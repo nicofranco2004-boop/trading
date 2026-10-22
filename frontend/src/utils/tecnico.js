@@ -11,14 +11,26 @@
 // York y vos tengas CEDEARs (otra escala), o una acción argentina pasada a
 // dólares día por día.
 
-import { esTradeCerrado } from './tradeStats'
+import { esCobro, esTradeCerrado } from './tradeStats'
 
-// Cuántas ruedas muestra cada rango del gráfico.
+// Cuánto tiempo muestra cada rango del gráfico, en días CORRIDOS: una cripto
+// cotiza los 7 días y la bolsa 5, así que contar velas daba 8 meses en "1A"
+// para Bitcoin (auditoría 22/10).
 export const RANGOS = [
-  { id: '3m', label: '3M', ruedas: 63 },
-  { id: '1a', label: '1A', ruedas: 252 },
-  { id: '2a', label: '2A', ruedas: 504 },
+  { id: '3m', label: '3M', dias: 91 },
+  { id: '1a', label: '1A', dias: 365 },
+  { id: '2a', label: '2A', dias: 730 },
 ]
+
+/** Cuántos de los últimos puntos caen en los últimos `dias` días corridos. */
+export function puntosEnDias(puntos = [], dias) {
+  if (!puntos.length) return 0
+  const fin = Date.parse(puntos[puntos.length - 1].d + 'T00:00:00Z')
+  const piso = new Date(fin - dias * 86400000).toISOString().slice(0, 10)
+  let n = 0
+  for (let i = puntos.length - 1; i >= 0 && puntos[i].d > piso; i--) n++
+  return n
+}
 
 // Los cortes del RSI que usa todo el mundo (TradingView incluido).
 export const RSI_CASTIGADO = 30
@@ -108,11 +120,14 @@ export function tarjetas(l) {
 
   if (l.media200 != null && l.dist_media200 != null) {
     const arriba = l.dist_media200 >= 0
-    const sube = (l.pendiente_media200 ?? 0) >= 0
+    // Sin el dato de hace un mes (un activo con 200 a 220 ruedas) no se sabe
+    // hacia dónde va la media: se corta la frase, no se supone "subiendo".
+    const hacia = l.pendiente_media200 == null ? ''
+      : `, y esa media viene ${l.pendiente_media200 >= 0 ? 'subiendo' : 'bajando'}`
     out.push({
       id: 'fondo', titulo: 'Tendencia de fondo',
       veredicto: arriba ? 'Alcista' : 'Bajista', tono: arriba ? 'pos' : 'neg',
-      texto: `Está ${pct1(l.dist_media200)} ${arriba ? 'arriba' : 'abajo'} de su media de 200 días, y esa media viene ${sube ? 'subiendo' : 'bajando'}.`,
+      texto: `Está ${pct1(l.dist_media200)} ${arriba ? 'arriba' : 'abajo'} de su media de 200 días${hacia}.`,
     })
   } else {
     out.push({
@@ -142,7 +157,8 @@ export function tarjetas(l) {
   }
 
   if (l.dist_maximo_12m != null) {
-    const enMaximo = l.dist_maximo_12m > -0.05
+    // El máximo es de CIERRE (el servidor): cerrar en récord da exactamente 0.
+    const enMaximo = l.dist_maximo_12m >= -0.1
     out.push({
       id: 'maximo', titulo: l.anio_completo ? 'Máximo del año' : 'Máximo del período',
       veredicto: enMaximo ? 'En su máximo' : `${pct1(l.dist_maximo_12m)} abajo`, tono: 'neutro',
@@ -174,13 +190,22 @@ export function textoCruceRsi(c) {
 }
 
 /**
- * Dónde va tu precio promedio en el gráfico: `último ÷ (1 + resultado)`. null si
- * no hay resultado (no tenés el activo) o el resultado no tiene sentido.
+ * Dónde va tu precio promedio en el gráfico: `último ÷ (1 + resultado) × (1 +
+ * variación de hoy)`. El último punto del gráfico es el cierre de AYER (las
+ * velas se guardan de noche) y el resultado es con el precio de AHORA: sin la
+ * variación de hoy, un día que el papel se mueve 10 % la línea se corría 10 %
+ * (auditoría 22/10). null si no hay resultado o no tiene sentido.
  */
-export function lineaPromedio(puntos = [], pnlPct) {
+export function lineaPromedio(puntos = [], pnlPct, variacionHoy = 0) {
   const ultimo = puntos.length ? puntos[puntos.length - 1].c : null
   if (!(ultimo > 0) || pnlPct == null || !(1 + pnlPct > 0)) return null
-  return ultimo / (1 + pnlPct)
+  return (ultimo / (1 + pnlPct)) * (1 + (variacionHoy || 0))
+}
+
+/** Cuánto se movió hoy el precio en vivo contra el último cierre guardado del
+ *  MISMO instrumento. 0 si falta alguno de los dos. */
+export function variacionDeHoy(precioVivo, cierreRef) {
+  return precioVivo > 0 && cierreRef?.cierre > 0 ? precioVivo / cierreRef.cierre - 1 : 0
 }
 
 /**
@@ -197,8 +222,10 @@ export function marcas(lotes = [], operaciones = []) {
   }
   for (const o of operaciones) {
     // La regla de "esto fue una compra y una venta" es la de las estadísticas de
-    // la ficha (`esTradeCerrado`): deja afuera cobros y conversiones de moneda.
-    if (!esTradeCerrado(o)) continue
+    // la ficha (`esTradeCerrado`): deja afuera conversiones de moneda. Los cobros
+    // (dividendo, cupón, renta, amortización) con `esCobro`, que los tiene a
+    // todos: `esTradeCerrado` sólo excluye algunos.
+    if (esCobro(o.op_type) || !esTradeCerrado(o)) continue
     if (o.entry_date) out.push({ fecha: String(o.entry_date).slice(0, 10), tipo: 'compra' })
     if (o.date) out.push({ fecha: String(o.date).slice(0, 10), tipo: 'venta' })
   }

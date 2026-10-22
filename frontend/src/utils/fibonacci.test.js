@@ -61,6 +61,13 @@ describe('tarjetaFibonacci', () => {
     expect(t.texto).toContain('La última suba (de US$ 10 el 01/03/2024 a US$ 20 el 01/06/2024) terminó hace más de un año')
   })
 
+  it('si el pozo ya estaba perforado cuando se confirmó el pico, dice las dos fechas', () => {
+    const t = tarjetaFibonacci({ ...SUBA, ruptura: { ...SUBA.ruptura, fecha: '2026-09-09', cerro_fuera_fecha: '2026-09-04' } }, precio, fecha)
+    expect(t.texto).toContain('La suba se dio por terminada el 09/09/2026: ese día se confirmó que el nivel a defender era su último pozo más alto (US$ 1.900, del 01/09/2026), y el precio ya había cerrado debajo el 04/09/2026.')
+    const mismoDia = tarjetaFibonacci({ ...SUBA, ruptura: { ...SUBA.ruptura, cerro_fuera_fecha: SUBA.ruptura.fecha } }, precio, fecha)
+    expect(mismoDia.texto).toContain('se dio por terminada el 09/09/2026, cuando cerró debajo de su último pozo más alto')
+  })
+
   it('si se rompió contra su propio arranque, no lo llama "último pozo más alto"', () => {
     const t = tarjetaFibonacci({ ...SUBA, ruptura: { ...SUBA.ruptura, nivel: 1495, nivel_fecha: '2026-05-13' } }, precio, fecha)
     expect(t.texto).toContain('cuando cerró debajo de donde había arrancado (US$ 1.495)')

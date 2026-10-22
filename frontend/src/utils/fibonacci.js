@@ -121,7 +121,12 @@ export function tarjetaFibonacci(f, precio, fecha) {
   const contra = f.ruptura.nivel_fecha === f.desde.fecha
     ? `donde había arrancado (${precio(f.ruptura.nivel)})`
     : `${suba ? 'su último pozo más alto' : 'su último techo más bajo'} (${precio(f.ruptura.nivel)}, del ${fecha(f.ruptura.nivel_fecha)})`
-  const fin = `La ${f.dir} se dio por terminada el ${fecha(f.ruptura.fecha)}, cuando cerró ${suba ? 'debajo' : 'encima'} de ${contra}.`
+  // El pico (o piso) se confirma 3 ruedas después: a veces el precio ya había
+  // cerrado del otro lado antes de que se supiera cuál era el nivel a defender.
+  const fuera = f.ruptura.cerro_fuera_fecha
+  const fin = fuera && fuera !== f.ruptura.fecha
+    ? `La ${f.dir} se dio por terminada el ${fecha(f.ruptura.fecha)}: ese día se confirmó que el nivel a defender era ${contra}, y el precio ya había cerrado ${suba ? 'debajo' : 'encima'} el ${fecha(fuera)}.`
+    : `La ${f.dir} se dio por terminada el ${fecha(f.ruptura.fecha)}, cuando cerró ${suba ? 'debajo' : 'encima'} de ${contra}.`
   const rm = f.retroceso_maximo
   const lejos = rm && alcanzado > 0
     ? ` Lo más ${suba ? 'bajo' : 'alto'} que llegó${rm.precio != null ? ` fue ${precio(rm.precio)},` : ''} el ${fecha(rm.fecha)}.` : ''

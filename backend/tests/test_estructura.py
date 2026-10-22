@@ -29,7 +29,7 @@ import sys
 import tempfile
 import unittest
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -88,6 +88,12 @@ class YahooDibujo:
                             index=pd.DatetimeIndex([pd.Timestamp(d) for d in dias]))
 
 
+def _fecha_iso(i):
+    """La rueda i como fecha (de corrido desde 2024-01-01): las cuentas del
+    Fibonacci miran fechas de verdad."""
+    return (date(2024, 1, 1) + timedelta(days=i)).isoformat()
+
+
 def _velas_de(cierres, ancho=0.01):
     """La apertura es el cierre anterior; máximo y mínimo, ±`ancho` del cierre."""
     out, prev = [], cierres[0]
@@ -122,7 +128,7 @@ class EstructuraPuraTest(unittest.TestCase):
         x, v = 100.0, []
         for i in range(500):
             x *= 1 + random.gauss(0, 0.02)
-            v.append({"date": f"{i:04d}", "open": x, "high": x * 1.01, "low": x * 0.99, "close": x})
+            v.append({"date": _fecha_iso(i), "open": x, "high": x * 1.01, "low": x * 0.99, "close": x})
         final = estructura.tramos(v)["confirmados"]
         self.assertGreater(len(final), 5)
         for corte in range(60, 500, 7):
@@ -132,19 +138,39 @@ class EstructuraPuraTest(unittest.TestCase):
     def test_tramo_de_hace_mas_de_un_anio_no_se_mide(self):
         # La suba de la figura y después más de un año quieto: no se mide.
         cierres, _ = _dibujo(SUBA)
-        cierres += [cierres[-1]] * (estructura.MAX_RUEDAS_DESDE_EL_FINAL + 30)
-        v = [{"date": f"{i:04d}", "open": o, "high": h, "low": l, "close": c}
+        cierres += [cierres[-1]] * (estructura.MAX_DIAS_DESDE_EL_FINAL + 30)
+        v = [{"date": _fecha_iso(i), "open": o, "high": h, "low": l, "close": c}
              for i, (o, h, l, c) in enumerate(_velas_de(cierres))]
         f = estructura.fibonacci(v)
         self.assertEqual((f["disponible"], f["motivo"]), (False, "tramo_viejo"))
         self.assertEqual(f["viejo"]["dir"], "suba")
+
+    def test_pozo_ya_perforado_cuando_se_confirma_el_pico(self):
+        # La suba llega a 150; baja a un pozo en 140, sube 3 ruedas a 160 (un pico
+        # más alto) y se desploma: el 2do día de la caída ya cerró debajo de 140,
+        # pero el pico de 160 recién se confirma al 3er día. La suba termina ESE
+        # día (cuando se supo), y queda anotado el cierre que perforó antes.
+        cierres, _ = _dibujo(SUBA[:9])                       # ... 100 → 130 → 118 → 150
+        cierres += [148, 146, 144, 142, 140]                  # baja al pozo de 140
+        j = len(cierres) - 1
+        cierres += [147, 154, 160]                            # 3 ruedas al pico de 160 (j+3)
+        cierres += [150, 132, 131, 130, 129, 128]             # j+5 ya cierra debajo de 140
+        v = [{"date": _fecha_iso(i), "open": o, "high": h, "low": l, "close": c}
+             for i, (o, h, l, c) in enumerate(_velas_de(cierres))]
+        t = estructura.tramos(v)["confirmados"][-1]
+        self.assertEqual((t["dir"], t["fin"], t["protegido"]), ("suba", j + 3, j))
+        self.assertEqual(t["cerro_fuera"], j + 5, "el primer cierre debajo del pozo")
+        self.assertEqual(t["ruptura"], j + 6, "el día que se confirma el pico de 160")
+        f = estructura.fibonacci(v)
+        self.assertEqual(f["ruptura"]["fecha"], _fecha_iso(j + 6))
+        self.assertEqual(f["ruptura"]["cerro_fuera_fecha"], _fecha_iso(j + 5))
 
     def test_superado_cuenta_el_tramo_vivo(self):
         # Después de la suba rota, el precio vuelve a subir y pasa el pico (sin
         # que la bajada en el medio sea un movimiento claro): el Fibonacci de esa
         # suba ya no describe nada.
         cierres, _ = _dibujo(SUBA[:-2] + [165, 190])
-        v = [{"date": f"{i:04d}", "open": o, "high": h, "low": l, "close": c}
+        v = [{"date": _fecha_iso(i), "open": o, "high": h, "low": l, "close": c}
              for i, (o, h, l, c) in enumerate(_velas_de(cierres))]
         f = estructura.fibonacci(v)
         self.assertFalse(f["disponible"])

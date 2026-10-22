@@ -48,6 +48,8 @@ ETH-USD), mediana de los 12:
 """
 from __future__ import annotations
 
+from datetime import date
+
 # Días de cada lado para que un día sea pico o pozo (ver arriba por qué 3).
 N_PIVOTE = 3
 # Los niveles de Fibonacci que se dibujan (0 y 1 son los extremos del tramo).
@@ -56,9 +58,11 @@ NIVELES = (0.236, 0.382, 0.5, 0.618, 0.786)
 # de máximo − mínimo de las 14 ruedas anteriores a su final), es ruido de
 # pocos días y no se mide. Ver `_es_claro`.
 MIN_RANGOS_TRAMO = 4.0
-# Un tramo que terminó hace más que esto (en ruedas, ~1 año) ya no describe
-# cómo se mueve el precio hoy: 'tramo_viejo' en vez de medir uno viejo.
-MAX_RUEDAS_DESDE_EL_FINAL = 252
+# Un tramo que terminó hace más que esto (días de calendario: un año) ya no
+# describe cómo se mueve el precio hoy: 'tramo_viejo' en vez de medir uno viejo.
+# Por fecha y no por cantidad de velas, como `tecnico.DIAS_ANIO`: una cripto
+# cotiza los 7 días y la bolsa 5.
+MAX_DIAS_DESDE_EL_FINAL = 365
 # Menos ruedas que esto no alcanza para hablar de estructura.
 MIN_RUEDAS = 30
 
@@ -94,6 +98,10 @@ def pivotes(velas: list, n: int = N_PIVOTE) -> list:
     return out
 
 
+def _dias_entre(a: str, b: str) -> int:
+    return (date.fromisoformat(str(b)[:10]) - date.fromisoformat(str(a)[:10])).days
+
+
 def _rango_tipico(velas: list, i: int, ruedas: int = 14) -> float:
     """El promedio de (máximo − mínimo) de las `ruedas` anteriores a `i`."""
     tramo = velas[max(0, i - ruedas + 1):i + 1]
@@ -106,8 +114,9 @@ def tramos(velas: list, n: int = N_PIVOTE) -> dict:
     (un pivote entra recién cuando se confirma), y devuelve:
       · 'confirmados': los tramos terminados, del más viejo al más nuevo;
       · 'en_curso': el que está vivo hoy, con el nivel que lo rompería.
-    Cada tramo: {'dir': 'suba'|'bajada', 'inicio': i, 'fin': i, 'ruptura': i,
-    'protegido': i del pozo/techo que se rompió, 'primero': bool}."""
+    Cada tramo: {'dir': 'suba'|'bajada', 'inicio': i, 'fin': i, 'ruptura': i
+    (el día que se supo), 'cerro_fuera': i (el primer cierre del otro lado, que
+    puede ser anterior), 'protegido': i del pozo/techo que se rompió, 'primero'}."""
     piv = sorted(pivotes(velas, n), key=lambda p: (p["confirmado"], p["i"]))
     altos = [_alto(v) for v in velas]
     bajos = [_bajo(v) for v in velas]
@@ -148,10 +157,11 @@ def tramos(velas: list, n: int = N_PIVOTE) -> dict:
                 ini = max(range(ult_pozo, i + 1), key=lambda j: altos[j])
                 estado = _nuevo("bajada", ini, i, piv, altos, bajos, cierres, primero=True)
             continue
-        if estado["dir"] == "suba" and c < bajos[estado["protegido"]]:
+        # (o el pozo que hoy pasó a defenderse ya estaba perforado: ver _aplicar)
+        if estado["dir"] == "suba" and (c < bajos[estado["protegido"]] or estado["perforado"] is not None):
             confirmados.append(_cerrar(estado, i))
             estado = _nuevo("bajada", estado["extremo"], i, piv, altos, bajos, cierres)
-        elif estado["dir"] == "bajada" and c > altos[estado["protegido"]]:
+        elif estado["dir"] == "bajada" and (c > altos[estado["protegido"]] or estado["perforado"] is not None):
             confirmados.append(_cerrar(estado, i))
             estado = _nuevo("suba", estado["extremo"], i, piv, altos, bajos, cierres)
 
@@ -162,7 +172,8 @@ def tramos(velas: list, n: int = N_PIVOTE) -> dict:
     return {"confirmados": confirmados, "en_curso": en_curso}
 
 
-def _aplicar(estado: dict, p: dict, altos: list, bajos: list, cierres: list, hoy: int) -> None:
+def _aplicar(estado: dict, p: dict, altos: list, bajos: list, cierres: list, hoy: int,
+             al_nacer: bool = False) -> None:
     """Un pivote confirmado dentro del tramo vivo. En una suba:
       · un POZO es candidato a "pozo más alto": el más bajo desde el pico más
         alto del tramo ("pendiente");
@@ -173,11 +184,15 @@ def _aplicar(estado: dict, p: dict, altos: list, bajos: list, cierres: list, hoy
         cierre lo rompe, el pico más alto fue el final.
       · el primer pico del tramo no protege nada todavía: un pozo es "más
         alto" recién cuando queda entre dos picos.
-      · un pozo que algún cierre ya perforó (entre su día y `hoy`) no pasa a
-        defenderse: como el pico se confirma 3 ruedas después, el precio pudo
-        haberlo cerrado por debajo antes de que se sepa. Decir "se termina si
-        cierra debajo de X" cuando ya cerró debajo sería falso; queda el que
-        se defendía antes.
+      · el pico se confirma 3 ruedas después, así que cuando un pozo pasa a
+        defenderse el precio ya pudo haber cerrado debajo (por ejemplo, el
+        mismo día que se confirma el pico). Entonces la suba terminó HOY, el
+        día que se supo: queda anotado en `perforado` el primer cierre debajo,
+        y `tramos` la cierra en este mismo día.
+      · `al_nacer`: un tramo que recién nace repasa el pasado. Ahí un pozo que
+        se perforó antes de que el tramo existiera no se defiende (queda el que
+        se defendía antes): el cierre que lo perforó era parte del tramo
+        anterior, no una ruptura de este.
     En una bajada, al revés."""
     suba = estado["dir"] == "suba"
     if p["tipo"] == ("pozo" if suba else "pico"):
@@ -191,16 +206,23 @@ def _aplicar(estado: dict, p: dict, altos: list, bajos: list, cierres: list, hoy
         return
     mas_extremo = altos[p["i"]] > altos[previo] if suba else bajos[p["i"]] < bajos[previo]
     cand = estado["pendiente"]
-    if cand is not None and _en_pie(cand, suba, altos, bajos, cierres, hoy):
-        estado["protegido"] = cand
+    if cand is not None:
+        k = _primer_cierre_que_pasa(cand, suba, altos, bajos, cierres, hoy)
+        if k is None:
+            estado["protegido"] = cand
+        elif not al_nacer:
+            estado["protegido"], estado["perforado"] = cand, k
     if mas_extremo:
         estado["previo"], estado["pendiente"] = p["i"], None
 
 
-def _en_pie(j: int, suba: bool, altos: list, bajos: list, cierres: list, hoy: int) -> bool:
-    """¿Ningún cierre desde el día `j` hasta `hoy` pasó el pozo (o techo) de `j`?"""
-    tramo = cierres[j:hoy + 1]
-    return min(tramo) >= bajos[j] if suba else max(tramo) <= altos[j]
+def _primer_cierre_que_pasa(j: int, suba: bool, altos: list, bajos: list, cierres: list, hoy: int):
+    """El primer día, desde `j` hasta `hoy`, que cerró debajo del pozo de `j`
+    (o encima del techo, en una bajada). None si ninguno."""
+    for k in range(j, hoy + 1):
+        if (cierres[k] < bajos[j]) if suba else (cierres[k] > altos[j]):
+            return k
+    return None
 
 
 def _nuevo(direccion: str, inicio: int, hoy: int, piv: list, altos: list, bajos: list,
@@ -208,23 +230,26 @@ def _nuevo(direccion: str, inicio: int, hoy: int, piv: list, altos: list, bajos:
     """Un tramo que arranca en `inicio` (el extremo del que se rompió). Hasta que
     haga su segundo pico más alto con un pozo en el medio, lo que defiende es su
     propio arranque. Los pivotes que ya se confirmaron entre el arranque y hoy
-    se le aplican en orden: el tramo nuevo nace sabiendo lo que pasó, y con los
-    cierres hasta hoy (un pozo que ya se perforó no se defiende)."""
+    se le aplican en orden: el tramo nuevo nace sabiendo lo que pasó (ver
+    `al_nacer` en `_aplicar`)."""
     serie = altos if direccion == "suba" else bajos
     rango = range(inicio, hoy + 1)
     extremo = (max(rango, key=lambda j: serie[j]) if direccion == "suba"
                else min(rango, key=lambda j: serie[j]))
     estado = {"dir": direccion, "inicio": inicio, "extremo": extremo, "protegido": inicio,
-              "pendiente": None, "previo": None, "primero": primero}
+              "pendiente": None, "previo": None, "primero": primero, "perforado": None}
     for p in piv:
         if p["confirmado"] <= hoy and p["i"] > inicio:
-            _aplicar(estado, p, altos, bajos, cierres, hoy)
+            _aplicar(estado, p, altos, bajos, cierres, hoy, al_nacer=True)
     return estado
 
 
 def _cerrar(estado: dict, hoy: int) -> dict:
     return {"dir": estado["dir"], "inicio": estado["inicio"], "fin": estado["extremo"],
-            "ruptura": hoy, "protegido": estado["protegido"], "primero": estado["primero"]}
+            "ruptura": hoy, "protegido": estado["protegido"], "primero": estado["primero"],
+            # El primer cierre del otro lado: hoy, o antes si el pozo pasó a
+            # defenderse ya perforado (ver _aplicar).
+            "cerro_fuera": estado["perforado"] if estado["perforado"] is not None else hoy}
 
 
 def _es_claro(velas: list, t: dict) -> bool:
@@ -273,7 +298,7 @@ def fibonacci(velas: list, n: int = N_PIVOTE) -> dict:
         return {**base, "motivo": "sin_tramo_terminado"}
     if not validos:
         return {**base, "motivo": "tramos_chicos"}
-    if hoy - validos[-1]["fin"] > MAX_RUEDAS_DESDE_EL_FINAL:
+    if _dias_entre(velas[validos[-1]["fin"]]["date"], velas[hoy]["date"]) > MAX_DIAS_DESDE_EL_FINAL:
         return {**base, "motivo": "tramo_viejo", "viejo": lista[-1]}
 
     t = validos[-1]
@@ -318,6 +343,8 @@ def fibonacci(velas: list, n: int = N_PIVOTE) -> dict:
         "desde": {"fecha": ini["date"], "precio": _r(p0)},
         "hasta": {"fecha": fin["date"], "precio": _r(p1)},
         "ruptura": {"fecha": rup["date"], "cierre": _r(rup["close"]),
+                    "cerro_fuera_fecha": velas[t["cerro_fuera"]]["date"],
+                    "cerro_fuera_cierre": _r(velas[t["cerro_fuera"]]["close"]),
                     "nivel": _r(_bajo(velas[t["protegido"]]) if suba else _alto(velas[t["protegido"]])),
                     "nivel_fecha": velas[t["protegido"]]["date"]},
         "niveles": [{"nivel": r, "precio": _r(p1 - r * (p1 - p0))} for r in NIVELES],

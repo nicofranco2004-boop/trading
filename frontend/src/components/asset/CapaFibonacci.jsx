@@ -14,7 +14,11 @@
 import { indiceDeFecha } from '../../utils/tecnico'
 import { nivelTexto, rayas, rotulosQueEntran, tarjetaFibonacci } from '../../utils/fibonacci'
 
-export const COLOR_FIB = 'rgb(var(--data-amber))'
+// Magenta: no se confunde con ninguna otra línea del gráfico (precio, media de
+// 200 azul, media de 50 naranja, velas verdes y rojas). Variable del tema (R8),
+// con transparencia por canal: `rgb(var(--x) / a)`.
+const magenta = (a = 1) => `rgb(var(--cat-magenta) / ${a})`
+export const COLOR_FIB = magenta()
 
 /**
  * Los precios que el gráfico tiene que mostrar para que la capa entre entera.
@@ -72,7 +76,12 @@ export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio }) {
   const p0 = posicion(puntos, fib.desde.fecha)
   if (p0.donde === 'despues') return null
   const p1 = posicion(puntos, fib.hasta.fecha)
-  const pr = posicion(puntos, fib.ruptura.fecha)
+  // El rombo va en el cierre que pasó del otro lado (puede ser unos días antes
+  // de que se supiera: el pico se confirma 3 ruedas después).
+  const rup = fib.ruptura.cerro_fuera_fecha
+    ? { fecha: fib.ruptura.cerro_fuera_fecha, cierre: fib.ruptura.cerro_fuera_cierre }
+    : fib.ruptura
+  const pr = posicion(puntos, rup.fecha)
   // Las rayas arrancan en el arranque del tramo, o en el borde si arrancó antes.
   const x0 = p0.donde === 'adentro' ? pctX(p0.i) : 0
   const x1 = p1.donde === 'adentro' ? pctX(p1.i) : null
@@ -90,8 +99,8 @@ export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio }) {
   return (
     <div className="pointer-events-none absolute inset-0" aria-hidden="true">
       {franja && (
-        <div className="absolute bg-data-amber/10"
-          style={{ left: `${x0}%`, right: 0, top: `${Math.min(...franja)}%`, height: `${Math.abs(franja[0] - franja[1])}%` }} />
+        <div className="absolute"
+          style={{ background: magenta(0.1), left: `${x0}%`, right: 0, top: `${Math.min(...franja)}%`, height: `${Math.abs(franja[0] - franja[1])}%` }} />
       )}
       {lista.map((r, k) => (
         <div key={r.nivel} className="absolute h-0"
@@ -115,8 +124,8 @@ export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio }) {
       {x1 != null && <Punto x={x1} y={pctY(fib.hasta.precio)} titulo="Final del tramo" />}
       {pr.donde === 'adentro' && (
         <span className="absolute -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 border-2 bg-bg-1"
-          style={{ left: `${pctX(pr.i)}%`, top: `${pctY(fib.ruptura.cierre)}%`, borderColor: COLOR_FIB }}
-          title={`Ruptura: cerró ${precio(fib.ruptura.cierre)}`} />
+          style={{ left: `${pctX(pr.i)}%`, top: `${pctY(rup.cierre)}%`, borderColor: COLOR_FIB }}
+          title={`Ruptura: cerró ${precio(rup.cierre)}`} />
       )}
     </div>
   )
@@ -153,7 +162,7 @@ export function TarjetaFibonacci({ fib, precio, fecha }) {
   const t = tarjetaFibonacci(fib, precio, fecha)
   if (!t) return null
   return (
-    <div className="sm:col-span-2 rounded-lg border border-data-amber/40 bg-data-amber/5 px-3.5 py-3">
+    <div className="sm:col-span-2 rounded-lg border px-3.5 py-3" style={{ borderColor: magenta(0.4), background: magenta(0.05) }}>
       <div className="text-[12px] text-ink-2 font-medium">{t.titulo}</div>
       <div className="text-[15px] font-semibold mt-0.5 text-ink-0">{t.veredicto}</div>
       <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.texto}</div>

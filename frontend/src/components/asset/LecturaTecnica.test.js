@@ -89,10 +89,36 @@ describe('LecturaTecnica', () => {
     expect(t).not.toContain('Lectura técnica')
   })
 
-  it('si el pedido falla, también cae al gráfico de siempre', async () => {
+  it('si el pedido falla lo dice y deja reintentar (no muestra otro gráfico)', async () => {
     respuestas = { '/tecnico/': new Error('caído'), '/prices/history': { points: [] } }
     const t = await dibujar({})
-    expect(t).toContain('últimos 30 días')
+    expect(t).toContain('No se pudo cargar el gráfico')
+    expect(t).not.toContain('últimos 30 días')
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD }
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Reintentar'))
+    for (let i = 0; i < 3; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA' }))
+    expect(texto(montado.contenedor)).toContain('Tendencia de fondo')
+  })
+
+  it('la línea de tu precio usa el dólar de compra; sin ese dato no se dibuja y lo dice', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD }
+    let t = await dibujar({ pnlPctUsd: 0.4, pnlPctLinea: 0.1 })
+    expect(t).toContain('Tu precio promedio')
+    expect(t).toContain('40,0% arriba')            // la tarjeta: el mismo resultado de arriba
+    await montado.desmontar(); montado = null
+    t = await dibujar({ pnlPctUsd: 0.4, pnlPctLinea: null, lineaSinTc: true })
+    expect(t).not.toContain('Tu precio promedio')
+    expect(t).toContain('le falta el dólar de ese día')
+  })
+
+  it('compras y ventas en la leyenda sólo si hay alguna en el rango', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD }
+    let t = await dibujar({ pnlPctUsd: 0.1 })
+    expect(t).not.toContain('Tus compras y ventas')
+    await montado.desmontar(); montado = null
+    const ultimo = USD.puntos[USD.puntos.length - 10].d
+    t = await dibujar({ pnlPctUsd: 0.1, lotes: [{ entry_date: ultimo, quantity: 1 }] })
+    expect(t).toContain('Tus compras y ventas')
   })
 
   it('pide pesos recién al tocarlos, y una acción argentina pide su precio local', async () => {

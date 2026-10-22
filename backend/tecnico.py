@@ -13,8 +13,10 @@ cada vista con lo que hay guardado:
     una acción o ETF de EE.UU., una cripto); si no, la de BYMA en pesos ÷ el
     dólar MEP de CADA día (una acción argentina).
   · pesos: la de BYMA si existe; si no, la de afuera × el MEP de cada día.
-El dólar de cada día es el punto medio del MEP de `fx_rates_daily` (la misma
-expresión que `fx.fx_for_date`), con el blue de red como allá.
+El dólar de cada día sale de `fx.serie_diaria`: la MISMA regla que
+`fx.fx_for_date` (el último MEP conocido; el blue sólo si no hubo ninguno).
+Las velas llegan ya corregidas por `velas_diarias.serie` (cambios de ratio de un
+CEDEAR y precios rotos de un día, que Yahoo no corrige): acá no se corrige nada.
 
 EL FIBONACCI (picos, pozos, tramos de suba y de bajada) vive en
 `estructura.py`; acá sólo se le pasa la misma serie que va al gráfico.
@@ -28,11 +30,13 @@ from datetime import date, timedelta
 
 import estructura
 
-RUEDAS_ANIO = 252
-# Cuántas ruedas se mandan a la pantalla: 2 años, el rango más largo del gráfico.
-RUEDAS_GRAFICO = 2 * RUEDAS_ANIO
-# Hacia dónde va la media de 200: su cambio en el último mes de ruedas.
-RUEDAS_PENDIENTE = 20
+# Todo lo que es "un año" o "un mes" se corta por FECHA (días corridos), no por
+# cantidad de velas: una cripto cotiza los 7 días y la bolsa 5.
+DIAS_ANIO = 365
+# Lo que se manda a la pantalla: 2 años de calendario, el rango más largo.
+DIAS_GRAFICO = 2 * DIAS_ANIO
+# Hacia dónde va la media de 200: contra la de hace un mes.
+DIAS_PENDIENTE = 30
 # Un dólar de hace más días que esto no es "el de ese día" (mismo techo que
 # price_history.MAX_DIAS_ATRAS): sin él, la vela no se convierte.
 MAX_DIAS_SIN_DOLAR = 7
@@ -103,18 +107,41 @@ def _pct(a, b):
     return (a / b - 1.0) * 100.0 if (a is not None and b) else None
 
 
-def lectura(velas: list) -> dict:
-    """Los números de la lectura técnica sobre la última vela."""
+def _desde_dias(velas: list, dias: int) -> int:
+    """Índice de la primera vela de los últimos `dias` días CORRIDOS. Se corta
+    por fecha, no por cantidad: 252 velas son un año de bolsa pero 8 meses de
+    una cripto, que cotiza los 7 días (auditoría 22/10: Bitcoin "3,8 % abajo
+    del máximo del año" cuando estaba 27,7 % abajo)."""
+    if not velas:
+        return 0
+    piso = (date.fromisoformat(velas[-1]["date"]) - timedelta(days=dias)).isoformat()
+    for i, v in enumerate(velas):
+        if v["date"] > piso:
+            return i
+    return len(velas)
+
+
+def lectura(velas: list, m50=None, m200=None, r=None) -> dict:
+    """Los números de la lectura técnica sobre la última vela. Las medias y el
+    RSI se pueden pasar ya calculados (la ficha los calcula para el gráfico)."""
     cierres = [v["close"] for v in velas]
     n = len(cierres)
     if not n:
         return {"ruedas": 0}
-    m50, m200, r = media(cierres, 50), media(cierres, 200), rsi(cierres)
+    m50 = m50 if m50 is not None else media(cierres, 50)
+    m200 = m200 if m200 is not None else media(cierres, 200)
+    r = r if r is not None else rsi(cierres)
     ultimo = cierres[-1]
-    anio = velas[-RUEDAS_ANIO:]
-    maximo = max((v.get("high") or v["close"]) for v in anio)
-    minimo = min((v.get("low") or v["close"]) for v in anio)
-    m200_antes = m200[-1 - RUEDAS_PENDIENTE] if n > RUEDAS_PENDIENTE else None
+    i_anio = _desde_dias(velas, DIAS_ANIO)
+    anio = velas[i_anio:]
+    # El máximo y el mínimo del año, de CIERRE contra CIERRE: el pico dentro del
+    # día de hoy nunca se alcanza al cierre, así que con el máximo intradiario
+    # "En su máximo" no aparecía nunca (Apple cerró en récord 36 días del año).
+    maximo = max(v["close"] for v in anio)
+    minimo = min(v["close"] for v in anio)
+    # Hacia dónde va la media de 200: contra la de hace un mes CORRIDO.
+    i_mes = _desde_dias(velas, DIAS_PENDIENTE) - 1
+    m200_antes = m200[i_mes] if 0 <= i_mes < n else None
     vols = [v.get("volume") for v in velas[-21:-1] if v.get("volume")]
     vol_hoy = velas[-1].get("volume")
     return {
@@ -132,41 +159,29 @@ def lectura(velas: list) -> dict:
         "dist_maximo_12m": _pct(ultimo, maximo),
         "minimo_12m": minimo,
         "volumen_vs_promedio": (vol_hoy / (sum(vols) / len(vols))) if (vol_hoy and len(vols) >= 10) else None,
-        "anio_completo": n >= RUEDAS_ANIO,
+        "anio_completo": i_anio > 0,
     }
 
 
 # ─── Qué serie y en qué moneda ───────────────────────────────────────────────
 
-def _dolares_por_dia(conn, desde: str) -> dict:
-    """{fecha: dólar MEP medio} desde `desde`, con el blue donde no hay MEP.
-    Es la misma cuenta que `fx.fx_for_date`, hecha una vez para toda la serie."""
-    from fx import SQL_MEDIO_BLUE, SQL_MEDIO_MEP
-    rows = conn.execute(
-        f"SELECT date, {SQL_MEDIO_MEP} AS mep, {SQL_MEDIO_BLUE} AS blue FROM fx_rates_daily "
-        "WHERE date >= ? ORDER BY date",
-        ((date.fromisoformat(desde) - timedelta(days=MAX_DIAS_SIN_DOLAR)).isoformat(),)).fetchall()
-    out = {}
-    for r in rows:
-        v = r["mep"] if (r["mep"] or 0) > 0 else r["blue"]
-        if v and v > 0:
-            out[r["date"]] = float(v)
-    return out
-
-
-def _convertir(velas: list, dolares: dict, por: str) -> list:
+def _convertir(conn, velas: list, por: str) -> list:
     """Pasa una serie de moneda: `por`='dividir' (pesos → dólares) o
-    'multiplicar' (dólares → pesos), con el dólar de cada día. Un día sin dólar
-    en la última semana se saltea: no se inventa con uno viejo."""
-    fechas = sorted(dolares)
-    out, j, ultimo = [], 0, None
+    'multiplicar' (dólares → pesos), con el dólar de cada día (`fx.serie_diaria`,
+    la regla de `fx.fx_for_date`). Si el último MEP conocido tiene más de una
+    semana, la vela se saltea: no se inventa con un dólar viejo."""
+    from fx import serie_diaria
+    if not velas:
+        return []
+    dolares = serie_diaria(conn, velas[0]["date"])
+    out, j, actual = [], 0, None
     for v in velas:
-        while j < len(fechas) and fechas[j] <= v["date"]:
-            ultimo = fechas[j]
+        while j < len(dolares) and dolares[j][0] <= v["date"]:
+            actual = dolares[j]
             j += 1
-        if not ultimo or (date.fromisoformat(v["date"]) - date.fromisoformat(ultimo)).days > MAX_DIAS_SIN_DOLAR:
+        if not actual or (date.fromisoformat(v["date"]) - date.fromisoformat(actual[2])).days > MAX_DIAS_SIN_DOLAR:
             continue
-        tc = dolares[ultimo]
+        tc = actual[1]
         f = (lambda x: x / tc) if por == "dividir" else (lambda x: x * tc)
         out.append({**v, **{k: (f(v[k]) if v.get(k) is not None else None)
                              for k in ("open", "high", "low", "close")}})
@@ -191,28 +206,42 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     if not a:
         return {"velas": []}
     cripto = yahoo_de_cripto(a)
+    de_afuera = cripto or velas_diarias.ticker_de_afuera(a)
     byma = [] if cripto else velas_diarias.serie(conn, simbolo_byma(a))
-    afuera = [] if (local and byma) else velas_diarias.serie(conn, cripto or a)
+    afuera = [] if (local and byma) else velas_diarias.serie(conn, de_afuera)
 
     if moneda == "ars":
         if byma:
             return {"velas": byma, "ticker": simbolo_byma(a), "convertida": None}
         if afuera:
-            return {"velas": _convertir(afuera, _dolares_por_dia(conn, afuera[0]["date"]), "multiplicar"),
-                    "ticker": cripto or a, "convertida": "mep"}
+            return {"velas": _convertir(conn, afuera, "multiplicar"), "ticker": de_afuera, "convertida": "mep"}
         return {"velas": []}
     if afuera:
-        return {"velas": afuera, "ticker": cripto or a, "convertida": None}
+        return {"velas": afuera, "ticker": de_afuera, "convertida": None}
     if byma:
-        return {"velas": _convertir(byma, _dolares_por_dia(conn, byma[0]["date"]), "dividir"),
-                "ticker": simbolo_byma(a), "convertida": "mep"}
+        return {"velas": _convertir(conn, byma, "dividir"), "ticker": simbolo_byma(a), "convertida": "mep"}
     return {"velas": []}
 
 
-def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
-    """Lo que necesita la ficha: la serie del gráfico (2 años) con sus medias y
-    su RSI ya calculados sobre TODA la historia guardada (la media de 200 del
-    primer punto del gráfico necesita los 10 meses de antes) y la lectura."""
+def cierre_de(conn, simbolo: str):
+    """El último cierre guardado de un símbolo tal como lo pide la valuación
+    ('AAPL.BA', 'AAPL', 'BTC', 'BRK.B'), con su fecha. Sirve para saber cuánto se
+    movió HOY el precio en vivo de tu tenencia contra el cierre del gráfico."""
+    from cripto import yahoo_de_cripto
+    import velas_diarias
+    s = (simbolo or "").strip().upper()
+    if not s:
+        return None
+    ticker = yahoo_de_cripto(s) or (s if s.endswith(".BA") else velas_diarias.ticker_de_afuera(s))
+    v = velas_diarias.ultima_vela(conn, ticker)
+    return {"fecha": v["date"], "cierre": v["close"]} if v else None
+
+
+def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, ref: str = None) -> dict:
+    """Lo que necesita la ficha: la serie del gráfico (2 años de calendario) con
+    sus medias y su RSI ya calculados sobre TODA la historia guardada (la media
+    de 200 del primer punto del gráfico necesita los 10 meses de antes) y la
+    lectura."""
     moneda = "ars" if moneda == "ars" else "usd"
     s = serie(conn, asset, moneda, local)
     velas = s["velas"]
@@ -220,7 +249,7 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False) ->
         return {"asset": (asset or "").upper(), "moneda": moneda, "disponible": False}
     cierres = [v["close"] for v in velas]
     m50, m200, r = media(cierres, 50), media(cierres, 200), rsi(cierres)
-    desde = max(0, len(velas) - RUEDAS_GRAFICO)
+    desde = _desde_dias(velas, DIAS_GRAFICO)
 
     def _r(x, d=4):
         return round(x, d) if x is not None else None
@@ -237,7 +266,11 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False) ->
         "ticker": s["ticker"],
         "convertida": s["convertida"],
         "puntos": puntos,
-        "lectura": lectura(velas),
+        "lectura": lectura(velas, m50, m200, r),
+        # El último cierre del instrumento con el que se valúa tu tenencia
+        # (`ref`): la pantalla lo compara con el precio en vivo para que la línea
+        # de tu precio no se corra lo que se movió hoy (auditoría 22/10).
+        "cierre_ref": cierre_de(conn, ref) if ref else None,
         # Fibonacci del último tramo (estructura.py), sobre TODA la historia
         # guardada de esta misma serie: los niveles quedan en la moneda del gráfico.
         "fibonacci": estructura.fibonacci(velas),

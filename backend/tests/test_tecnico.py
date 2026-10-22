@@ -53,9 +53,10 @@ class YahooFalso:
     """`precios[ticker](i, fecha)` da el cierre de la rueda i (0 = la más vieja)."""
 
     def __init__(self, hoy):
-        self.hoy, self.precios = hoy, {}
+        self.hoy, self.precios, self.pedidos = hoy, {}, []
 
     def __call__(self, ticker, period, interval, auto_adjust, timeout):
+        self.pedidos.append((ticker, period, auto_adjust))
         f = self.precios.get(ticker)
         if f is None:
             return pd.DataFrame()
@@ -133,8 +134,8 @@ class FichaTest(unittest.TestCase):
         self.client = TestClient(main.app)
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
-            for t in ("velas_diarias", "velas_estado", "watchlist", "positions", "brokers",
-                      "fx_rates_daily"):
+            for t in ("velas_diarias", "velas_estado", "velas_correcciones", "watchlist", "positions",
+                      "brokers", "fx_rates_daily"):
                 conn.execute(f"DELETE FROM {t}")
             cur = conn.execute(
                 "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
@@ -179,8 +180,9 @@ class FichaTest(unittest.TestCase):
                              (d.isoformat(), f(i) * 1.1, f(i)))
             conn.commit()
 
-    def _ficha(self, asset, moneda="usd", h=None):
-        r = self.client.get(f"/api/tecnico/{asset}?moneda={moneda}", headers=h or self.h)
+    def _ficha(self, asset, moneda="usd", h=None, local=False):
+        r = self.client.get(f"/api/tecnico/{asset}?moneda={moneda}{'&local=1' if local else ''}",
+                            headers=h or self.h)
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()
 
@@ -199,7 +201,9 @@ class FichaTest(unittest.TestCase):
         self.assertIsNone(usd["convertida"])
         self.assertLess(usd["lectura"]["dist_media200"], 0, "en dólares está debajo de su media")
         self.assertLess(usd["lectura"]["pendiente_media200"], 0)
-        self.assertEqual(len(usd["puntos"]), tecnico.RUEDAS_GRAFICO)
+        # Dos años de CALENDARIO (no una cantidad fija de velas).
+        piso = (self.dias[-1] - timedelta(days=tecnico.DIAS_GRAFICO)).isoformat()
+        self.assertEqual(len(usd["puntos"]), sum(1 for d in self.dias if d.isoformat() > piso))
         self.assertIsNotNone(usd["puntos"][0]["s200"],
                              "la media de 200 del primer punto se calcula con la historia anterior")
 
@@ -224,7 +228,8 @@ class FichaTest(unittest.TestCase):
         self.assertAlmostEqual(f["puntos"][-1]["h"], esperado * 1.01, places=3)
         self.assertAlmostEqual(f["puntos"][-1]["l"], esperado * 0.99, places=3)
         self.assertAlmostEqual(f["puntos"][-1]["o"], esperado, places=3)
-        primero = len(self.dias) - tecnico.RUEDAS_GRAFICO
+        piso = (self.dias[-1] - timedelta(days=tecnico.DIAS_GRAFICO)).isoformat()
+        primero = next(i for i, d in enumerate(self.dias) if d.isoformat() > piso)
         self.assertAlmostEqual(f["puntos"][0]["c"], (5000 + primero * 5) / (1000 + primero), places=3,
                                msg="cada día con SU dólar, no con el de hoy")
 
@@ -306,6 +311,135 @@ class FichaTest(unittest.TestCase):
             correr.assert_not_called()
         finally:
             main._soltar_corrida("velas_diarias")
+
+
+    def test_cripto_el_anio_son_365_dias(self):
+        # Bitcoin cotiza los 7 días: 252 velas son 8 meses. El máximo "del año"
+        # tiene que mirar 12 meses de calendario.
+        self._broker("Binance", "USDT")
+        self._posicion("Binance", "BTC", "CRYPTO")
+        hoy = self.hoy
+        dias = [hoy - timedelta(days=k) for k in range(760, 0, -1)]   # todos los días
+        pico = hoy - timedelta(days=300)                               # hace 10 meses
+
+        def btc(ticker, period, interval, auto_adjust, timeout):
+            idx = [pd.Timestamp(d) for d in dias]
+            c = [120000.0 if d == pico else 80000.0 for d in dias]
+            return pd.DataFrame({"Open": c, "High": c, "Low": c, "Close": c, "Volume": [1.0] * len(c)},
+                                index=pd.DatetimeIndex(idx))
+        with mock.patch("pricing.yahoo._historia", btc):
+            main._run_velas_diarias_job()
+        f = self._ficha("BTC")
+        self.assertEqual(f["lectura"]["maximo_12m"], 120000.0, "el pico de hace 10 meses es del año")
+        self.assertAlmostEqual(f["lectura"]["dist_maximo_12m"], -33.33, places=1)
+        self.assertGreater(f["puntos"][0]["d"], (hoy - timedelta(days=731)).isoformat())
+        self.assertLess(f["puntos"][0]["d"], (hoy - timedelta(days=700)).isoformat(), "2A = 2 años de calendario")
+
+    def test_cedear_en_pesos_sin_el_escalon_del_cambio_de_ratio(self):
+        # El 5/12 BYMA pasa XLE de un ratio a otro el doble: el CEDEAR en pesos
+        # cae 50 % ese día mientras afuera no se mueve. Yahoo no lo corrige.
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "XLE", "CEDEAR")
+        cambio = len(self.dias) - 200
+        self.yahoo.precios["XLE"] = lambda i, d: 90.0
+        self.yahoo.precios["XLE.BA"] = lambda i, d: 9000.0 if i < cambio else 4500.0
+        main._run_velas_diarias_job()
+        ars = self._ficha("XLE", "ars")
+        cierres = {p["c"] for p in ars["puntos"]}
+        self.assertEqual(cierres, {4500.0}, "toda la historia en la escala nueva, sin caída falsa")
+        self.assertAlmostEqual(ars["lectura"]["dist_media200"], 0.0, places=6)
+
+    def test_precio_roto_de_un_dia_se_saca(self):
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "ETHA", "CEDEAR")
+        roto = len(self.dias) - 10
+        self.yahoo.precios["ETHA"] = lambda i, d: 20.0
+        self.yahoo.precios["ETHA.BA"] = lambda i, d: 6810.0 if i == roto else 19650.0
+        main._run_velas_diarias_job()
+        ars = self._ficha("ETHA", "ars")
+        self.assertNotIn(6810.0, {p["c"] for p in ars["puntos"]})
+        self.assertNotIn(self.dias[roto].isoformat(), {p["d"] for p in ars["puntos"]})
+
+    def test_dia_sin_mep_usa_el_ultimo_mep_como_el_resto_de_la_app(self):
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "GGAL", "ACCION")
+        self._mep(lambda i: 1000.0)
+        hueco = self.dias[-3].isoformat()
+        with main.db_abierta() as conn:   # ese día hay blue (1.100) pero no MEP
+            conn.execute("UPDATE fx_rates_daily SET mep_venta=NULL WHERE date=?", (hueco,))
+            conn.commit()
+        self.yahoo.precios["GGAL.BA"] = lambda i, d: 5000.0
+        main._run_velas_diarias_job()
+        f = self._ficha("GGAL", "usd", local=True)
+        punto = next(p for p in f["puntos"] if p["d"] == hueco)
+        self.assertAlmostEqual(punto["c"], 5.0, places=6, msg="con el MEP de antes, no con el blue de ese día")
+        import fx
+        with main.db_abierta() as conn:
+            self.assertEqual(fx.fx_for_date(conn, hueco), 1000.0)
+
+    def test_acciones_con_clase_se_piden_con_guion(self):
+        import velas_diarias
+        self.assertEqual(velas_diarias.ticker_de_afuera("BRK.B"), "BRK-B")
+        self.assertEqual(velas_diarias.ticker_de_afuera("AAPL"), "AAPL")
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "BRK.B", "STOCK")
+        self.yahoo.precios["BRK-B"] = lambda i, d: 480.0
+        main._run_velas_diarias_job()
+        f = self._ficha("BRK.B")
+        self.assertTrue(f["disponible"])
+        self.assertEqual(f["ticker"], "BRK-B")
+
+    def test_lista_de_seguimiento_tiene_tope(self):
+        with mock.patch("main.WATCHLIST_TOPE", 3):
+            for t in ("AAA", "BBB", "CCC"):
+                r = self.client.post("/api/watchlist", json={"symbol": t}, headers=self.h)
+                self.assertEqual(r.status_code, 200, r.text)
+            r = self.client.post("/api/watchlist", json={"symbol": "DDD"}, headers=self.h)
+            self.assertEqual(r.status_code, 400)
+            self.assertIn("llegó a 3", r.text)
+            # Repetir uno que ya está no es sumar: sigue andando.
+            self.assertEqual(self.client.post("/api/watchlist", json={"symbol": "AAA"}, headers=self.h).status_code, 200)
+
+    def test_los_que_fallan_pasan_al_final_de_la_fila(self):
+        import velas_diarias
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "MSFT", "STOCK")
+        for t in ("ZZA", "ZZB"):
+            self.client.post("/api/watchlist", json={"symbol": t}, headers=self.h)
+        self.yahoo.precios["MSFT"] = lambda i, d: 400.0
+        main._run_velas_diarias_job()                          # noche 1: ZZA y ZZB fallan
+        self.yahoo.pedidos = []
+        with main.db_abierta() as conn:
+            velas_diarias.actualizar(conn, ["ZZA", "ZZB", "MSFT"])
+        self.assertEqual(self.yahoo.pedidos[0], ("MSFT", "1mo", False), "los de verdad primero")
+
+    def test_admin_cuenta_solo_lo_que_se_sigue_hoy(self):
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "MSFT", "STOCK")
+        self.yahoo.precios["MSFT"] = lambda i, d: 400.0
+        main._run_velas_diarias_job()
+        with main.db_abierta() as conn:   # un activo viejo que ya nadie sigue, atrasado y fallado
+            conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES ('VIEJO', '2025-01-02', 1)")
+            conn.execute("INSERT INTO velas_estado (symbol, ok, error) VALUES ('VIEJO', 0, 'x')")
+            conn.commit()
+        e = self.client.get("/api/admin/velas", headers=self.h_admin).json()
+        self.assertEqual((e["seguidos"], e["atrasados"], e["fallados"]), (1, [], []))
+
+
+    def test_cierre_del_instrumento_de_tu_tenencia(self):
+        # La ficha de AAPL en dólares es la acción de afuera, pero tu tenencia se
+        # valúa con el CEDEAR en pesos: la ficha necesita SU último cierre para
+        # saber cuánto se movió hoy.
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "AAPL", "CEDEAR")
+        self.yahoo.precios["AAPL"] = lambda i, d: 250.0
+        self.yahoo.precios["AAPL.BA"] = lambda i, d: 25000.0
+        main._run_velas_diarias_job()
+        f = self.client.get("/api/tecnico/AAPL?moneda=usd&ref=AAPL.BA", headers=self.h).json()
+        self.assertEqual(f["cierre_ref"], {"fecha": self.dias[-1].isoformat(), "cierre": 25000.0})
+        self.assertIsNone(self._ficha("AAPL")["cierre_ref"])
+        r = self.client.get("/api/tecnico/AAPL?ref=<x>", headers=self.h)
+        self.assertEqual(r.status_code, 400)
 
 
 if __name__ == "__main__":

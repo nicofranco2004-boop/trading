@@ -150,3 +150,35 @@ describe('zoom y arrastre', () => {
     expect(moverVentana({ n: 100, fin: 110, total: 504 }, 0.5)).toEqual({ n: 100, fin: 100 })
   })
 })
+
+describe('arreglos de la auditoría', () => {
+  it('rangos por días corridos (una cripto también tiene 365 días en 1A)', async () => {
+    const { puntosEnDias } = await import('./tecnico')
+    const dias = Array.from({ length: 800 }, (_, i) => ({ d: new Date(Date.UTC(2024, 0, 1) + i * 86400000).toISOString().slice(0, 10) }))
+    expect(puntosEnDias(dias, 365)).toBe(365)
+    const habiles = dias.filter(p => ![0, 6].includes(new Date(p.d + 'T00:00:00Z').getUTCDay()))
+    expect(puntosEnDias(habiles, 365)).toBeGreaterThan(255)
+    expect(puntosEnDias(habiles, 365)).toBeLessThan(265)
+  })
+  it('sin el dato de hace un mes no dice hacia dónde va la media', () => {
+    const t = tarjetas({ ruedas: 210, media200: 10, dist_media200: 5, pendiente_media200: null })
+    expect(t.find(x => x.id === 'fondo').texto).toBe('Está 5,0% arriba de su media de 200 días.')
+  })
+  it('en su máximo cuando cierra en el máximo de cierre', () => {
+    const t = tarjetas({ ruedas: 400, dist_maximo_12m: 0, anio_completo: true })
+    expect(t.find(x => x.id === 'maximo').veredicto).toBe('En su máximo')
+  })
+  it('la línea de tu precio se corrige por lo que se movió hoy', async () => {
+    const { variacionDeHoy } = await import('./tecnico')
+    // Ayer cerró 100 y hoy vale 110; ganás 10 %, así que pagaste 100. La línea
+    // tiene que quedar en 100 (sin la corrección del día quedaba en 90,9).
+    expect(lineaPromedio([{ c: 100 }], 0.1, variacionDeHoy(110, { cierre: 100 }))).toBeCloseTo(100, 10)
+    expect(variacionDeHoy(null, { cierre: 100 })).toBe(0)
+  })
+  it('los cobros (cupón, renta, amortización) no son compras ni ventas', () => {
+    expect(marcas([], [
+      { op_type: 'Cupón', entry_date: '2026-01-01', date: '2026-02-01', pnl_usd: 3 },
+      { op_type: 'Amortización', entry_date: '2026-01-01', date: '2026-03-01', pnl_usd: 0 },
+    ])).toEqual([])
+  })
+})
