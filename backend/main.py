@@ -2518,6 +2518,32 @@ def init_db():
             );
         """)
 
+        # Velas diarias para el análisis técnico (velas_diarias.py). NO es
+        # `asset_price_history`: ésta SE PISA cuando Yahoo reescribe la historia
+        # (un split), aquella no pisa nunca. Tablas nuevas, sin ALTER: el índice
+        # va en el mismo bloque que su tabla y es seguro en una base ya creada.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS velas_diarias (
+                symbol TEXT NOT NULL,            -- ticker de Yahoo: 'AAPL', 'GGAL.BA', 'BTC-USD'
+                date TEXT NOT NULL,              -- 'YYYY-MM-DD'
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL NOT NULL,             -- ajustado por splits, no por dividendos
+                volume REAL,
+                fetched_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (symbol, date)
+            );
+            CREATE TABLE IF NOT EXISTS velas_estado (
+                symbol TEXT PRIMARY KEY,
+                ultima_corrida TEXT,
+                ultima_completa TEXT,            -- NULL = nunca se bajó la historia entera
+                ok INTEGER NOT NULL DEFAULT 0,
+                filas INTEGER DEFAULT 0,
+                error TEXT
+            );
+        """)
+
         # ─── TWR: períodos SELLADOS ──────────────────────────────────────────
         # Append-only. Cada mes cerrado se calcula UNA vez y no se reescribe nunca.
         # Sin esto el número de ayer cambia hoy: `_migrate_snapshots_netdep` corre
@@ -45021,6 +45047,20 @@ def _run_daily_snapshot_job():
         _snapshot_log.info(f"Daily snapshot result: {result}")
     except Exception as e:
         _snapshot_log.error(f"Daily snapshot job failed: {e}", exc_info=True)
+    # Después de la foto, nunca antes: si Yahoo está lento, que se demore esto
+    # y no la foto. Y aparte: un error acá no toca la foto.
+    _run_velas_diarias_job()
+
+
+def _run_velas_diarias_job():
+    """Pone al día las velas diarias del análisis técnico (velas_diarias.py)."""
+    _velas_log = logging.getLogger("velas_diarias")
+    try:
+        import velas_diarias
+        with db_abierta() as conn:
+            _velas_log.info("Velas diarias: %s", velas_diarias.correr(conn))
+    except Exception as e:
+        _velas_log.error(f"Velas diarias falló: {e}", exc_info=True)
 
 
 def _run_backup_db_job():
