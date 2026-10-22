@@ -2542,6 +2542,19 @@ def init_db():
                 filas INTEGER DEFAULT 0,
                 error TEXT
             );
+            -- Lo que la revisión nocturna encontró en las velas (velas_diarias.revisar):
+            -- un cambio de ratio de un CEDEAR que Yahoo no ajusta, un precio roto de
+            -- un día, o un salto que no se puede explicar. Las velas quedan como las
+            -- dio Yahoo; `velas_diarias.serie` aplica 'ratio' y 'roto' al leer.
+            CREATE TABLE IF NOT EXISTS velas_correcciones (
+                symbol TEXT NOT NULL,            -- el '.BA' corregido
+                date TEXT NOT NULL,              -- 'ratio': desde este día rige la escala nueva
+                tipo TEXT NOT NULL,              -- 'ratio' | 'roto' | 'sin_explicar'
+                factor REAL,                     -- 'ratio': por cuánto se lleva lo anterior; si no, el salto
+                referencia TEXT,                 -- contra qué se comparó ('XLE'); NULL si no hay par
+                detectado_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (symbol, date, tipo)
+            );
         """)
 
         # ─── TWR: períodos SELLADOS ──────────────────────────────────────────
@@ -11368,6 +11381,86 @@ def _variacion_del_dia(symbols, uid=None, *, tope=None) -> dict:
             "as_of": fecha,
         }
     return out
+
+
+# ─── Lectura técnica de la ficha del activo ─────────────────────────────────
+
+@app.get("/api/tecnico/{asset}")
+def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None,
+                uid: int = Depends(get_effective_user)):
+    """La serie del gráfico técnico (precio, medias de 50 y 200, RSI) y los
+    números de la lectura, en dólares (default) o en pesos. Sale de las velas
+    guardadas (velas_diarias.py), no de Yahoo: si el activo todavía no tiene
+    velas, `disponible` es False y la ficha lo dice. `local=1`: es una acción
+    argentina (en dólares va su precio de BYMA ÷ MEP, no el ADR). Las cuentas:
+    tecnico.py."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    ref = (ref or "").strip().upper() or None
+    if ref and not _SYMBOL_RE.match(ref):
+        raise HTTPException(400, f"Símbolo inválido: {ref}")
+    import tecnico
+    with db_abierta() as conn:
+        return tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
+
+
+@app.get("/api/admin/velas")
+def admin_velas(uid: int = Depends(get_admin_user)):
+    """Estado del guardado nocturno de velas: cuántos activos, desde cuándo,
+    cuándo corrió por última vez, cuáles fallaron y qué corrigió la revisión
+    (cambios de ratio de CEDEAR, precios rotos, saltos sin explicar). Sólo lee."""
+    from fechas import hoy_art_date
+    import velas_diarias
+    atrasado = (hoy_art_date() - timedelta(days=5)).isoformat()
+    with db_abierta() as conn:
+        # Atrasados y fallados, sólo de lo que se sigue HOY: lo que alguien vendió
+        # o dejó de seguir no se actualiza más (a propósito) y no es un problema.
+        seguidos = set(velas_diarias.simbolos_a_seguir(conn))
+        e = conn.execute(
+            """SELECT COUNT(*) AS activos, COALESCE(SUM(ok), 0) AS ok,
+                      COALESCE(SUM(CASE WHEN ultima_completa IS NULL THEN 1 ELSE 0 END), 0) AS sin_historia,
+                      MAX(ultima_corrida) AS ultima_corrida
+                 FROM velas_estado""").fetchone()
+        v = conn.execute(
+            """SELECT COUNT(*) AS filas, MIN(date) AS desde, MAX(date) AS hasta
+                 FROM velas_diarias""").fetchone()
+        atrasados = [r for r in conn.execute(
+            """SELECT symbol, MAX(date) AS hasta FROM velas_diarias
+                GROUP BY symbol HAVING MAX(date) < ? ORDER BY symbol""",
+            (atrasado,)).fetchall() if r["symbol"] in seguidos][:50]
+        fallados = [r for r in conn.execute(
+            """SELECT symbol, error, ultima_corrida FROM velas_estado
+                WHERE ok = 0 ORDER BY ultima_corrida DESC""").fetchall() if r["symbol"] in seguidos][:50]
+        # Lo que encontró la revisión nocturna (velas_diarias.revisar): los
+        # cambios de ratio y precios rotos que se corrigen solos, y los saltos
+        # que NO se pueden explicar (una acción argentina sin par afuera), que
+        # hay que mirar a mano.
+        correcciones = [r for r in conn.execute(
+            """SELECT symbol, date, tipo, factor, referencia FROM velas_correcciones
+                ORDER BY date DESC, symbol""").fetchall() if r["symbol"] in seguidos]
+    return {
+        "seguidos": len(seguidos),
+        "activos": e["activos"], "ok": e["ok"], "sin_historia": e["sin_historia"],
+        "ultima_corrida": e["ultima_corrida"],
+        "filas": v["filas"], "desde": v["desde"], "hasta": v["hasta"],
+        "atrasados": [dict(r) for r in atrasados],
+        "fallados": [dict(r) for r in fallados],
+        "cambios_de_ratio": [dict(r) for r in correcciones if r["tipo"] == "ratio"][:50],
+        "precios_rotos": [dict(r) for r in correcciones if r["tipo"] == "roto"][:50],
+        "sin_explicar": [dict(r) for r in correcciones if r["tipo"] == "sin_explicar"][:50],
+        "corriendo": "velas_diarias" in _corridas_en_curso,
+    }
+
+
+@app.post("/api/admin/velas/correr")
+def admin_velas_correr(uid: int = Depends(get_admin_user)):
+    """Corre ahora el guardado de velas, sin esperar a la noche. En el fondo:
+    la primera vez baja 3 años de cada activo y tarda unos minutos."""
+    if "velas_diarias" in _corridas_en_curso:
+        return {"ok": True, "status": "already_running"}
+    threading.Thread(target=_run_velas_diarias_job, daemon=True, name="corrida-velas").start()
+    return {"ok": True, "status": "started"}
 
 
 # ─── Historical prices (mini-chart en AssetQuickView) ───────────────────────
@@ -45277,14 +45370,22 @@ def _run_daily_snapshot_job():
 
 
 def _run_velas_diarias_job():
-    """Pone al día las velas diarias del análisis técnico (velas_diarias.py)."""
+    """Pone al día las velas diarias del análisis técnico (velas_diarias.py).
+
+    Con su propia bandera: la corre la foto diaria al terminar y también el botón
+    de /admin, y las dos no pueden escribir la misma tabla a la vez."""
     _velas_log = logging.getLogger("velas_diarias")
+    if not _tomar_corrida("velas_diarias"):
+        _velas_log.info("Velas diarias: ya hay una corrida en curso, se saltea")
+        return
     try:
         import velas_diarias
         with db_abierta() as conn:
             _velas_log.info("Velas diarias: %s", velas_diarias.correr(conn))
     except Exception as e:
         _velas_log.error(f"Velas diarias falló: {e}", exc_info=True)
+    finally:
+        _soltar_corrida("velas_diarias")
 
 
 def _run_backup_db_job():
@@ -47103,6 +47204,13 @@ def watchlist_list(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+# Cuántos activos puede seguir una persona. Sin tope, una sola cuenta podía
+# cargar miles de símbolos inventados: el guardado nocturno de precios
+# (velas_diarias) intenta bajar cada uno y la noche no alcanzaba para los de
+# verdad (auditoría de seguridad 22/10). 100 es mucho más de lo que sigue nadie.
+WATCHLIST_TOPE = 100
+
+
 @app.post("/api/watchlist")
 def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_effective_user)):
     """Agrega un símbolo a la watchlist. Si ya existe, devuelve 200 silenciosamente
@@ -47110,6 +47218,12 @@ def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:
+            ya = conn.execute("SELECT 1 FROM watchlist WHERE user_id=? AND symbol=?",
+                              (uid, data.symbol)).fetchone()
+            if not ya and conn.execute("SELECT COUNT(*) FROM watchlist WHERE user_id=?",
+                                       (uid,)).fetchone()[0] >= WATCHLIST_TOPE:
+                raise HTTPException(400, f"Tu lista de seguimiento llegó a {WATCHLIST_TOPE} activos. "
+                                         "Sacá alguno para sumar otro.")
             conn.execute(
                 """INSERT OR IGNORE INTO watchlist (user_id, symbol, asset_type)
                    VALUES (?, ?, ?)""",
