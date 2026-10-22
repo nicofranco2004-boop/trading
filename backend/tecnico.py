@@ -220,7 +220,10 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False) ->
     def _r(x, d=4):
         return round(x, d) if x is not None else None
 
-    puntos = [{"d": velas[i]["date"], "c": _r(cierres[i]), "s50": _r(m50[i]),
+    # o/h/l: apertura, máximo y mínimo, para el gráfico de velas. Pueden venir
+    # vacíos (una vela de Yahoo con el máximo roto se guarda sólo con cierre).
+    puntos = [{"d": velas[i]["date"], "o": _r(velas[i].get("open")), "h": _r(velas[i].get("high")),
+               "l": _r(velas[i].get("low")), "c": _r(cierres[i]), "s50": _r(m50[i]),
                "s200": _r(m200[i]), "rsi": _r(r[i], 2)} for i in range(desde, len(velas))]
     return {
         "asset": (asset or "").upper(),

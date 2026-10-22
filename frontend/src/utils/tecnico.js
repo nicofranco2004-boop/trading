@@ -26,6 +26,72 @@ export const RSI_ESTIRADO = 70
 
 const pct1 = (v) => `${Math.abs(v).toLocaleString('es-AR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })}%`
 
+/**
+ * La vela de un punto, completa: apertura, máximo, mínimo y cierre. Si a la vela
+ * guardada le falta algo (Yahoo a veces manda el máximo roto y se guarda sólo el
+ * cierre), se completa con lo que hay: la apertura con el cierre anterior y el
+ * máximo/mínimo con la apertura y el cierre. Nunca se inventa una mecha.
+ */
+export function velaCompleta(p, cierreAnterior) {
+  const c = p.c
+  const o = p.o ?? cierreAnterior ?? c
+  const h = p.h != null ? Math.max(p.h, o, c) : Math.max(o, c)
+  const l = p.l != null ? Math.min(p.l, o, c) : Math.min(o, c)
+  return { o, h, l, c }
+}
+
+/**
+ * Velas SEMANALES a partir de las diarias (para el rango de 2 años: 500 velas
+ * diarias en un celular son rayitas). Cada semana: la apertura del primer día,
+ * el máximo y el mínimo de la semana, el cierre del último día; las medias y el
+ * RSI son los del último día. `d` es el primer día de la semana, así una compra
+ * a mitad de semana cae en su vela.
+ */
+export function velasSemanales(puntos = []) {
+  const out = []
+  let actual = null
+  let clave = null
+  let prevC = null
+  for (const p of puntos) {
+    const f = new Date(p.d + 'T00:00:00Z')
+    const lunes = new Date(f.getTime() - ((f.getUTCDay() + 6) % 7) * 86400000).toISOString().slice(0, 10)
+    const v = velaCompleta(p, prevC)
+    prevC = p.c
+    if (lunes !== clave) {
+      if (actual) out.push(actual)
+      clave = lunes
+      actual = { ...p, d: p.d, o: v.o, h: v.h, l: v.l, c: v.c, semana: true }
+    } else {
+      actual = { ...actual, h: Math.max(actual.h, v.h), l: Math.min(actual.l, v.l), c: v.c,
+        s50: p.s50, s200: p.s200, rsi: p.rsi }
+    }
+  }
+  if (actual) out.push(actual)
+  return out
+}
+
+/**
+ * El zoom de la ruedita: cuántas ruedas se ven y hasta cuál. `vista` = { n, fin,
+ * total } (fin sin incluir), `factor` > 1 aleja y < 1 acerca, `f` (0 a 1) es
+ * dónde está el mouse: ese día queda quieto. Nunca menos de 20 ruedas ni más de
+ * las que hay. null si no cambia nada.
+ */
+export const RUEDAS_MINIMAS = 20
+export function zoomVentana({ n, fin, total }, factor, f) {
+  const n2 = Math.round(Math.min(total, Math.max(RUEDAS_MINIMAS, n * factor)))
+  if (n2 === n) return null
+  const bajoMouse = fin - n + f * n
+  const fin2 = Math.round(Math.min(total, Math.max(n2, bajoMouse - f * n2 + n2)))
+  return { n: n2, fin: fin2 }
+}
+
+/** Arrastrar: corre la ventana en el tiempo. `frac` es cuánto del ancho se
+ *  arrastró (a la derecha = para atrás en el tiempo). null si ya está en el borde. */
+export function moverVentana({ n, fin, total }, frac) {
+  const fin2 = Math.round(Math.min(total, Math.max(n, fin - frac * n)))
+  return fin2 === fin ? null : { n, fin: fin2 }
+}
+
 /** Los últimos `ruedas` puntos. */
 export function recortar(puntos = [], ruedas) {
   return ruedas >= puntos.length ? puntos : puntos.slice(puntos.length - ruedas)

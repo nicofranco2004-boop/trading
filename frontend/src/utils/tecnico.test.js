@@ -103,3 +103,50 @@ describe('recortar y tendenciasDistintas', () => {
     expect(tendenciasDistintas(null, { dist_media200: 24 })).toBe(false)
   })
 })
+
+describe('velas', () => {
+  it('completa una vela rota con lo que hay, sin inventar mecha', async () => {
+    const { velaCompleta } = await import('./tecnico')
+    expect(velaCompleta({ o: 10, h: 12, l: 9, c: 11 }, 9.5)).toEqual({ o: 10, h: 12, l: 9, c: 11 })
+    // Sin apertura ni máximo/mínimo: abre en el cierre anterior y la mecha es el cuerpo.
+    expect(velaCompleta({ o: null, h: null, l: null, c: 11 }, 10)).toEqual({ o: 10, h: 11, l: 10, c: 11 })
+    // Un máximo menor que el cierre (dato roto) se corrige al cierre.
+    expect(velaCompleta({ o: 10, h: 10.5, l: 9, c: 11 }, null).h).toBe(11)
+  })
+
+  it('agrupa por semana: apertura del lunes, máximo y mínimo de la semana, cierre del viernes', async () => {
+    const { velasSemanales } = await import('./tecnico')
+    const dias = [
+      { d: '2026-10-12', o: 10, h: 11, l: 9.5, c: 10.5, s200: 1, rsi: 40 },   // lunes
+      { d: '2026-10-14', o: 10.5, h: 13, l: 10, c: 12, s200: 2, rsi: 50 },
+      { d: '2026-10-16', o: 12, h: 12.5, l: 8, c: 9, s200: 3, rsi: 45 },       // viernes
+      { d: '2026-10-19', o: 9, h: 10, l: 8.5, c: 9.8, s200: 4, rsi: 47 },      // otra semana
+    ]
+    const s = velasSemanales(dias)
+    expect(s).toHaveLength(2)
+    expect(s[0]).toMatchObject({ d: '2026-10-12', o: 10, h: 13, l: 8, c: 9, s200: 3, rsi: 45, semana: true })
+    expect(s[1]).toMatchObject({ d: '2026-10-19', o: 9, c: 9.8 })
+  })
+})
+
+describe('zoom y arrastre', () => {
+  it('la ruedita acerca dejando quieto el día bajo el mouse', async () => {
+    const { zoomVentana } = await import('./tecnico')
+    // Se ven las ruedas 252..503 y el mouse está en el medio (rueda 378).
+    const v = zoomVentana({ n: 252, fin: 504, total: 504 }, 0.5, 0.5)
+    expect(v).toEqual({ n: 126, fin: 441 })
+    expect(v.fin - v.n + 0.5 * v.n).toBe(378)
+  })
+  it('no se pasa de los bordes ni baja de 20 ruedas', async () => {
+    const { zoomVentana } = await import('./tecnico')
+    expect(zoomVentana({ n: 500, fin: 504, total: 504 }, 1.5, 0.5)).toEqual({ n: 504, fin: 504 })
+    expect(zoomVentana({ n: 504, fin: 504, total: 504 }, 1.5, 0.5)).toBeNull()
+    expect(zoomVentana({ n: 21, fin: 504, total: 504 }, 0.1, 1)).toEqual({ n: 20, fin: 504 })
+  })
+  it('arrastrar a la derecha va para atrás en el tiempo, sin salirse', async () => {
+    const { moverVentana } = await import('./tecnico')
+    expect(moverVentana({ n: 100, fin: 504, total: 504 }, 0.25)).toEqual({ n: 100, fin: 479 })
+    expect(moverVentana({ n: 100, fin: 504, total: 504 }, -0.25)).toBeNull()
+    expect(moverVentana({ n: 100, fin: 110, total: 504 }, 0.5)).toEqual({ n: 100, fin: 100 })
+  })
+})

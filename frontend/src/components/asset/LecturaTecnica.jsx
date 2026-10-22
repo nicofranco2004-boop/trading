@@ -18,8 +18,8 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import { api } from '../../utils/api'
 import {
-  RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, recortar, tarjetas, lineaPromedio, marcas,
-  indiceDeFecha, tendenciasDistintas,
+  RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, tarjetas, lineaPromedio, marcas,
+  indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, moverVentana,
 } from '../../utils/tecnico'
 
 const v = (t) => `rgb(var(--${t}))`
@@ -32,6 +32,16 @@ const COLOR = {
 const W = 1000
 const H = 260
 const H_RSI = 64
+// Línea o velas: lo que eligió la persona la última vez. El navegador puede
+// tener el almacenamiento bloqueado (modo privado): entonces, línea.
+const CLAVE_TIPO = 'rendi_grafico_tipo'
+function tipoGuardado() {
+  try { return localStorage.getItem(CLAVE_TIPO) === 'velas' ? 'velas' : 'linea' } catch { return 'linea' }
+}
+function guardarTipo(t) {
+  try { localStorage.setItem(CLAVE_TIPO, t) } catch { /* sin almacenamiento */ }
+}
+
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
 
 function fmtPrecio(x, moneda) {
@@ -59,6 +69,12 @@ export default function LecturaTecnica({
   const [datos, setDatos] = useState({ usd: undefined, ars: undefined })
   // Qué líneas se ven: la leyenda prende y apaga cada una.
   const [ver, setVer] = useState({ s200: true, s50: true, prom: true, marcas: true })
+  const [tipo, setTipoEstado] = useState(tipoGuardado)
+  const setTipo = (t) => { setTipoEstado(t); guardarTipo(t) }
+  // Zoom con la rueda y arrastre: qué ruedas se ven ({ n: cuántas, fin: hasta
+  // cuál, sin incluirla }). null = el rango del botón (3M/1A/2A).
+  const [ventana, setVentana] = useState(null)
+  const elegirRango = (r) => { setRango(r); setVentana(null) }
 
   // Dólares al abrir; pesos recién la primera vez que se tocan (la mayoría no
   // los mira y es otra cuenta en el servidor). Otro activo = otro componente
@@ -93,7 +109,7 @@ export default function LecturaTecnica({
   if (!actual?.disponible) {
     if (moneda === 'ars' && datos.usd?.disponible) {
       return (
-        <Marco moneda={moneda} setMoneda={setMoneda} rango={rango} setRango={setRango} conPesos={false}>
+        <Marco moneda={moneda} setMoneda={setMoneda} rango={rango} setRango={elegirRango} tipo={tipo} setTipo={setTipo} conPesos={false}>
           <p className="text-sm text-ink-2">No hay serie en pesos para este activo.</p>
         </Marco>
       )
@@ -109,15 +125,23 @@ export default function LecturaTecnica({
     ) : null
   }
 
-  const ruedas = RANGOS.find(r => r.id === rango)?.ruedas || 252
-  const puntos = recortar(actual.puntos, ruedas)
+  const total = actual.puntos.length
+  const nVista = Math.min(ventana?.n ?? (RANGOS.find(r => r.id === rango)?.ruedas || 252), total)
+  const finVista = Math.min(ventana?.fin ?? total, total)
+  const diarios = actual.puntos.slice(Math.max(0, finVista - nVista), finVista)
+  // Más de ~300 velas diarias son rayitas: se agrupan por semana.
+  const semanales = tipo === 'velas' && diarios.length > 300
+  const puntos = semanales ? velasSemanales(diarios) : diarios
+  const vista = { n: nVista, fin: finVista, total }
+  const zoom = (factor, f) => { const v2 = zoomVentana(vista, factor, f); if (v2) setVentana(v2) }
+  const mover = (frac) => { const v2 = moverVentana(vista, frac); if (v2) setVentana(v2) }
   const promedio = lineaPromedio(actual.puntos, pnlPct)
   const lista = tarjetas(actual.lectura)
   const distintas = tendenciasDistintas(datos.usd?.lectura, datos.ars?.lectura)
   const alternar = (k) => setVer(x => ({ ...x, [k]: !x[k] }))
 
   return (
-    <Marco moneda={moneda} setMoneda={setMoneda} rango={rango} setRango={setRango}
+    <Marco moneda={moneda} setMoneda={setMoneda} rango={ventana ? null : rango} setRango={elegirRango} tipo={tipo} setTipo={setTipo}
       conPesos={datos.ars?.disponible !== false}>
       {moneda === 'ars' && distintas && (
         <div className="rounded-lg border border-rendi-warn/40 bg-rendi-warn/10 px-3.5 py-3 mb-3">
@@ -129,10 +153,17 @@ export default function LecturaTecnica({
       )}
 
       <Grafico puntos={puntos} moneda={moneda} promedio={ver.prom ? promedio : null}
-        marcas={ver.marcas ? marcas(lotes, operaciones) : []} ver={ver} />
+        marcas={ver.marcas ? marcas(lotes, operaciones) : []} ver={ver} tipo={tipo}
+        onZoom={zoom} onMover={mover} />
+      <p className="text-[11.5px] text-ink-3 mt-1">
+        {semanales && 'Cada vela es una semana. '}
+        <span className="hidden sm:inline">Con la ruedita del mouse acercás o alejás; arrastrando te movés en el tiempo.</span>
+      </p>
 
       <div className="flex flex-wrap gap-1.5 mt-3" role="group" aria-label="Qué líneas mostrar">
-        <Chip activo fijo color={COLOR.precio}>Precio</Chip>
+        {tipo === 'velas'
+          ? <Chip activo fijo puntos>Velas: sube · baja</Chip>
+          : <Chip activo fijo color={COLOR.precio}>Precio</Chip>}
         <Chip activo={ver.s200} onClick={() => alternar('s200')} color={COLOR.media200} grueso>Media 200 días</Chip>
         <Chip activo={ver.s50} onClick={() => alternar('s50')} color={COLOR.media50}>Media 50 días</Chip>
         {promedio != null && (
@@ -165,12 +196,14 @@ export default function LecturaTecnica({
   )
 }
 
-function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, children }) {
+function Marco({ moneda, setMoneda, rango, setRango, tipo, setTipo, conPesos = true, children }) {
   return (
     <section className="mb-5" aria-label="Lectura técnica">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <div className="text-[12.5px] text-ink-2 font-medium">Lectura técnica</div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Segmento etiqueta="Tipo de gráfico" valor={tipo} alElegir={setTipo}
+            opciones={[['linea', 'Línea'], ['velas', 'Velas']]} />
           <Segmento etiqueta="Moneda" valor={moneda} alElegir={setMoneda}
             opciones={[['usd', 'Dólares'], ...(conPesos ? [['ars', 'Pesos']] : [])]} />
           <Segmento etiqueta="Rango" valor={rango} alElegir={setRango}
@@ -196,6 +229,7 @@ function Segmento({ etiqueta, valor, alElegir, opciones }) {
 }
 
 function Chip({ activo, fijo, onClick, color, grueso, punteado, puntos, children }) {
+  // `puntos`: la muestra es un punto verde y uno rojo (compras/ventas, o velas que suben/bajan).
   const muestra = puntos ? (
     <span className="inline-flex gap-0.5" aria-hidden="true">
       <span className="w-2 h-2 rounded-full bg-rendi-pos-fill" />
@@ -273,20 +307,55 @@ function rotulosDeMeses(puntos) {
   })
 }
 
-function Grafico({ puntos, moneda, promedio, marcas: lista, ver }) {
+function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', onZoom, onMover }) {
+  const conVelas = tipo === 'velas'
   const ref = useRef(null)
+  const arrastre = useRef(null)
+  // La rueda tiene que frenar el scroll de la página mientras está sobre el
+  // gráfico: eso sólo se puede con un escucha "no pasivo" (el onWheel de React
+  // es pasivo y no puede frenarlo).
+  const zoomRef = useRef(onZoom)
+  zoomRef.current = onZoom
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const rueda = (e) => {
+      if (!zoomRef.current) return
+      e.preventDefault()
+      const r = el.getBoundingClientRect()
+      const f = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))
+      zoomRef.current(e.deltaY > 0 ? 1.15 : 1 / 1.15, f)
+    }
+    el.addEventListener('wheel', rueda, { passive: false })
+    return () => el.removeEventListener('wheel', rueda)
+  }, [])
   const gid = useId().replace(/:/g, '')
   const [hover, setHover] = useState(null)
 
-  const { escalaY, path, area, min, max } = useMemo(() => {
+  const { escalaY, path, area, min, max, velas, promFuera } = useMemo(() => {
     const valores = []
+    let prevC = null
     for (const p of puntos) {
       valores.push(p.c)
+      if (conVelas) {
+        const vela = velaCompleta(p, prevC)
+        valores.push(vela.h, vela.l)
+        prevC = p.c
+      }
       if (ver.s50 && p.s50 != null) valores.push(p.s50)
       if (ver.s200 && p.s200 != null) valores.push(p.s200)
     }
-    if (promedio != null) valores.push(promedio)
     let lo = Math.min(...valores), hi = Math.max(...valores)
+    // Tu precio entra en la escala sólo si está cerca de lo que se ve. Si está
+    // muy lejos (ganás 70 %, o perdés 60 %), estirar la escala aplastaría el
+    // gráfico contra un borde: va una etiqueta en ese borde con una flecha.
+    let fuera = null
+    if (promedio != null) {
+      const rango = hi - lo || hi * 0.1 || 1
+      if (promedio < lo - rango * 0.35) fuera = 'abajo'
+      else if (promedio > hi + rango * 0.35) fuera = 'arriba'
+      else { lo = Math.min(lo, promedio); hi = Math.max(hi, promedio) }
+    }
     const margen = (hi - lo) * 0.08 || hi * 0.02 || 1
     lo -= margen; hi += margen
     const y = (val) => H - ((val - lo) / (hi - lo)) * H
@@ -301,12 +370,25 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver }) {
       return d
     }
     const c = linea('c')
+    // Las velas: el ancho de cada una es el 65 % de su lugar, la mecha va del
+    // mínimo al máximo y el cuerpo de la apertura al cierre.
+    const ancho = Math.max((W / Math.max(puntos.length, 1)) * 0.65, 1)
+    let pc = null
+    const velas = conVelas ? puntos.map((p, i) => {
+      const vela = velaCompleta(p, pc)
+      pc = p.c
+      const arriba = Math.min(y(vela.o), y(vela.c))
+      return {
+        k: i, x: x(i), sube: vela.c >= vela.o, yh: y(vela.h), yl: y(vela.l),
+        cuerpoY: arriba, cuerpoH: Math.max(Math.abs(y(vela.o) - y(vela.c)), 0.8), ancho,
+      }
+    }) : []
     return {
-      escalaY: y, min: lo, max: hi,
+      escalaY: y, min: lo, max: hi, velas, promFuera: fuera,
       path: { c, s50: linea('s50'), s200: linea('s200') },
       area: c ? `${c}L${x(puntos.length - 1).toFixed(1)},${H}L0,${H}Z` : '',
     }
-  }, [puntos, promedio, ver.s50, ver.s200])
+  }, [puntos, promedio, ver.s50, ver.s200, conVelas])
 
   const rsiPath = useMemo(() => {
     let d = '', abierto = false
@@ -340,17 +422,28 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver }) {
   const meses = rotulosDeMeses(puntos)
   // Los rótulos del eje se esconden si chocan con la etiqueta del último precio
   // o con la de tu precio (que pesan más).
-  const promCerca = promedio != null && ultimo && Math.abs(pctY(promedio) - pctY(ultimo.c)) < 9
+  const promVisible = promedio != null && !promFuera
+  const promCerca = promVisible && ultimo && Math.abs(pctY(promedio) - pctY(ultimo.c)) < 9
   const cerca = (val) => (ultimo && Math.abs(pctY(val) - pctY(ultimo.c)) < 7)
-    || (promedio != null && !promCerca && Math.abs(pctY(val) - pctY(promedio)) < 7)
+    || (promVisible && !promCerca && Math.abs(pctY(val) - pctY(promedio)) < 7)
   const rsiCerca = (nivel) => ultimo?.rsi != null && Math.abs(nivel - ultimo.rsi) < 12
 
   return (
     <div>
       <div className="relative">
         {/* Área del gráfico: deja libre la columna de la derecha para los precios. */}
-        <div ref={ref} className="relative mr-[72px] h-56 sm:h-64 select-none touch-pan-y"
-          onMouseMove={e => mover(e.clientX)} onMouseLeave={() => setHover(null)}
+        <div ref={ref} className="relative mr-[72px] h-56 sm:h-64 select-none touch-pan-y cursor-crosshair"
+          onMouseDown={e => { arrastre.current = e.clientX }}
+          onMouseUp={() => { arrastre.current = null }}
+          onMouseMove={e => {
+            if (arrastre.current != null && onMover) {
+              const r = ref.current.getBoundingClientRect()
+              const frac = (e.clientX - arrastre.current) / r.width
+              if (Math.abs(frac) * puntos.length >= 1) { onMover(frac); arrastre.current = e.clientX }
+            }
+            mover(e.clientX)
+          }}
+          onMouseLeave={() => { setHover(null); arrastre.current = null }}
           onTouchStart={e => mover(e.touches[0].clientX)} onTouchMove={e => mover(e.touches[0].clientX)}
           onTouchEnd={() => setHover(null)}
           role="img" aria-label={`Precio con media de 200 y de 50 días. Último cierre ${fmtPrecio(ultimo?.c, moneda)}.`}>
@@ -365,14 +458,24 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver }) {
               <line key={k} x1="0" x2={W} y1={escalaY(t)} y2={escalaY(t)} stroke={v('chart-grid')} strokeWidth="1"
                 strokeDasharray="2 4" vectorEffect="non-scaling-stroke" />
             ))}
-            <path d={area} fill={`url(#area-${gid})`} />
+            {!conVelas && <path d={area} fill={`url(#area-${gid})`} />}
             {ver.s200 && <path d={path.s200} fill="none" stroke={COLOR.media200} strokeWidth="2.5" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
             {ver.s50 && <path d={path.s50} fill="none" stroke={COLOR.media50} strokeWidth="1.6" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
-            {promedio != null && (
+            {promedio != null && !promFuera && (
               <line x1="0" x2={W} y1={escalaY(promedio)} y2={escalaY(promedio)} stroke={COLOR.promedio}
                 strokeWidth="1.3" strokeDasharray="6 5" vectorEffect="non-scaling-stroke" />
             )}
-            <path d={path.c} fill="none" stroke={COLOR.precio} strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+            {conVelas ? velas.map(b => {
+              const color = b.sube ? v('rendi-pos-fill') : v('rendi-neg-fill')
+              return (
+                <g key={b.k}>
+                  <line x1={b.x} x2={b.x} y1={b.yh} y2={b.yl} stroke={color} strokeWidth="1" vectorEffect="non-scaling-stroke" />
+                  <rect x={b.x - b.ancho / 2} width={b.ancho} y={b.cuerpoY} height={b.cuerpoH} fill={color} />
+                </g>
+              )
+            }) : (
+              <path d={path.c} fill="none" stroke={COLOR.precio} strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+            )}
           </svg>
 
           {/* Marcas y el punto del mouse van en HTML: un círculo dentro de un
@@ -393,8 +496,18 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver }) {
                 style={{ left: `${pctX(hover)}%`, top: `${pctY(ph.c)}%`, background: COLOR.precio }} />
               <div className={`pointer-events-none absolute top-2 rounded-lg border border-line-2 bg-bg-raised px-2.5 py-2 text-[12px] leading-snug shadow-sm tabular min-w-[150px] ${pctX(hover) > 55 ? '-translate-x-[calc(100%+10px)]' : 'translate-x-[10px]'}`}
                 style={{ left: `${pctX(hover)}%` }}>
-                <div className="text-ink-3">{fechaCorta(ph.d)}</div>
+                <div className="text-ink-3">{ph.semana ? `Semana del ${fechaCorta(ph.d)}` : fechaCorta(ph.d)}</div>
                 <div className="text-ink-0 font-semibold text-[13px]">{fmtPrecio(ph.c, moneda)}</div>
+                {conVelas && (() => {
+                  const vela = velaCompleta(ph, hover > 0 ? puntos[hover - 1].c : null)
+                  return (
+                    <>
+                      <Fila k="Apertura" v={fmtPrecio(vela.o, moneda)} />
+                      <Fila k="Máximo" v={fmtPrecio(vela.h, moneda)} />
+                      <Fila k="Mínimo" v={fmtPrecio(vela.l, moneda)} />
+                    </>
+                  )
+                })()}
                 {ph.s200 != null && <Fila color={COLOR.media200} k="Media 200" v={fmtPrecio(ph.s200, moneda)} />}
                 {ph.s50 != null && <Fila color={COLOR.media50} k="Media 50" v={fmtPrecio(ph.s50, moneda)} />}
                 {ph.rsi != null && <Fila k="RSI" v={Math.round(ph.rsi)} />}
@@ -409,9 +522,15 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver }) {
             <span key={k} className="absolute left-1.5 -translate-y-1/2 text-[11px] text-ink-3 tabular whitespace-nowrap"
               style={{ top: `${pctY(t)}%` }}>{fmtPrecio(t, moneda).replace(/^US\$ /, '')}</span>
           ))}
-          {promedio != null && !promCerca && (
+          {promVisible && !promCerca && (
             <span className="absolute left-0 -translate-y-1/2 rounded border border-dashed border-ink-3 bg-bg-1 px-1 text-[10.5px] text-ink-1 tabular whitespace-nowrap"
               style={{ top: `${pctY(promedio)}%` }}>Tu precio</span>
+          )}
+          {promFuera && (
+            <span className={`absolute left-0 rounded border border-dashed border-ink-3 bg-bg-1 px-1 text-[10.5px] text-ink-1 tabular whitespace-nowrap ${promFuera === 'abajo' ? 'bottom-0' : 'top-0'}`}
+              title={`Tu precio: ${fmtPrecio(promedio, moneda)}, fuera de este gráfico`}>
+              {promFuera === 'abajo' ? '↓' : '↑'} Tu precio
+            </span>
           )}
           {ultimo && (
             <span className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular whitespace-nowrap"

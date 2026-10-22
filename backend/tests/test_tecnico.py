@@ -220,6 +220,10 @@ class FichaTest(unittest.TestCase):
         ultimo = len(self.dias) - 1
         esperado = (5000 + ultimo * 5) / (1000 + ultimo)
         self.assertAlmostEqual(f["puntos"][-1]["c"], esperado, places=3)
+        # La vela entera viaja convertida con el MISMO dólar del día (gráfico de velas).
+        self.assertAlmostEqual(f["puntos"][-1]["h"], esperado * 1.01, places=3)
+        self.assertAlmostEqual(f["puntos"][-1]["l"], esperado * 0.99, places=3)
+        self.assertAlmostEqual(f["puntos"][-1]["o"], esperado, places=3)
         primero = len(self.dias) - tecnico.RUEDAS_GRAFICO
         self.assertAlmostEqual(f["puntos"][0]["c"], (5000 + primero * 5) / (1000 + primero), places=3,
                                msg="cada día con SU dólar, no con el de hoy")

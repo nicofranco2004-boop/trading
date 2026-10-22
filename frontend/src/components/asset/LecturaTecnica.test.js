@@ -17,7 +17,7 @@ function puntos(n, f) {
 }
 const USD = {
   disponible: true, moneda: 'usd', ticker: 'AAPL', convertida: null,
-  puntos: puntos(300, i => 250 - i * 0.05),
+  puntos: puntos(504, i => 250 - i * 0.03),
   lectura: { ruedas: 760, fecha: '2026-10-21', precio: 235, media50: 241, dist_media50: -2.5,
     media200: 250, dist_media200: -6, pendiente_media200: -1, rsi: 38, dist_maximo_12m: -14, anio_completo: true },
 }
@@ -111,12 +111,24 @@ describe('LecturaTecnica', () => {
 
   it('en pesos, tu precio sale de lo que pagaste en pesos (con comisiones)', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
-    // Último cierre en pesos: 250 − 299 × 0,05 = 235,05. 10 unidades valen
-    // 2.350,50; pagaste 2.000 + 100 de comisión → +11,9 %.
+    // Último cierre en pesos: 250 − 503 × 0,03 = 234,91. 10 unidades valen
+    // 2.349,10; pagaste 2.000 + 100 de comisión → +11,9 %.
     await dibujar({ pnlPctUsd: 0.5, costoPesos: { invertido: 2100, cantidad: 10 } })
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos'))
     for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.5, costoPesos: { invertido: 2100, cantidad: 10 } }))
     expect(texto(montado.contenedor)).toContain('11,9% arriba')
+  })
+
+  it('con el botón Velas dibuja velas, y en 2 años son semanales', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
+    await dibujar({ pnlPctUsd: 0.1 })
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Velas'))
+    for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
+    expect(texto(montado.contenedor)).toContain('Velas: sube · baja')
+    expect(texto(montado.contenedor)).not.toContain('Cada vela es una semana')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, '2A'))
+    for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
+    expect(texto(montado.contenedor)).toContain('Cada vela es una semana')
   })
 
   it('sin tenencia no dibuja tu precio', async () => {
