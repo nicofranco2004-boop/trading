@@ -2542,6 +2542,19 @@ def init_db():
                 filas INTEGER DEFAULT 0,
                 error TEXT
             );
+            -- Lo que la revisión nocturna encontró en las velas (velas_diarias.revisar):
+            -- un cambio de ratio de un CEDEAR que Yahoo no ajusta, un precio roto de
+            -- un día, o un salto que no se puede explicar. Las velas quedan como las
+            -- dio Yahoo; `velas_diarias.serie` aplica 'ratio' y 'roto' al leer.
+            CREATE TABLE IF NOT EXISTS velas_correcciones (
+                symbol TEXT NOT NULL,            -- el '.BA' corregido
+                date TEXT NOT NULL,              -- 'ratio': desde este día rige la escala nueva
+                tipo TEXT NOT NULL,              -- 'ratio' | 'roto' | 'sin_explicar'
+                factor REAL,                     -- 'ratio': por cuánto se lleva lo anterior; si no, el salto
+                referencia TEXT,                 -- contra qué se comparó ('XLE'); NULL si no hay par
+                detectado_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (symbol, date, tipo)
+            );
         """)
 
         # ─── TWR: períodos SELLADOS ──────────────────────────────────────────
@@ -11395,7 +11408,8 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
 @app.get("/api/admin/velas")
 def admin_velas(uid: int = Depends(get_admin_user)):
     """Estado del guardado nocturno de velas: cuántos activos, desde cuándo,
-    cuándo corrió por última vez y cuáles fallaron. Sólo lee."""
+    cuándo corrió por última vez, cuáles fallaron y qué corrigió la revisión
+    (cambios de ratio de CEDEAR, precios rotos, saltos sin explicar). Sólo lee."""
     from fechas import hoy_art_date
     import velas_diarias
     atrasado = (hoy_art_date() - timedelta(days=5)).isoformat()
@@ -11418,6 +11432,13 @@ def admin_velas(uid: int = Depends(get_admin_user)):
         fallados = [r for r in conn.execute(
             """SELECT symbol, error, ultima_corrida FROM velas_estado
                 WHERE ok = 0 ORDER BY ultima_corrida DESC""").fetchall() if r["symbol"] in seguidos][:50]
+        # Lo que encontró la revisión nocturna (velas_diarias.revisar): los
+        # cambios de ratio y precios rotos que se corrigen solos, y los saltos
+        # que NO se pueden explicar (una acción argentina sin par afuera), que
+        # hay que mirar a mano.
+        correcciones = [r for r in conn.execute(
+            """SELECT symbol, date, tipo, factor, referencia FROM velas_correcciones
+                ORDER BY date DESC, symbol""").fetchall() if r["symbol"] in seguidos]
     return {
         "seguidos": len(seguidos),
         "activos": e["activos"], "ok": e["ok"], "sin_historia": e["sin_historia"],
@@ -11425,6 +11446,9 @@ def admin_velas(uid: int = Depends(get_admin_user)):
         "filas": v["filas"], "desde": v["desde"], "hasta": v["hasta"],
         "atrasados": [dict(r) for r in atrasados],
         "fallados": [dict(r) for r in fallados],
+        "cambios_de_ratio": [dict(r) for r in correcciones if r["tipo"] == "ratio"][:50],
+        "precios_rotos": [dict(r) for r in correcciones if r["tipo"] == "roto"][:50],
+        "sin_explicar": [dict(r) for r in correcciones if r["tipo"] == "sin_explicar"][:50],
         "corriendo": "velas_diarias" in _corridas_en_curso,
     }
 

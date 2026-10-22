@@ -2343,6 +2343,15 @@ function MtmBackfillPanel({ toast }) {
 // El endpoint existía pero es POST-only: sin botón, en la práctica había que
 // esperar 24h para que el usuario que reportó pudiera cargar su fondo.
 // ─── VelasPanel — el guardado nocturno de precios (análisis técnico) ─────────
+// Un cambio de ratio: lo anterior se multiplicó por `factor`. 0,5 = cada CEDEAR
+// viejo son 2 nuevos ("se partió en 2"); 2 = dos viejos son uno nuevo.
+function ratioTxt(f) {
+  if (!f) return '?'
+  const n = (x) => x.toLocaleString('es-AR', { maximumFractionDigits: 2 })
+  return f < 1 ? `se partió en ${n(1 / f)}` : `se juntaron ${n(f)} en 1`
+}
+const saltoTxt = (f) => `${f >= 1 ? '+' : '−'}${Math.round(Math.abs(f - 1) * 100)} % en un día`
+
 // Lee GET /api/admin/velas: cuántos activos tienen precios guardados, desde y
 // hasta cuándo, cuándo corrió por última vez y cuáles fallaron. El botón corre
 // el guardado ahora (la primera vez baja 3 años de cada activo: unos minutos).
@@ -2366,7 +2375,7 @@ function VelasPanel({ toast }) {
     } finally { setBusy(false) }
   }
 
-  const sano = e && e.activos > 0 && e.fallados.length === 0 && e.atrasados.length === 0
+  const sano = e && e.activos > 0 && e.fallados.length === 0 && e.atrasados.length === 0 && !e.sin_explicar?.length
   return (
     <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -2408,6 +2417,26 @@ function VelasPanel({ toast }) {
             <div className="text-xs">
               <div className="text-ink-2 font-medium mb-1">Sin velas nuevas hace más de 5 días ({e.atrasados.length})</div>
               <div className="text-ink-3 leading-relaxed">{e.atrasados.map(a => `${a.symbol} (${a.hasta})`).join(' · ')}</div>
+            </div>
+          )}
+          {e.sin_explicar?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-rendi-warn font-medium mb-1">Saltos sin explicar: mirar a mano ({e.sin_explicar.length})</div>
+              <p className="text-ink-3 mb-1">Acciones sin par en Nueva York con un salto de más de 40 % en un día. Puede ser real o un cambio de escala que Yahoo no corrigió: no se corrige solo.</p>
+              <div className="text-ink-3 leading-relaxed">{e.sin_explicar.map(c => `${c.symbol} ${c.date} (${saltoTxt(c.factor)})`).join(' · ')}</div>
+            </div>
+          )}
+          {e.cambios_de_ratio?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Cambios de ratio corregidos solos ({e.cambios_de_ratio.length})</div>
+              <p className="text-ink-3 mb-1">BYMA cambió cuántos CEDEARs son una acción y Yahoo no ajustó la historia: el gráfico en pesos la lleva a la escala nueva.</p>
+              <div className="text-ink-3 leading-relaxed">{e.cambios_de_ratio.map(c => `${c.symbol} ${c.date} (${ratioTxt(c.factor)})`).join(' · ')}</div>
+            </div>
+          )}
+          {e.precios_rotos?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Días con precio roto, sacados del gráfico ({e.precios_rotos.length})</div>
+              <div className="text-ink-3 leading-relaxed">{e.precios_rotos.map(c => `${c.symbol} ${c.date}`).join(' · ')}</div>
             </div>
           )}
         </>
