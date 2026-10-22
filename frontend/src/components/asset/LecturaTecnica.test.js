@@ -61,14 +61,14 @@ describe('LecturaTecnica', () => {
   it('con velas: tarjetas en castellano, leyenda y contra tu precio', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     const t = await dibujar({ pnlPctUsd: -0.081, lotes: [{ entry_date: '2025-03-01', quantity: 5 }] })
-    expect(t).toContain('Tendencia de fondo')
+    expect(t).toContain('Largo plazo')
     expect(t).toContain('Bajista')
-    expect(t).toContain('Media 200 días')
+    expect(t).toContain('Promedio 200 días')
     expect(t).toContain('Tu precio promedio')
-    expect(t).toContain('Contra tu precio')
-    expect(t).toContain('8,1% abajo')
+    expect(t).toContain('Contra lo que pagaste')
+    expect(t).toContain('Perdés 8,1%')
     expect(t).toContain('no es una recomendación')
-    expect(t).not.toContain('En pesos se ve distinto')
+    expect(t).not.toContain('En pesos la tendencia es otra')
   })
 
   it('en pesos avisa que el dólar cambia la lectura', async () => {
@@ -78,7 +78,7 @@ describe('LecturaTecnica', () => {
     // Pesos se piden recién ahora: que vuelva el pedido.
     for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     const t = texto(montado.contenedor)
-    expect(t).toContain('En pesos se ve distinto que en dólares')
+    expect(t).toContain('En pesos la tendencia es otra que en dólares')
     expect(t).toContain('Alcista')
   })
 
@@ -86,7 +86,7 @@ describe('LecturaTecnica', () => {
     respuestas = { '/tecnico/': { disponible: false }, '/prices/history': { points: [] } }
     const t = await dibujar({})
     expect(t).toContain('últimos 30 días')
-    expect(t).not.toContain('Lectura técnica')
+    expect(t).not.toContain('Análisis técnico')
   })
 
   it('si el pedido falla lo dice y deja reintentar (no muestra otro gráfico)', async () => {
@@ -97,14 +97,14 @@ describe('LecturaTecnica', () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD }
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Reintentar'))
     for (let i = 0; i < 3; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA' }))
-    expect(texto(montado.contenedor)).toContain('Tendencia de fondo')
+    expect(texto(montado.contenedor)).toContain('Largo plazo')
   })
 
   it('la línea de tu precio usa el dólar de compra; sin ese dato no se dibuja y lo dice', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD }
     let t = await dibujar({ pnlPctUsd: 0.4, pnlPctLinea: 0.1 })
     expect(t).toContain('Tu precio promedio')
-    expect(t).toContain('40,0% arriba')            // la tarjeta: el mismo resultado de arriba
+    expect(t).toContain('Ganás 40,0%')            // la tarjeta: el mismo resultado de arriba
     await montado.desmontar(); montado = null
     t = await dibujar({ pnlPctUsd: 0.4, pnlPctLinea: null, lineaSinTc: true })
     expect(t).not.toContain('Tu precio promedio')
@@ -142,7 +142,7 @@ describe('LecturaTecnica', () => {
     await dibujar({ pnlPctUsd: 0.5, costoPesos: { invertido: 2100, cantidad: 10 } })
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos'))
     for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.5, costoPesos: { invertido: 2100, cantidad: 10 } }))
-    expect(texto(montado.contenedor)).toContain('11,9% arriba')
+    expect(texto(montado.contenedor)).toContain('Ganás 11,9%')
   })
 
   it('con el botón Velas dibuja velas diarias, y semanales sólo si se eligen', async () => {
@@ -150,7 +150,7 @@ describe('LecturaTecnica', () => {
     await dibujar({ pnlPctUsd: 0.1 })
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Velas'))
     for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
-    expect(texto(montado.contenedor)).toContain('Velas: sube · baja')
+    expect(texto(montado.contenedor)).toContain('Velas: subió · bajó')
     expect(texto(montado.contenedor)).not.toContain('Cada vela es una semana')
     // En 2 años siguen siendo diarias; las semanales se eligen.
     await clic(montado.contenedor, buscarBoton(montado.contenedor, '2A'))
@@ -164,7 +164,7 @@ describe('LecturaTecnica', () => {
   it('sin tenencia no dibuja tu precio', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     const t = await dibujar({ pnlPctUsd: null })
-    expect(t).not.toContain('Contra tu precio')
+    expect(t).not.toContain('Contra lo que pagaste')
     expect(t).not.toContain('Tu precio promedio')
   })
 })
