@@ -150,10 +150,11 @@ export default function CalendarioEventos({ positions = [], cerSeries, cobroCtx,
 
         <Leyenda />
 
-        {backend == null && <p className="text-sm text-ink-2">Buscando las fechas de tu cartera…</p>}
-
-        {backend != null && (
-          <div className="flex flex-col gap-1">
+        {/* El ALTO de todo lo que sigue es fijo —seis semanas y una lista de alto
+            fijo con su propia barra—, también mientras carga: si cambiara de un
+            mes a otro, la ventana se volvería a centrar y la flecha de "mes
+            siguiente" se correría de debajo del mouse. */}
+        <div className="flex flex-col gap-1">
             <div className="grid grid-cols-7 gap-1">
               {DIAS_SEMANA.map((d, i) => (
                 <div key={i} className="text-center text-xs text-ink-3 font-medium">{d}</div>
@@ -162,7 +163,7 @@ export default function CalendarioEventos({ positions = [], cerSeries, cobroCtx,
             {semanas.map((sem, i) => (
               <div key={i} className="grid grid-cols-7 gap-1">
                 {sem.map((dia, j) => {
-                  if (!dia) return <div key={j} />
+                  if (!dia) return <div key={j} className="min-h-12 sm:min-h-20" />
                   const del = dias.get(dia) || []
                   const pasado = dia < hoy
                   const elegido = diaElegido === dia
@@ -199,11 +200,9 @@ export default function CalendarioEventos({ positions = [], cerSeries, cobroCtx,
                 })}
               </div>
             ))}
-          </div>
-        )}
+        </div>
 
-        {backend != null && (
-          <div className="flex flex-col">
+        <div className="flex flex-col">
             <div className="flex items-center justify-between gap-2 pb-2">
               <p className="text-sm font-semibold text-ink-0">
                 {diaElegido ? `El ${diaCorto(diaElegido)}` : `En ${nombreDelMes(anio, mes).split(' ')[0].toLowerCase()}`}
@@ -214,7 +213,9 @@ export default function CalendarioEventos({ positions = [], cerSeries, cobroCtx,
                 </button>
               )}
             </div>
-            {!lista.length && (
+            <div className="h-40 sm:h-44 overflow-y-auto flex flex-col">
+            {backend == null && <p className="text-sm text-ink-2 py-2">Buscando las fechas de tu cartera…</p>}
+            {backend != null && !lista.length && (
               <p className="text-sm text-ink-2 py-2">
                 {error ? 'No pudimos traer las fechas de tus empresas. Probá de nuevo en un rato.'
                   : 'No hay fechas conocidas este mes.'}
@@ -256,8 +257,8 @@ export default function CalendarioEventos({ positions = [], cerSeries, cobroCtx,
                 </button>
               )
             })}
-          </div>
-        )}
+            </div>
+        </div>
 
         <p className="text-xs text-ink-2 leading-relaxed">
           Están sólo las fechas que ya se conocen: las empresas anuncian su próximo balance y su próximo dividendo unas semanas antes, así que más adelante el calendario se va llenando. Los cupones de los bonos salen de su cronograma.

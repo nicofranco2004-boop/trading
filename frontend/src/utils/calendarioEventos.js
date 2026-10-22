@@ -78,14 +78,18 @@ export function porDia(eventos = []) {
 
 const iso = (y, m, d) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
 
-/** Las semanas del mes, de lunes a domingo: cada una 7 fechas o null (relleno). */
+/** Las semanas del mes, de lunes a domingo: cada una 7 fechas o null (relleno).
+ *  SIEMPRE seis semanas, aunque el mes entre en cinco (o en cuatro, un febrero
+ *  que arranca lunes): con un alto distinto por mes, la ventana se volvía a
+ *  centrar al pasar de mes y la flecha de "siguiente" se corría de debajo del
+ *  mouse (pedido de Nico, 2026-10-22). */
 export function semanasDelMes(anio, mes) {
   const dias = new Date(Date.UTC(anio, mes, 0)).getUTCDate()
   // getUTCDay: 0 = domingo. Lo corremos para que el lunes sea la columna 0.
   const blancos = (new Date(Date.UTC(anio, mes - 1, 1)).getUTCDay() + 6) % 7
   const celdas = [...Array(blancos).fill(null)]
   for (let d = 1; d <= dias; d++) celdas.push(iso(anio, mes, d))
-  while (celdas.length % 7) celdas.push(null)
+  while (celdas.length < 42) celdas.push(null)
   const semanas = []
   for (let i = 0; i < celdas.length; i += 7) semanas.push(celdas.slice(i, i + 7))
   return semanas

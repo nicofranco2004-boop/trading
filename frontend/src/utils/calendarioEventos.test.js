@@ -39,6 +39,13 @@ describe('semanasDelMes', () => {
   it('febrero bisiesto tiene 29 días', () => {
     expect(semanasDelMes(2028, 2).flat().filter(Boolean)).toHaveLength(29)
   })
+  it('todos los meses tienen seis semanas: el calendario no cambia de alto', () => {
+    // Noviembre 2026 (arranca domingo) necesita seis; diciembre, cinco; febrero
+    // 2027 arranca lunes y entra en cuatro.
+    for (const [y, m] of [[2026, 11], [2026, 12], [2027, 2]]) {
+      expect(semanasDelMes(y, m)).toHaveLength(6)
+    }
+  })
 })
 
 describe('mesesDelCalendario', () => {
