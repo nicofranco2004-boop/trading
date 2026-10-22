@@ -1,0 +1,137 @@
+{
+ "cobros": {
+  "anios_previos": [],
+  "cobros": [
+   {
+    "activo": "KO",
+    "fecha": "2025-07-01",
+    "tipo": "DIVIDEND",
+    "usd": 4.0
+   },
+   {
+    "activo": "",
+    "fecha": "2026-03-10",
+    "tipo": "INTEREST",
+    "usd": 18.181818181818183
+   },
+   {
+    "activo": "KO",
+    "fecha": "2026-04-01",
+    "tipo": "DIVIDEND",
+    "usd": 4.1
+   },
+   {
+    "activo": "GGAL",
+    "fecha": "2026-05-20",
+    "tipo": "DIVIDEND",
+    "usd": 127.11864406779661
+   }
+  ],
+  "dias_hasta_el_pago": 21,
+  "hoy": "2026-10-22",
+  "pagos_mixtos": [
+   {
+    "activo": "AL30",
+    "fecha": "2026-01-09",
+    "tipo": "MIXTO",
+    "usd": 43.2
+   },
+   {
+    "activo": "GD30",
+    "fecha": "2026-07-09",
+    "tipo": "MIXTO",
+    "usd": 84.5
+   }
+  ]
+ },
+ "movements": [
+  {
+   "amount_usd": 600.0,
+   "asset": "AL30",
+   "broker": "IOL · USD",
+   "cobro": null,
+   "currency": "USD",
+   "date": "2025-02-01",
+   "fx_to_usd": null,
+   "notes": "",
+   "type": "BUY"
+  },
+  {
+   "amount_usd": 600.0,
+   "asset": "GD30",
+   "broker": "IOL · USD",
+   "cobro": null,
+   "currency": "USD",
+   "date": "2025-02-01",
+   "fx_to_usd": null,
+   "notes": "",
+   "type": "BUY"
+  },
+  {
+   "amount_usd": 4.0,
+   "asset": "KO",
+   "broker": "IOL · USD",
+   "cobro": "entero",
+   "currency": "USD",
+   "date": "2025-07-01",
+   "fx_to_usd": null,
+   "notes": "",
+   "type": "DIVIDEND"
+  },
+  {
+   "amount_usd": 43.2,
+   "asset": "AL30",
+   "broker": "IOL · USD",
+   "cobro": "mixto",
+   "currency": "USD",
+   "date": "2026-01-09",
+   "fx_to_usd": null,
+   "notes": "Renta y Amortización AL30",
+   "type": "SELL"
+  },
+  {
+   "amount_usd": 18.181818181818183,
+   "asset": "",
+   "broker": "IOL",
+   "cobro": "entero",
+   "currency": "ARS",
+   "date": "2026-03-10",
+   "fx_to_usd": 1100.0,
+   "notes": "Interés caución",
+   "type": "INTEREST"
+  },
+  {
+   "amount_usd": 4.1,
+   "asset": "KO",
+   "broker": "IOL · USD",
+   "cobro": "entero",
+   "currency": "USD",
+   "date": "2026-04-01",
+   "fx_to_usd": null,
+   "notes": "",
+   "type": "DIVIDEND"
+  },
+  {
+   "amount_usd": 127.11864406779661,
+   "asset": "GGAL",
+   "broker": "IOL",
+   "cobro": "entero",
+   "currency": "ARS",
+   "date": "2026-05-20",
+   "fx_to_usd": 1180.0,
+   "notes": "",
+   "type": "DIVIDEND"
+  },
+  {
+   "amount_usd": 84.5,
+   "asset": "GD30",
+   "broker": "IOL · USD",
+   "cobro": "mixto",
+   "currency": "USD",
+   "date": "2026-07-09",
+   "fx_to_usd": null,
+   "notes": "Renta y Amortización GD30",
+   "type": "AMORTIZATION"
+  }
+ ]
+}

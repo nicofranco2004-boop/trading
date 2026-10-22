@@ -45,11 +45,13 @@ import TradesTable, { PAGE_SIZE } from '../components/operations/TradesTable'
 import TradesFeed from '../components/operations/TradesFeed'
 import MovementsTable, { MOV_PAGE_SIZE } from '../components/operations/MovementsTable'
 import MovementsFeed from '../components/operations/MovementsFeed'
+import CobrosView from '../components/operations/CobrosView'
 import { hoyISO } from '../utils/fecha'
 import {
   MOVEMENT_TYPES, GROUP_OPTIONS, buildGroups, buildPeriodOptions, enPeriodo,
 } from '../components/operations/shared'
 import { confirmar } from '../utils/confirmar'
+import { cobradoDe } from '../utils/cobros'
 
 // pnl_usd arranca como string vacío (no 0) para que el form distinga
 // "no completado" de "0 USD" — sin esto, el user que quiere cargar un trade
@@ -476,7 +478,9 @@ export default function Operations() {
           title="Operaciones"
           subtitle={tab === 'trades'
             ? 'Historial de trades cerrados con P&L realizado.'
-            : 'Todos los movimientos: trades, depósitos, retiros, dividendos y comisiones.'}
+            : tab === 'cobros'
+              ? 'Lo que te pagaron tus inversiones: dividendos, cupones e intereses.'
+              : 'Todos los movimientos: trades, depósitos, retiros, dividendos y comisiones.'}
           action={
             <div className="flex items-center gap-2 flex-wrap">
               <AnalyzeButton screen="operations" subtitle="Tu historial completo" />
@@ -496,43 +500,33 @@ export default function Operations() {
           que /posiciones y /analisis (filled pills + violet en activa). */}
       {!isMobile && (
         <div className="inline-flex flex-wrap gap-2 mb-5">
-          <button
-            onClick={() => setTab('all')}
-            className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
-              tab === 'all'
-                ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
-                : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
-            }`}
-          >
-            Todos los movimientos
-          </button>
-          <button
-            onClick={() => setTab('trades')}
-            className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
-              tab === 'trades'
-                ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
-                : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
-            }`}
-          >
-            Solo P/L
-          </button>
+          {[['all', 'Todos los movimientos'], ['trades', 'Solo P/L'], ['cobros', 'Cobros']].map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded border transition-all ${
+                tab === id
+                  ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
+                  : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       )}
       {isMobile && (
         <div className="px-4 pt-3 flex items-center gap-2">
           <div className="flex flex-1 min-w-0 rounded-sm border border-line/60 bg-bg-1 p-0.5 text-xs font-medium">
-            <button
-              onClick={() => setTab('trades')}
-              className={`flex-1 py-1.5 rounded-sm transition-colors ${tab === 'trades' ? 'bg-bg-3 text-ink-0' : 'text-ink-3'}`}
-            >
-              Trades
-            </button>
-            <button
-              onClick={() => setTab('all')}
-              className={`flex-1 py-1.5 rounded-sm transition-colors ${tab === 'all' ? 'bg-bg-3 text-ink-0' : 'text-ink-3'}`}
-            >
-              Movimientos
-            </button>
+            {[['trades', 'Trades'], ['all', 'Movimientos'], ['cobros', 'Cobros']].map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setTab(id)}
+                className={`flex-1 py-1.5 rounded-sm transition-colors ${tab === id ? 'bg-bg-3 text-ink-0' : 'text-ink-3'}`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
           {/* El alta de una operación existía SÓLO en la rama ancha: el feed no
               tenía ningún botón que la abriera, así que desde el teléfono no
@@ -554,6 +548,14 @@ export default function Operations() {
           las operaciones del tab "Solo P/L", cuyos datos viven acá. Antes el
           feed lo montaba sin el prop y borrar en el celular no refrescaba nada. */}
       {tab === 'all' && <MovementsView onChanged={load} isMobile={isMobile} cambios={cambios} />}
+
+      {/* Cobros: dividendos, cupones e intereses por mes, año y activo. Una sola
+          vista para las dos anchuras (se acomoda sola, R6). */}
+      {tab === 'cobros' && (
+        <div className={isMobile ? 'px-4 pt-3' : ''}>
+          <CobrosView conTitulo={isMobile} />
+        </div>
+      )}
 
       {tab === 'trades' && (
       <>
@@ -1512,9 +1514,22 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     return loose + embedded
   }, [movements, filterBroker, filterYear, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion])
 
+  // Lo cobrado (dividendos, cupones, intereses) del alcance broker/año, SIN
+  // filtrar por tipo, como las comisiones: un pago de bono con cupón y
+  // amortización juntos es una fila "Amortización" o "Venta", y su cupón tiene
+  // que estar en "Cobrado" y en el total del filtro Dividendos. La cuenta es la
+  // de la pestaña Cobros (`cobradoDe`, utils/cobros.js): los dos números
+  // coinciden por construcción.
+  const cobrado = useMemo(() => {
+    const scoped = movements.filter(m =>
+      (filterBroker === 'all' || m.broker === filterBroker) &&
+      (filterYear === 'all' || (m.date || '').startsWith(filterYear)))
+    return cobradoDe(scoped, sumarEnVista)
+  }, [movements, filterBroker, filterYear, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion])
+
   const kpis = useMemo(
-    () => computeMovementKpis(filtered, filterType, { sumar: sumarEnVista, fmt: fmtVista }, commTotal),
-    [filtered, filterType, commTotal, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
+    () => computeMovementKpis(filtered, filterType, { sumar: sumarEnVista, fmt: fmtVista }, commTotal, cobrado),
+    [filtered, filterType, commTotal, cobrado, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
   )
   // Los números de arriba dependen del filtro: cada combinación es OTRO número
   // para <KpiCell> (si no, cambiar de filtro se leería como un cambio de la cartera).
@@ -1727,7 +1742,11 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
 // el total es la suma de lo que muestran las filas. `fmt` formatea un monto que
 // ya está en esa moneda. `comisiones` llega igual, ya convertido.
 // En dólares, `sumar` es la suma de siempre y no cambia ningún número.
-export function computeMovementKpis(rows, filterType, { sumar, fmt }, comisionesTotal = 0) {
+// LO COBRADO llega hecho (`cobrado`, de `cobradoDe` sobre el alcance broker/año):
+// es la cuenta de la pestaña Cobros, con el cupón de los pagos mixtos adentro.
+// Sin él (las pruebas que pasan sólo filas), se calcula sobre `rows` con la
+// misma función.
+export function computeMovementKpis(rows, filterType, { sumar, fmt }, comisionesTotal = 0, cobrado = cobradoDe(rows, sumar)) {
   const sumByType = (t) => sumar(rows.filter(r => r.type === t), r => r.amount_usd || 0)
   const countByType = (t) => rows.filter(r => r.type === t).length
 
@@ -1752,8 +1771,14 @@ export function computeMovementKpis(rows, filterType, { sumar, fmt }, comisiones
     ]
   }
   if (filterType === 'DIVIDEND' || filterType === 'INTEREST') {
+    const total = cobrado[filterType]
+    const pagos = cobrado.pagos[filterType]
+    const conMixtos = filterType === 'DIVIDEND' && cobrado.mixtos > 0
     return [
-      { label: `Total ${filterType === 'DIVIDEND' ? 'dividendos' : 'intereses'}`, value: fmt(sumByType(filterType)), num: sumByType(filterType), tone: 'pos', sub: `${countByType(filterType)} pagos` },
+      { label: `Total ${filterType === 'DIVIDEND' ? 'dividendos' : 'intereses'}`, value: fmt(total), num: total, tone: 'pos',
+        sub: conMixtos
+          ? `${pagos} pagos · incluye el cupón de ${cobrado.mixtos} ${cobrado.mixtos === 1 ? 'pago de bono' : 'pagos de bonos'} con amortización`
+          : `${pagos} pagos` },
     ]
   }
   if (filterType === 'FEE') {
@@ -1768,7 +1793,7 @@ export function computeMovementKpis(rows, filterType, { sumar, fmt }, comisiones
   const neto = dep - wit
   const depCount = countByType('DEPOSIT')
   const witCount = countByType('WITHDRAW')
-  const dividendos = sumByType('DIVIDEND') + sumByType('INTEREST')
+  const dividendos = cobrado.total
   const comisiones = comisionesTotal  // FEE explícitos + embebidas en trades (no solo los FEE sueltos)
   return [
     {
@@ -1778,7 +1803,7 @@ export function computeMovementKpis(rows, filterType, { sumar, fmt }, comisiones
       tone: neto > 0 ? 'pos' : neto < 0 ? 'neg' : null,
       sub: `${depCount} depósitos · ${witCount} retiros`,
     },
-    { label: 'Cobrado',    value: fmt(dividendos), num: dividendos, tone: dividendos > 0 ? 'pos' : null, sub: 'dividendos + intereses' },
+    { label: 'Cobrado',    value: fmt(dividendos), num: dividendos, tone: dividendos > 0 ? 'pos' : null, sub: 'dividendos, cupones e intereses' },
     { label: 'Comisiones', value: fmt(comisiones), num: comisiones, tone: comisiones > 0 ? 'neg' : null, sub: 'fees totales (incl. embebidas)' },
   ]
 }
