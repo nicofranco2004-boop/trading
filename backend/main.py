@@ -11373,7 +11373,7 @@ def _variacion_del_dia(symbols, uid=None, *, tope=None) -> dict:
 # ─── Lectura técnica de la ficha del activo ─────────────────────────────────
 
 @app.get("/api/tecnico/{asset}")
-def get_tecnico(asset: str, moneda: str = "usd", local: int = 0,
+def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None,
                 uid: int = Depends(get_effective_user)):
     """La serie del gráfico técnico (precio, medias de 50 y 200, RSI) y los
     números de la lectura, en dólares (default) o en pesos. Sale de las velas
@@ -11384,9 +11384,12 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0,
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
+    ref = (ref or "").strip().upper() or None
+    if ref and not _SYMBOL_RE.match(ref):
+        raise HTTPException(400, f"Símbolo inválido: {ref}")
     import tecnico
     with db_abierta() as conn:
-        return tecnico.para_la_ficha(conn, sym, moneda, bool(local))
+        return tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
 
 
 class ActivoTecnicoIn(BaseModel):
@@ -11423,8 +11426,12 @@ def admin_velas(uid: int = Depends(get_admin_user)):
     """Estado del guardado nocturno de velas: cuántos activos, desde cuándo,
     cuándo corrió por última vez y cuáles fallaron. Sólo lee."""
     from fechas import hoy_art_date
+    import velas_diarias
     atrasado = (hoy_art_date() - timedelta(days=5)).isoformat()
     with db_abierta() as conn:
+        # Atrasados y fallados, sólo de lo que se sigue HOY: lo que alguien vendió
+        # o dejó de seguir no se actualiza más (a propósito) y no es un problema.
+        seguidos = set(velas_diarias.simbolos_a_seguir(conn))
         e = conn.execute(
             """SELECT COUNT(*) AS activos, COALESCE(SUM(ok), 0) AS ok,
                       COALESCE(SUM(CASE WHEN ultima_completa IS NULL THEN 1 ELSE 0 END), 0) AS sin_historia,
@@ -11433,14 +11440,15 @@ def admin_velas(uid: int = Depends(get_admin_user)):
         v = conn.execute(
             """SELECT COUNT(*) AS filas, MIN(date) AS desde, MAX(date) AS hasta
                  FROM velas_diarias""").fetchone()
-        atrasados = conn.execute(
+        atrasados = [r for r in conn.execute(
             """SELECT symbol, MAX(date) AS hasta FROM velas_diarias
-                GROUP BY symbol HAVING MAX(date) < ? ORDER BY symbol LIMIT 50""",
-            (atrasado,)).fetchall()
-        fallados = conn.execute(
+                GROUP BY symbol HAVING MAX(date) < ? ORDER BY symbol""",
+            (atrasado,)).fetchall() if r["symbol"] in seguidos][:50]
+        fallados = [r for r in conn.execute(
             """SELECT symbol, error, ultima_corrida FROM velas_estado
-                WHERE ok = 0 ORDER BY ultima_corrida DESC LIMIT 50""").fetchall()
+                WHERE ok = 0 ORDER BY ultima_corrida DESC""").fetchall() if r["symbol"] in seguidos][:50]
     return {
+        "seguidos": len(seguidos),
         "activos": e["activos"], "ok": e["ok"], "sin_historia": e["sin_historia"],
         "ultima_corrida": e["ultima_corrida"],
         "filas": v["filas"], "desde": v["desde"], "hasta": v["hasta"],
@@ -47201,6 +47209,13 @@ def watchlist_list(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+# Cuántos activos puede seguir una persona. Sin tope, una sola cuenta podía
+# cargar miles de símbolos inventados: el guardado nocturno de precios
+# (velas_diarias) intenta bajar cada uno y la noche no alcanzaba para los de
+# verdad (auditoría de seguridad 22/10). 100 es mucho más de lo que sigue nadie.
+WATCHLIST_TOPE = 100
+
+
 @app.post("/api/watchlist")
 def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_effective_user)):
     """Agrega un símbolo a la watchlist. Si ya existe, devuelve 200 silenciosamente
@@ -47208,6 +47223,12 @@ def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:
+            ya = conn.execute("SELECT 1 FROM watchlist WHERE user_id=? AND symbol=?",
+                              (uid, data.symbol)).fetchone()
+            if not ya and conn.execute("SELECT COUNT(*) FROM watchlist WHERE user_id=?",
+                                       (uid,)).fetchone()[0] >= WATCHLIST_TOPE:
+                raise HTTPException(400, f"Tu lista de seguimiento llegó a {WATCHLIST_TOPE} activos. "
+                                         "Sacá alguno para sumar otro.")
             conn.execute(
                 """INSERT OR IGNORE INTO watchlist (user_id, symbol, asset_type)
                    VALUES (?, ?, ?)""",
