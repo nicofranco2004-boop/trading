@@ -75,7 +75,13 @@ class _Base(unittest.TestCase):
         self.conn.commit()
         self.uid = self.conn.execute(
             "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
-            ("renombrados@rendi.test", "x")).lastrowid
+            # Email ÚNICO por instancia y no fijo. El barrido de arriba borra con
+            # `except: pass`, así que cuando falla —en Postgres falla: hay tablas
+            # que apuntan a `users` y no están en esa lista— el email del test
+            # anterior sobrevive y el alta de éste choca contra la unicidad. Con
+            # un email distinto cada vez, la prueba deja de depender de que la
+            # limpieza haya funcionado.
+            (f"renombrados-{id(self)}@rendi.test", "x")).lastrowid
         self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                           (self.uid, self.BROKER, "USD"))
         self.conn.commit()
