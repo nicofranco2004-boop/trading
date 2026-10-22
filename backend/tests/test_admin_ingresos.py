@@ -98,12 +98,13 @@ class IngresosEnElPanel(unittest.TestCase):
         self.client.cookies.clear()
 
     def _restablecer(self, email):
-        r = self.client.post("/api/auth/forgot-password", json={"email": email})
-        self.assertEqual(r.status_code, 200, r.text)
-        token = self._q(
-            """SELECT t.token FROM password_reset_tokens t JOIN users u ON u.id=t.user_id
-               WHERE u.email=? AND t.used_at IS NULL
-               ORDER BY t.id DESC LIMIT 1""", (email,))["token"]
+        # El token se saca DEL MAIL: en la base vive sólo su huella (RENDI-10).
+        from unittest.mock import patch as _patch
+        from urllib.parse import urlparse, parse_qs
+        with _patch("billing.emails.send_password_reset") as mock_spr:
+            r = self.client.post("/api/auth/forgot-password", json={"email": email})
+            self.assertEqual(r.status_code, 200, r.text)
+        token = parse_qs(urlparse(mock_spr.call_args.kwargs["reset_url"]).query)["token"][0]
         r = self.client.post("/api/auth/reset-password",
                              json={"token": token, "new_password": "OtraClave456$"})
         self.assertEqual(r.status_code, 200, r.text)

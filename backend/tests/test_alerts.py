@@ -1607,3 +1607,38 @@ def test_sin_nombre_que_sirva_saluda_a_secas(clean, monkeypatch):
     monkeypatch.setattr(ae, "_prices_for", lambda syms: {"AAPL": 201.0})
     ae.evaluate_alerts(conn, only_user=1)
     assert "Hola, es el precio que marcaste." in enviados[0]["html"]
+
+
+def test_borrar_alerta_no_toca_el_estado_de_otro_usuario(clean):
+    """RENDI-06: borrar una alerta propia no debe resetear el estado de las
+    alertas de OTRO usuario.
+
+    `alert_symbol_state` no tiene columna user_id, así que su borrado se ata por
+    subquery a `alerts` (y antes de borrar la alerta, si no el subquery ya no la
+    encontraría). Pasar el id de una alerta ajena no debe borrar nada. El camino
+    es el del endpoint real (`main.alerts_delete`), no un DELETE suelto."""
+    conn = clean
+    # Alerta de B (uid=2) con su estado "ya avisé hoy".
+    aid_b = _mk_alert(conn, user_id=2, symbol="MSFT")
+    conn.execute("INSERT INTO alert_symbol_state (alert_id, symbol, armed, last_fired_date) "
+                 "VALUES (?,?,0,?)", (aid_b, "MSFT", "2026-10-21"))
+    # Alerta de A (uid=1) con su propio estado.
+    aid_a = _mk_alert(conn, user_id=1, symbol="AAPL")
+    conn.execute("INSERT INTO alert_symbol_state (alert_id, symbol, armed, last_fired_date) "
+                 "VALUES (?,?,0,?)", (aid_a, "AAPL", "2026-10-21"))
+    conn.commit()
+
+    # A (uid=1) intenta borrar la alerta de B pasando su id.
+    main.alerts_delete(alert_id=aid_b, uid=1)
+
+    # La alerta de B y su estado siguen intactos: el ataque no tocó nada ajeno.
+    assert conn.execute("SELECT 1 FROM alerts WHERE id=?", (aid_b,)).fetchone() is not None
+    fila_b = conn.execute(
+        "SELECT last_fired_date FROM alert_symbol_state WHERE alert_id=?", (aid_b,)).fetchone()
+    assert fila_b is not None and fila_b[0] == "2026-10-21"
+
+    # Y A sí puede borrar LO SUYO: se va la alerta y su estado (no rompimos el borrado normal).
+    main.alerts_delete(alert_id=aid_a, uid=1)
+    assert conn.execute("SELECT 1 FROM alerts WHERE id=?", (aid_a,)).fetchone() is None
+    assert conn.execute(
+        "SELECT 1 FROM alert_symbol_state WHERE alert_id=?", (aid_a,)).fetchone() is None

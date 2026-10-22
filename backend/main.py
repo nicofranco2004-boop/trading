@@ -3676,6 +3676,24 @@ def init_db():
         except Exception as ex:
             log.warning("no se pudo limpiar el precio de las cajas vacías: %s", ex)
 
+        # Tokens de reseteo: hasta 2026-10 se guardaban en claro y no se borraban
+        # los vencidos (RENDI-10). La migración (borrar usados/vencidos + pasar a
+        # huella los vivos) vive en una función para que el test la atraviese. En
+        # WARNING como las de arriba (init_db corre antes del basicConfig).
+        try:
+            _vivos, _migrados = _migrar_reset_tokens_a_huella(conn)
+            log.warning("tokens de reseteo: %d vivos, %d pasados a huella ahora",
+                        _vivos, _migrados)
+        except Exception as ex:
+            log.warning("no se pudieron migrar los tokens de reseteo a huella: %s", ex)
+
+        # Links de asesor (claim + pedido de acceso): misma huella, sin borrar filas.
+        try:
+            _n = _migrar_tokens_link_a_huella(conn)
+            log.warning("tokens de links de asesor: %d pasados a huella ahora", _n)
+        except Exception as ex:
+            log.warning("no se pudieron migrar los tokens de links de asesor a huella: %s", ex)
+
         conn.commit()
 
 
@@ -3693,6 +3711,37 @@ def create_token(user_id: int, pw_changed_at: Optional[str] = None) -> str:
     if pw_changed_at:
         payload["pca"] = pw_changed_at  # password_changed_at — invalida tokens viejos al cambiar pass
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+# Margen para el desfasaje entre el reloj del proceso (iat del token) y el de la
+# base (password_changed_at): el token que se emite AL cambiar la contraseña no
+# debe cortarse a sí mismo por una diferencia de milisegundos.
+_PWD_CHANGE_GRACE_S = 5
+
+
+def _token_posterior_al_cambio(payload: dict, pwd_changed_at: str) -> bool:
+    """¿El token se emitió DESPUÉS del último cambio de contraseña? True = sigue
+    válido; False = hay que echarlo.
+
+    Compara la fecha de emisión del token (`iat`, epoch UTC) contra
+    `password_changed_at`. Así alcanza también a las cuentas viejas cuyos tokens
+    NO llevan `pca` (se crearon cuando la columna estaba vacía): antes esas
+    sesiones sobrevivían al cambio de contraseña. Con un token sin `iat` cae al
+    criterio anterior (`pca`). Ante cualquier duda de formato devuelve True: un
+    error de parseo no puede dejar a nadie afuera de su cuenta — el cambio de
+    contraseña ya exige la contraseña actual o el link de reseteo."""
+    from datetime import timezone
+    iat = payload.get("iat")
+    if iat is None:
+        pca = payload.get("pca")
+        return not (pca and pca != pwd_changed_at)
+    try:
+        dt = datetime.fromisoformat(str(pwd_changed_at).replace(" ", "T"))
+        cambio_epoch = dt.replace(tzinfo=timezone.utc).timestamp()
+        return float(iat) >= cambio_epoch - _PWD_CHANGE_GRACE_S
+    except (ValueError, TypeError):
+        pca = payload.get("pca")
+        return not (pca and pca != pwd_changed_at)
 
 
 def get_current_user(
@@ -3737,8 +3786,11 @@ def get_current_user(
     if not row:
         raise HTTPException(401, "Token inválido")
     request.state.rendi_requires_plan = marca
-    pca = payload.get("pca")
-    if pca and row["password_changed_at"] and pca != row["password_changed_at"]:
+    # El token queda invalidado si se emitió ANTES del último cambio de contraseña.
+    # Se mira la fecha de emisión (iat), no sólo la marca `pca`, para alcanzar
+    # también a las cuentas viejas cuyos tokens no la llevan (RENDI-11).
+    if row["password_changed_at"] and not _token_posterior_al_cambio(
+            payload, row["password_changed_at"]):
         raise HTTPException(401, "Token expirado por cambio de contraseña")
     return uid
 
@@ -4192,6 +4244,99 @@ def _frontend_url() -> str:
 def _gen_reset_token() -> str:
     """URL-safe random ~43 chars (~256 bits de entropía)."""
     return secrets.token_urlsafe(32)
+
+
+def _validar_cron_token(request: Request, *nombres_env: str) -> None:
+    """Puerta común de los crons externos (cron-job.org). RENDI-05.
+
+    Reemplaza la comparación con `!=`, que cortaba en la primera letra distinta y
+    dejaba adivinar el token a cronómetro: ahora `hmac.compare_digest` (tiempo
+    constante). Acepta el token por la cabecera `X-Cron-Token` (preferida) o por
+    `?token=` (compat: cron-job.org lo manda así hoy); cuando llega por la URL
+    loguea un aviso —la URL queda en los logs de todos los proxies— para migrarlo
+    a la cabecera y cerrar esa fuga. Varios `nombres_env`: vale cualquiera que esté
+    seteado (p.ej. el token propio o el de snapshots como respaldo). Falla cerrado:
+    sin ninguna variable → 503; token ausente o que no coincide → 401."""
+    esperados = [v for v in ((os.environ.get(n) or "").strip() for n in nombres_env) if v]
+    if not esperados:
+        raise HTTPException(503, f"Cron no configurado (falta {nombres_env[0]}).")
+    en_cabecera = (request.headers.get("x-cron-token") or "").strip()
+    en_url = (request.query_params.get("token") or "").strip()
+    got = en_cabecera or en_url
+    ok = bool(got) and any(
+        hmac.compare_digest(got.encode("utf-8"), e.encode("utf-8")) for e in esperados)
+    if not ok:
+        raise HTTPException(401, "Token inválido.")
+    if en_url and not en_cabecera:
+        log.warning("cron %s: token recibido por URL (queda en los logs) — migrar a "
+                    "la cabecera X-Cron-Token", request.url.path)
+
+
+def _hash_token(token: str) -> str:
+    """Huella SHA-256 (hex, 64 chars) de un token de link, para guardar EN REPOSO.
+
+    El token aleatorio viaja en claro al usuario (mail/URL) pero en la base se
+    guarda sólo esta huella: si se filtra una copia de la base, el valor guardado
+    no sirve para usar el link (no se puede volver atrás a la huella). Al validar,
+    se hashea el token entrante y se compara contra lo guardado. No lleva sal a
+    propósito: son 256 bits aleatorios, no hay nada que adivinar por diccionario.
+
+    Hoy lo usa el token de reseteo de contraseña. Los otros tres tokens de link
+    (claim, link-request de asesor, informe público) comparten el mismo patrón y
+    se migran a este helper con su propia migración de links vivos — RENDI-10."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+_TOKEN_HASH_LEN = 64  # un SHA-256 hex; sirve para distinguir "ya hasheado" de un token crudo
+
+
+def _es_huella(valor: str) -> bool:
+    """¿`valor` ya es una huella SHA-256 (64 hex)? Para migraciones idempotentes."""
+    return (len(valor or "") == _TOKEN_HASH_LEN
+            and all(c in "0123456789abcdef" for c in valor))
+
+
+def _migrar_reset_tokens_a_huella(conn) -> tuple:
+    """Deja `password_reset_tokens` sin ningún token en claro. Idempotente.
+
+    (1) Borra los usados y los vencidos: ya no sirven y hasta 2026-10 no se
+    borraban nunca. (2) Pasa a huella los pocos vivos que quedaran en claro, para
+    que una copia de la base no permita usar el link. Devuelve (vivos, migrados).
+
+    Es una función con nombre —y no SQL suelto en el arranque— para que el test la
+    atraviese por el mismo camino que corre en producción."""
+    conn.execute(
+        "DELETE FROM password_reset_tokens WHERE used_at IS NOT NULL OR expires_at < ?",
+        (datetime.utcnow().isoformat(),))
+    vivos = conn.execute("SELECT id, token FROM password_reset_tokens").fetchall()
+    en_claro = [r for r in vivos if not _es_huella(r["token"])]
+    for r in en_claro:
+        conn.execute("UPDATE password_reset_tokens SET token=? WHERE id=?",
+                     (_hash_token(r["token"]), r["id"]))
+    return len(vivos), len(en_claro)
+
+
+def _migrar_tokens_link_a_huella(conn) -> int:
+    """Pasa a huella los tokens en claro de los links de ASESOR: claim (reclamar
+    cuenta) y link-request (pedido de acceso). RENDI-10 parte B. Idempotente.
+
+    A diferencia de los de reseteo NO se borra ninguna fila: `used_at`, `status` y
+    los conteos por fecha deben quedar intactos. Sólo se reescribe la columna
+    `token` de claro a huella, y eso preserva los links VIVOS (el token del mail
+    se hashea al validar y sigue matcheando). Devuelve cuántos se convirtieron.
+
+    `advisor_reports` queda afuera a propósito: ahí el token crudo también vive en
+    `wa_text` y el asesor re-comparte el link desde su historial, así que hashearlo
+    es una decisión de producto (parte C), no un cambio mecánico."""
+    convertidos = 0
+    for tabla in ("advisor_claim_tokens", "advisor_link_requests"):
+        filas = conn.execute(f"SELECT id, token FROM {tabla}").fetchall()
+        for r in filas:
+            if r["token"] and not _es_huella(r["token"]):
+                conn.execute(f"UPDATE {tabla} SET token=? WHERE id=?",
+                             (_hash_token(r["token"]), r["id"]))
+                convertidos += 1
+    return convertidos
 
 
 # ─── Login history / device tracking ─────────────────────────────────────────
@@ -4718,8 +4863,9 @@ def forgot_password(data: ForgotPasswordIn, request: Request):
                 conn.execute(
                     """INSERT INTO password_reset_tokens (user_id, token, expires_at)
                        VALUES (?, ?, ?)""",
-                    (user["id"], token, expires),
+                    (user["id"], _hash_token(token), expires),
                 )
+            # El token crudo va SÓLO al mail; en la base quedó su huella.
             reset_url = f"{_frontend_url()}/reset-password?token={token}"
             try:
                 from billing import emails
@@ -4753,7 +4899,7 @@ def reset_password(data: ResetPasswordIn, request: Request, response: Response):
         row = conn.execute(
             """SELECT id, user_id, expires_at, used_at FROM password_reset_tokens
                WHERE token = ?""",
-            (data.token,),
+            (_hash_token(data.token),),
         ).fetchone()
         if not row or row["used_at"]:
             raise HTTPException(400, "Link inválido o ya usado. Pedí uno nuevo.")
@@ -44330,12 +44476,7 @@ def iol_lab_run_cron(request: Request):
     """Renueva el refresh token de TODOS los testers con medición activa. Lo pega
     cron-job.org cada hora. Auth: X-Cron-Token o ?token= contra IOL_LAB_CRON_TOKEN.
     Sin token configurado → 503. Sincrónico: son 1-3 cuentas, un POST cada una."""
-    expected = (os.environ.get("IOL_LAB_CRON_TOKEN") or "").strip()
-    if not expected:
-        raise HTTPException(503, "IOL Lab cron no configurado (falta IOL_LAB_CRON_TOKEN).")
-    got = (request.headers.get("x-cron-token") or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "IOL_LAB_CRON_TOKEN")
     return _iol_lab_refresh_all()
 
 
@@ -47220,10 +47361,16 @@ def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:
+            # `alert_symbol_state` no tiene user_id: se ata por subquery a `alerts`
+            # para no tocar el estado de alertas AJENAS, y se borra ANTES que la
+            # alerta (después el subquery ya no la encontraría). Sin este candado,
+            # pasar el id de una alerta de otro reseteaba su "ya te avisé".
+            conn.execute(
+                "DELETE FROM alert_symbol_state WHERE alert_id IN "
+                "(SELECT id FROM alerts WHERE id=? AND user_id=?)", (alert_id, uid))
             conn.execute("DELETE FROM alerts WHERE id=? AND user_id=?", (alert_id, uid))
             conn.execute("DELETE FROM alert_events WHERE alert_id=? AND user_id=?",
                          (alert_id, uid))
-            conn.execute("DELETE FROM alert_symbol_state WHERE alert_id=?", (alert_id,))
         return {"ok": True}
     finally:
         conn.close()
@@ -47292,13 +47439,7 @@ def alerts_evaluate(request: Request):
     corte de ~30 s del proxy: el cron veía un error con los avisos saliendo, y
     sin guarda un segundo ping podía encimar otra corrida. 200 = "arrancó"; el
     resultado va al registro."""
-    expected = (os.environ.get("ALERTS_CRON_TOKEN") or "").strip()
-    if not expected:
-        raise HTTPException(503, "Alertas cron no configurado (falta ALERTS_CRON_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "ALERTS_CRON_TOKEN")
     return _correr_en_fondo("alertas", _evaluar_alertas_job)
 
 
@@ -47325,13 +47466,7 @@ def snapshots_run_cron(request: Request):
     Lo pega un cron externo (cron-job.org) 1x/día ~03:00 UTC, después del cierre de
     NYSE/BCBA. Auth: header X-Cron-Token o ?token= contra SNAPSHOT_CRON_TOKEN. Sin
     token configurado → 503 (endpoint cerrado)."""
-    expected = (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip()
-    if not expected:
-        raise HTTPException(503, "Snapshot cron no configurado (falta SNAPSHOT_CRON_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "SNAPSHOT_CRON_TOKEN")
     # El job es el wrapper existente: corre + loguea + captura errores.
     return _correr_en_fondo("snapshot_diario", _run_daily_snapshot_job)
 
@@ -47381,13 +47516,7 @@ def billing_run_cron(request: Request):
     ⚠️ 200 significa "arrancó", no "terminó bien": el resultado va a los logs de
     Railway. Es la misma limitación que el cron de snapshots.
     """
-    expected = (os.environ.get("BILLING_CRON_TOKEN") or "").strip()
-    if not expected:
-        raise HTTPException(503, "Billing cron no configurado (falta BILLING_CRON_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "BILLING_CRON_TOKEN")
     solo_avisos = (request.query_params.get("solo_avisos") or "").strip().lower() in (
         "1", "true", "si", "sí")
     return {**_correr_en_fondo(
@@ -47762,14 +47891,7 @@ def advisor_brief_run_cron(request: Request):
 
     Auth: header X-Cron-Token o ?token= contra ADVISOR_BRIEF_TOKEN (o el de
     snapshots como fallback, para no multiplicar secretos)."""
-    expected = ((os.environ.get("ADVISOR_BRIEF_TOKEN") or "").strip()
-                or (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip())
-    if not expected:
-        raise HTTPException(503, "Brief no configurado (falta ADVISOR_BRIEF_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "ADVISOR_BRIEF_TOKEN", "SNAPSHOT_CRON_TOKEN")
     kind = (request.query_params.get("kind") or "open").strip().lower()
     if kind not in ("open", "close"):
         raise HTTPException(400, "kind debe ser 'open' o 'close'.")
@@ -47884,14 +48006,7 @@ def market_brief_run_cron(request: Request):
     al de snapshots para no multiplicar secretos (mismo criterio que el brief
     del asesor: así se da de alta el cron sin tocar Railway).
     """
-    expected = ((os.environ.get("MARKET_BRIEF_TOKEN") or "").strip()
-                or (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip())
-    if not expected:
-        raise HTTPException(503, "Resumen de mercado no configurado (falta MARKET_BRIEF_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "MARKET_BRIEF_TOKEN", "SNAPSHOT_CRON_TOKEN")
 
     def _bg():
         # El parte de la corrida sale por DOS canales: el registro (para
@@ -48769,7 +48884,8 @@ def advisor_invite_client(
                 """INSERT INTO advisor_claim_tokens
                        (user_id, advisor_uid, token, email, expires_at)
                    VALUES (?,?,?,?,?)""",
-                (client_uid, uid, token, email_norm, expires))
+                (client_uid, uid, _hash_token(token), email_norm, expires))
+        # El token crudo va SÓLO al mail; en la base quedó su huella (RENDI-10).
         claim_url = f"{_frontend_url()}/claim?token={token}"
         # El envío es LA operación (audit: un fallo silencioso dejaba al asesor
         # esperando a un cliente que nunca recibió nada). send devuelve bool.
@@ -48882,7 +48998,8 @@ def _advisor_link_request(conn, uid: int, shadow_uid: int, target, data: Advisor
             """INSERT INTO advisor_link_requests
                    (advisor_uid, client_uid, shadow_uid, permission, token, email, expires_at)
                VALUES (?,?,?,?,?,?,?)""",
-            (uid, target_uid, shadow_uid, permission, token, email_norm, expires))
+            (uid, target_uid, shadow_uid, permission, _hash_token(token), email_norm, expires))
+    # El token crudo va SÓLO al mail; en la base quedó su huella (RENDI-10).
     url = f"{_frontend_url()}/acceso?token={token}"
     sent = False
     try:
@@ -49017,7 +49134,8 @@ def link_request_preview(token: str, request: Request):
     conn = get_db()
     try:
         req = conn.execute(
-            "SELECT * FROM advisor_link_requests WHERE token=?", (token,)).fetchone()
+            "SELECT * FROM advisor_link_requests WHERE token=?",
+            (_hash_token(token),)).fetchone()
         if not req:
             raise HTTPException(400, "Link inválido.")
         adv = conn.execute("SELECT name, email FROM users WHERE id=?",
@@ -49060,7 +49178,8 @@ def link_request_respond(data: LinkRequestRespondIn, request: Request):
     conn = get_db()
     try:
         req = conn.execute(
-            "SELECT * FROM advisor_link_requests WHERE token=?", (data.token,)).fetchone()
+            "SELECT * FROM advisor_link_requests WHERE token=?",
+            (_hash_token(data.token),)).fetchone()
         if not req:
             raise HTTPException(400, "Link inválido.")
         if data.accept:
@@ -49090,12 +49209,13 @@ def claim_preview(token: str, request: Request):
                LEFT JOIN advisor_clients ac
                       ON ac.advisor_uid = ct.advisor_uid AND ac.client_uid = ct.user_id
                WHERE ct.token=? AND ct.used_at IS NULL""",
-            (token,),
+            (_hash_token(token),),
         ).fetchone()
         if not row:
             raise HTTPException(400, "Link inválido o ya usado.")
         exp = conn.execute(
-            "SELECT expires_at FROM advisor_claim_tokens WHERE token=?", (token,)).fetchone()
+            "SELECT expires_at FROM advisor_claim_tokens WHERE token=?",
+            (_hash_token(token),)).fetchone()
         if exp and datetime.fromisoformat(exp["expires_at"]) < datetime.utcnow():
             raise HTTPException(400, "El link expiró. Pedile a tu asesor que te invite de nuevo.")
         # Marca del asesor (audit): el claim es EL momento donde el cliente
@@ -49104,7 +49224,7 @@ def claim_preview(token: str, request: Request):
             """SELECT ap.display_name, ap.cnv_matricula, ap.logo_data
                FROM advisor_profile ap
                JOIN advisor_claim_tokens ct ON ct.advisor_uid = ap.advisor_uid
-               WHERE ct.token=?""", (token,)).fetchone()
+               WHERE ct.token=?""", (_hash_token(token),)).fetchone()
         return {
             "advisor_name": (prof["display_name"] if prof and prof["display_name"] else None)
                             or row["advisor_name"] or row["advisor_email"].split("@")[0],
@@ -49132,7 +49252,7 @@ def claim_account(data: ClaimAccountIn, request: Request, response: Response):
         row = conn.execute(
             """SELECT id, user_id, email, expires_at, used_at
                FROM advisor_claim_tokens WHERE token=?""",
-            (data.token,),
+            (_hash_token(data.token),),
         ).fetchone()
         if not row or row["used_at"]:
             raise HTTPException(400, "Link inválido o ya usado. Pedile a tu asesor que te invite de nuevo.")
