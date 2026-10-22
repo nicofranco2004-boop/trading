@@ -217,6 +217,26 @@ class FichaTest(unittest.TestCase):
         self.assertIsNone(p["convertida"])
         self.assertAlmostEqual(p["puntos"][-1]["c"], 5000 + ultimo * 5, places=3)
 
+    def test_accion_local_no_usa_el_adr_de_otro_usuario(self):
+        # Alguien tiene el ADR de Galicia en Schwab (10 acciones, ~US$ 50) y
+        # vos tenés la acción local: tu ficha en dólares tiene que ser TU acción.
+        with main.db_abierta() as conn:   # dos brokers: plan Pro
+            conn.execute("UPDATE users SET tier='pro' WHERE id=?", (self.uid,))
+            conn.commit()
+        self._broker("IOL", "ARS")
+        self._broker("Schwab", "USD")
+        self._posicion("IOL", "GGAL", "ACCION")
+        self._posicion("Schwab", "GGAL", "STOCK")
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["GGAL"] = lambda i, d: 50.0
+        self.yahoo.precios["GGAL.BA"] = lambda i, d: 5000.0
+        main._run_velas_diarias_job()
+        r = self.client.get("/api/tecnico/GGAL?moneda=usd&local=1", headers=self.h).json()
+        self.assertEqual((r["ticker"], r["convertida"]), ("GGAL.BA", "mep"))
+        self.assertAlmostEqual(r["puntos"][-1]["c"], 5.0, places=6)
+        adr = self.client.get("/api/tecnico/GGAL?moneda=usd", headers=self.h).json()
+        self.assertEqual(adr["ticker"], "GGAL", "sin la marca, el ADR (lo que tiene el de Schwab)")
+
     def test_sin_dolar_ese_dia_no_se_inventa(self):
         self._broker("IOL", "ARS")
         self._posicion("IOL", "GGAL", "ACCION")

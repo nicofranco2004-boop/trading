@@ -23,8 +23,9 @@ import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
+import { isBymaHolding, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
+import { cedearRatio } from '../utils/cedearRatio'
 import { empresaDeTenencias } from '../utils/buscadorRapido'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { ChipDelActivo } from '../components/FueraDeHorario'
@@ -33,6 +34,15 @@ import { operacionesEnUsd } from '../utils/assetPnl'
 import { esCobro } from '../utils/tradeStats'
 
 // ─── Matriz de valuación por lote (reusa la lógica de PositionDetailMobile) ──
+// Costo económico del lote, en SU moneda = lo pagado + las comisiones de compra.
+// Es la definición de la casa: la usan computeBrokerValue (valuation.js:486), las
+// filas del desktop, usdLotValue, pesoLotUsd y el backend (persister.py:747).
+// El CASH no lleva comisión y por eso sigue con `invested`. Lo usan `valueLot` y
+// el costo en pesos de la lectura técnica: una sola cuenta para los dos.
+function costoDelLote(p) {
+  return (p.invested || 0) + (p.commissions || 0)
+}
+
 // Devuelve { valueUsd, investedUsd, pnlUsd, priceLocal } para UN lote.
 function valueLot(p, { brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis = 'today' }) {
   const broker = brokers.find(b => b.name === p.broker)
@@ -43,11 +53,7 @@ function valueLot(p, { brokers, prices, tcValuacion, tcCedear, tcCripto, costBas
     const v = isAR ? cashInvested / tcValuacion : cashInvested
     return { valueUsd: v, investedUsd: v, pnlUsd: 0, priceLocal: null }
   }
-  // Costo económico del lote = lo pagado + las comisiones de compra. Es la
-  // definición de la casa: la usan computeBrokerValue (valuation.js:486), las
-  // filas del desktop, usdLotValue, pesoLotUsd y el backend
-  // (persister.py:747). El CASH no lleva comisión y por eso sigue con `invested`.
-  const invested = cashInvested + (p.commissions || 0)
+  const invested = costoDelLote(p)
   // Lote en PESOS (currency='ARS') en una cuenta USD → estilo-ARS por el MEP
   // (tcCedear): costo Y valor a USD por el mismo rate, no el costo en pesos como dólares.
   if (costInPesos(p) && !isAR) {
@@ -103,6 +109,25 @@ function valueLot(p, { brokers, prices, tcValuacion, tcCedear, tcCripto, costBas
   const mkt = (priceLocal != null ? priceLocal * qty : invested) * f
   const valueUsd = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null) ? mkt : investedUsd
   return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
+}
+
+// Lo que pagaste en PESOS por tus lotes abiertos ({ invertido, cantidad }), para
+// la lectura técnica en pesos. Sólo si TODO lo compraste en pesos: un lote
+// pagado en dólares no tiene un costo en pesos que sea verdad.
+function costoEnPesos(lots) {
+  const abiertos = lots.filter(p => !p.is_cash && Number(p.quantity) > 0)
+  if (!abiertos.length || !abiertos.every(costInPesos)) return null
+  return {
+    invertido: abiertos.reduce((s, p) => s + costoDelLote(p), 0),
+    cantidad: abiertos.reduce((s, p) => s + Number(p.quantity), 0),
+  }
+}
+
+// ¿Es una acción argentina (no un CEDEAR)? Entonces su gráfico en dólares es su
+// precio de BYMA ÷ el MEP, no el ADR de Nueva York (GGAL "de afuera" son 10).
+function esAccionLocal(asset, lots) {
+  if (!lots.length || cedearRatio(asset) || isCrypto(asset)) return false
+  return lots.every(p => p.asset_type !== 'CEDEAR' && isBymaHolding(p))
 }
 
 // Símbolo de precio que necesita un lote (para fetchear el set correcto).
@@ -276,11 +301,14 @@ export default function AssetDetail() {
           todavía no tiene velas guardadas, adentro cae al gráfico de 30 días. */}
       {!esFci(asset) && !(agg.lots.length > 0 && esFci(symbolFor(agg.lots[0], brokers))) && (
         <LecturaTecnica
+          key={`${asset}|${esAccionLocal(asset, agg.lots)}`}
           asset={asset}
           symbolMiniChart={agg.lots.length > 0 ? symbolFor(agg.lots[0], brokers) : null}
           lotes={positions}
           operaciones={operations}
           pnlPctUsd={agg.lots.length > 0 ? agg.pnlPct : null}
+          costoPesos={costoEnPesos(agg.lots)}
+          accionLocal={esAccionLocal(asset, agg.lots)}
         />
       )}
 

@@ -75,6 +75,8 @@ describe('LecturaTecnica', () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     await dibujar({ pnlPctUsd: 0.1 })
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos'))
+    // Pesos se piden recién ahora: que vuelva el pedido.
+    for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     const t = texto(montado.contenedor)
     expect(t).toContain('En pesos se ve distinto que en dólares')
     expect(t).toContain('Alcista')
@@ -91,6 +93,30 @@ describe('LecturaTecnica', () => {
     respuestas = { '/tecnico/': new Error('caído'), '/prices/history': { points: [] } }
     const t = await dibujar({})
     expect(t).toContain('últimos 30 días')
+  })
+
+  it('pide pesos recién al tocarlos, y una acción argentina pide su precio local', async () => {
+    const { api } = await import('../../utils/api')
+    api.get.mockClear()
+    respuestas = { '/tecnico/GGAL?moneda=usd&local=1': USD, '/tecnico/GGAL?moneda=ars&local=1': ARS }
+    const el = () => h(LecturaTecnica, { asset: 'GGAL', accionLocal: true })
+    montado = await montar(el())
+    for (let i = 0; i < 4; i++) await montado.redibujar(el())
+    const pedidos = () => api.get.mock.calls.map(c => c[0]).filter(r => r.startsWith('/tecnico'))
+    expect(pedidos()).toEqual(['/tecnico/GGAL?moneda=usd&local=1'])
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos'))
+    for (let i = 0; i < 4; i++) await montado.redibujar(el())
+    expect(pedidos()).toEqual(['/tecnico/GGAL?moneda=usd&local=1', '/tecnico/GGAL?moneda=ars&local=1'])
+  })
+
+  it('en pesos, tu precio sale de lo que pagaste en pesos (con comisiones)', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
+    // Último cierre en pesos: 250 − 299 × 0,05 = 235,05. 10 unidades valen
+    // 2.350,50; pagaste 2.000 + 100 de comisión → +11,9 %.
+    await dibujar({ pnlPctUsd: 0.5, costoPesos: { invertido: 2100, cantidad: 10 } })
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos'))
+    for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.5, costoPesos: { invertido: 2100, cantidad: 10 } }))
+    expect(texto(montado.contenedor)).toContain('11,9% arriba')
   })
 
   it('sin tenencia no dibuja tu precio', async () => {

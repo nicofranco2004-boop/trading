@@ -33,8 +33,11 @@ const H_RSI = 64
 
 function fmtPrecio(x, moneda) {
   if (x == null) return '—'
-  const dec = x >= 1000 ? 0 : 2
-  const n = x.toLocaleString('es-AR', { minimumFractionDigits: dec, maximumFractionDigits: dec })
+  // Abajo de 1 (una cripto de US$ 0,0004) van cifras significativas: con dos
+  // decimales fijos el eje entero diría "US$ 0,00".
+  const n = Math.abs(x) >= 1000 ? x.toLocaleString('es-AR', { maximumFractionDigits: 0 })
+    : Math.abs(x) >= 1 ? x.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : x.toLocaleString('es-AR', { maximumSignificantDigits: 3 })
   return moneda === 'ars' ? `$ ${n}` : `US$ ${n}`
 }
 
@@ -44,40 +47,40 @@ function fechaCorta(iso) {
   return `${d}/${m}/${y.slice(2)}`
 }
 
-export default function LecturaTecnica({ asset, symbolMiniChart, lotes = [], operaciones = [], pnlPctUsd = null }) {
+export default function LecturaTecnica({
+  asset, symbolMiniChart, lotes = [], operaciones = [], pnlPctUsd = null,
+  costoPesos = null, accionLocal = false,
+}) {
   const [moneda, setMoneda] = useState('usd')
   const [rango, setRango] = useState('1a')
   const [datos, setDatos] = useState({ usd: undefined, ars: undefined })
 
+  // Dólares al abrir; pesos recién la primera vez que se tocan (la mayoría no
+  // los mira y es otra cuenta en el servidor). Otro activo = otro componente
+  // (la ficha lo monta con `key`), así que no hay que limpiar nada a mano.
   useEffect(() => {
+    if (datos[moneda] !== undefined) return
     let vivo = true
-    setDatos({ usd: undefined, ars: undefined })
-    for (const m of ['usd', 'ars']) {
-      api.get(`/tecnico/${encodeURIComponent(asset)}?moneda=${m}`)
-        .then(r => { if (vivo) setDatos(d => ({ ...d, [m]: r })) })
-        .catch(() => { if (vivo) setDatos(d => ({ ...d, [m]: null })) })
-    }
+    api.get(`/tecnico/${encodeURIComponent(asset)}?moneda=${moneda}${accionLocal ? '&local=1' : ''}`)
+      .then(r => { if (vivo) setDatos(d => ({ ...d, [moneda]: r })) })
+      .catch(() => { if (vivo) setDatos(d => ({ ...d, [moneda]: null })) })
     return () => { vivo = false }
-  }, [asset])
+  }, [asset, moneda, accionLocal, datos])
 
   const actual = datos[moneda]
-  const otra = datos[moneda === 'usd' ? 'ars' : 'usd']
 
   // Tu resultado en la moneda que se mira, para dibujar tu precio promedio.
   //   · dólares: el mismo % que la ficha muestra arriba (pnlPctUsd);
-  //   · pesos: sólo si todo lo compraste en pesos y el gráfico es el de BYMA
-  //     (misma unidad que tus lotes). Si no, no se dibuja: no hay un "precio en
-  //     pesos" tuyo que sea verdad.
+  //   · pesos: sólo si todo lo compraste en pesos (`costoPesos`, con la cuenta
+  //     de costo de la ficha) y el gráfico es el de BYMA (misma unidad que tus
+  //     lotes). Si no, no se dibuja: no hay un "precio en pesos" tuyo que sea verdad.
   const pnlPct = useMemo(() => {
     if (moneda === 'usd') return pnlPctUsd
-    if (!actual?.disponible || actual.convertida) return null
-    const abiertos = lotes.filter(l => !l.is_cash && Number(l.quantity) > 0)
-    if (!abiertos.length || abiertos.some(l => String(l.currency || '').toUpperCase() !== 'ARS')) return null
-    const invertido = abiertos.reduce((s, l) => s + (Number(l.invested) || 0), 0)
-    const cantidad = abiertos.reduce((s, l) => s + Number(l.quantity), 0)
+    if (!actual?.disponible || actual.convertida || !costoPesos) return null
     const ultimo = actual.puntos[actual.puntos.length - 1]?.c
-    return invertido > 0 && ultimo > 0 ? (cantidad * ultimo) / invertido - 1 : null
-  }, [moneda, pnlPctUsd, actual, lotes])
+    return costoPesos.invertido > 0 && ultimo > 0
+      ? (costoPesos.cantidad * ultimo) / costoPesos.invertido - 1 : null
+  }, [moneda, pnlPctUsd, actual, costoPesos])
 
   if (actual === undefined) {
     return <div className="h-72 mb-5 rounded-lg bg-bg-2/40 border border-line esqueleto" aria-label="Cargando gráfico" />
@@ -145,8 +148,9 @@ export default function LecturaTecnica({ asset, symbolMiniChart, lotes = [], ope
       </div>
 
       <p className="text-[12px] text-ink-3 mt-3 leading-relaxed">
+        {moneda === 'usd' && 'Se mide en dólares aunque elijas pesos arriba: en pesos el precio sube también con el dólar. '}
         {actual.convertida === 'mep' && (moneda === 'usd'
-          ? 'En dólares: el precio en pesos de cada día dividido por el dólar MEP de ese día. '
+          ? 'Acá, el precio en pesos de cada día dividido por el dólar MEP de ese día. '
           : 'En pesos: el precio en dólares de cada día por el dólar MEP de ese día. ')}
         Al cierre del {fechaCorta(actual.lectura?.fecha)}. Describe cómo se movió el precio; no es una recomendación de compra o venta.
       </p>

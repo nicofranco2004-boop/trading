@@ -146,9 +146,14 @@ def _convertir(velas: list, dolares: dict, por: str) -> list:
     return out
 
 
-def serie(conn, asset: str, moneda: str = "usd") -> dict:
+def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     """La serie de `asset` en `moneda` ('usd' | 'ars') con lo que hay guardado.
-    {velas, ticker, convertida} o {velas: []} si no hay."""
+    {velas, ticker, convertida} o {velas: []} si no hay.
+
+    `local`: es una acción ARGENTINA (lo sabe la ficha por tus lotes). Entonces
+    en dólares se usa SU precio de BYMA ÷ el MEP, aunque haya guardado un ticker
+    pelado igual: GGAL "de afuera" es el ADR (10 acciones), que otro usuario
+    puede tener en Schwab, y su precio no es el de tu acción."""
     from cripto import yahoo_de_cripto
     from snapshots_job import simbolo_byma
     import velas_diarias
@@ -159,8 +164,8 @@ def serie(conn, asset: str, moneda: str = "usd") -> dict:
     if not a:
         return {"velas": []}
     cripto = yahoo_de_cripto(a)
-    afuera = velas_diarias.serie(conn, cripto or a)
     byma = [] if cripto else velas_diarias.serie(conn, simbolo_byma(a))
+    afuera = [] if (local and byma) else velas_diarias.serie(conn, cripto or a)
 
     if moneda == "ars":
         if byma:
@@ -177,12 +182,12 @@ def serie(conn, asset: str, moneda: str = "usd") -> dict:
     return {"velas": []}
 
 
-def para_la_ficha(conn, asset: str, moneda: str = "usd") -> dict:
+def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     """Lo que necesita la ficha: la serie del gráfico (2 años) con sus medias y
     su RSI ya calculados sobre TODA la historia guardada (la media de 200 del
     primer punto del gráfico necesita los 10 meses de antes) y la lectura."""
     moneda = "ars" if moneda == "ars" else "usd"
-    s = serie(conn, asset, moneda)
+    s = serie(conn, asset, moneda, local)
     velas = s["velas"]
     if not velas:
         return {"asset": (asset or "").upper(), "moneda": moneda, "disponible": False}

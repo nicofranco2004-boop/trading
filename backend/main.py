@@ -11373,17 +11373,20 @@ def _variacion_del_dia(symbols, uid=None, *, tope=None) -> dict:
 # ─── Lectura técnica de la ficha del activo ─────────────────────────────────
 
 @app.get("/api/tecnico/{asset}")
-def get_tecnico(asset: str, moneda: str = "usd", uid: int = Depends(get_effective_user)):
+def get_tecnico(asset: str, moneda: str = "usd", local: int = 0,
+                uid: int = Depends(get_effective_user)):
     """La serie del gráfico técnico (precio, medias de 50 y 200, RSI) y los
     números de la lectura, en dólares (default) o en pesos. Sale de las velas
     guardadas (velas_diarias.py), no de Yahoo: si el activo todavía no tiene
-    velas, `disponible` es False y la ficha lo dice. Las cuentas: tecnico.py."""
+    velas, `disponible` es False y la ficha lo dice. `local=1`: es una acción
+    argentina (en dólares va su precio de BYMA ÷ MEP, no el ADR). Las cuentas:
+    tecnico.py."""
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
     import tecnico
     with db_abierta() as conn:
-        return tecnico.para_la_ficha(conn, sym, moneda)
+        return tecnico.para_la_ficha(conn, sym, moneda, bool(local))
 
 
 @app.get("/api/admin/velas")
