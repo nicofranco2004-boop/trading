@@ -19,12 +19,17 @@ El dólar de cada día sale de `fx.serie_diaria`: la MISMA regla que
 Las velas llegan ya corregidas por `velas_diarias.serie` (cambios de ratio de un
 CEDEAR y precios rotos de un día, que Yahoo no corrige): acá no se corrige nada.
 
+EL FIBONACCI (picos, pozos, tramos de suba y de bajada) vive en
+`estructura.py`; acá sólo se le pasa la misma serie que va al gráfico.
+
 QUÉ NO HACE. No sabe nada del usuario: tu precio promedio y tus compras se
 dibujan en la pantalla con lo que ya tiene la ficha.
 """
 from __future__ import annotations
 
 from datetime import date, timedelta
+
+import estructura
 
 # Todo lo que es "un año" o "un mes" se corta por FECHA (días corridos), no por
 # cantidad de velas: una cripto cotiza los 7 días y la bolsa 5.
@@ -494,4 +499,7 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         # (`ref`): la pantalla lo compara con el precio en vivo para que la línea
         # de tu precio no se corra lo que se movió hoy (auditoría 22/10).
         "cierre_ref": cierre_de(conn, ref) if ref else None,
+        # Fibonacci del último tramo (estructura.py), sobre TODA la historia
+        # guardada de esta misma serie: los niveles quedan en la moneda del gráfico.
+        "fibonacci": estructura.fibonacci(velas),
     }
