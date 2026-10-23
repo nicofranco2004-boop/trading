@@ -2122,28 +2122,6 @@ ALTER TABLE uso_diario ADD COLUMN IF NOT EXISTS evento text;
 
 ALTER TABLE uso_diario ADD COLUMN IF NOT EXISTS cantidad bigint DEFAULT 0;
 
-CREATE TABLE IF NOT EXISTS velas_correcciones (
-  symbol text NOT NULL,
-  date text NOT NULL,
-  tipo text NOT NULL,
-  factor double precision,
-  referencia text,
-  detectado_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS'),
-  PRIMARY KEY (symbol, date, tipo)
-);
-
-ALTER TABLE velas_correcciones ADD COLUMN IF NOT EXISTS symbol text;
-
-ALTER TABLE velas_correcciones ADD COLUMN IF NOT EXISTS date text;
-
-ALTER TABLE velas_correcciones ADD COLUMN IF NOT EXISTS tipo text;
-
-ALTER TABLE velas_correcciones ADD COLUMN IF NOT EXISTS factor double precision;
-
-ALTER TABLE velas_correcciones ADD COLUMN IF NOT EXISTS referencia text;
-
-ALTER TABLE velas_correcciones ADD COLUMN IF NOT EXISTS detectado_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS');
-
 CREATE TABLE IF NOT EXISTS velas_diarias (
   symbol text NOT NULL,
   date text NOT NULL,

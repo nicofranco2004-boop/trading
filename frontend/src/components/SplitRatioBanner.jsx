@@ -126,7 +126,7 @@ export default function SplitRatioBanner({ onAdjusted }) {
               </div>
             </div>
             {active.evidence === 'pregunta' && (
-              <p className="rounded-md border border-amber-500/40 bg-amber-500/[0.07] px-3 py-2 text-xs text-ink-1">
+              <p className="rounded border border-amber-500/40 bg-amber-500/[0.07] px-3 py-2 text-xs text-ink-1">
                 El precio que cargaste ({fmt(active.buy_price)}) no coincide con el que tenía el CEDEAR
                 ese día, ni antes ni después del cambio.
                 <strong className="text-ink-0"> Confirmá sólo si tu broker te acreditó {fmt(active.suggested_qty - active.current_qty)} CEDEARs

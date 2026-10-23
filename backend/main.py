@@ -2542,19 +2542,6 @@ def init_db():
                 filas INTEGER DEFAULT 0,
                 error TEXT
             );
-            -- Lo que la revisión nocturna encontró en las velas (velas_diarias.revisar):
-            -- un cambio de ratio de un CEDEAR que Yahoo no ajusta, un precio roto de
-            -- un día, o un salto que no se puede explicar. Las velas quedan como las
-            -- dio Yahoo; `velas_diarias.serie` aplica 'ratio' y 'roto' al leer.
-            CREATE TABLE IF NOT EXISTS velas_correcciones (
-                symbol TEXT NOT NULL,            -- el '.BA' corregido
-                date TEXT NOT NULL,              -- 'ratio': desde este día rige la escala nueva
-                tipo TEXT NOT NULL,              -- 'ratio' | 'roto' | 'sin_explicar'
-                factor REAL,                     -- 'ratio': por cuánto se lleva lo anterior; si no, el salto
-                referencia TEXT,                 -- contra qué se comparó ('XLE'); NULL si no hay par
-                detectado_at TEXT DEFAULT (datetime('now')),
-                PRIMARY KEY (symbol, date, tipo)
-            );
         """)
 
         # Cambios de ratio de CEDEAR (cambios_ratio.py): la lista única que leen
@@ -11429,8 +11416,8 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
 @app.get("/api/admin/velas")
 def admin_velas(uid: int = Depends(get_admin_user)):
     """Estado del guardado nocturno de velas: cuántos activos, desde cuándo,
-    cuándo corrió por última vez, cuáles fallaron y qué corrigió la revisión
-    (cambios de ratio de CEDEAR, precios rotos, saltos sin explicar). Sólo lee."""
+    cuándo corrió por última vez, cuáles fallaron y qué tiene la lista única de
+    cambios de ratio (cambios_ratio.py) de lo que se sigue. Sólo lee."""
     from fechas import hoy_art_date
     import velas_diarias
     atrasado = (hoy_art_date() - timedelta(days=5)).isoformat()
@@ -11453,13 +11440,19 @@ def admin_velas(uid: int = Depends(get_admin_user)):
         fallados = [r for r in conn.execute(
             """SELECT symbol, error, ultima_corrida FROM velas_estado
                 WHERE ok = 0 ORDER BY ultima_corrida DESC""").fetchall() if r["symbol"] in seguidos][:50]
-        # Lo que encontró la revisión nocturna (velas_diarias.revisar): los
-        # cambios de ratio y precios rotos que se corrigen solos, y los saltos
-        # que NO se pueden explicar (una acción argentina sin par afuera), que
-        # hay que mirar a mano.
-        correcciones = [r for r in conn.execute(
-            """SELECT symbol, date, tipo, factor, referencia FROM velas_correcciones
-                ORDER BY date DESC, symbol""").fetchall() if r["symbol"] in seguidos]
+        # La lista única de cambios de ratio (cambios_ratio.py): lo que el
+        # gráfico en pesos empalma, lo que el aviso «Ajustar» ofrece, y los
+        # saltos que NO se pueden explicar (una acción argentina sin par
+        # afuera), que hay que mirar a mano.
+        import cambios_ratio
+        correcciones = sorted(
+            ({"symbol": f"{r['cedear']}.BA", "date": r["fecha"], "tipo": r["tipo"],
+              "estado": r["estado"], "factor": r["factor"] or r["factor_medido"],
+              "motivo": r["motivo"]}
+             for r in cambios_ratio.todos(conn) if f"{r['cedear']}.BA" in seguidos),
+            key=lambda c: (c["date"], c["symbol"]), reverse=True)
+    def _de(*tipos):
+        return [c for c in correcciones if c["tipo"] in tipos][:50]
     return {
         "seguidos": len(seguidos),
         "activos": e["activos"], "ok": e["ok"], "sin_historia": e["sin_historia"],
@@ -11467,9 +11460,11 @@ def admin_velas(uid: int = Depends(get_admin_user)):
         "filas": v["filas"], "desde": v["desde"], "hasta": v["hasta"],
         "atrasados": [dict(r) for r in atrasados],
         "fallados": [dict(r) for r in fallados],
-        "cambios_de_ratio": [dict(r) for r in correcciones if r["tipo"] == "ratio"][:50],
-        "precios_rotos": [dict(r) for r in correcciones if r["tipo"] == "roto"][:50],
-        "sin_explicar": [dict(r) for r in correcciones if r["tipo"] == "sin_explicar"][:50],
+        "cambios_de_ratio": _de("ratio"),
+        "empalmes": _de("escision", "precio_roto"),
+        "precios_rotos": _de("roto"),
+        "pendientes": _de("pendiente"),
+        "sin_explicar": _de("sin_explicar"),
         "corriendo": "velas_diarias" in _corridas_en_curso,
     }
 
@@ -45461,21 +45456,14 @@ def _run_velas_diarias_job():
         _velas_log.info("Velas diarias: ya hay una corrida en curso, se saltea")
         return
     try:
-        try:
-            import velas_diarias
-            with db_abierta() as conn:
-                _velas_log.info("Velas diarias: %s", velas_diarias.correr(conn))
-        except Exception as e:
-            _velas_log.error(f"Velas diarias falló: {e}", exc_info=True)
-        # Con las velas ya al día: la lista de cambios de ratio de CEDEAR sale de
-        # ellas (cambios_ratio.py). Aparte, para que un error acá no toque las
-        # velas; dentro de la misma bandera, porque lee lo que la corrida escribe.
-        try:
-            import cambios_ratio
-            with db_abierta() as conn:
-                _velas_log.info("Cambios de ratio: %s", cambios_ratio.correr(conn))
-        except Exception as e:
-            _velas_log.error(f"Cambios de ratio falló: {e}", exc_info=True)
+        # `correr` también arma, con las velas ya al día, la lista única de
+        # cambios de ratio (cambios_ratio.py), pasándole qué papel es un CEDEAR
+        # y cuál es su acción de afuera. Un error de la lista no toca las velas.
+        import velas_diarias
+        with db_abierta() as conn:
+            _velas_log.info("Velas diarias: %s", velas_diarias.correr(conn))
+    except Exception as e:
+        _velas_log.error(f"Velas diarias falló: {e}", exc_info=True)
     finally:
         _soltar_corrida("velas_diarias")
 
