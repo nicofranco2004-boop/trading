@@ -11,7 +11,7 @@
 //     (`tarjetas` y `veredictoRsi` de utils/tecnico.js): un activo no puede
 //     decir «Alcista» en la Cartera y «Bajista» en su ficha.
 
-import { isBymaHolding, fciLabel } from './valuation'
+import { isBymaHolding, fciLabel, isFciSym, isFixedIncome } from './valuation'
 import { isCrypto } from './crypto'
 import { cedearRatio } from './cedearRatio'
 import { tarjetas, veredictoRsi, RSI_CASTIGADO, RSI_ESTIRADO } from './tecnico'
@@ -68,22 +68,41 @@ export function lecturaDeFila(indice, p) {
   return indice.get(clave(String(p.asset || '').toUpperCase(), esAccionLocal(p.asset, lots))) || null
 }
 
+// Por qué algo va «sin lectura», del más permanente al más pasajero. Cada uno
+// con su explicación: un bono no se mide así y nunca va a tener; una acción
+// recién agregada sí, a partir de la noche en que se guardan sus precios.
+export const MOTIVOS_SIN_LECTURA = {
+  no_se_mide: 'bonos, fondos, efectivo y plazos fijos no tienen historia de precios en Rendi: no se les mide la tendencia.',
+  sin_historia: 'todavía no hay historia de precios guardada. Se guarda cada noche: aparece en un día.',
+  pocos_dias: 'para leer la tendencia hacen falta 200 días de mercado de precios guardados, y todavía no los tienen.',
+  vieja: `su último precio guardado tiene más de ${DIAS_LECTURA_VIEJA} días: no describe el de hoy.`,
+}
+
+/** ¿Este lote es de los que no se miden con velas? (efectivo, fondo, bono, plazo fijo) */
+function noSeMide(p) {
+  return !!p && (p.is_cash || p.es_plazo_fijo || isFciSym(p.asset) || isFixedIncome(p.asset_type)
+    || ['FUND', 'FCI'].includes(String(p.asset_type || '').toUpperCase()))
+}
+
 /**
  * La tendencia de fondo con las palabras de la ficha: { id: 'alcista' |
- * 'bajista' | 'sin', palabra, motivo }. «Sin lectura» cuando no hay velas o no
- * alcanzan para el promedio de 200 días (la ficha dice «Faltan datos»).
+ * 'bajista' | 'sin', palabra, motivo, porque }. «Sin lectura» trae `porque`
+ * (una clave de MOTIVOS_SIN_LECTURA) y un `motivo` para el globo de la fila,
+ * según qué le falta: `p` (un lote del activo) dice si es un bono o un fondo.
  */
-export function tendencia(x, hoy = hoyISO()) {
+export function tendencia(x, hoy = hoyISO(), p = null) {
+  const sin = (porque, motivo) => ({ id: 'sin', palabra: 'Sin lectura', porque, motivo })
   if (!x || !x.disponible || !x.lectura) {
-    return { id: 'sin', palabra: 'Sin lectura', motivo: 'Todavía no hay historia de precios guardada para este activo.' }
+    if (noSeMide(p)) return sin('no_se_mide', 'Bonos, fondos y efectivo no tienen historia de precios en Rendi: no se les mide la tendencia.')
+    return sin('sin_historia', 'Todavía no hay historia de precios guardada para este activo. Se guarda cada noche: aparece en un día.')
   }
   if (lecturaVieja(x, hoy)) {
-    return { id: 'sin', palabra: 'Sin lectura', motivo: `El último precio guardado es del ${fechaCorta(x.lectura.fecha)}: no describe el de hoy.` }
+    return sin('vieja', `El último precio guardado es del ${fechaCorta(x.lectura.fecha)}: no describe el de hoy.`)
   }
   const fondo = tarjetas(x.lectura).find(t => t.id === 'fondo')
   if (fondo?.veredicto === 'Alcista') return { id: 'alcista', palabra: 'Alcista', motivo: fondo.texto }
   if (fondo?.veredicto === 'Bajista') return { id: 'bajista', palabra: 'Bajista', motivo: fondo.texto }
-  return { id: 'sin', palabra: 'Sin lectura', motivo: fondo?.texto || 'Faltan datos.' }
+  return sin('pocos_dias', fondo?.texto || 'Faltan datos.')
 }
 
 /** ¿La última vela es de hace más de DIAS_LECTURA_VIEJA días corridos? */
@@ -141,25 +160,29 @@ function cuando(iso) {
  *     cambios: [{ asset, tono: 'pos'|'neg'|'aviso', texto }] }
  */
 export function radiografia(lotes = [], valorDe, indice, extra = [], hoy = hoyISO()) {
-  const porActivo = new Map()   // clave → { nombre, valor, x }
-  const sumar = (k, nombre, valor, x) => {
+  const porActivo = new Map()   // clave → { nombre, valor, x, p (un lote, para el motivo) }
+  const sumar = (k, nombre, valor, x, p) => {
     if (!(valor > 0)) return
-    const a = porActivo.get(k) || { nombre, valor: 0, x }
+    const a = porActivo.get(k) || { nombre, valor: 0, x, p }
     a.valor += valor
     porActivo.set(k, a)
   }
   for (const p of lotes) {
     if (!p) continue
     const v = Number(valorDe(p))
-    if (p.is_cash) { sumar('efectivo', 'efectivo', v, null); continue }
+    if (p.is_cash) { sumar('efectivo', 'efectivo', v, null, p); continue }
     const local = esLoteLocal(p)
     const k = clave(String(p.asset).toUpperCase(), local)
-    sumar(k, fciLabel(p.asset), v, indice?.get(k) || null)
+    sumar(k, fciLabel(p.asset), v, indice?.get(k) || null, p)
   }
-  for (const e of extra) sumar(`extra:${e.nombre}`, e.nombre, Number(e.valor), null)
+  for (const e of extra) sumar(`extra:${e.nombre}`, e.nombre, Number(e.valor), null, { es_plazo_fijo: true })
 
   const grupos = { alcista: [], bajista: [], sin: [] }
-  for (const a of porActivo.values()) grupos[tendencia(a.x, hoy).id].push(a)
+  const motivos = {}   // porque → [nombres], en el orden de MOTIVOS_SIN_LECTURA
+  for (const a of porActivo.values()) {
+    a.t = tendencia(a.x, hoy, a.p)
+    grupos[a.t.id].push(a)
+  }
   const ids = ['alcista', 'bajista', 'sin']
   const valores = ids.map(id => grupos[id].reduce((s, a) => s + a.valor, 0))
   const pcts = repartirCien(valores)
@@ -169,6 +192,10 @@ export function radiografia(lotes = [], valorDe, indice, extra = [], hoy = hoyIS
     const nombres = [...new Set(grupos[id].sort((a, b) => b.valor - a.valor).map(a => a.nombre))]
     salida[id] = { valor: valores[i], pct: pcts[i], fraccion: total > 0 ? valores[i] / total : 0, nombres }
   })
+  for (const a of grupos.sin) (motivos[a.t.porque] ||= []).includes(a.nombre) || motivos[a.t.porque].push(a.nombre)
+  // [{ porque, nombres, texto }]: el «por qué» de cada uno de los sin lectura.
+  salida.sin.motivos = Object.keys(MOTIVOS_SIN_LECTURA).filter(k => motivos[k])
+    .map(k => ({ porque: k, nombres: motivos[k], texto: MOTIVOS_SIN_LECTURA[k] }))
 
   // Lo que cambió: primero los cruces del promedio de 200 (la tendencia de
   // fondo), después los de 50, después el RSI en un extremo; dentro de cada

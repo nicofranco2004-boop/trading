@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   esLoteLocal, esAccionLocal, activosParaLeer, indexarLecturas, lecturaDeFila, tendencia, fuerza,
-  repartirCien, radiografia, lecturaVieja,
+  repartirCien, radiografia, lecturaVieja, MOTIVOS_SIN_LECTURA,
 } from './radiografia'
 import { lecturaDeLaFila } from '../components/RadiografiaTecnica'
 import { computeBrokerValue, setBrokersRegistry } from './valuation'
@@ -157,5 +157,35 @@ describe('lo que no se puede leer no se inventa', () => {
     const listo = lecturaDeLaFila({ cargando: false, error: false, indice: indexarLecturas([lec('NVDA', false, ALCISTA)]) }, p)
     expect(listo.estado).toBe('listo')
     expect(tendencia(listo.x).id).toBe('alcista')
+  })
+})
+
+describe('el motivo de cada «sin lectura»', () => {
+  const HOY = '2026-10-22'
+  it('bono y fondo no se miden; acción sin velas aparece en un día; pocos días y vieja, los suyos', () => {
+    const lotes = [
+      { id: 1, broker: 'IOL', asset: 'AL30', asset_type: 'BONO' },
+      { id: 2, broker: 'IOL', asset: 'FCI:PIONERO-PESOS', asset_type: 'FUND' },
+      { id: 3, broker: 'IOL', asset: 'ARS', is_cash: true },
+      { id: 4, broker: 'IOL', asset: 'GGAL', asset_type: 'ACCION' },
+      { id: 5, broker: 'Schwab', asset: 'IREN', asset_type: 'STOCK' },
+      { id: 6, broker: 'Schwab', asset: 'MSFT', asset_type: 'STOCK' },
+    ]
+    const indice = indexarLecturas([
+      { asset: 'AL30', local: true, disponible: false },
+      { asset: 'GGAL', local: true, disponible: false },
+      lec('IREN', false, { ...ALCISTA, ruedas: 120, media200: null, dist_media200: null, fecha: HOY }),
+      lec('MSFT', false, { ...ALCISTA, fecha: '2026-09-17' }),
+    ])
+    const r = radiografia(lotes, () => 100, indice, [{ nombre: 'plazos fijos', valor: 50 }], HOY)
+    expect(r.grupos.sin.motivos.map(m => [m.porque, m.nombres])).toEqual([
+      ['no_se_mide', ['AL30', 'Pionero Pesos', 'efectivo', 'plazos fijos']],
+      ['sin_historia', ['GGAL']],
+      ['pocos_dias', ['IREN']],
+      ['vieja', ['MSFT']],
+    ])
+    expect(r.grupos.sin.motivos[1].texto).toBe(MOTIVOS_SIN_LECTURA.sin_historia)
+    expect(tendencia(null, HOY, lotes[3]).motivo).toContain('aparece en un día')
+    expect(tendencia(null, HOY, lotes[0]).porque).toBe('no_se_mide')
   })
 })

@@ -10,7 +10,9 @@
 //
 // «Alcista» = el precio está arriba de su promedio de 200 días, medido en DÓLARES
 // (un CEDEAR en pesos sube con el dólar aunque la empresa no se mueva). Sin
-// velas guardadas, «Sin lectura»: nunca se inventa.
+// velas guardadas, «Sin lectura»: nunca se inventa, y la tarjeta dice POR QUÉ
+// cada uno (un bono no se mide; una acción recién agregada todavía no tiene
+// precios guardados; ver MOTIVOS_SIN_LECTURA en utils/radiografia.js).
 //
 // Con "Ocultar saldos" no se muestran los porcentajes ni la barra: la
 // proporción también es información de la cartera (como PesoEnCartera).
@@ -75,9 +77,10 @@ const TONO = {
 }
 
 /** La tendencia de una fila: «Alcista» / «Bajista» / «Sin lectura», con la
- *  explicación de la ficha en el globo. */
-export function TendenciaChip({ x, className = '' }) {
-  const t = tendencia(x)
+ *  explicación de la ficha en el globo. `p` (la fila) dice si es un bono o un
+ *  fondo, para explicar bien por qué no tiene lectura. */
+export function TendenciaChip({ x, p = null, className = '' }) {
+  const t = tendencia(x, undefined, p)
   const tono = TONO[t.id]
   return (
     <span title={t.motivo}
@@ -181,9 +184,15 @@ export default function RadiografiaTecnica({ lotes, valorDe, extra = [], indice,
             )
           })}
         </div>
+        {sin.motivos.length > 0 && (
+          <ul className="flex flex-col gap-1 text-[12px] text-ink-2 leading-relaxed" aria-label="Por qué algunos van sin lectura">
+            {sin.motivos.map(m => (
+              <li key={m.porque}><b className="font-semibold text-ink-1">{m.nombres.join(', ')}</b>: {m.texto}</li>
+            ))}
+          </ul>
+        )}
         <p className="text-[12px] text-ink-3 leading-relaxed">
-          «Alcista» = el precio está arriba de su promedio de los últimos 200 días. Bonos, fondos y efectivo no tienen
-          historia de precios en Rendi: por eso van sin lectura. Describe el precio; no es una recomendación.
+          «Alcista» = el precio está arriba de su promedio de los últimos 200 días. Describe el precio; no es una recomendación.
         </p>
       </div>
 

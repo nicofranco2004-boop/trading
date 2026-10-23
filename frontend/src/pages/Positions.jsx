@@ -1831,7 +1831,7 @@ function PositionsDesktop() {
               : lleno}
       </td>
     )
-    return <>{celda(<TendenciaChip x={x} />)}{celda(<FuerzaRsi x={x} />)}</>
+    return <>{celda(<TendenciaChip x={x} p={p} />)}{celda(<FuerzaRsi x={x} />)}</>
   }
   const heroInvested = totals.invested + pfInvestedUsd
   const heroPnl = heroValue - heroInvested

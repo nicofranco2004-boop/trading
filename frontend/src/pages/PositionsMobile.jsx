@@ -3126,7 +3126,7 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
           <div className={`${LINEA_1} text-ink-3`}>…</div>
         ) : tecnica.estado === 'error' ? <Vacio /> : (
           <>
-            <TendenciaChip x={tecnica.x} className="text-[11.5px]" />
+            <TendenciaChip x={tecnica.x} p={p} className="text-[11.5px]" />
             <FuerzaRsi x={tecnica.x} sinGuion className="mt-[5px]" />
           </>
         )}
