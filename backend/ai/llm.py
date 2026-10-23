@@ -153,6 +153,7 @@ def analyze(
     descriptive: bool = False,
     instruction: Optional[str] = None,
     effort: Optional[str] = None,
+    cachear: bool = True,
 ) -> Optional[LLMResult]:
     """Manda el packet a Claude y devuelve output validado contra `output_model`.
 
@@ -176,6 +177,10 @@ def analyze(
             viene, el del modelo. En un resumen el razonamiento es casi todo el
             costo: Sonnet 5.5 en su nivel de fábrica gastaba ~2.500 tokens de
             salida por mail, de los que el texto eran ~500.
+        cachear: False para un pedido que se hace pocas veces por hora (el
+            resumen técnico de la ficha: uno por activo y por día). Escribir el
+            caché de 1 h cuesta el doble que leer el pedido una vez; si nadie lo
+            vuelve a leer en esa hora, es plata tirada.
 
     Returns:
         LLMResult con .output validado, o None si AI no está configurada.
@@ -274,17 +279,16 @@ def analyze(
             # Trade-off: write paga 2.0x (vs 1.25x del default 5min) pero
             # reads en la siguiente hora pagan 0.10x. A 100+ users/hora
             # con mismo system prompt (mismo tier+screen) gana fácil.
+            sistema = {"type": "text", "text": system_prompt}
+            if cachear:
+                sistema["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
             response = client.messages.parse(
                 model=model,
                 max_tokens=max_tokens,
-                system=[{
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
-                }],
+                system=[sistema],
                 messages=[{"role": "user", "content": user_msg}],
                 output_format=output_model,
-                extra_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"},
+                **({"extra_headers": {"anthropic-beta": "extended-cache-ttl-2025-04-11"}} if cachear else {}),
                 **({"output_config": {"effort": effort}} if effort else {}),
             )
             # Capturar raw output ANTES de parsed_output — si parse falla, lo

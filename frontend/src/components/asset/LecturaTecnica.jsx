@@ -19,11 +19,15 @@
 // Debajo del RSI, la fuerza de la tendencia en dos franjas: el ADX con su línea
 // de 23 y las barras del Squeeze (el combo «DMI/ADX/KEYLEVEL» + «SQZMOM_LB» de
 // TradingView), con su tarjeta «Fuerza de la tendencia».
+//
+// Debajo de la leyenda, el resumen de Mervall-E (ResumenMervalle.jsx): un
+// párrafo a pedido, uno por activo y por día, que ven todos.
 
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa, ventanaDelTramo } from './CapaFibonacci'
+import ResumenMervalle from './ResumenMervalle'
 import { api } from '../../utils/api'
 import {
   RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
@@ -253,6 +257,11 @@ export default function LecturaTecnica({
           }} color={COLOR_FIB}>Fibonacci</Chip>
         )}
       </div>
+
+      {/* El resumen de Mervall-E de esta serie y este día de velas: uno para
+          todos. `key` por moneda: en pesos es otro resumen, con su propio botón. */}
+      <ResumenMervalle key={moneda} asset={asset} moneda={moneda} local={accionLocal} resumen={actual.resumen}
+        alTenerlo={(r) => setDatos(d => ({ ...d, [moneda]: { ...d[moneda], resumen: r } }))} />
 
       <div className={`mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2 ${grande ? 'xl:grid-cols-3' : ''}`}>
         {ver.fib && actual.fibonacci && (

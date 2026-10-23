@@ -2544,6 +2544,33 @@ def init_db():
             );
         """)
 
+        # El resumen de Mervall-E de la ficha del activo (ai/resumen_tecnico.py):
+        # uno por serie + moneda + día de velas, compartido entre todos, con lo
+        # que costó. Tabla nueva, sin ALTER: segura en una base ya creada.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS resumenes_tecnicos (
+                ticker TEXT NOT NULL,            -- la serie del gráfico: 'NVDA', 'GGAL.BA'
+                moneda TEXT NOT NULL,            -- 'usd' | 'ars'
+                fecha_vela TEXT NOT NULL,        -- la última vela que leyó: 'YYYY-MM-DD'
+                estado TEXT NOT NULL DEFAULT 'generando',   -- 'generando' | 'listo' | 'fallo'
+                texto TEXT,
+                hechos_json TEXT,                -- lo que se le mandó al modelo
+                model TEXT,
+                llamadas INTEGER DEFAULT 0,      -- veces que se llamó al modelo
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cost_usd_cents INTEGER DEFAULT 0, -- unidad de ai/llm: 1 = US$ 0,0001
+                palabras INTEGER,
+                pedido_por INTEGER,              -- quién tocó el botón (para el tope por persona)
+                dia TEXT NOT NULL,               -- día argentino en que se pidió
+                empezado_at TEXT,
+                terminado_at TEXT,
+                error TEXT,
+                PRIMARY KEY (ticker, moneda, fecha_vela)
+            );
+            CREATE INDEX IF NOT EXISTS idx_resumenes_tecnicos_dia ON resumenes_tecnicos(dia);
+        """)
+
         # Cambios de ratio de CEDEAR (cambios_ratio.py): la lista única que leen
         # el aviso «Ajustar» de Posiciones y los gráficos en pesos. Tabla nueva,
         # sin ALTER: segura en una base ya creada.
@@ -11417,8 +11444,33 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
     if ref and not _SYMBOL_RE.match(ref):
         raise HTTPException(400, f"Símbolo inválido: {ref}")
     import tecnico
+    from ai import resumen_tecnico
     with db_abierta() as conn:
-        return tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
+        ficha = tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
+        # El resumen de Mervall-E de esta serie y este día de velas, si alguien
+        # ya lo pidió (es de todos); si no, si se puede ofrecer el botón.
+        ficha["resumen"] = resumen_tecnico.estado_para_la_ficha(conn, ficha)
+        return ficha
+
+
+@app.post("/api/tecnico/{asset}/resumen")
+def post_tecnico_resumen(asset: str, moneda: str = "usd", local: int = 0,
+                         uid: int = Depends(get_effective_user)):
+    """El botón «✦ Resumen de Mervall-E» de la ficha: genera el resumen de esta
+    serie y este día de velas UNA vez (Claude Sonnet 5.5) y lo guarda para todos.
+    Los datos los arma el servidor con las mismas velas del gráfico; no viaja
+    nada del usuario. No descuenta el cupo de IA. Las reglas (candado, topes,
+    revisión del texto): ai/resumen_tecnico.py."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    import tecnico
+    from ai import resumen_tecnico
+    from ai.asset_names import asset_name
+    with db_abierta() as conn:
+        ficha = tecnico.para_la_ficha(conn, sym, moneda, bool(local))
+    base = sym[:-3] if sym.endswith(".BA") else sym
+    return resumen_tecnico.pedir(db_abierta, ficha, asset_name(base) or base, uid)
 
 
 @app.get("/api/admin/velas")
@@ -11459,6 +11511,9 @@ def admin_velas(uid: int = Depends(get_admin_user)):
               "motivo": r["motivo"]}
              for r in cambios_ratio.todos(conn) if f"{r['cedear']}.BA" in seguidos),
             key=lambda c: (c["date"], c["symbol"]), reverse=True)
+        # Los resúmenes de Mervall-E de la ficha: cuántos por día y lo que costaron.
+        from ai import resumen_tecnico
+        resumenes = resumen_tecnico.para_admin(conn)
     def _de(*tipos):
         return [c for c in correcciones if c["tipo"] in tipos][:50]
     return {
@@ -11474,6 +11529,7 @@ def admin_velas(uid: int = Depends(get_admin_user)):
         "pendientes": _de("pendiente"),
         "sin_explicar": _de("sin_explicar"),
         "corriendo": "velas_diarias" in _corridas_en_curso,
+        "resumenes": resumenes,
     }
 
 

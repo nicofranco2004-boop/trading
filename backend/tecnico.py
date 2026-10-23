@@ -4,8 +4,10 @@ QUÉ ES. Toma las velas que guarda `velas_diarias` y arma, para la ficha del
 activo, la serie del gráfico (precio, media de 50, media de 200, RSI, ADX y
 Squeeze) y los números de la lectura (dónde está el precio contra cada media,
 hacia dónde va la de 200, el RSI, la fuerza de la tendencia y la distancia al
-máximo de 12 meses). Las PALABRAS ("alcista",
-"muy estirado") las pone la pantalla; acá van sólo los números, en un lugar.
+máximo de 12 meses). Las PALABRAS de la pantalla ("alcista", "muy estirado")
+las pone la pantalla; acá van los números, en un lugar. La excepción son los
+hechos del resumen de Mervall-E (al final del archivo): ahí Rendi escribe las
+cuentas ya en palabras para que la IA no tenga que hacer ninguna.
 
 EN QUÉ MONEDA. La tendencia se lee en DÓLARES por defecto: un CEDEAR en pesos
 sube aunque la empresa no se mueva, sólo porque sube el dólar. Cómo se arma
@@ -27,6 +29,7 @@ dibujan en la pantalla con lo que ya tiene la ficha.
 """
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 
 import estructura
@@ -502,4 +505,374 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         # Fibonacci del último tramo (estructura.py), sobre TODA la historia
         # guardada de esta misma serie: los niveles quedan en la moneda del gráfico.
         "fibonacci": estructura.fibonacci(velas),
+    }
+
+
+# ─── Los hechos del resumen de Mervall-E, ya en palabras ─────────────────────
+#
+# El resumen de la ficha lo redacta la IA, pero LAS CUENTAS LAS HACE RENDI: la
+# prueba con Sonnet del 22/10 dijo «recuperó un tercio» y en otra corrida «dos
+# tercios» de MercadoLibre, que había recuperado casi la mitad. Acá se calculan
+# las proporciones, se redondean los precios y se escriben las fechas; la IA
+# recibe frases hechas y sólo elige y une (ai/resumen_tecnico.py le prohíbe
+# calcular, y revisa que no aparezca ningún número que no esté acá).
+#
+# TODO EN PRECIOS DE CIERRE. El tramo de Fibonacci (estructura.py) se marca con
+# los picos DENTRO del día, y el máximo de 12 meses es de CIERRE: con los dos en
+# el mismo texto salía «cerró en su máximo del año, 344» y dos renglones después
+# «llegó a 348 el 13 de octubre». Para contar la historia se usan las FECHAS del
+# tramo y los cierres de esos días; el único número de un pico del día que queda
+# es el precio que, si se pasa al cierre, terminaría el movimiento, y va dicho
+# como lo que es.
+#
+# LA ÚLTIMA VELA SE NOMBRA CON SU FECHA («el último cierre, el martes 21 de
+# octubre»), nunca «hoy» ni «ayer»: las velas se guardan de noche y la de hoy
+# no se guarda nunca (velas_diarias._velas_de), así que el resumen se lee casi
+# siempre al día siguiente, y lo leen todos durante todo ese día: una palabra
+# relativa sería falsa para una parte de los que lo leen.
+
+_MESES_LARGOS = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+                 "agosto", "septiembre", "octubre", "noviembre", "diciembre")
+_DIAS_SEMANA = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+
+# Proporción de un tramo → palabras que entiende cualquiera. Cada corte es el
+# techo (sin incluir) de su frase. Fracciones conocidas: un cuarto, un tercio,
+# la mitad, dos tercios, tres cuartos.
+_PROPORCIONES = (
+    (0.06, "casi nada"),
+    (0.20, "una parte chica"),
+    (0.29, "cerca de un cuarto"),
+    (0.38, "cerca de un tercio"),
+    (0.45, "algo menos de la mitad"),
+    (0.49, "casi la mitad"),
+    (0.52, "la mitad"),
+    (0.60, "un poco más de la mitad"),
+    (0.71, "cerca de dos tercios"),
+    (0.80, "cerca de tres cuartos"),
+    (0.94, "casi todo"),
+    (1.00, "prácticamente todo"),
+)
+
+# Lo que se considera "casi en el promedio" (no arriba ni abajo).
+_CERCA_DEL_PROMEDIO_PCT = 2.0
+# Un movimiento posterior más chico que esta parte del tramo no se cuenta.
+_MOVIMIENTO_MINIMO = 0.10
+# El precio que terminaría el movimiento se cuenta sólo si está a menos de esto.
+_UMBRAL_LEJOS_PCT = 25.0
+
+
+def proporcion_en_palabras(p: float) -> str:
+    """0,47 → «casi la mitad». Más de 1 (se pasó del punto de partida) → «todo, y más»."""
+    if p is None:
+        return None
+    if p < 0:
+        p = 0.0
+    if p > 1.0:
+        return "todo, y más"
+    for techo, frase in _PROPORCIONES:
+        if p < techo:
+            return frase
+    return "prácticamente todo"  # justo 1: volvió exacto al punto de partida
+
+
+def numero_en_palabras(x: float) -> str:
+    """El número redondeado como se dice: 84.000 · 1.855 · 222 · 13,45 ·
+    0,0004. Punto de miles y coma decimal, a la argentina. De 10.000 para arriba
+    va a la centena: «75.613 dólares» de un Bitcoin no se dice así."""
+    if x is None:
+        return None
+    a = abs(x)
+    if a >= 10000:
+        s = f"{_redondo(x / 100) * 100:,}".replace(",", ".")
+    elif a >= 20:
+        s = f"{_redondo(x):,}".replace(",", ".")
+    elif a >= 1:
+        s = f"{x:.2f}".replace(".", ",")
+    else:
+        s = f"{float(f'{x:.3g}'):f}".rstrip("0").rstrip(".").replace(".", ",")
+    return s
+
+
+def precio_en_palabras(x: float, moneda: str) -> str:
+    n = numero_en_palabras(x)
+    return None if n is None else f"{n} {'pesos' if moneda == 'ars' else 'dólares'}"
+
+
+def _redondo(x: float) -> int:
+    """Redondeo de la escuela (12,5 → 13). `round` de Python redondea al par
+    (12,5 → 12), y el número que se lee tiene que ser el que uno haría a mano."""
+    return int(math.floor(x + 0.5))
+
+
+def pct_en_palabras(x: float) -> str:
+    """9,4 → «un 9 %»; 0,6 → «menos de un 1 %»."""
+    if x is None:
+        return None
+    a = abs(x)
+    return "menos de un 1 %" if a < 1 else f"un {_redondo(a)} %"
+
+
+def parte_de(p: float, lo_que: str) -> str:
+    """«casi la mitad de lo que había subido» · «casi todo lo que había subido» ·
+    «todo lo que había subido, y más»."""
+    frase = proporcion_en_palabras(p)
+    if frase == "todo, y más":
+        return f"todo lo que {lo_que}, y más"
+    if frase.endswith("todo"):
+        return f"{frase} lo que {lo_que}"
+    return f"{frase} de lo que {lo_que}"
+
+
+def fecha_en_palabras(iso: str, ultima: str, con_dia: bool = False) -> str:
+    """'2026-10-20' → «el 20 de octubre». Con otro año que el de la última vela,
+    lo lleva («el 15 de diciembre de 2025»): sin él, un diciembre leído en
+    octubre parece el que viene. `con_dia`: «el martes 21 de octubre»."""
+    d = date.fromisoformat(iso)
+    texto = f"{d.day} de {_MESES_LARGOS[d.month - 1]}"
+    if ultima and d.year != date.fromisoformat(ultima).year:
+        texto += f" de {d.year}"
+    return f"el {_DIAS_SEMANA[d.weekday()]} {texto}" if con_dia else f"el {texto}"
+
+
+def _extremo(cierres: list, desde: str, hasta: str = None, alto: bool = True):
+    """(fecha, cierre) del cierre más alto (o más bajo) entre dos fechas, ambas incluidas."""
+    tramo = [(d, c) for d, c in cierres if d >= desde and (hasta is None or d <= hasta)]
+    if not tramo:
+        return None
+    return (max if alto else min)(tramo, key=lambda x: x[1])
+
+
+def _tramo_en_cierres(cierres: list, dir_: str, desde: str, hasta: str, hasta_final="igual"):
+    """Un tramo de estructura.py (marcado con picos del día) pasado a cierres:
+    (arranque, final), cada uno (fecha, cierre). El arranque es el cierre más
+    bajo (de una suba) entre `desde` y `hasta`; el final, el más alto desde el
+    arranque hasta `hasta_final` (None = hasta el último cierre: un tramo que
+    sigue vivo). Las FECHAS que se dicen son las de esos cierres: con la del
+    pico del día, «viene subiendo desde el 31 de julio» convivía con «subió de
+    23.970 pesos el 12 de agosto»."""
+    suba = dir_ == "suba"
+    arranque = _extremo(cierres, desde, hasta, alto=not suba)
+    if not arranque:
+        return None
+    final = _extremo(cierres, arranque[0], hasta if hasta_final == "igual" else hasta_final, alto=suba)
+    if not final or final[1] == arranque[1]:
+        return None
+    return arranque, final
+
+
+def _historia(cierres: list, dir_: str, desde: str, hasta: str, moneda: str, ultima: str,
+              hasta_final="igual"):
+    """La historia del último tramo en cierres: de dónde a dónde, lo más lejos
+    que fue después, y dónde quedó al último cierre, con las proporciones ya en
+    palabras. Devuelve (frases, fecha del final del tramo)."""
+    suba = dir_ == "suba"
+    p = lambda x: precio_en_palabras(x, moneda)
+    f = lambda d: fecha_en_palabras(d, ultima)
+    t = _tramo_en_cierres(cierres, dir_, desde, hasta, hasta_final)
+    if not t:
+        return [], None
+    arranque, final = t
+    amplitud = abs(final[1] - arranque[1])
+    ultimo_d, ultimo_c = cierres[-1]
+    frases = [f"{'Subió' if suba else 'Bajó'} de {p(arranque[1])} ({f(arranque[0])}) a "
+              f"{p(final[1])} ({f(final[0])})."]
+    despues = [(d, c) for d, c in cierres if d > final[0]]
+    if not despues:
+        return frases, final[0]
+    # Lo más lejos que llegó en contra del tramo.
+    ext = (min if suba else max)(despues, key=lambda x: x[1])
+    contra = abs(final[1] - ext[1]) / amplitud if (ext[1] < final[1] if suba else ext[1] > final[1]) else 0.0
+    if contra < _MOVIMIENTO_MINIMO:
+        frases.append(f"Desde ahí casi no se movió: al último cierre estaba en {p(ultimo_c)}.")
+        return frases, final[0]
+    verbo, lo_que = ("perdió", "había subido") if suba else ("recuperó", "había caído")
+    if ext[0] == ultimo_d:
+        frases.append(f"Después {'bajó' if suba else 'subió'} hasta {p(ext[1])} al último cierre: "
+                      f"{verbo} {parte_de(contra, lo_que)}.")
+        return frases, final[0]
+    frases.append(f"Después {'bajó' if suba else 'subió'} hasta {p(ext[1])} ({f(ext[0])}): "
+                  f"{verbo} {parte_de(contra, lo_que)}.")
+    # Y desde ese extremo, cuánto volvió.
+    vuelta = abs(ultimo_c - ext[1]) / abs(final[1] - ext[1])
+    volvio = ultimo_c > ext[1] if suba else ultimo_c < ext[1]
+    if volvio and vuelta >= _MOVIMIENTO_MINIMO:
+        verbo2, lo_que2 = ("recuperó", "había perdido") if suba else ("volvió a perder", "había recuperado")
+        frases.append(f"Al último cierre estaba en {p(ultimo_c)}: desde {f(ext[0])} "
+                      f"{verbo2} {parte_de(vuelta, lo_que2)}.")
+    else:
+        frases.append(f"Al último cierre estaba en {p(ultimo_c)}.")
+    return frases, final[0]
+
+
+def hechos_para_el_resumen(ficha: dict, nombre: str = None) -> dict:
+    """Los hechos del resumen de Mervall-E, en el orden en que importan, cada uno
+    ya escrito en castellano con sus números redondeados. Sale de la MISMA
+    respuesta que dibuja la ficha (`para_la_ficha`), sin nada del usuario.
+    None si no hay datos para contar."""
+    if not ficha or not ficha.get("disponible") or not ficha.get("puntos"):
+        return None
+    moneda = ficha.get("moneda") or "usd"
+    l = ficha.get("lectura") or {}
+    cierres = [(x["d"], x["c"]) for x in ficha["puntos"] if x.get("c") is not None]
+    if len(cierres) < 30:
+        return None
+    ultima, ultimo = cierres[-1]
+    p = lambda x: precio_en_palabras(x, moneda)
+    f = lambda d: fecha_en_palabras(d, ultima)
+    hechos = []
+
+    # 1. Para dónde viene ahora (el tramo vivo) y la historia del último tramo.
+    fib = ficha.get("fibonacci") or {}
+    vivo = fib.get("en_curso")
+    # El tramo medido y el vivo se dan la mano en UN cierre: el pico (o el
+    # piso) de cierre donde uno termina y el otro arranca. Con los picos del día
+    # cada uno caía en una fecha distinta: Tesla «subió hasta 380 el 23 de
+    # septiembre» y «venía bajando desde el 25».
+    tf = fib.get("disponible") and _tramo_en_cierres(cierres, fib["dir"], fib["desde"]["fecha"],
+                                                     fib["hasta"]["fecha"])
+    opuesto = bool(tf and vivo and vivo["dir"] != fib["dir"])
+    desde_vivo = vivo and vivo["desde"]["fecha"]
+    if opuesto:
+        desde_vivo = min(desde_vivo, tf[1][0])
+    tv = vivo and _tramo_en_cierres(cierres, vivo["dir"], desde_vivo, vivo["hasta"]["fecha"],
+                                    hasta_final=None)
+    if tv:
+        # Un tramo vivo puede haberse dado vuelta en los cierres sin romperse
+        # todavía (se rompe con un cierre que pase el pico o el piso del día):
+        # Tesla «viene bajando» con el último cierre arriba del de su pico.
+        # Si ya deshizo más de la mitad, se dice «venía».
+        (_, c0), (_, c1) = tv
+        sube = vivo["dir"] == "suba"
+        vuelta = ((c1 - ultimo) if sube else (ultimo - c1)) / abs(c1 - c0)
+        palabra = "subiendo" if sube else "bajando"
+        if vuelta >= 0.6:
+            hechos.append(f"Desde {f(tv[0][0])} venía {palabra}, pero ya volvió a {'bajar' if sube else 'subir'}.")
+        else:
+            hechos.append(f"Viene {palabra} desde {f(tv[0][0])}.")
+    historia, fin_tramo = [], None
+    if fib.get("disponible"):
+        # Si en cierres el tramo vivo arrancó DESPUÉS del final del tramo medido
+        # (Apple: el piso del día fue el 31/7, pero el cierre más bajo, el 12/8),
+        # el tramo medido se cuenta hasta ese cierre: si no, «viene subiendo
+        # desde el 12 de agosto» y «bajó hasta 309 el 31 de julio» no cierran.
+        hasta_final = "igual"
+        if tv and opuesto and tv[0][0] > fib["hasta"]["fecha"]:
+            hasta_final = tv[0][0]
+        historia, fin_tramo = _historia(cierres, fib["dir"], fib["desde"]["fecha"],
+                                        fib["hasta"]["fecha"], moneda, ultima, hasta_final)
+    elif vivo:
+        historia, fin_tramo = _historia(cierres, vivo["dir"], vivo["desde"]["fecha"],
+                                        vivo["hasta"]["fecha"], moneda, ultima, hasta_final=None)
+    hechos += historia
+
+    # 2. El máximo del año, de cierre. Si es el final del tramo que ya se contó,
+    #    se dice ahí mismo (un solo número para el mismo pico).
+    if l.get("maximo_12m") is not None and l.get("anio_completo"):
+        piso = (date.fromisoformat(ultima) - timedelta(days=DIAS_ANIO)).isoformat()
+        maxi = _extremo(cierres, piso, alto=True)
+        if maxi and maxi[0] == ultima:
+            hechos.append("El último cierre es el más alto del último año.")
+        elif maxi and maxi[0] == fin_tramo:
+            hechos.append(f"El cierre del {f(maxi[0])[3:]} fue el más alto del último año; al último "
+                          f"cierre está {pct_en_palabras(_pct(ultimo, maxi[1]))} abajo.")
+        elif maxi:
+            hechos.append(f"El cierre más alto del último año fue {p(maxi[1])} ({f(maxi[0])}); "
+                          f"al último cierre está {pct_en_palabras(_pct(ultimo, maxi[1]))} abajo.")
+        mini = _extremo(cierres, piso, alto=False)
+        if mini and mini[0] == ultima:
+            hechos.append("El último cierre es el más bajo del último año.")
+
+    # 3. La tendencia de fondo: el promedio de 200 días y hacia dónde va.
+    d200 = l.get("dist_media200")
+    if d200 is not None and l.get("media200"):
+        if abs(d200) < _CERCA_DEL_PROMEDIO_PCT:
+            lado = f"casi justo en el promedio de los últimos 200 días ({p(l['media200'])})"
+        else:
+            lado = (f"{pct_en_palabras(d200)} {'arriba' if d200 > 0 else 'abajo'} del promedio de "
+                    f"los últimos 200 días ({p(l['media200'])})")
+        pend = l.get("pendiente_media200")
+        # «todavía» cuando el promedio va para el otro lado que el precio: si no,
+        # «abajo del promedio, que viene subiendo: tendencia para abajo» se lee
+        # como una contradicción.
+        todavia = "todavía " if (pend is not None and abs(d200) >= _CERCA_DEL_PROMEDIO_PCT
+                                 and (pend > 0) != (d200 > 0)) else ""
+        va = ("" if pend is None else
+              f", y ese promedio {todavia}viene subiendo" if pend > 0.5 else
+              f", y ese promedio {todavia}viene bajando" if pend < -0.5 else ", y ese promedio está casi quieto")
+        fondo = ("" if abs(d200) < _CERCA_DEL_PROMEDIO_PCT else
+                 ": la tendencia de fondo es para arriba" if d200 > 0 else
+                 ": la tendencia de fondo es para abajo")
+        hechos.append(f"Está {lado}{va}{fondo}.")
+
+    # 4. Lo que miraría alguien: el cierre que terminaría el movimiento de ahora.
+    #    Es un pico (o un pozo) de DENTRO del día, y se dice así.
+    if vivo and vivo.get("se_rompe_si_cierra"):
+        r = vivo["se_rompe_si_cierra"]
+        nivel = r.get("debajo_de") if vivo["dir"] == "suba" else r.get("encima_de")
+        if nivel and abs(_pct(nivel, ultimo)) <= _UMBRAL_LEJOS_PCT:
+            # «La suba que arrancó el…», no «esta suba»: el tramo vivo puede
+            # estar dado vuelta en los cierres (Tesla: «ya volvió a subir… esta
+            # bajada se terminaría») y entonces «esta» no se entiende.
+            arranco = f" que arrancó {f(tv[0][0])}" if tv else ""
+            hechos.append(
+                f"La {'suba' if vivo['dir'] == 'suba' else 'bajada'}{arranco} se terminaría si cierra "
+                f"{'abajo' if vivo['dir'] == 'suba' else 'arriba'} de {p(nivel)} (el "
+                f"{'piso' if vivo['dir'] == 'suba' else 'pico'} que tocó durante el día {f(r['fecha'])}).")
+
+    # 5. La fuerza del precio (RSI).
+    rsi_v = l.get("rsi")
+    if rsi_v is not None:
+        # La palabra sale del número que se muestra (44,6 se dice 45, y 45 es neutro).
+        n = _redondo(rsi_v)
+        que = ("cayó muy rápido" if n < 30 else "viene perdiendo fuerza" if n < 45 else
+               "ni gana ni pierde fuerza" if n <= 55 else "viene ganando fuerza" if n <= 70 else
+               "subió muy rápido")
+        hechos.append(f"La fuerza del precio (RSI, de 0 a 100) está en {n}: {que}.")
+        c = l.get("rsi_cruce")
+        if c and c.get("hace") is not None and c["hace"] < len(cierres):
+            cuando = f(cierres[-1 - c["hace"]][0])
+            hechos.append(f"{cuando[0].upper()}{cuando[1:]} la fuerza del precio "
+                          + ("salió de abajo de 30, después de haber caído muy rápido."
+                             if c["tipo"] == "salio_de_abajo" else
+                             "bajó de 70, después de haber subido muy rápido."))
+
+    # 6. La fuerza de la tendencia (ADX) y el empuje de los últimos días (Squeeze).
+    a = l.get("adx")
+    if a is not None:
+        pend = l.get("adx_pendiente")
+        va = ("" if pend is None else ", y viene creciendo" if pend > 0.5 else
+              ", y viene aflojando" if pend < -0.5 else "")
+        n = _redondo(a)
+        hechos.append(f"La fuerza de la tendencia (ADX) está en {n}: la tendencia es "
+                      f"{'firme' if n >= ADX_CLAVE else 'floja'}{va} (se considera firme de 23 para arriba).")
+        c = l.get("adx_cruce")
+        if c and c.get("hace") is not None and c["hace"] < len(cierres):
+            cuando = f(cierres[-1 - c["hace"]][0])
+            hechos.append(f"{cuando[0].upper()}{cuando[1:]} la fuerza de la tendencia "
+                          + ("pasó de 23: la tendencia tomó fuerza." if c["tipo"] == "paso_arriba"
+                             else "bajó de 23: la tendencia perdió fuerza."))
+    color = l.get("squeeze_color")
+    if color:
+        hechos.append({
+            "verde_fuerte": "El empuje de los últimos días es para arriba, y cada vez más fuerte.",
+            "verde_apagado": "El empuje de los últimos días es para arriba, pero cada vez más flojo.",
+            "rojo_fuerte": "El empuje de los últimos días es para abajo, y cada vez más fuerte.",
+            "rojo_apagado": "El empuje de los últimos días es para abajo, pero cada vez más flojo.",
+        }.get(color))
+
+    # 7. Un volumen fuera de lo común en el último cierre.
+    vol = l.get("volumen_vs_promedio")
+    if vol is not None and vol >= 1.8:
+        veces = "el doble" if vol < 2.5 else "el triple" if vol < 3.5 else "varias veces"
+        hechos.append(f"En el último cierre se negoció {veces} de lo normal.")
+
+    # 8. En pesos, parte del movimiento es el dólar.
+    if moneda == "ars":
+        hechos.append("Está medido en pesos: parte de lo que sube o baja en pesos es el dólar, no la empresa.")
+
+    return {
+        "activo": nombre or (ficha.get("asset") or "").upper(),
+        "moneda": "pesos" if moneda == "ars" else "dólares",
+        "ultimo_cierre": f"{fecha_en_palabras(ultima, ultima, con_dia=True)}: {p(ultimo)}",
+        "hechos": [h for h in hechos if h],
     }
