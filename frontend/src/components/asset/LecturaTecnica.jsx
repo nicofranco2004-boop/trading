@@ -17,6 +17,7 @@
 // (R8): `rgb(var(--token))` en el SVG, que sigue al modo claro y al oscuro.
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { Maximize2, Minimize2 } from 'lucide-react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa, ventanaDelTramo } from './CapaFibonacci'
 import { api } from '../../utils/api'
@@ -84,6 +85,18 @@ export default function LecturaTecnica({
   // de 2 años). El análisis (Fibonacci, giros) se hace sobre las diarias.
   const [intervalo, setIntervalo] = useState('dia')
   const elegirRango = (r) => { setRango(r); setVentana(null) }
+  // Agrandado: el gráfico ocupa toda la pantalla (la ficha es angosta y el
+  // gráfico quedaba chico con mucho negro alrededor, Nico 22/10). Esc o el
+  // mismo botón lo achican; mientras tanto la página de atrás no se mueve.
+  const [grande, setGrande] = useState(false)
+  useEffect(() => {
+    if (!grande) return
+    const antes = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const tecla = (e) => { if (e.key === 'Escape') setGrande(false) }
+    window.addEventListener('keydown', tecla)
+    return () => { document.body.style.overflow = antes; window.removeEventListener('keydown', tecla) }
+  }, [grande])
 
   // Dólares al abrir; pesos recién la primera vez que se tocan (la mayoría no
   // los mira y es otra cuenta en el servidor). Otro activo = otro componente
@@ -119,7 +132,7 @@ export default function LecturaTecnica({
 
   const marco = (hijos, conPesos = datos.ars?.disponible !== false) => (
     <Marco moneda={moneda} setMoneda={setMoneda} rango={ventana ? null : rango} setRango={elegirRango}
-      tipo={tipo} setTipo={setTipo} conPesos={conPesos}>{hijos}</Marco>
+      tipo={tipo} setTipo={setTipo} conPesos={conPesos} grande={grande} setGrande={setGrande}>{hijos}</Marco>
   )
   // Cargando: el marco con sus botones queda quieto y el gris va adentro, con la
   // altura del gráfico ya reservada (antes desaparecía todo y la página saltaba).
@@ -196,7 +209,7 @@ export default function LecturaTecnica({
         </div>
       )}
       <Grafico puntos={puntos} moneda={moneda} promedio={ver.prom ? promedio : null}
-        marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo}
+        marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo} grande={grande}
         fibonacci={ver.fib ? actual.fibonacci : null} onZoom={zoom} onMover={mover} />
       <p className="text-[11.5px] text-ink-2 mt-1">
         {semanales && 'Cada vela es una semana. '}
@@ -226,7 +239,7 @@ export default function LecturaTecnica({
         )}
       </div>
 
-      <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
+      <div className={`mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2 ${grande ? 'xl:grid-cols-3' : ''}`}>
         {ver.fib && actual.fibonacci && (
           <TarjetaFibonacci fib={actual.fibonacci} precio={(x) => fmtPrecio(x, moneda)} fecha={fechaCorta} />
         )}
@@ -261,12 +274,23 @@ export default function LecturaTecnica({
   )
 }
 
-function Marco({ moneda, setMoneda, rango, setRango, tipo, setTipo, conPesos = true, children }) {
+function Marco({ moneda, setMoneda, rango, setRango, tipo, setTipo, conPesos = true, grande = false, setGrande, children }) {
+  // Agrandado = la misma sección, fija sobre toda la pantalla (no es otra vista:
+  // mismos datos, mismos botones; R6).
   return (
-    <section className="mb-5" aria-label="Análisis técnico">
+    <section aria-label="Análisis técnico" role={grande ? 'dialog' : undefined} aria-modal={grande || undefined}
+      className={grande ? 'fixed inset-0 z-[70] overflow-y-auto bg-bg-0 px-3 py-3 sm:px-6 sm:py-5' : 'mb-5'}>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <div className="text-[12.5px] text-ink-2 font-medium">Análisis técnico</div>
         <div className="flex flex-wrap items-center gap-2">
+          {setGrande && (
+            <button type="button" onClick={() => setGrande(!grande)} aria-pressed={grande}
+              title={grande ? 'Achicar (Esc)' : 'Agrandar el gráfico'}
+              className="inline-flex items-center gap-1.5 min-h-10 sm:min-h-8 px-3 sm:px-2.5 rounded-lg border border-line bg-bg-2 text-xs text-ink-1 hover:text-ink-0">
+              {grande ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}
+              {grande ? 'Achicar' : 'Agrandar'}
+            </button>
+          )}
           <Segmento etiqueta="Tipo de gráfico" valor={tipo} alElegir={setTipo}
             opciones={[['linea', 'Línea'], ['velas', 'Velas']]} />
           <Segmento etiqueta="Moneda" valor={moneda} alElegir={setMoneda}
@@ -372,7 +396,7 @@ function rotulosDeMeses(puntos) {
   })
 }
 
-function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, onZoom, onMover }) {
+function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', grande = false, fibonacci = null, onZoom, onMover }) {
   const conVelas = tipo === 'velas'
   const ref = useRef(null)
   const arrastre = useRef(null)
@@ -498,7 +522,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
     <div>
       <div className="relative">
         {/* Área del gráfico: deja libre la columna de la derecha para los precios. */}
-        <div ref={ref} className="relative mr-[72px] h-56 sm:h-64 select-none touch-pan-y cursor-crosshair"
+        <div ref={ref} className={`relative mr-[72px] ${grande ? 'h-[58vh] min-h-64' : 'h-56 sm:h-64'} select-none touch-pan-y cursor-crosshair`}
           onMouseDown={e => { arrastre.current = e.clientX }}
           onMouseUp={() => { arrastre.current = null }}
           onMouseMove={e => {
@@ -635,7 +659,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
           <span>Fuerza (RSI)</span>
         </div>
         <div className="relative mt-1.5">
-          <div className="relative mr-[72px] h-14">
+          <div className={`relative mr-[72px] ${grande ? 'h-24' : 'h-14'}`}>
             <svg viewBox={`0 0 ${W} ${H_RSI}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
               <rect x="0" y="0" width={W} height={H_RSI * (1 - RSI_ESTIRADO / 100)} fill={v('rendi-pos-fill')} fillOpacity="0.09" />
               <rect x="0" y={H_RSI * (1 - RSI_CASTIGADO / 100)} width={W} height={H_RSI * (RSI_CASTIGADO / 100)} fill={v('rendi-neg-fill')} fillOpacity="0.09" />

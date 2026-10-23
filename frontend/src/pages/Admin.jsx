@@ -2343,14 +2343,19 @@ function MtmBackfillPanel({ toast }) {
 // El endpoint existía pero es POST-only: sin botón, en la práctica había que
 // esperar 24h para que el usuario que reportó pudiera cargar su fondo.
 // ─── VelasPanel — el guardado nocturno de precios (análisis técnico) ─────────
-// Un cambio de ratio: lo anterior se multiplicó por `factor`. 0,5 = cada CEDEAR
-// viejo son 2 nuevos ("se partió en 2"); 2 = dos viejos son uno nuevo.
+// La lista única de cambios de ratio (backend/cambios_ratio.py). `factor` = por
+// cuánto se multiplicó la cantidad = precio de antes ÷ precio de después: 2 =
+// cada CEDEAR viejo son 2 nuevos ("se partió en 2"); 1/3 = tres viejos son uno.
 function ratioTxt(f) {
   if (!f) return '?'
   const n = (x) => x.toLocaleString('es-AR', { maximumFractionDigits: 2 })
-  return f < 1 ? `se partió en ${n(1 / f)}` : `se juntaron ${n(f)} en 1`
+  return f >= 1 ? `se partió en ${n(f)}` : `se juntaron ${n(1 / f)} en 1`
 }
-const saltoTxt = (f) => `${f >= 1 ? '+' : '−'}${Math.round(Math.abs(f - 1) * 100)} % en un día`
+const saltoTxt = (f) => {
+  const p = 1 / f - 1
+  return `${p >= 0 ? '+' : '−'}${Math.round(Math.abs(p) * 100)} % en un día`
+}
+const ESTADO_RATIO = { confirmado: '', sin_confirmar: ' · se pregunta', dudoso: ' · dudoso, no se ofrece' }
 
 // Lee GET /api/admin/velas: cuántos activos tienen precios guardados, desde y
 // hasta cuándo, cuándo corrió por última vez y cuáles fallaron. El botón corre
@@ -2428,9 +2433,22 @@ function VelasPanel({ toast }) {
           )}
           {e.cambios_de_ratio?.length > 0 && (
             <div className="text-xs">
-              <div className="text-ink-2 font-medium mb-1">Cambios de ratio corregidos solos ({e.cambios_de_ratio.length})</div>
-              <p className="text-ink-3 mb-1">BYMA cambió cuántos CEDEARs son una acción y Yahoo no ajustó la historia: el gráfico en pesos la lleva a la escala nueva.</p>
-              <div className="text-ink-3 leading-relaxed">{e.cambios_de_ratio.map(c => `${c.symbol} ${c.date} (${ratioTxt(c.factor)})`).join(' · ')}</div>
+              <div className="text-ink-2 font-medium mb-1">Cambios de ratio ({e.cambios_de_ratio.length})</div>
+              <p className="text-ink-3 mb-1">Cambió cuántos CEDEARs son una acción. Si Yahoo no ajustó la historia, el gráfico en pesos la lleva a la escala nueva; los confirmados se le ofrecen a quien tiene un lote de antes («Ajustar»).</p>
+              <div className="text-ink-3 leading-relaxed">{e.cambios_de_ratio.map(c => `${c.symbol} ${c.date} (${ratioTxt(c.factor)}${ESTADO_RATIO[c.estado] ?? ''})`).join(' · ')}</div>
+            </div>
+          )}
+          {e.empalmes?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Saltos empalmados sólo en el gráfico ({e.empalmes.length})</div>
+              <p className="text-ink-3 mb-1">Escisiones (la empresa separó una parte) y precios fuera de escala: el gráfico en pesos los empalma, pero no cambian la cantidad de nadie.</p>
+              <div className="text-ink-3 leading-relaxed">{e.empalmes.map(c => `${c.symbol} ${c.date} (${c.tipo === 'escision' ? 'escisión' : 'precio fuera de escala'})`).join(' · ')}</div>
+            </div>
+          )}
+          {e.pendientes?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Saltos de los últimos días, todavía sin decidir ({e.pendientes.length})</div>
+              <div className="text-ink-3 leading-relaxed">{e.pendientes.map(c => `${c.symbol} ${c.date}`).join(' · ')}</div>
             </div>
           )}
           {e.precios_rotos?.length > 0 && (

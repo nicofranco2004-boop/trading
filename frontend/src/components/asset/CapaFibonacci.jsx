@@ -162,7 +162,7 @@ export function TarjetaFibonacci({ fib, precio, fecha }) {
   const t = tarjetaFibonacci(fib, precio, fecha)
   if (!t) return null
   return (
-    <div className="sm:col-span-2 rounded-lg border px-3.5 py-3" style={{ borderColor: magenta(0.4), background: magenta(0.05) }}>
+    <div className="col-span-full rounded-lg border px-3.5 py-3" style={{ borderColor: magenta(0.4), background: magenta(0.05) }}>
       <div className="text-[12px] text-ink-2 font-medium">{t.titulo}</div>
       <div className="text-[15px] font-semibold mt-0.5 text-ink-0">{t.veredicto}</div>
       <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.texto}</div>
