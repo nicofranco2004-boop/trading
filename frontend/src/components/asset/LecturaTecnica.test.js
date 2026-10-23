@@ -7,7 +7,7 @@
 //   · sin velas (o si el pedido falla): el gráfico de 30 días de siempre.
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
-import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic } from '../../testing/navegadorMinimo'
+import { instalarNavegadorMinimo, montar, texto, buscar, buscarBoton, clic, enActo } from '../../testing/navegadorMinimo'
 
 function puntos(n, f) {
   return Array.from({ length: n }, (_, i) => ({
@@ -159,6 +159,29 @@ describe('LecturaTecnica', () => {
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Semanales'))
     for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     expect(texto(montado.contenedor)).toContain('Cada vela es una semana')
+  })
+
+  it('Agrandar pone el gráfico a pantalla completa; Achicar y Esc lo devuelven', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
+    await dibujar({ pnlPctUsd: 0.1 })
+    const otra = () => montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
+    const seccion = () => buscar(montado.contenedor, 'section')
+    expect(seccion().getAttribute('role')).toBeNull()
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Agrandar'))
+    await otra()
+    expect(seccion().getAttribute('role')).toBe('dialog')
+    expect(seccion().getAttribute('class')).toContain('fixed')
+    expect(document.body.style.overflow).toBe('hidden')   // la página de atrás no se mueve
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Achicar'))
+    await otra()
+    expect(seccion().getAttribute('role')).toBeNull()
+    expect(document.body.style.overflow).not.toBe('hidden')
+    // Esc también achica.
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Agrandar'))
+    await otra()
+    await enActo(() => { window.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Escape' })) })
+    await otra()
+    expect(seccion().getAttribute('role')).toBeNull()
   })
 
   it('sin tenencia no dibuja tu precio', async () => {
