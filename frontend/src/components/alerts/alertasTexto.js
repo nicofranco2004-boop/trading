@@ -9,6 +9,24 @@
 //
 // Los números salen en convención argentina: $ 7.350 · US$ 231,80 · 8,8 %.
 import { nfmt } from '../../utils/format'
+import { isArStock } from '../../utils/valuation'
+
+// El activo que se vigila. Una acción argentina (GGAL, BMA, YPFD…) se mira en
+// la Bolsa de Buenos Aires, en pesos ('GGAL.BA'): el buscador la ofrece como
+// «Grupo Financiero Galicia · BCBA» pero su código viene pelado, y 'GGAL' a
+// secas es el ADR de Nueva York, en dólares (10 acciones por ADR). Así, quien
+// buscaba GGAL para «avisame si llega a $ 8.000» quedaba mirando US$ 40 y el
+// aviso no saltaba nunca (22/10/2026).
+// La única excepción es un link que pide dólares a propósito: la posición de un
+// broker de afuera (Schwab) tiene el ADR y abre /alertas?new=GGAL&ccy=USD
+// (alertaDePosicion.linkDeAlerta). Por eso se mira la moneda DEL LINK, no la
+// del formulario, que arranca en dólares para cualquier código sin '.BA'.
+export function simboloDelAviso(symbol, monedaDelLink) {
+  const s = String(symbol || '').trim().toUpperCase()
+  if (!s || s.endsWith('.BA') || s.startsWith('FCI:')) return s
+  if (String(monedaDelLink || '').toUpperCase() === 'USD') return s
+  return isArStock(s) ? `${s}.BA` : s
+}
 
 export function monedaDe(symbol) {
   return String(symbol || '').toUpperCase().endsWith('.BA') ? 'ARS' : 'USD'

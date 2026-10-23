@@ -34,7 +34,7 @@ import { api } from '../../utils/api'
 import { parseNum, numACampo } from '../../utils/format'
 import { confirmar } from '../../utils/confirmar'
 import AvisoNotificaciones from '../AvisoNotificaciones'
-import { monedaDe, simbolo, fmtPrecio, fmtPct, confirmacion, canal, monedasPosibles } from './alertasTexto'
+import { monedaDe, simbolo, fmtPrecio, fmtPct, confirmacion, canal, monedasPosibles, simboloDelAviso } from './alertasTexto'
 import { cargarCedears, dolaresPorSimbolo } from '../../utils/opcionesCedear'
 
 const VACIO = {
@@ -91,7 +91,10 @@ export function borradorInicial({ alerta, prefill, puedeMovimiento }) {
     }
   }
   if (!prefill) return VACIO
-  const base = { ...VACIO, symbol: prefill.symbol || '', currency: prefill.currency || monedaDe(prefill.symbol) }
+  const base = {
+    ...VACIO, symbol: prefill.symbol || '', monedaDelLink: prefill.currency,
+    currency: prefill.currency || monedaDe(simboloDelAviso(prefill.symbol, prefill.currency)),
+  }
   // "Crear alerta BTC −10%" desde Mervall-E AI → por %, ya cargada. Sin el
   // permiso queda el de precio (el selector de % muestra que es de Plus).
   if ((prefill.downPct || prefill.upPct) && puedeMovimiento) {
@@ -102,6 +105,20 @@ export function borradorInicial({ alerta, prefill, puedeMovimiento }) {
     }
   }
   return base
+}
+
+// El activo que se vigila de verdad (el que se pide al servidor y del que se
+// muestra el precio): una alerta que se edita no cambia de activo; una nueva
+// pasa por la regla de acción argentina (alertasTexto.simboloDelAviso).
+export function activoDelBorrador(f, editando) {
+  const crudo = (f.symbol || '').trim().toUpperCase()
+  return editando ? crudo : simboloDelAviso(crudo, f.monedaDelLink)
+}
+
+// Elegir o escribir otro activo en el buscador: la moneda del link ya no
+// vale (era del activo que traía el link) y la del precio sale del activo.
+export function alElegirActivo(f, valor, ccy) {
+  return { ...f, symbol: valor, monedaDelLink: undefined, currency: ccy || monedaDe(simboloDelAviso(valor)) }
 }
 
 const CAMPO = 'h-12 w-full rounded-lg border border-line bg-bg-2 px-3.5 text-ink-0 outline-none focus-within:border-data-violet'
@@ -135,7 +152,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
   }, [])
   const dolares = useMemo(() => (cedears === undefined ? undefined : dolaresPorSimbolo(cedears)), [cedears])
 
-  const sym = (form.symbol || '').trim().toUpperCase()
+  const sym = activoDelBorrador(form, editando)
   // La moneda del precio es una que el activo TIENE (la regla del servidor,
   // main._moneda_del_aviso): antes el selector $/US$ era libre y «AAPL baja a
   // US$ 15» se comparaba contra los pesos del CEDEAR — no avisaba nunca.
@@ -279,7 +296,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
               </Fijo>
             ) : (
               <BuscadorTicker valor={form.symbol} precio={precio} moneda={moneda} dolares={dolares}
-                onChange={(v, ccy) => setForm(f => ({ ...f, symbol: v, currency: ccy || monedaDe(v) }))} />
+                onChange={(v, ccy) => setForm(f => alElegirActivo(f, v, ccy))} />
             )}
           </Campo>
         )}
