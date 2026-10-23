@@ -184,6 +184,32 @@ describe('LecturaTecnica', () => {
     expect(seccion().getAttribute('role')).toBeNull()
   })
 
+  it('el volumen: barras abajo del precio y un botón para apagarlas; sin datos, no aparece', async () => {
+    const conVolumen = { ...USD, puntos: USD.puntos.map((p, i) => ({ ...p, v: 1000 + i })) }
+    respuestas = { '/tecnico/AAPL?moneda=usd': conVolumen, '/tecnico/AAPL?moneda=ars': ARS }
+    const t = await dibujar({ pnlPctUsd: 0.1 })
+    expect(t).toContain('Volumen')
+    const barras = () => {
+      let n = 0
+      const pila = [montado.contenedor]
+      while (pila.length) {
+        const x = pila.shift()
+        if (x.nodeName === 'RECT' && x.getAttribute?.('fill-opacity') === '0.28') n++
+        pila.push(...(x.childNodes || []))
+      }
+      return n
+    }
+    expect(barras()).toBeGreaterThan(200)          // un año de ruedas, una barra por día
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Volumen'))
+    for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
+    expect(barras()).toBe(0)
+  })
+
+  it('sin volumen en los datos no hay botón de volumen', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
+    expect(await dibujar({ pnlPctUsd: 0.1 })).not.toContain('Volumen')
+  })
+
   it('sin tenencia no dibuja tu precio', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     const t = await dibujar({ pnlPctUsd: null })

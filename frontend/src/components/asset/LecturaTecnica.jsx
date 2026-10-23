@@ -2,9 +2,9 @@
 // ════════════════════════════════════════════════════════════════════════════
 // Gráfico de precio con las medias de 50 y 200 días, tu precio promedio y tus
 // compras y ventas; la fuerza del movimiento (RSI) abajo; y tarjetas en
-// castellano. El botón «Fibonacci» de la leyenda (apagado de entrada) suma la
+// castellano. El botón «Fibonacci» de la leyenda (prendido de entrada) muestra la
 // capa del último tramo de suba o bajada (CapaFibonacci.jsx), y «Ondas de
-// Elliott» (también apagado) un conteo posible de ondas (CapaElliott.jsx). Se mide en
+// Elliott» (apagado de entrada) un conteo posible de ondas (CapaElliott.jsx). Se mide en
 // DÓLARES por defecto: un CEDEAR en pesos sube con el dólar aunque la empresa
 // no se mueva (ver backend/tecnico.py).
 //
@@ -23,6 +23,7 @@ import AssetMiniChart from '../home/AssetMiniChart'
 import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
 import CapaElliott, { COLOR_ELLIOTT, TarjetaElliott, fechaDelConteo, preciosDelConteo } from './CapaElliott'
 import { api } from '../../utils/api'
+import { factorDeFechas, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
 import {
   RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, tarjetas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, moverVentana,
@@ -40,6 +41,7 @@ const COLOR = {
 const W = 1000
 const H = 260
 const H_RSI = 64
+const VOL_ALTO = 0.2   // la franja del volumen: el 20 % de abajo del gráfico de precio
 // Línea o velas: lo que eligió la persona la última vez. El navegador puede
 // tener el almacenamiento bloqueado (modo privado): entonces, línea.
 const CLAVE_TIPO = 'rendi_grafico_tipo'
@@ -51,6 +53,10 @@ function guardarTipo(t) {
 }
 
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
+
+// El volumen, corto: 1,2 M · 850 mil.
+const VOLUMEN = new Intl.NumberFormat('es-AR', { notation: 'compact', maximumFractionDigits: 1 })
+function fmtVolumen(n) { return VOLUMEN.format(n) }
 
 function fmtPrecio(x, moneda) {
   if (x == null) return '—'
@@ -77,7 +83,9 @@ export default function LecturaTecnica({
   const [rango, setRango] = useState('1a')
   const [datos, setDatos] = useState({ usd: undefined, ars: undefined })
   // Qué líneas se ven: la leyenda prende y apaga cada una.
-  const [ver, setVer] = useState({ s200: true, s50: true, prom: true, marcas: true, fib: false, ell: false })
+  // El Fibonacci arranca prendido (Nico, 22/10): es lo primero que se mira.
+  // Las ondas de Elliott, apagadas: son una hipótesis (CapaElliott.jsx).
+  const [ver, setVer] = useState({ s200: true, s50: true, prom: true, marcas: true, fib: true, vol: true, ell: false })
   const [tipo, setTipoEstado] = useState(tipoGuardado)
   const setTipo = (t) => { setTipoEstado(t); guardarTipo(t) }
   // Zoom con la rueda y arrastre: qué ruedas se ven ({ n: cuántas, fin: hasta
@@ -174,7 +182,7 @@ export default function LecturaTecnica({
   const semanales = tipo === 'velas' && intervalo === 'semana'
   const puntos = semanales ? velasSemanales(diarios) : diarios
   const vista = { n: nVista, fin: finVista, total }
-  const zoom = (factor, f) => { const v2 = zoomVentana(vista, factor, f); if (v2) setVentana(v2) }
+  const zoom = (factor, f) => { const v2 = zoomVentana(vista, factor, f); if (v2) setVentana(v2); return !!v2 }
   const mover = (frac) => { const v2 = moverVentana(vista, frac); if (v2) setVentana(v2) }
   const promedio = lineaPromedio(actual.puntos, pnlPct,
     moneda === 'usd' ? variacionDeHoy(referencia?.precio, actual.cierre_ref) : 0)
@@ -212,12 +220,13 @@ export default function LecturaTecnica({
       )}
       <Grafico puntos={puntos} moneda={moneda} promedio={ver.prom ? promedio : null}
         marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo} grande={grande}
-        fibonacci={ver.fib ? actual.fibonacci : null} elliott={ver.ell ? actual.elliott : null}
-        onZoom={zoom} onMover={mover} />
+        fibonacci={ver.fib ? actual.fibonacci : null} elliott={ver.ell ? actual.elliott : null} onZoom={zoom} onMover={mover}
+        onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rango}|${tipo}|${intervalo}`} />
       <p className="text-[11.5px] text-ink-2 mt-1">
         {semanales && 'Cada vela es una semana. '}
         {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá con la ruedita o pasá a velas semanales. '}
-        <span className="hidden sm:inline">Con la ruedita del mouse acercás o alejás. Arrastrá para ir más atrás o más adelante.</span>
+        <span className="hidden sm:inline">Con la ruedita del mouse acercás o alejás (como arrastrar las fechas). Arrastrá el gráfico para ir más atrás o más adelante. </span>
+        Arrastrá los precios de la derecha para estirar el gráfico, y las fechas de abajo para acercar o alejar; con doble click (o «Automático») vuelve a como estaba.
       </p>
 
       <div className="flex flex-wrap gap-1.5 mt-3" role="group" aria-label="Qué líneas mostrar">
@@ -226,6 +235,9 @@ export default function LecturaTecnica({
           : <Chip activo fijo color={COLOR.precio}>Precio</Chip>}
         <Chip activo={ver.s200} onClick={() => alternar('s200')} color={COLOR.media200} grueso>Promedio 200 días</Chip>
         <Chip activo={ver.s50} onClick={() => alternar('s50')} color={COLOR.media50}>Promedio 50 días</Chip>
+        {puntos.some(p => p.v > 0) && (
+          <Chip activo={ver.vol} onClick={() => alternar('vol')} barras>Volumen</Chip>
+        )}
         {promedio != null && (
           <Chip activo={ver.prom} onClick={() => alternar('prom')} color={COLOR.promedio} punteado>Tu precio promedio</Chip>
         )}
@@ -331,9 +343,16 @@ function Segmento({ etiqueta, valor, alElegir, opciones }) {
   )
 }
 
-function Chip({ activo, fijo, onClick, color, grueso, punteado, puntos, children }) {
+function Chip({ activo, fijo, onClick, color, grueso, punteado, puntos, barras, children }) {
   // `puntos`: la muestra es un punto verde y uno rojo (compras/ventas, o velas que suben/bajan).
-  const muestra = puntos ? (
+  // `barras`: tres barritas (el volumen).
+  const muestra = barras ? (
+    <svg width="14" height="10" aria-hidden="true" className="text-ink-3">
+      <rect x="0" y="5" width="3" height="5" fill="currentColor" />
+      <rect x="5" y="2" width="3" height="8" fill="currentColor" />
+      <rect x="10" y="6" width="3" height="4" fill="currentColor" />
+    </svg>
+  ) : puntos ? (
     <span className="inline-flex gap-0.5" aria-hidden="true">
       <span className="w-2 h-2 rounded-full bg-rendi-pos-fill" />
       <span className="w-2 h-2 rounded-full bg-rendi-neg-fill" />
@@ -410,10 +429,20 @@ function rotulosDeMeses(puntos) {
   })
 }
 
-function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', grande = false, fibonacci = null, elliott = null, onZoom, onMover }) {
+function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', grande = false, fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio }) {
   const conVelas = tipo === 'velas'
   const ref = useRef(null)
   const arrastre = useRef(null)
+  // Los ejes se arrastran como en TradingView (utils/ejesGrafico.js): la
+  // columna de precios estira el gráfico en vertical y deja el precio "a mano"
+  // (`precioMano` = { lo, hi } fijo; null = automático), y la fila de fechas
+  // acerca o aleja. Con el precio a mano, arrastrar el gráfico también lo mueve
+  // para arriba y para abajo. Doble click o «Automático»: vuelve a automático;
+  // otro rango, moneda o tipo de gráfico (`reinicioPrecio`) también.
+  const [precioMano, setPrecioMano] = useState(null)
+  useEffect(() => { setPrecioMano(null) }, [reinicioPrecio])
+  const ejeY = useRef(null)
+  const ejeX = useRef(null)
   // La rueda tiene que frenar el scroll de la página mientras está sobre el
   // gráfico: eso sólo se puede con un escucha "no pasivo" (el onWheel de React
   // es pasivo y no puede frenarlo).
@@ -422,12 +451,20 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
   useEffect(() => {
     const el = ref.current
     if (!el) return
+    // La ruedita hace lo mismo que arrastrar la fila de fechas: acerca o aleja
+    // el tiempo con el ÚLTIMO día quieto, no alrededor del mouse (Nico, 23/10:
+    // «que amplíe como el eje X»). Hacia arriba acerca; hacia abajo aleja.
+    // Proporcional a cuánto se giró: un paso de ruedita de mouse (~100) mueve
+    // ~8 % y el trackpad, que manda muchos pasitos, va de a poco (antes cada
+    // evento era un 15 % fijo y con el trackpad volaba). Lo girado se junta
+    // hasta que alcanza para mover una rueda.
+    let girado = 0
     const rueda = (e) => {
       if (!zoomRef.current) return
       e.preventDefault()
-      const r = el.getBoundingClientRect()
-      const f = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))
-      zoomRef.current(e.deltaY > 0 ? 1.15 : 1 / 1.15, f)
+      const paso = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY
+      girado = Math.max(-600, Math.min(600, girado + paso))
+      if (zoomRef.current(Math.exp(girado * 0.0008), 1)) girado = 0
     }
     el.addEventListener('wheel', rueda, { passive: false })
     return () => el.removeEventListener('wheel', rueda)
@@ -435,7 +472,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
   const gid = useId().replace(/:/g, '')
   const [hover, setHover] = useState(null)
 
-  const { escalaY, path, area, min, max, velas, promFuera } = useMemo(() => {
+  const { escalaY, path, area, min, max, velas, volumen, promFuera } = useMemo(() => {
     const valores = []
     let prevC = null
     for (const p of puntos) {
@@ -462,6 +499,14 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
     }
     const margen = (hi - lo) * 0.08 || hi * 0.02 || 1
     lo -= margen; hi += margen
+    // El volumen va en la franja de abajo (el 20 % del alto): se le deja ese
+    // lugar para que las barras no tapen las velas.
+    const maxVol = ver.vol ? Math.max(0, ...puntos.map(p => p.v || 0)) : 0
+    if (maxVol > 0) lo -= (hi - lo) * 0.25
+    if (precioMano) {
+      lo = precioMano.lo; hi = precioMano.hi
+      fuera = promedio == null ? null : promedio < lo ? 'abajo' : promedio > hi ? 'arriba' : null
+    }
     const y = (val) => H - ((val - lo) / (hi - lo)) * H
     const x = (i) => (puntos.length > 1 ? (i / (puntos.length - 1)) * W : W / 2)
     const linea = (k) => {
@@ -487,12 +532,23 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
         cuerpoY: arriba, cuerpoH: Math.max(Math.abs(y(vela.o) - y(vela.c)), 0.8), ancho,
       }
     }) : []
+    // Las barras del volumen, abajo de todo, del color de la vela (o de si cerró
+    // arriba o abajo del día anterior, en el gráfico de línea).
+    const anchoVol = Math.max((W / Math.max(puntos.length, 1)) * 0.65, 1)
+    const volumen = maxVol > 0 ? puntos.map((p, i) => {
+      if (!(p.v > 0)) return null
+      const antes = i > 0 ? puntos[i - 1].c : null
+      const vela = velaCompleta(p, antes)
+      const sube = conVelas ? vela.c >= vela.o : (antes == null || p.c >= antes)
+      const alto = (p.v / maxVol) * H * VOL_ALTO
+      return { k: i, x: x(i), y: H - alto, alto, ancho: anchoVol, sube }
+    }).filter(Boolean) : []
     return {
-      escalaY: y, min: lo, max: hi, velas, promFuera: fuera,
+      escalaY: y, min: lo, max: hi, velas, volumen, promFuera: fuera,
       path: { c, s50: linea('s50'), s200: linea('s200') },
       area: c ? `${c}L${x(puntos.length - 1).toFixed(1)},${H}L0,${H}Z` : '',
     }
-  }, [puntos, promedio, ver.s50, ver.s200, conVelas, fibonacci, elliott])
+  }, [puntos, promedio, ver.s50, ver.s200, ver.vol, conVelas, fibonacci, elliott, precioMano])
 
   const rsiPath = useMemo(() => {
     let d = '', abierto = false
@@ -511,7 +567,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
   const visibles = lista
     .filter(m => m.fecha >= desde)
     .map(m => ({ ...m, i: indiceDeFecha(puntos, m.fecha) }))
-    .filter(m => m.i != null)
+    .filter(m => m.i != null && pctY(puntos[m.i].c) >= 0 && pctY(puntos[m.i].c) <= 100)
 
   // El mouse o el dedo: el punto más cercano en el tiempo.
   function mover(clientX) {
@@ -536,14 +592,21 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
     <div>
       <div className="relative">
         {/* Área del gráfico: deja libre la columna de la derecha para los precios. */}
-        <div ref={ref} className={`relative mr-[72px] ${grande ? 'h-[58vh] min-h-64' : 'h-56 sm:h-64'} select-none touch-pan-y cursor-crosshair`}
-          onMouseDown={e => { arrastre.current = e.clientX }}
+        {/* Con la escala vertical a mano, lo que queda fuera se recorta (como en
+            TradingView); en automático no hace falta y el punto del último
+            precio puede asomar sobre el borde. */}
+        <div ref={ref} className={`relative mr-[72px] ${grande ? 'h-[58vh] min-h-64' : 'h-56 sm:h-64'} select-none touch-pan-y cursor-crosshair ${precioMano ? 'overflow-hidden' : ''}`}
+          onMouseDown={e => { arrastre.current = { x: e.clientX, y: e.clientY } }}
           onMouseUp={() => { arrastre.current = null }}
           onMouseMove={e => {
-            if (arrastre.current != null && onMover) {
+            const a = arrastre.current
+            if (a) {
               const r = ref.current.getBoundingClientRect()
-              const frac = (e.clientX - arrastre.current) / r.width
-              if (Math.abs(frac) * puntos.length >= 1) { onMover(frac); arrastre.current = e.clientX }
+              const frac = (e.clientX - a.x) / r.width
+              if (onMover && Math.abs(frac) * puntos.length >= 1) { onMover(frac); a.x = e.clientX }
+              // Con el precio a mano, también para arriba y para abajo.
+              const fy = (e.clientY - a.y) / r.height
+              if (precioMano && Math.abs(fy) >= 0.005) { setPrecioMano(rangoCorrido(min, max, fy)); a.y = e.clientY }
             }
             mover(e.clientX)
           }}
@@ -563,6 +626,10 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
                 strokeDasharray="2 4" vectorEffect="non-scaling-stroke" />
             ))}
             {!conVelas && <path d={area} fill={`url(#area-${gid})`} />}
+            {volumen.map(b => (
+              <rect key={`v${b.k}`} x={b.x - b.ancho / 2} width={b.ancho} y={b.y} height={b.alto}
+                fill={b.sube ? v('rendi-pos-fill') : v('rendi-neg-fill')} fillOpacity="0.28" />
+            ))}
             {ver.s200 && <path d={path.s200} fill="none" stroke={COLOR.media200} strokeWidth="2.5" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
             {ver.s50 && <path d={path.s50} fill="none" stroke={COLOR.media50} strokeWidth="1.6" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
             {promedio != null && !promFuera && (
@@ -625,6 +692,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
                   {ph.s200 != null && <Fila color={COLOR.media200} k="200" v={fmtPrecio(ph.s200, moneda).replace(/^US\$ |^\$ /, '')} />}
                   {ph.s50 != null && <Fila color={COLOR.media50} k="50" v={fmtPrecio(ph.s50, moneda).replace(/^US\$ |^\$ /, '')} />}
                   {ph.rsi != null && <Fila k="RSI" v={Math.round(ph.rsi)} />}
+                  {ver.vol && ph.v > 0 && <Fila k="Vol." v={fmtVolumen(ph.v)} />}
                 </div>
                 {visibles.filter(m => m.i === hover).map(m => (
                   <div key={m.tipo} className={`mt-0.5 font-medium ${m.tipo === 'compra' ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
@@ -636,13 +704,19 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
           )}
         </div>
 
-        {/* Columna de precios: la grilla, tu precio y el último precio. */}
-        <div className="absolute inset-y-0 right-0 w-[68px] pointer-events-none">
+        {/* Columna de precios: la grilla, tu precio y el último precio. Se
+            arrastra para estirar el gráfico en vertical (ver ejesGrafico.js). */}
+        <div className="absolute inset-y-0 right-0 w-[68px] cursor-ns-resize touch-none select-none"
+          title="Arrastrá hacia arriba o hacia abajo para estirar o achicar. Doble click: automático."
+          onPointerDown={e => { e.currentTarget.setPointerCapture?.(e.pointerId); ejeY.current = { y: e.clientY, lo: min, hi: max } }}
+          onPointerMove={e => { const t = ejeY.current; if (t) setPrecioMano(rangoEstirado(t.lo, t.hi, e.clientY - t.y)) }}
+          onPointerUp={() => { ejeY.current = null }} onPointerCancel={() => { ejeY.current = null }}
+          onDoubleClick={() => setPrecioMano(null)}>
           {ticks.map((t, k) => !cerca(t) && (
             <span key={k} className="absolute left-1.5 -translate-y-1/2 text-[11px] text-ink-2 tabular whitespace-nowrap"
               style={{ top: `${pctY(t)}%` }}>{fmtPrecio(t, moneda).replace(/^US\$ /, '')}</span>
           ))}
-          {promVisible && !promCerca && (
+          {promVisible && !promCerca && pctY(promedio) >= 0 && pctY(promedio) <= 100 && (
             <span className="absolute left-0 -translate-y-1/2 rounded border border-dashed border-ink-3 bg-bg-1 px-1 text-[10.5px] text-ink-1 tabular whitespace-nowrap"
               style={{ top: `${pctY(promedio)}%` }}>Tu precio</span>
           )}
@@ -652,17 +726,38 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
               {promFuera === 'abajo' ? '↓' : '↑'} Tu precio
             </span>
           )}
-          {ultimo && (
+          {ultimo && pctY(ultimo.c) >= 0 && pctY(ultimo.c) <= 100 && (
             <span className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular whitespace-nowrap"
               style={{ top: `${pctY(ultimo.c)}%`, background: COLOR.precio, color: v('bg-0') }}>
               {fmtPrecio(ultimo.c, moneda).replace(/^US\$ /, '')}
             </span>
           )}
+          {/* El doble click no se descubre solo y en el celular no existe:
+              mientras el precio o las fechas están a mano, un botón vuelve LAS
+              DOS cosas a automático (uno solo, no dos iguales uno al lado del
+              otro). Va debajo de la columna, al lado de las fechas: abajo de
+              todo lo pisaba «↓ Tu precio». */}
+          {(precioMano || fechasAMano) && (
+            <button type="button" onPointerDown={e => e.stopPropagation()} onClick={() => { setPrecioMano(null); onFechasAuto?.() }}
+              className="absolute top-full mt-1 left-0 rounded border border-line-2 bg-bg-1 px-1.5 py-0.5 text-[10.5px] text-ink-1 hover:text-ink-0">
+              Automático
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Meses. */}
-      <div className="relative mr-[72px] h-5 mt-1.5 text-[11px] text-ink-2">
+      {/* Meses. Se arrastran para acercar o alejar en el tiempo, con el último
+          día quieto (ver ejesGrafico.js). */}
+      <div className="relative mr-[72px] h-6 mt-1 pt-0.5 text-[11px] text-ink-2 cursor-ew-resize touch-none select-none"
+        title="Arrastrá hacia los costados para acercar o alejar. Doble click: automático."
+        onPointerDown={e => { e.currentTarget.setPointerCapture?.(e.pointerId); ejeX.current = { x: e.clientX } }}
+        onPointerMove={e => {
+          if (!ejeX.current || !onZoom) return
+          const dx = e.clientX - ejeX.current.x
+          if (Math.abs(dx) >= 4) { onZoom(factorDeFechas(dx), 1); ejeX.current.x = e.clientX }
+        }}
+        onPointerUp={() => { ejeX.current = null }} onPointerCancel={() => { ejeX.current = null }}
+        onDoubleClick={() => onFechasAuto?.()}>
         {meses.map(m => (
           <span key={m.i} className="absolute -translate-x-1/2 whitespace-nowrap" style={{ left: `${pctX(m.i)}%` }}>{m.texto}</span>
         ))}

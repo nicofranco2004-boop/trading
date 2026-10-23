@@ -55,7 +55,8 @@ export function velaCompleta(p, cierreAnterior) {
 /**
  * Velas SEMANALES a partir de las diarias (para el rango de 2 años: 500 velas
  * diarias en un celular son rayitas). Cada semana: la apertura del primer día,
- * el máximo y el mínimo de la semana, el cierre del último día; las medias y el
+ * el máximo y el mínimo de la semana, el cierre del último día, el volumen
+ * sumado; las medias y el
  * RSI son los del último día. `d` es el primer día de la semana, así una compra
  * a mitad de semana cae en su vela.
  */
@@ -72,9 +73,10 @@ export function velasSemanales(puntos = []) {
     if (lunes !== clave) {
       if (actual) out.push(actual)
       clave = lunes
-      actual = { ...p, d: p.d, o: v.o, h: v.h, l: v.l, c: v.c, semana: true }
+      actual = { ...p, d: p.d, o: v.o, h: v.h, l: v.l, c: v.c, v: p.v ?? null, semana: true }
     } else {
       actual = { ...actual, h: Math.max(actual.h, v.h), l: Math.min(actual.l, v.l), c: v.c,
+        v: p.v == null ? actual.v : (actual.v || 0) + p.v,
         s50: p.s50, s200: p.s200, rsi: p.rsi }
     }
   }

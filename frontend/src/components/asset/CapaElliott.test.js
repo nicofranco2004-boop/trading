@@ -89,12 +89,14 @@ describe('Ondas de Elliott en la ficha', () => {
   })
 
   it('convive con el Fibonacci: los dos prendidos', async () => {
+    // El Fibonacci arranca prendido (ficha-tecnica d6ae4dc3); Elliott, no.
     respuesta = DATOS(ELL)
-    await dibujar()
-    await tocar('Ondas de Elliott')
-    const t = await tocar('Fibonacci')
+    const antes = await dibujar()
+    expect(antes).toContain('Sin tramo claro')           // la tarjeta del Fibonacci, de entrada
+    expect(antes).not.toContain('Un conteo posible')
+    const t = await tocar('Ondas de Elliott')
     expect(t).toContain('Un conteo posible: onda 5')
-    expect(t).toContain('Sin tramo claro')               // la tarjeta del Fibonacci
+    expect(t).toContain('Sin tramo claro')
   })
 
   it('sin conteo claro: lo dice y no dibuja nada', async () => {

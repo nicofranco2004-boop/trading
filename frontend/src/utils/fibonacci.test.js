@@ -89,7 +89,9 @@ describe('tarjetaFibonacci', () => {
     }, precio, fecha)
     expect(t.veredicto).toBe('Suba en curso')
     expect(t.texto).toContain('La última bajada (de US$ 466,32 el 01/06/2026 a US$ 349,2 el 25/06/2026) ya quedó atrás')
-    expect(t.texto).toContain('si un día cierra debajo de US$ 486 (el último pozo más alto, del 10/09/2026)')
+    expect(t.texto).toContain('Si un día cierra debajo de US$ 486 (el último pozo más alto, del 10/09/2026), podría ser una señal de que esa suba está perdiendo fuerza.')
+    // Lo que puede pasar se dice como posibilidad, nunca como certeza (Nico, 23/10).
+    expect(t.texto).not.toMatch(/se da por terminada|se terminaría|se termina /)
   })
 
   it('pocos datos: lo dice', () => {

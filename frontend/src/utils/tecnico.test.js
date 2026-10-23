@@ -128,6 +128,16 @@ describe('velas', () => {
     expect(s[0]).toMatchObject({ d: '2026-10-12', o: 10, h: 13, l: 8, c: 9, s200: 3, rsi: 45, semana: true })
     expect(s[1]).toMatchObject({ d: '2026-10-19', o: 9, c: 9.8 })
   })
+
+  it('el volumen de la semana es la suma de sus días (un día sin dato no suma)', async () => {
+    const { velasSemanales } = await import('./tecnico')
+    const s = velasSemanales([
+      { d: '2026-10-12', c: 10, v: 100 }, { d: '2026-10-13', c: 11, v: null }, { d: '2026-10-14', c: 12, v: 50 },
+      { d: '2026-10-19', c: 9 },
+    ])
+    expect(s[0].v).toBe(150)
+    expect(s[1].v).toBeNull()
+  })
 })
 
 describe('zoom y arrastre', () => {
