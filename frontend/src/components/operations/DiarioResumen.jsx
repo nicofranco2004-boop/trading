@@ -50,7 +50,7 @@ export default function DiarioResumen({ resumen, estadoTendencias = 'listo', apa
         <Tarjeta
           titulo="Rendimiento por año"
           ayuda={<>
-            <p>Lo que rindió cada operación llevado a un año, y el promedio de todas.</p>
+            <p>Lo que rindió cada operación llevado a un año, y el promedio de todas. Es el mismo % de la columna P&L %: en una venta en pesos, el % en pesos.</p>
             <p className="mt-1 text-ink-3">Sólo las que tuviste 3 meses o más: pasar a un año un mes bueno infla el número.</p>
           </>}
           sub={r.nPorAnio ? `promedio de ${r.nPorAnio === 1 ? 'la' : 'las'} ${r.nPorAnio} que tuviste 3 meses o más` : 'ninguna la tuviste 3 meses o más'}

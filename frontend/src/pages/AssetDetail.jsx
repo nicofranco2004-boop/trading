@@ -340,7 +340,9 @@ export default function AssetDetail() {
         <section className="mb-5" aria-label={`Tu tesis de ${asset}`}>
           <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu tesis</div>
           <Panel padding="md">
-            <TesisDelActivo asset={asset} local={esAccionLocal(asset, agg.lots)} tesis={tesis} />
+            {/* `key`: pasar de la ficha de AAPL a la de NVDA no deja a la vista
+                lo que estabas escribiendo para AAPL. */}
+            <TesisDelActivo key={asset} asset={asset} local={esAccionLocal(asset, agg.lots)} tesis={tesis} />
           </Panel>
         </section>
       )}

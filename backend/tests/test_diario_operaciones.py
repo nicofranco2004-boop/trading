@@ -264,7 +264,7 @@ class TesisTest(Base):
         main._run_velas_diarias_job()
 
     def _guardar(self, texto, asset="NVDA", local=False):
-        r = self.client.put(f"/api/tesis/{asset}", json={"texto": texto, "local": local}, headers=self.h)
+        r = self.client.put("/api/tesis", json={"asset": asset, "texto": texto, "local": local}, headers=self.h)
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()["id"]
 
@@ -295,12 +295,10 @@ class TesisTest(Base):
                          ["Data centers e IA, y los chips nuevos", "Ahora la tengo por el dividendo"])
 
     def test_validaciones_y_de_otro_usuario(self):
-        r = self.client.put("/api/tesis/NVDA", json={"texto": "   "}, headers=self.h)
-        self.assertEqual(r.status_code, 400)
-        r = self.client.put("/api/tesis/NVDA", json={"texto": "x" * 1001}, headers=self.h)
-        self.assertEqual(r.status_code, 400)
-        r = self.client.put("/api/tesis/<b>", json={"texto": "hola"}, headers=self.h)
-        self.assertEqual(r.status_code, 400)
+        for body in ({"asset": "NVDA", "texto": "   "}, {"asset": "NVDA", "texto": "x" * 1001},
+                     {"asset": "<b>", "texto": "hola"}, {"asset": "  ", "texto": "hola"}):
+            self.assertIn(self.client.put("/api/tesis", json=body, headers=self.h).status_code,
+                          (400, 422), body)
         tid = self._guardar("mía")
         with main.db_abierta() as conn:
             otro = conn.execute("INSERT INTO users (email, password_hash, approved, email_verified) "
@@ -389,15 +387,54 @@ class TesisTest(Base):
         self.assertEqual(len(pushes), 1)
         m = mails[0]
         self.assertEqual(m["titulo"], "Quedaste en revisar tu tesis de NVDA")
+        self.assertTrue(m["detail"].startswith("escribiste esta tesis el "), m["detail"])
         self.assertIn("«Data centers e IA»", m["detail"])
+        self.assertIn("no es una recomendación", m["detail"])
+        self.assertEqual(m["heading"], m["titulo"])
         self.assertIn("abajo de su promedio de 200 días", m["detail"])
         self.assertEqual(m["cta_path"], "/activo/NVDA")
-        self.assertNotIn("vend", m["detail"].lower())
+        self.assertNotRegex(m["detail"].lower(), r"vendé|comprá|mantené|deberías|conviene")
         self.assertEqual(pushes[0][1]["url"], "/activo/NVDA")
         rec = self._lista()["items"][0]["recordatorio"]
         self.assertIsNotNone(rec["avisado_at"])
         ev = self.client.get("/api/alerts", headers=self.h).json()["events"]
         self.assertEqual([e["message"] for e in ev], ["Quedaste en revisar tu tesis de NVDA"])
+
+    def test_un_fondo_tambien_tiene_tesis(self):
+        # Un fondo no tiene forma de ticker: con el activo en la ruta, el servidor
+        # lo rechazaba («Símbolo inválido») y no había forma de escribir su tesis.
+        tid = self._guardar("Liquidez para la cuota del auto", asset="FCI:COCOS-RENDIMIENTO-A")
+        l = self._lista()
+        t = next(i for i in l["items"] if i["id"] == tid)
+        self.assertEqual(t["asset"], "FCI:COCOS-RENDIMIENTO-A", "tal cual lo guarda la cartera")
+        self.assertEqual(t["tendencia"], {"tendencia": None, "motivo": "sin_velas"})
+        self.assertEqual(l["hoy"]["FCI:COCOS-RENDIMIENTO-A"]["tendencia"], None)
+
+    def test_recordatorio_de_un_cliente_le_llega_al_asesor_diciendo_de_quien_es(self):
+        with main.db_abierta() as conn:
+            asesor = conn.execute(
+                "INSERT INTO users (email, password_hash, approved, email_verified) VALUES (?, 'x', 1, 1)",
+                (f"asesor-{uuid.uuid4().hex[:6]}@rendi.test",)).lastrowid
+            conn.execute("UPDATE users SET managed_by=? WHERE id=?", (asesor, self.uid))
+            conn.execute("INSERT INTO advisor_clients (advisor_uid, client_uid, label) VALUES (?, ?, 'Laura')",
+                         (asesor, self.uid))
+            conn.commit()
+        tid = self._guardar("Data centers")
+        self.client.put(f"/api/tesis/{tid}/recordatorio", json={"tipo": "3m"}, headers=self.h)
+        with main.db_abierta() as conn:
+            conn.execute("UPDATE tesis SET recordar_el=? WHERE id=?", (self.hoy.isoformat(), tid))
+            conn.commit()
+        mails, pushes = [], []
+        with mock.patch("billing.emails.send_alert_email", lambda **kw: mails.append(kw) or True), \
+             mock.patch("main._send_push_to_user", lambda uid, p: pushes.append((uid, p)) or 1), \
+             mock.patch("alerts_engine.HORA_RECORDATORIO", 0):
+            main._evaluar_alertas_job()
+        self.assertEqual([u for u, _ in pushes], [asesor])
+        self.assertTrue(mails[0]["to"].startswith("asesor-"))
+        self.assertEqual(mails[0]["heading"], "[Laura] Quedaste en revisar tu tesis de NVDA")
+        self.assertIn("en la cuenta de Laura.", mails[0]["detail"])
+        self.assertEqual((mails[0]["cta_path"], pushes[0][1]["url"]), ("/clientes", "/clientes"),
+                         "la ficha del asesor no es la de su cliente")
 
     def test_reescribirla_otro_dia_muda_el_recordatorio(self):
         tid = self._guardar("v1")

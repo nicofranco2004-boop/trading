@@ -47910,6 +47910,10 @@ def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
 # ─── Tu tesis (tesis.py) ──────────────────────────────────────────────────────
 
 class TesisIn(BaseModel):
+    # El activo como lo guarda la cartera ('GGAL', 'FCI:COCOS-RENDIMIENTO-A'):
+    # viaja en el cuerpo y no en la ruta porque un fondo no tiene forma de
+    # ticker (`_SYMBOL_RE` lo rechazaba y no se podía escribir su tesis).
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
     texto: str = Field(..., max_length=2000)
     # Acción argentina: la tendencia sale de su precio en BYMA ÷ el MEP, no del
     # ADR (lo decide la pantalla, como en la ficha: `esAccionLocal`).
@@ -47940,14 +47944,16 @@ def tesis_list(uid: int = Depends(get_effective_user)):
         return _tesis.listar(conn, uid)
 
 
-@app.put("/api/tesis/{asset}")
-def tesis_guardar(asset: str, data: TesisIn, uid: int = Depends(get_effective_user)):
+@app.put("/api/tesis")
+def tesis_guardar(data: TesisIn, uid: int = Depends(get_effective_user)):
     """Escribe o corrige la tesis de un activo (el mismo día se corrige; otro
     día se guarda una nueva y la vieja queda: ver tesis.py)."""
     import tesis as _tesis
-    sym = (asset or "").strip().upper()
-    if not _SYMBOL_RE.match(sym):
-        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    # Sin pasarlo a mayúsculas: tiene que coincidir con `positions.asset` tal
+    # cual, que es contra lo que la pantalla lo busca.
+    sym = (data.asset or "").strip()
+    if not sym or any(ord(c) < 32 or c in "<>" for c in sym):
+        raise HTTPException(400, "Ese activo no es válido.")
     with db_abierta() as conn:
         try:
             tid = _tesis.guardar(conn, uid, sym, data.texto, data.local)

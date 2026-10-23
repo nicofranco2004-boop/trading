@@ -644,6 +644,14 @@ def _deliver(conn, alert, items) -> tuple:
         heading = f"[{client_label}] {heading}"
     channel = alert["channel"] or "both"
     push_ok = email_ok = False
+    # Un aviso que trae su mail ya armado (el recordatorio de una tesis,
+    # `evaluar_recordatorios`) no pasa por el de precio y %. Para el asesor se
+    # le pone lo mismo que a los otros: de qué cliente es y a dónde entrar.
+    armado = items[0].get("contenido")
+    if armado:
+        armado = {**armado, "heading": heading}
+        if client_label:
+            _para_el_asesor(armado, client_label)
 
     if channel in ("push", "both"):
         try:
@@ -657,7 +665,7 @@ def _deliver(conn, alert, items) -> tuple:
                 # Despues fue /dashboard, que no dice nada del aviso. Ahora abre
                 # «Mis alertas»: la alerta que salto, con su estado y para
                 # pausarla.
-                "url": (items[0].get("contenido") or {}).get("cta_path") or "/alertas?tab=mis",
+                "url": (armado or {}).get("cta_path") or "/alertas?tab=mis",
                 "tag": (f"alert-{alert['id']}-{items[0]['symbol'] or ''}"
                         if len(items) == 1 else f"alert-{alert['id']}-grupo"),
             })
@@ -670,9 +678,7 @@ def _deliver(conn, alert, items) -> tuple:
             row = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
             if row and row["email"]:
                 from billing import emails
-                # Un aviso que trae su mail ya armado (el recordatorio de una
-                # tesis, `evaluar_recordatorios`) no pasa por el de precio y %.
-                contenido = items[0].get("contenido") or _contenido_del_mail(
+                contenido = armado or _contenido_del_mail(
                     alert, items, fuera, mixto, client_label, heading)
                 email_ok = emails.send_alert_email(
                     to=row["email"], user_name=(row["name"] or ""), **contenido)
@@ -807,17 +813,22 @@ def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading)
                      "filas": [_fila(it, mixto) for it in items],
                      "cta_label": "Ver mi cartera", "cta_path": "/posiciones"}
 
-    if client_label:
-        # Plan Asesor: la alerta es de una cuenta que administra. Su cartera, su
-        # ficha y su «Mis alertas» no son las de esa cuenta: se entra desde
-        # Clientes. El asunto ya lleva «[Cliente]» adelante.
-        contenido["detail"] = contenido["detail"].rstrip(".") + f", en la cuenta de {client_label}."
-        contenido["cta_label"], contenido["cta_path"] = "Ver mis clientes", "/clientes"
-        pie = (f"Para cambiarla, entrá a la cuenta de {client_label}.",
-               "Ir a mis clientes", "/clientes")
     contenido["pie"] = pie
     contenido["heading"] = heading
+    if client_label:
+        _para_el_asesor(contenido, client_label)
     return contenido
+
+
+def _para_el_asesor(contenido: dict, client_label: str) -> None:
+    """Plan Asesor: el aviso es de una cuenta que administra. Su cartera, su
+    ficha y su «Mis alertas» no son las de esa cuenta: se entra desde Clientes.
+    El asunto ya lleva «[Cliente]» adelante (`_deliver`). Lo usan el mail de
+    precio y % y el que llega ya armado (el recordatorio de una tesis)."""
+    contenido["detail"] = contenido["detail"].rstrip(".") + f", en la cuenta de {client_label}."
+    contenido["cta_label"], contenido["cta_path"] = "Ver mis clientes", "/clientes"
+    contenido["pie"] = (f"Para cambiarla, entrá a la cuenta de {client_label}.",
+                        "Ir a mis clientes", "/clientes")
 
 
 def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: list,

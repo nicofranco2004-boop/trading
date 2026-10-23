@@ -58,7 +58,7 @@ export default function TesisDelActivo({ asset, local = false, tesis, desde = nu
   async function guardar() {
     setGuardando(true); setError(null)
     try {
-      await api.put(`/tesis/${encodeURIComponent(asset)}`, { texto, local })
+      await api.put('/tesis', { asset, texto, local })
       await tesis.recargar()
       setEditando(false)
     } catch (ex) {
@@ -67,8 +67,12 @@ export default function TesisDelActivo({ asset, local = false, tesis, desde = nu
   }
 
   async function borrar() {
+    // La tesis tiene historia por día: si hay una más vieja, vuelve a ser la
+    // vigente. Que no sea una sorpresa.
+    const anterior = tesisVigente((tesis.items || []).filter(t => t.id !== vigente.id), asset)
     const ok = await confirmar(
-      `¿Borrar tu tesis de ${asset}?\n\nSe borra este texto y, si tenía, el recordatorio.`,
+      `¿Borrar tu tesis de ${asset}?\n\nSe borra este texto y, si tenía, el recordatorio.`
+        + (anterior ? ` Vuelve a verse la que escribiste el ${fechaCorta(anterior.escrita_el)}.` : ''),
       { si: 'Borrar', peligro: true })
     if (!ok) return
     setError(null)

@@ -55,17 +55,24 @@ export default function TradesTable({
               <th className="text-right px-3 py-2.5 font-medium">Tiempo</th>
               <th className="text-right px-3 py-2.5 font-medium whitespace-nowrap">
                 <span className="inline-flex items-center gap-1">Por año
+                  {/* El encabezado es `whitespace-nowrap`: sin `whitespace-normal`
+                      el globo hereda eso y su texto sale en un solo renglón,
+                      cortado por el borde (medido en la copia de prueba). */}
                   <InfoTooltip label="Qué es Por año" align="center">
-                    <p>Lo que rindió la operación llevado a un año, para comparar una que tuviste dos meses con otra que tuviste dos años.</p>
-                    <p className="mt-1 text-ink-3">Con menos de 3 meses va «—»: pasar a un año un mes bueno infla el número (un +5 % en un mes daría +80 % por año).</p>
+                    <div className="whitespace-normal text-left font-normal">
+                      <p>Lo que rindió la operación llevado a un año, para comparar una que tuviste dos meses con otra que tuviste dos años. Es el mismo % de la columna P&L %: en una venta en pesos, el % en pesos.</p>
+                      <p className="mt-1 text-ink-3">Con menos de 3 meses va «—»: pasar a un año un mes bueno infla el número (un +5 % en un mes daría +80 % por año).</p>
+                    </div>
                   </InfoTooltip>
                 </span>
               </th>
               <th className="text-left px-3 py-2.5 font-medium whitespace-nowrap">
                 <span className="inline-flex items-center gap-1">Tendencia al comprar
                   <InfoTooltip label="Qué es la tendencia al comprar" align="center">
-                    <p>Cómo estaba el papel el día que lo compraste: Alcista si el precio estaba arriba de su promedio de los últimos 200 días de mercado, Bajista si estaba abajo. Es la misma lectura de la ficha del activo, en dólares.</p>
-                    <p className="mt-1 text-ink-3">Describe cómo estaba, no anticipa qué iba a pasar. «sin dato»: no hay precios de ese día (guardamos 3 años) o es un bono o un fondo.</p>
+                    <div className="whitespace-normal text-left font-normal">
+                      <p>Cómo estaba el papel el día que lo compraste: Alcista si el precio estaba arriba de su promedio de los últimos 200 días de mercado, Bajista si estaba abajo. Es la misma lectura de la ficha del activo, en dólares.</p>
+                      <p className="mt-1 text-ink-3">Describe cómo estaba, no anticipa qué iba a pasar. «sin dato»: no hay precios de ese día (guardamos 3 años) o es un bono o un fondo.</p>
+                    </div>
                   </InfoTooltip>
                 </span>
               </th>

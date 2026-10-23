@@ -231,7 +231,8 @@ def para_el_aviso(conn, t) -> dict:
         antes = {}
     ahora = _tendencia(conn, asset, bool(t["accion_local"]), hoy_art_date().isoformat())
     texto = t["texto"] if len(t["texto"]) <= 280 else t["texto"][:277].rstrip() + "…"
-    partes = [f"la escribiste el {fecha_legible(escrita)} de {escrita.year}: «{texto}»."]
+    # El mail le antepone «Hola Nico, »: la oración arranca en minúscula.
+    partes = [f"escribiste esta tesis el {fecha_legible(escrita)} de {escrita.year}: «{texto}»."]
     a, h = antes.get("tendencia"), ahora.get("tendencia")
 
     def _donde(x):
@@ -244,6 +245,9 @@ def para_el_aviso(conn, t) -> dict:
                       f"(tendencia {a}); hoy está {_donde(h)} ({h}).")
     elif h:
         partes.append(f"Hoy el precio está {_donde(h)} de su promedio de 200 días (tendencia {h}).")
+    if h:
+        # La misma línea que los avisos técnicos: la tendencia describe, no manda.
+        partes.append("Muestra cómo se movió el precio: no es una recomendación para comprar ni vender.")
     return {
         "titulo": f"Quedaste en revisar tu tesis de {asset}",
         "detail": " ".join(partes),
