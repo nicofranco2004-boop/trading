@@ -238,6 +238,8 @@ class FichaTest(unittest.TestCase):
         self.assertAlmostEqual(f["puntos"][-1]["h"], esperado * 1.01, places=3)
         self.assertAlmostEqual(f["puntos"][-1]["l"], esperado * 0.99, places=3)
         self.assertAlmostEqual(f["puntos"][-1]["o"], esperado, places=3)
+        # El volumen del día viaja con la vela (las barras de abajo del gráfico).
+        self.assertEqual(f["puntos"][-1]["v"], 1000.0)
         piso = (self.dias[-1] - timedelta(days=tecnico.DIAS_GRAFICO)).isoformat()
         primero = next(i for i, d in enumerate(self.dias) if d.isoformat() > piso)
         self.assertAlmostEqual(f["puntos"][0]["c"], (5000 + primero * 5) / (1000 + primero), places=3,

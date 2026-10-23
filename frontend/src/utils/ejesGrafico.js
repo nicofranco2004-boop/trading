@@ -5,8 +5,9 @@
 //   que se ve queda quieto. Desde ese momento el precio queda "a mano": un rango
 //   fijo { lo, hi } que ya no se acomoda solo, y arrastrar el gráfico también lo
 //   mueve hacia arriba o hacia abajo.
-// · La fila de FECHAS (abajo): arrastrar hacia la derecha acerca (menos días,
-//   velas más anchas); hacia la izquierda aleja. El último día queda quieto.
+// · La fila de FECHAS (abajo): arrastrar hacia la izquierda acerca (menos días,
+//   velas más anchas); hacia la derecha aleja. El último día queda quieto.
+//   (Al revés de la primera versión: Nico lo pidió así, 23/10.)
 // · Doble click en cualquiera de los dos, o el botón «Automático»: vuelve a lo
 //   automático. Otro rango, moneda o tipo de gráfico también.
 // Acá sólo las cuentas; el gráfico (LecturaTecnica.jsx) las usa.
@@ -39,8 +40,8 @@ export function rangoCorrido(lo, hi, f) {
   return { lo: lo + d, hi: hi + d }
 }
 
-/** El zoom de la fila de fechas: arrastrar `dx` píxeles a la derecha acerca
- *  (factor < 1, menos días a la vista); a la izquierda aleja. */
+/** El zoom de la fila de fechas: arrastrar `dx` píxeles a la izquierda acerca
+ *  (factor < 1, menos días a la vista); a la derecha aleja. */
 export function factorDeFechas(dx) {
-  return factorDeArrastre(-dx)
+  return factorDeArrastre(dx)
 }

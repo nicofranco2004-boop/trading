@@ -4,7 +4,7 @@
 //     grilla se separan) y deja el precio a mano: aparece «Automático», y
 //     arrastrar el gráfico lo mueve para arriba y para abajo; «Automático», el
 //     doble click u otro rango vuelven a lo automático;
-//   · la fila de fechas, con el dedo: hacia la derecha acerca (se ven menos
+//   · la fila de fechas, con el dedo: hacia la izquierda acerca (se ven menos
 //     meses y ningún botón de rango queda elegido), doble click vuelve al 1A.
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
@@ -175,19 +175,47 @@ describe('arrastrar los ejes del gráfico', () => {
     expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
   })
 
-  it('la fila de fechas, con el dedo: hacia la derecha acerca; doble click, vuelve al 1A', async () => {
+  it('la fila de fechas, con el dedo: hacia la izquierda acerca; doble click, vuelve al 1A', async () => {
     await dibujar()
     const fechas = porTitulo(montado.contenedor, 'Arrastrá hacia los costados')
     expect(fechas).not.toBeNull()
     expect(botonPresionado(montado.contenedor, '1A')).toBe(true)
     const meses = () => texto(fechas)
     const antes = meses()
-    await arrastrar(fechas, { dx: 280, pointerType: 'touch' })
+    const rotulos = () => fechas.childNodes.filter(n => n.nodeName === 'SPAN').length
+    const rotulosAntes = rotulos()
+    await arrastrar(fechas, { dx: -280, pointerType: 'touch' })
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
     expect(meses()).not.toBe(antes)
+    expect(rotulos()).toBeLessThan(rotulosAntes)   // acercó: menos meses a la vista
     expect(botonPresionado(montado.contenedor, '1A')).toBe(false)  // ya no es el rango del botón
     await dobleClick(fechas)
     expect(botonPresionado(montado.contenedor, '1A')).toBe(true)
     expect(meses()).toBe(antes)
+  })
+
+  it('la ruedita hace lo mismo que la fila de fechas: acerca con el último día quieto, esté donde esté el mouse', async () => {
+    await dibujar()
+    const fechas = porTitulo(montado.contenedor, 'Arrastrá hacia los costados')
+    const rotulos = () => fechas.childNodes.filter(n => n.nodeName === 'SPAN').map(n => texto(n))
+    const antes = rotulos()
+    // El gráfico (role="img") tiene el escucha de la rueda; el mouse, a la izquierda de todo.
+    const pila = [montado.contenedor]
+    let area = null
+    while (pila.length && !area) {
+      const n = pila.shift()
+      if (n.getAttribute?.('role') === 'img') area = n
+      pila.push(...(n.childNodes || []))
+    }
+    expect(area).not.toBeNull()
+    for (let k = 0; k < 6; k++) {
+      await enActo(async () => {
+        for (const fn of area.escuchas.wheel || []) fn({ deltaY: -100, deltaMode: 0, clientX: 0, preventDefault() {} })
+      })
+    }
+    for (let i = 0; i < 2; i++) await montado.redibujar(el())
+    const despues = rotulos()
+    expect(despues.length).toBeLessThan(antes.length)               // acercó
+    expect(despues[despues.length - 1]).toBe(antes[antes.length - 1])   // el final quedó quieto
   })
 })

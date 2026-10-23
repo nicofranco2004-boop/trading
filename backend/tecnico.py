@@ -264,7 +264,8 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
     p = estructura.precio_redondo   # abajo de 1, cifras significativas (SHIB, PEPE)
     puntos = [{"d": velas[i]["date"], "o": p(velas[i].get("open")), "h": p(velas[i].get("high")),
                "l": p(velas[i].get("low")), "c": p(cierres[i]), "s50": p(m50[i]),
-               "s200": p(m200[i]), "rsi": _r(r[i], 2)} for i in range(desde, len(velas))]
+               "s200": p(m200[i]), "rsi": _r(r[i], 2),
+               "v": velas[i].get("volume")} for i in range(desde, len(velas))]
     return {
         "asset": (asset or "").upper(),
         "moneda": moneda,

@@ -24,8 +24,9 @@ describe('eje de precios', () => {
 })
 
 describe('eje de fechas', () => {
-  it('a la derecha acerca (menos días), a la izquierda aleja', () => {
-    expect(factorDeFechas(PIXELES_POR_DOBLE)).toBeCloseTo(0.5)
-    expect(factorDeFechas(-PIXELES_POR_DOBLE)).toBeCloseTo(2)
+  it('a la izquierda acerca (menos días), a la derecha aleja', () => {
+    // A la izquierda (dx < 0) acerca: la mitad de días; a la derecha aleja.
+    expect(factorDeFechas(-PIXELES_POR_DOBLE)).toBeCloseTo(0.5)
+    expect(factorDeFechas(PIXELES_POR_DOBLE)).toBeCloseTo(2)
   })
 })
