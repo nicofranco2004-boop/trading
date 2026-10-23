@@ -100,7 +100,20 @@ function porAtributo(contenedor, k, v) {
 const SIN_CARTERA = {
   '/positions': [], '/brokers': [], '/dolar': null, '/operations': [],
   '/watchlist': { items: [] },
+  // Sin empresa en el pedido: la ficha no muestra el análisis fundamental.
+  '/fundamentals/': { available: false },
 }
+
+// Lo que contesta /api/fundamentals/{ticker} (el contrato de "Calidad de cartera").
+const FUNDAMENTALES = (ticker, nombre) => ({
+  available: true, ticker, company_name: nombre, sector: 'Technology', currency: 'USD',
+  score: { categories: [
+    { key: 'valuation', score: 40 }, { key: 'growth', score: 85 },
+    { key: 'profitability', score: 90 }, { key: 'health', score: 80 },
+  ] },
+  categories_detail: [{ key: 'growth', label: 'Crecimiento', question: '¿Crece?', score: 85, metrics: [] }],
+  price: { current_usd: 182.4 }, metrics: { market_cap_usd: 4.4e12, trailing_pe: 45 },
+})
 
 describe('la ficha de un activo que no tenés', () => {
   it('muestra el precio, el análisis técnico, la watchlist y la empresa; nada tuyo', async () => {
@@ -109,6 +122,7 @@ describe('la ficha de un activo que no tenés', () => {
       '/prices?symbols=NVDA': { NVDA: 182.4 },
       '/prices/prev-close?symbols=NVDA': { NVDA: 180 },
       '/tecnico/NVDA?moneda=usd': TECNICO,
+      '/fundamentals/NVDA': FUNDAMENTALES('NVDA', 'NVIDIA Corporation'),
     }
     const t = await abrir('/activo/NVDA')
     expect(t).toContain('Último precio')
@@ -117,7 +131,18 @@ describe('la ficha de un activo que no tenés', () => {
     expect(t).toContain('Análisis técnico')
     expect(t).toContain('Largo plazo')
     expect(t).toContain('Agregar a la watchlist')
-    expect(t).toContain('Ver fundamentals de NVDA')
+    // El análisis fundamental, adentro de la ficha y DEBAJO del técnico.
+    expect(t).toContain('Análisis fundamental')
+    expect(t.indexOf('Análisis fundamental')).toBeGreaterThan(t.indexOf('Largo plazo'))
+    expect(t).toContain('NVIDIA Corporation')
+    expect(t).toContain('El negocio')
+    expect(t).toContain('Sólido')
+    expect(t).toContain('El precio hoy')
+    expect(t).toContain('Caro')
+    expect(t).toContain('Compararla en Calidad de cartera')
+    expect(t).not.toContain('Ver fundamentals de')
+    const link = porAtributo(montado.contenedor, 'href', '/fundamentals?ticker=NVDA')
+    expect(link).toBeTruthy()
     // Nada que dependa de tus compras.
     expect(t).not.toContain('Contra lo que pagaste')
     expect(t).not.toContain('Tu precio promedio')
@@ -149,7 +174,8 @@ describe('la ficha de un activo que no tenés', () => {
     expect(t).toContain('pesos')
     const pedidos = api.get.mock.calls.map(c => c[0])
     expect(pedidos).toContain('/tecnico/GGAL.BA?moneda=usd&local=1')
-    expect(t).toContain('Ver fundamentals de GGAL')
+    // La empresa de GGAL.BA es GGAL (su ADR): ésa se pide para el fundamental.
+    expect(pedidos).toContain('/fundamentals/GGAL')
   })
 
   it('si el servidor no pudo traer la historia, lo dice y muestra los 30 días', async () => {
@@ -361,5 +387,49 @@ describe('lo que encontró la auditoría (22/10)', () => {
   it('en el demo, el gráfico cae a los 30 días (no a "No se pudo cargar")', async () => {
     const { handleDemoRequest } = await vi.importActual('../utils/demo')
     expect(handleDemoRequest('GET', '/tecnico/CSCO?moneda=usd')).toMatchObject({ disponible: false, motivo: 'sin_serie' })
+  })
+})
+
+describe('el análisis fundamental en la ficha', () => {
+  it('no pide el resumen con IA (gasta el cupo semanal mirando fichas)', async () => {
+    const { api } = await import('../utils/api')
+    api.post.mockClear()
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=NVDA': { NVDA: 182.4 }, '/tecnico/': TECNICO,
+      '/fundamentals/NVDA': FUNDAMENTALES('NVDA', 'NVIDIA Corporation') }
+    const t = await abrir('/activo/NVDA')
+    expect(t).toContain('El negocio')
+    expect(api.post.mock.calls.map(c => c[0])).not.toContain('/fundamentals/ai-summary')
+  })
+
+  it('una cripto no tiene empresa: ni se pide ni queda un título suelto', async () => {
+    const { api } = await import('../utils/api')
+    api.get.mockClear()
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=BTC': { BTC: 80000 }, '/tecnico/': TECNICO }
+    const t = await abrir('/activo/BTC')
+    expect(t).not.toContain('Análisis fundamental')
+    expect(api.get.mock.calls.map(c => c[0]).some(r => r.startsWith('/fundamentals/'))).toBe(false)
+  })
+
+  it('si la empresa no tiene fundamentales, la ficha sigue sin un cartel vacío', async () => {
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=NVDA': { NVDA: 182.4 }, '/tecnico/': TECNICO,
+      '/fundamentals/NVDA': { available: false, reason: 'sin datos' } }
+    const t = await abrir('/activo/NVDA')
+    expect(t).toContain('Largo plazo')
+    expect(t).not.toContain('Análisis fundamental')
+    expect(t).not.toContain('no tenemos fundamentales')
+  })
+
+  it('en lo que tenés, también va debajo del técnico y antes de tu operatoria', async () => {
+    respuestas = {
+      '/positions': [{ id: 5, asset: 'NVDA', broker: 'Schwab', quantity: 3, invested: 450, currency: 'USD', asset_type: 'STOCK', entry_date: '2025-05-01' }],
+      '/brokers': [{ name: 'Schwab', currency: 'USD' }], '/dolar': null, '/operations': [],
+      '/prices': { NVDA: 182.4 }, '/tecnico/': TECNICO, '/plazos-fijos': [],
+      '/fundamentals/NVDA': FUNDAMENTALES('NVDA', 'NVIDIA Corporation'),
+    }
+    const t = await abrir('/activo/NVDA')
+    const tecnico = t.indexOf('Largo plazo'), fundamental = t.indexOf('Análisis fundamental'), tuya = t.indexOf('Tu operatoria')
+    expect(tecnico).toBeGreaterThan(-1)
+    expect(fundamental).toBeGreaterThan(tecnico)
+    expect(tuya).toBeGreaterThan(fundamental)
   })
 })

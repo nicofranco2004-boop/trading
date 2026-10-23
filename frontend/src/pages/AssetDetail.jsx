@@ -4,7 +4,7 @@
 // el mapa de calor, los movers, la watchlist y los eventos (urlDeActivo).
 // Si NO lo tenés: el último precio y la variación del día, el análisis técnico
 // (LecturaTecnica, sin tu precio ni tus compras), agregarlo a la watchlist y
-// la empresa en "Calidad de cartera". Antes eso era un modal aparte con un
+// el análisis fundamental de la empresa. Antes eso era un modal aparte con un
 // gráfico chico de 30 días (AssetQuickView): ahora es una sola pantalla.
 //
 // Drill-down pedido en el design audit (#1): al clickear un activo en la cartera
@@ -14,7 +14,7 @@
 //   • Stats: P&L realizado de toda la vida, win rate, veces operado, costo prom
 //   • Lotes abiertos (orden FIFO: más viejo primero = el que se vende primero)
 //   • Historial de operaciones (cada trade con su P&L realizado, win/loss)
-//   • Link a Fundamentals (si es acción/CEDEAR)
+//   • Análisis fundamental de la empresa (si es acción/CEDEAR), debajo del técnico
 //
 // Responsive: una sola página sirve desktop y mobile (max-w centrado en desktop,
 // full-width en mobile). Reusa la matriz de valuación de PositionDetailMobile.
@@ -22,10 +22,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, TrendingUp, TrendingDown, Calendar, BarChart3, Star, Check,
+  ArrowLeft, TrendingUp, TrendingDown, Calendar, Star, Check,
 } from 'lucide-react'
 import AssetLogo from '../components/AssetLogo'
 import LecturaTecnica from '../components/asset/LecturaTecnica'
+import AnalyzeView from '../components/fundamentals/AnalyzeView'
 import Skeleton from '../components/Skeleton'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
@@ -388,6 +389,12 @@ export default function AssetDetail() {
         />
       )}
 
+      {/* Análisis fundamental de la empresa, debajo del técnico: la MISMA vista
+          de "Calidad de cartera" (AnalyzeView), sin buscador ni resumen con IA.
+          Para compararla con otras, el link lleva a "Calidad de cartera". Sin
+          empresa (cripto, ETF, bono, fondo) no aparece. */}
+      {empresa && <AnalyzeView ticker={empresa.ticker} enFicha irACalidad={empresa.ir} />}
+
       {/* Stats de operatoria */}
       {tenes && <section className="mb-5">
         <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu operatoria en {asset}</div>
@@ -492,24 +499,6 @@ export default function AssetDetail() {
         </AskAIAbout>
       )}
 
-      {/* Link a Calidad de cartera (fundamentals de la empresa). */}
-      {empresa && (
-        <button
-          onClick={() => navigate(empresa.ir)}
-          className="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-bg-1 border border-line hover:border-data-violet/40 hover:bg-data-violet/[0.04] transition-colors group"
-        >
-          <span className="flex items-center gap-2.5 text-sm text-ink-1 text-left">
-            <BarChart3 size={15} strokeWidth={1.75} className="text-data-violet shrink-0" />
-            <span>
-              Ver fundamentals de {empresa.ticker}
-              {empresa.ticker !== asset.replace(/\.BA$/, '') && (
-                <span className="block text-xs text-ink-3">{asset} cotiza en EE.UU. como {empresa.ticker}</span>
-              )}
-            </span>
-          </span>
-          <span className="text-data-violet group-hover:translate-x-0.5 transition-transform">→</span>
-        </button>
-      )}
     </div>
   )
 }
