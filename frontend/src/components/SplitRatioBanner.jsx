@@ -18,6 +18,9 @@ const ratioLabel = (f) => (Number(f) >= 1 ? `×${fmt(f)}` : `1:${fmt(1 / Number(
 
 export default function SplitRatioBanner({ onAdjusted }) {
   const [suggestions, setSuggestions] = useState([])
+  // El aviso nuevo (la lista única de cambios de ratio) está detrás de un
+  // interruptor de /admin. Apagado, el texto es el de siempre, fecha incluida.
+  const [avisoNuevo, setAvisoNuevo] = useState(false)
   const [dismissed, setDismissed] = useState(false)
   const [active, setActive] = useState(null) // suggestion en confirmación
   // Freno del doble click, el mismo de todos los botones (hooks/useEnVuelo). El
@@ -29,12 +32,13 @@ export default function SplitRatioBanner({ onAdjusted }) {
   useEffect(() => {
     let alive = true
     api.get('/positions/split-check')
-      .then((d) => { if (alive) setSuggestions(d?.suggestions || []) })
+      .then((d) => { if (alive) { setSuggestions(d?.suggestions || []); setAvisoNuevo(!!d?.aviso_nuevo) } })
       .catch(() => {}) // silencioso: es un realce, no debe romper la página
     return () => { alive = false }
   }, [])
 
   if (dismissed || suggestions.length === 0) return null
+  const fecha = avisoNuevo ? fechaAR : (d) => d
 
   const confirmAdjust = () => enVuelo.correr(ajustar)
   async function ajustar() {
@@ -110,7 +114,7 @@ export default function SplitRatioBanner({ onAdjusted }) {
             <p>
               <strong className="text-ink-0">{baseTicker(active.asset)}</strong> tuvo un{' '}
               {active.factor < 1 ? 'split inverso' : 'split'} de <strong>{ratioLabel(active.factor)}</strong>{' '}
-              el {fechaAR(active.ex_date)}. Tu inversión no cambia:{' '}
+              el {fecha(active.ex_date)}. Tu inversión no cambia:{' '}
               {active.factor < 1
                 ? 'se reduce la cantidad de nominales y sube el precio unitario en la misma proporción.'
                 : 'se multiplica la cantidad de nominales y baja el precio unitario en la misma proporción.'}
@@ -149,7 +153,7 @@ export default function SplitRatioBanner({ onAdjusted }) {
             </p>
             {active.raw_splits?.length > 1 && (
               <p className="text-ink-3 text-xs">
-                Splits detectados: {active.raw_splits.map((r) => `×${fmt(r.factor)} (${fechaAR(r.ex_date)})`).join(', ')}.
+                Splits detectados: {active.raw_splits.map((r) => `×${fmt(r.factor)} (${fecha(r.ex_date)})`).join(', ')}.
               </p>
             )}
             {err && <div className="text-rendi-neg text-xs">{err}</div>}

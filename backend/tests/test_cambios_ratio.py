@@ -283,12 +283,32 @@ class ParNoPorElNombreTest(unittest.TestCase):
         self.assertNotIn("AGRO.BA", pares)
 
 
+def _interruptor(encendido: bool):
+    """El aviso nuevo está detrás de un interruptor de /admin (apagado de entrada)."""
+    conn = main.get_db()
+    try:
+        conn.execute("INSERT INTO interruptores (nombre, encendido) VALUES (?, ?) "
+                     "ON CONFLICT(nombre) DO UPDATE SET encendido=excluded.encendido",
+                     (main.AVISO_RATIO_NUEVO, 1 if encendido else 0))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 class _ConUsuario(unittest.TestCase):
+    """El aviso NUEVO: con el interruptor encendido (lo de apagado está en
+    tests/test_interruptor_ratio.py)."""
+
     @classmethod
     def setUpClass(cls):
         _armar_lista()
 
+    @classmethod
+    def tearDownClass(cls):
+        _interruptor(False)
+
     def setUp(self):
+        _interruptor(True)
         self.http = TestClient(main.app)
         conn = main.get_db()
         self.uid = conn.execute(

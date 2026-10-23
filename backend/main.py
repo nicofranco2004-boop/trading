@@ -2563,6 +2563,14 @@ def init_db():
                 actualizado TEXT DEFAULT (datetime('now')),
                 PRIMARY KEY (cedear, fecha, tipo)
             );
+            -- Interruptores que prende y apaga un admin desde /admin (no variables
+            -- de entorno: se cambian sin deploy). Sin fila = apagado.
+            CREATE TABLE IF NOT EXISTS interruptores (
+                nombre TEXT PRIMARY KEY,         -- 'aviso_ratio_nuevo'
+                encendido INTEGER NOT NULL DEFAULT 0,
+                cambiado_at TEXT,
+                cambiado_por INTEGER             -- users.id del admin
+            );
         """)
 
         # ─── TWR: períodos SELLADOS ──────────────────────────────────────────
@@ -12255,17 +12263,129 @@ def delete_position(pid: int, uid: int = Depends(get_effective_user)):
 # INTACTO. Idempotente vía positions.split_adjusted_through (watermark por lote).
 
 
-def _fetch_ba_splits(ba_symbol: str, conn=None):
-    """Cambios de ratio CONFIRMADOS de un CEDEAR, [(fecha, factor)], de la lista
-    única (`cambios_ratio.py`), la misma que leen los gráficos en pesos.
+# ─── El interruptor del aviso nuevo ──────────────────────────────────────────
+# El aviso «Ajustar» tiene dos caminos y un interruptor que los elige, guardado
+# en la base y que prende un admin desde /admin (`interruptores`):
+#   · APAGADO (de entrada): el de producción hasta el 22/10/2026 (24dadbd5), tal
+#     cual. Le pregunta a Yahoo los splits de la especie en pesos y ofrece lo que
+#     encuentre; la foto de tenencia siembra el hueco entero como compra.
+#   · ENCENDIDO: la lista única (`cambios_ratio.py`), con la evidencia del precio
+#     del día de compra y la foto de tenencia acreditando a $0.
+# Nico pidió que el nuevo arranque apagado hasta revisar la lista y medir cuántos
+# usuarios lo verían. El gráfico en pesos y /admin usan la lista siempre: no
+# tocan cantidades ni plata.
+AVISO_RATIO_NUEVO = "aviso_ratio_nuevo"
 
-    Antes se le preguntaba a Yahoo, en cada pedido, por la especie en pesos
-    (`XLE.BA`). Medido el 22/10/2026: esa lista viene VACÍA en 33 cambios reales
-    de los últimos 3 años (los 27 del 24/01/2024 —AAPL, MELI, JPM…—, TQQQ y los
-    ETFs sectoriales de diciembre de 2025), así que el aviso nunca aparecía y la
-    persona veía la mitad de lo que tenía; y trae alguno que no existe (DDD.BA
-    1:3, copiado de DuPont), que ofrecía dividir la tenencia por 3. La lista se
-    arma de noche con las velas guardadas: acá no hay red."""
+
+def interruptor(nombre: str, conn=None) -> bool:
+    """¿Está encendido? Sin fila, o si la tabla no se puede leer: apagado."""
+    def _leer(c):
+        try:
+            r = c.execute("SELECT encendido FROM interruptores WHERE nombre=?", (nombre,)).fetchone()
+        except ERR_OPERACIONAL:
+            return False
+        return bool(r and r["encendido"])
+    if conn is not None:
+        return _leer(conn)
+    with db_abierta() as c:
+        return _leer(c)
+
+
+# ─── Camino viejo (APAGADO): los splits que anota Yahoo ──────────────────────
+# Copiado TAL CUAL de producción (24dadbd5, 22/10/2026), salvo el nombre de
+# `_splits_de_yahoo_ba`: con el interruptor apagado el aviso tiene que ofrecer
+# exactamente lo mismo que antes, Yahoo incluido.
+
+_splits_cache = {}  # { 'SYM.BA': (timestamp, [(ex_date, factor)]) }
+
+
+# Por símbolo: la lista de splits de una cartera se precalienta en paralelo
+# (`_precalentar_splits`), así que esto sólo lo paga quien pide UN símbolo.
+SPLITS_TOPE_SEG = 5.0
+
+
+def _splits_de_yahoo(ba_symbol: str):
+    return yf.Ticker(ba_symbol).splits
+
+
+def _parsear_splits(s) -> list:
+    """Serie de yfinance → [(ex_date 'YYYY-MM-DD', factor)]. Normaliza el índice
+    tz-aware (idx.date().isoformat()) para NUNCA comparar el timestamp crudo
+    contra entry_date."""
+    out = []
+    for idx, factor in s.items():
+        try:
+            d = idx.date().isoformat()
+        except Exception:
+            d = str(idx)[:10]
+        f = float(factor)
+        if f and f > 0:
+            out.append((d, f))
+    return out
+
+
+def _splits_fallaron(ba_symbol: str, now: float) -> list:
+    """Yahoo falló o no contestó: se sirve lo último que se supo (o nada) y se
+    vuelve a probar en `EVENTOS_REINTENTO_SEG`, no en 6 h — "Yahoo no contestó"
+    no es "este papel no tuvo splits"."""
+    cached = _splits_cache.get(ba_symbol)
+    out = cached[1] if cached else []
+    _splits_cache[ba_symbol] = (now - EVENTS_TTL + EVENTOS_REINTENTO_SEG, out)
+    return out
+
+
+def _precalentar_splits(ba_symbols) -> None:
+    """Trae a la caché los splits de varios `.BA` a la vez, con UN tope para
+    todos. /split-check los pedía de a uno dentro del bucle de posiciones, sin
+    tope: con Yahoo colgado, cada CEDEAR de la cartera sumaba hasta 30 s."""
+    import time as _t
+    now = _t.time()
+    faltan = [s for s in dict.fromkeys(ba_symbols)
+              if not (_splits_cache.get(s) and (now - _splits_cache[s][0]) < EVENTS_TTL)]
+    if not faltan:
+        return
+    hechos, _ = _yahoo.varios(_splits_de_yahoo, faltan, tope=_yahoo.TOPE_PANTALLA_SEG,
+                              que="splits de la cartera")
+    for sym in faltan:
+        try:
+            _splits_cache[sym] = (now, _parsear_splits(hechos[sym]))
+        except Exception as ex:   # no llegó, falló o vino ilegible
+            log.warning("fetch splits %s falló: %r", sym, ex)
+            _splits_fallaron(sym, now)
+
+
+def _splits_de_yahoo_ba(ba_symbol: str):
+    """Splits de un símbolo .BA vía yfinance, cacheado con el TTL de eventos (6h)."""
+    import time as _t
+    now = _t.time()
+    cached = _splits_cache.get(ba_symbol)
+    if cached and (now - cached[0]) < EVENTS_TTL:
+        return cached[1]
+    try:
+        out = _parsear_splits(_yahoo.con_tope(_splits_de_yahoo, ba_symbol, tope=SPLITS_TOPE_SEG,
+                                              que=f"splits {ba_symbol}"))
+    except Exception as ex:
+        log.warning("fetch splits %s falló: %s", ba_symbol, ex)
+        return _splits_fallaron(ba_symbol, now)
+    _splits_cache[ba_symbol] = (now, out)
+    return out
+
+
+
+def _fetch_ba_splits(ba_symbol: str, conn=None, nuevo: bool = None):
+    """[(fecha, factor)] de los cambios de cantidad de un `.BA`, del camino que
+    elige el interruptor (`nuevo=None`: lo que diga la base).
+
+    Encendido: la lista única (`cambios_ratio.py`). La de Yahoo para la especie
+    en pesos (`XLE.BA`) viene VACÍA en 33 cambios reales de los últimos 3 años
+    (los 27 del 24/01/2024 —AAPL, MELI, JPM…—, TQQQ y los ETFs sectoriales de
+    diciembre de 2025), y trae alguno que nadie pudo confirmar (DDD.BA 1:3,
+    copiado de DuPont). La lista se arma de noche: acá no hay red.
+    Apagado: Yahoo, como en producción."""
+    if nuevo is None:
+        nuevo = interruptor(AVISO_RATIO_NUEVO, conn)
+    if not nuevo:
+        return _splits_de_yahoo_ba(ba_symbol)
     return [(d, f) for d, f, _ in _cambios_de_cantidad(ba_symbol, conn)]
 
 
@@ -12303,7 +12423,7 @@ def _dedup_splits(splits):
 
 
 def _applicable_splits(base_symbol: str, entry: str, wm: str, foto_wm: str = "",
-                       corp_fechas=(), conn=None):
+                       corp_fechas=(), conn=None, nuevo: bool = None):
     """Splits del .BA aplicables a un lote: posteriores a la compra (entry), al
     watermark de ajuste (wm) Y a la fecha de la foto de tenencia (foto_wm). SSoT
     compartida por /split-check y /adjust-ratio para que detección y escritura nunca
@@ -12321,7 +12441,7 @@ def _applicable_splits(base_symbol: str, entry: str, wm: str, foto_wm: str = "",
       (sin esto, Balanz Resultados —que trae el split sin descripción— y cualquier
       broker que lo describa distinto quedaban a un clic de duplicar la tenencia)."""
     out = []
-    for d, f in _dedup_splits(_fetch_ba_splits(f"{base_symbol}.BA", conn)):
+    for d, f in _dedup_splits(_fetch_ba_splits(f"{base_symbol}.BA", conn, nuevo)):
         if entry and d <= entry:           # comprado el día del split o después → ya al ratio nuevo
             continue
         if any(_dias_entre(d, c) <= _SPLIT_DEDUP_DAYS for c in corp_fechas or ()):
@@ -12529,7 +12649,7 @@ def _foto_wm_for(broker: str, base: str, foto_map: dict, pair_cache: dict, conn,
     return max((foto_map.get((pb, base), "") for pb in pair_cache[broker]), default="")
 
 
-def _cambios_a_ofrecer(conn, uid: int, row, marcas: dict, pair_cache: dict):
+def _cambios_a_ofrecer(conn, uid: int, row, marcas: dict, pair_cache: dict, nuevo: bool = None):
     """(cambios, evidencia) que /split-check ofrece y /adjust-ratio aplica para
     UN lote: una sola decisión para los dos, así detección y escritura nunca
     divergen. `cambios` = [] → no hay nada que ofrecer.
@@ -12544,7 +12664,13 @@ def _cambios_a_ofrecer(conn, uid: int, row, marcas: dict, pair_cache: dict):
                           pesos y nada lo confirma ni lo desmiente): el front pregunta
                           si el broker acreditó o debitó los CEDEARs.
     Si el precio cargado está en la escala NUEVA (cargó a mano la cantidad de hoy
-    con la fecha original), no se ofrece: ajustar lo duplicaría."""
+    con la fecha original), no se ofrece: ajustar lo duplicaría.
+
+    `nuevo`: el camino del interruptor (None = lo que diga la base). APAGADO es
+    producción tal cual (24dadbd5): lo que anota Yahoo, después de la compra y de
+    las marcas de ajuste y de foto, siempre con evidencia 'fecha'."""
+    if nuevo is None:
+        nuevo = interruptor(AVISO_RATIO_NUEVO, conn)
     asset = (row["asset"] or "").upper()
     base = asset[:-3] if asset.endswith(".BA") else asset
     if not base:
@@ -12558,9 +12684,12 @@ def _cambios_a_ofrecer(conn, uid: int, row, marcas: dict, pair_cache: dict):
     # ACTUAL, post-split), re-aplicar multiplica un lote que la foto ya compensó. Va
     # como foto_wm aparte (sin ventana de dedup).
     foto_wm = _foto_wm_for(row["broker"], base, marcas["foto"], pair_cache, conn, uid)
+    if not nuevo:
+        cambios = _applicable_splits(base, entry, wm, foto_wm=foto_wm, conn=conn, nuevo=False)
+        return (cambios, "fecha") if cambios else ([], None)
     corp_fechas = _fechas_del_par(row["broker"], base, marcas["cero"], pair_cache, conn, uid)
     cambios = _applicable_splits(base, entry, wm, foto_wm=foto_wm,
-                                 corp_fechas=corp_fechas, conn=conn)
+                                 corp_fechas=corp_fechas, conn=conn, nuevo=True)
     if not cambios:
         return [], None
     escala = (_escala_del_lote(conn, base, entry, row["buy_price"], cambios)
@@ -12658,64 +12787,124 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
         conn.close()
 
 
-@app.get("/api/positions/split-check")
-def positions_split_check(uid: int = Depends(get_effective_user)):
-    """Detecta lotes con un cambio de ratio (split) que Rendi todavía no ajustó →
-    P&L fantasma. Por cada equity de BYMA con qty>0, busca splits del .BA con
-    ex_date posterior a la compra Y al watermark. Excluye el caso comprado EXACTO
-    el día del split (ya cotiza al ratio nuevo) y dedupea el mis-log de yfinance.
+def _sugerencias_de_split(conn, uid: int, nuevo: bool) -> list:
+    """Lo que el aviso «Ajustar» le muestra a `uid`, por el camino `nuevo` (el
+    del interruptor `aviso_ratio_nuevo`).
 
     Gate alineado con la valuación (priceSymbol): califica si asset_type='CEDEAR'
     O el broker es ARS (todo equity de BYMA se precia vía .BA — CEDEAR, acción AR,
     o un ticker ambiguo como SPY/QQQ mal-taggeado). Excluye bonos/ONs, FCI, cripto
     y fiat. Schwab (USD) queda fuera salvo CEDEAR explícito (ya maneja splits con
     un BUY sintético $0)."""
+    rows = conn.execute(
+        """SELECT p.* FROM positions p
+            WHERE p.user_id=? AND p.is_cash=0 AND COALESCE(p.quantity,0) > 0
+              AND COALESCE(p.asset,'') NOT LIKE 'FCI:%'
+              AND UPPER(COALESCE(p.asset_type,'')) NOT IN ('BOND','FIAT','CRYPTO')
+              AND (
+                    UPPER(COALESCE(p.asset_type,'')) = 'CEDEAR'
+                    OR EXISTS (SELECT 1 FROM brokers b
+                                WHERE b.user_id = p.user_id
+                                  AND b.name = p.broker
+                                  AND UPPER(COALESCE(b.currency,'')) = 'ARS')
+                  )""",
+        (uid,),
+    ).fetchall()
+    marcas = _marcas_de_split(conn, uid)
+    _pair_cache = {}
+    if not nuevo:
+        # Producción: todos los splits de la cartera de una vez, con un tope para
+        # todos; el bucle de abajo los lee de la caché (`_fetch_ba_splits`).
+        _bases = [(r["asset"] or "").upper() for r in rows]
+        _precalentar_splits(f"{a[:-3] if a.endswith('.BA') else a}.BA" for a in _bases
+                            if a and a != ".BA")
+    suggestions = []
+    for r in rows:
+        applicable, evidencia = _cambios_a_ofrecer(conn, uid, r, marcas, _pair_cache, nuevo)  # SSoT con /adjust-ratio
+        if not applicable:
+            continue
+        asset = (r["asset"] or "").upper()
+        combined = 1.0
+        for _, f in applicable:
+            combined *= f
+        cur_qty = float(r["quantity"] or 0)
+        suggestions.append({
+            "pid": r["id"],
+            "asset": asset,
+            "broker": r["broker"],
+            "factor": round(combined, 6),
+            "ex_date": max(d for d, _ in applicable),
+            "current_qty": cur_qty,
+            "suggested_qty": round(cur_qty * combined, 6),
+            # 'fecha'         = la compra es anterior al cambio (certeza).
+            # 'pregunta'      = el precio cargado no coincide con ninguna escala del
+            #                   día de compra → el front pregunta en vez de afirmarlo.
+            # 'sin_confirmar' = el cambio no está confirmado → el front pregunta.
+            # (Apagado, siempre 'fecha', como en producción.)
+            "evidence": evidencia,
+            "buy_price": round(float(r["buy_price"] or 0), 6),
+            "raw_splits": [{"ex_date": d, "factor": f} for d, f in applicable],
+        })
+    return suggestions
+
+
+@app.get("/api/positions/split-check")
+def positions_split_check(uid: int = Depends(get_effective_user)):
+    """Detecta lotes con un cambio de ratio (split) que Rendi todavía no ajustó →
+    P&L fantasma. Por cada equity de BYMA con qty>0, busca cambios del .BA
+    posteriores a la compra Y al watermark, por el camino que elige el interruptor
+    `aviso_ratio_nuevo` (`_sugerencias_de_split`). `aviso_nuevo` le dice a la
+    pantalla cuál fue: apagado, el texto es el de producción."""
     conn = get_db()
     try:
-        rows = conn.execute(
-            """SELECT p.* FROM positions p
-                WHERE p.user_id=? AND p.is_cash=0 AND COALESCE(p.quantity,0) > 0
-                  AND COALESCE(p.asset,'') NOT LIKE 'FCI:%'
-                  AND UPPER(COALESCE(p.asset_type,'')) NOT IN ('BOND','FIAT','CRYPTO')
-                  AND (
-                        UPPER(COALESCE(p.asset_type,'')) = 'CEDEAR'
-                        OR EXISTS (SELECT 1 FROM brokers b
-                                    WHERE b.user_id = p.user_id
-                                      AND b.name = p.broker
-                                      AND UPPER(COALESCE(b.currency,'')) = 'ARS')
-                      )""",
-            (uid,),
-        ).fetchall()
-        marcas = _marcas_de_split(conn, uid)
-        _pair_cache = {}
-        suggestions = []
-        for r in rows:
-            applicable, evidencia = _cambios_a_ofrecer(conn, uid, r, marcas, _pair_cache)  # SSoT con /adjust-ratio
-            if not applicable:
-                continue
-            asset = (r["asset"] or "").upper()
-            combined = 1.0
-            for _, f in applicable:
-                combined *= f
-            cur_qty = float(r["quantity"] or 0)
-            suggestions.append({
-                "pid": r["id"],
-                "asset": asset,
-                "broker": r["broker"],
-                "factor": round(combined, 6),
-                "ex_date": max(d for d, _ in applicable),
-                "current_qty": cur_qty,
-                "suggested_qty": round(cur_qty * combined, 6),
-                # 'fecha'    = la compra es anterior al cambio (certeza).
-                # 'pregunta' = el precio cargado no coincide con ninguna escala del
-                #              día de compra → el front pregunta en vez de afirmarlo.
-                "evidence": evidencia,
-                "buy_price": round(float(r["buy_price"] or 0), 6),
-                "raw_splits": [{"ex_date": d, "factor": f} for d, f in applicable],
-            })
-        return {"suggestions": suggestions}
+        nuevo = interruptor(AVISO_RATIO_NUEVO, conn)
+        return {"suggestions": _sugerencias_de_split(conn, uid, nuevo), "aviso_nuevo": nuevo}
     finally:
         conn.close()
+
+
+# ─── /admin: el interruptor del aviso nuevo ──────────────────────────────────
+
+class InterruptorIn(BaseModel):
+    encendido: bool
+
+
+def _estado_interruptor(conn, nombre: str) -> dict:
+    try:
+        r = conn.execute("SELECT encendido, cambiado_at FROM interruptores WHERE nombre=?",
+                         (nombre,)).fetchone()
+    except ERR_OPERACIONAL:
+        r = None
+    return {"encendido": bool(r and r["encendido"]), "cambiado_at": r["cambiado_at"] if r else None}
+
+
+@app.get("/api/admin/cambios-ratio")
+def admin_cambios_ratio(uid: int = Depends(get_admin_user)):
+    """El interruptor del aviso nuevo y la lista de cambios de CANTIDAD para
+    revisar antes de encenderlo (los confirmados se ofrecen; los sin confirmar
+    se preguntan; los dudosos no llegan al aviso). Sólo lee."""
+    import cambios_ratio
+    with db_abierta() as conn:
+        lista = [{k: r[k] for k in ("cedear", "fecha", "factor", "factor_medido", "estado", "origen",
+                                    "motivo", "precio_antes", "precio_despues")}
+                 for r in cambios_ratio.todos(conn) if r["tipo"] == cambios_ratio.RATIO]
+        return {"interruptor": _estado_interruptor(conn, AVISO_RATIO_NUEVO),
+                "lista": sorted(lista, key=lambda r: (r["estado"], r["fecha"]), reverse=True)}
+
+
+@app.post("/api/admin/cambios-ratio/interruptor")
+def admin_cambios_ratio_interruptor(data: InterruptorIn, uid: int = Depends(get_admin_user)):
+    """Prende o apaga el aviso nuevo. Queda en la base: se cambia sin deploy."""
+    with db_abierta() as conn:
+        conn.execute(
+            """INSERT INTO interruptores (nombre, encendido, cambiado_at, cambiado_por)
+               VALUES (?, ?, datetime('now'), ?)
+               ON CONFLICT(nombre) DO UPDATE SET encendido=excluded.encendido,
+                 cambiado_at=excluded.cambiado_at, cambiado_por=excluded.cambiado_por""",
+            (AVISO_RATIO_NUEVO, 1 if data.encendido else 0, uid))
+        conn.commit()
+        log.info("interruptor %s → %s (admin %s)", AVISO_RATIO_NUEVO, data.encendido, uid)
+        return _estado_interruptor(conn, AVISO_RATIO_NUEVO)
 
 
 # ─── Plazos fijos ─────────────────────────────────────────────────────────────
@@ -42014,8 +42203,11 @@ def _marcar_cambios_de_ratio(conn, uid: int, pair, rec, seed_date: str) -> None:
     lotes que Rendi tiene en la escala vieja. Es la MISMA decisión que el aviso
     «Ajustar» (`_cambios_a_ofrecer`): si el aviso no lo ofrecería para ese lote
     (Balanz ya lo trajo, otra foto lo concilió, ya está en la escala nueva), la
-    foto tampoco lo explica así, y el hueco entra como compra, igual que antes."""
-    if not rec.to_seed:
+    foto tampoco lo explica así, y el hueco entra como compra, igual que antes.
+
+    Sólo con el interruptor `aviso_ratio_nuevo` encendido: apagado, la foto
+    siembra como en producción (el hueco entero como compra al precio del día)."""
+    if not rec.to_seed or not interruptor(AVISO_RATIO_NUEVO, conn):
         return
     marcas, cache = _marcas_de_split(conn, uid), {}
     ph = ",".join("?" * len(pair))

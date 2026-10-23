@@ -640,8 +640,12 @@ def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
     txs = []
     idx = -20000  # negativo, no colisiona con row_index reales (igual que el seed)
     def _partes(h, gap):
-        """(a $0 por cambio de ratio, comprado) del hueco de un activo."""
-        cero = min(gap, max(0.0, float((reconcile.por_ratio.get(h.ticker) or (0.0, ""))[0])))
+        """(a $0 por cambio de ratio, comprado) del hueco de un activo. Sin cambio
+        de ratio, el hueco entero y SIN redondear: la siembra de siempre."""
+        por_ratio = reconcile.por_ratio.get(h.ticker)
+        if not por_ratio:
+            return 0.0, gap
+        cero = min(gap, max(0.0, float(por_ratio[0])))
         return round(cero, 6), round(gap - cero, 6)
 
     total = round(sum(_partes(h, gap)[1] * h.price_per1 for h, gap in reconcile.to_seed), 4)
@@ -665,8 +669,8 @@ def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
                 notes=(f"{TENENCIA_APERTURA_NOTE_PREFIX} {h.ticker}: acreditados por el "
                        f"cambio de ratio{(' ' + detalle) if detalle else ''} (a $0)" + marca)))
             idx += 1
-        if comprado <= 1e-9:
-            continue
+            if comprado <= 1e-9:
+                continue
         txs.append(NormalizedTx(
             row_index=idx, date=seed_date, broker=broker, operation_type=OP_BUY,
             asset_symbol=h.ticker, asset_type=h.asset_type,
