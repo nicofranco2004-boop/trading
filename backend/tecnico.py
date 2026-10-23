@@ -29,12 +29,17 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import estructura
+from velas_diarias import DIAS_GUARDADOS
 
 # Todo lo que es "un año" o "un mes" se corta por FECHA (días corridos), no por
 # cantidad de velas: una cripto cotiza los 7 días y la bolsa 5.
 DIAS_ANIO = 365
-# Lo que se manda a la pantalla: 2 años de calendario, el rango más largo.
-DIAS_GRAFICO = 2 * DIAS_ANIO
+# Lo que se manda a la pantalla: TODO lo que se guarda (3 años de calendario),
+# para poder arrastrar el gráfico hasta el principio (Nico, 22/10: «no deja ir
+# más atrás»). Los botones 3M/1A/2A eligen qué parte se ve de entrada. La media
+# de 200 de los primeros ~10 meses no se puede calcular (no hay 200 días antes)
+# y esa parte del gráfico va sin esa línea, como en TradingView.
+DIAS_GRAFICO = DIAS_GUARDADOS
 # Hacia dónde va la media de 200: contra la de hace un mes.
 DIAS_PENDIENTE = 30
 # Un dólar de hace más días que esto no es "el de ese día" (mismo techo que

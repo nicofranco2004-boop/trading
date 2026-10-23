@@ -2,7 +2,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // Gráfico de precio con las medias de 50 y 200 días, tu precio promedio y tus
 // compras y ventas; la fuerza del movimiento (RSI) abajo; y tarjetas en
-// castellano. El botón «Fibonacci» de la leyenda (apagado de entrada) suma la
+// castellano. El botón «Fibonacci» de la leyenda (prendido de entrada) muestra la
 // capa del último tramo de suba o bajada (CapaFibonacci.jsx). Se mide en
 // DÓLARES por defecto: un CEDEAR en pesos sube con el dólar aunque la empresa
 // no se mueva (ver backend/tecnico.py).
@@ -75,7 +75,8 @@ export default function LecturaTecnica({
   const [rango, setRango] = useState('1a')
   const [datos, setDatos] = useState({ usd: undefined, ars: undefined })
   // Qué líneas se ven: la leyenda prende y apaga cada una.
-  const [ver, setVer] = useState({ s200: true, s50: true, prom: true, marcas: true, fib: false })
+  // El Fibonacci arranca prendido (Nico, 22/10): es lo primero que se mira.
+  const [ver, setVer] = useState({ s200: true, s50: true, prom: true, marcas: true, fib: true })
   const [tipo, setTipoEstado] = useState(tipoGuardado)
   const setTipo = (t) => { setTipoEstado(t); guardarTipo(t) }
   // Zoom con la rueda y arrastre: qué ruedas se ven ({ n: cuántas, fin: hasta

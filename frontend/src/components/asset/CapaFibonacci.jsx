@@ -1,6 +1,6 @@
 // CapaFibonacci — el Fibonacci automático encima del gráfico de la ficha.
 // ════════════════════════════════════════════════════════════════════════════
-// Se prende con el botón «Fibonacci» de la leyenda (apagado de entrada). Dibuja
+// Se ve de entrada; el botón «Fibonacci» de la leyenda la apaga y la prende. Dibuja
 // el último tramo confirmado (pozo → pico de una suba, o techo → piso de una
 // bajada) resaltado, las rayas de cada nivel con su precio, la franja entre las
 // dos rayas donde está hoy el precio y el día de la ruptura. Si no hay tramo

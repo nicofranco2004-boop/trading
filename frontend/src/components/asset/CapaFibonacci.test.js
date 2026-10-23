@@ -1,7 +1,7 @@
 // El botón «Fibonacci» de la lectura técnica, montado de verdad
 // (testing/navegadorMinimo.js) con /api/tecnico simulado en la frontera:
-//   · apagado de entrada: ni rayas ni tarjeta;
-//   · al prenderlo: las rayas con su precio y la tarjeta en castellano;
+//   · prendido de entrada: las rayas con su precio y la tarjeta en castellano;
+//   · el botón lo apaga (ni rayas ni tarjeta) y lo vuelve a prender;
 //   · sin tramo para medir: la tarjeta lo dice y no hay rayas de niveles.
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
@@ -48,35 +48,33 @@ async function dibujar() {
   for (let i = 0; i < 4; i++) await montado.redibujar(el())
   return texto(montado.contenedor)
 }
-async function prender() {
+async function tocarFibonacci() {
   await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Fibonacci'))
   for (let i = 0; i < 2; i++) await montado.redibujar(el())
   return texto(montado.contenedor)
 }
 
 describe('Fibonacci en la ficha', () => {
-  it('apagado de entrada; al prenderlo, rayas con precio y la tarjeta', async () => {
+  it('prendido de entrada: rayas con precio y la tarjeta; el botón lo apaga', async () => {
     respuesta = DATOS(FIB)
-    const antes = await dibujar()
-    expect(antes).toContain('Fibonacci')            // el botón
-    expect(antes).not.toContain('Fibonacci de la última suba')
-    expect(antes).not.toContain('61,8 % ·')
-    const t = await prender()
+    const t = await dibujar()
     expect(t).toContain('Fibonacci de la última suba')
     expect(t).toContain('Devolvió el 45 % de la suba')
     expect(t).toContain('está entre el 38,2 % y el 50 % de la suba')
     expect(t).toContain('Pico · US$ 176,75')         // el final del tramo, siempre con rótulo
     expect(t).toContain('Arranque · US$ 108,90')
     expect(t).toContain('no es una recomendación')
-    // Apagarlo lo saca.
-    const despues = await prender()
-    expect(despues).not.toContain('Fibonacci de la última suba')
+    // Apagarlo lo saca, y prenderlo lo vuelve a poner.
+    const apagado = await tocarFibonacci()
+    expect(apagado).toContain('Fibonacci')            // el botón sigue
+    expect(apagado).not.toContain('Fibonacci de la última suba')
+    expect(apagado).not.toContain('61,8 % ·')
+    expect(await tocarFibonacci()).toContain('Fibonacci de la última suba')
   })
 
   it('sin tramo claro: lo dice y no dibuja niveles', async () => {
     respuesta = DATOS({ disponible: false, motivo: 'tramos_chicos', n_pivote: 3, ruedas: 252, en_curso: null })
-    await dibujar()
-    const t = await prender()
+    const t = await dibujar()
     expect(t).toContain('Sin tramo claro')
     expect(t).not.toContain('61,8 % ·')
   })
@@ -97,10 +95,12 @@ describe('Fibonacci en la ficha', () => {
     expect(ventanaDelTramo(puntos, corto, 63)).toBeNull()
     expect(ventanaDelTramo(puntos, { disponible: false }, 252)).toBeNull()
     expect(ventanaDelTramo(puntos, { ...FIB, desde: { fecha: '2020-01-01', precio: 1 } }, 252)).toBeNull()
-    // Montado: con el tramo corto, al prender aparecen las 7 rayas con rótulo.
+    // Montado: con el tramo corto, al apagarlo y volver a prenderlo el gráfico
+    // se acerca y aparecen las 7 rayas con rótulo.
     respuesta = DATOS(corto)
     await dibujar()
-    const t = await prender()
+    await tocarFibonacci()
+    const t = await tocarFibonacci()
     for (const n of ['Pico ·', '23,6 % ·', '38,2 % ·', '50 % ·', '61,8 % ·', '78,6 % ·', 'Arranque ·']) expect(t).toContain(n)
   })
 
