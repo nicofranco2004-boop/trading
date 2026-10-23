@@ -181,7 +181,7 @@ describe('LecturaTecnica', () => {
     const t = await dibujar({ pnlPctUsd: null })
     expect(t).toContain('Fuerza de la tendencia (ADX)')
     expect(t).toContain('a favor de la suba')
-    expect(t).toContain('Toma fuerza')
+    expect(t).toContain('La tendencia toma fuerza')
     expect(t).toContain('la fuerza (ADX) pasó 23 para arriba con el Squeeze en verde: suele leerse como el arranque de una suba con fuerza.')
     // El panel: una barra por día con Squeeze y la línea del ADX.
     const nodos = (n) => [n, ...(n.childNodes || []).flatMap(nodos)]
@@ -192,9 +192,9 @@ describe('LecturaTecnica', () => {
   })
 
   it('sin ADX (pocos días) no dibuja el panel y la tarjeta dice que faltan datos', async () => {
-    respuestas = { '/tecnico/AAPL?moneda=usd': { ...USD, lectura: { ...USD.lectura, ruedas: 30, adx: null, squeeze: null } } }
+    respuestas = { '/tecnico/AAPL?moneda=usd': { ...USD, lectura: { ...USD.lectura, ruedas: 20, adx: null, squeeze: null } } }
     const t = await dibujar({ pnlPctUsd: null })
     expect(t).not.toContain('Fuerza de la tendencia (ADX)')
-    expect(t).toContain('Para medirla hacen falta unos 40 días de mercado')
+    expect(t).toContain('Para medirla hacen falta unos 28 días de mercado y este activo tiene 20')
   })
 })

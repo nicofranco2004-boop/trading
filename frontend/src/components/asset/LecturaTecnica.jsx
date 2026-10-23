@@ -730,7 +730,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
               )}
             </div>
             <div className="absolute inset-y-0 right-0 w-[68px] text-[11px] tabular pointer-events-none">
-              {!(ultimo?.adx != null && Math.abs(fuerza.pctAdx(ultimo.adx) - fuerza.pctAdx(ADX_CLAVE)) < 26) && (
+              {!(ultimo?.adx != null && Math.abs(fuerza.pctAdx(ultimo.adx) - fuerza.pctAdx(ADX_CLAVE)) < 12) && (
                 <span className="absolute left-1.5 -translate-y-1/2 text-rendi-accent" style={{ top: `${fuerza.pctAdx(ADX_CLAVE)}%` }}>{ADX_CLAVE}</span>
               )}
               {ultimo?.adx != null && (

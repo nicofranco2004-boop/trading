@@ -79,6 +79,11 @@ export function velasSemanales(puntos = []) {
     }
   }
   if (actual) out.push(actual)
+  // El color del Squeeze de cada semana, contra la semana anterior (el de cada
+  // día viene comparado contra el día anterior).
+  out.forEach((s, k) => {
+    if (s.squeeze != null) s.squeeze_color = colorSqueeze(s.squeeze, k > 0 ? out[k - 1].squeeze : null)
+  })
   return out
 }
 
@@ -205,9 +210,21 @@ export function textoCruceRsi(c) {
 
 // La línea clave del ADX (la misma que `tecnico.ADX_CLAVE` del servidor).
 export const ADX_CLAVE = 23
+// Cuántos días de mercado necesita cada uno (el servidor manda null antes).
+const DIAS_ADX = 28
+const DIAS_SQUEEZE = 39
 // Lo que tiene que subir o bajar el ADX en 3 días de mercado para decir que la
 // fuerza crece o se afloja (menos es ruido).
 const ADX_QUIETO = 0.5
+
+/** El color de una barra del Squeeze, con la regla de LazyBear (la misma que
+ *  `tecnico.squeeze` del servidor): contra la barra anterior. Sólo se usa para
+ *  las velas semanales, que comparan contra la SEMANA anterior. */
+export function colorSqueeze(x, antes) {
+  if (x == null) return null
+  const a = antes ?? 0
+  return x > 0 ? (x > a ? 'verde_fuerte' : 'verde_apagado') : (x < a ? 'rojo_fuerte' : 'rojo_apagado')
+}
 
 /** El color del Squeeze dicho en palabras: hacia dónde empuja y si con más o
  *  menos empuje que el día anterior. */
@@ -228,30 +245,41 @@ export function textoSqueeze(color) {
  */
 export function tarjetaFuerza(l) {
   if (!l || !l.ruedas) return null
-  if (l.adx == null || l.squeeze == null) {
-    return {
-      id: 'fuerza', titulo: 'Fuerza de la tendencia', veredicto: 'Faltan datos', tono: 'neutro',
-      texto: `Para medirla hacen falta unos 40 días de mercado y este activo tiene ${l.ruedas}.`,
-    }
+  const base = { id: 'fuerza', titulo: 'Fuerza de la tendencia' }
+  if (l.adx == null) {
+    // Con historia suficiente y sin ADX es que el precio no se movió (el
+    // servidor no puede dividir por un rango de 0): no faltan datos.
+    return l.ruedas < DIAS_ADX
+      ? { ...base, veredicto: 'Faltan datos', tono: 'neutro',
+        texto: `Para medirla hacen falta unos ${DIAS_ADX} días de mercado y este activo tiene ${l.ruedas}.` }
+      : { ...base, veredicto: 'Sin tendencia clara', tono: 'neutro',
+        texto: 'El precio casi no se movió en las últimas semanas: no hay tendencia que medir.' }
   }
   const conFuerza = l.adx >= ADX_CLAVE
-  const sube = l.squeeze > 0
+  // Para dónde empuja: 1 suba, -1 baja, 0 ninguno (en cero o sin Squeeze todavía).
+  const lado = l.squeeze > 0 ? 1 : l.squeeze < 0 ? -1 : 0
   const cruce = l.adx_cruce
+  const bajando = (l.adx_pendiente ?? 0) < -ADX_QUIETO
+  // «La tendencia …» y no «Toma fuerza» a secas: la tarjeta del RSI usa
+  // «Toma fuerza» para otra cosa y salían las dos juntas (auditoría 22/10). Un
+  // cruce reciente con el ADX ya cayendo no es «toma fuerza»: es «afloja».
   const veredicto = !conFuerza ? 'Sin tendencia clara'
-    : cruce?.tipo === 'paso_arriba' ? 'Toma fuerza'
-      : (l.adx_pendiente ?? 0) < -ADX_QUIETO ? 'La fuerza afloja'
+    : bajando ? 'La tendencia afloja'
+      : cruce?.tipo === 'paso_arriba' ? 'La tendencia toma fuerza'
         : 'Tendencia con fuerza'
   const hacia = l.adx_pendiente == null ? ''
     : l.adx_pendiente > ADX_QUIETO ? ', y subiendo'
-      : l.adx_pendiente < -ADX_QUIETO ? ', y bajando' : ''
-  const sq = textoSqueeze(l.squeeze_color)
+      : bajando ? ', y bajando' : ''
+  const direccion = l.squeeze == null
+    ? `Para ver para dónde empuja (el Squeeze) hacen falta unos ${DIAS_SQUEEZE} días de mercado y este activo tiene ${l.ruedas}.`
+    : lado === 0 ? 'El Squeeze está en cero: no empuja para ningún lado.'
+      : `La dirección la marca el Squeeze, que ${textoSqueeze(l.squeeze_color)}.`
   return {
-    id: 'fuerza', titulo: 'Fuerza de la tendencia',
-    veredicto, tono: conFuerza ? (sube ? 'pos' : 'neg') : 'neutro', adx: l.adx,
+    ...base, veredicto, tono: conFuerza && lado ? (lado > 0 ? 'pos' : 'neg') : 'neutro', adx: l.adx,
     texto: `El ADX está en ${Math.round(l.adx)}, ${conFuerza ? 'arriba' : 'abajo'} de la línea de ${ADX_CLAVE}${hacia}. `
       + `El ADX mide cuánta fuerza tiene la tendencia, no para dónde va: arriba de ${ADX_CLAVE} hay tendencia con fuerza; abajo, el precio va más de costado. `
-      + (sq ? `La dirección la marca el Squeeze, que ${sq}.` : '')
-      + (l.squeeze_activo ? ' Además el precio se mueve poco («apretado»): suele ser la antesala de un movimiento más grande, para cualquier lado.' : ''),
+      + direccion
+      + (l.squeeze_activo && l.squeeze != null ? ' Además el precio se mueve poco («apretado»): suele ser la antesala de un movimiento más grande, para cualquier lado.' : ''),
     cruce: textoCruceAdx(cruce, l.squeeze),
   }
 }

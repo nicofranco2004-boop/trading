@@ -113,6 +113,11 @@ def cruce_rsi(r: list, abajo: float = 30.0, arriba: float = 70.0):
 ADX_CLAVE = 23
 # Cuántas ruedas para atrás se mira si el ADX cruzó la línea clave.
 RUEDAS_CRUCE_ADX = 10
+# Lo que necesita el Squeeze para sus últimos valores: 20 días de bandas + 20
+# de regresión + el día anterior para el color. La lectura sólo mira el final,
+# así que lo calcula sobre los últimos días (la radiografía de la Cartera pide
+# la lectura de cada activo y no usa el Squeeze).
+VELAS_SQUEEZE_LECTURA = 60
 
 
 def _velas_completas(velas: list):
@@ -163,14 +168,17 @@ def _rango_verdadero(hs: list, ls: list, cs: list) -> list:
 
 
 def adx(velas: list, n: int = 14, suavizado: int = None) -> dict:
-    """ADX, +DI y −DI con el suavizado de Wilder: lo mismo que `ta.dmi(n,
-    suavizado)` de TradingView. {'adx', 'di_mas', 'di_menos'}: listas del largo
+    """ADX, +DI y −DI con el suavizado de Wilder: lo mismo que el script
+    «DMI/ADX/KEYLEVEL» de TradingView (el que usa Nico) y que `ta.dmi(n,
+    suavizado)`. {'adx', 'di_mas', 'di_menos'}: listas del largo
     de `velas`, None mientras no haya historia suficiente (el ADX necesita unas
     2×n ruedas)."""
     suavizado = suavizado or n
     hs, ls, cs = _velas_completas(velas)
     tr = _rango_verdadero(hs, ls, cs)
-    dm_mas, dm_menos = [None], [None]
+    # El primer día no hay día anterior: el script lo cuenta como 0 (en Pine,
+    # `na > x` es falso), no como hueco. Sólo cambia las primeras semanas.
+    dm_mas, dm_menos = [0.0], [0.0]
     for i in range(1, len(cs)):
         sube, baja = hs[i] - hs[i - 1], ls[i - 1] - ls[i]
         dm_mas.append(sube if (sube > baja and sube > 0) else 0.0)
@@ -250,6 +258,9 @@ def squeeze(velas: list, largo_bb: int = 20, mult_bb: float = 2.0,
         medio = (max(hs[i - largo_kc + 1:i + 1]) + min(ls[i - largo_kc + 1:i + 1])) / 2.0
         base[i] = cs[i] - (medio + m_kc[i]) / 2.0
     valor = _regresion(base, largo_kc)
+    # Un precio quieto deja un residuo de redondeo (2e-14), no un empuje: va 0.
+    # Si no, la pantalla dibujaba barras verdes enteras para algo que no se movió.
+    valor = [0.0 if (x is not None and abs(x) <= 1e-9 * abs(cs[i])) else x for i, x in enumerate(valor)]
     color = [None] * N
     for i in range(N):
         x = valor[i]
@@ -311,7 +322,10 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None) -> dic
     m200 = m200 if m200 is not None else media(cierres, 200)
     r = r if r is not None else rsi(cierres)
     dmi = dmi if dmi is not None else adx(velas)
-    sqz = sqz if sqz is not None else squeeze(velas)
+    if sqz is None:
+        cola = squeeze(velas[-VELAS_SQUEEZE_LECTURA:])
+        relleno = [None] * (len(velas) - len(cola["valor"]))
+        sqz = {k: relleno + lista for k, lista in cola.items()}
     a = dmi["adx"]
     ultimo = cierres[-1]
     i_anio = _desde_dias(velas, DIAS_ANIO)

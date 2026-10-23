@@ -181,7 +181,8 @@ class FuerzaTest(unittest.TestCase):
         sube, baja = df.high.diff(), -df.low.diff()
         dm_mas = sube.where((sube > baja) & (sube > 0), 0.0)
         dm_menos = baja.where((baja > sube) & (baja > 0), 0.0)
-        dm_mas.iloc[0] = dm_menos.iloc[0] = float("nan")
+        # El primer día: 0, no hueco (en el Pine del script, `na > x` es falso).
+        dm_mas.iloc[0] = dm_menos.iloc[0] = 0.0
         atr = _rma_pandas(_tr_pandas(df), 14)
         mas, menos = 100 * _rma_pandas(dm_mas, 14) / atr, 100 * _rma_pandas(dm_menos, 14) / atr
         adx_ref = 100 * _rma_pandas((mas - menos).abs() / (mas + menos), 14)
@@ -229,6 +230,27 @@ class FuerzaTest(unittest.TestCase):
         b = tecnico.squeeze(self.velas, como_lazybear=False)["activo"]
         # Con Bollinger más anchas (2 en vez de 1,5) hay menos días "apretados".
         self.assertLess(sum(1 for x in b if x), sum(1 for x in a if x))
+
+    def test_la_lectura_mira_el_squeeze_sobre_la_cola_y_da_lo_mismo(self):
+        completo = tecnico.squeeze(self.velas)
+        l = tecnico.lectura(self.velas)
+        self.assertAlmostEqual(l["squeeze"], completo["valor"][-1], places=10)
+        self.assertEqual(l["squeeze_color"], completo["color"][-1])
+        self.assertEqual(l["squeeze_activo"], completo["activo"][-1])
+        # El signo del Squeeze el día del cruce sale de la serie completa alineada.
+        a = tecnico.adx(self.velas)["adx"]
+        self.assertEqual(l["adx_cruce"], tecnico.cruce_adx(a, completo["valor"]))
+
+    def test_precio_quieto_no_inventa_empuje(self):
+        # Una acción suspendida: 300 días al mismo precio. El ADX no existe (no
+        # hay rango) y el Squeeze es 0, no un residuo de redondeo que la
+        # pantalla dibujaba como barras verdes enteras.
+        quieto = [{"date": (date(2024, 1, 1) + timedelta(days=i)).isoformat(), "open": 228.97,
+                   "high": 228.97, "low": 228.97, "close": 228.97} for i in range(300)]
+        self.assertTrue(all(x is None for x in tecnico.adx(quieto)["adx"]))
+        s = tecnico.squeeze(quieto)
+        self.assertTrue(all(x == 0.0 for x in s["valor"][38:]))
+        self.assertEqual(tecnico.lectura(quieto)["squeeze"], 0.0)
 
     def test_vela_rota_se_completa_como_en_la_pantalla(self):
         # Sin máximo ni mínimo (Yahoo mandó la vela rota): se usan apertura y cierre.
