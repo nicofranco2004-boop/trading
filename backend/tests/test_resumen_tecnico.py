@@ -79,7 +79,7 @@ class PalabrasTest(unittest.TestCase):
     def test_proporciones(self):
         casos = {0: "casi nada", 0.119: "casi nada", 0.12: "más o menos un cuarto", 0.33: "más o menos un tercio",
                  0.42: "más o menos la mitad", 0.5: "más o menos la mitad", 0.58: "casi dos tercios",
-                 0.75: "más o menos tres cuartos", 0.9: "casi todo", 0.97: "todo", 1.03: "todo",
+                 0.75: "más o menos tres cuartos", 0.9: "casi todo", 0.976: "casi todo", 1.0: "todo", 1.03: "todo",
                  1.2: "todo y un poco más"}
         for q, frase in casos.items():
             self.assertEqual(rh.proporcion(q), frase, q)
@@ -162,11 +162,20 @@ class PalabrasTest(unittest.TestCase):
             self.assertTrue(graves, consejo)
         neutro = "Lo que se mira es si cierra abajo de 309 dólares: ahí se terminaría la suba. A. B. C."
         self.assertEqual(resumen_tecnico.problemas(neutro, hechos)[0], [])
-        # Largo: más de 100 palabras se rehace; en el segundo intento se toleran 120.
-        largo_txt = " ".join(["palabra"] * 100) + ". B. C. D."
-        self.assertTrue(resumen_tecnico.problemas(largo_txt, hechos)[1])
-        self.assertFalse(resumen_tecnico.problemas(largo_txt, hechos, segunda=True)[1])
+        # Largo (decisión de Nico, 23/10): 120 es un tope, no una meta. Hasta 120
+        # pasa; más se rehace; en el segundo intento se toleran 130.
+        de_116 = " ".join(["palabra"] * 113) + ". B. C. D."
+        self.assertFalse(resumen_tecnico.problemas(de_116, hechos)[1])
+        de_125 = " ".join(["palabra"] * 122) + ". B. C. D."
+        self.assertTrue(resumen_tecnico.problemas(de_125, hechos)[1])
+        self.assertFalse(resumen_tecnico.problemas(de_125, hechos, segunda=True)[1])
+        self.assertTrue(resumen_tecnico.problemas(" ".join(["palabra"] * 135) + ". B. C. D.", hechos, segunda=True)[1])
         self.assertTrue(resumen_tecnico.problemas("Una sola oración.", hechos)[1])
+        con_fuerza = {**hechos, "indicador_que_suma": {resumen_tecnico.FRASE_DE_FUERZA: "La bajada se quedó sin fuerza"}}
+        # Y si se pasa igual, el aviso no le pide sacar esa frase (lo que hacía).
+        aviso = resumen_tecnico.problemas(" ".join(["palabra"] * 125) + ". B. C. D.", con_fuerza)[1][0]
+        self.assertIn("oración 2", aviso)
+        self.assertNotIn("sacá la oración 4", aviso)
         # Una corrección a la vista (vuelta 7 de la redacción) o un salto de línea.
         graves, largo = resumen_tecnico.problemas("Subió a 344. Corrijo: a 309. A. B.", hechos)
         self.assertTrue(graves)
@@ -260,6 +269,9 @@ class ResumenTest(unittest.TestCase):
         self.assertIn("Sos Mervall-E", kw["system"])
         self.assertIn("Lo que se mira es", kw["system"])
         self.assertNotRegex(kw["system"], r"[Yy]o miraría|mirarías vos")
+        # 120 es un tope, no una meta (Nico, 23/10): nada de «entre 60 y 80».
+        self.assertIn("Nunca más de 120", kw["system"])
+        self.assertNotIn("entre 60 y 80", kw["system"])
 
         # Otro usuario: lo ve al abrir la ficha, y tocar el botón no lo regenera.
         f2 = self._ficha(h=self.h2)

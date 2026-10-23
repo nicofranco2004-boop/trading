@@ -60,16 +60,21 @@ SEGUNDOS_ESPERA = 30
 # ofrece el resumen: contaría como actual algo de hace semanas.
 DIAS_VELA_VIEJA = 7
 
-# Largo: el pedido dice de 60 a 80 palabras. Con un salto de línea o más de
-# PALABRAS_MAX se pide de nuevo UNA vez (en la vuelta 7 de la redacción apareció
-# un «Corrijo: …» a la vista). En el segundo intento se tolera hasta
-# PALABRAS_MAX_SEGUNDA: mejor un poco largo que ningún resumen.
-PALABRAS_MAX = 95
-PALABRAS_MAX_SEGUNDA = 110
+# Largo (decisión de Nico, 23/10): 120 palabras es un TOPE, no una meta; el
+# pedido dice que use las que hagan falta y ni una más. Un texto de más de 120,
+# con un salto de línea o fuera de 3–6 oraciones se pide de nuevo UNA vez. En el
+# segundo intento se toleran PALABRAS_MAX_SEGUNDA: mejor un poco largo que
+# ningún resumen.
+PALABRAS_MAX = 120
+PALABRAS_MAX_SEGUNDA = 130
 ORACIONES = (3, 6)
 ORACIONES_SEGUNDA = (3, 7)
+FRASE_DE_FUERZA = "fuerza_del_movimiento_ADX_y_Squeeze"
 
-MAX_TOKENS = 2000
+# Con effort low el modelo igual puede razonar antes de escribir (Pampa, 23/10:
+# 1.280 tokens en el segundo intento). Con 2.000 una vez se quedó sin lugar y el
+# texto vino vacío. Sólo se paga lo que se usa.
+MAX_TOKENS = 4000
 
 # El pedido vive en su propio archivo para que se pueda reemplazar sin tocar el
 # código (lo escribe y lo mide la sesión de redacción). Va junto con los hechos
@@ -134,7 +139,12 @@ def problemas(texto: str, hechos: dict, segunda: bool = False) -> tuple[list, li
     palabras = len(t.split())
     tope = PALABRAS_MAX_SEGUNDA if segunda else PALABRAS_MAX
     if palabras > tope:
-        largo.append(f"tiene {palabras} palabras: tienen que ser entre 60 y 80, sacá la oración 4")
+        # Con la frase de la fuerza, lo que se achica es la oración 2: el aviso
+        # decía «sacá la oración 4» y el modelo borraba justo esa frase (Pampa, 23/10).
+        con_fuerza = FRASE_DE_FUERZA in (hechos.get("indicador_que_suma") or {})
+        largo.append(f"tiene {palabras} palabras y el tope es 120: acortá la oración 2 (el movimiento)"
+                     + (", pero la frase de la fuerza (ADX y Squeeze) va entera, sin recortarla" if con_fuerza
+                        else " o sacá la oración 4"))
     lo, hi = ORACIONES_SEGUNDA if segunda else ORACIONES
     oraciones = len([o for o in re.split(r"(?<=[.!?])\s+", t) if o.strip()])
     if not lo <= oraciones <= hi:

@@ -10,7 +10,7 @@ cada indicador con lo que significa. El modelo sólo ordena y cuenta.
 La primera prueba con Sonnet (22/10) dijo «un tercio» y otra vez «dos tercios»
 donde MercadoLibre había recuperado casi la mitad, y «ayer» por un dato del día.
 
-Lo armó y lo midió la sesión «Redacción del resumen de Mervall-E» (vuelta 17, sobre 20
+Lo armó y lo midió la sesión «Redacción del resumen de Mervall-E» (vuelta 20, sobre 24
 resúmenes, 0 números inventados) junto con el pedido, que vive al lado en
 `resumen_tecnico_pedido.txt`. Se reemplazan juntos: el pedido nombra las claves
 de acá («para_el_titular», «movimientos_recientes»…).
@@ -86,7 +86,8 @@ def proporcion(q):
         return "casi dos tercios"
     if q < 0.85:
         return "más o menos tres cuartos"
-    if q < 0.97:
+    # v18: «todo» sólo desde 1. Tesla decía «ya recuperó todo» con 386 contra un pico de 387 (0,976).
+    if q < 1.0:
         return "casi todo"
     if q <= 1.03:
         return "todo"
@@ -323,17 +324,93 @@ def hechos(nombre, r):
     # recién cruzando 23. Si ninguno, no hay oración de indicador.
     mov_dir = (e or {}).get("dir")
     sq_arriba = (col or "").startswith("verde")
+    # v18: la lectura combinada ADX + Squeeze (como Jaime Merino, pedido de Nico) va
+    # PRIMERO cuando cuenta un hecho: tomó fuerza, se está cansando o se quedó sin
+    # fuerza (con el día en que cambió el empuje, que es el momento que él mira).
+    fz = fuerza(r)
     elegido = None
-    if rsi is not None and (rsi >= 70 or rsi <= 30 or l.get("rsi_cruce")):
+    if fz and fz[1]:
+        ind["fuerza_del_movimiento_ADX_y_Squeeze"] = fz[0][0].upper() + fz[0][1:]
+        elegido = "fuerza_del_movimiento_ADX_y_Squeeze"
+    elif rsi is not None and (rsi >= 70 or rsi <= 30 or l.get("rsi_cruce")):
         elegido = "fuerza_del_precio_RSI"
     elif col and mov_dir and sq_arriba != (mov_dir == "suba"):
         elegido = "empuje_de_los_ultimos_dias_Squeeze"
-    elif l.get("adx_cruce"):
-        elegido = "fuerza_de_la_tendencia_ADX"
     if elegido and elegido in ind:
         h["indicador_que_suma"] = {elegido: ind[elegido]}
     return h
 
+
+def _lado(sq):
+    return "suba" if sq > 0 else "bajada"
+
+
+def fuerza(ficha):
+    """La fuerza del movimiento leída como Jaime Merino: ADX (cuánta fuerza, si crece o se
+    cansa) + Squeeze (para dónde empuja), en UNA frase. Devuelve (frase, cuenta_algo):
+    `cuenta_algo` es True cuando hay un hecho (tomó fuerza, se está cansando, se quedó sin
+    fuerza); False cuando sólo describe. Nunca como señal: describe lo que pasó.
+
+    De QUÉ movimiento habla el ADX lo dicen sus dos líneas (+DI / −DI), no el Squeeze: Nike
+    (21/10) tenía el ADX en 25 bajando y el Squeeze verde, y «la suba todavía es firme pero
+    se está cansando» era falso: la suba tenía 2 semanas y lo que se apagaba era la bajada
+    de meses. Si el lado que manda cambió hace menos de 10 días de mercado, el ADX todavía
+    describe el movimiento anterior y no se cuenta como hecho."""
+    import tecnico
+    l, pts = ficha["lectura"], ficha["puntos"]
+    hoy = l["fecha"]
+    el = lambda hace: "el " + fecha(pts[-1 - hace]["d"], hoy)
+    a, pend, sq = l.get("adx"), l.get("adx_pendiente"), l.get("squeeze")
+    color, cruce = l.get("squeeze_color") or "", l.get("adx_cruce")
+    if a is None or sq is None:
+        return None
+    dmi = tecnico.adx([{"open": x.get("o"), "high": x.get("h"), "low": x.get("l"), "close": x["c"]} for x in pts])
+    dm, dn = dmi["di_mas"], dmi["di_menos"]
+    if dm[-1] is None or dn[-1] is None:
+        return None
+    arriba = lambda i: dm[i] > dn[i]
+    lado = "suba" if arriba(-1) else "bajada"
+    dias_lado = 0
+    while dias_lado < len(dm) - 1 and dm[-1 - dias_lado] is not None and arriba(-1 - dias_lado) == arriba(-1):
+        dias_lado += 1
+    n = round(a)
+    sube, baja = (pend or 0) >= 1, (pend or 0) <= -1
+    sqs = [x.get("squeeze") for x in pts if x.get("squeeze") is not None]
+    giro = next((k for k in range(1, min(len(sqs), 15)) if (sqs[-k - 1] > 0) != (sqs[-1] > 0)), None)
+    para = "para arriba" if sq > 0 else "para abajo"
+    if cruce and cruce["tipo"] == "paso_abajo":
+        i = -1 - cruce["hace"]
+        antes = "suba" if arriba(i) else "bajada"
+        sq_antes = sqs[i] if cruce["hace"] < len(sqs) else sq
+        # Se nombra el movimiento sólo si las líneas del ADX y el empuje coinciden ese día
+        # (Pampa en pesos, 8/10: el ADX decía suba y el empuje bajada).
+        quien = f"la {antes} se quedó sin fuerza" if (antes == "suba") == (sq_antes > 0) else "el precio se quedó sin una tendencia firme"
+        txt = f"{quien}: {el(cruce['hace'])} la fuerza de la tendencia (ADX) bajó de 23, o sea que dejó de ser firme"
+        if giro is not None and (sq_antes > 0) != (sq > 0):
+            # v18: frase más corta (con las dos partes enteras pasaba de 95 palabras): el
+            # segundo día sin el mes si es el mismo, y «el empuje (Squeeze)».
+            d1, d2 = pts[-1 - cruce["hace"]]["d"], pts[-giro]["d"]
+            dia2 = f"el {int(d2[8:])}" if d1[:7] == d2[:7] else el(giro - 1)
+            # v20: «el empuje de los últimos días» completo: el juez marcó que «el empuje
+            # (Squeeze)» a secas no se entiende (v19 perdió 10 de 10 contra la frase larga).
+            txt += f"; y {dia2}, el empuje de los últimos días (Squeeze) cambió {para}"
+        else:
+            txt += f", y el empuje {para} se achica" if "apagado" in color else f", aunque el empuje sigue {para}"
+        return txt, True
+    if cruce and cruce["tipo"] == "paso_arriba" and sube and (sq > 0) == (lado == "suba"):
+        return (f"la {lado} tomó fuerza: {el(cruce['hace'])} la fuerza de la tendencia (ADX) pasó de 23"
+                f", o sea que se volvió firme, y sigue creciendo; el empuje de los últimos días (Squeeze) es {para}"), True
+    if n >= 23 and baja and dias_lado >= 10:
+        return (f"la {lado} todavía es firme (la fuerza de la tendencia, ADX, está en {n}, arriba de 23), pero se está "
+                f"cansando: esa fuerza viene bajando" + (" y el empuje se achica" if "apagado" in color else "")), True
+    if n >= 23 and dias_lado >= 10:
+        return (f"la {lado} viene firme (ADX en {n})"
+                + (" y ganando fuerza" if sube and "fuerte" in color else
+                   ", aunque el empuje de los últimos días se achica" if "apagado" in color else "")), False
+    if n >= 23:
+        return None  # firme, pero el lado que manda cambió hace poco: no se sabe de qué movimiento habla
+    return (f"no hay una tendencia firme (ADX en {n}, abajo de 23); el empuje de los últimos días es {para}"
+            + (", cada vez más" if "fuerte" in color else ", cada vez menos")), False
 
 def para_el_resumen(ficha: dict, nombre: str):
     """Los hechos del resumen, o None si la ficha no tiene con qué contar."""
