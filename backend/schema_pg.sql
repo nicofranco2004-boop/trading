@@ -707,6 +707,46 @@ ALTER TABLE brokers ADD COLUMN IF NOT EXISTS parent_broker_id bigint;
 
 ALTER TABLE brokers ADD COLUMN IF NOT EXISTS nombres_anteriores text;
 
+CREATE TABLE IF NOT EXISTS cambios_ratio (
+  cedear text NOT NULL,
+  fecha text NOT NULL,
+  tipo text NOT NULL,
+  factor double precision,
+  factor_medido double precision,
+  estado text NOT NULL,
+  origen text NOT NULL,
+  motivo text,
+  precio_antes double precision,
+  precio_despues double precision,
+  en_la_serie bigint NOT NULL DEFAULT 0,
+  actualizado text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS'),
+  PRIMARY KEY (cedear, fecha, tipo)
+);
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS cedear text;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS fecha text;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS tipo text;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS factor double precision;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS factor_medido double precision;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS estado text;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS origen text;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS motivo text;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS precio_antes double precision;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS precio_despues double precision;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS en_la_serie bigint DEFAULT 0;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS actualizado text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS');
+
 CREATE TABLE IF NOT EXISTS config (
   key text NOT NULL,
   value text,

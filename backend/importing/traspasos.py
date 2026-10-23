@@ -109,26 +109,35 @@ def senales_del_lote(txs: List[NormalizedTx]) -> set:
             and _SENAL_SALIDA.search(_norm(t.notes))}
 
 
-def traspasos_ya_cerrados(conn, uid: int) -> set:
-    """{(broker, activo, fecha)} de los cierres por traspaso que YA se aplicaron.
+def traspasos_ya_cerrados(conn, uid: int) -> Dict[Tuple[str, str, str], float]:
+    """{(broker, activo, fecha): cantidad} de los cierres por traspaso que YA se
+    aplicaron.
 
     Sin esto el cruce no es idempotente: re-importar el archivo del broker de
     origen vuelve a proponer los mismos cierres y descuenta DE NUEVO lo que ya
     se había cerrado. Medido con un archivo real: Bull Market bajaba de 11
     posiciones a 9 en la segunda importación del mismo archivo.
 
+    Devuelve la CANTIDAD y no sólo "ya se cerró": hasta 2026-10-22 el cierre
+    sólo tocaba la mitad en pesos del broker de origen y dejaba abierta la mitad
+    en dólares ("· USD"). Para esas cuentas, re-importar tiene que proponer lo
+    que FALTA, no saltear el papel entero porque ya tiene un cierre.
+
     ⚠️ Lee el LOG entero, lápidas incluidas, a propósito: si la persona borró un
     cierre por traspaso, re-importar no se lo tiene que volver a proponer."""
-    return {(r["broker"], r["asset_symbol"], (r["date"] or "")[:10])
-            for r in conn.execute(
-                """SELECT n.broker, n.asset_symbol, n.date
-                     FROM import_normalized_tx n
-                     JOIN import_batches b ON b.id = n.batch_id
-                    WHERE b.user_id = ? AND b.status = 'confirmed'
-                      AND n.operation_type = 'SELL'
-                      AND COALESCE(n.notes, '') LIKE ?""",
-                (uid, f"%{MARCA_TRASPASO}%")).fetchall()
-            if r["asset_symbol"]}
+    out: Dict[Tuple[str, str, str], float] = {}
+    for r in conn.execute(
+            """SELECT n.broker, n.asset_symbol, n.date, n.quantity
+                 FROM import_normalized_tx n
+                 JOIN import_batches b ON b.id = n.batch_id
+                WHERE b.user_id = ? AND b.status = 'confirmed'
+                  AND n.operation_type = 'SELL'
+                  AND COALESCE(n.notes, '') LIKE ?""",
+            (uid, f"%{MARCA_TRASPASO}%")).fetchall():
+        if r["asset_symbol"]:
+            k = (r["broker"], r["asset_symbol"], (r["date"] or "")[:10])
+            out[k] = out.get(k, 0.0) + float(r["quantity"] or 0)
+    return out
 
 
 def entradas_ya_confirmadas(conn, uid: int, brokers_del_lote: set) -> List[dict]:
@@ -154,12 +163,19 @@ def entradas_ya_confirmadas(conn, uid: int, brokers_del_lote: set) -> List[dict]
     return [dict(r) for r in filas if r["broker"] not in brokers_del_lote]
 
 
-def _posiciones_que_deja_el_lote(txs: List[NormalizedTx]) -> Dict[Tuple[str, str], float]:
+def _posiciones_que_deja_el_lote(txs: List[NormalizedTx],
+                                 repetidas=()) -> Dict[Tuple[str, str], float]:
     """Lo que va a quedar abierto cuando este lote se confirme, por (broker,
     activo). Se usa para el sentido inverso: las posiciones del broker que
-    ENTREGA todavía no existen en `positions` — las está creando este import."""
+    ENTREGA todavía no existen en `positions` — las está creando este import.
+
+    `repetidas` son los row_index que el confirm va a omitir porque ya entraron
+    en otro import: esas compras ya están en `positions`, y sumarlas de nuevo
+    haría proponer un cierre de títulos que no existen."""
     out: Dict[Tuple[str, str], float] = {}
     for t in txs:
+        if t.row_index in repetidas:
+            continue
         if not t.asset_symbol or not t.quantity:
             continue
         if t.operation_type not in (OP_SELL, OP_BUY):
@@ -173,13 +189,15 @@ def _posiciones_que_deja_el_lote(txs: List[NormalizedTx]) -> Dict[Tuple[str, str
 def cerrar_origen_de_traspasos(
     conn, uid: int, txs: List[NormalizedTx],
     existing_positions: Dict[Tuple[str, str], float],
+    repetidas=(),
 ) -> List[NormalizedTx]:
     """Movimientos que cierran el broker de ORIGEN de cada traspaso detectado.
 
     `txs` son las filas válidas del import (las del broker que RECIBE) y
     `existing_positions` es {(broker, activo): cantidad} de lo que el usuario ya
-    tiene. Devuelve filas nuevas para AGREGAR al lote; lista vacía si no hay
-    nada que cruzar (el caso normal)."""
+    tiene; `repetidas`, los row_index de `txs` que el confirm va a omitir por
+    ya importados. Devuelve filas nuevas para AGREGAR al lote; lista vacía si
+    no hay nada que cruzar (el caso normal)."""
     # ── Las dos direcciones ──────────────────────────────────────────────
     # El usuario puede importar los brokers en cualquier orden, y el traspaso
     # hay que reconocerlo igual:
@@ -212,7 +230,7 @@ def cerrar_origen_de_traspasos(
     # descuenta a medida que se usa, así dos entradas del mismo papel no cierran
     # la misma posición dos veces.
     disponible = {k: v for k, v in existing_positions.items() if v > 0}
-    for k, v in _posiciones_que_deja_el_lote(txs).items():
+    for k, v in _posiciones_que_deja_el_lote(txs, repetidas).items():
         disponible[k] = disponible.get(k, 0.0) + v
 
     # Grupo de brokers de cada destino: el padre MÁS su sibling "· USD". Los dos
@@ -229,51 +247,81 @@ def cerrar_origen_de_traspasos(
 
     for e in sorted(entradas, key=lambda d: (d["date"] or "", d["asset_symbol"] or "")):
         fecha = (e["date"] or "")[:10]
-        for (broker, activo), abierto in sorted(disponible.items()):
-            if (activo != e["asset_symbol"] or abierto <= 0
+        activo = e["asset_symbol"]
+        # El broker de origen se cierra ENTERO: el padre MÁS su "· USD". Un papel
+        # comprado en dólares queda en el sibling y se va en el mismo traspaso
+        # que el comprado en pesos — el broker declara UNA salida para los dos.
+        # Antes se miraba sólo el primer broker que matcheaba: medido con la
+        # cuenta real, AL30 cerraba 3.630 de 6.460 (los 2.830 comprados con
+        # dólares quedaban abiertos) y VIST 18 de 28.
+        origen = None
+        for (broker, act), abierto in sorted(disponible.items()):
+            if (act != activo or abierto <= 0
                     or broker in grupo_de(e["broker"])):
                 continue
-            if (broker, fecha) not in salidas:
-                continue          # sin señal de salida no se toca nada
-            if (broker, activo, fecha) in ya_cerrados:
-                continue          # este traspaso ya se cerró: no se repite
+            g = grupo_de(broker)
+            # La señal de salida la deja el broker, no la moneda: Bull Market
+            # cobra el trámite en pesos aunque se lleve también los papeles
+            # comprados en dólares.
+            if any((b, fecha) in salidas for b in g):
+                origen = g
+                break
+        if origen is None:
+            continue              # sin señal de salida no se toca nada
 
-            # El MÍNIMO de los dos. Cerrar de más le borra tenencia real; cerrar
-            # de menos lo deja como está hoy. Y resuelve solo el cambio de ratio
-            # (un CEDEAR puede entrar 84 donde salieron 28).
-            cierra = min(abierto, float(e["quantity"]))
-            if cierra <= 0:
-                continue
-            valor = float(e["gross_amount"] or 0) * cierra / float(e["quantity"])
-            precio = (valor / cierra) if cierra else 0.0
-            idx = _BASE_ROW_INDEX - len(nuevas)
-            nota = (f"{MARCA_APROBACION} {MARCA_TRASPASO}{e['broker']} el {fecha} "
-                    f"— se cierra la posición acá para no contarla dos veces")
+        # Lo que ya se cerró por esta MISMA entrada (otro import, o el cierre
+        # viejo que sólo tocaba la mitad en pesos) se descuenta, no se repite.
+        restante = float(e["quantity"]) - sum(
+            ya_cerrados.get((b, activo, fecha), 0.0) for b in origen)
+        abierto = sum(disponible.get((b, activo), 0.0) for b in origen)
+        # El MÍNIMO de los dos. Cerrar de más le borra tenencia real; cerrar de
+        # menos lo deja como está hoy. Y resuelve solo el cambio de ratio (un
+        # CEDEAR puede entrar 84 donde salieron 28).
+        cierra = min(abierto, restante)
+        if cierra <= 0:
+            continue
+        # UNA venta para todo el broker, asentada donde está la señal de salida.
+        # El rebuild repasa el par padre↔"· USD" como un solo libro, así que la
+        # venta consume también los lotes comprados en dólares; y la caja no se
+        # mueve en ninguno de los dos (la venta acredita y el retiro debita en
+        # el mismo lugar).
+        broker = sorted(b for b in origen if (b, fecha) in salidas)[0]
+        valor = float(e["gross_amount"] or 0) * cierra / float(e["quantity"])
+        precio = (valor / cierra) if cierra else 0.0
+        idx = _BASE_ROW_INDEX - len(nuevas)
+        nota = (f"{MARCA_APROBACION} {MARCA_TRASPASO}{e['broker']} el {fecha} "
+                f"— se cierra la posición acá para no contarla dos veces")
 
-            nuevas.append(NormalizedTx(
-                row_index=idx, date=e["date"], broker=broker,
-                operation_type=OP_SELL, asset_symbol=activo,
-                quantity=cierra, unit_price=round(precio, 8),
-                gross_amount=round(valor, 4), currency=e["currency"], notes=nota,
-            ))
-            # El RETIRO espeja el DEPOSITO que el destino ya emite por la
-            # entrada: el capital aportado baja acá lo mismo que sube allá, y la
-            # caja del origen no se mueve (la venta acredita, el retiro debita).
-            nuevas.append(NormalizedTx(
-                row_index=idx - 1, date=e["date"], broker=broker,
-                operation_type=OP_WITHDRAW, gross_amount=round(valor, 4),
-                currency=e["currency"],
-                # ⚠️ LLEVA `asset_symbol` aunque sea un movimiento de CAJA: la
-                # aprobación se pide POR TICKER, y una fila sin ticker nunca
-                # queda aprobada. Sin esto se aplicaba la venta y NO el retiro
-                # que la acompaña → el capital aportado no bajaba en el origen y
-                # quedaba contado dos veces, que es justo lo que esto arregla.
-                asset_symbol=activo,
-                notes=f"{MARCA_APROBACION} {MARCA_TRASPASO}{e['broker']} el {fecha} "
-                      f"— el valor se fue con los títulos",
-            ))
-            disponible[(broker, activo)] = abierto - cierra
-            break                 # una entrada cierra un solo broker de origen
+        nuevas.append(NormalizedTx(
+            row_index=idx, date=e["date"], broker=broker,
+            operation_type=OP_SELL, asset_symbol=activo,
+            quantity=cierra, unit_price=round(precio, 8),
+            gross_amount=round(valor, 4), currency=e["currency"], notes=nota,
+        ))
+        # El RETIRO espeja el DEPOSITO que el destino ya emite por la
+        # entrada: el capital aportado baja acá lo mismo que sube allá, y la
+        # caja del origen no se mueve (la venta acredita, el retiro debita).
+        nuevas.append(NormalizedTx(
+            row_index=idx - 1, date=e["date"], broker=broker,
+            operation_type=OP_WITHDRAW, gross_amount=round(valor, 4),
+            currency=e["currency"],
+            # ⚠️ LLEVA `asset_symbol` aunque sea un movimiento de CAJA: la
+            # aprobación se pide POR TICKER, y una fila sin ticker nunca
+            # queda aprobada. Sin esto se aplicaba la venta y NO el retiro
+            # que la acompaña → el capital aportado no bajaba en el origen y
+            # quedaba contado dos veces, que es justo lo que esto arregla.
+            asset_symbol=activo,
+            notes=f"{MARCA_APROBACION} {MARCA_TRASPASO}{e['broker']} el {fecha} "
+                  f"— el valor se fue con los títulos",
+        ))
+        # Descontar de la bolsa, pesos primero, para que otra entrada del mismo
+        # papel no vuelva a cerrar lo mismo.
+        falta = cierra
+        for b in sorted(origen):
+            usa = min(disponible.get((b, activo), 0.0), falta)
+            if usa > 0:
+                disponible[(b, activo)] -= usa
+                falta -= usa
 
     # Re-numerar para que los índices sean únicos y consecutivos.
     for i, t in enumerate(nuevas):

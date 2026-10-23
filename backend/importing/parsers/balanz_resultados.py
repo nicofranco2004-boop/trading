@@ -309,7 +309,9 @@ class BalanzResultadosParser(Parser):
             # acciones" / "Split"): Precio Compra=0 es un lote VÁLIDO de costo-cero,
             # no un precio faltante. Sin esto _pos(0)=None tiraba el lote en silencio
             # (BYMA y SPY quedaban con menos nominales de los reales).
-            is_free_lot = op_compra.startswith("dividendo en acciones") or op_compra.startswith("split")
+            # «Acreditación cambio de ratio» de un CEDEAR es el mismo lote gratis.
+            is_free_lot = (op_compra.startswith("dividendo en acciones") or op_compra.startswith("split")
+                           or "cambio de ratio" in op_compra)
             pc = _pos(_g(row, "precio_compra"))
             if pc is None:
                 if is_free_lot:
