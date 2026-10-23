@@ -10048,8 +10048,11 @@ def _fetch_data912_equities():
                     # `mercado`: de qué lista vino. El buscador de CEDEARs
                     # (cedears_dolar) lee SÓLO los de arg_cedears: con las acciones
                     # argentinas mezcladas, YPFD se leía como "YPF en dólares".
+                    # px_bid/px_ask: las mejores puntas de compra y venta, para
+                    # la liquidez de la ficha (liquidez.py).
                     result[sym] = {'c': float(close), 'pct': item.get('pct_change'),
-                                   'v': item.get('v'), 'mercado': endpoint}
+                                   'v': item.get('v'), 'mercado': endpoint,
+                                   'px_bid': item.get('px_bid'), 'px_ask': item.get('px_ask')}
         if result:  # sólo pisamos el cache si hubo data nueva
             _data912_eq_cache['data'] = result
             _data912_eq_cache['ts'] = now
@@ -11428,6 +11431,20 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
         if not res.get("disponible"):
             res["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
         return res
+
+
+@app.get("/api/liquidez/{papel}")
+def get_liquidez(papel: str, uid: int = Depends(get_effective_user)):
+    """Liquidez en BYMA de un CEDEAR o una acción argentina, para la ficha:
+    plata operada por día, días sin operaciones, diferencia entre puntas y un
+    veredicto (mucha / media / poca). Sólo papeles que cotizan en BYMA (los que
+    lista data912); lo demás contesta `disponible: False`. Las cuentas y los
+    cortes: liquidez.py."""
+    sym = (papel or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {papel}")
+    import liquidez
+    return liquidez.para_la_ficha(sym)
 
 
 @app.get("/api/admin/velas")
