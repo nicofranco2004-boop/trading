@@ -47276,7 +47276,12 @@ class WatchlistAddIn(BaseModel):
     @classmethod
     def normalize_symbol(cls, v):
         v = v.strip().upper()
-        if not re.match(r'^[A-Z0-9]{1,10}(\.BA|-USD)?$', v):
+        # Acción con clase (Berkshire, Brown-Forman): se guarda como la cotiza
+        # Yahoo y como la manda el mapa de calor, con guión (BRK.B → BRK-B).
+        # Antes se rechazaba: la estrella de su ficha fallaba siempre.
+        if re.match(r'^[A-Z0-9]{1,10}\.[A-Z]$', v):
+            v = v.replace('.', '-')
+        if not re.match(r'^[A-Z0-9]{1,10}(\.BA|-USD|-[A-Z])?$', v):
             raise ValueError('Símbolo inválido')
         return ticker_vigente(v)   # SQ → XYZ: el que cotiza (tickers_renombrados.py)
 

@@ -547,9 +547,9 @@ def _necesita(conn, ticker: str, hoy: str, ahora: datetime) -> bool:
             cuando = datetime.fromisoformat(str(e["ultima_corrida"])[:19])
         except ValueError:
             return True
-        # Las 00:00 de hoy en Argentina (UTC−3), en UTC.
-        empieza_hoy = datetime.fromisoformat(hoy) + timedelta(hours=3)
-        if cuando >= empieza_hoy or ahora - cuando < timedelta(hours=A_PEDIDO_REINTENTO_HORAS):
+        from fechas import dia_art   # el día argentino de un instante UTC (regla única)
+        if (dia_art(cuando) >= date.fromisoformat(hoy)
+                or ahora - cuando < timedelta(hours=A_PEDIDO_REINTENTO_HORAS)):
             return False
     return True
 

@@ -403,6 +403,19 @@ class FichaTest(unittest.TestCase):
         self.assertTrue(f["disponible"])
         self.assertEqual(f["ticker"], "BRK-B")
 
+    def test_watchlist_acepta_acciones_con_clase(self):
+        # El mapa del S&P manda BRK-B; la estrella de su ficha fallaba siempre
+        # porque la watchlist sólo aceptaba letras con '.BA' o '-USD'.
+        for t in ("BRK-B", "brk.b"):
+            r = self.client.post("/api/watchlist", json={"symbol": t}, headers=self.h)
+            self.assertEqual(r.status_code, 200, r.text)
+        items = self.client.get("/api/watchlist", headers=self.h).json()["items"]
+        self.assertEqual([i["symbol"] for i in items], ["BRK-B"], "una sola, con guión")
+        self.yahoo.precios["BRK-B"] = lambda i, d: 480.0
+        main._run_velas_diarias_job()
+        self.assertIn(("BRK-B", "3y", False), self._pedidos("BRK-B"), "la noche la sigue (3 años de velas)")
+        self.assertEqual(self.client.post("/api/watchlist", json={"symbol": "BRK-BB"}, headers=self.h).status_code, 422)
+
     def test_lista_de_seguimiento_tiene_tope(self):
         with mock.patch("main.WATCHLIST_TOPE", 3):
             for t in ("AAA", "BBB", "CCC"):
