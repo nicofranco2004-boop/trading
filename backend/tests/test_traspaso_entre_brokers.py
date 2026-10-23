@@ -364,5 +364,50 @@ class LaOnCanjeadaSeReconoce(_Base):
         self.assertEqual(self.qty(self.NUEVO_N, "CS38O"), 306.0)
 
 
+# ── Por la puerta de verdad: el endpoint, y con «Completar mis datos» ────────
+class PorElEndpointConDatosCompletados(_Base):
+    """Caso real (2026-10-23): la persona marcó AL30, CS38O y VIST, cargó un
+    saldo en «Completar mis datos» y confirmó. Los tres siguieron en Bull Market.
+
+    Con datos completados el confirm NO lee lo guardado en la previsualización:
+    vuelve a leer el archivo desde cero (`load_session_with_seed_revalidate`).
+    Los cierres por traspaso no salieron del archivo —se generan aparte—, así
+    que en esa relectura desaparecían y el tilde no tenía nada que aplicar.
+
+    Por eso estos tests pasan por `main.import_confirm`, el mismo camino que la
+    pantalla: el helper `importar` de arriba llama a `load_session_for_confirm`
+    directo y nunca vio la otra rama."""
+
+    def _confirmar(self, data, broker, fmt, aprobar, seed=None):
+        with self.conn:
+            p = pl.run_preview(self.conn, uid=self.uid, file_bytes=data,
+                               file_name="f.csv", broker_hint=broker, parser_format=fmt)
+        main.import_confirm(main.ImportConfirmIn(
+            session_id=p["session_id"], skip_row_indices=[],
+            aprobar_tickers=aprobar, seed_state=seed), self.uid)
+        return p
+
+    SEED = {"seed_date": "2024-01-01",
+            "brokers": [{"broker": "Balanz", "cash": {"ARS": 5000}, "assets": []}]}
+
+    def test_con_datos_completados_el_tilde_cierra(self):
+        self._confirmar(VIEJO, self.VIEJO_N, "bullmarket", [])
+        p = self._confirmar(NUEVO, self.NUEVO_N, "balanz_movimientos", ["VIST"], self.SEED)
+        self.assertEqual([t["activo"] for t in p["traspasos"]], ["VIST"])
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST"), 0.0,
+                         "marcó el título y confirmó, y siguió en el broker viejo")
+        self.assertEqual(self.qty(self.NUEVO_N, "VIST"), 21.0)
+
+    def test_con_datos_completados_sin_tilde_no_se_toca(self):
+        self._confirmar(VIEJO, self.VIEJO_N, "bullmarket", [])
+        self._confirmar(NUEVO, self.NUEVO_N, "balanz_movimientos", [], self.SEED)
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST"), 7.0)
+
+    def test_sin_datos_completados_el_tilde_cierra(self):
+        self._confirmar(VIEJO, self.VIEJO_N, "bullmarket", [])
+        self._confirmar(NUEVO, self.NUEVO_N, "balanz_movimientos", ["VIST"])
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST"), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
