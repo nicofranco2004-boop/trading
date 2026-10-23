@@ -18,11 +18,11 @@
 // de 23 y las barras del Squeeze (el combo «DMI/ADX/KEYLEVEL» + «SQZMOM_LB» de
 // TradingView), con su tarjeta «Fuerza de la tendencia».
 
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import { api } from '../../utils/api'
 import {
-  RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, tarjetas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
+  RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, moverVentana,
 } from '../../utils/tecnico'
 
@@ -166,9 +166,10 @@ export default function LecturaTecnica({
   const total = actual.puntos.length
   const nVista = Math.min(ventana?.n ?? puntosEnDias(actual.puntos, RANGOS.find(r => r.id === rango)?.dias || 365), total)
   const finVista = Math.min(ventana?.fin ?? total, total)
-  const diarios = actual.puntos.slice(Math.max(0, finVista - nVista), finVista)
+  const inicioVista = Math.max(0, finVista - nVista)
+  const diarios = actual.puntos.slice(inicioVista, finVista)
   const semanales = tipo === 'velas' && intervalo === 'semana'
-  const puntos = semanales ? velasSemanales(diarios) : diarios
+  const puntos = semanales ? velasSemanales(diarios, actual.puntos.slice(Math.max(0, inicioVista - 7), inicioVista)) : diarios
   const vista = { n: nVista, fin: finVista, total }
   const zoom = (factor, f) => { const v2 = zoomVentana(vista, factor, f); if (v2) setVentana(v2) }
   const mover = (frac) => { const v2 = moverVentana(vista, frac); if (v2) setVentana(v2) }
@@ -421,6 +422,15 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
   }, [])
   const gid = useId().replace(/:/g, '')
   const [hover, setHover] = useState(null)
+  // El globo se mide para que nunca se salga de la pantalla: en un celular el
+  // gráfico mide ~250 px y el globo ~200; con la regla fija «a la derecha hasta
+  // el 62 %» la página se ensanchaba o el precio quedaba cortado (auditoría 22/10).
+  const globoRef = useRef(null)
+  const [anchoGlobo, setAnchoGlobo] = useState(0)
+  useLayoutEffect(() => {
+    const w = globoRef.current?.offsetWidth
+    if (w && Math.abs(w - anchoGlobo) > 1) setAnchoGlobo(w)
+  })
 
   const { escalaY, path, area, min, max, velas, promFuera } = useMemo(() => {
     const valores = []
@@ -513,7 +523,8 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
     const ancho = Math.max((W / Math.max(puntos.length, 1)) * 0.7, 1)
     const medio = H_SQUEEZE / 2
     const barras = puntos.map((p, i) => {
-      if (p.squeeze == null || !SQUEEZE[p.squeeze_color]) return null
+      // En 0 no empuja para ningún lado: sin barra (si no, rayitas rojas).
+      if (!p.squeeze || !SQUEEZE[p.squeeze_color]) return null
       const alto = Math.max((Math.abs(p.squeeze) / maxSq) * (medio * 0.92), 0.5)
       return { k: i, x: xx(i) - ancho / 2, ancho, y: p.squeeze > 0 ? medio - alto : medio, alto, color: SQUEEZE[p.squeeze_color] }
     }).filter(Boolean)
@@ -616,8 +627,8 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
               {/* El globo va pegado al punto que se mira (abajo a la derecha;
                   del otro lado si no entra), chico y de un renglón por dato:
                   arriba y fijo tapaba casi todo el gráfico (Nico, 22/10). */}
-              <div className={`pointer-events-none absolute z-10 rounded border border-line-2 bg-bg-raised/95 px-2 py-1.5 text-[11px] leading-tight shadow-sm tabular whitespace-nowrap ${pctX(hover) > 62 ? '-translate-x-[calc(100%+12px)]' : 'translate-x-3'} ${pctY(ph.c) > 55 ? '-translate-y-[calc(100%+12px)]' : 'translate-y-3'}`}
-                style={{ left: `${pctX(hover)}%`, top: `${pctY(ph.c)}%` }}>
+              <div ref={globoRef} className={`pointer-events-none absolute z-10 rounded border border-line-2 bg-bg-raised/95 px-2 py-1.5 text-[11px] leading-tight shadow-sm tabular whitespace-nowrap ${pctY(ph.c) > 55 ? '-translate-y-[calc(100%+12px)]' : 'translate-y-3'}`}
+                style={{ left: `${ladoGlobo(pctX(hover), ref.current?.clientWidth, anchoGlobo)}px`, top: `${pctY(ph.c)}%` }}>
                 <div className="flex items-baseline gap-2">
                   <span className="text-ink-0 font-semibold text-[12px]">{fmtPrecio(ph.c, moneda)}</span>
                   <span className="text-ink-2">{ph.semana ? `semana del ${fechaCorta(ph.d)}` : fechaCorta(ph.d)}</span>
@@ -637,9 +648,15 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
                 <div className="flex gap-2.5 mt-0.5">
                   {ph.s200 != null && <Fila color={COLOR.media200} k="200" v={fmtPrecio(ph.s200, moneda).replace(/^US\$ |^\$ /, '')} />}
                   {ph.s50 != null && <Fila color={COLOR.media50} k="50" v={fmtPrecio(ph.s50, moneda).replace(/^US\$ |^\$ /, '')} />}
-                  {ph.rsi != null && <Fila k="RSI" v={Math.round(ph.rsi)} />}
-                  {ph.adx != null && <Fila k="ADX" v={Math.round(ph.adx)} />}
                 </div>
+                {/* RSI y ADX en su propio renglón: en uno solo el globo no
+                    entraba en un celular. */}
+                {(ph.rsi != null || ph.adx != null) && (
+                  <div className="flex gap-2.5 mt-0.5">
+                    {ph.rsi != null && <Fila k="RSI" v={Math.round(ph.rsi)} />}
+                    {ph.adx != null && <Fila k="ADX" v={fmtAdx(ph.adx)} />}
+                  </div>
+                )}
                 {visibles.filter(m => m.i === hover).map(m => (
                   <div key={m.tipo} className={`mt-0.5 font-medium ${m.tipo === 'compra' ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
                     {m.tipo === 'compra' ? 'Compraste' : 'Vendiste'} {ph.semana ? 'esta semana' : 'este día'}
@@ -722,24 +739,25 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
           </div>
           <div className="relative mt-1.5">
             <div className="relative mr-[72px] h-14" role="img"
-              aria-label={`Fuerza de la tendencia (ADX)${ultimo?.adx != null ? `: ${Math.round(ultimo.adx)}` : ''}, con la línea de ${ADX_CLAVE}.`}>
+              aria-label={`Fuerza de la tendencia (ADX)${ultimo?.adx != null ? `: ${fmtAdx(ultimo.adx)}` : ''}, con la línea de ${ADX_CLAVE}.`}>
               <svg viewBox={`0 0 ${W} ${H_ADX}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
                 <rect x="0" y="0" width={W} height={fuerza.yClave} fill={v('rendi-accent')} fillOpacity="0.07" />
                 <line x1="0" x2={W} y1={fuerza.yClave} y2={fuerza.yClave} stroke={v('rendi-accent')} strokeWidth="1.2"
                   strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />
                 <path d={fuerza.d} fill="none" stroke={v('ink-1')} strokeWidth="1.5" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
               </svg>
+              {/* El «23» va adentro, pegado a su línea a la izquierda: en la
+                  columna de la derecha lo tapaba el cartel del ADX de hoy. */}
+              <span aria-hidden="true" className="pointer-events-none absolute left-1 -translate-y-full pb-px text-[10.5px] leading-none text-rendi-accent tabular"
+                style={{ top: `${fuerza.pctAdx(ADX_CLAVE)}%` }}>{ADX_CLAVE}</span>
               {ph && (
                 <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 w-px bg-ink-2/50" style={{ left: `${pctX(hover)}%` }} />
               )}
             </div>
             <div className="absolute inset-y-0 right-0 w-[68px] text-[11px] tabular pointer-events-none">
-              {!(ultimo?.adx != null && Math.abs(fuerza.pctAdx(ultimo.adx) - fuerza.pctAdx(ADX_CLAVE)) < 12) && (
-                <span className="absolute left-1.5 -translate-y-1/2 text-rendi-accent" style={{ top: `${fuerza.pctAdx(ADX_CLAVE)}%` }}>{ADX_CLAVE}</span>
-              )}
               {ultimo?.adx != null && (
                 <span className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 font-semibold"
-                  style={{ top: `${Math.min(85, Math.max(15, fuerza.pctAdx(ultimo.adx)))}%`, background: v('ink-1'), color: v('bg-0') }}>{Math.round(ultimo.adx)}</span>
+                  style={{ top: `${Math.min(85, Math.max(15, fuerza.pctAdx(ultimo.adx)))}%`, background: v('ink-1'), color: v('bg-0') }}>{fmtAdx(ultimo.adx)}</span>
               )}
             </div>
           </div>
@@ -766,6 +784,22 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
       )}
     </div>
   )
+}
+
+/**
+ * Dónde va el borde izquierdo del globo, en px desde el borde del gráfico. A la
+ * derecha del punto si entra (puede usar la columna de los precios, 68 px); si
+ * no, a la izquierda; si tampoco, pegado al borde que tenga lugar. `pct` es
+ * dónde está el punto (0 a 100), `ancho` el del gráfico y `globo` el del globo.
+ */
+export function ladoGlobo(pct, ancho, globo) {
+  if (!ancho) return 0
+  const g = globo || 200
+  const x = (pct / 100) * ancho
+  const tope = ancho + 68
+  if (x + 12 + g <= tope) return x + 12
+  if (x - 12 - g >= 0) return x - 12 - g
+  return Math.max(0, tope - g)
 }
 
 // Un dato del globo, en una sola línea: la rayita del color de su línea, el

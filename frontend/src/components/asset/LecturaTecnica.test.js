@@ -45,10 +45,10 @@ vi.mock('../../utils/api', () => ({
   },
 }))
 
-let LecturaTecnica
+let LecturaTecnica, ladoGlobo
 beforeAll(async () => {
   instalarNavegadorMinimo()
-  ;({ default: LecturaTecnica } = await import('./LecturaTecnica'))
+  ;({ default: LecturaTecnica, ladoGlobo } = await import('./LecturaTecnica'))
 })
 afterAll(() => { vi.unstubAllGlobals() })
 
@@ -196,5 +196,17 @@ describe('LecturaTecnica', () => {
     const t = await dibujar({ pnlPctUsd: null })
     expect(t).not.toContain('Fuerza de la tendencia (ADX)')
     expect(t).toContain('Para medirla hacen falta unos 28 días de mercado y este activo tiene 20')
+  })
+
+  it('el globo del mouse nunca se sale del gráfico (celular: gráfico de 250 px, globo de 200)', () => {
+    const ancho = 250, globo = 200
+    for (let pct = 0; pct <= 100; pct += 1) {
+      const izq = ladoGlobo(pct, ancho, globo)
+      expect(izq).toBeGreaterThanOrEqual(0)
+      expect(izq + globo).toBeLessThanOrEqual(ancho + 68)
+    }
+    // En la compu (gráfico ancho) va pegado al punto: a la derecha y, cerca del borde, a la izquierda.
+    expect(ladoGlobo(50, 900, 200)).toBe(462)
+    expect(ladoGlobo(95, 900, 200)).toBe(855 - 212)
   })
 })

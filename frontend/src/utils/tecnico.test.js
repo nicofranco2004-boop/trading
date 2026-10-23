@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { tarjetas, tarjetaFuerza, colorSqueeze, textoCruceAdx, textoSqueeze, velasSemanales, ADX_CLAVE, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
+import { tarjetas, tarjetaFuerza, colorSqueeze, fmtAdx, textoCruceAdx, textoSqueeze, velasSemanales, ADX_CLAVE, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
 
 const L = {
   ruedas: 760, fecha: '2026-10-21', precio: 228.97,
@@ -209,7 +209,10 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     expect(sin.tono).toBe('neutro')
     expect(sin.texto).toMatch(/^El ADX está en 17, abajo de la línea de 23\. /)
     expect(tarjetaFuerza({ ...F, adx_pendiente: -1.5 }).veredicto).toBe('La tendencia afloja')
-    expect(tarjetaFuerza({ ...F, squeeze_activo: true }).texto).toContain('el precio se mueve poco («apretado»)')
+    // «Apretado» sólo sin tendencia, y dicho como lectura, no como pronóstico.
+    expect(tarjetaFuerza({ ...F, adx: 17, squeeze_activo: true }).texto)
+      .toContain('el precio se mueve poco («apretado»): suele leerse como la antesala')
+    expect(tarjetaFuerza({ ...F, squeeze_activo: true }).texto).not.toContain('apretado')
   })
 
   it('cuando el ADX pasa 23 con el Squeeze del mismo lado, la frase destacada dice para dónde', () => {
@@ -259,6 +262,8 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     // Pasó 23 hace 8 días pero ya viene cayendo: afloja, no «toma fuerza».
     const cae = tarjetaFuerza({ ...F, adx: 28.9, adx_pendiente: -1.75, adx_cruce: { tipo: 'paso_arriba', hace: 8, squeeze: 1 } })
     expect(cae.veredicto).toBe('La tendencia afloja')
+    // …y la frase destacada no le lleva la contraria («arranque de una suba con fuerza»).
+    expect(cae.cruce).toBe('Hace 8 días de mercado la fuerza (ADX) pasó 23 para arriba, pero desde entonces viene bajando.')
     // Squeeze exactamente en 0: no dice «a favor de la baja».
     const cero = tarjetaFuerza({ ...F, squeeze: 0, squeeze_color: 'rojo_apagado' })
     expect(cero.tono).toBe('neutro')
@@ -279,5 +284,32 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     for (const v of [cae, cero, sinSq, quieto, tarjetaFuerza({ ...F, adx_cruce: { tipo: 'paso_arriba', hace: 1, squeeze: 1 } })].map(t => t.veredicto)) {
       expect(delRsi).not.toContain(v)
     }
+  })
+
+  it('segunda auditoría: el redondeo no contradice la línea de 23, y los cortes exactos', () => {
+    // 22,8 se mostraba «23» al lado de «abajo de la línea de 23».
+    expect(fmtAdx(22.8)).toBe('22,8')
+    expect(fmtAdx(22.97)).toBe('22,9')
+    expect(fmtAdx(22.4)).toBe('22')
+    expect(fmtAdx(23)).toBe('23')
+    expect(fmtAdx(23.4)).toBe('23')
+    expect(fmtAdx(null)).toBe('—')
+    expect(tarjetaFuerza({ ...F, adx: 22.8 }).texto).toMatch(/^El ADX está en 22,8, abajo de la línea de 23/)
+    // 23 justo ya cuenta como arriba (la misma regla que el cruce del servidor).
+    const justo = tarjetaFuerza({ ...F, adx: 23, adx_pendiente: 0 })
+    expect(justo.veredicto).toBe('Tendencia con fuerza')
+    expect(justo.texto).toMatch(/^El ADX está en 23, arriba de la línea de 23\. /)
+    // Un cambio chico (menos de medio punto en 3 días) no es «subiendo» ni «bajando».
+    expect(tarjetaFuerza({ ...F, adx_pendiente: 0.3 }).texto).toMatch(/^El ADX está en 31, arriba de la línea de 23\. /)
+    expect(tarjetaFuerza({ ...F, adx_pendiente: -0.3 }).veredicto).toBe('Tendencia con fuerza')
+  })
+
+  it('la primera semana del zoom compara su Squeeze con la semana anterior, no con 0', () => {
+    const previos = [{ d: '2026-10-02', squeeze: 9 }, { d: '2026-10-05', squeeze: 7 }]
+    const pts = [{ d: '2026-10-08', c: 10, squeeze: 5 }, { d: '2026-10-09', c: 10, squeeze: 6 }]
+    // Semana del 5/10: el 8 y el 9 (visibles) y el 5 (fuera del zoom). La de
+    // antes es la del 2/10 (squeeze 9): 6 < 9 → verde apagado.
+    expect(velasSemanales(pts, previos)[0].squeeze_color).toBe('verde_apagado')
+    expect(velasSemanales(pts)[0].squeeze_color).toBe('verde_fuerte')
   })
 })

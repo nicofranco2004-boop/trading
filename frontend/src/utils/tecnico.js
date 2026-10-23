@@ -57,9 +57,11 @@ export function velaCompleta(p, cierreAnterior) {
  * diarias en un celular son rayitas). Cada semana: la apertura del primer día,
  * el máximo y el mínimo de la semana, el cierre del último día; las medias y el
  * RSI son los del último día. `d` es el primer día de la semana, así una compra
- * a mitad de semana cae en su vela.
+ * a mitad de semana cae en su vela. `previos`: los días de antes de `puntos`
+ * (la ventana del zoom), para que la primera semana compare su Squeeze contra la
+ * semana anterior de verdad y no contra 0.
  */
-export function velasSemanales(puntos = []) {
+export function velasSemanales(puntos = [], previos = []) {
   const out = []
   let actual = null
   let clave = null
@@ -81,8 +83,16 @@ export function velasSemanales(puntos = []) {
   if (actual) out.push(actual)
   // El color del Squeeze de cada semana, contra la semana anterior (el de cada
   // día viene comparado contra el día anterior).
+  let antes = null
+  if (out.length) {
+    const f = new Date(out[0].d + 'T00:00:00Z')
+    const lunes = new Date(f.getTime() - ((f.getUTCDay() + 6) % 7) * 86400000).toISOString().slice(0, 10)
+    for (let i = previos.length - 1; i >= 0; i--) {
+      if (previos[i].d < lunes) { antes = previos[i].squeeze ?? null; break }
+    }
+  }
   out.forEach((s, k) => {
-    if (s.squeeze != null) s.squeeze_color = colorSqueeze(s.squeeze, k > 0 ? out[k - 1].squeeze : null)
+    if (s.squeeze != null) s.squeeze_color = colorSqueeze(s.squeeze, k > 0 ? out[k - 1].squeeze : antes)
   })
   return out
 }
@@ -226,6 +236,17 @@ export function colorSqueeze(x, antes) {
   return x > 0 ? (x > a ? 'verde_fuerte' : 'verde_apagado') : (x < a ? 'rojo_fuerte' : 'rojo_apagado')
 }
 
+/** El ADX para mostrar. Redondeado, salvo que el redondeo lo suba a 23 sin
+ *  haber llegado: «está en 23, abajo de la línea de 23» se contradecía. */
+export function fmtAdx(adx) {
+  if (adx == null) return '—'
+  const n = Math.round(adx)
+  if (adx < ADX_CLAVE && n >= ADX_CLAVE) {
+    return (Math.floor(adx * 10) / 10).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+  }
+  return String(n)
+}
+
 /** El color del Squeeze dicho en palabras: hacia dónde empuja y si con más o
  *  menos empuje que el día anterior. */
 export function textoSqueeze(color) {
@@ -276,26 +297,33 @@ export function tarjetaFuerza(l) {
       : `La dirección la marca el Squeeze, que ${textoSqueeze(l.squeeze_color)}.`
   return {
     ...base, veredicto, tono: conFuerza && lado ? (lado > 0 ? 'pos' : 'neg') : 'neutro', adx: l.adx,
-    texto: `El ADX está en ${Math.round(l.adx)}, ${conFuerza ? 'arriba' : 'abajo'} de la línea de ${ADX_CLAVE}${hacia}. `
+    texto: `El ADX está en ${fmtAdx(l.adx)}, ${conFuerza ? 'arriba' : 'abajo'} de la línea de ${ADX_CLAVE}${hacia}. `
       + `El ADX mide cuánta fuerza tiene la tendencia, no para dónde va: arriba de ${ADX_CLAVE} hay tendencia con fuerza; abajo, el precio va más de costado. `
       + direccion
-      + (l.squeeze_activo && l.squeeze != null ? ' Además el precio se mueve poco («apretado»): suele ser la antesala de un movimiento más grande, para cualquier lado.' : ''),
-    cruce: textoCruceAdx(cruce, l.squeeze),
+      // «Apretado» sólo sin tendencia: el script de LazyBear lo marca casi la
+      // mitad de los días (por su 1,5 en las Bollinger) y al lado de «Tendencia
+      // con fuerza» era ruido (auditoría 22/10).
+      + (l.squeeze_activo && l.squeeze != null && !conFuerza
+        ? ' Además el precio se mueve poco («apretado»): suele leerse como la antesala de un movimiento más grande, para cualquier lado.' : ''),
+    cruce: textoCruceAdx(cruce, l.squeeze, bajando),
   }
 }
 
 /**
  * El último cruce del ADX por 23 (de `lectura.adx_cruce`), en palabras. Si pasó
  * para arriba con el Squeeze del mismo lado ese día y hoy, la frase dice para
- * dónde. null si no hubo.
+ * dónde. Si desde entonces el ADX viene bajando (`bajando`), sólo cuenta el
+ * cruce: «el arranque de una suba con fuerza» debajo de «La tendencia afloja»
+ * se contradecía (auditoría 22/10). null si no hubo.
  */
-export function textoCruceAdx(c, squeezeHoy) {
+export function textoCruceAdx(c, squeezeHoy, bajando = false) {
   if (!c) return null
   const cuando = c.hace === 0 ? 'En el último día de mercado' : c.hace === 1 ? 'Hace 1 día de mercado' : `Hace ${c.hace} días de mercado`
   if (c.tipo === 'paso_abajo') {
     return `${cuando} la fuerza (ADX) bajó de ${ADX_CLAVE}: suele leerse como que la tendencia se queda sin fuerza y el precio pasa a moverse de costado.`
   }
   if (c.tipo !== 'paso_arriba') return null
+  if (bajando) return `${cuando} la fuerza (ADX) pasó ${ADX_CLAVE} para arriba, pero desde entonces viene bajando.`
   const hoy = squeezeHoy > 0 ? 1 : squeezeHoy < 0 ? -1 : 0
   if (hoy !== 0 && c.squeeze === hoy) {
     return `${cuando} la fuerza (ADX) pasó ${ADX_CLAVE} para arriba con el Squeeze en ${hoy > 0 ? 'verde' : 'rojo'}: `

@@ -297,7 +297,7 @@ class FuerzaTest(unittest.TestCase):
         self.assertGreaterEqual(a[-2], tecnico.ADX_CLAVE)
         l = tecnico.lectura(velas)
         self.assertEqual(l["adx_cruce"], {"tipo": "paso_arriba", "hace": 1, "squeeze": 1})
-        self.assertGreater(l["adx_pendiente"], 0)
+        self.assertAlmostEqual(l["adx_pendiente"], a[-1] - a[-4], places=12, msg="el cambio de los últimos 3 días")
         self.assertEqual(l["squeeze_color"], "verde_fuerte")
         # La bajada espejo: el cruce viene con el Squeeze en rojo.
         espejo = [{"date": v["date"], "open": 1e4 / v["open"], "high": 1e4 / v["low"],
@@ -305,8 +305,12 @@ class FuerzaTest(unittest.TestCase):
         self.assertEqual(tecnico.lectura(espejo)["adx_cruce"]["squeeze"], -1)
 
     def test_cruces_del_adx(self):
-        self.assertEqual(tecnico.cruce_adx([None, 18, 21, 24, 26], [0, 0, 0, -2, -3]),
+        # El signo del Squeeze es el del DÍA DEL CRUCE (rojo), no el de hoy (verde).
+        self.assertEqual(tecnico.cruce_adx([None, 18, 21, 24, 26], [0, 0, 0, -2, 3]),
                          {"tipo": "paso_arriba", "hace": 1, "squeeze": -1})
+        # Mira exactamente los últimos 10 días de mercado (hace 0 a 9).
+        self.assertEqual(tecnico.cruce_adx([20, 25] + [30] * 9)["hace"], 9)
+        self.assertIsNone(tecnico.cruce_adx([20, 25] + [30] * 10))
         self.assertEqual(tecnico.cruce_adx([30, 25, 22]), {"tipo": "paso_abajo", "hace": 0, "squeeze": None})
         self.assertIsNone(tecnico.cruce_adx([20, 25] + [30] * 12), "un cruce de hace más de 10 días ya no cuenta")
         self.assertIsNone(tecnico.cruce_adx([30] * 20))
@@ -633,6 +637,19 @@ class FichaTest(unittest.TestCase):
         f = self._ficha("AAPL", "usd")
         p = f["puntos"][-1]
         self.assertIsNotNone(p["adx"])
+        # Cada punto del gráfico (2 años) lleva el ADX y el Squeeze de la
+        # historia ENTERA guardada, el de SU día: no los de la ventana dibujada
+        # (el ADX arrastra memoria) ni corridos un día.
+        with main.db_abierta() as conn:
+            velas = tecnico.serie(conn, "AAPL", "usd")["velas"]
+        d, s = tecnico.adx(velas), tecnico.squeeze(velas)
+        por_dia = {v["date"]: i for i, v in enumerate(velas)}
+        self.assertGreater(por_dia[f["puntos"][0]["d"]], 200, "el gráfico arranca después de mucha historia")
+        for q in f["puntos"]:
+            i = por_dia[q["d"]]
+            self.assertEqual(q["adx"], round(d["adx"][i], 2) if d["adx"][i] is not None else None, q["d"])
+            self.assertEqual(q["squeeze"], float(f"{s['valor'][i]:.6g}") if s["valor"][i] is not None else None, q["d"])
+            self.assertEqual(q["squeeze_color"], s["color"][i], q["d"])
         self.assertIsNotNone(p["squeeze"])
         self.assertEqual(p["squeeze_color"], f["lectura"]["squeeze_color"])
         self.assertAlmostEqual(p["adx"], f["lectura"]["adx"], places=2)
