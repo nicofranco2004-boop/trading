@@ -486,10 +486,76 @@ def _dice_otra_cosa(a: dict, b: dict) -> bool:
     return True
 
 
+def zona(c: dict):
+    """Dónde suele terminar la onda EN CURSO según las mismas proporciones de
+    las pautas (en la vista: dada vuelta si es una bajada). (desde, hasta) o
+    None si no hay una onda en curso que medir (5 ondas terminadas sin A
+    todavía, o la A-B-C terminada).
+      · en la 3: desde el final de la 2, entre 1,38 y 1,9 veces la 1;
+      · en la 4: desde el final de la 3, devolviendo entre 24 % y 50 % de la 3;
+      · en la 5: desde el final de la 4, entre 0,75 y 1,33 veces la 1;
+      · en la B: desde el final de la A, devolviendo entre 40 % y 79 % de la A;
+      · en la C: desde el final de la B, entre 0,75 y 1,33 veces la A.
+    Cuánto acierta, medido con la historia: `ACIERTO_ZONA`."""
+    P = [p["precio"] for p in c["pts"]]
+    a = c["ahora"]
+    if a == "onda_3":
+        w1 = P[1] - P[0]
+        return P[2] + P_ONDA3[0] * w1, P[2] + P_ONDA3[1] * w1
+    if a == "onda_4":
+        w3 = P[3] - P[2]
+        return P[3] - P_ONDA4[1] * w3, P[3] - P_ONDA4[0] * w3
+    if a == "onda_5":
+        w1 = P[1] - P[0]
+        return P[4] + P_ONDA5[0] * w1, P[4] + P_ONDA5[1] * w1
+    if a in ("onda_B", "onda_C"):
+        # El arranque de la A: el final de la 5 si va pegada, si no el "0".
+        k = 5 if c["tipo"] == "impulso_y_correccion" else 0
+        ini, fa = P[k], P[k + 1]
+        largo_a = ini - fa
+        if a == "onda_B":
+            return fa + P_ONDA_B[0] * largo_a, fa + P_ONDA_B[1] * largo_a
+        b = P[k + 2]
+        return b - P_ONDA_C[1] * largo_a, b - P_ONDA_C[0] * largo_a
+    return None
+
+
+# Cuántas veces, en la historia, la onda en curso terminó DENTRO de su zona
+# (`zona`), y cuántas una franja "tonta" del mismo ancho puesta justo delante
+# del precio de ese día. {ahora: (aciertos, ondas terminadas, aciertos de la tonta)}.
+# La pantalla lo dice al lado de la zona: sin este número la zona no se muestra.
+#
+# Medido el 2026-10-23 con `scripts/medir_zonas_elliott.py` sobre 3 años de
+# velas de 42 activos (23 de EE.UU., 2 CEDEAR en pesos, 13 acciones argentinas
+# en pesos, 4 cripto), día por día sin mirar el futuro: 2.436 conteos con zona,
+# 1.250 ondas que terminaron, 813 conteos que se invalidaron antes (1 de 3).
+# Con el PRIMER final que vio el detector (lo que vería quien mira): 40 %
+# contra 71 % de la tonta. Con el final MÁS LEJANO antes de invalidarse: 36 %
+# contra 53 %. En ninguna onda ni grupo (EE.UU., BYMA, cripto) le gana a la
+# tonta: la zona NO adivina mejor que "termina cerca de donde está". Se
+# muestra igual porque Nico la quiso ver (23/10), con estos números al lado.
+ACIERTO_ZONA = {
+    "onda_3": (39, 223, 112),
+    "onda_4": (134, 219, 193),
+    "onda_5": (132, 403, 267),
+    "onda_B": (69, 142, 119),
+    "onda_C": (126, 263, 193),
+}
+ACTIVOS_MEDIDOS = 42
+
+
 def _para_afuera(c: dict, velas: list) -> dict:
     s = -1 if c["espejo"] else 1
     tipo_real = lambda t: ({"pico": "pozo", "pozo": "pico"}[t] if c["espejo"] else t)
+    z = zona(c)
+    medido = ACIERTO_ZONA.get(c["ahora"])
     return {
+        # La zona donde suele terminar la onda en curso, en precios de verdad
+        # (de menor a mayor), con cuántas veces acertó en la historia medida.
+        "zona": ({"desde": _r(min(s * z[0], s * z[1])), "hasta": _r(max(s * z[0], s * z[1])),
+                  "aciertos": medido[0], "casos": medido[1], "tonta": medido[2],
+                  "activos": ACTIVOS_MEDIDOS}
+                 if z and medido else None),
         "tipo": c["tipo"],
         "dir": c["dir"],
         "ondas": [{"onda": o, "fecha": velas[p["i"]]["date"], "precio": _r(s * p["precio"]),

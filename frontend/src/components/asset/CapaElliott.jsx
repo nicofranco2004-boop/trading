@@ -3,8 +3,9 @@
 // Se prende con el botón «Ondas de Elliott» de la leyenda (apagado de entrada).
 // Dibuja la línea que une los picos y pozos contados (llena en el impulso,
 // cortada en la corrección), la etiqueta de cada onda (1 2 3 4 5 / A B C) en su
-// punto —arriba de un pico, abajo de un pozo— y la raya del precio que
-// invalida el conteo. Convive con la capa del Fibonacci (CapaFibonacci.jsx):
+// punto —arriba de un pico, abajo de un pozo—, la raya del precio que
+// invalida el conteo y, si hay, la franja donde suele terminar la onda en
+// curso con cuánto acertó en la historia (backend/elliott.py, `zona`). Convive con la capa del Fibonacci (CapaFibonacci.jsx):
 // otro color y otras formas.
 //
 // Las cuentas vienen hechas del servidor (backend/elliott.py); las palabras, de
@@ -27,7 +28,7 @@ export function preciosDelConteo(e, puntos) {
   const c = e?.disponible ? e.principal : null
   if (!c) return []
   const visibles = c.ondas.filter(o => posicion(puntos, o.fecha).donde === 'adentro').map(o => o.precio)
-  return visibles.length ? [...visibles, c.invalida.precio] : []
+  return visibles.length ? [...visibles, c.invalida.precio, ...(c.zona ? [c.zona.desde, c.zona.hasta] : [])] : []
 }
 
 /** La fecha desde la que hay que ver el gráfico para que entre el conteo. */
@@ -59,6 +60,21 @@ export default function CapaElliott({ elliott, puntos, pctX, pctY, precio }) {
             vectorEffect="non-scaling-stroke" opacity="0.85" />
         ))}
       </svg>
+      {/* La zona donde suele terminar la onda en curso: desde el último punto
+          contado hasta hoy, con cuánto acertó en la historia medida. */}
+      {c.zona && (() => {
+        const ult = pos[pos.length - 1]
+        const x = ult.p.donde === 'adentro' ? pctX(ult.p.i) : 0
+        const y1 = pctY(c.zona.hasta), y2 = pctY(c.zona.desde)
+        return (
+          <div className="absolute" style={{ left: `${x}%`, right: 0, top: `${Math.min(y1, y2)}%`, height: `${Math.abs(y2 - y1)}%`,
+            background: indigo(0.12), borderTop: `1px dashed ${indigo(0.6)}`, borderBottom: `1px dashed ${indigo(0.6)}` }}>
+            <span className="absolute right-1 top-0.5 rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1">
+              Suele terminar acá · acertó {Math.round((c.zona.aciertos / c.zona.casos) * 100)} %
+            </span>
+          </div>
+        )
+      })()}
       {/* La raya que invalida: desde el arranque del conteo hasta hoy. */}
       <div className="absolute h-0" style={{ left: `${xInv}%`, right: 0, top: `${yInv}%`, borderTop: `1.5px dashed ${indigo(0.8)}` }}>
         <span className={`absolute ${c.invalida.lado === 'debajo' ? 'top-0.5' : '-translate-y-full'} ${xInv < 60 ? 'left-1' : 'right-1'} rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1`}>
@@ -96,6 +112,7 @@ export function TarjetaElliott({ elliott, precio, fecha }) {
       <div className="text-[15px] font-semibold mt-0.5 text-ink-0">{t.veredicto}</div>
       <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.texto}</div>
       {t.invalida && <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.invalida}</div>}
+      {t.zona && <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.zona}</div>}
       {t.confianza && (
         <div className="mt-1.5">
           <div className="text-[12.5px] text-ink-1 font-medium">{t.confianza}</div>

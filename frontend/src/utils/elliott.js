@@ -88,8 +88,26 @@ export function textoConfianza(c) {
   return `${base}: cumple ${si} de ${n} ${n === 1 ? 'proporción que suele darse' : 'proporciones que suelen darse'}.`
 }
 
+const NOMBRE_ONDA = { onda_3: 'la onda 3', onda_4: 'la onda 4', onda_5: 'la onda 5', onda_B: 'la onda B', onda_C: 'la onda C' }
+const pctDe = (a, n) => `${Math.round((a / n) * 100)} %`
+
 /**
- * La tarjeta: { titulo, veredicto, texto, invalida?, confianza?, pautas?, alternativo?, pie }.
+ * La zona donde suele terminar la onda en curso, con cuánto acertó en la
+ * historia y contra qué: una franja del mismo ancho puesta justo delante del
+ * precio. Si Fibonacci no le gana a esa franja, se dice (Nico, 23/10: «con ese
+ * número al lado»). null si no hay zona.
+ */
+export function textoZona(c, precio) {
+  const z = c?.zona
+  if (!z || !z.casos) return null
+  const base = `Si ${NOMBRE_ONDA[c.ahora]} sigue las proporciones habituales de Fibonacci, suele terminar entre ${precio(z.desde)} y ${precio(z.hasta)} (la franja del gráfico). `
+    + `En la historia de ${z.activos} activos, de ${z.casos} veces que una onda así terminó, terminó dentro de su franja ${z.aciertos} (${pctDe(z.aciertos, z.casos)}); `
+    + `una franja del mismo ancho puesta justo delante del precio acertó ${z.tonta} (${pctDe(z.tonta, z.casos)}).`
+  return z.aciertos > z.tonta ? base : `${base} O sea: esta franja no adivinó mejor que una cualquiera puesta delante del precio.`
+}
+
+/**
+ * La tarjeta: { titulo, veredicto, texto, invalida?, zona?, confianza?, pautas?, alternativo?, pie }.
  * `precio` y `fecha` formatean como el resto de la ficha. Describe, no recomienda.
  */
 export function tarjetaElliott(e, precio, fecha) {
@@ -113,6 +131,7 @@ export function tarjetaElliott(e, precio, fecha) {
     veredicto: veredictoElliott(c),
     texto: `${QUE_ES} Un conteo posible dice que ${dondeHoy(c, fecha)}.`,
     invalida: textoInvalida(c, precio),
+    zona: textoZona(c, precio),
     confianza: textoConfianza(c),
     pautas: c.pautas.map(p => ({ texto: textoPauta(p), cumple: p.cumple })),
     alternativo: a ? `Otra lectura posible: ${dondeHoy(a, fecha)} (confianza ${a.confianza}).` : null,

@@ -132,6 +132,26 @@ class ImpulsoTest(unittest.TestCase):
         c = _conteo(LIBRO + [139, 146, 132, 136])["principal"]
         self.assertEqual((c["ahora"], _puntos(c)[-1]), ("fin_abc", ("C", 132)))
 
+    def test_la_zona_de_cada_onda_en_curso(self):
+        # En la 3: desde el final de la 2 (108), entre 1,38 y 1,9 veces la 1 (20).
+        c = _conteo([115, 100, 120, 108, 125])["principal"]
+        w1 = 120 * 1.003 - 100 * 0.997
+        self.assertAlmostEqual(c["zona"]["desde"], 108 * 0.997 + 1.38 * w1, places=2)
+        self.assertAlmostEqual(c["zona"]["hasta"], 108 * 0.997 + 1.90 * w1, places=2)
+        self.assertEqual((c["zona"]["aciertos"], c["zona"]["casos"], c["zona"]["tonta"]),
+                         elliott.ACIERTO_ZONA["onda_3"])
+        # En la 4: devolviendo entre 24 % y 50 % de la 3, desde su final.
+        c = _conteo(LIBRO[:-2] + [131])["principal"]
+        w3 = 140 * 1.003 - 108 * 0.997
+        self.assertAlmostEqual(c["zona"]["desde"], 140 * 1.003 - 0.50 * w3, places=2)
+        self.assertAlmostEqual(c["zona"]["hasta"], 140 * 1.003 - 0.24 * w3, places=2)
+        # Bajada: la zona en precios de verdad, de menor a mayor.
+        c = _conteo([250 - x for x in [115, 100, 120, 108, 125]])["principal"]
+        self.assertLess(c["zona"]["desde"], c["zona"]["hasta"])
+        self.assertLess(c["zona"]["hasta"], 250 - 108)
+        # Terminado (sin onda en curso que medir): sin zona.
+        self.assertIsNone(_conteo(LIBRO + [141])["principal"]["zona"])
+
     def test_bajada_es_la_misma_figura_dada_vuelta(self):
         c = _conteo([250 - x for x in LIBRO + [141]])["principal"]
         self.assertEqual((c["tipo"], c["dir"], c["ahora"], c["confianza"]), ("impulso", "bajada", "correccion", "alta"))

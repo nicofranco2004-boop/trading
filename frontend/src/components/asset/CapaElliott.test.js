@@ -10,7 +10,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic } from '../../testing/navegadorMinimo'
-import { tarjetaElliott, dondeHoy, veredictoElliott, textoInvalida } from '../../utils/elliott'
+import { tarjetaElliott, dondeHoy, veredictoElliott, textoInvalida, textoZona } from '../../utils/elliott'
 
 const puntos = Array.from({ length: 252 }, (_, i) => {
   const d = new Date(Date.UTC(2025, 9, 1) + i * 86400000).toISOString().slice(0, 10)
@@ -143,5 +143,36 @@ describe('las palabras de cada estado', () => {
     const todo = [t.texto, t.invalida, t.confianza, t.alternativo, ...t.pautas.map(p => p.texto)].join(' ')
     expect(todo).not.toMatch(/\b(compr[áa]|vend[ée]|va a (subir|bajar)|seguro)\b/i)
     expect(t.pie).toContain('No dice qué va a pasar')
+  })
+})
+
+describe('la zona donde suele terminar la onda en curso', () => {
+  const precio = (x) => `$ ${x}`
+  const conZona = (z) => ({ ...PRINCIPAL, zona: { desde: 150, hasta: 160, activos: 42, ...z } })
+
+  it('dice cuánto acertó y contra qué', () => {
+    const t = textoZona(conZona({ aciertos: 30, casos: 60, tonta: 20 }), precio)
+    expect(t).toContain('Si la onda 5 sigue las proporciones habituales de Fibonacci, suele terminar entre $ 150 y $ 160')
+    expect(t).toContain('de 60 veces que una onda así terminó, terminó dentro de su franja 30 (50 %)')
+    expect(t).toContain('acertó 20 (33 %)')
+    expect(t).not.toContain('no adivinó mejor')
+  })
+
+  it('si no le gana a una franja cualquiera, lo dice', () => {
+    const t = textoZona(conZona({ aciertos: 10, casos: 60, tonta: 40 }), precio)
+    expect(t).toContain('no adivinó mejor que una cualquiera puesta delante del precio')
+  })
+
+  it('sin medición no hay zona', () => {
+    expect(textoZona(PRINCIPAL, precio)).toBeNull()
+    expect(textoZona(conZona({ aciertos: 0, casos: 0, tonta: 0 }), precio)).toBeNull()
+  })
+
+  it('montada: la franja con su número y la frase en la tarjeta', async () => {
+    respuesta = DATOS({ ...ELL, principal: conZona({ aciertos: 30, casos: 60, tonta: 20 }) })
+    await dibujar()
+    const t = await tocar('Ondas de Elliott')
+    expect(t).toContain('Suele terminar acá · acertó 50 %')
+    expect(t).toContain('terminó dentro de su franja 30 (50 %)')
   })
 })
