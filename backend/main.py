@@ -41556,6 +41556,12 @@ def _atomic_insert_fact(conn, uid: int, content: str, source: str):
     default es BEGIN DEFERRED y el SELECT no toma write lock → TOCTOU.
     """
     try:
+        # El turno, por usuario: el mismo patrón de contar-y-escribir que el
+        # tope de trials, que en Postgres NO aguanta solo. Acá la clave lleva el
+        # uid porque el tope es por persona: dos usuarios distintos no tienen
+        # por qué esperarse. Ver `pgsesion.turno_exclusivo`.
+        import pgsesion as _ps
+        _ps.turno_exclusivo(conn, _ps.TURNO_TOPE_FACTS_POR_USUARIO + int(uid))
         cur = conn.execute(
             """INSERT INTO ai_user_facts(user_id, content, source)
                SELECT ?, ?, ?

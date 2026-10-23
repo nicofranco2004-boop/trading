@@ -429,6 +429,13 @@ def _start_tx(conn, user_id: int, until: str, now_iso: str, cap: int,
         _mark_email_consumed(conn, _email_of(conn, user_id))
         _nota = f"Free trial: {TRIAL_PRO_DAYS}d Pro + {TRIAL_PLUS_DAYS}d Plus"
         if cap:
+            # EL TURNO, antes de contar. Sin esto el tope NO aguanta en Postgres:
+            # cada transacción lee su propia foto y veinte altas simultáneas
+            # cuentan cero las veinte. Medido con tope 1 y dos conexiones:
+            # entraron las dos. En SQLite no hace nada (ya serializa).
+            # Ver `pgsesion.turno_exclusivo`.
+            import pgsesion as _ps
+            _ps.turno_exclusivo(conn, _ps.TURNO_TOPE_TRIALS_DEL_MES)
             # CON TOPE, el ledger deja de ser solo auditoría: es el que lo hace
             # cumplir. El chequeo de eligibility() es check-then-act —lee el
             # conteo, después escribe— y entre las dos cosas entran todas las

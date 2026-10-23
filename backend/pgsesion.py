@@ -78,3 +78,51 @@ def conectar(dsn: str, **kw):
     except Exception:
         conn.close()
         raise
+
+# ── El turno: serializar un chequeo de tope ──────────────────────────────────
+
+def turno_exclusivo(conn, clave: int) -> None:
+    """Pide el turno para un chequeo de tope. Las demás esperan acá.
+
+    POR QUÉ EXISTE, y no es teórico — medido el 22/10/2026 contra Postgres real.
+
+    Varios topes de Rendi se hacen cumplir contando y escribiendo en UNA sola
+    sentencia (`INSERT … SELECT … WHERE (SELECT COUNT(*) …) < tope`). El
+    comentario de esos sitios dice que así «el tope se respeta bajo carga», y en
+    SQLite es CIERTO — pero no por la sentencia: porque SQLite deja escribir a
+    UNO POR VEZ en toda la base. La garantía venía del motor, gratis, sin que
+    nadie la pidiera.
+
+    En Postgres cada transacción lee su propia foto del momento en que arrancó.
+    Veinte altas simultáneas cuentan CERO las veinte y entran las veinte.
+    Reproducido con tope 1 y dos conexiones: entraron las dos.
+
+      ⚠️ No todos los topes se rompen, y la diferencia importa:
+      · El de la cuota de IA escribe sobre LA FILA DE ESE USUARIO
+        (`ON CONFLICT (user_id, date) DO UPDATE`). Dos pedidos chocan en esa
+        fila, Postgres los hace esperar, y el tope AGUANTA. Medido: aguanta.
+      · El de pruebas gratis del mes cuenta filas de TODOS los usuarios e
+        inserta una fila nueva. No hay fila compartida donde chocar, así que
+        nadie espera a nadie. Medido: NO aguanta.
+
+    `pg_advisory_xact_lock` se suelta solo al terminar la transacción (commit o
+    rollback), así que no hay forma de olvidarse de devolverlo — que es
+    exactamente el error que deja una base trabada.
+
+    En SQLite no hace NADA, a propósito: allá el motor ya serializa y agregar un
+    candado propio sólo sumaría una forma nueva de trabarse.
+    """
+    try:
+        import main as _m
+        if not getattr(_m, "USANDO_PG", False):
+            return                      # SQLite ya serializa: no hay nada que pedir
+    except Exception:
+        return
+    conn.execute("SELECT pg_advisory_xact_lock(?)", (int(clave),))
+
+
+# Claves de turno. Fijas y acá juntas para que se vea de un vistazo quién
+# compite con quién: dos topes distintos NO pueden compartir clave (se
+# bloquearían sin motivo) y el mismo tope SÍ tiene que usar siempre la misma.
+TURNO_TOPE_TRIALS_DEL_MES = 823471001
+TURNO_TOPE_FACTS_POR_USUARIO = 823471002
