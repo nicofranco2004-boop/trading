@@ -64,8 +64,10 @@ export function rotulosQueEntran(lista, tops, entre, minimo = 6) {
 
 const pct0 = (r) => `${Math.round(r * 100)} %`
 
-// "Ahora sube desde US$ 349 (25/06/26) haciendo picos y pozos cada vez más
-// altos. Se rompe si cierra debajo de US$ 486 (el último pozo más alto, del …)."
+// "Ahora sube desde US$ 349 (25/06/26). Si un día cierra debajo de US$ 486 (el
+// último pozo más alto, del …), podría ser una señal de que esa suba está
+// perdiendo fuerza." Dicho como posibilidad, no como certeza (Nico, 23/10:
+// «ahí se termina la suba» sonaba a que iba a pasar seguro)."
 function textoEnCurso(e, precio, fecha) {
   if (!e) return ''
   const suba = e.dir === 'suba'
@@ -74,7 +76,7 @@ function textoEnCurso(e, precio, fecha) {
     ? 'donde arrancó'
     : `${suba ? 'el último pozo más alto' : 'el último techo más bajo'}, del ${fecha(e.se_rompe_si_cierra.fecha)}`
   return `Ahora ${suba ? 'sube' : 'baja'} desde ${precio(e.desde.precio)} (${fecha(e.desde.fecha)}). `
-    + `Esa ${e.dir} se da por terminada si un día cierra ${suba ? 'debajo' : 'encima'} de ${precio(corte)} (${donde}).`
+    + `Si un día cierra ${suba ? 'debajo' : 'encima'} de ${precio(corte)} (${donde}), podría ser una señal de que esa ${e.dir} está perdiendo fuerza.`
 }
 
 /**
@@ -93,7 +95,7 @@ export function tarjetaFibonacci(f, precio, fecha) {
     }
     const e = f.en_curso
     const enCurso = e ? `${e.dir === 'suba' ? 'Suba' : 'Bajada'} en curso` : null
-    const cola = e ? ` ${textoEnCurso(e, precio, fecha)} Recién ahí se mide su Fibonacci.` : ''
+    const cola = e ? ` ${textoEnCurso(e, precio, fecha)} Si eso pasa, recién ahí se mide su Fibonacci.` : ''
     const tramo = (t) => `${t.dir} (de ${precio(t.desde.precio)} el ${fecha(t.desde.fecha)} a ${precio(t.hasta.precio)} el ${fecha(t.hasta.fecha)})`
     if (f.motivo === 'superado' && f.superado) {
       return {
