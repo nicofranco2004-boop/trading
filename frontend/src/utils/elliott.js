@@ -20,7 +20,11 @@ const mov = (c) => (c.dir === 'suba' ? 'la suba' : 'la bajada')
 
 const punto = (c, onda) => c.ondas.find(o => o.onda === onda)
 
-/** Dónde estaría hoy, para poner después de «Un conteo posible dice que…». */
+/**
+ * Dónde podría estar hoy, para poner después de «Según un conteo posible,».
+ * Todo en condicional: es una hipótesis, no lo que va a pasar (Nico, 23/10:
+ * «que no sea tan como seguro que lo dice»).
+ */
 export function dondeHoy(c, fecha) {
   if (!c) return ''
   const corrSuelta = c.tipo === 'correccion'
@@ -28,13 +32,13 @@ export function dondeHoy(c, fecha) {
   // corrige una suba anterior).
   const corr = corrSuelta ? `la corrección ${c.dir === 'bajada' ? 'a la baja, después de una suba' : 'al alza, después de una bajada'}` : 'la corrección'
   switch (c.ahora) {
-    case 'onda_3': return `estaría en la onda 3 de ${mov(c)}, la que suele ser la más larga y fuerte`
-    case 'onda_4': return `estaría en la onda 4, un descanso de ${mov(c)} después de la onda 3`
-    case 'onda_5': return `estaría en la onda 5, la última de ${mov(c)}`
-    case 'correccion': return `las 5 ondas de ${mov(c)} habrían terminado el ${fecha(punto(c, '5').fecha)} y estaría en la corrección que suele venir después`
-    case 'onda_B': return `las 5 ondas de ${mov(c)} terminaron el ${fecha(punto(c, '5').fecha)}; la corrección ya hizo su onda A y estaría en la B, un movimiento corto en contra de la corrección`
-    case 'onda_C': return `estaría en la onda C de ${corr}, su último tramo`
-    case 'fin_abc': return `${corr} (A, B y C) habría terminado el ${fecha(punto(c, 'C').fecha)}`
+    case 'onda_3': return `el precio podría estar en la onda 3 de ${mov(c)}, que en la teoría suele ser la más larga`
+    case 'onda_4': return `el precio podría estar en la onda 4, un descanso de ${mov(c)} después de la onda 3`
+    case 'onda_5': return `el precio podría estar en la onda 5, que en la teoría es la última de ${mov(c)}`
+    case 'correccion': return `las 5 ondas de ${mov(c)} podrían haber terminado el ${fecha(punto(c, '5').fecha)}, y el precio podría estar en la corrección que en la teoría suele venir después`
+    case 'onda_B': return `las 5 ondas de ${mov(c)} podrían haber terminado el ${fecha(punto(c, '5').fecha)}; la corrección habría hecho su onda A y el precio podría estar en la B, un movimiento corto en contra de la corrección`
+    case 'onda_C': return `el precio podría estar en la onda C de ${corr}, que en la teoría es su último tramo`
+    case 'fin_abc': return `${corr} (A, B y C) podría haber terminado el ${fecha(punto(c, 'C').fecha)}`
     default: return ''
   }
 }
@@ -44,23 +48,37 @@ export function veredictoElliott(c) {
   if (!c) return 'Sin conteo claro'
   const v = {
     onda_3: 'Onda 3', onda_4: 'Onda 4', onda_5: 'Onda 5', correccion: 'Corrección después de 5 ondas',
-    onda_B: 'Onda B de la corrección', onda_C: 'Onda C de la corrección', fin_abc: 'Terminó una corrección A-B-C',
+    onda_B: 'Onda B de la corrección', onda_C: 'Onda C de la corrección', fin_abc: 'Fin de una corrección A-B-C',
   }[c.ahora]
   return `Un conteo posible: ${v.charAt(0).toLowerCase()}${v.slice(1)}`
 }
 
-/** Qué lo invalida, en una oración. */
+const cruza = (lado, p, precio) => (lado === 'debajo' ? `baja de ${precio(p)}` : `sube de ${precio(p)}`)
+
+/**
+ * En qué precio el conteo dejaría de tener sentido, como posibilidad («si el
+ * precio…, dejaría de…»), nunca como sentencia. Con el segundo nivel que también
+ * lo corta, del otro lado, si hay (backend/elliott.py, `invalida.otro`).
+ */
 export function textoInvalida(c, precio) {
-  const { precio: p, lado, por } = c.invalida
-  const cruza = lado === 'debajo' ? `baja de ${precio(p)}` : `sube de ${precio(p)}`
-  switch (por) {
-    case 'arranque_1': return `Este conteo se invalida si el precio ${cruza} (donde arrancó la onda 1): la onda 2 nunca va más allá de ese punto.`
-    case 'final_1': return `Este conteo se invalida si el precio ${cruza} (donde terminó la onda 1): la onda 4 no se mete en el terreno de la 1.`
-    case 'final_5': return `Esta lectura deja de valer si el precio ${cruza} (el final de la onda 5): ahí la 5 todavía no habría terminado.`
-    case 'arranque_A': return `Este conteo se invalida si el precio ${cruza} (donde arrancó la onda A): la B no va más allá de ese punto.`
-    case 'final_C': return `Esta lectura deja de valer si el precio ${cruza} (el final de la onda C): ahí la corrección seguiría.`
-    default: return ''
-  }
+  const { precio: p, lado, por, otro } = c.invalida
+  const x = cruza(lado, p, precio)
+  const primero = {
+    arranque_1: `Si el precio ${x} (donde arrancó la onda 1), este conteo dejaría de tener sentido: en la teoría, la onda 2 no va más allá de ese punto.`,
+    final_1: `Si el precio ${x} (donde terminó la onda 1), este conteo dejaría de tener sentido: en la teoría, la onda 4 no se mete en el terreno de la 1.`,
+    final_5: `Si el precio ${x} (el final de la onda 5), esta lectura dejaría de tener sentido: podría ser que la 5 todavía no haya terminado.`,
+    arranque_A: `Si el precio ${x} (donde arrancó la onda A), este conteo dejaría de tener sentido: en la teoría, la B no va más allá de ese punto.`,
+    final_C: `Si el precio ${x} (el final de la onda C), esta lectura dejaría de tener sentido: podría ser que la corrección siga.`,
+  }[por] || ''
+  if (!otro) return primero
+  const y = cruza(otro.lado, otro.precio, precio)
+  const segundo = {
+    tope_3_corta: `También dejaría de tener sentido si ${y}: con una onda 3 más corta que la 1, en la teoría la 5 no mide más que la 3.`,
+    arranque_1: `Y también si ${y} (donde arrancó la onda 1): sería devolver todo el movimiento de 5 ondas.`,
+    borro_lo_corregido: `Y también si ${y}: la corrección habría borrado todo el movimiento que venía corrigiendo.`,
+    arranque_A: `Y también si ${y} (donde arrancó la onda A): ya no se vería como una corrección.`,
+  }[otro.por]
+  return segundo ? `${primero} ${segundo}` : primero
 }
 
 /** Cada pauta en castellano: { texto, cumple }. */
@@ -100,7 +118,7 @@ const pctDe = (a, n) => `${Math.round((a / n) * 100)} %`
 export function textoZona(c, precio) {
   const z = c?.zona
   if (!z || !z.casos) return null
-  const base = `Si ${NOMBRE_ONDA[c.ahora]} sigue las proporciones habituales de Fibonacci, suele terminar entre ${precio(z.desde)} y ${precio(z.hasta)} (la franja del gráfico). `
+  const base = `Si ${NOMBRE_ONDA[c.ahora]} siguiera las proporciones habituales de Fibonacci, podría terminar entre ${precio(z.desde)} y ${precio(z.hasta)} (la franja del gráfico). `
     + `En la historia de ${z.activos} activos, de ${z.casos} veces que una onda así terminó, terminó dentro de su franja ${z.aciertos} (${pctDe(z.aciertos, z.casos)}); `
     + `una franja del mismo ancho puesta justo delante del precio acertó ${z.tonta} (${pctDe(z.tonta, z.casos)}).`
   return z.aciertos > z.tonta ? base : `${base} O sea: esta franja no adivinó mejor que una cualquiera puesta delante del precio.`
@@ -129,7 +147,7 @@ export function tarjetaElliott(e, precio, fecha) {
   return {
     titulo: 'Ondas de Elliott',
     veredicto: veredictoElliott(c),
-    texto: `${QUE_ES} Un conteo posible dice que ${dondeHoy(c, fecha)}.`,
+    texto: `${QUE_ES} Según un conteo posible, ${dondeHoy(c, fecha)}.`,
     invalida: textoInvalida(c, precio),
     zona: textoZona(c, precio),
     confianza: textoConfianza(c),

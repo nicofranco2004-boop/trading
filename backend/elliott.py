@@ -589,21 +589,24 @@ def _zona_de_libro(c: dict):
 # del precio de ese día. {ahora: (aciertos, ondas terminadas, aciertos de la tonta)}.
 # La pantalla lo dice al lado de la zona: sin este número la zona no se muestra.
 #
-# Medido el 2026-10-23 con `scripts/medir_zonas_elliott.py` sobre 3 años de
-# velas de 42 activos (23 de EE.UU., 2 CEDEAR en pesos, 13 acciones argentinas
-# en pesos, 4 cripto), día por día sin mirar el futuro: 2.436 conteos con zona,
-# 1.250 ondas que terminaron, 813 conteos que se invalidaron antes (1 de 3).
-# Con el PRIMER final que vio el detector (lo que vería quien mira): 40 %
-# contra 71 % de la tonta. Con el final MÁS LEJANO antes de invalidarse: 36 %
-# contra 53 %. En ninguna onda ni grupo (EE.UU., BYMA, cripto) le gana a la
-# tonta: la zona NO adivina mejor que "termina cerca de donde está". Se
-# muestra igual porque Nico la quiso ver (23/10), con estos números al lado.
+# Medido el 2026-10-23 (después de la auditoría: zona recortada por los
+# límites del conteo, los dos niveles que lo cortan, sin "final más lejano")
+# con `scripts/medir_zonas_elliott.py` sobre 3 años de velas de 42 activos (23
+# de EE.UU., 2 CEDEAR en pesos, 13 acciones argentinas en pesos, 4 cripto), día
+# por día sin mirar el futuro: 2.381 conteos con zona, 1.212 ondas que
+# terminaron, 852 conteos que se invalidaron antes (más de 1 de 3).
+# Fibonacci 40 % contra 68 % de la tonta (EE.UU. 40/70, BYMA 39/69, cripto
+# 43/60). En ninguna onda ni grupo le gana: la zona NO adivina mejor que
+# "termina cerca de donde está". La auditoría lo confirmó con recorridos al
+# azar, sin ninguna estructura: da lo mismo (42 % contra 72 %). Se muestra
+# igual porque Nico la quiso ver (23/10), con estos números al lado, y queda
+# para la auditoría de dos semanas.
 ACIERTO_ZONA = {
-    "onda_3": (39, 223, 112),
-    "onda_4": (134, 219, 193),
-    "onda_5": (132, 403, 267),
-    "onda_B": (69, 142, 119),
-    "onda_C": (126, 263, 193),
+    "onda_3": (48, 250, 134),
+    "onda_4": (134, 218, 187),
+    "onda_5": (131, 388, 247),
+    "onda_B": (69, 141, 119),
+    "onda_C": (108, 215, 143),
 }
 ACTIVOS_MEDIDOS = 42
 

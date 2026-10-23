@@ -60,7 +60,6 @@ export default function CapaElliott({ elliott, puntos, pctX, pctY, precio }) {
   }
   const xInv = pos[0].p.donde === 'adentro' ? pctX(pos[0].p.i) : 0
   const yInv = pctY(c.invalida.precio)
-  const fin = c.invalida.por === 'final_5' || c.invalida.por === 'final_C'
   return (
     <div className="pointer-events-none absolute inset-0" aria-hidden="true">
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
@@ -80,17 +79,25 @@ export default function CapaElliott({ elliott, puntos, pctX, pctY, precio }) {
           <div className="absolute" style={{ left: `${x}%`, right: 0, top: `${Math.min(y1, y2)}%`, height: `${Math.abs(y2 - y1)}%`,
             background: indigo(0.12), borderTop: `1px dashed ${indigo(0.6)}`, borderBottom: `1px dashed ${indigo(0.6)}` }}>
             <span className="absolute right-1 top-0.5 rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1">
-              Suele terminar acá · acertó {Math.round((c.zona.aciertos / c.zona.casos) * 100)} %
+              Podría terminar acá · acertó {Math.round((c.zona.aciertos / c.zona.casos) * 100)} %
             </span>
           </div>
         )
       })()}
-      {/* La raya que invalida: desde el arranque del conteo hasta hoy. */}
-      <div className="absolute h-0" style={{ left: `${xInv}%`, right: 0, top: `${yInv}%`, borderTop: `1.5px dashed ${indigo(0.8)}` }}>
-        <span className={`absolute ${c.invalida.lado === 'debajo' ? 'top-0.5' : '-translate-y-full'} ${xInv < 60 ? 'left-1' : 'right-1'} rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1`}>
-          {fin ? 'Deja de valer' : 'Invalida el conteo'} · {precio(c.invalida.precio)}
-        </span>
-      </div>
+      {/* Las rayas donde el conteo dejaría de tener sentido: desde el
+          arranque del conteo hasta hoy. La segunda (del otro lado), sólo si cae
+          dentro de lo que se ve: no estira la escala. */}
+      {[c.invalida, c.invalida.otro].filter(Boolean).map((r, k) => {
+        const y = k === 0 ? yInv : pctY(r.precio)
+        if (k > 0 && (y < 0 || y > 100)) return null
+        return (
+          <div key={k} className="absolute h-0" style={{ left: `${xInv}%`, right: 0, top: `${y}%`, borderTop: `1.5px dashed ${indigo(0.8)}` }}>
+            <span className={`absolute ${r.lado === 'debajo' ? 'top-0.5' : '-translate-y-full'} ${xInv < 60 ? 'left-1' : 'right-1'} rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1`}>
+              Dejaría de valer · {precio(r.precio)}
+            </span>
+          </div>
+        )
+      })}
       {pos.map(o => {
         if (o.p.donde !== 'adentro') return null
         const r = rotuloOnda(o)

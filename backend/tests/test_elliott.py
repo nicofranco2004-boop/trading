@@ -250,6 +250,73 @@ class CorreccionSueltaTest(unittest.TestCase):
         self.assertEqual((abc["invalida"]["lado"], abc["invalida"]["por"]), ("encima", "arranque_A"))
 
 
+class AuditoriaTest(unittest.TestCase):
+    """Lo que encontró la auditoría independiente del 23/10, un caso por hallazgo."""
+
+    def test_la_zona_nunca_cae_donde_el_conteo_ya_no_vale(self):
+        # En la 4 la zona bajaba hasta el 50 % de la 3, debajo del final de la 1
+        # (justo el nivel que la invalida). Ahora se recorta o no hay zona.
+        lista = elliott.candidatos(_velas(_dibujo([115, 100, 120, 108, 124, 122])))
+        en4 = [c for c in lista if c["ahora"] == "onda_4"]
+        self.assertTrue(en4, "la figura tiene una onda 4 en curso")
+        for c in en4:
+            z = elliott.zona(c)
+            if z:
+                self.assertGreaterEqual(z[0], c["pts"][1]["precio"], "la zona de la 4 no baja del final de la 1")
+        # Y en general, en recorridos al azar: toda zona queda entre los límites del conteo.
+        for semilla in (5, 17):
+            random.seed(semilla)
+            x, v = 100.0, []
+            for i in range(300):
+                x *= 1 + random.gauss(0, 0.02)
+                v.append({"date": _fecha_iso(i), "open": x, "high": x * 1.01, "low": x * 0.99, "close": x})
+            for corte in range(80, 300, 11):
+                for c in elliott.candidatos(v[:corte]):
+                    z = elliott.zona(c)
+                    if z:
+                        piso, techo = elliott._limites(c)
+                        self.assertTrue(piso <= z[0] < z[1] <= techo, (corte, c["ahora"], z, piso, techo))
+
+    def test_en_la_5_con_la_3_corta_hay_un_techo_y_se_dice(self):
+        # 1 = 30, 3 = 22: la 5 no puede medir más que la 3. Ese techo ahora sale
+        # como segundo nivel y la zona no lo pasa.
+        c = _conteo([115, 100, 130, 118, 140, 133, 150])["principal"]
+        self.assertEqual(c["ahora"], "onda_5")
+        otro = c["invalida"]["otro"]
+        self.assertEqual((otro["lado"], otro["por"]), ("encima", "tope_3_corta"))
+        if c["zona"]:
+            self.assertLessEqual(c["zona"]["hasta"], otro["precio"])
+
+    def test_despues_de_la_5_tambien_cae_si_devuelve_todo(self):
+        c = _conteo(LIBRO + [141])["principal"]
+        self.assertEqual(c["ahora"], "correccion")
+        self.assertEqual((c["invalida"]["otro"]["lado"], c["invalida"]["otro"]["por"]), ("debajo", "arranque_1"))
+        self.assertAlmostEqual(c["invalida"]["otro"]["precio"], 100 * 0.997, places=2)
+
+    def test_una_c_que_ya_borro_lo_que_corregia_no_se_ofrece(self):
+        # Suba 90 → 120, A a 105, B a 115 y ahora 70: la caída ya borró toda la suba.
+        for hoy in (85, 70):
+            lista = elliott.candidatos(_velas(_dibujo([90, 120, 105, 115, hoy])))
+            self.assertFalse(any(c["tipo"] == "correccion" and c["ahora"] == "onda_C" and not c["espejo"]
+                                 for c in lista), hoy)
+        # Con la C todavía arriba del arranque de la suba, sí, y con ese piso como segundo nivel.
+        lista = elliott.candidatos(_velas(_dibujo([90, 120, 105, 115, 100])))
+        c = next(c for c in lista if c["tipo"] == "correccion" and c["ahora"] == "onda_C" and not c["espejo"])
+        self.assertEqual(c["otro"][1:], ("borro_lo_corregido", "debajo"))
+
+    def test_un_dia_pico_y_pozo_entra_con_el_tipo_que_alterna(self):
+        # Pico en 120; después una vela enorme (máximo 125, mínimo 90) que es pico
+        # y pozo a la vez. Venía un pico: entra el pozo (antes se perdía).
+        cierres = [100.0] * 10 + [105, 110, 115, 120, 116, 112, 108, 108, 108]
+        v = [{"date": _fecha_iso(i), "open": c, "high": c, "low": c, "close": c} for i, c in enumerate(cierres)]
+        k = len(v)
+        v.append({"date": _fecha_iso(k), "open": 108, "high": 125, "low": 90, "close": 108})
+        v += [{"date": _fecha_iso(k + 1 + j), "open": 108, "high": 109, "low": 107, "close": 108} for j in range(5)]
+        zz = elliott._zigzag(v, estructura.N_PIVOTE)
+        enorme = [p for p in zz if p["i"] == k]
+        self.assertEqual([p["tipo"] for p in enorme], ["pozo"], zz)
+
+
 class SinConteoTest(unittest.TestCase):
 
     def test_pocos_datos(self):
