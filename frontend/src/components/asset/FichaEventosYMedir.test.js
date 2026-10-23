@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, enActo, medidas, clic, buscarBoton } from '../../testing/navegadorMinimo'
+import { margenDerecho } from '../../utils/tecnico'
 
 const puntos = Array.from({ length: 700 }, (_, i) => {
   const d = new Date(Date.UTC(2024, 9, 1) + i * 86400000).toISOString().slice(0, 10)
@@ -106,9 +107,11 @@ async function toqueEn(x, hastaX = x) {
   return fin
 }
 const fecha = (iso) => { const [y, m, d] = iso.split('-'); return `${d}/${m}/${y.slice(2)}` }
-// Lo que se ve en 1A: los últimos 365 puntos (uno por día). El punto bajo x:
-// round(x / 1000 × 364) dentro de lo que se ve.
-const bajo = (x) => 700 - 365 + Math.round((x / 1000) * 364)
+// Lo que se ve en 1A: los últimos 365 puntos (uno por día) más el aire vacío de
+// la derecha (como TradingView): el ancho se reparte en LUGARES. El punto bajo
+// x: round(x / 1000 × (lugares − 1)) dentro de lo que se ve.
+const LUGARES = 365 + margenDerecho(365)
+const bajo = (x) => 700 - 365 + Math.round((x / 1000) * (LUGARES - 1))
 const pct = (a, b) => ((puntos[b].c / puntos[a].c - 1) * 100).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 
 describe('medir entre dos puntos', () => {
@@ -160,6 +163,16 @@ describe('medir entre dos puntos', () => {
     expect(texto(montado.contenedor)).toContain(`en ${b - a} días de mercado`)
   })
 
+  it('tocar el aire de la derecha (el futuro) no elige un día', async () => {
+    await dibujar()
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Medir entre dos puntos'))
+    await redibujar()
+    expect(bajo(995)).toBeGreaterThan(699)        // 995 px cae en el aire
+    await clickEn(995)
+    await toqueEn(995)
+    expect(texto(montado.contenedor)).toContain('Tocá un día del gráfico para empezar a medir.')
+  })
+
   it('apagar el modo borra la medición', async () => {
     await dibujar()
     const boton = () => buscarBoton(montado.contenedor, 'Medir entre dos puntos')
@@ -179,6 +192,11 @@ describe('balances y dividendos en el gráfico', () => {
     await dibujar()
     const ms = marcas()
     expect(ms.map(n => texto(n))).toEqual(['B', 'D'])
+    // En el mismo lugar que la vela de ese día (el ancho se reparte en lugares,
+    // con el aire de la derecha): no corridas.
+    const lugarDe = (i) => `${((i - (700 - 365)) / (LUGARES - 1)) * 100}%`
+    expect(ms[0].style.left).toBe(lugarDe(600))
+    expect(ms[1].style.left).toBe(lugarDe(610))
     expect(ms[0].getAttribute('aria-label')).toBe(
       `Balance del ${fecha(puntos[600].d)}. Lo presentó con el mercado ya cerrado. Al otro día el precio: −4,2%`)
     // Con un toque, el globo.
