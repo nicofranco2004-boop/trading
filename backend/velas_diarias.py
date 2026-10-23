@@ -138,7 +138,8 @@ def _es_bono(asset: str) -> bool:
 
 def simbolos_a_seguir(conn) -> list:
     """Todos los tickers de Yahoo que hacen falta: lo que alguien tiene en
-    cartera y lo que alguien sigue en su watchlist."""
+    cartera, lo que alguien sigue en su watchlist y lo que alguien vigila con
+    una alerta técnica."""
     return sorted(_seguimiento(conn)[0])
 
 
@@ -155,7 +156,7 @@ def _seguimiento(conn):
     su serie en pesos es la del '.BA'. Reinventar esa regla acá es lo que hizo
     que un CEDEAR comprado por dólar-MEP pidiera el ticker equivocado (bug C1)."""
     from cripto import yahoo_de_cripto
-    from snapshots_job import _broker_name_sets, position_price_key
+    from snapshots_job import _broker_name_sets, position_price_key, simbolo_byma
 
     cedears = _cedears_de_byma()
     tickers, pares = set(), {}
@@ -184,6 +185,18 @@ def _seguimiento(conn):
     for r in conn.execute("SELECT symbol, asset_type FROM watchlist").fetchall():
         sym = (r['symbol'] or '').upper()
         _sumar(_yahoo_de(sym, r['asset_type'], sym.endswith('.BA'), yahoo_de_cripto, cedears))
+
+    # Las alertas técnicas (alerts_engine.evaluar_tecnicas) miran la serie de la
+    # ficha: sin esto, una alerta sobre un activo que nadie tiene no avisaba
+    # nunca. El activo viene pelado ('AAPL', 'GGAL'): en pesos hace falta el
+    # '.BA' — el de una acción argentina, o el de un CEDEAR que BYMA lista.
+    for r in conn.execute(
+            "SELECT symbol, currency, accion_local FROM alerts "
+            "WHERE kind = 'tecnica' AND active = 1").fetchall():
+        sym = (r['symbol'] or '').upper()
+        en_pesos = bool(r['accion_local']) or (
+            (r['currency'] or '').upper() == 'ARS' and simbolo_byma(sym)[:-3] in cedears)
+        _sumar(_yahoo_de(sym, None, en_pesos, yahoo_de_cripto, cedears))
 
     tickers.discard('')
     tickers.discard(None)

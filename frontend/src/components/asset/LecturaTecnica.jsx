@@ -16,6 +16,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import AssetMiniChart from '../home/AssetMiniChart'
+import { BotonAvisame, useAvisosTecnicos, senalDeTarjeta } from '../alerts/AvisameTecnico'
 import { api } from '../../utils/api'
 import {
   RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, tarjetas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
@@ -81,6 +82,9 @@ export default function LecturaTecnica({
   // de 2 años). El análisis (Fibonacci, giros) se hace sobre las diarias.
   const [intervalo, setIntervalo] = useState('dia')
   const elegirRango = (r) => { setRango(r); setVentana(null) }
+  // Las alertas de la cuenta, para que cada «Avisame» sepa si ya hay una igual.
+  // Arriba de los return de abajo: un hook después de un return rompe la ficha.
+  const avisos = useAvisosTecnicos()
 
   // Dólares al abrir; pesos recién la primera vez que se tocan (la mayoría no
   // los mira y es otra cuenta en el servidor). Otro activo = otro componente
@@ -216,7 +220,14 @@ export default function LecturaTecnica({
       </div>
 
       <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
-        {lista.map(t => <Tarjeta key={t.id} t={t} />)}
+        {lista.map(t => {
+          const s = senalDeTarjeta(t.id, actual.lectura)
+          return (
+            <Tarjeta key={t.id} t={t} pie={s && (
+              <BotonAvisame avisos={avisos} asset={asset} accionLocal={accionLocal} moneda={moneda} {...s} />
+            )} />
+          )
+        })}
         {(() => {
           // La tarjeta: en dólares, el MISMO resultado de arriba de la ficha; en
           // pesos, el de lo que pagaste en pesos.
@@ -301,11 +312,16 @@ function Chip({ activo, fijo, onClick, color, grueso, punteado, puntos, children
   )
 }
 
-function Tarjeta({ t }) {
+// `pie`: el «Avisame» de la señal de esa tarjeta (AvisameTecnico), arriba a la
+// derecha, chico, para no competir con la lectura.
+function Tarjeta({ t, pie }) {
   const tono = t.tono === 'pos' ? 'text-rendi-pos' : t.tono === 'neg' ? 'text-rendi-neg' : 'text-ink-0'
   return (
     <div className="rounded-lg border border-line/60 bg-bg-2/40 px-3.5 py-3">
-      <div className="text-[12px] text-ink-2 font-medium">{t.titulo}</div>
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-[12px] text-ink-2 font-medium">{t.titulo}</div>
+        {pie && <div className="-mt-1.5 flex-shrink-0">{pie}</div>}
+      </div>
       <div className={`text-[15px] font-semibold mt-0.5 tabular ${tono}`}>{t.veredicto}</div>
       {t.rsi != null && <BarraRsi rsi={t.rsi} />}
       <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.texto}</div>

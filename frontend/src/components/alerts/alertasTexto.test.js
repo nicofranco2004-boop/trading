@@ -2,7 +2,7 @@
 // y la línea de estado. Son las tres caras de la misma alerta y tienen que
 // decir lo mismo.
 import { describe, it, expect } from 'vitest'
-import { frase, confirmacion, estado, fmtPrecio, fmtPct, diaArgentina, fechaCorta, simbolo } from './alertasTexto'
+import { frase, confirmacion, estado, fmtPrecio, fmtPct, diaArgentina, fechaCorta, simbolo, activoTecnico } from './alertasTexto'
 
 const precio = { id: 1, kind: 'price_target', scope: 'ticker', symbol: 'GGAL.BA', currency: 'ARS', direction: 'above', threshold: 8000, active: true, repeat: 'once' }
 const cartera = { id: 2, kind: 'pct_move', scope: 'holdings', symbol: null, up_pct: 8, down_pct: 5, baseline: 'prev_close', active: true, repeat: 'always' }
@@ -27,7 +27,7 @@ describe('la frase de la fila y la confirmación dicen lo mismo', () => {
   })
 
   it('toda la cartera, con los dos lados', () => {
-    expect(frase(cartera)).toEqual({ quien: 'Mi cartera', que: 'algo sube 8 % o cae 5 % en el día' })
+    expect(frase(cartera)).toEqual({ quien: 'Mi cartera', que: 'algo sube 8 % o cae 5 % en el día', sep: ': ' })
     expect(confirmacion(cartera)).toBe('Te avisamos si algo de tu cartera sube más de 8 % o cae más de 5 % en el día.')
   })
 
@@ -73,5 +73,44 @@ describe('el servidor sella en UTC sin «Z»', () => {
     // 01:30 UTC del 20 = 22:30 del 19 en Argentina.
     expect(diaArgentina('2026-10-20T01:30:00')).toBe('2026-10-19')
     expect(fechaCorta('2026-10-20T01:30:00.123456')).toBe('19/10')
+  })
+})
+
+describe('alertas técnicas', () => {
+  const tec = { id: 9, kind: 'tecnica', scope: 'ticker', symbol: 'AAPL', senal: 'media200', direction: 'below', currency: 'USD', accion_local: 0, active: true, repeat: 'always' }
+
+  it('el cruce de un promedio, con su lado', () => {
+    expect(frase(tec)).toEqual({ quien: 'AAPL', que: 'queda abajo de su promedio de 200 días' })
+    expect(confirmacion(tec)).toBe('Te avisamos cuando AAPL quede abajo de su promedio de 200 días. Lo miramos cada día con el precio de cierre.')
+    expect(frase({ ...tec, direction: 'above' }).que).toBe('pasa para arriba su promedio de 200 días')
+    expect(frase({ ...tec, senal: 'media50', direction: 'either' }).que).toBe('cruza su promedio de 50 días')
+  })
+
+  it('el RSI se dice como fuerza, y el máximo del año', () => {
+    expect(frase({ ...tec, senal: 'rsi_bajo_30' })).toEqual({ quien: 'AAPL', que: 'la fuerza (RSI) baja de 30', sep: ': ' })
+    expect(confirmacion({ ...tec, senal: 'rsi_sube_30' })).toBe('Te avisamos cuando la fuerza (RSI) de AAPL vuelva a pasar 30. Lo miramos cada día con el precio de cierre.')
+    expect(frase({ ...tec, senal: 'maximo_12m' }).que).toBe('cierra en su máximo del año')
+  })
+
+  it('en pesos lo dice; una acción argentina en dólares también', () => {
+    expect(frase({ ...tec, currency: 'ARS' }).quien).toBe('AAPL en pesos')
+    expect(frase({ ...tec, symbol: 'GGAL', accion_local: 1, currency: 'ARS' }).quien).toBe('GGAL')
+    expect(frase({ ...tec, symbol: 'GGAL', accion_local: 1 }).quien).toBe('GGAL en dólares')
+  })
+
+  it('el estado no habla de precio: se mira con el cierre', () => {
+    expect(estado(tec, null, [], '2026-10-22').texto).toBe('Se mira cada día con el precio de cierre')
+    const ev = [{ alert_id: 9, fired_at: '2026-10-22 12:05:00', message: 'AAPL quedó abajo de su promedio de 200 días: la tendencia de fondo se volvió bajista' }]
+    expect(estado(tec, null, ev, '2026-10-22')).toEqual({ texto: `Hoy avisó: ${ev[0].message}`, tono: 'aviso' })
+  })
+
+  it('del buscador: el CEDEAR va pelado, la acción argentina con su marca', () => {
+    expect(activoTecnico('AAPL.BA')).toEqual({ symbol: 'AAPL', accion_local: false })
+    expect(activoTecnico('GGAL.BA')).toEqual({ symbol: 'GGAL', accion_local: true })
+    // El buscador de Alertas ofrece la acción argentina pelada (fila «Acción AR»).
+    expect(activoTecnico('GGAL')).toEqual({ symbol: 'GGAL', accion_local: true })
+    expect(activoTecnico('YPFD')).toEqual({ symbol: 'YPFD', accion_local: true })
+    expect(activoTecnico('MSFT')).toEqual({ symbol: 'MSFT', accion_local: false })
+    expect(activoTecnico('BTC')).toEqual({ symbol: 'BTC', accion_local: false })
   })
 })

@@ -55,7 +55,7 @@ export default function MisAlertas({ items, events, precios, resumen, hoy, onEdi
           />
         )}
         {ordenadas.map(a => {
-          const { quien, que } = frase(a)
+          const { quien, que, sep = ' ' } = frase(a)
           const est = estado(a, a.symbol ? precios[claveDePrecio(a)] : null, events, hoy)
           const cartera = a.scope === 'holdings'
           return (
@@ -63,7 +63,7 @@ export default function MisAlertas({ items, events, precios, resumen, hoy, onEdi
               icono={cartera
                 ? <Circulo><Briefcase size={18} strokeWidth={1.75} className="text-ink-1" /></Circulo>
                 : <AssetLogo asset={a.symbol} size={40} />}
-              titulo={<><span className="font-semibold">{quien}</span>{cartera ? ': ' : ' '}{que}</>}
+              titulo={<><span className="font-semibold">{quien}</span>{sep}{que}</>}
               detalle={est.tono === 'aviso'
                 ? <span className="inline-flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-rendi-warn" aria-hidden="true" />{est.texto}</span>
                 : est.texto}

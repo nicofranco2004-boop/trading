@@ -81,21 +81,48 @@ def rsi(cierres: list, n: int = 14) -> list:
 RUEDAS_CRUCE_RSI = 10
 
 
+def _ref(referencia, i):
+    return referencia[i] if isinstance(referencia, list) else referencia
+
+
+def ultimo_cruce(valores: list, referencia, desde_i: int = 1, hacia: str = None):
+    """El ÚLTIMO cruce de `valores` con `referencia` desde el índice `desde_i`:
+    (índice, 'arriba'|'abajo'), o None si no cruzó.
+
+    `referencia` es una serie (la media de 200 de cada día) o un nivel fijo (el
+    30 del RSI). «Arriba» es valor ≥ referencia: la MISMA regla que la tarjeta de
+    la ficha (precio ≥ media es «Alcista»). `hacia` busca sólo los cruces en ese
+    sentido. Es LA cuenta de "cruzó": la usan el aviso de la ficha
+    (`cruce_rsi`) y las alertas técnicas (`senal_desde`). Con una media o un
+    valor que todavía no existe (None) ese día no cruza nada."""
+    for i in range(len(valores) - 1, max(desde_i, 1) - 1, -1):
+        a, b = valores[i - 1], valores[i]
+        ra, rb = _ref(referencia, i - 1), _ref(referencia, i)
+        if a is None or b is None or ra is None or rb is None:
+            continue
+        antes, ahora = a >= ra, b >= rb
+        if antes != ahora:
+            sentido = "arriba" if ahora else "abajo"
+            if hacia in (None, sentido):
+                return i, sentido
+    return None
+
+
 def cruce_rsi(r: list, abajo: float = 30.0, arriba: float = 70.0):
     """El último cruce del RSI hacia AFUERA de una zona extrema en las últimas
     `RUEDAS_CRUCE_RSI` ruedas: {'tipo': 'salio_de_abajo'|'salio_de_arriba',
     'hace': ruedas}. Salir de abajo de 30 es lo que muchos leen como "vuelve a
-    tomar fuerza"; salir de arriba de 70, "pierde fuerza". None si no hubo."""
+    tomar fuerza"; salir de arriba de 70, "pierde fuerza". None si no hubo.
+    Sale de `ultimo_cruce`, la misma cuenta que las alertas técnicas."""
     n = len(r)
-    for i in range(n - 1, max(0, n - 1 - RUEDAS_CRUCE_RSI), -1):
-        a, b = r[i - 1], r[i]
-        if a is None or b is None:
-            continue
-        if a < abajo <= b:
-            return {"tipo": "salio_de_abajo", "hace": n - 1 - i}
-        if a > arriba >= b:
-            return {"tipo": "salio_de_arriba", "hace": n - 1 - i}
-    return None
+    desde = max(1, n - RUEDAS_CRUCE_RSI)
+    de_abajo = ultimo_cruce(r, abajo, desde, "arriba")
+    de_arriba = ultimo_cruce(r, arriba, desde, "abajo")
+    if not de_abajo and not de_arriba:
+        return None
+    if de_abajo and (not de_arriba or de_abajo[0] > de_arriba[0]):
+        return {"tipo": "salio_de_abajo", "hace": n - 1 - de_abajo[0]}
+    return {"tipo": "salio_de_arriba", "hace": n - 1 - de_arriba[0]}
 
 
 def _pct(a, b):
@@ -267,3 +294,90 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         # de tu precio no se corra lo que se movió hoy (auditoría 22/10).
         "cierre_ref": cierre_de(conn, ref) if ref else None,
     }
+
+
+# ─── Señales para las alertas técnicas ───────────────────────────────────────
+#
+# Lo que una alerta técnica vigila (alerts_engine.evaluar_tecnicas). Cada una es
+# un CAMBIO que pasa en un día de mercado, no un estado: «cruzó su promedio de
+# 200 días» pasa el día que el cierre queda del otro lado, no todos los días que
+# sigue ahí. Se calculan con las mismas cuentas que la ficha (`media`, `rsi`,
+# `ultimo_cruce`) sobre la misma serie (`serie`), así que lo que avisa la alerta
+# es lo que después se ve en la tarjeta.
+
+SENALES = ("media200", "media50", "rsi_bajo_30", "rsi_sobre_70", "rsi_sube_30", "maximo_12m")
+# Las de las medias se pueden pedir para un solo lado (arriba / abajo) o para
+# los dos; las del RSI y el máximo ya dicen el sentido en el nombre.
+SENALES_CON_SENTIDO = ("media200", "media50")
+_RSI = {"rsi_bajo_30": (30.0, "abajo"), "rsi_sobre_70": (70.0, "arriba"),
+        "rsi_sube_30": (30.0, "arriba")}
+# «En su máximo» con la misma tolerancia que la tarjeta de la ficha
+# (`tarjetas()` en frontend/src/utils/tecnico.js: dist_maximo_12m ≥ −0,1 %).
+TOLERANCIA_MAXIMO = 0.001
+# Un activo que cierra en su máximo varios días seguidos (Apple lo hizo 36 días
+# en un año) avisa la PRIMERA vez: vuelve a avisar sólo después de un mes de
+# mercado sin máximos.
+RUEDAS_ENTRE_MAXIMOS = 20
+
+
+def _en_maximo(velas: list, cierres: list, desde_i: int) -> dict:
+    """{i: True/False} desde `desde_i`: ¿el cierre de ese día es el más alto de
+    los 12 meses (corridos) que terminan ese día? Sin un año entero de velas
+    antes, no se sabe (no figura): el «máximo del año» de 4 meses no es tal."""
+    out = {}
+    if not velas:
+        return out
+    j = 0
+    primera = date.fromisoformat(velas[0]["date"])
+    for i in range(max(0, desde_i), len(velas)):
+        piso = date.fromisoformat(velas[i]["date"]) - timedelta(days=DIAS_ANIO)
+        if primera > piso:
+            continue
+        piso_iso = piso.isoformat()
+        while velas[j]["date"] <= piso_iso:
+            j += 1
+        out[i] = cierres[i] >= max(cierres[j:i + 1]) * (1 - TOLERANCIA_MAXIMO)
+    return out
+
+
+def senal_desde(velas: list, senal: str, desde: str = None, sentido: str = None):
+    """La última vez que pasó `senal` en una vela POSTERIOR a la fecha `desde`
+    (None = en cualquiera): {'fecha', 'sentido', 'cierre', 'referencia', 'rsi'}
+    o None. `sentido` ('arriba'|'abajo') acota las de las medias.
+
+    `referencia` es contra qué se midió: el valor del promedio ese día, el nivel
+    del RSI (30/70) o el máximo del año. Sin velas suficientes (menos de 200
+    días para la media de 200) no pasa nada: no se inventa."""
+    if not velas or senal not in SENALES:
+        return None
+    desde_i = 1
+    if desde:
+        desde_i = next((i for i, v in enumerate(velas) if v["date"] > desde), len(velas))
+    if desde_i >= len(velas):
+        return None
+    cierres = [v["close"] for v in velas]
+
+    def _ev(i, sentido, referencia, r=None):
+        return {"fecha": velas[i]["date"], "sentido": sentido, "cierre": cierres[i],
+                "referencia": referencia, "rsi": r}
+
+    if senal in ("media200", "media50"):
+        m = media(cierres, 200 if senal == "media200" else 50)
+        c = ultimo_cruce(cierres, m, desde_i, sentido if sentido in ("arriba", "abajo") else None)
+        return _ev(c[0], c[1], m[c[0]]) if c else None
+    if senal in _RSI:
+        nivel, hacia = _RSI[senal]
+        r = rsi(cierres)
+        c = ultimo_cruce(r, nivel, desde_i, hacia)
+        return _ev(c[0], c[1], nivel, r[c[0]]) if c else None
+    # maximo_12m: el primer máximo después de un mes sin máximos.
+    en_max = _en_maximo(velas, cierres, desde_i - RUEDAS_ENTRE_MAXIMOS)
+    for i in range(len(velas) - 1, desde_i - 1, -1):
+        if not en_max.get(i):
+            continue
+        antes = range(i - RUEDAS_ENTRE_MAXIMOS, i)
+        if i - RUEDAS_ENTRE_MAXIMOS < 0 or any(en_max.get(k) is None for k in antes):
+            continue    # sin el mes de antes no se sabe si es la PRIMERA vez
+        if not any(en_max[k] for k in antes):
+            return _ev(i, "arriba", cierres[i])
+    return None
