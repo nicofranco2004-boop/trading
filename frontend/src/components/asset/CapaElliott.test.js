@@ -176,3 +176,25 @@ describe('la zona donde suele terminar la onda en curso', () => {
     expect(t).toContain('terminó dentro de su franja 30 (50 %)')
   })
 })
+
+describe('con zoom o arrastre', () => {
+  it('la zona no se dibuja sobre velas viejas ni estira la escala', async () => {
+    const { default: Capa, preciosDelConteo, zonaVisible } = await import('./CapaElliott')
+    const conZona = { ...ELL, principal: { ...PRINCIPAL, zona: { desde: 150, hasta: 160, aciertos: 1, casos: 3, tonta: 2, activos: 42 } } }
+    const capa = (vista) => h(Capa, {
+      elliott: conZona, puntos: vista, pctX: (i) => (i / (vista.length - 1)) * 100, pctY: (v) => 100 - (v - 100), precio: (x) => `US$ ${x}`,
+    })
+    // Ventana entre el punto 2 (rueda 150) y el 4 (rueda 200): el último punto
+    // contado todavía no llegó.
+    const pasado = puntos.slice(130, 170)
+    expect(zonaVisible(conZona.principal, pasado)).toBe(false)
+    expect(preciosDelConteo(conZona, pasado)).not.toContain(160)
+    montado = await montar(capa(pasado))
+    expect(texto(montado.contenedor)).not.toContain('Suele terminar acá')
+    await montado.desmontar()
+    // Con el último punto a la vista, sí.
+    expect(zonaVisible(conZona.principal, puntos)).toBe(true)
+    montado = await montar(capa(puntos))
+    expect(texto(montado.contenedor)).toContain('Suele terminar acá · acertó 33 %')
+  })
+})

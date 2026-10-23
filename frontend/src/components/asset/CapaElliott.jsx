@@ -28,7 +28,17 @@ export function preciosDelConteo(e, puntos) {
   const c = e?.disponible ? e.principal : null
   if (!c) return []
   const visibles = c.ondas.filter(o => posicion(puntos, o.fecha).donde === 'adentro').map(o => o.precio)
-  return visibles.length ? [...visibles, c.invalida.precio, ...(c.zona ? [c.zona.desde, c.zona.hasta] : [])] : []
+  if (!visibles.length) return []
+  return [...visibles, c.invalida.precio, ...(zonaVisible(c, puntos) ? [c.zona.desde, c.zona.hasta] : [])]
+}
+
+/**
+ * ¿Se dibuja la zona? Es sobre lo que viene después del último punto contado:
+ * si la ventana está corrida al pasado y ese punto todavía no llegó, la zona
+ * quedaría sobre velas viejas, en un lugar que no es el suyo.
+ */
+export function zonaVisible(c, puntos) {
+  return !!c?.zona && posicion(puntos, c.ondas[c.ondas.length - 1].fecha).donde !== 'despues'
 }
 
 /** La fecha desde la que hay que ver el gráfico para que entre el conteo. */
@@ -62,7 +72,7 @@ export default function CapaElliott({ elliott, puntos, pctX, pctY, precio }) {
       </svg>
       {/* La zona donde suele terminar la onda en curso: desde el último punto
           contado hasta hoy, con cuánto acertó en la historia medida. */}
-      {c.zona && (() => {
+      {zonaVisible(c, puntos) && (() => {
         const ult = pos[pos.length - 1]
         const x = ult.p.donde === 'adentro' ? pctX(ult.p.i) : 0
         const y1 = pctY(c.zona.hasta), y2 = pctY(c.zona.desde)

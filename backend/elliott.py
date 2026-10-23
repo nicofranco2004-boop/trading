@@ -96,12 +96,21 @@ def _zigzag(velas: list, n: int) -> list:
     [{'i', 'tipo', 'precio'}]. Dos del mismo tipo seguidos: queda el más
     extremo. Un día que es pico y pozo a la vez (una vela enorme) entra con el
     tipo que alterna con el anterior; el otro se descarta."""
-    piv = sorted(estructura.pivotes(velas, n), key=lambda p: (p["i"], p["tipo"] != "pico"))
-    out = []
+    piv = sorted(estructura.pivotes(velas, n), key=lambda p: p["i"])
+    # Un día que es pico y pozo: queda el que alterna con el anterior (sin
+    # anterior, el pico). Antes entraba siempre el pico, aunque el anterior
+    # también lo fuera, y el pozo se perdía (auditoría 23/10).
+    juntos = {}
     for p in piv:
+        juntos.setdefault(p["i"], []).append(p)
+    out = []
+    for i in sorted(juntos):
+        grupo = juntos[i]
+        if len(grupo) > 1:
+            quiero = "pozo" if out and out[-1]["tipo"] == "pico" else "pico"
+            grupo = [g for g in grupo if g["tipo"] == quiero]
+        p = grupo[0]
         q = {"i": p["i"], "tipo": p["tipo"], "precio": p["precio"]}
-        if out and out[-1]["i"] == q["i"]:
-            continue
         if out and out[-1]["tipo"] == q["tipo"]:
             mas = q["precio"] > out[-1]["precio"] if q["tipo"] == "pico" else q["precio"] < out[-1]["precio"]
             if mas:
@@ -254,10 +263,18 @@ def _impulso(pts: list, vista: _Vista):
         inval, por = P[1], "final_1"              # la 4 se metería en el terreno de la 1
     else:
         inval, por = P[5], "final_5"              # la 5 no habría terminado
+    # El OTRO nivel que también lo corta, del otro lado (ver `_limites`):
+    #   · en la 5 con una 3 más corta que la 1: la 5 no puede pasar el largo de la 3;
+    #   · después de la 5: si devuelve todo el impulso, no lo era.
+    otro = None
+    if hecho == 4 and w3 < w1:
+        otro = (P[4] + w3, "tope_3_corta", "encima")
+    elif hecho == 5:
+        otro = (P[0], "arranque_1", "debajo")
     ondas = [str(k) for k in range(len(pts))]
     return {"tipo": "impulso", "pts": pts, "ondas": ondas, "ahora": ahora, "pautas": pautas,
             "invalida": inval, "invalida_por": por, "invalida_lado": "encima" if hecho == 5 else "debajo",
-            "principales": [(0, 1), (2, 3), (4, 5)][:(hecho + 1) // 2]}
+            "otro": otro, "principales": [(0, 1), (2, 3), (4, 5)][:(hecho + 1) // 2]}
 
 
 def _correcciones(zz: list, vista: _Vista, impulsos: list) -> list:
@@ -285,7 +302,7 @@ def _correcciones(zz: list, vista: _Vista, impulsos: list) -> list:
             if pts[0]["i"] == p5["i"]:
                 b = {"tipo": "correccion", "pts": pts, "ondas": ["0", "A"], "ahora": "onda_B",
                      "pautas": [], "invalida": p5["precio"], "invalida_por": "arranque_A",
-                     "invalida_lado": "encima", "principales": [(0, 1)]}
+                     "invalida_lado": "encima", "otro": None, "principales": [(0, 1)]}
                 pegadas.append(_pegar(imp, b))
     # Suelta, una A-B-C tiene que corregir algo (ver `_corrige_algo`).
     return [c for c in sueltas if _corrige_algo(c, vista)] + pegadas
@@ -304,7 +321,15 @@ def _corrige_algo(c: dict, vista: _Vista) -> bool:
         return False
     piso = vista.min_bajo(desde, I[0])
     P = [p["precio"] for p in c["pts"]]
-    return P[0] - piso >= P[0] - P[1] and min(P[1:][::2]) > piso
+    # Lo más bajo de la corrección: el final de la A y el de la C; con la C
+    # en curso, lo que ya bajó desde la B hasta hoy (antes no se miraba y se
+    # ofrecía "en la C" con la suba ya borrada entera: auditoría 23/10).
+    hondo = min(P[1], P[3]) if len(P) == 4 else min(P[1], vista.min_bajo(I[2], vista.hoy))
+    if not (P[0] - piso >= P[0] - P[1] and hondo > piso):
+        return False
+    if c["ahora"] == "onda_C":
+        c["otro"] = (piso, "borro_lo_corregido", "debajo")
+    return True
 
 
 def _abc(pts: list, vista: _Vista):
@@ -332,13 +357,20 @@ def _abc(pts: list, vista: _Vista):
             "invalida": P[0] if hecho == 2 else P[3],
             "invalida_por": "arranque_A" if hecho == 2 else "final_C",
             "invalida_lado": "encima" if hecho == 2 else "debajo",
+            # Terminada, también deja de valer si vuelve a pasar el arranque de
+            # la A (ya chequeado arriba con lo que pasó). En la C, el otro
+            # límite lo pone `_corrige_algo` (suelta) o `_pegar` (pegada).
+            "otro": (P[0], "arranque_A", "encima") if hecho == 3 else None,
             "principales": [(0, 1), (2, 3)][:(hecho + 1) // 2]}
 
 
 def _pegar(imp: dict, abc: dict) -> dict:
     """Un impulso terminado y la corrección que le sigue, en un solo conteo."""
     corr = abc["ondas"][1:]                      # sin el "0"/"5" del arranque de la A
-    return {**abc, "tipo": "impulso_y_correccion", "pts": imp["pts"] + abc["pts"][1:],
+    # En la B y en la C, el conteo también cae si el precio devuelve todo el
+    # impulso (ya chequeado con lo que pasó, en `_impulso`).
+    otro = abc["otro"] if abc["ahora"] == "fin_abc" else (imp["pts"][0]["precio"], "arranque_1", "debajo")
+    return {**abc, "tipo": "impulso_y_correccion", "pts": imp["pts"] + abc["pts"][1:], "otro": otro,
             "ondas": imp["ondas"] + corr, "pautas": imp["pautas"] + abc["pautas"],
             "principales": imp["principales"] + [(a + 5, b + 5) for a, b in abc["principales"]]}
 
@@ -497,6 +529,38 @@ def zona(c: dict):
       · en la B: desde el final de la A, devolviendo entre 40 % y 79 % de la A;
       · en la C: desde el final de la B, entre 0,75 y 1,33 veces la A.
     Cuánto acierta, medido con la historia: `ACIERTO_ZONA`."""
+    z = _zona_de_libro(c)
+    if z is None:
+        return None
+    # Recortada por los niveles que cortan el conteo (`_limites`) y por la regla
+    # del final de la onda: una zona que cae donde el propio conteo ya no vale
+    # no es una zona (auditoría 23/10: en la 4, entera debajo del final de la 1).
+    piso, techo = _limites(c)
+    lo, hi = max(z[0], piso), min(z[1], techo)
+    return (lo, hi) if lo < hi else None
+
+
+def _limites(c: dict):
+    """(piso, techo) en la vista: entre esos precios el conteo vale, contando
+    el nivel que invalida, el otro límite y la regla del final de la onda en
+    curso (la 3 pasa la 1, la 4 no se mete en la 1, la C pasa la A)."""
+    piso, techo = -math.inf, math.inf
+    for precio, lado in [(c["invalida"], c["invalida_lado"])] + ([(c["otro"][0], c["otro"][2])] if c.get("otro") else []):
+        if lado == "debajo":
+            piso = max(piso, precio)
+        else:
+            techo = min(techo, precio)
+    P = [p["precio"] for p in c["pts"]]
+    if c["ahora"] == "onda_3":
+        piso = max(piso, P[1])
+    if c["ahora"] == "onda_C":
+        k = 5 if c["tipo"] == "impulso_y_correccion" else 0
+        techo = min(techo, P[k + 1])
+    return piso, techo
+
+
+def _zona_de_libro(c: dict):
+    """La franja de la pauta de la onda en curso, sin recortar."""
     P = [p["precio"] for p in c["pts"]]
     a = c["ahora"]
     if a == "onda_3":
@@ -564,7 +628,12 @@ def _para_afuera(c: dict, velas: list) -> dict:
         "invalida": {"precio": _r(s * c["invalida"]),
                      "lado": c["invalida_lado"] if not c["espejo"] else
                      {"debajo": "encima", "encima": "debajo"}[c["invalida_lado"]],
-                     "por": c["invalida_por"]},
+                     "por": c["invalida_por"],
+                     # El otro nivel que también lo corta, del otro lado (o None).
+                     "otro": ({"precio": _r(s * c["otro"][0]),
+                               "lado": c["otro"][2] if not c["espejo"] else
+                               {"debajo": "encima", "encima": "debajo"}[c["otro"][2]],
+                               "por": c["otro"][1]} if c.get("otro") else None)},
         "confianza": c["confianza"],
         "pautas": [{"id": p["id"], "valor": _r(p["valor"], 3), "cumple": bool(p["cumple"])} for p in c["pautas"]],
     }

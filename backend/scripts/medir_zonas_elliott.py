@@ -8,11 +8,14 @@ hasta ese día (como las habría visto alguien entonces):
   2. hacia adelante, el primer día en que el detector ve esa onda TERMINADA (hay
      un conteo con los mismos puntos y uno más: ese punto nuevo es donde
      terminó), o el primer día en que el precio pasa el nivel que lo invalida;
-  3. si terminó: ¿adentro de la zona, antes de llegar o pasándola? Con dos
-     definiciones de "dónde terminó": el PRIMER final que vio el detector (lo
-     que habría visto quien miraba) y el MÁS LEJANO que llegó a ver antes de
-     invalidarse o de que pase un año (una onda 3 tiene descansos adentro y el
-     primero puede ser uno de ellos). La tabla imprime las dos.
+  3. si terminó: ¿adentro de la zona, antes de llegar o pasándola? "Dónde
+     terminó" es el PRIMER final que vio el detector: lo que habría visto
+     quien miraba ese día. (Se probó también "el final más lejano antes de
+     invalidarse", y se sacó: para una onda 3 ese punto puede ser el techo de
+     la 5 —un conteo 0-1-2 + un punto más vale con cualquier final—, y mezclaba
+     ondas: auditoría 23/10.)
+  El conteo se da por invalidado si el precio pasa CUALQUIERA de sus dos
+  límites (el que invalida y el otro, del otro lado: `elliott._limites`).
 
 Y lo compara con una zona "tonta" del mismo ancho, puesta justo delante del
 precio de ese día en la dirección de la onda: si la de Fibonacci no acierta
@@ -55,6 +58,7 @@ def _clasificar(fin, lo, hi, sube, tonta):
 
 
 def medir(velas, elliott, desde=60):
+    import estructura
     n = len(velas)
     por_dia = {}
     for t in range(desde, n + 1):
@@ -75,9 +79,9 @@ def medir(velas, elliott, desde=60):
         vistos.add(clave)
         lo, hi = sorted(z)                     # en la vista
         sube = SUBE[c["ahora"]]
-        inv = c["invalida"]                    # en la vista
-        # El nivel que invalida, en la vista: "debajo" en la vista = más bajo.
-        inv_debajo = c["invalida_lado"] == "debajo"
+        # Los dos niveles que cortan el conteo, en la vista (sin la regla del
+        # final de la onda, que es sobre dónde termina y no sobre el camino).
+        corta = [(c["invalida"], c["invalida_lado"])] + ([(c["otro"][0], c["otro"][2])] if c.get("otro") else [])
         hoy = velas[t - 1]["close"] * s
         ancho = hi - lo
         tonta = (hoy, hoy + ancho) if sube else (hoy - ancho, hoy)
@@ -85,32 +89,23 @@ def medir(velas, elliott, desde=60):
                 "zona": [lo * s, hi * s], "resultado": "sin_resolver"}
         for t2 in range(t + 1, min(t + HORIZONTE, n) + 1):
             v = velas[t2 - 1]
-            alto, bajo = (v["high"] if v.get("high") is not None else v["close"]), \
-                         (v["low"] if v.get("low") is not None else v["close"])
+            # El mismo máximo y mínimo que usa el detector (una vela rota usa
+            # apertura y cierre: `estructura._alto/_bajo`).
+            alto, bajo = estructura._alto(v), estructura._bajo(v)
             if s < 0:
                 alto, bajo = -bajo, -alto
-            if (bajo <= inv) if inv_debajo else (alto >= inv):
-                if "fin" not in caso:
-                    caso.update(resultado="invalidado", fecha_fin=v["date"])
+            if any((bajo <= x) if lado == "debajo" else (alto >= x) for x, lado in corta):
+                caso.update(resultado="invalidado", fecha_fin=v["date"])
                 break
+            fin = None
             for c2 in por_dia[t2]:
                 p2, s2 = _real(c2)
                 if len(p2) == len(pts) + 1 and p2[:len(pts)] == pts:
                     fin = s2 * c2["pts"][-1]["precio"] * s     # en la vista de este caso
-                    if "fin" not in caso:
-                        # El PRIMER final que vio el detector: lo que habría
-                        # visto quien miraba ese día.
-                        caso.update(_clasificar(fin, lo, hi, sube, tonta), fin=fin * s, fecha_fin=v["date"])
-                    # El final MÁS LEJANO (en la dirección de la onda) que llegó a
-                    # ver antes de invalidarse o de que pase el año: una onda 3
-                    # tiene descansos adentro, y el primer final puede ser uno.
-                    previo = caso.get("_lejano")
-                    if previo is None or (fin > previo if sube else fin < previo):
-                        caso["_lejano"] = fin
                     break
-        if "_lejano" in caso:
-            lejos = _clasificar(caso.pop("_lejano"), lo, hi, sube, tonta)
-            caso.update(lejano=lejos["resultado"], tonta_lejano=lejos["tonta"])
+            if fin is not None:
+                caso.update(_clasificar(fin, lo, hi, sube, tonta), fin=fin * s, fecha_fin=v["date"])
+                break
         casos.append(caso)
     return casos
 
@@ -130,6 +125,7 @@ def main():
     # directo (tests/test_escritores_solo_sqlite.py). Sólo lee.
     import main
     import elliott
+    import estructura
     import velas_diarias
     if os.path.realpath(main.DB_PATH) != os.path.realpath(db):
         sys.exit(f"La base abierta no es la pedida: {main.DB_PATH}")
@@ -160,11 +156,6 @@ def main():
     term = tot["dentro"] + tot["no_llego"] + tot["se_paso"]
     print(f"total | {tot['dentro']}/{term} | {tot['no_llego']} | {tot['se_paso']} | {tot['invalidado']} | "
           f"{tot['sin_resolver']} | {tot['tonta']}/{term}")
-    print("\nCon el final MÁS LEJANO: onda | dentro/terminadas | zona tonta dentro")
-    for k in ("onda_3", "onda_4", "onda_5", "onda_B", "onda_C"):
-        cs = [c for casos in todos.values() for c in casos if c["ahora"] == k and "lejano" in c]
-        if cs:
-            print(f"{k} | {sum(c['lejano'] == 'dentro' for c in cs)}/{len(cs)} | {sum(c['tonta_lejano'] for c in cs)}/{len(cs)}")
     if a.json:
         json.dump({"resumen": resumen, "casos": todos}, open(a.json, "w"), indent=1, default=str)
 
