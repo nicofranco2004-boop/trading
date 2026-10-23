@@ -1,8 +1,8 @@
 // LecturaTecnica — el gráfico técnico y su lectura en la ficha del activo.
 // ════════════════════════════════════════════════════════════════════════════
 // Gráfico de precio con las medias de 50 y 200 días, tu precio promedio y tus
-// compras y ventas; la fuerza del movimiento (RSI) abajo; debajo, la fuerza de
-// la tendencia (ADX + Squeeze); y tarjetas en castellano. Se mide en DÓLARES por defecto: un CEDEAR en pesos sube con el
+// compras y ventas; la fuerza del movimiento (RSI) abajo; y tarjetas en
+// castellano. Se mide en DÓLARES por defecto: un CEDEAR en pesos sube con el
 // dólar aunque la empresa no se mueva (ver backend/tecnico.py).
 //
 // Los números vienen de GET /api/tecnico (las velas que se guardan de noche).
@@ -13,6 +13,10 @@
 // precios del eje van en su propia columna a la derecha (no tapan la línea) y
 // las tarjetas se acomodan en la grilla. Colores sólo por variables del tema
 // (R8): `rgb(var(--token))` en el SVG, que sigue al modo claro y al oscuro.
+//
+// Debajo del RSI, la fuerza de la tendencia en dos franjas: el ADX con su línea
+// de 23 y las barras del Squeeze (el combo «DMI/ADX/KEYLEVEL» + «SQZMOM_LB» de
+// TradingView), con su tarjeta «Fuerza de la tendencia».
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import AssetMiniChart from '../home/AssetMiniChart'

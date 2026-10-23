@@ -231,15 +231,25 @@ class FuerzaTest(unittest.TestCase):
         # Con Bollinger más anchas (2 en vez de 1,5) hay menos días "apretados".
         self.assertLess(sum(1 for x in b if x), sum(1 for x in a if x))
 
-    def test_la_lectura_mira_el_squeeze_sobre_la_cola_y_da_lo_mismo(self):
-        completo = tecnico.squeeze(self.velas)
-        l = tecnico.lectura(self.velas)
-        self.assertAlmostEqual(l["squeeze"], completo["valor"][-1], places=10)
-        self.assertEqual(l["squeeze_color"], completo["color"][-1])
-        self.assertEqual(l["squeeze_activo"], completo["activo"][-1])
-        # El signo del Squeeze el día del cruce sale de la serie completa alineada.
-        a = tecnico.adx(self.velas)["adx"]
-        self.assertEqual(l["adx_cruce"], tecnico.cruce_adx(a, completo["valor"]))
+    def test_squeeze_da_identico_sobre_la_cola_y_sobre_la_historia_entera(self):
+        # La ficha lo calcula con toda la historia y la lectura (que la
+        # radiografía de la Cartera pide por activo) sobre los últimos 60 días.
+        # Tienen que dar el MISMO número, no "casi": el color compara contra el
+        # día anterior y en un empate decide el redondeo. Una serie que sube en
+        # línea recta da empates exactos en el papel (ahí se rompía).
+        recta = [{"date": (date(2024, 1, 1) + timedelta(days=i)).isoformat(), "open": 100 + i * 0.37,
+                  "high": (100 + i * 0.37) * 1.01, "low": (100 + i * 0.37) * 0.99, "close": 100 + i * 0.37}
+                 for i in range(760)]
+        for velas in (self.velas, recta):
+            completo = tecnico.squeeze(velas)
+            for desde in (len(velas) - tecnico.VELAS_SQUEEZE_LECTURA, len(velas) - 41, 0, 123):
+                cola = tecnico.squeeze(velas[desde:])
+                for k in ("valor", "color", "activo"):
+                    self.assertEqual(cola[k][-1], completo[k][-1], f"{k} desde {desde}")
+                    self.assertEqual(cola[k][-2], completo[k][-2], f"{k} anteúltimo desde {desde}")
+            # Y la lectura sola (como la pide la Cartera) == la de la ficha.
+            dmi = tecnico.adx(velas)
+            self.assertEqual(tecnico.lectura(velas), tecnico.lectura(velas, dmi=dmi, sqz=completo))
 
     def test_precio_quieto_no_inventa_empuje(self):
         # Una acción suspendida: 300 días al mismo precio. El ADX no existe (no

@@ -241,7 +241,16 @@ def squeeze(velas: list, largo_bb: int = 20, mult_bb: float = 2.0,
     de "apretado" dé igual que lo que ve la persona. Sólo cambia `activo`."""
     hs, ls, cs = _velas_completas(velas)
     N = len(cs)
-    m_bb, m_kc = media(cs, largo_bb), media(cs, largo_kc)
+    # Cada promedio con SU ventana (no `media()`, que es una suma acumulada):
+    # así el resultado sólo depende de esos 20 días y da idéntico, bit a bit,
+    # calculado sobre la historia entera (la ficha) o sobre la cola (`lectura`,
+    # que la radiografía de la Cartera pide por cada activo). Con la suma
+    # acumulada el redondeo cambiaba según dónde arrancaba la serie y, como el
+    # color compara contra el día anterior, un empate lo decidía el ruido: la
+    # ficha decía «rojo apagado» y la Cartera «rojo fuerte» (auditoría 22/10).
+    def _prom(n):
+        return [sum(cs[i - n + 1:i + 1]) / n if i >= n - 1 else None for i in range(N)]
+    m_bb, m_kc = _prom(largo_bb), _prom(largo_kc)
     tr = _rango_verdadero(hs, ls, cs)
     k_bb = mult_kc if como_lazybear else mult_bb
     activo = [None] * N
