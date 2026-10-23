@@ -115,16 +115,25 @@ class PalabrasTest(unittest.TestCase):
         cierres = [300 + i * 0.1 for i in range(400)] + [344.0]
         f = self._ficha(cierres, {"dir": "suba", "hasta": {"fecha": "2026-10-13", "precio": 348.0}})
         h = rh.para_el_resumen(f, "Apple")
-        self.assertTrue(h["para_el_titular"].startswith("Cerró en su precio más alto del año"))
+        self.assertIn("y cerró en su precio más alto del año", h["para_el_titular"])
         self.assertIn("hasta el último cierre", h["movimientos_recientes"]["el_movimiento_de_ahora"])
         self.assertNotIn("348", json.dumps(h, ensure_ascii=False))
+
+    def test_con_menos_de_un_anio_de_historia_no_se_rompe(self):
+        # Una acción o una cripto nueva: no hay «en un año», el titular sale de
+        # los tres meses. Comparar el año (que no existe) con 0 tiraba el pedido.
+        cierres = [100 + i * 0.5 for i in range(150)] + [160.0 - i for i in range(20)]
+        f = self._ficha(cierres, {"dir": "bajada", "hasta": {"fecha": "2026-10-21", "precio": 140.0},
+                                  "se_rompe_si_cierra": {"encima_de": 175.0, "fecha": "2026-10-01"}})
+        h = rh.para_el_resumen(f, "Nueva")
+        self.assertTrue(h["para_el_titular"].startswith("En tres meses"))
 
     def test_cerca_del_maximo_no_dice_que_es_el_maximo(self):
         # El día anterior cerró en 30.420 y el último en 30.300 (0,4 % abajo).
         cierres = [20000 + i * 25 for i in range(399)] + [30420.0, 30300.0]
         f = self._ficha(cierres, {"dir": "suba", "hasta": {"fecha": "2026-10-20", "precio": 30600.0}})
         h = rh.para_el_resumen(f, "Coca-Cola")
-        self.assertTrue(h["para_el_titular"].startswith("Cerró muy cerca de su precio más alto del año"))
+        self.assertIn("y cerró muy cerca de su precio más alto del año", h["para_el_titular"])
         self.assertNotIn("el último cierre es ese mismo", h["cierre_mas_alto_del_año"])
 
     def test_revision_del_texto(self):
@@ -295,7 +304,9 @@ class ResumenTest(unittest.TestCase):
         self.assertIn("que_terminaria_la_bajada_de_ahora", movs)
         # El cierre más alto del año cae el día del pico: no se repite su precio.
         self.assertIn("no repitas su precio", datos["cierre_mas_alto_del_año"])
-        self.assertIn("RSI", " ".join(datos["indicadores"]))
+        # Un solo indicador, elegido por regla (o ninguno): nunca la lista entera.
+        self.assertNotIn("indicadores", datos)
+        self.assertLessEqual(len(datos.get("indicador_que_suma") or {}), 1)
         # El último dato va con su fecha, nunca como «ayer».
         self.assertRegex(datos["ultimo_cierre"], r"^\d+ de [a-z]+ \(es el último dato")
         self.assertNotIn("ayer", msg)

@@ -10,7 +10,7 @@ cada indicador con lo que significa. El modelo sólo ordena y cuenta.
 La primera prueba con Sonnet (22/10) dijo «un tercio» y otra vez «dos tercios»
 donde MercadoLibre había recuperado casi la mitad, y «ayer» por un dato del día.
 
-Lo armó y lo midió la sesión «Redacción del resumen de Mervall-E» (vuelta 8: 20
+Lo armó y lo midió la sesión «Redacción del resumen de Mervall-E» (vuelta 17, sobre 20
 resúmenes, 0 números inventados) junto con el pedido, que vive al lado en
 `resumen_tecnico_pedido.txt`. Se reemplazan juntos: el pedido nombra las claves
 de acá («para_el_titular», «movimientos_recientes»…).
@@ -114,7 +114,7 @@ def hechos(nombre, r):
     h = {
         "activo": nombre,
         "moneda": "pesos" if mon == "ars" else "dólares",
-        "ultimo_cierre": f"{fecha(hoy, hoy)} (es el último dato; puede no ser hoy)",
+        "ultimo_cierre": f"{fecha(hoy, hoy)} (es el último dato que hay)",
         "precio_al_ultimo_cierre": plata(precio, mon),
     }
     # El dato del titular lo elige una regla fija (v7: dejarlo al modelo hizo que contrapusiera
@@ -143,12 +143,14 @@ def hechos(nombre, r):
     h["cierre_mas_alto_del_año"] = (f"{plata(pmax['c'], mon)} el {fecha(pmax['d'], hoy)}; "
                                      + ("el último cierre es ese mismo" if en_max else f"al último cierre está {pct(dmax)} abajo"))
     a1, a3 = var.get("en un año"), var.get("en tres meses")
+    # v15: frase natural («En un año subió 31 % y cerró en…»). Con el «;» el modelo
+    # intentaba reacomodarla y una vez dejó el borrador a la vista (Netflix, v14).
     if en_max or cerca_max:
-        tit = (f"Cerró {'en' if en_max else 'muy cerca de'} su precio más alto del año"
-               + (f"; {dicho('en un año').lower()}" if a1 is not None else ""))
+        tit = ((f"{dicho('en un año')} y cerró " if a1 is not None else "Cerró ")
+               + f"{'en' if en_max else 'muy cerca de'} su precio más alto del año")
     elif en_min or cerca_min:
-        tit = (f"Cerró {'en' if en_min else 'muy cerca de'} su precio más bajo del año"
-               + (f"; {dicho('en un año').lower()}" if a1 is not None else ""))
+        tit = ((f"{dicho('en un año')} y cerró " if a1 is not None else "Cerró ")
+               + f"{'en' if en_min else 'muy cerca de'} su precio más bajo del año")
     elif a1 is not None and a3 is not None and (a1 >= 0) != (a3 >= 0) and abs(a1) >= 10 and abs(a3) >= 10:
         tit = f"{dicho('en un año')}, pero {dicho('en tres meses').lower()}"
     elif a1 is not None:
@@ -169,9 +171,20 @@ def hechos(nombre, r):
         else:
             lect = (f"el precio está {pct(d)} {'arriba' if d >= 0 else 'abajo'} de ese promedio"
                     + (" → la tendencia de fondo es para arriba" if d >= 0 else " → la tendencia de fondo es para abajo"))
+        # v11: 200 días de mercado dichos en meses (una cripto cotiza todos los días:
+        # 200 días son ~7 meses, no ~10). El juez a ciegas marcó en 15 de 20 textos que
+        # «el promedio de 200 días» no explicaba por qué dice algo de la tendencia.
+        meses = None
+        if len(pts) >= 200:
+            meses = round((date.fromisoformat(hoy) - date.fromisoformat(pts[-200]["d"])).days / 30.44)
         h["promedio_de_los_ultimos_200_dias"] = (
-            f"{plata(l['media200'], mon)}; {lect}"
-            + (f"; el promedio mismo viene {'subiendo' if pend >= 0 else 'bajando'} en el último mes" if pend is not None else ""))
+            f"{plata(l['media200'], mon)}"
+            + (f" (es su precio promedio de los últimos {meses} meses)" if meses else "")
+            + f"; {lect}"
+            # v9: sólo cuando va EN CONTRA del lado del precio (precio arriba y promedio
+            # bajando, o al revés). Si van juntos no agrega nada y alargaba 4 de 20 textos.
+            + ("; ojo: el promedio mismo viene " + ("subiendo" if pend >= 0 else "bajando") + " en el último mes"
+               if pend is not None and abs(d) >= 2 and (pend >= 0) != (d >= 0) else ""))
     # Movimientos recientes (los de la estructura de Fibonacci)
     f = r.get("fibonacci") or {}
     cierre_de = {p["d"]: p["c"] for p in pts}
@@ -198,7 +211,10 @@ def hechos(nombre, r):
                 if q > 1.03:
                     fin += f" (quedó más arriba que los {plata(t['desde']['precio'], mon)} donde había arrancado)"
             txt += fin
-        movs["la_ultima_suba_o_bajada_terminada"] = txt + " (precios que tocó)"
+        # v10: si el precio ya salió de ese movimiento (lo deshizo entero o lo pasó), es
+        # historia vieja: no va. Apple contaba una caída de julio ya recuperada (95 palabras).
+        if q is not None and 0.12 <= q < 0.97:
+            movs["la_ultima_suba_o_bajada_terminada"] = txt + " (precios que tocó)"
     e = f.get("en_curso")
     if e:
         e = {**e, "desde": al_cierre(e["desde"]), "hasta": al_cierre(e["hasta"])}
@@ -218,14 +234,32 @@ def hechos(nombre, r):
             dist = (precio / b - 1) * 100
             if abs(dist) >= 0.5:
                 txt += f"; al último cierre está {pct(dist)} {'arriba' if dist > 0 else 'abajo'} de ese punto"
+            # v11: «esta bajada» confundía cuando el precio ya había vuelto casi arriba (Tesla).
+            a0 = e["desde"]["precio"]
+            q2 = (precio - b) / (a0 - b) if a0 != b else 0
+            if q2 >= 0.25:
+                txt += (f"; de esa {'bajada' if e['dir'] == 'bajada' else 'suba'} ya "
+                        f"{'recuperó' if e['dir'] == 'bajada' else 'perdió'} {proporcion(q2)}")
         movs["el_movimiento_de_ahora"] = txt
         s = e.get("se_rompe_si_cierra") or {}
         if "encima_de" in s:
             movs["que_terminaria_la_bajada_de_ahora"] = (f"que cierre arriba de {plata(s['encima_de'], mon)}, "
-                                                         f"el máximo que tocó el {fecha(s['fecha'], hoy)}")
+                                                         f"el máximo que tocó el {fecha(s['fecha'], hoy)}, el último pico de esta bajada")
         if "debajo_de" in s:
             movs["que_terminaria_la_suba_de_ahora"] = (f"que cierre abajo de {plata(s['debajo_de'], mon)}, "
-                                                       f"el mínimo que tocó el {fecha(s['fecha'], hoy)}")
+                                                       f"el mínimo que tocó el {fecha(s['fecha'], hoy)}, el último pozo de esta suba")
+    # (Con menos de un año de historia el titular sale de los tres meses: `a1` es
+    # None y compararlo con 0 tiraba el pedido entero, 23/10.)
+    # v14: el titular trae armado qué está haciendo AHORA si va en otra dirección que el
+    # dato del titular (en v13 el modelo lo agregaba solo y repetía la oración 2).
+    if tit and e:
+        tdir = ("suba" if (en_max or cerca_max) else "bajada" if (en_min or cerca_min)
+                else ("suba" if (a3 if ("pero" in tit or a1 is None) else a1) >= 0 else "bajada"))
+        b_ = e["hasta"]["precio"]; a_ = e["desde"]["precio"]
+        q2 = 0 if e["hasta"]["fecha"] == hoy else ((precio - b_) / (a_ - b_) if a_ != b_ else 0)
+        if e["dir"] != tdir and q2 < 0.5 and "pero" not in tit:
+            h["para_el_titular"] = (tit + f", pero desde el {fecha(e['desde']['fecha'], hoy)} viene "
+                                    + ("subiendo" if e["dir"] == "suba" else "bajando"))
     if movs:
         h["movimientos_recientes"] = movs
         giros = {x["fecha"] for m in (t, e) if m for x in (m["desde"], m["hasta"])}
@@ -250,9 +284,13 @@ def hechos(nombre, r):
             lect = "cerca de 50: ni gana ni pierde fuerza"
         c = l.get("rsi_cruce")
         if c:
-            lect += ("; hace " + str(c["hace"]) + " días de mercado salió de abajo de 30 (había caído muy rápido)"
-                     if c["tipo"] == "salio_de_abajo" else
-                     "; hace " + str(c["hace"]) + " días de mercado bajó de 70 (venía de subir muy rápido)")
+            # v14: el cruce va PRIMERO: es lo que matiza (en v13 Galicia decía «viene
+            # perdiendo fuerza» y recién al final que había dejado de caer tan rápido).
+            # v16: sólo el cruce (con la lectura de base al lado, el modelo se quedaba con
+            # «viene perdiendo fuerza» y tiraba lo nuevo: Galicia, v15).
+            lect = (f"hace {c['hace']} días de mercado salió de abajo de 30, o sea que dejó de caer tan rápido"
+                    if c["tipo"] == "salio_de_abajo" else
+                    f"hace {c['hace']} días de mercado bajó de 70, o sea que dejó de subir tan rápido")
         ind["fuerza_del_precio_RSI"] = f"{round(rsi)} ({lect})"
     a = l.get("adx")
     if a is not None:
@@ -268,16 +306,32 @@ def hechos(nombre, r):
     col = l.get("squeeze_color")
     if col:
         ind["empuje_de_los_ultimos_dias_Squeeze"] = {
-            "verde_fuerte": "verde y creciendo: empuja para arriba, cada vez más",
-            "verde_apagado": "verde pero achicándose: empuja para arriba, cada vez menos",
-            "rojo_fuerte": "rojo y creciendo: empuja para abajo, cada vez más",
-            "rojo_apagado": "rojo pero achicándose: empuja para abajo, cada vez menos",
+            "verde_fuerte": "verde y creciendo: empuja para arriba cada vez más",
+            "verde_apagado": "verde pero achicándose: empuja para arriba cada vez menos",
+            "rojo_fuerte": "rojo y creciendo: empuja para abajo cada vez más",
+            "rojo_apagado": "rojo pero achicándose: empuja para abajo cada vez menos",
         }.get(col, col)
     v = l.get("volumen_vs_promedio")
     if v and (v >= 1.5 or v <= 0.5):
         ind["cantidad_negociada"] = (f"el último día se negoció {num(v)} veces lo normal de las últimas 4 semanas" if v >= 1.5
                                      else "el último día se negoció menos de la mitad de lo normal de las últimas 4 semanas")
-    h["indicadores"] = ind
+    # v13: va UN indicador y sólo si matiza la historia, elegido por regla (en v12 el
+    # modelo ponía «la fuerza de la tendencia… no hay rumbo firme» en 11 de 20 textos,
+    # varias veces justo después de «de fondo no hay rumbo claro»). Prioridad:
+    # 1) fuerza del precio en un extremo o recién salida de uno; 2) el empuje de los
+    # últimos días en contra del movimiento de ahora; 3) la fuerza de la tendencia
+    # recién cruzando 23. Si ninguno, no hay oración de indicador.
+    mov_dir = (e or {}).get("dir")
+    sq_arriba = (col or "").startswith("verde")
+    elegido = None
+    if rsi is not None and (rsi >= 70 or rsi <= 30 or l.get("rsi_cruce")):
+        elegido = "fuerza_del_precio_RSI"
+    elif col and mov_dir and sq_arriba != (mov_dir == "suba"):
+        elegido = "empuje_de_los_ultimos_dias_Squeeze"
+    elif l.get("adx_cruce"):
+        elegido = "fuerza_de_la_tendencia_ADX"
+    if elegido and elegido in ind:
+        h["indicador_que_suma"] = {elegido: ind[elegido]}
     return h
 
 
