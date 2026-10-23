@@ -23,9 +23,9 @@ import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
-import { isBymaHolding, lotMissingPurchaseRate, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
+import { lotMissingPurchaseRate, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
-import { cedearRatio } from '../utils/cedearRatio'
+import { esAccionLocal } from '../utils/accionLocal'
 import { empresaDeTenencias } from '../utils/buscadorRapido'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { ChipDelActivo } from '../components/FueraDeHorario'
@@ -123,12 +123,6 @@ function costoEnPesos(lots) {
   }
 }
 
-// ¿Es una acción argentina (no un CEDEAR)? Entonces su gráfico en dólares es su
-// precio de BYMA ÷ el MEP, no el ADR de Nueva York (GGAL "de afuera" son 10).
-function esAccionLocal(asset, lots) {
-  if (!lots.length || cedearRatio(asset) || isCrypto(asset)) return false
-  return lots.every(p => p.asset_type !== 'CEDEAR' && isBymaHolding(p))
-}
 
 // Símbolo de precio que necesita un lote (para fetchear el set correcto).
 // Delega en `valuationPriceKey`, que es LA key con la que la valuación lee — su

@@ -96,11 +96,12 @@ class AlertasTecnicasTest(unittest.TestCase):
         r = _ruedas(self.hoy, 30)
         self.ayer, self.anteayer = r[-1], r[-2]     # las dos últimas ruedas cerradas
         self.yahoo = YahooFalso(self.anteayer)
+        self.byma = {}          # la lista de CEDEARs de BYMA (data912)
         self.mails, self.pushes = [], []
         self._p = [
             mock.patch("main._check_rate_limit"),
             mock.patch("pricing.yahoo._historia", self.yahoo),
-            mock.patch("main._fetch_data912_equities", lambda: {}),
+            mock.patch("main._fetch_data912_equities", lambda: self.byma),
             # El alta prueba el precio de ahora (¿existe el ticker?): es red.
             mock.patch("alerts_engine._prices_for", lambda syms: {s: 100.0 for s in syms}),
             mock.patch("billing.emails._send",
@@ -124,12 +125,26 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.yahoo.hasta = hasta
         main._run_velas_diarias_job()
 
-    def _crear(self, **kw):
+    def _crear(self, creada_el=None, **kw):
+        """Crea la alerta por HTTP. `creada_el`: el día (Argentina) en que se
+        creó, a la tarde, antes del cierre: lo que cierra ESE día es nuevo. Sin
+        él, se crea hoy."""
         body = {"kind": "tecnica", "symbol": "MSFT", "senal": "media200",
                 "direction": "either", "channel": "both", "repeat": "always", **kw}
-        r = self.client.post("/api/alerts", json=body, headers=self.h)
+        with self._el_dia(creada_el):
+            r = self.client.post("/api/alerts", json=body, headers=self.h)
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()
+
+    def _el_dia(self, d):
+        return mock.patch("fechas.hoy_art_date", lambda: d) if d else mock.MagicMock()
+
+    @staticmethod
+    def _siguiente(d):
+        d += timedelta(days=1)
+        while d.weekday() >= 5:
+            d += timedelta(days=1)
+        return d
 
     def _cron(self):
         return main._evaluar_alertas_job()
@@ -191,11 +206,13 @@ class AlertasTecnicasTest(unittest.TestCase):
 
     def _seguir_por_alerta_y_crear(self, hasta=None, **kw):
         """El camino del botón «Avisame» de la ficha: alguien ya seguía MSFT (acá,
-        por la watchlist), la noche guardó velas hasta anteayer y la ficha las
-        mostraba; ahí se crea la alerta, que mira desde esa última vela."""
+        por la watchlist), la noche guardó velas hasta anteayer y al día
+        siguiente (ayer, antes del cierre) la ficha las mostraba y se creó la
+        alerta: lo que cerró ayer es nuevo."""
+        hasta = hasta or self.anteayer
         self.client.post("/api/watchlist", json={"symbol": "MSFT"}, headers=self.h)
-        self._noche(hasta or self.anteayer)
-        res = self._crear(**kw)
+        self._noche(hasta)
+        res = self._crear(creada_el=self._siguiente(hasta), **kw)
         self.assertTrue(res["velas"])
         self._cron()
         self.assertEqual(self._eventos(), [], "con las velas de antes de crearla no avisa nada")
@@ -217,6 +234,52 @@ class AlertasTecnicasTest(unittest.TestCase):
         res = self._crear()
         self.assertFalse(res["velas"])
         self.assertTrue(res["resolved"], "el ticker existe: tiene precio")
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual(self._eventos(), [])
+
+    def test_velas_atrasadas_al_crear_no_avisan_un_cruce_de_antes(self):
+        """Alguien seguía MSFT hasta hace semanas: la última vela guardada es
+        vieja. La alerta se crea hoy; esa noche se bajan los días que faltaban,
+        con un cruce de hace 3 días adentro: es de antes de crearla, no avisa.
+        (Auditoría 22/10: con la marca en la última vela, avisaba.)"""
+        r = _ruedas(self.hoy, 30)
+        self.yahoo.precios["MSFT"] = lambda d: (120.0 if d >= r[-3] else
+                                                90.0 if d >= r[-3] - timedelta(days=56) else 100.0)
+        self.client.post("/api/watchlist", json={"symbol": "MSFT"}, headers=self.h)
+        self._noche(r[-12])
+        self._crear()
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual(self._eventos(), [])
+
+    def test_reactivar_una_alerta_que_era_lo_unico_que_seguia_el_activo(self):
+        """Pausada, nadie más sigue el activo: sus velas dejan de bajarse. Cruza
+        mientras tanto; al reactivarla se bajan los días que faltaban y ese cruce
+        no avisa (auditoría 22/10)."""
+        r = _ruedas(self.hoy, 30)
+        self.yahoo.precios["MSFT"] = lambda d: (120.0 if d >= r[-3] else
+                                                90.0 if d >= r[-3] - timedelta(days=56) else 100.0)
+        res = self._crear(creada_el=r[-8])
+        self._noche(r[-8])
+        self.client.patch(f"/api/alerts/{res['id']}", json={"active": False}, headers=self.h)
+        self._noche(self.ayer)
+        with main.db_abierta() as conn:
+            self.assertEqual(tecnico.serie(conn, "MSFT")["velas"][-1]["date"], r[-8].isoformat(),
+                             "pausada, sus velas no se bajan")
+        self.client.patch(f"/api/alerts/{res['id']}", json={"active": True}, headers=self.h)
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual(self._eventos(), [])
+
+    def test_dos_dias_juntos_que_cruzan_y_vuelven_no_avisan(self):
+        """Una noche no corrió: llegan dos días juntos. Cruzó para arriba y al día
+        siguiente volvió abajo: la ficha dice «Bajista» y la alerta «para arriba»
+        no avisa (auditoría 22/10: avisaba «se volvió alcista»)."""
+        r = _ruedas(self.hoy, 30)
+        self.yahoo.precios["MSFT"] = lambda d: (90.0 if d >= self.ayer else 120.0 if d >= self.anteayer else
+                                                90.0 if d >= r[-2] - timedelta(days=56) else 100.0)
+        self._seguir_por_alerta_y_crear(hasta=r[-3], direction="above")
         self._noche(self.ayer)
         self._cron()
         self.assertEqual(self._eventos(), [])
@@ -291,10 +354,11 @@ class AlertasTecnicasTest(unittest.TestCase):
         self._noche(self.ayer)
         hoy = datetime.combine(self.hoy, datetime.min.time())
         with mock.patch("alerts_engine.HORA_AVISO_TECNICO", 9), main.db_abierta() as conn:
+            antes = ae._visto_hasta(conn, res["id"], "MSFT")
             # 08:30 en Argentina = 11:30 UTC.
             r = ae.evaluar_tecnicas(conn, now=hoy + timedelta(hours=11, minutes=30))
             self.assertEqual(r.get("fired", 0), 0)
-            self.assertEqual(ae._visto_hasta(conn, res["id"], "MSFT"), self.anteayer.isoformat(),
+            self.assertEqual(ae._visto_hasta(conn, res["id"], "MSFT"), antes,
                              "a las 8:30 no se mira nada: la marca no se mueve")
             # 09:10 en Argentina.
             r = ae.evaluar_tecnicas(conn, now=hoy + timedelta(hours=12, minutes=10))
@@ -309,6 +373,78 @@ class AlertasTecnicasTest(unittest.TestCase):
         with main.db_abierta() as conn:
             r = ae.evaluate_alerts(conn)
         self.assertEqual(r["alerts"], 0)
+
+    def test_un_split_que_yahoo_tarda_dos_noches_en_reescribir_no_avisa(self):
+        """Yahoo a veces publica los cierres de después del split SIN reescribir
+        la historia, y tarda varias noches: la acción "cae" 75 % y quedaría
+        abajo de su promedio de 200 días. Se espera hasta que el precio nuevo
+        se sostenga 3 días; antes de eso Yahoo reescribió todo y no hubo cruce.
+        (Auditoría 22/10: esperar sólo el último día avisaba la 2da noche.)"""
+        r = _ruedas(self.hoy, 30)
+        dia_split = r[-3]
+
+        def base(d):
+            return 110.0 if d >= self.ayer - timedelta(days=90) else 100.0
+        self.yahoo.precios["MSFT"] = lambda d: base(d) / 4 if d >= dia_split else base(d)
+        self._seguir_por_alerta_y_crear(hasta=r[-4])
+        for noche in (r[-3], r[-2]):                # dos noches con la historia sin dividir
+            self._noche(noche)
+            self._cron()
+            self.assertEqual(self._eventos(), [], f"la noche del {noche} se espera")
+        # La tercera noche Yahoo ya reescribió todo: no hubo cruce.
+        self.yahoo.precios["MSFT"] = lambda d: base(d) / 4
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual(self._eventos(), [])
+
+    def test_una_caida_de_verdad_avisa_cuando_se_sostiene(self):
+        """Si el salto era real (la acción se desplomó y se quedó ahí), avisa
+        cuando el precio nuevo se sostiene 3 días, una sola vez, con la fecha
+        del día del cruce."""
+        r = _ruedas(self.hoy, 30)
+        dia = r[-3]
+        self.yahoo.precios["MSFT"] = lambda d: (50.0 if d >= dia else
+                                                110.0 if d >= self.ayer - timedelta(days=90) else 100.0)
+        self._seguir_por_alerta_y_crear(hasta=r[-4])
+        for noche in (r[-3], r[-2]):
+            self._noche(noche)
+            self._cron()
+            self.assertEqual(self._eventos(), [])
+        self._noche(self.ayer)
+        self._cron()
+        self._cron()
+        ev = self._eventos()
+        self.assertEqual(len(ev), 1)
+        self.assertTrue(ev[0]["message"].startswith("MSFT quedó abajo de su promedio de 200 días"))
+        self.assertIn(f"{dia.day}/{dia.month}", self.mails[0]["texto"], "el mail dice el día del cruce")
+
+    def test_la_misma_alerta_dos_veces_no(self):
+        """Dos alertas que avisan el mismo cruce son dos mails: la segunda se
+        rechaza si pide lo mismo o si alguna es «los dos lados»."""
+        def otra(direction):
+            return self.client.post("/api/alerts", json={"kind": "tecnica", "symbol": "MSFT", "senal": "media200",
+                                                         "direction": direction}, headers=self.h).status_code
+        self._crear(direction="above")
+        self.assertEqual(otra("above"), 409)
+        self.assertEqual(otra("either"), 409, "«los dos lados» incluye el de arriba")
+        self.assertEqual(otra("below"), 200, "el otro lado sí es otra alerta")
+        self.assertEqual(otra("below"), 409)
+        # Otra señal u otra moneda, sí.
+        self._crear(senal="media50")
+        self._crear(currency="ARS")
+
+    def test_se_siguen_las_velas_que_mira_cada_alerta(self):
+        """Lo que guarda la noche tiene que ser lo que lee la alerta: un CEDEAR
+        en dólares (la acción de afuera), un CEDEAR en pesos (también su '.BA'),
+        una acción argentina (su '.BA')."""
+        self.byma = {"AAPL": {"mercado": "arg_cedears"}, "GGAL": {"mercado": "arg_stocks"}}
+        self._crear(symbol="MSFT")
+        self._crear(symbol="AAPL", currency="ARS")
+        self._crear(symbol="GGAL", accion_local=True)
+        with main.db_abierta() as conn:
+            import velas_diarias
+            self.assertEqual(set(velas_diarias.simbolos_a_seguir(conn)),
+                             {"MSFT", "AAPL", "AAPL.BA", "GGAL.BA"})
 
     def test_el_alta_rechaza_lo_que_no_se_puede_mirar(self):
         for body, motivo in (({"senal": "inventada"}, "señal"),
@@ -342,17 +478,27 @@ class SenalesTest(unittest.TestCase):
         cierres = [100 + (i % 2) for i in range(20)] + [100 + i for i in range(40)] + [140 - 3 * i for i in range(1, 15)] + [98 + 4 * i for i in range(1, 6)]
         v = self._velas(cierres)
         r = tecnico.rsi(cierres)
-        baja = tecnico.senal_desde(v, "rsi_bajo_30")
+        fondo = 74                                  # el último día de la caída
+        baja = tecnico.senal_desde(v[:fondo], "rsi_bajo_30")
         sube = tecnico.senal_desde(v, "rsi_sube_30")
         self.assertIsNotNone(baja)
         self.assertIsNotNone(sube)
         self.assertLess(baja["fecha"], sube["fecha"])
+        self.assertIsNone(tecnico.senal_desde(v, "rsi_bajo_30"),
+                          "con el rebote, lo último del 30 es para arriba: «bajó de 30» ya no vale")
         i = [x["date"] for x in v].index(baja["fecha"])
         self.assertTrue(r[i - 1] >= 30 > r[i], "bajó de 30 ese día, con el RSI de la ficha")
-        self.assertIsNone(tecnico.senal_desde(v, "rsi_bajo_30", desde=baja["fecha"]),
+        self.assertIsNone(tecnico.senal_desde(v[:fondo], "rsi_bajo_30", desde=baja["fecha"]),
                           "desde ese día no volvió a bajar: el mismo cruce no se cuenta dos veces")
-        # Pasó 70 subiendo, al principio.
-        self.assertIsNotNone(tecnico.senal_desde(v, "rsi_sobre_70"))
+        # Pasó 70 subiendo, al principio, y volvió a bajar de 70 al empezar la caída.
+        sobre = tecnico.senal_desde(v[:60], "rsi_sobre_70")
+        vuelve = tecnico.senal_desde(v[:fondo], "rsi_baja_70")
+        self.assertIsNotNone(sobre)
+        self.assertLess(sobre["fecha"], vuelve["fecha"])
+        self.assertLess(vuelve["fecha"], baja["fecha"])
+        # La ficha anuncia la misma vuelta con `cruce_rsi` (salio_de_arriba).
+        j = [x["date"] for x in v].index(vuelve["fecha"])
+        self.assertEqual(tecnico.cruce_rsi(r[:j + 1]), {"tipo": "salio_de_arriba", "hace": 0})
 
     def test_el_rsi_del_mail_no_contradice_el_cruce(self):
         """«Bajó de 30» con «quedó en 30 de 100» se contradice (era 29,6): con el
@@ -373,6 +519,25 @@ class SenalesTest(unittest.TestCase):
         self.assertIsNone(tecnico.senal_desde(v, "maximo_12m", desde=v[380]["date"]),
                           "los máximos de los días siguientes no vuelven a avisar")
 
+    def test_maximo_entre_avisos_es_un_mes_de_calendario_tambien_en_cripto(self):
+        """Una cripto cotiza los 7 días: «un mes sin máximos» son 30 días
+        corridos, no 20 velas (auditoría 22/10)."""
+        hasta = date(2026, 10, 21)
+        cierres = [100.0 - 0.01 * i for i in range(400)]
+        cierres[380] = 120.0                    # máximo del año
+        for k in range(381, 400):
+            cierres[k] = 110.0
+        # Otro máximo 25 días después (25 velas: con "20 velas" avisaba) y otro
+        # 35 días después de ése.
+        cierres += [110.0] * 5 + [121.0] + [110.0] * 34 + [122.0]
+        v = [{"date": (hasta - timedelta(days=len(cierres) - 1 - i)).isoformat(), "close": c}
+             for i, c in enumerate(cierres)]
+        i25 = 405
+        self.assertIsNone(tecnico.senal_desde(v[:i25 + 1], "maximo_12m", desde=v[i25 - 1]["date"]),
+                          "a los 25 días corridos todavía no pasó un mes")
+        self.assertEqual(tecnico.senal_desde(v, "maximo_12m", desde=v[i25]["date"])["fecha"], v[-1]["date"],
+                         "después de 35 días sin máximos, sí")
+
     def test_maximo_sin_un_anio_de_velas_no_avisa(self):
         v = self._velas([100.0] * 100 + [120.0])
         self.assertIsNone(tecnico.senal_desde(v, "maximo_12m"))
@@ -381,9 +546,20 @@ class SenalesTest(unittest.TestCase):
         cierres = [100.0] * 250 + [90.0] * 20 + [120.0]
         v = self._velas(cierres)
         self.assertEqual(tecnico.senal_desde(v, "media200", sentido="arriba")["fecha"], v[-1]["date"])
-        ab = tecnico.senal_desde(v, "media200", sentido="abajo")
+        self.assertIsNone(tecnico.senal_desde(v, "media200", sentido="abajo"),
+                          "la bajada a 90 ya se dio vuelta: hoy está arriba")
+        ab = tecnico.senal_desde(v[:-1], "media200", sentido="abajo")
         self.assertEqual(ab["fecha"], v[250]["date"], "la bajada a 90 fue el cruce para abajo")
         self.assertIsNone(tecnico.senal_desde(v, "media200", desde=v[-1]["date"]))
+
+    def test_vale_el_ultimo_cruce_del_periodo(self):
+        """Cruza para arriba y al día siguiente vuelve abajo: lo último es «abajo»
+        (lo que muestra la tarjeta); una alerta «para arriba» no avisa."""
+        v = self._velas([100.0] * 250 + [90.0] * 20 + [120.0, 90.0])
+        desde = v[-3]["date"]
+        self.assertIsNone(tecnico.senal_desde(v, "media200", desde, "arriba"))
+        self.assertEqual(tecnico.senal_desde(v, "media200", desde, "abajo")["fecha"], v[-1]["date"])
+        self.assertEqual(tecnico.senal_desde(v, "media200", desde)["sentido"], "abajo")
 
 
 if __name__ == "__main__":

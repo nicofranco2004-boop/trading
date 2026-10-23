@@ -1353,6 +1353,34 @@ HORA_AVISO_TECNICO = 9
 # Un cruce de hace más que esto no se avisa aunque recién llegue (las velas se
 # trabaron una semana y volvieron): ya no es noticia. La marca se corre igual.
 DIAS_AVISO_TECNICO = 7
+# Un cierre que salta más que `_salto_sospechoso()` contra el anterior puede ser
+# Yahoo atrasado con un split (la acción "cae" 75 % hasta que reescribe la
+# historia, a veces varias noches después) o un precio roto que nadie corrige
+# (una acción argentina sin par afuera). Con ese cierre la alerta diría «quedó
+# abajo de su promedio de 200 días» sin que haya pasado nada. Se mira hasta el
+# día ANTERIOR al salto y la marca queda ahí hasta que el precio nuevo se
+# sostiene `DIAS_CONFIRMA_SALTO` días de mercado (una caída de verdad avisa
+# unos días tarde) o la historia se reescribe (el salto desaparece y no hubo
+# nada). Es el umbral de "salto sin explicar" de las velas, el mismo número.
+DIAS_CONFIRMA_SALTO = 3
+
+
+def _salto_sospechoso() -> float:
+    import velas_diarias
+    return velas_diarias.SALTO_SIN_EXPLICAR
+
+
+def _hasta_antes_del_salto(velas: list, visto: str) -> list:
+    """Las velas que se pueden mirar hoy: todas, o hasta el día anterior al
+    primer salto sin confirmar posterior a `visto`."""
+    umbral = _salto_sospechoso()
+    for j in range(1, len(velas)):
+        if velas[j]["date"] <= visto:
+            continue
+        a, b = velas[j - 1]["close"], velas[j]["close"]
+        if a and b and abs(b / a - 1) > umbral and len(velas) - j < DIAS_CONFIRMA_SALTO:
+            return velas[:j]
+    return velas
 
 _NO_ES_RECOMENDACION = "Muestra cómo se movió el precio: no es una recomendación para comprar ni vender."
 
@@ -1380,11 +1408,19 @@ def _serie_tecnica(conn, alert) -> list:
 
 def arrancar_tecnica(conn, alert) -> None:
     """Pone la marca de «ya miré hasta acá» al crear (o reactivar) una alerta
-    técnica: la última vela guardada. Si el activo todavía no tiene velas (nadie
-    lo tenía: se guardan desde esta noche), ayer: lo que cierre desde hoy cuenta."""
+    técnica: lo que cierre desde HOY cuenta, lo de antes no.
+
+    Es la última vela guardada o ayer, la que sea MÁS NUEVA. Con sólo la última
+    vela, unas velas atrasadas dejaban pasar un cruce viejo: un activo que nadie
+    seguía desde agosto (o el de una alerta pausada, que deja de bajarse) tenía
+    la última vela del 27/08; al crearla el 22/10, esa noche se bajaban los días
+    que faltaban y avisaba el cruce del 19/10 (auditoría 22/10). Con «ayer»
+    sola, una alerta creada a la 1 de la mañana, con la vela de ayer ya
+    guardada, la contaría como nueva."""
     from fechas import hoy_art_date
+    ayer = (hoy_art_date() - timedelta(days=1)).isoformat()
     velas = _serie_tecnica(conn, alert)
-    hasta = velas[-1]["date"] if velas else (hoy_art_date() - timedelta(days=1)).isoformat()
+    hasta = max(velas[-1]["date"], ayer) if velas else ayer
     _marcar_visto(conn, alert["id"], alert["symbol"], hasta)
 
 
@@ -1424,6 +1460,8 @@ def _mensaje_tecnico(alert, symbol, ev) -> str:
         return f"La fuerza (RSI) de {quien} pasó 70: subió muy rápido"
     if senal == "rsi_sube_30":
         return f"La fuerza (RSI) de {quien} volvió a pasar 30: dejó de caer tan rápido"
+    if senal == "rsi_baja_70":
+        return f"La fuerza (RSI) de {quien} volvió a bajar de 70: dejó de subir tan rápido"
     return f"{quien} cerró en su precio más alto del año"
 
 
@@ -1447,12 +1485,13 @@ def _detalle_tecnico(alert, symbol, ev) -> str:
             lectura = (f"Quiere decir que en los últimos meses viene "
                        f"{'subiendo' if arriba else 'bajando'}.")
         return f"{cuando} {sym} cerró en {cierre} y su promedio de {dias} días está en {prom}. {lectura}"
-    if senal in ("rsi_bajo_30", "rsi_sobre_70", "rsi_sube_30"):
+    if senal.startswith("rsi_"):
         fuerza = f"{cuando} la fuerza (RSI) de {sym} quedó en {_fmt_rsi(ev['rsi'], ev['referencia'])} de 100, con un cierre de {cierre}."
         lectura = {
             "rsi_bajo_30": "Bajar de 30 es caer muy rápido, y suele rebotar.",
             "rsi_sobre_70": "Pasar 70 es subir muy rápido, y suele frenar.",
             "rsi_sube_30": "Volver a pasar 30 suele leerse como que dejó de caer y empieza a tomar fuerza.",
+            "rsi_baja_70": "Volver a bajar de 70 suele leerse como que empieza a perder fuerza.",
         }[senal]
         return f"{fuerza} {lectura}"
     return f"{cuando} {sym} cerró en {cierre}, el cierre más alto de los últimos 12 meses."
@@ -1491,42 +1530,59 @@ def evaluar_tecnicas(conn, now: datetime = None, only_user: int = None) -> dict:
     pendientes: list = []
     fired = mirados = 0
     for a in alerts:
-        sym = a["symbol"]
-        if not sym or a["senal"] not in _senales():
+        # Una alerta que revienta (un activo raro, una serie rota) no puede dejar
+        # sin mirar a las demás: el cron pega cada 10 minutos y fallaría siempre
+        # en la misma. Las cuentas van antes de cualquier escritura.
+        try:
+            resultado = _evaluar_una_tecnica(conn, a, series, ultima_global, piso, now, pendientes)
+        except Exception as ex:
+            log.warning("alert técnica %s (%s) falló: %s", a["id"], a["symbol"], ex)
             continue
-        visto = _visto_hasta(conn, a["id"], sym)
-        if visto and ultima_global and visto >= ultima_global:
-            continue
-        clave = (sym, str(a["currency"] or "").upper(), bool(_campo(a, "accion_local")))
-        if clave not in series:
-            series[clave] = _serie_tecnica(conn, a)
-        velas = series[clave]
-        if not velas:
-            continue        # todavía no hay velas: la marca queda donde estaba
-        ultima = velas[-1]["date"]
-        if visto is None:
-            # Sin marca (no debería pasar: la pone el alta): se arranca acá, sin avisar.
-            _marcar_visto(conn, a["id"], sym, ultima)
-            continue
-        if ultima <= visto:
-            continue
-        mirados += 1
-        import tecnico
-        ev = tecnico.senal_desde(velas, a["senal"], visto, _sentido_pedido(a))
-        _marcar_visto(conn, a["id"], sym, ultima)
-        if not ev:
-            continue
-        if ev["fecha"] < piso:
-            log.info("alert %s %s: %s del %s llegó tarde, no aviso", a["id"], sym, a["senal"], ev["fecha"])
-            continue
-        _fire(conn, a, sym, ev["cierre"], None, now, pendientes, tecnica=ev)
-        fired += 1
-        _cumplio_una_vez(conn, a)
+        mirados += resultado in ("mirada", "avisó")
+        fired += resultado == "avisó"
     # Lo disparado y las marcas quedan confirmados ANTES de entregar (la entrega
     # es red): igual que `evaluate_alerts`.
     conn.commit()
     _entregar_pendientes(conn, pendientes)
     return {"tecnicas": len(alerts), "mirados": mirados, "fired": fired}
+
+
+def _evaluar_una_tecnica(conn, a, series: dict, ultima_global, piso: str, now, pendientes: list) -> str:
+    """Una alerta técnica contra sus velas nuevas. Devuelve qué pasó: 'nada'
+    (nada nuevo que mirar), 'mirada' o 'avisó'."""
+    import tecnico
+    sym = a["symbol"]
+    if not sym or a["senal"] not in _senales():
+        return "nada"
+    visto = _visto_hasta(conn, a["id"], sym)
+    if visto and ultima_global and visto >= ultima_global:
+        return "nada"
+    clave = (sym, str(a["currency"] or "").upper(), bool(_campo(a, "accion_local")))
+    if clave not in series:
+        series[clave] = _serie_tecnica(conn, a)
+    velas = series[clave]
+    if not velas:
+        return "nada"       # todavía no hay velas: la marca queda donde estaba
+    if visto is None:
+        # Sin marca (no debería pasar: la pone el alta): se arranca acá, sin avisar.
+        _marcar_visto(conn, a["id"], sym, velas[-1]["date"])
+        return "nada"
+    mirables = _hasta_antes_del_salto(velas, visto)
+    if len(mirables) < len(velas):
+        log.info("alert %s %s: el cierre del %s saltó demasiado, se espera a que se confirme",
+                 a["id"], sym, velas[len(mirables)]["date"])
+    if not mirables or mirables[-1]["date"] <= visto:
+        return "nada"
+    ultima = mirables[-1]["date"]
+    ev = tecnico.senal_desde(mirables, a["senal"], visto, _sentido_pedido(a))
+    if ev and ev["fecha"] < piso:
+        log.info("alert %s %s: %s del %s llegó tarde, no aviso", a["id"], sym, a["senal"], ev["fecha"])
+        ev = None
+    if ev:
+        _fire(conn, a, sym, ev["cierre"], None, now, pendientes, tecnica=ev)
+        _cumplio_una_vez(conn, a)
+    _marcar_visto(conn, a["id"], sym, ultima)
+    return "avisó" if ev else "mirada"
 
 
 def _senales() -> tuple:

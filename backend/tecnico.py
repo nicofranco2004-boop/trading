@@ -305,19 +305,22 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
 # `ultimo_cruce`) sobre la misma serie (`serie`), así que lo que avisa la alerta
 # es lo que después se ve en la tarjeta.
 
-SENALES = ("media200", "media50", "rsi_bajo_30", "rsi_sobre_70", "rsi_sube_30", "maximo_12m")
+SENALES = ("media200", "media50", "rsi_bajo_30", "rsi_sobre_70", "rsi_sube_30", "rsi_baja_70",
+           "maximo_12m")
 # Las de las medias se pueden pedir para un solo lado (arriba / abajo) o para
 # los dos; las del RSI y el máximo ya dicen el sentido en el nombre.
 SENALES_CON_SENTIDO = ("media200", "media50")
+# Las dos de "volver" son las que la ficha ya anuncia (`cruce_rsi`): salir de
+# abajo de 30 y salir de arriba de 70.
 _RSI = {"rsi_bajo_30": (30.0, "abajo"), "rsi_sobre_70": (70.0, "arriba"),
-        "rsi_sube_30": (30.0, "arriba")}
+        "rsi_sube_30": (30.0, "arriba"), "rsi_baja_70": (70.0, "abajo")}
 # «En su máximo» con la misma tolerancia que la tarjeta de la ficha
 # (`tarjetas()` en frontend/src/utils/tecnico.js: dist_maximo_12m ≥ −0,1 %).
 TOLERANCIA_MAXIMO = 0.001
 # Un activo que cierra en su máximo varios días seguidos (Apple lo hizo 36 días
-# en un año) avisa la PRIMERA vez: vuelve a avisar sólo después de un mes de
-# mercado sin máximos.
-RUEDAS_ENTRE_MAXIMOS = 20
+# en un año) avisa la PRIMERA vez: vuelve a avisar sólo después de un mes sin
+# máximos. Días CORRIDOS, como todo lo de "un mes" acá: una cripto cotiza los 7.
+DIAS_ENTRE_MAXIMOS = 30
 
 
 def _en_maximo(velas: list, cierres: list, desde_i: int) -> dict:
@@ -345,6 +348,12 @@ def senal_desde(velas: list, senal: str, desde: str = None, sentido: str = None)
     (None = en cualquiera): {'fecha', 'sentido', 'cierre', 'referencia', 'rsi'}
     o None. `sentido` ('arriba'|'abajo') acota las de las medias.
 
+    Vale el ÚLTIMO cruce del período, en cualquier sentido: si cruzó para arriba
+    y al día siguiente volvió abajo (llegan dos días juntos cuando una noche no
+    corrió), lo que muestra la ficha es «Bajista» y una alerta «para arriba» no
+    avisa nada. Buscar sólo los cruces del lado pedido avisaba «se volvió
+    alcista» con la tarjeta diciendo lo contrario (auditoría 22/10).
+
     `referencia` es contra qué se midió: el valor del promedio ese día, el nivel
     del RSI (30/70) o el máximo del año. Sin velas suficientes (menos de 200
     días para la media de 200) no pasa nada: no se inventa."""
@@ -363,20 +372,31 @@ def senal_desde(velas: list, senal: str, desde: str = None, sentido: str = None)
 
     if senal in ("media200", "media50"):
         m = media(cierres, 200 if senal == "media200" else 50)
-        c = ultimo_cruce(cierres, m, desde_i, sentido if sentido in ("arriba", "abajo") else None)
-        return _ev(c[0], c[1], m[c[0]]) if c else None
+        c = ultimo_cruce(cierres, m, desde_i)
+        if not c or (sentido in ("arriba", "abajo") and c[1] != sentido):
+            return None
+        return _ev(c[0], c[1], m[c[0]])
     if senal in _RSI:
         nivel, hacia = _RSI[senal]
         r = rsi(cierres)
-        c = ultimo_cruce(r, nivel, desde_i, hacia)
-        return _ev(c[0], c[1], nivel, r[c[0]]) if c else None
+        c = ultimo_cruce(r, nivel, desde_i)
+        if not c or c[1] != hacia:
+            return None
+        return _ev(c[0], c[1], nivel, r[c[0]])
     # maximo_12m: el primer máximo después de un mes sin máximos.
-    en_max = _en_maximo(velas, cierres, desde_i - RUEDAS_ENTRE_MAXIMOS)
+    def _piso(i):
+        return (date.fromisoformat(velas[i]["date"]) - timedelta(days=DIAS_ENTRE_MAXIMOS)).isoformat()
+    primero = next((k for k, v in enumerate(velas) if v["date"] > _piso(desde_i)), desde_i)
+    en_max = _en_maximo(velas, cierres, primero)
     for i in range(len(velas) - 1, desde_i - 1, -1):
         if not en_max.get(i):
             continue
-        antes = range(i - RUEDAS_ENTRE_MAXIMOS, i)
-        if i - RUEDAS_ENTRE_MAXIMOS < 0 or any(en_max.get(k) is None for k in antes):
+        piso = _piso(i)
+        antes, k = [], i - 1
+        while k >= 0 and velas[k]["date"] > piso:
+            antes.append(k)
+            k -= 1
+        if velas[0]["date"] > piso or any(en_max.get(k) is None for k in antes):
             continue    # sin el mes de antes no se sabe si es la PRIMERA vez
         if not any(en_max[k] for k in antes):
             return _ev(i, "arriba", cierres[i])

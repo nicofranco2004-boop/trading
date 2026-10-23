@@ -41,7 +41,7 @@ import { confirmar } from '../../utils/confirmar'
 import AvisoNotificaciones from '../AvisoNotificaciones'
 import { monedaDe, simbolo, fmtPrecio, fmtPct, confirmacion, canal, monedasPosibles, SENALES_TECNICAS, conSentido, activoTecnico } from './alertasTexto'
 import { cargarCedears, dolaresPorSimbolo } from '../../utils/opcionesCedear'
-import { isCrypto } from '../../utils/crypto'
+import { setBrokersRegistry } from '../../utils/valuation'
 
 const VACIO = {
   kind: 'price_target',
@@ -126,17 +126,17 @@ export function borradorInicial({ alerta, prefill, puedeMovimiento }) {
 }
 
 // El activo de un aviso técnico: el de la ficha tal cual (`fijo`: ya viene
-// pelado y con su marca de acción argentina) o el del buscador ('GGAL.BA' →
-// GGAL, acción argentina; 'AAPL.BA' → AAPL, CEDEAR).
-function activoDelBorrador(f, fijo) {
+// pelado y con su marca de acción argentina) o el del buscador, decidido con
+// tus lotes como lo decide la ficha (`activoTecnico`).
+function activoDelBorrador(f, fijo, posiciones) {
   const sym = (f.symbol || '').trim().toUpperCase()
-  return fijo ? { symbol: sym, accion_local: !!f.accion_local } : activoTecnico(sym)
+  return fijo ? { symbol: sym, accion_local: !!f.accion_local } : activoTecnico(sym, posiciones)
 }
 
 // Lo que se manda al crear un aviso técnico (POST /api/alerts, ver
 // main._crear_alerta_tecnica). Exportada para las pruebas.
-export function pedidoTecnico(f, fijo) {
-  const { symbol, accion_local } = activoDelBorrador(f, fijo)
+export function pedidoTecnico(f, fijo, posiciones = []) {
+  const { symbol, accion_local } = activoDelBorrador(f, fijo, posiciones)
   return {
     kind: 'tecnica', scope: 'ticker', symbol, senal: f.senal,
     direction: conSentido(f.senal) ? f.direction : 'either',
@@ -178,6 +178,24 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
   }, [])
   const dolares = useMemo(() => (cedears === undefined ? undefined : dolaresPorSimbolo(cedears)), [cedears])
 
+  // Tus tenencias, para decidir como la ficha si un activo del buscador es una
+  // acción argentina (`activoTecnico`). Sólo para el aviso técnico armado acá:
+  // desde la ficha la marca ya viene, y editando no se cambia.
+  const [posiciones, setPosiciones] = useState([])
+  const buscaTecnica = form.kind === 'tecnica' && !prefill?.fijo && !alerta
+  useEffect(() => {
+    if (!buscaTecnica) return
+    let vivo = true
+    Promise.all([api.get('/positions').catch(() => []), api.get('/brokers').catch(() => [])])
+      .then(([pos, bkrs]) => {
+        if (!vivo) return
+        // `isBymaHolding` mira la moneda del broker en el registro, como la ficha.
+        setBrokersRegistry(bkrs || [])
+        setPosiciones(pos || [])
+      })
+    return () => { vivo = false }
+  }, [buscaTecnica])
+
   const sym = (form.symbol || '').trim().toUpperCase()
   // La moneda del precio es una que el activo TIENE (la regla del servidor,
   // main._moneda_del_aviso): antes el selector $/US$ era libre y «AAPL baja a
@@ -189,7 +207,8 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
   // El precio de ahora del activo elegido: contexto para la persona y para el
   // «le falta X %» del campo de precio.
   useEffect(() => {
-    if (!sym || cartera) { setPrecio(null); return }
+    // La técnica no muestra precio (se mira con el cierre del día).
+    if (!sym || cartera || esTecnica) { setPrecio(null); return }
     if (enDolaresDeLaBolsa) { setPrecio(dolares?.get(sym)?.px ?? null); return }
     let cancelado = false
     const t = setTimeout(async () => {
@@ -199,11 +218,11 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
       } catch { if (!cancelado) setPrecio(null) }
     }, 400)
     return () => { cancelado = true; clearTimeout(t) }
-  }, [sym, cartera, enDolaresDeLaBolsa, dolares])
+  }, [sym, cartera, esTecnica, enDolaresDeLaBolsa, dolares])
 
   function elegirTipo(kind) {
     if (editando) return
-    if (kind === 'pct_move' && !puedeMovimiento) { setUpsell(true); return }
+    if (kind === 'pct_move' && !puedeMovimiento) { setUpsell('pct'); return }
     setUpsell(false)
     setForm(f => alElegirTipo(f, kind, repeticionElegida))
   }
@@ -211,7 +230,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
   // Lo que se manda es lo que se ve: el borrador con los números leídos.
   // La técnica: el activo como lo pide la ficha (pelado + marca de acción
   // argentina). Desde la ficha ya viene así; del buscador se deduce.
-  const tec = esTecnica ? activoDelBorrador(form, fijo || editando) : null
+  const tec = esTecnica ? activoDelBorrador(form, fijo || editando, posiciones) : null
   const borrador = {
     ...form,
     ...(tec || {}),
@@ -264,7 +283,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
         onClose()
         return
       }
-      const pedido = esTecnica ? pedidoTecnico(form, fijo) : {
+      const pedido = esTecnica ? pedidoTecnico(form, fijo, posiciones) : {
         kind: form.kind,
         scope: esPrecio ? 'ticker' : form.scope,
         symbol: cartera ? null : sym,
@@ -279,8 +298,15 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
       onCreada?.(res, pedido, pedidoPush)
       onClose()
     } catch (e2) {
-      if (e2?.status === 403 && e2?.payload?.upgrade) setUpsell(true)
-      setErr(e2?.payload?.error || e2?.message || 'No se pudo guardar.')
+      // El 403 del servidor trae {error, upgrade, quota | feature} en `detail`
+      // (api.js deja la respuesta entera en `payload`). Antes se leía
+      // `payload.upgrade`, que no existe: el cartel de planes no salía nunca.
+      const det = e2?.payload?.detail
+      if (e2?.status === 403 && det?.upgrade) {
+        setUpsell(det.feature ? 'pct' : 'tope')
+        if (!det.feature) return     // el cartel ya lo dice, con el link
+      }
+      setErr(e2?.message || 'No se pudo guardar.')
     } finally {
       setOcupado(false)
     }
@@ -309,7 +335,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
 
         {upsell && (
           <p className="text-sm text-ink-1 rounded-lg bg-bg-2 px-3.5 py-3">
-            Los avisos por % son de Rendi Plus.{' '}
+            {upsell === 'tope' ? 'Llegaste al máximo de alertas de tu plan.' : 'Los avisos por % son de Rendi Plus.'}{' '}
             <Link to="/config?tab=planes" className="text-data-violet font-medium hover:underline">Ver planes</Link>
           </p>
         )}
@@ -346,7 +372,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
         )}
 
         {esTecnica ? (
-          <CamposTecnica form={form} set={set} editando={editando} cripto={isCrypto(tec?.symbol || '')} />
+          <CamposTecnica form={form} set={set} editando={editando} />
         ) : esPrecio ? (
           <div className="grid gap-4 sm:grid-cols-2">
             <Campo rotulo="Avisame cuando">
@@ -462,7 +488,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
 // Lo que se elige en un aviso técnico: qué señal, para qué lado (sólo los
 // cruces de un promedio) y en qué moneda se mira. Editando, la señal y la
 // moneda quedan fijas (para otra, se arma otra alerta); el lado se cambia.
-function CamposTecnica({ form, set, editando, cripto }) {
+function CamposTecnica({ form, set, editando }) {
   const actual = SENALES_TECNICAS.find(s => s.id === form.senal)
   return (
     <>
@@ -493,21 +519,21 @@ function CamposTecnica({ form, set, editando, cripto }) {
           ]} />
         </Campo>
       )}
-      {!cripto && (
-        <Campo rotulo="Medido en" ayuda={form.currency === 'ARS'
-          ? 'En pesos el precio también sube con el dólar, aunque la empresa no se mueva.'
-          : 'Como la ficha: en dólares se ve la tendencia de la empresa, sin el dólar en el medio.'}>
-          {editando ? (
-            <Fijo>{form.currency === 'ARS' ? 'Pesos' : 'Dólares'}</Fijo>
-          ) : (
-            <Segmentos etiqueta="Medido en" grande valor={form.currency === 'ARS' ? 'ARS' : 'USD'}
-              onChange={v => set('currency', v)} opciones={[
-                { valor: 'USD', texto: 'Dólares' },
-                { valor: 'ARS', texto: 'Pesos' },
-              ]} />
-          )}
-        </Campo>
-      )}
+      {/* Siempre a la vista, también en cripto (la ficha también la muestra en
+          pesos): escondido, se mandaba igual lo último que se había elegido. */}
+      <Campo rotulo="Medido en" ayuda={form.currency === 'ARS'
+        ? 'En pesos el precio también sube con el dólar, aunque la empresa no se mueva.'
+        : 'Como la ficha: en dólares se ve la tendencia de la empresa, sin el dólar en el medio.'}>
+        {editando ? (
+          <Fijo>{form.currency === 'ARS' ? 'Pesos' : 'Dólares'}</Fijo>
+        ) : (
+          <Segmentos etiqueta="Medido en" grande valor={form.currency === 'ARS' ? 'ARS' : 'USD'}
+            onChange={v => set('currency', v)} opciones={[
+              { valor: 'USD', texto: 'Dólares' },
+              { valor: 'ARS', texto: 'Pesos' },
+            ]} />
+        )}
+      </Campo>
     </>
   )
 }

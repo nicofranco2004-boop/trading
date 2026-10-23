@@ -39,12 +39,15 @@ export function prefillTecnico({ asset, accionLocal = false, moneda = 'usd', sen
   }
 }
 
-/** ¿Ya hay una alerta técnica activa para esta señal, este activo y esta moneda? */
+/** ¿Ya hay una alerta técnica activa que avise esto? La misma señal, activo y
+ *  moneda, y que cubra el lado: una de «los dos lados» cubre cualquiera; una de
+ *  «para arriba» no avisa cuando queda abajo. */
 export function alertaExistente(items = [], p) {
   return items.find(a => a.kind === 'tecnica' && a.active
     && String(a.symbol || '').toUpperCase() === p.symbol && a.senal === p.senal
     && String(a.currency || 'USD').toUpperCase() === p.currency
-    && !!a.accion_local === p.accionLocal) || null
+    && !!a.accion_local === p.accionLocal
+    && (!conSentido(p.senal) || a.direction === 'either' || a.direction === p.direction)) || null
 }
 
 /** Las alertas de la cuenta, una sola vez por pantalla (no una por botón). */
@@ -115,8 +118,11 @@ export function senalDeTarjeta(id, l) {
   if (id === 'fondo') return { senal: 'media200', direction: lado(l?.dist_media200) }
   if (id === 'corto') return { senal: 'media50', direction: lado(l?.dist_media50) }
   if (id === 'rsi') {
+    // Lo próximo que puede pasar: abajo de 30, que vuelva a pasarlo; arriba de
+    // 70, que vuelva a bajar; con fuerza, que pase 70; sin fuerza, que baje de 30.
     const r = l?.rsi
-    return { senal: r != null && r < 30 ? 'rsi_sube_30' : r != null && r > 50 ? 'rsi_sobre_70' : 'rsi_bajo_30' }
+    if (r == null) return { senal: 'rsi_bajo_30' }
+    return { senal: r < 30 ? 'rsi_sube_30' : r >= 70 ? 'rsi_baja_70' : r > 50 ? 'rsi_sobre_70' : 'rsi_bajo_30' }
   }
   if (id === 'maximo') return { senal: 'maximo_12m' }
   return null

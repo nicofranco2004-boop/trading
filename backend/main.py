@@ -47453,6 +47453,17 @@ def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn") -> dict:
     # ya lo dicen en el nombre de la señal.
     direction = data.direction if data.senal in tecnico.SENALES_CON_SENTIDO else "either"
     local = 1 if data.accion_local else 0
+    # Dos alertas que avisan lo mismo son dos mails por el mismo cruce. Se
+    # pisan si es la misma señal y una de las dos es «los dos lados» o las dos
+    # piden el mismo lado. La ficha ya muestra «Te avisamos» (alertaExistente,
+    # la misma regla); esto cubre el formulario de Alertas.
+    igual = conn.execute(
+        """SELECT id FROM alerts WHERE user_id=? AND kind='tecnica' AND active=1
+             AND symbol=? AND senal=? AND currency=? AND accion_local=?
+             AND (direction=? OR direction='either' OR ?='either')""",
+        (uid, symbol, data.senal, currency, local, direction, direction)).fetchone()
+    if igual:
+        raise HTTPException(409, "Ya tenés una alerta que avisa esto: está en Mis alertas, para cambiarla.")
     cur = conn.execute(
         """INSERT INTO alerts
            (user_id, kind, symbol, scope, direction, currency, channel, repeat,
@@ -47681,7 +47692,14 @@ def _evaluar_alertas_job() -> dict:
         # fija si ya es hora y si hay velas nuevas). Su propia guarda, igual que
         # las de arriba y las del libro.
         try:
-            result["tecnicas"] = _ae.evaluar_tecnicas(conn)
+            if "velas_diarias" in _corridas_en_curso:
+                # Las velas se están guardando (de noche, o el botón de /admin a
+                # media mañana): entre que se bajan y que se corrigen los cambios
+                # de ratio de un CEDEAR, la serie en pesos está a medio arreglar.
+                # Se miran en la pasada siguiente, cuando terminó.
+                result["tecnicas"] = {"esperando": "las velas se están guardando"}
+            else:
+                result["tecnicas"] = _ae.evaluar_tecnicas(conn)
         except Exception as _ex:
             log.error("alertas técnicas en el cron: %s", _ex)
             try:

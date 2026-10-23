@@ -3,6 +3,7 @@
 // decir lo mismo.
 import { describe, it, expect } from 'vitest'
 import { frase, confirmacion, estado, fmtPrecio, fmtPct, diaArgentina, fechaCorta, simbolo, activoTecnico } from './alertasTexto'
+import { setBrokersRegistry } from '../../utils/valuation'
 
 const precio = { id: 1, kind: 'price_target', scope: 'ticker', symbol: 'GGAL.BA', currency: 'ARS', direction: 'above', threshold: 8000, active: true, repeat: 'once' }
 const cartera = { id: 2, kind: 'pct_move', scope: 'holdings', symbol: null, up_pct: 8, down_pct: 5, baseline: 'prev_close', active: true, repeat: 'always' }
@@ -90,6 +91,7 @@ describe('alertas técnicas', () => {
     expect(frase({ ...tec, senal: 'rsi_bajo_30' })).toEqual({ quien: 'AAPL', que: 'la fuerza (RSI) baja de 30', sep: ': ' })
     expect(confirmacion({ ...tec, senal: 'rsi_sube_30' })).toBe('Te avisamos cuando la fuerza (RSI) de AAPL vuelva a pasar 30. Lo miramos cada día con el precio de cierre.')
     expect(frase({ ...tec, senal: 'maximo_12m' }).que).toBe('cierra en su máximo del año')
+    expect(frase({ ...tec, senal: 'rsi_baja_70' }).que).toBe('la fuerza (RSI) vuelve a bajar de 70')
   })
 
   it('en pesos lo dice; una acción argentina en dólares también', () => {
@@ -104,13 +106,19 @@ describe('alertas técnicas', () => {
     expect(estado(tec, null, ev, '2026-10-22')).toEqual({ texto: `Hoy avisó: ${ev[0].message}`, tono: 'aviso' })
   })
 
-  it('del buscador: el CEDEAR va pelado, la acción argentina con su marca', () => {
-    expect(activoTecnico('AAPL.BA')).toEqual({ symbol: 'AAPL', accion_local: false })
-    expect(activoTecnico('GGAL.BA')).toEqual({ symbol: 'GGAL', accion_local: true })
-    // El buscador de Alertas ofrece la acción argentina pelada (fila «Acción AR»).
-    expect(activoTecnico('GGAL')).toEqual({ symbol: 'GGAL', accion_local: true })
-    expect(activoTecnico('YPFD')).toEqual({ symbol: 'YPFD', accion_local: true })
-    expect(activoTecnico('MSFT')).toEqual({ symbol: 'MSFT', accion_local: false })
+  it('del buscador: la misma regla que la ficha (por tus lotes)', () => {
+    setBrokersRegistry([{ name: 'IOL', currency: 'ARS' }, { name: 'Schwab', currency: 'USD' }])
+    const enIol = [{ asset: 'GGAL', broker: 'IOL', asset_type: 'ACCION', quantity: 10 }]
+    const enSchwab = [{ asset: 'GGAL', broker: 'Schwab', asset_type: 'STOCK', quantity: 10 }]
+    // GGAL en IOL: la acción de BYMA (÷ MEP), como la ficha.
+    expect(activoTecnico('GGAL', enIol)).toEqual({ symbol: 'GGAL', accion_local: true })
+    expect(activoTecnico('GGAL.BA', enIol)).toEqual({ symbol: 'GGAL', accion_local: true })
+    // El ADR en Schwab, o sin lotes: la ficha muestra el ADR, la alerta también.
+    expect(activoTecnico('GGAL', enSchwab)).toEqual({ symbol: 'GGAL', accion_local: false })
+    expect(activoTecnico('GGAL.BA')).toEqual({ symbol: 'GGAL', accion_local: false })
+    // Un CEDEAR va pelado (se mira la acción de afuera) aunque esté en IOL.
+    expect(activoTecnico('AAPL.BA', [{ asset: 'AAPL', broker: 'IOL', asset_type: 'CEDEAR', quantity: 1 }]))
+      .toEqual({ symbol: 'AAPL', accion_local: false })
     expect(activoTecnico('BTC')).toEqual({ symbol: 'BTC', accion_local: false })
   })
 })

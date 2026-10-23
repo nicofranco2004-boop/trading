@@ -9,9 +9,7 @@
 //
 // Los números salen en convención argentina: $ 7.350 · US$ 231,80 · 8,8 %.
 import { nfmt } from '../../utils/format'
-import { cedearRatio } from '../../utils/cedearRatio'
-import { isCrypto } from '../../utils/crypto'
-import { isArStock } from '../../utils/valuation'
+import { esAccionLocal } from '../../utils/accionLocal'
 
 // ── Alertas técnicas ─────────────────────────────────────────────────────────
 // Las señales que se pueden vigilar (backend/tecnico.py → SENALES), dichas con
@@ -23,6 +21,7 @@ export const SENALES_TECNICAS = [
   { id: 'rsi_bajo_30', texto: 'La fuerza (RSI) baje de 30', tarjeta: 'rsi' },
   { id: 'rsi_sobre_70', texto: 'La fuerza (RSI) pase 70', tarjeta: 'rsi' },
   { id: 'rsi_sube_30', texto: 'La fuerza (RSI) vuelva a pasar 30', tarjeta: 'rsi' },
+  { id: 'rsi_baja_70', texto: 'La fuerza (RSI) vuelva a bajar de 70', tarjeta: 'rsi' },
   { id: 'maximo_12m', texto: 'Cierre en su máximo del año', tarjeta: 'maximo' },
 ]
 export const conSentido = (senal) => !!SENALES_TECNICAS.find(s => s.id === senal)?.conSentido
@@ -40,6 +39,7 @@ function queTecnico(senal, direction, subj) {
   if (senal === 'rsi_bajo_30') return `${v('baja', 'baje')} de 30`
   if (senal === 'rsi_sobre_70') return `${v('pasa', 'pase')} 70`
   if (senal === 'rsi_sube_30') return `${v('vuelve', 'vuelva')} a pasar 30`
+  if (senal === 'rsi_baja_70') return `${v('vuelve', 'vuelva')} a bajar de 70`
   return `${v('cierra', 'cierre')} en su máximo del año`
 }
 const esRsi = (senal) => String(senal || '').startsWith('rsi_')
@@ -57,16 +57,15 @@ function quienTecnico(a) {
 
 // Lo que se guarda de un activo elegido en el buscador para una alerta técnica:
 // el activo pelado (como lo pide la ficha) y si es una acción argentina (su
-// precio de BYMA ÷ MEP, no el ADR). Como la ficha (AssetDetail →
-// esAccionLocal), ni un CEDEAR ni una cripto lo son. El buscador ofrece las
-// acciones argentinas peladas ('GGAL', fila «Acción AR»): las reconoce la
-// lista de acciones de BYMA (`isArStock`). El ADR de Nueva York se pide desde
-// su ficha, con el «Avisame» de la tarjeta.
-export function activoTecnico(symbol) {
-  const s = String(symbol || '').trim().toUpperCase()
-  const pelado = s.replace(/\.BA$/, '')
-  const local = (s.endsWith('.BA') || isArStock(pelado)) && !cedearRatio(pelado) && !isCrypto(pelado)
-  return { symbol: pelado, accion_local: local }
+// precio de BYMA ÷ MEP, no el ADR). Con la MISMA regla que la ficha
+// (`esAccionLocal`, por tus lotes de ese activo): así el aviso mira la misma
+// serie que muestra la ficha a la que lleva el botón del mail. Antes se
+// deducía del ticker y GGAL sin lotes miraba BYMA mientras la ficha mostraba
+// el ADR (auditoría 22/10).
+export function activoTecnico(symbol, posiciones = []) {
+  const pelado = String(symbol || '').trim().toUpperCase().replace(/\.BA$/, '')
+  const lotes = (posiciones || []).filter(p => !p.is_cash && String(p.asset || '').toUpperCase() === pelado)
+  return { symbol: pelado, accion_local: esAccionLocal(pelado, lotes) }
 }
 
 export function monedaDe(symbol) {

@@ -13,6 +13,7 @@ vi.mock('../../utils/api', () => ({ api: { get: vi.fn(() => Promise.resolve({}))
 
 import AlertaForm, { borradorInicial, pedidoTecnico, repeticionPorDefecto } from './AlertaForm'
 import { prefillTecnico, alertaExistente, senalDeTarjeta } from './AvisameTecnico'
+import { setBrokersRegistry } from '../../utils/valuation'
 
 const plan = { can: () => true, limit: () => null }
 const html = (props) => renderToStaticMarkup(
@@ -30,6 +31,8 @@ describe('la señal de cada tarjeta', () => {
     expect(senalDeTarjeta('rsi', { rsi: 24 }).senal).toBe('rsi_sube_30')
     expect(senalDeTarjeta('rsi', { rsi: 62 }).senal).toBe('rsi_sobre_70')
     expect(senalDeTarjeta('rsi', { rsi: 41 }).senal).toBe('rsi_bajo_30')
+    // Ya arriba de 70, «que pase 70» no puede pasar pronto: que vuelva a bajar.
+    expect(senalDeTarjeta('rsi', { rsi: 76 }).senal).toBe('rsi_baja_70')
     expect(senalDeTarjeta('maximo', {}).senal).toBe('maximo_12m')
     expect(senalDeTarjeta('tuyo', {})).toBeNull()
   })
@@ -53,9 +56,12 @@ describe('de la ficha al servidor', () => {
     })
   })
 
-  it('desde el buscador de Alertas, GGAL.BA es la acción argentina', () => {
-    const f = { ...borradorInicial({ prefill: { kind: 'tecnica' } }), symbol: 'GGAL.BA' }
-    expect(pedidoTecnico(f, false)).toMatchObject({ symbol: 'GGAL', accion_local: true, currency: 'USD' })
+  it('desde el buscador de Alertas, GGAL es la acción argentina si la tenés en BYMA (como la ficha)', () => {
+    setBrokersRegistry([{ name: 'IOL', currency: 'ARS' }])
+    const f = { ...borradorInicial({ prefill: { kind: 'tecnica' } }), symbol: 'GGAL' }
+    const lotes = [{ asset: 'GGAL', broker: 'IOL', asset_type: 'ACCION', quantity: 10 }]
+    expect(pedidoTecnico(f, false, lotes)).toMatchObject({ symbol: 'GGAL', accion_local: true, currency: 'USD' })
+    expect(pedidoTecnico(f, false, [])).toMatchObject({ symbol: 'GGAL', accion_local: false })
   })
 
   it('el formulario desde la ficha: sin selector de tipo, con el activo fijo y la frase', () => {
@@ -77,8 +83,12 @@ describe('de la ficha al servidor', () => {
 describe('«Te avisamos» si ya hay una igual', () => {
   const p = prefillTecnico({ asset: 'AAPL', senal: 'media200', direction: 'below' })
   const a = { kind: 'tecnica', active: true, symbol: 'AAPL', senal: 'media200', currency: 'USD', accion_local: 0, direction: 'either' }
-  it('misma señal, activo y moneda (cualquier lado)', () => {
+  it('misma señal, activo y moneda; «los dos lados» cubre cualquiera', () => {
     expect(alertaExistente([a], p)).toBe(a)
+    expect(alertaExistente([{ ...a, direction: 'below' }], p)).not.toBeNull()
+  })
+  it('una de «para arriba» no avisa cuando queda abajo', () => {
+    expect(alertaExistente([{ ...a, direction: 'above' }], p)).toBeNull()
   })
   it('pausada, en pesos u otra señal: no cuenta', () => {
     expect(alertaExistente([{ ...a, active: false }], p)).toBeNull()
