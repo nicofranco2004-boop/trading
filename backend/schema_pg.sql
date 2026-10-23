@@ -2422,3 +2422,19 @@ ALTER TABLE iol_lab_runs ADD CONSTRAINT fk_iol_lab_runs_user_id_users FOREIGN KE
 ALTER TABLE iol_lab_token_log ADD CONSTRAINT fk_iol_lab_token_log_user_id_users FOREIGN KEY (user_id) REFERENCES users(id);
 
 ALTER TABLE user_broker_credentials ADD CONSTRAINT fk_user_broker_credentials_user_id_users FOREIGN KEY (user_id) REFERENCES users(id);
+
+CREATE TABLE IF NOT EXISTS interruptores (
+  nombre text,
+  encendido bigint NOT NULL DEFAULT 0,
+  cambiado_at text,
+  cambiado_por bigint,
+  PRIMARY KEY (nombre)
+);
+
+ALTER TABLE interruptores ADD COLUMN IF NOT EXISTS nombre text;
+
+ALTER TABLE interruptores ADD COLUMN IF NOT EXISTS encendido bigint DEFAULT 0;
+
+ALTER TABLE interruptores ADD COLUMN IF NOT EXISTS cambiado_at text;
+
+ALTER TABLE interruptores ADD COLUMN IF NOT EXISTS cambiado_por bigint;
