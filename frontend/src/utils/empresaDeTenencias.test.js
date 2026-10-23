@@ -89,7 +89,10 @@ const fuente = (rel) => readFileSync(resolve(AQUI, rel), 'utf-8')
 describe('las pantallas usan la regla única', () => {
   it('la ficha del activo', () => {
     const src = fuente('../pages/AssetDetail.jsx')
-    expect(src).toMatch(/empresaDeTenencias\(/)
+    // Lo tuyo, por tus tenencias; lo que no tenés (no hay tenencias), por el
+    // ticker con la regla de buscadorRapido (empresaDeTicker), no una propia.
+    expect(src).toMatch(/tenes\s*\?\s*empresaDeTenencias\(/)
+    expect(src).toMatch(/:\s*empresaDeTicker\(asset\)/)
     expect(src).not.toMatch(/fundamentals\?ticker=/)
     expect(src).not.toMatch(/inferType/)
   })

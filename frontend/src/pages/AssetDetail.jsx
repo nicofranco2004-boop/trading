@@ -1,5 +1,12 @@
 // AssetDetail — ficha completa de un activo (/activo/:ticker).
 // ═══════════════════════════════════════════════════════════════════════════
+// LA ficha de un activo, lo tengas o no: la abren la Cartera, los buscadores,
+// el mapa de calor, los movers, la watchlist y los eventos (urlDeActivo).
+// Si NO lo tenés: el último precio y la variación del día, el análisis técnico
+// (LecturaTecnica, sin tu precio ni tus compras), agregarlo a la watchlist y
+// la empresa en "Calidad de cartera". Antes eso era un modal aparte con un
+// gráfico chico de 30 días (AssetQuickView): ahora es una sola pantalla.
+//
 // Drill-down pedido en el design audit (#1): al clickear un activo en la cartera
 // se abre TODO sobre ese ticker, agregando lotes de todos los brokers:
 //   • Hero: valor actual + P&L total (USD + %)
@@ -15,18 +22,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, TrendingUp, TrendingDown, Calendar, BarChart3, Layers,
+  ArrowLeft, TrendingUp, TrendingDown, Calendar, BarChart3, Star, Check,
 } from 'lucide-react'
 import AssetLogo from '../components/AssetLogo'
 import LecturaTecnica from '../components/asset/LecturaTecnica'
 import Skeleton from '../components/Skeleton'
-import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
 import { isBymaHolding, lotMissingPurchaseRate, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { cedearRatio } from '../utils/cedearRatio'
-import { empresaDeTenencias } from '../utils/buscadorRapido'
+import { empresaDeTenencias, empresaDeTicker, urlDeActivo, miradaSinTenencia } from '../utils/buscadorRapido'
+import { monedaDe } from '../components/home/Watchlist'
+import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { ChipDelActivo } from '../components/FueraDeHorario'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -144,6 +152,10 @@ function symbolFor(p, brokers) {
 // pedir un gráfico que la API no puede devolver.
 const esFci = (sym) => String(sym || '').toUpperCase().startsWith('FCI:')
 
+// El mismo papel con o sin ".BA": el mapa de calor del Merval y el buscador
+// mandan GGAL.BA, y tu lote se llama GGAL.
+const sinBA = (sym) => String(sym || '').toUpperCase().replace(/\.BA$/, '')
+
 export default function AssetDetail() {
   const { ticker } = useParams()
   const navigate = useNavigate()
@@ -156,11 +168,14 @@ export default function AssetDetail() {
   const [dolar, setDolar] = useState(null)
   const [operations, setOperations] = useState([])
   const [loading, setLoading] = useState(true)
+  // Sólo si no lo tenés: el último precio, el cierre anterior y si está en tu watchlist.
+  const [cotizacion, setCotizacion] = useState(null)
 
   useEffect(() => { loadAll() /* eslint-disable-next-line */ }, [asset])
 
   async function loadAll() {
     setLoading(true)
+    let redirige = false
     try {
       const [pos, bkrs, dol, ops] = await Promise.all([
         api.get('/positions').catch(() => []),
@@ -168,7 +183,18 @@ export default function AssetDetail() {
         api.get('/dolar').catch(() => null),
         api.get('/operations').catch(() => []),
       ])
-      const myLots = (pos || []).filter(p => (p.asset || '').toUpperCase() === asset)
+      const todas = pos || []
+      const misOps = operacionesEnUsd(ops)
+      const myLots = todas.filter(p => (p.asset || '').toUpperCase() === asset)
+      if (!myLots.length && !misOps.some(o => (o.asset || '').toUpperCase() === asset)) {
+        // Llegaste por GGAL.BA y lo tenés como GGAL: a TU ficha, con su nombre.
+        const mismo = [...todas.filter(p => !p.is_cash), ...misOps].find(x => sinBA(x.asset) === sinBA(asset))
+        if (mismo && (mismo.asset || '').toUpperCase() !== asset) {
+          redirige = true
+          navigate(urlDeActivo(mismo.asset), { replace: true })
+          return
+        }
+      }
       setPositions(myLots)
       setBrokers(bkrs || [])
       // Sin el registry, isArUsdBroker cae al fallback por NOMBRE y esta ficha
@@ -176,14 +202,32 @@ export default function AssetDetail() {
       setBrokersRegistry(bkrs || [])
       setDolar(dol)
       // En dólares desde el borde (un cupón en pesos guarda pesos en `pnl_usd`).
-      setOperations(operacionesEnUsd(ops).filter(o => (o.asset || '').toUpperCase() === asset))
+      const opsDelActivo = misOps.filter(o => (o.asset || '').toUpperCase() === asset)
+      setOperations(opsDelActivo)
       // Fetchar todos los símbolos de precio que necesitan los lotes
       const syms = [...new Set(myLots.map(p => symbolFor(p, bkrs || [])).filter(Boolean))]
       if (syms.length) {
         try { setPrices(await api.get(`/prices?symbols=${syms.join(',')}`)) } catch { /* silent */ }
       }
+      if (!myLots.length && !opsDelActivo.length) {
+        const { simboloPrecio } = miradaSinTenencia(asset)
+        const q = encodeURIComponent(simboloPrecio)
+        const [precio, previo, wl] = await Promise.all([
+          api.get(`/prices?symbols=${q}`).catch(() => ({})),
+          api.get(`/prices/prev-close?symbols=${q}`).catch(() => ({})),
+          api.get('/watchlist').catch(() => ({ items: [] })),
+        ])
+        setCotizacion({
+          simbolo: simboloPrecio,
+          precio: precio?.[simboloPrecio] ?? null,
+          previo: previo?.[simboloPrecio] ?? null,
+          enWatchlist: (wl?.items || []).some(i => (i.symbol || '').toUpperCase() === asset),
+        })
+      } else {
+        setCotizacion(null)
+      }
     } finally {
-      setLoading(false)
+      if (!redirige) setLoading(false)
     }
   }
 
@@ -239,8 +283,13 @@ export default function AssetDetail() {
   // La empresa de este activo en "Calidad de cartera", con la misma regla que
   // el buscador (empresaDeTenencias): mira en qué mercado está cada lote, no
   // sólo el ticker. Sin lotes abiertos, deciden las operaciones (tienen broker).
-  const empresa = empresaDeTenencias(positions.length ? positions : operations, brokers)
+  const tenes = positions.length > 0 || operations.length > 0
+  const empresa = tenes
+    ? empresaDeTenencias(positions.length ? positions : operations, brokers)
+    : empresaDeTicker(asset)
   const name = fciLabel(asset)
+  // Lo que no tenés no tiene lotes que digan su mercado: decide el ticker.
+  const libre = miradaSinTenencia(asset)
 
   if (loading) {
     return (
@@ -252,36 +301,18 @@ export default function AssetDetail() {
     )
   }
 
-  const hasAnything = positions.length > 0 || operations.length > 0
-  if (!hasAnything) {
-    return (
-      <div className="page-shell-wide py-4">
-        <BackBar onBack={() => navigate(-1)} asset={asset} name={name} brokerCount={0} />
-        <EmptyState
-          icon={<Layers size={20} />}
-          eyebrow={asset}
-          title="No tenés movimientos en este activo"
-          description="Cuando cargues una posición o una operación de este ticker, vas a ver acá todo su detalle: lotes, historial y P&L."
-          action={
-            <button
-              type="button"
-              onClick={() => navigate('/posiciones')}
-              className="text-sm bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 px-4 py-2 rounded-sm transition-colors"
-            >
-              Ir a mi cartera
-            </button>
-          }
-        />
-      </div>
-    )
-  }
-
   return (
     <div className="page-shell-wide py-2 sm:py-4 max-w-3xl">
       <BackBar onBack={() => navigate(-1)} asset={asset} name={name} brokerCount={agg.brokerCount} />
 
+      {/* Lo que no tenés: el precio de hoy y la watchlist, en vez de tu resultado. */}
+      {!tenes && (
+        <HeroSinTenencia asset={asset} cotizacion={cotizacion}
+          alCambiarWatchlist={(enWatchlist) => setCotizacion(c => ({ ...c, enWatchlist }))} />
+      )}
+
       {/* Hero: valor + P&L total */}
-      <AskAIAbout topic="position" params={{ asset }} subtitle={`${name} · todos los lotes`}>
+      {tenes && <AskAIAbout topic="position" params={{ asset }} subtitle={`${name} · todos los lotes`}>
         <section className="mb-5">
           <div className="text-[12.5px] text-ink-2 mb-1.5 font-medium">
             Valor actual {agg.brokerCount > 1 && `· ${agg.brokerCount} brokers`}
@@ -303,7 +334,7 @@ export default function AssetDetail() {
           <ChipDelActivo lotes={positions} brokers={brokers} prices={prices}
             tcValuacion={tcValuacion} tcCedear={tcCedear} tcCripto={tcCripto} className="mt-3 text-[12.5px]" />
         </section>
-      </AskAIAbout>
+      </AskAIAbout>}
 
       {/* Chart 30d — solo para símbolos que la serie histórica sabe servir.
           Los FCI se valúan por su NAV diario (tabla fci_prices, un valor por
@@ -316,9 +347,9 @@ export default function AssetDetail() {
           todavía no tiene velas guardadas, adentro cae al gráfico de 30 días. */}
       {!esFci(asset) && !(agg.lots.length > 0 && esFci(symbolFor(agg.lots[0], brokers))) && (
         <LecturaTecnica
-          key={`${asset}|${esAccionLocal(asset, agg.lots)}`}
+          key={`${asset}|${tenes ? esAccionLocal(asset, agg.lots) : libre.accionLocal}`}
           asset={asset}
-          symbolMiniChart={agg.lots.length > 0 ? symbolFor(agg.lots[0], brokers) : null}
+          symbolMiniChart={agg.lots.length > 0 ? symbolFor(agg.lots[0], brokers) : tenes ? null : libre.simboloPrecio}
           lotes={positions}
           operaciones={operations}
           pnlPctUsd={agg.lots.length > 0 ? agg.pnlPct : null}
@@ -329,12 +360,12 @@ export default function AssetDetail() {
             precio: agg.lots[0].price_override ?? prices[symbolFor(agg.lots[0], brokers)] ?? null,
           } : null}
           costoPesos={costoEnPesos(agg.lots)}
-          accionLocal={esAccionLocal(asset, agg.lots)}
+          accionLocal={tenes ? esAccionLocal(asset, agg.lots) : libre.accionLocal}
         />
       )}
 
       {/* Stats de operatoria */}
-      <section className="mb-5">
+      {tenes && <section className="mb-5">
         <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu operatoria en {asset}</div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           <StatCell label="Costo promedio" value={agg.avgCostUsd != null ? `$${agg.avgCostUsd.toFixed(2).replace('.', ',')}` : '—'} sub="por unidad (USD)" />
@@ -357,7 +388,7 @@ export default function AssetDetail() {
             </>
           )}
         </div>
-      </section>
+      </section>}
 
       {/* Lotes abiertos (FIFO) */}
       {agg.lots.length > 0 && (
@@ -460,6 +491,68 @@ export default function AssetDetail() {
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────
+
+// El arriba de la ficha de un activo que no tenés: su último precio (en pesos
+// si cotiza en BYMA, en dólares si no), cuánto se movió hoy y la estrella de
+// la watchlist (lo que hacía el modal AssetQuickView, que ya no existe).
+function HeroSinTenencia({ asset, cotizacion, alCambiarWatchlist }) {
+  const [guardando, setGuardando] = useState(false)
+  const precio = cotizacion?.precio
+  const variacion = precio != null && cotizacion?.previo > 0 ? precio / cotizacion.previo - 1 : null
+  const enWatchlist = !!cotizacion?.enWatchlist
+  const enPesos = monedaDe(cotizacion?.simbolo) === '$'
+  async function alternar() {
+    if (guardando) return
+    setGuardando(true)
+    try {
+      if (enWatchlist) {
+        await api.delete(`/watchlist/${encodeURIComponent(asset)}`)
+        notifyWatchlistChanged({ symbol: asset, removed: true })
+      } else {
+        await api.post('/watchlist', { symbol: asset })
+        notifyWatchlistChanged({ symbol: asset, added: true })
+      }
+      alCambiarWatchlist(!enWatchlist)
+    } catch (ex) {
+      console.error('Watchlist:', ex)
+    } finally {
+      setGuardando(false)
+    }
+  }
+  return (
+    <section className="mb-5">
+      <div className="text-[12.5px] text-ink-2 mb-1.5 font-medium">Último precio</div>
+      <div className="text-4xl font-medium tabular tracking-tight text-ink-0 leading-none">
+        {precio != null ? `$${precio.toLocaleString(LOCALE, precio >= 1000
+          ? { maximumFractionDigits: 0 }
+          : precio >= 1 ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : { maximumSignificantDigits: 4 })}` : '—'}
+        <span className="text-base text-ink-3 ml-1.5 font-normal">{enPesos ? 'pesos' : 'USD'}</span>
+      </div>
+      {variacion != null && (
+        <div className={`flex items-center gap-1.5 mt-3 text-sm font-medium tabular ${colorClass(variacion)}`}>
+          {variacion >= 0 ? <TrendingUp size={13} strokeWidth={1.75} /> : <TrendingDown size={13} strokeWidth={1.75} />}
+          <span>{pctSigned(variacion)}</span>
+          <span className="text-ink-3 text-xs ml-1 font-normal">contra el cierre anterior</span>
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={alternar}
+        disabled={guardando || !cotizacion}
+        aria-pressed={enWatchlist}
+        className={`mt-4 inline-flex items-center gap-1.5 min-h-10 px-3 rounded-lg border text-[13px] transition-colors disabled:opacity-50 ${
+          enWatchlist
+            ? 'border-rendi-warn/30 bg-rendi-warn/10 text-rendi-warn hover:bg-rendi-warn/15'
+            : 'border-line bg-bg-2 text-ink-1 hover:bg-bg-3'
+        }`}
+      >
+        {enWatchlist
+          ? <><Check size={13} strokeWidth={2} /> En tu watchlist</>
+          : <><Star size={13} strokeWidth={1.75} /> Agregar a tu watchlist</>}
+      </button>
+    </section>
+  )
+}
 
 function BackBar({ onBack, asset, name, brokerCount }) {
   return (

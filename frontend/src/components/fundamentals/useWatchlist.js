@@ -2,7 +2,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // No inventa store: lee GET /watchlist, escribe POST/DELETE /watchlist, y se
 // sincroniza vía el bus de eventos window-level de utils/watchlistEvents
-// (mismo que usan SearchBar / AssetQuickView / Watchlist).
+// (mismo que usan SearchBar / la ficha del activo / Watchlist).
 //
 // Devuelve:
 //   { symbols: string[] (upper), has(sym), toggle(sym), loading }

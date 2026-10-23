@@ -161,6 +161,10 @@ class FichaTest(unittest.TestCase):
                    mock.patch("main._fetch_data912_equities", lambda: {})]
         for p in self._p:
             p.start()
+        # El cupo de la hora de las fichas a pedido vive en memoria: cada
+        # prueba arranca con la hora vacía.
+        import velas_diarias
+        velas_diarias._a_pedido_hechos.clear()
 
     def tearDown(self):
         for p in self._p:
@@ -445,6 +449,139 @@ class FichaTest(unittest.TestCase):
         self.assertIsNone(self._ficha("AAPL")["cierre_ref"])
         r = self.client.get("/api/tecnico/AAPL?ref=<x>", headers=self.h)
         self.assertEqual(r.status_code, 400)
+
+    # ─── Ficha de un activo que nadie sigue (mapa de calor, buscador) ────────
+
+    def _pedidos(self, ticker):
+        return [p for p in self.yahoo.pedidos if p[0] == ticker]
+
+    def test_activo_que_nadie_sigue_se_baja_al_abrir_la_ficha(self):
+        # NVDA no está en ninguna cartera ni watchlist: la noche no la baja.
+        self.yahoo.precios["NVDA"] = lambda i, d: 100 + i * 0.2
+        main._run_velas_diarias_job()
+        self.assertEqual(self._pedidos("NVDA"), [], "la noche sólo baja lo que alguien sigue")
+        f = self._ficha("NVDA")
+        self.assertTrue(f["disponible"])
+        self.assertEqual(f["ticker"], "NVDA")
+        self.assertEqual(f["puntos"][-1]["d"], self.dias[-1].isoformat())
+        self.assertEqual(self._pedidos("NVDA"), [("NVDA", "3y", False)])
+        # La segunda vez (o la de otra persona) ya está guardada: no se pide de nuevo.
+        self._ficha("NVDA")
+        self._ficha("NVDA", "ars")
+        self.assertEqual(len(self._pedidos("NVDA")), 1)
+
+    def test_cedear_a_pedido_baja_solo_la_accion_de_afuera(self):
+        # La serie en pesos de un CEDEAR necesita la lista de cambios de ratio,
+        # que se arma de noche sólo para lo seguido: a pedido va la de afuera y
+        # en pesos se multiplica por el MEP de cada día.
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["AAPL"] = lambda i, d: 250.0
+        self.yahoo.precios["AAPL.BA"] = lambda i, d: 25000.0
+        with mock.patch("main._fetch_data912_equities", lambda: {"AAPL": {"mercado": "arg_cedears"}}):
+            usd = self._ficha("AAPL.BA")
+            ars = self._ficha("AAPL.BA", "ars")
+        self.assertEqual((usd["ticker"], usd["convertida"]), ("AAPL", None))
+        self.assertEqual((ars["ticker"], ars["convertida"]), ("AAPL", "mep"))
+        self.assertAlmostEqual(ars["puntos"][-1]["c"], 250_000.0, places=3)
+        self.assertEqual(self._pedidos("AAPL.BA"), [])
+
+    def test_accion_argentina_a_pedido(self):
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["GGAL.BA"] = lambda i, d: 5000.0
+        self.yahoo.precios["GGAL"] = lambda i, d: 50.0      # el ADR: otra cosa
+        f = self._ficha("GGAL.BA", local=True)
+        self.assertEqual((f["ticker"], f["convertida"]), ("GGAL.BA", "mep"))
+        self.assertAlmostEqual(f["puntos"][-1]["c"], 5.0, places=6)
+        self.assertEqual(self._pedidos("GGAL"), [], "el ADR no se baja para la acción local")
+        # Un '.BA' sin saber si es CEDEAR (data912 caído en esta prueba) no se baja.
+        g = self._ficha("YPFD.BA")
+        self.assertEqual((g["disponible"], g["motivo"]), (False, "sin_serie"))
+        self.assertEqual(self._pedidos("YPFD.BA"), [])
+
+    def test_cupo_por_persona_y_por_hora(self):
+        import velas_diarias
+        for t in ("AAA", "BBB", "CCC"):
+            self.yahoo.precios[t] = lambda i, d: 10.0
+        with mock.patch.object(velas_diarias, "A_PEDIDO_POR_PERSONA_HORA", 2):
+            self.assertTrue(self._ficha("AAA")["disponible"])
+            self.assertTrue(self._ficha("BBB")["disponible"])
+            f = self._ficha("CCC")
+            self.assertEqual((f["disponible"], f["motivo"]), (False, "tope"))
+            self.assertEqual(self._pedidos("CCC"), [], "pasado el cupo no se le pide nada a Yahoo")
+            # Lo ya bajado se sigue viendo: el cupo frena descargas, no lecturas.
+            self.assertTrue(self._ficha("AAA")["disponible"])
+        with mock.patch.object(velas_diarias, "A_PEDIDO_TODOS_HORA", 2):
+            otro = self.h_admin
+            r = self.client.get("/api/tecnico/CCC", headers=otro).json()
+            self.assertEqual(r.get("motivo"), "tope", "el cupo de todos juntos también frena")
+
+    def test_lo_que_no_existe_no_se_reintenta_enseguida(self):
+        f = self._ficha("ZZZZ")
+        self.assertEqual((f["disponible"], f["motivo"]), (False, "sin_datos"))
+        self._ficha("ZZZZ")
+        self.assertEqual(len(self._pedidos("ZZZZ")), 1)
+        self.assertEqual(self._ficha("AL30")["motivo"], "sin_serie")
+        self.assertEqual(self._pedidos("AL30"), [], "un bono no tiene velas: ni se pide")
+
+    def test_velas_viejas_se_ponen_al_dia_al_abrir(self):
+        import velas_diarias
+        self.yahoo.precios["NVDA"] = lambda i, d: 100.0
+        self._ficha("NVDA")
+        # Pasaron días: las últimas velas no están y el último intento fue hace 7 horas.
+        with main.db_abierta() as conn:
+            conn.execute("DELETE FROM velas_diarias WHERE symbol='NVDA' AND date >= ?",
+                         (self.dias[-3].isoformat(),))
+            hace = (velas_diarias._ahora_utc() - timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute("UPDATE velas_estado SET ultima_corrida=? WHERE symbol='NVDA'", (hace,))
+            conn.commit()
+        f = self._ficha("NVDA")
+        self.assertEqual(f["puntos"][-1]["d"], self.dias[-1].isoformat())
+        self.assertEqual(self._pedidos("NVDA")[-1], ("NVDA", "1mo", False), "sólo el último mes")
+
+    def test_la_noche_borra_lo_que_nadie_sigue_ni_mira(self):
+        import velas_diarias
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "MSFT", "STOCK")
+        self.yahoo.precios["MSFT"] = lambda i, d: 400.0
+        self.yahoo.precios["NVDA"] = lambda i, d: 100.0
+        self.yahoo.precios["AMD"] = lambda i, d: 100.0
+        self._ficha("NVDA")
+        self._ficha("AMD")
+        viejo = (velas_diarias._ahora_utc() - timedelta(days=50)).strftime("%Y-%m-%d %H:%M:%S")
+        with main.db_abierta() as conn:
+            conn.execute("UPDATE velas_estado SET ultima_corrida=? WHERE symbol IN ('NVDA')", (viejo,))
+            conn.commit()
+        main._run_velas_diarias_job()
+        with main.db_abierta() as conn:
+            hay = {r["symbol"] for r in conn.execute("SELECT DISTINCT symbol FROM velas_diarias")}
+            # Lo seguido nunca se borra, aunque su último intento sea viejo.
+            conn.execute("UPDATE velas_estado SET ultima_corrida=? WHERE symbol='MSFT'", (viejo,))
+            conn.commit()
+            self.assertEqual(velas_diarias._podar_a_pedido(conn, {"MSFT"}), 0)
+        self.assertEqual(hay, {"MSFT", "AMD"}, "NVDA nadie la miró en 50 días; AMD sí")
+
+    def test_dos_a_la_vez_bajan_una_sola_vez(self):
+        import threading
+        import time as _t
+        import velas_diarias
+        pedidos = []
+
+        def lento(t, periodo):
+            pedidos.append(t)
+            _t.sleep(0.3)
+            return self.yahoo(t, periodo, "1d", False, 10.0)
+        self.yahoo.precios["NVDA"] = lambda i, d: 100.0
+
+        def abrir(uid):
+            with main.db_abierta() as conn:
+                velas_diarias.asegurar(conn, ["NVDA"], uid, bajar=lento)
+        hilos = [threading.Thread(target=abrir, args=(u,)) for u in (1, 2, 3)]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join()
+        self.assertEqual(pedidos, ["NVDA"])
+        self.assertTrue(self._ficha("NVDA")["disponible"])
 
 
 if __name__ == "__main__":

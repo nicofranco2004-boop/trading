@@ -56,6 +56,7 @@ import {
   pasosEventosParaTi, pasosEventosPopulares, empresasDeLaCartera, chipsDeEmpresas,
 } from '../utils/cargaPorPasos'
 import { hayPrecios } from '../utils/preciosEnVivo'
+import { urlDeActivo } from '../utils/buscadorRapido'
 
 const WINDOW_OPTIONS = [
   { value: 30,  label: '30D' },
@@ -381,7 +382,7 @@ export default function Events({ embedded = false }) {
           cobroCtx={cobroCtx}
           eventosDelAnio={windowDays >= 365 && llego.cartera && !fallo.cartera ? portfolioEvents : null}
           onClose={() => setVerCalendario(false)}
-          onVerActivo={(t) => navigate(`/activo/${encodeURIComponent(t)}`)}
+          onVerActivo={(t) => navigate(urlDeActivo(t))}
         />
       )}
 
@@ -411,7 +412,7 @@ export default function Events({ embedded = false }) {
             ? (tickerValueUsd.get(nextEvent.ticker) || 0) / portfolioTotalUsd
             : null}
           cobro={eventCobro(nextEvent, cobroCtx)}
-          onView={() => navigate(`/activo/${encodeURIComponent(nextEvent.ticker)}`)}
+          onView={() => navigate(urlDeActivo(nextEvent.ticker))}
         /></div>
       )}
 

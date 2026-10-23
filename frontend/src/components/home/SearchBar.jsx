@@ -8,14 +8,15 @@
 //   └─ footer con atajos
 //
 // Sin command palette global (no Cmd+K). Es un buscador inline en el header.
-// Keyboard: ↑↓ navega, ↩ abre la ficha, ESC cierra.
+// Keyboard: ↑↓ navega, ↩ abre la ficha del activo (/activo/X), ESC cierra.
 
 import { useState, useEffect, useRef, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Search, X, CornerDownLeft, ArrowUp, ArrowDown, Plus, Check } from 'lucide-react'
 import { api } from '../../utils/api'
 import AssetLogo from '../AssetLogo'
 import AssetTypeBadge from '../AssetTypeBadge'
-import AssetQuickView from './AssetQuickView'
+import { urlDeActivo } from '../../utils/buscadorRapido'
 import { notifyWatchlistChanged, subscribeWatchlistChanged } from '../../utils/watchlistEvents'
 import { POPULAR_TICKERS, CEDEAR_SEARCH, AR_STOCK_SEARCH, US_SEARCH, inferType } from '../../utils/tickers'
 
@@ -54,7 +55,7 @@ export default function SearchBar() {
   const [filter, setFilter] = useState('all')
   const [userHoldings, setUserHoldings] = useState([])
   const [watchlist, setWatchlist] = useState([])
-  const [selected, setSelected] = useState(null)
+  const navigate = useNavigate()
   const [cursor, setCursor] = useState(0)
   const [addingSymbol, setAddingSymbol] = useState(null)
   const inputRef = useRef(null)
@@ -104,7 +105,7 @@ export default function SearchBar() {
         .catch(() => setWatchlist([]))
     }
     load()
-    // Cuando otro componente cambia la watchlist (MobileSearch, AssetQuickView)
+    // Cuando otro componente cambia la watchlist (MobileSearch, la ficha del activo)
     // refrescamos para que el botón "+ WATCHLIST" refleje el estado actual.
     return subscribeWatchlistChanged(load)
   }, [])
@@ -162,7 +163,7 @@ export default function SearchBar() {
 
   // ── Actions ────────────────────────────────────────────────────────────────
   function pick(symbol) {
-    setSelected(symbol)
+    navigate(urlDeActivo(symbol))
     setOpen(false)
     setQ('')
   }
@@ -343,7 +344,6 @@ export default function SearchBar() {
         )}
       </div>
 
-      {selected && <AssetQuickView symbol={selected} onClose={() => setSelected(null)} />}
     </>
   )
 }

@@ -59,6 +59,7 @@ import { hoyISO } from '../utils/fecha'
 import { useAlVerse } from '../hooks/useAlVerse'
 import PuntaViva, { puntaEsDeAhora } from '../components/PuntaViva'
 import { fechaCorta } from '../utils/lineaDelBono'
+import { urlDeActivo } from '../utils/buscadorRapido'
 
 const REFRESH_MS = 90_000
 
@@ -1774,7 +1775,8 @@ function KpiCell({ label, value, sub, tone, info, infoAlign = 'right',
 }
 
 // ─── Top holdings panel ──────────────────────────────────────────────────────
-// Tabla compacta: top 5 holdings por value_usd, con sparkline 30d lazy.
+// Tabla compacta: top 5 holdings por value_usd, con sparkline 30d lazy. Cada
+// fila abre la ficha del activo con su análisis técnico (el efectivo no tiene).
 
 function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
   const fmt = (v) => currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v)
@@ -1790,7 +1792,7 @@ function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
     const byAsset = new Map()
     for (const p of positions) {
       if (!p.value_usd || p.value_usd <= 0) continue
-      const cur = byAsset.get(p.asset) || { asset: p.asset, value_usd: 0, pnl_usd: 0 }
+      const cur = byAsset.get(p.asset) || { asset: p.asset, value_usd: 0, pnl_usd: 0, is_cash: !!p.is_cash }
       cur.value_usd += p.value_usd
       cur.pnl_usd += (p.pnl_usd || 0)
       byAsset.set(p.asset, cur)
@@ -1820,8 +1822,10 @@ function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
       <div className="px-5 pb-4">
         {top.map((h, i) => {
           const positive = (h.pnl_pct ?? 0) >= 0
+          const Fila = h.is_cash ? 'div' : Link
           return (
-            <div key={h.asset} className={`flex items-center gap-3 py-2.5 ${i > 0 ? 'border-t border-line/40' : ''}`}>
+            <Fila key={h.asset} {...(h.is_cash ? {} : { to: urlDeActivo(h.asset), 'aria-label': `${h.asset}: ver la ficha` })}
+              className={`flex items-center gap-3 py-2.5 -mx-2 px-2 rounded-lg ${h.is_cash ? '' : 'hover:bg-bg-2/50 transition-colors'} ${i > 0 ? 'border-t border-line/40' : ''}`}>
               <AssetLogo asset={h.asset} size={30} className="flex-shrink-0" />
               <div className="min-w-0 flex-1">
                 <div className="text-[13.5px] font-semibold text-ink-0 truncate leading-tight">{h.asset}</div>
@@ -1838,7 +1842,7 @@ function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
                   </span>
                 )}
               </div>
-            </div>
+            </Fila>
           )
         })}
       </div>

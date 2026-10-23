@@ -5,9 +5,11 @@
 // castellano. Se mide en DÓLARES por defecto: un CEDEAR en pesos sube con el
 // dólar aunque la empresa no se mueva (ver backend/tecnico.py).
 //
-// Los números vienen de GET /api/tecnico (las velas que se guardan de noche).
-// Si el activo todavía no tiene velas (recién agregado, o un bono/fondo), se
-// muestra el gráfico de 30 días de siempre (`AssetMiniChart`).
+// Los números vienen de GET /api/tecnico (las velas que se guardan de noche, o
+// que el servidor baja en el momento si nadie seguía el activo). Sirve también
+// para un activo que no tenés: sin lotes no hay tu precio, tus compras ni
+// «Contra lo que pagaste». Si no hay velas (un bono/fondo, o el servidor no las
+// pudo traer), se muestra el gráfico de 30 días de siempre (`AssetMiniChart`).
 //
 // Una sola vista para compu y celular (R6): el gráfico es `width: 100%`, los
 // precios del eje van en su propia columna a la derecha (no tapan la línea) y
@@ -138,9 +140,16 @@ export default function LecturaTecnica({
     if (moneda === 'ars' && datos.usd?.disponible) {
       return marco(<p className="text-sm text-ink-2">Este activo no tiene precio en pesos.</p>, false)
     }
-    // Sin velas todavía: el gráfico de siempre.
+    // Sin velas: el gráfico de siempre. Si el servidor no las pudo traer en el
+    // momento (un activo que nadie sigue), se dice por qué (`motivo`).
+    const aviso = actual?.motivo === 'tope'
+      ? 'Ahora no pudimos traer la historia completa de este activo. Probá de nuevo en un rato.'
+      : actual?.motivo === 'sin_datos'
+        ? 'No encontramos la historia de precios de este activo para el análisis técnico.'
+        : null
     return symbolMiniChart ? (
       <section className="mb-5">
+        {aviso && <p className="text-[13px] text-ink-1 mb-2">{aviso}</p>}
         <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Precio · últimos 30 días</div>
         <div className="bg-bg-1 border border-line/60 rounded-lg p-3">
           <AssetMiniChart symbol={symbolMiniChart} />

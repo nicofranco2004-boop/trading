@@ -11398,10 +11398,13 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
                 uid: int = Depends(get_effective_user)):
     """La serie del gráfico técnico (precio, medias de 50 y 200, RSI) y los
     números de la lectura, en dólares (default) o en pesos. Sale de las velas
-    guardadas (velas_diarias.py), no de Yahoo: si el activo todavía no tiene
-    velas, `disponible` es False y la ficha lo dice. `local=1`: es una acción
-    argentina (en dólares va su precio de BYMA ÷ MEP, no el ADR). Las cuentas:
-    tecnico.py."""
+    guardadas (velas_diarias.py). Si el activo no las tiene (nadie lo sigue: se
+    abrió desde el mapa de calor o el buscador) o están viejas, se bajan en el
+    momento con frenos (`velas_diarias.asegurar`). Si igual no hay, `disponible`
+    es False y `motivo` dice por qué: 'sin_serie' (un bono, un fondo), 'tope'
+    (el cupo de la hora) o 'sin_datos' (Yahoo no lo tiene). `local=1`: es una
+    acción argentina (en dólares va su precio de BYMA ÷ MEP, no el ADR). Las
+    cuentas: tecnico.py."""
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
@@ -11409,8 +11412,19 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
     if ref and not _SYMBOL_RE.match(ref):
         raise HTTPException(400, f"Símbolo inválido: {ref}")
     import tecnico
+    import velas_diarias
     with db_abierta() as conn:
-        return tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
+        tickers, motivo = [], None
+        try:
+            tickers = velas_diarias.tickers_a_pedido(sym, bool(local))
+            motivo = velas_diarias.asegurar(conn, tickers, uid)
+        except Exception as ex:
+            # Sin la descarga, la ficha muestra lo que haya guardado.
+            log.warning("tecnico: velas a pedido de %s fallaron: %r", sym, ex)
+        res = tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
+        if not res.get("disponible"):
+            res["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
+        return res
 
 
 @app.get("/api/admin/velas")
@@ -11479,7 +11493,7 @@ def admin_velas_correr(uid: int = Depends(get_admin_user)):
     return {"ok": True, "status": "started"}
 
 
-# ─── Historical prices (mini-chart en AssetQuickView) ───────────────────────
+# ─── Historical prices (gráfico de 30 días: AssetMiniChart) ───────────────────────
 # Cache simple in-memory keyed por (symbol, period). yfinance fetchea las
 # series históricas — para periods chicos (1mo) es rápido. TTL 1h porque
 # las velas diarias no cambian dentro del día.
