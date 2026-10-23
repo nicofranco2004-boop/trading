@@ -287,15 +287,40 @@ def condicion_de_tope(cap: str, user_id: int, limit) -> tuple[str, tuple]:
         además se pide el turno en el chequeo de más arriba, que se suelta al
         cerrar la transacción y por lo tanto cubre hasta este INSERT.
 
-    `limit` None significa SIN TOPE, y entonces la condición no filtra nada.
+    `limit` None significa SIN TOPE (Plus, Pro, asesor y admin en alertas; Pro,
+    asesor y admin en brokers), y entonces la condición no filtra nada.
+
+    🔴 EL «SIN TOPE» SE DECIDE EN PYTHON Y NO EN SQL, y esto costó un bug que
+    habría volteado a TODOS los que pagan. La primera versión preguntaba en SQL
+    `(? IS NULL OR …)` pasándole `limit`. En SQLite andaba perfecto. En Postgres
+    revienta:
+
+        IndeterminateDatatype: could not determine data type of parameter $1
+
+    porque psycopg manda `None` sin decir de qué tipo es, y en `$1 IS NULL`
+    Postgres no tiene de dónde inferirlo: no hay comparación ni columna que se lo
+    diga. Con un entero manda un tipo concreto, y por eso el plan Free —el único
+    con tope numérico en los dos casos— era el único que seguía funcionando.
+    Medido: `limit=1` da TRUE, `limit=0` da FALSE, `limit=None` revienta y el
+    endpoint tira la excepción.
+
+    Un `::bigint` lo arreglaría en Postgres y rompería SQLite. La forma correcta
+    es no preguntarle a la base algo que Python ya sabe.
+
+    ⚠️ Y es la clase de bug que la suite de SQLite NO puede encontrar: allá
+    `NULL IS NULL` no necesita que nadie infiera nada y pasa en verde. El test
+    que lo vigila (`tests/test_tope_sin_tope.py`) está escrito para dar verde en
+    SQLite y rojo en Postgres, que es la única forma que sirve acá.
     """
+    if limit is None:
+        return ("1=1", ())          # sin tope: no filtra nada, y sin parámetros
     if cap == "brokers":
-        return (f"(? IS NULL OR (SELECT COUNT(*) FROM brokers b "
-                f"WHERE {SQL_BROKERS_QUE_CUENTAN}) < ?)",
-                (limit, user_id, limit))
+        return (f"(SELECT COUNT(*) FROM brokers b "
+                f"WHERE {SQL_BROKERS_QUE_CUENTAN}) < ?",
+                (user_id, limit))
     if cap == "alerts":
-        return ("(? IS NULL OR (SELECT COUNT(*) FROM alerts WHERE user_id = ?) < ?)",
-                (limit, user_id, limit))
+        return ("(SELECT COUNT(*) FROM alerts WHERE user_id = ?) < ?",
+                (user_id, limit))
     raise ValueError(f"tope del plan desconocido: {cap!r}")
 
 
