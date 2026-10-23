@@ -2,7 +2,8 @@
 ═══════════════════════════════════════════════════════════════════════════
 QUÉ ES. Un párrafo de 4 o 5 oraciones que cuenta cómo viene el precio de un
 activo «como si te lo explicara un amigo». Lo escribe Claude Sonnet 5.5 (effort
-low) con los hechos que arma Rendi (`tecnico.hechos_para_el_resumen`).
+low) con el pedido de `resumen_tecnico_pedido.txt` y los hechos que arma Rendi
+(`resumen_tecnico_hechos.py`).
 
 A PEDIDO Y UNO SOLO PARA TODOS (decisión de Nico, 22/10):
   · la clave es serie + moneda + fecha de la última vela ('NVDA', 'usd',
@@ -22,14 +23,12 @@ A PEDIDO Y UNO SOLO PARA TODOS (decisión de Nico, 22/10):
 NADA DEL USUARIO. Los hechos salen de la serie del activo; tu precio, tus
 compras y tu resultado no viajan a la IA (no son parte del pedido).
 
-LAS CUENTAS LAS HACE RENDI. La prueba del 22/10 con datos reales: Sonnet dijo
-«un tercio» y otra vez «dos tercios» donde MercadoLibre había recuperado casi
-la mitad, «ayer» por un dato del día, y se pasó del largo. Por eso:
-  · las proporciones, los precios redondeados y las fechas vienen ya escritos;
-  · el pedido le prohíbe calcular, y `problemas()` revisa la respuesta: un
-    número que no está en los hechos, una palabra prohibida o un largo de más
-    → se rehace UNA vez diciéndole qué estuvo mal. Si la segunda trae un dato
-    inventado, no se publica (falla limpio y el botón vuelve).
+LAS CUENTAS LAS HACE RENDI (resumen_tecnico_hechos.py): proporciones, precios
+redondeados y fechas llegan ya escritos, y el pedido le prohíbe calcular.
+`problemas()` revisa la respuesta: un número que no está en los datos, una
+palabra prohibida, un salto de línea o un largo de más → se pide de nuevo UNA
+vez diciéndole qué estuvo mal. Si la segunda trae un dato inventado, no se
+publica (falla limpio y el botón vuelve).
 """
 
 from __future__ import annotations
@@ -40,8 +39,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta
-
-from pydantic import BaseModel
+from pathlib import Path
 
 log = logging.getLogger("ai.resumen_tecnico")
 
@@ -62,55 +60,39 @@ SEGUNDOS_ESPERA = 30
 # ofrece el resumen: contaría como actual algo de hace semanas.
 DIAS_VELA_VIEJA = 7
 
-# Largo: el pedido dice ~90 palabras. Arriba de PALABRAS_MAX se rehace; en el
-# segundo intento se acepta hasta PALABRAS_MAX_SEGUNDA (mejor un poco largo que
-# ningún resumen).
-PALABRAS_MAX = 100
-PALABRAS_MAX_SEGUNDA = 120
+# Largo: el pedido dice de 60 a 80 palabras. Con un salto de línea o más de
+# PALABRAS_MAX se pide de nuevo UNA vez (en la vuelta 7 de la redacción apareció
+# un «Corrijo: …» a la vista). En el segundo intento se tolera hasta
+# PALABRAS_MAX_SEGUNDA: mejor un poco largo que ningún resumen.
+PALABRAS_MAX = 95
+PALABRAS_MAX_SEGUNDA = 110
 ORACIONES = (3, 6)
 ORACIONES_SEGUNDA = (3, 7)
 
-MAX_TOKENS = 1200
+MAX_TOKENS = 2000
 
-SISTEMA = """Sos Mervall-E, la IA de Rendi, una app argentina para seguir inversiones.
-Le contás a una persona que NO sabe nada de análisis técnico cómo viene el precio de un activo, como si se lo explicaras a un amigo en un café.
+# El pedido vive en su propio archivo para que se pueda reemplazar sin tocar el
+# código (lo escribe y lo mide la sesión de redacción). Va junto con los hechos
+# de `resumen_tecnico_hechos.py`: nombra sus claves.
+SISTEMA = (Path(__file__).with_name("resumen_tecnico_pedido.txt")).read_text(encoding="utf-8").strip()
 
-Te paso los HECHOS, ya escritos por Rendi: los precios redondeados, las fechas y las proporciones («perdió casi la mitad de lo que había subido») ya están calculados. Tu trabajo es elegir los más importantes y unirlos en un texto que se lea de corrido. Vos NO hacés ninguna cuenta.
-
-Cómo escribir:
-- Un solo párrafo de 4 oraciones cortas (5 como mucho), de unas 80 palabras y NUNCA más de 90, en castellano rioplatense del día a día (voseo), sin títulos ni viñetas. Una idea por oración, de 20 palabras o menos. No entran todos los hechos: elegí 4 o 5 y dejá el resto afuera. Mejor 3 datos claros que 8 juntos.
-- Empezá por lo más importante: si viene subiendo o bajando, y desde cuándo.
-- Contá los movimientos como una historia, con los precios y las fechas de los hechos: «subió de 211 a 239 dólares entre el 14 de septiembre y el 6 de octubre, y después bajó hasta 214».
-- Los números, las fechas y las proporciones van TAL CUAL están en los hechos. Prohibido calcular: ni porcentajes, ni diferencias, ni proporciones, ni promedios, ni redondear distinto. No escribas ningún número que no aparezca en los hechos. Si una proporción no está en los hechos, no la digas.
-- Todos los precios de la historia son de CIERRE. El único que no es de cierre es el pico (o el piso) que tocó durante el día: decilo como viene, como el precio que alguien miraría.
-- El último cierre se nombra con su fecha o como «el último cierre». Nunca escribas «hoy», «ayer» ni «mañana»: el texto lo leen otras personas otros días.
-- Cada indicador va con lo que significa en la misma oración, como viene en los hechos: «el promedio de los últimos 200 días», «la fuerza del precio (RSI)», «la fuerza de la tendencia (ADX)».
-- No uses estas palabras: devolvió, retroceso, lateral, consolidación, impulso, momentum, tracción, comprimido, «zona de», media móvil, Fibonacci, soporte, resistencia, rally.
-- Nunca recomiendes comprar ni vender ni digas qué va a pasar; contá cómo viene. Podés decir qué miraría alguien («si cierra arriba de 243 dólares, se terminaría la bajada que arrancó el 6 de octubre»). No agregues aclaraciones legales (la app ya las pone).
-
-Devolvé sólo el párrafo en el campo `texto`."""
-
-ORDEN = "Hechos del activo (JSON). Escribí el resumen siguiendo las reglas."
-
-# Palabras que no pueden salir: jerga que Nico no entiende (prueba del 22/10),
-# fechas relativas (el texto se lee otro día), y recomendar o pronosticar.
+# Palabras que no pueden salir: la lista prohibida del pedido (jerga que Nico
+# no entiende), fechas relativas (el texto se lee otro día), una corrección a
+# la vista, y recomendar o pronosticar.
 _PROHIBIDAS = [
-    r"devolvi[óo]", r"retroceso", r"lateral", r"consolidaci[óo]n", r"impulso", r"momentum",
-    r"tracci[óo]n", r"comprimid[oa]", r"zona de", r"media m[óo]vil", r"fibonacci",
-    r"soporte", r"resistencia", r"rally",
+    r"devolvi[óo]", r"retroceso", r"recorte", r"correcci[óo]n", r"corrijo", r"lateral", r"de costado",
+    r"consolidaci[óo]n", r"impulso", r"momentum", r"tracci[óo]n", r"zonas?", r"soportes?", r"resistencias?",
+    r"techos?", r"pisos?", r"alcista", r"bajista", r"media m[óo]vil", r"sobrecompra", r"sobreventa",
+    r"rebot[eóa]", r"tramos?", r"nivel(es)?", r"fibonacci", r"ruedas?", r"volatilidad", r"recalentad[oa]",
     r"hoy", r"ayer", r"mañana",
-    r"compr[áa](r|lo|la)?", r"vend[ée](r|lo|la)?", r"recomend", r"te conviene", r"oportunidad",
-    r"va a (subir|bajar|seguir|caer|romper)", r"subir[áa]", r"bajar[áa]", r"deber[íi]a",
+    r"compr[áa](r|lo|la)?", r"vend[ée](r|lo|la)?", r"recomend\w*", r"te conviene", r"oportunidad",
+    r"esper(ar|á)", r"va a (subir|bajar|seguir|caer|romper)", r"subir[áa]", r"bajar[áa]", r"deber[íi]a",
 ]
 _RE_PROHIBIDAS = re.compile(r"\b(" + "|".join(_PROHIBIDAS) + r")\b", re.IGNORECASE)
 _RE_NUMERO = re.compile(r"\d+(?:[.,]\d+)*")
 # Números que el modelo puede usar aunque no estén en los hechos: los que
 # definen los indicadores en el pedido.
 _NUMEROS_LIBRES = {"200", "50", "23", "12", "0", "100", "30", "70"}
-
-
-class ResumenTexto(BaseModel):
-    texto: str
 
 
 def _normal(n: str) -> str:
@@ -125,23 +107,23 @@ def numeros_de(texto: str) -> set:
     return {_normal(x) for x in _RE_NUMERO.findall(texto or "")}
 
 
-def paquete(hechos: dict) -> dict:
-    """Lo que viaja al modelo: sólo los hechos del activo."""
-    return {k: hechos[k] for k in ("activo", "moneda", "ultimo_cierre", "hechos")}
+def pedido_de(hechos: dict) -> str:
+    """El mensaje con los datos, tal cual lo midió la redacción (vuelta 8)."""
+    return "Datos del activo:\n" + json.dumps(hechos, ensure_ascii=False, indent=1)
 
 
 def problemas(texto: str, hechos: dict, segunda: bool = False) -> tuple[list, list]:
     """(graves, de_largo). Graves: un número que no está en los hechos o una
-    palabra prohibida (no se publica). De largo: se rehace, y en el segundo
-    intento se tolera un poco más."""
+    palabra prohibida (no se publica). De largo: se pide de nuevo, y en el
+    segundo intento se tolera un poco más."""
     graves, largo = [], []
     t = (texto or "").strip()
     if not t:
         return ["vino vacío"], []
-    permitidos = numeros_de(json.dumps(paquete(hechos), ensure_ascii=False)) | _NUMEROS_LIBRES
+    permitidos = numeros_de(json.dumps(hechos, ensure_ascii=False)) | _NUMEROS_LIBRES
     inventados = sorted(numeros_de(t) - permitidos)
     if inventados:
-        graves.append("usaste números que no están en los hechos ("
+        graves.append("usaste números que no están en los datos ("
                       + ", ".join(inventados) + "): copiá los números tal cual, sin calcular")
     malas = sorted({m.group(0).lower() for m in _RE_PROHIBIDAS.finditer(t)})
     if malas:
@@ -149,13 +131,13 @@ def problemas(texto: str, hechos: dict, segunda: bool = False) -> tuple[list, li
     palabras = len(t.split())
     tope = PALABRAS_MAX_SEGUNDA if segunda else PALABRAS_MAX
     if palabras > tope:
-        largo.append(f"tiene {palabras} palabras: el máximo es 90, sacá hechos enteros")
+        largo.append(f"tiene {palabras} palabras: tienen que ser entre 60 y 80, sacá la oración 4")
     lo, hi = ORACIONES_SEGUNDA if segunda else ORACIONES
     oraciones = len([o for o in re.split(r"(?<=[.!?])\s+", t) if o.strip()])
     if not lo <= oraciones <= hi:
         largo.append(f"tiene {oraciones} oraciones: tienen que ser 4 o 5")
-    if "\n" in t or t.lstrip().startswith(("-", "•", "*", "#")):
-        largo.append("tiene que ser un solo párrafo, sin títulos ni viñetas")
+    if "\n" in t or t.startswith(("-", "•", "*", "#")):
+        largo.append("tiene que ser un solo párrafo, sin títulos, viñetas ni correcciones a la vista")
     return graves, largo
 
 
@@ -169,35 +151,43 @@ class NoSePudo(Exception):
 def generar(hechos: dict) -> dict:
     """Llama al modelo (hasta 2 veces) y devuelve
     {texto, model, input_tokens, output_tokens, cost_usd_cents, llamadas, palabras}.
-    None si la IA no está configurada. NoSePudo si no hubo texto publicable."""
+    None si la IA no está configurada. NoSePudo si no hubo texto publicable.
+
+    Texto plano, sin salida estructurada ni caché: es el pedido tal como lo midió
+    la redacción, y con uno por activo y por día el caché de 1 h (que cuesta el
+    doble escribirlo) casi nunca se volvería a leer."""
     from ai import llm
 
-    pkt = paquete(hechos)
+    cliente = llm._get_anthropic_client()
+    if cliente is None:
+        return None
     gasto = {"model": llm.MODEL_SONNET, "input_tokens": 0, "output_tokens": 0,
              "cost_usd_cents": 0, "llamadas": 0}
-    orden = ORDEN
+    mensajes = [{"role": "user", "content": pedido_de(hechos)}]
     for intento in (1, 2):
         try:
-            res = llm.analyze(system_prompt=SISTEMA, packet=pkt, output_model=ResumenTexto,
-                              model=llm.MODEL_SONNET, max_tokens=MAX_TOKENS, max_retries=0,
-                              instruction=orden, effort="low", cachear=False)
+            resp = cliente.messages.create(model=llm.MODEL_SONNET, max_tokens=MAX_TOKENS, system=SISTEMA,
+                                           messages=mensajes, extra_body={"output_config": {"effort": "low"}})
         except Exception as ex:
             raise NoSePudo(f"el modelo falló: {type(ex).__name__}", gasto) from ex
-        if res is None:
-            return None
+        u = resp.usage
+        ent, sal = getattr(u, "input_tokens", 0) or 0, getattr(u, "output_tokens", 0) or 0
         gasto["llamadas"] += 1
-        gasto["input_tokens"] += res.input_tokens + res.cache_read_input_tokens + res.cache_creation_input_tokens
-        gasto["output_tokens"] += res.output_tokens
-        gasto["cost_usd_cents"] += res.cost_usd_cents
-        texto = " ".join((res.output.texto or "").split())
-        graves, largo = problemas(texto, hechos, segunda=intento == 2)
+        gasto["input_tokens"] += ent
+        gasto["output_tokens"] += sal
+        gasto["cost_usd_cents"] += llm._calc_cost_cents(llm.MODEL_SONNET, ent, sal, 0, 0)
+        crudo = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+        graves, largo = problemas(crudo, hechos, segunda=intento == 2)
         if not graves and not largo:
-            return {**gasto, "texto": texto, "palabras": len(texto.split())}
+            return {**gasto, "texto": crudo, "palabras": len(crudo.split())}
         log.info("Resumen técnico de %s, intento %d: %s", hechos.get("activo"), intento, graves + largo)
         if intento == 2:
             raise NoSePudo("; ".join(graves + largo), gasto)
-        orden = (ORDEN + "\n\nYa lo escribiste una vez y estuvo mal: " + "; ".join(graves + largo)
-                 + ". Escribilo de nuevo corrigiendo eso, con los mismos hechos.")
+        # Se le muestra lo que escribió y qué estuvo mal: así corrige ESE texto.
+        mensajes = mensajes + [
+            {"role": "assistant", "content": crudo},
+            {"role": "user", "content": "Ese párrafo no sirve: " + "; ".join(graves + largo)
+             + ". Escribí de nuevo sólo el párrafo final, corregido, con los mismos datos."}]
 
 
 # ─── Guardado compartido ─────────────────────────────────────────────────────
@@ -285,12 +275,12 @@ def pedir(abrir, ficha: dict, nombre: str, uid: int) -> dict:
     Devuelve {estado: 'listo', texto, fecha} · {estado: 'generando'} (el otro
     pedido sigue) · {estado: 'tope'} · {estado: 'tope_persona'} ·
     {estado: 'no_disponible'} · {estado: 'error'}."""
-    import tecnico
     from ai import llm
+    from ai.resumen_tecnico_hechos import para_el_resumen
     from fechas import hoy_art
 
     clave = clave_de(ficha)
-    hechos = tecnico.hechos_para_el_resumen(ficha, nombre)
+    hechos = para_el_resumen(ficha, nombre)
     if not clave or not hechos or _vela_vieja(clave[2]) or not llm.is_configured():
         return {"estado": "no_disponible"}
     hoy = hoy_art()

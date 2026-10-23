@@ -24,7 +24,7 @@ import threading
 import time
 import unittest
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 from types import SimpleNamespace
 from unittest import mock
 
@@ -42,6 +42,7 @@ from fastapi.testclient import TestClient
 import main
 import tecnico
 from ai import resumen_tecnico
+from ai import resumen_tecnico_hechos as rh
 from fechas import hoy_art_date
 from tests.test_tecnico import YahooFalso, _ruedas
 
@@ -60,7 +61,7 @@ class ClaudeFalso:
         self.pedidos, self.entro = [], threading.Event()
         self.messages = self
 
-    def parse(self, **kw):
+    def create(self, **kw):
         self.pedidos.append(kw)
         self.entro.set()
         if self.demora:
@@ -68,52 +69,67 @@ class ClaudeFalso:
         if self.falla:
             raise self.falla
         texto = self.textos[min(len(self.pedidos) - 1, len(self.textos) - 1)]
-        out = kw["output_format"](texto=texto)
-        return SimpleNamespace(
-            content=[SimpleNamespace(text=json.dumps({"texto": texto}))], parsed_output=out,
-            stop_reason="end_turn",
-            usage=SimpleNamespace(input_tokens=1700, output_tokens=220,
-                                  cache_creation_input_tokens=0, cache_read_input_tokens=0))
+        return SimpleNamespace(content=[SimpleNamespace(type="text", text=texto)], stop_reason="end_turn",
+                               usage=SimpleNamespace(input_tokens=1700, output_tokens=220))
 
 
 class PalabrasTest(unittest.TestCase):
-    """Las cuentas en palabras, con sus bordes."""
+    """Las cuentas en palabras (resumen_tecnico_hechos), con sus bordes."""
 
     def test_proporciones(self):
-        casos = {0: "casi nada", 0.059: "casi nada", 0.06: "una parte chica", 0.25: "cerca de un cuarto",
-                 0.33: "cerca de un tercio", 0.40: "algo menos de la mitad", 0.47: "casi la mitad",
-                 0.49: "la mitad", 0.5: "la mitad", 0.519: "la mitad", 0.52: "un poco más de la mitad",
-                 0.66: "cerca de dos tercios", 0.75: "cerca de tres cuartos", 0.9: "casi todo",
-                 0.94: "prácticamente todo", 1.0: "prácticamente todo", 1.3: "todo, y más", -0.1: "casi nada"}
-        for p, frase in casos.items():
-            self.assertEqual(tecnico.proporcion_en_palabras(p), frase, p)
-
-    def test_la_frase_con_lo_que(self):
-        self.assertEqual(tecnico.parte_de(0.47, "había subido"), "casi la mitad de lo que había subido")
-        self.assertEqual(tecnico.parte_de(0.9, "había subido"), "casi todo lo que había subido")
-        self.assertEqual(tecnico.parte_de(1.2, "había caído"), "todo lo que había caído, y más")
+        casos = {0: "casi nada", 0.119: "casi nada", 0.12: "más o menos un cuarto", 0.33: "más o menos un tercio",
+                 0.42: "más o menos la mitad", 0.5: "más o menos la mitad", 0.58: "casi dos tercios",
+                 0.75: "más o menos tres cuartos", 0.9: "casi todo", 0.97: "todo", 1.03: "todo",
+                 1.2: "todo y un poco más"}
+        for q, frase in casos.items():
+            self.assertEqual(rh.proporcion(q), frase, q)
 
     def test_numeros_redondeados_a_la_argentina(self):
-        n = tecnico.numero_en_palabras
-        self.assertEqual(n(84012.3), "84.000")
-        self.assertEqual(n(75650), "75.700")        # media para arriba, no al par
-        self.assertEqual(n(1855.4), "1.855")
-        self.assertEqual(n(222.5), "223")
-        self.assertEqual(n(13.454), "13,45")
-        self.assertEqual(n(0.00041234), "0,000412")
-        self.assertEqual(tecnico.pct_en_palabras(12.5), "un 13 %")
-        self.assertEqual(tecnico.pct_en_palabras(-0.4), "menos de un 1 %")
-        self.assertEqual(tecnico.precio_en_palabras(6015, "ars"), "6.015 pesos")
+        self.assertEqual(rh.num(84012.3), "84.000")
+        self.assertEqual(rh.num(1855.4), "1.855")
+        self.assertEqual(rh.num(222.4), "222")
+        self.assertEqual(rh.num(37.42), "37,4")
+        self.assertEqual(rh.num(4.564), "4,56")
+        self.assertEqual(rh.num(0.00041234), "0,000412", "una cripto chica no dice «0 dólares»")
+        self.assertEqual(rh.plata(6015, "ars"), "6.015 pesos")
+        self.assertEqual(rh.pct(-0.4), "menos de 1 %")
 
     def test_fechas_sin_hoy_ni_ayer(self):
-        f = tecnico.fecha_en_palabras
-        self.assertEqual(f("2026-10-20", "2026-10-21"), "el 20 de octubre")
-        self.assertEqual(f("2025-12-15", "2026-10-21"), "el 15 de diciembre de 2025")
-        self.assertEqual(f("2026-10-21", "2026-10-21", con_dia=True), "el miércoles 21 de octubre")
+        self.assertEqual(rh.fecha("2026-10-20", "2026-10-21"), "20 de octubre")
+        self.assertEqual(rh.fecha("2025-12-15", "2026-10-21"), "15 de diciembre del año pasado")
+        self.assertEqual(rh.fecha("2024-12-15", "2026-10-21"), "15 de diciembre de 2024")
+
+    @staticmethod
+    def _ficha(cierres, en_curso):
+        """Una respuesta de la ficha con estos cierres (el último es el último dato)."""
+        hoy = date(2026, 10, 21)
+        dias = [(hoy - timedelta(days=len(cierres) - 1 - i)).isoformat() for i in range(len(cierres))]
+        pts = [{"d": d, "c": c} for d, c in zip(dias, cierres)]
+        return {"disponible": True, "moneda": "usd", "puntos": pts,
+                "lectura": {"fecha": dias[-1], "precio": cierres[-1]},
+                "fibonacci": {"disponible": False, "en_curso": {**en_curso, "desde": {"fecha": dias[0], "precio": cierres[0]}}}}
+
+    def test_en_su_maximo_no_se_cuenta_otro_pico_del_dia(self):
+        # Cierra en 344, el cierre más alto del año; el 13 de octubre había
+        # TOCADO 348 durante el día. No se dicen los dos.
+        cierres = [300 + i * 0.1 for i in range(400)] + [344.0]
+        f = self._ficha(cierres, {"dir": "suba", "hasta": {"fecha": "2026-10-13", "precio": 348.0}})
+        h = rh.para_el_resumen(f, "Apple")
+        self.assertTrue(h["para_el_titular"].startswith("Cerró en su precio más alto del año"))
+        self.assertIn("hasta el último cierre", h["movimientos_recientes"]["el_movimiento_de_ahora"])
+        self.assertNotIn("348", json.dumps(h, ensure_ascii=False))
+
+    def test_cerca_del_maximo_no_dice_que_es_el_maximo(self):
+        # El día anterior cerró en 30.420 y el último en 30.300 (0,4 % abajo).
+        cierres = [20000 + i * 25 for i in range(399)] + [30420.0, 30300.0]
+        f = self._ficha(cierres, {"dir": "suba", "hasta": {"fecha": "2026-10-20", "precio": 30600.0}})
+        h = rh.para_el_resumen(f, "Coca-Cola")
+        self.assertTrue(h["para_el_titular"].startswith("Cerró muy cerca de su precio más alto del año"))
+        self.assertNotIn("el último cierre es ese mismo", h["cierre_mas_alto_del_año"])
 
     def test_revision_del_texto(self):
-        hechos = {"activo": "Apple", "moneda": "dólares", "ultimo_cierre": "el miércoles 21 de octubre: 344 dólares",
-                  "hechos": ["Subió de 309 dólares (el 31 de julio) a 344 dólares (el 21 de octubre)."]}
+        hechos = {"activo": "Apple", "moneda": "dólares", "ultimo_cierre": "21 de octubre",
+                  "movimientos_recientes": {"el_movimiento_de_ahora": "subió de 309 dólares (31 de julio) a 344 dólares"}}
         graves, largo = resumen_tecnico.problemas(
             "Apple subió de 309 a 344 dólares. Está arriba del promedio de 200 días. Viene firme. Sigue así.", hechos)
         self.assertEqual((graves, largo), ([], []))
@@ -122,7 +138,7 @@ class PalabrasTest(unittest.TestCase):
             "Apple subió 35 dólares. Ganó un 11 %. Está arriba del promedio. Viene firme.", hechos)
         self.assertTrue(any("35" in g and "11" in g for g in graves), graves)
         # «1.855» y «1855» son el mismo número.
-        h2 = {**hechos, "hechos": ["Estaba en 1.855 dólares."]}
+        h2 = {**hechos, "precio_al_ultimo_cierre": "1.855 dólares"}
         self.assertEqual(resumen_tecnico.problemas("Cerró en 1855 dólares. A. B. C.", h2)[0], [])
         # Fechas relativas y jerga.
         graves, _ = resumen_tecnico.problemas("Ayer devolvió parte. A. B. C.", hechos)
@@ -130,10 +146,14 @@ class PalabrasTest(unittest.TestCase):
         graves, _ = resumen_tecnico.problemas("Es un buen momento para comprar. A. B. C.", hechos)
         self.assertTrue(graves)
         # Largo: más de 100 palabras se rehace; en el segundo intento se toleran 120.
-        largo_txt = " ".join(["palabra"] * 105) + ". B. C. D."
+        largo_txt = " ".join(["palabra"] * 100) + ". B. C. D."
         self.assertTrue(resumen_tecnico.problemas(largo_txt, hechos)[1])
         self.assertFalse(resumen_tecnico.problemas(largo_txt, hechos, segunda=True)[1])
         self.assertTrue(resumen_tecnico.problemas("Una sola oración.", hechos)[1])
+        # Una corrección a la vista (vuelta 7 de la redacción) o un salto de línea.
+        graves, largo = resumen_tecnico.problemas("Subió a 344. Corrijo: a 309. A. B.", hechos)
+        self.assertTrue(graves)
+        self.assertTrue(resumen_tecnico.problemas("Subió a 344. A.\nB. C.", hechos)[1])
 
 
 class ResumenTest(unittest.TestCase):
@@ -165,9 +185,6 @@ class ResumenTest(unittest.TestCase):
                    mock.patch("ai.llm._get_anthropic_client", lambda: self.claude)]
         for p in self._p:
             p.start()
-        # Una acción de EE.UU. que se sigue: bajó de 130 a 100, subió a 200,
-        # bajó a 150 (perdió la mitad de lo que había subido) y volvió a 175
-        # (recuperó la mitad de lo que había perdido).
         self._posicion("Schwab", "USD", "MSFT")
         self.yahoo.precios["MSFT"] = self._serie
         main._run_velas_diarias_job()
@@ -176,15 +193,16 @@ class ResumenTest(unittest.TestCase):
         for p in self._p:
             p.stop()
 
-    @staticmethod
-    def _serie(i, d):
-        if i <= 650:
-            return 130 - 30 * i / 650
-        if i <= 710:
-            return 100 + 100 * (i - 650) / 60
-        if i <= 740:
-            return 200 - 50 * (i - 710) / 30
-        return 150 + 25 * (i - 740) / 19
+    # Una acción de EE.UU. que se sigue: después de unas idas y vueltas, una
+    # suba de 100 a 200 que terminó, y una bajada que ya deshizo la mitad.
+    PUNTOS = [(0, 120), (150, 140), (200, 125), (250, 145), (300, 120), (400, 130), (500, 100), (600, 110),
+              (620, 105), (650, 160), (665, 150), (700, 200), (730, 140), (745, 165), (759, 150)]
+
+    @classmethod
+    def _serie(cls, i, d):
+        for (a, va), (b, vb) in zip(cls.PUNTOS, cls.PUNTOS[1:]):
+            if a <= i <= b:
+                return va + (vb - va) * (i - a) / (b - a)
 
     def _posicion(self, broker, moneda, asset, tipo="STOCK", h=None):
         self.client.post("/api/brokers", json={"name": broker, "currency": moneda}, headers=h or self.h)
@@ -220,8 +238,9 @@ class ResumenTest(unittest.TestCase):
         self.assertEqual(len(self.claude.pedidos), 1)
         kw = self.claude.pedidos[0]
         self.assertEqual(kw["model"], "claude-sonnet-5-5")
-        self.assertEqual(kw["output_config"], {"effort": "low"})
-        self.assertNotIn("cache_control", kw["system"][0], "uno por día: el caché de 1 h sólo encarecería")
+        self.assertEqual(kw["extra_body"], {"output_config": {"effort": "low"}})
+        self.assertEqual(kw["system"], resumen_tecnico.SISTEMA, "el pedido del archivo, sin caché")
+        self.assertIn("Sos Mervall-E", kw["system"])
 
         # Otro usuario: lo ve al abrir la ficha, y tocar el botón no lo regenera.
         f2 = self._ficha(h=self.h2)
@@ -261,23 +280,28 @@ class ResumenTest(unittest.TestCase):
     def test_lo_que_se_le_manda_son_las_cuentas_de_rendi_y_nada_tuyo(self):
         self._pedir()
         msg = self.claude.pedidos[0]["messages"][0]["content"]
-        datos = json.loads(msg[msg.index("```json") + 7:msg.rindex("```")])
-        self.assertEqual(set(datos), {"activo", "moneda", "ultimo_cierre", "hechos"})
+        self.assertTrue(msg.startswith("Datos del activo:\n"))
+        datos = json.loads(msg.split("\n", 1)[1])
         self.assertEqual(datos["activo"], "Microsoft")
-        texto = " ".join(datos["hechos"])
-        # Las proporciones vienen hechas: subió de 100 a 200, bajó a 150, volvió a 175.
-        self.assertIn("Subió de 100 dólares", texto)
-        self.assertIn("a 200 dólares", texto)
-        self.assertIn("perdió la mitad de lo que había subido", texto)
-        self.assertIn("recuperó la mitad de lo que había perdido", texto)
-        self.assertIn("Al último cierre estaba en 175 dólares", texto)
-        # El pico de cierre del tramo es el máximo del año: un solo número.
-        self.assertIn("fue el más alto del último año; al último cierre está un 13 % abajo", texto)
-        self.assertNotIn("202", texto, "el pico del día (200 × 1,01) no aparece como si fuera un cierre")
-        self.assertNotRegex(json.dumps(datos, ensure_ascii=False), r"\b(hoy|ayer)\b")
+        self.assertEqual(list(datos)[0], "para_el_titular", "el titular va primero")
+        movs = datos["movimientos_recientes"]
+        # La proporción viene hecha: subió de 99 a 202 (lo que tocó) y al último
+        # cierre (150) había perdido 52 de 103 → «más o menos la mitad».
+        ultima = movs["la_ultima_suba_o_bajada_terminada"]
+        self.assertIn("subió de 99 dólares", ultima)
+        self.assertIn("a 202 dólares", ultima)
+        self.assertIn("de esa suba había perdido más o menos la mitad", ultima)
+        self.assertEqual(datos["precio_al_ultimo_cierre"], "150 dólares")
+        self.assertIn("que_terminaria_la_bajada_de_ahora", movs)
+        # El cierre más alto del año cae el día del pico: no se repite su precio.
+        self.assertIn("no repitas su precio", datos["cierre_mas_alto_del_año"])
+        self.assertIn("RSI", " ".join(datos["indicadores"]))
+        # El último dato va con su fecha, nunca como «ayer».
+        self.assertRegex(datos["ultimo_cierre"], r"^\d+ de [a-z]+ \(es el último dato")
+        self.assertNotIn("ayer", msg)
         # Nada del usuario: ni su precio de compra, ni su broker, ni su mail.
         todo = json.dumps(self.claude.pedidos[0], default=str, ensure_ascii=False)
-        for propio in ("123", "Schwab", "rendi.test", "promedio de compra", "Ganás", "Perdés"):
+        for propio in ("123", "Schwab", "rendi.test", "Ganás", "Perdés", "Contra lo que pagaste"):
             self.assertNotIn(propio, todo)
 
     # ── Topes ────────────────────────────────────────────────────────────────
@@ -353,8 +377,9 @@ class ResumenTest(unittest.TestCase):
         self.claude.textos = [largo, BUENO]
         self.assertEqual(self._pedir()["texto"], BUENO)
         self.assertEqual(len(self.claude.pedidos), 2)
-        self.assertIn("palabras", self.claude.pedidos[1]["messages"][0]["content"],
-                      "el segundo pedido le dice qué estuvo mal")
+        segundo = self.claude.pedidos[1]["messages"]
+        self.assertEqual(segundo[1], {"role": "assistant", "content": largo}, "ve lo que escribió")
+        self.assertIn("palabras", segundo[2]["content"], "y qué estuvo mal")
         fila = self._fila()
         self.assertEqual((fila["llamadas"], fila["cost_usd_cents"]), (2, 112), "se registran los dos")
 

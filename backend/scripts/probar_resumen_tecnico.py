@@ -1,17 +1,17 @@
 """Prueba el resumen de Mervall-E de la ficha con el modelo REAL sobre activos reales.
 
 Arma los hechos con las velas guardadas en una COPIA de la base (nunca
-backend/trading.db), llama a ai/resumen_tecnico.generar —el mismo camino que el
-botón— e imprime el texto, los hechos, los tokens, el costo y la demora.
+backend/trading.db) con ai/resumen_tecnico_hechos, llama a
+ai/resumen_tecnico.generar —el mismo camino que el botón, con el pedido de
+ai/resumen_tecnico_pedido.txt— e imprime el texto, los tokens, el costo y la demora.
 
-Uso (desde backend/):
-    DB_PATH=<scratch>/x.db python3 scripts/probar_resumen_tecnico.py <copia.db> <.env> [salida.json]
+Uso (desde backend/), con DB_PATH apuntando a la COPIA (entra por get_db, como la app):
+    DB_PATH=<copia.db> python3 scripts/probar_resumen_tecnico.py <.env> [salida.json]
 
 La clave de Anthropic se lee del .env sin imprimirla.
 """
 import json
 import os
-import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -36,26 +36,28 @@ ACTIVOS = [
 
 
 def main():
-    base, env = sys.argv[1], sys.argv[2]
-    salida = Path(sys.argv[3]) if len(sys.argv) > 3 else None
-    if Path(base).resolve() == (BACKEND / "trading.db").resolve():
-        sys.exit("Usá una COPIA de la base, no backend/trading.db")
+    env = sys.argv[1]
+    salida = Path(sys.argv[2]) if len(sys.argv) > 2 else None
+    base = os.environ.get("DB_PATH")
+    if not base or Path(base).resolve() == (BACKEND / "trading.db").resolve():
+        sys.exit("Poné DB_PATH=<una COPIA de la base>; nunca backend/trading.db")
     for linea in Path(env).read_text().splitlines():
         if linea.startswith("ANTHROPIC_API_KEY="):
             os.environ["ANTHROPIC_API_KEY"] = linea.split("=", 1)[1].strip().strip('"').strip("'")
     import logging
     logging.basicConfig(level=logging.WARNING, format="   [%(name)s] %(message)s")
     logging.getLogger("ai.resumen_tecnico").setLevel(logging.INFO)
+    import main
     import tecnico
     from ai import resumen_tecnico
     from ai.asset_names import asset_name
+    from ai.resumen_tecnico_hechos import para_el_resumen
 
-    conn = sqlite3.connect(base)
-    conn.row_factory = sqlite3.Row
     filas, total = [], 0.0
     for sim, mon, local, que in ACTIVOS:
-        ficha = tecnico.para_la_ficha(conn, sim, mon, local)
-        hechos = tecnico.hechos_para_el_resumen(ficha, asset_name(sim) or sim)
+        with main.db_abierta() as conn:
+            ficha = tecnico.para_la_ficha(conn, sim, mon, local)
+        hechos = para_el_resumen(ficha, asset_name(sim) or sim)
         if not hechos:
             print(f"{sim} {mon}: sin datos")
             continue
