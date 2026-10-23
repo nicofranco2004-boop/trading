@@ -165,6 +165,26 @@ class ReglasDurasTest(unittest.TestCase):
         v = [115, 100, 120, 108, 140, 115, 150]
         self.assertEqual(self._impulsos_con(v, [100, 120, 108, 140, 115, 150]), [])
 
+    def test_la_5_no_pasa_a_la_3(self):
+        # La 5 "truncada" (128 → 138, sin llegar a 140): no se cuenta.
+        v = [115, 100, 120, 108, 140, 128, 138]
+        self.assertEqual(self._impulsos_con(v, [100, 120, 108, 140, 128, 138]), [])
+
+    def test_una_onda_de_un_dia_no_es_una_onda(self):
+        # La figura de libro con la onda 2 hecha en 2 días (pico y pozo casi
+        # pegados): ningún conteo usa esa onda 2.
+        cierres = [115.0] * 40 + [115 - 15 * j / 6 for j in range(6)]
+        cierres += [100 + 20 * j / 6 for j in range(6)] + [120, 108]
+        cierres += [108 + 32 * j / 6 for j in range(1, 7)] + [140 - 12 * j / 6 for j in range(1, 7)]
+        cierres += [128 + 22 * j / 6 for j in range(1, 7)] + [145, 141]
+        v = _velas(cierres)
+        piv = {p["i"] for p in estructura.pivotes(v)}
+        i120 = cierres.index(120)
+        self.assertTrue({i120, i120 + 1} <= piv, "la figura tiene el pico y el pozo pegados")
+        for c in elliott.candidatos(v):
+            I = [p["i"] for p in c["pts"]]
+            self.assertFalse(i120 in I and i120 + 1 in I, c["ondas"])
+
     def test_la_3_no_pasa_a_la_1(self):
         v = [115, 100, 120, 108, 118, 110, 130]
         self.assertEqual(self._impulsos_con(v, [100, 120, 108, 118, 110, 130]), [])

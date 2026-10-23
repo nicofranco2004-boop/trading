@@ -44,7 +44,11 @@ export function preciosDeLaCapa(f, puntos) {
  */
 export const RUEDAS_MINIMAS_FIB = 63
 export function ventanaDelTramo(puntos, f, nVista) {
-  const fecha = f?.disponible ? f.desde.fecha : null
+  return ventanaDesde(puntos, f?.disponible ? f.desde.fecha : null, nVista)
+}
+
+/** Lo mismo desde cualquier fecha (el arranque del conteo de Elliott, CapaElliott.jsx). */
+export function ventanaDesde(puntos, fecha, nVista) {
   if (!fecha || !puntos?.length || fecha < puntos[0].d) return null
   const i = indiceDeFecha(puntos, fecha)
   const desdeElTramo = puntos.length - i

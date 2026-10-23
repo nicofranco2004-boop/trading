@@ -1,0 +1,124 @@
+// elliott.js — las palabras de las ondas de Elliott de la ficha.
+// ════════════════════════════════════════════════════════════════════════════
+// Las CUENTAS (qué picos y pozos son cada onda, las reglas, las proporciones y
+// el precio que invalida) vienen hechas de GET /api/tecnico en el campo
+// `elliott` (backend/elliott.py). Acá sólo se dicen en castellano.
+//
+// El conteo de Elliott es subjetivo: siempre se dice como «un conteo posible»,
+// con la confianza y lo que lo invalida, y nunca como lo que va a pasar ni como
+// una recomendación. Mismo tono que el Fibonacci (utils/fibonacci.js):
+// «días de mercado», porcentajes como dato al lado y no como jerga.
+
+const pct = (x) => `${Math.round(x * 100)} %`
+const veces = (x) => x.toLocaleString('es-AR', { maximumFractionDigits: 2, minimumFractionDigits: 1 })
+
+export const QUE_ES = 'La teoría de Elliott dice que el precio suele avanzar en 5 ondas —tres a favor (1, 3 y 5) '
+  + 'y dos de descanso (2 y 4)— y después corregir en 3 (A, B y C).'
+
+/** El nombre del movimiento contado: «la suba» o «la bajada». */
+const mov = (c) => (c.dir === 'suba' ? 'la suba' : 'la bajada')
+
+const punto = (c, onda) => c.ondas.find(o => o.onda === onda)
+
+/** Dónde estaría hoy, para poner después de «Un conteo posible dice que…». */
+export function dondeHoy(c, fecha) {
+  if (!c) return ''
+  const corrSuelta = c.tipo === 'correccion'
+  // Una corrección suelta: su 'dir' es el de su onda A (una A-B-C a la baja
+  // corrige una suba anterior).
+  const corr = corrSuelta ? `la corrección ${c.dir === 'bajada' ? 'a la baja, después de una suba' : 'al alza, después de una bajada'}` : 'la corrección'
+  switch (c.ahora) {
+    case 'onda_3': return `estaría en la onda 3 de ${mov(c)}, la que suele ser la más larga y fuerte`
+    case 'onda_4': return `estaría en la onda 4, un descanso de ${mov(c)} después de la onda 3`
+    case 'onda_5': return `estaría en la onda 5, la última de ${mov(c)}`
+    case 'correccion': return `las 5 ondas de ${mov(c)} habrían terminado el ${fecha(punto(c, '5').fecha)} y estaría en la corrección que suele venir después`
+    case 'onda_B': return `las 5 ondas de ${mov(c)} terminaron el ${fecha(punto(c, '5').fecha)}; la corrección ya hizo su onda A y estaría en la B, un movimiento corto en contra de la corrección`
+    case 'onda_C': return `estaría en la onda C de ${corr}, su último tramo`
+    case 'fin_abc': return `${corr} (A, B y C) habría terminado el ${fecha(punto(c, 'C').fecha)}`
+    default: return ''
+  }
+}
+
+/** El veredicto corto de la tarjeta. */
+export function veredictoElliott(c) {
+  if (!c) return 'Sin conteo claro'
+  const v = {
+    onda_3: 'Onda 3', onda_4: 'Onda 4', onda_5: 'Onda 5', correccion: 'Corrección después de 5 ondas',
+    onda_B: 'Onda B de la corrección', onda_C: 'Onda C de la corrección', fin_abc: 'Terminó una corrección A-B-C',
+  }[c.ahora]
+  return `Un conteo posible: ${v.charAt(0).toLowerCase()}${v.slice(1)}`
+}
+
+/** Qué lo invalida, en una oración. */
+export function textoInvalida(c, precio) {
+  const { precio: p, lado, por } = c.invalida
+  const cruza = lado === 'debajo' ? `baja de ${precio(p)}` : `sube de ${precio(p)}`
+  switch (por) {
+    case 'arranque_1': return `Este conteo se invalida si el precio ${cruza} (donde arrancó la onda 1): la onda 2 nunca va más allá de ese punto.`
+    case 'final_1': return `Este conteo se invalida si el precio ${cruza} (donde terminó la onda 1): la onda 4 no se mete en el terreno de la 1.`
+    case 'final_5': return `Esta lectura deja de valer si el precio ${cruza} (el final de la onda 5): ahí la 5 todavía no habría terminado.`
+    case 'arranque_A': return `Este conteo se invalida si el precio ${cruza} (donde arrancó la onda A): la B no va más allá de ese punto.`
+    case 'final_C': return `Esta lectura deja de valer si el precio ${cruza} (el final de la onda C): ahí la corrección seguiría.`
+    default: return ''
+  }
+}
+
+/** Cada pauta en castellano: { texto, cumple }. */
+export function textoPauta(p) {
+  const v = p.valor
+  switch (p.id) {
+    case 'onda2': return `La onda 2 devolvió el ${pct(v)} de la 1 (lo habitual: entre 50 % y 61,8 %).`
+    case 'onda3': return `La onda 3 midió ${veces(v)} veces la 1 (lo habitual: cerca de 1,6 veces).`
+    case 'onda4': return `La onda 4 devolvió el ${pct(v)} de la 3 (lo habitual: cerca del 38 %).`
+    case 'alternancia': return p.cumple
+      ? 'Las ondas 2 y 4 fueron distintas (una devolvió la mitad o más y la otra poco, o una duró el triple), como suele pasar.'
+      : 'Las ondas 2 y 4 se parecieron; lo habitual es que sean distintas.'
+    case 'onda5': return `La onda 5 midió ${veces(v)} veces la 1 (lo habitual: parecida).`
+    case 'ondaB': return `La onda B devolvió el ${pct(v)} de la A (lo habitual: entre 50 % y 61,8 %).`
+    case 'ondaC': return `La onda C midió ${veces(v)} veces la A (lo habitual: parecida).`
+    default: return ''
+  }
+}
+
+export function textoConfianza(c) {
+  const n = c.pautas.length
+  const si = c.pautas.filter(p => p.cumple).length
+  const base = `Confianza ${c.confianza}`
+  if (!n) return `${base}: todavía no hay proporciones para comparar.`
+  return `${base}: cumple ${si} de ${n} ${n === 1 ? 'proporción que suele darse' : 'proporciones que suelen darse'}.`
+}
+
+/**
+ * La tarjeta: { titulo, veredicto, texto, invalida?, confianza?, pautas?, alternativo?, pie }.
+ * `precio` y `fecha` formatean como el resto de la ficha. Describe, no recomienda.
+ */
+export function tarjetaElliott(e, precio, fecha) {
+  if (!e) return null
+  const n = e.n_pivote ?? 3
+  const pie = 'Es una de varias lecturas posibles: dos personas pueden contar distinto el mismo gráfico. '
+    + `Un pico o un pozo recién se confirma ${n} días de mercado después. `
+    + 'No dice qué va a pasar ni es una recomendación de compra o venta.'
+  if (!e.disponible) {
+    if (e.motivo === 'pocos_datos') {
+      return { titulo: 'Ondas de Elliott', veredicto: 'Faltan datos', pie,
+        texto: `${QUE_ES} Para contarlas hacen falta al menos 30 días de mercado y este activo tiene ${e.ruedas}.` }
+    }
+    return { titulo: 'Ondas de Elliott', veredicto: 'Sin conteo claro', pie,
+      texto: `${QUE_ES} Con los picos y pozos de este activo no aparece ningún conteo que cumpla las reglas, y no se fuerza uno.` }
+  }
+  const c = e.principal
+  const a = e.alternativo
+  return {
+    titulo: 'Ondas de Elliott',
+    veredicto: veredictoElliott(c),
+    texto: `${QUE_ES} Un conteo posible dice que ${dondeHoy(c, fecha)}.`,
+    invalida: textoInvalida(c, precio),
+    confianza: textoConfianza(c),
+    pautas: c.pautas.map(p => ({ texto: textoPauta(p), cumple: p.cumple })),
+    alternativo: a ? `Otra lectura posible: ${dondeHoy(a, fecha)} (confianza ${a.confianza}).` : null,
+    pie,
+  }
+}
+
+/** El rótulo de cada punto en el gráfico ('0', el arranque, no lleva). */
+export const rotuloOnda = (o) => (o.onda === '0' ? null : o.onda)

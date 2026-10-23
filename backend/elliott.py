@@ -20,6 +20,11 @@ REGLAS DURAS (si una no se cumple, ese conteo no existe):
   · la onda 2 no baja más que el arranque de la 1;
   · la onda 3 pasa el final de la 1 y no es la más corta de 1, 3 y 5;
   · la onda 4 no se mete en el terreno de la 1 (no baja del final de la 1);
+  · la onda 5 pasa el final de la 3. La teoría admite una 5 "truncada" que no
+    llega, pero es rara, y con picos y pozos automáticos producía conteos
+    forzados (TSLA, 22/10/26: una "5" en 342 con la 3 en 297): no se cuenta;
+  · cada onda dura al menos `MIN_RUEDAS_ONDA` días de mercado (un pico y un
+    pozo en días seguidos no son una onda: YPFD, una "onda 4" de un día);
   · en una corrección A-B-C, la B no pasa el arranque de la A y la C pasa el
     final de la A; y suelta (no pegada a un impulso) tiene que corregir algo:
     antes de una A-B-C a la baja hubo una suba al menos del tamaño de la A,
@@ -27,9 +32,13 @@ REGLAS DURAS (si una no se cumple, ese conteo no existe):
   En una bajada, todo al revés.
 
 PAUTAS (no excluyen; dan la confianza): onda 2 ≈ 50–61,8 % de la 1; onda 3 ≈
-1,618 veces la 1; onda 4 ≈ 38,2 % de la 3; la 5 parecida a la 1; la 5 pasa a la
-3; alternancia entre 2 y 4 (una honda y la otra no, o una el doble de larga);
-en A-B-C, B ≈ 50–61,8 % de A y C ≈ A.
+1,618 veces la 1; onda 4 ≈ 38,2 % de la 3; la 5 parecida a la 1; alternancia
+entre 2 y 4 (una honda —50 % o más— y la otra no —38,2 % o menos—, o una el
+triple de larga que la otra); en A-B-C, B ≈ 50–61,8 % de A y C ≈ A.
+
+EL ALTERNATIVO tiene que decir otra cosa de hoy: estar en otra onda. "Onda 5"
+contra "onda 5" con otro arranque es la misma lectura, y "en la B" contra "en
+la corrección" con los mismos puntos también; no se ofrecen.
 
 QUÉ ES "HOY". Un conteo puede estar terminado o a mitad: 1-2 contadas y la 3
 en curso, 1-2-3 y la 4 en curso, etc. Lo que pasó desde el último punto
@@ -46,6 +55,7 @@ pantalla (utils/elliott.js) y siempre como "un conteo posible".
 """
 from __future__ import annotations
 
+import math
 from datetime import date
 
 import estructura
@@ -67,10 +77,16 @@ P_ONDA4 = (0.24, 0.50)          # retroceso de la 4 sobre la 3 (≈ 38,2 %)
 P_ONDA5 = (0.75, 1.33)          # la 5 contra la 1 (≈ igual)
 P_ONDA_B = (0.40, 0.79)         # retroceso de la B sobre la A (≈ 50–61,8 %)
 P_ONDA_C = (0.75, 1.33)         # la C contra la A (≈ igual)
-# Alternancia: una de las dos correcciones (2 y 4) es honda y la otra no, o
-# una dura al menos el doble que la otra.
-CORTE_HONDA = 0.5
-VECES_MAS_LARGA = 2.0
+# Alternancia: una de las dos correcciones (2 y 4) es honda (devuelve 50 % o
+# más) y la otra no (alrededor de 38,2 % o menos), o una dura al menos el triple que la
+# otra. Más floja (cualquier diferencia, o el doble) se cumplía en casi todos
+# los conteos reales (22/10/26) y sólo inflaba la confianza.
+HONDA = 0.5
+PLAYA = 0.40           # ≈ 38,2 %, con el mismo aire que las otras pautas
+VECES_MAS_LARGA = 3.0
+# Una onda dura al menos esto en días de mercado (lo que tarda en confirmarse
+# un pico o pozo).
+MIN_RUEDAS_ONDA = estructura.N_PIVOTE
 
 ORDEN_CONFIANZA = {"alta": 2, "media": 1, "baja": 0}
 
@@ -197,6 +213,9 @@ def _impulso(pts: list, vista: _Vista):
         # Regla: la 3 no es la más corta.
         if w3 < w1 and w3 < w5:
             return None
+        # Regla (ver arriba): la 5 pasa el final de la 3.
+        if P[5] <= P[3]:
+            return None
     # Lo que pasó desde el último punto tiene que encajar con la onda en curso.
     ultimo = I[-1]
     if hecho == 4:
@@ -221,12 +240,11 @@ def _impulso(pts: list, vista: _Vista):
         r4 = (P[3] - P[4]) / w3
         pautas.append({"id": "onda4", "valor": r4, "cumple": _dentro(r4, P_ONDA4)})
         d2, d4 = I[2] - I[1], I[4] - I[3]
-        alterna = ((r2 >= CORTE_HONDA) != (r4 >= CORTE_HONDA)
+        alterna = ((r2 >= HONDA and r4 <= PLAYA) or (r4 >= HONDA and r2 <= PLAYA)
                    or max(d2, d4) >= VECES_MAS_LARGA * max(1, min(d2, d4)))
         pautas.append({"id": "alternancia", "valor": None, "cumple": alterna})
     if hecho == 5:
         pautas.append({"id": "onda5", "valor": w5 / w1, "cumple": _dentro(w5 / w1, P_ONDA5)})
-        pautas.append({"id": "onda5_pasa_3", "valor": None, "cumple": P[5] > P[3]})
 
     ahora = {2: "onda_3", 3: "onda_4", 4: "onda_5", 5: "correccion"}[hecho]
     # El precio que invalida: el que rompería una regla dura.
@@ -325,6 +343,13 @@ def _pegar(imp: dict, abc: dict) -> dict:
             "principales": imp["principales"] + [(a + 5, b + 5) for a, b in abc["principales"]]}
 
 
+def _duracion_ok(c: dict) -> bool:
+    """Cada onda (de un punto contado al siguiente) dura al menos
+    `MIN_RUEDAS_ONDA` días de mercado."""
+    I = [p["i"] for p in c["pts"]]
+    return all(b - a >= MIN_RUEDAS_ONDA for a, b in zip(I, I[1:]))
+
+
 def _tamanio_ok(c: dict, velas: list) -> bool:
     """Las ondas principales y todo lo contado tienen que ser movimientos de
     verdad, no el ruido de pocos días (ver `estructura._es_claro`)."""
@@ -363,12 +388,27 @@ def confianza(pautas: list) -> str:
     return "baja"
 
 
+# El número "de libro" de cada pauta, para desempatar (ver `_desvio`).
+IDEAL = {"onda2": 0.559, "onda3": 1.618, "onda4": 0.382, "onda5": 1.0, "ondaB": 0.559, "ondaC": 1.0}
+
+
+def _desvio(c: dict) -> float:
+    """Cuánto se alejan, en promedio, las proporciones del número de libro
+    (en escala logarítmica: el doble y la mitad están igual de lejos)."""
+    xs = [abs(math.log(p["valor"] / IDEAL[p["id"]])) for p in c["pautas"]
+          if p["id"] in IDEAL and p["valor"] and p["valor"] > 0]
+    return sum(xs) / len(xs) if xs else 1.0
+
+
 def _clave(c: dict):
     """Orden de preferencia: más confianza, más ondas contadas (explica más),
-    el último punto más reciente, y la proporción de pautas que cumple."""
+    el último punto más reciente, la proporción de pautas que cumple y, al
+    final, el más parecido al libro. Sin ese último desempate, BTC (22/10/26)
+    elegía unas ondas 1 y 2 de 9 y 3 días al pie de la suba en vez de unas
+    parejas, con la misma confianza."""
     si = sum(1 for p in c["pautas"] if p["cumple"])
     frac = si / len(c["pautas"]) if c["pautas"] else 0.0
-    return (ORDEN_CONFIANZA[c["confianza"]], len(c["pts"]), c["pts"][-1]["i"], frac)
+    return (ORDEN_CONFIANZA[c["confianza"]], len(c["pts"]), c["pts"][-1]["i"], frac, -_desvio(c))
 
 
 def candidatos(velas: list, n: int = estructura.N_PIVOTE) -> list:
@@ -393,7 +433,7 @@ def candidatos(velas: list, n: int = estructura.N_PIVOTE) -> list:
                 c["dir"] = "suba" if espejo else "bajada"
         for c in imp + corr:
             c["espejo"] = espejo
-            if _tamanio_ok(c, velas) and _fresco(c, velas):
+            if _duracion_ok(c) and _tamanio_ok(c, velas) and _fresco(c, velas):
                 c["confianza"] = confianza(c["pautas"])
                 out.append(c)
     out.sort(key=_clave, reverse=True)
@@ -420,15 +460,30 @@ def conteo(velas: list, n: int = estructura.N_PIVOTE) -> dict:
     if not lista:
         return {"disponible": False, "motivo": "sin_conteo", "ruedas": len(velas), "n_pivote": n}
     principal = lista[0]
-    # El alternativo: el mejor que dice OTRA cosa de hoy; si ninguno, el mejor
-    # con otros puntos.
-    distinto = next((c for c in lista[1:] if (c["ahora"], c["dir"]) != (principal["ahora"], principal["dir"])), None)
-    if distinto is None:
-        distinto = next((c for c in lista[1:] if [p["i"] for p in c["pts"]] != [p["i"] for p in principal["pts"]]), None)
+    distinto = next((c for c in lista[1:] if _dice_otra_cosa(principal, c)), None)
     return {"disponible": True, "n_pivote": n, "ruedas": len(velas),
             "fecha_hoy": velas[-1]["date"], "precio_hoy": _r(velas[-1]["close"]),
             "principal": _para_afuera(principal, velas),
             "alternativo": _para_afuera(distinto, velas) if distinto else None}
+
+
+def _fase(c: dict) -> str:
+    return "impulso" if c["ahora"] in ("onda_3", "onda_4", "onda_5") else "correccion"
+
+
+def _dice_otra_cosa(a: dict, b: dict) -> bool:
+    """¿`b` dice otra cosa de HOY que `a`? Tiene que estar en otra onda (u
+    otra dirección): "onda 5" contra "onda 5" con otro arranque es la misma
+    lectura (AAPL, GGAL, BTC el 22/10/26). Y si es el mismo conteo con una
+    onda más o una menos, tiene que estar en otra fase: "en la B" contra "en la
+    corrección" con los mismos puntos tampoco es otra lectura (MELI)."""
+    if (a["ahora"], a["dir"], a["espejo"]) == (b["ahora"], b["dir"], b["espejo"]):
+        return False
+    ia, ib = [(p["i"], p["tipo"]) for p in a["pts"]], [(p["i"], p["tipo"]) for p in b["pts"]]
+    corto, largo = (ia, ib) if len(ia) <= len(ib) else (ib, ia)
+    if largo[:len(corto)] == corto and a["espejo"] == b["espejo"]:
+        return _fase(a) != _fase(b)
+    return True
 
 
 def _para_afuera(c: dict, velas: list) -> dict:

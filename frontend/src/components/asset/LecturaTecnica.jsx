@@ -3,7 +3,8 @@
 // Gráfico de precio con las medias de 50 y 200 días, tu precio promedio y tus
 // compras y ventas; la fuerza del movimiento (RSI) abajo; y tarjetas en
 // castellano. El botón «Fibonacci» de la leyenda (apagado de entrada) suma la
-// capa del último tramo de suba o bajada (CapaFibonacci.jsx). Se mide en
+// capa del último tramo de suba o bajada (CapaFibonacci.jsx), y «Ondas de
+// Elliott» (también apagado) un conteo posible de ondas (CapaElliott.jsx). Se mide en
 // DÓLARES por defecto: un CEDEAR en pesos sube con el dólar aunque la empresa
 // no se mueva (ver backend/tecnico.py).
 //
@@ -19,7 +20,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import AssetMiniChart from '../home/AssetMiniChart'
-import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa, ventanaDelTramo } from './CapaFibonacci'
+import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
+import CapaElliott, { COLOR_ELLIOTT, TarjetaElliott, fechaDelConteo, preciosDelConteo } from './CapaElliott'
 import { api } from '../../utils/api'
 import {
   RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, tarjetas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
@@ -75,7 +77,7 @@ export default function LecturaTecnica({
   const [rango, setRango] = useState('1a')
   const [datos, setDatos] = useState({ usd: undefined, ars: undefined })
   // Qué líneas se ven: la leyenda prende y apaga cada una.
-  const [ver, setVer] = useState({ s200: true, s50: true, prom: true, marcas: true, fib: false })
+  const [ver, setVer] = useState({ s200: true, s50: true, prom: true, marcas: true, fib: false, ell: false })
   const [tipo, setTipoEstado] = useState(tipoGuardado)
   const setTipo = (t) => { setTipoEstado(t); guardarTipo(t) }
   // Zoom con la rueda y arrastre: qué ruedas se ven ({ n: cuántas, fin: hasta
@@ -210,7 +212,8 @@ export default function LecturaTecnica({
       )}
       <Grafico puntos={puntos} moneda={moneda} promedio={ver.prom ? promedio : null}
         marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo} grande={grande}
-        fibonacci={ver.fib ? actual.fibonacci : null} onZoom={zoom} onMover={mover} />
+        fibonacci={ver.fib ? actual.fibonacci : null} elliott={ver.ell ? actual.elliott : null}
+        onZoom={zoom} onMover={mover} />
       <p className="text-[11.5px] text-ink-2 mt-1">
         {semanales && 'Cada vela es una semana. '}
         {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá con la ruedita o pasá a velas semanales. '}
@@ -237,11 +240,22 @@ export default function LecturaTecnica({
             alternar('fib')
           }} color={COLOR_FIB}>Fibonacci</Chip>
         )}
+        {actual.elliott && (
+          <Chip activo={ver.ell} onClick={() => {
+            // Igual que el Fibonacci: al prenderlo, se acerca a lo contado.
+            const v2 = !ver.ell && ventanaDesde(actual.puntos, fechaDelConteo(actual.elliott), nVista)
+            if (v2) setVentana(v2)
+            alternar('ell')
+          }} color={COLOR_ELLIOTT}>Ondas de Elliott</Chip>
+        )}
       </div>
 
       <div className={`mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2 ${grande ? 'xl:grid-cols-3' : ''}`}>
         {ver.fib && actual.fibonacci && (
           <TarjetaFibonacci fib={actual.fibonacci} precio={(x) => fmtPrecio(x, moneda)} fecha={fechaCorta} />
+        )}
+        {ver.ell && actual.elliott && (
+          <TarjetaElliott elliott={actual.elliott} precio={(x) => fmtPrecio(x, moneda)} fecha={fechaCorta} />
         )}
         {lista.map(t => <Tarjeta key={t.id} t={t} />)}
         {(() => {
@@ -396,7 +410,7 @@ function rotulosDeMeses(puntos) {
   })
 }
 
-function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', grande = false, fibonacci = null, onZoom, onMover }) {
+function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', grande = false, fibonacci = null, elliott = null, onZoom, onMover }) {
   const conVelas = tipo === 'velas'
   const ref = useRef(null)
   const arrastre = useRef(null)
@@ -434,7 +448,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
       if (ver.s50 && p.s50 != null) valores.push(p.s50)
       if (ver.s200 && p.s200 != null) valores.push(p.s200)
     }
-    valores.push(...preciosDeLaCapa(fibonacci, puntos))
+    valores.push(...preciosDeLaCapa(fibonacci, puntos), ...preciosDelConteo(elliott, puntos))
     let lo = Math.min(...valores), hi = Math.max(...valores)
     // Tu precio entra en la escala sólo si está cerca de lo que se ve. Si está
     // muy lejos (ganás 70 %, o perdés 60 %), estirar la escala aplastaría el
@@ -478,7 +492,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
       path: { c, s50: linea('s50'), s200: linea('s200') },
       area: c ? `${c}L${x(puntos.length - 1).toFixed(1)},${H}L0,${H}Z` : '',
     }
-  }, [puntos, promedio, ver.s50, ver.s200, conVelas, fibonacci])
+  }, [puntos, promedio, ver.s50, ver.s200, conVelas, fibonacci, elliott])
 
   const rsiPath = useMemo(() => {
     let d = '', abierto = false
@@ -569,6 +583,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
           </svg>
 
           <CapaFibonacci fib={fibonacci} puntos={puntos} pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
+          <CapaElliott elliott={elliott} puntos={puntos} pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
           {/* Marcas y el punto del mouse van en HTML: un círculo dentro de un
               SVG estirado (preserveAspectRatio=none) se deformaría en óvalo. */}
           {visibles.map((m, k) => (
