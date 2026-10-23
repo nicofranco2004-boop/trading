@@ -37,6 +37,9 @@ de hasta 5 ruedas de cada lado, cortando en el salto siguiente. Qué fue:
     escala vieja entre dos días a la nueva). El gráfico lo saca.
   · `pendiente`: el salto es de los últimos días y todavía no hay 5 ruedas para
     saber si se queda. Se decide la noche que las haya.
+  · `sin_explicar`: una acción argentina (sin par afuera) saltó más de 40% en un
+    día y Yahoo no anotó nada. Puede ser real o un cambio de escala: se muestra
+    en /admin para mirarlo a mano; no lo usan ni el gráfico ni el aviso.
 NO se exige que Nueva York se haya movido poco: el cociente ya descuenta a Nueva
 York, y ese filtro tiraba NFLX el 24/01/2024 (ese día subió 10,7% por su
 balance).
@@ -62,9 +65,10 @@ detectó el cociente, o se ve en el precio). 0 si Yahoo ya la corrigió hacia
 atrás (NVDA). El gráfico empalma sólo los primeros: empalmar uno ya corregido lo
 rompería. La evidencia de cada lote (main.py) lee la serie CRUDA, no la empalmada.
 
-CUÁNDO CORRE. De noche, después de `velas_diarias.correr` (que ya guarda la serie
+CUÁNDO CORRE. De noche, al final de `velas_diarias.correr` (que ya guardó la serie
 en pesos de cada papel que alguien tiene y, de los CEDEARs, también la de Nueva
-York): `correr(conn)`. Lo que quedó fuera de la ventana de 3 años de las velas
+York): `correr(conn, pares)`. Los `pares` (qué papel es un CEDEAR y cuál es su
+acción de afuera) los da `velas_diarias`, nunca el nombre (ver `recalcular`). Lo que quedó fuera de la ventana de 3 años de las velas
 NO se borra: un cambio de 2024 tiene que seguir existiendo en 2028 para el lote
 que se compró antes.
 
@@ -98,8 +102,12 @@ DIAS_ROTOS_MAX = 2
 TOPE_YAHOO_SEG = 180.0
 
 CONFIRMADO, SIN_CONFIRMAR, DUDOSO, DESCARTADO = "confirmado", "sin_confirmar", "dudoso", "descartado"
-RATIO, ESCISION, PRECIO_QUIETO, PRECIO_ROTO, ROTO, PENDIENTE = (
-    "ratio", "escision", "precio_quieto", "precio_roto", "roto", "pendiente")
+RATIO, ESCISION, PRECIO_QUIETO, PRECIO_ROTO, ROTO, PENDIENTE, SIN_EXPLICAR = (
+    "ratio", "escision", "precio_quieto", "precio_roto", "roto", "pendiente", "sin_explicar")
+# Una acción argentina no tiene par afuera: un salto de más que esto en un día,
+# que Yahoo no anota, se guarda como `sin_explicar` para mirarlo a mano en /admin
+# (Agrometal −88 % el 03/11/2023). Ni el gráfico ni el aviso lo usan.
+SALTO_SIN_EXPLICAR = 0.40
 
 
 # ─── La regla, sin base ni red (se prueba sola) ──────────────────────────────
@@ -289,6 +297,14 @@ def clasificar(ba: dict, ny: dict, splits_ba: list, splits_d: list, splits_ny: l
                 filas.append(_fila(d, RATIO, DUDOSO,
                                    "Yahoo lo anota en la especie en dólares y nada lo confirma",
                                    factor=f, **base))
+    if not ny:
+        dias = sorted(d for d in ba if ba[d] and ba[d] > 0)
+        for a, b in zip(dias, dias[1:]):
+            if abs(ba[b] / ba[a] - 1) > SALTO_SIN_EXPLICAR and \
+                    not any(_dias(v, b) <= VENTANA_DIAS for v in vistos):
+                filas.append(_fila(b, SIN_EXPLICAR, DESCARTADO,
+                                   "sin par afuera y Yahoo no lo anota: mirar a mano", "precio",
+                                   medido=ba[a] / ba[b], antes=ba[a], despues=ba[b]))
     filas.sort(key=lambda e: (e["fecha"], e["tipo"]))
     return filas
 
@@ -404,19 +420,31 @@ def papeles_guardados(conn) -> list:
         if r["symbol"][:-3]})
 
 
-def recalcular(conn, papeles: list, *, splits=None, byma=None,
+def recalcular(conn, papeles: list, *, pares: dict = None, splits=None, byma=None,
                tope_seg: float = TOPE_YAHOO_SEG) -> dict:
     """Recalcula la lista de estos papeles con las velas guardadas y lo que
     Yahoo anota. `splits(ticker) -> [(fecha, factor)]` y `byma(papel) ->
     {fecha: cierre}` se inyectan en las pruebas; por defecto, Yahoo con tope y
-    data912 (sólo para los pocos casos que lo necesitan)."""
+    data912 (sólo para los pocos casos que lo necesitan).
+
+    `pares`: {papel: ticker de afuera} de los papeles que SON un CEDEAR ('XLE':
+    'XLE', 'BRKB': 'BRK-B'). Lo sabe `velas_diarias` (por la cartera, la lista
+    de seguimiento y la lista de CEDEARs de BYMA). Sin par, el papel se lee como
+    una acción argentina: sin cociente, sólo con lo que Yahoo anota. NUNCA se
+    arma el par por el nombre: AGRO.BA es Agrometal y AGRO en Nueva York es
+    Adecoagro, y compararlos daba un «cambio de ratio confirmado ×8» el
+    03/11/2023 que el aviso le ofrecía a quien tiene Agrometal (medido el
+    22/10/2026). Tampoco con un ADR del mismo nombre (GGAL): un cambio de la
+    equivalencia del ADR no cambia la cantidad de acciones locales de nadie."""
     from pricing import yahoo as _yahoo
     papeles = sorted({(c or "").upper() for c in papeles if c})
-    series = {c: (_serie(conn, f"{c}.BA"), _serie(conn, c)) for c in papeles}
+    afuera = {(k or "").upper(): (v or "").upper() for k, v in (pares or {}).items() if k and v}
+    series = {c: (_serie(conn, f"{c}.BA"), _serie(conn, afuera[c]) if c in afuera else {})
+              for c in papeles}
     # La especie en dólares ('XD.BA') sólo existe para los CEDEARs: pedirla para
     # una acción argentina es un 404 por papel, todas las noches.
     def _tickers(c):
-        return (f"{c}.BA", f"{c}D.BA", c) if series[c][1] else (f"{c}.BA",)
+        return (f"{c}.BA", f"{c}D.BA", afuera[c]) if series[c][1] else (f"{c}.BA",)
     pedir = [t for c in papeles for t in _tickers(c)]
     if splits is None:
         hechos, sin = _yahoo.varios(_splits_de_yahoo, pedir, tope=tope_seg,
@@ -439,13 +467,13 @@ def recalcular(conn, papeles: list, *, splits=None, byma=None,
             continue
         if any(t in sin for t in _tickers(c)):
             # Yahoo no contestó: se conservan las filas que vinieron de Yahoo.
-            filas = [e for e in clasificar(ba, ny, [], [], []) if e["origen"].startswith("cociente")]
+            filas = [e for e in clasificar(ba, ny, [], [], []) if e["origen"].startswith(("cociente", "precio"))]
             viejas = [dict(r) for r in conn.execute(
                 "SELECT * FROM cambios_ratio WHERE cedear=? AND origen LIKE 'yahoo%'", (c,)).fetchall()]
             filas += [v for v in viejas
                       if not any(_dias(v["fecha"], e["fecha"]) <= VENTANA_DIAS for e in filas)]
         else:
-            sp = (consulta(f"{c}.BA"), consulta(f"{c}D.BA") if ny else [], consulta(c) if ny else [])
+            sp = (consulta(f"{c}.BA"), consulta(f"{c}D.BA") if ny else [], consulta(afuera[c]) if ny else [])
             filas = clasificar(ba, ny, *sp)
             if _le_falta_byma(filas):
                 try:
@@ -461,10 +489,11 @@ def recalcular(conn, papeles: list, *, splits=None, byma=None,
     return res
 
 
-def correr(conn) -> dict:
-    """La corrida nocturna: todo lo que tiene velas en pesos guardadas."""
+def correr(conn, pares: dict = None) -> dict:
+    """La corrida nocturna: todo lo que tiene velas en pesos guardadas. La
+    llama `velas_diarias.correr`, que le pasa los `pares` de cada CEDEAR."""
     t0 = time.monotonic()
-    res = recalcular(conn, papeles_guardados(conn))
+    res = recalcular(conn, papeles_guardados(conn), pares=pares)
     res["seg"] = round(time.monotonic() - t0, 1)
     return res
 

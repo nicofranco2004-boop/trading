@@ -45367,14 +45367,6 @@ def _run_velas_diarias_job():
             _velas_log.info("Velas diarias: %s", velas_diarias.correr(conn))
     except Exception as e:
         _velas_log.error(f"Velas diarias falló: {e}", exc_info=True)
-    # Con las velas ya al día: la lista de cambios de ratio de CEDEAR sale de
-    # ellas (cambios_ratio.py). Aparte, para que un error acá no toque las velas.
-    try:
-        import cambios_ratio
-        with db_abierta() as conn:
-            _velas_log.info("Cambios de ratio: %s", cambios_ratio.correr(conn))
-    except Exception as e:
-        _velas_log.error(f"Cambios de ratio falló: {e}", exc_info=True)
 
 
 def _run_backup_db_job():

@@ -135,7 +135,7 @@ export default function SplitRatioBanner({ onAdjusted }) {
               </p>
             )}
             {active.evidence === 'sin_confirmar' && (
-              <p className="rounded-md border border-amber-500/40 bg-amber-500/[0.07] px-3 py-2 text-xs text-ink-1">
+              <p className="rounded border border-amber-500/40 bg-amber-500/[0.07] px-3 py-2 text-xs text-ink-1">
                 Este cambio lo informa la fuente de precios, pero no lo pudimos confirmar con los
                 precios de esos días.
                 <strong className="text-ink-0"> Confirmá sólo si tu broker te cambió la cantidad

@@ -109,6 +109,11 @@ class VelasDiariasTest(unittest.TestCase):
         self.byma = {}
         self._p = [mock.patch("main._check_rate_limit"),
                    mock.patch("pricing.yahoo._historia", self.yahoo),
+                   # La corrida nocturna también arma la lista de cambios de ratio,
+                   # que le pregunta a Yahoo sus splits y a data912 la historia:
+                   # sin red, la prueba da lo mismo todos los días.
+                   mock.patch("cambios_ratio._splits_de_yahoo", lambda t: []),
+                   mock.patch("cambios_ratio._historia_byma", lambda c: {}),
                    mock.patch("main._fetch_data912_equities", lambda: self.byma)]
         for p in self._p:
             p.start()

@@ -64,6 +64,9 @@ SPLITS_YAHOO = {
 }
 CEDEARS = ["XLE", "AAPL", "NFLX", "TQQQ", "DD", "DDD", "FNMA", "AZN", "SPY", "ETHA"]
 ACCIONES_AR = ["YPFD", "MIRG", "BYMA"]
+# Qué papel es un CEDEAR y cuál es su acción de afuera: de noche lo dice
+# velas_diarias (por la cartera); acá la lista se arma sin cartera.
+PARES = {c: c for c in CEDEARS}
 
 
 def _byma(papel):
@@ -93,7 +96,7 @@ def _armar_lista():
         conn.commit()
         tickers = [t for c in CEDEARS for t in (c, f"{c}.BA")] + [f"{a}.BA" for a in ACCIONES_AR]
         velas_diarias.actualizar(conn, tickers, bajar=_bajar_de_la_fixture, hoy=HOY)
-        return cambios_ratio.recalcular(conn, cambios_ratio.papeles_guardados(conn),
+        return cambios_ratio.recalcular(conn, cambios_ratio.papeles_guardados(conn), pares=PARES,
                                         splits=lambda t: SPLITS_YAHOO.get(t, []), byma=_byma)
     finally:
         conn.close()
@@ -202,7 +205,7 @@ class ListaDeCambiosTest(unittest.TestCase):
                 "INSERT INTO cambios_ratio (cedear, fecha, tipo, factor, estado, origen, motivo) "
                 "VALUES ('DDD', '2026-06-24', 'ratio', NULL, 'descartado', 'manual', 'revisado')")
             conn.commit()
-            cambios_ratio.recalcular(conn, ["DDD"], splits=lambda t: SPLITS_YAHOO.get(t, []), byma=_byma)
+            cambios_ratio.recalcular(conn, ["DDD"], pares=PARES, splits=lambda t: SPLITS_YAHOO.get(t, []), byma=_byma)
             filas = [f for f in cambios_ratio.todos(conn, "DDD") if f["fecha"] == "2026-06-24"]
         finally:
             conn.close()
@@ -217,7 +220,7 @@ class ListaDeCambiosTest(unittest.TestCase):
         try:
             viejo = {"XLE.BA": [("2021-03-01", 2.0)], "XLE": [("2021-03-01", 2.0)],
                      "MIRG.BA": [("2020-01-02", 3.0)]}
-            cambios_ratio.recalcular(conn, ["XLE", "MIRG"], byma=_byma,
+            cambios_ratio.recalcular(conn, ["XLE", "MIRG"], pares=PARES, byma=_byma,
                                      splits=lambda t: SPLITS_YAHOO.get(t, []) + viejo.get(t, []))
             self.assertIn(("2021-03-01", 2.0, True), cambios_ratio.para_lotes(conn, "XLE"))
             self.assertIn(("2020-01-02", 3.0, False), cambios_ratio.para_lotes(conn, "MIRG"))
@@ -230,11 +233,54 @@ class ListaDeCambiosTest(unittest.TestCase):
         try:
             conn.execute("DELETE FROM velas_diarias WHERE symbol IN ('AAPL','AAPL.BA') AND date < '2024-02-01'")
             conn.commit()
-            cambios_ratio.recalcular(conn, ["AAPL"], splits=lambda t: SPLITS_YAHOO.get(t, []), byma=_byma)
+            cambios_ratio.recalcular(conn, ["AAPL"], pares=PARES, splits=lambda t: SPLITS_YAHOO.get(t, []), byma=_byma)
             self.assertEqual(cambios_ratio.confirmados(conn, "AAPL"), [("2024-01-24", 2.0)])
         finally:
             conn.close()
         _armar_lista()
+
+
+class ParNoPorElNombreTest(unittest.TestCase):
+    """AGRO.BA es Agrometal; AGRO en Nueva York es Adecoagro. Emparejarlos por el
+    nombre daba un «cambio de ratio confirmado ×8» que el aviso le ofrecía a quien
+    tiene Agrometal (medido por la auditoría de la ficha, 22/10/2026)."""
+
+    def test_sin_par_no_hay_cociente(self):
+        _armar_lista()
+        conn = main.get_db()
+        try:
+            # Las velas de XLE están las dos ('XLE' y 'XLE.BA'), pero sin par
+            # declarado se leen como una acción argentina: sin cociente.
+            cambios_ratio.recalcular(conn, ["XLE"], pares={}, byma=_byma,
+                                     splits=lambda t: SPLITS_YAHOO.get(t, []))
+            self.assertEqual(cambios_ratio.confirmados(conn, "XLE"), [])
+        finally:
+            conn.close()
+        _armar_lista()
+
+    def test_los_pares_salen_de_saber_que_es_un_cedear(self):
+        from unittest import mock
+        conn = main.get_db()
+        try:
+            uid = conn.execute("INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+                               (f"par-{uuid.uuid4().hex[:8]}@rendi.test", "x")).lastrowid
+            conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)", (uid, "IOL", "ARS"))
+            for asset, tipo in (("AGRO", "STOCK"), ("XLE", "CEDEAR")):
+                conn.execute(
+                    """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
+                           invested, entry_date, asset_type, currency)
+                       VALUES (?,?,?,0,100,1,100,'2026-01-02',?,'ARS')""", (uid, "IOL", asset, tipo))
+            conn.execute("INSERT INTO watchlist (user_id, symbol, asset_type) VALUES (?,?,?)",
+                         (uid, "AGRO", "STOCK"))      # Adecoagro, en Nueva York
+            conn.commit()
+            with mock.patch("main._fetch_data912_equities", lambda: {}):
+                tickers, pares = velas_diarias._seguimiento(conn)
+        finally:
+            conn.close()
+        self.assertIn("AGRO", tickers)
+        self.assertIn("AGRO.BA", tickers)
+        self.assertEqual(pares.get("XLE.BA"), "XLE")
+        self.assertNotIn("AGRO.BA", pares)
 
 
 class _ConUsuario(unittest.TestCase):

@@ -128,7 +128,18 @@ def _es_bono(asset: str) -> bool:
 
 def simbolos_a_seguir(conn) -> list:
     """Todos los tickers de Yahoo que hacen falta: lo que alguien tiene en
-    cartera y lo que alguien sigue en su watchlist.
+    cartera y lo que alguien sigue en su watchlist."""
+    return sorted(_seguimiento(conn)[0])
+
+
+def _seguimiento(conn):
+    """(tickers, pares): los tickers de Yahoo a seguir y, de cada CEDEAR, su
+    par {'XLE.BA': 'XLE'} (el CEDEAR en pesos y la acción de afuera), que es
+    contra lo que la lista de cambios de ratio (`cambios_ratio`) compara la
+    serie en pesos.
+
+    El par sale de saber que ES un CEDEAR (`_yahoo_de`), no de que dos tickers
+    se llamen igual: AGRO.BA es Agrometal y AGRO en Nueva York es Adecoagro.
 
     "En pesos" se decide con la MISMA regla que la valuación
     (`snapshots_job.position_price_key`): si la posición se valúa por su '.BA',
@@ -138,7 +149,12 @@ def simbolos_a_seguir(conn) -> list:
     from snapshots_job import _broker_name_sets, position_price_key
 
     cedears = _cedears_de_byma()
-    tickers = set()
+    tickers, pares = set(), {}
+
+    def _sumar(ys):
+        tickers.update(ys)
+        if len(ys) == 2:   # la forma de un CEDEAR: [afuera, pesos]
+            pares[ys[1]] = ys[0]
     brokers = [dict(r) for r in conn.execute(
         "SELECT id, user_id, name, currency, parent_broker_id FROM brokers").fetchall()]
     por_usuario = {}
@@ -154,13 +170,15 @@ def simbolos_a_seguir(conn) -> list:
         ars, ar_usd = sets.get(p['user_id'], (set(), set()))
         clave = position_price_key(p, ars, ar_usd)
         en_pesos = str(clave).upper().endswith('.BA')
-        tickers.update(_yahoo_de(p['asset'], p.get('asset_type'), en_pesos, yahoo_de_cripto, cedears))
+        _sumar(_yahoo_de(p['asset'], p.get('asset_type'), en_pesos, yahoo_de_cripto, cedears))
 
     for r in conn.execute("SELECT symbol, asset_type FROM watchlist").fetchall():
         sym = (r['symbol'] or '').upper()
-        tickers.update(_yahoo_de(sym, r['asset_type'], sym.endswith('.BA'), yahoo_de_cripto, cedears))
+        _sumar(_yahoo_de(sym, r['asset_type'], sym.endswith('.BA'), yahoo_de_cripto, cedears))
 
-    return sorted(t for t in tickers if t)
+    tickers.discard('')
+    tickers.discard(None)
+    return tickers, pares
 
 
 # ─── Bajar y guardar ─────────────────────────────────────────────────────────
@@ -349,8 +367,20 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
 
 
 def correr(conn) -> dict:
-    """La corrida nocturna completa: qué seguir + ponerlo al día."""
-    return actualizar(conn, simbolos_a_seguir(conn))
+    """La corrida nocturna completa: qué seguir, ponerlo al día y, con las velas
+    ya guardadas, la lista única de cambios de ratio (`cambios_ratio`), a la que
+    se le pasa de cada CEDEAR cuál es su acción de afuera. Un error de la lista
+    no toca las velas."""
+    tickers, pares = _seguimiento(conn)
+    res = actualizar(conn, sorted(tickers))
+    try:
+        import cambios_ratio
+        res["cambios_ratio"] = cambios_ratio.correr(
+            conn, {ba[:-3]: afuera for ba, afuera in pares.items()})
+    except Exception as ex:
+        log.error("velas: la lista de cambios de ratio falló: %r", ex, exc_info=True)
+        res["cambios_ratio"] = {"error": repr(ex)}
+    return res
 
 
 # ─── Leer ────────────────────────────────────────────────────────────────────
