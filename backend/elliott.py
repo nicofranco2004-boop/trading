@@ -47,6 +47,15 @@ pasado el nivel que invalida). Un conteo cuyo último punto quedó lejos (más
 tiempo desde ahí que lo que duró todo lo contado, o más de un año) ya no
 describe el presente y no se ofrece.
 
+LA ZONA DONDE "SUELE TERMINAR" LA ONDA EN CURSO SE PROBÓ Y SE SACÓ (23/10).
+Con las proporciones de Fibonacci de cada onda, medida en la historia día por
+día sin mirar el futuro: 42 activos × 3 años, 40 % de aciertos contra 68 % de
+una franja del mismo ancho puesta delante del precio; la sesión de verificación
+(2 años, 70 activos, `audit/09_ficha_tecnica/resultados/tabla_rebobinado.md` en
+`claude/zen-lewin-4c71cc`) dio 4,1 de 10 contra 7,2 de una franja al azar.
+Peor que el azar en todas las ondas: Nico decidió sacarla. Las proporciones
+siguen sirviendo para la confianza (lo que YA pasó), no para marcar precios.
+
 NO MIRA EL FUTURO. Un pico o pozo entra recién cuando se confirma (N ruedas
 después), y el conteo de un día usa sólo las velas hasta ese día.
 
@@ -263,7 +272,7 @@ def _impulso(pts: list, vista: _Vista):
         inval, por = P[1], "final_1"              # la 4 se metería en el terreno de la 1
     else:
         inval, por = P[5], "final_5"              # la 5 no habría terminado
-    # El OTRO nivel que también lo corta, del otro lado (ver `_limites`):
+    # El OTRO nivel que también lo corta, del otro lado (la tarjeta lo dice):
     #   · en la 5 con una 3 más corta que la 1: la 5 no puede pasar el largo de la 3;
     #   · después de la 5: si devuelve todo el impulso, no lo era.
     otro = None
@@ -518,111 +527,10 @@ def _dice_otra_cosa(a: dict, b: dict) -> bool:
     return True
 
 
-def zona(c: dict):
-    """Dónde suele terminar la onda EN CURSO según las mismas proporciones de
-    las pautas (en la vista: dada vuelta si es una bajada). (desde, hasta) o
-    None si no hay una onda en curso que medir (5 ondas terminadas sin A
-    todavía, o la A-B-C terminada).
-      · en la 3: desde el final de la 2, entre 1,38 y 1,9 veces la 1;
-      · en la 4: desde el final de la 3, devolviendo entre 24 % y 50 % de la 3;
-      · en la 5: desde el final de la 4, entre 0,75 y 1,33 veces la 1;
-      · en la B: desde el final de la A, devolviendo entre 40 % y 79 % de la A;
-      · en la C: desde el final de la B, entre 0,75 y 1,33 veces la A.
-    Cuánto acierta, medido con la historia: `ACIERTO_ZONA`."""
-    z = _zona_de_libro(c)
-    if z is None:
-        return None
-    # Recortada por los niveles que cortan el conteo (`_limites`) y por la regla
-    # del final de la onda: una zona que cae donde el propio conteo ya no vale
-    # no es una zona (auditoría 23/10: en la 4, entera debajo del final de la 1).
-    piso, techo = _limites(c)
-    lo, hi = max(z[0], piso), min(z[1], techo)
-    return (lo, hi) if lo < hi else None
-
-
-def _limites(c: dict):
-    """(piso, techo) en la vista: entre esos precios el conteo vale, contando
-    el nivel que invalida, el otro límite y la regla del final de la onda en
-    curso (la 3 pasa la 1, la 4 no se mete en la 1, la C pasa la A)."""
-    piso, techo = -math.inf, math.inf
-    for precio, lado in [(c["invalida"], c["invalida_lado"])] + ([(c["otro"][0], c["otro"][2])] if c.get("otro") else []):
-        if lado == "debajo":
-            piso = max(piso, precio)
-        else:
-            techo = min(techo, precio)
-    P = [p["precio"] for p in c["pts"]]
-    if c["ahora"] == "onda_3":
-        piso = max(piso, P[1])
-    if c["ahora"] == "onda_C":
-        k = 5 if c["tipo"] == "impulso_y_correccion" else 0
-        techo = min(techo, P[k + 1])
-    return piso, techo
-
-
-def _zona_de_libro(c: dict):
-    """La franja de la pauta de la onda en curso, sin recortar."""
-    P = [p["precio"] for p in c["pts"]]
-    a = c["ahora"]
-    if a == "onda_3":
-        w1 = P[1] - P[0]
-        return P[2] + P_ONDA3[0] * w1, P[2] + P_ONDA3[1] * w1
-    if a == "onda_4":
-        w3 = P[3] - P[2]
-        return P[3] - P_ONDA4[1] * w3, P[3] - P_ONDA4[0] * w3
-    if a == "onda_5":
-        w1 = P[1] - P[0]
-        return P[4] + P_ONDA5[0] * w1, P[4] + P_ONDA5[1] * w1
-    if a in ("onda_B", "onda_C"):
-        # El arranque de la A: el final de la 5 si va pegada, si no el "0".
-        k = 5 if c["tipo"] == "impulso_y_correccion" else 0
-        ini, fa = P[k], P[k + 1]
-        largo_a = ini - fa
-        if a == "onda_B":
-            return fa + P_ONDA_B[0] * largo_a, fa + P_ONDA_B[1] * largo_a
-        b = P[k + 2]
-        return b - P_ONDA_C[1] * largo_a, b - P_ONDA_C[0] * largo_a
-    return None
-
-
-# Cuántas veces, en la historia, la onda en curso terminó DENTRO de su zona
-# (`zona`), y cuántas una franja "tonta" del mismo ancho puesta justo delante
-# del precio de ese día. {ahora: (aciertos, ondas terminadas, aciertos de la tonta)}.
-# La pantalla lo dice al lado de la zona: sin este número la zona no se muestra.
-#
-# Medido el 2026-10-23 (después de la auditoría: zona recortada por los
-# límites del conteo, los dos niveles que lo cortan, sin "final más lejano")
-# con `scripts/medir_zonas_elliott.py` sobre 3 años de velas de 42 activos (23
-# de EE.UU., 2 CEDEAR en pesos, 13 acciones argentinas en pesos, 4 cripto), día
-# por día sin mirar el futuro: 2.381 conteos con zona, 1.212 ondas que
-# terminaron, 852 conteos que se invalidaron antes (más de 1 de 3).
-# Fibonacci 40 % contra 68 % de la tonta (EE.UU. 40/70, BYMA 39/69, cripto
-# 43/60). En ninguna onda ni grupo le gana: la zona NO adivina mejor que
-# "termina cerca de donde está". La auditoría lo confirmó con recorridos al
-# azar, sin ninguna estructura: da lo mismo (42 % contra 72 %). Se muestra
-# igual porque Nico la quiso ver (23/10), con estos números al lado, y queda
-# para la auditoría de dos semanas.
-ACIERTO_ZONA = {
-    "onda_3": (48, 250, 134),
-    "onda_4": (134, 218, 187),
-    "onda_5": (131, 388, 247),
-    "onda_B": (69, 141, 119),
-    "onda_C": (108, 215, 143),
-}
-ACTIVOS_MEDIDOS = 42
-
-
 def _para_afuera(c: dict, velas: list) -> dict:
     s = -1 if c["espejo"] else 1
     tipo_real = lambda t: ({"pico": "pozo", "pozo": "pico"}[t] if c["espejo"] else t)
-    z = zona(c)
-    medido = ACIERTO_ZONA.get(c["ahora"])
     return {
-        # La zona donde suele terminar la onda en curso, en precios de verdad
-        # (de menor a mayor), con cuántas veces acertó en la historia medida.
-        "zona": ({"desde": _r(min(s * z[0], s * z[1])), "hasta": _r(max(s * z[0], s * z[1])),
-                  "aciertos": medido[0], "casos": medido[1], "tonta": medido[2],
-                  "activos": ACTIVOS_MEDIDOS}
-                 if z and medido else None),
         "tipo": c["tipo"],
         "dir": c["dir"],
         "ondas": [{"onda": o, "fecha": velas[p["i"]]["date"], "precio": _r(s * p["precio"]),

@@ -10,7 +10,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic } from '../../testing/navegadorMinimo'
-import { tarjetaElliott, dondeHoy, veredictoElliott, textoInvalida, textoZona } from '../../utils/elliott'
+import { tarjetaElliott, dondeHoy, veredictoElliott, textoInvalida } from '../../utils/elliott'
 
 const puntos = Array.from({ length: 252 }, (_, i) => {
   const d = new Date(Date.UTC(2025, 9, 1) + i * 86400000).toISOString().slice(0, 10)
@@ -159,14 +159,11 @@ describe('las palabras de cada estado', () => {
     const ondas = [...PRINCIPAL.ondas, onda('5', 220, 150, 'pico'), onda('A', 230, 130, 'pozo'), onda('B', 240, 140, 'pico'), onda('C', 250, 120, 'pozo')]
     for (const ahora of Object.keys(por)) {
       for (const tipo of ['impulso_y_correccion', 'correccion']) {
-        const c = { ...PRINCIPAL, tipo, ahora, ondas, invalida: { precio: 110, lado: 'debajo', por: por[ahora], otro: otros[ahora] || null },
-          zona: ['onda_3', 'onda_4', 'onda_5', 'onda_B', 'onda_C'].includes(ahora) ? { desde: 1, hasta: 2, aciertos: 1, casos: 3, tonta: 2, activos: 42 } : null }
+        const c = { ...PRINCIPAL, tipo, ahora, ondas, invalida: { precio: 110, lado: 'debajo', por: por[ahora], otro: otros[ahora] || null } }
         const t = tarjetaElliott({ disponible: true, principal: c, alternativo: c }, precio, fecha)
         for (const parte of [t.veredicto, t.texto, t.invalida, t.alternativo]) {
           expect(parte, `${ahora}/${tipo}: ${parte}`).not.toMatch(CERTEZA)
         }
-        // La zona habla de la medición (pasado) y de lo que podría pasar.
-        if (t.zona) expect(t.zona).toContain('podría terminar entre')
       }
     }
   })
@@ -180,55 +177,26 @@ describe('las palabras de cada estado', () => {
   })
 })
 
-describe('la zona donde suele terminar la onda en curso', () => {
-  const precio = (x) => `$ ${x}`
-  const conZona = (z) => ({ ...PRINCIPAL, zona: { desde: 150, hasta: 160, activos: 42, ...z } })
+describe('la zona de fin de onda se sacó (23/10: acertaba menos que una franja al azar)', () => {
+  const precio = (x) => `US$ ${x}`
+  // Un servidor viejo podría todavía mandarla: la pantalla no la dibuja ni la dice.
+  const conZona = { ...ELL, principal: { ...PRINCIPAL, zona: { desde: 150, hasta: 160, aciertos: 30, casos: 60, tonta: 20, activos: 42 } } }
 
-  it('dice cuánto acertó y contra qué', () => {
-    const t = textoZona(conZona({ aciertos: 30, casos: 60, tonta: 20 }), precio)
-    expect(t).toContain('Si la onda 5 siguiera las proporciones habituales de Fibonacci, podría terminar entre $ 150 y $ 160')
-    expect(t).toContain('de 60 veces que una onda así terminó, terminó dentro de su franja 30 (50 %)')
-    expect(t).toContain('acertó 20 (33 %)')
-    expect(t).not.toContain('no adivinó mejor')
-  })
-
-  it('si no le gana a una franja cualquiera, lo dice', () => {
-    const t = textoZona(conZona({ aciertos: 10, casos: 60, tonta: 40 }), precio)
-    expect(t).toContain('no adivinó mejor que una cualquiera puesta delante del precio')
-  })
-
-  it('sin medición no hay zona', () => {
-    expect(textoZona(PRINCIPAL, precio)).toBeNull()
-    expect(textoZona(conZona({ aciertos: 0, casos: 0, tonta: 0 }), precio)).toBeNull()
-  })
-
-  it('montada: la franja con su número y la frase en la tarjeta', async () => {
-    respuesta = DATOS({ ...ELL, principal: conZona({ aciertos: 30, casos: 60, tonta: 20 }) })
+  it('ni en la tarjeta ni en el gráfico, aunque llegue', async () => {
+    const t = tarjetaElliott(conZona, precio, (d) => d)
+    expect(t.zona).toBeUndefined()
+    expect(Object.values(t).join(' ')).not.toMatch(/terminar acá|podría terminar entre|franja/)
+    respuesta = DATOS(conZona)
     await dibujar()
-    const t = await tocar('Ondas de Elliott')
-    expect(t).toContain('Podría terminar acá · acertó 50 %')
-    expect(t).toContain('terminó dentro de su franja 30 (50 %)')
+    const vis = await tocar('Ondas de Elliott')
+    expect(vis).toContain('Un conteo posible: onda 5')            // el conteo sigue
+    expect(vis).toContain('Dejaría de valer · US$ 120,00')
+    expect(vis).not.toMatch(/terminar acá|acertó/)
   })
-})
 
-describe('con zoom o arrastre', () => {
-  it('la zona no se dibuja sobre velas viejas ni estira la escala', async () => {
-    const { default: Capa, preciosDelConteo, zonaVisible } = await import('./CapaElliott')
-    const conZona = { ...ELL, principal: { ...PRINCIPAL, zona: { desde: 150, hasta: 160, aciertos: 1, casos: 3, tonta: 2, activos: 42 } } }
-    const capa = (vista) => h(Capa, {
-      elliott: conZona, puntos: vista, pctX: (i) => (i / (vista.length - 1)) * 100, pctY: (v) => 100 - (v - 100), precio: (x) => `US$ ${x}`,
-    })
-    // Ventana entre el punto 2 (rueda 150) y el 4 (rueda 200): el último punto
-    // contado todavía no llegó.
-    const pasado = puntos.slice(130, 170)
-    expect(zonaVisible(conZona.principal, pasado)).toBe(false)
-    expect(preciosDelConteo(conZona, pasado)).not.toContain(160)
-    montado = await montar(capa(pasado))
-    expect(texto(montado.contenedor)).not.toContain('Podría terminar acá')
-    await montado.desmontar()
-    // Con el último punto a la vista, sí.
-    expect(zonaVisible(conZona.principal, puntos)).toBe(true)
-    montado = await montar(capa(puntos))
-    expect(texto(montado.contenedor)).toContain('Podría terminar acá · acertó 33 %')
+  it('tampoco estira la escala del gráfico', async () => {
+    const { preciosDelConteo } = await import('./CapaElliott')
+    expect(preciosDelConteo(conZona, puntos)).not.toContain(160)
+    expect(preciosDelConteo(conZona, puntos)).toContain(120)
   })
 })

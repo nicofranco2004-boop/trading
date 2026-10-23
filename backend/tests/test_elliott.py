@@ -132,25 +132,17 @@ class ImpulsoTest(unittest.TestCase):
         c = _conteo(LIBRO + [139, 146, 132, 136])["principal"]
         self.assertEqual((c["ahora"], _puntos(c)[-1]), ("fin_abc", ("C", 132)))
 
-    def test_la_zona_de_cada_onda_en_curso(self):
-        # En la 3: desde el final de la 2 (108), entre 1,38 y 1,9 veces la 1 (20).
-        c = _conteo([115, 100, 120, 108, 125])["principal"]
-        w1 = 120 * 1.003 - 100 * 0.997
-        self.assertAlmostEqual(c["zona"]["desde"], 108 * 0.997 + 1.38 * w1, places=2)
-        self.assertAlmostEqual(c["zona"]["hasta"], 108 * 0.997 + 1.90 * w1, places=2)
-        self.assertEqual((c["zona"]["aciertos"], c["zona"]["casos"], c["zona"]["tonta"]),
-                         elliott.ACIERTO_ZONA["onda_3"])
-        # En la 4: devolviendo entre 24 % y 50 % de la 3, desde su final.
-        c = _conteo(LIBRO[:-2] + [131])["principal"]
-        w3 = 140 * 1.003 - 108 * 0.997
-        self.assertAlmostEqual(c["zona"]["desde"], 140 * 1.003 - 0.50 * w3, places=2)
-        self.assertAlmostEqual(c["zona"]["hasta"], 140 * 1.003 - 0.24 * w3, places=2)
-        # Bajada: la zona en precios de verdad, de menor a mayor.
-        c = _conteo([250 - x for x in [115, 100, 120, 108, 125]])["principal"]
-        self.assertLess(c["zona"]["desde"], c["zona"]["hasta"])
-        self.assertLess(c["zona"]["hasta"], 250 - 108)
-        # Terminado (sin onda en curso que medir): sin zona.
-        self.assertIsNone(_conteo(LIBRO + [141])["principal"]["zona"])
+    def test_la_zona_de_fin_de_onda_ya_no_existe(self):
+        # Se probó y se sacó (23/10: 40 % contra 68 % de una franja al azar;
+        # ver el docstring de elliott.py). Ni se calcula ni viaja.
+        self.assertFalse(hasattr(elliott, "zona"))
+        self.assertFalse(hasattr(elliott, "ACIERTO_ZONA"))
+        for vertices in ([115, 100, 120, 108, 125], LIBRO[:-2] + [131], LIBRO[:-1] + [141],
+                         LIBRO + [139, 144], LIBRO + [139, 146, 142], [70, 105, 95, 120, 100, 110, 104]):
+            r = _conteo(vertices)
+            for c in (r["principal"], r["alternativo"]):
+                if c:
+                    self.assertNotIn("zona", c, (vertices, c["ahora"]))
 
     def test_bajada_es_la_misma_figura_dada_vuelta(self):
         c = _conteo([250 - x for x in LIBRO + [141]])["principal"]
@@ -253,39 +245,14 @@ class CorreccionSueltaTest(unittest.TestCase):
 class AuditoriaTest(unittest.TestCase):
     """Lo que encontró la auditoría independiente del 23/10, un caso por hallazgo."""
 
-    def test_la_zona_nunca_cae_donde_el_conteo_ya_no_vale(self):
-        # En la 4 la zona bajaba hasta el 50 % de la 3, debajo del final de la 1
-        # (justo el nivel que la invalida). Ahora se recorta o no hay zona.
-        lista = elliott.candidatos(_velas(_dibujo([115, 100, 120, 108, 124, 122])))
-        en4 = [c for c in lista if c["ahora"] == "onda_4"]
-        self.assertTrue(en4, "la figura tiene una onda 4 en curso")
-        for c in en4:
-            z = elliott.zona(c)
-            if z:
-                self.assertGreaterEqual(z[0], c["pts"][1]["precio"], "la zona de la 4 no baja del final de la 1")
-        # Y en general, en recorridos al azar: toda zona queda entre los límites del conteo.
-        for semilla in (5, 17):
-            random.seed(semilla)
-            x, v = 100.0, []
-            for i in range(300):
-                x *= 1 + random.gauss(0, 0.02)
-                v.append({"date": _fecha_iso(i), "open": x, "high": x * 1.01, "low": x * 0.99, "close": x})
-            for corte in range(80, 300, 11):
-                for c in elliott.candidatos(v[:corte]):
-                    z = elliott.zona(c)
-                    if z:
-                        piso, techo = elliott._limites(c)
-                        self.assertTrue(piso <= z[0] < z[1] <= techo, (corte, c["ahora"], z, piso, techo))
-
     def test_en_la_5_con_la_3_corta_hay_un_techo_y_se_dice(self):
-        # 1 = 30, 3 = 22: la 5 no puede medir más que la 3. Ese techo ahora sale
-        # como segundo nivel y la zona no lo pasa.
+        # 1 = 30, 3 = 22: la 5 no puede medir más que la 3. Ese techo sale como
+        # segundo nivel (antes el conteo moría ahí sin decirlo).
         c = _conteo([115, 100, 130, 118, 140, 133, 150])["principal"]
         self.assertEqual(c["ahora"], "onda_5")
         otro = c["invalida"]["otro"]
         self.assertEqual((otro["lado"], otro["por"]), ("encima", "tope_3_corta"))
-        if c["zona"]:
-            self.assertLessEqual(c["zona"]["hasta"], otro["precio"])
+        self.assertAlmostEqual(otro["precio"], c["ondas"][4]["precio"] + (c["ondas"][3]["precio"] - c["ondas"][2]["precio"]), places=2)
 
     def test_despues_de_la_5_tambien_cae_si_devuelve_todo(self):
         c = _conteo(LIBRO + [141])["principal"]
@@ -436,6 +403,8 @@ class ElliottFichaTest(unittest.TestCase):
         c = e["principal"]
         self.assertEqual((c["tipo"], c["ahora"], c["confianza"]), ("impulso", "correccion", "alta"))
         self.assertEqual([round(o["precio"]) for o in c["ondas"]], [100, 120, 108, 140, 128, 150])
+        # La zona de fin de onda se sacó: no viaja en /api/tecnico.
+        self.assertNotIn("zona", r.text)
         # Las fechas son las del gráfico (las mismas ruedas que `puntos`).
         fechas = {p["d"] for p in r.json()["puntos"]}
         self.assertTrue(all(o["fecha"] in fechas for o in c["ondas"]))
