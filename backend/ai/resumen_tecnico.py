@@ -95,6 +95,11 @@ _PROHIBIDAS = [
     r"esper(ar|á)", r"va a (subir|bajar|seguir|caer|romper)", r"subir[áa]", r"bajar[áa]", r"deber[íi]as?",
     r"yo", r"mirar[íi]as?", r"(compr|vend|esper|entr|invert)[aei]r[íi]as?", r"saldr[íi]as?",
     r"(te )?conviene", r"sugi?er\w*", r"aconsej\w*", r"te diría",
+    # Certezas sobre lo que viene (Nico, 23/10: «ahí se termina la bajada» sonaba
+    # seguro). Lo que se mira va como posibilidad: «podría ser una señal de…».
+    # El pasado («terminó el 6 de octubre») es un hecho y no se toca.
+    r"se (termin|cort|confirm)(a|an|ar[íi]an?|ar[áa]n?)", r"(termin|confirm)ar[íi]an?",
+    r"d(a|ar[íi]a) por terminad[ao]", r"sin duda", r"seguro que", r"seguramente", r"con seguridad",
 ]
 _RE_PROHIBIDAS = re.compile(r"\b(" + "|".join(_PROHIBIDAS) + r")\b", re.IGNORECASE)
 _RE_NUMERO = re.compile(r"\d+(?:[.,]\d+)*")

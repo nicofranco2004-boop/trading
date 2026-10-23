@@ -242,13 +242,22 @@ def hechos(nombre, r):
                 txt += (f"; de esa {'bajada' if e['dir'] == 'bajada' else 'suba'} ya "
                         f"{'recuperó' if e['dir'] == 'bajada' else 'perdió'} {proporcion(q2)}")
         movs["el_movimiento_de_ahora"] = txt
+        # Lo que se mira, dicho como POSIBILIDAD y no como certeza (Nico, 23/10:
+        # «ahí se termina la bajada» sonaba seguro). La misma forma que la
+        # tarjeta de Fibonacci de la ficha (utils/fibonacci.js), para que hablen
+        # igual. Antes la clave se llamaba «que_terminaria_…» y el modelo lo
+        # repetía: el nombre de la clave también es parte del pedido. Y sin «el
+        # máximo que tocó el…, el último pico de esta bajada»: decía dos veces lo
+        # mismo y 4 de 11 textos pasaban de 120 palabras.
         s = e.get("se_rompe_si_cierra") or {}
         if "encima_de" in s:
-            movs["que_terminaria_la_bajada_de_ahora"] = (f"que cierre arriba de {plata(s['encima_de'], mon)}, "
-                                                         f"el máximo que tocó el {fecha(s['fecha'], hoy)}, el último pico de esta bajada")
+            movs["lo_que_se_mira"] = (f"si cierra arriba de {plata(s['encima_de'], mon)}, el último pico, del "
+                                      f"{fecha(s['fecha'], hoy)}: si pasa, podría ser una señal de que la bajada "
+                                      f"está perdiendo fuerza")
         if "debajo_de" in s:
-            movs["que_terminaria_la_suba_de_ahora"] = (f"que cierre abajo de {plata(s['debajo_de'], mon)}, "
-                                                       f"el mínimo que tocó el {fecha(s['fecha'], hoy)}, el último pozo de esta suba")
+            movs["lo_que_se_mira"] = (f"si cierra abajo de {plata(s['debajo_de'], mon)}, el último pozo, del "
+                                      f"{fecha(s['fecha'], hoy)}: si pasa, podría ser una señal de que la suba "
+                                      f"está perdiendo fuerza")
     # (Con menos de un año de historia el titular sale de los tres meses: `a1` es
     # None y compararlo con 0 tiraba el pedido entero, 23/10.)
     # v14: el titular trae armado qué está haciendo AHORA si va en otra dirección que el
