@@ -109,6 +109,11 @@ class VelasDiariasTest(unittest.TestCase):
         self.byma = {}
         self._p = [mock.patch("main._check_rate_limit"),
                    mock.patch("pricing.yahoo._historia", self.yahoo),
+                   # La corrida nocturna también arma la lista de cambios de ratio,
+                   # que le pregunta a Yahoo sus splits y a data912 la historia:
+                   # sin red, la prueba da lo mismo todos los días.
+                   mock.patch("cambios_ratio._splits_de_yahoo", lambda t: []),
+                   mock.patch("cambios_ratio._historia_byma", lambda c: {}),
                    mock.patch("main._fetch_data912_equities", lambda: self.byma)]
         for p in self._p:
             p.start()
@@ -301,7 +306,7 @@ class VelasDiariasTest(unittest.TestCase):
         self.assertIsNone(velas[0]["high"], "un máximo de 0 arruinaría el máximo del año")
         self.assertEqual(velas[0]["close"], 6100.0)
 
-    def test_sin_datos_queda_anotado_y_va_primero_la_noche_siguiente(self):
+    def test_sin_datos_queda_anotado_y_se_reintenta_al_final_de_la_fila(self):
         self._broker("Schwab", "USD")
         self._posicion("Schwab", "AAA", "STOCK")
         self._posicion("Schwab", "ZZZ", "STOCK")
@@ -312,8 +317,10 @@ class VelasDiariasTest(unittest.TestCase):
         self.yahoo.precios["AAA"] = lambda d: 5.0
         self.yahoo.pedidos.clear()
         main._run_velas_diarias_job()
-        self.assertEqual(self.yahoo.pedidos[0], ("AAA", "3y", False),
-                         "lo que nunca se bajó va primero y con la historia entera")
+        # Se reintenta con la historia entera, pero DESPUÉS de los que andan: un
+        # símbolo que nunca trae datos no puede comerse la noche de los demás
+        # (antes iba primero siempre; auditoría de seguridad 22/10).
+        self.assertEqual(self.yahoo.pedidos, [("ZZZ", "1mo", False), ("AAA", "3y", False)])
         self.assertEqual(len(self._velas("AAA")), 760)
 
     def test_se_borra_lo_de_mas_de_3_anios(self):

@@ -404,6 +404,7 @@ export default function Admin() {
       <AlcanceAuditoriaPanel toast={toast} />
       <RepairInteresPfPanel toast={toast} />
       <RepairCaja1415Panel toast={toast} />
+      <VelasPanel toast={toast} />
       <FciRefreshPanel toast={toast} />
       <MtmAuditPanel toast={toast} />
       <FxMigratePanel toast={toast} />
@@ -2341,6 +2342,127 @@ function MtmBackfillPanel({ toast }) {
 // usuario reporta "falta el mío"— hay que esperar al cron o dispararlo a mano.
 // El endpoint existía pero es POST-only: sin botón, en la práctica había que
 // esperar 24h para que el usuario que reportó pudiera cargar su fondo.
+// ─── VelasPanel — el guardado nocturno de precios (análisis técnico) ─────────
+// La lista única de cambios de ratio (backend/cambios_ratio.py). `factor` = por
+// cuánto se multiplicó la cantidad = precio de antes ÷ precio de después: 2 =
+// cada CEDEAR viejo son 2 nuevos ("se partió en 2"); 1/3 = tres viejos son uno.
+function ratioTxt(f) {
+  if (!f) return '?'
+  const n = (x) => x.toLocaleString('es-AR', { maximumFractionDigits: 2 })
+  return f >= 1 ? `se partió en ${n(f)}` : `se juntaron ${n(1 / f)} en 1`
+}
+const saltoTxt = (f) => {
+  const p = 1 / f - 1
+  return `${p >= 0 ? '+' : '−'}${Math.round(Math.abs(p) * 100)} % en un día`
+}
+const ESTADO_RATIO = { confirmado: '', sin_confirmar: ' · se pregunta', dudoso: ' · dudoso, no se ofrece' }
+
+// Lee GET /api/admin/velas: cuántos activos tienen precios guardados, desde y
+// hasta cuándo, cuándo corrió por última vez y cuáles fallaron. El botón corre
+// el guardado ahora (la primera vez baja 3 años de cada activo: unos minutos).
+function VelasPanel({ toast }) {
+  const [e, setE] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  async function cargar() {
+    try { setE(await api.get('/admin/velas')) } catch (ex) { toast.push('Error: ' + ex.message, { type: 'error' }) }
+  }
+  useEffect(() => { cargar() /* eslint-disable-next-line */ }, [])
+
+  async function correr() {
+    setBusy(true)
+    try {
+      const r = await api.post('/admin/velas/correr')
+      toast.push(r.status === 'already_running' ? 'Ya estaba corriendo' : 'Arrancó: tarda unos minutos', { type: 'success' })
+      setTimeout(cargar, 3000)
+    } catch (ex) {
+      toast.push('Error: ' + ex.message, { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  const sano = e && e.activos > 0 && e.fallados.length === 0 && e.atrasados.length === 0 && !e.sin_explicar?.length
+  return (
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <RefreshCw size={16} className="text-violet-500" />
+          <h2 className="font-semibold text-ink-0">Precios guardados (análisis técnico)</h2>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={cargar} className="text-xs px-3 py-1.5 rounded border border-line text-ink-1 hover:bg-bg-3">Actualizar</button>
+          <button onClick={correr} disabled={busy || e?.corriendo}
+            className="text-xs px-3 py-1.5 rounded bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50">
+            {e?.corriendo ? 'Corriendo…' : busy ? 'Arrancando…' : 'Correr ahora'}
+          </button>
+        </div>
+      </div>
+      {!e ? <p className="text-xs text-ink-3">Cargando…</p> : (
+        <>
+          <p className={`text-sm font-medium ${e.activos === 0 ? 'text-rendi-warn' : sano ? 'text-rendi-pos' : 'text-rendi-warn'}`}>
+            {e.activos === 0
+              ? 'Todavía no se guardó nada: corre esta noche al final de la foto diaria, o tocá «Correr ahora».'
+              : sano ? 'Todo al día.' : 'Hay activos con problemas (abajo).'}
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            <Row label="Activos seguidos"><span className="tabular">{e.activos} ({e.ok} bien)</span></Row>
+            <Row label="Velas guardadas"><span className="tabular">{e.filas.toLocaleString('es-AR')}</span></Row>
+            <Row label="Desde / hasta"><span className="tabular">{e.desde || '—'} → {e.hasta || '—'}</span></Row>
+            <Row label="Última corrida (UTC)"><span className="tabular">{e.ultima_corrida || '—'}</span></Row>
+          </div>
+          {e.sin_historia > 0 && (
+            <p className="text-xs text-ink-2">{e.sin_historia} todavía sin su historia completa (se bajan primero en la próxima corrida).</p>
+          )}
+          {e.fallados.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Yahoo no devolvió datos ({e.fallados.length})</div>
+              <div className="text-ink-3 leading-relaxed">{e.fallados.map(f => f.symbol).join(' · ')}</div>
+            </div>
+          )}
+          {e.atrasados.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Sin velas nuevas hace más de 5 días ({e.atrasados.length})</div>
+              <div className="text-ink-3 leading-relaxed">{e.atrasados.map(a => `${a.symbol} (${a.hasta})`).join(' · ')}</div>
+            </div>
+          )}
+          {e.sin_explicar?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-rendi-warn font-medium mb-1">Saltos sin explicar: mirar a mano ({e.sin_explicar.length})</div>
+              <p className="text-ink-3 mb-1">Acciones sin par en Nueva York con un salto de más de 40 % en un día. Puede ser real o un cambio de escala que Yahoo no corrigió: no se corrige solo.</p>
+              <div className="text-ink-3 leading-relaxed">{e.sin_explicar.map(c => `${c.symbol} ${c.date} (${saltoTxt(c.factor)})`).join(' · ')}</div>
+            </div>
+          )}
+          {e.cambios_de_ratio?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Cambios de ratio ({e.cambios_de_ratio.length})</div>
+              <p className="text-ink-3 mb-1">Cambió cuántos CEDEARs son una acción. Si Yahoo no ajustó la historia, el gráfico en pesos la lleva a la escala nueva; los confirmados se le ofrecen a quien tiene un lote de antes («Ajustar»).</p>
+              <div className="text-ink-3 leading-relaxed">{e.cambios_de_ratio.map(c => `${c.symbol} ${c.date} (${ratioTxt(c.factor)}${ESTADO_RATIO[c.estado] ?? ''})`).join(' · ')}</div>
+            </div>
+          )}
+          {e.empalmes?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Saltos empalmados sólo en el gráfico ({e.empalmes.length})</div>
+              <p className="text-ink-3 mb-1">Escisiones (la empresa separó una parte) y precios fuera de escala: el gráfico en pesos los empalma, pero no cambian la cantidad de nadie.</p>
+              <div className="text-ink-3 leading-relaxed">{e.empalmes.map(c => `${c.symbol} ${c.date} (${c.tipo === 'escision' ? 'escisión' : 'precio fuera de escala'})`).join(' · ')}</div>
+            </div>
+          )}
+          {e.pendientes?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Saltos de los últimos días, todavía sin decidir ({e.pendientes.length})</div>
+              <div className="text-ink-3 leading-relaxed">{e.pendientes.map(c => `${c.symbol} ${c.date}`).join(' · ')}</div>
+            </div>
+          )}
+          {e.precios_rotos?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Días con precio roto, sacados del gráfico ({e.precios_rotos.length})</div>
+              <div className="text-ink-3 leading-relaxed">{e.precios_rotos.map(c => `${c.symbol} ${c.date}`).join(' · ')}</div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 function FciRefreshPanel({ toast }) {
   const [r, setR] = useState(null)
   const [busy, setBusy] = useState(false)

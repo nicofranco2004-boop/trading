@@ -98,10 +98,20 @@ def _yahoo_de(asset: str, asset_type: str, en_pesos: bool, es_cripto,
         if a in CEDEAR_USD_RATIOS:
             # Su '.BA' en Yahoo cotiza en dólares y roto (BAC ≈ 9): la serie en
             # pesos se arma de la acción de afuera, como el gráfico de la ficha.
-            return [a]
-        # La acción de afuera (dólares) y el CEDEAR en pesos.
-        return [a, pesos]
-    return [pesos] if en_pesos else [a]
+            return [ticker_de_afuera(a)]
+        # La acción de afuera (dólares) y el CEDEAR en pesos. Es la ÚNICA rama
+        # que devuelve dos: `_seguimiento` reconoce el par por esta forma.
+        return [ticker_de_afuera(a), pesos]
+    return [pesos] if en_pesos else [ticker_de_afuera(a)]
+
+
+def ticker_de_afuera(a: str) -> str:
+    """El nombre con que Yahoo cotiza la acción de afuera: las acciones con
+    clase van con guión ('BRK.B' → 'BRK-B'). Con el punto, Yahoo no la encuentra
+    y la serie en dólares de Berkshire no se guardaba (auditoría 22/10). La usa
+    también `tecnico.serie` para leerla: un solo traductor."""
+    a = (a or '').strip().upper()
+    return a.replace('.', '-') if '.' in a and not a.endswith('.BA') else a
 
 
 def _cedears_de_byma() -> frozenset:
@@ -128,7 +138,18 @@ def _es_bono(asset: str) -> bool:
 
 def simbolos_a_seguir(conn) -> list:
     """Todos los tickers de Yahoo que hacen falta: lo que alguien tiene en
-    cartera y lo que alguien sigue en su watchlist.
+    cartera y lo que alguien sigue en su watchlist."""
+    return sorted(_seguimiento(conn)[0])
+
+
+def _seguimiento(conn):
+    """(tickers, pares): los tickers de Yahoo a seguir y, de cada CEDEAR, su
+    par {'XLE.BA': 'XLE'} (el CEDEAR en pesos y la acción de afuera), que es
+    contra lo que la lista de cambios de ratio (`cambios_ratio`) compara la
+    serie en pesos.
+
+    El par sale de saber que ES un CEDEAR (`_yahoo_de`), no de que dos tickers
+    se llamen igual: AGRO.BA es Agrometal y AGRO en Nueva York es Adecoagro.
 
     "En pesos" se decide con la MISMA regla que la valuación
     (`snapshots_job.position_price_key`): si la posición se valúa por su '.BA',
@@ -138,7 +159,12 @@ def simbolos_a_seguir(conn) -> list:
     from snapshots_job import _broker_name_sets, position_price_key
 
     cedears = _cedears_de_byma()
-    tickers = set()
+    tickers, pares = set(), {}
+
+    def _sumar(ys):
+        tickers.update(ys)
+        if len(ys) == 2:   # la forma de un CEDEAR: [afuera, pesos]
+            pares[ys[1]] = ys[0]
     brokers = [dict(r) for r in conn.execute(
         "SELECT id, user_id, name, currency, parent_broker_id FROM brokers").fetchall()]
     por_usuario = {}
@@ -154,13 +180,15 @@ def simbolos_a_seguir(conn) -> list:
         ars, ar_usd = sets.get(p['user_id'], (set(), set()))
         clave = position_price_key(p, ars, ar_usd)
         en_pesos = str(clave).upper().endswith('.BA')
-        tickers.update(_yahoo_de(p['asset'], p.get('asset_type'), en_pesos, yahoo_de_cripto, cedears))
+        _sumar(_yahoo_de(p['asset'], p.get('asset_type'), en_pesos, yahoo_de_cripto, cedears))
 
     for r in conn.execute("SELECT symbol, asset_type FROM watchlist").fetchall():
         sym = (r['symbol'] or '').upper()
-        tickers.update(_yahoo_de(sym, r['asset_type'], sym.endswith('.BA'), yahoo_de_cripto, cedears))
+        _sumar(_yahoo_de(sym, r['asset_type'], sym.endswith('.BA'), yahoo_de_cripto, cedears))
 
-    return sorted(t for t in tickers if t)
+    tickers.discard('')
+    tickers.discard(None)
+    return tickers, pares
 
 
 # ─── Bajar y guardar ─────────────────────────────────────────────────────────
@@ -290,8 +318,20 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
 
     estado = {r['symbol']: dict(r) for r in conn.execute(
         "SELECT symbol, ultima_completa, ok FROM velas_estado").fetchall()}
-    pendientes = sorted(set(t for t in (tickers or []) if t),
-                        key=lambda t: (bool((estado.get(t) or {}).get('ultima_completa')), t))
+    def _turno(t):
+        # Primero lo que nunca se intentó, después lo que necesita la historia
+        # entera, después la puesta al día, y AL FINAL lo que falló la última
+        # vez. Antes "lo que nunca se bajó" iba primero siempre, y un símbolo
+        # que nunca trae datos (inventado en una watchlist) nunca deja de ser
+        # "nunca bajado": con miles, se comían el tope de la noche y los activos
+        # de verdad no se actualizaban (auditoría de seguridad 22/10).
+        e = estado.get(t)
+        if e is None:
+            return 0
+        if not e.get('ok'):
+            return 3
+        return 1 if _toca_completa(e, hoy) else 2
+    pendientes = sorted(set(t for t in (tickers or []) if t), key=lambda t: (_turno(t), t))
 
     res = {"pedidos": len(pendientes), "completas": 0, "incrementales": 0,
            "reescritas": [], "sin_datos": [], "sin_tiempo": 0, "filas": 0}
@@ -349,19 +389,90 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
 
 
 def correr(conn) -> dict:
-    """La corrida nocturna completa: qué seguir + ponerlo al día."""
-    return actualizar(conn, simbolos_a_seguir(conn))
+    """La corrida nocturna completa: qué seguir, ponerlo al día y, con las velas
+    ya guardadas, la lista única de cambios de ratio (`cambios_ratio`), a la que
+    se le pasa de cada CEDEAR cuál es su acción de afuera. Un error de la lista
+    no toca las velas."""
+    tickers, pares = _seguimiento(conn)
+    res = actualizar(conn, sorted(tickers))
+    try:
+        import cambios_ratio
+        res["cambios_ratio"] = cambios_ratio.correr(
+            conn, {ba[:-3]: afuera for ba, afuera in pares.items()})
+    except Exception as ex:
+        log.error("velas: la lista de cambios de ratio falló: %r", ex, exc_info=True)
+        res["cambios_ratio"] = {"error": repr(ex)}
+    return res
 
 
 # ─── Leer ────────────────────────────────────────────────────────────────────
 
-def serie(conn, ticker: str, desde: str = None) -> list:
-    """Las velas guardadas de un ticker, de la más vieja a la más nueva:
-    [{date, open, high, low, close, volume}]. [] si no hay: quien la usa tiene
-    que decir "sin datos", nunca inventar."""
+def _crudas(conn, ticker: str, desde: str = None) -> list:
+    """Las velas tal como las dio Yahoo, sin empalmar. Las lee `serie`; quien
+    necesita lo crudo (la lista de cambios de ratio, la evidencia de un lote)
+    lee la tabla con su propia consulta."""
     q = "SELECT date, open, high, low, close, volume FROM velas_diarias WHERE symbol=?"
     args = [ticker]
     if desde:
         q += " AND date >= ?"
         args.append(str(desde)[:10])
     return [dict(r) for r in conn.execute(q + " ORDER BY date", args).fetchall()]
+
+
+def _empalmar(velas: list, g: dict) -> list:
+    """Las velas en pesos con lo que dice la lista única de cambios de ratio
+    (`cambios_ratio.para_el_grafico`):
+      · escalones [(fecha, factor)]: lo ANTERIOR a `fecha` se lleva a la escala
+        nueva (el precio ÷ factor; el volumen, en cantidad de CEDEARs, × factor).
+        Cambios de ratio, escisiones (DuPont 03/11/2025) y precios rotos de nivel;
+        sólo los que la serie guardada muestra (lo que Yahoo ya corrigió, no).
+      · rotos: días que saltan y vuelven (ETHA 06/10/2026): se sacan.
+      · pendientes: un salto de los últimos días que todavía no se sabe si se
+        queda: se esconde desde ese día (no se reescala la historia por algo que
+        puede ser un precio roto). La noche que haya 5 ruedas, se decide."""
+    escalones = [(d, f) for d, f in (g.get("escalones") or []) if f and f > 0]
+    rotos = set(g.get("rotos") or [])
+    pendiente = min(g.get("pendientes") or [None], key=lambda d: d or "9999")
+    if not escalones and not rotos and not pendiente:
+        return velas
+    out = []
+    for v in velas:
+        if v["date"] in rotos or (pendiente and v["date"] >= pendiente):
+            continue
+        f = 1.0
+        for desde, factor in escalones:
+            if v["date"] < desde:
+                f *= factor
+        if f != 1.0:
+            v = {**v, **{k: (v[k] / f if v.get(k) is not None else None)
+                         for k in ("open", "high", "low", "close")},
+                 "volume": (v["volume"] * f if v.get("volume") is not None else None)}
+        out.append(v)
+    return out
+
+
+def serie(conn, ticker: str, desde: str = None) -> list:
+    """Las velas guardadas de un ticker, de la más vieja a la más nueva:
+    [{date, open, high, low, close, volume}]. Las de una serie en pesos ('.BA')
+    vienen empalmadas con la lista única de cambios de ratio (`cambios_ratio`):
+    Yahoo no corrige los cambios de ratio de los CEDEAR en la especie en pesos
+    (XLE.BA cae 50 % el 05/12/2025 sin que nada pase), y esa caída falsa dejaba
+    la media de 200 en pesos diciendo "bajista" diez meses. [] si no hay: quien
+    la usa tiene que decir "sin datos", nunca inventar. Es LA puerta para leer
+    velas en un gráfico o una lectura: no leer la tabla a mano."""
+    velas = _crudas(conn, ticker, desde)
+    if not velas or not str(ticker).upper().endswith('.BA'):
+        return velas
+    import cambios_ratio
+    return _empalmar(velas, cambios_ratio.para_el_grafico(conn, ticker))
+
+
+def ultima_vela(conn, ticker: str):
+    """La última vela de `ticker` por la puerta de `serie` (si la última vino
+    rota, la anterior). None si no hay."""
+    row = conn.execute("SELECT MAX(date) AS d FROM velas_diarias WHERE symbol=?", (ticker,)).fetchone()
+    if not row or not row["d"]:
+        return None
+    desde = (date.fromisoformat(row["d"]) - timedelta(days=15)).isoformat()
+    velas = serie(conn, ticker, desde)
+    return velas[-1] if velas else None
