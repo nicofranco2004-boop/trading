@@ -50,7 +50,7 @@ except ImportError:
     # python-dotenv opcional — si no está, seguimos con env vars del sistema.
     pass
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _esperar_futuros
-from eventos_guardados import eventos_guardados
+from eventos_guardados import balances_entre, eventos_guardados
 from tickers_renombrados import ticker_vigente   # SQ → XYZ: el código que cotiza hoy
 import yfinance as yf
 from pricing import yahoo as _yahoo   # toda llamada a Yahoo con alguien esperando
@@ -8557,6 +8557,117 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
     return sum(1 for f in terminados if not f.cancelled() and f.result() is True)
 
 
+# ─── Balances PASADOS (los «B» del gráfico de la ficha) ───────────────────────
+# El calendario de arriba sólo trae el PRÓXIMO balance; los que ya pasaron se
+# piden aparte (`get_earnings_dates`, con la hora del anuncio) y se guardan en
+# la MISMA tabla `financial_events`, como 'earnings', sólo con fecha anterior a
+# hoy. Nadie que muestre "lo que se viene" los ve: todos leen de hoy en adelante
+# (eventos_guardados, el mail del día, el radar del asesor). La pide sólo la
+# ficha del activo (/api/tecnico/{asset}/eventos), no la renovación de 6 h de
+# Novedades: es un pedido más a Yahoo por papel y los pasados no cambian.
+_earnings_pasados_at = {}            # { ticker: timestamp del último pedido bueno }
+EARNINGS_PASADOS_TTL = 7 * 24 * 3600
+# Cuántos balances para atrás: 16 trimestres cubren los 3 años de velas.
+EARNINGS_PASADOS_CUANTOS = 16
+# Hora de cierre de cada mercado, en su hora local: un balance anunciado antes
+# se nota ese mismo día; después, al día de mercado siguiente.
+_CIERRE_MERCADO = {"America/New_York": 16, "America/Argentina/Buenos_Aires": 17}
+
+
+def _fetch_yf_earnings_pasados(ticker: str):
+    """Los balances ya anunciados de `ticker`: [{event_date, momento, hora}] con
+    `momento` 'antes_del_cierre' | 'despues_del_cierre' | None (Yahoo no dio la
+    hora: medianoche justa). None si Yahoo no contestó (≠ [] = no tiene)."""
+    try:
+        ed = yf.Ticker(ticker).get_earnings_dates(limit=EARNINGS_PASADOS_CUANTOS)
+    except Exception:
+        return None
+    if ed is None or not len(ed):
+        return []
+    zona = "America/Argentina/Buenos_Aires" if ticker.endswith(".BA") else "America/New_York"
+    hoy = _iso_today()
+    out = []
+    for ts in ed.index:
+        try:
+            local = ts.tz_convert(zona) if ts.tzinfo else ts.tz_localize(zona)
+        except Exception:
+            continue
+        d = local.strftime("%Y-%m-%d")
+        if not _DATE_RE.match(d) or d >= hoy:
+            continue
+        sin_hora = local.hour == 0 and local.minute == 0
+        out.append({
+            "event_date": d,
+            "momento": None if sin_hora else (
+                "antes_del_cierre" if local.hour < _CIERRE_MERCADO[zona] else "despues_del_cierre"),
+            "hora": None if sin_hora else local.strftime("%H:%M"),
+        })
+    return out
+
+
+def _buscar_y_guardar_earnings_pasados(ticker: str) -> bool:
+    """Un trabajador: pide los balances pasados y los guarda (su propia
+    conexión). Lo que ya estaba guardado de esa fecha (el EPS estimado del
+    calendario) se conserva: sólo se le suma la hora."""
+    clave = f"{ticker}|pasados"
+    try:
+        lista = _fetch_yf_earnings_pasados(ticker)
+        if lista is None:
+            _earnings_pasados_at[ticker] = time.time() - EARNINGS_PASADOS_TTL + EVENTOS_REINTENTO_SEG
+            return False
+        if lista:
+            iso_now = datetime.utcnow().isoformat() + "Z"
+            conn = get_db()
+            try:
+                with conn:
+                    for e in lista:
+                        fila = conn.execute(
+                            "SELECT details FROM financial_events WHERE ticker=? AND event_type='earnings' "
+                            "AND event_date=?", (ticker, e["event_date"])).fetchone()
+                        try:
+                            details = json.loads(fila["details"]) if fila and fila["details"] else {}
+                        except (TypeError, ValueError):
+                            details = {}
+                        details = details if isinstance(details, dict) else {}
+                        details.update({"momento": e["momento"], "hora": e["hora"]})
+                        conn.execute(
+                            """INSERT INTO financial_events
+                               (ticker, event_type, event_date, details, confirmed, source, fetched_at)
+                               VALUES (?, 'earnings', ?, ?, 1, 'yfinance', ?)
+                               ON CONFLICT(ticker, event_type, event_date) DO UPDATE SET
+                                   details = excluded.details, confirmed = 1,
+                                   fetched_at = excluded.fetched_at""",
+                            (ticker, e["event_date"], json.dumps(details), iso_now))
+            finally:
+                conn.close()
+        _earnings_pasados_at[ticker] = time.time()
+        return True
+    except Exception as ex:
+        logging.getLogger(__name__).warning("earnings pasados %s: %s", ticker, ex)
+        return False
+    finally:
+        with _events_en_vuelo_lock:
+            _events_en_vuelo.pop(clave, None)
+
+
+def _earnings_pasados_al_dia(ticker: str, esperar_segundos=None) -> None:
+    """Pide los balances pasados de `ticker` si nunca se pidieron o hace más de
+    una semana (de a uno a la vez por ticker, en el mismo pool que los eventos).
+    `esperar_segundos`: cuánto espera la pantalla (None = de fondo)."""
+    if not ticker or not _SYMBOL_RE.match(ticker):
+        return
+    clave = f"{ticker}|pasados"
+    with _events_en_vuelo_lock:
+        if time.time() - _earnings_pasados_at.get(ticker, 0) < EARNINGS_PASADOS_TTL:
+            return
+        fut = _events_en_vuelo.get(clave)
+        if fut is None:
+            fut = _events_fetch_executor.submit(_buscar_y_guardar_earnings_pasados, ticker)
+            _events_en_vuelo[clave] = fut
+    if esperar_segundos:
+        _esperar_futuros([fut], timeout=esperar_segundos)
+
+
 def _eventos_al_dia(conn, tickers: list) -> int:
     """La regla ÚNICA para tener los eventos al día antes de leerlos de la DB
     (stale-while-revalidate). La usan /events/portfolio, /events/popular y el
@@ -11419,6 +11530,53 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
     import tecnico
     with db_abierta() as conn:
         return tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
+
+
+# Lo que la ficha espera a Yahoo por los balances y dividendos la primera vez
+# (después sale de lo guardado al instante). El gráfico no espera: esto llega aparte.
+_TOPE_EVENTOS_FICHA = 5.0
+
+
+@app.get("/api/tecnico/{asset}/eventos")
+def get_tecnico_eventos(asset: str, moneda: str = "usd", local: int = 0,
+                        uid: int = Depends(get_effective_user)):
+    """Los balances («B») y dividendos («D») de la empresa dentro del gráfico de
+    la ficha, cada uno con lo que se movió el precio en la serie del gráfico y
+    en su moneda (movimiento.eventos_del_grafico). Las fuentes son las de
+    siempre: los dividendos, la caché de la bandeja de cobros (dividendos.py);
+    los balances, `financial_events` (la de Novedades) con los pasados que trae
+    `_earnings_pasados_al_dia`."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    moneda = "ars" if moneda == "ars" else "usd"
+    import movimiento
+    import tecnico
+    with db_abierta() as conn:
+        empresa = tecnico.ticker_de_la_empresa(conn, sym, bool(local))
+        velas = tecnico.serie(conn, sym, moneda, bool(local))["velas"]
+        if not empresa or not velas:
+            return {"empresa": empresa, "eventos": []}
+        desde = velas[0]["date"]
+        hasta = velas[-1]["date"]
+        incompleto = False
+        try:
+            incompleto = bool(_dividendos.actualizar(conn, [empresa], tope=_TOPE_EVENTOS_FICHA))
+        except Exception as ex:   # Yahoo caído: lo guardado
+            log.warning("ficha eventos: dividendos de %s: %s", empresa, ex)
+            incompleto = True
+        dividendos = _dividendos.historial(conn, [empresa], desde)[empresa]["pagos"]
+        # Sin ningún balance pasado guardado, se espera a Yahoo (con tope); si
+        # ya hay, se responde con eso y se renueva de fondo.
+        ya = balances_entre(conn, empresa, desde, hasta)
+        _earnings_pasados_al_dia(empresa, esperar_segundos=None if ya else _TOPE_EVENTOS_FICHA)
+        balances = balances_entre(conn, empresa, desde, hasta)
+        return {
+            "empresa": empresa,
+            "eventos": movimiento.eventos_del_grafico(
+                velas, balances, dividendos, "ars" if empresa.endswith(".BA") else "usd"),
+            "incompleto": incompleto,
+        }
 
 
 @app.get("/api/admin/velas")

@@ -65,16 +65,24 @@ def _tabla(filas: dict) -> pd.DataFrame:
 
 class YahooFalso:
     """Reemplaza a Yahoo. `precios[ticker](fecha)` da el cierre de ese día;
-    anota cada pedido para poder ver qué se le pidió."""
+    anota cada pedido para poder ver qué se le pidió. El S&P 500, que se guarda
+    todas las noches lo tenga alguien o no (velas_diarias.SP500), va anotado
+    aparte (`pedidos_sp500`) y con un precio fijo: así cada prueba cuenta los
+    pedidos de lo que la gente tiene, y una prueba propia cuenta el del S&P."""
 
     def __init__(self, hoy: date):
         self.hoy = hoy
         self.precios = {}
         self.pedidos = []
+        self.pedidos_sp500 = []
 
     def __call__(self, ticker, period, interval, auto_adjust, timeout):
-        self.pedidos.append((ticker, period, auto_adjust))
-        f = self.precios.get(ticker)
+        if ticker == velas_diarias.SP500:
+            self.pedidos_sp500.append((ticker, period, auto_adjust))
+        else:
+            self.pedidos.append((ticker, period, auto_adjust))
+        f = self.precios.get(ticker) or (
+            (lambda d: 5000.0) if ticker == velas_diarias.SP500 else None)
         if f is None:
             return pd.DataFrame()
         n = 760 if period == "3y" else 22
@@ -164,7 +172,7 @@ class VelasDiariasTest(unittest.TestCase):
         with main.db_abierta() as conn:
             seguidos = set(velas_diarias.simbolos_a_seguir(conn))
         self.assertEqual(seguidos, {"AAPL", "AAPL.BA", "GGAL.BA", "MSFT", "BTC-USD",
-                                    "NVDA", "YPFD.BA"})
+                                    "NVDA", "YPFD.BA", velas_diarias.SP500})
 
     def test_cedear_sin_etiqueta_bac_y_monedas_estables(self):
         # SPY cargado en IOL sin tipo, como llega de muchos imports: BYMA lo lista
@@ -179,7 +187,7 @@ class VelasDiariasTest(unittest.TestCase):
         self._posicion("Binance", "USDC", "CRYPTO")
         with main.db_abierta() as conn:
             seguidos = set(velas_diarias.simbolos_a_seguir(conn))
-        self.assertEqual(seguidos, {"SPY", "SPY.BA", "GGAL.BA", "BAC"},
+        self.assertEqual(seguidos, {"SPY", "SPY.BA", "GGAL.BA", "BAC", velas_diarias.SP500},
                          "GGAL es acción local (sin serie de afuera); BAC sólo en dólares "
                          "(su '.BA' de Yahoo viene roto); USDC no tiene nada que medir")
 
@@ -190,7 +198,16 @@ class VelasDiariasTest(unittest.TestCase):
         self._posicion("IOL", "AAPL", "CEDEAR")
         with main.db_abierta() as conn:
             seguidos = set(velas_diarias.simbolos_a_seguir(conn))
-        self.assertEqual(seguidos, {"SPY.BA", "AAPL", "AAPL.BA"})
+        self.assertEqual(seguidos, {"SPY.BA", "AAPL", "AAPL.BA", velas_diarias.SP500})
+
+    def test_el_sp500_se_guarda_aunque_nadie_lo_tenga(self):
+        # Es contra lo que la ficha compara «un día normal» (movimiento.py).
+        with main.db_abierta() as conn:
+            self.assertEqual(velas_diarias.simbolos_a_seguir(conn), [velas_diarias.SP500])
+        main._run_velas_diarias_job()
+        self.assertEqual(self.yahoo.pedidos_sp500, [(velas_diarias.SP500, "3y", False)])
+        with main.db_abierta() as conn:
+            self.assertTrue(velas_diarias.serie(conn, velas_diarias.SP500))
 
     def test_primera_noche_baja_3_anios_y_la_siguiente_un_mes(self):
         self._broker("Schwab", "USD")

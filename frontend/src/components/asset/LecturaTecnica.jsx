@@ -7,6 +7,12 @@
 // DÓLARES por defecto: un CEDEAR en pesos sube con el dólar aunque la empresa
 // no se mueva (ver backend/tecnico.py).
 //
+// Encima del gráfico, los balances («B») y dividendos («D») de la empresa con
+// lo que se movió el precio (GET /api/tecnico/{asset}/eventos), el modo «Medir
+// entre dos puntos» y el rango «Desde que lo tenés». Debajo de las tarjetas,
+// «Cuánto se mueve este papel» (backend/movimiento.py). Todo es lo que YA pasó:
+// nada de esto anticipa nada. Las palabras: utils/cuantoSeMueve.js.
+//
 // Los números vienen de GET /api/tecnico (las velas que se guardan de noche).
 // Si el activo todavía no tiene velas (recién agregado, o un bono/fondo), se
 // muestra el gráfico de 30 días de siempre (`AssetMiniChart`).
@@ -17,15 +23,18 @@
 // (R8): `rgb(var(--token))` en el SVG, que sigue al modo claro y al oscuro.
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
-import { Maximize2, Minimize2 } from 'lucide-react'
+import { Maximize2, Minimize2, Ruler } from 'lucide-react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa, ventanaDelTramo } from './CapaFibonacci'
 import { api } from '../../utils/api'
 import { factorDeFechas, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
 import {
   RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, tarjetas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
-  indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, moverVentana,
+  indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, moverVentana, RUEDAS_MINIMAS,
 } from '../../utils/tecnico'
+import {
+  medicion as medirEntre, primeraCompra, puntosDesde, tarjetasMovimiento, textoGrupo, textoMedicion,
+} from '../../utils/cuantoSeMueve'
 
 const v = (t) => `rgb(var(--${t}))`
 const COLOR = {
@@ -35,9 +44,17 @@ const COLOR = {
   // misma luminosidad en modo claro y para un daltónico eran la misma línea.
   media50: v('cat-orange'),
   promedio: v('ink-2'),
+  // Balances y dividendos: violeta de la marca y verde azulado, que se
+  // distinguen también por claridad (no sólo por el tono) y por la letra.
+  balance: v('data-violet'),
+  dividendo: v('cat-teal'),
+  medir: v('rendi-accent'),
 }
 const W = 1000
 const H = 260
+// Dos marcas de balance o dividendo más cerca que esto (en la pantalla) se
+// juntan: es lo que ocupa una marca con su número al lado («D 2»).
+const MARCA_PX = 34
 const H_RSI = 64
 const VOL_ALTO = 0.2   // la franja del volumen: el 20 % de abajo del gráfico de precio
 // Línea o velas: lo que eligió la persona la última vez. El navegador puede
@@ -75,14 +92,21 @@ function fechaCorta(iso) {
 export default function LecturaTecnica({
   asset, symbolMiniChart, lotes = [], operaciones = [], pnlPctUsd = null,
   pnlPctLinea = undefined, lineaSinTc = false, referencia = null,
-  costoPesos = null, accionLocal = false,
+  costoPesos = null, accionLocal = false, tenencia = null, valorCartera = null,
 }) {
   const [moneda, setMoneda] = useState('usd')
   const [rango, setRango] = useState('1a')
   const [datos, setDatos] = useState({ usd: undefined, ars: undefined })
   // Qué líneas se ven: la leyenda prende y apaga cada una.
   // El Fibonacci arranca prendido (Nico, 22/10): es lo primero que se mira.
-  const [ver, setVer] = useState({ s200: true, s50: true, prom: true, marcas: true, fib: true, vol: true })
+  const [ver, setVer] = useState({ s200: true, s50: true, prom: true, marcas: true, fib: true, vol: true, eventos: true })
+  // Balances y dividendos de la empresa, por moneda (lo que se movió el precio
+  // es sobre la serie de esa moneda). Llegan después del gráfico: piden Yahoo.
+  const [eventos, setEventos] = useState({ usd: undefined, ars: undefined })
+  // Medir entre dos puntos: los dos días tocados, por FECHA (sobreviven al zoom
+  // y al arrastre). a sin b = esperando el segundo toque.
+  const [medir, setMedir] = useState({ activo: false, a: null, b: null })
+  useEffect(() => { setMedir(m => ({ ...m, a: null, b: null })) }, [moneda])
   const [tipo, setTipoEstado] = useState(tipoGuardado)
   const setTipo = (t) => { setTipoEstado(t); guardarTipo(t) }
   // Zoom con la rueda y arrastre: qué ruedas se ven ({ n: cuántas, fin: hasta
@@ -122,6 +146,17 @@ export default function LecturaTecnica({
   const reintentar = () => setDatos(d => ({ ...d, [moneda]: undefined }))
 
   const actual = datos[moneda]
+  const conGrafico = !!actual?.disponible
+  useEffect(() => {
+    if (!conGrafico || eventos[moneda] !== undefined) return
+    let vivo = true
+    api.get(`/tecnico/${encodeURIComponent(asset)}/eventos?moneda=${moneda}${accionLocal ? '&local=1' : ''}`)
+      .then(r => { if (vivo) setEventos(e => ({ ...e, [moneda]: r?.eventos || [] })) })
+      .catch(() => { if (vivo) setEventos(e => ({ ...e, [moneda]: [] })) })
+    return () => { vivo = false }
+  }, [asset, moneda, accionLocal, conGrafico, eventos])
+  // «Desde que lo tenés»: sólo si tenés el activo hoy.
+  const primera = primeraCompra(lotes)
 
   // Tu resultado para dibujar la LÍNEA de tu precio:
   //   · dólares: al dólar del día de cada compra (`pnlPctLinea`), sin importar
@@ -139,7 +174,8 @@ export default function LecturaTecnica({
 
   const marco = (hijos, conPesos = datos.ars?.disponible !== false) => (
     <Marco moneda={moneda} setMoneda={setMoneda} rango={ventana ? null : rango} setRango={elegirRango}
-      tipo={tipo} setTipo={setTipo} conPesos={conPesos} grande={grande} setGrande={setGrande}>{hijos}</Marco>
+      tipo={tipo} setTipo={setTipo} conPesos={conPesos} grande={grande} setGrande={setGrande}
+      conTuyo={!!primera}>{hijos}</Marco>
   )
   // Cargando: el marco con sus botones queda quieto y el gris va adentro, con la
   // altura del gráfico ya reservada (antes desaparecía todo y la página saltaba).
@@ -173,7 +209,10 @@ export default function LecturaTecnica({
   }
 
   const total = actual.puntos.length
-  const nVista = Math.min(ventana?.n ?? puntosEnDias(actual.puntos, RANGOS.find(r => r.id === rango)?.dias || 365), total)
+  const nRango = rango === 'tuyo' && primera
+    ? Math.max(RUEDAS_MINIMAS, puntosDesde(actual.puntos, primera))
+    : puntosEnDias(actual.puntos, RANGOS.find(r => r.id === rango)?.dias || 365)
+  const nVista = Math.min(ventana?.n ?? nRango, total)
   const finVista = Math.min(ventana?.fin ?? total, total)
   const diarios = actual.puntos.slice(Math.max(0, finVista - nVista), finVista)
   const semanales = tipo === 'velas' && intervalo === 'semana'
@@ -192,6 +231,25 @@ export default function LecturaTecnica({
   const lista = tarjetas(actual.lectura)
   const distintas = tendenciasDistintas(datos.usd?.lectura, datos.ars?.lectura)
   const alternar = (k) => setVer(x => ({ ...x, [k]: !x[k] }))
+  const losEventos = eventos[moneda] || []
+  // Un toque en el gráfico (modo medir): el día de ese punto. En velas
+  // semanales, el ÚLTIMO día de esa semana (el cierre de la vela).
+  const tocar = (k) => {
+    let fecha = puntos[k]?.d
+    if (semanales) {
+      const sig = puntos[k + 1]
+      fecha = sig ? diarios[Math.max(0, indiceDeFecha(diarios, sig.d) - 1)]?.d : diarios[diarios.length - 1]?.d
+    }
+    if (!fecha) return
+    setMedir(m => (m.a && !m.b ? { ...m, b: fecha } : { activo: true, a: fecha, b: null }))
+  }
+  const medida = medir.activo ? medirEntre(actual.puntos, medir.a, medir.b) : null
+  const tenenciaEnMoneda = tenencia?.valorUsd > 0
+    ? { valor: moneda === 'usd' ? tenencia.valorUsd : tenencia.valorUsd * (tenencia.tc || 0) } : null
+  const cuanto = tarjetasMovimiento(actual.movimiento, {
+    moneda, precio: (x) => fmtPrecio(x, moneda), tenencia: tenenciaEnMoneda,
+    peso: tenencia?.valorUsd > 0 && valorCartera > 0 ? tenencia.valorUsd / valorCartera : null,
+  })
 
   return marco(
     <>
@@ -218,7 +276,26 @@ export default function LecturaTecnica({
       <Grafico puntos={puntos} moneda={moneda} promedio={ver.prom ? promedio : null}
         marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo} grande={grande}
         fibonacci={ver.fib ? actual.fibonacci : null} onZoom={zoom} onMover={mover}
-        onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rango}|${tipo}|${intervalo}`} />
+        onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rango}|${tipo}|${intervalo}`}
+        eventos={ver.eventos ? losEventos : []} medicion={medir.activo ? { a: medir.a, b: medir.b, m: medida } : null}
+        onToque={medir.activo ? tocar : null} />
+      {medir.activo && (
+        <div role="status" aria-live="polite"
+          className="mt-2 rounded-lg border border-rendi-accent/30 bg-rendi-accent/10 px-3 py-2 text-[12.5px] text-ink-1 leading-relaxed">
+          {!medir.a && 'Tocá un día del gráfico para empezar a medir.'}
+          {medir.a && !medir.b && `Desde el ${fechaCorta(medir.a)}. Ahora tocá el otro día.`}
+          {medida && (
+            <>
+              <b className={`font-semibold tabular ${medida.dias === 0 ? 'text-ink-0' : medida.pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>{textoMedicion(medida)}</b>
+              {medida.dias > 0 && <span className="tabular">{`: del ${fechaCorta(medida.desde)} (${fmtPrecio(medida.precioDesde, moneda)}) al ${fechaCorta(medida.hasta)} (${fmtPrecio(medida.precioHasta, moneda)}), de cierre a cierre. `}</span>}
+              Tocá otro día para medir de nuevo.
+            </>
+          )}
+        </div>
+      )}
+      {rango === 'tuyo' && !ventana && primera && primera < actual.puntos[0].d && (
+        <p className="text-[11.5px] text-ink-2 mt-1">Lo tenés desde el {fechaCorta(primera)}; el gráfico empieza el {fechaCorta(actual.puntos[0].d)}, que es lo que hay guardado.</p>
+      )}
       <p className="text-[11.5px] text-ink-2 mt-1">
         {semanales && 'Cada vela es una semana. '}
         {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá con la ruedita o pasá a velas semanales. '}
@@ -241,6 +318,12 @@ export default function LecturaTecnica({
         {marcasEnVista.length > 0 && (
           <Chip activo={ver.marcas} onClick={() => alternar('marcas')} puntos>Tus compras y ventas</Chip>
         )}
+        {losEventos.length > 0 && (
+          <Chip activo={ver.eventos} onClick={() => alternar('eventos')} letras>Balances y dividendos</Chip>
+        )}
+        <Chip activo={medir.activo} onClick={() => setMedir(m => ({ activo: !m.activo, a: null, b: null }))} regla>
+          Medir entre dos puntos
+        </Chip>
         {actual.fibonacci && (
           <Chip activo={ver.fib} onClick={() => {
             // Al prenderlo, el gráfico se acerca al tramo medido (si se ve chico).
@@ -275,6 +358,23 @@ export default function LecturaTecnica({
         })()}
       </div>
 
+      {cuanto.length > 0 && (
+        <section aria-label="Cuánto se mueve este papel" className="mt-5">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 mb-2">
+            <h3 className="text-[14px] font-semibold text-ink-0">Cuánto se mueve este papel</h3>
+            <span className="text-[12px] text-ink-2">
+              {periodoDeMovimiento(actual.movimiento)}, en {moneda === 'usd' ? 'dólares' : 'pesos'}
+            </span>
+          </div>
+          <div className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${grande ? 'xl:grid-cols-4' : ''}`}>
+            {cuanto.map(t => <Tarjeta key={t.id} t={t} />)}
+          </div>
+          <p className="text-[11.5px] text-ink-2 mt-2 leading-relaxed">
+            Es lo que pasó, de cierre a cierre: no dice cuánto se va a mover de acá en adelante.
+          </p>
+        </section>
+      )}
+
       <p className="text-[12px] text-ink-2 mt-3 leading-relaxed">
         {moneda === 'usd' && 'Se mira en dólares aunque uses la app en pesos, porque en pesos el precio también sube con el dólar. Para verlo en pesos, tocá «Pesos» arriba del gráfico. '}
         {actual.convertida === 'mep' && (moneda === 'usd'
@@ -286,7 +386,14 @@ export default function LecturaTecnica({
   )
 }
 
-function Marco({ moneda, setMoneda, rango, setRango, tipo, setTipo, conPesos = true, grande = false, setGrande, children }) {
+// «Últimos 2 años» o, si hay menos guardado, desde cuándo.
+function periodoDeMovimiento(m) {
+  if (!m?.desde || !m?.hasta) return ''
+  const dias = (Date.parse(m.hasta) - Date.parse(m.desde)) / 86400000
+  return dias >= 700 ? 'Últimos 2 años' : `Desde el ${fechaCorta(m.desde)}`
+}
+
+function Marco({ moneda, setMoneda, rango, setRango, tipo, setTipo, conPesos = true, grande = false, setGrande, conTuyo = false, children }) {
   // Agrandado = la misma sección, fija sobre toda la pantalla (no es otra vista:
   // mismos datos, mismos botones; R6).
   return (
@@ -308,7 +415,7 @@ function Marco({ moneda, setMoneda, rango, setRango, tipo, setTipo, conPesos = t
           <Segmento etiqueta="Moneda" valor={moneda} alElegir={setMoneda}
             opciones={[['usd', 'Dólares'], ...(conPesos ? [['ars', 'Pesos']] : [])]} />
           <Segmento etiqueta="Rango" valor={rango} alElegir={setRango}
-            opciones={RANGOS.map(r => [r.id, r.label])} />
+            opciones={[...RANGOS.map(r => [r.id, r.label]), ...(conTuyo ? [['tuyo', 'Desde que lo tenés']] : [])]} />
         </div>
       </div>
       <div className="bg-bg-1 border border-line/60 rounded-xl p-3 sm:p-4">{children}</div>
@@ -329,10 +436,17 @@ function Segmento({ etiqueta, valor, alElegir, opciones }) {
   )
 }
 
-function Chip({ activo, fijo, onClick, color, grueso, punteado, puntos, barras, children }) {
+function Chip({ activo, fijo, onClick, color, grueso, punteado, puntos, barras, letras, regla, children }) {
   // `puntos`: la muestra es un punto verde y uno rojo (compras/ventas, o velas que suben/bajan).
-  // `barras`: tres barritas (el volumen).
-  const muestra = barras ? (
+  // `barras`: tres barritas (el volumen). `letras`: la «B» y la «D» de balances y
+  // dividendos. `regla`: el ícono de medir.
+  const muestra = letras ? (
+    <span className="inline-flex gap-0.5" aria-hidden="true">
+      <Letra tipo="balance" /><Letra tipo="dividendo" />
+    </span>
+  ) : regla ? (
+    <Ruler size={13} aria-hidden="true" />
+  ) : barras ? (
     <svg width="14" height="10" aria-hidden="true" className="text-ink-3">
       <rect x="0" y="5" width="3" height="5" fill="currentColor" />
       <rect x="5" y="2" width="3" height="8" fill="currentColor" />
@@ -349,12 +463,26 @@ function Chip({ activo, fijo, onClick, color, grueso, punteado, puntos, barras, 
         strokeDasharray={punteado ? '4 3' : undefined} />
     </svg>
   )
-  const clase = `inline-flex items-center gap-1.5 min-h-10 sm:min-h-[30px] px-3 sm:px-2.5 rounded-full border text-[12px] transition-colors ${activo ? 'border-line-2 bg-bg-2/60 text-ink-1' : 'border-line text-ink-3 opacity-60'}`
+  // Las líneas apagadas se ven tenues (no se dibujan). Medir es una herramienta,
+  // no una línea: apagado se ve como un botón común y prendido, resaltado.
+  const clase = `inline-flex items-center gap-1.5 min-h-10 sm:min-h-[30px] px-3 sm:px-2.5 rounded-full border text-[12px] transition-colors ${
+    regla ? (activo ? 'border-rendi-accent/60 bg-rendi-accent/15 text-ink-0' : 'border-line-2 text-ink-1')
+      : activo ? 'border-line-2 bg-bg-2/60 text-ink-1' : 'border-line text-ink-3 opacity-60'}`
   if (fijo) return <span className={clase}>{muestra}{children}</span>
   return (
     <button type="button" onClick={onClick} aria-pressed={!!activo} className={`${clase} hover:text-ink-0`}>
       {muestra}{children}
     </button>
+  )
+}
+
+// La «B» de un balance o la «D» de un dividendo: un círculo con la letra.
+function Letra({ tipo, grande: g = false }) {
+  return (
+    <span className={`inline-flex items-center justify-center rounded-full font-bold leading-none ${g ? 'w-[18px] h-[18px] text-[10px]' : 'w-3.5 h-3.5 text-[9px]'}`}
+      style={{ background: tipo === 'balance' ? COLOR.balance : COLOR.dividendo, color: v('bg-0') }}>
+      {tipo === 'balance' ? 'B' : 'D'}
+    </span>
   )
 }
 
@@ -415,10 +543,31 @@ function rotulosDeMeses(puntos) {
   })
 }
 
-function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', grande = false, fibonacci = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio }) {
+function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', grande = false, fibonacci = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null }) {
   const conVelas = tipo === 'velas'
   const ref = useRef(null)
   const arrastre = useRef(null)
+  // Un toque del dedo (para medir): dónde empezó y si se movió. El navegador
+  // después del dedo manda también un click de mouse: se ignora un rato.
+  const dedo = useRef(null)
+  const ultimoDedo = useRef(0)
+  // El balance o dividendo que se está mirando (su globo): la clave del grupo.
+  const [eventoSel, setEventoSel] = useState(null)
+  const conMouse = useRef(false)
+  // El ancho del gráfico en pantalla: con él se sabe qué marcas se pisarían.
+  const [ancho, setAncho] = useState(1000)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    // Se mide ya (con la página en segundo plano el aviso de abajo no llega
+    // hasta que vuelve a verse) y después se sigue cada cambio de tamaño.
+    const w = el.getBoundingClientRect?.().width
+    if (w > 0) setAncho(w)
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(([e]) => { if (e?.contentRect?.width) setAncho(e.contentRect.width) })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   // Los ejes se arrastran como en TradingView (utils/ejesGrafico.js): la
   // columna de precios estira el gráfico en vertical y deja el precio "a mano"
   // (`precioMano` = { lo, hi } fijo; null = automático), y la fila de fechas
@@ -556,12 +705,58 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
     .filter(m => m.i != null && pctY(puntos[m.i].c) >= 0 && pctY(puntos[m.i].c) <= 100)
 
   // El mouse o el dedo: el punto más cercano en el tiempo.
-  function mover(clientX) {
+  function indiceEn(clientX) {
     const r = ref.current?.getBoundingClientRect()
-    if (!r || !puntos.length) return
+    if (!r || !puntos.length) return null
     const i = Math.round(((clientX - r.left) / r.width) * (puntos.length - 1))
-    setHover(Math.max(0, Math.min(puntos.length - 1, i)))
+    return Math.max(0, Math.min(puntos.length - 1, i))
   }
+  function mover(clientX) {
+    const i = indiceEn(clientX)
+    if (i != null) setHover(i)
+  }
+
+  // Balances y dividendos dentro de lo que se ve, con su lugar. Si hay de los
+  // dos, cada tipo va en su renglón (en el celular un balance y un dividendo
+  // separados por diez días caen uno encima del otro). Y las del mismo tipo que
+  // en la pantalla quedarían a menos de MARCA_PX se juntan en UNA marca con
+  // cuántas son (Galicia paga todos los meses: en el celular eran doce «D»
+  // pisadas); su globo las lista.
+  const hasta = puntos[puntos.length - 1]?.d
+  const evVisibles = eventos
+    .filter(e => e.fecha >= (puntos[0]?.d || '') && e.fecha <= (hasta || ''))
+    .map(e => ({ ...e, i: indiceDeFecha(puntos, e.fecha) }))
+    .filter(e => e.i != null)
+  const grupos = []
+  for (const tipo of ['balance', 'dividendo']) {
+    let actual = null
+    for (const e of evVisibles.filter(x => x.tipo === tipo)) {
+      const x = pctX(e.i)
+      if (actual && ((x - actual.x0) / 100) * ancho < MARCA_PX) {
+        actual.items.push(e)
+        actual.x = (actual.x0 + x) / 2
+      } else {
+        actual = { clave: `${tipo}|${e.fecha}`, tipo, x0: x, x, items: [e] }
+        grupos.push(actual)
+      }
+    }
+  }
+  const dosRenglones = grupos.some(g => g.tipo === 'balance') && grupos.some(g => g.tipo === 'dividendo')
+  const grupoSel = grupos.find(g => g.clave === eventoSel) || null
+
+  // La medición, dibujada: cada día tocado en su punto (en velas semanales, en
+  // la semana que lo contiene) y a la altura de SU cierre.
+  const lugar = (fecha) => {
+    if (!fecha || !puntos.length) return null
+    if (fecha < puntos[0].d) return { x: 0, fuera: true }
+    const i = indiceDeFecha(puntos, fecha)
+    return i == null ? null : { x: pctX(i), fuera: false }
+  }
+  const mA = medicion ? lugar(medicion.m ? medicion.m.desde : medicion.a) : null
+  const mB = medicion?.m ? lugar(medicion.m.hasta) : null
+  const yDe = (precio) => (precio != null ? Math.min(100, Math.max(0, pctY(precio))) : null)
+  const precioA = medicion?.m ? medicion.m.precioDesde : (medicion?.a ? puntos[indiceDeFecha(puntos, medicion.a) ?? 0]?.c : null)
+  const precioB = medicion?.m ? medicion.m.precioHasta : null
   const ph = hover != null ? puntos[hover] : null
   const ultimo = puntos[puntos.length - 1]
   const ticks = [max - (max - min) * 0.12, (max + min) / 2, min + (max - min) * 0.12]
@@ -582,8 +777,17 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
             TradingView); en automático no hace falta y el punto del último
             precio puede asomar sobre el borde. */}
         <div ref={ref} className={`relative mr-[72px] ${grande ? 'h-[58vh] min-h-64' : 'h-56 sm:h-64'} select-none touch-pan-y cursor-crosshair ${precioMano ? 'overflow-hidden' : ''}`}
-          onMouseDown={e => { arrastre.current = { x: e.clientX, y: e.clientY } }}
-          onMouseUp={() => { arrastre.current = null }}
+          onMouseDown={e => { arrastre.current = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY } }}
+          onMouseUp={e => {
+            // Un click sin arrastrar, en el modo medir, marca ese día.
+            const a = arrastre.current
+            arrastre.current = null
+            if (!a || !onToque || Date.now() - ultimoDedo.current < 800) return
+            if (Math.abs(e.clientX - a.x0) < 5 && Math.abs(e.clientY - a.y0) < 5) {
+              const i = indiceEn(e.clientX)
+              if (i != null) onToque(i)
+            }
+          }}
           onMouseMove={e => {
             const a = arrastre.current
             if (a) {
@@ -597,8 +801,29 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
             mover(e.clientX)
           }}
           onMouseLeave={() => { setHover(null); arrastre.current = null }}
-          onTouchStart={e => mover(e.touches[0].clientX)} onTouchMove={e => mover(e.touches[0].clientX)}
-          onTouchEnd={() => setHover(null)}
+          onTouchStart={e => {
+            const t = e.touches[0]
+            dedo.current = { x0: t.clientX, y0: t.clientY, x: t.clientX, quieto: e.touches.length === 1 }
+            mover(t.clientX)
+          }}
+          onTouchMove={e => {
+            const t = e.touches[0], d = dedo.current
+            if (d) {
+              d.x = t.clientX
+              if (Math.abs(t.clientX - d.x0) > 10 || Math.abs(t.clientY - d.y0) > 10) d.quieto = false
+            }
+            mover(t.clientX)
+          }}
+          onTouchEnd={e => {
+            // Un toque quieto (sin deslizar) en el modo medir marca ese día.
+            const d = dedo.current
+            dedo.current = null
+            setHover(null)
+            if (d?.quieto && onToque) {
+              const i = indiceEn(d.x)
+              if (i != null) { ultimoDedo.current = Date.now(); onToque(i); if (e.cancelable) e.preventDefault() }
+            }
+          }}
           role="img" aria-label={`Precio con su promedio de 200 y de 50 días. Último cierre ${fmtPrecio(ultimo?.c, moneda)}.`}>
           <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
             <defs>
@@ -633,6 +858,20 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
             }) : (
               <path d={path.c} fill="none" stroke={COLOR.precio} strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
             )}
+            {/* Una raya tenue por balance; la del que se mira, marcada. */}
+            {grupos.flatMap(g => g.items.filter(() => g.tipo === 'balance' || g === grupoSel).map(e => (
+              <line key={`e${e.tipo}${e.fecha}`} x1={(pctX(e.i) / 100) * W} x2={(pctX(e.i) / 100) * W} y1="0" y2={H}
+                stroke={e.tipo === 'balance' ? COLOR.balance : COLOR.dividendo}
+                strokeOpacity={g === grupoSel ? 0.9 : 0.3} strokeWidth="1" strokeDasharray="2 4" vectorEffect="non-scaling-stroke" />
+            )))}
+            {mA && mB && (
+              <>
+                <rect x={(Math.min(mA.x, mB.x) / 100) * W} width={(Math.abs(mB.x - mA.x) / 100) * W} y="0" height={H}
+                  fill={COLOR.medir} fillOpacity="0.08" />
+                <line x1={(mA.x / 100) * W} y1={(yDe(precioA) / 100) * H} x2={(mB.x / 100) * W} y2={(yDe(precioB) / 100) * H}
+                  stroke={COLOR.medir} strokeWidth="1.4" strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />
+              </>
+            )}
           </svg>
 
           <CapaFibonacci fib={fibonacci} puntos={puntos} pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
@@ -646,6 +885,17 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
           {ultimo && (
             <span aria-hidden="true" className="absolute w-2 h-2 -translate-x-1/2 -translate-y-1/2 rounded-full"
               style={{ left: '100%', top: `${pctY(ultimo.c)}%`, background: COLOR.precio }} />
+          )}
+          {[[mA, precioA], [mB, precioB]].map(([l, precio], k) => l && !l.fuera && precio != null && (
+            <span key={`m${k}`} aria-hidden="true" className="pointer-events-none absolute w-3 h-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-bg-1"
+              style={{ left: `${l.x}%`, top: `${yDe(precio)}%`, background: COLOR.medir }} />
+          ))}
+          {mA && mB && medicion.m.dias > 0 && (
+            <span aria-hidden="true"
+              className={`pointer-events-none absolute z-10 top-1 rounded border border-rendi-accent/40 bg-bg-raised/95 px-2 py-1 text-[12px] font-semibold tabular whitespace-nowrap shadow-sm ${(mA.x + mB.x) / 2 > 60 ? '-translate-x-full' : (mA.x + mB.x) / 2 < 40 ? '' : '-translate-x-1/2'} ${medicion.m.pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}
+              style={{ left: `${(mA.x + mB.x) / 2}%` }}>
+              {textoMedicion(medicion.m)}
+            </span>
           )}
           {ph && (
             <>
@@ -730,6 +980,45 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
           )}
         </div>
       </div>
+
+      {/* Balances («B») y dividendos («D»), sobre el eje de fechas. Cada uno es
+          un botón: con el mouse encima, con el foco o con un toque, el globo
+          dice qué fue y cuánto se movió el precio. */}
+      {grupos.length > 0 && (
+        <div className={`relative mr-[72px] mt-1 ${dosRenglones ? 'h-10' : 'h-5'}`} role="group" aria-label="Balances y dividendos">
+          {grupos.map(g => {
+            const t = textoGrupo(g.items)
+            return (
+              <button key={g.clave} type="button" aria-label={`${t.titulo}. ${t.lineas.join(' ')}`}
+                aria-expanded={g.clave === eventoSel}
+                className={`absolute -translate-x-1/2 inline-flex items-center p-0.5 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-rendi-accent ${dosRenglones && g.tipo === 'dividendo' ? 'top-5' : 'top-0'}`}
+                style={{ left: `${g.x}%` }}
+                onPointerEnter={ev => { if (ev.pointerType === 'mouse') { conMouse.current = true; setEventoSel(g.clave) } }}
+                onPointerLeave={ev => { if (ev.pointerType === 'mouse') { conMouse.current = false; setEventoSel(null) } }}
+                onFocus={() => setEventoSel(g.clave)} onBlur={() => setEventoSel(null)}
+                onClick={() => setEventoSel(s => (s === g.clave && !conMouse.current ? null : g.clave))}>
+                <Letra tipo={g.tipo} grande />
+                {g.items.length > 1 && <span className="ml-0.5 text-[10px] font-semibold text-ink-1 tabular">{g.items.length}</span>}
+              </button>
+            )
+          })}
+          {grupoSel && (() => {
+            const t = textoGrupo(grupoSel.items)
+            const x = grupoSel.x
+            return (
+              // En el celular el globo ocupa el ancho del gráfico (pegado a la
+              // marca quedaba de una palabra por renglón); desde sm, va junto a
+              // la marca, del lado en que entra.
+              <div aria-hidden="true"
+                className={`pointer-events-none absolute bottom-full mb-1 z-20 left-0 right-0 sm:right-auto sm:left-[var(--x)] sm:w-max sm:max-w-[16rem] rounded border border-line-2 bg-bg-raised/95 px-2.5 py-1.5 text-[11.5px] leading-snug shadow-sm ${x > 62 ? 'sm:-translate-x-full' : x < 38 ? '' : 'sm:-translate-x-1/2'}`}
+                style={{ '--x': `${x}%` }}>
+                <div className="text-ink-0 font-semibold text-[12px]">{t.titulo}</div>
+                {t.lineas.map((l, k) => <div key={k} className="text-ink-1 tabular">{l}</div>)}
+              </div>
+            )
+          })()}
+        </div>
+      )}
 
       {/* Meses. Se arrastran para acercar o alejar en el tiempo, con el último
           día quieto (ver ejesGrafico.js). */}

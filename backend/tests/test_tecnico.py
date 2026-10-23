@@ -56,8 +56,11 @@ class YahooFalso:
         self.hoy, self.precios, self.pedidos = hoy, {}, []
 
     def __call__(self, ticker, period, interval, auto_adjust, timeout):
-        self.pedidos.append((ticker, period, auto_adjust))
-        f = self.precios.get(ticker)
+        # El S&P 500 se guarda todas las noches (velas_diarias.SP500): precio fijo
+        # salvo que la prueba le dé otro, y fuera de `pedidos`.
+        if ticker != "^GSPC":
+            self.pedidos.append((ticker, period, auto_adjust))
+        f = self.precios.get(ticker) or ((lambda i, d: 5000.0) if ticker == "^GSPC" else None)
         if f is None:
             return pd.DataFrame()
         dias = _ruedas(self.hoy, 760 if period == "3y" else 22)
@@ -306,9 +309,10 @@ class FichaTest(unittest.TestCase):
         self.assertEqual(antes["activos"], 0)
         main._run_velas_diarias_job()
         e = self.client.get("/api/admin/velas", headers=self.h_admin).json()
-        self.assertEqual((e["activos"], e["ok"]), (2, 1))
+        # 3 activos: MSFT, NOEXISTE y el S&P 500 (que se guarda siempre).
+        self.assertEqual((e["activos"], e["ok"]), (3, 2))
         self.assertEqual([f["symbol"] for f in e["fallados"]], ["NOEXISTE"])
-        self.assertEqual(e["filas"], 760)
+        self.assertEqual(e["filas"], 2 * 760)
         self.assertEqual(e["hasta"], self.dias[-1].isoformat())
         self.assertFalse(e["corriendo"])
 
@@ -436,7 +440,8 @@ class FichaTest(unittest.TestCase):
             conn.execute("INSERT INTO velas_estado (symbol, ok, error) VALUES ('VIEJO', 0, 'x')")
             conn.commit()
         e = self.client.get("/api/admin/velas", headers=self.h_admin).json()
-        self.assertEqual((e["seguidos"], e["atrasados"], e["fallados"]), (1, [], []))
+        self.assertEqual((e["seguidos"], e["atrasados"], e["fallados"]), (2, [], []),
+                         "MSFT y el S&P 500")
 
 
     def test_cierre_del_instrumento_de_tu_tenencia(self):

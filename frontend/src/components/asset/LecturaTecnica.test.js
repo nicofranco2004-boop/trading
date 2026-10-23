@@ -128,11 +128,15 @@ describe('LecturaTecnica', () => {
     const el = () => h(LecturaTecnica, { asset: 'GGAL', accionLocal: true })
     montado = await montar(el())
     for (let i = 0; i < 4; i++) await montado.redibujar(el())
-    const pedidos = () => api.get.mock.calls.map(c => c[0]).filter(r => r.startsWith('/tecnico'))
+    const todos = () => api.get.mock.calls.map(c => c[0]).filter(r => r.startsWith('/tecnico'))
+    const pedidos = () => todos().filter(r => !r.includes('/eventos'))
     expect(pedidos()).toEqual(['/tecnico/GGAL?moneda=usd&local=1'])
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos'))
     for (let i = 0; i < 4; i++) await montado.redibujar(el())
     expect(pedidos()).toEqual(['/tecnico/GGAL?moneda=usd&local=1', '/tecnico/GGAL?moneda=ars&local=1'])
+    // Los balances y dividendos, también por moneda y con la acción local.
+    expect(todos().filter(r => r.includes('/eventos'))).toEqual(
+      ['/tecnico/GGAL/eventos?moneda=usd&local=1', '/tecnico/GGAL/eventos?moneda=ars&local=1'])
   })
 
   it('en pesos, tu precio sale de lo que pagaste en pesos (con comisiones)', async () => {
