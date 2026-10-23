@@ -406,6 +406,10 @@ def correr(conn) -> dict:
     tickers, pares = _seguimiento(conn)
     res = actualizar(conn, sorted(tickers))
     res["podados_a_pedido"] = _podar_a_pedido(conn, tickers)
+    # Cuándo corrió la NOCHE, aparte de cada activo: las fichas abiertas a pedido
+    # también anotan su `ultima_corrida`, y /admin no tiene que confundirlas.
+    _anotar(conn, MARCA_CORRIDA_NOCHE, completa=False, ok=True, filas=res["filas"])
+    conn.commit()
     try:
         import cambios_ratio
         res["cambios_ratio"] = cambios_ratio.correr(
@@ -421,21 +425,73 @@ def correr(conn) -> dict:
 # también para un activo que nadie tiene ni sigue: la corrida de la noche no lo
 # baja. Entonces se baja en el momento en que alguien abre su ficha, con frenos
 # para que nadie pueda usar la ficha para disparar descargas sin límite:
-#   · cuántos activos nuevos por hora, por persona y entre todos;
-#   · lo que se intentó hace poco no se vuelve a pedir (tampoco lo que falló);
-#   · a Yahoo se lo espera poco: la ficha no queda colgada;
-#   · dos personas abriendo el mismo activo a la vez lo bajan una sola vez;
+#   · sólo activos que la app conoce (`se_puede_pedir`): los de los buscadores,
+#     el mapa de calor, BYMA, o los que la persona tiene o sigue. Un símbolo
+#     inventado, o miles de símbolos reales de cualquier bolsa, no entran;
+#   · cuántos activos nuevos por hora y por día, por persona, y por hora entre
+#     todos;
+#   · lo que ya se intentó hoy no se vuelve a pedir (la vela de hoy no entra
+#     hasta mañana: otra descarga no puede traer nada nuevo), ni lo que falló
+#     en las últimas horas;
+#   · a Yahoo se lo espera poco, y si otra persona ya lo está bajando no se
+#     espera: la ficha dice "trayendo la historia" y vuelve a pedir;
 #   · lo que nadie sigue ni volvió a mirar en `A_PEDIDO_DIAS_SIN_USO` días se
 #     borra de noche (`_podar_a_pedido`): no se acumula basura.
 A_PEDIDO_POR_PERSONA_HORA = 30
+A_PEDIDO_POR_PERSONA_DIA = 100
 A_PEDIDO_TODOS_HORA = 200
 A_PEDIDO_TOPE_SEG = 10.0
 A_PEDIDO_REINTENTO_HORAS = 6
 A_PEDIDO_DIAS_SIN_USO = 45
+# La fila de `velas_estado` donde la corrida de la noche anota que corrió. No es
+# un ticker (`~` no pasa la validación de símbolos de la API): no choca con nada.
+MARCA_CORRIDA_NOCHE = '~corrida_noche'
 
 _a_pedido_cond = threading.Condition()
 _a_pedido_en_curso = set()
 _a_pedido_hechos = deque()   # (momento, uid) de cada ticker bajado a pedido
+
+
+def _variantes(asset: str) -> set:
+    """Las formas de escribir el mismo papel: con o sin '.BA', una cripto con
+    o sin '-USD', y una acción con clase con punto o guión (BRK.B / BRK-B)."""
+    a = (asset or '').strip().upper()
+    base = a[:-3] if a.endswith('.BA') else a
+    for suf in ('-USD', '-USDT', '-USDC'):
+        if base.endswith(suf):
+            base = base[:-len(suf)]
+    return {a, base, base.replace('.', '-'), base.replace('-', '.')}
+
+
+def se_puede_pedir(conn, asset: str, uid) -> bool:
+    """¿La app conoce este activo? Lo que ofrecen los buscadores y lo que se
+    puede tocar en Mercado (la lista de tickers de la app, `ai.trade_tickers`,
+    y el mapa de calor/movers, `home.market`), lo que cotiza en BYMA (data912)
+    y lo que la persona tiene, operó o sigue. Lo demás no se baja a pedido:
+    sin esto, cualquier cuenta podía llenar la base pidiendo, de a 30 por hora,
+    las decenas de miles de tickers reales que existen (auditoría 22/10)."""
+    from ai import trade_tickers as tt
+    from home import market as mk
+    v = _variantes(asset)
+    conocidos = (tt.CRYPTO_TICKERS | tt.US_TICKERS | tt.CEDEAR_TICKERS | tt.AR_STOCK_TICKERS)
+    if v & conocidos:
+        return True
+    mercado = {x for lista in (mk.SP500_TOP_50, mk.MERVAL_TOP_25, mk.CRYPTO_TOP_30)
+               for s in lista for x in _variantes(s)}
+    if v & mercado:
+        return True
+    try:
+        from main import _fetch_data912_equities
+        if v & set((_fetch_data912_equities() or {}).keys()):
+            return True
+    except Exception:
+        pass
+    marcas = ",".join("?" * len(v))
+    for tabla, col in (("positions", "asset"), ("operations", "asset"), ("watchlist", "symbol")):
+        if conn.execute(f"SELECT 1 FROM {tabla} WHERE user_id=? AND UPPER({col}) IN ({marcas}) LIMIT 1",
+                        (uid, *v)).fetchone():
+            return True
+    return False
 
 
 def tickers_a_pedido(asset: str, local: bool = False, cedears=None) -> list:
@@ -448,8 +504,11 @@ def tickers_a_pedido(asset: str, local: bool = False, cedears=None) -> list:
     pesos, la ficha usa la de afuera × el MEP de cada día (`tecnico.serie`).
 
     `local`: la ficha dice que es una acción argentina (su serie es la de BYMA).
-    Un '.BA' sin `local` necesita la lista de CEDEARs de BYMA para saber qué es:
-    si data912 no contesta, no se baja (mejor sin gráfico que uno equivocado)."""
+    Un '.BA' necesita la lista de CEDEARs de BYMA para saber qué es: si data912
+    no contesta, sólo se baja si es una acción argentina conocida (`local` lo
+    manda la pantalla, pero también se puede escribir a mano). Mejor sin gráfico
+    que uno equivocado guardado para todos."""
+    from ai.trade_tickers import AR_STOCK_TICKERS
     from cripto import yahoo_de_cripto
     a = (asset or '').strip().upper()
     en_pesos = a.endswith('.BA') or bool(local)
@@ -458,7 +517,8 @@ def tickers_a_pedido(asset: str, local: bool = False, cedears=None) -> list:
     ys = _yahoo_de(a, None, en_pesos, yahoo_de_cripto, cedears)
     if len(ys) == 2:          # la forma de un CEDEAR: [afuera, pesos]
         return [ys[0]]
-    if not local and not cedears and any(t.endswith('.BA') for t in ys):
+    base = a[:-3] if a.endswith('.BA') else a
+    if not cedears and any(t.endswith('.BA') for t in ys) and base not in AR_STOCK_TICKERS:
         return []
     return ys
 
@@ -469,8 +529,15 @@ def _ahora_utc() -> datetime:
 
 
 def _necesita(conn, ticker: str, hoy: str, ahora: datetime) -> bool:
-    """¿Hay que bajarlo? No, si su última vela es de ayer o de hoy, o si se
-    intentó hace menos de `A_PEDIDO_REINTENTO_HORAS` (haya salido bien o mal)."""
+    """¿Hay que bajarlo? No, si:
+      · su última vela es de ayer (la de hoy no entra hasta mañana: `_velas_de`);
+      · ya se intentó HOY (día argentino), salga bien o mal: otra descarga hoy
+        no puede traer nada nuevo. Un domingo, un lunes antes del cierre o el
+        día después de un feriado, la última vela es de hace 2-4 días y antes
+        eso se leía como "vieja": cada ficha volvía a bajar lo mismo y gastaba
+        el cupo (auditoría 22/10);
+      · se intentó hace menos de `A_PEDIDO_REINTENTO_HORAS`.
+    Lo que sigue la corrida de la noche ya se intentó hoy: no se vuelve a pedir."""
     r = conn.execute("SELECT MAX(date) AS d FROM velas_diarias WHERE symbol=?", (ticker,)).fetchone()
     if r and r["d"] and (date.fromisoformat(hoy) - date.fromisoformat(str(r["d"])[:10])).days <= 1:
         return False
@@ -480,19 +547,25 @@ def _necesita(conn, ticker: str, hoy: str, ahora: datetime) -> bool:
             cuando = datetime.fromisoformat(str(e["ultima_corrida"])[:19])
         except ValueError:
             return True
-        if ahora - cuando < timedelta(hours=A_PEDIDO_REINTENTO_HORAS):
+        # Las 00:00 de hoy en Argentina (UTC−3), en UTC.
+        empieza_hoy = datetime.fromisoformat(hoy) + timedelta(hours=3)
+        if cuando >= empieza_hoy or ahora - cuando < timedelta(hours=A_PEDIDO_REINTENTO_HORAS):
             return False
     return True
 
 
 def _hay_cupo(uid, n: int) -> bool:
-    """¿Entran `n` tickers más en la última hora, para esta persona y para
-    todos? Si entran, quedan anotados. Se llama con `_a_pedido_cond` tomado."""
+    """¿Entran `n` tickers más en la última hora y en el último día para esta
+    persona, y en la última hora para todos? Si entran, quedan anotados. Se
+    llama con `_a_pedido_cond` tomado."""
     ahora = time.monotonic()
-    while _a_pedido_hechos and ahora - _a_pedido_hechos[0][0] > 3600:
+    while _a_pedido_hechos and ahora - _a_pedido_hechos[0][0] > 86400:
         _a_pedido_hechos.popleft()
-    de_el = sum(1 for _, u in _a_pedido_hechos if u == uid)
-    if len(_a_pedido_hechos) + n > A_PEDIDO_TODOS_HORA or de_el + n > A_PEDIDO_POR_PERSONA_HORA:
+    hora = [u for t, u in _a_pedido_hechos if ahora - t <= 3600]
+    de_el_hora = sum(1 for u in hora if u == uid)
+    de_el_dia = sum(1 for _, u in _a_pedido_hechos if u == uid)
+    if (len(hora) + n > A_PEDIDO_TODOS_HORA or de_el_hora + n > A_PEDIDO_POR_PERSONA_HORA
+            or de_el_dia + n > A_PEDIDO_POR_PERSONA_DIA):
         return False
     _a_pedido_hechos.extend((ahora, uid) for _ in range(n))
     return True
@@ -500,29 +573,41 @@ def _hay_cupo(uid, n: int) -> bool:
 
 def asegurar(conn, tickers: list, uid, *, bajar=None, hoy: str = None):
     """Baja en el momento las velas de `tickers` que falten o estén viejas (ver
-    `_necesita`), con los frenos de arriba. Devuelve None, o 'tope' si no se
-    bajaron porque se llegó al cupo de la hora: la ficha lo dice."""
+    `_necesita`), con los frenos de arriba. Devuelve None (listo, o no hacía
+    falta), 'tope' (se llegó al cupo) o 'bajando' (otra persona lo está bajando
+    ahora mismo: la ficha vuelve a pedir en unos segundos, sin dejar un hilo del
+    servidor esperando)."""
     from fechas import hoy_art
     hoy = hoy or hoy_art()
     tickers = [t for t in dict.fromkeys(tickers or []) if t]
-    if not any(_necesita(conn, t, hoy, _ahora_utc()) for t in tickers):
+    faltan = [t for t in tickers if _necesita(conn, t, hoy, _ahora_utc())]
+    if not faltan:
         return None
+    # Una acción argentina que no tenía nada: su lista de cambios de cantidad
+    # (YPFD 10 a 1) se arma después de bajarla, o el gráfico de hoy mostraría
+    # el salto falso hasta la noche.
+    nuevos_ba = [t for t in faltan if t.endswith('.BA') and not conn.execute(
+        "SELECT 1 FROM velas_diarias WHERE symbol=? LIMIT 1", (t,)).fetchone()]
     with _a_pedido_cond:
-        # Si otra persona lo está bajando ahora mismo, se espera a que termine.
-        _a_pedido_cond.wait_for(lambda: not (set(tickers) & _a_pedido_en_curso),
-                                timeout=2 * A_PEDIDO_TOPE_SEG + 5)
-        if set(tickers) & _a_pedido_en_curso:
-            return None   # sigue bajándose: la ficha muestra lo que haya
-        faltan = [t for t in tickers if _necesita(conn, t, hoy, _ahora_utc())]
-        if not faltan:
-            return None
+        if set(faltan) & _a_pedido_en_curso:
+            return "bajando"
         if not _hay_cupo(uid, len(faltan)):
-            log.warning("velas a pedido: cupo de la hora lleno (uid=%s, %s)", uid, faltan)
+            log.warning("velas a pedido: cupo lleno (uid=%s, %s)", uid, faltan)
             return "tope"
         _a_pedido_en_curso.update(faltan)
     try:
+        # Se cierra la lectura antes de esperar a Yahoo: en Postgres quedaba una
+        # transacción abierta los 10 s de la espera.
+        conn.commit()
         actualizar(conn, faltan, bajar=bajar, hoy=hoy, tope_seg=A_PEDIDO_TOPE_SEG,
                    tope_tanda=A_PEDIDO_TOPE_SEG, podar=False)
+        bajados = [t for t in nuevos_ba if conn.execute(
+            "SELECT 1 FROM velas_diarias WHERE symbol=? LIMIT 1", (t,)).fetchone()]
+        if bajados:
+            import cambios_ratio
+            # Sin `pares`: a pedido nunca se baja la serie en pesos de un CEDEAR
+            # (`tickers_a_pedido`), así que un '.BA' bajado acá es una acción argentina.
+            cambios_ratio.recalcular(conn, [t[:-3] for t in bajados], tope_seg=A_PEDIDO_TOPE_SEG)
     finally:
         with _a_pedido_cond:
             _a_pedido_en_curso.difference_update(faltan)

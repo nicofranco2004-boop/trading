@@ -103,6 +103,18 @@ export function opcionRendiAI(texto, chatLibre = true) {
   return { clase: 'ia', id: 'ia', titulo: `Preguntarle a Mervall-E: «${texto}»`, detalle: 'Mervall-E AI', pregunta: texto }
 }
 
+// El mismo papel escrito de otra forma: con o sin ".BA", una cripto con o sin
+// "-USD" (el mapa de calor y el chat la guardan como BTC-USD), una acción con
+// clase con punto, guión o pegada (BRK.B, BRK-B, BRKB: el CEDEAR) y los CEDEARs
+// con ticker propio (DISN → DIS: CEDEAR_EN_EEUU). OJO: con o sin ".BA" puede
+// ser OTRO instrumento (GGAL.BA es la acción local, GGAL el ADR; AGRO.BA es
+// Agrometal y AGRO Adecoagro): quien compara decide el mercado aparte.
+export function mismoPapel(simbolo) {
+  let s = (simbolo || '').toUpperCase().trim().replace(/\.BA$/, '').replace(/-(USD|USDT|USDC)$/, '')
+  s = CEDEAR_EN_EEUU[s] || s
+  return s.replace(/[.\s]/g, '-')
+}
+
 // La ficha de un activo: UN lugar para todo activo, lo tengas o no. La abren la
 // Cartera, los buscadores, el mapa de calor, los movers, la watchlist y los
 // eventos. Con lotes muestra lo tuyo; sin lotes, el precio y el análisis técnico.

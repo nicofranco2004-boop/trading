@@ -16,7 +16,7 @@ import { Search, X, CornerDownLeft, ArrowUp, ArrowDown, Plus, Check } from 'luci
 import { api } from '../../utils/api'
 import AssetLogo from '../AssetLogo'
 import AssetTypeBadge from '../AssetTypeBadge'
-import { urlDeActivo } from '../../utils/buscadorRapido'
+import { destinoDeTicker } from '../../utils/buscadorRapido'
 import { notifyWatchlistChanged, subscribeWatchlistChanged } from '../../utils/watchlistEvents'
 import { POPULAR_TICKERS, CEDEAR_SEARCH, AR_STOCK_SEARCH, US_SEARCH, inferType } from '../../utils/tickers'
 
@@ -162,8 +162,14 @@ export default function SearchBar() {
   const elapsedMs = Math.max(1, Math.round(performance.now() - startedAt.current))
 
   // ── Actions ────────────────────────────────────────────────────────────────
-  function pick(symbol) {
-    navigate(urlDeActivo(symbol))
+  // A dónde lleva cada fila: la MISMA regla que el ⌘K y la lupa del celular
+  // (destinoDeTicker). null = un bono o un fondo que no tenés: la fila no lleva
+  // a ningún lado y queda sólo el botón de la watchlist.
+  const destinoDe = (t) => destinoDeTicker(t.symbol, { tuyo: !!t.fromUser, tipo: t.type })
+  function pick(t) {
+    const ir = destinoDe(t)
+    if (!ir) return
+    navigate(ir)
     setOpen(false)
     setQ('')
   }
@@ -204,9 +210,9 @@ export default function SearchBar() {
     } else if (e.key === 'Enter') {
       const target = flatResults[cursor]
       if (!target) return
-      // En holdings → abre ficha. En suggested → agrega a watchlist.
-      if (target.fromUser) pick(target.symbol)
-      else toggleWatchlist(target.symbol)
+      // Enter hace lo mismo que el click: abre la ficha. Agregaba a la watchlist
+      // los sugeridos, algo que nadie pidió con Enter (auditoría 22/10).
+      pick(target)
     }
   }
 
@@ -291,7 +297,7 @@ export default function SearchBar() {
                           ticker={t}
                           active={cursor === i}
                           highlight
-                          onPick={pick}
+                          onPick={destinoDe(t) ? pick : null}
                           onHover={() => setCursor(i)}
                         />
                       ))}
@@ -316,7 +322,7 @@ export default function SearchBar() {
                             key={t.symbol}
                             ticker={t}
                             active={cursor === idx}
-                            onPick={pick}
+                            onPick={destinoDe(t) ? pick : null}
                             onHover={() => setCursor(idx)}
                             inWatchlist={inWatchlist}
                             actionDisabled={addingSymbol === t.symbol}
@@ -333,7 +339,7 @@ export default function SearchBar() {
             {/* FOOTER: atajos */}
             <div className="px-3 py-2 border-t border-line/60 flex items-center gap-4 text-[12.5px] text-ink-2 bg-bg-2/40 font-medium">
               <Shortcut icon={<><ArrowUp size={9} strokeWidth={2} /><ArrowDown size={9} strokeWidth={2} /></>} label="navegar" />
-              <Shortcut icon={<CornerDownLeft size={9} strokeWidth={2} />} label="abrir / agregar" />
+              <Shortcut icon={<CornerDownLeft size={9} strokeWidth={2} />} label="abrir" />
               <Shortcut text="ESC" label="cerrar" />
               <span className="ml-auto flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden="true" />
@@ -379,10 +385,10 @@ function ResultRow({ ticker, active, highlight, onPick, onHover, inWatchlist = f
   return (
     <div
       onMouseEnter={onHover}
-      className={`relative flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors group ${
-        active ? 'bg-bg-2' : 'hover:bg-bg-2/60'
+      className={`relative flex items-center gap-3 px-3 py-2.5 transition-colors group ${onPick ? 'cursor-pointer' : ''} ${
+        active ? 'bg-bg-2' : onPick ? 'hover:bg-bg-2/60' : ''
       } ${highlight ? 'border-l-2 border-rendi-pos' : 'border-l-2 border-transparent'}`}
-      onClick={() => onPick(ticker.symbol)}
+      onClick={onPick ? () => onPick(ticker) : undefined}
     >
       {/* Logo del activo (cae a iniciales con color hash si no hay archivo) */}
       <AssetLogo asset={logoSymbolFor(ticker.symbol)} size={28} className="flex-shrink-0" />
@@ -411,7 +417,7 @@ function ResultRow({ ticker, active, highlight, onPick, onHover, inWatchlist = f
       {/* Acción */}
       {ticker.fromUser ? (
         <button
-          onClick={(e) => { e.stopPropagation(); onPick(ticker.symbol) }}
+          onClick={(e) => { e.stopPropagation(); onPick?.(ticker) }}
           className="flex-shrink-0 text-[12px] text-ink-2 hover:text-ink-0 border border-line bg-bg-2 hover:bg-bg-3 px-2 py-1 rounded-sm transition-colors font-medium"
         >
           Ver posición

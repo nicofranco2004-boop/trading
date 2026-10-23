@@ -40,6 +40,11 @@ import tecnico
 from fechas import hoy_art_date
 
 
+def _dt_utc(*a):
+    from datetime import datetime
+    return datetime(*a)
+
+
 def _ruedas(hasta, n):
     out, d = [], hasta - timedelta(days=1)
     while len(out) < n:
@@ -493,33 +498,63 @@ class FichaTest(unittest.TestCase):
         self.assertEqual((f["ticker"], f["convertida"]), ("GGAL.BA", "mep"))
         self.assertAlmostEqual(f["puntos"][-1]["c"], 5.0, places=6)
         self.assertEqual(self._pedidos("GGAL"), [], "el ADR no se baja para la acción local")
-        # Un '.BA' sin saber si es CEDEAR (data912 caído en esta prueba) no se baja.
-        g = self._ficha("YPFD.BA")
+        # Un '.BA' sin saber si es CEDEAR (data912 caído en esta prueba) no se
+        # baja, salvo que sea una acción argentina conocida.
+        g = self._ficha("XLE.BA")
         self.assertEqual((g["disponible"], g["motivo"]), (False, "sin_serie"))
-        self.assertEqual(self._pedidos("YPFD.BA"), [])
+        self.assertEqual(self._pedidos("XLE.BA"), [])
+        self.yahoo.precios["YPFD.BA"] = lambda i, d: 40000.0
+        self.assertTrue(self._ficha("YPFD.BA")["disponible"])
 
     def test_cupo_por_persona_y_por_hora(self):
         import velas_diarias
-        for t in ("AAA", "BBB", "CCC"):
+        for t in ("AMD", "INTC", "ORCL", "QCOM"):
             self.yahoo.precios[t] = lambda i, d: 10.0
         with mock.patch.object(velas_diarias, "A_PEDIDO_POR_PERSONA_HORA", 2):
-            self.assertTrue(self._ficha("AAA")["disponible"])
-            self.assertTrue(self._ficha("BBB")["disponible"])
-            f = self._ficha("CCC")
+            self.assertTrue(self._ficha("AMD")["disponible"])
+            self.assertTrue(self._ficha("INTC")["disponible"])
+            f = self._ficha("ORCL")
             self.assertEqual((f["disponible"], f["motivo"]), (False, "tope"))
-            self.assertEqual(self._pedidos("CCC"), [], "pasado el cupo no se le pide nada a Yahoo")
+            self.assertEqual(self._pedidos("ORCL"), [], "pasado el cupo no se le pide nada a Yahoo")
             # Lo ya bajado se sigue viendo: el cupo frena descargas, no lecturas.
-            self.assertTrue(self._ficha("AAA")["disponible"])
+            self.assertTrue(self._ficha("AMD")["disponible"])
         with mock.patch.object(velas_diarias, "A_PEDIDO_TODOS_HORA", 2):
             otro = self.h_admin
-            r = self.client.get("/api/tecnico/CCC", headers=otro).json()
+            r = self.client.get("/api/tecnico/ORCL", headers=otro).json()
             self.assertEqual(r.get("motivo"), "tope", "el cupo de todos juntos también frena")
+        # Y el del día por persona: pasada la hora, 30 por hora no alcanzan para
+        # llenar la base de a miles.
+        velas_diarias._a_pedido_hechos.clear()
+        with mock.patch.object(velas_diarias, "A_PEDIDO_POR_PERSONA_DIA", 3):
+            velas_diarias._a_pedido_hechos.extend([(0.0, self.uid)] * 0)
+            import time as _t
+            hace_2h = _t.monotonic() - 7200
+            velas_diarias._a_pedido_hechos.extend([(hace_2h, self.uid)] * 3)
+            f = self._ficha("QCOM")
+            self.assertEqual(f["motivo"], "tope")
+            self.assertEqual(self._pedidos("QCOM"), [])
 
-    def test_lo_que_no_existe_no_se_reintenta_enseguida(self):
+    def test_lo_que_falla_no_se_reintenta_enseguida(self):
+        # Un ticker que la app conoce pero Yahoo no devuelve (caído, deslistado).
+        f = self._ficha("SNAP")
+        self.assertEqual((f["disponible"], f["motivo"]), (False, "sin_datos"))
+        self._ficha("SNAP")
+        self.assertEqual(len(self._pedidos("SNAP")), 1)
+
+    def test_solo_se_baja_lo_que_la_app_conoce(self):
+        # Un símbolo que ningún buscador ni el mapa ofrecen, y que no tenés ni
+        # seguís, no se baja: sin esto se podía llenar la base de a miles.
+        self.yahoo.precios["ZZZZ"] = lambda i, d: 5.0
         f = self._ficha("ZZZZ")
         self.assertEqual((f["disponible"], f["motivo"]), (False, "sin_datos"))
-        self._ficha("ZZZZ")
-        self.assertEqual(len(self._pedidos("ZZZZ")), 1)
+        self.assertEqual(self._pedidos("ZZZZ"), [])
+        # Si lo tenés (recién cargado, antes de la noche), sí.
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "ZZZZ", "STOCK")
+        self.assertTrue(self._ficha("ZZZZ")["disponible"])
+        # Una cripto del mapa de calor que llega como BTC: la app la conoce.
+        self.yahoo.precios["BTC-USD"] = lambda i, d: 80000.0
+        self.assertTrue(self._ficha("BTC")["disponible"])
         self.assertEqual(self._ficha("AL30")["motivo"], "sin_serie")
         self.assertEqual(self._pedidos("AL30"), [], "un bono no tiene velas: ni se pide")
 
@@ -527,11 +562,11 @@ class FichaTest(unittest.TestCase):
         import velas_diarias
         self.yahoo.precios["NVDA"] = lambda i, d: 100.0
         self._ficha("NVDA")
-        # Pasaron días: las últimas velas no están y el último intento fue hace 7 horas.
+        # Pasaron días: las últimas velas no están y el último intento fue ayer.
         with main.db_abierta() as conn:
             conn.execute("DELETE FROM velas_diarias WHERE symbol='NVDA' AND date >= ?",
                          (self.dias[-3].isoformat(),))
-            hace = (velas_diarias._ahora_utc() - timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
+            hace = (velas_diarias._ahora_utc() - timedelta(hours=30)).strftime("%Y-%m-%d %H:%M:%S")
             conn.execute("UPDATE velas_estado SET ultima_corrida=? WHERE symbol='NVDA'", (hace,))
             conn.commit()
         f = self._ficha("NVDA")
@@ -572,16 +607,124 @@ class FichaTest(unittest.TestCase):
             return self.yahoo(t, periodo, "1d", False, 10.0)
         self.yahoo.precios["NVDA"] = lambda i, d: 100.0
 
-        def abrir(uid):
+        resultados = []
+
+        def abrir_y_anotar(uid):
             with main.db_abierta() as conn:
-                velas_diarias.asegurar(conn, ["NVDA"], uid, bajar=lento)
-        hilos = [threading.Thread(target=abrir, args=(u,)) for u in (1, 2, 3)]
+                resultados.append(velas_diarias.asegurar(conn, ["NVDA"], uid, bajar=lento))
+        hilos = [threading.Thread(target=abrir_y_anotar, args=(u,)) for u in (1, 2, 3)]
         for h in hilos:
             h.start()
         for h in hilos:
             h.join()
         self.assertEqual(pedidos, ["NVDA"])
+        # Los que llegan mientras se baja no esperan (no ocupan un hilo del
+        # servidor 10 s): la ficha dice "trayendo la historia" y vuelve a pedir.
+        self.assertEqual(sorted(resultados, key=str), [None, "bajando", "bajando"])
         self.assertTrue(self._ficha("NVDA")["disponible"])
+
+
+    def test_fin_de_semana_no_se_vuelve_a_bajar_lo_que_la_noche_puso_al_dia(self):
+        # Lunes antes del cierre: la última vela es del viernes (3 días) y la
+        # noche ya lo intentó HOY. Abrir la ficha no le pide nada a Yahoo.
+        import velas_diarias
+        from datetime import date as _d
+        lunes = _d(2026, 10, 26)
+        viernes = "2026-10-23"
+        llamados = []
+
+        def bajar(t, periodo):
+            llamados.append(t)
+            return pd.DataFrame()
+        with main.db_abierta() as conn:
+            conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES ('MSFT', ?, 400)", (viernes,))
+            conn.execute("INSERT INTO velas_estado (symbol, ultima_corrida, ultima_completa, ok) "
+                         "VALUES ('MSFT', '2026-10-26 04:10:00', '2026-10-20 04:00:00', 1)")
+            conn.commit()
+            with mock.patch.object(velas_diarias, "_ahora_utc", lambda: _dt_utc(2026, 10, 26, 15)):
+                self.assertIsNone(velas_diarias.asegurar(conn, ["MSFT"], self.uid, bajar=bajar,
+                                                         hoy=lunes.isoformat()))
+            self.assertEqual(llamados, [], "otra descarga hoy no puede traer nada nuevo")
+            # Si la noche NO corrió hoy (último intento: el sábado), sí se baja.
+            conn.execute("UPDATE velas_estado SET ultima_corrida='2026-10-24 04:00:00' WHERE symbol='MSFT'")
+            conn.commit()
+            with mock.patch.object(velas_diarias, "_ahora_utc", lambda: _dt_utc(2026, 10, 26, 15)):
+                velas_diarias.asegurar(conn, ["MSFT"], self.uid, bajar=bajar, hoy=lunes.isoformat())
+            self.assertEqual(llamados, ["MSFT"])
+
+    def test_pesos_de_un_cedear_que_nadie_sigue_no_usa_una_serie_vieja(self):
+        # Alguien tuvo MELI y la vendió: quedó MELI.BA guardada, 20 días atrás.
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["MELI"] = lambda i, d: 2000.0
+        with main.db_abierta() as conn:
+            for d in self.dias[-300:-14]:
+                conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES ('MELI.BA', ?, 99.0)",
+                             (d.isoformat(),))
+            conn.commit()
+        with mock.patch("main._fetch_data912_equities", lambda: {"MELI": {"mercado": "arg_cedears"}}):
+            ars = self._ficha("MELI.BA", "ars")
+        self.assertEqual((ars["ticker"], ars["convertida"]), ("MELI", "mep"))
+        self.assertEqual(ars["puntos"][-1]["d"], self.dias[-1].isoformat())
+        self.assertAlmostEqual(ars["puntos"][-1]["c"], 2_000_000.0, places=3)
+
+    def test_local_a_mano_con_data912_caido_no_baja_un_cedear_en_pesos(self):
+        # `local=1` lo manda la pantalla sólo para acciones argentinas, pero se
+        # puede escribir a mano. Sin la lista de CEDEARs de BYMA, XLE.BA cruda
+        # (sin sus cambios de ratio) quedaría guardada para todos.
+        self.yahoo.precios["XLE.BA"] = lambda i, d: 30000.0
+        f = self._ficha("XLE", local=True)
+        self.assertEqual((f["disponible"], f["motivo"]), (False, "sin_serie"))
+        self.assertEqual(self._pedidos("XLE.BA"), [])
+        # Una acción argentina conocida sí, aunque data912 no conteste.
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["BMA.BA"] = lambda i, d: 9000.0
+        self.assertTrue(self._ficha("BMA", local=True)["disponible"])
+
+    def test_accion_argentina_a_pedido_ya_viene_corregida_como_de_noche(self):
+        # Un precio roto de un día: la noche lo saca con la lista de cambios
+        # (cambios_ratio). Bajada a pedido, la ficha tiene que mostrar LO MISMO
+        # que mostraría después de la noche, no el salto hasta mañana.
+        # TGSU2 pasa a valer un décimo (10 nuevas por cada vieja, como YPFD el
+        # 03/08/2026): Yahoo lo anota en sus splits pero no corrige la serie en
+        # pesos. La noche lo empalma con la lista de cambios (cambios_ratio).
+        self._mep(lambda i: 1000.0)
+        corte = len(self.dias) - 40
+        self.yahoo.precios["TGSU2.BA"] = lambda i, d: 60000.0 if i < corte else 6000.0
+        splits = mock.patch("cambios_ratio._splits_de_yahoo",
+                            lambda t: [(self.dias[corte].isoformat(), 10.0)] if t == "TGSU2.BA" else [])
+        splits.start()
+        self.addCleanup(splits.stop)
+        a_pedido = self._ficha("TGSU2.BA", local=True)
+        # La misma serie, por el camino de la noche (alguien la tiene).
+        with main.db_abierta() as conn:
+            for t in ("velas_diarias", "velas_estado", "cambios_ratio"):
+                conn.execute(f"DELETE FROM {t}")
+            conn.commit()
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "TGSU2", "ACCION")
+        main._run_velas_diarias_job()
+        de_noche = self._ficha("TGSU2", local=True)
+        cierres = [p["c"] for p in de_noche["puntos"]]
+        self.assertLess(max(cierres) / min(cierres), 1.5, "de noche, sin el salto falso")
+        self.assertEqual([p["c"] for p in a_pedido["puntos"]], cierres)
+
+    def test_admin_muestra_la_corrida_de_la_noche_no_la_ultima_ficha(self):
+        import velas_diarias
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "MSFT", "STOCK")
+        self.yahoo.precios["MSFT"] = lambda i, d: 400.0
+        self.yahoo.precios["NVDA"] = lambda i, d: 100.0
+        main._run_velas_diarias_job()
+        with main.db_abierta() as conn:
+            conn.execute("UPDATE velas_estado SET ultima_corrida='2026-01-01 03:00:00' WHERE symbol=?",
+                         (velas_diarias.MARCA_CORRIDA_NOCHE,))
+            conn.commit()
+        self._ficha("NVDA")                      # una ficha a pedido, hoy
+        self._ficha("ZZZZ")                      # un símbolo que no existe
+        e = self.client.get("/api/admin/velas", headers=self.h_admin).json()
+        self.assertEqual(e["ultima_corrida"], "2026-01-01 03:00:00",
+                         "si la noche dejó de correr, la última ficha abierta no lo tapa")
+        self.assertEqual((e["activos"], e["sin_historia"]), (1, 0), "sólo lo que se sigue")
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@
 //   · una acción argentina que no tenés se mira en BYMA (local=1, GGAL.BA).
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
-import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic, enActo, escribir, buscar } from '../testing/navegadorMinimo'
+import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic, enActo, escribir, buscar, tecla } from '../testing/navegadorMinimo'
 
 function puntos(n, f) {
   return Array.from({ length: n }, (_, i) => ({
@@ -65,10 +65,12 @@ afterEach(async () => {
   montado = null
 })
 
-// Dónde quedó el router: lo escribe en la pantalla un elemento escondido.
+// Dónde quedó el router, y cómo moverlo (como el ⌘K, que está en toda la app).
 let donde = null
+let navegar = null
 function Donde() {
   donde = R.useLocation().pathname
+  navegar = R.useNavigate()
   return null
 }
 function app(inicio, pantalla) {
@@ -114,7 +116,7 @@ describe('la ficha de un activo que no tenés', () => {
     expect(t).toContain('+1,3%')
     expect(t).toContain('Análisis técnico')
     expect(t).toContain('Largo plazo')
-    expect(t).toContain('Agregar a tu watchlist')
+    expect(t).toContain('Agregar a la watchlist')
     expect(t).toContain('Ver fundamentals de NVDA')
     // Nada que dependa de tus compras.
     expect(t).not.toContain('Contra lo que pagaste')
@@ -129,9 +131,9 @@ describe('la ficha de un activo que no tenés', () => {
     api.post.mockClear()
     respuestas = { ...SIN_CARTERA, '/prices?symbols=NVDA': { NVDA: 182.4 }, '/tecnico/': TECNICO }
     await abrir('/activo/NVDA')
-    await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Agregar a tu watchlist')))
+    await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Agregar a la watchlist')))
     expect(api.post).toHaveBeenCalledWith('/watchlist', { symbol: 'NVDA' })
-    expect(texto(montado.contenedor)).toContain('En tu watchlist')
+    expect(texto(montado.contenedor)).toContain('En la watchlist')
   })
 
   it('una acción argentina que no tenés: precio en pesos y gráfico de BYMA', async () => {
@@ -215,6 +217,35 @@ describe('Mercado: un toque abre la ficha del activo', () => {
     expect(donde).toBe('/activo/AMD')
   })
 
+  it('el buscador de Mercado: Enter abre la ficha (no agrega a la watchlist)', async () => {
+    const { api } = await import('../utils/api')
+    api.post.mockClear()
+    respuestas = { ...SIN_CARTERA, '/tecnico/': TECNICO }
+    await abrir('/', h(SearchBar))
+    const campo = buscar(montado.contenedor, 'input')
+    await escribir(campo, 'NVDA')
+    for (let i = 0; i < 3; i++) await montado.redibujar(app('/', h(SearchBar)))
+    await tecla(campo, 'Enter')
+    expect(donde).toBe('/activo/NVDA')
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('el buscador de Mercado: un bono que no tenés no abre una ficha vacía', async () => {
+    respuestas = { ...SIN_CARTERA }
+    await abrir('/', h(SearchBar))
+    const campo = buscar(montado.contenedor, 'input')
+    await escribir(campo, 'AL30')
+    for (let i = 0; i < 3; i++) await montado.redibujar(app('/', h(SearchBar)))
+    const fila = (function hallar(n) {
+      if (n.nodeName === 'SPAN' && texto(n) === 'AL30') return n
+      for (const c of n.childNodes || []) { const r = hallar(c); if (r) return r }
+      return null
+    })(montado.contenedor)
+    expect(fila).toBeTruthy()
+    await enActo(async () => clic(montado.contenedor, fila))
+    expect(donde).toBe('/')
+  })
+
   it('el buscador de Mercado, aunque no lo agregues a la watchlist', async () => {
     respuestas = { ...SIN_CARTERA, '/tecnico/': TECNICO }
     await abrir('/', h(SearchBar))
@@ -229,5 +260,106 @@ describe('Mercado: un toque abre la ficha del activo', () => {
     expect(fila).toBeTruthy()
     await enActo(async () => clic(montado.contenedor, fila))
     expect(donde).toBe('/activo/NVDA')
+  })
+})
+
+describe('lo que encontró la auditoría (22/10)', () => {
+  it('si cambiás de activo mientras carga, la respuesta vieja no pisa la ficha nueva', async () => {
+    let soltar
+    const lenta = new Promise(r => { soltar = r })
+    let primera = true
+    respuestas = {
+      ...SIN_CARTERA,
+      '/positions': () => { if (primera) { primera = false; return lenta } return [] },
+      '/prices?symbols=AAPL': { AAPL: 255.55 }, '/prices?symbols=NVDA': { NVDA: 182.4 },
+      '/watchlist': { items: [{ symbol: 'AAPL' }] }, '/tecnico/': TECNICO,
+    }
+    const el = () => app('/activo/AAPL', null)
+    montado = await montar(el())
+    await enActo(async () => navegar('/activo/NVDA'))
+    for (let i = 0; i < 4; i++) await montado.redibujar(el())
+    await enActo(async () => soltar([]))
+    for (let i = 0; i < 4; i++) await montado.redibujar(el())
+    const t = texto(montado.contenedor)
+    expect(donde).toBe('/activo/NVDA')
+    expect(t).toContain('182,40')
+    expect(t).not.toContain('255,55')
+    expect(t).toContain('Agregar a la watchlist')       // AAPL está en la lista; NVDA no
+  })
+
+  it('la estrella guarda el instrumento que muestra la ficha (Agrometal, no Adecoagro)', async () => {
+    const { api } = await import('../utils/api')
+    api.post.mockClear()
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=AGRO.BA': { 'AGRO.BA': 900 }, '/tecnico/': TECNICO,
+      '/watchlist': { items: [{ symbol: 'AGRO' }] } }      // AGRO a secas = Adecoagro: otra cosa
+    const t = await abrir('/activo/AGRO')
+    expect(t).toContain('pesos')
+    expect(t).toContain('Agregar a la watchlist')
+    await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Agregar a la watchlist')))
+    expect(api.post).toHaveBeenCalledWith('/watchlist', { symbol: 'AGRO.BA' })
+  })
+
+  it('si la watchlist no acepta el símbolo, lo dice en la pantalla', async () => {
+    const { api } = await import('../utils/api')
+    api.post.mockImplementationOnce(() => Promise.reject(Object.assign(new Error('Tu lista llegó a 100 activos'), { status: 400 })))
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=NVDA': { NVDA: 182.4 }, '/tecnico/': TECNICO }
+    await abrir('/activo/NVDA')
+    await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Agregar a la watchlist')))
+    expect(texto(montado.contenedor)).toContain('Tu lista llegó a 100 activos')
+  })
+
+  it('BRK-B del mapa del S&P lleva a tu Berkshire aunque lo tengas como BRK.B', async () => {
+    respuestas = {
+      '/positions': [{ id: 3, asset: 'BRK.B', broker: 'Schwab', quantity: 2, invested: 900, currency: 'USD', asset_type: 'STOCK', entry_date: '2025-05-01' }],
+      '/brokers': [{ name: 'Schwab', currency: 'USD' }], '/dolar': null, '/operations': [],
+      '/prices': { 'BRK-B': 480 }, '/tecnico/': TECNICO,
+    }
+    await abrir('/activo/BRK-B')
+    expect(donde).toBe('/activo/BRK.B')
+  })
+
+  it('GGAL.BA no te lleva a tu ADR de Schwab: es otro instrumento', async () => {
+    respuestas = {
+      '/positions': [{ id: 4, asset: 'GGAL', broker: 'Schwab', quantity: 5, invested: 250, currency: 'USD', asset_type: 'STOCK', entry_date: '2025-05-01' }],
+      '/brokers': [{ name: 'Schwab', currency: 'USD' }], '/dolar': null, '/operations': [],
+      '/watchlist': { items: [] }, '/prices?symbols=GGAL.BA': { 'GGAL.BA': 6250 }, '/tecnico/': TECNICO,
+    }
+    const t = await abrir('/activo/GGAL.BA')
+    expect(donde).toBe('/activo/GGAL.BA')
+    expect(t).toContain('Último precio')
+  })
+
+  it('una acción argentina que vendiste toda se grafica en BYMA, no con el ADR', async () => {
+    const { api } = await import('../utils/api')
+    api.get.mockClear()
+    respuestas = {
+      '/positions': [], '/brokers': [{ name: 'IOL', currency: 'ARS' }], '/dolar': null,
+      '/operations': [{ id: 9, asset: 'GGAL', broker: 'IOL', op_type: 'Venta', date: '2026-05-01', quantity: 10, pnl_usd: 12 }],
+      '/tecnico/': TECNICO,
+    }
+    await abrir('/activo/GGAL')
+    expect(api.get.mock.calls.map(c => c[0])).toContain('/tecnico/GGAL?moneda=usd&local=1')
+  })
+
+  it('si otra persona está bajando la historia, avisa y vuelve a pedir solo', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      let veces = 0
+      respuestas = { ...SIN_CARTERA, '/prices?symbols=NVDA': { NVDA: 182.4 }, '/prices/history': { points: [] },
+        '/tecnico/': () => (++veces === 1 ? { disponible: false, motivo: 'bajando' } : TECNICO) }
+      const t = await abrir('/activo/NVDA')
+      expect(t).toContain('Estamos trayendo la historia')
+      await enActo(async () => { vi.advanceTimersByTime(3100) })
+      for (let i = 0; i < 4; i++) await montado.redibujar(app('/activo/NVDA', null))
+      expect(texto(montado.contenedor)).toContain('Largo plazo')
+      expect(veces).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('en el demo, el gráfico cae a los 30 días (no a "No se pudo cargar")', async () => {
+    const { handleDemoRequest } = await vi.importActual('../utils/demo')
+    expect(handleDemoRequest('GET', '/tecnico/CSCO?moneda=usd')).toMatchObject({ disponible: false, motivo: 'sin_serie' })
   })
 })

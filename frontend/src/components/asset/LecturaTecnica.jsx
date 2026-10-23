@@ -115,6 +115,17 @@ export default function LecturaTecnica({
 
   const actual = datos[moneda]
 
+  // Otra persona está bajando la historia de este activo ahora mismo
+  // (`motivo: 'bajando'`): el servidor no deja un pedido esperando, así que se
+  // vuelve a pedir solo, unas pocas veces.
+  const intentos = useRef(0)
+  useEffect(() => {
+    if (actual?.motivo !== 'bajando' || intentos.current >= 5) return
+    const t = setTimeout(() => { intentos.current += 1; reintentar() }, 3000)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actual])
+
   // Tu resultado para dibujar la LÍNEA de tu precio:
   //   · dólares: al dólar del día de cada compra (`pnlPctLinea`), sin importar
   //     la preferencia de la pantalla; null si a alguna compra le falta ese dólar;
@@ -155,7 +166,9 @@ export default function LecturaTecnica({
     }
     // Sin velas: el gráfico de siempre. Si el servidor no las pudo traer en el
     // momento (un activo que nadie sigue), se dice por qué (`motivo`).
-    const aviso = actual?.motivo === 'tope'
+    const aviso = actual?.motivo === 'bajando' && intentos.current < 5
+      ? 'Estamos trayendo la historia de este activo…'
+      : actual?.motivo === 'tope' || actual?.motivo === 'bajando'
       ? 'Ahora no pudimos traer la historia completa de este activo. Probá de nuevo en un rato.'
       : actual?.motivo === 'sin_datos'
         ? 'No encontramos la historia de precios de este activo para el análisis técnico.'

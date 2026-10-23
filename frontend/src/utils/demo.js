@@ -3096,6 +3096,12 @@ export function handleDemoRequest(method, path, body) {
     if (basePath === '/prices/history') {
       return buildPriceHistory(query)
     }
+    // La lectura técnica: el demo no tiene velas guardadas. "Sin serie" hace
+    // que la ficha muestre el gráfico de 30 días (que sí se simula), en vez de
+    // "No se pudo cargar el gráfico" (el null de una ruta que el demo no conoce).
+    if (basePath.startsWith('/tecnico/')) {
+      return { asset: decodeURIComponent(basePath.slice('/tecnico/'.length)).toUpperCase(), disponible: false, motivo: 'sin_serie' }
+    }
     // Reports timeline (Reportes page)
     if (basePath === '/reports/timeline') {
       return { reports: REPORTS_TIMELINE, total: REPORTS_TIMELINE.length,

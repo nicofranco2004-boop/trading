@@ -11400,9 +11400,11 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
     números de la lectura, en dólares (default) o en pesos. Sale de las velas
     guardadas (velas_diarias.py). Si el activo no las tiene (nadie lo sigue: se
     abrió desde el mapa de calor o el buscador) o están viejas, se bajan en el
-    momento con frenos (`velas_diarias.asegurar`). Si igual no hay, `disponible`
-    es False y `motivo` dice por qué: 'sin_serie' (un bono, un fondo), 'tope'
-    (el cupo de la hora) o 'sin_datos' (Yahoo no lo tiene). `local=1`: es una
+    momento con frenos (`velas_diarias.asegurar`), sólo si la app conoce el
+    activo (`velas_diarias.se_puede_pedir`). Si igual no hay, `disponible` es
+    False y `motivo` dice por qué: 'sin_serie' (un bono, un fondo), 'tope' (el
+    cupo), 'bajando' (otra persona lo está bajando: volver a pedir) o
+    'sin_datos' (Yahoo no lo tiene, o la app no lo conoce). `local=1`: es una
     acción argentina (en dólares va su precio de BYMA ÷ MEP, no el ADR). Las
     cuentas: tecnico.py."""
     sym = (asset or "").strip().upper()
@@ -11417,7 +11419,8 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
         tickers, motivo = [], None
         try:
             tickers = velas_diarias.tickers_a_pedido(sym, bool(local))
-            motivo = velas_diarias.asegurar(conn, tickers, uid)
+            if tickers and velas_diarias.se_puede_pedir(conn, sym, uid):
+                motivo = velas_diarias.asegurar(conn, tickers, uid)
         except Exception as ex:
             # Sin la descarga, la ficha muestra lo que haya guardado.
             log.warning("tecnico: velas a pedido de %s fallaron: %r", sym, ex)
@@ -11439,11 +11442,19 @@ def admin_velas(uid: int = Depends(get_admin_user)):
         # Atrasados y fallados, sólo de lo que se sigue HOY: lo que alguien vendió
         # o dejó de seguir no se actualiza más (a propósito) y no es un problema.
         seguidos = set(velas_diarias.simbolos_a_seguir(conn))
-        e = conn.execute(
-            """SELECT COUNT(*) AS activos, COALESCE(SUM(ok), 0) AS ok,
-                      COALESCE(SUM(CASE WHEN ultima_completa IS NULL THEN 1 ELSE 0 END), 0) AS sin_historia,
-                      MAX(ultima_corrida) AS ultima_corrida
-                 FROM velas_estado""").fetchone()
+        # El estado, también sólo de lo que se sigue: las fichas abiertas a pedido
+        # (velas_diarias.asegurar) escriben en la misma tabla, y "Última corrida"
+        # mostraba la hora de la última ficha aunque la noche hubiera dejado de
+        # correr; "sin historia" contaba cada símbolo inventado que falló a pedido.
+        estado = [r for r in conn.execute(
+            "SELECT symbol, ok, ultima_completa, ultima_corrida FROM velas_estado").fetchall()
+            if r["symbol"] in seguidos]
+        e = {"activos": len(estado), "ok": sum(1 for r in estado if r["ok"]),
+             "sin_historia": sum(1 for r in estado if not r["ultima_completa"]),
+             "ultima_corrida": None}
+        noche = conn.execute("SELECT ultima_corrida FROM velas_estado WHERE symbol=?",
+                             (velas_diarias.MARCA_CORRIDA_NOCHE,)).fetchone()
+        e["ultima_corrida"] = noche["ultima_corrida"] if noche else None
         v = conn.execute(
             """SELECT COUNT(*) AS filas, MIN(date) AS desde, MAX(date) AS hasta
                  FROM velas_diarias""").fetchone()
