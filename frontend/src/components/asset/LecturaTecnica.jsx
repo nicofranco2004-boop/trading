@@ -21,6 +21,7 @@ import { Maximize2, Minimize2 } from 'lucide-react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa, ventanaDelTramo } from './CapaFibonacci'
 import { api } from '../../utils/api'
+import { escalaYDespuesDe, factorDeFechas, rangoConEscala } from '../../utils/ejesGrafico'
 import {
   RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, tarjetas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, moverVentana,
@@ -211,11 +212,13 @@ export default function LecturaTecnica({
       )}
       <Grafico puntos={puntos} moneda={moneda} promedio={ver.prom ? promedio : null}
         marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo} grande={grande}
-        fibonacci={ver.fib ? actual.fibonacci : null} onZoom={zoom} onMover={mover} />
+        fibonacci={ver.fib ? actual.fibonacci : null} onZoom={zoom} onMover={mover}
+        onFechasAuto={() => setVentana(null)} />
       <p className="text-[11.5px] text-ink-2 mt-1">
         {semanales && 'Cada vela es una semana. '}
         {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá con la ruedita o pasá a velas semanales. '}
-        <span className="hidden sm:inline">Con la ruedita del mouse acercás o alejás. Arrastrá para ir más atrás o más adelante.</span>
+        <span className="hidden sm:inline">Con la ruedita del mouse acercás o alejás. Arrastrá para ir más atrás o más adelante. </span>
+        Arrastrá los precios de la derecha para estirar el gráfico, y las fechas de abajo para acercar o alejar; con doble click vuelve a como estaba.
       </p>
 
       <div className="flex flex-wrap gap-1.5 mt-3" role="group" aria-label="Qué líneas mostrar">
@@ -397,10 +400,16 @@ function rotulosDeMeses(puntos) {
   })
 }
 
-function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', grande = false, fibonacci = null, onZoom, onMover }) {
+function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', grande = false, fibonacci = null, onZoom, onMover, onFechasAuto }) {
   const conVelas = tipo === 'velas'
   const ref = useRef(null)
   const arrastre = useRef(null)
+  // Los ejes se arrastran como en TradingView (utils/ejesGrafico.js): la
+  // columna de precios estira el gráfico en vertical (`escalaY`, 1 = automático)
+  // y la fila de fechas acerca o aleja. Doble click: automático.
+  const [escalaManual, setEscalaManual] = useState(1)
+  const ejeY = useRef(null)
+  const ejeX = useRef(null)
   // La rueda tiene que frenar el scroll de la página mientras está sobre el
   // gráfico: eso sólo se puede con un escucha "no pasivo" (el onWheel de React
   // es pasivo y no puede frenarlo).
@@ -449,6 +458,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
     }
     const margen = (hi - lo) * 0.08 || hi * 0.02 || 1
     lo -= margen; hi += margen
+    ;[lo, hi] = rangoConEscala(lo, hi, escalaManual)
     const y = (val) => H - ((val - lo) / (hi - lo)) * H
     const x = (i) => (puntos.length > 1 ? (i / (puntos.length - 1)) * W : W / 2)
     const linea = (k) => {
@@ -479,7 +489,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
       path: { c, s50: linea('s50'), s200: linea('s200') },
       area: c ? `${c}L${x(puntos.length - 1).toFixed(1)},${H}L0,${H}Z` : '',
     }
-  }, [puntos, promedio, ver.s50, ver.s200, conVelas, fibonacci])
+  }, [puntos, promedio, ver.s50, ver.s200, conVelas, fibonacci, escalaManual])
 
   const rsiPath = useMemo(() => {
     let d = '', abierto = false
@@ -523,7 +533,10 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
     <div>
       <div className="relative">
         {/* Área del gráfico: deja libre la columna de la derecha para los precios. */}
-        <div ref={ref} className={`relative mr-[72px] ${grande ? 'h-[58vh] min-h-64' : 'h-56 sm:h-64'} select-none touch-pan-y cursor-crosshair`}
+        {/* Con la escala vertical a mano, lo que queda fuera se recorta (como en
+            TradingView); en automático no hace falta y el punto del último
+            precio puede asomar sobre el borde. */}
+        <div ref={ref} className={`relative mr-[72px] ${grande ? 'h-[58vh] min-h-64' : 'h-56 sm:h-64'} select-none touch-pan-y cursor-crosshair ${escalaManual !== 1 ? 'overflow-hidden' : ''}`}
           onMouseDown={e => { arrastre.current = e.clientX }}
           onMouseUp={() => { arrastre.current = null }}
           onMouseMove={e => {
@@ -622,13 +635,19 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
           )}
         </div>
 
-        {/* Columna de precios: la grilla, tu precio y el último precio. */}
-        <div className="absolute inset-y-0 right-0 w-[68px] pointer-events-none">
+        {/* Columna de precios: la grilla, tu precio y el último precio. Se
+            arrastra para estirar el gráfico en vertical (ver ejesGrafico.js). */}
+        <div className="absolute inset-y-0 right-0 w-[68px] cursor-ns-resize touch-none select-none"
+          title="Arrastrá hacia arriba o hacia abajo para estirar o achicar. Doble click: automático."
+          onPointerDown={e => { e.currentTarget.setPointerCapture?.(e.pointerId); ejeY.current = { y: e.clientY, k: escalaManual } }}
+          onPointerMove={e => { if (ejeY.current) setEscalaManual(escalaYDespuesDe(ejeY.current.k, e.clientY - ejeY.current.y)) }}
+          onPointerUp={() => { ejeY.current = null }} onPointerCancel={() => { ejeY.current = null }}
+          onDoubleClick={() => setEscalaManual(1)}>
           {ticks.map((t, k) => !cerca(t) && (
             <span key={k} className="absolute left-1.5 -translate-y-1/2 text-[11px] text-ink-2 tabular whitespace-nowrap"
               style={{ top: `${pctY(t)}%` }}>{fmtPrecio(t, moneda).replace(/^US\$ /, '')}</span>
           ))}
-          {promVisible && !promCerca && (
+          {promVisible && !promCerca && pctY(promedio) >= 0 && pctY(promedio) <= 100 && (
             <span className="absolute left-0 -translate-y-1/2 rounded border border-dashed border-ink-3 bg-bg-1 px-1 text-[10.5px] text-ink-1 tabular whitespace-nowrap"
               style={{ top: `${pctY(promedio)}%` }}>Tu precio</span>
           )}
@@ -640,15 +659,25 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
           )}
           {ultimo && (
             <span className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular whitespace-nowrap"
-              style={{ top: `${pctY(ultimo.c)}%`, background: COLOR.precio, color: v('bg-0') }}>
+              style={{ top: `${Math.min(100, Math.max(0, pctY(ultimo.c)))}%`, background: COLOR.precio, color: v('bg-0') }}>
               {fmtPrecio(ultimo.c, moneda).replace(/^US\$ /, '')}
             </span>
           )}
         </div>
       </div>
 
-      {/* Meses. */}
-      <div className="relative mr-[72px] h-5 mt-1.5 text-[11px] text-ink-2">
+      {/* Meses. Se arrastran para acercar o alejar en el tiempo, con el último
+          día quieto (ver ejesGrafico.js). */}
+      <div className="relative mr-[72px] h-6 mt-1 pt-0.5 text-[11px] text-ink-2 cursor-ew-resize touch-none select-none"
+        title="Arrastrá hacia los costados para acercar o alejar. Doble click: automático."
+        onPointerDown={e => { e.currentTarget.setPointerCapture?.(e.pointerId); ejeX.current = { x: e.clientX } }}
+        onPointerMove={e => {
+          if (!ejeX.current || !onZoom) return
+          const dx = e.clientX - ejeX.current.x
+          if (Math.abs(dx) >= 4) { onZoom(factorDeFechas(dx), 1); ejeX.current.x = e.clientX }
+        }}
+        onPointerUp={() => { ejeX.current = null }} onPointerCancel={() => { ejeX.current = null }}
+        onDoubleClick={() => onFechasAuto?.()}>
         {meses.map(m => (
           <span key={m.i} className="absolute -translate-x-1/2 whitespace-nowrap" style={{ left: `${pctX(m.i)}%` }}>{m.texto}</span>
         ))}
