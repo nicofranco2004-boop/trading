@@ -555,6 +555,24 @@ class FichaTest(unittest.TestCase):
             main._soltar_corrida("velas_diarias")
 
 
+    def test_cripto_de_fracciones_de_centavo_no_llega_en_cero(self):
+        # SHIB vale US$ 0,00001: con 4 decimales fijos el gráfico entero llegaba
+        # en 0 («último cierre US$ 0»). Abajo de 1 van 6 cifras significativas;
+        # arriba de 1, los 4 decimales de siempre.
+        self._broker("Binance", "USDT")
+        self._posicion("Binance", "SHIB", "CRYPTO")
+        self.yahoo.precios["SHIB-USD"] = lambda i, d: 0.0000123456 * (1 + i * 0.001)
+        main._run_velas_diarias_job()
+        f = self._ficha("SHIB")
+        self.assertTrue(f["disponible"])
+        ultimo = f["puntos"][-1]
+        esperado = f["lectura"]["precio"]
+        for k in ("o", "c", "s50", "s200"):
+            self.assertGreater(ultimo[k], 0, k)
+        self.assertAlmostEqual(ultimo["c"] / esperado, 1, places=5)
+        self.assertAlmostEqual(ultimo["h"] / (esperado * 1.01), 1, places=5)
+        self.assertEqual(len({p["c"] for p in f["puntos"]}), len(f["puntos"]), "cada día con su precio, no todos iguales")
+
     def test_cripto_el_anio_son_365_dias(self):
         # Bitcoin cotiza los 7 días: 252 velas son 8 meses. El máximo "del año"
         # tiene que mirar 12 meses de calendario.

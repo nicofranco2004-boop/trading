@@ -115,8 +115,9 @@ ADX_CLAVE = 23
 RUEDAS_CRUCE_ADX = 10
 # Lo que necesita el Squeeze para sus últimos valores: 20 días de bandas + 20
 # de regresión + el día anterior para el color. La lectura sólo mira el final,
-# así que lo calcula sobre los últimos días (la radiografía de la Cartera pide
-# la lectura de cada activo y no usa el Squeeze).
+# así que lo calcula sobre los últimos días: la radiografía de la Cartera
+# (`para_la_cartera`, que llega en su propia rama) pide la lectura de cada activo
+# y no usa el Squeeze.
 VELAS_SQUEEZE_LECTURA = 60
 
 
@@ -244,7 +245,7 @@ def squeeze(velas: list, largo_bb: int = 20, mult_bb: float = 2.0,
     # Cada promedio con SU ventana (no `media()`, que es una suma acumulada):
     # así el resultado sólo depende de esos 20 días y da idéntico, bit a bit,
     # calculado sobre la historia entera (la ficha) o sobre la cola (`lectura`,
-    # que la radiografía de la Cartera pide por cada activo). Con la suma
+    # que la radiografía de la Cartera pedirá por cada activo). Con la suma
     # acumulada el redondeo cambiaba según dónde arrancaba la serie y, como el
     # color compara contra el día anterior, un empate lo decidía el ruido: la
     # ficha decía «rojo apagado» y la Cartera «rojo fuerte» (auditoría 22/10).
@@ -286,7 +287,8 @@ def squeeze(velas: list, largo_bb: int = 20, mult_bb: float = 2.0,
 def cruce_adx(a: list, s: list = None, clave: float = ADX_CLAVE):
     """El último cruce del ADX por la línea clave en las últimas
     `RUEDAS_CRUCE_ADX` ruedas: {'tipo': 'paso_arriba'|'paso_abajo', 'hace':
-    ruedas, 'squeeze': signo del Squeeze ESE día (1, -1 o 0)}. Pasar 23 para
+    ruedas, 'squeeze': signo del Squeeze ESE día (1, -1 o 0; None si ese día
+    todavía no había Squeeze, con menos de 39 velas)}. Pasar 23 para
     arriba es lo que se lee como "la tendencia toma fuerza". None si no hubo."""
     n = len(a)
     for i in range(n - 1, max(0, n - 1 - RUEDAS_CRUCE_ADX), -1):
@@ -475,11 +477,20 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         # cripto de US$ 0,0004 daría 0. Van 6 cifras significativas.
         return float(f"{x:.6g}") if x is not None else None
 
+    def _p(x):
+        # Un precio: 4 decimales (como siempre) y, abajo de 1, 6 cifras
+        # significativas. Con 4 decimales fijos SHIB o PEPE (US$ 0,00001)
+        # llegaban en 0: el gráfico entero chato y «último cierre US$ 0»
+        # (auditoría 22/10; el Squeeze ya tenía `_sig`, los precios no).
+        if x is None:
+            return None
+        return round(x, 4) if abs(x) >= 1 else _sig(x)
+
     # o/h/l: apertura, máximo y mínimo, para el gráfico de velas. Pueden venir
     # vacíos (una vela de Yahoo con el máximo roto se guarda sólo con cierre).
-    puntos = [{"d": velas[i]["date"], "o": _r(velas[i].get("open")), "h": _r(velas[i].get("high")),
-               "l": _r(velas[i].get("low")), "c": _r(cierres[i]), "s50": _r(m50[i]),
-               "s200": _r(m200[i]), "rsi": _r(r[i], 2), "adx": _r(dmi["adx"][i], 2),
+    puntos = [{"d": velas[i]["date"], "o": _p(velas[i].get("open")), "h": _p(velas[i].get("high")),
+               "l": _p(velas[i].get("low")), "c": _p(cierres[i]), "s50": _p(m50[i]),
+               "s200": _p(m200[i]), "rsi": _r(r[i], 2), "adx": _r(dmi["adx"][i], 2),
                "squeeze": _sig(sqz["valor"][i]), "squeeze_color": sqz["color"][i]}
               for i in range(desde, len(velas))]
     return {

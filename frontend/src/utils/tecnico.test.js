@@ -191,7 +191,7 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
 
   it('arriba de 23 con el Squeeze en verde: tendencia con fuerza, a favor de la suba', () => {
     const t = tarjetaFuerza(F)
-    expect(t.veredicto).toBe('Tendencia con fuerza')
+    expect(t.veredicto).toBe('Tendencia firme')
     expect(t.tono).toBe('pos')
     expect(t.texto).toBe('El ADX está en 31, arriba de la línea de 23, y subiendo. '
       + 'El ADX mide cuánta fuerza tiene la tendencia, no para dónde va: arriba de 23 hay tendencia con fuerza; abajo, el precio va más de costado. '
@@ -217,14 +217,14 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
 
   it('cuando el ADX pasa 23 con el Squeeze del mismo lado, la frase destacada dice para dónde', () => {
     const t = tarjetaFuerza({ ...F, adx: 24.4, adx_cruce: { tipo: 'paso_arriba', hace: 1, squeeze: 1 } })
-    expect(t.veredicto).toBe('La tendencia toma fuerza')
+    expect(t.veredicto).toBe('La tendencia se afirma')
     expect(t.cruce).toBe('Hace 1 día de mercado la fuerza (ADX) pasó 23 para arriba con el Squeeze en verde: '
       + 'suele leerse como el arranque de una suba con fuerza.')
     expect(textoCruceAdx({ tipo: 'paso_arriba', hace: 0, squeeze: -1 }, -2))
       .toBe('En el último día de mercado la fuerza (ADX) pasó 23 para arriba con el Squeeze en rojo: suele leerse como el arranque de una baja con fuerza.')
     // El Squeeze cambió de lado desde el cruce: no se dice para dónde.
     expect(textoCruceAdx({ tipo: 'paso_arriba', hace: 4, squeeze: -1 }, 2))
-      .toBe('Hace 4 días de mercado la fuerza (ADX) pasó 23 para arriba: suele leerse como que la tendencia toma fuerza.')
+      .toBe('Hace 4 días de mercado la fuerza (ADX) pasó 23 para arriba: suele leerse como que la tendencia se afirma.')
     expect(textoCruceAdx({ tipo: 'paso_abajo', hace: 2, squeeze: 1 }, 1)).toContain('bajó de 23')
     expect(textoCruceAdx(null, 1)).toBeNull()
   })
@@ -263,7 +263,8 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     const cae = tarjetaFuerza({ ...F, adx: 28.9, adx_pendiente: -1.75, adx_cruce: { tipo: 'paso_arriba', hace: 8, squeeze: 1 } })
     expect(cae.veredicto).toBe('La tendencia afloja')
     // …y la frase destacada no le lleva la contraria («arranque de una suba con fuerza»).
-    expect(cae.cruce).toBe('Hace 8 días de mercado la fuerza (ADX) pasó 23 para arriba, pero desde entonces viene bajando.')
+    expect(cae.cruce).toBe('Hace 8 días de mercado la fuerza (ADX) pasó 23 para arriba; en los últimos 3 días de mercado viene bajando.')
+    expect(cae.tono).toBe('neutro')
     // Squeeze exactamente en 0: no dice «a favor de la baja».
     const cero = tarjetaFuerza({ ...F, squeeze: 0, squeeze_color: 'rojo_apagado' })
     expect(cero.tono).toBe('neutro')
@@ -271,7 +272,7 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     expect(cero.texto).not.toContain('a favor de la baja')
     // 33 días: ya hay ADX (el panel lo dibuja) pero no Squeeze. La tarjeta lee el ADX.
     const sinSq = tarjetaFuerza({ ruedas: 33, adx: 26, adx_pendiente: 1, adx_cruce: null, squeeze: null, squeeze_activo: true })
-    expect(sinSq.veredicto).toBe('Tendencia con fuerza')
+    expect(sinSq.veredicto).toBe('Tendencia firme')
     expect(sinSq.tono).toBe('neutro')
     expect(sinSq.texto).toContain('hacen falta unos 39 días de mercado y este activo tiene 33.')
     expect(sinSq.texto).not.toContain('apretado')
@@ -291,17 +292,19 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     expect(fmtAdx(22.8)).toBe('22,8')
     expect(fmtAdx(22.97)).toBe('22,9')
     expect(fmtAdx(22.4)).toBe('22')
-    expect(fmtAdx(23)).toBe('23')
-    expect(fmtAdx(23.4)).toBe('23')
+    expect(fmtAdx(23)).toBe('23,0')
+    expect(fmtAdx(23.4)).toBe('23,4')
+    expect(fmtAdx(23.6)).toBe('24')
     expect(fmtAdx(null)).toBe('—')
     expect(tarjetaFuerza({ ...F, adx: 22.8 }).texto).toMatch(/^El ADX está en 22,8, abajo de la línea de 23/)
     // 23 justo ya cuenta como arriba (la misma regla que el cruce del servidor).
     const justo = tarjetaFuerza({ ...F, adx: 23, adx_pendiente: 0 })
-    expect(justo.veredicto).toBe('Tendencia con fuerza')
-    expect(justo.texto).toMatch(/^El ADX está en 23, arriba de la línea de 23\. /)
+    expect(justo.veredicto).toBe('Tendencia firme')
+    expect(justo.texto).toMatch(/^El ADX está en 23,0, justo en la línea de 23\. /)
+    expect(tarjetaFuerza({ ...F, adx: 23.2, adx_pendiente: 0 }).texto).toMatch(/^El ADX está en 23,2, arriba de la línea de 23\. /)
     // Un cambio chico (menos de medio punto en 3 días) no es «subiendo» ni «bajando».
     expect(tarjetaFuerza({ ...F, adx_pendiente: 0.3 }).texto).toMatch(/^El ADX está en 31, arriba de la línea de 23\. /)
-    expect(tarjetaFuerza({ ...F, adx_pendiente: -0.3 }).veredicto).toBe('Tendencia con fuerza')
+    expect(tarjetaFuerza({ ...F, adx_pendiente: -0.3 }).veredicto).toBe('Tendencia firme')
   })
 
   it('la primera semana del zoom compara su Squeeze con la semana anterior, no con 0', () => {
@@ -311,5 +314,28 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     // antes es la del 2/10 (squeeze 9): 6 < 9 → verde apagado.
     expect(velasSemanales(pts, previos)[0].squeeze_color).toBe('verde_apagado')
     expect(velasSemanales(pts)[0].squeeze_color).toBe('verde_fuerte')
+  })
+
+  it('tercera auditoría: el cruce de hoy no «afloja», sin tendencia no hay «dirección», y textos más cortos', () => {
+    // Cruzó hoy: el ADX subió hoy aunque esté más bajo que hace 3 días (26 → 23,1).
+    const hoy = tarjetaFuerza({ ...F, adx: 23.1, adx_pendiente: -1.6, adx_cruce: { tipo: 'paso_arriba', hace: 0, squeeze: 1 } })
+    expect(hoy.veredicto).toBe('La tendencia se afirma')
+    expect(hoy.texto).toMatch(/^El ADX está en 23,1, arriba de la línea de 23\. /)
+    expect(hoy.cruce).not.toContain('bajando')
+    // Hace 3 días o más, los 3 días que mira son posteriores al cruce: ahí sí afloja.
+    expect(tarjetaFuerza({ ...F, adx_pendiente: -1.6, adx_cruce: { tipo: 'paso_arriba', hace: 3, squeeze: 1 } }).veredicto).toBe('La tendencia afloja')
+    // Sin tendencia, el Squeeze es el empuje de estos días, no «la dirección».
+    const sin = tarjetaFuerza({ ...F, adx: 15 })
+    expect(sin.texto).toContain('Por ahora el Squeeze está en verde: empuja a favor de la suba, pero sin fuerza para hablar de tendencia.')
+    // Bajó de 23 hoy: «y subiendo» (por los 3 días de antes del cruce) no va.
+    expect(tarjetaFuerza({ ...F, adx: 22.1, adx_pendiente: 1, adx_cruce: { tipo: 'paso_abajo', hace: 0, squeeze: 1 } }).texto)
+      .toMatch(/^El ADX está en 22, abajo de la línea de 23\. /)
+    expect(sin.texto).not.toContain('La dirección la marca')
+    // Ningún veredicto dice «fuerza» (el RSI la usa para otra cosa).
+    for (const t of [hoy, sin, tarjetaFuerza(F), tarjetaFuerza({ ...F, adx_pendiente: -2 })]) expect(t.veredicto).not.toMatch(/fuerza/i)
+    // La más larga posible (cruce para abajo + apretado) no repite «de costado».
+    const larga = tarjetaFuerza({ ...F, adx: 21, adx_pendiente: -2, squeeze_activo: true, adx_cruce: { tipo: 'paso_abajo', hace: 2, squeeze: -1 } })
+    expect((larga.texto + larga.cruce).match(/de costado/g)).toHaveLength(1)
+    expect((larga.texto + larga.cruce).length).toBeLessThan(560)
   })
 })

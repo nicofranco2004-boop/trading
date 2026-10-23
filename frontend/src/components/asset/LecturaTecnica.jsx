@@ -44,10 +44,11 @@ const H_SQUEEZE = 40
 // El ADX se dibuja de 0 a 50 (casi nunca pasa; si pasa, la escala se estira).
 const ADX_TOPE = 50
 // Las barras del Squeeze: fuerte (creciendo) bien pintada, apagada (perdiendo
-// empuje) más transparente, como en TradingView.
+// empuje) más transparente, como en TradingView. La apagada no baja de 0,55: con
+// 0,38 casi no se veía contra el fondo en modo claro (auditoría 22/10).
 const SQUEEZE = {
-  verde_fuerte: [v('rendi-pos-fill'), 0.9], verde_apagado: [v('rendi-pos-fill'), 0.38],
-  rojo_fuerte: [v('rendi-neg-fill'), 0.9], rojo_apagado: [v('rendi-neg-fill'), 0.38],
+  verde_fuerte: [v('rendi-pos-fill'), 1], verde_apagado: [v('rendi-pos-fill'), 0.55],
+  rojo_fuerte: [v('rendi-neg-fill'), 1], rojo_apagado: [v('rendi-neg-fill'), 0.55],
 }
 // Línea o velas: lo que eligió la persona la última vez. El navegador puede
 // tener el almacenamiento bloqueado (modo privado): entonces, línea.
@@ -780,7 +781,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
             </div>
             <div className="absolute inset-y-0 right-0 w-[68px] text-[11px] tabular pointer-events-none">
               {ultimo?.adx != null && (
-                <span className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 font-semibold"
+                <span aria-hidden="true" className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 font-semibold"
                   style={{ top: `${Math.min(85, Math.max(15, fuerza.pctAdx(ultimo.adx)))}%`, background: v('ink-1'), color: v('bg-0') }}>{fmtAdx(ultimo.adx)}</span>
               )}
             </div>
@@ -793,7 +794,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
             </span>
           </div>
           <div className={`relative mr-[72px] ${grande ? 'h-16' : 'h-10'} mt-1`} role="img"
-            aria-label="Barras del Squeeze: verdes a favor de la suba, rojas a favor de la baja.">
+            aria-label={`Barras del Squeeze: verdes a favor de la suba, rojas a favor de la baja.${ultimo?.squeeze ? ` Hoy, ${ultimo.squeeze > 0 ? 'verde' : 'roja'}.` : ''}`}>
             <svg viewBox={`0 0 ${W} ${H_SQUEEZE}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
               <line x1="0" x2={W} y1={H_SQUEEZE / 2} y2={H_SQUEEZE / 2} stroke={v('chart-grid')} strokeWidth="1" vectorEffect="non-scaling-stroke" />
               {fuerza.barras.map(b => (
