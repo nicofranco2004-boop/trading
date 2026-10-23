@@ -19,13 +19,17 @@ import {
 } from 'lucide-react'
 import AssetLogo from '../components/AssetLogo'
 import LecturaTecnica from '../components/asset/LecturaTecnica'
+import Panel from '../components/Panel'
+import TesisDelActivo from '../components/tesis/TesisDelActivo'
+import { useTesis } from '../hooks/useDiario'
+import { tesisVigente } from '../utils/diarioOperaciones'
 import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
-import { isBymaHolding, lotMissingPurchaseRate, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
+import { lotMissingPurchaseRate, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
-import { cedearRatio } from '../utils/cedearRatio'
+import { esAccionLocal } from '../utils/accionLocal'
 import { empresaDeTenencias } from '../utils/buscadorRapido'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { ChipDelActivo } from '../components/FueraDeHorario'
@@ -123,12 +127,6 @@ function costoEnPesos(lots) {
   }
 }
 
-// ¿Es una acción argentina (no un CEDEAR)? Entonces su gráfico en dólares es su
-// precio de BYMA ÷ el MEP, no el ADR de Nueva York (GGAL "de afuera" son 10).
-function esAccionLocal(asset, lots) {
-  if (!lots.length || cedearRatio(asset) || isCrypto(asset)) return false
-  return lots.every(p => p.asset_type !== 'CEDEAR' && isBymaHolding(p))
-}
 
 // Símbolo de precio que necesita un lote (para fetchear el set correcto).
 // Delega en `valuationPriceKey`, que es LA key con la que la valuación lee — su
@@ -155,6 +153,8 @@ export default function AssetDetail() {
   const [prices, setPrices] = useState({})
   const [dolar, setDolar] = useState(null)
   const [operations, setOperations] = useState([])
+  // Tu tesis de este activo (la misma de Movimientos). Arriba de los return.
+  const tesis = useTesis()
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { loadAll() /* eslint-disable-next-line */ }, [asset])
@@ -331,6 +331,18 @@ export default function AssetDetail() {
           costoPesos={costoEnPesos(agg.lots)}
           accionLocal={esAccionLocal(asset, agg.lots)}
         />
+      )}
+
+      {/* Tu tesis: por qué lo compraste, la tendencia de ese día y la de hoy, y
+          «Recordarme revisarla». Va si lo tenés o si escribiste una (la ficha
+          de un activo que vendiste todo la sigue mostrando). */}
+      {(agg.lots.length > 0 || tesisVigente(tesis.items, asset)) && tesis.estado !== 'error' && (
+        <section className="mb-5" aria-label={`Tu tesis de ${asset}`}>
+          <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu tesis</div>
+          <Panel padding="md">
+            <TesisDelActivo asset={asset} local={esAccionLocal(asset, agg.lots)} tesis={tesis} />
+          </Panel>
+        </section>
       )}
 
       {/* Stats de operatoria */}

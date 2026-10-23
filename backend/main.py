@@ -2573,6 +2573,28 @@ def init_db():
             );
         """)
 
+        # Tu tesis: por qué compraste un activo (tesis.py). Una por (usuario,
+        # activo) y por día: reescribirla otro día guarda otra y la vieja queda
+        # para las ventas que hiciste mientras valía. Tabla nueva, sin ALTER: el
+        # índice va en el mismo bloque y es seguro en una base ya creada.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tesis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                asset TEXT NOT NULL,             -- el ticker, como lo guarda la cartera
+                texto TEXT NOT NULL,
+                escrita_el TEXT NOT NULL,        -- 'YYYY-MM-DD', día argentino
+                accion_local INTEGER NOT NULL DEFAULT 0,  -- acción argentina: la tendencia sale de BYMA
+                tendencia_json TEXT,             -- tecnico.tendencia_del_dia del día que se escribió
+                recordar_tipo TEXT,              -- '3m' | 'fecha' | 'balance'
+                recordar_el TEXT,                -- día del aviso
+                alert_id INTEGER,                -- alerts.id (kind='recordatorio')
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_tesis_user_asset ON tesis(user_id, asset, escrita_el);
+        """)
+
         # ─── TWR: períodos SELLADOS ──────────────────────────────────────────
         # Append-only. Cada mes cerrado se calcula UNA vez y no se reescribe nunca.
         # Sin esto el número de ayer cambia hoy: `_migrate_snapshots_netdep` corre
@@ -5248,6 +5270,9 @@ _RESET_CONFIG_KEYS = ("fx_version", "tc_blue", "tc_mep")
 _RESET_ADMIN_EXTRA_TABLES = (
     "alerts", "alert_events", "watchlist",
     "user_broker_credentials", "import_mappings",
+    # Las tesis van con sus recordatorios (que son alertas): el reset del
+    # usuario no las toca, como a las alertas.
+    "tesis",
 )
 
 
@@ -11419,6 +11444,38 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
     import tecnico
     with db_abierta() as conn:
         return tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
+
+
+class _PedidoTendencia(BaseModel):
+    id: str = Field(..., max_length=40)
+    asset: str = Field(..., max_length=40)
+    local: bool = False
+    fecha: str = Field(..., max_length=10)
+
+
+class TendenciasEnFechasIn(BaseModel):
+    # Tope al leer el pedido (422), no después de armar la lista.
+    items: List[_PedidoTendencia] = Field(..., max_length=2000)
+
+
+@app.post("/api/tecnico/en-fechas")
+def tecnico_en_fechas(data: TendenciasEnFechasIn, uid: int = Depends(get_effective_user)):
+    """¿Cómo estaba la tendencia de fondo de cada activo en cada fecha? Para el
+    diario de operaciones: la del día en que compraste cada operación cerrada.
+    Misma regla y misma serie que la ficha (tecnico.tendencia_del_dia).
+    {resultados: {id: {tendencia, fecha, precio, media200, dist} | {tendencia: None, motivo}}}"""
+    import tecnico
+    pedidos = []
+    out = {}
+    for it in data.items:
+        sym = (it.asset or "").strip().upper()
+        if not _SYMBOL_RE.match(sym):
+            out[it.id] = {"tendencia": None, "motivo": "sin_velas"}
+            continue
+        pedidos.append({"id": it.id, "asset": sym, "local": it.local, "fecha": it.fecha})
+    with db_abierta() as conn:
+        out.update(tecnico.tendencias_en_fechas(conn, pedidos))
+    return {"resultados": out}
 
 
 @app.get("/api/admin/velas")
@@ -47637,7 +47694,11 @@ def alerts_list(uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         rows = conn.execute(
-            "SELECT * FROM alerts WHERE user_id=? ORDER BY created_at DESC", (uid,)
+            # Los recordatorios de una tesis (`kind='recordatorio'`, tesis.py) son
+            # alertas del mismo motor, pero se ven y se manejan desde la tesis:
+            # «Mis alertas» no sabe dibujarlos. Sus avisos sí salen abajo.
+            "SELECT * FROM alerts WHERE user_id=? AND kind != 'recordatorio' "
+            "ORDER BY created_at DESC", (uid,)
         ).fetchall()
         events = conn.execute(
             """SELECT id, alert_id, symbol, fired_at, price, message, seen
@@ -47846,6 +47907,99 @@ def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+# ─── Tu tesis (tesis.py) ──────────────────────────────────────────────────────
+
+class TesisIn(BaseModel):
+    texto: str = Field(..., max_length=2000)
+    # Acción argentina: la tendencia sale de su precio en BYMA ÷ el MEP, no del
+    # ADR (lo decide la pantalla, como en la ficha: `esAccionLocal`).
+    local: bool = False
+
+
+class RecordatorioIn(BaseModel):
+    tipo: str = Field(..., max_length=10)          # '3m' | 'fecha' | 'balance'
+    fecha: Optional[str] = Field(None, max_length=10)
+
+
+def _proximo_balance(conn, asset: str):
+    """La fecha del próximo balance (earnings) guardada en `financial_events`,
+    con la misma regla de «tener los eventos al día» que la pantalla de Eventos
+    (`_eventos_al_dia`). None si no hay (acción sin balances, ETF, bono)."""
+    _eventos_al_dia(conn, [asset])
+    for e in eventos_guardados(conn, [asset], 200):
+        if e["event_type"] == "earnings":
+            return e["event_date"]
+    return None
+
+
+@app.get("/api/tesis")
+def tesis_list(uid: int = Depends(get_effective_user)):
+    """Tus tesis (con su historia) y la tendencia de hoy de cada activo."""
+    import tesis as _tesis
+    with db_abierta() as conn:
+        return _tesis.listar(conn, uid)
+
+
+@app.put("/api/tesis/{asset}")
+def tesis_guardar(asset: str, data: TesisIn, uid: int = Depends(get_effective_user)):
+    """Escribe o corrige la tesis de un activo (el mismo día se corrige; otro
+    día se guarda una nueva y la vieja queda: ver tesis.py)."""
+    import tesis as _tesis
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    with db_abierta() as conn:
+        try:
+            tid = _tesis.guardar(conn, uid, sym, data.texto, data.local)
+        except _tesis.TesisError as e:
+            raise HTTPException(400, str(e))
+        conn.commit()
+        return {"ok": True, "id": tid}
+
+
+@app.delete("/api/tesis/{tesis_id}")
+def tesis_borrar(tesis_id: int, uid: int = Depends(get_effective_user)):
+    import tesis as _tesis
+    with db_abierta() as conn:
+        try:
+            _tesis.borrar(conn, uid, tesis_id)
+        except LookupError as e:
+            raise HTTPException(404, str(e))
+        conn.commit()
+        return {"ok": True}
+
+
+@app.put("/api/tesis/{tesis_id}/recordatorio")
+def tesis_recordatorio(tesis_id: int, data: RecordatorioIn, uid: int = Depends(get_effective_user)):
+    """«Recordarme revisarla»: en 3 meses, una fecha o el día después del
+    próximo balance. Es una alerta del motor de siempre (mail + push)."""
+    import tesis as _tesis
+    with db_abierta() as conn:
+        t = conn.execute("SELECT asset FROM tesis WHERE id=? AND user_id=?",
+                         (tesis_id, uid)).fetchone()
+        if not t:
+            raise HTTPException(404, "No encontramos esa tesis.")
+        balance = _proximo_balance(conn, t["asset"]) if data.tipo == "balance" else None
+        try:
+            dia = _tesis.fijar_recordatorio(conn, uid, tesis_id, data.tipo, data.fecha, balance)
+        except _tesis.TesisError as e:
+            raise HTTPException(400, str(e))
+        conn.commit()
+        return {"ok": True, "fecha": dia, "balance": balance}
+
+
+@app.delete("/api/tesis/{tesis_id}/recordatorio")
+def tesis_sin_recordatorio(tesis_id: int, uid: int = Depends(get_effective_user)):
+    import tesis as _tesis
+    with db_abierta() as conn:
+        try:
+            _tesis.quitar_recordatorio(conn, uid, tesis_id)
+        except LookupError as e:
+            raise HTTPException(404, str(e))
+        conn.commit()
+        return {"ok": True}
+
+
 @app.post("/api/alerts/events/seen")
 def alerts_events_seen(uid: int = Depends(get_effective_user)):
     """Marca los eventos de alerta como vistos (apaga el badge in-app)."""
@@ -47882,6 +48036,16 @@ def _evaluar_alertas_job() -> dict:
         # Mismo ciclo: las alertas del LIBRO del asesor (movimiento de la
         # cartera de un cliente) se evalúan acá → el asesor no tiene que dar
         # de alta ningún cron nuevo.
+        # Los recordatorios de las tesis («Recordarme revisarla»): mismo
+        # cron, misma entrega, su propia guarda.
+        try:
+            result.update(_ae.evaluar_recordatorios(conn))
+        except Exception as _ex:
+            log.error("recordatorios de tesis en el cron: %s", _ex)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         try:
             import advisor_alerts
             result["advisor"] = advisor_alerts.evaluate(
@@ -48650,7 +48814,8 @@ def primeros_pasos(uid: int = Depends(get_current_user)):
         import market_brief
         fila = conn.execute("SELECT app_instalada_at FROM users WHERE id = ?", (uid,)).fetchone()
         alertas = conn.execute(
-            "SELECT COUNT(*) FROM alerts WHERE user_id = ?", (uid,)).fetchone()[0]
+            "SELECT COUNT(*) FROM alerts WHERE user_id = ? AND kind != 'recordatorio'",
+            (uid,)).fetchone()[0]
         return {
             "app_instalada": bool(fila and fila["app_instalada_at"]),
             "dispositivos_push": _contar_dispositivos_push(conn, uid),
