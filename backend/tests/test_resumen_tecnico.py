@@ -154,6 +154,14 @@ class PalabrasTest(unittest.TestCase):
         self.assertTrue(any("ayer" in g and "devolvió" in g for g in graves), graves)
         graves, _ = resumen_tecnico.problemas("Es un buen momento para comprar. A. B. C.", hechos)
         self.assertTrue(graves)
+        # El cierre es neutro (decisión de Nico, 23/10): la primera persona o un
+        # consejo se rehace, y si vuelve, no se publica.
+        for consejo in ("Yo miraría los 344 dólares.", "Te conviene esperar.", "Yo compraría acá.",
+                        "Te sugiero mirar los 309.", "Vendería en 344."):
+            graves, _ = resumen_tecnico.problemas(consejo + " A. B. C.", hechos)
+            self.assertTrue(graves, consejo)
+        neutro = "Lo que se mira es si cierra abajo de 309 dólares: ahí se terminaría la suba. A. B. C."
+        self.assertEqual(resumen_tecnico.problemas(neutro, hechos)[0], [])
         # Largo: más de 100 palabras se rehace; en el segundo intento se toleran 120.
         largo_txt = " ".join(["palabra"] * 100) + ". B. C. D."
         self.assertTrue(resumen_tecnico.problemas(largo_txt, hechos)[1])
@@ -250,6 +258,8 @@ class ResumenTest(unittest.TestCase):
         self.assertEqual(kw["extra_body"], {"output_config": {"effort": "low"}})
         self.assertEqual(kw["system"], resumen_tecnico.SISTEMA, "el pedido del archivo, sin caché")
         self.assertIn("Sos Mervall-E", kw["system"])
+        self.assertIn("Lo que se mira es", kw["system"])
+        self.assertNotRegex(kw["system"], r"[Yy]o miraría|mirarías vos")
 
         # Otro usuario: lo ve al abrir la ficha, y tocar el botón no lo regenera.
         f2 = self._ficha(h=self.h2)
@@ -393,6 +403,13 @@ class ResumenTest(unittest.TestCase):
         self.assertIn("palabras", segundo[2]["content"], "y qué estuvo mal")
         fila = self._fila()
         self.assertEqual((fila["llamadas"], fila["cost_usd_cents"]), (2, 112), "se registran los dos")
+
+    def test_en_primera_persona_se_rehace_con_el_cierre_neutro(self):
+        self.claude.textos = ["Viene subiendo. Está arriba del promedio de los últimos 200 días. "
+                              "Empuja para arriba. Yo miraría el precio de cerca.", BUENO]
+        self.assertEqual(self._pedir()["texto"], BUENO)
+        self.assertEqual(len(self.claude.pedidos), 2)
+        self.assertIn("yo", self.claude.pedidos[1]["messages"][2]["content"].lower())
 
     def test_un_numero_inventado_no_se_publica(self):
         malo = "Subió 37 dólares. Ganó un 58 %. Está arriba del promedio de los últimos 200 días. Fin."

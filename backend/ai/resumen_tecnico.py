@@ -78,7 +78,8 @@ SISTEMA = (Path(__file__).with_name("resumen_tecnico_pedido.txt")).read_text(enc
 
 # Palabras que no pueden salir: la lista prohibida del pedido (jerga que Nico
 # no entiende), fechas relativas (el texto se lee otro día), una corrección a
-# la vista, y recomendar o pronosticar.
+# la vista, recomendar o pronosticar, y la primera persona: el cierre es neutro,
+# «Lo que se mira es…» (decisión de Nico, 23/10); «yo miraría» suena a consejo.
 _PROHIBIDAS = [
     r"devolvi[óo]", r"retroceso", r"recorte", r"correcci[óo]n", r"corrijo", r"lateral", r"de costado",
     r"consolidaci[óo]n", r"impulso", r"momentum", r"tracci[óo]n", r"zonas?", r"soportes?", r"resistencias?",
@@ -86,7 +87,9 @@ _PROHIBIDAS = [
     r"rebot[eóa]", r"tramos?", r"nivel(es)?", r"fibonacci", r"ruedas?", r"volatilidad", r"recalentad[oa]",
     r"hoy", r"ayer", r"mañana",
     r"compr[áa](r|lo|la)?", r"vend[ée](r|lo|la)?", r"recomend\w*", r"te conviene", r"oportunidad",
-    r"esper(ar|á)", r"va a (subir|bajar|seguir|caer|romper)", r"subir[áa]", r"bajar[áa]", r"deber[íi]a",
+    r"esper(ar|á)", r"va a (subir|bajar|seguir|caer|romper)", r"subir[áa]", r"bajar[áa]", r"deber[íi]as?",
+    r"yo", r"mirar[íi]as?", r"(compr|vend|esper|entr|invert)[aei]r[íi]as?", r"saldr[íi]as?",
+    r"(te )?conviene", r"sugi?er\w*", r"aconsej\w*", r"te diría",
 ]
 _RE_PROHIBIDAS = re.compile(r"\b(" + "|".join(_PROHIBIDAS) + r")\b", re.IGNORECASE)
 _RE_NUMERO = re.compile(r"\d+(?:[.,]\d+)*")
