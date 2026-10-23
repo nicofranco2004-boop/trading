@@ -60,13 +60,16 @@ SEGUNDOS_ESPERA = 30
 # ofrece el resumen: contaría como actual algo de hace semanas.
 DIAS_VELA_VIEJA = 7
 
-# Largo (decisión de Nico, 23/10): 120 palabras es un TOPE, no una meta; el
-# pedido dice que use las que hagan falta y ni una más. Un texto de más de 120,
-# con un salto de línea o fuera de 3–6 oraciones se pide de nuevo UNA vez. En el
-# segundo intento se toleran PALABRAS_MAX_SEGUNDA: mejor un poco largo que
+# Largo (decisiones de Nico, 23/10): el tope es 120 palabras, y 130 cuando
+# viene la frase del ADX + Squeeze, que va entera y es larga (con 120, 4 de 11
+# de esos se rehacían). Es un TOPE, no una meta: el pedido dice que use las que
+# hagan falta y ni una más. Un texto de más del tope, con un salto de línea o
+# fuera de 3–6 oraciones se pide de nuevo UNA vez. En el segundo intento se
+# tolera un poco más (13/12 del tope: 130 y 141): mejor un poco largo que
 # ningún resumen.
 PALABRAS_MAX = 120
-PALABRAS_MAX_SEGUNDA = 130
+PALABRAS_MAX_CON_FUERZA = 130
+TOLERANCIA_SEGUNDA = 13 / 12
 ORACIONES = (3, 6)
 ORACIONES_SEGUNDA = (3, 7)
 FRASE_DE_FUERZA = "fuerza_del_movimiento_ADX_y_Squeeze"
@@ -142,12 +145,13 @@ def problemas(texto: str, hechos: dict, segunda: bool = False) -> tuple[list, li
     if malas:
         graves.append("usaste palabras prohibidas (" + ", ".join(malas) + ")")
     palabras = len(t.split())
-    tope = PALABRAS_MAX_SEGUNDA if segunda else PALABRAS_MAX
+    con_fuerza = FRASE_DE_FUERZA in (hechos.get("indicador_que_suma") or {})
+    pedido = PALABRAS_MAX_CON_FUERZA if con_fuerza else PALABRAS_MAX
+    tope = round(pedido * TOLERANCIA_SEGUNDA) if segunda else pedido
     if palabras > tope:
         # Con la frase de la fuerza, lo que se achica es la oración 2: el aviso
         # decía «sacá la oración 4» y el modelo borraba justo esa frase (Pampa, 23/10).
-        con_fuerza = FRASE_DE_FUERZA in (hechos.get("indicador_que_suma") or {})
-        largo.append(f"tiene {palabras} palabras y el tope es 120: acortá la oración 2 (el movimiento)"
+        largo.append(f"tiene {palabras} palabras y el tope es {pedido}: acortá la oración 2 (el movimiento)"
                      + (", pero la frase de la fuerza (ADX y Squeeze) va entera, sin recortarla" if con_fuerza
                         else " o sacá la oración 4"))
     lo, hi = ORACIONES_SEGUNDA if segunda else ORACIONES

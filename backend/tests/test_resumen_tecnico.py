@@ -178,8 +178,16 @@ class PalabrasTest(unittest.TestCase):
         self.assertTrue(resumen_tecnico.problemas(" ".join(["palabra"] * 135) + ". B. C. D.", hechos, segunda=True)[1])
         self.assertTrue(resumen_tecnico.problemas("Una sola oración.", hechos)[1])
         con_fuerza = {**hechos, "indicador_que_suma": {resumen_tecnico.FRASE_DE_FUERZA: "La bajada se quedó sin fuerza"}}
+        # Con la frase del ADX + Squeeze el tope es 130 (Nico, 23/10); en el
+        # segundo intento, 141. Sin ella, 120 y 130: el de 125 se rehace.
+        self.assertFalse(resumen_tecnico.problemas(de_125, con_fuerza)[1])
+        de_134 = " ".join(["palabra"] * 131) + ". B. C. D."
+        self.assertTrue(resumen_tecnico.problemas(de_134, con_fuerza)[1])
+        self.assertFalse(resumen_tecnico.problemas(de_134, con_fuerza, segunda=True)[1])
+        self.assertTrue(resumen_tecnico.problemas(" ".join(["palabra"] * 142) + ". B. C. D.", con_fuerza, segunda=True)[1])
         # Y si se pasa igual, el aviso no le pide sacar esa frase (lo que hacía).
-        aviso = resumen_tecnico.problemas(" ".join(["palabra"] * 125) + ". B. C. D.", con_fuerza)[1][0]
+        aviso = resumen_tecnico.problemas(de_134, con_fuerza)[1][0]
+        self.assertIn("el tope es 130", aviso)
         self.assertIn("oración 2", aviso)
         self.assertNotIn("sacá la oración 4", aviso)
         # Una corrección a la vista (vuelta 7 de la redacción) o un salto de línea.
@@ -276,7 +284,7 @@ class ResumenTest(unittest.TestCase):
         self.assertIn("Lo que se mira es", kw["system"])
         self.assertNotRegex(kw["system"], r"[Yy]o miraría|mirarías vos")
         # 120 es un tope, no una meta (Nico, 23/10): nada de «entre 60 y 80».
-        self.assertIn("Nunca más de 120", kw["system"])
+        self.assertIn("Nunca más de 120 (130 si los datos traen «fuerza_del_movimiento_ADX_y_Squeeze»)", kw["system"])
         self.assertNotIn("entre 60 y 80", kw["system"])
         self.assertNotRegex(kw["system"], r"se terminar[íi]a|se termina\b", "lo que se mira, como posibilidad")
         self.assertIn("podría ser una señal de que", kw["system"])
