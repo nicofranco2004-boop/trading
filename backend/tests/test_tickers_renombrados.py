@@ -32,7 +32,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 import main  # noqa: E402
 import snapshots_job  # noqa: E402
 from ai.trade_tickers import resolve_asset  # noqa: E402
-from tickers_renombrados import ticker_vigente  # noqa: E402
+import tickers_renombrados  # noqa: E402
+from tickers_renombrados import ticker_importado, ticker_vigente  # noqa: E402
 
 HDR = "fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas\n"
 
@@ -58,6 +59,24 @@ class TestTickerVigente(unittest.TestCase):
             ticker, tipos = resolve_asset(dicho)
             self.assertEqual(ticker, "XYZ", dicho)
             self.assertIn("STOCK", tipos)
+
+
+class TestGoldEsBSoloAlImportar(unittest.TestCase):
+    """Barrick pasó de GOLD a B (mayo 2025). Bull Market compra "GOLD" en 2021 y
+    vende "B" en 2023 en el MISMO archivo (cuenta de Agustín, 2026-10-22: GOLD 4
+    quedaba abierto). Pero "GOLD" es también el indicador «Oro (spot)» de la
+    pantalla, así que el renombre vale sólo para lo que manda un broker."""
+
+    def test_lo_importado_pasa_a_b(self):
+        self.assertEqual(ticker_importado("GOLD"), "B")
+        self.assertEqual(ticker_importado("gold.ba"), "B.BA")
+        self.assertEqual(ticker_importado("SQ"), "XYZ", "el renombre general sigue")
+
+    def test_lo_que_la_persona_tipea_no_se_toca(self):
+        self.assertEqual(ticker_vigente("GOLD"), "GOLD")
+        self.assertEqual(main.WatchlistAddIn(symbol="GOLD").symbol, "GOLD")
+        self.assertEqual(main.AlertCreateIn(kind="price_target", symbol="GOLD",
+                                            threshold=90).symbol, "GOLD")
 
 
 class _Base(unittest.TestCase):
@@ -155,6 +174,35 @@ class TestImportar(_Base):
         self._import(archivo)
         self._import(archivo)
         self.assertEqual(self._abiertas(), {"XYZ": 10})
+
+
+class TestImportarGold(_Base):
+    def test_compra_gold_y_venta_b_son_el_mismo_libro(self):
+        self._import(_csv(
+            "2021-07-01,DEPOSITO,IBKR,,,,1000,,,0,USD,",
+            "2021-07-20,COMPRA,IBKR,GOLD,4,20,80,,,0,USD,",
+            "2023-05-11,VENTA,IBKR,B,4,25,100,,,0,USD,",
+        ))
+        self.assertEqual(self._abiertas(), {}, "la venta de B no encontró la compra de GOLD")
+
+    def test_reimportar_lo_guardado_como_gold_no_lo_duplica(self):
+        """Las cuentas que importaron ANTES del renombre tienen la compra
+        guardada como GOLD. Al volver a subir el archivo, esa fila hoy entra como
+        B y da otra huella: sin probar el código viejo, la compra (y su débito de
+        caja) entraba dos veces."""
+        archivo = _csv(
+            "2021-07-01,DEPOSITO,IBKR,,,,1000,,,0,USD,",
+            "2021-07-20,COMPRA,IBKR,GOLD,4,20,80,,,0,USD,",
+        )
+        guardado = dict(tickers_renombrados.RENOMBRADOS_AL_IMPORTAR)
+        tickers_renombrados.RENOMBRADOS_AL_IMPORTAR.clear()   # como antes del arreglo
+        try:
+            self._import(archivo)
+        finally:
+            tickers_renombrados.RENOMBRADOS_AL_IMPORTAR.update(guardado)
+        self.assertEqual(self._abiertas(), {"GOLD": 4})
+        self._import(archivo)
+        self.assertEqual(self._abiertas(), {"GOLD": 4}, "la compra entró otra vez como B")
 
 
 class TestCargaAMano(_Base):

@@ -163,6 +163,46 @@ def entradas_ya_confirmadas(conn, uid: int, brokers_del_lote: set) -> List[dict]
     return [dict(r) for r in filas if r["broker"] not in brokers_del_lote]
 
 
+def _libro_vivo(conn, uid: int) -> Dict[Tuple[str, str], float]:
+    """{(broker, activo): compras − ventas} de todo lo importado que cuenta,
+    INCLUIDOS los cierres por traspaso ya confirmados.
+
+    Es el segundo tope de lo que se puede cerrar, y existe por un caso medido
+    (cuenta de Agustín, 2026-10-22): la persona borra el import del broker que
+    ENTREGA y lo vuelve a subir. Los cierres viejos siguen vivos en el lote del
+    broker que RECIBE, pero ya no figuran en `positions` (se aplicaron sobre
+    lotes que el borrado se llevó), así que las compras recién subidas parecían
+    libres. Con un CEDEAR que cambió de ratio (VIST entró 84 por 28) se proponía
+    cerrar OTRA VEZ lo ya cerrado: AMZN 76 y VIST 28 de más. El rebuild repasa
+    estos mismos eventos, así que este número es lo que va a quedar abierto."""
+    out: Dict[Tuple[str, str], float] = {}
+    for r in conn.execute(
+            f"""SELECT n.broker, n.asset_symbol, n.operation_type, n.quantity
+                 FROM {TX_VIVAS}
+                WHERE b.user_id = ? AND n.operation_type IN ('BUY', 'SELL')
+                  AND COALESCE(n.asset_symbol, '') <> ''""",
+            (uid,)).fetchall():
+        k = (r["broker"], r["asset_symbol"])
+        signo = -1 if r["operation_type"] == OP_SELL else 1
+        out[k] = out.get(k, 0.0) + signo * float(r["quantity"] or 0)
+    return out
+
+
+def _neto_del_lote(txs: List[NormalizedTx], repetidas=()) -> Dict[Tuple[str, str], float]:
+    """Compras − ventas de este lote por (broker, activo), sin las filas que el
+    confirm va a omitir por repetidas."""
+    out: Dict[Tuple[str, str], float] = {}
+    for t in txs:
+        if t.row_index in repetidas or not t.asset_symbol or not t.quantity:
+            continue
+        if t.operation_type not in (OP_SELL, OP_BUY):
+            continue
+        k = (t.broker, t.asset_symbol)
+        signo = -1 if t.operation_type == OP_SELL else 1
+        out[k] = out.get(k, 0.0) + signo * float(t.quantity)
+    return out
+
+
 def _posiciones_que_deja_el_lote(txs: List[NormalizedTx],
                                  repetidas=()) -> Dict[Tuple[str, str], float]:
     """Lo que va a quedar abierto cuando este lote se confirme, por (broker,
@@ -172,18 +212,7 @@ def _posiciones_que_deja_el_lote(txs: List[NormalizedTx],
     `repetidas` son los row_index que el confirm va a omitir porque ya entraron
     en otro import: esas compras ya están en `positions`, y sumarlas de nuevo
     haría proponer un cierre de títulos que no existen."""
-    out: Dict[Tuple[str, str], float] = {}
-    for t in txs:
-        if t.row_index in repetidas:
-            continue
-        if not t.asset_symbol or not t.quantity:
-            continue
-        if t.operation_type not in (OP_SELL, OP_BUY):
-            continue
-        k = (t.broker, t.asset_symbol)
-        signo = -1 if t.operation_type == OP_SELL else 1
-        out[k] = out.get(k, 0.0) + signo * float(t.quantity)
-    return {k: v for k, v in out.items() if v > 0}
+    return {k: v for k, v in _neto_del_lote(txs, repetidas).items() if v > 0}
 
 
 def cerrar_origen_de_traspasos(
@@ -232,6 +261,11 @@ def cerrar_origen_de_traspasos(
     disponible = {k: v for k, v in existing_positions.items() if v > 0}
     for k, v in _posiciones_que_deja_el_lote(txs, repetidas).items():
         disponible[k] = disponible.get(k, 0.0) + v
+    # Segundo tope: lo que dice el libro de lo importado (ver `_libro_vivo`).
+    # Se cierra el MÍNIMO de los dos: si alguno dice que no hay, no se toca.
+    libro = _libro_vivo(conn, uid)
+    for k, v in _neto_del_lote(txs, repetidas).items():
+        libro[k] = libro.get(k, 0.0) + v
 
     # Grupo de brokers de cada destino: el padre MÁS su sibling "· USD". Los dos
     # son EL MISMO broker partido por moneda, así que una entrada a "Balanz" no
@@ -273,7 +307,8 @@ def cerrar_origen_de_traspasos(
         # viejo que sólo tocaba la mitad en pesos) se descuenta, no se repite.
         restante = float(e["quantity"]) - sum(
             ya_cerrados.get((b, activo, fecha), 0.0) for b in origen)
-        abierto = sum(disponible.get((b, activo), 0.0) for b in origen)
+        abierto = min(sum(disponible.get((b, activo), 0.0) for b in origen),
+                      sum(libro.get((b, activo), 0.0) for b in origen))
         # El MÍNIMO de los dos. Cerrar de más le borra tenencia real; cerrar de
         # menos lo deja como está hoy. Y resuelve solo el cambio de ratio (un
         # CEDEAR puede entrar 84 donde salieron 28).
@@ -322,6 +357,7 @@ def cerrar_origen_de_traspasos(
             if usa > 0:
                 disponible[(b, activo)] -= usa
                 falta -= usa
+        libro[(broker, activo)] = libro.get((broker, activo), 0.0) - cierra
 
     # Re-numerar para que los índices sean únicos y consecutivos.
     for i, t in enumerate(nuevas):
