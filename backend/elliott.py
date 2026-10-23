@@ -21,7 +21,9 @@ REGLAS DURAS (si una no se cumple, ese conteo no existe):
   · la onda 3 pasa el final de la 1 y no es la más corta de 1, 3 y 5;
   · la onda 4 no se mete en el terreno de la 1 (no baja del final de la 1);
   · en una corrección A-B-C, la B no pasa el arranque de la A y la C pasa el
-    final de la A.
+    final de la A; y suelta (no pegada a un impulso) tiene que corregir algo:
+    antes de una A-B-C a la baja hubo una suba al menos del tamaño de la A,
+    que la corrección no borró entera.
   En una bajada, todo al revés.
 
 PAUTAS (no excluyen; dan la confianza): onda 2 ≈ 50–61,8 % de la 1; onda 3 ≈
@@ -257,6 +259,7 @@ def _correcciones(zz: list, vista: _Vista, impulsos: list) -> list:
         if imp["ahora"] != "correccion":
             continue
         p5 = imp["pts"][-1]
+        # Pegada a un impulso, lo que corrige es el impulso (ya revisado).
         pegadas += [_pegar(imp, c) for c in sueltas if c["pts"][0]["i"] == p5["i"]]
         # La B en curso: sólo pegada a un impulso terminado (una A suelta no
         # es nada). La A, del final de la 5 al mínimo desde ahí hasta hoy.
@@ -266,7 +269,24 @@ def _correcciones(zz: list, vista: _Vista, impulsos: list) -> list:
                      "pautas": [], "invalida": p5["precio"], "invalida_por": "arranque_A",
                      "invalida_lado": "encima", "principales": [(0, 1)]}
                 pegadas.append(_pegar(imp, b))
-    return sueltas + pegadas
+    # Suelta, una A-B-C tiene que corregir algo (ver `_corrige_algo`).
+    return [c for c in sueltas if _corrige_algo(c, vista)] + pegadas
+
+
+def _corrige_algo(c: dict, vista: _Vista) -> bool:
+    """Una corrección corrige un movimiento anterior en contra suyo: antes de
+    una A-B-C a la baja tuvo que haber una suba. Se mira hacia atrás tanto
+    como dura la corrección (al menos 20 ruedas): desde el mínimo de ahí hasta
+    el arranque de la A, la suba tiene que medir al menos lo que la A, y la
+    corrección no puede haberla borrado entera (eso ya es otra bajada)."""
+    I = [p["i"] for p in c["pts"]]
+    largo = max((I[-1] if len(I) == 4 else vista.hoy) - I[0], 20)
+    desde = max(0, I[0] - largo)
+    if desde >= I[0]:
+        return False
+    piso = vista.min_bajo(desde, I[0])
+    P = [p["precio"] for p in c["pts"]]
+    return P[0] - piso >= P[0] - P[1] and min(P[1:][::2]) > piso
 
 
 def _abc(pts: list, vista: _Vista):
