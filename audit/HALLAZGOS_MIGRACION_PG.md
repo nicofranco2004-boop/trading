@@ -5,6 +5,31 @@
 que el autor agregó mientras yo auditaba: **sólo marca tres tests como «sólo
 SQLite», no toca una línea de lo auditado**, así que ningún hallazgo cambia.
 **Consigna:** intentar romperlos, no confirmarlos. **Nada publicado.**
+
+> ✅ **ESTADO (23/10/2026):** los hallazgos **1, 2, 3, 6 y 7** los arregló la
+> sesión de la migración **en esta misma rama** (verificado en el código, no
+> por lo que dice el commit), y el 2 y su gemelo —el tope de alertas— quedaron
+> los dos cubiertos poniendo la regla adentro del `INSERT`. El **4** no era un
+> bug sino la respuesta a una pregunta del informe, y el **5** sigue como estaba
+> porque está verificado que no es alcanzable.
+>
+> Hubo un segundo arreglo en paralelo (`arreglo/topes-pg`, de esta sesión de
+> auditoría) que **se descartó por decisión de Nico**: hacía lo mismo dejando las
+> cuatro copias de la reserva sin unificar, que es justo lo que la regla de
+> propagación de este repo pide no hacer. Lo único que sobrevive de esa rama es
+> esta corrección del informe y dos cosas anotadas: la nota de diseño del tope de
+> alertas (abajo, en el hallazgo 2) y la regla de orden de candados del hallazgo 8.
+>
+> 🔴 **Y la auditoría de ESOS arreglos encontró un bug nuevo: el hallazgo 8.**
+>
+> 🔴 **Y UNA CORRECCIÓN MÍA, importante:** el hallazgo 2 decía que el tope de
+> brokers era «una regresión de la migración, no una deuda vieja». **Eso está
+> mal.** Con la máquina tranquila **también se escapa en SQLite** (5 de 5 con
+> tope 1, seis corridas), o sea que **es un bug vivo en producción hoy**, no
+> algo que aparezca al pasar a Postgres. Mis dos mediciones de SQLite dieron
+> «1 y 1» porque las corrí con la suite grande ocupando la máquina, y eso
+> escalonaba los hilos lo suficiente para tapar la carrera. El detalle está en
+> la sección del hallazgo 2.
 **Informe auditado:** `audit/AUDITAR_MIGRACION_PG.md`
 
 **Instrumento:** un Postgres 16.2 propio (`pgserver`, sin docker), independiente
@@ -163,11 +188,33 @@ Es el mismo bug con otra cara: entre contar y escribir entra cualquiera.
 
 | base | tope (Free) | pedidos a la vez | brokers que quedaron |
 |---|---|---|---|
-| **Postgres** | 1 | 5 | **2** y **4** (dos corridas) |
-| SQLite | 1 | 5 | 1 y 1 |
+| **Postgres** | 1 | 5 | **2** y **4** |
+| **SQLite** | 1 | 5 | **5, 5, 5, 4, 5 y 5** (seis corridas) |
 
-Igual que el hallazgo 1: SQLite lo hacía cumplir gratis y Postgres no. **Es una
-regresión de la migración, no una deuda vieja.**
+🔴 **ACÁ ME EQUIVOQUÉ Y ES LA CORRECCIÓN QUE MÁS IMPORTA DEL INFORME.** La
+primera versión de esta sección decía «SQLite dejó 1 y 1 → es una regresión de
+la migración, no una deuda vieja». Las dos mediciones que decían «1 y 1` se
+hicieron **con la suite grande de SQLite corriendo en la misma máquina**, y esa
+carga escalonaba los hilos lo bastante para que la carrera no se diera. Repetidas
+con la máquina tranquila, SQLite deja entrar a los cinco.
+
+**No es una regresión de la migración: es un bug vivo en producción hoy.** Y el
+motivo es la distinción que dejó pasar todo esto:
+
+| forma del tope | SQLite | Postgres |
+|---|---|---|
+| contar y escribir en **UNA sentencia** | ✅ lo hace cumplir gratis | 🔴 no |
+| contar **en Python** y escribir después | 🔴 **tampoco** | 🔴 no |
+
+Lo que SQLite serializa son las ESCRITURAS. Cuando el conteo está en Python, la
+decisión ya se tomó antes de escribir: los cinco leen cero, los cinco deciden
+que pueden, y los cinco escriben de a uno, ordenaditos y de más.
+
+👉 Consecuencia práctica: **`turno_exclusivo` no sirve para esta familia**, porque
+no hace nada en SQLite a propósito. Para ésta va `turno_de_la_persona`, que toma
+para escribir el renglón de esa persona —la única fila que seguro existe— y por
+eso funciona en los dos motores. Medido con el arreglo puesto: **1 broker exacto,
+6 de 6 en SQLite y 4 de 4 en Postgres.**
 
 **Qué se escapa:** la pared del plan. Un Free con tope 1 se queda con 4 brokers y
 después «grandfather» se los conserva (`check_broker_quota` no deja agregar más,
@@ -187,7 +234,20 @@ inserta. Tope de alertas: 3 en Free.
 del símbolo por red antes de insertar, y para probarlo habría que simular ese
 sondeo — un test que fuerza la condición puede tapar justo lo que falla. Lo que
 sí está medido es su gemelo (el de brokers), y la forma es la misma línea por
-línea. **Tratarlo como roto hasta que alguien lo mida.**
+línea, en los DOS motores. **Tratarlo como roto hasta que alguien lo mida.**
+
+⚠️ **Y NO SE ARREGLA COPIANDO LA LÍNEA DEL DE BROKERS — por eso quedó sin
+arreglar acá y no por olvido.** En el de brokers el turno va arriba porque entre
+el conteo y el INSERT sólo hay lecturas locales. En el de alertas, en el medio
+está `_ae.price_for_alert()`, que **sale por red a buscar el precio**. Poner el
+turno arriba dejaría a SQLite con la base tomada para escribir durante toda esa
+llamada: nadie más podría escribir hasta que Yahoo contestara. Cambiaríamos un
+tope que se escapa por un «database is locked» para todos — un bug peor.
+
+El arreglo necesita MOVER el chequeo: dejar el gate de arriba para el cartel del
+403, y **volver a contar, con el turno, recién después del sondeo y justo antes
+del INSERT**. Es un cambio de estructura en un camino de paywall, con su test —
+no una línea.
 
 ¿Hay más? Los topes cuantitativos del plan son exactamente esos dos
 (`brokers_max` y `alerts_max` en `PLAN_LIMITS`); los demás son `can_access`
@@ -334,6 +394,94 @@ clave, o agregue `TURNO_... = 823471004` con la forma de una, el usuario 1 (o el
 2) empieza a esperar un candado que no tiene nada que ver con lo suyo, sin error
 y sin que nada lo diga. Ya existe la forma de dos claves y es la que hace lo que
 este sitio quiere: `turno_exclusivo(conn, TURNO_TOPE_FACTS_POR_USUARIO, uid)`.
+
+---
+
+## 🔴 HALLAZGO 8 — El tope «sin tope» rompía el endpoint en Postgres
+
+Encontrado al auditar los arreglos de los hallazgos 1 y 2 (23/10/2026), medido
+contra Postgres real.
+
+`plan.condicion_de_tope()` arma el `WHERE` que hace cumplir el tope adentro del
+`INSERT`, y para los planes SIN tope preguntaba `? IS NULL` pasando `None` como
+parámetro:
+
+```sql
+(? IS NULL OR (SELECT COUNT(*) …) < ?)
+```
+
+Postgres contesta:
+
+```
+IndeterminateDatatype: could not determine data type of parameter $1
+```
+
+**El mecanismo:** el driver manda `None` con el tipo SIN ESPECIFICAR, y en
+`$1 IS NULL` Postgres no tiene de dónde inferirlo — no hay comparación, no hay
+columna, nada. Con un entero manda un tipo concreto y por eso el caso con tope
+anda. En SQLite pasa perfecto (`NULL IS NULL` no necesita que nadie infiera
+nada), así que **la suite de SQLite queda verde con el bug adentro**.
+
+| `limit` | la condición sola | el endpoint |
+|---|---|---|
+| `1` (Free) | TRUE ✅ | crea su primer broker ✅ |
+| `0` | FALSE ✅ | — |
+| **`None`** | 🔴 **revienta** | 🔴 el endpoint tira la excepción |
+
+**El alcance, de `PLAN_LIMITS`, y está al revés de lo que uno querría:**
+
+| | `brokers_max=None` | `alerts_max=None` |
+|---|---|---|
+| free | — | — |
+| **plus** | — | 🔴 |
+| **pro** | 🔴 | 🔴 |
+| advisor / admin | 🔴 | 🔴 |
+
+**El único que seguía funcionando era el Free.** Todo el que paga perdía crear
+alertas, y el Pro perdía además crear brokers.
+
+**El arreglo: no preguntarle a SQL algo que Python ya sabe.**
+
+```python
+if limit is None:
+    return ("1=1", ())        # sin tope: la condición no filtra nada
+```
+
+Así desaparece el parámetro sin tipo y la sentencia dice lo que hace. Un
+`::bigint` lo arreglaría en Postgres pero rompe SQLite.
+
+⚠️ **Y por qué no lo agarró ningún test:** los tests del tope usan plan Free,
+que es el único que NO se rompe. El caso «sin tope» no tenía ninguno. Un usuario
+Pro creando tres brokers alcanza, y tiene la forma que uno quiere: verde en
+SQLite, rojo en Postgres.
+
+### Lo que sí aguantó de esos arreglos
+
+* **`lastrowid` con `INSERT … SELECT … WHERE`**: no se rompe. El shim le pega el
+  `RETURNING` igual (su regex matchea `INSERT INTO <tabla>` sin importar si sigue
+  `VALUES` o `SELECT`), y con 0 filas insertadas devuelve None — pero los dos
+  endpoints miran `rowcount` ANTES de tocar `lastrowid`, así que nunca usan un id
+  viejo. Sin ese chequeo, en SQLite `lastrowid` después de un INSERT que no
+  insertó nada devuelve el ANTERIOR: el endpoint habría contestado el id de un
+  broker ajeno.
+* **El conteo del chequeo y el del INSERT cuentan LO MISMO** en los dos topes: en
+  brokers por construcción (comparten `SQL_BROKERS_QUE_CUENTAN`), en alertas
+  verificado a mano (los dos cuentan sin filtrar por `active`). Si hubieran
+  diferido, un usuario con alertas apagadas tendría la pantalla diciendo «podés»
+  y la base diciendo «no».
+* **`_reservar_un_slot` nunca recibe `limit=None`**: chat y análisis tienen número
+  en los cinco planes, y escuchas y descartes tienen salida temprana. Si llegara,
+  `< NULL` daría falso y bloquearía al que NO tiene tope — el mismo error del
+  hallazgo 8 con otra cara.
+
+### 🔒 La regla de orden de candados que queda de los dos arreglos
+
+Un alcance, UN mecanismo, pedido SIEMPRE primero. Si dos caminos serializan «lo
+de una persona» con candados de clase distinta —uno tomando el renglón de la
+persona y otro un candado de aviso— una transacción que use los dos en orden
+opuesto se cruza, y sale como `deadlock detected`. Es la misma forma del
+hallazgo 3, y es el motivo por el que la caja y los topes del plan usan los dos
+el candado de aviso y no uno cada uno.
 
 ---
 
