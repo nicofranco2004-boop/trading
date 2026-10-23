@@ -419,7 +419,7 @@ describe('el análisis fundamental en la ficha', () => {
     expect(t).not.toContain('no tenemos fundamentales')
   })
 
-  it('en lo que tenés, también va debajo del técnico y antes de tu operatoria', async () => {
+  it('en lo que tenés: técnico → tu operatoria, lotes e historial → fundamental', async () => {
     respuestas = {
       '/positions': [{ id: 5, asset: 'NVDA', broker: 'Schwab', quantity: 3, invested: 450, currency: 'USD', asset_type: 'STOCK', entry_date: '2025-05-01' }],
       '/brokers': [{ name: 'Schwab', currency: 'USD' }], '/dolar': null, '/operations': [],
@@ -427,9 +427,11 @@ describe('el análisis fundamental en la ficha', () => {
       '/fundamentals/NVDA': FUNDAMENTALES('NVDA', 'NVIDIA Corporation'),
     }
     const t = await abrir('/activo/NVDA')
-    const tecnico = t.indexOf('Largo plazo'), fundamental = t.indexOf('Análisis fundamental'), tuya = t.indexOf('Tu operatoria')
+    const tecnico = t.indexOf('Largo plazo'), fundamental = t.indexOf('Análisis fundamental')
+    const tuya = t.indexOf('Tu operatoria'), lotes = t.indexOf('Lotes abiertos')
     expect(tecnico).toBeGreaterThan(-1)
-    expect(fundamental).toBeGreaterThan(tecnico)
-    expect(tuya).toBeGreaterThan(fundamental)
+    expect(tuya).toBeGreaterThan(tecnico)
+    expect(lotes).toBeGreaterThan(tuya)
+    expect(fundamental).toBeGreaterThan(lotes)
   })
 })

@@ -14,7 +14,7 @@
 //   • Stats: P&L realizado de toda la vida, win rate, veces operado, costo prom
 //   • Lotes abiertos (orden FIFO: más viejo primero = el que se vende primero)
 //   • Historial de operaciones (cada trade con su P&L realizado, win/loss)
-//   • Análisis fundamental de la empresa (si es acción/CEDEAR), debajo del técnico
+//   • Análisis fundamental de la empresa (si es acción/CEDEAR), al final
 //
 // Responsive: una sola página sirve desktop y mobile (max-w centrado en desktop,
 // full-width en mobile). Reusa la matriz de valuación de PositionDetailMobile.
@@ -389,12 +389,6 @@ export default function AssetDetail() {
         />
       )}
 
-      {/* Análisis fundamental de la empresa, debajo del técnico: la MISMA vista
-          de "Calidad de cartera" (AnalyzeView), sin buscador ni resumen con IA.
-          Para compararla con otras, el link lleva a "Calidad de cartera". Sin
-          empresa (cripto, ETF, bono, fondo) no aparece. */}
-      {empresa && <AnalyzeView ticker={empresa.ticker} enFicha irACalidad={empresa.ir} />}
-
       {/* Stats de operatoria */}
       {tenes && <section className="mb-5">
         <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu operatoria en {asset}</div>
@@ -499,6 +493,13 @@ export default function AssetDetail() {
         </AskAIAbout>
       )}
 
+      {/* Análisis fundamental de la empresa, al final: técnico → lo tuyo
+          (operatoria, lotes, historial) → fundamental, para no tener que pasar
+          todo el fundamental para llegar a tus lotes (Nico, 23/10). Es la MISMA
+          vista de "Calidad de cartera" (AnalyzeView), sin buscador ni resumen
+          con IA; para compararla con otras, el link lleva ahí. Sin empresa
+          (cripto, ETF, bono, fondo) no aparece. */}
+      {empresa && <AnalyzeView ticker={empresa.ticker} enFicha irACalidad={empresa.ir} />}
     </div>
   )
 }
