@@ -462,6 +462,10 @@ class LasHerramientasDelAdmin(_Despues):
         finally:
             conn.close()
 
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "Sólo SQLite por diseño: el ensayo clona la base entera con "
+                     "Connection.backup, que en Postgres no existe (dberrors."
+                     "exigir_clon_soportado corta con 501 a propósito).")
     def test_el_ensayo_no_escribe_en_la_base_real(self):
         """Los "Simular" del admin corren el motor sobre un CLON. La primera versión
         anotaba igual las cuentas y al terminar las reconstruía en la base REAL
@@ -488,6 +492,9 @@ class LasHerramientasDelAdmin(_Despues):
         self.assertEqual(disparos, [])
         self.assertIsNone(self._foto("2025-07-31"))
 
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "Sólo SQLite por diseño: el ensayo clona la base entera con "
+                     "Connection.backup, que en Postgres no existe.")
     def test_el_ensayo_de_reconstruccion_cuenta_las_fotos_que_borraria(self):
         self._importar(*IBKR)
         conn = main.get_db()

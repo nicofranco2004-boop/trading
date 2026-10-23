@@ -758,11 +758,25 @@ def test_entre_una_entrega_de_alertas_y_la_siguiente_la_base_queda_libre(conn, m
     assert pudo == [True, True]
 
 
+@pytest.mark.skipif(getattr(main, "USANDO_PG", False),
+                    reason="Sólo SQLite: simula «database is locked», que no existe así "
+                           "en Postgres. Ver el aviso del docstring.")
 def test_si_no_se_puede_anotar_una_entrega_las_demas_alertas_salen_igual(conn, monkeypatch):
     """Otro escritor de la app (un import largo) tiene la base tomada más que
     el busy_timeout justo cuando se anota la primera entrega. Antes el error
     cortaba la entrega de las que faltaban — ya registradas como disparadas,
-    no se reintentan nunca."""
+    no se reintentan nunca.
+
+    ⚠️ SÓLO-SQLITE, y la razón es de fondo: este test FABRICA la condición
+    abriendo una conexión cruda al archivo y tomándolo con `BEGIN IMMEDIATE`.
+    Eso reproduce el escritor único de SQLite — exactamente lo que la migración
+    a Postgres viene a eliminar. Allá no hay una base entera que trabar.
+
+    **Lo que el test protege SÍ importa del otro lado**: si una entrega no se
+    puede anotar, las demás tienen que salir igual. La versión para Postgres
+    tendría que fabricar otra cosa (un lock de FILA con `lock_timeout` corto) y
+    queda PENDIENTE: no es que no aplique, es que falta escribirla.
+    """
     uids = [_usuario(conn, n, tier="plus") for n in ("ana", "beto")]
     for u, sym in zip(uids, ("AAPL", "MSFT")):
         _alerta(conn, u, sym)
