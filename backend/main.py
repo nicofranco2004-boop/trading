@@ -5844,13 +5844,14 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
         # Feature gate: el tope de brokers de cada plan (PLAN_LIMITS). Grandfather:
         # usuarios preexistentes con más conservan sus brokers pero no agregan
         # más hasta upgrade. Admin/Pro: sin tope.
-        allowed, quota_info = plan.check_broker_quota(conn, uid)
-        if not allowed:
+        def _403_del_tope(quota_info):
+            """El 403 del tope, armado UNA vez: lo levanta el chequeo amable de
+            abajo y también el INSERT, que es el que hace cumplir la regla."""
             tier = quota_info["tier"]
             # El texto y la lista salen de los límites (billing/plan_textos).
             # Decía "El plan Free permite 1 broker" también al Plus que llegaba
             # a 3 — y el frontend lo muestra en el modal.
-            raise HTTPException(403, {
+            return HTTPException(403, {
                 "error": plan_textos.aviso_brokers(tier, "pro"),
                 "quota": quota_info,
                 "upgrade": {
@@ -5864,6 +5865,10 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
                         "brokers", tier, "pro", usage=plan.quota.get_current_usage(conn, uid)),
                 },
             })
+
+        allowed, quota_info = plan.check_broker_quota(conn, uid)
+        if not allowed:
+            raise _403_del_tope(quota_info)
         # Validar parent_broker_id (si se pasa, debe pertenecer al user)
         if data.parent_broker_id is not None:
             parent = conn.execute(
@@ -5873,10 +5878,19 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
             if not parent:
                 raise HTTPException(400, "Broker padre inválido")
         try:
+            # El tope se hace cumplir ACÁ, no en el chequeo de arriba: entre
+            # contar y escribir entraban cinco pedidos. Ver
+            # `plan.condicion_de_tope`, que tiene el número medido.
+            _cond, _cond_p = plan.condicion_de_tope("brokers", uid, quota_info["limit"])
             cur = conn.execute(
-                "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES (?,?,?,?)",
-                (uid, data.name, data.currency, data.parent_broker_id),
+                "INSERT INTO brokers (user_id, name, currency, parent_broker_id) "
+                f"SELECT ?,?,?,? WHERE {_cond}",
+                (uid, data.name, data.currency, data.parent_broker_id) + _cond_p,
             )
+            if not getattr(cur, "rowcount", 0):
+                # Perdió la carrera: el tope ya está lleno. Se vuelve a contar
+                # para que el cartel diga el número de AHORA y no el de antes.
+                raise _403_del_tope(plan.check_broker_quota(conn, uid)[1])
             # Auto-crear posición cash con saldo 0. Esto evita el gap donde el
             # usuario crea un broker nuevo y no tiene cómo hacer su primer
             # depósito (el botón 'Depositar' vive dentro del menú de cada
@@ -41587,11 +41601,12 @@ def _atomic_insert_fact(conn, uid: int, content: str, source: str):
     """
     try:
         # El turno, por usuario: el mismo patrón de contar-y-escribir que el
-        # tope de trials, que en Postgres NO aguanta solo. Acá la clave lleva el
-        # uid porque el tope es por persona: dos usuarios distintos no tienen
-        # por qué esperarse. Ver `pgsesion.turno_exclusivo`.
+        # tope de trials, que en Postgres NO aguanta solo. El uid va como
+        # SEGUNDA clave y no sumado a la primera —dos usuarios distintos no
+        # tienen por qué esperarse, pero sumando el usuario 1 caía justo en la
+        # clave de la caja—. Ver `pgsesion.turno_exclusivo`.
         import pgsesion as _ps
-        _ps.turno_exclusivo(conn, _ps.TURNO_TOPE_FACTS_POR_USUARIO + int(uid))
+        _ps.turno_exclusivo(conn, _ps.TURNO_TOPE_FACTS_POR_USUARIO, int(uid))
         cur = conn.execute(
             """INSERT INTO ai_user_facts(user_id, content, source)
                SELECT ?, ?, ?
@@ -47349,11 +47364,16 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
     from ai import plan as _plan
     conn = get_db()
     try:
-        allowed, info = _plan.check_alert_quota(conn, uid)
-        if not allowed:
-            raise HTTPException(403, {
+        def _403_del_tope(info):
+            """El 403 del tope, armado UNA vez: lo levanta el chequeo amable de
+            acá y también el INSERT, que es el que hace cumplir la regla."""
+            return HTTPException(403, {
                 "error": "Llegaste al límite de alertas de tu plan.",
                 "quota": info, "upgrade": True})
+
+        allowed, info = _plan.check_alert_quota(conn, uid)
+        if not allowed:
+            raise _403_del_tope(info)
         if data.kind == "pct_move" and not _plan.can_access(conn, uid, "alerts.pct_move"):
             raise HTTPException(403, {
                 "error": "Las alertas de variación (%) son de Rendi Plus.",
@@ -47410,15 +47430,20 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
             elif baseline == "set_price":
                 anchor_price = current_price   # "Desde ahora": ancla = precio actual
 
+        # Igual que los brokers: el tope se hace cumplir en el INSERT, porque
+        # entre contar y escribir entra cualquiera. Ver `plan.condicion_de_tope`.
+        _cond, _cond_p = _plan.condicion_de_tope("alerts", uid, info["limit"])
         cur = conn.execute(
             """INSERT INTO alerts
                (user_id, kind, symbol, scope, direction, threshold, up_pct, down_pct,
                 currency, baseline, anchor_price, channel, repeat, cooldown_min, armed, active, note)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+               SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,? WHERE """ + _cond,
             (uid, data.kind, symbol, data.scope, data.direction, threshold, up_pct, down_pct,
              currency, baseline, anchor_price, data.channel, data.repeat, data.cooldown_min,
-             armed, data.note),
+             armed, data.note) + _cond_p,
         )
+        if not getattr(cur, "rowcount", 0):
+            raise _403_del_tope(_plan.check_alert_quota(conn, uid)[1])
         aid = cur.lastrowid
         conn.commit()
         return {"ok": True, "id": aid, "armed": bool(armed),

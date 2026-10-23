@@ -571,6 +571,7 @@ def step_down_due_trials(conn) -> int:
 
     Idempotente: solo matchea tier='pro', así que correrlo dos veces no hace
     nada la segunda. Devuelve cuántos bajó."""
+    from ai import quota as _q   # el día de la cuota, en UN solo lugar
     # El corte va por DÍA, no por instante — mismo umbral, otra unidad.
     #
     # Con el instante, el corte caía un día tarde: el trial arranca a la hora que
@@ -628,11 +629,18 @@ def step_down_due_trials(conn) -> int:
             conn.execute(
                 "UPDATE users SET tier='plus', quota_window_from=? WHERE id=? AND tier='pro'",
                 # Fecha LOCAL, el mismo reloj con el que ai_usage_daily guarda
-                # el consumo (date.today()). Con utcnow() el piso quedaba un día
-                # adelante en cualquier servidor que no corra en UTC, la ventana
-                # daba vacía y el usuario tenía cuota infinita hasta que el reloj
-                # lo alcanzaba.
-                (datetime.now().date().isoformat(), r["id"]))
+                # el consumo. Con utcnow() el piso quedaba un día adelante en
+                # cualquier servidor que no corra en UTC, la ventana daba vacía
+                # y el usuario tenía cuota infinita hasta que el reloj lo
+                # alcanzaba.
+                #
+                # Sale de `dia_de_la_cuota()` y no de un `datetime.now()` propio
+                # —era el SÉPTIMO sitio que lo calculaba por su cuenta— para que
+                # el día que se decida mover la cuota al día argentino alcance
+                # cambiar esa función. Con la copia suelta, el síntoma iba a ser
+                # que a la prueba gratis se le corre el corte un día respecto de
+                # todo lo demás, que es de los que no se encuentran mirando.
+                (_q.dia_de_la_cuota(), r["id"]))
             try:
                 conn.execute(
                     """INSERT INTO credit_ledger

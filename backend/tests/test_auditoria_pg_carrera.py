@@ -57,6 +57,54 @@ def _en_paralelo(n, trabajo):
     return res, errs
 
 
+def _ventana_abierta(modulo, nombre, n):
+    """Parchea `modulo.nombre` para que NADIE siga hasta que los n hilos hayan
+    pasado por ahí. Devuelve el parche listo para un `with`.
+
+    🔴 POR QUÉ ESTO Y NO ESPERAR A QUE LA CARRERA SE DÉ SOLA. Medido: sin el
+    arreglo, el tope de brokers falló 3 de 3 en una tanda y 0 de 3 en la
+    siguiente, con la única diferencia de qué otros tests corrían al lado. Un
+    guardián que depende de la carga de la máquina no es un guardián: el día
+    que alguien rompa el tope, el test va a estar verde una de cada dos veces.
+
+    Con la barrera, la ventana entre CONTAR y ESCRIBIR se abre a propósito, que
+    es exactamente lo que la máquina cargada hace sola. No tapa nada de lo que
+    se está midiendo: lo que hace cumplir el tope es el INSERT, y el INSERT no
+    se toca.
+
+    La barrera tiene vencimiento y si se rompe no pasa nada, porque en Postgres
+    el turno serializa los chequeos y entonces los n hilos NO pueden estar
+    adentro a la vez: ahí la espera vence, siguen igual, y el que serializa es
+    el turno. O sea que el test mide en los dos motores, cada uno por su
+    mecanismo.
+    """
+    import threading as _th
+    import unittest.mock as _mock
+    original = getattr(modulo, nombre)
+    barrera = _th.Barrier(n)
+    # Sólo las PRIMERAS n llamadas esperan. El que pierde la carrera vuelve a
+    # llamar al chequeo para armar el cartel con el número de ahora, y si esa
+    # segunda vuelta también esperara, la barrera se quedaría colgada esperando
+    # a un hilo que ya terminó: cinco segundos de vencimiento por test, por
+    # nada. (Pasó, y por eso está escrito.)
+    vueltas = {"n": 0}
+    cerrojo = _th.Lock()
+
+    def espiado(*a, **kw):
+        r = original(*a, **kw)
+        with cerrojo:
+            vueltas["n"] += 1
+            primera_vuelta = vueltas["n"] <= n
+        if primera_vuelta:
+            try:
+                barrera.wait(timeout=5)
+            except _th.BrokenBarrierError:
+                pass
+        return r
+
+    return _mock.patch.object(modulo, nombre, espiado)
+
+
 def _nuevo_user(conn, etiqueta):
     uid = conn.execute(
         "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
@@ -494,16 +542,118 @@ class TopeDeBrokersDelPlan(unittest.TestCase):
             except Exception:
                 pass          # un 403 del tope o un choque del índice único
 
-        hilos = [threading.Thread(target=crear, args=(i,)) for i in range(5)]
-        [h.start() for h in hilos]
-        [h.join(timeout=60) for h in hilos]
+        from ai import plan as _plan
+        with _ventana_abierta(_plan, "check_broker_quota", 5):
+            hilos = [threading.Thread(target=crear, args=(i,)) for i in range(5)]
+            [h.start() for h in hilos]
+            [h.join(timeout=60) for h in hilos]
         self.conn.rollback()
+        # El mismo seguro que el de alertas: si no entró ninguno, el conteo
+        # queda bajo el tope y el verde no mide nada. Ver ese test.
+        self.assertGreaterEqual(
+            len(aceptados), 1,
+            "NO ENTRÓ NINGÚN PEDIDO: el test no midió el tope, falló antes.")
         quedaron = self.conn.execute(
             "SELECT COUNT(*) c FROM brokers WHERE user_id=?", (self.uid,)).fetchone()["c"]
         self.assertLessEqual(
             quedaron, self.tope,
             f"el tope del plan es {self.tope} y quedaron {quedaron} brokers "
             f"({len(aceptados)} pedidos aceptados)")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6 · El gemelo del anterior: el tope de ALERTAS del plan
+# ─────────────────────────────────────────────────────────────────────────────
+class TopeDeAlertasDelPlan(unittest.TestCase):
+    """El gemelo de `TopeDeBrokersDelPlan`, que la auditoría marcó sin medir.
+
+    Tiene la forma IDÉNTICA —`check_alert_quota` cuenta, el endpoint inserta
+    unas líneas después— y por eso se arregló junto con el otro. Pero un arreglo
+    sin una medición que lo respalde no está verificado, así que acá está la
+    medición que faltaba.
+
+    POR QUÉ LA AUDITORÍA NO LO MIDIÓ, y cómo se resuelve sin hacer trampa: el
+    endpoint sondea el precio del ticker POR RED antes de insertar
+    (`price_for_alert`), y forzar eso podía tapar justo lo que falla. Acá el
+    sondeo se reemplaza por un precio fijo — y eso hace la ventana entre contar
+    e insertar MÁS CORTA, no más larga. O sea que el test se vuelve más difícil
+    de romper, no más fácil: si igual sale rojo sin el arreglo, el rojo es real.
+    Verificado: sin el turno en `check_alert_quota`, con 2 alertas puestas y
+    tope 3, los 8 pedidos entran y quedan 10.
+
+    Corre el endpoint de verdad (`main.alerts_create`), no una copia."""
+
+    def setUp(self):
+        self.conn = main.get_db()
+        self.uid = _nuevo_user(self.conn, "topealr")
+        from ai import plan as _plan
+        self.tope = _plan.PLAN_LIMITS["free"]["alerts_max"]
+        # Arranca en tope−1: así cada pedido, mirando solo, ve "2 < 3 → pasá".
+        # Es el borde, que es donde el tope tiene que aguantar de verdad.
+        for i in range(self.tope - 1):
+            self.conn.execute(
+                "INSERT INTO alerts (user_id, kind, symbol, scope, direction, "
+                "threshold, currency, baseline, channel, repeat, cooldown_min, "
+                "armed, active) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,1)",
+                (self.uid, "price_target", f"PREV{i}", "ticker", "above",
+                 100.0, "USD", "prev_close", "both", "once", 360))
+        self.conn.commit()
+
+    def tearDown(self):
+        try:
+            self.conn.execute("DELETE FROM alerts WHERE user_id=?", (self.uid,))
+            self.conn.execute("DELETE FROM users WHERE id=?", (self.uid,))
+            self.conn.commit()
+        except Exception:
+            try: self.conn.rollback()
+            except Exception: pass
+        self.conn.close()
+
+    def test_free_en_el_borde_y_ocho_pedidos(self):
+        import unittest.mock as _mock
+        import alerts_engine as _ae
+
+        listo = threading.Barrier(8)
+        aceptados, cerrojo = [], threading.Lock()
+
+        def crear(i):
+            try:
+                listo.wait(timeout=30)
+                main.alerts_create(
+                    main.AlertCreateIn(kind="price_target", symbol=f"CARR{i}",
+                                       scope="ticker", direction="above",
+                                       threshold=999999.0, currency="USD"),
+                    uid=self.uid)
+                with cerrojo:
+                    aceptados.append(i)
+            except Exception:
+                pass          # un 403 del tope es exactamente lo que se espera
+
+        # El sondeo de precio, por un número fijo. Ver el docstring: acorta la
+        # ventana, no la alarga.
+        from ai import plan as _plan
+        with _mock.patch.object(_ae, "price_for_alert", return_value=1.0), \
+             _ventana_abierta(_plan, "check_alert_quota", 8):
+            hilos = [threading.Thread(target=crear, args=(i,)) for i in range(8)]
+            [h.start() for h in hilos]
+            [h.join(timeout=60) for h in hilos]
+
+        self.conn.rollback()
+        # 🔴 EL SEGURO, y no es decorativo: este test estuvo verde un rato
+        # largo porque los OCHO pedidos morían con un 400 de validación
+        # ("ticker desconocido cotiza en dólares") antes de llegar al tope.
+        # Cero inserciones también deja el conteo por debajo del tope, así que
+        # el verde no significaba nada. Si no entró al menos uno, no se midió.
+        self.assertGreaterEqual(
+            len(aceptados), 1,
+            "NO ENTRÓ NINGÚN PEDIDO: el test no midió el tope, falló antes. "
+            "Revisá que el endpoint acepte estos datos.")
+        quedaron = self.conn.execute(
+            "SELECT COUNT(*) c FROM alerts WHERE user_id=?", (self.uid,)).fetchone()["c"]
+        self.assertLessEqual(
+            quedaron, self.tope,
+            f"el tope del plan es {self.tope} y quedaron {quedaron} alertas "
+            f"({len(aceptados)} pedidos aceptados sobre 8)")
 
 
 if __name__ == "__main__":

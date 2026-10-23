@@ -70,29 +70,41 @@ def tomar_saldo(conn, uid: int, broker: str) -> None:
     sqlite3 abre la transacción recién en la primera escritura, así que un SELECT
     anterior lee sin bloqueo y otro pedido puede cambiar el saldo antes de que
     éste escriba. Esta escritura no cambia nada, pero desde acá hasta el commit
-    nadie más puede tocar el saldo (en SQLite, la base entera —también cuando
-    todavía no hay caja: un UPDATE de 0 filas igual la toma—; en Postgres, la
-    fila), y lo que se lea después es lo vigente."""
-    cur = conn.execute(
+    nadie más puede tocar el saldo, y lo que se lea después es lo vigente.
+
+    QUIÉN LO GARANTIZA, que es distinto en cada motor: en SQLite el UPDATE toma
+    la base entera —también cuando todavía no hay caja, porque un UPDATE de 0
+    filas igual la toma—; en Postgres el UPDATE toma la FILA, que no existe
+    cuando la caja todavía no está, y por eso acá se pide además el turno. El
+    comentario de abajo cuenta por qué va siempre y no sólo en ese caso."""
+    # 🔴 EL TURNO VA SIEMPRE Y ANTES DEL UPDATE, no sólo cuando falta la caja.
+    #
+    # POR QUÉ HACE FALTA: en Postgres, si la caja todavía no existe no hay fila
+    # que trabar, así que el UPDATE de abajo no toma NADA y dos primeros
+    # depósitos simultáneos crean DOS cajas. Como todo el código lee «la más
+    # vieja», la plata de la segunda no la mueve nadie más: un depósito que
+    # desaparece del saldo. Medido: dos depósitos a la vez dejaban dos filas de
+    # efectivo (300 y 200) donde tenía que quedar una.
+    #
+    # POR QUÉ SIEMPRE, que es el arreglo del arreglo: pedirlo sólo en el caso
+    # sin caja mezcla DOS candados distintos —la fila (cuando la caja existe) y
+    # el turno (cuando no)— y entonces una transacción que toca dos brokers los
+    # toma en el orden que le toque según cuál caja exista. Dos pedidos cruzados
+    # se trababan mutuamente: medido `deadlock detected` 3 de 3, con el par
+    # realista de un broker en pesos (su caja nace con el broker) y su pata
+    # '· USD' (que nace SIN caja), que es lo que hace `dividendos.py` al
+    # acreditar dólares y descontar la comisión en pesos.
+    # Pidiéndolo siempre y primero, el orden es uno solo y no hay cómo cruzarse.
+    #
+    # Es por (caja, usuario): dos usuarios distintos no se esperan. En SQLite no
+    # hace nada —el motor ya serializa— y por eso el UPDATE de abajo se queda:
+    # allá es él el que toma la base, también con 0 filas.
+    import pgsesion as _ps
+    _ps.turno_exclusivo(conn, _ps.TURNO_CAJA_DEL_BROKER, uid)
+    conn.execute(
         "UPDATE positions SET invested=invested WHERE user_id=? AND broker=? AND is_cash=1",
         (uid, broker),
     )
-    if not getattr(cur, "rowcount", 0):
-        # 🔴 NO HAY CAJA TODAVÍA, y acá es donde el candado de arriba NO alcanza
-        # en Postgres. El docstring ya decía que un UPDATE de 0 filas igual toma
-        # la base EN SQLITE; en Postgres no hay fila que trabar, así que no toma
-        # NADA y dos primeros depósitos simultáneos crean DOS cajas. Como todo
-        # el código lee «la más vieja», la plata de la segunda no la mueve nadie
-        # más: un depósito que desaparece del saldo.
-        #
-        # Medido: dos depósitos a la vez dejaban dos filas de efectivo (300 y
-        # 200) donde tenía que quedar una.
-        #
-        # Se pide turno por (caja, usuario): dos usuarios distintos no se
-        # esperan. En SQLite no hace nada —el UPDATE de 0 filas ya tomó la base,
-        # que es justamente lo que dice el docstring—. Ver `pgsesion`.
-        import pgsesion as _ps
-        _ps.turno_exclusivo(conn, _ps.TURNO_CAJA_DEL_BROKER, uid)
 
 
 def caja(conn, uid: int, broker: str):

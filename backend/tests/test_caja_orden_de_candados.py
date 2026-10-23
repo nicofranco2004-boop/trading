@@ -20,16 +20,17 @@ es un broker en pesos (su caja la crea `/api/brokers` al nacer) y su sub-broker
 después descuenta la comisión en pesos (`dividendos.py:398`), y una conversión
 va al revés.
 
-NO ES UNA REGRESIÓN A FAVOR DEL BUG VIEJO: sin el turno, estos dos pedidos
+NO ERA UNA REGRESIÓN A FAVOR DEL BUG VIEJO: sin el turno, estos dos pedidos
 dejaban DOS cajas y la plata de una desaparecía. Un 500 ruidoso es mejor que
-plata invisible. Pero se puede tener las dos cosas: **pedir el turno SIEMPRE y
-ANTES del UPDATE** —no sólo cuando la caja falta— deja a todos los pedidos
-tomando el mismo candado primero, así que no hay orden que invertir. Probado:
-con ese cambio esta sonda da 3 de 3 sin error y el test de los cinco primeros
-depósitos sigue pasando.
+plata invisible. Pero se tienen las dos cosas, y así quedó: **el turno se pide
+SIEMPRE y ANTES del UPDATE** —no sólo cuando la caja falta—, así que todos los
+pedidos toman el mismo candado primero y no hay orden que invertir.
 
-Queda `expectedFailure` porque el arreglo no está: el día que se aplique, esto
-sale como XPASS y hay que sacarle el decorador."""
+ESTE TEST ES EL GUARDIÁN DE ESO. Falla si alguien vuelve a mover el turno
+adentro del `if` del UPDATE (que es como estaba escrito al principio, porque
+parecía de sentido común pedirlo sólo cuando hace falta). Se verificó que
+distingue: con el turno adentro del `if`, 3 de 3 con `deadlock detected`; con el
+turno siempre y primero, 3 de 3 sin error."""
 import os, sys, threading, unittest
 HERE = os.path.dirname(os.path.abspath(__file__)); BACKEND = os.path.dirname(HERE)
 if BACKEND not in sys.path: sys.path.insert(0, BACKEND)
@@ -65,7 +66,6 @@ class OrdenDeCandados(unittest.TestCase):
 
     @unittest.skipUnless(getattr(main, "USANDO_PG", False),
                          "en SQLite el motor serializa: no hay orden que invertir")
-    @unittest.expectedFailure
     def test_dos_pedidos_en_ORDEN_OPUESTO(self):
         listo = threading.Barrier(2); errs = []; lock = threading.Lock()
 

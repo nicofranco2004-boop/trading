@@ -97,13 +97,27 @@ def turno_exclusivo(conn, clave: int, clave2: int = None) -> None:
     Veinte altas simultáneas cuentan CERO las veinte y entran las veinte.
     Reproducido con tope 1 y dos conexiones: entraron las dos.
 
-      ⚠️ No todos los topes se rompen, y la diferencia importa:
-      · El de la cuota de IA escribe sobre LA FILA DE ESE USUARIO
-        (`ON CONFLICT (user_id, date) DO UPDATE`). Dos pedidos chocan en esa
-        fila, Postgres los hace esperar, y el tope AGUANTA. Medido: aguanta.
-      · El de pruebas gratis del mes cuenta filas de TODOS los usuarios e
-        inserta una fila nueva. No hay fila compartida donde chocar, así que
-        nadie espera a nadie. Medido: NO aguanta.
+      🔴 ACÁ ME EQUIVOQUÉ YO, y queda escrito porque el error es instructivo.
+      El 22/10 anoté que el tope de la cuota de IA SÍ aguantaba «porque escribe
+      sobre la fila de ese usuario (`ON CONFLICT (user_id, date) DO UPDATE`) y
+      Postgres los hace esperar en esa fila». Lo medí con DOS pedidos y pasó.
+      El 23/10 la auditoría lo midió con DIEZ: tope 1, entraron 8.
+
+      El razonamiento estaba bien a medias. Los pedidos sí se esperan en la
+      fila. Pero cuando les toca seguir, la SUBCONSULTA que suma la semana se
+      evalúa con la foto que su transacción sacó al arrancar, así que
+      re-chequean el tope contra un número que ya no existe. Con dos pedidos el
+      segundo suele alcanzar a sacar foto nueva y rechaza bien: de ahí el falso
+      negativo. Con ocho, no.
+
+      ⚠️ LA REGLA QUE QUEDA: «choca en una fila compartida» NO es protección.
+      Lo único que protege es que el NÚMERO comparado contra el tope se lea
+      DESPUÉS de que el otro escribió — y eso acá sólo lo da el turno. Si un
+      tope cuenta algo y después escribe, pedí el turno, no lo deduzcas.
+
+      (El de pruebas gratis del mes es el caso evidente: cuenta filas de TODOS
+      los usuarios e inserta una nueva, así que no hay ni fila donde chocar.
+      Medido: NO aguanta. Pero «no hay fila compartida» nunca fue el criterio.)
 
     `pg_advisory_xact_lock` se suelta solo al terminar la transacción (commit o
     rollback), así que no hay forma de olvidarse de devolverlo — que es
@@ -130,7 +144,15 @@ def turno_exclusivo(conn, clave: int, clave2: int = None) -> None:
 # Claves de turno. Fijas y acá juntas para que se vea de un vistazo quién
 # compite con quién: dos topes distintos NO pueden compartir clave (se
 # bloquearían sin motivo) y el mismo tope SÍ tiene que usar siempre la misma.
+#
+# ⚠️ **NUNCA ARMAR UNA CLAVE SUMANDO** (`CLAVE + uid`). Para distinguir «sobre
+# quién» está la forma de DOS claves, que es un espacio aparte. Sumando, el
+# usuario 1 de un tope cae justo en la clave de otro, y el día que alguien
+# agregue la de al lado dos cosas sin relación empiezan a esperarse sin que
+# nada lo diga. Pasó: `TURNO_TOPE_FACTS_POR_USUARIO + 1` daba exactamente
+# `TURNO_CAJA_DEL_BROKER`.
 TURNO_TOPE_TRIALS_DEL_MES = 823471001
 TURNO_TOPE_FACTS_POR_USUARIO = 823471002
-
 TURNO_CAJA_DEL_BROKER = 823471003
+TURNO_CUOTA_IA_POR_USUARIO = 823471004
+TURNO_TOPE_DEL_PLAN_POR_USUARIO = 823471005

@@ -589,14 +589,88 @@ def record_chat(conn, user_id: int, cost_usd_cents: int = 0) -> None:
         )
 
 
+# ─── El único lugar donde se reserva un slot de cuota ────────────────────────
+# 🔴 POR QUÉ ES UNO Y NO CUATRO, y es la historia de un bug de plata.
+#
+# Esta sentencia estaba COPIADA cuatro veces (chat, análisis, escuchas,
+# descartes del diagnóstico), con cuatro docstrings que afirmaban lo mismo: que
+# «el WHERE re-verifica el cap DENTRO de la transacción serializada de SQLite →
+# sin race». Era cierto en SQLite y FALSO en Postgres, y al estar copiada cuatro
+# veces había que descubrirlo cuatro veces. Ahora el mecanismo vive acá.
+#
+# LO MEDIDO (23/10/2026, Postgres real, auditoría con consigna de romper):
+#
+#     escenario                          tope   pedidos a la vez   entraron
+#     chat, cuota vacía (Free)              1          10             8
+#     chat, cuota en tope−1 (Pro)          40           8             2  (quedó en 41)
+#     análisis, cuota vacía (Free)          1           8             5
+#
+# Los mismos escenarios contra SQLite entran 1 y 1, como corresponde.
+#
+# POR QUÉ FALLA, que es lo que no era obvio: la sentencia escribe en la fila de
+# ESE usuario (`ON CONFLICT (user_id, date) DO UPDATE`), así que los pedidos SÍ
+# se esperan en esa fila. Pero cuando le toca seguir, la SUBCONSULTA que suma la
+# semana se evalúa con la foto que esa transacción sacó al arrancar: re-chequea
+# el tope contra un número que ya no existe. Y si la fila del día todavía no
+# existe es peor —inserción especulativa—: los diez cuentan 0, uno gana el
+# índice único y los otros nueve caen al DO UPDATE con la foto vieja.
+#
+#   ⚠️ LA LECCIÓN, que vale para cualquier tope que se escriba después:
+#   «chocan en una fila compartida» NO es protección. Lo que protege es que el
+#   NÚMERO que se compara contra el tope se lea después de que el otro escribió,
+#   y eso en Postgres sólo lo garantiza el turno.
+#
+# Tres de los cuatro (chat, análisis, escuchas) le pagan a un proveedor por cada
+# pasada, así que un tope que no aguanta no es un número feo: es la factura.
+
+
+_COLUMNAS_DE_CUOTA = (
+    "chat_count", "analyses_count", "listen_count", "diag_dismiss_count",
+)
+
+
+def _reservar_un_slot(conn, user_id: int, columna: str, limit: int) -> bool:
+    """Toma 1 slot de `columna` si el usuario no llegó al tope de su semana.
+
+    Devuelve True si el slot QUEDÓ TOMADO (y entonces el caller que falle tiene
+    que devolverlo con su `refund_*`), False si el tope ya estaba lleno.
+
+    `columna` se interpola en el SQL, así que no puede venir de afuera: es una
+    de `_COLUMNAS_DE_CUOTA` y cualquier otra cosa revienta acá y no en la base.
+    """
+    if columna not in _COLUMNAS_DE_CUOTA:
+        raise ValueError(f"columna de cuota desconocida: {columna!r}")
+    today = date.today()
+    window_start = _window_start(today, _window_floor(conn, user_id)).isoformat()
+    import pgsesion as _ps
+    with conn:
+        # El turno ANTES de contar: en Postgres la cuenta de abajo se hace con
+        # la foto del arranque de la transacción. Ver el comentario de arriba.
+        # Es por usuario, así que dos usuarios distintos no se esperan.
+        _ps.turno_exclusivo(conn, _ps.TURNO_CUOTA_IA_POR_USUARIO, int(user_id))
+        cur = conn.execute(
+            f"""INSERT INTO ai_usage_daily (user_id, date, {columna}, cost_usd_cents)
+               SELECT ?, ?, 1, 0
+                WHERE (SELECT COALESCE(SUM({columna}), 0) FROM ai_usage_daily
+                        WHERE user_id = ? AND date >= ?) < ?
+               ON CONFLICT(user_id, date) DO UPDATE SET
+                 {columna} = ai_usage_daily.{columna} + 1
+               WHERE (SELECT COALESCE(SUM({columna}), 0) FROM ai_usage_daily
+                        WHERE user_id = ? AND date >= ?) < ?""",
+            (user_id, today.isoformat(), user_id, window_start, limit,
+             user_id, window_start, limit),
+        )
+        return cur.rowcount > 0
+
+
 def reserve_chat(conn, user_id: int, tier_override: str = None) -> tuple[bool, dict]:
     """Reserva ATÓMICA de 1 slot de chat ANTES del LLM (audit IA #2 B-9).
 
     El flujo viejo (can_chat → LLM → record_chat) era check-then-act sin lock:
     N requests concurrentes leían el mismo count y TODOS pasaban el gate — un
-    Free en 0/3 disparaba N llamadas al LLM. Acá el conteo y el incremento
-    ocurren en UN statement: el WHERE re-verifica el cap DENTRO de la
-    transacción de escritura de SQLite (serializada) → sin ventana.
+    Free en 0/3 disparaba N llamadas al LLM. El conteo y el incremento ocurren
+    en UN statement, y quién garantiza que ese statement alcance está explicado
+    en `_reservar_un_slot` (en SQLite el motor; en Postgres el turno).
 
     Devuelve (ok, usage). Con ok=True el slot ya está tomado: si el LLM falla,
     el caller debe devolverlo con refund_chat. usage refleja el estado
@@ -604,22 +678,7 @@ def reserve_chat(conn, user_id: int, tier_override: str = None) -> tuple[bool, d
     """
     tier = tier_override if tier_override in LIMITS else get_tier(conn, user_id)
     limit = limites_del_usuario(conn, user_id, tier)["chat_per_week"]
-    today = date.today()
-    window_start = _window_start(today, _window_floor(conn, user_id)).isoformat()
-    with conn:
-        cur = conn.execute(
-            """INSERT INTO ai_usage_daily (user_id, date, chat_count, cost_usd_cents)
-               SELECT ?, ?, 1, 0
-                WHERE (SELECT COALESCE(SUM(chat_count), 0) FROM ai_usage_daily
-                        WHERE user_id = ? AND date >= ?) < ?
-               ON CONFLICT(user_id, date) DO UPDATE SET
-                 chat_count = ai_usage_daily.chat_count + 1
-               WHERE (SELECT COALESCE(SUM(chat_count), 0) FROM ai_usage_daily
-                        WHERE user_id = ? AND date >= ?) < ?""",
-            (user_id, today.isoformat(), user_id, window_start, limit,
-             user_id, window_start, limit),
-        )
-        ok = cur.rowcount > 0
+    ok = _reservar_un_slot(conn, user_id, "chat_count", limit)
     return ok, get_current_usage(conn, user_id, tier_override=tier_override)
 
 
@@ -663,22 +722,7 @@ def reserve_analysis(conn, user_id: int, tier_override: str = None) -> tuple[boo
     """
     tier = tier_override if tier_override in LIMITS else get_tier(conn, user_id)
     limit = limites_del_usuario(conn, user_id, tier)["analyses_per_week"]
-    today = date.today()
-    window_start = _window_start(today, _window_floor(conn, user_id)).isoformat()
-    with conn:
-        cur = conn.execute(
-            """INSERT INTO ai_usage_daily (user_id, date, analyses_count, cost_usd_cents)
-               SELECT ?, ?, 1, 0
-                WHERE (SELECT COALESCE(SUM(analyses_count), 0) FROM ai_usage_daily
-                        WHERE user_id = ? AND date >= ?) < ?
-               ON CONFLICT(user_id, date) DO UPDATE SET
-                 analyses_count = ai_usage_daily.analyses_count + 1
-               WHERE (SELECT COALESCE(SUM(analyses_count), 0) FROM ai_usage_daily
-                        WHERE user_id = ? AND date >= ?) < ?""",
-            (user_id, today.isoformat(), user_id, window_start, limit,
-             user_id, window_start, limit),
-        )
-        ok = cur.rowcount > 0
+    ok = _reservar_un_slot(conn, user_id, "analyses_count", limit)
     return ok, get_current_usage(conn, user_id, tier_override=tier_override)
 
 
@@ -732,22 +776,7 @@ def reserve_listen(conn, user_id: int, tier_override: str = None) -> tuple[bool,
     limit = listen_limit(tier)
     if limit is None:
         return True, get_current_usage(conn, user_id, tier_override=tier)
-    today = date.today()
-    window_start = _window_start(today, _window_floor(conn, user_id)).isoformat()
-    with conn:
-        cur = conn.execute(
-            """INSERT INTO ai_usage_daily (user_id, date, listen_count, cost_usd_cents)
-               SELECT ?, ?, 1, 0
-                WHERE (SELECT COALESCE(SUM(listen_count), 0) FROM ai_usage_daily
-                        WHERE user_id = ? AND date >= ?) < ?
-               ON CONFLICT(user_id, date) DO UPDATE SET
-                 listen_count = ai_usage_daily.listen_count + 1
-               WHERE (SELECT COALESCE(SUM(listen_count), 0) FROM ai_usage_daily
-                        WHERE user_id = ? AND date >= ?) < ?""",
-            (user_id, today.isoformat(), user_id, window_start, limit,
-             user_id, window_start, limit),
-        )
-        ok = cur.rowcount > 0
+    ok = _reservar_un_slot(conn, user_id, "listen_count", limit)
     return ok, get_current_usage(conn, user_id, tier_override=tier)
 
 
@@ -795,8 +824,8 @@ def reserve_diag_dismiss(conn, user_id: int) -> tuple[bool, dict]:
     reserve_chat, sin refund — no hay LLM detrás, la acción es instantánea).
 
     Tiers con límite None (plus/pro/admin) → siempre permitido, no descuenta.
-    Free (cap 2/sem) → conteo + incremento en UN statement (el WHERE re-verifica
-    el cap dentro de la transacción serializada de SQLite → sin race).
+    Free (cap 2/sem) → conteo + incremento en `_reservar_un_slot`, que es donde
+    está explicado por qué una sola sentencia no alcanza en Postgres.
 
     Devuelve (ok, usage). ok=False → el endpoint responde 429 con upgrade payload.
     """
@@ -804,22 +833,7 @@ def reserve_diag_dismiss(conn, user_id: int) -> tuple[bool, dict]:
     limit = limites_del_usuario(conn, user_id, tier).get("diag_dismiss_per_week")
     if limit is None:  # ilimitado
         return True, get_current_usage(conn, user_id)
-    today = date.today()
-    window_start = _window_start(today, _window_floor(conn, user_id)).isoformat()
-    with conn:
-        cur = conn.execute(
-            """INSERT INTO ai_usage_daily (user_id, date, diag_dismiss_count, cost_usd_cents)
-               SELECT ?, ?, 1, 0
-                WHERE (SELECT COALESCE(SUM(diag_dismiss_count), 0) FROM ai_usage_daily
-                        WHERE user_id = ? AND date >= ?) < ?
-               ON CONFLICT(user_id, date) DO UPDATE SET
-                 diag_dismiss_count = ai_usage_daily.diag_dismiss_count + 1
-               WHERE (SELECT COALESCE(SUM(diag_dismiss_count), 0) FROM ai_usage_daily
-                        WHERE user_id = ? AND date >= ?) < ?""",
-            (user_id, today.isoformat(), user_id, window_start, limit,
-             user_id, window_start, limit),
-        )
-        ok = cur.rowcount > 0
+    ok = _reservar_un_slot(conn, user_id, "diag_dismiss_count", limit)
     return ok, get_current_usage(conn, user_id)
 
 
