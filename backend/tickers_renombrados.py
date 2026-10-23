@@ -47,6 +47,14 @@ TICKERS_RENOMBRADOS = {
 # lista no puede pasar a seguir Barrick.
 RENOMBRADOS_AL_IMPORTAR = {
     "GOLD": "B",   # Barrick Gold → Barrick Mining, mayo 2025
+    # Canje de ON: Cresud cambió la Clase XXIII por la Clase XXXVIII (CS38O, vto
+    # 3/3/2026), cierre el 8/7/2022. Bull Market lo anota como "CANJ" SIN ticker,
+    # así que la XXIII quedaba abierta para siempre y, si la CS38O se traspasaba
+    # a otro broker, el cierre del traspaso no la reconocía (cuenta de Agustín,
+    # 2026-10-22: CSDOO 298 fantasma; entraron 306 CS38O a Balanz). Que CSDOO
+    # sea la XXIII es deducido —la fecha del CANJ coincide con el cierre del
+    # canje—, no sale de una fuente oficial del ticker.
+    "CSDOO": "CS38O",
 }
 
 

@@ -333,5 +333,36 @@ class LaMitadEnDolaresSeVaConElTraspaso(_Base):
         self.assertEqual(self.qty(self.NUEVO_N, "VIST"), 21.0)
 
 
+# ── Una ON que el broker viejo CANJEÓ antes del traspaso ─────────────────────
+# Cresud cambió la Clase XXIII (CSDOO) por la XXXVIII (CS38O) el 8/7/2022. Bull
+# Market lo anota como "CANJ" sin ticker; Balanz recibe CS38O. Montos reales de
+# la cuenta de Agustín.
+VIEJO_ON = (
+    "F.Liquid;Cpbt;N.Cpbt;Importe;Dolares;Mda;Ref./Cantidad\n"
+    "10/03/22;COBA;6668;-50000;;;CREDITO CTA. CTE.\n"
+    "11/03/22;PU$A;76618;35000;300;DOLAR;TRANSFERENCIA VIA MEP\n"
+    "17/03/22;CPU$;602511;32756,45;299,94;DOLAR;298.0000  CSDOO\n"
+    "08/07/22;CANJ;395549;407,7;;;\n"
+    "22/01/24;DTRT;257047;1210;;;GTOS. TRANS. TITULOS\n"
+).encode("utf-8")
+NUEVO_ON = (BHDR +
+    "Recibo de Cobro / 1,,,2024-01-20,0,-1,2024-01-20,Pesos,1000000\n"
+    "Transferencia Externa (Crédito) / O.N. CRESUD CL.38 USD V.03/03/2026 / 306,"
+    "CS38O,Corporativos,2024-01-22,306,1320,2024-01-22,,0\n"
+).encode("utf-8")
+
+
+class LaOnCanjeadaSeReconoce(_Base):
+    def test_la_clase_vieja_se_cierra_con_el_traspaso_de_la_nueva(self):
+        self.importar(VIEJO_ON, self.VIEJO_N, "bullmarket")
+        prop = self.importar(NUEVO_ON, self.NUEVO_N, "balanz_movimientos", aprobar=["CS38O"])
+        self.assertEqual([(p["asset_symbol"], float(p["quantity"])) for p in prop],
+                         [("CS38O", 298.0)])
+        for b in (self.VIEJO_N, f"{self.VIEJO_N} · USD"):
+            for activo in ("CSDOO", "CS38O"):
+                self.assertEqual(self.qty(b, activo), 0.0, f"quedó {activo} en {b}")
+        self.assertEqual(self.qty(self.NUEVO_N, "CS38O"), 306.0)
+
+
 if __name__ == "__main__":
     unittest.main()
