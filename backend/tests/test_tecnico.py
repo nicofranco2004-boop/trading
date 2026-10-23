@@ -322,7 +322,7 @@ class FichaTest(unittest.TestCase):
         self.client = TestClient(main.app)
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
-            for t in ("velas_diarias", "velas_estado", "velas_correcciones", "watchlist", "positions",
+            for t in ("velas_diarias", "velas_estado", "cambios_ratio", "watchlist", "positions",
                       "brokers", "fx_rates_daily"):
                 conn.execute(f"DELETE FROM {t}")
             cur = conn.execute(
@@ -341,6 +341,11 @@ class FichaTest(unittest.TestCase):
         self.yahoo = YahooFalso(self.hoy)
         self._p = [mock.patch("main._check_rate_limit"),
                    mock.patch("pricing.yahoo._historia", self.yahoo),
+                   # La corrida nocturna también arma la lista de cambios de ratio,
+                   # que le pregunta a Yahoo sus splits y a data912 la historia:
+                   # sin red, la prueba da lo mismo todos los días.
+                   mock.patch("cambios_ratio._splits_de_yahoo", lambda t: []),
+                   mock.patch("cambios_ratio._historia_byma", lambda c: {}),
                    mock.patch("main._fetch_data912_equities", lambda: {})]
         for p in self._p:
             p.start()
