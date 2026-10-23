@@ -13,13 +13,17 @@
 // precios del eje van en su propia columna a la derecha (no tapan la línea) y
 // las tarjetas se acomodan en la grilla. Colores sólo por variables del tema
 // (R8): `rgb(var(--token))` en el SVG, que sigue al modo claro y al oscuro.
+//
+// Debajo del RSI, la fuerza de la tendencia en dos franjas: el ADX con su línea
+// de 23 y las barras del Squeeze (el combo «DMI/ADX/KEYLEVEL» + «SQZMOM_LB» de
+// TradingView), con su tarjeta «Fuerza de la tendencia».
 
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import { api } from '../../utils/api'
 import {
-  RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, tarjetas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
+  RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, moverVentana,
 } from '../../utils/tecnico'
 
@@ -35,6 +39,16 @@ const COLOR = {
 const W = 1000
 const H = 260
 const H_RSI = 64
+const H_ADX = 56
+const H_SQUEEZE = 40
+// El ADX se dibuja de 0 a 50 (casi nunca pasa; si pasa, la escala se estira).
+const ADX_TOPE = 50
+// Las barras del Squeeze: fuerte (creciendo) bien pintada, apagada (perdiendo
+// empuje) más transparente, como en TradingView.
+const SQUEEZE = {
+  verde_fuerte: [v('rendi-pos-fill'), 0.9], verde_apagado: [v('rendi-pos-fill'), 0.38],
+  rojo_fuerte: [v('rendi-neg-fill'), 0.9], rojo_apagado: [v('rendi-neg-fill'), 0.38],
+}
 // Línea o velas: lo que eligió la persona la última vez. El navegador puede
 // tener el almacenamiento bloqueado (modo privado): entonces, línea.
 const CLAVE_TIPO = 'rendi_grafico_tipo'
@@ -165,9 +179,10 @@ export default function LecturaTecnica({
   const total = actual.puntos.length
   const nVista = Math.min(ventana?.n ?? puntosEnDias(actual.puntos, RANGOS.find(r => r.id === rango)?.dias || 365), total)
   const finVista = Math.min(ventana?.fin ?? total, total)
-  const diarios = actual.puntos.slice(Math.max(0, finVista - nVista), finVista)
+  const inicioVista = Math.max(0, finVista - nVista)
+  const diarios = actual.puntos.slice(inicioVista, finVista)
   const semanales = tipo === 'velas' && intervalo === 'semana'
-  const puntos = semanales ? velasSemanales(diarios) : diarios
+  const puntos = semanales ? velasSemanales(diarios, actual.puntos.slice(Math.max(0, inicioVista - 7), inicioVista)) : diarios
   const vista = { n: nVista, fin: finVista, total }
   const zoom = (factor, f) => { const v2 = zoomVentana(vista, factor, f); if (v2) setVentana(v2) }
   const mover = (frac) => { const v2 = moverVentana(vista, frac); if (v2) setVentana(v2) }
@@ -332,6 +347,7 @@ function Tarjeta({ t }) {
       <div className="text-[12px] text-ink-2 font-medium">{t.titulo}</div>
       <div className={`text-[15px] font-semibold mt-0.5 tabular ${tono}`}>{t.veredicto}</div>
       {t.rsi != null && <BarraRsi rsi={t.rsi} />}
+      {t.adx != null && <BarraAdx adx={t.adx} />}
       <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.texto}</div>
       {t.cruce && (
         <div className="text-[12.5px] text-ink-0 leading-relaxed mt-2 rounded border border-rendi-accent/30 bg-rendi-accent/10 px-2.5 py-1.5">
@@ -363,6 +379,30 @@ function BarraRsi({ rsi }) {
       </div>
       <div className="flex justify-between text-[11px] text-ink-2 mt-0.5">
         <span>← pierde fuerza</span><span>toma fuerza →</span>
+      </div>
+    </div>
+  )
+}
+
+// La regla del ADX dibujada: 0 a 50, con la línea de 23 y dónde está hoy.
+function BarraAdx({ adx }) {
+  const pos = (Math.min(ADX_TOPE, Math.max(0, adx)) / ADX_TOPE) * 100
+  const clave = (ADX_CLAVE / ADX_TOPE) * 100
+  return (
+    <div className="mt-2.5" aria-hidden="true">
+      <div className="relative h-2 rounded-full overflow-hidden bg-bg-3">
+        <div className="absolute inset-y-0 right-0 bg-rendi-accent/30" style={{ width: `${100 - clave}%` }} />
+      </div>
+      <div className="relative h-0">
+        <div className="absolute -top-3 w-1 h-4 rounded-full bg-ink-0 shadow-sm" style={{ left: `calc(${pos}% - 2px)` }} />
+      </div>
+      <div className="relative h-4 mt-1 text-[11px] text-ink-2 tabular">
+        <span className="absolute left-0">0</span>
+        <span className="absolute -translate-x-1/2" style={{ left: `${clave}%` }}>{ADX_CLAVE}</span>
+        <span className="absolute right-0">{ADX_TOPE}+</span>
+      </div>
+      <div className="flex justify-between text-[11px] text-ink-2 mt-0.5">
+        <span>← sin tendencia</span><span>con fuerza →</span>
       </div>
     </div>
   )
@@ -406,6 +446,15 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
   }, [])
   const gid = useId().replace(/:/g, '')
   const [hover, setHover] = useState(null)
+  // El globo se mide para que nunca se salga de la pantalla: en un celular el
+  // gráfico mide ~250 px y el globo ~200; con la regla fija «a la derecha hasta
+  // el 62 %» la página se ensanchaba o el precio quedaba cortado (auditoría 22/10).
+  const globoRef = useRef(null)
+  const [anchoGlobo, setAnchoGlobo] = useState(0)
+  useLayoutEffect(() => {
+    const w = globoRef.current?.offsetWidth
+    if (w && Math.abs(w - anchoGlobo) > 1) setAnchoGlobo(w)
+  })
 
   const { escalaY, path, area, min, max, velas, promFuera } = useMemo(() => {
     const valores = []
@@ -474,6 +523,36 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
       abierto = true
     })
     return d
+  }, [puntos])
+
+  // La fuerza de la tendencia, en dos franjas: el ADX como línea (0 abajo, 50
+  // arriba) con la de 23, y debajo el Squeeze como barras desde el medio
+  // (arriba, verde; abajo, rojo). Juntos en una franja, la línea de 23 caía
+  // casi sobre el cero del Squeeze y no se distinguían. El Squeeze está en
+  // unidades de precio: sólo importan su lado y su tamaño.
+  const fuerza = useMemo(() => {
+    const conAdx = puntos.filter(p => p.adx != null)
+    const conSq = puntos.filter(p => p.squeeze != null)
+    if (!conAdx.length && !conSq.length) return null
+    const tope = Math.max(ADX_TOPE, ...conAdx.map(p => p.adx))
+    const yAdx = (a) => H_ADX - (a / tope) * H_ADX
+    const xx = (i) => (puntos.length > 1 ? (i / (puntos.length - 1)) * W : W / 2)
+    let d = '', abierto = false
+    puntos.forEach((p, i) => {
+      if (p.adx == null) { abierto = false; return }
+      d += `${abierto ? 'L' : 'M'}${xx(i).toFixed(1)},${yAdx(p.adx).toFixed(1)}`
+      abierto = true
+    })
+    const maxSq = Math.max(...conSq.map(p => Math.abs(p.squeeze)), 0) || 1
+    const ancho = Math.max((W / Math.max(puntos.length, 1)) * 0.7, 1)
+    const medio = H_SQUEEZE / 2
+    const barras = puntos.map((p, i) => {
+      // En 0 no empuja para ningún lado: sin barra (si no, rayitas rojas).
+      if (!p.squeeze || !SQUEEZE[p.squeeze_color]) return null
+      const alto = Math.max((Math.abs(p.squeeze) / maxSq) * (medio * 0.92), 0.5)
+      return { k: i, x: xx(i) - ancho / 2, ancho, y: p.squeeze > 0 ? medio - alto : medio, alto, color: SQUEEZE[p.squeeze_color] }
+    }).filter(Boolean)
+    return { d, barras, yClave: yAdx(ADX_CLAVE), pctAdx: (a) => (yAdx(a) / H_ADX) * 100 }
   }, [puntos])
 
   const pctX = (i) => (puntos.length > 1 ? (i / (puntos.length - 1)) * 100 : 50)
@@ -572,8 +651,8 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
               {/* El globo va pegado al punto que se mira (abajo a la derecha;
                   del otro lado si no entra), chico y de un renglón por dato:
                   arriba y fijo tapaba casi todo el gráfico (Nico, 22/10). */}
-              <div className={`pointer-events-none absolute z-10 rounded border border-line-2 bg-bg-raised/95 px-2 py-1.5 text-[11px] leading-tight shadow-sm tabular whitespace-nowrap ${pctX(hover) > 62 ? '-translate-x-[calc(100%+12px)]' : 'translate-x-3'} ${pctY(ph.c) > 55 ? '-translate-y-[calc(100%+12px)]' : 'translate-y-3'}`}
-                style={{ left: `${pctX(hover)}%`, top: `${pctY(ph.c)}%` }}>
+              <div ref={globoRef} className={`pointer-events-none absolute z-10 rounded border border-line-2 bg-bg-raised/95 px-2 py-1.5 text-[11px] leading-tight shadow-sm tabular whitespace-nowrap ${pctY(ph.c) > 55 ? '-translate-y-[calc(100%+12px)]' : 'translate-y-3'}`}
+                style={{ left: `${ladoGlobo(pctX(hover), ref.current?.clientWidth, anchoGlobo)}px`, top: `${pctY(ph.c)}%` }}>
                 <div className="flex items-baseline gap-2">
                   <span className="text-ink-0 font-semibold text-[12px]">{fmtPrecio(ph.c, moneda)}</span>
                   <span className="text-ink-2">{ph.semana ? `semana del ${fechaCorta(ph.d)}` : fechaCorta(ph.d)}</span>
@@ -593,8 +672,15 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
                 <div className="flex gap-2.5 mt-0.5">
                   {ph.s200 != null && <Fila color={COLOR.media200} k="200" v={fmtPrecio(ph.s200, moneda).replace(/^US\$ |^\$ /, '')} />}
                   {ph.s50 != null && <Fila color={COLOR.media50} k="50" v={fmtPrecio(ph.s50, moneda).replace(/^US\$ |^\$ /, '')} />}
-                  {ph.rsi != null && <Fila k="RSI" v={Math.round(ph.rsi)} />}
                 </div>
+                {/* RSI y ADX en su propio renglón: en uno solo el globo no
+                    entraba en un celular. */}
+                {(ph.rsi != null || ph.adx != null) && (
+                  <div className="flex gap-2.5 mt-0.5">
+                    {ph.rsi != null && <Fila k="RSI" v={Math.round(ph.rsi)} />}
+                    {ph.adx != null && <Fila k="ADX" v={fmtAdx(ph.adx)} />}
+                  </div>
+                )}
                 {visibles.filter(m => m.i === hover).map(m => (
                   <div key={m.tipo} className={`mt-0.5 font-medium ${m.tipo === 'compra' ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
                     {m.tipo === 'compra' ? 'Compraste' : 'Vendiste'} {ph.semana ? 'esta semana' : 'este día'}
@@ -664,8 +750,80 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
           </div>
         </div>
       </div>
+
+      {/* Fuerza de la tendencia: ADX + Squeeze. */}
+      {fuerza && (
+        <div className="mt-2 border-t border-line/40 pt-2.5">
+          <div className="flex flex-wrap items-baseline gap-x-2 text-[12px] text-ink-2 mr-[72px]">
+            <span>Fuerza de la tendencia (ADX)</span>
+            <span className="inline-flex items-center gap-1 text-[11px]">
+              <svg width="14" height="4" aria-hidden="true"><line x1="0" y1="2" x2="14" y2="2" stroke={v('rendi-accent')} strokeWidth="1.5" strokeDasharray="3 2" /></svg>
+              arriba de {ADX_CLAVE}: con fuerza
+            </span>
+          </div>
+          <div className="relative mt-1.5">
+            <div className={`relative mr-[72px] ${grande ? 'h-24' : 'h-14'}`} role="img"
+              aria-label={`Fuerza de la tendencia (ADX)${ultimo?.adx != null ? `: ${fmtAdx(ultimo.adx)}` : ''}, con la línea de ${ADX_CLAVE}.`}>
+              <svg viewBox={`0 0 ${W} ${H_ADX}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
+                <rect x="0" y="0" width={W} height={fuerza.yClave} fill={v('rendi-accent')} fillOpacity="0.07" />
+                <line x1="0" x2={W} y1={fuerza.yClave} y2={fuerza.yClave} stroke={v('rendi-accent')} strokeWidth="1.2"
+                  strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />
+                <path d={fuerza.d} fill="none" stroke={v('ink-1')} strokeWidth="1.5" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+              </svg>
+              {/* El «23» va adentro, pegado a su línea a la izquierda: en la
+                  columna de la derecha lo tapaba el cartel del ADX de hoy. */}
+              <span aria-hidden="true" className="pointer-events-none absolute left-1 -translate-y-full pb-px text-[10.5px] leading-none text-rendi-accent tabular"
+                style={{ top: `${fuerza.pctAdx(ADX_CLAVE)}%` }}>{ADX_CLAVE}</span>
+              {ph && (
+                <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 w-px bg-ink-2/50" style={{ left: `${pctX(hover)}%` }} />
+              )}
+            </div>
+            <div className="absolute inset-y-0 right-0 w-[68px] text-[11px] tabular pointer-events-none">
+              {ultimo?.adx != null && (
+                <span className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 font-semibold"
+                  style={{ top: `${Math.min(85, Math.max(15, fuerza.pctAdx(ultimo.adx)))}%`, background: v('ink-1'), color: v('bg-0') }}>{fmtAdx(ultimo.adx)}</span>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-2 mt-2 text-[12px] text-ink-2 mr-[72px]">
+            <span>Squeeze</span>
+            <span className="inline-flex items-center gap-1 text-[11px]">
+              <span className="w-1.5 h-2.5 rounded-xs bg-rendi-pos-fill" aria-hidden="true" />a favor de la suba
+              <span className="w-1.5 h-2.5 rounded-xs bg-rendi-neg-fill ml-1.5" aria-hidden="true" />de la baja
+            </span>
+          </div>
+          <div className={`relative mr-[72px] ${grande ? 'h-16' : 'h-10'} mt-1`} role="img"
+            aria-label="Barras del Squeeze: verdes a favor de la suba, rojas a favor de la baja.">
+            <svg viewBox={`0 0 ${W} ${H_SQUEEZE}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
+              <line x1="0" x2={W} y1={H_SQUEEZE / 2} y2={H_SQUEEZE / 2} stroke={v('chart-grid')} strokeWidth="1" vectorEffect="non-scaling-stroke" />
+              {fuerza.barras.map(b => (
+                <rect key={b.k} x={b.x} width={b.ancho} y={b.y} height={b.alto} fill={b.color[0]} fillOpacity={b.color[1]} />
+              ))}
+            </svg>
+            {ph && (
+              <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 w-px bg-ink-2/50" style={{ left: `${pctX(hover)}%` }} />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
+}
+
+/**
+ * Dónde va el borde izquierdo del globo, en px desde el borde del gráfico. A la
+ * derecha del punto si entra (puede usar la columna de los precios, 68 px); si
+ * no, a la izquierda; si tampoco, pegado al borde que tenga lugar. `pct` es
+ * dónde está el punto (0 a 100), `ancho` el del gráfico y `globo` el del globo.
+ */
+export function ladoGlobo(pct, ancho, globo) {
+  if (!ancho) return 0
+  const g = globo || 200
+  const x = (pct / 100) * ancho
+  const tope = ancho + 68
+  if (x + 12 + g <= tope) return x + 12
+  if (x - 12 - g >= 0) return x - 12 - g
+  return Math.max(0, tope - g)
 }
 
 // Un dato del globo, en una sola línea: la rayita del color de su línea, el
