@@ -386,5 +386,18 @@ def _en_curso_para_afuera(velas: list, t: dict):
     }
 
 
-def _r(x, d=4):
+def precio_redondo(x):
+    """Un precio para mandar a la pantalla: 4 decimales y, abajo de 1, 6 cifras
+    significativas. Con 4 decimales fijos una cripto de fracciones de centavo
+    (SHIB, PEPE: US$ 0,00001) llegaba en 0: el gráfico chato y los niveles de
+    Fibonacci todos en 0 (auditoría 22/10). Lo usa también tecnico.para_la_ficha."""
+    if x is None:
+        return None
+    return round(x, 4) if abs(x) >= 1 else float(f"{x:.6g}")
+
+
+def _r(x, d=None):
+    # Sin `d`, un precio (o una proporción menor a 1): ver precio_redondo.
+    if d is None:
+        return precio_redondo(x)
     return round(x, d) if x is not None else None

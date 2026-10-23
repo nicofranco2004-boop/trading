@@ -259,6 +259,26 @@ class FibonacciFichaTest(unittest.TestCase):
         self.assertEqual(f["en_curso"]["dir"], "bajada")
         self.assertEqual(f["en_curso"]["desde"]["fecha"], self._fecha(i170, n))
 
+    def test_precios_de_fracciones_de_centavo_no_llegan_en_cero(self):
+        # SHIB o PEPE (US$ 0,00001): con 4 decimales fijos el gráfico y todos los
+        # niveles de Fibonacci llegaban en 0 (auditoría 22/10).
+        self._tener("Schwab", "USD", "ZZSH", "STOCK")
+        cierres, donde = _dibujo(SUBA)
+        escala = 1e-7
+        velas = _velas_de([c * escala for c in cierres])
+        self.yahoo.velas["ZZSH"] = velas
+        r = self._fib("ZZSH")
+        f = r["fibonacci"]
+        self.assertTrue(f["disponible"], f)
+        p0, p1 = velas[donde[5]][2], velas[donde[10]][1]
+        self.assertAlmostEqual(f["desde"]["precio"] / p0, 1, places=4)
+        self.assertAlmostEqual(f["hasta"]["precio"] / p1, 1, places=4)
+        for x in f["niveles"]:
+            self.assertAlmostEqual(x["precio"] / (p1 - x["nivel"] * (p1 - p0)), 1, places=4)
+        # Y el gráfico: ningún cierre en 0.
+        self.assertTrue(all(pt["c"] > 0 for pt in r["puntos"]))
+        self.assertAlmostEqual(r["puntos"][-1]["c"] / velas[-1][3], 1, places=4)
+
     def test_bajada_que_se_rompe(self):
         # La misma figura dada vuelta: 300 − cada cierre.
         self._tener("Schwab", "USD", "ZZFB", "STOCK")

@@ -261,9 +261,10 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
 
     # o/h/l: apertura, máximo y mínimo, para el gráfico de velas. Pueden venir
     # vacíos (una vela de Yahoo con el máximo roto se guarda sólo con cierre).
-    puntos = [{"d": velas[i]["date"], "o": _r(velas[i].get("open")), "h": _r(velas[i].get("high")),
-               "l": _r(velas[i].get("low")), "c": _r(cierres[i]), "s50": _r(m50[i]),
-               "s200": _r(m200[i]), "rsi": _r(r[i], 2)} for i in range(desde, len(velas))]
+    p = estructura.precio_redondo   # abajo de 1, cifras significativas (SHIB, PEPE)
+    puntos = [{"d": velas[i]["date"], "o": p(velas[i].get("open")), "h": p(velas[i].get("high")),
+               "l": p(velas[i].get("low")), "c": p(cierres[i]), "s50": p(m50[i]),
+               "s200": p(m200[i]), "rsi": _r(r[i], 2)} for i in range(desde, len(velas))]
     return {
         "asset": (asset or "").upper(),
         "moneda": moneda,
