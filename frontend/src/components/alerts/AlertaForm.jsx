@@ -333,12 +333,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
           ]} />
         )}
 
-        {upsell && (
-          <p className="text-sm text-ink-1 rounded-lg bg-bg-2 px-3.5 py-3">
-            {upsell === 'tope' ? 'Llegaste al máximo de alertas de tu plan.' : 'Los avisos por % son de Rendi Plus.'}{' '}
-            <Link to="/config?tab=planes" className="text-data-violet font-medium hover:underline">Ver planes</Link>
-          </p>
-        )}
+        {upsell === 'pct' && <Upsell texto="Los avisos por % son de Rendi Plus." />}
 
         {!esPrecio && !esTecnica && (
           <Campo rotulo="Qué vigilar">
@@ -465,6 +460,9 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
         )}
 
         {err && <p className="text-sm text-rendi-neg">{err}</p>}
+        {/* El tope del plan sale al lado del botón que se acaba de tocar: arriba
+            del formulario quedaba fuera de la vista. */}
+        {upsell === 'tope' && <Upsell texto="Llegaste al máximo de alertas de tu plan." />}
 
         {!opciones && editando && <Resumen canal={form.channel} veces={veces} onCambiar={() => setOpciones(true)} />}
 
@@ -535,6 +533,15 @@ function CamposTecnica({ form, set, editando }) {
         )}
       </Campo>
     </>
+  )
+}
+
+function Upsell({ texto }) {
+  return (
+    <p className="text-sm text-ink-1 rounded-lg bg-bg-2 px-3.5 py-3">
+      {texto}{' '}
+      <Link to="/config?tab=planes" className="text-data-violet font-medium hover:underline">Ver planes</Link>
+    </p>
   )
 }
 
