@@ -73,10 +73,26 @@ def tomar_saldo(conn, uid: int, broker: str) -> None:
     nadie más puede tocar el saldo (en SQLite, la base entera —también cuando
     todavía no hay caja: un UPDATE de 0 filas igual la toma—; en Postgres, la
     fila), y lo que se lea después es lo vigente."""
-    conn.execute(
+    cur = conn.execute(
         "UPDATE positions SET invested=invested WHERE user_id=? AND broker=? AND is_cash=1",
         (uid, broker),
     )
+    if not getattr(cur, "rowcount", 0):
+        # 🔴 NO HAY CAJA TODAVÍA, y acá es donde el candado de arriba NO alcanza
+        # en Postgres. El docstring ya decía que un UPDATE de 0 filas igual toma
+        # la base EN SQLITE; en Postgres no hay fila que trabar, así que no toma
+        # NADA y dos primeros depósitos simultáneos crean DOS cajas. Como todo
+        # el código lee «la más vieja», la plata de la segunda no la mueve nadie
+        # más: un depósito que desaparece del saldo.
+        #
+        # Medido: dos depósitos a la vez dejaban dos filas de efectivo (300 y
+        # 200) donde tenía que quedar una.
+        #
+        # Se pide turno por (caja, usuario): dos usuarios distintos no se
+        # esperan. En SQLite no hace nada —el UPDATE de 0 filas ya tomó la base,
+        # que es justamente lo que dice el docstring—. Ver `pgsesion`.
+        import pgsesion as _ps
+        _ps.turno_exclusivo(conn, _ps.TURNO_CAJA_DEL_BROKER, uid)
 
 
 def caja(conn, uid: int, broker: str):

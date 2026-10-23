@@ -81,7 +81,7 @@ def conectar(dsn: str, **kw):
 
 # ── El turno: serializar un chequeo de tope ──────────────────────────────────
 
-def turno_exclusivo(conn, clave: int) -> None:
+def turno_exclusivo(conn, clave: int, clave2: int = None) -> None:
     """Pide el turno para un chequeo de tope. Las demás esperan acá.
 
     POR QUÉ EXISTE, y no es teórico — medido el 22/10/2026 contra Postgres real.
@@ -118,7 +118,13 @@ def turno_exclusivo(conn, clave: int) -> None:
             return                      # SQLite ya serializa: no hay nada que pedir
     except Exception:
         return
-    conn.execute("SELECT pg_advisory_xact_lock(?)", (int(clave),))
+    if clave2 is None:
+        conn.execute("SELECT pg_advisory_xact_lock(?)", (int(clave),))
+    else:
+        # Forma de dos claves: la primera dice QUÉ se está serializando y la
+        # segunda SOBRE QUIÉN. Así dos usuarios distintos no se esperan.
+        conn.execute("SELECT pg_advisory_xact_lock(?, ?)",
+                     (int(clave), int(clave2)))
 
 
 # Claves de turno. Fijas y acá juntas para que se vea de un vistazo quién
@@ -126,3 +132,5 @@ def turno_exclusivo(conn, clave: int) -> None:
 # bloquearían sin motivo) y el mismo tope SÍ tiene que usar siempre la misma.
 TURNO_TOPE_TRIALS_DEL_MES = 823471001
 TURNO_TOPE_FACTS_POR_USUARIO = 823471002
+
+TURNO_CAJA_DEL_BROKER = 823471003

@@ -13849,13 +13849,43 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
     # retiro se tragaba, el depósito sumaba entero → capital_final fantasma
     # del mes abierto — review cash-chat). Un capital_final negativo de mes
     # abierto es honesto (flujo neto negativo); el repair recalcula al cierre.
+    # ON CONFLICT: si OTRO pedido creó la fila entre el SELECT de arriba y este
+    # INSERT, se SUMA en vez de reventar — exactamente lo que hace la rama de
+    # arriba cuando la fila ya existía.
+    #
+    # Esto es leer-y-después-escribir, y en el medio entra cualquiera. En SQLite
+    # no se notaba porque el motor deja escribir a UNO POR VEZ: el segundo
+    # esperaba y ya veía la fila. En Postgres pasan los dos y el segundo choca
+    # con `monthly_entries_user_id_year_month_broker_key` → 500 al usuario.
+    # Medido: dos depósitos simultáneos daban [200, 500].
+    #
+    # Sólo se tocan las columnas de FLUJO. `capital_inicio` queda el de la fila
+    # que ya estaba (el nuestro se calculó para una fila que no existía) y los
+    # `pnl_*` no se pisan: esos los mueve otro camino. `capital_final` suma el
+    # neto, que es +monto para un depósito y −monto para un retiro: idéntico al
+    # `cap_sign` de la rama de arriba.
     conn.execute(
         """INSERT INTO monthly_entries
            (user_id, year, month, broker, deposits, withdrawals,
             manual_deposits, manual_withdrawals,
             manual_deposits_native, manual_withdrawals_native,
             pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-           VALUES (?,?,?,?,?,?,?,?,?,?,0,0,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,0,0,?,?)
+           ON CONFLICT (user_id, year, month, broker) DO UPDATE SET
+               deposits    = monthly_entries.deposits    + EXCLUDED.deposits,
+               withdrawals = monthly_entries.withdrawals + EXCLUDED.withdrawals,
+               manual_deposits =
+                   COALESCE(monthly_entries.manual_deposits,0) + EXCLUDED.manual_deposits,
+               manual_withdrawals =
+                   COALESCE(monthly_entries.manual_withdrawals,0) + EXCLUDED.manual_withdrawals,
+               manual_deposits_native =
+                   COALESCE(monthly_entries.manual_deposits_native,0)
+                   + EXCLUDED.manual_deposits_native,
+               manual_withdrawals_native =
+                   COALESCE(monthly_entries.manual_withdrawals_native,0)
+                   + EXCLUDED.manual_withdrawals_native,
+               capital_final = monthly_entries.capital_final
+                               + EXCLUDED.deposits - EXCLUDED.withdrawals""",
         (uid, year, month, broker, deposits, withdrawals,
          man_dep, man_wit, man_dep_nat, man_wit_nat, cap_inicio, cap_final),
     )
