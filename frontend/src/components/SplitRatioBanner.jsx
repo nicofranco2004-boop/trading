@@ -77,6 +77,15 @@ export default function SplitRatioBanner({ onAdjusted }) {
                 la cantidad de antes o la de ahora. Ajustá sólo si tu broker te acreditó más CEDEARs.
               </p>
             )}
+            {/* 'sin_confirmar': Yahoo anota el cambio y nada lo confirma ni lo
+                desmiente. El aviso viejo lo afirmaba; ahora se pregunta. */}
+            {suggestions.some((s) => s.evidence === 'sin_confirmar') && (
+              <p className="text-ink-2 mt-1">
+                En {suggestions.filter((s) => s.evidence === 'sin_confirmar').map((s) => baseTicker(s.asset)).join(', ')}{' '}
+                no pudimos confirmar el cambio con el precio de esos días. Fijate en tu broker si te
+                cambió la cantidad antes de ajustar.
+              </p>
+            )}
             <div className="mt-2 flex flex-wrap gap-2">
               {suggestions.map((s) => (
                 <button
@@ -123,6 +132,15 @@ export default function SplitRatioBanner({ onAdjusted }) {
                 <strong className="text-ink-0"> Confirmá sólo si tu broker te acreditó {fmt(active.suggested_qty - active.current_qty)} CEDEARs
                 más el {fechaAR(active.ex_date)}.</strong>{' '}
                 Si la cantidad que ves ya es la de hoy, cerrá esto: ajustar la multiplicaría de más.
+              </p>
+            )}
+            {active.evidence === 'sin_confirmar' && (
+              <p className="rounded-md border border-amber-500/40 bg-amber-500/[0.07] px-3 py-2 text-xs text-ink-1">
+                Este cambio lo informa la fuente de precios, pero no lo pudimos confirmar con los
+                precios de esos días.
+                <strong className="text-ink-0"> Confirmá sólo si tu broker te cambió la cantidad
+                {active.factor < 1 ? ' (te sacó CEDEARs)' : ' (te acreditó CEDEARs)'} el {fechaAR(active.ex_date)}.</strong>{' '}
+                Si no, cerrá esto y no toques nada.
               </p>
             )}
             <p className="text-ink-3 text-xs">

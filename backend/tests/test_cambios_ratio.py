@@ -51,14 +51,27 @@ SPLITS_YAHOO = {
     # SPY: cambio de ratio del CEDEAR (Nueva York no hizo nada). Yahoo lo anota
     # en pesos y corrige la serie hacia atrás: en las velas no queda escalón.
     "SPY.BA": [("2026-05-29", 3.0)],
+    # ETHA: agrupación 1 a 3 en Nueva York; BYMA la aplicó un día después y el
+    # 06/10 cotizó a la escala vieja entre dos días a la nueva.
+    "ETHA": [("2026-10-06", 0.3333)],
+    "ETHA.BA": [("2026-10-06", 0.3333)],
+    # Acciones argentinas: YPFD 10 a 1 (Yahoo corrigió la serie; BYMA guarda el
+    # escalón), MIRG 10 a 1 (la serie guardada muestra el escalón) y BYMA en
+    # 2024 (ni Yahoo ni data912 lo muestran: no se puede confirmar).
+    "YPFD.BA": [("2026-08-03", 10.0)],
+    "MIRG.BA": [("2026-08-03", 10.0)],
+    "BYMA.BA": [("2024-05-10", 5.0)],
 }
-CEDEARS = ["XLE", "AAPL", "NFLX", "TQQQ", "DD", "DDD", "FNMA", "AZN", "SPY"]
+CEDEARS = ["XLE", "AAPL", "NFLX", "TQQQ", "DD", "DDD", "FNMA", "AZN", "SPY", "ETHA"]
+ACCIONES_AR = ["YPFD", "MIRG", "BYMA"]
 
 
-def _byma(cedear):
+def _byma(papel):
     """Los cierres de BYMA como fueron ese día (data912, bajados el 22/10/2026).
     DDD no tiene historia en data912."""
-    return SERIES.get(f"BYMA:{cedear}", {})
+    return SERIES.get(f"BYMA:{papel}", {})
+
+
 HOY = "2026-10-22"
 
 
@@ -78,9 +91,9 @@ def _armar_lista():
         conn.execute("DELETE FROM velas_estado")
         conn.execute("DELETE FROM cambios_ratio")
         conn.commit()
-        tickers = [t for c in CEDEARS for t in (c, f"{c}.BA")]
+        tickers = [t for c in CEDEARS for t in (c, f"{c}.BA")] + [f"{a}.BA" for a in ACCIONES_AR]
         velas_diarias.actualizar(conn, tickers, bajar=_bajar_de_la_fixture, hoy=HOY)
-        return cambios_ratio.recalcular(conn, cambios_ratio.cedears_guardados(conn),
+        return cambios_ratio.recalcular(conn, cambios_ratio.papeles_guardados(conn),
                                         splits=lambda t: SPLITS_YAHOO.get(t, []), byma=_byma)
     finally:
         conn.close()
@@ -121,6 +134,7 @@ class ListaDeCambiosTest(unittest.TestCase):
 
     def test_escision_de_dupont_no_es_un_cambio_de_cantidad(self):
         filas = {f["fecha"]: f for f in _filas("DD")}
+        self.assertEqual(filas["2025-11-03"]["tipo"], cambios_ratio.ESCISION)
         self.assertEqual(filas["2025-11-03"]["estado"], cambios_ratio.DESCARTADO)
         self.assertIn("escisión", filas["2025-11-03"]["motivo"])
         # La agrupación 1 a 3 sí es real y el CEDEAR la trasladó.
@@ -129,10 +143,46 @@ class ListaDeCambiosTest(unittest.TestCase):
         self.assertEqual(d, "2026-06-24")
         self.assertAlmostEqual(f, 1 / 3)
 
-    def test_lo_que_yahoo_copia_sin_respaldo_queda_dudoso(self):
+    def test_lo_que_yahoo_anota_sin_respaldo_queda_sin_confirmar(self):
         self.assertEqual(self._confirmados("DDD"), [])
         self.assertEqual({f["estado"] for f in _filas("DDD") if f["fecha"] == "2026-06-24"},
-                         {cambios_ratio.DUDOSO})
+                         {cambios_ratio.SIN_CONFIRMAR})
+        # BYMA 2024: ni la serie de Yahoo ni la de data912 muestran el escalón.
+        self.assertEqual({f["estado"] for f in _filas("BYMA") if f["fecha"] == "2024-05-10"},
+                         {cambios_ratio.SIN_CONFIRMAR})
+
+    def test_acciones_argentinas_entran_a_la_lista(self):
+        self.assertEqual(self._confirmados("YPFD"), [("2026-08-03", 10.0)])   # por BYMA
+        self.assertEqual(self._confirmados("MIRG"), [("2026-08-03", 10.0)])   # por el precio
+        self.assertEqual([f["origen"] for f in _filas("YPFD")], ["yahoo+byma"])
+        self.assertEqual([f["origen"] for f in _filas("MIRG")], ["yahoo+precio"])
+
+    def test_etha_dia_roto_y_agrupacion(self):
+        self.assertEqual(self._confirmados("ETHA"), [("2026-10-06", 1 / 3)])
+        conn = main.get_db()
+        try:
+            g = cambios_ratio.para_el_grafico(conn, "ETHA")
+        finally:
+            conn.close()
+        self.assertEqual(g["rotos"], ["2026-10-06"])
+        self.assertEqual(g["escalones"], [])     # Yahoo ya corrigió la serie: no se empalma
+
+    def test_lo_que_necesita_el_grafico(self):
+        conn = main.get_db()
+        try:
+            xle = cambios_ratio.para_el_grafico(conn, "XLE.BA")
+            dd = cambios_ratio.para_el_grafico(conn, "DD")
+            mirg = cambios_ratio.para_el_grafico(conn, "MIRG")
+            ypfd = cambios_ratio.para_el_grafico(conn, "YPFD")
+        finally:
+            conn.close()
+        self.assertEqual(xle["escalones"], [("2025-12-05", 2.0)])
+        # La escisión de DuPont se empalma en el gráfico (no en los lotes); la
+        # agrupación de 2026 no, porque Yahoo ya corrigió la serie.
+        self.assertEqual([d for d, _ in dd["escalones"]], ["2025-11-03"])
+        self.assertAlmostEqual(dd["escalones"][0][1], 2.38, places=1)
+        self.assertEqual(mirg["escalones"], [("2026-08-03", 10.0)])
+        self.assertEqual(ypfd["escalones"], [])
 
     def test_spy_anotado_y_corregido_por_yahoo_lo_confirma_byma(self):
         # El aviso viejo lo ofrecía (era real: hubo un reclamo de un usuario); la
@@ -149,14 +199,30 @@ class ListaDeCambiosTest(unittest.TestCase):
         try:
             conn.execute("DELETE FROM cambios_ratio WHERE cedear='DDD' AND fecha='2026-06-24'")
             conn.execute(
-                "INSERT INTO cambios_ratio (cedear, fecha, factor, estado, origen, motivo) "
-                "VALUES ('DDD', '2026-06-24', NULL, 'descartado', 'manual', 'revisado')")
+                "INSERT INTO cambios_ratio (cedear, fecha, tipo, factor, estado, origen, motivo) "
+                "VALUES ('DDD', '2026-06-24', 'ratio', NULL, 'descartado', 'manual', 'revisado')")
             conn.commit()
             cambios_ratio.recalcular(conn, ["DDD"], splits=lambda t: SPLITS_YAHOO.get(t, []), byma=_byma)
             filas = [f for f in cambios_ratio.todos(conn, "DDD") if f["fecha"] == "2026-06-24"]
         finally:
             conn.close()
         self.assertEqual([(f["origen"], f["estado"]) for f in filas], [("manual", "descartado")])
+        _armar_lista()
+
+    def test_lo_que_yahoo_anota_antes_de_las_velas_se_conserva(self):
+        # Splits de Yahoo anteriores a los 3 años de velas: no hay con qué
+        # juzgarlos, pero el aviso viejo los ofrecía. Entran sin confirmar (o
+        # confirmados si Nueva York anotó lo mismo).
+        conn = main.get_db()
+        try:
+            viejo = {"XLE.BA": [("2021-03-01", 2.0)], "XLE": [("2021-03-01", 2.0)],
+                     "MIRG.BA": [("2020-01-02", 3.0)]}
+            cambios_ratio.recalcular(conn, ["XLE", "MIRG"], byma=_byma,
+                                     splits=lambda t: SPLITS_YAHOO.get(t, []) + viejo.get(t, []))
+            self.assertIn(("2021-03-01", 2.0, True), cambios_ratio.para_lotes(conn, "XLE"))
+            self.assertIn(("2020-01-02", 3.0, False), cambios_ratio.para_lotes(conn, "MIRG"))
+        finally:
+            conn.close()
         _armar_lista()
 
     def test_lo_viejo_que_salio_de_la_ventana_de_velas_no_se_borra(self):
@@ -280,11 +346,26 @@ class AvisoDePosicionesTest(_ConUsuario):
         self.assertAlmostEqual(av["factor"], 3.0)
         self.assertEqual(av["evidence"], "fecha")
 
-    def test_ddd_ya_no_ofrece_dividir_por_tres(self):
+    def test_ddd_se_pregunta_no_se_afirma(self):
+        # El aviso viejo afirmaba «dividí por 3»; nadie lo confirma, así que se
+        # pregunta. Ajusta sólo si la persona confirma que el broker lo hizo.
         pid = self._lote("DDD", 30, 29.0, "2026-03-02")
-        self.assertNotIn(pid, self._avisos())
-        self._ajustar(pid)
-        self.assertAlmostEqual(self._lotes("DDD")[0]["quantity"], 30.0)
+        self.assertEqual(self._avisos()[pid]["evidence"], "sin_confirmar")
+
+    def test_accion_argentina_ypfd(self):
+        conn = main.get_db()
+        try:
+            pid = conn.execute(
+                """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
+                       invested, entry_date, asset_type, currency)
+                   VALUES (?,?,?,0,?,?,?,?,'STOCK','ARS')""",
+                (self.uid, "IOL", "YPFD", 79500.0, 5, 397500.0, "2026-07-28")).lastrowid
+            conn.commit()
+        finally:
+            conn.close()
+        av = self._avisos()[pid]
+        self.assertAlmostEqual(av["factor"], 10.0)
+        self.assertEqual(av["evidence"], "fecha")
 
     def test_comprado_despues_del_cambio_no_se_toca(self):
         pid = self._lote("XLE", 10, 34980.0, "2025-12-05")

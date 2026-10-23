@@ -2549,17 +2549,19 @@ def init_db():
         # sin ALTER: segura en una base ya creada.
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS cambios_ratio (
-                cedear TEXT NOT NULL,            -- código en pesos, sin '.BA': 'XLE'
+                cedear TEXT NOT NULL,            -- código en pesos, sin '.BA': 'XLE', 'YPFD'
                 fecha TEXT NOT NULL,             -- primer día que BYMA cotizó a la escala nueva
+                tipo TEXT NOT NULL,              -- 'ratio' | 'escision' | 'precio_quieto' | 'precio_roto' | 'roto' | 'pendiente'
                 factor REAL,                     -- por cuánto se multiplicó la cantidad (2; 1/3); NULL si no es redondo
                 factor_medido REAL,
-                estado TEXT NOT NULL,            -- 'confirmado' | 'dudoso' | 'descartado'
+                estado TEXT NOT NULL,            -- 'confirmado' | 'sin_confirmar' | 'dudoso' | 'descartado'
                 origen TEXT NOT NULL,            -- 'cociente', 'yahoo…', 'manual' (la corrida no pisa 'manual')
                 motivo TEXT,
                 precio_antes REAL,
                 precio_despues REAL,
+                en_la_serie INTEGER NOT NULL DEFAULT 0,  -- 1 = la serie guardada muestra el escalón
                 actualizado TEXT DEFAULT (datetime('now')),
-                PRIMARY KEY (cedear, fecha)
+                PRIMARY KEY (cedear, fecha, tipo)
             );
         """)
 
@@ -12264,11 +12266,18 @@ def _fetch_ba_splits(ba_symbol: str, conn=None):
     persona veía la mitad de lo que tenía; y trae alguno que no existe (DDD.BA
     1:3, copiado de DuPont), que ofrecía dividir la tenencia por 3. La lista se
     arma de noche con las velas guardadas: acá no hay red."""
+    return [(d, f) for d, f, _ in _cambios_de_cantidad(ba_symbol, conn)]
+
+
+def _cambios_de_cantidad(ba_symbol: str, conn=None) -> list:
+    """[(fecha, factor, confirmado)] de la lista única (`cambios_ratio.para_lotes`).
+    `confirmado=False`: Yahoo lo anota en pesos y nada lo confirma ni lo desmiente
+    (BYMA el 10/05/2024, DDD): el aviso lo PREGUNTA en vez de afirmarlo."""
     import cambios_ratio
     if conn is not None:
-        return cambios_ratio.confirmados(conn, ba_symbol)
+        return cambios_ratio.para_lotes(conn, ba_symbol)
     with db_abierta() as c:
-        return cambios_ratio.confirmados(c, ba_symbol)
+        return cambios_ratio.para_lotes(c, ba_symbol)
 
 
 _SPLIT_DEDUP_DAYS = 7  # ventana para tratar logs separados como el MISMO evento
@@ -12528,9 +12537,12 @@ def _cambios_a_ofrecer(conn, uid: int, row, marcas: dict, pair_cache: dict):
     `marcas`: {'foto', 'corp', 'cero'} = _foto_split_watermarks,
     _corporate_split_watermarks y _corporate_zero_dates de la persona (se leen una
     vez por pedido). `evidencia`:
-      · 'fecha'    — comprado antes del cambio y el precio cargado no lo contradice;
-      · 'pregunta' — hay velas del día de compra y el precio cargado no coincide con
-                     ninguna de las dos escalas: el front pregunta en vez de afirmar.
+      · 'fecha'         — comprado antes del cambio y el precio cargado no lo contradice;
+      · 'pregunta'      — hay velas del día de compra y el precio cargado no coincide
+                          con ninguna de las dos escalas: el front pregunta;
+      · 'sin_confirmar' — el cambio mismo no está confirmado (Yahoo lo anota en
+                          pesos y nada lo confirma ni lo desmiente): el front pregunta
+                          si el broker acreditó o debitó los CEDEARs.
     Si el precio cargado está en la escala NUEVA (cargó a mano la cantidad de hoy
     con la fecha original), no se ofrece: ajustar lo duplicaría."""
     asset = (row["asset"] or "").upper()
@@ -12555,6 +12567,9 @@ def _cambios_a_ofrecer(conn, uid: int, row, marcas: dict, pair_cache: dict):
               if _lote_en_pesos(conn, uid, row) else "sin_datos")
     if escala == "nueva":
         return [], None
+    sin_confirmar = {d for d, _, ok in _cambios_de_cantidad(f"{base}.BA", conn) if not ok}
+    if any(d in sin_confirmar for d, _ in cambios):
+        return cambios, "sin_confirmar"
     return cambios, ("pregunta" if escala == "ninguna" else "fecha")
 
 
@@ -42012,7 +42027,9 @@ def _marcar_cambios_de_ratio(conn, uid: int, pair, rec, seed_date: str) -> None:
                 f"SELECT * FROM positions WHERE user_id=? AND COALESCE(is_cash,0)=0 "
                 f"AND broker IN ({ph}) AND UPPER(asset)=? AND COALESCE(quantity,0) > 0",
                 (uid, *pair, (h.ticker or "").upper())).fetchall():
-            cambios, _ = _cambios_a_ofrecer(conn, uid, lote, marcas, cache)
+            cambios, evidencia = _cambios_a_ofrecer(conn, uid, lote, marcas, cache)
+            if evidencia == "sin_confirmar":
+                continue            # sólo lo confirmado explica CEDEARs a $0
             cambios = [(d, f) for d, f in cambios if d <= seed_date]
             factor = 1.0
             for _, f in cambios:
