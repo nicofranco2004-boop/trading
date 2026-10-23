@@ -129,10 +129,49 @@ describe('arrastrar los ejes del gráfico', () => {
     await dobleClick(columna)
     expect(grilla()).toEqual(antes)
 
-    // Y otro rango también.
-    await arrastrar(columna, { dy: 100 })
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, '2A'))
-    for (let i = 0; i < 3; i++) await montado.redibujar(el())
+  })
+
+  // Otro rango, moneda, tipo de gráfico o diarias/semanales: el precio vuelve a
+  // automático (cada uno con su prueba, como pidió la sesión central).
+  for (const [nombre, pasos] of [
+    ['otro rango', ['2A']],
+    ['otra moneda', ['Pesos']],
+    ['otro tipo de gráfico', ['Velas']],
+    ['de diarias a semanales', ['Velas', '@', 'Semanales']],
+  ]) {
+    it(`${nombre} vuelve el precio a automático`, async () => {
+      await dibujar()
+      const columna = () => porTitulo(montado.contenedor, 'Arrastrá hacia arriba o hacia abajo')
+      const grilla = () => columna().childNodes.map(n => numeros(texto(n))[0]).filter(x => x != null)
+      // Lo que se cambia ANTES de estirar (marcado con '@') no cuenta: es el punto de partida.
+      const antes = pasos.includes('@') ? pasos.slice(0, pasos.indexOf('@')) : []
+      const despues = pasos.includes('@') ? pasos.slice(pasos.indexOf('@') + 1) : pasos
+      for (const b of antes) {
+        await clic(montado.contenedor, buscarBoton(montado.contenedor, b))
+        for (let i = 0; i < 3; i++) await montado.redibujar(el())
+      }
+      const auto = grilla()
+      await arrastrar(columna(), { dy: 120 })
+      expect(grilla()).not.toEqual(auto)
+      expect(buscarBoton(montado.contenedor, 'Automático')).not.toBeNull()
+      for (const b of despues) {
+        await clic(montado.contenedor, buscarBoton(montado.contenedor, b))
+        for (let i = 0; i < 3; i++) await montado.redibujar(el())
+      }
+      expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
+    })
+  }
+
+  it('las fechas a mano también muestran «Automático» (en el celular no hay doble click)', async () => {
+    await dibujar()
+    const fechas = porTitulo(montado.contenedor, 'Arrastrá hacia los costados')
+    expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
+    await arrastrar(fechas, { dx: 200, pointerType: 'touch' })
+    for (let i = 0; i < 2; i++) await montado.redibujar(el())
+    expect(botonPresionado(montado.contenedor, '1A')).toBe(false)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Automático'))
+    for (let i = 0; i < 2; i++) await montado.redibujar(el())
+    expect(botonPresionado(montado.contenedor, '1A')).toBe(true)
     expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
   })
 

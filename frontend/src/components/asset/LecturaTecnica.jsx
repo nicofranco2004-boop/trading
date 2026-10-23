@@ -213,7 +213,7 @@ export default function LecturaTecnica({
       <Grafico puntos={puntos} moneda={moneda} promedio={ver.prom ? promedio : null}
         marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo} grande={grande}
         fibonacci={ver.fib ? actual.fibonacci : null} onZoom={zoom} onMover={mover}
-        onFechasAuto={() => setVentana(null)} reinicioPrecio={`${moneda}|${rango}|${tipo}|${intervalo}`} />
+        onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rango}|${tipo}|${intervalo}`} />
       <p className="text-[11.5px] text-ink-2 mt-1">
         {semanales && 'Cada vela es una semana. '}
         {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá con la ruedita o pasá a velas semanales. '}
@@ -400,7 +400,7 @@ function rotulosDeMeses(puntos) {
   })
 }
 
-function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', grande = false, fibonacci = null, onZoom, onMover, onFechasAuto, reinicioPrecio }) {
+function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', grande = false, fibonacci = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio }) {
   const conVelas = tipo === 'velas'
   const ref = useRef(null)
   const arrastre = useRef(null)
@@ -674,11 +674,13 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
               {fmtPrecio(ultimo.c, moneda).replace(/^US\$ /, '')}
             </span>
           )}
-          {/* El doble click no se descubre solo: mientras el precio está a
-              mano, un botón para volver a automático. Va debajo de la columna,
-              al lado de las fechas: abajo de todo lo pisaba «↓ Tu precio». */}
-          {precioMano && (
-            <button type="button" onPointerDown={e => e.stopPropagation()} onClick={() => setPrecioMano(null)}
+          {/* El doble click no se descubre solo y en el celular no existe:
+              mientras el precio o las fechas están a mano, un botón vuelve LAS
+              DOS cosas a automático (uno solo, no dos iguales uno al lado del
+              otro). Va debajo de la columna, al lado de las fechas: abajo de
+              todo lo pisaba «↓ Tu precio». */}
+          {(precioMano || fechasAMano) && (
+            <button type="button" onPointerDown={e => e.stopPropagation()} onClick={() => { setPrecioMano(null); onFechasAuto?.() }}
               className="absolute top-full mt-1 left-0 rounded border border-line-2 bg-bg-1 px-1.5 py-0.5 text-[10.5px] text-ink-1 hover:text-ink-0">
               Automático
             </button>
