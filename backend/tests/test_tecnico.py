@@ -475,6 +475,55 @@ class FichaTest(unittest.TestCase):
         r = self.client.get("/api/tecnico/<script>", headers=self.h)
         self.assertIn(r.status_code, (400, 404))
 
+    def test_fuerza_de_la_tendencia_llega_a_la_ficha(self):
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "AAPL", "CEDEAR")
+        self.yahoo.precios["AAPL"] = lambda i, d: 100 * (1.01 if i % 2 else 0.99) if i < 748 else 100 * 1.02 ** (i - 747)
+        main._run_velas_diarias_job()
+        f = self._ficha("AAPL", "usd")
+        p = f["puntos"][-1]
+        self.assertIsNotNone(p["adx"])
+        # Cada punto del gráfico (2 años) lleva el ADX y el Squeeze de la
+        # historia ENTERA guardada, el de SU día: no los de la ventana dibujada
+        # (el ADX arrastra memoria) ni corridos un día.
+        with main.db_abierta() as conn:
+            velas = tecnico.serie(conn, "AAPL", "usd")["velas"]
+        d, s = tecnico.adx(velas), tecnico.squeeze(velas)
+        por_dia = {v["date"]: i for i, v in enumerate(velas)}
+        self.assertGreater(por_dia[f["puntos"][0]["d"]], 200, "el gráfico arranca después de mucha historia")
+        for q in f["puntos"]:
+            i = por_dia[q["d"]]
+            self.assertEqual(q["adx"], round(d["adx"][i], 2) if d["adx"][i] is not None else None, q["d"])
+            self.assertEqual(q["squeeze"], float(f"{s['valor'][i]:.6g}") if s["valor"][i] is not None else None, q["d"])
+            self.assertEqual(q["squeeze_color"], s["color"][i], q["d"])
+        self.assertIsNotNone(p["squeeze"])
+        self.assertEqual(p["squeeze_color"], f["lectura"]["squeeze_color"])
+        self.assertAlmostEqual(p["adx"], f["lectura"]["adx"], places=2)
+        self.assertEqual(f["lectura"]["adx_cruce"]["tipo"], "paso_arriba")
+        self.assertEqual(f["lectura"]["adx_cruce"]["squeeze"], 1)
+
+    def test_fuerza_con_pocos_dias_no_inventa(self):
+        # Una acción argentina con dólar sólo para los últimos 25 días: 25 velas
+        # en dólares. El ADX necesita 28 y el Squeeze 39: van vacíos, no en 0.
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "GGAL", "ACCION")
+        with main.db_abierta() as conn:
+            for d in self.dias[-25:]:
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
+                             (d.isoformat(), 1100.0, 1000.0))
+            conn.commit()
+        self.yahoo.precios["GGAL.BA"] = lambda i, d: 5000.0 + (i % 7) * 30
+        main._run_velas_diarias_job()
+        f = self._ficha("GGAL", "usd")
+        self.assertEqual(f["lectura"]["ruedas"], 25)
+        self.assertTrue(all(p["adx"] is None and p["squeeze"] is None and p["squeeze_color"] is None
+                            for p in f["puntos"]))
+        for k in ("adx", "adx_cruce", "squeeze", "squeeze_color"):
+            self.assertIsNone(f["lectura"][k], k)
+        # Si las bandas están "apretadas" sí se sabe con 21 días (las bandas
+        # son de 20): es un dato real, no inventado.
+        self.assertIn(f["lectura"]["squeeze_activo"], (True, False))
+
     def test_admin_ve_el_estado_y_el_usuario_no(self):
         self._broker("Schwab", "USD")
         self._posicion("Schwab", "MSFT", "STOCK")
@@ -633,55 +682,6 @@ class FichaTest(unittest.TestCase):
         self.assertIsNone(self._ficha("AAPL")["cierre_ref"])
         r = self.client.get("/api/tecnico/AAPL?ref=<x>", headers=self.h)
         self.assertEqual(r.status_code, 400)
-
-    def test_fuerza_de_la_tendencia_llega_a_la_ficha(self):
-        self._broker("IOL", "ARS")
-        self._posicion("IOL", "AAPL", "CEDEAR")
-        self.yahoo.precios["AAPL"] = lambda i, d: 100 * (1.01 if i % 2 else 0.99) if i < 748 else 100 * 1.02 ** (i - 747)
-        main._run_velas_diarias_job()
-        f = self._ficha("AAPL", "usd")
-        p = f["puntos"][-1]
-        self.assertIsNotNone(p["adx"])
-        # Cada punto del gráfico (2 años) lleva el ADX y el Squeeze de la
-        # historia ENTERA guardada, el de SU día: no los de la ventana dibujada
-        # (el ADX arrastra memoria) ni corridos un día.
-        with main.db_abierta() as conn:
-            velas = tecnico.serie(conn, "AAPL", "usd")["velas"]
-        d, s = tecnico.adx(velas), tecnico.squeeze(velas)
-        por_dia = {v["date"]: i for i, v in enumerate(velas)}
-        self.assertGreater(por_dia[f["puntos"][0]["d"]], 200, "el gráfico arranca después de mucha historia")
-        for q in f["puntos"]:
-            i = por_dia[q["d"]]
-            self.assertEqual(q["adx"], round(d["adx"][i], 2) if d["adx"][i] is not None else None, q["d"])
-            self.assertEqual(q["squeeze"], float(f"{s['valor'][i]:.6g}") if s["valor"][i] is not None else None, q["d"])
-            self.assertEqual(q["squeeze_color"], s["color"][i], q["d"])
-        self.assertIsNotNone(p["squeeze"])
-        self.assertEqual(p["squeeze_color"], f["lectura"]["squeeze_color"])
-        self.assertAlmostEqual(p["adx"], f["lectura"]["adx"], places=2)
-        self.assertEqual(f["lectura"]["adx_cruce"]["tipo"], "paso_arriba")
-        self.assertEqual(f["lectura"]["adx_cruce"]["squeeze"], 1)
-
-    def test_fuerza_con_pocos_dias_no_inventa(self):
-        # Una acción argentina con dólar sólo para los últimos 25 días: 25 velas
-        # en dólares. El ADX necesita 28 y el Squeeze 39: van vacíos, no en 0.
-        self._broker("IOL", "ARS")
-        self._posicion("IOL", "GGAL", "ACCION")
-        with main.db_abierta() as conn:
-            for d in self.dias[-25:]:
-                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
-                             (d.isoformat(), 1100.0, 1000.0))
-            conn.commit()
-        self.yahoo.precios["GGAL.BA"] = lambda i, d: 5000.0 + (i % 7) * 30
-        main._run_velas_diarias_job()
-        f = self._ficha("GGAL", "usd")
-        self.assertEqual(f["lectura"]["ruedas"], 25)
-        self.assertTrue(all(p["adx"] is None and p["squeeze"] is None and p["squeeze_color"] is None
-                            for p in f["puntos"]))
-        for k in ("adx", "adx_cruce", "squeeze", "squeeze_color"):
-            self.assertIsNone(f["lectura"][k], k)
-        # Si las bandas están "apretadas" sí se sabe con 21 días (las bandas
-        # son de 20): es un dato real, no inventado.
-        self.assertIn(f["lectura"]["squeeze_activo"], (True, False))
 
 
 if __name__ == "__main__":
