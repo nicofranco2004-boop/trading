@@ -11,9 +11,8 @@
 //     (`tarjetas` y `veredictoRsi` de utils/tecnico.js): un activo no puede
 //     decir «Alcista» en la Cartera y «Bajista» en su ficha.
 
-import { isBymaHolding, fciLabel, isFciSym, isFixedIncome } from './valuation'
-import { isCrypto } from './crypto'
-import { cedearRatio } from './cedearRatio'
+import { fciLabel, isFciSym, isFixedIncome } from './valuation'
+import { esLoteLocal, esAccionLocal } from './accionLocal'
 import { tarjetas, veredictoRsi, RSI_CASTIGADO, RSI_ESTIRADO } from './tecnico'
 import { hoyISO } from './fecha'
 
@@ -23,21 +22,9 @@ import { hoyISO } from './fecha'
 // largo con feriados son 5 días; las velas se guardan cada noche.
 export const DIAS_LECTURA_VIEJA = 10
 
-/**
- * ¿Este lote es una acción ARGENTINA (no un CEDEAR)? Entonces su lectura en
- * dólares es su precio de BYMA ÷ el MEP de cada día, no el ADR de Nueva York
- * (GGAL "de afuera" son 10 acciones). La regla de la ficha, lote por lote.
- */
-export function esLoteLocal(p) {
-  if (!p || p.is_cash || cedearRatio(p.asset) || isCrypto(p.asset)) return false
-  return p.asset_type !== 'CEDEAR' && isBymaHolding(p)
-}
-
-/** La marca `local` de la ficha: todos los lotes del activo son acción argentina. */
-export function esAccionLocal(asset, lots) {
-  if (!lots.length || cedearRatio(asset) || isCrypto(asset)) return false
-  return lots.every(esLoteLocal)
-}
+// ¿Acción ARGENTINA (no CEDEAR)? La regla vive en accionLocal.js, una para la
+// ficha, la Cartera y las alertas técnicas; acá se re-exporta.
+export { esLoteLocal, esAccionLocal }
 
 const clave = (asset, local) => `${asset}|${local ? 1 : 0}`
 

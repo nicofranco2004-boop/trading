@@ -1034,7 +1034,7 @@ def send_alert_email(*, to: str, user_name: str = "", heading: str,
                      detail: str, cta_path: str = "/dashboard",
                      lines: Optional[list] = None, titulo: Optional[str] = None,
                      filas: Optional[list] = None, cta_label: str = "Ver en Rendi",
-                     pie: Optional[tuple] = None) -> bool:
+                     pie: Optional[tuple] = None, aclaracion: Optional[str] = None) -> bool:
     """Email de una alerta disparada (precio, % de variacion, movimiento del
     libro del asesor). Diseño del tablero «Cómo llega por mail» (19/10/2026):
     un titular grande, UNA oración, la lista si son varios, UN botón y al pie
@@ -1057,6 +1057,9 @@ def send_alert_email(*, to: str, user_name: str = "", heading: str,
     `cta_label` / `cta_path` = el botón ("Ver GGAL" → /activo/GGAL).
     `pie` = (texto, link, ruta): ("Esta alerta ya cumplió.", "Volver a
     activarla", "/alertas?tab=mis"). Sin `pie`, el genérico que lleva a Alertas.
+    `aclaracion` = una línea chica abajo del botón. La usan las alertas técnicas:
+    «Muestra cómo se movió el precio: no es una recomendación para comprar ni
+    vender.» (la misma frase que el pie de la ficha técnica).
 
     `cta_path` default = /dashboard. OJO: el default era
     /config?tab=notificaciones, una ruta MUERTA -- las alertas se mudaron a
@@ -1110,6 +1113,9 @@ def send_alert_email(*, to: str, user_name: str = "", heading: str,
         lista_txt = "\n".join(f"  · {l}" for l in lines) + "\n\n"
 
     oracion = f"{hola}{detail}"
+    aclaracion_html = (f'<p style="font-size:13px;line-height:1.6;color:#6B7280;margin:0 0 12px;">'
+                       f'{html.escape(aclaracion)}</p>\n      ') if aclaracion else ""
+    aclaracion_txt = f"{aclaracion}\n\n" if aclaracion else ""
     body_html = f"""
       <h1 style="font-size:28px;font-weight:700;letter-spacing:-0.02em;line-height:1.2;color:#15171E;margin:0 0 10px;">{html.escape(titular)}</h1>
       <p style="font-size:16px;line-height:1.6;color:#3D4351;margin:0 0 24px;">{html.escape(oracion)}</p>
@@ -1119,12 +1125,13 @@ def send_alert_email(*, to: str, user_name: str = "", heading: str,
           <a href="{html.escape(url)}" style="display:inline-block;color:#FFFFFF;text-decoration:none;padding:14px 28px;font-weight:600;font-size:15px;">{html.escape(cta_label)}</a>
         </td>
       </tr></table>
-      <p style="font-size:13px;line-height:1.6;color:#6B7280;margin:0;">
+      {aclaracion_html}<p style="font-size:13px;line-height:1.6;color:#6B7280;margin:0;">
         {html.escape(pie_txt)} <a href="{html.escape(pie_url)}" style="color:{_AVISO_LINK};">{html.escape(pie_link)}</a>
       </p>
     """
     text = (f"{titular}\n\n{oracion}\n\n{lista_txt}"
             f"{cta_label}: {url}\n\n"
+            f"{aclaracion_txt}"
             f"{pie_txt} {pie_link}: {pie_url}\n\n"
             "Si algo no cierra, respondé este mail y te contestamos.\n\n"
             "— Rendi")

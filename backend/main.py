@@ -2312,6 +2312,12 @@ def init_db():
         #   • pct_move: avisar cuando un activo se mueve `threshold`% vs `baseline`
         #     (prev_close por ahora). `scope='holdings'` (symbol NULL) evalúa TODAS
         #     las tenencias del user; `scope='ticker'` un símbolo puntual.
+        #   • tecnica: avisar cuando pasa una señal de la ficha técnica
+        #     (`senal`, ver tecnico.SENALES), una vez por día con las velas de la
+        #     noche. `symbol` es el activo como lo pide la ficha ('AAPL', 'GGAL'),
+        #     `currency` en qué moneda se mira ('USD' por defecto, como la ficha)
+        #     y `accion_local` la misma marca que la ficha (acción argentina →
+        #     su precio de BYMA ÷ MEP, no el ADR). Ver alerts_engine.evaluar_tecnicas.
         #
         # `armed` = estado del edge-trigger: la alerta dispara SOLO en el cruce
         # (armed=1 → 0), no mientras el precio sigue del lado disparado. `repeat`
@@ -2322,7 +2328,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
-                kind TEXT NOT NULL,                 -- 'price_target' | 'pct_move'
+                kind TEXT NOT NULL,                 -- 'price_target' | 'pct_move' | 'tecnica'
                 symbol TEXT,                        -- riel-aware; NULL = todas las tenencias
                 scope TEXT NOT NULL DEFAULT 'ticker',-- 'ticker' | 'holdings'
                 direction TEXT NOT NULL DEFAULT 'either', -- price_target: 'above'|'below'
@@ -2341,7 +2347,9 @@ def init_db():
                 created_at TEXT DEFAULT (datetime('now')),
                 last_evaluated_at TEXT,
                 last_fired_at TEXT,
-                last_fired_price REAL
+                last_fired_price REAL,
+                senal TEXT,                         -- tecnica: qué señal (tecnico.SENALES)
+                accion_local INTEGER NOT NULL DEFAULT 0 -- tecnica: acción argentina (como la ficha)
             );
             CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id);
             CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active);
@@ -2615,6 +2623,11 @@ def init_db():
         _alert_cols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
         if _alert_cols and 'anchor_price' not in _alert_cols:
             conn.executescript("ALTER TABLE alerts ADD COLUMN anchor_price REAL;")
+        # Migración: las alertas técnicas (qué señal y la marca de acción argentina).
+        if _alert_cols and 'senal' not in _alert_cols:
+            conn.executescript("ALTER TABLE alerts ADD COLUMN senal TEXT;")
+        if _alert_cols and 'accion_local' not in _alert_cols:
+            conn.executescript("ALTER TABLE alerts ADD COLUMN accion_local INTEGER NOT NULL DEFAULT 0;")
 
         # Migración: last_fired_date en alert_symbol_state (la tabla ya existe en prod
         # sin esta columna, se creó en el deploy anterior).
@@ -47368,7 +47381,7 @@ def watchlist_remove(symbol: str, uid: int = Depends(get_effective_user)):
 
 
 class AlertCreateIn(BaseModel):
-    kind: str = Field(..., max_length=20)              # 'price_target' | 'pct_move'
+    kind: str = Field(..., max_length=20)              # 'price_target' | 'pct_move' | 'tecnica'
     symbol: Optional[str] = Field(None, max_length=24)  # requerido si scope='ticker'
     scope: str = Field('ticker', max_length=12)         # 'ticker' | 'holdings'
     direction: str = Field('above', max_length=8)       # 'above' | 'below' | 'either'
@@ -47381,11 +47394,13 @@ class AlertCreateIn(BaseModel):
     repeat: str = Field('once', max_length=8)           # 'once' | 'daily' | 'always'
     cooldown_min: int = Field(360, ge=0, le=100000)
     note: Optional[str] = Field(None, max_length=200)
+    senal: Optional[str] = Field(None, max_length=20)   # tecnica: tecnico.SENALES
+    accion_local: bool = False                          # tecnica: acción argentina (como la ficha)
 
     @field_validator('kind')
     @classmethod
     def _v_kind(cls, v):
-        if v not in ('price_target', 'pct_move'):
+        if v not in ('price_target', 'pct_move', 'tecnica'):
             raise ValueError('kind inválido')
         return v
 
@@ -47526,6 +47541,59 @@ def _moneda_del_aviso(symbol: str, currency) -> str:
     return "USD"
 
 
+def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn") -> dict:
+    """El alta de una alerta técnica (ver alerts_engine.evaluar_tecnicas).
+
+    El activo se guarda como lo pide la ficha técnica: pelado ('AAPL', 'GGAL',
+    'BTC'), con la moneda en que se mira y la marca de acción argentina. La
+    marca de «ya miré hasta acá» arranca en la última vela que hay: un cruce de
+    antes de crearla no avisa."""
+    import alerts_engine as _ae
+    import tecnico
+    if data.scope != "ticker" or not data.symbol:
+        raise HTTPException(400, "Una alerta técnica necesita un activo.")
+    if data.senal not in tecnico.SENALES:
+        raise HTTPException(400, "Elegí qué querés que te avisemos.")
+    symbol = data.symbol
+    if symbol.endswith(".BA"):
+        symbol = symbol[:-3]
+    symbol = _ae._norm_sym(symbol)
+    if not symbol or symbol.startswith("FCI:") or not _SYMBOL_RE.match(symbol):
+        raise HTTPException(400, "Ese activo no tiene análisis técnico.")
+    currency = "ARS" if (data.currency or "").strip().upper() == "ARS" else "USD"
+    # El sentido sólo vale para los cruces de un promedio; el RSI y el máximo
+    # ya lo dicen en el nombre de la señal.
+    direction = data.direction if data.senal in tecnico.SENALES_CON_SENTIDO else "either"
+    local = 1 if data.accion_local else 0
+    # Dos alertas que avisan lo mismo son dos mails por el mismo cruce. Se
+    # pisan si es la misma señal y una de las dos es «los dos lados» o las dos
+    # piden el mismo lado. La ficha ya muestra «Te avisamos» (alertaExistente,
+    # la misma regla); esto cubre el formulario de Alertas.
+    igual = conn.execute(
+        """SELECT id FROM alerts WHERE user_id=? AND kind='tecnica' AND active=1
+             AND symbol=? AND senal=? AND currency=? AND accion_local=?
+             AND (direction=? OR direction='either' OR ?='either')""",
+        (uid, symbol, data.senal, currency, local, direction, direction)).fetchone()
+    if igual:
+        raise HTTPException(409, "Ya tenés una alerta que avisa esto: está en Mis alertas, para cambiarla.")
+    cur = conn.execute(
+        """INSERT INTO alerts
+           (user_id, kind, symbol, scope, direction, currency, channel, repeat,
+            cooldown_min, armed, active, note, senal, accion_local)
+           VALUES (?,'tecnica',?,'ticker',?,?,?,?,?,1,1,?,?,?)""",
+        (uid, symbol, direction, currency, data.channel, data.repeat,
+         data.cooldown_min, data.note, data.senal, local))
+    aid = cur.lastrowid
+    row = conn.execute("SELECT * FROM alerts WHERE id=?", (aid,)).fetchone()
+    _ae.arrancar_tecnica(conn, row)
+    conn.commit()
+    # ¿Se va a poder mirar? Si ya hay velas, seguro. Si no (nadie lo tenía), se
+    # guardan desde esta noche: el precio de ahora dice si el ticker existe.
+    tiene_velas = bool(_ae._serie_tecnica(conn, row))
+    resolved = tiene_velas or _ae.price_for_alert(f"{symbol}.BA" if local else symbol) is not None
+    return {"ok": True, "id": aid, "armed": True, "resolved": resolved, "velas": tiene_velas}
+
+
 @app.post("/api/alerts")
 def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
     """Crea una alerta. Gatea por cantidad (check_alert_quota) y por capacidad
@@ -47558,6 +47626,8 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
             if not (threshold and threshold > 0):
                 raise HTTPException(400, "Ingresá el precio objetivo.")
             currency = _moneda_del_aviso(symbol, currency)
+        elif data.kind == "tecnica":
+            return _crear_alerta_tecnica(conn, uid, data)
         else:  # pct_move — umbral asimétrico (sube ≥ up_pct% y/o cae ≥ down_pct%)
             if data.scope == "ticker" and not symbol:
                 raise HTTPException(400, "Elegí un ticker o la opción 'toda mi cartera'.")
@@ -47626,6 +47696,13 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
         if not row:
             raise HTTPException(404, "Alerta no encontrada.")
         sets, params = [], []
+        tecnica = row["kind"] == "tecnica"
+        if tecnica and data.direction is not None:
+            import tecnico
+            if row["senal"] not in tecnico.SENALES_CON_SENTIDO:
+                raise HTTPException(400, "Esta señal no tiene para qué lado.")
+        if tecnica and data.threshold is not None:
+            raise HTTPException(400, "Una alerta técnica no tiene precio.")
         if data.up_pct is not None or data.down_pct is not None:
             if row["kind"] != "pct_move":
                 raise HTTPException(400, "Los % son sólo de los avisos por movimiento.")
@@ -47660,6 +47737,10 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
         params.append(alert_id)
         with conn:
             conn.execute(f"UPDATE alerts SET {', '.join(sets)} WHERE id=?", params)
+            if tecnica and data.active:
+                # Reactivar una técnica = mirar desde ahora: lo que cruzó mientras
+                # estaba pausada no avisa de golpe.
+                _ae.arrancar_tecnica(conn, row)
         return {"ok": True}
     finally:
         conn.close()
@@ -47715,6 +47796,24 @@ def _evaluar_alertas_job() -> dict:
             # Lo que quedó a medias no puede confirmarse con el primer commit
             # de las alertas del libro, que usan esta misma conexión: alertas
             # 'once' apagadas y disparos registrados que nunca se entregaron.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        # Las técnicas: una vez por día, con las velas de la noche (adentro se
+        # fija si ya es hora y si hay velas nuevas). Su propia guarda, igual que
+        # las de arriba y las del libro.
+        try:
+            if "velas_diarias" in _corridas_en_curso:
+                # Las velas se están guardando (de noche, o el botón de /admin a
+                # media mañana): entre que se bajan y que se corrigen los cambios
+                # de ratio de un CEDEAR, la serie en pesos está a medio arreglar.
+                # Se miran en la pasada siguiente, cuando terminó.
+                result["tecnicas"] = {"esperando": "las velas se están guardando"}
+            else:
+                result["tecnicas"] = _ae.evaluar_tecnicas(conn)
+        except Exception as _ex:
+            log.error("alertas técnicas en el cron: %s", _ex)
             try:
                 conn.rollback()
             except Exception:

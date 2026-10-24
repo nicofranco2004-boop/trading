@@ -54,10 +54,16 @@ def hoy_art_date() -> date:
     return ahora_art().date()
 
 
+def en_art(instante_utc: datetime) -> datetime:
+    """Un instante UTC (naive) en hora argentina, naive. Para quien necesita la
+    HORA, no sólo el día (las alertas técnicas salen desde las 9 de la mañana)."""
+    return instante_utc - timedelta(hours=ART_OFFSET_HORAS)
+
+
 def dia_art(instante_utc: datetime) -> date:
     """El día argentino de un instante UTC (naive). Para quien ya tiene su
     "ahora" en la mano (y los tests que lo congelan)."""
-    return (instante_utc - timedelta(hours=ART_OFFSET_HORAS)).date()
+    return en_art(instante_utc).date()
 
 
 MESES_ES = ("enero", "febrero", "marzo", "abril", "mayo", "junio",

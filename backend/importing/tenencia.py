@@ -92,8 +92,8 @@ class Holding:
         # Rendi guardó, y lo importado ya entra con el código vigente. Sin esto
         # una foto que dijera SQ sembraba un duplicado y marcaba XYZ «¿vendido?».
         if (self.asset_type or "").upper() not in ("CRYPTO", "FIAT", "FUND"):
-            from tickers_renombrados import ticker_vigente
-            self.ticker = ticker_vigente(self.ticker)
+            from tickers_renombrados import ticker_importado
+            self.ticker = ticker_importado(self.ticker)
 
 
 @dataclass

@@ -1,7 +1,7 @@
 // Alertas — lo que Rendi te avisa, en dos pestañas.
 // ═══════════════════════════════════════════════════════════════════════════
-//   • Crear alerta (CrearAlerta): las dos cosas que se pueden pedir, para
-//     elegir — el resumen diario del mercado y el aviso de precio.
+//   • Crear alerta (CrearAlerta): lo que se puede pedir, para elegir — el
+//     resumen diario del mercado, el aviso de precio y la señal técnica.
 //   • Mis alertas (MisAlertas): lo que ya armaste, con su estado y su
 //     interruptor. Tocar una abre el formulario (AlertaForm) para cambiarla.
 //
@@ -113,8 +113,9 @@ function AlertasPropias({ plan }) {
   }, [setSearchParams])
 
   // Los precios de ahora de los activos con aviso, en un solo pedido.
+  // (Las técnicas no muestran precio: se miran con el cierre.)
   const simbolos = useMemo(
-    () => [...new Set(items.filter(a => a.symbol).map(a => a.symbol.toUpperCase()))].sort().join(','),
+    () => [...new Set(items.filter(a => a.symbol && a.kind !== 'tecnica').map(a => a.symbol.toUpperCase()))].sort().join(','),
     [items])
   // Los CEDEARs vigilados en dólares traen su precio de la lista de la Bolsa
   // (el mismo que mira el servidor), bajo la clave 'AAPL.BA|USD'.
@@ -177,7 +178,8 @@ function AlertasPropias({ plan }) {
 
       {tab === 'crear' && (
         <CrearAlerta resumen={resumen} alTope={alTope} alertsMax={alertsMax} puedeMovimiento={puedeMovimiento}
-          onCrearAviso={() => setFormulario({})} />
+          onCrearAviso={() => setFormulario({})}
+          onCrearTecnica={() => setFormulario({ prefill: { kind: 'tecnica' } })} />
       )}
       {tab === 'mis' && notaPush && (
         <div role="status" className="flex items-start gap-3 rounded-xl border border-rendi-warn/30 bg-rendi-warn/5 px-4 py-3">
