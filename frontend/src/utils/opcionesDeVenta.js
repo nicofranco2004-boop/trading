@@ -76,3 +76,25 @@ export function etiquetaDeVenta(o) {
   if (!o) return ''
   return o.dosMonedas ? `${o.cuenta} · en ${o.moneda === 'ARS' ? 'pesos' : 'dólares'}` : o.cuenta
 }
+
+/**
+ * El resultado en DÓLARES de un pedazo de venta (un lote), para la vista previa
+ * del formulario «Vender». Espejo de lo que anota el servidor: los tres motores
+ * de venta llaman a `resultado_dual.resultado_en_dolares` (backend).
+ *
+ *   · venta en dólares: cobrado − costo.
+ *   · venta en pesos, cuenta con `cadaPuntaASuDolar` (v2): lo cobrado al dólar
+ *     de la venta menos el costo al dólar de compra del lote — el mismo con que
+ *     Cartera muestra su costo en dólares. GGAL de $450.000 (dólar 1.000) a
+ *     $690.000 (dólar 1.500) = US$ 460 − US$ 450 = +US$ 10.
+ *   · venta en pesos sin dólar de compra, o cuenta v1: la ganancia en pesos ÷
+ *     el dólar de la venta (+US$ 160 en el mismo ejemplo), como el servidor.
+ *
+ * `cadaPuntaASuDolar` lo dice el servidor (GET /api/positions/regla-de-venta):
+ * depende de la versión de dólar de la cuenta, que la pantalla no conoce.
+ */
+export function resultadoUsdDelPedazo({ cobrado, costo, enPesos, tcVenta, tcCompra, cadaPuntaASuDolar }) {
+  if (!enPesos) return cobrado - costo
+  if (cadaPuntaASuDolar && tcCompra > 0 && tcVenta > 0) return cobrado / tcVenta - costo / tcCompra
+  return (cobrado - costo) / tcVenta
+}

@@ -43,7 +43,7 @@ function DayGroup({ group, histMoney, onDelete, borrando, nuevas }) {
   // el subtotal: si el día mezclaba una op USD (fx=1) con una ARS, el subtotal
   // quedaba mal. Mismo criterio que los headers de grupo de la tabla.
   const ops = group.rows
-  const subtotalDisp = histMoney.sumConvertedAt(ops, o => (o.pnl_usd || 0))
+  const subtotalDisp = histMoney.sumPnlAt(ops)
   return (
     <li className="border-t border-line/30">
       <div className="flex items-baseline justify-between px-4 py-2 bg-bg-1/50">
@@ -110,12 +110,7 @@ function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false
         {op.pnl_usd != null && (
           <div className={`text-sm font-medium tabular leading-none flex items-center justify-end gap-1 ${colorClass(op.pnl_usd)}`}>
             {isWin ? <TrendingUp size={11} strokeWidth={1.75} /> : isLoss ? <TrendingDown size={11} strokeWidth={1.75} /> : null}
-            {histMoney.fmtMoneyCompactAt(op.pnl_usd, {
-              stampedFx: op.fx_to_usd,
-              rowCurrency: op.currency,
-              dateIso: op.date,
-              signed: true,
-            })}
+            {histMoney.fmtPnlCompactAt(op, { signed: true })}
           </div>
         )}
         {pct != null && (

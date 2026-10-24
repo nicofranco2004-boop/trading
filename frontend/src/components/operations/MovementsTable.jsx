@@ -16,7 +16,7 @@ import {
 import { colorClass } from '../../utils/format'
 import { fmtConvertedRaw } from '../../contexts/CurrencyContext'
 import EmptyState from '../EmptyState'
-import { TYPE_META, puedeBorrarMovimiento, amountClassFor, movPnl } from './shared'
+import { TYPE_META, puedeBorrarMovimiento, amountClassFor } from './shared'
 
 export const MOV_PAGE_SIZE = 50
 
@@ -200,7 +200,7 @@ function MovementGroupRow({ conNueva = false, group, groupBy, isOpen, onToggle, 
   const canDeleteGroup = !!onDeleteGroup && group.key !== '__no_asset__'
     && group.rows.some(r => r.type === 'BUY' || r.type === 'SELL')
   // Ver TradeGroupRow: signo/color/flecha sobre el número que se muestra.
-  const pnl = histMoney.sumConvertedAt(group.rows, r => movPnl(r))
+  const pnl = histMoney.sumPnlAt(group.rows.filter(r => typeof r.pnl_usd === 'number'))
   const pnlDisp = pnl
   const Chevron = isOpen ? ChevronUp : ChevronDown
   const hasPnl = pnl !== 0

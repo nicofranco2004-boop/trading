@@ -115,9 +115,58 @@ export function dineroHistorico({ currency, tcValuacion, getRateForDate }) {
     return total
   }
 
+  /**
+   * pnlAt — el RESULTADO de una operación en la moneda de la app.
+   *
+   * En dólares es `pnl_usd`. En pesos, si la venta trae su resultado en pesos
+   * (`cobrado_ars − costo_ars`, cada punta a su dólar: backend/resultado_dual.py),
+   * es ése, exacto. Si no (dividendos, cupones, ventas viejas), `pnl_usd` × el
+   * dólar de la fila, como siempre.
+   *
+   * POR QUÉ NO ALCANZA CON `pnl_usd × fx_to_usd`. Desde el 24/10/2026 el resultado
+   * en dólares de una venta en pesos es cobrado − costo, cada uno a SU dólar
+   * (GGAL de US$ 450 a US$ 460 = +US$ 10), no la ganancia en pesos ÷ dólar de la
+   * venta (+US$ 160). Multiplicar esos US$ 10 por el dólar de la venta daba
+   * $15.000 donde la ganancia en pesos fue $240.000.
+   */
+  function pnlAt(row) {
+    if (row?.pnl_usd == null || !Number.isFinite(Number(row.pnl_usd))) return null
+    if (currency === 'ARS' && row.cobrado_ars != null && row.costo_ars != null) {
+      return Number(row.cobrado_ars) - Number(row.costo_ars)
+    }
+    return convertedValue(Number(row.pnl_usd), {
+      stampedFx: row.fx_to_usd, dateIso: row.date, rowCurrency: row.currency,
+    })
+  }
+
+  function fmtPnlAt(row, opts = {}) {
+    const v = pnlAt(row)
+    if (v == null) return '—'
+    return fmtConvertedRaw(v, currency, opts)
+  }
+
+  function fmtPnlCompactAt(row, opts = {}) {
+    const v = pnlAt(row)
+    if (v == null) return '—'
+    return fmtConvertedCompactRaw(v, currency, opts)
+  }
+
+  /** La suma de los resultados de `rows`, cada uno ya en la moneda de la app. */
+  function sumPnlAt(rows) {
+    let total = 0
+    for (const r of (rows || [])) {
+      const v = pnlAt(r)
+      if (v != null) total += v
+    }
+    return total
+  }
+
   // `tcValuacion` viaja para memoizar: es el respaldo de las filas sin fecha o sin
   // serie, así que un cambio del dólar de hoy cambia esos totales.
-  return { currency, tcValuacion, fmtMoneyAt, fmtMoneyCompactAt, convertedValue, resolveFx, sumConvertedAt }
+  return {
+    currency, tcValuacion, fmtMoneyAt, fmtMoneyCompactAt, convertedValue, resolveFx,
+    sumConvertedAt, pnlAt, fmtPnlAt, fmtPnlCompactAt, sumPnlAt,
+  }
 }
 
 export function useHistoricalMoney() {

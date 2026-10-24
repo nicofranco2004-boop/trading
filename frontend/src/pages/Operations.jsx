@@ -389,7 +389,7 @@ export default function Operations() {
   // actual — mismo bug que el header de grupo. `totalPnl` (USD crudo) se mantiene
   // solo para el TONO (color), que no debe depender del FX.
   const totalPnlDisp = useMemo(
-    () => histMoney.sumConvertedAt(ops, o => (o.pnl_usd || 0)),
+    () => histMoney.sumPnlAt(ops),
     [ops, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
   )
   // Win rate: UNA definición, la del backend (utils/tradeStats). Acá se contaban
@@ -401,9 +401,7 @@ export default function Operations() {
   // El máximo se elige sobre el valor que se VA A MOSTRAR (cada trade con SU FX
   // histórico): en pesos el ranking puede diferir del de USD.
   const bestTradeOp = useMemo(
-    () => mejorTrade(ops, o => histMoney.convertedValue(o.pnl_usd, {
-      stampedFx: o.fx_to_usd, rowCurrency: o.currency, dateIso: o.date,
-    })),
+    () => mejorTrade(ops, o => histMoney.pnlAt(o)),
     [ops, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
   )
   const patterns = useMemo(() => patronesDeOperaciones(ops), [ops])
@@ -592,10 +590,7 @@ export default function Operations() {
           <KpiCell
             label="Mejor trade"
             value={bestTradeOp
-              ? histMoney.fmtMoneyAt(bestTradeOp.pnl_usd, {
-                  stampedFx: bestTradeOp.fx_to_usd, rowCurrency: bestTradeOp.currency,
-                  dateIso: bestTradeOp.date, decimals: 2,
-                })
+              ? histMoney.fmtPnlAt(bestTradeOp, { decimals: 2 })
               : '—'}
             tone={bestTradeOp && bestTradeOp.pnl_usd > 0 ? 'pos' : null}
             sub="P&L individual"

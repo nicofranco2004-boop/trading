@@ -19,7 +19,7 @@ import { filaSinUnaPata } from '../utils/filaFusionada'
 import { groupBrokersIntoAccounts, flattenAccounts, brokerLegLabel } from '../utils/brokerAccounts'
 import { admiteDosMonedas, brokersParaElegir, formularioDeCaja, cuentaDe } from '../utils/pataDeLaMoneda'
 import { precioCedearEnDolares } from '../utils/opcionesCedear'
-import { opcionesDeVenta, lotesDeLaVenta, etiquetaDeVenta } from '../utils/opcionesDeVenta'
+import { opcionesDeVenta, lotesDeLaVenta, etiquetaDeVenta, resultadoUsdDelPedazo } from '../utils/opcionesDeVenta'
 import PfFormModal from '../components/PfFormModal'
 import BondCashflowModal from '../components/BondCashflowModal'
 import CuponesPorCobrar from '../components/CuponesPorCobrar'
@@ -3844,6 +3844,16 @@ export function SellModal({ form, setForm, positions, brokers, tcValuacion, fxHi
   // segunda venta legítima si quedan nominales. Vive en el modal para que
   // escritorio y celular lo tengan sin pasarlo (ver hooks/useEnVuelo).
   const enVuelo = useEnVuelo()
+  // Con qué regla anota el servidor el resultado en dólares de ESTA cuenta (v2:
+  // cada punta a su dólar). Sin respuesta, la regla nueva: es la de toda cuenta nueva.
+  const [reglaDeVenta, setReglaDeVenta] = useState(null)
+  useEffect(() => {
+    let vivo = true
+    api.get('/positions/regla-de-venta')
+      .then(r => { if (vivo) setReglaDeVenta(r?.cada_punta_a_su_dolar !== false) })
+      .catch(() => {})
+    return () => { vivo = false }
+  }, [])
   // Los lotes que va a cerrar la venta, con la MISMA regla que el servidor: toda
   // la cuenta (Cocos y Cocos · USD), sólo los de la moneda de la venta, del más
   // viejo al más nuevo (ver utils/opcionesDeVenta). Antes era sólo el broker
@@ -3897,15 +3907,15 @@ export function SellModal({ form, setForm, positions, brokers, tcValuacion, fxHi
     const ratio = (p.quantity || 0) > 0 ? take / p.quantity : 0
     const baseInvested = (p.invested || 0) + (p.commissions || 0)
     const investedPart = baseInvested * ratio
-    let pnlUsd = 0
-    if (isARS) {
-      // FX-phantom fix: P&L USD = P&L ARS / TC venta (cost basis alineado al
-      // mismo TC que la venta, así no aparece "FX gain" fantasma).
-      const pnlArs = (priceNum * take) - investedPart
-      pnlUsd = pnlArs / tcVenta
-    } else {
-      pnlUsd = (priceNum * take) - investedPart
-    }
+    // Lo mismo que anota el servidor (utils/opcionesDeVenta, resultadoUsdDelPedazo).
+    // El dólar de compra del lote: el suyo (el que usa Cartera) o, si no lo tiene,
+    // el de su fecha — como el alta y el rebuild.
+    const tcCompra = p.tc_compra > 0 ? p.tc_compra
+      : (p.entry_date ? fxHist?.getMepOrFallback?.(p.entry_date) : null)
+    const pnlUsd = resultadoUsdDelPedazo({
+      cobrado: priceNum * take, costo: investedPart, enPesos: isARS,
+      tcVenta, tcCompra, cadaPuntaASuDolar: reglaDeVenta !== false,
+    })
     fifoPreview.push({
       lot_id: p.id,
       entry_date: p.entry_date,

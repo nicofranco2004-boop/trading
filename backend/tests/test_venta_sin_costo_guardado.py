@@ -163,10 +163,15 @@ class VenderLoQueSeCargoSinInvertido(_Base):
         self.assertEqual(len(ops), 1)
         self.assertNotAlmostEqual(ops[0]["pnl_usd"], 25.6, places=2,
                                   msg="anotó lo cobrado entero como ganancia")
-        self.assertAlmostEqual(ops[0]["pnl_usd"], 9.6, places=2)
-        self.assertAlmostEqual(ops[0]["pnl_pct"], 60.0, places=2)
-        self.assertAlmostEqual(self._mes(self.uid, "global", 2026, 2), 9.6, places=2)
-        self.assertAlmostEqual(self._mes(self.uid, PESOS, 2026, 2), 9.6, places=2)
+        # Cada punta a su dólar (resultado_dual, desde el 24/10/2026): costo 20.000
+        # pesos al dólar de la compra del lote (1.000) = US$ 20; cobro 32.000 al de
+        # la venta (1.250) = US$ 25,6 → +US$ 5,6 (+28 %). Antes de esa fecha daba
+        # 9,6 = 12.000 pesos de ganancia ÷ 1.250. En pesos sigue siendo +60 %.
+        self.assertAlmostEqual(ops[0]["pnl_usd"], 5.6, places=2)
+        self.assertAlmostEqual(ops[0]["pnl_pct"], 28.0, places=2)
+        self.assertAlmostEqual(ops[0]["pnl_pct_ars"], 60.0, places=2)
+        self.assertAlmostEqual(self._mes(self.uid, "global", 2026, 2), 5.6, places=2)
+        self.assertAlmostEqual(self._mes(self.uid, PESOS, 2026, 2), 5.6, places=2)
 
     def test_da_lo_mismo_que_con_el_campo_lleno(self):
         self._alta(broker=PESOS, asset="GGAL", quantity=10, buy_price=5000,

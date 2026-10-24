@@ -6138,11 +6138,16 @@ class CrossCurrencyRealizedPnlTest(unittest.TestCase):
         pnl = self._sell_pnl("USDT", "USD", "USD", qty=10, lot_invested=10, exit_price=2.0)
         self.assertAlmostEqual(pnl, 10.0, places=1)
 
-    def test_same_currency_ars_unchanged(self):
-        # Lote ARS vendido en ARS: FX-phantom (cost y venta al mismo TC). cost 15000
-        # ARS, proceeds 16000 → pnl_ars 1000 /1500 = +0,67.
+    def test_same_currency_ars_cada_punta_a_su_dolar(self):
+        # Lote ARS vendido en ARS (cuenta v2): cada punta a su dólar (resultado_dual,
+        # decisión de Nico del 24/10/2026). Costo 15.000 pesos al dólar de la compra
+        # (1.000) = US$ 15; cobro 16.000 al de la venta (1.500) = US$ 10,67 →
+        # −US$ 4,33. En pesos ganó 1.000; en dólares perdió, porque el peso se
+        # devaluó 50 % y el precio subió 6,7 %. Hasta esa fecha esto daba +0,67
+        # (1.000 pesos ÷ 1.500, la regla "FX-phantom"), que no es lo que Cartera
+        # mostraba en dólares antes de vender.
         pnl = self._sell_pnl("ARS", "ARS", "ARS", qty=10, lot_invested=15000, exit_price=1600.0)
-        self.assertAlmostEqual(pnl, 0.67, places=1)
+        self.assertAlmostEqual(pnl, 16000 / 1500 - 15000 / 1000, places=1)
 
     def test_blue_for_date_helper(self):
         conn = main.get_db()

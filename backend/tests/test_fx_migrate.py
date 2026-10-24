@@ -7,7 +7,13 @@ todo importado "hoy" con el dólar vivo en 1450.
 
   · estado v1:               pnl 13,79 / depósito 689,66  → 2,00% (error 1,23×)
   · una pata sola (el bug):  pnl 105,26 / depósito 689,66 → 15,3% (error 9,4×)
-  · migrado (las dos patas): pnl 105,26 / depósito 6.451,61 → 1,63% ✅
+  · migrado (las dos patas): pnl −13,58 / depósito 6.451,61 → −0,21% ✅
+
+El P&L migrado era 105,26 (= 20.000 pesos ÷ MEP de la venta) hasta el 24/10/2026.
+Desde entonces una cuenta v2 anota cada punta a su dólar (resultado_dual.py,
+decisión de Nico): cobró 120.000 ÷ 190 = US$ 631,58 por lo que le había costado
+100.000 ÷ 155 = US$ 645,16 → −US$ 13,58. En pesos ganó; en dólares, no: el peso
+se devaluó 23 % y GGAL subió 20 %. Es lo que Cartera mostraba en dólares.
 
 Lo que fijan estos tests:
   1. una cuenta v1 que pasa por el rebuild NO cambia de números (el deploy es inocuo)
@@ -35,6 +41,8 @@ from importing import fx_migrate as fxm
 TC_VIVO = 1450.0
 MEP_DEP = 155.0     # el MEP del día del depósito
 MEP_VTA = 190.0     # el MEP del día de la venta
+# Migrada a v2: lo cobrado al MEP de la venta − lo que costó al MEP de la compra.
+PNL_MIGRADO = round(120000 / MEP_VTA - 100000 / MEP_DEP, 2)   # −13,58
 
 HDR = "fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas\n"
 
@@ -148,10 +156,11 @@ class FxMigrateTest(unittest.TestCase):
         self.assertTrue(out["ok"], out)
 
         pnl, dep = self._estado()
-        self.assertAlmostEqual(pnl, round(20000 / MEP_VTA, 2), places=1)     # 105,26
+        self.assertAlmostEqual(pnl, PNL_MIGRADO, places=1)                   # −13,58
         self.assertAlmostEqual(dep, round(1000000 / MEP_DEP, 2), places=1)   # 6.451,61
-        # El ratio queda el REAL (1,63%), no el 15,3% de la pata suelta.
-        self.assertAlmostEqual(pnl / dep * 100, 1.63, delta=0.05)
+        # El ratio queda el REAL (−0,21 %): cada número a su dólar, ni el 15,3 % de
+        # la pata suelta ni el 2,00 % del dólar vivo.
+        self.assertAlmostEqual(pnl / dep * 100, -0.21, delta=0.05)
         self.assertEqual(fxmod.fx_version(self.conn, self.uid), fxmod.FX_V2)
         # El stamp de la venta ahora es el MEP de su fecha.
         fx = self.conn.execute(
@@ -195,7 +204,7 @@ class FxMigrateTest(unittest.TestCase):
         self.assertTrue(out["ok"], out)
         # El dry-run REPORTA el después correcto…
         self.assertAlmostEqual(out["despues"]["pnl_ventas_usd"],
-                               round(20000 / MEP_VTA, 2), places=1)
+                               PNL_MIGRADO, places=1)
         # …pero la base real sigue intacta y la cuenta sigue v1.
         self.assertEqual(self._estado(), antes)
         self.assertEqual(fxmod.fx_version(self.conn, self.uid), fxmod.FX_V1)
@@ -205,7 +214,7 @@ class FxMigrateTest(unittest.TestCase):
         out = main.admin_fx_migrate_user(user_id=self.uid, apply=True, uid=self.uid)
         self.assertTrue(out["applied"])
         pnl, dep = self._estado()
-        self.assertAlmostEqual(pnl / dep * 100, 1.63, delta=0.05)
+        self.assertAlmostEqual(pnl / dep * 100, -0.21, delta=0.05)
 
     # ── 4. Defaults del versionado ────────────────────────────────────────
     def test_tc_compra_de_lotes_importados_se_completa(self):
@@ -378,7 +387,7 @@ class BatchDryRunTest(FxMigrateTest):
         r1 = r["resultados"][str(self.uid)]
         self.assertTrue(r1["ok"], r1)
         self.assertAlmostEqual(r1["despues"]["pnl_ventas_usd"],
-                               round(20000 / MEP_VTA, 2), places=1)
+                               PNL_MIGRADO, places=1)
         # …la inexistente no rompe el lote, se reporta y sigue.
         self.assertIn(str(999999), r["resultados"])
         # …y la base REAL quedó intacta: sigue v1 con los números viejos.

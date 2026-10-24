@@ -826,7 +826,6 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
 
     remaining = qty_to_sell
     total_pnl_usd = 0.0
-    total_pnl_ars_native = 0.0
     total_proceeds_native = 0.0
     ops_created: List[int] = []
 
@@ -911,13 +910,29 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
             pnl_ars_chunk = exit_price * take - (entry_invested or 0) - chunk_commission
             pnl_usd = pnl_ars_chunk / tc_venta if tc_venta else 0
             invested_usd = (entry_invested or 0) / tc_venta if entry_invested and tc_venta else 0
-            total_pnl_ars_native += pnl_ars_chunk
             proceeds_native = exit_price * take - chunk_commission
         else:
             cost = entry_invested if entry_invested is not None else ((p["buy_price"] or 0) * take)
             pnl_usd = (exit_price * take) - cost - chunk_commission
             invested_usd = cost
             proceeds_native = exit_price * take - chunk_commission
+
+        # El resultado en pesos y en dólares, cada punta a su dólar: la MISMA cuenta
+        # que la venta a mano y el rebuild (resultado_dual). Dólar de compra: el del
+        # lote (el que usa Cartera); de venta: el de la fecha, también en v1 (donde
+        # `tc_venta` es el dólar del import).
+        resultado = _resultado_dual.resultado_en_dos_monedas(
+            conn, costo=costo_en_su_moneda, moneda_costo=lot_currency,
+            fecha_compra=(p["entry_date"] if "entry_date" in p.keys() else None),
+            cobrado=proceeds_native, moneda_venta=sell_currency, fecha_venta=op_date,
+            riel=(RIEL_MEP if _hist else RIEL_BLUE),
+            tc_compra=(p["tc_compra"] if "tc_compra" in p.keys() else None),
+            retiro=bool(getattr(tx, "transfer_out", False)))
+        # El resultado en dólares: cobrado en dólares − costo en dólares, sólo en
+        # cuentas v2 (ver main.sell_position_fifo y resultado_dual.resultado_en_dolares).
+        _en_dolares = _resultado_dual.resultado_en_dolares(resultado) if _hist else None
+        if _en_dolares:
+            pnl_usd, invested_usd = _en_dolares
 
         total_pnl_usd += pnl_usd
         total_proceeds_native += proceeds_native
@@ -949,15 +964,7 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         op_id = cur.lastrowid
         ops_created.append(op_id)
         _link(conn, batch_id, raw_row_id, operation_id=op_id)
-        # El resultado en pesos y en dólares, cada punta a su dólar: la MISMA cuenta
-        # que la venta a mano y el rebuild (resultado_dual). El dólar de la venta es
-        # el de la fecha, también en v1 (donde `tc_venta` es el dólar del import).
-        _resultado_dual.guardar(conn, uid, op_id, _resultado_dual.resultado_en_dos_monedas(
-            conn, costo=costo_en_su_moneda, moneda_costo=lot_currency,
-            fecha_compra=(p["entry_date"] if "entry_date" in p.keys() else None),
-            cobrado=proceeds_native, moneda_venta=sell_currency, fecha_venta=op_date,
-            riel=(RIEL_MEP if _hist else RIEL_BLUE),
-            retiro=bool(getattr(tx, "transfer_out", False))))
+        _resultado_dual.guardar(conn, uid, op_id, resultado)
 
         if take >= pos_qty - 1e-9:
             conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (p["id"], uid))
@@ -976,13 +983,11 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         helpers._adjust_broker_cash(conn, uid, tx.cash_broker or tx.broker, total_proceeds_native)
 
     op_year, op_month = int(op_date[:4]), int(op_date[5:7])
-    # Para brokers ARS, el broker entry guarda P&L ARS-nativo / TC = USD-equivalente
-    # (mismo patrón que el flow manual). Global siempre USD-true.
-    if currency == "ARS":
-        pnl_for_broker = total_pnl_ars_native / tc_venta if tc_venta else 0
-    else:
-        pnl_for_broker = total_pnl_usd
-    helpers._update_monthly_pnl_realized(conn, uid, tx.broker, op_year, op_month, pnl_for_broker)
+    # El renglón del broker lleva lo mismo que el global: la suma de los `pnl_usd`
+    # de las filas (lo que deja `_recalc_pnl_realized_from_ops`). La rama de pesos
+    # que re-dividía la ganancia en pesos por el TC daba lo mismo con la regla
+    # vieja; con la de cada punta a su dólar (resultado_dual) ya no.
+    helpers._update_monthly_pnl_realized(conn, uid, tx.broker, op_year, op_month, total_pnl_usd)
     helpers._update_monthly_pnl_realized(conn, uid, "global", op_year, op_month, total_pnl_usd)
 
     return ops_created

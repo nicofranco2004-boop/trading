@@ -17,7 +17,7 @@ import { fmtConvertedRaw } from '../../contexts/CurrencyContext'
 import EmptyState from '../EmptyState'
 import InlineAIButton from '../ai/InlineAIButton'
 import Panel from '../Panel'
-import { prettyOpType, movPnl, pctEnMoneda } from './shared'
+import { prettyOpType, pctEnMoneda } from './shared'
 import { esCobro } from '../../utils/tradeStats'
 
 export const PAGE_SIZE = 50
@@ -159,13 +159,7 @@ function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = fal
       <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(op.pnl_usd)} ${indent ? 'opacity-75' : ''}`}>
         {op.pnl_usd == null
           ? '—'
-          : histMoney.fmtMoneyAt(op.pnl_usd, {
-              stampedFx: op.fx_to_usd,
-              rowCurrency: op.currency,
-              dateIso: op.date,
-              signed: true,
-              decimals: 2,
-            })}
+          : histMoney.fmtPnlAt(op, { signed: true, decimals: 2 })}
       </td>
       <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(pct)} ${indent ? 'opacity-75' : ''}`}
         title={motivo || undefined}>
@@ -216,7 +210,7 @@ function TradeGroupRow({ conNueva = false, group, groupBy, isOpen, onToggle, his
   // USD crudo podía contradecir lo mostrado: un grupo con +100 USD de 2021 (fx 190)
   // y −90 USD de 2026 (fx 1500) suma +10 USD (flecha verde) pero −$116.000 en
   // pesos. En modo USD `pnlDisp === pnl`, así que no cambia nada.
-  const pnl = histMoney.sumConvertedAt(group.rows, r => movPnl(r))
+  const pnl = histMoney.sumPnlAt(group.rows.filter(r => typeof r.pnl_usd === 'number'))
   const pnlDisp = pnl
   const Chevron = isOpen ? ChevronUp : ChevronDown
   const hasPnl = pnl !== 0

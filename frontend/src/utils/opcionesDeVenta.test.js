@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { opcionesDeVenta, lotesDeLaVenta, etiquetaDeVenta } from './opcionesDeVenta'
+import { opcionesDeVenta, lotesDeLaVenta, etiquetaDeVenta, resultadoUsdDelPedazo } from './opcionesDeVenta'
 import { setBrokersRegistry } from './valuation'
 
 const B = (id, name, currency = 'ARS', parent_broker_id = null) =>
@@ -77,5 +77,21 @@ describe('los lotes que cierra la venta (FIFO, espejo del servidor)', () => {
 
   it('otra cuenta no se mezcla', () => {
     expect(ids('IBKR', 'NFLX', 'USD')).toEqual([7])
+  })
+})
+
+describe('resultadoUsdDelPedazo — la vista previa dice lo que anota el servidor', () => {
+  const ggal = { cobrado: 690000, costo: 450000, enPesos: true, tcVenta: 1500, tcCompra: 1000 }
+  it('cuenta v2: cada punta a su dólar (US$ 460 − US$ 450)', () => {
+    expect(resultadoUsdDelPedazo({ ...ggal, cadaPuntaASuDolar: true })).toBeCloseTo(10, 6)
+  })
+  it('cuenta v1: la ganancia en pesos ÷ el dólar de la venta', () => {
+    expect(resultadoUsdDelPedazo({ ...ggal, cadaPuntaASuDolar: false })).toBeCloseTo(160, 6)
+  })
+  it('sin dólar de compra queda la regla de siempre, como el servidor', () => {
+    expect(resultadoUsdDelPedazo({ ...ggal, tcCompra: null, cadaPuntaASuDolar: true })).toBeCloseTo(160, 6)
+  })
+  it('en dólares no cambia nada', () => {
+    expect(resultadoUsdDelPedazo({ cobrado: 1500, costo: 1000, enPesos: false, cadaPuntaASuDolar: true })).toBe(500)
   })
 })

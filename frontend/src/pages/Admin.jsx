@@ -2600,11 +2600,13 @@ function RepairInteresPfPanel({ toast }) {
 }
 
 
-// ─── ResultadoDosMonedasPanel — el % en pesos y en dólares de las ventas viejas ──
-// Las ventas nuevas ya nacen con los dos (backend/resultado_dual.py). Las de antes
-// tienen las columnas vacías y la columna «P&L %» de Movimientos les sigue mostrando
-// el % en la moneda de la venta. Esto las completa por la MISMA cuenta que usa una
-// venta nueva. Dos pasos: primero se ve cuántas y qué daría, después se aplica.
+// ─── ResultadoDosMonedasPanel — corregir el resultado de las ventas viejas ──
+// Desde el 24/10/2026 una venta guarda su resultado en pesos y en dólares, cada
+// punta a su dólar, y el resultado en dólares es lo cobrado menos el costo al
+// dólar de compra del lote (el que usa Cartera). Las ventas de antes tienen la
+// regla vieja: ganancia en pesos ÷ dólar de la venta. Esto las corrige POR
+// TANDAS, sólo en cuentas que usaron la app en los últimos 60 días, con la misma
+// cuenta que una venta nueva (backend/resultado_dual.py). Dos pasos por tanda.
 const SIN_DATO_TXT = {
   sin_fecha_compra: 'sin fecha de compra', sin_dolar_compra: 'sin dólar del día de compra',
   sin_dolar_venta: 'sin dólar del día de venta', sin_costo: 'sin costo cargado',
@@ -2614,57 +2616,86 @@ function ResultadoDosMonedasPanel({ toast }) {
   const [prev, setPrev] = useState(null)
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState(null)
+  const [tanda, setTanda] = useState(10)
 
   async function correr(apply) {
     setBusy(true)
     try {
-      const out = await api.post(`/admin/resultado-dos-monedas?apply=${apply}`)
-      if (apply) { setDone(out); setPrev(null); toast.push(`Completadas ${out.filas} venta(s)`, { type: 'success' }) }
-      else setPrev(out)
+      const out = await api.post(`/admin/resultado-dos-monedas?apply=${apply}&tanda=${tanda}&dias=60`)
+      if (apply) {
+        setDone(out); setPrev(null)
+        toast.push(`Corregidas ${out.en_esta_tanda} cuenta(s); quedan ${out.quedan_despues}`, { type: 'success' })
+      } else setPrev(out)
     } catch (e) {
       toast.push('Error: ' + e.message, { type: 'error' })
     } finally { setBusy(false) }
   }
 
-  const n = prev?.filas ?? 0
-  const pct = v => (v == null ? '—' : `${v.toLocaleString('es-AR', { maximumFractionDigits: 1 })} %`)
+  const usd = v => `US$ ${Number(v || 0).toLocaleString('es-AR', { maximumFractionDigits: 2 })}`
+  const n = prev?.en_esta_tanda ?? 0
   return (
     <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <h2 className="font-semibold text-ink-0">Resultado de las ventas viejas en pesos y en dólares</h2>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          <AlertTriangle size={16} className="text-amber-500" />
+          <h2 className="font-semibold text-ink-0">Resultado en dólares de las ventas viejas</h2>
+        </div>
+        <div className="flex gap-2 items-center">
+          <label className="text-xs text-ink-3">Cuentas por tanda
+            <select value={tanda} onChange={e => { setTanda(Number(e.target.value)); setPrev(null) }}
+              className="ml-1 text-xs bg-bg-1 border border-line rounded px-1 py-1">
+              {[1, 5, 10, 25, 50].map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </label>
           <button onClick={() => correr(false)} disabled={busy}
             className="text-xs px-3 py-1.5 rounded border border-line text-ink-1 hover:bg-bg-1 disabled:opacity-50">
-            {busy && !prev ? 'Mirando…' : '1 · Ver qué cambiaría'}
+            {busy && !prev ? 'Mirando…' : '1 · Ver la próxima tanda'}
           </button>
           <button onClick={() => correr(true)} disabled={busy || !prev || n === 0}
             className="text-xs px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-40">
-            {busy && prev ? 'Aplicando…' : `2 · Aplicar${n ? ` (${n})` : ''}`}
+            {busy && prev ? 'Aplicando…' : `2 · Corregir esta tanda${n ? ` (${n})` : ''}`}
           </button>
         </div>
       </div>
       <p className="text-xs text-ink-3 leading-relaxed">
-        Las ventas hechas antes de este cambio sólo tienen el % en la moneda en que se vendió. Esto
-        les calcula el de pesos y el de dólares, cada punta a su dólar (el de la compra y el de la
-        venta). <b>No cambia el P&L realizado ni ningún monto</b>, y sólo toca ventas que todavía no
-        los tienen: apretarlo dos veces no hace nada la segunda. El paso 1 no modifica nada.
+        Las ventas en pesos de algo comprado en pesos anotaban como ganancia en dólares la ganancia
+        en pesos dividida por el dólar del día de la venta (GGAL de US$ 450 a US$ 460 figuraba
+        +US$ 160). Esto las pasa a lo que mostraba Cartera: <b>lo cobrado menos lo que costó, cada
+        uno a su dólar</b> (+US$ 10), y rehace el P&L realizado de los meses de esa cuenta. Sólo
+        cuentas que usaron la app en los últimos 60 días, de a una tanda. <b>El paso 1 no modifica
+        nada.</b> Cada cuenta se corrige entera o no se toca; apretarlo de nuevo sigue con la próxima.
       </p>
       {prev && (
         <div className="text-xs space-y-1">
           <p className="text-ink-2">
-            <b>{n}</b> venta(s) de <b>{prev.usuarios}</b> usuario(s): <b>{prev.con_los_dos}</b> quedan con los dos %.
+            Usaron la app en 60 días: <b>{prev.activos}</b>. Con ventas por corregir: <b>{prev.con_ventas_pendientes}</b>
+            {prev.v1_esperan_migracion > 0 && <> (y {prev.v1_esperan_migracion} en el dólar viejo, esperan su migración)</>}.
+            Esta tanda: <b>{n}</b> cuenta(s), <b>{prev.ventas}</b> venta(s). P&L realizado de esas cuentas:{' '}
+            <b>{usd(prev.realizado_antes)}</b> → <b>{usd(prev.realizado_despues)}</b>.
           </p>
-          {Object.entries(prev.sin_dato || {}).map(([k, v]) => (
-            <p key={k} className="text-amber-500">{v} con un % sin dato: {SIN_DATO_TXT[k] || k}.</p>
+          {prev.cuentas.map(c => (
+            <div key={c.user_id} className="text-ink-3 tabular">
+              <p>
+                Cuenta {c.user_id}: {c.ventas} venta(s) · {usd(c.realizado_antes)} → {usd(c.realizado_despues)}
+                {c.cambian_de_signo > 0 && <span className="text-amber-500"> · {c.cambian_de_signo} pasan de ganancia a pérdida o al revés</span>}
+                {Object.entries(c.sin_dato || {}).map(([k, v]) => <span key={k} className="text-amber-500"> · {v} {SIN_DATO_TXT[k] || k}</span>)}
+              </p>
+              {c.ejemplos.map(e => (
+                <p key={e.id} className="pl-3">
+                  {e.fecha} · {e.activo} ({e.moneda || '?'}) · {usd(e.pnl_usd_antes)} → {usd(e.pnl_usd_despues)}
+                </p>
+              ))}
+            </div>
           ))}
-          {prev.ejemplos.map(e => (
-            <p key={e.id} className="text-ink-3 tabular">
-              {e.fecha} · {e.activo} ({e.moneda || '?'}) · hoy {pct(e.pnl_pct_guardado)} → pesos {pct(e.pnl_pct_ars)} · dólares {pct(e.pnl_pct_usd)}
-            </p>
-          ))}
+          {prev.errores?.length > 0 && <p className="text-rose-500">{prev.errores.length} cuenta(s) con error: no se tocan.</p>}
         </div>
       )}
-      {done && <p className="text-xs text-emerald-500">Listo: {done.filas} venta(s) de {done.usuarios} usuario(s).</p>}
+      {done && (
+        <p className="text-xs text-emerald-500">
+          Listo: {done.en_esta_tanda} cuenta(s), {done.ventas} venta(s). Quedan {done.quedan_despues} cuenta(s).
+          {done.errores?.length > 0 && <span className="text-rose-500"> {done.errores.length} con error (no se tocaron).</span>}
+        </p>
+      )}
     </div>
   )
 }

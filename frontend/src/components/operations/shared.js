@@ -208,7 +208,7 @@ export const SIN_FECHA = '__sin_fecha__'
  * Devuelve { key, label, rows, count, pnl, brokers } ordenados.
  *
  * `pnl` es la suma CRUDA en USD y se usa sólo para ORDENAR. Lo que se muestra
- * lo recalcula cada renderer con `histMoney.sumConvertedAt(group.rows, …)`
+ * lo recalcula cada renderer con `histMoney.sumPnlAt(group.rows)`
  * (convert-then-sum), que es lo único que garantiza `total === Σ filas`.
  */
 export function buildGroups(rows, groupBy) {
