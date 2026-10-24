@@ -62,25 +62,35 @@ export function puntosDesde(puntos = [], fecha) {
 // ─── Medir entre dos puntos ─────────────────────────────────────────────────
 
 /**
- * El % entre los cierres de dos días y cuántos días de mercado pasaron, sobre
- * los puntos DIARIOS del gráfico (aunque se esté mirando en velas semanales).
- * El orden en que se tocaron no importa: siempre del más viejo al más nuevo.
- * null si falta alguno.
+ * Medir entre dos puntos CUALESQUIERA del gráfico, como la regla de
+ * TradingView (Nico, 24/10: «no me tendría que obligar a elegir el cierre de
+ * las velas»). Cada punto es { i, precio }: `i` es el día de mercado contado
+ * sobre los puntos DIARIOS del gráfico (aunque se miren velas semanales) y
+ * puede pasar del último día —el espacio vacío de la derecha, para medir hacia
+ * adelante—; `precio`, la altura donde se tocó, no el cierre.
+ * El orden en que se tocaron no importa: siempre del de la izquierda al de la
+ * derecha (a igual día, del primero tocado). null si falta alguno.
+ * Devuelve { desde, hasta (fecha, o null si es hacia adelante), adelanteDesde,
+ * adelanteHasta (cuántos días de mercado después del último), precioDesde,
+ * precioHasta, diferencia, pct, dias }.
  */
-export function medicion(puntos = [], fechaA, fechaB) {
-  if (!fechaA || !fechaB) return null
-  const ia = puntos.findIndex(p => p.d === fechaA)
-  const ib = puntos.findIndex(p => p.d === fechaB)
-  if (ia < 0 || ib < 0) return null
-  const [i, j] = ia <= ib ? [ia, ib] : [ib, ia]
-  const a = puntos[i], b = puntos[j]
-  if (!(a.c > 0) || b.c == null) return null
-  return { desde: a.d, hasta: b.d, precioDesde: a.c, precioHasta: b.c, pct: (b.c / a.c - 1) * 100, dias: j - i }
+export function medicion(puntos = [], a, b) {
+  if (!a || !b || !(puntos.length > 0)) return null
+  const [x, y] = b.i < a.i ? [b, a] : [a, b]
+  if (!(x.precio > 0) || !(y.precio > 0)) return null
+  const ultimo = puntos.length - 1
+  const fecha = (p) => (p.i >= 0 && p.i <= ultimo ? puntos[p.i].d : null)
+  return {
+    desde: fecha(x), hasta: fecha(y),
+    adelanteDesde: Math.max(0, x.i - ultimo), adelanteHasta: Math.max(0, y.i - ultimo),
+    precioDesde: x.precio, precioHasta: y.precio, diferencia: y.precio - x.precio,
+    pct: (y.precio / x.precio - 1) * 100, dias: y.i - x.i,
+  }
 }
 
 export function textoMedicion(m) {
   if (!m) return ''
-  if (m.dias === 0) return 'Es el mismo día: tocá otro.'
+  if (m.dias === 0) return m.diferencia === 0 ? 'Es el mismo punto: tocá otro.' : `${pctConSigno(m.pct)} en el mismo día`
   return `${pctConSigno(m.pct)} en ${m.dias} día${m.dias === 1 ? '' : 's'} de mercado`
 }
 

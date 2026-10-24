@@ -56,7 +56,44 @@ let montado
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
+  localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
 })
+
+// Un botón de la barra de herramientas, por su capa (data-capa).
+function botonDe(id) {
+  const pila = [montado.contenedor]
+  while (pila.length) {
+    const n = pila.shift()
+    if (n.nodeName === 'BUTTON' && n.getAttribute?.('data-capa') === id) return n
+    pila.push(...(n.childNodes || []))
+  }
+  return null
+}
+function contar(pred) {
+  let k = 0
+  const pila = [montado.contenedor]
+  while (pila.length) {
+    const n = pila.shift()
+    if (pred(n)) k++
+    pila.push(...(n.childNodes || []))
+  }
+  return k
+}
+function buscarRol(rol, parte) {
+  const pila = [montado.contenedor]
+  while (pila.length) {
+    const n = pila.shift()
+    if (n.getAttribute?.('role') === rol && texto(n).includes(parte)) return n
+    pila.push(...(n.childNodes || []))
+  }
+  return null
+}
+// Una vela es un <g> con su mecha (line) y su cuerpo (rect).
+const velasDibujadas = () => contar(n => n.nodeName === 'G' && (n.childNodes || []).some(c => c.nodeName === 'RECT'))
+const puntosDeCompra = () => contar(n => n.nodeName === 'SPAN' && (n.getAttribute?.('title') || '').startsWith('Compraste el'))
+async function otraVez(props) {
+  for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', ...props }))
+}
 
 async function dibujar(props) {
   const el = () => h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', ...props })
@@ -111,22 +148,29 @@ describe('LecturaTecnica', () => {
   it('la línea de tu precio usa el dólar de compra; sin ese dato no se dibuja y lo dice', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD }
     let t = await dibujar({ pnlPctUsd: 0.4, pnlPctLinea: 0.1 })
-    expect(t).toContain('Tu precio promedio')
+    expect(botonDe('prom').getAttribute('aria-pressed')).toBe('true')
+    expect(t).toContain('Tu precio')               // el cartel de la línea, en la columna de precios
     expect(t).toContain('Ganás 40,0%')            // la tarjeta: el mismo resultado de arriba
     await montado.desmontar(); montado = null
     t = await dibujar({ pnlPctUsd: 0.4, pnlPctLinea: null, lineaSinTc: true })
-    expect(t).not.toContain('Tu precio promedio')
+    expect(botonDe('prom').getAttribute('aria-disabled')).toBe('true')
+    expect(texto(botonDe('prom'))).toContain('A alguna de tus compras le falta el dólar de ese día')
     expect(t).toContain('le falta el dólar de ese día')
   })
 
-  it('compras y ventas en la leyenda sólo si hay alguna en el rango', async () => {
+  it('tus compras y ventas: sin ninguna, el botón deshabilitado con el porqué', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD }
-    let t = await dibujar({ pnlPctUsd: 0.1 })
-    expect(t).not.toContain('Tus compras y ventas')
+    await dibujar({ pnlPctUsd: 0.1 })
+    expect(botonDe('marcas').getAttribute('aria-disabled')).toBe('true')
+    expect(texto(botonDe('marcas'))).toContain('No hay compras ni ventas tuyas de este activo')
     await montado.desmontar(); montado = null
     const ultimo = USD.puntos[USD.puntos.length - 10].d
-    t = await dibujar({ pnlPctUsd: 0.1, lotes: [{ entry_date: ultimo, quantity: 1 }] })
-    expect(t).toContain('Tus compras y ventas')
+    await dibujar({ pnlPctUsd: 0.1, lotes: [{ entry_date: ultimo, quantity: 1 }] })
+    expect(botonDe('marcas').getAttribute('aria-pressed')).toBe('true')
+    expect(puntosDeCompra()).toBe(1)
+    await clic(montado.contenedor, botonDe('marcas'))
+    await otraVez({ pnlPctUsd: 0.1, lotes: [{ entry_date: ultimo, quantity: 1 }] })
+    expect(puntosDeCompra()).toBe(0)
   })
 
   it('pide pesos recién al tocarlos, y una acción argentina pide su precio local', async () => {
@@ -160,9 +204,13 @@ describe('LecturaTecnica', () => {
   it('con el botón Velas dibuja velas diarias, y semanales sólo si se eligen', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     await dibujar({ pnlPctUsd: 0.1 })
+    expect(velasDibujadas()).toBe(0)
+    expect(botonDe('linea').getAttribute('aria-pressed')).toBe('true')
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Velas'))
     for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
-    expect(texto(montado.contenedor)).toContain('Velas: subió · bajó')
+    expect(botonDe('velas').getAttribute('aria-pressed')).toBe('true')
+    expect(botonDe('linea').getAttribute('aria-pressed')).toBe('false')
+    expect(velasDibujadas()).toBeGreaterThan(200)     // un año de ruedas, una vela por día
     expect(texto(montado.contenedor)).not.toContain('Cada vela es una semana')
     // En 2 años siguen siendo diarias; las semanales se eligen.
     await clic(montado.contenedor, buscarBoton(montado.contenedor, '2A'))
@@ -217,16 +265,30 @@ describe('LecturaTecnica', () => {
     expect(barras()).toBe(0)
   })
 
-  it('sin volumen en los datos no hay botón de volumen', async () => {
+  it('sin volumen en los datos el botón queda deshabilitado y, al tocarlo, dice por qué', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
-    expect(await dibujar({ pnlPctUsd: 0.1 })).not.toContain('Volumen')
+    await dibujar({ pnlPctUsd: 0.1 })
+    const b = botonDe('vol')
+    expect(b.getAttribute('aria-disabled')).toBe('true')
+    expect(b.getAttribute('aria-pressed')).toBeNull()
+    expect(texto(montado.contenedor)).not.toContain('Volumen: Este activo no trae volumen en los datos de Yahoo.Cerrar')
+    await clic(montado.contenedor, b)
+    await otraVez({ pnlPctUsd: 0.1 })
+    const aviso = buscarRol('status', 'Volumen: ')
+    expect(texto(aviso)).toContain('Volumen: Este activo no trae volumen en los datos de Yahoo.')
+    // Tocar otro botón lo saca.
+    await clic(montado.contenedor, botonDe('s50'))
+    await otraVez({ pnlPctUsd: 0.1 })
+    expect(buscarRol('status', 'Volumen: ')).toBeNull()
   })
 
   it('sin tenencia no dibuja tu precio', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     const t = await dibujar({ pnlPctUsd: null })
     expect(t).not.toContain('Contra lo que pagaste')
-    expect(t).not.toContain('Tu precio promedio')
+    expect(t).not.toContain('Tu precio·')
+    expect(botonDe('prom').getAttribute('aria-disabled')).toBe('true')
+    expect(texto(botonDe('prom'))).toContain('No tenés este activo en tu cartera')
   })
 
   it('fuerza de la tendencia: panel del ADX con el Squeeze y la tarjeta con su frase destacada', async () => {

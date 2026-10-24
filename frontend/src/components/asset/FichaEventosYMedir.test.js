@@ -55,6 +55,7 @@ let montado, props
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
+  localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
 })
 const el = () => h(LecturaTecnica, { asset: 'ZZEV', ...props })
 async function dibujar(p = {}) {
@@ -93,9 +94,9 @@ async function evento(tipo, nodo, datos = {}) {
   return ev
 }
 const grafico = () => porRol(montado.contenedor, 'img', 'Precio con su promedio')
-async function clickEn(x) {
-  await evento('mousedown', grafico(), { clientX: x, clientY: 100 })
-  await evento('mouseup', grafico(), { clientX: x, clientY: 100 })
+async function clickEn(x, y = 100) {
+  await evento('mousedown', grafico(), { clientX: x, clientY: y })
+  await evento('mouseup', grafico(), { clientX: x, clientY: y })
   await redibujar()
 }
 async function toqueEn(x, hastaX = x) {
@@ -114,26 +115,73 @@ const LUGARES = 365 + margenDerecho(365)
 const bajo = (x) => 700 - 365 + Math.round((x / 1000) * (LUGARES - 1))
 const pct = (a, b) => ((puntos[b].c / puntos[a].c - 1) * 100).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 
-describe('medir entre dos puntos', () => {
-  it('con el mouse: dos clicks dan el % entre los cierres y los días de mercado', async () => {
+// Los precios que dice la medición, como números («US$ 1.234,56» → 1234.56).
+const precios = (t) => [...t.matchAll(/US\$ ([\d.]+,\d+)/g)].map(m => Number(m[1].replace(/\./g, '').replace(',', '.')))
+const status = () => texto(porRol(montado.contenedor, 'status') || { childNodes: [] })
+const EMPEZAR = 'Tocá cualquier punto del gráfico para empezar a medir'
+
+describe('medir entre dos puntos (como la regla de TradingView)', () => {
+  it('con el mouse: el % entre los PRECIOS tocados, no los cierres, y los días de mercado', async () => {
     await dibujar()
-    expect(texto(montado.contenedor)).not.toContain('Tocá un día del gráfico')
+    expect(texto(montado.contenedor)).not.toContain(EMPEZAR)
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Medir entre dos puntos'))
     await redibujar()
-    expect(texto(montado.contenedor)).toContain('Tocá un día del gráfico para empezar a medir.')
+    expect(status()).toContain(EMPEZAR)
 
-    await clickEn(100)
-    expect(texto(montado.contenedor)).toContain(`Desde el ${fecha(puntos[bajo(100)].d)}. Ahora tocá el otro día.`)
-    await clickEn(900)
-    const a = bajo(100), b = bajo(900), signo = puntos[b].c >= puntos[a].c ? '+' : '−'
-    const t = texto(montado.contenedor)
-    expect(t).toContain(`${signo}${pct(a, b).replace('-', '')}% en ${b - a} días de mercado`)
-    expect(t).toContain(`del ${fecha(puntos[a].d)}`)
-    expect(t).toContain(`al ${fecha(puntos[b].d)}`)
+    await clickEn(100, 150)
+    const a = bajo(100)
+    expect(status()).toContain(`, el ${fecha(puntos[a].d)}. Ahora tocá el otro punto.`)
+    const [pa] = precios(status())
+    expect(Math.abs(pa - puntos[a].c)).toBeGreaterThan(0.5)      // la altura del click, no el cierre de ese día
+    await clickEn(900, 40)                                        // más arriba en la pantalla: un precio más alto
+    const b = bajo(900)
+    const t = status()
+    const [desde, hasta] = precios(t)
+    expect(desde).toBe(pa)
+    expect(hasta).toBeGreaterThan(desde)
+    const pct = ((hasta / desde - 1) * 100).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+    expect(t).toContain(`+${pct}% en ${b - a} días de mercado`)
+    expect(t).toContain(`(el ${fecha(puntos[a].d)})`)
+    expect(t).toContain(`(el ${fecha(puntos[b].d)})`)
+    expect(t).not.toContain('de cierre a cierre')
 
     // Un tercer click empieza otra medición.
     await clickEn(500)
-    expect(texto(montado.contenedor)).toContain(`Desde el ${fecha(puntos[bajo(500)].d)}.`)
+    expect(status()).toContain(`, el ${fecha(puntos[bajo(500)].d)}. Ahora tocá el otro punto.`)
+  })
+
+  it('el mismo día, dos alturas: mide en vertical', async () => {
+    await dibujar()
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Medir entre dos puntos')); await redibujar()
+    await clickEn(500, 200)
+    await clickEn(500, 60)
+    expect(status()).toMatch(/\+[\d,]+% en el mismo día/)
+  })
+
+  it('el aire de la derecha mide hacia adelante: días de mercado que todavía no pasaron', async () => {
+    await dibujar()
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Medir entre dos puntos')); await redibujar()
+    expect(bajo(995)).toBeGreaterThan(699)        // 995 px cae en el aire, después del último día (699)
+    await clickEn(300)
+    await clickEn(995, 30)
+    const t = status()
+    expect(t).toContain(`en ${bajo(995) - bajo(300)} días de mercado`)
+    expect(t).toContain(`(dentro de ${bajo(995) - 699} días de mercado)`)
+    expect(t).toContain('Lo que queda a la derecha de hoy es una cuenta: todavía no hay precios ahí.')
+    // Y con el dedo, igual.
+    await toqueEn(995)
+    expect(status()).toContain(`dentro de ${bajo(995) - 699} días de mercado. Ahora tocá el otro punto.`)
+  })
+
+  it('con un punto puesto, el otro extremo sigue al mouse hasta el segundo click', async () => {
+    await dibujar()
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Medir entre dos puntos')); await redibujar()
+    await clickEn(200, 150)
+    await evento('mousemove', grafico(), { clientX: 800, clientY: 50 }); await redibujar()
+    const rotulo = todos(montado.contenedor, n => n.getAttribute?.('data-rotulo') === '6')
+    expect(rotulo).toHaveLength(1)
+    expect(texto(rotulo[0])).toContain(`en ${bajo(800) - bajo(200)} días de mercado`)
+    expect(status()).toContain('Ahora tocá el otro punto.')      // todavía no se eligió
   })
 
   it('arrastrar el gráfico sigue moviéndolo y no marca un punto', async () => {
@@ -144,8 +192,7 @@ describe('medir entre dos puntos', () => {
     await evento('mousemove', grafico(), { clientX: 600, clientY: 100 })
     await evento('mouseup', grafico(), { clientX: 600, clientY: 100 })
     await redibujar()
-    const t = texto(montado.contenedor)
-    expect(t).toContain('Tocá un día del gráfico para empezar a medir.')
+    expect(status()).toContain(EMPEZAR)
     // Se movió: ya no hay un rango elegido y aparece «Automático».
     expect(buscarBoton(montado.contenedor, 'Automático')).not.toBeNull()
   })
@@ -155,31 +202,22 @@ describe('medir entre dos puntos', () => {
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Medir entre dos puntos'))
     await redibujar()
     await toqueEn(200, 400)             // deslizó: es mirar el gráfico, no medir
-    expect(texto(montado.contenedor)).toContain('Tocá un día del gráfico para empezar a medir.')
+    expect(status()).toContain(EMPEZAR)
     const fin = await toqueEn(200)
     expect(fin.defaultPrevented).toBe(true)   // sin el click de mouse que el navegador arma después
     await toqueEn(800)
     const a = bajo(200), b = bajo(800)
-    expect(texto(montado.contenedor)).toContain(`en ${b - a} días de mercado`)
-  })
-
-  it('tocar el aire de la derecha (el futuro) no elige un día', async () => {
-    await dibujar()
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Medir entre dos puntos'))
-    await redibujar()
-    expect(bajo(995)).toBeGreaterThan(699)        // 995 px cae en el aire
-    await clickEn(995)
-    await toqueEn(995)
-    expect(texto(montado.contenedor)).toContain('Tocá un día del gráfico para empezar a medir.')
+    expect(status()).toContain(`en ${b - a} días de mercado`)
   })
 
   it('apagar el modo borra la medición', async () => {
     await dibujar()
     const boton = () => buscarBoton(montado.contenedor, 'Medir entre dos puntos')
     await clic(montado.contenedor, boton()); await redibujar()
-    await clickEn(100); await clickEn(900)
+    await clickEn(100); await clickEn(900, 40)
     await clic(montado.contenedor, boton()); await redibujar()
     expect(texto(montado.contenedor)).not.toContain('días de mercado:')
+    expect(todos(montado.contenedor, n => n.getAttribute?.('data-rotulo') === '6')).toHaveLength(0)
     expect(boton().getAttribute('aria-pressed')).toBe('false')
   })
 })
@@ -255,7 +293,7 @@ describe('desde que lo tenés', () => {
     // El primer día que se ve es el de tu primera compra: midiendo desde el borde izquierdo.
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Medir entre dos puntos')); await redibujar()
     await clickEn(0)
-    expect(texto(montado.contenedor)).toContain(`Desde el ${fecha(puntos[620].d)}.`)
+    expect(status()).toContain(`, el ${fecha(puntos[620].d)}. Ahora tocá el otro punto.`)
   })
 })
 

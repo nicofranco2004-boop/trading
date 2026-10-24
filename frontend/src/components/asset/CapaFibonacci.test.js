@@ -40,6 +40,7 @@ let montado
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
+  localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
 })
 
 const el = () => h(LecturaTecnica, { asset: 'ZZFB' })
@@ -134,9 +135,12 @@ describe('Fibonacci en la ficha', () => {
     expect(posicion(semanal, '2026-10-19').donde).toBe('despues')
   })
 
-  it('una respuesta vieja sin el campo no muestra el botón', async () => {
+  it('una respuesta vieja sin el campo: el botón deshabilitado, con el porqué, y nada dibujado', async () => {
     respuesta = DATOS(undefined)
     const t = await dibujar()
-    expect(t).not.toContain('Fibonacci')
+    expect(t).not.toContain('Fibonacci de la')
+    expect(t).not.toContain('61,8 % ·')
+    expect(buscarBoton(montado.contenedor, 'Fibonacci').getAttribute('aria-disabled')).toBe('true')
+    expect(await tocarFibonacci()).toContain('Fibonacci: Este activo todavía no tiene el cálculo del Fibonacci.')
   })
 })

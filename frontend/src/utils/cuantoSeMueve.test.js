@@ -51,17 +51,31 @@ describe('desde que lo tenés', () => {
 
 describe('medir entre dos puntos', () => {
   const p = [100, 110, 99, 121].map((c, i) => ({ d: `2025-03-0${i + 3}`, c }))
-  it('el % y los días de mercado, toque en cualquier orden', () => {
-    const m = medicion(p, '2025-03-06', '2025-03-03')
+  it('el % entre los PRECIOS tocados (no los cierres) y los días de mercado, en cualquier orden', () => {
+    const m = medicion(p, { i: 3, precio: 130 }, { i: 0, precio: 104 })
     expect(m.desde).toBe('2025-03-03')
+    expect(m.hasta).toBe('2025-03-06')
+    expect(m.precioDesde).toBe(104)
+    expect(m.diferencia).toBe(26)
     expect(m.dias).toBe(3)
-    expect(m.pct).toBeCloseTo(21, 9)
-    expect(textoMedicion(m)).toBe('+21,0% en 3 días de mercado')
-    expect(textoMedicion(medicion(p, '2025-03-04', '2025-03-05'))).toBe('−10,0% en 1 día de mercado')
+    expect(m.pct).toBeCloseTo(25, 9)
+    expect(textoMedicion(m)).toBe('+25,0% en 3 días de mercado')
+    expect(textoMedicion(medicion(p, { i: 1, precio: 110 }, { i: 2, precio: 99 }))).toBe('−10,0% en 1 día de mercado')
+  })
+  it('hacia adelante: el espacio vacío de la derecha cuenta días de mercado que todavía no pasaron', () => {
+    const m = medicion(p, { i: 3, precio: 121 }, { i: 23, precio: 145.2 })
+    expect(m.hasta).toBeNull()
+    expect(m.adelanteHasta).toBe(20)
+    expect(m.adelanteDesde).toBe(0)
+    expect(textoMedicion(m)).toBe('+20,0% en 20 días de mercado')
+  })
+  it('el mismo día, dos precios: también se mide (en vertical, como TradingView)', () => {
+    expect(textoMedicion(medicion(p, { i: 1, precio: 100 }, { i: 1, precio: 105 }))).toBe('+5,0% en el mismo día')
+    expect(textoMedicion(medicion(p, { i: 1, precio: 100 }, { i: 1, precio: 100 }))).toBe('Es el mismo punto: tocá otro.')
   })
   it('sin los dos toques no hay medición', () => {
-    expect(medicion(p, '2025-03-03', null)).toBeNull()
-    expect(medicion(p, '2025-03-03', '2030-01-01')).toBeNull()
+    expect(medicion(p, { i: 0, precio: 100 }, null)).toBeNull()
+    expect(medicion(p, { i: 0, precio: 0 }, { i: 1, precio: 100 })).toBeNull()
   })
 })
 

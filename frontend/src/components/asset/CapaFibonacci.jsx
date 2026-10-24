@@ -1,6 +1,7 @@
 // CapaFibonacci — el Fibonacci automático encima del gráfico de la ficha.
 // ════════════════════════════════════════════════════════════════════════════
-// Se ve de entrada; el botón «Fibonacci» de la leyenda la apaga y la prende. Dibuja
+// Se ve de entrada; el botón «Fibonacci» de la barra de herramientas del gráfico
+// (BarraGrafico.jsx) la apaga y la prende. Dibuja
 // el último tramo confirmado (pozo → pico de una suba, o techo → piso de una
 // bajada) resaltado, las rayas de cada nivel con su precio, la franja entre las
 // dos rayas donde está hoy el precio y el día de la ruptura. Si no hay tramo
@@ -13,6 +14,7 @@
 
 import { indiceDeFecha } from '../../utils/tecnico'
 import { rayas, rotuloNivel, rotulosQueEntran, tarjetaFibonacci } from '../../utils/fibonacci'
+import { PRIORIDAD } from '../../utils/rotulos'
 
 // Magenta: no se confunde con ninguna otra línea del gráfico (precio, media de
 // 200 azul, media de 50 naranja, velas verdes y rojas). Variable del tema (R8),
@@ -110,7 +112,7 @@ export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio }) {
         <div key={r.nivel} className="absolute h-0"
           style={{ left: `${x0}%`, right: 0, top: `${tops[k]}%`, borderTop: `1px ${r.extremo ? 'solid' : 'dashed'} ${COLOR_FIB}`, opacity: r.extremo ? 0.9 : 0.7 }}>
           {conRotulo.has(k) && (
-            <span className={`absolute rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1 ${rotuloAdentro ? 'left-1 -translate-y-full' : 'right-full mr-1 -translate-y-1/2'}`}>
+            <span data-rotulo={PRIORIDAD.nivelFib} className={`absolute rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1 ${rotuloAdentro ? 'left-1 -translate-y-full' : 'right-full mr-1 -translate-y-1/2'}`}>
               {rotuloNivel(r.nivel, fib.dir)} · {precio(r.precio)}
             </span>
           )}
@@ -153,7 +155,7 @@ function CorteEnCurso({ e, puntos, pctX, pctY, precio }) {
   return (
     <div className="pointer-events-none absolute inset-0" aria-hidden="true">
       <div className="absolute h-0" style={{ left: `${x}%`, right: 0, top: `${pctY(corte)}%`, borderTop: `1.5px dashed ${COLOR_FIB}` }}>
-        <span className={`absolute ${suba ? 'top-0.5' : '-translate-y-full'} ${x < 70 ? 'left-1' : 'right-1'} rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1`}>
+        <span data-rotulo={PRIORIDAD.corteFib} data-rotulo-voltear="" className={`absolute ${suba ? 'top-0.5' : '-translate-y-full'} ${x < 70 ? 'left-1' : 'right-1'} rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1`}>
           {suba ? 'Cierre debajo: termina la suba' : 'Cierre encima: termina la bajada'} · {precio(corte)}
         </span>
       </div>

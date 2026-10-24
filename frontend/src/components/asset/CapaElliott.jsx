@@ -1,6 +1,7 @@
 // CapaElliott — un conteo posible de ondas de Elliott encima del gráfico.
 // ════════════════════════════════════════════════════════════════════════════
-// Se prende con el botón «Ondas de Elliott» de la leyenda (apagado de entrada).
+// Se ve de entrada; el botón «Ondas de Elliott» de la barra de herramientas del
+// gráfico (BarraGrafico.jsx) la apaga y la prende.
 // Dibuja la línea que une los picos y pozos contados (llena en el impulso,
 // cortada en la corrección), la etiqueta de cada onda (1 2 3 4 5 / A B C) en su
 // punto —arriba de un pico, abajo de un pozo— y las rayas de los precios donde
@@ -14,6 +15,7 @@
 
 import { posicion } from './CapaFibonacci'
 import { rotuloOnda, tarjetaElliott } from '../../utils/elliott'
+import { PRIORIDAD } from '../../utils/rotulos'
 
 // Índigo: no se confunde con el magenta del Fibonacci, el azul de la media de
 // 200, el naranja de la de 50 ni las velas verdes y rojas.
@@ -67,7 +69,7 @@ export default function CapaElliott({ elliott, puntos, pctX, pctY, precio }) {
         if (k > 0 && (y < 0 || y > 100)) return null
         return (
           <div key={k} className="absolute h-0" style={{ left: `${xInv}%`, right: 0, top: `${y}%`, borderTop: `1.5px dashed ${indigo(0.8)}` }}>
-            <span className={`absolute ${r.lado === 'debajo' ? 'top-0.5' : '-translate-y-full'} ${xInv < 60 ? 'left-1' : 'right-1'} rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1`}>
+            <span data-rotulo={PRIORIDAD.invalidaElliott} data-rotulo-voltear="" className={`absolute ${r.lado === 'debajo' ? 'top-0.5' : '-translate-y-full'} ${xInv < 60 ? 'left-1' : 'right-1'} rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1`}>
               Dejaría de valer · {precio(r.precio)}
             </span>
           </div>
@@ -83,7 +85,7 @@ export default function CapaElliott({ elliott, puntos, pctX, pctY, precio }) {
         }
         const arriba = o.tipo === 'pico'
         return (
-          <span key={o.onda} title={`Onda ${o.onda}: ${precio(o.precio)}`}
+          <span key={o.onda} title={`Onda ${o.onda}: ${precio(o.precio)}`} data-rotulo={PRIORIDAD.onda}
             className={`absolute -translate-x-1/2 ${arriba ? '-translate-y-[calc(100%+4px)]' : 'translate-y-1'} inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full border bg-bg-1 text-[11px] font-semibold leading-none tabular text-ink-0`}
             style={{ left: `${x}%`, top: `${y}%`, borderColor: COLOR_ELLIOTT }}>
             {o.onda}

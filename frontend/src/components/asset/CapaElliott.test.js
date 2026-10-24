@@ -1,11 +1,11 @@
 // El botón «Ondas de Elliott» de la lectura técnica, montado de verdad
 // (testing/navegadorMinimo.js) con /api/tecnico simulado en la frontera:
-//   · apagado de entrada: ni etiquetas ni tarjeta;
-//   · al prenderlo: las etiquetas 1 a 5 sobre los puntos, la raya que invalida
-//     y la tarjeta en castellano (qué es, dónde estaría hoy, qué lo invalida,
-//     la confianza, otra lectura y la aclaración);
+//   · prendido de entrada (Nico, 24/10: todo prendido y cada uno apaga lo que
+//     no quiere): las etiquetas 1 a 5 sobre los puntos, la raya que invalida y
+//     la tarjeta en castellano (qué es, dónde estaría hoy, qué lo invalida, la
+//     confianza, otra lectura y la aclaración); el botón de la barra lo apaga;
 //   · convive con el Fibonacci: los dos prendidos a la vez;
-//   · sin conteo claro: lo dice y no dibuja nada.
+//   · sin conteo claro: lo dice, no dibuja nada y el botón queda deshabilitado.
 // Y las palabras de cada estado (utils/elliott.js).
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
@@ -50,6 +50,7 @@ let montado
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
+  localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
 })
 
 const el = () => h(LecturaTecnica, { asset: 'ZZEL' })
@@ -65,13 +66,10 @@ async function tocar(nombre) {
 }
 
 describe('Ondas de Elliott en la ficha', () => {
-  it('apagado de entrada; al prenderlo, etiquetas, raya y tarjeta', async () => {
+  it('prendido de entrada: etiquetas, raya y tarjeta; el botón lo apaga', async () => {
     respuesta = DATOS(ELL)
-    const antes = await dibujar()
-    expect(antes).toContain('Ondas de Elliott')        // el botón
-    expect(antes).not.toContain('Un conteo posible')
-    expect(antes).not.toContain('Dejaría de valer')
-    const t = await tocar('Ondas de Elliott')
+    const t = await dibujar()
+    expect(buscarBoton(montado.contenedor, 'Ondas de Elliott').getAttribute('aria-pressed')).toBe('true')
     expect(t).toContain('Un conteo posible: onda 5')
     expect(t).toContain('La teoría de Elliott dice que el precio suele avanzar en 5 ondas')
     expect(t).toContain('Según un conteo posible, el precio podría estar en la onda 5, que en la teoría es la última de la suba.')
@@ -83,35 +81,41 @@ describe('Ondas de Elliott en la ficha', () => {
     expect(t).toContain('no es una recomendación')
     expect(t).toContain('Dejaría de valer · US$ 120,00')
     for (const n of ['1', '2', '3', '4']) expect(t).toContain(n)
-    // Apagarlo lo saca.
+    // Apagarlo lo saca, y volverlo a prender lo trae.
     const despues = await tocar('Ondas de Elliott')
     expect(despues).not.toContain('Un conteo posible')
+    expect(despues).not.toContain('Dejaría de valer')
+    expect(buscarBoton(montado.contenedor, 'Ondas de Elliott').getAttribute('aria-pressed')).toBe('false')
+    expect(await tocar('Ondas de Elliott')).toContain('Dejaría de valer · US$ 120,00')
   })
 
   it('convive con el Fibonacci: los dos prendidos', async () => {
-    // El Fibonacci arranca prendido (ficha-tecnica d6ae4dc3); Elliott, no.
+    // Los dos arrancan prendidos (24/10).
     respuesta = DATOS(ELL)
-    const antes = await dibujar()
-    expect(antes).toContain('Sin tramo claro')           // la tarjeta del Fibonacci, de entrada
-    expect(antes).not.toContain('Un conteo posible')
-    const t = await tocar('Ondas de Elliott')
+    const t = await dibujar()
+    expect(t).toContain('Sin tramo claro')               // la tarjeta del Fibonacci
     expect(t).toContain('Un conteo posible: onda 5')
-    expect(t).toContain('Sin tramo claro')
   })
 
   it('sin conteo claro: lo dice y no dibuja nada', async () => {
     respuesta = DATOS({ disponible: false, motivo: 'sin_conteo', n_pivote: 3, ruedas: 252 })
-    await dibujar()
-    const t = await tocar('Ondas de Elliott')
+    const t = await dibujar()
     expect(t).toContain('Sin conteo claro')
-    expect(t).toContain('no se fuerza uno')
     expect(t).not.toContain('Dejaría de valer')
+    // El botón queda, deshabilitado; tocarlo dice por qué (en el celular no hay globo).
+    const boton = buscarBoton(montado.contenedor, 'Ondas de Elliott')
+    expect(boton.getAttribute('aria-disabled')).toBe('true')
+    expect(boton.getAttribute('aria-pressed')).toBeNull()
+    const aviso = await tocar('Ondas de Elliott')
+    expect(aviso).toContain('Ondas de Elliott: Con los picos y pozos de este activo no aparece ningún conteo')
+    expect(aviso).not.toContain('Dejaría de valer')
   })
 
-  it('una respuesta vieja sin el campo no muestra el botón', async () => {
+  it('una respuesta vieja sin el campo: el botón deshabilitado y nada dibujado', async () => {
     respuesta = DATOS(undefined)
     const t = await dibujar()
-    expect(t).not.toContain('Ondas de Elliott')
+    expect(buscarBoton(montado.contenedor, 'Ondas de Elliott').getAttribute('aria-disabled')).toBe('true')
+    expect(t).not.toContain('Un conteo posible')
   })
 })
 
@@ -187,8 +191,7 @@ describe('la zona de fin de onda se sacó (23/10: acertaba menos que una franja 
     expect(t.zona).toBeUndefined()
     expect(Object.values(t).join(' ')).not.toMatch(/terminar acá|podría terminar entre|franja/)
     respuesta = DATOS(conZona)
-    await dibujar()
-    const vis = await tocar('Ondas de Elliott')
+    const vis = await dibujar()
     expect(vis).toContain('Un conteo posible: onda 5')            // el conteo sigue
     expect(vis).toContain('Dejaría de valer · US$ 120,00')
     expect(vis).not.toMatch(/terminar acá|acertó/)
