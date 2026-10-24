@@ -3,7 +3,9 @@
 // gráfico como los manda el navegador:
 //   · línea horizontal: un click a la altura del precio;
 //   · línea de tendencia: dos clicks, también hacia adelante (el espacio vacío);
-//   · se guardan por activo y moneda y vuelven al volver a la ficha;
+//   · se guardan en la CUENTA por activo y moneda (en todos los dispositivos) y
+//     vuelven al volver a la ficha; lo borrado en otro dispositivo no revive;
+//     si el guardado falla, lo dice y lo sube la próxima vez;
 //   · quedan en su día con el zoom;
 //   · tocar una línea la elige y se borra (botón o tecla); borrar todas pregunta antes.
 // Las cuentas (dónde se guardan, el día de cada punto) están en utils/dibujos.test.js.
@@ -39,8 +41,21 @@ const EVENTOS = {
   ],
 }
 
+// La cuenta, del otro lado de la frontera: GET y PUT de /tecnico/ZZEV/dibujos
+// guardan acá, por moneda. `cuenta.caida` = el guardado falla (sin conexión).
+const cuenta = { usd: [], ars: [], caida: false, puts: 0 }
+const monedaDe = (ruta) => (ruta.includes('moneda=ars') ? 'ars' : 'usd')
 vi.mock('../../utils/api', () => ({
-  api: { get: vi.fn((ruta) => Promise.resolve(ruta.includes('/eventos') ? EVENTOS : DATOS)) },
+  api: {
+    get: vi.fn((ruta) => Promise.resolve(ruta.includes('/dibujos') ? { dibujos: cuenta[monedaDe(ruta)] }
+      : ruta.includes('/eventos') ? EVENTOS : DATOS)),
+    put: vi.fn((ruta, body) => {
+      cuenta.puts++
+      if (cuenta.caida) return Promise.reject(new Error('sin conexión'))
+      cuenta[monedaDe(ruta)] = body.dibujos
+      return Promise.resolve({ ok: true })
+    }),
+  },
 }))
 
 let LecturaTecnica
@@ -56,6 +71,7 @@ afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
   localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
+  Object.assign(cuenta, { usd: [], ars: [], caida: false, puts: 0 })
 })
 const el = () => h(LecturaTecnica, { asset: 'ZZEV', ...props })
 async function dibujar(p = {}) {
@@ -116,7 +132,9 @@ const status = () => todos(montado.contenedor, n => n.getAttribute?.('role') ===
 
 const linea = () => todos(montado.contenedor, n => n.nodeName === 'LINE' && n.getAttribute?.('data-dibujo') != null)
 const boton = (id) => todos(montado.contenedor, n => n.nodeName === 'BUTTON' && n.getAttribute?.('data-capa') === id)[0]
-const guardados = (moneda = 'usd') => JSON.parse(localStorage.getItem(`rendi_dibujos:ZZEV:${moneda}`) || '[]')
+// Lo que quedó guardado en la cuenta (el servidor simulado).
+const guardados = (moneda = 'usd') => cuenta[moneda]
+const copia = (moneda = 'usd') => JSON.parse(localStorage.getItem(`rendi_dibujos:ZZEV:${moneda}`) || 'null')
 // El precio a una altura del gráfico (250 px de alto), con la escala que muestra:
 // se lee del rótulo que la línea horizontal pone en la columna de precios.
 const num = (t) => Number(t.replace(/\./g, '').replace(',', '.'))
@@ -260,5 +278,49 @@ describe('elegir y borrar', () => {
     expect(boton('tendencia').getAttribute('aria-pressed')).toBe('true')
     await usar('medir')
     expect(boton('tendencia').getAttribute('aria-pressed')).toBe('false')
+  })
+})
+
+describe('en todos tus dispositivos', () => {
+  const H = { id: 'h1', tipo: 'horizontal', precio: 150 }
+
+  it('lo dibujado en otro dispositivo aparece (está en la cuenta, no en este navegador)', async () => {
+    cuenta.usd = [H]
+    await dibujar()
+    expect(linea()).toHaveLength(1)
+    expect(copia()).toEqual({ pendiente: false, dibujos: [H] })   // queda la copia, ya en la cuenta
+  })
+
+  it('lo borrado en otro dispositivo no revive desde la copia de este navegador', async () => {
+    localStorage.setItem('rendi_dibujos:ZZEV:usd', JSON.stringify({ pendiente: false, dibujos: [H] }))
+    cuenta.usd = []
+    await dibujar()
+    expect(linea()).toHaveLength(0)
+    expect(cuenta.puts).toBe(0)
+    expect(copia()).toBeNull()
+  })
+
+  it('lo dibujado en este navegador antes del guardado en la cuenta se sube solo', async () => {
+    localStorage.setItem('rendi_dibujos:ZZEV:usd', JSON.stringify([H]))      // la copia vieja: la lista sola
+    await dibujar()
+    expect(linea()).toHaveLength(1)
+    expect(guardados()).toEqual([H])
+    expect(copia().pendiente).toBe(false)
+  })
+
+  it('si el guardado falla, lo dice, queda pendiente y se sube al volver', async () => {
+    cuenta.caida = true
+    await dibujar()
+    await usar('horizontal'); await clickEn(500, 100)
+    expect(linea()).toHaveLength(1)
+    expect(texto(montado.contenedor)).toContain('No se pudieron guardar tus dibujos en tu cuenta: por ahora quedaron en este navegador.')
+    expect(guardados()).toEqual([])
+    expect(copia().pendiente).toBe(true)
+    await montado.desmontar()
+    cuenta.caida = false
+    await dibujar()                                                          // otra visita, con conexión
+    expect(guardados()).toHaveLength(1)
+    expect(copia().pendiente).toBe(false)
+    expect(linea()).toHaveLength(1)
   })
 })

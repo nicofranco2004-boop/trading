@@ -3,7 +3,8 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest'
 import { instalarNavegadorMinimo } from '../testing/navegadorMinimo'
 import {
-  DIBUJOS_MAXIMOS, diaDelPunto, dibujoTocado, dibujoValido, dibujosGuardados, distanciaASegmento, guardarDibujos, puntoDelDia,
+  DIBUJOS_MAXIMOS, copiaLocal, diaDelPunto, dibujoTocado, dibujoValido, dibujosGuardados, distanciaASegmento, guardarDibujos,
+  marcarSubidos, puntoDelDia,
 } from './dibujos'
 
 beforeAll(() => { instalarNavegadorMinimo() })
@@ -19,8 +20,8 @@ describe('dónde se guardan', () => {
     expect(dibujosGuardados('AAPL', 'usd')).toEqual([horizontal, tendencia])
     expect(dibujosGuardados('AAPL', 'ars')).toEqual([])
     expect(dibujosGuardados('GGAL', 'usd')).toEqual([])
-    // Sin ninguno, la clave se borra (no queda un [] guardado).
-    guardarDibujos('AAPL', 'usd', [])
+    // Sin ninguno y ya en la cuenta, la clave se borra (no queda un [] guardado).
+    guardarDibujos('AAPL', 'usd', [], false)
     expect(localStorage.getItem('rendi_dibujos:AAPL:usd')).toBeNull()
   })
 
@@ -49,6 +50,32 @@ describe('dónde se guardan', () => {
     const muchos = Array.from({ length: DIBUJOS_MAXIMOS + 5 }, (_, k) => ({ ...horizontal, id: `h${k}` }))
     guardarDibujos('AAPL', 'usd', muchos)
     expect(dibujosGuardados('AAPL', 'usd')).toHaveLength(DIBUJOS_MAXIMOS)
+  })
+})
+
+describe('la copia del navegador y la cuenta', () => {
+  it('un cambio sin subir queda pendiente; subido, deja de estarlo', () => {
+    guardarDibujos('AAPL', 'usd', [horizontal])
+    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [horizontal], pendiente: true })
+    marcarSubidos('AAPL', 'usd', [horizontal])
+    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [horizontal], pendiente: false })
+  })
+
+  it('borrar todo sin poder subirlo también queda pendiente (si no, la cuenta los traería de vuelta)', () => {
+    guardarDibujos('AAPL', 'usd', [])
+    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [], pendiente: true })
+  })
+
+  it('si mientras subía se dibujó otra cosa, la copia sigue pendiente', () => {
+    guardarDibujos('AAPL', 'usd', [horizontal])
+    guardarDibujos('AAPL', 'usd', [horizontal, tendencia])     // el segundo cambio, antes de que vuelva el primero
+    marcarSubidos('AAPL', 'usd', [horizontal])                  // volvió el primero
+    expect(copiaLocal('AAPL', 'usd').pendiente).toBe(true)
+  })
+
+  it('la copia de antes del guardado en la cuenta (la lista sola) cuenta como pendiente: se sube', () => {
+    localStorage.setItem('rendi_dibujos:AAPL:usd', JSON.stringify([horizontal]))
+    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [horizontal], pendiente: true })
   })
 })
 

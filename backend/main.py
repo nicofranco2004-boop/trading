@@ -6,8 +6,8 @@ from starlette.concurrency import iterate_in_threadpool
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.exception_handlers import http_exception_handler
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from pydantic import BaseModel, field_validator, Field
-from typing import Any, Optional, List
+from pydantic import BaseModel, field_validator, model_validator, Field
+from typing import Any, Literal, Optional, List
 import sqlite3, os, secrets, time, hashlib, hmac, json, threading, asyncio
 from contextlib import contextmanager
 import dberrors
@@ -2570,6 +2570,23 @@ def init_db():
                 encendido INTEGER NOT NULL DEFAULT 0,
                 cambiado_at TEXT,
                 cambiado_por INTEGER             -- users.id del admin
+            );
+        """)
+
+        # Los dibujos a mano del gráfico técnico (líneas de tendencia y
+        # horizontales, como TradingView), de cada persona por activo y moneda,
+        # para verlos en todos sus dispositivos. `datos` es la lista entera en
+        # JSON (la pantalla la manda completa: frontend/src/utils/dibujos.js).
+        # `user_id` con ese nombre: el borrado de cuenta la barre solo. Tabla
+        # nueva, sin ALTER: segura en una base ya creada.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS dibujos_grafico (
+                user_id INTEGER NOT NULL,
+                asset TEXT NOT NULL,             -- el símbolo de la ficha: 'AAPL', 'GGAL'
+                moneda TEXT NOT NULL,            -- 'usd' | 'ars': en cada una los precios son otros
+                datos TEXT NOT NULL,             -- JSON: [{id, tipo, precio | a, b}]
+                updated_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (user_id, asset, moneda)
             );
         """)
 
@@ -11577,6 +11594,103 @@ def get_tecnico_eventos(asset: str, moneda: str = "usd", local: int = 0,
                 velas, balances, dividendos, "ars" if empresa.endswith(".BA") else "usd"),
             "incompleto": incompleto,
         }
+
+
+# ─── Dibujos a mano en el gráfico de la ficha ────────────────────────────────
+# Líneas de tendencia y horizontales, como TradingView (Nico, 24/10: «que se
+# guarden por activo», «en todos los dispositivos»). La pantalla manda la lista
+# ENTERA cada vez que cambia (frontend/src/utils/dibujos.js): no hay que mezclar
+# nada acá. Son de quien los dibuja: un asesor mirando la cuenta de un cliente
+# guarda los suyos, no le escribe al cliente.
+
+_DIBUJOS_MAXIMOS = 60
+
+
+class _PuntoDibujo(BaseModel):
+    d: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")      # el día
+    mas: int = Field(ge=0, le=5000)                     # días de mercado después (hacia adelante)
+    precio: float = Field(gt=0, allow_inf_nan=False)
+
+
+class _Dibujo(BaseModel):
+    id: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    tipo: Literal["tendencia", "horizontal"]
+    precio: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    a: Optional[_PuntoDibujo] = None
+    b: Optional[_PuntoDibujo] = None
+
+    @model_validator(mode="after")
+    def _completo(self):
+        if self.tipo == "horizontal" and self.precio is None:
+            raise ValueError("una línea horizontal necesita su precio")
+        if self.tipo == "tendencia" and (self.a is None or self.b is None):
+            raise ValueError("una línea de tendencia necesita sus dos puntos")
+        return self
+
+
+class DibujosIn(BaseModel):
+    dibujos: List[_Dibujo] = Field(max_length=_DIBUJOS_MAXIMOS)
+
+
+def _dueno_de_los_dibujos(request: Request, uid: int) -> int:
+    # El uid AUTENTICADO (lo dejó get_effective_user), no el del cliente que se mira.
+    return getattr(request.state, "rendi_auth_uid", None) or uid
+
+
+@app.get("/api/tecnico/{asset}/dibujos")
+def get_tecnico_dibujos(asset: str, request: Request, moneda: str = "usd",
+                        uid: int = Depends(get_effective_user)):
+    """Tus dibujos en el gráfico de este activo, en esta moneda. Sin ninguno: []."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    moneda = "ars" if moneda == "ars" else "usd"
+    dueno = _dueno_de_los_dibujos(request, uid)
+    with db_abierta() as conn:
+        fila = conn.execute(
+            "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+            (dueno, sym, moneda)).fetchone()
+    if not fila:
+        return {"dibujos": []}
+    # Lo guardado se vuelve a validar: una fila rota no rompe la ficha.
+    try:
+        crudo = json.loads(fila[0])
+    except (TypeError, ValueError):
+        return {"dibujos": []}
+    dibujos = []
+    for d in crudo if isinstance(crudo, list) else []:
+        try:
+            dibujos.append(_Dibujo.model_validate(d).model_dump(exclude_none=True))
+        except Exception:
+            continue
+    return {"dibujos": dibujos[:_DIBUJOS_MAXIMOS]}
+
+
+@app.put("/api/tecnico/{asset}/dibujos")
+def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: str = "usd",
+                        uid: int = Depends(get_effective_user)):
+    """Reemplaza tus dibujos de este activo en esta moneda por la lista que
+    llega (la entera). Una lista vacía los borra."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    moneda = "ars" if moneda == "ars" else "usd"
+    dueno = _dueno_de_los_dibujos(request, uid)
+    lista = [d.model_dump(exclude_none=True) for d in data.dibujos]
+    with db_abierta() as conn:
+        if lista:
+            conn.execute(
+                """INSERT INTO dibujos_grafico (user_id, asset, moneda, datos)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(user_id, asset, moneda) DO UPDATE
+                     SET datos = excluded.datos,
+                         updated_at = datetime('now')""",
+                (dueno, sym, moneda, json.dumps(lista, separators=(",", ":"))))
+        else:
+            conn.execute("DELETE FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+                         (dueno, sym, moneda))
+        conn.commit()
+    return {"ok": True, "dibujos": len(lista)}
 
 
 @app.get("/api/admin/velas")

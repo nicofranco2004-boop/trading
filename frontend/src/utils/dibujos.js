@@ -2,9 +2,11 @@
 // tendencia (de un punto a otro) y líneas horizontales (un precio). Pedido de
 // Nico, 24/10: «que vos con eso marcás tendencias», «que se guarden por activo».
 // ════════════════════════════════════════════════════════════════════════════
-// Se guardan en ESTE navegador, por activo y por moneda (en pesos y en dólares
-// los precios son otros): `rendi_dibujos:AAPL:usd`. Todo el guardado está acá,
-// para poder pasarlo al servidor sin tocar la pantalla.
+// Se guardan en tu CUENTA, por activo y por moneda (en pesos y en dólares los
+// precios son otros), para verlos en todos tus dispositivos (Nico, 24/10):
+// GET/PUT /api/tecnico/{activo}/dibujos (tabla `dibujos_grafico`). Además queda
+// una copia en el navegador (`rendi_dibujos:AAPL:usd`): aparecen al instante,
+// antes de que conteste el servidor, y no se pierden si el guardado falla.
 //
 // Un punto se guarda por DÍA y precio, no por lugar en la pantalla, así queda
 // en su lugar con el zoom, con las velas semanales y cuando llegan días nuevos:
@@ -13,6 +15,7 @@
 // «n días de mercado después del último día que había».
 
 import { indiceDeFecha } from './tecnico'
+import { api } from './api'
 
 const clave = (asset, moneda) => `rendi_dibujos:${String(asset || '').toUpperCase()}:${moneda === 'ars' ? 'ars' : 'usd'}`
 export const DIBUJOS_MAXIMOS = 60
@@ -28,26 +31,68 @@ export function dibujoValido(x) {
   return false
 }
 
-/** Los dibujos guardados de un activo en una moneda. Sin almacenamiento o con un valor roto: ninguno. */
-export function dibujosGuardados(asset, moneda) {
+/**
+ * La copia de este navegador: { dibujos, pendiente }. `pendiente`: hay un
+ * cambio hecho acá que todavía no llegó a tu cuenta (el guardado falló, o se
+ * dibujó antes de que existiera el guardado en la cuenta: la copia vieja era la
+ * lista sola). Sin pendiente, lo de la cuenta manda: si borraste todo desde el
+ * celular, la copia de la compu no lo vuelve a subir.
+ * Sin almacenamiento o con un valor roto: ninguno.
+ */
+export function copiaLocal(asset, moneda) {
   try {
-    const g = JSON.parse(localStorage.getItem(clave(asset, moneda)) || '[]')
-    return Array.isArray(g) ? g.filter(dibujoValido).slice(0, DIBUJOS_MAXIMOS) : []
+    const g = JSON.parse(localStorage.getItem(clave(asset, moneda)) || 'null')
+    const lista = Array.isArray(g) ? g : Array.isArray(g?.dibujos) ? g.dibujos : []
+    return { dibujos: lista.filter(dibujoValido).slice(0, DIBUJOS_MAXIMOS), pendiente: Array.isArray(g) || !!g?.pendiente }
   } catch {
-    return []
+    return { dibujos: [], pendiente: false }
   }
 }
 
-export function guardarDibujos(asset, moneda, lista) {
+/** Los dibujos de la copia de este navegador. */
+export const dibujosGuardados = (asset, moneda) => copiaLocal(asset, moneda).dibujos
+
+export function guardarDibujos(asset, moneda, lista, pendiente = true) {
   try {
-    if (lista.length) localStorage.setItem(clave(asset, moneda), JSON.stringify(lista.slice(0, DIBUJOS_MAXIMOS)))
-    else localStorage.removeItem(clave(asset, moneda))
+    if (!pendiente && !lista.length) localStorage.removeItem(clave(asset, moneda))
+    else localStorage.setItem(clave(asset, moneda), JSON.stringify({ pendiente, dibujos: lista.slice(0, DIBUJOS_MAXIMOS) }))
   } catch { /* sin almacenamiento: el dibujo vive mientras la página esté abierta */ }
+}
+
+/** Ya llegó a la cuenta: si la copia sigue siendo ESA lista, deja de estar pendiente. */
+export function marcarSubidos(asset, moneda, lista) {
+  if (JSON.stringify(copiaLocal(asset, moneda).dibujos) === JSON.stringify(lista)) guardarDibujos(asset, moneda, lista, false)
 }
 
 /** El precio a guardar: el del toque viene con 15 decimales. 4 decimales y,
  *  abajo de 1, 6 cifras significativas (como backend/estructura.precio_redondo). */
 export const precioRedondo = (x) => (Math.abs(x) >= 1 ? Math.round(x * 1e4) / 1e4 : Number(x.toPrecision(6)))
+
+const ruta = (asset, moneda) => `/tecnico/${encodeURIComponent(String(asset || '').toUpperCase())}/dibujos?moneda=${moneda === 'ars' ? 'ars' : 'usd'}`
+
+/** Los de tu cuenta. null si no se pudieron traer (sin conexión): se sigue con la copia. */
+export async function dibujosDelServidor(asset, moneda) {
+  try {
+    const r = await api.get(ruta(asset, moneda))
+    return Array.isArray(r?.dibujos) ? r.dibujos.filter(dibujoValido).slice(0, DIBUJOS_MAXIMOS) : null
+  } catch {
+    return null
+  }
+}
+
+// Los guardados van en fila, uno detrás del otro por activo y moneda: la lista
+// va entera, y si dos salieran juntos el viejo podría llegar después y pisar
+// al nuevo.
+const enFila = {}
+/** Guarda la lista entera en tu cuenta. Resuelve true si quedó guardada. */
+export function subirDibujos(asset, moneda, lista) {
+  const k = clave(asset, moneda)
+  const sigue = (enFila[k] || Promise.resolve(true))
+    .then(() => api.put(ruta(asset, moneda), { dibujos: lista.slice(0, DIBUJOS_MAXIMOS) }))
+    .then(() => true, () => false)
+  enFila[k] = sigue
+  return sigue
+}
 
 let contador = 0
 export const idNuevo = () => `d${Date.now().toString(36)}${(contador++).toString(36)}`

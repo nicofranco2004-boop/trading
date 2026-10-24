@@ -37,7 +37,10 @@ import CapaElliott, { COLOR_ELLIOTT, TarjetaElliott, fechaDelConteo, preciosDelC
 import { api } from '../../utils/api'
 import { factorDeFechas, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
 import { PRIORIDAD, taparRotulos } from '../../utils/rotulos'
-import { DIBUJOS_MAXIMOS, diaDelPunto, dibujoTocado, dibujosGuardados, guardarDibujos, idNuevo, precioRedondo, puntoDelDia } from '../../utils/dibujos'
+import {
+  DIBUJOS_MAXIMOS, copiaLocal, diaDelPunto, dibujoTocado, dibujosDelServidor, dibujosGuardados, guardarDibujos, idNuevo,
+  marcarSubidos, precioRedondo, puntoDelDia, subirDibujos,
+} from '../../utils/dibujos'
 import {
   RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, moverVentana, RUEDAS_MINIMAS,
@@ -152,11 +155,41 @@ export default function LecturaTecnica({
     setElegido(null)
   }, [moneda])
   // Tus dibujos, por moneda (en pesos y en dólares los precios son otros), y el
-  // que está elegido para borrarlo.
+  // que está elegido para borrarlo. Se muestra al instante la copia de este
+  // navegador; los de tu cuenta llegan después y mandan (utils/dibujos.js).
   const [dibujos, setDibujos] = useState({})
   const [elegido, setElegido] = useState(null)
   const misDibujos = dibujos[moneda] ?? dibujosGuardados(asset, moneda)
-  const cambiarDibujos = (lista) => { guardarDibujos(asset, moneda, lista); setDibujos(x => ({ ...x, [moneda]: lista })) }
+  // Las monedas en las que ya dibujaste algo en esta visita: si los de la
+  // cuenta llegan después, no pisan lo recién dibujado.
+  const tocados = useRef(new Set())
+  const cambiarDibujos = (lista) => {
+    tocados.current.add(moneda)
+    guardarDibujos(asset, moneda, lista)
+    setDibujos(x => ({ ...x, [moneda]: lista }))
+    const m = moneda
+    subirDibujos(asset, m, lista).then(ok => {
+      if (ok) marcarSubidos(asset, m, lista)
+      else setAviso('No se pudieron guardar tus dibujos en tu cuenta: por ahora quedaron en este navegador. Se vuelve a intentar la próxima vez que abras este gráfico.')
+    })
+  }
+  useEffect(() => {
+    let vivo = true
+    const m = moneda
+    dibujosDelServidor(asset, m).then(deLaCuenta => {
+      if (!vivo || deLaCuenta == null || tocados.current.has(m)) return
+      const local = copiaLocal(asset, m)
+      if (local.pendiente) {
+        // Un cambio hecho acá que no llegó a la cuenta (el guardado falló, o
+        // se dibujó antes de que existiera el guardado en la cuenta): se sube.
+        subirDibujos(asset, m, local.dibujos).then(ok => { if (ok) marcarSubidos(asset, m, local.dibujos) })
+        return
+      }
+      guardarDibujos(asset, m, deLaCuenta, false)
+      setDibujos(x => ({ ...x, [m]: deLaCuenta }))
+    })
+    return () => { vivo = false }
+  }, [asset, moneda])
   const borrarDibujo = (id) => { cambiarDibujos(misDibujos.filter(d => d.id !== id)); setElegido(null) }
   // ¿Borrar todos? Se pregunta antes: es trabajo de la persona y no se deshace.
   const [borrarTodos, setBorrarTodos] = useState(false)

@@ -181,7 +181,7 @@ describe('LecturaTecnica', () => {
     montado = await montar(el())
     for (let i = 0; i < 4; i++) await montado.redibujar(el())
     const todos = () => api.get.mock.calls.map(c => c[0]).filter(r => r.startsWith('/tecnico'))
-    const pedidos = () => todos().filter(r => !r.includes('/eventos'))
+    const pedidos = () => todos().filter(r => !r.includes('/eventos') && !r.includes('/dibujos'))
     expect(pedidos()).toEqual(['/tecnico/GGAL?moneda=usd&local=1'])
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos'))
     for (let i = 0; i < 4; i++) await montado.redibujar(el())
