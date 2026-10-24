@@ -345,16 +345,17 @@ def persist_batch(
                 # Asegurar que existe cash position USD en el sibling (con 0 si
                 # no hay), así el resumen de saldos del import la muestra aunque
                 # ninguna fila la mueva. (Mover el saldo ya crea la caja si falta.)
-                cash_exists = conn.execute(
-                    "SELECT 1 FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-                    (uid, sibling["name"]),
-                ).fetchone()
-                if not cash_exists:
-                    conn.execute(
-                        """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
-                           VALUES (?,?,?,1,0)""",
-                        (uid, sibling["name"], asset_de_caja(sibling["currency"])),
-                    )
+                #
+                # 🔴 VA POR `efectivo.asegurar_caja` Y NO POR UN «¿existe? → la
+                # inserto» PROPIO. Lo que había acá leía primero y escribía
+                # después, que es el lado que NINGÚN motor hace cumplir, y
+                # `positions` no tiene índice único que rechace la segunda fila.
+                # Tampoco lo tapaba el índice único de `brokers`: en este punto
+                # el sibling '· USD' ya existe, así que no hay nada que frene al
+                # que llega segundo. Confirmar un import mientras entra el
+                # primer depósito al sibling dejaba DOS cajas, y como todo lee
+                # «la más vieja», la plata de la segunda no la movía nadie más.
+                _efectivo.asegurar_caja(conn, uid, sibling["name"], sibling["currency"])
 
         # Aplicar routing per-row. Cuando muteamos tx.broker, también
         # actualizamos la fila en import_normalized_tx para que el revert

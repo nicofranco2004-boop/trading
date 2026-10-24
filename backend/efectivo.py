@@ -109,12 +109,68 @@ def tomar_saldo(conn, uid: int, broker: str) -> None:
 
 def caja(conn, uid: int, broker: str):
     """La fila de efectivo del broker (o None). Si hubiera dos, siempre la misma:
-    la más vieja. Para leer el saldo VIGENTE, llamar antes a `tomar_saldo`."""
+    la más vieja.
+
+    🔴 PIDE EL TURNO ELLA MISMA, y por eso ESCRIBE (un UPDATE que no cambia
+    nada). Antes decía «para leer el saldo VIGENTE, llamar antes a
+    `tomar_saldo`» y lo dejaba en manos del que llamara. **2 de los 4 que la
+    llamaban no lo hacían**, y uno de esos dos decide si se puede borrar un
+    depósito:
+
+      `main.py` `_frenar_si_la_plata_del_deposito_no_esta` leía el saldo acá,
+      decidía que alcanzaba, y 50 líneas después debitaba permitiendo negativo.
+      En el medio corre `_foto_contable`, que el propio código mide en 0,8 a
+      1,65 segundos. Un retiro por `/api/cash/flow` en esa ventana dejaba el
+      efectivo en rojo con la compra viva y el capital aportado en 0 — que es
+      EXACTAMENTE el estado que esa función existe para impedir y que Nico vio
+      en la app el 10/10/2026.
+
+      Y no lo tapaba el turno de escritura que el borrado toma antes
+      (`UPDATE users SET tier=tier`): en SQLite eso agarra la base entera, pero
+      en Postgres sólo la fila de `users`, y `/api/cash/flow` no la escribe
+      nunca. Por eso el bug era de Postgres y la suite de SQLite no lo veía.
+
+    POR QUÉ EL TURNO VA ACÁ Y NO EN CADA LLAMADOR: porque un contrato que hay
+    que recordar se olvida, y acá se olvidó en la mitad de los casos. Cuesta un
+    UPDATE de cero filas por llamada; los cuatro llamadores la usan una vez,
+    ninguno adentro de un bucle.
+
+    ⚠️ Entonces NO la llames desde un camino que sólo lee y no quiere escribir
+    (un GET): usá el SELECT directo si alguna vez hace falta eso.
+    """
+    tomar_saldo(conn, uid, broker)
     return conn.execute(
         "SELECT id, invested, tc_compra FROM positions "
         "WHERE user_id=? AND broker=? AND is_cash=1 ORDER BY id LIMIT 1",
         (uid, broker),
     ).fetchone()
+
+
+def asegurar_caja(conn, uid: int, broker: str, moneda: str):
+    """Deja creada la fila de efectivo del broker si falta. Devuelve la fila.
+
+    🔴 LA ÚNICA PUERTA PARA CREARLA A PROPÓSITO. Había TRES caminos que la
+    creaban y dos leían antes de escribir —«¿ya existe? no → la inserto»—, que
+    por la regla del repo es el lado que **ningún** motor hace cumplir: el que
+    lee primero. Y `positions` **no tiene ningún índice único** (verificado en
+    los dos esquemas), así que nada abajo rechaza la segunda fila.
+
+    Consecuencia medida de dos filas de caja: como todo el código lee «la más
+    vieja» (`ORDER BY id LIMIT 1`), la plata de la segunda no la mueve nadie
+    nunca más. Es un depósito que desaparece del saldo.
+
+    Acá el `caja()` de arriba pide el turno antes de mirar, así que el que llega
+    segundo espera, ve la fila del primero y no inserta nada.
+    """
+    fila = caja(conn, uid, broker)
+    if fila is not None:
+        return fila
+    conn.execute(
+        """INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity)
+           VALUES (?,?,?,1,0,0)""",
+        (uid, broker, asset_de_caja(moneda)),
+    )
+    return caja(conn, uid, broker)
 
 
 def _precio_vigente(fila, saldo: float) -> Optional[float]:
