@@ -493,14 +493,18 @@ class FichaTest(unittest.TestCase):
         f = self._ficha("AAPL", "usd")
         p = f["puntos"][-1]
         self.assertIsNotNone(p["adx"])
-        # Cada punto del gráfico (2 años) lleva el ADX y el Squeeze de la
-        # historia ENTERA guardada, el de SU día: no los de la ventana dibujada
-        # (el ADX arrastra memoria) ni corridos un día.
+        # Cada punto del gráfico lleva el ADX y el Squeeze de la historia ENTERA
+        # guardada, el de SU día: no los de la ventana dibujada (el ADX arrastra
+        # memoria) ni corridos un día. El gráfico trae los 3 años guardados
+        # (d6ae4dc3): arranca en la primera vela, y ahí el ADX va vacío (todavía
+        # no tiene memoria), no en 0 ni con el valor de otro día.
         with main.db_abierta() as conn:
             velas = tecnico.serie(conn, "AAPL", "usd")["velas"]
         d, s = tecnico.adx(velas), tecnico.squeeze(velas)
         por_dia = {v["date"]: i for i, v in enumerate(velas)}
-        self.assertGreater(por_dia[f["puntos"][0]["d"]], 200, "el gráfico arranca después de mucha historia")
+        self.assertEqual(f["puntos"][0]["d"], velas[0]["date"], "el gráfico trae toda la historia guardada")
+        self.assertIsNone(f["puntos"][0]["adx"])
+        self.assertGreater(len(f["puntos"]), 700)
         for q in f["puntos"]:
             i = por_dia[q["d"]]
             self.assertEqual(q["adx"], round(d["adx"][i], 2) if d["adx"][i] is not None else None, q["d"])
