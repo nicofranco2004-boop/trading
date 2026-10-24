@@ -20,7 +20,8 @@ Las velas llegan ya corregidas por `velas_diarias.serie` (cambios de ratio de un
 CEDEAR y precios rotos de un día, que Yahoo no corrige): acá no se corrige nada.
 
 EL FIBONACCI (picos, pozos, tramos de suba y de bajada) vive en
-`estructura.py`; acá sólo se le pasa la misma serie que va al gráfico.
+`estructura.py`, y las ONDAS DE ELLIOTT (sobre esos mismos picos y pozos) en
+`elliott.py`; acá sólo se les pasa la misma serie que va al gráfico.
 
 QUÉ NO HACE. No sabe nada del usuario: tu precio promedio y tus compras se
 dibujan en la pantalla con lo que ya tiene la ficha.
@@ -29,6 +30,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import elliott
 import estructura
 from velas_diarias import DIAS_GUARDADOS
 
@@ -511,4 +513,7 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         # Fibonacci del último tramo (estructura.py), sobre TODA la historia
         # guardada de esta misma serie: los niveles quedan en la moneda del gráfico.
         "fibonacci": estructura.fibonacci(velas),
+        # Un conteo POSIBLE de ondas de Elliott (elliott.py) sobre los mismos
+        # picos y pozos del Fibonacci y la misma serie.
+        "elliott": elliott.conteo(velas),
     }
