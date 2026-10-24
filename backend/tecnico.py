@@ -552,16 +552,10 @@ def para_la_cartera(conn, activos: list) -> list:
     `DIAS_CAMBIOS` días. Sin velas: `disponible` False, nunca se inventa."""
     from fechas import hoy_art_date
     desde = (hoy_art_date() - timedelta(days=DIAS_CAMBIOS)).isoformat()
-    out, vistos = [], set()
-    for asset, local in activos:
-        a = (asset or "").strip().upper()
-        clave = (a, bool(local))
-        if not a or clave in vistos:
-            continue
-        vistos.add(clave)
-        velas = serie(conn, a, "usd", bool(local))["velas"]
+    out = []
+    for a, local, velas in _series_en_dolares(conn, activos):
         if not velas:
-            out.append({"asset": a, "local": bool(local), "disponible": False})
+            out.append({"asset": a, "local": local, "disponible": False})
             continue
         cierres = [v["close"] for v in velas]
         medias = {200: media(cierres, 200), 50: media(cierres, 50)}
@@ -570,6 +564,65 @@ def para_la_cartera(conn, activos: list) -> list:
             c = _cruce_de_media(velas, cierres, medias[n], desde)
             if c:
                 cambios.append({"media": n, **c})
-        out.append({"asset": a, "local": bool(local), "disponible": True,
+        out.append({"asset": a, "local": local, "disponible": True,
                     "lectura": lectura(velas, medias[50], medias[200]), "cambios": cambios})
+    return out
+
+
+def _series_en_dolares(conn, activos: list):
+    """(asset, local, velas en dólares) de cada activo de `activos` [(asset,
+    local)], una vez cada uno. La serie es la de la ficha (`serie`, con la
+    misma marca `local`)."""
+    vistos = set()
+    for asset, local in activos:
+        a = (asset or "").strip().upper()
+        clave = (a, bool(local))
+        if not a or clave in vistos:
+            continue
+        vistos.add(clave)
+        yield a, bool(local), serie(conn, a, "usd", bool(local))["velas"]
+
+
+# ─── Tu lista (cartera + watchlist) con su lectura técnica ──────────────────
+
+# La línea chica de cada fila: los cierres de los últimos 3 meses corridos.
+DIAS_LINEA = 92
+# «Último cambio»: el más reciente de este último año (la cuenta de qué es un
+# cambio es `cambios_desde`, la de «qué cambió esta semana»; acá no se repite).
+DIAS_ULTIMO_CAMBIO = DIAS_ANIO
+
+
+def _ultimo_cambio(velas: list):
+    """El cambio más reciente del último año, de `cambios_desde` (la cuenta
+    ÚNICA de cruces, la de la pieza «qué cambió esta semana»). None si no hubo
+    o si esa cuenta todavía no está en esta rama (se mezcla aparte)."""
+    contar = globals().get("cambios_desde")
+    if contar is None or not velas:
+        return None
+    desde = (date.fromisoformat(velas[-1]["date"]) - timedelta(days=DIAS_ULTIMO_CAMBIO)).isoformat()
+    cambios = contar(velas, desde) or []
+    return max(cambios, key=lambda c: c["fecha"]) if cambios else None
+
+
+def para_la_lista(conn, activos: list) -> list:
+    """La lectura en DÓLARES de lo que tenés y lo que seguís, para «Tu lista,
+    con su lectura técnica». `activos`: [(asset, local)] como en la Cartera.
+
+    Cada uno trae la MISMA `lectura` que su ficha y que la radiografía (de ahí
+    salen las palabras de las dos tendencias, la fuerza, el ADX y la distancia
+    al máximo del año), `linea`: los cierres de los últimos 3 meses para la
+    línea chica de la fila, y `ultimo_cambio` (ver `_ultimo_cambio`). Sin
+    velas: `disponible` False, nunca se inventa. Cuánto pesa cada uno lo pone
+    la pantalla, con la valuación de la Cartera."""
+    out = []
+    for a, local, velas in _series_en_dolares(conn, activos):
+        if not velas:
+            out.append({"asset": a, "local": local, "disponible": False})
+            continue
+        cierres = [v["close"] for v in velas]
+        linea = [{"d": v["date"], "c": estructura.precio_redondo(v["close"])}
+                 for v in velas[_desde_dias(velas, DIAS_LINEA):]]
+        out.append({"asset": a, "local": local, "disponible": True,
+                    "lectura": lectura(velas, media(cierres, 50), media(cierres, 200)),
+                    "linea": linea, "ultimo_cambio": _ultimo_cambio(velas)})
     return out

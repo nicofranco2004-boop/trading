@@ -11435,6 +11435,20 @@ class CarteraTecnicaIn(BaseModel):
     activos: List[ActivoTecnicoIn] = Field(default_factory=list, max_length=MAX_ACTIVOS_CARTERA)
 
 
+def _lecturas_tecnicas(body: CarteraTecnicaIn, leer) -> dict:
+    """Separa lo que es un ticker de lo que no (un fondo con espacios en el
+    nombre) y lee lo válido con `leer(conn, [(asset, local)])`. Lo inválido
+    vuelve como «sin lectura», sin tirar abajo el resto del pedido."""
+    validos, invalidos = [], []
+    for a in body.activos:
+        sym = (a.asset or "").strip().upper()
+        (validos if _SYMBOL_RE.match(sym) else invalidos).append((sym, a.local))
+    with db_abierta() as conn:
+        lecturas = leer(conn, validos)
+    return {"lecturas": lecturas + [{"asset": s, "local": bool(l), "disponible": False}
+                                    for s, l in invalidos]}
+
+
 @app.post("/api/tecnico/cartera")
 def post_tecnico_cartera(body: CarteraTecnicaIn, uid: int = Depends(get_effective_user)):
     """La lectura técnica en dólares de varios activos de una vez, para la
@@ -11443,14 +11457,18 @@ def post_tecnico_cartera(body: CarteraTecnicaIn, uid: int = Depends(get_effectiv
     (un fondo con espacios en el nombre) vuelve como «sin lectura», sin tirar
     abajo el resto del pedido."""
     import tecnico
-    validos, invalidos = [], []
-    for a in body.activos:
-        sym = (a.asset or "").strip().upper()
-        (validos if _SYMBOL_RE.match(sym) else invalidos).append((sym, a.local))
-    with db_abierta() as conn:
-        lecturas = tecnico.para_la_cartera(conn, validos)
-    return {"lecturas": lecturas + [{"asset": s, "local": bool(l), "disponible": False}
-                                    for s, l in invalidos]}
+    return _lecturas_tecnicas(body, tecnico.para_la_cartera)
+
+
+@app.post("/api/tecnico/lista")
+def post_tecnico_lista(body: CarteraTecnicaIn, uid: int = Depends(get_effective_user)):
+    """«Tu lista, con su lectura técnica» (inicio → Watchlist → «Ver como
+    tablero»): lo que tenés y lo que seguís, en dólares (tecnico.para_la_lista).
+    La pantalla manda cada activo con la marca `local` de la ficha. Mismo tope y
+    misma regla que /api/tecnico/cartera: un símbolo que no es un ticker vuelve
+    «sin lectura» sin tirar abajo el resto."""
+    import tecnico
+    return _lecturas_tecnicas(body, tecnico.para_la_lista)
 
 
 @app.get("/api/admin/velas")
