@@ -2,7 +2,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // Un botón por capa (volumen, promedios, Fibonacci, Elliott, RSI, fuerza de la
 // tendencia, balances, tus compras, tu precio) y por herramienta (medir,
-// agrandar), con su ícono y su nombre. Reemplaza a la leyenda de «chips» de
+// dibujar), con su ícono y su nombre. Reemplaza a la leyenda de «chips» de
 // abajo del gráfico: Fibonacci y Elliott ahí no se notaban (Nico, 24/10).
 //
 // Todo arranca PRENDIDO (pedido de Nico: «que estén todas puestas de manera

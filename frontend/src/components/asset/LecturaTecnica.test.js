@@ -69,6 +69,15 @@ function botonDe(id) {
   }
   return null
 }
+function porEtiqueta(parte) {
+  const pila = [montado.contenedor]
+  while (pila.length) {
+    const n = pila.shift()
+    if ((n.getAttribute?.('aria-label') || '').startsWith(parte)) return n
+    pila.push(...(n.childNodes || []))
+  }
+  return null
+}
 function contar(pred) {
   let k = 0
   const pila = [montado.contenedor]
@@ -221,27 +230,21 @@ describe('LecturaTecnica', () => {
     expect(texto(montado.contenedor)).toContain('Cada vela es una semana')
   })
 
-  it('Agrandar pone el gráfico a pantalla completa; Achicar y Esc lo devuelven', async () => {
+  it('siempre ampliado, dentro de la ficha: sin Agrandar/Achicar ni pantalla completa (Nico, 24/10)', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     await dibujar({ pnlPctUsd: 0.1 })
-    const otra = () => montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
-    const seccion = () => buscar(montado.contenedor, 'section')
-    expect(seccion().getAttribute('role')).toBeNull()
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Agrandar'))
-    await otra()
-    expect(seccion().getAttribute('role')).toBe('dialog')
-    expect(seccion().getAttribute('class')).toContain('fixed')
-    expect(document.body.style.overflow).toBe('hidden')   // la página de atrás no se mueve
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Achicar'))
-    await otra()
-    expect(seccion().getAttribute('role')).toBeNull()
-    expect(document.body.style.overflow).not.toBe('hidden')
-    // Esc también achica.
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Agrandar'))
-    await otra()
+    const seccion = buscar(montado.contenedor, 'section')
+    expect(seccion.getAttribute('role')).toBeNull()
+    expect(seccion.getAttribute('class')).not.toContain('fixed')
+    expect(buscarBoton(montado.contenedor, 'Agrandar')).toBeNull()
+    expect(buscarBoton(montado.contenedor, 'Achicar')).toBeNull()
+    // El alto del modo ampliado de antes en compu; en el celular, uno que no se come la pantalla.
+    const area = porEtiqueta('Precio con su promedio')
+    expect(area.getAttribute('class')).toContain('sm:h-[58vh]')
+    expect(area.getAttribute('class')).toMatch(/(^| )h-\[42vh\]/)
+    // Esc ya no hace nada raro (no hay nada que achicar) y la página no queda trabada.
     await enActo(() => { window.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Escape' })) })
-    await otra()
-    expect(seccion().getAttribute('role')).toBeNull()
+    expect(document.body.style.overflow).not.toBe('hidden')
   })
 
   it('el volumen: barras abajo del precio y un botón para apagarlas; sin datos, no aparece', async () => {

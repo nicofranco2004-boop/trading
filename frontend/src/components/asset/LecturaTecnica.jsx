@@ -29,7 +29,7 @@
 // TradingView), con su tarjeta «Fuerza de la tendencia».
 
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { LineChart, Maximize2, Minimize2, RotateCcw, Ruler, Trash2 } from 'lucide-react'
+import { LineChart, RotateCcw, Ruler, Trash2 } from 'lucide-react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import BarraGrafico, { CAPAS_DE_FABRICA, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica } from './BarraGrafico'
 import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
@@ -215,18 +215,6 @@ export default function LecturaTecnica({
   // de 2 años). El análisis (Fibonacci, giros) se hace sobre las diarias.
   const [intervalo, setIntervalo] = useState('dia')
   const elegirRango = (r) => { setRango(r); setVentana(null) }
-  // Agrandado: el gráfico ocupa toda la pantalla (la ficha es angosta y el
-  // gráfico quedaba chico con mucho negro alrededor, Nico 22/10). Esc o el
-  // mismo botón lo achican; mientras tanto la página de atrás no se mueve.
-  const [grande, setGrande] = useState(false)
-  useEffect(() => {
-    if (!grande) return
-    const antes = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    const tecla = (e) => { if (e.key === 'Escape') setGrande(false) }
-    window.addEventListener('keydown', tecla)
-    return () => { document.body.style.overflow = antes; window.removeEventListener('keydown', tecla) }
-  }, [grande])
 
   // Dólares al abrir; pesos recién la primera vez que se tocan (la mayoría no
   // los mira y es otra cuenta en el servidor). Otro activo = otro componente
@@ -273,7 +261,7 @@ export default function LecturaTecnica({
 
   const marco = (hijos, conPesos = datos.ars?.disponible !== false) => (
     <Marco moneda={moneda} setMoneda={setMoneda} rango={ventana ? null : rango} setRango={elegirRango}
-      conPesos={conPesos} grande={grande} conTuyo={!!primera}>{hijos}</Marco>
+      conPesos={conPesos} conTuyo={!!primera}>{hijos}</Marco>
   )
   // Cargando: el marco con sus botones queda quieto y el gris va adentro, con la
   // altura del gráfico ya reservada (antes desaparecía todo y la página saltaba).
@@ -419,7 +407,7 @@ export default function LecturaTecnica({
       <div className="flex flex-col sm:flex-row gap-1.5 sm:gap-3">
         <BarraGrafico onAviso={setAviso} grupos={botonesDeLaBarra({
           actual, ver, alternar, tipo, setTipo, losEventos, eventosCargando: eventos[moneda] === undefined,
-          misMarcas, promedio, moneda, pnlPctUsd, lineaSinTc, medir, setMedir, grande, setGrande,
+          misMarcas, promedio, moneda, pnlPctUsd, lineaSinTc, medir, setMedir,
           dibujar, setDibujar, cuantosDibujos: misDibujos.length, pedirBorrarTodos: () => { setElegido(null); setBorrarTodos(true) },
           deFabrica, volverDeFabrica, nVista, acercar,
         })} />
@@ -494,7 +482,7 @@ export default function LecturaTecnica({
             </div>
           )}
           <Grafico puntos={puntos} huecos={huecos} moneda={moneda} promedio={ver.prom ? promedio : null}
-            marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo} grande={grande}
+            marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo}
             fibonacci={ver.fib ? actual.fibonacci : null} elliott={ver.ell ? actual.elliott : null} onZoom={zoom} onMover={mover}
             onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rango}|${tipo}|${intervalo}`}
             eventos={ver.eventos ? losEventos : []}
@@ -519,7 +507,7 @@ export default function LecturaTecnica({
         </div>
       </div>
 
-      <div className={`mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2 ${grande ? 'xl:grid-cols-3' : ''}`}>
+      <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
         {ver.fib && actual.fibonacci && (
           <TarjetaFibonacci fib={actual.fibonacci} precio={(x) => fmtPrecio(x, moneda)} fecha={fechaCorta} />
         )}
@@ -554,7 +542,7 @@ export default function LecturaTecnica({
               {periodoDeMovimiento(actual.movimiento)}, en {moneda === 'usd' ? 'dólares' : 'pesos'}
             </span>
           </div>
-          <div className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${grande ? 'xl:grid-cols-4' : ''}`}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
             {cuanto.map(t => <Tarjeta key={t.id} t={t} />)}
           </div>
           <p className="text-[11.5px] text-ink-2 mt-2 leading-relaxed">
@@ -581,13 +569,12 @@ function periodoDeMovimiento(m) {
   return dias >= 700 ? 'Últimos 2 años' : `Desde el ${fechaCorta(m.desde)}`
 }
 
-function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, grande = false, conTuyo = false, children }) {
-  // Agrandado = la misma sección, fija sobre toda la pantalla (no es otra vista:
-  // mismos datos, mismos botones; R6). Línea/velas y Agrandar están en la barra
+function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, conTuyo = false, children }) {
+  // Siempre del tamaño que antes era «Agrandar» y dentro de la ficha (Nico,
+  // 24/10: «que sea automáticamente ampliado»; achicarlo no servía). Línea/velas están en la barra
   // de herramientas del gráfico (BarraGrafico.jsx).
   return (
-    <section aria-label="Análisis técnico" role={grande ? 'dialog' : undefined} aria-modal={grande || undefined}
-      className={grande ? 'fixed inset-0 z-[70] overflow-y-auto bg-bg-0 px-3 py-3 sm:px-6 sm:py-5' : 'mb-5'}>
+    <section aria-label="Análisis técnico" className="mb-5">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <div className="text-[12.5px] text-ink-2 font-medium">Análisis técnico</div>
         <div className="flex flex-wrap items-center gap-2">
@@ -623,7 +610,7 @@ function Segmento({ etiqueta, valor, alElegir, opciones }) {
  */
 function botonesDeLaBarra({
   actual, ver, alternar, tipo, setTipo, losEventos, eventosCargando, misMarcas, promedio, moneda,
-  pnlPctUsd, lineaSinTc, medir, setMedir, grande, setGrande, deFabrica, volverDeFabrica, nVista, acercar,
+  pnlPctUsd, lineaSinTc, medir, setMedir, deFabrica, volverDeFabrica, nVista, acercar,
   dibujar, setDibujar, cuantosDibujos, pedirBorrarTodos,
 }) {
   const capa = (id, nombre, icono, sinDatos, onClick) => ({
@@ -700,9 +687,6 @@ function botonesDeLaBarra({
         onClick: pedirBorrarTodos },
     ],
     [
-      { id: 'grande', nombre: grande ? 'Achicar' : 'Agrandar', icono: grande ? <Minimize2 size={18} /> : <Maximize2 size={18} />,
-        estado: grande ? 'Vuelve a la ficha (también con Esc)' : 'El gráfico a pantalla completa',
-        onClick: () => setGrande(!grande) },
       { id: 'fabrica', nombre: 'Volver a lo de fábrica', icono: <RotateCcw size={17} />,
         estado: deFabrica ? 'Ya está todo como viene: prendido y en línea' : 'Prende todo de nuevo y vuelve a la línea',
         onClick: volverDeFabrica },
@@ -894,7 +878,7 @@ function rotulosDeMeses(puntos) {
   })
 }
 
-function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', grande = false, fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null }) {
+function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null }) {
   const conVelas = tipo === 'velas'
   // Los lugares del ancho: los días más el aire vacío de la derecha.
   const lugares = puntos.length + huecos
@@ -1210,7 +1194,9 @@ function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tip
         {/* Con la escala vertical a mano, lo que queda fuera se recorta (como en
             TradingView); en automático no hace falta y el punto del último
             precio puede asomar sobre el borde. */}
-        <div ref={ref} className={`relative mr-[72px] ${grande ? 'h-[58vh] min-h-64' : 'h-56 sm:h-64'} select-none touch-pan-y cursor-crosshair ${precioMano ? 'overflow-hidden' : ''}`}
+        {/* Siempre ampliado (Nico, 24/10). En el celular, un alto que deja ver
+            la barra y el RSI sin comerse la pantalla; en compu, el de antes con «Agrandar». */}
+        <div ref={ref} className={`relative mr-[72px] h-[42vh] min-h-56 sm:h-[58vh] sm:min-h-64 select-none touch-pan-y cursor-crosshair ${precioMano ? 'overflow-hidden' : ''}`}
           onMouseDown={e => { arrastre.current = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY } }}
           onMouseUp={e => {
             // Un click sin arrastrar, en el modo medir, marca ese día.
@@ -1533,7 +1519,7 @@ function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tip
           <span>Fuerza (RSI)</span>
         </div>
         <div className="relative mt-1.5">
-          <div className={`relative mr-[72px] ${grande ? 'h-24' : 'h-14'}`}>
+          <div className="relative mr-[72px] h-14 sm:h-24">
             <svg viewBox={`0 0 ${W} ${H_RSI}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
               <rect x="0" y="0" width={W} height={H_RSI * (1 - RSI_ESTIRADO / 100)} fill={v('rendi-pos-fill')} fillOpacity="0.09" />
               <rect x="0" y={H_RSI * (1 - RSI_CASTIGADO / 100)} width={W} height={H_RSI * (RSI_CASTIGADO / 100)} fill={v('rendi-neg-fill')} fillOpacity="0.09" />
@@ -1567,7 +1553,7 @@ function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tip
             </span>
           </div>
           <div className="relative mt-1.5">
-            <div className={`relative mr-[72px] ${grande ? 'h-24' : 'h-14'}`} role="img"
+            <div className="relative mr-[72px] h-14 sm:h-24" role="img"
               aria-label={`Fuerza de la tendencia (ADX)${ultimo?.adx != null ? `: ${fmtAdx(ultimo.adx)}` : ''}, con la línea de ${ADX_CLAVE}.`}>
               <svg viewBox={`0 0 ${W} ${H_ADX}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
                 <rect x="0" y="0" width={W} height={fuerza.yClave} fill={v('rendi-accent')} fillOpacity="0.07" />
@@ -1597,7 +1583,7 @@ function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tip
               <span className="w-1.5 h-2.5 rounded-xs bg-rendi-neg-fill ml-1.5" aria-hidden="true" />de la baja
             </span>
           </div>
-          <div className={`relative mr-[72px] ${grande ? 'h-16' : 'h-10'} mt-1`} role="img"
+          <div className="relative mr-[72px] h-10 sm:h-16 mt-1" role="img"
             aria-label={`Barras del Squeeze: verdes a favor de la suba, rojas a favor de la baja.${ultimo?.squeeze ? ` Hoy, ${ultimo.squeeze > 0 ? 'verde' : 'roja'}.` : ''}`}>
             <svg viewBox={`0 0 ${W} ${H_SQUEEZE}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
               <line x1="0" x2={W} y1={H_SQUEEZE / 2} y2={H_SQUEEZE / 2} stroke={v('chart-grid')} strokeWidth="1" vectorEffect="non-scaling-stroke" />

@@ -10,7 +10,7 @@
 // LecturaTecnica.test.js, CapaElliott.test.js y CapaFibonacci.test.js.
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
-import { instalarNavegadorMinimo, montar, texto, clic, enActo, medidas } from '../../testing/navegadorMinimo'
+import { instalarNavegadorMinimo, montar, texto, clic, medidas } from '../../testing/navegadorMinimo'
 
 const puntos = Array.from({ length: 300 }, (_, i) => {
   const d = new Date(Date.UTC(2025, 9, 1) + i * 86400000).toISOString().slice(0, 10)
@@ -142,7 +142,7 @@ describe('la barra de herramientas del gráfico', () => {
       linea: 'Línea', velas: 'Velas', vol: 'Volumen', s200: 'Promedio 200 días', s50: 'Promedio 50 días',
       fib: 'Fibonacci', ell: 'Ondas de Elliott', rsi: 'RSI', fuerza: 'Fuerza de la tendencia',
       eventos: 'Balances y dividendos', marcas: 'Tus compras y ventas', prom: 'Tu precio promedio',
-      medir: 'Medir entre dos puntos', grande: 'Agrandar', fabrica: 'Volver a lo de fábrica',
+      medir: 'Medir entre dos puntos', fabrica: 'Volver a lo de fábrica',
     }
     for (const [id, nombre] of Object.entries(nombres)) expect(texto(boton(id)), id).toContain(nombre)
     expect(texto(boton('vol'))).toContain('Prendido. Tocá para apagarlo.')
@@ -188,19 +188,15 @@ describe('la barra de herramientas del gráfico', () => {
     for (const id of CAPAS) expect(prendido(id), id).toBe('true')
   })
 
-  it('medir y agrandar son herramientas: se prenden, se usan y se apagan', async () => {
+  it('medir es una herramienta: se prende, se usa y se apaga; no hay botón de agrandar (siempre ampliado)', async () => {
     await dibujar()
     await tocar('medir')
     expect(prendido('medir')).toBe('true')
     expect(texto(montado.contenedor)).toContain('Tocá cualquier punto del gráfico para empezar a medir')
     await tocar('medir')
     expect(texto(montado.contenedor)).not.toContain('Tocá cualquier punto del gráfico')
-    await tocar('grande')
-    expect(nodos(n => n.nodeName === 'SECTION')[0].getAttribute('role')).toBe('dialog')
-    expect(texto(boton('grande'))).toContain('Achicar')
-    await tocar('grande')
-    expect(nodos(n => n.nodeName === 'SECTION')[0].getAttribute('role')).toBeNull()
-    // Ni medir ni agrandar se guardan: la próxima vez el gráfico arranca normal.
+    expect(boton('grande')).toBeNull()
+    // Medir no se guarda: la próxima vez el gráfico arranca normal.
     expect(localStorage.getItem('rendi_grafico_capas')).toBeNull()
   })
 
@@ -249,13 +245,5 @@ describe('la barra de herramientas del gráfico', () => {
     } finally {
       medidas(null)
     }
-  })
-
-  it('Esc achica el gráfico agrandado desde la barra', async () => {
-    await dibujar()
-    await tocar('grande')
-    await enActo(() => { window.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Escape' })) })
-    for (let i = 0; i < 2; i++) await montado.redibujar(el())
-    expect(nodos(n => n.nodeName === 'SECTION')[0].getAttribute('role')).toBeNull()
   })
 })
