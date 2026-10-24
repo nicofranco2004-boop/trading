@@ -68,6 +68,9 @@ TOPE_TANDA_SEG = 120.0
 # Tope de la corrida entera: lo que no entró queda para la noche siguiente (los
 # que nunca se bajaron van primero).
 TOPE_CORRIDA_SEG = 15 * 60
+# El S&P 500 se guarda siempre, lo tenga alguien o no: es contra lo que la ficha
+# compara cuánto se mueve un papel en un día normal (movimiento.py).
+SP500 = "^GSPC"
 
 # ─── Qué activos se siguen ───────────────────────────────────────────────────
 
@@ -186,6 +189,7 @@ def _seguimiento(conn):
         sym = (r['symbol'] or '').upper()
         _sumar(_yahoo_de(sym, r['asset_type'], sym.endswith('.BA'), yahoo_de_cripto, cedears))
 
+    tickers.add(SP500)
     tickers.discard('')
     tickers.discard(None)
     return tickers, pares

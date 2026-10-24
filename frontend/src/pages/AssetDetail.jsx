@@ -32,6 +32,7 @@ import { ChipDelActivo } from '../components/FueraDeHorario'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { operacionesEnUsd } from '../utils/assetPnl'
 import { esCobro } from '../utils/tradeStats'
+import { ultimaFotoApta } from '../utils/cuantoSeMueve'
 
 // ─── Matriz de valuación por lote (reusa la lógica de PositionDetailMobile) ──
 // Costo económico del lote, en SU moneda = lo pagado + las comisiones de compra.
@@ -155,6 +156,9 @@ export default function AssetDetail() {
   const [prices, setPrices] = useState({})
   const [dolar, setDolar] = useState(null)
   const [operations, setOperations] = useState([])
+  // El valor de toda tu cartera (la última foto que sirve como medición), para
+  // decir qué parte de tu cartera es este papel en «Cuánto se mueve».
+  const [valorCartera, setValorCartera] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { loadAll() /* eslint-disable-next-line */ }, [asset])
@@ -162,12 +166,14 @@ export default function AssetDetail() {
   async function loadAll() {
     setLoading(true)
     try {
-      const [pos, bkrs, dol, ops] = await Promise.all([
+      const [pos, bkrs, dol, ops, fotos] = await Promise.all([
         api.get('/positions').catch(() => []),
         api.get('/brokers').catch(() => []),
         api.get('/dolar').catch(() => null),
         api.get('/operations').catch(() => []),
+        api.get('/snapshots?days=10').catch(() => []),
       ])
+      setValorCartera(ultimaFotoApta(fotos)?.total_value ?? null)
       const myLots = (pos || []).filter(p => (p.asset || '').toUpperCase() === asset)
       setPositions(myLots)
       setBrokers(bkrs || [])
@@ -330,6 +336,10 @@ export default function AssetDetail() {
           } : null}
           costoPesos={costoEnPesos(agg.lots)}
           accionLocal={esAccionLocal(asset, agg.lots)}
+          // «En tu cartera» de «Cuánto se mueve»: lo que vale hoy lo tuyo (y el
+          // dólar de la pantalla, para decirlo en pesos) y el total de tu cartera.
+          tenencia={agg.lots.length > 0 && agg.valueUsd > 0 ? { valorUsd: agg.valueUsd, tc: tcValuacion } : null}
+          valorCartera={valorCartera}
         />
       )}
 
