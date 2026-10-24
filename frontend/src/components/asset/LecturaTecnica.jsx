@@ -408,6 +408,7 @@ export default function LecturaTecnica({
         <BarraGrafico onAviso={setAviso} grupos={botonesDeLaBarra({
           actual, ver, alternar, tipo, setTipo, losEventos, eventosCargando: eventos[moneda] === undefined,
           misMarcas, promedio, moneda, pnlPctUsd, lineaSinTc, medir, setMedir,
+          tenes: pnlPctUsd != null, operaste: pnlPctUsd != null || lotes.length > 0 || operaciones.length > 0,
           dibujar, setDibujar, cuantosDibujos: misDibujos.length, pedirBorrarTodos: () => { setElegido(null); setBorrarTodos(true) },
           deFabrica, volverDeFabrica, nVista, acercar,
         })} />
@@ -606,11 +607,14 @@ function Segmento({ etiqueta, valor, alElegir, opciones }) {
  * Los botones de la barra de herramientas (BarraGrafico.jsx), en grupos: el
  * tipo de gráfico; lo que va sobre el precio; los paneles de abajo; lo tuyo y
  * lo de la empresa; las herramientas. Una capa sin datos para este activo va
- * con `sinDatos` (el porqué): el botón queda, deshabilitado.
+ * con `sinDatos` (el porqué): el botón queda, deshabilitado. Lo tuyo es la
+ * excepción: si nunca operaste el activo no hay «Tus compras y ventas», y si
+ * hoy no lo tenés no hay «Tu precio promedio» (Nico, 24/10: en la ficha de un
+ * activo que no tenés no aparece nada tuyo).
  */
 function botonesDeLaBarra({
   actual, ver, alternar, tipo, setTipo, losEventos, eventosCargando, misMarcas, promedio, moneda,
-  pnlPctUsd, lineaSinTc, medir, setMedir, deFabrica, volverDeFabrica, nVista, acercar,
+  pnlPctUsd, lineaSinTc, tenes, operaste, medir, setMedir, deFabrica, volverDeFabrica, nVista, acercar,
   dibujar, setDibujar, cuantosDibujos, pedirBorrarTodos,
 }) {
   const capa = (id, nombre, icono, sinDatos, onClick) => ({
@@ -632,7 +636,7 @@ function botonesDeLaBarra({
   const sinProm = promedio != null ? null
     : moneda === 'usd' && lineaSinTc ? 'A alguna de tus compras le falta el dólar de ese día: sin él, la línea no sería cierta.'
       : moneda === 'ars' && pnlPctUsd != null ? 'En pesos sólo se dibuja si compraste todo en pesos y el gráfico es el de la Bolsa de acá.'
-        : 'No tenés este activo en tu cartera.'
+        : 'Falta el resultado de tu compra para ubicar la línea.'
   return [
     // Línea o velas: uno de los dos, como dos botones (el elegido, prendido).
     [
@@ -663,9 +667,9 @@ function botonesDeLaBarra({
       capa('eventos', 'Balances y dividendos', <span className="inline-flex gap-px"><Letra tipo="balance" /><Letra tipo="dividendo" /></span>,
         eventosCargando ? 'Cargando los balances y dividendos…'
           : losEventos.length ? null : 'No hay balances ni dividendos de este activo (pasa con las criptos, los índices y los fondos).'),
-      capa('marcas', 'Tus compras y ventas', <IconoPuntos />, misMarcas.length ? null : 'No hay compras ni ventas tuyas de este activo.'),
-      capa('prom', 'Tu precio promedio', <IconoLinea color={COLOR.promedio} punteado />, sinProm),
-    ],
+      operaste && capa('marcas', 'Tus compras y ventas', <IconoPuntos />, misMarcas.length ? null : 'No hay compras ni ventas tuyas de este activo.'),
+      tenes && capa('prom', 'Tu precio promedio', <IconoLinea color={COLOR.promedio} punteado />, sinProm),
+    ].filter(Boolean),
     [
       { id: 'medir', nombre: 'Medir entre dos puntos', icono: <Ruler size={18} />, activo: medir.activo, herramienta: true,
         estado: medir.activo ? 'Tocá dos puntos del gráfico' : 'Cuánto sube o baja entre dos puntos, también hacia adelante',

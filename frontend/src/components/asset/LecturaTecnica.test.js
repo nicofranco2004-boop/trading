@@ -290,8 +290,19 @@ describe('LecturaTecnica', () => {
     const t = await dibujar({ pnlPctUsd: null })
     expect(t).not.toContain('Contra lo que pagaste')
     expect(t).not.toContain('Tu precio·')
-    expect(botonDe('prom').getAttribute('aria-disabled')).toBe('true')
-    expect(texto(botonDe('prom'))).toContain('No tenés este activo en tu cartera')
+    // Sin tenerlo ni haberlo operado, la barra no muestra nada tuyo (Nico, 24/10).
+    expect(botonDe('prom')).toBeNull()
+    expect(botonDe('marcas')).toBeNull()
+    expect(t).not.toContain('Tu precio promedio')
+    expect(t).not.toContain('Tus compras y ventas')
+  })
+
+  it('vendiste todo: tus compras y ventas siguen, tu precio promedio no', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD }
+    const ultimo = USD.puntos[USD.puntos.length - 10].d
+    await dibujar({ pnlPctUsd: null, operaciones: [{ date: ultimo, type: 'SELL', quantity: 1 }] })
+    expect(botonDe('marcas')).not.toBeNull()
+    expect(botonDe('prom')).toBeNull()
   })
 
   it('fuerza de la tendencia: panel del ADX con el Squeeze y la tarjeta con su frase destacada', async () => {
