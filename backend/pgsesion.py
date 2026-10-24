@@ -79,6 +79,45 @@ def conectar(dsn: str, **kw):
         conn.close()
         raise
 
+# ── ¿Esta conexión habla Postgres? ───────────────────────────────────────────
+# 🔴 SE PREGUNTA POR LA CONEXIÓN Y NO POR LA BANDERA GLOBAL, y esto costó 13
+# tests rojos que SQLite no podía ver.
+#
+# La primera versión preguntaba `main.USANDO_PG`, que es una bandera de proceso:
+# dice «este proceso arrancó con DATABASE_URL puesta». Pero el turno se pide
+# sobre UNA conexión concreta, y las dos cosas no son lo mismo. Hay código que
+# abre una base SQLite propia aunque el proceso tenga DATABASE_URL —los tests
+# con `sqlite3.connect(":memory:")` son el caso evidente, y un script suelto es
+# el caso que importa—. Ahí la bandera decía «Postgres», el turno mandaba
+# `pg_advisory_xact_lock` por una conexión de SQLite, y el resultado era:
+#
+#     sqlite3.OperationalError: no such function: pg_advisory_xact_lock
+#
+# O sea: reventaba, no fallaba callado. Lo encontró la suite de Postgres con 13
+# rojos en `test_ai_plan`, `test_ai_quota`, `test_alerts` y
+# `test_efectivo_una_puerta`, y la de SQLite no podía verlo porque allá la
+# bandera está en falso y el turno no se pide nunca.
+#
+# La pregunta correcta es sobre el objeto que se tiene en la mano. Y falla
+# CERRADA: si no se reconoce el tipo, no se pide el candado. Pedirlo donde no
+# corresponde revienta; no pedirlo donde sí corresponde deja el tope como estaba
+# antes de todo esto — malo, pero no una caída.
+_MODULOS_QUE_HABLAN_POSTGRES = ("pgshim", "psycopg")
+
+
+def habla_postgres(conn) -> bool:
+    """¿ESTA conexión habla Postgres? Mirando el objeto, no una bandera global.
+
+    `pgshim.Connection` (la que usa toda la app) y una `psycopg` pelada dicen
+    que sí; `sqlite3.Connection` dice que no. Cualquier otra cosa dice que no,
+    a propósito: ver el comentario de arriba.
+    """
+    try:
+        return type(conn).__module__.split(".")[0] in _MODULOS_QUE_HABLAN_POSTGRES
+    except Exception:
+        return False
+
+
 # ── El turno: serializar un chequeo de tope ──────────────────────────────────
 
 def turno_exclusivo(conn, clave: int, clave2: int = None) -> None:
@@ -126,12 +165,8 @@ def turno_exclusivo(conn, clave: int, clave2: int = None) -> None:
     En SQLite no hace NADA, a propósito: allá el motor ya serializa y agregar un
     candado propio sólo sumaría una forma nueva de trabarse.
     """
-    try:
-        import main as _m
-        if not getattr(_m, "USANDO_PG", False):
-            return                      # SQLite ya serializa: no hay nada que pedir
-    except Exception:
-        return
+    if not habla_postgres(conn):
+        return                          # SQLite ya serializa: no hay nada que pedir
     if clave2 is None:
         conn.execute("SELECT pg_advisory_xact_lock(?)", (int(clave),))
     else:
