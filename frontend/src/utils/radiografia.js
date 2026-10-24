@@ -193,9 +193,10 @@ export function radiografia(lotes = [], valorDe, indice, extra = [], hoy = hoyIS
   const cambios = []
   for (const n of [200, 50]) {
     for (const a of conLectura) {
-      const c = (a.x.cambios || []).find(c => c.media === n)
+      // `cambios` sale de tecnico.cambios_desde (la cuenta de «Tus señales»).
+      const c = (a.x.cambios || []).find(c => c.tipo === `media${n}`)
       if (!c) continue
-      const arriba = c.direccion === 'arriba'
+      const arriba = c.sentido === 'arriba'
       cambios.push({
         asset: a.nombre, tono: arriba ? 'pos' : 'neg',
         texto: `${arriba ? 'pasó arriba' : 'quedó abajo'} de su promedio de ${n} días (${cuando(c.fecha)})`,

@@ -90,8 +90,8 @@ describe('radiografia, con la valuación de la Cartera', () => {
 
   it('los tres grupos suman el total de la Cartera (más los plazos fijos)', () => {
     const indice = indexarLecturas([
-      lec('NVDA', false, ALCISTA, [{ media: 200, direccion: 'arriba', fecha: '2026-10-20' }]),
-      lec('KO', false, { ...BAJISTA, rsi: 24 }, [{ media: 50, direccion: 'abajo', fecha: '2026-10-21' }]),
+      lec('NVDA', false, ALCISTA, [{ tipo: 'media200', sentido: 'arriba', fecha: '2026-10-20' }]),
+      lec('KO', false, { ...BAJISTA, rsi: 24 }, [{ tipo: 'media50', sentido: 'abajo', fecha: '2026-10-21' }]),
     ])
     const r = radiografia(POS, valorDe, indice, [{ nombre: 'plazos fijos', valor: 1000 }])
     expect(r.total).toBeCloseTo(totalCartera + 1000, 9)
