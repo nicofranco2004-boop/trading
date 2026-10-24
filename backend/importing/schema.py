@@ -345,9 +345,9 @@ class NormalizedTx:
         # importada» y el confirm la volvía a cargar (medido: reimportar el mismo
         # archivo dejaba 20 en vez de 10).
         if (self.asset_type or "").upper() not in ("CRYPTO", "FIAT", "FUND"):
-            from tickers_renombrados import ticker_vigente
-            self.asset_symbol = ticker_vigente(self.asset_symbol)
-            self.asset_symbol_raw = ticker_vigente(self.asset_symbol_raw)
+            from tickers_renombrados import ticker_importado
+            self.asset_symbol = ticker_importado(self.asset_symbol)
+            self.asset_symbol_raw = ticker_importado(self.asset_symbol_raw)
 
     def to_db_dict(self) -> Dict[str, Any]:
         return asdict(self)

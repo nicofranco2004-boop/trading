@@ -31,6 +31,7 @@ from .mapper import Mapping, apply_mapping, inspect_csv as mapper_inspect
 from .cash_sim import simulate as simulate_cash
 from .excel import to_csv_text, is_xlsx, xlsx_to_csv, is_html_table, html_table_to_csv
 from . import seed as _seed
+from tickers_renombrados import codigos_anteriores   # GOLD → B: la huella vieja
 import renombre_broker as _renombre_broker   # los nombres anteriores de cada broker
 
 log = logging.getLogger(__name__)
@@ -326,14 +327,26 @@ def duplicate_row_indices_by_count(counts: "Counter", txs, already_skipped=(), *
         if t.row_index in skip:
             continue
         nombres = [None] + list(anteriores.get((t.broker or "").strip().lower(), ()))
-        for nombre in nombres:
-            fp = _row_fingerprint(t, nombre)
-            if budget.get(fp, 0) > 0:
-                budget[fp] -= 1; out.add(t.row_index); break
-            lfp = _row_fingerprint_legacy(t, nombre)
-            if lfp != fp and budget.get(lfp, 0) > 0:
-                budget[lfp] -= 1; out.add(t.row_index); break
+        # Lo mismo con el TICKER: una fila guardada como GOLD hoy entra como B
+        # (tickers_renombrados.py), y sin probar el código viejo la compra y su
+        # débito de caja se cargaban otra vez al re-importar el mismo archivo.
+        viejos = codigos_anteriores(t.asset_symbol)
+        if _dup_de(t, nombres, viejos, budget):
+            out.add(t.row_index)
     return out
+
+
+def _dup_de(t, nombres, viejos, budget) -> bool:
+    """¿Alguna variante de la huella de `t` tiene presupuesto? Consume una."""
+    for nombre in nombres:
+        fp = _row_fingerprint(t, nombre)
+        variantes = [fp, _row_fingerprint_legacy(t, nombre)]
+        variantes += [_fp_from(t, v, nombre) for v in viejos]
+        for i, v in enumerate(variantes):
+            if (i == 0 or v != fp) and budget.get(v, 0) > 0:
+                budget[v] -= 1
+                return True
+    return False
 
 
 def already_imported_row_indices(conn, uid: int, session_id: str, txs,
@@ -1337,15 +1350,28 @@ def load_session_with_seed_revalidate(
         (session_id,),
     ).fetchall()
 
+    # Las filas SINTÉTICAS (row_index negativo: los cierres por traspaso de
+    # `traspasos.py`, las de la foto de tenencia) no salieron del archivo: su
+    # fila cruda es un resumen, no algo que el normalizador sepa leer. Releerlas
+    # las tiraba por "fecha inválida" sin avisar, y con ellas el tilde de
+    # "Títulos que venían de otro broker tuyo": la persona marcaba, completaba
+    # sus datos, confirmaba, y el papel seguía en los dos brokers (2026-10-23).
+    # Se toman tal cual las dejó la previsualización, como hace el confirm sin
+    # datos completados (`load_session_for_confirm`).
+    sinteticas = [t for t in load_session_for_confirm(conn, uid=uid, session_id=session_id)[0]
+                  if t.row_index < 0]
+
     raw_rows: List[RawRow] = []
     raw_id_by_index: Dict[int, int] = {}
     for r in raw_rows_db:
+        raw_id_by_index[r["row_index"]] = r["id"]
+        if r["row_index"] < 0:
+            continue
         try:
             data = json.loads(r["raw_json"]) if r["raw_json"] else {}
         except json.JSONDecodeError:
             data = {}
         raw_rows.append(RawRow(row_index=r["row_index"], data=data))
-        raw_id_by_index[r["row_index"]] = r["id"]
 
     # Re-normalizar
     normalized, _ = normalize_rows(raw_rows)
@@ -1375,6 +1401,7 @@ def load_session_with_seed_revalidate(
         existing_positions=existing_with_seed,
         route_by_currency=route_currency,
     )
+    valid_txs += sinteticas
 
     # Reemplazar el contenido de import_normalized_tx con la nueva validación.
     # Las filas previamente válidas + las promovidas por el seed quedan ahí;
