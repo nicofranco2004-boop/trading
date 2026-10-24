@@ -760,6 +760,89 @@ bugs que no están arreglados, y se dejan rojos a propósito — se ponen verdes
 el turno. Los mismos 16 tests dan **16 verdes contra SQLite**, que es lo que
 prueba que miden la migración y no el instrumento.
 
+### ⚠️ «La suite de Postgres está en N» todavía no es un criterio
+
+Las cuatro corridas completas de Postgres de esta tanda, con su commit, su
+duración y lo que dieron:
+
+| corrida | commit | duró | fallas | qué tan limpia |
+|---|---|---|---|---|
+| v1 | `c48c1b8f` | 476 s | 22 | con el barrido de 7 lentes al lado |
+| v2 | `a80b43b7` | **899 s** | 14 | 🔴 **compartió 415 s con la v3** |
+| v3 | `a80b43b7` | 569 s | 16 | 🔴 **compartió 415 s con la v2** |
+| v4 | `b5ab559e` | 513 s | 12 | máquina quieta |
+
+**La v2 y la v3 son el MISMO commit y dieron 14 y 16** — pero no son dos
+muestras independientes: se solaparon **415 de los 569 segundos de la v3**
+(v2: 11:07:35→11:22:34 · v3: 11:15:38→11:25:07, y entre `a80b43b7` 11:05:32 y
+`5e7fcd0a` 11:32:20 no hubo ningún commit). Así que ese par NO prueba que el
+número varíe solo: prueba que **dos suites corriendo a la vez se estorban**, que
+es otra cosa.
+
+👉 **Y la duración es el delator.** La v2 tardó **899 s contra los 513 s de la
+v4**: 1,75× más, con el mismo motor y casi el mismo código. Un número de fallas
+sin su duración al lado no se puede interpretar — si la corrida tardó el doble,
+la máquina estaba ocupada y el número está inflado.
+
+**La evidencia de que el número se mueve con la carga es otra, y está medida:**
+la auditoría corrió DOS veces el **mismo commit** (`4fe75445`), una con la máquina
+ocupada y otra quieta → **18 y 13 fallas**. Ésa sí es una comparación de dos
+corridas independientes del mismo código.
+
+**Las dos mediciones limpias que tenemos coinciden:** la v4 (12, máquina quieta)
+y la de la auditoría (13 preexistentes, máquina quieta, commit anterior). La
+diferencia es exactamente un test —`VenderDolaresMientrasSeCompran`, que se
+cerró— y nada más se movió.
+
+**Los tres tests que entran y salen según la máquina**, identificados por nombre:
+
+    tests/test_cupones_bandeja.py::BonoImportadoTest::test_la_posicion_dice_que_su_nominal_ya_es_el_vivo
+    tests/test_cupones_bandeja_azar.py::CobrosDeBonosAlAzarTest::test_al_azar
+    tests/test_ritmo_de_envio.py::test_una_rafaga_de_mails_sueltos_no_congela_la_app_ni_se_saltea_la_fila
+
+El de `ritmo_de_envio` mide con reloj de pared y pasa 3/3 aislado; los dos de
+cupones aparecen y desaparecen sin que nada del código cambie.
+
+#### La consecuencia operativa
+
+**Mientras esos tres sigan así, «la suite de Postgres está en N» no sirve como
+criterio para decidir el pasaje.** Dos caminos, y hay que tomar uno:
+
+1. **Hacerlos deterministas** (el de `ritmo_de_envio` no puede medir con reloj de
+   pared; los de cupones hay que ver qué les falta), o
+2. **sacarlos de la cuenta y decirlo**: «N, más 3 que dependen de la máquina».
+
+Y en los dos casos, **la medición tiene que llevar su duración al lado**: una
+corrida que tardó 1,75× lo normal no es una medición, es una medición con la
+máquina ocupada. El `conftest` ya tiene documentado este mismo problema para sus
+tres relojes, y con los números al lado (`tests/conftest.py:114-121`):
+
+    #1  46 fallas · 68 s     #2  49 fallas · 133 s     #3  46 fallas · 71 s
+                                 ↑ las 3 extra: IdleInTransactionSessionTimeout
+
+«Nada corría en paralelo: era la máquina. Cuando se pone lenta y la corrida tarda
+el doble, un test LEGÍTIMO pasa más de 3 s con la transacción abierta y Postgres
+lo mata.» Es el mismo efecto visto desde el otro lado, y ya estaba medido en este
+repo: **la corrida que tardó el doble trajo 3 fallas de más.**
+
+#### Y la forma del error, que es la que se repitió todo el día
+
+El par «v2 dio 14 y v3 dio 16 con el mismo código» parecía la prueba perfecta y
+no lo era, porque las dos corridas no eran independientes. Es la quinta cara del
+mismo descuido de esta tanda:
+
+| se midió | y se afirmó sobre |
+|---|---|
+| dos pedidos simultáneos | un tope bajo carga |
+| un conteo de comillas par | el anidado de los bloques |
+| un total de fallas que cierra | de dónde salía cada falla |
+| una corrida | una trayectoria de cuatro |
+| dos corridas que se solapan | la variabilidad del número |
+
+**Las cinco son un agregado o una muestra puesta en lugar de la estructura.** Es
+el error más barato de cometer y el más caro de no ver: en los cinco casos el
+número cerraba perfecto.
+
 ---
 
 ## Lo que NO toqué (respetado del informe)
