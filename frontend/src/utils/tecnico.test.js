@@ -128,6 +128,16 @@ describe('velas', () => {
     expect(s[0]).toMatchObject({ d: '2026-10-12', o: 10, h: 13, l: 8, c: 9, s200: 3, rsi: 45, semana: true })
     expect(s[1]).toMatchObject({ d: '2026-10-19', o: 9, c: 9.8 })
   })
+
+  it('el volumen de la semana es la suma de sus días (un día sin dato no suma)', async () => {
+    const { velasSemanales } = await import('./tecnico')
+    const s = velasSemanales([
+      { d: '2026-10-12', c: 10, v: 100 }, { d: '2026-10-13', c: 11, v: null }, { d: '2026-10-14', c: 12, v: 50 },
+      { d: '2026-10-19', c: 9 },
+    ])
+    expect(s[0].v).toBe(150)
+    expect(s[1].v).toBeNull()
+  })
 })
 
 describe('zoom y arrastre', () => {
@@ -140,15 +150,28 @@ describe('zoom y arrastre', () => {
   })
   it('no se pasa de los bordes ni baja de 20 ruedas', async () => {
     const { zoomVentana } = await import('./tecnico')
-    expect(zoomVentana({ n: 500, fin: 504, total: 504 }, 1.5, 0.5)).toEqual({ n: 504, fin: 504 })
-    expect(zoomVentana({ n: 504, fin: 504, total: 504 }, 1.5, 0.5)).toBeNull()
+    // Lo más lejos: todos los días que hay más su aire a la derecha (504 + 25).
+    expect(zoomVentana({ n: 500, fin: 504, total: 504 }, 1.5, 0.5)).toEqual({ n: 529, fin: 529 })
+    expect(zoomVentana({ n: 529, fin: 529, total: 504 }, 1.5, 0.5)).toBeNull()
     expect(zoomVentana({ n: 21, fin: 504, total: 504 }, 0.1, 1)).toEqual({ n: 20, fin: 504 })
   })
-  it('arrastrar a la derecha va para atrás en el tiempo, sin salirse', async () => {
+  it('arrastrar a la derecha va para atrás en el tiempo; a la izquierda, hasta medio ancho de futuro', async () => {
     const { moverVentana } = await import('./tecnico')
     expect(moverVentana({ n: 100, fin: 504, total: 504 }, 0.25)).toEqual({ n: 100, fin: 479 })
-    expect(moverVentana({ n: 100, fin: 504, total: 504 }, -0.25)).toBeNull()
+    // Hacia el futuro (Nico, 23/10): se puede pasar del último día, hasta la mitad de lo que se ve.
+    expect(moverVentana({ n: 100, fin: 504, total: 504 }, -0.25)).toEqual({ n: 100, fin: 529 })
+    expect(moverVentana({ n: 100, fin: 554, total: 504 }, -0.25)).toBeNull()
     expect(moverVentana({ n: 100, fin: 110, total: 504 }, 0.5)).toEqual({ n: 100, fin: 100 })
+  })
+})
+
+describe('aire a la derecha (el futuro)', () => {
+  it('la ventana de entrada deja aire a la derecha: 5 % de lo que se ve, nunca menos de 3', async () => {
+    const { ventanaInicial, margenDerecho } = await import('./tecnico')
+    expect(margenDerecho(252)).toBe(13)
+    expect(margenDerecho(20)).toBe(3)
+    expect(ventanaInicial(252, 760)).toEqual({ n: 265, fin: 773 })
+    expect(ventanaInicial(900, 760)).toEqual({ n: 798, fin: 798 })   // pocos datos: todos, más su aire
   })
 })
 
