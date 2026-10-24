@@ -596,3 +596,58 @@ describe('la liquidez cuando falta el dato (auditoría 24/10)', () => {
     expect(t).not.toContain('todos los días')
   })
 })
+
+describe('la ficha a todo el ancho y en secciones (Nico, 24/10)', () => {
+  const titulos = () => {
+    const out = []
+    const pila = [montado.contenedor]
+    while (pila.length) {
+      const n = pila.shift()
+      if (n.nodeName === 'H2') out.push(texto(n))
+      pila.push(...(n.childNodes || []))
+    }
+    return out
+  }
+  const veces = (t, frase) => t.split(frase).length - 1
+
+  it('lo que tenés: técnico → tu operatoria → fundamental, cada una con su título', async () => {
+    respuestas = {
+      '/positions': [{ id: 5, asset: 'NVDA', broker: 'Schwab', quantity: 3, invested: 450, currency: 'USD', asset_type: 'STOCK', entry_date: '2025-05-01' }],
+      '/brokers': [{ name: 'Schwab', currency: 'USD' }], '/dolar': null, '/operations': [],
+      '/prices': { NVDA: 182.4 }, '/tecnico/': TECNICO, '/plazos-fijos': [],
+      '/fundamentals/NVDA': FUNDAMENTALES('NVDA', 'NVIDIA Corporation'),
+    }
+    const t = await abrir('/activo/NVDA')
+    expect(titulos()).toEqual(['Análisis técnico', 'Tu operatoria en NVDA', 'Análisis fundamental'])
+    // El título del técnico no queda repetido adentro del gráfico.
+    expect(veces(t, 'Análisis técnico')).toBe(1)
+    expect(veces(t, 'Análisis fundamental')).toBe(1)
+  })
+
+  it('lo que no tenés: técnico → fundamental, sin la sección tuya', async () => {
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=NVDA': { NVDA: 182.4 }, '/tecnico/': TECNICO,
+      '/fundamentals/NVDA': FUNDAMENTALES('NVDA', 'NVIDIA Corporation') }
+    await abrir('/activo/NVDA')
+    expect(titulos()).toEqual(['Análisis técnico', 'Análisis fundamental'])
+  })
+
+  it('una cripto: sólo el técnico (no queda un título de fundamental suelto)', async () => {
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=BTC': { BTC: 80000 }, '/tecnico/': TECNICO }
+    await abrir('/activo/BTC')
+    expect(titulos()).toEqual(['Análisis técnico'])
+  })
+
+  it('usa el ancho de la página (no la columna angosta de antes)', async () => {
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=NVDA': { NVDA: 182.4 }, '/tecnico/': TECNICO }
+    await abrir('/activo/NVDA')
+    const pila = [montado.contenedor]
+    let raiz = null
+    while (pila.length && !raiz) {
+      const n = pila.shift()
+      if ((n.atributos?.class || '').includes('page-shell-wide')) raiz = n
+      pila.push(...(n.childNodes || []))
+    }
+    expect(raiz).toBeTruthy()
+    expect(raiz.atributos.class).not.toContain('max-w-3xl')
+  })
+})

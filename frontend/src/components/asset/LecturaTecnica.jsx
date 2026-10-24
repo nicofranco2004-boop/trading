@@ -69,6 +69,8 @@ export default function LecturaTecnica({
   asset, symbolMiniChart, lotes = [], operaciones = [], pnlPctUsd = null,
   pnlPctLinea = undefined, lineaSinTc = false, referencia = null,
   costoPesos = null, accionLocal = false,
+  // La ficha pone el título de la sección («Análisis técnico») y pasa null.
+  titulo = 'Análisis técnico',
 }) {
   const [moneda, setMoneda] = useState('usd')
   const [rango, setRango] = useState('1a')
@@ -142,7 +144,7 @@ export default function LecturaTecnica({
 
   const marco = (hijos, conPesos = datos.ars?.disponible !== false) => (
     <Marco moneda={moneda} setMoneda={setMoneda} rango={ventana ? null : rango} setRango={elegirRango}
-      tipo={tipo} setTipo={setTipo} conPesos={conPesos} grande={grande} setGrande={setGrande}>{hijos}</Marco>
+      tipo={tipo} setTipo={setTipo} conPesos={conPesos} grande={grande} setGrande={setGrande} titulo={titulo}>{hijos}</Marco>
   )
   // Cargando: el marco con sus botones queda quieto y el gris va adentro, con la
   // altura del gráfico ya reservada (antes desaparecía todo y la página saltaba).
@@ -250,7 +252,7 @@ export default function LecturaTecnica({
         )}
       </div>
 
-      <div className={`mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2 ${grande ? 'xl:grid-cols-3' : ''}`}>
+      <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
         {lista.map(t => <Tarjeta key={t.id} t={t} />)}
         {(() => {
           // La tarjeta: en dólares, el MISMO resultado de arriba de la ficha; en
@@ -282,14 +284,14 @@ export default function LecturaTecnica({
   )
 }
 
-function Marco({ moneda, setMoneda, rango, setRango, tipo, setTipo, conPesos = true, grande = false, setGrande, children }) {
+function Marco({ moneda, setMoneda, rango, setRango, tipo, setTipo, conPesos = true, grande = false, setGrande, titulo, children }) {
   // Agrandado = la misma sección, fija sobre toda la pantalla (no es otra vista:
   // mismos datos, mismos botones; R6).
   return (
     <section aria-label="Análisis técnico" role={grande ? 'dialog' : undefined} aria-modal={grande || undefined}
       className={grande ? 'fixed inset-0 z-[70] overflow-y-auto bg-bg-0 px-3 py-3 sm:px-6 sm:py-5' : 'mb-5'}>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-        <div className="text-[12.5px] text-ink-2 font-medium">Análisis técnico</div>
+        {titulo ? <div className="text-[12.5px] text-ink-2 font-medium">{titulo}</div> : <span />}
         <div className="flex flex-wrap items-center gap-2">
           {setGrande && (
             <button type="button" onClick={() => setGrande(!grande)} aria-pressed={grande}

@@ -28,6 +28,7 @@ import AssetLogo from '../components/AssetLogo'
 import LecturaTecnica from '../components/asset/LecturaTecnica'
 import AnalyzeView from '../components/fundamentals/AnalyzeView'
 import LiquidezByma from '../components/asset/LiquidezByma'
+import SeccionFicha from '../components/asset/SeccionFicha'
 import Skeleton from '../components/Skeleton'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
@@ -335,7 +336,9 @@ export default function AssetDetail() {
   }
 
   return (
-    <div className="page-shell-wide py-2 sm:py-4 max-w-3xl">
+    // Todo el ancho de la página (Nico, 24/10: con `max-w-3xl` el gráfico quedaba
+    // chico y con mucho negro alrededor). En el celular, el mismo ancho que antes.
+    <div className="page-shell-wide py-2 sm:py-4">
       <BackBar onBack={() => navigate(-1)} asset={asset} name={name} brokerCount={agg.brokerCount} />
 
       {/* Lo que no tenés: el precio de hoy y la watchlist, en vez de tu resultado. */}
@@ -378,8 +381,12 @@ export default function AssetDetail() {
           y le hacía creer al usuario que su fondo estaba mal cargado. */}
       {/* Lectura técnica (medias, RSI, tus compras y tu precio). Si el activo
           todavía no tiene velas guardadas, adentro cae al gráfico de 30 días. */}
+      {/* Tres secciones separadas, cada una con su título (Nico, 24/10):
+          técnico → tu operatoria → fundamental. */}
       {!esFci(asset) && !(agg.lots.length > 0 && esFci(symbolFor(agg.lots[0], brokers))) && (
+        <SeccionFicha titulo="Análisis técnico">
         <LecturaTecnica
+          titulo={null}
           key={`${asset}|${accionLocal}`}
           asset={asset}
           symbolMiniChart={agg.lots.length > 0 ? symbolFor(agg.lots[0], brokers) : tenes ? null : libre.simboloPrecio}
@@ -395,16 +402,19 @@ export default function AssetDetail() {
           costoPesos={costoEnPesos(agg.lots)}
           accionLocal={accionLocal}
         />
+
+        {/* Cuánto se opera en BYMA y cuánto cuesta entrar y salir (CEDEARs y
+            acciones argentinas): el gráfico de un CEDEAR mira Nueva York. */}
+        {papelByma && <LiquidezByma papel={papelByma} />}
+        </SeccionFicha>
       )}
 
-      {/* Cuánto se opera en BYMA y cuánto cuesta entrar y salir (CEDEARs y
-          acciones argentinas): el gráfico de un CEDEAR mira Nueva York. */}
-      {papelByma && <LiquidezByma papel={papelByma} />}
-
-      {/* Stats de operatoria */}
-      {tenes && <section className="mb-5">
-        <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu operatoria en {asset}</div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+      {/* Lo tuyo: tu operatoria, tus lotes y tu historial. */}
+      {tenes && <SeccionFicha titulo={`Tu operatoria en ${asset}`}>
+      <section className="mb-5" aria-label="Resumen de tu operatoria">
+        {/* Con ancho, las cajitas se reparten todo el renglón (3 o 6, según si
+            vendiste algo): con 6 columnas fijas, 3 cajitas dejaban medio vacío. */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-[repeat(auto-fit,minmax(10rem,1fr))] gap-2">
           <StatCell label="Costo promedio" value={agg.avgCostUsd != null ? `$${agg.avgCostUsd.toFixed(2).replace('.', ',')}` : '—'} sub="por unidad (USD)" />
           <StatCell label="Cantidad" value={agg.qty ? formatQty(agg.qty) : '—'} sub={`${agg.lots.length} lote${agg.lots.length !== 1 ? 's' : ''} abierto${agg.lots.length !== 1 ? 's' : ''}`} />
           <StatCell label="Invertido" value={`$${Math.round(agg.investedUsd).toLocaleString('es-AR')}`} sub="costo total (USD)" />
@@ -425,8 +435,11 @@ export default function AssetDetail() {
             </>
           )}
         </div>
-      </section>}
+      </section>
 
+      {/* Lotes e historial, uno al lado del otro cuando hay ancho y están los
+          dos (uno solo ocupa todo el renglón). */}
+      <div className={agg.lots.length > 0 && operations.length > 0 ? 'xl:grid xl:grid-cols-2 xl:gap-4 xl:items-start' : ''}>
       {/* Lotes abiertos (FIFO) */}
       {agg.lots.length > 0 && (
         <section className="mb-5">
@@ -504,6 +517,8 @@ export default function AssetDetail() {
           </section>
         </AskAIAbout>
       )}
+      </div>
+      </SeccionFicha>}
 
       {/* Análisis fundamental de la empresa, al final: técnico → lo tuyo
           (operatoria, lotes, historial) → fundamental, para no tener que pasar
