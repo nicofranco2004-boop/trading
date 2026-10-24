@@ -98,22 +98,68 @@ def conectar(dsn: str, **kw):
 # `test_efectivo_una_puerta`, y la de SQLite no podía verlo porque allá la
 # bandera está en falso y el turno no se pide nunca.
 #
-# La pregunta correcta es sobre el objeto que se tiene en la mano. Y falla
-# CERRADA: si no se reconoce el tipo, no se pide el candado. Pedirlo donde no
-# corresponde revienta; no pedirlo donde sí corresponde deja el tope como estaba
-# antes de todo esto — malo, pero no una caída.
+# La pregunta correcta es sobre el objeto que se tiene en la mano.
+#
+# 🔴 SEGUNDA VUELTA, porque la primera versión de esta función tenía un agujero
+# que costó dos cajas de efectivo. Miraba SÓLO `type(conn).__module__` y
+# devolvía «no» para cualquier cosa que no reconociera, con el argumento de que
+# fallar cerrada es más seguro. **Acá fallar cerrada es perder la protección en
+# silencio**, y eso es justo el bug de plata que el candado existe para tapar.
+#
+# Lo que lo destapó: un ENVOLTORIO. `tests/test_dos_pedidos_a_la_vez.py` hace
+# `main.get_db = lambda: _Conexion(real(), cruce)` para forzar que dos pedidos
+# lean antes de que nadie escriba. Ese envoltorio no es `pgshim.Connection`
+# —su módulo es el del test—, así que la primera versión decía «no es Postgres»,
+# no pedía el candado, y los dos primeros depósitos simultáneos volvían a crear
+# DOS cajas: medido, quedaron una con 200 y otra con 300. Como todo el código
+# lee «la más vieja», los 200 no los movía nadie más.
+#
+# Y no es un problema del test: cualquier envoltorio —uno de registro, uno de
+# pool, uno de medición— perdía la protección sin que nada avisara.
+#
+# POR ESO SE PREGUNTA EN TRES PASOS, y el orden importa:
+#   1. ¿Es SQLite? Dos formas, porque un envoltorio NO es una
+#      `sqlite3.Connection` pero SÍ reenvía sus atributos por `__getattr__`.
+#      `total_changes` lo tiene sqlite3 y no lo tiene psycopg.
+#   2. ¿Es Postgres, directo? Por el módulo, como antes.
+#   3. Ninguna de las dos: ahí sí vale la bandera del proceso, que es la mejor
+#      información que queda. Un envoltorio sigue el motor de la app.
+# Así el caso que arreglamos (una base SQLite de verdad con el proceso apuntando
+# a Postgres) lo caza el paso 1, y el que rompimos (un envoltorio sobre una
+# conexión buena) lo caza el paso 3.
+import sqlite3 as _sqlite3
+
 _MODULOS_QUE_HABLAN_POSTGRES = ("pgshim", "psycopg")
 
 
 def habla_postgres(conn) -> bool:
-    """¿ESTA conexión habla Postgres? Mirando el objeto, no una bandera global.
+    """¿ESTA conexión habla Postgres? Preguntándole al objeto, en tres pasos.
 
-    `pgshim.Connection` (la que usa toda la app) y una `psycopg` pelada dicen
-    que sí; `sqlite3.Connection` dice que no. Cualquier otra cosa dice que no,
-    a propósito: ver el comentario de arriba.
+    Ver el comentario de arriba: cada paso está porque un bug lo pidió.
     """
+    # 1 · SQLite, directo o a través de un envoltorio que reenvía atributos.
     try:
-        return type(conn).__module__.split(".")[0] in _MODULOS_QUE_HABLAN_POSTGRES
+        if isinstance(conn, _sqlite3.Connection):
+            return False
+        if hasattr(conn, "total_changes"):
+            return False
+    except Exception:
+        return False
+    # 2 · Postgres, directo.
+    try:
+        if type(conn).__module__.split(".")[0] in _MODULOS_QUE_HABLAN_POSTGRES:
+            return True
+    except Exception:
+        pass
+    # 3 · Un envoltorio que no reenvía nada reconocible: el motor del proceso.
+    #     Pero antes, que al menos PAREZCA una conexión: sin esto, un `None`
+    #     —o cualquier cosa pasada por error— contestaba «sí habla Postgres» y
+    #     el error salía recién en el `conn.execute`, lejos y disfrazado.
+    if not callable(getattr(conn, "execute", None)):
+        return False
+    try:
+        import main as _m
+        return bool(getattr(_m, "USANDO_PG", False))
     except Exception:
         return False
 

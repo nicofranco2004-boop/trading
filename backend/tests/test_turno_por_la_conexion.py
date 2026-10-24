@@ -61,12 +61,50 @@ class QuienHablaPostgres(unittest.TestCase):
         finally:
             c.close()
 
-    def test_cualquier_otra_cosa_dice_que_no(self):
-        # Falla cerrada: un objeto que no se reconoce NO recibe el candado.
+    def test_lo_que_no_parece_una_conexion_dice_que_no(self):
+        # Sin esto, un `None` pasado por error contestaba «sí habla Postgres» y
+        # el error salía recién en el `conn.execute`, lejos y disfrazado.
         class Cualquiera:
             pass
         self.assertFalse(_ps.habla_postgres(Cualquiera()))
         self.assertFalse(_ps.habla_postgres(None))
+        self.assertFalse(_ps.habla_postgres("no soy una conexión"))
+
+    # ── Los ENVOLTORIOS, que es la segunda vuelta de este bug ────────────────
+    # La primera versión miraba SÓLO el módulo del tipo y devolvía «no» para lo
+    # que no reconocía. Un envoltorio sobre una conexión BUENA caía ahí, el
+    # candado no se pedía, y los dos primeros depósitos simultáneos volvían a
+    # crear DOS cajas de efectivo: medido, una con 200 y otra con 300.
+    # `tests/test_dos_pedidos_a_la_vez.py` usa justamente un envoltorio
+    # (`main.get_db = lambda: _Conexion(real(), cruce)`), y cualquier envoltorio
+    # de registro, de pool o de medición tendría el mismo efecto.
+
+    def _envoltorio(self, interna):
+        class Envoltorio:
+            def __init__(self, c): self._c = c
+            def execute(self, *a, **k): return self._c.execute(*a, **k)
+            def __getattr__(self, n): return getattr(self._c, n)
+        return Envoltorio(interna)
+
+    def test_un_envoltorio_sobre_la_conexion_de_la_app_SI_habla_postgres(self):
+        c = main.get_db()
+        try:
+            self.assertEqual(
+                _ps.habla_postgres(self._envoltorio(c)), CON_POSTGRES,
+                "un envoltorio sobre una conexión buena perdió el candado: es "
+                "exactamente el bug que dejó dos cajas de efectivo")
+        finally:
+            c.close()
+
+    def test_un_envoltorio_sobre_sqlite_NO_habla_postgres(self):
+        # Pasa por `total_changes`, que sqlite3 tiene y psycopg no, y que el
+        # envoltorio reenvía por `__getattr__`. Si se decidiera sólo por el
+        # módulo del tipo, acá habría un falso «sí».
+        c = sqlite3.connect(":memory:")
+        try:
+            self.assertFalse(_ps.habla_postgres(self._envoltorio(c)))
+        finally:
+            c.close()
 
 
 class ElTurnoPorUnaConexionDeSqlite(unittest.TestCase):
