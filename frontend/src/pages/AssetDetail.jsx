@@ -27,6 +27,7 @@ import {
 import AssetLogo from '../components/AssetLogo'
 import LecturaTecnica from '../components/asset/LecturaTecnica'
 import AnalyzeView from '../components/fundamentals/AnalyzeView'
+import LiquidezByma from '../components/asset/LiquidezByma'
 import Skeleton from '../components/Skeleton'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
@@ -315,6 +316,13 @@ export default function AssetDetail() {
   const libre = miradaSinTenencia(asset)
   const accionLocal = !tenes ? libre.accionLocal
     : esAccionLocal(asset, agg.lots.length ? agg.lots : operations)
+  // El papel en BYMA, para la liquidez: un CEDEAR o una acción argentina. Si lo
+  // tenés, lo dicen tus lotes (o tus operaciones, si lo vendiste); si no, el
+  // ticker (X.BA, o una acción argentina conocida). AAPL en Schwab no: no se
+  // opera en BYMA. Bonos y fondos tampoco (el servidor no los lista).
+  const papelByma = esFci(asset) ? null
+    : !tenes ? ((asset.endsWith('.BA') || libre.accionLocal) ? asset.replace(/\.BA$/, '') : null)
+      : (agg.lots.length ? agg.lots : operations).some(p => isBymaHolding(p)) ? asset.replace(/\.BA$/, '') : null
 
   if (loading) {
     return (
@@ -388,6 +396,10 @@ export default function AssetDetail() {
           accionLocal={accionLocal}
         />
       )}
+
+      {/* Cuánto se opera en BYMA y cuánto cuesta entrar y salir (CEDEARs y
+          acciones argentinas): el gráfico de un CEDEAR mira Nueva York. */}
+      {papelByma && <LiquidezByma papel={papelByma} />}
 
       {/* Stats de operatoria */}
       {tenes && <section className="mb-5">

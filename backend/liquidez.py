@@ -4,7 +4,8 @@ QUÉ ES. Cuánto se opera de un papel en BYMA y cuánto cuesta entrar y salir:
   · la plata que se opera por día (promedio de las últimas `RUEDAS` ruedas);
   · cuántas de esas ruedas no tuvo ninguna operación;
   · la diferencia entre el mejor precio de compra y el de venta AHORA (lo que
-    perdés si comprás y vendés enseguida, aunque el precio no se mueva).
+    perdés si comprás y vendés enseguida, aunque el precio no se mueva), sólo
+    con la rueda abierta: fuera de horario las puntas no dicen nada.
 Y un veredicto con los cortes de abajo: mucha, media o poca.
 
 POR QUÉ. El gráfico técnico de un CEDEAR mira, por defecto, la acción en Nueva
@@ -111,6 +112,13 @@ def _ruedas_de_byma() -> list:
     return sorted(hist)[-RUEDAS:]
 
 
+def _byma_abierto() -> bool:
+    """La regla única de horario de BYMA (fuera_de_horario.byma_abierto)."""
+    from datetime import datetime, timezone
+    from fuera_de_horario import byma_abierto
+    return byma_abierto(datetime.now(timezone.utc))
+
+
 def nivel(pesos_por_dia, dias_sin_operar, spread_pct):
     """'mucha' | 'media' | 'poca' | None (sin datos para decir nada)."""
     if spread_pct is not None and spread_pct > SPREAD_POCA:
@@ -124,19 +132,66 @@ def nivel(pesos_por_dia, dias_sin_operar, spread_pct):
     return "mucha" if pesos_por_dia >= MUCHA_DESDE else "media"
 
 
+def _especie_en_dolares(p: str, vivos: dict):
+    """Si `p` es la especie en dólares de un CEDEAR (MELID = MEP, MELIC = cable),
+    el precio en PESOS de su especie base (MELI); si no, None. Las D y las C
+    cotizan en dólares: multiplicar su volumen por su precio y llamarlo pesos
+    hacía «poca liquidez» de cualquier especie en dólares (auditoría 24/10:
+    IRENC salía «poca» y el CEDEAR de IREN en pesos se opera $ 1.585 millones
+    por día). Se reconoce por el precio, no por la letra: YPFD es una acción
+    argentina en pesos que también termina en D."""
+    if len(p) < 3 or p[-1] not in "DC":
+        return None
+    base = vivos.get(p[:-1])
+    yo = vivos.get(p)
+    if not base or not yo or base.get("mercado") != yo.get("mercado"):
+        return None
+    cb, cp = float(base.get("c") or 0), float(yo.get("c") or 0)
+    # Un dólar de BYMA vale cientos de pesos: la base cotiza muchas veces más.
+    return cb if cp > 0 and cb / cp > 100 else None
+
+
+def _ruedas_para(hist: dict, ref: list, fuente: str) -> list:
+    """Las ruedas contra las que se cuenta un papel: las de BYMA (data912). Si
+    la historia es de Yahoo, menos las últimas que Yahoo todavía no cargó (a
+    veces va un día atrás: sin esto, ese día contaba como "sin operaciones");
+    si le faltan más de 2, no es atraso: el papel dejó de operarse, y cuentan.
+    Con historia de data912 (la misma fuente que las ruedas) un día que falta
+    es un día sin operaciones, siempre."""
+    ultimo = max(hist)
+    despues = [d for d in ref if d > ultimo]
+    if fuente == "yahoo" and 0 < len(despues) <= 2:
+        ref = [d for d in ref if d <= ultimo]
+    return ref[-RUEDAS:]
+
+
 def para_la_ficha(papel: str) -> dict:
     """Lo que muestra la ficha. `papel`: el código de BYMA ('MELI', 'GGAL',
-    'AAPL'), con o sin '.BA'. {disponible: False} si no cotiza en BYMA o no hay
-    nada que medir."""
+    'AAPL'), con o sin '.BA'.
+
+    Cuando no hay dato, `disponible` es False y `motivo` dice por qué, para que
+    la ficha no calle algo que importa:
+      · 'sin_fuente': data912 no contesta (no se sabe nada; la ficha lo dice);
+      · 'no_cotiza':  data912 contesta y el papel no está (un bono, un fondo, un
+        código que BYMA no lista): no hay nada que decir.
+    Sin historia de días anteriores (ni data912 ni Yahoo), se usa la última
+    rueda del precio en vivo (`periodo: 'ultima_rueda'`): un papel chico sin
+    historia es justo el que más importa avisar."""
     from main import _fetch_data912_equities
     p = (papel or "").strip().upper()
     if p.endswith(".BA"):
         p = p[:-3]
-    vivo = (_fetch_data912_equities() or {}).get(p)
+    vivos = _fetch_data912_equities() or {}
+    if not vivos:
+        return {"papel": p, "disponible": False, "motivo": "sin_fuente"}
+    vivo = vivos.get(p)
     if not p or not vivo:
-        return {"papel": p, "disponible": False}
+        return {"papel": p, "disponible": False, "motivo": "no_cotiza"}
     es_cedear = vivo.get("mercado") == "arg_cedears"
-    precio = float(vivo.get("c") or 0)
+    # El precio en PESOS con el que se pasa a plata el volumen: el propio, o el
+    # de la especie base si ésta es la especie en dólares.
+    base_pesos = _especie_en_dolares(p, vivos) if es_cedear else None
+    precio = base_pesos or float(vivo.get("c") or 0)
 
     hist = _cacheado(("d912", p), lambda: _historia_data912("cedears" if es_cedear else "stocks", p))
     fuente = "data912" if hist else None
@@ -144,32 +199,49 @@ def para_la_ficha(papel: str) -> dict:
         hist = _cacheado(("yahoo", p), lambda: _historia_yahoo(p))
         fuente = "yahoo" if hist else None
 
-    pesos_por_dia = dias_sin_operar = None
-    ruedas = []
+    pesos_por_dia = dias_sin_operar = ruedas = None
+    periodo = "promedio"
     if hist:
-        ruedas = _ruedas_de_byma()
-        # Sin la referencia, las ruedas son las del propio papel (no se pueden
-        # contar los días sin operar: ésos no aparecen en su historia).
-        ruedas = ruedas or sorted(hist)[-RUEDAS:]
-        volumenes = [hist.get(d, 0.0) for d in ruedas]
-        if precio > 0 and volumenes:
-            pesos_por_dia = sum(volumenes) / len(volumenes) * precio
-        dias_sin_operar = sum(1 for v in volumenes if not v)
+        ref = _ruedas_de_byma()
+        if ref:
+            dias = _ruedas_para(hist, ref, fuente)
+            dias_sin_operar = sum(1 for d in dias if not hist.get(d))
+        else:
+            # Sin las ruedas de BYMA no se pueden contar los días SIN
+            # operaciones (no aparecen en la historia del papel): no se dice
+            # "se operó todos los días" de algo que no se midió.
+            dias = sorted(hist)[-RUEDAS:]
+        ruedas = len(dias)
+        if precio > 0 and dias:
+            pesos_por_dia = sum(hist.get(d, 0.0) for d in dias) / len(dias) * precio
+    elif vivo.get("v") is not None and precio > 0:
+        # Sin historia: la última rueda (del precio en vivo de data912).
+        periodo, fuente, ruedas = "ultima_rueda", "data912_vivo", 1
+        pesos_por_dia = float(vivo.get("v") or 0) * precio
+        dias_sin_operar = 0 if vivo.get("v") else 1
 
+    # La diferencia entre puntas, sólo con la rueda abierta: con BYMA cerrada
+    # (a la noche, el fin de semana) quedan órdenes colgadas lejos del precio y
+    # la diferencia no es lo que cuesta operar. Medido un sábado: MUX daba 7,97 %
+    # contra 0,41 % en la rueda (24/10).
     bid, ask = vivo.get("px_bid"), vivo.get("px_ask")
-    # Fuera de horario las puntas vienen vacías: no hay diferencia que medir.
-    spread_pct = round((ask - bid) / bid * 100, 2) if bid and ask and ask >= bid > 0 else None
+    spread_pct = (round((ask - bid) / bid * 100, 2)
+                  if _byma_abierto() and bid and ask and ask >= bid > 0 else None)
 
-    n = nivel(pesos_por_dia, dias_sin_operar, spread_pct)
+    n = nivel(pesos_por_dia, dias_sin_operar if periodo == "promedio" else None, spread_pct)
+    if periodo == "ultima_rueda" and dias_sin_operar:
+        n = "poca"          # la última rueda no tuvo ni una operación
     if n is None:
-        return {"papel": p, "disponible": False}
+        return {"papel": p, "disponible": False, "motivo": "sin_datos"}
     return {
         "papel": p,
         "disponible": True,
         "es_cedear": es_cedear,
+        "en_dolares": bool(base_pesos),
         "nivel": n,
+        "periodo": periodo,
         "pesos_por_dia": round(pesos_por_dia) if pesos_por_dia is not None else None,
-        "ruedas": len(ruedas) if hist else None,
+        "ruedas": ruedas,
         "dias_sin_operar": dias_sin_operar,
         "spread_pct": spread_pct,
         "fuente": fuente,

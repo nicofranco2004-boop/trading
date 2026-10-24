@@ -77,7 +77,9 @@ class LiquidezTest(unittest.TestCase):
         def yahoo(papel):
             self.pedidos.append(("yahoo", papel))
             return dict(self.yahoo.get(papel, {}))
+        self.abierto = True
         self._p = [mock.patch("main._fetch_data912_equities", lambda: self.vivo),
+                   mock.patch.object(liquidez, "_byma_abierto", lambda: self.abierto),
                    mock.patch.object(liquidez, "_historia_data912", d912),
                    mock.patch.object(liquidez, "_historia_yahoo", yahoo)]
         for p in self._p:
@@ -138,21 +140,23 @@ class LiquidezTest(unittest.TestCase):
         self.yahoo["MUX"] = {d: 2500.0 for d in RUEDAS[-20:]}            # $ 30 M
         f = self._liq("MUX")
         self.assertEqual((f["fuente"], f["nivel"], f["dias_sin_operar"]), ("yahoo", "poca", 0))
-        # IRENC: ni data912 ni Yahoo tienen su historia. Antes decía «20 días
-        # sin operar» de algo que se opera todos los días; ahora sólo las puntas.
-        self.vivo["IRENC"] = _vivo(2.19, 2.17, 2.20)
-        g = self._liq("IRENC")
-        self.assertEqual((g["pesos_por_dia"], g["dias_sin_operar"]), (None, None))
-        self.assertEqual((g["nivel"], g["spread_pct"]), ("poca", 1.38))
-        # Sin historia y con puntas angostas (o fuera de horario): no hay nada que decir.
-        self.vivo["QQQ"] = _vivo(30000.0, None, None)
-        self.assertFalse(self._liq("QQQ")["disponible"])
+        # ABC: ni data912 ni Yahoo tienen su historia. Antes decía «20 días sin
+        # operar» de algo que se opera; ahora, la última rueda del precio en vivo.
+        self.vivo["ABC"] = _vivo(2000.0, 1990.0, 2010.0, v=10000.0)        # $ 20 M
+        g = self._liq("ABC")
+        self.assertEqual((g["periodo"], g["fuente"], g["pesos_por_dia"], g["ruedas"]),
+                         ("ultima_rueda", "data912_vivo", 20_000_000, 1))
+        self.assertEqual(g["nivel"], "poca")
+        # Sin historia y sin ninguna operación en la última rueda: poca, siempre.
+        self.vivo["QQQ"] = _vivo(30000.0, None, None, v=0.0)
+        q = self._liq("QQQ")
+        self.assertEqual((q["nivel"], q["dias_sin_operar"]), ("poca", 1))
 
     def test_una_fila_suelta_de_yahoo_no_es_una_historia(self):
         # La función real de Yahoo (sin el reemplazo de esta prueba), con Yahoo
         # reemplazado un nivel más abajo.
         import pandas as pd
-        self._p[2].stop()
+        self._p[3].stop()
         try:
             with mock.patch("pricing.yahoo._historia") as hist:
                 hist.return_value = pd.DataFrame({"Volume": [9.0]}, index=pd.to_datetime(["2026-10-22"]))
@@ -162,7 +166,74 @@ class LiquidezTest(unittest.TestCase):
                 h = liquidez._historia_yahoo("MUX")
                 self.assertEqual((len(h), h[RUEDAS[-1]]), (15, 0.0), "un volumen vacío es 0, no NaN")
         finally:
-            self._p[2].start()
+            self._p[3].start()
+
+    def test_con_byma_cerrada_las_puntas_no_cuentan(self):
+        # Un sábado: órdenes colgadas lejos del precio. No es lo que cuesta operar.
+        self.abierto = False
+        self.vivo["MUX"] = _vivo(12000.0, 11500.0, 12417.0)
+        self.d912[("cedears", "MUX")] = {d: 100000.0 for d in RUEDAS}     # $ 1.200 M
+        f = self._liq("MUX")
+        self.assertEqual((f["spread_pct"], f["nivel"]), (None, "mucha"))
+        # Sin historia y con la rueda cerrada: la última rueda, sin puntas.
+        self.vivo["ABC"] = _vivo(30000.0, 20000.0, 40000.0, v=100000.0)   # $ 3.000 M
+        a = self._liq("ABC")
+        self.assertEqual((a["periodo"], a["spread_pct"], a["nivel"]), ("ultima_rueda", None, "mucha"))
+        # La regla de horario es la única de la app.
+        from datetime import datetime, timezone
+        with mock.patch("fuera_de_horario.byma_abierto", return_value=True) as regla:
+            self._p[1].stop()
+            try:
+                self.assertTrue(liquidez._byma_abierto())
+            finally:
+                self._p[1].start()
+        self.assertIsInstance(regla.call_args[0][0], datetime)
+        self.assertEqual(regla.call_args[0][0].tzinfo, timezone.utc)
+
+    def test_especie_en_dolares_se_mide_en_pesos(self):
+        # IRENC es la especie cable (en dólares) del CEDEAR de IREN: su precio es
+        # 2,10. Multiplicar su volumen por 2,10 y llamarlo pesos daba «poca».
+        self.vivo["IREN"] = _vivo(3447.5)
+        self.vivo["IRENC"] = _vivo(2.10, v=981.0)
+        self.vivo["IREND"] = _vivo(2.225)
+        self.d912[("cedears", "IRENC")] = {d: 400000.0 for d in RUEDAS}
+        f = self._liq("IRENC")
+        self.assertTrue(f["en_dolares"])
+        self.assertEqual(f["pesos_por_dia"], round(400000 * 3447.5))
+        self.assertEqual(f["nivel"], "mucha")
+        # La especie en pesos, igual que siempre.
+        self.assertFalse(self._liq("IREN")["en_dolares"] if self._liq("IREN")["disponible"] else False)
+        # YPFD termina en D y es una acción argentina en pesos: no se confunde.
+        self.vivo["YPF"] = _vivo(40000.0)
+        self.vivo["YPFD"] = _vivo(41000.0, mercado="arg_stocks")
+        self.d912[("stocks", "YPFD")] = {d: 50000.0 for d in RUEDAS}
+        y = self._liq("YPFD")
+        self.assertEqual((y["en_dolares"], y["pesos_por_dia"]), (False, 50000 * 41000))
+
+    def test_sin_fuente_o_sin_cotizar_dice_por_que(self):
+        self.vivo["GGAL"] = _vivo(6000.0, mercado="arg_stocks")
+        f = self._liq("MELI")                 # data912 contesta y MELI no está
+        self.assertEqual((f["disponible"], f["motivo"]), (False, "no_cotiza"))
+        self.vivo.clear()                     # data912 no contesta
+        g = self._liq("MELI")
+        self.assertEqual((g["disponible"], g["motivo"]), (False, "sin_fuente"))
+
+    def test_sin_las_ruedas_de_byma_no_dice_que_se_opero_todos_los_dias(self):
+        self.d912[("stocks", "GGAL")] = {}    # la referencia no vino
+        self.vivo["BXC"] = _vivo(5000.0)
+        self.d912[("cedears", "BXC")] = {d: 1e6 for d in RUEDAS[-20:][::2]}
+        f = self._liq("BXC")
+        self.assertIsNone(f["dias_sin_operar"])
+
+    def test_yahoo_un_dia_atrasado_no_cuenta_como_dia_sin_operar(self):
+        self.vivo["MUX"] = _vivo(12000.0)
+        self.yahoo["MUX"] = {d: 100000.0 for d in RUEDAS[-21:-1]}   # le falta el último día
+        f = self._liq("MUX")
+        self.assertEqual((f["fuente"], f["dias_sin_operar"]), ("yahoo", 0))
+        # Pero si le faltan 5 días, el papel dejó de operarse: cuentan.
+        liquidez._cache.clear()
+        self.yahoo["MUX"] = {d: 100000.0 for d in RUEDAS[-25:-5]}
+        self.assertEqual(self._liq("MUX")["dias_sin_operar"], 5)
 
     def test_lo_que_no_cotiza_en_byma_no_pide_nada(self):
         f = self._liq("NVDA")          # no está en la lista de data912 de esta prueba

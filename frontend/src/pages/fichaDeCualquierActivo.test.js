@@ -102,6 +102,7 @@ const SIN_CARTERA = {
   '/watchlist': { items: [] },
   // Sin empresa en el pedido: la ficha no muestra el análisis fundamental.
   '/fundamentals/': { available: false },
+  '/liquidez/': { disponible: false },
 }
 
 // Lo que contesta /api/fundamentals/{ticker} (el contrato de "Calidad de cartera").
@@ -433,5 +434,165 @@ describe('el análisis fundamental en la ficha', () => {
     expect(tuya).toBeGreaterThan(tecnico)
     expect(lotes).toBeGreaterThan(tuya)
     expect(fundamental).toBeGreaterThan(lotes)
+  })
+})
+
+describe('la liquidez en BYMA', () => {
+  const pedidosDeLiquidez = async () => {
+    const { api } = await import('../utils/api')
+    return api.get.mock.calls.map(c => c[0]).filter(r => r.startsWith('/liquidez/'))
+  }
+
+  it('un CEDEAR que se opera mucho: una sola línea, sin tarjeta', async () => {
+    const { api } = await import('../utils/api')
+    api.get.mockClear()
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=MELI.BA': { 'MELI.BA': 24980 }, '/tecnico/': TECNICO,
+      '/liquidez/MELI': { disponible: true, es_cedear: true, nivel: 'mucha', pesos_por_dia: 5727100000,
+        ruedas: 20, dias_sin_operar: 0, spread_pct: 0.08 } }
+    const t = await abrir('/activo/MELI.BA')
+    expect(await pedidosDeLiquidez()).toEqual(['/liquidez/MELI'])
+    expect(t).toContain('Se opera mucho en BYMA')
+    expect(t).toContain('$ 5.727 millones por día')
+    expect(t).toContain('0,08 %')
+    expect(t).toContain('Podés comprar o vender enseguida, a un precio cerca del último')
+    expect(t).not.toContain('Liquidez en BYMA')
+    // Debajo del análisis técnico.
+    expect(t.indexOf('Se opera mucho en BYMA')).toBeGreaterThan(t.indexOf('Largo plazo'))
+  })
+
+  it('media: tarjeta tranquila con los números', async () => {
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=XLE.BA': { 'XLE.BA': 57000 }, '/tecnico/': TECNICO,
+      '/liquidez/XLE': { disponible: true, es_cedear: true, nivel: 'media', pesos_por_dia: 171000000,
+        ruedas: 20, dias_sin_operar: 0, spread_pct: 0.18 } }
+    const t = await abrir('/activo/XLE.BA')
+    expect(t).toContain('Liquidez en BYMA')
+    expect(t).toContain('Media')
+    expect(t).toContain('$ 171 millones por día y se operó todos los días de las últimas 20 ruedas')
+    expect(t).toContain('Qué te cambia al operar')
+    expect(t).toContain('En montos grandes, tu propia orden puede mover el precio en contra')
+    expect(t).not.toContain('Puede no haber quién te compre')
+  })
+
+  it('poca: el aviso, los días sin operar, la diferencia de puntas y que el gráfico es de Nueva York', async () => {
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=MUX.BA': { 'MUX.BA': 12000 }, '/tecnico/': TECNICO,
+      '/liquidez/MUX': { disponible: true, es_cedear: true, nivel: 'poca', pesos_por_dia: 12000000,
+        ruedas: 20, dias_sin_operar: 6, spread_pct: 2.4 } }
+    const t = await abrir('/activo/MUX.BA')
+    expect(t).toContain('Poca')
+    expect(t).toContain('no tuvo ninguna operación en 6 de las últimas 20 ruedas')
+    expect(t).toContain('Ahora, entre el precio de compra y el de venta hay 2,40 %')
+    expect(t).toContain('Qué te cambia al operar')
+    expect(t).toContain('Puede no haber quién te compre o te venda enseguida al precio que ves')
+    expect(t).toContain('perdés ese 2,40 % aunque el precio no se mueva')
+    expect(t).toContain('Una orden grande puede mover el precio en contra')
+    expect(t).toContain('puede alejarse del de la acción en Nueva York, que se opera mucho más')
+    expect(t).not.toContain('gráfico de arriba')
+    // Describe el riesgo; nunca dice qué hacer.
+    expect(t).not.toMatch(/no lo compres|evitalo|te conviene|deberías/i)
+  })
+
+  it('una acción argentina con poca liquidez no dice que el gráfico es de Nueva York', async () => {
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=AGRO.BA': { 'AGRO.BA': 900 }, '/tecnico/': TECNICO,
+      '/liquidez/AGRO': { disponible: true, es_cedear: false, nivel: 'poca', pesos_por_dia: 31000000,
+        ruedas: 20, dias_sin_operar: 0, spread_pct: 0.96 } }
+    const t = await abrir('/activo/AGRO')
+    expect(t).toContain('Poca')
+    expect(t).not.toContain('Nueva York')
+    expect(t).toContain('Comprar y vender al toque cuesta 0,96 %')
+    expect(t).toContain('Entrar y salir seguido cuesta más que en un papel que se opera mucho')
+  })
+
+  it('sin historia, sólo la diferencia de puntas (no inventa días sin operar)', async () => {
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=IRENC.BA': { 'IRENC.BA': 2.19 }, '/tecnico/': TECNICO,
+      '/liquidez/IRENC': { disponible: true, es_cedear: true, nivel: 'poca', pesos_por_dia: null,
+        ruedas: null, dias_sin_operar: null, spread_pct: 1.42 } }
+    const t = await abrir('/activo/IRENC.BA')
+    expect(t).toContain('No hay historia de cuánto se opera por día.')
+    expect(t).toContain('hay 1,42 %')
+    expect(t).toContain('perdés ese 1,42 %')
+    expect(t).not.toContain('ruedas')
+  })
+
+  it('una acción de Nueva York que no tenés: no se pide (no se opera en BYMA)', async () => {
+    const { api } = await import('../utils/api')
+    api.get.mockClear()
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=NVDA': { NVDA: 182.4 }, '/tecnico/': TECNICO }
+    await abrir('/activo/NVDA')
+    expect(await pedidosDeLiquidez()).toEqual([])
+  })
+
+  it('lo tuyo decide el mercado: tu CEDEAR de IOL sí, tu AAPL de Schwab no', async () => {
+    const { api } = await import('../utils/api')
+    api.get.mockClear()
+    respuestas = {
+      '/positions': [{ id: 7, asset: 'AAPL', broker: 'IOL', quantity: 10, invested: 280000, currency: 'ARS', asset_type: 'CEDEAR', entry_date: '2025-05-01' }],
+      '/brokers': [{ name: 'IOL', currency: 'ARS' }], '/dolar': null, '/operations': [],
+      '/prices': { 'AAPL.BA': 28540 }, '/tecnico/': TECNICO, '/fundamentals/': { available: false },
+      '/liquidez/AAPL': { disponible: true, es_cedear: true, nivel: 'mucha', pesos_por_dia: 1678700000,
+        ruedas: 20, dias_sin_operar: 0, spread_pct: 0.07 },
+    }
+    let t = await abrir('/activo/AAPL')
+    expect(await pedidosDeLiquidez()).toEqual(['/liquidez/AAPL'])
+    expect(t).toContain('Se opera mucho en BYMA')
+    await montado.desmontar(); montado = null
+    api.get.mockClear()
+    respuestas = { ...respuestas,
+      '/positions': [{ id: 8, asset: 'AAPL', broker: 'Schwab', quantity: 2, invested: 500, currency: 'USD', asset_type: 'STOCK', entry_date: '2025-05-01' }],
+      '/brokers': [{ name: 'Schwab', currency: 'USD' }], '/prices': { AAPL: 255 } }
+    t = await abrir('/activo/AAPL')
+    expect(await pedidosDeLiquidez()).toEqual([])
+    expect(t).not.toContain('BYMA')
+  })
+
+  it('si el pedido falla, la ficha sigue sin el bloque', async () => {
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=MELI.BA': { 'MELI.BA': 24980 }, '/tecnico/': TECNICO,
+      '/liquidez/MELI': new Error('caído') }
+    const t = await abrir('/activo/MELI.BA')
+    expect(t).toContain('Largo plazo')
+    expect(t).not.toContain('BYMA')
+  })
+})
+
+describe('la liquidez cuando falta el dato (auditoría 24/10)', () => {
+  const ficha = async (papel, liq) => {
+    respuestas = { ...SIN_CARTERA, [`/prices?symbols=${papel}.BA`]: { [`${papel}.BA`]: 1000 }, '/tecnico/': TECNICO,
+      [`/liquidez/${papel}`]: liq }
+    return abrir(`/activo/${papel}.BA`)
+  }
+
+  it('si data912 no contesta, lo dice (callar haría pensar que no hay riesgo)', async () => {
+    const t = await ficha('MUX', { disponible: false, motivo: 'sin_fuente' })
+    expect(t).toContain('Ahora no pudimos medir cuánto se opera en BYMA')
+  })
+
+  it('si el papel no cotiza en BYMA, no dice nada', async () => {
+    const t = await ficha('MUX', { disponible: false, motivo: 'no_cotiza' })
+    expect(t).not.toContain('BYMA')
+  })
+
+  it('sin historia: la última rueda, dicho así', async () => {
+    let t = await ficha('ABC', { disponible: true, es_cedear: true, nivel: 'poca', periodo: 'ultima_rueda',
+      pesos_por_dia: 3400000, ruedas: 1, dias_sin_operar: 0, spread_pct: null })
+    expect(t).toContain('En la última rueda se operaron unos $ 3 millones. No hay historia de los días anteriores.')
+    expect(t).not.toContain('por día')
+    await montado.desmontar(); montado = null
+    t = await ficha('ABBVC', { disponible: true, es_cedear: true, nivel: 'poca', periodo: 'ultima_rueda',
+      pesos_por_dia: 0, ruedas: 1, dias_sin_operar: 1, spread_pct: null, en_dolares: true })
+    expect(t).toContain('En la última rueda no tuvo ninguna operación')
+    expect(t).toContain('Es la especie en dólares: el monto está pasado a pesos.')
+  })
+
+  it('menos de un millón no es "$ 0 millones"', async () => {
+    const t = await ficha('ABC', { disponible: true, es_cedear: true, nivel: 'poca', periodo: 'promedio',
+      pesos_por_dia: 300000, ruedas: 20, dias_sin_operar: 2, spread_pct: null })
+    expect(t).toContain('menos de $ 1 millón por día')
+    expect(t).not.toContain('$ 0 millones')
+  })
+
+  it('sin las ruedas de BYMA no dice que se operó todos los días', async () => {
+    const t = await ficha('ABC', { disponible: true, es_cedear: true, nivel: 'poca', periodo: 'promedio',
+      pesos_por_dia: 30000000, ruedas: 20, dias_sin_operar: null, spread_pct: null })
+    expect(t).toContain('Se operan unos $ 30 millones por día.')
+    expect(t).not.toContain('todos los días')
   })
 })
