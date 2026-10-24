@@ -20,7 +20,7 @@ import sys
 import tempfile
 import unittest
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -126,6 +126,194 @@ class CuentasTest(unittest.TestCase):
         self.assertEqual(tecnico.rsi(sube)[-1], 100.0)
         baja = [float(i) for i in range(40, 1, -1)]
         self.assertEqual(tecnico.rsi(baja)[-1], 0.0)
+
+
+def _velas_al_azar(n, semilla):
+    """Velas con máximo, mínimo y apertura de verdad (no un % fijo del cierre),
+    para que el ADX y el Squeeze no salgan triviales."""
+    import random
+    random.seed(semilla)
+    out, c = [], 100.0
+    for i in range(n):
+        o = c * (1 + random.gauss(0, 0.01))
+        c = o * (1 + random.gauss(0.0005, 0.02))
+        h = max(o, c) * (1 + abs(random.gauss(0, 0.01)))
+        lo = min(o, c) * (1 - abs(random.gauss(0, 0.01)))
+        out.append({"date": (date(2024, 1, 1) + timedelta(days=i)).isoformat(), "open": o, "high": h, "low": lo, "close": c})
+    return out
+
+
+def _rma_pandas(s, n):
+    """Wilder hecho con pandas: el promedio simple de los primeros n como
+    semilla y después `ewm` con alfa 1/n (la definición de `ta.rma`)."""
+    s = pd.Series(s, dtype=float).reset_index(drop=True)
+    i0 = s.first_valid_index()
+    resto = s.iloc[i0 + n - 1:].copy()
+    resto.iloc[0] = s.iloc[i0:i0 + n].mean()
+    out = pd.Series(float("nan"), index=s.index)
+    out.iloc[i0 + n - 1:] = resto.ewm(alpha=1 / n, adjust=False).mean().values
+    return out
+
+
+def _tr_pandas(df):
+    c0 = df.close.shift()
+    return pd.concat([df.high - df.low, (df.high - c0).abs(), (df.low - c0).abs()], axis=1).max(axis=1, skipna=False)
+
+
+class FuerzaTest(unittest.TestCase):
+    """ADX y Squeeze: diferencial contra una cuenta independiente con pandas
+    (como la del RSI), pocas velas y un cruce del ADX armado a mano."""
+
+    def setUp(self):
+        self.velas = _velas_al_azar(400, 11)
+        self.df = pd.DataFrame(self.velas)
+
+    def _igual(self, nuestra, ref, places=8):
+        for k, (a, b) in enumerate(zip(nuestra, ref)):
+            if b != b:   # NaN
+                self.assertIsNone(a, f"posición {k}")
+            else:
+                self.assertIsNotNone(a, f"posición {k}")
+                self.assertAlmostEqual(a, b, places=places, msg=f"posición {k}")
+
+    def test_adx_igual_al_de_tradingview_hecho_con_pandas(self):
+        df = self.df
+        sube, baja = df.high.diff(), -df.low.diff()
+        dm_mas = sube.where((sube > baja) & (sube > 0), 0.0)
+        dm_menos = baja.where((baja > sube) & (baja > 0), 0.0)
+        # El primer día: 0, no hueco (en el Pine del script, `na > x` es falso).
+        dm_mas.iloc[0] = dm_menos.iloc[0] = 0.0
+        atr = _rma_pandas(_tr_pandas(df), 14)
+        mas, menos = 100 * _rma_pandas(dm_mas, 14) / atr, 100 * _rma_pandas(dm_menos, 14) / atr
+        adx_ref = 100 * _rma_pandas((mas - menos).abs() / (mas + menos), 14)
+
+        nuestro = tecnico.adx(self.velas)
+        self._igual(nuestro["di_mas"], mas.tolist())
+        self._igual(nuestro["di_menos"], menos.tolist())
+        self._igual(nuestro["adx"], adx_ref.tolist())
+        # El primer ADX sale en la vela 27: 14 para el +DI/−DI y 14 más para su promedio.
+        self.assertIsNone(nuestro["adx"][26])
+        self.assertIsNotNone(nuestro["adx"][27])
+
+    def test_squeeze_igual_al_de_lazybear_hecho_con_pandas(self):
+        import numpy as np
+        df, n = self.df, 20
+        c = df.close
+        prom = c.rolling(n).mean()
+        desvio = 1.5 * c.rolling(n).std(ddof=0)   # el script original usa 1,5 también en las Bollinger
+        rango = _tr_pandas(df).rolling(n).mean()
+        activo = ((prom - desvio > prom - 1.5 * rango) & (prom + desvio < prom + 1.5 * rango)).where(rango.notna())
+        base = c - ((df.high.rolling(n).max() + df.low.rolling(n).min()) / 2 + prom) / 2
+        valor = base.rolling(n).apply(lambda w: np.polyval(np.polyfit(np.arange(n), w, 1), n - 1), raw=True)
+
+        nuestro = tecnico.squeeze(self.velas)
+        self._igual(nuestro["valor"], valor.tolist())
+        for k, (a, b) in enumerate(zip(nuestro["activo"], activo.tolist())):
+            self.assertEqual(a, None if b != b else bool(b), f"posición {k}")
+        self.assertTrue(any(nuestro["activo"]) and not all(x for x in nuestro["activo"] if x is not None),
+                        "el caso tiene días apretados y días sueltos")
+        # El color, contra el día anterior.
+        v = valor.tolist()
+        for k in range(len(v)):
+            if v[k] != v[k]:
+                self.assertIsNone(nuestro["color"][k])
+                continue
+            antes = v[k - 1] if v[k - 1] == v[k - 1] else 0.0
+            esperado = ("verde_fuerte" if v[k] > antes else "verde_apagado") if v[k] > 0 \
+                else ("rojo_fuerte" if v[k] < antes else "rojo_apagado")
+            self.assertEqual(nuestro["color"][k], esperado, f"posición {k}")
+        self.assertEqual({x for x in nuestro["color"] if x},
+                         {"verde_fuerte", "verde_apagado", "rojo_fuerte", "rojo_apagado"})
+
+    def test_squeeze_sin_el_error_de_lazybear_usa_el_2(self):
+        a = tecnico.squeeze(self.velas)["activo"]
+        b = tecnico.squeeze(self.velas, como_lazybear=False)["activo"]
+        # Con Bollinger más anchas (2 en vez de 1,5) hay menos días "apretados".
+        self.assertLess(sum(1 for x in b if x), sum(1 for x in a if x))
+
+    def test_squeeze_da_identico_sobre_la_cola_y_sobre_la_historia_entera(self):
+        # La ficha lo calcula con toda la historia y la lectura (que la
+        # radiografía de la Cartera pide por activo) sobre los últimos 60 días.
+        # Tienen que dar el MISMO número, no "casi": el color compara contra el
+        # día anterior y en un empate decide el redondeo. Una serie que sube en
+        # línea recta da empates exactos en el papel (ahí se rompía).
+        recta = [{"date": (date(2024, 1, 1) + timedelta(days=i)).isoformat(), "open": 100 + i * 0.37,
+                  "high": (100 + i * 0.37) * 1.01, "low": (100 + i * 0.37) * 0.99, "close": 100 + i * 0.37}
+                 for i in range(760)]
+        for velas in (self.velas, recta):
+            completo = tecnico.squeeze(velas)
+            for desde in (len(velas) - tecnico.VELAS_SQUEEZE_LECTURA, len(velas) - 41, 0, 123):
+                cola = tecnico.squeeze(velas[desde:])
+                for k in ("valor", "color", "activo"):
+                    self.assertEqual(cola[k][-1], completo[k][-1], f"{k} desde {desde}")
+                    self.assertEqual(cola[k][-2], completo[k][-2], f"{k} anteúltimo desde {desde}")
+            # Y la lectura sola (como la pide la Cartera) == la de la ficha.
+            dmi = tecnico.adx(velas)
+            self.assertEqual(tecnico.lectura(velas), tecnico.lectura(velas, dmi=dmi, sqz=completo))
+
+    def test_precio_quieto_no_inventa_empuje(self):
+        # Una acción suspendida: 300 días al mismo precio. El ADX no existe (no
+        # hay rango) y el Squeeze es 0, no un residuo de redondeo que la
+        # pantalla dibujaba como barras verdes enteras.
+        quieto = [{"date": (date(2024, 1, 1) + timedelta(days=i)).isoformat(), "open": 228.97,
+                   "high": 228.97, "low": 228.97, "close": 228.97} for i in range(300)]
+        self.assertTrue(all(x is None for x in tecnico.adx(quieto)["adx"]))
+        s = tecnico.squeeze(quieto)
+        self.assertTrue(all(x == 0.0 for x in s["valor"][38:]))
+        self.assertEqual(tecnico.lectura(quieto)["squeeze"], 0.0)
+
+    def test_vela_rota_se_completa_como_en_la_pantalla(self):
+        # Sin máximo ni mínimo (Yahoo mandó la vela rota): se usan apertura y cierre.
+        velas = [dict(v) for v in self.velas]
+        velas[100]["high"] = velas[100]["low"] = None
+        hs, ls, _ = tecnico._velas_completas(velas)
+        self.assertEqual(hs[100], max(velas[100]["open"], velas[100]["close"]))
+        self.assertEqual(ls[100], min(velas[100]["open"], velas[100]["close"]))
+        self.assertIsNotNone(tecnico.adx(velas)["adx"][-1])
+
+    def test_con_pocas_velas_no_inventa(self):
+        pocas = self.velas[:27]
+        self.assertTrue(all(x is None for x in tecnico.adx(pocas)["adx"]), "el ADX necesita 28 velas")
+        self.assertTrue(all(x is None for x in tecnico.squeeze(self.velas[:38])["valor"]), "el Squeeze necesita 39")
+        l = tecnico.lectura(pocas)
+        for k in ("adx", "adx_pendiente", "adx_cruce", "squeeze", "squeeze_color"):
+            self.assertIsNone(l[k], k)
+        self.assertIsNone(tecnico.lectura(self.velas[:20])["squeeze_activo"], "las bandas necesitan 21 días")
+        self.assertIsNotNone(l["rsi"], "lo demás sigue")
+
+    def test_cruce_del_adx_armado(self):
+        # Dos años de serrucho (sin tendencia: ADX bajísimo) y 12 días de suba
+        # firme al final: la fuerza pasa 23 en el anteúltimo día, con el Squeeze
+        # en verde.
+        N = 760
+
+        def f(i):
+            return 100 * (1.01 if i % 2 else 0.99) if i < N - 12 else 100 * 1.02 ** (i - N + 13)
+
+        velas = [{"date": (date(2024, 1, 1) + timedelta(days=i)).isoformat(), "open": f(i), "high": f(i) * 1.01, "low": f(i) * 0.99, "close": f(i)}
+                 for i in range(N)]
+        a = tecnico.adx(velas)["adx"]
+        self.assertLess(a[-3], tecnico.ADX_CLAVE)
+        self.assertGreaterEqual(a[-2], tecnico.ADX_CLAVE)
+        l = tecnico.lectura(velas)
+        self.assertEqual(l["adx_cruce"], {"tipo": "paso_arriba", "hace": 1, "squeeze": 1})
+        self.assertAlmostEqual(l["adx_pendiente"], a[-1] - a[-4], places=12, msg="el cambio de los últimos 3 días")
+        self.assertEqual(l["squeeze_color"], "verde_fuerte")
+        # La bajada espejo: el cruce viene con el Squeeze en rojo.
+        espejo = [{"date": v["date"], "open": 1e4 / v["open"], "high": 1e4 / v["low"],
+                   "low": 1e4 / v["high"], "close": 1e4 / v["close"]} for v in velas]
+        self.assertEqual(tecnico.lectura(espejo)["adx_cruce"]["squeeze"], -1)
+
+    def test_cruces_del_adx(self):
+        # El signo del Squeeze es el del DÍA DEL CRUCE (rojo), no el de hoy (verde).
+        self.assertEqual(tecnico.cruce_adx([None, 18, 21, 24, 26], [0, 0, 0, -2, 3]),
+                         {"tipo": "paso_arriba", "hace": 1, "squeeze": -1})
+        # Mira exactamente los últimos 10 días de mercado (hace 0 a 9).
+        self.assertEqual(tecnico.cruce_adx([20, 25] + [30] * 9)["hace"], 9)
+        self.assertIsNone(tecnico.cruce_adx([20, 25] + [30] * 10))
+        self.assertEqual(tecnico.cruce_adx([30, 25, 22]), {"tipo": "paso_abajo", "hace": 0, "squeeze": None})
+        self.assertIsNone(tecnico.cruce_adx([20, 25] + [30] * 12), "un cruce de hace más de 10 días ya no cuenta")
+        self.assertIsNone(tecnico.cruce_adx([30] * 20))
 
 
 class FichaTest(unittest.TestCase):
@@ -294,6 +482,57 @@ class FichaTest(unittest.TestCase):
         r = self.client.get("/api/tecnico/<script>", headers=self.h)
         self.assertIn(r.status_code, (400, 404))
 
+    def test_fuerza_de_la_tendencia_llega_a_la_ficha(self):
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "AAPL", "CEDEAR")
+        self.yahoo.precios["AAPL"] = lambda i, d: 100 * (1.01 if i % 2 else 0.99) if i < 748 else 100 * 1.02 ** (i - 747)
+        main._run_velas_diarias_job()
+        f = self._ficha("AAPL", "usd")
+        p = f["puntos"][-1]
+        self.assertIsNotNone(p["adx"])
+        # Cada punto del gráfico lleva el ADX y el Squeeze de la historia ENTERA
+        # guardada, el de SU día: no los de la ventana dibujada (el ADX arrastra
+        # memoria) ni corridos un día. Desde d6ae4dc3 el gráfico trae los 3 años
+        # guardados (arranca en la primera vela), así que se mira que cada punto,
+        # también los de más adelante, siga siendo el de la historia entera.
+        with main.db_abierta() as conn:
+            velas = tecnico.serie(conn, "AAPL", "usd")["velas"]
+        d, s = tecnico.adx(velas), tecnico.squeeze(velas)
+        por_dia = {v["date"]: i for i, v in enumerate(velas)}
+        self.assertEqual(len(f["puntos"]), len(velas), "el gráfico trae toda la historia guardada")
+        for q in f["puntos"]:
+            i = por_dia[q["d"]]
+            self.assertEqual(q["adx"], round(d["adx"][i], 2) if d["adx"][i] is not None else None, q["d"])
+            self.assertEqual(q["squeeze"], float(f"{s['valor'][i]:.6g}") if s["valor"][i] is not None else None, q["d"])
+            self.assertEqual(q["squeeze_color"], s["color"][i], q["d"])
+        self.assertIsNotNone(p["squeeze"])
+        self.assertEqual(p["squeeze_color"], f["lectura"]["squeeze_color"])
+        self.assertAlmostEqual(p["adx"], f["lectura"]["adx"], places=2)
+        self.assertEqual(f["lectura"]["adx_cruce"]["tipo"], "paso_arriba")
+        self.assertEqual(f["lectura"]["adx_cruce"]["squeeze"], 1)
+
+    def test_fuerza_con_pocos_dias_no_inventa(self):
+        # Una acción argentina con dólar sólo para los últimos 25 días: 25 velas
+        # en dólares. El ADX necesita 28 y el Squeeze 39: van vacíos, no en 0.
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "GGAL", "ACCION")
+        with main.db_abierta() as conn:
+            for d in self.dias[-25:]:
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
+                             (d.isoformat(), 1100.0, 1000.0))
+            conn.commit()
+        self.yahoo.precios["GGAL.BA"] = lambda i, d: 5000.0 + (i % 7) * 30
+        main._run_velas_diarias_job()
+        f = self._ficha("GGAL", "usd")
+        self.assertEqual(f["lectura"]["ruedas"], 25)
+        self.assertTrue(all(p["adx"] is None and p["squeeze"] is None and p["squeeze_color"] is None
+                            for p in f["puntos"]))
+        for k in ("adx", "adx_cruce", "squeeze", "squeeze_color"):
+            self.assertIsNone(f["lectura"][k], k)
+        # Si las bandas están "apretadas" sí se sabe con 21 días (las bandas
+        # son de 20): es un dato real, no inventado.
+        self.assertIn(f["lectura"]["squeeze_activo"], (True, False))
+
     def test_admin_ve_el_estado_y_el_usuario_no(self):
         self._broker("Schwab", "USD")
         self._posicion("Schwab", "MSFT", "STOCK")
@@ -324,6 +563,24 @@ class FichaTest(unittest.TestCase):
         finally:
             main._soltar_corrida("velas_diarias")
 
+
+    def test_cripto_de_fracciones_de_centavo_no_llega_en_cero(self):
+        # SHIB vale US$ 0,00001: con 4 decimales fijos el gráfico entero llegaba
+        # en 0 («último cierre US$ 0»). Abajo de 1 van 6 cifras significativas;
+        # arriba de 1, los 4 decimales de siempre.
+        self._broker("Binance", "USDT")
+        self._posicion("Binance", "SHIB", "CRYPTO")
+        self.yahoo.precios["SHIB-USD"] = lambda i, d: 0.0000123456 * (1 + i * 0.001)
+        main._run_velas_diarias_job()
+        f = self._ficha("SHIB")
+        self.assertTrue(f["disponible"])
+        ultimo = f["puntos"][-1]
+        esperado = f["lectura"]["precio"]
+        for k in ("o", "c", "s50", "s200"):
+            self.assertGreater(ultimo[k], 0, k)
+        self.assertAlmostEqual(ultimo["c"] / esperado, 1, places=5)
+        self.assertAlmostEqual(ultimo["h"] / (esperado * 1.01), 1, places=5)
+        self.assertEqual(len({p["c"] for p in f["puntos"]}), len(f["puntos"]), "cada día con su precio, no todos iguales")
 
     def test_cripto_el_anio_son_365_dias(self):
         # Bitcoin cotiza los 7 días: 252 velas son 8 meses. El máximo "del año"
