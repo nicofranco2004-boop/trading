@@ -134,7 +134,7 @@ class FichaTest(unittest.TestCase):
         self.client = TestClient(main.app)
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
-            for t in ("velas_diarias", "velas_estado", "velas_correcciones", "watchlist", "positions",
+            for t in ("velas_diarias", "velas_estado", "cambios_ratio", "watchlist", "positions",
                       "brokers", "fx_rates_daily"):
                 conn.execute(f"DELETE FROM {t}")
             cur = conn.execute(
@@ -153,6 +153,11 @@ class FichaTest(unittest.TestCase):
         self.yahoo = YahooFalso(self.hoy)
         self._p = [mock.patch("main._check_rate_limit"),
                    mock.patch("pricing.yahoo._historia", self.yahoo),
+                   # La corrida nocturna también arma la lista de cambios de ratio,
+                   # que le pregunta a Yahoo sus splits y a data912 la historia:
+                   # sin red, la prueba da lo mismo todos los días.
+                   mock.patch("cambios_ratio._splits_de_yahoo", lambda t: []),
+                   mock.patch("cambios_ratio._historia_byma", lambda c: {}),
                    mock.patch("main._fetch_data912_equities", lambda: {})]
         for p in self._p:
             p.start()
@@ -201,11 +206,16 @@ class FichaTest(unittest.TestCase):
         self.assertIsNone(usd["convertida"])
         self.assertLess(usd["lectura"]["dist_media200"], 0, "en dólares está debajo de su media")
         self.assertLess(usd["lectura"]["pendiente_media200"], 0)
-        # Dos años de CALENDARIO (no una cantidad fija de velas).
+        # Todo lo guardado, cortado por CALENDARIO (no una cantidad fija de velas).
         piso = (self.dias[-1] - timedelta(days=tecnico.DIAS_GRAFICO)).isoformat()
         self.assertEqual(len(usd["puntos"]), sum(1 for d in self.dias if d.isoformat() > piso))
-        self.assertIsNotNone(usd["puntos"][0]["s200"],
-                             "la media de 200 del primer punto se calcula con la historia anterior")
+        # La media de 200 se calcula con TODA la historia: la de hace 2 años ya
+        # tiene sus 200 días anteriores; la del primer día guardado no, y no se inventa.
+        hace2 = (self.dias[-1] - timedelta(days=2 * tecnico.DIAS_ANIO)).isoformat()
+        i2 = next(i for i, p in enumerate(usd["puntos"]) if p["d"] > hace2)
+        self.assertIsNotNone(usd["puntos"][i2]["s200"],
+                             "la media de 200 de hace 2 años se calcula con la historia anterior")
+        self.assertIsNone(usd["puntos"][0]["s200"], "sin 200 días antes, no hay media de 200")
 
         ars = self._ficha("AAPL", "ars")
         self.assertEqual(ars["ticker"], "AAPL.BA")
@@ -228,6 +238,8 @@ class FichaTest(unittest.TestCase):
         self.assertAlmostEqual(f["puntos"][-1]["h"], esperado * 1.01, places=3)
         self.assertAlmostEqual(f["puntos"][-1]["l"], esperado * 0.99, places=3)
         self.assertAlmostEqual(f["puntos"][-1]["o"], esperado, places=3)
+        # El volumen del día viaja con la vela (las barras de abajo del gráfico).
+        self.assertEqual(f["puntos"][-1]["v"], 1000.0)
         piso = (self.dias[-1] - timedelta(days=tecnico.DIAS_GRAFICO)).isoformat()
         primero = next(i for i, d in enumerate(self.dias) if d.isoformat() > piso)
         self.assertAlmostEqual(f["puntos"][0]["c"], (5000 + primero * 5) / (1000 + primero), places=3,
@@ -319,7 +331,7 @@ class FichaTest(unittest.TestCase):
         self._broker("Binance", "USDT")
         self._posicion("Binance", "BTC", "CRYPTO")
         hoy = self.hoy
-        dias = [hoy - timedelta(days=k) for k in range(760, 0, -1)]   # todos los días
+        dias = [hoy - timedelta(days=k) for k in range(1200, 0, -1)]  # todos los días
         pico = hoy - timedelta(days=300)                               # hace 10 meses
 
         def btc(ticker, period, interval, auto_adjust, timeout):
@@ -332,8 +344,9 @@ class FichaTest(unittest.TestCase):
         f = self._ficha("BTC")
         self.assertEqual(f["lectura"]["maximo_12m"], 120000.0, "el pico de hace 10 meses es del año")
         self.assertAlmostEqual(f["lectura"]["dist_maximo_12m"], -33.33, places=1)
-        self.assertGreater(f["puntos"][0]["d"], (hoy - timedelta(days=731)).isoformat())
-        self.assertLess(f["puntos"][0]["d"], (hoy - timedelta(days=700)).isoformat(), "2A = 2 años de calendario")
+        # El gráfico trae todo lo guardado: 3 años de CALENDARIO, no 3 × 252 velas.
+        self.assertGreater(f["puntos"][0]["d"], (hoy - timedelta(days=tecnico.DIAS_GRAFICO + 1)).isoformat())
+        self.assertLess(f["puntos"][0]["d"], (hoy - timedelta(days=3 * 365 - 5)).isoformat(), "3 años de calendario")
 
     def test_cedear_en_pesos_sin_el_escalon_del_cambio_de_ratio(self):
         # El 5/12 BYMA pasa XLE de un ratio a otro el doble: el CEDEAR en pesos

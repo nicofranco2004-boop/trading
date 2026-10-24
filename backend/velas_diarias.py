@@ -145,7 +145,8 @@ def simbolos_a_seguir(conn) -> list:
 def _seguimiento(conn):
     """(tickers, pares): los tickers de Yahoo a seguir y, de cada CEDEAR, su
     par {'XLE.BA': 'XLE'} (el CEDEAR en pesos y la acción de afuera), que es
-    contra lo que `revisar` compara la serie en pesos.
+    contra lo que la lista de cambios de ratio (`cambios_ratio`) compara la
+    serie en pesos.
 
     El par sale de saber que ES un CEDEAR (`_yahoo_de`), no de que dos tickers
     se llamen igual: AGRO.BA es Agrometal y AGRO en Nueva York es Adecoagro.
@@ -383,180 +384,33 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
 
     piso = (date.fromisoformat(hoy) - timedelta(days=DIAS_GUARDADOS)).isoformat()
     conn.execute("DELETE FROM velas_diarias WHERE date < ?", (piso,))
-    conn.execute("DELETE FROM velas_correcciones WHERE date < ?", (piso,))
     conn.commit()
     return res
 
 
 def correr(conn) -> dict:
-    """La corrida nocturna completa: qué seguir, ponerlo al día y revisar lo
-    bajado (cambios de ratio y precios rotos que Yahoo no corrige)."""
+    """La corrida nocturna completa: qué seguir, ponerlo al día y, con las velas
+    ya guardadas, la lista única de cambios de ratio (`cambios_ratio`), a la que
+    se le pasa de cada CEDEAR cuál es su acción de afuera. Un error de la lista
+    no toca las velas."""
     tickers, pares = _seguimiento(conn)
     res = actualizar(conn, sorted(tickers))
-    sueltos = [t for t in tickers if t.endswith('.BA') and t not in pares]
-    res["correcciones"] = revisar(conn, pares, sueltos)
+    try:
+        import cambios_ratio
+        res["cambios_ratio"] = cambios_ratio.correr(
+            conn, {ba[:-3]: afuera for ba, afuera in pares.items()})
+    except Exception as ex:
+        log.error("velas: la lista de cambios de ratio falló: %r", ex, exc_info=True)
+        res["cambios_ratio"] = {"error": repr(ex)}
     return res
-
-
-# ─── Revisar: lo que Yahoo no corrige ────────────────────────────────────────
-#
-# POR QUÉ (auditoría 22/10). Cuando BYMA cambia el ratio de un CEDEAR (de 10 a
-# 20 por acción), el precio de cada CEDEAR se parte a la mitad de un día para
-# el otro. Con un split de una acción Yahoo reescribe la historia vieja y
-# `_historia_reescrita` lo ve; con el ratio de un CEDEAR, Yahoo NO reescribe
-# nada ni lo anota en su lista de splits: la serie '.BA' queda con un escalón
-# de −50 % (XLE y XLU el 05/12/2025, TQQQ, DuPont, AAPL y MELI el 24/01/2024).
-# La media de 200 en pesos quedaba inflada 10 meses diciendo "bajista" con la
-# acción subiendo afuera. Es como si el kiosco vendiera los alfajores de a
-# medio: el precio por unidad cae, el alfajor no.
-#
-# Qué se hace: las velas quedan COMO LAS DIO YAHOO (así `_historia_reescrita`
-# sigue comparando Yahoo contra Yahoo) y lo encontrado se anota en
-# `velas_correcciones`. `serie` lo aplica al leer: es la única puerta por la que
-# pasan todos los que usan las velas (la ficha, Fibonacci, lo que venga). Se
-# recalcula entero cada noche: si Yahoo un día ajusta la historia él mismo, el
-# escalón desaparece, la corrección también, y no se corrige dos veces.
-
-# El cociente "CEDEAR en pesos ÷ acción de afuera" es (dólar ÷ ratio): se mueve
-# despacio. Un salto de más que esto en un día no es del precio.
-SALTO_RATIO = 0.25
-# ...salvo que afuera también se haya movido muchísimo: un split de afuera que
-# Yahoo todavía no ajustó (−50 %) movería el cociente sin que el CEDEAR cambie.
-# El cociente ya descuenta lo que se mueve afuera, así que el techo es alto: un
-# ETF apalancado (TQQQ) se mueve 10-15 % en un día y su cambio de ratio se ve.
-QUIETO_AFUERA = 0.30
-# Una acción argentina sin par afuera no tiene contra qué compararse: un salto
-# de más que esto en un día se anota para mirarlo a mano en /admin (AGRO.BA
-# −88 % el 03/11/2023), pero no se corrige solo.
-SALTO_SIN_EXPLICAR = 0.40
-# Cuánto cambió la escala se mide con la mediana del cociente de los días de
-# cada lado, no con un solo día: el día del cambio el cociente también se mueve
-# por el dólar (medido: un día solo da 0,5076 para AAPL el 24/01/2024, que fue
-# exactamente a la mitad; con 5 días de cada lado, 0,4926).
-DIAS_FACTOR = 5
-# Los cambios de ratio de BYMA son a 2, 3… veces (o al revés), o de 2 a 3. Si lo
-# medido está a menos de esto de uno de esos, se usa el exacto, para no llevar
-# el ruido a toda la historia. Si no (DuPont, un spin-off: 0,42), queda lo medido.
-TOLERANCIA_FRACCION = 0.02
-_FRACCIONES = sorted({float(n) for n in range(2, 11)} | {1.0 / n for n in range(2, 11)} | {1.5, 2.0 / 3.0})
-
-
-def _factor_redondo(x: float) -> float:
-    f = min(_FRACCIONES, key=lambda r: abs(r / x - 1))
-    return f if abs(f / x - 1) <= TOLERANCIA_FRACCION else x
-
-
-def _mediana(xs: list) -> float:
-    xs = sorted(xs)
-    n = len(xs)
-    return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
-
-
-def _tramo(q: list, desde: int, paso: int) -> list:
-    """Hasta `DIAS_FACTOR` cocientes desde `desde` hacia adelante (+1) o atrás
-    (−1), cortando en el próximo salto: la mediana de un lado no puede mezclar
-    otra escala (un precio roto de dos días, otro cambio de ratio)."""
-    out, i = [q[desde]], desde
-    while len(out) < DIAS_FACTOR and 0 <= i + paso < len(q) and abs(q[i + paso] / q[i] - 1) <= SALTO_RATIO:
-        i += paso
-        out.append(q[i])
-    return out
-
-
-def detectar(byma: list, afuera: list) -> list:
-    """Los cambios de ratio y precios rotos de un CEDEAR en pesos:
-    [{date, tipo: 'ratio'|'roto', factor}]. Día por día, el cociente pesos ÷
-    afuera contra el del día anterior (sólo días con las dos series):
-      · salta y al día siguiente vuelve → precio roto de ese día ('roto');
-      · salta y se queda → cambio de ratio: desde `date` rige la escala nueva y
-        lo anterior se multiplica por `factor` ('ratio')."""
-    if not byma or not afuera:
-        return []
-    ny = {v["date"]: v["close"] for v in afuera if v.get("close")}
-    comunes = [v for v in byma if ny.get(v["date"]) and v.get("close")]
-    if len(comunes) < 3:
-        return []
-    q = [v["close"] / ny[v["date"]] for v in comunes]
-    out, roto = [], set()
-    for k in range(1, len(comunes)):
-        if k - 1 in roto:
-            continue
-        salto = q[k] / q[k - 1]
-        mov_ny = abs(ny[comunes[k]["date"]] / ny[comunes[k - 1]["date"]] - 1)
-        if abs(salto - 1) <= SALTO_RATIO or mov_ny >= QUIETO_AFUERA:
-            continue
-        # El último día todavía no se sabe si vuelve: se esconde ESE día (y no se
-        # reescala toda la historia por lo que puede ser un precio roto). La
-        # noche siguiente, con un día más, se decide.
-        if k + 1 == len(comunes) or abs(q[k + 1] / q[k - 1] - 1) <= SALTO_RATIO:
-            roto.add(k)
-            out.append({"date": comunes[k]["date"], "tipo": "roto", "factor": salto})
-        else:
-            medido = _mediana(_tramo(q, k, +1)) / _mediana(_tramo(q, k - 1, -1))
-            out.append({"date": comunes[k]["date"], "tipo": "ratio", "factor": _factor_redondo(medido)})
-    return out
-
-
-def saltos_sin_explicar(velas: list) -> list:
-    """Los días en que el cierre saltó más de `SALTO_SIN_EXPLICAR` contra el
-    anterior: [{date, tipo: 'sin_explicar', factor}]. Para una serie sin par."""
-    out = []
-    for a, b in zip(velas, velas[1:]):
-        if a.get("close") and b.get("close") and abs(b["close"] / a["close"] - 1) > SALTO_SIN_EXPLICAR:
-            out.append({"date": b["date"], "tipo": "sin_explicar", "factor": b["close"] / a["close"]})
-    return out
-
-
-def revisar(conn, pares: dict, sueltos: list = ()) -> dict:
-    """Recalcula `velas_correcciones` de cada CEDEAR (`pares`: {'XLE.BA':
-    'XLE'}) y anota los saltos sin explicar de las series en pesos sin par
-    (`sueltos`). Lee las velas CRUDAS. Reemplaza lo de cada símbolo: correrlo
-    dos veces da lo mismo."""
-    res = {"ratio": 0, "roto": 0, "sin_explicar": 0}
-    trabajo = [(ba, af) for ba, af in sorted(pares.items())] + [(t, None) for t in sorted(sueltos)]
-    for ba, af in trabajo:
-        crudas = _crudas(conn, ba)
-        hallado = detectar(crudas, _crudas(conn, af)) if af else saltos_sin_explicar(crudas)
-        conn.execute("DELETE FROM velas_correcciones WHERE symbol=?", (ba,))
-        for c in hallado:
-            conn.execute(
-                "INSERT INTO velas_correcciones (symbol, date, tipo, factor, referencia) VALUES (?,?,?,?,?)",
-                (ba, c["date"], c["tipo"], c["factor"], af))
-            res[c["tipo"]] += 1
-    conn.commit()
-    if res["ratio"] or res["sin_explicar"]:
-        log.info("velas: revisión %s", res)
-    return res
-
-
-def _aplicar(velas: list, correcciones: list) -> list:
-    """Las velas con las correcciones de `velas_correcciones` aplicadas: sin los
-    días rotos y, antes de cada cambio de ratio, en la escala nueva (el precio
-    por el factor; el volumen, en cantidad de CEDEARs, dividido)."""
-    rotos = {c["date"] for c in correcciones if c["tipo"] == "roto"}
-    ratios = [(c["date"], c["factor"]) for c in correcciones if c["tipo"] == "ratio" and c["factor"]]
-    if not rotos and not ratios:
-        return velas
-    out = []
-    for v in velas:
-        if v["date"] in rotos:
-            continue
-        f = 1.0
-        for desde, factor in ratios:
-            if v["date"] < desde:
-                f *= factor
-        if f != 1.0:
-            v = {**v, **{k: (v[k] * f if v.get(k) is not None else None)
-                         for k in ("open", "high", "low", "close")},
-                 "volume": (v["volume"] / f if v.get("volume") is not None else None)}
-        out.append(v)
-    return out
 
 
 # ─── Leer ────────────────────────────────────────────────────────────────────
 
 def _crudas(conn, ticker: str, desde: str = None) -> list:
-    """Las velas tal como las dio Yahoo. Sólo para `revisar`: el resto lee `serie`."""
+    """Las velas tal como las dio Yahoo, sin empalmar. Las lee `serie`; quien
+    necesita lo crudo (la lista de cambios de ratio, la evidencia de un lote)
+    lee la tabla con su propia consulta."""
     q = "SELECT date, open, high, low, close, volume FROM velas_diarias WHERE symbol=?"
     args = [ticker]
     if desde:
@@ -565,19 +419,52 @@ def _crudas(conn, ticker: str, desde: str = None) -> list:
     return [dict(r) for r in conn.execute(q + " ORDER BY date", args).fetchall()]
 
 
+def _empalmar(velas: list, g: dict) -> list:
+    """Las velas en pesos con lo que dice la lista única de cambios de ratio
+    (`cambios_ratio.para_el_grafico`):
+      · escalones [(fecha, factor)]: lo ANTERIOR a `fecha` se lleva a la escala
+        nueva (el precio ÷ factor; el volumen, en cantidad de CEDEARs, × factor).
+        Cambios de ratio, escisiones (DuPont 03/11/2025) y precios rotos de nivel;
+        sólo los que la serie guardada muestra (lo que Yahoo ya corrigió, no).
+      · rotos: días que saltan y vuelven (ETHA 06/10/2026): se sacan.
+      · pendientes: un salto de los últimos días que todavía no se sabe si se
+        queda: se esconde desde ese día (no se reescala la historia por algo que
+        puede ser un precio roto). La noche que haya 5 ruedas, se decide."""
+    escalones = [(d, f) for d, f in (g.get("escalones") or []) if f and f > 0]
+    rotos = set(g.get("rotos") or [])
+    pendiente = min(g.get("pendientes") or [None], key=lambda d: d or "9999")
+    if not escalones and not rotos and not pendiente:
+        return velas
+    out = []
+    for v in velas:
+        if v["date"] in rotos or (pendiente and v["date"] >= pendiente):
+            continue
+        f = 1.0
+        for desde, factor in escalones:
+            if v["date"] < desde:
+                f *= factor
+        if f != 1.0:
+            v = {**v, **{k: (v[k] / f if v.get(k) is not None else None)
+                         for k in ("open", "high", "low", "close")},
+                 "volume": (v["volume"] * f if v.get("volume") is not None else None)}
+        out.append(v)
+    return out
+
+
 def serie(conn, ticker: str, desde: str = None) -> list:
     """Las velas guardadas de un ticker, de la más vieja a la más nueva:
-    [{date, open, high, low, close, volume}], con las correcciones de la
-    revisión nocturna aplicadas (cambio de ratio de un CEDEAR, precio roto de
-    un día). [] si no hay: quien la usa tiene que decir "sin datos", nunca
-    inventar. Es LA puerta para leer velas: no leer la tabla a mano."""
+    [{date, open, high, low, close, volume}]. Las de una serie en pesos ('.BA')
+    vienen empalmadas con la lista única de cambios de ratio (`cambios_ratio`):
+    Yahoo no corrige los cambios de ratio de los CEDEAR en la especie en pesos
+    (XLE.BA cae 50 % el 05/12/2025 sin que nada pase), y esa caída falsa dejaba
+    la media de 200 en pesos diciendo "bajista" diez meses. [] si no hay: quien
+    la usa tiene que decir "sin datos", nunca inventar. Es LA puerta para leer
+    velas en un gráfico o una lectura: no leer la tabla a mano."""
     velas = _crudas(conn, ticker, desde)
-    if not velas or not ticker:
+    if not velas or not str(ticker).upper().endswith('.BA'):
         return velas
-    correcciones = [dict(r) for r in conn.execute(
-        "SELECT date, tipo, factor FROM velas_correcciones WHERE symbol=? AND tipo IN ('ratio', 'roto')",
-        (ticker,)).fetchall()]
-    return _aplicar(velas, correcciones)
+    import cambios_ratio
+    return _empalmar(velas, cambios_ratio.para_el_grafico(conn, ticker))
 
 
 def ultima_vela(conn, ticker: str):

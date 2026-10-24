@@ -174,7 +174,9 @@ def _classify(desc_norm: str) -> str:
         return "fee"
     if d.startswith("debito"):
         return "signed"   # débito de aranceles (−) / débito-crédito de monedas
-    if d.startswith("split"):
+    if d.startswith("split") or "cambio de ratio" in d:
+        # «Cambio de ratio» de un CEDEAR: entran (o salen) CEDEARs sin plata, como
+        # un split. Antes caía en "unknown" y la cantidad quedaba en la escala vieja.
         return "corporate"
     if d.startswith("movimiento manual"):
         return "signed"

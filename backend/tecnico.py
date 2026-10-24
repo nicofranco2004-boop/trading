@@ -18,6 +18,9 @@ El dólar de cada día sale de `fx.serie_diaria`: la MISMA regla que
 Las velas llegan ya corregidas por `velas_diarias.serie` (cambios de ratio de un
 CEDEAR y precios rotos de un día, que Yahoo no corrige): acá no se corrige nada.
 
+EL FIBONACCI (picos, pozos, tramos de suba y de bajada) vive en
+`estructura.py`; acá sólo se le pasa la misma serie que va al gráfico.
+
 QUÉ NO HACE. No sabe nada del usuario: tu precio promedio y tus compras se
 dibujan en la pantalla con lo que ya tiene la ficha.
 """
@@ -25,11 +28,18 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import estructura
+from velas_diarias import DIAS_GUARDADOS
+
 # Todo lo que es "un año" o "un mes" se corta por FECHA (días corridos), no por
 # cantidad de velas: una cripto cotiza los 7 días y la bolsa 5.
 DIAS_ANIO = 365
-# Lo que se manda a la pantalla: 2 años de calendario, el rango más largo.
-DIAS_GRAFICO = 2 * DIAS_ANIO
+# Lo que se manda a la pantalla: TODO lo que se guarda (3 años de calendario),
+# para poder arrastrar el gráfico hasta el principio (Nico, 22/10: «no deja ir
+# más atrás»). Los botones 3M/1A/2A eligen qué parte se ve de entrada. La media
+# de 200 de los primeros ~10 meses no se puede calcular (no hay 200 días antes)
+# y esa parte del gráfico va sin esa línea, como en TradingView.
+DIAS_GRAFICO = DIAS_GUARDADOS
 # Hacia dónde va la media de 200: contra la de hace un mes.
 DIAS_PENDIENTE = 30
 # Un dólar de hace más días que esto no es "el de ese día" (mismo techo que
@@ -251,9 +261,11 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
 
     # o/h/l: apertura, máximo y mínimo, para el gráfico de velas. Pueden venir
     # vacíos (una vela de Yahoo con el máximo roto se guarda sólo con cierre).
-    puntos = [{"d": velas[i]["date"], "o": _r(velas[i].get("open")), "h": _r(velas[i].get("high")),
-               "l": _r(velas[i].get("low")), "c": _r(cierres[i]), "s50": _r(m50[i]),
-               "s200": _r(m200[i]), "rsi": _r(r[i], 2)} for i in range(desde, len(velas))]
+    p = estructura.precio_redondo   # abajo de 1, cifras significativas (SHIB, PEPE)
+    puntos = [{"d": velas[i]["date"], "o": p(velas[i].get("open")), "h": p(velas[i].get("high")),
+               "l": p(velas[i].get("low")), "c": p(cierres[i]), "s50": p(m50[i]),
+               "s200": p(m200[i]), "rsi": _r(r[i], 2),
+               "v": velas[i].get("volume")} for i in range(desde, len(velas))]
     return {
         "asset": (asset or "").upper(),
         "moneda": moneda,
@@ -266,6 +278,9 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         # (`ref`): la pantalla lo compara con el precio en vivo para que la línea
         # de tu precio no se corra lo que se movió hoy (auditoría 22/10).
         "cierre_ref": cierre_de(conn, ref) if ref else None,
+        # Fibonacci del último tramo (estructura.py), sobre TODA la historia
+        # guardada de esta misma serie: los niveles quedan en la moneda del gráfico.
+        "fibonacci": estructura.fibonacci(velas),
     }
 
 

@@ -55,7 +55,8 @@ export function velaCompleta(p, cierreAnterior) {
 /**
  * Velas SEMANALES a partir de las diarias (para el rango de 2 años: 500 velas
  * diarias en un celular son rayitas). Cada semana: la apertura del primer día,
- * el máximo y el mínimo de la semana, el cierre del último día; las medias y el
+ * el máximo y el mínimo de la semana, el cierre del último día, el volumen
+ * sumado; las medias y el
  * RSI son los del último día. `d` es el primer día de la semana, así una compra
  * a mitad de semana cae en su vela.
  */
@@ -72,9 +73,10 @@ export function velasSemanales(puntos = []) {
     if (lunes !== clave) {
       if (actual) out.push(actual)
       clave = lunes
-      actual = { ...p, d: p.d, o: v.o, h: v.h, l: v.l, c: v.c, semana: true }
+      actual = { ...p, d: p.d, o: v.o, h: v.h, l: v.l, c: v.c, v: p.v ?? null, semana: true }
     } else {
       actual = { ...actual, h: Math.max(actual.h, v.h), l: Math.min(actual.l, v.l), c: v.c,
+        v: p.v == null ? actual.v : (actual.v || 0) + p.v,
         s50: p.s50, s200: p.s200, rsi: p.rsi }
     }
   }
@@ -83,24 +85,48 @@ export function velasSemanales(puntos = []) {
 }
 
 /**
- * El zoom de la ruedita: cuántas ruedas se ven y hasta cuál. `vista` = { n, fin,
- * total } (fin sin incluir), `factor` > 1 aleja y < 1 acerca, `f` (0 a 1) es
- * dónde está el mouse: ese día queda quieto. Nunca menos de 20 ruedas ni más de
- * las que hay. null si no cambia nada.
+ * La ventana del gráfico se mide en LUGARES, no en velas: además de los días
+ * que hay, puede tener lugares vacíos a la derecha (el futuro), como en
+ * TradingView. Así la última vela no queda pegada al borde y se puede
+ * arrastrar el gráfico hacia adelante (Nico, 23/10: «tosco»). `fin` puede
+ * pasar de `total` (los días que hay) hasta la mitad de lo que se ve.
+ *
+ * El aire de entrada a la derecha: un 5 % de lo que se ve, nunca menos de 3.
+ */
+export function margenDerecho(dias) {
+  return Math.max(3, Math.round(dias * 0.05))
+}
+/** Lo más lejos que se puede ir hacia el futuro con `n` lugares a la vista. */
+export function futuroMaximo(n) {
+  return Math.floor(n * 0.5)
+}
+/** La ventana de entrada para ver `dias` días: esos días más el aire de la derecha. */
+export function ventanaInicial(dias, total) {
+  const d = Math.min(dias, total)
+  const m = margenDerecho(d)
+  return { n: d + m, fin: total + m }
+}
+
+/**
+ * El zoom de la ruedita: cuántos lugares se ven y hasta cuál. `vista` = { n,
+ * fin, total } (fin sin incluir; puede pasar de `total`), `factor` > 1 aleja y
+ * < 1 acerca, `f` (0 a 1) es qué punto del ancho queda quieto. Nunca menos de
+ * 20 ruedas ni más de las que hay (más su aire). null si no cambia nada.
  */
 export const RUEDAS_MINIMAS = 20
 export function zoomVentana({ n, fin, total }, factor, f) {
-  const n2 = Math.round(Math.min(total, Math.max(RUEDAS_MINIMAS, n * factor)))
+  const n2 = Math.round(Math.min(total + margenDerecho(total), Math.max(RUEDAS_MINIMAS, n * factor)))
   if (n2 === n) return null
   const bajoMouse = fin - n + f * n
-  const fin2 = Math.round(Math.min(total, Math.max(n2, bajoMouse - f * n2 + n2)))
+  const fin2 = Math.round(Math.min(total + futuroMaximo(n2), Math.max(n2, bajoMouse - f * n2 + n2)))
   return { n: n2, fin: fin2 }
 }
 
 /** Arrastrar: corre la ventana en el tiempo. `frac` es cuánto del ancho se
- *  arrastró (a la derecha = para atrás en el tiempo). null si ya está en el borde. */
+ *  arrastró (a la derecha = para atrás en el tiempo; a la izquierda, hacia el
+ *  futuro, hasta la mitad de lo que se ve). null si ya está en el borde. */
 export function moverVentana({ n, fin, total }, frac) {
-  const fin2 = Math.round(Math.min(total, Math.max(n, fin - frac * n)))
+  const fin2 = Math.round(Math.min(total + futuroMaximo(n), Math.max(n, fin - frac * n)))
   return fin2 === fin ? null : { n, fin: fin2 }
 }
 
