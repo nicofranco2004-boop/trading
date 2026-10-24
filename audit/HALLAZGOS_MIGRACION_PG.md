@@ -294,28 +294,85 @@ primeros depósitos sigue pasando. Costo: las operaciones de efectivo de UNA
 persona se serializan entre sí — que es lo que el `UPDATE`-candado ya hacía
 broker por broker.
 
-Queda anotado en `backend/tests/test_caja_orden_de_candados.py`, como
-`expectedFailure` (sale `xfail` hoy; el día que se aplique la mitigación sale
-`XPASS` y hay que sacarle el decorador).
+✅ **ARREGLADO**, y el test dejó de ser `expectedFailure`:
+`backend/tests/test_caja_orden_de_candados.py` ahora pasa y queda de guardián —
+si alguien vuelve a condicionar el turno al `rowcount`, se pone rojo con el
+`deadlock detected` en el mensaje.
+
+### 🎉 Y de costado se cerró el PENDIENTE 2 de la migración
+
+`VenderDolaresMientrasSeCompran` (dos conversiones simultáneas dando
+`deadlock detected`) estaba declarado como «diagnosticado, SIN arreglar, va
+aparte» en el informe original. **Se cerró sin que nadie lo tocara.**
+
+| | antes | después |
+|---|---|---|
+| `test_dos_pedidos_a_la_vez.py` completo, Postgres | `deadlock detected` 3 de 3 reproducible | **24 pasados, 4 corridas seguidas, cero deadlock** |
+
+Y el motivo es exactamente la regla de arriba: ahora la lectura del saldo pide el
+turno por usuario **SIEMPRE y PRIMERO**, así que la conversión toma UN candado
+antes de cualquier candado de fila y **no queda orden que invertir**. Los dos
+bloqueos mutuos de esta migración —el que el arreglo de la caja introdujo y este
+que venía de antes— tenían la misma causa, y una sola regla cerró los dos.
+
+👉 Lo que esto deja como método: cuando aparece un bloqueo mutuo, antes de
+diseñarle un arreglo propio conviene preguntarse si no es la misma inversión de
+orden que otro que ya está en la lista. Acá eran el mismo, y se trataron como dos
+problemas distintos durante un día entero.
 
 ---
 
-## 🟡 HALLAZGO 4 — Sí quedan dos caminos que crean la caja sin pasar por `tomar_saldo` (pero no pueden duplicarla)
+## 🟡 HALLAZGO 4 — Eran TRES caminos que crean la caja sin `tomar_saldo`, no dos, y el tercero sí podía duplicarla
 
-Era la pregunta explícita del informe. Barridos todos los `INSERT INTO positions`
-con `is_cash`, fuera de tests, son cuatro:
+🔴 **CORRECCIÓN DE ESTE HALLAZGO (24/10/2026).** La primera versión decía: «sí
+hay dos, y los dos están tapados por el índice único de `brokers`». **Estaba
+incompleto, y el que faltaba era el único peligroso.**
 
-| sitio | crea caja | ¿puede duplicar? |
+Barridos todos los `INSERT INTO positions` que escriben `is_cash`, fuera de
+tests:
+
+| sitio | crea caja | ¿podía duplicarla? |
 |---|---|---|
-| `efectivo.py:205` (`mover`) | sí | no — es el arreglo |
-| `main.py:5887` `POST /api/brokers` | sí, con saldo 0 | **no**: va junto al `INSERT INTO brokers`, y el esquema de Postgres tiene `UNIQUE (user_id, name)` (verificado en `schema_pg.sql`), así que el segundo pedido se cae con error de integridad |
-| `main.py:44042` `_wallbit_ensure_broker` | sí, con saldo 0 | **no**: igual, sale temprano si el broker ya existe |
-| `main.py:11716` `_insert_manual_position` | **no** | lo frena un `if p.is_cash: raise HTTPException(400, …)` tres líneas antes |
+| `efectivo.mover` | sí | no — es la puerta |
+| `POST /api/brokers` | sí, con saldo 0 | **no**: va junto al `INSERT INTO brokers`, y hay `UNIQUE (user_id, name)` en los dos esquemas |
+| `_wallbit_ensure_broker` | sí, con saldo 0 | **no**: igual, sale temprano si el broker ya existe |
+| `_insert_manual_position` | **no** | lo frena un `if p.is_cash: raise HTTPException(400, …)` |
+| **`importing/persister.py`** (el sibling '· USD' del import) | **sí** | 🔴 **SÍ** |
 
-**Conclusión: la respuesta a la pregunta del informe es «sí hay dos, y los dos
-están tapados por el índice único de `brokers`, no por el turno».** Es una
-dependencia que conviene saber: si alguien le saca el `UNIQUE (user_id, name)` a
-`brokers`, se vuelven a abrir los dos caminos.
+**El tercero, que se me había escapado.** Era un «¿existe? → la inserto»:
+
+    cash_exists = conn.execute("SELECT 1 FROM positions WHERE … is_cash=1 LIMIT 1").fetchone()
+    if not cash_exists:
+        conn.execute("INSERT INTO positions (… is_cash, invested) VALUES (?,?,?,1,0)")
+
+Y no lo tapaba nada:
+· no pasa por `efectivo.tomar_saldo`;
+· **el índice único de `brokers` no aplica**: en ese punto el sibling '· USD' ya
+  existe (`_ensure_usd_sibling` lo devuelve), así que no hay nada que frene al
+  segundo;
+· **`positions` no tiene NINGÚN índice UNIQUE**, ni en Postgres ni en SQLite
+  (verificado en los dos esquemas);
+· y cae del lado malo de la regla de esta auditoría: **lo primero que hace es
+  LEER** para decidir, así que no lo hace cumplir ninguno de los dos motores.
+
+Confirmar un import mientras entra el primer depósito al sibling dejaba DOS
+cajas, y como todo lee «la más vieja», la plata de la segunda no la movía nadie
+más.
+
+✅ **ARREGLADO**: ese sitio va por `efectivo.asegurar_caja`, con
+`backend/tests/test_caja_una_sola_puerta.py` como guardián.
+
+### Por qué se me escapó, que es lo que queda de este hallazgo
+
+El barrido fue `grep "is_cash" | grep -i "insert\|values"`: las dos palabras **en
+la misma línea**. En el persister el INSERT ocupa varias líneas y el `is_cash`
+cae en la segunda. Es el punto ciego que este repo ya tiene anotado para los
+guardianes por texto, y lo pisé igual — en el mismo informe donde para los topes
+sí usé AST sobre los `conn.execute`, que es lo que lo habría encontrado.
+
+👉 **Un barrido por texto no cierra una pregunta del tipo «¿quedó algún otro
+camino?».** Para esa pregunta hay que mirar la estructura del código, no su
+texto. Lo encontró una de las siete lentes del barrido, no yo.
 
 ---
 
@@ -485,6 +542,131 @@ el candado de aviso y no uno cada uno.
 
 ---
 
+## 🟡 HALLAZGO 9 — El primer cobro de Rebill deja DOS renglones en el libro, pero NO regala días
+
+Viene del barrido de siete lentes: **tres lentes ciegas entre sí** lo encontraron
+por separado, y las tres dijeron «paga 30 días y recibe 60». **El mecanismo que
+describen es cierto; la consecuencia que le ponen, no.**
+
+### Lo que es cierto, verificado leyendo
+
+· El primer cobro **llega dos veces** —como `subscription.created` y como
+  `payment.created`—, y eso no es una hipótesis: lo dice el propio código en
+  `main.py:37818`, «con segundos de diferencia y **en cualquier orden**».
+· Los dos avisos tienen un guardián que pregunta «¿esto ya se acreditó?», y
+  **los dos preguntan sin candado**: `_rebill_activate` abre su `with conn:` en
+  `main.py:37530` y lo CIERRA antes de preguntar en `37588` (el comentario lo
+  dice: «fuera del with por simplicidad»), y `_rebill_record_payment` hace lo
+  mismo (`with conn:` en `37807`, guardián en `37826`).
+· La regla de la base que debería frenarlo **no lo frena**:
+  `idx_credit_ledger_payment_dedup` es **PARCIAL**, con
+  `WHERE payment_id IS NOT NULL AND source_subscription_id IS NOT NULL`
+  (`main.py:3210`, `schema_pg.sql:2236`). La fila del alta nace con
+  `payment_id` NULO a propósito, así que queda FUERA del índice y el segundo
+  INSERT no choca con nada.
+
+### Lo que MEDÍ, con las funciones reales del webhook y dos conexiones
+
+| base | corridas | días acreditados | renglones de «payment» en el libro |
+|---|---|---|---|
+| SQLite (lo que corre en producción hoy), proceso frío | 10 | **30** siempre | **2** en 9 de 10 |
+| Postgres | 10 | **30** siempre | **2** en 10 de 10 |
+| SQLite, desfasaje ±5/10/20/40/80 ms | 11 | 30 | 1 |
+
+**31 intentos, dos motores, 11 desfasajes: los días NUNCA se duplicaron.**
+
+### Por qué no se duplican, que es la parte que importa
+
+Los dos llaman a `get_credit_state` ANTES de que ninguno commitee, así que los
+dos ven «no hay crédito» y los dos caen en el `else` de `credits.py:250`:
+
+    new_active_until = now + period_days
+
+Es un valor **ABSOLUTO, no una suma**: el segundo PISA al primero y queda en 30.
+La rama que suma (`credits.py:228-236`, `total_days = remaining + period_days`)
+sólo se activa si el segundo VE la ventana que el primero ya commiteó — y en ese
+caso los guardianes lo agarran antes.
+
+👉 **Lo que salva la plata es que la escritura es absoluta, no que los guardianes
+funcionen.** Es importante decirlo así: el día que alguien convierta ese `else`
+en una suma, los 60 días pasan a ser seguros y nada más cambió.
+
+⚠️ **El riesgo que queda y NO pude forzar:** si el cruce cae de modo que el
+guardián del cobro corra ANTES del commit del alta pero su `get_credit_state`
+DESPUÉS, se activa la rama que suma y entran los 60 días. La ventana son unas
+pocas sentencias entre `37826` y la llamada a `grant_payment_credit`. Existe en
+el código; no la alcancé en 31 intentos.
+
+### Veredicto
+
+**Gravedad DATOS, no PLATA.** El libro de créditos es el registro de qué se
+cobró, y queda con dos renglones de «payment» por un solo pago: mirando el libro
+no se puede reconstruir cuánto entró. Vale arreglarlo. **No es «estamos regalando
+un mes»**, y conviene que quede escrito así para que nadie lo trate como un
+incendio.
+
+La forma del arreglo que cubre el caso que el índice parcial no puede cubrir (el
+`payment_id` nulo) es la misma que se usó para los topes del plan: la regla
+adentro de la sentencia, `INSERT … SELECT … WHERE NOT EXISTS (…)` por
+(usuario, suscripción, kind). La sonda con el barrido de desfasaje es el
+guardián que hace falta para que la prueba no dependa del scheduler.
+
+---
+
+## 🔴 HALLAZGO 10 — «Fallar cerrada» era perder el candado, y lo agarró un test de tres semanas antes
+
+El arreglo del turno por conexión (`4d969e10`) —hacer que se decida por LA
+CONEXIÓN y no por una bandera del proceso— dejó un agujero nuevo durante dos horas, y lo
+interesante es por qué.
+
+`habla_postgres()` miraba SÓLO `type(conn).__module__` y contestaba «no» para
+todo lo que no reconociera, con el argumento de que **fallar cerrada es más
+seguro**. Pero un envoltorio de conexión —de registro, de pool, de medición— no
+es un `pgshim.Connection`, así que contestaba «no es Postgres», **no pedía el
+candado**, y los dos primeros depósitos simultáneos volvían a crear DOS cajas:
+medido, una con 200 y otra con 300. El bug de las dos cajas, de vuelta.
+
+### 🔑 La lección, que es general y vale fuera de esto
+
+**«Fallar cerrada» no es seguro por definición. Hay que preguntarse QUÉ SE PIERDE
+al fallar.** Si lo que se pierde es un candado que protege plata, fallar cerrada
+es el PEOR resultado, no el más prudente.
+
+Es la misma forma que la regla que este repo ya tiene medida sobre las listas de
+exclusión («se ofrece salvo a…» dejó pasar plata dos veces) — sólo que ahí el
+default abierto costaba plata y acá el default cerrado costaba plata. **La regla
+no es «cerrá» ni «abrí»: es mirá qué se pierde.**
+
+### Quién lo agarró, y la atribución correcta
+
+Lo agarró **`backend/tests/test_dos_pedidos_a_la_vez.py`**, que **no lo escribió
+ninguna de las dos sesiones de esta tanda**: nació en `61282c09`, el **3 de
+octubre de 2026** —tres semanas antes—, en «fix(efectivo): dos pedidos iguales a
+la vez ya no mueven la plata dos veces». Su envoltorio `_Conexion` nació en ese
+mismo commit, para otro motivo.
+
+👉 **Un test viejo, escrito para otra cosa, agarró una regresión que ninguno de
+los dos autores vio.** Es la regla de «el test viejo tenía razón», y de paso el
+argumento concreto para no borrar un test porque «es viejo y molesta»: la próxima
+vez no hay quien avise.
+
+### El arreglo
+
+Tres pasos, y cada uno lo pidió un bug distinto (`5e7fcd0a`):
+1. ¿Es SQLite? `isinstance` para la conexión directa **y**
+   `hasattr(conn, "total_changes")` para la envuelta — un envoltorio no es una
+   `sqlite3.Connection` pero sí reenvía atributos, y `total_changes` lo tiene
+   sqlite3 y no psycopg. Preguntar por algo que el objeto REENVÍA, y no por su
+   tipo, es lo único que sobrevive a un envoltorio.
+2. ¿Es Postgres directo? Por el módulo.
+3. Ninguna de las dos: ahí sí vale la bandera del proceso, pero antes el objeto
+   tiene que PARECER una conexión (`callable(conn.execute)`) — sin eso, un `None`
+   contestaba «sí habla Postgres».
+
+Medido con una sonda de las CINCO situaciones en los dos motores: **5/5 y 5/5**.
+
+---
+
 ## ✅ Lo que ataqué y aguantó
 
 * **Los seis `UPDATE` de cobros, verificados por máquina y no a ojo.** El guard
@@ -568,8 +750,9 @@ conviene saberlo antes de usarlo como criterio de «verde».
 Las 13 preexistentes están repartidas en **12 archivos distintos** —cobertura sin
 precios, alertas que no toman la base, poda del arranque, cupones, verificación de
 mail, la caja al arrancar— o sea que son fallas VARIADAS, no un instrumento mal
-armado. Entre ellas está `VenderDolaresMientrasSeCompran`, el `deadlock` que el
-informe deja diagnosticado y aparte: coherente con lo declarado.
+armado. Entre ellas estaba `VenderDolaresMientrasSeCompran`, el `deadlock` que el
+informe dejaba diagnosticado y aparte — **ése ya no está**: se cerró de costado
+con el turno pedido siempre y primero (ver el final del hallazgo 3).
 
 Los **5 rojos nuevos** contra Postgres **son los hallazgos 1 y 2**: cuatro del
 tope de la cuota de IA y uno del tope de brokers del plan. Son tests que marcan
@@ -583,9 +766,10 @@ prueba que miden la migración y no el instrumento.
 
 * El horario de la cuota (día UTC vs día argentino): decisión de producto.
 * La columna de orden en `import_batches`: cambio de esquema.
-* El `deadlock detected` de dos conversiones simultáneas
-  (`VenderDolaresMientrasSeCompran`): diagnosticado y aparte. **Ojo: el hallazgo
-  2 es OTRO bloqueo mutuo, con otro mecanismo (el candado nuevo de la caja).**
+* ~~El `deadlock detected` de dos conversiones simultáneas
+  (`VenderDolaresMientrasSeCompran`)~~ — **ya no está**: resultó ser la MISMA
+  inversión de orden que el bloqueo mutuo del hallazgo 3, y la misma regla cerró
+  los dos. Ver el final del hallazgo 3.
 * El patrón «borrar e ignorar el error» de los 118 archivos de test.
 * No se tocó una línea de código de producción. Las dos pruebas de remedio
   (hallazgos 1 y 3) se aplicaron, se midieron y se revirtieron: `git status` sólo
