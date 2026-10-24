@@ -19,7 +19,7 @@ import { TrendingUp, TrendingDown, Calendar, Trash2 } from 'lucide-react'
 import AssetLogo from '../AssetLogo'
 import { pctSigned, colorClass } from '../../utils/format'
 import { fmtConvertedCompactRaw } from '../../contexts/CurrencyContext'
-import { formatQty } from './shared'
+import { formatQty, pctEnMoneda } from './shared'
 import { esCobro } from '../../utils/tradeStats'
 
 // `nuevas`: ids de las operaciones recién cargadas (Operations): esa tarjeta
@@ -71,6 +71,8 @@ function DayGroup({ group, histMoney, onDelete, borrando, nuevas }) {
 
 function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false }) {
   const isWin = op.pnl_usd != null && op.pnl_usd > 0
+  // El % en la moneda de la app (pesos o dólares), no en la de la venta.
+  const { pct } = pctEnMoneda(op, histMoney.currency)
   const isLoss = op.pnl_usd != null && op.pnl_usd < 0
   const type = (op.op_type || '').toLowerCase()
   const isBuy = type.includes('compra') || type === 'buy'
@@ -116,9 +118,9 @@ function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false
             })}
           </div>
         )}
-        {op.pnl_pct != null && (
-          <div className={`text-[10px] tabular leading-none mt-1.5 ${colorClass(op.pnl_pct)}`}>
-            {pctSigned(op.pnl_pct / 100)}
+        {pct != null && (
+          <div className={`text-[10px] tabular leading-none mt-1.5 ${colorClass(pct)}`}>
+            {pctSigned(pct / 100)}
           </div>
         )}
       </div>

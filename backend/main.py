@@ -95,6 +95,7 @@ def _setup_yfinance_cache():
 
 _setup_yfinance_cache()
 import fx as _fx
+import resultado_dual as _resultado_dual
 import efectivo as _efectivo   # la única puerta por la que se mueve el saldo de un broker
 import renombre_broker as _renombre_broker   # el nombre del broker ADENTRO de lo guardado
 import dividendos as _dividendos   # bandeja de cobros de dividendos (Cartera)
@@ -1846,6 +1847,17 @@ def init_db():
         cols = _table_cols(conn, 'operations')
         if cols and 'cost_basis_consumed' not in cols:
             conn.execute("ALTER TABLE operations ADD COLUMN cost_basis_consumed REAL")
+        # El resultado de una venta en las DOS monedas, cada punta a su dólar (ver
+        # resultado_dual.py). `pnl_pct` es el % en la moneda de la venta y queda como
+        # está; éstas van al lado. Las completa el motor de venta al vender y el
+        # botón de Admin para lo ya guardado.
+        cols = _table_cols(conn, 'operations')
+        for _col, _tipo in (('costo_ars', 'REAL'), ('costo_usd', 'REAL'),
+                            ('cobrado_ars', 'REAL'), ('cobrado_usd', 'REAL'),
+                            ('pnl_pct_ars', 'REAL'), ('pnl_pct_usd', 'REAL'),
+                            ('pnl_sin_dato', 'TEXT')):
+            if cols and _col not in cols:
+                conn.execute(f"ALTER TABLE operations ADD COLUMN {_col} {_tipo}")
         conn.commit()
 
         # ─── Índices secundarios — positions / operations / monthly_entries ────
@@ -16101,6 +16113,10 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                     # `invested` guardado.
                     base_invested = ((_fx.costo_del_lote(p["invested"], buy_price, pos_qty) or 0)
                                      + pos_buy_commissions)
+                    # El costo de este pedazo EN LA MONEDA EN QUE SE COMPRÓ, antes de
+                    # llevarlo a la de la venta: es lo que necesita el resultado en las
+                    # dos monedas (resultado_dual), que pone cada punta a su dólar.
+                    costo_en_su_moneda = base_invested * ratio
 
                     # CROSS-CURRENCY: si el lote se compró en otra moneda que la de la
                     # venta, convertimos el cost basis a la moneda de la venta (igual
@@ -16201,6 +16217,18 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                          sell_ccy, fx_stamp),
                     )
                     ops_created.append(cur.lastrowid)
+                    # El resultado en pesos y en dólares, cada punta a su dólar. La
+                    # cuenta vive en resultado_dual (la misma del importador, el
+                    # rebuild y el histórico). El dólar de la venta: el que escribió
+                    # el usuario, si lo escribió; si no, el de la fecha.
+                    _resultado_dual.guardar(conn, uid, cur.lastrowid,
+                        _resultado_dual.resultado_en_dos_monedas(
+                            conn, costo=costo_en_su_moneda, moneda_costo=lot_currency,
+                            fecha_compra=(p["entry_date"] if "entry_date" in p.keys() else None),
+                            cobrado=data.exit_price * take - chunk_commission_native,
+                            moneda_venta=sell_ccy, fecha_venta=op_date,
+                            riel=(_fx.RIEL_MEP if _hist_fx else _fx.RIEL_BLUE),
+                            tc_venta=(data.tc_venta if sell_ccy == "ARS" else None)))
 
                     # Reversibilidad: la venta CONSUME el lote (lo borra o lo achica), y esa
                     # información no vive en ningún otro lado — sin esta foto, borrar la venta
@@ -20947,6 +20975,9 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
             # Mismo helper que usa el import — una sola implementación del movimiento
             # de efectivo. Un P&L negativo lo DESCUENTA, que es lo correcto.
             _adjust_broker_cash(conn, uid, op.broker, pnl_cash_nativo)
+        # Una 'Venta' tipeada también tiene su resultado en las dos monedas (sin fecha
+        # de compra, la otra moneda queda "sin dato"). Misma cuenta que los motores.
+        _resultado_dual.recalcular_fila(conn, uid, cur.lastrowid)
         row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
         # Sync cache de pnl_realized en monthly_entries
         try:
@@ -21136,6 +21167,10 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
         # puede mover esta operación hasta el commit.
         for broker_mov, delta in movimientos:
             _adjust_broker_cash(conn, uid, broker_mov, delta)
+        # El resultado en las dos monedas sale de los precios, la cantidad y el % de la
+        # fila: si la edición los cambió, el guardado quedaría viejo. Se re-deriva con
+        # la misma cuenta que usan los motores de venta.
+        _resultado_dual.recalcular_fila(conn, uid, oid)
         # FIXED: include user_id in SELECT to prevent IDOR data leak
         row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)).fetchone()
         if not row:
@@ -26455,6 +26490,22 @@ def admin_repair_caja_1415(apply: bool = False, uid: int = Depends(get_admin_use
     conn = get_db()
     try:
         return _repair_caja_1415(conn, bool(apply))
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/resultado-dos-monedas")
+def admin_resultado_dos_monedas(apply: bool = False, user_id: Optional[int] = None,
+                                uid: int = Depends(get_admin_user)):
+    """Completa el resultado en pesos y en dólares de las ventas ya guardadas que no
+    lo tienen (las anteriores a las columnas). `apply=false` = sólo cuenta.
+
+    Por el MISMO camino que una venta nueva: `resultado_dual.resultado_de_la_fila`
+    despeja de la fila el costo del lote, su moneda y sus fechas, y llama a la misma
+    función que los motores de venta. Sólo toca filas con las columnas vacías."""
+    conn = get_db()
+    try:
+        return _resultado_dual.recalcular_historico(conn, uid=user_id, apply=bool(apply))
     finally:
         conn.close()
 

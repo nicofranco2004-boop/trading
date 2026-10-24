@@ -403,6 +403,7 @@ export default function Admin() {
 
       <AlcanceAuditoriaPanel toast={toast} />
       <RepairInteresPfPanel toast={toast} />
+      <ResultadoDosMonedasPanel toast={toast} />
       <RepairCaja1415Panel toast={toast} />
       <FciRefreshPanel toast={toast} />
       <AvisoRatioPanel toast={toast} />
@@ -2594,6 +2595,76 @@ function RepairInteresPfPanel({ toast }) {
         </div>
       )}
       {done && <p className="text-xs text-emerald-500">Listo: {done.filas_a_sellar.length} fila(s) selladas y {done.usuarios} usuario(s) recalculado(s).</p>}
+    </div>
+  )
+}
+
+
+// ─── ResultadoDosMonedasPanel — el % en pesos y en dólares de las ventas viejas ──
+// Las ventas nuevas ya nacen con los dos (backend/resultado_dual.py). Las de antes
+// tienen las columnas vacías y la columna «P&L %» de Movimientos les sigue mostrando
+// el % en la moneda de la venta. Esto las completa por la MISMA cuenta que usa una
+// venta nueva. Dos pasos: primero se ve cuántas y qué daría, después se aplica.
+const SIN_DATO_TXT = {
+  sin_fecha_compra: 'sin fecha de compra', sin_dolar_compra: 'sin dólar del día de compra',
+  sin_dolar_venta: 'sin dólar del día de venta', sin_costo: 'sin costo cargado',
+  moneda_del_lote: 'no se sabe en qué moneda se compró', retiro: 'retiros a costo',
+}
+function ResultadoDosMonedasPanel({ toast }) {
+  const [prev, setPrev] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(null)
+
+  async function correr(apply) {
+    setBusy(true)
+    try {
+      const out = await api.post(`/admin/resultado-dos-monedas?apply=${apply}`)
+      if (apply) { setDone(out); setPrev(null); toast.push(`Completadas ${out.filas} venta(s)`, { type: 'success' }) }
+      else setPrev(out)
+    } catch (e) {
+      toast.push('Error: ' + e.message, { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  const n = prev?.filas ?? 0
+  const pct = v => (v == null ? '—' : `${v.toLocaleString('es-AR', { maximumFractionDigits: 1 })} %`)
+  return (
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h2 className="font-semibold text-ink-0">Resultado de las ventas viejas en pesos y en dólares</h2>
+        <div className="flex gap-2">
+          <button onClick={() => correr(false)} disabled={busy}
+            className="text-xs px-3 py-1.5 rounded border border-line text-ink-1 hover:bg-bg-1 disabled:opacity-50">
+            {busy && !prev ? 'Mirando…' : '1 · Ver qué cambiaría'}
+          </button>
+          <button onClick={() => correr(true)} disabled={busy || !prev || n === 0}
+            className="text-xs px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-40">
+            {busy && prev ? 'Aplicando…' : `2 · Aplicar${n ? ` (${n})` : ''}`}
+          </button>
+        </div>
+      </div>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Las ventas hechas antes de este cambio sólo tienen el % en la moneda en que se vendió. Esto
+        les calcula el de pesos y el de dólares, cada punta a su dólar (el de la compra y el de la
+        venta). <b>No cambia el P&L realizado ni ningún monto</b>, y sólo toca ventas que todavía no
+        los tienen: apretarlo dos veces no hace nada la segunda. El paso 1 no modifica nada.
+      </p>
+      {prev && (
+        <div className="text-xs space-y-1">
+          <p className="text-ink-2">
+            <b>{n}</b> venta(s) de <b>{prev.usuarios}</b> usuario(s): <b>{prev.con_los_dos}</b> quedan con los dos %.
+          </p>
+          {Object.entries(prev.sin_dato || {}).map(([k, v]) => (
+            <p key={k} className="text-amber-500">{v} con un % sin dato: {SIN_DATO_TXT[k] || k}.</p>
+          ))}
+          {prev.ejemplos.map(e => (
+            <p key={e.id} className="text-ink-3 tabular">
+              {e.fecha} · {e.activo} ({e.moneda || '?'}) · hoy {pct(e.pnl_pct_guardado)} → pesos {pct(e.pnl_pct_ars)} · dólares {pct(e.pnl_pct_usd)}
+            </p>
+          ))}
+        </div>
+      )}
+      {done && <p className="text-xs text-emerald-500">Listo: {done.filas} venta(s) de {done.usuarios} usuario(s).</p>}
     </div>
   )
 }

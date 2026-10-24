@@ -255,3 +255,31 @@ export function buildGroups(rows, groupBy) {
   }
   return groups
 }
+
+// ─── El % de una venta en la moneda elegida ────────────────────────────────
+// `pnl_pct` es el % en la moneda de la VENTA: en una venta en pesos, el % en
+// pesos, aunque la app esté en dólares (GGAL de $4.500 a $6.900 = +53 % en
+// pesos, +2 % en dólares con el dólar de 1.000 a 1.500). El servidor guarda al
+// lado los dos, cada punta a su dólar (`pnl_pct_ars` / `pnl_pct_usd`, ver
+// backend/resultado_dual.py), y acá se elige el de la moneda de la app.
+//
+// Una fila que no tiene ninguno de los tres campos nuevos no es la venta de un
+// lote (dividendo, cupón, futuro, conversión): muestra su `pnl_pct` como siempre.
+// Una venta a la que le falta el de esta moneda NO cae al `pnl_pct`: eso sería
+// mostrar el % en pesos rotulado como dólares. Muestra «—» y el porqué.
+const MOTIVO_SIN_PCT = {
+  sin_fecha_compra: 'La compra no tiene fecha: no sabemos a qué dólar se pagó.',
+  sin_dolar_compra: 'No tenemos el dólar del día de la compra.',
+  sin_dolar_venta: 'No tenemos el dólar del día de la venta.',
+  sin_costo: 'La compra no tiene costo cargado.',
+  moneda_del_lote: 'No sabemos en qué moneda se pagó la compra.',
+  retiro: 'Salió de la cuenta a costo: no fue una venta.',
+}
+
+export function pctEnMoneda(op, currency) {
+  const tieneLosDos = op.pnl_pct_ars != null || op.pnl_pct_usd != null || op.pnl_sin_dato != null
+  if (!tieneLosDos) return { pct: op.pnl_pct ?? null, motivo: null }
+  const pct = currency === 'ARS' ? op.pnl_pct_ars : op.pnl_pct_usd
+  if (pct != null) return { pct, motivo: null }
+  return { pct: null, motivo: MOTIVO_SIN_PCT[op.pnl_sin_dato] || 'Sin dato.' }
+}

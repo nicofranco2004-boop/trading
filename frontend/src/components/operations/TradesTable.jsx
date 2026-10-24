@@ -17,7 +17,7 @@ import { fmtConvertedRaw } from '../../contexts/CurrencyContext'
 import EmptyState from '../EmptyState'
 import InlineAIButton from '../ai/InlineAIButton'
 import Panel from '../Panel'
-import { prettyOpType, movPnl } from './shared'
+import { prettyOpType, movPnl, pctEnMoneda } from './shared'
 import { esCobro } from '../../utils/tradeStats'
 
 export const PAGE_SIZE = 50
@@ -142,6 +142,8 @@ function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = fal
   const isLoss = op.pnl_usd != null && op.pnl_usd < 0
   const ArrowIcon = isWin ? ArrowUpRight : isLoss ? ArrowDownRight : null
   const arrowColor = isWin ? 'text-rendi-pos' : isLoss ? 'text-rendi-neg' : 'text-ink-3'
+  // El % en la moneda de la app (pesos o dólares), no en la de la venta.
+  const { pct, motivo } = pctEnMoneda(op, histMoney.currency)
   return (
     <tr className={`border-b border-line/30 hover:bg-bg-2/40 transition-colors ${indent ? 'bg-bg-2/15' : ''} ${nueva ? 'destello-nueva' : ''}`}>
       <td className={`px-4 py-2 text-xs font-mono tabular text-ink-2 ${indent ? 'pl-6 opacity-75' : ''}`}>
@@ -165,8 +167,9 @@ function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = fal
               decimals: 2,
             })}
       </td>
-      <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(op.pnl_pct)} ${indent ? 'opacity-75' : ''}`}>
-        {op.pnl_pct != null ? pctSigned(op.pnl_pct / 100) : '—'}
+      <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(pct)} ${indent ? 'opacity-75' : ''}`}
+        title={motivo || undefined}>
+        {pct != null ? pctSigned(pct / 100) : '—'}
       </td>
       <td className="px-3 py-2">
         <div className="flex gap-1 justify-end items-center">
