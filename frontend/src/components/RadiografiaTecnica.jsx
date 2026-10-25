@@ -80,12 +80,18 @@ const TONO = {
  *  explicación de la ficha en el globo. `p` (la fila) dice si es un bono o un
  *  fondo, para explicar bien por qué no tiene lectura. */
 export function TendenciaChip({ x, p = null, className = '' }) {
-  const t = tendencia(x, undefined, p)
-  const tono = TONO[t.id]
+  return <PildoraTendencia {...tendencia(x, undefined, p)} className={className} />
+}
+
+/** La píldora de una tendencia ya leída: `id` 'alcista' | 'bajista' | 'sin',
+ *  su palabra y, en el globo, la explicación. La usan también «Tu lista» y su
+ *  columna de corto plazo. */
+export function PildoraTendencia({ id, palabra, motivo, className = '' }) {
+  const tono = TONO[id] || TONO.sin
   return (
-    <span title={t.motivo}
+    <span title={motivo}
       className={`inline-flex items-center rounded-full px-2 py-0.5 text-[12px] font-medium whitespace-nowrap ${tono.texto} ${tono.fondo} ${className}`}>
-      {t.palabra}
+      {palabra}
     </span>
   )
 }

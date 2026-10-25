@@ -39,7 +39,7 @@ export function esAccionLocal(asset, lots) {
   return lots.every(esLoteLocal)
 }
 
-const clave = (asset, local) => `${asset}|${local ? 1 : 0}`
+export const clave = (asset, local) => `${asset}|${local ? 1 : 0}`
 
 /** Lo que se le pide al servidor: cada activo (con su marca `local`) una vez. */
 export function activosParaLeer(lotes = []) {
@@ -144,6 +144,34 @@ export function repartirCien(valores) {
   return pisos
 }
 
+/**
+ * Cuánto vale cada activo de la cartera: los lotes del mismo activo (y la misma
+ * marca `local`) sumados con `valorDe(p)`, la valuación de la pantalla. El
+ * efectivo va junto en 'efectivo' y cada `extra` ({ nombre, valor }: los plazos
+ * fijos) en su propia clave. `total`: la suma de todo, el mismo total de la
+ * Cartera. La usan la radiografía y «Tu lista» (el «cuánto pesa» de cada fila).
+ * → { porActivo: Map(clave → { nombre, valor, p (un lote, para el motivo) }), total }
+ */
+export function valorPorActivo(lotes = [], valorDe, extra = []) {
+  const porActivo = new Map()
+  const sumar = (k, nombre, valor, p) => {
+    if (!(valor > 0)) return
+    const a = porActivo.get(k) || { nombre, valor: 0, p }
+    a.valor += valor
+    porActivo.set(k, a)
+  }
+  for (const p of lotes) {
+    if (!p) continue
+    const v = Number(valorDe(p))
+    if (p.is_cash) { sumar('efectivo', 'efectivo', v, p); continue }
+    sumar(clave(String(p.asset).toUpperCase(), esLoteLocal(p)), fciLabel(p.asset), v, p)
+  }
+  for (const e of extra) sumar(`extra:${e.nombre}`, e.nombre, Number(e.valor), { es_plazo_fijo: true })
+  let total = 0
+  for (const a of porActivo.values()) total += a.valor
+  return { porActivo, total }
+}
+
 const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado']
 function cuando(iso) {
   const [y, m, d] = iso.split('-').map(Number)
@@ -160,22 +188,8 @@ function cuando(iso) {
  *     cambios: [{ asset, tono: 'pos'|'neg'|'aviso', texto }] }
  */
 export function radiografia(lotes = [], valorDe, indice, extra = [], hoy = hoyISO()) {
-  const porActivo = new Map()   // clave → { nombre, valor, x, p (un lote, para el motivo) }
-  const sumar = (k, nombre, valor, x, p) => {
-    if (!(valor > 0)) return
-    const a = porActivo.get(k) || { nombre, valor: 0, x, p }
-    a.valor += valor
-    porActivo.set(k, a)
-  }
-  for (const p of lotes) {
-    if (!p) continue
-    const v = Number(valorDe(p))
-    if (p.is_cash) { sumar('efectivo', 'efectivo', v, null, p); continue }
-    const local = esLoteLocal(p)
-    const k = clave(String(p.asset).toUpperCase(), local)
-    sumar(k, fciLabel(p.asset), v, indice?.get(k) || null, p)
-  }
-  for (const e of extra) sumar(`extra:${e.nombre}`, e.nombre, Number(e.valor), null, { es_plazo_fijo: true })
+  const { porActivo } = valorPorActivo(lotes, valorDe, extra)
+  for (const [k, a] of porActivo) a.x = indice?.get(k) || null
 
   const grupos = { alcista: [], bajista: [], sin: [] }
   const motivos = {}   // porque → [nombres], en el orden de MOTIVOS_SIN_LECTURA

@@ -8,7 +8,8 @@
 // seguido que en los movers: cada cotización vive 1 min en el servidor.
 
 import { useEffect, useMemo, useState } from 'react'
-import { Star, X, TrendingUp, TrendingDown, Eye } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Star, X, TrendingUp, TrendingDown, Eye, Table2 } from 'lucide-react'
 import { api } from '../../utils/api'
 import { pctVar, pctVarSign } from '../../utils/format'
 import AssetQuickView from './AssetQuickView'
@@ -109,12 +110,22 @@ export default function Watchlist() {
     <section ref={ref}>
       <div className="flex items-center justify-between gap-3 mb-2">
         <h2><Eyebrow>Watchlist</Eyebrow></h2>
-        {!loading && items.length > 0 && (
-          <span className="flex items-center gap-3">
-            {estado && <EnVivo estado={estado} />}
-            <span className="text-[12px] text-ink-3">{items.length} tickers</span>
-          </span>
-        )}
+        <span className="flex items-center gap-3">
+          {!loading && items.length > 0 && (
+            <>
+              {estado && <EnVivo estado={estado} />}
+              <span className="text-[12px] text-ink-3">{items.length} tickers</span>
+            </>
+          )}
+          {/* Lo que tenés y lo que seguís en una tabla, con su lectura técnica
+              (pages/TuLista.jsx). Va aunque la watchlist esté vacía: también
+              muestra tu cartera. */}
+          <Link to="/tu-lista"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-line-2 px-2.5 py-1 text-[12.5px] text-ink-1 hover:text-ink-0 hover:border-data-violet/50 transition-colors">
+            <Table2 size={13} strokeWidth={1.75} aria-hidden="true" />
+            Ver como tablero
+          </Link>
+        </span>
       </div>
 
       {loading ? (

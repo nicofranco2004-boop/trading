@@ -85,6 +85,7 @@ const Wrapped = lazy(() => import('./pages/Wrapped'))
 const Analisis = lazy(() => import('./pages/Analisis'))
 const Fundamentals = lazy(() => import('./pages/Fundamentals'))
 const AssetDetail = lazy(() => import('./pages/AssetDetail'))
+const TuLista = lazy(() => import('./pages/TuLista'))
 const Cartera = lazy(() => import('./pages/Cartera'))
 const PerfilInversor = lazy(() => import('./pages/PerfilInversor'))
 // Plan Asesor: roster de clientes + drill-down + operación grupal (tier advisor)
@@ -255,6 +256,9 @@ function AppRoutes() {
       <Route path="/analisis" element={<Analisis />} />
       <Route path="/fundamentals" element={<Fundamentals />} />
       <Route path="/activo/:ticker" element={<AssetDetail />} />
+      {/* «Tu lista, con su lectura técnica»: se abre desde el panel Watchlist
+          del inicio («Ver como tablero»), sin entrada en el menú. */}
+      <Route path="/tu-lista" element={<TuLista />} />
       {/* Dashboard vuelve a ser página propia (ítem "Dashboard" del sidebar,
           principal dentro de "Tu Cartera"). Antes era un tab de Cartera. */}
       {/* Informe del período: el link público TAMBIÉN debe resolver con
