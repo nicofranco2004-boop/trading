@@ -46,6 +46,10 @@ const LS_ON = 'rendi:voz:on'
 // Hasta el 2026-09-26 los dos decían que se activaba con el parlante.
 export const VOZ_ARRANCA_PRENDIDA = true
 const LS_RATE = 'rendi:voz:rate'
+// Si la isla flotante (el acompañante, RendiMate) se dibuja o no. Prendida por
+// defecto; se apaga con el interruptor de la cabecera de /ai. Apagada no se
+// pierde nada: la conversación es la misma y vive en /ai.
+const LS_ISLA = 'rendi:isla:on'
 
 // 1,25× por defecto: a la velocidad natural el resumen de 3 oraciones dura 24
 // segundos y se hace largo. Las tres marcas son las del mockup; acelerar más
@@ -152,6 +156,12 @@ export function VozProvider({ children }) {
   // ── El parlante ──────────────────────────────────────────────────────────
   const [enabled, setEnabledState] = useState(() => leerBool(LS_ON, VOZ_ARRANCA_PRENDIDA))
   const [rate, setRateState] = useState(leerRate)
+  // ── La isla flotante ─────────────────────────────────────────────────────
+  const [islaVisible, setIslaVisibleState] = useState(() => leerBool(LS_ISLA, true))
+  const setIslaVisible = useCallback((v) => {
+    setIslaVisibleState(v)
+    guardar(LS_ISLA, v ? '1' : '0')
+  }, [])
   const rateRef = useRef(rate)
   rateRef.current = rate
 
@@ -983,6 +993,7 @@ export function VozProvider({ children }) {
 
   const value = useMemo(() => ({
     enabled, setEnabled,
+    islaVisible, setIslaVisible,
     rate, setRate, rates: RATES,
     status, progress, current,
     speak, escuchar, toggle, stop,
@@ -991,7 +1002,7 @@ export function VozProvider({ children }) {
     kindDeCuotaDelError, codigoDelError, motivoSinVoz,
     modoLibro, cartera, leerCartera, persona,
     sinCupo, ask, analizar, limpiar,
-  }), [enabled, setEnabled, rate, setRate, status, progress, current,
+  }), [enabled, setEnabled, islaVisible, setIslaVisible, rate, setRate, status, progress, current,
        speak, escuchar, toggle, stop, open, thread, sending, loading, paso, pasos, askError,
        upgradeInfo, usageDelError, kindDeCuotaDelError, codigoDelError, sinCupo,
        motivoSinVoz, modoLibro, cartera, leerCartera, persona,
@@ -1011,6 +1022,7 @@ export function VozProvider({ children }) {
 // suelto, o el árbol sin sesión): así ningún caller tiene que preguntar.
 const INERTE = {
   enabled: false, setEnabled: () => {},
+  islaVisible: true, setIslaVisible: () => {},
   rate: DEFAULT_RATE, setRate: () => {}, rates: RATES,
   status: 'idle', progress: { t: 0, d: 0 }, current: null,
   speak: () => {}, escuchar: () => {}, toggle: () => {}, stop: () => {},
