@@ -60,6 +60,8 @@ const INK_0 = '#E6EAF2'
 const INK_2 = TONE.gray
 const INK_3 = '#5A6478'
 const LINEA = '#1B2230'
+// El texto oscuro sobre una porción clara: el mismo tono del fondo.
+const FONDO_TINTA = '#0E1218'
 
 const LOGO_SRC = '/brand/rendi-mark-violet.png'
 const DOMINIO = 'rendi.finance'
@@ -67,8 +69,9 @@ const DOMINIO = 'rendi.finance'
 // Lo que no es una porción "de verdad": va al final y no puede ser el titular.
 const PORCION_RESIDUAL = new Set(['__otros__', '__resto__', 'otro', 'sin_dato'])
 
-// Más filas que estas no entran debajo de la torta en 1350 px de alto.
-const MAX_FILAS_LEYENDA = 9
+// Más filas que estas no entran debajo de la torta en 1350 px de alto (la
+// lista va en dos columnas de 5).
+const MAX_FILAS_LEYENDA = 10
 
 // ── Render principal ──────────────────────────────────────────────────────
 
@@ -478,7 +481,7 @@ export function specDeRendimiento({
 
 function pintarFondo(ctx, accent) {
   const grad = ctx.createLinearGradient(0, 0, 0, H)
-  grad.addColorStop(0, '#0E1218')
+  grad.addColorStop(0, FONDO_TINTA)
   grad.addColorStop(1, '#07090C')
   ctx.fillStyle = grad
   ctx.fillRect(0, 0, W, H)
@@ -548,15 +551,16 @@ function pintarPie(ctx, spec) {
 function pintarDistribucion(ctx, spec, logo) {
   const yTitulo = pintarTitular(ctx, spec)
 
-  // ── La torta ────────────────────────────────────────────────────────
+  // ── La torta: grande, con el nombre y el % adentro de cada porción ────
   const porciones = spec.porciones || []
   const colores = resolverColores(porciones.map(p => p.color))
   const cx = W / 2
-  const R = 200
-  const r = 122
-  const cy = Math.max(yTitulo + 40 + R, 560)
+  const R = 310
+  const r = 150
+  const cy = yTitulo + 30 + R
   const sumaPct = porciones.reduce((s, p) => s + p.pct, 0) || 1
-  const hueco = porciones.length > 1 ? 0.018 : 0
+  const hueco = porciones.length > 1 ? 0.012 : 0
+  const arcos = []
   let a0 = -Math.PI / 2
   porciones.forEach((p, i) => {
     const barrido = (p.pct / sumaPct) * Math.PI * 2
@@ -570,21 +574,71 @@ function pintarDistribucion(ctx, spec, logo) {
       ctx.fillStyle = colores[i]
       ctx.fill()
     }
+    arcos.push({ desde, hasta })
     a0 += barrido
+  })
+
+  // Rótulos adentro. Se prueba "nombre + %", si no entra sólo el %, y si
+  // tampoco, nada: esa porción queda leída en la lista de abajo. Nunca se
+  // dibuja un rótulo que se salga de su porción.
+  // El texto es horizontal y el anillo no: según el ángulo, la caja entra
+  // más cerca del borde de afuera o del de adentro. Se prueban varios radios.
+  const rm = (r + R) / 2
+  const radios = [rm, rm + 14, rm - 14, rm + 28, rm - 28]
+  porciones.forEach((p, i) => {
+    const { desde, hasta } = arcos[i]
+    if (!(hasta > desde)) return
+    const medio = (desde + hasta) / 2
+    const tinta = tintaSobre(colores[i])
+    const pct = pctTxt(p.pct)
+    const opciones = [
+      { nombre: String(p.label), fNombre: 22, fPct: 32 },
+      { nombre: null, fPct: 30 },
+      { nombre: null, fPct: 22 },
+    ]
+    for (const op of opciones) {
+      ctx.font = `700 ${op.fPct}px ${FONT_SANS}`
+      let ancho = ctx.measureText(pct).width
+      let alto = op.fPct
+      if (op.nombre) {
+        ctx.font = `600 ${op.fNombre}px ${FONT_SANS}`
+        ancho = Math.max(ancho, ctx.measureText(op.nombre).width)
+        alto += op.fNombre + 4
+      }
+      const rad = radios.find(rr => cajaDentroDePorcion(
+        cx + Math.cos(medio) * rr, cy + Math.sin(medio) * rr, ancho + 12, alto + 8,
+        { cx, cy, r, R, desde, hasta }))
+      if (rad == null) continue
+      const x = cx + Math.cos(medio) * rad
+      const y = cy + Math.sin(medio) * rad
+      ctx.fillStyle = tinta
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      if (op.nombre) {
+        ctx.font = `600 ${op.fNombre}px ${FONT_SANS}`
+        ctx.fillText(op.nombre, x, y - alto / 2 + op.fNombre / 2)
+        ctx.font = `700 ${op.fPct}px ${FONT_SANS}`
+        ctx.fillText(pct, x, y + alto / 2 - op.fPct / 2)
+      } else {
+        ctx.font = `700 ${op.fPct}px ${FONT_SANS}`
+        ctx.fillText(pct, x, y)
+      }
+      break
+    }
   })
 
   // El centro: el total si el usuario eligió mostrar montos; si no, el isotipo.
   ctx.textAlign = 'center'
   if (spec.total) {
     ctx.fillStyle = INK_2
-    ctx.font = `22px ${FONT_SANS}`
+    ctx.font = `24px ${FONT_SANS}`
     ctx.textBaseline = 'alphabetic'
-    ctx.fillText('Total', cx, cy - 22)
+    ctx.fillText('Total', cx, cy - 24)
     ctx.fillStyle = INK_0
-    ctx.font = `600 ${spec.total.length > 14 ? 30 : 38}px ${FONT_SANS}`
-    ctx.fillText(spec.total, cx, cy + 26)
+    ctx.font = `600 ${spec.total.length > 14 ? 34 : 42}px ${FONT_SANS}`
+    ctx.fillText(spec.total, cx, cy + 28)
   } else if (logo) {
-    const alto = 76
+    const alto = 96
     const ancho = alto * (logo.naturalWidth / logo.naturalHeight || 0.83)
     ctx.globalAlpha = 0.9
     ctx.drawImage(logo, cx - ancho / 2, cy - alto / 2, ancho, alto)
@@ -593,50 +647,79 @@ function pintarDistribucion(ctx, spec, logo) {
   ctx.textAlign = 'left'
   ctx.textBaseline = 'top'
 
-  // ── La leyenda ──────────────────────────────────────────────────────
-  const fila = 42
-  let y = cy + R + 48
-  const xPct = W - PAD
-  const anchoPct = 120
+  // ── La lista, en dos columnas (se lee por columna, de arriba abajo) ───
+  const fila = 40
+  const sep = 40
+  const anchoCol = (W - 2 * PAD - sep) / 2
+  const porColumna = Math.ceil(porciones.length / 2)
+  const yLista = cy + R + 32
   porciones.forEach((p, i) => {
-    const yc = y + fila / 2
+    const colIdx = i < porColumna ? 0 : 1
+    const x0 = PAD + colIdx * (anchoCol + sep)
+    const x1 = x0 + anchoCol
+    const yc = yLista + (i % porColumna) * fila + fila / 2
+
     ctx.fillStyle = colores[i]
-    roundRect(ctx, PAD, yc - 9, 18, 18, 4)
+    roundRect(ctx, x0, yc - 8, 16, 16, 4)
     ctx.fill()
 
     ctx.textBaseline = 'middle'
-    ctx.fillStyle = INK_0
-    ctx.font = `600 26px ${FONT_SANS}`
     ctx.textAlign = 'right'
-    ctx.fillText(pctTxt(p.pct), xPct, yc)
-
-    let limiteLabel = xPct - anchoPct
+    ctx.fillStyle = INK_0
+    ctx.font = `600 24px ${FONT_SANS}`
+    const pct = pctTxt(p.pct)
+    ctx.fillText(pct, x1, yc)
+    let limite = x1 - ctx.measureText(pct).width - 16
     if (p.monto) {
       ctx.fillStyle = INK_2
-      ctx.font = `22px ${FONT_SANS}`
-      ctx.fillText(p.monto, xPct - anchoPct, yc)
-      limiteLabel -= ctx.measureText(p.monto).width + 24
+      ctx.font = `20px ${FONT_SANS}`
+      ctx.fillText(p.monto, limite, yc)
+      limite -= ctx.measureText(p.monto).width + 16
     }
     ctx.textAlign = 'left'
-
     ctx.fillStyle = INK_0
-    ctx.font = `26px ${FONT_SANS}`
-    const xLabel = PAD + 34
-    ctx.fillText(truncateToWidth(ctx, String(p.label), limiteLabel - xLabel), xLabel, yc)
+    ctx.font = `24px ${FONT_SANS}`
+    const xLabel = x0 + 28
+    ctx.fillText(truncateToWidth(ctx, String(p.label), limite - xLabel), xLabel, yc)
     ctx.textBaseline = 'top'
-
-    if (i < porciones.length - 1) {
-      ctx.strokeStyle = LINEA
-      ctx.lineWidth = 1
-      ctx.beginPath()
-      ctx.moveTo(PAD, y + fila)
-      ctx.lineTo(W - PAD, y + fila)
-      ctx.stroke()
-    }
-    y += fila
   })
 
   pintarPie(ctx, spec)
+}
+
+// ¿Entra una caja de texto centrada en (x, y) adentro de la porción? Se miran
+// las esquinas y los puntos medios de los bordes: cada uno tiene que caer en
+// el anillo (con margen) y entre los dos ángulos de la porción.
+function cajaDentroDePorcion(x, y, ancho, alto, { cx, cy, r, R, desde, hasta }) {
+  const pts = []
+  for (const dx of [-0.5, 0, 0.5]) for (const dy of [-0.5, 0, 0.5]) pts.push([x + dx * ancho, y + dy * alto])
+  return pts.every(([px, py]) => {
+    const d = Math.hypot(px - cx, py - cy)
+    if (d < r + 6 || d > R - 6) return false
+    let ang = Math.atan2(py - cy, px - cx)
+    while (ang < desde) ang += Math.PI * 2
+    while (ang > desde + Math.PI * 2) ang -= Math.PI * 2
+    return ang <= hasta - 0.01 && ang >= desde + 0.01
+  })
+}
+
+// Texto oscuro sobre porciones claras, blanco sobre las oscuras.
+function tintaSobre(color) {
+  const m = String(color).match(/\d+(\.\d+)?/g)
+  let rgb = null
+  if (/^#([0-9a-f]{6})$/i.test(color)) {
+    const n = parseInt(color.slice(1), 16)
+    rgb = [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+  } else if (m && m.length >= 3) {
+    rgb = m.slice(0, 3).map(Number)
+  }
+  if (!rgb) return INK_0
+  const [rr, gg, bb] = rgb.map(v => {
+    const c = v / 255
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  })
+  const lum = 0.2126 * rr + 0.7152 * gg + 0.0722 * bb
+  return lum > 0.3 ? FONDO_TINTA : INK_0
 }
 
 function pintarRendimiento(ctx, spec) {

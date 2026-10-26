@@ -43,8 +43,8 @@ describe('specDeDistribucion', () => {
       key: `a${i}`, label: `A${i}`, color: '#123456', value: 10, pct: 100 / 14,
     }))
     const s = specDeDistribucion({ titulo: 'X', porciones: muchas, fmt, now })
-    expect(s.porciones).toHaveLength(9)
-    expect(s.porciones[8].label).toBe('Otros')
+    expect(s.porciones).toHaveLength(10)
+    expect(s.porciones[9].label).toBe('Otros')
     const suma = s.porciones.reduce((a, p) => a + p.pct, 0)
     expect(suma).toBeCloseTo(100, 6)
   })
