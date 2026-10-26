@@ -20,6 +20,11 @@
 //     Un "18% en Semiconductores" no dice nada hasta que ves que son NVDA y
 //     AMD. Los % de los hijos suman exactamente el % del padre, así que la
 //     lista se lee como una descomposición, no como otra métrica.
+//   • `compartir` (opcional, el `source` para analytics) → ícono de compartir
+//     arriba a la derecha que baja la torta como imagen (BotonCompartir). La
+//     imagen se arma con las MISMAS porciones que la leyenda (`slices`, con el
+//     "Otros" ya agrupado), así que no puede decir un % distinto. El libro del
+//     asesor no lo pasa: son datos de clientes, no del usuario.
 //
 // Nota de tema: el tooltip NO hardcodea colores (el pie "Por broker" de
 // Insights sí lo hace — `background:'#1e293b'`). Acá todo sale de los tokens
@@ -32,7 +37,9 @@ import { useAlVerse } from '../hooks/useAlVerse'
 import { prefiereSinMovimiento } from '../utils/movimiento'
 import { ChevronRight } from 'lucide-react'
 import InfoTooltip from './InfoTooltip'
+import BotonCompartir from './BotonCompartir'
 import { withAlpha } from '../utils/chartTheme'
+import { specDeDistribucion, nombreDeArchivo } from '../utils/shareCard'
 
 // Debajo de este peso la porción no se lista aparte: se agrupa en "Otros" para
 // que la leyenda no se llene de slivers ilegibles. 10 clases de activo ya es
@@ -86,6 +93,7 @@ export default function CompositionDonut({
   // vuelve clickeable. Lo usa el libro del asesor para abrir el detalle por
   // cliente; retail no lo pasa y las filas siguen siendo texto.
   onAssetClick = null,
+  compartir = null,
   className = '',
 }) {
   const [active, setActive] = useState(null)
@@ -170,8 +178,20 @@ export default function CompositionDonut({
           <h3 className="text-sm font-medium text-ink-0 truncate">{title}</h3>
           {info && <InfoTooltip size={12} align="left">{info}</InfoTooltip>}
         </div>
-        {subtitle && (
-          <span className="text-xs text-ink-3 flex-shrink-0">{subtitle}</span>
+        {(subtitle || (compartir && !isEmpty)) && (
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {subtitle && <span className="text-xs text-ink-3">{subtitle}</span>}
+            {compartir && !isEmpty && (
+              <BotonCompartir
+                source={compartir}
+                etiqueta={`Compartir ${title.toLowerCase()}`}
+                filename={`rendi-${nombreDeArchivo(title)}.png`}
+                buildSpec={({ mostrarMontos }) => specDeDistribucion({
+                  titulo: title, porciones: slices, fmt, mostrarMontos,
+                })}
+              />
+            )}
+          </div>
         )}
       </div>
 
