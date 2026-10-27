@@ -261,6 +261,30 @@ patrón → impacto medido por modo → arreglo en el origen → test por el cam
   "repone" como aporte. HANDOFF_reconstructor (uid 870) dice que para otros usuarios 'OTHER' sí es pesos: la regla
   necesita mirar el monto contra la tenencia, no un valor fijo.
 
+### H13 · El tramo mensual supone que todo aporte entró a mitad de mes — CONFIRMADO
+
+- **Pregunta del dueño:** ¿el rendimiento tiene en cuenta cuánto capital había en cada momento? (ganar US$300 sobre
+  US$1.000 no es lo mismo que sobre US$40.000).
+- **Respuesta, en dos partes.** (1) Sí: cada tramo divide su ganancia por el capital de ese tramo, y después los tramos
+  se multiplican (rendimiento **ponderado por tiempo**, como un fondo). Eso es a propósito y es lo comparable contra
+  un índice, pero **no** es "cuánto gané con mi plata": el 30 % de la etapa de US$1.000 pesa igual que el −10 % de la
+  etapa de US$40.000. Rendi no tiene un rendimiento **ponderado por plata** (TIR) de cartera
+  (`audit/_partes/30-concepto-tir.md`). (2) **El error:** en los tramos MENSUALES (la reconstrucción y la cadena
+  contable del Estimado) `twr.dietz` (`twr.py:646`) pondera todo aporte con 0,5 ("entró a mitad de mes") aunque la
+  fecha real se sabe (`import_normalized_tx`). Un aporte grande a principio de mes duplica el % de ese mes; uno a fin
+  de mes lo achica a la mitad. Los tramos diarios del cron no tienen el problema.
+- **Medido** (`audit/rendimiento_csv/pesos_relativos.py`, Schwab, USD sin tipo de cambio): US$1.000 en XYZ a 100 → 130;
+  aporte de US$39.000 el 2/5 a 130; baja a 117. Tramo de mayo: Rendi **−14,90 %**, real **−7,69 %**. Acumulado desde
+  2025-01-31: Rendi **+1,2 %** vs real **+9,78 %** (**−8,6 pp**), en Certero y en Estimado. Referencia: ponderado por
+  tiempo desde la 1ª compra +17,0 %; TIR −6,34 % anual; resultado −US$3.730 sobre US$40.000.
+- **Eslabón.** La foto reconstruida es sólo de fin de mes (`backfill_historical_mtm._month_end`) y el leg toma el
+  flujo como diferencia de `net_deposited`, sin fecha; `dietz` no puede hacer otra cosa que suponer 0,5.
+- **Arreglo en el origen.** Que la reconstrucción escriba también una foto el día anterior a cada aporte/retiro
+  material (así ningún leg cruza un flujo grande), o que el leg reciba la fecha de cada flujo y pondere por días
+  (Modified Dietz completo). Lo mismo para la cadena contable de `monthly_entries`.
+- **Producto (decisión del dueño, no de código):** mostrar también el rendimiento ponderado por plata (TIR) o el
+  resultado en dólares al lado del % — es la respuesta a "¿cuánto gané yo?".
+
 ### H11 · Dos implementaciones de "qué tenía en tal fecha" — CONFIRMADO (sin medir diferencia)
 
 `ledger_replay.tenencia_en/cash_en/valor_en` no tiene ningún llamador de producción (sólo tests; mención en

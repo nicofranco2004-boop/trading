@@ -88,7 +88,14 @@ el test se pone rojo) → arnés → suite.
 4. **H5-b** — `twr.py:1697` `costura_no_cierra`: el aporte de la siembra de la foto no puede diluir la guarda.
    Diseñala con tests: el caso medido (v0 = 2.777, v1 = 22.030, flujo = 15.445, 4 días) tiene que cortarse, y una
    costura sana con aporte grande (escenarios S0 y S3) tiene que pasar.
-5. **Las fotos ya escritas no se arreglan solas.** `mtm_backfill` está guardado en `snapshots`: hay que volver a
+5. **H13 (aporte a mitad de mes)** — los legs mensuales ponderan todo aporte con 0,5 (`twr.dietz`, `twr.py:646`)
+   aunque la fecha se sabe. Medido: un aporte de US$39.000 el 2 de mayo hace que mayo dé −14,90 % en vez de
+   −7,69 %, y el acumulado +1,2 % en vez de +9,78 % (`audit/rendimiento_csv/pesos_relativos.py`). Arreglo en el
+   origen: que la reconstrucción escriba una foto el día anterior a cada flujo material (así ningún leg cruza un
+   aporte grande) o que el leg pondere por días; lo mismo para la cadena contable de `monthly_entries`. Criterio:
+   `pesos_relativos.py` con error < 0,5 pp. (Mostrar además una TIR / resultado en US$ es decisión de producto:
+   proponelo al dueño, no lo implementes de oficio.)
+6. **Las fotos ya escritas no se arreglan solas.** `mtm_backfill` está guardado en `snapshots`: hay que volver a
    reconstruir a los usuarios (buscá el camino de admin que ya existe, p. ej. `backfill_summary`/el panel de
    reconstrucción) y verificar que ningún escritor POSTERIOR (`marcar_reconstrucciones_superadas`, el cron,
    `estampar_base`) lo pise.
