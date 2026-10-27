@@ -12,6 +12,7 @@ import {
   computeDrawdownOnReturns,
   acumuladoDeVentana,
   acumuladoPublicado,
+  benchEntreFilas,
   computeAssetContribution,
   computeBestWorstClosedOp,
   computeProfitFactor,
@@ -957,5 +958,35 @@ describe('classifyAssetType: el aviso "una sola clase" no junta clases distintas
       { asset: 'AAPL', broker: 'Cocos', value_usd: 100 },
     ], bk)
     expect(r.map(x => x.type).sort()).toEqual(['Acciones AR', 'Bonos y letras', 'CEDEARs'])
+  })
+})
+
+// En ESTIMADO el acumulado de la cartera puede arrancar después del borde del
+// gráfico (primera punta de la cadena publicada). El "vs Inflación" tiene que
+// medirse entre ESAS mismas filas, no desde el borde: si no, se comparan dos
+// ventanas distintas.
+describe('benchEntreFilas · el benchmark en la misma ventana que la cartera', () => {
+  const B = 'Inflación AR'
+  const filas = [
+    { key: '2024-10-31', [B]: 0 },      // borde del gráfico
+    { key: '2025-06-30', [B]: 20 },     // acá arranca la cartera publicada
+    { key: '2026-10-27', [B]: 71 },     // hoy
+  ]
+  it('mide entre las dos filas pedidas, no desde el borde', () => {
+    // (171/120 − 1) = 42,5 %, no el 71 % desde el borde.
+    expect(benchEntreFilas(filas, B, 1, 2)).toBe(42.5)
+  })
+  it('desde el borde coincide con la última fila rebaseada', () => {
+    expect(benchEntreFilas(filas, B, 0, 2)).toBe(71)
+  })
+  it('sin dos filas distintas o sin dato, no hay "vs"', () => {
+    expect(benchEntreFilas(filas, B, 2, 2)).toBe(null)
+    expect(benchEntreFilas([{ key: 'a' }, { key: 'b', [B]: 3 }], B, 0, 1)).toBe(null)
+  })
+  it('acumuladoDeVentana devuelve las filas de su corrida', () => {
+    const KM = 'm', KE = 'e'
+    const f = [{ [KM]: null, [KE]: null }, { [KE]: 0 }, { [KE]: 5 }]
+    const r = acumuladoDeVentana(f, KM, KE)
+    expect([r.iIni, r.iFin]).toEqual([1, 2])
   })
 })

@@ -1187,7 +1187,32 @@ export function acumuladoDeVentana(filas, claveMedida, claveEstimada) {
     puntos: corrida.length,
     desde: f[ini]?.label ?? null,
     hasta: f[fin]?.label ?? null,
+    // Las filas exactas de la corrida: el benchmark del KPI se mide entre ESTAS
+    // dos, no entre las puntas del gráfico (ver `benchEntreFilas`).
+    iIni: ini,
+    iFin: fin,
   }
+}
+
+/**
+ * benchEntreFilas — el % del benchmark entre DOS filas del gráfico.
+ *
+ * ⚠️ EXISTE PARA QUE EL "vs" COMPARE LA MISMA VENTANA. En modo Estimado el
+ * acumulado de la cartera arranca en la primera punta de la cadena publicada,
+ * que puede ser meses después del borde del gráfico; el KPI tomaba el benchmark
+ * de la ÚLTIMA fila (rebaseado al borde). Resultado: "+82 % vs Inflación +71 %"
+ * con la cartera medida desde una fecha y la inflación desde otra.
+ *
+ * `benchKey` viene rebaseado al inicio de la ventana; el cociente de dos
+ * rebaseados cancela la base común.
+ */
+export function benchEntreFilas(filas, benchKey, i, j) {
+  const f = Array.isArray(filas) ? filas : []
+  const a = f[i], b = f[j]
+  if (!benchKey || !a || !b || i >= j) return null
+  if (typeof a[benchKey] !== 'number' || typeof b[benchKey] !== 'number') return null
+  if (!(100 + a[benchKey])) return null
+  return +((((100 + b[benchKey]) / (100 + a[benchKey])) - 1) * 100).toFixed(2)
 }
 
 // ─── El KPI de certero: el acumulado PUBLICADO de la ventana visible ─────────
@@ -1238,9 +1263,6 @@ export function acumuladoPublicado(filas, benchKey, opts = {}) {
   }
   const a = f[ini], b = f[fin]
   const pct = +((b.ip / a.ip - 1) * 100).toFixed(2)
-  let benchPct = null
-  if (benchKey && typeof a[benchKey] === 'number' && typeof b[benchKey] === 'number') {
-    benchPct = +((((100 + b[benchKey]) / (100 + a[benchKey])) - 1) * 100).toFixed(2)
-  }
+  const benchPct = benchEntreFilas(f, benchKey, ini, fin)
   return { pct, benchPct, desde: a.key, hasta: b.key, puntos: fin - ini + 1 }
 }

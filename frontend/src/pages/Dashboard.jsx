@@ -1,4 +1,5 @@
 import ModoRendimiento from '../components/ModoRendimiento'
+import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
@@ -99,8 +100,9 @@ function PersonalDashboard() {
   const plan = usePlanFeatures()
   // El rendimiento histórico sale del MOTOR CANÓNICO (`/goals/cagr`, que es
   // `twr.curva_indexada`), no de un cálculo propio del Dashboard. Y con los mismos
-  // dos modos que la tarjeta de Performance de Métricas.
-  const [modoRend, setModoRend] = useState('certero')
+  // dos modos que la tarjeta de Performance de Métricas — y la MISMA elección,
+  // guardada hasta que el usuario la cambie (ModoRendimientoContext).
+  const [modoRend, setModoRend] = useModoRendimiento()
   const [rendHist, setRendHist] = useState(null)
   // Fase A (2026-05-31): toggle currency global compartido entre Dashboard,
   // HomeMobile, PositionsMobile via CurrencyContext. Antes era local state

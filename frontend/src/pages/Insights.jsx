@@ -81,6 +81,7 @@ import {
   applyMtmToMonthly,
   atribucionDelCrecimiento,
   acumuladoDeVentana,
+  benchEntreFilas,
   perfEsDeLaVista,
   etiquetasFinales,
   marcaPeorCaida,
@@ -114,6 +115,7 @@ import { esConversion } from '../utils/tradeStats'
 import AssetLogo from '../components/AssetLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
+import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 import {
   computeAllocationMatch,
   computeObjectiveCoherence,
@@ -507,7 +509,9 @@ function InsightsDesktop({ _embeddedTab }) {
   // CERTERO (default) vs ESTIMADO. La línea divisoria no es "foto del cron vs
   // reconstrucción" —reconstruir un CEDEAR o una acción es EXACTO— sino
   // "valuado a precio real vs valuado al costo".
-  const [modoPerf, setModoPerf] = useState('certero')
+  // La elección es de TODA la app y queda guardada hasta que el usuario la
+  // cambie: Dashboard, Metas y Reportes leen la misma (ModoRendimientoContext).
+  const [modoPerf, setModoPerf] = useModoRendimiento()
   const _monedaVista = currency === 'ARS' ? 'ars' : 'usd'
   const _perfEsDeLaVista = perfEsDeLaVista(perfRaw, { moneda: _monedaVista, bench: benchDelPedido, modo: modoPerf })
   const perf = _perfEsDeLaVista ? perfRaw : null
@@ -3052,10 +3056,12 @@ function InsightsDesktop({ _embeddedTab }) {
     // homogénea, con "parcial").
     const _pubEst = _modoEstimado
       ? acumuladoPublicado(chartData, benchmarkKey, { contable: true }) : null
+    const _acumVentana = (_modoEstimado && !_pubEst)
+      ? acumuladoDeVentana(chartData, _kTotal, _kEstimado) : null
     const _acum = _modoEstimado
       ? (_pubEst
           ? { pct: _pubEst.pct, parcial: false, desde: _pubEst.desde }
-          : acumuladoDeVentana(chartData, _kTotal, _kEstimado))
+          : _acumVentana)
       : null
     // ⚠️ EN CERTERO EL KPI LEE EL ÍNDICE PUBLICADO, NO EL DIBUJADO. `lastRow[_kTotal]`
     // es `(index − 1)·100` rebaseado, y `index` es la FORMA: encadena las fotos
@@ -3087,7 +3093,15 @@ function InsightsDesktop({ _embeddedTab }) {
       : (_usaPub ? (_pub ? _pub.pct : null) : (_arsSinMedir ? null : (lastRow[_kTotal] ?? null)))
     // El benchmark del KPI, entre LAS MISMAS DOS FECHAS que el acumulado — es
     // lo que "mismo período" tiene que significar.
-    const benchmarkReturnPct = _arsSinMedir ? null : (_pub && _pub.benchPct != null)
+    // ⚠️ EN ESTIMADO TAMBIÉN. Leía `lastRow[benchmarkKey]` —la inflación desde el
+    // BORDE del gráfico— mientras la cartera se medía desde la primera punta de la
+    // cadena publicada: "+82 % vs Inflación +71 %" con dos ventanas distintas.
+    // Ahora sale de las mismas dos filas que el acumulado; sin ellas no hay "vs".
+    const _benchEstimado = !_modoEstimado ? null
+      : _pubEst ? _pubEst.benchPct
+      : (_acumVentana ? benchEntreFilas(chartData, benchmarkKey, _acumVentana.iIni, _acumVentana.iFin) : null)
+    const benchmarkReturnPct = _modoEstimado ? _benchEstimado
+      : _arsSinMedir ? null : (_pub && _pub.benchPct != null)
       ? _pub.benchPct
       : (_pub ? null : (lastRow[benchmarkKey] ?? null))
     // Label dinámico = el mismo nombre del benchmark seleccionado (chart legend).
