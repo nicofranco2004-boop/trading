@@ -31,8 +31,9 @@ sea idéntico, recibe lo mismo que usa la pantalla:
                   sale de la contabilidad, que no es un camino de precios. El
                   paquete tampoco.
 
-Si no llegan (un navegador con la versión anterior de la página), se mide en
-dólares, en certero, hasta el último cierre, y el resultado lo DICE (`moneda`,
+Si no llegan (un navegador con la versión anterior de la página, o el chat
+abierto desde otra pantalla), se mide en dólares, en el modo que el usuario
+eligió (`twr.modo_de`), hasta el último cierre, y el resultado lo DICE (`moneda`,
 `incluye_hoy`, `medido_hasta`).
 
 ── LO QUE NO SE PUBLICA ───────────────────────────────────────────────────
@@ -79,13 +80,6 @@ MOTIVO_ESTIMADO = (
 def leer_moneda(v) -> str:
     """La moneda que pidió la pantalla. Cualquier otra cosa → dólares."""
     return _twr.MONEDA_ARS if str(v or "").strip().lower() == "ars" else _twr.MONEDA_USD
-
-
-def leer_modo(v) -> str:
-    """El modo del selector de la pantalla. Cualquier otra cosa → certero, que
-    es donde vive la tarjeta de drawdown."""
-    return (_twr.MODO_ESTIMADO if str(v or "").strip().lower() == "estimado"
-            else _twr.MODO_CERTERO)
 
 
 def leer_valor_live(v) -> Optional[float]:
@@ -182,7 +176,10 @@ def medir(conn, user_id: int, *, moneda=None, valor_live=None, modo=None) -> Dic
     """
     _moneda = leer_moneda(moneda)
     out: Dict[str, Any] = {"que_es": QUE_ES, "moneda": _moneda}
-    if leer_modo(modo) == _twr.MODO_ESTIMADO:
+    # El modo de la pantalla si lo mandó; si no, el que eligió el usuario. Sin
+    # esto, el chat abierto desde otra pantalla medía la caída en certero aunque
+    # la app estuviera en estimado (donde la tarjeta dice "—").
+    if _twr.modo_de(conn, user_id, modo) == _twr.MODO_ESTIMADO:
         # El motor en estimado devuelve SIEMPRE el drawdown en None ("el estimado
         # no tiene camino de precios", twr.curva_indexada). Se dice por qué en vez
         # de caer al motivo genérico de "no hay mediciones", que acá es falso.
@@ -194,7 +191,7 @@ def medir(conn, user_id: int, *, moneda=None, valor_live=None, modo=None) -> Dic
     # se dice por qué.
     try:
         c = _twr.curva_indexada(conn, user_id, valor_live=leer_valor_live(valor_live),
-                                moneda=_moneda)
+                                moneda=_moneda, modo=_twr.MODO_CERTERO)
     except Exception:
         log.exception("caida_medida: curva_indexada falló uid=%s", user_id)
         return _sin_numero(out, _NO_SE_PUDO)

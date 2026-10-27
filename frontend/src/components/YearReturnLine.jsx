@@ -46,7 +46,9 @@ export function fechaEnPalabras(iso) {
   return `${parseInt(iso.slice(8, 10), 10)} de ${MESES[parseInt(iso.slice(5, 7), 10) - 1]}`
 }
 
-export default function YearReturnLine({ modo = 'certero', className = '' }) {
+// Sin `modo`, el hook usa la elección guardada del usuario: el inicio del celular
+// lo monta sin modo y medía siempre en certero aunque la app estuviera en estimado.
+export default function YearReturnLine({ modo, className = '' }) {
   const { currency } = useCurrency()
   const moneda = currency === 'ARS' ? 'ars' : 'usd'
   const { current, loading, refreshing } = useReportYears('global', modo, moneda)

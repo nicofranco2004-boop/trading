@@ -1226,12 +1226,15 @@ def render_insights_attribution_prompt(tier: str = "pro") -> str:
 def render_insights_benchmarks_prompt(tier: str = "pro") -> str:
     view = "Performance vs benchmarks (S&P 500 / inflación AR / dólar blue)"
     pkt = (
-        "user_return_pct (el MISMO número que la pantalla de Métricas) + "
+        "user_return_pct (en dólares; el MISMO número y el MISMO modo —certero o "
+        "estimado, `modo`— que la pantalla de Métricas) + user_return_ars_pct (el "
+        "mismo rendimiento EN PESOS, contra el que se comparan inflación y blue) + "
         "window_from/window_to (la ventana real de ese número) + basis "
         "('mercado' = medido a precio real; 'contable' = reconstruido de la "
         "contabilidad, NO cuenta lo no realizado; 'ventana_corta' = menos de "
         "28 días, sin número) + benchmarks {sp500_pct, inflation_ar_pct, "
-        "dolar_blue_pct} sobre esa MISMA ventana + deltas_pp (user - bench) + "
+        "dolar_blue_pct} sobre esa MISMA ventana + deltas_pp (S&P: dólares − S&P; "
+        "inflación y blue: pesos − índice) + "
         "outperform flags."
     )
     free = _maybe_free("insights.benchmarks", view, pkt, tier)

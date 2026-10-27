@@ -3157,6 +3157,11 @@ def init_db():
         # poda a los 13 meses y sólo se manda si la persona tocó la pantalla.
         if user_cols_after and 'app_instalada_at' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN app_instalada_at TEXT")
+        # La elección Certero/Estimado del usuario ('certero'|'estimado'|NULL).
+        # La escribe PUT /api/preferencias/modo-rendimiento; la lee `twr.modo_de`,
+        # que es el default de todo cálculo de rendimiento (pantallas, IA, informes).
+        if user_cols_after and 'modo_rendimiento' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN modo_rendimiento TEXT")
         if user_cols_after and 'aviso_vencimiento_de' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN aviso_vencimiento_de TEXT")
             conn.commit()
@@ -16710,7 +16715,7 @@ def insights_performance(
     hasta: str = None,
     valor_live: float = None,
     incluir_indeterminado: bool = False,
-    modo: str = "certero",
+    modo: str = None,
     moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
@@ -16739,7 +16744,8 @@ def insights_performance(
             except Exception:
                 data = {}
         import twr as _twr
-        _modo = _twr.MODO_ESTIMADO if modo == "estimado" else _twr.MODO_CERTERO
+        # Sin `modo` (o con uno inválido), el que eligió el usuario.
+        _modo = _twr.modo_de(conn, uid, modo)
         # `moneda=ars` mide la MISMA cartera en pesos: cada punta al TC de su
         # fecha, el flujo al TC medio del tramo. Antes la sección en pesos la
         # armaba el frontend sobre la cadena contable de los brokers ARS
@@ -20653,8 +20659,11 @@ def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
             meses = None
     finally:
         conn.close()
+    # `inflacion_mensual`: build_wrapped mide la inflación sobre el MISMO tramo
+    # que el retorno (el que el motor declara), no sobre el año calendario.
     return build_wrapped(year, monthly, ops, behavioral_cards, benchmarks,
-                         inflation_ytd, fx_de, rendimiento=rendimiento, meses=meses)
+                         inflation_ytd, fx_de, rendimiento=rendimiento, meses=meses,
+                         inflacion_mensual=inflation_monthly or None)
 
 
 @app.get("/api/behavioral/insights")
@@ -23021,7 +23030,9 @@ def _historical_cagr_global(conn, uid: int, modo: str = None, moneda: str = None
     "+54 % desde el 3 de julio" en vez de un anualizado inventado.
     """
     import twr as _twr
-    _modo = _twr.MODO_ESTIMADO if modo == "estimado" else _twr.MODO_CERTERO
+    # Sin `modo`: el que eligió el usuario (Metas, el diagnóstico y la IA llaman
+    # sin modo y tienen que decir el mismo número que la pantalla).
+    _modo = _twr.modo_de(conn, uid, modo)
     _moneda = _twr.MONEDA_ARS if str(moneda or "").lower() == "ars" else _twr.MONEDA_USD
     try:
         c = _twr.curva_indexada(conn, uid, modo=_modo, moneda=_moneda)
@@ -23070,7 +23081,7 @@ def _historical_cagr_global(conn, uid: int, modo: str = None, moneda: str = None
 
 
 @app.get("/api/goals/cagr")
-def historical_cagr(modo: str = "certero", moneda: str = "usd",
+def historical_cagr(modo: str = None, moneda: str = "usd",
                     uid: int = Depends(get_effective_user)):
     """El rendimiento histórico, del MISMO motor que la sección Performance
     (`twr.curva_indexada`): mismos cortes, misma cota de plausibilidad, mismo piso
@@ -46908,7 +46919,7 @@ def _tiene_reportes_historicos(conn, uid: int) -> bool:
 def reports_timeline(
     broker: str = "global",
     months: int = 12,
-    modo: str = "certero",
+    modo: str = None,
     moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
@@ -46928,6 +46939,8 @@ def reports_timeline(
         raise HTTPException(400, "months debe estar entre 1 y 36")
     conn = get_db()
     try:
+        import twr as _twr_rt
+        modo = _twr_rt.modo_de(conn, uid, modo)
         # Los meses pasados son de plan pago (igual que /reports/years): a quien no
         # lo tiene se le da sólo el mes en curso. Antes se mandaban los 36 y el
         # front los escondía — datos pagos viajando igual. El teaser lo pinta el
@@ -46984,7 +46997,7 @@ _REPORTES_MAX_ANOS = 12
 @app.get("/api/reports/years")
 def reports_years(
     broker: str = "global",
-    modo: str = "certero",
+    modo: str = None,
     moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
@@ -47003,6 +47016,8 @@ def reports_years(
     """
     conn = get_db()
     try:
+        import twr as _twr_ry
+        modo = _twr_ry.modo_de(conn, uid, modo)
         hoy = _hoy_art_date()
         # El rango de años con historia: lo más viejo entre la contabilidad y las
         # fotos. Sin filtro de broker a propósito — el rango es del usuario; el
@@ -47194,7 +47209,7 @@ def reports_years(
 def reports_period_detail(
     period_type: str, period_key: str,
     broker: str = "global",
-    modo: str = "certero",
+    modo: str = None,
     moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
@@ -47204,6 +47219,8 @@ def reports_period_detail(
         raise HTTPException(400, "period_type inválido")
     conn = get_db()
     try:
+        import twr as _twr_pd
+        modo = _twr_pd.modo_de(conn, uid, modo)
         # Los períodos CERRADOS son de plan pago; el EN CURSO es gratis (lo muestra
         # el inicio). Un deep-link directo a un período pasado desde una cuenta sin
         # plan se corta acá, no sólo en la pantalla.
@@ -48517,6 +48534,43 @@ def push_status(uid: int = Depends(get_effective_user)):
         return {"subscribed_devices": _contar_dispositivos_push(conn, uid)}
     finally:
         conn.close()
+
+
+class ModoRendimientoIn(BaseModel):
+    modo: str
+
+
+@app.get("/api/preferencias/modo-rendimiento")
+def leer_modo_rendimiento(uid: int = Depends(get_current_user)):
+    """La elección guardada de la PERSONA autenticada (un asesor mirando a un
+    cliente ve su propio toggle). `modo: null` = nunca eligió."""
+    import twr as _twr_pm
+    with db_abierta() as conn:
+        try:
+            r = conn.execute("SELECT modo_rendimiento FROM users WHERE id = ?", (uid,)).fetchone()
+        except Exception:
+            r = None
+    v = (r["modo_rendimiento"] if r else None)
+    return {"modo": v if v in _twr_pm.MODOS else None}
+
+
+@app.put("/api/preferencias/modo-rendimiento")
+def guardar_modo_rendimiento(body: ModoRendimientoIn, request: Request,
+                             uid: int = Depends(get_current_user)):
+    """Guarda la elección Certero/Estimado del usuario. Dura hasta que la cambie.
+
+    La lee `twr.modo_de`, que es el default de TODO cálculo de rendimiento: las
+    pantallas que no mandan `modo`, la IA, los informes. Antes la elección vivía
+    en cuatro `useState` de cuatro pantallas y en ningún lado más."""
+    import twr as _twr_pm
+    modo = str(body.modo or "").strip().lower()
+    if modo not in _twr_pm.MODOS:
+        raise HTTPException(400, "modo debe ser 'certero' o 'estimado'")
+    _check_rate_limit(request, max_calls=120, window_seconds=3600, suffix=f"modo_rend:{uid}")
+    with db_abierta() as conn:
+        conn.execute("UPDATE users SET modo_rendimiento = ? WHERE id = ?", (modo, uid))
+        conn.commit()
+    return {"modo": modo}
 
 
 @app.get("/api/primeros-pasos")
