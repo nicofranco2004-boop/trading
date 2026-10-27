@@ -45,6 +45,8 @@ import { assetSlicesFromPositions } from '../utils/bookComposition'
 import DistribucionPorActivo from '../components/DistribucionPorActivo'
 import BotonCompartir from '../components/BotonCompartir'
 import { specDeRendimiento, nombreDeArchivo } from '../utils/shareCard'
+import BotonReporte from '../components/reporte/BotonReporte'
+import { armarReporte } from '../utils/reporteCartera'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { pctCreible, operacionesEnUsd } from '../utils/assetPnl'
 import { denominadorAportado } from '../utils/evolution'
@@ -3102,10 +3104,12 @@ function InsightsDesktop({ _embeddedTab }) {
   // forma. Sin acumulado publicado no hay botón: la imagen no puede mostrar un
   // número que la pantalla esconde (serie partida, pesos sin medir, etc.).
   const puedeCompartirRendimiento = kpiRendimiento.cumulativeReturnPct != null && chartData.length > 1
-  const specRendimiento = ({ mostrarMontos }) => {
+  // Lo que comparten la imagen y el reporte en PDF: un solo armado, así los dos
+  // dicen el mismo período y dibujan la misma curva.
+  const datosRendimiento = () => {
     const num = (v) => (Number.isFinite(v) ? v : null)
     const PERIODOS = { 1: 'Último mes', 3: 'Últimos 3 meses', 12: 'Último año', 24: 'Últimos 2 años', 60: 'Últimos 5 años' }
-    return specDeRendimiento({
+    return {
       carteraPct: kpiRendimiento.cumulativeReturnPct,
       benchPct: kpiRendimiento.benchmarkReturnPct,
       benchLabel: benchmarkKey,
@@ -3117,9 +3121,39 @@ function InsightsDesktop({ _embeddedTab }) {
         bench: num(r[benchmarkKey]),
       })),
       periodo: effectiveRange ? (PERIODOS[effectiveRange] || `Últimos ${effectiveRange} meses`) : 'Desde el inicio',
-      moneda: currency,
-      patrimonio: assetBreakdown.total > 0 ? amt(assetBreakdown.total) : null,
+    }
+  }
+  const specRendimiento = ({ mostrarMontos }) => specDeRendimiento({
+    ...datosRendimiento(),
+    moneda: currency,
+    patrimonio: assetBreakdown.total > 0 ? amt(assetBreakdown.total) : null,
+    mostrarMontos,
+  })
+
+  // ── El reporte en PDF ─────────────────────────────────────────────────────
+  // Todo sale de lo que esta pantalla ya calculó: el KPI "Acumulado", las tres
+  // tortas (mismos items y mismo corte que CompositionDonut), el drawdown del
+  // KPI strip y "Qué explica tu resultado". No entran las métricas Pro
+  // (Sharpe, beta…): están bloqueadas para Free y el reporte es para todos.
+  const armarDatosReporte = ({ mostrarMontos }) => {
+    const rend = puedeCompartirRendimiento ? datosRendimiento() : null
+    return armarReporte({
+      fmt: amt,
       mostrarMontos,
+      moneda: currency,
+      periodo: rend?.periodo || '',
+      patrimonio: assetBreakdown.total > 0 ? assetBreakdown.total : null,
+      rendimiento: rend,
+      drawdown: drawdownTwrr,
+      distribuciones: [
+        // La de activos ya viene cortada en top-N + "Resto": no se re-agrupa
+        // (igual que DistribucionPorActivo).
+        { titulo: 'Distribución de activos', items: assetBreakdown.items, maxSlices: assetBreakdown.items.length, minSlicePct: 0 },
+        { titulo: 'Distribución por tipo de activo', items: classBreakdown.items },
+        { titulo: 'Distribución por sector', items: sectorBreakdown.items },
+      ],
+      ganadores: topContribPos,
+      perdedores: topContribNeg,
     })
   }
 
@@ -3161,6 +3195,9 @@ function InsightsDesktop({ _embeddedTab }) {
         subtitle="Análisis profundo de tu performance, riesgo y comportamiento como inversor."
         action={
           <div className="flex items-center gap-2 flex-wrap">
+            {(assetBreakdown.items.length > 0 || puedeCompartirRendimiento) && (
+              <BotonReporte armarDatos={armarDatosReporte} source="analisis" />
+            )}
             <AnalyzeButton
               screen="insights"
               params={{ window_days: 365, ...paramsCaidaIA }}

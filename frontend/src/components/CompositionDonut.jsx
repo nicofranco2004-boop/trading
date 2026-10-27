@@ -63,6 +63,71 @@ const toneOf = (v) => (v >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
 // canónico del catálogo), no algo que el usuario reconozca.
 const displayTicker = (t) => String(t || '').replace(/^FCI:/, '')
 
+/**
+ * agruparPorciones — de los items de una torta a las porciones que se dibujan:
+ * ordenadas de mayor a menor, las chicas (o las que pasan de `maxSlices`)
+ * juntas en "Otros", y los residuales (sin clasificar, "Resto") al final.
+ *
+ * Es la ÚNICA definición de qué porciones tiene una torta. La usan la torta de
+ * la pantalla (abajo), la imagen para compartir (que recibe estas porciones) y
+ * el reporte en PDF (utils/reporteCartera). Si cada uno agrupara a su manera,
+ * el "Otros" del PDF podría sumar distinto que el de la pantalla.
+ */
+export function agruparPorciones(items = [], { maxSlices = 10, minSlicePct = MIN_SLICE_PCT } = {}) {
+  const sorted = [...items].filter(i => i.value > 0).sort((a, b) => b.value - a.value)
+  if (sorted.length === 0) return []
+  const keep = []
+  const rest = []
+  for (const it of sorted) {
+    if (keep.length < maxSlices && it.pct >= minSlicePct) keep.push(it)
+    else rest.push(it)
+  }
+  const withDetail = keep.map(it => ({
+    ...it,
+    detail: (it.assets || []).map(a => ({
+      key: a.asset, label: displayTicker(a.asset), value: a.value, pct: a.pct, pnl: a.pnl,
+      // Dispersión entre carteras — solo la manda el libro del asesor.
+      spread: a.spread, asset: a.asset, market: a.market,
+    })),
+  }))
+  // Las porciones RESIDUALES van al final, pegadas al "Otros" de agrupación:
+  // si no, quedan mezcladas entre porciones reales y se leen como una más.
+  // Son dos casos: las "no sé qué es" (otro / sin_dato) y el "Resto" que un
+  // caller puede traer ya agrupado (el eje por activo del libro del asesor
+  // corta en top-N y manda el resto en una porción propia). Ese Resto puede
+  // pesar más que la porción más grande — en un libro de 486 tickers pesa
+  // 16% mientras el primer activo pesa 14% — y sin esto encabezaría la
+  // torta, que es exactamente lo que un residual no tiene que hacer.
+  const RESIDUAL = new Set(['otro', 'sin_dato', '__resto__'])
+  const unknownIdx = withDetail.findIndex(i => RESIDUAL.has(i.key))
+  if (unknownIdx >= 0 && unknownIdx < withDetail.length - 1) {
+    withDetail.push(withDetail.splice(unknownIdx, 1)[0])
+  }
+  if (rest.length === 1) {
+    const r = rest[0]
+    return [...withDetail, {
+      ...r,
+      detail: (r.assets || []).map(a => ({
+        key: a.asset, label: displayTicker(a.asset), value: a.value, pct: a.pct, pnl: a.pnl,
+        spread: a.spread, asset: a.asset, market: a.market,
+      })),
+    }]
+  }
+  if (rest.length > 1) {
+    withDetail.push({
+      key: '__otros__',
+      label: `Otros (${rest.length})`,
+      color: OTHERS_COLOR,
+      value: rest.reduce((s, x) => s + x.value, 0),
+      pct: rest.reduce((s, x) => s + x.pct, 0),
+      // Acá el detalle son las porciones agrupadas, no activos sueltos:
+      // desplegar "Otros" tiene que contestar "otros QUÉ".
+      detail: rest.map(r => ({ key: r.key, label: r.label, value: r.value, pct: r.pct })),
+    })
+  }
+  return withDetail
+}
+
 // La porción con el mouse encima sale un poco hacia afuera (+6 px de radio).
 function PorcionActiva(props) {
   const { cx, cy, innerRadius, outerRadius, startAngle, endAngle, fill } = props
@@ -114,60 +179,10 @@ export default function CompositionDonut({
   // "Otros" de la leyenda sigue sumando el total real. Cada porción lleva su
   // `detail`: para una porción normal son sus activos; para el "Otros"
   // agrupado son las porciones que quedaron adentro.
-  const slices = useMemo(() => {
-    const sorted = [...items].filter(i => i.value > 0).sort((a, b) => b.value - a.value)
-    if (sorted.length === 0) return []
-    const keep = []
-    const rest = []
-    for (const it of sorted) {
-      if (keep.length < maxSlices && it.pct >= minSlicePct) keep.push(it)
-      else rest.push(it)
-    }
-    const withDetail = keep.map(it => ({
-      ...it,
-      detail: (it.assets || []).map(a => ({
-        key: a.asset, label: displayTicker(a.asset), value: a.value, pct: a.pct, pnl: a.pnl,
-        // Dispersión entre carteras — solo la manda el libro del asesor.
-        spread: a.spread, asset: a.asset, market: a.market,
-      })),
-    }))
-    // Las porciones RESIDUALES van al final, pegadas al "Otros" de agrupación:
-    // si no, quedan mezcladas entre porciones reales y se leen como una más.
-    // Son dos casos: las "no sé qué es" (otro / sin_dato) y el "Resto" que un
-    // caller puede traer ya agrupado (el eje por activo del libro del asesor
-    // corta en top-N y manda el resto en una porción propia). Ese Resto puede
-    // pesar más que la porción más grande — en un libro de 486 tickers pesa
-    // 16% mientras el primer activo pesa 14% — y sin esto encabezaría la
-    // torta, que es exactamente lo que un residual no tiene que hacer.
-    const RESIDUAL = new Set(['otro', 'sin_dato', '__resto__'])
-    const unknownIdx = withDetail.findIndex(i => RESIDUAL.has(i.key))
-    if (unknownIdx >= 0 && unknownIdx < withDetail.length - 1) {
-      withDetail.push(withDetail.splice(unknownIdx, 1)[0])
-    }
-    if (rest.length === 1) {
-      const r = rest[0]
-      return [...withDetail, {
-        ...r,
-        detail: (r.assets || []).map(a => ({
-          key: a.asset, label: displayTicker(a.asset), value: a.value, pct: a.pct, pnl: a.pnl,
-          spread: a.spread, asset: a.asset, market: a.market,
-        })),
-      }]
-    }
-    if (rest.length > 1) {
-      withDetail.push({
-        key: '__otros__',
-        label: `Otros (${rest.length})`,
-        color: OTHERS_COLOR,
-        value: rest.reduce((s, x) => s + x.value, 0),
-        pct: rest.reduce((s, x) => s + x.pct, 0),
-        // Acá el detalle son las porciones agrupadas, no activos sueltos:
-        // desplegar "Otros" tiene que contestar "otros QUÉ".
-        detail: rest.map(r => ({ key: r.key, label: r.label, value: r.value, pct: r.pct })),
-      })
-    }
-    return withDetail
-  }, [items, maxSlices, minSlicePct])
+  const slices = useMemo(
+    () => agruparPorciones(items, { maxSlices, minSlicePct }),
+    [items, maxSlices, minSlicePct],
+  )
 
   const isEmpty = slices.length === 0
 

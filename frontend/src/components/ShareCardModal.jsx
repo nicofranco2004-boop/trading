@@ -31,6 +31,7 @@ import {
   tryNativeShare,
 } from '../utils/shareCard'
 import { track } from '../utils/track'
+import PreguntaMontos from './PreguntaMontos'
 
 export default function ShareCardModal({ spec: specFijo, buildSpec = null, filename, source, onClose }) {
   const pregunta = typeof buildSpec === 'function'
@@ -167,30 +168,8 @@ export default function ShareCardModal({ spec: specFijo, buildSpec = null, filen
         </header>
 
         {esperandoRespuesta ? (
-          <div className="p-4 space-y-3">
-            <p className="text-[13px] text-ink-1 leading-relaxed">
-              La imagen puede mostrar cuánta plata tenés en cada parte, o solo los
-              porcentajes. Si la vas a subir a redes, te recomendamos ocultarlos.
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <button
-                type="button"
-                autoFocus
-                onClick={() => setMostrarMontos(false)}
-                className="inline-flex items-center justify-center gap-1.5 text-xs bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 px-3 py-2.5 rounded-sm transition-colors"
-              >
-                <EyeOff size={12} strokeWidth={1.75} />
-                Solo porcentajes
-              </button>
-              <button
-                type="button"
-                onClick={() => setMostrarMontos(true)}
-                className="inline-flex items-center justify-center gap-1.5 text-xs bg-bg-2 hover:bg-bg-3 text-ink-1 border border-line-2 px-3 py-2.5 rounded-sm transition-colors"
-              >
-                <Eye size={12} strokeWidth={1.75} />
-                Mostrar montos
-              </button>
-            </div>
+          <div className="p-4">
+            <PreguntaMontos onElegir={setMostrarMontos} />
           </div>
         ) : (
         <div className="p-4 space-y-3">
