@@ -144,6 +144,94 @@ class LoQueLaFotoDesmienteNoEsCertero(_Inversor):
         self.assertLess(abs(err), 1.0)
 
 
+class ElAporteTieneFecha(unittest.TestCase):
+    """H13, el ejemplo del dueño: US$ 1.000 en XYZ que sube 30 %, un aporte de
+    US$ 39.000 el 2 de mayo y una baja de 10 %, por un archivo de Schwab. Con todo
+    aporte pesando como si hubiera entrado a mitad de mes, mayo daba −14,90 % en vez
+    de −7,69 % y el acumulado +1,2 % en vez de +9,78 %."""
+
+    PX = [("2025-01-06", 100), ("2025-04-30", 130), ("2025-05-02", 130), ("2025-05-31", 120),
+          ("2025-08-31", 117), (HOY, 117)]
+    FLUJOS = [("2025-01-06", 1000, 10), ("2025-05-02", 39000, 300)]
+
+    def _valor(self, m, d):
+        return sum(q for f, _, q in self.FLUJOS if f <= d.isoformat()) * m.usd("XYZ", d)
+
+    def _verdad(self, m, d0, d1):
+        idx, d = 1.0, date.fromisoformat(d0)
+        prev = self._valor(m, d)
+        while d < date.fromisoformat(d1):
+            d += timedelta(days=1)
+            fl = sum(ap for f, ap, _ in self.FLUJOS if f == d.isoformat())
+            idx *= self._valor(m, d) / (prev + fl)
+            prev = self._valor(m, d)
+        return (idx - 1) * 100
+
+    def test_el_aporte_grande_del_2_de_mayo(self):
+        m = Mercado(extra_usd={"XYZ": self.PX})
+        c = Camino(self, m)
+        c.usuario("pesos-relativos@rendi.test")
+        filas = ['"Date","Action","Symbol","Description","Quantity","Price","Fees & Comm","Amount"']
+        for f, ap, q in self.FLUJOS:
+            d = date.fromisoformat(f).strftime("%m/%d/%Y")
+            filas.append(f'"{d}","MoneyLink Transfer","","Tfr BANK","","","","${ap:.2f}"')
+            filas.append(f'"{d}","Buy","XYZ","XYZ CORP","{q}","${ap / q:.2f}","","-${ap:.2f}"')
+        c.subir("schwab.csv", "\n".join(filas).encode(), "Schwab", "schwab")
+        c.cron(date(2026, 10, 1), date.today())
+        c.reconstruir()
+        for modo in ("certero", "estimado"):
+            cv = c.curva(modo)
+            self.assertEqual(cv["ventana_desde"], "2025-01-31", modo)
+            err = cv["twr"] * 100 - self._verdad(m, cv["ventana_desde"], HOY)
+            self.assertLess(abs(err), 0.5, (modo, cv["twr"]))
+
+
+class ElEstimadoSeApagaEnLaPrimeraMedicion(unittest.TestCase):
+    """H4: la contabilidad se apaga en la primera MEDICIÓN DEL CRON, como dice el
+    comentario de `serie_medible` — no en la primera foto apta, que puede ser una
+    reconstrucción. Con el primer mes 100 % valuado y meses contables después (acá,
+    un lote recibido gratis que no tiene precio), esos meses quedaban afuera del
+    Estimado aunque fueran anteriores a toda medición."""
+
+    def test_los_meses_contables_anteriores_al_cron_cuentan(self):
+        m = Mercado()
+        c = Camino(self, m)
+        c.usuario("h4@rendi.test")
+        hdr = "fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas\n"
+        filas = ["2025-01-02,DEPOSITO,IBKR,,,,10000,,,0,USD,",
+                 f"2025-01-03,COMPRA,IBKR,AAPL,20,{m.usd('AAPL', '2025-01-03'):.2f},"
+                 f"{20 * m.usd('AAPL', '2025-01-03'):.2f},,,0,USD,"]
+        import main
+        conn = main.get_db()
+        with conn:
+            conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                         (c.uid, "IBKR", "USDT"))
+        conn.close()
+        c.subir("mov.csv", (hdr + "\n".join(filas) + "\n").encode(), "IBKR", "rendi_generic")
+        # Un lote recibido gratis en marzo y vendido en junio: sin precio ni costo,
+        # esos meses no se pueden valuar (cobertura sin afirmar → contables).
+        r = c.http.post("/api/positions", headers=c.h, json={
+            "broker": "IBKR", "asset": "LIBRE", "quantity": 10, "buy_price": 0,
+            "invested": 0, "entry_date": "2025-03-01", "currency": "USD"})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = c.http.post("/api/positions/sell", headers=c.h, json={
+            "broker": "IBKR", "asset": "LIBRE", "quantity": 10, "exit_price": 1,
+            "date": "2025-06-15", "currency": "USD"})
+        self.assertEqual(r.status_code, 200, r.text)
+        c._esperar()
+        c.cron(date(2025, 9, 1), date(2025, 9, 30))
+        c.reconstruir()
+        cv = c.curva("estimado", hasta="2025-09-30")
+        cobs = {r["date"]: r["mtm_coverage"] for r in c.q(
+            "SELECT date, mtm_coverage FROM snapshots WHERE user_id=? "
+            "AND source='mtm_backfill'", c.uid)}
+        # Las premisas: enero apto, marzo a mayo sin cobertura.
+        self.assertEqual(cobs["2025-01-31"], 1.0)
+        self.assertIsNone(cobs["2025-04-30"])
+        self.assertEqual(cv["contable_superado"], 0)
+        self.assertLessEqual(cv["ventana_desde"], "2025-06-30")
+
+
 class LaCosturaMideElRetornoDelLeg(unittest.TestCase):
     """H5-b: `costura_no_cierra` medía `v1 / (v0 + flujo)`, que supone el flujo
     entero al principio y con un aporte grande lo diluye."""
