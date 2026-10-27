@@ -589,54 +589,81 @@ function pintarDistribucion(ctx, spec, logo) {
     a0 += barrido
   })
 
-  // Rótulos adentro. Se prueba "nombre + %", si no entra sólo el %, y si
-  // tampoco, nada: esa porción queda leída en la lista de abajo. Nunca se
+  // Rótulos adentro: TODA porción lleva su nombre si de alguna forma entra.
+  // Se prueba en este orden, y gana el primero que cabe:
+  //   1. horizontal, nombre arriba y % abajo, achicando la letra;
+  //   2. vertical (a lo largo del radio, como en la torta de referencia):
+  //      nombre y % en dos renglones, después en uno solo, achicando;
+  //   3. sólo el %, vertical.
+  // Si nada entra, la porción queda leída en la lista de abajo. Nunca se
   // dibuja un rótulo que se salga de su porción.
-  // El texto es horizontal y el anillo no: según el ángulo, la caja entra
+  // El texto horizontal no sigue al anillo: según el ángulo, la caja entra
   // más cerca del borde de afuera o del de adentro. Se prueban varios radios.
   const rm = (r + R) / 2
   const radios = [rm, rm + 14, rm - 14, rm + 28, rm - 28]
+  const medir = (texto, peso, tam) => { ctx.font = `${peso} ${tam}px ${FONT_SANS}`; return ctx.measureText(texto).width }
+
   porciones.forEach((p, i) => {
     const { desde, hasta } = arcos[i]
     if (!(hasta > desde)) return
     const medio = (desde + hasta) / 2
     const tinta = tintaSobre(colores[i])
     const pct = pctTxt(p.pct)
-    const opciones = [
-      { nombre: String(p.label), fNombre: 22, fPct: 32 },
-      { nombre: null, fPct: 30 },
-      { nombre: null, fPct: 22 },
+    const nombre = String(p.label)
+
+    // Los renglones de cada opción: [texto, peso, tamaño].
+    const horizontales = [[22, 32], [19, 26], [16, 21], [14, 17]]
+      .map(([fn, fp]) => [[nombre, 600, fn], [pct, 700, fp]])
+    const verticales = [
+      ...[[16, 18], [13, 15]].map(([fn, fp]) => [[nombre, 600, fn], [pct, 700, fp]]),
+      ...[14, 12, 10].map(t => [[`${nombre} ${pct}`, 600, t]]),
+      ...[14, 11].map(t => [[pct, 700, t]]),
     ]
-    for (const op of opciones) {
-      ctx.font = `700 ${op.fPct}px ${FONT_SANS}`
-      let ancho = ctx.measureText(pct).width
-      let alto = op.fPct
-      if (op.nombre) {
-        ctx.font = `600 ${op.fNombre}px ${FONT_SANS}`
-        ancho = Math.max(ancho, ctx.measureText(op.nombre).width)
-        alto += op.fNombre + 4
+    const caja = (renglones) => ({
+      ancho: Math.max(...renglones.map(([t, w, f]) => medir(t, w, f))),
+      alto: renglones.reduce((s, [, , f]) => s + f, 0) + (renglones.length - 1) * 3,
+    })
+    const dibujar = (renglones, alto) => {
+      let y = -alto / 2
+      for (const [t, w, f] of renglones) {
+        ctx.font = `${w} ${f}px ${FONT_SANS}`
+        ctx.fillText(t, 0, y + f / 2)
+        y += f + 3
       }
+    }
+    ctx.fillStyle = tinta
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+
+    for (const renglones of horizontales) {
+      const { ancho, alto } = caja(renglones)
       const rad = radios.find(rr => cajaDentroDePorcion(
         cx + Math.cos(medio) * rr, cy + Math.sin(medio) * rr, ancho + 12, alto + 8,
         { cx, cy, r, R, desde, hasta }))
       if (rad == null) continue
-      const x = cx + Math.cos(medio) * rad
-      const y = cy + Math.sin(medio) * rad
-      ctx.fillStyle = tinta
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      if (op.nombre) {
-        ctx.font = `600 ${op.fNombre}px ${FONT_SANS}`
-        ctx.fillText(op.nombre, x, y - alto / 2 + op.fNombre / 2)
-        ctx.font = `700 ${op.fPct}px ${FONT_SANS}`
-        ctx.fillText(pct, x, y + alto / 2 - op.fPct / 2)
-      } else {
-        ctx.font = `700 ${op.fPct}px ${FONT_SANS}`
-        ctx.fillText(pct, x, y)
-      }
-      break
+      ctx.save()
+      ctx.translate(cx + Math.cos(medio) * rad, cy + Math.sin(medio) * rad)
+      dibujar(renglones, alto)
+      ctx.restore()
+      return
+    }
+
+    for (const renglones of verticales) {
+      const { ancho, alto } = caja(renglones)
+      const rad = radioQueEntraVertical(ancho + 10, alto + 4, { r, R, desde, hasta })
+      if (rad == null) continue
+      ctx.save()
+      ctx.translate(cx + Math.cos(medio) * rad, cy + Math.sin(medio) * rad)
+      // A lo largo del radio, y nunca cabeza abajo: del lado izquierdo de la
+      // torta se gira media vuelta para que se lea de izquierda a derecha.
+      ctx.rotate(Math.cos(medio) < 0 ? medio + Math.PI : medio)
+      dibujar(renglones, alto)
+      ctx.restore()
+      return
     }
   })
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'top'
 
   // El centro: el total si el usuario eligió mostrar montos; si no, el isotipo.
   ctx.textAlign = 'center'
@@ -696,6 +723,21 @@ function pintarDistribucion(ctx, spec, logo) {
   })
 
   pintarPie(ctx, spec)
+}
+
+// ¿Dónde entra un texto puesto a lo largo del radio? `ancho` va en dirección
+// radial (tiene que caber en el grosor del anillo) y `alto` de costado (tiene
+// que caber en la apertura de la porción, medida en su borde de ADENTRO, que es
+// el más angosto). Devuelve el radio del centro de la caja, o null.
+function radioQueEntraVertical(ancho, alto, { r, R, desde, hasta }) {
+  const centro = (r + R) / 2
+  for (const rc of [centro, centro + 10, centro - 10]) {
+    const adentro = rc - ancho / 2
+    if (adentro < r + 6 || rc + ancho / 2 > R - 6) continue
+    const mitadNecesaria = Math.atan((alto / 2) / adentro)
+    if (mitadNecesaria <= (hasta - desde) / 2 - 0.006) return rc
+  }
+  return null
 }
 
 // ¿Entra una caja de texto centrada en (x, y) adentro de la porción? Se miran
@@ -977,6 +1019,7 @@ async function ensureFontsReady() {
       // Las de métricas (distribución / rendimiento) usan también estos pesos.
       `22px Geist`, `500 22px Geist`, `500 28px Geist`, `600 26px Geist`,
       `600 34px Geist`, `600 64px Geist`, `600 120px Geist`,
+      `600 16px Geist`, `600 13px Geist`, `700 18px Geist`, `700 15px Geist`,
       `12px "JetBrains Mono"`, `13px "JetBrains Mono"`, `14px "JetBrains Mono"`,
     ]
     const loads = SIZES.map((spec) => {
