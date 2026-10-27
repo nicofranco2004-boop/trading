@@ -33,6 +33,7 @@ from .excel import to_csv_text, is_xlsx, xlsx_to_csv, is_html_table, html_table_
 from . import seed as _seed
 from tickers_renombrados import codigos_anteriores   # GOLD → B: la huella vieja
 import renombre_broker as _renombre_broker   # los nombres anteriores de cada broker
+from efectivo import asset_de_caja
 
 log = logging.getLogger(__name__)
 
@@ -584,6 +585,69 @@ def brokers_que_no_aceptan_pesos(user_brokers, fmt_base) -> frozenset:
                      and n.strip().lower() not in CRYPTO_BROKERS)
 
 
+def broker_tiene_datos(conn, uid: int, nombre: str) -> bool:
+    """¿El broker tiene algo cargado, o historia? Si no, se le puede cambiar la moneda.
+
+    Una caja en cero NO cuenta: queda así después de revertir un import, y contarla
+    impedía que "revertir y volver a subir" curara el broker. Las operaciones y las
+    filas importadas vivas SÍ cuentan: un broker en dólares que vendió y retiró todo
+    tiene la caja en cero y ninguna tenencia, pero su historia está en dólares y
+    pasarlo a pesos la reinterpretaría. Revertir un import borra la suya, así que
+    volver a subirlo sigue curando."""
+    if conn.execute(
+        "SELECT 1 FROM positions WHERE user_id=? AND broker=? "
+        "AND (COALESCE(is_cash,0)=0 OR ABS(COALESCE(invested,0)) > 0.005) LIMIT 1",
+        (uid, nombre),
+    ).fetchone():
+        return True
+    if conn.execute("SELECT 1 FROM operations WHERE user_id=? AND broker=? LIMIT 1",
+                    (uid, nombre)).fetchone():
+        return True
+    return conn.execute(f"SELECT 1 FROM {TX_VIVAS} WHERE b.user_id=? AND n.broker=? LIMIT 1",
+                        (uid, nombre)).fetchone() is not None
+
+
+def que_hacer_con_pesos(conn, uid: int, user_brokers, nombre: str) -> str:
+    """Le llega PLATA EN PESOS al broker `nombre`: "ok" si la puede guardar,
+    "curar" si hay que pasarlo a pesos antes, "rechazar" si no se puede.
+
+    Un broker en dólares vacío pasa a pesos (sus dólares van solos a "· USD"). Con
+    datos no se toca —cambiar la moneda reinterpretaría lo que ya tiene—, y la
+    sub-cuenta "<broker> · USD" de otro tampoco: los pesos van a su padre. La
+    llaman las dos puertas por donde entran pesos a un broker existente: el import
+    de movimientos (`run_preview`) y la foto de tenencia (main.py). Los exchanges
+    cripto quedan afuera (ver `brokers_que_no_aceptan_pesos`).
+    """
+    if nombre not in brokers_que_no_aceptan_pesos(user_brokers, None):
+        return "ok"
+    if user_brokers[nombre].get("parent_broker_id") or broker_tiene_datos(conn, uid, nombre):
+        return "rechazar"
+    return "curar"
+
+
+def escrituras_para_cambiar_moneda(uid: int, nombre: str, moneda: str) -> List[tuple]:
+    """Las escrituras que cambian la moneda de un broker: la del broker y las DOS
+    marcas de moneda de su caja, que la acompañan siempre.
+
+      · `asset` (el rótulo): lo miran la pantalla y `invariantes.check_cash_moneda`.
+      · `currency`: el arranque (init_db) la completa desde el rótulo, y
+        `behavioral._native_ccy` la lee ANTES que el rótulo y el broker. Es la que
+        usan `_position_value_usd` —metas, tableros e insights de la IA, reportes—
+        para decidir si la caja se pasa de pesos a dólares.
+
+    Sin esto, la caja en cero que deja un import revertido quedaba "USD" (las dos
+    marcas) en un broker ya en pesos, y los pesos que entraban después se sumaban
+    ahí: medido, $1.500.000 de una foto valían US$1.500.000 para esos lectores.
+    El mismo criterio que el arranque: rótulo 'ARS' → ARS; 'USD'/'USDT' → USD.
+
+    Si se puede cambiar lo decide quien llama: el import y la foto, sólo con el
+    broker vacío (`que_hacer_con_pesos`); la edición a mano, la persona."""
+    caja = asset_de_caja(moneda)
+    return [("UPDATE brokers SET currency=? WHERE user_id=? AND name=?", (moneda, uid, nombre)),
+            ("UPDATE positions SET asset=?, currency=? WHERE user_id=? AND broker=? AND is_cash=1",
+             (caja, "ARS" if caja == "ARS" else "USD", uid, nombre))]
+
+
 def moneda_de_broker_nuevo(nombre: str, filas, fmt_base=None) -> str:
     """La moneda con la que el import crea un broker que el usuario no tenía.
 
@@ -776,26 +840,15 @@ def run_preview(
             continue
         if fmt_base:
             target = fmt_base
-        elif (info.get("currency") != "ARS" and not info.get("parent_broker_id")
-                and name.strip().lower() not in CRYPTO_BROKERS
-                and _trae_pesos(_filas_por_broker.get(name, []))):
+            if info.get("currency") == target or broker_tiene_datos(conn, uid, name):
+                continue
+        elif (_trae_pesos(_filas_por_broker.get(name, []))
+                and que_hacer_con_pesos(conn, uid, user_brokers, name) == "curar"):
             target = "ARS"
         else:
             continue
-        if info.get("currency") == target:
-            continue
-        # Una caja en cero no es tener datos (queda así después de revertir un
-        # import): sin esto, "revertir y volver a subir" no curaba el broker.
-        has_data = conn.execute(
-            "SELECT 1 FROM positions WHERE user_id=? AND broker=? "
-            "AND (COALESCE(is_cash,0)=0 OR ABS(COALESCE(invested,0)) > 0.005) LIMIT 1",
-            (uid, name),
-        ).fetchone()
-        if has_data:
-            continue
-        _escrituras_diferidas.append((
-            "UPDATE brokers SET currency=? WHERE user_id=? AND name=?",
-            (target, uid, name), None))
+        _escrituras_diferidas.extend(
+            (sql, params, None) for sql, params in escrituras_para_cambiar_moneda(uid, name, target))
         info["currency"] = target
 
     # Auto-crear brokers que aparecen en el CSV pero no existen para este

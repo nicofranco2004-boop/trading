@@ -6234,10 +6234,10 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
         if not name_changed:
             if new_currency != row["currency"]:
                 with conn:
-                    conn.execute(
-                        "UPDATE brokers SET currency=? WHERE id=? AND user_id=?",
-                        (new_currency, bid, uid),
-                    )
+                    # La moneda y el rótulo de la caja, juntos (ver la función).
+                    for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(
+                            uid, old_name, new_currency):
+                        conn.execute(_sql, _params)
                 _ai_cache_invalidate(uid)
             updated = conn.execute(
                 "SELECT * FROM brokers WHERE id=? AND user_id=?", (bid, uid)
@@ -6375,6 +6375,12 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
                 if sibling is not None:
                     _renombre_broker.anotar_nombre_anterior(
                         conn, uid, sibling["id"], old_sibling, new_sibling)
+                # Si además cambió la moneda, el rótulo de la caja la acompaña (con
+                # el nombre nuevo: las posiciones ya se renombraron arriba).
+                if new_currency != row["currency"]:
+                    for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(
+                            uid, new_name, new_currency):
+                        conn.execute(_sql, _params)
         except ERR_INTEGRIDAD as ex:
             raise HTTPException(
                 status_code=409,
@@ -42528,6 +42534,37 @@ def import_tenencia_preview(
                 raise HTTPException(400, "La tanda no existe o no es tuya.")
         if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone():
             raise HTTPException(400, f"No encontramos el broker '{broker}'. {broker_hint}")
+        # ⚠️ LA FOTO TAMBIÉN PUEDE METER PESOS EN UN BROKER EN DÓLARES.
+        # Todo lo de abajo da por hecho que el broker es en pesos y que sus dólares
+        # van a "<broker> · USD". Si quedó en dólares (una plantilla de Rendi sólo
+        # con filas en dólares, o un import viejo con la regla de mayoría), los
+        # pesos de la foto se guardaban como dólares: medido, una caja de
+        # $1.500.000 quedaba "US$1.500.000" y el CEDEAR en pesos adentro del broker
+        # en dólares (AUDIT_plantilla_rendi_2026-10-27.md, PL1). La regla es la
+        # misma que la del import de movimientos (`que_hacer_con_pesos`): vacío →
+        # pasa a pesos; con datos, o si es la sub-cuenta en dólares → se rechaza.
+        # El cambio de moneda queda en la transacción del lote: si la vista previa
+        # no llega a guardarse, no queda escrito.
+        if (any((h.currency or "").upper() == "ARS" for h in snap.holdings)
+                or abs(snap.cash_ars or 0) > 0.005):
+            _ub = _import_pipeline.fetch_user_brokers(conn, uid)
+            _accion = _import_pipeline.que_hacer_con_pesos(conn, uid, _ub, broker)
+            if _accion == "rechazar" and _ub[broker].get("parent_broker_id"):
+                _padre = next((n for n, b in _ub.items()
+                               if b["id"] == _ub[broker]["parent_broker_id"]), "el broker principal")
+                raise HTTPException(400, f"«{broker}» es la cuenta en dólares de «{_padre}». "
+                                         f"Esta foto trae pesos: subila al broker «{_padre}» "
+                                         f"(sus dólares van solos a «{broker}»).")
+            if _accion == "rechazar":
+                raise HTTPException(400, (
+                    f"Tu broker «{broker}» está en dólares y esta foto trae pesos: Rendi no "
+                    f"puede guardar pesos en una cuenta en dólares. Los brokers argentinos van "
+                    f"en pesos (sus dólares van solos a «{broker} · USD»). Para arreglarlo, "
+                    f"revertí los imports de «{broker}», cambiale la moneda a pesos y volvé a "
+                    f"subir los movimientos y la foto."))
+            if _accion == "curar":
+                for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(uid, broker, "ARS"):
+                    conn.execute(_sql, _params)
         # 🔴 CUANDO NO SE PUDO LEER LA FECHA, DECIRLO. Antes esto caía al reloj
         # del servidor en silencio y la respuesta devolvía `date: null`, que el
         # frontend ni renderiza. Medido en prod: 93 de 152 fotos confirmadas
