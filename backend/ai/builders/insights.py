@@ -535,18 +535,23 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # COMPARA, no sobre los `window_days` pedidos. El motor mide desde el primer
     # cierre que puede afirmar (en certero puede ser hace semanas): con la ventana
     # pedida, "+3 % desde junio" se comparaba contra 12 meses de inflación.
-    # S&P ↔ `_rend` (dólares); inflación ↔ `_rend_ars` (pesos). Sin ventana no hay
-    # benchmark: un índice de otro período al lado del número invita a restarlos.
+    # S&P ↔ `_rend` (dólares); inflación ↔ `_rend_ars` (pesos).
+    # Sin número medido (sin ventana) el índice se sigue INFORMANDO, sobre la
+    # ventana pedida y diciendo cuál es (`*_ventana`): es contexto, y la resta
+    # (`delta_*`) ya no se hace en ese caso.
     sp500_pct: Optional[float] = None
     inflation_pct: Optional[float] = None
+    _pedida = (_cutoff_iso, "hoy")
+    _v_sp = ((_rend.get("desde"), _rend.get("hasta")) if _rend.get("desde") else _pedida)
+    _v_inf = ((_rend_ars.get("desde"), _rend_ars.get("hasta")) if _rend_ars.get("desde")
+              else _pedida)
     try:
         import main as _m
         import performance as _perf
         cache_bench = getattr(_m, "_bench_cache", {}) or {}
         data = cache_bench.get("data") or {}
-        sp500_pct = _perf.bench_pct_entre(data, "sp500", _rend.get("desde"), _rend.get("hasta"))
-        inflation_pct = _perf.bench_pct_entre(
-            data, "inflation_ar", _rend_ars.get("desde"), _rend_ars.get("hasta"))
+        sp500_pct = _perf.bench_pct_entre(data, "sp500", *_v_sp)
+        inflation_pct = _perf.bench_pct_entre(data, "inflation_ar", *_v_inf)
     except Exception:
         pass
 
@@ -558,6 +563,10 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     vs_benchmarks = {
         "sp500_pct": sp500_pct,
         "inflation_ar_pct": inflation_pct,
+        # El período de cada índice: el del número contra el que se compara, o el
+        # pedido cuando no hay número (y entonces no hay resta).
+        "sp500_ventana": list(_v_sp),
+        "inflation_ventana": list(_v_inf),
         # Sólo a mercado: la contabilidad al costo contra el S&P compara el
         # realizado con un índice que sí ve el mercado.
         "delta_sp500_pp": (
