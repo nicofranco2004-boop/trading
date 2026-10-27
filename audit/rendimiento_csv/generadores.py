@@ -180,7 +180,7 @@ def ieb_mov(h: Historia, omitir=None, hasta=None) -> bytes:
     return _xlsx([("Export", [hdr] + rows)])
 
 
-def ieb_foto(h: Historia, fecha: str, ajustar=None) -> bytes:
+def ieb_foto(h: Historia, fecha: str, ajustar=None, ppp_factor=1.0) -> bytes:
     f = h.foto(fecha)
     if ajustar:
         f = ajustar(f)
@@ -202,7 +202,7 @@ def ieb_foto(h: Historia, fecha: str, ajustar=None) -> bytes:
             else:
                 px = h.m.ars(tk, d) / (h.m.mep(d) if mon == "USD" else 1)
                 val = q * px
-            pat.append([f"{tk} - {tk} DESCRIPCION", mon, q, round(px, 4), 1.0, round(px, 4), 0, 0,
+            pat.append([f"{tk} - {tk} DESCRIPCION", mon, q, round(px, 4), 1.0, round(px * ppp_factor, 4), 0, 0,
                         datetime(d.year, d.month, d.day, 8, 0), round(val, 2)])
         pat.append(["Subtotal", "-", "-", None, "-", "-", "0", "-", "0", None])
     sal = [["ARS "], ["Plazo", "Fecha", "Saldo"], ["Hoy", datetime(d.year, d.month, d.day, 11, 0), round(f["cash"]["ARS"], 2)],
