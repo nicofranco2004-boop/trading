@@ -407,7 +407,7 @@ export function specDeDistribucion({ titulo, porciones = [], fmt = (v) => String
     filas = [...quedan, {
       key: '__otros__',
       label: 'Otros',
-      color: resto.find(p => PORCION_RESIDUAL.has(p.key))?.color || INK_3,
+      color: resto.find(p => PORCION_RESIDUAL.has(p.key))?.color || INK_2,
       value: resto.reduce((s, p) => s + p.value, 0),
       pct: resto.reduce((s, p) => s + p.pct, 0),
     }]

@@ -50,7 +50,9 @@ import { specDeDistribucion, nombreDeArchivo } from '../utils/shareCard'
 // "Resto" explícito desde el agregador, y volver a agrupar acá partiría ese
 // resto en dos "Otros" distintos. Ese caso pasa minSlicePct={0}.
 const MIN_SLICE_PCT = 1.5
-const OTHERS_COLOR = '#5A6478'
+// El mismo gris intermedio que el "Resto" de bookComposition (antes un hex
+// a mano, el ink-3 oscuro, sobre el que el rótulo de la imagen no se leía).
+const OTHERS_COLOR = 'rgb(var(--ink-2))'
 // Cuántos activos mostramos al desplegar antes de cortar con "y N más".
 const MAX_DETAIL_ROWS = 12
 
