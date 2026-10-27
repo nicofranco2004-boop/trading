@@ -96,6 +96,16 @@ persona no las borra, entran como operaciones reales y crean esos brokers.
   Exchanges cripto (Binance & cía.) quedan como estaban: mandan pares en pesos a
   propósito y falta medir cuántos son. Las cuentas que YA quedaron mal no se tocan
   solas: `backend/scripts/diag_brokers_moneda.py <copia de prod>` las lista.
+- **La foto de tenencia, la misma falla por otra puerta (2026-10-27):** la foto va a un
+  broker que ya existe y da por hecho que es en pesos; si quedó en dólares, metía los
+  pesos como dólares (reproducido: $1.500.000 → "US$1.500.000"). Arreglado y en
+  producción en [PR #37](https://github.com/nicofranco2004-boop/trading/pull/37)
+  (`7fca3ef`), con la misma regla que el import (vacío → pesos; con datos o historia →
+  se rechaza). La auditoría de ese PR encontró dos fallas en la curación de #36, ya
+  corregidas:
+  - la caja curada conservaba sus marcas en "USD", y metas, IA y reportes valuaban los
+    pesos como dólares;
+  - un broker que vendió y retiró todo contaba como vacío.
 
 ### PL2 · Sin foto, el Certero confía en el archivo (regresión de la Fase A) — CONFIRMADO
 
