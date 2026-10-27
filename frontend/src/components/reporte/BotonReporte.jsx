@@ -13,7 +13,7 @@
 // los precios de Análisis se refrescan solos y el PDF tiene que ser lo que el
 // usuario está viendo en la vista previa.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { FileText, Download, X, Eye, EyeOff } from 'lucide-react'
 import PreguntaMontos from '../PreguntaMontos'
@@ -25,7 +25,11 @@ import { hoyISO } from '../../utils/fecha'
 const CSS_IMPRESION = `
   @media print {
     @page { margin: 12mm; }
-    /* El fondo de la app (oscuro) se colaba en los márgenes de la hoja. */
+    /* El fondo de la app (oscuro) se colaba en los márgenes de la hoja. Y con
+       el tema oscuro Chromium pinta el MARGEN de la página con el color de su
+       \`color-scheme\` (index.css lo pone en dark): sin forzarlo a claro, los
+       12 mm salían negros (verificado con page.pdf). */
+    :root { color-scheme: light !important; }
     html, body { background: ${P.paper} !important; }
     body > *:not(.reporte-portal) { display: none !important; }
     .reporte-portal { position: static !important; display: block !important; overflow: visible !important; background: ${P.paper} !important; padding: 0 !important; }
@@ -41,28 +45,57 @@ export default function BotonReporte({ armarDatos, source = 'analisis' }) {
   const [paso, setPaso] = useState(null)
   const [mostrarMontos, setMostrarMontos] = useState(false)
   const [datos, setDatos] = useState(null)
+  // El título de la pestaña mientras se imprime (ver `descargar`) y cómo
+  // volverlo atrás: al terminar la impresión o al cerrar, lo que pase primero.
+  const tituloRef = useRef(null)
 
-  const elegir = (conMontos) => {
+  const restaurarTitulo = () => {
+    const t = tituloRef.current
+    if (!t) return
+    document.title = t.antes
+    window.removeEventListener('afterprint', t.volver)
+    tituloRef.current = null
+  }
+
+  // Cambiar montos en la vista previa vuelve a armar el papel, pero no es otro
+  // reporte: "generado" se cuenta sólo al contestar la pregunta.
+  const armar = (conMontos) => {
     setMostrarMontos(conMontos)
     setDatos(armarDatos({ mostrarMontos: conMontos }))
+  }
+  const elegir = (conMontos) => {
+    armar(conMontos)
     setPaso('vista')
     track('reporte_generado', { source, montos: conMontos ? 'visibles' : 'ocultos' })
   }
-  const cerrar = () => { setPaso(null); setDatos(null) }
+  const cerrar = () => { restaurarTitulo(); setPaso(null); setDatos(null) }
 
   useEffect(() => {
     if (!paso) return
     const onKey = (e) => { if (e.key === 'Escape') cerrar() }
     document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
+    // Con la pregunta o la vista previa abiertas la página de atrás no scrollea.
+    const overflowAntes = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = overflowAntes
+    }
   }, [paso])
+
+  // Si el componente se va con el título cambiado (navegar en medio), se vuelve.
+  useEffect(() => () => restaurarTitulo(), [])
 
   function descargar() {
     // El título de la pestaña es el nombre que el navegador le propone al PDF.
-    const antes = document.title
+    // Dos toques seguidos (en el celular print() no bloquea) no pisan el
+    // título original con el del reporte: se guarda una sola vez.
+    if (!tituloRef.current) {
+      const volver = () => restaurarTitulo()
+      tituloRef.current = { antes: document.title, volver }
+      window.addEventListener('afterprint', volver)
+    }
     document.title = `Reporte de cartera Rendi ${hoyISO()}`
-    const volver = () => { document.title = antes; window.removeEventListener('afterprint', volver) }
-    window.addEventListener('afterprint', volver)
     track('reporte_descargado', { source, montos: mostrarMontos ? 'visibles' : 'ocultos' })
     window.print()
   }
@@ -116,7 +149,7 @@ export default function BotonReporte({ armarDatos, source = 'analisis' }) {
             <div className="max-w-[800px] mx-auto flex items-center justify-between gap-2 px-3 py-2.5">
               <button
                 type="button"
-                onClick={() => elegir(!mostrarMontos)}
+                onClick={() => armar(!mostrarMontos)}
                 className="inline-flex items-center gap-1 text-[12px] text-data-violet hover:text-data-violet/80 transition-colors"
               >
                 {mostrarMontos ? <EyeOff size={12} strokeWidth={1.75} /> : <Eye size={12} strokeWidth={1.75} />}

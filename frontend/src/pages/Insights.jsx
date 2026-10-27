@@ -35,7 +35,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
 import UpgradeModal from '../components/plan/UpgradeModal'
 import { track } from '../utils/track'
-import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, tienePrecio, seCotiza, coberturaDePrecios, COBERTURA_MINIMA, valorAlMep } from '../utils/valuation'
+import { sumarBrokers, noRealizadoEnVista, computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, tienePrecio, seCotiza, coberturaDePrecios, COBERTURA_MINIMA, valorAlMep } from '../utils/valuation'
 import { cedearEspecieBase } from '../utils/tickers'
 import { auditPositions, positionPct } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
@@ -47,7 +47,6 @@ import BotonCompartir from '../components/BotonCompartir'
 import { specDeRendimiento, nombreDeArchivo } from '../utils/shareCard'
 import BotonReporte from '../components/reporte/BotonReporte'
 import { armarReporte } from '../utils/reporteCartera'
-import { sumarBrokers, pnlNoRealizado } from '../utils/pnlNoRealizado'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { pctCreible, operacionesEnUsd } from '../utils/assetPnl'
 import { denominadorAportado } from '../utils/evolution'
@@ -871,9 +870,15 @@ function InsightsDesktop({ _embeddedTab }) {
   const liquidityCard = computeLiquidityRisk(investorProfile, positionsWithValue, brokers)
 
   // Cost basis y P&L no realizado (live, sobre posiciones abiertas).
-  // Mismo motor y misma suma que Cartera (utils/pnlNoRealizado).
+  // Mismo motor y misma suma que Cartera y el Dashboard (sumarBrokers).
   const totalesCartera = sumarBrokers({ brokers, positions, prices, tcValuacion, tcCedear, tcCripto, costBasis })
   const totalCostBasis = totalesCartera.invested
+  // Los plazos fijos en dólares (valor + capital) y el valor de la cartera CON
+  // ellos: es el "Valor actual" del Dashboard (`totalValue`). `totalPortfolio`
+  // (arriba) no los incluye y descarta los brokers en cero o negativos; sigue
+  // alimentando el diagnóstico tal cual estaba.
+  const pfRollup = pfUsd(pfTotals, tcValuacion)
+  const valorCarteraUsd = totalesCartera.value + pfRollup.valueUsd
   const unrealizedPnl = totalPortfolio - totalCostBasis
 
   // ── Cumulative performance series (monthly + today) ──
@@ -2158,9 +2163,14 @@ function InsightsDesktop({ _embeddedTab }) {
   // pusieron y el valor de hoy en pesos (`resultadoTotal`, la misma cuenta que el
   // "Capital aportado" y la "Ganancia total" del Dashboard). Los montos de
   // `discipline` quedan en esa moneda: la tarjeta los escribe con `amtEnVista`.
+  // ⚠️ CON LOS MISMOS INSUMOS QUE EL DASHBOARD: el valor de hoy con los plazos
+  // fijos y su capital sumado a lo aportado (`extraUsd`). Antes acá iba
+  // `totalPortfolio` sin plazos fijos: con un plazo fijo, "Atribución del
+  // crecimiento" decía otro valor y otro aportado que el Dashboard, y el
+  // reporte en PDF mostraba dos "valor de hoy" distintos en la misma hoja.
   const resultado = resultadoTotal({
     monthly, brokers, dolarMes, tcEnFecha, tcHoy: tcValuacion,
-    valorHoyUsd: totalPortfolio, moneda: currency,
+    valorHoyUsd: valorCarteraUsd, moneda: currency, extraUsd: pfRollup.investedUsd,
   })
   const discipline = atribucionDelCrecimiento({
     globalMonthly,
@@ -2477,7 +2487,6 @@ function InsightsDesktop({ _embeddedTab }) {
   // Los dos ejes de la torta de distribución. MISMOS agregadores que el
   // Dashboard — el objetivo es que las dos pantallas no puedan dar números
   // distintos. El plazo fijo entra como porción sintética, igual que allá.
-  const pfRollup = pfUsd(pfTotals, tcValuacion)
   const pfSliceUsd = pfRollup.valueUsd
   const pfPnl = { total: pfRollup.pnlUsd, cost: pfRollup.investedUsd }
   const classBreakdown = computeClassBreakdown(
@@ -3104,30 +3113,54 @@ function InsightsDesktop({ _embeddedTab }) {
   // la curva: son los que la pantalla publica. La curva (chartData) es sólo la
   // forma. Sin acumulado publicado no hay botón: la imagen no puede mostrar un
   // número que la pantalla esconde (serie partida, pesos sin medir, etc.).
-  const puedeCompartirRendimiento = kpiRendimiento.cumulativeReturnPct != null && chartData.length > 1
+  const puedeCompartirRendimiento = Number.isFinite(kpiRendimiento.cumulativeReturnPct) && chartData.length > 1
   // Lo que comparten la imagen y el reporte en PDF: un solo armado, así los dos
   // dicen el mismo período y dibujan la misma curva.
   const datosRendimiento = () => {
     const num = (v) => (Number.isFinite(v) ? v : null)
     const PERIODOS = { 1: 'Último mes', 3: 'Últimos 3 meses', 12: 'Último año', 24: 'Últimos 2 años', 60: 'Últimos 5 años' }
+    const serie = chartData.map(r => ({
+      ts: r.ts,
+      // En certero lo no medido va en la clave "estimado" (la parte
+      // punteada): juntas son la curva entera que se ve en pantalla.
+      cartera: num(r[claveCartera]) ?? num(r[`${userName} estimado`]),
+      bench: num(r[benchmarkKey]),
+    }))
+    // El período que el número REALMENTE cubre, como lo avisa la pantalla
+    // ("1A ya muestra todo tu historial · desde X"): con menos historia que la
+    // ventana, "Último año" mentía sobre un número de 4 meses.
+    let periodo = effectiveRange ? (PERIODOS[effectiveRange] || `Últimos ${effectiveRange} meses`) : 'Desde el inicio'
+    const primero = serie.find(p => Number.isFinite(p.ts) && p.cartera != null)
+    if (effectiveRange && primero) {
+      const corte = new Date()
+      corte.setMonth(corte.getMonth() - effectiveRange)
+      if (primero.ts > corte.getTime() + 15 * 864e5) {
+        periodo = `Desde el ${fmtFecha(new Date(primero.ts).toISOString().slice(0, 10))}`
+      }
+    }
+    // Y si el número es el RECREADO de la contabilidad (modo estimado), lo
+    // dice, como el KPI de la pantalla.
+    const acum = kpiRendimiento.acum
+    // `desde` es la clave de una fila del gráfico: día ("2026-03-14") o mes ("2026-03").
+    const fechaDeClave = (k) => (/^\d{4}-\d{2}-\d{2}$/.test(k || '') ? fmtFecha(k)
+      : /^\d{4}-\d{2}$/.test(k || '') ? `${k.slice(5)}/${k.slice(0, 4)}` : '')
+    const desdeAcum = acum?.parcial ? fechaDeClave(acum.desde) : ''
+    const nota = kpiRendimiento.modoEstimado
+      ? (desdeAcum ? `recreado de tu contabilidad, desde ${desdeAcum}` : 'recreado de tu contabilidad')
+      : null
     return {
       carteraPct: kpiRendimiento.cumulativeReturnPct,
       benchPct: kpiRendimiento.benchmarkReturnPct,
       benchLabel: benchmarkKey,
-      serie: chartData.map(r => ({
-        ts: r.ts,
-        // En certero lo no medido va en la clave "estimado" (la parte
-        // punteada): juntas son la curva entera que se ve en pantalla.
-        cartera: num(r[claveCartera]) ?? num(r[`${userName} estimado`]),
-        bench: num(r[benchmarkKey]),
-      })),
-      periodo: effectiveRange ? (PERIODOS[effectiveRange] || `Últimos ${effectiveRange} meses`) : 'Desde el inicio',
+      serie,
+      periodo,
+      nota,
     }
   }
   const specRendimiento = ({ mostrarMontos }) => specDeRendimiento({
     ...datosRendimiento(),
     moneda: currency,
-    patrimonio: assetBreakdown.total > 0 ? amt(assetBreakdown.total) : null,
+    patrimonio: preciosCompletos && resultado.valor > 0 ? amtEnVista(resultado.valor) : null,
     mostrarMontos,
   })
 
@@ -3143,7 +3176,9 @@ function InsightsDesktop({ _embeddedTab }) {
       mostrarMontos,
       moneda: currency,
       periodo: rend?.periodo || '',
-      patrimonio: assetBreakdown.total > 0 ? assetBreakdown.total : null,
+      // El "Valor actual" del Dashboard, en la moneda de la vista (fmtEnVista):
+      // el mismo "Lo que vale hoy" de la sección de aportes.
+      patrimonio: preciosCompletos && resultado.valor > 0 ? resultado.valor : null,
       rendimiento: rend,
       drawdown: drawdownTwrr,
       distribuciones: [
@@ -3161,13 +3196,13 @@ function InsightsDesktop({ _embeddedTab }) {
       // Cartera (pnlNoRealizado), no el `unrealizedPnl` de acá arriba.
       fmtEnVista: amtEnVista,
       capital: discipline ? { aportado: discipline.deposits, mercado: discipline.pnl, valorHoy: discipline.total } : null,
-      noRealizado: preciosCompletos ? pnlNoRealizado({
-        totals: totalesCartera,
-        totalsToday: sumarBrokers({ brokers, positions, prices, tcValuacion, tcCedear, tcCripto, costBasis: 'today' }),
-        pf: pfRollup,
-        tcValuacion,
-        moneda: currency,
-      }) : null,
+      noRealizado: preciosCompletos ? (() => {
+        const nr = noRealizadoEnVista({
+          positions, prices, brokers, tcValuacion, tcCedear, tcCripto, costBasis, moneda: currency,
+          extraValorUsd: pfRollup.valueUsd, extraCostoUsd: pfRollup.investedUsd,
+        })
+        return { pnl: nr.monto, pct: nr.pct }
+      })() : null,
     })
   }
 
@@ -3209,7 +3244,10 @@ function InsightsDesktop({ _embeddedTab }) {
         subtitle="Análisis profundo de tu performance, riesgo y comportamiento como inversor."
         action={
           <div className="flex items-center gap-2 flex-wrap">
-            {(assetBreakdown.items.length > 0 || puedeCompartirRendimiento) && (
+            {/* Sólo con precios completos: antes, las tenencias valen al costo
+                y el PDF saldría con ese patrimonio sin avisar (el mismo criterio
+                que la IA: nada se manda al costo). */}
+            {preciosCompletos && (assetBreakdown.items.length > 0 || puedeCompartirRendimiento) && (
               <BotonReporte armarDatos={armarDatosReporte} source="analisis" />
             )}
             <AnalyzeButton
@@ -3345,7 +3383,8 @@ function InsightsDesktop({ _embeddedTab }) {
           <CompositionDonut
             className="h-full"
             title="Distribución por tipo de activo"
-            compartir="analisis"
+            // Sin precios completos las tortas valen al costo: no se exportan.
+            compartir={preciosCompletos ? 'analisis' : null}
             compartirConDetalle
             items={classBreakdown.items}
             fmt={amt}
@@ -3376,7 +3415,8 @@ function InsightsDesktop({ _embeddedTab }) {
           <CompositionDonut
             className="h-full"
             title="Distribución por sector"
-            compartir="analisis"
+            // Sin precios completos las tortas valen al costo: no se exportan.
+            compartir={preciosCompletos ? 'analisis' : null}
             items={sectorBreakdown.items}
             fmt={amt}
             height={230}

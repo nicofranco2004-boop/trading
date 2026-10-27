@@ -28,14 +28,14 @@ describe('armarReporte', () => {
     expect(JSON.stringify(r)).not.toMatch(/(US\$|USD) \d/)
     expect(r.plata).toBeNull()
     // El no realizado va igual, sólo con su %.
-    expect(r.noRealizado).toEqual({ monto: null, pct: '+17,6%', positivo: true })
+    expect(r.noRealizado).toEqual({ monto: null, pct: '+17,6%', signo: 1 })
     expect(r.patrimonio).toBeNull()
     expect(r.ganadores[0].resultado).toBeNull()
   })
 
   it('con montos: total, montos por porción y resultado con signo', () => {
     const r = armarReporte({ ...base, mostrarMontos: true })
-    expect(r.patrimonio).toBe('US$ 1000')
+    expect(r.patrimonio).toBe('USD 1000')
     expect(r.distribuciones[0].porciones[0].monto).toBe('US$ 600')
     expect(r.ganadores[0]).toEqual({ label: 'FIMA-A', resultado: '+US$ 120' })
     expect(r.perdedores[0].resultado).toBe('−US$ 40')
@@ -57,7 +57,7 @@ describe('armarReporte', () => {
     expect(r.rendimiento.cartera).toBe('+12,3%')
     expect(r.rendimiento.bench).toBe('+9,1%')
     expect(r.rendimiento.diferencia).toBe('+3,2 puntos')
-    expect(r.rendimiento.ganaAlBench).toBe(true)
+    expect(r.rendimiento.contraBench).toBe(1)
     expect(r.drawdown).toEqual({ actual: '−3,2%', maximo: '−18,5%' })
   })
 
@@ -65,5 +65,18 @@ describe('armarReporte', () => {
     const r = armarReporte({ ...base, rendimiento: null, drawdown: null })
     expect(r.rendimiento).toBeNull()
     expect(r.drawdown).toBeNull()
+  })
+
+  it('empate a la vista: diferencia 0,0 y sin signo; un −0,04 se ve "0,0%" neutro', () => {
+    const r = armarReporte({ ...base, rendimiento: { ...base.rendimiento, carteraPct: -0.04, benchPct: 0.02 } })
+    expect(r.rendimiento.cartera).toBe('0,0%')
+    expect(r.rendimiento.signoCartera).toBe(0)
+    expect(r.rendimiento.diferencia).toBe('0,0 puntos')
+    expect(r.rendimiento.contraBench).toBe(0)
+  })
+
+  it('el valor de la cartera va en la moneda de la vista (fmtEnVista), como lo que vale hoy', () => {
+    const r = armarReporte({ ...base, mostrarMontos: true, patrimonio: 1000 })
+    expect(r.patrimonio).toBe(r.plata.valorHoy)
   })
 })

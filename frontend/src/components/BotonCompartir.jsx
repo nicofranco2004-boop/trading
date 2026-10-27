@@ -20,12 +20,18 @@ import { createPortal } from 'react-dom'
 import { Share2 } from 'lucide-react'
 import ShareCardModal from './ShareCardModal'
 import { useAuth } from '../contexts/AuthContext'
+import { getClientContext } from '../utils/api'
+import { nombreParaTarjeta } from '../utils/shareCard'
 
 export default function BotonCompartir({ buildSpec, source, filename = 'rendi.png', etiqueta = 'Compartir', className = '' }) {
   const [abierto, setAbierto] = useState(false)
   // El nombre de la cuenta va de titular en la tarjeta. `useAuth()` es null
   // fuera del provider (tests de render): sin nombre, la tarjeta igual sale.
-  const nombre = useAuth()?.user?.name || null
+  // ⚠️ Un asesor mirando la cuenta de un cliente ve la cartera DEL CLIENTE,
+  // pero `user` es el asesor: su nombre arriba de esos números sería falso.
+  // En ese contexto la tarjeta va sin nombre.
+  const nombreCuenta = useAuth()?.user?.name || null
+  const nombre = getClientContext() ? null : nombreParaTarjeta(nombreCuenta)
   return (
     <>
       <button
@@ -43,7 +49,8 @@ export default function BotonCompartir({ buildSpec, source, filename = 'rendi.pn
         // Mervall-E por la tarjeta (AskAIAbout escucha onDoubleClick).
         <div onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
           <ShareCardModal
-            buildSpec={(o) => buildSpec({ ...o, nombre })}
+            buildSpec={(o) => buildSpec({ ...o, nombre: o.conNombre === false ? null : nombre })}
+            conNombreOpcional={!!nombre}
             source={source}
             filename={filename}
             onClose={() => setAbierto(false)}

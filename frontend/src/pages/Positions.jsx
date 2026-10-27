@@ -46,9 +46,8 @@ import StalePricesNotice from '../components/StalePricesNotice'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass, pctTxt, parseNum, parseNumOrNull, numToInput, numACampo } from '../utils/format'
 import { leerVenta, cuerpoDeVenta, leerConversion, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { api, errorMessage } from '../utils/api'
-import { sumarBrokers, pnlNoRealizado } from '../utils/pnlNoRealizado'
 import { pfUsd } from '../hooks/usePfRollup'
-import { computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, avgCostArsPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
+import { sumarBrokers, noRealizadoEnVista, computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, avgCostArsPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
 import { linkDeAlerta } from '../components/alerts/alertaDePosicion'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { EtiquetaMoneda, EtiquetaEfectivo, EtiquetaBono, EtiquetaFaltaTc } from '../components/EtiquetaFila'
@@ -1797,22 +1796,23 @@ function PositionsDesktop() {
   // Plazos fijos → USD, coherente: valor (capital + devengado), capital
   // (invertido) y P&L (devengado). Suma al titular del patrimonio. No entra en
   // la variación diaria (los snapshots históricos no tienen PF).
-  // La cuenta vive en utils/pnlNoRealizado: el reporte en PDF de Análisis
-  // publica el mismo P&L no realizado que este encabezado.
+  // La cuenta es `noRealizadoEnVista` (valuation.js), la misma del Dashboard y
+  // del reporte en PDF: acá se le pasan las sumas ya memoizadas.
   const pfRoll = pfUsd(pfTotals, tcValuacion)
   const pfValueUsd = pfRoll.valueUsd
-  const heroUsd = pnlNoRealizado({ totals, totalsToday, pf: pfRoll, tcValuacion, moneda: 'USD' })
+  const extraPf = { extraValorUsd: pfRoll.valueUsd, extraCostoUsd: pfRoll.investedUsd }
+  const heroUsd = noRealizadoEnVista({ ...extraPf, tcValuacion, moneda: 'USD', totales: totals })
   const heroValue = heroUsd.valor
-  const heroInvested = heroUsd.invertido
-  const heroPnl = heroUsd.pnl
+  const heroInvested = heroUsd.costo
+  const heroPnl = heroUsd.monto
   const heroPct = heroUsd.pct
   // Hero en display ARS: cifras mode-INDEPENDENT (pesos nativos + tenencias USD al
   // dólar de hoy), a partir del total 'today' ×tcValuacion. Incluye PF. Así ARS-nativo
   // queda nativo y USD queda USD×hoy, sin filtrar el modo ni dropear brokers USD.
-  const heroArs = pnlNoRealizado({ totals, totalsToday, pf: pfRoll, tcValuacion, moneda: 'ARS' })
+  const heroArs = noRealizadoEnVista({ ...extraPf, tcValuacion, moneda: 'ARS', totales: totalsToday })
   const heroValueArs = heroArs.valor
-  const heroInvestedArs = heroArs.invertido
-  const heroPnlArs = heroArs.pnl
+  const heroInvestedArs = heroArs.costo
+  const heroPnlArs = heroArs.monto
   const heroPctArs = heroArs.pct
   // Cifras del hero según el display: ARS → nativas (mode-independent); USD → reflejan
   // el modo (en 'purchase' el invertido/P&L en USD absorben la devaluación).

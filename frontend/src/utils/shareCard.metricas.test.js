@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { specDeDistribucion, specDeRendimiento, specDeComposicion, specDeAportes, nombreDeArchivo, pctConSigno } from './shareCard'
+import { specDeDistribucion, specDeRendimiento, specDeComposicion, specDeAportes, nombreDeArchivo, pctConSigno, nombreParaTarjeta } from './shareCard'
 
 const fmt = (v) => `US$ ${Math.round(v)}`
 const now = new Date('2026-10-26T12:00:00')
@@ -45,8 +45,8 @@ describe('specDeDistribucion', () => {
       key: `a${i}`, label: `A${i}`, color: '#123456', value: 10, pct: 100 / 14,
     }))
     const s = specDeDistribucion({ titulo: 'X', porciones: muchas, fmt, now })
-    expect(s.porciones).toHaveLength(10)
-    expect(s.porciones[9].label).toBe('Otros')
+    expect(s.porciones).toHaveLength(12)
+    expect(s.porciones[11].label).toBe('Otros')
     const suma = s.porciones.reduce((a, p) => a + p.pct, 0)
     expect(suma).toBeCloseTo(100, 6)
   })
@@ -107,7 +107,8 @@ describe('helpers', () => {
   })
   it('pctConSigno usa el menos tipográfico', () => {
     expect(pctConSigno(-0.5)).toBe('−0,5%')
-    expect(pctConSigno(0)).toBe('+0,0%')
+    expect(pctConSigno(0)).toBe('0,0%')
+    expect(pctConSigno(-0.04)).toBe('0,0%')
   })
 })
 
@@ -148,8 +149,9 @@ describe('specDeAportes', () => {
   it('con montos: los de las tarjetas del Dashboard', () => {
     const s = specDeAportes({ ...base, mostrarMontos: true })
     expect(s.stats.map(x => x.value)).toEqual(['USD 800', '+USD 200', 'USD 1000'])
-    expect(s.stats[0].sub).toBe('80,0% del total')
-    expect(s.stats[1].sub).toBe('+25,0% sobre lo aportado')
+    expect(s.stats[0].sub).toBe('80,0% de lo que vale')
+    expect(s.stats[1].sub).toBe('Ganancia total +25,0%')
+    expect(s.alcance).toBe('Desde el inicio')
   })
 
   it('sin montos: reparto en % y ganancia en %, ninguna cifra de plata', () => {
@@ -159,8 +161,47 @@ describe('specDeAportes', () => {
   })
 
   it('pérdida: el rótulo lo dice y la barra va en rojo', () => {
-    const s = specDeAportes({ ...base, valor: 700, ganancia: -100, pct: -0.125 })
-    expect(s.stats[1].label).toBe('Lo que perdió en el mercado')
-    expect(s.barra.gana).toBe(false)
+    const s = specDeAportes({ ...base, valor: 700, ganancia: -100, pct: -0.125, mostrarMontos: true })
+    expect(s.stats[1].label).toBe('Lo que restó el mercado')
+    expect(s.gana).toBe(false)
+    // Con pérdida el reparto "X% de lo que vale" no se lee bien: no va.
+    expect(s.barra).toBeNull()
+    expect(s.stats[0].sub).toBeNull()
+  })
+})
+
+describe('auditoría — casos borde', () => {
+  it('aportes con más retiros que depósitos: sin reparto ni barra', () => {
+    const s = specDeAportes({ aportado: -500, valor: 1000, ganancia: 1500, pct: 0.5, now, fmt: String, fmtConSigno: String })
+    expect(s.barra).toBeNull()
+    expect(s.stats.map(x => x.label)).toEqual(['Ganancia total'])
+  })
+
+  it('rendimiento: empate a la vista dice "Igual que", y sin número no hay tarjeta', () => {
+    const s = specDeRendimiento({ carteraPct: 5.04, benchPct: 5.0, benchLabel: 'S&P 500', now })
+    expect(s.stats[2].value).toBe('0,0 puntos')
+    expect(s.veredicto).toBe('Igual que S&P 500')
+    expect(specDeRendimiento({ carteraPct: NaN, now })).toBeNull()
+  })
+
+  it('composición: el efectivo adentro de "Otros" cuenta para "Invertido"', () => {
+    const s = specDeComposicion({
+      titulo: 'X', now,
+      porciones: [
+        { key: 'cripto', label: 'Cripto', color: 'c', value: 980, pct: 98, detail: [{ label: 'BTC', value: 980, pct: 98 }] },
+        { key: '__otros__', label: 'Otros (2)', color: 'c', value: 20, pct: 2, detail: [
+          { key: 'cash', label: 'Efectivo', value: 12, pct: 1.2 }, { key: 'fci', label: 'FCI', value: 8, pct: 0.8 },
+        ] },
+      ],
+    })
+    expect(s.invertido).toBeCloseTo(98.8, 6)
+  })
+
+  it('nombre: ni emails disfrazados, ni números, y no parte un emoji', () => {
+    expect(nombreParaTarjeta('juan [at] gmail.com')).toBeNull()
+    expect(nombreParaTarjeta('12345678')).toBeNull()
+    expect(nombreParaTarjeta('Ana Pérez')).toBe('Ana Pérez')
+    const largo = 'A'.repeat(39) + '😀'
+    expect(nombreParaTarjeta(largo + 'x')).toBe(largo)
   })
 })

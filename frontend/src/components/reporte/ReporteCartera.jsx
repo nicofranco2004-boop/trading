@@ -19,6 +19,7 @@ const VIOLETA = 'rgb(var(--data-violet))'
 const FUENTE = "'Geist', -apple-system, 'Segoe UI', system-ui, sans-serif"
 const num = { fontVariantNumeric: 'tabular-nums' }
 const pct = (v) => `${Number(v).toFixed(1).replace('.', ',')}%`
+const colorDeSigno = (s) => (s > 0 ? P.up : s < 0 ? P.down : P.ink0)
 
 // "Último año" → "En el último año"; "Desde el inicio" queda como está.
 export const fraseDelPeriodo = (periodo) => {
@@ -52,14 +53,16 @@ export default function ReporteCartera({ datos }) {
       </div>
 
       {/* ── Resumen ────────────────────────────────────────────────────── */}
+      {(d.patrimonio || d.rendimiento || d.noRealizado || d.drawdown) && (
       <Seccion titulo="Resumen">
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 14 }}>
           {d.patrimonio && <Dato rotulo="Valor de la cartera" valor={d.patrimonio} />}
           {d.rendimiento && (
             <Dato
               rotulo={`Rendimiento · ${d.periodo || 'período'}`}
+              sub={d.rendimiento.nota ? d.rendimiento.nota.charAt(0).toUpperCase() + d.rendimiento.nota.slice(1) : null}
               valor={d.rendimiento.cartera}
-              color={d.rendimiento.carteraPositiva ? P.up : P.down}
+              color={colorDeSigno(d.rendimiento.signoCartera)}
             />
           )}
           {d.rendimiento?.bench && (
@@ -69,14 +72,14 @@ export default function ReporteCartera({ datos }) {
             <Dato
               rotulo="Diferencia"
               valor={d.rendimiento.diferencia}
-              color={d.rendimiento.ganaAlBench ? P.up : P.down}
+              color={colorDeSigno(d.rendimiento.contraBench)}
             />
           )}
           {d.noRealizado && (
             <Dato
               rotulo="P/L no realizado"
               valor={d.noRealizado.monto || d.noRealizado.pct}
-              color={d.noRealizado.positivo ? P.up : P.down}
+              color={colorDeSigno(d.noRealizado.signo)}
               sub={d.noRealizado.monto ? `${d.noRealizado.pct} sobre lo invertido` : 'sobre lo invertido'}
             />
           )}
@@ -89,6 +92,7 @@ export default function ReporteCartera({ datos }) {
           )}
         </div>
       </Seccion>
+      )}
 
       {/* ── Aportes vs mercado ─────────────────────────────────────────── */}
       {d.plata && (
@@ -118,9 +122,11 @@ export default function ReporteCartera({ datos }) {
               <strong style={{ color: P.ink0, ...num }}>{d.rendimiento.cartera}</strong> y el{' '}
               {d.rendimiento.benchLabel} <strong style={{ color: P.ink0, ...num }}>{d.rendimiento.bench}</strong>
               {' '}con tus mismos depósitos y retiros.{' '}
-              {d.rendimiento.ganaAlBench
+              {d.rendimiento.contraBench > 0
                 ? `Le ganaste por ${d.rendimiento.diferencia.replace(/^[+−]/, '')}.`
-                : `Quedaste ${d.rendimiento.diferencia.replace(/^[+−]/, '')} abajo.`}
+                : d.rendimiento.contraBench < 0
+                  ? `Quedaste ${d.rendimiento.diferencia.replace(/^[+−]/, '')} abajo.`
+                  : 'Quedaste igual.'}
             </p>
           )}
           <CurvaRendimiento serie={d.rendimiento.serie} />
@@ -144,8 +150,8 @@ export default function ReporteCartera({ datos }) {
             <Torta porciones={dist.porciones} />
             <table style={{ flex: 1, minWidth: 260, borderCollapse: 'collapse', fontSize: 12.5 }}>
               <tbody>
-                {dist.porciones.map(p => (
-                  <tr key={p.label} style={{ borderBottom: `1px solid ${P.line2}` }}>
+                {dist.porciones.map((p, i) => (
+                  <tr key={`${i}-${p.label}`} style={{ borderBottom: `1px solid ${P.line2}` }}>
                     <td style={{ padding: '5px 0', width: 16 }}>
                       <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 3, background: p.color }} />
                     </td>
@@ -210,8 +216,8 @@ function ListaActivos({ titulo, filas, color, vacio }) {
       <div style={{ fontSize: 12, fontWeight: 600, color, marginBottom: 6 }}>{titulo}</div>
       {filas.length === 0 ? (
         <div style={{ fontSize: 12, color: P.ink3 }}>{vacio}</div>
-      ) : filas.map(f => (
-        <div key={f.label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '5px 0', borderBottom: `1px solid ${P.line2}` }}>
+      ) : filas.map((f, i) => (
+        <div key={`${i}-${f.label}`} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '5px 0', borderBottom: `1px solid ${P.line2}` }}>
           <span style={{ fontWeight: 600 }}>{f.label}</span>
           {f.resultado && <span style={{ color, fontWeight: 600, ...num }}>{f.resultado}</span>}
         </div>
@@ -233,7 +239,7 @@ function Torta({ porciones, tam = 170 }) {
     <svg width={tam} height={tam} viewBox={`0 0 ${tam} ${tam}`} style={{ flexShrink: 0 }} aria-hidden="true">
       {porciones.length === 1 ? (
         <circle cx={c} cy={c} r={(R + r) / 2} fill="none" stroke={porciones[0].color} strokeWidth={R - r} />
-      ) : porciones.map(p => {
+      ) : porciones.map((p, i) => {
         const barrido = (p.pct / suma) * Math.PI * 2
         const desde = a + hueco / 2
         const hasta = a + barrido - hueco / 2
@@ -241,7 +247,7 @@ function Torta({ porciones, tam = 170 }) {
         if (!(hasta > desde)) return null
         const grande = hasta - desde > Math.PI ? 1 : 0
         const dPath = `M ${punto(R, desde)} A ${R} ${R} 0 ${grande} 1 ${punto(R, hasta)} L ${punto(r, hasta)} A ${r} ${r} 0 ${grande} 0 ${punto(r, desde)} Z`
-        return <path key={p.label} d={dPath} fill={p.color} />
+        return <path key={i} d={dPath} fill={p.color} />
       })}
     </svg>
   )
@@ -275,8 +281,10 @@ function CurvaRendimiento({ serie, ancho = 730, alto = 230 }) {
   }
   const linea = (tramo, clave) => tramo.map((p, i) => `${i ? 'L' : 'M'} ${X(p.ts).toFixed(1)} ${Y(p[clave]).toFixed(1)}`).join(' ')
 
-  // Tres marcas en el eje: el cero y los extremos redondeados.
-  const marcas = [...new Set([0, Math.round(vMax - m), Math.round(vMin + m)])]
+  // Sólo el cero. La curva es la FORMA (encadena las fotos del día) y sus
+  // extremos pueden no coincidir con el número del KPI, que es el publicado:
+  // rotularlos ponía al lado del "+6,6%" un eje que llegaba a otro número.
+  const marcas = [0]
 
   return (
     <svg width="100%" viewBox={`0 0 ${ancho} ${alto}`} style={{ display: 'block' }} aria-hidden="true">

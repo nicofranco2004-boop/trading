@@ -1603,7 +1603,8 @@ function PersonalDashboard() {
           >
           <CompositionDonut
             title="Distribución por tipo de activo"
-            compartir="dashboard"
+            // Sin precios (`lastUpdated`) las tortas valen al costo: no se exportan.
+            compartir={lastUpdated ? 'dashboard' : null}
             compartirConDetalle
             items={classBreakdown.items}
             fmt={compFmt}
@@ -1632,7 +1633,8 @@ function PersonalDashboard() {
           >
           <CompositionDonut
             title="Distribución por sector"
-            compartir="dashboard"
+            // Sin precios (`lastUpdated`) las tortas valen al costo: no se exportan.
+            compartir={lastUpdated ? 'dashboard' : null}
             items={sectorBreakdown.items}
             fmt={compFmt}
             info={
