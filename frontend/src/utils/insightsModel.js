@@ -1187,10 +1187,15 @@ export function acumuladoDeVentana(filas, claveMedida, claveEstimada) {
     puntos: corrida.length,
     desde: f[ini]?.label ?? null,
     hasta: f[fin]?.label ?? null,
-    // Las filas exactas de la corrida: el benchmark del KPI se mide entre ESTAS
-    // dos, no entre las puntas del gráfico (ver `benchEntreFilas`).
-    iIni: ini,
-    iFin: fin,
+    // Las filas entre las que el número REALMENTE se mide, para que el
+    // benchmark del KPI se mida entre las mismas (ver `benchEntreFilas`).
+    // ⚠️ `pct` sale de `total`, que es relativo al ARRANQUE DE SU SEGMENTO, no al
+    // borde de la ventana. Ese arranque está en el gráfico sólo si la primera
+    // fila de la corrida vale 0 (el índice recién reiniciado). Si no, el
+    // segmento empezó antes de lo visible: no hay fila desde la cual medir el
+    // benchmark, y `iDesde` es null (sin "vs" antes que un "vs" de otro período).
+    iDesde: (tFin == null || totalDe(f[ini]) === 0) ? ini : null,
+    iHasta: fin,
   }
 }
 
@@ -1213,6 +1218,25 @@ export function benchEntreFilas(filas, benchKey, i, j) {
   if (typeof a[benchKey] !== 'number' || typeof b[benchKey] !== 'number') return null
   if (!(100 + a[benchKey])) return null
   return +((((100 + b[benchKey]) / (100 + a[benchKey])) - 1) * 100).toFixed(2)
+}
+
+/**
+ * benchDelAcumuladoEstimado — el "vs benchmark" del KPI en modo ESTIMADO.
+ *
+ * Sale de las MISMAS filas que el acumulado de la cartera:
+ *   · con la cadena publicada (`acumuladoPublicado(..., {contable: true})`), su
+ *     `benchPct`, que ya está medido entre sus dos puntas;
+ *   · si no, con la corrida de `acumuladoDeVentana`, entre `iDesde` e `iHasta`;
+ *     sin `iDesde` (el número arranca antes del gráfico) no hay "vs".
+ * Antes era la última fila del gráfico: el benchmark desde el BORDE, contra una
+ * cartera medida desde otra fecha.
+ */
+export function benchDelAcumuladoEstimado(filas, benchKey, publicado, ventana) {
+  if (publicado) return publicado.benchPct ?? null
+  if (ventana && ventana.iDesde != null) {
+    return benchEntreFilas(filas, benchKey, ventana.iDesde, ventana.iHasta)
+  }
+  return null
 }
 
 // ─── El KPI de certero: el acumulado PUBLICADO de la ventana visible ─────────

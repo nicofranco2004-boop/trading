@@ -13,16 +13,20 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../utils/api'
+import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 
 /**
  * @param {string} broker  'global' | nombre del broker
- * @param {string} modo    'certero' | 'estimado'
+ * @param {string} [modo] 'certero' | 'estimado'. Sin él, la elección guardada del
+ *   usuario (ModoRendimientoContext): quien se olvide de pasarlo no mide en otra regla.
  * @param {string} moneda  'usd' | 'ars'
  * @returns {{ years, current, loading, refreshing, error }} — `loading` es sólo
  *   la PRIMERA carga; los cambios de modo/moneda levantan `refreshing` y dejan
  *   los datos anteriores en pantalla.
  */
-export default function useReportYears(broker = 'global', modo = 'certero', moneda = 'usd') {
+export default function useReportYears(broker = 'global', modoPedido, moneda = 'usd') {
+  const [modoApp] = useModoRendimiento()
+  const modo = modoPedido || modoApp
   const [years, setYears] = useState([])
   // ¿El plan incluye los años anteriores? Lo dice el backend, que es quien corta.
   const [historicos, setHistoricos] = useState(true)

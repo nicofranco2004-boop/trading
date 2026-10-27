@@ -202,6 +202,10 @@ def build(conn, user_id: int, period: str = "30d", **pantalla) -> Dict[str, Any]
             _r30 = _twr_d.rendimiento_publicable(
                 conn, user_id, desde=cutoff, permitir_contable=False)
             twr_30d_pct = None if _r30["pct"] is None else _r30["pct"] / 100.0
+            # El mismo período EN PESOS: contra éste va la inflación (pesos).
+            _r30_ars = _twr_d.rendimiento_publicable(
+                conn, user_id, desde=cutoff, moneda=_twr_d.MONEDA_ARS,
+                permitir_contable=False)
         except Exception:
             twr_30d_pct = None
 
@@ -218,26 +222,25 @@ def build(conn, user_id: int, period: str = "30d", **pantalla) -> Dict[str, Any]
     # ─── Benchmarks 30d (S&P 500 + inflación AR) ──────────────────────────
     vs_sp500_pp = None
     vs_inflation_pp = None
+    # ⚠️ EL BENCHMARK ENTRE LAS MISMAS DOS FECHAS QUE EL NÚMERO. Antes: el S&P
+    # era el cambio entre los dos últimos cierres MENSUALES (otro período que los
+    # 30 días del usuario), y la inflación era la del último mes publicado restada
+    # a un rendimiento en DÓLARES — otro período y otra moneda. Ahora cada uno se
+    # mide con `performance.bench_pct_entre` sobre la ventana que el motor midió:
+    # S&P contra el rendimiento en dólares, inflación contra el de pesos.
     try:
         from main import _bench_cache
+        import performance as _perf_d
         data = (_bench_cache.get("data") or {})
-        # S&P: comparar último cierre vs cierre ~30d atrás (de la serie mensual)
-        sp = data.get("sp500") or {}
-        if sp and twr_30d_pct is not None:
-            sorted_keys = sorted(sp.keys())
-            if len(sorted_keys) >= 2:
-                last = sp[sorted_keys[-1]]
-                prev = sp[sorted_keys[-2]]
-                if prev > 0:
-                    sp_30d_pct = (last / prev) - 1
-                    vs_sp500_pp = twr_30d_pct - sp_30d_pct
-        # Inflación AR del último mes disponible
-        infl = data.get("inflation_ar") or {}
-        if infl and twr_30d_pct is not None:
-            sorted_keys = sorted(infl.keys())
-            if sorted_keys:
-                last_infl = infl[sorted_keys[-1]] / 100  # viene en %, ej 4.5 → 0.045
-                vs_inflation_pp = twr_30d_pct - last_infl
+        if twr_30d_pct is not None:
+            _sp = _perf_d.bench_pct_entre(data, "sp500", _r30.get("desde"), _r30.get("hasta"))
+            if _sp is not None:
+                vs_sp500_pp = twr_30d_pct - _sp / 100.0
+            if _r30_ars.get("pct") is not None:
+                _inf = _perf_d.bench_pct_entre(
+                    data, "inflation_ar", _r30_ars.get("desde"), _r30_ars.get("hasta"))
+                if _inf is not None:
+                    vs_inflation_pp = _r30_ars["pct"] / 100.0 - _inf / 100.0
     except Exception:
         pass
 

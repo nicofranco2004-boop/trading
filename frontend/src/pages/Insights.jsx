@@ -81,7 +81,7 @@ import {
   applyMtmToMonthly,
   atribucionDelCrecimiento,
   acumuladoDeVentana,
-  benchEntreFilas,
+  benchDelAcumuladoEstimado,
   perfEsDeLaVista,
   etiquetasFinales,
   marcaPeorCaida,
@@ -3097,10 +3097,8 @@ function InsightsDesktop({ _embeddedTab }) {
     // BORDE del gráfico— mientras la cartera se medía desde la primera punta de la
     // cadena publicada: "+82 % vs Inflación +71 %" con dos ventanas distintas.
     // Ahora sale de las mismas dos filas que el acumulado; sin ellas no hay "vs".
-    const _benchEstimado = !_modoEstimado ? null
-      : _pubEst ? _pubEst.benchPct
-      : (_acumVentana ? benchEntreFilas(chartData, benchmarkKey, _acumVentana.iIni, _acumVentana.iFin) : null)
-    const benchmarkReturnPct = _modoEstimado ? _benchEstimado
+    const benchmarkReturnPct = _modoEstimado
+      ? benchDelAcumuladoEstimado(chartData, benchmarkKey, _pubEst, _acumVentana)
       : _arsSinMedir ? null : (_pub && _pub.benchPct != null)
       ? _pub.benchPct
       : (_pub ? null : (lastRow[benchmarkKey] ?? null))

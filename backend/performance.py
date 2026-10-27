@@ -271,10 +271,51 @@ def retorno_bench_en_moneda(bench_pct, bench_key, *, moneda=twr.MONEDA_USD,
     return twr.retorno_en_pesos_pct(bench_pct, fx1, fx0)
 
 
+def _bench_alineado(bench_data: dict, bench_key: str, fechas: list):
+    """`(puntos, resolucion)`: el benchmark alineado a `fechas`, DIARIO primero.
+
+    `<clave>_d` es la serie por fecha que llena `_benchmarks_fetch_and_cache`; el
+    mensual queda para los porcentuales y para cuando el diario no cubre ninguna
+    fecha (historia más vieja que la ventana bajada)."""
+    bd = bench_data or {}
+    serie_d = bd.get(f"{bench_key}_d") or {}
+    if serie_d and bench_key not in BENCH_PORCENTUAL and _es_diario(serie_d):
+        bench = benchmark_recortado(serie_d, fechas, bench_key)
+        if any(p.get("index") is not None for p in bench):
+            return bench, "diaria"
+    return benchmark_recortado(bd.get(bench_key) or {}, fechas, bench_key), "mensual"
+
+
+def bench_pct_entre(bench_data: dict, bench_key: str, desde, hasta):
+    """Cuánto hizo el benchmark ENTRE DOS FECHAS, en puntos (2,5 = 2,5 %).
+
+    ⚠️ ES LA MISMA REGLA QUE EL GRÁFICO (`_bench_alineado` → `benchmark_recortado`),
+    no una copia. Había tres maneras de componer la inflación en el backend: el
+    gráfico (meses POSTERIORES al de arranque), `insights_benchmarks` (igual,
+    escrita a mano) e `insights` (INCLUYENDO el mes de arranque, un mes de
+    inflación de más), y el paquete del dashboard restaba la inflación del ÚLTIMO
+    mes publicado a un rendimiento de 30 días. Cada "¿le ganaste a la inflación?"
+    se medía sobre un período distinto al del número del usuario.
+
+    `desde`/`hasta` son las puntas de la ventana del NÚMERO con el que se compara
+    (`ventana_desde`/`ventana_hasta` del motor). `hasta` puede ser "hoy". Sin
+    ventana no hay comparación: None.
+    """
+    if not desde or not hasta:
+        return None
+    pts, _ = _bench_alineado(bench_data, bench_key, [str(desde), str(hasta)])
+    if len(pts) != 2:
+        return None
+    i0, i1 = pts[0].get("index"), pts[1].get("index")
+    if not i0 or i1 is None:
+        return None
+    return round((i1 / i0 - 1) * 100, 2)
+
+
 def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
                 desde: str = None, hasta: str = None, valor_live: float = None,
                 incluir_indeterminado: bool = False,
-                modo: str = twr.MODO_CERTERO,
+                modo: str = None,
                 moneda: str = twr.MONEDA_USD) -> dict:
     """Todo lo que la sección Performance necesita, en una sola respuesta.
 
@@ -286,6 +327,9 @@ def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
       · ESTIMADO — la historia completa, incluyendo lo que no tiene precio
         histórico y va al costo. La respuesta declara cuánto y de qué instrumentos.
     """
+    # Sin `modo`, el que eligió el usuario — resuelto ACÁ para que la respuesta
+    # estampe el modo con el que se midió (la pantalla descarta la que no coincide).
+    modo = twr.modo_de(conn, uid, modo)
     # ACEPTA_LINEA, no BASE_MERCADO: la intradía sostiene la línea con apto=False.
     aceptar = twr.ACEPTA_LINEA + ((twr.INDETERMINADO,) if incluir_indeterminado else ())
     c = twr.curva_indexada(conn, uid, desde, hasta, modo=modo, aceptar=aceptar,
@@ -296,18 +340,7 @@ def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
     # cuando el diario no cubre ninguna fecha de la curva (historia más vieja que
     # la ventana bajada): ahí el mensual tampoco la cubre, pero se mantiene el
     # comportamiento anterior en vez de devolver una lista de None.
-    bd = bench_data or {}
-    bench, resolucion = [], "mensual"
-    serie_d = bd.get(f"{bench_key}_d") or {}
-    if serie_d and bench_key not in BENCH_PORCENTUAL and _es_diario(serie_d):
-        bench = benchmark_recortado(serie_d, fechas, bench_key)
-        if any(p.get("index") is not None for p in bench):
-            resolucion = "diaria"
-        else:
-            bench = []
-    if not bench:
-        serie_b = bd.get(bench_key) or {}
-        bench = benchmark_recortado(serie_b, fechas, bench_key)
+    bench, resolucion = _bench_alineado(bench_data, bench_key, fechas)
     # En PESOS el índice de precio se pasa a pesos y se re-ancla; los porcentuales
     # (inflación, plazo fijo) ya están en pesos y no se tocan.
     if moneda == twr.MONEDA_ARS and bench and bench_key not in BENCH_EN_ARS:

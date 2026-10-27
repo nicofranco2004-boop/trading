@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
-  ModoRendimientoProvider, useModoRendimiento, leerModoGuardado, guardarModo,
+  ModoRendimientoProvider, useModoRendimiento, leerModoGuardado, guardarModo, reconciliarModo,
 } from './ModoRendimientoContext'
 
 function memoria() {
@@ -49,5 +49,17 @@ describe('modo de rendimiento guardado', () => {
     globalThis.localStorage = { getItem() { throw new Error('bloqueado') }, setItem() { throw new Error('bloqueado') } }
     expect(leerModoGuardado()).toBe('certero')
     expect(() => guardarModo('estimado')).not.toThrow()
+  })
+  it('lo guardado en la cuenta manda sobre lo local (decisión tomada en otro dispositivo)', () => {
+    expect(reconciliarModo('estimado')).toBe('estimado')
+    expect(reconciliarModo('certero')).toBe('certero')
+  })
+
+  it('cuenta sin elección → certero, NUNCA lo que quedó en este navegador', () => {
+    // En una compu compartida lo local puede ser de otra persona.
+    guardarModo('estimado')
+    expect(reconciliarModo(null)).toBe('certero')
+    expect(reconciliarModo(undefined)).toBe('certero')
+    expect(reconciliarModo('basura')).toBe('certero')
   })
 })

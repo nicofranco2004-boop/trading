@@ -1454,7 +1454,7 @@ def compute_metrics_for_period(
     conn, uid: int, period_type: str, period_start: str, period_end: str,
     broker_filter: str, bench: Optional[Dict[str, Any]],
     live_value: Optional[float] = None,
-    modo: str = "certero", moneda: str = "usd",
+    modo: Optional[str] = None, moneda: str = "usd",
     today: Optional[date_cls] = None,
 ) -> Tuple[PeriodMetrics, List[Dict[str, Any]]]:
     """Computa métricas + devuelve operaciones del período (para drivers/highlights).
@@ -1464,7 +1464,11 @@ def compute_metrics_for_period(
     - week/day: usa snapshots para start/end + operations para realized/trades.
 
     Para el período en curso, si hay liveValue, lo usamos como end_value.
+
+    `modo` None → el que eligió el usuario (`twr.modo_de`).
     """
+    import twr as _twr_mm
+    modo = _twr_mm.modo_de(conn, uid, modo)
     ops = fetch_operations_in_range(conn, uid, period_start, period_end, broker_filter)
     realized = sum(float(o.get("pnl_usd") or 0) for o in ops)
 
@@ -3073,10 +3077,15 @@ def build_period_report(
     bench: Optional[Dict[str, Any]] = None,
     live_value: Optional[float] = None,
     today: Optional[date_cls] = None,
-    modo: str = "certero", moneda: str = "usd",
+    modo: Optional[str] = None, moneda: str = "usd",
 ) -> PeriodReport:
     """Builder principal — recibe un período, devuelve el PeriodReport completo
-    (sin children. Children se anidan en `timeline.py`)."""
+    (sin children. Children se anidan en `timeline.py`).
+
+    `modo` None → el que eligió el usuario (`twr.modo_de`): el informe mensual de
+    la IA y cualquier llamador que no lo pase miden igual que la pantalla."""
+    import twr as _twr_bp
+    modo = _twr_bp.modo_de(conn, uid, modo)
     start, end = parse_period_bounds(period_type, period_key)
     label = period_label(period_type, period_key, start)
     is_current = is_period_current(period_type, start, end, today=today)

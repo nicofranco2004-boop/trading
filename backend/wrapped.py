@@ -125,6 +125,36 @@ def ventana_de_los_retornos(rows: List[dict]) -> Optional[tuple]:
     return (previo, meses[-1])
 
 
+def _ventana_del_retorno(rows: List[dict], rendimiento: Optional[dict], year: int):
+    """`(desde, hasta)` en ISO: las puntas del tramo que el retorno publicado CUBRE.
+
+    · número del motor (`rendimiento` con `pct`) → su ventana declarada; si no la
+      trae (rama contable de `rendimiento_publicable`), la de los meses contables.
+    · sin motor → la de los meses contables (`ventana_de_los_retornos`).
+    "hoy" se lleva al 31/12 del año o a hoy, lo que sea antes."""
+    if rendimiento is not None and rendimiento.get("pct") is not None \
+            and rendimiento.get("desde") and rendimiento.get("hasta"):
+        d0, d1 = str(rendimiento["desde"])[:10], str(rendimiento["hasta"])
+        if d1 == "hoy":
+            from datetime import date as _date_w
+            d1 = min(_date_w.today().isoformat(), f"{year}-12-31")
+        return d0, d1[:10]
+    _v = ventana_de_los_retornos(rows)
+    if not _v:
+        return None
+    return _fin_de_mes_wrapped(_v[0]), _fin_de_mes_wrapped(_v[1])
+
+
+def _periodo_en_texto(ventana, year: int) -> str:
+    """'de 2025' si el tramo es el año entero; si no, 'del 30/06 al 31/12'."""
+    if not ventana:
+        return f"de {year}"
+    d0, d1 = ventana
+    if d0 == f"{year - 1}-12-31" and d1[:4] == str(year) and d1[5:] in ("12-31",):
+        return f"de {year}"
+    return f"del {d0[8:10]}/{d0[5:7]} al {d1[8:10]}/{d1[5:7]}"
+
+
 def _twr_for_period(rows: List[dict], rendimiento: Optional[dict] = None) -> Optional[float]:
     """El rendimiento del período, en fracción (0,12 = 12 %). None si no se publica.
 
@@ -499,7 +529,7 @@ def _slide_vs_benchmark(twr_user: Optional[float], benchmarks: Optional[dict], y
 
 
 def _slide_vs_inflation(twr_user: Optional[float], inflation_ytd: Optional[float], year: int,
-                        fx_ytd: Optional[tuple] = None) -> Optional[dict]:
+                        fx_ytd: Optional[tuple] = None, periodo: Optional[str] = None) -> Optional[dict]:
     """"Le ganaste a la inflación AR" — medido SIEMPRE en pesos.
 
     La idea del slide es el dato cultural: aún rindiendo en dólares, ¿le ganaste
@@ -524,22 +554,26 @@ def _slide_vs_inflation(twr_user: Optional[float], inflation_ytd: Optional[float
     if _delta_pp is None:
         return None
     twr_user = _ret_ars_pct / 100.0      # lo que se MUESTRA es lo que se restó
+    # El período de los dos números ("de 2025" o "del 30/06 al 31/12"): si la
+    # cartera se midió medio año, la inflación también es de ese medio año, y
+    # la imagen que se comparte tiene que decirlo.
+    periodo = periodo or f"de {year}"
     delta = _delta_pp / 100.0
     sign = '+' if delta >= 0 else '−'
     bars = [
         {'label': 'Tu cartera (en pesos)', 'value': twr_user, 'highlight': True},
-        {'label': f'Inflación AR {year}', 'value': inflation_ytd},
+        {'label': f'Inflación AR {periodo}', 'value': inflation_ytd},
     ]
     if delta >= 0:
         return {
             'code': 'vs_inflation',
             'kind': 'vs_inflation',
             'title': 'Le ganaste a la inflación AR',
-            'subtitle': f'Tu rendimiento estuvo {sign}{fmt_num(abs(delta) * 100, 2)}pp por encima de la inflación de {year}.',
+            'subtitle': f'Tu rendimiento estuvo {sign}{fmt_num(abs(delta) * 100, 2)}pp por encima de la inflación {periodo}.',
             'metric': {'value': f'{sign}{fmt_num(abs(delta) * 100, 2)}pp', 'label': 'VS INFLACIÓN AR'},
             'stats': [
                 {'label': 'Tu rendimiento en pesos', 'value': f'{"+" if twr_user >= 0 else "−"}{fmt_num(abs(twr_user) * 100, 2)}%'},
-                {'label': f'Inflación {year}', 'value': f'{fmt_num(inflation_ytd * 100, 2)}%'},
+                {'label': f'Inflación {periodo}', 'value': f'{fmt_num(inflation_ytd * 100, 2)}%'},
             ],
             'tone': 'positive',
             'bars': bars,
@@ -548,11 +582,11 @@ def _slide_vs_inflation(twr_user: Optional[float], inflation_ytd: Optional[float
         'code': 'vs_inflation',
         'kind': 'vs_inflation',
         'title': 'La inflación te ganó',
-        'subtitle': f'Tu rendimiento quedó {fmt_num(abs(delta) * 100, 2)}pp por debajo de la inflación AR.',
+        'subtitle': f'Tu rendimiento quedó {fmt_num(abs(delta) * 100, 2)}pp por debajo de la inflación AR {periodo}.',
         'metric': {'value': f'−{fmt_num(abs(delta) * 100, 2)}pp', 'label': 'VS INFLACIÓN AR'},
         'stats': [
             {'label': 'Tu rendimiento en pesos', 'value': f'{"+" if twr_user >= 0 else "−"}{fmt_num(abs(twr_user) * 100, 2)}%'},
-            {'label': f'Inflación {year}', 'value': f'{fmt_num(inflation_ytd * 100, 2)}%'},
+            {'label': f'Inflación {periodo}', 'value': f'{fmt_num(inflation_ytd * 100, 2)}%'},
         ],
         'tone': 'negative',
         'bars': bars,
@@ -583,6 +617,7 @@ def build_wrapped(
     fx_de=None,
     rendimiento: Optional[dict] = None,
     meses: Optional[List[dict]] = None,
+    inflacion_mensual: Optional[dict] = None,
 ) -> dict:
     """Orquesta los slides. Retorna {year, slides: [...], summary: {...}}.
 
@@ -658,27 +693,38 @@ def build_wrapped(
     if vs_bm:
         slides.append(vs_bm)
 
-    # El TC de las DOS PUNTAS DEL TRAMO QUE EL RETORNO CUBRE — no las del año.
-    # `fx_de(fecha) -> float|None` lo provee el endpoint, que es quien tiene la
-    # base; acá se decide QUÉ FECHAS, que es lo que depende de `rows`.
+    # LAS DOS PUNTAS DEL TRAMO QUE EL RETORNO CUBRE — no las del año. De ellas
+    # salen el TC (para pasar el retorno a pesos) Y la inflación contra la que se
+    # compara: los tres números tienen que hablar del MISMO período.
+    # ⚠️ Si el número viene del motor, el tramo es el que el motor declara
+    # (`rendimiento.desde/hasta`): una cuenta medida desde junio rendía jun–dic y
+    # se comparaba contra la inflación de enero a diciembre. Si no, el de los
+    # meses contables (`ventana_de_los_retornos`).
+    ventana = _ventana_del_retorno(rows, rendimiento, year)
     fx_ytd = None
-    if fx_de is not None:
+    if fx_de is not None and ventana:
         # ⚠️ BLINDADO. `main.py` calculaba el par de TC adentro de su propio
         # try/except y pasaba una tupla; al pasar la FUNCIÓN, esa protección se
         # perdió y cualquier error del lookup tiraba `/api/wrapped/{year}` entero.
         # El slide vs-inflación ya sabe no publicarse sin TC: que falte es una
         # diapositiva menos, no una respuesta rota.
         try:
-            _v = ventana_de_los_retornos(rows)
-            if _v:
-                _f0 = fx_de(_fin_de_mes_wrapped(_v[0]))
-                _f1 = fx_de(_fin_de_mes_wrapped(_v[1]))
-                if _f0 and _f1:
-                    fx_ytd = (_f0, _f1)
+            _f0, _f1 = fx_de(ventana[0]), fx_de(ventana[1])
+            if _f0 and _f1:
+                fx_ytd = (_f0, _f1)
         except Exception:
             log.exception("wrapped: ventana de TC (year=%s)", year)
             fx_ytd = None
-    vs_inf = _slide_vs_inflation(twr, inflation_ytd, year, fx_ytd)
+    if inflacion_mensual is not None:
+        # La inflación del MISMO tramo, con la regla del gráfico de Métricas.
+        inflation_ytd = None
+        if ventana:
+            import performance as _perf_w
+            _i = _perf_w.bench_pct_entre({"inflation_ar": inflacion_mensual},
+                                         "inflation_ar", ventana[0], ventana[1])
+            inflation_ytd = None if _i is None else _i / 100.0
+    vs_inf = _slide_vs_inflation(twr, inflation_ytd, year, fx_ytd,
+                                 periodo=_periodo_en_texto(ventana, year))
     if vs_inf:
         slides.append(vs_inf)
 

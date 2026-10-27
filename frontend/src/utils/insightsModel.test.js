@@ -13,6 +13,7 @@ import {
   acumuladoDeVentana,
   acumuladoPublicado,
   benchEntreFilas,
+  benchDelAcumuladoEstimado,
   computeAssetContribution,
   computeBestWorstClosedOp,
   computeProfitFactor,
@@ -983,10 +984,39 @@ describe('benchEntreFilas · el benchmark en la misma ventana que la cartera', (
     expect(benchEntreFilas(filas, B, 2, 2)).toBe(null)
     expect(benchEntreFilas([{ key: 'a' }, { key: 'b', [B]: 3 }], B, 0, 1)).toBe(null)
   })
-  it('acumuladoDeVentana devuelve las filas de su corrida', () => {
+  it('KPI estimado: la cartera arranca en la 2ª fila → la inflación también', () => {
+    // El borde (fila 0) no es punta de la cadena: sin `ip`. La cartera se publica
+    // de la fila 1 a la 2, y el "vs" tiene que ser de esas dos (42,5 %), no 71 %.
+    const f = [
+      { key: '2024-10-31', [B]: 0 },
+      { key: '2025-06-30', [B]: 20, ip: 1.0, base: 'costo' },
+      { key: '2026-10-27', [B]: 71, ip: 1.3, base: 'costo' },
+    ]
+    const pub = acumuladoPublicado(f, B, { contable: true })
+    expect(pub.pct).toBe(30)
+    expect(benchDelAcumuladoEstimado(f, B, pub, null)).toBe(42.5)
+  })
+  it('KPI estimado sin cadena: corrida que arranca en el gráfico vs. antes', () => {
     const KM = 'm', KE = 'e'
-    const f = [{ [KM]: null, [KE]: null }, { [KE]: 0 }, { [KE]: 5 }]
+    const adentro = [{ [KE]: null, [B]: 0 }, { [KE]: 0, total: 0, [B]: 20 }, { [KE]: 5, total: 5, [B]: 71 }]
+    expect(benchDelAcumuladoEstimado(adentro, B, null, acumuladoDeVentana(adentro, KM, KE))).toBe(42.5)
+    const antes = [{ [KE]: 12, total: 12, [B]: 0 }, { [KE]: 30, total: 30, [B]: 71 }]
+    expect(benchDelAcumuladoEstimado(antes, B, null, acumuladoDeVentana(antes, KM, KE))).toBe(null)
+  })
+  it('acumuladoDeVentana: el número arranca en la corrida → se mide desde ahí', () => {
+    const KM = 'm', KE = 'e'
+    // Corte (null) y después el segmento nuevo, que arranca en 0.
+    const f = [{ [KM]: null, [KE]: null }, { [KE]: 0, total: 0 }, { [KE]: 5, total: 5 }]
     const r = acumuladoDeVentana(f, KM, KE)
-    expect([r.iIni, r.iFin]).toEqual([1, 2])
+    expect([r.iDesde, r.iHasta]).toEqual([1, 2])
+  })
+  it('acumuladoDeVentana: el segmento empezó ANTES del gráfico → sin fila de arranque', () => {
+    const KM = 'm', KE = 'e'
+    // `total` relativo a un arranque que quedó fuera de la ventana: el número
+    // (+30 %) no se mide desde la primera fila visible, y el benchmark tampoco puede.
+    const f = [{ [KE]: 12, total: 12 }, { [KE]: 30, total: 30 }]
+    const r = acumuladoDeVentana(f, KM, KE)
+    expect(r.pct).toBe(30)
+    expect(r.iDesde).toBe(null)
   })
 })
