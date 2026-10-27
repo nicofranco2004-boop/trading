@@ -31,8 +31,9 @@ import {
   tryNativeShare,
 } from '../utils/shareCard'
 import { track } from '../utils/track'
+import PreguntaMontos from './PreguntaMontos'
 
-export default function ShareCardModal({ spec: specFijo, buildSpec = null, filename, source, onClose }) {
+export default function ShareCardModal({ spec: specFijo, buildSpec = null, filename, source, onClose, conNombreOpcional = false }) {
   const pregunta = typeof buildSpec === 'function'
   // null = todavía no contestó (sólo cuando hay que preguntar).
   const [mostrarMontos, setMostrarMontos] = useState(pregunta ? null : false)
@@ -41,7 +42,13 @@ export default function ShareCardModal({ spec: specFijo, buildSpec = null, filen
   const [error, setError] = useState(null)
   const [copied, setCopied] = useState(false)
   const [busy, setBusy] = useState(false)
+  // El nombre de la cuenta va en la imagen salvo que el usuario lo saque: la
+  // pregunta de los montos no lo cubre, y es otro dato personal que se publica.
+  const [conNombre, setConNombre] = useState(true)
   const specRef = useRef(specFijo || null)
+  // "Generada" se cuenta una vez por apertura: cambiar montos o nombre en el
+  // preview vuelve a dibujarla, pero no es otra tarjeta.
+  const contada = useRef(false)
   const buildRef = useRef(buildSpec)
   buildRef.current = buildSpec
 
@@ -55,21 +62,36 @@ export default function ShareCardModal({ spec: specFijo, buildSpec = null, filen
     return () => document.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  // Con el modal abierto la página de atrás no scrollea.
+  useEffect(() => {
+    const antes = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = antes }
+  }, [])
+
   // Render una vez por montaje (o por respuesta a la pregunta de los montos).
   // El `spec` se congela acá: es el que usan después descargar/compartir/copiar.
   useEffect(() => {
     if (esperandoRespuesta) return
     let cancelled = false
-    const spec = pregunta ? buildRef.current({ mostrarMontos }) : specFijo
+    const spec = pregunta ? buildRef.current({ mostrarMontos, conNombre }) : specFijo
     specRef.current = spec
     setLoading(true)
     setError(null)
     setDataUrl(null)
+    if (!spec) {
+      setError('No hay datos suficientes para armar esta imagen.')
+      setLoading(false)
+      return undefined
+    }
     shareCardToDataURL(spec)
       .then((url) => {
         if (cancelled) return
         setDataUrl(url)
-        track('share_card_generated', { source, kind: spec.kind, montos: montosProp })
+        if (!contada.current) {
+          contada.current = true
+          track('share_card_generated', { source, kind: spec.kind, montos: montosProp })
+        }
       })
       .catch((ex) => {
         if (cancelled) return
@@ -81,7 +103,7 @@ export default function ShareCardModal({ spec: specFijo, buildSpec = null, filen
     // nueva referencia de `spec`. Si el caller cambia la card, debería
     // re-montar el modal.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, mostrarMontos])
+  }, [source, mostrarMontos, conNombre])
 
   async function handleDownload() {
     setBusy(true)
@@ -99,7 +121,9 @@ export default function ShareCardModal({ spec: specFijo, buildSpec = null, filen
     setBusy(true)
     try {
       const spec = specRef.current
-      const ok = await tryNativeShare(spec, { title: 'Rendi', text: spec.title })
+      // El texto que acompaña al archivo es genérico: el título de la tarjeta
+      // puede ser el nombre del usuario, y ahí ya no lo controla la imagen.
+      const ok = await tryNativeShare(spec, { title: 'Rendi', text: 'Hecho con Rendi · rendi.finance' })
       if (ok) {
         track('share_card_shared', { source, kind: spec.kind, channel: 'native', montos: montosProp })
       } else {
@@ -167,30 +191,8 @@ export default function ShareCardModal({ spec: specFijo, buildSpec = null, filen
         </header>
 
         {esperandoRespuesta ? (
-          <div className="p-4 space-y-3">
-            <p className="text-[13px] text-ink-1 leading-relaxed">
-              La imagen puede mostrar cuánta plata tenés en cada parte, o solo los
-              porcentajes. Si la vas a subir a redes, te recomendamos ocultarlos.
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <button
-                type="button"
-                autoFocus
-                onClick={() => setMostrarMontos(false)}
-                className="inline-flex items-center justify-center gap-1.5 text-xs bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 px-3 py-2.5 rounded-sm transition-colors"
-              >
-                <EyeOff size={12} strokeWidth={1.75} />
-                Solo porcentajes
-              </button>
-              <button
-                type="button"
-                onClick={() => setMostrarMontos(true)}
-                className="inline-flex items-center justify-center gap-1.5 text-xs bg-bg-2 hover:bg-bg-3 text-ink-1 border border-line-2 px-3 py-2.5 rounded-sm transition-colors"
-              >
-                <Eye size={12} strokeWidth={1.75} />
-                Mostrar montos
-              </button>
-            </div>
+          <div className="p-4">
+            <PreguntaMontos onElegir={setMostrarMontos} />
           </div>
         ) : (
         <div className="p-4 space-y-3">
@@ -232,6 +234,20 @@ export default function ShareCardModal({ spec: specFijo, buildSpec = null, filen
               >
                 {mostrarMontos ? <EyeOff size={12} strokeWidth={1.75} /> : <Eye size={12} strokeWidth={1.75} />}
                 {mostrarMontos ? 'Ocultar montos' : 'Mostrar montos'}
+              </button>
+            </div>
+          )}
+          {pregunta && conNombreOpcional && (
+            <div className="flex items-center justify-between gap-2 text-[11.5px] text-ink-3 -mt-1">
+              <span>{conNombre ? 'Con tu nombre' : 'Sin tu nombre'}</span>
+              <button
+                type="button"
+                onClick={() => setConNombre(v => !v)}
+                disabled={loading || busy}
+                className="inline-flex items-center gap-1 text-data-violet hover:text-data-violet/80 disabled:opacity-50 transition-colors"
+              >
+                {conNombre ? <EyeOff size={12} strokeWidth={1.75} /> : <Eye size={12} strokeWidth={1.75} />}
+                {conNombre ? 'Ocultar mi nombre' : 'Mostrar mi nombre'}
               </button>
             </div>
           )}

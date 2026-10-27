@@ -101,7 +101,7 @@ export const ASSET_CLASS_META = {
   plazo_fijo:{ label: 'Plazo fijo',     color: 'rgb(var(--cat-bronze))' },  // sintética, ver extraSlices
   fci:       { label: 'FCI',            color: 'rgb(var(--cat-magenta))' },
   cripto:    { label: 'Cripto',         color: 'rgb(var(--cat-orange))' },
-  cash:      { label: 'Efectivo',       color: 'rgb(var(--ink-3))' },
+  cash:      { label: 'Efectivo',       color: 'rgb(var(--ink-1))' },  // gris claro: el rótulo oscuro de la imagen se lee encima
   otro:      { label: 'Sin clasificar', color: 'rgb(var(--cat-gray-2))' },
 }
 
@@ -130,7 +130,7 @@ export const ASSET_CLASS_META = {
 export const RISK_GROUP_META = {
   variable: { label: 'Renta variable', color: 'rgb(var(--data-violet))' },
   fija:     { label: 'Renta fija',     color: 'rgb(var(--data-amber))' },
-  efectivo: { label: 'Efectivo',       color: 'rgb(var(--ink-3))' },
+  efectivo: { label: 'Efectivo',       color: 'rgb(var(--ink-1))' },
   otro:     { label: 'Sin clasificar', color: 'rgb(var(--cat-gray-2))' },
 }
 

@@ -42,6 +42,8 @@ import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDonut'
+import BotonCompartir from '../components/BotonCompartir'
+import { specDeAportes } from '../utils/shareCard'
 import { computeClassBreakdown } from '../utils/assetClass'
 import { assetSlicesFromPositions } from '../utils/bookComposition'
 import DistribucionPorActivo from '../components/DistribucionPorActivo'
@@ -1390,7 +1392,32 @@ function PersonalDashboard() {
               el destino es un candado, y un enlace que promete y no cumple es
               peor que no estar. */}
           <div className="flex flex-col items-end gap-2">
-            <RangeTabs value={range} onChange={setRange} />
+            <div className="flex items-center gap-2">
+              {/* Bajar el gráfico como imagen: aportes vs mercado. Espera a los
+                  precios (`lastUpdated`): antes el valor vivo es el COSTO y la
+                  imagen diría que el mercado no puso nada. */}
+              {lastUpdated && evoSeries.length >= 2 && resultado.valor > 0 && (
+                <BotonCompartir
+                  source="dashboard"
+                  etiqueta="Compartir aportes vs mercado"
+                  filename="rendi-aportes-vs-mercado.png"
+                  buildSpec={({ mostrarMontos, nombre }) => specDeAportes({
+                    aportado: resultado.aportado,
+                    valor: resultado.valor,
+                    ganancia: resultado.ganancia,
+                    pct: resultado.pct,
+                    // La misma serie que dibuja el gráfico, en la moneda de la vista.
+                    serie: evoSeriesDisplay.map(p => ({ ts: Date.parse(p.date), valor: p.valueUsd, aportado: p.netDeposited })),
+                    periodo: PERIODO_IMAGEN[range] || rangeLabel(range),
+                    fmt: fmtDirect,
+                    fmtConSigno: fmtSignedDirect,
+                    mostrarMontos,
+                    nombre,
+                  })}
+                />
+              )}
+              <RangeTabs value={range} onChange={setRange} />
+            </div>
             {range === '1W' && plan.can('reportes.historicos') && (
               <Link
                 to="/analisis?tab=reportes&periodo=week"
@@ -1540,7 +1567,7 @@ function PersonalDashboard() {
             rounded={false}
             className="h-full"
           >
-            <DistribucionPorActivo compartir="dashboard" items={assetBreakdown.items} fmt={compFmt} className="h-full" />
+            <DistribucionPorActivo items={assetBreakdown.items} fmt={compFmt} className="h-full" />
           </AskAIAbout>
           <AskAIAbout
             topic="dashboard.top_holdings"
@@ -1576,7 +1603,9 @@ function PersonalDashboard() {
           >
           <CompositionDonut
             title="Distribución por tipo de activo"
-            compartir="dashboard"
+            // Sin precios (`lastUpdated`) las tortas valen al costo: no se exportan.
+            compartir={lastUpdated ? 'dashboard' : null}
+            compartirConDetalle
             items={classBreakdown.items}
             fmt={compFmt}
             info={
@@ -1604,7 +1633,8 @@ function PersonalDashboard() {
           >
           <CompositionDonut
             title="Distribución por sector"
-            compartir="dashboard"
+            // Sin precios (`lastUpdated`) las tortas valen al costo: no se exportan.
+            compartir={lastUpdated ? 'dashboard' : null}
             items={sectorBreakdown.items}
             fmt={compFmt}
             info={
@@ -1678,6 +1708,13 @@ function PersonalDashboard() {
       <MonthlyTeaser mesEnCurso={monthlyVar} />
     </div>
   )
+}
+
+// El período como lo dice la imagen para compartir ("Último año"); el de
+// rangeLabel va en medio de una frase ("en 1 año").
+const PERIODO_IMAGEN = {
+  '1D': 'Último día', '1W': 'Última semana', '1M': 'Último mes',
+  '6M': 'Últimos 6 meses', '1Y': 'Último año', MAX: 'Desde el inicio',
 }
 
 function rangeLabel(id) {
