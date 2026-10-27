@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { specDeDistribucion, specDeRendimiento, nombreDeArchivo, pctConSigno } from './shareCard'
+import { specDeDistribucion, specDeRendimiento, specDeComposicion, specDeAportes, nombreDeArchivo, pctConSigno, nombreParaTarjeta } from './shareCard'
 
 const fmt = (v) => `US$ ${Math.round(v)}`
 const now = new Date('2026-10-26T12:00:00')
@@ -14,8 +14,9 @@ describe('specDeDistribucion', () => {
   it('sin montos: sólo porcentajes, ni total ni monto por porción', () => {
     const s = specDeDistribucion({ titulo: 'Distribución por sector', porciones, fmt, mostrarMontos: false, now })
     expect(s.kind).toBe('distribucion')
-    expect(s.eyebrow).toBe('Distribución por sector')
-    expect(s.title).toBe('60,0% en Tecnología')
+    // Sin nombre, el titular es el título de la torta (no el % mayor).
+    expect(s.title).toBe('Distribución por sector')
+    expect(s.eyebrow).toBeNull()
     expect(s.total).toBeNull()
     expect(s.porciones.every(p => p.monto === null)).toBe(true)
     expect(s.porciones.map(p => p.pct)).toEqual([60, 30, 10])
@@ -27,15 +28,16 @@ describe('specDeDistribucion', () => {
     expect(s.porciones[0].monto).toBe('US$ 600')
   })
 
-  it('el titular nunca es una porción residual', () => {
-    const s = specDeDistribucion({
-      titulo: 'X', fmt, now,
-      porciones: [
-        { key: '__resto__', label: 'Resto (30 activos)', value: 700, pct: 70, color: '#000' },
-        { key: 'AAPL', label: 'AAPL', value: 300, pct: 30, color: '#000' },
-      ],
-    })
-    expect(s.title).toBe('30,0% en AAPL')
+  it('con nombre: el nombre es el titular y el título va arriba', () => {
+    const s = specDeDistribucion({ titulo: 'Distribución de activos', porciones, fmt, nombre: 'Nicolás Franco', now })
+    expect(s.title).toBe('Nicolás Franco')
+    expect(s.eyebrow).toBe('Distribución de activos')
+  })
+
+  it('nunca imprime un email como nombre', () => {
+    const s = specDeDistribucion({ titulo: 'X', porciones, fmt, nombre: 'alguien@gmail.com', now })
+    expect(s.title).toBe('X')
+    expect(JSON.stringify(s)).not.toMatch(/@/)
   })
 
   it('si no entran, las últimas filas se juntan en "Otros" y los % siguen sumando 100', () => {
@@ -43,8 +45,8 @@ describe('specDeDistribucion', () => {
       key: `a${i}`, label: `A${i}`, color: '#123456', value: 10, pct: 100 / 14,
     }))
     const s = specDeDistribucion({ titulo: 'X', porciones: muchas, fmt, now })
-    expect(s.porciones).toHaveLength(10)
-    expect(s.porciones[9].label).toBe('Otros')
+    expect(s.porciones).toHaveLength(12)
+    expect(s.porciones[11].label).toBe('Otros')
     const suma = s.porciones.reduce((a, p) => a + p.pct, 0)
     expect(suma).toBeCloseTo(100, 6)
   })
@@ -105,6 +107,101 @@ describe('helpers', () => {
   })
   it('pctConSigno usa el menos tipográfico', () => {
     expect(pctConSigno(-0.5)).toBe('−0,5%')
-    expect(pctConSigno(0)).toBe('+0,0%')
+    expect(pctConSigno(0)).toBe('0,0%')
+    expect(pctConSigno(-0.04)).toBe('0,0%')
+  })
+})
+
+describe('specDeComposicion', () => {
+  const tipos = [
+    { key: 'cash', label: 'Efectivo', color: 'c0', value: 334, pct: 33.4, detail: [] },
+    { key: 'cripto', label: 'Cripto', color: 'c1', value: 418, pct: 41.8, detail: [
+      { label: 'ETH', value: 30, pct: 3 }, { label: 'BTC', value: 290, pct: 29 }, { label: 'BNB', value: 98, pct: 9.8 },
+    ] },
+    { key: 'etf', label: 'ETFs', color: 'c2', value: 248, pct: 24.8, detail: [{ label: 'SPY', value: 248, pct: 24.8 }] },
+  ]
+
+  it('invertido = todo lo que no es efectivo', () => {
+    const s = specDeComposicion({ titulo: 'Distribución por tipo de activo', porciones: tipos, now })
+    expect(s.kind).toBe('composicion')
+    expect(s.invertido).toBeCloseTo(66.6, 6)
+  })
+
+  it('una tarjeta por tipo con activos (Efectivo sin activos no lleva), activos de mayor a menor', () => {
+    const s = specDeComposicion({ titulo: 'X', porciones: tipos, now })
+    expect(s.grupos.map(g => g.label)).toEqual(['Cripto', 'ETFs'])
+    expect(s.grupos[0].activos.map(a => a.label)).toEqual(['BTC', 'BNB', 'ETH'])
+  })
+
+  it('sin montos no hay total; con montos, el del fmt', () => {
+    expect(specDeComposicion({ titulo: 'X', porciones: tipos, fmt, now }).total).toBeNull()
+    expect(specDeComposicion({ titulo: 'X', porciones: tipos, fmt, mostrarMontos: true, now }).total).toBe('US$ 1000')
+  })
+})
+
+describe('specDeAportes', () => {
+  const base = {
+    aportado: 800, valor: 1000, ganancia: 200, pct: 0.25,
+    serie: [{ ts: 1, valor: 500, aportado: 500 }, { ts: 2, valor: 1000, aportado: 800 }],
+    periodo: 'Último año', fmt: (v) => `USD ${v}`, fmtConSigno: (v) => `${v >= 0 ? '+' : '−'}USD ${Math.abs(v)}`, now,
+  }
+
+  it('con montos: los de las tarjetas del Dashboard', () => {
+    const s = specDeAportes({ ...base, mostrarMontos: true })
+    expect(s.stats.map(x => x.value)).toEqual(['USD 800', '+USD 200', 'USD 1000'])
+    expect(s.stats[0].sub).toBe('80,0% de lo que vale')
+    expect(s.stats[1].sub).toBe('Ganancia total +25,0%')
+    expect(s.alcance).toBe('Desde el inicio')
+  })
+
+  it('sin montos: reparto en % y ganancia en %, ninguna cifra de plata', () => {
+    const s = specDeAportes({ ...base, mostrarMontos: false })
+    expect(s.stats.map(x => x.value)).toEqual(['80,0%', '20,0%', '+25,0%'])
+    expect(JSON.stringify(s)).not.toMatch(/USD/)
+  })
+
+  it('pérdida: el rótulo lo dice y la barra va en rojo', () => {
+    const s = specDeAportes({ ...base, valor: 700, ganancia: -100, pct: -0.125, mostrarMontos: true })
+    expect(s.stats[1].label).toBe('Lo que restó el mercado')
+    expect(s.gana).toBe(false)
+    // Con pérdida el reparto "X% de lo que vale" no se lee bien: no va.
+    expect(s.barra).toBeNull()
+    expect(s.stats[0].sub).toBeNull()
+  })
+})
+
+describe('auditoría — casos borde', () => {
+  it('aportes con más retiros que depósitos: sin reparto ni barra', () => {
+    const s = specDeAportes({ aportado: -500, valor: 1000, ganancia: 1500, pct: 0.5, now, fmt: String, fmtConSigno: String })
+    expect(s.barra).toBeNull()
+    expect(s.stats.map(x => x.label)).toEqual(['Ganancia total'])
+  })
+
+  it('rendimiento: empate a la vista dice "Igual que", y sin número no hay tarjeta', () => {
+    const s = specDeRendimiento({ carteraPct: 5.04, benchPct: 5.0, benchLabel: 'S&P 500', now })
+    expect(s.stats[2].value).toBe('0,0 puntos')
+    expect(s.veredicto).toBe('Igual que S&P 500')
+    expect(specDeRendimiento({ carteraPct: NaN, now })).toBeNull()
+  })
+
+  it('composición: el efectivo adentro de "Otros" cuenta para "Invertido"', () => {
+    const s = specDeComposicion({
+      titulo: 'X', now,
+      porciones: [
+        { key: 'cripto', label: 'Cripto', color: 'c', value: 980, pct: 98, detail: [{ label: 'BTC', value: 980, pct: 98 }] },
+        { key: '__otros__', label: 'Otros (2)', color: 'c', value: 20, pct: 2, detail: [
+          { key: 'cash', label: 'Efectivo', value: 12, pct: 1.2 }, { key: 'fci', label: 'FCI', value: 8, pct: 0.8 },
+        ] },
+      ],
+    })
+    expect(s.invertido).toBeCloseTo(98.8, 6)
+  })
+
+  it('nombre: ni emails disfrazados, ni números, y no parte un emoji', () => {
+    expect(nombreParaTarjeta('juan [at] gmail.com')).toBeNull()
+    expect(nombreParaTarjeta('12345678')).toBeNull()
+    expect(nombreParaTarjeta('Ana Pérez')).toBe('Ana Pérez')
+    const largo = 'A'.repeat(39) + '😀'
+    expect(nombreParaTarjeta(largo + 'x')).toBe(largo)
   })
 })

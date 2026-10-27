@@ -78,6 +78,8 @@ export const EVENTOS = {
   share_card_downloaded: { label: 'Descargó la tarjeta', donde: 'Análisis' },
   share_card_copied: { label: 'Copió la tarjeta', donde: 'Análisis' },
   share_card_shared: { label: 'Compartió la tarjeta', donde: 'Análisis' },
+  reporte_generado: { label: 'Abrió el reporte de cartera', donde: 'Análisis' },
+  reporte_descargado: { label: 'Descargó el reporte en PDF', donde: 'Análisis' },
   wrapped_viewed: { label: 'Abrió el Wrapped', donde: 'Wrapped', tipo: 'vista' },
   wrapped_slide_viewed: { label: 'Pasó una lámina del Wrapped', donde: 'Wrapped', tipo: 'vista' },
   wrapped_share_opened: { label: 'Quiso compartir el Wrapped', donde: 'Wrapped' },

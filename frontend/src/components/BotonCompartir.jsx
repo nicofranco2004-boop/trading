@@ -1,9 +1,11 @@
 // BotonCompartir — el ícono chico de "compartir" de una tarjeta de métricas.
 // ═══════════════════════════════════════════════════════════════════════════
 // Abre ShareCardModal con `buildSpec`: el modal pregunta primero si la imagen
-// lleva los montos o sólo los porcentajes, y recién ahí la genera. Lo usan las
-// tortas de distribución (vía la prop `compartir` de CompositionDonut) y el
-// gráfico "Cartera vs benchmark" de Análisis.
+// lleva los montos o sólo los porcentajes, y recién ahí la genera. A
+// `buildSpec` le llega también `nombre` (el de la cuenta) para el titular.
+// Lo usan las tortas de distribución (vía la prop `compartir` de
+// CompositionDonut), el gráfico "Cartera vs benchmark" de Análisis y el de
+// evolución del Dashboard (aportes vs mercado).
 //
 // Va arriba a la derecha de la tarjeta. Si la tarjeta está envuelta en
 // AskAIAbout, el ✦ de Mervall-E se corre solo al primer hueco libre a la
@@ -17,9 +19,19 @@ import { useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Share2 } from 'lucide-react'
 import ShareCardModal from './ShareCardModal'
+import { useAuth } from '../contexts/AuthContext'
+import { getClientContext } from '../utils/api'
+import { nombreParaTarjeta } from '../utils/shareCard'
 
 export default function BotonCompartir({ buildSpec, source, filename = 'rendi.png', etiqueta = 'Compartir', className = '' }) {
   const [abierto, setAbierto] = useState(false)
+  // El nombre de la cuenta va de titular en la tarjeta. `useAuth()` es null
+  // fuera del provider (tests de render): sin nombre, la tarjeta igual sale.
+  // ⚠️ Un asesor mirando la cuenta de un cliente ve la cartera DEL CLIENTE,
+  // pero `user` es el asesor: su nombre arriba de esos números sería falso.
+  // En ese contexto la tarjeta va sin nombre.
+  const nombreCuenta = useAuth()?.user?.name || null
+  const nombre = getClientContext() ? null : nombreParaTarjeta(nombreCuenta)
   return (
     <>
       <button
@@ -37,7 +49,8 @@ export default function BotonCompartir({ buildSpec, source, filename = 'rendi.pn
         // Mervall-E por la tarjeta (AskAIAbout escucha onDoubleClick).
         <div onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
           <ShareCardModal
-            buildSpec={buildSpec}
+            buildSpec={(o) => buildSpec({ ...o, nombre: o.conNombre === false ? null : nombre })}
+            conNombreOpcional={!!nombre}
             source={source}
             filename={filename}
             onClose={() => setAbierto(false)}
