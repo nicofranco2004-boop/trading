@@ -15,8 +15,11 @@
 //   • en PESOS, las cifras no dependen del modo: pesos nativos + tenencias en
 //     dólares al dólar de hoy (`totalsToday`, costBasis 'today') × tcValuacion.
 //
-// ⚠️ PositionsMobile.jsx todavía arma su encabezado sumando las filas (es
-// "espejo del desktop" por comentario, no por código). Queda anotado.
+// ⚠️ Dos que todavía NO pasan por acá, anotados:
+//   • PositionsMobile.jsx arma su encabezado sumando las filas (es "espejo del
+//     desktop" por comentario, no por código);
+//   • `unrealizedPnl` de Insights.jsx (sin plazos fijos) sigue alimentando el
+//     diagnóstico: cambiarlo mueve reglas de hallazgos, que es otro cambio.
 
 import { computeBrokerValue } from './valuation'
 
