@@ -171,29 +171,66 @@ def check_subbroker_usd_bien_formado(conn, uid: Optional[int] = None) -> List[Vi
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. Cash con moneda que no es la de su broker
 # ─────────────────────────────────────────────────────────────────────────────
+def _lado(moneda: Optional[str]) -> Optional[str]:
+    """'ARS' o 'USD' ('USDT' es el mismo dólar); None si no es ninguna de las dos."""
+    m = (moneda or "").strip().upper()
+    return "ARS" if m == "ARS" else "USD" if m in _DOLAR else None
+
+
+# Quién lee cada marca de moneda de la caja.
+_QUIEN_LEE = {
+    "asset": "la pantalla, por el rótulo",
+    "currency": "metas, reportes e insights de la IA, por `currency` (la marca que lee "
+                "primero `behavioral._native_ccy`)",
+}
+
+
 def check_cash_moneda(conn, uid: Optional[int] = None) -> List[Violacion]:
     """El efectivo de un broker dólar no puede ser pesos, ni al revés.
 
     A diferencia de los activos —donde un broker ARS puede tener tenencias en
-    dólares— la caja SÍ vive separada por pata: por eso existe el sibling. Un
-    cash cruzado es plata contada en la moneda equivocada.
+    dólares— la caja SÍ vive separada por pata: por eso existe el sibling. Lo que
+    entra a la caja se suma en la moneda del broker (`efectivo.mover`); si una de
+    sus marcas dice la otra moneda, esa plata se está contando en la equivocada.
+
+    La caja tiene DOS marcas de moneda, y se miran las dos:
+      · `asset` (el rótulo): lo que muestra la pantalla.
+      · `currency`: la lee PRIMERO `behavioral._native_ccy`, y con ella
+        `_position_value_usd` (metas, tableros e insights de la IA, reportes)
+        decide si pasa la caja de pesos a dólares. Vacía no cuenta: así nace toda
+        caja hasta que el arranque (init_db) la completa desde el rótulo, y
+        mientras tanto `_native_ccy` lee el rótulo, que ya se mira.
+
+    EL SALDO ES `invested`, NO `quantity` (efectivo.py). Hasta 2026-10-27 esto
+    filtraba por `quantity`, que en las cajas queda vacía o en 0: no podía marcar
+    ninguna. Se mira la caja con plata, también en rojo; vacía es la misma
+    definición que usa el resto (`efectivo.CAJA_VACIA`).
     """
     filtro, params = _scope(uid)
     out = []
     for r in _rows(conn, f"""
-        SELECT p.id, p.user_id, p.broker, p.asset, b.currency bc
+        SELECT p.id, p.user_id, p.broker, p.asset, p.currency pc, p.invested, b.currency bc
           FROM positions p JOIN brokers b ON b.user_id=p.user_id AND b.name=p.broker
-         WHERE p.is_cash=1 AND UPPER(COALESCE(p.asset,'')) IN ('ARS','USD','USDT')
-           AND ((UPPER(p.asset)='ARS' AND UPPER(COALESCE(b.currency,'')) IN ('USD','USDT'))
-             OR (UPPER(p.asset) IN ('USD','USDT') AND UPPER(COALESCE(b.currency,''))='ARS'))
-           AND ABS(COALESCE(p.quantity,0))>0.005{filtro}""", params):
+         WHERE p.is_cash=1
+           AND ABS(COALESCE(p.invested,0)) >= {efectivo.CAJA_VACIA}{filtro}""", params):
+        lado_broker = _lado(r["bc"])
+        if lado_broker is None:
+            continue
+        marcas = [m for m, valor in (("asset", r["asset"]), ("currency", r["pc"]))
+                  if _lado(valor) not in (None, lado_broker)]
+        if not marcas:
+            continue
+        otra = "pesos" if lado_broker == "USD" else "dólares"
+        saldo = float(r["invested"])
         out.append(Violacion(
             chequeo="cash_moneda", severidad="aviso", user_id=r["user_id"],
-            que_pasa=(f"El broker '{r['broker']}' está en {r['bc']} pero tiene caja en "
-                      f"{r['asset']}. Si no hay un sub-broker para esa pata, esa plata "
-                      f"se está sumando en la moneda equivocada."),
+            que_pasa=(f"La caja de '{r['broker']}' tiene {fmt_num(saldo, 2)} en la moneda "
+                      f"del broker ({r['bc']}), pero la leen en {otra}: "
+                      f"{'; '.join(_QUIEN_LEE[m] for m in marcas)}. Esa plata se está "
+                      f"contando en la moneda equivocada."),
             detalle={"position_id": r["id"], "broker": r["broker"],
-                     "cash": r["asset"], "moneda_broker": r["bc"]}))
+                     "cash": r["asset"], "currency": r["pc"], "moneda_broker": r["bc"],
+                     "saldo": saldo, "marcas": marcas}))
     return out
 
 
