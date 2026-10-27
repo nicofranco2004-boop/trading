@@ -96,7 +96,7 @@ def check_broker_inexistente(conn, uid: Optional[int] = None) -> List[Violacion]
     filtro, params = _scope(uid)
     out = []
     for r in _rows(conn, f"""
-        SELECT p.id, p.user_id, p.broker, COUNT(*) n
+        SELECT p.user_id, p.broker, COUNT(*) n
           FROM positions p
           LEFT JOIN brokers b ON b.user_id=p.user_id AND b.name=p.broker
          WHERE b.id IS NULL AND COALESCE(p.quantity,0)>0{filtro}

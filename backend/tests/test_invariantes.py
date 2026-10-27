@@ -284,8 +284,11 @@ class TestCajaCruzadaPorLasPuertasReales:
         assert not cajas["MiBroker"]["quantity"] and not cajas["MiBroker · USD"]["quantity"]
         assert self.cajas_cruzadas() == []
         main.init_db()
-        assert {b: c["currency"] for b, c in self.cajas().items()} == {
-            "MiBroker": "ARS", "MiBroker · USD": "USD"}
+        # En Postgres el arranque no corre las correcciones de SQLite (la base nace
+        # de schema_pg.sql): `currency` queda vacía y `_native_ccy` lee el rótulo.
+        assert {b: c["currency"] for b, c in self.cajas().items()} == (
+            {"MiBroker": None, "MiBroker · USD": None} if main.USANDO_PG
+            else {"MiBroker": "ARS", "MiBroker · USD": "USD"})
         assert self.cajas_cruzadas() == []
 
     def test_la_caja_que_quedo_en_la_otra_moneda_dispara(self):
@@ -301,7 +304,9 @@ class TestCajaCruzadaPorLasPuertasReales:
         v = self.cajas_cruzadas()
         assert len(v) == 1, v
         assert v[0]["detalle"]["broker"] == "MiIBKR" and v[0]["detalle"]["saldo"] == 1000.0
-        assert v[0]["detalle"]["marcas"] == ["asset", "currency"]
+        # `currency` sólo la completa el arranque de SQLite (ver el test de arriba).
+        assert v[0]["detalle"]["marcas"] == (["asset"] if main.USANDO_PG
+                                             else ["asset", "currency"])
 
     def test_el_cambio_de_moneda_de_hoy_no_deja_la_caja_cruzada(self):
         """El mismo cambio por el PUT de hoy lleva las dos marcas de la caja con la
