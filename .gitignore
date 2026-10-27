@@ -57,3 +57,4 @@ design/video/
 
 # Datos reales de brokers para auditorías locales (nunca se commitean)
 _datos/
+_comparacion/

@@ -51,9 +51,25 @@ listar TODOS los call sites del mismo patrón, y que el test atraviese el mismo 
 | `correr_reales.py <_datos> <salida>` | los archivos reales del dueño (en `_datos/`, ver `HANDOFF_auditoria_rendimiento_csv.md`) |
 | `medir_prod.py <copia prod> [salida]` | sólo lectura: cobertura por modo, Estimado−Certero, y cuántos usuarios tienen cada señal H1…H7 |
 
-⚠️ El arnés bloquea la red a propósito (para que la verdad sea conocida). Las salidas "de antes" están en
-`audit/rendimiento_csv/salidas/` — son tu línea base. **Corré `medir_prod.py` sobre la copia de prod ANTES de
-cambiar nada y guardá la salida**: es el "antes" del A/B.
+⚠️ El arnés bloquea la red a propósito (para que la verdad sea conocida).
+
+### 2-bis · FASE 0 — la foto del ANTES (obligatoria, antes de tocar una sola línea)
+
+El dueño quiere saber, al final, **si quedó más certero que antes**. Para eso hay que congelar cómo está HOY,
+con el código de `origin/main` sin tocar, sobre las MISMAS entradas que vas a usar después:
+
+```bash
+cd audit/rendimiento_csv && mkdir -p ../../_comparacion/antes
+python3 correr_escenarios.py ../../_comparacion/antes/escenarios.json balanz ieb generico
+python3 lectores.py ../../_comparacion/antes/lectores.json balanz:S0_completo balanz:S1_ventana_desde_2025 ieb:S0_completo
+python3 pesos_relativos.py > ../../_comparacion/antes/pesos.txt
+cd ../../backend && python3 ../audit/rendimiento_csv/medir_prod.py ~/Downloads/<copia>.db ../_comparacion/antes/prod.json
+git rev-parse HEAD > ../_comparacion/antes/commit.txt
+```
+
+(`_comparacion/` no se commitea: `prod.json` tiene datos de usuarios.) Si agregás un escenario o un broker nuevo al
+arnés, corrélo también con el código de ANTES y sumalo a `antes/`: sin su "antes" no hay comparación. No uses las
+salidas de `audit/rendimiento_csv/salidas/` como línea base: son de otra máquina y de otro commit.
 
 **Los tests nuevos van en `backend/tests/`** y tienen que pasar por el mismo camino: subida HTTP
 (`/api/imports/preview` → `/confirm`), reconstrucción (`backfill_user`), cron (`take_snapshot_for_user`) y lector.
@@ -168,7 +184,27 @@ y la IA publican el mismo número sobre la misma ventana, o "—" con motivo; ni
    silencio en "aporte". No lo arregles por tu cuenta: proponé al dueño qué mostrarle al usuario ("faltan $X en tu
    caja: ¿aporte o cobro?").
 
-## 4 · A/B contra producción (obligatorio antes de cada PR)
+## 4 · ¿Quedó más certero? Antes vs después (obligatorio al cerrar cada fase y al final)
+
+Repetí los mismos comandos de la FASE 0 con el código nuevo, en `_comparacion/despues_faseX/`, y compará:
+
+```bash
+python3 audit/rendimiento_csv/comparar_antes_despues.py _comparacion/antes _comparacion/despues_faseX
+```
+
+**La regla de "más certero"** (la aplica el script; no la reinterpretes):
+- **Arnés (hay verdad):** en cada escenario y modo, el error absoluto contra el TWR verdadero de la misma ventana
+  tiene que BAJAR o quedar igual. Medir desde más atrás con el mismo error también es mejora. Un número que aparece
+  donde antes no había cuenta como mejora sólo si su error es < 1 pp.
+- **Regresión** = un escenario cuyo error sube ≥ 0,5 pp, un número que desaparece, o lectores que dejan de
+  coincidir. **Una regresión frena el PR** hasta que la expliques y el dueño la acepte por escrito.
+- **Producción (no hay verdad):** no se declara ganador. Se informa: cuántos usuarios ganan y pierden número por
+  modo (con uid y motivo de los que pierden), cuántos meses mide el Certero, cuánto se movió cada uno (mediana y
+  peor caso, con los 10 que más se movieron y qué fix los movió) y las señales H4/H5/H6/H7 antes → después.
+- Con eso armá una tabla **antes / después / verdad** por escenario y modo, en castellano simple, para el dueño.
+  Es la respuesta a "¿quedó más certero?".
+
+### Detalle del A/B contra producción
 
 - `medir_prod.py` sobre la copia cruda (antes) y sobre la copia reconstruida/estampada con el código nuevo
   (después). Reportá: usuarios con número por modo (antes/después) y por motivo; meses que mide el Certero
@@ -180,8 +216,10 @@ y la IA publican el mismo número sobre la misma ventana, o "—" con motivo; ni
 ## 5 · Qué entregar
 
 1. Un PR por fase contra `main` (sin mergear), cada uno con: archivos y líneas, la lista de call sites, el test por
-   el camino de producción + su mutación, la salida del arnés antes/después, el A/B de prod y el conjunto de tests
-   que fallan antes/después.
-2. La auditoría actualizada: en `AUDIT_rendimiento_desde_csv_2026-10-27.md`, cada hallazgo marcado arreglado / no
+   el camino de producción + su mutación, **la salida de `comparar_antes_despues.py` (antes vs esa fase)**, el A/B
+   de prod y el conjunto de tests que fallan antes/después.
+2. Al final, la tabla **antes / después / verdad** de todas las fases juntas contra la FASE 0, y el veredicto en una
+   línea por modo: más certero, igual o peor, y por qué.
+3. La auditoría actualizada: en `AUDIT_rendimiento_desde_csv_2026-10-27.md`, cada hallazgo marcado arreglado / no
    arreglado / decidido no arreglar, con el PR.
-3. 🔴 **"QUÉ NO VERIFIQUÉ"** al final de cada PR, sin maquillar.
+4. 🔴 **"QUÉ NO VERIFIQUÉ"** al final de cada PR, sin maquillar.
