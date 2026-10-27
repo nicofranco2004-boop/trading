@@ -17,12 +17,18 @@ const base = {
   ],
   ganadores: [{ asset: 'FCI:FIMA-A', pnl: 120 }],
   perdedores: [{ asset: 'YPF', pnl: -40 }],
+  fmtEnVista: (v, o = {}) => `${o.signed ? (v >= 0 ? '+' : '−') : ''}USD ${Math.abs(Math.round(v))}`,
+  capital: { aportado: 800, mercado: 200, valorHoy: 1000 },
+  noRealizado: { pnl: 150, pct: 0.176 },
 }
 
 describe('armarReporte', () => {
   it('sin montos no queda NINGUNA cifra de plata en el objeto', () => {
     const r = armarReporte({ ...base, mostrarMontos: false })
-    expect(JSON.stringify(r)).not.toMatch(/US\$/)
+    expect(JSON.stringify(r)).not.toMatch(/(US\$|USD) \d/)
+    expect(r.plata).toBeNull()
+    // El no realizado va igual, sólo con su %.
+    expect(r.noRealizado).toEqual({ monto: null, pct: '+17,6%', positivo: true })
     expect(r.patrimonio).toBeNull()
     expect(r.ganadores[0].resultado).toBeNull()
   })
@@ -33,6 +39,9 @@ describe('armarReporte', () => {
     expect(r.distribuciones[0].porciones[0].monto).toBe('US$ 600')
     expect(r.ganadores[0]).toEqual({ label: 'FIMA-A', resultado: '+US$ 120' })
     expect(r.perdedores[0].resultado).toBe('−US$ 40')
+    // Aportado / mercado / no realizado: con el formateador de la vista.
+    expect(r.plata).toEqual({ aportado: 'USD 800', mercado: '+USD 200', mercadoPositivo: true, valorHoy: 'USD 1000' })
+    expect(r.noRealizado.monto).toBe('+USD 150')
   })
 
   it('agrupa las porciones igual que la torta de la pantalla y saca las vacías', () => {

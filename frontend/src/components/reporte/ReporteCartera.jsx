@@ -72,6 +72,14 @@ export default function ReporteCartera({ datos }) {
               color={d.rendimiento.ganaAlBench ? P.up : P.down}
             />
           )}
+          {d.noRealizado && (
+            <Dato
+              rotulo="P/L no realizado"
+              valor={d.noRealizado.monto || d.noRealizado.pct}
+              color={d.noRealizado.positivo ? P.up : P.down}
+              sub={d.noRealizado.monto ? `${d.noRealizado.pct} sobre lo invertido` : 'sobre lo invertido'}
+            />
+          )}
           {d.drawdown && (
             <Dato
               rotulo="Caída desde el máximo"
@@ -81,6 +89,25 @@ export default function ReporteCartera({ datos }) {
           )}
         </div>
       </Seccion>
+
+      {/* ── Aportes vs mercado ─────────────────────────────────────────── */}
+      {d.plata && (
+        <Seccion titulo="Lo que pusiste y lo que puso el mercado">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 14, alignItems: 'stretch' }}>
+            <Dato rotulo="Aportado (neto de retiros)" valor={d.plata.aportado} />
+            <Dato
+              rotulo={d.plata.mercadoPositivo ? 'Ganado en el mercado' : 'Perdido en el mercado'}
+              valor={d.plata.mercado}
+              color={d.plata.mercadoPositivo ? P.up : P.down}
+            />
+            {d.plata.valorHoy && <Dato rotulo="Lo que vale hoy" valor={d.plata.valorHoy} />}
+          </div>
+          <p style={{ fontSize: 11.5, color: P.ink3, margin: '8px 0 0', lineHeight: 1.5 }}>
+            Lo que vale hoy tu cartera = lo que aportaste (depósitos menos retiros) + lo que
+            {d.plata.mercadoPositivo ? ' ganó' : ' perdió'} el mercado. Incluye lo realizado y lo no realizado.
+          </p>
+        </Seccion>
+      )}
 
       {/* ── Rendimiento vs benchmark ───────────────────────────────────── */}
       {d.rendimiento && (

@@ -47,6 +47,7 @@ import BotonCompartir from '../components/BotonCompartir'
 import { specDeRendimiento, nombreDeArchivo } from '../utils/shareCard'
 import BotonReporte from '../components/reporte/BotonReporte'
 import { armarReporte } from '../utils/reporteCartera'
+import { sumarBrokers, pnlNoRealizado } from '../utils/pnlNoRealizado'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { pctCreible, operacionesEnUsd } from '../utils/assetPnl'
 import { denominadorAportado } from '../utils/evolution'
@@ -870,9 +871,9 @@ function InsightsDesktop({ _embeddedTab }) {
   const liquidityCard = computeLiquidityRisk(investorProfile, positionsWithValue, brokers)
 
   // Cost basis y P&L no realizado (live, sobre posiciones abiertas).
-  const totalCostBasis = brokers.reduce((s, b) => {
-    return s + computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis).invested
-  }, 0)
+  // Mismo motor y misma suma que Cartera (utils/pnlNoRealizado).
+  const totalesCartera = sumarBrokers({ brokers, positions, prices, tcValuacion, tcCedear, tcCripto, costBasis })
+  const totalCostBasis = totalesCartera.invested
   const unrealizedPnl = totalPortfolio - totalCostBasis
 
   // ── Cumulative performance series (monthly + today) ──
@@ -3154,6 +3155,19 @@ function InsightsDesktop({ _embeddedTab }) {
       ],
       ganadores: topContribPos,
       perdedores: topContribNeg,
+      // En la moneda de la vista (por eso fmtEnVista): lo aportado y lo que
+      // puso el mercado son los de "Atribución del crecimiento" (`discipline`,
+      // null sin precios completos); el no realizado, el del encabezado de
+      // Cartera (pnlNoRealizado), no el `unrealizedPnl` de acá arriba.
+      fmtEnVista: amtEnVista,
+      capital: discipline ? { aportado: discipline.deposits, mercado: discipline.pnl, valorHoy: discipline.total } : null,
+      noRealizado: preciosCompletos ? pnlNoRealizado({
+        totals: totalesCartera,
+        totalsToday: sumarBrokers({ brokers, positions, prices, tcValuacion, tcCedear, tcCripto, costBasis: 'today' }),
+        pf: pfRollup,
+        tcValuacion,
+        moneda: currency,
+      }) : null,
     })
   }
 

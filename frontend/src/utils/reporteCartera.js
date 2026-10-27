@@ -27,11 +27,19 @@ const ticker = (t) => String(t || '').replace(/^FCI:/, '')
  * @param {Array<{titulo:string, items:Array, maxSlices?:number, minSlicePct?:number}>} a.distribuciones
  * @param {Array<{asset:string, pnl:number}>} a.ganadores
  * @param {Array<{asset:string, pnl:number}>} a.perdedores
+ * @param {Function} a.fmtEnVista     formatea un monto que YA está en la moneda de
+ *                                    la vista (el `amtEnVista` de Análisis)
+ * @param {{aportado:number, mercado:number, valorHoy:number}|null} a.capital
+ *        lo de "Atribución del crecimiento", en la moneda de la vista
+ * @param {{pnl:number, pct:number}|null} a.noRealizado
+ *        el de pnlNoRealizado (encabezado de Cartera), en la moneda de la vista;
+ *        `pct` es fracción (0,12 = 12%)
  */
 export function armarReporte({
   fmt = (v) => String(v), mostrarMontos = false, moneda = 'USD', periodo = '',
   patrimonio = null, rendimiento = null, drawdown = null,
   distribuciones = [], ganadores = [], perdedores = [], now = new Date(),
+  fmtEnVista = fmt, capital = null, noRealizado = null,
 }) {
   const monto = (v) => (mostrarMontos && Number.isFinite(v) ? fmt(v) : null)
   const montoConSigno = (v) => {
@@ -55,8 +63,26 @@ export function armarReporte({
     }
   }
 
+  // Aportado / mercado: son montos y nada más (el "% del cambio" de la
+  // pantalla no se lee solo). Sin montos, la sección no va.
+  const plata = mostrarMontos && capital && Number.isFinite(capital.aportado) && Number.isFinite(capital.mercado) ? {
+    aportado: fmtEnVista(capital.aportado),
+    mercado: fmtEnVista(capital.mercado, { signed: true }),
+    mercadoPositivo: capital.mercado >= 0,
+    valorHoy: Number.isFinite(capital.valorHoy) ? fmtEnVista(capital.valorHoy) : null,
+  } : null
+
+  // El no realizado SÍ va sin montos: su % es el de Cartera.
+  const nr = noRealizado && Number.isFinite(noRealizado.pnl) ? {
+    monto: mostrarMontos ? fmtEnVista(noRealizado.pnl, { signed: true }) : null,
+    pct: pctConSigno((noRealizado.pct || 0) * 100),
+    positivo: noRealizado.pnl >= 0,
+  } : null
+
   return {
     fecha: fechaDeHoy(now),
+    plata,
+    noRealizado: nr,
     moneda,
     enMoneda: moneda === 'ARS' ? 'en pesos' : 'en dólares',
     periodo,
