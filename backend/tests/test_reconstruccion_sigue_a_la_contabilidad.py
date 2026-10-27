@@ -237,12 +237,28 @@ class LaHistoriaSigueALaContabilidad(_Despues):
         self.assertEqual(fotos["2025-06-30"], (12600.0, 12000.0))
 
     def test_una_operacion_cerrada_cargada_a_mano_en_el_pasado(self):
+        """Sólo el resultado anotado, sin mover el efectivo: los 300 no están en la
+        cuenta (no son caja ni títulos), así que la historia —valuada como la mide
+        el cron, tenencia × precio + caja— no cambia. Hasta el 2026-10-27 la foto
+        valía "contabilidad + no realizado" y los sumaba desde junio, y la unión
+        con el cron, que no los ve, los devolvía como una caída de 300."""
         self._importar(*IBKR)
         self._pedir("post", "/api/operations", json={
             "date": "2025-06-15", "broker": "IBKR", "asset": "TSLA", "op_type": "LONG",
             "entry_price": 100, "exit_price": 130, "quantity": 10, "pnl_usd": 300,
             "currency": "USD"})
-        # Los 300 de ganancia realizada entran al valor desde junio; lo aportado no.
+        fotos = self._cada_foto_describe(
+            MOV_IBKR, ("2025-03-31", "2025-06-30", "2025-07-31", "2025-09-30"))
+        self.assertEqual(fotos["2025-06-30"], (10600.0, 10000.0))
+
+    def test_una_operacion_cerrada_a_mano_que_mueve_el_efectivo(self):
+        """La misma operación, con el resultado acreditado en la caja: ahora los 300
+        sí están en la cuenta y entran al valor desde junio; lo aportado no."""
+        self._importar(*IBKR)
+        self._pedir("post", "/api/operations", json={
+            "date": "2025-06-15", "broker": "IBKR", "asset": "TSLA", "op_type": "LONG",
+            "entry_price": 100, "exit_price": 130, "quantity": 10, "pnl_usd": 300,
+            "currency": "USD", "mueve_efectivo": True})
         fotos = self._cada_foto_describe(
             MOV_IBKR + [("2025-06-15", 300, 0)],
             ("2025-03-31", "2025-06-30", "2025-07-31", "2025-09-30"))

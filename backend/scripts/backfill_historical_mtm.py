@@ -80,6 +80,13 @@ import threading as _threading           # noqa: E402
 _CORRIDA = _threading.local()
 
 
+def _mes_de_cache() -> str:
+    """El mes (AAAA-MM) con el que se fecha cada serie guardada en `_HIST_CACHE`
+    (ver `_HIST_CACHE_MES`). Clave de caché, no un día del usuario: el mes del
+    servidor alcanza para saber si la serie ya trae el cierre del mes pasado."""
+    return _date.today().strftime("%Y-%m")
+
+
 def _fallas_yahoo() -> list:
     if not hasattr(_CORRIDA, "fallas"):
         _CORRIDA.fallas = []
@@ -119,7 +126,17 @@ def _unidad_renta_fija(price_key: str):
 
 
 def _cierres_renta_fija(price_key: str, start_iso: str) -> dict:
-    """{YYYY-MM: cierre por 1 nominal} de un bono/ON/letra, desde las velas
+    """{YYYY-MM: cierre por 1 nominal}: la ÚLTIMA vela de cada mes de
+    `_velas_renta_fija` (como el cierre mensual de Yahoo). Un mes sin velas no
+    entra: ese mes el papel queda al costo."""
+    ultimo: dict = {}
+    for d, c in sorted(_velas_renta_fija(price_key, start_iso).items()):
+        ultimo[d[:7]] = c
+    return ultimo
+
+
+def _velas_renta_fija(price_key: str, start_iso: str) -> dict:
+    """{YYYY-MM-DD: cierre por 1 nominal} de un bono/ON/letra, de las velas
     diarias de data912 — en pesos para el '.BA', en dólar MEP (especie 'D') si no.
 
     ⚠️ "DATA912 ES LIVE-ONLY" ERA FALSO. data912 publica las velas diarias de cada
@@ -129,35 +146,35 @@ def _cierres_renta_fija(price_key: str, start_iso: str) -> dict:
     con un bono llegaba al 90 % de cobertura y el Certero no podía usar la
     historia (auditoría 2026-10-27, H3).
 
-    El cierre del mes es la ÚLTIMA vela del mes (como el cierre mensual de
-    Yahoo). Un mes sin velas no entra: ese mes el papel queda al costo.
     Levanta si la red falla (quien llama no lo guarda como "no hay datos")."""
+    ck = ("rf", price_key, start_iso)
+    _mes = _mes_de_cache()
+    if ck in _HIST_CACHE and _HIST_CACHE_MES.get(ck, _mes) == _mes:
+        return _HIST_CACHE[ck]
     import requests
     es_ars = price_key.endswith(".BA")
     base = price_key[:-3] if es_ars else price_key
     ticker = base if es_ars else base + "D"
     unidad = _unidad_renta_fija(price_key)
-    if unidad is None:
-        return {}
-    for tipo in _TIPOS_DATA912_RENTA_FIJA:
-        r = requests.get(f"https://data912.com/historical/{tipo}/{ticker}", timeout=8)
-        if r.status_code != 200:
-            continue
-        filas = r.json()
-        ultimo: dict = {}                  # YYYY-MM -> (fecha, cierre)
-        for f in (filas if isinstance(filas, list) else []):
-            try:
-                d, c = str(f.get("date"))[:10], float(f.get("c") or 0)
-            except (TypeError, ValueError, AttributeError):
+    out: dict = {}
+    if unidad is not None:
+        for tipo in _TIPOS_DATA912_RENTA_FIJA:
+            r = requests.get(f"https://data912.com/historical/{tipo}/{ticker}", timeout=8)
+            if r.status_code != 200:
                 continue
-            if c <= 0 or len(d) != 10 or d < start_iso:
-                continue
-            ym = d[:7]
-            if ym not in ultimo or d > ultimo[ym][0]:
-                ultimo[ym] = (d, c)
-        if ultimo:
-            return {ym: c * unidad for ym, (_, c) in ultimo.items()}
-    return {}
+            filas = r.json()
+            for f in (filas if isinstance(filas, list) else []):
+                try:
+                    d, c = str(f.get("date"))[:10], float(f.get("c") or 0)
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                if c > 0 and len(d) == 10 and d >= start_iso:
+                    out[d] = c * unidad
+            if out:
+                break
+    _HIST_CACHE[ck] = out
+    _HIST_CACHE_MES[ck] = _mes
+    return out
 
 
 def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
@@ -170,7 +187,7 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     las velas de data912 (`_cierres_renta_fija`), no de Yahoo: el '.BA' de Yahoo
     cotiza por 100 sin avisarlo (ver `snapshots_job.fetch_prices_for_symbols`)."""
     ck = (price_key, start_iso)
-    _mes = _date.today().strftime("%Y-%m")
+    _mes = _mes_de_cache()
     if ck in _HIST_CACHE and _HIST_CACHE_MES.get(ck, _mes) == _mes:
         return _HIST_CACHE[ck]
     if price_key in _fallas_yahoo():
@@ -221,7 +238,64 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     return out
 
 
-def _precio_por_subyacente(asset: str, ym: str, start_iso: str):
+# Un cierre de hace más días que esto no es "el precio de ese día" (el mismo tope
+# que `price_history.MAX_DIAS_ATRAS`): el papel queda al costo.
+MAX_DIAS_ATRAS = 7
+
+
+def _fetch_daily_close(price_key: str, start_iso: str) -> dict:
+    """{YYYY-MM-DD: close}, el diario de `_fetch_monthly_close`: misma fuente por
+    clase de activo (velas de data912 para la renta fija, Yahoo para el resto,
+    nada para los FCI) y misma regla ante una falla (no se guarda). Sólo lo usan
+    las fotos del día anterior a un aporte grande (`backfill_user`)."""
+    ck = ("1d", price_key, start_iso)
+    _mes = _mes_de_cache()
+    if ck in _HIST_CACHE and _HIST_CACHE_MES.get(ck, _mes) == _mes:
+        return _HIST_CACHE[ck]
+    if price_key in _fallas_yahoo():
+        return {}
+    base = price_key[:-3] if price_key.endswith(".BA") else price_key
+    out: dict = {}
+    if price_key.startswith("FCI:"):
+        pass
+    elif _es_renta_fija(base):
+        try:
+            return _velas_renta_fija(price_key, start_iso)
+        except Exception:
+            _fallas_yahoo().append(price_key)
+            return {}
+    else:
+        yf_sym = main.CRYPTO_YF.get(base, price_key) if base in main.CRYPTO_SYMBOLS else price_key
+        try:
+            import yfinance as yf
+            data = yf.Ticker(yf_sym).history(start=start_iso, interval="1d",
+                                             auto_adjust=False, timeout=8)
+            if not data.empty:
+                for idx, row in data.iterrows():
+                    c = row.get("Close")
+                    if c is not None and not (isinstance(c, float) and math.isnan(c)):
+                        out[idx.strftime("%Y-%m-%d")] = float(c)
+        except Exception:
+            _fallas_yahoo().append(price_key)
+            return {}
+    _HIST_CACHE[ck] = out
+    _HIST_CACHE_MES[ck] = _mes
+    return out
+
+
+def _cierre_a_fecha(diario: dict, fecha: str):
+    """El último cierre en o antes de `fecha`, si no tiene más de MAX_DIAS_ATRAS
+    días. None si no hay."""
+    from datetime import timedelta
+    d = _date.fromisoformat(str(fecha)[:10])
+    for k in range(MAX_DIAS_ATRAS + 1):
+        c = diario.get((d - timedelta(days=k)).isoformat())
+        if c is not None:
+            return c
+    return None
+
+
+def _precio_por_subyacente(asset: str, ym: str, start_iso: str, dia: str = None):
     """Precio en USD de UN CEDEAR que cotiza en dólares, vía su SUBYACENTE.
 
     Un CEDEAR con ratio 4 es 1/4 de acción: 100 CEDEARs = 25 acciones
@@ -237,7 +311,8 @@ def _precio_por_subyacente(asset: str, ym: str, start_iso: str):
     if not ratio:
         return None
     try:
-        px = _fetch_monthly_close(base, start_iso).get(ym)
+        px = (_cierre_a_fecha(_fetch_daily_close(base, start_iso), dia) if dia
+              else _fetch_monthly_close(base, start_iso).get(ym))
     except Exception:
         return None
     if px is None:
@@ -301,11 +376,12 @@ def _no_es_un_lote(op_type) -> bool:
 
 def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
     """(costo_usd, afirmable) de la tenencia NO-CASH a `date_iso` que
-    `_holdings_asof` no puede ver.
+    `_lotes_por_fecha` no puede ver.
 
-    `_holdings_asof` sólo mira `import_normalized_tx` de batches confirmados. Todo
-    lo cargado A MANO —y cualquier mes anterior a la primera compra importada—
-    queda invisible. El problema no es que falte: es que el silencio se leía como
+    `_lotes_por_fecha` sólo mira los lotes con fecha de compra. Un lote sin fecha
+    —y antes, todo lo cargado A MANO, cuando la tenencia salía del archivo
+    importado (`_holdings_asof`, reemplazada el 2026-10-27)— queda invisible.
+    El problema no es que falte: es que el silencio se leía como
     "no había nada que valuar" y de ahí salía cobertura 1,0. El código NO PUEDE
     DISTINGUIR "no había nada" de "no vi lo que había", así que tiene que
     preguntarlo en otro lado antes de dar el veredicto optimista.
@@ -439,8 +515,14 @@ def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
 # esa misma proporción: los cupones faltantes (3,4 %) se llevaban 9,6 pp de 141 %.
 CONTRADICCION_MAX = 0.005
 
+# Desde qué tamaño —fracción de lo que valía la cartera— un aporte o retiro lleva
+# su propia foto el día anterior (ver "UNA FOTO EL DÍA ANTERIOR" en
+# `backfill_user`). Con 5 %, el error de suponer que el mercado se movió parejo en
+# el mes queda por debajo de una décima de punto en el mes del aporte.
+FLUJO_MATERIAL = 0.05
 
-def _correcciones_de_fotos(conn, uid: int) -> list:
+
+def _correcciones_de_fotos(conn, uid: int, tenencia_en) -> list:
     """[(fecha_foto, usd)] — por cada foto de tenencia confirmada, cuánto tuvo que
     corregir en dólares: lo que abrió (compras de apertura), lo que cerró a costo
     (ventas `transfer_out`) y el ajuste de caja. El depósito que financia las
@@ -468,7 +550,7 @@ def _correcciones_de_fotos(conn, uid: int) -> list:
             # tenía el lote el día anterior, el mismo que usa la reconstrucción.
             from datetime import timedelta
             antes = (_date.fromisoformat(f) - timedelta(days=1)).isoformat()
-            lote = next((h for h in _holdings_asof(conn, uid, antes)
+            lote = next((h for h in tenencia_en(antes)
                          if h["broker"] == r["broker"] and h["asset"] == r["asset_symbol"]), None)
             if lote and float(lote["quantity"] or 0) > 0:
                 monto = (float(lote["invested"] or 0) / float(lote["quantity"])
@@ -479,13 +561,13 @@ def _correcciones_de_fotos(conn, uid: int) -> list:
     return sorted(por_fecha.items())
 
 
-def _foto_que_contradice(conn, uid: int, valor_en) -> str:
+def _foto_que_contradice(conn, uid: int, valor_en, tenencia_en) -> str:
     """La fecha de la ÚLTIMA foto de tenencia cuya corrección supera
     `CONTRADICCION_MAX` de lo que valía la cartera, o None. Todo mes reconstruido
     anterior a esa fecha describe un archivo que la foto desmintió.
     `valor_en(fecha)`: el valor reconstruido (USD) más cercano antes de la foto."""
     ultima = None
-    for fecha, usd in _correcciones_de_fotos(conn, uid):
+    for fecha, usd in _correcciones_de_fotos(conn, uid, tenencia_en):
         base = valor_en(fecha)
         if base is None:
             continue                      # no hay historia anterior que desmentir
@@ -494,54 +576,245 @@ def _foto_que_contradice(conn, uid: int, valor_en) -> str:
     return ultima
 
 
-# ─── Tenencias a fin de mes (net BUY−SELL + costo promedio) ───────────────────
-def _holdings_asof(conn, uid: int, date_iso: str) -> list:
-    """[{broker, asset, asset_type, quantity, invested(costo)}] tenidas a date_iso.
-    qty = Σ BUY − Σ SELL; costo = precio promedio de compra × qty tenida.
+# ─── LA HISTORIA SE VALÚA COMO EL CRON (auditoría 2026-10-27, H14) ───────────
+#
+# Hasta acá cada foto reconstruida valía "contabilidad + no realizado": los
+# aportes en dólares AL TIPO DE CAMBIO DE CADA APORTE más lo que subió cada
+# papel. El cron, en cambio, vale tenencia × precio + caja AL DÓLAR DEL DÍA. Las
+# dos coinciden sólo si no hay pesos: la caja en pesos y el costo de lo comprado
+# en pesos se DEVALÚAN, y la contabilidad no lo ve nunca (no hay nada realizado).
+# Medido en el arnés (historia inventada 2024-01 → 2026-08, Balanz): el acumulado
+# cerraba (+140,99 % contra +141,34 % real) sólo porque los errores se
+# compensaban — 2024 +23,5 % (real +18,4 %), 2025 +49,9 % (real +40,2 %), meses
+# errados hasta 5 pp, y la unión con el cron devolvía todo de golpe: −9,7 % en
+# cuatro días que no existieron. Un Certero así acierta el total y miente en cada
+# año que publica.
+#
+# Ahora la foto vale lo mismo que mediría el cron ese día:
+#   · TENENCIA — los LOTES que Rendi ya guarda (`positions` abiertos con su fecha
+#     de compra + `operations` cerradas con su fecha de compra y de venta). Son
+#     el resultado del mismo armado que la cartera de hoy (FIFO, el bono puente
+#     del dólar MEP ya cancelado, ventas borradas, ajustes de la foto): no es una
+#     cuarta forma de calcular "qué tenía" (H11). `_holdings_asof`, que sumaba
+#     compras − ventas por sub-cuenta, dejaba un AL30 fantasma por cada compra de
+#     dólar MEP con bono puente (la compra en "Balanz", la venta en "Balanz · USD").
+#   · CAJA — los movimientos del archivo, por MONEDA, con la misma regla que el
+#     importador aplica a cada uno. Y se VERIFICA: la caja reproducida a hoy tiene
+#     que dar la caja que la cuenta tiene hoy. Si no da (plata cargada a mano,
+#     dividendos confirmados en la bandeja, un archivo incompleto), no se sabe
+#     cuándo apareció la diferencia: la historia de esa cuenta se sigue
+#     escribiendo con la regla vieja y NO es afirmable (no entra al Certero).
+#   · TIPO DE CAMBIO — el MEP medio de esa fecha, el mismo del cron y de los
+#     aportes (`fx.SQL_MEDIO_MEP`). Antes el MEP era "el blue, de proxy".
+#
+# La caja que se tolera sin verificar es la misma fracción que la foto de
+# tenencia (`CONTRADICCION_MAX`): por debajo, la diferencia mueve el índice en
+# esa proporción como mucho.
 
-    ⚠️ Lee de `TX_VIVAS`: sólo imports confirmados y SIN las filas que la persona
-    borró. Antes filtraba el lote confirmado pero no la lápida (`excluded_at`), y
-    una compra borrada seguía en la foto valuada a mercado: con MSFT de 100 a 150,
-    la curva publicaba +US$ 500 de una suba que la persona ya no tenía, mientras
-    `positions` (el rebuild sí filtra) mostraba bien la cartera."""
+_CAJA_ENTRA = ("DEPOSIT", "DIVIDEND", "INTEREST", "SELL")
+_CAJA_SALE = ("WITHDRAW", "FEE", "IMPUESTO", "BUY")
+
+
+def _moneda_de_caja(moneda) -> str:
+    """'ARS' o 'USD' (dólar, USDT, USDC). Otra moneda: su código (no se valúa)."""
+    m = (moneda or "").strip().upper()
+    if m in ("USD", "USDT", "USDC"):
+        return "USD"
+    return m
+
+
+def _caja_por_fecha(conn, uid: int):
+    """(caja_en(fecha) -> {'ARS': saldo, 'USD': saldo}, caja_de_hoy) — la caja que
+    dejan los movimientos importados, por moneda, con el efecto que les da el
+    importador (`importing.persister`): la compra resta su importe más la
+    comisión, la venta suma lo cobrado menos la comisión, el depósito, el
+    dividendo y el interés suman el importe, el retiro, la comisión suelta y el
+    impuesto lo restan, la conversión mueve las dos monedas. Por moneda y no por
+    sub-cuenta: el bono puente del dólar MEP compra en una y vende en la otra."""
+    import bisect
     from importing.schema import TX_VIVAS
-    rows = conn.execute(
-        f"""SELECT n.broker AS broker, n.asset_symbol AS asset, n.asset_type AS asset_type,
-                  MAX(CASE WHEN n.operation_type='BUY' AND COALESCE(n.currency,'') <> ''
-                           THEN UPPER(n.currency) END) AS currency,
-                  SUM(CASE n.operation_type WHEN 'BUY'  THEN COALESCE(n.quantity,0)
-                                            WHEN 'SELL' THEN -COALESCE(n.quantity,0)
-                                            ELSE 0 END) AS qty,
-                  SUM(CASE n.operation_type WHEN 'BUY'
-                        THEN COALESCE(n.gross_amount, COALESCE(n.quantity,0)*COALESCE(n.unit_price,0))
-                        ELSE 0 END) AS buy_amt,
-                  SUM(CASE n.operation_type WHEN 'BUY' THEN COALESCE(n.quantity,0) ELSE 0 END) AS buy_qty
-             FROM {TX_VIVAS}
-            WHERE b.user_id = ?
-              AND n.asset_symbol IS NOT NULL AND n.asset_symbol != ''
-              AND n.operation_type IN ('BUY','SELL')
-              AND n.date <= ?
-            GROUP BY n.broker, n.asset_symbol, n.asset_type""",
-        (uid, date_iso),
-    ).fetchall()
-    out = []
-    for r in rows:
-        qty = r["qty"] or 0
-        if qty <= 1e-9:        # cerrada / sobre-vendida → no es tenencia
+    bcur = {r["name"]: r["currency"] for r in conn.execute(
+        "SELECT name, currency FROM brokers WHERE user_id=?", (uid,)).fetchall()}
+    fechas, saldos = [], []
+    acum = {}
+    for r in conn.execute(
+            f"""SELECT n.date, n.broker, n.operation_type, n.quantity, n.gross_amount,
+                       n.fees, COALESCE(n.settlement_currency, n.currency) AS ccy
+                  FROM {TX_VIVAS} WHERE b.user_id = ?
+                 ORDER BY n.date, n.id""", (uid,)).fetchall():
+        op = r["operation_type"]
+        bruto = float(r["gross_amount"] or 0)
+        com = float(r["fees"] or 0)
+        mon = _moneda_de_caja(r["ccy"] or bcur.get(r["broker"]))
+        if op == "FX_ARS_TO_USD":
+            mov = {"ARS": -bruto, "USD": float(r["quantity"] or 0)}
+        elif op == "FX_USD_TO_ARS":
+            mov = {"USD": -float(r["quantity"] or 0), "ARS": bruto}
+        elif op == "FUTURES_PNL":
+            mov = {mon: bruto}
+        elif bruto <= 0:
+            continue                       # sin plata (cierre a costo de la foto, traspaso)
+        elif op == "BUY":
+            mov = {mon: -(bruto + com)}
+        elif op == "SELL":
+            mov = {mon: bruto - com}
+        elif op in _CAJA_ENTRA:
+            mov = {mon: bruto}
+        elif op in _CAJA_SALE:
+            mov = {mon: -bruto}
+        else:
             continue
-        buy_qty = r["buy_qty"] or 0
-        avg_cost = (r["buy_amt"] / buy_qty) if buy_qty > 0 else 0
-        # currency: para que compute_broker_value_usd respete el costo USD (sin ÷MEP)
-        # de bonos/ONs/FCI-USD/CEDEAR-MEP en un broker ARS. Se TAGEA desde las patas de
-        # COMPRA (no se particiona el GROUP BY): una VENTA de reducción sin cash (rescate
-        # parcial / reducción de capital / canje) llega con moneda vacía→'ARS' y, si
-        # particionáramos, caería en otro bucket y NO restaría la cantidad (qty inflada).
-        # MAX prioriza 'USD' si alguna compra fue en dólares (el caso "costo en dólares").
-        out.append({
+        for k, v in mov.items():
+            acum[k] = acum.get(k, 0.0) + v
+        f = str(r["date"])[:10]
+        if fechas and fechas[-1] == f:
+            saldos[-1] = dict(acum)
+        else:
+            fechas.append(f)
+            saldos.append(dict(acum))
+
+    def caja_en(fecha):
+        i = bisect.bisect_right(fechas, str(fecha)[:10])
+        return dict(saldos[i - 1]) if i else {}
+
+    hoy = {}
+    for r in conn.execute(
+            "SELECT p.broker, p.invested FROM positions p WHERE p.user_id=? "
+            "AND COALESCE(p.is_cash,0)=1", (uid,)).fetchall():
+        k = _moneda_de_caja(bcur.get(r["broker"]))
+        hoy[k] = hoy.get(k, 0.0) + float(r["invested"] or 0)
+    return caja_en, hoy
+
+
+def _lotes_por_fecha(conn, uid: int):
+    """tenencia_en(fecha) -> [{broker, asset, asset_type, currency, quantity,
+    invested}] — lo que la cuenta TENÍA esa fecha, armado con los lotes que Rendi
+    ya guarda: los abiertos (`positions`, comprados en o antes de la fecha) y los
+    cerrados (`operations`, comprados en o antes y vendidos DESPUÉS de la fecha).
+    `invested` es el costo de esas unidades en la moneda del lote.
+
+    Un lote sin fecha de compra no entra: no se sabe desde cuándo estaba. Lo
+    cuenta `_tenencia_no_vista`, al costo, como siempre."""
+    from importing.schema import TX_VIVAS
+    meta = {}                                # (broker, asset) -> (moneda, tipo)
+    for r in conn.execute(
+            f"""SELECT n.broker, n.asset_symbol AS asset,
+                       MAX(CASE WHEN COALESCE(n.currency,'') <> '' THEN UPPER(n.currency) END) AS cur,
+                       MAX(n.asset_type) AS tipo
+                  FROM {TX_VIVAS} WHERE b.user_id=? AND n.operation_type='BUY'
+                   AND n.asset_symbol IS NOT NULL
+                 GROUP BY n.broker, n.asset_symbol""", (uid,)).fetchall():
+        meta[(r["broker"], r["asset"])] = (r["cur"], r["tipo"])
+    lotes = []                               # (desde, hasta|None, fila)
+    for r in conn.execute(
+            """SELECT broker, asset, asset_type, currency, quantity, invested, entry_date
+                 FROM positions WHERE user_id=? AND COALESCE(is_cash,0)=0
+                  AND entry_date IS NOT NULL""", (uid,)).fetchall():
+        q = float(r["quantity"] or 0)
+        if q <= 0:
+            continue
+        meta.setdefault((r["broker"], r["asset"]), (r["currency"], r["asset_type"]))
+        lotes.append((str(r["entry_date"])[:10], None, {
             "broker": r["broker"], "asset": r["asset"], "asset_type": r["asset_type"],
-            "currency": (r["currency"] or None), "quantity": qty, "invested": avg_cost * qty,
-        })
-    return out
+            "currency": (r["currency"] or None), "quantity": q,
+            "invested": float(r["invested"] or 0)}))
+    for r in conn.execute(
+            """SELECT broker, asset, op_type, quantity, entry_price, exit_price,
+                      entry_date, date
+                 FROM operations WHERE user_id=? AND entry_date IS NOT NULL
+                  AND date IS NOT NULL""", (uid,)).fetchall():
+        if _no_es_un_lote(r["op_type"]):
+            continue
+        q = float(r["quantity"] or 0)
+        if q <= 0:
+            continue
+        cur, tipo = meta.get((r["broker"], r["asset"]), (None, None))
+        desde, hasta = str(r["entry_date"])[:10], str(r["date"])[:10]
+        # ⚠️ EL LOTE SEMILLA YA ESTABA ANTES DEL ARCHIVO (H5-a). Cuando el archivo
+        # trae una venta de algo que no muestra comprado, el importador cierra un
+        # lote "semilla" al precio de la venta, fechado el día de la venta
+        # (`rebuild._replay_asset._seed`, `persister._persist_sell_fifo`). Ese lote
+        # existía desde ANTES de la ventana del archivo —si no, no se podía
+        # vender—: si se lo contara sólo el día de la venta, la plata cobrada
+        # aparecía de la nada en la caja y la historia la leía como ganancia
+        # (medido: export desde 2025 con una venta de AAPL comprado en 2024 →
+        # Estimado +264 % contra +69 % real). Se cuenta desde el principio de la
+        # historia, valuado a su precio de cada mes.
+        try:
+            semilla = (desde == hasta and r["exit_price"] is not None
+                       and abs(float(r["entry_price"] or 0) - float(r["exit_price"]))
+                       <= 1e-6 * max(1.0, abs(float(r["exit_price"]))))
+        except (TypeError, ValueError):
+            semilla = False
+        lotes.append(("0000-01-01" if semilla else desde, hasta, {
+            "broker": r["broker"], "asset": r["asset"], "asset_type": tipo,
+            "currency": cur, "quantity": q,
+            "invested": q * float(r["entry_price"] or 0)}))
+
+    def tenencia_en(fecha):
+        f = str(fecha)[:10]
+        out = {}
+        for desde, hasta, l in lotes:
+            if desde > f or (hasta is not None and hasta <= f):
+                continue
+            k = (l["broker"], l["asset"], (l["currency"] or "").upper())
+            if k not in out:
+                out[k] = dict(l, quantity=0.0, invested=0.0)
+            out[k]["quantity"] += l["quantity"]
+            out[k]["invested"] += l["invested"]
+        return [h for h in out.values() if h["quantity"] > 1e-9]
+    return tenencia_en
+
+
+def _verificar_caja(conn, uid: int, today: _date, caja_en, caja_hoy: dict,
+                    por_mes: dict) -> dict:
+    """¿La caja que dejan los movimientos importados, llevada a hoy, da la caja
+    que la cuenta tiene hoy? Por moneda, en dólares al MEP de hoy, contra
+    `CONTRADICCION_MAX` del valor de la cartera (la última foto valuada como el
+    cron). Devuelve {verificada, diferencia_usd, base_usd, por_moneda}."""
+    try:
+        live_blue = main._user_tc_blue(conn, uid)
+    except Exception:
+        live_blue = 1415.0
+    hoy_iso = today.isoformat()
+    mep = _hist_mep(conn, hoy_iso, _hist_blue(conn, hoy_iso, live_blue))
+    reproducida = caja_en("9999-12-31")
+    por_moneda, dif = {}, 0.0
+    rara = False
+    for k in set(reproducida) | set(caja_hoy):
+        a, b = reproducida.get(k, 0.0), caja_hoy.get(k, 0.0)
+        por_moneda[k] = {"reproducida": round(a, 2), "hoy": round(b, 2)}
+        if k == "ARS":
+            dif += abs(a - b) / mep
+        elif k == "USD":
+            dif += abs(a - b)
+        elif abs(a - b) > 0.005 or abs(a) > 0.005:
+            rara = True                   # otra moneda: no se sabe valuarla
+    valores = [i["valor_posiciones"] for i in por_mes.values()
+               if i.get("valor_posiciones") is not None]
+    base = valores[-1] if valores else 0.0
+    ok = (not rara) and base > 0 and dif <= CONTRADICCION_MAX * base
+    return {"verificada": ok, "diferencia_usd": round(dif, 2), "base_usd": round(base, 2),
+            "por_moneda": por_moneda}
+
+
+def _hist_mep(conn, fecha_iso: str, fallback: float) -> float:
+    """El MEP MEDIO de la fecha (último ≤ fecha), con la expresión compartida de
+    `fx.py` — el mismo con el que el cron valúa y el importador sella los aportes
+    en pesos. Sin MEP guardado, `fallback`."""
+    try:
+        import fx as _fxmod
+    except ImportError:  # pragma: no cover
+        from .. import fx as _fxmod
+    try:
+        row = conn.execute(
+            f"SELECT {_fxmod.SQL_MEDIO_MEP} AS mep FROM fx_rates_daily "
+            "WHERE date <= ? AND mep_venta IS NOT NULL ORDER BY date DESC LIMIT 1",
+            (fecha_iso,)).fetchone()
+        v = float(row["mep"]) if row and row["mep"] is not None else None
+        return v if (v and v > 0) else fallback
+    except Exception:
+        return fallback
 
 
 def _month_end(year: int, month: int) -> str:
@@ -646,7 +919,15 @@ def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
         # la misma fila recibiera respuestas distintas según quién preguntaba y
         # cuándo. Con cobertura baja el `total_value` de la foto ES el costo (lo que
         # no se pudo precear entra con unrealized 0): base contable, y nunca apta.
-        _base, _apto = _twr_base_apto(info["coverage"], info.get("contradicha", False))
+        # Afirmable = no desmentida por una foto de tenencia, y valuada como el
+        # cron (caja verificada) o sin nada en pesos: sin pesos, "contabilidad +
+        # no realizado" da lo mismo que el cron (el dólar no se devalúa contra sí
+        # mismo), y una cuenta en dólares con un aporte cargado a mano —que la
+        # caja reproducida no ve— no tiene por qué perder su historia.
+        _no_afirmable = (info.get("contradicha", False)
+                         or (not info.get("caja_verificada", True)
+                             and info.get("con_pesos", False)))
+        _base, _apto = _twr_base_apto(info["coverage"], _no_afirmable)
         conn.execute(
             """INSERT INTO snapshots
                  (user_id, date, total_value, total_invested, net_deposited,
@@ -758,13 +1039,16 @@ def huella_de_entrada(conn, uid: int, today: _date) -> str:
               "monthly_entries WHERE user_id=? AND broker='global' AND year*100+month < ?",
               "year, month", uid, ym_hoy)
     _agregado(("id",), "import_batches WHERE user_id=? AND status='confirmed'", "id", uid)
+    # TODOS los movimientos importados, de todos los tipos y hasta hoy: la caja de
+    # cada foto sale de reproducirlos (`_caja_por_fecha`) y se verifica contra la
+    # caja de HOY, así que un movimiento del mes en curso también la cambia.
     _agregado(("n.id", "n.date", "n.broker", "n.asset_symbol", "n.asset_type",
                "n.operation_type", "n.quantity", "n.gross_amount", "n.unit_price",
-               "n.currency", "CASE WHEN n.excluded_at IS NULL THEN 1 ELSE 0 END"),
+               "n.fees", "n.currency", "n.settlement_currency",
+               "CASE WHEN n.excluded_at IS NULL THEN 1 ELSE 0 END"),
               "import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id "
-              "WHERE b.user_id=? AND b.status='confirmed' "
-              "AND n.operation_type IN ('BUY','SELL') AND n.date < ?",
-              "n.id", uid, hoy)
+              "WHERE b.user_id=? AND b.status='confirmed'",
+              "n.id", uid)
     # Lo que corrigió cada foto de tenencia (incluido su ajuste de caja, que no es
     # compra ni venta): decide qué meses son afirmables (`_foto_que_contradice`).
     _agregado(("n.id", "n.date", "n.operation_type", "n.gross_amount", "n.currency",
@@ -772,9 +1056,13 @@ def huella_de_entrada(conn, uid: int, today: _date) -> str:
               "import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id "
               "WHERE b.user_id=? AND b.status='confirmed' AND b.parser_format LIKE '%tenencia'",
               "n.id", uid)
-    _agregado(("id", "broker", "asset", "quantity", "invested", "currency", "entry_date"),
+    _agregado(("id", "broker", "asset", "asset_type", "quantity", "invested", "currency",
+               "entry_date"),
               "positions WHERE user_id=? AND COALESCE(is_cash,0)=0 "
               "AND (entry_date IS NULL OR entry_date < ?)", "id", uid, hoy)
+    # La caja de HOY: contra ella se verifica la caja reproducida (`_verificar_caja`).
+    _agregado(("id", "broker", "invested"),
+              "positions WHERE user_id=? AND COALESCE(is_cash,0)=1", "id", uid)
     _agregado(("s.asset",),
               "(SELECT DISTINCT asset FROM positions WHERE user_id=? "
               "AND split_adjusted_through IS NOT NULL) s", "s.asset", uid)
@@ -811,7 +1099,7 @@ def _meses_a_reconstruir(huella: list, today: _date) -> list:
     hueco (`capital_inicio` del mes siguiente = `capital_final` del anterior que
     tiene fila), así que su costo es exactamente el del último mes con fila, con
     flujos y realizado en cero. Las tenencias sí cambian (compras) y salen de
-    `_holdings_asof` a su fecha, como en cualquier otro mes.
+    `_lotes_por_fecha` a su fecha, como en cualquier otro mes.
 
     Llega hasta el último mes CERRADO y no hasta la última fila: después de su
     último depósito la persona sigue teniendo la cartera, y la foto de ese último
@@ -888,43 +1176,54 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
 
     por_mes: dict = {}                         # {ym: foto reconstruida}
     start_iso = f"{huella[0][0]:04d}-{huella[0][1]:02d}-01"
+    # Lo que la cuenta tenía y la caja que dejaron los movimientos, a cualquier
+    # fecha (ver "LA HISTORIA SE VALÚA COMO EL CRON").
+    tenencia_en = _lotes_por_fecha(conn, uid)
+    caja_en, caja_hoy = _caja_por_fecha(conn, uid)
 
-    # El mes en curso (y cualquier fila futura) no se toca: lo maneja el flujo live.
-    for y, m, fila, propia in _meses_a_reconstruir(huella, today):
-        d = _month_end(y, m)
-        ym = f"{y}-{m:02d}"
-        hold = _holdings_asof(conn, uid, d)
-        try:
-            live_blue = main._user_tc_blue(conn, uid)
-        except Exception:
-            live_blue = 1415.0
+    try:
+        live_blue = main._user_tc_blue(conn, uid)
+    except Exception:
+        live_blue = 1415.0
+
+    def _valuar(d, precio_de):
+        """La foto de la fecha `d`: cada lote a precio real (o al costo, con las
+        guardas), lo que el reconstructor no ve al costo, y la caja. `precio_de(h,
+        pkey)` -> (precio, precio_por_subyacente): el cierre del mes o el del día."""
         blue = _hist_blue(conn, d, live_blue)
-        mep = blue                              # Fase 1: MEP = blue-proxy
-
+        # El MEP de la fecha, el del cron y el de los aportes. Sin MEP guardado
+        # para esa fecha, el blue (lo que se usaba siempre, de proxy).
+        mep = _hist_mep(conn, d, blue)
+        hold = tenencia_en(d)
         # Unrealized por broker (valor_mercado − costo), con guardas → costo.
         # `val_mkt`/`val_costo` miden la COBERTURA del mes: cuanto del valor
         # no-cash salio de un precio real y cuanto cayo al costo. Sin ese numero
         # un mes casi enteramente al costo se publicaria como medido.
         unreal_by_broker: dict = {}
         val_mkt = val_costo = 0.0
+        val_tenencia = 0.0                      # lo no-cash, a mercado o al costo
         by_asset: dict = {}
         assets_al_costo: set = set()
+        valor_conocido = True                   # ¿se sabe cuánto vale cada lote?
+        con_pesos = False                       # ¿algo de la foto está en pesos?
         for h in hold:
             b = h["broker"]
             btype = bcur.get(b, "USDT")
+            # Con la moneda del lote, como el cron: un lote de costo en pesos que
+            # vive en una cuenta dólar se valúa por su '.BA' (`_cost_in_pesos`).
             pkey = sj.position_price_key(
-                {"asset": h["asset"], "broker": b, "asset_type": h["asset_type"]},
+                {"asset": h["asset"], "broker": b, "asset_type": h["asset_type"],
+                 "currency": h.get("currency")},
                 ars_names, ar_usd_names)
-            # precio histórico del mes (None si no hay / split → costo)
+            if pkey.endswith(".BA") or (h.get("currency") or "").upper() == "ARS":
+                con_pesos = True
+            # precio histórico (None si no hay / split → costo)
             price = None
             _px_sub = None
             if h["asset"] not in split_assets:
                 # Primero el camino corto: si es un CEDEAR que cotiza en dólares,
                 # se valúa por su subyacente y no hace falta el CCL histórico.
-                _px_sub = _precio_por_subyacente(h["asset"], ym, start_iso)
-                if _px_sub is None:
-                    hist = _fetch_monthly_close(pkey, start_iso)
-                    price = hist.get(ym)
+                price, _px_sub = precio_de(h, pkey)
             if _px_sub is not None:
                 val = _px_sub * float(h["quantity"] or 0)
                 inv = float(h["invested"] or 0)
@@ -960,6 +1259,7 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
             # Valor EFECTIVO del holding en la foto: a mercado si el precio se
             # pudo usar, al costo si degrado (ahi u quedo en 0).
             efectivo = inv + u
+            val_tenencia += efectivo
             by_asset[h["asset"]] = by_asset.get(h["asset"], 0.0) + efectivo
             if price is None or not trusted:
                 res["cost_fallbacks"] += 1
@@ -967,10 +1267,15 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
                 # Por NOMBRE, no sólo el conteo: un porcentaje pelado no le dice al
                 # usuario qué hacer; "tus FCI" sí.
                 assets_al_costo.add(h["asset"])
+                # Un lote que se tiene, sin precio Y sin costo (recibido gratis, una
+                # semilla en cero) no vale cero: no se sabe cuánto vale. Contarlo en
+                # cero da cobertura 1,0 sobre una cartera que no se pudo valuar —
+                # el mismo veredicto optimista que `_tenencia_no_vista` prohíbe para
+                # lo que no se ve.
+                if inv <= 0 and float(h["quantity"] or 0) > 0:
+                    valor_conocido = False
             else:
                 val_mkt += efectivo
-
-        total_unreal = sum(unreal_by_broker.values())
 
         # ⚠️ LA TENENCIA QUE EL RECONSTRUCTOR NO VE CUENTA COMO COSTO, NO DESAPARECE.
         #
@@ -990,7 +1295,7 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
         if _no_visto > 0:
             res["cost_fallbacks"] += 1
         base_cob = val_mkt + val_costo
-        if not _afirmable:
+        if not (_afirmable and valor_conocido):
             cobertura = None          # hay tenencia que no veo y no se cuanto vale
         elif base_cob > 0:
             cobertura = val_mkt / base_cob
@@ -998,6 +1303,39 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
             # Cero base Y nada invisible: se puede AFIRMAR que no habia nada
             # no-cash que valuar. Recien ahi 1,0 es un hecho y no un supuesto.
             cobertura = 1.0
+        # La misma foto valuada como el cron: tenencia + la caja de esa fecha al
+        # MEP de esa fecha. Se usa sólo si la caja reproducida da la de hoy (ver
+        # más abajo, "LA CAJA SE VERIFICA"). Lo que no se ve (`_no_visto`) baja la
+        # cobertura pero NO entra al valor, igual que en la regla de siempre: un
+        # lote sin fecha no se sabe si estaba, y una operación cerrada cargada a
+        # mano sin mover el efectivo es sólo un resultado anotado, no plata ni
+        # títulos de la cuenta (el cron tampoco la ve).
+        _caja = caja_en(d)
+        _caja_rara = any(abs(v) > 0.005 for k, v in _caja.items() if k not in ("ARS", "USD"))
+        return {
+            "total_unreal": sum(unreal_by_broker.values()),
+            "con_pesos": con_pesos or abs(_caja.get("ARS", 0.0)) > 0.005,
+            "cobertura": round(cobertura, 4) if cobertura is not None else None,
+            "valor_posiciones": (None if _caja_rara else
+                                 val_tenencia
+                                 + _caja.get("ARS", 0.0) / mep + _caja.get("USD", 0.0)),
+            "holdings": [{"asset": a, "value_usd": round(v, 2),
+                          "al_costo": a in assets_al_costo}
+                         for a, v in by_asset.items()],
+        }
+
+    # El mes en curso (y cualquier fila futura) no se toca: lo maneja el flujo live.
+    for y, m, fila, propia in _meses_a_reconstruir(huella, today):
+        d = _month_end(y, m)
+        ym = f"{y}-{m:02d}"
+
+        def _precio_del_mes(h, pkey, _ym=ym):
+            sub = _precio_por_subyacente(h["asset"], _ym, start_iso)
+            if sub is not None:
+                return None, sub
+            return _fetch_monthly_close(pkey, start_iso).get(_ym), None
+        v = _valuar(d, _precio_del_mes)
+        total_unreal = v["total_unreal"]
 
         # Valor de la foto = costo(recomputado de columnas estables) + unrealized.
         # Se calcula SOLO para el global y NO se escribe en monthly_entries: ver el
@@ -1036,15 +1374,14 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
         else:
             before_global = cost
         after_global = new_cf
-        cost_global = cost
-        _cob = round(cobertura, 4) if cobertura is not None else None
         res["months"].append({"ym": ym, "before": before_global, "after": after_global,
-                              "coverage": _cob, "sin_fila": not propia})
-        por_mes[ym] = {"date": d, "value": after_global, "cost": cost_global,
-                       "net_dep": net_dep, "coverage": _cob,
-                       "holdings": [{"asset": a, "value_usd": round(v, 2),
-                                     "al_costo": a in assets_al_costo}
-                                    for a, v in by_asset.items()]}
+                              "coverage": v["cobertura"], "sin_fila": not propia})
+        por_mes[ym] = {"date": d, "value": after_global, "cost": cost,
+                       "valor_contable": after_global,
+                       "valor_posiciones": v["valor_posiciones"],
+                       "con_pesos": v["con_pesos"],
+                       "net_dep": net_dep, "coverage": v["cobertura"],
+                       "holdings": v["holdings"]}
 
     # ⚠️ SI LA CONTABILIDAD CAMBIÓ DURANTE LA CORRIDA, SE VUELVE A EMPEZAR.
     # Entre la primera lectura y acá pasan minutos (Yahoo, 8 s de tope por activo),
@@ -1086,6 +1423,107 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
         res["reintentar"] = True
         res["yahoo_fallo"] = sorted(set(_fallas_yahoo()))
 
+    # ⚠️ LA CAJA SE VERIFICA (ver "LA HISTORIA SE VALÚA COMO EL CRON"). La caja que
+    # dejan los movimientos importados, llevada a hoy, tiene que dar la caja que la
+    # cuenta tiene hoy. Si da, cada foto vale lo que mediría el cron ese día. Si no
+    # da, no se sabe CUÁNDO apareció la diferencia: la foto se escribe con la regla
+    # de antes (contabilidad + no realizado, la mejor estimación que hay) y no es
+    # afirmable.
+    res["caja"] = _verificar_caja(conn, uid, today, caja_en, caja_hoy, por_mes)
+    _caja_ok = res["caja"]["verificada"]
+    for _info in por_mes.values():
+        _vp = _info.get("valor_posiciones")
+        _info["caja_verificada"] = bool(_caja_ok and _vp is not None and _vp > 0)
+        if _info["caja_verificada"]:
+            _info["value"] = _vp
+    for _m in res["months"]:
+        _i = por_mes.get(_m["ym"], {})
+        _m["after"] = _i.get("value", _m["after"])
+        _m["valuacion"] = "posiciones" if _i.get("caja_verificada") else "contable"
+
+    # ⚠️ UNA FOTO EL DÍA ANTERIOR A CADA APORTE O RETIRO GRANDE (H13). El tramo
+    # mensual pondera cada aporte por los días que estuvo invertido
+    # (`twr.flujo_ponderado`), pero sigue suponiendo que el mercado se movió parejo
+    # dentro del mes: con un aporte del tamaño de la cartera, el error de esa
+    # suposición se lleva puntos (medido: US$ 4.000 sobre US$ 6.600 el 14 de
+    # febrero → el mes daba 3,12 % contra 3,71 %, y compuesto, −1,5 pp sobre el
+    # acumulado de dos años y medio). Con una foto valuada el día anterior, el
+    # tramo que lleva el aporte arranca con él: ningún tramo cruza un aporte grande.
+    # Sólo con la caja verificada: el valor del día sale de tenencia × precio +
+    # caja (la contabilidad es mensual y no sabe valuar un día del medio).
+    res["fotos_por_aporte"] = 0
+    if _caja_ok and _canon is not None:
+        import twr as _twr_f
+        from datetime import timedelta as _td
+        _primero_en_curso = _date(today.year, today.month, 1).isoformat()
+        _fines = sorted(i["date"] for i in por_mes.values())
+        _flujos = _twr_f.flujos_fechados(conn, uid)
+        _ya = set(_fines)
+        for _f, _usd in _flujos:
+            _dia = (_date.fromisoformat(_f) - _td(days=1)).isoformat()
+            if _dia in _ya or _f >= _primero_en_curso or not _fines or _dia < _fines[0]:
+                continue
+            _prev = [i for i in por_mes.values() if i["date"] < _f]
+            _base = _prev[-1]["value"] if _prev else 0.0
+            if _base <= 0 or abs(_usd) < FLUJO_MATERIAL * _base:
+                continue
+
+            _fin_anterior = max(f for f in _fines if f < _f) if any(f < _f for f in _fines) else None
+
+            def _coherente(diario, mensual_de):
+                """¿La serie diaria describe lo mismo que la mensual que valuó los
+                cierres? Su cierre en el último fin de mes tiene que dar el cierre
+                mensual de ese mes (±1 %). Si no (otro ticker, otro ajuste), la foto
+                del medio sería un escalón entre dos fuentes."""
+                if not _fin_anterior:
+                    return False
+                m = mensual_de(_fin_anterior[:7])
+                dd = _cierre_a_fecha(diario, _fin_anterior)
+                return bool(m and dd and abs(dd / m - 1.0) <= 0.01)
+
+            def _precio_del_dia(h, pkey, _x=_dia):
+                base = h["asset"][:-3] if str(h["asset"]).endswith(".BA") else h["asset"]
+                sub = _precio_por_subyacente(h["asset"], _x[:7], start_iso, dia=_x)
+                if sub is not None:
+                    # Se compara la serie del SUBYACENTE, que es de donde sale.
+                    if not _coherente(_fetch_daily_close(base, start_iso),
+                                      lambda ym: _fetch_monthly_close(base, start_iso).get(ym)):
+                        return None, None
+                    return None, sub
+                diario = _fetch_daily_close(pkey, start_iso)
+                if not _coherente(diario, lambda ym: _fetch_monthly_close(pkey, start_iso).get(ym)):
+                    return None, None
+                return _cierre_a_fecha(diario, _x), None
+            _v = _valuar(_dia, _precio_del_dia)
+            # Sólo la foto que puede ser borde: cobertura de medición (lo que no
+            # tuvo precio del día cae al costo y la baja). Sin cobertura (hay
+            # tenencia que no se sabe cuánto vale), el Estimado realinea los cierres
+            # a la contabilidad y una foto valuada a mercado en el medio sería un
+            # escalón de regla.
+            import twr as _twr_c
+            if (_v["valor_posiciones"] is None or _v["valor_posiciones"] <= 0
+                    or _v["cobertura"] is None
+                    or _v["cobertura"] < _twr_c.COBERTURA_MEDICION):
+                continue
+            # El aportado de ESE día: el del cierre de su mes menos lo que entró
+            # después en el mismo mes (el canónico es mensual; `_aportado_por_punto`
+            # lo ancla y deja que la estampa diga el día).
+            _fin_mes = _month_end(int(_dia[:4]), int(_dia[5:7]))
+            _despues = sum(v for f, v in _flujos if _dia < f <= _fin_mes)
+            _mes = por_mes.get(_dia[:7]) or {}
+            por_mes[_dia] = {"date": _dia, "value": _v["valor_posiciones"],
+                             "cost": _mes.get("cost", 0.0),
+                             "valor_contable": None,
+                             "valor_posiciones": _v["valor_posiciones"],
+                             "net_dep": _canon(_fin_mes) - _despues,
+                             "coverage": _v["cobertura"], "holdings": _v["holdings"],
+                             "caja_verificada": True, "por_aporte": True}
+            _ya.add(_dia)
+            res["fotos_por_aporte"] += 1
+        # `por_mes` queda en orden de fecha (lo recorren la foto de tenencia y el
+        # persistidor; una foto del medio del mes va entre sus dos cierres).
+        por_mes = dict(sorted(por_mes.items(), key=lambda kv: kv[1]["date"]))
+
     # ⚠️ LO QUE LA FOTO DE TENENCIA DESMINTIÓ NO ES CERTERO (ver CONTRADICCION_MAX).
     # Los meses anteriores a una foto que tuvo que corregir el archivo se escriben
     # igual —son la mejor estimación que hay, y el Estimado las usa—, pero sin
@@ -1093,7 +1531,7 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     def _valor_antes_de(fecha):
         previos = [i["value"] for i in por_mes.values() if i["date"] < fecha]
         return previos[-1] if previos else None
-    _desmentida = _foto_que_contradice(conn, uid, _valor_antes_de)
+    _desmentida = _foto_que_contradice(conn, uid, _valor_antes_de, tenencia_en)
     res["foto_que_contradice"] = _desmentida
     for _info in por_mes.values():
         _info["contradicha"] = bool(_desmentida and _info["date"] < _desmentida)
@@ -1119,10 +1557,17 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     _con_fila = {f"{r['year']}-{r['month']:02d}" for r in conn.execute(
         "SELECT year, month FROM monthly_entries WHERE user_id=? AND broker='global'",
         (uid,)).fetchall()}
+    # La foto del día anterior a un aporte grande (que no es de fin de mes) se
+    # rehace en cada corrida: si esta corrida no la produjo —el aporte se borró, o
+    # la caja dejó de verificar— ya no describe nada y se borra aunque su mes
+    # tenga contabilidad.
+    from datetime import timedelta as _td_b
     for _r in conn.execute(
             "SELECT date FROM snapshots WHERE user_id=? AND source=? AND date < ?",
             (uid, MTM_SOURCE, _primero_mes_en_curso)).fetchall():
-        if _r["date"] not in _vigentes and _r["date"][:7] not in _con_fila:
+        _f = str(_r["date"])[:10]
+        _es_fin = (_date.fromisoformat(_f) + _td_b(days=1)).day == 1
+        if _r["date"] not in _vigentes and (_r["date"][:7] not in _con_fila or not _es_fin):
             conn.execute("DELETE FROM snapshots WHERE user_id=? AND date=? AND source=?",
                          (uid, _r["date"], MTM_SOURCE))
             res["snapshots_borrados"] = res.get("snapshots_borrados", 0) + 1

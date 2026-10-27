@@ -78,6 +78,14 @@ class ReconstruccionE2ETest(unittest.TestCase):
                 quantity, unit_price, gross_amount, currency, date)
                VALUES (?,?,'IBKR','AAPL','STOCK','BUY',10,200,2000,'USD','2024-08-05')""",
             (bid, rr))
+        # El lote que esa compra deja en `positions` al confirmarse
+        # (`persister._persist_buy`): la reconstrucción lee la tenencia de los lotes,
+        # como el cron (`backfill_historical_mtm._lotes_por_fecha`).
+        self.conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity, "
+            "invested, entry_date, currency, asset_type) "
+            "VALUES (?, 'IBKR', 'AAPL', 0, 200, 10, 2000, '2024-08-05', 'USD', 'STOCK')",
+            (self.uid,))
         for (y, m, ci, cf) in ((2024, 8, 0, 2000), (2024, 9, 2000, 2000), (2024, 10, 2000, 2000)):
             for b in ("global", "IBKR"):
                 self.conn.execute(

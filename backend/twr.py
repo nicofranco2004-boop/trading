@@ -643,24 +643,104 @@ MOTIVO_TEXTO = {
 FLUJO_SOSPECHOSO = 0.5
 
 
-def dietz(v0: float, v1: float, flow: float):
+def dietz(v0: float, v1: float, flow: float, ponderado: float = None):
     """Modified Dietz de UN tramo. Es EL primitivo: si alguna pantalla calcula
     el retorno de otra forma, vuelve a haber dos motores.
 
-        r = (v1 − v0 − flujo) / (v0 + 0,5·flujo)
+        r = (v1 − v0 − flujo) / (v0 + Σ wᵢ·flujoᵢ)
 
-    El 0,5 pondera el aporte como si hubiera entrado a mitad del tramo. Devuelve
-    None cuando el denominador no da para medir (sin capital no hay retorno).
+    `ponderado` es Σ wᵢ·flujoᵢ: cada aporte por la fracción del tramo que estuvo
+    invertido (`flujo_ponderado`). Sin él, 0,5·flujo — el aporte como si hubiera
+    entrado a mitad del tramo. Devuelve None cuando el denominador no da para
+    medir (sin capital no hay retorno).
 
     SIN TECHO. El clamp de +50% que arrastra el lado retail trunca meses reales
     (+80% en cripto o post-devaluación es perfectamente posible) y encima NO se
     le aplica al benchmark → el sesgo es sistemático en contra del usuario y se
     compone mes a mes. El piso de −100% sí: no se puede perder más que todo.
     """
-    denom = v0 + 0.5 * flow
+    denom = v0 + (0.5 * flow if ponderado is None else ponderado)
     if denom <= 0:
         return None
     return max((v1 - v0 - flow) / denom, -1.0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EL APORTE TIENE FECHA (auditoría 2026-10-27, H13)
+#
+# Con el 0,5 fijo, un tramo MENSUAL (la historia reconstruida, la cadena
+# contable) supone que todo aporte entró a mitad de mes, aunque la fecha se sabe.
+# Medido (`audit/rendimiento_csv/pesos_relativos.py`): US$ 1.000 que suben 30 %,
+# un aporte de US$ 39.000 el 2 de mayo y una baja de 10 % → mayo daba −14,90 % en
+# vez de −7,69 %, y el acumulado +1,2 % en vez de +9,78 %: la plata nueva pesaba
+# la mitad del mes que de verdad estuvo invertida. Un aporte a fin de mes, al
+# revés, duplica el porcentaje del mes.
+#
+# Cada flujo pesa la fracción del tramo que estuvo adentro, contado desde la
+# MITAD del día en que entró (no se sabe a qué hora): w = (d1 − t + 0,5) / días.
+# En un tramo de UN día eso es exactamente 0,5, así que los tramos diarios del
+# cron no cambian ni en un bit. Lo que las fechas no explican (un aporte cargado
+# a mano sin fecha) sigue pesando 0,5.
+def flujos_fechados(conn, uid: int) -> list:
+    """[(fecha, usd)] ordenados: los aportes (+) y retiros (−) con FECHA de la
+    cuenta. Los importados con el mismo monto en dólares con el que entran a la
+    contabilidad (`main._FLUJO_IMPORT_USD_SQL`), y los cargados a mano que tienen
+    día (`flujos_a_mano.fecha`). Sólo dan el CUÁNDO: el CUÁNTO de cada tramo
+    sigue saliendo del aportado canónico."""
+    out = []
+    try:
+        import main as _m
+        from importing.schema import TX_VIVAS
+        tc = float(_m._user_tc_blue(conn, uid) or 0)
+        for r in conn.execute(
+                f"""SELECT n.date AS d, n.operation_type AS op,
+                           {_m._FLUJO_IMPORT_USD_SQL} AS usd
+                      FROM {TX_VIVAS} WHERE {_m._FLUJO_IMPORT_DONDE_SQL}""",
+                (tc, tc, uid)).fetchall():
+            f = str(r["d"] or "")[:10]
+            if not _RE_ISO.match(f) or r["usd"] is None:
+                continue
+            v = abs(float(r["usd"]))
+            out.append((f, v if r["op"] == "DEPOSIT" else -v))
+    except Exception:
+        log.exception("flujos_fechados: importados uid=%s", uid)
+    try:
+        for r in conn.execute(
+                "SELECT fecha, direction, monto_usd FROM flujos_a_mano WHERE user_id=? "
+                "AND fecha IS NOT NULL AND anulado_at IS NULL AND broker <> 'global'",
+                (uid,)).fetchall():
+            f = str(r["fecha"])[:10]
+            if not _RE_ISO.match(f):
+                continue
+            v = float(r["monto_usd"] or 0)
+            out.append((f, v if r["direction"] == "deposit" else -v))
+    except Exception:
+        pass                     # base sin la tabla: sólo lo importado
+    out.sort()
+    return out
+
+
+def flujo_ponderado(flujos: list, d0: str, d1: str, flujo_usd: float):
+    """Σ wᵢ·flujoᵢ del tramo (d0, d1], en dólares, o None si no hay nada que
+    afinar (tramo de un día, o ningún flujo fechado adentro). Lo que el aportado
+    canónico tiene y las fechas no explican pesa 0,5."""
+    import bisect
+    if not flujos or not d0 or not d1:
+        return None
+    a, b = str(d0)[:10], str(d1)[:10]
+    if not (_RE_ISO.match(a) and _RE_ISO.match(b)):
+        return None
+    n = _dias(a, b)
+    if n <= 1 or b <= a:
+        return None
+    fechas = [f for f, _ in flujos]
+    i, j = bisect.bisect_right(fechas, a), bisect.bisect_right(fechas, b)
+    if i >= j:
+        return None
+    dentro = flujos[i:j]
+    explicado = sum(v for _, v in dentro)
+    pond = sum(v * (_dias(f, b) + 0.5) / n for f, v in dentro)
+    return pond + 0.5 * (float(flujo_usd or 0.0) - explicado)
 
 
 def retorno_mensual(ci, cf, flujo):
@@ -2960,6 +3040,24 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
     # el frontend corta entre segmentos y NO puentea a través de un cambio de base
     # (`partirMedidoYEstimado`, insightsModel.js)—. Esconder puntos nunca fue la
     # respuesta: es la ronda 7 al revés.
+    # Los aportes y retiros con fecha: cada tramo de más de un día los pondera por
+    # los días que estuvieron invertidos (H13, ver `flujo_ponderado`).
+    _flujos = flujos_fechados(conn, uid)
+
+    def _pond(p0, p1, flow_moneda):
+        """Σ wᵢ·flujoᵢ del leg en la moneda de la serie, o None (= 0,5·flujo)."""
+        try:
+            f_usd = float(p1["net_deposited"]) - float(p0["net_deposited"])
+        except (TypeError, ValueError, KeyError):
+            return None
+        pu = flujo_ponderado(_flujos, p0.get("date"), p1.get("date"), f_usd)
+        if pu is None:
+            return None
+        if abs(f_usd) > 1e-9:
+            return pu * (flow_moneda / f_usd)
+        f0, f1 = fx_usable(p0.get("fx")), fx_usable(p1.get("fx"))
+        return pu * ((f0 * f1) ** 0.5 if (f0 and f1) else 1.0)
+
     curva = []
     tramos_info = []       # {desde, hasta, twr, dd_max, dd_actual, legs} por tramo
     # (pico, fecha) del índice PUBLICADO de cada tramo, en paralelo a `tramos_info`.
@@ -3052,7 +3150,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                 _arranque_medible = True
             else:
                 _a, _b, flow = _leg_en_moneda(ancla, p, ancla["value"], p["value"])
-                ret = dietz(_a, _b, flow)
+                ret = dietz(_a, _b, flow, _pond(ancla, p, flow))
             # ⚠️ DOS ÍNDICES, PORQUE SON DOS PREGUNTAS.
             #   `idx_dib` — la FORMA de la historia: encadena TODOS los puntos, así
             #     el usuario ve su curva aunque ninguno sirva para medir. Sin esto,
@@ -3129,7 +3227,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                     seg_por_base[_b] = segmento
                     idx_por_base[_b] = 1.0
                 else:
-                    _rp = dietz(_v0d, _v1d, _flow_dib)
+                    _rp = dietz(_v0d, _v1d, _flow_dib, _pond(_prev, p, _flow_dib))
                     if _rp is not None:
                         idx_por_base[_b] *= (1.0 + _rp)
             # FASE 2 · la cadena del ESTIMADO. Entra el punto APTO (cierre a
@@ -3142,7 +3240,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                 if _prev_est is not None:
                     _v0e, _v1e, _fe = _leg_en_moneda(
                         _prev_est, p, valor_para_dibujar(_prev_est), valor_para_dibujar(p))
-                    _re = dietz(_v0e, _v1e, _fe)
+                    _re = dietz(_v0e, _v1e, _fe, _pond(_prev_est, p, _fe))
                     if _re is not None:
                         idx_est *= (1.0 + _re)
                         legs_est += 1

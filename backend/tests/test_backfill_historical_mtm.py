@@ -20,7 +20,7 @@ class HistMtmTest(unittest.TestCase):
         self.conn = main.get_db()
         for t in ("monthly_entries", "import_normalized_tx", "import_raw_rows",
                   "import_batches", "brokers", "users", "snapshots", "positions",
-                  "fx_rates_daily", "config"):
+                  "operations", "fx_rates_daily", "config"):
             try:
                 self.conn.execute(f"DELETE FROM {t}")
             except Exception:
@@ -45,6 +45,15 @@ class HistMtmTest(unittest.TestCase):
                    asset_type, quantity, unit_price, gross_amount, currency)
                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (bid, rr, "2024-08-15", "IBKR", "BUY", "AAPL", "STOCK_US", 10, 200, 2000, "USD"))
+        # Y el LOTE que esa compra deja en `positions` al confirmarse (lo crea el
+        # importador, `persister._persist_buy`). La reconstrucción lee la tenencia
+        # de los lotes, como el cron (`_lotes_por_fecha`): sin el lote, una cuenta
+        # importada que no tiene nada en cartera no es una que exista.
+        self.conn.execute(
+            """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
+                   invested, entry_date, currency, asset_type)
+               VALUES (?,?,?,0,?,?,?,?,?,?)""",
+            (self.uid, "IBKR", "AAPL", 200, 10, 2000, "2024-08-15", "USD", "STOCK_US"))
         # monthly_entries cost-based (pnl_unrealized=0): ago y sep 2024, global + IBKR.
         for (y, mo, ci, dep, cf) in [(2024, 8, 0, 2000, 2000), (2024, 9, 2000, 0, 2000)]:
             for b in ("global", "IBKR"):

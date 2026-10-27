@@ -135,11 +135,17 @@ class LaHistoriaQueCuenta(unittest.TestCase):
                          "Ya no leen la tabla directo: sacarlos de LEEN_EL_LOG.")
 
     def test_el_reconstructor_lee_las_filas_vivas(self):
+        # Desde el 2026-10-27 la tenencia de cada fecha sale de los LOTES que deja
+        # el importador (`_lotes_por_fecha`, ver "LA HISTORIA SE VALÚA COMO EL
+        # CRON") y `_holdings_asof` ya no existe; lo que sigue leyendo el archivo
+        # importado —la moneda y el tipo de cada lote, la caja, lo que corrigió la
+        # foto de tenencia— tiene que leer sólo las filas vivas.
         import inspect
         import scripts.backfill_historical_mtm as bf
-        self.assertNotIn(("scripts/backfill_historical_mtm.py", "_holdings_asof"),
-                         lectores_directos())
-        self.assertIn("TX_VIVAS", inspect.getsource(bf._holdings_asof))
+        for fn in (bf._lotes_por_fecha, bf._caja_por_fecha, bf._correcciones_de_fotos):
+            self.assertNotIn(("scripts/backfill_historical_mtm.py", fn.__name__),
+                             lectores_directos())
+            self.assertIn("TX_VIVAS", inspect.getsource(fn), fn.__name__)
 
 
 if __name__ == "__main__":

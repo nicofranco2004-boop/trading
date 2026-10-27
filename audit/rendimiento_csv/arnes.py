@@ -104,8 +104,20 @@ class _YahooFalso:
 
     def history(self, start, interval="1mo", auto_adjust=False, timeout=8, **k):
         m = _YahooFalso.mercado
-        d0 = date.fromisoformat(str(start)[:10]).replace(day=1)
         hoy = date.today()
+        if interval == "1d":
+            # El cierre de cada día (el mercado inventado se mueve todos los días).
+            # Lo pide la foto del día anterior a un aporte grande; el código de
+            # antes nunca pedía velas diarias.
+            idx, vals = [], []
+            for d in dias(date.fromisoformat(str(start)[:10]), hoy - timedelta(days=1)):
+                p = m.precio_clave(self.sym, d)
+                if p is None:
+                    return pd.DataFrame()
+                idx.append(pd.Timestamp(d))
+                vals.append(float(p))
+            return pd.DataFrame({"Close": vals}, index=pd.DatetimeIndex(idx))
+        d0 = date.fromisoformat(str(start)[:10]).replace(day=1)
         idx, vals = [], []
         y, mo = d0.year, d0.month
         while date(y, mo, 1) <= hoy:
@@ -155,9 +167,11 @@ class Arnes:
             return 404, {"detail": "not found"}
         hoy = date.today()
         filas = []
+        # Todos los días, también sábados y domingos: el mercado inventado se mueve
+        # todos los días (igual que el Yahoo falso, que cierra el mes en el último
+        # día calendario). Con sólo días hábiles, el cierre de un mes que termina
+        # en domingo salía del viernes y el error era del arnés, no de Rendi.
         for d in dias(date(2023, 6, 1), hoy - timedelta(days=1)):
-            if d.weekday() >= 5:
-                continue
             p = self.m.usd(base, d) if usd else self.m.ars(base, d)
             filas.append({"date": d.isoformat(), "c": round(p * 100, 4 if usd else 2)})
         return 200, filas

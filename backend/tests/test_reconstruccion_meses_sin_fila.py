@@ -80,7 +80,12 @@ class _Cuenta(unittest.TestCase):
         self.addCleanup(_data912.stop)
         self._fetch_orig = bf._fetch_monthly_close
         bf._HIST_CACHE.clear()
-        bf._fetch_monthly_close = lambda price_key, start_iso: dict(PRECIOS)
+        # Yahoo de mentira: AAPL tiene su serie; lo demás (el LIBRE recibido gratis
+        # de abajo) no tiene precio. Con precio para cualquier ticker, el LIBRE —un
+        # lote con fecha, que la reconstrucción valúa como el cron desde el
+        # 2026-10-27— salía valuado a precio de AAPL.
+        bf._fetch_monthly_close = (lambda price_key, start_iso:
+                                   dict(PRECIOS) if "AAPL" in str(price_key) else {})
 
     def tearDown(self):
         bf._fetch_monthly_close = self._fetch_orig
@@ -176,7 +181,10 @@ class ElMesSinFilaTieneFoto(_Cuenta):
         self._crear_cuenta()
         self._importar(_filas_laboratorio(sin_deposito_de=(6,)))
         con_hueco = self._rendimiento_hasta_octubre()
-        self.assertEqual(round(completo["twr"], 4), 0.1695)
+        # 0,1695 hasta el 2026-10-27, con cada depósito de 100 a "mitad de mes"; los
+        # depósitos son del día 10, así que estuvieron invertidos dos tercios del
+        # mes (`twr.flujo_ponderado`, H13).
+        self.assertEqual(round(completo["twr"], 4), 0.1692)
         self.assertIsNotNone(con_hueco["twr"], con_hueco.get("motivo"))
         for p in (completo, con_hueco):
             self.assertEqual((p["ventana_desde"], p["ventana_hasta"]),

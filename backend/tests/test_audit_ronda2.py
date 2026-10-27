@@ -442,7 +442,14 @@ class CoberturaInvariantesTest(_Base):
             (bid, rr))
         self.pos("2024-08-05", "AAPL", invested=10000.0, qty=100, currency="USD")
         if invisible:
-            self.pos("2024-08-01", "GGAL", invested=100000.0, broker="Cocos",
+            # Un lote SIN fecha de compra: no se sabe desde cuándo estaba, así que la
+            # reconstrucción no lo puede valuar en el pasado (`_tenencia_no_vista` lo
+            # cuenta al costo). Hasta el 2026-10-27 "invisible" era cualquier lote
+            # que no viniera del archivo importado —éste tenía fecha (2024-08-01)—;
+            # desde que la tenencia sale de los lotes, como en el cron
+            # (`_lotes_por_fecha`), un lote con fecha se valúa y lo que queda sin
+            # ver es lo que no tiene fecha.
+            self.pos(None, "GGAL", invested=100000.0, broker="Cocos",
                      qty=500, currency="USD")
         if venta_ars:
             self.conn.execute(
