@@ -44,9 +44,24 @@ for _k in ("RESEND_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
 import requests  # noqa: E402
 
 RED_BLOQUEADA: list = []
+# Respuestas que el arnés SÍ sirve desde el mercado inventado: {prefijo de URL:
+# función(url) -> (status, json)}. Lo carga `Arnes` (las velas de data912).
+SERVIDAS: dict = {}
+
+
+class _RespuestaFalsa:
+    def __init__(self, status, cuerpo):
+        self.status_code, self._c = status, cuerpo
+        self.ok = status == 200
+
+    def json(self):
+        return self._c
 
 
 def _sin_red(self, method, url, *a, **k):
+    for pref, fn in SERVIDAS.items():
+        if str(url).startswith(pref):
+            return _RespuestaFalsa(*fn(str(url)))
     RED_BLOQUEADA.append(str(url)[:120])
     raise requests.ConnectionError(f"arnés: red bloqueada ({url})")
 
@@ -122,11 +137,31 @@ class Arnes:
             univ[b + "D"] = round(mercado.usd(b, hoy) * 100, 4)
         main._data912_cache["data"] = univ
         main._data912_cache["ts"] = time.time() + 10 ** 7
+        # Las velas diarias de data912 (`/historical/bonds/<ticker>`), con la
+        # misma convención que el feed vivo de arriba: por 100 nominales, en pesos
+        # el ticker base y en dólares la especie 'D'. Es lo que lee la
+        # reconstrucción para la renta fija (H3); el código de antes no lo pedía.
+        SERVIDAS["https://data912.com/historical/"] = self._velas_data912
         main._fetch_dolar = self._dolar
         self.http = TestClient(main.app)
         self._fx_cargado = False
 
     # ── red reemplazada ──
+    def _velas_data912(self, url):
+        tipo, ticker = url.split("/historical/", 1)[1].split("/", 1)
+        base, usd = ((ticker[:-1], True) if ticker.endswith("D") and ticker[:-1] in BONOS
+                     else (ticker, False))
+        if tipo != "bonds" or base not in BONOS:
+            return 404, {"detail": "not found"}
+        hoy = date.today()
+        filas = []
+        for d in dias(date(2023, 6, 1), hoy - timedelta(days=1)):
+            if d.weekday() >= 5:
+                continue
+            p = self.m.usd(base, d) if usd else self.m.ars(base, d)
+            filas.append({"date": d.isoformat(), "c": round(p * 100, 4 if usd else 2)})
+        return 200, filas
+
     def _precios_cron(self, symbols, crypto_yf=None, *a, **k):
         d = FECHA_CRON["d"]
         return {s: self.m.precio_clave(s, d) for s in symbols}

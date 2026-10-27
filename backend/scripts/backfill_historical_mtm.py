@@ -85,14 +85,90 @@ def _fallas_yahoo() -> list:
         _CORRIDA.fallas = []
     return _CORRIDA.fallas
 
+def _es_renta_fija(base: str) -> bool:
+    """¿El ticker (sin '.BA') es un bono, ON o letra del universo de data912?"""
+    return (base in getattr(main, "AR_BONDS_DATA912", set())
+            or main._is_data912_bond(base))
+
+
+# Dónde guarda data912 las velas de cada clase de renta fija. 'bonds' está
+# verificado (lo usa `main._rueda_byma` con AL30); 'corp' es el nombre del feed
+# vivo de las ONs (`arg_corp`) y se prueba en segundo lugar — si no existe
+# contesta 404 y el papel queda al costo, como antes.
+_TIPOS_DATA912_RENTA_FIJA = ("bonds", "corp")
+
+
+def _unidad_renta_fija(price_key: str):
+    """El factor que lleva la cotización CRUDA de data912 a precio por 1 nominal,
+    decidido por la MISMA regla que el precio vivo (`main._resolve_ar_bond_price`:
+    los soberanos cotizan por 100, los CER por 1, las letras declaran la suya).
+    Se aplica a toda la serie: la convención de un ticker no cambia con la fecha.
+    None si no se puede decidir (sin precio vivo) → la serie no se usa."""
+    es_ars = price_key.endswith(".BA")
+    base = price_key[:-3] if es_ars else price_key
+    crudo = (main._fetch_data912_bonds() or {}).get(base if es_ars else base + "D")
+    por_uno = main._resolve_ar_bond_price(price_key)
+    try:
+        f = float(por_uno) / float(crudo)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    for unidad in (1.0, 0.01):
+        if abs(f / unidad - 1.0) < 1e-6:
+            return unidad
+    return None
+
+
+def _cierres_renta_fija(price_key: str, start_iso: str) -> dict:
+    """{YYYY-MM: cierre por 1 nominal} de un bono/ON/letra, desde las velas
+    diarias de data912 — en pesos para el '.BA', en dólar MEP (especie 'D') si no.
+
+    ⚠️ "DATA912 ES LIVE-ONLY" ERA FALSO. data912 publica las velas diarias de cada
+    papel (`/historical/<tipo>/<ticker>`) y el repo ya las lee para fechar la
+    rueda de BYMA (`main._rueda_byma`, con AL30) y para los cambios de ratio
+    (`cambios_ratio._historia_byma`). Con los bonos siempre al costo, ningún mes
+    con un bono llegaba al 90 % de cobertura y el Certero no podía usar la
+    historia (auditoría 2026-10-27, H3).
+
+    El cierre del mes es la ÚLTIMA vela del mes (como el cierre mensual de
+    Yahoo). Un mes sin velas no entra: ese mes el papel queda al costo.
+    Levanta si la red falla (quien llama no lo guarda como "no hay datos")."""
+    import requests
+    es_ars = price_key.endswith(".BA")
+    base = price_key[:-3] if es_ars else price_key
+    ticker = base if es_ars else base + "D"
+    unidad = _unidad_renta_fija(price_key)
+    if unidad is None:
+        return {}
+    for tipo in _TIPOS_DATA912_RENTA_FIJA:
+        r = requests.get(f"https://data912.com/historical/{tipo}/{ticker}", timeout=8)
+        if r.status_code != 200:
+            continue
+        filas = r.json()
+        ultimo: dict = {}                  # YYYY-MM -> (fecha, cierre)
+        for f in (filas if isinstance(filas, list) else []):
+            try:
+                d, c = str(f.get("date"))[:10], float(f.get("c") or 0)
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if c <= 0 or len(d) != 10 or d < start_iso:
+                continue
+            ym = d[:7]
+            if ym not in ultimo or d > ultimo[ym][0]:
+                ultimo[ym] = (d, c)
+        if ultimo:
+            return {ym: c * unidad for ym, (_, c) in ultimo.items()}
+    return {}
+
+
 def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     """{YYYY-MM: close} para un price_key ('AAPL', 'GGAL.BA', 'BTC'), desde start a
-    hoy. {} (→ costo) sólo para lo que NO tiene historia confiable en yfinance: los
-    FCI y los bonos/ONs de data912, que es live-only.
+    hoy. {} (→ costo) sólo para lo que NO tiene historia: los FCI.
 
     Los CEDEARs y las acciones AR (.BA) SÍ tienen serie: medido, 24 de 24 meses
     para AAPL.BA, KO.BA, MELI.BA, GGAL.BA e YPFD.BA. El que cotiza en dólares se
-    valúa por su subyacente — ver `_precio_por_subyacente`."""
+    valúa por su subyacente — ver `_precio_por_subyacente`. La renta fija sale de
+    las velas de data912 (`_cierres_renta_fija`), no de Yahoo: el '.BA' de Yahoo
+    cotiza por 100 sin avisarlo (ver `snapshots_job.fetch_prices_for_symbols`)."""
     ck = (price_key, start_iso)
     _mes = _date.today().strftime("%Y-%m")
     if ck in _HIST_CACHE and _HIST_CACHE_MES.get(ck, _mes) == _mes:
@@ -105,18 +181,22 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     base = price_key[:-3] if price_key.endswith(".BA") else price_key
     out: dict = {}
     # ⚠️ EL CEDEAR COTIZADO EN USD YA NO SE SALTEA.
-    # Se saltea lo que NO tiene serie histórica confiable: FCI y los bonos/ONs de
-    # data912 (que es live-only). El CEDEAR en dólares estaba acá por otra razón —
+    # Se saltea lo que NO tiene serie histórica: los FCI. (Los bonos/ONs también se
+    # salteaban, por "data912 es live-only"; ya no: ver `_cierres_renta_fija`.)
+    # El CEDEAR en dólares estaba acá por otra razón —
     # el código intentaba el camino largo (precio local ÷ CCL histórico)— y no hace
     # falta: con el ratio, 100 CEDEARs de ratio 4 son 25 acciones equivalentes, y
     # la acción SÍ tiene precio en dólares. Lo resuelve `_precio_por_subyacente`.
     # (Y `CEDEAR_USD_RATIOS` tiene exactamente un ticker: BAC.)
-    skip = (
-        price_key.startswith("FCI:")
-        or base in getattr(main, "AR_BONDS_DATA912", set())
-        or main._is_data912_bond(base)   # data912 es live-only → costo histórico
-    )
-    if not skip:
+    renta_fija = not price_key.startswith("FCI:") and _es_renta_fija(base)
+    if renta_fija:
+        try:
+            out = _cierres_renta_fija(price_key, start_iso)
+        except Exception:
+            # Igual que Yahoo: una falla de red no se guarda como "no hay datos".
+            _fallas_yahoo().append(price_key)
+            return {}
+    elif not price_key.startswith("FCI:"):
         yf_sym = main.CRYPTO_YF.get(base, price_key) if base in main.CRYPTO_SYMBOLS else price_key
         try:
             import yfinance as yf
@@ -194,6 +274,31 @@ def _hist_blue(conn, month_end_iso: str, fallback: float) -> float:
 
 
 # ─── Lo que el reconstructor NO ve ───────────────────────────────────────────
+def _no_es_un_lote(op_type) -> bool:
+    """¿La fila de `operations` NO describe un lote que se tuvo?
+
+    `operations` guarda los cierres de lote ('Venta' y los trades manuales) y,
+    en la misma tabla, plata que entró o salió sin que hubiera un lote detrás:
+      · los cobros de renta —'Dividendo', 'Interés', 'Renta' importados, 'Cupón'
+        y 'Amortización' de la bandeja de bonos— (`cobros_bonos.es_cobro_de_renta`);
+      · el interés de un plazo fijo ('Interés PF');
+      · las conversiones de moneda (`realized_pnl.es_conversion`);
+      · el resultado de un futuro ('Futuros') y la 'Compra' que `realized_pnl`
+        ya excluye de los trades.
+    Ninguna trae `entry_date` ni `entry_price` (un cobro guarda en `quantity` el
+    MONTO cobrado), así que la regla de "sin fecha de entrada, se cuenta" las
+    tomaba por una posición abierta de valor desconocido.
+
+    ⚠️ ES UNA LISTA DE LO QUE NO ES UN LOTE, NO DE LO QUE SÍ. `op_type` es texto
+    libre en el alta manual de Operaciones ('Venta', 'Long', 'Trade'…) y esas
+    filas sí son lotes: con una lista de lo que sí, un trade manual con otro
+    nombre volvería a desaparecer de la cobertura sin bajarla."""
+    from cobros_bonos import es_cobro_de_renta, _norm
+    from realized_pnl import es_conversion
+    return (es_cobro_de_renta(op_type) or es_conversion(op_type or "")
+            or _norm(op_type) in ("INTERES PF", "FUTUROS", "COMPRA"))
+
+
 def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
     """(costo_usd, afirmable) de la tenencia NO-CASH a `date_iso` que
     `_holdings_asof` no puede ver.
@@ -274,11 +379,19 @@ def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
         afirmable = False
     try:
         for r in conn.execute(
-            """SELECT broker, asset, quantity, entry_price, fx_to_usd, currency,
-                      entry_date, date
+            """SELECT broker, asset, op_type, quantity, entry_price, fx_to_usd,
+                      currency, entry_date, date
                  FROM operations WHERE user_id=?""",
             (uid,),
         ).fetchall():
+            # ⚠️ UN COBRO NO ES UNA TENENCIA (auditoría 2026-10-27, H1). Contado
+            # como lote abierto sin costo, cada dividendo en dólares de un CEDEAR
+            # que vive en la cuenta en pesos —y en IEB, todo dividendo, que viene
+            # sin activo— dejaba `afirmable=False` en TODOS los meses anteriores:
+            # cobertura NULL y el mes afuera del Certero. Medido: Balanz A real,
+            # 40 de 51 meses perdidos; IEB, 8 de 9.
+            if _no_es_un_lote(r["op_type"]):
+                continue
             ed = str(r["entry_date"])[:10] if r["entry_date"] else None
             sd = str(r["date"])[:10] if r["date"] else None
             if ed and ed > date_iso:
@@ -301,6 +414,84 @@ def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
     except Exception:
         afirmable = False
     return costo, afirmable
+
+
+# ─── La foto de tenencia que contradice el archivo ────────────────────────────
+# Cuánto puede tener que corregir una foto de tenencia —como fracción de lo que
+# valía la cartera— antes de que la historia ANTERIOR a ella deje de ser
+# afirmable.
+#
+# ⚠️ POR QUÉ HACE FALTA (auditoría 2026-10-27, H9). Cuando la foto no coincide con
+# los movimientos, Rendi agrega lo que falta como "aporte + compra", saca lo que
+# sobra "al costo" y ajusta la caja con un depósito o retiro: arregla el PRESENTE.
+# El pasado reconstruido sigue describiendo el archivo, que por definición estaba
+# incompleto. Mientras el Certero medía sólo desde el cron eso no se veía; con la
+# historia reconstruida adentro (H1 + H3), cada escenario incompleto pasaba al
+# número certero: falta una venta → sin número (la costura no cierra); faltan los
+# cupones → −9,6 pp; títulos traídos de otro broker → +3,1 pp. Ninguno es un
+# error de cálculo: es plata que el archivo no trae y que la foto prueba que
+# existía. Lo que el Certero no puede afirmar no lo publica; el Estimado sí lo usa,
+# que para eso es una estimación.
+#
+# 0,5 % y no cero: la foto también corrige redondeos y comisiones que el archivo
+# trae distinto (medido en el arnés: Balanz US$ 0,2 y IEB US$ 34 sobre una cartera de
+# ~US$ 25.000, 0,13 %). Una diferencia de ese tamaño mueve el índice acumulado en
+# esa misma proporción: los cupones faltantes (3,4 %) se llevaban 9,6 pp de 141 %.
+CONTRADICCION_MAX = 0.005
+
+
+def _correcciones_de_fotos(conn, uid: int) -> list:
+    """[(fecha_foto, usd)] — por cada foto de tenencia confirmada, cuánto tuvo que
+    corregir en dólares: lo que abrió (compras de apertura), lo que cerró a costo
+    (ventas `transfer_out`) y el ajuste de caja. El depósito que financia las
+    aperturas no se cuenta aparte: es la misma plata que las compras."""
+    from importing.schema import TX_VIVAS
+    from importing.tenencia import TENENCIA_SEED_DEPOSIT_NOTE
+    filas = conn.execute(
+        f"""SELECT n.date, n.broker, n.operation_type, n.asset_symbol, n.quantity,
+                   n.gross_amount, n.currency, n.notes, n.transfer_out
+              FROM {TX_VIVAS}
+             WHERE b.user_id = ? AND b.parser_format LIKE '%tenencia'
+             ORDER BY n.date""", (uid,)).fetchall()
+    try:
+        live_blue = main._user_tc_blue(conn, uid)
+    except Exception:
+        live_blue = 1415.0
+    por_fecha: dict = {}
+    for r in filas:
+        f = str(r["date"])[:10]
+        if (r["notes"] or "").startswith(TENENCIA_SEED_DEPOSIT_NOTE):
+            continue
+        monto = abs(float(r["gross_amount"] or 0))
+        if r["operation_type"] == "SELL" and r["transfer_out"]:
+            # Cierre a costo: monto 0 en la fila. Se valúa al costo promedio que
+            # tenía el lote el día anterior, el mismo que usa la reconstrucción.
+            from datetime import timedelta
+            antes = (_date.fromisoformat(f) - timedelta(days=1)).isoformat()
+            lote = next((h for h in _holdings_asof(conn, uid, antes)
+                         if h["broker"] == r["broker"] and h["asset"] == r["asset_symbol"]), None)
+            if lote and float(lote["quantity"] or 0) > 0:
+                monto = (float(lote["invested"] or 0) / float(lote["quantity"])
+                         * abs(float(r["quantity"] or 0)))
+        moneda = (r["currency"] or "").strip().upper()
+        usd = monto if moneda in ("USD", "USDT", "USDC") else monto / _hist_blue(conn, f, live_blue)
+        por_fecha[f] = por_fecha.get(f, 0.0) + usd
+    return sorted(por_fecha.items())
+
+
+def _foto_que_contradice(conn, uid: int, valor_en) -> str:
+    """La fecha de la ÚLTIMA foto de tenencia cuya corrección supera
+    `CONTRADICCION_MAX` de lo que valía la cartera, o None. Todo mes reconstruido
+    anterior a esa fecha describe un archivo que la foto desmintió.
+    `valor_en(fecha)`: el valor reconstruido (USD) más cercano antes de la foto."""
+    ultima = None
+    for fecha, usd in _correcciones_de_fotos(conn, uid):
+        base = valor_en(fecha)
+        if base is None:
+            continue                      # no hay historia anterior que desmentir
+        if usd > CONTRADICCION_MAX * max(base, 0.0):
+            ultima = fecha
+    return ultima
 
 
 # ─── Tenencias a fin de mes (net BUY−SELL + costo promedio) ───────────────────
@@ -378,12 +569,12 @@ MTM_SOURCE = "mtm_backfill"
 COBERTURA_REFERENCIA = 0.70
 
 
-def _twr_base_apto(coverage):
+def _twr_base_apto(coverage, contradicha=False):
     """(base, apto) de una foto reconstruida con ESA cobertura. Una sola fuente:
     `twr.base_y_apto_para`, la misma que usan los otros tres escritores y la
     migración. Si acá se escribiera la regla a mano, habría dos."""
     import twr as _twr
-    return _twr.base_y_apto_para(_twr.RECONSTRUIDO, coverage)
+    return _twr.base_y_apto_para(_twr.RECONSTRUIDO, coverage, contradicha=contradicha)
 
 
 def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
@@ -455,7 +646,7 @@ def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
         # la misma fila recibiera respuestas distintas según quién preguntaba y
         # cuándo. Con cobertura baja el `total_value` de la foto ES el costo (lo que
         # no se pudo precear entra con unrealized 0): base contable, y nunca apta.
-        _base, _apto = _twr_base_apto(info["coverage"])
+        _base, _apto = _twr_base_apto(info["coverage"], info.get("contradicha", False))
         conn.execute(
             """INSERT INTO snapshots
                  (user_id, date, total_value, total_invested, net_deposited,
@@ -504,6 +695,19 @@ def _huella_contable(conn, uid: int) -> list:
                 "ORDER BY year, month", (uid,)).fetchall()]
 
 
+# ⚠️ LA VERSIÓN DE LA REGLA ENTRA A LA HUELLA. La huella decide si una cuenta
+# se vuelve a reconstruir (`main._cuentas_que_cambiaron`), y sólo miraba la
+# CONTABILIDAD: un cambio en CÓMO se reconstruye (qué es un lote, con qué precio
+# se valúa un bono) dejaba escritas para siempre las fotos de la regla vieja,
+# porque la contabilidad de nadie cambió. Con la versión adentro, el deploy que
+# la sube hace que cada cuenta se rehaga en su próximo pedido que guarda (o con
+# el botón de reconstrucción del admin, para todas a la vez).
+# Subila cada vez que cambie lo que `backfill_user` escribe con la misma entrada.
+#   2026-10-27 — los cobros no son tenencia (H1); renta fija con precio
+#                histórico (H3) — auditoría del rendimiento desde el CSV.
+VERSION_RECONSTRUCCION = "2026-10-27"
+
+
 def huella_de_entrada(conn, uid: int, today: _date) -> str:
     """Resumen de TODO lo que `backfill_user` lee para los meses cerrados.
 
@@ -523,7 +727,7 @@ def huella_de_entrada(conn, uid: int, today: _date) -> str:
     hoy = _date(today.year, today.month, 1).isoformat()
     ym_hoy = today.year * 100 + today.month
     pg = bool(getattr(main, "USANDO_PG", False))
-    partes = []
+    partes = [f"regla:{VERSION_RECONSTRUCCION}"]
 
     # ⚠️ EL TEXTO LO ARMA LA BASE, NO PYTHON. Convertir miles de filas en tuplas de
     # Python retiene el turno del intérprete (GIL) fila por fila: medido por la
@@ -561,6 +765,13 @@ def huella_de_entrada(conn, uid: int, today: _date) -> str:
               "WHERE b.user_id=? AND b.status='confirmed' "
               "AND n.operation_type IN ('BUY','SELL') AND n.date < ?",
               "n.id", uid, hoy)
+    # Lo que corrigió cada foto de tenencia (incluido su ajuste de caja, que no es
+    # compra ni venta): decide qué meses son afirmables (`_foto_que_contradice`).
+    _agregado(("n.id", "n.date", "n.operation_type", "n.gross_amount", "n.currency",
+               "CASE WHEN n.excluded_at IS NULL THEN 1 ELSE 0 END"),
+              "import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id "
+              "WHERE b.user_id=? AND b.status='confirmed' AND b.parser_format LIKE '%tenencia'",
+              "n.id", uid)
     _agregado(("id", "broker", "asset", "quantity", "invested", "currency", "entry_date"),
               "positions WHERE user_id=? AND COALESCE(is_cash,0)=0 "
               "AND (entry_date IS NULL OR entry_date < ?)", "id", uid, hoy)
@@ -572,8 +783,9 @@ def huella_de_entrada(conn, uid: int, today: _date) -> str:
     # —aunque se haya cargado hoy—. Un filtro propio acá la dejaba afuera (medido
     # por la auditoría: cobertura 1,0 guardada contra 0,40 real). La regla vive en
     # un solo lugar: lo que mira la reconstrucción entra entero.
-    _agregado(("id", "broker", "asset", "quantity", "entry_price", "fx_to_usd", "currency",
-               "entry_date", "date"), "operations WHERE user_id=?", "id", uid)
+    # `op_type` entra porque decide si la fila es un lote (`_no_es_un_lote`).
+    _agregado(("id", "broker", "asset", "op_type", "quantity", "entry_price", "fx_to_usd",
+               "currency", "entry_date", "date"), "operations WHERE user_id=?", "id", uid)
     _agregado(("name", "currency"), "brokers WHERE user_id=?", "name", uid)
     return hashlib.sha256("\n".join(partes).encode()).hexdigest()
 
@@ -873,6 +1085,20 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     if _fallas_yahoo():
         res["reintentar"] = True
         res["yahoo_fallo"] = sorted(set(_fallas_yahoo()))
+
+    # ⚠️ LO QUE LA FOTO DE TENENCIA DESMINTIÓ NO ES CERTERO (ver CONTRADICCION_MAX).
+    # Los meses anteriores a una foto que tuvo que corregir el archivo se escriben
+    # igual —son la mejor estimación que hay, y el Estimado las usa—, pero sin
+    # poder ser borde del Certero.
+    def _valor_antes_de(fecha):
+        previos = [i["value"] for i in por_mes.values() if i["date"] < fecha]
+        return previos[-1] if previos else None
+    _desmentida = _foto_que_contradice(conn, uid, _valor_antes_de)
+    res["foto_que_contradice"] = _desmentida
+    for _info in por_mes.values():
+        _info["contradicha"] = bool(_desmentida and _info["date"] < _desmentida)
+    for _m in res["months"]:
+        _m["contradicha"] = por_mes.get(_m["ym"], {}).get("contradicha", False)
 
     # ⚠️ LA FOTO DE UN MES QUE YA NO TIENE CONTABILIDAD SE BORRA.
     # La reconstrucción arma todos los meses cerrados desde la PRIMERA fila de la

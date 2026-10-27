@@ -1696,17 +1696,32 @@ RECONSTRUIDO_VS_MEDICION_MAX_VECES = 1.25
 
 def costura_no_cierra(v0: float, v1: float, flow: float) -> bool:
     """¿El leg entre una reconstrucción y una medición del cron NO describe la
-    misma cartera? `v1` contra `v0 + flujo`: sin flujos, lo que se movió el
-    mercado en el medio. Una base ≤ 0 (los flujos se llevan más de lo que la
-    reconstrucción decía que había) no cierra nunca."""
+    misma cartera? Lo que se movió la cartera en el medio, SIN los flujos, tiene
+    que caber en la tolerancia. Una base ≤ 0 (los flujos se llevan más de lo que
+    la reconstrucción decía que había) no cierra nunca.
+
+    ⚠️ EL RETORNO DEL LEG, NO `v1 / (v0 + flujo)` (auditoría 2026-10-27, H5).
+    Ese cociente supone que el flujo entró ENTERO al principio, y con un aporte
+    grande lo diluye: el import que arranca en 2025 dejaba una reconstrucción de
+    US$ 2.777 (una venta sin su compra metió plata en la cuenta que la
+    contabilidad no vio), la foto de tenencia sumaba US$ 15.445 de aportes y el
+    cron medía US$ 22.030 cuatro días después → 22.030 / 18.222 = 1,21, "cierra";
+    sin el aporte el cociente es 2,37, y el Certero publicaba +70,6 % contra
+    +25,5 % real. Como la foto se sube justo cuando la persona empieza (y con ella
+    el cron), la guarda quedaba ciega en su caso típico. Se mide el MISMO retorno
+    que va a encadenar el leg (`dietz`, flujo a mitad de camino): 3.808 / 10.499
+    = +36 % en cuatro días, cortado. Una costura sana con un aporte grande y
+    poco movimiento (ver tests) sigue pasando."""
     try:
         v0, v1, flow = float(v0), float(v1), float(flow or 0.0)
     except (TypeError, ValueError):
         return True
-    base = v0 + flow
-    if base <= 0 or v1 <= 0:
+    if v0 + flow <= 0 or v0 <= 0 or v1 <= 0:
         return True
-    ratio = v1 / base
+    r = dietz(v0, v1, flow)
+    if r is None:
+        return True
+    ratio = 1.0 + r
     t = RECONSTRUIDO_VS_MEDICION_MAX_VECES
     return ratio > t or ratio < 1.0 / t
 
@@ -2124,13 +2139,20 @@ def aptos_de_serie(filas, clases, bases=None) -> list:
 # EL ESTAMPADO
 # ═══════════════════════════════════════════════════════════════════════════
 
-def base_y_apto_para(clase: str, cobertura=None):
+def base_y_apto_para(clase: str, cobertura=None, *, contradicha: bool = False):
     """(base, apto) de una fila de esa clase. LA función que usan los escritores.
 
     Existe para que los cuatro que escriben snapshots —el cron, el browser, el
     import y el reconstructor— no cada uno su versión. El que agregue un quinto
     escritor tiene que pasar por acá.
+
+    `contradicha`: una reconstrucción anterior a una foto de tenencia que tuvo que
+    corregir el archivo (`backfill_historical_mtm.CONTRADICCION_MAX`). Su valor
+    describe un archivo que la foto desmintió: no es afirmable como mercado,
+    tenga la cobertura que tenga. Sólo lo sabe el reconstructor, que la estampa.
     """
+    if contradicha and clase == RECONSTRUIDO:
+        return VALUADO_AL_COSTO, 0
     b = base_de(clase, cobertura)
     return b, (1 if es_apto(clase, b) else 0)
 
@@ -2480,7 +2502,12 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     # después de su primera medición; en la cuenta demo, la del 31/07 en medio de
     # las mediciones diarias de julio, que partía la línea en tres). Esas filas
     # siguen en la banda gris `contable`; no entran a la línea ni al número.
-    _primer_apto = next((str(r["date"])[:10] for r, a in zip(filas, aptos) if a), None)
+    # ⚠️ LA PRIMERA MEDICIÓN DEL CRON, NO LA PRIMERA FOTO APTA (auditoría
+    # 2026-10-27, H4). Una RECONSTRUCCIÓN apta no es una medición real: con el
+    # primer mes 100 % valuado (antes de comprar un bono), las 30 fotos contables
+    # de después quedaban afuera y el estimado pasaba de 2,75 años a 3 meses.
+    _primer_apto = next((str(r["date"])[:10] for r, c, a in zip(filas, clases, aptos)
+                         if a and c == MEDICION), None)
     contable_superado = 0
     # ⚠️ EN ESTIMADO EL VALOR CONTABLE SALE DE LA CADENA, NO DE LA FOTO.
     #
