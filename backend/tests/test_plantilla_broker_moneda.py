@@ -77,14 +77,25 @@ class LaPlantillaNoGuardaPesosComoDolares(unittest.TestCase):
             "SELECT broker, asset, invested FROM positions WHERE user_id=? AND is_cash=1",
             self.uid)}
 
+    def caja_en_dolares(self, broker, tc=1000.0):
+        """Lo que vale la caja para metas, tableros de la IA y reportes: el lector
+        real (`behavioral._position_value_usd`), no las columnas sueltas."""
+        from behavioral import _position_value_usd
+        fila = self.sql("SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1",
+                        self.uid, broker)
+        self.assertEqual(len(fila), 1, fila)
+        return round(_position_value_usd(fila[0], tc_blue=tc), 2)
+
     def crear_broker(self, nombre, moneda, con_datos=False):
         conn = main.get_db()
         with conn:
             conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                          (self.uid, nombre, moneda))
             # Una caja en cero (lo que queda después de revertir un import): no es data.
-            conn.execute("INSERT INTO positions (user_id, broker, asset, is_cash, invested) "
-                         "VALUES (?,?,?,1,0)", (self.uid, nombre, "USD"))
+            # Con `currency` como en producción: el arranque (init_db) la completa
+            # desde el rótulo, así que una caja "USD" lleva currency USD.
+            conn.execute("INSERT INTO positions (user_id, broker, asset, is_cash, invested, "
+                         "currency) VALUES (?,?,?,1,0,'USD')", (self.uid, nombre, "USD"))
             if con_datos:
                 conn.execute(
                     "INSERT INTO positions (user_id, broker, asset, is_cash, quantity, invested, "
@@ -160,7 +171,47 @@ class LaPlantillaNoGuardaPesosComoDolares(unittest.TestCase):
         # La caja en cero que quedó del import viejo se llamaba "USD": los pesos
         # se sumaban ahí con ese rótulo.
         self.assertEqual(self.cajas()["MiBroker"], ("ARS", 1_000_000.0))
+        self.assertEqual(self.caja_en_dolares("MiBroker"), 1000.0)    # no US$1.000.000
         self.assertEqual(self.cajas()["MiBroker · USD"][1], 500.0)
+
+    def test_revertir_y_volver_a_subir_cura_el_broker(self):
+        """El camino de verdad, de punta a punta: una plantilla sólo en dólares crea
+        el broker en dólares; se revierte; la plantilla con pesos lo cura."""
+        prev = self.vista_previa("Cocos", "2026-01-05,DEPOSITO,Cocos,,,,1000,,,,USD,\n")
+        self.confirmar(prev)
+        self.assertEqual(self.brokers()["Cocos"], "USD")
+        r = self.client.post(f"/api/imports/{prev['session_id']}/revert", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.confirmar(self.vista_previa("Cocos", "2026-01-05,DEPOSITO,Cocos,,,,1000,,,,USD,\n"
+                                                  "2026-01-06,DEPOSITO,Cocos,,,,2000000,,,,ARS,\n"))
+        self.assertEqual(self.brokers()["Cocos"], "ARS")
+        self.assertEqual(self.caja_en_dolares("Cocos"), 2000.0)
+        self.assertEqual(self.cajas()["Cocos · USD"][1], 1000.0)
+
+    def test_un_broker_en_dolares_con_historia_no_se_cura(self):
+        """Vendió todo: caja en cero y ninguna tenencia, pero su historia está en
+        dólares. Pasarlo a pesos la reinterpretaría."""
+        self.crear_broker("MiIBKR", "USD")
+        conn = main.get_db()
+        with conn:
+            conn.execute("INSERT INTO operations (user_id, date, broker, asset, op_type, "
+                         "entry_price, exit_price, quantity, pnl_usd) "
+                         "VALUES (?,'2025-08-01',?,'AAPL','Venta',180,210,5,150)",
+                         (self.uid, "MiIBKR"))
+        conn.close()
+        prev = self.vista_previa("MiIBKR", "2026-01-05,DEPOSITO,MiIBKR,,,,1000000,,,,ARS,\n")
+        self.assertEqual([e["code"] for e in prev["errors"]], ["PESOS_EN_BROKER_EN_DOLARES"])
+        self.assertEqual(self.brokers()["MiIBKR"], "USD")
+
+    def test_un_broker_en_dolares_con_movimientos_importados_no_se_cura(self):
+        """Depositó y retiró lo mismo: caja en cero, sin tenencia ni operaciones,
+        pero con movimientos importados en dólares."""
+        self.confirmar(self.vista_previa("MiIBKR", "2026-01-05,DEPOSITO,MiIBKR,,,,1000,,,,USD,\n"
+                                                   "2026-01-06,RETIRO,MiIBKR,,,,1000,,,,USD,\n"))
+        self.assertEqual(self.cajas()["MiIBKR"][1], 0.0)
+        r = self.subir_foto("MiIBKR", self.FOTO)
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertEqual(self.brokers()["MiIBKR"], "USD")
 
     def test_un_broker_en_dolares_con_datos_rechaza_los_pesos(self):
         self.crear_broker("MiIBKR", "USD", con_datos=True)
@@ -258,6 +309,7 @@ class LaPlantillaNoGuardaPesosComoDolares(unittest.TestCase):
         self.assertEqual(self.brokers()["Cocos"], "ARS")
         cajas = self.cajas()
         self.assertEqual(cajas["Cocos"], ("ARS", 1_500_000.0))
+        self.assertEqual(self.caja_en_dolares("Cocos"), 1500.0)       # no US$1.500.000
         self.assertEqual(cajas["Cocos · USD"][1], 800.0)
 
     def test_la_foto_con_pesos_no_va_a_la_subcuenta_en_dolares(self):
@@ -292,6 +344,7 @@ class LaPlantillaNoGuardaPesosComoDolares(unittest.TestCase):
         self.confirmar(self.vista_previa("Cocos", "2026-01-05,DEPOSITO,Cocos,,,,1000,,,,USD,\n"
                                                   "2026-01-06,DEPOSITO,Cocos,,,,2000000,,,,ARS,\n"))
         self.assertEqual(self.cajas()["Cocos"], ("ARS", 2_000_000.0))
+        self.assertEqual(self.caja_en_dolares("Cocos"), 2000.0)
         self.assertEqual(self.cajas()["Cocos · USD"][1], 1000.0)
 
     def test_renombrar_y_cambiar_la_moneda_tambien(self):
@@ -299,6 +352,8 @@ class LaPlantillaNoGuardaPesosComoDolares(unittest.TestCase):
         self.editar_broker("MiBroker", "Cocos", "ARS")
         self.assertEqual(self.brokers(), {"Cocos": "ARS"})
         self.assertEqual(self.cajas(), {"Cocos": ("ARS", 0.0)})
+        self.assertEqual(self.sql("SELECT currency FROM positions WHERE user_id=? AND is_cash=1",
+                                  self.uid), [{"currency": "ARS"}])
 
     def test_una_foto_solo_en_dolares_sigue_entrando_a_un_broker_en_dolares(self):
         """Control: sin pesos en la foto, nada cambia."""

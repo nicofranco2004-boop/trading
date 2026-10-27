@@ -586,14 +586,25 @@ def brokers_que_no_aceptan_pesos(user_brokers, fmt_base) -> frozenset:
 
 
 def broker_tiene_datos(conn, uid: int, nombre: str) -> bool:
-    """¿El broker tiene algo cargado? Una caja en cero NO cuenta: queda así después
-    de revertir un import, y contarla impedía que "revertir y volver a subir"
-    curara el broker."""
-    return conn.execute(
+    """¿El broker tiene algo cargado, o historia? Si no, se le puede cambiar la moneda.
+
+    Una caja en cero NO cuenta: queda así después de revertir un import, y contarla
+    impedía que "revertir y volver a subir" curara el broker. Las operaciones y las
+    filas importadas vivas SÍ cuentan: un broker en dólares que vendió y retiró todo
+    tiene la caja en cero y ninguna tenencia, pero su historia está en dólares y
+    pasarlo a pesos la reinterpretaría. Revertir un import borra la suya, así que
+    volver a subirlo sigue curando."""
+    if conn.execute(
         "SELECT 1 FROM positions WHERE user_id=? AND broker=? "
         "AND (COALESCE(is_cash,0)=0 OR ABS(COALESCE(invested,0)) > 0.005) LIMIT 1",
         (uid, nombre),
-    ).fetchone() is not None
+    ).fetchone():
+        return True
+    if conn.execute("SELECT 1 FROM operations WHERE user_id=? AND broker=? LIMIT 1",
+                    (uid, nombre)).fetchone():
+        return True
+    return conn.execute(f"SELECT 1 FROM {TX_VIVAS} WHERE b.user_id=? AND n.broker=? LIMIT 1",
+                        (uid, nombre)).fetchone() is not None
 
 
 def que_hacer_con_pesos(conn, uid: int, user_brokers, nombre: str) -> str:
@@ -615,17 +626,26 @@ def que_hacer_con_pesos(conn, uid: int, user_brokers, nombre: str) -> str:
 
 
 def escrituras_para_cambiar_moneda(uid: int, nombre: str, moneda: str) -> List[tuple]:
-    """Las escrituras que cambian la moneda de un broker: la del broker y el rótulo
-    de su caja. El rótulo acompaña siempre a la moneda porque la valuación ya la
-    sigue (mira la moneda del broker); la pantalla y `invariantes.check_cash_moneda`
-    miran el rótulo. Sin esto, la caja en cero que deja un import revertido quedaba
-    "USD" en un broker ya en pesos, y los pesos que entraban después se sumaban ahí.
+    """Las escrituras que cambian la moneda de un broker: la del broker y las DOS
+    marcas de moneda de su caja, que la acompañan siempre.
+
+      · `asset` (el rótulo): lo miran la pantalla y `invariantes.check_cash_moneda`.
+      · `currency`: el arranque (init_db) la completa desde el rótulo, y
+        `behavioral._native_ccy` la lee ANTES que el rótulo y el broker. Es la que
+        usan `_position_value_usd` —metas, tableros e insights de la IA, reportes—
+        para decidir si la caja se pasa de pesos a dólares.
+
+    Sin esto, la caja en cero que deja un import revertido quedaba "USD" (las dos
+    marcas) en un broker ya en pesos, y los pesos que entraban después se sumaban
+    ahí: medido, $1.500.000 de una foto valían US$1.500.000 para esos lectores.
+    El mismo criterio que el arranque: rótulo 'ARS' → ARS; 'USD'/'USDT' → USD.
 
     Si se puede cambiar lo decide quien llama: el import y la foto, sólo con el
     broker vacío (`que_hacer_con_pesos`); la edición a mano, la persona."""
+    caja = asset_de_caja(moneda)
     return [("UPDATE brokers SET currency=? WHERE user_id=? AND name=?", (moneda, uid, nombre)),
-            ("UPDATE positions SET asset=? WHERE user_id=? AND broker=? AND is_cash=1",
-             (asset_de_caja(moneda), uid, nombre))]
+            ("UPDATE positions SET asset=?, currency=? WHERE user_id=? AND broker=? AND is_cash=1",
+             (caja, "ARS" if caja == "ARS" else "USD", uid, nombre))]
 
 
 def moneda_de_broker_nuevo(nombre: str, filas, fmt_base=None) -> str:
