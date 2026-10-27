@@ -16,34 +16,21 @@ import { ArrowRight } from 'lucide-react'
 import useReportYears from '../hooks/useReportYears'
 import { useCurrency } from '../contexts/CurrencyContext'
 import { pctSigned } from '../utils/format'
-
-// El artículo viaja aparte del nombre: el chip dice "vs el S&P 500" y el tooltip
-// "Por encima DEL S&P 500". Con el artículo pegado al nombre salía "de el S&P 500".
-function Chip({ nombre, articulo, pp, detalle }) {
-  const gana = pp >= 0
-  const de = articulo === 'el' ? 'del' : 'de la'
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 text-[11px] text-ink-2 bg-bg-2 border border-line-2 rounded-full px-2.5 py-1 tabular whitespace-nowrap"
-      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${Math.abs(pp).toFixed(1).replace('.', ',')} puntos porcentuales`
-             + (detalle ? `. ${detalle}` : '')}
-    >
-      vs {articulo} {nombre}
-      <b className={`font-semibold ${gana ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-        {gana ? '+' : '−'}{Math.abs(pp).toFixed(1).replace('.', ',')} pp
-      </b>
-    </span>
-  )
-}
+import { anioPublicado, detalleVsInflacion } from '../utils/anioPublicado'
+import { Veredicto } from './VeredictoChip'
 
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
                'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
 
 // "2026-06-30" → "30 de junio". La fecha en palabras porque va dentro de una
 // oración ("desde el 30 de junio"), no en una columna de números.
-export function fechaEnPalabras(iso) {
+// Con `anio` (el de la tarjeta), una fecha de OTRO año lleva el suyo: el tramo
+// del año puede arrancar en el cierre de diciembre anterior, y "Este año · 2026 ·
+// desde el 30 de diciembre" se leía como una fecha que todavía no pasó.
+export function fechaEnPalabras(iso, anio = null) {
   if (!iso || iso.length < 10) return ''
-  return `${parseInt(iso.slice(8, 10), 10)} de ${MESES[parseInt(iso.slice(5, 7), 10) - 1]}`
+  const base = `${parseInt(iso.slice(8, 10), 10)} de ${MESES[parseInt(iso.slice(5, 7), 10) - 1]}`
+  return anio != null && Number(iso.slice(0, 4)) !== Number(anio) ? `${base} de ${iso.slice(0, 4)}` : base
 }
 
 // Sin `modo`, el hook usa la elección guardada del usuario: el inicio del celular
@@ -74,10 +61,12 @@ export default function YearReturnLine({ modo, className = '' }) {
   // · 74 días". Había sesenta fotos; lo que no llegaba era a cubrir el año. El
   // motor sabe medir ese tramo, así que se publica con la fecha desde la que corre
   // — "desde el 30 de junio" es verdadero; llamarlo "2026" sería la mentira.
-  const parcial = current.pct == null && current.parcial_pct != null
-  const pct = parcial ? current.parcial_pct : current.pct
-  const vsSp = parcial ? current.parcial_vs_sp500_pct : current.vs_sp500_pct
-  const vsInfl = parcial ? null : current.vs_inflation_pct
+  // El número y sus dos veredictos salen del MISMO tramo, en el modo pedido: lo
+  // decide `anioPublicado`, la misma función que usa Reportes. Antes acá se
+  // escribía `vsInfl = parcial ? null : …` y el tramo mostraba "vs el S&P" sin
+  // "vs la inflación".
+  const anio = anioPublicado(current)
+  const { parcial, pct, vsSp, vsInfl, motivoInfl } = anio
   const positivo = pct != null && pct >= 0
 
   return (
@@ -100,22 +89,20 @@ export default function YearReturnLine({ modo, className = '' }) {
         </div>
       )}
 
-      {pct != null && (vsSp != null || vsInfl != null) && (
+      {pct != null && (vsSp != null || vsInfl != null || motivoInfl) && (
         <div className="flex flex-wrap gap-1.5 mt-2.5">
-          {vsSp != null && (
-            <Chip nombre="S&P 500" articulo="el" pp={vsSp} />
-          )}
+          <Veredicto nombre="S&P 500" articulo="el" pp={vsSp} />
           {/* El veredicto contra la inflación se calcula SIEMPRE en pesos (el backend
               convierte el retorno con `twr.vs_inflacion_ar`), así que aparece en las
               dos monedas. En dólares, el globo aclara contra qué número se restó. */}
-          {vsInfl != null && (
-            <Chip
-              nombre="inflación" articulo="la" pp={vsInfl}
-              detalle={moneda !== 'ars' && current.retorno_ars_pct != null
-                ? `Se compara en pesos: tu cartera hizo ${current.retorno_ars_pct.toFixed(2).replace('.', ',')} % en pesos y la inflación ${current.inflation_pct?.toFixed(1).replace('.', ',')} %`
-                : null}
-            />
-          )}
+          {/* Sin veredicto pero con número, la pastilla aparece "sin medir" con el
+              motivo: un "vs el S&P" solo, sin la inflación al lado, se leyó
+              como un error de la app. */}
+          <Veredicto
+            nombre="inflación" articulo="la" pp={vsInfl}
+            detalle={detalleVsInflacion(anio, moneda === 'ars')}
+            motivo={motivoInfl}
+          />
         </div>
       )}
 
@@ -127,7 +114,7 @@ export default function YearReturnLine({ modo, className = '' }) {
           para que quede abajo aunque la card se estire al alto de sus hermanas. */}
       <div className="flex items-center justify-between gap-2 flex-wrap mt-auto pt-2.5">
         <span className="text-[11px] text-ink-3 leading-none">
-          {parcial ? `desde el ${fechaEnPalabras(current.parcial_desde)}`
+          {parcial ? `desde el ${fechaEnPalabras(anio.desde, current.year)}`
             : pct == null ? 'todavía sin dos mediciones que cubran el año'
             : current.basis === 'contable' ? 'de tu historia importada'
             : 'medido a mercado'}

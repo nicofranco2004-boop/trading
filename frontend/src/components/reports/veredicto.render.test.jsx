@@ -1,10 +1,20 @@
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { Veredicto } from './PerformanceCalendar'
+import { Veredicto } from '../VeredictoChip'
 
 // "vs inflación" del calendario de Reportes: el número, el color y la ayuda
 // dicen lo mismo, y la aclaración ("Se compara en pesos…") va siempre.
 describe('Veredicto — contra un benchmark, en puntos porcentuales', () => {
+  it('sin número pero con motivo: la pastilla aparece, "sin medir", con el motivo en el globo', () => {
+    const motivo = 'La inflación del INDEC se publica por mes completo y este número arranca el 17 de agosto'
+    const html = renderToStaticMarkup(<Veredicto nombre="inflación" articulo="la" pp={null} motivo={motivo} />)
+    expect(html).toContain('vs la inflación')
+    expect(html).toContain('sin medir')
+    expect(html).toContain(`title="${motivo}"`)
+  })
+  it('sin número y sin motivo: nada', () => {
+    expect(renderToStaticMarkup(<Veredicto nombre="inflación" articulo="la" pp={null} />)).toBe('')
+  })
   const detalle = 'Se compara en pesos'
   it('empate (0,0 pp): neutro, "Igual que la inflación" y CON la aclaración', () => {
     const html = renderToStaticMarkup(<Veredicto nombre="inflación" articulo="la" pp={0} detalle={detalle} />)

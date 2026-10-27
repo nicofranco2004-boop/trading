@@ -24,8 +24,10 @@ import { Lock } from 'lucide-react'
 import { useCurrency } from '../../contexts/CurrencyContext'
 import { usePesosDelPeriodo } from '../../hooks/usePesosDelPeriodo'
 import { fechaEnPalabras } from '../YearReturnLine'
+import { anioPublicado, detalleVsInflacion } from '../../utils/anioPublicado'
+import { Veredicto } from '../VeredictoChip'
 import { useAlVerse } from '../../hooks/useAlVerse'
-import { pctVar, pctTxt, pctVarSign, ppVarFino, decimalesFinos } from '../../utils/format'
+import { pctVar, pctVarSign } from '../../utils/format'
 import AnimatedNumber from '../AnimatedNumber'
 
 function monthNum(period_key) {
@@ -227,35 +229,6 @@ function KpiCell({ label, value, sub, tone, first }) {
   )
 }
 
-// ─── Veredicto contra un benchmark ───────────────────────────────────────────
-// `pp` es el EXCESO en puntos porcentuales (cartera − benchmark), no el retorno
-// del índice. Sin dato no se dibuja nada: un "—" por año ocupa lugar y no dice
-// más que el vacío.
-export function Veredicto({ nombre, articulo, pp, detalle }) {
-  if (pp == null) return null
-  // El veredicto, el del número que se ve: 0,0 pp es un empate (neutro), no
-  // "por encima" en verde.
-  const signo = pctVarSign(pp, decimalesFinos(pp, 1))
-  const gana = signo > 0
-  const de = articulo === 'el' ? 'del' : 'de la'
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 text-[11px] text-ink-2 bg-bg-2 border border-line-2 rounded-full px-2.5 py-1 tabular whitespace-nowrap"
-      // La aclaración (`detalle`) va en los TRES casos: sin los paréntesis el
-      // `+` se pegaba sólo al "por encima/por debajo" y el empate la perdía.
-      title={(signo === 0 ? `Igual que ${articulo} ${nombre}`
-        : `${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${ppVarFino(Math.abs(pp), 1).replace(/^\+/, '').replace(' pp', '')} puntos porcentuales`)
-             + (detalle ? `. ${detalle}` : '')}
-    >
-      vs {nombre}
-      <b className={`font-semibold ${signo > 0 ? 'text-rendi-pos' : signo < 0 ? 'text-rendi-neg' : 'text-ink-1'}`}>
-        {/* ppVarFino: −0,04 se escribe "−0,04 pp", no "−0,0 pp" en rojo. */}
-        {ppVarFino(pp, 1)}
-      </b>
-    </span>
-  )
-}
-
 // dd/mm/aa — corto pero sin perder el año, que es lo que distingue las dos
 // puntas de una ventana anual.
 function fmtFechaCorta(iso) {
@@ -316,7 +289,7 @@ export function mejorYPeorMes(ranking, months) {
   return out
 }
 
-function MetricasDelAno({ resumen, months, pesos, ranking }) {
+export function MetricasDelAno({ resumen, months, pesos, ranking }) {
   if (!resumen) return null
   // Los montos del año, cada uno a los pesos de su momento: lo aportado y
   // retirado con la regla del Dashboard (los pesos que se pusieron), lo
@@ -345,13 +318,18 @@ function MetricasDelAno({ resumen, months, pesos, ranking }) {
   const mesesDelAnio = resumen.meses_del_anio ?? (resumen.is_current ? conDato.length : 12)
   const sinMedir = Math.max(0, mesesDelAnio - conDato.length)
   const datos = []
-  if (resumen.sp500_return_pct != null) {
-    datos.push({ label: 'S&P 500 ese año',
-                 valor: pctVar(resumen.sp500_return_pct, 1) })
+  // ⚠️ LOS ÍNDICES Y LA VENTANA SON LOS DEL NÚMERO DE ARRIBA. Con el año mostrando
+  // su tramo ("desde el 30 de junio"), esta fila seguía con el S&P, la inflación y
+  // el "comparado del … al …" del año ENTERO: dos inflaciones distintas para el
+  // mismo año, a diez píxeles. `anioPublicado` elige los del mismo tramo.
+  const publicado = anioPublicado(resumen)
+  if (publicado.sp500Pct != null) {
+    datos.push({ label: publicado.parcial ? 'S&P 500 en el tramo' : 'S&P 500 ese año',
+                 valor: pctVar(publicado.sp500Pct, 1) })
   }
-  if (resumen.inflation_pct != null) {
+  if (publicado.inflacion != null) {
     // pctVar: con deflación decía "+-0,3%".
-    datos.push({ label: 'Inflación AR', valor: pctVar(resumen.inflation_pct, 1) })
+    datos.push({ label: 'Inflación AR', valor: pctVar(publicado.inflacion, 1) })
   }
   if (resumen.deposits > 0) {
     datos.push({ label: 'Aportaste', valor: pesos.fmt(anio.depositos) })
@@ -392,12 +370,12 @@ function MetricasDelAno({ resumen, months, pesos, ranking }) {
           {sinMedir === 1 ? '1 mes sin medir' : `${sinMedir} meses sin medir`}
         </span>
       )}
-      {resumen.bench_desde && resumen.bench_hasta && (
+      {publicado.benchDesde && publicado.benchHasta && (
         // ⚠️ CON AÑO. Sin él, un año cerrado se leía "comparado del 31/12 al
         // 31/12" — dos fechas idénticas que sugieren un solo día, cuando son los
         // dos extremos del año. La ventana existe justamente para poder leerla.
         <span className="text-[10.5px] text-ink-3 self-end leading-none">
-          comparado del {fmtFechaCorta(resumen.bench_desde)} al {fmtFechaCorta(resumen.bench_hasta)}
+          comparado del {fmtFechaCorta(publicado.benchDesde)} al {fmtFechaCorta(publicado.benchHasta)}
         </span>
       )}
     </div>
@@ -485,11 +463,13 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
             // Ahora el número viene de `/api/reports/years` (`twr.curva_indexada`),
             // que es el mismo que publica la pestaña Año y el inicio.
             const resumen = years.find(a => a.year === year) || null
-            // El mismo criterio que la card del inicio: si el año entero no se puede
-            // medir pero hay un tramo medido adentro, se muestra ese tramo con su
-            // fecha. Ver `YearReturnLine` — la regla vive documentada allá.
-            const parcial = resumen != null && resumen.pct == null && resumen.parcial_pct != null
-            const pct = parcial ? resumen.parcial_pct : resumen?.pct
+            // El mismo criterio que la card del inicio, y la MISMA función: si el
+            // año entero no se puede medir pero hay un tramo medido adentro, se
+            // muestra ese tramo con su fecha y sus dos veredictos (S&P e
+            // inflación), todos del mismo tramo. Ver `utils/anioPublicado`.
+            const anio = anioPublicado(resumen)
+            const parcial = !!anio?.parcial
+            const pct = anio?.pct ?? null
             // ⚠️ "BLOQUEADO" NO ES "SIN MEDIR". Sin el resumen —porque el plan no
             // lo incluye— la fila diría "sin fotos a precio de mercado", que es
             // falso: el número existe y está del otro lado del muro. Decirle al
@@ -522,7 +502,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                     {bloqueado
                       ? 'los años anteriores están en el plan pago'
                       : parcial
-                        ? `desde el ${fechaEnPalabras(resumen.parcial_desde)}`
+                        ? `desde el ${fechaEnPalabras(anio.desde, year)}`
                         : pct == null
                           ? (resumen?.motivo_texto
                               ? 'el motor no publica este año'
@@ -548,8 +528,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                   )}
                 </div>
                 <div className="flex flex-col gap-1.5 items-end min-w-[132px]">
-                  <Veredicto nombre="S&P 500" articulo="el"
-                             pp={parcial ? resumen.parcial_vs_sp500_pct : resumen?.vs_sp500_pct} />
+                  <Veredicto nombre="S&P 500" articulo="el" pp={anio?.vsSp ?? null} />
                   {/* ⚠️ LA INFLACIÓN SE COMPARA SIEMPRE EN PESOS (ver `twr.vs_inflacion_ar`):
                       restarle a un retorno en dólares un índice que mide precios
                       argentinos es restar unidades distintas. Cuando el usuario está
@@ -558,10 +537,9 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                       dice: si no, la resta que el usuario puede hacer con lo que ve no
                       le va a dar. */}
                   <Veredicto
-                    nombre="inflación" articulo="la" pp={parcial ? null : resumen?.vs_inflation_pct}
-                    detalle={!enPesos && resumen?.retorno_ars_pct != null
-                      ? `Se compara en pesos: tu cartera hizo ${pctTxt(resumen.retorno_ars_pct, 2)} en pesos y la inflación ${pctTxt(resumen.inflation_pct, 1)}`
-                      : null}
+                    nombre="inflación" articulo="la" pp={anio?.vsInfl ?? null}
+                    detalle={detalleVsInflacion(anio, enPesos)}
+                    motivo={anio?.motivoInfl}
                   />
                 </div>
               </div>

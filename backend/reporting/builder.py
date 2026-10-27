@@ -773,6 +773,11 @@ def _ventana_cubre(medido_desde: Optional[str], medido_hasta: Optional[str],
     """
     if not medido_desde or not medido_hasta:
         return False
+    # El motor cierra con "hoy" la ventana que termina en el valor vivo (en
+    # ESTIMADO, `ventana_hasta`). Sin esto, "hoy" no parseaba y el año en curso
+    # del estimado no se daba nunca por cubierto.
+    if medido_hasta == "hoy":
+        medido_hasta = _hoy_iso()
     try:
         _fmt = "%Y-%m-%d"
         d0 = datetime.strptime(str(medido_desde)[:10], _fmt)
@@ -1420,6 +1425,99 @@ def benchmark_return_for_period(bench: Dict[str, Any], period_type: str,
     return None
 
 
+def veredicto_inflacion(conn, bench: Dict[str, Any], retorno_pct: Optional[float], *,
+                        period_type: str, period_start: str, period_end: str,
+                        ventana=None, moneda=None):
+    """"¿Le ganaste a la inflación?" para un rendimiento YA PUBLICADO, sobre la
+    misma ventana en que se midió. Devuelve `(inflacion_pct, retorno_ars_pct,
+    vs_inflacion_pp, motivo)`: los tres primeros en puntos o None, y `motivo` el
+    texto de POR QUÉ no hay veredicto cuando hay número y no se pudo comparar.
+
+    ⚠️ ES LA ÚNICA CUENTA DE LA TARJETA DEL PERÍODO: el año entero, el tramo
+    parcial del año y el mes (todos en `compute_metrics_for_period`). El tramo
+    parcial se armaba aparte, en el endpoint, y copió sólo el veredicto contra el
+    S&P. Reportado desde producción: el inicio decía "Este año · desde el 31 de
+    enero · vs el S&P 500 +1,5 pp" y callaba la inflación; el usuario la buscó en
+    "¿Le ganás a las alternativas?", que mide TODA su historia, y leyó "le gano al
+    S&P pero le pierdo a la inflación" como un error de la app.
+    (El Wrapped y los paquetes de la IA tienen su propia cuenta —miden en pesos
+    con el motor, o componen meses— y no pasan por acá.)
+
+    EL RENDIMIENTO ES EL DEL MODO QUE SE MIRA. `retorno_pct` entra tal cual lo
+    publica la tarjeta, ya medido en certero o en estimado
+    (`twr.curva_indexada(modo=...)`). Esta función no vuelve a medir nada: el
+    veredicto no puede salir de otro número que el que tiene al lado.
+
+    ⚠️ EL DÓLAR SE TOMA EN LAS PUNTAS DEL NÚMERO, NO EN LAS DE LA INFLACIÓN. Con el
+    selector en dólares el retorno se pasa a pesos (`twr.vs_inflacion_ar`) con la
+    devaluación entre las mismas dos fechas que cubre el número: en el año, las
+    puntas de `ventana`; en el mes, del cierre del mes anterior al cierre del mes.
+    Son las fechas en que el motor mide EN PESOS cuando el selector está en Pesos,
+    y por eso el veredicto no cambia con el selector. Se probó lo contrario —tomar
+    el dólar en el cierre del mes base de la inflación— y con un tramo que arranca
+    el 1/7 daba +2,1 pp en dólares y +1,56 pp en pesos: la misma cartera, dos
+    veredictos. El año usaba el 31/12 del almanaque y tenía el mismo defecto cuando
+    la medición arrancaba el 1, 2 o 3 de enero.
+    Lo que sí queda aproximado es la INFLACIÓN: el IPC es mensual y
+    `_ancla_mensual` acepta que la ventana arranque hasta el día 3 contando el mes
+    entero. Esa aproximación es la misma en las dos monedas.
+
+    `motivo`, cuando el número existe y el veredicto no: la pantalla lo dice en vez
+    de callarlo. Un "vs el S&P" solo, sin "vs la inflación" al lado, es
+    exactamente lo que se leyó como un error.
+    """
+    inflacion = benchmark_return_for_period(bench or {}, period_type, period_start,
+                                            period_end, "inflation_ar",
+                                            ventana=ventana, moneda=moneda)
+    import twr as _twr
+    d0, d1 = ((ventana or (None, None)) if period_type == "year"
+              else (_dia_anterior(period_start), period_end))
+    fx0 = fx1 = None
+    if (retorno_pct is not None and inflacion is not None
+            and str(moneda).lower() != _twr.MONEDA_ARS and d0 and d1):
+        try:
+            _fx, _ = _twr.serie_fx(conn, d0, d1)
+            fx0, fx1 = _fx(d0), _fx(d1)
+        except Exception:
+            log.exception("veredicto_inflacion serie_fx %s..%s", d0, d1)
+    retorno_ars, exceso = _twr.vs_inflacion_ar(retorno_pct, inflacion, moneda=moneda,
+                                               fx0=fx0, fx1=fx1)
+    motivo = None
+    sin_ventana = period_type == "year" and not (ventana and ventana[0] and ventana[1])
+    if retorno_pct is not None and exceso is None and not sin_ventana:
+        if period_type == "year" and _ancla_mensual(ventana[0]) is None:
+            from fechas import fecha_legible
+            try:
+                arranque = fecha_legible(datetime.strptime(str(ventana[0])[:10],
+                                                           "%Y-%m-%d").date())
+            except (TypeError, ValueError):
+                arranque = str(ventana[0])[:10]
+            motivo = (f"La inflación del INDEC se publica por mes completo y este "
+                      f"número arranca el {arranque}: compararla obligaría a "
+                      f"inventar una parte de ese mes.")
+        elif inflacion is None:
+            motivo = "Todavía no hay inflación del INDEC publicada para este período."
+        else:
+            motivo = ("Falta el dólar de alguna de las dos fechas para pasar tu "
+                      "rendimiento a pesos.")
+    return inflacion, retorno_ars, exceso, motivo
+
+
+# Los campos del tramo parcial del año (`compute_metrics_for_period`), con los
+# MISMOS nombres con que viajan en `/api/reports/years`.
+CAMPOS_TRAMO_PARCIAL = ("parcial_pct", "parcial_desde", "parcial_hasta",
+                        "parcial_sp500_return_pct", "parcial_vs_sp500_pct",
+                        "parcial_inflation_pct", "parcial_retorno_ars_pct",
+                        "parcial_vs_inflation_pct", "parcial_vs_inflation_motivo")
+
+
+def tramo_parcial(metrics) -> Dict[str, Any]:
+    """El tramo parcial de un año, tal cual lo midió `compute_metrics_for_period`.
+    Siempre las mismas claves (en None si no hay tramo): una que falta llega
+    `undefined` a la pantalla, y el estado vacío es el que más se lee mal."""
+    return {c: getattr(metrics, c, None) for c in CAMPOS_TRAMO_PARCIAL}
+
+
 # ─── Métricas core del período ───────────────────────────────────────────────
 
 def _modified_dietz_pct(start_value: float, end_value: float, flows: float) -> Optional[float]:
@@ -1543,6 +1641,11 @@ def compute_metrics_for_period(
     # al lado de su número, y abajo gana la del que se publique.
     _ventana_comp = (None, None)
     _ventana_puntas = (None, None)
+    # La curva del motor para el AÑO, cubra o no el período: si no lo cubre, es el
+    # tramo que se publica aparte (`parcial_*`, abajo). Una sola curva para el año
+    # y para su tramo — antes el endpoint pedía una segunda, sin el valor vivo y
+    # sin mirar el broker.
+    _curva_anio = None
     _start_is_mtm = False   # start_value salió de un cierre real a mercado
     _live_month_unmeasured = False  # (año) el mes vivo no tiene borde medido
 
@@ -1904,6 +2007,19 @@ def compute_metrics_for_period(
                 _c = _twr.curva_indexada(
                     conn, uid, _desde, period_end, modo=_modo_twr, moneda=_moneda_twr,
                     valor_live=(float(live_value) if year_is_current and live_value else None))
+                # ⚠️ "hoy" NO ES UNA FECHA, Y EL ESTIMADO NUNCA CUBRÍA EL AÑO.
+                # Con el valor vivo, el motor cierra la curva en un punto "hoy" y en
+                # ESTIMADO lo usa como fin de la ventana (`ventana_hasta = "hoy"`;
+                # el certero declara la fecha de su última foto). `_ventana_cubre`
+                # no sabe leer "hoy": devolvía "no cubre" y el año en curso del
+                # estimado no se publicaba NUNCA desde el motor. Caía al tramo
+                # parcial —que además arrancaba el 1/1 y perdía el cierre del
+                # 31/12—, y el inicio mostraba "Este año · desde el 31 de enero"
+                # con enero afuera del número (reportado desde producción).
+                # El "hoy" del motor es el día de hoy en Argentina.
+                if _c.get("ventana_hasta") == "hoy":
+                    _c = {**_c, "ventana_hasta": _hoy_iso()}
+                _curva_anio = _c
                 # ⚠️ EL TWR TIENE QUE CUBRIR EL PERÍODO QUE SE ESTÁ PUBLICANDO.
                 #
                 # Sin esta guarda, un usuario con mediciones sólo desde julio
@@ -2626,23 +2742,6 @@ def compute_metrics_for_period(
                                             period_end, "sp500",
                                             ventana=_bench_ventana, fx=_bench_fx,
                                             moneda=moneda)
-    # ⚠️ ACÁ HUBO UN GATE PROPIO QUE TAPABA LA INFLACIÓN EN DÓLARES, Y SOBRABA.
-    #
-    # El problema es real —restarle la inflación del INDEC, que mide pesos, a un
-    # rendimiento medido en dólares es restar unidades distintas— pero F5 ya lo
-    # resolvió mejor y para TODAS las superficies: `twr.vs_inflacion_ar` convierte
-    # el retorno del usuario a pesos y hace la comparación ahí, en vez de esconder
-    # el veredicto. Se decidió con el dueño y está unos renglones más abajo.
-    #
-    # Dejar los dos no era redundante: era ROMPER el de F5. Este gate le pasaba
-    # `inflation_ret = None` para el año en dólares, así que `vs_inflacion_ar` no
-    # tenía con qué comparar y el veredicto desaparecía justo donde ellos habían
-    # decidido publicarlo. Dos arreglos del mismo problema se unifican en uno, y el
-    # que queda es el que cubre más.
-    inflation_ret = benchmark_return_for_period(bench or {}, period_type, period_start,
-                                                period_end, "inflation_ar",
-                                                ventana=_bench_ventana,
-                                                moneda=moneda)
     # Sin `delta_pct` no hay con qué comparar — y si lo tapamos por base
     # incomparable, publicar un "vs benchmark" sería reintroducir el mismo número
     # por la ventana. Sin TC tampoco: `sp500_ret` ya vino None de la conversión, y
@@ -2668,14 +2767,10 @@ def compute_metrics_for_period(
     # selector en 65 de 186 meses (35 %). En 2024 la misma cartera leía "la
     # inflación te ganó por 117,7pp" en dólares y por 44,9pp en pesos.
     #
-    # LA REGLA VIVE EN `twr.vs_inflacion_ar`, con su docstring. Acá NO se la llama:
-    # ahí sólo hay el porcentaje ya calculado y se compone `(1+r)·(fx1/fx0)`,
-    # mientras que en este punto están los valores crudos y la vía exacta es
-    # `_pct_en_pesos` (abajo). Los dos caminos coinciden al bit con flujo cero y
-    # difieren por el residuo intrínseco de Modified Dietz cuando hay aportes.
-    # `vs_inflacion_ar` la usan el Wrapped y el paquete de la IA, que componen
-    # meses y no legs. El gráfico de Performance NO está migrado — ver la nota en
-    # `performance.py`.
+    # LA REGLA VIVE EN `twr.vs_inflacion_ar`, con su docstring: se compone
+    # `(1+r)·(fx1/fx0)` sobre el porcentaje ya publicado. La usan también el
+    # Wrapped y el paquete de la IA, que componen meses y no legs. El gráfico de
+    # Performance NO está migrado — ver la nota en `performance.py`.
     # ⚠️ SE CONVIERTE `delta_pct`, NO SE RECALCULA EL RENDIMIENTO.
     #
     # Éste es el punto donde me equivoqué una vez y vale dejarlo escrito. La
@@ -2699,27 +2794,68 @@ def compute_metrics_for_period(
     # El precio de componer es el residuo intrínseco de Modified Dietz cuando hay
     # aportes (medido sobre producción: p90 0,003). Es tres órdenes de magnitud
     # menos que el riesgo de tomar el número de otra fuente.
-    # ⚠️ ESTAS PUNTAS NO SON LAS DEL S&P, Y NO SE PUEDEN COMPARTIR.
+    # ⚠️ LA CUENTA VIVE EN `veredicto_inflacion`, NO ACÁ. Estaba escrita en este
+    # punto y el tramo parcial del año —armado en otro lado— nunca la tuvo: el
+    # inicio publicaba "vs el S&P" sin "vs la inflación". Ahora el año, el mes y el
+    # tramo piden el mismo veredicto a la misma función.
     #
-    # Las dos patas necesitan TC en el caso OPUESTO —la inflación cuando el
-    # selector está en dólares, el S&P cuando está en pesos— así que nunca hacen
-    # falta a la vez. Y miden cosas distintas: acá se mueve la CARTERA a pesos
-    # (una tasa en pesos no tiene versión en dólares), mientras que para el S&P se
-    # mueve el ÍNDICE a la moneda de la cartera. Un intento de unificarlas en un
-    # solo par de variables se cayó justo en esto.
-    import twr as _twr_infl
-    _fx0_infl = _fx1_infl = None
-    if (delta_pct is not None and inflation_ret is not None
-            and str(moneda).lower() != _twr_infl.MONEDA_ARS):
-        _d0_infl = _dia_anterior(period_start)
-        if _d0_infl:
-            try:
-                _fxfn_infl, _ = _twr_infl.serie_fx(conn, _d0_infl, period_end)
-                _fx0_infl, _fx1_infl = _fxfn_infl(_d0_infl), _fxfn_infl(period_end)
-            except Exception:
-                log.exception("vs_inflacion serie_fx %s..%s", _d0_infl, period_end)
-    _ret_ars_infl, vs_inflation = _twr_infl.vs_inflacion_ar(
-        delta_pct, inflation_ret, moneda=moneda, fx0=_fx0_infl, fx1=_fx1_infl)
+    # Y la inflación se publica también con el selector en dólares (sin un gate
+    # propio que la tape): `vs_inflacion_ar` lleva el retorno a pesos en vez de
+    # esconder el veredicto. Un gate que vivió acá le pasaba `inflation_ret = None`
+    # y rompía esa decisión, tomada con el dueño.
+    #
+    # Las puntas del TC NO son las del S&P: la inflación necesita TC cuando el
+    # selector está en dólares (mueve la CARTERA a pesos), el S&P cuando está en
+    # pesos (mueve el ÍNDICE a la moneda de la cartera). Nunca hacen falta a la vez.
+    inflation_ret, _ret_ars_infl, vs_inflation, _motivo_infl = veredicto_inflacion(
+        conn, bench, delta_pct, period_type=period_type, period_start=period_start,
+        period_end=period_end, ventana=_bench_ventana, moneda=moneda)
+
+    # ── El TRAMO del año, cuando el año entero no se publica ─────────────────
+    # ⚠️ SIN EL GUARD DE `basis_incomparable`. Esa bandera dice que las dos puntas
+    # DEL AÑO están en bases distintas (el arranque de la contabilidad, el cierre a
+    # mercado), y es justo el caso en que el tramo del motor más sirve: él sólo
+    # encadena puntos MEDIDOS. Reportado desde producción: con fotos desde el 30/06
+    # la pantalla decía "sin dos fotos a precio de mercado" con sesenta fotos en la
+    # base. Se publica APARTE de `delta_pct` y con la fecha desde la que corre:
+    # "+2,15 % desde el 30 de junio" es verdadero; llamarlo "2026" sería mentir.
+    #
+    # ⚠️ ES LA CURVA DEL AÑO (`_curva_anio`), NO UNA SEGUNDA. El tramo se pedía en
+    # el endpoint con otra `curva_indexada`: sin el valor vivo (el año en curso
+    # terminaba en la última foto mientras el año entero llegaba a hoy), sin mirar
+    # el broker (Reportes filtrado por IOL mostraba el tramo de TODA la cartera) y
+    # con un solo try para todo (si fallaba el S&P se perdía también el número).
+    # Y los veredictos son los del año: las mismas dos llamadas, con la ventana
+    # del tramo.
+    _tramo = dict.fromkeys(CAMPOS_TRAMO_PARCIAL)
+    if (period_type == "year" and delta_pct is None and _curva_anio
+            and _curva_anio.get("twr") is not None and _curva_anio.get("ventana_desde")):
+        _pct_t = round(_curva_anio["twr"] * 100, 2)
+        _v_t = (_curva_anio["ventana_desde"], _curva_anio["ventana_hasta"])
+        _tramo.update(parcial_pct=_pct_t, parcial_desde=_v_t[0], parcial_hasta=_v_t[1])
+        try:
+            _sp_t = benchmark_return_for_period(bench or {}, "year", period_start,
+                                                period_end, "sp500", ventana=_v_t,
+                                                fx=_bench_fx, moneda=moneda)
+            if _sp_t is not None:
+                # El S&P del tramo viaja ADEMÁS del exceso: Reportes los muestra
+                # juntos ("S&P 500 en el tramo"), y mostrar el del año entero al
+                # lado del veredicto del tramo era contradecirse en la misma fila.
+                _tramo["parcial_sp500_return_pct"] = round(_sp_t, 2)
+                _tramo["parcial_vs_sp500_pct"] = round(_pct_t - _sp_t, 2)
+        except Exception:
+            log.exception("tramo parcial: S&P uid=%s", uid)
+        try:
+            _inf_t, _ars_t, _exc_t, _mot_t = veredicto_inflacion(
+                conn, bench, _pct_t, period_type="year", period_start=period_start,
+                period_end=period_end, ventana=_v_t, moneda=moneda)
+            if _exc_t is not None:
+                _tramo.update(parcial_inflation_pct=round(_inf_t, 2),
+                              parcial_retorno_ars_pct=round(_ars_t, 2),
+                              parcial_vs_inflation_pct=round(_exc_t, 2))
+            _tramo["parcial_vs_inflation_motivo"] = _mot_t
+        except Exception:
+            log.exception("tramo parcial: inflación uid=%s", uid)
 
     metrics = PeriodMetrics(
         start_value=round(start_value, 2),
@@ -2738,6 +2874,7 @@ def compute_metrics_for_period(
         vs_sp500_pct=round(vs_sp500, 2) if vs_sp500 is not None else None,
         vs_inflation_pct=round(vs_inflation, 2) if vs_inflation is not None else None,
         retorno_ars_pct=round(_ret_ars_infl, 2) if _ret_ars_infl is not None else None,
+        vs_inflation_motivo=_motivo_infl,
         sp500_return_pct=round(sp500_ret, 2) if sp500_ret is not None else None,
         inflation_pct=round(inflation_ret, 2) if inflation_ret is not None else None,
         basis_incomparable=basis_incomparable,
@@ -2751,6 +2888,7 @@ def compute_metrics_for_period(
         bench_hasta=(_bench_ventana or (None, None))[1],
         modo=("estimado" if modo == "estimado" else "certero"),
         moneda=("ars" if str(moneda).lower() == "ars" else "usd"),
+        **_tramo,
     )
     return metrics, ops
 

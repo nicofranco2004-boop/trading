@@ -109,6 +109,7 @@ import {
   patrimonioEnPesos,
   blueAlCierre,
   lookupMonthly,
+  mesInicialDeLasSimulaciones,
 } from '../utils/benchmarkSim'
 import { selectDiagnostics } from '../utils/diagnostics'
 import { resolveTierShown, computeDismiss } from '../utils/diagnosticsRotation'
@@ -2932,9 +2933,35 @@ function InsightsDesktop({ _embeddedTab }) {
   // activos al costo: en ese caso no se publica ninguna (mismo criterio que
   // "desde tu última visita", más abajo).
   const _hoyMedido = preciosCompletos
-  const _mesIndec = vsInflacion?.hastaMes
-    ? `${MONTHS[+vsInflacion.hastaMes.slice(5, 7) - 1].toLowerCase()} ${vsInflacion.hastaMes.slice(0, 4)}`
-    : null
+  // 'YYYY-MM' → "septiembre de 2026".
+  const _mesEnPalabras = (k) => (k ? `${MONTHS[+k.slice(5, 7) - 1].toLowerCase()} de ${k.slice(0, 4)}` : null)
+  const _mesIndec = _mesEnPalabras(vsInflacion?.hastaMes)
+  // ⚠️ EL PERÍODO SE ESCRIBE. Las tres celdas miden TODA la historia (desde el
+  // primer mes, el mismo para las tres simulaciones), no el año. Sin decirlo, su
+  // "Inflación: le perdés" se comparaba con el "Este año · vs el S&P" del inicio
+  // —otro período— y se leía como una contradicción (reportado).
+  // El mes desde el que arrancan las tres simulaciones (uno solo: lo usan el
+  // encabezado de la tarjeta y lo que se le pasa a la IA).
+  const _mesInicialAlternativas = mesInicialDeLasSimulaciones(globalMonthly)
+  const _desdeAlternativas = _mesEnPalabras(_mesInicialAlternativas)
+  // Por qué algo en dólares puede perderle a la inflación: cuánto subieron los
+  // precios y cuánto el dólar en los MISMOS meses (de `desdeMes` al último con IPC
+  // publicado, `hastaMes`), y cuánto hacía falta en dólares para empatar
+  // (`veredictoInflacion`). El período va escrito: los precios llegan hasta lo
+  // último que publicó el INDEC, no hasta hoy.
+  const _contextoInflacion = (() => {
+    const v = vsInflacion
+    if (!v || v.dolarPct == null || v.dolarParaEmpatarPct == null || !v.hastaMes) return null
+    const periodo = `Entre ${_mesEnPalabras(v.desdeMes)} y ${_mesEnPalabras(v.hastaMes)}`
+    const precios = pctTxt(v.inflacionPct, 0)
+    // El verbo sigue al signo: un dólar que bajó no "subió −8 %".
+    const dolar = v.dolarPct >= 0
+      ? `el dólar blue subió ${pctTxt(v.dolarPct, 0)}`
+      : `el dólar blue bajó ${pctTxt(-v.dolarPct, 0)}`
+    return Math.round(v.dolarParaEmpatarPct) > 0
+      ? `${periodo} los precios subieron ${precios} y ${dolar}: algo en dólares —el S&P incluido— tenía que rendir ${pctTxt(v.dolarParaEmpatarPct, 0)} en dólares sólo para empatar.`
+      : `${periodo} ${dolar} y los precios ${precios}: tener dólares alcanzaba para no perderle a la inflación.`
+  })()
   const verdictItems = [
     // La UNIDAD va escrita: el UVA se simula EN PESOS (capitaliza con el
     // coeficiente) y se compara EN PESOS contra lo que vale hoy tu cartera
@@ -2955,6 +2982,7 @@ function InsightsDesktop({ _embeddedTab }) {
       // Hasta qué mes llega la inflación contada: el INDEC publica con atraso,
       // y el valor de tu cartera es el de hoy.
       nota: `tu patrimonio de hoy vs la misma plata ajustada por inflación${_mesIndec ? ` · INDEC hasta ${_mesIndec}` : ''}`,
+      contexto: _contextoInflacion,
     },
   ]
 
@@ -3009,7 +3037,7 @@ function InsightsDesktop({ _embeddedTab }) {
   const verdictVisible = diagLayout.slots.includes('verdict') && hasVerdicts
   const verdictFirst = verdictVisible &&
     diagLayout.slots.indexOf('verdict') < diagLayout.slots.indexOf('kpi')
-  const verdictNode = verdictVisible ? <ArAlternativesVerdict items={verdictItems} /> : null
+  const verdictNode = verdictVisible ? <ArAlternativesVerdict items={verdictItems} desde={_desdeAlternativas} /> : null
   // El motor también decide si la curva de drawdown se muestra (se suprime sin
   // ≥2 meses de serie, en vez de un placeholder "necesitás 2 meses").
   // ⚠️ FASE 2 · EN MODO ESTIMADO NO HAY CARD DE DRAWDOWN.
@@ -3033,7 +3061,13 @@ function InsightsDesktop({ _embeddedTab }) {
   const diagAiParams = {
     archetype: diagLayout.archetype,
     findings: diagnosisTop.slice(0, 3).map(d => ({ category: d.category, severity: d.severity, text: d.text })),
-    verdicts: verdictItems.filter(v => v.pct != null).map(v => ({ label: v.label, pct: Math.round(v.pct * 10) / 10 })),
+    // Con el mes desde el que miden (toda la historia): el paquete trae al lado
+    // `vs_benchmarks`, de otra ventana, y sin el período la IA podía narrar "le
+    // ganás al S&P pero le perdés a la inflación" como si fuera el mismo tramo.
+    verdicts: verdictItems.filter(v => v.pct != null).map(v => ({
+      label: v.label, pct: Math.round(v.pct * 10) / 10,
+      desde: _mesInicialAlternativas,
+    })),
     months_tracked: globalMonthly.length,
     missing_prices: [...new Set(missingPriceTickers)].slice(0, 12),
     // La caída del paquete, medida como la de la tira de KPIs: moneda, modo y el
