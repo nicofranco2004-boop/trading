@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import InsightsKpiStrip from './InsightsKpiStrip.jsx'
+import InsightsKpiStrip, { textoReconstruido } from './InsightsKpiStrip.jsx'
 
 // La tira de arriba de Análisis. Se dibuja de verdad y se lee el texto, porque
 // el bug estaba en la unión de dos lugares: el formateador local devolvía
@@ -50,5 +50,27 @@ describe('InsightsKpiStrip — los porcentajes se leen a la argentina', () => {
   it('sin dato, guión', () => {
     const v = texto(<InsightsKpiStrip {...base} cumulativeReturnPct={null} drawdownTwrr={null} />)
     expect(v).toContain('Drawdown actual —')
+  })
+})
+
+describe('InsightsKpiStrip — el acumulado del modo Estimado dice qué es (H6, 2026-10-27)', () => {
+  // Decisión del dueño: el estimado es una reconstrucción, "precio real donde lo
+  // hay, costo donde no", y la pantalla tiene que decir cuánto quedó a precio real
+  // en vez de "no cuenta lo que todavía no vendiste".
+  it('con cobertura parcial dice el % a precio real y no "sólo se mueve cuando vendés"', () => {
+    const t = texto(<InsightsKpiStrip {...base}
+      acumuladoEstimado={{ parcial: false, desde: null, medidoDesde: null,
+                           cobertura: 0.62, excluyeNoRealizado: false }} />)
+    expect(t).toContain('reconstruido')
+    expect(t).toContain('62 % a precio real, el resto al costo')
+    expect(t).not.toContain('cuando vendés')
+  })
+  it('todo valuado: lo dice', () => {
+    expect(textoReconstruido({ cobertura: 1, excluyeNoRealizado: false }))
+      .toBe('reconstruido · todo a precio real')
+  })
+  it('sólo cuando parte es contabilidad pura avisa que esa parte se mueve al vender', () => {
+    expect(textoReconstruido({ cobertura: null, excluyeNoRealizado: true }))
+      .toBe('reconstruido · lo contable sólo se mueve cuando vendés')
   })
 })

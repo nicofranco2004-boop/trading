@@ -1270,11 +1270,14 @@ export function benchDelAcumuladoEstimado(filas, benchKey, publicado, ventana) {
  */
 export function acumuladoPublicado(filas, benchKey, opts = {}) {
   const f = Array.isArray(filas) ? filas : []
-  // En CERTERO sólo un punto apto es punta. En ESTIMADO también lo es un punto
-  // contable: la cadena publicada (`ip` = idx_est) los encadena a los dos, y es
-  // la MISMA que muestra el chip — así el KPI y el chip dicen lo mismo.
+  // En CERTERO sólo un punto apto es punta. En ESTIMADO lo es todo punto que la
+  // cadena publicada (`ip` = idx_est) encadena: el backend lo marca con
+  // `en_estimado` (aptos, reconstrucciones parciales y contables; no la intradía).
+  // Es la MISMA cadena que muestra el chip — así el KPI y el chip dicen lo mismo.
+  // Las bases sueltas quedan para filas armadas sin la marca (datos viejos, tests).
   const puedeSerPunta = opts.contable
-    ? (r) => !!r && (r.apto === true || r.base === 'costo')
+    ? (r) => !!r && (r.apto === true || r.enEstimado === true
+                     || r.base === 'costo' || r.base === 'parcial')
     : (r) => !!r && r.apto === true
   const esApto = (r) => puedeSerPunta(r) && typeof r.ip === 'number' && r.ip > 0
   let ini = -1, fin = -1

@@ -28,6 +28,23 @@ function fmtFechaCorta(iso) {
   return /^\d{4}-\d{2}-\d{2}/.test(s) ? `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}` : s
 }
 
+/**
+ * Qué es el número del modo Estimado, en una línea. Desde el 2026-10-27 (decisión
+ * del dueño) el estimado es una RECONSTRUCCIÓN: precio real de lo que se pudo
+ * valuar, costo de lo que no (bonos o FCI sin precio histórico), y la pantalla dice
+ * cuánto quedó a precio real. "Sólo se mueve cuando vendés" queda únicamente para
+ * cuando parte del número es la contabilidad pura (`excluyeNoRealizado`).
+ */
+export function textoReconstruido({ cobertura, excluyeNoRealizado } = {}) {
+  const partes = ['reconstruido']
+  if (typeof cobertura === 'number' && cobertura >= 0) {
+    const pct = Math.round(cobertura * 100)
+    partes.push(pct >= 100 ? 'todo a precio real' : `${pct} % a precio real, el resto al costo`)
+  }
+  if (excluyeNoRealizado) partes.push('lo contable sólo se mueve cuando vendés')
+  return partes.join(' · ')
+}
+
 export default function InsightsKpiStrip({
   diagnosis = [],
   assetPieData = [],
@@ -121,14 +138,14 @@ export default function InsightsKpiStrip({
           anual" del Dashboard —que sí es toda la historia, y anualizado— y no hay
           forma de darse cuenta de que miden cosas distintas. */}
       {/* ⚠️ FASE 2 · UN NÚMERO RECONSTRUIDO NO PUEDE VERSE IGUAL QUE UNO MEDIDO.
-          En modo Estimado este acumulado sale de la cadena contable: llega más
-          atrás y a cambio NO cuenta lo que todavía no vendiste. El chip del
-          gráfico ya lo dice; si el KPI queda mudo, el usuario se lleva el número
+          En modo Estimado este acumulado sale de la reconstrucción: llega más
+          atrás y a cambio lo que no tuvo precio histórico queda al costo. El chip
+          del gráfico lo dice con el % a precio real; si el KPI queda mudo, el usuario se lleva el número
           sin el asterisco. Y cuando la ventana tiene un corte de regla en el
           medio, el número es de la última corrida homogénea —encadenar por encima
           del corte sería la Fase 1 otra vez—, así que se declara desde cuándo. */}
       <KpiCell
-        label={`Acumulado ${ventanaLabel} · ${currency}${acumuladoEstimado ? ' · recreado' : ''}`}
+        label={`Acumulado ${ventanaLabel} · ${currency}${acumuladoEstimado ? ' · reconstruido' : ''}`}
         value={cuenta(cumulativeReturnPct, n => pctVar(n, 1))}
         tone={rendTone}
         sub={
@@ -138,12 +155,12 @@ export default function InsightsKpiStrip({
                    abre la corrida puede no ser el arranque real del segmento, así
                    que la fecha sería inventada. Lo que SÍ sabemos es que hay un
                    corte de regla antes y que el número es de después de ese corte. */
-                ? 'de tu contabilidad · desde el último corte de la serie'
+                ? 'reconstruido · desde el último corte de la serie'
                 : (acumuladoEstimado.medidoDesde
-                    /* La línea es contable hasta la primera medición y medida
+                    /* La línea es reconstruida hasta la primera medición y medida
                        después; el número es el producto de las dos partes. */
-                    ? `contable hasta ${fmtFechaCorta(acumuladoEstimado.medidoDesde)} · medido después`
-                    : 'de tu contabilidad · sólo se mueve cuando vendés'))
+                    ? `reconstruido hasta ${fmtFechaCorta(acumuladoEstimado.medidoDesde)} · medido después`
+                    : textoReconstruido(acumuladoEstimado)))
             : benchmarkReturnPct != null
             ? `vs ${benchmarkLabel}: ${pctVar(benchmarkReturnPct, 1)} · mismo período`
             : 'TWRR ajustado · sin anualizar'

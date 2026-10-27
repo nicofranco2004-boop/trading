@@ -1257,6 +1257,9 @@ function InsightsDesktop({ _embeddedTab }) {
         // que sólo aparece en estimado (la cadena contable). Ver el comentario de
         // `resolucionChart` más abajo.
         base: pt.base,
+        // ¿Encadena en el número del estimado? (todo menos la intradía). Es lo
+        // que decide si el punto puede ser punta del acumulado en ese modo.
+        enEstimado: !!pt.en_estimado,
       })
     })
     return out
@@ -1391,53 +1394,57 @@ function InsightsDesktop({ _embeddedTab }) {
 
     // ── FASE 2 · el chip del modo ESTIMADO ───────────────────────────────────
     // El modo estimado publica un número que el certero no puede dar, y a cambio
-    // tiene un sesgo que hay que declarar EN PANTALLA, no en un tooltip escondido:
-    // la cadena contable fuerza `pnl_unrealized = 0`, así que NO cuenta lo que
-    // todavía no vendiste. Una cartera que se duplicó sin vender nada sale ~0%.
-    // El sesgo va SIEMPRE para el mismo lado (en contra del usuario), y por eso la
-    // frase tiene que estar junto al número y no en la letra chica: el usuario está
-    // por comparar esto contra el S&P.
+    // es una RECONSTRUCCIÓN, y eso se declara EN PANTALLA, no en un tooltip
+    // escondido: el usuario está por comparar esto contra el S&P.
+    // Desde el 2026-10-27 (decisión del dueño, H6) la regla es "precio real donde
+    // lo hay, costo donde no": lo que tuvo precio histórico se valúa a mercado y
+    // lo que no (bonos o FCI sin cotización vieja) queda al costo. El chip dice
+    // cuánto quedó a precio real (`cobertura_estimado`). "Sólo se mueve cuando
+    // vendés" queda ÚNICAMENTE para la parte que es contabilidad pura
+    // (`excluye_no_realizado`): decirlo de una reconstrucción a mercado era falso.
     // ⚠️ SÓLO SI HAY NÚMERO. `base_del_twr` dice con qué regla se calculó, y vale
     // 'contable' en modo estimado AUNQUE no haya nada que publicar (152 de los 822
     // no tienen una sola fila de snapshot). Sin este chequeo, esos usuarios leerían
-    // "Recreado de tu contabilidad" sobre un gráfico vacío: un cartel que describe
-    // un número que no existe. Ésos caen al estado vacío de abajo, que es el suyo.
+    // "Reconstruido" sobre un gráfico vacío: un cartel que describe un número que
+    // no existe. Ésos caen al estado vacío de abajo, que es el suyo.
     if (perf.base_del_twr === 'contable' && perf.twr != null) {
+      const cob = typeof perf.cobertura_estimado === 'number'
+        ? Math.round(perf.cobertura_estimado * 100) : null
       return (
         <div className="flex items-center gap-1.5">
           <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/30 whitespace-nowrap">
-            {/* Con mediciones reales la línea tiene DOS partes y el chip lo dice: la
-                contable (punteada) hasta la primera foto del cron, la medida
-                (llena) desde ahí. "Sólo se mueve cuando vendés" describe la
-                primera; decirlo sobre una línea que sigue con mediciones diarias
-                era falso para la mitad del gráfico. */}
-            Recreado de tu contabilidad
+            Reconstruido
+            {cob != null ? (cob >= 100 ? ' · todo a precio real' : ` · ${cob} % a precio real`) : ''}
             {perf.ventana_desde ? ` · desde ${fmtFecha(perf.ventana_desde)}` : ''}
             {perf.medido_desde
               ? ` · medido a mercado desde ${fmtFecha(perf.medido_desde)}`
-              : (perf.excluye_no_realizado ? ' · sólo se mueve cuando vendés' : '')}
+              : (perf.excluye_no_realizado ? ' · lo contable sólo se mueve cuando vendés' : '')}
           </span>
           <InfoTooltip>
             <p className="font-semibold text-ink-0">Qué estás viendo</p>
-            <p>La historia completa reconstruida de tu contabilidad: aportes, retiros
-               y lo que ya vendiste. Llega más atrás que la medición a precio real,
-               y a cambio es aproximada.</p>
-            <div className="border-t border-line/60 my-1.5" />
-            <p className="font-semibold text-ink-0">Por qué esta línea puede no parecerse a la del modo Certero</p>
-            <p className="text-ink-3">La parte <strong>punteada</strong> es la contabilidad y
-               <strong> sólo se mueve cuando vendés</strong>: no refleja lo que pasa con lo
-               que todavía tenés. Si tus posiciones abiertas suben o caen, esa parte
-               no se entera — se queda quieta hasta que realizás. Por eso puede
-               mostrar una recta donde el modo Certero muestra un pozo. Desde la
-               primera medición a mercado, la línea sigue <strong>llena</strong> con
-               las mismas mediciones del Certero, encadenadas a lo anterior.</p>
-            <p className="text-ink-3">Ojo: <strong>sí baja</strong> cuando vendés con pérdida.
-               No es una línea que sólo sube.</p>
+            <p>Tu historia reconstruida mes a mes con lo que tenías en cada momento:
+               lo que tuvo precio en esa fecha está valuado a <strong>precio real</strong>,
+               y lo que no (bonos o fondos sin cotización vieja) quedó <strong>al costo</strong>.
+               Llega más atrás que el modo Certero y a cambio es aproximada.</p>
+            {cob != null && cob < 100 && (
+              <p className="text-ink-3">En este período, el {cob} % de tu cartera está a
+                 precio real; el resto, al costo. Lo que está al costo no refleja si
+                 subió o bajó.</p>
+            )}
+            {perf.excluye_no_realizado && (
+              <p className="text-ink-3">Una parte de la línea sale de tu contabilidad
+                 (aportes, retiros y lo que vendiste): esa parte <strong>sólo se mueve
+                 cuando vendés</strong> y no se entera si lo que todavía tenés sube o baja.</p>
+            )}
+            {perf.medido_desde && (
+              <p className="text-ink-3">Desde la primera medición a mercado, la línea sigue
+                 con las mismas mediciones del Certero, encadenadas a lo anterior.</p>
+            )}
             <div className="border-t border-line/60 my-1.5" />
             <p className="font-semibold text-ink-0">Por qué acá no hay drawdown ni pico</p>
-            <p className="text-ink-3">Una caída desde el máximo necesita el CAMINO de
-               los precios, y la contabilidad es un saldo mensual, no un recorrido.
-               Su máximo nunca fue un precio: nadie te pagó eso. Para eso está el
+            <p className="text-ink-3">Una caída desde el máximo necesita el CAMINO diario de
+               los precios, y una reconstrucción mensual no lo tiene: su máximo puede no
+               haber sido nunca un precio al que vendiste. Para eso está el
                modo <strong>Certero</strong>.</p>
           </InfoTooltip>
         </div>
@@ -1678,7 +1685,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // era radio de explosión gratis. Con la guarda, sólo cambian las series MIXTAS
   // — que son exactamente las que tenían el bug.
   const clavesMedidas = activeSeries
-    .filter(s => s.key !== 'today' && s.base !== 'costo')
+    .filter(s => s.key !== 'today' && s.base !== 'costo' && s.base !== 'parcial')
     .map(s => s.key)
   const resolucionChart = resolucionDeSerie(
     clavesMedidas.length
@@ -3010,8 +3017,8 @@ function InsightsDesktop({ _embeddedTab }) {
   // El KPI de arriba ya dice "—" porque el backend devuelve `drawdown_maximo:
   // null` en estimado, pero la CARD seguía dibujándose: `drawdownSeries` se arma
   // de `perf.curva` filtrando `p.apto`, así que en estimado quedaba una curva
-  // hecha sólo con el pedacito medido, colgada de un chip que dice "Recreado de tu
-  // contabilidad". El usuario leía "Drawdown actual —" y tres cards más abajo una
+  // hecha sólo con el pedacito medido, colgada de un chip que dice
+  // "Reconstruido". El usuario leía "Drawdown actual —" y tres cards más abajo una
   // curva de drawdown que baja a −12%: la pantalla contradiciéndose sola.
   //
   // Y es la mitad que importa del guard: publicar el acumulado contable SIN sacar
@@ -3158,7 +3165,7 @@ function InsightsDesktop({ _embeddedTab }) {
       : /^\d{4}-\d{2}$/.test(k || '') ? `${k.slice(5)}/${k.slice(0, 4)}` : '')
     const desdeAcum = acum?.parcial ? fechaDeClave(acum.desde) : ''
     const nota = kpiRendimiento.modoEstimado
-      ? (desdeAcum ? `recreado de tu contabilidad, desde ${desdeAcum}` : 'recreado de tu contabilidad')
+      ? (desdeAcum ? `reconstruido, desde ${desdeAcum}` : 'reconstruido')
       : null
     return {
       carteraPct: kpiRendimiento.cumulativeReturnPct,
@@ -3334,13 +3341,15 @@ function InsightsDesktop({ _embeddedTab }) {
             ventanaMeses={effectiveRange}
             currency={currency}
             /* Un +16,9% reconstruido no puede verse igual que uno medido: el chip
-               del gráfico ya dice "Recreado de tu contabilidad", y el KPI tiene que
+               del gráfico ya dice "Reconstruido", y el KPI tiene que
                ser coherente con eso en vez de quedar mudo. `parcial` avisa cuando
                el número arranca DESPUÉS del borde de la ventana, que es lo que pasa
                cuando hay un corte de regla en el medio. */
             acumuladoEstimado={_modoEstimado && _acum ? {
               parcial: _acum.parcial, desde: _acum.desde,
               medidoDesde: perf?.medido_desde || null,
+              cobertura: perf?.cobertura_estimado ?? null,
+              excluyeNoRealizado: !!perf?.excluye_no_realizado,
             } : null}
           />
         )
@@ -3523,7 +3532,7 @@ function InsightsDesktop({ _embeddedTab }) {
                 { k: 'certero', t: 'Certero',
                   h: 'Menos historial, número exacto: sólo lo valuado a precio real. Incluye drawdown y pico.' },
                 { k: 'estimado', t: 'Estimado',
-                  h: 'Más historial, aproximado: reconstruido de tu contabilidad. Sólo se mueve cuando vendés — no refleja lo que pasa con lo que todavía tenés. No puede dar drawdown ni pico.' },
+                  h: 'Más historial, aproximado: reconstruido con el precio real de lo que se pudo valuar y al costo lo que no (bonos o fondos sin cotización vieja). No puede dar drawdown ni pico.' },
               ].map(({ k, t, h }) => (
                 <button
                   key={k}
@@ -3605,7 +3614,7 @@ function InsightsDesktop({ _embeddedTab }) {
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-semibold text-ink-0">{_perfContable ? 'Las 2 líneas' : 'Las 3 líneas'}</p>
               <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background: trendStroke(true)}}/><strong>Verde sólido</strong>: {_perfContable
-                ? 'lo que ya vendiste, reconstruido de tu contabilidad. NO incluye la ganancia o pérdida de lo que todavía tenés abierto — ese dato no existe hacia atrás.'
+                ? 'tu cartera reconstruida: a precio real lo que tuvo cotización en cada fecha, al costo lo que no. Lo que está al costo no refleja si subió o bajó.'
                 : 'tu cartera total (lo cerrado + lo abierto).'}</p>
               {!_perfContable && (
                 <p><span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{background: 'rgb(var(--data-amber))'}}/><strong>Amarillo punteado</strong>: solo lo cobrado (ventas + dividendos + intereses). Sin la plusvalía abierta.</p>

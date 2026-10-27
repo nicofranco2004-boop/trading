@@ -225,7 +225,8 @@ class NingunSegmentoUneDosBasesTest(_Base):
         # las dos coberturas bajas NUNCA son aptas, esté donde esté la mediana
         bajas = [p for p in c["curva"] if p["date"] >= "2026-03-31"]
         self.assertTrue(all(not p["apto"] for p in bajas))
-        self.assertTrue(all(p["base"] == twr.VALUADO_AL_COSTO for p in bajas))
+        # (reconstrucción parcial desde el 2026-10-27, H6: su propia regla)
+        self.assertTrue(all(p["base"] == twr.VALUADO_PARCIAL for p in bajas))
         # y las cuatro se SIGUEN VIENDO
         self.assertEqual(len(c["curva"]), 4)
 
@@ -248,7 +249,7 @@ class NingunSegmentoUneDosBasesTest(_Base):
         self.assertEqual(c["motivo"], "serie_partida")
         # …pero ni una sola fila bajo el piso quedó apta
         for p in c["curva"]:
-            if p["base"] == twr.VALUADO_AL_COSTO:
+            if p["base"] != twr.VALUADO_A_MERCADO:
                 self.assertFalse(p["apto"])
 
 
@@ -324,14 +325,16 @@ class LaBaseEsUnaFuncionSolaTest(_Base):
     """La tabla completa, para que se lea de un vistazo y no haya que deducirla."""
 
     def test_la_tabla(self):
-        M, C = twr.VALUADO_A_MERCADO, twr.VALUADO_AL_COSTO
+        M, C, P = twr.VALUADO_A_MERCADO, twr.VALUADO_AL_COSTO, twr.VALUADO_PARCIAL
         for clase, cob, esperado in (
             (twr.MEDICION,        None, M),   # el cron: posiciones × precio
             (twr.INTRADIA,        None, M),   # el browser: media rueda, pero precio
             (twr.RECONSTRUIDO,    1.00, M),
             (twr.RECONSTRUIDO,    0.90, M),   # justo en el piso
-            (twr.RECONSTRUIDO,    0.89, C),
-            (twr.RECONSTRUIDO,    0.05, C),   # el caso 452
+            # Bajo el piso: reconstrucción PARCIAL —precio real donde lo hay, costo
+            # donde no—, su propia regla desde el 2026-10-27 (H6). Era C.
+            (twr.RECONSTRUIDO,    0.89, P),
+            (twr.RECONSTRUIDO,    0.05, P),   # el caso 452
             (twr.RECONSTRUIDO,    None, C),   # sin cobertura no se puede afirmar
             (twr.SINTETICO_COSTO, None, C),
             (twr.INDETERMINADO,   None, C),

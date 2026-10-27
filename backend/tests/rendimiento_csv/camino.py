@@ -53,6 +53,9 @@ class Camino:
         self.t, self.m = test, mercado
         self.fecha_cron = date.today()
         self.red_bloqueada = []
+        # Bonos con precio vivo pero SIN velas históricas en data912 (como un bono
+        # nuevo o una especie que data912 no tiene): la reconstrucción los deja al costo.
+        self.sin_historia = set()
         camino = self
 
         class _Yahoo:
@@ -115,7 +118,7 @@ class Camino:
             tipo, ticker = url.split("/historical/", 1)[1].split("/", 1)
             usd = ticker.endswith("D") and ticker[:-1] in BONOS
             base = ticker[:-1] if usd else ticker
-            if tipo != "bonds" or base not in BONOS:
+            if tipo != "bonds" or base not in BONOS or base in self.sin_historia:
                 return _Respuesta(404, {"detail": "not found"})
             filas = [{"date": d.isoformat(),
                       "c": round((self.m.usd(base, d) if usd else self.m.ars(base, d)) * 100,

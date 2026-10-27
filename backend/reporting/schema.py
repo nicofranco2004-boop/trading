@@ -114,6 +114,12 @@ class PeriodMetrics:
     # sabe nada del mercado. Eso es lo que producía "+3,6% anual" en una cuenta
     # que a mercado se había derrumbado, y "9 de 12 meses positivos" perdiendo plata.
     basis: str = "contable"
+    # Con `basis='contable'`: ¿el número deja afuera lo que todavía no vendiste? Es
+    # cierto de la cadena de monthly_entries (fuerza `pnl_unrealized = 0`), y NO de
+    # la reconstrucción del modo Estimado desde el 2026-10-27 (H6): ésa valúa a
+    # precio real lo que tuvo precio y al costo lo que no. El motor lo dice en su
+    # `excluye_no_realizado`; sin motor, la cadena contable lo excluye siempre.
+    excluye_no_realizado: bool = True
     # ⚠️ POR QUÉ EL NÚMERO NO ESTÁ, CUANDO NO ESTÁ. `basis_incomparable` sólo cubre
     # un caso (las dos puntas en bases distintas). Cuando el motor canónico corta
     # por una foto que no cierra o por una contabilidad que no coincide con la

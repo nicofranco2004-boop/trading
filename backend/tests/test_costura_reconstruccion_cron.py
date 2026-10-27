@@ -265,7 +265,10 @@ class LaReconstruccionAdentroDelCron(_Cuenta):
         cron, ver `marcar_reconstrucciones_superadas`)."""
         rec = self._foto(_fin(M1))
         self.assertEqual(rec["source"], "mtm_backfill")
-        self.assertEqual((rec["base"], rec["apto"]), (twr.VALUADO_AL_COSTO, 0))
+        # Desde el 2026-10-27 la reconstrucción que no llega al piso es su propia
+        # regla, `VALUADO_PARCIAL` (precio real donde lo hay, costo donde no), y
+        # no la contabilidad pura (H6, decisión del dueño).
+        self.assertEqual((rec["base"], rec["apto"]), (twr.VALUADO_PARCIAL, 0))
 
     def test_la_curva_no_pasa_por_la_reconstruccion(self):
         """Antes: caída máxima −40 % (10.000 → 6.000) en una cartera quieta."""
@@ -302,7 +305,7 @@ class LaReconstruccionAdentroDelCron(_Cuenta):
             bf._HIST_CACHE.clear()
         self.assertFalse(res["skipped"], res)
         rec = self._foto(_fin(M1))
-        self.assertEqual((rec["base"], rec["apto"]), (twr.VALUADO_AL_COSTO, 0))
+        self.assertEqual((rec["base"], rec["apto"]), (twr.VALUADO_PARCIAL, 0))
 
 
 if __name__ == "__main__":

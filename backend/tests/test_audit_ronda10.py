@@ -315,7 +315,10 @@ class B1_CoberturaOscilanteTest(_Base):
             self.recon(d, float(v), 0.05)
         c = twr.curva_indexada(self.conn, self.uid)
         self.assertIsNone(c["twr"])
-        self.assertEqual([p["base"] for p in c["curva"]], [twr.VALUADO_AL_COSTO] * 2)
+        # Desde el 2026-10-27 la reconstrucción que no llega al piso es su propia
+        # regla, `VALUADO_PARCIAL` (precio real donde lo hay, costo donde no), y
+        # no la contabilidad pura (H6, decisión del dueño).
+        self.assertEqual([p["base"] for p in c["curva"]], [twr.VALUADO_PARCIAL] * 2)
         # …pero la DIBUJA con su forma real (lo que ganó la ronda 7)
         self.assertAlmostEqual(c["curva"][-1]["index"], 1.10, places=4)
 
@@ -354,7 +357,8 @@ class B3_SinYuxtaponerDosBasesTest(_Base):
         # historia al 61% del padrón), pero en SEGMENTOS distintos y cada una
         # rebaseada en 1,0. Lo que impide leer el salto es que no se tocan.
         self.assertEqual(len(c["curva"]), 3)
-        contables = [p for p in c["curva"] if p["base"] == twr.VALUADO_AL_COSTO]
+        # (la reconstrucción al 5 % es `VALUADO_PARCIAL` desde el 2026-10-27, H6)
+        contables = [p for p in c["curva"] if p["base"] == twr.VALUADO_PARCIAL]
         mercado = [p for p in c["curva"] if p["base"] == twr.VALUADO_A_MERCADO]
         self.assertEqual(len(contables), 2)
         self.assertEqual(len(mercado), 1)

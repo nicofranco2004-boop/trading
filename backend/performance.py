@@ -393,6 +393,10 @@ def performance(conn, uid: int, bench_data: dict, bench_key: str = "sp500",
         # medido, y la pantalla no puede declarar el sesgo que el modo tiene.
         "base_del_twr": c.get("base_del_twr"),
         "excluye_no_realizado": c.get("excluye_no_realizado", False),
+        # Qué parte del número del ESTIMADO está valuada a precio real (0 a 1; None
+        # en certero). La pantalla lo dice: el estimado es "precio real de lo que
+        # se pudo valuar, costo de lo que no" (decisión del dueño, 2026-10-27).
+        "cobertura_estimado": c.get("cobertura_estimado"),
         # La ventana que el número REALMENTE cubre (≠ `medido_desde`, que describe
         # todos los puntos aptos). En estimado es la del tramo contable publicado.
         "ventana_desde": c.get("ventana_desde"),

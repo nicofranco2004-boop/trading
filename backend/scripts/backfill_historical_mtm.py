@@ -842,12 +842,13 @@ MTM_SOURCE = "mtm_backfill"
 COBERTURA_REFERENCIA = 0.70
 
 
-def _twr_base_apto(coverage, contradicha=False):
+def _twr_base_apto(coverage, contradicha=False, regla_del_cron=True):
     """(base, apto) de una foto reconstruida con ESA cobertura. Una sola fuente:
     `twr.base_y_apto_para`, la misma que usan los otros tres escritores y la
     migración. Si acá se escribiera la regla a mano, habría dos."""
     import twr as _twr
-    return _twr.base_y_apto_para(_twr.RECONSTRUIDO, coverage, contradicha=contradicha)
+    return _twr.base_y_apto_para(_twr.RECONSTRUIDO, coverage, contradicha=contradicha,
+                                 regla_del_cron=regla_del_cron)
 
 
 def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
@@ -919,15 +920,16 @@ def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
         # la misma fila recibiera respuestas distintas según quién preguntaba y
         # cuándo. Con cobertura baja el `total_value` de la foto ES el costo (lo que
         # no se pudo precear entra con unrealized 0): base contable, y nunca apta.
-        # Afirmable = no desmentida por una foto de tenencia, y valuada como el
-        # cron (caja verificada) o sin nada en pesos: sin pesos, "contabilidad +
-        # no realizado" da lo mismo que el cron (el dólar no se devalúa contra sí
-        # mismo), y una cuenta en dólares con un aporte cargado a mano —que la
-        # caja reproducida no ve— no tiene por qué perder su historia.
-        _no_afirmable = (info.get("contradicha", False)
-                         or (not info.get("caja_verificada", True)
-                             and info.get("con_pesos", False)))
-        _base, _apto = _twr_base_apto(info["coverage"], _no_afirmable)
+        # La REGLA es la del cron si la foto se valuó como el cron (caja verificada)
+        # o si no tiene nada en pesos: sin pesos, "contabilidad + no realizado" da
+        # lo mismo que el cron (el dólar no se devalúa contra sí mismo), y una
+        # cuenta en dólares con un aporte cargado a mano —que la caja reproducida no
+        # ve— no tiene por qué perder su historia. Si no, es una reconstrucción
+        # parcial. Y lo que una foto de tenencia desmintió nunca es apto.
+        _regla_del_cron = (info.get("caja_verificada", True)
+                           or not info.get("con_pesos", False))
+        _base, _apto = _twr_base_apto(info["coverage"], info.get("contradicha", False),
+                                      _regla_del_cron)
         conn.execute(
             """INSERT INTO snapshots
                  (user_id, date, total_value, total_invested, net_deposited,

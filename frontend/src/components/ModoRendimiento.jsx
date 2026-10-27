@@ -9,15 +9,16 @@
  *
  * Los dos modos, en una línea:
  *   · CERTERO  — sólo lo valuado a precio real. Menos historia, número exacto.
- *   · ESTIMADO — además la contabilidad reconstruida. Más historia, aproximada,
- *                y no cuenta lo que todavía no vendiste.
+ *   · ESTIMADO — además la historia reconstruida: precio real de lo que se pudo
+ *                valuar y al costo lo que no (bonos o FCI sin precio histórico).
+ *                Más historia, aproximada, con el % valuado a precio real.
  */
 export default function ModoRendimiento({ valor, onChange, deshabilitado, motivo, className = '' }) {
   const OPCIONES = [
     { k: 'certero', t: 'Certero',
       h: 'Menos historial, número exacto: sólo lo valuado a precio real.' },
     { k: 'estimado', t: 'Estimado',
-      h: 'Más historial, aproximado: reconstruido de tu contabilidad. Sólo se mueve cuando vendés.' },
+      h: 'Más historial, aproximado: reconstruido con el precio real de lo que se pudo valuar y al costo lo que no.' },
   ]
   return (
     <div className={`flex gap-1 bg-bg-2 dark:bg-bg-1/60 rounded-lg p-0.5 ${className}`}>

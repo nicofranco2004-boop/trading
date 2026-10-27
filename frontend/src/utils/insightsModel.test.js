@@ -940,6 +940,28 @@ describe('acumuladoPublicado', () => {
     expect(c.desde).toBe('2026-07-11')
   })
 
+  it('en estimado la reconstrucción PARCIAL y todo punto marcado en_estimado son punta (H6, 2026-10-27)', () => {
+    // El estimado es "precio real donde lo hay, costo donde no": una reconstrucción
+    // con parte al costo viene como base 'parcial', no apta, y el backend la
+    // encadena en el número. Si el KPI no la toma como punta, el número arranca en
+    // la primera medición y el chip —que dice "desde mayo"— lo contradice.
+    const filas = [
+      { key: '2025-05-31', ip: 1.0, apto: false, base: 'parcial', enEstimado: true, [B]: 0 },
+      { key: '2025-06-30', ip: 1.04, apto: false, base: 'parcial', enEstimado: true, [B]: 1.0 },
+      { key: '2025-07-31', ip: 1.08, apto: false, base: 'mercado', enEstimado: true, [B]: 2.0 },
+    ]
+    const r = acumuladoPublicado(filas, B, { contable: true })
+    expect(r.desde).toBe('2025-05-31')
+    expect(r.hasta).toBe('2025-07-31')
+    expect(r.pct).toBeCloseTo(8.0, 2)
+    // la intradía no viene marcada: no es punta aunque tenga índice
+    const conIntradia = [...filas,
+      { key: '2025-08-02T15:00', ip: 1.5, apto: false, base: 'mercado', enEstimado: false, [B]: 2.1 }]
+    expect(acumuladoPublicado(conIntradia, B, { contable: true }).hasta).toBe('2025-07-31')
+    // y en certero nada de eso cuenta
+    expect(acumuladoPublicado(filas, B)).toBeNull()
+  })
+
   it('sin benchmark en alguna de las dos puntas, benchPct es null pero el acumulado sale', () => {
     const r = acumuladoPublicado([
       fila('2026-07-01', 1.0, true, null),

@@ -1493,6 +1493,9 @@ def compute_metrics_for_period(
     # NI el monto — un número inventado con autoridad es peor que un "—".
     basis_incomparable = False
     _basis = "contable"     # en qué base quedaron las dos puntas
+    # Con base contable, ¿el número deja afuera lo no vendido? La cadena de
+    # monthly_entries sí; la reconstrucción del estimado (motor) dice lo suyo.
+    _excluye_no_realizado = True
     # Por qué el motor canónico se negó a publicar (None = no se negó). Se propaga
     # a la respuesta para que la pantalla diga lo MISMO que Métricas.
     _motor_nego = None
@@ -1704,6 +1707,7 @@ def compute_metrics_for_period(
                         month_twr_pct = round(_cm["twr"] * 100, 2)
                         _basis = ("mercado" if _cm.get("base_del_twr") != "contable"
                                   else "contable")
+                        _excluye_no_realizado = bool(_cm.get("excluye_no_realizado", True))
                         _motor_publico = True
                         _ventana_medida = (_cm.get("ventana_desde"), _cm.get("ventana_hasta"))
                         # ⚠️ EL MONTO TIENE QUE DESCRIBIR LA MISMA VENTANA QUE EL %.
@@ -1900,6 +1904,7 @@ def compute_metrics_for_period(
                                            period_start, period_end, year_is_current)):
                     year_twr_pct = round(_c["twr"] * 100, 2)
                     _basis = "mercado" if _c.get("base_del_twr") != "contable" else "contable"
+                    _excluye_no_realizado = bool(_c.get("excluye_no_realizado", True))
                     _motor_publico = True
                     _ventana_medida = (_c.get("ventana_desde"), _c.get("ventana_hasta"))
                 # ⚠️ EL MOTOR SE NEGÓ, Y ESO NO ES "NO HAY DATO": ES UNA DECISIÓN.
@@ -2688,6 +2693,7 @@ def compute_metrics_for_period(
         inflation_pct=round(inflation_ret, 2) if inflation_ret is not None else None,
         basis_incomparable=basis_incomparable,
         basis=_basis,
+        excluye_no_realizado=(_basis == "contable" and _excluye_no_realizado),
         motor_motivo=_motor_nego,
         motor_motivo_texto=_motor_nego_texto,
         medido_desde=_ventana_medida[0],
@@ -3060,10 +3066,18 @@ def generate_narrative(metrics: "PeriodMetrics", drivers: List["AssetContributio
     if metrics.vs_sp500_pct is not None and abs(metrics.vs_sp500_pct) >= 0.5:
         sign = "encima" if metrics.vs_sp500_pct > 0 else "debajo"
         _frase = f"Quedaste {fmt_num(abs(metrics.vs_sp500_pct), 1)} puntos por {sign} del S&P 500."
+        # Desde el 2026-10-27 (H6) el estimado es una reconstrucción "precio real
+        # donde lo hay, costo donde no": la advertencia de que NO cuenta lo no
+        # vendido es cierta sólo cuando el número sale de la contabilidad pura.
         if getattr(metrics, "basis", None) == "contable":
-            _frase += (" Ojo: tu número está reconstruido de tu contabilidad y no "
-                       "cuenta las ganancias que todavía no vendiste, así que la "
-                       "comparación te juega en contra.")
+            if getattr(metrics, "excluye_no_realizado", True):
+                _frase += (" Ojo: tu número está reconstruido de tu contabilidad y no "
+                           "cuenta las ganancias que todavía no vendiste, así que la "
+                           "comparación te juega en contra.")
+            else:
+                _frase += (" Ojo: tu número es una reconstrucción —a precio real lo "
+                           "que tuvo cotización, al costo lo que no—, así que es "
+                           "aproximado.")
         parts.append(_frase)
 
     return " ".join(parts) if parts else None

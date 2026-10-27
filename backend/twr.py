@@ -292,6 +292,18 @@ def clasificar_fila(row, tenia_posiciones: bool) -> str:
 #     REGLA. Cuando la regla cambia no hay segmento: hay un corte.
 VALUADO_A_MERCADO = "mercado"   # posiciones × precio real
 VALUADO_AL_COSTO = "costo"      # la cadena contable copiada
+# ⚠️ LA RECONSTRUCCIÓN PARCIAL ES SU PROPIA REGLA (auditoría 2026-10-27, H6; decisión
+# del dueño del mismo día). Una foto reconstruida que no llega a la cobertura de
+# medición NO es la contabilidad: vale "precio real de lo que se pudo valuar, costo
+# de lo que no" (bonos y FCI sin precio histórico). Hasta acá se estampaba 'costo',
+# igual que la foto contable pura, y la cadena del Estimado —que encadena por
+# base— las restaba entre sí: un leg contable → casi mercado asentaba de golpe
+# años de ganancia no vendida (IEB: +36 % en un trimestre; mismo inversor, Estimado
+# 135 % en Balanz y 123 % en IEB). Con su propia base, la reconstrucción parcial se
+# encadena contra sí misma, nunca contra la contabilidad pura; pasar de una regla a
+# otra es un traspaso que no mide retorno, como siempre.
+VALUADO_PARCIAL = "parcial"     # reconstrucción: precio real donde hay, costo donde no
+BASES = (VALUADO_A_MERCADO, VALUADO_PARCIAL, VALUADO_AL_COSTO)
 
 
 def es_apto(clase: str, base: str) -> bool:
@@ -350,10 +362,14 @@ def base_de(clase: str, cobertura=None) -> str:
     if clase in (MEDICION, INTRADIA):
         return VALUADO_A_MERCADO
     if clase == RECONSTRUIDO:
+        # Sin cobertura no se puede afirmar nada: es contable (y `clasificar_fila`
+        # ya la lee como SINTETICO_COSTO). Con cobertura bajo el piso es una
+        # reconstrucción parcial: precio real donde lo hay, costo donde no.
         try:
-            return (VALUADO_A_MERCADO
-                    if cobertura is not None and float(cobertura) >= COBERTURA_MEDICION
-                    else VALUADO_AL_COSTO)
+            if cobertura is None:
+                return VALUADO_AL_COSTO
+            return (VALUADO_A_MERCADO if float(cobertura) >= COBERTURA_MEDICION
+                    else VALUADO_PARCIAL)
         except (TypeError, ValueError):
             return VALUADO_AL_COSTO
     return VALUADO_AL_COSTO
@@ -1832,7 +1848,7 @@ def fechas_de_medicion(conn, uid: int) -> list:
 
 
 def marcar_reconstrucciones_superadas(conn, uid: int) -> int:
-    """Estampa como NO-cierre (`base='costo'`, `apto=0`) las fotos reconstruidas
+    """Estampa como NO-cierre (`base='parcial'`, `apto=0`) las fotos reconstruidas
     que caen adentro de un tramo que el cron ya midió (regla 1 de arriba).
     Devuelve cuántas cambió. NO commitea.
 
@@ -1862,10 +1878,13 @@ def marcar_reconstrucciones_superadas(conn, uid: int) -> int:
     meds = fechas_de_medicion(conn, uid)
     n = 0
     for r in rec:
+        # Una reconstrucción es su propia regla (`VALUADO_PARCIAL`), nunca la
+        # contabilidad pura: marcada como no-cierre sigue siendo una reconstrucción.
+        # Una que ya era parcial o contable con apto=0 no se toca.
         if (reconstruccion_superada(r["date"], meds)
-                and (r["base"] != VALUADO_AL_COSTO or r["apto"] != 0)):
+                and (r["base"] == VALUADO_A_MERCADO or r["apto"] != 0)):
             conn.execute("UPDATE snapshots SET base=?, apto=0 WHERE user_id=? AND date=? "
-                         "AND source='mtm_backfill'", (VALUADO_AL_COSTO, uid, r["date"]))
+                         "AND source='mtm_backfill'", (VALUADO_PARCIAL, uid, r["date"]))
             n += 1
     return n
 
@@ -2140,6 +2159,20 @@ def _aportado_por_punto(conn, uid: int, filas, excluir=()):
     return _en
 
 
+def _cobertura_de_punto(p) -> float:
+    """Qué fracción del valor de un punto de la curva salió de un precio real: la
+    medición del cron entera, la reconstrucción por su cobertura estampada, la
+    contabilidad pura nada."""
+    if p.get("clase") in (MEDICION, INTRADIA):
+        return 1.0
+    if p.get("clase") == RECONSTRUIDO:
+        try:
+            return max(0.0, min(1.0, float(p.get("cobertura") or 0.0)))
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
 def valor_para_dibujar(p) -> float:
     """El valor crudo de un punto, MIDA O NO. La única puerta al número de un punto
     que no mide, y tiene nombre largo a propósito.
@@ -2149,6 +2182,23 @@ def valor_para_dibujar(p) -> float:
     no es el dato — `serie_medible()["medibles"]` lo es.
     """
     return float(p["value"] if p.get("apto") else p["value_no_medible"])
+
+
+def cobertura_en_el_tiempo(puntos):
+    """Qué fracción de la ventana del estimado estuvo valuada a precio real,
+    PONDERADA POR TIEMPO: cada punto vale por los días hasta el siguiente (el
+    último, un día). Promediando por punto, 60 cierres diarios del cron a 1,0
+    pesaban el doble que 30 meses reconstruidos al 70 % y la pantalla decía "90 %
+    a precio real" de una historia que estuvo dos años y medio al 70 %."""
+    if not puntos:
+        return None
+    num = den = 0.0
+    for k, q in enumerate(puntos):
+        w = (max(1, _dias(q["date"], puntos[k + 1]["date"]))
+             if k + 1 < len(puntos) else 1)
+        num += _cobertura_de_punto(q) * w
+        den += w
+    return round(num / den, 4) if den > 0 else None
 
 
 def _tiene_columna(conn, tabla: str, col: str) -> bool:
@@ -2195,7 +2245,7 @@ def bases_de_serie(filas, clases) -> list:
     out = []
     for r, c in zip(filas, clases):
         estampada = _col(r, "base")
-        if estampada in (VALUADO_A_MERCADO, VALUADO_AL_COSTO):
+        if estampada in BASES:
             out.append(estampada)
         else:
             out.append(base_de(c, _col(r, "mtm_coverage")))
@@ -2208,7 +2258,7 @@ def aptos_de_serie(filas, clases, bases=None) -> list:
     out = []
     for r, c, b in zip(filas, clases, bases):
         estampado = _col(r, "apto")
-        if estampado is not None and _col(r, "base") in (VALUADO_A_MERCADO, VALUADO_AL_COSTO):
+        if estampado is not None and _col(r, "base") in BASES:
             out.append(bool(estampado))
         else:
             out.append(es_apto(c, b))
@@ -2219,22 +2269,29 @@ def aptos_de_serie(filas, clases, bases=None) -> list:
 # EL ESTAMPADO
 # ═══════════════════════════════════════════════════════════════════════════
 
-def base_y_apto_para(clase: str, cobertura=None, *, contradicha: bool = False):
+def base_y_apto_para(clase: str, cobertura=None, *, contradicha: bool = False,
+                     regla_del_cron: bool = True):
     """(base, apto) de una fila de esa clase. LA función que usan los escritores.
 
     Existe para que los cuatro que escriben snapshots —el cron, el browser, el
     import y el reconstructor— no cada uno su versión. El que agregue un quinto
     escritor tiene que pasar por acá.
 
-    `contradicha`: una reconstrucción anterior a una foto de tenencia que tuvo que
-    corregir el archivo (`backfill_historical_mtm.CONTRADICCION_MAX`). Su valor
-    describe un archivo que la foto desmintió: no es afirmable como mercado,
-    tenga la cobertura que tenga. Sólo lo sabe el reconstructor, que la estampa.
+    Dos cosas que sólo sabe el reconstructor, que es el que la estampa:
+      · `contradicha` — la foto es anterior a una foto de tenencia que tuvo que
+        corregir el archivo (`backfill_historical_mtm.CONTRADICCION_MAX`): describe
+        un archivo que la foto desmintió. Su REGLA puede ser la del cron, pero no
+        es afirmable: nunca apta.
+      · `regla_del_cron=False` — no se pudo valuar como el cron (la caja no se
+        verificó y hay pesos) y su valor salió de "contabilidad + no realizado":
+        precio real donde lo hay, el resto como lo dejó la contabilidad. Es una
+        reconstrucción parcial (`VALUADO_PARCIAL`) aunque tenga cobertura.
     """
-    if contradicha and clase == RECONSTRUIDO:
-        return VALUADO_AL_COSTO, 0
     b = base_de(clase, cobertura)
-    return b, (1 if es_apto(clase, b) else 0)
+    if clase == RECONSTRUIDO and b == VALUADO_A_MERCADO and not regla_del_cron:
+        b = VALUADO_PARCIAL
+    nunca_apta = contradicha and clase == RECONSTRUIDO
+    return b, (1 if (es_apto(clase, b) and not nunca_apta) else 0)
 
 
 def estampar_base(conn, uids=None, solo_faltantes: bool = True) -> dict:
@@ -2268,8 +2325,7 @@ def estampar_base(conn, uids=None, solo_faltantes: bool = True) -> dict:
 
     for uid, filas in por_user.items():
         pendientes = [r for r in filas
-                      if not solo_faltantes or _col(r, "base") not in
-                      (VALUADO_A_MERCADO, VALUADO_AL_COSTO)]
+                      if not solo_faltantes or _col(r, "base") not in BASES]
         if not pendientes:
             continue
         clases = clasificar_serie(filas, primera_fecha_con_posiciones(conn, uid))
@@ -2285,6 +2341,26 @@ def estampar_base(conn, uids=None, solo_faltantes: bool = True) -> dict:
             n_filas += tocadas
             n_users += 1
     return {"filas": n_filas, "usuarios": n_users}
+
+
+def reestampar_reconstrucciones_parciales(conn) -> int:
+    """Las fotos reconstruidas que se estamparon `'costo'` con cobertura conocida
+    pasan a `VALUADO_PARCIAL` (H6, 2026-10-27). Devuelve cuántas cambió.
+
+    ⚠️ ES LA ÚNICA RE-ESTAMPA, Y ES SEGURA POR CONSTRUCCIÓN. `estampar_base` no toca
+    una fila ya estampada (`solo_faltantes`, ver ahí por qué), y no hace falta: lo
+    único que cambió de regla es la reconstrucción bajo el piso de cobertura, que
+    antes se estampaba igual que la contabilidad pura. Una foto `mtm_backfill` con
+    cobertura NUNCA fue contabilidad pura —su valor lleva el precio real de lo que se
+    pudo valuar—, así que pasarla a parcial no reescribe un hecho: corrige una
+    etiqueta. `apto` no se toca (era 0 y sigue en 0). Las demás las rehace la
+    reconstrucción misma, que con la versión nueva de la regla vuelve a correr para
+    cada cuenta (`backfill_historical_mtm.VERSION_RECONSTRUCCION`)."""
+    if not _tiene_columna(conn, "snapshots", "base"):
+        return 0
+    return conn.execute(
+        "UPDATE snapshots SET base=? WHERE source='mtm_backfill' AND base=? "
+        "AND mtm_coverage IS NOT NULL", (VALUADO_PARCIAL, VALUADO_AL_COSTO)).rowcount
 
 
 MODO_CERTERO = "certero"
@@ -2701,7 +2777,9 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
         #     como una caída del 47%;
         #   · la foto INTRADIA SÍ entraba, y es posiciones × precio real: mezclarla
         #     con la cadena contable hace que la propia banda una dos bases.
-        if _base == VALUADO_AL_COSTO:
+        # La reconstrucción parcial tampoco es una medición: va a la banda igual
+        # que la contabilidad (y con su base, para que se distingan).
+        if _base != VALUADO_A_MERCADO:
             # ⚠️ `value_no_medible`, NO `value` — misma disciplina que los puntos.
             # La banda seguía exponiendo el número crudo bajo `value`, así que un
             # `.get("value")` devolvía el valor contable sin romper nada: el error
@@ -2745,10 +2823,32 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     # (la cadena del `idx_est`, que encadena las filas al costo entre sí). La cadena
     # de DIBUJO no corta el tramo: parte el segmento, en `curva_indexada`.
     tramos, actual, ultimo_apto = [], [], None
+    # El último punto de la cadena del ESTIMADO (todo menos la intradía). Esa cadena
+    # encadena sólo puntos SEGUIDOS de la misma base: un cambio de base es un
+    # traspaso (no mide retorno). Con un ancla por base, mercado → parcial → mercado
+    # medía el leg mercado→mercado POR ENCIMA del tramo parcial, que también
+    # encadenaba: el mismo período contado dos veces (H6, 2026-10-27).
+    ultimo_p_est = None
     ultimo_costo = None            # última fila CONTABLE del tramo (cadena del estimado)
     primer_costo = None            # la fila CONTABLE donde ARRANCA esa cadena
     cortes_dudosos = []
     cortes_capital_chico = []      # cadena contable sobre menos de US$100 (no es un dato roto)
+
+    def _traspaso_no_cierra(c, p):
+        """El traspaso de una base que no mide (contable, parcial) a la medición:
+        no se mide su retorno, pero el saldo anterior más los flujos tiene que
+        parecerse a lo medido (×3). Ver el comentario en el primer uso."""
+        _v0, _v1, _flow = _leg_en_moneda(c, p, valor_para_dibujar(c), valor_para_dibujar(p))
+        _base_c = _v0 + _flow
+        _ratio = (_v1 / _base_c) if _base_c > 0 else None
+        if _ratio is None or _ratio > SALTO_MAX_VECES or _ratio < 1.0 / SALTO_MAX_VECES:
+            cortes_dudosos.append({
+                "desde": c["date"], "hasta": p["date"], "motivo": "cadena_implausible",
+                "v0": valor_para_dibujar(c), "v1": valor_para_dibujar(p),
+                "flujo": _flow, "cadena": "traspaso"})
+            return True
+        return False
+
     for p in puntos:
         corta = False
         motivo_corte = None
@@ -2763,7 +2863,7 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
         if actual and _dias(actual[-1]["date"], p["date"]) > _tope:
             corta = True
         elif (actual and p["apto"] and ultimo_apto is None and modo == MODO_ESTIMADO
-              and actual[-1]["base"] == VALUADO_AL_COSTO):
+              and actual[-1]["base"] != VALUADO_A_MERCADO):
             # ⚠️ EL TRASPASO CONTABLE→MERCADO TIENE QUE CERRAR. No se mide un retorno
             # a través del cambio de regla, pero SÍ se puede preguntar si la
             # contabilidad se parece a la realidad el día que ésta aparece: el
@@ -2773,21 +2873,29 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
             # US$1,85 M de contabilidad contra US$55 k medidos, y encadenar esa
             # cadena publicaba +17.517 %. Una cadena que se separa ×3 de la
             # realidad no es "aproximada": está rota, y no se encadena.
-            _c = actual[-1]
-            _v0, _v1, _flow = _leg_en_moneda(_c, p, valor_para_dibujar(_c),
-                                             valor_para_dibujar(p))
-            _base_c = _v0 + _flow
-            _ratio = (_v1 / _base_c) if _base_c > 0 else None
-            if _ratio is None or _ratio > SALTO_MAX_VECES or _ratio < 1.0 / SALTO_MAX_VECES:
-                corta = True
-                motivo_corte = "cadena_implausible"
-                cortes_dudosos.append({
-                    "desde": _c["date"], "hasta": p["date"], "motivo": motivo_corte,
-                    "v0": valor_para_dibujar(_c), "v1": valor_para_dibujar(p),
-                    "flujo": _flow, "cadena": "traspaso"})
+            if _traspaso_no_cierra(actual[-1], p):
+                corta, motivo_corte = True, "cadena_implausible"
         elif actual and p["apto"] and ultimo_apto is not None:
             if _dias(ultimo_apto["date"], p["date"]) > max_hueco_dias:
-                corta = True
+                # ⚠️ EN ESTIMADO, EL SILENCIO DE LA CADENA CERTERA NO ES UN SILENCIO
+                # DE LA SERIE (H6). Una reconstrucción parcial —un bono sin precio
+                # histórico— deja la cadena certera sin puntos durante años, pero el
+                # estimado tiene un punto por mes hasta el día anterior a la
+                # medición. Cortar acá le dejaba al estimado sólo el tramo del cron:
+                # la historia que el modo existe para dar, tirada por la regla del
+                # otro modo. Si el punto anterior del estimado está cerca, esto es
+                # un TRASPASO (no mide retorno) y cierra como cualquier traspaso. La
+                # cadena certera sí arranca de nuevo (`ultimo_apto`), y en certero
+                # el corte queda como estaba.
+                if (modo == MODO_ESTIMADO and ultimo_p_est is not None
+                        and not ultimo_p_est["apto"]
+                        and _dias(ultimo_p_est["date"], p["date"]) <= max_hueco_dias):
+                    ultimo_apto = None
+                    if (ultimo_p_est["base"] != p["base"]
+                            and _traspaso_no_cierra(ultimo_p_est, p)):
+                        corta, motivo_corte = True, "cadena_implausible"
+                else:
+                    corta = True
             else:
                 _v0, _v1, _flow = _leg_en_moneda(ultimo_apto, p, ultimo_apto["value"],
                                                  valor_para_dibujar(p))
@@ -2808,7 +2916,7 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
                         "v0": ultimo_apto["value"], "v1": valor_para_dibujar(p),
                         "flujo": _flow, "cadena": _cadena})
         elif (actual and modo == MODO_ESTIMADO and p["base"] == VALUADO_AL_COSTO
-              and ultimo_costo is not None):
+              and ultimo_costo is not None and ultimo_p_est is ultimo_costo):
             _v0, _v1, _flow = _leg_en_moneda(ultimo_costo, p,
                                              valor_para_dibujar(ultimo_costo),
                                              valor_para_dibujar(p))
@@ -2850,10 +2958,44 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
                     "desde": ultimo_costo["date"], "hasta": p["date"], "motivo": motivo_corte,
                     "v0": valor_para_dibujar(ultimo_costo), "v1": valor_para_dibujar(p),
                     "flujo": _flow, "cadena": "contable"})
+        # ⚠️ LAS OTRAS DOS CADENAS DEL ESTIMADO (H6). La reconstrucción parcial
+        # (`VALUADO_PARCIAL`) y la reconstrucción con la regla del cron que una foto
+        # de tenencia desmintió (mercado, no apta) encadenan por su base en
+        # `curva_indexada`, igual que la contable. Sus legs no pasan por la cadena
+        # certera (apto → apto) ni por la contable, así que llevan acá las mismas
+        # guardas: capital chico, `leg_dudoso` y, entre una reconstrucción y una
+        # medición del cron, la costura.
+        if (not corta and actual and modo == MODO_ESTIMADO and p["clase"] != INTRADIA
+                and p["base"] != VALUADO_AL_COSTO):
+            _prev = (ultimo_p_est if (ultimo_p_est is not None
+                                      and ultimo_p_est["base"] == p["base"]) else None)
+            if _prev is not None and not (p["apto"] and _prev["apto"]):
+                _v0, _v1, _flow = _leg_en_moneda(_prev, p, valor_para_dibujar(_prev),
+                                                 valor_para_dibujar(p))
+                _cadena = "parcial" if p["base"] == VALUADO_PARCIAL else "mercado"
+                if valor_para_dibujar(_prev) < PISO_DENOMINADOR_USD:
+                    corta = True
+                    cortes_capital_chico.append({
+                        "desde": _prev["date"], "hasta": p["date"],
+                        "v0": valor_para_dibujar(_prev), "v1": valor_para_dibujar(p)})
+                else:
+                    motivo_corte = leg_dudoso(_v0, _v1, _flow)
+                    if (not motivo_corte and es_costura(_prev["clase"], p["clase"])
+                            and costura_no_cierra(_v0, _v1, _flow)):
+                        motivo_corte, _cadena = "cadena_implausible", "costura"
+                    if motivo_corte:
+                        corta = True
+                        cortes_dudosos.append({
+                            "desde": _prev["date"], "hasta": p["date"],
+                            "motivo": motivo_corte, "v0": valor_para_dibujar(_prev),
+                            "v1": valor_para_dibujar(p), "flujo": _flow, "cadena": _cadena})
         if corta:
             tramos.append(actual); actual = []; ultimo_apto = None; ultimo_costo = None
             primer_costo = None
+            ultimo_p_est = None
         actual.append(p)
+        if p["clase"] != INTRADIA:
+            ultimo_p_est = p
         if p["apto"]:
             ultimo_apto = p
         if p["base"] == VALUADO_AL_COSTO:
@@ -3011,7 +3153,8 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                 # gate por `!== 'contable'` deja pasar exactamente lo que vino a
                 # frenar. Es el mismo defecto que `drawdown_maximo_fecha` ya causó.
                 "base_del_twr": ("contable" if modo == MODO_ESTIMADO else "mercado"),
-                "excluye_no_realizado": (modo == MODO_ESTIMADO)}
+                "excluye_no_realizado": (modo == MODO_ESTIMADO),
+                "cobertura_estimado": None}
 
     # ⚠️ EL ÍNDICE Y EL PICO SE REINICIAN EN CADA TRAMO.
     #
@@ -3126,9 +3269,15 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         # ancla por base, la cadena contable se encadena contra sí misma y la de
         # mercado contra sí misma; lo que las une es el PRODUCTO de dos retornos,
         # que es otra cosa: cada tramo se midió entero bajo su propia regla.
-        ancla_est = {}        # base -> último punto que puede encadenar en ESTIMADO
+        # (Desde H6 el ancla es el punto ANTERIOR del estimado si es de la misma
+        # base, no el último de esa base: ver abajo.)
         idx_est = 1.0
         legs_est = 0
+        # Lo que entró a la cadena del estimado en este tramo, para decir CON QUÉ se
+        # armó el número (cobertura, si hay contabilidad pura) y para poder probar
+        # que ningún leg une dos reglas (`legs_est_detalle`).
+        puntos_est = []
+        legs_est_det = []
         for i, p in enumerate(tramo):
             # ⚠️ UN PUNTO NO-APTO NO TOCA EL ÍNDICE, NI COMO v0 NI COMO v1.
             #
@@ -3145,8 +3294,12 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             _arranque_medible = False
             if not p["apto"]:
                 ret = None
-            elif ancla is None:
-                ret = None                       # arranque medible del tramo
+            elif ancla is None or _dias(ancla["date"], p["date"]) > max_hueco_dias:
+                # Arranque medible del tramo. El segundo caso existe sólo en
+                # ESTIMADO: ahí `serie_medible` no corta el tramo por el silencio de
+                # la cadena certera cuando el estimado sí tiene puntos en el medio
+                # (H6); la cadena certera arranca de nuevo, no lo cruza.
+                ret = None
                 _arranque_medible = True
             else:
                 _a, _b, flow = _leg_en_moneda(ancla, p, ancla["value"], p["value"])
@@ -3235,8 +3388,18 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             # INDETERMINADO: son los dos que no se pueden afirmar ni siquiera como
             # punta contable —la intradía es media rueda, el indeterminado no se
             # sabe qué es—, y meterlos sería cambiar "aproximado" por "cualquiera".
-            if modo == MODO_ESTIMADO and not _vetado and (p["apto"] or _b == VALUADO_AL_COSTO):
-                _prev_est = ancla_est.get(_b)
+            # ⚠️ Y LA RECONSTRUCCIÓN QUE NO MIDE (H6): la parcial y la que la foto de
+            # tenencia desmintió entran con su base, en su propia cadena. Afuera
+            # queda sólo la intradía (media rueda).
+            if modo == MODO_ESTIMADO and not _vetado and p["clase"] != INTRADIA:
+                # ⚠️ SÓLO PUNTOS SEGUIDOS DE LA MISMA BASE (H6, 2026-10-27). Con el
+                # ancla por base, mercado → parcial → mercado medía el leg
+                # mercado→mercado por ENCIMA del tramo parcial, que también
+                # encadenaba: el mismo período contado dos veces. Un cambio de
+                # base es un traspaso, y el siguiente leg arranca desde ahí.
+                _prev_est = (ultimo_p_est if (ultimo_p_est is not None
+                                              and ultimo_p_est["base"] == _b) else None)
+                puntos_est.append(p)
                 if _prev_est is not None:
                     _v0e, _v1e, _fe = _leg_en_moneda(
                         _prev_est, p, valor_para_dibujar(_prev_est), valor_para_dibujar(p))
@@ -3244,14 +3407,16 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                     if _re is not None:
                         idx_est *= (1.0 + _re)
                         legs_est += 1
-                elif ancla_est:
+                        legs_est_det.append({"desde": _prev_est["date"], "hasta": p["date"],
+                                             "base_desde": _prev_est["base"],
+                                             "base_hasta": p["base"], "ret": _re})
+                elif ultimo_p_est is not None:
                     # Traspaso a una base nueva: el retorno del hueco no se mide,
                     # la devaluación sí (mismo motivo que en el dibujo, arriba).
                     _ffx = _factor_fx(ultimo_p_est, p)
                     if _ffx != 1.0:
                         idx_est *= _ffx
                         legs_est += 1
-                ancla_est[_b] = p
                 ultimo_p_est = p
             ancla_por_base[_b] = p
             idx_dib = idx_por_base[_b]
@@ -3295,6 +3460,11 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                          valor_para_dibujar(p),
                      "clase": p["clase"],
                      "apto": p["apto"], "ret": ret,
+                     # ¿Este punto ENCADENA en el número del estimado? (Puede ser
+                     # punta del acumulado que rebasea el frontend.) Todo menos la
+                     # intradía —y lo de un tramo vetado por el techo contable—.
+                     "en_estimado": (modo == MODO_ESTIMADO and not _vetado
+                                     and p["clase"] != INTRADIA),
                      # A qué TRAMO pertenece. Sin esto el punto sale con el índice
                      # reiniciado a 1,0 y sin ninguna marca, y el chart lo dibuja
                      # como continuación: la línea "se recupera" a breakeven
@@ -3343,6 +3513,12 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             # no pisa a `twr`: el que quiera el número contable tiene que nombrarlo.
             "legs_est": legs_est,
             "twr_est": (idx_est - 1.0) if legs_est > 0 else None,
+            "legs_est_detalle": legs_est_det,
+            # Qué fracción de lo que encadenó el estimado está valuada a precio real:
+            # la medición del cron entera, la reconstrucción por su cobertura, la
+            # contabilidad pura nada. Es el "% a precio real" que dice la pantalla.
+            "cobertura_est": cobertura_en_el_tiempo(puntos_est),
+            "con_contable": any(q["base"] == VALUADO_AL_COSTO for q in puntos_est),
             # La ventana que el número del ESTIMADO cubre: arranca en el primer
             # punto que ENCADENA, que no es el primer apto.
             "desde_est": (tramo[0]["date"] if tramo else None),
@@ -3626,7 +3802,18 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         # que NO cuenta lo que todavía no vendiste. Una cartera que se duplicó sin
         # vender nada muestra ~0%. Subestima POR DISEÑO, y siempre para el mismo
         # lado — por eso viaja al frontend y no se queda en un comentario.
-        "excluye_no_realizado": (modo == MODO_ESTIMADO),
+        # ⚠️ DESDE EL 2026-10-27 (H6) ES CIERTO SÓLO SI LA VENTANA TIENE CONTABILIDAD
+        # PURA. El estimado es "precio real donde lo hay, costo donde no": la
+        # reconstrucción parcial SÍ cuenta lo no vendido de lo que tuvo precio. Lo
+        # que no lo cuenta es el saldo contable de quien no tiene reconstrucción.
+        "excluye_no_realizado": (modo == MODO_ESTIMADO and (
+            bool(est_con_legs[0].get("con_contable")) if (est_publicable and est_con_legs)
+            else True)),
+        # Qué parte del número del estimado está valuada a precio real (0 a 1), para
+        # que la pantalla lo diga. None en certero (ahí todo es precio real).
+        "cobertura_estimado": (est_con_legs[0].get("cobertura_est")
+                               if (modo == MODO_ESTIMADO and est_publicable and est_con_legs)
+                               else None),
         "tramos_medidos": legs,
         "tramos_detalle": tramos_info,
         "serie_partida": partida,

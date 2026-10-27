@@ -132,8 +132,9 @@ class ElEstampoExisteYSeUsaTest(_Base):
                 (twr.MEDICION, None, ("mercado", 1)),
                 (twr.INTRADIA, None, ("mercado", 0)),
                 (twr.RECONSTRUIDO, 0.97, ("mercado", 1)),
-                (twr.RECONSTRUIDO, 0.05, ("costo", 0)),
-                (twr.RECONSTRUIDO, 0.00, ("costo", 0)),
+                # reconstrucción parcial (H6, 2026-10-27): era ("costo", 0)
+                (twr.RECONSTRUIDO, 0.05, ("parcial", 0)),
+                (twr.RECONSTRUIDO, 0.00, ("parcial", 0)),
                 (twr.SINTETICO_COSTO, None, ("costo", 0)),
                 (twr.INDETERMINADO, None, ("costo", 0))):
             with self.subTest(clase=clase, cobertura=cob):
@@ -267,7 +268,7 @@ class LaCurvaNoDesapareceTest(_Base):
                 self.assertEqual(faltan, [], f"{modo}: desaparecieron del gráfico")
                 # …y siguen sin poder medir
                 for p in c["curva"]:
-                    if p["base"] == twr.VALUADO_AL_COSTO:
+                    if p["base"] != twr.VALUADO_A_MERCADO:
                         self.assertFalse(p["apto"])
 
     def test_las_dos_bases_no_comparten_segmento(self):

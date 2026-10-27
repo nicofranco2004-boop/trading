@@ -45786,9 +45786,22 @@ def _migrate_estampar_base():
                     return
                 pend = conn.execute(
                     "SELECT COUNT(*) c FROM snapshots WHERE base IS NULL").fetchone()["c"]
+                import twr as _twr
+                # La reconstrucción parcial es su propia regla desde el 2026-10-27
+                # (H6): las fotos viejas estampadas 'costo' con cobertura pasan a
+                # 'parcial' (ver `twr.reestampar_reconstrucciones_parciales`).
+                parciales = conn.execute(
+                    "SELECT COUNT(*) c FROM snapshots WHERE source='mtm_backfill' "
+                    "AND base=? AND mtm_coverage IS NOT NULL",
+                    (_twr.VALUADO_AL_COSTO,)).fetchone()["c"]
+                if parciales:
+                    def _reestampar():
+                        with conn:
+                            return _twr.reestampar_reconstrucciones_parciales(conn)
+                    _log.info("estampar_base: %s reconstrucciones pasan a 'parcial'",
+                              _run_with_lock_retry(_reestampar, attempts=5, base_delay=2.0))
                 if not pend:
                     return
-                import twr as _twr
 
                 # ⚠️ UN SOLO INTENTO NO ALCANZA, Y EL GUARD YA ESTABA ESCRITO.
                 # Reproducido sobre la copia de producción: basta con que otro
