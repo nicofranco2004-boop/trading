@@ -8,6 +8,27 @@
 > medido es sobre el mercado inventado del arnés (`audit/rendimiento_csv/`), donde la
 > verdad se conoce exacta. Lo de producción queda con los comandos para la Mac (al final).
 
+## ⚠️ Regresión encontrada después — NO mergear la Fase A así
+
+Analizando la plantilla de Rendi (`AUDIT_plantilla_rendi_2026-10-27.md`, PL2) apareció
+un caso que la comparación de esta rama no medía: **cuentas SIN foto de tenencia**. La
+Fase A hizo que el Certero confíe en la historia reconstruida, pero sin foto nada la
+verifica (la caja se compara contra `positions`, que sale del mismo archivo). Con el
+archivo completo da exacto; si le falta algo, el Certero ahora publica números muy
+errados donde antes no publicaba o medía sólo desde el cron:
+
+| sin foto, al archivo le falta | código original (Certero) | esta rama (Certero) | verdad |
+|---|---|---|---|
+| plantilla sin depósitos | +45,5 % desde ago-26 (verdad +25,2) | **+1.841 %** desde abr-24 | +157,8 % |
+| plantilla sin una venta | +33,6 % desde ago-26 (verdad +25,2) | **+193,2 %** | +141,3 % |
+| Balanz sin una venta (antes del cron) | sin número | **+162,2 %** | +121,4 % |
+| plantilla desde 2025 | sin número | **+43,9 %** | +87,6 % |
+
+La comparación de abajo medía el resultado DESPUÉS de subir la foto, y por eso no lo
+vio. **Arreglo propuesto (decisión del dueño):** una foto reconstruida es certera sólo
+si una foto de tenencia la confirmó; sin foto, la historia va al Estimado y el Certero
+mide desde el cron, como antes. Con foto se conserva toda la mejora.
+
 ## Estado
 
 | fase | hallazgos | commit | estado |
@@ -71,7 +92,8 @@ Script: `comparar_antes_despues.py _comparacion/antes _comparacion/despues_faseD
 
 - **Certero:** con el archivo completo mide toda la historia importada con error de
   0,0–0,1 pp (antes medía sólo desde que arrancó el cron); con un archivo incompleto
-  que la foto desmiente, mide desde la foto, exacto, o no publica — nunca inventa.
+  que la foto desmiente, mide desde la foto, exacto, o no publica. **Pero sin foto,
+  con un archivo incompleto, inventa** (ver la regresión de arriba).
 - **Estimado:** el mismo inversor da el mismo número en los tres brokers y, con el
   archivo completo, coincide con la verdad; cuando al archivo le falta algo (una venta,
   los cupones) queda ~10 pp abajo, y con títulos traídos de otro broker ~3 pp arriba.
