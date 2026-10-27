@@ -181,11 +181,23 @@ def test_caja_en_rojo_cruzada_tambien_dispara(db):
     assert len(check_cash_moneda(db, UID)) == 1
 
 
-def test_caja_en_cero_no_dispara(db):
-    """Un saldo residual de redondeo no es plata en la moneda equivocada. Tampoco un
-    `quantity` viejo con la caja vacía: el saldo es `invested`."""
+def test_caja_vacia_cruzada_avisa_que_lo_proximo_se_cuenta_mal(db):
+    """Vacía no es sana: es la caja que deja un import revertido en un broker que
+    después cambió de moneda, y lo próximo que entre se cuenta en la equivocada.
+    El saldo es `invested`: un `quantity` viejo no la hace "con plata"."""
     _broker(db, "Schwab", "USD")
     _caja(db, "Schwab", 0.001, rotulo="ARS")
+    db.execute("UPDATE positions SET quantity=100000 WHERE broker='Schwab'")
+    v = check_cash_moneda(db, UID)
+    assert len(v) == 1 and v[0]["detalle"]["vacia"] is True
+    assert "lo próximo que entre" in v[0]["que_pasa"]
+
+
+def test_caja_sana_vacia_con_quantity_viejo_no_dispara(db):
+    """Lo que hacía disparar a la versión que miraba `quantity`: una caja vacía, con
+    sus marcas de acuerdo con el broker, y un número viejo en `quantity`."""
+    _broker(db, "Schwab", "USD")
+    _caja(db, "Schwab", 0, rotulo="USD")
     db.execute("UPDATE positions SET quantity=100000 WHERE broker='Schwab'")
     assert check_cash_moneda(db, UID) == []
 
@@ -248,9 +260,10 @@ class TestCajaCruzadaPorLasPuertasReales:
             data={"format": "rendi_generic", "broker": broker})
         assert r.status_code == 200, r.text
         assert r.json()["errors"] == []
-        r = self.client.post("/api/imports/confirm", headers=self.h,
-                             json={"session_id": r.json()["session_id"]})
+        sid = r.json()["session_id"]
+        r = self.client.post("/api/imports/confirm", headers=self.h, json={"session_id": sid})
         assert r.status_code == 200, r.text
+        return sid
 
     def sql(self, q, *a):
         conn = main.get_db()
@@ -307,6 +320,18 @@ class TestCajaCruzadaPorLasPuertasReales:
         # `currency` sólo la completa el arranque de SQLite (ver el test de arriba).
         assert v[0]["detalle"]["marcas"] == (["asset"] if main.USANDO_PG
                                              else ["asset", "currency"])
+
+    def test_la_caja_vacia_que_deja_revertir_tambien_avisa(self):
+        """Revertir el import deja la caja en cero con sus marcas en dólares; cambiar
+        la moneda como antes de 86a2559 la deja cruzada. Vacía, pero lo próximo que
+        entre se cuenta mal (es el caso de `escrituras_para_cambiar_moneda`)."""
+        sid = self.importar("MiIBKR", "2026-01-05,DEPOSITO,MiIBKR,,,,1000,,,,USD,\n")
+        r = self.client.post(f"/api/imports/{sid}/revert", headers=self.h)
+        assert r.status_code == 200, r.text
+        assert abs(self.cajas()["MiIBKR"]["invested"] or 0) < 0.005
+        self.sql("UPDATE brokers SET currency='ARS' WHERE user_id=? AND name='MiIBKR'", self.uid)
+        v = self.cajas_cruzadas()
+        assert len(v) == 1 and v[0]["detalle"]["vacia"] is True, v
 
     def test_el_cambio_de_moneda_de_hoy_no_deja_la_caja_cruzada(self):
         """El mismo cambio por el PUT de hoy lleva las dos marcas de la caja con la
