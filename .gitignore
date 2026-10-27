@@ -54,3 +54,6 @@ design/video/
 *.ai
 *.sketch
 *.fig
+
+# Datos reales de brokers para auditorías locales (nunca se commitean)
+_datos/
