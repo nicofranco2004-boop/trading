@@ -89,6 +89,13 @@ persona no las borra, entran como operaciones reales y crean esos brokers.
 - **Arreglo propuesto:** si un broker nuevo trae filas en pesos, crearlo en pesos (los
   dólares van solos a "· USD", que ya funciona); o preguntar la moneda en el asistente.
 - **Medir en prod:** brokers en USD/USDT sin padre que tienen lotes en pesos.
+- **Estado (2026-10-27):** arreglado y en producción —
+  [PR #36](https://github.com/nicofranco2004-boop/trading/pull/36), mergeado a `main`
+  (`acf6dbf`)—: broker nuevo con pesos → en pesos; broker en dólares vacío → se cura al re-importar; con
+  datos → la fila en pesos se rechaza (también al confirmar con "Estado inicial").
+  Exchanges cripto (Binance & cía.) quedan como estaban: mandan pares en pesos a
+  propósito y falta medir cuántos son. Las cuentas que YA quedaron mal no se tocan
+  solas: `backend/scripts/diag_brokers_moneda.py <copia de prod>` las lista.
 
 ### PL2 · Sin foto, el Certero confía en el archivo (regresión de la Fase A) — CONFIRMADO
 
