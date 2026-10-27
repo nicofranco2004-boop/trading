@@ -43,6 +43,8 @@ import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDon
 import { computeClassBreakdown } from '../utils/assetClass'
 import { assetSlicesFromPositions } from '../utils/bookComposition'
 import DistribucionPorActivo from '../components/DistribucionPorActivo'
+import BotonCompartir from '../components/BotonCompartir'
+import { specDeRendimiento, nombreDeArchivo } from '../utils/shareCard'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { pctCreible, operacionesEnUsd } from '../utils/assetPnl'
 import { denominadorAportado } from '../utils/evolution'
@@ -3094,6 +3096,33 @@ function InsightsDesktop({ _embeddedTab }) {
     return { cumulativeReturnPct, benchmarkReturnPct, benchmarkLabel, modoEstimado: _modoEstimado, acum: _acum }
   })()
 
+  // ── La imagen para compartir "Cartera vs benchmark" ──────────────────────
+  // Los números son los del KPI "Acumulado" (kpiRendimiento), no la punta de
+  // la curva: son los que la pantalla publica. La curva (chartData) es sólo la
+  // forma. Sin acumulado publicado no hay botón: la imagen no puede mostrar un
+  // número que la pantalla esconde (serie partida, pesos sin medir, etc.).
+  const puedeCompartirRendimiento = kpiRendimiento.cumulativeReturnPct != null && chartData.length > 1
+  const specRendimiento = ({ mostrarMontos }) => {
+    const num = (v) => (Number.isFinite(v) ? v : null)
+    const PERIODOS = { 1: 'Último mes', 3: 'Últimos 3 meses', 12: 'Último año', 24: 'Últimos 2 años', 60: 'Últimos 5 años' }
+    return specDeRendimiento({
+      carteraPct: kpiRendimiento.cumulativeReturnPct,
+      benchPct: kpiRendimiento.benchmarkReturnPct,
+      benchLabel: benchmarkKey,
+      serie: chartData.map(r => ({
+        ts: r.ts,
+        // En certero lo no medido va en la clave "estimado" (la parte
+        // punteada): juntas son la curva entera que se ve en pantalla.
+        cartera: num(r[claveCartera]) ?? num(r[`${userName} estimado`]),
+        bench: num(r[benchmarkKey]),
+      })),
+      periodo: effectiveRange ? (PERIODOS[effectiveRange] || `Últimos ${effectiveRange} meses`) : 'Desde el inicio',
+      moneda: currency,
+      patrimonio: assetBreakdown.total > 0 ? amt(assetBreakdown.total) : null,
+      mostrarMontos,
+    })
+  }
+
   // La escala común de "Atribución por activo": el |P&L| más grande de las dos listas.
   const escalaAtribucion = Math.max(0, ...[...topContribPos, ...topContribNeg].map(it => Math.abs(it.pnl || 0)))
 
@@ -3251,7 +3280,7 @@ function InsightsDesktop({ _embeddedTab }) {
             rounded={false}
             className="md:col-span-2 xl:col-span-1 h-full"
           >
-            <DistribucionPorActivo items={assetBreakdown.items} fmt={amt} className="h-full" />
+            <DistribucionPorActivo compartir="analisis" items={assetBreakdown.items} fmt={amt} className="h-full" />
           </AskAIAbout>
           )}
           {classBreakdown.items.length > 0 && (<>
@@ -3265,6 +3294,7 @@ function InsightsDesktop({ _embeddedTab }) {
           <CompositionDonut
             className="h-full"
             title="Distribución por tipo de activo"
+            compartir="analisis"
             items={classBreakdown.items}
             fmt={amt}
             height={230}
@@ -3294,6 +3324,7 @@ function InsightsDesktop({ _embeddedTab }) {
           <CompositionDonut
             className="h-full"
             title="Distribución por sector"
+            compartir="analisis"
             items={sectorBreakdown.items}
             fmt={amt}
             height={230}
@@ -3587,6 +3618,15 @@ function InsightsDesktop({ _embeddedTab }) {
               {opt.label}
             </button>
           ))}
+          {puedeCompartirRendimiento && (
+            <BotonCompartir
+              className="ml-auto"
+              source="analisis"
+              etiqueta={`Compartir mi cartera vs ${benchmarkKey}`}
+              filename={`rendi-cartera-vs-${nombreDeArchivo(benchmarkKey)}.png`}
+              buildSpec={specRendimiento}
+            />
+          )}
         </div>
 
         {/* ⚠️ EL HUECO TIENE QUE VERSE, NO SÓLO EXISTIR. Con la serie partida el
