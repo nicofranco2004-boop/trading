@@ -47011,8 +47011,9 @@ def reports_years(
     es como se fabricaron las divergencias que este repo viene cerrando.
 
     Cada año trae su rendimiento, la ventana que ese número cubre, y el veredicto
-    contra el S&P (y contra la inflación cuando se mide en pesos; en dólares la
-    inflación argentina no es un comparable, ver `compute_metrics_for_period`).
+    contra el S&P y contra la inflación — ésta SIEMPRE en pesos, también con el
+    selector en dólares (`builder.veredicto_inflacion`). Si el año entero no se
+    puede medir, el tramo que sí, con los mismos dos veredictos (`parcial_*`).
     """
     conn = get_db()
     try:
@@ -47062,6 +47063,7 @@ def reports_years(
             except Exception:
                 pass
 
+        from reporting import builder as _rb
         from reporting.builder import pair_cache
         out = []
         with pair_cache():
@@ -47083,67 +47085,12 @@ def reports_years(
                     continue
                 m = rep.metrics
                 # ⚠️ SI EL AÑO ENTERO NO SE PUEDE MEDIR, EL TRAMO QUE SÍ VALE MÁS
-                # QUE NADA. El año exige que la medición CUBRA el período: con las
-                # fotos arrancando a mitad de año, el número no se publica — y la
-                # pantalla decía "sin dos fotos a precio de mercado" con sesenta
-                # fotos en la base. Reportado desde producción: al lado, el propio
-                # Dashboard mostraba "Desde que medimos · +5,9 % · 74 días".
-                # El motor sí sabe medir ese tramo. Se publica APARTE, nunca como
-                # `pct`, y siempre con la fecha desde la que corre: "+2,15 % desde
-                # el 30 de junio" es verdadero y accionable; llamarlo "2026" sería
-                # exactamente la mentira que este trabajo viene cerrando.
-                parcial = {"parcial_pct": None, "parcial_desde": None, "parcial_hasta": None,
-                           "parcial_vs_sp500_pct": None}
-                # ⚠️ SIN EL GUARD DE `basis_incomparable`. Esa bandera dice que las dos
-                # puntas DEL AÑO están en bases distintas (el arranque de la contabilidad,
-                # el cierre a mercado) — y es exactamente el caso en que el tramo del motor
-                # más sirve, porque él sólo encadena puntos MEDIDOS y por definición no
-                # mezcla bases. Con el guard puesto, el caso reportado desde producción
-                # —fotos desde el 30/06, año incomparable— se quedaba sin nada que mostrar.
-                if m.delta_pct is None:
-                    try:
-                        import twr as _twr_p
-                        _c = _twr_p.curva_indexada(
-                            conn, uid, f"{y}-01-01", f"{y}-12-31",
-                            modo=(_twr_p.MODO_ESTIMADO if modo == "estimado" else _twr_p.MODO_CERTERO),
-                            moneda=(_twr_p.MONEDA_ARS if str(moneda).lower() == "ars"
-                                    else _twr_p.MONEDA_USD))
-                        if _c.get("twr") is not None and _c.get("ventana_desde"):
-                            parcial["parcial_pct"] = round(_c["twr"] * 100, 2)
-                            parcial["parcial_desde"] = _c["ventana_desde"]
-                            parcial["parcial_hasta"] = _c["ventana_hasta"]
-                            # El veredicto del tramo se mide en el MISMO tramo.
-                            # ⚠️ Y EN LA MISMA MONEDA (F6). `parcial_pct` sale de
-                            # `curva_indexada`, que recibe `moneda` cuatro líneas
-                            # arriba y devuelve pesos cuando el selector está en
-                            # Pesos. El S&P de esta resta salía SIEMPRE en dólares,
-                            # así que con el selector en Pesos le regalaba la
-                            # devaluación entera al veredicto — el mismo defecto
-                            # que el `vs_sp500_pct` del año completo, en el tramo
-                            # parcial, que es justamente el que se publica cuando
-                            # el año completo no se puede medir.
-                            #
-                            # TERCER call site del mismo patrón en la misma
-                            # pantalla; los otros dos viven en `reporting/builder`
-                            # y ya lo tienen. La conversión NO se copia acá: se le
-                            # pide a `benchmark_entre_fechas` declarando `moneda`,
-                            # y el primitivo decide. Sin TC devuelve None y no se
-                            # publica, que es mejor que publicarlo cruzado.
-                            from reporting.builder import benchmark_entre_fechas as _bef
-                            _fx_parcial = None
-                            if str(moneda).lower() == "ars":
-                                try:
-                                    _fx_parcial = _twr_p.serie_fx(
-                                        conn, None, _c["ventana_hasta"])[0]
-                                except Exception:
-                                    log.exception("serie_fx tramo parcial uid=%s", uid)
-                            _sp = _bef(bench_data, _c["ventana_desde"], _c["ventana_hasta"],
-                                       "sp500", fx=_fx_parcial, moneda=moneda)
-                            if _sp is not None:
-                                parcial["parcial_vs_sp500_pct"] = round(
-                                    parcial["parcial_pct"] - _sp, 2)
-                    except Exception:
-                        log.exception("tramo parcial uid=%s year=%s", uid, y)
+                # QUE NADA — con su "vs S&P" y su "vs inflación", medidos en ese
+                # tramo y en el modo pedido. Lo mide `compute_metrics_for_period`
+                # con la MISMA curva que el año (valor vivo, sólo cartera entera);
+                # acá sólo se copia. Antes se pedía acá una segunda curva, que traía
+                # el S&P y no la inflación.
+                parcial = _rb.tramo_parcial(m)
                 # Un año sin una sola operación, sin flujos y sin movimiento no se
                 # lista: ocupa una fila y no dice nada. El año en curso siempre va
                 # —es el que el inicio muestra— aunque todavía esté vacío.
@@ -47191,6 +47138,8 @@ def reports_years(
                     # la pantalla pueda mostrar los dos números de la misma resta: si
                     # muestra un retorno y el veredicto salió de otro, se contradice sola.
                     "retorno_ars_pct": m.retorno_ars_pct,
+                    # Por qué no hay veredicto contra la inflación, si hay número.
+                    "vs_inflation_motivo": m.vs_inflation_motivo,
                     "deposits": m.deposits,
                     "withdrawals": m.withdrawals,
                     "realized_pnl": m.realized_pnl,
