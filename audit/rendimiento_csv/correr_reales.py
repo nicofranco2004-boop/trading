@@ -18,7 +18,7 @@ a = arnes.Arnes(Mercado())
 for nombre in solo:
     caso = CASOS[nombre]
     uid = a.usuario(f"{nombre}@rendi.test")
-    out = {"uploads": []}
+    out = {"uploads": [], "db": arnes.main.DB_PATH}
     for rel, broker, fmt in caso["mov"]:
         b = open(os.path.join(DATOS, rel), "rb").read()
         prev, _ = a.subir([(os.path.basename(rel), b)], broker=broker, fmt=fmt, confirmar=False)

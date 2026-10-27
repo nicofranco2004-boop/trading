@@ -37,7 +37,8 @@ computadora; ponelos en `.claude/worktrees/audit-csv/_datos/` (carpeta ignorada)
       cron real `take_snapshot_for_user` → `curva_indexada`/`rendimiento_publicable` en los dos modos).
       Mercado inventado en `mercado.py`. Correr: `python3 correr_reales.py <carpeta _datos> <salida>`.
 - [x] Archivos reales (Balanz A, Balanz B, IEB) por el arnés (salidas fuera del repo).
-- [ ] Archivos inventados por broker: movimientos + foto de tenencia, con y sin discrepancias.
+- [x] Archivos inventados (Balanz, IEB, genérico) × 6 escenarios de discrepancia: `correr_escenarios.py`
+      (historia y verdad en `historia.py`, formatos en `generadores.py`). Falta: Cocos, IOL, PPI, Inviu, BMB.
 - [ ] Tabla parser × tipo de movimiento.
 - [ ] Consistencia entre lectores.
 - [ ] Informe `AUDIT_rendimiento_desde_csv_2026-10-27.md`.
@@ -73,6 +74,39 @@ computadora; ponelos en `.claude/worktrees/audit-csv/_datos/` (carpeta ignorada)
    lo que la gente tiene) tampoco lo lee la reconstrucción. Bonos/ONs/letras van SIEMPRE al costo en
    la reconstrucción (`_fetch_monthly_close` los saltea por "data912 es live-only"), y son los que
    bajan la cobertura bajo 0,90.
+
+6. **H4 · El Estimado tira la contabilidad posterior a CUALQUIER foto apta.** `twr.py` ~2483
+   `_primer_apto` toma la primera foto apta, incluida una RECONSTRUIDA; el comentario dice "la
+   contabilidad se apaga en la primera MEDICIÓN REAL". Con un primer mes 100 % valuado (antes de
+   comprar bonos), 30 fotos contables posteriores se descartan: Estimado 135 % (2,75 años) → 25 %
+   (3 meses). Hoy no se ve porque H1 lo tapa.
+7. **H5 · La costura reconstrucción→cron fabrica ganancia con export parcial.** Con el export desde
+   2025 (escenario S1), una VENTA sin su compra mete efectivo en `positions` pero no en
+   `capital_final`; la foto reconstruida vale contabilidad+no realizado (2.777) y el cron vale
+   posiciones (22.030). La guarda `twr.costura_no_cierra` mide `v1/(v0+flujo)` = 1,21 < 1,25: el
+   aporte de la siembra de la foto la diluye. Resultado: Certero +70,6 % vs verdad +25,5 % (Balanz).
+8. **H6 · `base='costo'` mezcla dos reglas.** `twr.base_de`: RECONSTRUIDO con cobertura < 0,90 →
+   'costo', pero su `total_value` (backfill_user: `new_cf = cost + total_unreal`) incluye el no
+   realizado de lo que tuvo precio. El Estimado encadena por base → un leg contable→casi-mercado
+   asienta años de no realizado de golpe (IEB S0: +36 % en un trimestre). El Estimado NO es
+   "sin no realizado": da 123–135 % con verdad contable 21,7 % y TWR real 141,3 %.
+9. **H7 · `rendimiento_publicable(modo='certero')` devuelve un número contable** cuando el motor no
+   mide (S0 antes del cron: 32,06 % base 'contable'). Los lectores que lo usan (Wrapped, IA,
+   reportes) muestran un contable en modo Certero.
+10. **IEB: dividendos en dólares como pesos.** Divisa 'OTHER' en la columna "Importe ARS" →
+   DIVIDEND ARS 0,27 (era US$0,27). Real: 22 filas, US$26,93. Después la foto lo "arregla" con un
+   DEPÓSITO de caja (aporte, no renta).
+
+### Matriz de escenarios (Certero / Estimado, verdad TWR 141,3 % y contable 21,7 % en S0)
+
+| escenario | Balanz | IEB |
+|---|---|---|
+| S0 completo | 25,2✔(sólo cron) / 135,5 | 25,2✔ / 123,5 |
+| S1 export desde 2025 | **70,6 vs 25,5** / 82,4 | sin número / 25,2 |
+| S2 falta una venta | 25,2✔ / **166,6** | 25,2✔ / 147,6 |
+| S3 títulos de otro broker | 24,7✔ / 134,5 (v 137,6) | 24,7✔ / 122,5 |
+| S4 faltan cupones | 25,2✔ / 125,3 | 25,2✔ / 125,4 |
+| S5 movimientos post-foto | 18,9 (v 19,5) / 131,3 | 18,9 / 119,5 |
 
 ## Dónde está cada cosa en la rama
 
