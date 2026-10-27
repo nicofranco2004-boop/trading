@@ -258,12 +258,21 @@ class B4_AnioParcialTest(_Base):
             self.snap(f"{Y}-{mo:02d}-{ult:02d}", 40000.0 + mo * 100, nd=50000.0)
         m, _ = builder.compute_metrics_for_period(
             self.conn, self.uid, "year", f"{Y}-01-01", f"{Y}-12-31", "global", None,
-            live_value=44000.0)
+            live_value=44000.0, modo="estimado")
         # El % no puede ser el de julio-a-hoy (positivo) al lado de un monto anual
         # negativo. Los dos describen start→end.
         self.assertEqual(m.basis, "contable")
         self.assertLess(m.delta_usd, 0)
         self.assertLess(m.delta_pct, 0)
+        # En Certero (H7, 2026-10-27): ni el julio-a-hoy ni la contabilidad. Sin
+        # número, diciendo desde cuándo sí se midió.
+        mc, _ = builder.compute_metrics_for_period(
+            self.conn, self.uid, "year", f"{Y}-01-01", f"{Y}-12-31", "global", None,
+            live_value=44000.0, modo="certero")
+        self.assertIsNone(mc.delta_pct)
+        self.assertTrue(mc.basis_incomparable)
+        self.assertEqual(mc.motor_motivo, "ventana_parcial")
+        self.assertIn("desde el", mc.motor_motivo_texto)
 
     def test_ventana_cubierta_si_acepta_el_motor_canonico(self):
         self.pos()

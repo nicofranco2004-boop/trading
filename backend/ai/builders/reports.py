@@ -29,7 +29,7 @@ Shape (~900 bytes):
   "worst_month": { "month": str, "delta_pct": float } | null,
   "months_base": "mercado" | "contable" | null,  # con qué regla se midieron los meses
   "months_not_market": int,       # meses del año que no se midieron a mercado
-  "vs_sp500_pp": float | null,    # promedio de vs_sp500_pct mensual
+  "vs_sp500_pp": float | null,    # twr_year_pct − S&P 500 entre las MISMAS dos fechas
   "consistency": "alto" | "medio" | "bajo",
   "years_available": [int],       # años con datos cargados
 }
@@ -64,7 +64,6 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     used = 0
     best: Optional[Dict[str, Any]] = None
     worst: Optional[Dict[str, Any]] = None
-    vs_sp500_values: List[float] = []
     monthly_deltas: List[Dict[str, Any]] = []
 
     # ⚠️ CADA MES SE LE PIDE AL MOTOR, igual que el acumulado de abajo. El Dietz
@@ -89,7 +88,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # cortar el tramo. Los meses de `monthly_deltas` siguen igual: cada uno por
     # separado es honesto, lo que estaba mal era el producto.
     _rend = _twr.rendimiento_publicable(
-        conn, user_id, desde=f"{year:04d}-01-01", hasta=f"{year:04d}-12-31")
+        conn, user_id, desde=f"{year:04d}-01-01", hasta=f"{year:04d}-12-31", periodo=True)
     twr_year_pct: Optional[float] = _rend["pct"]
     winrate_monthly = round((positive / used) * 100, 1) if used > 0 else 0.0
     pnl_year_usd = round(sum(
@@ -105,38 +104,24 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     ).fetchone()
     trades_year = int(trades_year_row["c"] or 0) if trades_year_row else 0
 
-    # vs S&P — heurística: si tenemos serie de SPY mensual en bench cache,
-    # restamos para promediar.
+    # ⚠️ EL S&P ENTRE LAS MISMAS DOS FECHAS QUE EL NÚMERO (H7). Antes: el promedio
+    # de "mes del usuario − mes del S&P", con la fórmula propia de acá y sobre los
+    # meses de `monthly_deltas` —que pueden ser contables—, mientras el número del
+    # año sale del motor con su propia ventana. Era otra cuenta sobre otro período.
+    # Ahora es la misma regla que el dashboard y las métricas:
+    # `performance.bench_pct_entre` sobre la ventana que el motor declaró. Sin
+    # ventana (sin número, o el número es contable) no hay comparación.
+    vs_sp500_avg = None
     try:
         import main as _m
-        cache_bench = getattr(_m, "_bench_cache", {}) or {}
-        sp = (cache_bench.get("data") or {}).get("sp500") or {}
-        for md in monthly_deltas:
-            ym = md["month"]
-            sp_val = sp.get(ym)
-            sp_prev_key = None
-            # Aprox: tomamos cambio MoM si tenemos consecutivos
-            try:
-                y, m = ym.split("-")
-                prev_m = int(m) - 1
-                prev_y = int(y)
-                if prev_m == 0:
-                    prev_m = 12
-                    prev_y -= 1
-                sp_prev_key = f"{prev_y:04d}-{prev_m:02d}"
-            except Exception:
-                pass
-            sp_prev = sp.get(sp_prev_key) if sp_prev_key else None
-            if sp_val and sp_prev:
-                sp_ret = (sp_val - sp_prev) / sp_prev * 100
-                vs_sp500_values.append(md["delta_pct"] - sp_ret)
+        import performance as _perf_r
+        _data = ((getattr(_m, "_bench_cache", {}) or {}).get("data") or {})
+        if twr_year_pct is not None:
+            _sp = _perf_r.bench_pct_entre(_data, "sp500", _rend.get("desde"), _rend.get("hasta"))
+            if _sp is not None:
+                vs_sp500_avg = round(twr_year_pct - _sp, 2)
     except Exception:
-        vs_sp500_values = []
-
-    vs_sp500_avg = (
-        round(sum(vs_sp500_values) / len(vs_sp500_values), 2)
-        if vs_sp500_values else None
-    )
+        vs_sp500_avg = None
 
     # Consistencia cualitativa
     if winrate_monthly >= 70:
@@ -160,6 +145,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             "winrate_monthly": "% de meses con delta positivo (TWRR > 0).",
             "best_month / worst_month": "Mejor/peor mes por delta_pct, del motor (`twr.rendimientos_mensuales`). Mirá `months_base`: 'mercado' = medido contra fotos reales de la cartera; 'contable' = ningún mes del año se pudo medir a mercado y salen de la contabilidad, que sólo cuenta lo VENDIDO (un mes sin ventas da ~0 %): al hablarlo decilo.",
             "months_not_market": "Meses del año que no se pudieron medir a mercado. Si hay meses de mercado, éstos NO entran en best/worst ni en winrate_monthly.",
+            "vs_sp500_pp": "`twr_year_pct` menos lo que hizo el S&P 500 entre las MISMAS dos fechas que ese número (puntos). null si no hay número del año o no hay datos del S&P para esa ventana.",
         },
         "year": year,
         "total_months_active": used,

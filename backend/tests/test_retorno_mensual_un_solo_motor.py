@@ -116,8 +116,13 @@ class TestUnSoloDenominador(unittest.TestCase):
         self.conn = main.get_db()
         self.addCleanup(self.conn.close)
         cur = self.conn.execute(
-            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            "INSERT INTO users (email, password_hash, approved, modo_rendimiento) "
+            "VALUES (?,?,1,'estimado')",
             (f"dietz-{id(self)}@rendi.test", "x"))
+        # ⚠️ EN ESTIMADO: el mes de este fixture no tiene cierre a mercado del mes
+        # anterior, así que sale de la contabilidad, que desde el 2026-10-27 (H7) es
+        # sólo del modo Estimado. Lo que se prueba acá es el DENOMINADOR de esa
+        # cuenta, el mismo en todos los lectores.
         self.uid = cur.lastrowid
         self.addCleanup(self._limpiar)
         # Un mes del año en curso, para caer dentro de las ventanas por defecto.

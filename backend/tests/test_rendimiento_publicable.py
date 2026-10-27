@@ -57,7 +57,11 @@ from realized_pnl import MAX_PNL_PCT
 
 
 class ElPrimitivoTest(unittest.TestCase):
-    """`twr.rendimiento_publicable` — la regla. NO mide el bug (es nueva)."""
+    """`twr.rendimiento_publicable` — la regla. NO mide el bug (es nueva).
+
+    La rama CONTABLE es del modo Estimado desde el 2026-10-27 (H7): en Certero el
+    motor mide o no hay número (`test_en_certero_no_cae_a_la_contabilidad`). Por eso
+    las pruebas de los guards de esa rama piden el modo Estimado explícito."""
 
     def setUp(self):
         self.conn = main.get_db()
@@ -87,7 +91,7 @@ class ElPrimitivoTest(unittest.TestCase):
         """LA FORMA es el arreglo. El informe lo pide así: "un primitivo que
         devuelva (r, motivo) y no un float pelado" — con un float, el llamador no
         tiene con qué decidir si publicarlo ni cómo etiquetarlo."""
-        r = twr.rendimiento_publicable(self.conn, self.uid)
+        r = twr.rendimiento_publicable(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
         self.assertIsInstance(r, dict)
         for k in ("pct", "base", "motivo", "motivo_texto", "meses"):
             self.assertIn(k, r)
@@ -97,11 +101,27 @@ class ElPrimitivoTest(unittest.TestCase):
         `importado_sin_mediciones`. No se les saca el número: se etiqueta."""
         self.me(2025, 1, 1000, 1100)
         self.me(2025, 2, 1100, 1210)
-        r = twr.rendimiento_publicable(self.conn, self.uid)
+        r = twr.rendimiento_publicable(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
         self.assertEqual(r["base"], "contable")
         self.assertAlmostEqual(r["pct"], 21.0, places=0)     # 1,1 × 1,1 − 1
         self.assertIsNotNone(r["motivo"], "tiene que decir por qué no fue a mercado")
         self.assertIsNotNone(r["motivo_texto"], "y decirlo en castellano")
+
+    def test_en_certero_no_cae_a_la_contabilidad(self):
+        """H7 (auditoría 2026-10-27): el modo Certero promete "sólo lo valuado a
+        precio real". Caer a la contabilidad le ponía un número contable con la
+        etiqueta del modo que existe para no tenerlo: el Wrapped 2025 publicaba
+        +3,08 % en un año sin una sola medición (verdad +40,16 %). Sin número, con
+        el motivo."""
+        self.me(2025, 1, 1000, 1100)
+        self.me(2025, 2, 1100, 1210)
+        r = twr.rendimiento_publicable(self.conn, self.uid, modo=twr.MODO_CERTERO)
+        self.assertIsNone(r["pct"])
+        self.assertIsNone(r["base"])
+        self.assertIsNotNone(r["motivo"], "tiene que decir por qué no hay número")
+        self.assertIsNotNone(r["motivo_texto"])
+        # Y sin modo pedido rige el guardado; sin elección, certero.
+        self.assertIsNone(twr.rendimiento_publicable(self.conn, self.uid)["pct"])
 
     def test_EL_TRAMO_SE_CORTA_no_se_saltea(self):
         """EL CORAZÓN DEL ARREGLO, con el caso real del uid 826.
@@ -117,7 +137,7 @@ class ElPrimitivoTest(unittest.TestCase):
         self.me(2025, 3, 9200, 2217)          # la caída sin flujo → corta acá
         self.me(2025, 4, 2217, 2439)          # +10 %  ← el tramo que se publica
         self.me(2025, 5, 2439, 2683)          # +10 %
-        r = twr.rendimiento_publicable(self.conn, self.uid)
+        r = twr.rendimiento_publicable(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
         self.assertEqual(r["base"], "contable")
         # El ÚLTIMO tramo: 1,1 × 1,1 − 1 = 21 %. No los cuatro meses juntos (46 %).
         self.assertAlmostEqual(r["pct"], 21.0, places=0)
@@ -135,14 +155,14 @@ class ElPrimitivoTest(unittest.TestCase):
         for m in range(1, 13):
             self.me(2025, m, v, v * 1.4)
             v *= 1.4
-        r = twr.rendimiento_publicable(self.conn, self.uid)
+        r = twr.rendimiento_publicable(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
         self.assertIsNone(r["pct"], "con US$13 de capital el % no significa nada")
 
     def test_y_con_capital_de_verdad_SI_se_publica(self):
         """El piso no puede tapar a quien sí tiene capital medible."""
         self.me(2025, 1, 5000, 5500)
         self.me(2025, 2, 5500, 6050)
-        r = twr.rendimiento_publicable(self.conn, self.uid)
+        r = twr.rendimiento_publicable(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
         self.assertIsNotNone(r["pct"])
         self.assertAlmostEqual(r["pct"], 21.0, places=0)
 
@@ -154,11 +174,11 @@ class ElPrimitivoTest(unittest.TestCase):
         for m in range(1, 13):                 # +100 % por mes, todos creíbles solos
             self.me(2025, m, v, v * 2)
             v *= 2
-        r = twr.rendimiento_publicable(self.conn, self.uid)
+        r = twr.rendimiento_publicable(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
         self.assertIsNone(r["pct"], "4.095 % no es un rendimiento publicable")
 
     def test_sin_nada_cargado_no_inventa(self):
-        r = twr.rendimiento_publicable(self.conn, self.uid)
+        r = twr.rendimiento_publicable(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
         self.assertIsNone(r["pct"])
         self.assertIsNone(r["base"])
 
@@ -167,7 +187,7 @@ class ElPrimitivoTest(unittest.TestCase):
         flujo INFLA el mes (medido: 23,71 % contra 20,10 % real)."""
         self.me(2025, 1, 0, 1000, dep=1000)    # alta: no se mide
         self.me(2025, 2, 1000, 1100)           # +10 %
-        r = twr.rendimiento_publicable(self.conn, self.uid)
+        r = twr.rendimiento_publicable(self.conn, self.uid, modo=twr.MODO_ESTIMADO)
         self.assertAlmostEqual(r["pct"], 10.0, places=0)
         self.assertEqual(r["meses"], 1)
 

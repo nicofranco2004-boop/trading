@@ -135,10 +135,12 @@ class ElAnioEnPesosTest(unittest.TestCase):
         self.conn.commit()
         self.conn.close()
 
-    def _metrics(self, moneda="usd"):
+    def _metrics(self, moneda="usd", modo="estimado"):
+        # El año de este fixture sale de la composición contable, que desde el
+        # 2026-10-27 (H7) es del modo Estimado: en Certero no se publica.
         m, _ = builder.compute_metrics_for_period(
             self.conn, self.uid, "year", "2025-01-01", "2025-12-31",
-            broker_filter="global", bench=self.BENCH, moneda=moneda)
+            broker_filter="global", bench=self.BENCH, moneda=moneda, modo=modo)
         return m
 
     def test_en_dolares_nada_cambia(self):

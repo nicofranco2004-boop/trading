@@ -20644,7 +20644,7 @@ def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
         # tanda vino a darle: el número medido contra fotos de mercado.
         try:
             rendimiento = _twr_w.rendimiento_publicable(
-                conn, uid, desde=f"{year}-01-01", hasta=f"{year}-12-31")
+                conn, uid, desde=f"{year}-01-01", hasta=f"{year}-12-31", periodo=True)
         except Exception:
             logging.exception("wrapped rendimiento_publicable %s", year)
             rendimiento = None

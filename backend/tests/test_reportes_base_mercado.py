@@ -52,9 +52,10 @@ class _Base(unittest.TestCase):
             (self.uid, d, v, v, source, 1200.0, "[]"))
         self.conn.commit()
 
-    def metrics(self, ptype, start, end, live=None):
+    def metrics(self, ptype, start, end, live=None, modo=None):
         m, _ = builder.compute_metrics_for_period(
-            self.conn, self.uid, ptype, start, end, "global", None, live_value=live)
+            self.conn, self.uid, ptype, start, end, "global", None, live_value=live,
+            modo=modo)
         return m
 
 
@@ -68,10 +69,16 @@ class AnualTest(_Base):
 
     def test_sin_bordes_medidos_sigue_siendo_contable_y_lo_dice(self):
         self._cuenta_que_vendio_con_ganancia_y_se_derrumbo()
-        m = self.metrics("year", "2025-01-01", "2025-12-31")
+        m = self.metrics("year", "2025-01-01", "2025-12-31", modo="estimado")
         self.assertEqual(m.basis, "contable")
         # El defecto reproducido: +3,6% que es exactamente lo realizado sobre costo.
         self.assertAlmostEqual(m.delta_usd, 3600.0, places=1)
+        # En Certero ese +3,6 % no se publica (H7, auditoría 2026-10-27): es la
+        # contabilidad, y el modo promete precio real. Sin número, con el motivo.
+        mc = self.metrics("year", "2025-01-01", "2025-12-31", modo="certero")
+        self.assertIsNone(mc.delta_pct)
+        self.assertTrue(mc.basis_incomparable)
+        self.assertTrue(mc.motor_motivo_texto)
 
     def test_con_bordes_medidos_el_anual_mide_el_MERCADO(self):
         self._cuenta_que_vendio_con_ganancia_y_se_derrumbo()

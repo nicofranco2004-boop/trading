@@ -1498,12 +1498,12 @@ def render_reports_prompt(tier: str = "pro") -> str:
             "TWR del año + cuántos meses contribuyeron — si la mayoría del rendimiento vino de pocos meses, el resultado es menos replicable.",
             "Win rate mensual (% meses positivos) — interpretar como tendencia más que como métrica aislada. > 70% es muy sostenido, < 50% indica meses ganadores grandes pero alternancia.",
             "Mejor y peor mes en magnitud — dispersión mensual amplia significa volatilidad del estilo, no solo del mercado.",
-            "vs SPY promedio — si delta positivo sostenido todos los meses, alpha real; si solo viene de uno o dos meses, suerte concentrada.",
+            "vs S&P 500 (`vs_sp500_pp`) — el rendimiento del año contra el S&P en la MISMA ventana que ese número. Para saber si la diferencia es sostenida o vino de uno o dos meses, mirá best_month / worst_month.",
             "Consistency tag — usar para enmarcar el tipo de año (sostenido, mixto, concentrado).",
         ],
         insight_examples=[
             "El año cierra con un TWR positivo pero la consistency es media — eso significa que los meses negativos restaron más de lo que aportaron varios meses planos. Un win rate del 50% con TWR positivo describe un año donde uno o dos meses excepcionales sostuvieron el resultado.",
-            "vs SPY promedio negativo en sostenido sugiere un underperform estructural — no es señal de error de stock-picking necesariamente, pero sí de que el bench dominante del período fue difícil de batir con la composición actual.",
+            "Un vs S&P negativo en el año sugiere un underperform — no es señal de error de stock-picking necesariamente, pero sí de que el bench dominante del período fue difícil de batir con la composición actual.",
         ],
         pitfalls=[
             "Si total_months_active < 6, decir que la muestra es chica y la consistency aún no es informativa.",

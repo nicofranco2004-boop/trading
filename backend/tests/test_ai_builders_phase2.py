@@ -777,6 +777,17 @@ class TestEventsItemBuilder:
         assert p["portfolio_context"]["holds_ticker"] is False
 
 
+def _modo_guardado(conn, modo, uid=1):
+    """La elección Certero/Estimado guardada del usuario (`users.modo_rendimiento`),
+    que es la que usan los builders de la IA cuando no se les pasa un modo."""
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN modo_rendimiento TEXT")
+    except sqlite3.OperationalError:
+        pass
+    conn.execute("INSERT OR IGNORE INTO users (id, email) VALUES (?, ?)", (uid, f"u{uid}@t"))
+    conn.execute("UPDATE users SET modo_rendimiento=? WHERE id=?", (modo, uid))
+
+
 class TestReportsBuilder:
 
     def test_empty_returns_zero(self):
@@ -802,7 +813,12 @@ class TestReportsBuilder:
                 (m, ci, cf),
             )
         from ai.builders.reports import build
+        # Sin fotos de mercado el número del año es la contabilidad, y eso es del
+        # modo Estimado (H7, 2026-10-27): en Certero no hay número.
+        assert build(conn, 1, year=2026)["twr_year_pct"] is None
+        _modo_guardado(conn, "estimado")
         p = build(conn, 1, year=2026)
+        assert p["twr_year_base"] == "contable"
         assert p["total_months_active"] == 3
         # 1.05 × 0.98 × 1.10 - 1 = 0.1319 → ~13.19%
         assert abs(p["twr_year_pct"] - 13.19) < 0.5
@@ -823,6 +839,7 @@ class TestReportsBuilder:
                 (m, ci, cf),
             )
         from ai.builders.reports import build
+        _modo_guardado(conn, "estimado")   # meses contables: modo Estimado (H7)
         p = build(conn, 1, year=2026)
         assert p["best_month"]["month"] == "2026-02"
         assert p["worst_month"]["month"] == "2026-03"
@@ -839,6 +856,7 @@ class TestReportsBuilder:
                 (m,),
             )
         from ai.builders.reports import build
+        _modo_guardado(conn, "estimado")   # meses contables: modo Estimado (H7)
         p = build(conn, 1, year=2026)
         assert p["winrate_monthly"] == 100.0
         assert p["consistency"] == "alto"
@@ -857,6 +875,7 @@ class TestReportsBuilder:
                VALUES (1, 2026, 1, 'global', 10000, 10500)"""
         )
         from ai.builders.reports import build
+        _modo_guardado(conn, "estimado")   # el número contable es del Estimado (H7)
         p_2026 = build(conn, 1, year=2026)
         p_2025 = build(conn, 1, year=2025)
         assert p_2026["total_months_active"] == 1

@@ -60,10 +60,10 @@ class _Base(unittest.TestCase):
             (self.uid, y, m, ci, cf, dep, ret, pnl))
         self.conn.commit()
 
-    def reporte(self, tipo, clave, live=None):
+    def reporte(self, tipo, clave, live=None, modo=None):
         return report_to_dict(build_period_report(
             self.conn, self.uid, tipo, clave, "global", None,
-            live_value=live, today=HOY))
+            live_value=live, today=HOY, modo=modo))
 
     def assertSinBase(self, d, palabra):
         m = d["metrics"]
@@ -168,7 +168,8 @@ class AnioTest(_Base):
     def test_control_anio_cerrado_sano_compone(self):
         """El mismo año con la cadena en 0 (retiró todo): se compone como siempre."""
         self._anio_2025(0.0)
-        m = self.reporte("year", "2025")["metrics"]
+        # Composición contable: modo Estimado (en Certero no se publica, H7).
+        m = self.reporte("year", "2025", modo="estimado")["metrics"]
         self.assertFalse(m["basis_incomparable"])
         self.assertIsNotNone(m["delta_pct"])
 

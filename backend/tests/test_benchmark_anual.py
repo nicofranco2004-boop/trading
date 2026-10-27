@@ -187,10 +187,12 @@ class _Base(unittest.TestCase):
             (self.uid, d, v, v, source, 1200.0, "[]"))
         self.conn.commit()
 
-    def metrics(self, ptype, start, end, moneda="usd", b=None, live=None):
+    def metrics(self, ptype, start, end, moneda="usd", b=None, live=None, modo=None):
+        # `modo="estimado"` en los años que salen de la contabilidad: desde el
+        # 2026-10-27 (H7) esa composición es sólo del modo Estimado.
         m, _ = builder.compute_metrics_for_period(
             self.conn, self.uid, ptype, start, end, "global",
-            bench() if b is None else b, live_value=live, moneda=moneda)
+            bench() if b is None else b, live_value=live, moneda=moneda, modo=modo)
         return m
 
     def ano_medido(self):
@@ -260,7 +262,7 @@ class AnualIntegracionTest(_Base):
         self.me(2025, 1, 100000.0, 101200.0, rz=1200.0)
         self.me(2025, 6, 101200.0, 102400.0, rz=1200.0)   # faltan feb-may
         self.me(2025, 12, 102400.0, 103600.0, rz=1200.0)
-        m = self.metrics("year", "2025-01-01", "2025-12-31")
+        m = self.metrics("year", "2025-01-01", "2025-12-31", modo="estimado")
         self.assertIsNotNone(m.delta_pct)          # el % sí se publica
         self.assertIsNone(m.sp500_return_pct)      # el veredicto NO
         self.assertIsNone(m.vs_sp500_pct)
@@ -273,7 +275,7 @@ class AnualIntegracionTest(_Base):
             cf = ci * 1.01
             self.me(2025, mes, round(ci, 2), round(cf, 2), rz=round(cf - ci, 2))
             ci = cf
-        m = self.metrics("year", "2025-01-01", "2025-12-31")
+        m = self.metrics("year", "2025-01-01", "2025-12-31", modo="estimado")
         self.assertIsNotNone(m.delta_pct)
         self.assertAlmostEqual(m.sp500_return_pct, 10.0, places=2)
 
@@ -309,7 +311,7 @@ class AnualIntegracionTest(_Base):
             d += datetime.timedelta(days=1)
         m = self.metrics("year", f"{y}-01-01", f"{y}-12-31",
                          b={"sp500_d": sp, "sp500": {}, "inflation_ar": {}},
-                         live=round(ci, 2))
+                         live=round(ci, 2), modo="estimado")
         self.assertIsNotNone(m.delta_pct)
         # La ventana declarada tiene que llegar a hoy — y el índice medirlo.
         self.assertEqual(m.bench_hasta, hoy)

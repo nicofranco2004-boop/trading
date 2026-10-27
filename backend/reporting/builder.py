@@ -847,6 +847,32 @@ def snapshot_borde_apertura(conn, uid: int, period_start: str,
     return snap
 
 
+def inicio_de_ventana(conn, uid: int, period_start: str) -> str:
+    """Desde qué fecha se le pide al MOTOR (`twr.curva_indexada`) el rendimiento de
+    un período que arranca en `period_start`: el CIERRE DEL PERÍODO ANTERIOR.
+
+    `curva_indexada` mide con los puntos que caen en la ventana, así que pedirle
+    "desde el 1 de enero" arranca en el primer punto de enero —con fotos
+    mensuales, el 31— y se come el mes entero. Medido (auditoría 2026-10-27, H7):
+    el Wrapped 2025 publicaba 29,0 % donde Reportes y la verdad decían 40,2 %. Es
+    la regla que Reportes ya usaba para el año, ahora en un solo lugar:
+
+      · el último borde de período (`twr.BORDE_PERIODO`) del día anterior;
+      · si no lo hay, `_BORDER_MAX_LAG_DAYS` antes, y la ventana declarada por el
+        motor dice desde cuándo midió.
+    """
+    import twr as _twr_v
+    _prev_dia = _dia_anterior(period_start)
+    _snap_ini = (fetch_snapshot_at_or_before(conn, uid, _prev_dia, accept=_twr_v.BORDE_PERIODO)
+                 if _prev_dia else None)
+    if _snap_ini is not None and not _border_is_fresh(_snap_ini.get("date"), period_start, 1):
+        _snap_ini = None
+    if _snap_ini:
+        return str(_snap_ini["date"])[:10]
+    return (datetime.strptime(period_start[:10], "%Y-%m-%d")
+            - timedelta(days=_BORDER_MAX_LAG_DAYS)).date().isoformat()
+
+
 def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
                            broker_filter: str, *, con_fechas: bool = False):
     """Las dos puntas de un período CERRADO, medidas a mercado. None si no se puede.
@@ -1500,6 +1526,8 @@ def compute_metrics_for_period(
     # a la respuesta para que la pantalla diga lo MISMO que Métricas.
     _motor_nego = None
     _motor_nego_texto = None
+    # Desde cuándo midió el motor cuando midió, pero no el período entero.
+    _motor_parcial_desde = None
     _motor_publico = False
     _mes_dudoso = False     # algún mes de la composición contable no es creíble
     _mes_negativo = False   # …porque arranca con la cadena rota (`_capital_roto`)
@@ -1869,16 +1897,7 @@ def compute_metrics_for_period(
                 # end: el porcentaje describía 13 meses y el monto 12. Es la misma
                 # asimetría que `bordes_mercado_periodo` ya cierra con
                 # `_border_is_fresh` 350 líneas más arriba; acá faltaba.
-                _prev_dia = _dia_anterior(period_start)
-                _snap_ini = (fetch_snapshot_at_or_before(
-                    conn, uid, _prev_dia, accept=_twr.BORDE_PERIODO)
-                    if _prev_dia else None)
-                if _snap_ini is not None and not _border_is_fresh(
-                        _snap_ini.get("date"), period_start, 1):
-                    _snap_ini = None
-                _desde = (str(_snap_ini["date"])[:10] if _snap_ini
-                          else (datetime.strptime(period_start[:10], "%Y-%m-%d")
-                                - timedelta(days=_BORDER_MAX_LAG_DAYS)).date().isoformat())
+                _desde = inicio_de_ventana(conn, uid, period_start)
                 _modo_twr = (_twr.MODO_ESTIMADO if modo == "estimado" else _twr.MODO_CERTERO)
                 _moneda_twr = (_twr.MONEDA_ARS if str(moneda).lower() == "ars"
                                else _twr.MONEDA_USD)
@@ -1926,6 +1945,8 @@ def compute_metrics_for_period(
                 elif _c.get("twr") is None:
                     _motor_nego = _c.get("motivo")
                     _motor_nego_texto = _c.get("motivo_texto")
+                else:
+                    _motor_parcial_desde = _c.get("ventana_desde")
             except Exception:
                 log.exception("year_twr desde twr.curva_indexada fallo uid=%s", uid)
         # AUDIT B1: el retorno del año = composición GEOMÉTRICA de los retornos
@@ -2514,6 +2535,34 @@ def compute_metrics_for_period(
                                      else _MOTIVO_PUNTAS_DUDOSAS)
         except Exception:
             pass
+    # ⚠️ EN CERTERO, LO QUE EL MOTOR NO MIDIÓ NO SE COMPLETA CON LA CONTABILIDAD
+    # (H7, auditoría 2026-10-27). El modo promete "sólo lo valuado a precio real":
+    # cuando ni el motor ni los dos bordes a mercado miden el período, el número de
+    # acá abajo es el de `monthly_entries` —para un mes cerrado, lo realizado sobre
+    # el costo— y salía con la etiqueta del modo que existe para no tenerlo. Sin
+    # número, con el motivo (y el mismo interruptor que el frontend ya lee). La
+    # contabilidad sigue en el modo Estimado.
+    # ⚠️ SÓLO EL AÑO, POR AHORA. Los MESES del calendario tienen el mismo defecto,
+    # pero medido en producción (2026-08-16, julio) sólo 12 de 670 usuarios tienen
+    # los dos bordes a mercado: en Certero se quedarían casi todos sin calendario.
+    # Es una decisión del dueño con el número de producción en la mano
+    # (HANDOFF_fixes_rendimiento.md, Fase C), no un arreglo. Y sólo la vista
+    # 'global': con un filtro de broker el motor no puede medir nada (los snapshots
+    # son por usuario), así que ahí la pregunta es la misma decisión pendiente.
+    if (modo == _twr_mm.MODO_CERTERO and period_type == "year"
+            and broker_filter == "global" and not _motor_publico and _basis != "mercado"):
+        basis_incomparable = True
+        if not _motor_nego_texto:
+            if _motor_parcial_desde:
+                _f = str(_motor_parcial_desde)[:10]
+                _motor_nego = "ventana_parcial"
+                _motor_nego_texto = (
+                    f"A precio real lo medimos desde el {_f[8:10]}/{_f[5:7]}/{_f[:4]}, no el "
+                    "período entero, y completarlo con tu contabilidad sería otra forma de "
+                    "medir. El modo Estimado muestra la reconstrucción del período completo.")
+            else:
+                _motor_nego = _motor_nego or "sin_mediciones"
+                _motor_nego_texto = _twr_mm.MOTIVO_TEXTO.get(_motor_nego)
     if (_motor_nego in MOTIVOS_DATO_ROTO) and not _motor_publico:
         delta_pct = None
         delta_usd = 0.0

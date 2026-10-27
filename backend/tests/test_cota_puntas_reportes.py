@@ -61,10 +61,13 @@ class _Base(unittest.TestCase):
             (date, mep, mep))
         self.conn.commit()
 
-    def anio(self, moneda="usd"):
+    def anio(self, moneda="usd", modo="estimado"):
+        # Estas cuentas no tienen fotos de mercado: el año sale de la composición
+        # contable, que desde el 2026-10-27 (H7) es del modo Estimado. En Certero
+        # el año no se publica (`test_en_certero_el_anio_contable_no_se_publica`).
         return builder.compute_metrics_for_period(
             self.conn, self.uid, "year", "2026-01-01", "2026-12-31",
-            "global", None, moneda=moneda)[0]
+            "global", None, moneda=moneda, modo=modo)[0]
 
 
 class CotaEnLasPuntasTest(_Base):
@@ -109,6 +112,21 @@ class CotaEnLasPuntasTest(_Base):
         # tests de usuarios perfectamente sanos.
         self.assertNotIn(m.motor_motivo, builder.MOTIVOS_DATO_ROTO)
         self.assertFalse(m.basis_incomparable)
+
+
+class EnCerteroNoHayContabilidadTest(_Base):
+
+    def test_en_certero_el_anio_contable_no_se_publica(self):
+        """H7 (auditoría 2026-10-27): la misma cuenta sana de arriba, en Certero. Sin
+        fotos de mercado, el año es la contabilidad: sin número y con el motivo, no
+        un porcentaje contable con la etiqueta del modo que promete precio real."""
+        self.mes(1, 0.0, 1000.0, dep=1000.0)
+        self.mes(2, 1000.0, 1100.0)
+        m = self.anio(modo="certero")
+        self.assertIsNone(m.delta_pct)
+        self.assertTrue(m.basis_incomparable)
+        self.assertTrue(m.motor_motivo_texto)
+        self.assertIsNotNone(self.anio(modo="estimado").delta_pct)
 
 
 class ModoPesosViaContableTest(_Base):

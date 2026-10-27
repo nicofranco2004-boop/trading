@@ -50,11 +50,11 @@ class VariacionesF4Test(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    def _metrics(self, period_type, period_key, broker="global", live=None):
+    def _metrics(self, period_type, period_key, broker="global", live=None, modo=None):
         start, end = parse_period_bounds(period_type, period_key)
         m, _ops = compute_metrics_for_period(
             self.conn, self.uid, period_type, start, end, broker,
-            bench=None, live_value=live)
+            bench=None, live_value=live, modo=modo)
         return m
 
     def _metrics_month(self, live, broker="global"):
@@ -881,7 +881,9 @@ class VariacionesF4Test(unittest.TestCase):
             "VALUES (?,?,100000,90000,90000,'cron','{\"AAPL\":100000}')",
             (self.uid, f"{self.y - 1}-12-31"))
         self.conn.commit()
-        m = self._metrics("year", str(self.y), live=112000.0)
+        # El año sale de la composición contable cerrada con el vivo: es el modo
+        # Estimado (en Certero, sin medición del año, no se publica — H7).
+        m = self._metrics("year", str(self.y), live=112000.0, modo="estimado")
         self.assertFalse(m.basis_incomparable)
         self.assertAlmostEqual(m.start_value, 100000.0, delta=1)
         self.assertAlmostEqual(m.delta_usd, 12000.0, delta=1)

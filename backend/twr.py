@@ -806,7 +806,7 @@ def clave_mes(iso):
 
 def rendimiento_publicable(conn, uid: int, *, modo=None, moneda=None,
                            desde=None, hasta=None, valor_live=None,
-                           permitir_contable=True):
+                           permitir_contable=True, periodo=False):
     """EL rendimiento acumulado de una cuenta, CON SU PROCEDENCIA. Un solo lugar.
 
     Devuelve siempre un dict, nunca un float pelado:
@@ -883,9 +883,21 @@ def rendimiento_publicable(conn, uid: int, *, modo=None, moneda=None,
                     "motivo_texto": MOTIVO_TEXTO.get("ventana_invalida")}
 
     # 1. EL MOTOR. Mide contra fotos de mercado y trae sus propios guards.
+    #
+    # `periodo=True`: `desde` es el ARRANQUE de un período (el año del Wrapped, el
+    # de Reportes) y el motor arranca en el cierre del período anterior
+    # (`reporting.builder.inicio_de_ventana`, la misma regla que Reportes). Sin
+    # esto el año empezaba en el primer punto de enero y se comía el mes (H7).
     motivo = None
+    _desde_motor = desde
+    if periodo and desde:
+        try:
+            from reporting.builder import inicio_de_ventana
+            _desde_motor = inicio_de_ventana(conn, uid, str(desde)[:10])
+        except Exception:
+            log.exception("rendimiento_publicable: inicio de ventana uid=%s", uid)
     try:
-        c = curva_indexada(conn, uid, desde, hasta, modo=_modo, moneda=_moneda,
+        c = curva_indexada(conn, uid, _desde_motor, hasta, modo=_modo, moneda=_moneda,
                            valor_live=valor_live)
         if c.get("twr") is not None:
             # La base la declara el motor: en estimado el número puede ser la
@@ -903,7 +915,14 @@ def rendimiento_publicable(conn, uid: int, *, modo=None, moneda=None,
     # `permitir_contable=False` para VENTANAS CORTAS. `monthly_entries` es mensual:
     # sobre 30 días no mide "los últimos 30 días", mide el mes que los contiene.
     # Publicar eso con la etiqueta de 30 días es peor que no publicar nada.
-    if not permitir_contable:
+    #
+    # ⚠️ Y EN CERTERO, NUNCA (H7, auditoría 2026-10-27). El modo Certero promete
+    # "sólo lo valuado a precio real": cuando el motor no mide, caer a la
+    # contabilidad le ponía un número contable con la etiqueta del modo que existe
+    # para no tenerlo. Medido: el Wrapped 2025 publicaba +3,08 % en un año sin una
+    # sola medición (verdad +40,16 %) y +0,0 % en otro caso; la IA, lo mismo. En
+    # Certero, sin número y con el motivo; la contabilidad es del Estimado.
+    if not permitir_contable or _modo == MODO_CERTERO:
         return {**vacio, "motivo": motivo,
                 "motivo_texto": MOTIVO_TEXTO.get(motivo) if motivo else None}
     try:
@@ -1008,7 +1027,7 @@ MES_TOLERANCIA_BORDE_DIAS = 4
 
 
 def rendimientos_mensuales(conn, uid: int, desde=None, hasta=None, *,
-                           moneda=None, hoy=None) -> list:
+                           moneda=None, hoy=None, modo=None) -> list:
     """El rendimiento de cada mes de la cuenta, CON SU PROCEDENCIA. Un solo lugar.
 
     Devuelve un dict por cada mes de `monthly_entries` (broker 'global') dentro de
@@ -1040,15 +1059,18 @@ def rendimientos_mensuales(conn, uid: int, desde=None, hasta=None, *,
         (`leg_dudoso`, el hueco de 45 días, el piso de capital). Las dos puntas
         tienen que estar en el MISMO tramo: si en el medio la serie se corta, el
         mes no se mide — se corta, no se puentea.
-      · si no se puede, la contabilidad DICIENDO que es contabilidad (`base`
-        'contable', con el motivo), con los guards de la rama contable: el mes de
-        alta no se mide, `leg_dudoso`, el piso de US$100 y el clamp por mes.
+      · si no se puede, en ESTIMADO la contabilidad DICIENDO que es contabilidad
+        (`base` 'contable', con el motivo), con los guards de la rama contable: el
+        mes de alta no se mide, `leg_dudoso`, el piso de US$100 y el clamp por mes.
+        En CERTERO no hay rama contable (H7, 2026-10-27): `modo` None → el que
+        eligió el usuario (`modo_de`).
       · si tampoco, `pct` None con el motivo. Nunca el costo disfrazado.
 
     El mes en curso se cierra contra HOY (el último cierre a mercado de los
     últimos días), no contra el fin de mes calendario.
     """
     _moneda = moneda if moneda is not None else MONEDA_USD
+    _modo = modo_de(conn, uid, modo)
     q = ("SELECT year, month, capital_inicio, capital_final, deposits, withdrawals "
          "FROM monthly_entries WHERE user_id=? AND broker='global'")
     args = [uid]
@@ -1168,9 +1190,12 @@ def rendimientos_mensuales(conn, uid: int, desde=None, hasta=None, *,
 
         # La contabilidad, etiquetada. Los mismos guards que la rama contable del
         # acumulado (`contable_de_filas`), aplicados a un mes solo.
+        # ⚠️ SÓLO EN ESTIMADO (H7, 2026-10-27), igual que `rendimiento_publicable`:
+        # en Certero el mejor y el peor mes de la IA y del Wrapped salían de la
+        # contabilidad con la etiqueta del modo que promete precio real.
         item["motivo"] = motivo
         item["motivo_texto"] = MOTIVO_TEXTO.get(motivo) if motivo else None
-        ret = mes_contable(r)
+        ret = mes_contable(r) if _modo != MODO_CERTERO else None
         if ret is not None:
             item.update(pct=ret * 100, base="contable")
         out.append(item)
