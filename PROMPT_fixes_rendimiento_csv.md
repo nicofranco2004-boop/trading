@@ -63,6 +63,8 @@ cd audit/rendimiento_csv && mkdir -p ../../_comparacion/antes
 python3 correr_escenarios.py ../../_comparacion/antes/escenarios.json balanz ieb generico
 python3 lectores.py ../../_comparacion/antes/lectores.json balanz:S0_completo balanz:S1_ventana_desde_2025 ieb:S0_completo
 python3 pesos_relativos.py > ../../_comparacion/antes/pesos.txt
+python3 tabla_parsers.py ../../_comparacion/antes/tabla.json
+python3 correr_reales.py ../../_datos ../../_comparacion/antes/reales
 cd ../../backend && python3 ../audit/rendimiento_csv/medir_prod.py ~/Downloads/<copia>.db ../_comparacion/antes/prod.json
 git rev-parse HEAD > ../_comparacion/antes/commit.txt
 ```
@@ -79,6 +81,27 @@ que llame al persister o a `twr` directo, salteándose el import, no cuenta.
 
 **Gate de la suite** (`cd backend && python3 -m pytest -q`, ~13 min): compará el CONJUNTO de nombres de tests que
 fallan contra `origin/main` limpio en la misma máquina. Diferencia vacía o explicada. Nunca compares conteos.
+
+### 2-ter · CÓMO MEDIR — las mismas pruebas que hizo la auditoría
+
+Todas corren desde `audit/rendimiento_csv/` y pasan por el camino de producción (subida HTTP → confirm con todo su
+post-proceso → reconstrucción a mercado → foto de tenencia → cron real → lectores), con un mercado inventado donde
+se conoce el rendimiento verdadero. **Son las mismas para el antes y el después**: mismas entradas, mismo mercado.
+🔴 No toques `mercado.py`, `historia.py` ni `generadores.py` entre el antes y el después; si hace falta cambiarlos,
+volvé a correr el ANTES con el código viejo.
+
+| # | prueba | comando | qué simula y qué mide | resultado de la auditoría (referencia) |
+|---|---|---|---|---|
+| 1 | Matriz de escenarios | `python3 correr_escenarios.py <dir>/escenarios.json balanz ieb generico` | Un inversor inventado (2024-01 → 2026-08: aportes en pesos y dólares, CEDEARs, acciones, bono con cupones, dólar MEP, ventas, retiro) escrito en formato Balanz, IEB y genérico, + su foto de tenencia, en 6 escenarios: **S0** completo · **S1** el export arranca en 2025 · **S2** falta una venta · **S3** títulos traídos de otro broker · **S4** faltan los cupones · **S5** hay movimientos después de la fecha de la foto. Mide Certero y Estimado contra el TWR verdadero y la verdad contable sobre la MISMA ventana, qué filas sintéticas creó la foto, y el contrafáctico "sin cobros" (H1). | Balanz: S0 25,2 / 135,5 · S1 **70,6 (verdad 25,5)** / 82,4 · S2 25,2 / **166,6** · S3 24,7 / 134,5 · S4 25,2 / **125,3** · S5 18,9 (verdad 19,5) / 131,3. IEB: S0 25,2 / **123,5** · S1 sin número / 25,2 · S2 25,2 / 147,6. Genérico S0 25,2 / 135,6. Verdad S0: TWR 141,3 %, contable 21,7 %. El Certero sólo mide desde 2026-08-04 en todos. |
+| 2 | Lectores | `python3 lectores.py <dir>/lectores.json balanz:S0_completo balanz:S1_ventana_desde_2025 ieb:S0_completo` | Qué publica cada pantalla en los dos modos: Métricas, Metas, Reportes 2026, Wrapped 2025 y la IA (dashboard, insights, reports). | Métricas = Metas = IA ✔. Wrapped 2025: Balanz 3,08 (Certero) / 27,15 (Estimado), IEB 3,08 / **1,53**, verdad 40,16; S1 muestra **0,0**. Reportes 2026: sin número en los dos modos. |
+| 3 | Aporte a mitad de mes | `python3 pesos_relativos.py > <dir>/pesos.txt` | US$1.000 que suben 30 %, aporte de US$39.000 el 2/5, baja de 10 % (Schwab, dólares, sin tipo de cambio). | Rendi **+1,2 %** vs verdad **+9,78 %**; mayo −14,90 % vs −7,69 %. |
+| 4 | Parser × movimiento | `python3 tabla_parsers.py <dir>/tabla.json` | El mismo aporte, retiro, compra, venta, dividendo, cupón, MEP y comisión escritos en formato Cocos, IOL, PPI, Inviu y Schwab, por la vista previa. | Ver §4 del informe (PPI no reconoce "Egreso de Fondos", Schwab rechaza "Bank Interest", IEB pierde la comisión y el dividendo en dólares). |
+| 5 | Archivos reales del dueño | `python3 correr_reales.py <_datos> <dir>/reales` (la carpeta `_datos/`: ver `HANDOFF_auditoria_rendimiento_csv.md`) | Balanz A, Balanz B e IEB (actividad + portafolio). Precios interpolados de las propias operaciones del archivo: **no hay verdad**, se miran los mecanismos. | Fotos reconstruidas con cobertura NULL: Balanz A 40/51, B 36/38, IEB 8/9. Certero: A 0,37 % desde 2025-10-31, B 9,07 desde 2026-07-31, IEB 0,42 desde 2026-07-31. Estimado: A 41,38 desde 2022-06-30, B 106,7 desde 2023-07-31, IEB 1,61 desde 2025-11-30. IEB: 22 dividendos 'OTHER' = US$26,93 cargados como pesos. |
+| 6 | Producción | `cd backend && python3 ../audit/rendimiento_csv/medir_prod.py <copia>.db <dir>/prod.json` | Sólo lectura. Usuarios con número por modo y motivo, Estimado − Certero sobre la misma ventana, señales H1/H2/H4/H5/H6/H7. | No corrido en la auditoría (no había copia): **tu FASE 0 es la primera medición**. |
+| 7 | Comparación | `python3 comparar_antes_despues.py <antes> <después>` | Lee 1, 2, 3 y 6 de las dos carpetas y aplica la regla de "más certero" (§4). Termina con código 1 si hay regresiones. | — |
+
+Para cada hallazgo que arregles, el test nuevo en `backend/tests/` reproduce el escenario de la tabla que lo muestra
+(p. ej. H5 → S1, H8 → S5, H13 → prueba 3), y la mutación (revertir el fix) lo tiene que poner rojo.
 
 ## 3 · Fases, en orden
 
