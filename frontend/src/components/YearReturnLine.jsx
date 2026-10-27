@@ -17,25 +17,7 @@ import useReportYears from '../hooks/useReportYears'
 import { useCurrency } from '../contexts/CurrencyContext'
 import { pctSigned } from '../utils/format'
 import { anioPublicado, detalleVsInflacion } from '../utils/anioPublicado'
-
-// El artículo viaja aparte del nombre: el chip dice "vs el S&P 500" y el tooltip
-// "Por encima DEL S&P 500". Con el artículo pegado al nombre salía "de el S&P 500".
-function Chip({ nombre, articulo, pp, detalle }) {
-  const gana = pp >= 0
-  const de = articulo === 'el' ? 'del' : 'de la'
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 text-[11px] text-ink-2 bg-bg-2 border border-line-2 rounded-full px-2.5 py-1 tabular whitespace-nowrap"
-      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${Math.abs(pp).toFixed(1).replace('.', ',')} puntos porcentuales`
-             + (detalle ? `. ${detalle}` : '')}
-    >
-      vs {articulo} {nombre}
-      <b className={`font-semibold ${gana ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-        {gana ? '+' : '−'}{Math.abs(pp).toFixed(1).replace('.', ',')} pp
-      </b>
-    </span>
-  )
-}
+import { Veredicto } from './VeredictoChip'
 
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
                'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
@@ -80,7 +62,7 @@ export default function YearReturnLine({ modo, className = '' }) {
   // escribía `vsInfl = parcial ? null : …` y el tramo mostraba "vs el S&P" sin
   // "vs la inflación".
   const anio = anioPublicado(current)
-  const { parcial, pct, vsSp, vsInfl } = anio
+  const { parcial, pct, vsSp, vsInfl, motivoInfl } = anio
   const positivo = pct != null && pct >= 0
 
   return (
@@ -103,20 +85,20 @@ export default function YearReturnLine({ modo, className = '' }) {
         </div>
       )}
 
-      {pct != null && (vsSp != null || vsInfl != null) && (
+      {pct != null && (vsSp != null || vsInfl != null || motivoInfl) && (
         <div className="flex flex-wrap gap-1.5 mt-2.5">
-          {vsSp != null && (
-            <Chip nombre="S&P 500" articulo="el" pp={vsSp} />
-          )}
+          <Veredicto nombre="S&P 500" articulo="el" pp={vsSp} />
           {/* El veredicto contra la inflación se calcula SIEMPRE en pesos (el backend
               convierte el retorno con `twr.vs_inflacion_ar`), así que aparece en las
               dos monedas. En dólares, el globo aclara contra qué número se restó. */}
-          {vsInfl != null && (
-            <Chip
-              nombre="inflación" articulo="la" pp={vsInfl}
-              detalle={detalleVsInflacion(anio, moneda === 'ars')}
-            />
-          )}
+          {/* Sin veredicto pero con número, la pastilla aparece "sin medir" con el
+              motivo: un "vs el S&P" solo, sin la inflación al lado, se leyó
+              como un error de la app. */}
+          <Veredicto
+            nombre="inflación" articulo="la" pp={vsInfl}
+            detalle={detalleVsInflacion(anio, moneda === 'ars')}
+            motivo={motivoInfl}
+          />
         </div>
       )}
 

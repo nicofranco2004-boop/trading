@@ -25,8 +25,9 @@ import { useCurrency } from '../../contexts/CurrencyContext'
 import { usePesosDelPeriodo } from '../../hooks/usePesosDelPeriodo'
 import { fechaEnPalabras } from '../YearReturnLine'
 import { anioPublicado, detalleVsInflacion } from '../../utils/anioPublicado'
+import { Veredicto } from '../VeredictoChip'
 import { useAlVerse } from '../../hooks/useAlVerse'
-import { pctVar, pctVarSign, ppVarFino, decimalesFinos } from '../../utils/format'
+import { pctVar, pctVarSign } from '../../utils/format'
 import AnimatedNumber from '../AnimatedNumber'
 
 function monthNum(period_key) {
@@ -225,35 +226,6 @@ function KpiCell({ label, value, sub, tone, first }) {
         {sub}
       </div>
     </div>
-  )
-}
-
-// ─── Veredicto contra un benchmark ───────────────────────────────────────────
-// `pp` es el EXCESO en puntos porcentuales (cartera − benchmark), no el retorno
-// del índice. Sin dato no se dibuja nada: un "—" por año ocupa lugar y no dice
-// más que el vacío.
-export function Veredicto({ nombre, articulo, pp, detalle }) {
-  if (pp == null) return null
-  // El veredicto, el del número que se ve: 0,0 pp es un empate (neutro), no
-  // "por encima" en verde.
-  const signo = pctVarSign(pp, decimalesFinos(pp, 1))
-  const gana = signo > 0
-  const de = articulo === 'el' ? 'del' : 'de la'
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 text-[11px] text-ink-2 bg-bg-2 border border-line-2 rounded-full px-2.5 py-1 tabular whitespace-nowrap"
-      // La aclaración (`detalle`) va en los TRES casos: sin los paréntesis el
-      // `+` se pegaba sólo al "por encima/por debajo" y el empate la perdía.
-      title={(signo === 0 ? `Igual que ${articulo} ${nombre}`
-        : `${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${ppVarFino(Math.abs(pp), 1).replace(/^\+/, '').replace(' pp', '')} puntos porcentuales`)
-             + (detalle ? `. ${detalle}` : '')}
-    >
-      vs {nombre}
-      <b className={`font-semibold ${signo > 0 ? 'text-rendi-pos' : signo < 0 ? 'text-rendi-neg' : 'text-ink-1'}`}>
-        {/* ppVarFino: −0,04 se escribe "−0,04 pp", no "−0,0 pp" en rojo. */}
-        {ppVarFino(pp, 1)}
-      </b>
-    </span>
   )
 }
 
@@ -562,6 +534,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                   <Veredicto
                     nombre="inflación" articulo="la" pp={anio?.vsInfl ?? null}
                     detalle={detalleVsInflacion(anio, enPesos)}
+                    motivo={anio?.motivoInfl}
                   />
                 </div>
               </div>

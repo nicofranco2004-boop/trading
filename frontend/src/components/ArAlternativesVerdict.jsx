@@ -18,10 +18,11 @@
 //     costo, y contradecía a la celda del UVA.
 //   pct ≥ 0 = "le ganás".
 //
-// El PERÍODO va escrito arriba (`desde`): las tres miden toda la historia, no el
-// año. Y la celda de Inflación trae su `contexto` —cuánto subieron los precios y
-// cuánto el dólar en ese período—, que es lo que explica cómo algo en dólares
-// (el S&P incluido) puede perderle a la inflación argentina. Sin las dos cosas,
+// El PERÍODO va escrito arriba (`desde`): las tres comparan lo que pusiste desde
+// el primer mes de tu historia contra lo que vale hoy, no el año. Y la celda de
+// Inflación trae su `contexto` —cuánto subieron los precios y cuánto el dólar en
+// los mismos meses, hasta el último que publicó el INDEC—, que es lo que explica
+// cómo algo en dólares (el S&P incluido) puede perderle a la inflación argentina. Sin las dos cosas,
 // "le gano al S&P y le pierdo a la inflación" se leía como un error (reportado).
 //
 // No depende de Certero/Estimado: no usa un rendimiento encadenado sino los
@@ -49,7 +50,9 @@ export default function ArAlternativesVerdict({ items, desde = null }) {
         ¿Le ganás a las alternativas?
       </p>
       <p className="text-[12px] text-ink-3 mt-1 mb-4">
-        {desde ? `Toda tu historia: desde ${desde} hasta hoy` : 'Toda tu historia, hasta hoy'}
+        {desde
+          ? `Toda tu historia: lo que pusiste desde ${desde}, contra lo que vale hoy`
+          : 'Toda tu historia: lo que pusiste, contra lo que vale hoy'}
       </p>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

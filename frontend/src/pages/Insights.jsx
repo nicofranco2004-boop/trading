@@ -2933,18 +2933,24 @@ function InsightsDesktop({ _embeddedTab }) {
   // primer mes, el mismo para las tres simulaciones), no el año. Sin decirlo, su
   // "Inflación: le perdés" se comparaba con el "Este año · vs el S&P" del inicio
   // —otro período— y se leía como una contradicción (reportado).
-  const _desdeAlternativas = _mesEnPalabras(mesInicialDeLasSimulaciones(globalMonthly))
+  // El mes desde el que arrancan las tres simulaciones (uno solo: lo usan el
+  // encabezado de la tarjeta y lo que se le pasa a la IA).
+  const _mesInicialAlternativas = mesInicialDeLasSimulaciones(globalMonthly)
+  const _desdeAlternativas = _mesEnPalabras(_mesInicialAlternativas)
   // Por qué algo en dólares puede perderle a la inflación: cuánto subieron los
-  // precios y cuánto el dólar en el MISMO período, con las mismas puntas que usa
-  // la simulación (`veredictoInflacion`).
+  // precios y cuánto el dólar en los MISMOS meses (de `desdeMes` al último con IPC
+  // publicado, `hastaMes`), y cuánto hacía falta en dólares para empatar
+  // (`veredictoInflacion`). El período va escrito: los precios llegan hasta lo
+  // último que publicó el INDEC, no hasta hoy.
   const _contextoInflacion = (() => {
     const v = vsInflacion
-    if (!v || v.dolarPct == null || v.dolarParaEmpatarPct == null) return null
+    if (!v || v.dolarPct == null || v.dolarParaEmpatarPct == null || !v.hastaMes) return null
+    const periodo = `Entre ${_mesEnPalabras(v.desdeMes)} y ${_mesEnPalabras(v.hastaMes)}`
     const precios = pctTxt(v.inflacionPct, 0)
     const dolar = pctTxt(v.dolarPct, 0)
     return Math.round(v.dolarParaEmpatarPct) > 0
-      ? `En ese período los precios subieron ${precios} y el dólar blue ${dolar}: algo en dólares —el S&P incluido— tenía que rendir ${pctTxt(v.dolarParaEmpatarPct, 0)} en dólares sólo para empatar.`
-      : `En ese período el dólar blue subió ${dolar} y los precios ${precios}: tener dólares alcanzaba para no perderle a la inflación.`
+      ? `${periodo} los precios subieron ${precios} y el dólar blue ${dolar}: algo en dólares —el S&P incluido— tenía que rendir ${pctTxt(v.dolarParaEmpatarPct, 0)} en dólares sólo para empatar.`
+      : `${periodo} el dólar blue subió ${dolar} y los precios ${precios}: tener dólares alcanzaba para no perderle a la inflación.`
   })()
   const verdictItems = [
     // La UNIDAD va escrita: el UVA se simula EN PESOS (capitaliza con el
@@ -3050,7 +3056,7 @@ function InsightsDesktop({ _embeddedTab }) {
     // ganás al S&P pero le perdés a la inflación" como si fuera el mismo tramo.
     verdicts: verdictItems.filter(v => v.pct != null).map(v => ({
       label: v.label, pct: Math.round(v.pct * 10) / 10,
-      desde: mesInicialDeLasSimulaciones(globalMonthly),
+      desde: _mesInicialAlternativas,
     })),
     months_tracked: globalMonthly.length,
     missing_prices: [...new Set(missingPriceTickers)].slice(0, 12),

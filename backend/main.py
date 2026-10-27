@@ -47085,18 +47085,12 @@ def reports_years(
                     continue
                 m = rep.metrics
                 # ⚠️ SI EL AÑO ENTERO NO SE PUEDE MEDIR, EL TRAMO QUE SÍ VALE MÁS
-                # QUE NADA — con su "vs S&P" Y su "vs inflación", medidos en ese
-                # tramo y en el modo pedido. La cuenta vive en
-                # `builder.tramo_parcial_del_anio`, junto a la del año entero: acá
-                # se armaba aparte y sólo traía el S&P, así que el inicio decía
-                # "vs el S&P 500 +1,5 pp" y callaba la inflación.
-                parcial = _rb.tramo_parcial_vacio()
-                if m.delta_pct is None:
-                    try:
-                        parcial = _rb.tramo_parcial_del_anio(
-                            conn, uid, y, modo=modo, moneda=moneda, bench=bench_data)
-                    except Exception:
-                        log.exception("tramo parcial uid=%s year=%s", uid, y)
+                # QUE NADA — con su "vs S&P" y su "vs inflación", medidos en ese
+                # tramo y en el modo pedido. Lo mide `compute_metrics_for_period`
+                # con la MISMA curva que el año (valor vivo, sólo cartera entera);
+                # acá sólo se copia. Antes se pedía acá una segunda curva, que traía
+                # el S&P y no la inflación.
+                parcial = _rb.tramo_parcial(m)
                 # Un año sin una sola operación, sin flujos y sin movimiento no se
                 # lista: ocupa una fila y no dice nada. El año en curso siempre va
                 # —es el que el inicio muestra— aunque todavía esté vacío.
@@ -47144,6 +47138,8 @@ def reports_years(
                     # la pantalla pueda mostrar los dos números de la misma resta: si
                     # muestra un retorno y el veredicto salió de otro, se contradice sola.
                     "retorno_ars_pct": m.retorno_ars_pct,
+                    # Por qué no hay veredicto contra la inflación, si hay número.
+                    "vs_inflation_motivo": m.vs_inflation_motivo,
                     "deposits": m.deposits,
                     "withdrawals": m.withdrawals,
                     "realized_pnl": m.realized_pnl,

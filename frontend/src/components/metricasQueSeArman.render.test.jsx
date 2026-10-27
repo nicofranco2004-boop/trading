@@ -31,13 +31,13 @@ describe('¿Le ganás a las alternativas? — la celda armada', () => {
 // que mide otro período. La tarjeta dice desde cuándo mide, y la celda de
 // inflación por qué algo en dólares puede perderle.
 describe('¿Le ganás a las alternativas? — el período y el porqué, escritos', () => {
-  const contexto = 'En ese período los precios subieron 71% y el dólar blue 31%: algo en dólares —el S&P incluido— tenía que rendir 31% en dólares sólo para empatar.'
+  const contexto = 'Entre noviembre de 2024 y septiembre de 2026 los precios subieron 67% y el dólar blue 39%: algo en dólares —el S&P incluido— tenía que rendir 20% en dólares sólo para empatar.'
   const html = renderToStaticMarkup(<ArAlternativesVerdict desde="noviembre de 2024" items={[
     { key: 'dolar', label: 'Dólar', pct: 6.1 },
     { key: 'inflacion', label: 'Inflación', pct: -6.4, nota: 'tu patrimonio de hoy vs la misma plata ajustada por inflación', contexto },
   ]} />)
-  it('el período que miden las tres, arriba', () => {
-    expect(html).toContain('Toda tu historia: desde noviembre de 2024 hasta hoy')
+  it('el período que miden las tres, arriba: lo que pusiste desde el primer mes contra lo que vale hoy', () => {
+    expect(html).toContain('Toda tu historia: lo que pusiste desde noviembre de 2024, contra lo que vale hoy')
   })
   it('la celda de inflación explica cuánto subieron los precios y cuánto el dólar', () => {
     expect(html).toContain(contexto.replace('&', '&amp;'))

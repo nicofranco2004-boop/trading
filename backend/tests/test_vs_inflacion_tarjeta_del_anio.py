@@ -17,15 +17,20 @@ sí (`parcial_*`). Ese tramo se armaba en el endpoint, aparte de
 la inflación vivía escrita adentro del builder y nunca le llegó. La pantalla, sin
 el dato, lo escondía (`vsInfl = parcial ? null : ...`).
 
-Y en el año entero, el retorno se pasaba a pesos con el dólar del 31/12 anterior y
-del 31/12 del almanaque, no con el de las puntas de la ventana medida.
+Ese tramo además salía de una SEGUNDA curva del motor, pedida aparte: sin el
+valor de hoy, sin mirar el broker y arrancando el 1/1 (sin el cierre del 31/12).
+Y en ESTIMADO el año en curso no se publicaba nunca entero: el motor cierra la
+ventana en "hoy" y `_ventana_cubre` no lo leía como fecha. Con la historia completa
+el inicio decía "desde el 31 de enero", con enero afuera del número.
 
 EL ARREGLO
 ──────────
-`builder.veredicto_inflacion` es la única cuenta, y la piden el año, el mes y el
-tramo (`builder.tramo_parcial_del_anio`). El rendimiento que entra es el que la
-tarjeta publica, ya medido con el modo elegido: el veredicto no puede salir de otro
-número que el que tiene al lado.
+`builder.veredicto_inflacion` es la única cuenta de la tarjeta, y la piden el año,
+el mes y el tramo — los tres dentro de `compute_metrics_for_period`, y el tramo sale
+de la MISMA curva que el año. El rendimiento que entra es el que la tarjeta
+publica, ya medido con el modo elegido: el veredicto no puede salir de otro número
+que el que tiene al lado. El dólar se toma en las puntas del número, así que el
+veredicto es el mismo en dólares y en pesos.
 
 Los tests atraviesan el camino de producción: el endpoint (o
 `compute_metrics_for_period` para el año entero), sobre una base con fotos,
@@ -85,18 +90,16 @@ class _Base(unittest.TestCase):
             dia += _d.timedelta(days=1)
         return sp
 
+    def anio_en_curso(self, dia_inicio_cron=1, cierre_de_diciembre=False):
+        """El año en curso, con la forma de la cuenta del reporte.
 
-class ElTramoParcialTraeLosDosVeredictosTest(_Base):
-    """El caso del reporte: el año en curso no se puede medir entero.
-
-    · ESTIMADO: la contabilidad importada (fotos al costo de fin de mes desde el
-      31 de enero) → tramo "desde el 31 de enero".
-    · CERTERO: sólo las fotos a mercado del cron, desde el día 1 de hace dos
-      meses → otro tramo, otro número.
-    """
-
-    def setUp(self):
-        super().setUp()
+        · Contabilidad importada: una foto AL COSTO a fin de cada mes cerrado (lo
+          que lee el ESTIMADO). Con `cierre_de_diciembre`, también la del 31/12
+          anterior: la historia cubre el año entero.
+        · Fotos del cron a precio de mercado (lo que lee el CERTERO), desde el día
+          `dia_inicio_cron` de hace dos meses.
+        Las fotos no declaran plata aportada: no hay depósitos cargados, y el cierre
+        con el valor de hoy pregunta los aportes reales."""
         self.hoy = _d.date.fromisoformat(builder._hoy_iso())
         Y, M = self.hoy.year, self.hoy.month
         if M < 4:
@@ -110,32 +113,48 @@ class ElTramoParcialTraeLosDosVeredictosTest(_Base):
             "sp500": {k[:7]: v for k, v in sorted(sp_d.items())},
         }
         cap = 10000.0
+        fotos = [(f"{Y - 1}-12-31", cap)] if cierre_de_diciembre else []
         for m in range(1, M):
-            cf = cap * 1.02
+            cap *= 1.02
+            fotos.append((f"{Y}-{m:02d}-{calendar.monthrange(Y, m)[1]:02d}", cap))
+        for fecha, valor in fotos:
             self.conn.execute(
                 "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
-                "net_deposited, source) VALUES (?,?,?,?,10000,'import')",
-                (self.uid, f"{Y}-{m:02d}-{calendar.monthrange(Y, m)[1]:02d}", cf, 10000.0))
-            cap = cf
-        self.inicio_cron = _d.date(Y, M - 2, 1)
+                "net_deposited, source) VALUES (?,?,?,10000,0,'import')",
+                (self.uid, fecha, valor))
+        self.inicio_cron = _d.date(Y, M - 2, dia_inicio_cron)
         v, dia = 12000.0, self.inicio_cron
         while dia <= self.hoy:
             self.conn.execute(
                 "INSERT OR IGNORE INTO snapshots (user_id, date, total_value, "
                 "total_invested, net_deposited, source, fx_to_usd_blue, holdings_json, "
-                "base, apto) VALUES (?,?,?,10000,10000,'cron',1200,'[]','mercado',1)",
+                "base, apto) VALUES (?,?,?,10000,0,'cron',1200,'[]','mercado',1)",
                 (self.uid, dia.isoformat(), round(v, 2)))
             v *= 1.0005
             dia += _d.timedelta(days=1)
         twr.estampar_base(self.conn)
         self.conn.commit()
 
-    def anio(self, modo, moneda):
-        r = main.reports_years(broker="global", modo=modo, moneda=moneda, uid=self.uid)
+    def anio(self, modo, moneda, broker="global"):
+        r = main.reports_years(broker=broker, modo=modo, moneda=moneda, uid=self.uid)
         return next(a for a in r["years"] if a["is_current"])
 
+
+class ElTramoParcialTraeLosDosVeredictosTest(_Base):
+    """El caso del reporte: el año en curso no se puede medir entero.
+
+    · ESTIMADO: la contabilidad arranca con la foto del 31 de enero → tramo
+      "desde el 31 de enero".
+    · CERTERO: sólo las fotos a mercado del cron, desde el día 1 de hace dos
+      meses → otro tramo, otro número.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.anio_en_curso()
+
     def inflacion_esperada(self, desde_iso):
-        """2 % por cada mes POSTERIOR al de arranque con IPC publicado. Arrancar el
+        """2 % por cada mes con IPC publicado DESPUÉS del mes base. Arrancar el
         último día de un mes cuenta desde el siguiente; arrancar el día 1, desde
         ese mismo mes (la ventana lo cubre entero)."""
         d = _d.date.fromisoformat(desde_iso)
@@ -152,6 +171,7 @@ class ElTramoParcialTraeLosDosVeredictosTest(_Base):
                     self.assertIsNotNone(f["parcial_pct"])
                     self.assertIsNotNone(f["parcial_vs_sp500_pct"])
                     self.assertIsNotNone(f["parcial_vs_inflation_pct"])
+                    self.assertIsNone(f["parcial_vs_inflation_motivo"])
 
     def test_la_inflacion_es_la_del_tramo_y_no_la_del_anio(self):
         for modo in twr.MODOS:
@@ -168,6 +188,18 @@ class ElTramoParcialTraeLosDosVeredictosTest(_Base):
                 d1 = _d.date.fromisoformat(f["parcial_hasta"])
                 esperado = ((1 + f["parcial_pct"] / 100) * _fx(d1) / _fx(d0) - 1) * 100
                 self.assertAlmostEqual(f["parcial_retorno_ars_pct"], esperado, places=1)
+
+    def test_el_veredicto_no_cambia_con_el_selector_de_moneda(self):
+        """La misma cartera, el mismo tramo: "le ganás a la inflación por X" no puede
+        depender de si mirás en dólares o en pesos. (Tomar el dólar en el cierre
+        del mes base de la inflación, y no en la punta del número, daba +2,1 en
+        dólares y +1,56 en pesos para el tramo del certero.)"""
+        for modo in twr.MODOS:
+            with self.subTest(modo=modo):
+                usd, ars = self.anio(modo, "usd"), self.anio(modo, "ars")
+                self.assertEqual(usd["parcial_desde"], ars["parcial_desde"])
+                self.assertAlmostEqual(usd["parcial_vs_inflation_pct"],
+                                       ars["parcial_vs_inflation_pct"], delta=0.05)
 
     def test_en_pesos_el_retorno_no_se_vuelve_a_convertir(self):
         for modo in twr.MODOS:
@@ -196,6 +228,13 @@ class ElTramoParcialTraeLosDosVeredictosTest(_Base):
         self.assertNotAlmostEqual(cert["parcial_vs_inflation_pct"],
                                   est["parcial_vs_inflation_pct"], places=1)
 
+    def test_el_tramo_es_el_de_la_curva_del_anio_y_termina_hoy(self):
+        """Una sola curva para el año y su tramo: termina HOY (con el valor vivo),
+        y nunca en la palabra "hoy", que la pantalla no puede leer como fecha."""
+        for modo in twr.MODOS:
+            with self.subTest(modo=modo):
+                self.assertEqual(self.anio(modo, "usd")["parcial_hasta"], self.hoy.isoformat())
+
     def test_sin_modo_en_el_pedido_usa_el_que_eligio_el_usuario(self):
         """El inicio del celular monta la tarjeta sin `modo`."""
         for modo in twr.MODOS:
@@ -209,23 +248,108 @@ class ElTramoParcialTraeLosDosVeredictosTest(_Base):
                 self.assertEqual(guardado["parcial_vs_inflation_pct"],
                                  pedido["parcial_vs_inflation_pct"])
 
-    def test_la_forma_no_cambia_cuando_no_hay_tramo(self):
-        """El año entero medido: las claves del tramo viajan igual, en None."""
-        vacio = builder.tramo_parcial_vacio()
-        for clave in ("parcial_inflation_pct", "parcial_vs_inflation_pct",
-                      "parcial_retorno_ars_pct"):
-            self.assertIn(clave, vacio)
-            self.assertIsNone(vacio[clave])
-        self.assertIn("parcial_vs_inflation_pct", self.anio("certero", "usd"))
+    def test_las_claves_del_tramo_viajan_siempre(self):
+        f = self.anio("certero", "usd")
+        for clave in builder.CAMPOS_TRAMO_PARCIAL:
+            self.assertIn(clave, f)
+
+    def test_si_falla_el_veredicto_el_numero_del_tramo_queda(self):
+        """Antes un solo try envolvía el tramo entero: si la comparación fallaba,
+        se perdía también el número, y la tarjeta volvía a "todavía sin dos
+        mediciones" — el defecto que el tramo vino a cerrar."""
+        from unittest import mock
+        original = builder.veredicto_inflacion
+
+        def rompe_en_el_tramo(conn, bench, retorno_pct, **kw):
+            if retorno_pct is not None:          # sólo el del tramo trae número
+                raise RuntimeError("serie de inflación rota")
+            return original(conn, bench, retorno_pct, **kw)
+
+        with mock.patch.object(builder, "veredicto_inflacion", side_effect=rompe_en_el_tramo):
+            f = self.anio("estimado", "usd")
+        self.assertIsNotNone(f["parcial_pct"])
+        self.assertIsNotNone(f["parcial_vs_sp500_pct"])
+        self.assertIsNone(f["parcial_vs_inflation_pct"])
+
+
+class ElTramoEsDeLaCarteraEnteraTest(_Base):
+    """El motor mide la cartera ENTERA. Reportes filtrado por un broker mostraba el
+    tramo de toda la cartera como si fuera de ese broker (lo pedía una segunda
+    curva sin broker)."""
+
+    def setUp(self):
+        super().setUp()
+        self.anio_en_curso()
+        # Un broker cuyo año no se puede medir (sin capital ni flujos): es el caso
+        # en que la pantalla busca el tramo.
+        self.conn.execute(
+            "INSERT INTO monthly_entries (user_id, broker, year, month, capital_inicio, "
+            "capital_final, deposits, withdrawals, pnl_realized, pnl_unrealized) "
+            "VALUES (?,'IOL',?,1,0,0,0,0,0,0)", (self.uid, self.hoy.year))
+        self.conn.commit()
+
+    def test_filtrado_por_broker_no_hay_tramo(self):
+        self.assertIsNotNone(self.anio("certero", "usd")["parcial_pct"])
+        f = self.anio("certero", "usd", broker="IOL")
+        self.assertIsNone(f["pct"], "el escenario es el del año de IOL sin medir")
+        self.assertIsNone(f["parcial_pct"])
+        self.assertIsNone(f["parcial_vs_inflation_pct"])
+
+
+class ElTramoQueArrancaAMitadDeMesTest(_Base):
+    """El IPC es mensual: con el tramo arrancando el 17, compararlo inventaría
+    medio mes, y no se publica. Pero tampoco se calla — viaja el motivo, para que
+    la pantalla no muestre "vs el S&P" solo (lo que se leyó como un error)."""
+
+    def setUp(self):
+        super().setUp()
+        self.anio_en_curso(dia_inicio_cron=17)
+
+    def test_sin_veredicto_pero_con_el_motivo(self):
+        f = self.anio("certero", "usd")
+        self.assertEqual(f["parcial_desde"], self.inicio_cron.isoformat())
+        self.assertIsNotNone(f["parcial_vs_sp500_pct"], "el S&P es diario: ése sí se mide")
+        self.assertIsNone(f["parcial_vs_inflation_pct"])
+        self.assertIn("arranca el 17 de", f["parcial_vs_inflation_motivo"])
+
+
+class ElEstimadoConLaHistoriaCompletaPublicaElAnioTest(_Base):
+    """Con la contabilidad desde el 31/12, el ESTIMADO cubre el año entero. Pero el
+    motor cierra su ventana en "hoy" y `_ventana_cubre` no lo leía: el año no se
+    publicaba nunca y caía a un tramo que arrancaba el 31 de ENERO — enero afuera
+    del número. Era la tarjeta del reporte: "Este año · desde el 31 de enero"."""
+
+    def setUp(self):
+        super().setUp()
+        self.anio_en_curso(cierre_de_diciembre=True)
+
+    def test_el_anio_entero_con_sus_dos_veredictos(self):
+        for moneda in ("usd", "ars"):
+            with self.subTest(moneda=moneda):
+                f = self.anio("estimado", moneda)
+                self.assertIsNotNone(f["pct"], "el año entero se publica")
+                self.assertIsNone(f["parcial_pct"])
+                self.assertEqual(f["bench_desde"], f"{self.hoy.year - 1}-12-31")
+                self.assertEqual(f["bench_hasta"], self.hoy.isoformat())
+                self.assertIsNotNone(f["vs_sp500_pct"])
+                self.assertIsNotNone(f["vs_inflation_pct"])
+
+    def test_enero_esta_adentro_del_numero(self):
+        """Doce meses de contabilidad al 2 %: sin enero, el número es un mes más
+        chico."""
+        f = self.anio("estimado", "usd")
+        con_enero = (1.02 ** (self.hoy.month - 1) - 1) * 100
+        self.assertGreater(f["pct"], con_enero - 0.5)
 
 
 class ElAnioEnteroConvierteConElDolarDeSuVentanaTest(_Base):
     """La ventana medida del año arranca el 2/1 y el dólar saltó 10 % entre el 31/12
     y el 2/1 —antes de que el número empezara a medir—. Adentro de la ventana el
-    dólar no se movió: en pesos, el rendimiento es el mismo que en dólares.
+    dólar no se movió: en pesos, el rendimiento es el mismo que en dólares, y el
+    veredicto el mismo con los dos selectores.
 
-    Antes se convertía con el dólar del 31/12 del almanaque y le sumaba al
-    rendimiento en pesos un 10 % que la cartera nunca midió."""
+    Antes se convertía con el dólar del 31/12 del almanaque: en dólares el
+    rendimiento en pesos llevaba un 10 % que en pesos no estaba."""
 
     def setUp(self):
         super().setUp()
@@ -250,10 +374,14 @@ class ElAnioEnteroConvierteConElDolarDeSuVentanaTest(_Base):
             "net_deposited, source, fx_to_usd_blue, holdings_json) "
             "VALUES (?,?,?,?,0,'cron',1200,'[]')", (self.uid, d, v, v))
 
-    def test_el_retorno_en_pesos_usa_las_puntas_de_la_ventana(self):
+    def metrics(self, moneda):
         m, _ = builder.compute_metrics_for_period(
             self.conn, self.uid, "year", "2025-01-01", "2025-12-31", "global",
-            self.bench, moneda="usd")
+            self.bench, moneda=moneda)
+        return m
+
+    def test_el_retorno_en_pesos_usa_las_puntas_de_la_ventana(self):
+        m = self.metrics("usd")
         self.assertEqual(m.bench_desde, "2025-01-02", "el escenario es el de la ventana corrida")
         self.assertIsNotNone(m.delta_pct)
         self.assertIsNotNone(m.vs_inflation_pct)
@@ -262,6 +390,11 @@ class ElAnioEnteroConvierteConElDolarDeSuVentanaTest(_Base):
         self.assertAlmostEqual(m.retorno_ars_pct, m.delta_pct, places=2)
         self.assertAlmostEqual(m.vs_inflation_pct, m.retorno_ars_pct - m.inflation_pct,
                                delta=0.011)
+
+    def test_el_veredicto_es_el_mismo_en_dolares_y_en_pesos(self):
+        usd, ars = self.metrics("usd"), self.metrics("ars")
+        self.assertIsNotNone(ars.vs_inflation_pct)
+        self.assertAlmostEqual(usd.vs_inflation_pct, ars.vs_inflation_pct, delta=0.05)
 
 
 if __name__ == "__main__":

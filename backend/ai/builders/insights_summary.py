@@ -68,7 +68,9 @@ def _clean_findings(raw) -> List[Dict[str, Any]]:
 def _clean_verdicts(raw) -> List[Dict[str, Any]]:
     """Veredictos comparativos ya computados por el frontend ({label, pct, desde}).
 
-    `desde` ('YYYY-MM') es el mes desde el que miden: TODA la historia, no el año.
+    `desde` ('YYYY-MM') es el mes desde el que se cuenta la plata aportada: comparan
+    el patrimonio de hoy contra esa plata en cada alternativa (toda la historia,
+    no el año).
     Viaja porque el paquete trae al lado `vs_benchmarks`, medido sobre la ventana
     del rendimiento: sin el período, "le ganás al S&P" (una ventana) y "le perdés
     a la inflación" (otra) se narraban como si fueran el mismo — la confusión que
@@ -146,7 +148,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "_field_docs": {
             "_doc_scope": "Números server-side canónicos (exposure, holdings, atribución, drawdown, trades) — confiables. NO hay TWR compuesto acá.",
             "twr_pct_low_confidence": "TWR compuesto con baja confianza (bug conocido del motor de retorno). PROHIBIDO citarlo como número. NO digas 'tu cartera hizo X%'. Para performance usá SOLO `verdicts` (lo que el user ya ve).",
-            "verdicts": "Veredictos comparativos YA computados y mostrados al user ({label, pct, desde}). Son la ÚNICA fuente para afirmar performance vs inflación/plazo fijo/dólar/S&P. Citá estos, no inventes otros. Miden TODA la historia desde `desde` (YYYY-MM), no el año: si los ponés al lado de `vs_benchmarks` (otra ventana), decí el período de cada uno. La inflación es la argentina, en pesos: algo en dólares —el S&P incluido— le pierde si el dólar subió menos que los precios.",
+            "verdicts": "Veredictos comparativos YA computados y mostrados al user ({label, pct, desde}). Son la ÚNICA fuente para afirmar performance vs inflación/plazo fijo/dólar/S&P. Citá estos, no inventes otros. Comparan el patrimonio de HOY contra lo que valdría la misma plata aportada desde `desde` (YYYY-MM): son de toda la historia, no del año ni de la ventana de `vs_benchmarks`; si los ponés al lado, decí el período de cada uno. La inflación es la argentina, en pesos, contada hasta el último mes que publicó el INDEC: algo en dólares —el S&P incluido— le pierde si el dólar subió menos que los precios.",
             "top_findings": "Diagnósticos ya rankeados por el motor de la app (lo que el user ve en la lista). Sintetizá 2-3, no los repitas literal.",
             "realized_attribution": "Trades CERRADOS (P&L histórico). status='closed'. NO inferir riesgo presente.",
             "current_holdings_top": "Posiciones ABIERTAS por market value. Para razonar riesgo/concentración usá SOLO esto.",

@@ -341,6 +341,24 @@ describe('veredictoInflacion', () => {
   })
 })
 
+describe('veredictoInflacion — el dólar de los MISMOS meses que la inflación', () => {
+  it('con el INDEC atrasado, el dólar se mide hasta el último mes con IPC, no hasta hoy', () => {
+    // Historia de enero a abril; el INDEC publicó hasta febrero. El dólar sigue
+    // subiendo en marzo y abril: eso no entra en "los precios subieron X y el
+    // dólar Y", porque los precios de esos meses todavía no se conocen.
+    const hist = [month(2026, 1, 0, 0, 100), month(2026, 4, 0, 0)]
+    const v = veredictoInflacion({
+      globalMonthly: hist,
+      inflationMap: { '2026-02': 3 },
+      blueMap: { '2026-01': 1000, '2026-02': 1010, '2026-03': 1100, '2026-04': 1200 },
+      valorHoyUsd: 100, valorHoyArs: 100 * 1200, valorHoyMedido: true,
+    })
+    expect(v.hastaMes).toBe('2026-02')
+    expect(v.dolarPct).toBeCloseTo(1, 6)                                   // 1000 → 1010
+    expect(v.dolarParaEmpatarPct).toBeCloseTo((1.03 / 1.01 - 1) * 100, 6)
+  })
+})
+
 describe('mesInicialDeLasSimulaciones', () => {
   it('es el primer mes de la historia, aunque las filas lleguen desordenadas', () => {
     expect(mesInicialDeLasSimulaciones([month(2025, 3, 0, 0), month(2024, 11, 0, 0, 100)])).toBe('2024-11')

@@ -21,8 +21,10 @@ import { pctTxt } from './format'
 
 /**
  * @param {object|null} resumen  una fila de `/api/reports/years`
- * @returns {{ parcial, pct, desde, vsSp, vsInfl, retornoArs, inflacion } | null}
+ * @returns {{ parcial, pct, desde, vsSp, vsInfl, retornoArs, inflacion, motivoInfl } | null}
  *   `desde` sólo en el tramo parcial (la fecha desde la que corre el número).
+ *   `motivoInfl`: por qué no hay veredicto contra la inflación, cuando hay número
+ *   y no se pudo comparar (lo redacta el servidor).
  */
 export function anioPublicado(resumen) {
   if (!resumen) return null
@@ -36,6 +38,7 @@ export function anioPublicado(resumen) {
       vsInfl: resumen.parcial_vs_inflation_pct ?? null,
       retornoArs: resumen.parcial_retorno_ars_pct ?? null,
       inflacion: resumen.parcial_inflation_pct ?? null,
+      motivoInfl: resumen.parcial_vs_inflation_motivo ?? null,
     }
   }
   return {
@@ -46,6 +49,7 @@ export function anioPublicado(resumen) {
     vsInfl: resumen.vs_inflation_pct ?? null,
     retornoArs: resumen.retorno_ars_pct ?? null,
     inflacion: resumen.inflation_pct ?? null,
+    motivoInfl: resumen.vs_inflation_motivo ?? null,
   }
 }
 

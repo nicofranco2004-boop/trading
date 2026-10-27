@@ -22,6 +22,14 @@ const FILAS = {
     parcial_vs_sp500_pct: 3.69, parcial_vs_inflation_pct: 1.56,
     parcial_retorno_ars_pct: 9.1, parcial_inflation_pct: 7.5,
   },
+  // El certero con el tramo arrancando a mitad de mes: el IPC es mensual y no se
+  // compara, pero la pastilla no desaparece.
+  certero_mitad: {
+    year: 2026, is_current: true, pct: null, basis: 'mercado',
+    parcial_pct: 4.2, parcial_desde: '2026-08-17', parcial_hasta: '2026-10-27',
+    parcial_vs_sp500_pct: 0.9, parcial_vs_inflation_pct: null,
+    parcial_vs_inflation_motivo: 'La inflación del INDEC se publica por mes completo y este número arranca el 17 de agosto: compararla obligaría a inventar una parte de ese mes.',
+  },
 }
 let moneda = 'USD'
 const pedidos = []
@@ -67,5 +75,13 @@ describe('Este año — el tramo parcial trae sus dos veredictos', () => {
     expect(cert).toContain('+3,7 pp')
     expect(cert).toContain('+1,6 pp')
     expect(cert).not.toContain('−0,8 pp')
+  })
+
+  it('sin veredicto contra la inflación, la pastilla dice "sin medir" y por qué', () => {
+    const html = dibujar('certero_mitad')
+    expect(html).toContain('vs el S&amp;P 500')
+    expect(html).toContain('vs la inflación')
+    expect(html).toContain('sin medir')
+    expect(html).toContain('arranca el 17 de agosto')
   })
 })

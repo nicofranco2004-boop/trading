@@ -19,15 +19,22 @@ describe('anioPublicado', () => {
   it('el año entero: su número y sus veredictos', () => {
     expect(anioPublicado(entero)).toEqual({
       parcial: false, pct: 12.0, desde: null, vsSp: -1.0, vsInfl: 2.5,
-      retornoArs: 30.0, inflacion: 27.5,
+      retornoArs: 30.0, inflacion: 27.5, motivoInfl: null,
     })
   })
 
   it('el tramo parcial: su número, su fecha y SUS DOS veredictos', () => {
     expect(anioPublicado(parcial)).toEqual({
       parcial: true, pct: 13.0, desde: '2026-01-31', vsSp: 1.5, vsInfl: -0.8,
-      retornoArs: 19.24, inflacion: 20.2,
+      retornoArs: 19.24, inflacion: 20.2, motivoInfl: null,
     })
+  })
+
+  it('el motivo de no tener veredicto viaja con el del MISMO tramo', () => {
+    const motivo = 'La inflación del INDEC se publica por mes completo y este número arranca el 17 de agosto'
+    expect(anioPublicado({ pct: null, parcial_pct: 4, parcial_vs_inflation_motivo: motivo,
+                           vs_inflation_motivo: 'otro' }).motivoInfl).toBe(motivo)
+    expect(anioPublicado({ pct: 4, vs_inflation_motivo: 'el del año' }).motivoInfl).toBe('el del año')
   })
 
   it('un backend viejo sin los campos de inflación del tramo: null, no undefined', () => {
