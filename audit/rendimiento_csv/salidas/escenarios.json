@@ -1,0 +1,4279 @@
+{
+ "balanz|S0_completo": {
+  "uid": 1,
+  "preview_status": "ok",
+  "preview_summary": [
+   {
+    "type": "DIVIDEND",
+    "label": "Dividendo",
+    "count": 7
+   },
+   {
+    "type": "BUY",
+    "label": "Compra",
+    "count": 7
+   },
+   {
+    "type": "SELL",
+    "label": "Venta",
+    "count": 3
+   },
+   {
+    "type": "DEPOSIT",
+    "label": "Depósito",
+    "count": 3
+   },
+   {
+    "type": "WITHDRAW",
+    "label": "Retiro",
+    "count": 1
+   }
+  ],
+  "errors": [],
+  "confirm": {
+   "ok": true,
+   "post_proceso": {}
+  },
+  "sin_foto": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 32.06,
+     "base": "contable",
+     "motivo": "importado_sin_mediciones",
+     "desde": null,
+     "hasta": null,
+     "meses": 12
+    }
+   },
+   "estimado": {
+    "rendi": 110.85,
+    "ventana": [
+     "2024-01-31",
+     "2026-09-30"
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 110.85,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 121.37,
+    "error_pp": -10.52,
+    "verdad_contable": 21.65
+   }
+  },
+  "foto": {
+   "override": {
+    "reduced": [],
+    "removed": [],
+    "skipped_manual": [],
+    "capped": false,
+    "particiones": [
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 5009057.47,
+       "n_cut": 0,
+       "n_current": 4
+      },
+      "broker": "Balanz",
+      "currency": "ARS"
+     }
+    ]
+   },
+   "foto_completa": true,
+   "warnings": [],
+   "fecha_usada": "2026-08-03",
+   "matched": 4,
+   "nothing_to_do": null,
+   "message": null,
+   "detail": null,
+   "avisos_escala": [],
+   "confirm_ok": true,
+   "sinteticas": [
+    {
+     "date": "2026-08-03",
+     "broker": "Balanz",
+     "t": "WITHDRAW",
+     "a": null,
+     "q": null,
+     "g": 258.51,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (ARS)"
+    }
+   ]
+  },
+  "cron_dias": 61,
+  "final": {
+   "certero": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 25.19,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 135.47,
+    "ventana": [
+     "2024-01-31",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 135.47,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 141.34,
+    "error_pp": -5.87,
+    "verdad_contable": 21.65
+   }
+  },
+  "snaps_por_origen": {
+   "mtm_backfill|costo|apto=0": 31,
+   "cron|mercado|apto=1": 61
+  },
+  "capital": [
+   {
+    "year": 2024,
+    "month": 1,
+    "cf": 6101.24,
+    "dep": 6101.24,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 2,
+    "cf": 10101.24,
+    "dep": 4000.0,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 4,
+    "cf": 10120.48,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 19.24
+   },
+   {
+    "year": 2024,
+    "month": 5,
+    "cf": 10124.23,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 3.75
+   },
+   {
+    "year": 2024,
+    "month": 7,
+    "cf": 10294.23,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2024,
+    "month": 9,
+    "cf": 11160.26,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 866.03
+   },
+   {
+    "year": 2025,
+    "month": 1,
+    "cf": 11330.26,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 6,
+    "cf": 11087.82,
+    "dep": 0.0,
+    "wd": 242.44,
+    "pnl": 0.0
+   },
+   {
+    "year": 2025,
+    "month": 7,
+    "cf": 11257.82,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 10,
+    "cf": 13285.59,
+    "dep": 2027.77,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 1,
+    "cf": 13455.59,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 3,
+    "cf": 15236.17,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 1780.58
+   },
+   {
+    "year": 2026,
+    "month": 7,
+    "cf": 15406.17,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 8,
+    "cf": 15406.0,
+    "dep": 0.0,
+    "wd": 0.17,
+    "pnl": 0.0
+   }
+  ],
+  "cf_sin_cobros": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 32.06,
+     "base": "contable",
+     "motivo": "serie_partida",
+     "desde": null,
+     "hasta": null,
+     "meses": 13
+    }
+   },
+   "estimado": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 25.19,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   }
+  }
+ },
+ "balanz|S1_ventana_desde_2025": {
+  "uid": 2,
+  "preview_status": "ok",
+  "preview_summary": [
+   {
+    "type": "DIVIDEND",
+    "label": "Dividendo",
+    "count": 4
+   },
+   {
+    "type": "BUY",
+    "label": "Compra",
+    "count": 3
+   },
+   {
+    "type": "SELL",
+    "label": "Venta",
+    "count": 1
+   },
+   {
+    "type": "DEPOSIT",
+    "label": "Depósito",
+    "count": 1
+   },
+   {
+    "type": "WITHDRAW",
+    "label": "Retiro",
+    "count": 1
+   }
+  ],
+  "errors": [],
+  "confirm": {
+   "ok": true,
+   "post_proceso": {}
+  },
+  "sin_foto": {
+   "certero": {
+    "rendi": 8.15,
+    "ventana": [
+     "2026-07-31",
+     "2026-09-30"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 8.15,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-07-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 15.07,
+    "error_pp": -6.92,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 15.64,
+    "ventana": [
+     "2025-10-31",
+     "2026-09-30"
+    ],
+    "motivo": "capital_chico",
+    "publicable": {
+     "pct": 15.64,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2025-10-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 24.81,
+    "error_pp": -9.17,
+    "verdad_contable": 8.69
+   }
+  },
+  "foto": {
+   "override": {
+    "reduced": [],
+    "removed": [],
+    "skipped_manual": [],
+    "capped": false,
+    "particiones": [
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 3689747.47,
+       "n_cut": 0,
+       "n_current": 3
+      },
+      "broker": "Balanz",
+      "currency": "ARS"
+     }
+    ]
+   },
+   "foto_completa": true,
+   "warnings": [],
+   "fecha_usada": "2026-08-03",
+   "matched": 3,
+   "nothing_to_do": null,
+   "message": null,
+   "detail": null,
+   "avisos_escala": [],
+   "confirm_ok": true,
+   "sinteticas": [
+    {
+     "date": "2026-08-03",
+     "broker": "Balanz",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 19120314.0,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Tenencia — aporte inicial sintético (Rendi)"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "Balanz",
+     "t": "BUY",
+     "a": "GGAL",
+     "q": 600.0,
+     "g": 9173882.0,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Tenencia — apertura GGAL a precio de 2026-08-03 (P"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "Balanz",
+     "t": "BUY",
+     "a": "GD38",
+     "q": 8000.0,
+     "g": 9946432.0,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Tenencia — apertura GD38 a precio de 2026-08-03 (P"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "Balanz",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 1815240.86,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (ARS)"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "Balanz · USD",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 1513.66,
+     "c": "USD",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (USD)"
+    }
+   ]
+  },
+  "cron_dias": 61,
+  "final": {
+   "certero": {
+    "rendi": 70.56,
+    "ventana": [
+     "2026-07-31",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 70.56,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-07-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.46,
+    "error_pp": 45.1,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 82.37,
+    "ventana": [
+     "2025-10-31",
+     "2026-10-27"
+    ],
+    "motivo": "capital_chico",
+    "publicable": {
+     "pct": 82.37,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2025-10-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 36.07,
+    "error_pp": 46.3,
+    "verdad_contable": 8.69
+   }
+  },
+  "snaps_por_origen": {
+   "mtm_backfill|costo|apto=0": 18,
+   "mtm_backfill|mercado|apto=1": 1,
+   "cron|mercado|apto=1": 61
+  },
+  "capital": [
+   {
+    "year": 2025,
+    "month": 1,
+    "cf": 170.0,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 6,
+    "cf": -72.44,
+    "dep": 0.0,
+    "wd": 242.44,
+    "pnl": 0.0
+   },
+   {
+    "year": 2025,
+    "month": 7,
+    "cf": 97.56,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 10,
+    "cf": 2125.33,
+    "dep": 2027.77,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 1,
+    "cf": 2295.33,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 3,
+    "cf": 2272.56,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": -22.77
+   },
+   {
+    "year": 2026,
+    "month": 7,
+    "cf": 2442.56,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 8,
+    "cf": 17888.13,
+    "dep": 15445.57,
+    "wd": 0.0,
+    "pnl": 0.0
+   }
+  ],
+  "cf_sin_cobros": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "medicion_dudosa",
+    "publicable": {
+     "pct": -0.0,
+     "base": "contable",
+     "motivo": "medicion_dudosa",
+     "desde": null,
+     "hasta": null,
+     "meses": 1
+    }
+   },
+   "estimado": {
+    "rendi": 98.41,
+    "ventana": [
+     "2025-07-31",
+     "2026-10-27"
+    ],
+    "motivo": "medicion_dudosa",
+    "publicable": {
+     "pct": 98.41,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2025-07-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 68.84,
+    "error_pp": 29.57,
+    "verdad_contable": 8.57
+   }
+  }
+ },
+ "balanz|S2_falta_una_venta": {
+  "uid": 3,
+  "preview_status": "ok",
+  "preview_summary": [
+   {
+    "type": "DIVIDEND",
+    "label": "Dividendo",
+    "count": 7
+   },
+   {
+    "type": "BUY",
+    "label": "Compra",
+    "count": 7
+   },
+   {
+    "type": "DEPOSIT",
+    "label": "Depósito",
+    "count": 3
+   },
+   {
+    "type": "SELL",
+    "label": "Venta",
+    "count": 2
+   },
+   {
+    "type": "WITHDRAW",
+    "label": "Retiro",
+    "count": 1
+   }
+  ],
+  "errors": [],
+  "confirm": {
+   "ok": true,
+   "post_proceso": {}
+  },
+  "sin_foto": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 23.3,
+     "base": "contable",
+     "motivo": "importado_sin_mediciones",
+     "desde": null,
+     "hasta": null,
+     "meses": 11
+    }
+   },
+   "estimado": {
+    "rendi": 149.84,
+    "ventana": [
+     "2024-01-31",
+     "2026-09-30"
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 149.84,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 121.37,
+    "error_pp": 28.47,
+    "verdad_contable": 21.65
+   }
+  },
+  "foto": {
+   "override": {
+    "reduced": [
+     {
+      "ticker": "GGAL",
+      "rendi": 1000.0,
+      "tenencia": 600.0,
+      "sold": 400.0
+     }
+    ],
+    "removed": [],
+    "skipped_manual": [],
+    "capped": false,
+    "particiones": [
+     {
+      "reduced": [
+       {
+        "ticker": "GGAL",
+        "rendi": 1000.0,
+        "tenencia": 600.0,
+        "sold": 400.0
+       }
+      ],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [
+       {
+        "ticker": "GGAL",
+        "rendi": 1000.0,
+        "foto": 600.0
+       }
+      ],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 879540.0,
+       "total_inv": 5888597.47,
+       "n_cut": 1,
+       "n_current": 4
+      },
+      "broker": "Balanz",
+      "currency": "ARS"
+     }
+    ]
+   },
+   "foto_completa": true,
+   "warnings": [],
+   "fecha_usada": "2026-08-03",
+   "matched": 3,
+   "nothing_to_do": null,
+   "message": null,
+   "detail": null,
+   "avisos_escala": [],
+   "confirm_ok": true,
+   "sinteticas": [
+    {
+     "date": "2026-08-03",
+     "broker": "Balanz",
+     "t": "SELL",
+     "a": "GGAL",
+     "q": 400.0,
+     "g": 0.0,
+     "c": "ARS",
+     "tout": 1,
+     "nota": "Tenencia — ajuste a foto de 2026-08-03: cierre de "
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "Balanz",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 1939973.83,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (ARS)"
+    }
+   ]
+  },
+  "cron_dias": 61,
+  "final": {
+   "certero": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 25.19,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 166.55,
+    "ventana": [
+     "2024-01-31",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 166.55,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 141.34,
+    "error_pp": 25.21,
+    "verdad_contable": 21.65
+   }
+  },
+  "snaps_por_origen": {
+   "mtm_backfill|costo|apto=0": 31,
+   "cron|mercado|apto=1": 61
+  },
+  "capital": [
+   {
+    "year": 2024,
+    "month": 1,
+    "cf": 6101.24,
+    "dep": 6101.24,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 2,
+    "cf": 10101.24,
+    "dep": 4000.0,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 4,
+    "cf": 10120.48,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 19.24
+   },
+   {
+    "year": 2024,
+    "month": 5,
+    "cf": 10124.23,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 3.75
+   },
+   {
+    "year": 2024,
+    "month": 7,
+    "cf": 10294.23,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 1,
+    "cf": 10464.23,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 6,
+    "cf": 10221.79,
+    "dep": 0.0,
+    "wd": 242.44,
+    "pnl": 0.0
+   },
+   {
+    "year": 2025,
+    "month": 7,
+    "cf": 10391.79,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 10,
+    "cf": 12419.56,
+    "dep": 2027.77,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 1,
+    "cf": 12589.56,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 3,
+    "cf": 14370.14,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 1780.58
+   },
+   {
+    "year": 2026,
+    "month": 7,
+    "cf": 14540.14,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 8,
+    "cf": 15831.13,
+    "dep": 1290.99,
+    "wd": 0.0,
+    "pnl": 0.0
+   }
+  ],
+  "cf_sin_cobros": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 23.3,
+     "base": "contable",
+     "motivo": "serie_partida",
+     "desde": null,
+     "hasta": null,
+     "meses": 12
+    }
+   },
+   "estimado": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 25.19,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   }
+  }
+ },
+ "balanz|S3_titulos_de_otro_broker": {
+  "uid": 4,
+  "preview_status": "ok",
+  "preview_summary": [
+   {
+    "type": "DIVIDEND",
+    "label": "Dividendo",
+    "count": 7
+   },
+   {
+    "type": "BUY",
+    "label": "Compra",
+    "count": 7
+   },
+   {
+    "type": "SELL",
+    "label": "Venta",
+    "count": 3
+   },
+   {
+    "type": "DEPOSIT",
+    "label": "Depósito",
+    "count": 3
+   },
+   {
+    "type": "WITHDRAW",
+    "label": "Retiro",
+    "count": 1
+   }
+  ],
+  "errors": [],
+  "confirm": {
+   "ok": true,
+   "post_proceso": {}
+  },
+  "sin_foto": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 32.06,
+     "base": "contable",
+     "motivo": "importado_sin_mediciones",
+     "desde": null,
+     "hasta": null,
+     "meses": 12
+    }
+   },
+   "estimado": {
+    "rendi": 110.85,
+    "ventana": [
+     "2024-01-31",
+     "2026-09-30"
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 110.85,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 119.76,
+    "error_pp": -8.91,
+    "verdad_contable": 20.03
+   }
+  },
+  "foto": {
+   "override": {
+    "reduced": [],
+    "removed": [],
+    "skipped_manual": [],
+    "capped": false,
+    "particiones": [
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 5009057.47,
+       "n_cut": 0,
+       "n_current": 4
+      },
+      "broker": "Balanz",
+      "currency": "ARS"
+     }
+    ]
+   },
+   "foto_completa": true,
+   "warnings": [],
+   "fecha_usada": "2026-08-03",
+   "matched": 4,
+   "nothing_to_do": null,
+   "message": null,
+   "detail": null,
+   "avisos_escala": [],
+   "confirm_ok": true,
+   "sinteticas": [
+    {
+     "date": "2026-08-03",
+     "broker": "Balanz",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 1985640.0,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Tenencia — aporte inicial sintético (Rendi)"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "Balanz",
+     "t": "BUY",
+     "a": "VIST",
+     "q": 60.0,
+     "g": 1985640.0,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Tenencia — apertura VIST a precio de 2026-08-03 (P"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "Balanz",
+     "t": "WITHDRAW",
+     "a": null,
+     "q": null,
+     "g": 258.51,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (ARS)"
+    }
+   ]
+  },
+  "cron_dias": 61,
+  "final": {
+   "certero": {
+    "rendi": 24.67,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 24.67,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 24.67,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 134.49,
+    "ventana": [
+     "2024-01-31",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 134.49,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 137.64,
+    "error_pp": -3.15,
+    "verdad_contable": 20.03
+   }
+  },
+  "snaps_por_origen": {
+   "mtm_backfill|costo|apto=0": 31,
+   "cron|mercado|apto=1": 61
+  },
+  "capital": [
+   {
+    "year": 2024,
+    "month": 1,
+    "cf": 6101.24,
+    "dep": 6101.24,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 2,
+    "cf": 10101.24,
+    "dep": 4000.0,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 4,
+    "cf": 10120.48,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 19.24
+   },
+   {
+    "year": 2024,
+    "month": 5,
+    "cf": 10124.23,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 3.75
+   },
+   {
+    "year": 2024,
+    "month": 7,
+    "cf": 10294.23,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2024,
+    "month": 9,
+    "cf": 11160.26,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 866.03
+   },
+   {
+    "year": 2025,
+    "month": 1,
+    "cf": 11330.26,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 6,
+    "cf": 11087.82,
+    "dep": 0.0,
+    "wd": 242.44,
+    "pnl": 0.0
+   },
+   {
+    "year": 2025,
+    "month": 7,
+    "cf": 11257.82,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 10,
+    "cf": 13285.59,
+    "dep": 2027.77,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 1,
+    "cf": 13455.59,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 3,
+    "cf": 15236.17,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 1780.58
+   },
+   {
+    "year": 2026,
+    "month": 7,
+    "cf": 15406.17,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 8,
+    "cf": 16727.38,
+    "dep": 1321.38,
+    "wd": 0.17,
+    "pnl": 0.0
+   }
+  ],
+  "cf_sin_cobros": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 32.06,
+     "base": "contable",
+     "motivo": "serie_partida",
+     "desde": null,
+     "hasta": null,
+     "meses": 13
+    }
+   },
+   "estimado": {
+    "rendi": 24.67,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 24.67,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 24.67,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   }
+  }
+ },
+ "balanz|S4_faltan_cupones": {
+  "uid": 5,
+  "preview_status": "ok",
+  "preview_summary": [
+   {
+    "type": "BUY",
+    "label": "Compra",
+    "count": 7
+   },
+   {
+    "type": "SELL",
+    "label": "Venta",
+    "count": 3
+   },
+   {
+    "type": "DEPOSIT",
+    "label": "Depósito",
+    "count": 3
+   },
+   {
+    "type": "DIVIDEND",
+    "label": "Dividendo",
+    "count": 2
+   },
+   {
+    "type": "WITHDRAW",
+    "label": "Retiro",
+    "count": 1
+   }
+  ],
+  "errors": [],
+  "confirm": {
+   "ok": true,
+   "post_proceso": {}
+  },
+  "sin_foto": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 23.97,
+     "base": "contable",
+     "motivo": "importado_sin_mediciones",
+     "desde": null,
+     "hasta": null,
+     "meses": 7
+    }
+   },
+   "estimado": {
+    "rendi": 102.64,
+    "ventana": [
+     "2024-01-31",
+     "2026-09-30"
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 102.64,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 121.37,
+    "error_pp": -18.73,
+    "verdad_contable": 21.65
+   }
+  },
+  "foto": {
+   "override": {
+    "reduced": [],
+    "removed": [],
+    "skipped_manual": [],
+    "capped": false,
+    "particiones": [
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 5009057.47,
+       "n_cut": 0,
+       "n_current": 4
+      },
+      "broker": "Balanz",
+      "currency": "ARS"
+     }
+    ]
+   },
+   "foto_completa": true,
+   "warnings": [],
+   "fecha_usada": "2026-08-03",
+   "matched": 4,
+   "nothing_to_do": null,
+   "message": null,
+   "detail": null,
+   "avisos_escala": [],
+   "confirm_ok": true,
+   "sinteticas": [
+    {
+     "date": "2026-08-03",
+     "broker": "Balanz",
+     "t": "WITHDRAW",
+     "a": null,
+     "q": null,
+     "g": 258.51,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (ARS)"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "Balanz · USD",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 850.0,
+     "c": "USD",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (USD)"
+    }
+   ]
+  },
+  "cron_dias": 61,
+  "final": {
+   "certero": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 25.19,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 125.27,
+    "ventana": [
+     "2024-01-31",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 125.27,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 141.34,
+    "error_pp": -16.07,
+    "verdad_contable": 21.65
+   }
+  },
+  "snaps_por_origen": {
+   "mtm_backfill|costo|apto=0": 31,
+   "cron|mercado|apto=1": 61
+  },
+  "capital": [
+   {
+    "year": 2024,
+    "month": 1,
+    "cf": 6101.24,
+    "dep": 6101.24,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 2,
+    "cf": 10101.24,
+    "dep": 4000.0,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 4,
+    "cf": 10120.48,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 19.24
+   },
+   {
+    "year": 2024,
+    "month": 5,
+    "cf": 10124.23,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 3.75
+   },
+   {
+    "year": 2024,
+    "month": 9,
+    "cf": 10990.26,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 866.03
+   },
+   {
+    "year": 2025,
+    "month": 6,
+    "cf": 10747.82,
+    "dep": 0.0,
+    "wd": 242.44,
+    "pnl": 0.0
+   },
+   {
+    "year": 2025,
+    "month": 10,
+    "cf": 12775.59,
+    "dep": 2027.77,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 3,
+    "cf": 14556.17,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 1780.58
+   },
+   {
+    "year": 2026,
+    "month": 8,
+    "cf": 15406.0,
+    "dep": 850.0,
+    "wd": 0.17,
+    "pnl": 0.0
+   }
+  ],
+  "cf_sin_cobros": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 23.97,
+     "base": "contable",
+     "motivo": "serie_partida",
+     "desde": null,
+     "hasta": null,
+     "meses": 8
+    }
+   },
+   "estimado": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 25.19,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   }
+  }
+ },
+ "balanz|S5_movimientos_despues_de_la_foto": {
+  "uid": 1,
+  "preview_status": "ok",
+  "preview_summary": [
+   {
+    "type": "BUY",
+    "label": "Compra",
+    "count": 8
+   },
+   {
+    "type": "DIVIDEND",
+    "label": "Dividendo",
+    "count": 7
+   },
+   {
+    "type": "DEPOSIT",
+    "label": "Depósito",
+    "count": 4
+   },
+   {
+    "type": "SELL",
+    "label": "Venta",
+    "count": 3
+   },
+   {
+    "type": "WITHDRAW",
+    "label": "Retiro",
+    "count": 1
+   }
+  ],
+  "errors": [],
+  "confirm": {
+   "ok": true,
+   "post_proceso": {}
+  },
+  "sin_foto": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 32.06,
+     "base": "contable",
+     "motivo": "importado_sin_mediciones",
+     "desde": null,
+     "hasta": null,
+     "meses": 13
+    }
+   },
+   "estimado": {
+    "rendi": 110.38,
+    "ventana": [
+     "2024-01-31",
+     "2026-09-30"
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 110.38,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 120.67,
+    "error_pp": -10.29,
+    "verdad_contable": 21.59
+   }
+  },
+  "foto": {
+   "override": {
+    "reduced": [],
+    "removed": [],
+    "skipped_manual": [],
+    "capped": false,
+    "particiones": [
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 6653348.67,
+       "n_cut": 0,
+       "n_current": 4
+      },
+      "broker": "Balanz",
+      "currency": "ARS"
+     }
+    ]
+   },
+   "foto_completa": true,
+   "warnings": [],
+   "fecha_usada": "2026-08-03",
+   "matched": 4,
+   "nothing_to_do": null,
+   "message": null,
+   "detail": null,
+   "avisos_escala": [],
+   "confirm_ok": true,
+   "sinteticas": [
+    {
+     "date": "2026-08-03",
+     "broker": "Balanz",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 1153898.44,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (ARS)"
+    }
+   ]
+  },
+  "cron_dias": 40,
+  "final": {
+   "certero": {
+    "rendi": 18.9,
+    "ventana": [
+     "2026-09-02",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 18.9,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-09-02",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 19.53,
+    "error_pp": -0.63,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 131.31,
+    "ventana": [
+     "2024-01-31",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 131.31,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 141.42,
+    "error_pp": -10.11,
+    "verdad_contable": 21.59
+   }
+  },
+  "snaps_por_origen": {
+   "mtm_backfill|costo|apto=0": 32,
+   "cron|mercado|apto=1": 40
+  },
+  "capital": [
+   {
+    "year": 2024,
+    "month": 1,
+    "cf": 6101.24,
+    "dep": 6101.24,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 2,
+    "cf": 10101.24,
+    "dep": 4000.0,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 4,
+    "cf": 10120.48,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 19.24
+   },
+   {
+    "year": 2024,
+    "month": 5,
+    "cf": 10124.23,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 3.75
+   },
+   {
+    "year": 2024,
+    "month": 7,
+    "cf": 10294.23,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2024,
+    "month": 9,
+    "cf": 11160.26,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 866.03
+   },
+   {
+    "year": 2025,
+    "month": 1,
+    "cf": 11330.26,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 6,
+    "cf": 11087.82,
+    "dep": 0.0,
+    "wd": 242.44,
+    "pnl": 0.0
+   },
+   {
+    "year": 2025,
+    "month": 7,
+    "cf": 11257.82,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 10,
+    "cf": 13285.59,
+    "dep": 2027.77,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 1,
+    "cf": 13455.59,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 3,
+    "cf": 15236.17,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 1780.58
+   },
+   {
+    "year": 2026,
+    "month": 7,
+    "cf": 15406.17,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 8,
+    "cf": 16174.05,
+    "dep": 767.88,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 9,
+    "cf": 16506.26,
+    "dep": 332.21,
+    "wd": 0.0,
+    "pnl": 0.0
+   }
+  ],
+  "cf_sin_cobros": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 32.06,
+     "base": "contable",
+     "motivo": "serie_partida",
+     "desde": null,
+     "hasta": null,
+     "meses": 14
+    }
+   },
+   "estimado": {
+    "rendi": 18.9,
+    "ventana": [
+     "2026-09-02",
+     "2026-10-27"
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 18.9,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2026-09-02",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 19.53,
+    "error_pp": -0.63,
+    "verdad_contable": 0.0
+   }
+  }
+ },
+ "ieb|S0_completo": {
+  "uid": 2,
+  "preview_status": "ok",
+  "preview_summary": [
+   {
+    "type": "BUY",
+    "label": "Compra",
+    "count": 7
+   },
+   {
+    "type": "DIVIDEND",
+    "label": "Dividendo",
+    "count": 7
+   },
+   {
+    "type": "DEPOSIT",
+    "label": "Depósito",
+    "count": 3
+   },
+   {
+    "type": "SELL",
+    "label": "Venta",
+    "count": 3
+   },
+   {
+    "type": "WITHDRAW",
+    "label": "Retiro",
+    "count": 1
+   }
+  ],
+  "errors": [],
+  "confirm": {
+   "ok": true,
+   "post_proceso": {}
+  },
+  "sin_foto": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 32.32,
+     "base": "contable",
+     "motivo": "importado_sin_mediciones",
+     "desde": null,
+     "hasta": null,
+     "meses": 11
+    }
+   },
+   "estimado": {
+    "rendi": 100.08,
+    "ventana": [
+     "2024-01-31",
+     "2026-09-30"
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 100.08,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 121.37,
+    "error_pp": -21.29,
+    "verdad_contable": 21.65
+   }
+  },
+  "foto": {
+   "override": {
+    "reduced": [],
+    "removed": [],
+    "skipped_manual": [],
+    "capped": false,
+    "particiones": [
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 5037666.62,
+       "n_cut": 0,
+       "n_current": 3
+      },
+      "broker": "IEB",
+      "currency": "ARS"
+     },
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 4949.52,
+       "n_cut": 0,
+       "n_current": 2
+      },
+      "broker": "IEB · USD",
+      "currency": "USD"
+     }
+    ]
+   },
+   "foto_completa": true,
+   "warnings": [],
+   "fecha_usada": "2026-08-03",
+   "matched": 5,
+   "nothing_to_do": null,
+   "message": null,
+   "detail": null,
+   "avisos_escala": [],
+   "confirm_ok": true,
+   "sinteticas": [
+    {
+     "date": "2026-08-03",
+     "broker": "IEB",
+     "t": "WITHDRAW",
+     "a": null,
+     "q": null,
+     "g": 45618.89,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (ARS)"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "IEB · USD",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 3.75,
+     "c": "USD",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (USD)"
+    }
+   ]
+  },
+  "cron_dias": 61,
+  "final": {
+   "certero": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 25.19,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 123.46,
+    "ventana": [
+     "2024-01-31",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 123.46,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 141.34,
+    "error_pp": -17.88,
+    "verdad_contable": 21.65
+   }
+  },
+  "snaps_por_origen": {
+   "mtm_backfill|costo|apto=0": 31,
+   "cron|mercado|apto=1": 61
+  },
+  "capital": [
+   {
+    "year": 2024,
+    "month": 1,
+    "cf": 6101.24,
+    "dep": 6101.24,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 2,
+    "cf": 10101.24,
+    "dep": 4000.0,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 4,
+    "cf": 10120.48,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 19.24
+   },
+   {
+    "year": 2024,
+    "month": 7,
+    "cf": 10290.49,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2024,
+    "month": 9,
+    "cf": 11166.13,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 875.64
+   },
+   {
+    "year": 2025,
+    "month": 1,
+    "cf": 11336.13,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 6,
+    "cf": 11093.68,
+    "dep": 0.0,
+    "wd": 242.44,
+    "pnl": 0.0
+   },
+   {
+    "year": 2025,
+    "month": 7,
+    "cf": 11263.68,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 10,
+    "cf": 13291.45,
+    "dep": 2027.77,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 1,
+    "cf": 13461.45,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 3,
+    "cf": 15264.8,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 1803.35
+   },
+   {
+    "year": 2026,
+    "month": 7,
+    "cf": 15434.8,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 8,
+    "cf": 15408.2,
+    "dep": 3.75,
+    "wd": 30.36,
+    "pnl": 0.0
+   }
+  ],
+  "cf_sin_cobros": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 32.32,
+     "base": "contable",
+     "motivo": "serie_partida",
+     "desde": null,
+     "hasta": null,
+     "meses": 12
+    }
+   },
+   "estimado": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 25.19,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   }
+  }
+ },
+ "ieb|S1_ventana_desde_2025": {
+  "uid": 3,
+  "preview_status": "ok",
+  "preview_summary": [
+   {
+    "type": "DIVIDEND",
+    "label": "Dividendo",
+    "count": 4
+   },
+   {
+    "type": "BUY",
+    "label": "Compra",
+    "count": 3
+   },
+   {
+    "type": "WITHDRAW",
+    "label": "Retiro",
+    "count": 1
+   },
+   {
+    "type": "DEPOSIT",
+    "label": "Depósito",
+    "count": 1
+   },
+   {
+    "type": "SELL",
+    "label": "Venta",
+    "count": 1
+   }
+  ],
+  "errors": [],
+  "confirm": {
+   "ok": true,
+   "post_proceso": {}
+  },
+  "sin_foto": {
+   "certero": {
+    "rendi": 8.12,
+    "ventana": [
+     "2026-07-31",
+     "2026-09-30"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 8.12,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-07-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 15.07,
+    "error_pp": -6.95,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 16.77,
+    "ventana": [
+     "2025-10-31",
+     "2026-09-30"
+    ],
+    "motivo": "capital_chico",
+    "publicable": {
+     "pct": 16.77,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2025-10-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 24.81,
+    "error_pp": -8.04,
+    "verdad_contable": 8.69
+   }
+  },
+  "foto": {
+   "override": {
+    "reduced": [],
+    "removed": [],
+    "skipped_manual": [],
+    "capped": false,
+    "particiones": [
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 3710440.76,
+       "n_cut": 0,
+       "n_current": 2
+      },
+      "broker": "IEB",
+      "currency": "ARS"
+     },
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 1436.57,
+       "n_cut": 0,
+       "n_current": 1
+      },
+      "broker": "IEB · USD",
+      "currency": "USD"
+     }
+    ]
+   },
+   "foto_completa": true,
+   "warnings": [],
+   "fecha_usada": "2026-08-03",
+   "matched": 3,
+   "nothing_to_do": null,
+   "message": null,
+   "detail": null,
+   "avisos_escala": [
+    "El aporte de apertura de esta foto es de 661.902 USD en IEB · USD — 973 veces lo que ya figura en esa cuenta (680 USD). Suele significar que el archivo es de otro broker, o que los importes vienen en otra moneda que la del broker. Verificalo antes de confirmar."
+   ],
+   "confirm_ok": true,
+   "sinteticas": [
+    {
+     "date": "2026-08-03",
+     "broker": "IEB",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 9173881.62,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Tenencia — aporte inicial sintético (Rendi)"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "IEB",
+     "t": "BUY",
+     "a": "GGAL",
+     "q": 600.0,
+     "g": 9173881.62,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Tenencia — apertura GGAL a precio de 2026-08-03 (P"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "IEB · USD",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 661901.6,
+     "c": "USD",
+     "tout": 0,
+     "nota": "Tenencia — aporte inicial sintético (Rendi)"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "IEB · USD",
+     "t": "BUY",
+     "a": "GD38",
+     "q": 8000.0,
+     "g": 661901.6,
+     "c": "USD",
+     "tout": 0,
+     "nota": "Tenencia — apertura GD38 a precio de 2026-08-03 (P"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "IEB",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 1781595.89,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (ARS)"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "IEB · USD",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 1513.66,
+     "c": "USD",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (USD)"
+    }
+   ]
+  },
+  "cron_dias": 61,
+  "final": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "medicion_dudosa",
+    "publicable": {
+     "pct": -0.0,
+     "base": "contable",
+     "motivo": "medicion_dudosa",
+     "desde": null,
+     "hasta": null,
+     "meses": 1
+    }
+   },
+   "estimado": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": "medicion_dudosa",
+    "publicable": {
+     "pct": 25.19,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   }
+  },
+  "snaps_por_origen": {
+   "mtm_backfill|costo|apto=0": 18,
+   "mtm_backfill|mercado|apto=1": 1,
+   "cron|mercado|apto=1": 61
+  },
+  "capital": [
+   {
+    "year": 2025,
+    "month": 1,
+    "cf": 170.0,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 6,
+    "cf": -72.44,
+    "dep": 0.0,
+    "wd": 242.44,
+    "pnl": 0.0
+   },
+   {
+    "year": 2025,
+    "month": 7,
+    "cf": 97.56,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 10,
+    "cf": 2125.33,
+    "dep": 2027.77,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 1,
+    "cf": 2295.33,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 7,
+    "cf": 2465.33,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 8,
+    "cf": 673171.09,
+    "dep": 670705.76,
+    "wd": 0.0,
+    "pnl": 0.0
+   }
+  ],
+  "cf_sin_cobros": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "medicion_dudosa",
+    "publicable": {
+     "pct": -0.0,
+     "base": "contable",
+     "motivo": "medicion_dudosa",
+     "desde": null,
+     "hasta": null,
+     "meses": 1
+    }
+   },
+   "estimado": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": "medicion_dudosa",
+    "publicable": {
+     "pct": 25.19,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   }
+  }
+ },
+ "ieb|S2_falta_una_venta": {
+  "uid": 4,
+  "preview_status": "ok",
+  "preview_summary": [
+   {
+    "type": "BUY",
+    "label": "Compra",
+    "count": 7
+   },
+   {
+    "type": "DIVIDEND",
+    "label": "Dividendo",
+    "count": 7
+   },
+   {
+    "type": "DEPOSIT",
+    "label": "Depósito",
+    "count": 3
+   },
+   {
+    "type": "SELL",
+    "label": "Venta",
+    "count": 2
+   },
+   {
+    "type": "WITHDRAW",
+    "label": "Retiro",
+    "count": 1
+   }
+  ],
+  "errors": [],
+  "confirm": {
+   "ok": true,
+   "post_proceso": {}
+  },
+  "sin_foto": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 23.45,
+     "base": "contable",
+     "motivo": "importado_sin_mediciones",
+     "desde": null,
+     "hasta": null,
+     "meses": 10
+    }
+   },
+   "estimado": {
+    "rendi": 132.07,
+    "ventana": [
+     "2024-01-31",
+     "2026-09-30"
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 132.07,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 121.37,
+    "error_pp": 10.7,
+    "verdad_contable": 21.65
+   }
+  },
+  "foto": {
+   "override": {
+    "reduced": [
+     {
+      "ticker": "GGAL",
+      "rendi": 1000.0,
+      "tenencia": 600.0,
+      "sold": 400.0
+     }
+    ],
+    "removed": [],
+    "skipped_manual": [],
+    "capped": false,
+    "particiones": [
+     {
+      "reduced": [
+       {
+        "ticker": "GGAL",
+        "rendi": 1000.0,
+        "tenencia": 600.0,
+        "sold": 400.0
+       }
+      ],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [
+       {
+        "ticker": "GGAL",
+        "rendi": 1000.0,
+        "foto": 600.0
+       }
+      ],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 884817.24,
+       "total_inv": 5922483.86,
+       "n_cut": 1,
+       "n_current": 3
+      },
+      "broker": "IEB",
+      "currency": "ARS"
+     },
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 4949.52,
+       "n_cut": 0,
+       "n_current": 2
+      },
+      "broker": "IEB · USD",
+      "currency": "USD"
+     }
+    ]
+   },
+   "foto_completa": true,
+   "warnings": [],
+   "fecha_usada": "2026-08-03",
+   "matched": 4,
+   "nothing_to_do": null,
+   "message": null,
+   "detail": null,
+   "avisos_escala": [],
+   "confirm_ok": true,
+   "sinteticas": [
+    {
+     "date": "2026-08-03",
+     "broker": "IEB",
+     "t": "SELL",
+     "a": "GGAL",
+     "q": 400.0,
+     "g": 0.0,
+     "c": "ARS",
+     "tout": 1,
+     "nota": "Tenencia — ajuste a foto de 2026-08-03: cierre de "
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "IEB",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 1906325.11,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (ARS)"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "IEB · USD",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 3.75,
+     "c": "USD",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (USD)"
+    }
+   ]
+  },
+  "cron_dias": 61,
+  "final": {
+   "certero": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 25.19,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 147.58,
+    "ventana": [
+     "2024-01-31",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 147.58,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 141.34,
+    "error_pp": 6.24,
+    "verdad_contable": 21.65
+   }
+  },
+  "snaps_por_origen": {
+   "mtm_backfill|costo|apto=0": 31,
+   "cron|mercado|apto=1": 61
+  },
+  "capital": [
+   {
+    "year": 2024,
+    "month": 1,
+    "cf": 6101.24,
+    "dep": 6101.24,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 2,
+    "cf": 10101.24,
+    "dep": 4000.0,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 4,
+    "cf": 10120.48,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 19.24
+   },
+   {
+    "year": 2024,
+    "month": 7,
+    "cf": 10290.49,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 1,
+    "cf": 10460.49,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 6,
+    "cf": 10218.04,
+    "dep": 0.0,
+    "wd": 242.44,
+    "pnl": 0.0
+   },
+   {
+    "year": 2025,
+    "month": 7,
+    "cf": 10388.04,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 10,
+    "cf": 12415.81,
+    "dep": 2027.77,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 1,
+    "cf": 12585.81,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 3,
+    "cf": 14389.16,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 1803.35
+   },
+   {
+    "year": 2026,
+    "month": 7,
+    "cf": 14559.16,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 8,
+    "cf": 15831.51,
+    "dep": 1272.35,
+    "wd": 0.0,
+    "pnl": 0.0
+   }
+  ],
+  "cf_sin_cobros": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 23.45,
+     "base": "contable",
+     "motivo": "serie_partida",
+     "desde": null,
+     "hasta": null,
+     "meses": 11
+    }
+   },
+   "estimado": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 25.19,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   }
+  }
+ },
+ "ieb|S3_titulos_de_otro_broker": {
+  "uid": 5,
+  "preview_status": "ok",
+  "preview_summary": [
+   {
+    "type": "BUY",
+    "label": "Compra",
+    "count": 7
+   },
+   {
+    "type": "DIVIDEND",
+    "label": "Dividendo",
+    "count": 7
+   },
+   {
+    "type": "DEPOSIT",
+    "label": "Depósito",
+    "count": 3
+   },
+   {
+    "type": "SELL",
+    "label": "Venta",
+    "count": 3
+   },
+   {
+    "type": "WITHDRAW",
+    "label": "Retiro",
+    "count": 1
+   }
+  ],
+  "errors": [],
+  "confirm": {
+   "ok": true,
+   "post_proceso": {}
+  },
+  "sin_foto": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 32.32,
+     "base": "contable",
+     "motivo": "importado_sin_mediciones",
+     "desde": null,
+     "hasta": null,
+     "meses": 11
+    }
+   },
+   "estimado": {
+    "rendi": 100.08,
+    "ventana": [
+     "2024-01-31",
+     "2026-09-30"
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 100.08,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 119.76,
+    "error_pp": -19.68,
+    "verdad_contable": 20.03
+   }
+  },
+  "foto": {
+   "override": {
+    "reduced": [],
+    "removed": [],
+    "skipped_manual": [],
+    "capped": false,
+    "particiones": [
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 5037666.62,
+       "n_cut": 0,
+       "n_current": 3
+      },
+      "broker": "IEB",
+      "currency": "ARS"
+     },
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 4949.52,
+       "n_cut": 0,
+       "n_current": 2
+      },
+      "broker": "IEB · USD",
+      "currency": "USD"
+     }
+    ]
+   },
+   "foto_completa": true,
+   "warnings": [],
+   "fecha_usada": "2026-08-03",
+   "matched": 5,
+   "nothing_to_do": null,
+   "message": null,
+   "detail": null,
+   "avisos_escala": [],
+   "confirm_ok": true,
+   "sinteticas": [
+    {
+     "date": "2026-08-03",
+     "broker": "IEB",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 1985640.28,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Tenencia — aporte inicial sintético (Rendi)"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "IEB",
+     "t": "BUY",
+     "a": "VIST",
+     "q": 60.0,
+     "g": 1985640.28,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Tenencia — apertura VIST a precio de 2026-08-03 (P"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "IEB",
+     "t": "WITHDRAW",
+     "a": null,
+     "q": null,
+     "g": 45618.89,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (ARS)"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "IEB · USD",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 3.75,
+     "c": "USD",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (USD)"
+    }
+   ]
+  },
+  "cron_dias": 61,
+  "final": {
+   "certero": {
+    "rendi": 24.67,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 24.67,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 24.67,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 122.53,
+    "ventana": [
+     "2024-01-31",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 122.53,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 137.64,
+    "error_pp": -15.11,
+    "verdad_contable": 20.03
+   }
+  },
+  "snaps_por_origen": {
+   "mtm_backfill|costo|apto=0": 31,
+   "cron|mercado|apto=1": 61
+  },
+  "capital": [
+   {
+    "year": 2024,
+    "month": 1,
+    "cf": 6101.24,
+    "dep": 6101.24,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 2,
+    "cf": 10101.24,
+    "dep": 4000.0,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 4,
+    "cf": 10120.48,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 19.24
+   },
+   {
+    "year": 2024,
+    "month": 7,
+    "cf": 10290.49,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2024,
+    "month": 9,
+    "cf": 11166.13,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 875.64
+   },
+   {
+    "year": 2025,
+    "month": 1,
+    "cf": 11336.13,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 6,
+    "cf": 11093.68,
+    "dep": 0.0,
+    "wd": 242.44,
+    "pnl": 0.0
+   },
+   {
+    "year": 2025,
+    "month": 7,
+    "cf": 11263.68,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 10,
+    "cf": 13291.45,
+    "dep": 2027.77,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 1,
+    "cf": 13461.45,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 3,
+    "cf": 15264.8,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 1803.35
+   },
+   {
+    "year": 2026,
+    "month": 7,
+    "cf": 15434.8,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 8,
+    "cf": 16729.57,
+    "dep": 1325.13,
+    "wd": 30.36,
+    "pnl": 0.0
+   }
+  ],
+  "cf_sin_cobros": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 32.32,
+     "base": "contable",
+     "motivo": "serie_partida",
+     "desde": null,
+     "hasta": null,
+     "meses": 12
+    }
+   },
+   "estimado": {
+    "rendi": 24.67,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 24.67,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 24.67,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   }
+  }
+ },
+ "ieb|S4_faltan_cupones": {
+  "uid": 6,
+  "preview_status": "ok",
+  "preview_summary": [
+   {
+    "type": "BUY",
+    "label": "Compra",
+    "count": 7
+   },
+   {
+    "type": "DEPOSIT",
+    "label": "Depósito",
+    "count": 3
+   },
+   {
+    "type": "SELL",
+    "label": "Venta",
+    "count": 3
+   },
+   {
+    "type": "DIVIDEND",
+    "label": "Dividendo",
+    "count": 2
+   },
+   {
+    "type": "WITHDRAW",
+    "label": "Retiro",
+    "count": 1
+   }
+  ],
+  "errors": [],
+  "confirm": {
+   "ok": true,
+   "post_proceso": {}
+  },
+  "sin_foto": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 24.22,
+     "base": "contable",
+     "motivo": "importado_sin_mediciones",
+     "desde": null,
+     "hasta": null,
+     "meses": 6
+    }
+   },
+   "estimado": {
+    "rendi": 102.7,
+    "ventana": [
+     "2024-01-31",
+     "2026-09-30"
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 102.7,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 121.37,
+    "error_pp": -18.67,
+    "verdad_contable": 21.65
+   }
+  },
+  "foto": {
+   "override": {
+    "reduced": [],
+    "removed": [],
+    "skipped_manual": [],
+    "capped": false,
+    "particiones": [
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 5037666.62,
+       "n_cut": 0,
+       "n_current": 3
+      },
+      "broker": "IEB",
+      "currency": "ARS"
+     },
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 4949.52,
+       "n_cut": 0,
+       "n_current": 2
+      },
+      "broker": "IEB · USD",
+      "currency": "USD"
+     }
+    ]
+   },
+   "foto_completa": true,
+   "warnings": [],
+   "fecha_usada": "2026-08-03",
+   "matched": 5,
+   "nothing_to_do": null,
+   "message": null,
+   "detail": null,
+   "avisos_escala": [],
+   "confirm_ok": true,
+   "sinteticas": [
+    {
+     "date": "2026-08-03",
+     "broker": "IEB",
+     "t": "WITHDRAW",
+     "a": null,
+     "q": null,
+     "g": 45618.89,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (ARS)"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "IEB · USD",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 853.75,
+     "c": "USD",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (USD)"
+    }
+   ]
+  },
+  "cron_dias": 61,
+  "final": {
+   "certero": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 25.19,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 125.35,
+    "ventana": [
+     "2024-01-31",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 125.35,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 141.34,
+    "error_pp": -15.99,
+    "verdad_contable": 21.65
+   }
+  },
+  "snaps_por_origen": {
+   "mtm_backfill|costo|apto=0": 31,
+   "cron|mercado|apto=1": 61
+  },
+  "capital": [
+   {
+    "year": 2024,
+    "month": 1,
+    "cf": 6101.24,
+    "dep": 6101.24,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 2,
+    "cf": 10101.24,
+    "dep": 4000.0,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 4,
+    "cf": 10120.48,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 19.24
+   },
+   {
+    "year": 2024,
+    "month": 9,
+    "cf": 10996.13,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 875.64
+   },
+   {
+    "year": 2025,
+    "month": 6,
+    "cf": 10753.68,
+    "dep": 0.0,
+    "wd": 242.44,
+    "pnl": 0.0
+   },
+   {
+    "year": 2025,
+    "month": 10,
+    "cf": 12781.45,
+    "dep": 2027.77,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 3,
+    "cf": 14584.8,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 1803.35
+   },
+   {
+    "year": 2026,
+    "month": 8,
+    "cf": 15408.2,
+    "dep": 853.75,
+    "wd": 30.36,
+    "pnl": 0.0
+   }
+  ],
+  "cf_sin_cobros": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 24.22,
+     "base": "contable",
+     "motivo": "serie_partida",
+     "desde": null,
+     "hasta": null,
+     "meses": 7
+    }
+   },
+   "estimado": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 25.19,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   }
+  }
+ },
+ "ieb|S5_movimientos_despues_de_la_foto": {
+  "uid": 7,
+  "preview_status": "ok",
+  "preview_summary": [
+   {
+    "type": "BUY",
+    "label": "Compra",
+    "count": 8
+   },
+   {
+    "type": "DIVIDEND",
+    "label": "Dividendo",
+    "count": 7
+   },
+   {
+    "type": "DEPOSIT",
+    "label": "Depósito",
+    "count": 4
+   },
+   {
+    "type": "SELL",
+    "label": "Venta",
+    "count": 3
+   },
+   {
+    "type": "WITHDRAW",
+    "label": "Retiro",
+    "count": 1
+   }
+  ],
+  "errors": [],
+  "confirm": {
+   "ok": true,
+   "post_proceso": {}
+  },
+  "sin_foto": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 32.32,
+     "base": "contable",
+     "motivo": "importado_sin_mediciones",
+     "desde": null,
+     "hasta": null,
+     "meses": 12
+    }
+   },
+   "estimado": {
+    "rendi": 99.58,
+    "ventana": [
+     "2024-01-31",
+     "2026-09-30"
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 99.58,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 120.67,
+    "error_pp": -21.09,
+    "verdad_contable": 21.59
+   }
+  },
+  "foto": {
+   "override": {
+    "reduced": [],
+    "removed": [],
+    "skipped_manual": [],
+    "capped": false,
+    "particiones": [
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 6691823.57,
+       "n_cut": 0,
+       "n_current": 3
+      },
+      "broker": "IEB",
+      "currency": "ARS"
+     },
+     {
+      "reduced": [],
+      "removed": [],
+      "skipped_manual": [],
+      "capped": false,
+      "over_visto": [],
+      "frenado": {
+       "manual": [],
+       "sibling": []
+      },
+      "cap": {
+       "cut_inv": 0,
+       "total_inv": 4949.52,
+       "n_cut": 0,
+       "n_current": 2
+      },
+      "broker": "IEB · USD",
+      "currency": "USD"
+     }
+    ]
+   },
+   "foto_completa": true,
+   "warnings": [],
+   "fecha_usada": "2026-08-03",
+   "matched": 5,
+   "nothing_to_do": null,
+   "message": null,
+   "detail": null,
+   "avisos_escala": [],
+   "confirm_ok": true,
+   "sinteticas": [
+    {
+     "date": "2026-08-03",
+     "broker": "IEB",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 1108538.06,
+     "c": "ARS",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (ARS)"
+    },
+    {
+     "date": "2026-08-03",
+     "broker": "IEB · USD",
+     "t": "DEPOSIT",
+     "a": null,
+     "q": null,
+     "g": 3.75,
+     "c": "USD",
+     "tout": 0,
+     "nota": "Ajuste de cash a Estado de Cuenta (USD)"
+    }
+   ]
+  },
+  "cron_dias": 40,
+  "final": {
+   "certero": {
+    "rendi": 18.9,
+    "ventana": [
+     "2026-09-02",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 18.9,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-09-02",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 19.53,
+    "error_pp": -0.63,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 119.45,
+    "ventana": [
+     "2024-01-31",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 119.45,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 141.42,
+    "error_pp": -21.97,
+    "verdad_contable": 21.59
+   }
+  },
+  "snaps_por_origen": {
+   "mtm_backfill|costo|apto=0": 32,
+   "cron|mercado|apto=1": 40
+  },
+  "capital": [
+   {
+    "year": 2024,
+    "month": 1,
+    "cf": 6101.24,
+    "dep": 6101.24,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 2,
+    "cf": 10101.24,
+    "dep": 4000.0,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 4,
+    "cf": 10120.48,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 19.24
+   },
+   {
+    "year": 2024,
+    "month": 7,
+    "cf": 10290.49,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2024,
+    "month": 9,
+    "cf": 11166.13,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 875.64
+   },
+   {
+    "year": 2025,
+    "month": 1,
+    "cf": 11336.13,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 6,
+    "cf": 11093.68,
+    "dep": 0.0,
+    "wd": 242.44,
+    "pnl": 0.0
+   },
+   {
+    "year": 2025,
+    "month": 7,
+    "cf": 11263.68,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 10,
+    "cf": 13291.45,
+    "dep": 2027.77,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 1,
+    "cf": 13461.45,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 3,
+    "cf": 15264.8,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 1803.35
+   },
+   {
+    "year": 2026,
+    "month": 7,
+    "cf": 15434.8,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 8,
+    "cf": 16176.25,
+    "dep": 741.45,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 9,
+    "cf": 16508.46,
+    "dep": 332.21,
+    "wd": 0.0,
+    "pnl": 0.0
+   }
+  ],
+  "cf_sin_cobros": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 32.32,
+     "base": "contable",
+     "motivo": "serie_partida",
+     "desde": null,
+     "hasta": null,
+     "meses": 13
+    }
+   },
+   "estimado": {
+    "rendi": 18.9,
+    "ventana": [
+     "2026-09-02",
+     "2026-10-27"
+    ],
+    "motivo": "serie_partida",
+    "publicable": {
+     "pct": 18.9,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2026-09-02",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 19.53,
+    "error_pp": -0.63,
+    "verdad_contable": 0.0
+   }
+  }
+ },
+ "generico|S0_completo": {
+  "uid": 8,
+  "preview_status": "ok",
+  "preview_summary": [
+   {
+    "type": "DIVIDEND",
+    "label": "Dividendo",
+    "count": 7
+   },
+   {
+    "type": "BUY",
+    "label": "Compra",
+    "count": 6
+   },
+   {
+    "type": "DEPOSIT",
+    "label": "Depósito",
+    "count": 3
+   },
+   {
+    "type": "SELL",
+    "label": "Venta",
+    "count": 2
+   },
+   {
+    "type": "FX_ARS_TO_USD",
+    "label": "Conversión ARS → USD",
+    "count": 1
+   },
+   {
+    "type": "WITHDRAW",
+    "label": "Retiro",
+    "count": 1
+   }
+  ],
+  "errors": [],
+  "confirm": {
+   "ok": true,
+   "post_proceso": {}
+  },
+  "sin_foto": {
+   "certero": {
+    "rendi": null,
+    "ventana": [
+     null,
+     null
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 32.06,
+     "base": "contable",
+     "motivo": "importado_sin_mediciones",
+     "desde": null,
+     "hasta": null,
+     "meses": 12
+    }
+   },
+   "estimado": {
+    "rendi": 110.93,
+    "ventana": [
+     "2024-01-31",
+     "2026-09-30"
+    ],
+    "motivo": "importado_sin_mediciones",
+    "publicable": {
+     "pct": 110.93,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-09-30",
+     "meses": 0
+    },
+    "verdad_twr": 121.37,
+    "error_pp": -10.44,
+    "verdad_contable": 21.65
+   }
+  },
+  "cron_dias": 61,
+  "final": {
+   "certero": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 25.19,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 135.57,
+    "ventana": [
+     "2024-01-31",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 135.57,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 141.34,
+    "error_pp": -5.77,
+    "verdad_contable": 21.65
+   }
+  },
+  "snaps_por_origen": {
+   "mtm_backfill|costo|apto=0": 31,
+   "cron|mercado|apto=1": 61
+  },
+  "capital": [
+   {
+    "year": 2024,
+    "month": 1,
+    "cf": 6101.24,
+    "dep": 6101.24,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 2,
+    "cf": 10101.24,
+    "dep": 4000.0,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2024,
+    "month": 4,
+    "cf": 10120.48,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 19.24
+   },
+   {
+    "year": 2024,
+    "month": 5,
+    "cf": 10124.23,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 3.75
+   },
+   {
+    "year": 2024,
+    "month": 7,
+    "cf": 10294.23,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2024,
+    "month": 9,
+    "cf": 11160.26,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 866.03
+   },
+   {
+    "year": 2025,
+    "month": 1,
+    "cf": 11330.26,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 6,
+    "cf": 11087.82,
+    "dep": 0.0,
+    "wd": 242.44,
+    "pnl": 0.0
+   },
+   {
+    "year": 2025,
+    "month": 7,
+    "cf": 11257.82,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2025,
+    "month": 10,
+    "cf": 13285.59,
+    "dep": 2027.77,
+    "wd": 0.0,
+    "pnl": 0.0
+   },
+   {
+    "year": 2026,
+    "month": 1,
+    "cf": 13455.59,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   },
+   {
+    "year": 2026,
+    "month": 3,
+    "cf": 15236.17,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 1780.58
+   },
+   {
+    "year": 2026,
+    "month": 7,
+    "cf": 15406.17,
+    "dep": 0.0,
+    "wd": 0.0,
+    "pnl": 170.0
+   }
+  ],
+  "cf_sin_cobros": {
+   "certero": {
+    "rendi": 25.19,
+    "ventana": [
+     "2026-08-04",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 25.19,
+     "base": "mercado",
+     "motivo": null,
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 25.19,
+    "error_pp": 0.0,
+    "verdad_contable": 0.0
+   },
+   "estimado": {
+    "rendi": 124.42,
+    "ventana": [
+     "2024-01-31",
+     "2026-10-27"
+    ],
+    "motivo": null,
+    "publicable": {
+     "pct": 124.42,
+     "base": "contable",
+     "motivo": null,
+     "desde": "2024-01-31",
+     "hasta": "2026-10-27",
+     "meses": 0
+    },
+    "verdad_twr": 141.34,
+    "error_pp": -16.92,
+    "verdad_contable": 21.65
+   }
+  }
+ }
+}

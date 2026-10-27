@@ -39,11 +39,13 @@ computadora; ponelos en `.claude/worktrees/audit-csv/_datos/` (carpeta ignorada)
 - [x] Archivos reales (Balanz A, Balanz B, IEB) por el arnés (salidas fuera del repo).
 - [x] Archivos inventados (Balanz, IEB, genérico) × 6 escenarios de discrepancia: `correr_escenarios.py`
       (historia y verdad en `historia.py`, formatos en `generadores.py`). Falta: Cocos, IOL, PPI, Inviu, BMB.
-- [ ] Tabla parser × tipo de movimiento.
-- [ ] Consistencia entre lectores.
-- [ ] Informe `AUDIT_rendimiento_desde_csv_2026-10-27.md`.
+- [x] Tabla parser × tipo de movimiento (`tabla_parsers.py`, por la vista previa HTTP).
+- [x] Consistencia entre lectores (`lectores.py`).
+- [x] Informe **`AUDIT_rendimiento_desde_csv_2026-10-27.md`** en la raíz de esta rama — es el entregable.
+- [ ] **Pendiente para tu Mac:** correr `medir_prod.py` contra la copia de prod (ver §7 del informe) y
+      completar los conteos "por medir". Y las pruebas de punta a punta de Cocos/IOL/PPI/Inviu/BMB (§6).
 
-## Hallazgos preliminares (sin cuantificar todavía)
+## Hallazgos (el detalle y los números finales están en el informe)
 
 1. **El Certero de producción no usa `ledger_replay`.** `ledger_replay.tenencia_en/cash_en/valor_en`
    no tiene ningún llamador fuera de `tests/` (`grep -rn "import ledger_replay" backend --include=*.py`

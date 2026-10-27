@@ -1,0 +1,1275 @@
+{
+ "balanz:S0_completo": {
+  "certero": {
+   "metricas": {
+    "status": 200,
+    "n": {
+     "medido_desde": "2026-08-04",
+     "medido_hasta": "2026-10-27",
+     "modo": "certero",
+     "tramos_detalle[0].desde": "2026-08-04",
+     "tramos_detalle[0].hasta": "2026-10-27",
+     "tramos_detalle[0].twr": 0.25189210900215686,
+     "tramos_detalle[0].desde_est": "2024-05-31",
+     "twr": 0.25189210900215686,
+     "base_del_twr": "mercado",
+     "ventana_desde": "2026-08-04",
+     "ventana_hasta": "2026-10-27"
+    }
+   },
+   "metricas_sin_modo": {
+    "status": 200,
+    "n": {
+     "medido_desde": "2026-08-04",
+     "medido_hasta": "2026-10-27",
+     "modo": "certero",
+     "tramos_detalle[0].desde": "2026-08-04",
+     "tramos_detalle[0].hasta": "2026-10-27",
+     "tramos_detalle[0].twr": 0.25189210900215686,
+     "tramos_detalle[0].desde_est": "2024-05-31",
+     "twr": 0.25189210900215686,
+     "base_del_twr": "mercado",
+     "ventana_desde": "2026-08-04",
+     "ventana_hasta": "2026-10-27"
+    }
+   },
+   "metas": {
+    "status": 200,
+    "n": {
+     "modo": "certero",
+     "base_del_twr": "mercado",
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "historia_desde": "2026-08-04",
+     "historia_hasta": "2026-10-27",
+     "total_return": 0.251892,
+     "total_return_pct": 25.19
+    }
+   },
+   "reportes_2026": {
+    "status": 200,
+    "n": {
+     "metrics.basis": "contable",
+     "metrics.modo": "certero",
+     "insights[0].evidence.pct": 52.2,
+     "insights[2].evidence.cash_pct": 41.9,
+     "drivers[0].contribution_pct": 84.0,
+     "drivers[1].contribution_pct": 16.0,
+     "movers[0].delta_pct": 150.42,
+     "movers[1].delta_pct": 30.8,
+     "portfolio_snapshot.delta_1d.pct": -2.82,
+     "portfolio_snapshot.delta_7d.pct": -1.17,
+     "portfolio_snapshot.delta_30d.pct": 7.54
+    },
+    "crudo": {
+     "metrics": {
+      "start_value": 13285.59,
+      "end_value": 26726.83,
+      "delta_usd": 0.0,
+      "delta_pct": null,
+      "delta_pct_over_contrib": null,
+      "realized_pnl": 2120.58,
+      "unrealized_pnl": 0.0,
+      "deposits": 0.0,
+      "withdrawals": 0.17,
+      "trades_count": 1,
+      "win_count": 1,
+      "loss_count": 0,
+      "win_rate": 100.0,
+      "vs_sp500_pct": null,
+      "vs_inflation_pct": null,
+      "sp500_return_pct": null,
+      "inflation_pct": null,
+      "retorno_ars_pct": null,
+      "basis_incomparable": true,
+      "basis": "contable",
+      "motor_motivo": null,
+      "motor_motivo_texto": null,
+      "medido_desde": null,
+      "medido_hasta": null,
+      "bench_desde": null,
+      "bench_hasta": null,
+      "modo": "certero",
+      "moneda": "usd"
+     }
+    }
+   },
+   "reportes_2025": {
+    "status": 403,
+    "n": "{'detail': {'code': 'plan_requerido', 'message': 'Ver un período cerrado es parte de un plan pago.'}}"
+   },
+   "wrapped_2025": {
+    "status": 200,
+    "n": {
+     "summary.twr": 0.0308
+    },
+    "crudo": {
+     "summary": {
+      "has_data": true,
+      "twr": 0.0308,
+      "months_count": 4,
+      "operations_count": 2,
+      "slide_count": 8
+     }
+    }
+   },
+   "ia_dashboard": {
+    "n": {
+     "portfolio.twr_30d_pct": 0.0979,
+     "portfolio.twr_lifetime_pct": 0.2519,
+     "portfolio.best_position.pnl_pct": 0.0,
+     "portfolio.worst_position.pnl_pct": 0.0,
+     "portfolio.cash_pct": 0.373
+    }
+   },
+   "ia_insights": {
+    "n": {
+     "twr_pct": 25.19,
+     "twr_base": "mercado",
+     "twr_modo": "certero",
+     "twr_desde": "2026-08-04",
+     "twr_hasta": "2026-10-27",
+     "realized_avg_pct_per_trade": 104.34,
+     "drawdown.medido_desde": "2026-08-04",
+     "drawdown.medido_hasta": "2026-10-27",
+     "drawdown.current_pct": 0.0,
+     "drawdown.max_pct": 0.0,
+     "trades.best_trade_pct": 119.28,
+     "trades.worst_trade_pct": 89.4,
+     "realized_attribution.top_contributors[0].pnl_pct": 89.4,
+     "realized_attribution.top_contributors[1].pnl_pct": 119.28,
+     "current_holdings_top[0].share_pct": 27.0,
+     "current_holdings_top[1].share_pct": 16.4,
+     "current_holdings_top[2].share_pct": 11.0,
+     "exposure.cash_pct": 37.3,
+     "exposure.ar_pct": 33.5,
+     "exposure.us_pct": 29.2,
+     "exposure.crypto_pct": 0.0
+    }
+   },
+   "ia_reports": {
+    "n": {
+     "_field_docs.twr_year_base": "De dónde sale `twr_year_pct`. 'mercado' = medido contra fotos reales de la cartera, es el bueno. 'contable' = de la cadena de monthly_entries, que no sabe nada del mercado: al hablarlo decilo (\"según tu contabilidad cargada\"). null = no se pudo medir y NO hay que publicar ningún número; el motivo está en `twr_year_motivo_texto`.",
+     "_field_docs.twr_year_motivo_texto": "Por qué no se pudo medir a mercado, ya escrito en castellano para el usuario. Si `twr_year_pct` es null, esto es lo que hay que contestar EN LUGAR de un número — no inventes uno de otra parte del packet.",
+     "twr_year_pct": 25.19,
+     "twr_year_base": "mercado",
+     "best_month.delta_pct": 13.23,
+     "worst_month.delta_pct": -0.0,
+     "months_base": "contable"
+    }
+   },
+   "ia_insights_evolution": {
+    "n": {
+     "twr_pct": 25.19,
+     "twr_base": "mercado",
+     "best_month.return_pct": 13.23,
+     "best_month.base": "contable",
+     "worst_month.return_pct": -0.0,
+     "worst_month.base": "contable",
+     "consistency_pct": 60.0,
+     "monthly_base": "contable"
+    }
+   },
+   "ia_dashboard_evolution": {
+    "n": {
+     "rendimiento_motivo": "Este análisis no recibió el número que muestra la pantalla. No lo calcules con los valores de la curva: incluyen lo que el usuario depositó y retiró, y darías un número distinto al que está viendo.",
+     "curva.ventana.desde": "2026-08-04",
+     "curva.ventana.hasta": "2026-10-27",
+     "caida_desde_el_mejor_momento_pct": 0.0,
+     "best_month.pct": 0.1323,
+     "worst_month.pct": -0.0,
+     "meses_base": "contable"
+    }
+   },
+   "motor_publicable": {
+    "pct": 25.19,
+    "base": "mercado",
+    "motivo": null,
+    "motivo_texto": null,
+    "meses": 0,
+    "modo": "certero",
+    "desde": "2026-08-04",
+    "hasta": "2026-10-27"
+   }
+  },
+  "estimado": {
+   "metricas": {
+    "status": 200,
+    "n": {
+     "medido_desde": "2026-08-04",
+     "medido_hasta": "2026-10-27",
+     "modo": "estimado",
+     "tramos_detalle[0].desde": "2026-08-04",
+     "tramos_detalle[0].hasta": "2026-10-27",
+     "tramos_detalle[0].twr": 0.25189210900215686,
+     "tramos_detalle[0].twr_est": 1.3547306376460875,
+     "tramos_detalle[0].desde_est": "2024-01-31",
+     "twr": 1.3547306376460875,
+     "cagr": 0.36726134572491165,
+     "base_del_twr": "contable",
+     "ventana_desde": "2024-01-31",
+     "ventana_hasta": "2026-10-27"
+    }
+   },
+   "metricas_sin_modo": {
+    "status": 200,
+    "n": {
+     "medido_desde": "2026-08-04",
+     "medido_hasta": "2026-10-27",
+     "modo": "estimado",
+     "tramos_detalle[0].desde": "2026-08-04",
+     "tramos_detalle[0].hasta": "2026-10-27",
+     "tramos_detalle[0].twr": 0.25189210900215686,
+     "tramos_detalle[0].twr_est": 1.3547306376460875,
+     "tramos_detalle[0].desde_est": "2024-01-31",
+     "twr": 1.3547306376460875,
+     "cagr": 0.36726134572491165,
+     "base_del_twr": "contable",
+     "ventana_desde": "2024-01-31",
+     "ventana_hasta": "2026-10-27"
+    }
+   },
+   "metas": {
+    "status": 200,
+    "n": {
+     "modo": "estimado",
+     "base_del_twr": "contable",
+     "desde": "2024-01-31",
+     "hasta": "2026-10-27",
+     "historia_desde": "2026-08-04",
+     "historia_hasta": "2026-10-27",
+     "total_return": 1.354731,
+     "total_return_pct": 135.47,
+     "cagr": 36.73
+    }
+   },
+   "reportes_2026": {
+    "status": 200,
+    "n": {
+     "metrics.basis": "contable",
+     "metrics.modo": "estimado",
+     "insights[0].evidence.pct": 52.2,
+     "insights[2].evidence.cash_pct": 41.9,
+     "drivers[0].contribution_pct": 84.0,
+     "drivers[1].contribution_pct": 16.0,
+     "movers[0].delta_pct": 150.42,
+     "movers[1].delta_pct": 30.8,
+     "portfolio_snapshot.delta_1d.pct": -2.82,
+     "portfolio_snapshot.delta_7d.pct": -1.17,
+     "portfolio_snapshot.delta_30d.pct": 7.54
+    },
+    "crudo": {
+     "metrics": {
+      "start_value": 13285.59,
+      "end_value": 26726.83,
+      "delta_usd": 0.0,
+      "delta_pct": null,
+      "delta_pct_over_contrib": null,
+      "realized_pnl": 2120.58,
+      "unrealized_pnl": 0.0,
+      "deposits": 0.0,
+      "withdrawals": 0.17,
+      "trades_count": 1,
+      "win_count": 1,
+      "loss_count": 0,
+      "win_rate": 100.0,
+      "vs_sp500_pct": null,
+      "vs_inflation_pct": null,
+      "sp500_return_pct": null,
+      "inflation_pct": null,
+      "retorno_ars_pct": null,
+      "basis_incomparable": true,
+      "basis": "contable",
+      "motor_motivo": null,
+      "motor_motivo_texto": null,
+      "medido_desde": null,
+      "medido_hasta": null,
+      "bench_desde": null,
+      "bench_hasta": null,
+      "modo": "estimado",
+      "moneda": "usd"
+     }
+    }
+   },
+   "reportes_2025": {
+    "status": 403,
+    "n": "{'detail': {'code': 'plan_requerido', 'message': 'Ver un período cerrado es parte de un plan pago.'}}"
+   },
+   "wrapped_2025": {
+    "status": 200,
+    "n": {
+     "summary.twr": 0.27149999999999996
+    },
+    "crudo": {
+     "summary": {
+      "has_data": true,
+      "twr": 0.27149999999999996,
+      "months_count": 4,
+      "operations_count": 2,
+      "slide_count": 8
+     }
+    }
+   },
+   "ia_dashboard": {
+    "n": {
+     "portfolio.twr_30d_pct": 0.0979,
+     "portfolio.twr_lifetime_pct": 1.3547,
+     "portfolio.best_position.pnl_pct": 0.0,
+     "portfolio.worst_position.pnl_pct": 0.0,
+     "portfolio.cash_pct": 0.373
+    }
+   },
+   "ia_insights": {
+    "n": {
+     "twr_pct": 29.95,
+     "twr_base": "contable",
+     "twr_modo": "estimado",
+     "twr_desde": "2025-10-31",
+     "twr_hasta": "2026-10-27",
+     "realized_avg_pct_per_trade": 104.34,
+     "trades.best_trade_pct": 119.28,
+     "trades.worst_trade_pct": 89.4,
+     "realized_attribution.top_contributors[0].pnl_pct": 89.4,
+     "realized_attribution.top_contributors[1].pnl_pct": 119.28,
+     "current_holdings_top[0].share_pct": 27.0,
+     "current_holdings_top[1].share_pct": 16.4,
+     "current_holdings_top[2].share_pct": 11.0,
+     "exposure.cash_pct": 37.3,
+     "exposure.ar_pct": 33.5,
+     "exposure.us_pct": 29.2,
+     "exposure.crypto_pct": 0.0
+    }
+   },
+   "ia_reports": {
+    "n": {
+     "_field_docs.twr_year_base": "De dónde sale `twr_year_pct`. 'mercado' = medido contra fotos reales de la cartera, es el bueno. 'contable' = de la cadena de monthly_entries, que no sabe nada del mercado: al hablarlo decilo (\"según tu contabilidad cargada\"). null = no se pudo medir y NO hay que publicar ningún número; el motivo está en `twr_year_motivo_texto`.",
+     "_field_docs.twr_year_motivo_texto": "Por qué no se pudo medir a mercado, ya escrito en castellano para el usuario. Si `twr_year_pct` es null, esto es lo que hay que contestar EN LUGAR de un número — no inventes uno de otra parte del packet.",
+     "twr_year_pct": 38.77,
+     "twr_year_base": "contable",
+     "best_month.delta_pct": 13.23,
+     "worst_month.delta_pct": -0.0,
+     "months_base": "contable"
+    }
+   },
+   "ia_insights_evolution": {
+    "n": {
+     "twr_pct": 29.95,
+     "twr_base": "contable",
+     "best_month.return_pct": 13.23,
+     "best_month.base": "contable",
+     "worst_month.return_pct": -0.0,
+     "worst_month.base": "contable",
+     "consistency_pct": 60.0,
+     "monthly_base": "contable"
+    }
+   },
+   "ia_dashboard_evolution": {
+    "n": {
+     "rendimiento_motivo": "Este análisis no recibió el número que muestra la pantalla. No lo calcules con los valores de la curva: incluyen lo que el usuario depositó y retiró, y darías un número distinto al que está viendo.",
+     "curva.ventana.desde": "2026-08-04",
+     "curva.ventana.hasta": "2026-10-27",
+     "best_month.pct": 0.1323,
+     "worst_month.pct": -0.0,
+     "meses_base": "contable"
+    }
+   },
+   "motor_publicable": {
+    "pct": 135.47,
+    "base": "contable",
+    "motivo": null,
+    "motivo_texto": null,
+    "meses": 0,
+    "modo": "estimado",
+    "desde": "2024-01-31",
+    "hasta": "2026-10-27"
+   }
+  },
+  "verdad": {
+   "twr_total": 141.34213275335222,
+   "twr_2025": 40.1578804853864,
+   "twr_2026_ytd": 45.407866459605614,
+   "contable": {
+    "2024-01": 0.0,
+    "2024-02": -0.259602443475504,
+    "2024-03": -0.259602443475504,
+    "2024-04": -0.008650672822796412,
+    "2024-05": 0.028569293596292233,
+    "2024-06": 0.028569293596292233,
+    "2024-07": 1.7158744379282664,
+    "2024-08": 1.7158744379282664,
+    "2024-09": 8.656560701939675,
+    "2024-10": 8.656560701939675,
+    "2024-11": 8.65657577131691,
+    "2024-12": 8.65657577131691,
+    "2025-01": 10.343880915648885,
+    "2025-02": 10.343880915648885,
+    "2025-03": 10.32593013940013,
+    "2025-04": 10.32593013940013,
+    "2025-05": 10.32593013940013,
+    "2025-06": 10.32593013940013,
+    "2025-07": 12.05085783461859,
+    "2025-08": 12.05085783461859,
+    "2025-09": 12.05085783461859,
+    "2025-10": 11.925460879703698,
+    "2025-11": 11.925460879703698,
+    "2025-12": 11.925460879703698,
+    "2026-01": 13.382663528037341,
+    "2026-02": 13.382663528037341,
+    "2026-03": 20.264922187040323,
+    "2026-04": 20.264922187040323,
+    "2026-05": 20.19146203000375,
+    "2026-06": 20.19146203000375,
+    "2026-07": 21.648664678337415,
+    "2026-08": 21.648664678337415,
+    "2026-09": 21.648664678337415,
+    "2026-10": 21.648664678337415
+   }
+  }
+ },
+ "balanz:S1_ventana_desde_2025": {
+  "certero": {
+   "metricas": {
+    "status": 200,
+    "n": {
+     "medido_desde": "2026-07-31",
+     "medido_hasta": "2026-10-27",
+     "modo": "certero",
+     "tramos_detalle[0].desde": "2026-07-31",
+     "tramos_detalle[0].hasta": "2026-10-27",
+     "tramos_detalle[0].twr": 0.7055547870265075,
+     "tramos_detalle[0].desde_est": "2026-07-31",
+     "twr": 0.7055547870265075,
+     "base_del_twr": "mercado",
+     "ventana_desde": "2026-07-31",
+     "ventana_hasta": "2026-10-27"
+    }
+   },
+   "metricas_sin_modo": {
+    "status": 200,
+    "n": {
+     "medido_desde": "2026-07-31",
+     "medido_hasta": "2026-10-27",
+     "modo": "certero",
+     "tramos_detalle[0].desde": "2026-07-31",
+     "tramos_detalle[0].hasta": "2026-10-27",
+     "tramos_detalle[0].twr": 0.7055547870265075,
+     "tramos_detalle[0].desde_est": "2026-07-31",
+     "twr": 0.7055547870265075,
+     "base_del_twr": "mercado",
+     "ventana_desde": "2026-07-31",
+     "ventana_hasta": "2026-10-27"
+    }
+   },
+   "metas": {
+    "status": 200,
+    "n": {
+     "modo": "certero",
+     "base_del_twr": "mercado",
+     "desde": "2026-07-31",
+     "hasta": "2026-10-27",
+     "historia_desde": "2026-07-31",
+     "historia_hasta": "2026-10-27",
+     "total_return": 0.705555,
+     "total_return_pct": 70.56
+    }
+   },
+   "reportes_2026": {
+    "status": 200,
+    "n": {
+     "metrics.basis": "contable",
+     "metrics.modo": "certero",
+     "insights[0].evidence.pct": 43.6,
+     "drivers[0].contribution_pct": 93.7,
+     "drivers[1].contribution_pct": 6.3,
+     "movers[0].delta_pct": 14.39,
+     "movers[1].delta_pct": 30.8,
+     "portfolio_snapshot.delta_1d.pct": -2.82,
+     "portfolio_snapshot.delta_7d.pct": -1.17,
+     "portfolio_snapshot.delta_30d.pct": 7.54
+    },
+    "crudo": {
+     "metrics": {
+      "start_value": 2125.33,
+      "end_value": 26726.83,
+      "delta_usd": 0.0,
+      "delta_pct": null,
+      "delta_pct_over_contrib": null,
+      "realized_pnl": 317.23,
+      "unrealized_pnl": 0.0,
+      "deposits": 15445.57,
+      "withdrawals": 0.0,
+      "trades_count": 1,
+      "win_count": 0,
+      "loss_count": 1,
+      "win_rate": 0.0,
+      "vs_sp500_pct": null,
+      "vs_inflation_pct": null,
+      "sp500_return_pct": null,
+      "inflation_pct": null,
+      "retorno_ars_pct": null,
+      "basis_incomparable": true,
+      "basis": "contable",
+      "motor_motivo": null,
+      "motor_motivo_texto": null,
+      "medido_desde": null,
+      "medido_hasta": null,
+      "bench_desde": null,
+      "bench_hasta": null,
+      "modo": "certero",
+      "moneda": "usd"
+     }
+    }
+   },
+   "reportes_2025": {
+    "status": 403,
+    "n": "{'detail': {'code': 'plan_requerido', 'message': 'Ver un período cerrado es parte de un plan pago.'}}"
+   },
+   "wrapped_2025": {
+    "status": 200,
+    "n": {
+     "summary.twr": -0.0
+    },
+    "crudo": {
+     "summary": {
+      "has_data": true,
+      "twr": -0.0,
+      "months_count": 4,
+      "operations_count": 2,
+      "slide_count": 8
+     }
+    }
+   },
+   "ia_dashboard": {
+    "n": {
+     "portfolio.twr_30d_pct": 0.0979,
+     "portfolio.twr_lifetime_pct": 0.7056,
+     "portfolio.best_position.pnl_pct": 0.0,
+     "portfolio.worst_position.pnl_pct": 0.0,
+     "portfolio.cash_pct": 0.232
+    }
+   },
+   "ia_insights": {
+    "n": {
+     "twr_pct": 70.56,
+     "twr_base": "mercado",
+     "twr_modo": "certero",
+     "twr_desde": "2026-07-31",
+     "twr_hasta": "2026-10-27",
+     "realized_avg_pct_per_trade": -0.6,
+     "drawdown.medido_desde": "2026-07-31",
+     "drawdown.medido_hasta": "2026-10-27",
+     "drawdown.current_pct": 0.0,
+     "drawdown.max_pct": 0.0,
+     "trades.best_trade_pct": -0.6,
+     "trades.worst_trade_pct": -0.6,
+     "realized_attribution.top_detractors[0].pnl_pct": -0.6,
+     "current_holdings_top[0].share_pct": 30.5,
+     "current_holdings_top[1].share_pct": 28.1,
+     "current_holdings_top[2].share_pct": 10.2,
+     "exposure.cash_pct": 23.2,
+     "exposure.ar_pct": 58.6,
+     "exposure.us_pct": 18.2,
+     "exposure.crypto_pct": 0.0
+    }
+   },
+   "ia_reports": {
+    "n": {
+     "_field_docs.twr_year_base": "De dónde sale `twr_year_pct`. 'mercado' = medido contra fotos reales de la cartera, es el bueno. 'contable' = de la cadena de monthly_entries, que no sabe nada del mercado: al hablarlo decilo (\"según tu contabilidad cargada\"). null = no se pudo medir y NO hay que publicar ningún número; el motivo está en `twr_year_motivo_texto`.",
+     "_field_docs.twr_year_motivo_texto": "Por qué no se pudo medir a mercado, ya escrito en castellano para el usuario. Si `twr_year_pct` es null, esto es lo que hay que contestar EN LUGAR de un número — no inventes uno de otra parte del packet.",
+     "twr_year_pct": 70.56,
+     "twr_year_base": "mercado",
+     "best_month.delta_pct": 42.3,
+     "worst_month.delta_pct": 42.3,
+     "months_base": "mercado"
+    }
+   },
+   "ia_insights_evolution": {
+    "n": {
+     "twr_pct": 70.56,
+     "twr_base": "mercado",
+     "monthly_returns[0].return_pct": 42.3,
+     "monthly_returns[0].base": "mercado",
+     "best_month.return_pct": 42.3,
+     "best_month.base": "mercado",
+     "worst_month.return_pct": 42.3,
+     "worst_month.base": "mercado",
+     "consistency_pct": 100.0,
+     "monthly_base": "mercado"
+    }
+   },
+   "ia_dashboard_evolution": {
+    "n": {
+     "rendimiento_motivo": "Este análisis no recibió el número que muestra la pantalla. No lo calcules con los valores de la curva: incluyen lo que el usuario depositó y retiró, y darías un número distinto al que está viendo.",
+     "curva.ventana.desde": "2026-07-31",
+     "curva.ventana.hasta": "2026-10-27",
+     "caida_desde_el_mejor_momento_pct": 0.0,
+     "best_month.pct": 0.423,
+     "worst_month.pct": 0.423,
+     "meses_base": "mercado"
+    }
+   },
+   "motor_publicable": {
+    "pct": 70.56,
+    "base": "mercado",
+    "motivo": null,
+    "motivo_texto": null,
+    "meses": 0,
+    "modo": "certero",
+    "desde": "2026-07-31",
+    "hasta": "2026-10-27"
+   }
+  },
+  "estimado": {
+   "metricas": {
+    "status": 200,
+    "n": {
+     "medido_desde": "2026-07-31",
+     "medido_hasta": "2026-10-27",
+     "modo": "estimado",
+     "twr": 0.8237048663101583,
+     "cagr": 0.8366514103908738,
+     "base_del_twr": "contable",
+     "ventana_desde": "2025-10-31",
+     "ventana_hasta": "2026-10-27",
+     "motivo": "capital_chico",
+     "motivo_texto": "Al principio tu cuenta tenía menos de US$100. Sobre tan poco capital un porcentaje no describe nada, así que esos meses no entran en el rendimiento."
+    }
+   },
+   "metricas_sin_modo": {
+    "status": 200,
+    "n": {
+     "medido_desde": "2026-07-31",
+     "medido_hasta": "2026-10-27",
+     "modo": "estimado",
+     "twr": 0.8237048663101583,
+     "cagr": 0.8366514103908738,
+     "base_del_twr": "contable",
+     "ventana_desde": "2025-10-31",
+     "ventana_hasta": "2026-10-27",
+     "motivo": "capital_chico",
+     "motivo_texto": "Al principio tu cuenta tenía menos de US$100. Sobre tan poco capital un porcentaje no describe nada, así que esos meses no entran en el rendimiento."
+    }
+   },
+   "metas": {
+    "status": 200,
+    "n": {
+     "modo": "estimado",
+     "base_del_twr": "contable",
+     "desde": "2025-10-31",
+     "hasta": "2026-10-27",
+     "historia_desde": "2026-07-31",
+     "historia_hasta": "2026-10-27",
+     "total_return": 0.823705,
+     "total_return_pct": 82.37,
+     "cagr": 83.67
+    }
+   },
+   "reportes_2026": {
+    "status": 200,
+    "n": {
+     "metrics.basis": "contable",
+     "metrics.modo": "estimado",
+     "insights[0].evidence.pct": 43.6,
+     "drivers[0].contribution_pct": 93.7,
+     "drivers[1].contribution_pct": 6.3,
+     "movers[0].delta_pct": 14.39,
+     "movers[1].delta_pct": 30.8,
+     "portfolio_snapshot.delta_1d.pct": -2.82,
+     "portfolio_snapshot.delta_7d.pct": -1.17,
+     "portfolio_snapshot.delta_30d.pct": 7.54
+    },
+    "crudo": {
+     "metrics": {
+      "start_value": 2125.33,
+      "end_value": 26726.83,
+      "delta_usd": 0.0,
+      "delta_pct": null,
+      "delta_pct_over_contrib": null,
+      "realized_pnl": 317.23,
+      "unrealized_pnl": 0.0,
+      "deposits": 15445.57,
+      "withdrawals": 0.0,
+      "trades_count": 1,
+      "win_count": 0,
+      "loss_count": 1,
+      "win_rate": 0.0,
+      "vs_sp500_pct": null,
+      "vs_inflation_pct": null,
+      "sp500_return_pct": null,
+      "inflation_pct": null,
+      "retorno_ars_pct": null,
+      "basis_incomparable": true,
+      "basis": "contable",
+      "motor_motivo": null,
+      "motor_motivo_texto": null,
+      "medido_desde": null,
+      "medido_hasta": null,
+      "bench_desde": null,
+      "bench_hasta": null,
+      "modo": "estimado",
+      "moneda": "usd"
+     }
+    }
+   },
+   "reportes_2025": {
+    "status": 403,
+    "n": "{'detail': {'code': 'plan_requerido', 'message': 'Ver un período cerrado es parte de un plan pago.'}}"
+   },
+   "wrapped_2025": {
+    "status": 200,
+    "n": {
+     "summary.twr": 0.0
+    },
+    "crudo": {
+     "summary": {
+      "has_data": true,
+      "twr": 0.0,
+      "months_count": 4,
+      "operations_count": 2,
+      "slide_count": 8
+     }
+    }
+   },
+   "ia_dashboard": {
+    "n": {
+     "portfolio.twr_30d_pct": 0.0979,
+     "portfolio.twr_lifetime_pct": 0.8237,
+     "portfolio.best_position.pnl_pct": 0.0,
+     "portfolio.worst_position.pnl_pct": 0.0,
+     "portfolio.cash_pct": 0.232
+    }
+   },
+   "ia_insights": {
+    "n": {
+     "twr_pct": 82.37,
+     "twr_base": "contable",
+     "twr_modo": "estimado",
+     "twr_desde": "2025-10-31",
+     "twr_hasta": "2026-10-27",
+     "realized_avg_pct_per_trade": -0.6,
+     "trades.best_trade_pct": -0.6,
+     "trades.worst_trade_pct": -0.6,
+     "realized_attribution.top_detractors[0].pnl_pct": -0.6,
+     "current_holdings_top[0].share_pct": 30.5,
+     "current_holdings_top[1].share_pct": 28.1,
+     "current_holdings_top[2].share_pct": 10.2,
+     "exposure.cash_pct": 23.2,
+     "exposure.ar_pct": 58.6,
+     "exposure.us_pct": 18.2,
+     "exposure.crypto_pct": 0.0
+    }
+   },
+   "ia_reports": {
+    "n": {
+     "_field_docs.twr_year_base": "De dónde sale `twr_year_pct`. 'mercado' = medido contra fotos reales de la cartera, es el bueno. 'contable' = de la cadena de monthly_entries, que no sabe nada del mercado: al hablarlo decilo (\"según tu contabilidad cargada\"). null = no se pudo medir y NO hay que publicar ningún número; el motivo está en `twr_year_motivo_texto`.",
+     "_field_docs.twr_year_motivo_texto": "Por qué no se pudo medir a mercado, ya escrito en castellano para el usuario. Si `twr_year_pct` es null, esto es lo que hay que contestar EN LUGAR de un número — no inventes uno de otra parte del packet.",
+     "twr_year_pct": 68.86,
+     "twr_year_base": "contable",
+     "best_month.delta_pct": 42.3,
+     "worst_month.delta_pct": 42.3,
+     "months_base": "mercado"
+    }
+   },
+   "ia_insights_evolution": {
+    "n": {
+     "twr_pct": 82.37,
+     "twr_base": "contable",
+     "monthly_returns[0].return_pct": 42.3,
+     "monthly_returns[0].base": "mercado",
+     "best_month.return_pct": 42.3,
+     "best_month.base": "mercado",
+     "worst_month.return_pct": 42.3,
+     "worst_month.base": "mercado",
+     "consistency_pct": 100.0,
+     "monthly_base": "mercado"
+    }
+   },
+   "ia_dashboard_evolution": {
+    "n": {
+     "rendimiento_motivo": "Este análisis no recibió el número que muestra la pantalla. No lo calcules con los valores de la curva: incluyen lo que el usuario depositó y retiró, y darías un número distinto al que está viendo.",
+     "curva.ventana.desde": "2026-07-31",
+     "curva.ventana.hasta": "2026-10-27",
+     "best_month.pct": 0.423,
+     "worst_month.pct": 0.423,
+     "meses_base": "mercado"
+    }
+   },
+   "motor_publicable": {
+    "pct": 82.37,
+    "base": "contable",
+    "motivo": null,
+    "motivo_texto": null,
+    "meses": 0,
+    "modo": "estimado",
+    "desde": "2025-10-31",
+    "hasta": "2026-10-27"
+   }
+  },
+  "verdad": {
+   "twr_total": 141.34213275335222,
+   "twr_2025": 40.1578804853864,
+   "twr_2026_ytd": 45.407866459605614,
+   "contable": {
+    "2024-01": 0.0,
+    "2024-02": -0.259602443475504,
+    "2024-03": -0.259602443475504,
+    "2024-04": -0.008650672822796412,
+    "2024-05": 0.028569293596292233,
+    "2024-06": 0.028569293596292233,
+    "2024-07": 1.7158744379282664,
+    "2024-08": 1.7158744379282664,
+    "2024-09": 8.656560701939675,
+    "2024-10": 8.656560701939675,
+    "2024-11": 8.65657577131691,
+    "2024-12": 8.65657577131691,
+    "2025-01": 10.343880915648885,
+    "2025-02": 10.343880915648885,
+    "2025-03": 10.32593013940013,
+    "2025-04": 10.32593013940013,
+    "2025-05": 10.32593013940013,
+    "2025-06": 10.32593013940013,
+    "2025-07": 12.05085783461859,
+    "2025-08": 12.05085783461859,
+    "2025-09": 12.05085783461859,
+    "2025-10": 11.925460879703698,
+    "2025-11": 11.925460879703698,
+    "2025-12": 11.925460879703698,
+    "2026-01": 13.382663528037341,
+    "2026-02": 13.382663528037341,
+    "2026-03": 20.264922187040323,
+    "2026-04": 20.264922187040323,
+    "2026-05": 20.19146203000375,
+    "2026-06": 20.19146203000375,
+    "2026-07": 21.648664678337415,
+    "2026-08": 21.648664678337415,
+    "2026-09": 21.648664678337415,
+    "2026-10": 21.648664678337415
+   }
+  }
+ },
+ "ieb:S0_completo": {
+  "certero": {
+   "metricas": {
+    "status": 200,
+    "n": {
+     "medido_desde": "2026-08-04",
+     "medido_hasta": "2026-10-27",
+     "modo": "certero",
+     "tramos_detalle[0].desde": "2026-08-04",
+     "tramos_detalle[0].hasta": "2026-10-27",
+     "tramos_detalle[0].twr": 0.25189211023693003,
+     "tramos_detalle[0].desde_est": "2026-07-31",
+     "twr": 0.25189211023693003,
+     "base_del_twr": "mercado",
+     "ventana_desde": "2026-08-04",
+     "ventana_hasta": "2026-10-27"
+    }
+   },
+   "metricas_sin_modo": {
+    "status": 200,
+    "n": {
+     "medido_desde": "2026-08-04",
+     "medido_hasta": "2026-10-27",
+     "modo": "certero",
+     "tramos_detalle[0].desde": "2026-08-04",
+     "tramos_detalle[0].hasta": "2026-10-27",
+     "tramos_detalle[0].twr": 0.25189211023693003,
+     "tramos_detalle[0].desde_est": "2026-07-31",
+     "twr": 0.25189211023693003,
+     "base_del_twr": "mercado",
+     "ventana_desde": "2026-08-04",
+     "ventana_hasta": "2026-10-27"
+    }
+   },
+   "metas": {
+    "status": 200,
+    "n": {
+     "modo": "certero",
+     "base_del_twr": "mercado",
+     "desde": "2026-08-04",
+     "hasta": "2026-10-27",
+     "historia_desde": "2026-08-04",
+     "historia_hasta": "2026-10-27",
+     "total_return": 0.251892,
+     "total_return_pct": 25.19
+    }
+   },
+   "reportes_2026": {
+    "status": 200,
+    "n": {
+     "metrics.basis": "contable",
+     "metrics.modo": "certero",
+     "insights[0].evidence.pct": 42.9,
+     "insights[2].evidence.cash_pct": 37.2,
+     "drivers[0].contribution_pct": 100.0,
+     "movers[0].delta_pct": 150.42,
+     "movers[1].delta_pct": 30.8,
+     "portfolio_snapshot.delta_1d.pct": -2.82,
+     "portfolio_snapshot.delta_7d.pct": -1.17,
+     "portfolio_snapshot.delta_30d.pct": 7.54
+    },
+    "crudo": {
+     "metrics": {
+      "start_value": 13291.45,
+      "end_value": 26726.83,
+      "delta_usd": 0.0,
+      "delta_pct": null,
+      "delta_pct_over_contrib": null,
+      "realized_pnl": 2143.35,
+      "unrealized_pnl": 0.0,
+      "deposits": 3.75,
+      "withdrawals": 30.36,
+      "trades_count": 1,
+      "win_count": 1,
+      "loss_count": 0,
+      "win_rate": 100.0,
+      "vs_sp500_pct": null,
+      "vs_inflation_pct": null,
+      "sp500_return_pct": null,
+      "inflation_pct": null,
+      "retorno_ars_pct": null,
+      "basis_incomparable": true,
+      "basis": "contable",
+      "motor_motivo": null,
+      "motor_motivo_texto": null,
+      "medido_desde": null,
+      "medido_hasta": null,
+      "bench_desde": null,
+      "bench_hasta": null,
+      "modo": "certero",
+      "moneda": "usd"
+     }
+    }
+   },
+   "reportes_2025": {
+    "status": 403,
+    "n": "{'detail': {'code': 'plan_requerido', 'message': 'Ver un período cerrado es parte de un plan pago.'}}"
+   },
+   "wrapped_2025": {
+    "status": 200,
+    "n": {
+     "summary.twr": 0.0308
+    },
+    "crudo": {
+     "summary": {
+      "has_data": true,
+      "twr": 0.0308,
+      "months_count": 4,
+      "operations_count": 2,
+      "slide_count": 8
+     }
+    }
+   },
+   "ia_dashboard": {
+    "n": {
+     "portfolio.twr_30d_pct": 0.0979,
+     "portfolio.twr_lifetime_pct": 0.2519,
+     "portfolio.best_position.pnl_pct": 0.0,
+     "portfolio.worst_position.pnl_pct": 0.0,
+     "portfolio.cash_pct": 0.372
+    }
+   },
+   "ia_insights": {
+    "n": {
+     "twr_pct": 25.19,
+     "twr_base": "mercado",
+     "twr_modo": "certero",
+     "twr_desde": "2026-08-04",
+     "twr_hasta": "2026-10-27",
+     "realized_avg_pct_per_trade": 105.57,
+     "drawdown.medido_desde": "2026-08-04",
+     "drawdown.medido_hasta": "2026-10-27",
+     "drawdown.current_pct": 0.0,
+     "drawdown.max_pct": 0.0,
+     "trades.best_trade_pct": 120.6,
+     "trades.worst_trade_pct": 90.54,
+     "realized_attribution.top_contributors[0].pnl_pct": 90.54,
+     "realized_attribution.top_contributors[1].pnl_pct": 120.6,
+     "current_holdings_top[0].share_pct": 27.0,
+     "current_holdings_top[1].share_pct": 16.5,
+     "current_holdings_top[2].share_pct": 11.0,
+     "exposure.cash_pct": 37.2,
+     "exposure.ar_pct": 33.5,
+     "exposure.us_pct": 29.3,
+     "exposure.crypto_pct": 0.0
+    }
+   },
+   "ia_reports": {
+    "n": {
+     "_field_docs.twr_year_base": "De dónde sale `twr_year_pct`. 'mercado' = medido contra fotos reales de la cartera, es el bueno. 'contable' = de la cadena de monthly_entries, que no sabe nada del mercado: al hablarlo decilo (\"según tu contabilidad cargada\"). null = no se pudo medir y NO hay que publicar ningún número; el motivo está en `twr_year_motivo_texto`.",
+     "_field_docs.twr_year_motivo_texto": "Por qué no se pudo medir a mercado, ya escrito en castellano para el usuario. Si `twr_year_pct` es null, esto es lo que hay que contestar EN LUGAR de un número — no inventes uno de otra parte del packet.",
+     "twr_year_pct": 25.19,
+     "twr_year_base": "mercado",
+     "best_month.delta_pct": 13.4,
+     "worst_month.delta_pct": -0.0,
+     "months_base": "contable"
+    }
+   },
+   "ia_insights_evolution": {
+    "n": {
+     "twr_pct": 25.19,
+     "twr_base": "mercado",
+     "best_month.return_pct": 13.4,
+     "best_month.base": "contable",
+     "worst_month.return_pct": -0.0,
+     "worst_month.base": "contable",
+     "consistency_pct": 60.0,
+     "monthly_base": "contable"
+    }
+   },
+   "ia_dashboard_evolution": {
+    "n": {
+     "rendimiento_motivo": "Este análisis no recibió el número que muestra la pantalla. No lo calcules con los valores de la curva: incluyen lo que el usuario depositó y retiró, y darías un número distinto al que está viendo.",
+     "curva.ventana.desde": "2026-08-04",
+     "curva.ventana.hasta": "2026-10-27",
+     "caida_desde_el_mejor_momento_pct": 0.0,
+     "best_month.pct": 0.134,
+     "worst_month.pct": -0.0,
+     "meses_base": "contable"
+    }
+   },
+   "motor_publicable": {
+    "pct": 25.19,
+    "base": "mercado",
+    "motivo": null,
+    "motivo_texto": null,
+    "meses": 0,
+    "modo": "certero",
+    "desde": "2026-08-04",
+    "hasta": "2026-10-27"
+   }
+  },
+  "estimado": {
+   "metricas": {
+    "status": 200,
+    "n": {
+     "medido_desde": "2026-08-04",
+     "medido_hasta": "2026-10-27",
+     "modo": "estimado",
+     "tramos_detalle[0].desde": "2026-08-04",
+     "tramos_detalle[0].hasta": "2026-10-27",
+     "tramos_detalle[0].twr": 0.25189211023693003,
+     "tramos_detalle[0].twr_est": 1.2345677748680068,
+     "tramos_detalle[0].desde_est": "2024-01-31",
+     "twr": 1.2345677748680068,
+     "cagr": 0.34135254423634387,
+     "base_del_twr": "contable",
+     "ventana_desde": "2024-01-31",
+     "ventana_hasta": "2026-10-27"
+    }
+   },
+   "metricas_sin_modo": {
+    "status": 200,
+    "n": {
+     "medido_desde": "2026-08-04",
+     "medido_hasta": "2026-10-27",
+     "modo": "estimado",
+     "tramos_detalle[0].desde": "2026-08-04",
+     "tramos_detalle[0].hasta": "2026-10-27",
+     "tramos_detalle[0].twr": 0.25189211023693003,
+     "tramos_detalle[0].twr_est": 1.2345677748680068,
+     "tramos_detalle[0].desde_est": "2024-01-31",
+     "twr": 1.2345677748680068,
+     "cagr": 0.34135254423634387,
+     "base_del_twr": "contable",
+     "ventana_desde": "2024-01-31",
+     "ventana_hasta": "2026-10-27"
+    }
+   },
+   "metas": {
+    "status": 200,
+    "n": {
+     "modo": "estimado",
+     "base_del_twr": "contable",
+     "desde": "2024-01-31",
+     "hasta": "2026-10-27",
+     "historia_desde": "2026-08-04",
+     "historia_hasta": "2026-10-27",
+     "total_return": 1.234568,
+     "total_return_pct": 123.46,
+     "cagr": 34.14
+    }
+   },
+   "reportes_2026": {
+    "status": 200,
+    "n": {
+     "metrics.basis": "contable",
+     "metrics.modo": "estimado",
+     "insights[0].evidence.pct": 42.9,
+     "insights[2].evidence.cash_pct": 37.2,
+     "drivers[0].contribution_pct": 100.0,
+     "movers[0].delta_pct": 150.42,
+     "movers[1].delta_pct": 30.8,
+     "portfolio_snapshot.delta_1d.pct": -2.82,
+     "portfolio_snapshot.delta_7d.pct": -1.17,
+     "portfolio_snapshot.delta_30d.pct": 7.54
+    },
+    "crudo": {
+     "metrics": {
+      "start_value": 13291.45,
+      "end_value": 26726.83,
+      "delta_usd": 0.0,
+      "delta_pct": null,
+      "delta_pct_over_contrib": null,
+      "realized_pnl": 2143.35,
+      "unrealized_pnl": 0.0,
+      "deposits": 3.75,
+      "withdrawals": 30.36,
+      "trades_count": 1,
+      "win_count": 1,
+      "loss_count": 0,
+      "win_rate": 100.0,
+      "vs_sp500_pct": null,
+      "vs_inflation_pct": null,
+      "sp500_return_pct": null,
+      "inflation_pct": null,
+      "retorno_ars_pct": null,
+      "basis_incomparable": true,
+      "basis": "contable",
+      "motor_motivo": null,
+      "motor_motivo_texto": null,
+      "medido_desde": null,
+      "medido_hasta": null,
+      "bench_desde": null,
+      "bench_hasta": null,
+      "modo": "estimado",
+      "moneda": "usd"
+     }
+    }
+   },
+   "reportes_2025": {
+    "status": 403,
+    "n": "{'detail': {'code': 'plan_requerido', 'message': 'Ver un período cerrado es parte de un plan pago.'}}"
+   },
+   "wrapped_2025": {
+    "status": 200,
+    "n": {
+     "summary.twr": 0.015300000000000001
+    },
+    "crudo": {
+     "summary": {
+      "has_data": true,
+      "twr": 0.015300000000000001,
+      "months_count": 4,
+      "operations_count": 2,
+      "slide_count": 8
+     }
+    }
+   },
+   "ia_dashboard": {
+    "n": {
+     "portfolio.twr_30d_pct": 0.0979,
+     "portfolio.twr_lifetime_pct": 1.2346,
+     "portfolio.best_position.pnl_pct": 0.0,
+     "portfolio.worst_position.pnl_pct": 0.0,
+     "portfolio.cash_pct": 0.372
+    }
+   },
+   "ia_insights": {
+    "n": {
+     "twr_pct": 25.19,
+     "twr_base": "contable",
+     "twr_modo": "estimado",
+     "twr_desde": "2026-07-31",
+     "twr_hasta": "2026-10-27",
+     "realized_avg_pct_per_trade": 105.57,
+     "trades.best_trade_pct": 120.6,
+     "trades.worst_trade_pct": 90.54,
+     "realized_attribution.top_contributors[0].pnl_pct": 90.54,
+     "realized_attribution.top_contributors[1].pnl_pct": 120.6,
+     "current_holdings_top[0].share_pct": 27.0,
+     "current_holdings_top[1].share_pct": 16.5,
+     "current_holdings_top[2].share_pct": 11.0,
+     "exposure.cash_pct": 37.2,
+     "exposure.ar_pct": 33.5,
+     "exposure.us_pct": 29.3,
+     "exposure.crypto_pct": 0.0
+    }
+   },
+   "ia_reports": {
+    "n": {
+     "_field_docs.twr_year_base": "De dónde sale `twr_year_pct`. 'mercado' = medido contra fotos reales de la cartera, es el bueno. 'contable' = de la cadena de monthly_entries, que no sabe nada del mercado: al hablarlo decilo (\"según tu contabilidad cargada\"). null = no se pudo medir y NO hay que publicar ningún número; el motivo está en `twr_year_motivo_texto`.",
+     "_field_docs.twr_year_motivo_texto": "Por qué no se pudo medir a mercado, ya escrito en castellano para el usuario. Si `twr_year_pct` es null, esto es lo que hay que contestar EN LUGAR de un número — no inventes uno de otra parte del packet.",
+     "twr_year_pct": 25.19,
+     "twr_year_base": "contable",
+     "best_month.delta_pct": 13.4,
+     "worst_month.delta_pct": -0.0,
+     "months_base": "contable"
+    }
+   },
+   "ia_insights_evolution": {
+    "n": {
+     "twr_pct": 25.19,
+     "twr_base": "contable",
+     "best_month.return_pct": 13.4,
+     "best_month.base": "contable",
+     "worst_month.return_pct": -0.0,
+     "worst_month.base": "contable",
+     "consistency_pct": 60.0,
+     "monthly_base": "contable"
+    }
+   },
+   "ia_dashboard_evolution": {
+    "n": {
+     "rendimiento_motivo": "Este análisis no recibió el número que muestra la pantalla. No lo calcules con los valores de la curva: incluyen lo que el usuario depositó y retiró, y darías un número distinto al que está viendo.",
+     "curva.ventana.desde": "2026-08-04",
+     "curva.ventana.hasta": "2026-10-27",
+     "best_month.pct": 0.134,
+     "worst_month.pct": -0.0,
+     "meses_base": "contable"
+    }
+   },
+   "motor_publicable": {
+    "pct": 123.46,
+    "base": "contable",
+    "motivo": null,
+    "motivo_texto": null,
+    "meses": 0,
+    "modo": "estimado",
+    "desde": "2024-01-31",
+    "hasta": "2026-10-27"
+   }
+  },
+  "verdad": {
+   "twr_total": 141.34213275335222,
+   "twr_2025": 40.1578804853864,
+   "twr_2026_ytd": 45.407866459605614,
+   "contable": {
+    "2024-01": 0.0,
+    "2024-02": -0.259602443475504,
+    "2024-03": -0.259602443475504,
+    "2024-04": -0.008650672822796412,
+    "2024-05": 0.028569293596292233,
+    "2024-06": 0.028569293596292233,
+    "2024-07": 1.7158744379282664,
+    "2024-08": 1.7158744379282664,
+    "2024-09": 8.656560701939675,
+    "2024-10": 8.656560701939675,
+    "2024-11": 8.65657577131691,
+    "2024-12": 8.65657577131691,
+    "2025-01": 10.343880915648885,
+    "2025-02": 10.343880915648885,
+    "2025-03": 10.32593013940013,
+    "2025-04": 10.32593013940013,
+    "2025-05": 10.32593013940013,
+    "2025-06": 10.32593013940013,
+    "2025-07": 12.05085783461859,
+    "2025-08": 12.05085783461859,
+    "2025-09": 12.05085783461859,
+    "2025-10": 11.925460879703698,
+    "2025-11": 11.925460879703698,
+    "2025-12": 11.925460879703698,
+    "2026-01": 13.382663528037341,
+    "2026-02": 13.382663528037341,
+    "2026-03": 20.264922187040323,
+    "2026-04": 20.264922187040323,
+    "2026-05": 20.19146203000375,
+    "2026-06": 20.19146203000375,
+    "2026-07": 21.648664678337415,
+    "2026-08": 21.648664678337415,
+    "2026-09": 21.648664678337415,
+    "2026-10": 21.648664678337415
+   }
+  }
+ }
+}
