@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { specDeDistribucion, specDeRendimiento, nombreDeArchivo, pctConSigno } from './shareCard'
+import { specDeDistribucion, specDeRendimiento, specDeComposicion, nombreDeArchivo, pctConSigno } from './shareCard'
 
 const fmt = (v) => `US$ ${Math.round(v)}`
 const now = new Date('2026-10-26T12:00:00')
@@ -108,5 +108,32 @@ describe('helpers', () => {
   it('pctConSigno usa el menos tipográfico', () => {
     expect(pctConSigno(-0.5)).toBe('−0,5%')
     expect(pctConSigno(0)).toBe('+0,0%')
+  })
+})
+
+describe('specDeComposicion', () => {
+  const tipos = [
+    { key: 'cash', label: 'Efectivo', color: 'c0', value: 334, pct: 33.4, detail: [] },
+    { key: 'cripto', label: 'Cripto', color: 'c1', value: 418, pct: 41.8, detail: [
+      { label: 'ETH', value: 30, pct: 3 }, { label: 'BTC', value: 290, pct: 29 }, { label: 'BNB', value: 98, pct: 9.8 },
+    ] },
+    { key: 'etf', label: 'ETFs', color: 'c2', value: 248, pct: 24.8, detail: [{ label: 'SPY', value: 248, pct: 24.8 }] },
+  ]
+
+  it('invertido = todo lo que no es efectivo', () => {
+    const s = specDeComposicion({ titulo: 'Distribución por tipo de activo', porciones: tipos, now })
+    expect(s.kind).toBe('composicion')
+    expect(s.invertido).toBeCloseTo(66.6, 6)
+  })
+
+  it('una tarjeta por tipo con activos (Efectivo sin activos no lleva), activos de mayor a menor', () => {
+    const s = specDeComposicion({ titulo: 'X', porciones: tipos, now })
+    expect(s.grupos.map(g => g.label)).toEqual(['Cripto', 'ETFs'])
+    expect(s.grupos[0].activos.map(a => a.label)).toEqual(['BTC', 'BNB', 'ETH'])
+  })
+
+  it('sin montos no hay total; con montos, el del fmt', () => {
+    expect(specDeComposicion({ titulo: 'X', porciones: tipos, fmt, now }).total).toBeNull()
+    expect(specDeComposicion({ titulo: 'X', porciones: tipos, fmt, mostrarMontos: true, now }).total).toBe('US$ 1000')
   })
 })

@@ -3331,7 +3331,7 @@ function InsightsDesktop({ _embeddedTab }) {
             rounded={false}
             className="md:col-span-2 xl:col-span-1 h-full"
           >
-            <DistribucionPorActivo compartir="analisis" items={assetBreakdown.items} fmt={amt} className="h-full" />
+            <DistribucionPorActivo items={assetBreakdown.items} fmt={amt} className="h-full" />
           </AskAIAbout>
           )}
           {classBreakdown.items.length > 0 && (<>
@@ -3346,6 +3346,7 @@ function InsightsDesktop({ _embeddedTab }) {
             className="h-full"
             title="Distribución por tipo de activo"
             compartir="analisis"
+            compartirConDetalle
             items={classBreakdown.items}
             fmt={amt}
             height={230}

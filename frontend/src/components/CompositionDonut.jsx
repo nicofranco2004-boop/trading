@@ -25,6 +25,8 @@
 //     imagen se arma con las MISMAS porciones que la leyenda (`slices`, con el
 //     "Otros" ya agrupado), así que no puede decir un % distinto. El libro del
 //     asesor no lo pasa: son datos de clientes, no del usuario.
+//     Con `compartirConDetalle` la imagen es la de composición (la torta y,
+//     abajo, los activos de cada porción): la usa la torta por tipo.
 //
 // Nota de tema: el tooltip NO hardcodea colores (el pie "Por broker" de
 // Insights sí lo hace — `background:'#1e293b'`). Acá todo sale de los tokens
@@ -39,7 +41,7 @@ import { ChevronRight } from 'lucide-react'
 import InfoTooltip from './InfoTooltip'
 import BotonCompartir from './BotonCompartir'
 import { withAlpha } from '../utils/chartTheme'
-import { specDeDistribucion, nombreDeArchivo } from '../utils/shareCard'
+import { specDeDistribucion, specDeComposicion, nombreDeArchivo } from '../utils/shareCard'
 
 // Debajo de este peso la porción no se lista aparte: se agrupa en "Otros" para
 // que la leyenda no se llene de slivers ilegibles. 10 clases de activo ya es
@@ -161,6 +163,10 @@ export default function CompositionDonut({
   // cliente; retail no lo pasa y las filas siguen siendo texto.
   onAssetClick = null,
   compartir = null,
+  // compartirConDetalle: la imagen es la de composición (torta + una tarjeta
+  // por porción con sus activos) en vez de la de distribución. La usa la
+  // torta por TIPO, que así reemplaza a la imagen por activo.
+  compartirConDetalle = false,
   className = '',
 }) {
   const [active, setActive] = useState(null)
@@ -203,7 +209,7 @@ export default function CompositionDonut({
                 source={compartir}
                 etiqueta={`Compartir ${title.toLowerCase()}`}
                 filename={`rendi-${nombreDeArchivo(title)}.png`}
-                buildSpec={({ mostrarMontos, nombre }) => specDeDistribucion({
+                buildSpec={({ mostrarMontos, nombre }) => (compartirConDetalle ? specDeComposicion : specDeDistribucion)({
                   titulo: title, porciones: slices, fmt, mostrarMontos, nombre,
                 })}
               />

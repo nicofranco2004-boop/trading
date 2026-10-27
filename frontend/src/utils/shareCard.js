@@ -98,6 +98,12 @@ export async function renderShareCard(spec) {
     pintarDistribucion(ctx, spec, logo)
     return canvas
   }
+  if (spec.kind === 'composicion') {
+    pintarFondo(ctx, VIOLETA)
+    pintarEncabezado(ctx, logo)
+    pintarComposicion(ctx, spec)
+    return canvas
+  }
   if (spec.kind === 'rendimiento') {
     pintarFondo(ctx, VIOLETA)
     pintarEncabezado(ctx, logo)
@@ -434,6 +440,57 @@ export function specDeDistribucion({ titulo, porciones = [], fmt = (v) => String
 }
 
 /**
+ * La tarjeta de composición: la torta por TIPO de activo y, abajo, una
+ * tarjetita por tipo con los activos que tiene adentro. Reemplaza a las dos
+ * imágenes separadas (por tipo y por activo): la lista de abajo ya no repite
+ * la torta, la abre.
+ *
+ * `porciones` son las MISMAS de la torta por tipo de la pantalla
+ * (CompositionDonut → agruparPorciones), con su `detail`: los activos de cada
+ * tipo, cuyos % suman el % del tipo (son % de la cartera entera).
+ *
+ * El centro dice "Invertido": todo lo que no es efectivo.
+ */
+export function specDeComposicion({ titulo, porciones = [], fmt = (v) => String(v), mostrarMontos = false, nombre = null, now = new Date() }) {
+  const validas = porciones.filter(p => p && p.value > 0)
+  const total = validas.reduce((s, p) => s + p.value, 0)
+  const MAX_TIPOS = 8
+  let tipos = validas
+  if (validas.length > MAX_TIPOS) {
+    const resto = validas.slice(MAX_TIPOS - 1)
+    tipos = [...validas.slice(0, MAX_TIPOS - 1), {
+      key: '__otros__', label: 'Otros', color: INK_2,
+      value: resto.reduce((s, p) => s + p.value, 0),
+      pct: resto.reduce((s, p) => s + p.pct, 0),
+      detail: resto.map(p => ({ label: p.label, value: p.value, pct: p.pct })),
+    }]
+  }
+  const efectivo = tipos
+    .filter(p => p.key === 'cash' || p.key === 'efectivo')
+    .reduce((s, p) => s + p.pct, 0)
+  const quien = nombreParaTarjeta(nombre)
+  return {
+    kind: 'composicion',
+    eyebrow: quien ? titulo : null,
+    title: quien || titulo,
+    porciones: tipos.map(p => ({ label: p.label, color: p.color, pct: p.pct })),
+    // Una tarjetita por tipo con activos adentro. Efectivo no lleva: ya está
+    // en la torta y su "detalle" (USD, ARS) no agrega nada.
+    grupos: tipos
+      .filter(p => p.key !== 'cash' && p.key !== 'efectivo' && (p.detail || []).length > 0)
+      .map(p => ({
+        label: p.label,
+        color: p.color,
+        pct: p.pct,
+        activos: [...p.detail].sort((a, b) => b.pct - a.pct).map(d => ({ label: d.label, pct: d.pct })),
+      })),
+    invertido: Math.max(0, 100 - efectivo),
+    total: mostrarMontos && total > 0 ? fmt(total) : null,
+    date: fechaDeHoy(now),
+  }
+}
+
+/**
  * La tarjeta "Mi cartera vs benchmark".
  *
  * `carteraPct` y `benchPct` son los del KPI "Acumulado" de la pantalla
@@ -564,16 +621,10 @@ function pintarPie(ctx, spec) {
   ctx.textBaseline = 'top'
 }
 
-function pintarDistribucion(ctx, spec, logo) {
-  const yTitulo = pintarTitular(ctx, spec)
-
+// La torta con sus rótulos adentro. La comparten la tarjeta de distribución
+// (sector) y la de composición (tipo + activos): mismo dibujo, mismas reglas.
+function pintarTorta(ctx, porciones, colores, { cx, cy, R, r }) {
   // ── La torta: grande, con el nombre y el % adentro de cada porción ────
-  const porciones = spec.porciones || []
-  const colores = resolverColores(porciones.map(p => p.color))
-  const cx = W / 2
-  const R = 310
-  const r = 150
-  const cy = yTitulo + 30 + R
   const sumaPct = porciones.reduce((s, p) => s + p.pct, 0) || 1
   const hueco = porciones.length > 1 ? 0.012 : 0
   const arcos = []
@@ -668,6 +719,19 @@ function pintarDistribucion(ctx, spec, logo) {
   })
   ctx.textAlign = 'left'
   ctx.textBaseline = 'top'
+}
+
+function pintarDistribucion(ctx, spec, logo) {
+  const yTitulo = pintarTitular(ctx, spec)
+
+  // ── La torta: grande, con el nombre y el % adentro de cada porción ────
+  const porciones = spec.porciones || []
+  const colores = resolverColores(porciones.map(p => p.color)).map(suavizar)
+  const cx = W / 2
+  const R = 310
+  const r = 150
+  const cy = yTitulo + 30 + R
+  pintarTorta(ctx, porciones, colores, { cx, cy, R, r })
 
   // El centro: el total si el usuario eligió mostrar montos; si no, el isotipo.
   ctx.textAlign = 'center'
@@ -760,11 +824,132 @@ function cajaDentroDePorcion(x, y, ancho, alto, { cx, cy, r, R, desde, hasta }) 
   })
 }
 
+// La paleta de la app es intensa a propósito (en pantalla cada porción tiene
+// que distinguirse de un vistazo); en la imagen para redes se ve fluorescente.
+// Acá cada color se lleva un poco hacia el gris claro de la tinta: los mismos
+// tonos, más apagados y parejos entre sí. Sólo en el canvas.
+function suavizar(color) {
+  const m = String(color).match(/\d+(\.\d+)?/g)
+  if (!m || m.length < 3 || String(color).startsWith('#')) return color
+  const [r, g, b] = m.slice(0, 3).map(Number)
+  const n = parseInt(INK_0.slice(1), 16)
+  const base = [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+  const k = 0.22
+  const gris = (r + g + b) / 3
+  const mezcla = [r, g, b].map((v, i) => {
+    const desaturado = v + (gris - v) * 0.18
+    return Math.round(desaturado + (base[i] - desaturado) * k)
+  })
+  return `rgb(${mezcla.join(', ')})`
+}
+
 // Un color hex llevado hacia el negro: `factor` 1 lo deja igual, 0 es negro.
 function oscurecer(hex, factor) {
   const n = parseInt(String(hex).slice(1), 16)
   const c = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(v => Math.round(v * factor))
   return `rgb(${c.join(', ')})`
+}
+
+function pintarComposicion(ctx, spec) {
+  const yTitulo = pintarTitular(ctx, spec)
+  const porciones = spec.porciones || []
+  const colores = resolverColores(porciones.map(p => p.color)).map(suavizar)
+  const cx = W / 2
+  const R = 255
+  const r = 128
+  const cy = yTitulo + 22 + R
+  pintarTorta(ctx, porciones, colores, { cx, cy, R, r })
+
+  // ── El centro: cuánto está invertido (y el total, si eligió montos) ───
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'alphabetic'
+  ctx.fillStyle = INK_2
+  ctx.font = `24px ${FONT_SANS}`
+  ctx.fillText('Invertido', cx, cy - 26)
+  ctx.fillStyle = INK_0
+  ctx.font = `700 56px ${FONT_SANS}`
+  ctx.fillText(pctTxt(spec.invertido), cx, cy + 30)
+  if (spec.total) {
+    ctx.fillStyle = INK_2
+    ctx.font = `20px ${FONT_SANS}`
+    ctx.fillText(`Total ${spec.total}`, cx, cy + 62)
+  }
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'top'
+
+  // ── Detalle por activo: una tarjetita por tipo ────────────────────────
+  const grupos = spec.grupos || []
+  if (grupos.length) {
+    const colorDe = new Map(porciones.map((p, i) => [p.label, colores[i]]))
+    const y0 = cy + R + 34
+    const y1 = H - PAD - 44
+    const gap = 14
+    // Hasta 5, en UNA fila (tarjetas altas: entran todos los activos); más,
+    // en dos filas de 4.
+    const cols = grupos.length <= 5 ? grupos.length : 4
+    const filas = Math.ceil(grupos.length / cols)
+    const ancho = (W - 2 * PAD - gap * (cols - 1)) / cols
+    const alto = (y1 - y0 - gap * (filas - 1)) / filas
+    const renglon = 26
+    const entran = Math.max(1, Math.floor((alto - 52) / renglon))
+
+    grupos.forEach((g, i) => {
+      const x = PAD + (i % cols) * (ancho + gap)
+      const y = y0 + Math.floor(i / cols) * (alto + gap)
+      const color = colorDe.get(g.label) || INK_2
+
+      ctx.fillStyle = 'rgba(255,255,255,0.035)'
+      roundRect(ctx, x, y, ancho, alto, 12)
+      ctx.fill()
+      ctx.fillStyle = color
+      roundRect(ctx, x, y, 4, alto, 2)
+      ctx.fill()
+
+      // Encabezado: el tipo en su color y su % al lado.
+      const xi = x + 18
+      const xd = x + ancho - 14
+      ctx.textBaseline = 'middle'
+      const tamG = ancho < 200 ? 18 : 21
+      ctx.fillStyle = color
+      const pctG = ` ${pctTxt(g.pct)}`
+      ctx.font = `${tamG}px ${FONT_SANS}`
+      const anchoPct = ctx.measureText(pctG).width
+      ctx.font = `600 ${tamG}px ${FONT_SANS}`
+      const etiqueta = truncateToWidth(ctx, g.label, xd - xi - anchoPct)
+      ctx.fillText(etiqueta, xi, y + 24)
+      const xp = xi + ctx.measureText(etiqueta).width
+      ctx.fillStyle = INK_0
+      ctx.font = `${tamG}px ${FONT_SANS}`
+      ctx.fillText(pctG, xp, y + 24)
+
+      // Los activos, del más pesado al más liviano.
+      const sobran = g.activos.length > entran ? g.activos.length - (entran - 1) : 0
+      const visibles = sobran ? g.activos.slice(0, entran - 1) : g.activos
+      visibles.forEach((a, k) => {
+        const ya = y + 56 + k * renglon
+        ctx.font = `600 18px ${FONT_SANS}`
+        ctx.fillStyle = INK_0
+        ctx.textAlign = 'right'
+        const pa = pctTxt(a.pct)
+        ctx.fillStyle = INK_2
+        ctx.font = `18px ${FONT_SANS}`
+        ctx.fillText(pa, xd, ya)
+        const anchoPa = ctx.measureText(pa).width
+        ctx.textAlign = 'left'
+        ctx.fillStyle = INK_0
+        ctx.font = `600 18px ${FONT_SANS}`
+        ctx.fillText(truncateToWidth(ctx, String(a.label), xd - anchoPa - 12 - xi), xi, ya)
+      })
+      if (sobran) {
+        ctx.fillStyle = INK_2
+        ctx.font = `17px ${FONT_SANS}`
+        ctx.fillText(`y ${sobran} más`, xi, y + 56 + visibles.length * renglon)
+      }
+      ctx.textBaseline = 'top'
+    })
+  }
+
+  pintarPie(ctx, spec)
 }
 
 function pintarRendimiento(ctx, spec) {

@@ -1540,7 +1540,7 @@ function PersonalDashboard() {
             rounded={false}
             className="h-full"
           >
-            <DistribucionPorActivo compartir="dashboard" items={assetBreakdown.items} fmt={compFmt} className="h-full" />
+            <DistribucionPorActivo items={assetBreakdown.items} fmt={compFmt} className="h-full" />
           </AskAIAbout>
           <AskAIAbout
             topic="dashboard.top_holdings"
@@ -1577,6 +1577,7 @@ function PersonalDashboard() {
           <CompositionDonut
             title="Distribución por tipo de activo"
             compartir="dashboard"
+            compartirConDetalle
             items={classBreakdown.items}
             fmt={compFmt}
             info={
