@@ -2,6 +2,30 @@
 
 **Fecha:** 2026-10-27 · **Rama:** `claude/modest-mccarthy-4nsncl` (no está en `main`) · **No se arregló nada.**
 
+> **Estado después de los fixes** (rama `claude/affectionate-wright-uvbnbl`, sin mergear; detalle,
+> números y comandos para prod en `HANDOFF_fixes_rendimiento.md`):
+>
+> | hallazgo | estado | dónde |
+> |---|---|---|
+> | H1 · cobros que anulan la cobertura | **arreglado** | Fase A |
+> | H2 · Certero todo-o-nada ante un hueco | **decidido por el dueño: queda** (sin número con hueco en el medio) | — |
+> | H3 · bonos siempre al costo | **arreglado** (velas de data912; sin probar contra la red real) | Fase A |
+> | H4 · el Estimado se apaga en la primera foto apta | **arreglado** (se apaga en la primera medición del cron) | Fase A |
+> | H5-a · venta sin compra previa | **no arreglado — propuesta** (aporte en especie; medir en prod) | Fase D |
+> | H5-b · la costura no ve el aporte | **arreglado** | Fase A |
+> | H6 · `costo` mezcla dos reglas | **arreglado con la decisión del dueño** (base `parcial`, precio real donde lo hay) | Fase B |
+> | H7 · lectores / contable en Certero | **arreglado** (Wrapped, IA, Reportes del año). Meses del calendario y vista por broker: **decisión pendiente** | Fase C |
+> | H8 · la foto compara contra la caja de hoy | **arreglado** | Fase D |
+> | H9-a/b · venta o cupones que faltan | **no arreglado — propuesta de pantalla** | Fase D |
+> | H9-c · foto de IEB con bonos ×100 | **no arreglado — falta un portafolio real con bonos** | Fase D |
+> | H9-d · títulos de otro broker | **no arreglable sin el dato** (Estimado +2,8 pp en S3) | — |
+> | H10 · dividendos de IEB en dólares como pesos | **no arreglado — medir en prod** | Fase D |
+> | H11 · tres "qué tenía en tal fecha" | **arreglado para la caja** (una regla: `ledger_replay.movimientos_de_caja`); tenencia: lotes en la reconstrucción, `proyeccion` en la foto | Fases A y D |
+> | H12 · lo del HANDOFF_reconstructor fuera de `main` | sin cambios (fuera de alcance) | — |
+> | H13 · aporte a mitad de mes | **arreglado** | Fase A |
+> | H14 · la historia no devaluaba los pesos (nuevo) | **arreglado** (la historia se valúa como el cron) | Fase A |
+> | comisión de IEB dentro del importe | **arreglado** | Fase D |
+
 ---
 
 ## 0 · Cómo se midió (y qué limita lo medido)
