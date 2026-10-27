@@ -359,6 +359,14 @@ export const pctTxt = (v) => `${Number(v).toFixed(1).replace('.', ',')}%`
 // Con signo explícito y el menos tipográfico (U+2212), como el resto de la app.
 export const pctConSigno = (v) => `${v >= 0 ? '+' : '−'}${pctTxt(Math.abs(v))}`
 
+// El nombre que se imprime en una tarjeta pública. Nunca un email: hay
+// cuentas cuyo `name` quedó como su email, y eso no se publica en una imagen.
+export const nombreParaTarjeta = (nombre) => {
+  const n = String(nombre || '').trim()
+  if (!n || n.includes('@')) return null
+  return n.length > 40 ? n.slice(0, 40).trim() : n
+}
+
 // "Distribución por sector" → "distribucion-por-sector" (para el .png).
 export const nombreDeArchivo = (texto) => String(texto || 'tarjeta')
   .normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -380,8 +388,10 @@ export const fechaDeHoy = (now = new Date()) =>
  * @param {Array<{key,label,color,value,pct}>} a.porciones
  * @param {Function} a.fmt           formatea un monto (el mismo `fmt` de la torta)
  * @param {boolean}  a.mostrarMontos si van los montos; si no, sólo %
+ * @param {string}   a.nombre        el nombre del usuario: va de titular grande.
+ *                                   Sin nombre, el titular es el título de la torta.
  */
-export function specDeDistribucion({ titulo, porciones = [], fmt = (v) => String(v), mostrarMontos = false, now = new Date() }) {
+export function specDeDistribucion({ titulo, porciones = [], fmt = (v) => String(v), mostrarMontos = false, nombre = null, now = new Date() }) {
   const validas = porciones.filter(p => p && p.value > 0)
   const total = validas.reduce((s, p) => s + p.value, 0)
 
@@ -398,14 +408,15 @@ export function specDeDistribucion({ titulo, porciones = [], fmt = (v) => String
     }]
   }
 
-  // El titular es la porción más grande que sea algo concreto: "Otros" o
-  // "Sin clasificar" no dicen nada como titular aunque pesen más.
-  const mayor = filas.find(p => !PORCION_RESIDUAL.has(p.key)) || filas[0] || null
+  // El titular es DE QUIÉN es la cartera, no la porción más grande: la torta
+  // y su lista ya dicen los %, y repetir el mayor arriba lo decía dos veces
+  // (pedido de producto, 2026-10-27). Sin nombre, sube el título de la torta.
+  const quien = nombreParaTarjeta(nombre)
 
   return {
     kind: 'distribucion',
-    eyebrow: titulo,
-    title: mayor ? `${pctTxt(mayor.pct)} en ${mayor.label}` : '',
+    eyebrow: quien ? titulo : null,
+    title: quien || titulo,
     porciones: filas.map(p => ({
       label: p.label,
       color: p.color,

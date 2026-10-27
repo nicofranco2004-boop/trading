@@ -1,8 +1,9 @@
 // BotonCompartir — el ícono chico de "compartir" de una tarjeta de métricas.
 // ═══════════════════════════════════════════════════════════════════════════
 // Abre ShareCardModal con `buildSpec`: el modal pregunta primero si la imagen
-// lleva los montos o sólo los porcentajes, y recién ahí la genera. Lo usan las
-// tortas de distribución (vía la prop `compartir` de CompositionDonut) y el
+// lleva los montos o sólo los porcentajes, y recién ahí la genera. A
+// `buildSpec` le llega también `nombre` (el de la cuenta) para el titular.
+// Lo usan las tortas de distribución (vía la prop `compartir` de CompositionDonut) y el
 // gráfico "Cartera vs benchmark" de Análisis.
 //
 // Va arriba a la derecha de la tarjeta. Si la tarjeta está envuelta en
@@ -17,9 +18,13 @@ import { useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Share2 } from 'lucide-react'
 import ShareCardModal from './ShareCardModal'
+import { useAuth } from '../contexts/AuthContext'
 
 export default function BotonCompartir({ buildSpec, source, filename = 'rendi.png', etiqueta = 'Compartir', className = '' }) {
   const [abierto, setAbierto] = useState(false)
+  // El nombre de la cuenta va de titular en la tarjeta. `useAuth()` es null
+  // fuera del provider (tests de render): sin nombre, la tarjeta igual sale.
+  const nombre = useAuth()?.user?.name || null
   return (
     <>
       <button
@@ -37,7 +42,7 @@ export default function BotonCompartir({ buildSpec, source, filename = 'rendi.pn
         // Mervall-E por la tarjeta (AskAIAbout escucha onDoubleClick).
         <div onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
           <ShareCardModal
-            buildSpec={buildSpec}
+            buildSpec={(o) => buildSpec({ ...o, nombre })}
             source={source}
             filename={filename}
             onClose={() => setAbierto(false)}

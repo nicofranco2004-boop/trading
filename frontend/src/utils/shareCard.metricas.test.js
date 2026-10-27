@@ -14,8 +14,9 @@ describe('specDeDistribucion', () => {
   it('sin montos: sólo porcentajes, ni total ni monto por porción', () => {
     const s = specDeDistribucion({ titulo: 'Distribución por sector', porciones, fmt, mostrarMontos: false, now })
     expect(s.kind).toBe('distribucion')
-    expect(s.eyebrow).toBe('Distribución por sector')
-    expect(s.title).toBe('60,0% en Tecnología')
+    // Sin nombre, el titular es el título de la torta (no el % mayor).
+    expect(s.title).toBe('Distribución por sector')
+    expect(s.eyebrow).toBeNull()
     expect(s.total).toBeNull()
     expect(s.porciones.every(p => p.monto === null)).toBe(true)
     expect(s.porciones.map(p => p.pct)).toEqual([60, 30, 10])
@@ -27,15 +28,16 @@ describe('specDeDistribucion', () => {
     expect(s.porciones[0].monto).toBe('US$ 600')
   })
 
-  it('el titular nunca es una porción residual', () => {
-    const s = specDeDistribucion({
-      titulo: 'X', fmt, now,
-      porciones: [
-        { key: '__resto__', label: 'Resto (30 activos)', value: 700, pct: 70, color: '#000' },
-        { key: 'AAPL', label: 'AAPL', value: 300, pct: 30, color: '#000' },
-      ],
-    })
-    expect(s.title).toBe('30,0% en AAPL')
+  it('con nombre: el nombre es el titular y el título va arriba', () => {
+    const s = specDeDistribucion({ titulo: 'Distribución de activos', porciones, fmt, nombre: 'Nicolás Franco', now })
+    expect(s.title).toBe('Nicolás Franco')
+    expect(s.eyebrow).toBe('Distribución de activos')
+  })
+
+  it('nunca imprime un email como nombre', () => {
+    const s = specDeDistribucion({ titulo: 'X', porciones, fmt, nombre: 'alguien@gmail.com', now })
+    expect(s.title).toBe('X')
+    expect(JSON.stringify(s)).not.toMatch(/@/)
   })
 
   it('si no entran, las últimas filas se juntan en "Otros" y los % siguen sumando 100', () => {

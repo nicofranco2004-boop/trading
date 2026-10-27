@@ -201,8 +201,8 @@ export default function CompositionDonut({
                 source={compartir}
                 etiqueta={`Compartir ${title.toLowerCase()}`}
                 filename={`rendi-${nombreDeArchivo(title)}.png`}
-                buildSpec={({ mostrarMontos }) => specDeDistribucion({
-                  titulo: title, porciones: slices, fmt, mostrarMontos,
+                buildSpec={({ mostrarMontos, nombre }) => specDeDistribucion({
+                  titulo: title, porciones: slices, fmt, mostrarMontos, nombre,
                 })}
               />
             )}
