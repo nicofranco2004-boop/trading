@@ -36,7 +36,9 @@ LEEN_EL_LOG = {
     ("main.py", "import_confirm"): "borra filas del lote en vista previa que la persona omitió",
     # La vista previa todavía no está confirmada: filtran la lápida a mano y suman el lote en curso.
     ("ledger_replay.py", "tenencia_en"): "suma el lote en vista previa (b.id = ?); filtra la lápida a mano",
-    ("ledger_replay.py", "cash_en"): "suma el lote en vista previa (b.id = ?); filtra la lápida a mano",
+    # La única regla de caja (H11, 2026-10-27): la usan `cash_en`, la reconstrucción
+    # y el ajuste de caja de la foto. Con `session_id=None` son exactamente las vivas.
+    ("ledger_replay.py", "movimientos_de_caja"): "suma el lote en vista previa (b.id = ?); filtra la lápida a mano",
     ("importing/proyeccion.py", "proyectar"): "proyecta UN lote (b.id = ?); filtra la lápida a mano",
     ("importing/pipeline.py", "load_session_for_confirm"): "carga las filas de la vista previa que se va a confirmar",
     ("importing/pipeline.py", "load_session_with_seed_revalidate"): "rearma la vista previa (borra y reinserta sus filas)",
@@ -141,11 +143,19 @@ class LaHistoriaQueCuenta(unittest.TestCase):
         # importado —la moneda y el tipo de cada lote, la caja, lo que corrigió la
         # foto de tenencia— tiene que leer sólo las filas vivas.
         import inspect
+        import ledger_replay
         import scripts.backfill_historical_mtm as bf
         for fn in (bf._lotes_por_fecha, bf._caja_por_fecha, bf._correcciones_de_fotos):
             self.assertNotIn(("scripts/backfill_historical_mtm.py", fn.__name__),
                              lectores_directos())
+        for fn in (bf._lotes_por_fecha, bf._correcciones_de_fotos):
             self.assertIn("TX_VIVAS", inspect.getsource(fn), fn.__name__)
+        # La caja usa la única regla de caja (H11), que filtra el estado y la
+        # lápida a mano porque también sabe sumar una vista previa.
+        self.assertIn("movimientos_de_caja", inspect.getsource(bf._caja_por_fecha))
+        src = inspect.getsource(ledger_replay.movimientos_de_caja)
+        self.assertIn("b.status = 'confirmed'", src)
+        self.assertIn("n.excluded_at IS NULL", src)
 
 
 if __name__ == "__main__":

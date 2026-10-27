@@ -611,62 +611,27 @@ def _foto_que_contradice(conn, uid: int, valor_en, tenencia_en) -> str:
 # tenencia (`CONTRADICCION_MAX`): por debajo, la diferencia mueve el índice en
 # esa proporción como mucho.
 
-_CAJA_ENTRA = ("DEPOSIT", "DIVIDEND", "INTEREST", "SELL")
-_CAJA_SALE = ("WITHDRAW", "FEE", "IMPUESTO", "BUY")
-
-
 def _moneda_de_caja(moneda) -> str:
     """'ARS' o 'USD' (dólar, USDT, USDC). Otra moneda: su código (no se valúa)."""
-    m = (moneda or "").strip().upper()
-    if m in ("USD", "USDT", "USDC"):
-        return "USD"
-    return m
+    from ledger_replay import moneda_de_caja
+    return moneda_de_caja(moneda)
 
 
 def _caja_por_fecha(conn, uid: int):
     """(caja_en(fecha) -> {'ARS': saldo, 'USD': saldo}, caja_de_hoy) — la caja que
     dejan los movimientos importados, por moneda, con el efecto que les da el
-    importador (`importing.persister`): la compra resta su importe más la
-    comisión, la venta suma lo cobrado menos la comisión, el depósito, el
-    dividendo y el interés suman el importe, el retiro, la comisión suelta y el
-    impuesto lo restan, la conversión mueve las dos monedas. Por moneda y no por
-    sub-cuenta: el bono puente del dólar MEP compra en una y vende en la otra."""
+    importador. Las reglas viven en UN lugar, `ledger_replay.movimientos_de_caja`
+    (auditoría 2026-10-27, H11): acá sólo se acumulan por moneda y no por
+    sub-cuenta, porque el bono puente del dólar MEP compra en una y vende en la otra."""
     import bisect
-    from importing.schema import TX_VIVAS
+    from ledger_replay import movimientos_de_caja
     bcur = {r["name"]: r["currency"] for r in conn.execute(
         "SELECT name, currency FROM brokers WHERE user_id=?", (uid,)).fetchall()}
     fechas, saldos = [], []
     acum = {}
-    for r in conn.execute(
-            f"""SELECT n.date, n.broker, n.operation_type, n.quantity, n.gross_amount,
-                       n.fees, COALESCE(n.settlement_currency, n.currency) AS ccy
-                  FROM {TX_VIVAS} WHERE b.user_id = ?
-                 ORDER BY n.date, n.id""", (uid,)).fetchall():
-        op = r["operation_type"]
-        bruto = float(r["gross_amount"] or 0)
-        com = float(r["fees"] or 0)
-        mon = _moneda_de_caja(r["ccy"] or bcur.get(r["broker"]))
-        if op == "FX_ARS_TO_USD":
-            mov = {"ARS": -bruto, "USD": float(r["quantity"] or 0)}
-        elif op == "FX_USD_TO_ARS":
-            mov = {"USD": -float(r["quantity"] or 0), "ARS": bruto}
-        elif op == "FUTURES_PNL":
-            mov = {mon: bruto}
-        elif bruto <= 0:
-            continue                       # sin plata (cierre a costo de la foto, traspaso)
-        elif op == "BUY":
-            mov = {mon: -(bruto + com)}
-        elif op == "SELL":
-            mov = {mon: bruto - com}
-        elif op in _CAJA_ENTRA:
-            mov = {mon: bruto}
-        elif op in _CAJA_SALE:
-            mov = {mon: -bruto}
-        else:
-            continue
+    for f, _broker, mov in movimientos_de_caja(conn, uid):
         for k, v in mov.items():
             acum[k] = acum.get(k, 0.0) + v
-        f = str(r["date"])[:10]
         if fechas and fechas[-1] == f:
             saldos[-1] = dict(acum)
         else:

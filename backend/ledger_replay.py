@@ -89,8 +89,84 @@ def tenencia_en(conn, uid: int, fecha: str, *, session_id: str = None) -> dict:
 # que un borde reconstruido sin cash no es la misma magnitud que uno medido:
 # encadenarlos fabrica un escalon del tamano de la liquidez. Un cliente con 30%
 # en pesos veria una caida del 30% que nunca existio.
-_CASH_MAS = ("DEPOSIT", "SELL", "DIVIDEND", "INTEREST", "FUTURES_PNL")
-_CASH_MENOS = ("WITHDRAW", "BUY", "FEE", "IMPUESTO")
+_CASH_MAS = ("DEPOSIT", "DIVIDEND", "INTEREST")
+_CASH_MENOS = ("WITHDRAW", "FEE", "IMPUESTO")
+
+
+def moneda_de_caja(moneda) -> str:
+    """'ARS' o 'USD' (dólar, USDT, USDC). Otra moneda: su código."""
+    m = (moneda or "").strip().upper()
+    return "USD" if m in ("USD", "USDT", "USDC") else m
+
+
+def movimientos_de_caja(conn, uid: int, *, session_id: str = None) -> list:
+    """[(fecha, broker, {moneda: delta})] en orden: cómo mueve el EFECTIVO cada fila
+    importada, con el efecto que le da el importador (`importing.persister`).
+
+    ⚠️ ES LA ÚNICA COPIA DE ESAS REGLAS (auditoría 2026-10-27, H8/H11). Había dos:
+    `cash_en` (sin llamadores de producción: ignoraba las conversiones y restaba
+    impuestos que el importador no resta) y la caja de la reconstrucción a mercado.
+    Ahora las usan `cash_en`, la reconstrucción (`backfill_historical_mtm`) y el
+    ajuste de caja de la foto de tenencia (`main`), que necesita la caja A LA FECHA
+    DE LA FOTO y no la de hoy.
+
+      · compra: −(importe + comisión)
+      · venta: cantidad × precio − comisión, con el precio reconciliado contra el
+        importe (`persister.reconciled_unit_price`, la escala per-100) — el
+        importador NO cobra el importe: con un importe neto de comisión (IEB),
+        "importe − comisión" la descontaba dos veces
+      · una salida de títulos (`transfer_out`) no cobra nada
+      · depósito, dividendo, interés: +importe · retiro, comisión, impuesto: −importe
+      · conversión: las dos monedas (`gross_amount` = pesos, `quantity` = dólares)
+      · resultado de futuros: con su signo
+      · sin importe (el cierre a costo de una foto, un traspaso): nada
+    """
+    filas = conn.execute(
+        """SELECT n.date, n.broker, n.operation_type, n.quantity, n.gross_amount, n.fees,
+                  n.unit_price, n.asset_type, n.transfer_out,
+                  COALESCE(n.settlement_currency, n.currency) ccy, br.currency bccy
+           FROM import_normalized_tx n
+           JOIN import_batches b ON b.id = n.batch_id
+           LEFT JOIN brokers br ON br.user_id = b.user_id AND br.name = n.broker
+           WHERE b.user_id = ? AND n.excluded_at IS NULL
+             AND (b.status = 'confirmed' OR b.id = ?)
+           ORDER BY n.date ASC, n.id ASC""",
+        (uid, session_id or "")).fetchall()
+    from importing.persister import reconciled_unit_price
+    out = []
+    for r in filas:
+        op = r["operation_type"]
+        bruto = float(r["gross_amount"] or 0)
+        com = float(r["fees"] or 0)
+        mon = moneda_de_caja(r["ccy"] or r["bccy"] or "USD")
+        if op == "FX_ARS_TO_USD":
+            mov = {"ARS": -bruto, "USD": float(r["quantity"] or 0)}
+        elif op == "FX_USD_TO_ARS":
+            mov = {"USD": -float(r["quantity"] or 0), "ARS": bruto}
+        elif op == "FUTURES_PNL":
+            mov = {mon: bruto}
+        elif bruto <= 0:
+            continue
+        elif op == "BUY":
+            mov = {mon: -(bruto + com)}
+        elif op == "SELL":
+            if r["transfer_out"]:
+                continue
+            q = float(r["quantity"] or 0)
+            unit = float(reconciled_unit_price(r["unit_price"], q, r["gross_amount"],
+                                               r["asset_type"]) or 0)
+            cobrado = (unit * q if (unit and q) else bruto) - com
+            if cobrado <= 0:
+                continue
+            mov = {mon: cobrado}
+        elif op in _CASH_MAS:
+            mov = {mon: bruto}
+        elif op in _CASH_MENOS:
+            mov = {mon: -bruto}
+        else:
+            continue
+        out.append((str(r["date"])[:10], r["broker"] or "", mov))
+    return out
 
 
 def cash_en(conn, uid: int, fecha: str, *, session_id: str = None) -> dict:
@@ -101,36 +177,16 @@ def cash_en(conn, uid: int, fecha: str, *, session_id: str = None) -> dict:
     contra la realidad — es el ledger avisando que le falta un movimiento.
 
     🔴 Mismo fix de status que `tenencia_en`: sin él, el saldo incluía el cash
-    de imports revertidos. Iba peor acá que allá, porque este replay no filtra
-    por `operation_type` en el WHERE (los DEPOSIT/WITHDRAW de un batch deshecho
-    entraban enteros al saldo).
+    de imports revertidos. Las reglas de cada movimiento son las del importador,
+    en un solo lugar (`movimientos_de_caja`).
     """
-    filas = conn.execute(
-        """SELECT n.broker, n.operation_type, n.gross_amount, n.fees, n.taxes,
-                  COALESCE(n.settlement_currency, n.currency) ccy
-           FROM import_normalized_tx n
-           JOIN import_batches b ON b.id = n.batch_id
-           WHERE b.user_id = ? AND n.excluded_at IS NULL
-             AND (b.status = 'confirmed' OR b.id = ?)
-             AND n.date <= ?
-           ORDER BY n.date ASC, n.id ASC""",
-        (uid, session_id or "", str(fecha)[:10])).fetchall()
-
+    hasta = str(fecha)[:10]
     saldos = {}
-    for r in filas:
-        op = r["operation_type"]
-        monto = float(r["gross_amount"] or 0)
-        if monto <= 0:
-            continue
-        k = (r["broker"] or "", (r["ccy"] or "USD").upper())
-        if op in _CASH_MAS:
-            saldos[k] = saldos.get(k, 0.0) + monto
-        elif op in _CASH_MENOS:
-            saldos[k] = saldos.get(k, 0.0) - monto
-        else:
-            continue
-        # Comisiones e impuestos salen del efectivo en cualquier operacion.
-        saldos[k] -= float(r["fees"] or 0) + float(r["taxes"] or 0)
+    for f, broker, mov in movimientos_de_caja(conn, uid, session_id=session_id):
+        if f > hasta:
+            break
+        for mon, v in mov.items():
+            saldos[(broker, mon)] = saldos.get((broker, mon), 0.0) + v
     return saldos
 
 

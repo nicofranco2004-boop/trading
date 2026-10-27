@@ -42905,12 +42905,35 @@ def import_tenencia_preview(
         # en el sibling '· USD'. DEPOSITO/RETIRO sintéticos en el mismo batch
         # (auditable, revertible, sobrevive el rebuild). Logueamos la diferencia para
         # detección interna de bugs del parser (no se le muestra).
-        def _cur_cash(bname):
+        # ⚠️ LA CAJA A LA FECHA DE LA FOTO, NO LA DE HOY (H8, auditoría 2026-10-27).
+        # Las tenencias ya se proyectan a la fecha de la foto (`_qty_a_fecha`); la
+        # caja no, y una foto del 03/08 con movimientos hasta el 01/09 comparaba su
+        # efectivo contra el de HOY: el depósito de septiembre salía como un "Ajuste
+        # de cash" de $1.153.898 fechado el 03/08 que no existió (y el aportado
+        # quedaba inflado). La caja de la foto = la de hoy menos lo que movieron, en
+        # este par de brokers y en esa moneda, las filas posteriores a la foto. Las
+        # reglas de cada movimiento son las del importador, en un solo lugar
+        # (`ledger_replay.movimientos_de_caja`). Sin fecha real no se proyecta,
+        # igual que las tenencias.
+        _pair_cash = _import_persister.broker_pair(conn, uid, broker)
+        _post_foto = {}
+        if fecha_origen != "fallback_hoy":
+            try:
+                from ledger_replay import movimientos_de_caja, moneda_de_caja
+                for _f, _b, _mov in movimientos_de_caja(conn, uid):
+                    if _f > str(seed_date)[:10] and _b in _pair_cash:
+                        for _m, _v in _mov.items():
+                            _post_foto[_m] = _post_foto.get(_m, 0.0) + _v
+            except Exception:
+                log.exception("tenencia cash a la fecha de la foto uid=%s", uid)
+                _post_foto = {}
+
+        def _cur_cash(bname, ccy):
             row = conn.execute(
                 "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                 (uid, bname)).fetchone()
-            return float(row["invested"] or 0) if row else 0.0
-        _sib = next((b for b in _import_persister.broker_pair(conn, uid, broker) if b != broker), None)
+            return (float(row["invested"] or 0) if row else 0.0) - _post_foto.get(ccy, 0.0)
+        _sib = next((b for b in _pair_cash if b != broker), None)
         _adj = []
         # El true-up del efectivo sólo corre si la foto se leyó ENTERA. Los
         # parsers dejan cash_ars/cash_usd en 0.0 —no None— cuando el archivo no
@@ -42933,9 +42956,9 @@ def import_tenencia_preview(
                     "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone()
                 _sib = _ensure_usd_sibling(conn, uid, parent_row)["name"]
             if snap.cash_ars is not None:
-                _adj.append((broker, "ARS", _cur_cash(broker), snap.cash_ars, 1.0))
+                _adj.append((broker, "ARS", _cur_cash(broker, "ARS"), snap.cash_ars, 1.0))
             if snap.cash_usd is not None and _sib:
-                _adj.append((_sib, "USD", _cur_cash(_sib), snap.cash_usd, 0.01))
+                _adj.append((_sib, "USD", _cur_cash(_sib, "USD"), snap.cash_usd, 0.01))
         _cash_txs, _cash_applied = _import_tenencia.build_cash_trueup_txs(_adj, seed_date)
         for _b, _ccy, _cur, _tgt, _diff in _cash_applied:
             log.info("tenencia cash true-up uid=%s broker=%s %s rendi=%.2f foto=%.2f diff=%.2f",

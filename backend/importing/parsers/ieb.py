@@ -431,6 +431,22 @@ class IebParser(Parser):
                 notas_parts.append("divisa=OTHER")  # pata neta de DIV/RTA — revisar
             notas = " · ".join(notas_parts)
 
+            # ⚠️ LA COMISIÓN DE UNA VENTA VIENE ADENTRO DEL IMPORTE (auditoría
+            # 2026-10-27). El importe es lo NETO que entró a la cuenta; el
+            # importador cobra la venta como cantidad × precio − comisión
+            # (`persister._persist_sell_fifo`), así que con la comisión en 0 la
+            # caja quedaba arriba por la comisión, y la foto de tenencia la
+            # "reponía" como un RETIRO que no existió. Archivo real: STNE 23 ×
+            # 8.660 = 199.180 contra un importe de 199.300,5 en la compra. En la
+            # compra no hace falta: el costo y la caja salen del importe, que ya
+            # la trae. Sólo con la escala sana (cantidad × precio ≈ importe): con
+            # un bono por 100 nominales la diferencia no es comisión.
+            comision = 0.0
+            if is_asset_trade and tipo == "VENTA" and qty and price and amount:
+                _bruto, _neto = abs(qty) * abs(price), abs(amount)
+                if _neto > 0 and 0 < _bruto - _neto <= 0.05 * _neto:
+                    comision = round(_bruto - _neto, 2)
+
             data = {
                 "fecha":      (G(row, "fechaemision") or G(row, "fechaliquidacion"))[:10],
                 "tipo":       tipo,
@@ -441,7 +457,7 @@ class IebParser(Parser):
                 "monto":      "" if amount is None else str(abs(amount)),
                 "monto_usd":  "",
                 "tc":         "",
-                "comisiones": "0",
+                "comisiones": str(comision) if comision else "0",
                 "moneda":     moneda,
                 "asset_type": "",   # IEB no distingue CEDEAR/acción/bono en el export
                 "asset_name": ref,
