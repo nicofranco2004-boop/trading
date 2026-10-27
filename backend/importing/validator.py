@@ -41,6 +41,7 @@ def validate(
     existing_positions: Dict[Tuple[str, str], float],  # (broker, asset) → qty actual
     route_by_currency: bool = False,        # si True, omitimos chequeos de broker-currency
                                               # para FX (el persister rerutea al broker correcto)
+    brokers_sin_pesos: frozenset = frozenset(),  # la plantilla de Rendi (ver abajo)
 ) -> Tuple[List[NormalizedTx], List[RowError]]:
     """Devuelve (válidas, errores). Las inválidas se descartan del output."""
     errors: List[RowError] = []
@@ -81,6 +82,23 @@ def validate(
         broker_currency = (user_brokers.get(tx.broker) or {}).get("currency")
 
         op = tx.operation_type
+
+        # ⚠️ PESOS A UN BROKER EN DÓLARES: SE RECHAZA LA FILA, NO SE GUARDA MAL.
+        # Un broker en dólares no tiene dónde poner pesos: el importador sumaba el
+        # monto a su caja tal cual, sin convertir ($1.000.000 entraban como
+        # US$1.000.000) y el rendimiento de la cuenta quedaba en ~0 %. Qué brokers
+        # rechazan pesos lo decide `pipeline.brokers_que_no_aceptan_pesos`. Las
+        # conversiones ya tienen su chequeo.
+        if (tx.broker in brokers_sin_pesos
+                and (tx.currency or "").upper() == "ARS"
+                and op not in (OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS)):
+            row_errs.append(RowError(
+                ridx, "moneda", "PESOS_EN_BROKER_EN_DOLARES",
+                f"El broker «{tx.broker}» está en dólares y esta fila está en pesos: "
+                f"Rendi no puede guardar pesos en una cuenta en dólares. Si es un broker "
+                f"argentino, tiene que estar en pesos (sus dólares van solos a "
+                f"«{tx.broker} · USD»); si la fila era en dólares, corregí la columna "
+                f"«moneda»."))
         if op == OP_BUY:
             if not tx.asset_symbol:
                 row_errs.append(RowError(ridx, "activo", "MISSING_ASSET",

@@ -550,6 +550,74 @@ FORMAT_BASE_CURRENCY = {
 }
 
 
+# Brokers cripto: el nombre manda (en Binance "USD" suele venir como USDT igual).
+CRYPTO_BROKERS = frozenset({
+    'binance', 'coinbase', 'kraken', 'bybit', 'kucoin', 'bitget',
+    'okx', 'huobi', 'gemini', 'crypto.com', 'lemon', 'ripio', 'buenbit',
+    'satoshitango', 'fiwind',
+})
+
+
+def _trae_pesos(filas) -> bool:
+    """¿El archivo le manda plata EN PESOS a este broker? Una fila en ARS, o una
+    compra de dólares con pesos (FX_ARS_TO_USD sale de la cuenta en pesos). La
+    venta de dólares (FX_USD_TO_ARS) NO cuenta: sale de la cuenta en DÓLARES, y
+    contarla creaba en pesos la sub-cuenta "<broker> · USD" que el archivo nombra."""
+    return any((t.currency or "").upper() == "ARS" or t.operation_type == "FX_ARS_TO_USD"
+               for t in filas)
+
+
+def brokers_que_no_aceptan_pesos(user_brokers, fmt_base) -> frozenset:
+    """Los brokers a los que una fila en PESOS no puede ir (`validate` la rechaza).
+
+    Sólo sin moneda base —la plantilla de Rendi, donde la persona elige el broker y
+    escribe la moneda de cada fila—: los formatos de broker anclan la moneda
+    (`FORMAT_BASE_CURRENCY`). Y fuera de los exchanges cripto: Binance manda pares
+    en pesos a un broker en USDT a propósito, y "Editar y rehacer" re-importa
+    cualquier lote con el formato de la plantilla; cambiar eso sin medir cuántos
+    son está pendiente (AUDIT_plantilla_rendi_2026-10-27.md, PL1).
+    """
+    if fmt_base:
+        return frozenset()
+    return frozenset(n for n, b in user_brokers.items()
+                     if (b.get("currency") or "") != "ARS"
+                     and n.strip().lower() not in CRYPTO_BROKERS)
+
+
+def moneda_de_broker_nuevo(nombre: str, filas, fmt_base=None) -> str:
+    """La moneda con la que el import crea un broker que el usuario no tenía.
+
+      1. Nombre cripto conocido → USDT.
+      2. Moneda base del formato (Cocos → ARS, Schwab → USD…) → ésa.
+      3. Si el archivo le manda PESOS → ARS. Sus filas en dólares van solas al
+         sub-broker "<nombre> · USD" (`route_by_currency`).
+      4. Mayoría USDT → USDT; si no, USD.
+
+    ⚠️ EL PASO 3 ERA "MAYORÍA DE FILAS", Y ESO GUARDABA PESOS COMO DÓLARES. Un
+    broker en dólares no tiene dónde poner pesos: el importador los suma a su caja
+    tal cual, sin convertir (un depósito de $1.000.000 + US$500 quedaba como
+    "US$1.000.500"), y las conversiones MEP se rechazan. La combinación que sí
+    funciona es la inversa —broker en pesos con su sub-cuenta en dólares—, así que
+    si hay pesos, el broker es en pesos. Con la plantilla de Rendi (el único
+    formato sin moneda base) alcanzaba con un empate: medido con la historia de la
+    auditoría, sacar UNA venta en pesos (9 filas en pesos, 9 en dólares) dejaba el
+    broker en USD y el rendimiento en +0,2 % contra +25,2 % real
+    (AUDIT_plantilla_rendi_2026-10-27.md, PL1). Es el mismo bug que ya había
+    pasado con Balanz (231 posiciones en pesos de 23 usuarios, ver
+    `FORMAT_BASE_CURRENCY`), arreglado entonces formato por formato.
+    """
+    if (nombre or "").strip().lower() in CRYPTO_BROKERS:
+        return "USDT"
+    if fmt_base:
+        return fmt_base
+    filas = list(filas)
+    if _trae_pesos(filas):
+        return "ARS"
+    usd = sum(1 for t in filas if (t.currency or "").upper() == "USD")
+    usdt = sum(1 for t in filas if (t.currency or "").upper() == "USDT")
+    return "USDT" if usdt > usd else "USD"
+
+
 def run_preview(
     conn,
     *,
@@ -689,32 +757,51 @@ def run_preview(
     # moneda. Así un re-import no queda pegado a un broker mal etiquetado. Si ya
     # tuviera posiciones cargadas, NO lo tocamos — el usuario debe revertir ese
     # import primero (cambiar la moneda reinterpretaría su data).
-    if fmt_base:
-        healed_targets = set()
-        for tx in normalized:
-            name = tx.broker
-            if not name or name in healed_targets:
-                continue
-            healed_targets.add(name)
-            info = user_brokers.get(name)
-            if not info or info.get("currency") == fmt_base:
-                continue
-            has_data = conn.execute(
-                "SELECT 1 FROM positions WHERE user_id=? AND broker=? LIMIT 1",
-                (uid, name),
-            ).fetchone()
-            if has_data:
-                continue
-            _escrituras_diferidas.append((
-                "UPDATE brokers SET currency=? WHERE user_id=? AND name=?",
-                (fmt_base, uid, name), None))
-            info["currency"] = fmt_base
+    # Sin moneda base (la plantilla de Rendi), la misma curación vale para el caso
+    # que rompe la plata: el broker quedó en dólares (un import viejo con la regla
+    # de mayoría) y el archivo le manda pesos. Así "revertir y volver a subir"
+    # arregla la cuenta. Un broker ya ARS no se toca.
+    _filas_por_broker: Dict[str, List[Any]] = {}
+    for tx in normalized:
+        if tx.broker:
+            _filas_por_broker.setdefault(tx.broker, []).append(tx)
+    healed_targets = set()
+    for tx in normalized:
+        name = tx.broker
+        if not name or name in healed_targets:
+            continue
+        healed_targets.add(name)
+        info = user_brokers.get(name)
+        if not info:
+            continue
+        if fmt_base:
+            target = fmt_base
+        elif (info.get("currency") != "ARS" and not info.get("parent_broker_id")
+                and name.strip().lower() not in CRYPTO_BROKERS
+                and _trae_pesos(_filas_por_broker.get(name, []))):
+            target = "ARS"
+        else:
+            continue
+        if info.get("currency") == target:
+            continue
+        # Una caja en cero no es tener datos (queda así después de revertir un
+        # import): sin esto, "revertir y volver a subir" no curaba el broker.
+        has_data = conn.execute(
+            "SELECT 1 FROM positions WHERE user_id=? AND broker=? "
+            "AND (COALESCE(is_cash,0)=0 OR ABS(COALESCE(invested,0)) > 0.005) LIMIT 1",
+            (uid, name),
+        ).fetchone()
+        if has_data:
+            continue
+        _escrituras_diferidas.append((
+            "UPDATE brokers SET currency=? WHERE user_id=? AND name=?",
+            (target, uid, name), None))
+        info["currency"] = target
 
     # Auto-crear brokers que aparecen en el CSV pero no existen para este
-    # usuario. Inferimos la moneda por mayoría de filas: USD/USDT → USDT,
-    # ARS (o empate) → ARS. Si dos filas tienen el mismo broker con casing
-    # distinto (ej.: "Bull Market" + "bull market"), las agrupamos bajo el
-    # primer casing visto.
+    # usuario, con la moneda de `moneda_de_broker_nuevo`. Si dos filas tienen el
+    # mismo broker con casing distinto (ej.: "Bull Market" + "bull market"), las
+    # agrupamos bajo el primer casing visto.
     new_brokers_created: List[Dict[str, Any]] = []
     pending: Dict[str, Dict[str, Any]] = {}  # norm_key → {first_name, rows}
     for tx in normalized:
@@ -727,45 +814,10 @@ def run_preview(
             pending[key] = {"first_name": tx.broker.strip(), "rows": []}
         pending[key]["rows"].append(tx)
 
-    # Sets para distinguir brokers crypto-native (USDT) vs tradicionales (USD).
-    # Cuando un broker se auto-crea, miramos el nombre + la moneda de las filas:
-    #   • Brokers cripto típicos → USDT
-    #   • Brokers tradicionales con filas USD → USD (no USDT)
-    #   • Brokers AR → ARS
-    CRYPTO_BROKERS = frozenset({
-        'binance', 'coinbase', 'kraken', 'bybit', 'kucoin', 'bitget',
-        'okx', 'huobi', 'gemini', 'crypto.com', 'lemon', 'ripio', 'buenbit',
-        'satoshitango', 'fiwind',
-    })
     for key, info in pending.items():
         rows_for_broker = info["rows"]
         broker_name = info["first_name"]
-        broker_lower = broker_name.lower()
-        usd_count = sum(1 for t in rows_for_broker
-                        if (t.currency or "").upper() == "USD")
-        usdt_count = sum(1 for t in rows_for_broker
-                         if (t.currency or "").upper() == "USDT")
-        ars_count = sum(1 for t in rows_for_broker
-                        if (t.currency or "").upper() == "ARS")
-        # Prioridad de inferencia:
-        #   1. Nombre conocido cripto → USDT (aunque tenga filas USD: en
-        #      Binance "USD" suele venir como USDT igual)
-        #   2. Moneda base conocida del parser (Cocos→ARS, etc.) → gana sobre la
-        #      mayoría de filas. Evita que un broker AR caiga en USD por tener
-        #      muchas compras dólar-MEP.
-        #   3. Mayoría USDT → USDT (datos explícitos)
-        #   4. Mayoría ARS → ARS
-        #   5. Cualquier otro caso (mayoría USD o mix) → USD
-        if broker_lower in CRYPTO_BROKERS:
-            inferred = "USDT"
-        elif fmt_base:
-            inferred = fmt_base
-        elif usdt_count > usd_count and usdt_count > ars_count:
-            inferred = "USDT"
-        elif ars_count > usd_count and ars_count > usdt_count:
-            inferred = "ARS"
-        else:
-            inferred = "USD"
+        inferred = moneda_de_broker_nuevo(broker_name, rows_for_broker, fmt_base)
         new_brokers_created.append({
             "name": broker_name,
             "currency": inferred,
@@ -812,6 +864,7 @@ def run_preview(
         user_brokers=user_brokers,
         existing_positions=existing_pos,
         route_by_currency=route_by_currency,
+        brokers_sin_pesos=brokers_que_no_aceptan_pesos(user_brokers, fmt_base),
     )
 
     # ── Traspaso de títulos desde OTRO broker del usuario ────────────────────
@@ -1400,6 +1453,11 @@ def load_session_with_seed_revalidate(
         user_brokers=user_brokers,
         existing_positions=existing_with_seed,
         route_by_currency=route_currency,
+        # La misma guarda que la vista previa: sin esto, confirmar con "Estado
+        # inicial" volvía a dejar pasar las filas en pesos que la vista previa
+        # había rechazado.
+        brokers_sin_pesos=brokers_que_no_aceptan_pesos(
+            user_brokers, FORMAT_BASE_CURRENCY.get(batch["parser_format"] or "")),
     )
     valid_txs += sinteticas
 
