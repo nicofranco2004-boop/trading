@@ -3,8 +3,9 @@
 // Abre ShareCardModal con `buildSpec`: el modal pregunta primero si la imagen
 // lleva los montos o sólo los porcentajes, y recién ahí la genera. A
 // `buildSpec` le llega también `nombre` (el de la cuenta) para el titular.
-// Lo usan las tortas de distribución (vía la prop `compartir` de CompositionDonut) y el
-// gráfico "Cartera vs benchmark" de Análisis.
+// Lo usan las tortas de distribución (vía la prop `compartir` de
+// CompositionDonut), el gráfico "Cartera vs benchmark" de Análisis y el de
+// evolución del Dashboard (aportes vs mercado).
 //
 // Va arriba a la derecha de la tarjeta. Si la tarjeta está envuelta en
 // AskAIAbout, el ✦ de Mervall-E se corre solo al primer hueco libre a la

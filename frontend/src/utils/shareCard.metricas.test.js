@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { specDeDistribucion, specDeRendimiento, specDeComposicion, nombreDeArchivo, pctConSigno } from './shareCard'
+import { specDeDistribucion, specDeRendimiento, specDeComposicion, specDeAportes, nombreDeArchivo, pctConSigno } from './shareCard'
 
 const fmt = (v) => `US$ ${Math.round(v)}`
 const now = new Date('2026-10-26T12:00:00')
@@ -135,5 +135,32 @@ describe('specDeComposicion', () => {
   it('sin montos no hay total; con montos, el del fmt', () => {
     expect(specDeComposicion({ titulo: 'X', porciones: tipos, fmt, now }).total).toBeNull()
     expect(specDeComposicion({ titulo: 'X', porciones: tipos, fmt, mostrarMontos: true, now }).total).toBe('US$ 1000')
+  })
+})
+
+describe('specDeAportes', () => {
+  const base = {
+    aportado: 800, valor: 1000, ganancia: 200, pct: 0.25,
+    serie: [{ ts: 1, valor: 500, aportado: 500 }, { ts: 2, valor: 1000, aportado: 800 }],
+    periodo: 'Último año', fmt: (v) => `USD ${v}`, fmtConSigno: (v) => `${v >= 0 ? '+' : '−'}USD ${Math.abs(v)}`, now,
+  }
+
+  it('con montos: los de las tarjetas del Dashboard', () => {
+    const s = specDeAportes({ ...base, mostrarMontos: true })
+    expect(s.stats.map(x => x.value)).toEqual(['USD 800', '+USD 200', 'USD 1000'])
+    expect(s.stats[0].sub).toBe('80,0% del total')
+    expect(s.stats[1].sub).toBe('+25,0% sobre lo aportado')
+  })
+
+  it('sin montos: reparto en % y ganancia en %, ninguna cifra de plata', () => {
+    const s = specDeAportes({ ...base, mostrarMontos: false })
+    expect(s.stats.map(x => x.value)).toEqual(['80,0%', '20,0%', '+25,0%'])
+    expect(JSON.stringify(s)).not.toMatch(/USD/)
+  })
+
+  it('pérdida: el rótulo lo dice y la barra va en rojo', () => {
+    const s = specDeAportes({ ...base, valor: 700, ganancia: -100, pct: -0.125 })
+    expect(s.stats[1].label).toBe('Lo que perdió en el mercado')
+    expect(s.barra.gana).toBe(false)
   })
 })

@@ -104,6 +104,12 @@ export async function renderShareCard(spec) {
     pintarComposicion(ctx, spec)
     return canvas
   }
+  if (spec.kind === 'aportes') {
+    pintarFondo(ctx, VIOLETA)
+    pintarEncabezado(ctx, logo)
+    pintarAportes(ctx, spec)
+    return canvas
+  }
   if (spec.kind === 'rendimiento') {
     pintarFondo(ctx, VIOLETA)
     pintarEncabezado(ctx, logo)
@@ -486,6 +492,69 @@ export function specDeComposicion({ titulo, porciones = [], fmt = (v) => String(
       })),
     invertido: Math.max(0, 100 - efectivo),
     total: mostrarMontos && total > 0 ? fmt(total) : null,
+    date: fechaDeHoy(now),
+  }
+}
+
+/**
+ * La tarjeta "Aportes vs mercado" (el gráfico de evolución del Dashboard):
+ * cuánto de lo que vale la cartera lo pusiste vos y cuánto el mercado.
+ *
+ * Los números son los de las tarjetas "Capital aportado" y "Ganancia total"
+ * del Dashboard (`resultadoTotal`), ya en la moneda de la vista; la curva es
+ * la del gráfico (valor y aportado), sólo la forma.
+ *
+ * Sin montos: el reparto en % y la ganancia en %. El reparto es el mismo
+ * cálculo que "Atribución del crecimiento" de Análisis (|aportes| y
+ * |mercado| sobre la suma de los dos).
+ *
+ * @param {object} a
+ * @param {number} a.aportado   capital aportado neto (moneda de la vista)
+ * @param {number} a.valor      lo que vale hoy (moneda de la vista)
+ * @param {number} a.ganancia   valor − aportado (moneda de la vista)
+ * @param {number|null} a.pct   la ganancia como fracción (0,12 = 12%)
+ * @param {Array<{ts:number, valor:number, aportado:number}>} a.serie
+ * @param {string} a.periodo    "Último año"
+ * @param {Function} a.fmt / a.fmtConSigno  formatean un monto de la vista
+ */
+export function specDeAportes({
+  aportado, valor, ganancia, pct = null, serie = [], periodo = '',
+  fmt = (v) => String(v), fmtConSigno = (v) => String(v),
+  mostrarMontos = false, nombre = null, now = new Date(),
+}) {
+  const dep = Math.abs(aportado || 0)
+  const mer = Math.abs(ganancia || 0)
+  const suma = dep + mer
+  const parteAportes = suma > 0 ? (dep / suma) * 100 : 0
+  const parteMercado = suma > 0 ? (mer / suma) * 100 : 0
+  const gana = (ganancia || 0) >= 0
+  const pctGanancia = Number.isFinite(pct) ? pctConSigno(pct * 100) : null
+
+  const stats = mostrarMontos ? [
+    { label: 'Lo que aportaste', value: fmt(aportado), sub: `${pctTxt(parteAportes)} del total` },
+    { label: gana ? 'Lo que puso el mercado' : 'Lo que perdió en el mercado', value: fmtConSigno(ganancia),
+      sub: pctGanancia ? `${pctGanancia} sobre lo aportado` : null, tono: gana ? 'green' : 'red' },
+    { label: 'Lo que vale hoy', value: fmt(valor), sub: null },
+  ] : [
+    { label: 'Lo que aportaste', value: pctTxt(parteAportes), sub: 'del total' },
+    { label: gana ? 'Lo que puso el mercado' : 'Lo que perdió en el mercado', value: pctTxt(parteMercado),
+      sub: 'del total', tono: gana ? 'green' : 'red' },
+    ...(pctGanancia ? [{ label: 'Ganancia total', value: pctGanancia, sub: 'sobre lo aportado', tono: gana ? 'green' : 'red' }] : []),
+  ]
+
+  const limpia = serie.filter(p => p && Number.isFinite(p.ts) && Number.isFinite(p.valor))
+  const paso = Math.max(1, Math.ceil(limpia.length / 240))
+  const rala = limpia.filter((_, i) => i % paso === 0 || i === limpia.length - 1)
+  const quien = nombreParaTarjeta(nombre)
+
+  return {
+    kind: 'aportes',
+    eyebrow: quien ? 'Aportes vs mercado' : null,
+    title: quien || 'Aportes vs mercado',
+    stats,
+    barra: suma > 0 ? { aportes: parteAportes, mercado: parteMercado, gana } : null,
+    serie: rala,
+    periodo,
     date: fechaDeHoy(now),
   }
 }
@@ -948,6 +1017,118 @@ function pintarComposicion(ctx, spec) {
       ctx.textBaseline = 'top'
     })
   }
+
+  pintarPie(ctx, spec)
+}
+
+function pintarAportes(ctx, spec) {
+  let y = pintarTitular(ctx, spec) + 34
+  ctx.textBaseline = 'top'
+
+  // ── Los tres números ───────────────────────────────────────────────────
+  const stats = spec.stats || []
+  const col = (W - 2 * PAD) / Math.max(stats.length, 1)
+  stats.forEach((st, i) => {
+    const x = PAD + i * col
+    ctx.fillStyle = INK_2
+    ctx.font = `22px ${FONT_SANS}`
+    ctx.fillText(truncateToWidth(ctx, st.label, col - 16), x, y)
+    ctx.fillStyle = st.tono ? TONE[st.tono] : INK_0
+    ctx.font = `600 ${stats.length > 2 ? 36 : 42}px ${FONT_SANS}`
+    ctx.fillText(truncateToWidth(ctx, String(st.value), col - 16), x, y + 32)
+    if (st.sub) {
+      ctx.fillStyle = INK_2
+      ctx.font = `19px ${FONT_SANS}`
+      ctx.fillText(truncateToWidth(ctx, st.sub, col - 16), x, y + 80)
+    }
+  })
+  y += 128
+
+  // ── La barra: cuánto de cada lado ────────────────────────────────────
+  const aporteColor = INK_2
+  const mercadoColor = spec.barra?.gana ? VIOLETA : TONE.red
+  if (spec.barra) {
+    const ancho = W - 2 * PAD
+    const a = (spec.barra.aportes / 100) * ancho
+    ctx.save()
+    roundRect(ctx, PAD, y, ancho, 16, 8)
+    ctx.clip()
+    ctx.fillStyle = aporteColor
+    ctx.fillRect(PAD, y, a, 16)
+    ctx.fillStyle = mercadoColor
+    ctx.fillRect(PAD + a, y, ancho - a, 16)
+    ctx.restore()
+    y += 16
+  }
+  y += 44
+
+  // ── El gráfico: el valor arriba, lo aportado abajo, y entre los dos lo
+  //    que puso (o sacó) el mercado ───────────────────────────────────────
+  const gx0 = PAD
+  const gx1 = W - PAD
+  const gy0 = y
+  const gy1 = H - PAD - 120
+  const serie = spec.serie || []
+  const valores = serie.flatMap(p => [p.valor, p.aportado]).filter(Number.isFinite)
+  if (serie.length > 1 && valores.length > 1) {
+    const t0 = serie[0].ts
+    const t1 = serie[serie.length - 1].ts
+    let vMin = Math.min(...valores)
+    let vMax = Math.max(...valores)
+    const m = (vMax - vMin) * 0.08 || Math.abs(vMax) * 0.05 || 1
+    vMin -= m
+    vMax += m
+    const X = (t) => gx0 + ((t - t0) / ((t1 - t0) || 1)) * (gx1 - gx0)
+    const Y = (v) => gy1 - ((v - vMin) / (vMax - vMin)) * (gy1 - gy0)
+    const conAportado = serie.filter(p => Number.isFinite(p.aportado))
+
+    // La franja entre las dos líneas: lo que puso el mercado.
+    if (conAportado.length > 1) {
+      ctx.beginPath()
+      conAportado.forEach((p, i) => (i ? ctx.lineTo(X(p.ts), Y(p.valor)) : ctx.moveTo(X(p.ts), Y(p.valor))))
+      for (let i = conAportado.length - 1; i >= 0; i--) ctx.lineTo(X(conAportado[i].ts), Y(conAportado[i].aportado))
+      ctx.closePath()
+      ctx.fillStyle = hexToRgba(spec.barra?.gana === false ? TONE.red : VIOLETA, 0.22)
+      ctx.fill()
+
+      ctx.strokeStyle = aporteColor
+      ctx.lineWidth = 3
+      ctx.setLineDash([10, 9])
+      ctx.beginPath()
+      conAportado.forEach((p, i) => (i ? ctx.lineTo(X(p.ts), Y(p.aportado)) : ctx.moveTo(X(p.ts), Y(p.aportado))))
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+
+    ctx.strokeStyle = VIOLETA
+    ctx.lineWidth = 5
+    ctx.lineJoin = 'round'
+    ctx.beginPath()
+    serie.forEach((p, i) => (i ? ctx.lineTo(X(p.ts), Y(p.valor)) : ctx.moveTo(X(p.ts), Y(p.valor))))
+    ctx.stroke()
+  }
+
+  // ── Leyenda ───────────────────────────────────────────────────────────
+  const yl = gy1 + 34
+  ctx.textBaseline = 'middle'
+  ctx.font = `21px ${FONT_SANS}`
+  let x = PAD
+  const item = (dibujarMarca, texto) => {
+    dibujarMarca(x)
+    ctx.fillStyle = INK_0
+    ctx.fillText(texto, x + 42, yl)
+    x += 42 + ctx.measureText(texto).width + 30
+  }
+  item((x0) => { ctx.strokeStyle = VIOLETA; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(x0, yl); ctx.lineTo(x0 + 30, yl); ctx.stroke() }, 'Valor de la cartera')
+  item((x0) => { ctx.strokeStyle = aporteColor; ctx.lineWidth = 3; ctx.setLineDash([8, 6]); ctx.beginPath(); ctx.moveTo(x0, yl); ctx.lineTo(x0 + 30, yl); ctx.stroke(); ctx.setLineDash([]) }, 'Lo que aportaste')
+  item((x0) => { ctx.fillStyle = hexToRgba(spec.barra?.gana === false ? TONE.red : VIOLETA, 0.35); roundRect(ctx, x0, yl - 9, 30, 18, 4); ctx.fill() }, 'Mercado')
+  if (spec.periodo) {
+    ctx.fillStyle = INK_2
+    ctx.textAlign = 'right'
+    ctx.fillText(spec.periodo, W - PAD, yl)
+    ctx.textAlign = 'left'
+  }
+  ctx.textBaseline = 'top'
 
   pintarPie(ctx, spec)
 }
