@@ -60,8 +60,13 @@ const INK_0 = '#E6EAF2'
 const INK_2 = TONE.gray
 const INK_3 = '#5A6478'
 const LINEA = '#1B2230'
-// El texto oscuro sobre una porción clara: el mismo tono del fondo.
+// El fondo de arriba del degradado.
 const FONDO_TINTA = '#0E1218'
+// La tinta de TODOS los rótulos adentro de la torta: un negro tirando al
+// violeta de marca (el VIOLETA llevado casi a negro). Una sola tinta fija, no
+// una por porción: con blanco en unas y negro en otras la torta se veía
+// despareja (pedido de producto, 2026-10-27).
+const TINTA_PORCION = oscurecer(VIOLETA, 0.22)
 
 const LOGO_SRC = '/brand/rendi-mark-violet.png'
 const DOMINIO = 'rendi.finance'
@@ -607,7 +612,6 @@ function pintarDistribucion(ctx, spec, logo) {
     const { desde, hasta } = arcos[i]
     if (!(hasta > desde)) return
     const medio = (desde + hasta) / 2
-    const tinta = tintaSobre(colores[i])
     const pct = pctTxt(p.pct)
     const nombre = String(p.label)
 
@@ -631,7 +635,7 @@ function pintarDistribucion(ctx, spec, logo) {
         y += f + 3
       }
     }
-    ctx.fillStyle = tinta
+    ctx.fillStyle = TINTA_PORCION
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
 
@@ -756,23 +760,11 @@ function cajaDentroDePorcion(x, y, ancho, alto, { cx, cy, r, R, desde, hasta }) 
   })
 }
 
-// Texto oscuro sobre porciones claras, blanco sobre las oscuras.
-function tintaSobre(color) {
-  const m = String(color).match(/\d+(\.\d+)?/g)
-  let rgb = null
-  if (/^#([0-9a-f]{6})$/i.test(color)) {
-    const n = parseInt(color.slice(1), 16)
-    rgb = [(n >> 16) & 255, (n >> 8) & 255, n & 255]
-  } else if (m && m.length >= 3) {
-    rgb = m.slice(0, 3).map(Number)
-  }
-  if (!rgb) return INK_0
-  const [rr, gg, bb] = rgb.map(v => {
-    const c = v / 255
-    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
-  })
-  const lum = 0.2126 * rr + 0.7152 * gg + 0.0722 * bb
-  return lum > 0.3 ? FONDO_TINTA : INK_0
+// Un color hex llevado hacia el negro: `factor` 1 lo deja igual, 0 es negro.
+function oscurecer(hex, factor) {
+  const n = parseInt(String(hex).slice(1), 16)
+  const c = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(v => Math.round(v * factor))
+  return `rgb(${c.join(', ')})`
 }
 
 function pintarRendimiento(ctx, spec) {
