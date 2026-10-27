@@ -16,6 +16,7 @@ import { ArrowRight } from 'lucide-react'
 import useReportYears from '../hooks/useReportYears'
 import { useCurrency } from '../contexts/CurrencyContext'
 import { pctSigned } from '../utils/format'
+import { anioPublicado, detalleVsInflacion } from '../utils/anioPublicado'
 
 // El artículo viaja aparte del nombre: el chip dice "vs el S&P 500" y el tooltip
 // "Por encima DEL S&P 500". Con el artículo pegado al nombre salía "de el S&P 500".
@@ -74,10 +75,12 @@ export default function YearReturnLine({ modo, className = '' }) {
   // · 74 días". Había sesenta fotos; lo que no llegaba era a cubrir el año. El
   // motor sabe medir ese tramo, así que se publica con la fecha desde la que corre
   // — "desde el 30 de junio" es verdadero; llamarlo "2026" sería la mentira.
-  const parcial = current.pct == null && current.parcial_pct != null
-  const pct = parcial ? current.parcial_pct : current.pct
-  const vsSp = parcial ? current.parcial_vs_sp500_pct : current.vs_sp500_pct
-  const vsInfl = parcial ? null : current.vs_inflation_pct
+  // El número y sus dos veredictos salen del MISMO tramo, en el modo pedido: lo
+  // decide `anioPublicado`, la misma función que usa Reportes. Antes acá se
+  // escribía `vsInfl = parcial ? null : …` y el tramo mostraba "vs el S&P" sin
+  // "vs la inflación".
+  const anio = anioPublicado(current)
+  const { parcial, pct, vsSp, vsInfl } = anio
   const positivo = pct != null && pct >= 0
 
   return (
@@ -111,9 +114,7 @@ export default function YearReturnLine({ modo, className = '' }) {
           {vsInfl != null && (
             <Chip
               nombre="inflación" articulo="la" pp={vsInfl}
-              detalle={moneda !== 'ars' && current.retorno_ars_pct != null
-                ? `Se compara en pesos: tu cartera hizo ${current.retorno_ars_pct.toFixed(2).replace('.', ',')} % en pesos y la inflación ${current.inflation_pct?.toFixed(1).replace('.', ',')} %`
-                : null}
+              detalle={detalleVsInflacion(anio, moneda === 'ars')}
             />
           )}
         </div>
@@ -127,7 +128,7 @@ export default function YearReturnLine({ modo, className = '' }) {
           para que quede abajo aunque la card se estire al alto de sus hermanas. */}
       <div className="flex items-center justify-between gap-2 flex-wrap mt-auto pt-2.5">
         <span className="text-[11px] text-ink-3 leading-none">
-          {parcial ? `desde el ${fechaEnPalabras(current.parcial_desde)}`
+          {parcial ? `desde el ${fechaEnPalabras(anio.desde)}`
             : pct == null ? 'todavía sin dos mediciones que cubran el año'
             : current.basis === 'contable' ? 'de tu historia importada'
             : 'medido a mercado'}

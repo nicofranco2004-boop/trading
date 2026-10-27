@@ -8,8 +8,9 @@
 // números del mismo año, en la misma pantalla, con 26 puntos de diferencia.
 //
 // Este hook trae el número del motor canónico para TODOS los años, con la ventana
-// que cada número cubre y el veredicto contra el S&P (y contra la inflación cuando
-// se mide en pesos).
+// que cada número cubre y el veredicto contra el S&P y contra la inflación (ésta
+// siempre medida en pesos). Qué número y qué veredicto se muestran de cada año lo
+// decide `utils/anioPublicado.js`, una sola vez para el inicio y para Reportes.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../utils/api'

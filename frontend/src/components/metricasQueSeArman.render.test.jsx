@@ -27,6 +27,26 @@ describe('¿Le ganás a las alternativas? — la celda armada', () => {
   })
 })
 
+// El caso reportado: "Inflación: le perdés" al lado de un "Este año · vs el S&P"
+// que mide otro período. La tarjeta dice desde cuándo mide, y la celda de
+// inflación por qué algo en dólares puede perderle.
+describe('¿Le ganás a las alternativas? — el período y el porqué, escritos', () => {
+  const contexto = 'En ese período los precios subieron 71% y el dólar blue 31%: algo en dólares —el S&P incluido— tenía que rendir 31% en dólares sólo para empatar.'
+  const html = renderToStaticMarkup(<ArAlternativesVerdict desde="noviembre de 2024" items={[
+    { key: 'dolar', label: 'Dólar', pct: 6.1 },
+    { key: 'inflacion', label: 'Inflación', pct: -6.4, nota: 'tu patrimonio de hoy vs la misma plata ajustada por inflación', contexto },
+  ]} />)
+  it('el período que miden las tres, arriba', () => {
+    expect(html).toContain('Toda tu historia: desde noviembre de 2024 hasta hoy')
+  })
+  it('la celda de inflación explica cuánto subieron los precios y cuánto el dólar', () => {
+    expect(html).toContain(contexto.replace('&', '&amp;'))
+  })
+  it('aclara que no cambia con Certero/Estimado', () => {
+    expect(html).toContain('Es igual en Certero y en Estimado')
+  })
+})
+
 describe('Atribución por activo — una barra por fila, en una escala común', () => {
   const fmt = (n) => `${n >= 0 ? '+' : '−'}USD ${Math.abs(n).toFixed(2)}`
   const html = renderToStaticMarkup(<ContribList tone="positive" title="A favor" fmt={fmt} escala={2000}

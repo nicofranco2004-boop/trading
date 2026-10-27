@@ -24,8 +24,9 @@ import { Lock } from 'lucide-react'
 import { useCurrency } from '../../contexts/CurrencyContext'
 import { usePesosDelPeriodo } from '../../hooks/usePesosDelPeriodo'
 import { fechaEnPalabras } from '../YearReturnLine'
+import { anioPublicado, detalleVsInflacion } from '../../utils/anioPublicado'
 import { useAlVerse } from '../../hooks/useAlVerse'
-import { pctVar, pctTxt, pctVarSign, ppVarFino, decimalesFinos } from '../../utils/format'
+import { pctVar, pctVarSign, ppVarFino, decimalesFinos } from '../../utils/format'
 import AnimatedNumber from '../AnimatedNumber'
 
 function monthNum(period_key) {
@@ -485,11 +486,13 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
             // Ahora el número viene de `/api/reports/years` (`twr.curva_indexada`),
             // que es el mismo que publica la pestaña Año y el inicio.
             const resumen = years.find(a => a.year === year) || null
-            // El mismo criterio que la card del inicio: si el año entero no se puede
-            // medir pero hay un tramo medido adentro, se muestra ese tramo con su
-            // fecha. Ver `YearReturnLine` — la regla vive documentada allá.
-            const parcial = resumen != null && resumen.pct == null && resumen.parcial_pct != null
-            const pct = parcial ? resumen.parcial_pct : resumen?.pct
+            // El mismo criterio que la card del inicio, y la MISMA función: si el
+            // año entero no se puede medir pero hay un tramo medido adentro, se
+            // muestra ese tramo con su fecha y sus dos veredictos (S&P e
+            // inflación), todos del mismo tramo. Ver `utils/anioPublicado`.
+            const anio = anioPublicado(resumen)
+            const parcial = !!anio?.parcial
+            const pct = anio?.pct ?? null
             // ⚠️ "BLOQUEADO" NO ES "SIN MEDIR". Sin el resumen —porque el plan no
             // lo incluye— la fila diría "sin fotos a precio de mercado", que es
             // falso: el número existe y está del otro lado del muro. Decirle al
@@ -522,7 +525,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                     {bloqueado
                       ? 'los años anteriores están en el plan pago'
                       : parcial
-                        ? `desde el ${fechaEnPalabras(resumen.parcial_desde)}`
+                        ? `desde el ${fechaEnPalabras(anio.desde)}`
                         : pct == null
                           ? (resumen?.motivo_texto
                               ? 'el motor no publica este año'
@@ -548,8 +551,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                   )}
                 </div>
                 <div className="flex flex-col gap-1.5 items-end min-w-[132px]">
-                  <Veredicto nombre="S&P 500" articulo="el"
-                             pp={parcial ? resumen.parcial_vs_sp500_pct : resumen?.vs_sp500_pct} />
+                  <Veredicto nombre="S&P 500" articulo="el" pp={anio?.vsSp ?? null} />
                   {/* ⚠️ LA INFLACIÓN SE COMPARA SIEMPRE EN PESOS (ver `twr.vs_inflacion_ar`):
                       restarle a un retorno en dólares un índice que mide precios
                       argentinos es restar unidades distintas. Cuando el usuario está
@@ -558,10 +560,8 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                       dice: si no, la resta que el usuario puede hacer con lo que ve no
                       le va a dar. */}
                   <Veredicto
-                    nombre="inflación" articulo="la" pp={parcial ? null : resumen?.vs_inflation_pct}
-                    detalle={!enPesos && resumen?.retorno_ars_pct != null
-                      ? `Se compara en pesos: tu cartera hizo ${pctTxt(resumen.retorno_ars_pct, 2)} en pesos y la inflación ${pctTxt(resumen.inflation_pct, 1)}`
-                      : null}
+                    nombre="inflación" articulo="la" pp={anio?.vsInfl ?? null}
+                    detalle={detalleVsInflacion(anio, enPesos)}
                   />
                 </div>
               </div>
