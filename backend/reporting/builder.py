@@ -773,6 +773,11 @@ def _ventana_cubre(medido_desde: Optional[str], medido_hasta: Optional[str],
     """
     if not medido_desde or not medido_hasta:
         return False
+    # El motor cierra con "hoy" la ventana que termina en el valor vivo (en
+    # ESTIMADO, `ventana_hasta`). Sin esto, "hoy" no parseaba y el año en curso
+    # del estimado no se daba nunca por cubierto.
+    if medido_hasta == "hoy":
+        medido_hasta = _hoy_iso()
     try:
         _fmt = "%Y-%m-%d"
         d0 = datetime.strptime(str(medido_desde)[:10], _fmt)
@@ -1475,9 +1480,9 @@ def veredicto_inflacion(conn, bench: Dict[str, Any], retorno_pct: Optional[float
 # Los campos del tramo parcial del año (`compute_metrics_for_period`), con los
 # MISMOS nombres con que viajan en `/api/reports/years`.
 CAMPOS_TRAMO_PARCIAL = ("parcial_pct", "parcial_desde", "parcial_hasta",
-                        "parcial_vs_sp500_pct", "parcial_inflation_pct",
-                        "parcial_retorno_ars_pct", "parcial_vs_inflation_pct",
-                        "parcial_vs_inflation_motivo")
+                        "parcial_sp500_return_pct", "parcial_vs_sp500_pct",
+                        "parcial_inflation_pct", "parcial_retorno_ars_pct",
+                        "parcial_vs_inflation_pct", "parcial_vs_inflation_motivo")
 
 
 def tramo_parcial(metrics) -> Dict[str, Any]:
@@ -2768,10 +2773,7 @@ def compute_metrics_for_period(
     # con un solo try para todo (si fallaba el S&P se perdía también el número).
     # Y los veredictos son los del año: las mismas dos llamadas, con la ventana
     # del tramo.
-    _tramo = dict(parcial_pct=None, parcial_desde=None, parcial_hasta=None,
-                  parcial_vs_sp500_pct=None, parcial_inflation_pct=None,
-                  parcial_retorno_ars_pct=None, parcial_vs_inflation_pct=None,
-                  parcial_vs_inflation_motivo=None)
+    _tramo = dict.fromkeys(CAMPOS_TRAMO_PARCIAL)
     if (period_type == "year" and delta_pct is None and _curva_anio
             and _curva_anio.get("twr") is not None and _curva_anio.get("ventana_desde")):
         _pct_t = round(_curva_anio["twr"] * 100, 2)
@@ -2782,6 +2784,10 @@ def compute_metrics_for_period(
                                                 period_end, "sp500", ventana=_v_t,
                                                 fx=_bench_fx, moneda=moneda)
             if _sp_t is not None:
+                # El S&P del tramo viaja ADEMÁS del exceso: Reportes los muestra
+                # juntos ("S&P 500 en el tramo"), y mostrar el del año entero al
+                # lado del veredicto del tramo era contradecirse en la misma fila.
+                _tramo["parcial_sp500_return_pct"] = round(_sp_t, 2)
                 _tramo["parcial_vs_sp500_pct"] = round(_pct_t - _sp_t, 2)
         except Exception:
             log.exception("tramo parcial: S&P uid=%s", uid)

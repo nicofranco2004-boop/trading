@@ -10,9 +10,11 @@
 // parcial mostraban "vs el S&P 500 +1,5 pp" y callaban la inflación. El usuario
 // la buscó en "¿Le ganás a las alternativas?", que mide toda su historia, y leyó
 // "le gano al S&P pero le pierdo a la inflación" como un error. Ahora el backend
-// mide los dos veredictos del tramo (`builder.tramo_parcial_del_anio`) y esta
-// función los entrega juntos: el número y sus dos veredictos salen siempre del
-// mismo tramo.
+// mide el tramo con la misma curva que el año y sus dos veredictos con las mismas
+// llamadas (`compute_metrics_for_period`, campos `parcial_*`), y esta función los
+// entrega juntos: el número, sus veredictos, los índices y la ventana con que se
+// compararon salen siempre del mismo tramo — también la fila de Reportes que
+// muestra "S&P 500 ese año" y "comparado del … al …".
 //
 // El modo (certero / estimado) no se decide acá: el pedido ya lo lleva
 // (`useReportYears`) y el backend mide el número y los veredictos con él.
@@ -21,7 +23,8 @@ import { pctTxt } from './format'
 
 /**
  * @param {object|null} resumen  una fila de `/api/reports/years`
- * @returns {{ parcial, pct, desde, vsSp, vsInfl, retornoArs, inflacion, motivoInfl } | null}
+ * @returns {{ parcial, pct, desde, vsSp, vsInfl, retornoArs, inflacion, motivoInfl,
+ *             sp500Pct, benchDesde, benchHasta } | null}
  *   `desde` sólo en el tramo parcial (la fecha desde la que corre el número).
  *   `motivoInfl`: por qué no hay veredicto contra la inflación, cuando hay número
  *   y no se pudo comparar (lo redacta el servidor).
@@ -39,6 +42,9 @@ export function anioPublicado(resumen) {
       retornoArs: resumen.parcial_retorno_ars_pct ?? null,
       inflacion: resumen.parcial_inflation_pct ?? null,
       motivoInfl: resumen.parcial_vs_inflation_motivo ?? null,
+      sp500Pct: resumen.parcial_sp500_return_pct ?? null,
+      benchDesde: resumen.parcial_desde ?? null,
+      benchHasta: resumen.parcial_hasta ?? null,
     }
   }
   return {
@@ -50,6 +56,9 @@ export function anioPublicado(resumen) {
     retornoArs: resumen.retorno_ars_pct ?? null,
     inflacion: resumen.inflation_pct ?? null,
     motivoInfl: resumen.vs_inflation_motivo ?? null,
+    sp500Pct: resumen.sp500_return_pct ?? null,
+    benchDesde: resumen.bench_desde ?? null,
+    benchHasta: resumen.bench_hasta ?? null,
   }
 }
 

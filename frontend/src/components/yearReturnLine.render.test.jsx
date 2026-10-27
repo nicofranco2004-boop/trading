@@ -8,7 +8,7 @@ import { MemoryRouter } from 'react-router-dom'
 // la tarjeta tiene que mostrar los veredictos del modo que se está mirando.
 
 // Lo que devuelve `/api/reports/years` para el año en curso, por modo. Mismos
-// campos que arma `builder.tramo_parcial_del_anio`.
+// campos `parcial_*` que arma `compute_metrics_for_period`.
 const FILAS = {
   estimado: {
     year: 2026, is_current: true, pct: null, basis: 'contable',
@@ -75,6 +75,12 @@ describe('Este año — el tramo parcial trae sus dos veredictos', () => {
     expect(cert).toContain('+3,7 pp')
     expect(cert).toContain('+1,6 pp')
     expect(cert).not.toContain('−0,8 pp')
+  })
+
+  it('un tramo que arranca en el cierre del año anterior lleva el año en la fecha', () => {
+    FILAS.estimado_dic = { ...FILAS.estimado, parcial_desde: '2025-12-30' }
+    expect(dibujar('estimado_dic')).toContain('desde el 30 de diciembre de 2025')
+    expect(dibujar('estimado')).toContain('desde el 31 de enero<')
   })
 
   it('sin veredicto contra la inflación, la pastilla dice "sin medir" y por qué', () => {

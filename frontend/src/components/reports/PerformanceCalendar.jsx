@@ -289,7 +289,7 @@ export function mejorYPeorMes(ranking, months) {
   return out
 }
 
-function MetricasDelAno({ resumen, months, pesos, ranking }) {
+export function MetricasDelAno({ resumen, months, pesos, ranking }) {
   if (!resumen) return null
   // Los montos del año, cada uno a los pesos de su momento: lo aportado y
   // retirado con la regla del Dashboard (los pesos que se pusieron), lo
@@ -318,13 +318,18 @@ function MetricasDelAno({ resumen, months, pesos, ranking }) {
   const mesesDelAnio = resumen.meses_del_anio ?? (resumen.is_current ? conDato.length : 12)
   const sinMedir = Math.max(0, mesesDelAnio - conDato.length)
   const datos = []
-  if (resumen.sp500_return_pct != null) {
-    datos.push({ label: 'S&P 500 ese año',
-                 valor: pctVar(resumen.sp500_return_pct, 1) })
+  // ⚠️ LOS ÍNDICES Y LA VENTANA SON LOS DEL NÚMERO DE ARRIBA. Con el año mostrando
+  // su tramo ("desde el 30 de junio"), esta fila seguía con el S&P, la inflación y
+  // el "comparado del … al …" del año ENTERO: dos inflaciones distintas para el
+  // mismo año, a diez píxeles. `anioPublicado` elige los del mismo tramo.
+  const publicado = anioPublicado(resumen)
+  if (publicado.sp500Pct != null) {
+    datos.push({ label: publicado.parcial ? 'S&P 500 en el tramo' : 'S&P 500 ese año',
+                 valor: pctVar(publicado.sp500Pct, 1) })
   }
-  if (resumen.inflation_pct != null) {
+  if (publicado.inflacion != null) {
     // pctVar: con deflación decía "+-0,3%".
-    datos.push({ label: 'Inflación AR', valor: pctVar(resumen.inflation_pct, 1) })
+    datos.push({ label: 'Inflación AR', valor: pctVar(publicado.inflacion, 1) })
   }
   if (resumen.deposits > 0) {
     datos.push({ label: 'Aportaste', valor: pesos.fmt(anio.depositos) })
@@ -365,12 +370,12 @@ function MetricasDelAno({ resumen, months, pesos, ranking }) {
           {sinMedir === 1 ? '1 mes sin medir' : `${sinMedir} meses sin medir`}
         </span>
       )}
-      {resumen.bench_desde && resumen.bench_hasta && (
+      {publicado.benchDesde && publicado.benchHasta && (
         // ⚠️ CON AÑO. Sin él, un año cerrado se leía "comparado del 31/12 al
         // 31/12" — dos fechas idénticas que sugieren un solo día, cuando son los
         // dos extremos del año. La ventana existe justamente para poder leerla.
         <span className="text-[10.5px] text-ink-3 self-end leading-none">
-          comparado del {fmtFechaCorta(resumen.bench_desde)} al {fmtFechaCorta(resumen.bench_hasta)}
+          comparado del {fmtFechaCorta(publicado.benchDesde)} al {fmtFechaCorta(publicado.benchHasta)}
         </span>
       )}
     </div>
@@ -497,7 +502,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                     {bloqueado
                       ? 'los años anteriores están en el plan pago'
                       : parcial
-                        ? `desde el ${fechaEnPalabras(anio.desde)}`
+                        ? `desde el ${fechaEnPalabras(anio.desde, year)}`
                         : pct == null
                           ? (resumen?.motivo_texto
                               ? 'el motor no publica este año'

@@ -2947,10 +2947,13 @@ function InsightsDesktop({ _embeddedTab }) {
     if (!v || v.dolarPct == null || v.dolarParaEmpatarPct == null || !v.hastaMes) return null
     const periodo = `Entre ${_mesEnPalabras(v.desdeMes)} y ${_mesEnPalabras(v.hastaMes)}`
     const precios = pctTxt(v.inflacionPct, 0)
-    const dolar = pctTxt(v.dolarPct, 0)
+    // El verbo sigue al signo: un dólar que bajó no "subió −8 %".
+    const dolar = v.dolarPct >= 0
+      ? `el dólar blue subió ${pctTxt(v.dolarPct, 0)}`
+      : `el dólar blue bajó ${pctTxt(-v.dolarPct, 0)}`
     return Math.round(v.dolarParaEmpatarPct) > 0
-      ? `${periodo} los precios subieron ${precios} y el dólar blue ${dolar}: algo en dólares —el S&P incluido— tenía que rendir ${pctTxt(v.dolarParaEmpatarPct, 0)} en dólares sólo para empatar.`
-      : `${periodo} el dólar blue subió ${dolar} y los precios ${precios}: tener dólares alcanzaba para no perderle a la inflación.`
+      ? `${periodo} los precios subieron ${precios} y ${dolar}: algo en dólares —el S&P incluido— tenía que rendir ${pctTxt(v.dolarParaEmpatarPct, 0)} en dólares sólo para empatar.`
+      : `${periodo} ${dolar} y los precios ${precios}: tener dólares alcanzaba para no perderle a la inflación.`
   })()
   const verdictItems = [
     // La UNIDAD va escrita: el UVA se simula EN PESOS (capitaliza con el

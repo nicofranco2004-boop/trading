@@ -173,6 +173,17 @@ class ElTramoParcialTraeLosDosVeredictosTest(_Base):
                     self.assertIsNotNone(f["parcial_vs_inflation_pct"])
                     self.assertIsNone(f["parcial_vs_inflation_motivo"])
 
+    def test_el_sp_del_tramo_viaja_y_cierra_con_su_veredicto(self):
+        """Reportes muestra el S&P al lado del veredicto: tiene que ser el del
+        tramo, no el del año entero."""
+        for modo in twr.MODOS:
+            with self.subTest(modo=modo):
+                f = self.anio(modo, "usd")
+                self.assertIsNotNone(f["parcial_sp500_return_pct"])
+                self.assertAlmostEqual(f["parcial_vs_sp500_pct"],
+                                       f["parcial_pct"] - f["parcial_sp500_return_pct"],
+                                       delta=0.011)
+
     def test_la_inflacion_es_la_del_tramo_y_no_la_del_anio(self):
         for modo in twr.MODOS:
             with self.subTest(modo=modo):

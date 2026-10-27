@@ -149,6 +149,7 @@ class PeriodMetrics:
     parcial_pct: Optional[float] = None
     parcial_desde: Optional[str] = None
     parcial_hasta: Optional[str] = None
+    parcial_sp500_return_pct: Optional[float] = None
     parcial_vs_sp500_pct: Optional[float] = None
     parcial_inflation_pct: Optional[float] = None
     parcial_retorno_ars_pct: Optional[float] = None

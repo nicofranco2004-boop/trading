@@ -24,9 +24,13 @@ const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
 
 // "2026-06-30" → "30 de junio". La fecha en palabras porque va dentro de una
 // oración ("desde el 30 de junio"), no en una columna de números.
-export function fechaEnPalabras(iso) {
+// Con `anio` (el de la tarjeta), una fecha de OTRO año lleva el suyo: el tramo
+// del año puede arrancar en el cierre de diciembre anterior, y "Este año · 2026 ·
+// desde el 30 de diciembre" se leía como una fecha que todavía no pasó.
+export function fechaEnPalabras(iso, anio = null) {
   if (!iso || iso.length < 10) return ''
-  return `${parseInt(iso.slice(8, 10), 10)} de ${MESES[parseInt(iso.slice(5, 7), 10) - 1]}`
+  const base = `${parseInt(iso.slice(8, 10), 10)} de ${MESES[parseInt(iso.slice(5, 7), 10) - 1]}`
+  return anio != null && Number(iso.slice(0, 4)) !== Number(anio) ? `${base} de ${iso.slice(0, 4)}` : base
 }
 
 // Sin `modo`, el hook usa la elección guardada del usuario: el inicio del celular
@@ -110,7 +114,7 @@ export default function YearReturnLine({ modo, className = '' }) {
           para que quede abajo aunque la card se estire al alto de sus hermanas. */}
       <div className="flex items-center justify-between gap-2 flex-wrap mt-auto pt-2.5">
         <span className="text-[11px] text-ink-3 leading-none">
-          {parcial ? `desde el ${fechaEnPalabras(anio.desde)}`
+          {parcial ? `desde el ${fechaEnPalabras(anio.desde, current.year)}`
             : pct == null ? 'todavía sin dos mediciones que cubran el año'
             : current.basis === 'contable' ? 'de tu historia importada'
             : 'medido a mercado'}

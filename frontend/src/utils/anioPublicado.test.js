@@ -7,12 +7,16 @@ import { anioPublicado, detalleVsInflacion } from './anioPublicado'
 describe('anioPublicado', () => {
   const entero = {
     pct: 12.0, vs_sp500_pct: -1.0, vs_inflation_pct: 2.5,
-    retorno_ars_pct: 30.0, inflation_pct: 27.5,
+    retorno_ars_pct: 30.0, inflation_pct: 27.5, sp500_return_pct: 13.0,
+    bench_desde: '2025-12-31', bench_hasta: '2026-10-27',
     parcial_pct: null, parcial_vs_inflation_pct: null,
   }
   const parcial = {
     pct: null, vs_sp500_pct: null, vs_inflation_pct: null,
-    parcial_pct: 13.0, parcial_desde: '2026-01-31', parcial_vs_sp500_pct: 1.5,
+    // Lo del año entero viaja igual (medido en otra ventana) y NO se tiene que usar.
+    sp500_return_pct: 99, inflation_pct: 99, bench_desde: '2025-12-31', bench_hasta: '2026-10-27',
+    parcial_pct: 13.0, parcial_desde: '2026-01-31', parcial_hasta: '2026-10-27',
+    parcial_sp500_return_pct: 11.5, parcial_vs_sp500_pct: 1.5,
     parcial_vs_inflation_pct: -0.8, parcial_retorno_ars_pct: 19.24, parcial_inflation_pct: 20.2,
   }
 
@@ -20,6 +24,7 @@ describe('anioPublicado', () => {
     expect(anioPublicado(entero)).toEqual({
       parcial: false, pct: 12.0, desde: null, vsSp: -1.0, vsInfl: 2.5,
       retornoArs: 30.0, inflacion: 27.5, motivoInfl: null,
+      sp500Pct: 13.0, benchDesde: '2025-12-31', benchHasta: '2026-10-27',
     })
   })
 
@@ -27,6 +32,7 @@ describe('anioPublicado', () => {
     expect(anioPublicado(parcial)).toEqual({
       parcial: true, pct: 13.0, desde: '2026-01-31', vsSp: 1.5, vsInfl: -0.8,
       retornoArs: 19.24, inflacion: 20.2, motivoInfl: null,
+      sp500Pct: 11.5, benchDesde: '2026-01-31', benchHasta: '2026-10-27',
     })
   })
 
