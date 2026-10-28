@@ -218,7 +218,46 @@ export function tarjetas(l) {
         : `Lo que le falta para volver al precio más alto ${l.anio_completo ? 'de los últimos 12 meses' : `de los ${l.ruedas} días de mercado que hay`}.`,
     })
   }
+  const mov = tarjetaMovimiento(l)
+  if (mov) out.push(mov)
   return out
+}
+
+// ─── Cuánto se mueve ────────────────────────────────────────────────────────
+// El tamaño del movimiento de un día normal (`mov_dia` del servidor), no su
+// dirección. Es lo único técnico que se repite: medido el 28/10 en 15 acciones,
+// el orden de más tranquila a más movida casi no cambió de un año al otro.
+// Los cortes, con esas 15: Coca-Cola, Apple o Walmart quedan abajo de 1,5 %;
+// SMCI, Micron o CoreWeave arriba de 3 %.
+const MOV_BAJO = 1.5
+const MOV_ALTO = 3
+// Contra su último año: más de 1,3 veces es «más», menos de 0,75 «menos».
+const MOV_MAS = 1.3
+const MOV_MENOS = 0.75
+
+/** La tarjeta «Cuánto se mueve». null sin lectura. */
+export function tarjetaMovimiento(l) {
+  if (!l || !l.ruedas) return null
+  const base = { id: 'movimiento', titulo: 'Cuánto se mueve', tono: 'neutro' }
+  if (l.mov_dia == null) {
+    return { ...base, veredicto: 'Faltan datos',
+      texto: `Para medirlo hacen falta 21 días de mercado y este activo tiene ${l.ruedas}.` }
+  }
+  if (l.mov_dia === 0) {
+    return { ...base, veredicto: 'Sin movimiento', texto: 'El precio no se movió en los últimos 20 días de mercado.' }
+  }
+  const veredicto = l.mov_dia < MOV_BAJO ? 'Movimiento bajo' : l.mov_dia > MOV_ALTO ? 'Movimiento alto' : 'Movimiento medio'
+  const mes = l.mov_mes != null ? ` Llevado a un mes, son unos ${Math.round(l.mov_mes)}% para cualquiera de los dos lados.` : ''
+  const r = l.mov_dia_anio ? l.mov_dia / l.mov_dia_anio : null
+  const anio = r == null ? ''
+    : r > MOV_MAS ? ` Es más que su día normal del último año (${pct1(l.mov_dia_anio)}).`
+      : r < MOV_MENOS ? ` Es menos que su día normal del último año (${pct1(l.mov_dia_anio)}).`
+        : ` Es parecido a su día normal del último año (${pct1(l.mov_dia_anio)}).`
+  return {
+    ...base, veredicto,
+    texto: `En un día normal de los últimos 20 días de mercado subió o bajó alrededor de ${pct1(l.mov_dia)}.${mes}${anio} `
+      + 'Mide el tamaño del movimiento, no para dónde va.',
+  }
 }
 
 // El RSI dicho como fuerza que el precio gana o pierde. «Castigado/estirado»
@@ -406,21 +445,21 @@ export function tarjetaBandas(l) {
     return { ...base, veredicto: 'Faltan datos',
       texto: `Para dibujarlas hacen falta ${DIAS_BB} días de mercado y este activo tiene ${l.ruedas}.` }
   }
-  const que = 'Las bandas van 2 desvíos arriba y abajo del promedio de los últimos 20 días: encierran casi todos los precios de estas 4 semanas. '
+  const que = 'Las bandas van 2 desvíos arriba y abajo del promedio de los últimos 20 días de mercado: encierran casi todos sus precios. '
   const p = l.bb_posicion
   if (p == null) {
     return { ...base, veredicto: 'Sin movimiento',
-      texto: `${que}El precio casi no se movió en estas 4 semanas: las bandas no se separan.` }
+      texto: `${que}El precio casi no se movió en esos 20 días: las bandas no se separan.` }
   }
   const [veredicto, donde] = p > 1
-    ? ['Arriba de las bandas', 'Cerró arriba de la banda de arriba: subió más rápido de lo normal estas 4 semanas.']
+    ? ['Arriba de las bandas', 'Cerró arriba de la banda de arriba: subió más rápido de lo normal en esos 20 días.']
     : p < 0
-      ? ['Abajo de las bandas', 'Cerró abajo de la banda de abajo: bajó más rápido de lo normal estas 4 semanas.']
+      ? ['Abajo de las bandas', 'Cerró abajo de la banda de abajo: bajó más rápido de lo normal en esos 20 días.']
       : p >= 1 - BB_PEGADO
-        ? ['Cerca de la banda de arriba', 'El precio está pegado a la banda de arriba: está en la parte alta de lo que se movió estas 4 semanas.']
+        ? ['Cerca de la banda de arriba', 'El precio está pegado a la banda de arriba: está en la parte alta de lo que se movió en esos 20 días.']
         : p <= BB_PEGADO
-          ? ['Cerca de la banda de abajo', 'El precio está pegado a la banda de abajo: está en la parte baja de lo que se movió estas 4 semanas.']
-          : ['Entre las bandas', 'El precio está en la zona del medio de lo que se movió estas 4 semanas.']
+          ? ['Cerca de la banda de abajo', 'El precio está pegado a la banda de abajo: está en la parte baja de lo que se movió en esos 20 días.']
+          : ['Entre las bandas', 'El precio está en la zona del medio de lo que se movió en esos 20 días.']
   const r = l.bb_ancho_relativo
   const ancho = r == null ? ''
     : r < BB_ANGOSTAS ? ' Las bandas están más angostas que de costumbre en los últimos 6 meses: el precio se está moviendo menos.'

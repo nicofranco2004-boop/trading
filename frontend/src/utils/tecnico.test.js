@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { tarjetas, tarjetaFuerza, tarjetaBandas, colorSqueeze, fmtAdx, textoCruceAdx, textoSqueeze, velasSemanales, ADX_CLAVE, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
+import { tarjetas, tarjetaFuerza, tarjetaBandas, tarjetaMovimiento, colorSqueeze, fmtAdx, textoCruceAdx, textoSqueeze, velasSemanales, ADX_CLAVE, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
 
 const L = {
   ruedas: 760, fecha: '2026-10-21', precio: 228.97,
@@ -272,7 +272,8 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
       // Las Bollinger en todas sus posiciones y anchos: tocar una banda no anticipa nada.
       ...[-0.2, 0.1, 0.5, 0.9, 1.2, null].flatMap(bb_posicion => [0.5, 1, 2].map(bb_ancho_relativo =>
         tarjetaBandas({ ruedas: 300, bb_arriba: 110, bb_abajo: 90, bb_posicion, bb_ancho_relativo }).texto)),
-      tarjetaBandas({ ruedas: 10, bb_arriba: null }).texto].join(' ')
+      tarjetaBandas({ ruedas: 10, bb_arriba: null }).texto,
+      ...[0.8, 2, 4].flatMap(mov_dia => [null, 1, 3].map(mov_dia_anio => tarjetaMovimiento({ ruedas: 300, mov_dia, mov_dia_anio, mov_mes: mov_dia * 4.6 }).texto))].join(' ')
     expect(textos).not.toMatch(/suele|se viene|comprá|vendé|va a subir|va a bajar|rebota|frena|antesala|arranque/i)
   })
 
@@ -280,9 +281,9 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     const B = { ruedas: 300, bb_arriba: 110, bb_abajo: 90, bb_ancho_relativo: 1 }
     const arriba = tarjetaBandas({ ...B, bb_posicion: 0.9 })
     expect(arriba.veredicto).toBe('Cerca de la banda de arriba')
-    expect(arriba.texto).toContain('El precio está pegado a la banda de arriba: está en la parte alta de lo que se movió estas 4 semanas.')
+    expect(arriba.texto).toContain('El precio está pegado a la banda de arriba: está en la parte alta de lo que se movió en esos 20 días.')
     expect(arriba.texto).not.toContain('angostas')
-    expect(tarjetaBandas({ ...B, bb_posicion: 1.3 }).texto).toContain('Cerró arriba de la banda de arriba: subió más rápido de lo normal estas 4 semanas.')
+    expect(tarjetaBandas({ ...B, bb_posicion: 1.3 }).texto).toContain('Cerró arriba de la banda de arriba: subió más rápido de lo normal en esos 20 días.')
     expect(tarjetaBandas({ ...B, bb_posicion: -0.1 }).veredicto).toBe('Abajo de las bandas')
     expect(tarjetaBandas({ ...B, bb_posicion: 0.15 }).veredicto).toBe('Cerca de la banda de abajo')
     expect(tarjetaBandas({ ...B, bb_posicion: 0.5 }).veredicto).toBe('Entre las bandas')
@@ -293,6 +294,24 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     expect(tarjetaBandas({ ruedas: 12, bb_arriba: null }).texto).toContain('hacen falta 20 días de mercado y este activo tiene 12')
     expect(tarjetaBandas({ ...B, bb_posicion: null }).veredicto).toBe('Sin movimiento')
     expect(tarjetaBandas(null)).toBeNull()
+  })
+
+  it('cuánto se mueve: el tamaño del día normal, contra su último año', () => {
+    const t = tarjetaMovimiento({ ruedas: 300, mov_dia: 3.49, mov_dia_anio: 2.1, mov_mes: 16.0 })
+    expect(t.veredicto).toBe('Movimiento alto')
+    expect(t.texto).toBe('En un día normal de los últimos 20 días de mercado subió o bajó alrededor de 3,5%. '
+      + 'Llevado a un mes, son unos 16% para cualquiera de los dos lados. Es más que su día normal del último año (2,1%). '
+      + 'Mide el tamaño del movimiento, no para dónde va.')
+    expect(t.tono).toBe('neutro')
+    expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 1.2, mov_dia_anio: 2 }).veredicto).toBe('Movimiento bajo')
+    expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 1.2, mov_dia_anio: 2 }).texto).toContain('Es menos que su día normal')
+    expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 2, mov_dia_anio: 2.1 }).veredicto).toBe('Movimiento medio')
+    expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 2, mov_dia_anio: 2.1 }).texto).toContain('Es parecido')
+    // Sin año medido no compara; con pocos días o precio quieto lo dice.
+    expect(tarjetaMovimiento({ ruedas: 60, mov_dia: 2, mov_dia_anio: null }).texto).not.toContain('último año')
+    expect(tarjetaMovimiento({ ruedas: 15, mov_dia: null }).texto).toContain('hacen falta 21 días de mercado y este activo tiene 15')
+    expect(tarjetaMovimiento({ ruedas: 60, mov_dia: 0 }).veredicto).toBe('Sin movimiento')
+    expect(tarjetas({ ruedas: 300, mov_dia: 2 }).map(x => x.id)).toContain('movimiento')
   })
 
   it('las velas semanales llevan las bandas del último día', () => {

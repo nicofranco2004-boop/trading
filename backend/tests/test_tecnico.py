@@ -177,6 +177,35 @@ class CuentasTest(unittest.TestCase):
         self.assertIsNone(corto["bb_arriba"])
         self.assertIsNone(corto["bb_posicion"])
 
+    def test_cuanto_se_mueve_igual_a_pandas(self):
+        import random
+        random.seed(21)
+        xs, x = [], 100.0
+        for _ in range(400):
+            x *= 1 + random.gauss(0, 0.02)
+            xs.append(x)
+        velas = [{"date": (date(2025, 1, 1) + timedelta(days=i)).isoformat(), "close": c} for i, c in enumerate(xs)]
+        l = tecnico.lectura(velas)
+        cambios = pd.Series(xs).pct_change()
+        self.assertAlmostEqual(l["mov_dia"], cambios.iloc[-20:].std(ddof=0) * 100, places=9)
+        # El año: los cambios desde la primera vela de los últimos 365 días corridos.
+        i_anio = tecnico._desde_dias(velas, 365)
+        self.assertAlmostEqual(l["mov_dia_anio"], cambios.iloc[i_anio + 1:].std(ddof=0) * 100, places=9)
+        # Un mes: estas velas son de todos los días (como una cripto) → √30.
+        self.assertAlmostEqual(l["mov_mes"], l["mov_dia"] * 30 ** 0.5, places=9)
+        # Con velas sólo de lunes a viernes, el mes son unos 21 o 22 días de mercado.
+        habiles = [v for v in velas if date.fromisoformat(v["date"]).weekday() < 5]
+        lh = tecnico.lectura(habiles)
+        self.assertIn(round((lh["mov_mes"] / lh["mov_dia"]) ** 2), (21, 22, 23))
+        # Pocos días: no inventa.
+        corto = tecnico.lectura(velas[:20])
+        self.assertIsNone(corto["mov_dia"])
+        self.assertIsNone(corto["mov_mes"])
+        self.assertIsNone(tecnico.lectura(velas[:100])["mov_dia_anio"])
+        # Un precio quieto se movió 0, no «sin datos».
+        plano = [{"date": (date(2025, 1, 1) + timedelta(days=i)).isoformat(), "close": 50.0} for i in range(60)]
+        self.assertEqual(tecnico.lectura(plano)["mov_dia"], 0.0)
+
     def test_el_squeeze_usa_las_mismas_bandas(self):
         # Una sola cuenta: con el 2 de verdad (sin el error de LazyBear), «apretado»
         # es exactamente «las bandas de la ficha caben dentro de las de Keltner».

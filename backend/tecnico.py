@@ -163,6 +163,12 @@ VELAS_SQUEEZE_LECTURA = 60
 # 6 meses corridos, con al menos 60 días medidos.
 DIAS_ANCHO_BB = 182
 MIN_ANCHOS_BB = 60
+# Cuánto se mueve: el día normal de los últimos 20 días de mercado, contra el
+# de su último año (con al menos 120 días medidos). Medido el 28/10 en 15
+# acciones: el orden de más tranquila a más movida se repitió de un año al otro
+# (0,91), así que describe al activo; no dice para dónde va.
+RUEDAS_MOVIMIENTO = 20
+MIN_RUEDAS_MOVIMIENTO_ANIO = 120
 
 
 def _velas_completas(velas: list):
@@ -398,6 +404,18 @@ def _ancho_relativo(bb: dict, velas: list):
     return hoy / mediana if mediana > 0 else None
 
 
+def movimiento_diario(cierres: list) -> float:
+    """Cuánto se movió el precio en un día normal, en %: el desvío
+    (poblacional) de los cambios de un día al otro. Para arriba o para abajo:
+    2,0 es «un día normal sube o baja alrededor de 2 %». None con menos de 2
+    cambios o con un precio en 0."""
+    cambios = [cierres[i] / cierres[i - 1] - 1.0 for i in range(1, len(cierres)) if cierres[i - 1] > 0]
+    if len(cambios) < 2 or len(cambios) != len(cierres) - 1:
+        return None
+    prom = sum(cambios) / len(cambios)
+    return (sum((x - prom) ** 2 for x in cambios) / len(cambios)) ** 0.5 * 100.0
+
+
 def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=None) -> dict:
     """Los números de la lectura técnica sobre la última vela. Las medias, el
     RSI, el ADX, el Squeeze y las Bollinger se pueden pasar ya calculados (la
@@ -428,6 +446,12 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=Non
     # Hacia dónde va la media de 200: contra la de hace un mes CORRIDO.
     i_mes = _desde_dias(velas, DIAS_PENDIENTE) - 1
     m200_antes = m200[i_mes] if 0 <= i_mes < n else None
+    # Cuánto se mueve: 20 días de mercado, su último año y llevado a un mes
+    # (√ de los días de mercado de los últimos 30 corridos: 21 en la bolsa, 30
+    # en una cripto que cotiza los 7 días).
+    mov_dia = movimiento_diario(cierres[-(RUEDAS_MOVIMIENTO + 1):]) if n > RUEDAS_MOVIMIENTO else None
+    mov_anio = movimiento_diario(cierres[i_anio:]) if n - i_anio > MIN_RUEDAS_MOVIMIENTO_ANIO else None
+    ruedas_mes = n - _desde_dias(velas, DIAS_PENDIENTE)
     vols = [v.get("volume") for v in velas[-21:-1] if v.get("volume")]
     vol_hoy = velas[-1].get("volume")
     return {
@@ -464,6 +488,9 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=Non
         "bb_posicion": ((ultimo - bb_abajo) / (bb_arriba - bb_abajo))
         if (bb_arriba is not None and bb_arriba > bb_abajo) else None,
         "bb_ancho_relativo": _ancho_relativo(bb, velas),
+        "mov_dia": mov_dia,
+        "mov_dia_anio": mov_anio,
+        "mov_mes": mov_dia * ruedas_mes ** 0.5 if mov_dia is not None else None,
     }
 
 

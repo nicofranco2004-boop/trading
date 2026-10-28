@@ -217,7 +217,7 @@ describe('LecturaTecnica', () => {
     const conBandas = {
       ...USD,
       puntos: USD.puntos.map((p, i) => (i < 19 ? p : { ...p, bb_arriba: p.c * 1.04, bb_abajo: p.c * 0.96 })),
-      lectura: { ...USD.lectura, bb_arriba: 240, bb_abajo: 226, bb_posicion: 0.64, bb_ancho_relativo: 0.5 },
+      lectura: { ...USD.lectura, bb_arriba: 240, bb_abajo: 226, bb_posicion: 0.64, bb_ancho_relativo: 0.5, mov_dia: 2.04, mov_mes: 9.4 },
     }
     respuestas = { '/tecnico/AAPL?moneda=usd': conBandas, '/tecnico/AAPL?moneda=ars': ARS }
     const relleno = () => {
@@ -233,6 +233,8 @@ describe('LecturaTecnica', () => {
     const t = await dibujar({ pnlPctUsd: 0.1 })
     expect(t).toContain('Bandas de Bollinger')        // el botón de la leyenda
     expect(t).not.toContain('Entre las bandas')       // la tarjeta, todavía no
+    expect(t).toContain('Cuánto se mueve')           // ésta va siempre
+    expect(t).toContain('alrededor de 2,0%')
     expect(relleno()).toBe(0)
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Bandas de Bollinger'))
     for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
