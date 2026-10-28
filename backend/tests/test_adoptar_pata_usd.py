@@ -297,6 +297,123 @@ class TestAdoptarLaPataUsd:
         assert self.broker(PATA)["parent_broker_id"] == padre
         assert self.caja(PATA)["invested"] == 300.0
 
+    # ── segunda ronda de auditoría ───────────────────────────────────────────
+
+    def test_confirmar_con_estado_inicial_no_pierde_los_dolares_en_silencio(self):
+        """Con "Estado inicial" el confirm re-valida y descarta lo inválido sin
+        avisar. Si la sub-cuenta se volvió imposible entre la vista previa y el
+        confirm, los US$500 desaparecían y el import decía "ok"."""
+        padre = self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "ARS")
+        prev = self.vista_previa("2026-01-05,DEPOSITO,Cocos,,,,1000,,,,ARS,\n" + DOLARES_A_COCOS)
+        assert prev["errors"] == []
+        assert self.depositar(PATA, 100_000).status_code == 200
+
+        r = self.client.post("/api/imports/confirm", headers=self.h, json={
+            "session_id": prev["session_id"],
+            "seed_state": {"cash": [{"broker": "Cocos", "currency": "ARS", "amount": 10}]}})
+
+        assert r.status_code == 400, r.text
+        assert PATA in r.json()["detail"]
+        self.no_se_toco(padre)
+        assert self.caja("Cocos")["invested"] == 0.0
+
+    def test_el_padre_que_crea_el_import_tambien_se_avisa_en_la_vista_previa(self):
+        """"Cocos" no existe y lo crea este import; "Cocos · USD" sí, en pesos y con
+        plata. La vista previa lo daba limpio y el confirm rebotaba con 409."""
+        self.crear_broker(PATA, "ARS")
+        assert self.depositar(PATA, 100_000).status_code == 200
+
+        prev = self.vista_previa("2026-01-05,DEPOSITO,Cocos,,,,1000,,,,ARS,\n" + DOLARES_A_COCOS)
+
+        assert self.codigos(prev) == ["SIN_CUENTA_EN_DOLARES"], prev["errors"]
+        assert self.confirmar(prev["session_id"]).status_code == 200
+        assert self.caja("Cocos")["invested"] == 1000.0
+        assert self.broker(PATA)["currency"] == "ARS"
+        assert self.caja(PATA)["invested"] == 100_000.0
+        assert self.cajas_cruzadas() == []
+
+    def test_la_sub_cuenta_huerfana_en_dolares_se_vuelve_a_adoptar(self):
+        """Su padre ya no existe (datos viejos). Tiene dólares: adoptarla es lo que
+        hacía antes, y lo correcto. No es "la cuenta de otro broker"."""
+        self.crear_broker(PATA, "USD")
+        assert self.depositar(PATA, 300).status_code == 200
+        # Un padre que ya no existe: sólo se arma salteando la clave foránea.
+        conn = main.get_db()
+        try:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("UPDATE brokers SET parent_broker_id=987654 WHERE user_id=? AND name=?",
+                         (self.uid, PATA))
+            conn.commit()
+        finally:
+            conn.close()
+        padre = self.crear_broker("Cocos", "ARS")
+
+        r = self.depositar("Cocos", 500, "USD")
+
+        assert r.status_code == 200, r.text
+        assert self.broker(PATA)["parent_broker_id"] == padre
+        assert self.caja(PATA)["invested"] == 800.0
+        assert self.cajas_cruzadas() == []
+
+    def test_un_formato_de_broker_sigue_curando_la_cuenta_con_movimientos_a_mano(self):
+        """La regresión que dejó la primera corrección: contar los depósitos a mano
+        en `broker_tiene_datos` hacía que un "Cocos" en dólares con un depósito y un
+        retiro de US$100 no se pasara a pesos, y un export de Cocos guardaba
+        $1.000.000 como dólares sin un error."""
+        self.crear_broker("Cocos", "USDT")
+        assert self.depositar("Cocos", 100).status_code == 200
+        r = self.client.post("/api/cash/flow", headers=self.h, json={
+            "broker_name": "Cocos", "direction": "withdraw", "amount": 100})
+        assert r.status_code == 200, r.text
+        mov = ("nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;tipoOperacion;"
+               "instrumento;moneda;mercado;cantidad;precio;montoBruto;comision;ddmm;iva;otros;"
+               "total\n1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;1.000.000;0;0;0;0;"
+               "1.000.000\n")
+        r = self.client.post("/api/imports/preview", headers=self.h,
+                             files=[("files", ("mov.csv", io.BytesIO(mov.encode()), "text/csv"))],
+                             data={"format": "cocos", "broker": "Cocos"})
+        assert r.status_code == 200, r.text
+        assert self.confirmar(r.json()["session_id"]).status_code == 200
+        assert self.broker("Cocos")["currency"] == "ARS"
+        caja = self.caja("Cocos")
+        assert (caja["asset"], caja["invested"]) == ("ARS", 1_000_000.0)
+        assert self.cajas_cruzadas() == []
+
+    def test_la_foto_con_pesos_a_la_sub_cuenta_dice_adonde_subirla(self):
+        """"Cocos · USD" creada a mano en dólares, vacía, y una foto con pesos para
+        ella. No se cura a pesos (el primer dólar de "Cocos" la adopta), y el
+        mensaje dice qué hacer en vez de "cambiale la moneda a pesos"."""
+        self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "USD")
+        foto = ("instrumento;cantidad;precio;moneda;total\n"
+                "Energy Select Sector SPDR (XLE);20;55800,00;ARS;1116000,00\n"
+                "ARS;0;0;ARS;0\n")
+        r = self.client.post(
+            "/api/imports/tenencia/preview", headers=self.h,
+            files={"file": ("portfolio_report_20261021.csv", io.BytesIO(foto.encode()),
+                            "text/csv")},
+            data={"broker": PATA, "format": "cocos"})
+        assert r.status_code == 400, r.text
+        assert "subila al broker «Cocos»" in r.json()["detail"]
+        assert self.broker(PATA)["currency"] == "USD"
+
+    def test_la_foto_con_pesos_a_una_cuenta_en_pesos_con_ese_nombre_sigue_andando(self):
+        """Antes de este cambio, una foto en pesos a un "Cocos · USD" que está en
+        pesos pasaba. Sigue pasando: el que no puede recibir pesos es el que está en
+        dólares."""
+        self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "ARS")
+        foto = ("instrumento;cantidad;precio;moneda;total\n"
+                "Energy Select Sector SPDR (XLE);20;55800,00;ARS;1116000,00\n"
+                "ARS;0;0;ARS;0\n")
+        r = self.client.post(
+            "/api/imports/tenencia/preview", headers=self.h,
+            files={"file": ("portfolio_report_20261021.csv", io.BytesIO(foto.encode()),
+                            "text/csv")},
+            data={"broker": PATA, "format": "cocos"})
+        assert r.status_code == 200, r.text
+
 
 class TestCompraGrupalDelAsesor:
     """Un cliente con "Cocos · USD" en pesos no tumba la compra de los demás."""

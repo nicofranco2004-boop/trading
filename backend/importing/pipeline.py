@@ -603,15 +603,14 @@ def broker_tiene_datos(conn, uid: int, nombre: str) -> bool:
     pasarlo a pesos la reinterpretaría. Revertir un import borra la suya, así que
     volver a subirlo sigue curando.
 
-    Los depósitos y retiros cargados a mano (`flujos_a_mano`) también son historia,
-    y su `monto_nativo` está en la moneda del broker. Hasta 2026-10-28 no se
-    miraban: depositar y retirar $100.000 dejaba el broker "vacío", y al pasarlo a
-    dólares Movimientos mostraba esos pesos como US$70 y el aportado nativo
-    mezclaba pesos con dólares. Cuentan también los anulados: un borrado se puede
-    deshacer, y volvería a sumar su monto en la moneda vieja."""
-    if conn.execute("SELECT 1 FROM flujos_a_mano WHERE user_id=? AND broker=? LIMIT 1",
-                    (uid, nombre)).fetchone():
-        return True
+    ⚠️ NO MIRA LOS DEPÓSITOS Y RETIROS A MANO (`flujos_a_mano`), A PROPÓSITO. Se
+    probó sumarlos (2026-10-28) y un broker en dólares con un depósito y un retiro
+    de US$100 dejó de curarse: el import de un formato con moneda (Cocos) guardó
+    $10.000.000 como dólares, sin un error (la curación de `run_preview` saltea al
+    que tiene datos, y para esos formatos nada más rechaza los pesos). Acá "tiene
+    datos" deja pasar algo peor que lo que evita. Quien sí los cuenta es la
+    adopción de la sub-cuenta en dólares (`por_que_no_hay_pata_usd`), donde la
+    alternativa es un rechazo que se ve."""
     if conn.execute(
         "SELECT 1 FROM positions WHERE user_id=? AND broker=? "
         "AND (COALESCE(is_cash,0)=0 OR ABS(COALESCE(invested,0)) > 0.005) LIMIT 1",
@@ -637,7 +636,8 @@ def que_hacer_con_pesos(conn, uid: int, user_brokers, nombre: str) -> str:
     de movimientos (`run_preview`) y la foto de tenencia (main.py). Los exchanges
     cripto quedan afuera (ver `brokers_que_no_aceptan_pesos`).
     """
-    if nombre not in brokers_que_no_aceptan_pesos(user_brokers, None):
+    if ((user_brokers[nombre].get("currency") or "") == "ARS"
+            or nombre.strip().lower() in CRYPTO_BROKERS):
         return "ok"
     padre = nombre[:-len(" · USD")] if nombre.endswith(" · USD") else None
     if (user_brokers[nombre].get("parent_broker_id")
@@ -672,12 +672,19 @@ def por_que_no_hay_pata_usd(conn, uid: int, padre) -> Optional[str]:
         "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, nombre)).fetchone()
     if not existente:
         return None
-    if existente["parent_broker_id"] not in (None, padre["id"]):
-        otro = conn.execute("SELECT name FROM brokers WHERE user_id=? AND id=?",
-                            (uid, existente["parent_broker_id"])).fetchone()
+    # El padre de la que existe. Si apunta a un broker que ya no está, es una
+    # sub-cuenta huérfana: se la trata como sin padre (antes se la adoptaba igual).
+    suyo = existente["parent_broker_id"]
+    otro = suyo and conn.execute("SELECT name FROM brokers WHERE user_id=? AND id=?",
+                                 (uid, suyo)).fetchone()
+    if not otro:
+        suyo = None
+    # `padre["id"]` es None si el padre lo crea este mismo import (vista previa).
+    es_la_suya = suyo is not None and suyo == padre["id"]
+    if suyo is not None and not es_la_suya:
         return (f"Hay un broker «{nombre}» que es la cuenta en dólares de "
-                f"«{otro['name'] if otro else 'otro broker'}», y Rendi necesita ese nombre "
-                f"para los dólares de «{padre['name']}». Escribinos y lo acomodamos.")
+                f"«{otro['name']}», y Rendi necesita ese nombre para los dólares de "
+                f"«{padre['name']}». Escribinos y lo acomodamos.")
     # En pesos: el broker, o su caja (una caja 'ARS' con saldo en un broker en
     # dólares ya está cruzada; adoptarla la remarcaría en dólares y borraría la
     # única señal que tiene, `invariantes.check_cash_moneda`).
@@ -685,9 +692,17 @@ def por_que_no_hay_pata_usd(conn, uid: int, padre) -> Optional[str]:
         "SELECT 1 FROM positions WHERE user_id=? AND broker=? AND is_cash=1 "
         "AND (UPPER(COALESCE(asset,''))='ARS' OR UPPER(COALESCE(currency,''))='ARS') "
         "AND ABS(COALESCE(invested,0)) > 0.005 LIMIT 1", (uid, nombre)).fetchone()
-    if not en_pesos or not broker_tiene_datos(conn, uid, nombre):
+    # Con datos: lo que mira `broker_tiene_datos` y, además, los depósitos y
+    # retiros a mano (allá no se cuentan: ver por qué). Depositar y retirar
+    # $100.000 deja la caja en cero, pero adoptarla mostraba esos pesos como
+    # dólares en Movimientos. Cuentan también los anulados: un borrado se puede
+    # deshacer y volvería a sumar su monto en la moneda vieja.
+    con_datos = broker_tiene_datos(conn, uid, nombre) or conn.execute(
+        "SELECT 1 FROM flujos_a_mano WHERE user_id=? AND broker=? LIMIT 1",
+        (uid, nombre)).fetchone()
+    if not en_pesos or not con_datos:
         return None
-    if existente["parent_broker_id"] == padre["id"]:
+    if es_la_suya:
         # La propia sub-cuenta pasada a pesos a mano (antes de que el PUT lo
         # prohibiera): no se puede renombrar, así que la salida es otra.
         return (f"«{nombre}» es la cuenta en dólares de «{padre['name']}», pero está "
@@ -703,11 +718,11 @@ def padres_sin_pata_usd(conn, uid: int, user_brokers) -> Dict[str, str]:
     """Los brokers en pesos del usuario que hoy NO pueden tener sub-cuenta en
     dólares (`por_que_no_hay_pata_usd`), con el motivo. La validación marca sus
     filas en dólares: así el problema se ve en la vista previa y no recién como
-    un 409 al confirmar. Los brokers que crea este mismo import no están en la
-    base y no pueden tener el problema."""
+    un 409 al confirmar. También los que crea este mismo import (sin `id`
+    todavía): "Cocos" es nuevo, pero "Cocos · USD" puede existir de antes."""
     out = {}
     for nombre, b in user_brokers.items():
-        if b.get("currency") != "ARS" or b.get("id") is None:
+        if b.get("currency") != "ARS":
             continue
         motivo = por_que_no_hay_pata_usd(conn, uid, {"id": b["id"], "name": nombre})
         if motivo:
@@ -1599,7 +1614,7 @@ def load_session_with_seed_revalidate(
         existing_with_seed[k] = existing_with_seed.get(k, 0.0) + v
 
     route_currency = bool(batch["route_by_currency"] or 0)
-    valid_txs, _ = validate(
+    valid_txs, _errores = validate(
         normalized,
         user_brokers=user_brokers,
         existing_positions=existing_with_seed,
@@ -1610,6 +1625,15 @@ def load_session_with_seed_revalidate(
         **guardas_de_moneda(conn, uid, user_brokers,
                             FORMAT_BASE_CURRENCY.get(batch["parser_format"] or "")),
     )
+    # Acá las filas inválidas se descartan sin avisar: sirve para las que la vista
+    # previa ya había rechazado, no para las que eran válidas y dejaron de serlo.
+    # Si entre la vista previa y el confirm la sub-cuenta en dólares se volvió
+    # imposible (le entraron pesos), sus filas en dólares se perdían en silencio y
+    # el import decía "ok"; sin "Estado inicial", el mismo caso da 409. Se frena
+    # igual, con el mismo motivo.
+    _sin_pata = next((e for e in _errores if e.code == "SIN_CUENTA_EN_DOLARES"), None)
+    if _sin_pata:
+        raise ValueError(_sin_pata.message)
     valid_txs += sinteticas
 
     # Reemplazar el contenido de import_normalized_tx con la nueva validación.

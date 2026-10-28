@@ -42589,6 +42589,14 @@ def import_tenencia_preview(
                 raise HTTPException(400, f"«{broker}» es la cuenta en dólares de «{_padre}». "
                                          f"Esta foto trae pesos: subila al broker «{_padre}» "
                                          f"(sus dólares van solos a «{broker}»).")
+            _padre_de_nombre = broker[:-len(" · USD")] if broker.endswith(" · USD") else None
+            if (_accion == "rechazar" and _padre_de_nombre
+                    and (_ub.get(_padre_de_nombre) or {}).get("currency") == "ARS"):
+                # "Cocos · USD" sin padre todavía: el primer dólar de "Cocos" la
+                # adopta (`por_que_no_hay_pata_usd`), así que no se cura a pesos.
+                raise HTTPException(400, f"«{broker}» es el nombre de la cuenta en dólares de "
+                                         f"«{_padre_de_nombre}». Esta foto trae pesos: subila "
+                                         f"al broker «{_padre_de_nombre}».")
             if _accion == "rechazar":
                 raise HTTPException(400, (
                     f"Tu broker «{broker}» está en dólares y esta foto trae pesos: Rendi no "
