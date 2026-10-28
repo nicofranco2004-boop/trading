@@ -794,6 +794,107 @@ una condición puede tapar lo que falla — o inventar una falla que no existe.
 
 ---
 
+## 🔴 HALLAZGO 12 — «Tomar el turno» es una protección que sólo existe en SQLite, y la usan 24 lugares
+
+Barrido pedido por Nico el 28/10/2026, a partir del hallazgo del depósito borrado
+(ver `efectivo.caja`). **No es un bug: es una causa con 24 sitios colgados de
+ella.**
+
+### El mecanismo, que el propio código ya dice
+
+`_tomar_turno` (`main.py:18448`) es **una sola sentencia**:
+
+    conn.execute("UPDATE users SET tier=tier WHERE id=?", (uid,))
+
+· En **SQLite** eso toma la base ENTERA para escribir: cualquier otro pedido que
+  escriba cualquier cosa espera. Es una serialización de verdad.
+· En **Postgres** traba **sólo esa fila de `users`**, así que únicamente espera
+  quien también la escriba.
+
+Y esto no es una deducción de la auditoría: está escrito en el docstring de
+`_foto_contable`, con todas las letras — «En Postgres sólo traba la fila del
+usuario: pone en fila a las puertas de borrado entre sí (y al login de ese
+usuario) … hace falta un turno por usuario que tomen todos los que escriben las
+cuentas». **Lo que faltaba era la lista de quiénes no lo toman.** Es ésta.
+
+### Los 24 usos, y no todos son iguales
+
+| | cuántos |
+|---|---|
+| lo piden **SIEMPRE**, al entrar a la función | **11** |
+| lo piden **sólo en una rama** (un `if`, un `for`, un `try`) | **13** |
+
+Los 11 incondicionales son las puertas de borrado y la foto contable
+(`_delete_one_movement`, `_delete_operation_cascade`,
+`_delete_position_cascade`, `_delete_asset_history_cascade`,
+`_delete_manual_*_cascade`, `_undo_manual_delete`, `_borrar_datos_de_brokers`,
+`_exigir_broker_existente`, `_ensure_usd_sibling`, `_foto_contable`).
+
+Los 13 condicionales lo piden sólo si pasa algo: `update_broker`,
+`bond_cashflow`, `bond_pago`, `dividendos_cobro`, `create/update/delete_monthly`,
+`close_futuro`, `undo_delete_operation`, `undo_delete_asset_history`,
+`import_mappings_save`, `sections_archive`, `sections_restore`.
+
+### 🔴 Los 16 que escriben las cuentas y NO toman el turno
+
+De los **34 endpoints que escriben las cuentas** (`monthly_entries`,
+`flujos_a_mano`, `snapshots`), **16 no llegan nunca al turno** — o sea que pueden
+caer dentro de la ventana de cualquiera de las puertas de borrado:
+
+    /api/operations                          create_operation      ← MEDIDO: pierde una operación (hallazgo 11)
+    /api/operations/{oid}                    update_operation
+    /api/monthly/sync-unrealized             sync_unrealized       ← una lente lo marcó: «se come un depósito»
+    /api/imports/confirm                     import_confirm
+    /api/imports/recalc-pnl                  import_recalc_pnl
+    /api/snapshots                           post_snapshot
+    /api/brokers/reconcile-cash              broker_reconcile_cash
+    /api/plazos-fijos                        create_plazo_fijo
+    /api/plazos-fijos/{pid}/cobrar           cobrar_plazo_fijo
+    /api/advisor/group-op/{batch_id}/undo    advisor_group_op_undo
+    /api/admin/delete-snapshot               admin_delete_snapshot
+    /api/admin/cleanup-future-snapshots      admin_cleanup_future_snapshots
+    /api/admin/recompute-snapshots-netdep    admin_recompute_snapshots_netdep
+    /api/admin/repair-caja-1415              admin_repair_caja_1415
+    /api/admin/repair-interes-pf             admin_repair_interes_pf
+    /api/admin/repair-user-history           admin_repair_user_history
+
+Dos de esos 16 ya tienen un hallazgo propio en este informe o en el barrido de
+las siete lentes, y **uno está medido**: `create_operation` (hallazgo 11). Los
+seis de `/api/admin/repair-*` son de reparación masiva, que es el peor momento
+para que alguien escriba al mismo tiempo.
+
+### ⚠️ Y el límite de este barrido, que es parte del resultado
+
+El «18 que sí lo toman» es un **techo, no un número**. Mi barrido es de
+alcanzabilidad (¿se puede llegar al turno desde este endpoint?), y eso **no es lo
+mismo que tomarlo**. El falso positivo que lo prueba:
+
+    /api/cash/flow  →  _pata_de_la_moneda  →  _ensure_usd_sibling  →  _tomar_turno
+
+`cash_flow` aparece «con turno», pero sólo lo toma si hay que CREAR el sub-broker
+'· USD'. Un depósito o retiro normal en pesos no pasa por ahí — y eso está
+medido: en la sonda del depósito borrado, el retiro por `/api/cash/flow` quedó
+bloqueado en `Lock/advisory`, o sea en el candado del efectivo que pide `caja()`,
+**no** en la fila de `users`. Si el turno lo hubiera tomado, habría esperado ahí.
+
+👉 **Un grafo de llamadas dice «puede», no «hace».** Para cada uno de los 18 hay
+que mirar si la llamada es incondicional — y 13 de los 24 usos están dentro de un
+`if`.
+
+### Qué cambia esto para el pasaje
+
+El único de los 24 que quedó con una protección de verdad es el del efectivo, y
+no por el turno: porque `caja()` pide un `pg_advisory_xact_lock` por usuario
+(`a80b43b7`). **Los otros 23 siguen confiando en el turno.** Mientras corra
+SQLite no se nota; el día que se prenda Postgres, 16 endpoints que escriben las
+cuentas pueden caer en medio de un borrado.
+
+El arreglo que el propio código propone —«un turno por usuario que tomen todos
+los que escriben las cuentas»— es uno, no 24: la misma forma que cerró las dos
+cajas, el bloqueo mutuo de las conversiones y el del depósito borrado.
+
+---
+
 ## ✅ Lo que ataqué y aguantó
 
 * **Los seis `UPDATE` de cobros, verificados por máquina y no a ojo.** El guard
