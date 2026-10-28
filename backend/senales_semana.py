@@ -1,7 +1,7 @@
 """senales_semana — «Qué cambió esta semana en lo tuyo» (pieza 15).
 
 Dos lugares con LA MISMA cuenta (`armar_semana`):
-  · la pestaña «Tus señales» de Mercado → Novedades (GET /api/tecnico/semana);
+  · la pestaña «Tus señales» de Mercado → Novedades (GET /api/tus-senales);
   · el resumen de los sábados a las 10:00 de Argentina, por mail y/o
     notificación (`correr_si_toca`, que lo pega el cron de alertas).
 
@@ -107,7 +107,7 @@ def texto_del_cambio(c: dict) -> dict:
         nivel = 30 if t == "rsi_bajo_30" else 70
         texto = f"tiene la fuerza (RSI) en {_rsi_txt(c.get('rsi'), nivel)}"
         if c.get("rsi_antes") is not None:
-            texto += f": una semana de mercado antes estaba en {_rsi_txt(c['rsi_antes'])}."
+            texto += f": una semana de mercado antes estaba en {round(c['rsi_antes'])}."
         else:
             texto += "."
         # Sólo la caída tiene la frase: subir muy rápido no anticipó nada
@@ -368,31 +368,50 @@ def _titular(senales: list) -> str:
     """«Tu semana: AAPL quedó abajo de su promedio de 200 días y 4 cambios más».
     Nombra el cambio más importante de lo que TENÉS (por tipo, después por peso);
     si no tenés nada que cambió, el de la watchlist."""
-    import tecnico
-    orden = {t: i for i, t in enumerate(tecnico.TIPOS_CAMBIO)}
-    top = sorted(senales, key=lambda s: (not s["tenes"], orden[s["tipo"]], -(s["peso"] or 0)))[0]
+    top = _por_importancia(senales)[0]
     texto = top["texto"].split(":")[0].rstrip(".")
     resto = len(senales) - 1
     mas = f" y {resto} {'cambio' if resto == 1 else 'cambios'} más" if resto else ""
     return f"Tu semana: {top['asset']} {texto}{mas}"
 
 
+def _por_importancia(senales: list) -> list:
+    """Lo que tenés antes que la watchlist; adentro, por tipo (TIPOS_CAMBIO) y
+    por peso."""
+    import tecnico
+    orden = {t: i for i, t in enumerate(tecnico.TIPOS_CAMBIO)}
+    return sorted(senales, key=lambda x: (not x["tenes"], orden[x["tipo"]], -(x["peso"] or 0)))
+
+
+def _y(nombres: list) -> str:
+    return nombres[0] if len(nombres) == 1 else ", ".join(nombres[:-1]) + " y " + nombres[-1]
+
+
+# Cuántos activos se nombran en el mail, uno por renglón (con su cambio más
+# importante); lo demás se cuenta al final, como el recuadro 15.
+RENGLONES_MAIL = 3
+
+
 def contenido_del_mail(semana: dict) -> dict:
     """Los argumentos de `emails.send_alert_email` para el resumen."""
-    import tecnico
-    s = semana["senales"]
-    orden = {t: i for i, t in enumerate(tecnico.TIPOS_CAMBIO)}
-    lista = sorted(s, key=lambda x: (not x["tenes"], orden[x["tipo"]], -(x["peso"] or 0)))
+    lista = _por_importancia(semana["senales"])
+    primeros, nombrados = [], []
+    for x in lista:
+        if x["asset"] not in nombrados and len(nombrados) < RENGLONES_MAIL:
+            nombrados.append(x["asset"])
+            primeros.append(x)
     lineas = []
-    for x in lista[:4]:
-        linea = f"{x['asset']} {x['texto']}"
+    for x in primeros:
+        # Lo que no tenés lo dice: «MSFT pasó arriba…» se leía como algo tuyo.
+        quien = x["asset"] if x["tenes"] else f"{x['asset']} (en tu watchlist)"
+        linea = f"{quien} {x['texto']}"
         if x.get("tesis"):
             linea += f" Tu tesis: «{x['tesis']}»."
         lineas.append(linea)
-    if len(lista) > 4:
-        quienes = sorted({x["asset"] for x in lista[4:]})
-        lineas.append(f"{len(lista) - 4} {'cambio' if len(lista) - 4 == 1 else 'cambios'} más, en "
-                      + (", ".join(quienes[:-1]) + " y " + quienes[-1] if len(quienes) > 1 else quienes[0]) + ".")
+    resto = [x for x in lista if x not in primeros]
+    if resto:
+        quienes = list(dict.fromkeys(x["asset"] for x in resto))
+        lineas.append(f"{len(resto)} {'cambio' if len(resto) == 1 else 'cambios'} más, en {_y(quienes)}.")
     a = semana.get("alcista")
     if a:
         detail = f"el {a['pct']}% de tu plata está en activos con tendencia de fondo alcista"
@@ -402,7 +421,7 @@ def contenido_del_mail(semana: dict) -> dict:
     else:
         detail = "esto se movió esta semana en lo tuyo y en tu watchlist:"
     return {
-        "heading": _titular(s), "detail": detail, "lines": lineas,
+        "heading": _titular(semana["senales"]), "detail": detail, "lines": lineas,
         "cta_path": "/novedades?tab=senales", "cta_label": "Ver los cambios",
         "pie": ("Te llega los sábados porque lo pediste.", "Cambiar o apagar",
                 "/novedades?tab=senales"),
@@ -410,17 +429,26 @@ def contenido_del_mail(semana: dict) -> dict:
     }
 
 
-def _entregar(conn, uid: int, via: str, semana: dict) -> tuple:
-    """(push_ok, mail_ok). Por el camino de las alertas: `_delivery_target` (una
-    cuenta administrada le llega al asesor, con el nombre del cliente),
-    `send_alert_email` y `_send_push_to_user`."""
-    import main
+def _armar_envio(conn, uid: int, semana: dict) -> tuple:
+    """(destino, cliente, contenido). Todo lo que se puede romper al armar el
+    mail pasa ACÁ, antes de marcar la semana como hecha: un error al armarlo no
+    puede comerse el resumen de esa persona sin mandarlo."""
     from alerts_engine import _delivery_target
-    from billing import emails
     destino, cliente = _delivery_target(conn, uid)
     contenido = contenido_del_mail(semana)
     if cliente:
         contenido["heading"] = f"[{cliente}] {contenido['heading']}"
+    return destino, cliente, contenido
+
+
+def _entregar(conn, via: str, envio: tuple) -> tuple:
+    """(push_ok, mail_ok). Por el camino de las alertas: `_delivery_target` (una
+    cuenta administrada le llega al asesor, con el nombre del cliente),
+    `send_alert_email` y `_send_push_to_user`."""
+    import main
+    from billing import emails
+    destino, cliente, contenido = envio
+    uid = destino
     push_ok = mail_ok = False
     if via in ("push", "ambos"):
         try:
@@ -466,6 +494,13 @@ def correr(conn, hoy: date, *, solo: int = None) -> dict:
             continue
         via = canal(conn, uid)
         mandar = via != "no" and bool(sem["senales"])
+        try:
+            envio = _armar_envio(conn, uid, sem) if mandar else None
+        except Exception as ex:
+            log.error("semana: no pude armar el resumen de uid=%s: %s: %s", uid,
+                      type(ex).__name__, ex, exc_info=True)
+            res["errores"] += 1
+            continue
         conn.execute(
             "INSERT INTO tendencia_semanal (user_id, semana, pct_alcista, cambios, canal) "
             "VALUES (?,?,?,?,?)",
@@ -476,7 +511,7 @@ def correr(conn, hoy: date, *, solo: int = None) -> dict:
         if not mandar:
             res["sin_cambios"] += via != "no"
             continue
-        push_ok, mail_ok = _entregar(conn, uid, via, sem)
+        push_ok, mail_ok = _entregar(conn, via, envio)
         conn.execute("UPDATE tendencia_semanal SET push_ok=?, mail_ok=? WHERE user_id=? AND semana=?",
                      (int(push_ok), int(mail_ok), uid, semana_iso))
         conn.commit()
