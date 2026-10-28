@@ -213,6 +213,35 @@ describe('LecturaTecnica', () => {
     expect(barras()).toBe(0)
   })
 
+  it('Bandas de Bollinger: apagadas de entrada; el botón dibuja la capa y su tarjeta', async () => {
+    const conBandas = {
+      ...USD,
+      puntos: USD.puntos.map((p, i) => (i < 19 ? p : { ...p, bb_arriba: p.c * 1.04, bb_abajo: p.c * 0.96 })),
+      lectura: { ...USD.lectura, bb_arriba: 240, bb_abajo: 226, bb_posicion: 0.64, bb_ancho_relativo: 0.5 },
+    }
+    respuestas = { '/tecnico/AAPL?moneda=usd': conBandas, '/tecnico/AAPL?moneda=ars': ARS }
+    const relleno = () => {
+      let n = 0
+      const pila = [montado.contenedor]
+      while (pila.length) {
+        const x = pila.shift()
+        if (x.nodeName === 'PATH' && x.getAttribute?.('fill-opacity') === '0.08') n++
+        pila.push(...(x.childNodes || []))
+      }
+      return n
+    }
+    const t = await dibujar({ pnlPctUsd: 0.1 })
+    expect(t).toContain('Bandas de Bollinger')        // el botón de la leyenda
+    expect(t).not.toContain('Entre las bandas')       // la tarjeta, todavía no
+    expect(relleno()).toBe(0)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Bandas de Bollinger'))
+    for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
+    const t2 = texto(montado.contenedor)
+    expect(t2).toContain('Entre las bandas')
+    expect(t2).toContain('más angostas que de costumbre')
+    expect(relleno()).toBe(1)
+  })
+
   it('sin volumen en los datos no hay botón de volumen', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     expect(await dibujar({ pnlPctUsd: 0.1 })).not.toContain('Volumen')
