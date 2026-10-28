@@ -11552,9 +11552,11 @@ def post_tecnico_lista(body: CarteraTecnicaIn, uid: int = Depends(get_effective_
     return _lecturas_tecnicas(body, tecnico.para_la_lista)
 
 
-@app.get("/api/tecnico/semana")
+@app.get("/api/tus-senales")
 def get_tecnico_semana(uid: int = Depends(get_effective_user)):
-    """«Tus señales» (Mercado → Novedades): lo que cambió en los últimos 7 días
+    """«Tus señales» (Mercado → Novedades). Ruta propia y no /api/tecnico/semana:
+    ésa la atrapa la ficha (`/api/tecnico/{asset}`, «SEMANA» como ticker).
+    Lo que cambió en los últimos 7 días
     corridos, contados desde HOY, en lo que tenés y en tu watchlist; el % de tu
     plata en tendencia alcista y el del sábado anterior si está guardado; y cómo
     te llega el resumen de los sábados. La misma cuenta que el mail
@@ -11571,7 +11573,7 @@ class ResumenSemanalIn(BaseModel):
     canal: str = Field(..., pattern="^(mail|push|ambos|no)$")
 
 
-@app.put("/api/tecnico/semana/canal")
+@app.put("/api/tus-senales/canal")
 def put_tecnico_semana_canal(data: ResumenSemanalIn, uid: int = Depends(get_effective_user)):
     """Cómo le llega el resumen de los sábados: Mail / Notificación / Las dos /
     No quiero. Sin fila es 'no' (opt-in)."""

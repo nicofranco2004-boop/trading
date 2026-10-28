@@ -108,20 +108,22 @@ export default function Watchlist() {
 
   return (
     <section ref={ref}>
-      <div className="flex items-center justify-between gap-3 mb-2">
+      {/* En el celular no entra todo en un renglón: lo de la derecha baja
+          entero (el botón no se parte en tres). */}
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 mb-2">
         <h2><Eyebrow>Watchlist</Eyebrow></h2>
-        <span className="flex items-center gap-3">
+        <span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
           {!loading && items.length > 0 && (
             <>
               {estado && <EnVivo estado={estado} />}
-              <span className="text-[12px] text-ink-3">{items.length} tickers</span>
+              <span className="text-[12px] text-ink-3 whitespace-nowrap">{items.length} tickers</span>
             </>
           )}
           {/* Lo que tenés y lo que seguís en una tabla, con su lectura técnica
-              (pages/TuLista.jsx). Va aunque la watchlist esté vacía: también
+              (pages/TuLista.jsx, «Análisis técnico» en el menú). Va aunque la watchlist esté vacía: también
               muestra tu cartera. */}
-          <Link to="/tu-lista"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-line-2 px-2.5 py-1 text-[12.5px] text-ink-1 hover:text-ink-0 hover:border-data-violet/50 transition-colors">
+          <Link to="/analisis-tecnico"
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-line-2 px-2.5 py-1 text-[12.5px] text-ink-1 hover:text-ink-0 hover:border-data-violet/50 transition-colors">
             <Table2 size={13} strokeWidth={1.75} aria-hidden="true" />
             Ver como tablero
           </Link>

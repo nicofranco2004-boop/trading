@@ -256,9 +256,11 @@ function AppRoutes() {
       <Route path="/analisis" element={<Analisis />} />
       <Route path="/fundamentals" element={<Fundamentals />} />
       <Route path="/activo/:ticker" element={<AssetDetail />} />
-      {/* «Tu lista, con su lectura técnica»: se abre desde el panel Watchlist
-          del inicio («Ver como tablero»), sin entrada en el menú. */}
-      <Route path="/tu-lista" element={<TuLista />} />
+      {/* «Análisis técnico» (menú → Análisis): tu lista con su lectura técnica.
+          También se abre desde el panel Watchlist del inicio («Ver como
+          tablero»). /tu-lista era su dirección antes de tener lugar en el menú. */}
+      <Route path="/analisis-tecnico" element={<TuLista />} />
+      <Route path="/tu-lista" element={<Navigate to="/analisis-tecnico" replace />} />
       {/* Dashboard vuelve a ser página propia (ítem "Dashboard" del sidebar,
           principal dentro de "Tu Cartera"). Antes era un tab de Cartera. */}
       {/* Informe del período: el link público TAMBIÉN debe resolver con

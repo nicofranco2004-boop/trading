@@ -1,6 +1,8 @@
-// TuLista — «Tu lista, con su lectura técnica»: lo que tenés y lo que seguís
-// (watchlist), juntos en una tabla. Se abre desde el inicio → panel Watchlist →
-// «Ver como tablero» (/tu-lista); no tiene entrada propia en el menú.
+// TuLista — «Análisis técnico» (menú → Análisis): tu lista con su lectura
+// técnica, lo que tenés y lo que seguís (watchlist) juntos en una tabla. Vive en
+// /analisis-tecnico (pedido de Nico, 28/10: «una sección nueva de la parte de
+// análisis»); también se abre desde el inicio → panel Watchlist → «Ver como
+// tablero». /tu-lista, la dirección de antes, lleva acá.
 // ════════════════════════════════════════════════════════════════════════════
 // Una sola pantalla para compu y celular (R6): en el celular la tabla se
 // desliza de costado, con la columna del activo fija, como la de Cartera.
@@ -16,9 +18,10 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, ArrowDown, ArrowUp } from 'lucide-react'
+import { ArrowDown, ArrowUp } from 'lucide-react'
 import { api } from '../utils/api'
 import Panel from '../components/Panel'
+import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import { PildoraTendencia } from '../components/RadiografiaTecnica'
 import { usePrivacy } from '../contexts/PrivacyContext'
@@ -134,6 +137,12 @@ function Corto({ corto }) {
   return <PildoraTendencia id={corto.palabra === 'Alcista' ? 'alcista' : 'bajista'} palabra={corto.palabra} motivo={corto.motivo} />
 }
 
+// El borde derecho de la columna fija del activo: con la tabla deslizada en el
+// celular, marca qué queda quieto. Va por `style` (una sombra hacia adentro):
+// con border-collapse el borde de una celda fija no viaja con ella, y
+// `shadow-[var(--x)]` de Tailwind compila sin pintar (frontend/CLAUDE.md, R8).
+const BORDE_FIJO = { boxShadow: 'inset -1px 0 0 rgb(var(--line))' }
+
 // El color del cambio, el de su pastilla en «Tus señales» (`tono` del servidor).
 const TONO_CAMBIO = { pos: 'text-rendi-pos', neg: 'text-rendi-neg' }
 
@@ -206,7 +215,7 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
           <table className="w-full min-w-[960px] border-collapse text-left">
             <thead className="text-[12px] text-ink-2 border-b border-line">
               <tr>
-                <th scope="col" className="sticky left-0 z-[1] bg-bg-1 px-3 py-2.5 font-medium align-bottom">Activo</th>
+                <th scope="col" className="sticky left-0 z-[1] bg-bg-1 px-3 py-2.5 font-medium align-bottom" style={BORDE_FIJO}>Activo</th>
                 <Encabezado id="tenes" orden={orden} onOrdenar={ordenar}>¿Lo tenés?</Encabezado>
                 <Encabezado id="linea" orden={orden} onOrdenar={ordenar}>3 meses</Encabezado>
                 <Encabezado id="fondo" orden={orden} onOrdenar={ordenar}>De fondo <span className="block text-ink-3">200 días</span></Encabezado>
@@ -221,7 +230,7 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
               {vista.map(f => (
                 <tr key={f.clave} onClick={() => onAbrir?.(f)}
                   className={`group cursor-pointer border-b border-line/40 last:border-b-0 hover:bg-bg-2/50 ${f.vigente ? '' : 'opacity-60'}`}>
-                  <td className="sticky left-0 z-[1] bg-bg-1 group-hover:bg-bg-2 px-3 py-2.5">
+                  <td className="sticky left-0 z-[1] bg-bg-1 group-hover:bg-bg-2 px-3 py-2.5" style={BORDE_FIJO}>
                     <Link to={`/activo/${encodeURIComponent(f.ruta)}`} onClick={e => e.stopPropagation()}
                       className="font-semibold text-ink-0 hover:text-data-violet">
                       {f.nombre}
@@ -300,15 +309,8 @@ export default function TuLista() {
 
   return (
     <div className="page-shell-wide py-4">
-      <Link to="/" className="inline-flex items-center gap-1.5 text-[13px] text-ink-2 hover:text-ink-0 mb-3">
-        <ArrowLeft size={14} strokeWidth={1.75} aria-hidden="true" /> Mercado
-      </Link>
-      <header className="mb-5">
-        <h1 className="text-2xl sm:text-[27px] font-semibold text-ink-0 tracking-tight leading-tight">Tu lista, con su lectura técnica</h1>
-        <p className="text-[14px] text-ink-2 mt-1.5 leading-relaxed max-w-2xl">
-          Lo que tenés y lo que seguís, juntos. Medido en dólares, al cierre del último día de mercado. Tocá una fila para abrir su ficha.
-        </p>
-      </header>
+      <PageHeader eyebrow="Análisis" title="Análisis técnico"
+        subtitle="Lo que tenés y lo que seguís, juntos, con su lectura técnica. Medido en dólares, al cierre del último día de mercado. Tocá una fila para abrir su ficha." />
 
       {datos.error === 'base' ? (
         <Panel padding="lg" className="text-center text-[13px] text-ink-2">No pudimos cargar tu cartera y tu watchlist. Probá de nuevo en un rato.</Panel>
