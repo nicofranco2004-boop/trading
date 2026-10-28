@@ -295,16 +295,23 @@ mapeo y **nada más**. Para cerrarlos hace falta volver a correr la refutación.
 
 ## Cómo volver a correr la refutación de los 14
 
-El workflow quedó guardado y se puede reanudar: los agentes del mapeo vuelven de
-caché al instante y sólo corren los escépticos que faltan.
+⚠️ **CORREGIDO el 28/10:** una versión anterior de esta sección decía que el
+workflow se podía *reanudar* con `resumeFromRunId`. **Eso sólo funciona dentro de
+la misma sesión que lo lanzó.** Desde una sesión nueva no se puede.
 
-    Workflow({scriptPath: '…/workflows/scripts/tomar-turno-24-sitios-wf_e03a13e3-041.js',
-              resumeFromRunId: 'wf_e03a13e3-041'})
+Lo que sí sirve desde cualquier sesión:
 
-El journal con el detalle completo de cada agente está en
-`…/subagents/workflows/wf_e03a13e3-041/journal.jsonl`. ⚠️ Ese journal vive fuera del
-repo: si hace falta para algo, copiarlo antes de que se purgue.
+1. El script quedó copiado en el repo como plantilla:
+   `audit/workflows/barrido_tomar_turno_24.js`. Tiene el molde de preguntas y las
+   tres lentes de los escépticos, que es la parte que costó armar.
+2. Los 14 sitios a verificar están en la tabla «SIN VERIFICAR» de arriba, con la
+   gravedad y la consecuencia que afirmaba el mapeo.
+3. Hacer un workflow **sólo de refutación** sobre esos 14 —sin volver a mapear—,
+   reusando el `CONTEXTO` y las `LENTES` del script. Correr el mapeo de nuevo
+   costaría lo mismo que la primera vez y no agrega nada.
 
+⚠️ El límite de uso de la cuenta mató 44 de 71 agentes la primera vez. Con 14
+sitios × 3 escépticos son 42 agentes: conviene correrlos en tandas.
 
 ---
 
