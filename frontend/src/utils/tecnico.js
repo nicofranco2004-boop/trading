@@ -1,6 +1,6 @@
 // tecnico.js — lo que la ficha del activo dibuja encima de la lectura técnica.
 // ════════════════════════════════════════════════════════════════════════════
-// Los NÚMEROS (medias, RSI, ADX, Squeeze, máximo del año) vienen hechos de GET /api/tecnico
+// Los NÚMEROS (medias, Bandas de Bollinger, RSI, ADX, Squeeze, máximo del año) vienen hechos de GET /api/tecnico
 // (backend/tecnico.py), en UN lugar. Acá viven las palabras de cada tarjeta y lo
 // que sólo sabe la ficha: tus compras, tus ventas y tu precio promedio.
 //
@@ -56,7 +56,7 @@ export function velaCompleta(p, cierreAnterior) {
  * Velas SEMANALES a partir de las diarias (para el rango de 2 años: 500 velas
  * diarias en un celular son rayitas). Cada semana: la apertura del primer día,
  * el máximo y el mínimo de la semana, el cierre del último día, el volumen
- * sumado; las medias, el RSI, el ADX y el Squeeze son los del último día (el
+ * sumado; las medias, las bandas, el RSI, el ADX y el Squeeze son los del último día (el
  * color del Squeeze se recalcula contra la semana anterior). `d` es el primer
  * día de la semana, así una compra a mitad de semana cae en su vela. `previos`:
  * los días de antes de `puntos` (la ventana del zoom), para que la primera
@@ -79,7 +79,7 @@ export function velasSemanales(puntos = [], previos = []) {
     } else {
       actual = { ...actual, h: Math.max(actual.h, v.h), l: Math.min(actual.l, v.l), c: v.c,
         v: p.v == null ? actual.v : (actual.v || 0) + p.v,
-        s50: p.s50, s200: p.s200, rsi: p.rsi, adx: p.adx, squeeze: p.squeeze, squeeze_color: p.squeeze_color }
+        s50: p.s50, s200: p.s200, bb_arriba: p.bb_arriba, bb_abajo: p.bb_abajo, rsi: p.rsi, adx: p.adx, squeeze: p.squeeze, squeeze_color: p.squeeze_color }
     }
   }
   if (actual) out.push(actual)
@@ -378,6 +378,55 @@ export function textoCruceAdx(c, squeezeHoy, bajando = false) {
       + `el precio viene ${hoy > 0 ? 'subiendo' : 'bajando'} con fuerza.`
   }
   return `${cuando} la fuerza (ADX) pasó ${ADX_CLAVE} para arriba: la tendencia tomó fuerza.`
+}
+
+// ─── Bandas de Bollinger ────────────────────────────────────────────────────
+// El promedio de los últimos 20 días ± 2 desvíos (`tecnico.bollinger` del
+// servidor, la misma cuenta que usa el Squeeze). Sólo DESCRIBEN: «tocar la banda
+// de arriba suele anticipar una baja» no se cumplió en la medición (backtest
+// 28/10), así que la tarjeta cuenta dónde está el precio y cuánto se movió.
+
+// Cortes de la posición entre las bandas (0 = la de abajo, 1 = la de arriba).
+const BB_PEGADO = 0.2
+// El ancho contra el de los últimos 6 meses: menos de 0,7 es «más angostas»,
+// más de 1,4 «más anchas»; en el medio no se dice nada.
+const BB_ANGOSTAS = 0.7
+const BB_ANCHAS = 1.4
+const DIAS_BB = 20
+
+/**
+ * La tarjeta «Bandas de Bollinger» (sólo con la capa prendida). Veredicto por
+ * dónde está el precio entre las bandas; el texto suma cuánto se movió contra
+ * los últimos 6 meses. Con pocos datos lo dice. null sin lectura.
+ */
+export function tarjetaBandas(l) {
+  if (!l || !l.ruedas) return null
+  const base = { id: 'bandas', titulo: 'Bandas de Bollinger', tono: 'neutro' }
+  if (l.bb_arriba == null) {
+    return { ...base, veredicto: 'Faltan datos',
+      texto: `Para dibujarlas hacen falta ${DIAS_BB} días de mercado y este activo tiene ${l.ruedas}.` }
+  }
+  const que = 'Las bandas van 2 desvíos arriba y abajo del promedio de los últimos 20 días: encierran casi todos los precios de estas 4 semanas. '
+  const p = l.bb_posicion
+  if (p == null) {
+    return { ...base, veredicto: 'Sin movimiento',
+      texto: `${que}El precio casi no se movió en estas 4 semanas: las bandas no se separan.` }
+  }
+  const [veredicto, donde] = p > 1
+    ? ['Arriba de las bandas', 'Cerró arriba de la banda de arriba: subió más rápido de lo normal estas 4 semanas.']
+    : p < 0
+      ? ['Abajo de las bandas', 'Cerró abajo de la banda de abajo: bajó más rápido de lo normal estas 4 semanas.']
+      : p >= 1 - BB_PEGADO
+        ? ['Cerca de la banda de arriba', 'El precio está pegado a la banda de arriba: está en la parte alta de lo que se movió estas 4 semanas.']
+        : p <= BB_PEGADO
+          ? ['Cerca de la banda de abajo', 'El precio está pegado a la banda de abajo: está en la parte baja de lo que se movió estas 4 semanas.']
+          : ['Entre las bandas', 'El precio está en la zona del medio de lo que se movió estas 4 semanas.']
+  const r = l.bb_ancho_relativo
+  const ancho = r == null ? ''
+    : r < BB_ANGOSTAS ? ' Las bandas están más angostas que de costumbre en los últimos 6 meses: el precio se está moviendo menos.'
+      : r > BB_ANCHAS ? ' Las bandas están más anchas que de costumbre en los últimos 6 meses: el precio se está moviendo más.'
+        : ''
+  return { ...base, veredicto, texto: `${que}${donde}${ancho} Cuenta lo que ya pasó, no lo que viene.` }
 }
 
 /**

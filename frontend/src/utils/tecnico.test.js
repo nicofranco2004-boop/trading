@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { tarjetas, tarjetaFuerza, colorSqueeze, fmtAdx, textoCruceAdx, textoSqueeze, velasSemanales, ADX_CLAVE, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
+import { tarjetas, tarjetaFuerza, tarjetaBandas, colorSqueeze, fmtAdx, textoCruceAdx, textoSqueeze, velasSemanales, ADX_CLAVE, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
 
 const L = {
   ruedas: 760, fecha: '2026-10-21', precio: 228.97,
@@ -268,8 +268,37 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     const textos = [textoSqueeze('verde_fuerte'), textoSqueeze('rojo_fuerte'),
       ...['paso_arriba', 'paso_abajo'].flatMap(tipo => [-1, 1].map(sq => textoCruceAdx({ tipo, hace: 1, squeeze: sq }, sq))),
       tarjetaFuerza(F).texto, tarjetaFuerza({ ...F, adx: 17, squeeze_activo: true }).texto,
-      rsi.texto, textoCruceRsi({ tipo: 'salio_de_abajo', hace: 1 }), textoCruceRsi({ tipo: 'salio_de_arriba', hace: 1 })].join(' ')
+      rsi.texto, textoCruceRsi({ tipo: 'salio_de_abajo', hace: 1 }), textoCruceRsi({ tipo: 'salio_de_arriba', hace: 1 }),
+      // Las Bollinger en todas sus posiciones y anchos: tocar una banda no anticipa nada.
+      ...[-0.2, 0.1, 0.5, 0.9, 1.2, null].flatMap(bb_posicion => [0.5, 1, 2].map(bb_ancho_relativo =>
+        tarjetaBandas({ ruedas: 300, bb_arriba: 110, bb_abajo: 90, bb_posicion, bb_ancho_relativo }).texto)),
+      tarjetaBandas({ ruedas: 10, bb_arriba: null }).texto].join(' ')
     expect(textos).not.toMatch(/suele|se viene|comprá|vendé|va a subir|va a bajar|rebota|frena|antesala|arranque/i)
+  })
+
+  it('las Bandas de Bollinger dicen dónde está el precio y cuánto se movió', () => {
+    const B = { ruedas: 300, bb_arriba: 110, bb_abajo: 90, bb_ancho_relativo: 1 }
+    const arriba = tarjetaBandas({ ...B, bb_posicion: 0.9 })
+    expect(arriba.veredicto).toBe('Cerca de la banda de arriba')
+    expect(arriba.texto).toContain('El precio está pegado a la banda de arriba: está en la parte alta de lo que se movió estas 4 semanas.')
+    expect(arriba.texto).not.toContain('angostas')
+    expect(tarjetaBandas({ ...B, bb_posicion: 1.3 }).texto).toContain('Cerró arriba de la banda de arriba: subió más rápido de lo normal estas 4 semanas.')
+    expect(tarjetaBandas({ ...B, bb_posicion: -0.1 }).veredicto).toBe('Abajo de las bandas')
+    expect(tarjetaBandas({ ...B, bb_posicion: 0.15 }).veredicto).toBe('Cerca de la banda de abajo')
+    expect(tarjetaBandas({ ...B, bb_posicion: 0.5 }).veredicto).toBe('Entre las bandas')
+    expect(tarjetaBandas({ ...B, bb_posicion: 0.5, bb_ancho_relativo: 0.5 }).texto).toContain('más angostas que de costumbre')
+    expect(tarjetaBandas({ ...B, bb_posicion: 0.5, bb_ancho_relativo: 1.8 }).texto).toContain('más anchas que de costumbre')
+    expect(arriba.tono).toBe('neutro')
+    // Pocos días o un precio quieto: lo dice, no inventa.
+    expect(tarjetaBandas({ ruedas: 12, bb_arriba: null }).texto).toContain('hacen falta 20 días de mercado y este activo tiene 12')
+    expect(tarjetaBandas({ ...B, bb_posicion: null }).veredicto).toBe('Sin movimiento')
+    expect(tarjetaBandas(null)).toBeNull()
+  })
+
+  it('las velas semanales llevan las bandas del último día', () => {
+    const pts = ['2026-10-12', '2026-10-13'].map((d, i) => ({ d, c: 10 + i, bb_arriba: 12 + i, bb_abajo: 8 + i }))
+    const [semana] = velasSemanales(pts)
+    expect([semana.bb_arriba, semana.bb_abajo]).toEqual([13, 9])
   })
 
   it('las velas semanales llevan el ADX y el Squeeze del último día', () => {

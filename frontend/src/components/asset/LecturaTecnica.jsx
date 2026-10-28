@@ -1,7 +1,8 @@
 // LecturaTecnica — el gráfico técnico y su lectura en la ficha del activo.
 // ════════════════════════════════════════════════════════════════════════════
-// Gráfico de precio con las medias de 50 y 200 días, tu precio promedio y tus
-// compras y ventas; la fuerza del movimiento (RSI) abajo; y tarjetas en
+// Gráfico de precio con las medias de 50 y 200 días, las Bandas de Bollinger
+// (apagadas de entrada; el botón de la leyenda las prende junto con su
+// tarjeta), tu precio promedio y tus compras y ventas; la fuerza del movimiento (RSI) abajo; y tarjetas en
 // castellano. El botón «Fibonacci» de la leyenda (prendido de entrada) muestra la
 // capa del último tramo de suba o bajada (CapaFibonacci.jsx). Se mide en
 // DÓLARES por defecto: un CEDEAR en pesos sube con el dólar aunque la empresa
@@ -30,7 +31,7 @@ import { BotonAvisame, useAvisosTecnicos, senalDeTarjeta } from '../alerts/Avisa
 import { api } from '../../utils/api'
 import { factorDeFechas, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
 import {
-  RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
+  RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, tarjetaBandas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, moverVentana,
   ventanaInicial, margenDerecho, futuroMaximo,
 } from '../../utils/tecnico'
@@ -43,6 +44,9 @@ const COLOR = {
   // misma luminosidad en modo claro y para un daltónico eran la misma línea.
   media50: v('cat-orange'),
   promedio: v('ink-2'),
+  // Verde azulado: no se confunde con el azul de la de 200, el naranja de la de
+  // 50 ni el magenta del Fibonacci.
+  bandas: v('cat-teal'),
 }
 const W = 1000
 const H = 260
@@ -103,7 +107,7 @@ export default function LecturaTecnica({
   const [datos, setDatos] = useState({ usd: undefined, ars: undefined })
   // Qué líneas se ven: la leyenda prende y apaga cada una.
   // El Fibonacci arranca prendido (Nico, 22/10): es lo primero que se mira.
-  const [ver, setVer] = useState({ s200: true, s50: true, prom: true, marcas: true, fib: true, vol: true })
+  const [ver, setVer] = useState({ s200: true, s50: true, bb: false, prom: true, marcas: true, fib: true, vol: true })
   const [tipo, setTipoEstado] = useState(tipoGuardado)
   const setTipo = (t) => { setTipoEstado(t); guardarTipo(t) }
   // Zoom con la rueda y arrastre: qué ruedas se ven ({ n: cuántas, fin: hasta
@@ -283,6 +287,7 @@ export default function LecturaTecnica({
           : <Chip activo fijo color={COLOR.precio}>Precio</Chip>}
         <Chip activo={ver.s200} onClick={() => alternar('s200')} color={COLOR.media200} grueso>Promedio 200 días</Chip>
         <Chip activo={ver.s50} onClick={() => alternar('s50')} color={COLOR.media50}>Promedio 50 días</Chip>
+        <Chip activo={ver.bb} onClick={() => alternar('bb')} color={COLOR.bandas}>Bandas de Bollinger</Chip>
         {puntos.some(p => p.v > 0) && (
           <Chip activo={ver.vol} onClick={() => alternar('vol')} barras>Volumen</Chip>
         )}
@@ -306,6 +311,7 @@ export default function LecturaTecnica({
         {ver.fib && actual.fibonacci && (
           <TarjetaFibonacci fib={actual.fibonacci} precio={(x) => fmtPrecio(x, moneda)} fecha={fechaCorta} />
         )}
+        {ver.bb && tarjetaBandas(actual.lectura) && <Tarjeta t={tarjetaBandas(actual.lectura)} />}
         {lista.map(t => {
           const s = senalDeTarjeta(t.id, actual.lectura)
           return (
@@ -569,6 +575,7 @@ function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tip
       }
       if (ver.s50 && p.s50 != null) valores.push(p.s50)
       if (ver.s200 && p.s200 != null) valores.push(p.s200)
+      if (ver.bb && p.bb_arriba != null) valores.push(p.bb_arriba, p.bb_abajo)
     }
     valores.push(...preciosDeLaCapa(fibonacci, puntos))
     let lo = Math.min(...valores), hi = Math.max(...valores)
@@ -604,6 +611,21 @@ function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tip
       return d
     }
     const c = linea('c')
+    // El relleno entre las bandas: cada tramo seguido va por la de arriba hacia
+    // adelante y vuelve por la de abajo.
+    let bandas = ''
+    if (ver.bb) {
+      let tramo = []
+      const cerrar = () => {
+        if (tramo.length > 1) {
+          bandas += tramo.map((i, k) => `${k ? 'L' : 'M'}${x(i).toFixed(1)},${y(puntos[i].bb_arriba).toFixed(1)}`).join('')
+            + [...tramo].reverse().map(i => `L${x(i).toFixed(1)},${y(puntos[i].bb_abajo).toFixed(1)}`).join('') + 'Z'
+        }
+        tramo = []
+      }
+      puntos.forEach((p, i) => { if (p.bb_arriba != null && p.bb_abajo != null) tramo.push(i); else cerrar() })
+      cerrar()
+    }
     // Las velas: el ancho de cada una es el 65 % de su lugar, la mecha va del
     // mínimo al máximo y el cuerpo de la apertura al cierre.
     const ancho = Math.max((W / Math.max(lugares, 1)) * 0.65, 1)
@@ -630,10 +652,10 @@ function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tip
     }).filter(Boolean) : []
     return {
       escalaY: y, min: lo, max: hi, velas, volumen, promFuera: fuera,
-      path: { c, s50: linea('s50'), s200: linea('s200') },
+      path: { c, s50: linea('s50'), s200: linea('s200'), bbArriba: linea('bb_arriba'), bbAbajo: linea('bb_abajo'), bandas },
       area: c ? `${c}L${x(puntos.length - 1).toFixed(1)},${H}L0,${H}Z` : '',
     }
-  }, [puntos, lugares, promedio, ver.s50, ver.s200, ver.vol, conVelas, fibonacci, precioMano])
+  }, [puntos, lugares, promedio, ver.s50, ver.s200, ver.bb, ver.vol, conVelas, fibonacci, precioMano])
 
   const rsiPath = useMemo(() => {
     let d = '', abierto = false
@@ -746,6 +768,13 @@ function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tip
               <rect key={`v${b.k}`} x={b.x - b.ancho / 2} width={b.ancho} y={b.y} height={b.alto}
                 fill={b.sube ? v('rendi-pos-fill') : v('rendi-neg-fill')} fillOpacity="0.28" />
             ))}
+            {ver.bb && (
+              <>
+                <path d={path.bandas} fill={COLOR.bandas} fillOpacity="0.08" stroke="none" />
+                <path d={path.bbArriba} fill="none" stroke={COLOR.bandas} strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+                <path d={path.bbAbajo} fill="none" stroke={COLOR.bandas} strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+              </>
+            )}
             {ver.s200 && <path d={path.s200} fill="none" stroke={COLOR.media200} strokeWidth="2.5" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
             {ver.s50 && <path d={path.s50} fill="none" stroke={COLOR.media50} strokeWidth="1.6" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
             {promedio != null && !promFuera && (
@@ -808,6 +837,11 @@ function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tip
                   {ph.s50 != null && <Fila color={COLOR.media50} k="50" v={fmtPrecio(ph.s50, moneda).replace(/^US\$ |^\$ /, '')} />}
                   {ver.vol && ph.v > 0 && <Fila k="Vol." v={fmtVolumen(ph.v)} />}
                 </div>
+                {ver.bb && ph.bb_arriba != null && (
+                  <div className="flex gap-2.5 mt-0.5">
+                    <Fila color={COLOR.bandas} k="Bandas" v={`${fmtPrecio(ph.bb_abajo, moneda).replace(/^US\$ |^\$ /, '')} – ${fmtPrecio(ph.bb_arriba, moneda).replace(/^US\$ |^\$ /, '')}`} />
+                  </div>
+                )}
                 {/* RSI y ADX en su propio renglón: en uno solo el globo no
                     entraba en un celular. */}
                 {(ph.rsi != null || ph.adx != null) && (
