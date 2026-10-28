@@ -193,6 +193,8 @@ class TusSenalesTest(unittest.TestCase):
         self.assertEqual(s["alcista"]["pct"], 94)
         self.assertIsNone(s["alcista"]["semana_pasada"], "para atrás no se reconstruye")
         self.assertEqual(s["tenes"]["activos"], 4)
+        self.assertEqual(s["tenes"]["con_cambios"], 1, "de lo tuyo, sólo NVDA cambió")
+        self.assertEqual(s["watchlist"], 1)
         self.assertEqual(s["canal"], "no", "sin elegir, no te llega nada (opt-in)")
         # La frase de «no es una recomendación» no va en cada cambio; la pone la pantalla.
         self.assertTrue(all("compr" not in x["texto"] and "vend" not in x["texto"] for x in s["senales"]))

@@ -280,6 +280,7 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
       'desde', 'hasta': el período (desde exclusive: las velas posteriores),
       'alcista': {'pct', 'semana_pasada': {'semana','pct'}|None} | None,
       'tenes': {'activos': con lectura, 'con_cambios'},
+      'watchlist': cuántos activos sigue,
       'senales': [{asset, ficha, local, tenes, watchlist, peso, tesis,
                    tipo, fecha, sentido, …números…, etiqueta, tono, texto, extra}],
     }
@@ -334,6 +335,7 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
         "desde": desde, "hasta": hoy.isoformat(),
         "alcista": alcista,
         "tenes": {"activos": con_lectura, "con_cambios": len(con_cambios)},
+        "watchlist": len(wl),
         "senales": senales,
     }
 

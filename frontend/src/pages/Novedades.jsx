@@ -1,4 +1,4 @@
-// Novedades — hub unificado de Eventos + Noticias.
+// Novedades — hub unificado de Eventos + Noticias + Tus señales.
 // ════════════════════════════════════════════════════════════════════════════
 // Reúne los dos bloques de "qué pasa en el mercado y en tu cartera". Reduce
 // la complejidad del navbar (en lugar de 2 items, 1).
@@ -6,16 +6,21 @@
 // Diseño: PageHeader con live-dot. Tabs outer prominentes con icono. Cada
 // sección hija (Events/News) maneja su propio KPI strip + sub-tabs en URL.
 //
+// «Tus señales» (pieza 15): qué cambió esta semana en lo tuyo y en tu
+// watchlist, el análisis técnico de cada uno (components/TusSenales.jsx). Es
+// adonde lleva el mail y la notificación de los sábados (?tab=senales).
+//
 // URL state:
-//   • ?tab=eventos|noticias  → sección activa (este componente)
+//   • ?tab=eventos|noticias|senales  → sección activa (este componente)
 //   • ?sub=…                 → sub-tab dentro de la sección (componente hijo)
 
 import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Calendar, Newspaper } from 'lucide-react'
+import { Activity, Calendar, Newspaper } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Events from './Events'
 import News from './News'
+import TusSenales from '../components/TusSenales'
 import AdvisorNovedades from './AdvisorNovedades'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
@@ -23,6 +28,7 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 const SECTIONS = [
   { value: 'eventos',  label: 'Eventos',  icon: Calendar },
   { value: 'noticias', label: 'Noticias', icon: Newspaper },
+  { value: 'senales',  label: 'Tus señales', icon: Activity },
 ]
 
 const DEFAULT_SECTION = 'eventos'
@@ -77,7 +83,7 @@ function PersonalNovedades() {
       <div
         role="tablist"
         aria-label="Secciones de Novedades"
-        className="flex items-center gap-1 mb-5 border-b border-line"
+        className="flex items-center gap-1 mb-5 border-b border-line overflow-x-auto"
       >
         {SECTIONS.map(s => {
           const Icon = s.icon
@@ -90,7 +96,7 @@ function PersonalNovedades() {
               aria-controls={`novedades-panel-${s.value}`}
               id={`novedades-tab-${s.value}`}
               onClick={() => selectSection(s.value)}
-              className={`group flex items-center gap-2 px-4 py-3 text-[15px] font-semibold border-b-2 -mb-px transition-colors ${
+              className={`group flex items-center gap-2 px-3 sm:px-4 py-3 text-[15px] font-semibold whitespace-nowrap border-b-2 -mb-px transition-colors ${
                 active
                   ? 'border-rendi-accent text-ink-0'
                   : 'border-transparent text-ink-2 hover:text-ink-0'
@@ -115,6 +121,7 @@ function PersonalNovedades() {
       >
         {section === 'eventos'  && <Events  embedded />}
         {section === 'noticias' && <News    embedded />}
+        {section === 'senales'  && <TusSenales />}
       </div>
     </div>
   )
