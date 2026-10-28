@@ -324,3 +324,84 @@ describe('en todos tus dispositivos', () => {
     expect(linea()).toHaveLength(1)
   })
 })
+
+describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos estiman»)', () => {
+  const capas = () => JSON.parse(localStorage.getItem('rendi_grafico_capas') || '{}')
+  const rotulos = () => todos(montado.contenedor, n => n.nodeName === 'SPAN' && n.getAttribute?.('data-rotulo') != null).map(n => texto(n))
+
+  it('la barra separa el automático de la herramienta a mano', async () => {
+    await dibujar()
+    expect(texto(boton('fib'))).toContain('Fibonacci automático')
+    expect(texto(boton('ell'))).toContain('Ondas de Elliott automáticas')
+    expect(texto(boton('fibonacci'))).toContain('Fibonacci a mano')
+    expect(texto(boton('elliott'))).toContain('Elliott a mano')
+  })
+
+  it('tu Fibonacci: dos toques (arranque y final del tramo), los niveles con su precio, guardado; apaga el automático', async () => {
+    await dibujar()
+    await usar('fibonacci')
+    expect(status()).toContain('Tocá donde arranca el tramo que querés medir')
+    await clickEn(300, 200)                                    // el pozo
+    expect(status()).toContain('Ahora tocá donde termina el tramo')
+    await clickEn(800, 50)                                     // el pico
+    const [f] = guardados()
+    expect(f.tipo).toBe('fibonacci')
+    expect(f.a).toMatchObject({ d: puntos[bajo(300)].d, mas: 0 })
+    expect(f.b).toMatchObject({ d: puntos[bajo(800)].d, mas: 0 })
+    // Los niveles: la misma cuenta que el automático, con el precio de cada uno.
+    const precio618 = f.b.precio - 0.618 * (f.b.precio - f.a.precio)
+    const r = rotulos().find(t => t.startsWith('61,8 % · '))
+    expect(r).toBeTruthy()
+    expect(num(r.replace('61,8 % · US$ ', ''))).toBeCloseTo(precio618, 1)
+    expect(rotulos().some(t => t.startsWith('Pico · '))).toBe(true)
+    expect(rotulos().some(t => t.startsWith('Arranque · '))).toBe(true)
+    expect(capas().fib).toBe(false)                            // el automático, apagado (se prende de nuevo desde la barra)
+    expect(boton('fibonacci').getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('cancelar a mitad de camino no apaga el automático ni guarda nada', async () => {
+    await dibujar()
+    await usar('fibonacci'); await clickEn(300, 200)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Cancelar')); await redibujar()
+    expect(guardados()).toEqual([])
+    expect(capas().fib).not.toBe(false)
+  })
+
+  it('tu conteo de Elliott: un toque por onda, «Terminar acá» cuando quieras; apaga el automático', async () => {
+    await dibujar()
+    await usar('elliott')
+    expect(status()).toContain('Tocá el arranque del conteo (el 0)')
+    await clickEn(100, 220)
+    expect(status()).not.toContain('Terminar acá')              // con el 0 solo no hay conteo
+    await clickEn(250, 120)
+    expect(status()).toContain('Ahora tocá la onda 2')
+    await clickEn(350, 170)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Terminar acá')); await redibujar()
+    const [e] = guardados()
+    expect(e.tipo).toBe('elliott')
+    expect(e.puntos.map(q => q.d)).toEqual([bajo(100), bajo(250), bajo(350)].map(i => puntos[i].d))
+    expect(rotulos().filter(t => /^[0-5ABC]$/.test(t))).toEqual(['0', '1', '2'])
+    expect(capas().ell).toBe(false)
+  })
+
+  it('al llegar a la C el conteo se termina solo', async () => {
+    await dibujar()
+    await usar('elliott')
+    for (let k = 0; k < 9; k++) await clickEn(100 + k * 80, k % 2 ? 80 : 200)
+    const [e] = guardados()
+    expect(e.puntos).toHaveLength(9)
+    expect(rotulos().filter(t => /^[0-5ABC]$/.test(t))).toEqual(['0', '1', '2', '3', '4', '5', 'A', 'B', 'C'])
+    expect(boton('elliott').getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('tocar uno de tus niveles elige tu Fibonacci y se borra entero', async () => {
+    await dibujar()
+    await usar('fibonacci'); await clickEn(300, 200); await clickEn(800, 50)
+    // El nivel del 50 %: a mitad de altura entre los dos toques.
+    await clickEn(900, 125)
+    expect(status()).toContain('Tu Fibonacci, elegido.')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Borrar este Fibonacci')); await redibujar()
+    expect(guardados()).toEqual([])
+    expect(rotulos().some(t => t.startsWith('61,8 %'))).toBe(false)
+  })
+})

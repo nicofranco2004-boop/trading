@@ -1,6 +1,9 @@
 // Dibujos a mano sobre el gráfico técnico, como en TradingView: líneas de
-// tendencia (de un punto a otro) y líneas horizontales (un precio). Pedido de
-// Nico, 24/10: «que vos con eso marcás tendencias», «que se guarden por activo».
+// tendencia (de un punto a otro), líneas horizontales (un precio), un Fibonacci
+// propio (el tramo que uno elige) y un conteo propio de ondas de Elliott. Pedido
+// de Nico, 24/10: «que vos con eso marcás tendencias», «que se guarden por
+// activo»; 28/10: Fibonacci y Elliott automáticos, pero «poder calcularlo como
+// ellos estiman».
 // ════════════════════════════════════════════════════════════════════════════
 // Se guardan en tu CUENTA, por activo y por moneda (en pesos y en dólares los
 // precios son otros), para verlos en todos tus dispositivos (Nico, 24/10):
@@ -21,13 +24,22 @@ const clave = (asset, moneda) => `rendi_dibujos:${String(asset || '').toUpperCas
 export const DIBUJOS_MAXIMOS = 60
 
 const numero = (x) => typeof x === 'number' && Number.isFinite(x)
-const punto = (p) => p && typeof p.d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(p.d)
+const punto = (p) => !!p && typeof p.d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(p.d)
   && Number.isInteger(p.mas) && p.mas >= 0 && numero(p.precio) && p.precio > 0
-/** ¿Es un dibujo que se puede dibujar? (lo guardado puede venir roto o de otra versión) */
+// Un conteo de Elliott a mano: el arranque (0), las cinco ondas y la corrección
+// A-B-C, uno por toque. Se puede terminar antes (un conteo que va por la 3).
+export const ETIQUETAS_ELLIOTT = ['0', '1', '2', '3', '4', '5', 'A', 'B', 'C']
+
+/** ¿Es un dibujo que se puede dibujar? (lo guardado puede venir roto o de otra versión)
+ *  horizontal: un precio · tendencia y fibonacci: dos puntos (a, b) ·
+ *  elliott: de 2 a 9 puntos, en el orden de ETIQUETAS_ELLIOTT. */
 export function dibujoValido(x) {
   if (!x || typeof x.id !== 'string') return false
   if (x.tipo === 'horizontal') return numero(x.precio) && x.precio > 0
-  if (x.tipo === 'tendencia') return punto(x.a) && punto(x.b)
+  if (x.tipo === 'tendencia' || x.tipo === 'fibonacci') return punto(x.a) && punto(x.b)
+  if (x.tipo === 'elliott') {
+    return Array.isArray(x.puntos) && x.puntos.length >= 2 && x.puntos.length <= ETIQUETAS_ELLIOTT.length && x.puntos.every(punto)
+  }
   return false
 }
 

@@ -141,6 +141,6 @@ describe('Fibonacci en la ficha', () => {
     expect(t).not.toContain('Fibonacci de la')
     expect(t).not.toContain('61,8 % ·')
     expect(buscarBoton(montado.contenedor, 'Fibonacci').getAttribute('aria-disabled')).toBe('true')
-    expect(await tocarFibonacci()).toContain('Fibonacci: Este activo todavía no tiene el cálculo del Fibonacci.')
+    expect(await tocarFibonacci()).toContain('Fibonacci automático: Este activo todavía no tiene el cálculo del Fibonacci.')
   })
 })

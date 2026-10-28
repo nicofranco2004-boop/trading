@@ -11597,8 +11597,9 @@ def get_tecnico_eventos(asset: str, moneda: str = "usd", local: int = 0,
 
 
 # ─── Dibujos a mano en el gráfico de la ficha ────────────────────────────────
-# Líneas de tendencia y horizontales, como TradingView (Nico, 24/10: «que se
-# guarden por activo», «en todos los dispositivos»). La pantalla manda la lista
+# Líneas de tendencia y horizontales, y Fibonacci y ondas de Elliott marcados a
+# mano, como TradingView (Nico, 24/10: «que se guarden por activo», «en todos
+# los dispositivos»; 28/10: Fibonacci y Elliott también a mano). La pantalla manda la lista
 # ENTERA cada vez que cambia (frontend/src/utils/dibujos.js): no hay que mezclar
 # nada acá. Son de quien los dibuja: un asesor mirando la cuenta de un cliente
 # guarda los suyos, no le escribe al cliente.
@@ -11612,19 +11613,28 @@ class _PuntoDibujo(BaseModel):
     precio: float = Field(gt=0, allow_inf_nan=False)
 
 
+# Un conteo de Elliott a mano: el 0, las ondas 1 a 5 y A, B, C (se puede cortar antes).
+_PUNTOS_ELLIOTT = 9
+
+
 class _Dibujo(BaseModel):
     id: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
-    tipo: Literal["tendencia", "horizontal"]
+    # «fibonacci» y «elliott»: los que la persona marca a mano en vez del
+    # automático (Nico, 28/10: «poder calcularlo como ellos estiman»).
+    tipo: Literal["tendencia", "horizontal", "fibonacci", "elliott"]
     precio: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
     a: Optional[_PuntoDibujo] = None
     b: Optional[_PuntoDibujo] = None
+    puntos: Optional[List[_PuntoDibujo]] = Field(None, max_length=_PUNTOS_ELLIOTT)
 
     @model_validator(mode="after")
     def _completo(self):
         if self.tipo == "horizontal" and self.precio is None:
             raise ValueError("una línea horizontal necesita su precio")
-        if self.tipo == "tendencia" and (self.a is None or self.b is None):
-            raise ValueError("una línea de tendencia necesita sus dos puntos")
+        if self.tipo in ("tendencia", "fibonacci") and (self.a is None or self.b is None):
+            raise ValueError("una línea de tendencia o un Fibonacci necesitan sus dos puntos")
+        if self.tipo == "elliott" and (not self.puntos or len(self.puntos) < 2):
+            raise ValueError("un conteo de Elliott necesita al menos el 0 y la onda 1")
         return self
 
 

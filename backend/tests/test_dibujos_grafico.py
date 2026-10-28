@@ -116,6 +116,22 @@ class DibujosGraficoTest(unittest.TestCase):
         self.assertEqual(self._leer(uid=asesor, cliente=self.yo), [T])
         self.assertEqual(self._leer(), [H], "el asesor le pisó los dibujos al cliente")
 
+    def test_fibonacci_y_elliott_a_mano(self):
+        fib = {"id": "f1", "tipo": "fibonacci", "a": T["a"], "b": T["b"]}
+        ell = {"id": "e1", "tipo": "elliott",
+               "puntos": [{"d": f"2026-0{m}-01", "mas": 0, "precio": 100.0 + m * 10} for m in range(1, 10)]}
+        r = self._guardar([fib, ell])
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._leer(), [fib, ell])
+        # Un conteo que va por la onda 1 (dos toques) también vale.
+        corto = {**ell, "id": "e2", "puntos": ell["puntos"][:2]}
+        self.assertEqual(self._guardar([corto]).status_code, 200)
+        for malo in ([{**ell, "puntos": ell["puntos"][:1]}],                       # sólo el 0
+                     [{**ell, "puntos": ell["puntos"] + ell["puntos"][:1]}],       # más de A-B-C
+                     [{"id": "f", "tipo": "fibonacci", "a": T["a"]}],              # sin el final del tramo
+                     [{**ell, "puntos": [*ell["puntos"][:2], {"d": "x", "mas": 0, "precio": 1}]}]):
+            self.assertEqual(self._guardar(malo).status_code, 422, malo)
+
     def test_lo_que_no_es_un_dibujo_se_rechaza(self):
         malos = [
             [{"id": "x", "tipo": "flecha", "precio": 1}],

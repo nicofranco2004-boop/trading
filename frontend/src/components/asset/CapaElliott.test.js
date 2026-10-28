@@ -107,7 +107,7 @@ describe('Ondas de Elliott en la ficha', () => {
     expect(boton.getAttribute('aria-disabled')).toBe('true')
     expect(boton.getAttribute('aria-pressed')).toBeNull()
     const aviso = await tocar('Ondas de Elliott')
-    expect(aviso).toContain('Ondas de Elliott: Con los picos y pozos de este activo no aparece ningún conteo')
+    expect(aviso).toContain('Ondas de Elliott automáticas: Con los picos y pozos de este activo no aparece ningún conteo')
     expect(aviso).not.toContain('Dejaría de valer')
   })
 

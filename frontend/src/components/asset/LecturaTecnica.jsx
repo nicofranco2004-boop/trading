@@ -34,11 +34,12 @@ import AssetMiniChart from '../home/AssetMiniChart'
 import BarraGrafico, { CAPAS_DE_FABRICA, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica } from './BarraGrafico'
 import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
 import CapaElliott, { COLOR_ELLIOTT, TarjetaElliott, fechaDelConteo, preciosDelConteo } from './CapaElliott'
+import CapaDibujos, { trazosDeDibujos } from './CapaDibujos'
 import { api } from '../../utils/api'
 import { factorDeFechas, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
 import { PRIORIDAD, taparRotulos } from '../../utils/rotulos'
 import {
-  DIBUJOS_MAXIMOS, copiaLocal, diaDelPunto, dibujoTocado, dibujosDelServidor, dibujosGuardados, guardarDibujos, idNuevo,
+  DIBUJOS_MAXIMOS, ETIQUETAS_ELLIOTT, copiaLocal, diaDelPunto, dibujoTocado, dibujosDelServidor, dibujosGuardados, guardarDibujos, idNuevo,
   marcarSubidos, precioRedondo, puntoDelDia, subirDibujos,
 } from '../../utils/dibujos'
 import {
@@ -143,15 +144,16 @@ export default function LecturaTecnica({
   // no por lugar en pantalla: sobreviven al zoom y al arrastre. a sin b =
   // esperando el segundo toque.
   const [medir, setMedirEstado] = useState({ activo: false, a: null, b: null })
-  // Dibujar (utils/dibujos.js): la herramienta elegida ('tendencia' u
-  // 'horizontal') y, en una línea de tendencia, el primer punto ya tocado. Una
-  // herramienta por vez: medir, dibujar una línea o ninguna.
-  const [dibujar, setDibujarEstado] = useState({ tipo: null, a: null })
-  const setMedir = (f) => { setDibujarEstado({ tipo: null, a: null }); setMedirEstado(f) }
+  // Dibujar (utils/dibujos.js): la herramienta elegida ('tendencia',
+  // 'horizontal', 'fibonacci' o 'elliott', las dos últimas «a mano») y los
+  // toques ya hechos ({ i, precio }). Una herramienta por vez: medir, dibujar o
+  // ninguna.
+  const [dibujar, setDibujarEstado] = useState({ tipo: null, puntos: [] })
+  const setMedir = (f) => { setDibujarEstado({ tipo: null, puntos: [] }); setMedirEstado(f) }
   const setDibujar = (f) => { setMedirEstado({ activo: false, a: null, b: null }); setDibujarEstado(f) }
   useEffect(() => {
     setMedirEstado(m => ({ ...m, a: null, b: null }))
-    setDibujarEstado(d => ({ ...d, a: null }))
+    setDibujarEstado(d => ({ ...d, puntos: [] }))
     setElegido(null)
   }, [moneda])
   // Tus dibujos, por moneda (en pesos y en dólares los precios son otros), y el
@@ -334,7 +336,7 @@ export default function LecturaTecnica({
     setVerEstado({ ...CAPAS_DE_FABRICA }); olvidarCapas()
     setTipoEstado('linea'); olvidarTipo()
     setMedirEstado({ activo: false, a: null, b: null })
-    setDibujarEstado({ tipo: null, a: null })
+    setDibujarEstado({ tipo: null, puntos: [] })
   }
   // Un toque en el gráfico (modo medir): el lugar `k` (puede caer en el
   // espacio vacío de la derecha) y el precio a esa altura. En velas semanales,
@@ -360,23 +362,39 @@ export default function LecturaTecnica({
   const tocar = (k, precio) => {
     if (!(precio > 0)) return
     const p = { i: diaDelLugar(k), precio }
+    const guardado = (q) => puntoDelDia(actual.puntos, q.i, q.precio)
     if (dibujar.tipo === 'horizontal') {
       cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'horizontal', precio: precioRedondo(precio) }])
-      setDibujarEstado({ tipo: null, a: null })     // una línea por vez, como TradingView
-    } else if (dibujar.tipo === 'tendencia') {
-      if (!dibujar.a) { setDibujarEstado({ tipo: 'tendencia', a: p }); return }
-      cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'tendencia',
-        a: puntoDelDia(actual.puntos, dibujar.a.i, dibujar.a.precio), b: puntoDelDia(actual.puntos, p.i, precio) }])
-      setDibujarEstado({ tipo: null, a: null })
+      setDibujarEstado({ tipo: null, puntos: [] })     // una línea por vez, como TradingView
+    } else if (dibujar.tipo === 'tendencia' || dibujar.tipo === 'fibonacci') {
+      if (!dibujar.puntos.length) { setDibujarEstado({ tipo: dibujar.tipo, puntos: [p] }); return }
+      cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: dibujar.tipo, a: guardado(dibujar.puntos[0]), b: guardado(p) }])
+      // Tu Fibonacci reemplaza al automático (si no, se mezclan las rayas);
+      // el automático se vuelve a prender desde su botón.
+      if (dibujar.tipo === 'fibonacci') setVer(x => ({ ...x, fib: false }))
+      setDibujarEstado({ tipo: null, puntos: [] })
+    } else if (dibujar.tipo === 'elliott') {
+      const puntos = [...dibujar.puntos, p]
+      if (puntos.length >= ETIQUETAS_ELLIOTT.length) terminarElliott(puntos)
+      else setDibujarEstado({ tipo: 'elliott', puntos })
     } else {
       setMedirEstado(m => (m.a && !m.b ? { ...m, b: p } : { activo: true, a: p, b: null }))
     }
   }
+  // Tu conteo de Elliott se termina con «Terminar» (uno que va por la onda 3)
+  // o solo, al llegar a la C. Como con el Fibonacci, apaga el automático.
+  function terminarElliott(puntos = dibujar.puntos) {
+    if (puntos.length >= 2) {
+      cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'elliott', puntos: puntos.map(q => puntoDelDia(actual.puntos, q.i, q.precio)) }])
+      setVer(x => ({ ...x, ell: false }))
+    }
+    setDibujarEstado({ tipo: null, puntos: [] })
+  }
   // Los dibujos en lo que se ve: cada punto en su lugar (`k`) y su precio.
-  const dibujosEnVista = misDibujos.map(d => (d.tipo === 'horizontal' ? d : {
-    ...d, a: { k: lugarDelDia(diaDelPunto(actual.puntos, d.a)), precio: d.a.precio },
-    b: { k: lugarDelDia(diaDelPunto(actual.puntos, d.b)), precio: d.b.precio },
-  }))
+  const enVista = (q) => ({ k: lugarDelDia(diaDelPunto(actual.puntos, q)), precio: q.precio })
+  const dibujosEnVista = misDibujos.map(d => (d.tipo === 'horizontal' ? d
+    : d.tipo === 'elliott' ? { ...d, puntos: d.puntos.map(enVista) }
+      : { ...d, a: enVista(d.a), b: enVista(d.b) }))
   const herramienta = medir.activo ? 'medir' : dibujar.tipo
   const medida = medir.activo ? medirEntre(actual.puntos, medir.a, medir.b) : null
   // Lo que dice un punto medido: su día, o cuántos días de mercado después de hoy.
@@ -448,11 +466,8 @@ export default function LecturaTecnica({
               className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-data-cyan/40 bg-data-cyan/10 px-3 py-2 text-[12.5px] text-ink-1 leading-relaxed">
               <span className="flex-1 min-w-[12rem]">
                 {borrarTodos ? `¿Borrar ${misDibujos.length === 1 ? 'tu dibujo' : `tus ${misDibujos.length} dibujos`} de este activo en ${moneda === 'usd' ? 'dólares' : 'pesos'}? No se puede deshacer.`
-                  : dibujar.tipo === 'horizontal' ? 'Tocá la altura del gráfico (el precio) donde va la línea horizontal.'
-                    : dibujar.tipo === 'tendencia' ? (dibujar.a
-                      ? 'Ahora tocá donde termina la línea (también podés tocar el espacio vacío de la derecha).'
-                      : 'Tocá donde empieza la línea de tendencia.')
-                      : `${misDibujos.find(d => d.id === elegido)?.tipo === 'horizontal' ? 'Línea horizontal' : 'Línea de tendencia'} elegida.`}
+                  : dibujar.tipo ? textoDibujando(dibujar)
+                    : ELEGIDO[misDibujos.find(d => d.id === elegido)?.tipo]?.[0]}
               </span>
               {borrarTodos ? (
                 <>
@@ -465,14 +480,20 @@ export default function LecturaTecnica({
                 <>
                   <button type="button" onClick={() => borrarDibujo(elegido)}
                     className="inline-flex items-center gap-1.5 min-h-10 sm:min-h-8 px-3 rounded-lg border border-rendi-neg/50 bg-rendi-neg/10 text-ink-0 font-medium">
-                    <Trash2 size={14} aria-hidden="true" />Borrar esta línea
+                    <Trash2 size={14} aria-hidden="true" />{ELEGIDO[misDibujos.find(d => d.id === elegido)?.tipo]?.[1] || 'Borrar esta línea'}
                   </button>
                   <button type="button" onClick={() => setElegido(null)}
                     className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-line-2 text-ink-1 hover:text-ink-0">Listo</button>
                 </>
               ) : (
-                <button type="button" onClick={() => setDibujarEstado({ tipo: null, a: null })}
-                  className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-line-2 text-ink-1 hover:text-ink-0">Cancelar</button>
+                <>
+                  {dibujar.tipo === 'elliott' && dibujar.puntos.length >= 2 && (
+                    <button type="button" onClick={() => terminarElliott()}
+                      className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-data-cyan/60 bg-data-cyan/15 text-ink-0 font-medium">Terminar acá</button>
+                  )}
+                  <button type="button" onClick={() => setDibujarEstado({ tipo: null, puntos: [] })}
+                    className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-line-2 text-ink-1 hover:text-ink-0">Cancelar</button>
+                </>
               )}
             </div>
           )}
@@ -495,7 +516,7 @@ export default function LecturaTecnica({
             } : null}
             onToque={herramienta ? tocar : null}
             dibujos={dibujosEnVista} elegido={elegido} onElegir={setElegido}
-            trazo={dibujar.a ? { k: lugarDelDia(dibujar.a.i), precio: dibujar.a.precio } : null} />
+            trazo={dibujar.puntos.length ? { tipo: dibujar.tipo, puntos: dibujar.puntos.map(q => ({ k: lugarDelDia(q.i), precio: q.precio })) } : null} />
           {rango === 'tuyo' && !ventana && primera && primera < actual.puntos[0].d && (
             <p className="text-[11.5px] text-ink-2 mt-1">Lo tenés desde el {fechaCorta(primera)}; el gráfico empieza el {fechaCorta(actual.puntos[0].d)}, que es lo que hay guardado.</p>
           )}
@@ -561,6 +582,34 @@ export default function LecturaTecnica({
       </p>
     </>
   )
+}
+
+// Lo que dice el cartel mientras se dibuja.
+function textoDibujando({ tipo, puntos }) {
+  if (tipo === 'horizontal') return 'Tocá la altura del gráfico (el precio) donde va la línea horizontal.'
+  if (tipo === 'tendencia') {
+    return puntos.length ? 'Ahora tocá donde termina la línea (también podés tocar el espacio vacío de la derecha).'
+      : 'Tocá donde empieza la línea de tendencia.'
+  }
+  if (tipo === 'fibonacci') {
+    return puntos.length ? 'Ahora tocá donde termina el tramo (el pico de la suba o el piso de la bajada).'
+      : 'Tocá donde arranca el tramo que querés medir (el pozo de una suba o el techo de una bajada). Al terminar se apaga el Fibonacci automático, para que no se mezclen.'
+  }
+  if (tipo === 'elliott') {
+    const sigue = ETIQUETAS_ELLIOTT[puntos.length]
+    return !puntos.length
+      ? 'Tocá el arranque del conteo (el 0). Después, una por una, las ondas 1 a 5 y, si querés, A, B y C. Al terminar se apaga el conteo automático.'
+      : `Ahora tocá la onda ${sigue}${puntos.length >= 2 ? ', o «Terminar acá» si tu conteo va por ahí' : ''}.`
+  }
+  return ''
+}
+
+// El cartel de un dibujo elegido: [qué es, el botón de borrar].
+const ELEGIDO = {
+  horizontal: ['Línea horizontal elegida.', 'Borrar esta línea'],
+  tendencia: ['Línea de tendencia elegida.', 'Borrar esta línea'],
+  fibonacci: ['Tu Fibonacci, elegido.', 'Borrar este Fibonacci'],
+  elliott: ['Tu conteo de Elliott, elegido.', 'Borrar este conteo'],
 }
 
 // «Últimos 2 años» o, si hay menos guardado, desde cuándo.
@@ -649,12 +698,12 @@ function botonesDeLaBarra({
       capa('vol', 'Volumen', <IconoVolumen />, actual.puntos.some(p => p.v > 0) ? null : 'Este activo no trae volumen en los datos de Yahoo.'),
       capa('s200', 'Promedio 200 días', <IconoLinea color={COLOR.media200} grueso />, hay('s200') ? null : 'Faltan datos: hacen falta 200 días de mercado.'),
       capa('s50', 'Promedio 50 días', <IconoLinea color={COLOR.media50} />, hay('s50') ? null : 'Faltan datos: hacen falta 50 días de mercado.'),
-      capa('fib', 'Fibonacci', <IconoFibonacci />, sinFib, () => {
+      capa('fib', 'Fibonacci automático', <IconoFibonacci />, sinFib, () => {
         // Al prenderlo, el gráfico se acerca al tramo medido (si se ve chico).
         if (!ver.fib) acercar(ventanaDelTramo(actual.puntos, fib, nVista))
         alternar('fib')
       }),
-      capa('ell', 'Ondas de Elliott', <IconoElliott />, sinEll, () => {
+      capa('ell', 'Ondas de Elliott automáticas', <IconoElliott />, sinEll, () => {
         if (!ver.ell) acercar(ventanaDesde(actual.puntos, fechaDelConteo(ell), nVista))
         alternar('ell')
       }),
@@ -680,11 +729,21 @@ function botonesDeLaBarra({
       { id: 'tendencia', nombre: 'Línea de tendencia', icono: <IconoTendencia />, activo: dibujar.tipo === 'tendencia', herramienta: true,
         sinDatos: cuantosDibujos >= DIBUJOS_MAXIMOS ? `Llegaste a ${DIBUJOS_MAXIMOS} dibujos en este activo: borrá alguno para hacer otro.` : null,
         estado: dibujar.tipo === 'tendencia' ? 'Tocá dos puntos del gráfico' : 'De un punto a otro, para marcar una tendencia',
-        onClick: () => setDibujar(d => (d.tipo === 'tendencia' ? { tipo: null, a: null } : { tipo: 'tendencia', a: null })) },
+        onClick: () => setDibujar(d => (d.tipo === 'tendencia' ? { tipo: null, puntos: [] } : { tipo: 'tendencia', puntos: [] })) },
       { id: 'horizontal', nombre: 'Línea horizontal', icono: <IconoHorizontal />, activo: dibujar.tipo === 'horizontal', herramienta: true,
         sinDatos: cuantosDibujos >= DIBUJOS_MAXIMOS ? `Llegaste a ${DIBUJOS_MAXIMOS} dibujos en este activo: borrá alguno para hacer otro.` : null,
         estado: dibujar.tipo === 'horizontal' ? 'Tocá la altura del precio' : 'Un precio que querés vigilar (un soporte, un techo)',
-        onClick: () => setDibujar(d => (d.tipo === 'horizontal' ? { tipo: null, a: null } : { tipo: 'horizontal', a: null })) },
+        onClick: () => setDibujar(d => (d.tipo === 'horizontal' ? { tipo: null, puntos: [] } : { tipo: 'horizontal', puntos: [] })) },
+      // Fibonacci y Elliott como uno los estima (Nico, 28/10): al terminarlos
+      // se apaga el automático, que se vuelve a prender desde su botón.
+      { id: 'fibonacci', nombre: 'Fibonacci a mano', icono: <IconoFibonacci color={COLOR.dibujo} />, activo: dibujar.tipo === 'fibonacci', herramienta: true,
+        sinDatos: cuantosDibujos >= DIBUJOS_MAXIMOS ? `Llegaste a ${DIBUJOS_MAXIMOS} dibujos en este activo: borrá alguno para hacer otro.` : null,
+        estado: dibujar.tipo === 'fibonacci' ? 'Tocá dónde arranca y dónde termina el tramo' : 'Marcá vos el tramo: dos toques',
+        onClick: () => setDibujar(d => (d.tipo === 'fibonacci' ? { tipo: null, puntos: [] } : { tipo: 'fibonacci', puntos: [] })) },
+      { id: 'elliott', nombre: 'Elliott a mano', icono: <IconoElliott color={COLOR.dibujo} />, activo: dibujar.tipo === 'elliott', herramienta: true,
+        sinDatos: cuantosDibujos >= DIBUJOS_MAXIMOS ? `Llegaste a ${DIBUJOS_MAXIMOS} dibujos en este activo: borrá alguno para hacer otro.` : null,
+        estado: dibujar.tipo === 'elliott' ? 'Tocá el 0 y después cada onda' : 'Contá vos las ondas, toque por toque',
+        onClick: () => setDibujar(d => (d.tipo === 'elliott' ? { tipo: null, puntos: [] } : { tipo: 'elliott', puntos: [] })) },
       { id: 'borrarDibujos', nombre: 'Borrar mis dibujos', icono: <Trash2 size={17} />,
         sinDatos: cuantosDibujos ? null : 'Todavía no dibujaste nada en este activo (en esta moneda).',
         estado: `${cuantosDibujos === 1 ? 'Tu dibujo' : `Tus ${cuantosDibujos} dibujos`} de este activo. Para borrar uno solo, tocalo en el gráfico.`,
@@ -727,9 +786,9 @@ function IconoVolumen() {
     </svg>
   )
 }
-function IconoFibonacci() {
+function IconoFibonacci({ color = COLOR_FIB }) {
   return (
-    <svg width="18" height="18" viewBox="0 0 18 18" stroke={COLOR_FIB} strokeWidth="1.6" strokeLinecap="round">
+    <svg width="18" height="18" viewBox="0 0 18 18" stroke={color} strokeWidth="1.6" strokeLinecap="round">
       <line x1="1" y1="3" x2="17" y2="3" />
       <line x1="1" y1="7.5" x2="17" y2="7.5" strokeDasharray="2.5 2" />
       <line x1="1" y1="11" x2="17" y2="11" strokeDasharray="2.5 2" />
@@ -737,11 +796,11 @@ function IconoFibonacci() {
     </svg>
   )
 }
-function IconoElliott() {
+function IconoElliott({ color = COLOR_ELLIOTT }) {
   return (
     <svg width="18" height="18" viewBox="0 0 18 18">
-      <path d="M1 15 4.5 8 7 11 11.5 3 14 7 17 5" fill="none" stroke={COLOR_ELLIOTT} strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" />
-      <circle cx="11.5" cy="3" r="1.6" fill={COLOR_ELLIOTT} />
+      <path d="M1 15 4.5 8 7 11 11.5 3 14 7 17 5" fill="none" stroke={color} strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" />
+      <circle cx="11.5" cy="3" r="1.6" fill={color} />
     </svg>
   )
 }
@@ -1117,11 +1176,9 @@ function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tip
     onToque(k, precio)
     return true
   }
-  // Tus dibujos en pantalla: una horizontal va de borde a borde; una de
-  // tendencia, de su punto a su punto (fuera de lo que se ve, el SVG la corta).
-  const trazos = dibujos.map(d => (d.tipo === 'horizontal'
-    ? { id: d.id, tipo: d.tipo, x1: 0, y1: pctY(d.precio), x2: 100, y2: pctY(d.precio), precio: d.precio }
-    : { id: d.id, tipo: d.tipo, x1: pctX(d.a.k), y1: pctY(d.a.precio), x2: pctX(d.b.k), y2: pctY(d.b.precio) }))
+  // Tus dibujos en pantalla (CapaDibujos.jsx), como trazos: para saber a cuál
+  // se le tocó encima y para el precio de las horizontales en la columna.
+  const trazos = trazosDeDibujos(dibujos, pctX, pctY)
   // Un click (o un toque) sin herramienta, cerca de un dibujo: lo elige (para
   // borrarlo); lejos de todos, suelta el que estaba elegido.
   function elegirEn(clientX, clientY, radio) {
@@ -1305,28 +1362,9 @@ function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tip
 
           <CapaFibonacci fib={fibonacci} puntos={puntos} pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
           <CapaElliott elliott={elliott} puntos={puntos} pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
-          {/* Tus dibujos, y la línea que se está dibujando (hasta el mouse). */}
-          {(trazos.length > 0 || trazo) && (
-            <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="pointer-events-none absolute inset-0 w-full h-full" aria-hidden="true">
-              {trazos.map(t => (
-                <line key={t.id} data-dibujo={t.id} x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2} stroke={COLOR.dibujo}
-                  strokeWidth={t.id === elegido ? 3 : 1.8} strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-              ))}
-              {trazo && cursor?.precio != null && (
-                <line x1={pctX(trazo.k)} y1={pctY(trazo.precio)} x2={pctX(cursor.k)} y2={pctY(cursor.precio)} stroke={COLOR.dibujo}
-                  strokeWidth="1.8" strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />
-              )}
-            </svg>
-          )}
-          {/* Las puntas: la del primer toque mientras se dibuja, y las de la línea elegida. */}
-          {[
-            ...(trazo ? [{ k: 'trazo', x: pctX(trazo.k), y: pctY(trazo.precio) }] : []),
-            ...trazos.filter(t => t.id === elegido && t.tipo === 'tendencia')
-              .flatMap(t => [{ k: 'a', x: t.x1, y: t.y1 }, { k: 'b', x: t.x2, y: t.y2 }]),
-          ].filter(p => p.x >= 0 && p.x <= 100 && p.y >= 0 && p.y <= 100).map(p => (
-            <span key={p.k} aria-hidden="true" className="pointer-events-none absolute w-2.5 h-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-bg-1"
-              style={{ left: `${p.x}%`, top: `${p.y}%`, background: COLOR.dibujo }} />
-          ))}
+          {/* Tus dibujos, y lo que se está dibujando (hasta el mouse). */}
+          <CapaDibujos dibujos={dibujos} elegido={elegido} trazo={trazo} cursor={onToque ? cursor : null}
+            pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
           {/* Marcas y el punto del mouse van en HTML: un círculo dentro de un
               SVG estirado (preserveAspectRatio=none) se deformaría en óvalo. */}
           {visibles.map((m, k) => (

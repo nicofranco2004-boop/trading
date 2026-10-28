@@ -2,8 +2,9 @@
 // punto queda en su día y qué línea se tocó.
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest'
 import { instalarNavegadorMinimo } from '../testing/navegadorMinimo'
+import { fibonacciAMano, rayas } from './fibonacci'
 import {
-  DIBUJOS_MAXIMOS, copiaLocal, diaDelPunto, dibujoTocado, dibujoValido, dibujosGuardados, distanciaASegmento, guardarDibujos,
+  DIBUJOS_MAXIMOS, ETIQUETAS_ELLIOTT, copiaLocal, diaDelPunto, dibujoTocado, dibujoValido, dibujosGuardados, distanciaASegmento, guardarDibujos,
   marcarSubidos, puntoDelDia,
 } from './dibujos'
 
@@ -116,5 +117,30 @@ describe('qué línea se tocó', () => {
     expect(dibujoTocado(trazos, 40, 52)).toBe('a')
     expect(dibujoTocado(trazos, 40, 80)).toBeNull()
     expect(dibujoTocado(trazos, 40, 70, 16)).toBe('b')           // con el dedo, más margen
+  })
+})
+
+describe('Fibonacci y Elliott a mano', () => {
+  const p = (d, precio) => ({ d, mas: 0, precio })
+  it('tu Fibonacci usa la misma cuenta que el automático (backend/estructura.py: hasta − r × (hasta − desde))', () => {
+    const f = fibonacciAMano(100, 200)
+    expect(f.dir).toBe('suba')
+    expect(f.niveles.find(n => n.nivel === 0.618).precio).toBeCloseTo(138.2, 9)
+    expect(rayas(f).map(r => r.precio)).toEqual([200, 176.4, 161.8, 150, 138.2, 121.4, 100].map(x => expect.closeTo(x, 9)))
+    const b = fibonacciAMano(200, 100)                   // una bajada: del techo al piso
+    expect(b.dir).toBe('bajada')
+    expect(b.niveles.find(n => n.nivel === 0.382).precio).toBeCloseTo(138.2, 9)
+  })
+
+  it('qué se puede guardar', () => {
+    const a = p('2026-10-01', 100), b = p('2026-10-20', 130)
+    expect(dibujoValido({ id: 'f', tipo: 'fibonacci', a, b })).toBe(true)
+    expect(dibujoValido({ id: 'f', tipo: 'fibonacci', a })).toBe(false)
+    const puntos = ETIQUETAS_ELLIOTT.map((_, k) => p('2026-10-01', 100 + k))
+    expect(dibujoValido({ id: 'e', tipo: 'elliott', puntos })).toBe(true)
+    expect(dibujoValido({ id: 'e', tipo: 'elliott', puntos: puntos.slice(0, 2) })).toBe(true)
+    expect(dibujoValido({ id: 'e', tipo: 'elliott', puntos: puntos.slice(0, 1) })).toBe(false)
+    expect(dibujoValido({ id: 'e', tipo: 'elliott', puntos: [...puntos, puntos[0]] })).toBe(false)
+    expect(dibujoValido({ id: 'e', tipo: 'elliott', puntos: [...puntos.slice(0, 2), { d: 'x' }] })).toBe(false)
   })
 })
