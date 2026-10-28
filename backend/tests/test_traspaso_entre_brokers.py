@@ -162,6 +162,23 @@ class ElPapelNoQuedaEnLosDosBrokers(_Base):
         self.assertEqual(self.qty(self.NUEVO_N, "VIST"), 21.0,
                          "el broker nuevo tiene que conservar lo que recibió")
 
+    def test_el_gasto_cobrado_en_dolares_no_manda_el_cierre_a_la_caja_en_dolares(self):
+        """Si Bull Market cobró el trámite en DÓLARES, la señal de salida queda en
+        "Bull Market · USD" y el cierre (venta + retiro EN PESOS) se asentaba ahí:
+        pesos en la caja en dólares, que el confirm ahora frena con un 409 que
+        tumbaba el import entero de Balanz. Va a la pata de su moneda."""
+        viejo_usd = VIEJO.replace(b"22/01/24;DTRT;257047;1210;;;GTOS. TRANS. TITULOS\n",
+                                  b"22/01/24;DTRT;257047;12000;12;U$S;GTOS. TRANS. TITULOS\n")
+        self.importar(viejo_usd, self.VIEJO_N, "bullmarket")
+        self.assertTrue(self.conn.execute(
+            "SELECT 1 FROM brokers WHERE user_id=? AND name=?",
+            (self.uid, f"{self.VIEJO_N} · USD")).fetchone(), "el gasto en dólares armó la pata")
+        propuestos = self.importar(NUEVO, self.NUEVO_N, "balanz_movimientos", aprobar=["VIST"])
+        self.assertEqual({p["broker"] for p in propuestos}, {self.VIEJO_N})
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST") +
+                         self.qty(f"{self.VIEJO_N} · USD", "VIST"), 0.0)
+        self.assertEqual(self.qty(self.NUEVO_N, "VIST"), 21.0)
+
     def test_se_propone_con_su_motivo(self):
         self.importar(VIEJO, self.VIEJO_N, "bullmarket")
         prop = self.importar(NUEVO, self.NUEVO_N, "balanz_movimientos", aprobar=[])

@@ -8,6 +8,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { CurrencyProvider } from './contexts/CurrencyContext'
 import { PrivacyProvider } from './contexts/PrivacyContext'
+import { ModoRendimientoProvider } from './contexts/ModoRendimientoContext'
 import { CoachDrawerProvider } from './contexts/CoachDrawerContext'
 import { AlertsProvider } from './contexts/AlertsContext'
 import { AdvisorProvider, useAdvisorContext } from './contexts/AdvisorContext'
@@ -514,6 +515,7 @@ export default function App() {
       <AuthProvider>
         <CurrencyProvider>
           <PrivacyProvider>
+          <ModoRendimientoProvider>
           <CoachDrawerProvider>
           <VozProvider>
             <div className="min-h-screen bg-bg-0 text-ink-0">
@@ -541,6 +543,7 @@ export default function App() {
             </div>
           </VozProvider>
           </CoachDrawerProvider>
+          </ModoRendimientoProvider>
           </PrivacyProvider>
         </CurrencyProvider>
       </AuthProvider>
