@@ -1350,15 +1350,28 @@ def load_session_with_seed_revalidate(
         (session_id,),
     ).fetchall()
 
+    # Las filas SINTÉTICAS (row_index negativo: los cierres por traspaso de
+    # `traspasos.py`, las de la foto de tenencia) no salieron del archivo: su
+    # fila cruda es un resumen, no algo que el normalizador sepa leer. Releerlas
+    # las tiraba por "fecha inválida" sin avisar, y con ellas el tilde de
+    # "Títulos que venían de otro broker tuyo": la persona marcaba, completaba
+    # sus datos, confirmaba, y el papel seguía en los dos brokers (2026-10-23).
+    # Se toman tal cual las dejó la previsualización, como hace el confirm sin
+    # datos completados (`load_session_for_confirm`).
+    sinteticas = [t for t in load_session_for_confirm(conn, uid=uid, session_id=session_id)[0]
+                  if t.row_index < 0]
+
     raw_rows: List[RawRow] = []
     raw_id_by_index: Dict[int, int] = {}
     for r in raw_rows_db:
+        raw_id_by_index[r["row_index"]] = r["id"]
+        if r["row_index"] < 0:
+            continue
         try:
             data = json.loads(r["raw_json"]) if r["raw_json"] else {}
         except json.JSONDecodeError:
             data = {}
         raw_rows.append(RawRow(row_index=r["row_index"], data=data))
-        raw_id_by_index[r["row_index"]] = r["id"]
 
     # Re-normalizar
     normalized, _ = normalize_rows(raw_rows)
@@ -1388,6 +1401,7 @@ def load_session_with_seed_revalidate(
         existing_positions=existing_with_seed,
         route_by_currency=route_currency,
     )
+    valid_txs += sinteticas
 
     # Reemplazar el contenido de import_normalized_tx con la nueva validación.
     # Las filas previamente válidas + las promovidas por el seed quedan ahí;

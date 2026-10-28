@@ -240,12 +240,75 @@ class ListaDeCambiosTest(unittest.TestCase):
         _armar_lista()
 
 
+class ParNoPorElNombreTest(unittest.TestCase):
+    """AGRO.BA es Agrometal; AGRO en Nueva York es Adecoagro. Emparejarlos por el
+    nombre daba un «cambio de ratio confirmado ×8» que el aviso le ofrecía a quien
+    tiene Agrometal (medido por la auditoría de la ficha, 22/10/2026)."""
+
+    def test_sin_par_no_hay_cociente(self):
+        _armar_lista()
+        conn = main.get_db()
+        try:
+            # Las velas de XLE están las dos ('XLE' y 'XLE.BA'), pero sin par
+            # declarado se leen como una acción argentina: sin cociente.
+            cambios_ratio.recalcular(conn, ["XLE"], pares={}, byma=_byma,
+                                     splits=lambda t: SPLITS_YAHOO.get(t, []))
+            self.assertEqual(cambios_ratio.confirmados(conn, "XLE"), [])
+        finally:
+            conn.close()
+        _armar_lista()
+
+    def test_los_pares_salen_de_saber_que_es_un_cedear(self):
+        from unittest import mock
+        conn = main.get_db()
+        try:
+            uid = conn.execute("INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+                               (f"par-{uuid.uuid4().hex[:8]}@rendi.test", "x")).lastrowid
+            conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)", (uid, "IOL", "ARS"))
+            for asset, tipo in (("AGRO", "STOCK"), ("XLE", "CEDEAR")):
+                conn.execute(
+                    """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
+                           invested, entry_date, asset_type, currency)
+                       VALUES (?,?,?,0,100,1,100,'2026-01-02',?,'ARS')""", (uid, "IOL", asset, tipo))
+            conn.execute("INSERT INTO watchlist (user_id, symbol, asset_type) VALUES (?,?,?)",
+                         (uid, "AGRO", "STOCK"))      # Adecoagro, en Nueva York
+            conn.commit()
+            with mock.patch("main._fetch_data912_equities", lambda: {}):
+                tickers, pares = velas_diarias._seguimiento(conn)
+        finally:
+            conn.close()
+        self.assertIn("AGRO", tickers)
+        self.assertIn("AGRO.BA", tickers)
+        self.assertEqual(pares.get("XLE.BA"), "XLE")
+        self.assertNotIn("AGRO.BA", pares)
+
+
+def _interruptor(encendido: bool):
+    """El aviso nuevo está detrás de un interruptor de /admin (apagado de entrada)."""
+    conn = main.get_db()
+    try:
+        conn.execute("INSERT INTO interruptores (nombre, encendido) VALUES (?, ?) "
+                     "ON CONFLICT(nombre) DO UPDATE SET encendido=excluded.encendido",
+                     (main.AVISO_RATIO_NUEVO, 1 if encendido else 0))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 class _ConUsuario(unittest.TestCase):
+    """El aviso NUEVO: con el interruptor encendido (lo de apagado está en
+    tests/test_interruptor_ratio.py)."""
+
     @classmethod
     def setUpClass(cls):
         _armar_lista()
 
+    @classmethod
+    def tearDownClass(cls):
+        _interruptor(False)
+
     def setUp(self):
+        _interruptor(True)
         self.http = TestClient(main.app)
         conn = main.get_db()
         self.uid = conn.execute(

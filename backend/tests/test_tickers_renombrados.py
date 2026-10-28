@@ -72,6 +72,12 @@ class TestGoldEsBSoloAlImportar(unittest.TestCase):
         self.assertEqual(ticker_importado("gold.ba"), "B.BA")
         self.assertEqual(ticker_importado("SQ"), "XYZ", "el renombre general sigue")
 
+    def test_la_on_canjeada_entra_como_la_nueva(self):
+        # Cresud Clase XXIII → XXXVIII (8/7/2022): ver RENOMBRADOS_AL_IMPORTAR.
+        self.assertEqual(ticker_importado("CSDOO"), "CS38O")
+        self.assertEqual(ticker_vigente("CSDOO"), "CSDOO")
+        self.assertEqual(tickers_renombrados.codigos_anteriores("CS38O"), ["CSDOO"])
+
     def test_lo_que_la_persona_tipea_no_se_toca(self):
         self.assertEqual(ticker_vigente("GOLD"), "GOLD")
         self.assertEqual(main.WatchlistAddIn(symbol="GOLD").symbol, "GOLD")
