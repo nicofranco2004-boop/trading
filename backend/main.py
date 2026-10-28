@@ -15582,16 +15582,33 @@ def _ensure_usd_sibling(conn, uid: int, parent_broker_row) -> dict:
     if sibling:
         return dict(sibling)
     sibling_name = f"{parent_name} · USD"
-    # Si por algún motivo ya existe un broker con ese nombre (sin parent), lo
-    # reutilizamos asignándole parent.
+    # Si ya existe un broker con ese nombre (lo creó la persona a mano), se lo
+    # adopta: padre y moneda USDT, con la caja cambiando de moneda junto con él
+    # (`escrituras_para_cambiar_moneda`). Hasta 2026-10-28 cambiaba sólo
+    # `brokers.currency`: un "Cocos · USD" creado en pesos, con $100.000, quedaba
+    # en dólares con su caja marcada 'ARS', y los US$500 que entraban se sumaban
+    # ahí ("100.500"). Si tiene pesos no se adopta: no hay forma de pasarlo a
+    # dólares sin cambiarle el sentido a lo que tiene. Todo lo que crea la pata
+    # pasa por acá (import, foto, conversiones, cargas a mano), así que el
+    # rechazo vale para todas las puertas; cada una corre en una transacción y
+    # el 409 la deshace entera.
     existing = conn.execute(
         "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, sibling_name)
     ).fetchone()
     if existing:
+        if not _import_pipeline.se_puede_adoptar_como_pata_usd(conn, uid, existing, parent_id):
+            raise HTTPException(409, (
+                f"Ya tenés un broker que se llama «{sibling_name}» y no es la cuenta en "
+                f"dólares de «{parent_name}» (tiene movimientos en pesos, o es de otro "
+                f"broker). Rendi usa ese nombre para los dólares de «{parent_name}». "
+                f"Renombralo en Configuración → Brokers y volvé a intentar."))
         conn.execute(
-            "UPDATE brokers SET parent_broker_id=?, currency='USDT' WHERE id=? AND user_id=?",
+            "UPDATE brokers SET parent_broker_id=? WHERE id=? AND user_id=?",
             (parent_id, existing['id'], uid),
         )
+        for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(
+                uid, sibling_name, 'USDT'):
+            conn.execute(_sql, _params)
         return dict(conn.execute(
             "SELECT * FROM brokers WHERE id=? AND user_id=?", (existing['id'], uid)
         ).fetchone())

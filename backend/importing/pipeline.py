@@ -625,6 +625,23 @@ def que_hacer_con_pesos(conn, uid: int, user_brokers, nombre: str) -> str:
     return "curar"
 
 
+def se_puede_adoptar_como_pata_usd(conn, uid: int, existente, padre_id: int) -> bool:
+    """¿El broker `existente`, que ya se llama "<Padre> · USD", puede pasar a ser la
+    sub-cuenta en dólares del broker `padre_id`? (`_ensure_usd_sibling`, main.py)
+
+    Adoptarlo lo pasa a USDT. Eso sólo no cambia el sentido de lo que tiene si ya
+    era en dólares, o si está vacío (la caja en cero que crea el alta no cuenta,
+    igual que en `que_hacer_con_pesos`). Uno en pesos con datos NO: sus pesos
+    quedarían en una cuenta en dólares, y los dólares que entraran después se
+    sumarían a ellos (medido: $100.000 + US$500 = "100.500" en una caja 'ARS' de
+    un broker USDT). Tampoco el que ya es la sub-cuenta de OTRO broker."""
+    if existente["parent_broker_id"] not in (None, padre_id):
+        return False
+    if (existente["currency"] or "").upper() in ("USD", "USDT"):
+        return True
+    return not broker_tiene_datos(conn, uid, existente["name"])
+
+
 def escrituras_para_cambiar_moneda(uid: int, nombre: str, moneda: str) -> List[tuple]:
     """Las escrituras que cambian la moneda de un broker: la del broker y las DOS
     marcas de moneda de su caja, que la acompañan siempre.
