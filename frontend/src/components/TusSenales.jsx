@@ -58,11 +58,12 @@ function Tarjeta({ t, children }) {
 
 function Cambio({ s, hidden, onVer }) {
   return (
-    <li className="flex flex-col sm:flex-row sm:items-start gap-2.5 sm:gap-3.5 py-3 border-t border-line/60 first:border-t-0">
-      <span className={`self-start inline-block text-[12px] font-medium rounded-full px-2.5 py-1 whitespace-nowrap sm:min-w-[150px] sm:text-center ${PASTILLA[s.tono] || PASTILLA.adx}`}>
+    // Celular: la pastilla arriba y el botón al costado del texto; compu: en fila.
+    <li className="grid grid-cols-[1fr_auto] sm:grid-cols-[150px_1fr_auto] gap-x-3 sm:gap-x-3.5 gap-y-1.5 items-start py-3 border-t border-line/60 first:border-t-0">
+      <span className={`col-span-2 sm:col-span-1 justify-self-start sm:justify-self-stretch text-[12px] font-medium rounded-full px-2.5 py-1 whitespace-nowrap sm:text-center ${PASTILLA[s.tono] || PASTILLA.adx}`}>
         {s.etiqueta}
       </span>
-      <div className="flex-1 min-w-0 flex flex-col gap-1">
+      <div className="min-w-0 flex flex-col gap-1">
         <p className="text-[14px] leading-snug text-ink-0">
           <b className="font-semibold">{s.asset}</b> {s.texto}
         </p>
@@ -71,7 +72,7 @@ function Cambio({ s, hidden, onVer }) {
         <p className={`text-[12px] ${s.tenes ? 'text-data-violet' : 'text-ink-2'}`}>{deQuien(s, hidden)}</p>
       </div>
       <button type="button" onClick={() => onVer(s)}
-        className="self-start flex-none text-[13px] font-medium text-ink-1 bg-bg-2/60 border border-line rounded-full px-3.5 py-1.5 min-h-[34px] hover:text-ink-0 hover:border-rendi-accent/40 transition">
+        className="self-end sm:self-start text-[13px] font-medium text-ink-1 bg-bg-2/60 border border-line rounded-full px-3.5 py-1.5 min-h-[34px] hover:text-ink-0 hover:border-rendi-accent/40 transition">
         {boton(s)}
       </button>
     </li>

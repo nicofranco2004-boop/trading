@@ -74,7 +74,7 @@ function PersonalNovedades() {
     <div className="page-shell-wide">
       <PageHeader
         title="Novedades"
-        subtitle="Eventos financieros y noticias del mercado — todo en un solo lugar."
+        subtitle="Eventos, noticias del mercado y lo que cambió en lo tuyo — todo en un solo lugar."
         meta="Google News + yfinance"
       />
 
@@ -83,7 +83,7 @@ function PersonalNovedades() {
       <div
         role="tablist"
         aria-label="Secciones de Novedades"
-        className="flex items-center gap-1 mb-5 border-b border-line overflow-x-auto"
+        className="flex items-center gap-0.5 sm:gap-1 mb-5 border-b border-line overflow-x-auto scrollbar-none"
       >
         {SECTIONS.map(s => {
           const Icon = s.icon
@@ -96,7 +96,7 @@ function PersonalNovedades() {
               aria-controls={`novedades-panel-${s.value}`}
               id={`novedades-tab-${s.value}`}
               onClick={() => selectSection(s.value)}
-              className={`group flex items-center gap-2 px-3 sm:px-4 py-3 text-[15px] font-semibold whitespace-nowrap border-b-2 -mb-px transition-colors ${
+              className={`group flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-3 text-[14px] sm:text-[15px] font-semibold whitespace-nowrap border-b-2 -mb-px transition-colors ${
                 active
                   ? 'border-rendi-accent text-ink-0'
                   : 'border-transparent text-ink-2 hover:text-ink-0'
