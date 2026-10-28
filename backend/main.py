@@ -5911,6 +5911,10 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
             ).fetchone()
             if not parent:
                 raise HTTPException(400, "Broker padre inválido")
+            # Una sub-cuenta es la pata en DÓLARES de su padre (el mismo motivo
+            # que el PUT, que no deja pasarla a pesos).
+            if data.currency == "ARS":
+                raise HTTPException(400, "Una sub-cuenta va en dólares (USD o USDT).")
         try:
             # El tope se hace cumplir ACÁ, no en el chequeo de arriba: entre
             # contar y escribir entraban cinco pedidos. Ver
@@ -6205,6 +6209,19 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
                 detail={
                     "code": "sibling_rename_forbidden",
                     "message": "El sub-broker USD se renombra automáticamente con su broker padre.",
+                },
+            )
+        # 2.1) Ni se pasa a pesos: es la caja en dólares de su padre. Pasarla
+        #      remarcaba sus dólares como pesos (US$500 → $500) y después ningún
+        #      dólar podía volver a entrar a la cuenta (`por_que_no_hay_pata_usd`),
+        #      con la única salida —volver a ponerla en dólares— remarcando como
+        #      dólares los pesos que hubieran entrado mientras tanto.
+        if is_sibling and new_currency == "ARS" and row["currency"] != "ARS":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "sibling_currency_forbidden",
+                    "message": "Es la cuenta en dólares de su broker: siempre está en dólares.",
                 },
             )
 
@@ -15626,16 +15643,33 @@ def _ensure_usd_sibling(conn, uid: int, parent_broker_row) -> dict:
     if sibling:
         return dict(sibling)
     sibling_name = f"{parent_name} · USD"
-    # Si por algún motivo ya existe un broker con ese nombre (sin parent), lo
-    # reutilizamos asignándole parent.
+    # Si ya existe un broker con ese nombre (lo creó la persona a mano, o un
+    # import), se lo adopta: padre y moneda USDT, con la caja cambiando de moneda
+    # junto con él (`escrituras_para_cambiar_moneda`). Hasta 2026-10-28 cambiaba
+    # sólo `brokers.currency`: un "Cocos · USD" creado en pesos, con $100.000,
+    # quedaba en dólares con su caja marcada 'ARS', y los US$500 que entraban se
+    # sumaban ahí ("100.500"). Si no se puede adoptar sin cambiarle el sentido a
+    # lo que tiene, 409 con el motivo (`por_que_no_hay_pata_usd`). Todo lo que
+    # crea la pata pasa por acá (import, foto, conversiones, cargas a mano, chat,
+    # compra grupal): el rechazo vale para todas las puertas, y cada una lo
+    # deshace en su transacción. La única que no es la conversión importada
+    # (`persister._persist_fx`), que corre en el SAVEPOINT de su fila; no se
+    # llega, porque el ruteo del mismo import (`persister.persist_batch`) crea la
+    # pata antes y, si no puede, rechaza el lote.
+    motivo = _import_pipeline.por_que_no_hay_pata_usd(conn, uid, parent_broker_row)
+    if motivo:
+        raise HTTPException(409, motivo)
     existing = conn.execute(
         "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, sibling_name)
     ).fetchone()
     if existing:
         conn.execute(
-            "UPDATE brokers SET parent_broker_id=?, currency='USDT' WHERE id=? AND user_id=?",
+            "UPDATE brokers SET parent_broker_id=? WHERE id=? AND user_id=?",
             (parent_id, existing['id'], uid),
         )
+        for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(
+                uid, sibling_name, 'USDT'):
+            conn.execute(_sql, _params)
         return dict(conn.execute(
             "SELECT * FROM brokers WHERE id=? AND user_id=?", (existing['id'], uid)
         ).fetchone())
@@ -42611,6 +42645,14 @@ def import_tenencia_preview(
                 raise HTTPException(400, f"«{broker}» es la cuenta en dólares de «{_padre}». "
                                          f"Esta foto trae pesos: subila al broker «{_padre}» "
                                          f"(sus dólares van solos a «{broker}»).")
+            _padre_de_nombre = broker[:-len(" · USD")] if broker.endswith(" · USD") else None
+            if (_accion == "rechazar" and _padre_de_nombre
+                    and (_ub.get(_padre_de_nombre) or {}).get("currency") == "ARS"):
+                # "Cocos · USD" sin padre todavía: el primer dólar de "Cocos" la
+                # adopta (`por_que_no_hay_pata_usd`), así que no se cura a pesos.
+                raise HTTPException(400, f"«{broker}» es el nombre de la cuenta en dólares de "
+                                         f"«{_padre_de_nombre}». Esta foto trae pesos: subila "
+                                         f"al broker «{_padre_de_nombre}».")
             if _accion == "rechazar":
                 raise HTTPException(400, (
                     f"Tu broker «{broker}» está en dólares y esta foto trae pesos: Rendi no "
@@ -50979,7 +51021,16 @@ def _advisor_group_op_apply(uid: int, asset: str, asset_type, currency, entry_da
             # (_pata_de_la_moneda, adentro de _insert_manual_position), igual que
             # una compra del propio cliente. Pesos en un broker en dólares, no.
             if batch_ccy and _ccy_family(batch_ccy) == "USD" and bc == "ARS":
-                pass
+                # Salvo que ese cliente no pueda tener la pata (un "· USD" suyo en
+                # pesos con movimientos): `_ensure_usd_sibling` rechazaría con 409
+                # y, como todo se aplica en UNA transacción, se caía el lote de
+                # todos los clientes por uno solo.
+                _padre = conn.execute("SELECT id, name FROM brokers WHERE user_id=? AND name=?",
+                                      (cid, row["broker"])).fetchone()
+                _motivo = _import_pipeline.por_que_no_hay_pata_usd(conn, cid, _padre)
+                if _motivo:
+                    skipped.append({"client_uid": cid, "reason": _motivo})
+                    continue
             elif batch_ccy and _ccy_family(batch_ccy) != _ccy_family(bc):
                 hint = ""
                 skipped.append({"client_uid": cid,
