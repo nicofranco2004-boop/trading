@@ -190,8 +190,12 @@ class ListaTecnicaTest(unittest.TestCase):
         self.assertEqual(contar.call_args.args[1], desde, "el año se cuenta desde hoy, no desde la última vela")
         with main.db_abierta() as conn:
             velas = tecnico.serie(conn, "MSFT", "usd")["velas"]
+        import senales_semana
         esperado = tecnico.cambios_desde(velas, desde)[0]
-        self.assertEqual(x["ultimo_cambio"], esperado)
+        self.assertEqual(x["ultimo_cambio"], {**esperado, **senales_semana.texto_del_cambio(esperado)},
+                         "el cambio y sus palabras: los mismos de «Tus señales»")
+        self.assertEqual(x["ultimo_cambio"]["etiqueta"], "Tendencia de fondo")
+        self.assertTrue(x["ultimo_cambio"]["texto"].startswith("pasó arriba de su promedio de 200 días"))
         self.assertEqual(x["ultimo_cambio"]["tipo"], "media200")
         self.assertEqual(x["ultimo_cambio"]["sentido"], "arriba")
         self.assertEqual(x["ultimo_cambio"]["fecha"], self.dias[n - 3].isoformat())

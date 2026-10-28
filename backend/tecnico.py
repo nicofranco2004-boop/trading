@@ -568,7 +568,7 @@ DIAS_CAMBIOS = 7
 MAX_ACTIVOS_CARTERA = 200
 
 
-def para_la_cartera(conn, activos: list) -> list:
+def para_la_cartera(conn, activos: list, hoy: date = None) -> list:
     """La lectura en DÓLARES de varios activos, para la radiografía de la Cartera.
 
     `activos`: [(asset, local)], con `local` igual que en la ficha (acción
@@ -576,9 +576,10 @@ def para_la_cartera(conn, activos: list) -> list:
     `lectura` que la ficha (así las palabras salen de la misma regla) y
     `cambios`: lo que cambió en los últimos `DIAS_CAMBIOS` días (`cambios_desde`,
     la misma cuenta que «Tus señales»). Sin velas: `disponible` False, nunca se
-    inventa."""
+    inventa. `hoy` (día argentino) lo pasa quien ya tiene su reloj: el resumen
+    de los sábados."""
     from fechas import hoy_art_date
-    desde = (hoy_art_date() - timedelta(days=DIAS_CAMBIOS)).isoformat()
+    desde = ((hoy or hoy_art_date()) - timedelta(days=DIAS_CAMBIOS)).isoformat()
     out = []
     for a, local, velas in _series_en_dolares(conn, activos):
         if not velas:
@@ -618,10 +619,13 @@ DIAS_ULTIMO_CAMBIO = DIAS_ANIO
 
 def _ultimo_cambio(velas: list, desde: str):
     """El cambio más reciente desde `desde`, de `cambios_desde` (la cuenta
-    ÚNICA de cruces, la de «Tus señales»; ya viene el más nuevo primero).
-    None si no hubo."""
+    ÚNICA de cruces, la de «Tus señales»; ya viene el más nuevo primero), con
+    sus palabras de `senales_semana.texto_del_cambio` (las mismas de «Tus
+    señales» y del mail de los sábados: etiqueta, tono, texto, extra). None si
+    no hubo."""
+    from senales_semana import texto_del_cambio   # acá: senales_semana importa tecnico
     cambios = cambios_desde(velas, desde) if velas else []
-    return cambios[0] if cambios else None
+    return {**cambios[0], **texto_del_cambio(cambios[0])} if cambios else None
 
 
 def para_la_lista(conn, activos: list) -> list:

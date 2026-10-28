@@ -119,7 +119,7 @@ describe('las filas, con la valuación de la Cartera', () => {
   })
 
   it('velas de hace más de 10 días: sin lectura, con su fecha, y sin último cambio', () => {
-    const vieja = lec('MSFT', false, { fecha: '2026-10-10' }, { ultimo_cambio: { fecha: '2026-10-08', texto: 'Pasó arriba del de 50' } })
+    const vieja = lec('MSFT', false, { fecha: '2026-10-10' }, { ultimo_cambio: { fecha: '2026-10-08', texto: 'pasó arriba de su promedio de 50 días: el corto plazo se volvió alcista.' } })
     const f = filasDeLaLista({ lotes: [], valorDe, seguidos: [{ symbol: 'MSFT' }], indice: indexarLecturas([vieja]), hoy: HOY })
     expect(f[0]).toMatchObject({ vigente: false, porque: 'vieja', rsi: null, adx: null, cambio: null })
     expect(f[0].motivo).toContain('10/10/2026')
@@ -129,9 +129,35 @@ describe('las filas, con la valuación de la Cartera', () => {
   })
 
   it('el último cambio: el de la cuenta única, con hace cuánto', () => {
-    const x = lec('TSLA', false, {}, { ultimo_cambio: { fecha: '2026-10-21', texto: 'El ADX pasó 23' } })
+    // Como lo manda el servidor: cambios_desde + senales_semana.texto_del_cambio.
+    const x = lec('TSLA', false, {}, { ultimo_cambio: {
+      tipo: 'media50', sentido: 'abajo', fecha: '2026-10-21', etiqueta: 'Corto plazo', tono: 'neg',
+      texto: 'quedó abajo de su promedio de 50 días: el corto plazo se volvió bajista.', extra: null } })
     const f = filasDeLaLista({ lotes: [], valorDe, seguidos: [{ symbol: 'TSLA' }], indice: indexarLecturas([x]), hoy: HOY })
-    expect(f[0].cambio).toEqual({ texto: 'El ADX pasó 23', fecha: '2026-10-21', hace: 'hace 3 días' })
+    expect(f[0].cambio).toEqual({
+      corta: 'Quedó abajo de su promedio de 50 días',
+      completa: 'Quedó abajo de su promedio de 50 días: el corto plazo se volvió bajista.',
+      tono: 'neg', fecha: '2026-10-21', hace: 'hace 3 días',
+    })
+    // La aclaración de «cayó muy rápido» (la posibilidad de rebote) va al globo.
+    const rsi = lec('KO', false, {}, { ultimo_cambio: {
+      tipo: 'rsi_bajo_30', fecha: '2026-10-23', tono: 'rsi', texto: 'tiene la fuerza (RSI) en 25.', extra: 'Es una posibilidad, no una certeza.' } })
+    const g = filasDeLaLista({ lotes: [], valorDe, seguidos: [{ symbol: 'KO' }], indice: indexarLecturas([rsi]), hoy: HOY })
+    expect(g[0].cambio).toMatchObject({ corta: 'Tiene la fuerza (RSI) en 25', completa: 'Tiene la fuerza (RSI) en 25. Es una posibilidad, no una certeza.', hace: 'ayer' })
+  })
+
+  it('dos filas con el mismo ticker dicen dónde cotiza cada una', () => {
+    const lotes = [
+      { id: 1, broker: 'IOL', asset: 'GGAL', asset_type: 'ACCION' },
+      { id: 2, broker: 'Schwab', asset: 'GGAL', asset_type: 'STOCK' },
+      { id: 3, broker: 'Schwab', asset: 'KO', asset_type: 'STOCK' },
+    ]
+    const f = filasDeLaLista({ lotes, valorDe: () => 100, seguidos: [{ symbol: 'BTC-USD' }], indice: new Map(), hoy: HOY })
+    const por = Object.fromEntries(f.map(x => [x.clave, x]))
+    expect(por['GGAL|1'].detalle).toBe('en BYMA')
+    expect(por['GGAL|0'].detalle).toBe('en Nueva York')
+    expect(por['KO|0'].detalle).toBeUndefined()
+    expect(por['BTC|0'].nombre).toBe('BTC')
   })
 })
 

@@ -73,9 +73,17 @@ export function haceCuanto(fecha, hoy = hoyISO()) {
   return m >= 12 ? 'hace un año' : `hace ${m} meses`
 }
 
-/** El cambio en palabras: las que manda la cuenta única (`texto`). */
+/**
+ * El cambio en palabras, las que manda el servidor (`senales_semana.texto_del_cambio`,
+ * las mismas de «Tus señales» y del mail de los sábados). En la celda va la
+ * frase hasta los dos puntos («Pasó arriba de su promedio de 200 días»); la
+ * entera, con su aclaración (`extra`), en el globo. null sin texto.
+ */
 export function textoDelCambio(c) {
-  return c?.texto || null
+  if (!c?.texto) return null
+  const mayus = (t) => t.charAt(0).toUpperCase() + t.slice(1)
+  const corta = c.texto.split(':')[0].replace(/\.$/, '')
+  return { corta: mayus(corta), completa: [mayus(c.texto), c.extra].filter(Boolean).join(' '), tono: c.tono || null }
 }
 
 /**
@@ -109,7 +117,7 @@ export function filasDeLaLista({ lotes = [], valorDe, extra = [], seguidos = [],
       adx: l?.adx != null ? { valor: l.adx, texto: fmtAdx(l.adx), palabra: l.adx >= ADX_CLAVE ? 'marcada' : 'de costado' } : null,
       desdeMax: l?.dist_maximo_12m != null ? { pct: l.dist_maximo_12m, enMaximo: l.dist_maximo_12m >= -0.1, anioCompleto: !!l.anio_completo } : null,
       linea,
-      cambio: c?.fecha ? { texto: textoDelCambio(c), fecha: c.fecha, hace: haceCuanto(c.fecha, hoy) } : null,
+      cambio: c?.fecha ? { ...textoDelCambio(c), fecha: c.fecha, hace: haceCuanto(c.fecha, hoy) } : null,
     })
   }
   for (const [k, a] of porActivo) {

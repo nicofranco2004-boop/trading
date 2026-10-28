@@ -134,6 +134,9 @@ function Corto({ corto }) {
   return <PildoraTendencia id={corto.palabra === 'Alcista' ? 'alcista' : 'bajista'} palabra={corto.palabra} motivo={corto.motivo} />
 }
 
+// El color del cambio, el de su pastilla en «Tus señales» (`tono` del servidor).
+const TONO_CAMBIO = { pos: 'text-rendi-pos', neg: 'text-rendi-neg' }
+
 // Columnas que ordenan al tocarlas: la de cada opción de «Ordenar por».
 const COLUMNA_DE = { peso: 'tenes', fuerza: 'rsi', maximo: 'maximo', cambio: 'cambio' }
 
@@ -256,10 +259,10 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
                   <td className="px-3 py-2.5 min-w-[200px] text-[13px]">
                     {!f.vigente ? <span className="text-ink-2">{f.motivo}</span>
                       : f.cambio ? (
-                        <>
-                          {f.cambio.texto && <span className="text-ink-0">{f.cambio.texto}</span>}
-                          <span className="text-[12px] text-ink-2">{f.cambio.texto ? ' · ' : ''}{f.cambio.hace}</span>
-                        </>
+                        <span title={f.cambio.completa}>
+                          {f.cambio.corta && <span className={TONO_CAMBIO[f.cambio.tono] || 'text-ink-0'}>{f.cambio.corta}</span>}
+                          <span className="text-[12px] text-ink-2">{f.cambio.corta ? ' · ' : ''}{f.cambio.hace}</span>
+                        </span>
                       ) : <span className="text-ink-3">—</span>}
                   </td>
                 </tr>

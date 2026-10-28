@@ -25,7 +25,9 @@ const LOTES = [
 ]
 const filas = filasDeLaLista({
   lotes: LOTES, valorDe: p => (p.asset === 'MELI' ? 120 : 880), seguidos: [{ symbol: 'TSLA' }],
-  indice: indexarLecturas([lec('MELI', false), lec('TSLA', false, { adx: 12 }), { asset: 'AL30', local: true, disponible: false }]),
+  indice: indexarLecturas([lec('MELI', false, {}, { ultimo_cambio: {
+    tipo: 'media200', sentido: 'arriba', fecha: hoy, etiqueta: 'Tendencia de fondo', tono: 'pos', extra: null,
+    texto: 'pasó arriba de su promedio de 200 días: la tendencia de fondo se volvió alcista.' } }), lec('TSLA', false, { adx: 12 }), { asset: 'AL30', local: true, disponible: false }]),
 })
 const dibujar = (oculto = false) => renderToStaticMarkup(
   <MemoryRouter><TablaLista filas={filas} oculto={oculto} /></MemoryRouter>,
@@ -50,6 +52,8 @@ describe('Tu lista: la tabla', () => {
     expect(t).toContain('31 marcada')
     expect(t).toContain('12 de costado')
     expect(t).toContain('−24,3%')
+    expect(t).toContain('Pasó arriba de su promedio de 200 días · hoy')
+    expect(dibujar()).toContain('title="Pasó arriba de su promedio de 200 días: la tendencia de fondo se volvió alcista."')
   })
 
   it('el bono va «Sin lectura» y dice por qué; las filas abren la ficha', () => {

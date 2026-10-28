@@ -2430,6 +2430,34 @@ def init_db():
             conn.executescript(
                 "ALTER TABLE market_brief_log ADD COLUMN narrative TEXT;")
 
+        # «Tus señales» (pieza 15, senales_semana.py). La preferencia del
+        # resumen de los sábados: sin fila, 'no' — opt-in, como el resumen del
+        # mercado. Y el % de la plata en tendencia alcista de cada sábado: la
+        # «semana pasada» de la pestaña y del mail. Para atrás no se reconstruye.
+        # La fila se escribe ANTES de mandar: re-correr no manda dos veces.
+        # El índice va DESPUÉS de crear la tabla con sus columnas (el orden que
+        # rompió producción el 2026-08-02).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS resumen_semanal_prefs (
+                user_id INTEGER PRIMARY KEY,
+                canal TEXT NOT NULL DEFAULT 'no',   -- 'mail' | 'push' | 'ambos' | 'no'
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS tendencia_semanal (
+                user_id INTEGER NOT NULL,
+                semana TEXT NOT NULL,                -- el sábado, día ARGENTINO
+                pct_alcista REAL,                    -- NULL: ningún activo con lectura
+                cambios INTEGER NOT NULL DEFAULT 0,
+                canal TEXT,                          -- por dónde se mandó (NULL: no se mandó)
+                push_ok INTEGER,
+                mail_ok INTEGER,
+                created_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (user_id, semana)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tendencia_semanal_semana ON tendencia_semanal(semana);
+        """)
+
         # Grupos de clientes del asesor: filtros GUARDADOS y dinámicos (se
         # recalculan solos). `rules` es JSON con las condiciones; `excluded` la
         # lista de client_uid sacados a mano del resultado.
@@ -5234,6 +5262,10 @@ _RESET_PORTFOLIO_TABLES = (
     # Es parte de `monthly_entries`: un reset que borra la suma y deja el detalle
     # dejaría renglones que no suman a nada.
     "flujos_a_mano",
+    # Agregada 2026-10-24 (pieza 15): el % semanal en tendencia alcista es de
+    # ESTA cartera. Sin borrarlo, la cuenta vaciada mostraba «la semana pasada
+    # era 61 %» de la cartera de antes.
+    "tendencia_semanal",
 )
 # Keys de config que son de CARTERA (se borran); el resto —onboarding,
 # welcome_email_sent_at, diag_*— son prefs de UX y sobreviven. Borrar fx_version
@@ -5261,6 +5293,8 @@ _RESET_CONFIG_KEYS = ("fx_version", "tc_blue", "tc_mep")
 _RESET_ADMIN_EXTRA_TABLES = (
     "alerts", "alert_events", "watchlist",
     "user_broker_credentials", "import_mappings",
+    # Cómo le llega el resumen de los sábados (pieza 15): lo configuró.
+    "resumen_semanal_prefs",
 )
 
 
@@ -11516,6 +11550,39 @@ def post_tecnico_lista(body: CarteraTecnicaIn, uid: int = Depends(get_effective_
     «sin lectura» sin tirar abajo el resto."""
     import tecnico
     return _lecturas_tecnicas(body, tecnico.para_la_lista)
+
+
+@app.get("/api/tecnico/semana")
+def get_tecnico_semana(uid: int = Depends(get_effective_user)):
+    """«Tus señales» (Mercado → Novedades): lo que cambió en los últimos 7 días
+    corridos, contados desde HOY, en lo que tenés y en tu watchlist; el % de tu
+    plata en tendencia alcista y el del sábado anterior si está guardado; y cómo
+    te llega el resumen de los sábados. La misma cuenta que el mail
+    (senales_semana.armar_semana)."""
+    import senales_semana
+    from fechas import hoy_art_date
+    with db_abierta() as conn:
+        out = senales_semana.armar_semana(conn, uid, hoy_art_date())
+        out["canal"] = senales_semana.canal(conn, uid)
+    return out
+
+
+class ResumenSemanalIn(BaseModel):
+    canal: str = Field(..., pattern="^(mail|push|ambos|no)$")
+
+
+@app.put("/api/tecnico/semana/canal")
+def put_tecnico_semana_canal(data: ResumenSemanalIn, uid: int = Depends(get_effective_user)):
+    """Cómo le llega el resumen de los sábados: Mail / Notificación / Las dos /
+    No quiero. Sin fila es 'no' (opt-in)."""
+    with db_abierta() as conn:
+        conn.execute(
+            """INSERT INTO resumen_semanal_prefs (user_id, canal) VALUES (?, ?)
+               ON CONFLICT(user_id) DO UPDATE
+                 SET canal = excluded.canal, updated_at = datetime('now')""",
+            (uid, data.canal))
+        conn.commit()
+    return {"ok": True, "canal": data.canal}
 
 
 @app.get("/api/admin/velas")
@@ -48036,6 +48103,30 @@ def alerts_events_seen(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+def _resumen_semanal_job(conn, now=None) -> dict:
+    """Una pasada del resumen de los sábados, con su guarda propia: un error acá
+    no puede dejar sin evaluar las alertas del libro que vienen después."""
+    import senales_semana
+    try:
+        if not senales_semana.toca(now or datetime.utcnow()):
+            return {"esperando": "sábados desde las 10:00"}
+        if "velas_diarias" in _corridas_en_curso:
+            return {"esperando": "las velas se están guardando"}
+        if not _tomar_corrida("resumen_semanal"):
+            return {"esperando": "ya hay una corrida en curso"}
+        try:
+            return senales_semana.correr_si_toca(conn, now)
+        finally:
+            _soltar_corrida("resumen_semanal")
+    except Exception as _ex:
+        log.error("resumen semanal en el cron: %s", _ex, exc_info=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {"error": str(_ex)}
+
+
 def _evaluar_alertas_job() -> dict:
     """Una corrida de las alertas: las de precio y las del libro del asesor."""
     import alerts_engine as _ae
@@ -48075,6 +48166,11 @@ def _evaluar_alertas_job() -> dict:
                 conn.rollback()
             except Exception:
                 pass
+        # El resumen de «Tus señales» (senales_semana.py): sábados desde las
+        # 10:00 de Argentina. Adentro se fija si es la hora; cada persona tiene
+        # su fila de la semana, así que las pasadas siguientes no mandan nada.
+        # No mientras se guardan las velas (la misma razón que las técnicas).
+        result["semana"] = _resumen_semanal_job(conn)
         # Mismo ciclo: las alertas del LIBRO del asesor (movimiento de la
         # cartera de un cliente) se evalúan acá → el asesor no tiene que dar
         # de alta ningún cron nuevo.
