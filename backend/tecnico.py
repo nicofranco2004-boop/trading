@@ -1,8 +1,8 @@
 """Lectura técnica de un activo: medias, fuerza del movimiento y máximo del año.
 
 QUÉ ES. Toma las velas que guarda `velas_diarias` y arma, para la ficha del
-activo, la serie del gráfico (precio, media de 50, media de 200, RSI, ADX y
-Squeeze) y los números de la lectura (dónde está el precio contra cada media,
+activo, la serie del gráfico (precio, media de 50, media de 200, Bandas de
+Bollinger, RSI, ADX y Squeeze) y los números de la lectura (dónde está el precio contra cada media,
 hacia dónde va la de 200, el RSI, la fuerza de la tendencia y la distancia al
 máximo de 12 meses). Las PALABRAS ("alcista",
 "muy estirado") las pone la pantalla; acá van sólo los números, en un lugar.
@@ -159,6 +159,10 @@ RUEDAS_CRUCE_ADX = 10
 # (`para_la_cartera`, que llega en su propia rama) pide la lectura de cada activo
 # y no usa el Squeeze.
 VELAS_SQUEEZE_LECTURA = 60
+# Bandas de Bollinger: el «de costumbre» del ancho es la mediana de los últimos
+# 6 meses corridos, con al menos 60 días medidos.
+DIAS_ANCHO_BB = 182
+MIN_ANCHOS_BB = 60
 
 
 def _velas_completas(velas: list):
@@ -376,10 +380,28 @@ def _desde_dias(velas: list, dias: int) -> int:
     return len(velas)
 
 
-def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None) -> dict:
+def _ancho_relativo(bb: dict, velas: list):
+    """El ancho de las bandas de hoy contra el de costumbre: el ancho (arriba −
+    abajo, en % del promedio) ÷ la MEDIANA de ese ancho en los últimos
+    `DIAS_ANCHO_BB` días corridos. 1 = como siempre; 0,5 = la mitad de ancho (el
+    precio se movió mucho menos que de costumbre). None con menos de
+    `MIN_ANCHOS_BB` días medidos o si el ancho de costumbre es 0."""
+    def ancho(i):
+        m = bb["media"][i]
+        return (bb["arriba"][i] - bb["abajo"][i]) / m if (m is not None and m > 0) else None
+    hoy = ancho(len(velas) - 1) if velas else None
+    anchos = sorted(a for a in (ancho(i) for i in range(_desde_dias(velas, DIAS_ANCHO_BB), len(velas))) if a is not None)
+    if hoy is None or len(anchos) < MIN_ANCHOS_BB:
+        return None
+    k = len(anchos) // 2
+    mediana = anchos[k] if len(anchos) % 2 else (anchos[k - 1] + anchos[k]) / 2
+    return hoy / mediana if mediana > 0 else None
+
+
+def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=None) -> dict:
     """Los números de la lectura técnica sobre la última vela. Las medias, el
-    RSI, el ADX y el Squeeze se pueden pasar ya calculados (la ficha los calcula
-    para el gráfico)."""
+    RSI, el ADX, el Squeeze y las Bollinger se pueden pasar ya calculados (la
+    ficha los calcula para el gráfico)."""
     cierres = [v["close"] for v in velas]
     n = len(cierres)
     if not n:
@@ -392,8 +414,10 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None) -> dic
         cola = squeeze(velas[-VELAS_SQUEEZE_LECTURA:])
         relleno = [None] * (len(velas) - len(cola["valor"]))
         sqz = {k: relleno + lista for k, lista in cola.items()}
+    bb = bb if bb is not None else bollinger(cierres)
     a = dmi["adx"]
     ultimo = cierres[-1]
+    bb_arriba, bb_abajo = bb["arriba"][-1], bb["abajo"][-1]
     i_anio = _desde_dias(velas, DIAS_ANIO)
     anio = velas[i_anio:]
     # El máximo y el mínimo del año, de CIERRE contra CIERRE: el pico dentro del
@@ -432,6 +456,14 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None) -> dic
         "squeeze": sqz["valor"][-1],
         "squeeze_color": sqz["color"][-1],
         "squeeze_activo": sqz["activo"][-1],
+        "bb_arriba": bb_arriba,
+        "bb_abajo": bb_abajo,
+        # Dónde está el precio entre las bandas: 0 en la de abajo, 1 en la de
+        # arriba; menos de 0 o más de 1, afuera. None si las bandas no se
+        # separan (un precio que no se movió en 20 días).
+        "bb_posicion": ((ultimo - bb_abajo) / (bb_arriba - bb_abajo))
+        if (bb_arriba is not None and bb_arriba > bb_abajo) else None,
+        "bb_ancho_relativo": _ancho_relativo(bb, velas),
     }
 
 
@@ -560,7 +592,7 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         "ticker": s["ticker"],
         "convertida": s["convertida"],
         "puntos": puntos,
-        "lectura": lectura(velas, m50, m200, r, dmi, sqz),
+        "lectura": lectura(velas, m50, m200, r, dmi, sqz, bb),
         # El último cierre del instrumento con el que se valúa tu tenencia
         # (`ref`): la pantalla lo compara con el precio en vivo para que la línea
         # de tu precio no se corra lo que se movió hoy (auditoría 22/10).

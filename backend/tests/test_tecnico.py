@@ -36,6 +36,7 @@ import pandas as pd
 from fastapi.testclient import TestClient
 
 import main
+import estructura
 import tecnico
 from fechas import hoy_art_date
 
@@ -131,6 +132,63 @@ class CuentasTest(unittest.TestCase):
         self.assertEqual(tecnico.rsi(sube)[-1], 100.0)
         baja = [float(i) for i in range(40, 1, -1)]
         self.assertEqual(tecnico.rsi(baja)[-1], 0.0)
+
+    def test_bollinger_igual_a_tradingview_hecho_con_pandas(self):
+        # `ta.bb` de TradingView: promedio de 20 ± 2 desvíos POBLACIONALES
+        # (ddof=0); con el desvío muestral de pandas por defecto no da igual.
+        import random
+        random.seed(9)
+        xs, x = [], 100.0
+        for _ in range(300):
+            x *= 1 + random.gauss(0, 0.02)
+            xs.append(x)
+        bb = tecnico.bollinger(xs)
+        s = pd.Series(xs)
+        m, d = s.rolling(20).mean(), s.rolling(20).std(ddof=0)
+        for k, nombre, ref in (("media", "media", m), ("arriba", "arriba", m + 2 * d), ("abajo", "abajo", m - 2 * d)):
+            for i, (a, b) in enumerate(zip(bb[k], ref.tolist())):
+                if b != b:
+                    self.assertIsNone(a, f"{nombre} {i}")
+                else:
+                    self.assertAlmostEqual(a, b, places=9, msg=f"{nombre} {i}")
+        self.assertIsNone(bb["arriba"][18])
+        self.assertIsNotNone(bb["arriba"][19])
+
+    def test_lectura_de_las_bandas(self):
+        # 200 días que van y vienen ±1 y al final un salto: el precio queda
+        # arriba de la banda de arriba y las bandas se abren.
+        cierres = [100 + (1 if i % 2 else -1) for i in range(200)] + [110]
+        velas = [{"date": (date(2025, 1, 1) + timedelta(days=i)).isoformat(), "close": c} for i, c in enumerate(cierres)]
+        l = tecnico.lectura(velas)
+        bb = tecnico.bollinger(cierres)
+        self.assertEqual((l["bb_arriba"], l["bb_abajo"]), (bb["arriba"][-1], bb["abajo"][-1]))
+        self.assertGreater(l["bb_posicion"], 1, "cerró arriba de la banda de arriba")
+        self.assertGreater(l["bb_ancho_relativo"], 1.5, "las bandas, más anchas que de costumbre")
+        # En el medio de un ir y venir parejo: posición ~0,5, ancho como siempre.
+        quieto = tecnico.lectura(velas[:-1])
+        self.assertAlmostEqual(quieto["bb_posicion"], 0.5, delta=0.3)
+        self.assertAlmostEqual(quieto["bb_ancho_relativo"], 1.0, places=6)
+        # Un precio que no se movió: las bandas no se separan, no hay posición.
+        plano = [{"date": (date(2025, 1, 1) + timedelta(days=i)).isoformat(), "close": 50.0} for i in range(100)]
+        self.assertIsNone(tecnico.lectura(plano)["bb_posicion"])
+        self.assertIsNone(tecnico.lectura(plano)["bb_ancho_relativo"])
+        # Pocos días: sin bandas, sin inventar.
+        corto = tecnico.lectura(velas[:15])
+        self.assertIsNone(corto["bb_arriba"])
+        self.assertIsNone(corto["bb_posicion"])
+
+    def test_el_squeeze_usa_las_mismas_bandas(self):
+        # Una sola cuenta: con el 2 de verdad (sin el error de LazyBear), «apretado»
+        # es exactamente «las bandas de la ficha caben dentro de las de Keltner».
+        velas = _velas_al_azar(200, 4)
+        hs, ls, cs = tecnico._velas_completas(velas)
+        bb = tecnico.bollinger(cs)
+        tr = tecnico._rango_verdadero(hs, ls, cs)
+        sq = tecnico.squeeze(velas, como_lazybear=False)
+        for i in range(20, len(cs)):
+            rango = sum(tr[i - 19:i + 1]) / 20
+            esperado = bb["abajo"][i] > bb["media"][i] - 1.5 * rango and bb["arriba"][i] < bb["media"][i] + 1.5 * rango
+            self.assertEqual(sq["activo"][i], esperado, i)
 
 
 def _velas_al_azar(n, semilla):
@@ -507,6 +565,7 @@ class FichaTest(unittest.TestCase):
         with main.db_abierta() as conn:
             velas = tecnico.serie(conn, "AAPL", "usd")["velas"]
         d, s = tecnico.adx(velas), tecnico.squeeze(velas)
+        b = tecnico.bollinger([v["close"] for v in velas])
         por_dia = {v["date"]: i for i, v in enumerate(velas)}
         # Desde ficha-tecnica `DIAS_GRAFICO = DIAS_GUARDADOS`: el gráfico lleva
         # TODA la historia guardada (antes arrancaba después de 200 días).
@@ -517,6 +576,9 @@ class FichaTest(unittest.TestCase):
             self.assertEqual(q["adx"], round(d["adx"][i], 2) if d["adx"][i] is not None else None, q["d"])
             self.assertEqual(q["squeeze"], float(f"{s['valor'][i]:.6g}") if s["valor"][i] is not None else None, q["d"])
             self.assertEqual(q["squeeze_color"], s["color"][i], q["d"])
+            for k in ("arriba", "abajo"):
+                esperado = estructura.precio_redondo(b[k][i])
+                self.assertEqual(q[f"bb_{k}"], esperado, q["d"])
         self.assertIsNotNone(p["squeeze"])
         self.assertEqual(p["squeeze_color"], f["lectura"]["squeeze_color"])
         self.assertAlmostEqual(p["adx"], f["lectura"]["adx"], places=2)
