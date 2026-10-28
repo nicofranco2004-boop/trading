@@ -13,6 +13,9 @@
 //                gasta el cupo semanal: abriendo fichas desde el mapa de calor
 //                se lo comía mirando. Y si la empresa no tiene fundamentales (o
 //                no cargan), no ocupa lugar: la ficha sigue con lo demás.
+//   alSaberSiHay — (ticker, hay) => void: cuando termina de cargar, avisa si la
+//                empresa tiene fundamentales. La ficha lo usa para mostrar el
+//                «Ordenar por» sólo si hay algo que ordenar.
 
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
@@ -22,6 +25,7 @@ import {
 } from 'lucide-react'
 import Panel from '../Panel'
 import Pill from '../Pill'
+import InfoTooltip from '../InfoTooltip'
 import EmptyState from '../EmptyState'
 import Skeleton from '../Skeleton'
 import AssetLogo from '../AssetLogo'
@@ -70,22 +74,32 @@ function fmtBeta(n) {
 }
 
 // FooterStrip — barra full-width de 4 celdas con métricas clave de mercado.
+// Cada una con su «?» (el mismo InfoTooltip de las métricas de cada categoría):
+// los nombres quedan en inglés, como los muestra todo el mundo, y la ayuda dice
+// qué son en criollo (Nico, 28/10).
 function FooterStrip({ metrics }) {
   const m = metrics || {}
   const cells = [
-    { label: 'Market Cap', value: fmtMarketCap(m.market_cap_usd) },
-    { label: 'P/E', value: fmtMultiple(m.trailing_pe) },
-    { label: 'Div Yield', value: pctTxt(m.dividend_yield_pct, 2) },
-    { label: 'Beta', value: fmtBeta(m.beta) },
+    { label: 'Market Cap', value: fmtMarketCap(m.market_cap_usd),
+      info: 'Cuánto vale toda la empresa en la bolsa: el precio de una acción por la cantidad de acciones. En dólares: M = millones, B = miles de millones, T = millones de millones.' },
+    { label: 'P/E', value: fmtMultiple(m.trailing_pe),
+      info: 'Cuántos años de ganancia pagás al comprar: el precio de una acción dividido lo que ganó la empresa por acción en los últimos 12 meses. 20x = pagás 20 veces lo que gana en un año. Menor = más barato.' },
+    { label: 'Div Yield', value: pctTxt(m.dividend_yield_pct, 2),
+      info: 'Cuánto te paga por año en dividendos (la parte de la ganancia que la empresa reparte entre sus accionistas), contra el precio de hoy. 2% = US$ 2 por año por cada US$ 100 de acciones.' },
+    { label: 'Beta', value: fmtBeta(m.beta),
+      info: 'Cuánto se mueve contra la bolsa de Estados Unidos (el S&P 500). 1 = igual que la bolsa; 1,5 = si la bolsa sube o baja 10%, ésta suele moverse 15%; menos de 1 = más tranquila.' },
   ]
   return (
     <Panel padding="none">
       <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-line">
         {cells.map(c => (
           <div key={c.label} className="px-4 py-3 text-center">
-            <p className="text-[12px] text-ink-3 mb-1 font-medium">
-              {c.label}
-            </p>
+            <div className="flex items-center justify-center gap-1.5 mb-1">
+              <span className="text-[12px] text-ink-3 font-medium">{c.label}</span>
+              <InfoTooltip label={c.label} size={12} align="center">
+                <p className="text-left">{c.info}</p>
+              </InfoTooltip>
+            </div>
             <p className="text-base font-semibold text-ink-0 tabular leading-none">
               {c.value}
             </p>
@@ -113,7 +127,7 @@ function AxisCard({ title, read }) {
   )
 }
 
-export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = false, onCompareWith, enFicha = false, irACalidad = null }) {
+export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = false, onCompareWith, enFicha = false, irACalidad = null, alSaberSiHay = null }) {
   const { analizar } = useVoz()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -168,10 +182,12 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
       .then(res => {
         if (cancelled) return
         setData(res)
+        alSaberSiHay?.(ticker, !!res?.available)
         track('fundamentals_ticker_viewed', { ticker })
       })
       .catch(e => {
         if (cancelled) return
+        alSaberSiHay?.(ticker, false)
         setError(e?.message || 'No pudimos cargar los fundamentales.')
       })
       .finally(() => { if (!cancelled) setLoading(false) })

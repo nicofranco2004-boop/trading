@@ -10,7 +10,7 @@
 //     estrella de la watchlist y la empresa, sin nada "tuyo";
 //   · la de algo que tenés con otro nombre (GGAL.BA → GGAL) va a TU ficha;
 //   · una acción argentina que no tenés se mira en BYMA (local=1, GGAL.BA).
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic, enActo, escribir, buscar, tecla } from '../testing/navegadorMinimo'
 
@@ -649,5 +649,169 @@ describe('la ficha a todo el ancho y en secciones (Nico, 24/10)', () => {
     }
     expect(raiz).toBeTruthy()
     expect(raiz.atributos.class).not.toContain('max-w-3xl')
+  })
+})
+
+describe('la franja de abajo del fundamental, con su «?» (Nico, 28/10)', () => {
+  it('Market Cap, P/E, Div Yield y Beta explican qué son, con el mismo «?» que las demás', async () => {
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=NVDA': { NVDA: 182.4 }, '/tecnico/': TECNICO,
+      '/fundamentals/NVDA': FUNDAMENTALES('NVDA', 'NVIDIA Corporation') }
+    await abrir('/activo/NVDA')
+    const explicaciones = {
+      'Market Cap': 'Cuánto vale toda la empresa en la bolsa',
+      'P/E': 'Cuántos años de ganancia pagás al comprar',
+      'Div Yield': 'Cuánto te paga por año en dividendos',
+      'Beta': 'Cuánto se mueve contra la bolsa de Estados Unidos',
+    }
+    for (const [dato, frase] of Object.entries(explicaciones)) {
+      // El botón del «?» del dato (InfoTooltip: se nombra con el dato).
+      const boton = porAtributo(montado.contenedor, 'aria-label', dato)
+      expect(boton, dato).toBeTruthy()
+      expect(boton.nodeName).toBe('BUTTON')
+      expect(texto(montado.contenedor)).not.toContain(frase)
+      await enActo(async () => clic(montado.contenedor, boton))
+      expect(texto(montado.contenedor)).toContain(frase)
+      await enActo(async () => clic(montado.contenedor, boton))
+    }
+  })
+})
+
+describe('«Ordenar por»: técnico o fundamental primero (Nico, 28/10)', () => {
+  const titulos = () => {
+    const out = []
+    const pila = [montado.contenedor]
+    while (pila.length) {
+      const n = pila.shift()
+      if (n.nodeName === 'H2') out.push(texto(n))
+      pila.push(...(n.childNodes || []))
+    }
+    return out
+  }
+  const CON_NVDA = () => ({
+    '/positions': [{ id: 5, asset: 'NVDA', broker: 'Schwab', quantity: 3, invested: 450, currency: 'USD', asset_type: 'STOCK', entry_date: '2025-05-01' }],
+    '/brokers': [{ name: 'Schwab', currency: 'USD' }], '/dolar': null, '/operations': [],
+    '/prices': { NVDA: 182.4 }, '/tecnico/': TECNICO, '/plazos-fijos': [],
+    '/fundamentals/NVDA': FUNDAMENTALES('NVDA', 'NVIDIA Corporation'),
+  })
+  const elegido = () => {
+    const tec = buscarBoton(montado.contenedor, 'Técnico primero')
+    const fun = buscarBoton(montado.contenedor, 'Fundamental primero')
+    return { tec: tec?.atributos?.['aria-pressed'], fun: fun?.atributos?.['aria-pressed'] }
+  }
+  beforeEach(() => { localStorage.removeItem('rendi_ficha_orden') })
+
+  it('de entrada, técnico primero; con «Fundamental primero» se da vuelta y lo tuyo queda en el medio', async () => {
+    respuestas = CON_NVDA()
+    const t = await abrir('/activo/NVDA')
+    expect(t).toContain('Ordenar por')
+    expect(elegido()).toEqual({ tec: 'true', fun: 'false' })
+    expect(titulos()).toEqual(['Análisis técnico', 'Tu operatoria en NVDA', 'Análisis fundamental'])
+
+    await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Fundamental primero')))
+    expect(elegido()).toEqual({ tec: 'false', fun: 'true' })
+    expect(titulos()).toEqual(['Análisis fundamental', 'Tu operatoria en NVDA', 'Análisis técnico'])
+    const t2 = texto(montado.contenedor)
+    expect(t2.indexOf('NVIDIA Corporation')).toBeLessThan(t2.indexOf('Lotes abiertos'))
+    expect(t2.indexOf('Lotes abiertos')).toBeLessThan(t2.indexOf('Largo plazo'))
+
+    await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Técnico primero')))
+    expect(titulos()).toEqual(['Análisis técnico', 'Tu operatoria en NVDA', 'Análisis fundamental'])
+  })
+
+  it('cambiar el orden no vuelve a pedir el fundamental ni el gráfico (las mueve, no las rearma)', async () => {
+    const { api } = await import('../utils/api')
+    respuestas = CON_NVDA()
+    await abrir('/activo/NVDA')
+    api.get.mockClear()
+    const boton = buscarBoton(montado.contenedor, 'Fundamental primero')
+    expect(boton).toBeTruthy()
+    await enActo(async () => clic(montado.contenedor, boton))
+    for (let i = 0; i < 3; i++) await enActo(async () => {})
+    expect(titulos()[0]).toBe('Análisis fundamental')
+    const pedidos = api.get.mock.calls.map(c => c[0])
+    expect(pedidos.filter(r => r.startsWith('/fundamentals/'))).toEqual([])
+    expect(pedidos.filter(r => r.startsWith('/tecnico/'))).toEqual([])
+  })
+
+  it('se recuerda para la próxima ficha que abras', async () => {
+    respuestas = CON_NVDA()
+    await abrir('/activo/NVDA')
+    await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Fundamental primero')))
+    expect(localStorage.getItem('rendi_ficha_orden')).toBe('fundamental')
+    await montado.desmontar()
+    montado = null
+
+    // Otra ficha, otro día: arranca con el fundamental arriba.
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=AAPL': { AAPL: 230 }, '/tecnico/': TECNICO,
+      '/fundamentals/AAPL': FUNDAMENTALES('AAPL', 'Apple Inc.') }
+    await abrir('/activo/AAPL')
+    expect(elegido()).toEqual({ tec: 'false', fun: 'true' })
+    expect(titulos()).toEqual(['Análisis fundamental', 'Análisis técnico'])
+  })
+
+  it('una cripto no tiene fundamental: no aparece el botón y el técnico va igual', async () => {
+    localStorage.setItem('rendi_ficha_orden', 'fundamental')
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=BTC': { BTC: 80000 }, '/tecnico/': TECNICO }
+    const t = await abrir('/activo/BTC')
+    expect(t).not.toContain('Ordenar por')
+    expect(buscarBoton(montado.contenedor, 'Fundamental primero')).toBeNull()
+    expect(titulos()).toEqual(['Análisis técnico'])
+  })
+
+  // Con la ficha de algo que TENÉS, que es donde está «Tu operatoria»: sin
+  // fundamental no hay nada que poner arriba, y dar vuelta la lista dejaba tu
+  // operatoria arriba del técnico (visto en el demo con BTC, 28/10).
+  const tuyo = (asset, broker, extra) => ({
+    '/positions': [{ id: 7, asset, broker, quantity: 2, invested: 1000, currency: 'USD', asset_type: extra.tipo, entry_date: '2025-05-01' }],
+    '/brokers': [{ name: broker, currency: 'USD', is_exchange: extra.exchange || false }], '/dolar': null, '/operations': [],
+    '/prices': { [asset]: 600 }, '/tecnico/': TECNICO, '/plazos-fijos': [], '/watchlist': { items: [] },
+    '/liquidez/': { disponible: false }, '/fundamentals/': extra.fundamentales || { available: false },
+  })
+
+  it('tu cripto, con «Fundamental primero» guardado: técnico arriba y tu operatoria abajo', async () => {
+    localStorage.setItem('rendi_ficha_orden', 'fundamental')
+    respuestas = tuyo('BTC', 'Binance', { tipo: 'CRYPTO', exchange: true })
+    const t = await abrir('/activo/BTC')
+    expect(t).not.toContain('Ordenar por')
+    expect(titulos()).toEqual(['Análisis técnico', 'Tu operatoria en BTC'])
+  })
+
+  it('tu ETF sin fundamentales, con «Fundamental primero» guardado: el orden de siempre', async () => {
+    localStorage.setItem('rendi_ficha_orden', 'fundamental')
+    respuestas = tuyo('SPY', 'Schwab', { tipo: 'ETF', fundamentales: { available: false, reason: 'ETF' } })
+    const t = await abrir('/activo/SPY')
+    expect(t).not.toContain('Ordenar por')
+    expect(titulos()).toEqual(['Análisis técnico', 'Tu operatoria en SPY'])
+  })
+
+  it('una empresa sin fundamentales (un ETF): tampoco aparece', async () => {
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=SPY': { SPY: 600 }, '/tecnico/': TECNICO,
+      '/fundamentals/SPY': { available: false, reason: 'ETF' } }
+    const t = await abrir('/activo/SPY')
+    expect(t).toContain('Largo plazo')
+    expect(t).not.toContain('Ordenar por')
+  })
+
+  it('si los fundamentales no cargan, tampoco aparece', async () => {
+    respuestas = { ...SIN_CARTERA, '/prices?symbols=NVDA': { NVDA: 182.4 }, '/tecnico/': TECNICO,
+      '/fundamentals/NVDA': new Error('caído') }
+    const t = await abrir('/activo/NVDA')
+    expect(t).toContain('Largo plazo')
+    expect(t).not.toContain('Ordenar por')
+  })
+
+  it('con el almacenamiento bloqueado (modo privado): técnico primero y el botón anda igual', async () => {
+    const leer = vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('bloqueado') })
+    const escribir = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('bloqueado') })
+    try {
+      respuestas = CON_NVDA()
+      await abrir('/activo/NVDA')
+      expect(titulos()).toEqual(['Análisis técnico', 'Tu operatoria en NVDA', 'Análisis fundamental'])
+      await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Fundamental primero')))
+      expect(titulos()).toEqual(['Análisis fundamental', 'Tu operatoria en NVDA', 'Análisis técnico'])
+    } finally {
+      leer.mockRestore()
+      escribir.mockRestore()
+    }
   })
 })
