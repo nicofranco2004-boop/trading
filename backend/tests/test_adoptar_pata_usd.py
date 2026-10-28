@@ -62,17 +62,27 @@ class TestAdoptarLaPataUsd:
             "broker_name": broker, "direction": "deposit", "amount": monto,
             "currency": moneda})
 
-    def importar(self, filas):
-        """Vista previa + confirmación. Devuelve la respuesta de la confirmación."""
+    def vista_previa(self, filas):
         r = self.client.post(
             "/api/imports/preview", headers=self.h,
             files=[("files", ("plantilla.csv", io.BytesIO((HDR + filas).encode("utf-8")),
                               "text/csv"))],
             data={"format": "rendi_generic", "broker": "Cocos"})
         assert r.status_code == 200, r.text
-        assert r.json()["errors"] == []
-        return self.client.post("/api/imports/confirm", headers=self.h,
-                                json={"session_id": r.json()["session_id"]})
+        return r.json()
+
+    def confirmar(self, sid):
+        return self.client.post("/api/imports/confirm", headers=self.h, json={"session_id": sid})
+
+    def importar(self, filas):
+        """Vista previa sin errores + confirmación. Devuelve la confirmación."""
+        prev = self.vista_previa(filas)
+        assert prev["errors"] == []
+        return self.confirmar(prev["session_id"])
+
+    @staticmethod
+    def codigos(prev):
+        return sorted(e["code"] for e in prev["errors"])
 
     # ── lo que se mira ───────────────────────────────────────────────────────
 
@@ -103,25 +113,89 @@ class TestAdoptarLaPataUsd:
 
     # ── los casos ────────────────────────────────────────────────────────────
 
-    def test_con_pesos_adentro_no_se_adopta_y_no_se_toca_nada(self):
+    def no_se_toco(self, padre, saldo=100_000.0):
+        assert self.broker(PATA)["currency"] == "ARS"
+        assert self.broker(PATA)["parent_broker_id"] is None
+        caja = self.caja(PATA)
+        assert (caja["asset"], caja["invested"]) == ("ARS", saldo)
+        assert not self.sql("SELECT 1 FROM brokers WHERE user_id=? AND parent_broker_id=?",
+                            self.uid, padre)
+        assert self.cajas_cruzadas() == []
+
+    def test_con_pesos_adentro_la_vista_previa_lo_marca(self):
         """El caso del bug: "Cocos · USD" creado a mano en pesos, con $100.000.
-        Adoptarlo convertía esos pesos en dólares. Se rechaza el import entero
-        —es atómico— con un mensaje que dice qué hacer, y la cuenta queda como
-        estaba."""
+        Adoptarlo convertía esos pesos en dólares. La vista previa marca la fila
+        en dólares con el motivo y qué hacer; confirmar lo que queda no toca nada."""
         padre = self.crear_broker("Cocos", "ARS")
         self.crear_broker(PATA, "ARS")
         assert self.depositar(PATA, 100_000).status_code == 200
 
-        r = self.importar(DOLARES_A_COCOS)
+        prev = self.vista_previa(DOLARES_A_COCOS)
+
+        assert self.codigos(prev) == ["SIN_CUENTA_EN_DOLARES"], prev["errors"]
+        assert "Renombralo" in prev["errors"][0]["message"]
+        assert self.confirmar(prev["session_id"]).status_code == 200
+        self.no_se_toco(padre)
+
+    def test_si_entran_pesos_entre_la_vista_previa_y_el_confirm_rechaza_entero(self):
+        """La vista previa estaba limpia (la cuenta vacía), pero antes de confirmar
+        le entraron pesos. El confirm no la adopta: 409 y el import entero se deshace."""
+        padre = self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "ARS")
+        prev = self.vista_previa(DOLARES_A_COCOS)
+        assert prev["errors"] == []
+        assert self.depositar(PATA, 100_000).status_code == 200
+
+        r = self.confirmar(prev["session_id"])
 
         assert r.status_code == 409, r.text
-        assert PATA in r.json()["detail"] and "renombr" in r.json()["detail"].lower()
-        assert self.broker(PATA)["currency"] == "ARS"
-        assert self.broker(PATA)["parent_broker_id"] is None
+        assert PATA in r.json()["detail"] and "Renombralo" in r.json()["detail"]
+        self.no_se_toco(padre)
+
+    def test_el_mismo_archivo_no_puede_mandarle_pesos_a_la_que_va_a_adoptar(self):
+        """El hueco que dejaba mirar sólo la base: "Cocos · USD" vacía, y un archivo
+        con pesos para ella y dólares para "Cocos". Se adoptaba vacía y los pesos
+        entraban después a la caja en dólares, sin que nada avisara. Ahora la fila
+        en pesos se marca en la vista previa, como en cualquier sub-cuenta."""
+        padre = self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "ARS")
+
+        prev = self.vista_previa(f"2026-01-05,DEPOSITO,{PATA},,,,100000,,,,ARS,\n"
+                                 + DOLARES_A_COCOS)
+
+        assert self.codigos(prev) == ["PESOS_EN_BROKER_EN_DOLARES"], prev["errors"]
+        assert "Los pesos van a «Cocos»" in prev["errors"][0]["message"]
+        assert self.confirmar(prev["session_id"]).status_code == 200
+        assert self.broker(PATA)["parent_broker_id"] == padre
+        assert self.caja(PATA) == {"asset": "USDT", "currency": "USD", "invested": 500.0}
+        assert self.cajas_cruzadas() == []
+
+    def test_usuario_nuevo_con_pesos_a_la_sub_cuenta_desde_el_archivo(self):
+        """Lo mismo sin crear nada a mano: el import crea "Cocos" y "Cocos · USD"."""
+        prev = self.vista_previa("2026-01-05,DEPOSITO,Cocos,,,,1000000,,,,ARS,\n"
+                                 f"2026-01-05,DEPOSITO,{PATA},,,,100000,,,,ARS,\n"
+                                 + DOLARES_A_COCOS)
+        assert self.codigos(prev) == ["PESOS_EN_BROKER_EN_DOLARES"], prev["errors"]
+        assert self.confirmar(prev["session_id"]).status_code == 200
+        assert self.caja("Cocos")["invested"] == 1_000_000.0
+        # La caja nace con la pata ya en dólares: `currency` vacía hasta que el
+        # arranque la complete desde el rótulo (ver test_invariantes.py).
         caja = self.caja(PATA)
-        assert (caja["asset"], caja["invested"]) == ("ARS", 100_000.0)
-        assert not self.sql("SELECT 1 FROM brokers WHERE user_id=? AND parent_broker_id=?",
-                            self.uid, padre)
+        assert (caja["asset"], caja["invested"]) == ("USDT", 500.0)
+        assert self.cajas_cruzadas() == []
+
+    def test_la_que_esta_en_dolares_no_se_pasa_a_pesos_por_un_archivo(self):
+        """"Cocos · USD" en dólares y vacía: los pesos que le manda el archivo
+        la pasaban a pesos en la vista previa (la "curación"), y el confirm la volvía
+        a dólares con los pesos adentro."""
+        self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "USD")
+        prev = self.vista_previa(f"2026-01-05,DEPOSITO,{PATA},,,,100000,,,,ARS,\n"
+                                 + DOLARES_A_COCOS)
+        assert self.codigos(prev) == ["PESOS_EN_BROKER_EN_DOLARES"], prev["errors"]
+        assert self.broker(PATA)["currency"] == "USD"
+        assert self.confirmar(prev["session_id"]).status_code == 200
+        assert self.caja(PATA)["invested"] == 500.0
         assert self.cajas_cruzadas() == []
 
     def test_la_otra_puerta_tambien_rechaza(self):
@@ -168,3 +242,109 @@ class TestAdoptarLaPataUsd:
         assert self.broker(PATA)["parent_broker_id"] == padre
         assert self.caja(PATA) == {"asset": "USDT", "currency": "USD", "invested": 800.0}
         assert self.cajas_cruzadas() == []
+
+    def test_pesos_que_entraron_y_salieron_cuentan_como_movimientos(self):
+        """Depositar y retirar $100.000 deja la caja en cero, pero la historia es en
+        pesos (`flujos_a_mano`): adoptarla mostraba esos pesos como dólares en
+        Movimientos."""
+        padre = self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "ARS")
+        assert self.depositar(PATA, 100_000).status_code == 200
+        r = self.client.post("/api/cash/flow", headers=self.h, json={
+            "broker_name": PATA, "direction": "withdraw", "amount": 100_000})
+        assert r.status_code == 200, r.text
+
+        r = self.depositar("Cocos", 500, "USD")
+
+        assert r.status_code == 409, r.text
+        self.no_se_toco(padre, saldo=0.0)
+
+    def test_la_sub_cuenta_no_se_pasa_a_pesos_a_mano(self):
+        """El PUT dejaba pasar a pesos la propia "Cocos · USD": sus US$300 quedaban
+        como $300, y después ningún dólar podía volver a entrar."""
+        self.crear_broker("Cocos", "ARS")
+        assert self.depositar("Cocos", 300, "USD").status_code == 200
+        pata = self.broker(PATA)
+        r = self.client.put(f"/api/brokers/{pata['id']}", headers=self.h,
+                            json={"name": PATA, "currency": "ARS"})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["code"] == "sibling_currency_forbidden"
+        assert self.broker(PATA)["currency"] == "USDT"
+        assert self.caja(PATA)["invested"] == 300.0
+
+    def test_no_se_crea_una_sub_cuenta_en_pesos(self):
+        padre = self.crear_broker("Cocos", "ARS")
+        r = self.client.post("/api/brokers", headers=self.h, json={
+            "name": PATA, "currency": "ARS", "parent_broker_id": padre})
+        assert r.status_code == 400, r.text
+        assert not self.sql("SELECT 1 FROM brokers WHERE user_id=? AND name=?", self.uid, PATA)
+
+    def test_la_sub_cuenta_vieja_en_pesos_dice_la_salida_que_existe(self):
+        """Una sub-cuenta que quedó en pesos de antes (hoy el PUT ya no deja): no se
+        puede renombrar, así que el mensaje no manda a renombrarla."""
+        padre = self.crear_broker("Cocos", "ARS")
+        assert self.depositar("Cocos", 300, "USD").status_code == 200
+        # Lo que dejaba el PUT de antes: broker y caja en pesos, juntos.
+        self.sql("UPDATE brokers SET currency='ARS' WHERE user_id=? AND name=?", self.uid, PATA)
+        self.sql("UPDATE positions SET asset='ARS', currency='ARS' "
+                 "WHERE user_id=? AND broker=? AND is_cash=1", self.uid, PATA)
+
+        r = self.depositar("Cocos", 500, "USD")
+
+        assert r.status_code == 409, r.text
+        assert "volvé a ponerla en dólares" in r.json()["detail"]
+        assert "Renombralo" not in r.json()["detail"]
+        assert self.broker(PATA)["parent_broker_id"] == padre
+        assert self.caja(PATA)["invested"] == 300.0
+
+
+class TestCompraGrupalDelAsesor:
+    """Un cliente con "Cocos · USD" en pesos no tumba la compra de los demás."""
+
+    @pytest.fixture(autouse=True)
+    def _asesor(self):
+        self.client = TestClient(main.app)
+        tag = uuid.uuid4().hex[:8]
+        conn = main.get_db()
+        with conn:
+            self.asesor = conn.execute(
+                "INSERT INTO users (email, password_hash, approved, tier) VALUES (?,?,1,'advisor')",
+                (f"asesor-{tag}@rendi.test", "x")).lastrowid
+            self.sano, self.trabado = (conn.execute(
+                "INSERT INTO users (email, password_hash, approved, managed_by) VALUES (?,?,0,?)",
+                (f"cliente{i}-{tag}@rendi.test", "x", self.asesor)).lastrowid for i in (1, 2))
+            for cid in (self.sano, self.trabado):
+                conn.execute("""INSERT INTO advisor_clients (advisor_uid, client_uid, link_type,
+                                permission, status, label)
+                                VALUES (?,?,'managed','read_write','active','x')""",
+                             (self.asesor, cid))
+                conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                             (cid, "Cocos", "ARS"))
+        conn.close()
+        self.h = {"Authorization": f"Bearer {main.create_token(self.asesor)}"}
+        # El cliente trabado: "Cocos · USD" creado por él en pesos, con plata.
+        h_trabado = {"Authorization": f"Bearer {main.create_token(self.trabado)}"}
+        r = self.client.post("/api/brokers", headers=h_trabado,
+                             json={"name": PATA, "currency": "ARS"})
+        assert r.status_code == 200, r.text
+        r = self.client.post("/api/cash/flow", headers=h_trabado, json={
+            "broker_name": PATA, "direction": "deposit", "amount": 100_000})
+        assert r.status_code == 200, r.text
+
+    def test_saltea_solo_al_cliente_trabado(self):
+        r = self.client.post("/api/advisor/group-op", headers=self.h, json={
+            "asset": "GD30", "currency": "USD", "entry_date": "2026-03-06",
+            "rows": [{"client_uid": c, "broker": "Cocos", "quantity": 10, "buy_price": 100}
+                     for c in (self.sano, self.trabado)]})
+        assert r.status_code == 200, r.text
+        saltados = {s["client_uid"]: s["reason"] for s in r.json()["skipped"]}
+        assert list(saltados) == [self.trabado] and PATA in saltados[self.trabado]
+        conn = main.get_db()
+        try:
+            def gd30(cid):
+                return conn.execute("SELECT broker FROM positions WHERE user_id=? AND asset='GD30'",
+                                    (cid,)).fetchall()
+            assert [x["broker"] for x in gd30(self.sano)] == [PATA]
+            assert gd30(self.trabado) == []
+        finally:
+            conn.close()
