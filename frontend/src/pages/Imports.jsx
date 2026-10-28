@@ -28,7 +28,8 @@ export default function Imports() {
   // (audit). Aviso no bloqueante — la página sigue operable.
   const advisorOwnLevel = user?.tier === 'advisor' && !clientCtx
   const [searchParams] = useSearchParams()
-  const fromOnboarding = searchParams.get('from') === 'onboarding'
+  const from = searchParams.get('from')
+  const fromOnboarding = from === 'onboarding' || from === 'checklist'
   const [batches, setBatches] = useState([])
   const [loading, setLoading] = useState(true)
   const [reverting, setReverting] = useState(null) // batch_id en proceso

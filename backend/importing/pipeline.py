@@ -31,7 +31,9 @@ from .mapper import Mapping, apply_mapping, inspect_csv as mapper_inspect
 from .cash_sim import simulate as simulate_cash
 from .excel import to_csv_text, is_xlsx, xlsx_to_csv, is_html_table, html_table_to_csv
 from . import seed as _seed
+from tickers_renombrados import codigos_anteriores   # GOLD → B: la huella vieja
 import renombre_broker as _renombre_broker   # los nombres anteriores de cada broker
+from efectivo import asset_de_caja
 
 log = logging.getLogger(__name__)
 
@@ -326,14 +328,26 @@ def duplicate_row_indices_by_count(counts: "Counter", txs, already_skipped=(), *
         if t.row_index in skip:
             continue
         nombres = [None] + list(anteriores.get((t.broker or "").strip().lower(), ()))
-        for nombre in nombres:
-            fp = _row_fingerprint(t, nombre)
-            if budget.get(fp, 0) > 0:
-                budget[fp] -= 1; out.add(t.row_index); break
-            lfp = _row_fingerprint_legacy(t, nombre)
-            if lfp != fp and budget.get(lfp, 0) > 0:
-                budget[lfp] -= 1; out.add(t.row_index); break
+        # Lo mismo con el TICKER: una fila guardada como GOLD hoy entra como B
+        # (tickers_renombrados.py), y sin probar el código viejo la compra y su
+        # débito de caja se cargaban otra vez al re-importar el mismo archivo.
+        viejos = codigos_anteriores(t.asset_symbol)
+        if _dup_de(t, nombres, viejos, budget):
+            out.add(t.row_index)
     return out
+
+
+def _dup_de(t, nombres, viejos, budget) -> bool:
+    """¿Alguna variante de la huella de `t` tiene presupuesto? Consume una."""
+    for nombre in nombres:
+        fp = _row_fingerprint(t, nombre)
+        variantes = [fp, _row_fingerprint_legacy(t, nombre)]
+        variantes += [_fp_from(t, v, nombre) for v in viejos]
+        for i, v in enumerate(variantes):
+            if (i == 0 or v != fp) and budget.get(v, 0) > 0:
+                budget[v] -= 1
+                return True
+    return False
 
 
 def already_imported_row_indices(conn, uid: int, session_id: str, txs,
@@ -537,6 +551,137 @@ FORMAT_BASE_CURRENCY = {
 }
 
 
+# Brokers cripto: el nombre manda (en Binance "USD" suele venir como USDT igual).
+CRYPTO_BROKERS = frozenset({
+    'binance', 'coinbase', 'kraken', 'bybit', 'kucoin', 'bitget',
+    'okx', 'huobi', 'gemini', 'crypto.com', 'lemon', 'ripio', 'buenbit',
+    'satoshitango', 'fiwind',
+})
+
+
+def _trae_pesos(filas) -> bool:
+    """¿El archivo le manda plata EN PESOS a este broker? Una fila en ARS, o una
+    compra de dólares con pesos (FX_ARS_TO_USD sale de la cuenta en pesos). La
+    venta de dólares (FX_USD_TO_ARS) NO cuenta: sale de la cuenta en DÓLARES, y
+    contarla creaba en pesos la sub-cuenta "<broker> · USD" que el archivo nombra."""
+    return any((t.currency or "").upper() == "ARS" or t.operation_type == "FX_ARS_TO_USD"
+               for t in filas)
+
+
+def brokers_que_no_aceptan_pesos(user_brokers, fmt_base) -> frozenset:
+    """Los brokers a los que una fila en PESOS no puede ir (`validate` la rechaza).
+
+    Sólo sin moneda base —la plantilla de Rendi, donde la persona elige el broker y
+    escribe la moneda de cada fila—: los formatos de broker anclan la moneda
+    (`FORMAT_BASE_CURRENCY`). Y fuera de los exchanges cripto: Binance manda pares
+    en pesos a un broker en USDT a propósito, y "Editar y rehacer" re-importa
+    cualquier lote con el formato de la plantilla; cambiar eso sin medir cuántos
+    son está pendiente (AUDIT_plantilla_rendi_2026-10-27.md, PL1).
+    """
+    if fmt_base:
+        return frozenset()
+    return frozenset(n for n, b in user_brokers.items()
+                     if (b.get("currency") or "") != "ARS"
+                     and n.strip().lower() not in CRYPTO_BROKERS)
+
+
+def broker_tiene_datos(conn, uid: int, nombre: str) -> bool:
+    """¿El broker tiene algo cargado, o historia? Si no, se le puede cambiar la moneda.
+
+    Una caja en cero NO cuenta: queda así después de revertir un import, y contarla
+    impedía que "revertir y volver a subir" curara el broker. Las operaciones y las
+    filas importadas vivas SÍ cuentan: un broker en dólares que vendió y retiró todo
+    tiene la caja en cero y ninguna tenencia, pero su historia está en dólares y
+    pasarlo a pesos la reinterpretaría. Revertir un import borra la suya, así que
+    volver a subirlo sigue curando."""
+    if conn.execute(
+        "SELECT 1 FROM positions WHERE user_id=? AND broker=? "
+        "AND (COALESCE(is_cash,0)=0 OR ABS(COALESCE(invested,0)) > 0.005) LIMIT 1",
+        (uid, nombre),
+    ).fetchone():
+        return True
+    if conn.execute("SELECT 1 FROM operations WHERE user_id=? AND broker=? LIMIT 1",
+                    (uid, nombre)).fetchone():
+        return True
+    return conn.execute(f"SELECT 1 FROM {TX_VIVAS} WHERE b.user_id=? AND n.broker=? LIMIT 1",
+                        (uid, nombre)).fetchone() is not None
+
+
+def que_hacer_con_pesos(conn, uid: int, user_brokers, nombre: str) -> str:
+    """Le llega PLATA EN PESOS al broker `nombre`: "ok" si la puede guardar,
+    "curar" si hay que pasarlo a pesos antes, "rechazar" si no se puede.
+
+    Un broker en dólares vacío pasa a pesos (sus dólares van solos a "· USD"). Con
+    datos no se toca —cambiar la moneda reinterpretaría lo que ya tiene—, y la
+    sub-cuenta "<broker> · USD" de otro tampoco: los pesos van a su padre. La
+    llaman las dos puertas por donde entran pesos a un broker existente: el import
+    de movimientos (`run_preview`) y la foto de tenencia (main.py). Los exchanges
+    cripto quedan afuera (ver `brokers_que_no_aceptan_pesos`).
+    """
+    if nombre not in brokers_que_no_aceptan_pesos(user_brokers, None):
+        return "ok"
+    if user_brokers[nombre].get("parent_broker_id") or broker_tiene_datos(conn, uid, nombre):
+        return "rechazar"
+    return "curar"
+
+
+def escrituras_para_cambiar_moneda(uid: int, nombre: str, moneda: str) -> List[tuple]:
+    """Las escrituras que cambian la moneda de un broker: la del broker y las DOS
+    marcas de moneda de su caja, que la acompañan siempre.
+
+      · `asset` (el rótulo): lo miran la pantalla y `invariantes.check_cash_moneda`.
+      · `currency`: el arranque (init_db) la completa desde el rótulo, y
+        `behavioral._native_ccy` la lee ANTES que el rótulo y el broker. Es la que
+        usan `_position_value_usd` —metas, tableros e insights de la IA, reportes—
+        para decidir si la caja se pasa de pesos a dólares.
+
+    Sin esto, la caja en cero que deja un import revertido quedaba "USD" (las dos
+    marcas) en un broker ya en pesos, y los pesos que entraban después se sumaban
+    ahí: medido, $1.500.000 de una foto valían US$1.500.000 para esos lectores.
+    El mismo criterio que el arranque: rótulo 'ARS' → ARS; 'USD'/'USDT' → USD.
+
+    Si se puede cambiar lo decide quien llama: el import y la foto, sólo con el
+    broker vacío (`que_hacer_con_pesos`); la edición a mano, la persona."""
+    caja = asset_de_caja(moneda)
+    return [("UPDATE brokers SET currency=? WHERE user_id=? AND name=?", (moneda, uid, nombre)),
+            ("UPDATE positions SET asset=?, currency=? WHERE user_id=? AND broker=? AND is_cash=1",
+             (caja, "ARS" if caja == "ARS" else "USD", uid, nombre))]
+
+
+def moneda_de_broker_nuevo(nombre: str, filas, fmt_base=None) -> str:
+    """La moneda con la que el import crea un broker que el usuario no tenía.
+
+      1. Nombre cripto conocido → USDT.
+      2. Moneda base del formato (Cocos → ARS, Schwab → USD…) → ésa.
+      3. Si el archivo le manda PESOS → ARS. Sus filas en dólares van solas al
+         sub-broker "<nombre> · USD" (`route_by_currency`).
+      4. Mayoría USDT → USDT; si no, USD.
+
+    ⚠️ EL PASO 3 ERA "MAYORÍA DE FILAS", Y ESO GUARDABA PESOS COMO DÓLARES. Un
+    broker en dólares no tiene dónde poner pesos: el importador los suma a su caja
+    tal cual, sin convertir (un depósito de $1.000.000 + US$500 quedaba como
+    "US$1.000.500"), y las conversiones MEP se rechazan. La combinación que sí
+    funciona es la inversa —broker en pesos con su sub-cuenta en dólares—, así que
+    si hay pesos, el broker es en pesos. Con la plantilla de Rendi (el único
+    formato sin moneda base) alcanzaba con un empate: medido con la historia de la
+    auditoría, sacar UNA venta en pesos (9 filas en pesos, 9 en dólares) dejaba el
+    broker en USD y el rendimiento en +0,2 % contra +25,2 % real
+    (AUDIT_plantilla_rendi_2026-10-27.md, PL1). Es el mismo bug que ya había
+    pasado con Balanz (231 posiciones en pesos de 23 usuarios, ver
+    `FORMAT_BASE_CURRENCY`), arreglado entonces formato por formato.
+    """
+    if (nombre or "").strip().lower() in CRYPTO_BROKERS:
+        return "USDT"
+    if fmt_base:
+        return fmt_base
+    filas = list(filas)
+    if _trae_pesos(filas):
+        return "ARS"
+    usd = sum(1 for t in filas if (t.currency or "").upper() == "USD")
+    usdt = sum(1 for t in filas if (t.currency or "").upper() == "USDT")
+    return "USDT" if usdt > usd else "USD"
+
+
 def run_preview(
     conn,
     *,
@@ -676,32 +821,40 @@ def run_preview(
     # moneda. Así un re-import no queda pegado a un broker mal etiquetado. Si ya
     # tuviera posiciones cargadas, NO lo tocamos — el usuario debe revertir ese
     # import primero (cambiar la moneda reinterpretaría su data).
-    if fmt_base:
-        healed_targets = set()
-        for tx in normalized:
-            name = tx.broker
-            if not name or name in healed_targets:
+    # Sin moneda base (la plantilla de Rendi), la misma curación vale para el caso
+    # que rompe la plata: el broker quedó en dólares (un import viejo con la regla
+    # de mayoría) y el archivo le manda pesos. Así "revertir y volver a subir"
+    # arregla la cuenta. Un broker ya ARS no se toca.
+    _filas_por_broker: Dict[str, List[Any]] = {}
+    for tx in normalized:
+        if tx.broker:
+            _filas_por_broker.setdefault(tx.broker, []).append(tx)
+    healed_targets = set()
+    for tx in normalized:
+        name = tx.broker
+        if not name or name in healed_targets:
+            continue
+        healed_targets.add(name)
+        info = user_brokers.get(name)
+        if not info:
+            continue
+        if fmt_base:
+            target = fmt_base
+            if info.get("currency") == target or broker_tiene_datos(conn, uid, name):
                 continue
-            healed_targets.add(name)
-            info = user_brokers.get(name)
-            if not info or info.get("currency") == fmt_base:
-                continue
-            has_data = conn.execute(
-                "SELECT 1 FROM positions WHERE user_id=? AND broker=? LIMIT 1",
-                (uid, name),
-            ).fetchone()
-            if has_data:
-                continue
-            _escrituras_diferidas.append((
-                "UPDATE brokers SET currency=? WHERE user_id=? AND name=?",
-                (fmt_base, uid, name), None))
-            info["currency"] = fmt_base
+        elif (_trae_pesos(_filas_por_broker.get(name, []))
+                and que_hacer_con_pesos(conn, uid, user_brokers, name) == "curar"):
+            target = "ARS"
+        else:
+            continue
+        _escrituras_diferidas.extend(
+            (sql, params, None) for sql, params in escrituras_para_cambiar_moneda(uid, name, target))
+        info["currency"] = target
 
     # Auto-crear brokers que aparecen en el CSV pero no existen para este
-    # usuario. Inferimos la moneda por mayoría de filas: USD/USDT → USDT,
-    # ARS (o empate) → ARS. Si dos filas tienen el mismo broker con casing
-    # distinto (ej.: "Bull Market" + "bull market"), las agrupamos bajo el
-    # primer casing visto.
+    # usuario, con la moneda de `moneda_de_broker_nuevo`. Si dos filas tienen el
+    # mismo broker con casing distinto (ej.: "Bull Market" + "bull market"), las
+    # agrupamos bajo el primer casing visto.
     new_brokers_created: List[Dict[str, Any]] = []
     pending: Dict[str, Dict[str, Any]] = {}  # norm_key → {first_name, rows}
     for tx in normalized:
@@ -714,45 +867,10 @@ def run_preview(
             pending[key] = {"first_name": tx.broker.strip(), "rows": []}
         pending[key]["rows"].append(tx)
 
-    # Sets para distinguir brokers crypto-native (USDT) vs tradicionales (USD).
-    # Cuando un broker se auto-crea, miramos el nombre + la moneda de las filas:
-    #   • Brokers cripto típicos → USDT
-    #   • Brokers tradicionales con filas USD → USD (no USDT)
-    #   • Brokers AR → ARS
-    CRYPTO_BROKERS = frozenset({
-        'binance', 'coinbase', 'kraken', 'bybit', 'kucoin', 'bitget',
-        'okx', 'huobi', 'gemini', 'crypto.com', 'lemon', 'ripio', 'buenbit',
-        'satoshitango', 'fiwind',
-    })
     for key, info in pending.items():
         rows_for_broker = info["rows"]
         broker_name = info["first_name"]
-        broker_lower = broker_name.lower()
-        usd_count = sum(1 for t in rows_for_broker
-                        if (t.currency or "").upper() == "USD")
-        usdt_count = sum(1 for t in rows_for_broker
-                         if (t.currency or "").upper() == "USDT")
-        ars_count = sum(1 for t in rows_for_broker
-                        if (t.currency or "").upper() == "ARS")
-        # Prioridad de inferencia:
-        #   1. Nombre conocido cripto → USDT (aunque tenga filas USD: en
-        #      Binance "USD" suele venir como USDT igual)
-        #   2. Moneda base conocida del parser (Cocos→ARS, etc.) → gana sobre la
-        #      mayoría de filas. Evita que un broker AR caiga en USD por tener
-        #      muchas compras dólar-MEP.
-        #   3. Mayoría USDT → USDT (datos explícitos)
-        #   4. Mayoría ARS → ARS
-        #   5. Cualquier otro caso (mayoría USD o mix) → USD
-        if broker_lower in CRYPTO_BROKERS:
-            inferred = "USDT"
-        elif fmt_base:
-            inferred = fmt_base
-        elif usdt_count > usd_count and usdt_count > ars_count:
-            inferred = "USDT"
-        elif ars_count > usd_count and ars_count > usdt_count:
-            inferred = "ARS"
-        else:
-            inferred = "USD"
+        inferred = moneda_de_broker_nuevo(broker_name, rows_for_broker, fmt_base)
         new_brokers_created.append({
             "name": broker_name,
             "currency": inferred,
@@ -799,6 +917,7 @@ def run_preview(
         user_brokers=user_brokers,
         existing_positions=existing_pos,
         route_by_currency=route_by_currency,
+        brokers_sin_pesos=brokers_que_no_aceptan_pesos(user_brokers, fmt_base),
     )
 
     # ── Traspaso de títulos desde OTRO broker del usuario ────────────────────
@@ -808,8 +927,16 @@ def run_preview(
     # el confirm las aplica y el revert las deshace sin código extra — y van
     # marcadas `[requiere-aprobacion]`, o sea que NO se aplican solas.
     # Ver `importing/traspasos.py` para los tres frenos.
+    #
+    # Las filas que el confirm va a omitir por repetidas no cuentan como
+    # tenencia nueva: al volver a subir el archivo del broker que ENTREGA, sus
+    # compras ya están en la base y contarlas otra vez propondría cerrar de más.
+    _huellas_confirmadas = confirmed_fingerprint_counts(conn, uid)
+    _anteriores = _renombre_broker.nombres_anteriores(conn, uid)
     _cierres_traspaso = _traspasos.cerrar_origen_de_traspasos(
-        conn, uid, valid_txs, existing_pos)
+        conn, uid, valid_txs, existing_pos,
+        repetidas=duplicate_row_indices_by_count(
+            _huellas_confirmadas, valid_txs, anteriores=_anteriores))
     valid_txs += _cierres_traspaso
 
     # Combinar errores por row_index (parse + norm + validation)
@@ -892,8 +1019,7 @@ def run_preview(
     # Huellas ya confirmadas — para anticipar en la previsualización EXACTAMENTE
     # lo que el confirm va a omitir (mismo helper, mismo conteo).
     duplicate_row_indices: List[int] = sorted(duplicate_row_indices_by_count(
-        confirmed_fingerprint_counts(conn, uid), valid_txs,
-        anteriores=_renombre_broker.nombres_anteriores(conn, uid)))
+        _huellas_confirmadas, valid_txs, anteriores=_anteriores))
 
     # Fase 4: tc_blue stamp at write time
     tc_blue_at_import = _read_user_tc_blue(conn, uid)
@@ -1330,15 +1456,28 @@ def load_session_with_seed_revalidate(
         (session_id,),
     ).fetchall()
 
+    # Las filas SINTÉTICAS (row_index negativo: los cierres por traspaso de
+    # `traspasos.py`, las de la foto de tenencia) no salieron del archivo: su
+    # fila cruda es un resumen, no algo que el normalizador sepa leer. Releerlas
+    # las tiraba por "fecha inválida" sin avisar, y con ellas el tilde de
+    # "Títulos que venían de otro broker tuyo": la persona marcaba, completaba
+    # sus datos, confirmaba, y el papel seguía en los dos brokers (2026-10-23).
+    # Se toman tal cual las dejó la previsualización, como hace el confirm sin
+    # datos completados (`load_session_for_confirm`).
+    sinteticas = [t for t in load_session_for_confirm(conn, uid=uid, session_id=session_id)[0]
+                  if t.row_index < 0]
+
     raw_rows: List[RawRow] = []
     raw_id_by_index: Dict[int, int] = {}
     for r in raw_rows_db:
+        raw_id_by_index[r["row_index"]] = r["id"]
+        if r["row_index"] < 0:
+            continue
         try:
             data = json.loads(r["raw_json"]) if r["raw_json"] else {}
         except json.JSONDecodeError:
             data = {}
         raw_rows.append(RawRow(row_index=r["row_index"], data=data))
-        raw_id_by_index[r["row_index"]] = r["id"]
 
     # Re-normalizar
     normalized, _ = normalize_rows(raw_rows)
@@ -1367,7 +1506,13 @@ def load_session_with_seed_revalidate(
         user_brokers=user_brokers,
         existing_positions=existing_with_seed,
         route_by_currency=route_currency,
+        # La misma guarda que la vista previa: sin esto, confirmar con "Estado
+        # inicial" volvía a dejar pasar las filas en pesos que la vista previa
+        # había rechazado.
+        brokers_sin_pesos=brokers_que_no_aceptan_pesos(
+            user_brokers, FORMAT_BASE_CURRENCY.get(batch["parser_format"] or "")),
     )
+    valid_txs += sinteticas
 
     # Reemplazar el contenido de import_normalized_tx con la nueva validación.
     # Las filas previamente válidas + las promovidas por el seed quedan ahí;

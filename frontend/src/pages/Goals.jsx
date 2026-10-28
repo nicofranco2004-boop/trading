@@ -15,6 +15,7 @@ import { usd, fmtUsd, pctTxt, parseNum, numACampo } from '../utils/format'
 import { priceSymbol, computeBrokerValue, isArUsdBroker, buildPriceSymbols } from '../utils/valuation'
 import { api } from '../utils/api'
 import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
+import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { hoyISO } from '../utils/fecha'
 import { confirmar } from '../utils/confirmar'
@@ -36,8 +37,9 @@ export default function Goals() {
   const [goals, setGoals] = useState([])
   const [cagr, setCagr] = useState(null)
   // El mismo control que la tarjeta de Performance de Métricas: el rendimiento
-  // que se muestra acá sale del MISMO motor, así que tiene los mismos dos modos.
-  const [modoRend, setModoRend] = useState('certero')
+  // que se muestra acá sale del MISMO motor, así que tiene los mismos dos modos
+  // y la misma elección guardada (ModoRendimientoContext).
+  const [modoRend, setModoRend] = useModoRendimiento()
   const [currentValue, setCurrentValue] = useState(0)
   const [loading, setLoading] = useState(true)
   const [modal, setModal] = useState(null) // 'add' | 'edit' | null

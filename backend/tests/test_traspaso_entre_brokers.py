@@ -272,5 +272,142 @@ class LoQueEncontroAuditarEsteCodigo(_Base):
                          "el retiro que acompaña a la venta no se aplicó")
 
 
+# Una compra de VIST con DÓLARES en el broker viejo, antes del traspaso. Va a
+# parar al sub-broker "Bull Market · USD", no al padre.
+COMPRA_USD = b"04/01/24;CPU$;29746;238413,74;295,03;DOLAR;10.0000  VIST\n"
+VIEJO_CON_USD = VIEJO.replace(b"22/01/24;DTRT", COMPRA_USD + b"22/01/24;DTRT")
+SOLO_COMPRA_USD = b"F.Liquid;Cpbt;N.Cpbt;Importe;Dolares;Mda;Ref./Cantidad\n" + COMPRA_USD
+
+
+class LaMitadEnDolaresSeVaConElTraspaso(_Base):
+    """Caso real (Agustín Sapino, 2026-10-22): después de aprobar los 11 cierres,
+    Bull Market seguía mostrando AL30 2.830 y VIST 10. Eran los papeles que había
+    comprado con DÓLARES: quedan en "Bull Market · USD", y el cierre sólo miraba
+    el primer broker que matcheaba (el de pesos)."""
+    USD_N = "Bull Market · USD"
+
+    def test_cierra_tambien_lo_comprado_en_dolares(self):
+        self.importar(VIEJO_CON_USD, self.VIEJO_N, "bullmarket")
+        self.assertEqual(self.qty(self.USD_N, "VIST"), 10.0,
+                         "precondición: la compra en dólares va al sub-broker")
+        prop = self.importar(NUEVO, self.NUEVO_N, "balanz_movimientos", aprobar=["VIST"])
+        self.assertEqual(len(prop), 1, "tiene que ser UNA propuesta por papel")
+        self.assertEqual(float(prop[0]["quantity"]), 17.0)
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST"), 0.0)
+        self.assertEqual(self.qty(self.USD_N, "VIST"), 0.0,
+                         "quedó abierta la mitad comprada en dólares")
+        self.assertEqual(self.qty(self.NUEVO_N, "VIST"), 21.0)
+
+    def test_lo_ya_cerrado_se_descuenta_y_se_propone_lo_que_falta(self):
+        """Las cuentas que ya aprobaron el cierre viejo (sólo la mitad en pesos):
+        volver a subir un archivo tiene que proponer lo que FALTA, no saltear el
+        papel porque ya tiene un cierre, ni cerrar de nuevo lo de pesos."""
+        self.importar(VIEJO, self.VIEJO_N, "bullmarket")
+        self.importar(NUEVO, self.NUEVO_N, "balanz_movimientos", aprobar=["VIST"])
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST"), 0.0)
+        prop = self.importar(SOLO_COMPRA_USD, self.VIEJO_N, "bullmarket",
+                             aprobar=["VIST"], nombre="g.csv")
+        self.assertEqual([float(p["quantity"]) for p in prop], [10.0])
+        self.assertEqual(self.qty(self.USD_N, "VIST"), 0.0)
+        self.assertEqual(self.qty(self.NUEVO_N, "VIST"), 21.0)
+        # Y una vez cerrado todo, no se vuelve a proponer.
+        prop = self.importar(NUEVO, self.NUEVO_N, "balanz_movimientos", aprobar=["VIST"])
+        self.assertEqual(prop, [])
+
+    def test_borrar_y_volver_a_subir_el_broker_viejo_no_cierra_de_mas(self):
+        """Lo que se le indica a quien quedó con el cierre viejo: borrar el import
+        del broker viejo ("Forzar revert") y volver a subirlo. El cierre de antes
+        sigue vivo en el lote del broker NUEVO; como VIST entró 21 por 7 (ratio),
+        "lo que falta" daba 14 y se volvía a cerrar todo lo recién subido."""
+        self.importar(VIEJO, self.VIEJO_N, "bullmarket")
+        self.importar(NUEVO, self.NUEVO_N, "balanz_movimientos", aprobar=["VIST"])
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST"), 0.0)
+        sid = self.conn.execute(
+            "SELECT id FROM import_batches WHERE user_id=? AND broker=? AND status='confirmed'",
+            (self.uid, self.VIEJO_N)).fetchone()["id"]
+        with self.conn:
+            main._revert_batch_de(self.conn, self.uid, sid, nuclear=True)
+        prop = self.importar(VIEJO, self.VIEJO_N, "bullmarket", aprobar=["VIST"], nombre="h.csv")
+        self.assertEqual(prop, [], "propuso cerrar otra vez lo que ya estaba cerrado")
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST"), 0.0)
+        self.assertEqual(self.qty(self.NUEVO_N, "VIST"), 21.0)
+
+
+# ── Una ON que el broker viejo CANJEÓ antes del traspaso ─────────────────────
+# Cresud cambió la Clase XXIII (CSDOO) por la XXXVIII (CS38O) el 8/7/2022. Bull
+# Market lo anota como "CANJ" sin ticker; Balanz recibe CS38O. Montos reales de
+# la cuenta de Agustín.
+VIEJO_ON = (
+    "F.Liquid;Cpbt;N.Cpbt;Importe;Dolares;Mda;Ref./Cantidad\n"
+    "10/03/22;COBA;6668;-50000;;;CREDITO CTA. CTE.\n"
+    "11/03/22;PU$A;76618;35000;300;DOLAR;TRANSFERENCIA VIA MEP\n"
+    "17/03/22;CPU$;602511;32756,45;299,94;DOLAR;298.0000  CSDOO\n"
+    "08/07/22;CANJ;395549;407,7;;;\n"
+    "22/01/24;DTRT;257047;1210;;;GTOS. TRANS. TITULOS\n"
+).encode("utf-8")
+NUEVO_ON = (BHDR +
+    "Recibo de Cobro / 1,,,2024-01-20,0,-1,2024-01-20,Pesos,1000000\n"
+    "Transferencia Externa (Crédito) / O.N. CRESUD CL.38 USD V.03/03/2026 / 306,"
+    "CS38O,Corporativos,2024-01-22,306,1320,2024-01-22,,0\n"
+).encode("utf-8")
+
+
+class LaOnCanjeadaSeReconoce(_Base):
+    def test_la_clase_vieja_se_cierra_con_el_traspaso_de_la_nueva(self):
+        self.importar(VIEJO_ON, self.VIEJO_N, "bullmarket")
+        prop = self.importar(NUEVO_ON, self.NUEVO_N, "balanz_movimientos", aprobar=["CS38O"])
+        self.assertEqual([(p["asset_symbol"], float(p["quantity"])) for p in prop],
+                         [("CS38O", 298.0)])
+        for b in (self.VIEJO_N, f"{self.VIEJO_N} · USD"):
+            for activo in ("CSDOO", "CS38O"):
+                self.assertEqual(self.qty(b, activo), 0.0, f"quedó {activo} en {b}")
+        self.assertEqual(self.qty(self.NUEVO_N, "CS38O"), 306.0)
+
+
+# ── Por la puerta de verdad: el endpoint, y con «Completar mis datos» ────────
+class PorElEndpointConDatosCompletados(_Base):
+    """Caso real (2026-10-23): la persona marcó AL30, CS38O y VIST, cargó un
+    saldo en «Completar mis datos» y confirmó. Los tres siguieron en Bull Market.
+
+    Con datos completados el confirm NO lee lo guardado en la previsualización:
+    vuelve a leer el archivo desde cero (`load_session_with_seed_revalidate`).
+    Los cierres por traspaso no salieron del archivo —se generan aparte—, así
+    que en esa relectura desaparecían y el tilde no tenía nada que aplicar.
+
+    Por eso estos tests pasan por `main.import_confirm`, el mismo camino que la
+    pantalla: el helper `importar` de arriba llama a `load_session_for_confirm`
+    directo y nunca vio la otra rama."""
+
+    def _confirmar(self, data, broker, fmt, aprobar, seed=None):
+        with self.conn:
+            p = pl.run_preview(self.conn, uid=self.uid, file_bytes=data,
+                               file_name="f.csv", broker_hint=broker, parser_format=fmt)
+        main.import_confirm(main.ImportConfirmIn(
+            session_id=p["session_id"], skip_row_indices=[],
+            aprobar_tickers=aprobar, seed_state=seed), self.uid)
+        return p
+
+    SEED = {"seed_date": "2024-01-01",
+            "brokers": [{"broker": "Balanz", "cash": {"ARS": 5000}, "assets": []}]}
+
+    def test_con_datos_completados_el_tilde_cierra(self):
+        self._confirmar(VIEJO, self.VIEJO_N, "bullmarket", [])
+        p = self._confirmar(NUEVO, self.NUEVO_N, "balanz_movimientos", ["VIST"], self.SEED)
+        self.assertEqual([t["activo"] for t in p["traspasos"]], ["VIST"])
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST"), 0.0,
+                         "marcó el título y confirmó, y siguió en el broker viejo")
+        self.assertEqual(self.qty(self.NUEVO_N, "VIST"), 21.0)
+
+    def test_con_datos_completados_sin_tilde_no_se_toca(self):
+        self._confirmar(VIEJO, self.VIEJO_N, "bullmarket", [])
+        self._confirmar(NUEVO, self.NUEVO_N, "balanz_movimientos", [], self.SEED)
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST"), 7.0)
+
+    def test_sin_datos_completados_el_tilde_cierra(self):
+        self._confirmar(VIEJO, self.VIEJO_N, "bullmarket", [])
+        self._confirmar(NUEVO, self.NUEVO_N, "balanz_movimientos", ["VIST"])
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST"), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

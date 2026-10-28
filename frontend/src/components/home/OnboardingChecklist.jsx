@@ -4,10 +4,13 @@
 // Complementa el wizard /onboarding (que se ejecuta una sola vez post-signup)
 // con una guía visible "en frío" durante los primeros días/semanas del user.
 //
-// Dos grupos (pedido de Nico, 2026-10-19: que entrar a Rendi se vuelva hábito,
-// y para eso lo primero es tenerla a mano y que le lleguen avisos):
+// Dos grupos. Desde 2026-10-27 va PRIMERO «Para tener tu cartera bien» y su
+// primer paso (Importar CSV) es obligatorio: no tiene «Ahora no» y la lista no
+// se puede cerrar con la X hasta que haya un import. Abre /imports directo en
+// el asistente. (Antes iba tercero, y quien se creaba la cuenta nunca cargaba nada.)
 //
-//   Para tener Rendi a mano
+//   Para tener Rendi a mano (pedido de Nico, 2026-10-19: que entrar a Rendi se
+//   vuelva hábito)
 //   1. Agregá Rendi a tu celular — se abrió alguna vez desde el ícono del inicio
 //      de un CELULAR (servidor: users.app_instalada_at, que escribe
 //      avisarSiEstaInstalada en utils/instalarApp.js) o está abierta así ahora.
@@ -17,7 +20,7 @@
 //      compu: algún dispositivo suscripto (servidor).
 //   3. Armá tu primera alerta    — al menos una alerta (servidor).
 //
-//   Para tener tu cartera bien (los de antes)
+//   Para tener tu cartera bien (va primero)
 //   4. Importá tu historial    — count(imports) > 0            (Paso 1 de cartera)
 //   5. Conocé tus posiciones   — flag 'rendi_positions_discovered' (Paso 2: por
 //                                DESCUBRIMIENTO, no por cargar — así el import no
@@ -93,9 +96,12 @@ function guardarOmitidos(omitidos) {
   try { localStorage.setItem(OMITIDOS_KEY, JSON.stringify(omitidos)) } catch {}
 }
 
+// La cartera va PRIMERO (pedido de Nico, 2026-10-27): al sacar «Importar» de la
+// barra y meterlo adentro de Registrar, mucha gente que se creó la cuenta nunca
+// cargó nada. El historial es lo que hace que el resto de Rendi tenga qué mostrar.
 const GRUPOS = [
-  { id: 'a_mano', titulo: 'Para tener Rendi a mano' },
   { id: 'cartera', titulo: 'Para tener tu cartera bien' },
+  { id: 'a_mano', titulo: 'Para tener Rendi a mano' },
 ]
 
 export default function OnboardingChecklist() {
@@ -223,6 +229,26 @@ export default function OnboardingChecklist() {
   const enCompu = push.plataforma === 'otro'
   const enCelular = esCelular(push.plataforma)
   const items = [
+    // Carga de cartera en 2 pasos que NO desaparecen al hacer el primero.
+    // El broker NO es un paso aparte: el import lo crea solo (importing/pipeline.py
+    // auto-crea el broker referenciado en el CSV, infiriendo la moneda) y en
+    // /posiciones el BrokerManager también deja crearlo inline. Antes "crear
+    // broker" era un paso suelto donde mucha gente se quedaba sin llegar a importar.
+    //   Paso 1 → Importaciones (historial completo por CSV, crea el broker solo)
+    //   Paso 2 → Posiciones (solo las activas que tenés hoy)
+    {
+      id: 'import',
+      grupo: 'cartera',
+      done: state.hasImported,
+      Icon: Upload,
+      title: 'Importá tu historial',
+      // Obligatorio: sin «Ahora no» (no es omitible) y la lista no se puede cerrar
+      // con la X hasta que haya un import. Abre el importador directo.
+      recomendado: true,
+      desc: 'Paso 1 de 2 · Subí el CSV de tu broker. Lo creamos solo y traemos todas tus operaciones, todo de una.',
+      cta: 'Importar CSV',
+      onClick: () => navigate('/imports?from=checklist'),
+    },
     {
       id: 'instalar',
       grupo: 'a_mano',
@@ -281,23 +307,6 @@ export default function OnboardingChecklist() {
       desc: 'Elegí un precio o un movimiento y te avisamos cuando pase.',
       cta: 'Crear',
       onClick: () => navigate('/alertas'),
-    },
-    // Carga de cartera en 2 pasos que NO desaparecen al hacer el primero.
-    // El broker NO es un paso aparte: el import lo crea solo (importing/pipeline.py
-    // auto-crea el broker referenciado en el CSV, infiriendo la moneda) y en
-    // /posiciones el BrokerManager también deja crearlo inline. Antes "crear
-    // broker" era un paso suelto donde mucha gente se quedaba sin llegar a importar.
-    //   Paso 1 → Importaciones (historial completo por CSV, crea el broker solo)
-    //   Paso 2 → Posiciones (solo las activas que tenés hoy)
-    {
-      id: 'import',
-      grupo: 'cartera',
-      done: state.hasImported,
-      Icon: Upload,
-      title: 'Importá tu historial',
-      desc: 'Paso 1 de 2 · Subí el CSV de tu broker. Lo creamos solo y traemos todas tus operaciones, todo de una.',
-      cta: 'Importar',
-      onClick: () => navigate('/imports'),
     },
     {
       // Done por DESCUBRIMIENTO (ver utils/positionsDiscovered): se tilda cuando
@@ -447,14 +456,16 @@ export default function OnboardingChecklist() {
             </p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={handleDismiss}
-          aria-label="Cerrar checklist"
-          className="text-ink-3 hover:text-ink-1 transition-colors p-1 -mr-1 -mt-1"
-        >
-          <X size={16} strokeWidth={1.75} />
-        </button>
+        {state.hasImported && (
+          <button
+            type="button"
+            onClick={handleDismiss}
+            aria-label="Cerrar checklist"
+            className="text-ink-3 hover:text-ink-1 transition-colors p-1 -mr-1 -mt-1"
+          >
+            <X size={16} strokeWidth={1.75} />
+          </button>
+        )}
       </div>
 
       {/* Progress mini */}

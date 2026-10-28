@@ -707,6 +707,46 @@ ALTER TABLE brokers ADD COLUMN IF NOT EXISTS parent_broker_id bigint;
 
 ALTER TABLE brokers ADD COLUMN IF NOT EXISTS nombres_anteriores text;
 
+CREATE TABLE IF NOT EXISTS cambios_ratio (
+  cedear text NOT NULL,
+  fecha text NOT NULL,
+  tipo text NOT NULL,
+  factor double precision,
+  factor_medido double precision,
+  estado text NOT NULL,
+  origen text NOT NULL,
+  motivo text,
+  precio_antes double precision,
+  precio_despues double precision,
+  en_la_serie bigint NOT NULL DEFAULT 0,
+  actualizado text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS'),
+  PRIMARY KEY (cedear, fecha, tipo)
+);
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS cedear text;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS fecha text;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS tipo text;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS factor double precision;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS factor_medido double precision;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS estado text;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS origen text;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS motivo text;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS precio_antes double precision;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS precio_despues double precision;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS en_la_serie bigint DEFAULT 0;
+
+ALTER TABLE cambios_ratio ADD COLUMN IF NOT EXISTS actualizado text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS');
+
 CREATE TABLE IF NOT EXISTS config (
   key text NOT NULL,
   value text,
@@ -1990,6 +2030,7 @@ CREATE TABLE IF NOT EXISTS users (
   origen text,
   origen_visto_at text,
   app_instalada_at text,
+  modo_rendimiento text,
   aviso_vencimiento_de text,
   UNIQUE (email)
 );
@@ -2063,6 +2104,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS origen text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS origen_visto_at text;
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS app_instalada_at text;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS modo_rendimiento text;
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS aviso_vencimiento_de text;
 
@@ -2382,3 +2425,19 @@ ALTER TABLE iol_lab_runs ADD CONSTRAINT fk_iol_lab_runs_user_id_users FOREIGN KE
 ALTER TABLE iol_lab_token_log ADD CONSTRAINT fk_iol_lab_token_log_user_id_users FOREIGN KEY (user_id) REFERENCES users(id);
 
 ALTER TABLE user_broker_credentials ADD CONSTRAINT fk_user_broker_credentials_user_id_users FOREIGN KEY (user_id) REFERENCES users(id);
+
+CREATE TABLE IF NOT EXISTS interruptores (
+  nombre text,
+  encendido bigint NOT NULL DEFAULT 0,
+  cambiado_at text,
+  cambiado_por bigint,
+  PRIMARY KEY (nombre)
+);
+
+ALTER TABLE interruptores ADD COLUMN IF NOT EXISTS nombre text;
+
+ALTER TABLE interruptores ADD COLUMN IF NOT EXISTS encendido bigint DEFAULT 0;
+
+ALTER TABLE interruptores ADD COLUMN IF NOT EXISTS cambiado_at text;
+
+ALTER TABLE interruptores ADD COLUMN IF NOT EXISTS cambiado_por bigint;

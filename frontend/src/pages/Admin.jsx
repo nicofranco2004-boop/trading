@@ -405,6 +405,7 @@ export default function Admin() {
       <RepairInteresPfPanel toast={toast} />
       <RepairCaja1415Panel toast={toast} />
       <FciRefreshPanel toast={toast} />
+      <AvisoRatioPanel toast={toast} />
       <MtmAuditPanel toast={toast} />
       <FxMigratePanel toast={toast} />
 
@@ -2377,6 +2378,75 @@ function FciRefreshPanel({ toast }) {
         <p className="text-xs text-emerald-500 tabular">
           {Object.entries(r).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ')}
         </p>
+      )}
+    </div>
+  )
+}
+
+
+// ─── AvisoRatioPanel — el interruptor del aviso «Ajustar» nuevo ─────────────
+// El aviso nuevo de cambio de ratio (backend/cambios_ratio.py) arranca APAGADO:
+// apagado, Posiciones muestra el aviso de siempre (lo que anota Yahoo). Se prende
+// después de revisar la lista de abajo. Lee GET /api/admin/cambios-ratio; el
+// botón es POST /api/admin/cambios-ratio/interruptor (sólo admins).
+const ESTADOS_RATIO = { confirmado: 'se ofrece', sin_confirmar: 'se pregunta', dudoso: 'no llega al aviso', descartado: 'descartado' }
+const factorTxt = (f) => (!f ? '?' : f >= 1 ? `×${Number(f).toLocaleString('es-AR', { maximumFractionDigits: 2 })}`
+  : `1:${Number(1 / f).toLocaleString('es-AR', { maximumFractionDigits: 2 })}`)
+
+function AvisoRatioPanel({ toast }) {
+  const [e, setE] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  async function cargar() {
+    try { setE(await api.get('/admin/cambios-ratio')) } catch (ex) { toast.push('Error: ' + ex.message, { type: 'error' }) }
+  }
+  useEffect(() => { cargar() /* eslint-disable-next-line */ }, [])
+
+  async function cambiar(encendido) {
+    if (encendido && !await confirmar('¿Prender el aviso nuevo? Desde ahora Posiciones ofrece «Ajustar» con la lista nueva y la foto de tenencia acredita a $0 los CEDEARs de un cambio de ratio.')) return
+    setBusy(true)
+    try {
+      const r = await api.post('/admin/cambios-ratio/interruptor', { encendido })
+      setE((x) => ({ ...(x || {}), interruptor: r }))
+      toast.push(r.encendido ? 'Aviso nuevo PRENDIDO' : 'Aviso nuevo apagado', { type: 'success' })
+    } catch (ex) {
+      toast.push('Error: ' + ex.message, { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  const on = !!e?.interruptor?.encendido
+  const porEstado = {}
+  for (const c of e?.lista || []) (porEstado[c.estado] ||= []).push(c)
+  return (
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <AlertTriangle size={16} className="text-violet-500" />
+          <h2 className="font-semibold text-ink-0">Aviso de cambio de ratio («Ajustar»)</h2>
+        </div>
+        <button onClick={() => cambiar(!on)} disabled={busy || !e}
+          className={`text-xs px-3 py-1.5 rounded text-white disabled:opacity-50 ${on ? 'bg-rendi-neg hover:opacity-90' : 'bg-violet-600 hover:bg-violet-500'}`}>
+          {busy ? 'Guardando…' : on ? 'Apagar el aviso nuevo' : 'Prender el aviso nuevo'}
+        </button>
+      </div>
+      {!e ? <p className="text-xs text-ink-3">Cargando…</p> : (
+        <>
+          <p className={`text-sm font-medium ${on ? 'text-rendi-warn' : 'text-ink-1'}`}>
+            {on
+              ? 'PRENDIDO: Posiciones ofrece «Ajustar» con la lista nueva.'
+              : 'Apagado: Posiciones muestra el aviso de siempre (lo que anota Yahoo).'}
+            {e.interruptor?.cambiado_at && <span className="text-ink-3 font-normal"> · cambiado {e.interruptor.cambiado_at} (UTC)</span>}
+          </p>
+          {Object.keys(ESTADOS_RATIO).filter((k) => porEstado[k]?.length).map((k) => (
+            <div key={k} className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">{k.replace('_', ' ')}: {ESTADOS_RATIO[k]} ({porEstado[k].length})</div>
+              <div className="text-ink-3 leading-relaxed">
+                {porEstado[k].map((c) => `${c.cedear} ${c.fecha} (${factorTxt(c.factor || c.factor_medido)})`).join(' · ')}
+              </div>
+            </div>
+          ))}
+          {!e.lista?.length && <p className="text-xs text-ink-3">La lista todavía está vacía: se arma en la corrida de velas de la noche.</p>}
+        </>
       )}
     </div>
   )

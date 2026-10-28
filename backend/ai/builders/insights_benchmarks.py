@@ -11,7 +11,9 @@ Shape (~600 bytes):
 {
   "screen": "insights.benchmarks",
   "window_days": int,
-  "user_return_pct": float | null,
+  "user_return_pct": float | null,      # en dólares, contra el S&P
+  "user_return_ars_pct": float | null,  # en pesos, contra inflación y blue
+  "modo": "certero" | "estimado" | null,
   "benchmarks": {
     "sp500_pct": float | null,
     "inflation_ar_pct": float | null,
@@ -60,8 +62,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     ninguna posición del toggle publica (AUDIT_benchmark_2026-09-01 §2.6).
 
     Ahora sale de `performance.performance`, la MISMA fuente que el gráfico: el
-    TWR publicado del modo Certero (si no hay medición, el del Estimado, y se
-    declara `basis='contable'`), y el S&P entre las MISMAS dos fechas que ese
+    TWR publicado del modo que ELIGIÓ EL USUARIO (`twr.modo_de`; si ése no tiene
+    número, el otro, declarado en `modo`/`basis`), y el S&P entre las MISMAS dos fechas que ese
     número, del benchmark diario. `window_days` se conserva por compatibilidad
     del packet, pero la ventana real es la que el motor declara
     (`window_from`/`window_to`): un número medido sobre un período publicado
@@ -86,30 +88,40 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     except Exception:
         data = {}
 
+    def _dias(d0, d1):
+        _a = str(d0 or "")[:10]
+        _b = today.isoformat() if str(d1) in ("hoy", "None", "") else str(d1)[:10]
+        try:
+            return (date.fromisoformat(_b) - date.fromisoformat(_a)).days
+        except ValueError:
+            return 0
+
+    user_ars_pct: Optional[float] = None
+    modo_usado: Optional[str] = None
     try:
         import performance as _perf
         import twr as _twr
+        # ⚠️ EL MODO DEL USUARIO PRIMERO. Antes era siempre certero y, si no
+        # había medición, estimado: con la app en Estimado, el chat comparaba
+        # contra el S&P un número que la pantalla no mostraba. El otro modo queda
+        # como respaldo DECLARADO (`modo`/`basis` en el paquete).
+        _pref = _twr.modo_de(conn, user_id, kwargs.get("modo"))
+        _orden = (_pref,) + tuple(m for m in _twr.MODOS if m != _pref)
         perf = None
-        for modo in (_twr.MODO_CERTERO, _twr.MODO_ESTIMADO):
+        for modo in _orden:
             p = _perf.performance(conn, user_id, data, bench_key="sp500", modo=modo)
             if p.get("twr") is not None:
                 perf = p
                 break
         if perf is not None:
+            modo_usado = perf.get("modo")
             window_from, window_to = perf.get("ventana_desde"), perf.get("ventana_hasta")
             # ⚠️ VENTANA MÍNIMA. Medido en la copia de producción: el fallback al
             # Estimado devolvía ventanas de DOS DÍAS (2026-08-14 → 08-16, +0,09 %)
             # y el modelo compararía eso contra el S&P como si fuera un período.
             # Menos de 28 días no es una comparación: se publica la ventana y el
             # motivo, no el número.
-            _d0 = str(window_from or "")[:10]
-            _d1 = (today.isoformat() if str(window_to) in ("hoy", "None", "")
-                   else str(window_to)[:10])
-            try:
-                _dias = (date.fromisoformat(_d1) - date.fromisoformat(_d0)).days
-            except ValueError:
-                _dias = 0
-            if _dias >= 28:
+            if _dias(window_from, window_to) >= 28:
                 user_pct = round(float(perf["twr"]) * 100, 2)
                 basis = perf.get("base_del_twr")
                 excluye_no_realizado = bool(perf.get("excluye_no_realizado"))
@@ -118,38 +130,33 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             else:
                 basis = "ventana_corta"
                 window_from = window_to = None
+
+            # ⚠️ INFLACIÓN Y BLUE, EN PESOS Y CON EL MISMO MODO. Se restaba la
+            # inflación del INDEC (pesos) a `user_pct` (dólares): le faltaba la
+            # devaluación, que es justo lo que separa las dos monedas (ver
+            # `twr.vs_inflacion_ar`). Ahora es la misma cuenta que la tarjeta
+            # "Cartera vs Inflación AR (ARS)": la cartera medida EN PESOS por el
+            # motor y la inflación entre las MISMAS dos fechas de esa medición.
+            if user_pct is not None:
+                p_ars = _perf.performance(conn, user_id, data, bench_key="inflation_ar",
+                                          modo=modo_usado, moneda=_twr.MONEDA_ARS)
+                a0, a1 = p_ars.get("ventana_desde"), p_ars.get("ventana_hasta")
+                if p_ars.get("twr") is not None and _dias(a0, a1) >= 28:
+                    user_ars_pct = round(float(p_ars["twr"]) * 100, 2)
+                    inflation_pct = _bench_pct_entre(p_ars.get("benchmark"),
+                                                     p_ars.get("curva"), a0, a1)
+                    dolar_pct = _perf.bench_pct_entre(data, "dolar_blue", a0, a1)
     except Exception:
         perf = None
-
-    # Inflación y blue: sobre la MISMA ventana que el número del usuario. Sin
-    # ventana (sin número) no hay comparación que armar.
-    try:
-        if window_from:
-            cutoff_ym = str(window_from)[:7]
-            hasta_ym = (today.strftime("%Y-%m") if str(window_to) in ("hoy", "", "None")
-                        else str(window_to)[:7])
-            infl = data.get("inflation_ar") or {}
-            infl_window = sorted([(k, v) for k, v in infl.items() if cutoff_ym < k <= hasta_ym])
-            if infl_window:
-                comp = 1.0
-                for _, pct in infl_window:
-                    comp *= (1 + float(pct) / 100)
-                inflation_pct = round((comp - 1) * 100, 2)
-            blue = data.get("dolar_blue") or {}
-            k0 = max((k for k in blue if k <= cutoff_ym), default=None)
-            k1 = max((k for k in blue if k <= hasta_ym), default=None)
-            if k0 and k1 and blue.get(k0):
-                dolar_pct = round((float(blue[k1]) - float(blue[k0])) / float(blue[k0]) * 100, 2)
-    except Exception:
-        pass
 
     def _delta(u, b):
         return round(u - b, 2) if (u is not None and b is not None) else None
 
     deltas = {
         "vs_sp500": _delta(user_pct, sp500_pct),
-        "vs_inflation": _delta(user_pct, inflation_pct),
-        "vs_dolar_blue": _delta(user_pct, dolar_pct),
+        # Pesos contra pesos: la inflación y el blue se miden en pesos.
+        "vs_inflation": _delta(user_ars_pct, inflation_pct),
+        "vs_dolar_blue": _delta(user_ars_pct, dolar_pct),
     }
     outperform = {
         "sp500": (deltas["vs_sp500"] > 0) if deltas["vs_sp500"] is not None else None,
@@ -168,6 +175,12 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "basis": basis,
         "excluye_no_realizado": excluye_no_realizado,
         "user_return_pct": user_pct,
+        # El mismo rendimiento EN PESOS (incluye la devaluación): contra éste se
+        # comparan la inflación y el blue.
+        "user_return_ars_pct": user_ars_pct,
+        # Con qué modo se midió: el que eligió el usuario, salvo que no tuviera
+        # número (entonces el otro, y acá se ve).
+        "modo": modo_usado,
         "benchmarks": {
             "sp500_pct": sp500_pct,
             "inflation_ar_pct": inflation_pct,
