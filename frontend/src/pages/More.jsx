@@ -65,6 +65,7 @@ const EN_EL_CELULAR = {
   '/novedades':       { sub: 'Noticias y eventos de los activos' },
   '/analisis':        { sub: 'Diagnóstico, comportamiento, reportes' },
   '/fundamentals':    { sub: 'Calidad de las tenencias + buscador de empresas' },
+  '/analisis-tecnico': { sub: 'Lo que tenés y lo que seguís, con su lectura técnica' },
   '/perfil-inversor': { sub: 'Perfil declarado vs. la cartera real' },
 }
 
