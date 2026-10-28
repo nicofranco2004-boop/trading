@@ -121,9 +121,20 @@ export function filasDeLaLista({ lotes = [], valorDe, extra = [], seguidos = [],
     const { asset, local, simbolo } = lecturaDeSeguido(it?.symbol)
     const k = clave(asset, local)
     if (!asset || filas.has(k)) continue
-    armar(k, { nombre: simbolo, ruta: simbolo, tenes: false, valor: 0, peso: 0, p: loteDeSeguido(it, asset) })
+    armar(k, { nombre: isCrypto(asset) ? asset : simbolo, ruta: simbolo, tenes: false, valor: 0, peso: 0, p: loteDeSeguido(it, asset) })
   }
-  return [...filas.values()]
+  return conDetalle([...filas.values()])
+}
+
+/** Dos filas con el mismo ticker (GGAL de IOL y el ADR GGAL de Schwab) son dos
+ *  papeles distintos con dos lecturas: cada una dice dónde cotiza. */
+function conDetalle(filas) {
+  const base = (n) => n.replace(/\.BA$/, '')
+  const cuantas = {}
+  for (const f of filas) cuantas[base(f.nombre)] = (cuantas[base(f.nombre)] || 0) + 1
+  return filas.map(f => (cuantas[base(f.nombre)] > 1
+    ? { ...f, detalle: f.clave.endsWith('|1') ? 'en BYMA' : String(f.p?.asset_type).toUpperCase() === 'CEDEAR' ? 'CEDEAR' : 'en Nueva York' }
+    : f))
 }
 
 /** Cuántas hay en cada filtro. «Watchlist» = lo que seguís y no tenés. */

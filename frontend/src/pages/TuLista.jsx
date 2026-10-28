@@ -139,14 +139,14 @@ const COLUMNA_DE = { peso: 'tenes', fuerza: 'rsi', maximo: 'maximo', cambio: 'ca
 
 function Encabezado({ id, orden, onOrdenar, children, className = '' }) {
   const por = Object.keys(COLUMNA_DE).find(k => COLUMNA_DE[k] === id)
-  if (!por) return <th scope="col" className={`px-3 py-2.5 font-medium whitespace-nowrap ${className}`}>{children}</th>
+  if (!por) return <th scope="col" className={`px-3 py-2.5 font-medium leading-tight align-bottom ${className}`}>{children}</th>
   const activa = orden.por === por
   const Flecha = orden.desc ? ArrowDown : ArrowUp
   return (
     <th scope="col" aria-sort={activa ? (orden.desc ? 'descending' : 'ascending') : 'none'}
-      className={`px-3 py-2.5 font-medium whitespace-nowrap ${className}`}>
+      className={`px-3 py-2.5 font-medium leading-tight align-bottom ${className}`}>
       <button type="button" onClick={() => onOrdenar(por)}
-        className={`inline-flex items-center gap-1 hover:text-ink-0 ${activa ? 'text-ink-0' : ''}`}>
+        className={`inline-flex items-end gap-1 text-left hover:text-ink-0 ${className.includes('text-right') ? 'justify-end text-right' : ''} ${activa ? 'text-ink-0' : ''}`}>
         {children}
         {activa && <Flecha size={12} strokeWidth={2} aria-hidden="true" />}
       </button>
@@ -181,6 +181,7 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="Qué mostrar">
           {FILTROS.map(f => (
             <button key={f.id} type="button" aria-pressed={filtro === f.id} onClick={() => setFiltro(f.id)}
+              aria-label={`${f.label}: ${cuantas[f.id]}`}
               className={`rounded-full border px-3 py-1.5 text-[13px] min-h-[34px] transition-colors ${filtro === f.id
                 ? 'border-data-violet bg-data-violet/10 text-ink-0'
                 : 'border-line-2 bg-bg-1 text-ink-1 hover:text-ink-0'}`}>
@@ -199,17 +200,17 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
 
       <Panel padding="none" className="overflow-hidden">
         <div className="overflow-x-auto overscroll-x-contain">
-          <table className="w-full min-w-[1040px] border-collapse text-left">
+          <table className="w-full min-w-[960px] border-collapse text-left">
             <thead className="text-[12px] text-ink-2 border-b border-line">
               <tr>
-                <th scope="col" className="sticky left-0 z-[1] bg-bg-1 px-3 py-2.5 font-medium">Activo</th>
+                <th scope="col" className="sticky left-0 z-[1] bg-bg-1 px-3 py-2.5 font-medium align-bottom">Activo</th>
                 <Encabezado id="tenes" orden={orden} onOrdenar={ordenar}>¿Lo tenés?</Encabezado>
                 <Encabezado id="linea" orden={orden} onOrdenar={ordenar}>3 meses</Encabezado>
-                <Encabezado id="fondo" orden={orden} onOrdenar={ordenar}>De fondo <span className="text-ink-3">· 200 días</span></Encabezado>
-                <Encabezado id="corto" orden={orden} onOrdenar={ordenar}>Corto plazo <span className="text-ink-3">· 50 días</span></Encabezado>
+                <Encabezado id="fondo" orden={orden} onOrdenar={ordenar}>De fondo <span className="block text-ink-3">200 días</span></Encabezado>
+                <Encabezado id="corto" orden={orden} onOrdenar={ordenar}>Corto plazo <span className="block text-ink-3">50 días</span></Encabezado>
                 <Encabezado id="rsi" orden={orden} onOrdenar={ordenar} className="text-right">Fuerza (RSI)</Encabezado>
-                <Encabezado id="adx" orden={orden} onOrdenar={ordenar} className="text-right">Fuerza de la tendencia (ADX)</Encabezado>
-                <Encabezado id="maximo" orden={orden} onOrdenar={ordenar} className="text-right">Desde el máximo del año</Encabezado>
+                <Encabezado id="adx" orden={orden} onOrdenar={ordenar} className="text-right">Fuerza de la{' '}<br />tendencia (ADX)</Encabezado>
+                <Encabezado id="maximo" orden={orden} onOrdenar={ordenar} className="text-right">Desde el{' '}<br />máximo del año</Encabezado>
                 <Encabezado id="cambio" orden={orden} onOrdenar={ordenar}>Último cambio</Encabezado>
               </tr>
             </thead>
@@ -222,6 +223,7 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
                       className="font-semibold text-ink-0 hover:text-data-violet">
                       {f.nombre}
                     </Link>
+                    {f.detalle && <span className="block text-[11.5px] text-ink-3 whitespace-nowrap">{f.detalle}</span>}
                   </td>
                   <td className="px-3 py-2.5 whitespace-nowrap">
                     {f.tenes
@@ -251,7 +253,7 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
                     {!f.desdeMax ? <span className="text-ink-3">—</span>
                       : f.desdeMax.enMaximo ? 'En su máximo' : signo(f.desdeMax.pct)}
                   </td>
-                  <td className="px-3 py-2.5 min-w-[220px] text-[13px]">
+                  <td className="px-3 py-2.5 min-w-[200px] text-[13px]">
                     {!f.vigente ? <span className="text-ink-2">{f.motivo}</span>
                       : f.cambio ? (
                         <>
