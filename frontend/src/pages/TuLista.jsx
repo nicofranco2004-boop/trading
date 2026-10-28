@@ -134,6 +134,12 @@ function Corto({ corto }) {
   return <PildoraTendencia id={corto.palabra === 'Alcista' ? 'alcista' : 'bajista'} palabra={corto.palabra} motivo={corto.motivo} />
 }
 
+// El borde derecho de la columna fija del activo: con la tabla deslizada en el
+// celular, marca qué queda quieto. Va por `style` (una sombra hacia adentro):
+// con border-collapse el borde de una celda fija no viaja con ella, y
+// `shadow-[var(--x)]` de Tailwind compila sin pintar (frontend/CLAUDE.md, R8).
+const BORDE_FIJO = { boxShadow: 'inset -1px 0 0 rgb(var(--line))' }
+
 // El color del cambio, el de su pastilla en «Tus señales» (`tono` del servidor).
 const TONO_CAMBIO = { pos: 'text-rendi-pos', neg: 'text-rendi-neg' }
 
@@ -206,7 +212,7 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
           <table className="w-full min-w-[960px] border-collapse text-left">
             <thead className="text-[12px] text-ink-2 border-b border-line">
               <tr>
-                <th scope="col" className="sticky left-0 z-[1] bg-bg-1 px-3 py-2.5 font-medium align-bottom">Activo</th>
+                <th scope="col" className="sticky left-0 z-[1] bg-bg-1 px-3 py-2.5 font-medium align-bottom" style={BORDE_FIJO}>Activo</th>
                 <Encabezado id="tenes" orden={orden} onOrdenar={ordenar}>¿Lo tenés?</Encabezado>
                 <Encabezado id="linea" orden={orden} onOrdenar={ordenar}>3 meses</Encabezado>
                 <Encabezado id="fondo" orden={orden} onOrdenar={ordenar}>De fondo <span className="block text-ink-3">200 días</span></Encabezado>
@@ -221,7 +227,7 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
               {vista.map(f => (
                 <tr key={f.clave} onClick={() => onAbrir?.(f)}
                   className={`group cursor-pointer border-b border-line/40 last:border-b-0 hover:bg-bg-2/50 ${f.vigente ? '' : 'opacity-60'}`}>
-                  <td className="sticky left-0 z-[1] bg-bg-1 group-hover:bg-bg-2 px-3 py-2.5">
+                  <td className="sticky left-0 z-[1] bg-bg-1 group-hover:bg-bg-2 px-3 py-2.5" style={BORDE_FIJO}>
                     <Link to={`/activo/${encodeURIComponent(f.ruta)}`} onClick={e => e.stopPropagation()}
                       className="font-semibold text-ink-0 hover:text-data-violet">
                       {f.nombre}
