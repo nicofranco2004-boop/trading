@@ -235,6 +235,21 @@ const MOV_ALTO = 3
 const MOV_MAS = 1.3
 const MOV_MENOS = 0.75
 
+/**
+ * Ganancia por cada punto de movimiento, en PASADO (`rend_por_movimiento` del
+ * servidor): lo que cambió el precio en 12 meses ÷ cuánto se movió en el año.
+ * Medido el 28/10 en 15 acciones, NO anticipó qué acción rindió más después:
+ * por eso se dice en pasado y lo aclara. null sin año completo.
+ */
+export function textoRendPorMovimiento(l) {
+  const r = l?.rend_por_movimiento
+  if (r == null || l.rend_12m == null || !(l.mov_anual > 0)) return null
+  const veces = Math.abs(r).toLocaleString('es-AR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })
+  return `En los últimos 12 meses ${l.rend_12m >= 0 ? 'subió' : 'bajó'} ${pct1(l.rend_12m)} y se movió unos ${Math.round(l.mov_anual)}% en el año: `
+    + `${veces} de ${l.rend_12m >= 0 ? 'ganancia' : 'pérdida'} por cada 1 de movimiento. `
+    + 'Es lo que ya pasó: medido en 15 acciones, este número no anticipó cuál iba a rendir más después.'
+}
+
 /** La tarjeta «Cuánto se mueve». null sin lectura. */
 export function tarjetaMovimiento(l) {
   if (!l || !l.ruedas) return null
@@ -257,6 +272,7 @@ export function tarjetaMovimiento(l) {
     ...base, veredicto,
     texto: `En un día normal de los últimos 20 días de mercado subió o bajó alrededor de ${pct1(l.mov_dia)}.${mes}${anio} `
       + 'Mide el tamaño del movimiento, no para dónde va.',
+    cruce: textoRendPorMovimiento(l),
   }
 }
 

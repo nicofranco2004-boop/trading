@@ -197,6 +197,13 @@ class CuentasTest(unittest.TestCase):
         habiles = [v for v in velas if date.fromisoformat(v["date"]).weekday() < 5]
         lh = tecnico.lectura(habiles)
         self.assertIn(round((lh["mov_mes"] / lh["mov_dia"]) ** 2), (21, 22, 23))
+        # Ganancia por punto de movimiento (pasado): 12 meses ÷ el año de movimiento.
+        hace_un_anio = xs[i_anio - 1]
+        self.assertAlmostEqual(l["rend_12m"], (xs[-1] / hace_un_anio - 1) * 100, places=9)
+        self.assertAlmostEqual(l["mov_anual"], l["mov_dia_anio"] * (len(xs) - i_anio) ** 0.5, places=9)
+        self.assertAlmostEqual(l["rend_por_movimiento"], l["rend_12m"] / l["mov_anual"], places=12)
+        # Sin un año completo, no hay relación (no se inventa con medio año).
+        self.assertIsNone(tecnico.lectura(velas[:300])["rend_por_movimiento"])
         # Pocos días: no inventa.
         corto = tecnico.lectura(velas[:20])
         self.assertIsNone(corto["mov_dia"])

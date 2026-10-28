@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { tarjetas, tarjetaFuerza, tarjetaBandas, tarjetaMovimiento, colorSqueeze, fmtAdx, textoCruceAdx, textoSqueeze, velasSemanales, ADX_CLAVE, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
+import { tarjetas, tarjetaFuerza, tarjetaBandas, tarjetaMovimiento, textoRendPorMovimiento, colorSqueeze, fmtAdx, textoCruceAdx, textoSqueeze, velasSemanales, ADX_CLAVE, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
 
 const L = {
   ruedas: 760, fecha: '2026-10-21', precio: 228.97,
@@ -273,6 +273,7 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
       ...[-0.2, 0.1, 0.5, 0.9, 1.2, null].flatMap(bb_posicion => [0.5, 1, 2].map(bb_ancho_relativo =>
         tarjetaBandas({ ruedas: 300, bb_arriba: 110, bb_abajo: 90, bb_posicion, bb_ancho_relativo }).texto)),
       tarjetaBandas({ ruedas: 10, bb_arriba: null }).texto,
+      textoRendPorMovimiento({ rend_12m: 32, mov_anual: 24, rend_por_movimiento: 1.33 }), textoRendPorMovimiento({ rend_12m: -22, mov_anual: 41, rend_por_movimiento: -0.54 }),
       ...[0.8, 2, 4].flatMap(mov_dia => [null, 1, 3].map(mov_dia_anio => tarjetaMovimiento({ ruedas: 300, mov_dia, mov_dia_anio, mov_mes: mov_dia * 4.6 }).texto))].join(' ')
     expect(textos).not.toMatch(/suele|se viene|comprá|vendé|va a subir|va a bajar|rebota|frena|antesala|arranque/i)
   })
@@ -312,6 +313,14 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     expect(tarjetaMovimiento({ ruedas: 15, mov_dia: null }).texto).toContain('hacen falta 21 días de mercado y este activo tiene 15')
     expect(tarjetaMovimiento({ ruedas: 60, mov_dia: 0 }).veredicto).toBe('Sin movimiento')
     expect(tarjetas({ ruedas: 300, mov_dia: 2 }).map(x => x.id)).toContain('movimiento')
+    // Ganancia por punto de movimiento, en pasado y con la aclaración.
+    const con = tarjetaMovimiento({ ruedas: 760, mov_dia: 0.84, rend_12m: 32.07, mov_anual: 24.13, rend_por_movimiento: 1.329 })
+    expect(con.cruce).toBe('En los últimos 12 meses subió 32,1% y se movió unos 24% en el año: 1,3 de ganancia por cada 1 de movimiento. '
+      + 'Es lo que ya pasó: medido en 15 acciones, este número no anticipó cuál iba a rendir más después.')
+    expect(textoRendPorMovimiento({ rend_12m: -22.2, mov_anual: 41.2, rend_por_movimiento: -0.539 }))
+      .toContain('bajó 22,2% y se movió unos 41% en el año: 0,5 de pérdida por cada 1 de movimiento')
+    expect(textoRendPorMovimiento({ rend_12m: 5, mov_anual: 20, rend_por_movimiento: null })).toBeNull()
+    expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 2 }).cruce).toBeNull()
   })
 
   it('las velas semanales llevan las bandas del último día', () => {

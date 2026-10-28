@@ -452,6 +452,13 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=Non
     mov_dia = movimiento_diario(cierres[-(RUEDAS_MOVIMIENTO + 1):]) if n > RUEDAS_MOVIMIENTO else None
     mov_anio = movimiento_diario(cierres[i_anio:]) if n - i_anio > MIN_RUEDAS_MOVIMIENTO_ANIO else None
     ruedas_mes = n - _desde_dias(velas, DIAS_PENDIENTE)
+    # Ganancia por cada punto de movimiento, en PASADO (pedido de Nico, 28/10):
+    # lo que cambió el precio en 12 meses ÷ cuánto se movió en ese año (el día
+    # normal llevado a un año: × √ de los días de mercado del año). Medido el
+    # 28/10 en 15 acciones: este número NO anticipó qué acción rindió más
+    # después (INFORME_riesgo_beneficio.md). Sólo con el año completo.
+    ret_12m = _pct(ultimo, cierres[i_anio - 1]) if i_anio > 0 else None
+    vol_anual = mov_anio * (n - i_anio) ** 0.5 if mov_anio is not None else None
     vols = [v.get("volume") for v in velas[-21:-1] if v.get("volume")]
     vol_hoy = velas[-1].get("volume")
     return {
@@ -491,6 +498,9 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=Non
         "mov_dia": mov_dia,
         "mov_dia_anio": mov_anio,
         "mov_mes": mov_dia * ruedas_mes ** 0.5 if mov_dia is not None else None,
+        "rend_12m": ret_12m,
+        "mov_anual": vol_anual,
+        "rend_por_movimiento": (ret_12m / vol_anual) if (ret_12m is not None and vol_anual) else None,
     }
 
 
