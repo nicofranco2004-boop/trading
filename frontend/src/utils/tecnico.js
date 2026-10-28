@@ -197,7 +197,9 @@ export function tarjetas(l) {
       veredicto: veredictoRsi(l.rsi), tono: 'neutro', rsi: l.rsi,
       texto: `${Math.round(l.rsi)} de 100. Compara las subas con las bajas de las últimas 3 semanas. `
         + `Arriba de 50 el precio toma fuerza; abajo de 50, la pierde. `
-        + `Pasar ${RSI_ESTIRADO} es subir muy rápido, y suele frenar. Bajar de ${RSI_CASTIGADO} es caer muy rápido, y suele rebotar.`,
+        // Describe, no anticipa: «suele frenar» y «suele rebotar» no se cumplieron
+        // en la medición (después de pasar 70 el precio siguió subiendo en promedio).
+        + `Pasar ${RSI_ESTIRADO} es subir muy rápido; bajar de ${RSI_CASTIGADO}, caer muy rápido. Cuenta lo que ya pasó, no lo que viene.`,
       cruce: textoCruceRsi(l.rsi_cruce),
     })
   }
@@ -234,8 +236,8 @@ export function veredictoRsi(rsi) {
 export function textoCruceRsi(c) {
   if (!c) return null
   const cuando = c.hace === 0 ? 'En el último día de mercado' : c.hace === 1 ? 'Hace 1 día de mercado' : `Hace ${c.hace} días de mercado`
-  if (c.tipo === 'salio_de_abajo') return `${cuando} volvió a pasar ${RSI_CASTIGADO} para arriba: suele leerse como que dejó de caer y empieza a tomar fuerza.`
-  if (c.tipo === 'salio_de_arriba') return `${cuando} bajó de ${RSI_ESTIRADO}: suele leerse como que empieza a perder fuerza.`
+  if (c.tipo === 'salio_de_abajo') return `${cuando} volvió a pasar ${RSI_CASTIGADO} para arriba: dejó de caer tan rápido.`
+  if (c.tipo === 'salio_de_arriba') return `${cuando} bajó de ${RSI_ESTIRADO}: dejó de subir tan rápido.`
   return null
 }
 
@@ -348,7 +350,7 @@ export function tarjetaFuerza(l) {
       // mitad de los días (por su 1,5 en las Bollinger) y al lado de una
       // tendencia firme era ruido (auditoría 22/10).
       + (l.squeeze_activo && l.squeeze != null && !conFuerza
-        ? ' Además el precio se mueve poco («apretado»): suele leerse como la antesala de un movimiento más grande, para cualquier lado.' : ''),
+        ? ' Además el precio se mueve poco («apretado»): sus subas y bajas de estas semanas son más chicas que de costumbre.' : ''),
     cruce: textoCruceAdx(cruce, l.squeeze, bajando),
   }
 }
@@ -364,7 +366,7 @@ export function textoCruceAdx(c, squeezeHoy, bajando = false) {
   if (!c) return null
   const cuando = c.hace === 0 ? 'En el último día de mercado' : c.hace === 1 ? 'Hace 1 día de mercado' : `Hace ${c.hace} días de mercado`
   if (c.tipo === 'paso_abajo') {
-    return `${cuando} la fuerza (ADX) bajó de ${ADX_CLAVE}: suele leerse como que la tendencia se quedó sin fuerza.`
+    return `${cuando} la fuerza (ADX) bajó de ${ADX_CLAVE}: la tendencia se quedó sin fuerza.`
   }
   if (c.tipo !== 'paso_arriba') return null
   // `bajando` sólo llega con un cruce de hace 3 días o más: los 3 días que
@@ -373,9 +375,9 @@ export function textoCruceAdx(c, squeezeHoy, bajando = false) {
   const hoy = squeezeHoy > 0 ? 1 : squeezeHoy < 0 ? -1 : 0
   if (hoy !== 0 && c.squeeze === hoy) {
     return `${cuando} la fuerza (ADX) pasó ${ADX_CLAVE} para arriba con el Squeeze en ${hoy > 0 ? 'verde' : 'rojo'}: `
-      + `suele leerse como el arranque de una ${hoy > 0 ? 'suba' : 'baja'} con fuerza.`
+      + `el precio viene ${hoy > 0 ? 'subiendo' : 'bajando'} con fuerza.`
   }
-  return `${cuando} la fuerza (ADX) pasó ${ADX_CLAVE} para arriba: suele leerse como que la tendencia se afirma.`
+  return `${cuando} la fuerza (ADX) pasó ${ADX_CLAVE} para arriba: la tendencia tomó fuerza.`
 }
 
 /**

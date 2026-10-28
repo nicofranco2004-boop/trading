@@ -47,9 +47,9 @@ describe('veredictoRsi', () => {
 
   it('cuenta cuándo volvió a pasar 30 para arriba o bajó de 70', () => {
     expect(textoCruceRsi({ tipo: 'salio_de_abajo', hace: 3 }))
-      .toBe('Hace 3 días de mercado volvió a pasar 30 para arriba: suele leerse como que dejó de caer y empieza a tomar fuerza.')
+      .toBe('Hace 3 días de mercado volvió a pasar 30 para arriba: dejó de caer tan rápido.')
     expect(textoCruceRsi({ tipo: 'salio_de_arriba', hace: 0 }))
-      .toBe('En el último día de mercado bajó de 70: suele leerse como que empieza a perder fuerza.')
+      .toBe('En el último día de mercado bajó de 70: dejó de subir tan rápido.')
     expect(textoCruceRsi(null)).toBeNull()
   })
 })
@@ -234,7 +234,7 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     expect(tarjetaFuerza({ ...F, adx_pendiente: -1.5 }).veredicto).toBe('La tendencia afloja')
     // «Apretado» sólo sin tendencia, y dicho como lectura, no como pronóstico.
     expect(tarjetaFuerza({ ...F, adx: 17, squeeze_activo: true }).texto)
-      .toContain('el precio se mueve poco («apretado»): suele leerse como la antesala')
+      .toContain('el precio se mueve poco («apretado»): sus subas y bajas de estas semanas son más chicas que de costumbre.')
     expect(tarjetaFuerza({ ...F, squeeze_activo: true }).texto).not.toContain('apretado')
   })
 
@@ -242,12 +242,12 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     const t = tarjetaFuerza({ ...F, adx: 24.4, adx_cruce: { tipo: 'paso_arriba', hace: 1, squeeze: 1 } })
     expect(t.veredicto).toBe('La tendencia se afirma')
     expect(t.cruce).toBe('Hace 1 día de mercado la fuerza (ADX) pasó 23 para arriba con el Squeeze en verde: '
-      + 'suele leerse como el arranque de una suba con fuerza.')
+      + 'el precio viene subiendo con fuerza.')
     expect(textoCruceAdx({ tipo: 'paso_arriba', hace: 0, squeeze: -1 }, -2))
-      .toBe('En el último día de mercado la fuerza (ADX) pasó 23 para arriba con el Squeeze en rojo: suele leerse como el arranque de una baja con fuerza.')
+      .toBe('En el último día de mercado la fuerza (ADX) pasó 23 para arriba con el Squeeze en rojo: el precio viene bajando con fuerza.')
     // El Squeeze cambió de lado desde el cruce: no se dice para dónde.
     expect(textoCruceAdx({ tipo: 'paso_arriba', hace: 4, squeeze: -1 }, 2))
-      .toBe('Hace 4 días de mercado la fuerza (ADX) pasó 23 para arriba: suele leerse como que la tendencia se afirma.')
+      .toBe('Hace 4 días de mercado la fuerza (ADX) pasó 23 para arriba: la tendencia tomó fuerza.')
     expect(textoCruceAdx({ tipo: 'paso_abajo', hace: 2, squeeze: 1 }, 1)).toContain('bajó de 23')
     expect(textoCruceAdx(null, 1)).toBeNull()
   })
@@ -260,10 +260,16 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     expect(ADX_CLAVE).toBe(23)
   })
 
-  it('nunca promete: «suele leerse», ni «se viene» ni «comprá»', () => {
+  it('nunca promete: ni «suele», ni «se viene», ni «comprá»', () => {
+    // Medido (backtest 28/10, y «Tus señales»: 70 activos, 2 años): ni el RSI ni
+    // el ADX anticiparon el precio mejor que el azar. Los textos describen lo que
+    // ya pasó; ninguno dice qué «suele» venir.
+    const rsi = tarjetas({ ruedas: 300, rsi: 75 }).find(c => c.id === 'rsi')
     const textos = [textoSqueeze('verde_fuerte'), textoSqueeze('rojo_fuerte'),
-      textoCruceAdx({ tipo: 'paso_arriba', hace: 1, squeeze: 1 }, 1), tarjetaFuerza(F).texto].join(' ')
-    expect(textos).not.toMatch(/se viene|comprá|vendé|va a subir|va a bajar/i)
+      ...['paso_arriba', 'paso_abajo'].flatMap(tipo => [-1, 1].map(sq => textoCruceAdx({ tipo, hace: 1, squeeze: sq }, sq))),
+      tarjetaFuerza(F).texto, tarjetaFuerza({ ...F, adx: 17, squeeze_activo: true }).texto,
+      rsi.texto, textoCruceRsi({ tipo: 'salio_de_abajo', hace: 1 }), textoCruceRsi({ tipo: 'salio_de_arriba', hace: 1 })].join(' ')
+    expect(textos).not.toMatch(/suele|se viene|comprá|vendé|va a subir|va a bajar|rebota|frena|antesala|arranque/i)
   })
 
   it('las velas semanales llevan el ADX y el Squeeze del último día', () => {

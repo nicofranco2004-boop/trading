@@ -584,5 +584,28 @@ class SenalesTest(unittest.TestCase):
         self.assertEqual(tecnico.senal_desde(v, "media200", desde)["sentido"], "abajo")
 
 
+class TestDetalleNoPromete(unittest.TestCase):
+    """El texto del mail describe lo que pasó; no anticipa. Medido (backtest 28/10
+    y «Tus señales», 70 activos, 2 años): después de «pasa 70» el precio siguió
+    subiendo en promedio, así que «suele frenar» era falso. La única con algo de
+    ventaja es la caída debajo de 30, y su frase es la de senales_semana."""
+
+    def test_detalle_tecnico_no_promete(self):
+        from senales_semana import POSIBILIDAD_REBOTE
+        hoy = hoy_art_date().isoformat()
+        casos = [("rsi_bajo_30", "abajo", 30.0), ("rsi_sobre_70", "arriba", 70.0),
+                 ("rsi_sube_30", "arriba", 30.0), ("rsi_baja_70", "abajo", 70.0),
+                 ("media200", "arriba", 95.0), ("media200", "abajo", 95.0),
+                 ("media50", "arriba", 95.0), ("media50", "abajo", 95.0)]
+        for senal, sentido, ref in casos:
+            ev = {"fecha": hoy, "sentido": sentido, "cierre": 100.0, "referencia": ref, "rsi": 25.0}
+            txt = ae._detalle_tecnico({"currency": "USD", "senal": senal}, "AAPL", ev)
+            with self.subTest(senal=senal, sentido=sentido):
+                self.assertNotRegex(txt.lower(), r"suele|rebota|frena|se viene|va a (subir|bajar)", txt)
+        bajo = ae._detalle_tecnico({"currency": "USD", "senal": "rsi_bajo_30"}, "AAPL",
+                                   {"fecha": hoy, "sentido": "abajo", "cierre": 100.0, "referencia": 30.0, "rsi": 25.0})
+        self.assertIn(POSIBILIDAD_REBOTE, bajo, "la caída lleva la MISMA frase que «Tus señales»")
+
+
 if __name__ == "__main__":
     unittest.main()

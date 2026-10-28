@@ -1468,7 +1468,8 @@ def _mensaje_tecnico(alert, symbol, ev) -> str:
 
 def _detalle_tecnico(alert, symbol, ev) -> str:
     """La oración del mail (va después de «Hola Nico, »): el día, los números y
-    qué se suele leer de eso, con las palabras de las tarjetas de la ficha."""
+    qué quieren decir, con las palabras de las tarjetas de la ficha. Describe lo
+    que pasó; no anticipa (test_detalle_tecnico_no_promete)."""
     from cartera_hoy import dia_txt
     from fechas import hoy_art
     sym = _display_symbol(symbol)
@@ -1488,11 +1489,15 @@ def _detalle_tecnico(alert, symbol, ev) -> str:
         return f"{cuando} {sym} cerró en {cierre} y su promedio de {dias} días está en {prom}. {lectura}"
     if senal.startswith("rsi_"):
         fuerza = f"{cuando} la fuerza (RSI) de {sym} quedó en {_fmt_rsi(ev['rsi'], ev['referencia'])} de 100, con un cierre de {cierre}."
+        # Describen, no anticipan: «suele frenar» y «suele rebotar» no se cumplieron
+        # en la medición. La caída es la única con algo de ventaja, y su frase es
+        # la de «Tus señales» (UNA, en senales_semana), no otra escrita acá.
+        from senales_semana import POSIBILIDAD_REBOTE
         lectura = {
-            "rsi_bajo_30": "Bajar de 30 es caer muy rápido, y suele rebotar.",
-            "rsi_sobre_70": "Pasar 70 es subir muy rápido, y suele frenar.",
-            "rsi_sube_30": "Volver a pasar 30 suele leerse como que dejó de caer y empieza a tomar fuerza.",
-            "rsi_baja_70": "Volver a bajar de 70 suele leerse como que empieza a perder fuerza.",
+            "rsi_bajo_30": f"Bajar de 30 es caer muy rápido. {POSIBILIDAD_REBOTE}",
+            "rsi_sobre_70": "Pasar 70 es subir muy rápido.",
+            "rsi_sube_30": "Volver a pasar 30: dejó de caer tan rápido.",
+            "rsi_baja_70": "Volver a bajar de 70: dejó de subir tan rápido.",
         }[senal]
         return f"{fuerza} {lectura}"
     return f"{cuando} {sym} cerró en {cierre}, el cierre más alto de los últimos 12 meses."
