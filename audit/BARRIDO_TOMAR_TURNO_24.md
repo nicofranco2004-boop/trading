@@ -304,3 +304,80 @@ caché al instante y sólo corren los escépticos que faltan.
 El journal con el detalle completo de cada agente está en
 `…/subagents/workflows/wf_e03a13e3-041/journal.jsonl`. ⚠️ Ese journal vive fuera del
 repo: si hace falta para algo, copiarlo antes de que se purgue.
+
+
+---
+
+# 🔀 EL CRUCE DE LOS DOS BARRIDOS (auditoría, 28/10/2026)
+
+Los dos barridos preguntaban cosas distintas: el de arriba, **qué se rompe** en
+cada uno de los 24 sitios; el de la auditoría (hallazgo 12 del informe), **qué
+endpoints no llegan al turno**. Cruzarlos era la idea de esta sesión, y dio
+exactamente lo que se buscaba: **los dos estábamos parcialmente mal, y aparece
+una tercera categoría que ninguna de las dos listas tenía.**
+
+## Las tres discrepancias
+
+| endpoint | el barrido de arriba decía | la auditoría decía | **lo medido** |
+|---|---|---|---|
+| `sell_position_fifo` | intruso (no pide turno) | cubierto | 🟡 **depende de la MONEDA** |
+| `create_conversion` | intruso | cubierto | 🟡 depende de la rama |
+| `create_position` | intruso en una sección, **cubierto en otra** | cubierto | 🟡 depende de la rama |
+| `_insert_manual_position`, `update_position` | intruso / — | cubierto | 🟡 depende de la rama |
+| `_edit_position_group`, `adjust_position_ratio`, `cobrar_plazo_fijo`, `create_operation`, `import_confirm`, `advisor_group_op_undo` | intrusos | sin turno | ✅ **coinciden: NUNCA llegan** |
+
+Los seis de la última fila son intrusos reales y los dos barridos coinciden. Las
+cinco de arriba **no son ni una cosa ni la otra**.
+
+## 🟡 La tercera categoría: «lo toma a veces», y es la peor de las tres
+
+Los caminos, con todos los saltos verificados (el buscador se validó antes
+contra dos casos conocidos: `_delete_one_movement`, directo e incondicional, y
+`cash_flow`, condicional por `_pata_de_la_moneda`):
+
+    sell_position_fifo      → _pata_de_la_moneda → _ensure_usd_sibling → _tomar_turno
+    create_conversion       → _ensure_usd_sibling → _tomar_turno
+    _insert_manual_position → _pata_de_la_moneda → _ensure_usd_sibling → _tomar_turno
+    create_position         → _exigir_broker_existente → _tomar_turno
+    update_position         → _exigir_broker_existente → _tomar_turno
+
+Es peor que «sin turno» por un motivo: **«sin turno» se arregla y se sabe que
+estaba mal; «a veces» da verde cuando lo probás y falla en producción**, según
+qué esté haciendo la persona.
+
+## 🔴 Y la condición real, MEDIDA — mi hipótesis estaba equivocada
+
+Supuse que la rama era «la primera vez», porque pasa por `_ensure_usd_sibling`,
+que **crea** la pata '· USD'. **La medición lo refutó:**
+
+    vender en DÓLARES dentro de un broker en pesos  →  el turno SE PIDE  (1ª venta y 2ª)
+    vender en PESOS (la moneda del broker)          →  el turno NO se pide  (0 veces)
+
+No es «la primera vez»: es **la moneda de la operación**. `_ensure_usd_sibling`
+toma el turno arriba aunque la pata ya exista, así que toda venta en dólares está
+protegida; y toda venta en la moneda del broker, no.
+
+👉 **El caso que queda sin candado es el común de una cuenta argentina: vender en
+pesos.** La protección aparece justo en el caso menos frecuente.
+
+Medido contando si la llamada ocurre, sin concurrencia (sonda
+`test_turno_depende_de_la_moneda.py`, en el scratchpad de la auditoría). En
+SQLite se saltea a propósito: allá el motor serializa igual y el turno no cambia
+nada.
+
+## Lo que queda como método
+
+**Un grafo de llamadas dice «puede», no «hace»** — y éste es el segundo caso que
+lo prueba, después de `/api/cash/flow`. Pero hay una vuelta más: entre «puede» y
+«hace» hay un «hace a veces», y **de qué depende ese "a veces" no se lee en el
+grafo: hay que medirlo**. Yo tenía la condición equivocada y la habría escrito
+mal si no la hubiera contado.
+
+Tres instrumentos propios fallaron en este barrido y los tres se cazaron igual:
+cruzando contra un segundo método.
+  · el grafo de alcanzabilidad dio `/api/cash/flow` como cubierto → lo refutó la
+    traza de candados de Postgres (`Lock/advisory`, no la fila de `users`);
+  · un `awk` que buscaba desde la línea del `def` cruzó al cuerpo de otra función
+    → lo refutó el árbol del código;
+  · un armador de caminos mal escrito inventó rutas de dos pasos → lo refutó
+    validarlo contra dos casos cuya respuesta ya se conocía.
