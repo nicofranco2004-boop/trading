@@ -461,3 +461,82 @@ el escalón que faltaba:
 Las dos hipótesis que tuvimos sobre ese «a veces» (una por lista) estaban mal:
 «sólo la primera vez» y «siempre». La respuesta real era la moneda en un caso y
 el cambio de broker en el otro, y las dos salieron de leer el `if`.
+
+
+---
+
+# 🔎 LOS 14 SIN VERIFICAR: qué se puede cerrar sin medirlos uno por uno (28/10)
+
+Nico pidió verificar los 14. No se pueden confirmar sus consecuencias sin 14
+mediciones, pero **sí se puede resolver mecánicamente la mitad estructural** —y
+de paso corregir un número mío que estaba mal.
+
+## 1 · 🔴 Mi número del hallazgo 12 estaba equivocado: era un `try`, no un `if`
+
+Decía que 13 de los 24 piden el turno «sólo en una rama». **Falso.** Recontado
+distinguiendo `try` de rama de verdad:
+
+    se toma SIEMPRE, sin nada alrededor ......... 11
+    se toma SIEMPRE, adentro de un `try` ........ 13   ← un try NO es una rama
+    se toma sólo si se cumple un `if` ...........  0
+
+**Los 24 son incondicionales.** Y la distinción cambia dónde está el arreglo: lo
+condicional no es la llamada adentro de la función, es **si el pedido LLEGA a esa
+función**. Una venta en pesos nunca llama a `_ensure_usd_sibling` — eso está
+medido contando llamadas, y sigue en pie.
+
+👉 Consecuencia para los 14: **todos piden el turno cuando se los alcanza.** Así
+que su riesgo no depende de ellos: depende enteramente de **si existe un intruso**.
+
+## 2 · El mapa de intrusos, mecánico
+
+Qué tabla de las que importan escribe cada uno de los **16 endpoints que nunca
+piden el turno** (más `_edit_position_group` y `adjust_position_ratio`, que
+tampoco):
+
+| tabla | cuántos escritores SIN turno la tocan |
+|---|---|
+| `monthly_entries` | **12** |
+| `snapshots` | **12** |
+| `operations` | **5** |
+| `positions` | **4** |
+| `flujos_a_mano` | **3** |
+
+    create_operation, update_operation, cobrar_plazo_fijo, admin_repair_interes_pf  → monthly + snapshots + operations
+    import_confirm                                                                  → monthly + snapshots + positions
+    advisor_group_op_undo                                                           → monthly + flujos + positions
+    broker_reconcile_cash, create_plazo_fijo                                        → monthly + flujos
+    sync_unrealized, import_recalc_pnl, admin_repair_caja_1415,
+      admin_repair_user_history                                                     → monthly (+ snapshots)
+    post_snapshot, admin_delete_snapshot, admin_cleanup_future_snapshots,
+      admin_recompute_snapshots_netdep                                              → snapshots
+    _edit_position_group, adjust_position_ratio                                     → positions (+ operations)
+
+## 3 · Qué queda verificado y qué no
+
+**NINGUNA de las cinco tablas tiene cero escritores sin turno.** O sea que
+**ninguno de los 14 se puede refutar por «no hay quien se meta»**: la precondición
+estructural se cumple en los catorce.
+
+Lo que queda sin verificar de cada uno es **sólo la consecuencia** — si el cruce
+produce de verdad el error de plata que el hallazgo afirma. Y ahí vale la regla de
+esta tanda, con los números de los que sí se midieron:
+
+| hallazgo medido | el dónde | el cuánto |
+|---|---|---|
+| cobro doble de Rebill | ✅ cierto | 🟡 exagerado (el libro, no los días) |
+| tercer creador de la caja | ✅ cierto | ✅ cierto (y ya arreglado) |
+| depósito borrado → efectivo en rojo | ✅ cierto | ✅ cierto (ya arreglado) |
+| la hermana del mes | ✅ cierto | 🔴 **peor** de lo afirmado (se pierde la operación) |
+
+Tres de cuatro aciertan el dónde; el cuánto se movió en dos, una vez para abajo y
+una para arriba. **Para los 14 hay que creerles el dónde y medir el cuánto** —
+que es justo lo que ninguno de los dos barridos puede hacer solo.
+
+## 4 · Por dónde empezaría
+
+Por los que escriben `monthly_entries`, que son 12 y es la tabla de la que cuelga
+toda la pantalla Mensual y Reportes. Y de ésos, por `sync_unrealized`: es el único
+de los 12 que **ya tiene un hallazgo propio de una lente** («se come un
+depósito»), así que tiene las dos mitades —intruso mecánico y consecuencia
+afirmada— y es el más barato de cerrar.
