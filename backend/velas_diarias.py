@@ -32,12 +32,16 @@ cada pantalla lo decide quien calcula los indicadores, no esta tabla.
 
 CUÁNDO CORRE. Al final de la foto diaria (`_run_daily_snapshot_job`), que ya
 dispara un cron externo todas las noches después del cierre de Nueva York y de
-Buenos Aires. No hace falta otro cron.
+Buenos Aires. No hace falta otro cron. Y A PEDIDO, cuando alguien abre la ficha
+de un activo que nadie sigue (desde el mapa de calor o el buscador): ver
+`tickers_a_pedido` y `asegurar`, con sus frenos.
 """
 import logging
 import math
+import threading
 import time
-from datetime import date, timedelta
+from collections import deque
+from datetime import date, datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
@@ -295,7 +299,8 @@ def _toca_completa(est: dict, hoy: str) -> bool:
 
 
 def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
-               tope_seg: float = TOPE_CORRIDA_SEG) -> dict:
+               tope_seg: float = TOPE_CORRIDA_SEG, tope_tanda: float = TOPE_TANDA_SEG,
+               podar: bool = True) -> dict:
     """Pone al día las velas de estos tickers. Idempotente: correrlo dos veces
     seguidas no cambia nada.
 
@@ -306,7 +311,11 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
     Nunca se espera a Yahoo con una escritura abierta: cada tanda baja todo,
     escribe y confirma; los que hay que rebajar enteros (split) se piden DESPUÉS
     de confirmar. En SQLite una escritura abierta traba a todos los demás que
-    quieren escribir, y Yahoo puede tardar 30 s en contestar."""
+    quieren escribir, y Yahoo puede tardar 30 s en contestar.
+
+    `tope_tanda`: cuánto se espera a Yahoo por tanda (la ficha a pedido espera
+    poco). `podar`: borrar lo que quedó más viejo que 3 años; la ficha a pedido
+    no lo hace (es un borrado de toda la tabla y lo hace la corrida de la noche)."""
     from fechas import hoy_art
     from pricing import yahoo as _yahoo
     bajar = bajar or _bajar
@@ -344,7 +353,7 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
         pedidos = {t: (PERIODO_COMPLETO if _toca_completa(estado.get(t), hoy)
                        else PERIODO_INCREMENTAL) for t in tanda}
         bajadas, _ = _yahoo.varios(lambda t: bajar(t, pedidos[t]), tanda,
-                                   tope=TOPE_TANDA_SEG, que="velas diarias")
+                                   tope=tope_tanda, que="velas diarias")
         a_rebajar = []
         for t in tanda:
             velas = _velas_de(bajadas.get(t), hoy)
@@ -365,7 +374,7 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
         if a_rebajar:
             # Con la tanda ya confirmada: acá no hay ninguna escritura abierta.
             rebajadas, _ = _yahoo.varios(lambda t: bajar(t, PERIODO_COMPLETO), a_rebajar,
-                                         tope=TOPE_TANDA_SEG, que="velas diarias (historia cambiada)")
+                                         tope=tope_tanda, que="velas diarias (historia cambiada)")
             for t in a_rebajar:
                 velas = _velas_de(rebajadas.get(t), hoy)
                 if not velas:
@@ -382,9 +391,10 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
                 res["reescritas"].append(t)
             conn.commit()
 
-    piso = (date.fromisoformat(hoy) - timedelta(days=DIAS_GUARDADOS)).isoformat()
-    conn.execute("DELETE FROM velas_diarias WHERE date < ?", (piso,))
-    conn.commit()
+    if podar:
+        piso = (date.fromisoformat(hoy) - timedelta(days=DIAS_GUARDADOS)).isoformat()
+        conn.execute("DELETE FROM velas_diarias WHERE date < ?", (piso,))
+        conn.commit()
     return res
 
 
@@ -395,6 +405,11 @@ def correr(conn) -> dict:
     no toca las velas."""
     tickers, pares = _seguimiento(conn)
     res = actualizar(conn, sorted(tickers))
+    res["podados_a_pedido"] = _podar_a_pedido(conn, tickers)
+    # Cuándo corrió la NOCHE, aparte de cada activo: las fichas abiertas a pedido
+    # también anotan su `ultima_corrida`, y /admin no tiene que confundirlas.
+    _anotar(conn, MARCA_CORRIDA_NOCHE, completa=False, ok=True, filas=res["filas"])
+    conn.commit()
     try:
         import cambios_ratio
         res["cambios_ratio"] = cambios_ratio.correr(
@@ -403,6 +418,218 @@ def correr(conn) -> dict:
         log.error("velas: la lista de cambios de ratio falló: %r", ex, exc_info=True)
         res["cambios_ratio"] = {"error": repr(ex)}
     return res
+
+
+# ─── A pedido: la ficha de un activo que nadie sigue ─────────────────────────
+# La ficha del activo se abre desde el mapa de calor, el buscador y la watchlist,
+# también para un activo que nadie tiene ni sigue: la corrida de la noche no lo
+# baja. Entonces se baja en el momento en que alguien abre su ficha, con frenos
+# para que nadie pueda usar la ficha para disparar descargas sin límite:
+#   · sólo activos que la app conoce (`se_puede_pedir`): los de los buscadores,
+#     el mapa de calor, BYMA, o los que la persona tiene o sigue. Un símbolo
+#     inventado, o miles de símbolos reales de cualquier bolsa, no entran;
+#   · cuántos activos nuevos por hora y por día, por persona, y por hora entre
+#     todos;
+#   · lo que ya se intentó hoy no se vuelve a pedir (la vela de hoy no entra
+#     hasta mañana: otra descarga no puede traer nada nuevo), ni lo que falló
+#     en las últimas horas;
+#   · a Yahoo se lo espera poco, y si otra persona ya lo está bajando no se
+#     espera: la ficha dice "trayendo la historia" y vuelve a pedir;
+#   · lo que nadie sigue ni volvió a mirar en `A_PEDIDO_DIAS_SIN_USO` días se
+#     borra de noche (`_podar_a_pedido`): no se acumula basura.
+A_PEDIDO_POR_PERSONA_HORA = 30
+A_PEDIDO_POR_PERSONA_DIA = 100
+A_PEDIDO_TODOS_HORA = 200
+A_PEDIDO_TOPE_SEG = 10.0
+A_PEDIDO_REINTENTO_HORAS = 6
+A_PEDIDO_DIAS_SIN_USO = 45
+# La fila de `velas_estado` donde la corrida de la noche anota que corrió. No es
+# un ticker (`~` no pasa la validación de símbolos de la API): no choca con nada.
+MARCA_CORRIDA_NOCHE = '~corrida_noche'
+
+_a_pedido_cond = threading.Condition()
+_a_pedido_en_curso = set()
+_a_pedido_hechos = deque()   # (momento, uid) de cada ticker bajado a pedido
+
+
+def _variantes(asset: str) -> set:
+    """Las formas de escribir el mismo papel: con o sin '.BA', una cripto con
+    o sin '-USD', y una acción con clase con punto o guión (BRK.B / BRK-B)."""
+    a = (asset or '').strip().upper()
+    base = a[:-3] if a.endswith('.BA') else a
+    for suf in ('-USD', '-USDT', '-USDC'):
+        if base.endswith(suf):
+            base = base[:-len(suf)]
+    return {a, base, base.replace('.', '-'), base.replace('-', '.')}
+
+
+def se_puede_pedir(conn, asset: str, uid) -> bool:
+    """¿La app conoce este activo? Lo que ofrecen los buscadores y lo que se
+    puede tocar en Mercado (la lista de tickers de la app, `ai.trade_tickers`,
+    y el mapa de calor/movers, `home.market`), lo que cotiza en BYMA (data912)
+    y lo que la persona tiene, operó o sigue. Lo demás no se baja a pedido:
+    sin esto, cualquier cuenta podía llenar la base pidiendo, de a 30 por hora,
+    las decenas de miles de tickers reales que existen (auditoría 22/10)."""
+    from ai import trade_tickers as tt
+    from home import market as mk
+    v = _variantes(asset)
+    conocidos = (tt.CRYPTO_TICKERS | tt.US_TICKERS | tt.CEDEAR_TICKERS | tt.AR_STOCK_TICKERS)
+    if v & conocidos:
+        return True
+    mercado = {x for lista in (mk.SP500_TOP_50, mk.MERVAL_TOP_25, mk.CRYPTO_TOP_30)
+               for s in lista for x in _variantes(s)}
+    if v & mercado:
+        return True
+    try:
+        from main import _fetch_data912_equities
+        if v & set((_fetch_data912_equities() or {}).keys()):
+            return True
+    except Exception:
+        pass
+    marcas = ",".join("?" * len(v))
+    for tabla, col in (("positions", "asset"), ("operations", "asset"), ("watchlist", "symbol")):
+        if conn.execute(f"SELECT 1 FROM {tabla} WHERE user_id=? AND UPPER({col}) IN ({marcas}) LIMIT 1",
+                        (uid, *v)).fetchone():
+            return True
+    return False
+
+
+def tickers_a_pedido(asset: str, local: bool = False, cedears=None) -> list:
+    """Los tickers de Yahoo que la ficha de `asset` necesita y se pueden bajar
+    en el momento. La misma traducción que la corrida de la noche (`_yahoo_de`),
+    con una excepción: de un CEDEAR se baja SÓLO la acción de afuera. Su serie
+    en pesos se corrige con la lista de cambios de ratio (`cambios_ratio`), que
+    se arma de noche y sólo para lo que alguien sigue; sin ella, el gráfico en
+    pesos mostraría caídas que no existieron (XLE.BA −50 % el 05/12/2025). En
+    pesos, la ficha usa la de afuera × el MEP de cada día (`tecnico.serie`).
+
+    `local`: la ficha dice que es una acción argentina (su serie es la de BYMA).
+    Un '.BA' necesita la lista de CEDEARs de BYMA para saber qué es: si data912
+    no contesta, sólo se baja si es una acción argentina conocida (`local` lo
+    manda la pantalla, pero también se puede escribir a mano). Mejor sin gráfico
+    que uno equivocado guardado para todos."""
+    from ai.trade_tickers import AR_STOCK_TICKERS
+    from cripto import yahoo_de_cripto
+    a = (asset or '').strip().upper()
+    en_pesos = a.endswith('.BA') or bool(local)
+    if cedears is None:
+        cedears = _cedears_de_byma() if en_pesos else frozenset()
+    ys = _yahoo_de(a, None, en_pesos, yahoo_de_cripto, cedears)
+    if len(ys) == 2:          # la forma de un CEDEAR: [afuera, pesos]
+        return [ys[0]]
+    base = a[:-3] if a.endswith('.BA') else a
+    if not cedears and any(t.endswith('.BA') for t in ys) and base not in AR_STOCK_TICKERS:
+        return []
+    return ys
+
+
+def _ahora_utc() -> datetime:
+    # `velas_estado.ultima_corrida` se guarda con datetime('now'): UTC, sin zona.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _necesita(conn, ticker: str, hoy: str, ahora: datetime) -> bool:
+    """¿Hay que bajarlo? No, si:
+      · su última vela es de ayer (la de hoy no entra hasta mañana: `_velas_de`);
+      · ya se intentó HOY (día argentino), salga bien o mal: otra descarga hoy
+        no puede traer nada nuevo. Un domingo, un lunes antes del cierre o el
+        día después de un feriado, la última vela es de hace 2-4 días y antes
+        eso se leía como "vieja": cada ficha volvía a bajar lo mismo y gastaba
+        el cupo (auditoría 22/10);
+      · se intentó hace menos de `A_PEDIDO_REINTENTO_HORAS`.
+    Lo que sigue la corrida de la noche ya se intentó hoy: no se vuelve a pedir."""
+    r = conn.execute("SELECT MAX(date) AS d FROM velas_diarias WHERE symbol=?", (ticker,)).fetchone()
+    if r and r["d"] and (date.fromisoformat(hoy) - date.fromisoformat(str(r["d"])[:10])).days <= 1:
+        return False
+    e = conn.execute("SELECT ultima_corrida FROM velas_estado WHERE symbol=?", (ticker,)).fetchone()
+    if e and e["ultima_corrida"]:
+        try:
+            cuando = datetime.fromisoformat(str(e["ultima_corrida"])[:19])
+        except ValueError:
+            return True
+        from fechas import dia_art   # el día argentino de un instante UTC (regla única)
+        if (dia_art(cuando) >= date.fromisoformat(hoy)
+                or ahora - cuando < timedelta(hours=A_PEDIDO_REINTENTO_HORAS)):
+            return False
+    return True
+
+
+def _hay_cupo(uid, n: int) -> bool:
+    """¿Entran `n` tickers más en la última hora y en el último día para esta
+    persona, y en la última hora para todos? Si entran, quedan anotados. Se
+    llama con `_a_pedido_cond` tomado."""
+    ahora = time.monotonic()
+    while _a_pedido_hechos and ahora - _a_pedido_hechos[0][0] > 86400:
+        _a_pedido_hechos.popleft()
+    hora = [u for t, u in _a_pedido_hechos if ahora - t <= 3600]
+    de_el_hora = sum(1 for u in hora if u == uid)
+    de_el_dia = sum(1 for _, u in _a_pedido_hechos if u == uid)
+    if (len(hora) + n > A_PEDIDO_TODOS_HORA or de_el_hora + n > A_PEDIDO_POR_PERSONA_HORA
+            or de_el_dia + n > A_PEDIDO_POR_PERSONA_DIA):
+        return False
+    _a_pedido_hechos.extend((ahora, uid) for _ in range(n))
+    return True
+
+
+def asegurar(conn, tickers: list, uid, *, bajar=None, hoy: str = None):
+    """Baja en el momento las velas de `tickers` que falten o estén viejas (ver
+    `_necesita`), con los frenos de arriba. Devuelve None (listo, o no hacía
+    falta), 'tope' (se llegó al cupo) o 'bajando' (otra persona lo está bajando
+    ahora mismo: la ficha vuelve a pedir en unos segundos, sin dejar un hilo del
+    servidor esperando)."""
+    from fechas import hoy_art
+    hoy = hoy or hoy_art()
+    tickers = [t for t in dict.fromkeys(tickers or []) if t]
+    faltan = [t for t in tickers if _necesita(conn, t, hoy, _ahora_utc())]
+    if not faltan:
+        return None
+    # Una acción argentina que no tenía nada: su lista de cambios de cantidad
+    # (YPFD 10 a 1) se arma después de bajarla, o el gráfico de hoy mostraría
+    # el salto falso hasta la noche.
+    nuevos_ba = [t for t in faltan if t.endswith('.BA') and not conn.execute(
+        "SELECT 1 FROM velas_diarias WHERE symbol=? LIMIT 1", (t,)).fetchone()]
+    with _a_pedido_cond:
+        if set(faltan) & _a_pedido_en_curso:
+            return "bajando"
+        if not _hay_cupo(uid, len(faltan)):
+            log.warning("velas a pedido: cupo lleno (uid=%s, %s)", uid, faltan)
+            return "tope"
+        _a_pedido_en_curso.update(faltan)
+    try:
+        # Se cierra la lectura antes de esperar a Yahoo: en Postgres quedaba una
+        # transacción abierta los 10 s de la espera.
+        conn.commit()
+        actualizar(conn, faltan, bajar=bajar, hoy=hoy, tope_seg=A_PEDIDO_TOPE_SEG,
+                   tope_tanda=A_PEDIDO_TOPE_SEG, podar=False)
+        bajados = [t for t in nuevos_ba if conn.execute(
+            "SELECT 1 FROM velas_diarias WHERE symbol=? LIMIT 1", (t,)).fetchone()]
+        if bajados:
+            import cambios_ratio
+            # Sin `pares`: a pedido nunca se baja la serie en pesos de un CEDEAR
+            # (`tickers_a_pedido`), así que un '.BA' bajado acá es una acción argentina.
+            cambios_ratio.recalcular(conn, [t[:-3] for t in bajados], tope_seg=A_PEDIDO_TOPE_SEG)
+    finally:
+        with _a_pedido_cond:
+            _a_pedido_en_curso.difference_update(faltan)
+            _a_pedido_cond.notify_all()
+    return None
+
+
+def _podar_a_pedido(conn, seguidos) -> int:
+    """Borra las velas de lo que nadie sigue y nadie miró en los últimos
+    `A_PEDIDO_DIAS_SIN_USO` días (lo bajado a pedido, o lo que alguien dejó de
+    tener). Lo que se mira se vuelve a bajar a pedido cuando está viejo, y eso
+    renueva su `ultima_corrida`: lo que se usa no se borra."""
+    limite = (_ahora_utc() - timedelta(days=A_PEDIDO_DIAS_SIN_USO)).strftime('%Y-%m-%d %H:%M:%S')
+    seguidos = set(seguidos or [])
+    viejos = [r["symbol"] for r in conn.execute(
+        "SELECT symbol FROM velas_estado WHERE ultima_corrida < ?", (limite,)).fetchall()
+        if r["symbol"] not in seguidos]
+    for t in viejos:
+        conn.execute("DELETE FROM velas_diarias WHERE symbol=?", (t,))
+        conn.execute("DELETE FROM velas_estado WHERE symbol=?", (t,))
+    conn.commit()
+    return len(viejos)
 
 
 # ─── Leer ────────────────────────────────────────────────────────────────────

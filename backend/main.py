@@ -10056,8 +10056,11 @@ def _fetch_data912_equities():
                     # `mercado`: de qué lista vino. El buscador de CEDEARs
                     # (cedears_dolar) lee SÓLO los de arg_cedears: con las acciones
                     # argentinas mezcladas, YPFD se leía como "YPF en dólares".
+                    # px_bid/px_ask: las mejores puntas de compra y venta, para
+                    # la liquidez de la ficha (liquidez.py).
                     result[sym] = {'c': float(close), 'pct': item.get('pct_change'),
-                                   'v': item.get('v'), 'mercado': endpoint}
+                                   'v': item.get('v'), 'mercado': endpoint,
+                                   'px_bid': item.get('px_bid'), 'px_ask': item.get('px_ask')}
         if result:  # sólo pisamos el cache si hubo data nueva
             _data912_eq_cache['data'] = result
             _data912_eq_cache['ts'] = now
@@ -11406,10 +11409,15 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
                 uid: int = Depends(get_effective_user)):
     """La serie del gráfico técnico (precio, medias de 50 y 200, RSI) y los
     números de la lectura, en dólares (default) o en pesos. Sale de las velas
-    guardadas (velas_diarias.py), no de Yahoo: si el activo todavía no tiene
-    velas, `disponible` es False y la ficha lo dice. `local=1`: es una acción
-    argentina (en dólares va su precio de BYMA ÷ MEP, no el ADR). Las cuentas:
-    tecnico.py."""
+    guardadas (velas_diarias.py). Si el activo no las tiene (nadie lo sigue: se
+    abrió desde el mapa de calor o el buscador) o están viejas, se bajan en el
+    momento con frenos (`velas_diarias.asegurar`), sólo si la app conoce el
+    activo (`velas_diarias.se_puede_pedir`). Si igual no hay, `disponible` es
+    False y `motivo` dice por qué: 'sin_serie' (un bono, un fondo), 'tope' (el
+    cupo), 'bajando' (otra persona lo está bajando: volver a pedir) o
+    'sin_datos' (Yahoo no lo tiene, o la app no lo conoce). `local=1`: es una
+    acción argentina (en dólares va su precio de BYMA ÷ MEP, no el ADR). Las
+    cuentas: tecnico.py."""
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
@@ -11417,8 +11425,34 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
     if ref and not _SYMBOL_RE.match(ref):
         raise HTTPException(400, f"Símbolo inválido: {ref}")
     import tecnico
+    import velas_diarias
     with db_abierta() as conn:
-        return tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
+        tickers, motivo = [], None
+        try:
+            tickers = velas_diarias.tickers_a_pedido(sym, bool(local))
+            if tickers and velas_diarias.se_puede_pedir(conn, sym, uid):
+                motivo = velas_diarias.asegurar(conn, tickers, uid)
+        except Exception as ex:
+            # Sin la descarga, la ficha muestra lo que haya guardado.
+            log.warning("tecnico: velas a pedido de %s fallaron: %r", sym, ex)
+        res = tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
+        if not res.get("disponible"):
+            res["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
+        return res
+
+
+@app.get("/api/liquidez/{papel}")
+def get_liquidez(papel: str, uid: int = Depends(get_effective_user)):
+    """Liquidez en BYMA de un CEDEAR o una acción argentina, para la ficha:
+    plata operada por día, días sin operaciones, diferencia entre puntas y un
+    veredicto (mucha / media / poca). Sólo papeles que cotizan en BYMA (los que
+    lista data912); lo demás contesta `disponible: False`. Las cuentas y los
+    cortes: liquidez.py."""
+    sym = (papel or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {papel}")
+    import liquidez
+    return liquidez.para_la_ficha(sym)
 
 
 class ActivoTecnicoIn(BaseModel):
@@ -11483,11 +11517,19 @@ def admin_velas(uid: int = Depends(get_admin_user)):
         # Atrasados y fallados, sólo de lo que se sigue HOY: lo que alguien vendió
         # o dejó de seguir no se actualiza más (a propósito) y no es un problema.
         seguidos = set(velas_diarias.simbolos_a_seguir(conn))
-        e = conn.execute(
-            """SELECT COUNT(*) AS activos, COALESCE(SUM(ok), 0) AS ok,
-                      COALESCE(SUM(CASE WHEN ultima_completa IS NULL THEN 1 ELSE 0 END), 0) AS sin_historia,
-                      MAX(ultima_corrida) AS ultima_corrida
-                 FROM velas_estado""").fetchone()
+        # El estado, también sólo de lo que se sigue: las fichas abiertas a pedido
+        # (velas_diarias.asegurar) escriben en la misma tabla, y "Última corrida"
+        # mostraba la hora de la última ficha aunque la noche hubiera dejado de
+        # correr; "sin historia" contaba cada símbolo inventado que falló a pedido.
+        estado = [r for r in conn.execute(
+            "SELECT symbol, ok, ultima_completa, ultima_corrida FROM velas_estado").fetchall()
+            if r["symbol"] in seguidos]
+        e = {"activos": len(estado), "ok": sum(1 for r in estado if r["ok"]),
+             "sin_historia": sum(1 for r in estado if not r["ultima_completa"]),
+             "ultima_corrida": None}
+        noche = conn.execute("SELECT ultima_corrida FROM velas_estado WHERE symbol=?",
+                             (velas_diarias.MARCA_CORRIDA_NOCHE,)).fetchone()
+        e["ultima_corrida"] = noche["ultima_corrida"] if noche else None
         v = conn.execute(
             """SELECT COUNT(*) AS filas, MIN(date) AS desde, MAX(date) AS hasta
                  FROM velas_diarias""").fetchone()
@@ -11537,7 +11579,7 @@ def admin_velas_correr(uid: int = Depends(get_admin_user)):
     return {"ok": True, "status": "started"}
 
 
-# ─── Historical prices (mini-chart en AssetQuickView) ───────────────────────
+# ─── Historical prices (gráfico de 30 días: AssetMiniChart) ───────────────────────
 # Cache simple in-memory keyed por (symbol, period). yfinance fetchea las
 # series históricas — para periods chicos (1mo) es rápido. TTL 1h porque
 # las velas diarias no cambian dentro del día.
@@ -47493,7 +47535,12 @@ class WatchlistAddIn(BaseModel):
     @classmethod
     def normalize_symbol(cls, v):
         v = v.strip().upper()
-        if not re.match(r'^[A-Z0-9]{1,10}(\.BA|-USD)?$', v):
+        # Acción con clase (Berkshire, Brown-Forman): se guarda como la cotiza
+        # Yahoo y como la manda el mapa de calor, con guión (BRK.B → BRK-B).
+        # Antes se rechazaba: la estrella de su ficha fallaba siempre.
+        if re.match(r'^[A-Z0-9]{1,10}\.[A-Z]$', v):
+            v = v.replace('.', '-')
+        if not re.match(r'^[A-Z0-9]{1,10}(\.BA|-USD|-[A-Z])?$', v):
             raise ValueError('Símbolo inválido')
         return ticker_vigente(v)   # SQ → XYZ: el que cotiza (tickers_renombrados.py)
 

@@ -8,11 +8,11 @@
 // seguido que en los movers: cada cotización vive 1 min en el servidor.
 
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Star, X, TrendingUp, TrendingDown, Eye, Table2 } from 'lucide-react'
 import { api } from '../../utils/api'
 import { pctVar, pctVarSign } from '../../utils/format'
-import AssetQuickView from './AssetQuickView'
+import { urlDeActivo } from '../../utils/buscadorRapido'
 import Panel from '../Panel'
 import Eyebrow from '../Eyebrow'
 import DataRow from '../DataRow'
@@ -40,7 +40,7 @@ export function monedaDe(symbol) {
 export default function Watchlist() {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
-  const [selected, setSelected] = useState(null)
+  const navigate = useNavigate()
   const [removingSym, setRemovingSym] = useState(null)
   const [estado, setEstado] = useState(null)
   const [ref, visto] = useAlVerse()
@@ -72,8 +72,8 @@ export default function Watchlist() {
 
   useEffect(() => {
     load()
-    // Escuchar cambios disparados desde MobileSearch / SearchBar /
-    // AssetQuickView para refrescar la lista sin requerir reload.
+    // Escuchar cambios disparados desde MobileSearch / SearchBar / la ficha
+    // del activo para refrescar la lista sin requerir reload.
     const unsubscribe = subscribeWatchlistChanged(({ detail }) => {
       // Si llega { symbol, added: true } podemos hacer optimistic update
       // — agregamos el row con price/change_pct null mientras el fetch
@@ -156,7 +156,7 @@ export default function Watchlist() {
                   <DataRow
                     density="default"
                     hoverable
-                    onClick={() => setSelected(it.symbol)}
+                    onClick={() => navigate(urlDeActivo(it.symbol))}
                     className="flex-1 relative isolate"
                   >
                     {!pending && <BarraIntensidad pct={it.change_pct} visto={visto} />}
@@ -195,13 +195,6 @@ export default function Watchlist() {
             })}
           </div>
         </Panel>
-      )}
-
-      {selected && (
-        // Silencioso: con load() a secas la lista pasaba por el esqueleto, las
-        // filas se volvían a montar y la entrada animada se repetía entera cada
-        // vez que alguien cerraba una ficha.
-        <AssetQuickView symbol={selected} onClose={() => { setSelected(null); load({ silent: true }) }} />
       )}
     </section>
   )

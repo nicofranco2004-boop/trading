@@ -3,7 +3,7 @@
 // Layout: squarified treemap simplificado (sin lib externa). Cada bloque:
 //   - size proporcional al market_cap
 //   - color por change_pct (escala verde/rojo)
-//   - click → abre AssetQuickView (modal mini-ficha)
+//   - click → la ficha del activo (/activo/X, con el análisis técnico)
 //   - con el mouse encima: borde resaltado + globo con nombre, precio y
 //     variación (en el celular el toque ya abre la ficha, no hay "encima")
 //   - al entrar en pantalla los cuadros aparecen en ola, de arriba a la
@@ -13,11 +13,12 @@
 // V2: real-time prices con polling 60s.
 
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAlVerse } from '../../hooks/useAlVerse'
 import { api } from '../../utils/api'
 import { pctVar, pctVarSign, nfmt } from '../../utils/format'
 import { polarityColor, CORTES_DIA } from '../../utils/polarityScale'
-import AssetQuickView from './AssetQuickView'
+import { urlDeActivo } from '../../utils/buscadorRapido'
 
 // Los colores salen de la rampa única (utils/polarityScale.js), que conoce los
 // dos temas. Acá vivían dos arrays de 9 hex y una función propia — construidos
@@ -29,9 +30,9 @@ import AssetQuickView from './AssetQuickView'
 //
 // Los cortes son los del DÍA (0,5 % y 1 %) porque esto mide una rueda.
 
-// Tickers crypto del backend vienen como `BTC-USD`, `ETH-USD`. El endpoint
-// /api/prices/history valida con regex `[A-Z0-9]{1,10}(\.BA)?` y rechaza `-`.
-// Limpiamos al abrir AssetQuickView así el modal puede pedir el chart.
+// Tickers crypto del backend vienen como `BTC-USD`, `ETH-USD`. En la app una
+// cripto se llama BTC (así la tenés en la cartera y así la pide el precio):
+// la ficha se abre con ese nombre.
 function cleanSymbol(symbol) {
   if (!symbol) return symbol
   const m = symbol.match(/^([A-Z0-9]+)-(USD|USDT|USDC)$/)
@@ -190,7 +191,8 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
   const [blocks, setBlocks] = useState([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
-  const [selected, setSelected] = useState(null)
+  const navigate = useNavigate()
+  const abrir = (symbol) => navigate(urlDeActivo(cleanSymbol(symbol)))
   const [encima, setEncima] = useState(null)   // símbolo con el mouse encima
   const [refMapa, mapaVisto] = useAlVerse()
 
@@ -276,7 +278,7 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
             return (
               <g
                 key={b.symbol}
-                onClick={() => setSelected({ ...b, symbol: cleanSymbol(b.symbol) })}
+                onClick={() => abrir(b.symbol)}
                 // Con teclado también: Tab llega a cada cuadro y Enter abre el
                 // detalle, igual que el click.
                 role="button"
@@ -285,7 +287,7 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
                 onKeyDown={e => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault()
-                    setSelected({ ...b, symbol: cleanSymbol(b.symbol) })
+                    abrir(b.symbol)
                   }
                 }}
                 onPointerEnter={e => { if (e.pointerType === 'mouse') setEncima(b.symbol) }}
@@ -343,12 +345,6 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
         </svg>
         <GloboCelda b={resaltado} market={market} />
       </div>
-      )}
-      {selected && (
-        <AssetQuickView
-          symbol={selected.symbol}
-          onClose={() => setSelected(null)}
-        />
       )}
     </>
   )

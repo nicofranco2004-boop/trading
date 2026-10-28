@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   normalizar, puntaje, resultadosDelBuscador, opcionesDeActivos, opcionesDeEmpresas, MAXIMO_RESULTADOS,
-  destinoDeTicker,
+  destinoDeTicker, tickerDeEmpresa, empresaDeTicker, urlDeActivo,
 } from './buscadorRapido'
 import { menuVisible, pantallasVisibles, GROUPS, LOOSE } from './navegacion'
 
@@ -54,9 +54,9 @@ describe('resultadosDelBuscador', () => {
     expect(r[0].ir).toBe('/activo/NVDA')
     expect(r.filter(o => o.simbolo === 'NVDA')).toHaveLength(1)
   })
-  it('uno que no tenés va a la empresa en Calidad de cartera', () => {
+  it('uno que no tenés va a su ficha, con el gráfico (Nico, 22/10)', () => {
     const r = resultadosDelBuscador(todas, 'aapl')
-    expect(r[0].ir).toBe('/fundamentals?ticker=AAPL')
+    expect(r[0].ir).toBe('/activo/AAPL')
   })
   it('con UNA letra no aparecen empresas que no tenés (taparían lo tuyo)', () => {
     const r = resultadosDelBuscador(todas, 'a')
@@ -173,56 +173,69 @@ describe('arreglos de la vuelta 1 de auditoría', () => {
 })
 
 describe('destinoDeTicker: a dónde lleva un ticker en los dos buscadores (⌘K y la lupa del celular)', () => {
-  it('lo tuyo va a tu posición, sea lo que sea', () => {
+  it('lo tuyo va a tu ficha, sea lo que sea', () => {
     expect(destinoDeTicker('al30', { tuyo: true, tipo: 'bond' })).toBe('/activo/AL30')
     expect(destinoDeTicker('BRK.B', { tuyo: true })).toBe('/activo/BRK.B')
   })
-  it('una acción de EE.UU. que no tenés: la empresa en Calidad de cartera', () => {
-    expect(destinoDeTicker('AAPL', { tipo: 'stock_us' })).toBe('/fundamentals?ticker=AAPL')
+  it('lo que no tenés también va a la ficha: acciones, CEDEARs, cripto y ETFs', () => {
+    expect(destinoDeTicker('AAPL', { tipo: 'stock_us' })).toBe('/activo/AAPL')
+    expect(destinoDeTicker('KO.BA', { tipo: 'cedear' })).toBe('/activo/KO.BA')
+    expect(destinoDeTicker('GGAL.BA', { tipo: 'stock_ar' })).toBe('/activo/GGAL.BA')
+    expect(destinoDeTicker('btc', { tipo: 'crypto' })).toBe('/activo/BTC')
+    expect(destinoDeTicker('SPY', { tipo: 'etf' })).toBe('/activo/SPY')
   })
-  it('un CEDEAR se abre por su acción de EE.UU. (en pesos no hay puntaje)', () => {
-    expect(destinoDeTicker('KO.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=KO')
+  it('un bono o un fondo que no tenés no lleva a ningún lado (no tienen gráfico técnico)', () => {
+    for (const tipo of ['bond', 'fci']) expect(destinoDeTicker('X', { tipo }), tipo).toBe(null)
   })
-  it('bonos, cripto y ETFs no tienen ficha de empresa: no llevan a ningún lado', () => {
-    for (const tipo of ['bond', 'crypto', 'etf']) expect(destinoDeTicker('X', { tipo }), tipo).toBe(null)
-    // Una acción argentina sí: si tiene ADR con el mismo ticker, la empresa abre.
-    expect(destinoDeTicker('GGAL', { tipo: 'stock_ar' })).toBe('/fundamentals?ticker=GGAL')
+  it('urlDeActivo: un solo armado del link, en mayúsculas y escapado', () => {
+    expect(urlDeActivo('brk.b')).toBe('/activo/BRK.B')
+    expect(urlDeActivo('A/B')).toBe('/activo/A%2FB')
   })
-  it('el ⌘K no ofrece "Ver la empresa" de lo que no tiene ficha', () => {
+  it('el ⌘K ofrece el gráfico de lo que no tenés, sin bonos', () => {
     const r = opcionesDeEmpresas([
       { symbol: 'AAPL', name: 'Apple', type: 'stock_us' }, { symbol: 'AL30', name: 'Bonar', type: 'bond' },
-      { symbol: 'MELI.BA', name: 'MercadoLibre', type: 'cedear' },
+      { symbol: 'BTC', name: 'Bitcoin', type: 'crypto' },
     ])
-    expect(r.map(o => o.ir)).toEqual(['/fundamentals?ticker=AAPL', '/fundamentals?ticker=MELI'])
+    expect(r.map(o => o.ir)).toEqual(['/activo/AAPL', '/activo/BTC'])
+    expect(r[0].detalle).toBe('Ver el gráfico')
   })
-  it('al asesor en su nivel el ⌘K no le ofrece empresas (no tiene Calidad de cartera en su menú)', () => {
+  it('al asesor en su nivel el ⌘K no le ofrece tickers sueltos (no tiene cartera propia)', () => {
     const universo = [{ symbol: 'AAPL', name: 'Apple', type: 'stock_us' }]
     expect(opcionesDeEmpresas(universo, { asesorEnSuNivel: true })).toEqual([])
     expect(opcionesDeEmpresas(universo)).toHaveLength(1)
   })
 })
 
-describe('destinoDeTicker: la empresa correcta, o ninguna', () => {
+describe('tickerDeEmpresa: la empresa correcta en Calidad de cartera, o ninguna', () => {
   // Buscar el ticker tal cual abría OTRA empresa (verificado contra yfinance):
   // TEN era una naviera griega, AGRO Adecoagro, BOLT/CELU/PCAR/HAVA otras.
+  it('una acción de EE.UU. es ella misma; un CEDEAR, su acción de EE.UU.', () => {
+    expect(tickerDeEmpresa('AAPL', 'stock_us')).toBe('AAPL')
+    expect(tickerDeEmpresa('KO.BA', 'cedear')).toBe('KO')
+  })
+  it('bonos, cripto y ETFs no tienen empresa', () => {
+    for (const tipo of ['bond', 'crypto', 'etf']) expect(tickerDeEmpresa('X', tipo), tipo).toBe(null)
+  })
   it('una acción argentina va por su ADR; sin ADR, a ningún lado', () => {
-    expect(destinoDeTicker('YPFD', { tipo: 'stock_ar' })).toBe('/fundamentals?ticker=YPF')
-    expect(destinoDeTicker('TECO2', { tipo: 'stock_ar' })).toBe('/fundamentals?ticker=TEO')
+    expect(tickerDeEmpresa('GGAL', 'stock_ar')).toBe('GGAL')
+    expect(tickerDeEmpresa('YPFD', 'stock_ar')).toBe('YPF')
+    expect(tickerDeEmpresa('TECO2', 'stock_ar')).toBe('TEO')
     for (const s of ['TEN', 'AGRO', 'BOLT', 'CELU', 'PCAR', 'HAVA', 'TXAR']) {
-      expect(destinoDeTicker(s, { tipo: 'stock_ar' }), s).toBe(null)
+      expect(tickerDeEmpresa(s, 'stock_ar'), s).toBe(null)
     }
   })
   it('un CEDEAR con ticker distinto en EE.UU. va por el de allá; uno de un ETF, a ningún lado', () => {
-    expect(destinoDeTicker('DISN.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=DIS')
-    expect(destinoDeTicker('BRKB.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=BRK-B')
-    expect(destinoDeTicker('NOKA.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=NOK')
-    expect(destinoDeTicker('SPY.BA', { tipo: 'cedear' })).toBe(null)
+    expect(tickerDeEmpresa('DISN.BA', 'cedear')).toBe('DIS')
+    expect(tickerDeEmpresa('BRKB.BA', 'cedear')).toBe('BRK-B')
+    expect(tickerDeEmpresa('NOKA.BA', 'cedear')).toBe('NOK')
+    expect(tickerDeEmpresa('SPY.BA', 'cedear')).toBe(null)
   })
-  it('el ⌘K no repite la misma empresa (AAPL y su CEDEAR AAPL.BA)', () => {
-    const r = opcionesDeEmpresas([
-      { symbol: 'AAPL', name: 'Apple', type: 'stock_us' }, { symbol: 'AAPL.BA', name: 'Apple (CEDEAR)', type: 'cedear' },
-    ])
-    expect(r.map(o => o.ir)).toEqual(['/fundamentals?ticker=AAPL'])
+  it('empresaDeTicker (la ficha de lo que no tenés) deduce el tipo del ticker', () => {
+    expect(empresaDeTicker('YPFD.BA')).toEqual({ ticker: 'YPF', ir: '/fundamentals?ticker=YPF' })
+    expect(empresaDeTicker('DISN.BA')).toEqual({ ticker: 'DIS', ir: '/fundamentals?ticker=DIS' })
+    expect(empresaDeTicker('NVDA')).toEqual({ ticker: 'NVDA', ir: '/fundamentals?ticker=NVDA' })
+    expect(empresaDeTicker('AGRO.BA')).toBe(null)
+    expect(empresaDeTicker('BTC')).toBe(null)
   })
   it('la lista de sugeridos ya no tiene "TEN" como Ternium Argentina', () => {
     const ternium = POPULAR_TICKERS.find(t => /Ternium Argentina/.test(t.name))
@@ -242,9 +255,9 @@ describe('CEDEARs de ETFs: ninguno lleva a "no tenemos fundamentales"', () => {
     expect(CEDEARS_DE_ETF.size).toBeGreaterThanOrEqual(17)
     for (const s of ['URA', 'COPX', 'FXI', 'ACWI', 'EWY', 'ETHA', 'GLD', 'IBIT']) {
       expect(CEDEARS_DE_ETF.has(s), s).toBe(true)
-      expect(destinoDeTicker(`${s}.BA`, { tipo: 'cedear' }), s).toBe(null)
+      expect(tickerDeEmpresa(`${s}.BA`, 'cedear'), s).toBe(null)
     }
     // Una acción con CEDEAR sí abre su empresa.
-    expect(destinoDeTicker('KO.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=KO')
+    expect(tickerDeEmpresa('KO.BA', 'cedear')).toBe('KO')
   })
 })

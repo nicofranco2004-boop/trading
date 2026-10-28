@@ -25,15 +25,15 @@ const buscar = (consulta, u, c = null) => {
 }
 
 describe('⌘K abierto', () => {
-  it('a un usuario común le ofrece la empresa que no tiene', () => {
-    expect(buscar('apple', { tier: 'pro' })).toContain('Ver la empresa')
+  it('a un usuario común le ofrece el gráfico de lo que no tiene (su ficha)', () => {
+    expect(buscar('apple', { tier: 'pro' })).toContain('Ver el gráfico')
   })
-  it('al asesor en su nivel, no (no tiene Calidad de cartera en su menú); adentro de un cliente, sí', () => {
-    expect(buscar('apple', { tier: 'advisor' })).not.toContain('Ver la empresa')
-    expect(buscar('apple', { tier: 'advisor' }, { id: 7, label: 'Ana' })).toContain('Ver la empresa')
+  it('al asesor en su nivel, no (no tiene cartera propia); adentro de un cliente, sí', () => {
+    expect(buscar('apple', { tier: 'advisor' })).not.toContain('Ver el gráfico')
+    expect(buscar('apple', { tier: 'advisor' }, { id: 7, label: 'Ana' })).toContain('Ver el gráfico')
   })
-  it('un bono no aparece como "empresa" (no tiene ficha: llevaba a una pantalla vacía)', () => {
+  it('un bono que no tenés no se ofrece (no tiene gráfico técnico: la ficha quedaría vacía)', () => {
     const html = buscar('al30', { tier: 'pro' })
-    expect(html).not.toMatch(/AL30[^<]*<\/span><span[^>]*>Ver la empresa/)
+    expect(html).not.toMatch(/AL30[^<]*<\/span><span[^>]*>Ver el gráfico/)
   })
 })

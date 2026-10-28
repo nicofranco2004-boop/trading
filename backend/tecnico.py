@@ -46,6 +46,9 @@ DIAS_PENDIENTE = 30
 # Un dólar de hace más días que esto no es "el de ese día" (mismo techo que
 # price_history.MAX_DIAS_ATRAS): sin él, la vela no se convierte.
 MAX_DIAS_SIN_DOLAR = 7
+# Una serie en pesos que se quedó más días que esto atrás de la de afuera no se
+# usa (`serie`): es la de algo que nadie sigue y no se actualiza más.
+DIAS_ATRASO = 5
 
 
 # ─── Cuentas ─────────────────────────────────────────────────────────────────
@@ -415,6 +418,12 @@ def _convertir(conn, velas: list, por: str) -> list:
     return out
 
 
+def _atrasada(una: list, otra: list) -> bool:
+    """¿La última vela de `una` tiene más de `DIAS_ATRASO` de diferencia con la
+    de `otra`? (Feriados de acá o de allá separan las dos series 1 o 2 días.)"""
+    return (date.fromisoformat(otra[-1]["date"]) - date.fromisoformat(una[-1]["date"])).days > DIAS_ATRASO
+
+
 def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     """La serie de `asset` en `moneda` ('usd' | 'ars') con lo que hay guardado.
     {velas, ticker, convertida} o {velas: []} si no hay.
@@ -438,6 +447,12 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     afuera = [] if (local and byma) else velas_diarias.serie(conn, de_afuera)
 
     if moneda == "ars":
+        # La serie en pesos de un CEDEAR que alguien tuvo y nadie sigue queda
+        # guardada sin actualizar (a pedido sólo se baja la de afuera): si se
+        # quedó atrás de la de afuera, se usa la de afuera × el MEP de cada día,
+        # en vez de mostrar una lectura de hace semanas (auditoría 22/10).
+        if byma and afuera and _atrasada(byma, afuera):
+            byma = []
         if byma:
             return {"velas": byma, "ticker": simbolo_byma(a), "convertida": None}
         if afuera:

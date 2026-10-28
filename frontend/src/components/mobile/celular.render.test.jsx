@@ -240,34 +240,28 @@ describe('la lupa del celular (/buscar)', () => {
   // ofrece los activos populares (los tuyos llegan después, del servidor). La
   // regla de cada tipo (CEDEAR, bono, ADR) la prueba utils/buscadorRapido.test.js.
   const destinos = (u, c) => rutas(dibujar(MobileSearch, { u, c }))
-  it('lleva a donde lleva el ⌘K, nunca al destino viejo que nadie leía', () => {
+  it('lleva a donde lleva el ⌘K: la ficha del activo, lo tengas o no', () => {
     const r = destinos({ tier: 'pro' }, null)
-    expect(r).toContain('/fundamentals?ticker=AAPL')
-    expect(r).toContain('/fundamentals?ticker=YPF')                // YPFD → su ADR
-    expect(r.filter(x => x.includes('.BA'))).toEqual([])
+    expect(r).toContain('/activo/AAPL')
+    expect(r.some(x => x.startsWith('/activo/YPFD'))).toBe(true)
+    expect(r.some(x => x.startsWith('/fundamentals'))).toBe(false)
     expect(r.some(x => x.startsWith('/posiciones'))).toBe(false)
   })
-  it('una acción argentina sin ADR se ofrece pero no lleva a ningún lado ni se ilumina al tocarla', () => {
+  it('una acción argentina sin ADR también abre su ficha (tiene gráfico) y se ilumina al tocarla', () => {
     const html = dibujar(MobileSearch, { u: { tier: 'pro' }, c: null })
     expect(html).toContain('>COME<')
-    expect(rutas(html).filter(x => x.includes('COME'))).toEqual([])
+    expect(rutas(html).filter(x => x.includes('COME'))).toEqual(['/activo/COME', '/activo/COME'])
     // La fila es el elemento con `border-t` más cercano antes del ticker; se mira
     // su clase entera, sin depender del orden de las clases.
     const antes = html.slice(0, html.indexOf('>COME<'))
     const filas = [...antes.matchAll(/<div class="([^"]*\bborder-t\b[^"]*)"/g)]
-    const claseDeLaFila = filas[filas.length - 1][1]
-    expect(claseDeLaFila).not.toMatch(/\bactive:/)
-    expect(claseDeLaFila).not.toMatch(/\bhover:bg/)
-    // Y una fila CON destino sí se ilumina (si no, esta prueba no mira nada).
-    const conDestino = html.slice(0, html.indexOf('>AAPL<'))
-    const filasA = [...conDestino.matchAll(/<div class="([^"]*\bborder-t\b[^"]*)"/g)]
-    expect(filasA[filasA.length - 1][1]).toMatch(/\bactive:/)
+    expect(filas[filas.length - 1][1]).toMatch(/\bactive:/)
   })
-  it('al asesor en su nivel no le ofrece cartera, watchlist ni empresas; adentro de un cliente, sí', () => {
+  it('al asesor en su nivel no le ofrece cartera, watchlist ni fichas; adentro de un cliente, sí', () => {
     const estrella = 'aria-label="Agregar a watchlist"'
     expect(dibujar(MobileSearch, { u: { tier: 'pro' }, c: null })).toContain(estrella)
     expect(dibujar(MobileSearch, { u: { tier: 'advisor' }, c: ANA })).toContain(estrella)
-    expect(destinos({ tier: 'advisor' }, ANA)).toContain('/fundamentals?ticker=AAPL')
+    expect(destinos({ tier: 'advisor' }, ANA)).toContain('/activo/AAPL')
     const suNivel = dibujar(MobileSearch, { u: { tier: 'advisor' }, c: null })
     expect(suNivel).not.toContain(estrella)
     expect(rutas(suNivel).filter(x => x.startsWith('/fundamentals') || x.startsWith('/activo'))).toEqual([])
