@@ -528,7 +528,12 @@ const SNAPSHOTS = (() => {
     const resultado = m.capital_final - m.capital_inicio - flujo
     const diasDelMes = new Date(m.year, m.month, 0).getDate()
     // El mes en curso llega a su capital_final HOY (el valor vivo), no a fin de mes.
-    const tramo = (m.year === hoyY && m.month === hoyM) ? hoyD : diasDelMes
+    // ⚠️ Se pregunta por el MES, no por `tramo === hoyD`: un mes cerrado de 28,
+    // 30 o 31 días tiene `tramo = diasDelMes`, que el 28, 30 o 31 de cada mes es
+    // igual a `hoyD`, y esos meses se dibujaban subiendo hasta la cartera de ayer
+    // (el 28/10/2026, febrero de 2025 cerraba en 41.307 en vez de 32.145).
+    const enCurso = m.year === hoyY && m.month === hoyM
+    const tramo = enCurso ? hoyD : diasDelMes
     for (let dia = 1; dia <= diasDelMes; dia++) {
       const fecha = fechaISO(new Date(m.year, m.month - 1, dia))
       if (fecha >= hoy) break
@@ -537,7 +542,7 @@ const SNAPSHOTS = (() => {
       let valor = m.capital_inicio + flujo + resultado * (dia / tramo) + ruido
       // El mes en curso llega AYER a la cartera valuada con los precios de ayer
       // (PREV_CLOSE): "Hoy" = la variación del día de cada posición, sumada.
-      if (tramo === hoyD && hoyD > 1) {
+      if (enCurso && hoyD > 1) {
         const hastaAyer = (_VALOR_CIERRE_AYER - m.capital_inicio - flujo) * (dia / (hoyD - 1))
         valor = m.capital_inicio + flujo + hastaAyer + (dia === hoyD - 1 ? 0 : ruido)
       }
