@@ -263,6 +263,22 @@ def _regresion(ys: list, n: int) -> list:
     return out
 
 
+def bollinger(cierres: list, largo: int = 20, mult: float = 2.0) -> dict:
+    """Bandas de Bollinger (`ta.bb` de TradingView): el promedio de los últimos
+    `largo` cierres ± `mult` desvíos POBLACIONALES de esos mismos cierres.
+    {'media', 'arriba', 'abajo'}: listas del largo de `cierres`, None hasta tener
+    `largo` días. Es LA cuenta: la usan la ficha y el Squeeze (`squeeze`).
+    Cada promedio con SU ventana (ver el comentario de `squeeze`)."""
+    N = len(cierres)
+    m, arriba, abajo = [None] * N, [None] * N, [None] * N
+    for i in range(largo - 1, N):
+        w = cierres[i - largo + 1:i + 1]
+        prom = sum(w) / largo
+        desvio = (sum((x - prom) ** 2 for x in w) / largo) ** 0.5
+        m[i], arriba[i], abajo[i] = prom, prom + mult * desvio, prom - mult * desvio
+    return {"media": m, "arriba": arriba, "abajo": abajo}
+
+
 def squeeze(velas: list, largo_bb: int = 20, mult_bb: float = 2.0,
             largo_kc: int = 20, mult_kc: float = 1.5, como_lazybear: bool = True) -> dict:
     """El Squeeze Momentum de LazyBear («SQZMOM_LB»).
@@ -291,18 +307,17 @@ def squeeze(velas: list, largo_bb: int = 20, mult_bb: float = 2.0,
     # ficha decía «rojo apagado» y la Cartera «rojo fuerte» (auditoría 22/10).
     def _prom(n):
         return [sum(cs[i - n + 1:i + 1]) / n if i >= n - 1 else None for i in range(N)]
-    m_bb, m_kc = _prom(largo_bb), _prom(largo_kc)
+    m_kc = _prom(largo_kc)
     tr = _rango_verdadero(hs, ls, cs)
-    k_bb = mult_kc if como_lazybear else mult_bb
+    # Las Bollinger salen de `bollinger`, la misma cuenta que dibuja la ficha.
+    bb = bollinger(cs, largo_bb, mult_kc if como_lazybear else mult_bb)
     activo = [None] * N
     for i in range(N):
-        if m_bb[i] is None or m_kc[i] is None or i < largo_kc:
+        if bb["media"][i] is None or m_kc[i] is None or i < largo_kc:
             continue
-        w = cs[i - largo_bb + 1:i + 1]
-        desvio = (sum((x - m_bb[i]) ** 2 for x in w) / largo_bb) ** 0.5   # poblacional, como `ta.stdev`
         rango = sum(tr[i - largo_kc + 1:i + 1]) / largo_kc
-        activo[i] = (m_bb[i] - k_bb * desvio > m_kc[i] - mult_kc * rango
-                     and m_bb[i] + k_bb * desvio < m_kc[i] + mult_kc * rango)
+        activo[i] = (bb["abajo"][i] > m_kc[i] - mult_kc * rango
+                     and bb["arriba"][i] < m_kc[i] + mult_kc * rango)
     base = [None] * N
     for i in range(largo_kc - 1, N):
         medio = (max(hs[i - largo_kc + 1:i + 1]) + min(ls[i - largo_kc + 1:i + 1])) / 2.0
@@ -518,7 +533,7 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         return {"asset": (asset or "").upper(), "moneda": moneda, "disponible": False}
     cierres = [v["close"] for v in velas]
     m50, m200, r = media(cierres, 50), media(cierres, 200), rsi(cierres)
-    dmi, sqz = adx(velas), squeeze(velas)
+    dmi, sqz, bb = adx(velas), squeeze(velas), bollinger(cierres)
     desde = _desde_dias(velas, DIAS_GRAFICO)
 
     def _r(x, d=4):
@@ -534,7 +549,8 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
     p = estructura.precio_redondo   # abajo de 1, cifras significativas (SHIB, PEPE)
     puntos = [{"d": velas[i]["date"], "o": p(velas[i].get("open")), "h": p(velas[i].get("high")),
                "l": p(velas[i].get("low")), "c": p(cierres[i]), "s50": p(m50[i]),
-               "s200": p(m200[i]), "rsi": _r(r[i], 2), "adx": _r(dmi["adx"][i], 2),
+               "s200": p(m200[i]), "bb_arriba": p(bb["arriba"][i]), "bb_abajo": p(bb["abajo"][i]),
+               "rsi": _r(r[i], 2), "adx": _r(dmi["adx"][i], 2),
                "squeeze": _sig(sqz["valor"][i]), "squeeze_color": sqz["color"][i],
                "v": velas[i].get("volume")} for i in range(desde, len(velas))]
     return {
