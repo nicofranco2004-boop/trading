@@ -167,6 +167,28 @@ class AlertasTecnicasTest(unittest.TestCase):
 
     # — los casos —
 
+    def test_el_umbral_del_salto_sale_de_la_lista_de_cambios_de_ratio(self):
+        # ficha-tecnica mudó SALTO_SIN_EXPLICAR de velas_diarias a cambios_ratio.
+        # Leído del lugar viejo, CADA alerta técnica reventaba en el cron (las 5
+        # pruebas de aviso de este archivo se ponen rojas). Ver 11f57c03.
+        import cambios_ratio
+        self.assertEqual(ae._salto_sospechoso(), cambios_ratio.SALTO_SIN_EXPLICAR)
+
+    def test_un_error_de_las_tecnicas_queda_a_la_vista_y_no_corta_las_de_precio(self):
+        self.yahoo.precios["MSFT"] = self._sube_ayer
+        self._seguir_por_alerta_y_crear()
+        self._noche(self.ayer)
+        roto = mock.patch("tecnico.senal_desde", side_effect=AttributeError("algo se mudó"))
+        with roto, self.assertLogs("alerts", level="ERROR") as logs:
+            r = self._cron()
+        self.assertEqual(r["tecnicas"].get("errores"), 1, "el cron cuenta el error")
+        self.assertTrue(any("AttributeError" in x and "algo se mudó" in x for x in logs.output),
+                        "el registro dice QUÉ error fue")
+        self.assertIn("alerts", r, "las alertas de precio se evaluaron igual")
+        # Arreglado el error, la vela que no se pudo mirar se mira en la pasada siguiente.
+        self._cron()
+        self.assertEqual(len(self._eventos()), 1)
+
     def test_cruza_su_promedio_de_200_y_avisa_una_sola_vez_con_el_mail_armado(self):
         self.yahoo.precios["MSFT"] = self._sube_ayer
         self._seguir_por_alerta_y_crear()

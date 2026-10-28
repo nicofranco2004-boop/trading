@@ -1529,15 +1529,22 @@ def evaluar_tecnicas(conn, now: datetime = None, only_user: int = None) -> dict:
     ultima_global = row["d"] if row else None
     series: dict = {}
     pendientes: list = []
-    fired = mirados = 0
+    fired = mirados = errores = 0
     for a in alerts:
         # Una alerta que revienta (un activo raro, una serie rota) no puede dejar
         # sin mirar a las demás: el cron pega cada 10 minutos y fallaría siempre
         # en la misma. Las cuentas van antes de cualquier escritura.
+        # Pero el error queda a la vista: con el NOMBRE del error y su traza en el
+        # registro, y contado en el resultado del cron. Al juntar ficha-tecnica
+        # con estas alertas, un número mudado de archivo (SALTO_SIN_EXPLICAR) hacía
+        # fallar TODAS, cada 10 minutos, con un aviso que nadie miraba: ninguna
+        # alerta técnica avisaba nunca (pieza 15, 11f57c03).
         try:
             resultado = _evaluar_una_tecnica(conn, a, series, ultima_global, piso, now, pendientes)
         except Exception as ex:
-            log.warning("alert técnica %s (%s) falló: %s", a["id"], a["symbol"], ex)
+            errores += 1
+            log.error("alert técnica %s (%s) falló: %s: %s", a["id"], a["symbol"],
+                      type(ex).__name__, ex, exc_info=True)
             continue
         mirados += resultado in ("mirada", "avisó")
         fired += resultado == "avisó"
@@ -1545,7 +1552,10 @@ def evaluar_tecnicas(conn, now: datetime = None, only_user: int = None) -> dict:
     # es red): igual que `evaluate_alerts`.
     conn.commit()
     _entregar_pendientes(conn, pendientes)
-    return {"tecnicas": len(alerts), "mirados": mirados, "fired": fired}
+    out = {"tecnicas": len(alerts), "mirados": mirados, "fired": fired}
+    if errores:
+        out["errores"] = errores
+    return out
 
 
 def _evaluar_una_tecnica(conn, a, series: dict, ultima_global, piso: str, now, pendientes: list) -> str:
