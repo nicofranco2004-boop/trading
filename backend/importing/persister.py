@@ -322,7 +322,15 @@ def persist_batch(
     if route_currency:
         # Identificar todos los brokers ARS que tienen filas USD para ellos.
         unique_brokers = {tx.broker for tx in sorted_txs}
-        for broker_name in unique_brokers:
+
+        def _moneda_de(nombre):
+            r = conn.execute("SELECT currency FROM brokers WHERE name=? AND user_id=?",
+                             (nombre, uid)).fetchone()
+            return r["currency"] if r else None
+
+        # En orden: recorrer el set en el orden de cada proceso hacía que el
+        # resultado dependiera de él (ver `efectivo.padre_de_pata_usd`).
+        for broker_name in sorted(unique_brokers):
             parent = conn.execute(
                 "SELECT * FROM brokers WHERE name=? AND user_id=?",
                 (broker_name, uid),
@@ -339,6 +347,15 @@ def persist_batch(
                 for t in sorted_txs
                 if t.broker == broker_name
             )
+            _padre = _efectivo.padre_de_pata_usd(broker_name, _moneda_de)
+            if _padre and (has_usd_rows or has_fx):
+                # Dólares directo a "Cocos · USD" todavía en pesos: es la cuenta en
+                # dólares de "Cocos". Se la adopta (o se rechaza, 409) y las filas
+                # se quedan en ella; nunca se le crea "Cocos · USD · USD".
+                helpers._ensure_usd_sibling(conn, uid, conn.execute(
+                    "SELECT * FROM brokers WHERE name=? AND user_id=?",
+                    (_padre, uid)).fetchone())
+                continue
             if has_usd_rows or has_fx:
                 sibling = helpers._ensure_usd_sibling(conn, uid, parent)
                 sibling_for[broker_name] = sibling["name"]

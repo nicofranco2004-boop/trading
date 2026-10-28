@@ -505,6 +505,63 @@ class TestAdoptarLaPataUsd:
         assert r.status_code == 409, r.text
         self.no_se_toco(self.broker("Cocos")["id"], saldo=0.0)
 
+    # ── cuarta ronda de auditoría ────────────────────────────────────────────
+
+    def test_el_estado_inicial_que_propone_la_app_es_en_dolares(self):
+        """"Cocos · USD" en pesos y vacía, y un archivo con dólares para "Cocos" que
+        retira más de lo que deposita. La vista previa simulaba la caja con la
+        moneda de HOY de la sub-cuenta (pesos), proponía un "Estado inicial" en
+        pesos para su cuenta en dólares, y el confirm lo frenaba (409) sin salida."""
+        self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "ARS")
+        prev = self.vista_previa("2026-01-05,DEPOSITO,Cocos,,,,1000,,,,ARS,\n"
+                                 + DOLARES_A_COCOS
+                                 + "2026-01-07,RETIRO,Cocos,,,,700,,,,USD,\n")
+        assert prev["errors"] == []
+        sug = {b["broker"]: b for b in prev["seed_suggestions"]["brokers"]}
+        assert sug[PATA]["broker_currency"] == "USDT", sug[PATA]
+        assert list(sug[PATA]["cash_overdraft"]) == ["USDT"], sug[PATA]
+
+        # Lo que arma el asistente con esa sugerencia (`buildSeedPayload`).
+        r = self.con_estado_inicial(prev["session_id"],
+                                    [{"broker": PATA, "cash": {"USDT": 200}}])
+
+        assert r.status_code == 200, r.text
+        assert self.broker(PATA)["currency"] == "USDT"
+        assert abs(self.caja(PATA)["invested"]) < 0.005
+        assert self.cajas_cruzadas() == []
+
+    def test_dolares_a_cocos_y_directo_a_su_sub_cuenta_quedan_en_una_sola(self):
+        """"Cocos · USD" en pesos y vacía; el archivo manda US$500 a "Cocos" y US$300
+        directo a "Cocos · USD". Según el orden en que el confirm recorría los
+        brokers (distinto en cada proceso), a veces le creaba "Cocos · USD · USD"."""
+        padre = self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "ARS")
+
+        r = self.importar(DOLARES_A_COCOS + f"2026-01-06,DEPOSITO,{PATA},,,,300,,,,USD,\n")
+
+        assert r.status_code == 200, r.text
+        assert self.broker(PATA)["parent_broker_id"] == padre
+        assert self.caja(PATA)["invested"] == 800.0
+        assert not self.sql("SELECT 1 FROM brokers WHERE user_id=? AND name LIKE ?",
+                            self.uid, f"{PATA} · USD")
+        assert self.cajas_cruzadas() == []
+
+    def test_dolares_directo_a_la_sub_cuenta_con_pesos_se_avisan(self):
+        """Con pesos adentro no se puede adoptar: la fila en dólares se marca en la
+        vista previa (antes creaba "Cocos · USD · USD" en silencio)."""
+        padre = self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "ARS")
+        assert self.depositar(PATA, 100_000).status_code == 200
+
+        prev = self.vista_previa(f"2026-01-06,DEPOSITO,{PATA},,,,300,,,,USD,\n")
+
+        assert self.codigos(prev) == ["SIN_CUENTA_EN_DOLARES"], prev["errors"]
+        assert self.confirmar(prev["session_id"]).status_code == 200
+        self.no_se_toco(padre)
+        assert not self.sql("SELECT 1 FROM brokers WHERE user_id=? AND name LIKE ?",
+                            self.uid, f"{PATA} · USD")
+
 
 class TestCompraGrupalDelAsesor:
     """Un cliente con "Cocos · USD" en pesos no tumba la compra de los demás."""
