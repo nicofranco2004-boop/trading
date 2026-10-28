@@ -381,3 +381,76 @@ cruzando contra un segundo método.
     → lo refutó el árbol del código;
   · un armador de caminos mal escrito inventó rutas de dos pasos → lo refutó
     validarlo contra dos casos cuya respuesta ya se conocía.
+
+---
+
+## Cierre del cruce — 28/10/2026, medido sobre el código
+
+Las dos listas tenían errores y el cruce los separó uno por uno. Lo que sigue
+está verificado leyendo el código y con un recorrido del árbol, no deducido.
+
+### `create_position` — **CUBIERTO**, y mi informe se contradecía
+
+Mi barrido lo listaba como intruso en dos secciones (líneas 68 y 119 de este
+documento) y como «descartado por tomar el turno igual» en otra (línea 237). **Dos
+agentes míos dijeron lo opuesto y nada en mi workflow los reconcilió** — el cruce
+contra una segunda lista fue lo que lo destapó.
+
+El que tenía razón es el tercero: `_exigir_broker_existente` (main.py:11826) pide
+el turno en su **primera línea** (11851), sin condición, y `create_position` la
+llama en 11862 sin condicionarla. **Está cubierto.** También `create_futuro` y
+`update_futuro`.
+
+⚠️ Y acá mi propio instrumento me falló: mi detector de «¿la llamada está en un
+bloque condicional?» marcaba `Try` como condicional. **Un `try:` no es una rama —
+su cuerpo siempre corre.** Es, otra vez, un proxy estructural («está adentro de
+algún bloque») puesto en lugar de la pregunta real («¿es condicional?»).
+
+### `update_position` — **«A VECES», y el caso protegido es el raro**
+
+Acá la otra lista tenía razón y la mía no. La llamada está condicionada
+(main.py:12196):
+
+    if _actual and p.broker != _actual["broker"]:
+        _exigir_broker_existente(conn, uid, p.broker)
+
+Y el comentario de arriba lo dice sin vueltas: «Sólo si CAMBIA: editar el precio
+de un lote no depende de esto.»
+
+👉 **Mover un lote a otro broker está protegido. Editarle el precio —el caso
+común— no.**
+
+### `sell_position_fifo` — **depende de la MONEDA**, no de «la primera vez»
+
+Verificado en `_pata_de_la_moneda` (main.py, el cuerpo arranca con los retornos
+tempranos): sólo se llega a `_ensure_usd_sibling` —y por lo tanto al turno— si el
+broker es **en pesos** y la operación es **en dólares**. Si la operación va en la
+moneda del broker, la función sale antes y el turno no se pide nunca.
+
+👉 **Vender en dólares en un broker en pesos está protegido. Vender en pesos —el
+caso común de una cuenta argentina— no.**
+
+### El patrón, que es lo que hay que llevarse
+
+En los tres casos **la protección aparece en el caso MENOS frecuente**:
+
+| operación | protegida | sin protección |
+|---|---|---|
+| vender un lote | en dólares, en un broker en pesos | **en pesos** |
+| editar un lote | moverlo a otro broker | **cambiarle el precio** |
+
+Eso no es casualidad: el turno está adentro de ayudantes que existen para los
+casos especiales (crear la pata '· USD', validar un broker nuevo). El camino
+común no pasa por ningún caso especial, así que no pasa por ningún turno.
+
+### Y el límite del método, en su forma final
+
+Veníamos con «**un grafo de llamadas dice "puede", no "hace"**». El cruce agrega
+el escalón que faltaba:
+
+> Entre «puede» y «hace» está «**hace a veces**» — y **de qué depende ese "a veces"
+> no se lee en el grafo**. Hay que ir a la rama y leer la condición.
+
+Las dos hipótesis que tuvimos sobre ese «a veces» (una por lista) estaban mal:
+«sólo la primera vez» y «siempre». La respuesta real era la moneda en un caso y
+el cambio de broker en el otro, y las dos salieron de leer el `if`.
