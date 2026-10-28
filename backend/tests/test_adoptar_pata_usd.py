@@ -534,7 +534,8 @@ class TestAdoptarLaPataUsd:
     def test_dolares_a_cocos_y_directo_a_su_sub_cuenta_quedan_en_una_sola(self):
         """"Cocos · USD" en pesos y vacía; el archivo manda US$500 a "Cocos" y US$300
         directo a "Cocos · USD". Según el orden en que el confirm recorría los
-        brokers (distinto en cada proceso), a veces le creaba "Cocos · USD · USD"."""
+        brokers (distinto en cada proceso), a veces le creaba "Cocos · USD · USD".
+        Ahora "Cocos" va primero y la adopta antes de que le toque a ella."""
         padre = self.crear_broker("Cocos", "ARS")
         self.crear_broker(PATA, "ARS")
 
@@ -547,21 +548,42 @@ class TestAdoptarLaPataUsd:
                             self.uid, f"{PATA} · USD")
         assert self.cajas_cruzadas() == []
 
-    def test_dolares_directo_a_la_sub_cuenta_con_pesos_se_avisan(self):
-        """Con pesos adentro no se puede adoptar: la fila en dólares se marca en la
-        vista previa (antes creaba "Cocos · USD · USD" en silencio)."""
-        padre = self.crear_broker("Cocos", "ARS")
-        self.crear_broker(PATA, "ARS")
-        assert self.depositar(PATA, 100_000).status_code == 200
+    def test_la_sub_cuenta_ya_en_dolares_se_simula_con_su_saldo(self):
+        """"Cocos · USD" creada a mano en USD con US$1.000, y un retiro de US$500 de
+        "Cocos". La simulación la forzaba a USDT: no veía sus US$1.000 (guardados
+        como USD), avisaba un faltante falso y proponía un "Estado inicial" que,
+        seguido, dejaba la caja en US$1.500."""
+        self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "USD")
+        assert self.depositar(PATA, 1000).status_code == 200
 
-        prev = self.vista_previa(f"2026-01-06,DEPOSITO,{PATA},,,,300,,,,USD,\n")
+        prev = self.vista_previa("2026-01-07,RETIRO,Cocos,,,,500,,,,USD,\n")
 
-        assert self.codigos(prev) == ["SIN_CUENTA_EN_DOLARES"], prev["errors"]
+        assert prev["errors"] == [] and prev["cash_warnings"] == [], prev["cash_warnings"]
+        assert not prev.get("seed_suggestions"), prev.get("seed_suggestions")
         assert self.confirmar(prev["session_id"]).status_code == 200
-        self.no_se_toco(padre)
-        assert not self.sql("SELECT 1 FROM brokers WHERE user_id=? AND name LIKE ?",
-                            self.uid, f"{PATA} · USD")
+        assert self.caja(PATA)["invested"] == 500.0
 
+    def test_dolares_directo_a_un_cocos_usd_en_pesos_nunca_quedan_en_pesos(self):
+        """"Cocos" ya tiene su cuenta en dólares con otro nombre, y "Cocos · USD" es
+        otra cuenta en pesos. Dólares directo a "Cocos · USD" no pueden quedar en su
+        caja en pesos (los manda a una sub-cuenta propia, como siempre)."""
+        padre = self.crear_broker("Cocos", "ARS")
+        r = self.client.post("/api/brokers", headers=self.h, json={
+            "name": "Cocos Dolares", "currency": "USDT", "parent_broker_id": padre})
+        assert r.status_code == 200, r.text
+        self.crear_broker(PATA, "ARS")
+
+        r = self.importar(f"2026-01-06,DEPOSITO,{PATA},,,,500,,,,USD,\n")
+
+        assert r.status_code == 200, r.text
+        assert self.caja(PATA)["invested"] == 0.0
+        cajas = {c["broker"]: c for c in self.sql(
+            "SELECT broker, asset, invested FROM positions WHERE user_id=? AND is_cash=1",
+            self.uid)}
+        assert [ (c["asset"], c["invested"]) for b, c in cajas.items()
+                 if c["invested"] ] == [("USDT", 500.0)], cajas
+        assert self.cajas_cruzadas() == []
 
 class TestCompraGrupalDelAsesor:
     """Un cliente con "Cocos · USD" en pesos no tumba la compra de los demás."""

@@ -112,16 +112,11 @@ def validate(
         # DÓLARES (`pipeline.por_que_no_hay_pata_usd`). El confirm la crea o la
         # adopta antes de guardar las filas y, si no puede, rechaza el lote entero
         # con un 409. Acá se ve antes, fila por fila.
-        # Vale igual para los dólares directo a "Cocos · USD" (todavía en pesos):
-        # también la adoptan (`efectivo.padre_de_pata_usd`).
-        _sin_pata = None
-        if padres_sin_pata_usd:
-            _sin_pata = padres_sin_pata_usd.get(tx.broker) or (
-                tx.broker.endswith(" · USD")
-                and padres_sin_pata_usd.get(tx.broker[:-len(" · USD")]))
-        if (_sin_pata and ((tx.currency or "").upper() in ("USD", "USDT")
-                           or op in (OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS))):
-            row_errs.append(RowError(ridx, "broker", "SIN_CUENTA_EN_DOLARES", _sin_pata))
+        if (padres_sin_pata_usd and tx.broker in padres_sin_pata_usd
+                and ((tx.currency or "").upper() in ("USD", "USDT")
+                     or op in (OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS))):
+            row_errs.append(RowError(ridx, "broker", "SIN_CUENTA_EN_DOLARES",
+                                     padres_sin_pata_usd[tx.broker]))
         if op == OP_BUY:
             if not tx.asset_symbol:
                 row_errs.append(RowError(ridx, "activo", "MISSING_ASSET",

@@ -37,22 +37,6 @@ from fastapi import HTTPException
 from money_fmt import fmt_num
 
 
-def padre_de_pata_usd(nombre: str, moneda_de) -> Optional[str]:
-    """Si `nombre` es la sub-cuenta en dólares de un broker en pesos —"Cocos · USD"
-    de un "Cocos" ARS—, lo sea ya o vaya a serlo cuando la adopten, el nombre del
-    padre; si no, None. `moneda_de(nombre)` da la moneda de un broker (o None).
-
-    Una así NO tiene sub-cuenta propia: los dólares que le llegan la hacen la de
-    su padre (`_ensure_usd_sibling`, main.py). Sin esta regla, el import podía
-    tratarla como un padre más y crearle "Cocos · USD · USD" —según el orden en
-    que recorría los brokers, distinto en cada proceso—, y la vista previa le
-    pedía el "Estado inicial" en pesos."""
-    if not nombre.endswith(" · USD"):
-        return None
-    padre = nombre[:-len(" · USD")]
-    return padre if (moneda_de(padre) or "") == "ARS" else None
-
-
 def asset_de_caja(moneda_broker: Optional[str]) -> str:
     """Cómo se llama la caja de un broker según su moneda.
 

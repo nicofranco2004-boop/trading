@@ -14,7 +14,6 @@ from money_fmt import fmt_num
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
-import efectivo as _efectivo
 from .schema import (
     NormalizedTx,
     OP_BUY, OP_SELL, OP_DEPOSIT, OP_WITHDRAW, OP_DIVIDEND, OP_INTEREST,
@@ -37,8 +36,8 @@ class CashWarning:
 class CashSimResult:
     final_balances: Dict[Tuple[str, str], float]  # (broker, currency) → balance
     warnings: List[CashWarning] = field(default_factory=list)
-    # Las sub-cuentas "· USD" que el confirm va a crear o adoptar (ya en dólares).
-    patas_del_lote: frozenset = frozenset()
+    # Las sub-cuentas "· USD" en pesos que el confirm va a adoptar (pasan a USDT).
+    pasan_a_dolares: frozenset = frozenset()
 
 
 def simulate(
@@ -64,15 +63,9 @@ def simulate(
     # En la realidad el persister llama a _ensure_usd_sibling. Acá no creamos
     # nada — solo proyectamos a un nombre virtual "<parent> · USD".
     sibling_for: Dict[str, str] = {}
-    def _moneda_de(nombre):
-        return (user_brokers.get(nombre) or {}).get("currency")
-
     if route_by_currency:
         for broker_name, info in user_brokers.items():
-            # La sub-cuenta "· USD" de otro (aunque hoy esté en pesos) no tiene
-            # sub-cuenta propia: ver `efectivo.padre_de_pata_usd`.
-            if (info.get("currency") == "ARS"
-                    and not _efectivo.padre_de_pata_usd(broker_name, _moneda_de)):
+            if info.get("currency") == "ARS":
                 # Si ya tiene un sibling existente, usalo; si no, proyectá nombre.
                 existing_sibling = next(
                     (n for n, i in user_brokers.items()
@@ -100,22 +93,25 @@ def simulate(
 
     # Las sub-cuentas que el confirm va a crear o ADOPTAR: las de los padres con
     # filas ruteadas en este lote (mismo criterio que `persister.persist_batch`).
-    # Una "Cocos · USD" que hoy está en pesos y vacía queda en dólares al
-    # adoptarla; simularla con su moneda de hoy le pedía a la persona el saldo
-    # "en ARS" de su cuenta en dólares, y el confirm frenaba esos pesos.
-    # También la que recibe dólares directo: queda en dólares igual.
-    patas_del_lote = set()
-    for t in sorted_txs:
-        if not ((t.currency or "").upper() in ("USD", "USDT")
-                or t.operation_type in ("FX_ARS_TO_USD", "FX_USD_TO_ARS")):
-            continue
-        if t.broker in sibling_for:
-            patas_del_lote.add(sibling_for[t.broker])
-        elif route_by_currency and _efectivo.padre_de_pata_usd(t.broker, _moneda_de):
-            patas_del_lote.add(t.broker)
+    # Una adoptada deja de ser padre: el confirm recorre los brokers en orden
+    # ("Cocos" antes que "Cocos · USD") y cuando le toca ya está en dólares.
+    def _patas():
+        return {sibling_for[t.broker] for t in sorted_txs
+                if t.broker in sibling_for
+                and ((t.currency or "").upper() in ("USD", "USDT")
+                     or t.operation_type in (OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS))}
+    for _p in _patas():
+        sibling_for.pop(_p, None)
+    # Las que hoy están en PESOS pasan a dólares al adoptarlas: simularlas con su
+    # moneda de hoy le pedía a la persona el "Estado inicial" en pesos de su
+    # cuenta en dólares, y el confirm frenaba esos pesos. Las que ya están en
+    # dólares (USD o USDT) se simulan con la suya: su saldo de hoy está guardado
+    # con esa moneda (`starting_cash`).
+    pasan_a_dolares = {p for p in _patas()
+                       if (user_brokers.get(p) or {}).get("currency") == "ARS"}
 
     def _broker_currency(broker: str) -> str:
-        if broker in patas_del_lote:
+        if broker in pasan_a_dolares:
             return "USDT"
         info = user_brokers.get(broker)
         if info:
@@ -209,4 +205,4 @@ def simulate(
                 balances[key] = balances.get(key, 0.0) + ars
 
     return CashSimResult(final_balances=balances, warnings=warnings,
-                         patas_del_lote=frozenset(patas_del_lote))
+                         pasan_a_dolares=frozenset(pasan_a_dolares))

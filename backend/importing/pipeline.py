@@ -33,7 +33,7 @@ from .excel import to_csv_text, is_xlsx, xlsx_to_csv, is_html_table, html_table_
 from . import seed as _seed
 from tickers_renombrados import codigos_anteriores   # GOLD → B: la huella vieja
 import renombre_broker as _renombre_broker   # los nombres anteriores de cada broker
-from efectivo import asset_de_caja, padre_de_pata_usd
+from efectivo import asset_de_caja
 
 log = logging.getLogger(__name__)
 
@@ -738,17 +738,12 @@ def guardas_de_moneda(conn, uid: int, user_brokers, fmt_base, filas) -> Dict[str
     sin_pata = padres_sin_pata_usd(conn, uid, user_brokers)
     sin_pesos = set(brokers_que_no_aceptan_pesos(user_brokers, fmt_base))
     if not fmt_base:
-        def _moneda_de(nombre):
-            return (user_brokers.get(nombre) or {}).get("currency")
         for t in filas:
-            if not ((t.currency or "").upper() in ("USD", "USDT")
-                    or t.operation_type in ("FX_ARS_TO_USD", "FX_USD_TO_ARS")):
-                continue
-            # Dólares a "Cocos", o directo a "Cocos · USD": los dos la adoptan.
-            padre = padre_de_pata_usd(t.broker, _moneda_de) or t.broker
-            pata = f"{padre} · USD"
-            if (_moneda_de(padre) == "ARS" and padre not in sin_pata
-                    and pata in user_brokers):
+            pata = f"{t.broker} · USD"
+            if (((t.currency or "").upper() in ("USD", "USDT")
+                    or t.operation_type in ("FX_ARS_TO_USD", "FX_USD_TO_ARS"))
+                    and (user_brokers.get(t.broker) or {}).get("currency") == "ARS"
+                    and t.broker not in sin_pata and pata in user_brokers):
                 sin_pesos.add(pata)
     return {"brokers_sin_pesos": frozenset(sin_pesos), "padres_sin_pata_usd": sin_pata}
 
@@ -1333,10 +1328,10 @@ def run_preview(
         if valid_txs else {}
     )
     # La moneda de cada broker AL CONFIRMAR: una "Cocos · USD" que hoy está en
-    # pesos y este lote adopta queda en dólares (`cash_sim.patas_del_lote`). Con la
-    # de hoy, el "Estado inicial" le pedía su saldo en pesos y el confirm frenaba.
+    # pesos y este lote adopta queda en dólares (`cash_sim.pasan_a_dolares`). Con
+    # la de hoy, el "Estado inicial" le pedía su saldo en pesos y el confirm frenaba.
     brokers_al_confirmar = dict(user_brokers)
-    for _p in (sim.patas_del_lote if valid_txs else ()):
+    for _p in (sim.pasan_a_dolares if valid_txs else ()):
         if _p in brokers_al_confirmar:
             brokers_al_confirmar[_p] = {**brokers_al_confirmar[_p], "currency": "USDT"}
     seed_suggestions = _seed.build_suggestions(
