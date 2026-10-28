@@ -667,6 +667,133 @@ Medido con una sonda de las CINCO situaciones en los dos motores: **5/5 y 5/5**.
 
 ---
 
+## 🔴 HALLAZGO 11 — Dos operaciones a la vez: en Postgres UNA SE PIERDE, y el usuario ve «guardada»
+
+Del barrido de siete lentes (lo vieron dos lentes como «el arreglo de
+`_update_monthly_flow` no se propagó a su hermana», y una tercera como «la
+segunda contesta guardada y no guarda nada»). **Verificado y medido el
+28/10/2026 contra Postgres real: las tres describían el mismo bug, y la
+consecuencia real es peor que la que le pusieron.**
+
+### El punto de partida: la hermana sin propagar
+
+`_update_monthly_pnl_realized` (`main.py:13746`) y `_update_monthly_flow`
+(`main.py:13793`) son hermanas: **47 líneas de distancia, misma tabla, misma
+fila**. A la segunda se le aplicaron las dos mitades del arreglo de concurrencia
+de `d4742484`; a la primera **ninguna**:
+
+| | `_update_monthly_flow` | `_update_monthly_pnl_realized` |
+|---|---|---|
+| suma | **en la base** (`deposits = deposits + ?`) | 🔴 **en Python** y escribe el absoluto |
+| `ON CONFLICT` | **2** | 🔴 **0** |
+| candado | — | 🔴 ninguno |
+
+Son **30 llamadores de producción**: 16 en `importing/persister.py` y 14 en
+`main.py` (ventas, operaciones a mano, cupones, importador).
+
+### Medido: SQLite 3/3 · Postgres 4/4, los dos consistentes
+
+| caso | SQLite | Postgres |
+|---|---|---|
+| dos operaciones a la vez, la fila del mes YA existe | 180 ✅ | 180 ✅ |
+| depósito + operación a la vez | dep 1000 · pnl 150 · cap 1150 ✅ | igual ✅ |
+| venta + operación a la vez | 250 ✅ | 250 ✅ |
+| **dos PRIMERAS operaciones del mes** | 100 ✅ | 🔴 **40 o 60** |
+
+Y el cuarto caso, medido aparte porque el número no alcanzaba:
+
+    SQLite    operaciones=[40.0, 60.0]   suma=100   global=100   ✅
+    Postgres  operaciones=[40.0]         suma=40    global=40    🔴  err=[]
+
+**Sólo queda UNA fila en `operations`.** No es que el total del mes quede corto:
+**la operación no está en el historial**, y las dos llamadas volvieron normal —
+el usuario vio «guardada» las dos veces.
+
+### 🔑 El mecanismo, y es el que generaliza
+
+`create_operation` (`main.py:20706`):
+
+    INSERT INTO operations …                      ← la operación entra
+    try:
+        _update_monthly_pnl_realized(…)           ← acá revienta: UNIQUE del mes
+        _recalc_pnl_realized_from_ops(conn, uid)
+    except Exception as ex:
+        log.error("Recalc tras create_operation falló: %s", ex)   ← SE TRAGA
+    conn.commit()
+    return dict(row)                              ← contesta ÉXITO
+
+· En **SQLite** el error no inutiliza la transacción: el `commit()` confirma el
+  INSERT de la operación. Se pierde sólo el total del mes, y el recálculo lo
+  rearma.
+· En **Postgres** la sentencia que falla **aborta la transacción**, el `commit()`
+  se vuelve un ROLLBACK **y se descarta todo lo del pedido** — el INSERT de la
+  operación incluido. Y el endpoint contesta igual.
+
+👉 **El `ON CONFLICT` que falta no causa un 500: causa una pérdida silenciosa**,
+porque hay un `except` que traga y un `commit()` después.
+
+### Lo que la lente erraba, y conviene saberlo
+
+Las dos lentes decían que se perdía **la suma del mes** y que el recálculo no la
+salvaba. **Al revés:** el recálculo SÍ la salva —`_recalc_pnl_realized_from_ops`
+rearma el total desde `SUM(operations)`, y en `READ COMMITTED` esa consulta ve lo
+que la otra transacción commiteó—. Medido por dos puertas (operación a mano y
+venta): la suma perdida **no se reproduce**. Lo que no se puede salvar es la fila
+que nunca se creó.
+
+⚠️ **No se midió la puerta del importador** (los 16 llamadores del persister).
+Ahí no corre `_recalc_pnl_realized_from_ops` después, así que podría comportarse
+distinto. Queda abierto.
+
+### El barrido del patrón: 28 candidatas
+
+`except` que traga + `commit()` después + respuesta de éxito. Barrido con AST
+sobre todo el backend (no grep): **28 funciones tienen esa forma.** Las de
+caminos de usuario o de plata:
+
+    main.py:20706  create_operation()      ← MEDIDO roto
+    main.py:20784  update_operation()      ← la hermana: editar una operación
+    main.py:12139  update_position()
+    main.py:7130   post_snapshot()
+    main.py:4537   register()
+    main.py:4404   _registrar_ingreso()
+    main.py:26692  registrar_uso()
+    alerts_engine.py:1091  evaluate_alerts()
+    snapshots_job.py:1354  run_daily_snapshot()
+
+**`register()` puede explicar una de las 12 fallas que quedan:**
+`test_email_verification::test_register_email_already_registered_returns_409_with_code`
+está rojo en Postgres, y una de las lentes decía «registrarse con un email que ya
+existe da 500 en vez del mensaje». Misma forma, mismo archivo, mismo síntoma. **No
+medido** — es la candidata más barata de confirmar.
+
+🔴 **Las 28 son CANDIDATAS, no hallazgos.** La forma no prueba el bug: el `except`
+puede no envolver nada que toque la base, el error puede no ser alcanzable, o el
+`commit` puede ser de otra conexión. De las 28 se verificó UNA.
+
+### El arreglo son DOS cosas, no una
+
+1. `ON CONFLICT` en el `INSERT` de `_update_monthly_pnl_realized` y pasar la suma
+   a la base, como su hermana. Eso tapa este caso.
+2. **El `except` que traga tiene que dejar de contestar éxito.** Con sólo (1) las
+   otras 27 candidatas siguen pudiendo descartar un pedido en silencio. Un
+   `except` alrededor de SQL en Postgres necesita además decidir qué hace con la
+   transacción: o `rollback()` explícito y un error al usuario, o no tragar.
+
+### La sonda
+
+Cuatro casos, las dos puertas, y el cuarto imprime las filas de `operations` para
+distinguir «se perdió el total» de «se perdió la operación». Está en el
+scratchpad de la auditoría como `test_pnl_del_mes_dos_pedidos.py`.
+
+⚠️ **Y un aviso sobre cómo NO escribirla:** la primera versión hacía el depósito
+llamando a `_update_monthly_flow` directo. Eso deja la suma sin su detalle en
+`flujos_a_mano`, el recálculo posterior la borra, y el test daba **rojo por culpa
+del andamio**. El depósito tiene que ir por `main.cash_flow`. Un test que fuerza
+una condición puede tapar lo que falla — o inventar una falla que no existe.
+
+---
+
 ## ✅ Lo que ataqué y aguantó
 
 * **Los seis `UPDATE` de cobros, verificados por máquina y no a ojo.** El guard
