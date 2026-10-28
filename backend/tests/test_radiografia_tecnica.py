@@ -174,10 +174,11 @@ class RadiografiaTest(unittest.TestCase):
         self._armar()
         c = self._cartera([{"asset": "NVDA"}, {"asset": "KO"}, {"asset": "AAPL"}])
         fecha = self.dias[self.n - 3].isoformat()
-        self.assertEqual(c[("NVDA", False)]["cambios"], [
-            {"media": 200, "direccion": "arriba", "fecha": fecha},
-            {"media": 50, "direccion": "arriba", "fecha": fecha},
-        ])
+        # Los cambios salen de tecnico.cambios_desde (la cuenta de «Tus señales»):
+        # acá, los cruces de los promedios.
+        medias = [(x["tipo"], x["sentido"], x["fecha"]) for x in c[("NVDA", False)]["cambios"]
+                  if x["tipo"] in ("media200", "media50")]
+        self.assertEqual(medias, [("media200", "arriba", fecha), ("media50", "arriba", fecha)])
         self.assertEqual(c[("KO", False)]["cambios"], [], "un cruce de hace 30 ruedas no es de esta semana")
         self.assertEqual(c[("AAPL", False)]["cambios"], [])
 

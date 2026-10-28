@@ -508,6 +508,9 @@ class FichaTest(unittest.TestCase):
             velas = tecnico.serie(conn, "AAPL", "usd")["velas"]
         d, s = tecnico.adx(velas), tecnico.squeeze(velas)
         por_dia = {v["date"]: i for i, v in enumerate(velas)}
+        # Desde ficha-tecnica `DIAS_GRAFICO = DIAS_GUARDADOS`: el gráfico lleva
+        # TODA la historia guardada (antes arrancaba después de 200 días).
+        self.assertEqual(por_dia[f["puntos"][0]["d"]], 0, "el gráfico lleva toda la historia")
         self.assertEqual(len(f["puntos"]), len(velas), "el gráfico trae toda la historia guardada")
         for q in f["puntos"]:
             i = por_dia[q["d"]]

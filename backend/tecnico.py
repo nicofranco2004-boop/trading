@@ -95,21 +95,48 @@ def rsi(cierres: list, n: int = 14) -> list:
 RUEDAS_CRUCE_RSI = 10
 
 
+def _ref(referencia, i):
+    return referencia[i] if isinstance(referencia, list) else referencia
+
+
+def ultimo_cruce(valores: list, referencia, desde_i: int = 1, hacia: str = None):
+    """El ÚLTIMO cruce de `valores` con `referencia` desde el índice `desde_i`:
+    (índice, 'arriba'|'abajo'), o None si no cruzó.
+
+    `referencia` es una serie (la media de 200 de cada día) o un nivel fijo (el
+    30 del RSI). «Arriba» es valor ≥ referencia: la MISMA regla que la tarjeta de
+    la ficha (precio ≥ media es «Alcista»). `hacia` busca sólo los cruces en ese
+    sentido. Es LA cuenta de "cruzó": la usan el aviso de la ficha
+    (`cruce_rsi`) y las alertas técnicas (`senal_desde`). Con una media o un
+    valor que todavía no existe (None) ese día no cruza nada."""
+    for i in range(len(valores) - 1, max(desde_i, 1) - 1, -1):
+        a, b = valores[i - 1], valores[i]
+        ra, rb = _ref(referencia, i - 1), _ref(referencia, i)
+        if a is None or b is None or ra is None or rb is None:
+            continue
+        antes, ahora = a >= ra, b >= rb
+        if antes != ahora:
+            sentido = "arriba" if ahora else "abajo"
+            if hacia in (None, sentido):
+                return i, sentido
+    return None
+
+
 def cruce_rsi(r: list, abajo: float = 30.0, arriba: float = 70.0):
     """El último cruce del RSI hacia AFUERA de una zona extrema en las últimas
     `RUEDAS_CRUCE_RSI` ruedas: {'tipo': 'salio_de_abajo'|'salio_de_arriba',
     'hace': ruedas}. Salir de abajo de 30 es lo que muchos leen como "vuelve a
-    tomar fuerza"; salir de arriba de 70, "pierde fuerza". None si no hubo."""
+    tomar fuerza"; salir de arriba de 70, "pierde fuerza". None si no hubo.
+    Sale de `ultimo_cruce`, la misma cuenta que las alertas técnicas."""
     n = len(r)
-    for i in range(n - 1, max(0, n - 1 - RUEDAS_CRUCE_RSI), -1):
-        a, b = r[i - 1], r[i]
-        if a is None or b is None:
-            continue
-        if a < abajo <= b:
-            return {"tipo": "salio_de_abajo", "hace": n - 1 - i}
-        if a > arriba >= b:
-            return {"tipo": "salio_de_arriba", "hace": n - 1 - i}
-    return None
+    desde = max(1, n - RUEDAS_CRUCE_RSI)
+    de_abajo = ultimo_cruce(r, abajo, desde, "arriba")
+    de_arriba = ultimo_cruce(r, arriba, desde, "abajo")
+    if not de_abajo and not de_arriba:
+        return None
+    if de_abajo and (not de_arriba or de_abajo[0] > de_arriba[0]):
+        return {"tipo": "salio_de_abajo", "hace": n - 1 - de_abajo[0]}
+    return {"tipo": "salio_de_arriba", "hace": n - 1 - de_arriba[0]}
 
 
 # ─── Fuerza de la tendencia: ADX + Squeeze Momentum ──────────────────────────
@@ -541,30 +568,15 @@ DIAS_CAMBIOS = 7
 MAX_ACTIVOS_CARTERA = 200
 
 
-def _cruce_de_media(velas: list, cierres: list, medias: list, desde: str):
-    """El ÚLTIMO cruce del precio con su media desde la fecha `desde` (exclusive):
-    {'direccion': 'arriba'|'abajo', 'fecha'}. «Arriba» es la misma regla que la
-    tarjeta de la ficha (precio ≥ media). None si no cruzó."""
-    for i in range(len(velas) - 1, 0, -1):
-        if velas[i]["date"] <= desde:
-            break
-        a0, a1 = medias[i - 1], medias[i]
-        if a0 is None or a1 is None:
-            continue
-        antes, ahora = cierres[i - 1] >= a0, cierres[i] >= a1
-        if antes != ahora:
-            return {"direccion": "arriba" if ahora else "abajo", "fecha": velas[i]["date"]}
-    return None
-
-
 def para_la_cartera(conn, activos: list) -> list:
     """La lectura en DÓLARES de varios activos, para la radiografía de la Cartera.
 
     `activos`: [(asset, local)], con `local` igual que en la ficha (acción
     argentina → su precio de BYMA ÷ el MEP). Cada uno devuelve la MISMA
     `lectura` que la ficha (así las palabras salen de la misma regla) y
-    `cambios`: los cruces de la media de 200 y de 50 de los últimos
-    `DIAS_CAMBIOS` días. Sin velas: `disponible` False, nunca se inventa."""
+    `cambios`: lo que cambió en los últimos `DIAS_CAMBIOS` días (`cambios_desde`,
+    la misma cuenta que «Tus señales»). Sin velas: `disponible` False, nunca se
+    inventa."""
     from fechas import hoy_art_date
     desde = (hoy_art_date() - timedelta(days=DIAS_CAMBIOS)).isoformat()
     out = []
@@ -573,14 +585,9 @@ def para_la_cartera(conn, activos: list) -> list:
             out.append({"asset": a, "local": local, "disponible": False})
             continue
         cierres = [v["close"] for v in velas]
-        medias = {200: media(cierres, 200), 50: media(cierres, 50)}
-        cambios = []
-        for n in (200, 50):
-            c = _cruce_de_media(velas, cierres, medias[n], desde)
-            if c:
-                cambios.append({"media": n, **c})
         out.append({"asset": a, "local": local, "disponible": True,
-                    "lectura": lectura(velas, medias[50], medias[200]), "cambios": cambios})
+                    "lectura": lectura(velas, media(cierres, 50), media(cierres, 200)),
+                    "cambios": cambios_desde(velas, desde)})
     return out
 
 
@@ -602,21 +609,19 @@ def _series_en_dolares(conn, activos: list):
 
 # La línea chica de cada fila: los cierres de los últimos 3 meses corridos.
 DIAS_LINEA = 92
-# «Último cambio»: el más reciente de este último año (la cuenta de qué es un
-# cambio es `cambios_desde`, la de «qué cambió esta semana»; acá no se repite).
+# «Último cambio»: el más reciente del último año contado desde HOY (la cuenta
+# de qué es un cambio es `cambios_desde`, la de «qué cambió esta semana»; acá
+# no se repite). Desde hoy y no desde la última vela, como la radiografía: con
+# la serie cortada, el año no se corre para atrás.
 DIAS_ULTIMO_CAMBIO = DIAS_ANIO
 
 
-def _ultimo_cambio(velas: list):
-    """El cambio más reciente del último año, de `cambios_desde` (la cuenta
-    ÚNICA de cruces, la de la pieza «qué cambió esta semana»). None si no hubo
-    o si esa cuenta todavía no está en esta rama (se mezcla aparte)."""
-    contar = globals().get("cambios_desde")
-    if contar is None or not velas:
-        return None
-    desde = (date.fromisoformat(velas[-1]["date"]) - timedelta(days=DIAS_ULTIMO_CAMBIO)).isoformat()
-    cambios = contar(velas, desde) or []
-    return max(cambios, key=lambda c: c["fecha"]) if cambios else None
+def _ultimo_cambio(velas: list, desde: str):
+    """El cambio más reciente desde `desde`, de `cambios_desde` (la cuenta
+    ÚNICA de cruces, la de «Tus señales»; ya viene el más nuevo primero).
+    None si no hubo."""
+    cambios = cambios_desde(velas, desde) if velas else []
+    return cambios[0] if cambios else None
 
 
 def para_la_lista(conn, activos: list) -> list:
@@ -629,6 +634,8 @@ def para_la_lista(conn, activos: list) -> list:
     línea chica de la fila, y `ultimo_cambio` (ver `_ultimo_cambio`). Sin
     velas: `disponible` False, nunca se inventa. Cuánto pesa cada uno lo pone
     la pantalla, con la valuación de la Cartera."""
+    from fechas import hoy_art_date
+    desde = (hoy_art_date() - timedelta(days=DIAS_ULTIMO_CAMBIO)).isoformat()
     out = []
     for a, local, velas in _series_en_dolares(conn, activos):
         if not velas:
@@ -639,5 +646,170 @@ def para_la_lista(conn, activos: list) -> list:
                  for v in velas[_desde_dias(velas, DIAS_LINEA):]]
         out.append({"asset": a, "local": local, "disponible": True,
                     "lectura": lectura(velas, media(cierres, 50), media(cierres, 200)),
-                    "linea": linea, "ultimo_cambio": _ultimo_cambio(velas)})
+                    "linea": linea, "ultimo_cambio": _ultimo_cambio(velas, desde)})
     return out
+
+
+# ─── Señales para las alertas técnicas ───────────────────────────────────────
+#
+# Lo que una alerta técnica vigila (alerts_engine.evaluar_tecnicas). Cada una es
+# un CAMBIO que pasa en un día de mercado, no un estado: «cruzó su promedio de
+# 200 días» pasa el día que el cierre queda del otro lado, no todos los días que
+# sigue ahí. Se calculan con las mismas cuentas que la ficha (`media`, `rsi`,
+# `ultimo_cruce`) sobre la misma serie (`serie`), así que lo que avisa la alerta
+# es lo que después se ve en la tarjeta.
+
+SENALES = ("media200", "media50", "rsi_bajo_30", "rsi_sobre_70", "rsi_sube_30", "rsi_baja_70",
+           "maximo_12m")
+# Las de las medias se pueden pedir para un solo lado (arriba / abajo) o para
+# los dos; las del RSI y el máximo ya dicen el sentido en el nombre.
+SENALES_CON_SENTIDO = ("media200", "media50")
+# Las dos de "volver" son las que la ficha ya anuncia (`cruce_rsi`): salir de
+# abajo de 30 y salir de arriba de 70.
+_RSI = {"rsi_bajo_30": (30.0, "abajo"), "rsi_sobre_70": (70.0, "arriba"),
+        "rsi_sube_30": (30.0, "arriba"), "rsi_baja_70": (70.0, "abajo")}
+# «En su máximo» con la misma tolerancia que la tarjeta de la ficha
+# (`tarjetas()` en frontend/src/utils/tecnico.js: dist_maximo_12m ≥ −0,1 %).
+TOLERANCIA_MAXIMO = 0.001
+# Un activo que cierra en su máximo varios días seguidos (Apple lo hizo 36 días
+# en un año) avisa la PRIMERA vez: vuelve a avisar sólo después de un mes sin
+# máximos. Días CORRIDOS, como todo lo de "un mes" acá: una cripto cotiza los 7.
+DIAS_ENTRE_MAXIMOS = 30
+
+
+def _en_maximo(velas: list, cierres: list, desde_i: int) -> dict:
+    """{i: True/False} desde `desde_i`: ¿el cierre de ese día es el más alto de
+    los 12 meses (corridos) que terminan ese día? Sin un año entero de velas
+    antes, no se sabe (no figura): el «máximo del año» de 4 meses no es tal."""
+    out = {}
+    if not velas:
+        return out
+    j = 0
+    primera = date.fromisoformat(velas[0]["date"])
+    for i in range(max(0, desde_i), len(velas)):
+        piso = date.fromisoformat(velas[i]["date"]) - timedelta(days=DIAS_ANIO)
+        if primera > piso:
+            continue
+        piso_iso = piso.isoformat()
+        while velas[j]["date"] <= piso_iso:
+            j += 1
+        out[i] = cierres[i] >= max(cierres[j:i + 1]) * (1 - TOLERANCIA_MAXIMO)
+    return out
+
+
+def senal_desde(velas: list, senal: str, desde: str = None, sentido: str = None):
+    """La última vez que pasó `senal` en una vela POSTERIOR a la fecha `desde`
+    (None = en cualquiera): {'fecha', 'sentido', 'cierre', 'referencia', 'rsi'}
+    o None. `sentido` ('arriba'|'abajo') acota las de las medias.
+
+    Vale el ÚLTIMO cruce del período, en cualquier sentido: si cruzó para arriba
+    y al día siguiente volvió abajo (llegan dos días juntos cuando una noche no
+    corrió), lo que muestra la ficha es «Bajista» y una alerta «para arriba» no
+    avisa nada. Buscar sólo los cruces del lado pedido avisaba «se volvió
+    alcista» con la tarjeta diciendo lo contrario (auditoría 22/10).
+
+    `referencia` es contra qué se midió: el valor del promedio ese día, el nivel
+    del RSI (30/70) o el máximo del año. Sin velas suficientes (menos de 200
+    días para la media de 200) no pasa nada: no se inventa.
+
+    Además de las de `SENALES` acepta 'adx23' (el ADX pasa 23), que no es un
+    tipo de alerta: la usa `cambios_desde` para «Tus señales»."""
+    if not velas or senal not in SENALES + ("adx23",):
+        return None
+    desde_i = 1
+    if desde:
+        desde_i = next((i for i, v in enumerate(velas) if v["date"] > desde), len(velas))
+    if desde_i >= len(velas):
+        return None
+    cierres = [v["close"] for v in velas]
+
+    def _ev(i, sentido, referencia, r=None):
+        return {"fecha": velas[i]["date"], "sentido": sentido, "cierre": cierres[i],
+                "referencia": referencia, "rsi": r}
+
+    if senal in ("media200", "media50"):
+        m = media(cierres, 200 if senal == "media200" else 50)
+        c = ultimo_cruce(cierres, m, desde_i)
+        if not c or (sentido in ("arriba", "abajo") and c[1] != sentido):
+            return None
+        return _ev(c[0], c[1], m[c[0]])
+    if senal in _RSI:
+        nivel, hacia = _RSI[senal]
+        r = rsi(cierres)
+        c = ultimo_cruce(r, nivel, desde_i)
+        if not c or c[1] != hacia:
+            return None
+        ev = _ev(c[0], c[1], nivel, r[c[0]])
+        # De dónde venía: el RSI una semana de mercado antes («bajó de 52»).
+        ev["rsi_antes"] = r[c[0] - RUEDAS_SEMANA] if c[0] >= RUEDAS_SEMANA else None
+        return ev
+    if senal == "adx23":
+        # Fuerza de la tendencia: el ADX pasa la línea clave (la regla de
+        # `cruce_adx`, ≥ 23 es arriba). Para DÓNDE marca dirección lo dice el
+        # Squeeze de ese día, como la tarjeta de la ficha.
+        a = adx(velas)["adx"]
+        c = ultimo_cruce(a, ADX_CLAVE, desde_i)
+        if not c or (sentido in ("arriba", "abajo") and c[1] != sentido):
+            return None
+        sq = squeeze(velas)["valor"][c[0]]
+        ev = _ev(c[0], c[1], ADX_CLAVE)
+        ev["adx"] = a[c[0]]
+        ev["squeeze"] = (1 if sq > 0 else -1 if sq < 0 else 0) if sq is not None else None
+        return ev
+    # maximo_12m: el primer máximo después de un mes sin máximos.
+    def _piso(i):
+        return (date.fromisoformat(velas[i]["date"]) - timedelta(days=DIAS_ENTRE_MAXIMOS)).isoformat()
+    primero = next((k for k, v in enumerate(velas) if v["date"] > _piso(desde_i)), desde_i)
+    en_max = _en_maximo(velas, cierres, primero)
+    for i in range(len(velas) - 1, desde_i - 1, -1):
+        if not en_max.get(i):
+            continue
+        piso = _piso(i)
+        antes, k = [], i - 1
+        while k >= 0 and velas[k]["date"] > piso:
+            antes.append(k)
+            k -= 1
+        if velas[0]["date"] > piso or any(en_max.get(k) is None for k in antes):
+            continue    # sin el mes de antes no se sabe si es la PRIMERA vez
+        if not any(en_max[k] for k in antes):
+            return _ev(i, "arriba", cierres[i])
+    return None
+
+
+# ─── Qué cambió: la lista de «Tus señales» ───────────────────────────────────
+#
+# UNA cuenta de «qué cambió desde tal fecha», hecha con las señales de arriba
+# (`senal_desde`, que sale de `ultimo_cruce`): la usan la radiografía de la
+# Cartera (`para_la_cartera`), la pestaña «Tus señales» y su resumen de los
+# sábados, y la columna «Último cambio» del tablero de la watchlist. Ninguna
+# regla se escribe de nuevo acá: un cambio que sale en «Tus señales» es el mismo
+# que avisaría una alerta y el que se ve en la tarjeta de la ficha.
+
+# En orden de importancia: así salen en el día y en el resumen.
+#   media200 / media50: el precio cruzó su promedio (los dos lados);
+#   rsi_bajo_30 / rsi_sobre_70: la fuerza (RSI) cayó / subió muy rápido;
+#   maximo_12m: el primer máximo de 12 meses después de un mes sin máximos;
+#   adx23: el ADX pasó 23 para arriba (la tendencia marca dirección).
+TIPOS_CAMBIO = ("media200", "media50", "rsi_bajo_30", "rsi_sobre_70", "maximo_12m", "adx23")
+# Una semana de mercado, para «el RSI venía de…».
+RUEDAS_SEMANA = 5
+
+
+def cambios_desde(velas: list, desde: str) -> list:
+    """Los cambios de un activo en las velas POSTERIORES a la fecha `desde`:
+    [{'tipo', 'fecha', 'sentido', 'cierre', 'referencia', 'rsi', …}], el más
+    nuevo primero (y, el mismo día, en el orden de `TIPOS_CAMBIO`). De cada tipo
+    vale el ÚLTIMO del período, como en `senal_desde`: si cruzó para arriba y
+    volvió abajo, queda «quedó abajo». Extras: 'rsi_antes' (el RSI una semana de
+    mercado antes) en los del RSI; 'adx' y 'squeeze' (signo) en el del ADX.
+
+    `desde` lo pone quien llama, contado desde HOY y no desde la última vela:
+    con la serie cortada (Yahoo dejó de mandar), un cruce de hace un mes no es
+    «de esta semana» (radiografia-tecnica.md, arreglo 1)."""
+    out = []
+    for orden, tipo in enumerate(TIPOS_CAMBIO):
+        ev = senal_desde(velas, tipo, desde, "arriba" if tipo == "adx23" else None)
+        if ev:
+            out.append((orden, {"tipo": tipo, **ev}))
+    out.sort(key=lambda x: (x[1]["fecha"], -x[0]), reverse=True)
+    return [c for _, c in out]

@@ -1,6 +1,8 @@
 """Motor de evaluación de alertas personalizadas.
 
-Dos tipos de alerta (ver schema en main.init_db):
+Tres tipos de alerta (ver schema en main.init_db). Las dos primeras se evalúan
+en vivo, cada vez que pega el cron; la tercera, una vez por día (ver
+`evaluar_tecnicas`, al final):
   • price_target — avisar cuando `symbol` cruza `threshold` en `direction`
     (above/below). Usa EDGE-TRIGGER con la columna `armed`: dispara SOLO en la
     transición no-cumplida → cumplida, nunca mientras el precio sigue del lado
@@ -10,6 +12,10 @@ Dos tipos de alerta (ver schema en main.init_db):
     Como el % es vs prev_close (que se resetea cada día), el anti-spam es por
     COOLDOWN por (alerta, símbolo) vía la tabla alert_events — no la columna
     armed (una alerta holdings tiene N símbolos, cada uno con su propio estado).
+  • tecnica — avisar cuando pasa una señal del análisis técnico de la ficha
+    (`senal`: cruzó su promedio de 200 / 50 días, el RSI cruzó 30 o 70, cerró
+    en su máximo del año). Sale de las velas que se guardan de noche, con las
+    cuentas de `tecnico.py`, y avisa una vez por cruce.
 
 Precios: reusa los MISMOS rieles que el snapshot diario (fetch_prices_for_symbols
 → stocks/CEDEARs/cripto/FCI/bonos) para price_target, y para pct_move la
@@ -45,7 +51,9 @@ from urllib.parse import quote
 
 log = logging.getLogger("alerts")
 
-VALID_KINDS = ("price_target", "pct_move")
+VALID_KINDS = ("price_target", "pct_move", "tecnica")
+# Las que se miran en vivo, cada vez que pega el cron (`evaluate_alerts`).
+KINDS_EN_VIVO = ("price_target", "pct_move")
 VALID_SCOPES = ("ticker", "holdings")
 VALID_DIRECTIONS = ("above", "below", "either")
 VALID_CHANNELS = ("push", "email", "both")
@@ -645,19 +653,25 @@ def _deliver(conn, alert, items) -> tuple:
     channel = alert["channel"] or "both"
     push_ok = email_ok = False
 
+    tecnica = alert["kind"] == "tecnica"
     if channel in ("push", "both"):
         try:
             import main
             sent = main._send_push_to_user(uid, {
                 "title": "Rendi · Alerta",
-                "body": heading,
+                # La señal técnica lleva la aclaración también en el push: es lo
+                # único que lee quien no abre el mail.
+                "body": f"{heading}. {_NO_ES_RECOMENDACION}" if tecnica else heading,
                 # Iba a /config?tab=notificaciones: ruta MUERTA desde que las
                 # alertas se mudaron a /alertas (en Config ya no existe esa
                 # pestana), asi que tocar el push caia en Config > Cuenta.
                 # Despues fue /dashboard, que no dice nada del aviso. Ahora abre
                 # «Mis alertas»: la alerta que salto, con su estado y para
                 # pausarla.
-                "url": "/alertas?tab=mis",
+                # La técnica abre la ficha del activo: ahí está el gráfico con
+                # el promedio que cruzó.
+                "url": (f"/activo/{quote(_display_symbol(items[0]['symbol']), safe='')}"
+                        if tecnica and not client_label else "/alertas?tab=mis"),
                 "tag": (f"alert-{alert['id']}-{items[0]['symbol'] or ''}"
                         if len(items) == 1 else f"alert-{alert['id']}-grupo"),
             })
@@ -763,6 +777,8 @@ def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading)
     una_vez = alert["repeat"] == "once"
     if una_vez:
         pie = ("Esta alerta ya cumplió.", "Volver a activarla", _MIS_ALERTAS)
+    elif alert["kind"] == "tecnica":
+        pie = ("Te volvemos a avisar la próxima vez que pase.", "Pausarla o cambiarla", _MIS_ALERTAS)
     elif alert["kind"] == "price_target":
         pie = ("Te volvemos a avisar si lo cruza de nuevo.", "Pausarla o cambiarla", _MIS_ALERTAS)
     else:
@@ -771,7 +787,10 @@ def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading)
     if len(items) == 1:
         it = items[0]
         sym = _display_symbol(it["symbol"])
-        if fuera:
+        if it.get("tecnica"):
+            titulo = it["message"]
+            detail = _detalle_tecnico(alert, it["symbol"], it["tecnica"])
+        elif fuera:
             # El pre/post explica qué franja, contra qué cierre y que es un
             # anticipo: es más que una oración, pero sin eso el % engaña.
             titulo = it["message"]
@@ -814,11 +833,13 @@ def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading)
                "Ir a mis clientes", "/clientes")
     contenido["pie"] = pie
     contenido["heading"] = heading
+    if alert["kind"] == "tecnica":
+        contenido["aclaracion"] = _NO_ES_RECOMENDACION
     return contenido
 
 
 def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: list,
-          fuera: dict = None, doble: bool = False):
+          fuera: dict = None, doble: bool = False, tecnica: dict = None):
     """Dispara: log en alert_events + actualiza last_fired_* + ENCOLA la entrega.
 
     El mail y el push no salen acá. Se acumulan en `pendientes` y salen al
@@ -828,7 +849,10 @@ def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: lis
     El evento de la app se escribe igual, uno por activo y en el momento — es lo
     que alimenta la lista de "Últimos avisos" y el puntito del sidebar. Las dos
     banderas de entregado se completan cuando la entrega efectivamente sale."""
-    if fuera:
+    if tecnica:
+        # Una señal técnica: la frase sale de la señal, no de un precio.
+        message = label = _mensaje_tecnico(alert, symbol, tecnica)
+    elif fuera:
         # Pre o post mercado: el mensaje dice en qué franja y, para un CEDEAR,
         # que es su acción en Nueva York. El precio es el de allá, en dólares.
         message = _mensaje_fuera(symbol, change_pct, fuera)
@@ -859,7 +883,7 @@ def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: lis
         "change_pct": change_pct, "message": message,
         "label": label,
         "event_id": cur.lastrowid,
-        "fuera": fuera, "doble": doble,
+        "fuera": fuera, "doble": doble, "tecnica": tecnica,
     })
     log.info("alert %s fired (uid=%s sym=%s): %s",
              alert["id"], alert["user_id"], symbol, message)
@@ -1094,7 +1118,9 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     ANTES de entregar y cada entrega por separado (ver `_entregar_pendientes`):
     la entrega es red y no puede llevar el lock de escritura."""
     now = datetime.utcnow()
-    q = "SELECT * FROM alerts WHERE active=1"
+    # Las técnicas no se miran acá: van una vez por día (`evaluar_tecnicas`).
+    en_vivo = "kind IN (" + ",".join(f"'{k}'" for k in KINDS_EN_VIVO) + ")"
+    q = f"SELECT * FROM alerts WHERE active=1 AND {en_vivo}"
     params: tuple = ()
     if only_user is not None:
         q += " AND user_id=?"
@@ -1289,7 +1315,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     _entregar_pendientes(conn, pendientes)
 
     conn.execute(
-        "UPDATE alerts SET last_evaluated_at=? WHERE active=1"
+        f"UPDATE alerts SET last_evaluated_at=? WHERE active=1 AND {en_vivo}"
         + ("" if only_user is None else " AND user_id=?"),
         (now.isoformat(),) + (() if only_user is None else (only_user,)),
     )
@@ -1298,3 +1324,268 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     _podar_movimientos(conn, now)
     conn.commit()
     return {"alerts": len(alerts), "evaluated": len(units), "fired": fired}
+
+
+# ─── Alertas técnicas: una vez por día, con las velas de la noche ─────────────
+#
+# Qué vigila: una señal de la ficha técnica de UN activo (`tecnico.SENALES`):
+# cruzó su promedio de 200 o de 50 días (para arriba, para abajo o cualquiera),
+# el RSI bajó de 30 / pasó 70 / volvió a pasar 30, cerró en su máximo del año.
+#
+# Cuándo: con las velas que se guardan cada noche (`velas_diarias`, al final de
+# la foto diaria), no en vivo: un cruce de la media de 200 se mira al CIERRE.
+# La evaluación va en el cron de alertas pero sólo desde las 9 de la mañana
+# (`HORA_AVISO_TECNICO`): las velas llegan cerca de la medianoche y un push a esa
+# hora despierta a la gente por algo que puede esperar a la mañana.
+#
+# Una vez por cruce: cada (alerta, activo) guarda HASTA QUÉ VELA ya miró
+# (`_visto_hasta`, en alert_symbol_state con la clave '<activo>#velas'). Cada
+# pasada mira sólo las velas nuevas: si una cruzó, avisa; y corre la marca a la
+# última vela. Correr el cron de nuevo, o que las velas se guarden dos veces la
+# misma noche, no repite nada. La marca arranca en la última vela que había al
+# CREAR la alerta (`arrancar_tecnica`): un cruce de antes de crearla no avisa.
+#
+# Cuentas: las de `tecnico.py` sobre `tecnico.serie` (la serie que corrige los
+# cambios de ratio de un CEDEAR), las mismas que dibuja la ficha.
+
+# Desde qué hora (Argentina) salen los avisos técnicos del día.
+HORA_AVISO_TECNICO = 9
+# Un cruce de hace más que esto no se avisa aunque recién llegue (las velas se
+# trabaron una semana y volvieron): ya no es noticia. La marca se corre igual.
+DIAS_AVISO_TECNICO = 7
+# Un cierre que salta más que `_salto_sospechoso()` contra el anterior puede ser
+# Yahoo atrasado con un split (la acción "cae" 75 % hasta que reescribe la
+# historia, a veces varias noches después) o un precio roto que nadie corrige
+# (una acción argentina sin par afuera). Con ese cierre la alerta diría «quedó
+# abajo de su promedio de 200 días» sin que haya pasado nada. Se mira hasta el
+# día ANTERIOR al salto y la marca queda ahí hasta que el precio nuevo se
+# sostiene `DIAS_CONFIRMA_SALTO` días de mercado (una caída de verdad avisa
+# unos días tarde) o la historia se reescribe (el salto desaparece y no hubo
+# nada). Es el umbral de "salto sin explicar" de las velas, el mismo número.
+DIAS_CONFIRMA_SALTO = 3
+
+
+def _salto_sospechoso() -> float:
+    # Vive en cambios_ratio (la lista única de cambios de ratio de la ficha).
+    import cambios_ratio
+    return cambios_ratio.SALTO_SIN_EXPLICAR
+
+
+def _hasta_antes_del_salto(velas: list, visto: str) -> list:
+    """Las velas que se pueden mirar hoy: todas, o hasta el día anterior al
+    primer salto sin confirmar posterior a `visto`."""
+    umbral = _salto_sospechoso()
+    for j in range(1, len(velas)):
+        if velas[j]["date"] <= visto:
+            continue
+        a, b = velas[j - 1]["close"], velas[j]["close"]
+        if a and b and abs(b / a - 1) > umbral and len(velas) - j < DIAS_CONFIRMA_SALTO:
+            return velas[:j]
+    return velas
+
+_NO_ES_RECOMENDACION = "Muestra cómo se movió el precio: no es una recomendación para comprar ni vender."
+
+
+def _clave_velas(symbol) -> str:
+    return f"{symbol}#velas"
+
+
+def _visto_hasta(conn, alert_id: int, symbol):
+    """La fecha de la última vela que ya miró esta alerta, o None."""
+    return _sym_state(conn, alert_id, _clave_velas(symbol))[1]
+
+
+def _marcar_visto(conn, alert_id: int, symbol, fecha: str) -> None:
+    _set_sym_fired(conn, alert_id, _clave_velas(symbol), fecha)
+
+
+def _serie_tecnica(conn, alert) -> list:
+    """Las velas que mira la alerta: las de la ficha en la moneda elegida
+    (`tecnico.serie`), con la marca de acción argentina igual que la ficha."""
+    import tecnico
+    moneda = "ars" if str(alert["currency"] or "").upper() == "ARS" else "usd"
+    return tecnico.serie(conn, alert["symbol"], moneda, bool(_campo(alert, "accion_local")))["velas"]
+
+
+def arrancar_tecnica(conn, alert) -> None:
+    """Pone la marca de «ya miré hasta acá» al crear (o reactivar) una alerta
+    técnica: lo que cierre desde HOY cuenta, lo de antes no.
+
+    Es la última vela guardada o ayer, la que sea MÁS NUEVA. Con sólo la última
+    vela, unas velas atrasadas dejaban pasar un cruce viejo: un activo que nadie
+    seguía desde agosto (o el de una alerta pausada, que deja de bajarse) tenía
+    la última vela del 27/08; al crearla el 22/10, esa noche se bajaban los días
+    que faltaban y avisaba el cruce del 19/10 (auditoría 22/10). Con «ayer»
+    sola, una alerta creada a la 1 de la mañana, con la vela de ayer ya
+    guardada, la contaría como nueva."""
+    from fechas import hoy_art_date
+    ayer = (hoy_art_date() - timedelta(days=1)).isoformat()
+    velas = _serie_tecnica(conn, alert)
+    hasta = max(velas[-1]["date"], ayer) if velas else ayer
+    _marcar_visto(conn, alert["id"], alert["symbol"], hasta)
+
+
+def _sentido_pedido(alert):
+    """El sentido que pidió la alerta para un cruce de media (None = cualquiera)."""
+    return {"above": "arriba", "below": "abajo"}.get(alert["direction"])
+
+
+def _quien_tecnico(alert, symbol) -> str:
+    """«AAPL», o «AAPL en pesos» cuando se mira en pesos (la ficha y la alerta
+    miran en dólares por defecto: en pesos el precio también sube con el dólar)."""
+    sym = _display_symbol(symbol)
+    if str(alert["currency"] or "").upper() == "ARS" and not _campo(alert, "accion_local"):
+        return f"{sym} en pesos"
+    if str(alert["currency"] or "").upper() == "USD" and _campo(alert, "accion_local"):
+        return f"{sym} en dólares"
+    return sym
+
+
+def _mensaje_tecnico(alert, symbol, ev) -> str:
+    """El titular (asunto, push y «Mis alertas»): qué pasó y qué quiere decir, en
+    palabras de la ficha. «AAPL pasó para arriba su promedio de 200 días: la
+    tendencia de fondo se volvió alcista»."""
+    quien = _quien_tecnico(alert, symbol)
+    senal, arriba = alert["senal"], ev["sentido"] == "arriba"
+    if senal == "media200":
+        return (f"{quien} pasó para arriba su promedio de 200 días: la tendencia de fondo se volvió alcista"
+                if arriba else
+                f"{quien} quedó abajo de su promedio de 200 días: la tendencia de fondo se volvió bajista")
+    if senal == "media50":
+        return (f"{quien} pasó para arriba su promedio de 50 días: en el corto plazo viene subiendo"
+                if arriba else
+                f"{quien} quedó abajo de su promedio de 50 días: en el corto plazo viene bajando")
+    if senal == "rsi_bajo_30":
+        return f"La fuerza (RSI) de {quien} bajó de 30: cayó muy rápido"
+    if senal == "rsi_sobre_70":
+        return f"La fuerza (RSI) de {quien} pasó 70: subió muy rápido"
+    if senal == "rsi_sube_30":
+        return f"La fuerza (RSI) de {quien} volvió a pasar 30: dejó de caer tan rápido"
+    if senal == "rsi_baja_70":
+        return f"La fuerza (RSI) de {quien} volvió a bajar de 70: dejó de subir tan rápido"
+    return f"{quien} cerró en su precio más alto del año"
+
+
+def _detalle_tecnico(alert, symbol, ev) -> str:
+    """La oración del mail (va después de «Hola Nico, »): el día, los números y
+    qué se suele leer de eso, con las palabras de las tarjetas de la ficha."""
+    from cartera_hoy import dia_txt
+    from fechas import hoy_art
+    sym = _display_symbol(symbol)
+    ccy = "ARS" if str(alert["currency"] or "").upper() == "ARS" else "USD"
+    cuando = dia_txt(ev["fecha"], hoy_art())
+    cierre = _fmt(ev["cierre"], ccy)
+    senal, arriba = alert["senal"], ev["sentido"] == "arriba"
+    if senal in ("media200", "media50"):
+        dias = 200 if senal == "media200" else 50
+        prom = _fmt(ev["referencia"], ccy)
+        if senal == "media200":
+            lectura = (f"Estar {'arriba' if arriba else 'abajo'} de ese promedio es la señal más usada "
+                       f"de que la tendencia de fondo es {'alcista' if arriba else 'bajista'}.")
+        else:
+            lectura = (f"Quiere decir que en los últimos meses viene "
+                       f"{'subiendo' if arriba else 'bajando'}.")
+        return f"{cuando} {sym} cerró en {cierre} y su promedio de {dias} días está en {prom}. {lectura}"
+    if senal.startswith("rsi_"):
+        fuerza = f"{cuando} la fuerza (RSI) de {sym} quedó en {_fmt_rsi(ev['rsi'], ev['referencia'])} de 100, con un cierre de {cierre}."
+        lectura = {
+            "rsi_bajo_30": "Bajar de 30 es caer muy rápido, y suele rebotar.",
+            "rsi_sobre_70": "Pasar 70 es subir muy rápido, y suele frenar.",
+            "rsi_sube_30": "Volver a pasar 30 suele leerse como que dejó de caer y empieza a tomar fuerza.",
+            "rsi_baja_70": "Volver a bajar de 70 suele leerse como que empieza a perder fuerza.",
+        }[senal]
+        return f"{fuerza} {lectura}"
+    return f"{cuando} {sym} cerró en {cierre}, el cierre más alto de los últimos 12 meses."
+
+
+def _fmt_rsi(r, nivel) -> str:
+    """El RSI sin decimales, como la ficha; con uno si redondeado cae justo en
+    el nivel que cruzó: «bajó de 30» con «quedó en 30» se contradice (29,6)."""
+    r = r or 0.0
+    return fmt_num(r, 1) if round(r) == round(nivel or 0) else str(round(r))
+
+
+def evaluar_tecnicas(conn, now: datetime = None, only_user: int = None) -> dict:
+    """Las alertas técnicas activas contra las velas guardadas. Idempotente: lo
+    pega el cron de alertas cada pocos minutos y sólo trabaja la primera pasada
+    después de que llegan velas nuevas (ver el bloque de arriba)."""
+    from fechas import dia_art, en_art
+    now = now or datetime.utcnow()
+    if en_art(now).hour < HORA_AVISO_TECNICO:
+        return {"tecnicas": 0, "esperando": f"desde las {HORA_AVISO_TECNICO}:00"}
+    q = "SELECT * FROM alerts WHERE active=1 AND kind='tecnica'"
+    params: tuple = ()
+    if only_user is not None:
+        q += " AND user_id=?"
+        params = (only_user,)
+    alerts = conn.execute(q, params).fetchall()
+    if not alerts:
+        return {"tecnicas": 0, "fired": 0}
+    hoy = dia_art(now)
+    piso = (hoy - timedelta(days=DIAS_AVISO_TECNICO)).isoformat()
+    # La última vela que hay en toda la tabla: una alerta que ya miró hasta ahí
+    # no tiene nada nuevo y no se lee su serie (el cron pega cada 10 minutos).
+    row = conn.execute("SELECT MAX(date) AS d FROM velas_diarias").fetchone()
+    ultima_global = row["d"] if row else None
+    series: dict = {}
+    pendientes: list = []
+    fired = mirados = 0
+    for a in alerts:
+        # Una alerta que revienta (un activo raro, una serie rota) no puede dejar
+        # sin mirar a las demás: el cron pega cada 10 minutos y fallaría siempre
+        # en la misma. Las cuentas van antes de cualquier escritura.
+        try:
+            resultado = _evaluar_una_tecnica(conn, a, series, ultima_global, piso, now, pendientes)
+        except Exception as ex:
+            log.warning("alert técnica %s (%s) falló: %s", a["id"], a["symbol"], ex)
+            continue
+        mirados += resultado in ("mirada", "avisó")
+        fired += resultado == "avisó"
+    # Lo disparado y las marcas quedan confirmados ANTES de entregar (la entrega
+    # es red): igual que `evaluate_alerts`.
+    conn.commit()
+    _entregar_pendientes(conn, pendientes)
+    return {"tecnicas": len(alerts), "mirados": mirados, "fired": fired}
+
+
+def _evaluar_una_tecnica(conn, a, series: dict, ultima_global, piso: str, now, pendientes: list) -> str:
+    """Una alerta técnica contra sus velas nuevas. Devuelve qué pasó: 'nada'
+    (nada nuevo que mirar), 'mirada' o 'avisó'."""
+    import tecnico
+    sym = a["symbol"]
+    if not sym or a["senal"] not in _senales():
+        return "nada"
+    visto = _visto_hasta(conn, a["id"], sym)
+    if visto and ultima_global and visto >= ultima_global:
+        return "nada"
+    clave = (sym, str(a["currency"] or "").upper(), bool(_campo(a, "accion_local")))
+    if clave not in series:
+        series[clave] = _serie_tecnica(conn, a)
+    velas = series[clave]
+    if not velas:
+        return "nada"       # todavía no hay velas: la marca queda donde estaba
+    if visto is None:
+        # Sin marca (no debería pasar: la pone el alta): se arranca acá, sin avisar.
+        _marcar_visto(conn, a["id"], sym, velas[-1]["date"])
+        return "nada"
+    mirables = _hasta_antes_del_salto(velas, visto)
+    if len(mirables) < len(velas):
+        log.info("alert %s %s: el cierre del %s saltó demasiado, se espera a que se confirme",
+                 a["id"], sym, velas[len(mirables)]["date"])
+    if not mirables or mirables[-1]["date"] <= visto:
+        return "nada"
+    ultima = mirables[-1]["date"]
+    ev = tecnico.senal_desde(mirables, a["senal"], visto, _sentido_pedido(a))
+    if ev and ev["fecha"] < piso:
+        log.info("alert %s %s: %s del %s llegó tarde, no aviso", a["id"], sym, a["senal"], ev["fecha"])
+        ev = None
+    if ev:
+        _fire(conn, a, sym, ev["cierre"], None, now, pendientes, tecnica=ev)
+        _cumplio_una_vez(conn, a)
+    _marcar_visto(conn, a["id"], sym, ultima)
+    return "avisó" if ev else "mirada"
+
+
+def _senales() -> tuple:
+    import tecnico
+    return tecnico.SENALES

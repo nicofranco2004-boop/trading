@@ -173,29 +173,31 @@ class ListaTecnicaTest(unittest.TestCase):
         self.assertEqual([p["d"] for p in linea], sorted(p["d"] for p in linea))
 
     def test_ultimo_cambio_sale_de_la_cuenta_unica(self):
-        # La cuenta de cruces es `tecnico.cambios_desde` (pieza «qué cambió esta
-        # semana»). Acá se mira la conexión: que reciba la serie de la ficha y
-        # «desde» un año antes de la última vela, y que la lista se quede con el
-        # cambio más reciente.
+        # La cuenta de cambios es `tecnico.cambios_desde` (la de «Tus señales»):
+        # la lista se queda con el primero (el más nuevo) del último año contado
+        # desde HOY. MSFT venía bajando y hace 3 ruedas saltó arriba de las dos
+        # medias: ese día cambió todo junto; manda el de 200 (el orden de
+        # TIPOS_CAMBIO).
         self._armar()
-        visto = {}
+        self._seguir("MSFT")
+        n = self.n
+        self.yahoo.precios["MSFT"] = lambda i, d: 150.0 if i >= n - 3 else 100 - i * 0.01
+        main._run_velas_diarias_job()
+        espia = mock.patch.object(tecnico, "cambios_desde", wraps=tecnico.cambios_desde)
+        with espia as contar:
+            x = self._lista([{"asset": "MSFT"}])[("MSFT", False)]
+        desde = (self.hoy - timedelta(days=tecnico.DIAS_ULTIMO_CAMBIO)).isoformat()
+        self.assertEqual(contar.call_args.args[1], desde, "el año se cuenta desde hoy, no desde la última vela")
+        with main.db_abierta() as conn:
+            velas = tecnico.serie(conn, "MSFT", "usd")["velas"]
+        esperado = tecnico.cambios_desde(velas, desde)[0]
+        self.assertEqual(x["ultimo_cambio"], esperado)
+        self.assertEqual(x["ultimo_cambio"]["tipo"], "media200")
+        self.assertEqual(x["ultimo_cambio"]["sentido"], "arriba")
+        self.assertEqual(x["ultimo_cambio"]["fecha"], self.dias[n - 3].isoformat())
 
-        def cambios_desde(velas, desde):
-            visto["ultima"], visto["desde"] = velas[-1]["date"], desde
-            return [{"tipo": "media200", "fecha": velas[-40]["date"]},
-                    {"tipo": "media50", "fecha": velas[-5]["date"]},
-                    {"tipo": "maximo", "fecha": velas[-90]["date"]}]
-
-        with mock.patch.object(tecnico, "cambios_desde", cambios_desde, create=True):
-            x = self._lista([{"asset": "TSLA"}])[("TSLA", False)]
-        self.assertEqual(x["ultimo_cambio"]["tipo"], "media50")
-        self.assertEqual(x["ultimo_cambio"]["fecha"], self.dias[-5].isoformat())
-        self.assertEqual(visto["ultima"], x["lectura"]["fecha"])
-        self.assertEqual(visto["desde"],
-                         (date.fromisoformat(visto["ultima"]) - timedelta(days=tecnico.DIAS_ULTIMO_CAMBIO)).isoformat())
-
-        with mock.patch.object(tecnico, "cambios_desde", lambda v, d: [], create=True):
-            self.assertIsNone(self._lista([{"asset": "TSLA"}])[("TSLA", False)]["ultimo_cambio"])
+        with mock.patch.object(tecnico, "cambios_desde", lambda v, d: []):
+            self.assertIsNone(self._lista([{"asset": "MSFT"}])[("MSFT", False)]["ultimo_cambio"])
 
     def test_bono_fondo_y_sin_velas(self):
         self._armar()

@@ -1,9 +1,12 @@
 // CrearAlerta — la pestaña «Crear alerta» de /alertas.
 // ═══════════════════════════════════════════════════════════════════════════
-// Las dos cosas que Rendi te puede avisar, una al lado de la otra, para elegir:
+// Las tres cosas que Rendi te puede avisar, una al lado de la otra, para elegir:
 //   • Resumen del mercado: un mail por día hábil. Se PRENDE, no se arma.
 //   • Aviso de precio: abre el formulario (AlertaForm), que adentro elige entre
 //     «llega a un precio» y «se mueve un %».
+//   • Señal técnica: el mismo formulario, en «Señal técnica» (cruza su
+//     promedio de 200 días, el RSI, el máximo del año). También se arma con el
+//     «Avisame» de cada tarjeta de la ficha técnica.
 // Lo que ya armaste vive en la otra pestaña (MisAlertas).
 //
 // Las dos tarjetas llevan las marcas del tutorial de novedades
@@ -15,7 +18,7 @@
 // rótulos sans sentence-case, números con `tabular`.
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Sunrise, Target, Check } from 'lucide-react'
+import { Sunrise, Target, Check, LineChart } from 'lucide-react'
 import Panel from '../Panel'
 import Pill from '../Pill'
 import ResumenMercadoCuerpo from './ResumenMercadoCuerpo'
@@ -45,7 +48,7 @@ const EJEMPLO = {
 
 const BOTON = 'inline-flex items-center justify-center h-11 px-5 rounded-lg bg-data-violet text-white text-sm font-semibold hover:bg-rendi-violet-hover disabled:opacity-50 transition-colors'
 
-export default function CrearAlerta({ resumen, onCrearAviso, alTope, alertsMax, puedeMovimiento }) {
+export default function CrearAlerta({ resumen, onCrearAviso, onCrearTecnica, alTope, alertsMax, puedeMovimiento }) {
   const [verEjemplo, setVerEjemplo] = useState(false)
 
   return (
@@ -121,6 +124,31 @@ export default function CrearAlerta({ resumen, onCrearAviso, alTope, alertsMax, 
             <div>
               <button type="button" className={BOTON} onClick={onCrearAviso}>
                 Crear aviso
+              </button>
+            </div>
+          )}
+        </Panel>
+
+        {/* Señal técnica */}
+        <Panel padding="lg" className="flex flex-col gap-4">
+          <div className="w-12 h-12 rounded-xl bg-bg-2 flex items-center justify-center text-data-violet" aria-hidden="true">
+            <LineChart size={24} strokeWidth={1.75} />
+          </div>
+          <div className="flex-1 space-y-1.5">
+            <h2 className="text-lg font-semibold text-ink-0">Señal técnica</h2>
+            <p className="text-sm text-ink-2 leading-relaxed">
+              Te avisamos cuando un activo cruza su promedio de 200 o de 50 días, cuando su fuerza (RSI) pasa 30 o 70, o cuando cierra en su máximo del año. Se mira cada día con el precio de cierre.
+            </p>
+          </div>
+          {alTope ? (
+            <p className="text-sm text-ink-1">
+              Llegaste al máximo de tu plan (<span className="tabular">{alertsMax}</span>).{' '}
+              <Link to="/config?tab=planes" className="text-data-violet font-medium hover:underline">Ver planes</Link>
+            </p>
+          ) : (
+            <div>
+              <button type="button" className={BOTON} onClick={onCrearTecnica}>
+                Crear aviso técnico
               </button>
             </div>
           )}

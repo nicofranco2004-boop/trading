@@ -35,9 +35,9 @@ import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
 import { isBymaHolding, lotMissingPurchaseRate, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { empresaDeTenencias, empresaDeTicker, urlDeActivo, miradaSinTenencia, mismoPapel } from '../utils/buscadorRapido'
-// ¿Es una acción argentina? La regla vive con la radiografía de la Cartera: la
-// ficha y la Cartera leen el mismo activo con la misma marca `local`.
-import { esAccionLocal } from '../utils/radiografia'
+// ¿Es una acción argentina? Una regla (utils/accionLocal.js) para la ficha, la
+// Cartera y las alertas: leen el mismo activo con la misma marca `local`.
+import { esAccionLocal } from '../utils/accionLocal'
 import { useUltimoPedido } from '../hooks/useUltimoPedido'
 import { monedaDe } from '../components/home/Watchlist'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
