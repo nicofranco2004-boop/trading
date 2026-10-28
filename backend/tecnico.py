@@ -163,6 +163,14 @@ VELAS_SQUEEZE_LECTURA = 60
 # 6 meses corridos, con al menos 60 días medidos.
 DIAS_ANCHO_BB = 182
 MIN_ANCHOS_BB = 60
+# Bandas que no se separan más que esto (en proporción al promedio) son un
+# precio quieto: con una comparación exacta, el redondeo (7e-15) las separaba en
+# la mitad de los precios constantes y la tarjeta decía «en el medio» al lado
+# de «Sin movimiento» (auditoría 28/10).
+BB_QUIETO = 1e-9
+# La vela de «hace 12 meses» tiene que estar a lo sumo a estos días de esa
+# fecha: después de un hueco largo era una de hace años (auditoría 28/10).
+DIAS_BASE_ANIO = 10
 # Cuánto se mueve: el día normal de los últimos 20 días de mercado, contra el
 # de su último año (con al menos 120 días medidos). Medido el 28/10 en 15
 # acciones: el orden de más tranquila a más movida se repitió de un año al otro
@@ -394,23 +402,27 @@ def _ancho_relativo(bb: dict, velas: list):
     `MIN_ANCHOS_BB` días medidos o si el ancho de costumbre es 0."""
     def ancho(i):
         m = bb["media"][i]
-        return (bb["arriba"][i] - bb["abajo"][i]) / m if (m is not None and m > 0) else None
+        if m is None or m <= 0:
+            return None
+        a = (bb["arriba"][i] - bb["abajo"][i]) / m
+        return a if a > BB_QUIETO else 0.0
     hoy = ancho(len(velas) - 1) if velas else None
     anchos = sorted(a for a in (ancho(i) for i in range(_desde_dias(velas, DIAS_ANCHO_BB), len(velas))) if a is not None)
     if hoy is None or len(anchos) < MIN_ANCHOS_BB:
         return None
     k = len(anchos) // 2
     mediana = anchos[k] if len(anchos) % 2 else (anchos[k - 1] + anchos[k]) / 2
-    return hoy / mediana if mediana > 0 else None
+    return hoy / mediana if (mediana > 0 and hoy > 0) else None
 
 
 def movimiento_diario(cierres: list) -> float:
     """Cuánto se movió el precio en un día normal, en %: el desvío
     (poblacional) de los cambios de un día al otro. Para arriba o para abajo:
-    2,0 es «un día normal sube o baja alrededor de 2 %». None con menos de 2
-    cambios o con un precio en 0."""
-    cambios = [cierres[i] / cierres[i - 1] - 1.0 for i in range(1, len(cierres)) if cierres[i - 1] > 0]
-    if len(cambios) < 2 or len(cambios) != len(cierres) - 1:
+    2,0 es «un día normal sube o baja alrededor de 2 %». Un cierre en 0 (una
+    vela rota) se saltea con su cambio. None con menos de 2 cambios."""
+    cambios = [cierres[i] / cierres[i - 1] - 1.0 for i in range(1, len(cierres))
+               if cierres[i - 1] > 0 and cierres[i] > 0]
+    if len(cambios) < 2:
         return None
     prom = sum(cambios) / len(cambios)
     return (sum((x - prom) ** 2 for x in cambios) / len(cambios)) ** 0.5 * 100.0
@@ -432,7 +444,14 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=Non
         cola = squeeze(velas[-VELAS_SQUEEZE_LECTURA:])
         relleno = [None] * (len(velas) - len(cola["valor"]))
         sqz = {k: relleno + lista for k, lista in cola.items()}
-    bb = bb if bb is not None else bollinger(cierres)
+    if bb is None:
+        # Sólo lo que se usa: los últimos 6 meses de anchos y sus 19 días de
+        # antes. Cada banda depende sólo de su ventana de 20, así que da idéntico
+        # a calcularlas sobre toda la historia (la ficha), sin el costo (la lista
+        # y la Cartera piden una lectura por activo).
+        desde = max(0, _desde_dias(velas, DIAS_ANCHO_BB) - 19)
+        cola = bollinger(cierres[desde:])
+        bb = {k: [None] * desde + lista for k, lista in cola.items()}
     a = dmi["adx"]
     ultimo = cierres[-1]
     bb_arriba, bb_abajo = bb["arriba"][-1], bb["abajo"][-1]
@@ -457,7 +476,9 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=Non
     # normal llevado a un año: × √ de los días de mercado del año). Medido el
     # 28/10 en 15 acciones: este número NO anticipó qué acción rindió más
     # después (INFORME_riesgo_beneficio.md). Sólo con el año completo.
-    ret_12m = _pct(ultimo, cierres[i_anio - 1]) if i_anio > 0 else None
+    base_ok = i_anio > 0 and (date.fromisoformat(velas[-1]["date"]) - timedelta(days=DIAS_ANIO)
+                              - date.fromisoformat(velas[i_anio - 1]["date"])).days <= DIAS_BASE_ANIO
+    ret_12m = _pct(ultimo, cierres[i_anio - 1]) if base_ok else None
     vol_anual = mov_anio * (n - i_anio) ** 0.5 if mov_anio is not None else None
     vols = [v.get("volume") for v in velas[-21:-1] if v.get("volume")]
     vol_hoy = velas[-1].get("volume")
@@ -493,7 +514,8 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=Non
         # arriba; menos de 0 o más de 1, afuera. None si las bandas no se
         # separan (un precio que no se movió en 20 días).
         "bb_posicion": ((ultimo - bb_abajo) / (bb_arriba - bb_abajo))
-        if (bb_arriba is not None and bb_arriba > bb_abajo) else None,
+        if (bb_arriba is not None and bb["media"][-1]
+            and (bb_arriba - bb_abajo) > BB_QUIETO * abs(bb["media"][-1])) else None,
         "bb_ancho_relativo": _ancho_relativo(bb, velas),
         "mov_dia": mov_dia,
         "mov_dia_anio": mov_anio,

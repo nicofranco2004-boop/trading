@@ -164,14 +164,18 @@ class CuentasTest(unittest.TestCase):
         self.assertEqual((l["bb_arriba"], l["bb_abajo"]), (bb["arriba"][-1], bb["abajo"][-1]))
         self.assertGreater(l["bb_posicion"], 1, "cerró arriba de la banda de arriba")
         self.assertGreater(l["bb_ancho_relativo"], 1.5, "las bandas, más anchas que de costumbre")
-        # En el medio de un ir y venir parejo: posición ~0,5, ancho como siempre.
+        # Un ir y venir parejo 99/101: promedio 100, desvío 1, bandas 98 a 102;
+        # el último cierre es 101 → posición (101−98)/4 = 0,75. Ancho como siempre.
         quieto = tecnico.lectura(velas[:-1])
-        self.assertAlmostEqual(quieto["bb_posicion"], 0.5, delta=0.3)
+        self.assertAlmostEqual(quieto["bb_posicion"], 0.75, places=9)
         self.assertAlmostEqual(quieto["bb_ancho_relativo"], 1.0, places=6)
         # Un precio que no se movió: las bandas no se separan, no hay posición.
-        plano = [{"date": (date(2025, 1, 1) + timedelta(days=i)).isoformat(), "close": 50.0} for i in range(100)]
-        self.assertIsNone(tecnico.lectura(plano)["bb_posicion"])
-        self.assertIsNone(tecnico.lectura(plano)["bb_ancho_relativo"])
+        # 10,1 y 0,07 dejan un residuo de redondeo (7e-15) que antes contaba como
+        # «bandas separadas» y la tarjeta decía «en el medio» (auditoría 28/10).
+        for precio in (50.0, 10.1, 0.07, 1234.56):
+            plano = [{"date": (date(2025, 1, 1) + timedelta(days=i)).isoformat(), "close": precio} for i in range(100)]
+            self.assertIsNone(tecnico.lectura(plano)["bb_posicion"], precio)
+            self.assertIsNone(tecnico.lectura(plano)["bb_ancho_relativo"], precio)
         # Pocos días: sin bandas, sin inventar.
         corto = tecnico.lectura(velas[:15])
         self.assertIsNone(corto["bb_arriba"])
@@ -209,9 +213,27 @@ class CuentasTest(unittest.TestCase):
         self.assertIsNone(corto["mov_dia"])
         self.assertIsNone(corto["mov_mes"])
         self.assertIsNone(tecnico.lectura(velas[:100])["mov_dia_anio"])
+        # Un cierre en 0 (vela rota) se saltea, no deja «faltan datos».
+        roto = [dict(v) for v in velas]
+        roto[-5]["close"] = 0.0
+        self.assertIsNotNone(tecnico.lectura(roto)["mov_dia"])
+        # Después de un hueco largo, «hace 12 meses» no es una vela de hace años.
+        hueco = [{"date": (date(2021, 1, 1) + timedelta(days=i)).isoformat(), "close": 50.0 + i} for i in range(100)] \
+            + [{"date": (date(2025, 1, 1) + timedelta(days=i)).isoformat(), "close": 80.0 + i * 0.1} for i in range(300)]
+        self.assertIsNone(tecnico.lectura(hueco)["rend_12m"])
+        self.assertIsNone(tecnico.lectura(hueco)["rend_por_movimiento"])
         # Un precio quieto se movió 0, no «sin datos».
         plano = [{"date": (date(2025, 1, 1) + timedelta(days=i)).isoformat(), "close": 50.0} for i in range(60)]
         self.assertEqual(tecnico.lectura(plano)["mov_dia"], 0.0)
+
+    def test_las_bandas_de_la_lectura_dan_igual_sobre_la_cola(self):
+        # La lectura sola calcula las bandas sobre los últimos 6 meses; la ficha,
+        # sobre toda la historia. Tienen que dar idéntico.
+        velas = _velas_al_azar(900, 8)
+        completo = tecnico.bollinger([v["close"] for v in velas])
+        sola, ficha = tecnico.lectura(velas), tecnico.lectura(velas, bb=completo)
+        for k in ("bb_arriba", "bb_abajo", "bb_posicion", "bb_ancho_relativo"):
+            self.assertEqual(sola[k], ficha[k], k)
 
     def test_el_squeeze_usa_las_mismas_bandas(self):
         # Una sola cuenta: con el 2 de verdad (sin el error de LazyBear), «apretado»

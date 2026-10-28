@@ -244,6 +244,29 @@ describe('LecturaTecnica', () => {
     expect(relleno()).toBe(0)
   })
 
+  it('una banda de abajo negativa (un salto brusco) no lleva el eje abajo de 0', async () => {
+    const salto = {
+      ...USD,
+      puntos: USD.puntos.map((p, i) => (i < 480 ? p : { ...p, bb_arriba: p.c * 1.6, bb_abajo: -5.44 })),
+      lectura: { ...USD.lectura, bb_arriba: 400, bb_abajo: -5.44, bb_posicion: 0.6, bb_ancho_relativo: 3 },
+    }
+    respuestas = { '/tecnico/AAPL?moneda=usd': salto, '/tecnico/AAPL?moneda=ars': ARS }
+    // La prueba de las velas deja guardado «velas»: ésta mira la línea.
+    try { localStorage.setItem('rendi_grafico_tipo', 'linea') } catch { /* sin almacenamiento */ }
+    await dibujar({ pnlPctUsd: 0.1 })
+    // La línea del precio sigue ocupando el alto del gráfico (con el eje hasta
+    // −5,44 y +400 quedaba aplastada en una franja finita).
+    const pila = [montado.contenedor]
+    let linea = null
+    while (pila.length) {
+      const x = pila.shift()
+      if (x.nodeName === 'PATH' && x.getAttribute?.('stroke-width') === '1.7') linea = x
+      pila.push(...(x.childNodes || []))
+    }
+    const ys = [...linea.getAttribute('d').matchAll(/,(-?[\d.]+)/g)].map(m => Number(m[1]))
+    expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThan(100)   // de 260 de alto
+  })
+
   it('sin volumen en los datos no hay botón de volumen', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     expect(await dibujar({ pnlPctUsd: 0.1 })).not.toContain('Volumen')

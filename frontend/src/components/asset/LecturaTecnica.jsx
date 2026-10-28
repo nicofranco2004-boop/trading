@@ -576,10 +576,25 @@ function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tip
       }
       if (ver.s50 && p.s50 != null) valores.push(p.s50)
       if (ver.s200 && p.s200 != null) valores.push(p.s200)
-      if (ver.bb && p.bb_arriba != null) valores.push(p.bb_arriba, p.bb_abajo)
     }
     valores.push(...preciosDeLaCapa(fibonacci, puntos))
     let lo = Math.min(...valores), hi = Math.max(...valores)
+    // Las bandas estiran la escala sólo cerca de lo que se ve, y nunca abajo de
+    // 0: después de un salto brusco (un pump, un cambio de ratio que Yahoo no
+    // corrige) la de abajo da un precio negativo y aplastaba todo el gráfico
+    // contra un eje con precios bajo cero (auditoría 28/10). Lo que queda
+    // afuera se corta en el borde, como en TradingView.
+    if (ver.bb) {
+      const rangoPrecio = hi - lo || hi * 0.1 || 1
+      const piso = Math.max(0, lo - rangoPrecio * 0.35), techo = hi + rangoPrecio * 0.35
+      let bLo = lo, bHi = hi
+      for (const p of puntos) {
+        if (p.bb_arriba == null || p.bb_abajo == null) continue
+        if (p.bb_abajo >= piso) bLo = Math.min(bLo, p.bb_abajo)
+        if (p.bb_arriba <= techo) bHi = Math.max(bHi, p.bb_arriba)
+      }
+      lo = bLo; hi = bHi
+    }
     // Tu precio entra en la escala sólo si está cerca de lo que se ve. Si está
     // muy lejos (ganás 70 %, o perdés 60 %), estirar la escala aplastaría el
     // gráfico contra un borde: va una etiqueta en ese borde con una flecha.
@@ -840,7 +855,9 @@ function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tip
                 </div>
                 {ver.bb && ph.bb_arriba != null && (
                   <div className="flex gap-2.5 mt-0.5">
-                    <Fila color={COLOR.bandas} k="Bandas" v={`${fmtPrecio(ph.bb_abajo, moneda).replace(/^US\$ |^\$ /, '')} – ${fmtPrecio(ph.bb_arriba, moneda).replace(/^US\$ |^\$ /, '')}`} />
+                    {/* La de abajo puede dar negativa después de un salto brusco: un
+                        precio bajo cero no existe, se dice «menos de 0». */}
+                    <Fila color={COLOR.bandas} k="Bandas" v={`${ph.bb_abajo < 0 ? 'menos de 0' : fmtPrecio(ph.bb_abajo, moneda).replace(/^US\$ |^\$ /, '')} – ${fmtPrecio(ph.bb_arriba, moneda).replace(/^US\$ |^\$ /, '')}`} />
                   </div>
                 )}
                 {/* RSI y ADX en su propio renglón: en uno solo el globo no

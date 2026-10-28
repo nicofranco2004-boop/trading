@@ -244,25 +244,35 @@ const MOV_MENOS = 0.75
 export function textoRendPorMovimiento(l) {
   const r = l?.rend_por_movimiento
   if (r == null || l.rend_12m == null || !(l.mov_anual > 0)) return null
-  const veces = Math.abs(r).toLocaleString('es-AR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })
-  return `En los últimos 12 meses ${l.rend_12m >= 0 ? 'subió' : 'bajó'} ${pct1(l.rend_12m)} y se movió unos ${Math.round(l.mov_anual)}% en el año: `
-    + `${veces} de ${l.rend_12m >= 0 ? 'ganancia' : 'pérdida'} por cada 1 de movimiento. `
+  // «Se movió 24 %» se leía como un movimiento total al lado de «subió 32 %»: es
+  // el día normal llevado a un año, y se dice así (auditoría 28/10). Lo que
+  // redondea a 0,0 se dice con palabras, no «0,0 de ganancia».
+  const casiIgual = Math.abs(l.rend_12m) < 0.05
+  const que = casiIgual ? 'quedó casi en el mismo precio' : `${l.rend_12m >= 0 ? 'subió' : 'bajó'} ${pct1(l.rend_12m)}`
+  const relacion = casiIgual || Math.abs(r) < 0.05
+    ? `casi nada de ${l.rend_12m >= 0 ? 'ganancia' : 'pérdida'} para todo lo que se movió`
+    : `${Math.abs(r).toLocaleString('es-AR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })} de ${l.rend_12m >= 0 ? 'ganancia' : 'pérdida'} por cada 1 de movimiento`
+  return `En los últimos 12 meses ${que}. Su movimiento de un día normal, llevado a un año, da unos ${Math.round(l.mov_anual)}%: ${relacion}. `
     + 'Es lo que ya pasó: medido en 15 acciones, este número no anticipó cuál iba a rendir más después.'
 }
 
 /** La tarjeta «Cuánto se mueve». null sin lectura. */
 export function tarjetaMovimiento(l) {
-  if (!l || !l.ruedas) return null
+  // Sin la clave (un servidor de antes, mientras se despliega) no hay tarjeta:
+  // «faltan datos» sería falso (auditoría 28/10).
+  if (!l || !l.ruedas || l.mov_dia === undefined) return null
   const base = { id: 'movimiento', titulo: 'Cuánto se mueve', tono: 'neutro' }
   if (l.mov_dia == null) {
     return { ...base, veredicto: 'Faltan datos',
       texto: `Para medirlo hacen falta 21 días de mercado y este activo tiene ${l.ruedas}.` }
   }
-  if (l.mov_dia === 0) {
+  // Menos de 0,05 % se mostraba «alrededor de 0,0 %… unos 0 %».
+  if (l.mov_dia < 0.05) {
     return { ...base, veredicto: 'Sin movimiento', texto: 'El precio no se movió en los últimos 20 días de mercado.' }
   }
   const veredicto = l.mov_dia < MOV_BAJO ? 'Movimiento bajo' : l.mov_dia > MOV_ALTO ? 'Movimiento alto' : 'Movimiento medio'
-  const mes = l.mov_mes != null ? ` Llevado a un mes, son unos ${Math.round(l.mov_mes)}% para cualquiera de los dos lados.` : ''
+  const mes = l.mov_mes == null ? ''
+    : ` Llevado a un mes, son unos ${l.mov_mes < 10 ? pct1(l.mov_mes) : `${Math.round(l.mov_mes)}%`} para cualquiera de los dos lados.`
   const r = l.mov_dia_anio ? l.mov_dia / l.mov_dia_anio : null
   const anio = r == null ? ''
     : r > MOV_MAS ? ` Es más que su día normal del último año (${pct1(l.mov_dia_anio)}).`
@@ -455,7 +465,7 @@ const DIAS_BB = 20
  * los últimos 6 meses. Con pocos datos lo dice. null sin lectura.
  */
 export function tarjetaBandas(l) {
-  if (!l || !l.ruedas) return null
+  if (!l || !l.ruedas || l.bb_arriba === undefined) return null
   const base = { id: 'bandas', titulo: 'Bandas de Bollinger', tono: 'neutro' }
   if (l.bb_arriba == null) {
     return { ...base, veredicto: 'Faltan datos',
@@ -468,9 +478,11 @@ export function tarjetaBandas(l) {
       texto: `${que}El precio casi no se movió en esos 20 días: las bandas no se separan.` }
   }
   const [veredicto, donde] = p > 1
-    ? ['Arriba de las bandas', 'Cerró arriba de la banda de arriba: subió más rápido de lo normal en esos 20 días.']
+    // «Subió más rápido de lo normal» no siempre era cierto: un salto el último
+    // día deja el cierre afuera aunque el precio esté más bajo que 20 días antes.
+    ? ['Arriba de las bandas', 'Cerró arriba de la banda de arriba: más alto que casi todos los precios de esos 20 días.']
     : p < 0
-      ? ['Abajo de las bandas', 'Cerró abajo de la banda de abajo: bajó más rápido de lo normal en esos 20 días.']
+      ? ['Abajo de las bandas', 'Cerró abajo de la banda de abajo: más bajo que casi todos los precios de esos 20 días.']
       : p >= 1 - BB_PEGADO
         ? ['Cerca de la banda de arriba', 'El precio está pegado a la banda de arriba: está en la parte alta de lo que se movió en esos 20 días.']
         : p <= BB_PEGADO

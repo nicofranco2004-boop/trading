@@ -275,7 +275,7 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
       tarjetaBandas({ ruedas: 10, bb_arriba: null }).texto,
       textoRendPorMovimiento({ rend_12m: 32, mov_anual: 24, rend_por_movimiento: 1.33 }), textoRendPorMovimiento({ rend_12m: -22, mov_anual: 41, rend_por_movimiento: -0.54 }),
       ...[0.8, 2, 4].flatMap(mov_dia => [null, 1, 3].map(mov_dia_anio => tarjetaMovimiento({ ruedas: 300, mov_dia, mov_dia_anio, mov_mes: mov_dia * 4.6 }).texto))].join(' ')
-    expect(textos).not.toMatch(/suele|se viene|comprá|vendé|va a subir|va a bajar|rebota|frena|antesala|arranque/i)
+    expect(textos).not.toMatch(/suele|se viene|comprá|vendé|va a subir|va a bajar|rebota|frena|antesala|arranque|esperad|potencial|oportunidad|anticipa\b/i)
   })
 
   it('las Bandas de Bollinger dicen dónde está el precio y cuánto se movió', () => {
@@ -284,7 +284,7 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     expect(arriba.veredicto).toBe('Cerca de la banda de arriba')
     expect(arriba.texto).toContain('El precio está pegado a la banda de arriba: está en la parte alta de lo que se movió en esos 20 días.')
     expect(arriba.texto).not.toContain('angostas')
-    expect(tarjetaBandas({ ...B, bb_posicion: 1.3 }).texto).toContain('Cerró arriba de la banda de arriba: subió más rápido de lo normal en esos 20 días.')
+    expect(tarjetaBandas({ ...B, bb_posicion: 1.3 }).texto).toContain('Cerró arriba de la banda de arriba: más alto que casi todos los precios de esos 20 días.')
     expect(tarjetaBandas({ ...B, bb_posicion: -0.1 }).veredicto).toBe('Abajo de las bandas')
     expect(tarjetaBandas({ ...B, bb_posicion: 0.15 }).veredicto).toBe('Cerca de la banda de abajo')
     expect(tarjetaBandas({ ...B, bb_posicion: 0.5 }).veredicto).toBe('Entre las bandas')
@@ -315,10 +315,20 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     expect(tarjetas({ ruedas: 300, mov_dia: 2 }).map(x => x.id)).toContain('movimiento')
     // Ganancia por punto de movimiento, en pasado y con la aclaración.
     const con = tarjetaMovimiento({ ruedas: 760, mov_dia: 0.84, rend_12m: 32.07, mov_anual: 24.13, rend_por_movimiento: 1.329 })
-    expect(con.cruce).toBe('En los últimos 12 meses subió 32,1% y se movió unos 24% en el año: 1,3 de ganancia por cada 1 de movimiento. '
+    expect(con.cruce).toBe('En los últimos 12 meses subió 32,1%. Su movimiento de un día normal, llevado a un año, da unos 24%: 1,3 de ganancia por cada 1 de movimiento. '
       + 'Es lo que ya pasó: medido en 15 acciones, este número no anticipó cuál iba a rendir más después.')
     expect(textoRendPorMovimiento({ rend_12m: -22.2, mov_anual: 41.2, rend_por_movimiento: -0.539 }))
-      .toContain('bajó 22,2% y se movió unos 41% en el año: 0,5 de pérdida por cada 1 de movimiento')
+      .toContain('bajó 22,2%. Su movimiento de un día normal, llevado a un año, da unos 41%: 0,5 de pérdida por cada 1 de movimiento')
+    // Lo que redondea a cero va en palabras (auditoría 28/10).
+    expect(textoRendPorMovimiento({ rend_12m: 0.9, mov_anual: 40, rend_por_movimiento: 0.0225 })).toContain('subió 0,9%')
+    expect(textoRendPorMovimiento({ rend_12m: 0.9, mov_anual: 40, rend_por_movimiento: 0.0225 })).toContain('casi nada de ganancia para todo lo que se movió')
+    expect(textoRendPorMovimiento({ rend_12m: -0.03, mov_anual: 40, rend_por_movimiento: -0.00075 })).toContain('quedó casi en el mismo precio')
+    expect(textoRendPorMovimiento({ rend_12m: -0.03, mov_anual: 40, rend_por_movimiento: -0.00075 })).not.toMatch(/0,0/)
+    expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 0.04, mov_mes: 0.2 }).veredicto).toBe('Sin movimiento')
+    expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 0.9, mov_mes: 4.2 }).texto).toContain('unos 4,2% para cualquiera')
+    // Un servidor de antes (sin las claves nuevas): sin tarjeta, no «faltan datos».
+    expect(tarjetaMovimiento({ ruedas: 760, rsi: 50 })).toBeNull()
+    expect(tarjetaBandas({ ruedas: 760, rsi: 50 })).toBeNull()
     expect(textoRendPorMovimiento({ rend_12m: 5, mov_anual: 20, rend_por_movimiento: null })).toBeNull()
     expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 2 }).cruce).toBeNull()
   })
