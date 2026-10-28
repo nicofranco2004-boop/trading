@@ -414,6 +414,97 @@ class TestAdoptarLaPataUsd:
             data={"broker": PATA, "format": "cocos"})
         assert r.status_code == 200, r.text
 
+    # ── tercera ronda de auditoría ───────────────────────────────────────────
+
+    FOTO_CON_PESOS = ("instrumento;cantidad;precio;moneda;total\n"
+                      "Energy Select Sector SPDR (XLE);20;55800,00;ARS;1116000,00\n"
+                      "ARS;250000;1;ARS;250000\n")
+
+    def con_estado_inicial(self, sid, brokers=()):
+        return self.client.post("/api/imports/confirm", headers=self.h, json={
+            "session_id": sid,
+            "seed_state": {"seed_date": "2026-01-04", "brokers": list(brokers)}})
+
+    def test_estado_inicial_con_una_fila_que_la_vista_previa_ya_rechazo_se_confirma(self):
+        """El "Estado inicial" re-valida TODAS las filas, también las que la vista
+        previa ya marcó. Frenar por ésas dejaba sin poder confirmar nunca."""
+        self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "ARS")
+        assert self.depositar(PATA, 100_000).status_code == 200
+        prev = self.vista_previa("2026-01-05,DEPOSITO,Cocos,,,,1000,,,,ARS,\n" + DOLARES_A_COCOS)
+        assert self.codigos(prev) == ["SIN_CUENTA_EN_DOLARES"]
+
+        r = self.con_estado_inicial(prev["session_id"])
+
+        assert r.status_code == 200, r.text
+        assert self.caja("Cocos")["invested"] == 1000.0
+        assert self.caja(PATA)["invested"] == 100_000.0
+
+    def test_pesos_a_una_cuenta_en_pesos_con_ese_nombre_sin_dolares_al_padre(self):
+        """Sin dólares para "Cocos" en el archivo no hay adopción: los pesos a un
+        "Cocos · USD" en pesos entran como siempre (la regla no es más ancha que
+        el problema)."""
+        self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "ARS")
+        assert self.depositar(PATA, 100_000).status_code == 200
+
+        r = self.importar(f"2026-01-05,DEPOSITO,{PATA},,,,7000,,,,ARS,\n")
+
+        assert r.status_code == 200, r.text
+        assert self.caja(PATA) == {"asset": "ARS", "currency": None, "invested": 107_000.0}
+
+    def test_estado_inicial_no_tira_una_fila_valida_cuando_aparece_el_padre(self):
+        """Vista previa con pesos a "Cocos · USD" (sin "Cocos" todavía); después se
+        crea "Cocos" y se confirma con "Estado inicial". La fila se perdía."""
+        self.crear_broker(PATA, "ARS")
+        prev = self.vista_previa(f"2026-01-05,DEPOSITO,{PATA},,,,7000,,,,ARS,\n")
+        assert prev["errors"] == []
+        self.crear_broker("Cocos", "ARS")
+
+        r = self.con_estado_inicial(prev["session_id"])
+
+        assert r.status_code == 200, r.text
+        assert self.caja(PATA)["invested"] == 7000.0
+
+    def test_la_foto_armada_antes_de_la_adopcion_no_mete_pesos_en_dolares(self):
+        """Foto con pesos a "Cocos · USD" (en pesos, vacía): pasa. Antes de
+        confirmarla entra un dólar a "Cocos" y la adopta. El confirm sumaba los
+        $250.000 a la caja ya en dólares."""
+        self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "ARS")
+        r = self.client.post(
+            "/api/imports/tenencia/preview", headers=self.h,
+            files={"file": ("portfolio_report_20261021.csv",
+                            io.BytesIO(self.FOTO_CON_PESOS.encode()), "text/csv")},
+            data={"broker": PATA, "format": "cocos"})
+        assert r.status_code == 200, r.text
+        sid = r.json()["session_id"]
+        assert self.depositar("Cocos", 500, "USD").status_code == 200
+
+        r = self.client.post("/api/imports/confirm", headers=self.h,
+                             json={"session_id": sid, "aprobar_tickers": ["XLE"]})
+
+        assert r.status_code == 409, r.text
+        assert "volvé a subir" in r.json()["detail"]
+        assert self.caja(PATA)["invested"] == 500.0
+        assert not self.sql("SELECT 1 FROM positions WHERE user_id=? AND asset='XLE'", self.uid)
+        assert self.cajas_cruzadas() == []
+
+    def test_el_estado_inicial_no_mete_pesos_en_la_que_adopta_el_mismo_lote(self):
+        """El "Estado inicial" no pasa por la validación: pesos para "Cocos · USD"
+        (vacía, en pesos) en el mismo confirm que la adopta por los dólares de
+        "Cocos" terminaban como dólares."""
+        self.crear_broker("Cocos", "ARS")
+        self.crear_broker(PATA, "ARS")
+        prev = self.vista_previa(DOLARES_A_COCOS)
+        assert prev["errors"] == []
+
+        r = self.con_estado_inicial(prev["session_id"],
+                                    [{"broker": PATA, "cash": {"ARS": 100_000}}])
+
+        assert r.status_code == 409, r.text
+        self.no_se_toco(self.broker("Cocos")["id"], saldo=0.0)
+
 
 class TestCompraGrupalDelAsesor:
     """Un cliente con "Cocos · USD" en pesos no tumba la compra de los demás."""

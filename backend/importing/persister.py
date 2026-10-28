@@ -399,6 +399,27 @@ def persist_batch(
                         (new_broker, batch_id, raw_id),
                     )
 
+    # ⚠️ PESOS A UNA SUB-CUENTA EN DÓLARES: SE FRENA EL LOTE, NO SE GUARDA MAL.
+    # La vista previa ya rechaza esas filas, pero lo que se decidió en la vista
+    # previa puede no valer al confirmar: la sub-cuenta "Cocos · USD" estaba en
+    # pesos (creada a mano) y la adoptó un dólar que entró entre medio, o la adopta
+    # el ruteo de arriba en este mismo lote; y el "Estado inicial" (`seed_state`)
+    # no pasa por la validación. Esos pesos se sumaban a la caja en dólares
+    # (medido con una foto: $250.000 + US$500 = "250.500" dólares). Éste es el
+    # último punto antes de escribir, con la sub-cuenta como quedó de verdad.
+    _patas_usd = {r["name"]: r["padre"] for r in conn.execute(
+        """SELECT h.name, p.name padre FROM brokers h
+             JOIN brokers p ON p.id=h.parent_broker_id AND p.user_id=h.user_id
+            WHERE h.user_id=? AND p.currency='ARS' AND h.currency IN ('USD','USDT')""",
+        (uid,)).fetchall()}
+    for tx in sorted_txs:
+        if (tx.broker in _patas_usd and (tx.currency or "").upper() == "ARS"
+                and tx.operation_type not in ("FX_ARS_TO_USD", "FX_USD_TO_ARS")):
+            raise PersistError(None, (
+                f"«{tx.broker}» es la cuenta en dólares de «{_patas_usd[tx.broker]}» y este "
+                f"import le trae pesos. Si la vista previa se armó antes de que lo fuera, "
+                f"volvé a subir el archivo; los pesos van a «{_patas_usd[tx.broker]}»."))
+
     brokers_touched: set = set()
     counts = {"positions": 0, "operations": 0, "cash_movements": 0, "conversions": 0}
     # Filas que fallaron al persistir (errores no detectados en validación,

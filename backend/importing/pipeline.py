@@ -580,17 +580,9 @@ def brokers_que_no_aceptan_pesos(user_brokers, fmt_base) -> frozenset:
     """
     if fmt_base:
         return frozenset()
-    # Y la sub-cuenta en dólares de un broker en pesos ("Cocos · USD" de un
-    # "Cocos" ARS), aunque hoy esté en pesos (creada a mano, o por este mismo
-    # import): el primer dólar que le llegue a "Cocos" la adopta y la pasa a
-    # dólares (`por_que_no_hay_pata_usd`). Si el mismo archivo le manda pesos y
-    # dólares a "Cocos", al adoptarla todavía está vacía y los pesos entraban
-    # después a la caja en dólares, sin que ningún chequeo lo viera.
-    patas = {f"{n} · USD" for n, b in user_brokers.items() if b.get("currency") == "ARS"}
     return frozenset(n for n, b in user_brokers.items()
-                     if n in patas
-                     or ((b.get("currency") or "") != "ARS"
-                         and n.strip().lower() not in CRYPTO_BROKERS))
+                     if (b.get("currency") or "") != "ARS"
+                     and n.strip().lower() not in CRYPTO_BROKERS)
 
 
 def broker_tiene_datos(conn, uid: int, nombre: str) -> bool:
@@ -730,12 +722,30 @@ def padres_sin_pata_usd(conn, uid: int, user_brokers) -> Dict[str, str]:
     return out
 
 
-def guardas_de_moneda(conn, uid: int, user_brokers, fmt_base) -> Dict[str, Any]:
+def guardas_de_moneda(conn, uid: int, user_brokers, fmt_base, filas) -> Dict[str, Any]:
     """Lo que `validator.validate` necesita saber de las monedas de los brokers.
     Lo usan la vista previa y la re-validación del confirm: con una sola función
-    no pueden decidir distinto."""
-    return {"brokers_sin_pesos": brokers_que_no_aceptan_pesos(user_brokers, fmt_base),
-            "padres_sin_pata_usd": padres_sin_pata_usd(conn, uid, user_brokers)}
+    no pueden decidir distinto.
+
+    Además de `brokers_que_no_aceptan_pesos`, la sub-cuenta "Cocos · USD" de un
+    "Cocos" en pesos al que ESTE archivo le manda dólares, aunque hoy esté en
+    pesos (creada a mano, o por este mismo import): el confirm la adopta antes de
+    guardar las filas (`persister.persist_batch`), todavía vacía, y los pesos que
+    el archivo le mandaba entraban después a la caja ya en dólares sin que ningún
+    chequeo lo viera. Sólo con dólares al padre en el archivo: sin ellos no se
+    adopta, y si no se puede adoptar (`padres_sin_pata_usd`) tampoco; rechazar
+    sus pesos no protegía nada."""
+    sin_pata = padres_sin_pata_usd(conn, uid, user_brokers)
+    sin_pesos = set(brokers_que_no_aceptan_pesos(user_brokers, fmt_base))
+    if not fmt_base:
+        for t in filas:
+            pata = f"{t.broker} · USD"
+            if (((t.currency or "").upper() in ("USD", "USDT")
+                    or t.operation_type in ("FX_ARS_TO_USD", "FX_USD_TO_ARS"))
+                    and (user_brokers.get(t.broker) or {}).get("currency") == "ARS"
+                    and t.broker not in sin_pata and pata in user_brokers):
+                sin_pesos.add(pata)
+    return {"brokers_sin_pesos": frozenset(sin_pesos), "padres_sin_pata_usd": sin_pata}
 
 
 def escrituras_para_cambiar_moneda(uid: int, nombre: str, moneda: str) -> List[tuple]:
@@ -1030,7 +1040,7 @@ def run_preview(
         user_brokers=user_brokers,
         existing_positions=existing_pos,
         route_by_currency=route_by_currency,
-        **guardas_de_moneda(conn, uid, user_brokers, fmt_base),
+        **guardas_de_moneda(conn, uid, user_brokers, fmt_base, normalized),
     )
 
     # ── Traspaso de títulos desde OTRO broker del usuario ────────────────────
@@ -1577,8 +1587,8 @@ def load_session_with_seed_revalidate(
     # sus datos, confirmaba, y el papel seguía en los dos brokers (2026-10-23).
     # Se toman tal cual las dejó la previsualización, como hace el confirm sin
     # datos completados (`load_session_for_confirm`).
-    sinteticas = [t for t in load_session_for_confirm(conn, uid=uid, session_id=session_id)[0]
-                  if t.row_index < 0]
+    _previa = load_session_for_confirm(conn, uid=uid, session_id=session_id)[0]
+    sinteticas = [t for t in _previa if t.row_index < 0]
 
     raw_rows: List[RawRow] = []
     raw_id_by_index: Dict[int, int] = {}
@@ -1623,17 +1633,21 @@ def load_session_with_seed_revalidate(
         # inicial" volvía a dejar pasar las filas en pesos que la vista previa
         # había rechazado.
         **guardas_de_moneda(conn, uid, user_brokers,
-                            FORMAT_BASE_CURRENCY.get(batch["parser_format"] or "")),
+                            FORMAT_BASE_CURRENCY.get(batch["parser_format"] or ""), normalized),
     )
-    # Acá las filas inválidas se descartan sin avisar: sirve para las que la vista
-    # previa ya había rechazado, no para las que eran válidas y dejaron de serlo.
-    # Si entre la vista previa y el confirm la sub-cuenta en dólares se volvió
-    # imposible (le entraron pesos), sus filas en dólares se perdían en silencio y
-    # el import decía "ok"; sin "Estado inicial", el mismo caso da 409. Se frena
-    # igual, con el mismo motivo.
-    _sin_pata = next((e for e in _errores if e.code == "SIN_CUENTA_EN_DOLARES"), None)
-    if _sin_pata:
-        raise ValueError(_sin_pata.message)
+    # Acá las filas inválidas se descartan sin avisar (se re-validan TODAS, también
+    # las que la vista previa ya había rechazado, y ésas se espera que se caigan).
+    # Pero una que la vista previa dio por buena y que una guarda de moneda ahora
+    # rechaza cambió de sentido entre medio: la sub-cuenta en dólares se volvió
+    # imposible (le entraron pesos), o pasó a adoptarse. Descartarla perdía esa
+    # plata en silencio con el import diciendo "ok"; sin "Estado inicial", el mismo
+    # caso da 409. Se frena con el motivo.
+    _validas_antes = {t.row_index for t in _previa}
+    _cambio = next((e for e in _errores
+                    if e.code in ("SIN_CUENTA_EN_DOLARES", "PESOS_EN_BROKER_EN_DOLARES")
+                    and e.row_index in _validas_antes), None)
+    if _cambio:
+        raise ValueError(_cambio.message)
     valid_txs += sinteticas
 
     # Reemplazar el contenido de import_normalized_tx con la nueva validación.
