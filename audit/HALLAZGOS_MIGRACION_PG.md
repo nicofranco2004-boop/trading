@@ -819,10 +819,19 @@ cuentas». **Lo que faltaba era la lista de quiénes no lo toman.** Es ésta.
 
 ### Los 24 usos, y no todos son iguales
 
+🔴 **ESTA TABLA ESTABA MAL Y LA CORRIJO (28/10, medido de nuevo).** Decía que 13
+de los 24 lo piden «sólo en una rama (un `if`, un `for`, un `try`)». **Un `try`
+no es una rama**: el código adentro de un `try` siempre corre. Recontado
+distinguiendo las dos cosas:
+
 | | cuántos |
 |---|---|
-| lo piden **SIEMPRE**, al entrar a la función | **11** |
-| lo piden **sólo en una rama** (un `if`, un `for`, un `try`) | **13** |
+| lo piden **SIEMPRE**, sin nada alrededor | **11** |
+| lo piden **SIEMPRE**, adentro de un `try` (que no es una rama) | **13** |
+| lo piden **sólo si se cumple un `if`** | **0** |
+
+**Los 24 son incondicionales.** Nadie se olvida de pedir el turno una vez que
+entró a una de esas 24 funciones.
 
 Los 11 incondicionales son las puertas de borrado y la foto contable
 (`_delete_one_movement`, `_delete_operation_cascade`,
@@ -878,8 +887,23 @@ bloqueado en `Lock/advisory`, o sea en el candado del efectivo que pide `caja()`
 **no** en la fila de `users`. Si el turno lo hubiera tomado, habría esperado ahí.
 
 👉 **Un grafo de llamadas dice «puede», no «hace».** Para cada uno de los 18 hay
-que mirar si la llamada es incondicional — y 13 de los 24 usos están dentro de un
-`if`.
+que mirar si la llamada es incondicional.
+
+🔴 **Y acá yo mismo confundí dos cosas distintas, que es el error de fondo de este
+hallazgo.** Escribí «13 de los 24 usos están dentro de un `if`»: es falso, están
+dentro de un `try`, y los 24 son incondicionales. Lo condicional **no es la
+llamada adentro de la función: es si el pedido LLEGA a esa función.**
+
+La distinción cambia el arreglo:
+
+· si fuera «a veces se pide el turno adentro de la función», el arreglo sería
+  sacar el `if`;
+· lo que pasa de verdad es que **un pedido puede no pasar por ninguna de las 24
+  funciones**, según sus datos. Una venta en pesos nunca llama a
+  `_ensure_usd_sibling`, y por eso no toma el turno — medido, no deducido.
+
+El arreglo, entonces, no está en los 24 sitios: está en **quién tiene que pedir
+el turno y hoy no lo pide**, que es la lista de los 16 escritores de abajo.
 
 ### Qué cambia esto para el pasaje
 
