@@ -210,6 +210,10 @@ class CobrarPlazoFijo(_Base):
         self.assertEqual(r.status_code, 200, r.text)
         pid = r.json()["id"]
         antes = self.cash("Balanz")
+        # Sin el turno (`sin_turno`): desde el 29/10 esta puerta lo pide también en
+        # Postgres y el segundo pedido espera al primero, así que el choque no se
+        # puede forzar. Lo que se prueba acá es la SEGUNDA defensa, el reclamo.
+        self.sin_turno()
         cruce = self.cruzar("FROM plazos_fijos WHERE id=? AND user_id=? AND closed_at IS NULL")
 
         rs = self.dos_a_la_vez(lambda: self.client.post(
@@ -349,6 +353,10 @@ class VenderLaTenencia(_Base):
             "date": "2026-09-01", "currency": "USD"})
 
     def test_doble_click_en_vender_TODO_acredita_la_venta_UNA_vez(self):
+        # Sin el turno (`sin_turno`): desde el 29/10 esta puerta lo pide también en
+        # Postgres y el segundo pedido espera al primero, así que el choque no se
+        # puede forzar. Lo que se prueba acá es la SEGUNDA defensa, el reclamo.
+        self.sin_turno()
         cruce = self.cruzar("AND is_cash=0 AND quantity > 0")
         rs = self.dos_a_la_vez(self._vender(10))
         self.assertTrue(cruce.se_juntaron, "el test no llegó a forzar el choque")
@@ -360,6 +368,10 @@ class VenderLaTenencia(_Base):
     def test_dos_ventas_PARCIALES_a_la_vez_no_pierden_un_descuento(self):
         """6 + 6 de 10: si las dos pasaran, el lote quedaría en 4 (la segunda pisa a
         la primera) habiendo vendido 12. Una tiene que rebotar."""
+        # Sin el turno (`sin_turno`): desde el 29/10 esta puerta lo pide también en
+        # Postgres y el segundo pedido espera al primero, así que el choque no se
+        # puede forzar. Lo que se prueba acá es la SEGUNDA defensa, el reclamo.
+        self.sin_turno()
         cruce = self.cruzar("AND is_cash=0 AND quantity > 0")
         rs = self.dos_a_la_vez(self._vender(6))
         self.assertTrue(cruce.se_juntaron, "el test no llegó a forzar el choque")
@@ -568,6 +580,10 @@ class ConfirmarYDeshacerUnaImportacion(_Base):
 
     def test_doble_click_en_confirmar_aplica_el_archivo_UNA_vez(self):
         sid = self._preview()
+        # Sin el turno (`sin_turno`): desde el 29/10 esta puerta lo pide también en
+        # Postgres y el segundo pedido espera al primero, así que el choque no se
+        # puede forzar. Lo que se prueba acá es la SEGUNDA defensa, el reclamo.
+        self.sin_turno()
         cruce = self.cruzar("SELECT * FROM import_batches WHERE id=? AND user_id=?")
         rs = self.dos_a_la_vez(lambda: self._confirmar(sid))
         self.assertTrue(cruce.se_juntaron, "el test no llegó a forzar el choque")
@@ -579,6 +595,10 @@ class ConfirmarYDeshacerUnaImportacion(_Base):
         sid = self._preview()
         self.assertEqual(self._confirmar(sid).status_code, 200)
         self.assertAlmostEqual(self.cash("Cocos"), 1_000_000, places=2)
+        # Sin el turno (`sin_turno`): desde el 29/10 esta puerta lo pide también en
+        # Postgres y el segundo pedido espera al primero, así que el choque no se
+        # puede forzar. Lo que se prueba acá es la SEGUNDA defensa, el reclamo.
+        self.sin_turno()
         cruce = self.cruzar("SELECT * FROM import_batches WHERE id=? AND user_id=?")
         rs = self.dos_a_la_vez(lambda: self.client.post(f"/api/imports/{sid}/revert",
                                                         headers=self.h))
@@ -677,6 +697,10 @@ class DeshacerDelChat(_Base):
         self.addCleanup(main._LAST_CHAT_TRADE.pop, self.uid, None)
         # El texto EXACTO de la lectura del deshacer (main._undo_last_trade_handler):
         # lee también la nota del alta, que dice de qué caja salió la plata.
+        # Sin el turno (`sin_turno`): desde el 29/10 esta puerta lo pide también en
+        # Postgres y el segundo pedido espera al primero, así que el choque no se
+        # puede forzar. Lo que se prueba acá es la SEGUNDA defensa, el reclamo.
+        self.sin_turno()
         cruce = self.cruzar("SELECT quantity, broker, undo_meta_json FROM positions WHERE id=? AND user_id=?")
 
         rs = self.dos_a_la_vez(lambda: main._undo_last_trade_handler(self.uid))

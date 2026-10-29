@@ -5922,6 +5922,7 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
             },
         )
     with db_abierta() as conn:
+        _tomar_turno_de_la_puerta(conn, uid)
         # Feature gate: el tope de brokers de cada plan (PLAN_LIMITS). Grandfather:
         # usuarios preexistentes con más conservan sus brokers pero no agregan
         # más hasta upgrade. Admin/Pro: sin tope.
@@ -6513,6 +6514,7 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
     """
     conn = get_db()
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         broker_row = conn.execute(
             "SELECT name FROM brokers WHERE id=? AND user_id=?", (bid, uid),
         ).fetchone()
@@ -6584,6 +6586,7 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
 
         # ── Force delete (o broker vacío) — incluye sibling para evitar orphans
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             _borrar_datos_de_brokers(conn, uid, broker_names, "broker_borrado")
             # DELETE explícito de los hijos ANTES del padre. NO alcanza con
             # confiar en el FK CASCADE: el schema de `brokers` existe en DOS
@@ -6606,6 +6609,7 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
         # Recalc global aggregates (el broker 'global' sumaba el broker borrado)
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 _recalc_pnl_realized_from_ops(conn, uid)
         except Exception as ex:
             log.error("Recalc tras delete_broker falló: %s", ex)
@@ -6621,6 +6625,7 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
         # recreado). Si _recalc dejó al user 100% vacío ya borró todo (ver :6631).
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 if snap_affected_start:
                     conn.execute(
                         "DELETE FROM snapshots WHERE user_id=? AND date >= ?",
@@ -7281,6 +7286,7 @@ def post_snapshot(data: SnapshotIn, request: Request,
 
     conn = get_db()
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         # ⚠️ UN CIERRE DEL CRON NO SE PISA — NI LA MARCA NI EL VALOR.
         # Antes se conservaba `source='cron'` pero se sobreescribía `total_value`
         # con el número de media rueda del browser: la fila quedaba diciendo
@@ -11923,6 +11929,7 @@ def create_position(p: PositionIn, uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         try:
             with conn:  # transacción atómica: insert + cash debit
+                _tomar_turno_de_la_puerta(conn, uid)
                 _exigir_broker_existente(conn, uid, p.broker)
                 row = _insert_manual_position(conn, uid, p)
             _ai_cache_invalidate(uid)
@@ -12148,6 +12155,7 @@ def edit_position_group(p: PositionGroupEditIn, uid: int = Depends(get_effective
     with db_abierta() as conn:      # cierra pase lo que pase (ver db_abierta)
         try:
             with conn:  # tx atómica: o quedan todos los lotes editados, o ninguno
+                _tomar_turno_de_la_puerta(conn, uid)
                 out = _edit_position_group(conn, uid, p)
         except HTTPException:
             raise
@@ -12207,6 +12215,7 @@ def undo_edit_position_group(token: str, uid: int = Depends(get_effective_user))
     with db_abierta() as conn:      # cierra pase lo que pase (ver db_abierta)
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 out = _undo_edit_position_group(conn, uid, token)
         except HTTPException:
             raise
@@ -12249,6 +12258,7 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
     try:
         # Ni editar una fila de efectivo, ni convertir un lote en efectivo (ver
         # _EFECTIVO_NO_SE_EDITA).
+        _tomar_turno_de_la_puerta(conn, uid)
         _actual = conn.execute(
             "SELECT is_cash, broker, asset_type FROM positions WHERE id=? AND user_id=?",
             (pid, uid)).fetchone()
@@ -12322,6 +12332,7 @@ def delete_position(pid: int, uid: int = Depends(get_effective_user)):
     re-derivar. Su cash tampoco se reversa — comportamiento previo, no lo cambiamos acá.
     """
     with db_abierta() as conn:
+        _tomar_turno_de_la_puerta(conn, uid)
         try:
             # La fila de efectivo no es una tenencia: borrarla tiraba la plata sin
             # anotar un retiro. Antes caía en los caminos de abajo y respondía un
@@ -12818,6 +12829,7 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
     """
     conn = get_db()
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         row = conn.execute(
             "SELECT * FROM positions WHERE id=? AND user_id=?", (pid, uid),
         ).fetchone()
@@ -13081,6 +13093,7 @@ def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_effective_user)):
     # (si no, sería doble conteo: el cash queda + el PF se suma). Si no se indica
     # source_broker, se asume plata nueva de afuera de Rendi.
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         if p.source_broker:
             br = conn.execute(
                 "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
@@ -13275,6 +13288,7 @@ def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_effective
     — el PF cerrado retiene sus datos para las métricas."""
     conn = get_db()
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         row = conn.execute(
             "SELECT * FROM plazos_fijos WHERE id=? AND user_id=? AND closed_at IS NULL",
             (pid, uid),
@@ -14492,6 +14506,7 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_ef
     conn = get_db()
     try:
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             broker_row = conn.execute(
                 "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, data.broker_name),
             ).fetchone()
@@ -14605,6 +14620,7 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 # 1. Validar broker
                 broker_row = conn.execute(
                     "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, data.broker_name)
@@ -14705,6 +14721,7 @@ def _revert_cash_flow(uid: int, broker_name: str, direction: str,
     conn = get_db()
     try:
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             br = conn.execute("SELECT currency FROM brokers WHERE user_id=? AND name=?",
                               (uid, broker_name)).fetchone()
             currency = br["currency"] if br else "USD"
@@ -15836,6 +15853,7 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
     with db_abierta() as conn:
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 pnl_usd_realized = 0.0  # solo aplica a usd_to_ars
 
                 # 1. Resolver broker(s) según dirección
@@ -16024,6 +16042,7 @@ def sync_unrealized(data: SyncUnrealizedIn, uid: int = Depends(get_effective_use
     meses futuros si el usuario los abría manualmente.
     """
     with db_abierta() as conn:
+        _tomar_turno_de_la_puerta(conn, uid)
         try:
             # ⏰ EL MES ARGENTINO (fechas.py), el mismo que `is_period_current`. Con
             # `utcnow()` el último día de cada mes, de 21 a 24 h, ya era el mes siguiente:
@@ -16119,6 +16138,7 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         try:
             with conn:  # transacción
+                _tomar_turno_de_la_puerta(conn, uid)
                 # Lo cobrado entra a la caja de SU moneda: una venta en dólares "en
                 # Cocos" acredita en 'Cocos · USD'. Los lotes se buscan igual en
                 # todo el par (ver broker_pair abajo), así que esto sólo decide a qué
@@ -17048,6 +17068,7 @@ def get_monthly(uid: int = Depends(get_effective_user)):
         # mes nuevo no se creaba — rompía sync-unrealized y métricas del
         # current month. Idempotente y safe contra races.
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             _rollover_all_brokers(conn, uid)
         rows = conn.execute(
             "SELECT * FROM monthly_entries WHERE user_id=? ORDER BY year, month, broker", (uid,)
@@ -18806,6 +18827,37 @@ def _tomar_turno(conn, uid: int) -> None:
     conn.execute("UPDATE users SET tier=tier WHERE id=?", (uid,))
 
 
+def _tomar_turno_de_la_puerta(conn, uid: int) -> None:
+    """El turno de `_tomar_turno` para las puertas que escriben la plata y no lo
+    pedían: depósitos y retiros, operaciones a mano, confirmar un import, vender,
+    editar lotes, plazos fijos, conversiones… (censo:
+    tests/test_turno_en_todas_las_puertas.py).
+
+    🔴 POR QUÉ HACE FALTA. En Postgres `_tomar_turno` traba sólo la fila de
+    `users`, así que espera únicamente quien también la escriba. Estas puertas no
+    la escribían y se metían en el medio de los borrados y los «deshacer» que sí
+    la piden. La auditoría de los 14 (audit/turno_14/): en los 9 cruces reales el
+    intruso era una de estas puertas. Medido: borrar un mes mientras entra un
+    depósito dejaba al mes siguiente con el capital del mes borrado (100.000 de
+    capital inicial donde iba 0), 3 de 3.
+
+    POR QUÉ EN SQLITE NO HACE NADA, a propósito. Allá la primera escritura de
+    cualquiera ya toma la base ENTERA, así que estas puertas ya esperaban a los
+    borrados. Pedir el turno antes de leer sólo agrandaría ese candado de toda la
+    base sobre lecturas y, en varias de estas puertas, sobre pedidos a la red
+    (cotizaciones, precios): cada usuario esperaría al Yahoo de otro. En Postgres
+    el candado es por usuario y esa espera es sólo suya.
+
+    Va PRIMERO en cada transacción —antes del candado de la caja
+    (`efectivo.tomar_saldo`)— para que el orden de candados sea uno solo: el
+    cruzado ya se pagó dos veces con un `deadlock detected`. Y en cada
+    transacción, no una vez por pedido: un `commit()` o un `rollback()` lo suelta.
+    """
+    import pgsesion as _ps
+    if _ps.habla_postgres(conn):
+        _tomar_turno(conn, uid)
+
+
 def _primer_dia_en_las_fotos(fecha_mov, confirmado: Optional[str]) -> Optional[str]:
     """Desde qué día las fotos tienen un movimiento importado (si nadie las
     re-estampó después): desde el día en que se confirmó su import, AUNQUE ESTÉ
@@ -20087,6 +20139,7 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
         conn = get_db()
         try:
             with conn:  # tx atómica: reverso + cascada
+                _tomar_turno_de_la_puerta(conn, uid)
                 if mid.startswith("op-"):
                     # op-{n}-buy / op-{n}-sell → borrar la operación (trade cerrado)
                     # con el motor de Fase 1, que hace su propia cascada.
@@ -21071,6 +21124,7 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
     """
     conn = get_db()
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
 
         # ¿MUEVE EL EFECTIVO? Si el resultado de la operación ya está (o ya no está)
@@ -21173,6 +21227,8 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
         currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
 
         for _intento in range(_INTENTOS_DE_RECLAMO):
+            # Adentro del bucle: el `rollback()` de un reclamo perdido suelta el turno.
+            _tomar_turno_de_la_puerta(conn, uid)
             prev = conn.execute(
                 "SELECT broker, date, op_type, undo_meta_json FROM operations "
                 "WHERE id=? AND user_id=?", (oid, uid)).fetchone()
@@ -22572,6 +22628,7 @@ def delete_operation(oid: int, uid: int = Depends(get_effective_user)):
     se bloquea con mensaje claro."""
     with db_abierta() as conn:
         try:
+            _tomar_turno_de_la_puerta(conn, uid)
             result = _delete_operation_cascade(conn, uid, oid)
             conn.commit()
         except HTTPException:
@@ -22882,6 +22939,7 @@ def delete_asset_history(asset: str, uid: int = Depends(get_effective_user)):
     y data manual de trades mezclada."""
     with db_abierta() as conn:
         try:
+            _tomar_turno_de_la_puerta(conn, uid)
             result = _delete_asset_history_cascade(conn, uid, asset)
             conn.commit()
         except HTTPException:
@@ -35394,6 +35452,7 @@ def _undo_last_trade_handler(uid: int) -> dict:
             _LAST_CHAT_TRADE.pop(uid, None)
             return {"error": "El broker de esa operación ya no existe. Revisá desde la app."}
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             row = conn.execute("SELECT quantity, broker, undo_meta_json FROM positions WHERE id=? AND user_id=?",
                                (info["position_id"], uid)).fetchone()
             if not row:
@@ -43956,6 +44015,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
                 raise HTTPException(400, "La foto se comparó contra un historial que después se revirtió: "
                                          "volvé a subirla para compararla de nuevo.")
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
             try:
                 txs, raw_id_by_index = _import_pipeline.load_session_with_seed_revalidate(
                     conn, uid=uid, session_id=data.session_id, seed_state=data.seed_state,
@@ -44060,6 +44120,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # persistido — loggeamos y seguimos (el recalc de abajo corre igual).
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _tc_blue_rb = _import_persister._read_tc_blue(conn, uid)
                 _import_rebuild.rebuild_fifo_after_import(
                     conn, uid, data.session_id, tc_blue=_tc_blue_rb,
@@ -44077,6 +44138,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # cash (ya entró) ni posiciones manuales. Best-effort.
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _import_maturity.sweep_matured_letras(conn, uid)
         except Exception:
             import traceback
@@ -44092,6 +44154,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # no toca cash ni posiciones manuales. Best-effort.
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _import_maturity.sweep_bond_amortizations(conn, uid)
         except Exception:
             import traceback
@@ -44105,6 +44168,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         try:
             import cobros_bonos as _cobros_bonos
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _cobros_bonos.reaplicar_pendientes(
                     conn, uid, _import_maturity.lotes_que_baja_el_barrido)
         except Exception:
@@ -44128,6 +44192,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
             # memoria, así el lock dura lo que tarda el UPDATE y nada más.
             _fetch_data912_bonds()
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _import_recompute.tag_bonds_from_data912(conn, uid, is_bond_ticker=_is_data912_bond)
         except Exception:
             import traceback
@@ -44141,6 +44206,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # ya per-1). Idempotente, no toca cash. Best-effort.
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _import_recompute.normalize_bond_units(conn, uid, bond_price_per1=_bond_price_per1)
         except Exception:
             import traceback
@@ -44152,6 +44218,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # fantasma, ej. YM39O -84%). Las pasa a USD. Best-effort.
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _import_recompute.normalize_usd_commissions(conn, uid, tc_blue=_tc_blue_rb)
         except Exception:
             import traceback
@@ -44168,6 +44235,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # operations ya corregidas.
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _recalc_pnl_realized_from_ops(conn, uid)
         except Exception:
             # No queremos hacer fallar el confirm si el recalc rompe — el
@@ -44182,6 +44250,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # (UPSERT idempotente) para que el chart de evolución use el P&L bueno.
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _import_persister._backfill_snapshots_from_monthly(conn, uid)
         except Exception:
             import traceback
@@ -44196,6 +44265,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # puebla el path de Balanz (fund_price_overrides NULL en el resto → no-op).
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _brow = conn.execute(
                     "SELECT broker, fund_price_overrides FROM import_batches WHERE id=?",
                     (data.session_id,)).fetchone()
@@ -44705,6 +44775,7 @@ def wallbit_connect(data: WallbitConnectIn, request: Request, uid: int = Depends
     try:
         # 2) Guardar la credencial cifrada (transacción propia → sobrevive si el sync falla)
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             conn.execute(
                 """INSERT INTO user_broker_credentials (user_id, broker, api_key_enc, scope)
                    VALUES (?, 'wallbit', ?, 'read')
@@ -44715,11 +44786,13 @@ def wallbit_connect(data: WallbitConnectIn, request: Request, uid: int = Depends
         try:
             res = _wallbit_do_sync(conn, uid, api_key, full=True)
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 conn.execute(
                     "UPDATE user_broker_credentials SET last_sync_at=datetime('now'), last_sync_status='ok' "
                     "WHERE user_id=? AND broker='wallbit'", (uid,))
         except _wallbit.WallbitError as e:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 conn.execute(
                     "UPDATE user_broker_credentials SET last_sync_status=? WHERE user_id=? AND broker='wallbit'",
                     (f"error: {e.message}", uid))
@@ -44747,11 +44820,13 @@ def wallbit_sync_endpoint(request: Request, uid: int = Depends(get_effective_use
         try:
             res = _wallbit_do_sync(conn, uid, api_key, full=False)
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 conn.execute(
                     "UPDATE user_broker_credentials SET last_sync_at=datetime('now'), last_sync_status='ok' "
                     "WHERE user_id=? AND broker='wallbit'", (uid,))
         except _wallbit.WallbitError as e:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 conn.execute(
                     "UPDATE user_broker_credentials SET last_sync_status=? WHERE user_id=? AND broker='wallbit'",
                     (f"error: {e.message}", uid))
@@ -45248,6 +45323,7 @@ def import_recalc_pnl(uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             updates = _recalc_pnl_realized_from_ops(conn, uid)
         return {"recalculated": True, "rows_updated": updates}
     except Exception as ex:
@@ -45270,6 +45346,7 @@ def import_wipe_broker(broker: str, uid: int = Depends(get_effective_user)):
     """
     conn = get_db()
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         b = conn.execute(
             "SELECT id FROM brokers WHERE user_id=? AND name=?", (uid, broker),
         ).fetchone()
@@ -45486,6 +45563,7 @@ def import_revert(batch_id: str, nuclear: int = 0, uid: int = Depends(get_effect
     conn = get_db()
     try:
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             try:
                 result = _revert_batch_de(conn, uid, batch_id, nuclear=bool(nuclear))
             except _import_persister.PersistError as ex:
