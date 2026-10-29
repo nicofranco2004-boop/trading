@@ -440,6 +440,57 @@ class TusSenalesTest(unittest.TestCase):
         self.assertEqual(self.mails[0]["to"], f"asesor-{self.uid}@rendi.test")
         self.assertTrue(self.mails[0]["asunto"].startswith("[Juan] Tu semana:"))
 
+    def _asesor(self, label="Juan"):
+        with main.db_abierta() as conn:
+            adv = conn.execute(
+                "INSERT INTO users (email, name, password_hash, approved, email_verified, tier) "
+                "VALUES (?, 'Laura Asesora', 'x', 1, 1, 'pro')", (f"asesor-{self.uid}@rendi.test",)).lastrowid
+            conn.execute("UPDATE users SET managed_by=? WHERE id=?", (adv, self.uid))
+            conn.execute("INSERT INTO advisor_clients (advisor_uid, client_uid, label) VALUES (?,?,?)",
+                         (adv, self.uid, label))
+            conn.commit()
+        return adv
+
+    def test_el_mail_del_asesor_dice_de_quien_es_y_lleva_a_sus_clientes(self):
+        """Auditoría B, hallazgo B1 (29/10): el mail del sábado de Juan le decía
+        a Laura «el 94% de TU plata» y sus dos links («Ver los cambios»,
+        «Cambiar o apagar») abrían las señales de LAURA. Un aviso de una cuenta
+        administrada se arma en UN lugar (`alerts_engine.entrega`), el mismo que
+        usan las alertas: oración, botón, pie y push."""
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("ambos")          # el asesor lo elige ENTRANDO a la cuenta de Juan
+        self._asesor("Juan")
+        r = self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "Data centers"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._cron(_utc(sabado, 10, 5))
+        self.assertEqual(len(self.mails), 1)
+        m = self.mails[0]
+        self.assertTrue(m["asunto"].startswith("[Juan] Tu semana:"))
+        self.assertIn("Hola Laura, en la cuenta de Juan, el ", m["texto"])
+        for tuyo in ("tu plata", "lo tuyo", "tu watchlist", "Tu tesis"):
+            self.assertNotIn(tuyo, m["texto"], f"«{tuyo}» le habla a Laura de la plata de Juan")
+        self.assertIn("La tesis de Juan: «Data centers»", m["texto"])
+        self.assertIn("(en la watchlist de Juan)", m["texto"])
+        self.assertNotIn("/analisis-tecnico?tab=senales", m["html"],
+                         "el botón y el pie abrían las señales DEL ASESOR, no las de Juan")
+        self.assertIn("/clientes", m["html"])
+        self.assertEqual([p["url"] for p in self.pushes], ["/clientes"])
+        self.assertTrue(self.pushes[0]["body"].startswith("[Juan] Tu semana:"))
+
+    def test_el_mail_de_la_cuenta_propia_sigue_hablando_de_vos(self):
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("ambos")
+        self._cron(_utc(sabado, 10, 5))
+        m = self.mails[0]
+        self.assertIn("Hola Nico, el ", m["texto"])
+        self.assertIn("% de tu plata", m["texto"])
+        self.assertIn("(en tu watchlist)", m["texto"])
+        self.assertNotIn("en la cuenta de", m["texto"])
+        self.assertIn(senales_semana.URL_SENALES, m["html"])
+        self.assertEqual([p["url"] for p in self.pushes], [senales_semana.URL_SENALES])
+
     # — la tesis (pieza 11) en la pestaña y en el mail —
 
     def test_la_tesis_escrita_sale_en_el_mail_del_sabado(self):

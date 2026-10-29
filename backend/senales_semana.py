@@ -482,8 +482,15 @@ def _y(nombres: list) -> str:
 RENGLONES_MAIL = 3
 
 
-def contenido_del_mail(semana: dict) -> dict:
-    """Los argumentos de `emails.send_alert_email` para el resumen."""
+def contenido_del_mail(semana: dict, cuenta: str = None) -> dict:
+    """Los argumentos de `emails.send_alert_email` para el resumen. `cuenta`: el
+    nombre del cliente cuando el mail es de una cuenta que administra un asesor
+    (lo pasa `alerts_engine.entrega`): entonces no es «tu plata» ni «tu
+    watchlist», es la de Juan."""
+    tu = {"plata": "tu plata", "lo": "lo tuyo", "watchlist": "tu watchlist", "tesis": "Tu tesis"}
+    if cuenta:
+        tu = {"plata": "la plata", "lo": "sus activos", "watchlist": f"la watchlist de {cuenta}",
+              "tesis": f"La tesis de {cuenta}"}
     lista = _por_importancia(semana["senales"])
     primeros, nombrados = [], []
     for x in lista:
@@ -493,24 +500,25 @@ def contenido_del_mail(semana: dict) -> dict:
     lineas = []
     for x in primeros:
         # Lo que no tenés lo dice: «MSFT pasó arriba…» se leía como algo tuyo.
-        quien = x["asset"] if x["tenes"] else f"{x['asset']} (en tu watchlist)"
+        quien = x["asset"] if x["tenes"] else f"{x['asset']} (en {tu['watchlist']})"
         linea = f"{quien} {x['texto']}"
         if x.get("tesis"):
             import tesis as _tesis
-            linea += f" Tu tesis: «{_tesis.para_una_linea(x['tesis'])}»."
+            linea += f" {tu['tesis']}: «{_tesis.para_una_linea(x['tesis'])}»."
         lineas.append(linea)
     resto = [x for x in lista if x not in primeros]
     if resto:
         quienes = list(dict.fromkeys(x["asset"] for x in resto))
         lineas.append(f"{len(resto)} {'cambio' if len(resto) == 1 else 'cambios'} más, en {_y(quienes)}.")
     a = semana.get("alcista")
+    watch = "su watchlist" if cuenta else tu["watchlist"]
     if a:
-        detail = f"el {a['pct']}% de tu plata está en activos con tendencia de fondo alcista"
+        detail = f"el {a['pct']}% de {tu['plata']} está en activos con tendencia de fondo alcista"
         if a.get("semana_pasada"):
             detail += f" (la semana pasada, {round(a['semana_pasada']['pct'])}%)"
-        detail += ". Esto se movió en lo tuyo y en tu watchlist:"
+        detail += f". Esto se movió en {tu['lo']} y en {watch}:"
     else:
-        detail = "esto se movió esta semana en lo tuyo y en tu watchlist:"
+        detail = f"esto se movió esta semana en {tu['lo']} y en {watch}:"
     return {
         "heading": _titular(semana["senales"]), "detail": detail, "lines": lineas,
         "cta_path": URL_SENALES, "cta_label": "Ver los cambios",
@@ -520,45 +528,42 @@ def contenido_del_mail(semana: dict) -> dict:
     }
 
 
-def _armar_envio(conn, uid: int, semana: dict) -> tuple:
-    """(destino, cliente, contenido). Todo lo que se puede romper al armar el
-    mail pasa ACÁ, antes de marcar la semana como hecha: un error al armarlo no
-    puede comerse el resumen de esa persona sin mandarlo."""
-    from alerts_engine import _delivery_target
-    destino, cliente = _delivery_target(conn, uid)
-    contenido = contenido_del_mail(semana)
-    if cliente:
-        contenido["heading"] = f"[{cliente}] {contenido['heading']}"
-    return destino, cliente, contenido
+def _armar_envio(conn, uid: int, semana: dict) -> dict:
+    """La entrega de `alerts_engine.entrega` (destino, cliente, mail y push),
+    la MISMA que la de las alertas: una cuenta administrada le llega al asesor,
+    con el nombre del cliente, sus links a /clientes y sin «tu plata». Todo lo
+    que se puede romper al armar el mail pasa ACÁ, antes de marcar la semana
+    como hecha: un error al armarlo no puede comerse el resumen de esa persona
+    sin mandarlo."""
+    from alerts_engine import entrega
+    return entrega(conn, uid, lambda cuenta: contenido_del_mail(semana, cuenta))
 
 
-def _entregar(conn, via: str, envio: tuple) -> tuple:
-    """(push_ok, mail_ok). Por el camino de las alertas: `_delivery_target` (una
-    cuenta administrada le llega al asesor, con el nombre del cliente),
-    `send_alert_email` y `_send_push_to_user`."""
+def _entregar(conn, via: str, envio: dict) -> tuple:
+    """(push_ok, mail_ok). Por el camino de las alertas: `send_alert_email` y
+    `_send_push_to_user`, con lo que armó `entrega`."""
     import main
     from billing import emails
-    destino, cliente, contenido = envio
-    uid = destino
+    destino = envio["destino"]
     push_ok = mail_ok = False
     if via in ("push", "ambos"):
         try:
             push_ok = main._send_push_to_user(destino, {
                 "title": "Rendi · Tu semana",
-                "body": f"{contenido['heading']}. {NO_ES_RECOMENDACION}",
-                "url": URL_SENALES if not cliente else "/clientes",
+                "body": f"{envio['push']['titulo']}. {NO_ES_RECOMENDACION}",
+                "url": envio["push"]["url"],
                 "tag": "resumen-semanal",
             }) > 0
         except Exception as ex:
-            log.warning("semana: push uid=%s falló: %s", uid, ex)
+            log.warning("semana: push uid=%s falló: %s", destino, ex)
     if via in ("mail", "ambos"):
         try:
             row = conn.execute("SELECT email, name FROM users WHERE id=?", (destino,)).fetchone()
             if row and row["email"]:
                 mail_ok = bool(emails.send_alert_email(to=row["email"], user_name=row["name"] or "",
-                                                       **contenido))
+                                                       **envio["mail"]))
         except Exception as ex:
-            log.warning("semana: mail uid=%s falló: %s", uid, ex)
+            log.warning("semana: mail uid=%s falló: %s", destino, ex)
     return push_ok, mail_ok
 
 
