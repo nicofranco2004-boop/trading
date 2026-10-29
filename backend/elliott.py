@@ -195,6 +195,17 @@ def _dentro(x, rango) -> bool:
     return x is not None and rango[0] <= x <= rango[1]
 
 
+def _pauta(id_: str, valor: float, rango: tuple) -> dict:
+    """Una pauta con el rango que decidió si se cumple: la pantalla escribe ESE
+    rango (auditoría D, 29/10: el texto decía «entre 50 % y 61,8 %» al lado de
+    un ✓ con 68 %, porque el ✓ salía de 40–72 % y el texto, de otro número)."""
+    # Se decide con el número como se muestra (68 %, 1,62 veces: dos decimales
+    # del cociente), para que un 72,4 % que la pantalla escribe «72 %» no salga
+    # sin ✓ al lado de «entre 40 % y 72 %».
+    valor = round(valor, 2)
+    return {"id": id_, "valor": valor, "cumple": _dentro(valor, rango), "desde": rango[0], "hasta": rango[1]}
+
+
 def _impulsos(zz: list, vista: _Vista) -> list:
     """Los conteos de impulso (en la dirección "a favor" de esta vista): de
     0-1-2 (la 3 en curso) a 0-1-2-3-4-5 (terminado). Sólo los que cumplen las
@@ -251,18 +262,18 @@ def _impulso(pts: list, vista: _Vista):
 
     pautas = []
     r2 = (P[1] - P[2]) / w1
-    pautas.append({"id": "onda2", "valor": r2, "cumple": _dentro(r2, P_ONDA2)})
+    pautas.append(_pauta("onda2", r2, P_ONDA2))
     if hecho >= 3:
-        pautas.append({"id": "onda3", "valor": w3 / w1, "cumple": _dentro(w3 / w1, P_ONDA3)})
+        pautas.append(_pauta("onda3", w3 / w1, P_ONDA3))
     if hecho >= 4:
         r4 = (P[3] - P[4]) / w3
-        pautas.append({"id": "onda4", "valor": r4, "cumple": _dentro(r4, P_ONDA4)})
+        pautas.append(_pauta("onda4", r4, P_ONDA4))
         d2, d4 = I[2] - I[1], I[4] - I[3]
         alterna = ((r2 >= HONDA and r4 <= PLAYA) or (r4 >= HONDA and r2 <= PLAYA)
                    or max(d2, d4) >= VECES_MAS_LARGA * max(1, min(d2, d4)))
         pautas.append({"id": "alternancia", "valor": None, "cumple": alterna})
     if hecho == 5:
-        pautas.append({"id": "onda5", "valor": w5 / w1, "cumple": _dentro(w5 / w1, P_ONDA5)})
+        pautas.append(_pauta("onda5", w5 / w1, P_ONDA5))
 
     ahora = {2: "onda_3", 3: "onda_4", 4: "onda_5", 5: "correccion"}[hecho]
     # El precio que invalida: el que rompería una regla dura.
@@ -357,10 +368,10 @@ def _abc(pts: list, vista: _Vista):
         # Terminada: si después volvió a pasar el arranque de la A, quedó vieja.
         if vista.max_alto(I[3], vista.hoy) >= P[0]:
             return None
-    pautas = [{"id": "ondaB", "valor": (P[2] - P[1]) / a, "cumple": _dentro((P[2] - P[1]) / a, P_ONDA_B)}]
+    pautas = [_pauta("ondaB", (P[2] - P[1]) / a, P_ONDA_B)]
     if hecho == 3:
         c = P[2] - P[3]
-        pautas.append({"id": "ondaC", "valor": c / a, "cumple": _dentro(c / a, P_ONDA_C)})
+        pautas.append(_pauta("ondaC", c / a, P_ONDA_C))
     return {"tipo": "correccion", "pts": pts, "ondas": ["0", "A", "B", "C"][:len(pts)],
             "ahora": "onda_C" if hecho == 2 else "fin_abc", "pautas": pautas,
             "invalida": P[0] if hecho == 2 else P[3],
@@ -546,7 +557,8 @@ def _para_afuera(c: dict, velas: list) -> dict:
                                {"debajo": "encima", "encima": "debajo"}[c["otro"][2]],
                                "por": c["otro"][1]} if c.get("otro") else None)},
         "confianza": c["confianza"],
-        "pautas": [{"id": p["id"], "valor": _r(p["valor"], 3), "cumple": bool(p["cumple"])} for p in c["pautas"]],
+        "pautas": [{"id": p["id"], "valor": _r(p["valor"], 3), "cumple": bool(p["cumple"]),
+                    **({"desde": p["desde"], "hasta": p["hasta"]} if "desde" in p else {})} for p in c["pautas"]],
     }
 
 

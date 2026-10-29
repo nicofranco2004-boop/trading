@@ -81,21 +81,35 @@ export function textoInvalida(c, precio) {
   return segundo ? `${primero} ${segundo}` : primero
 }
 
-/** Cada pauta en castellano: { texto, cumple }. */
+/**
+ * Cada pauta en castellano: { texto, cumple }. El rango que se escribe es el
+ * MISMO con el que el servidor decidió el ✓ (`desde`/`hasta`, backend/elliott.py):
+ * antes el texto decía «entre 50 % y 61,8 %» (el número de la teoría) al lado
+ * de un ✓ con 68 %, que el servidor aceptaba con margen (40–72 %). Auditoría D,
+ * 29/10. Sin rango (un servidor viejo), no se inventa uno.
+ */
 export function textoPauta(p) {
   const v = p.valor
+  const con = p.desde != null && p.hasta != null
+  const entre = (f) => (con ? ` (lo habitual, con margen: entre ${f(p.desde)} y ${f(p.hasta)})` : '')
   switch (p.id) {
-    case 'onda2': return `La onda 2 devolvió el ${pct(v)} de la 1 (lo habitual: entre 50 % y 61,8 %).`
-    case 'onda3': return `La onda 3 midió ${veces(v)} veces la 1 (lo habitual: cerca de 1,6 veces).`
-    case 'onda4': return `La onda 4 devolvió el ${pct(v)} de la 3 (lo habitual: cerca del 38 %).`
+    case 'onda2': return `La onda 2 devolvió el ${pct(v)} de la 1${entre(pct)}.`
+    case 'onda3': return `La onda 3 midió ${veces(v)} veces la 1${rangoVeces(p)}.`
+    case 'onda4': return `La onda 4 devolvió el ${pct(v)} de la 3${entre(pct)}.`
     case 'alternancia': return p.cumple
       ? 'Las ondas 2 y 4 fueron distintas (una devolvió la mitad o más y la otra poco, o una duró el triple), como suele pasar.'
       : 'Las ondas 2 y 4 se parecieron; lo habitual es que sean distintas.'
-    case 'onda5': return `La onda 5 midió ${veces(v)} veces la 1 (lo habitual: parecida).`
-    case 'ondaB': return `La onda B devolvió el ${pct(v)} de la A (lo habitual: entre 50 % y 61,8 %).`
-    case 'ondaC': return `La onda C midió ${veces(v)} veces la A (lo habitual: parecida).`
+    case 'onda5': return `La onda 5 midió ${veces(v)} veces la 1${rangoVeces(p)}.`
+    case 'ondaB': return `La onda B devolvió el ${pct(v)} de la A${entre(pct)}.`
+    case 'ondaC': return `La onda C midió ${veces(v)} veces la A${rangoVeces(p)}.`
     default: return ''
   }
+}
+
+// «(lo habitual, con margen: entre 1,38 y 1,9 veces)»
+function rangoVeces(p) {
+  if (p.desde == null || p.hasta == null) return ''
+  return ` (lo habitual, con margen: entre ${veces(p.desde)} y ${veces(p.hasta)} veces)`
 }
 
 export function textoConfianza(c) {
