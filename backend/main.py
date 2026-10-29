@@ -48449,6 +48449,10 @@ def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn") -> dict:
     symbol = _ae._norm_sym(symbol)
     if not symbol or symbol.startswith("FCI:") or not _SYMBOL_RE.match(symbol):
         raise HTTPException(400, "Ese activo no tiene análisis técnico.")
+    # Antes de guardarla y de preguntarle el precio a Yahoo: un símbolo inventado
+    # entraba a la descarga de la noche (velas_diarias._seguimiento) adelante de
+    # los de verdad (auditoría E4).
+    _exigir_activo_valido(conn, data.symbol, uid)
     currency = "ARS" if (data.currency or "").strip().upper() == "ARS" else "USD"
     # El sentido sólo vale para los cruces de un promedio; el RSI y el máximo
     # ya lo dicen en el nombre de la señal.
