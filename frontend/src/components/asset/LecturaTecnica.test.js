@@ -247,6 +247,41 @@ describe('LecturaTecnica', () => {
     expect(document.body.style.overflow).not.toBe('hidden')
   })
 
+  it('«Pantalla completa» pone el gráfico sobre toda la página; «Achicar» y Esc vuelven a la ficha (Nico, 28/10)', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
+    await dibujar({ pnlPctUsd: 0.1 })
+    const otra = () => montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
+    const seccion = () => buscar(montado.contenedor, 'section')
+    const area = () => porEtiqueta('Precio con su promedio')
+    const altoNormal = area().getAttribute('class')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pantalla completa'))
+    await otra()
+    expect(seccion().getAttribute('role')).toBe('dialog')
+    expect(seccion().getAttribute('class')).toContain('fixed inset-0')
+    expect(document.body.style.overflow).toBe('hidden')        // la página de atrás no se mueve
+    expect(area().getAttribute('class')).toContain('sm:h-[74vh]')   // el gráfico, más alto
+    expect(area().getAttribute('class')).not.toEqual(altoNormal)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Achicar'))
+    await otra()
+    expect(seccion().getAttribute('role')).toBeNull()
+    expect(document.body.style.overflow).not.toBe('hidden')
+    // Esc también achica…
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pantalla completa'))
+    await otra()
+    const esc = () => enActo(() => { window.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Escape' })) })
+    await esc(); await otra()
+    expect(seccion().getAttribute('role')).toBeNull()
+    // …pero si hay algo a medio dibujar, el primer Esc cancela eso y el gráfico sigue grande.
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pantalla completa'))
+    await otra()
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Medir entre dos puntos'))
+    await otra()
+    await esc(); await otra()
+    expect(seccion().getAttribute('role')).toBe('dialog')
+    await esc(); await otra()
+    expect(seccion().getAttribute('role')).toBeNull()
+  })
+
   it('el volumen: barras abajo del precio y un botón para apagarlas; sin datos, no aparece', async () => {
     const conVolumen = { ...USD, puntos: USD.puntos.map((p, i) => ({ ...p, v: 1000 + i })) }
     respuestas = { '/tecnico/AAPL?moneda=usd': conVolumen, '/tecnico/AAPL?moneda=ars': ARS }

@@ -35,6 +35,7 @@ const CLAVE = 'rendi_grafico_capas'
 export const CAPAS_DE_FABRICA = Object.freeze({
   vol: true, s200: true, s50: true, fib: true, ell: true, rsi: true, fuerza: true,
   eventos: true, marcas: true, prom: true,
+  globo: true,   // el cartel con los datos del día al pasar el mouse
 })
 
 /**

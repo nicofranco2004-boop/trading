@@ -386,7 +386,7 @@ describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos
     expect(enLaBarra).toEqual(['tendencia', 'horizontal', 'menu-fibonacci', 'menu-elliott', 'medir', 'borrarDibujos'])
     const lista = todos(montado.contenedor, n => n.getAttribute?.('role') === 'group' && n.getAttribute('aria-label') === 'Indicadores')[0]
     const enLaLista = todos(lista, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa')).filter(Boolean)
-    expect(enLaLista).toEqual(['vol', 's200', 's50', 'rsi', 'fuerza', 'eventos', 'fabrica'])
+    expect(enLaLista).toEqual(['vol', 's200', 's50', 'rsi', 'fuerza', 'eventos', 'globo', 'fabrica'])
     const tipo = todos(montado.contenedor, n => n.getAttribute?.('aria-label') === 'Tipo de gráfico')[0]
     expect(todos(tipo, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa'))).toEqual(['linea', 'velas'])
   })
@@ -400,6 +400,21 @@ describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos
     } finally {
       delete globalThis.ResizeObserver
     }
+  })
+
+  it('el cartel con los datos al pasar el mouse se oculta con su ojito, como un indicador más (Nico, 28/10)', async () => {
+    await dibujar()
+    const globo = () => todos(montado.contenedor, n => n.getAttribute?.('data-globo') != null)
+    await evento('mousemove', grafico(), { clientX: 400, clientY: 120 }); await redibujar()
+    expect(globo()).toHaveLength(1)
+    expect(texto(globo()[0])).toMatch(/US\$ [\d.,]+/)
+    await clic(montado.contenedor, boton('globo')); await redibujar()
+    await evento('mousemove', grafico(), { clientX: 420, clientY: 120 }); await redibujar()
+    expect(globo()).toHaveLength(0)
+    // La raya del día sigue (para saber dónde estás), sólo se va el cartel.
+    expect(todos(montado.contenedor, n => n.nodeName === 'DIV' && (n.getAttribute?.('class') || '').includes('inset-y-0 w-px'))).not.toHaveLength(0)
+    // Y se acuerda, como los demás.
+    expect(JSON.parse(localStorage.getItem('rendi_grafico_capas')).globo).toBe(false)
   })
 
   it('la lista de indicadores se pliega a un renglón y se acuerda', async () => {

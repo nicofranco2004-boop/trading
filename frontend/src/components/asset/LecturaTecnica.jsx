@@ -29,7 +29,7 @@
 // TradingView), con su tarjeta «Fuerza de la tendencia».
 
 import { cloneElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { LineChart, RotateCcw, Ruler, Trash2 } from 'lucide-react'
+import { LineChart, Maximize2, Minimize2, RotateCcw, Ruler, Trash2 } from 'lucide-react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica } from './BarraGrafico'
 import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
@@ -223,6 +223,20 @@ export default function LecturaTecnica({
   // Velas diarias siempre; semanales sólo si se eligen (para mirar el panorama
   // de 2 años). El análisis (Fibonacci, giros) se hace sobre las diarias.
   const [intervalo, setIntervalo] = useState('dia')
+  // Pantalla completa (Nico, 28/10: «para un análisis profundo, que toda la
+  // pantalla sea el gráfico, como entrar a TradingView»): la misma sección, fija
+  // sobre toda la página y con el gráfico más alto; «Achicar» o Esc vuelven a la
+  // ficha con el menú de Rendi. Mientras tanto la página de atrás no se mueve.
+  // Esc primero cancela lo que se esté dibujando; recién el siguiente achica.
+  const [grande, setGrande] = useState(false)
+  useEffect(() => {
+    if (!grande) return
+    const antes = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const tecla = (e) => { if (e.key === 'Escape' && !cancelarRef.current) setGrande(false) }
+    window.addEventListener('keydown', tecla)
+    return () => { document.body.style.overflow = antes; window.removeEventListener('keydown', tecla) }
+  }, [grande])
   const elegirRango = (r) => { setRango(r); setVentana(null) }
 
   // Dólares al abrir; pesos recién la primera vez que se tocan (la mayoría no
@@ -270,7 +284,8 @@ export default function LecturaTecnica({
 
   const marco = (hijos, conPesos = datos.ars?.disponible !== false) => (
     <Marco moneda={moneda} setMoneda={setMoneda} rango={ventana ? null : rango} setRango={elegirRango}
-      conPesos={conPesos} conTuyo={!!primera} tipo={tipo} setTipo={setTipo} intervalo={intervalo} setIntervalo={setIntervalo}>{hijos}</Marco>
+      conPesos={conPesos} conTuyo={!!primera} tipo={tipo} setTipo={setTipo} intervalo={intervalo} setIntervalo={setIntervalo}
+      grande={grande} setGrande={setGrande}>{hijos}</Marco>
   )
   // Cargando: el marco con sus botones queda quieto y el gris va adentro, con la
   // altura del gráfico ya reservada (antes desaparecía todo y la página saltaba).
@@ -525,7 +540,7 @@ export default function LecturaTecnica({
           )}
           <Grafico leyenda={
             <LeyendaIndicadores items={botones.indicadores} onAviso={setAviso} deFabrica={deFabrica} onFabrica={volverDeFabrica} />
-          } puntos={puntos} huecos={huecos} moneda={moneda} promedio={ver.prom ? promedio : null}
+          } grande={grande} puntos={puntos} huecos={huecos} moneda={moneda} promedio={ver.prom ? promedio : null}
             marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo}
             fibonacci={ver.fib ? actual.fibonacci : null} elliott={ver.ell ? actual.elliott : null} onZoom={zoom} onMover={mover}
             onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rango}|${tipo}|${intervalo}`}
@@ -654,16 +669,26 @@ function periodoDeMovimiento(m) {
   return dias >= 700 ? 'Últimos 2 años' : `Desde el ${fechaCorta(m.desde)}`
 }
 
-function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, conTuyo = false, tipo, setTipo, intervalo, setIntervalo, children }) {
-  // Siempre del tamaño que antes era «Agrandar» y dentro de la ficha (Nico,
-  // 24/10: «que sea automáticamente ampliado»; achicarlo no servía). Arriba a la
-  // derecha, con la moneda y el rango, línea o velas con sus dos íconos (Nico,
-  // 28/10: en la barra del costado eran demasiadas cosas).
+function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, conTuyo = false, tipo, setTipo, intervalo, setIntervalo, grande = false, setGrande, children }) {
+  // En la ficha, ya ampliado (Nico, 24/10: «que sea automáticamente ampliado»).
+  // Con «Pantalla completa», la MISMA sección fija sobre toda la página (no es
+  // otra vista: mismos datos, mismos botones; R6). Arriba a la derecha, con la
+  // moneda y el rango, línea o velas con sus dos íconos (Nico, 28/10: en la barra
+  // del costado eran demasiadas cosas).
   return (
-    <section aria-label="Análisis técnico" className="mb-5">
+    <section aria-label="Análisis técnico" role={grande ? 'dialog' : undefined} aria-modal={grande || undefined}
+      className={grande ? 'fixed inset-0 z-[70] overflow-y-auto bg-bg-0 px-3 py-3 sm:px-6 sm:py-4' : 'mb-5'}>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <div className="text-[12.5px] text-ink-2 font-medium">Análisis técnico</div>
         <div className="flex flex-wrap items-center gap-2">
+          {setGrande && (
+            <button type="button" data-capa="pantalla" onClick={() => setGrande(!grande)} aria-pressed={grande}
+              title={grande ? 'Volver a la ficha, con el menú de Rendi (también con Esc)' : 'El gráfico en toda la pantalla, para un análisis a fondo'}
+              className={`inline-flex items-center gap-1.5 min-h-10 sm:min-h-8 px-3 rounded-lg border text-xs font-medium transition-colors ${grande ? 'border-line-2 bg-bg-2 text-ink-0 hover:border-ink-3' : 'border-rendi-accent/55 bg-rendi-accent/15 text-ink-0 hover:border-rendi-accent'}`}>
+              {grande ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}
+              {grande ? 'Achicar' : 'Pantalla completa'}
+            </button>
+          )}
           {setTipo && (
             <div className="inline-flex gap-0.5 bg-bg-2 border border-line rounded-lg p-0.5" role="group" aria-label="Tipo de gráfico">
               {[['linea', 'Línea', <LineChart key="l" size={16} aria-hidden="true" />], ['velas', 'Velas', <IconoVelas key="v" />]].map(([id, nombre, icono]) => (
@@ -806,6 +831,7 @@ function botonesDeLaBarra({
           : losEventos.length ? null : 'No hay balances ni dividendos de este activo (pasa con las criptos, los índices y los fondos).'),
       operaste && capa('marcas', 'Tus compras y ventas', <IconoPuntos />, misMarcas.length ? null : 'No hay compras ni ventas tuyas de este activo.'),
       tenes && capa('prom', 'Tu precio promedio', <IconoLinea color={COLOR.promedio} punteado />, sinProm),
+      capa('globo', 'Datos al pasar el mouse', <IconoGlobo />, null),
     ].filter(Boolean),
   }
 }
@@ -890,6 +916,17 @@ function IconoHorizontal() {
     <svg width="18" height="18" viewBox="0 0 18 18">
       <line x1="1" y1="9" x2="17" y2="9" stroke={COLOR.dibujo} strokeWidth="1.8" strokeLinecap="round" />
       <circle cx="9" cy="9" r="2" fill={COLOR.dibujo} />
+    </svg>
+  )
+}
+// El cartel con los datos del día (precio, apertura, máximo, mínimo…).
+function IconoGlobo() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18">
+      <rect x="2" y="3" width="14" height="10" rx="2" fill="none" stroke={v('ink-1')} strokeWidth="1.5" />
+      <line x1="5" y1="7" x2="13" y2="7" stroke={v('ink-1')} strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="5" y1="10" x2="10" y2="10" stroke={v('ink-1')} strokeWidth="1.3" strokeLinecap="round" />
+      <path d="M7 13 9 15.5 11 13" fill="none" stroke={v('ink-1')} strokeWidth="1.5" strokeLinejoin="round" />
     </svg>
   )
 }
@@ -994,7 +1031,7 @@ function rotulosDeMeses(puntos) {
   })
 }
 
-function Grafico({ leyenda = null, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null }) {
+function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null }) {
   const conVelas = tipo === 'velas'
   // Los lugares del ancho: los días más el aire vacío de la derecha.
   const lugares = puntos.length + huecos
@@ -1318,7 +1355,7 @@ function Grafico({ leyenda = null, puntos, huecos = 0, moneda, promedio, marcas:
             precio puede asomar sobre el borde. */}
         {/* Siempre ampliado (Nico, 24/10). En el celular, un alto que deja ver
             la barra y el RSI sin comerse la pantalla; en compu, el de antes con «Agrandar». */}
-        <div ref={ref} className={`relative mr-[72px] h-[42vh] min-h-56 sm:h-[58vh] sm:min-h-64 select-none touch-pan-y ${sobreDibujo ? 'cursor-pointer' : 'cursor-crosshair'} ${precioMano ? 'overflow-hidden' : ''}`}
+        <div ref={ref} className={`relative mr-[72px] ${grande ? 'h-[68vh] min-h-72 sm:h-[74vh]' : 'h-[42vh] min-h-56 sm:h-[58vh] sm:min-h-64'} select-none touch-pan-y ${sobreDibujo ? 'cursor-pointer' : 'cursor-crosshair'} ${precioMano ? 'overflow-hidden' : ''}`}
           onMouseDown={e => { arrastre.current = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY } }}
           onMouseUp={e => {
             // Un click sin arrastrar, en el modo medir, marca ese día. Sólo el
@@ -1468,8 +1505,11 @@ function Grafico({ leyenda = null, puntos, huecos = 0, moneda, promedio, marcas:
                 style={{ left: `${pctX(hover)}%`, top: `${pctY(ph.c)}%`, background: COLOR.precio }} />
               {/* El globo va pegado al punto que se mira (abajo a la derecha;
                   del otro lado si no entra), chico y de un renglón por dato:
-                  arriba y fijo tapaba casi todo el gráfico (Nico, 22/10). */}
-              <div ref={globoRef} className={`pointer-events-none absolute z-10 rounded border border-line-2 bg-bg-raised/95 px-2 py-1.5 text-[11px] leading-tight shadow-sm tabular whitespace-nowrap ${pctY(ph.c) > 55 ? '-translate-y-[calc(100%+12px)]' : 'translate-y-3'}`}
+                  arriba y fijo tapaba casi todo el gráfico (Nico, 22/10). Se
+                  puede ocultar como un indicador más (Nico, 28/10: «hay veces
+                  que es muy molesto»): queda la raya y el punto del día. */}
+              {ver.globo !== false && (
+              <div ref={globoRef} data-globo="" className={`pointer-events-none absolute z-10 rounded border border-line-2 bg-bg-raised/95 px-2 py-1.5 text-[11px] leading-tight shadow-sm tabular whitespace-nowrap ${pctY(ph.c) > 55 ? '-translate-y-[calc(100%+12px)]' : 'translate-y-3'}`}
                 style={{ left: `${ladoGlobo(pctX(hover), ref.current?.clientWidth, anchoGlobo)}px`, top: `${pctY(ph.c)}%` }}>
                 <div className="flex items-baseline gap-2">
                   <span className="text-ink-0 font-semibold text-[12px]">{fmtPrecio(ph.c, moneda)}</span>
@@ -1506,6 +1546,7 @@ function Grafico({ leyenda = null, puntos, huecos = 0, moneda, promedio, marcas:
                   </div>
                 ))}
               </div>
+              )}
             </>
           )}
         </div>
