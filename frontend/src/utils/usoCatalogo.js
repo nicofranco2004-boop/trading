@@ -70,6 +70,7 @@ export const EVENTOS = {
   calidad_cartera_view: { label: 'Vio el análisis fundamental', donde: 'Análisis fundamental', tipo: 'vista' },
   fundamentals_ticker_viewed: { label: 'Analizó un ticker', donde: 'Análisis fundamental', tipo: 'vista' },
   fundamentals_compared: { label: 'Comparó tickers', donde: 'Análisis fundamental' },
+  comparar_precio: { label: 'Comparó precios desde la misma base', donde: 'Análisis fundamental' },
   fundamentals_ai_summary_loaded: { label: 'Leyó el resumen IA de un ticker', donde: 'Análisis fundamental', tipo: 'vista' },
   fundamentals_favorite_toggled: { label: 'Marcó/desmarcó un favorito', donde: 'Análisis fundamental' },
   watchlist_added: { label: 'Agregó a favoritos', donde: 'Buscar · celular' },
