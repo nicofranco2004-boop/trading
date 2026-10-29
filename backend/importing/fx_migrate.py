@@ -53,8 +53,19 @@ log = logging.getLogger(__name__)
 
 def _metricas(conn, uid: int) -> Dict[str, Any]:
     """La foto contra la que se mide el antes/después. Todo agregados, sin PII."""
+    # `s` es el P&L realizado que ve el usuario. `s_vieja` es el MISMO P&L medido con la
+    # regla anterior a la de cada punta a su dólar (resultado_dual): la ganancia en pesos
+    # dividida por el dólar estampado de la venta. El freno de plausibilidad de más abajo
+    # se calibró con esa regla: con la nueva, migrar a v2 mueve el P&L de una cuenta
+    # sana en pesos por la devaluación entera (medido: −US$ 29.269 en una tenencia de
+    # 2021) y el freno la tomaba por corrupta, también en la migración automática que
+    # corre tras importar.
     ops = conn.execute(
-        "SELECT COUNT(*) n, ROUND(COALESCE(SUM(pnl_usd),0),2) s "
+        "SELECT COUNT(*) n, ROUND(COALESCE(SUM(pnl_usd),0),2) s, "
+        "       ROUND(COALESCE(SUM(CASE WHEN cobrado_ars IS NOT NULL AND costo_ars IS NOT NULL "
+        "                                AND UPPER(COALESCE(currency,''))='ARS' AND fx_to_usd > 0 "
+        "                           THEN (cobrado_ars - costo_ars) / fx_to_usd "
+        "                           ELSE pnl_usd END),0),2) s_vieja "
         "FROM operations WHERE user_id=? AND op_type='Venta'", (uid,)).fetchone()
     mon = conn.execute(
         "SELECT ROUND(COALESCE(SUM(deposits),0),2) dep, "
@@ -97,6 +108,7 @@ def _metricas(conn, uid: int) -> Dict[str, Any]:
     valor = float(snap["total_value"]) if snap and snap["total_value"] is not None else None
     return {
         "ventas": ops["n"], "pnl_ventas_usd": ops["s"],
+        "pnl_ventas_regla_vieja_usd": ops["s_vieja"],
         "deposits_usd": mon["dep"], "withdrawals_usd": mon["ret"],
         "pnl_realized_usd": mon["pnl"],
         "capital_final": round(cap["capital_final"], 2) if cap and cap["capital_final"] is not None else None,
@@ -107,6 +119,15 @@ def _metricas(conn, uid: int) -> Dict[str, Any]:
         "rendimiento_pct": (round(((valor - aportado) / aportado) * 100, 1)
                             if valor is not None and aportado > 0 else None),
     }
+
+
+def delta_pnl_implausible(d_pnl: float, n_ventas: int) -> bool:
+    """¿El cambio del P&L de las ventas al migrar es demasiado grande para ser una
+    reparación? Magnitud absoluta grande, O un delta por venta fuera del rango sano
+    (medido: cuentas sanas 0-378/venta incluso con miles de ventas). Una función de
+    módulo para que la prueba llame a ESTA y no a una copia de la aritmética."""
+    n = max(int(n_ventas), 1)
+    return d_pnl > 100_000 or ((d_pnl / n) > 1_000 and d_pnl > 10_000)
 
 
 def denominador_roto(valor, ap_antes, ap_despues, rend_despues, rend_antes=None):
@@ -501,13 +522,16 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
     # US$ 2.888-347.527. Se pide magnitud absoluta Y por venta para no marcar a
     # una cuenta chica con un delta grande legítimo.
     _n_ventas = max(int(antes.get("ventas") or 0), 1)
-    _d_pnl = abs(float(despues["pnl_ventas_usd"] or 0) - float(antes["pnl_ventas_usd"] or 0))
+    # Medido con la regla con la que se calibró el freno (ver `_metricas`), no con el
+    # P&L que ve el usuario: lo que cambia por la regla nueva es una corrección, no un
+    # daño, y no puede frenar la migración.
+    _d_pnl = abs(float(despues["pnl_ventas_regla_vieja_usd"] or 0) - float(antes["pnl_ventas_usd"] or 0))
     # El umbral era `>100k Y >1000/venta`, y el "Y" dejaba pasar lo peor: medido
     # en el dry-run masivo, una cuenta con 1.203 ventas y Δ P&L de US$ 339.593
     # (282/venta) salía en VERDE. Ahora alcanza con CUALQUIERA de los dos: una
     # magnitud absoluta grande, o un delta por venta fuera del rango sano
     # (medido: cuentas sanas 0-378/venta incluso con miles de ventas).
-    _implausible = _d_pnl > 100_000 or ((_d_pnl / _n_ventas) > 1_000 and _d_pnl > 10_000)
+    _implausible = delta_pnl_implausible(_d_pnl, _n_ventas)
 
     # ── El APORTADO se MIDE y se muestra, pero NO frena ───────────────────────
     # El aportado es el denominador del rendimiento, así que moverlo le cambia el

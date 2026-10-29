@@ -6142,8 +6142,8 @@ class CrossCurrencyRealizedPnlTest(unittest.TestCase):
         # Lote ARS vendido en ARS (cuenta v2): cada punta a su dólar (resultado_dual,
         # decisión de Nico del 24/10/2026). Costo 15.000 pesos al dólar de la compra
         # (1.000) = US$ 15; cobro 16.000 al de la venta (1.500) = US$ 10,67 →
-        # −US$ 4,33. En pesos ganó 1.000; en dólares perdió, porque el peso se
-        # devaluó 50 % y el precio subió 6,7 %. Hasta esa fecha esto daba +0,67
+        # −US$ 4,33. En pesos ganó 1.000; en dólares perdió, porque el dólar
+        # subió 50 % (1.000 a 1.500) y el precio subió 6,7 %. Hasta esa fecha esto daba +0,67
         # (1.000 pesos ÷ 1.500, la regla "FX-phantom"), que no es lo que Cartera
         # mostraba en dólares antes de vender.
         pnl = self._sell_pnl("ARS", "ARS", "ARS", qty=10, lot_invested=15000, exit_price=1600.0)

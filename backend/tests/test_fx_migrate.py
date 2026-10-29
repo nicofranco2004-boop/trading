@@ -12,8 +12,8 @@ todo importado "hoy" con el dólar vivo en 1450.
 El P&L migrado era 105,26 (= 20.000 pesos ÷ MEP de la venta) hasta el 24/10/2026.
 Desde entonces una cuenta v2 anota cada punta a su dólar (resultado_dual.py,
 decisión de Nico): cobró 120.000 ÷ 190 = US$ 631,58 por lo que le había costado
-100.000 ÷ 155 = US$ 645,16 → −US$ 13,58. En pesos ganó; en dólares, no: el peso
-se devaluó 23 % y GGAL subió 20 %. Es lo que Cartera mostraba en dólares.
+100.000 ÷ 155 = US$ 645,16 → −US$ 13,58. En pesos ganó; en dólares, no: el dólar
+subió 23 % (de 155 a 190) y GGAL subió 20 %. Es lo que Cartera mostraba en dólares.
 
 Lo que fijan estos tests:
   1. una cuenta v1 que pasa por el rebuild NO cambia de números (el deploy es inocuo)
@@ -174,6 +174,42 @@ class FxMigrateTest(unittest.TestCase):
         self.assertTrue(v["cash_intacto"])          # el migrador no toca la caja
         self.assertGreaterEqual(v["tcs_distintos_en_flujos"]["despues"],
                                 v["tcs_distintos_en_flujos"]["antes"])
+
+    def test_tenencia_larga_en_pesos_no_frena_la_migracion(self):
+        """Con la regla de cada punta a su dólar (resultado_dual) migrar a v2 mueve el P&L de
+        una tenencia de 2021 en pesos por la devaluación entera (acá −US$ 18.925 contra +10.344
+        del dólar vivo): una corrección, no daño. El freno de plausibilidad la tomaba por corrupta
+        y bloqueaba la migración (también la automática tras importar)."""
+        self.conn.execute(
+            "INSERT INTO fx_rates_daily (date,blue_venta,mep_venta,source) VALUES (?,?,?,?) "
+            "ON CONFLICT (date) DO UPDATE SET blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta",
+            ("2024-06-10", 1490.0, 1500.0, "test"))
+        self.conn.commit()
+        fxmod.set_fx_version(self.conn, self.uid, fxmod.FX_V1)
+        self.conn.commit()
+        csv = (HDR +
+               "2021-01-15,DEPOSITO,IOL,,,,5000000,,,0,ARS,\n" +
+               "2021-01-15,COMPRA,IOL,GGAL,1000,5000,5000000,,,0,ARS,\n" +
+               "2024-06-10,VENTA,IOL,GGAL,1000,20000,20000000,,,0,ARS,\n").encode()
+        with self.conn:
+            payload = pl.run_preview(self.conn, uid=self.uid, file_bytes=csv, file_name="h.csv",
+                                     broker_hint="IOL", parser_format="rendi_generic")
+            sid = payload["session_id"]
+            txs, raw = pl.load_session_for_confirm(self.conn, uid=self.uid, session_id=sid)
+            ps.persist_batch(self.conn, uid=self.uid, batch_id=sid, txs=txs,
+                             raw_row_ids_by_index=raw, helpers=_helpers())
+            self.conn.execute("UPDATE import_batches SET status='confirmed', "
+                              "confirmed_at=datetime('now') WHERE id=?", (sid,))
+            rb.rebuild_fifo_after_import(self.conn, self.uid, sid, tc_blue=TC_VIVO)
+            main._recalc_pnl_realized_from_ops(self.conn, self.uid)
+        with self.conn:
+            out = fxm.migrate_user_fx(
+                self.conn, self.uid, helpers=None, recalc=main._recalc_pnl_realized_from_ops,
+                backfill_snapshots=ps._backfill_snapshots_from_monthly,
+                recompute_netdep=main._recompute_snapshots_netdep_for_user)
+        self.assertTrue(out["ok"], out.get("motivo"))
+        pnl, _dep = self._estado()
+        self.assertAlmostEqual(pnl, round(20000000 / 1500.0 - 5000000 / MEP_DEP, 2), places=1)
 
     def test_migracion_es_idempotente(self):
         self._importar_historia_v1()

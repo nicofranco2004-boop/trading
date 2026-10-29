@@ -99,6 +99,26 @@ class SchemaPgAlDia(unittest.TestCase):
                 f"la tabla {tabla} recibe ALTERs en SQLite y no existe en "
                 "schema_pg.sql")
 
+    def test_las_columnas_reales_de_operations_estan_en_el_schema_de_postgres(self):
+        """El regex de arriba sólo ve los ALTER escritos literales: una migración hecha con un
+        bucle y un f-string (las 7 columnas del resultado de la venta, resultado_dual.py) es
+        INVISIBLE para él. Esta compara lo que `init_db()` dejó de verdad en SQLite contra el
+        schema de Postgres, tabla `operations`."""
+        import main
+        if getattr(main, "USANDO_PG", False):
+            self.skipTest("PRAGMA es de SQLite")
+        conn = main.get_db()
+        try:
+            reales = {r[1] for r in conn.execute("PRAGMA table_info(operations)").fetchall()}
+        finally:
+            conn.close()
+        self.assertGreater(len(reales), 10, "no se pudo leer el esquema real de SQLite")
+        for col in ("costo_ars", "costo_usd", "cobrado_ars", "cobrado_usd",
+                    "pnl_pct_ars", "pnl_pct_usd", "pnl_sin_dato"):
+            self.assertIn(col, reales, f"init_db no agregó {col} en SQLite")
+        faltan = sorted(reales - _columnas_del_schema_pg("operations"))
+        self.assertEqual(faltan, [], f"columnas que SQLite tiene en operations y schema_pg.sql no: {faltan}")
+
     def test_requires_plan_es_el_caso_que_motivó_este_archivo(self):
         """Regresión explícita: se lee en el SELECT que valida el token, o sea
         en cada request autenticado."""

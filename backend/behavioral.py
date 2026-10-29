@@ -475,7 +475,7 @@ def _resolve_price(asset: str, broker: Optional[str], prices: Optional[Dict[str,
 
 def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = None,
                          tc_blue: float = 1415.0, tc_cedear: Optional[float] = None,
-                         honor_override: bool = True) -> float:
+                         honor_override: bool = True, costo: str = "hoy") -> float:
     """Valor USD-equivalente de una position. Maneja:
     - Cash (usa invested directo)
     - price_override (precio manual del user) con prioridad — igual que snapshots
@@ -484,6 +484,11 @@ def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = 
     - Posiciones con precio actual disponible (price × quantity)
     - Fallback a invested si no hay precio
     - Conversión ARS → USD para brokers AR
+    - `costo`: a QUÉ dólar se pasa a USD un COSTO en pesos. "hoy" (default, no se toca:
+      así vienen calculados los builders y los snapshots) usa el dólar de hoy; "compra"
+      usa el `tc_compra` del lote, que es lo que muestra Cartera y con lo que una venta
+      anota su resultado en dólares (resultado_dual). Lo piden los lectores que SUMAN
+      lo realizado con lo no realizado: con dos dólares distintos esa suma no es de nadie.
 
     Dos tipos de cambio:
     - tc_blue: para CASH en pesos (el dólar al que liquidarías efectivo).
@@ -494,6 +499,12 @@ def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = 
     if not p:
         return 0.0
     rate_holdings = tc_cedear if (tc_cedear and tc_cedear > 0) else tc_blue
+    # El dólar del COSTO: el de hoy, o el de compra del lote si lo tiene (cae al de hoy).
+    try:
+        _tcc = float(p.get("tc_compra") or 0)
+    except (TypeError, ValueError):
+        _tcc = 0.0
+    rate_costo = _tcc if (costo == "compra" and _tcc > 0) else rate_holdings
     asset = (p.get("asset") or "").upper()
     broker = p.get("broker") or ""
     # DOS ejes de moneda, distintos:
@@ -555,7 +566,7 @@ def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = 
             # ×100, colisión de ticker), caemos a costo. Comparamos en USD —
             # invested → USD por su moneda nativa (ARS por MEP) — para que un
             # CEDEAR en '· USD' (precio ARS, costo USD) no dispare el guard de más.
-            cost_usd = (invested_native / rate_holdings) if (cost_ccy == "ARS" and rate_holdings > 0) else invested_native
+            cost_usd = (invested_native / rate_costo) if (cost_ccy == "ARS" and rate_costo > 0) else invested_native
             if _trust_mkt_value_usd(mkt_usd, cost_usd, p.get("asset_type")):
                 return mkt_usd * crypto_f
             # precio no confiable → cae al cost basis de abajo (sin inventar P&L)
@@ -564,8 +575,8 @@ def _position_value_usd(p: Dict[str, Any], prices: Optional[Dict[str, float]] = 
     # El premium cripto SOLO aplica a montos spot-USD (los lleva a dólar-MEP).
     # Un costo en PESOS ya pasa a dólar-MEP con /rate_holdings → NO multiplicar de
     # nuevo por el factor (compondría /MEP²). El costo en USD sí: × factor.
-    if cost_ccy == "ARS" and rate_holdings > 0:
-        return invested_native / rate_holdings
+    if cost_ccy == "ARS" and rate_costo > 0:
+        return invested_native / rate_costo
     return invested_native * crypto_f
 
 

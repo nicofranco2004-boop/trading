@@ -4,7 +4,9 @@ EL CASO (medido por HTTP el 2026-10-10 contra `86dfacf7`). Broker en pesos.
 `POST /api/positions` con precio 5.000 y cantidad 10, SIN `invested` — la API lo
 acepta. Después `POST /api/positions/sell` de 4 a 8.000 con TC 1.250. La
 operación quedaba con `pnl_usd = 25,6`: los 32.000 pesos cobrados enteros,
-divididos por el TC. El resultado real son 9,6 (4 × (8.000 − 5.000) / 1.250).
+divididos por el TC. El resultado real son +US$ 5,6 con la regla vigente desde el 24/10/2026
+(costo 20.000 pesos al dólar de la compra, 1.000, = US$ 20; cobro 32.000 al de la venta, 1.250,
+= US$ 25,6); con la regla anterior eran 9,6 (12.000 pesos de ganancia ÷ 1.250).
 
 DÓNDE SE ROMPÍA. En dos eslabones, y ninguno era la pantalla:
 
@@ -46,6 +48,17 @@ import uuid
 
 import main
 from fastapi.testclient import TestClient
+
+
+def setUpModule():
+    # El dólar del día de la compra (2024-01-10 en `_plantar`): sin él la venta no puede costear
+    # el lote en dólares y cae a la regla vieja EN SILENCIO (`pnl_sin_dato='sin_dolar_compra'`):
+    # estas pruebas pasaban por eso. Las ventas escriben su propio TC (1.250).
+    conn = main.get_db()
+    conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES ('2024-01-10',1000,1000) "
+                 "ON CONFLICT (date) DO UPDATE SET blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta")
+    conn.commit()
+    conn.close()
 
 HDR = ("fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,"
        "comisiones,moneda,notas\n")
@@ -200,8 +213,11 @@ class VenderUnLoteQueYaEstabaSinCosto(_Base):
         self._plantar(self.uid, PESOS, "GGAL", 5000, 10, "ARS")
         op = self._vender(broker=PESOS, asset="GGAL", quantity=4, exit_price=8000,
                           date="2026-02-10", tc_venta=1250)[0]
-        self.assertAlmostEqual(op["pnl_usd"], 9.6, places=2)
-        self.assertAlmostEqual(self._mes(self.uid, "global", 2026, 2), 9.6, places=2)
+        self.assertIsNone(op["pnl_sin_dato"], "cayó a la regla vieja por falta del dólar de compra")
+        # Cada punta a su dólar: costo 20.000 pesos a 1.000 = US$ 20; cobro 32.000 a 1.250 =
+        # US$ 25,6. Sin el costo guardado, antes daba 25,6 (todo lo cobrado como ganancia).
+        self.assertAlmostEqual(op["pnl_usd"], 5.6, places=2)
+        self.assertAlmostEqual(self._mes(self.uid, "global", 2026, 2), 5.6, places=2)
 
     def test_en_dos_ventas_parciales(self):
         self._plantar(self.uid, PESOS, "GGAL", 5000, 10, "ARS")
@@ -209,7 +225,9 @@ class VenderUnLoteQueYaEstabaSinCosto(_Base):
                          date="2026-02-10", tc_venta=1250)[0]
         b = self._vender(broker=PESOS, asset="GGAL", quantity=6, exit_price=8000,
                          date="2026-02-11", tc_venta=1250)[0]
-        self.assertAlmostEqual(a["pnl_usd"] + b["pnl_usd"], 24.0, places=2)
+        # 20.000 → 25,6 y 30.000 → 38,4 (a 1.000 y a 1.250): +5,6 y +8,4.
+        self.assertIsNone(a["pnl_sin_dato"])
+        self.assertAlmostEqual(a["pnl_usd"] + b["pnl_usd"], 14.0, places=2)
 
     def test_en_dolares_con_comision_de_compra(self):
         # La red de dólares tenía su agujero: con comisión cargada, el costo del
@@ -223,8 +241,9 @@ class VenderUnLoteQueYaEstabaSinCosto(_Base):
         self._plantar(self.uid, PESOS, "GGAL", 5000, 10, "ARS", comisiones=500)
         op = self._vender(broker=PESOS, asset="GGAL", quantity=4, exit_price=8000,
                           date="2026-02-10", tc_venta=1250)[0]
-        # 32.000 − (50.000 + 500) × 0,4 = 11.800 pesos → 9,44 dólares
-        self.assertAlmostEqual(op["pnl_usd"], 9.44, places=2)
+        # Costo (50.000 + 500) × 0,4 = 20.200 pesos a 1.000 = US$ 20,2; cobro 32.000 a 1.250 = 25,6.
+        self.assertIsNone(op["pnl_sin_dato"])
+        self.assertAlmostEqual(op["pnl_usd"], 5.4, places=2)
 
 
 class CambiarElPrecioPromedioDelGrupo(_Base):

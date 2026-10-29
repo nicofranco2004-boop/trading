@@ -53,7 +53,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # en None sin que nadie se entere. Ver backend/realized_pnl.py.
     row = conn.execute(
         f"""SELECT id, date, asset, broker, op_type, entry_price, exit_price,
-                  quantity, {realized_usd_sql()} AS pnl_usd, pnl_pct, entry_date
+                  quantity, {realized_usd_sql()} AS pnl_usd, pnl_pct, entry_date,
+                  currency, cobrado_ars, costo_ars, pnl_pct_ars, pnl_pct_usd, pnl_sin_dato
              FROM operations
             WHERE id = ? AND user_id = ?""",
         (op_id, user_id),
@@ -124,6 +125,16 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         rank_in_year = None
     user_context["rank_in_year"] = rank_in_year
 
+    # La moneda de la venta (la de la fila o la del broker): los precios están en ELLA y
+    # pnl_usd en dólares, así que el % se da en las dos monedas y no uno solo sin decir cuál.
+    import resultado_dual as _rd
+    moneda = _rd.moneda_de_la_venta(conn, user_id, op) if _rd.es_venta_de_un_lote(op) else None
+    pct_ars, pct_usd = _rd.pcts_de_la_venta(op, moneda) if moneda else (None, None)
+    resultado_ars = (round(float(op["cobrado_ars"]) - float(op["costo_ars"]), 2)
+                     if op.get("cobrado_ars") is not None and op.get("costo_ars") is not None
+                     else None)
+    _r2 = lambda v: round(v, 2) if v is not None else None  # noqa: E731
+
     return {
         "screen": "operations.trade",
         "trade": {
@@ -139,6 +150,10 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             # Techo de credibilidad: ver realized_pnl.pct_creible.
             "pnl_pct": (lambda v: round(v, 2) if v is not None else None)(
                 pct_creible(op.get("pnl_pct"))),
+            "sale_currency": moneda,
+            "pnl_pct_ars": _r2(pct_creible(pct_ars)),
+            "pnl_pct_usd": _r2(pct_creible(pct_usd)),
+            "result_ars": resultado_ars,
             "holding_days": holding_days,
         },
         "user_context": user_context,

@@ -47,12 +47,12 @@ import efectivo as _efectivo   # el precio de los dólares y su ganancia cambiar
 log = logging.getLogger(__name__)
 try:
     from fx import (fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta,
-                    costo_del_lote, RIEL_MEP, RIEL_BLUE)
+                    costo_del_lote, RIEL_MEP)
     from efectivo import asset_de_caja
     import resultado_dual as _resultado_dual
 except ImportError:  # pragma: no cover — import relativo según cómo se cargue el paquete
     from ..fx import (fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta,
-                      costo_del_lote, RIEL_MEP, RIEL_BLUE)
+                      costo_del_lote, RIEL_MEP)
     from ..efectivo import asset_de_caja
     from .. import resultado_dual as _resultado_dual
 
@@ -921,16 +921,20 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         # que la venta a mano y el rebuild (resultado_dual). Dólar de compra: el del
         # lote (el que usa Cartera); de venta: el de la fecha, también en v1 (donde
         # `tc_venta` es el dólar del import).
-        resultado = _resultado_dual.resultado_en_dos_monedas(
-            conn, costo=costo_en_su_moneda, moneda_costo=lot_currency,
-            fecha_compra=(p["entry_date"] if "entry_date" in p.keys() else None),
-            cobrado=proceeds_native, moneda_venta=sell_currency, fecha_venta=op_date,
-            riel=(RIEL_MEP if _hist else RIEL_BLUE),
-            tc_compra=(p["tc_compra"] if "tc_compra" in p.keys() else None),
-            retiro=bool(getattr(tx, "transfer_out", False)))
-        # El resultado en dólares: cobrado en dólares − costo en dólares, sólo en
-        # cuentas v2 (ver main.sell_position_fifo y resultado_dual.resultado_en_dolares).
-        _en_dolares = _resultado_dual.resultado_en_dolares(resultado) if _hist else None
+        # SÓLO EN CUENTAS v2: en las v1 no se escribe ni la regla ni las columnas (ver
+        # main.sell_position_fifo y el docstring de resultado_dual).
+        resultado = None
+        if _hist:
+            resultado = _resultado_dual.resultado_en_dos_monedas(
+                conn, costo=costo_en_su_moneda, moneda_costo=lot_currency,
+                fecha_compra=(p["entry_date"] if "entry_date" in p.keys() else None),
+                cobrado=proceeds_native, moneda_venta=sell_currency, fecha_venta=op_date,
+                riel=RIEL_MEP,
+                tc_compra=(p["tc_compra"] if "tc_compra" in p.keys() else None),
+                retiro=bool(getattr(tx, "transfer_out", False)))
+        # El resultado en dólares: cobrado en dólares − costo en dólares (ver
+        # resultado_dual.resultado_en_dolares).
+        _en_dolares = _resultado_dual.resultado_en_dolares(resultado)
         if _en_dolares:
             pnl_usd, invested_usd = _en_dolares
 
@@ -964,7 +968,8 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         op_id = cur.lastrowid
         ops_created.append(op_id)
         _link(conn, batch_id, raw_row_id, operation_id=op_id)
-        _resultado_dual.guardar(conn, uid, op_id, resultado)
+        if resultado:
+            _resultado_dual.guardar(conn, uid, op_id, resultado)
 
         if take >= pos_qty - 1e-9:
             conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (p["id"], uid))

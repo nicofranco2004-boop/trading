@@ -20,12 +20,12 @@ import importing.fx_migrate as fxm  # noqa: E402
 
 
 class UmbralImplausibleTest(unittest.TestCase):
-    """El umbral nuevo es OR, no AND. Replica la aritmética del módulo."""
+    """El umbral nuevo es OR, no AND."""
 
     @staticmethod
     def _implausible(d_pnl, n_ventas):
-        n = max(int(n_ventas), 1)
-        return d_pnl > 100_000 or ((d_pnl / n) > 1_000 and d_pnl > 10_000)
+        # La función REAL del módulo, no una copia de su aritmética.
+        return fxm.delta_pnl_implausible(d_pnl, n_ventas)
 
     def test_caza_el_falso_negativo_medido_en_prod(self):
         # Cuenta #499 del dry-run: 1.203 ventas, Δ P&L US$ 339.593 → 282/venta.

@@ -1450,8 +1450,12 @@ def render_operation_trade_prompt(tier: str = "pro") -> str:
     view = "Trade individual (zoom sobre UNA operación cerrada)"
     pkt = (
         "trade {id, date, ticker, broker, op_type, entry_price, exit_price, "
-        "quantity, pnl_usd, pnl_pct, holding_days} + user_context {avg_win/loss, "
-        "payoff_ratio, vs_avg_win_multiplier, rank_in_year, year_total_trades}."
+        "quantity, pnl_usd, pnl_pct, sale_currency, pnl_pct_ars, pnl_pct_usd, result_ars, "
+        "holding_days} + user_context {avg_win/loss, "
+        "payoff_ratio, vs_avg_win_multiplier, rank_in_year, year_total_trades}. "
+        "Los precios están en sale_currency; pnl_usd es el resultado en dólares (cada punta "
+        "a su dólar) y result_ars el resultado en pesos; pnl_pct_ars y pnl_pct_usd son el % "
+        "en cada moneda (null si falta el dato)."
     )
     free = _maybe_free("operations.trade", view, pkt, tier)
     if free:

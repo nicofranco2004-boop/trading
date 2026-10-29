@@ -138,8 +138,11 @@ export default function TradesTable({
 // mismo recurso visual que MovementRow. Mantiene las acciones por-trade
 // (analizar/editar/eliminar) en todos los modos.
 function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = false, deleting = false }) {
-  const isWin = op.pnl_usd != null && op.pnl_usd > 0
-  const isLoss = op.pnl_usd != null && op.pnl_usd < 0
+  // Color, flecha y signo salen del MISMO número que se imprime (en Pesos puede tener
+  // otro signo que el resultado en dólares: ganó en pesos y perdió en dólares).
+  const pnlVisto = op.pnl_usd == null ? null : histMoney.pnlAt(op)
+  const isWin = pnlVisto != null && pnlVisto > 0
+  const isLoss = pnlVisto != null && pnlVisto < 0
   const ArrowIcon = isWin ? ArrowUpRight : isLoss ? ArrowDownRight : null
   const arrowColor = isWin ? 'text-rendi-pos' : isLoss ? 'text-rendi-neg' : 'text-ink-3'
   // El % en la moneda de la app (pesos o dólares), no en la de la venta.
@@ -156,7 +159,7 @@ function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = fal
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.entry_price != null ? usd(op.entry_price) : '—'}</td>
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{esCobro(op.op_type) ? '—' : (op.quantity ?? '—')}</td>
-      <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(op.pnl_usd)} ${indent ? 'opacity-75' : ''}`}>
+      <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(pnlVisto)} ${indent ? 'opacity-75' : ''}`}>
         {op.pnl_usd == null
           ? '—'
           : histMoney.fmtPnlAt(op, { signed: true, decimals: 2 })}

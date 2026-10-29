@@ -98,3 +98,47 @@ export function resultadoUsdDelPedazo({ cobrado, costo, enPesos, tcVenta, tcComp
   if (cadaPuntaASuDolar && tcCompra > 0 && tcVenta > 0) return cobrado / tcVenta - costo / tcCompra
   return (cobrado - costo) / tcVenta
 }
+
+/**
+ * vistaPreviaDeLaVenta — la vista previa FIFO del formulario «Vender», con las mismas
+ * cuentas que el servidor (`main.sell_position_fifo`): una fila por lote que la venta
+ * toca, con su resultado en dólares. Es una función pura para poder probarla contra los
+ * mismos casos que el servidor.
+ *
+ *   · costo del lote = `invested` si lo tiene (si no, precio × cantidad: `fx.costo_del_lote`)
+ *     + su comisión de compra, prorrateado por lo que se consume.
+ *   · lo cobrado = precio × cantidad − la comisión de venta prorrateada entre los lotes.
+ *   · dólar de compra = el `tc_compra` del lote o, si no lo tiene, el de su fecha
+ *     (`tcCompraDe(fecha)`); dólar de venta = el que escribió el usuario o, si lo dejó
+ *     vacío, el de la fecha de la venta (el que usa el servidor).
+ *
+ * `cadaPuntaASuDolar` es lo que dice el servidor de ESTA cuenta (GET /positions/regla-de-venta).
+ */
+export function vistaPreviaDeLaVenta({ lots, quantity, price, commission = 0, enPesos, tcVenta,
+  tcCompraDe, cadaPuntaASuDolar }) {
+  let restante = quantity
+  const filas = []
+  for (const p of (lots || [])) {
+    if (restante <= 1e-9) break
+    const posQty = p.quantity || 0
+    const take = Math.min(restante, posQty)
+    if (take <= 0) continue
+    const ratio = take / posQty
+    const costoDelLote = p.invested != null ? Number(p.invested) : ((p.buy_price || 0) * posQty)
+    const costo = (costoDelLote + (p.commissions || 0)) * ratio
+    const cobrado = price * take - (quantity > 0 ? commission * (take / quantity) : 0)
+    const tcCompra = p.tc_compra > 0 ? p.tc_compra
+      : (p.entry_date && tcCompraDe ? tcCompraDe(p.entry_date) : null)
+    filas.push({
+      lot_id: p.id,
+      entry_date: p.entry_date,
+      take,
+      pos_qty: p.quantity,
+      buy_price: p.buy_price,
+      pnl_usd: resultadoUsdDelPedazo({ cobrado, costo, enPesos, tcVenta, tcCompra, cadaPuntaASuDolar }),
+      partial: take < p.quantity,
+    })
+    restante -= take
+  }
+  return { filas, total: filas.reduce((a, f) => a + f.pnl_usd, 0) }
+}

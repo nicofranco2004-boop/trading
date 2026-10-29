@@ -62,7 +62,11 @@ def _base_db():
             -- currency/fx_to_usd existen en el schema real (init_db las migra) y
             -- los builders las necesitan para convertir Cupón/Amortización, que
             -- guardan el monto en moneda del broker. Ver backend/realized_pnl.py.
-            currency TEXT, fx_to_usd REAL
+            currency TEXT, fx_to_usd REAL,
+            -- El resultado de la venta en pesos y en dólares (resultado_dual.py): el
+            -- paquete de un trade lo lee para decir en qué moneda es cada %.
+            cobrado_ars REAL, costo_ars REAL, pnl_pct_ars REAL, pnl_pct_usd REAL,
+            pnl_sin_dato TEXT
         );
         CREATE TABLE snapshots (
             user_id INTEGER, date TEXT,

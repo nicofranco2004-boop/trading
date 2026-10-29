@@ -15977,11 +15977,10 @@ def regla_de_venta(uid: int = Depends(get_effective_user)):
       el costo al dólar de compra del lote (resultado_dual.resultado_en_dolares).
     · si no (v1): la ganancia en pesos ÷ el dólar de la venta.
 
-    Sólo lee: `fx_version` ya existe para toda cuenta que vendió o importó algo,
-    y una cuenta virgen nace v2 (fx.fx_version la persiste, igual que la venta)."""
+    Sólo lee (`fx.fx_version_lectura`): no persiste la versión de una cuenta virgen,
+    que la venta resuelve y guarda cuando ocurre."""
     with db_abierta() as conn:
-        v2 = _fx.fx_version(conn, uid) == _fx.FX_V2
-        conn.commit()
+        v2 = _resultado_dual.es_cuenta_v2(conn, uid)
     return {"cada_punta_a_su_dolar": v2}
 
 
@@ -16203,21 +16202,25 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                     # rebuild y el histórico). El dólar de compra: el del LOTE (el
                     # que usa Cartera); el de la venta: el que escribió el usuario,
                     # si lo escribió; si no, el de la fecha.
-                    resultado = _resultado_dual.resultado_en_dos_monedas(
-                        conn, costo=costo_en_su_moneda, moneda_costo=lot_currency,
-                        fecha_compra=(p["entry_date"] if "entry_date" in p.keys() else None),
-                        cobrado=data.exit_price * take - chunk_commission_native,
-                        moneda_venta=sell_ccy, fecha_venta=op_date,
-                        riel=(_fx.RIEL_MEP if _hist_fx else _fx.RIEL_BLUE),
-                        tc_compra=(p["tc_compra"] if "tc_compra" in p.keys() else None),
-                        tc_venta=(data.tc_venta if sell_ccy == "ARS" else None))
+                    #
+                    # SÓLO EN LAS CUENTAS v2 (el dólar por fecha). En las v1 los flujos
+                    # siguen al dólar del import y mover sólo esta pata descuadra el
+                    # rendimiento (fx.py, "Versionado por usuario"); y escribir las
+                    # columnas junto a un `pnl_usd` de la regla vieja dejaba la fila
+                    # con dos reglas y fuera de la cola de la corrección al migrarla.
+                    resultado = None
+                    if _hist_fx:
+                        resultado = _resultado_dual.resultado_en_dos_monedas(
+                            conn, costo=costo_en_su_moneda, moneda_costo=lot_currency,
+                            fecha_compra=(p["entry_date"] if "entry_date" in p.keys() else None),
+                            cobrado=data.exit_price * take - chunk_commission_native,
+                            moneda_venta=sell_ccy, fecha_venta=op_date, riel=_fx.RIEL_MEP,
+                            tc_compra=(p["tc_compra"] if "tc_compra" in p.keys() else None),
+                            tc_venta=(data.tc_venta if sell_ccy == "ARS" else None))
                     # EL RESULTADO EN DÓLARES: lo cobrado en dólares menos lo que costó
-                    # en dólares (ver `resultado_dual.resultado_en_dolares`). Sólo en las
-                    # cuentas en el dólar por fecha (v2): en las v1 los flujos siguen al
-                    # dólar del import y mover sólo esta pata descuadra el rendimiento
-                    # (fx.py, "Versionado por usuario"). Sin dólar de compra, queda la
-                    # regla de siempre.
-                    _en_dolares = _resultado_dual.resultado_en_dolares(resultado) if _hist_fx else None
+                    # en dólares (ver `resultado_dual.resultado_en_dolares`). Sin dólar de
+                    # compra, queda la regla de siempre.
+                    _en_dolares = _resultado_dual.resultado_en_dolares(resultado)
                     if _en_dolares:
                         pnl_usd, invested_usd = _en_dolares
 
@@ -16256,7 +16259,8 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                          sell_ccy, fx_stamp),
                     )
                     ops_created.append(cur.lastrowid)
-                    _resultado_dual.guardar(conn, uid, cur.lastrowid, resultado)
+                    if resultado:
+                        _resultado_dual.guardar(conn, uid, cur.lastrowid, resultado)
 
                     # Reversibilidad: la venta CONSUME el lote (lo borra o lo achica), y esa
                     # información no vive en ningún otro lado — sin esta foto, borrar la venta
@@ -16580,6 +16584,9 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
             "FROM operations "
             "WHERE user_id=? AND date LIKE ? ORDER BY ABS(COALESCE(pnl_usd,0)) DESC",
             (uid, mes + "%")).fetchall()
+        # La moneda de cada venta como la resuelve resultado_dual: la de la fila y, si falta
+        # (las ventas anteriores al 28/7), la del broker. Se arma acá, con la conexión abierta.
+        moneda_por_venta = {o["id"]: _resultado_dual.moneda_de_la_venta(conn, uid, dict(o)) for o in ops}
     finally:
         conn.close()
 
@@ -16608,7 +16615,7 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
         # Los precios dan el % en la MONEDA DE LA VENTA. Desde la regla de cada punta
         # a su dólar (resultado_dual) `pnl_pct` de una venta en pesos es el % en
         # dólares, así que se compara contra el de pesos que la fila trae al lado.
-        _pct_moneda = (o["pnl_pct_ars"] if (o["currency"] or "").upper() == "ARS"
+        _pct_moneda = (o["pnl_pct_ars"] if moneda_por_venta.get(o["id"]) == "ARS"
                        else o["pnl_pct_usd"])
         pct_guardado = _pct_moneda if _pct_moneda is not None else o["pnl_pct"]
         # El % que implican los precios. Libre de moneda: es una ratio.
@@ -20215,21 +20222,40 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
         # 125.000+ARS es consistente): este CSV no tiene columna de moneda, así
         # que el único valor correcto bajo ese encabezado es el USD real.
         rows = [dict(r) for r in conn.execute(
-            f"""SELECT date AS fecha_cierre, entry_date, asset, broker,
+            f"""SELECT id, date AS fecha_cierre, entry_date, asset, broker,
                       op_type AS tipo, quantity, entry_price, exit_price,
                       {realized_pnl.realized_usd_sql()} AS pnl_usd,
-                      pnl_pct, commissions
+                      pnl_pct, commissions, currency, cobrado_ars, costo_ars,
+                      pnl_pct_ars, pnl_pct_usd, pnl_sin_dato
                FROM operations
                WHERE user_id = ?
                ORDER BY date DESC""",
             (uid,),
         ).fetchall()]
+        # Los precios del archivo están en la moneda de la VENTA y `P&L USD` en dólares: el
+        # % que va al lado tiene que decir en qué moneda es. Desde que una venta guarda su
+        # resultado en pesos y en dólares (resultado_dual), `pnl_pct` de una venta de cuenta
+        # v2 es el % en dólares, así que se sacan LOS DOS con su columna y "P&L %" queda como
+        # siempre: el % en la moneda de la venta (el que cierra con los precios).
+        for r in rows:
+            _op = {**r, "op_type": r.get("tipo")}
+            _mon = (_resultado_dual.moneda_de_la_venta(conn, uid, _op)
+                    if _resultado_dual.es_venta_de_un_lote(_op) else None)
+            _pa, _pu = _resultado_dual.pcts_de_la_venta(r, _mon) if _mon else (None, None)
+            r["moneda"] = _mon
+            r["pct_ars"], r["pct_usd"] = _pa, _pu
+            r["resultado_ars"] = (round(float(r["cobrado_ars"]) - float(r["costo_ars"]), 2)
+                                  if r.get("cobrado_ars") is not None and r.get("costo_ars") is not None
+                                  else None)
+            if _mon:
+                r["pnl_pct"] = _pa if _mon == "ARS" else _pu
         # Mismo techo que la app: arriba de 1000 % el cociente dejó de ser un
         # rendimiento y la celda va vacía. `pnl_usd` sale igual — falta el
         # costo, no el dato. Sin esto la planilla que el usuario le manda a su
         # contador llevaba un "+188.566 %". Ver realized_pnl.pct_creible.
         for r in rows:
-            r["pnl_pct"] = realized_pnl.pct_creible(r.get("pnl_pct"))
+            for k in ("pnl_pct", "pct_ars", "pct_usd"):
+                r[k] = realized_pnl.pct_creible(r.get(k))
         # Conversiones de moneda. La COMPRA de USD no cierra nada (P&L 0) y su
         # fila guarda los PESOS en `quantity` con el TC como "precio entrada":
         # bajo "Cantidad" el contador leía 15.400 unidades a $1.539,65. Sale de
@@ -20266,6 +20292,10 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
         ("pnl_usd",       "P&L USD"),
         ("pnl_pct",       "P&L %"),
         ("commissions",   "Comisiones"),
+        ("moneda",        "Moneda de la venta"),
+        ("resultado_ars", "Resultado en pesos"),
+        ("pct_ars",       "% en pesos"),
+        ("pct_usd",       "% en USD"),
     ]
     today = date.today().isoformat()
     return _csv_response(rows, headers, f"rendi_operaciones_{today}.csv")
@@ -21008,10 +21038,11 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
             # Mismo helper que usa el import — una sola implementación del movimiento
             # de efectivo. Un P&L negativo lo DESCUENTA, que es lo correcto.
             _adjust_broker_cash(conn, uid, op.broker, pnl_cash_nativo)
-        # Una 'Venta' tipeada también tiene su resultado en las dos monedas (sin fecha
-        # de compra, la otra moneda queda "sin dato"). Misma cuenta que los motores.
-        _resultado_dual.recalcular_fila(conn, uid, cur.lastrowid)
         row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
+        # Una 'Venta' tipeada lleva LOS NÚMEROS QUE ESCRIBIÓ el usuario: no hay lote del que
+        # sacar un costo exacto, así que no se reconstruye y la corrección del histórico no
+        # la toca (resultado_dual.MANUAL).
+        _resultado_dual.al_cargar_a_mano(conn, uid, cur.lastrowid, dict(row))
         # Sync cache de pnl_realized en monthly_entries
         try:
             # Asegurar que exista la fila del mes ANTES del recalc: `_recalc` solo recompone
@@ -21204,16 +21235,15 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
         # puede mover esta operación hasta el commit.
         for broker_mov, delta in movimientos:
             _adjust_broker_cash(conn, uid, broker_mov, delta)
-        # El resultado en las dos monedas sale de los precios, la cantidad y el % de la
-        # fila: si la edición los cambió, el guardado quedaría viejo. Se re-deriva con
-        # la misma cuenta que usan los motores de venta.
-        _resultado_dual.recalcular_fila(conn, uid, oid,
-                                        antes=dict(_fila_antes) if _fila_antes else None)
         # FIXED: include user_id in SELECT to prevent IDOR data leak
         row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)).fetchone()
         if not row:
             conn.close()
             raise HTTPException(404, "Not found")
+        # Si la edición movió algo del resultado (precio, cantidad, fecha, P&L…), la fila
+        # pasa a llevar los números del usuario y sale de la cola de la corrección; si no
+        # (un «guardar» sin tocar, o sólo la nota), queda como estaba.
+        _resultado_dual.al_editar(conn, uid, oid, dict(_fila_antes) if _fila_antes else None, dict(row))
         try:
             _recalc_pnl_realized_from_ops(conn, uid)
         except Exception as ex:
@@ -24274,11 +24304,13 @@ def admin_diagnose_sell_fx(limit_ops: int = 500000, uid: int = Depends(get_admin
         rows = conn.execute(
             "SELECT id, user_id, date, broker, asset, pnl_usd, pnl_pct, entry_price, "
             "       exit_price, quantity, commissions, entry_date "
-            # Sólo las filas de la REGLA VIEJA: las escritas o corregidas con la de
-            # cada punta a su dólar (resultado_dual, columnas del resultado llenas)
-            # no cumplen `pnl_usd = pnl_ars / tc_venta`, que es la tesis de acá.
-            "FROM operations WHERE op_type='Venta' AND pnl_pct_ars IS NULL "
-            "  AND pnl_pct_usd IS NULL AND pnl_sin_dato IS NULL ORDER BY date LIMIT ?",
+            # Sólo las filas de la REGLA VIEJA: las escritas o corregidas con la de cada
+            # punta a su dólar (resultado_dual: costo y cobrado en dólares llenos) no
+            # cumplen `pnl_usd = pnl_ars / tc_venta`, que es la tesis de acá. NO se usa
+            # "columnas vacías" como marca: una venta corregida con un motivo
+            # (`pnl_sin_dato`) o de una cuenta v1 sigue en la regla vieja y tiene que verse.
+            "FROM operations WHERE op_type='Venta' "
+            "  AND NOT (costo_usd IS NOT NULL AND cobrado_usd IS NOT NULL) ORDER BY date LIMIT ?",
             (max(1, int(limit_ops)),),
         ).fetchall()
 
@@ -26536,28 +26568,63 @@ def admin_repair_caja_1415(apply: bool = False, uid: int = Depends(get_admin_use
         conn.close()
 
 
+def _aplicar_deltas_al_mes(conn, uid: int, deltas: dict) -> None:
+    """Mueve el P&L realizado de cada mes por la DIFERENCIA de las ventas corregidas
+    (`deltas`: {(broker, año, mes): diferencia en dólares}), en el renglón del broker y
+    en el global, y repara la cadena de capital de los brokers tocados.
+
+    NO se llama a `_recalc_pnl_realized_from_ops`: ese recálculo reescribe cada mes
+    entero desde las operaciones y borra el P&L realizado que el usuario cargó a mano
+    en /mensual (medido: 500 → 0 y el capital de los meses siguientes corrido).
+    Moviendo sólo la diferencia, lo que no es de las ventas corregidas queda intacto."""
+    tocados = []
+    for (broker, anio, mes), delta in sorted(deltas.items()):
+        if abs(delta) < 0.005:
+            continue
+        _update_monthly_pnl_realized(conn, uid, broker, anio, mes, delta)
+        _update_monthly_pnl_realized(conn, uid, "global", anio, mes, delta)
+        if broker not in tocados:
+            tocados.append(broker)
+    for b in tocados + (["global"] if tocados else []):
+        _repair_monthly_chain(conn, uid, b)
+
+
 @app.post("/api/admin/resultado-dos-monedas")
 def admin_resultado_dos_monedas(apply: bool = False, tanda: int = 10, dias: int = 60,
-                                user_id: Optional[int] = None,
+                                user_id: Optional[int] = None, saltear: str = "",
                                 uid: int = Depends(get_admin_user)):
     """La corrección del resultado de las ventas viejas, POR TANDAS: las próximas
     `tanda` cuentas que usaron la app en los últimos `dias` días y tienen ventas
     sin corregir (o sólo `user_id`). `apply=false` = muestra cuánto cambia cada
-    cuenta sin escribir nada.
+    cuenta sin escribir nada. `saltear` = user_id separados por coma que ya fallaron
+    (una cuenta que falla sigue pendiente y sería siempre la primera de la cola).
 
     Por cada venta: el resultado en pesos y en dólares (columnas nuevas) y, en
     cuentas v2, `pnl_usd`/`pnl_pct` a la regla de cada punta a su dólar — por la
-    MISMA función que una venta nueva (`resultado_dual`). Después
-    `_recalc_pnl_realized_from_ops`, el recálculo de siempre de los meses, en la
-    misma transacción de la cuenta. Idempotente."""
+    MISMA función que una venta nueva (`resultado_dual`), y sólo si la fila cierra
+    (ver su docstring). Los meses se mueven por la diferencia
+    (`_aplicar_deltas_al_mes`). Con `apply`, la historia reconstruida de las cuentas
+    corregidas se rehace en la fila de reconstrucción (un solo hilo): las fotos
+    guardadas del P&L por fecha traían el realizado viejo. Idempotente."""
     tanda = max(1, min(int(tanda), 50))
+    try:
+        salteadas = [int(x) for x in saltear.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(400, "saltear: user_id separados por coma")
     conn = get_db()
     try:
-        return _resultado_dual.corregir_tanda(
-            conn, recalcular_meses=_recalc_pnl_realized_from_ops, apply=bool(apply),
-            tanda=tanda, dias_activo=max(1, int(dias)), user_id=user_id)
+        out = _resultado_dual.corregir_tanda(
+            conn, aplicar_a_los_meses=_aplicar_deltas_al_mes, apply=bool(apply),
+            tanda=tanda, dias_activo=max(1, int(dias)), user_id=user_id, saltear=salteadas)
     finally:
         conn.close()
+    if apply:
+        corregidas = [c["user_id"] for c in out["cuentas"] if c["ventas"]]
+        for u in corregidas:
+            _ai_cache_invalidate(u)
+        if corregidas:
+            _reconstruir_en_fila(corregidas)
+    return out
 
 
 @app.post("/api/admin/repair-interes-pf")
@@ -36027,11 +36094,17 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
             return {"error": f"asset '{asset}' no tiene formato válido (alphanumeric A-Z0-9, max 10 chars, opcional .BA)"}
         with db_abierta() as conn:
             rows = conn.execute(
-                """SELECT date, op_type, entry_price, exit_price, quantity,
-                          pnl_usd, pnl_pct, entry_date, currency, fx_to_usd, commissions
+                """SELECT id, broker, date, op_type, entry_price, exit_price, quantity,
+                          pnl_usd, pnl_pct, entry_date, currency, fx_to_usd, commissions,
+                          cobrado_ars, costo_ars, pnl_pct_ars, pnl_pct_usd, pnl_sin_dato
                    FROM operations WHERE user_id=? AND asset=? ORDER BY date DESC""",
                 (uid, asset),
             ).fetchall()
+            # La moneda de cada venta (la de la fila o, si falta, la del broker), con la
+            # conexión abierta: los precios de una venta están en ELLA.
+            monedas = {r["id"]: (_resultado_dual.moneda_de_la_venta(conn, uid, dict(r))
+                                 if _resultado_dual.es_venta_de_un_lote(dict(r)) else None)
+                       for r in rows}
         # Los cobros (cupón, amortización, dividendo, interés) con sus números de
         # verdad: lo que entró y la ganancia, en dólares, sin "cantidad" (ahí está
         # la plata cobrada, no unidades). Misma lectura que Movimientos.
@@ -36039,7 +36112,18 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
         for r in rows:
             d = dict(r)
             cobro = realized_pnl.leer_cobro(d)
-            for k in ("currency", "fx_to_usd", "commissions"):
+            _mon = monedas.get(d.get("id"))
+            if _mon:
+                # Los precios están en la moneda de la venta; `pnl_usd` en dólares (cada punta a
+                # su dólar). El % se da en las dos monedas, no uno solo sin decir cuál es.
+                d["sale_currency"] = _mon
+                d["pnl_pct_ars"], d["pnl_pct_usd"] = _resultado_dual.pcts_de_la_venta(d, _mon)
+                d["result_ars"] = (round(float(d["cobrado_ars"]) - float(d["costo_ars"]), 2)
+                                   if d.get("cobrado_ars") is not None and d.get("costo_ars") is not None
+                                   else None)
+                d.pop("pnl_pct", None)
+            for k in ("id", "broker", "currency", "fx_to_usd", "commissions",
+                      "cobrado_ars", "costo_ars", "pnl_sin_dato"):
                 d.pop(k, None)
             if cobro:
                 d = {"date": d.get("date"), "op_type": d.get("op_type"),
@@ -36050,7 +36134,11 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
         return {"asset": asset, "operations": ops_out, "count": len(ops_out),
                 "_note": ("Las filas con kind='income' son cobros (cupón, amortización, "
                           "dividendo, interés): amount_usd es lo que entró y gain_usd la "
-                          "ganancia, en dólares. No son compras ni ventas.")}
+                          "ganancia, en dólares. No son compras ni ventas. En las ventas, "
+                          "entry_price y exit_price están en sale_currency; pnl_usd es el "
+                          "resultado en DÓLARES (lo cobrado menos lo que costó, cada uno a su "
+                          "dólar) y result_ars el resultado en pesos; pnl_pct_ars y pnl_pct_usd "
+                          "son el % en cada moneda (null si falta el dato).")}
 
     elif name == "get_monthly_detail":
         # months debe ser int [1, 24]. El LLM puede mandar string o número
@@ -36142,7 +36230,7 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
             ).fetchall()]
             pos_query = (
                 "SELECT broker, asset, asset_type, is_cash, invested, quantity, "
-                "commissions, price_override, currency FROM positions WHERE user_id=?"
+                "commissions, price_override, currency, tc_compra FROM positions WHERE user_id=?"
             )
             pos_args: tuple = (uid,)
             if asset_filter:
@@ -36173,8 +36261,12 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
                     if not bpos:
                         continue
                     try:
+                        # costo='compra': el dólar de COMPRA del lote, el de Cartera. Lo realizado
+                        # se anota con ese dólar (resultado_dual); con el de hoy, realizado + no
+                        # realizado mezclaba dos dólares.
                         r = compute_broker_value_usd(bpos, prices, b['currency'], tc_blue,
-                                                     broker_name=b['name'], cedear_rate=tc_cedear)
+                                                     broker_name=b['name'], cedear_rate=tc_cedear,
+                                                     costo='compra')
                         market_value_usd += r.get('value', 0) or 0
                         invested_usd += r.get('invested', 0) or 0
                     except Exception as ex:
@@ -46534,7 +46626,8 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     # tarjeta mostraba "ARS→USDT +US$ 0" como lo último que hizo el usuario.
     last_op_row = conn.execute(
         f"""SELECT date, broker, asset, op_type,
-                   {realized_pnl.realized_usd_sql()} AS pnl_usd
+                   {realized_pnl.realized_usd_sql()} AS pnl_usd,
+                   cobrado_ars, costo_ars
               FROM operations
              WHERE user_id = ? AND pnl_usd IS NOT NULL
                AND {realized_pnl.no_es_conversion_sql()}{br_clause}
@@ -46549,6 +46642,13 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
             "broker": last_op_row["broker"],
             "op_type": last_op_row["op_type"],
             "pnl_usd": float(last_op_row["pnl_usd"]) if last_op_row["pnl_usd"] is not None else None,
+            # El resultado en PESOS, exacto, de una venta con sus dos monedas guardadas
+            # (resultado_dual): la vista en pesos de Reportes lo usa en vez de pnl_usd × dólar,
+            # que ya no da la ganancia en pesos (GGAL: +US$10 × 1.500 = $15.000 contra
+            # los $240.000 que dice Operaciones). None para cobros y ventas sin los dos datos.
+            "resultado_ars": (round(float(last_op_row["cobrado_ars"]) - float(last_op_row["costo_ars"]), 2)
+                              if last_op_row["cobrado_ars"] is not None and last_op_row["costo_ars"] is not None
+                              else None),
         }
 
     # Top 3 holdings por valor invertido — proxy útil de "qué tenés más"
@@ -52454,7 +52554,7 @@ def _advisor_realized_raw(conn, ids: list) -> dict:
     for r in conn.execute(
         f"""SELECT user_id, broker, asset, op_type,
                    {realized_pnl.realized_usd_sql()} AS pnl_usd,
-                   pnl_pct, cost_basis_consumed, currency, fx_to_usd
+                   pnl_pct, cost_basis_consumed, currency, fx_to_usd, costo_usd, cobrado_usd
             FROM operations WHERE user_id IN ({ph}) AND pnl_usd IS NOT NULL""", ids
     ).fetchall():
         pnl = float(r["pnl_usd"] or 0)
@@ -52480,7 +52580,8 @@ def _advisor_realized_raw(conn, ids: list) -> dict:
         if b is None:
             b = agg[k] = {"asset": asset.upper(), "asset_type": atype,
                           "is_ar_market": bool(is_ar), "realized_usd": 0.0,
-                          "income_usd": 0.0, "cost_usd": 0.0, "cost_incomplete": False}
+                          "income_usd": 0.0, "cost_usd": 0.0, "cost_incomplete": False,
+                          "_reglas": set()}
         elif atype and not b["asset_type"]:
             b["asset_type"] = atype
 
@@ -52506,6 +52607,13 @@ def _advisor_realized_raw(conn, ids: list) -> dict:
             continue
 
         b["realized_usd"] += pnl
+        # ¿Con qué regla se anotó esta venta? Las de pesos tienen dos: la vieja (ganancia en
+        # pesos ÷ dólar de la venta; costo despejado a ESE dólar) y la de cada punta a su
+        # dólar (resultado_dual; costo al dólar de compra). Sumadas en un mismo grupo dan un
+        # % que no es de ninguna: se marca abajo y la tasa deja de publicarse.
+        if (r["currency"] or "").upper() == "ARS":
+            b["_reglas"].add("nueva" if (r["costo_usd"] is not None and r["cobrado_usd"] is not None)
+                             else "vieja")
         pct = r["pnl_pct"]
         cost = (pnl / (float(pct) / 100)) if (pct is not None and float(pct) != 0) else None
         if cost is not None and cost == cost and cost > 0 and cost != float("inf"):
@@ -52513,6 +52621,9 @@ def _advisor_realized_raw(conn, ids: list) -> dict:
         else:
             b["cost_incomplete"] = True
 
+    for b in agg.values():
+        if len(b["_reglas"]) > 1:
+            b["cost_incomplete"] = True
     return agg
 
 
@@ -52528,16 +52639,19 @@ def _advisor_realized_by_asset(conn, ids: list, raw: dict = None):
             f = folded[k] = {"asset": asset, "asset_type": b["asset_type"],
                              "is_ar_market": is_ar, "realized_usd": 0.0,
                              "income_usd": 0.0, "cost_usd": 0.0,
-                             "cost_incomplete": False}
+                             "cost_incomplete": False, "_reglas": set()}
         elif b["asset_type"] and not f["asset_type"]:
             f["asset_type"] = b["asset_type"]
         f["realized_usd"] += b["realized_usd"]
         f["income_usd"] += b["income_usd"]
         f["cost_usd"] += b["cost_usd"]
         f["cost_incomplete"] = f["cost_incomplete"] or b["cost_incomplete"]
+        f["_reglas"] |= b["_reglas"]
 
     out = []
     for b in folded.values():
+        if len(b["_reglas"]) > 1:      # clientes con una y otra regla: el % no es de ninguna
+            b["cost_incomplete"] = True
         # Ojo con el `or`: dos clientes que vendieron +500 y −500 dan un neto de
         # 0, pero el capital que estuvo en juego SÍ va al denominador del
         # rendimiento. Tirar la fila perdía esos US$10.000 de costo y la porción

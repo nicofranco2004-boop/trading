@@ -32,6 +32,8 @@ class SellFifoFxStampTest(unittest.TestCase):
     BROKER = "TestVenta"
     FECHA = "2024-03-15"
     TC_DE_LA_FECHA = 1000.0        # lejos de 1 y de cualquier default
+    FECHA_COMPRA = "2024-01-10"
+    TC_DE_LA_COMPRA = 800.0        # el peso se devaluó entre la compra y la venta
 
     def setUp(self):
         conn = main.get_db()
@@ -52,6 +54,12 @@ class SellFifoFxStampTest(unittest.TestCase):
         conn.execute(
             "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
             (self.FECHA, 950.0, self.TC_DE_LA_FECHA))
+        # El dólar del día de la COMPRA: sin él la venta no tiene con qué costear el lote en
+        # dólares y cae a la regla vieja en silencio (pnl_sin_dato='sin_dolar_compra'); esta
+        # prueba pasaba por ESO y no por lo que dice.
+        conn.execute(
+            "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
+            (self.FECHA_COMPRA, 760.0, self.TC_DE_LA_COMPRA))
         # Lote: 10 unidades compradas a 1.000 ARS = 10.000 ARS invertidos.
         self.pid = conn.execute(
             """INSERT INTO positions
@@ -76,7 +84,7 @@ class SellFifoFxStampTest(unittest.TestCase):
     def _venta(self):
         conn = main.get_db()
         row = conn.execute(
-            "SELECT pnl_usd, fx_to_usd, currency FROM operations "
+            "SELECT pnl_usd, fx_to_usd, currency, cobrado_ars, costo_ars, pnl_sin_dato FROM operations "
             "WHERE user_id=? AND op_type='Venta' LIMIT 1", (self.uid,)).fetchone()
         conn.close()
         return row
@@ -91,29 +99,32 @@ class SellFifoFxStampTest(unittest.TestCase):
         self.assertNotAlmostEqual(float(row["fx_to_usd"]), 1.0, places=2)
 
     def test_el_pnl_sellado_es_coherente_con_el_tc_sellado(self):
-        """El invariante que el bug rompía: `pnl_usd × fx_to_usd` tiene que dar el
-        P&L en pesos. Con el sello en 1.0, la fila se auto-contradecía."""
+        """El invariante que el bug rompía, en la regla de cada punta a su dólar (resultado_dual):
+        el resultado en PESOS cierra con los precios, y el de dólares es lo cobrado al dólar de
+        la venta menos lo que costó al de la compra. Ya NO vale `pnl_usd × fx_to_usd = pesos`:
+        con el peso devaluado entre la compra y la venta eso daba una ganancia que no existe."""
         self._vender_sin_tc()
         row = self._venta()
+        self.assertIsNone(row["pnl_sin_dato"], "la prueba cayó a la regla vieja por falta de un dólar")
         pnl_ars = 2000 * 10 - 10000          # 10.000 ARS de ganancia
-        self.assertAlmostEqual(float(row["pnl_usd"]) * float(row["fx_to_usd"]),
-                               pnl_ars, places=1)
+        self.assertAlmostEqual(float(row["cobrado_ars"]) - float(row["costo_ars"]), pnl_ars, places=2)
         self.assertAlmostEqual(float(row["pnl_usd"]),
-                               pnl_ars / self.TC_DE_LA_FECHA, places=2)
+                               20000 / self.TC_DE_LA_FECHA - 10000 / self.TC_DE_LA_COMPRA, places=2)
+        self.assertAlmostEqual(float(row["pnl_usd"]), 7.5, places=2)
 
     def test_el_mensual_del_broker_queda_en_dolares(self):
         """`monthly_entries.pnl_realized` vive en USD. Con `tc_v = 1` entraba el
         nominal en PESOS, y de ahí a capital_final."""
         self._vender_sin_tc()
         conn = main.get_db()
-        row = conn.execute(
-            "SELECT pnl_realized FROM monthly_entries "
-            "WHERE user_id=? AND broker=? AND year=2024 AND month=3",
-            (self.uid, self.BROKER)).fetchone()
+        for broker in (self.BROKER, "global"):
+            row = conn.execute(
+                "SELECT pnl_realized FROM monthly_entries "
+                "WHERE user_id=? AND broker=? AND year=2024 AND month=3",
+                (self.uid, broker)).fetchone()
+            self.assertIsNotNone(row, broker)
+            self.assertAlmostEqual(float(row["pnl_realized"]), 7.5, places=2, msg=broker)
         conn.close()
-        self.assertIsNotNone(row)
-        self.assertAlmostEqual(float(row["pnl_realized"]),
-                               10000 / self.TC_DE_LA_FECHA, places=2)
 
     def test_si_el_usuario_manda_el_tc_gana_el_suyo(self):
         """El fix no le quita el control al usuario: si completa el campo, se

@@ -44,17 +44,22 @@ DOLAR = {"2024-01-10": 1000.0, "2024-03-11": 1200.0, "2024-06-10": 1500.0}
 def setUpModule():
     conn = main.get_db()
     for fecha, tc in DOLAR.items():
-        conn.execute("INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta) "
-                     "VALUES (?,?,?)", (fecha, tc, tc))
+        # ON CONFLICT y no INSERT OR REPLACE: el mismo SQL en SQLite y en Postgres (pgshim
+        # rechaza a propósito el segundo). La tabla está vacía al empezar el módulo.
+        conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?) "
+                     "ON CONFLICT (date) DO UPDATE SET blue_venta=EXCLUDED.blue_venta, "
+                     "mep_venta=EXCLUDED.mep_venta", (fecha, tc, tc))
     conn.commit()
     conn.close()
 
 
 @contextlib.contextmanager
 def _regla_vieja():
-    """El motor de venta como era antes: sin el resultado en dos monedas y con
-    `pnl_usd` = ganancia en pesos ÷ dólar de la venta. Así nacen las filas que
-    hoy están en producción."""
+    """El motor de venta de 73e20fa4: sin el resultado en dos monedas y con `pnl_usd` =
+    ganancia en pesos ÷ dólar de la venta. Fabrica filas como las de producción para ese
+    motor; NO genera las que tienen `currency` y `fx_to_usd` NULL (anteriores al 28/7) ni
+    `fx_to_usd` = 1,0 (el campo TC vacío, antes del 8/9): esas se plantan con un UPDATE
+    después de vender (ver `Auditoria`)."""
     with mock.patch.object(resultado_dual, "resultado_en_dolares", lambda r: None), \
             mock.patch.object(resultado_dual, "guardar", lambda *a, **k: None):
         yield
@@ -130,10 +135,12 @@ class _Base(unittest.TestCase):
         conn.close()
         return float(row["pnl_realized"] or 0) if row else None
 
-    def _corregir(self, *, apply, user_id=None, tanda=10, dias=60):
+    def _corregir(self, *, apply, user_id=None, tanda=10, dias=60, saltear=()):
         q = f"apply={'true' if apply else 'false'}&tanda={tanda}&dias={dias}"
         if user_id is not None:
             q += f"&user_id={user_id}"
+        if saltear:
+            q += "&saltear=" + ",".join(str(u) for u in saltear)
         r = self.client.post(f"/api/admin/resultado-dos-monedas?{q}", headers=self._h_admin())
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()
@@ -319,9 +326,9 @@ class SinFechaDeCompra(_Base):
 
 
 class CuentaV1(_Base):
-    """Las cuentas que todavía no pasaron al dólar por fecha no cambian."""
+    """Las cuentas que todavía no pasaron al dólar por fecha: ni la regla ni las columnas."""
 
-    def test_v1_sigue_con_la_regla_vieja(self):
+    def test_v1_no_escribe_nada_y_queda_pendiente(self):
         self.uid, self.h = self._cuenta(v1=True)
         self._alta(broker=PESOS, asset="GGAL", quantity=100, buy_price=4500,
                    entry_date="2024-01-10", currency="ARS")
@@ -329,29 +336,50 @@ class CuentaV1(_Base):
                      date="2024-06-10", currency="ARS", tc_venta=1500)
         op = self._ventas("GGAL")[0]
         self.assertAlmostEqual(op["pnl_usd"], 160, places=2)
-        self.assertAlmostEqual(op["pnl_pct_usd"], 2.2222, places=3)   # la columna, igual
+        self.assertAlmostEqual(op["pnl_pct"], 53.3333, places=3)
+        for c in COLS:
+            self.assertIsNone(op[c], c)
 
 
 class EditarLaVenta(_Base):
 
-    def test_cambiar_el_precio_recalcula_las_columnas(self):
+    def _venta_y_cuerpo(self, **cambios):
         self._alta(broker=PESOS, asset="GGAL", quantity=100, buy_price=4500,
                    entry_date="2024-01-10", currency="ARS")
         self._vender(broker=PESOS, asset="GGAL", quantity=100, exit_price=6900,
                      date="2024-06-10", currency="ARS")
         op = self._ventas("GGAL")[0]
-        r = self.client.put(f"/api/operations/{op['id']}", headers=self.h, json={
-            "date": op["date"], "broker": op["broker"], "asset": op["asset"],
-            "op_type": "Venta", "entry_price": 4500, "exit_price": 7200,
-            "quantity": 50, "pnl_usd": 15, "pnl_pct": 6.6667, "commissions": 0,
-            "currency": "ARS", "fx_to_usd": op["fx_to_usd"]})
+        cuerpo = {"date": op["date"], "broker": op["broker"], "asset": op["asset"],
+                  "op_type": "Venta", "entry_price": op["entry_price"],
+                  "exit_price": op["exit_price"], "quantity": op["quantity"],
+                  "pnl_usd": op["pnl_usd"], "pnl_pct": op["pnl_pct"], "commissions": 0,
+                  "currency": "ARS", "fx_to_usd": op["fx_to_usd"]}
+        cuerpo.update(cambios)
+        r = self.client.put(f"/api/operations/{op['id']}", headers=self.h, json=cuerpo)
+        self.assertEqual(r.status_code, 200, r.text)
+        return op, self._ventas("GGAL")[0]
+
+    def test_guardar_sin_tocar_deja_la_fila_como_estaba(self):
+        antes, despues = self._venta_y_cuerpo()
+        for c in COLS + ("pnl_usd", "pnl_pct"):
+            self.assertEqual(antes[c], despues[c], c)
+
+    def test_cambiar_el_precio_pasa_a_numeros_del_usuario(self):
+        _, op = self._venta_y_cuerpo(exit_price=7200, pnl_usd=15, pnl_pct=6.6667)
+        self.assertEqual(op["pnl_sin_dato"], "manual")
+        for c in ("costo_ars", "costo_usd", "cobrado_ars", "cobrado_usd", "pnl_pct_ars", "pnl_pct_usd"):
+            self.assertIsNone(op[c], c)
+        self.assertAlmostEqual(op["pnl_usd"], 15, places=2)      # el que escribió
+
+    def test_una_venta_tipeada_a_mano_es_del_usuario(self):
+        r = self.client.post("/api/operations", headers=self.h, json={
+            "date": "2024-06-10", "broker": PESOS, "asset": "GGAL", "op_type": "Venta",
+            "entry_price": 4500, "exit_price": 6900, "quantity": 100,
+            "pnl_usd": 160, "pnl_pct": 53.3, "commissions": 0, "currency": "ARS"})
         self.assertEqual(r.status_code, 200, r.text)
         op = self._ventas("GGAL")[0]
-        # La mitad del lote: US$ 225 de costo, 360.000 ÷ 1.500 = US$ 240 cobrados.
-        self.assertAlmostEqual(op["costo_usd"], 225, places=3)
-        self.assertAlmostEqual(op["pnl_pct_usd"], 6.6667, places=3)
-        self.assertAlmostEqual(op["pnl_pct_ars"], 60, places=3)
-        self.assertAlmostEqual(op["pnl_usd"], 15, places=2)            # el que escribió
+        self.assertEqual(op["pnl_sin_dato"], "manual")
+        self.assertAlmostEqual(op["pnl_usd"], 160, places=2)
 
 
 class PorArchivo(_Base):
@@ -410,7 +438,8 @@ class Historico(_Base):
         hecho = self._corregir(apply=True, user_id=vieja[0])
         self.assertEqual(hecho["errores"], [])
         self.assertMismaVenta(self._ventas(asset, nueva[1]), self._ventas(asset, vieja[1]))
-        self.assertAlmostEqual(self._mes(nueva[0]), self._mes(vieja[0]), places=2)
+        # Las filas guardan 2 decimales y el mes acumula sin redondear: centavos de diferencia.
+        self.assertAlmostEqual(self._mes(nueva[0]), self._mes(vieja[0]), delta=0.02)
         self.assertEqual(self._corregir(apply=True, user_id=vieja[0])["ventas"], 0,
                          "la segunda vez tocó algo")
         return mirar
@@ -556,6 +585,149 @@ class Tandas(_Base):
         for uid, h in (usa_app, entro, cliente):
             self.assertAlmostEqual(self._ventas("GGAL", h)[0]["pnl_usd"], 10, places=2)
         self.assertAlmostEqual(self._ventas("GGAL", inactiva[1])[0]["pnl_usd"], 160, places=2)
+
+
+class Auditoria(_Base):
+    """Los huecos que dejó ver la auditoría del 29/10: el ciclo de vida de una cuenta v1, las
+    filas que el usuario editó o con un dólar raro, la tanda con una cuenta que falla, lo
+    manual de /mensual y el acceso de un usuario común."""
+
+    def _vieja(self, h=None, **extra):
+        """Una venta en pesos con el motor de 73e20fa4 (sin columnas, regla vieja)."""
+        cuenta = (self._cuenta() if h is None else None)
+        uid, hh = cuenta if cuenta else (None, h)
+        with _regla_vieja():
+            self._alta(hh, broker=PESOS, asset="GGAL", quantity=100, buy_price=4500,
+                       entry_date="2024-01-10", currency="ARS")
+            self._vender(hh, broker=PESOS, asset="GGAL", quantity=100, exit_price=6900,
+                         date="2024-06-10", currency="ARS", **extra)
+        return uid, hh
+
+    def _sql(self, sql, params=()):
+        conn = main.get_db()
+        conn.execute(sql, params)
+        conn.commit()
+        conn.close()
+
+    def test_v1_vende_se_migra_y_la_tanda_la_corrige_igual_que_a_una_v2(self):
+        # Vende con el motor NUEVO (sin _regla_vieja) en una cuenta v1...
+        uid, h = self._cuenta(v1=True)
+        self._alta(h, broker=PESOS, asset="GGAL", quantity=100, buy_price=4500,
+                   entry_date="2024-01-10", currency="ARS")
+        self._vender(h, broker=PESOS, asset="GGAL", quantity=100, exit_price=6900,
+                     date="2024-06-10", currency="ARS", tc_venta=1500)
+        self.assertAlmostEqual(self._ventas("GGAL", h)[0]["pnl_usd"], 160, places=2)
+        # ...pasa a v2 y se corre la tanda: tiene que quedar como una venta v2 de entrada.
+        conn = main.get_db()
+        fx.set_fx_version(conn, uid, fx.FX_V2)
+        conn.commit()
+        conn.close()
+        self._corregir(apply=True, user_id=uid)
+        gemela_uid, gemela_h = self._cuenta()
+        self._alta(gemela_h, broker=PESOS, asset="GGAL", quantity=100, buy_price=4500,
+                   entry_date="2024-01-10", currency="ARS")
+        self._vender(gemela_h, broker=PESOS, asset="GGAL", quantity=100, exit_price=6900,
+                     date="2024-06-10", currency="ARS", tc_venta=1500)
+        self.assertMismaVenta(self._ventas("GGAL", gemela_h), self._ventas("GGAL", h))
+        self.assertAlmostEqual(self._mes(uid), 10, delta=0.02)
+
+    def test_una_venta_editada_antes_de_la_correccion_no_se_pisa(self):
+        uid, h = self._vieja()
+        # El usuario la había editado: otro P&L y otro %, que ya no cierran con los precios.
+        self._sql("UPDATE operations SET pnl_usd=999, pnl_pct=11.11 WHERE user_id=?", (uid,))
+        self._corregir(apply=True, user_id=uid)
+        op = self._ventas("GGAL", h)[0]
+        self.assertEqual(op["pnl_sin_dato"], "no_cierra")
+        self.assertAlmostEqual(op["pnl_usd"], 999, places=2)
+        self.assertAlmostEqual(op["pnl_pct"], 11.11, places=2)
+
+    def test_un_dolar_estampado_raro_no_fabrica_ganancias(self):
+        # El campo TC vacío estampaba 1,0 y el P&L quedaba en pesos (240.000).
+        uid, h = self._vieja()
+        self._sql("UPDATE operations SET fx_to_usd=1.0, pnl_usd=240000 WHERE user_id=?", (uid,))
+        self._corregir(apply=True, user_id=uid)
+        op = self._ventas("GGAL", h)[0]
+        self.assertAlmostEqual(op["pnl_usd"], 10, places=2)          # cobrado al dólar de su fecha
+        self.assertAlmostEqual(op["pnl_pct"], 2.2222, places=3)
+
+    def test_lote_en_dolares_vendido_en_pesos_sin_foto_no_invierte_el_signo(self):
+        # Ventas anteriores al 9/10: sin undo_meta_json. AL30 US$50 → vendido por US$60.
+        uid, h = self._cuenta()
+        with _regla_vieja():
+            self._alta(h, broker=PESOS, asset="AL30", quantity=100, buy_price=0.5,
+                       entry_date="2024-01-10", currency="USD")
+            self._vender(h, broker=PESOS, asset="AL30", quantity=100, exit_price=900,
+                         date="2024-06-10", currency="ARS")
+        self._sql("UPDATE operations SET undo_meta_json=NULL WHERE user_id=?", (uid,))
+        self._corregir(apply=True, user_id=uid)
+        op = self._ventas("AL30", h)[0]
+        self.assertAlmostEqual(op["pnl_usd"], 10, places=2)          # no −15
+        self.assertAlmostEqual(op["costo_usd"], 50, places=3)
+        self.assertAlmostEqual(op["pnl_pct_ars"], 80, places=2)
+
+    def test_una_venta_sin_foto_ni_nada_que_la_valide_no_se_toca(self):
+        uid, h = self._vieja()
+        self._sql("UPDATE operations SET undo_meta_json=NULL, entry_price=NULL WHERE user_id=?", (uid,))
+        self._corregir(apply=True, user_id=uid)
+        op = self._ventas("GGAL", h)[0]
+        self.assertEqual(op["pnl_sin_dato"], "moneda_del_lote")
+        self.assertAlmostEqual(op["pnl_usd"], 160, places=2)
+
+    def test_lo_cargado_a_mano_en_mensual_sobrevive_a_la_tanda(self):
+        uid, h = self._vieja()
+        self._sql("INSERT INTO monthly_entries (user_id, year, month, broker, deposits, withdrawals, "
+                  "pnl_realized, pnl_unrealized, capital_inicio, capital_final) "
+                  "VALUES (?,2023,5,?,0,0,500,0,1000,1500)", (uid, PESOS))
+        self._corregir(apply=True, user_id=uid)
+        self.assertAlmostEqual(self._mes(uid, PESOS, 2023, 5), 500, places=2)   # no se recalcula entero
+        self.assertAlmostEqual(self._mes(uid, PESOS, 2024, 6), 10, delta=0.02)
+
+    def test_una_venta_sin_precio_ni_cantidad_no_traba_la_cola(self):
+        uid_solo, h_solo = self._cuenta()
+        r = self.client.post("/api/operations", headers=h_solo, json={
+            "date": "2024-06-10", "broker": PESOS, "asset": "GGAL", "op_type": "Venta",
+            "pnl_usd": 50, "commissions": 0})
+        self.assertEqual(r.status_code, 200, r.text)
+        uid, h = self._vieja()
+        self._sql("INSERT INTO uso_diario (user_id, dia, evento, cantidad) VALUES (?, date('now'), 'x', 1)", (uid_solo,))
+        self._sql("INSERT INTO uso_diario (user_id, dia, evento, cantidad) VALUES (?, date('now'), 'x', 1)", (uid,))
+        out = self._corregir(apply=True, tanda=5)
+        self.assertEqual(out["con_error"], 0)
+        self.assertAlmostEqual(self._ventas("GGAL", h)[0]["pnl_usd"], 10, places=2)
+        self.assertAlmostEqual(self._ventas("GGAL", h_solo)[0]["pnl_usd"], 50, places=2)   # intacta
+        self.assertEqual(self._corregir(apply=False, tanda=5)["con_ventas_pendientes"], 0)
+
+    def test_una_cuenta_que_falla_no_traba_las_siguientes(self):
+        cuentas = [self._vieja() for _ in range(3)]
+        for uid, _h in cuentas:
+            self._sql("INSERT INTO uso_diario (user_id, dia, evento, cantidad) VALUES (?, date('now'), 'x', 1)", (uid,))
+        rota = cuentas[0][0]
+        real = resultado_dual.corregir_usuario
+
+        def _falla_la_primera(conn, uid, **kw):
+            if uid == rota:
+                raise RuntimeError("boom")
+            return real(conn, uid, **kw)
+        with mock.patch.object(resultado_dual, "corregir_usuario", _falla_la_primera):
+            primera = self._corregir(apply=True, tanda=1)
+            self.assertEqual((primera["corregidas"], primera["con_error"]), (0, 1))
+            self.assertEqual(primera["quedan_despues"], 3)               # lo hecho, no lo intentado
+            segunda = self._corregir(apply=True, tanda=1, saltear=[rota])
+            self.assertEqual((segunda["corregidas"], segunda["con_error"]), (1, 0))
+        pnl = [self._ventas("GGAL", h)[0]["pnl_usd"] for _u, h in cuentas]
+        self.assertAlmostEqual(pnl[0], 160, places=2)                    # la que falló, intacta
+        self.assertEqual(sum(1 for v in pnl[1:] if abs(v - 10) < 0.01), 1)
+
+    def test_un_usuario_comun_no_puede_correrlo(self):
+        r = self.client.post("/api/admin/resultado-dos-monedas?apply=false", headers=self.h)
+        self.assertEqual(r.status_code, 403, r.text)
+
+    def test_las_ventas_ya_corregidas_no_se_vuelven_a_tocar(self):
+        uid, h = self._vieja()
+        self._corregir(apply=True, user_id=uid)
+        antes = self._ventas("GGAL", h)
+        self.assertEqual(self._corregir(apply=True, user_id=uid)["ventas"], 0)
+        self.assertEqual(self._ventas("GGAL", h), antes)
 
 
 if __name__ == "__main__":

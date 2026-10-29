@@ -370,6 +370,29 @@ def fx_version(conn, uid: int) -> str:
         return FX_V1
 
 
+def fx_version_lectura(conn, uid: int) -> str:
+    """La misma respuesta que `fx_version`, pero SOLO LEE: no persiste la versión de
+    una cuenta virgen. Es para lo que no puede escribir: un GET, o el ensayo de una
+    corrección (que además tomaría el candado de escritura de SQLite sin necesidad).
+
+    La respuesta coincide con la que `fx_version` daría y guardaría en ese momento:
+    la fila de config si existe; si no, v1 para una cuenta con historia y v2 para una
+    virgen. Ante cualquier duda, v1 (no corrompe nada)."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM config WHERE user_id=? AND key=?",
+            (uid, _FX_VERSION_KEY)).fetchone()
+        if row and row[0] in (FX_V1, FX_V2):
+            return row[0]
+        tiene_historia = conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM import_batches WHERE user_id=? AND status='confirmed') "
+            "OR EXISTS(SELECT 1 FROM operations WHERE user_id=?)",
+            (uid, uid)).fetchone()[0]
+        return FX_V1 if tiene_historia else FX_V2
+    except Exception:
+        return FX_V1
+
+
 def set_fx_version(conn, uid: int, version: str) -> None:
     if version not in (FX_V1, FX_V2):
         raise ValueError(f"fx_version inválida: {version}")

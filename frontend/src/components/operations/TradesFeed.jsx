@@ -70,10 +70,13 @@ function DayGroup({ group, histMoney, onDelete, borrando, nuevas }) {
 }
 
 function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false }) {
-  const isWin = op.pnl_usd != null && op.pnl_usd > 0
+  // Color, flecha y signo salen del MISMO número que se imprime (en Pesos puede tener
+  // otro signo que el resultado en dólares: ganó en pesos y perdió en dólares).
+  const pnlVisto = op.pnl_usd == null ? null : histMoney.pnlAt(op)
+  const isWin = pnlVisto != null && pnlVisto > 0
   // El % en la moneda de la app (pesos o dólares), no en la de la venta.
   const { pct } = pctEnMoneda(op, histMoney.currency)
-  const isLoss = op.pnl_usd != null && op.pnl_usd < 0
+  const isLoss = pnlVisto != null && pnlVisto < 0
   const type = (op.op_type || '').toLowerCase()
   const isBuy = type.includes('compra') || type === 'buy'
 
@@ -108,7 +111,7 @@ function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false
 
       <div className="flex-shrink-0 text-right">
         {op.pnl_usd != null && (
-          <div className={`text-sm font-medium tabular leading-none flex items-center justify-end gap-1 ${colorClass(op.pnl_usd)}`}>
+          <div className={`text-sm font-medium tabular leading-none flex items-center justify-end gap-1 ${colorClass(pnlVisto)}`}>
             {isWin ? <TrendingUp size={11} strokeWidth={1.75} /> : isLoss ? <TrendingDown size={11} strokeWidth={1.75} /> : null}
             {histMoney.fmtPnlCompactAt(op, { signed: true })}
           </div>

@@ -757,11 +757,16 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   // Última operación cerrada
   if (snap.last_op && snap.last_op.pnl_usd != null) {
     const op = snap.last_op
+    // En Pesos, el resultado en pesos exacto de la venta (el MISMO número que Operaciones),
+    // no el resultado en dólares × el dólar de la fecha. El color sale del número que se ve.
+    const monto = (pesos.moneda === 'ARS' && op.resultado_ars != null)
+      ? op.resultado_ars
+      : pesos.deFecha(op.pnl_usd, op.date)
     kpis.push({
       label: 'Última op cerrada',
-      value: `${op.asset} ${plata(pesos.deFecha(op.pnl_usd, op.date), mon, { signed: true })}`,
+      value: `${op.asset} ${plata(monto, mon, { signed: true })}`,
       sub: formatDateShort(op.date),
-      tone: op.pnl_usd >= 0 ? 'pos' : 'neg',
+      tone: monto >= 0 ? 'pos' : 'neg',
     })
   }
 

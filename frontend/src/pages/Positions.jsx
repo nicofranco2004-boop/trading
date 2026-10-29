@@ -19,7 +19,7 @@ import { filaSinUnaPata } from '../utils/filaFusionada'
 import { groupBrokersIntoAccounts, flattenAccounts, brokerLegLabel } from '../utils/brokerAccounts'
 import { admiteDosMonedas, brokersParaElegir, formularioDeCaja, cuentaDe } from '../utils/pataDeLaMoneda'
 import { precioCedearEnDolares } from '../utils/opcionesCedear'
-import { opcionesDeVenta, lotesDeLaVenta, etiquetaDeVenta, resultadoUsdDelPedazo } from '../utils/opcionesDeVenta'
+import { opcionesDeVenta, lotesDeLaVenta, etiquetaDeVenta, vistaPreviaDeLaVenta } from '../utils/opcionesDeVenta'
 import PfFormModal from '../components/PfFormModal'
 import BondCashflowModal from '../components/BondCashflowModal'
 import CuponesPorCobrar from '../components/CuponesPorCobrar'
@@ -3844,13 +3844,15 @@ export function SellModal({ form, setForm, positions, brokers, tcValuacion, fxHi
   // segunda venta legítima si quedan nominales. Vive en el modal para que
   // escritorio y celular lo tengan sin pasarlo (ver hooks/useEnVuelo).
   const enVuelo = useEnVuelo()
-  // Con qué regla anota el servidor el resultado en dólares de ESTA cuenta (v2:
-  // cada punta a su dólar). Sin respuesta, la regla nueva: es la de toda cuenta nueva.
+  // Con qué regla anota el servidor el resultado en dólares de ESTA cuenta (v2: cada
+  // punta a su dólar; v1: la de siempre). Mientras no responde —o si falla— el
+  // «Profit estimado» NO se muestra: asumir una regla mostraba un número que después
+  // no era el que quedaba anotado.
   const [reglaDeVenta, setReglaDeVenta] = useState(null)
   useEffect(() => {
     let vivo = true
     api.get('/positions/regla-de-venta')
-      .then(r => { if (vivo) setReglaDeVenta(r?.cada_punta_a_su_dolar !== false) })
+      .then(r => { if (vivo) setReglaDeVenta(r?.cada_punta_a_su_dolar === true ? true : (r?.cada_punta_a_su_dolar === false ? false : null)) })
       .catch(() => {})
     return () => { vivo = false }
   }, [])
@@ -3873,8 +3875,6 @@ export function SellModal({ form, setForm, positions, brokers, tcValuacion, fxHi
   const qtyNum = leido.quantity || 0
   const priceNum = leido.exit_price || 0
   const comisionNum = leido.commissions || 0
-  const tcVenta = leido.tc_venta || tcValuacion || 1
-
   // TC de la venta = el que existía en la FECHA de la venta, no el de hoy.
   // Mismo criterio que el aporte con fecha (MEP del día, blue de fallback; y
   // para hoy/futuro el blue actual porque el MEP de hoy puede no estar aún).
@@ -3897,37 +3897,17 @@ export function SellModal({ form, setForm, positions, brokers, tcValuacion, fxHi
     })
   }
 
-  // Preview FIFO — cost basis incluye buy commissions prorrateadas (mismo
-  // criterio que el backend en /positions/sell).
-  let remaining = qtyNum
-  const fifoPreview = []
-  for (const p of lots) {
-    if (remaining <= 1e-9) break
-    const take = Math.min(remaining, p.quantity || 0)
-    const ratio = (p.quantity || 0) > 0 ? take / p.quantity : 0
-    const baseInvested = (p.invested || 0) + (p.commissions || 0)
-    const investedPart = baseInvested * ratio
-    // Lo mismo que anota el servidor (utils/opcionesDeVenta, resultadoUsdDelPedazo).
-    // El dólar de compra del lote: el suyo (el que usa Cartera) o, si no lo tiene,
-    // el de su fecha — como el alta y el rebuild.
-    const tcCompra = p.tc_compra > 0 ? p.tc_compra
-      : (p.entry_date ? fxHist?.getMepOrFallback?.(p.entry_date) : null)
-    const pnlUsd = resultadoUsdDelPedazo({
-      cobrado: priceNum * take, costo: investedPart, enPesos: isARS,
-      tcVenta, tcCompra, cadaPuntaASuDolar: reglaDeVenta !== false,
-    })
-    fifoPreview.push({
-      lot_id: p.id,
-      entry_date: p.entry_date,
-      take,
-      pos_qty: p.quantity,
-      buy_price: p.buy_price,
-      pnl_usd: pnlUsd,
-      partial: take < p.quantity,
-    })
-    remaining -= take
-  }
-  const totalPnl = fifoPreview.reduce((s, x) => s + x.pnl_usd, 0)
+  // Preview FIFO — las mismas cuentas que el servidor (utils/opcionesDeVenta,
+  // vistaPreviaDeLaVenta): comisión de venta, costo del lote, dólar de compra y de venta.
+  // El dólar de la venta: el que escribió el usuario o, con el campo vacío, el de la FECHA
+  // de la venta (el que usa el servidor), no el de hoy.
+  const tcVenta = leido.tc_venta || (form.date ? tcForDate(form.date) : tcValuacion) || 1
+  const preview = vistaPreviaDeLaVenta({
+    lots, quantity: qtyNum, price: priceNum, commission: comisionNum, enPesos: isARS, tcVenta,
+    tcCompraDe: f => fxHist?.getMepOrFallback?.(f), cadaPuntaASuDolar: reglaDeVenta === true,
+  })
+  const fifoPreview = preview.filas
+  const totalPnl = preview.total
   const exceeds = qtyNum > totalQty + 1e-9
 
   const inputCls = 'w-full bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
@@ -3991,7 +3971,7 @@ export function SellModal({ form, setForm, positions, brokers, tcValuacion, fxHi
           onChange={q => setForm(f => ({ ...f, quantity: q }))}
           asset={form.asset}
           priceUsd={isARS ? (priceNum && tcVenta ? priceNum / tcVenta : 0) : priceNum}
-          pnlUsd={qtyNum > 0 && priceNum > 0 ? totalPnl : null}
+          pnlUsd={qtyNum > 0 && priceNum > 0 && reglaDeVenta !== null ? totalPnl : null}
         />
 
         {/* Precio de venta */}

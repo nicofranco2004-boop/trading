@@ -61,11 +61,11 @@ from .schema import OP_BUY, OP_SELL, TX_VIVAS
 from .persister import _link, broker_pair, reconciled_unit_price
 try:
     from fx import (fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta,
-                    costo_del_lote, RIEL_MEP, RIEL_BLUE)
+                    costo_del_lote, RIEL_MEP)
     import resultado_dual as _resultado_dual
 except ImportError:  # pragma: no cover
     from ..fx import (fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta,
-                      costo_del_lote, RIEL_MEP, RIEL_BLUE)
+                      costo_del_lote, RIEL_MEP)
     from .. import resultado_dual as _resultado_dual
 from .maturity import is_bond_like_name
 from .normalizer import guess_asset_type
@@ -474,16 +474,19 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
             # Dólar de compra: el del lote, que es el que queda en
             # `positions.tc_compra` (`_lot_tc_compra`: el del evento o, si no, el de
             # la fecha) y el que usa Cartera.
-            resultado = _resultado_dual.resultado_en_dos_monedas(
-                conn, costo=costo_en_su_moneda, moneda_costo=lot_currency,
-                fecha_compra=lot.get("entry_date"),
-                cobrado=(0.0 if transfer_out else exit_price * take - chunk_commission),
-                moneda_venta=currency, fecha_venta=op_date,
-                riel=(RIEL_MEP if use_hist else RIEL_BLUE),
-                tc_compra=lot.get("tc_compra"), retiro=transfer_out)
-            # El resultado en dólares: cobrado en dólares − costo en dólares, sólo en
-            # cuentas v2 (ver main.sell_position_fifo y resultado_dual.resultado_en_dolares).
-            _en_dolares = _resultado_dual.resultado_en_dolares(resultado) if use_hist else None
+            # SÓLO EN CUENTAS v2: en las v1 no se escribe ni la regla ni las columnas (ver
+            # main.sell_position_fifo y el docstring de resultado_dual).
+            resultado = None
+            if use_hist:
+                resultado = _resultado_dual.resultado_en_dos_monedas(
+                    conn, costo=costo_en_su_moneda, moneda_costo=lot_currency,
+                    fecha_compra=lot.get("entry_date"),
+                    cobrado=(0.0 if transfer_out else exit_price * take - chunk_commission),
+                    moneda_venta=currency, fecha_venta=op_date, riel=RIEL_MEP,
+                    tc_compra=lot.get("tc_compra"), retiro=transfer_out)
+            # El resultado en dólares: cobrado en dólares − costo en dólares (ver
+            # resultado_dual.resultado_en_dolares).
+            _en_dolares = _resultado_dual.resultado_en_dolares(resultado)
             if _en_dolares:
                 pnl_usd, invested_usd = _en_dolares
 

@@ -274,10 +274,16 @@ const MOTIVO_SIN_PCT = {
   sin_costo: 'La compra no tiene costo cargado.',
   moneda_del_lote: 'No sabemos en qué moneda se pagó la compra.',
   retiro: 'Salió de la cuenta a costo: no fue una venta.',
+  no_cierra: 'Los números de esta venta no cierran entre sí (¿la editaste?): no la tocamos.',
+  implausible: 'El resultado salía de otro orden de magnitud: no la tocamos.',
 }
 
+// `manual` = cargada o editada a mano: sus números son los que escribió el usuario, sin
+// las dos monedas guardadas. Se muestra su `pnl_pct` tal cual (backend/resultado_dual.py).
 export function pctEnMoneda(op, currency) {
-  const tieneLosDos = op.pnl_pct_ars != null || op.pnl_pct_usd != null || op.pnl_sin_dato != null
+  const propia = op.pnl_sin_dato === 'manual'
+  const tieneLosDos = op.pnl_pct_ars != null || op.pnl_pct_usd != null
+    || (op.pnl_sin_dato != null && !propia)
   if (!tieneLosDos) return { pct: op.pnl_pct ?? null, motivo: null }
   const pct = currency === 'ARS' ? op.pnl_pct_ars : op.pnl_pct_usd
   if (pct != null) return { pct, motivo: null }
