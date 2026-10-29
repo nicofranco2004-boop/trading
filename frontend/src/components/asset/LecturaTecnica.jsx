@@ -1975,14 +1975,14 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-x-2 mt-2 text-[12px] text-ink-2 mr-[72px]">
-            <span>Squeeze</span>
+            <span>Squeeze · para qué lado empuja el precio</span>
             <span className="inline-flex items-center gap-1 text-[11px]">
               <span className="w-1.5 h-2.5 rounded-xs bg-rendi-pos-fill" aria-hidden="true" />a favor de la suba
               <span className="w-1.5 h-2.5 rounded-xs bg-rendi-neg-fill ml-1.5" aria-hidden="true" />de la baja
             </span>
           </div>
           <div className="relative mr-[72px] h-10 sm:h-16 mt-1" role="img"
-            aria-label={`Barras del Squeeze: verdes a favor de la suba, rojas a favor de la baja.${ultimo?.squeeze ? ` Hoy, ${ultimo.squeeze > 0 ? 'verde' : 'roja'}.` : ''}`}>
+            aria-label={`Barras del Squeeze (para qué lado empuja el precio): verdes a favor de la suba, rojas a favor de la baja.${ultimo?.squeeze ? ` La última, ${ultimo.squeeze > 0 ? 'verde' : 'roja'}.` : ''}`}>
             <svg viewBox={`0 0 ${W} ${H_SQUEEZE}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
               <line x1="0" x2={W} y1={H_SQUEEZE / 2} y2={H_SQUEEZE / 2} stroke={v('chart-grid')} strokeWidth="1" vectorEffect="non-scaling-stroke" />
               {fuerza.barras.map(b => (
