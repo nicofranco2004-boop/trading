@@ -57,11 +57,16 @@ class ResetDataTest(unittest.TestCase):
     def tearDown(self):
         for t in ("users", "subscriptions", "credit_ledger", "user_broker_credentials",
                   "alerts", "watchlist", "config", "brokers", "positions", "operations", "snapshots"):
+            # Cada intento con su punto de guardado: en Postgres el primero que
+            # falla (`users` no tiene `user_id`) abortaba la transacción y el
+            # commit de abajo descartaba TODA la limpieza, callado.
             try:
-                self.conn.execute(f"DELETE FROM {t} WHERE user_id=? OR id=?", (self.UID, self.UID))
+                with main._si_falla_se_deshace_solo_esto(self.conn, "limpieza"):
+                    self.conn.execute(f"DELETE FROM {t} WHERE user_id=? OR id=?", (self.UID, self.UID))
             except Exception:
                 try:
-                    self.conn.execute(f"DELETE FROM {t} WHERE user_id=?", (self.UID,))
+                    with main._si_falla_se_deshace_solo_esto(self.conn, "limpieza"):
+                        self.conn.execute(f"DELETE FROM {t} WHERE user_id=?", (self.UID,))
                 except Exception:
                     pass
         self.conn.commit()

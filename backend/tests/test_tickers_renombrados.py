@@ -92,9 +92,14 @@ class _Base(unittest.TestCase):
         self.conn = main.get_db()
         for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
                   "import_batches", "operations", "positions", "monthly_entries",
-                  "snapshots", "watchlist", "price_alerts", "brokers", "users"):
+                  "snapshots", "watchlist", "alerts", "brokers", "users"):
+            # Cada borrado con su punto de guardado: en Postgres el primero que
+            # falla (`users`, por las tablas que la apuntan; antes también
+            # `price_alerts`, que no existe en ningún motor) abortaba la
+            # transacción y el commit de abajo descartaba TODO el barrido, callado.
             try:
-                self.conn.execute(f"DELETE FROM {t}")
+                with main._si_falla_se_deshace_solo_esto(self.conn, "limpieza"):
+                    self.conn.execute(f"DELETE FROM {t}")
             except Exception:
                 pass
         self.conn.commit()
