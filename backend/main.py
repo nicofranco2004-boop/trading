@@ -5326,18 +5326,11 @@ _RESET_CONFIG_KEYS = ("fx_version", "tc_blue", "tc_mep")
 # login y el plan pago. Acá viven las cosas que el usuario configuró y que un
 # "empezar de cero" de verdad no debería heredar: sus alertas, lo que sigue, las
 # claves read-only con las que conectó un broker y los mapeos de columnas que
-# guardó el importador.
-# ⚠️ Lo que NO está acá y NO es casualidad:
-#   • users / subscriptions / billing_events / credit_ledger / plan_events /
-#     trial_* → identidad y plata. Tocarlas es resetearle el plan a alguien que
-#     pagó: la razón entera de que este allowlist sea explícito.
-#   • ai_usage_daily / ai_tool_usage → son el CONTADOR de la cuota de IA. Si se
-#     borran, "resetear" pasa a ser la forma de regalarse cuota.
-#   • push_subscriptions → es el permiso de notificaciones del DISPOSITIVO.
-#     Borrarlo deja al usuario sin push en silencio hasta que lo vuelva a dar.
-#   • advisor_* → son vínculos con OTRAS personas, no datos propios.
-#   • login_history / password_reset_tokens / email_verification_codes → rastro
-#     de seguridad de la cuenta, que sigue siendo la misma cuenta.
+# guardó el importador. Lo que NO se borra está en `_RESET_ADMIN_CONSERVADAS`,
+# con su motivo: toda tabla con `user_id` tiene que estar en una de las dos (o en
+# `_RESET_ADMIN_OTRO_CAMINO`), y `tests/test_reset_censo.py` se pone en rojo si
+# aparece una sin decidir. Sin ese censo, una tabla nueva quedaba afuera sola:
+# pasó con `futures_positions` y con `dibujos_grafico` (auditoría C, 29/10).
 _RESET_ADMIN_EXTRA_TABLES = (
     "alerts", "alert_events", "watchlist",
     "user_broker_credentials", "import_mappings",
@@ -5346,7 +5339,47 @@ _RESET_ADMIN_EXTRA_TABLES = (
     # Las tesis van con sus recordatorios (que son alertas): el reset del
     # usuario no las toca, como a las alertas.
     "tesis",
+    # Agregadas 2026-10-29 (auditoría C hallazgo 3), las cuatro quedaban
+    # después de «como la primera vez»:
+    # · las líneas, Fibonacci y Elliott que dibujó en cada gráfico;
+    "dibujos_grafico",
+    # · si quiere el resumen del mercado por mail: la hermana de
+    #   `resumen_semanal_prefs`, que sí se borraba;
+    "market_brief_prefs",
+    # · la prueba de IOL: el reset ya borraba la clave con que la corrió
+    #   (`user_broker_credentials`, broker='iol_lab'); quedaban sus resultados y
+    #   la bitácora de cuánto vivía esa clave, que sin la clave no miden nada.
+    "iol_lab_runs", "iol_lab_token_log",
 )
+
+# Tablas con `user_id` que el reset de admin NO borra, y por qué. No es una
+# lista de olvidos: cada una es una decisión. Una tabla nueva con `user_id` va
+# acá o en la lista de arriba; si no va en ninguna, `test_reset_censo` falla.
+_RESET_ADMIN_CONSERVADAS = {
+    "subscriptions": "plata: el plan pago sigue siendo de la misma cuenta",
+    "billing_events": "plata: el rastro de los cobros",
+    "credit_ledger": "plata: el crédito pago; además cuenta para el tope de pruebas gratis",
+    "plan_events": "plata: la historia del plan",
+    "trial_email_log": "los avisos de la prueba gratis ya mandados: borrarlo los vuelve a mandar",
+    "ai_usage_daily": "contador de la cuota de IA: borrarlo es regalarse cuota",
+    "ai_tool_usage": "contador de la cuota de IA: borrarlo es regalarse cuota",
+    "push_subscriptions": "el permiso de notificaciones del DISPOSITIVO: sin él, no hay push "
+                          "hasta que lo vuelva a dar, sin aviso",
+    "login_history": "rastro de seguridad de la cuenta, que sigue siendo la misma",
+    "password_reset_tokens": "rastro de seguridad de la cuenta, que sigue siendo la misma",
+    "email_verification_codes": "rastro de seguridad de la cuenta, que sigue siendo la misma",
+    "advisor_claim_tokens": "invitación de un ASESOR (otra persona) a reclamar la cuenta",
+    "market_brief_log": "lo que Rendi le mandó por mail, para poder releerlo; además es el "
+                        "freno para no mandar dos veces el del día",
+    "uso_diario": "lo que Rendi midió de su uso (panel de uso del admin): borrarlo cambia la "
+                  "historia de cuántos usaron la app cada día",
+}
+
+# Tablas con `user_id` que el reset de admin SÍ borra, pero no por la lista.
+_RESET_ADMIN_OTRO_CAMINO = {
+    "config": "`toda_la_config=True` en `_reset_data_worker`: se van todas sus prefs",
+    "import_batches": "`_reset_data_worker` la borra siempre, después de sus filas de import",
+}
 
 
 # ─── Progreso del reset ──────────────────────────────────────────────────────
