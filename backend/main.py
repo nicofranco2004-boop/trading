@@ -11658,29 +11658,39 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
         raise HTTPException(400, f"Símbolo inválido: {ref}")
     import tecnico
     with db_abierta() as conn:
-        tickers, motivo = _velas_a_pedido(conn, sym, bool(local), uid)
+        tickers, motivo = _velas_a_pedido(conn, [(sym, bool(local))], uid)[sym]
         res = tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
         if not res.get("disponible"):
             res["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
         return res
 
 
-def _velas_a_pedido(conn, sym: str, local: bool, uid):
-    """Las velas de un activo que nadie sigue (o viejas) se bajan en el momento,
-    con los frenos de `velas_diarias.asegurar` y sólo si la app lo conoce
-    (`se_puede_pedir`). La usan la ficha y el comparador de precios: el mismo
-    activo se baja con la misma regla. (tickers, motivo): `tickers` vacío = no
-    tiene serie (un bono, un fondo); `motivo` 'tope' o 'bajando' si no se pudo."""
+def _velas_a_pedido(conn, pedidos: list, uid) -> dict:
+    """Las velas de los activos que nadie sigue (o viejas) se bajan en el momento,
+    con los frenos de `velas_diarias.asegurar` y sólo si la app los conoce
+    (`se_puede_pedir`). La usan la ficha (uno) y el comparador de precios
+    (hasta 4, juntos: UNA espera a Yahoo con un solo tope, no una por activo).
+    `pedidos`: [(símbolo, local)]. {símbolo: (tickers, motivo)}: `tickers` vacío
+    = no tiene serie (un bono, un fondo); `motivo` 'tope' o 'bajando' si no se pudo."""
     import velas_diarias
-    tickers, motivo = [], None
-    try:
-        tickers = velas_diarias.tickers_a_pedido(sym, local)
-        if tickers and velas_diarias.se_puede_pedir(conn, sym, uid):
-            motivo = velas_diarias.asegurar(conn, tickers, uid)
-    except Exception as ex:
-        # Sin la descarga, se muestra lo que haya guardado.
-        log.warning("tecnico: velas a pedido de %s fallaron: %r", sym, ex)
-    return tickers, motivo
+    out, bajar = {}, []
+    for sym, local in pedidos:
+        tickers = []
+        try:
+            tickers = velas_diarias.tickers_a_pedido(sym, local)
+            if tickers and velas_diarias.se_puede_pedir(conn, sym, uid):
+                bajar.extend(tickers)
+        except Exception as ex:
+            log.warning("tecnico: velas a pedido de %s fallaron: %r", sym, ex)
+        out[sym] = tickers
+    motivo = None
+    if bajar:
+        try:
+            motivo = velas_diarias.asegurar(conn, bajar, uid)
+        except Exception as ex:
+            # Sin la descarga, se muestra lo que haya guardado.
+            log.warning("tecnico: velas a pedido de %s fallaron: %r", bajar, ex)
+    return {s: (t, motivo if t else None) for s, t in out.items()}
 
 
 @app.get("/api/comparar/precio")
@@ -11720,10 +11730,8 @@ def get_comparar_precio(activos: str, local: str = "", moneda: str = "usd", plaz
     else:
         raise HTTPException(400, "Plazo inválido")
     with db_abierta() as conn:
-        motivos = {}
-        for s in lista:
-            tickers, motivo = _velas_a_pedido(conn, s, s in locales, uid)
-            motivos[s] = motivo or ("sin_serie" if not tickers else "sin_datos")
+        motivos = {s: motivo or ("sin_serie" if not tickers else "sin_datos") for s, (tickers, motivo)
+                   in _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid).items()}
         cer, basis = [], None
         if moneda == "ars":
             try:
@@ -11736,9 +11744,9 @@ def get_comparar_precio(activos: str, local: str = "", moneda: str = "usd", plaz
             except Exception as ex:   # sin la fuente, la vara no aparece y se dice
                 log.warning("comparar: CER no disponible: %r", ex)
         res = comparar.comparar(conn, [(s, s in locales) for s in lista], moneda, inicio,
-                                cer=cer, cer_basis=basis)
+                                cer=cer, cer_basis=basis, hoy=hoy)
         for f in res["faltan"]:
-            if f["clave"] in motivos:
+            if f["clave"] in motivos and f["motivo"] == "sin_datos":
                 f["motivo"] = motivos[f["clave"]]
         res["plazo"] = plazo
         return res

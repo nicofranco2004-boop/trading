@@ -22,21 +22,47 @@ export function esElMismo(pedido, x) {
   return !pedido.endsWith('.BA') || isBymaHolding(x)
 }
 
+/** Tus lotes y operaciones de un activo, como los junta la ficha
+ *  (pages/AssetDetail.jsx, `loadAll`): los de ESE nombre; si no hay ninguno, la
+ *  ficha te manda a tu activo con otro nombre (pediste GGAL.BA y lo tenés como
+ *  GGAL) y junta los de ese. Por nombre exacto y no «cualquier forma del mismo
+ *  papel»: con BRK.B en Schwab y el CEDEAR BRKB en IOL, son dos fichas.
+ *  { lotes, ops } */
+export function lotesDelActivo(asset, posiciones = [], operaciones = []) {
+  const a = (asset || '').toUpperCase()
+  const de = (nombre) => ({
+    lotes: posiciones.filter(p => (p.asset || '').toUpperCase() === nombre),
+    ops: operaciones.filter(o => (o.asset || '').toUpperCase() === nombre),
+  })
+  const exactos = de(a)
+  if (exactos.lotes.length || exactos.ops.length) return exactos
+  const otro = [...posiciones, ...operaciones].find(x => esElMismo(a, x))
+  return otro ? de((otro.asset || '').toUpperCase()) : exactos
+}
+
 /** ¿Se mira como acción argentina (su precio de BYMA)? La marca `local` de la
  *  ficha: si lo tenés, deciden tus lotes (o tus operaciones, si lo vendiste);
  *  si no, el ticker (GGAL y GGAL.BA sí; NVDA no). */
 export function marcaLocal(asset, posiciones = [], operaciones = []) {
-  const lotes = posiciones.filter(p => esElMismo(asset, p))
-  const ops = operaciones.filter(o => esElMismo(asset, o))
+  const { lotes, ops } = lotesDelActivo(asset, posiciones, operaciones)
+  const abiertos = lotes.filter(p => !p.is_cash)
   if (!lotes.length && !ops.length) return miradaSinTenencia(asset).accionLocal
-  return esAccionLocal(asset, lotes.length ? lotes : ops)
+  return esAccionLocal(asset, abiertos.length ? abiertos : ops)
 }
 
 /** El día de tu primera compra de lo que tenés HOY de alguno de los activos
  *  (el lote abierto más viejo, la regla de «Desde que lo tenés» de la ficha).
- *  null si no tenés ninguno. */
-export function primeraCompraDe(activos = [], posiciones = []) {
-  return primeraCompra(posiciones.filter(p => activos.some(a => esElMismo(a, p))))
+ *  null si no tenés ninguno, o si es de hoy (no hay nada que comparar todavía).
+ *  `hoy`: 'YYYY-MM-DD'. */
+export function primeraCompraDe(activos = [], posiciones = [], hoy = null) {
+  const f = primeraCompra(activos.flatMap(a => lotesDelActivo(a, posiciones).lotes))
+  return f && (!hoy || f < hoy) ? f : null
+}
+
+/** La dirección de Comparar → Precio, con `activos` ya cargados (hasta 4). */
+export function urlDeComparar(activos = []) {
+  const lista = [...new Set(activos.map(a => (a || '').toUpperCase()).filter(Boolean))].slice(0, MAX_ACTIVOS)
+  return `/fundamentals?vista=precio${lista.length ? `&cmp=${lista.map(encodeURIComponent).join(',')}` : ''}`
 }
 
 /** La dirección del pedido. */
@@ -86,7 +112,8 @@ export function fraseComparacion(res) {
   if (!activos.length || !res.base) return ''
   const vara = (k) => series.find(s => s.clave === k)
   const sp = vara('sp500'), mep = vara('mep'), cer = vara('cer')
-  const desde = res.plazo === 'compra' && !res.base_corrida_por
+  // «Tu primera compra» sólo si el 100 es ESE día: si se corrió, se dice la fecha.
+  const desde = res.plazo === 'compra' && res.base === res.desde
     ? 'desde tu primera compra'
     : `desde el ${fechaCorta(res.base)}`
   const partes = []
@@ -107,19 +134,24 @@ export function fraseComparacion(res) {
     }
   }
   if (mep) {
+    // «Quedó abajo» y no «subió menos»: lo que bajó no subió (auditoría 29/10).
     const abajo = activos.filter(a => r(a) < r(mep)).map(a => a.nombre)
     if (abajo.length) {
       partes.push(res.moneda === 'ars'
-        ? `${lista(abajo)} ${abajo.length === 1 ? 'subió' : 'subieron'} menos que el dólar MEP.`
+        ? `${lista(abajo)} ${abajo.length === 1 ? 'quedó' : 'quedaron'} abajo del dólar MEP.`
         : `${lista(abajo)} ${abajo.length === 1 ? 'quedó' : 'quedaron'} abajo de lo que habría dado guardar los dólares.`)
     }
   }
   if (cer && res.moneda === 'ars') {
     const abajo = activos.filter(a => r(a) < r(cer))
-    const conPesos = abajo.filter(a => r(a) >= 100).map(a => a.nombre)
+    const conPesos = abajo.filter(a => r(a) > 100).map(a => a.nombre)
     const sinPesos = abajo.filter(a => r(a) < 100).map(a => a.nombre)
+    const iguales = abajo.filter(a => r(a) === 100).map(a => a.nombre)
     if (conPesos.length) {
       partes.push(`${lista(conPesos)} ${conPesos.length === 1 ? 'subió' : 'subieron'} menos que la inflación: en pesos hay más, pero alcanza para menos.`)
+    }
+    if (iguales.length) {
+      partes.push(`${lista(iguales)} ${iguales.length === 1 ? 'terminó' : 'terminaron'} con los mismos pesos, que alcanzan para menos.`)
     }
     if (sinPesos.length) {
       partes.push(`${lista(sinPesos)} ${sinPesos.length === 1 ? 'terminó' : 'terminaron'} con menos pesos que al principio.`)

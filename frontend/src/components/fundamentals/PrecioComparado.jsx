@@ -26,19 +26,25 @@ import { setBrokersRegistry } from '../../utils/valuation'
 import { chartGrid, chartTickSm, chartTooltip, chartReferenceStroke } from '../../utils/chartTheme'
 import { fechaCorta } from '../../utils/cuantoSeMueve'
 import { MONTHS } from '../../utils/format'
+import { hoyISO } from '../../utils/fecha'
 import {
   MAX_ACTIVOS, PLAZOS, marcaLocal, primeraCompraDe, urlDelPedido, filasDelGrafico,
   monto, fraseComparacion,
 } from '../../utils/comparadorPrecio'
 
 const v = (token) => `rgb(var(--${token}))`
-// Los activos con los colores de serie que no dicen «gana / pierde» (sin el
-// verde ni el rojo); las varas, en tonos quietos y punteadas.
-const COLOR_ACTIVO = [v('rendi-accent'), v('data-amber'), v('data-violet'), v('data-cyan')]
+// Los colores no salen de SERIES_COLORS (utils/chartTheme.js) a propósito: esa
+// lista arranca con el verde de ganancia y termina con el rojo de pérdida, y
+// acá una línea verde se leería «va ganando». Cuatro que no dicen ni gana ni
+// pierde y que no se confunden entre sí ni con las varas (auditoría 29/10:
+// `data-amber` y `rendi-warn` son el MISMO color en los dos temas, y azul con
+// violeta son el par que chartTheme ya anota como demasiado cerca). Las varas,
+// en tonos quietos y punteadas.
+const COLOR_ACTIVO = [v('rendi-accent'), v('data-amber'), v('cat-magenta'), v('data-cyan')]
 const VARA = {
   sp500: { color: v('ink-1'), dash: '6 3', chip: 'S&P 500' },
   mep: { color: v('ink-3'), dash: '2 4', chip: 'Guardar dólares (MEP)' },
-  cer: { color: v('rendi-warn'), dash: '4 3', chip: 'Inflación (CER)' },
+  cer: { color: v('cat-teal'), dash: '4 3', chip: 'Inflación (CER)' },
 }
 const ORDEN_VARAS = ['sp500', 'mep', 'cer']
 // Un dato que se quedó más días que esto atrás de los activos se dice «al dd/mm».
@@ -48,10 +54,12 @@ const REINTENTOS = 3
 const ESPERA_MS = 4000
 
 const MOTIVO = {
-  sin_serie: 'no tiene un precio de todos los días para graficar (un bono o un fondo)',
-  sin_datos: 'no encontramos sus precios',
-  tope: 'pediste muchos activos nuevos en poco tiempo; probá de nuevo en un rato',
-  bajando: 'estamos bajando sus precios; probá de nuevo en unos segundos',
+  sin_serie: () => 'no tiene un precio de todos los días para graficar (un bono o un fondo)',
+  sin_datos: () => 'no encontramos sus precios',
+  tope: () => 'pediste muchos activos nuevos en poco tiempo; probá de nuevo en un rato',
+  bajando: () => 'estamos bajando sus precios; probá de nuevo en unos segundos',
+  // Su último precio no es de hoy: no se dibuja como si lo fuera (comparar.py).
+  vieja: (f) => `sus precios llegan hasta el ${fechaCorta(f.hasta)}: no entra en la comparación`,
 }
 
 const mesCorto = (iso) => {
@@ -70,6 +78,9 @@ export default function PrecioComparado({ tickers }) {
   const [cargando, setCargando] = useState(false)
   const [error, setError] = useState(null)
   const pedido = useRef(0)
+  // «Comparó precios» se cuenta una vez por juego de activos, no en cada cambio
+  // de moneda o de plazo ni en cada reintento.
+  const contado = useRef(null)
 
   useEffect(() => {
     let vivo = true
@@ -88,7 +99,7 @@ export default function PrecioComparado({ tickers }) {
 
   const clave = activos.join(',')
   const primera = useMemo(
-    () => (lotes ? primeraCompraDe(activos, lotes.posiciones) : null),
+    () => (lotes ? primeraCompraDe(activos, lotes.posiciones, hoyISO()) : null),
     [lotes, clave], // eslint-disable-line react-hooks/exhaustive-deps
   )
   const locales = useMemo(
@@ -117,10 +128,15 @@ export default function PrecioComparado({ tickers }) {
           }
           setRes(r)
           setCargando(false)
-          track('comparar_precio', { n: activos.length, moneda, plazo: plazoVigente })
+          if (contado.current !== clave) {
+            contado.current = clave
+            track('comparar_precio', { n: activos.length, moneda, plazo: plazoVigente })
+          }
         })
         .catch(e => {
           if (id !== pedido.current) return
+          // Sin respuesta nueva no queda el gráfico viejo con la moneda cambiada.
+          setRes(null)
           setError(e?.message || 'No se pudo armar la comparación')
           setCargando(false)
         })
@@ -150,10 +166,26 @@ export default function PrecioComparado({ tickers }) {
   const ultimoActivo = useMemo(() => visibles.filter(s => s.tipo === 'activo')
     .reduce((m, s) => (s.fecha_final > m ? s.fecha_final : m), ''), [visibles])
 
-  const enPesos = moneda === 'ars'
+  // Lo que se MUESTRA va en la moneda de la respuesta, no en la del botón:
+  // mientras llega la nueva, los números siguen siendo los de antes y tienen
+  // que decir su moneda (auditoría 29/10).
+  const enPesos = res?.moneda === 'ars'
+  const monedaRes = res?.moneda || moneda
   const opcionesPlazo = PLAZOS.filter(([id]) => id !== 'compra' || primera)
   const avisos = (res?.faltan || []).filter(f => MOTIVO[f.motivo] && activos.includes(f.clave))
-  const sinVara = (res?.faltan || []).filter(f => f.motivo === 'sin_datos' && VARA[f.clave])
+  const sinVara = (res?.faltan || []).filter(f => (f.motivo === 'sin_datos' || f.motivo === 'vieja') && VARA[f.clave])
+  // «El día de tu primera compra» sólo si el 100 es ESE día.
+  const esTuCompra = res?.plazo === 'compra' && res?.base === res?.desde
+
+  if (!activos.length) {
+    return (
+      <Panel padding="lg">
+        <EmptyState icon={<IconoLinea size={20} strokeWidth={1.75} />} eyebrow="Precio"
+          title="Agregá activos para comparar su precio"
+          description="Buscá arriba hasta 4 (acciones, CEDEARs, ETFs o cripto): todos arrancan en 100 el mismo día, contra el S&P 500 y guardar dólares." />
+      </Panel>
+    )
+  }
 
   return (
     <div className="space-y-4">
@@ -178,7 +210,7 @@ export default function PrecioComparado({ tickers }) {
       <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Contra qué comparar">
         <span className="text-[12px] text-ink-3 font-medium mr-1">Contra</span>
         {ORDEN_VARAS.map(k => {
-          const soloPesos = k === 'cer' && !enPesos
+          const soloPesos = k === 'cer' && moneda !== 'ars'
           const prendida = varas[k] && !soloPesos
           return (
             <button key={k} type="button" disabled={soloPesos} aria-pressed={prendida}
@@ -200,7 +232,7 @@ export default function PrecioComparado({ tickers }) {
       {avisos.map(f => (
         <div key={f.clave} className="flex items-start gap-2 text-xs text-rendi-warn bg-rendi-warn/5 border border-rendi-warn/20 rounded px-3 py-2">
           <AlertCircle size={13} className="mt-0.5 flex-shrink-0" />
-          <span><span className="font-medium">{f.clave}</span> — {MOTIVO[f.motivo]}.</span>
+          <span><span className="font-medium">{f.clave}</span> — {MOTIVO[f.motivo](f)}.</span>
         </div>
       ))}
       {error && (
@@ -226,8 +258,9 @@ export default function PrecioComparado({ tickers }) {
             <div className="flex items-start justify-between gap-3 mb-2 text-[12px] text-ink-3">
               <span>
                 Todos arrancan en 100 el {fechaCorta(res.base)}
-                {res.plazo === 'compra' && !res.base_corrida_por ? ', el día de tu primera compra' : ''}
-                {res.base_corrida_por ? ` (${res.base_corrida_por} tiene precios desde ese día)` : ''}
+                {esTuCompra ? ', el día de tu primera compra' : ''}
+                {res.base_corrida_por ? ` (${res.base_corrida_por} tiene precios desde ese día)`
+                  : res.base_corrida ? ' (los precios guardados empiezan ese día)' : ''}
               </span>
               <span className="flex-shrink-0">{enPesos ? 'en pesos' : 'en dólares'}</span>
             </div>
@@ -259,7 +292,7 @@ export default function PrecioComparado({ tickers }) {
           <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-4">
             <Panel padding="md">
               <p className="text-[12px] text-ink-3 font-medium mb-3">
-                Cada {monto(100, moneda)} del {fechaCorta(res.base)}, hoy son
+                Cada {monto(100, monedaRes)} del {fechaCorta(res.base)}, hoy son
               </p>
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-x-3 gap-y-3">
                 {visibles.map(s => (
@@ -268,7 +301,7 @@ export default function PrecioComparado({ tickers }) {
                       {s.nombre}
                     </div>
                     <div className={`text-xl font-semibold tabular ${Math.round(s.final) < 100 ? 'text-rendi-neg' : 'text-ink-0'}`}>
-                      {monto(s.final, moneda)}
+                      {monto(s.final, monedaRes)}
                     </div>
                     {ultimoActivo && dias(s.fecha_final, ultimoActivo) > DIAS_ATRASO && (
                       <div className="text-[11px] text-ink-3">al {fechaCorta(s.fecha_final)}</div>
@@ -287,7 +320,9 @@ export default function PrecioComparado({ tickers }) {
 
           {sinVara.length > 0 && (
             <p className="text-[12px] text-ink-3">
-              Sin datos para {sinVara.map(f => VARA[f.clave].chip).join(' ni ')} desde esa fecha: no aparece.
+              {sinVara.map(f => (f.motivo === 'vieja'
+                ? `${VARA[f.clave].chip}: el dato llega hasta el ${fechaCorta(f.hasta)}, no aparece.`
+                : `${VARA[f.clave].chip}: sin datos desde esa fecha, no aparece.`)).join(' ')}
             </p>
           )}
           <p className="text-[12px] text-ink-3 leading-relaxed">

@@ -21,6 +21,7 @@ Corre con: cd backend && python3 -m pytest tests/test_comparar_precio.py
 import os
 import sys
 import unittest
+import unittest.mock
 import uuid
 from datetime import timedelta
 from unittest import mock
@@ -181,10 +182,12 @@ class CompararTest(unittest.TestCase):
         self.assertAlmostEqual(msft["final"], ficha[-1]["c"] / en_base * 100, places=2)
 
         # 3 años: el 100 se va para atrás. Lo guardado en esta prueba (760
-        # ruedas) no llega a 3 años: arranca el primer día guardado y lo dice.
+        # ruedas) no llega a 3 años: arranca el primer día guardado, lo dice, y
+        # no culpa a ningún activo (el S&P empieza el mismo día: es lo guardado).
         r3 = self._comparar("MSFT,NVDA", "usd", "3a")
         self.assertEqual(r3["base"], self.dias[0].isoformat())
-        self.assertEqual(r3["base_corrida_por"], "MSFT")
+        self.assertTrue(r3["base_corrida"])
+        self.assertIsNone(r3["base_corrida_por"])
 
     def test_pesos_contra_dolares(self):
         # El dólar sube de 1000 a 1759: lo de afuera en pesos sube eso más lo suyo.
@@ -291,9 +294,47 @@ class CompararTest(unittest.TestCase):
         main._run_velas_diarias_job()
         r = self._comparar("MSFT,NVDA", "usd", "1a")
         primero = self.dias[desde_i].isoformat()
-        self.assertEqual((r["base"], r["base_corrida_por"]), (primero, "NVDA"))
+        self.assertEqual((r["base"], r["base_corrida"], r["base_corrida_por"]), (primero, True, "NVDA"))
         for k in ("MSFT", "NVDA", "sp500", "mep"):
             self.assertEqual(self._serie(r, k)["puntos"][0], {"d": primero, "v": 100.0}, k)
+
+    def test_una_serie_cortada_no_se_muestra_como_de_hoy(self):
+        # KO dejó de actualizarse hace 20 ruedas (deslistada, o nadie la baja):
+        # su último valor NO es «hoy». No se dibuja y se dice hasta cuándo llega.
+        corte = N_RUEDAS - 20
+        self.yahoo.precios["MSFT"] = lambda i, d: 100.0 + i
+        self.yahoo.precios["KO"] = lambda i, d: (60.0 + i) if i < corte else None
+        main._run_velas_diarias_job()
+        r = self._comparar("MSFT,KO", "usd", "1a")
+        self.assertIsNone(self._serie(r, "KO"))
+        self.assertIn({"clave": "KO", "motivo": "vieja", "hasta": self.dias[corte - 1].isoformat()}, r["faltan"])
+        self.assertEqual(r["hasta"], self.dias[-1].isoformat())
+
+    def test_la_inflacion_vieja_o_de_manana_no_se_dibuja_como_hoy(self):
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["MSFT"] = lambda i, d: 100.0
+        main._run_velas_diarias_job()
+        # La UVA se publica por adelantado: lo de mañana no entra.
+        with main.db_abierta() as conn:
+            for k in range(-400, 40):
+                d = (self.hoy + timedelta(days=k)).isoformat()
+                conn.execute("INSERT INTO bond_indices_daily (index_name, date, value, source, updated_at) "
+                             "VALUES ('UVA', ?, ?, 'test', 'x')", (d, 1000.0 + k))
+            conn.commit()
+        cer = self._serie(self._comparar("MSFT", "ars", "1a"), "cer")
+        self.assertEqual(cer["fecha_final"], self.dias[-1].isoformat(), "termina el último día de mercado")
+        # Un CER guardado que dejó de llegar hace meses (la fuente da 404): no
+        # se dibuja quieto, se dice hasta cuándo llega.
+        with main.db_abierta() as conn:
+            conn.execute("DELETE FROM bond_indices_daily")
+            for k in range(-400, -90):
+                conn.execute("INSERT INTO bond_indices_daily (index_name, date, value, source, updated_at) "
+                             "VALUES ('CER', ?, ?, 'test', 'x')", ((self.hoy + timedelta(days=k)).isoformat(), 10.0 + k))
+            conn.commit()
+        r = self._comparar("MSFT", "ars", "1a")
+        self.assertIsNone(self._serie(r, "cer"))
+        self.assertIn({"clave": "cer", "motivo": "vieja", "hasta": (self.hoy - timedelta(days=91)).isoformat()},
+                      r["faltan"])
 
     def test_lo_que_no_tiene_precios_se_dice(self):
         # Un activo que Yahoo no tiene: no aparece y dice por qué; el resto sí.
@@ -330,6 +371,19 @@ class CompararTest(unittest.TestCase):
 
 class BaseCienTest(unittest.TestCase):
     """La regla de arrancar en 100, suelta."""
+
+    def test_cortada_antes_del_dia_del_100(self):
+        # Una serie que se cortó ANTES del día del 100 daba una línea quieta en
+        # 100 («hoy son US$ 100»). Ahora queda afuera como vieja.
+        viejas = [{"date": "2024-01-02", "close": 10.0}, {"date": "2024-01-03", "close": 11.0}]
+        nuevas = [{"date": f"2025-11-{d:02d}", "close": 50.0 + d} for d in range(3, 29)]
+        series = {"VIEJ": viejas, "NUEV": nuevas}
+        with unittest.mock.patch("tecnico.serie", lambda c, a, m, l: {"velas": series[a]}), \
+             unittest.mock.patch("tecnico.sp500", lambda c, m: nuevas):
+            r = comparar.comparar(None, [("VIEJ", False), ("NUEV", False)], "usd", "2025-11-03",
+                                  hoy=__import__("datetime").date(2025, 11, 29))
+        self.assertEqual([s["clave"] for s in r["series"]], ["NUEV", "sp500", "mep"])
+        self.assertIn({"clave": "VIEJ", "motivo": "vieja", "hasta": "2024-01-03"}, r["faltan"])
 
     def test_regla(self):
         p = [("2025-01-02", 10.0), ("2025-01-03", 12.0), ("2025-01-06", 9.0)]

@@ -11,15 +11,24 @@ de la ficha (`tecnico.serie`: corrige los cambios de ratio de un CEDEAR y pasa
 una acción argentina a dólares con el MEP de CADA día) y la del S&P 500 la de
 «Cuánto se mueve» (`tecnico.sp500`). Acá no se arma ninguna serie de precios.
 
+HASTA CUÁNDO. Todas las líneas terminan el último día con precio de los
+activos (nunca después de hoy: la UVA se publica por adelantado). Una línea
+cuyo último dato quedó más de `DIAS_VIEJA` días antes (un activo que dejó de
+cotizar, un índice que la fuente dejó de mandar) NO se dibuja: se dice hasta
+cuándo llega (`faltan`, motivo 'vieja'). Dibujarla daba su último valor como si
+fuera de hoy y la frase la comparaba contra el S&P de ayer (auditoría 29/10).
+
 CÓMO SE ELIGE EL DÍA DEL 100.
   · El pedido trae `desde`: tu primera compra (la calcula la pantalla con la
     misma regla de la ficha, `primeraCompra`) o hoy menos 1 o 3 años.
   · Si `desde` cae un día sin precio (fin de semana, feriado), vale el último
     cierre anterior: es el precio que tenía ese día.
-  · Si un activo empieza DESPUÉS de `desde` (cotiza hace menos, o lo guardado
-    no llega tan atrás), el 100 se corre para TODOS al primer día que tienen
-    todos, y la respuesta dice cuál lo corrió (`base_corrida_por`). Cada uno con
-    su propio día de arranque no sería comparar desde la misma base.
+  · Si un activo empieza DESPUÉS de `desde`, el 100 se corre para TODOS al
+    primer día que tienen todos (cada uno con su propio día de arranque no sería
+    comparar desde la misma base) y la respuesta dice por qué: `base_corrida_por`
+    es el activo que cotiza hace menos; si todos empiezan juntos donde empieza
+    lo guardado (el S&P 500 guarda la historia entera), no es culpa de ninguno:
+    `base_corrida` sin `base_corrida_por`.
   · Una vara sin dato ese día (el CER de un mes que no bajó) no mueve la base:
     no aparece y la respuesta dice por qué.
 
@@ -49,6 +58,13 @@ VARAS = ("sp500", "mep", "cer")
 # 100: es el borde de lo guardado (3 años justos) o un feriado largo, no un
 # activo que cotiza hace menos. El 100 va a su primer día igual, sin aviso.
 DIAS_MARGEN = 7
+# Una línea con su último dato más de una semana antes que el último de los
+# activos ya no dice «hoy» (un feriado largo son 4 días).
+DIAS_VIEJA = 7
+
+
+def _dias(a: str, b: str) -> int:
+    return (date.fromisoformat(b) - date.fromisoformat(a)).days
 NOMBRE_VARA = {"sp500": "S&P 500", "mep": "Guardar dólares", "cer": "Inflación (CER)"}
 
 
@@ -95,25 +111,28 @@ def _mep(conn, desde: str) -> list:
 
 
 def comparar(conn, activos: list, moneda: str, desde: str, *, cer: list = None,
-             cer_basis: str = None) -> dict:
+             cer_basis: str = None, hoy: date = None) -> dict:
     """La comparación entera.
 
     `activos`: [(asset, local)] con `local` igual que la ficha (acción argentina
     → su precio de BYMA). `moneda`: 'usd' | 'ars'. `desde`: 'YYYY-MM-DD'. `cer`:
     [(fecha, valor)] del índice (sólo se usa en pesos) y `cer_basis` con qué se
-    armó ('CER' o 'UVA').
+    armó ('CER' o 'UVA'). `hoy`: el día argentino (ninguna línea pasa de hoy).
 
-    {moneda, desde, base, base_corrida_por, series: [{clave, tipo, nombre,
-    ticker, convertida, puntos, final, fecha_final}], faltan: [{clave, motivo}]}
-    `base` es el día del 100 (None si ningún activo tiene precios)."""
+    {moneda, desde, base, base_corrida, base_corrida_por, hasta, series:
+    [{clave, tipo, nombre, ticker, convertida, puntos, final, fecha_final}],
+    faltan: [{clave, motivo, hasta?}]}. `base` es el día del 100 y `hasta` el
+    último día (None si ningún activo tiene precios)."""
+    from fechas import hoy_art_date
     moneda = "ars" if moneda == "ars" else "usd"
-    out = {"moneda": moneda, "desde": desde, "base": None, "base_corrida_por": None,
-           "series": [], "faltan": []}
+    tope = (hoy or hoy_art_date()).isoformat()
+    out = {"moneda": moneda, "desde": desde, "base": None, "base_corrida": False,
+           "base_corrida_por": None, "hasta": None, "series": [], "faltan": []}
 
     crudas = []
     for asset, local in activos:
         s = tecnico.serie(conn, asset, moneda, bool(local))
-        puntos = _cierres(s["velas"])
+        puntos = [p for p in _cierres(s["velas"]) if p[0] <= tope]
         if not puntos:
             out["faltan"].append({"clave": asset, "motivo": "sin_datos"})
             continue
@@ -122,21 +141,31 @@ def comparar(conn, activos: list, moneda: str, desde: str, *, cer: list = None,
     if not crudas:
         return out
 
-    # El día del 100: `desde`, o el primero que tienen TODOS si alguno empieza después.
-    base, por = desde, None
-    for c in crudas:
-        primero = c["puntos"][0][0]
-        if primero > base:
-            base = primero
-            tarde = (date.fromisoformat(primero) - date.fromisoformat(desde)).days > DIAS_MARGEN
-            por = c["clave"] if tarde else por
-    out["base"], out["base_corrida_por"] = base, por
+    # Hasta cuándo: el último día con precio de los activos. El que quedó viejo
+    # contra ese día no se dibuja.
+    hasta = max(c["puntos"][-1][0] for c in crudas)
+    for c in [c for c in crudas if _dias(c["puntos"][-1][0], hasta) > DIAS_VIEJA]:
+        crudas.remove(c)
+        out["faltan"].append({"clave": c["clave"], "motivo": "vieja", "hasta": c["puntos"][-1][0]})
+    out["hasta"] = hasta
 
-    varas = [{"clave": "sp500", "puntos": _cierres(tecnico.sp500(conn, moneda)), "ticker": "^GSPC"}]
+    # El día del 100: `desde`, o el primero que tienen TODOS si alguno empieza después.
+    sp = [p for p in _cierres(tecnico.sp500(conn, moneda)) if p[0] <= hasta]
+    base = max([desde] + [c["puntos"][0][0] for c in crudas])
+    if _dias(desde, base) > DIAS_MARGEN:
+        out["base_corrida"] = True
+        # ¿Cotiza hace menos, o es donde empieza lo guardado para todos? El S&P
+        # guarda la historia entera: si arranca bastante antes, es el activo.
+        guardado = sp[0][0] if sp else min(c["puntos"][0][0] for c in crudas)
+        ultimo_en_llegar = max(crudas, key=lambda c: c["puntos"][0][0])
+        if _dias(guardado, ultimo_en_llegar["puntos"][0][0]) > DIAS_MARGEN:
+            out["base_corrida_por"] = ultimo_en_llegar["clave"]
+    out["base"] = base
+
+    varas = [{"clave": "sp500", "puntos": sp, "ticker": "^GSPC"}]
     if moneda == "usd":
         # Un dólar guardado sigue siendo un dólar: 100 de punta a punta.
-        ultimo = max(c["puntos"][-1][0] for c in crudas)
-        varas.append({"clave": "mep", "puntos": [(base, 1.0), (ultimo, 1.0)], "ticker": None})
+        varas.append({"clave": "mep", "puntos": [(base, 1.0), (hasta, 1.0)], "ticker": None})
         out["faltan"].append({"clave": "cer", "motivo": "solo_en_pesos"})
     else:
         varas.append({"clave": "mep", "puntos": _mep(conn, base), "ticker": None})
@@ -145,8 +174,12 @@ def comparar(conn, activos: list, moneda: str, desde: str, *, cer: list = None,
     for c in crudas:
         c["puntos"] = base_cien(c["puntos"], base)
     for v in varas:
-        p = base_cien(v["puntos"], base)
-        if not p:
+        puntos = [x for x in v["puntos"] if x[0] <= hasta]
+        if puntos and _dias(puntos[-1][0], hasta) > DIAS_VIEJA:
+            out["faltan"].append({"clave": v["clave"], "motivo": "vieja", "hasta": puntos[-1][0]})
+            continue
+        p = base_cien(puntos, base)
+        if len(p) < 2:
             out["faltan"].append({"clave": v["clave"], "motivo": "sin_datos"})
             continue
         # El CER se sirve con la UVA cuando su fuente no responde (main.

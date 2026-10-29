@@ -4,11 +4,11 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { setBrokersRegistry } from './valuation'
 import {
-  marcaLocal, primeraCompraDe, urlDelPedido, filasDelGrafico, fraseComparacion, monto,
+  marcaLocal, primeraCompraDe, urlDelPedido, urlDeComparar, filasDelGrafico, fraseComparacion, monto,
 } from './comparadorPrecio'
 
 const serie = (clave, final, tipo = 'activo') => ({ clave, nombre: clave, tipo, final, puntos: [] })
-const res = (series, extra = {}) => ({ moneda: 'usd', base: '2025-03-14', plazo: '1a', base_corrida_por: null, series, ...extra })
+const res = (series, extra = {}) => ({ moneda: 'usd', base: '2025-03-14', desde: '2025-03-14', plazo: '1a', base_corrida_por: null, series, ...extra })
 
 describe('qué se pide', () => {
   beforeEach(() => setBrokersRegistry([{ name: 'IOL', currency: 'ARS' }, { name: 'Schwab', currency: 'USD' }]))
@@ -37,6 +37,25 @@ describe('qué se pide', () => {
     expect(primeraCompraDe(['NVDA'], lotes)).toBeNull()
     // GGAL.BA (lo que manda el buscador) es tu GGAL de IOL.
     expect(primeraCompraDe(['GGAL.BA'], lotes)).toBe('2025-03-14')
+    // Comprado hoy: no hay nada que comparar todavía (el servidor lo rechazaba y la pantalla abría con error).
+    expect(primeraCompraDe(['GGAL'], lotes, '2025-03-14')).toBeNull()
+    expect(primeraCompraDe(['GGAL'], lotes, '2025-03-15')).toBe('2025-03-14')
+  })
+
+  it('tus lotes de un activo: los de ese nombre, como la ficha (BRK.B y BRKB son dos fichas)', () => {
+    const lotes = [
+      { asset: 'BRK.B', broker: 'Schwab', asset_type: 'STOCK', quantity: 1, entry_date: '2021-05-03' },
+      { asset: 'BRKB', broker: 'IOL', asset_type: 'CEDEAR', quantity: 4, entry_date: '2024-02-01' },
+    ]
+    expect(primeraCompraDe(['BRKB'], lotes)).toBe('2024-02-01')
+    expect(primeraCompraDe(['BRK.B'], lotes)).toBe('2021-05-03')
+    // Pedido con otro nombre y sin lotes con ése: el tuyo (como te redirige la ficha).
+    expect(primeraCompraDe(['BRK-B'], lotes)).toBe('2021-05-03')
+  })
+
+  it('la dirección de Comparar → Precio', () => {
+    expect(urlDeComparar(['ggal', 'MSFT', 'GGAL', 'NVDA', 'KO', 'AAPL'])).toBe('/fundamentals?vista=precio&cmp=GGAL,MSFT,NVDA,KO')
+    expect(urlDeComparar([])).toBe('/fundamentals?vista=precio')
   })
 
   it('la dirección', () => {
@@ -80,17 +99,21 @@ describe('lo que dicen los números', () => {
   it('desde tu primera compra, y uno solo', () => {
     expect(fraseComparacion(res([serie('GGAL', 90), serie('sp500', 110, 'vara')], { plazo: 'compra' })))
       .toBe('GGAL quedó abajo del S&P 500 desde tu primera compra.')
-    // Si el 100 se corrió (un activo cotiza hace menos), no es tu primera compra: se dice la fecha.
-    expect(fraseComparacion(res([serie('GGAL', 120), serie('sp500', 110, 'vara')], { plazo: 'compra', base_corrida_por: 'GGAL' })))
+    // Si el 100 se corrió (aunque sea unos días), no es tu primera compra: se dice la fecha.
+    expect(fraseComparacion(res([serie('GGAL', 120), serie('sp500', 110, 'vara')], { plazo: 'compra', desde: '2025-03-10' })))
       .toBe('GGAL le ganó al S&P 500 desde el 14/03/25.')
   })
 
   it('en pesos: el dólar y la inflación, sin decir qué hacer', () => {
     const f = fraseComparacion(res([serie('GGAL', 180), serie('PAMP', 90), serie('mep', 200, 'vara'),
       serie('cer', 150, 'vara')], { moneda: 'ars' }))
-    expect(f).toBe('GGAL y PAMP subieron menos que el dólar MEP. PAMP terminó con menos pesos que al principio.')
+    // PAMP BAJÓ: no puede decir que «subió menos» (la prueba vieja lo daba por bueno).
+    expect(f).toBe('GGAL y PAMP quedaron abajo del dólar MEP. PAMP terminó con menos pesos que al principio.')
     const g = fraseComparacion(res([serie('GGAL', 130), serie('cer', 150, 'vara')], { moneda: 'ars' }))
     expect(g).toBe('GGAL subió menos que la inflación: en pesos hay más, pero alcanza para menos.')
+    // En 100 redondo no «subió»: terminó con los mismos pesos.
+    expect(fraseComparacion(res([serie('GGAL', 100.3), serie('cer', 150, 'vara')], { moneda: 'ars' })))
+      .toBe('GGAL terminó con los mismos pesos, que alcanzan para menos.')
   })
 
   it('sin varas prendidas o sin activos, nada', () => {
