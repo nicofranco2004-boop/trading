@@ -9,15 +9,26 @@
 // también HomeMobile (el fork viejo de la pantalla de inicio): el recuadro es
 // el mismo archivo para los dos.
 //
+// Abajo, «tu plata por sector»: cuánto de tu plata está en sectores donde la
+// mayoría de las acciones sube o baja de fondo y, al tocar, qué papeles tuyos
+// cayeron en cada uno (y cuáles no tienen sector). Con «Ocultar saldos» no se
+// muestran los %.
+//
 // El número y sus partes vienen armados de GET /api/termometro
 // (backend/termometro.py); las palabras, de utils/termometro.js.
 
 import { useEffect, useState } from 'react'
 import { api } from '../../utils/api'
+import { usePrivacy } from '../../contexts/PrivacyContext'
+import { SECTOR_META } from '../../utils/assetSector'
 import {
   LEYENDA, CORTE_DEBIL, CORTE_FIRME, zona, cuando, semanaPasadaTxt, partes, sumaTxt, comoSeArma,
-  puntoDelArco, tramo,
+  puntoDelArco, tramo, frasesTuPlata, filasTuPlata,
 } from '../../utils/termometro'
+
+// Las palabras de cada sector: las de la torta de la Cartera (las claves son
+// las mismas), aunque la clasificación del termómetro sea la del S&P (GICS).
+const nombreSector = k => SECTOR_META[k]?.label || k
 
 const TONO_TEXTO = { neg: 'text-rendi-neg', neutro: 'text-ink-0', pos: 'text-rendi-pos' }
 
@@ -67,8 +78,58 @@ function Parte({ p }) {
   )
 }
 
+const TONO_FRASE = { suben: 'text-rendi-pos', bajan: 'text-rendi-warn', sin: 'text-ink-1' }
+
+/** «Tu plata por sector»: las frases y, al tocar, qué papeles tuyos cayeron en
+ *  cada sector (también los que no tienen sector, nombrados). `abierto` lo
+ *  puede fijar quien lo dibuja sin estado (la prueba). */
+export function TuPlata({ tp, oculto = false, abierto: fijo = null }) {
+  const [abierto, setAbierto] = useState(false)
+  const ver = fijo ?? abierto
+  const frases = frasesTuPlata(tp, nombreSector, oculto)
+  if (!frases.length) return null
+  return (
+    <div className="flex flex-col gap-2 border-t border-line pt-3">
+      <div className="text-[12px] text-ink-2 font-medium">Tu plata por sector</div>
+      <p className="text-[15px] text-ink-0 font-medium leading-snug">
+        {frases.map(f => (
+          <span key={f.id}>
+            <span className={`tabular ${TONO_FRASE[f.id]}`}>{f.cifra}</span> {f.texto}{' '}
+          </span>
+        ))}
+      </p>
+      <button type="button" onClick={() => setAbierto(a => !a)} aria-expanded={ver}
+        className="self-start text-[13px] font-medium text-rendi-accent hover:underline min-h-[32px]">
+        {ver ? 'Ocultar el detalle' : 'Qué papeles tuyos hay en cada sector'}
+      </button>
+      {ver && (
+        <ul className="flex flex-col divide-y divide-line border border-line rounded-xl">
+          {filasTuPlata(tp, nombreSector).map(f => (
+            <li key={f.id} className="px-3 py-2.5 flex flex-col gap-0.5">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-[14px] text-ink-0 font-medium">{f.nombre}</span>
+                <span className="text-[13px] text-ink-1 tabular shrink-0">{oculto ? '—' : `${f.pct} % de tu plata`}</span>
+              </div>
+              <div className={`text-[12.5px] ${f.sube === true ? 'text-rendi-pos' : f.sube === false ? 'text-rendi-warn' : 'text-ink-2'}`}>
+                {f.mercado}
+              </div>
+              <div className="text-[12.5px] text-ink-1">{f.papeles.join(' · ')}</div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {ver && (
+        <p className="text-[12px] text-ink-2 leading-snug">
+          Sectores como los clasifica el S&P 500 (GICS); las acciones argentinas del panel, con el mismo criterio.
+          Por eso Alphabet y Meta van en Comunicación y no en Tecnología. Un CEDEAR toma el sector de su empresa.
+        </p>
+      )}
+    </div>
+  )
+}
+
 /** Lo que se dibuja con una respuesta de GET /api/termometro (sin pedir nada). */
-export function TermometroVista({ datos }) {
+export function TermometroVista({ datos, oculto = false }) {
   if (!datos?.disponible) {
     return (
       <section className="bg-bg-1 border border-line rounded-xl p-4 sm:p-5" aria-label="Termómetro del mercado">
@@ -99,6 +160,7 @@ export function TermometroVista({ datos }) {
           {partes(datos).map(p => <Parte key={p.id} p={p} />)}
         </div>
       </div>
+      <TuPlata tp={datos.tu_plata} oculto={oculto} />
       <div className="flex flex-col gap-1 border-t border-line pt-3">
         <p className="text-[12.5px] text-ink-2 leading-snug">{comoSeArma(datos)}</p>
         <p className="text-[12.5px] text-ink-1 leading-snug">{LEYENDA}</p>
@@ -109,6 +171,7 @@ export function TermometroVista({ datos }) {
 
 export default function Termometro() {
   const { datos, error } = useTermometro()
+  const { hidden } = usePrivacy()
   if (error || !datos) return null
-  return <TermometroVista datos={datos} />
+  return <TermometroVista datos={datos} oculto={hidden} />
 }

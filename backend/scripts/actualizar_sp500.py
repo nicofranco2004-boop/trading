@@ -32,7 +32,10 @@ import json
 import os
 import sys
 import urllib.request
-from datetime import date
+
+# El día de la foto, con la regla única del calendario (el día ARGENTINO).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from fechas import hoy_art  # noqa: E402
 
 FUENTE = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 ARCHIVO = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -95,7 +98,7 @@ def main(argv=None) -> int:
         filas = ",\n".join("  " + json.dumps(e, ensure_ascii=False) for e in nuevas)
         with open(ARCHIVO, "w", encoding="utf-8") as f:
             f.write('{\n "fuente": %s,\n "bajada": "%s",\n "empresas": [\n%s\n ]\n}\n'
-                    % (json.dumps(FUENTE), date.today().isoformat(), filas))
+                    % (json.dumps(FUENTE), hoy_art(), filas))
         print(f"Escrito {ARCHIVO}")
     return 0
 

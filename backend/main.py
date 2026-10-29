@@ -11800,7 +11800,9 @@ def get_termometro(uid: int = Depends(get_effective_user)):
     import termometro
     from fechas import hoy_art_date
     with db_abierta() as conn:
-        return termometro.ultimo(conn, hoy_art_date())
+        t = termometro.ultimo(conn, hoy_art_date())
+        t["tu_plata"] = termometro.tu_plata(conn, uid, t)
+        return t
 
 
 class ResumenSemanalIn(BaseModel):

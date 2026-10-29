@@ -75,7 +75,7 @@ class TermometroTest(unittest.TestCase):
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
             for t in ("velas_diarias", "velas_estado", "watchlist", "positions", "brokers",
-                      "fx_rates_daily", "termometro_diario", "alerts", "operations"):
+                      "fx_rates_daily", "termometro_diario", "alerts", "operations", "asset_last_price"):
                 conn.execute(f"DELETE FROM {t}")
             cur = conn.execute(
                 "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
@@ -271,10 +271,51 @@ class TermometroTest(unittest.TestCase):
             self.yahoo.precios.pop(t)
         self._cron_del_termometro()
         t = self.client.get("/api/termometro", headers=self.h).json()
-        self.assertEqual(t, {"disponible": False}, "2 de 7 medidas: no se guarda")
+        self.assertEqual(t, {"disponible": False, "tu_plata": None}, "2 de 7 medidas: no se guarda")
         with main.db_abierta() as conn:
             # Anotó que corrió: mañana lo intenta de nuevo, no cada 10 minutos.
             self.assertFalse(termometro.toca(conn, datetime.utcnow()))
+
+    def test_tu_plata_por_sector(self):
+        # Tu plata, con el peso de LA cuenta (`senales_semana.peso`): AAPL
+        # (Tecnología: 1 de 2 sube → la mitad cuenta como «suben»), KO (Consumo
+        # básico: 0 de 1), GGAL argentina (Financiero, con BRK.B: 2 de 2) y SPY,
+        # un ETF que no está en el universo → «sin sector», nombrado.
+        self._noche()
+        self.client.post("/api/brokers", json={"name": "IOL", "currency": "ARS"}, headers=self.h)
+        for broker, asset, tipo, q, compra in (("Schwab", "KO", "STOCK", 10, 100), ("Schwab", "SPY", "ETF", 2, 500),
+                                               ("IOL", "GGAL", "ACCION", 100, 8000)):
+            r = self.client.post("/api/positions", json={"broker": broker, "asset": asset, "quantity": q,
+                                                         "buy_price": compra, "asset_type": tipo}, headers=self.h)
+            self.assertEqual(r.status_code, 200, r.text)
+        with main.db_abierta() as conn:
+            for sym, precio in (("AAPL", 150.0), ("KO", 100.0), ("SPY", 500.0), ("GGAL.BA", 8000.0)):
+                conn.execute("INSERT INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,datetime('now')) "
+                             "ON CONFLICT(symbol) DO UPDATE SET price=excluded.price", (sym, precio))
+            conn.commit()
+        self._cron_del_termometro()
+        with mock.patch("main._current_cedear_rate", lambda: MEP):
+            t = self.client.get("/api/termometro", headers=self.h).json()
+        tp = t["tu_plata"]
+        # 1.500 + 1.000 + 800 + 1.000 = 4.300 dólares: 34,9 / 23,3 / 18,6 / 23,3 → enteros que suman 100.
+        self.assertEqual([(x["sector"], x["pct"], x["papeles"]) for x in tp["suben"]["sectores"]],
+                         [("tecnologia", 35, ["AAPL"]), ("financiero", 19, ["GGAL"])])
+        self.assertEqual([(x["sector"], x["pct"], x["papeles"]) for x in tp["bajan"]["sectores"]],
+                         [("consumo_bas", 23, ["KO"])])
+        self.assertEqual((tp["suben"]["pct"], tp["bajan"]["pct"]), (54, 23))
+        self.assertEqual(tp["sin_sector"], {"pct": 23, "papeles": ["SPY"]})
+        self.assertEqual(tp["suben"]["pct"] + tp["bajan"]["pct"] + tp["sin_sector"]["pct"], 100)
+        self.assertEqual(tp["suben"]["sectores"][0]["mercado_pct"], 50.0)
+        # El peso es el de `senales_semana.peso` (la cuenta de Tu lista y Señales).
+        import senales_semana
+        with main.db_abierta() as conn, mock.patch("main._current_cedear_rate", lambda: MEP):
+            car = senales_semana.cartera(conn, self.uid)
+        self.assertAlmostEqual(senales_semana.peso(car, "AAPL", False), 1500 / 4300, places=3)
+
+    def test_sin_cartera_no_hay_tu_plata(self):
+        self._cron_del_termometro()
+        t = self.client.get("/api/termometro", headers=self.h).json()
+        self.assertIsNone(t["tu_plata"])
 
     def test_la_poda_de_la_noche_no_borra_el_universo(self):
         self._noche()

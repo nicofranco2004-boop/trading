@@ -269,6 +269,74 @@ def ultimo(conn, hoy: date) -> dict:
     return t
 
 
+# ─── Tu plata por sector ─────────────────────────────────────────────────────
+# Cuánto de tu plata está en sectores donde la mayoría de las acciones del
+# universo sube de fondo y cuánto donde la mayoría baja. El sector de cada
+# papel tuyo es el MISMO que usa el termómetro (la lista del S&P 500 y
+# `SECTOR_PANEL`): un CEDEAR de una empresa del S&P toma el de la empresa. Lo
+# que no está en el universo (ETFs, cripto, bonos, efectivo, acciones de afuera
+# del S&P o del panel) va a «sin sector», nombrado: nadie tiene que adivinar por
+# qué su papel no aparece. No es la torta de sectores de la Cartera
+# (`frontend/src/utils/assetSector.js`): ver la nota de la pieza 7.
+
+# «La mayoría sube de fondo»: la mitad o más de las acciones del sector.
+MAYORIA = 50.0
+
+
+def sector_de(asset: str, local: bool):
+    """El sector de un papel tuyo con la clasificación del termómetro, o None."""
+    a = (asset or "").strip().upper()
+    if a.endswith(".BA"):
+        a, local = a[:-3], True
+    if local:
+        return SECTOR_PANEL.get(a)
+    sp = {e["symbol"]: e["sector"] for e in _lista_sp500()["empresas"]}
+    return sp.get(a) or sp.get(a.replace("-", "."))
+
+
+def tu_plata(conn, uid: int, t: dict):
+    """{'suben': {pct, sectores}, 'bajan': {pct, sectores}, 'sin_sector': {pct,
+    papeles}} con tu plata valuada por el servidor (`senales_semana.cartera`) y
+    el peso de cada papel de `senales_semana.peso` (LA cuenta del peso). Cada
+    sector: {sector, mercado_pct (% de sus acciones que suben de fondo), pct
+    (de tu plata), papeles: [de más a menos plata]}. Los % son enteros que suman
+    100 (`_repartir_cien`). None si no tenés nada valuado o el termómetro no
+    tiene número."""
+    import senales_semana
+    if not t or not t.get("disponible"):
+        return None
+    car = senales_semana.cartera(conn, uid)
+    if not car["total"] > 0:
+        return None
+    mercado = t.get("sectores") or {}
+    por_sector, sin = {}, {}
+    for (asset, local), valor in car["tenencias"].items():
+        if (asset, local) in por_sector or valor <= 0:
+            continue
+        sec = sector_de(asset, local)
+        peso = senales_semana.peso(car, asset, local) or 0.0
+        if sec and sec in mercado and mercado[sec].get("pct") is not None:
+            por_sector.setdefault(sec, {})[asset] = por_sector.get(sec, {}).get(asset, 0.0) + peso
+        else:
+            sin[asset] = sin.get(asset, 0.0) + peso
+    for nombre, clave in (("efectivo", "efectivo"), ("plazos fijos", "plazos_fijos")):
+        if car.get(clave, 0) > 0:
+            sin[nombre] = sin.get(nombre, 0.0) + car[clave] / car["total"]
+    secs = sorted(por_sector, key=lambda k: -sum(por_sector[k].values()))
+    pcts = senales_semana._repartir_cien([sum(por_sector[k].values()) for k in secs] + [sum(sin.values())])
+
+    def _papeles(d):
+        return [n for n, _ in sorted(d.items(), key=lambda x: -x[1])]
+    grupos = {"suben": {"pct": 0, "sectores": []}, "bajan": {"pct": 0, "sectores": []}}
+    for k, pct in zip(secs, pcts):
+        m = mercado[k]["pct"]
+        g = grupos["suben" if m >= MAYORIA else "bajan"]
+        g["pct"] += pct
+        g["sectores"].append({"sector": k, "mercado_pct": m, "pct": pct, "papeles": _papeles(por_sector[k])})
+    grupos["sin_sector"] = {"pct": pcts[-1], "papeles": _papeles(sin)}
+    return grupos
+
+
 # ─── La corrida de cada día ──────────────────────────────────────────────────
 
 def _instante(v):

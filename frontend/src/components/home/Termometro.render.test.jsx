@@ -5,8 +5,10 @@
 // pone palabras, y lo que dice tiene que salir de esos números.
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { TermometroVista } from './Termometro'
-import { zona, partes, semanaPasadaTxt, cuando, tramo, puntoDelArco, LEYENDA } from '../../utils/termometro'
+import { TermometroVista, TuPlata } from './Termometro'
+import {
+  zona, partes, semanaPasadaTxt, cuando, tramo, puntoDelArco, LEYENDA, frasesTuPlata, filasTuPlata,
+} from '../../utils/termometro'
 
 const REAL = {
   "universo": 528,
@@ -181,5 +183,56 @@ describe('termómetro: la pantalla', () => {
     const html = renderToStaticMarkup(<TermometroVista datos={{ disponible: false }} />)
     expect(html).toContain('Todavía no hay un número guardado')
     expect(html).not.toMatch(/Suma \d/)
+  })
+})
+
+// `tu_plata` tal como la arma el servidor (backend/tests/test_termometro.py,
+// test_tu_plata_por_sector): AAPL, GGAL argentina, KO y SPY.
+const TP = {
+  suben: { pct: 54, sectores: [
+    { sector: 'tecnologia', mercado_pct: 50.0, pct: 35, papeles: ['AAPL'] },
+    { sector: 'financiero', mercado_pct: 100.0, pct: 19, papeles: ['GGAL'] },
+  ] },
+  bajan: { pct: 23, sectores: [{ sector: 'consumo_bas', mercado_pct: 0.0, pct: 23, papeles: ['KO'] }] },
+  sin_sector: { pct: 23, papeles: ['SPY'] },
+}
+const nombre = k => ({ tecnologia: 'Tecnología', financiero: 'Financiero', consumo_bas: 'Consumo básico' }[k])
+
+describe('termómetro: tu plata por sector', () => {
+  it('las tres frases, con la cifra aparte', () => {
+    expect(frasesTuPlata(TP, nombre).map(f => `${f.cifra} ${f.texto}`)).toEqual([
+      '54 % de tu plata está en sectores donde la mayoría de las acciones sube de fondo (Tecnología y Financiero).',
+      '23 % está en sectores donde la mayoría baja (Consumo básico).',
+      '23 % no tiene sector en esta cuenta.',
+    ])
+    expect(frasesTuPlata(TP, nombre, true).map(f => f.cifra)).toEqual(['—', '—', '—'])
+    expect(frasesTuPlata(null, nombre)).toEqual([])
+  })
+
+  it('el detalle nombra tus papeles en cada sector, y los que no tienen sector', () => {
+    const filas = filasTuPlata(TP, nombre)
+    expect(filas.map(f => [f.nombre, f.pct, f.papeles.join(',')])).toEqual([
+      ['Tecnología', 35, 'AAPL'], ['Financiero', 19, 'GGAL'], ['Consumo básico', 23, 'KO'], ['Sin sector', 23, 'SPY'],
+    ])
+    expect(filas[0].mercado).toBe('50 % de sus acciones sube de fondo')
+  })
+
+  it('en pantalla: al tocar se ve qué papel cayó en cada sector; con «Ocultar saldos», sin %', () => {
+    const cerrado = renderToStaticMarkup(<TuPlata tp={TP} />)
+    expect(cerrado).toContain('Qué papeles tuyos hay en cada sector')
+    expect(cerrado).not.toContain('SPY')
+    const abierto = renderToStaticMarkup(<TuPlata tp={TP} abierto />)
+    expect(abierto).toContain('Sin sector')
+    expect(abierto).toContain('SPY')
+    expect(abierto).toContain('Alphabet y Meta van en Comunicación')
+    const oculto = renderToStaticMarkup(<TuPlata tp={TP} abierto oculto />)
+    expect(oculto).not.toMatch(/\b(54|35|19|23) %/)
+    expect(oculto).toContain('AAPL')
+  })
+
+  it('sin cartera no se dibuja', () => {
+    expect(renderToStaticMarkup(<TuPlata tp={null} />)).toBe('')
+    expect(renderToStaticMarkup(<TermometroVista datos={{ ...REAL, tu_plata: null }} />)).not.toContain('Tu plata por sector')
+    expect(renderToStaticMarkup(<TermometroVista datos={{ ...REAL, tu_plata: TP }} />)).toContain('Tu plata por sector')
   })
 })

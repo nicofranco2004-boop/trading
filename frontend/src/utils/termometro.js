@@ -125,3 +125,48 @@ export function tramo(desde, hasta, cx, cy, r) {
   const f = n => Math.round(n * 100) / 100
   return `M${f(x1)},${f(y1)} A${r},${r} 0 0 1 ${f(x2)},${f(y2)}`
 }
+
+// ─── Tu plata por sector ─────────────────────────────────────────────────────
+// Viene armado de GET /api/termometro (`tu_plata`, backend termometro.tu_plata):
+// el sector de cada papel tuyo es el del termómetro (la clasificación del S&P,
+// GICS), no el de la torta de la Cartera. Acá sólo van las palabras.
+
+const y = xs => (xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} y ${xs[xs.length - 1]}`)
+
+/**
+ * Las frases de «tu plata por sector»: [{ id, pct, cifra, texto }], una por
+ * grupo con plata: la pantalla resalta `cifra` («54 %») y sigue con `texto`. `nombre(sector)` da la etiqueta del sector. Con `oculto` («Ocultar
+ * saldos») el % no se muestra.
+ */
+export function frasesTuPlata(tp, nombre, oculto = false) {
+  if (!tp) return []
+  const pct = p => (oculto ? '—' : `${p} %`)
+  const out = []
+  if (tp.suben?.pct > 0) {
+    out.push({ id: 'suben', pct: tp.suben.pct, cifra: pct(tp.suben.pct), texto: `de tu plata está en sectores donde la mayoría de las acciones sube de fondo (${y(tp.suben.sectores.map(s => nombre(s.sector)))}).` })
+  }
+  if (tp.bajan?.pct > 0) {
+    out.push({ id: 'bajan', pct: tp.bajan.pct, cifra: pct(tp.bajan.pct), texto: `está en sectores donde la mayoría baja (${y(tp.bajan.sectores.map(s => nombre(s.sector)))}).` })
+  }
+  if (tp.sin_sector?.pct > 0) {
+    out.push({ id: 'sin', pct: tp.sin_sector.pct, cifra: pct(tp.sin_sector.pct), texto: `no tiene sector en esta cuenta.` })
+  }
+  return out
+}
+
+/** Las filas del detalle: cada sector con tus papeles, y al final «sin sector». */
+export function filasTuPlata(tp, nombre) {
+  if (!tp) return []
+  const sectores = [...(tp.suben?.sectores || []), ...(tp.bajan?.sectores || [])]
+    .map(s => ({
+      id: s.sector, nombre: nombre(s.sector), pct: s.pct, papeles: s.papeles, sube: s.mercado_pct >= 50,
+      mercado: `${num(s.mercado_pct)} % de sus acciones sube de fondo`,
+    }))
+  if (tp.sin_sector?.papeles?.length) {
+    sectores.push({
+      id: 'sin_sector', nombre: 'Sin sector', pct: tp.sin_sector.pct, papeles: tp.sin_sector.papeles, sube: null,
+      mercado: 'No están en el S&P 500 ni en el panel argentino (ETFs, cripto, bonos, efectivo…)',
+    })
+  }
+  return sectores
+}

@@ -985,13 +985,16 @@ class FichaTest(unittest.TestCase):
         self._broker("Schwab", "USD")
         self._posicion("Schwab", "MSFT", "STOCK")
         self.yahoo.precios["MSFT"] = lambda i, d: 400.0
-        self.yahoo.precios["NVDA"] = lambda i, d: 100.0
+        # MELI y no NVDA: las empresas del S&P 500 son el universo del termómetro
+        # (termometro.py), que baja su propio trabajo todos los días: no son
+        # «lo bajado a pedido» y la noche no las poda.
+        self.yahoo.precios["MELI"] = lambda i, d: 100.0
         self.yahoo.precios["AMD"] = lambda i, d: 100.0
-        self._ficha("NVDA")
+        self._ficha("MELI")
         self._ficha("AMD")
         viejo = (velas_diarias._ahora_utc() - timedelta(days=50)).strftime("%Y-%m-%d %H:%M:%S")
         with main.db_abierta() as conn:
-            conn.execute("UPDATE velas_estado SET ultima_corrida=? WHERE symbol IN ('NVDA')", (viejo,))
+            conn.execute("UPDATE velas_estado SET ultima_corrida=? WHERE symbol IN ('MELI')", (viejo,))
             conn.commit()
         main._run_velas_diarias_job()
         with main.db_abierta() as conn:
@@ -1001,7 +1004,7 @@ class FichaTest(unittest.TestCase):
             conn.commit()
             self.assertEqual(velas_diarias._podar_a_pedido(conn, {"MSFT"}), 0)
         # El S&P 500 se guarda siempre (velas_diarias.SP500).
-        self.assertEqual(hay, {"MSFT", "AMD", "^GSPC"}, "NVDA nadie la miró en 50 días; AMD sí")
+        self.assertEqual(hay, {"MSFT", "AMD", "^GSPC"}, "MELI nadie la miró en 50 días; AMD sí")
 
     def test_dos_a_la_vez_bajan_una_sola_vez(self):
         import threading
