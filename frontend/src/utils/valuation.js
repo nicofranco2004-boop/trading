@@ -1123,10 +1123,6 @@ export function computeBrokerValue(allPositions, prices, broker, tcValuacion, ce
   const ctx = { broker, prices, tcValuacion, tcCedear: cedearRate, tcCripto, costBasis }
   let value = 0, invested = 0
   let valueArs = 0, invArs = 0
-  // El valor en USD de cada lote (id → valor): las piezas EXACTAS de `value`.
-  // Lo usa la radiografía técnica de la Cartera para pesar cada activo sin
-  // valuarlo por otro camino (su suma es el total de arriba).
-  const porLote = new Map()
 
   for (const p of bpos) {
     const r = valuePositionLot(p, ctx)
@@ -1134,7 +1130,6 @@ export function computeBrokerValue(allPositions, prices, broker, tcValuacion, ce
     invested += r.investedUsd
     valueArs += r.valueArs
     invArs   += r.invArs
-    porLote.set(p.id, r.valueUsd)
   }
 
   return {
@@ -1142,7 +1137,6 @@ export function computeBrokerValue(allPositions, prices, broker, tcValuacion, ce
     invested,
     valueArs,
     invArs,
-    porLote,
     pnlUsd: value - invested,
     pnlArs: valueArs - invArs,
   }

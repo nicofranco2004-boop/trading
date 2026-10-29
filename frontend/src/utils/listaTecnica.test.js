@@ -8,7 +8,7 @@ import {
   haceCuanto, trazoDeLinea, motivosSinLectura,
 } from './listaTecnica'
 import { indexarLecturas, MOTIVOS_SIN_LECTURA } from './radiografia'
-import { computeBrokerValue, setBrokersRegistry } from './valuation'
+import { setBrokersRegistry } from './valuation'
 import { tarjetas, veredictoRsi } from './tecnico'
 
 const BROKERS = [
@@ -36,31 +36,21 @@ describe('lo que seguís se lee con la regla de la ficha', () => {
     expect(lecturaDeSeguido('BTC-USD')).toMatchObject({ asset: 'BTC', local: false })
   })
 
-  it('pide cada activo una vez: el CEDEAR que tenés y seguís es uno; el ADR y la acción local, dos', () => {
-    const lotes = [
-      { id: 1, broker: 'IOL', asset: 'AAPL', asset_type: 'CEDEAR' },
-      { id: 2, broker: 'Schwab', asset: 'GGAL', asset_type: 'STOCK' },
-      { id: 3, broker: 'IOL', asset: 'ARS', is_cash: true },
-    ]
-    expect(activosDeLaLista(lotes, [{ symbol: 'AAPL.BA' }, { symbol: 'GGAL.BA' }, { symbol: 'TSLA' }])).toEqual([
-      { asset: 'AAPL', local: false }, { asset: 'GGAL', local: false }, { asset: 'GGAL', local: true },
-      { asset: 'TSLA', local: false },
+  it('pide lo que seguís, cada uno una vez (lo que tenés lo pone el servidor)', () => {
+    expect(activosDeLaLista([{ symbol: 'AAPL.BA' }, { symbol: 'GGAL.BA' }, { symbol: 'TSLA' }, { symbol: 'GGAL' }])).toEqual([
+      { asset: 'AAPL', local: false }, { asset: 'GGAL', local: true }, { asset: 'TSLA', local: false },
     ])
   })
 })
 
-describe('las filas, con la valuación de la Cartera', () => {
-  const POS = [
-    { id: 1, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK', quantity: 10, invested: 1000, buy_price: 100 },
-    { id: 2, broker: 'Schwab', asset: 'KO', asset_type: 'STOCK', quantity: 10, invested: 600, buy_price: 60 },
-    { id: 3, broker: 'Schwab', asset: 'USD', is_cash: true, quantity: 500, invested: 500 },
-    { id: 4, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK', quantity: 10, invested: 1000, buy_price: 100 },
-    { id: 5, broker: 'IOL', asset: 'AL30', asset_type: 'BONO', quantity: 100, invested: 50000, buy_price: 500 },
+describe('las filas, con lo que manda el servidor', () => {
+  // `tenencias` de POST /api/tecnico/lista: lo que tenés y su peso sobre toda
+  // tu plata (senales_semana.cartera, la misma valuación del % y de Señales).
+  const TENENCIAS = [
+    { asset: 'NVDA', local: false, peso: 0.5, tipo: 'STOCK' },
+    { asset: 'KO', local: false, peso: 0.25, tipo: 'STOCK' },
+    { asset: 'AL30', local: true, peso: 0.004, tipo: 'BONO' },
   ]
-  const PRICES = { NVDA: 150, KO: 50, 'AL30.BA': 500 }
-  const totales = BROKERS.map(b => computeBrokerValue(POS, PRICES, b, 1000, 1000))
-  const valorDe = p => totales.find((r, i) => BROKERS[i].name === p.broker).porLote.get(p.id) ?? 0
-  const extra = [{ nombre: 'plazos fijos', valor: 1000 }]
   const indice = indexarLecturas([
     lec('NVDA', false),
     lec('KO', false, { dist_media200: -9.1, media200: 110, dist_media50: -4.8, rsi: 24, adx: 18.2, dist_maximo_12m: -24.3 }),
@@ -68,15 +58,14 @@ describe('las filas, con la valuación de la Cartera', () => {
     { asset: 'AL30', local: true, disponible: false },
   ])
   const seguidos = [{ symbol: 'TSLA' }, { symbol: 'NVDA' }, { symbol: 'AL29' }]
-  const filas = filasDeLaLista({ lotes: POS, valorDe, extra, seguidos, indice, hoy: HOY })
+  const filas = filasDeLaLista({ tenencias: TENENCIAS, seguidos, indice, hoy: HOY })
   const de = (n) => filas.find(f => f.nombre === n)
 
-  it('cuánto pesa cada uno es su pedazo del total de la Cartera (computeBrokerValue + plazos fijos)', () => {
-    const total = totales.reduce((s, r) => s + r.value, 0) + 1000
-    expect(de('NVDA').valor).toBeCloseTo(3000, 9)
-    expect(de('NVDA').peso).toBeCloseTo((3000 / total) * 100, 9)
-    expect(de('KO').peso).toBeCloseTo((500 / total) * 100, 9)
-    // El efectivo y los plazos fijos suman al total pero no son filas.
+  it('cuánto pesa cada uno es lo que dice el servidor, sin recalcular', () => {
+    expect(de('NVDA').peso).toBeCloseTo(50, 9)
+    expect(de('KO').peso).toBeCloseTo(25, 9)
+    expect(de('AL30').peso).toBeCloseTo(0.4, 9)
+    // El efectivo y los plazos fijos suman al total del servidor pero no son filas.
     expect(filas.map(f => f.nombre).sort()).toEqual(['AL29', 'AL30', 'KO', 'NVDA', 'TSLA'])
   })
 
@@ -99,9 +88,9 @@ describe('las filas, con la valuación de la Cartera', () => {
   })
 
   it('el ADX justo en 23 ya es «marcada» (la línea de la ficha: 23 o más)', () => {
-    const f = filasDeLaLista({ lotes: [], valorDe, seguidos: [{ symbol: 'X' }], indice: indexarLecturas([lec('X', false, { adx: 23 })]), hoy: HOY })
+    const f = filasDeLaLista({ seguidos: [{ symbol: 'X' }], indice: indexarLecturas([lec('X', false, { adx: 23 })]), hoy: HOY })
     expect(f[0].adx.palabra).toBe('marcada')
-    const g = filasDeLaLista({ lotes: [], valorDe, seguidos: [{ symbol: 'X' }], indice: indexarLecturas([lec('X', false, { adx: 22.96 })]), hoy: HOY })
+    const g = filasDeLaLista({ seguidos: [{ symbol: 'X' }], indice: indexarLecturas([lec('X', false, { adx: 22.96 })]), hoy: HOY })
     expect(g[0].adx).toMatchObject({ texto: '22,9', palabra: 'de costado' })
   })
 
@@ -114,17 +103,17 @@ describe('las filas, con la valuación de la Cartera', () => {
   })
 
   it('una acción de la watchlist todavía sin velas: aparece en un día', () => {
-    const f = filasDeLaLista({ lotes: [], valorDe, seguidos: [{ symbol: 'IREN' }], indice: new Map(), hoy: HOY })
+    const f = filasDeLaLista({ seguidos: [{ symbol: 'IREN' }], indice: new Map(), hoy: HOY })
     expect(f[0]).toMatchObject({ vigente: false, porque: 'sin_historia' })
   })
 
   it('velas de hace más de 10 días: sin lectura, con su fecha, y sin último cambio', () => {
     const vieja = lec('MSFT', false, { fecha: '2026-10-10' }, { ultimo_cambio: { fecha: '2026-10-08', texto: 'pasó arriba de su promedio de 50 días: el corto plazo se volvió alcista.' } })
-    const f = filasDeLaLista({ lotes: [], valorDe, seguidos: [{ symbol: 'MSFT' }], indice: indexarLecturas([vieja]), hoy: HOY })
+    const f = filasDeLaLista({ seguidos: [{ symbol: 'MSFT' }], indice: indexarLecturas([vieja]), hoy: HOY })
     expect(f[0]).toMatchObject({ vigente: false, porque: 'vieja', rsi: null, adx: null, cambio: null })
     expect(f[0].motivo).toContain('10/10/2026')
     // El fin de semana largo sigue siendo de hoy.
-    const finde = filasDeLaLista({ lotes: [], valorDe, seguidos: [{ symbol: 'MSFT' }], indice: indexarLecturas([lec('MSFT', false, { fecha: '2026-10-16' })]), hoy: HOY })
+    const finde = filasDeLaLista({ seguidos: [{ symbol: 'MSFT' }], indice: indexarLecturas([lec('MSFT', false, { fecha: '2026-10-16' })]), hoy: HOY })
     expect(finde[0].vigente).toBe(true)
   })
 
@@ -133,7 +122,7 @@ describe('las filas, con la valuación de la Cartera', () => {
     const x = lec('TSLA', false, {}, { ultimo_cambio: {
       tipo: 'media50', sentido: 'abajo', fecha: '2026-10-21', etiqueta: 'Corto plazo', tono: 'neg',
       texto: 'quedó abajo de su promedio de 50 días: el corto plazo se volvió bajista.', extra: null } })
-    const f = filasDeLaLista({ lotes: [], valorDe, seguidos: [{ symbol: 'TSLA' }], indice: indexarLecturas([x]), hoy: HOY })
+    const f = filasDeLaLista({ seguidos: [{ symbol: 'TSLA' }], indice: indexarLecturas([x]), hoy: HOY })
     expect(f[0].cambio).toEqual({
       corta: 'Quedó abajo de su promedio de 50 días',
       completa: 'Quedó abajo de su promedio de 50 días: el corto plazo se volvió bajista.',
@@ -142,17 +131,17 @@ describe('las filas, con la valuación de la Cartera', () => {
     // La aclaración de «cayó muy rápido» (la posibilidad de rebote) va al globo.
     const rsi = lec('KO', false, {}, { ultimo_cambio: {
       tipo: 'rsi_bajo_30', fecha: '2026-10-23', tono: 'rsi', texto: 'tiene la fuerza (RSI) en 25.', extra: 'Es una posibilidad, no una certeza.' } })
-    const g = filasDeLaLista({ lotes: [], valorDe, seguidos: [{ symbol: 'KO' }], indice: indexarLecturas([rsi]), hoy: HOY })
+    const g = filasDeLaLista({ seguidos: [{ symbol: 'KO' }], indice: indexarLecturas([rsi]), hoy: HOY })
     expect(g[0].cambio).toMatchObject({ corta: 'Tiene la fuerza (RSI) en 25', completa: 'Tiene la fuerza (RSI) en 25. Es una posibilidad, no una certeza.', hace: 'ayer' })
   })
 
   it('dos filas con el mismo ticker dicen dónde cotiza cada una', () => {
-    const lotes = [
-      { id: 1, broker: 'IOL', asset: 'GGAL', asset_type: 'ACCION' },
-      { id: 2, broker: 'Schwab', asset: 'GGAL', asset_type: 'STOCK' },
-      { id: 3, broker: 'Schwab', asset: 'KO', asset_type: 'STOCK' },
+    const tenencias = [
+      { asset: 'GGAL', local: true, peso: 0.3, tipo: 'ACCION' },
+      { asset: 'GGAL', local: false, peso: 0.2, tipo: 'STOCK' },
+      { asset: 'KO', local: false, peso: 0.1, tipo: 'STOCK' },
     ]
-    const f = filasDeLaLista({ lotes, valorDe: () => 100, seguidos: [{ symbol: 'BTC-USD' }], indice: new Map(), hoy: HOY })
+    const f = filasDeLaLista({ tenencias, seguidos: [{ symbol: 'BTC-USD' }], indice: new Map(), hoy: HOY })
     const por = Object.fromEntries(f.map(x => [x.clave, x]))
     expect(por['GGAL|1'].detalle).toBe('en BYMA')
     expect(por['GGAL|0'].detalle).toBe('en Nueva York')

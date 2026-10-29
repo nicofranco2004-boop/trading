@@ -72,7 +72,11 @@ function servidor() {
   api.post.mockImplementation(async (url, body) => {
     pedidos.push(`POST ${url}`)
     if (url === '/tecnico/lista') {
-      return { lecturas: body.activos.map(a => ({
+      // Como el servidor: lo que tenés (y cuánto pesa) lo pone él, con su
+      // lectura; la pantalla manda sólo lo que sigue.
+      const tenencias = [{ asset: 'NVDA', local: false, peso: 0.75, tipo: 'STOCK' }, { asset: 'KO', local: false, peso: 0.25, tipo: 'STOCK' }]
+      const todos = [...tenencias, ...body.activos]
+      return { tenencias, lecturas: todos.map(a => ({
         asset: a.asset, local: a.local, disponible: true, linea: [{ d: HOY, c: 1 }, { d: HOY, c: 2 }], ultimo_cambio: null,
         lectura: a.asset === 'KO' ? LECTURA({ dist_media200: -5, media200: 110 }) : LECTURA(),
       })) }

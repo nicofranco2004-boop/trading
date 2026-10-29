@@ -104,6 +104,16 @@ describe('blocks (catálogo visual)', () => {
     expect(r.meta.blocks[0].items).toEqual([{ label: 'Ok', to: '/alertas?new=NVDA' }])
   })
 
+  it('actions: Análisis técnico y sus pestañas se pueden linkear (28/10)', () => {
+    const items = [
+      { label: 'Tu lista', to: '/analisis-tecnico?tab=lista' },
+      { label: 'Señales', to: '/analisis-tecnico?tab=senales' },
+      { label: 'Análisis técnico', to: '/analisis-tecnico' },
+    ]
+    const r = wrap([{ type: 'actions', items }])
+    expect(r.meta.blocks[0].items).toEqual(items)
+  })
+
   it('table: caps 4 cols × 5 filas', () => {
     const r = wrap([{ type: 'table', cols: ['a', 'b', 'c', 'd', 'e', 'f'], rows: Array.from({ length: 9 }, () => ['x', '1', '2', '3', '4', '5']) }])
     expect(r.meta.blocks[0].cols).toHaveLength(4)

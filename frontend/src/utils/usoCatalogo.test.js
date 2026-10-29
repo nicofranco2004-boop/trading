@@ -74,6 +74,9 @@ describe('catálogo de uso', () => {
 
   it('las pantallas no llevan el dato de la URL', () => {
     expect(pantallaDe('/activo/GGAL')).toBe('pantalla:/activo')
+    // Empieza como /analisis (Métricas) pero es otra pantalla.
+    expect(pantallaDe('/analisis-tecnico')).toBe('pantalla:/analisis-tecnico')
+    expect(pantallaDe('/analisis')).toBe('pantalla:/analisis')
     expect(pantallaDe('/posiciones/123')).toBe('pantalla:/posiciones/detalle')
     expect(pantallaDe('/posiciones')).toBe('pantalla:/posiciones')
     expect(pantallaDe('/config/notificaciones')).toBe('pantalla:/config')

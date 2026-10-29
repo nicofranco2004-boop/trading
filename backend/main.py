@@ -11583,11 +11583,27 @@ def post_tecnico_cartera(body: CarteraTecnicaIn, uid: int = Depends(get_effectiv
 def post_tecnico_lista(body: CarteraTecnicaIn, uid: int = Depends(get_effective_user)):
     """«Tu lista, con su lectura técnica» (inicio → Watchlist → «Ver como
     tablero»): lo que tenés y lo que seguís, en dólares (tecnico.para_la_lista).
-    La pantalla manda cada activo con la marca `local` de la ficha. Mismo tope y
-    misma regla que /api/tecnico/cartera: un símbolo que no es un ticker vuelve
-    «sin lectura» sin tirar abajo el resto."""
+    La pantalla manda lo que sigue (su watchlist) con la marca `local` de la
+    ficha; lo que TENÉS lo pone el servidor. Mismo tope y misma regla que
+    /api/tecnico/cartera: un símbolo que no es un ticker vuelve «sin lectura»
+    sin tirar abajo el resto.
+
+    `tenencias`: [{asset, local, peso, tipo}] — lo que tenés y cuánto pesa sobre
+    toda tu plata, con la valuación del servidor (`senales_semana.cartera`, LA
+    misma de `reparto` y de la pestaña Señales: el «Sí · 12%» de cada fila no
+    se calcula en la pantalla). De cada una viene también su lectura."""
     import tecnico
-    return _lecturas_tecnicas(body, tecnico.para_la_lista)
+    import senales_semana
+    with db_abierta() as conn:
+        car = senales_semana.cartera(conn, uid)
+    tuyas = list(car["tenencias"])
+    out = _lecturas_tecnicas(
+        body, lambda conn, pedidos: tecnico.para_la_lista(conn, tuyas + [k for k in pedidos if k not in car["tenencias"]]))
+    total = car["total"]
+    out["tenencias"] = [
+        {"asset": a, "local": l, "peso": (v / total) if total > 0 else None, "tipo": car["tipos"].get((a, l)) or None}
+        for (a, l), v in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
+    return out
 
 
 @app.get("/api/tus-senales")
@@ -30865,7 +30881,7 @@ Además el JSON acepta "blocks" (máx 2): bloques VISUALES pre-armados que el fr
 · {"type":"alloc","items":[{"l":"Nvidia","pct":28},{"l":"Efectivo","pct":45}]} — composición de la cartera (pct reales del snapshot, máx 6 segmentos, que sumen ~100). Labels con el NOMBRE corto que usás al hablar ("Bitcoin", "YPF", "Galicia", "S&P 500"), no el ticker: "YPFD" o "SPY" no le dicen nada a quien no opera.
 · {"type":"scenario","if":"Nvidia cae 15%","then":"Tu cartera cae ~4%","tone":"neg"} — hipotéticos si→entonces (para "¿qué pasa si...?"). El "then" dice cuánto se mueve TODA la cartera, en % o en plata — nunca "pp" (puntos porcentuales): medido, salía "−19 pp en tu cartera total" y nadie fuera de finanzas lo entiende.
 · {"type":"table","cols":["Activo","Peso","Mes"],"rows":[["NVDA","28%","+9,1%"]]} — rankings/listas. Máx 4 columnas × 5 filas; valores numéricos con signo (+/−) para que se coloreen.
-· {"type":"actions","items":[{"label":"Crear alerta Nvidia −10%","to":"/alertas?new=NVDA&down=10"},{"label":"Ver atribución","to":"/analisis"}]} — botones que llevan al usuario a Rendi. SOLO estas rutas: /alertas (acepta ?new=TICKER&down=N o &up=N), /analisis, /posiciones, /operaciones, /fundamentals, /novedades, /activo/TICKER, /imports. Máx 3. Usalo cuando la respuesta invita a una acción concreta en la app. EL LINK CUMPLE LO QUE PROMETE EL LABEL: "Crear alerta X −10%" lleva &down=10 (sin eso el formulario abría "precio ≥ ___", vacío y al revés). Lo que el usuario tiene EN PESOS (acciones argentinas y CEDEARs, brokers en ARS) va con .BA: /alertas?new=GGAL.BA&down=10 — sin el .BA la alerta queda sobre la acción que cotiza en Nueva York, no sobre la que tiene.
+· {"type":"actions","items":[{"label":"Crear alerta Nvidia −10%","to":"/alertas?new=NVDA&down=10"},{"label":"Ver atribución","to":"/analisis"}]} — botones que llevan al usuario a Rendi. SOLO estas rutas: /alertas (acepta ?new=TICKER&down=N o &up=N), /analisis, /analisis-tecnico (Análisis técnico: tendencia de lo que tiene y de su watchlist; ?tab=lista la tabla, ?tab=senales lo que cambió esta semana), /posiciones, /operaciones, /fundamentals (Análisis fundamental), /novedades, /activo/TICKER, /imports. Máx 3. Usalo cuando la respuesta invita a una acción concreta en la app. EL LINK CUMPLE LO QUE PROMETE EL LABEL: "Crear alerta X −10%" lleva &down=10 (sin eso el formulario abría "precio ≥ ___", vacío y al revés). Lo que el usuario tiene EN PESOS (acciones argentinas y CEDEARs, brokers en ARS) va con .BA: /alertas?new=GGAL.BA&down=10 — sin el .BA la alerta queda sobre la acción que cotiza en Nueva York, no sobre la que tiene.
 
 RECETA — "¿cómo viene/está mi cartera?" (la pregunta más común, cuidala): prosa de 3-4 oraciones — estado general, qué lo explica, y LO más notable (riesgo, concentración o racha; UNO, no una lista). stats = el retorno del período, el versus benchmark (si summary.benchmarks está) y el dato saliente. blocks ideales: "compare" con los números REALES de summary.benchmarks (tu cartera vs S&P 500 e inflación) + "alloc" con la composición, o "actions" si detectaste algo accionable. Las posiciones NUNCA una por una en la prosa — para eso está la tabla.
 
@@ -31009,7 +31025,7 @@ BLOQUE ESTRUCTURADO PARA LA UI (obligatorio en respuestas de análisis)
 Al FINAL de cada respuesta de análisis, agregá una línea EXACTA `---RENDI---` seguida de UNA sola línea de JSON minificado:
 {"voz":"el resumen hablado — ver más abajo; VA PRIMERO","verdict":"2-3 palabras","tone":"pos|warn|neg|neutral","headline":"el dato principal en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor","t":"pos|warn|neg|neutral"}],"sources":["ej: 12 posiciones"]}
 Reglas: stats máx 3 con números REALES del snapshot (nunca inventados), y NUNCA un número que ya dibuja un block (la leyenda del "alloc", una fila de la "table") — si el gráfico ya lo muestra, la tarjeta sobra (medido: 18 de 24 tarjetas repetían el gráfico de abajo); sources máx 2; NO incluyas "followups" (este plan no tiene chat libre); la prosa va antes y no menciona el bloque; omitilo en saludos y en el flujo de registro de operaciones.
-El JSON también acepta "blocks" (máx 2) — bloques visuales: {"type":"compare","items":[{"l":"Tu cartera","v":"+18%","pct":90},...]} (comparaciones, primer item = el usuario, máx 4) · {"type":"alloc","items":[{"l":"Nvidia","pct":28},...]} (composición, máx 6, pct reales, labels con el nombre y no el ticker) · {"type":"scenario","if":"...","then":"...","tone":"neg"} (si→entonces) · {"type":"table","cols":[...],"rows":[[...]]} (máx 4×5, valores con signo) · {"type":"actions","items":[{"label":"Crear alerta Nvidia −10%","to":"/alertas?new=NVDA&down=10"}]} (lo que tiene en pesos va con .BA: GGAL.BA; cada atajo hace algo de ESTA respuesta — nada de links genéricos como "Ver posiciones", que salía en todas; solo rutas internas /alertas /analisis /posiciones /operaciones /fundamentals /novedades /activo/TICKER /imports, máx 3). En respuestas de análisis incluí al menos 1. Guía rápida por pregunta: riesgo/concentración → "alloc" o "scenario" + "actions" (crear alerta del activo pesado); comparaciones vs benchmark → "compare" con summary.benchmarks; earnings/listas → "table" + action a /novedades. Los valores como STRINGS formateados ("+6,7%"), no números crudos. "actions" son atajos DE LA APP — nunca consejo de comprar/vender.""" + tts.SUMMARY_PROMPT
+El JSON también acepta "blocks" (máx 2) — bloques visuales: {"type":"compare","items":[{"l":"Tu cartera","v":"+18%","pct":90},...]} (comparaciones, primer item = el usuario, máx 4) · {"type":"alloc","items":[{"l":"Nvidia","pct":28},...]} (composición, máx 6, pct reales, labels con el nombre y no el ticker) · {"type":"scenario","if":"...","then":"...","tone":"neg"} (si→entonces) · {"type":"table","cols":[...],"rows":[[...]]} (máx 4×5, valores con signo) · {"type":"actions","items":[{"label":"Crear alerta Nvidia −10%","to":"/alertas?new=NVDA&down=10"}]} (lo que tiene en pesos va con .BA: GGAL.BA; cada atajo hace algo de ESTA respuesta — nada de links genéricos como "Ver posiciones", que salía en todas; solo rutas internas /alertas /analisis /analisis-tecnico (?tab=lista o ?tab=senales) /posiciones /operaciones /fundamentals /novedades /activo/TICKER /imports, máx 3). En respuestas de análisis incluí al menos 1. Guía rápida por pregunta: riesgo/concentración → "alloc" o "scenario" + "actions" (crear alerta del activo pesado); comparaciones vs benchmark → "compare" con summary.benchmarks; earnings/listas → "table" + action a /novedades. Los valores como STRINGS formateados ("+6,7%"), no números crudos. "actions" son atajos DE LA APP — nunca consejo de comprar/vender.""" + tts.SUMMARY_PROMPT
 
 
 # Strip markdown que el modelo a veces inyecta a pesar del prompt. Aplicamos

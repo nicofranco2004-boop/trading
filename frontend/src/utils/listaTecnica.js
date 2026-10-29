@@ -7,8 +7,10 @@
 //   · las PALABRAS son las de la ficha: `tendencia` (la tarjeta «Largo plazo»),
 //     la tarjeta «Corto plazo» de `tarjetas`, `veredictoRsi`, `fmtAdx` y la
 //     línea de 23 del ADX (`ADX_CLAVE`);
-//   · CUÁNTO PESA cada activo, con `valorPorActivo` de la radiografía y la
-//     valuación de la Cartera (`valorDe`): el 12 % de acá es el 12 % de allá.
+//   · CUÁNTO PESA cada activo y QUÉ tenés: lo manda el servidor (`tenencias`
+//     de POST /api/tecnico/lista, con la valuación de senales_semana.cartera,
+//     LA misma del % alcista y de la pestaña Señales): el 12 % de Tu lista es
+//     el 12 % de Señales.
 //   · el ÚLTIMO CAMBIO lo cuenta el servidor con `cambios_desde`, la cuenta
 //     única de «qué cambió esta semana».
 // Ninguna palabra habla del futuro ni dice qué hacer: describe cómo se movió.
@@ -17,9 +19,8 @@ import { inferType } from './tickers'
 import { isCrypto } from './crypto'
 import { hoyISO } from './fecha'
 import { tarjetas, fmtAdx, ADX_CLAVE } from './tecnico'
-import {
-  activosParaLeer, clave, valorPorActivo, tendencia, fuerza, lecturaVieja, MOTIVOS_SIN_LECTURA,
-} from './radiografia'
+import { fciLabel } from './valuation'
+import { clave, tendencia, fuerza, lecturaVieja, MOTIVOS_SIN_LECTURA } from './radiografia'
 
 /**
  * Cómo se lee un símbolo de la watchlist, con la regla de la ficha para lo que
@@ -36,13 +37,14 @@ export function lecturaDeSeguido(simbolo) {
   return { asset, local, simbolo: s }
 }
 
-// Lo que el servidor deja leer por pedido (tecnico.MAX_ACTIVOS_CARTERA).
+// Lo que el servidor deja leer por pedido (tecnico.MAX_ACTIVOS_CARTERA). La
+// watchlist tiene tope de 100 (main.WATCHLIST_TOPE): entra en uno.
 export const MAX_POR_PEDIDO = 200
 
-/** Lo que se le pide al servidor: tus activos (con su marca `local`, como la
- *  Cartera) y los que seguís, cada uno una vez. */
-export function activosDeLaLista(lotes = [], seguidos = []) {
-  const vistos = new Map(activosParaLeer(lotes).map(a => [clave(a.asset, a.local), a]))
+/** Lo que se le pide al servidor: lo que seguís, cada uno una vez, con la marca
+ *  `local` de la ficha. Lo que TENÉS lo pone el servidor (sus `tenencias`). */
+export function activosDeLaLista(seguidos = []) {
+  const vistos = new Map()
   for (const it of seguidos) {
     const { asset, local } = lecturaDeSeguido(it?.symbol)
     if (asset && !vistos.has(clave(asset, local))) vistos.set(clave(asset, local), { asset, local })
@@ -87,17 +89,16 @@ export function textoDelCambio(c) {
 }
 
 /**
- * Las filas de la tabla. `lotes`: tus posiciones (efectivo incluido, para el
- * total); `valorDe(p)`: el valor en dólares de ese lote, el de la Cartera;
- * `extra`: los plazos fijos ({ nombre, valor }); `seguidos`: los ítems de
- * /watchlist; `indice`: clave → lectura del servidor. Cada fila:
- *   { clave, nombre, ruta, tenes, valor, peso (0–100), vigente, motivo,
+ * Las filas de la tabla. `tenencias`: lo que tenés y cuánto pesa, como lo manda
+ * el servidor ([{ asset, local, peso (fracción), tipo }], de más a menos);
+ * `seguidos`: los ítems de /watchlist; `indice`: clave → lectura del servidor.
+ * Cada fila:
+ *   { clave, nombre, ruta, tenes, peso (0–100), vigente, motivo,
  *     fondo, corto, rsi, adx, desdeMax, linea, cambio }
  * `vigente` false = «Sin lectura» (sin velas, bono/fondo o velas de hace más
  * de 10 días): esa fila no muestra números y `motivo` dice por qué.
  */
-export function filasDeLaLista({ lotes = [], valorDe, extra = [], seguidos = [], indice, hoy = hoyISO() }) {
-  const { porActivo, total } = valorPorActivo(lotes, valorDe, extra)
+export function filasDeLaLista({ tenencias = [], seguidos = [], indice, hoy = hoyISO() }) {
   const filas = new Map()
   const armar = (k, base) => {
     const x = indice?.get(k) || null
@@ -120,16 +121,19 @@ export function filasDeLaLista({ lotes = [], valorDe, extra = [], seguidos = [],
       cambio: c?.fecha ? { ...textoDelCambio(c), fecha: c.fecha, hace: haceCuanto(c.fecha, hoy) } : null,
     })
   }
-  for (const [k, a] of porActivo) {
-    if (k === 'efectivo' || k.startsWith('extra:')) continue
-    const asset = String(a.p.asset).toUpperCase()
-    armar(k, { nombre: a.nombre, ruta: asset, tenes: true, valor: a.valor, peso: total > 0 ? (a.valor / total) * 100 : 0, p: a.p })
+  for (const t of tenencias) {
+    const asset = String(t.asset || '').toUpperCase()
+    if (!asset) continue
+    armar(clave(asset, t.local), {
+      nombre: fciLabel(asset), ruta: asset, tenes: true, peso: (t.peso || 0) * 100,
+      p: { asset, asset_type: t.tipo || null },
+    })
   }
   for (const it of seguidos) {
     const { asset, local, simbolo } = lecturaDeSeguido(it?.symbol)
     const k = clave(asset, local)
     if (!asset || filas.has(k)) continue
-    armar(k, { nombre: isCrypto(asset) ? asset : simbolo, ruta: simbolo, tenes: false, valor: 0, peso: 0, p: loteDeSeguido(it, asset) })
+    armar(k, { nombre: isCrypto(asset) ? asset : simbolo, ruta: simbolo, tenes: false, peso: 0, p: loteDeSeguido(it, asset) })
   }
   return conDetalle([...filas.values()])
 }

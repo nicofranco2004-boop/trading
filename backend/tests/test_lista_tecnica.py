@@ -132,7 +132,11 @@ class ListaTecnicaTest(unittest.TestCase):
         pedido = [{"asset": "AAPL"}, {"asset": "GGAL", "local": True}, {"asset": "GGAL"},
                   {"asset": "TSLA"}, {"asset": "PAMP", "local": True}]
         c = self._lista(pedido)
-        for (asset, local), x in c.items():
+        # Vuelve también lo que TENÉS (lo pone el servidor, 29/10), con el bono
+        # AL30 sin lectura: acá se comparan los pedidos, que tienen velas.
+        for clave in [(a["asset"], a.get("local", False)) for a in pedido]:
+            x = c[clave]
+            asset, local = clave
             self.assertTrue(x["disponible"], asset)
             self.assertEqual(x["lectura"], self._ficha(asset, local)["lectura"],
                              f"{asset}: la lista y la ficha leen distinto")
@@ -211,7 +215,13 @@ class ListaTecnicaTest(unittest.TestCase):
         self.assertFalse(c[("FCI PIONERO PESOS", False)]["disponible"], "un fondo no es un ticker")
         self.assertFalse(c[("ZZZZ", False)]["disponible"])
         self.assertTrue(c[("TSLA", False)]["disponible"])
-        self.assertEqual(len(c), 4, "el mismo activo dos veces se lee una")
+        # El mismo activo dos veces se lee una; además vienen las 4 tenencias
+        # (AAPL, GGAL local, AL30 local —el mismo que se pidió— y el ADR GGAL).
+        r = self.client.post("/api/tecnico/lista", json={"activos": [{"asset": "TSLA"}, {"asset": "TSLA"}]}, headers=self.h).json()
+        claves = [(x["asset"], x["local"]) for x in r["lecturas"]]
+        self.assertEqual(len(claves), len(set(claves)), "nada se lee dos veces")
+        self.assertEqual(claves.count(("TSLA", False)), 1)
+        self.assertEqual(len(c), 4 + 3, "4 pedidos distintos + 3 tenencias que no se pidieron")
 
     def test_velas_viejas_traen_su_fecha(self):
         self._armar()
@@ -234,3 +244,17 @@ class ListaTecnicaTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MervalleConoceAnalisisTecnicoTest(unittest.TestCase):
+    """Mervall-E sólo puede linkear a una lista cerrada de pantallas (el bloque
+    «actions»). Análisis técnico y sus pestañas están en esa lista, en los dos
+    modos (Pro y Free), y /fundamentals se llama «Análisis fundamental»."""
+
+    def test_las_rutas_que_puede_linkear(self):
+        for prompt in (main._AI_CHAT_SYSTEM, main._AI_CHAT_SYSTEM_FREE):
+            self.assertIn("/analisis-tecnico", prompt)
+            self.assertIn("?tab=lista", prompt)
+            self.assertIn("?tab=senales", prompt)
+            self.assertNotIn("Calidad de cartera", prompt)
+        self.assertIn("/fundamentals (Análisis fundamental)", main._AI_CHAT_SYSTEM)

@@ -13,8 +13,8 @@
 // deslizan de costado, con nombres cortos («Señales», «Pronto»).
 //
 // Nada se calcula acá. La página pide UNA vez lo de tu lista
-// (useListaTecnica: tu cartera valuada como en la Cartera + POST
-// /api/tecnico/lista) y lo de la semana (useTusSenales: GET /api/tus-senales,
+// (useListaTecnica: POST /api/tecnico/lista, con lo que tenés y cuánto pesa
+// según el servidor) y lo de la semana (useTusSenales: GET /api/tus-senales,
 // cambios_desde + texto_del_cambio, la misma cuenta que el mail de los
 // sábados), y cada pestaña dibuja su parte.
 
@@ -206,7 +206,7 @@ export default function AnalisisTecnico() {
   const [filtro, setFiltro] = useState('todo')
   const filas = useMemo(
     () => (lista.cargando || lista.error ? [] : filasDeLaLista(lista)),
-    [lista.cargando, lista.error, lista.lotes, lista.seguidos, lista.valorDe, lista.extra, lista.indice])
+    [lista.cargando, lista.error, lista.tenencias, lista.seguidos, lista.indice])
 
   const elegir = (id) => {
     const next = new URLSearchParams(searchParams)

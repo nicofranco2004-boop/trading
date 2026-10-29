@@ -384,6 +384,27 @@ class TusSenalesTest(unittest.TestCase):
         self.assertEqual(self.client.get("/api/tus-senales", headers=self.h).json()["alcista"]["semana_pasada"],
                          cartera["semana_pasada"])
 
+    def test_el_mismo_peso_en_tu_lista_y_en_senales(self):
+        # «Sí · 12%» de Tu lista y «Lo tenés · 12% de tu plata» de Señales son el
+        # MISMO número (senales_semana.cartera, 29/10): la pantalla ya no lo calcula.
+        self._velas(hoy_art_date())
+        lista = self.client.post("/api/tecnico/lista", json={"activos": [{"asset": "MSFT"}]}, headers=self.h)
+        self.assertEqual(lista.status_code, 200, lista.text)
+        lista = lista.json()
+        pesos = {(t["asset"], t["local"]): t["peso"] for t in lista["tenencias"]}
+        self.assertEqual(set(pesos), {("NVDA", False), ("KO", False), ("AAPL", False), ("GGAL", True)},
+                         "lo que tenés lo pone el servidor, aunque la pantalla sólo mande la watchlist")
+        self.assertAlmostEqual(sum(pesos.values()), 1.0, places=9, msg="sin efectivo ni plazos fijos, suman todo")
+        self.assertEqual([t["asset"] for t in lista["tenencias"]][:2], ["NVDA", "KO"], "de más a menos plata")
+        self.assertEqual({(x["asset"], x["local"]) for x in lista["lecturas"]} >= set(pesos) | {("MSFT", False)}, True,
+                         "y de cada cosa que tenés viene su lectura")
+        senales = self.client.get("/api/tus-senales", headers=self.h).json()["senales"]
+        for x in senales:
+            if x["tenes"]:
+                self.assertAlmostEqual(x["peso"], pesos[(x["asset"], x["local"])], places=12, msg=x["asset"])
+        self.assertTrue(any(x["tenes"] for x in senales), "la prueba tiene que comparar al menos uno")
+        self.assertEqual(next(t["tipo"] for t in lista["tenencias"] if t["asset"] == "AAPL"), "CEDEAR")
+
     def test_sin_nada_con_lectura_no_hay_porcentaje(self):
         # Sólo un bono: no hay tendencia que medir. Ni la Cartera ni la pestaña
         # inventan un 0 % (la pantalla lo dice con palabras).
