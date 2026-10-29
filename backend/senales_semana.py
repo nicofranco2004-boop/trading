@@ -243,12 +243,12 @@ def watchlist(conn, uid: int, cedears=None) -> dict:
 
 
 def _tesis(conn, uid: int) -> dict:
-    """{asset: texto} de la última tesis de cada activo (pieza 11, «Tu tesis»).
-    La tabla `tesis` vive en la rama de la pieza 11, todavía sin juntar con esta:
-    hasta entonces no hay tesis y la pantalla y el mail no muestran esa línea.
-    Al juntar: SELECT asset, texto FROM tesis WHERE user_id=? ORDER BY
-    escrita_el, quedándose con la última de cada activo."""
-    return {}
+    """{ACTIVO: texto} de la última tesis de cada activo (pieza 11, «Tu
+    tesis», `tesis.ultimas`). Hasta el 29/10 devolvía {} con un «al juntar:
+    SELECT…» en un comentario: se juntó la pieza 11 y nadie lo llenó (auditoría
+    B4 = A8 = C2). Ahora lo vigila test_tus_senales."""
+    import tesis as _t
+    return _t.ultimas(conn, uid)
 
 
 # ─── La cuenta ───────────────────────────────────────────────────────────────
@@ -496,7 +496,8 @@ def contenido_del_mail(semana: dict) -> dict:
         quien = x["asset"] if x["tenes"] else f"{x['asset']} (en tu watchlist)"
         linea = f"{quien} {x['texto']}"
         if x.get("tesis"):
-            linea += f" Tu tesis: «{x['tesis']}»."
+            import tesis as _tesis
+            linea += f" Tu tesis: «{_tesis.para_una_linea(x['tesis'])}»."
         lineas.append(linea)
     resto = [x for x in lista if x not in primeros]
     if resto:

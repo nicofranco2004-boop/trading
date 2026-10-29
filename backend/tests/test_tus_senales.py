@@ -440,6 +440,51 @@ class TusSenalesTest(unittest.TestCase):
         self.assertEqual(self.mails[0]["to"], f"asesor-{self.uid}@rendi.test")
         self.assertTrue(self.mails[0]["asunto"].startswith("[Juan] Tu semana:"))
 
+    # — la tesis (pieza 11) en la pestaña y en el mail —
+
+    def test_la_tesis_escrita_sale_en_el_mail_del_sabado(self):
+        """Auditoría B4 = A8 = C2 (29/10): `_tesis()` devolvía {} con un
+        «al juntar: SELECT…» en un comentario; se juntó y nadie lo llenó."""
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("mail")
+        r = self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "Data centers e IA"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._cron(_utc(sabado, 10, 5))
+        self.assertIn("NVDA pasó arriba", self.mails[0]["texto"])
+        self.assertIn("Tu tesis: «Data centers e IA».", self.mails[0]["texto"])
+
+    def test_la_tesis_escrita_sale_en_la_pestana(self):
+        self._velas(hoy_art_date())
+        r = self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "Data centers e IA"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        pestana = self.client.get("/api/tus-senales", headers=self.h).json()
+        nvda = [x for x in pestana["senales"] if x["asset"] == "NVDA"]
+        self.assertTrue(nvda)
+        self.assertEqual({x["tesis"] for x in nvda}, {"Data centers e IA"})
+        # La de un activo que no cambió no aparece (no hay renglón donde ponerla),
+        # y la de otro activo no se mete en NVDA.
+        self.assertTrue(all(x["tesis"] is None for x in pestana["senales"] if x["asset"] != "NVDA"))
+
+    def test_vale_la_ultima_version_de_la_tesis(self):
+        """La tesis se reescribe (una versión por día, `tesis.guardar`): vale la
+        última, como en la pantalla del diario."""
+        self._velas(hoy_art_date())
+        hoy = hoy_art_date()
+        with mock.patch("tesis.hoy_art_date", lambda: hoy - timedelta(days=5)):
+            self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "v1"}, headers=self.h)
+        self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "v2"}, headers=self.h)
+        pestana = self.client.get("/api/tus-senales", headers=self.h).json()
+        self.assertEqual({x["tesis"] for x in pestana["senales"] if x["asset"] == "NVDA"}, {"v2"})
+
+    def test_una_tesis_larga_va_cortada_en_el_mail_como_en_el_recordatorio(self):
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("mail")
+        self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "x" * 900}, headers=self.h)
+        self._cron(_utc(sabado, 10, 5))
+        self.assertIn("Tu tesis: «" + "x" * 277 + "…».", self.mails[0]["texto"])
+
 
 if __name__ == "__main__":
     unittest.main()
