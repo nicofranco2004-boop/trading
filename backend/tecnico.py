@@ -105,14 +105,16 @@ def _ref(referencia, i):
     return referencia[i] if isinstance(referencia, list) else referencia
 
 
-def ultimo_cruce(valores: list, referencia, desde_i: int = 1, hacia: str = None):
+def ultimo_cruce(valores: list, referencia, desde_i: int = 1):
     """El ÚLTIMO cruce de `valores` con `referencia` desde el índice `desde_i`:
     (índice, 'arriba'|'abajo'), o None si no cruzó.
 
     `referencia` es una serie (la media de 200 de cada día) o un nivel fijo (el
     30 del RSI). «Arriba» es valor ≥ referencia: la MISMA regla que la tarjeta de
-    la ficha (precio ≥ media es «Alcista»). `hacia` busca sólo los cruces en ese
-    sentido. Es LA cuenta de "cruzó": la usan el aviso de la ficha
+    la ficha (precio ≥ media es «Alcista»). Devuelve el último en CUALQUIER
+    sentido, a propósito: el que lo quiere en uno solo mira si el último fue
+    para ese lado (buscar sólo en un sentido saltea la vuelta: A4, 29/10). Es LA
+    cuenta de "cruzó": la usan el aviso de la ficha
     (`cruce_rsi`) y las alertas técnicas (`senal_desde`). Con una media o un
     valor que todavía no existe (None) ese día no cruza nada."""
     for i in range(len(valores) - 1, max(desde_i, 1) - 1, -1):
@@ -122,9 +124,7 @@ def ultimo_cruce(valores: list, referencia, desde_i: int = 1, hacia: str = None)
             continue
         antes, ahora = a >= ra, b >= rb
         if antes != ahora:
-            sentido = "arriba" if ahora else "abajo"
-            if hacia in (None, sentido):
-                return i, sentido
+            return i, "arriba" if ahora else "abajo"
     return None
 
 
@@ -133,11 +133,20 @@ def cruce_rsi(r: list, abajo: float = 30.0, arriba: float = 70.0):
     `RUEDAS_CRUCE_RSI` ruedas: {'tipo': 'salio_de_abajo'|'salio_de_arriba',
     'hace': ruedas}. Salir de abajo de 30 es lo que muchos leen como "vuelve a
     tomar fuerza"; salir de arriba de 70, "pierde fuerza". None si no hubo.
-    Sale de `ultimo_cruce`, la misma cuenta que las alertas técnicas."""
+    Sale de `ultimo_cruce`, la misma cuenta que las alertas técnicas, y con su
+    misma regla (`senal_desde`): vale el ÚLTIMO cruce de cada nivel, en
+    cualquier sentido. Si pasó 30 para arriba y después volvió a bajar, ya no
+    «salió»: buscando sólo los cruces para arriba la ficha decía «dejó de caer
+    tan rápido» con el RSI en 24 (auditoría A 29/10, A4; la regla se había
+    arreglado en las alertas el 22/10 y no acá)."""
     n = len(r)
     desde = max(1, n - RUEDAS_CRUCE_RSI)
-    de_abajo = ultimo_cruce(r, abajo, desde, "arriba")
-    de_arriba = ultimo_cruce(r, arriba, desde, "abajo")
+
+    def _ultimo(nivel, sentido):
+        c = ultimo_cruce(r, nivel, desde)
+        return c if c and c[1] == sentido else None
+    de_abajo = _ultimo(abajo, "arriba")
+    de_arriba = _ultimo(arriba, "abajo")
     if not de_abajo and not de_arriba:
         return None
     if de_abajo and (not de_arriba or de_abajo[0] > de_arriba[0]):

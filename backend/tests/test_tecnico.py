@@ -129,6 +129,12 @@ class CuentasTest(unittest.TestCase):
         self.assertIsNone(tecnico.cruce_rsi([40, 35, 29, 25]))
         # Un cruce de hace más de 10 ruedas ya no cuenta.
         self.assertIsNone(tecnico.cruce_rsi([25, 35] + [40] * 12))
+        # A4 (auditoría 29/10): pasó 30 para arriba y DESPUÉS volvió a bajar.
+        # Vale el último cruce, en cualquier sentido (la regla de `senal_desde`):
+        # no se avisa «dejó de caer tan rápido» con el RSI en 24.
+        self.assertIsNone(tecnico.cruce_rsi([40, 28, 25, 35, 39, 29, 24]))
+        # Lo mismo arriba: bajó de 70 y volvió a pasarlo.
+        self.assertIsNone(tecnico.cruce_rsi([60, 75, 68, 66, 72, 74]))
 
     def test_rsi_extremos(self):
         sube = [float(i) for i in range(1, 40)]
@@ -600,6 +606,25 @@ class FichaTest(unittest.TestCase):
         self.assertEqual(f["puntos"][0]["d"], self.dias[-100].isoformat())
         self.assertEqual(f["lectura"]["ruedas"], 100)
         self.assertIsNone(f["lectura"]["media200"], "con 100 ruedas no hay media de 200")
+
+    def test_rsi_que_salio_de_abajo_y_volvio_a_caer(self):
+        # A4 por el camino de la ficha (GET /api/tecnico/KO): el RSI baja de 30,
+        # sube a 39 dos días y vuelve a caer a ~24. La tarjeta dice «Cayó muy
+        # rápido»: el aviso de abajo no puede decir «dejó de caer tan rápido».
+        n = len(self.dias)
+        c = [100 + i * 0.05 + (1 if i % 2 else -0.8) for i in range(n - 19)]
+        x = c[-1]
+        for paso, veces in ((-3, 12), (6, 2), (-4, 5)):
+            for _ in range(veces):
+                x += paso
+                c.append(x)
+        self.yahoo.precios["KO"] = lambda i, d: c[i]
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "KO", "STOCK")
+        main._run_velas_diarias_job()
+        l = self._ficha("KO")["lectura"]
+        self.assertLess(l["rsi"], 30, "la prueba necesita el RSI abajo de 30 hoy")
+        self.assertIsNone(l["rsi_cruce"])
 
     def test_bono_y_lo_que_no_tiene_velas(self):
         self._broker("IOL", "ARS")
