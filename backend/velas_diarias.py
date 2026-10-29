@@ -190,9 +190,14 @@ def _seguimiento(conn):
         en_pesos = str(clave).upper().endswith('.BA')
         _sumar(_yahoo_de(p['asset'], p.get('asset_type'), en_pesos, yahoo_de_cripto, cedears))
 
+    # Lo que se sigue, con LA regla de la pantalla (`accion_local.seguido`):
+    # «GGAL» del buscador es la acción argentina, igual que «GGAL.BA» de la
+    # ficha. Por el sufijo se bajaba sólo el ADR y Tu lista y la ficha (que piden
+    # la de BYMA) quedaban sin serie al día (auditoría A 29/10, A1 y P4).
+    from accion_local import seguido
     for r in conn.execute("SELECT symbol, asset_type FROM watchlist").fetchall():
         sym = (r['symbol'] or '').upper()
-        _sumar(_yahoo_de(sym, r['asset_type'], sym.endswith('.BA'), yahoo_de_cripto, cedears))
+        _sumar(_yahoo_de(sym, r['asset_type'], sym.endswith('.BA') or seguido(sym)[1], yahoo_de_cripto, cedears))
 
     # Las alertas técnicas (alerts_engine.evaluar_tecnicas) miran la serie de la
     # ficha: sin esto, una alerta sobre un activo que nadie tiene no avisaba

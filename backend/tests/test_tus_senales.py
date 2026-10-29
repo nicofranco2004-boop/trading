@@ -478,6 +478,55 @@ class TusSenalesTest(unittest.TestCase):
         self.assertEqual(r["reparto"]["grupos"]["sin"]["nombres"], ["efectivo"])
         self.assertAlmostEqual(self.client.get("/api/tecnico/NVDA/peso", headers=self.h).json()["peso"], 0.5, places=9)
 
+    def test_una_accion_argentina_seguida_se_lee_en_byma_en_todas_las_pantallas(self):
+        # A1 + P4 (auditoría 29/10). «GGAL» lo guarda la estrella del buscador del
+        # inicio (sin «.BA») y «BMA.BA» la de la ficha. Nadie las tiene en BYMA:
+        # la noche tiene que bajar la serie de BYMA porque alguien la SIGUE. Los
+        # ADR de Nueva York se caen abajo de su promedio de 200 hace 2 ruedas; en
+        # BYMA ÷ MEP siguen subiendo. Señales (y el mail), Tu lista y la ficha a la
+        # que lleva «Ver gráfico» tienen que leer lo mismo: la acción de BYMA.
+        hoy = hoy_art_date()
+        self.yahoo = YahooFalso(hoy)
+        p = mock.patch("pricing.yahoo._historia", self.yahoo)
+        p.start()
+        self._p.append(p)
+        dias = _ruedas(hoy, 760)
+        n = len(dias)
+        self._post("/api/watchlist", {"symbol": "GGAL"})
+        self._post("/api/watchlist", {"symbol": "BMA.BA"})
+        with main.db_abierta() as conn:
+            for d in dias:
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
+                             (d.isoformat(), MEP * 1.1, MEP))
+            conn.commit()
+        for a in ("GGAL", "BMA"):
+            self.yahoo.precios[f"{a}.BA"] = lambda i, d: 5000 + i * 20
+            self.yahoo.precios[a] = lambda i, d: 30.0 if i >= n - 2 else 50 + i * 0.02
+        main._run_velas_diarias_job()
+
+        senales = self.client.get("/api/tus-senales", headers=self.h).json()["senales"]
+        # Lo que manda Tu lista: `activosDeLaLista` de la pantalla (accionLocal.test.js
+        # prueba que GGAL y BMA.BA salen local=true con la misma tabla que el servidor).
+        lista = self.client.post("/api/tecnico/lista", json={"activos": [{"asset": "GGAL", "local": True},
+                                                                         {"asset": "BMA", "local": True}]},
+                                 headers=self.h).json()["lecturas"]
+        for a, ficha_de in (("GGAL", "GGAL"), ("BMA", "BMA.BA")):
+            with self.subTest(a):
+                suyas = [s for s in senales if s["asset"] == a]
+                self.assertFalse([s for s in suyas if s["tipo"] == "media200"],
+                                 "Señales no puede avisar el cruce del ADR")
+                self.assertTrue(all(s["local"] and s["ficha"] == ficha_de for s in suyas))
+                fila = next(x for x in lista if x["asset"] == a)
+                self.assertTrue(fila["disponible"], "la noche bajó la serie de BYMA aunque nadie la tenga")
+                self.assertGreater(fila["lectura"]["dist_media200"], 0)
+                ficha = self.client.get(f"/api/tecnico/{a}?moneda=usd&local=1", headers=self.h).json()
+                self.assertEqual(ficha["ticker"], f"{a}.BA")
+                self.assertEqual(ficha["lectura"]["fecha"], fila["lectura"]["fecha"], "al día, la misma vela")
+                self.assertAlmostEqual(ficha["lectura"]["dist_media200"], fila["lectura"]["dist_media200"], places=9)
+        with main.db_abierta() as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM velas_diarias WHERE symbol='GGAL' LIMIT 1").fetchone(),
+                              "el ADR no lo sigue nadie: no se baja")
+
     def test_sin_nada_con_lectura_no_hay_porcentaje(self):
         # Sólo un bono: no hay tendencia que medir. Ni la Cartera ni la pestaña
         # inventan un 0 % (la pantalla lo dice con palabras).
