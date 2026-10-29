@@ -237,14 +237,18 @@ def para_el_aviso(conn, t) -> dict:
 
     def _donde(x):
         return "arriba" if x == "alcista" else "abajo"
+    # La de ahora es la del último CIERRE: dice de qué día es, no «hoy» (auditoría
+    # D5, 29/10; la misma frase que la ficha, TesisDelActivo.jsx).
+    cuando = (f"al cierre del {fecha_legible(date.fromisoformat(ahora['fecha']))}"
+              if ahora.get("fecha") else "en el último cierre")
     if a and h and a == h:
         partes.append(f"Ese día el precio estaba {_donde(a)} de su promedio de 200 días "
-                      f"(tendencia {a}) y hoy sigue {_donde(h)}.")
+                      f"(tendencia {a}) y {cuando} seguía {_donde(h)}.")
     elif a and h:
         partes.append(f"Ese día el precio estaba {_donde(a)} de su promedio de 200 días "
-                      f"(tendencia {a}); hoy está {_donde(h)} ({h}).")
+                      f"(tendencia {a}); {cuando} estaba {_donde(h)} ({h}).")
     elif h:
-        partes.append(f"Hoy el precio está {_donde(h)} de su promedio de 200 días (tendencia {h}).")
+        partes.append(f"{cuando[0].upper()}{cuando[1:]} el precio estaba {_donde(h)} de su promedio de 200 días (tendencia {h}).")
     if h:
         # La misma línea que los avisos técnicos: la tendencia describe, no manda.
         partes.append("Muestra cómo se movió el precio: no es una recomendación para comprar ni vender.")

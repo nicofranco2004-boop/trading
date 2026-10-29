@@ -190,7 +190,10 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
     out.push({
       id: 'desde_maximo', titulo: 'Caída desde el máximo', tono: enMaximo ? 'neutro' : 'neg',
       veredicto: enMaximo ? 'En su máximo' : pctConSigno(dm.pct),
-      texto: enMaximo ? `Hoy cerró en ${deCuando}.` : `Hoy, contra ${deCuando} (${precio(dm.maximo)}).`,
+      // Del último cierre, con su fecha (auditoría D5): no es el precio en vivo.
+      texto: m.hasta
+        ? (enMaximo ? `El ${fechaCorta(m.hasta)} cerró en ${deCuando}.` : `Al cierre del ${fechaCorta(m.hasta)}, contra ${deCuando} (${precio(dm.maximo)}).`)
+        : (enMaximo ? `En el último cierre estaba en ${deCuando}.` : `En el último cierre, contra ${deCuando} (${precio(dm.maximo)}).`),
     })
   }
 

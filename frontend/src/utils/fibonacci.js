@@ -175,7 +175,10 @@ export function tarjetaFibonacci(f, precio, fecha) {
   const lejos = rm && rm.precio != null && rm.valor >= 0.05
     ? ` Lo más ${suba ? 'bajo' : 'alto'} que llegó fue ${precio(rm.precio)}, el ${fecha(rm.fecha)} (${rm.valor >= 1 ? `pasó el arranque de la ${f.dir}` : `${pct0(rm.valor)} de la ${f.dir}`}).`
     : ''
-  const hoyTxt = f.precio_hoy != null ? `Hoy está en ${precio(f.precio_hoy)}: ${zona}.` : `Hoy ${zona}.`
+  // El último CIERRE, con su fecha: «hoy» al lado del precio en vivo de la
+  // ficha eran dos «hoy» distintos (auditoría D5, 29/10).
+  const alCierre = f.fecha_hoy ? `Al cierre del ${fecha(f.fecha_hoy)}` : 'En el último cierre'
+  const hoyTxt = f.precio_hoy != null ? `${alCierre} estaba en ${precio(f.precio_hoy)}: ${zona}.` : `${alCierre} ${zona}.`
   const queSon = suba
     ? 'Las rayas marcan hasta dónde podría volver a bajar antes de seguir subiendo: muchos miran el 38,2 %, el 50 % y el 61,8 % de la suba. Pasar el 78,6 % es devolver casi toda la suba.'
     : 'Las rayas marcan hasta dónde podría volver a subir antes de seguir bajando: muchos miran el 38,2 %, el 50 % y el 61,8 % de la bajada. Pasar el 78,6 % es recuperar casi toda la bajada.'

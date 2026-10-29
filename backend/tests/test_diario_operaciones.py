@@ -392,6 +392,10 @@ class TesisTest(Base):
         self.assertIn("no es una recomendación", m["detail"])
         self.assertEqual(m["heading"], m["titulo"])
         self.assertIn("abajo de su promedio de 200 días", m["detail"])
+        # D5 (auditoría D, 29/10): la tendencia de ahora es la del último CIERRE:
+        # dice de qué día es, no «hoy».
+        self.assertRegex(m["detail"], r"[Aa]l cierre del \d{1,2} de [a-z]+")
+        self.assertNotRegex(m["detail"].lower(), r"\bhoy\b")
         self.assertEqual(m["cta_path"], "/activo/NVDA")
         self.assertNotRegex(m["detail"].lower(), r"vendé|comprá|mantené|deberías|conviene")
         self.assertEqual(pushes[0][1]["url"], "/activo/NVDA")
