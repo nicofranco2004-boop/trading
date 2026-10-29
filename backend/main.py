@@ -12198,6 +12198,17 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
         # Sólo si CAMBIA: editar el precio de un lote no depende de esto.
         if _actual and p.broker != _actual["broker"]:
             _exigir_broker_existente(conn, uid, p.broker)
+        # Un lote en pesos no se lleva (ni se pasa) a una cuenta sin caja en pesos:
+        # después la venta manda su moneda y no hay dónde cobrar (auditoría 29/10).
+        # Sólo si CAMBIA el broker o la moneda: un lote viejo así se puede seguir
+        # editando, y pasarlo a dólares es justamente cómo se corrige.
+        _sel = conn.execute("SELECT currency FROM positions WHERE id=? AND user_id=?",
+                            (pid, uid)).fetchone() if _actual else None
+        _moneda = p.currency or (_sel["currency"] if _sel else None)
+        if (_actual and (_moneda or "").upper() == "ARS"
+                and (p.broker != _actual["broker"]
+                     or (p.currency or "").upper() != (_sel["currency"] or "").upper())):
+            _pata_de_la_moneda(conn, uid, p.broker, "ARS")   # 400 si no tiene caja en pesos
         if (p.tc_compra is None and not p.is_cash
                 and (p.currency or "").upper() == "ARS" and p.entry_date):
             # Mismo relleno que el alta: si el lote es en pesos y quedó sin TC, se
@@ -14902,7 +14913,7 @@ def _registrar_cobro_bono(conn, uid: int, data: "BondCashflowIn") -> dict:
         cash_broker = data.cash_broker
         cash_row = conn.execute(
             "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, cash_broker)).fetchone()
-    elif data.currency:
+    elif data.currency and not data.cash_broker:
         # Sin cuenta elegida, la moneda decide la pata, como en la compra y la venta:
         # dólares "en IOL" entran a 'IOL · USD'; pesos en IBKR, 400.
         cash_broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
@@ -16048,7 +16059,22 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 # @reintentar_si_trabada vuelve a llamar con el MISMO pedido, y si la
                 # primera vuelta se deshizo después de crear la pata, el reintento
                 # arrancaba con un broker que ya no existía.
-                broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
+                try:
+                    broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
+                except HTTPException as _e:
+                    # Un lote anotado en pesos en una cuenta en dólares (entró antes
+                    # del 29/10): la pantalla vende en su moneda y no hay caja donde
+                    # cobrar. Que diga cómo destrabarlo.
+                    if _e.status_code == 400 and conn.execute(
+                            "SELECT 1 FROM positions WHERE user_id=? AND broker=? AND asset=? "
+                            "AND is_cash=0 AND UPPER(COALESCE(currency,''))='ARS' LIMIT 1",
+                            (uid, data.broker, data.asset)).fetchone():
+                        raise HTTPException(400, (
+                            f"Este {data.asset} está anotado en pesos, pero {data.broker} "
+                            f"sólo tiene caja en dólares. Editá el lote: poné su moneda y "
+                            f"su precio en dólares (o movelo a tu broker en pesos) y "
+                            f"después vendé."))
+                    raise
                 # Obtener moneda del broker
                 br = conn.execute(
                     "SELECT currency FROM brokers WHERE name=? AND user_id=?", (broker, uid)

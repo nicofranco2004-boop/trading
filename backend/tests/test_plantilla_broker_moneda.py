@@ -245,6 +245,34 @@ class LaPlantillaNoGuardaPesosComoDolares(unittest.TestCase):
         self.assertEqual(self.brokers()["Cocos"], "USD")
         self.assertEqual(self.cajas()["Cocos"][1], 0.0)        # no 1.000.000
 
+    def test_si_el_broker_paso_a_dolares_despues_de_la_vista_previa_el_confirm_frena(self):
+        """Auditoría a ciegas 29/10: vista previa sin errores sobre un "Cocos" en pesos;
+        en otra pestaña se lo pasa a dólares; el confirm (sin "Estado inicial") no
+        re-valida y guardaba los pesos en la caja en dólares."""
+        self.crear_broker("Cocos", "ARS", con_datos=True)
+        mov = ("nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;tipoOperacion;"
+               "instrumento;moneda;mercado;cantidad;precio;montoBruto;comision;ddmm;iva;otros;"
+               "total\n1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;1.000.000;0;0;0;0;"
+               "1.000.000\n")
+        r = self.client.post(
+            "/api/imports/preview", headers=self.h,
+            files=[("files", ("mov.csv", io.BytesIO(mov.encode()), "text/csv"))],
+            data={"format": "cocos", "broker": "Cocos"})
+        self.assertEqual(r.status_code, 200, r.text)
+        prev = r.json()
+        self.assertEqual(prev["errors"], [])
+        conn = main.get_db()
+        with conn:
+            conn.execute("UPDATE brokers SET currency='USD' WHERE user_id=? AND name='Cocos'",
+                         (self.uid,))
+        conn.close()
+        antes = self.cajas()
+        r = self.client.post("/api/imports/confirm", headers=self.h,
+                             json={"session_id": prev["session_id"]})
+        self.assertGreaterEqual(r.status_code, 400, r.text)
+        self.assertIn("pesos", r.text)
+        self.assertEqual(self.cajas(), antes)
+
     def test_confirmar_con_estado_inicial_tampoco_deja_pasar_los_pesos(self):
         """El confirm con "Estado inicial" re-valida por otro camino."""
         self.crear_broker("MiIBKR", "USD", con_datos=True)

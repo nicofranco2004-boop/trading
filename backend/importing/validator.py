@@ -102,11 +102,14 @@ def validate(
                           f"broker de la fila, o corregí la columna «moneda» si era en "
                           f"dólares.")
             else:
+                # Con el mismo arreglo que el mensaje de la foto de tenencia: cambiarle
+                # la moneda a un broker con datos remarca su caja sin convertir.
                 _texto = (f"El broker «{tx.broker}» está en dólares y esta fila está en "
                           f"pesos: Rendi no puede guardar pesos en una cuenta en dólares. "
                           f"Si es un broker argentino, tiene que estar en pesos (sus "
-                          f"dólares van solos a «{tx.broker} · USD»); si la fila era en "
-                          f"dólares, corregí la columna «moneda».")
+                          f"dólares van solos a «{tx.broker} · USD»): revertí los imports "
+                          f"de «{tx.broker}», cambiale la moneda a pesos y volvé a subir el "
+                          f"archivo. Si la fila era en dólares, corregí la columna «moneda».")
             row_errs.append(RowError(ridx, "moneda", "PESOS_EN_BROKER_EN_DOLARES", _texto))
         # ⚠️ DÓLARES A UN BROKER EN PESOS QUE NO PUEDE TENER SU SUB-CUENTA EN
         # DÓLARES (`pipeline.por_que_no_hay_pata_usd`). El confirm la crea o la

@@ -354,6 +354,66 @@ class PataDeLaMonedaTest(unittest.TestCase):
         self.assertEqual(self._caja("Cocos"), 0.0)
         self.assertAlmostEqual(self._caja(SUB), dolares + 44, places=6)
 
+    # Auditoría a ciegas 29/10: la edición fabricaba el lote en pesos dentro de un
+    # broker en dólares, y ese lote quedaba trabado (la venta manda su moneda).
+    def test_editar_no_mueve_un_lote_en_pesos_a_un_broker_en_dolares(self):
+        self._ibkr_con_dolares(300)
+        pid = self._post("/api/positions", {
+            "broker": "Cocos", "asset": "GGAL", "quantity": 10, "buy_price": 5000,
+            "currency": "ARS", "entry_date": "2026-10-01"}).json()["id"]
+        r = self.client.put(f"/api/positions/{pid}", headers=self.hdr, json={
+            "broker": "IBKR", "asset": "GGAL", "quantity": 10, "buy_price": 5000,
+            "currency": "ARS", "entry_date": "2026-10-01"})
+        self.assertEqual(r.status_code, 400, r.text)
+        lote = self._q("SELECT broker, currency FROM positions WHERE id=?", pid)[0]
+        self.assertEqual((lote["broker"], lote["currency"]), ("Cocos", "ARS"))
+
+    def _lote_viejo_en_pesos_en_ibkr(self):
+        # Como quedaron los que entraron antes del arreglo.
+        conn = main.get_db()
+        pid = conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity, "
+            "invested, entry_date, currency) VALUES (?,?,?,0,5000,10,50000,'2026-10-01','ARS')",
+            (self.uid, "IBKR", "GGAL")).lastrowid
+        conn.commit()
+        conn.close()
+        return pid
+
+    def test_un_lote_viejo_en_pesos_se_puede_seguir_editando(self):
+        self._ibkr_con_dolares(300)
+        pid = self._lote_viejo_en_pesos_en_ibkr()
+        r = self.client.put(f"/api/positions/{pid}", headers=self.hdr, json={
+            "broker": "IBKR", "asset": "GGAL", "quantity": 10, "buy_price": 5100,
+            "currency": "ARS", "entry_date": "2026-10-01"})
+        self.assertEqual(r.status_code, 200, r.text)
+        # Y se puede corregir: pasarlo a dólares sí está permitido.
+        r = self.client.put(f"/api/positions/{pid}", headers=self.hdr, json={
+            "broker": "IBKR", "asset": "GGAL", "quantity": 10, "buy_price": 3.5,
+            "currency": "USD", "entry_date": "2026-10-01"})
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_vender_un_lote_viejo_en_pesos_dice_que_hacer(self):
+        self._ibkr_con_dolares(300)
+        self._lote_viejo_en_pesos_en_ibkr()
+        r = self._post("/api/positions/sell", {
+            "broker": "IBKR", "asset": "GGAL", "quantity": 1, "exit_price": 6000,
+            "currency": "ARS", "date": "2026-10-20"})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("Editá", r.json()["detail"])
+        self.assertAlmostEqual(self._caja("IBKR"), 300.0, places=6)
+
+    def test_cobro_de_bono_con_cuenta_elegida_no_la_cambia_la_moneda(self):
+        # Eligió «Cocos» (pesos) y mandó dólares: no se lo muda a «Cocos · USD»
+        # por su cuenta; se le dice que esa caja no es de esa moneda.
+        self._post("/api/positions", {
+            "broker": "Cocos", "asset": "AL30", "quantity": 100, "buy_price": 600,
+            "currency": "ARS", "asset_type": "BOND", "entry_date": "2026-10-01"})
+        r = self._post("/api/bonds/cashflow", {
+            "broker": "Cocos", "asset": "AL30", "flow_type": "coupon", "amount": 4,
+            "date": "2026-10-20", "currency": "USD", "cash_broker": "Cocos"})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertNotIn(SUB, self._brokers())
+
     def test_chat_compra_en_pesos_en_broker_en_dolares_se_rechaza(self):
         self._ibkr_con_dolares(300)
         r = self._chat({"action": "buy", "asset": "GGAL", "broker": "IBKR", "currency": "ARS",

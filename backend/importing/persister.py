@@ -417,13 +417,32 @@ def persist_batch(
              JOIN brokers p ON p.id=h.parent_broker_id AND p.user_id=h.user_id
             WHERE h.user_id=? AND p.currency='ARS' AND h.currency IN ('USD','USDT')""",
         (uid,)).fetchall()}
+    # Lo mismo para cualquier cuenta que no acepta pesos (un broker en dólares
+    # suelto), con la MISMA regla que la vista previa
+    # (`pipeline.brokers_que_no_aceptan_pesos`): el confirm sin "Estado inicial" no
+    # re-valida, y si el broker pasó a dólares en otra pestaña entre la vista
+    # previa y el confirm, $1.000.000 entraban como US$ 1.000.000 (auditoría 29/10).
+    from importing import pipeline as _pipeline      # local: pipeline importa este módulo
+    _fmt = conn.execute("SELECT parser_format FROM import_batches WHERE id=? AND user_id=?",
+                        (batch_id, uid)).fetchone()
+    _sin_pesos = _pipeline.brokers_que_no_aceptan_pesos(
+        {r["name"]: {"currency": r["currency"]} for r in conn.execute(
+            "SELECT name, currency FROM brokers WHERE user_id=?", (uid,)).fetchall()},
+        _pipeline.FORMAT_BASE_CURRENCY.get((_fmt["parser_format"] if _fmt else None) or ""))
     for tx in sorted_txs:
-        if (tx.broker in _patas_usd and (tx.currency or "").upper() == "ARS"
-                and tx.operation_type not in ("FX_ARS_TO_USD", "FX_USD_TO_ARS")):
+        if ((tx.currency or "").upper() != "ARS"
+                or tx.operation_type in ("FX_ARS_TO_USD", "FX_USD_TO_ARS")):
+            continue
+        if tx.broker in _patas_usd:
             raise PersistError(None, (
                 f"«{tx.broker}» es la cuenta en dólares de «{_patas_usd[tx.broker]}» y este "
                 f"import le trae pesos. Si la vista previa se armó antes de que lo fuera, "
                 f"volvé a subir el archivo; los pesos van a «{_patas_usd[tx.broker]}»."))
+        if tx.broker in _sin_pesos:
+            raise PersistError(None, (
+                f"«{tx.broker}» está en dólares y este import le trae pesos: Rendi no "
+                f"puede guardar pesos en una cuenta en dólares. Si cambiaste la moneda "
+                f"del broker después de la vista previa, volvé a subir el archivo."))
 
     brokers_touched: set = set()
     counts = {"positions": 0, "operations": 0, "cash_movements": 0, "conversions": 0}
