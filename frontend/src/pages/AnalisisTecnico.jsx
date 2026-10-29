@@ -110,18 +110,20 @@ function Tarjeta({ titulo, texto, ir, accion, pronto = false }) {
 
 /**
  * La tarjeta grande del Panorama: el % de tu plata en tendencia de fondo
- * alcista con la regla de la radiografía (la MISMA tarjeta y la misma cuenta
- * que la Cartera, con tu lista ya valuada), «la semana pasada» y la frase de lo
- * que se dio vuelta, que guarda y arma el servidor de «Tus señales»
- * (`tarjetas` de utils/tusSenales.js, sin palabras nuevas).
+ * alcista, la barra, los grupos y «la semana pasada». El número viene de GET
+ * /api/tus-senales (`alcista`: senales_semana.reparto, LA cuenta, la misma de la
+ * Cartera, de la pestaña Señales y del mail). La frase de lo que se dio vuelta
+ * es la de `tarjetas` de utils/tusSenales.js, sin palabras nuevas.
  */
-function PanoramaPlata({ lista, semana, hidden }) {
-  const plata = tarjetasDeLaSemana(semana.datos, hidden).plata
+function PanoramaPlata({ semana, hidden }) {
+  const datos = semana.datos
+  const plata = tarjetasDeLaSemana(datos, hidden).plata
+  // Sin nada con lectura el servidor manda `alcista: null`: la tarjeta lo dice.
+  const reparto = datos ? (datos.alcista || { pct: null, grupos: {}, motivos: [] }) : null
   return (
-    <TarjetaPlata lotes={lista.lotes} valorDe={lista.valorDe} extra={lista.extra} indice={lista.indice}
-      cargando={lista.cargando} error={!!lista.error} titulo="Tu plata en tendencia de fondo alcista"
-      antes={semana.datos ? plata.antes : null} tonoAntes={plata.tono}
-      nota={semana.datos?.alcista && !hidden ? plata.texto : null} />
+    <TarjetaPlata reparto={reparto} cargando={!datos && !semana.error} error={!!semana.error}
+      titulo="Tu plata en tendencia de fondo alcista"
+      nota={datos?.alcista && !hidden ? plata.texto : null} />
   )
 }
 
@@ -136,7 +138,7 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] gap-3.5">
-        <PanoramaPlata lista={lista} semana={semana} hidden={hidden} />
+        <PanoramaPlata semana={semana} hidden={hidden} />
         <section aria-label="Esta semana" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-3">
           <div className="text-[12px] text-ink-2 font-medium">Esta semana</div>
           {semana.error ? (

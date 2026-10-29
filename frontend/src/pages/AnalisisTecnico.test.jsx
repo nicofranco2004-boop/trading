@@ -4,8 +4,8 @@
 // queda dibujado. Lo que importa:
 //   · la dirección decide la pestaña (?tab=lista / ?tab=senales; sin tab,
 //     Panorama; Comparar y Mercado se ven y no se tocan);
-//   · el Panorama dice el % con la regla de la radiografía (la misma tarjeta que
-//     la Cartera), los 3 cambios más nuevos de la semana y cuántas señales hay;
+//   · el Panorama dice el % que manda el servidor (senales_semana.reparto, la
+//     cuenta única), los 3 cambios más nuevos de la semana y cuántas señales hay;
 //   · la página pide UNA vez lo de la semana y UNA vez tu lista, aunque los
 //     usen varias pestañas;
 //   · /novedades?tab=senales (los mails viejos) lleva a la pestaña nueva.
@@ -51,7 +51,14 @@ function servidor() {
     if (url === '/plazos-fijos') return []
     if (url === '/tus-senales') return {
       desde: '2026-10-21', hasta: HOY, canal: 'mail',
-      alcista: { pct: 75, semana_pasada: null },
+      // LA cuenta del servidor (senales_semana.reparto). 74 y no 75 a propósito:
+      // la cuenta vieja de la pantalla (NVDA 1.500 contra KO 500) daba 75; el
+      // Panorama tiene que decir lo que manda el servidor.
+      alcista: {
+        pct: 74,
+        grupos: { alcista: { pct: 74, fraccion: 0.74, nombres: ['NVDA'] }, bajista: { pct: 26, fraccion: 0.26, nombres: ['KO'] }, sin: { pct: 0, fraccion: 0, nombres: [] } },
+        motivos: [], semana_pasada: { semana: new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10), pct: 70 },
+      },
       tenes: { activos: 2, con_cambios: 2 }, watchlist: 1,
       senales: [
         CAMBIO('NVDA', 'media200', HOY),
@@ -151,11 +158,12 @@ describe('Análisis técnico: las pestañas', () => {
 })
 
 describe('Análisis técnico: el Panorama', () => {
-  it('el % con la regla de la radiografía, los 3 cambios más nuevos y cuántas señales hay', async () => {
+  it('el % del servidor (no el de la pantalla), los 3 cambios más nuevos y cuántas señales hay', async () => {
     montado = await abrir('/analisis-tecnico')
     const t = montado.t()
-    // NVDA vale 1.500 (alcista) y KO 500 (bajista): 75 % con la cuenta de la Cartera.
-    expect(t).toContain('75% de tu plata está en activos con tendencia de fondo alcista')
+    expect(t).toContain('74% de tu plata está en activos con tendencia de fondo alcista')
+    expect(t).toContain('(la semana pasada, 70%)')
+    expect(t).toContain('26% bajista')
     expect(t).toContain('3 cambiosen lo que tenés')        // NVDA, KO del día y KO del RSI
     expect(t).toContain('1 cambioen tu watchlist')         // TSLA
     expect(t).toContain('los 3 más nuevos')

@@ -7,7 +7,7 @@ import {
   lecturaDeSeguido, activosDeLaLista, filasDeLaLista, contarFilas, filtrarFilas, ordenarFilas,
   haceCuanto, trazoDeLinea, motivosSinLectura,
 } from './listaTecnica'
-import { indexarLecturas, radiografia, MOTIVOS_SIN_LECTURA } from './radiografia'
+import { indexarLecturas, MOTIVOS_SIN_LECTURA } from './radiografia'
 import { computeBrokerValue, setBrokersRegistry } from './valuation'
 import { tarjetas, veredictoRsi } from './tecnico'
 
@@ -71,11 +71,11 @@ describe('las filas, con la valuación de la Cartera', () => {
   const filas = filasDeLaLista({ lotes: POS, valorDe, extra, seguidos, indice, hoy: HOY })
   const de = (n) => filas.find(f => f.nombre === n)
 
-  it('cuánto pesa cada uno es su pedazo del mismo total que la radiografía', () => {
-    const r = radiografia(POS, valorDe, indice, extra, HOY)
+  it('cuánto pesa cada uno es su pedazo del total de la Cartera (computeBrokerValue + plazos fijos)', () => {
+    const total = totales.reduce((s, r) => s + r.value, 0) + 1000
     expect(de('NVDA').valor).toBeCloseTo(3000, 9)
-    expect(de('NVDA').peso).toBeCloseTo((3000 / r.total) * 100, 9)
-    expect(de('KO').peso).toBeCloseTo((500 / r.total) * 100, 9)
+    expect(de('NVDA').peso).toBeCloseTo((3000 / total) * 100, 9)
+    expect(de('KO').peso).toBeCloseTo((500 / total) * 100, 9)
     // El efectivo y los plazos fijos suman al total pero no son filas.
     expect(filas.map(f => f.nombre).sort()).toEqual(['AL29', 'AL30', 'KO', 'NVDA', 'TSLA'])
   })

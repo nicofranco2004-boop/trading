@@ -1,15 +1,14 @@
-// radiografia.js — la radiografía técnica de la Cartera: cuánto de tu plata está
-// en activos con tendencia de fondo alcista.
+// radiografia.js — la lectura técnica de cada fila de la Cartera (y de «Tu lista»).
 // ════════════════════════════════════════════════════════════════════════════
-// Tres fuentes, ninguna recalculada acá:
-//   · el VALOR de cada tenencia lo pone la pantalla que la dibuja (`valorDe`),
-//     con la misma valuación que arma su total — así el «54 %» cierra contra el
-//     número de arriba de la Cartera;
+// Dos fuentes, ninguna recalculada acá:
 //   · los NÚMEROS técnicos vienen de POST /api/tecnico/cartera (backend/tecnico.py,
 //     la misma `lectura` que la ficha de cada activo);
 //   · las PALABRAS («Alcista», «Toma fuerza») son las de la ficha
 //     (`tarjetas` y `veredictoRsi` de utils/tecnico.js): un activo no puede
 //     decir «Alcista» en la Cartera y «Bajista» en su ficha.
+// El % de tu plata en tendencia alcista YA NO se cuenta acá (28/10): lo arma el
+// servidor una sola vez (senales_semana.reparto) para la Cartera, el Panorama,
+// la pestaña Señales y el mail de los sábados.
 
 import { fciLabel, isFciSym, isFixedIncome } from './valuation'
 import { esLoteLocal, esAccionLocal } from './accionLocal'
@@ -113,30 +112,11 @@ export function fuerza(x, hoy = hoyISO()) {
 }
 
 /**
- * Porcentajes enteros que suman 100 (el método del resto mayor): redondear cada
- * uno por su lado puede dar 99 o 101 y la barra no cerraría.
- */
-export function repartirCien(valores) {
-  const total = valores.reduce((s, v) => s + v, 0)
-  if (!(total > 0)) return valores.map(() => 0)
-  const crudos = valores.map(v => (v / total) * 100)
-  const pisos = crudos.map(Math.floor)
-  let falta = 100 - pisos.reduce((s, v) => s + v, 0)
-  const orden = crudos.map((c, i) => [c - pisos[i], i]).sort((a, b) => b[0] - a[0])
-  for (const [, i] of orden) {
-    if (falta <= 0) break
-    pisos[i] += 1
-    falta -= 1
-  }
-  return pisos
-}
-
-/**
  * Cuánto vale cada activo de la cartera: los lotes del mismo activo (y la misma
  * marca `local`) sumados con `valorDe(p)`, la valuación de la pantalla. El
  * efectivo va junto en 'efectivo' y cada `extra` ({ nombre, valor }: los plazos
  * fijos) en su propia clave. `total`: la suma de todo, el mismo total de la
- * Cartera. La usan la radiografía y «Tu lista» (el «cuánto pesa» de cada fila).
+ * Cartera. La usa «Tu lista» (el «cuánto pesa» de cada fila).
  * → { porActivo: Map(clave → { nombre, valor, p (un lote, para el motivo) }), total }
  */
 export function valorPorActivo(lotes = [], valorDe, extra = []) {
@@ -157,41 +137,4 @@ export function valorPorActivo(lotes = [], valorDe, extra = []) {
   let total = 0
   for (const a of porActivo.values()) total += a.valor
   return { porActivo, total }
-}
-
-/**
- * La radiografía. `lotes`: todas las posiciones (efectivo incluido); `valorDe(p)`:
- * el valor en dólares de ESE lote, el que usa la pantalla para su total;
- * `extra`: [{ nombre, valor }] lo que suma al total sin ser una posición (los
- * plazos fijos). Devuelve:
- *   { total, grupos: { alcista, bajista, sin } con { valor, pct, nombres[] } }
- */
-export function radiografia(lotes = [], valorDe, indice, extra = [], hoy = hoyISO()) {
-  const { porActivo } = valorPorActivo(lotes, valorDe, extra)
-  for (const [k, a] of porActivo) a.x = indice?.get(k) || null
-
-  const grupos = { alcista: [], bajista: [], sin: [] }
-  const motivos = {}   // porque → [nombres], en el orden de MOTIVOS_SIN_LECTURA
-  for (const a of porActivo.values()) {
-    a.t = tendencia(a.x, hoy, a.p)
-    grupos[a.t.id].push(a)
-  }
-  const ids = ['alcista', 'bajista', 'sin']
-  const valores = ids.map(id => grupos[id].reduce((s, a) => s + a.valor, 0))
-  const pcts = repartirCien(valores)
-  const total = valores.reduce((s, v) => s + v, 0)
-  const salida = {}
-  ids.forEach((id, i) => {
-    const nombres = [...new Set(grupos[id].sort((a, b) => b.valor - a.valor).map(a => a.nombre))]
-    salida[id] = { valor: valores[i], pct: pcts[i], fraccion: total > 0 ? valores[i] / total : 0, nombres }
-  })
-  for (const a of grupos.sin) (motivos[a.t.porque] ||= []).includes(a.nombre) || motivos[a.t.porque].push(a.nombre)
-  // [{ porque, nombres, texto }]: el «por qué» de cada uno de los sin lectura.
-  salida.sin.motivos = Object.keys(MOTIVOS_SIN_LECTURA).filter(k => motivos[k])
-    .map(k => ({ porque: k, nombres: motivos[k], texto: MOTIVOS_SIN_LECTURA[k] }))
-
-  // «Lo que cambió esta semana» ya no se arma acá: se mudó al Panorama de
-  // Análisis técnico (28/10), que lo trae de GET /api/tus-senales
-  // (tecnico.cambios_desde + texto_del_cambio, la cuenta única).
-  return { total, grupos: salida }
 }

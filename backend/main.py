@@ -11564,9 +11564,19 @@ def post_tecnico_cartera(body: CarteraTecnicaIn, uid: int = Depends(get_effectiv
     radiografía de la Cartera (tecnico.para_la_cartera). La pantalla manda sus
     activos con la marca `local` de la ficha. Un símbolo que no es un ticker
     (un fondo con espacios en el nombre) vuelve como «sin lectura», sin tirar
-    abajo el resto del pedido."""
+    abajo el resto del pedido.
+
+    `reparto`: el % de tu plata en tendencia de fondo alcista con su «semana
+    pasada» (senales_semana.reparto, LA cuenta: la misma del Panorama, de la
+    pestaña Señales y del mail de los sábados). Viene en este pedido, que la
+    Cartera ya hace, para no sumar otro."""
     import tecnico
-    return _lecturas_tecnicas(body, tecnico.para_la_cartera)
+    import senales_semana
+    from fechas import hoy_art_date
+    out = _lecturas_tecnicas(body, tecnico.para_la_cartera)
+    with db_abierta() as conn:
+        out["reparto"] = senales_semana.reparto(conn, uid, hoy_art_date())
+    return out
 
 
 @app.post("/api/tecnico/lista")
