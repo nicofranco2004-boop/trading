@@ -242,7 +242,7 @@ export function TarjetaPlata({ reparto, cargando, error, titulo, nota = null, cl
         </ul>
       )}
       {nota && <p className="text-[13px] text-ink-1 leading-snug">{nota}</p>}
-      <p className="text-[12px] text-ink-3 leading-relaxed">
+      <p className="text-[12px] text-ink-2 leading-relaxed">
         «Alcista» = el precio está arriba de su promedio de los últimos 200 días. Describe el precio; no es una recomendación.
       </p>
     </section>

@@ -207,7 +207,7 @@ export function TarjetaFibonacci({ fib, precio, fecha }) {
       <div className="text-[15px] font-semibold mt-0.5 text-ink-0">{t.veredicto}</div>
       <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.texto}</div>
       {t.explicacion && <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.explicacion}</div>}
-      <div className="text-[11.5px] text-ink-3 leading-relaxed mt-2">{t.pie}</div>
+      <div className="text-[11.5px] text-ink-2 leading-relaxed mt-2">{t.pie}</div>
     </div>
   )
 }

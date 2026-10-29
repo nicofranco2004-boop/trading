@@ -146,7 +146,7 @@ export function TarjetaElliott({ elliott, precio, fecha }) {
         </div>
       )}
       {t.alternativo && <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.alternativo}</div>}
-      <div className="text-[11.5px] text-ink-3 leading-relaxed mt-2">{t.pie}</div>
+      <div className="text-[11.5px] text-ink-2 leading-relaxed mt-2">{t.pie}</div>
     </div>
   )
 }

@@ -191,7 +191,7 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
         <Tarjeta titulo="Comparar" pronto accion="Todavía no está"
           texto="¿Qué rindió más desde que compraste? Contra guardar dólares, la inflación y el S&P 500." />
       </div>
-      <p className="text-[12px] text-ink-3 leading-relaxed">{NO_ES_RECOMENDACION}</p>
+      <p className="text-[12px] text-ink-2 leading-relaxed">{NO_ES_RECOMENDACION}</p>
     </div>
   )
 }

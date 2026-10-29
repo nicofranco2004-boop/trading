@@ -223,7 +223,7 @@ export function TusSenalesVista({ datos, error, hidden, filtro, onFiltro, onVer,
             </div>
           ))}
         </section>
-        <p className="text-[12px] text-ink-3 leading-relaxed">{NO_ES_RECOMENDACION}</p>
+        <p className="text-[12px] text-ink-2 leading-relaxed">{NO_ES_RECOMENDACION}</p>
       </div>
 
       <aside className="lg:w-[340px] lg:flex-none flex flex-col gap-2">
