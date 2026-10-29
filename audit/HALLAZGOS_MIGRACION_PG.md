@@ -1057,7 +1057,36 @@ dos de Wallbit, que tragan un error de **red**, no de base; decidirlos pide leer
 mí:** `_reset_data_worker` cuenta cada tabla dentro de un `for`, con
 `except ERR_OPERACIONAL` que no hace SQL. Mi detector busca SQL **en el `except`**,
 así que no lo ve — pero el plan B ahí es **la vuelta siguiente del loop**. Es la
-misma forma con otra cara, y el guardián todavía no la cubre.
+misma forma con otra cara.
+
+**Lo medí: 14 sitios con esa forma** (un `try` con SQL adentro de un loop, cuyo
+`except` se lo traga sin rollback ni punto de guardado):
+
+```
+advisor_alerts.py:223          evaluate()
+billing/trial.py:644, :893     step_down_due_trials(), _trial_stats()
+importing/recompute_backfill.py:344   _reapply_fund_overrides()
+main.py:1265                   _init_db_postgres()
+main.py:5441                   _reset_data_worker()      ← el que encontraron ellos
+main.py:5615                   _wipe_user_rows()
+main.py:7057                   _backfill_compras_if_missing()
+main.py:9410                   _persist_news_items()
+main.py:23771                  _reset_admin_conteo()
+main.py:26898                  _db_internals()
+market_brief.py:1183           run_briefs()
+sim_import.py:37               run()
+twr.py:401                     primeras_fechas_con_posiciones()
+```
+
+🔴 **Y NO sumé estos 14 al censo del guardián, a propósito.** Hay un discriminador
+que el detector no puede ver: **si la conexión está en `autocommit`, el problema
+no existe** — cada sentencia es su propia transacción y la que falla no arrastra a
+las demás. `_init_db_postgres` es exactamente ese caso (abre con
+`autocommit=True`), así que es un falso positivo de los 14. Meter catorce entradas
+sin triar, varias de ellas falsas, convertiría el censo en una lista de exclusión
+que no enseña nada — que es justo lo que el guardián quiere evitar. **Quedan como
+deuda medida y nombrada:** hay que mirar uno por uno si su conexión está en
+autocommit, y recién entonces ampliar el detector con los que sobrevivan.
 
 ## 🔴 HALLAZGO 14 — En Postgres las reparaciones del arranque NO CORREN, y no dejan rastro
 
