@@ -674,3 +674,35 @@ importador.** Medido uno de los tres; los otros dos por forma, y lo digo así.
 
 Sonda: `test_dividendo_dos_clicks.py` (scratchpad de la auditoría). Verde en los
 dos motores: acá el verde es el resultado.
+
+
+---
+
+# 🧾 LOS 14, CERRADOS POR LECTURA (29/10) — `audit/turno_14/`
+
+Dos tandas, un escéptico por sitio con las tres lentes (protección / alcanzable /
+consecuencia), sobre una copia congelada de `22d6bb4e`, sólo lectura, sin correr
+nada. **Son veredictos de lectura, no mediciones**: cada archivo trae cómo medirlo.
+
+| sitio | veredicto | gravedad | intruso sin turno | vs. el mapeo |
+|---|---|---|---|---|
+| `_delete_one_movement` (tx-) | 🔴 sobrevive | plata | revert de import | igual: la caja queda restada dos veces, nada la cura |
+| `delete_monthly` | 🔴 sobrevive | plata | `/api/cash/flow` | igual: capital_inicio inflado, permanente |
+| `update_broker` | 🔴 sobrevive | plata | `import_confirm` | **peor**: una ventana existe también en SQLite (prod hoy) |
+| `_borrar_datos_de_brokers` | 🔴 sobrevive | plata | `import_confirm` | más acotado: tenencia huérfana que se duplica al re-importar |
+| `sections_archive` | 🔴 sobrevive | plata | `import_confirm` | igual/peor, baja probabilidad |
+| `update_monthly` | 🟡 sobrevive | plata | `/api/cash/flow` | **exagerado**: no permanente, lo rearma `_recalc` |
+| `undo_delete_operation` | 🔴 sobrevive | datos (plata con «mueve efectivo») | `create_operation` | igual + la caja queda con una venta que no existe |
+| `_foto_contable` | 🔴 sobrevive | datos | `/api/cash/flow` | igual: fotos viejas torcidas, el «Deshacer» no lo corrige |
+| `_delete_manual_position_cascade` | 🟡 sobrevive | datos | `/api/cash/flow` | **exagerado**: con depósito de hoy, sólo fotos del mes en curso |
+| `_ensure_usd_sibling` | ✅ refutado | cosmético | — | pide el turno antes de mirar; el alta manual choca con UNIQUE |
+| `close_futuro` | ✅ refutado | cosmético | `delete_futuro` | no acredita dos veces; sólo se pierde la fila histórica |
+| `dividendos_cobro` | ✅ doble click refutado (medido 28/10) | — | `import_confirm` | ABIERTO: el cruce con el import no se midió |
+| `bond_cashflow`, `bond_pago` | por forma = `dividendos_cobro` | — | `import_confirm` | ABIERTO, igual |
+
+**Lo que decide el arreglo:** en los 9 que sobreviven el intruso es uno de tres
+—`import_confirm`, `/api/cash/flow`, `create_operation`—, los tres en la lista de
+los 16 que nunca piden el turno. Confirma la hipótesis de la sección 5.C del
+handoff: **el arreglo es UNO** (que esas puertas hagan la fila con un candado que
+valga en Postgres), no 9 parches. Con el cuidado del orden de candados que pide el
+handoff (la caja ya tiene el suyo).
