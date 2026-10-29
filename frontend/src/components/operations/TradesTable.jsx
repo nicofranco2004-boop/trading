@@ -71,7 +71,7 @@ export default function TradesTable({
                   <InfoTooltip label="Qué es la tendencia al comprar" align="center">
                     <div className="whitespace-normal text-left font-normal">
                       <p>Cómo estaba el papel el día que lo compraste: Alcista si el precio estaba arriba de su promedio de los últimos 200 días de mercado, Bajista si estaba abajo. Es la misma lectura de la ficha del activo, en dólares.</p>
-                      <p className="mt-1 text-ink-3">Describe cómo estaba, no anticipa qué iba a pasar. «sin dato»: no hay precios de ese día (guardamos 3 años) o es un bono o un fondo.</p>
+                      <p className="mt-1 text-ink-3">Describe cómo estaba, no anticipa qué iba a pasar. «sin dato»: no hay precios de ese día (guardamos 5 años) o es un bono o un fondo.</p>
                     </div>
                   </InfoTooltip>
                 </span>

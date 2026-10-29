@@ -1,13 +1,17 @@
 """Velas diarias guardadas: la base del análisis técnico.
 
 QUÉ ES. Para cada activo que alguien tiene o sigue, la vela de cada rueda
-(apertura, máximo, mínimo, cierre y volumen) de los últimos 3 años, en la tabla
+(apertura, máximo, mínimo, cierre y volumen) de los últimos 5 años, en la tabla
 `velas_diarias`. Con esto se calculan después la media de 200 días, el RSI, el
 máximo del año, el volumen inusual y los giros para Fibonacci, sin salir a
 pedirle a Yahoo cada vez que alguien abre una pantalla.
 
-POR QUÉ 3 AÑOS. La ficha muestra hasta 2 años, y la media de 200 ruedas del
-primer día de esos 2 años necesita ~10 meses de antes. 3 años cubren eso.
+POR QUÉ 5 AÑOS. El gráfico de la ficha manda TODO lo guardado y arranca
+mostrándolo entero («Todo», «Desde que lo tenés»): Nico, 29/10, «hagamos 5
+años». Antes eran 3 (la ficha mostraba hasta 2 años y la media de 200 del primer
+día necesitaba ~10 meses de antes). Medido el 29/10/2026: Yahoo tiene diarias de
+AAPL desde 1980 y de GGAL.BA desde 2000, y con «5y» devuelve desde el mismo día
+de hace 5 años (1.826 días; AAPL 1.254 velas, GGAL.BA 1.222).
 
 POR QUÉ NO ES `asset_price_history` (price_history.py), aunque se parezcan.
 Las dos guardan precios por día, pero con reglas opuestas:
@@ -45,13 +49,19 @@ from datetime import date, datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
-# Cuánto se baja la primera vez (o cuando la historia cambió).
-PERIODO_COMPLETO = "3y"
+# Cuántos años se guardan: de acá salen lo que se baja y lo que se poda.
+ANIOS_GUARDADOS = 5
+# Cuánto se baja la primera vez (o cuando la historia cambió, o cada
+# `DIAS_ENTRE_COMPLETAS`). Al pasar de 3 a 5 años no hizo falta una noche
+# especial: la bajada completa de cada mes ya pide el período nuevo.
+PERIODO_COMPLETO = f"{ANIOS_GUARDADOS}y"
 # Cuánto se baja las noches siguientes: sobra para cubrir fines de semana,
 # feriados largos y alguna noche que el trabajo no corrió.
 PERIODO_INCREMENTAL = "1mo"
-# Se borra lo más viejo que esto.
-DIAS_GUARDADOS = 3 * 366
+# Se borra lo más viejo que esto. Con 366 por año sobran unos días sobre lo que
+# trae Yahoo (5 años de calendario = 1.826 días; esto, 1.830): la poda nunca le
+# come el principio a una bajada completa recién hecha.
+DIAS_GUARDADOS = ANIOS_GUARDADOS * 366
 # Si un día que ya estaba guardado vuelve con un cierre distinto en más de esto,
 # la historia fue reescrita (split, corrección de Yahoo) y se baja entera.
 # 1,5% deja pasar el redondeo y las correcciones chicas de un cierre; un split
@@ -343,7 +353,7 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
     seguidas no cambia nada.
 
     Los que nunca se bajaron (o se bajaron mal) van primero: con el tope de
-    tiempo, una noche lenta deja sin actualizar a los que ya tenían 3 años, no
+    tiempo, una noche lenta deja sin actualizar a los que ya tenían su historia, no
     a los que no tienen nada.
 
     Nunca se espera a Yahoo con una escritura abierta: cada tanda baja todo,
@@ -352,7 +362,7 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
     quieren escribir, y Yahoo puede tardar 30 s en contestar.
 
     `tope_tanda`: cuánto se espera a Yahoo por tanda (la ficha a pedido espera
-    poco). `podar`: borrar lo que quedó más viejo que 3 años; la ficha a pedido
+    poco). `podar`: borrar lo que quedó más viejo que `DIAS_GUARDADOS`; la ficha a pedido
     no lo hace (es un borrado de toda la tabla y lo hace la corrida de la noche)."""
     from fechas import hoy_art
     from pricing import yahoo as _yahoo

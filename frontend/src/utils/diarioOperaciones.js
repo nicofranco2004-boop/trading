@@ -96,7 +96,7 @@ export function pedidosDeTendencia(ops) {
 // `motivo` de tecnico.tendencia_del_dia (servidor).
 export const MOTIVO_SIN_TENDENCIA = {
   sin_velas: 'No tenemos precios guardados de este activo (pasa con bonos y fondos, y con un activo que recién empezamos a seguir: aparecen al día siguiente).',
-  sin_precio: 'No hay precios de ese día: guardamos los últimos 3 años.',
+  sin_precio: 'No hay precios de ese día: guardamos los últimos 5 años.',
   pocos_dias: 'Ese día todavía no había 200 días de mercado guardados para calcular el promedio.',
   sin_fecha: 'La operación no tiene fecha de compra.',
   // No es un motivo del servidor: el pedido falló (o es el demo, que no lo simula).

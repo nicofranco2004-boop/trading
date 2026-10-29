@@ -40,6 +40,7 @@ from fastapi.testclient import TestClient
 import main
 import tecnico
 from fechas import hoy_art_date
+from velas_diarias import PERIODO_COMPLETO
 
 
 def _ruedas(hasta, n):
@@ -62,7 +63,9 @@ class YahooFalso:
         f = self.precios.get(ticker)
         if f is None:
             return pd.DataFrame()
-        dias = _ruedas(self.hoy, 760 if period == "3y" else 22)
+        # Yahoo tiene 760 ruedas (~3 años) de cada papel de prueba: menos que lo que
+        # pide la bajada completa (5 años), como un papel que cotiza hace poco.
+        dias = _ruedas(self.hoy, 760 if period == PERIODO_COMPLETO else 22)
         base = _ruedas(self.hoy, 760)
         filas = {}
         for d in dias:

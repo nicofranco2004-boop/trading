@@ -213,7 +213,7 @@ class ListaDeCambiosTest(unittest.TestCase):
         _armar_lista()
 
     def test_lo_que_yahoo_anota_antes_de_las_velas_se_conserva(self):
-        # Splits de Yahoo anteriores a los 3 años de velas: no hay con qué
+        # Splits de Yahoo anteriores a las velas guardadas: no hay con qué
         # juzgarlos, pero el aviso viejo los ofrecía. Entran sin confirmar (o
         # confirmados si Nueva York anotó lo mismo).
         conn = main.get_db()

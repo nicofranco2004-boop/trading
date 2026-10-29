@@ -39,6 +39,7 @@ import main
 import estructura
 import tecnico
 from fechas import hoy_art_date
+from velas_diarias import PERIODO_COMPLETO
 
 
 def _dt_utc(*a):
@@ -69,7 +70,9 @@ class YahooFalso:
         f = self.precios.get(ticker) or ((lambda i, d: 5000.0) if ticker == "^GSPC" else None)
         if f is None:
             return pd.DataFrame()
-        dias = _ruedas(self.hoy, 760 if period == "3y" else 22)
+        # Yahoo tiene 760 ruedas (~3 años) de cada papel de prueba: menos que lo que
+        # pide la bajada completa (5 años), como un papel que cotiza hace poco.
+        dias = _ruedas(self.hoy, 760 if period == PERIODO_COMPLETO else 22)
         base = _ruedas(self.hoy, 760)
         filas = {}
         for d in dias:
@@ -620,8 +623,8 @@ class FichaTest(unittest.TestCase):
         self.assertIsNotNone(p["adx"])
         # Cada punto del gráfico lleva el ADX y el Squeeze de la historia ENTERA
         # guardada, el de SU día: no los de la ventana dibujada (el ADX arrastra
-        # memoria) ni corridos un día. Desde d6ae4dc3 el gráfico trae los 3 años
-        # guardados (arranca en la primera vela), así que se mira que cada punto,
+        # memoria) ni corridos un día. Desde d6ae4dc3 el gráfico trae toda la
+        # historia guardada (arranca en la primera vela), así que se mira que cada punto,
         # también los de más adelante, siga siendo el de la historia entera.
         with main.db_abierta() as conn:
             velas = tecnico.serie(conn, "AAPL", "usd")["velas"]
@@ -725,7 +728,8 @@ class FichaTest(unittest.TestCase):
         self._broker("Binance", "USDT")
         self._posicion("Binance", "BTC", "CRYPTO")
         hoy = self.hoy
-        dias = [hoy - timedelta(days=k) for k in range(1200, 0, -1)]  # todos los días
+        # Todos los días, y más de lo que se guarda: la poda corta el principio.
+        dias = [hoy - timedelta(days=k) for k in range(tecnico.DIAS_GRAFICO + 60, 0, -1)]
         pico = hoy - timedelta(days=300)                               # hace 10 meses
 
         def btc(ticker, period, interval, auto_adjust, timeout):
@@ -738,9 +742,9 @@ class FichaTest(unittest.TestCase):
         f = self._ficha("BTC")
         self.assertEqual(f["lectura"]["maximo_12m"], 120000.0, "el pico de hace 10 meses es del año")
         self.assertAlmostEqual(f["lectura"]["dist_maximo_12m"], -33.33, places=1)
-        # El gráfico trae todo lo guardado: 3 años de CALENDARIO, no 3 × 252 velas.
+        # El gráfico trae todo lo guardado: 5 años de CALENDARIO, no 5 × 252 velas.
         self.assertGreater(f["puntos"][0]["d"], (hoy - timedelta(days=tecnico.DIAS_GRAFICO + 1)).isoformat())
-        self.assertLess(f["puntos"][0]["d"], (hoy - timedelta(days=3 * 365 - 5)).isoformat(), "3 años de calendario")
+        self.assertLess(f["puntos"][0]["d"], (hoy - timedelta(days=5 * 365)).isoformat(), "5 años de calendario")
 
     def test_cedear_en_pesos_sin_el_escalon_del_cambio_de_ratio(self):
         # El 5/12 BYMA pasa XLE de un ratio a otro el doble: el CEDEAR en pesos
@@ -806,7 +810,7 @@ class FichaTest(unittest.TestCase):
         self.assertEqual([i["symbol"] for i in items], ["BRK-B"], "una sola, con guión")
         self.yahoo.precios["BRK-B"] = lambda i, d: 480.0
         main._run_velas_diarias_job()
-        self.assertIn(("BRK-B", "3y", False), self._pedidos("BRK-B"), "la noche la sigue (3 años de velas)")
+        self.assertIn(("BRK-B", PERIODO_COMPLETO, False), self._pedidos("BRK-B"), "la noche la sigue (historia entera)")
         self.assertEqual(self.client.post("/api/watchlist", json={"symbol": "BRK-BB"}, headers=self.h).status_code, 422)
 
     def test_lista_de_seguimiento_tiene_tope(self):
@@ -876,7 +880,7 @@ class FichaTest(unittest.TestCase):
         self.assertTrue(f["disponible"])
         self.assertEqual(f["ticker"], "NVDA")
         self.assertEqual(f["puntos"][-1]["d"], self.dias[-1].isoformat())
-        self.assertEqual(self._pedidos("NVDA"), [("NVDA", "3y", False)])
+        self.assertEqual(self._pedidos("NVDA"), [("NVDA", PERIODO_COMPLETO, False)])
         # La segunda vez (o la de otra persona) ya está guardada: no se pide de nuevo.
         self._ficha("NVDA")
         self._ficha("NVDA", "ars")

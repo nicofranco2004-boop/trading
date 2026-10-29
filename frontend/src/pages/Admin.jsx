@@ -2360,7 +2360,7 @@ const ESTADO_RATIO = { confirmado: '', sin_confirmar: ' · se pregunta', dudoso:
 
 // Lee GET /api/admin/velas: cuántos activos tienen precios guardados, desde y
 // hasta cuándo, cuándo corrió por última vez y cuáles fallaron. El botón corre
-// el guardado ahora (la primera vez baja 3 años de cada activo: unos minutos).
+// el guardado ahora (la primera vez baja 5 años de cada activo: unos minutos).
 function VelasPanel({ toast }) {
   const [e, setE] = useState(null)
   const [busy, setBusy] = useState(false)

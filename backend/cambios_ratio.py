@@ -68,7 +68,7 @@ rompería. La evidencia de cada lote (main.py) lee la serie CRUDA, no la empalma
 CUÁNDO CORRE. De noche, al final de `velas_diarias.correr` (que ya guardó la serie
 en pesos de cada papel que alguien tiene y, de los CEDEARs, también la de Nueva
 York): `correr(conn, pares)`. Los `pares` (qué papel es un CEDEAR y cuál es su
-acción de afuera) los da `velas_diarias`, nunca el nombre (ver `recalcular`). Lo que quedó fuera de la ventana de 3 años de las velas
+acción de afuera) los da `velas_diarias`, nunca el nombre (ver `recalcular`). Lo que quedó fuera de la ventana de las velas (5 años, `velas_diarias.ANIOS_GUARDADOS`)
 NO se borra: un cambio de 2024 tiene que seguir existiendo en 2028 para el lote
 que se compró antes.
 
