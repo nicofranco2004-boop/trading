@@ -1234,15 +1234,23 @@ function Grafico({ leyenda = null, puntos, huecos = 0, moneda, promedio, marcas:
   const trazos = trazosDeDibujos(dibujos, pctX, pctY)
   // Un click (o un toque) sin herramienta, cerca de un dibujo: lo elige (para
   // borrarlo); lejos de todos, suelta el que estaba elegido.
+  function dibujoBajo(clientX, clientY, radio) {
+    const r = ref.current?.getBoundingClientRect()
+    if (!r || !r.width || !trazos.length) return null
+    const px = (t) => ({ id: t.id, ax: (t.x1 / 100) * r.width, ay: (t.y1 / 100) * r.height, bx: (t.x2 / 100) * r.width, by: (t.y2 / 100) * r.height })
+    return dibujoTocado(trazos.map(px), clientX - r.left, clientY - r.top, radio)
+  }
   function elegirEn(clientX, clientY, radio) {
     if (!onElegir) return false
-    const r = ref.current?.getBoundingClientRect()
-    if (!r || !r.width) return false
-    const px = (t) => ({ id: t.id, ax: (t.x1 / 100) * r.width, ay: (t.y1 / 100) * r.height, bx: (t.x2 / 100) * r.width, by: (t.y2 / 100) * r.height })
-    const id = dibujoTocado(trazos.map(px), clientX - r.left, clientY - r.top, radio)
+    const id = dibujoBajo(clientX, clientY, radio)
     if (id || elegido) onElegir(id)
     return !!id
   }
+  // El dibujo que está bajo el mouse (sin ninguna herramienta prendida): la
+  // manito y la línea un poco más gruesa, como TradingView, para saber que un
+  // click lo va a elegir (Nico, 28/10). Con el mismo margen que el click.
+  const [sobreDibujo, setSobreDibujo] = useState(null)
+  useEffect(() => { if (onToque) setSobreDibujo(null) }, [onToque])
   // Dónde está el mouse, mientras se mide: la cruz con su precio y, con el
   // primer punto puesto, lo que daría la medición hasta ahí.
   const [cursor, setCursor] = useState(null)
@@ -1310,7 +1318,7 @@ function Grafico({ leyenda = null, puntos, huecos = 0, moneda, promedio, marcas:
             precio puede asomar sobre el borde. */}
         {/* Siempre ampliado (Nico, 24/10). En el celular, un alto que deja ver
             la barra y el RSI sin comerse la pantalla; en compu, el de antes con «Agrandar». */}
-        <div ref={ref} className={`relative mr-[72px] h-[42vh] min-h-56 sm:h-[58vh] sm:min-h-64 select-none touch-pan-y cursor-crosshair ${precioMano ? 'overflow-hidden' : ''}`}
+        <div ref={ref} className={`relative mr-[72px] h-[42vh] min-h-56 sm:h-[58vh] sm:min-h-64 select-none touch-pan-y ${sobreDibujo ? 'cursor-pointer' : 'cursor-crosshair'} ${precioMano ? 'overflow-hidden' : ''}`}
           onMouseDown={e => { arrastre.current = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY } }}
           onMouseUp={e => {
             // Un click sin arrastrar, en el modo medir, marca ese día. Sólo el
@@ -1335,8 +1343,9 @@ function Grafico({ leyenda = null, puntos, huecos = 0, moneda, promedio, marcas:
             }
             mover(e.clientX)
             if (onToque) setCursor({ k: lugarEn(e.clientX), precio: precioEn(e.clientY) })
+            else if (onElegir) setSobreDibujo(a ? null : dibujoBajo(e.clientX, e.clientY, 8))
           }}
-          onMouseLeave={() => { setHover(null); setCursor(null); arrastre.current = null }}
+          onMouseLeave={() => { setHover(null); setCursor(null); setSobreDibujo(null); arrastre.current = null }}
           onDoubleClick={() => { onTerminar?.() }}
           onContextMenu={e => { if (onToque && onTerminar?.()) e.preventDefault(); else if (onToque) e.preventDefault() }}
           onTouchStart={e => {
@@ -1420,7 +1429,7 @@ function Grafico({ leyenda = null, puntos, huecos = 0, moneda, promedio, marcas:
           <CapaFibonacci fib={fibonacci} puntos={puntos} pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
           <CapaElliott elliott={elliott} puntos={puntos} pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
           {/* Tus dibujos, y lo que se está dibujando (hasta el mouse). */}
-          <CapaDibujos dibujos={dibujos} elegido={elegido} trazo={trazo} cursor={onToque ? cursor : null}
+          <CapaDibujos dibujos={dibujos} elegido={elegido} resaltado={sobreDibujo} trazo={trazo} cursor={onToque ? cursor : null}
             pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
           {/* Marcas y el punto del mouse van en HTML: un círculo dentro de un
               SVG estirado (preserveAspectRatio=none) se deformaría en óvalo. */}

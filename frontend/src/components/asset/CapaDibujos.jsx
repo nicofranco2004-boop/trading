@@ -64,13 +64,14 @@ export function trazosDeDibujos(dibujos, pctX, pctY) {
  * `cursor` dónde está el mouse: la línea, el Fibonacci o el conteo siguen al
  * mouse hasta el próximo toque.
  */
-export default function CapaDibujos({ dibujos, elegido, trazo, cursor, pctX, pctY, precio }) {
+export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo, cursor, pctX, pctY, precio }) {
   // Lo que se está dibujando, como si ya estuviera: hasta el mouse.
   const enCurso = trazo && cursor?.precio != null ? enCursoHasta(trazo, cursor) : null
   const todos = enCurso ? [...dibujos, enCurso] : dibujos
   const trazos = trazosDeDibujos(todos, pctX, pctY)
   if (!trazos.length && !trazo) return null
-  const grueso = (id) => (id === elegido ? 3 : 1.8)
+  // Elegido, el más grueso; con el mouse encima (`resaltado`), un poco más.
+  const grueso = (id) => (id === elegido ? 3 : id === resaltado ? 2.6 : 1.8)
   return (
     <div className="pointer-events-none absolute inset-0" aria-hidden="true">
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
@@ -80,7 +81,7 @@ export default function CapaDibujos({ dibujos, elegido, trazo, cursor, pctX, pct
           return (
             <line key={`${t.id}-${k}`} data-dibujo={provisorio ? undefined : t.id} data-tipo={t.tipo}
               x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2} stroke={COLOR_DIBUJO}
-              strokeWidth={t.nivel ? (t.id === elegido ? 1.8 : 1) : grueso(t.id)} strokeLinecap="round"
+              strokeWidth={t.nivel ? (t.id === elegido || t.id === resaltado ? 1.8 : 1) : grueso(t.id)} strokeLinecap="round"
               strokeDasharray={punteado ? '5 4' : undefined} opacity={t.nivel ? 0.85 : 1} vectorEffect="non-scaling-stroke" />
           )
         })}

@@ -238,6 +238,30 @@ describe('elegir y borrar', () => {
     expect(guardados()).toHaveLength(1)
   })
 
+  it('con el mouse encima de un dibujo aparece la manito (y la línea se marca); en un lugar vacío, la cruz', async () => {
+    await dibujar()
+    await usar('horizontal'); await clickEn(500, 100)
+    const clase = () => grafico().getAttribute('class')
+    const ancho = () => linea()[0].getAttribute('stroke-width')
+    await evento('mousemove', grafico(), { clientX: 300, clientY: 104 }); await redibujar()   // a 4 px de la línea
+    expect(clase()).toContain('cursor-pointer')
+    expect(clase()).not.toContain('cursor-crosshair')
+    expect(ancho()).toBe('2.6')
+    await evento('mousemove', grafico(), { clientX: 300, clientY: 180 }); await redibujar()   // lejos
+    expect(clase()).toContain('cursor-crosshair')
+    expect(ancho()).toBe('1.8')
+    // Con una herramienta prendida, encima de un dibujo es para dibujar: la cruz.
+    await usar('tendencia')
+    await evento('mousemove', grafico(), { clientX: 300, clientY: 104 }); await redibujar()
+    expect(clase()).toContain('cursor-crosshair')
+    // Y al salir del gráfico, nada queda marcado.
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Cancelar')); await redibujar()
+    await evento('mousemove', grafico(), { clientX: 300, clientY: 104 }); await redibujar()
+    // React arma «onMouseLeave» con el «mouseout» del navegador (hacia afuera: sin destino).
+    await evento('mouseout', grafico(), { relatedTarget: null }); await redibujar()
+    expect(clase()).toContain('cursor-crosshair')
+  })
+
   it('un click lejos de todas suelta la elegida; la tecla Suprimir la borra', async () => {
     await dibujar()
     await usar('tendencia'); await clickEn(200, 200); await clickEn(800, 50)
