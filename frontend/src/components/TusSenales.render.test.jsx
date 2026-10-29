@@ -20,16 +20,16 @@ const DATOS = {
   senales: [
     { asset: 'MELI', local: false, ficha: 'MELI', tenes: true, watchlist: false, peso: 0.12, tesis: null,
       tipo: 'rsi_bajo_30', fecha: '2026-10-23', sentido: 'abajo', etiqueta: 'Cayó muy rápido', tono: 'rsi',
-      texto: 'tiene la fuerza (RSI) en 28: una semana de mercado antes estaba en 52.', extra: POSIBILIDAD },
+      corta: 'cayó muy rápido', texto: 'cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 28; una semana de mercado antes estaba en 52.', extra: POSIBILIDAD },
     { asset: 'YPFD', local: true, ficha: 'YPFD', tenes: true, watchlist: false, peso: 0.14, tesis: null,
       tipo: 'maximo_12m', fecha: '2026-10-23', sentido: 'arriba', etiqueta: 'Máximo del año', tono: 'pos',
-      texto: 'cerró en su precio más alto de los últimos 12 meses.', extra: null },
+      corta: 'volvió a cerrar en su precio más alto del año', texto: 'volvió a cerrar en su precio más alto de los últimos 12 meses, después de un mes sin hacerlo.', extra: null },
     { asset: 'AAPL', local: false, ficha: 'AAPL', tenes: true, watchlist: false, peso: 0.11, tesis: 'El recambio de iPhone.',
       tipo: 'media200', fecha: '2026-10-20', sentido: 'abajo', etiqueta: 'Tendencia de fondo', tono: 'neg',
       texto: 'quedó abajo de su promedio de 200 días: la tendencia de fondo se volvió bajista.', extra: null },
     { asset: 'PAMP', local: true, ficha: 'PAMP.BA', tenes: false, watchlist: true, peso: null, tesis: null,
       tipo: 'adx23', fecha: '2026-10-19', sentido: 'arriba', etiqueta: 'Fuerza de la tendencia', tono: 'adx',
-      texto: 'tiene el ADX en 24: pasó 23, deja de ir de costado y marca dirección, para arriba.', extra: null },
+      corta: 'dejó de ir de costado y marca dirección (para arriba)', texto: 'dejó de ir de costado y marca dirección (para arriba): la fuerza de la tendencia (ADX) pasó 23 y quedó en 24.', extra: null },
   ],
 }
 
@@ -91,7 +91,7 @@ describe('tusSenales: lo que se dibuja', () => {
     expect(t).toContain('Qué cambió esta semana en lo tuyo')
     for (const x of ['En lo que tenés', 'En tu watchlist', 'Tu plata en tendencia alcista', '54%', 'la semana pasada 61%',
       'Todo', 'Lo que tenés', 'Watchlist', 'Viernes 23/10', 'Lunes 19/10', 'Ver gráfico',
-      'MELI tiene la fuerza (RSI) en 28', 'Lo tenés · 12% de tu plata', 'En tu watchlist',
+      'MELI cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 28', 'Lo tenés · 12% de tu plata', 'En tu watchlist',
       'Tu tesis: «El recambio de iPhone.»', 'Revisar tu tesis',
       'Mail', 'Notificación', 'Las dos', 'No quiero', 'Sábados a las 10:00. Si en la semana no cambió nada, no te escribimos.',
       'no es una recomendación para comprar ni vender']) {

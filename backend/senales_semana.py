@@ -94,26 +94,34 @@ def _adx_txt(a) -> str:
 
 
 def texto_del_cambio(c: dict) -> dict:
-    """{etiqueta, tono, texto, extra} de un cambio de `tecnico.cambios_desde`.
+    """{etiqueta, tono, texto, corta, extra} de un cambio de `tecnico.cambios_desde`.
     `texto` va después del ticker («AAPL quedó abajo…»). `tono`: 'pos' | 'neg' |
-    'rsi' | 'adx' (el color de la pastilla)."""
+    'rsi' | 'adx' (el color de la pastilla).
+
+    `corta`: la frase que se entiende SOLA, sin jerga ni números, para donde
+    entra una sola (el asunto del mail y la notificación de los sábados,
+    `_titular`, y la celda «Último cambio» de Tu lista). Antes cada una cortaba
+    `texto` en los dos puntos y, en el ADX y el RSI, se quedaba con la parte
+    técnica: «Tu semana: KO tiene el ADX en 23,0» (auditoría D6, 29/10)."""
     t, arriba = c["tipo"], c.get("sentido") == "arriba"
     extra = None
     if t == "media200":
-        texto = ("pasó arriba de su promedio de 200 días: la tendencia de fondo se volvió alcista."
-                 if arriba else
-                 "quedó abajo de su promedio de 200 días: la tendencia de fondo se volvió bajista.")
+        corta = ("pasó arriba de su promedio de 200 días" if arriba
+                 else "quedó abajo de su promedio de 200 días")
+        texto = (f"{corta}: la tendencia de fondo se volvió {'alcista' if arriba else 'bajista'}.")
         tono = "pos" if arriba else "neg"
     elif t == "media50":
-        texto = ("pasó arriba de su promedio de 50 días: el corto plazo se volvió alcista."
-                 if arriba else
-                 "quedó abajo de su promedio de 50 días: el corto plazo se volvió bajista.")
+        corta = ("pasó arriba de su promedio de 50 días" if arriba
+                 else "quedó abajo de su promedio de 50 días")
+        texto = f"{corta}: el corto plazo se volvió {'alcista' if arriba else 'bajista'}."
         tono = "pos" if arriba else "neg"
     elif t in ("rsi_bajo_30", "rsi_sobre_70"):
         nivel = 30 if t == "rsi_bajo_30" else 70
-        texto = f"tiene la fuerza (RSI) en {_rsi_txt(c.get('rsi'), nivel)}"
+        corta = "cayó muy rápido" if t == "rsi_bajo_30" else "subió muy rápido"
+        texto = (f"{corta}: la fuerza (RSI) {'bajó de' if nivel == 30 else 'pasó'} {nivel} "
+                 f"y quedó en {_rsi_txt(c.get('rsi'), nivel)}")
         if c.get("rsi_antes") is not None:
-            texto += f": una semana de mercado antes estaba en {round(c['rsi_antes'])}."
+            texto += f"; una semana de mercado antes estaba en {round(c['rsi_antes'])}."
         else:
             texto += "."
         # Sólo la caída tiene la frase: subir muy rápido no anticipó nada
@@ -121,14 +129,22 @@ def texto_del_cambio(c: dict) -> dict:
         extra = POSIBILIDAD_REBOTE if t == "rsi_bajo_30" else None
         tono = "rsi"
     elif t == "maximo_12m":
-        texto = "cerró en su precio más alto de los últimos 12 meses."
+        # La regla (tecnico.senal_desde) marca el PRIMER cierre en máximo después
+        # de un mes sin ninguno: si siguió subiendo, los máximos de después no son
+        # un cambio nuevo (y la alerta no avisa todos los días). El texto dice eso
+        # y no «cerró en su máximo» a secas: «hace 5 semanas» se leía como que no
+        # volvió a hacerlo, y el último había sido hace una (auditoría D11, 29/10).
+        corta = "volvió a cerrar en su precio más alto del año"
+        texto = ("volvió a cerrar en su precio más alto de los últimos 12 meses, "
+                 "después de un mes sin hacerlo.")
         tono = "pos"
     else:   # adx23
-        lado = {1: ", para arriba", -1: ", para abajo"}.get(c.get("squeeze"), "")
-        texto = (f"tiene el ADX en {_adx_txt(c.get('adx') or 0)}: pasó 23, deja de ir de costado "
-                 f"y marca dirección{lado}.")
+        lado = {1: " (para arriba)", -1: " (para abajo)"}.get(c.get("squeeze"), "")
+        corta = f"dejó de ir de costado y marca dirección{lado}"
+        texto = (f"{corta}: la fuerza de la tendencia (ADX) pasó 23 y quedó en "
+                 f"{_adx_txt(c.get('adx') or 0)}.")
         tono = "adx"
-    return {"etiqueta": ETIQUETA[t], "tono": tono, "texto": texto, "extra": extra}
+    return {"etiqueta": ETIQUETA[t], "tono": tono, "texto": texto, "corta": corta, "extra": extra}
 
 
 # ─── Qué tiene y qué sigue cada persona ──────────────────────────────────────
@@ -459,7 +475,7 @@ def _titular(senales: list) -> str:
     Nombra el cambio más importante de lo que TENÉS (por tipo, después por peso);
     si no tenés nada que cambió, el de la watchlist."""
     top = _por_importancia(senales)[0]
-    texto = top["texto"].split(":")[0].rstrip(".")
+    texto = top.get("corta") or top["texto"].split(":")[0].rstrip(".")
     resto = len(senales) - 1
     mas = f" y {resto} {'cambio' if resto == 1 else 'cambios'} más" if resto else ""
     return f"Tu semana: {top['asset']} {texto}{mas}"

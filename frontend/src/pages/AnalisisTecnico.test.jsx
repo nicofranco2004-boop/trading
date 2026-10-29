@@ -63,8 +63,8 @@ function servidor() {
       senales: [
         CAMBIO('NVDA', 'media200', HOY),
         CAMBIO('KO', 'media50', HOY, { etiqueta: 'Corto plazo', texto: 'quedó abajo de su promedio de 50 días: el corto plazo se volvió bajista.', sentido: 'abajo', tono: 'neg' }),
-        CAMBIO('TSLA', 'maximo_12m', HOY, { tenes: false, watchlist: true, peso: null, etiqueta: 'Máximo del año', texto: 'cerró en su precio más alto de los últimos 12 meses.' }),
-        CAMBIO('KO', 'rsi_bajo_30', '2026-10-21', { etiqueta: 'Cayó muy rápido', tono: 'rsi', texto: 'tiene la fuerza (RSI) en 25.' }),
+        CAMBIO('TSLA', 'maximo_12m', HOY, { tenes: false, watchlist: true, peso: null, etiqueta: 'Máximo del año', corta: 'volvió a cerrar en su precio más alto del año', texto: 'volvió a cerrar en su precio más alto de los últimos 12 meses, después de un mes sin hacerlo.' }),
+        CAMBIO('KO', 'rsi_bajo_30', '2026-10-21', { etiqueta: 'Cayó muy rápido', tono: 'rsi', corta: 'cayó muy rápido', texto: 'cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 25.' }),
       ],
     }
     throw new Error(`GET inesperado ${url}`)
@@ -182,8 +182,8 @@ describe('Análisis técnico: el Panorama', () => {
     expect(t).toContain('1 cambioen tu watchlist')         // TSLA
     expect(t).toContain('los 3 más nuevos')
     expect(t).toContain('NVDA pasó arriba de su promedio de 200 días')
-    expect(t).toContain('TSLA cerró en su precio más alto')
-    expect(t).not.toContain('tiene la fuerza (RSI) en 25')  // el 4.º, más viejo, no va en el Panorama
+    expect(t).toContain('TSLA volvió a cerrar en su precio más alto')
+    expect(t).not.toContain('la fuerza (RSI) bajó de 30 y quedó en 25')  // el 4.º, más viejo, no va en el Panorama
     expect(t).toContain('Ver las 4 señales de la semana')
     expect(t).toContain('El resumen de la semana te llega el sábado')
     expect(t).toContain('3 activos: 2 que tenés y 1 que seguís')

@@ -78,13 +78,16 @@ export function haceCuanto(fecha, hoy = hoyISO()) {
 /**
  * El cambio en palabras, las que manda el servidor (`senales_semana.texto_del_cambio`,
  * las mismas de «Tus señales» y del mail de los sábados). En la celda va la
- * frase hasta los dos puntos («Pasó arriba de su promedio de 200 días»); la
- * entera, con su aclaración (`extra`), en el globo. null sin texto.
+ * frase corta que arma el servidor (`corta`, la misma del asunto del mail);
+ * la entera, con su aclaración (`extra`), en el globo. Antes la celda cortaba
+ * el texto en los dos puntos y en el ADX quedaba «Tiene el ADX en 23,3»
+ * (auditoría D6, 29/10). Un servidor viejo sin `corta`: el corte de antes.
+ * null sin texto.
  */
 export function textoDelCambio(c) {
   if (!c?.texto) return null
   const mayus = (t) => t.charAt(0).toUpperCase() + t.slice(1)
-  const corta = c.texto.split(':')[0].replace(/\.$/, '')
+  const corta = c.corta || c.texto.split(':')[0].replace(/\.$/, '')
   return { corta: mayus(corta), completa: [mayus(c.texto), c.extra].filter(Boolean).join(' '), tono: c.tono || null }
 }
 

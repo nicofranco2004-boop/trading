@@ -130,9 +130,19 @@ describe('las filas, con lo que manda el servidor', () => {
     })
     // La aclaración de «cayó muy rápido» (la posibilidad de rebote) va al globo.
     const rsi = lec('KO', false, {}, { ultimo_cambio: {
-      tipo: 'rsi_bajo_30', fecha: '2026-10-23', tono: 'rsi', texto: 'tiene la fuerza (RSI) en 25.', extra: 'Es una posibilidad, no una certeza.' } })
+      tipo: 'rsi_bajo_30', fecha: '2026-10-23', tono: 'rsi', corta: 'cayó muy rápido',
+      texto: 'cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 25.', extra: 'Es una posibilidad, no una certeza.' } })
     const g = filasDeLaLista({ seguidos: [{ symbol: 'KO' }], indice: indexarLecturas([rsi]), hoy: HOY })
-    expect(g[0].cambio).toMatchObject({ corta: 'Tiene la fuerza (RSI) en 25', completa: 'Tiene la fuerza (RSI) en 25. Es una posibilidad, no una certeza.', hace: 'ayer' })
+    expect(g[0].cambio).toMatchObject({ corta: 'Cayó muy rápido', completa: 'Cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 25. Es una posibilidad, no una certeza.', hace: 'ayer' })
+  })
+
+  it('D6: la celda usa la frase corta del servidor, sin jerga (antes «Tiene el ADX en 23,3»)', () => {
+    const adx = lec('KO', false, {}, { ultimo_cambio: {
+      tipo: 'adx23', fecha: '2026-10-23', tono: 'adx', corta: 'dejó de ir de costado y marca dirección (para arriba)',
+      texto: 'dejó de ir de costado y marca dirección (para arriba): la fuerza de la tendencia (ADX) pasó 23 y quedó en 23,3.' } })
+    const g = filasDeLaLista({ seguidos: [{ symbol: 'KO' }], indice: indexarLecturas([adx]), hoy: HOY })
+    expect(g[0].cambio.corta).toBe('Dejó de ir de costado y marca dirección (para arriba)')
+    expect(g[0].cambio.corta).not.toMatch(/ADX|\d/)
   })
 
   it('dos filas con el mismo ticker dicen dónde cotiza cada una', () => {
