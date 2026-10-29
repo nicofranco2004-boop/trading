@@ -88,7 +88,7 @@ describe('tusSenales: cuentas', () => {
 describe('tusSenales: lo que se dibuja', () => {
   it('la pantalla del recuadro 15', () => {
     const t = texto(dibujar())
-    expect(t).toContain('Qué cambió esta semana en lo tuyo')
+    expect(t).toContain('Qué cambió esta semana en lo tuyo y en tu watchlist')
     for (const x of ['En lo que tenés', 'En tu watchlist', 'Tu plata en tendencia alcista', '54%', 'la semana pasada 61%',
       'Todo', 'Lo que tenés', 'Watchlist', 'Viernes 23/10', 'Lunes 19/10', 'Ver gráfico',
       'MELI tiene la fuerza (RSI) en 28', 'Lo tenés · 12% de tu plata', 'En tu watchlist',

@@ -165,7 +165,7 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
 
       <section aria-label="Lo que cambió esta semana" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-1">
         <div className="flex items-baseline justify-between gap-3 pt-3 pb-1">
-          <h2 className="text-[15px] font-semibold text-ink-0">Lo que cambió esta semana en lo tuyo</h2>
+          <h2 className="text-[15px] font-semibold text-ink-0">Lo que cambió esta semana en lo tuyo y en tu watchlist</h2>
           {ultimos.length > 0 && <span className="text-[12px] text-ink-2">{ultimos.length === 1 ? 'el único' : `los ${ultimos.length} más nuevos`}</span>}
         </div>
         {!datos ? (

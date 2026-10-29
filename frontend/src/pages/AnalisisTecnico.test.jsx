@@ -151,7 +151,7 @@ describe('Análisis técnico: las pestañas', () => {
     expect(montado.t()).toContain('Ordenar por')
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Señales de la semana')))
     expect(montado.donde.actual.search).toBe('?tab=senales')
-    expect(montado.t()).toContain('Qué cambió esta semana en lo tuyo')
+    expect(montado.t()).toContain('Qué cambió esta semana en lo tuyo y en tu watchlist')
     expect(montado.t()).toContain('Crear una alerta técnica en Alertas')
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Panorama')))
     expect(montado.donde.actual.search).toBe('')
@@ -183,6 +183,10 @@ describe('Análisis técnico: el Panorama', () => {
     expect(t).toContain('los 3 más nuevos')
     expect(t).toContain('NVDA pasó arriba de su promedio de 200 días')
     expect(t).toContain('TSLA cerró en su precio más alto')
+    // P5 (auditoría A 29/10): el título decía «en lo tuyo» y la lista trae
+    // también lo que seguís (TSLA): el título dice las dos cosas.
+    expect(t).toContain('Lo que cambió esta semana en lo tuyo y en tu watchlist')
+    expect(t).toContain('En tu watchlist')
     expect(t).not.toContain('tiene la fuerza (RSI) en 25')  // el 4.º, más viejo, no va en el Panorama
     expect(t).toContain('Ver las 4 señales de la semana')
     expect(t).toContain('El resumen de la semana te llega el sábado 07/11 a las 10:00')
