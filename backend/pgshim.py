@@ -1079,7 +1079,36 @@ class Connection:
             # falso haría fallar tests por algo que no pasó.
             return False
 
+    def _no_confirmar_lo_descartado(self):
+        """🔴 Si la transacción quedó arruinada, NO se dice «confirmado».
+
+        En Postgres, después de un error de SQL la transacción queda abortada
+        (INERROR) y `commit()` de psycopg manda un COMMIT que el servidor contesta
+        con ROLLBACK, **sin levantar nada** (medido el 28/10/2026 con psycopg
+        3.2.13: un INSERT, un error, commit() callado y 0 filas). En SQLite un
+        error no arruina la transacción, así que el código se escribió suponiendo
+        que commitear después de un `except` guarda lo de antes.
+
+        Esa forma —«try: escribir → except: log → commit → contestar éxito»— está
+        en 28 funciones del backend (hallazgo 11). En `create_operation` contestaba
+        200 con una operación que se había descartado entera. Arreglarlas de a una
+        es el 1-de-N de siempre; acá se corta para todas: lo descartado se deshace
+        explícito y se levanta un error, así el pedido falla A LA VISTA (un 500 y
+        un registro) en vez de perder datos en silencio. Quien necesite guardar lo
+        de antes aunque falle una parte usa un punto de guardado
+        (`main._si_falla_se_deshace_solo_esto`)."""
+        try:
+            st = self._c.info.transaction_status
+        except Exception:
+            return
+        if st == psycopg.pq.TransactionStatus.INERROR:
+            self._c.rollback()
+            raise psycopg.errors.InFailedSqlTransaction(
+                "La transacción quedó abortada por un error anterior y se descartó: "
+                "no se guardó nada de este pedido (ver pgshim._no_confirmar_lo_descartado).")
+
     def commit(self):
+        self._no_confirmar_lo_descartado()
         self._c.commit()
 
     def rollback(self):
@@ -1098,6 +1127,8 @@ class Connection:
 
     def __exit__(self, exc_type, exc, tb):
         if exc_type is None:
+            # `with conn:` también confirma al salir: el mismo silencio, la misma guarda.
+            self._no_confirmar_lo_descartado()
             self._c.commit()
         else:
             self._c.rollback()
