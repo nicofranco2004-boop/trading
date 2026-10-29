@@ -29,10 +29,14 @@ import LecturaTecnica from '../components/asset/LecturaTecnica'
 import AnalyzeView from '../components/fundamentals/AnalyzeView'
 import LiquidezByma from '../components/asset/LiquidezByma'
 import SeccionFicha from '../components/asset/SeccionFicha'
+import Panel from '../components/Panel'
+import TesisDelActivo from '../components/tesis/TesisDelActivo'
+import { useTesis } from '../hooks/useDiario'
+import { tesisVigente } from '../utils/diarioOperaciones'
 import Skeleton from '../components/Skeleton'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
-import { isBymaHolding, lotMissingPurchaseRate, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
+import { lotMissingPurchaseRate, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { empresaDeTenencias, empresaDeTicker, urlDeActivo, miradaSinTenencia, mismoPapel } from '../utils/buscadorRapido'
 // ¿Es una acción argentina? Una regla (utils/accionLocal.js) para la ficha, la
@@ -172,6 +176,8 @@ export default function AssetDetail() {
   const [prices, setPrices] = useState({})
   const [dolar, setDolar] = useState(null)
   const [operations, setOperations] = useState([])
+  // Tu tesis de este activo (la misma de Movimientos). Arriba de los return.
+  const tesis = useTesis()
   const [loading, setLoading] = useState(true)
   // Sólo si no lo tenés: el último precio, el cierre anterior y si está en tu watchlist.
   const [cotizacion, setCotizacion] = useState(null)
@@ -402,6 +408,20 @@ export default function AssetDetail() {
             acciones argentinas): el gráfico de un CEDEAR mira Nueva York. */}
         {papelByma && <LiquidezByma papel={papelByma} />}
         </SeccionFicha>
+      )}
+
+      {/* Tu tesis: por qué lo compraste, la tendencia de ese día y la de hoy, y
+          «Recordarme revisarla». Va si lo tenés o si escribiste una (la ficha
+          de un activo que vendiste todo la sigue mostrando). */}
+      {(agg.lots.length > 0 || tesisVigente(tesis.items, asset)) && tesis.estado !== 'error' && (
+        <section className="mb-5" aria-label={`Tu tesis de ${asset}`}>
+          <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu tesis</div>
+          <Panel padding="md">
+            {/* `key`: pasar de la ficha de AAPL a la de NVDA no deja a la vista
+                lo que estabas escribiendo para AAPL. */}
+            <TesisDelActivo key={asset} asset={asset} local={esAccionLocal(asset, agg.lots)} tesis={tesis} />
+          </Panel>
+        </section>
       )}
 
       {/* Lo tuyo: tu operatoria, tus lotes y tu historial. */}

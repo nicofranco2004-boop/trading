@@ -21,22 +21,25 @@ import { pctSigned, colorClass } from '../../utils/format'
 import { fmtConvertedCompactRaw } from '../../contexts/CurrencyContext'
 import { formatQty } from './shared'
 import { esCobro } from '../../utils/tradeStats'
+import { celdasDelDiario, ChipTendencia } from './DiarioCeldas'
 
 // `nuevas`: ids de las operaciones recién cargadas (Operations): esa tarjeta
 // destella al aparecer. Acá los grupos son por día y están siempre abiertos,
 // así que la nueva siempre queda a la vista.
 // `borrando(clave)`: ¿ese borrado está viajando? Apaga el tacho (Operations).
-export default function TradesFeed({ groups, histMoney, onDelete, borrando = () => false, nuevas = new Set() }) {
+// `diario`: lo mismo que recibe la tabla (useDiario): cada venta suma un
+// renglón con el tiempo, el % por año, la tendencia al comprar y la tesis.
+export default function TradesFeed({ groups, histMoney, onDelete, borrando = () => false, nuevas = new Set(), diario = null }) {
   return (
     <ul>
       {groups.map(g => (
-        <DayGroup key={g.key} group={g} histMoney={histMoney} onDelete={onDelete} borrando={borrando} nuevas={nuevas} />
+        <DayGroup key={g.key} group={g} histMoney={histMoney} onDelete={onDelete} borrando={borrando} nuevas={nuevas} diario={diario} />
       ))}
     </ul>
   )
 }
 
-function DayGroup({ group, histMoney, onDelete, borrando, nuevas }) {
+function DayGroup({ group, histMoney, onDelete, borrando, nuevas, diario }) {
   // El subtotal del DÍA se arma convirtiendo CADA op con SU FX y sumando eso
   // (convert-then-sum) — así coincide con las filas que despliega.
   // Antes tomaba el `fx_to_usd` de la PRIMERA op con fx>0 y lo aplicaba a todo
@@ -62,14 +65,15 @@ function DayGroup({ group, histMoney, onDelete, borrando, nuevas }) {
       </div>
       <ul>
         {ops.map(op => (
-          <OperationRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onDelete={onDelete} deleting={borrando(`op-${op.id}`)} />
+          <OperationRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onDelete={onDelete} deleting={borrando(`op-${op.id}`)} diario={diario} />
         ))}
       </ul>
     </li>
   )
 }
 
-function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false }) {
+function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false, diario = null }) {
+  const c = celdasDelDiario(op, diario)
   const isWin = op.pnl_usd != null && op.pnl_usd > 0
   const isLoss = op.pnl_usd != null && op.pnl_usd < 0
   const type = (op.op_type || '').toLowerCase()
@@ -102,6 +106,20 @@ function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false
             </span>
           )}
         </div>
+        {c && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 text-[11px] tabular text-ink-2">
+            <span>{c.tiempo}</span>
+            <span className={c.porAnioValor != null ? colorClass(c.porAnioValor) : 'text-ink-3'} title={c.porAnioPorQue || undefined}>
+              {c.porAnioValor != null ? `${c.porAnio} por año` : '— por año'}
+            </span>
+            <span className="inline-flex items-center gap-1">al comprar <ChipTendencia celdas={c} chico /></span>
+          </div>
+        )}
+        {c?.tesis && (
+          <div className="mt-1 text-[11px] text-ink-3 truncate" title={c.tesis.texto}>
+            Tu tesis: «{c.tesis.texto}»
+          </div>
+        )}
       </div>
 
       <div className="flex-shrink-0 text-right">

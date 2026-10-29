@@ -924,3 +924,71 @@ def cambios_desde(velas: list, desde: str) -> list:
             out.append((orden, {"tipo": tipo, **ev}))
     out.sort(key=lambda x: (x[1]["fecha"], -x[0]), reverse=True)
     return [c for _, c in out]
+
+
+# ─── La tendencia de un día del pasado ──────────────────────────────────────
+# Para el diario de operaciones (Movimientos) y la tesis: «¿cómo estaba el papel
+# el día que lo compraste / que escribiste por qué?». Es la MISMA regla que la
+# tarjeta «Largo plazo» de la ficha (`tarjetas()` en utils/tecnico.js): precio
+# igual o arriba de su promedio de 200 días = alcista; abajo = bajista. Y la
+# misma serie (`serie`, en dólares por defecto), así la ficha, la Cartera y
+# Movimientos dicen lo mismo del mismo día.
+
+# Si el día pedido no tiene vela (fin de semana, feriado) se usa la última de
+# antes. Más días que esto sin vela = no hay precio de ese día: «sin dato».
+DIAS_SIN_VELA = 7
+
+
+def tendencia_del_dia(velas: list, m200: list, fecha: str) -> dict:
+    """{tendencia: 'alcista'|'bajista', fecha, precio, media200, dist} con la
+    vela del día `fecha` (o la última de antes, hasta `DIAS_SIN_VELA`). Sin
+    lectura: {tendencia: None, motivo}:
+      · 'sin_velas'   no hay precios guardados de este activo (bono, fondo…)
+      · 'sin_precio'  hay precios, pero no de ese día (antes de la primera vela
+                      guardada, o un hueco de más de una semana)
+      · 'pocos_dias'  hay precio, pero todavía no 200 días de mercado antes."""
+    if not velas:
+        return {"tendencia": None, "motivo": "sin_velas"}
+    f = str(fecha or "")[:10]
+    try:
+        dia = date.fromisoformat(f)
+    except ValueError:
+        return {"tendencia": None, "motivo": "sin_precio"}
+    # La última vela con fecha <= `fecha` (búsqueda binaria: miles de pedidos
+    # por pantalla con una sola serie).
+    lo, hi, i = 0, len(velas) - 1, -1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if velas[mid]["date"] <= f:
+            i, lo = mid, mid + 1
+        else:
+            hi = mid - 1
+    if i < 0 or (dia - date.fromisoformat(velas[i]["date"])).days > DIAS_SIN_VELA:
+        return {"tendencia": None, "motivo": "sin_precio"}
+    v, m = velas[i], m200[i]
+    if m is None:
+        return {"tendencia": None, "motivo": "pocos_dias", "fecha": v["date"]}
+    return {
+        "tendencia": "alcista" if v["close"] >= m else "bajista",
+        "fecha": v["date"],
+        "precio": estructura.precio_redondo(v["close"]),
+        "media200": estructura.precio_redondo(m),
+        "dist": round(_pct(v["close"], m), 2),
+    }
+
+
+def tendencias_en_fechas(conn, pedidos: list) -> dict:
+    """Muchas fechas de una vez: pedidos = [{id, asset, local, fecha}] →
+    {id: tendencia_del_dia(...)}. La serie y su media de 200 se calculan UNA vez
+    por (activo, local), no por pedido: un diario de 300 operaciones de 20
+    activos lee 20 series."""
+    series: dict = {}
+    out = {}
+    for p in pedidos:
+        clave = ((p.get("asset") or "").strip().upper(), bool(p.get("local")))
+        if clave not in series:
+            velas = serie(conn, clave[0], "usd", clave[1])["velas"]
+            series[clave] = (velas, media([v["close"] for v in velas], 200))
+        velas, m200 = series[clave]
+        out[p["id"]] = tendencia_del_dia(velas, m200, p.get("fecha"))
+    return out
