@@ -138,7 +138,12 @@ const copia = (moneda = 'usd') => JSON.parse(localStorage.getItem(`rendi_dibujos
 // El precio a una altura del gráfico (250 px de alto), con la escala que muestra:
 // se lee del rótulo que la línea horizontal pone en la columna de precios.
 const num = (t) => Number(t.replace(/\./g, '').replace(',', '.'))
-async function usar(id) { await clic(montado.contenedor, boton(id)); await redibujar() }
+// Fibonacci y Elliott a mano se eligen en el menú de su botón de la barra.
+const MENU = { fibonacci: 'menu-fibonacci', elliott: 'menu-elliott' }
+async function usar(id) {
+  if (MENU[id]) { await clic(montado.contenedor, boton(MENU[id])); await redibujar() }
+  await clic(montado.contenedor, boton(id)); await redibujar()
+}
 
 describe('línea horizontal', () => {
   it('un click a una altura: la línea de borde a borde, su precio a la derecha, guardada; la herramienta se apaga', async () => {
@@ -329,12 +334,60 @@ describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos
   const capas = () => JSON.parse(localStorage.getItem('rendi_grafico_capas') || '{}')
   const rotulos = () => todos(montado.contenedor, n => n.nodeName === 'SPAN' && n.getAttribute?.('data-rotulo') != null).map(n => texto(n))
 
-  it('la barra separa el automático de la herramienta a mano', async () => {
+  it('un solo botón para cada uno, con su menú: «Automático» o «A mano» (Nico, 28/10)', async () => {
     await dibujar()
-    expect(texto(boton('fib'))).toContain('Fibonacci automático')
-    expect(texto(boton('ell'))).toContain('Ondas de Elliott automáticas')
-    expect(texto(boton('fibonacci'))).toContain('Fibonacci a mano')
-    expect(texto(boton('elliott'))).toContain('Elliott a mano')
+    expect(boton('fib')).toBeFalsy()                            // cerrado, no se ve nada más que el botón
+    expect(texto(boton('menu-fibonacci'))).toContain('Fibonacci')
+    expect(boton('menu-fibonacci').getAttribute('aria-haspopup')).toBe('menu')
+    await clic(montado.contenedor, boton('menu-fibonacci')); await redibujar()
+    expect(boton('menu-fibonacci').getAttribute('aria-expanded')).toBe('true')
+    const menu = todos(montado.contenedor, n => n.getAttribute?.('role') === 'menu')[0]
+    expect(texto(menu)).toContain('Automático')
+    expect(texto(menu)).toContain('A mano')
+    expect(boton('fib').getAttribute('role')).toBe('menuitemcheckbox')
+    expect(boton('fibonacci').getAttribute('role')).toBe('menuitem')
+    // Esc lo cierra; elegir una opción también.
+    await enActo(() => { window.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Escape' })) }); await redibujar()
+    expect(boton('fib')).toBeFalsy()
+    await usar('elliott')
+    expect(todos(montado.contenedor, n => n.getAttribute?.('role') === 'menu')).toHaveLength(0)
+    expect(status()).toContain('Tocá el arranque del conteo (el 0)')
+  })
+
+  it('la barra del costado tiene sólo las herramientas; los indicadores van en su lista y línea/velas arriba', async () => {
+    await dibujar()
+    const barra = todos(montado.contenedor, n => n.getAttribute?.('role') === 'toolbar')[0]
+    const enLaBarra = todos(barra, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa'))
+    expect(enLaBarra).toEqual(['tendencia', 'horizontal', 'menu-fibonacci', 'menu-elliott', 'medir', 'borrarDibujos'])
+    const lista = todos(montado.contenedor, n => n.getAttribute?.('role') === 'group' && n.getAttribute('aria-label') === 'Indicadores')[0]
+    const enLaLista = todos(lista, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa')).filter(Boolean)
+    expect(enLaLista).toEqual(['vol', 's200', 's50', 'rsi', 'fuerza', 'eventos', 'fabrica'])
+    const tipo = todos(montado.contenedor, n => n.getAttribute?.('aria-label') === 'Tipo de gráfico')[0]
+    expect(todos(tipo, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa'))).toEqual(['linea', 'velas'])
+  })
+
+  it('en un gráfico angosto (el celular) la lista arranca plegada, para no tapar el gráfico', async () => {
+    globalThis.ResizeObserver = class { constructor(cb) { this.cb = cb } observe() { this.cb([{ contentRect: { width: 300 } }]) } disconnect() {} }
+    try {
+      await dibujar()
+      expect(buscarBoton(montado.contenedor, 'Indicadores').getAttribute('aria-expanded')).toBe('false')
+      expect(boton('vol')).toBeFalsy()
+    } finally {
+      delete globalThis.ResizeObserver
+    }
+  })
+
+  it('la lista de indicadores se pliega a un renglón y se acuerda', async () => {
+    await dibujar()
+    const plegar = () => buscarBoton(montado.contenedor, 'Indicadores')
+    expect(plegar().getAttribute('aria-expanded')).toBe('true')
+    expect(texto(plegar())).toMatch(/· \d+ de \d+/)
+    await clic(montado.contenedor, plegar()); await redibujar()
+    expect(boton('vol')).toBeFalsy()
+    expect(localStorage.getItem('rendi_grafico_leyenda')).toBe('cerrada')
+    await montado.desmontar()
+    await dibujar()
+    expect(plegar().getAttribute('aria-expanded')).toBe('false')
   })
 
   it('tu Fibonacci: dos toques (arranque y final del tramo), los niveles con su precio, guardado; apaga el automático', async () => {
@@ -356,7 +409,7 @@ describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos
     expect(rotulos().some(t => t.startsWith('Pico · '))).toBe(true)
     expect(rotulos().some(t => t.startsWith('Arranque · '))).toBe(true)
     expect(capas().fib).toBe(false)                            // el automático, apagado (se prende de nuevo desde la barra)
-    expect(boton('fibonacci').getAttribute('aria-pressed')).toBe('false')
+    expect(texto(boton('menu-fibonacci'))).not.toContain('Marcando a mano')   // la herramienta se apagó al terminar
   })
 
   it('cancelar a mitad de camino no apaga el automático ni guarda nada', async () => {
@@ -391,7 +444,7 @@ describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos
     const [e] = guardados()
     expect(e.puntos).toHaveLength(9)
     expect(rotulos().filter(t => /^[0-5ABC]$/.test(t))).toEqual(['0', '1', '2', '3', '4', '5', 'A', 'B', 'C'])
-    expect(boton('elliott').getAttribute('aria-pressed')).toBe('false')
+    expect(texto(boton('menu-elliott'))).not.toContain('Contando a mano')
   })
 
   it('tocar uno de tus niveles elige tu Fibonacci y se borra entero', async () => {

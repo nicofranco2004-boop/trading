@@ -28,10 +28,10 @@
 // de 23 y las barras del Squeeze (el combo «DMI/ADX/KEYLEVEL» + «SQZMOM_LB» de
 // TradingView), con su tarjeta «Fuerza de la tendencia».
 
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { cloneElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { LineChart, RotateCcw, Ruler, Trash2 } from 'lucide-react'
 import AssetMiniChart from '../home/AssetMiniChart'
-import BarraGrafico, { CAPAS_DE_FABRICA, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica } from './BarraGrafico'
+import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica } from './BarraGrafico'
 import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
 import CapaElliott, { COLOR_ELLIOTT, TarjetaElliott, fechaDelConteo, preciosDelConteo } from './CapaElliott'
 import CapaDibujos, { trazosDeDibujos } from './CapaDibujos'
@@ -263,7 +263,7 @@ export default function LecturaTecnica({
 
   const marco = (hijos, conPesos = datos.ars?.disponible !== false) => (
     <Marco moneda={moneda} setMoneda={setMoneda} rango={ventana ? null : rango} setRango={elegirRango}
-      conPesos={conPesos} conTuyo={!!primera}>{hijos}</Marco>
+      conPesos={conPesos} conTuyo={!!primera} tipo={tipo} setTipo={setTipo} intervalo={intervalo} setIntervalo={setIntervalo}>{hijos}</Marco>
   )
   // Cargando: el marco con sus botones queda quieto y el gris va adentro, con la
   // altura del gráfico ya reservada (antes desaparecía todo y la página saltaba).
@@ -406,6 +406,14 @@ export default function LecturaTecnica({
     peso: tenencia?.valorUsd > 0 && valorCartera > 0 ? tenencia.valorUsd / valorCartera : null,
   })
 
+  const botones = botonesDeLaBarra({
+    actual, ver, alternar, losEventos, eventosCargando: eventos[moneda] === undefined,
+    misMarcas, promedio, moneda, pnlPctUsd, lineaSinTc, medir, setMedir,
+    tenes: pnlPctUsd != null, operaste: pnlPctUsd != null || lotes.length > 0 || operaciones.length > 0,
+    dibujar, setDibujar, cuantosDibujos: misDibujos.length, pedirBorrarTodos: () => { setElegido(null); setBorrarTodos(true) },
+    nVista, acercar,
+  })
+
   return marco(
     <>
       {diasViejo > 7 && (
@@ -423,13 +431,7 @@ export default function LecturaTecnica({
       )}
 
       <div className="flex flex-col sm:flex-row gap-1.5 sm:gap-3">
-        <BarraGrafico onAviso={setAviso} grupos={botonesDeLaBarra({
-          actual, ver, alternar, tipo, setTipo, losEventos, eventosCargando: eventos[moneda] === undefined,
-          misMarcas, promedio, moneda, pnlPctUsd, lineaSinTc, medir, setMedir,
-          tenes: pnlPctUsd != null, operaste: pnlPctUsd != null || lotes.length > 0 || operaciones.length > 0,
-          dibujar, setDibujar, cuantosDibujos: misDibujos.length, pedirBorrarTodos: () => { setElegido(null); setBorrarTodos(true) },
-          deFabrica, volverDeFabrica, nVista, acercar,
-        })} />
+        <BarraGrafico onAviso={setAviso} grupos={botones.barra} />
         <div className="min-w-0 flex-1">
           {aviso && (
             <div role="status" className="mb-2 flex items-start justify-between gap-2 rounded-lg border border-line-2 bg-bg-2/60 px-3 py-2 text-[12.5px] text-ink-1 leading-relaxed">
@@ -497,13 +499,9 @@ export default function LecturaTecnica({
               )}
             </div>
           )}
-          {tipo === 'velas' && (
-            <div className="flex justify-end mb-2">
-              <Segmento etiqueta="Cada vela es" valor={intervalo} alElegir={setIntervalo}
-                opciones={[['dia', 'Diarias'], ['semana', 'Semanales']]} />
-            </div>
-          )}
-          <Grafico puntos={puntos} huecos={huecos} moneda={moneda} promedio={ver.prom ? promedio : null}
+          <Grafico leyenda={
+            <LeyendaIndicadores items={botones.indicadores} onAviso={setAviso} deFabrica={deFabrica} onFabrica={volverDeFabrica} />
+          } puntos={puntos} huecos={huecos} moneda={moneda} promedio={ver.prom ? promedio : null}
             marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo}
             fibonacci={ver.fib ? actual.fibonacci : null} elliott={ver.ell ? actual.elliott : null} onZoom={zoom} onMover={mover}
             onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rango}|${tipo}|${intervalo}`}
@@ -619,15 +617,31 @@ function periodoDeMovimiento(m) {
   return dias >= 700 ? 'Últimos 2 años' : `Desde el ${fechaCorta(m.desde)}`
 }
 
-function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, conTuyo = false, children }) {
+function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, conTuyo = false, tipo, setTipo, intervalo, setIntervalo, children }) {
   // Siempre del tamaño que antes era «Agrandar» y dentro de la ficha (Nico,
-  // 24/10: «que sea automáticamente ampliado»; achicarlo no servía). Línea/velas están en la barra
-  // de herramientas del gráfico (BarraGrafico.jsx).
+  // 24/10: «que sea automáticamente ampliado»; achicarlo no servía). Arriba a la
+  // derecha, con la moneda y el rango, línea o velas con sus dos íconos (Nico,
+  // 28/10: en la barra del costado eran demasiadas cosas).
   return (
     <section aria-label="Análisis técnico" className="mb-5">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <div className="text-[12.5px] text-ink-2 font-medium">Análisis técnico</div>
         <div className="flex flex-wrap items-center gap-2">
+          {setTipo && (
+            <div className="inline-flex gap-0.5 bg-bg-2 border border-line rounded-lg p-0.5" role="group" aria-label="Tipo de gráfico">
+              {[['linea', 'Línea', <LineChart key="l" size={16} aria-hidden="true" />], ['velas', 'Velas', <IconoVelas key="v" />]].map(([id, nombre, icono]) => (
+                <button key={id} type="button" data-capa={id} onClick={() => setTipo(id)} aria-pressed={tipo === id}
+                  title={`Gráfico de ${nombre.toLowerCase()}`}
+                  className={`inline-flex items-center justify-center min-h-10 min-w-10 sm:min-h-8 sm:min-w-8 rounded transition-colors ${tipo === id ? 'bg-bg-1 text-ink-0 shadow-sm' : 'text-ink-2 hover:text-ink-0 opacity-70 hover:opacity-100'}`}>
+                  {icono}<span className="sr-only">{nombre}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {tipo === 'velas' && setIntervalo && (
+            <Segmento etiqueta="Cada vela es" valor={intervalo} alElegir={setIntervalo}
+              opciones={[['dia', 'Diarias'], ['semana', 'Semanales']]} />
+          )}
           <Segmento etiqueta="Moneda" valor={moneda} alElegir={setMoneda}
             opciones={[['usd', 'Dólares'], ...(conPesos ? [['ars', 'Pesos']] : [])]} />
           <Segmento etiqueta="Rango" valor={rango} alElegir={setRango}
@@ -662,8 +676,8 @@ function Segmento({ etiqueta, valor, alElegir, opciones }) {
  * activo que no tenés no aparece nada tuyo).
  */
 function botonesDeLaBarra({
-  actual, ver, alternar, tipo, setTipo, losEventos, eventosCargando, misMarcas, promedio, moneda,
-  pnlPctUsd, lineaSinTc, tenes, operaste, medir, setMedir, deFabrica, volverDeFabrica, nVista, acercar,
+  actual, ver, alternar, losEventos, eventosCargando, misMarcas, promedio, moneda,
+  pnlPctUsd, lineaSinTc, tenes, operaste, medir, setMedir, nVista, acercar,
   dibujar, setDibujar, cuantosDibujos, pedirBorrarTodos,
 }) {
   const capa = (id, nombre, icono, sinDatos, onClick) => ({
@@ -686,75 +700,77 @@ function botonesDeLaBarra({
     : moneda === 'usd' && lineaSinTc ? 'A alguna de tus compras le falta el dólar de ese día: sin él, la línea no sería cierta.'
       : moneda === 'ars' && pnlPctUsd != null ? 'En pesos sólo se dibuja si compraste todo en pesos y el gráfico es el de la Bolsa de acá.'
         : 'Falta el resultado de tu compra para ubicar la línea.'
-  return [
-    // Línea o velas: uno de los dos, como dos botones (el elegido, prendido).
-    [
-      { id: 'linea', nombre: 'Línea', icono: <LineChart size={18} />, activo: tipo === 'linea', radio: true,
-        estado: tipo === 'linea' ? 'Así se ve ahora' : 'El precio de cierre de cada día, como una línea', onClick: () => setTipo('linea') },
-      { id: 'velas', nombre: 'Velas', icono: <IconoVelas />, activo: tipo === 'velas', radio: true,
-        estado: tipo === 'velas' ? 'Así se ve ahora' : 'Apertura, máximo, mínimo y cierre de cada día', onClick: () => setTipo('velas') },
+  const lleno = cuantosDibujos >= DIBUJOS_MAXIMOS ? `Llegaste a ${DIBUJOS_MAXIMOS} dibujos en este activo: borrá alguno para hacer otro.` : null
+  const herramienta = (id, nombre, icono, estadoOn, estadoOff) => ({
+    id, nombre, icono, activo: dibujar.tipo === id, herramienta: true, sinDatos: lleno,
+    estado: dibujar.tipo === id ? estadoOn : estadoOff,
+    onClick: () => setDibujar(d => (d.tipo === id ? { tipo: null, puntos: [] } : { tipo: id, puntos: [] })),
+  })
+  const aMano = (id) => ({
+    id, nombre: 'A mano', activo: dibujar.tipo === id, sinDatos: lleno,
+    detalle: id === 'fibonacci' ? 'Marcá vos el tramo: dónde arranca y dónde termina. Apaga el automático.'
+      : 'Contá vos las ondas, un toque por onda (0, 1, 2…). Apaga el automático.',
+    onClick: () => setDibujar({ tipo: id, puntos: [] }),
+  })
+  return {
+    // La barra del costado: las herramientas de análisis (Nico, 28/10).
+    barra: [
+      [
+        herramienta('tendencia', 'Línea de tendencia', <IconoTendencia />, 'Tocá dos puntos del gráfico', 'De un punto a otro, para marcar una tendencia'),
+        herramienta('horizontal', 'Línea horizontal', <IconoHorizontal />, 'Tocá la altura del precio', 'Un precio que querés vigilar (un soporte, un techo)'),
+      ],
+      // Fibonacci y Elliott: el automático y el «a mano» desde UN lugar.
+      [
+        { id: 'menu-fibonacci', nombre: 'Fibonacci', icono: <IconoFibonacci />,
+          activo: (!sinFib && !!ver.fib) || dibujar.tipo === 'fibonacci',
+          estado: dibujar.tipo === 'fibonacci' ? 'Marcando a mano' : !sinFib && ver.fib ? 'El automático, prendido' : 'El automático o a mano',
+          menu: [
+            { id: 'fib', nombre: 'Automático', interruptor: true, activo: !!ver.fib, sinDatos: sinFib,
+              detalle: 'Rendi busca el último tramo de suba o de bajada y dibuja sus niveles.',
+              onClick: () => {
+                // Al prenderlo, el gráfico se acerca al tramo medido (si se ve chico).
+                if (!ver.fib) acercar(ventanaDelTramo(actual.puntos, fib, nVista))
+                alternar('fib')
+              } },
+            aMano('fibonacci'),
+          ] },
+        { id: 'menu-elliott', nombre: 'Ondas de Elliott', icono: <IconoElliott />,
+          activo: (!sinEll && !!ver.ell) || dibujar.tipo === 'elliott',
+          estado: dibujar.tipo === 'elliott' ? 'Contando a mano' : !sinEll && ver.ell ? 'El automático, prendido' : 'El automático o a mano',
+          menu: [
+            { id: 'ell', nombre: 'Automático', interruptor: true, activo: !!ver.ell, sinDatos: sinEll,
+              detalle: 'Rendi busca un conteo posible sobre los picos y pozos del gráfico.',
+              onClick: () => {
+                if (!ver.ell) acercar(ventanaDesde(actual.puntos, fechaDelConteo(ell), nVista))
+                alternar('ell')
+              } },
+            aMano('elliott'),
+          ] },
+      ],
+      [
+        { id: 'medir', nombre: 'Medir entre dos puntos', icono: <Ruler size={18} />, activo: medir.activo, herramienta: true,
+          estado: medir.activo ? 'Tocá dos puntos del gráfico' : 'Cuánto sube o baja entre dos puntos, también hacia adelante',
+          onClick: () => setMedir(m => ({ activo: !m.activo, a: null, b: null })) },
+        { id: 'borrarDibujos', nombre: 'Borrar mis dibujos', icono: <Trash2 size={17} />,
+          sinDatos: cuantosDibujos ? null : 'Todavía no dibujaste nada en este activo (en esta moneda).',
+          estado: `${cuantosDibujos === 1 ? 'Tu dibujo' : `Tus ${cuantosDibujos} dibujos`} de este activo. Para borrar uno solo, tocalo en el gráfico.`,
+          onClick: pedirBorrarTodos },
+      ],
     ],
-    [
+    // La lista de arriba a la izquierda del gráfico: los indicadores, con su ojito.
+    indicadores: [
       capa('vol', 'Volumen', <IconoVolumen />, actual.puntos.some(p => p.v > 0) ? null : 'Este activo no trae volumen en los datos de Yahoo.'),
       capa('s200', 'Promedio 200 días', <IconoLinea color={COLOR.media200} grueso />, hay('s200') ? null : 'Faltan datos: hacen falta 200 días de mercado.'),
       capa('s50', 'Promedio 50 días', <IconoLinea color={COLOR.media50} />, hay('s50') ? null : 'Faltan datos: hacen falta 50 días de mercado.'),
-      capa('fib', 'Fibonacci automático', <IconoFibonacci />, sinFib, () => {
-        // Al prenderlo, el gráfico se acerca al tramo medido (si se ve chico).
-        if (!ver.fib) acercar(ventanaDelTramo(actual.puntos, fib, nVista))
-        alternar('fib')
-      }),
-      capa('ell', 'Ondas de Elliott automáticas', <IconoElliott />, sinEll, () => {
-        if (!ver.ell) acercar(ventanaDesde(actual.puntos, fechaDelConteo(ell), nVista))
-        alternar('ell')
-      }),
-    ],
-    [
       capa('rsi', 'RSI', <IconoRsi />, hay('rsi') ? null : 'Faltan datos: hacen falta al menos 15 días de mercado.'),
       capa('fuerza', 'Fuerza de la tendencia', <IconoFuerza />, hay('adx') || hay('squeeze') ? null : 'Faltan datos para calcularla.'),
-    ],
-    [
       capa('eventos', 'Balances y dividendos', <span className="inline-flex gap-px"><Letra tipo="balance" /><Letra tipo="dividendo" /></span>,
         eventosCargando ? 'Cargando los balances y dividendos…'
           : losEventos.length ? null : 'No hay balances ni dividendos de este activo (pasa con las criptos, los índices y los fondos).'),
       operaste && capa('marcas', 'Tus compras y ventas', <IconoPuntos />, misMarcas.length ? null : 'No hay compras ni ventas tuyas de este activo.'),
       tenes && capa('prom', 'Tu precio promedio', <IconoLinea color={COLOR.promedio} punteado />, sinProm),
     ].filter(Boolean),
-    [
-      { id: 'medir', nombre: 'Medir entre dos puntos', icono: <Ruler size={18} />, activo: medir.activo, herramienta: true,
-        estado: medir.activo ? 'Tocá dos puntos del gráfico' : 'Cuánto sube o baja entre dos puntos, también hacia adelante',
-        onClick: () => setMedir(m => ({ activo: !m.activo, a: null, b: null })) },
-    ],
-    // Dibujar a mano, como TradingView. Se guardan por activo y moneda.
-    [
-      { id: 'tendencia', nombre: 'Línea de tendencia', icono: <IconoTendencia />, activo: dibujar.tipo === 'tendencia', herramienta: true,
-        sinDatos: cuantosDibujos >= DIBUJOS_MAXIMOS ? `Llegaste a ${DIBUJOS_MAXIMOS} dibujos en este activo: borrá alguno para hacer otro.` : null,
-        estado: dibujar.tipo === 'tendencia' ? 'Tocá dos puntos del gráfico' : 'De un punto a otro, para marcar una tendencia',
-        onClick: () => setDibujar(d => (d.tipo === 'tendencia' ? { tipo: null, puntos: [] } : { tipo: 'tendencia', puntos: [] })) },
-      { id: 'horizontal', nombre: 'Línea horizontal', icono: <IconoHorizontal />, activo: dibujar.tipo === 'horizontal', herramienta: true,
-        sinDatos: cuantosDibujos >= DIBUJOS_MAXIMOS ? `Llegaste a ${DIBUJOS_MAXIMOS} dibujos en este activo: borrá alguno para hacer otro.` : null,
-        estado: dibujar.tipo === 'horizontal' ? 'Tocá la altura del precio' : 'Un precio que querés vigilar (un soporte, un techo)',
-        onClick: () => setDibujar(d => (d.tipo === 'horizontal' ? { tipo: null, puntos: [] } : { tipo: 'horizontal', puntos: [] })) },
-      // Fibonacci y Elliott como uno los estima (Nico, 28/10): al terminarlos
-      // se apaga el automático, que se vuelve a prender desde su botón.
-      { id: 'fibonacci', nombre: 'Fibonacci a mano', icono: <IconoFibonacci color={COLOR.dibujo} />, activo: dibujar.tipo === 'fibonacci', herramienta: true,
-        sinDatos: cuantosDibujos >= DIBUJOS_MAXIMOS ? `Llegaste a ${DIBUJOS_MAXIMOS} dibujos en este activo: borrá alguno para hacer otro.` : null,
-        estado: dibujar.tipo === 'fibonacci' ? 'Tocá dónde arranca y dónde termina el tramo' : 'Marcá vos el tramo: dos toques',
-        onClick: () => setDibujar(d => (d.tipo === 'fibonacci' ? { tipo: null, puntos: [] } : { tipo: 'fibonacci', puntos: [] })) },
-      { id: 'elliott', nombre: 'Elliott a mano', icono: <IconoElliott color={COLOR.dibujo} />, activo: dibujar.tipo === 'elliott', herramienta: true,
-        sinDatos: cuantosDibujos >= DIBUJOS_MAXIMOS ? `Llegaste a ${DIBUJOS_MAXIMOS} dibujos en este activo: borrá alguno para hacer otro.` : null,
-        estado: dibujar.tipo === 'elliott' ? 'Tocá el 0 y después cada onda' : 'Contá vos las ondas, toque por toque',
-        onClick: () => setDibujar(d => (d.tipo === 'elliott' ? { tipo: null, puntos: [] } : { tipo: 'elliott', puntos: [] })) },
-      { id: 'borrarDibujos', nombre: 'Borrar mis dibujos', icono: <Trash2 size={17} />,
-        sinDatos: cuantosDibujos ? null : 'Todavía no dibujaste nada en este activo (en esta moneda).',
-        estado: `${cuantosDibujos === 1 ? 'Tu dibujo' : `Tus ${cuantosDibujos} dibujos`} de este activo. Para borrar uno solo, tocalo en el gráfico.`,
-        onClick: pedirBorrarTodos },
-    ],
-    [
-      { id: 'fabrica', nombre: 'Volver a lo de fábrica', icono: <RotateCcw size={17} />,
-        estado: deFabrica ? 'Ya está todo como viene: prendido y en línea' : 'Prende todo de nuevo y vuelve a la línea',
-        onClick: volverDeFabrica },
-    ],
-  ]
+  }
 }
 
 // Los íconos de la barra muestran cómo se ve cada capa (su color y su forma):
@@ -941,7 +957,7 @@ function rotulosDeMeses(puntos) {
   })
 }
 
-function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null }) {
+function Grafico({ leyenda = null, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null }) {
   const conVelas = tipo === 'velas'
   // Los lugares del ancho: los días más el aire vacío de la derecha.
   const lugares = puntos.length + huecos
@@ -1444,6 +1460,9 @@ function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tip
           )}
         </div>
 
+        {/* Los indicadores, arriba a la izquierda (como TradingView): afuera del
+            área que escucha el mouse, para que tocar un ojito no sea tocar el gráfico. */}
+        {leyenda && <div className="absolute left-1 top-1 right-[76px] z-20 pointer-events-none [&>*]:pointer-events-auto">{cloneElement(leyenda, { anchoDisponible: ancho })}</div>}
         {/* Columna de precios: la grilla, tu precio y el último precio. Se
             arrastra para estirar el gráfico en vertical (ver ejesGrafico.js). */}
         <div className="absolute inset-y-0 right-0 w-[68px] cursor-ns-resize touch-none select-none"

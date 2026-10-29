@@ -74,7 +74,13 @@ async function dibujar() {
   montado = await montar(el())
   for (let i = 0; i < 4; i++) await montado.redibujar(el())
 }
+// Fibonacci y Elliott automáticos viven en el menú de su botón de la barra.
+const MENU = { fib: 'menu-fibonacci', ell: 'menu-elliott' }
 async function tocar(id) {
+  if (MENU[id]) {
+    await clic(montado.contenedor, boton(MENU[id]))
+    for (let i = 0; i < 2; i++) await montado.redibujar(el())
+  }
   await clic(montado.contenedor, boton(id))
   for (let i = 0; i < 2; i++) await montado.redibujar(el())
 }
@@ -91,7 +97,17 @@ function nodos(pred) {
 }
 const attr = (n, k) => n.getAttribute?.(k)
 const boton = (id) => nodos(n => n.nodeName === 'BUTTON' && attr(n, 'data-capa') === id)[0] || null
-const prendido = (id) => attr(boton(id), 'aria-pressed')
+// Prendido o apagado: el ojito de la lista (aria-pressed) o, en un menú, la
+// opción tildada (aria-checked: se abre, se lee y se cierra).
+async function prendido(id) {
+  if (!MENU[id]) return attr(boton(id), 'aria-pressed')
+  await clic(montado.contenedor, boton(MENU[id]))
+  for (let i = 0; i < 2; i++) await montado.redibujar(el())
+  const v = attr(boton(id), 'aria-checked')
+  await clic(montado.contenedor, boton(MENU[id]))
+  for (let i = 0; i < 2; i++) await montado.redibujar(el())
+  return v
+}
 
 // Cómo se reconoce cada capa en el gráfico dibujado.
 const SE_VE = {
@@ -112,12 +128,12 @@ describe('la barra de herramientas del gráfico', () => {
   it('todo prendido de entrada, Fibonacci y Elliott incluidos', async () => {
     await dibujar()
     for (const id of CAPAS) {
-      expect(prendido(id), id).toBe('true')
+      expect(await prendido(id), id).toBe('true')
       expect(SE_VE[id](), id).toBe(true)
     }
-    expect(prendido('linea')).toBe('true')
-    expect(prendido('velas')).toBe('false')
-    expect(prendido('medir')).toBe('false')     // medir es una herramienta: se prende para usarla
+    expect(await prendido('linea')).toBe('true')
+    expect(await prendido('velas')).toBe('false')
+    expect(await prendido('medir')).toBe('false')     // medir es una herramienta: se prende para usarla
     // La leyenda de chips de abajo ya no está: un solo lugar para prender cada cosa.
     expect(nodos(n => attr(n, 'aria-label') === 'Qué líneas mostrar')).toHaveLength(0)
     expect(nodos(n => attr(n, 'role') === 'toolbar' && attr(n, 'aria-label') === 'Herramientas del gráfico')).toHaveLength(1)
@@ -127,11 +143,11 @@ describe('la barra de herramientas del gráfico', () => {
     it(`«${id}»: el botón saca su capa y la vuelve a poner, sin tocar las otras`, async () => {
       await dibujar()
       await tocar(id)
-      expect(prendido(id)).toBe('false')
+      expect(await prendido(id)).toBe('false')
       expect(SE_VE[id]()).toBe(false)
       for (const otra of CAPAS.filter(k => k !== id)) expect(SE_VE[otra](), `${otra} al apagar ${id}`).toBe(true)
       await tocar(id)
-      expect(prendido(id)).toBe('true')
+      expect(await prendido(id)).toBe('true')
       expect(SE_VE[id]()).toBe(true)
     })
   }
@@ -140,14 +156,14 @@ describe('la barra de herramientas del gráfico', () => {
     await dibujar()
     const nombres = {
       linea: 'Línea', velas: 'Velas', vol: 'Volumen', s200: 'Promedio 200 días', s50: 'Promedio 50 días',
-      fib: 'Fibonacci', ell: 'Ondas de Elliott', rsi: 'RSI', fuerza: 'Fuerza de la tendencia',
+      'menu-fibonacci': 'Fibonacci', 'menu-elliott': 'Ondas de Elliott', rsi: 'RSI', fuerza: 'Fuerza de la tendencia',
       eventos: 'Balances y dividendos', marcas: 'Tus compras y ventas', prom: 'Tu precio promedio',
       medir: 'Medir entre dos puntos', fabrica: 'Volver a lo de fábrica',
     }
     for (const [id, nombre] of Object.entries(nombres)) expect(texto(boton(id)), id).toContain(nombre)
-    expect(texto(boton('vol'))).toContain('Prendido. Tocá para apagarlo.')
+    expect(texto(boton('vol'))).toContain('Ocultar Volumen')
     await tocar('vol')
-    expect(texto(boton('vol'))).toContain('Apagado. Tocá para prenderlo.')
+    expect(texto(boton('vol'))).toContain('Mostrar Volumen')
   })
 
   it('lo que se apaga se recuerda al volver', async () => {
@@ -158,10 +174,10 @@ describe('la barra de herramientas del gráfico', () => {
     expect(JSON.parse(localStorage.getItem('rendi_grafico_capas'))).toMatchObject({ vol: false, ell: false, fib: true })
     await montado.desmontar()
     await dibujar()                             // otra visita a la ficha
-    expect(prendido('vol')).toBe('false')
-    expect(prendido('ell')).toBe('false')
-    expect(prendido('fib')).toBe('true')
-    expect(prendido('velas')).toBe('true')
+    expect(await prendido('vol')).toBe('false')
+    expect(await prendido('ell')).toBe('false')
+    expect(await prendido('fib')).toBe('true')
+    expect(await prendido('velas')).toBe('true')
     expect(SE_VE.vol()).toBe(false)
     expect(SE_VE.ell()).toBe(false)
     expect(SE_VE.fib()).toBe(true)
@@ -172,26 +188,26 @@ describe('la barra de herramientas del gráfico', () => {
     for (const id of ['vol', 'fib', 'ell', 'rsi', 'prom']) await tocar(id)
     await tocar('velas')
     await tocar('medir')
-    expect(texto(boton('fabrica'))).toContain('Prende todo de nuevo')
+    expect(attr(boton('fabrica'), 'disabled')).toBeNull()
     await tocar('fabrica')
     for (const id of CAPAS) {
-      expect(prendido(id), id).toBe('true')
+      expect(await prendido(id), id).toBe('true')
       expect(SE_VE[id](), id).toBe(true)
     }
-    expect(prendido('linea')).toBe('true')
-    expect(prendido('medir')).toBe('false')
+    expect(await prendido('linea')).toBe('true')
+    expect(await prendido('medir')).toBe('false')
     expect(localStorage.getItem('rendi_grafico_capas')).toBeNull()
     expect(localStorage.getItem('rendi_grafico_tipo')).toBeNull()
-    expect(texto(boton('fabrica'))).toContain('Ya está todo como viene')
+    expect(attr(boton('fabrica'), 'disabled')).not.toBeNull()   // ya está todo como viene
     await montado.desmontar()
     await dibujar()
-    for (const id of CAPAS) expect(prendido(id), id).toBe('true')
+    for (const id of CAPAS) expect(await prendido(id), id).toBe('true')
   })
 
   it('medir es una herramienta: se prende, se usa y se apaga; no hay botón de agrandar (siempre ampliado)', async () => {
     await dibujar()
     await tocar('medir')
-    expect(prendido('medir')).toBe('true')
+    expect(await prendido('medir')).toBe('true')
     expect(texto(montado.contenedor)).toContain('Tocá cualquier punto del gráfico para empezar a medir')
     await tocar('medir')
     expect(texto(montado.contenedor)).not.toContain('Tocá cualquier punto del gráfico')
@@ -204,7 +220,7 @@ describe('la barra de herramientas del gráfico', () => {
     const roto = () => { throw new Error('SecurityError') }
     vi.stubGlobal('localStorage', { getItem: roto, setItem: roto, removeItem: roto, clear: () => {} })
     await dibujar()
-    for (const id of CAPAS) expect(prendido(id), id).toBe('true')
+    for (const id of CAPAS) expect(await prendido(id), id).toBe('true')
     await tocar('vol')
     expect(SE_VE.vol()).toBe(false)
     await tocar('fabrica')
@@ -214,13 +230,13 @@ describe('la barra de herramientas del gráfico', () => {
   it('un valor guardado roto o de otra versión no apaga nada de más', async () => {
     localStorage.setItem('rendi_grafico_capas', '{esto no es json')
     await dibujar()
-    for (const id of CAPAS) expect(prendido(id), id).toBe('true')
+    for (const id of CAPAS) expect(await prendido(id), id).toBe('true')
     await montado.desmontar()
     // Sólo cuenta un sí/no de una capa conocida: lo demás, de fábrica.
     localStorage.setItem('rendi_grafico_capas', JSON.stringify({ vol: false, ell: 'false', capaQueYaNoExiste: false }))
     await dibujar()
-    expect(prendido('vol')).toBe('false')
-    for (const id of CAPAS.filter(k => k !== 'vol')) expect(prendido(id), id).toBe('true')
+    expect(await prendido('vol')).toBe('false')
+    for (const id of CAPAS.filter(k => k !== 'vol')) expect(await prendido(id), id).toBe('true')
   })
 
   it('rótulos de capas distintas que se pisan: se esconde el menos importante, no la capa', async () => {

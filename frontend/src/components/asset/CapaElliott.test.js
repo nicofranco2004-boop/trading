@@ -59,8 +59,27 @@ async function dibujar() {
   for (let i = 0; i < 4; i++) await montado.redibujar(el())
   return texto(montado.contenedor)
 }
+
+// Un botón por su `data-capa` (la barra, su menú o el ojito de la lista).
+function porCapa(id) {
+  const pila = [montado.contenedor]
+  while (pila.length) {
+    const n = pila.shift()
+    if (n.nodeName === 'BUTTON' && n.getAttribute?.('data-capa') === id) return n
+    pila.push(...(n.childNodes || []))
+  }
+  return null
+}
+// Fibonacci y Elliott: el automático y el «a mano» viven en el menú de su botón.
+async function enElMenu(menu, opcion) {
+  await clic(montado.contenedor, porCapa(menu))
+  for (let i = 0; i < 2; i++) await montado.redibujar(el())
+  const b = porCapa(opcion)
+  return b
+}
 async function tocar(nombre) {
-  await clic(montado.contenedor, buscarBoton(montado.contenedor, nombre))
+  // El automático se prende y se apaga desde el menú del botón «Ondas de Elliott».
+  await clic(montado.contenedor, nombre === 'Ondas de Elliott' ? await enElMenu('menu-elliott', 'ell') : buscarBoton(montado.contenedor, nombre))
   for (let i = 0; i < 2; i++) await montado.redibujar(el())
   return texto(montado.contenedor)
 }
@@ -69,7 +88,8 @@ describe('Ondas de Elliott en la ficha', () => {
   it('prendido de entrada: etiquetas, raya y tarjeta; el botón lo apaga', async () => {
     respuesta = DATOS(ELL)
     const t = await dibujar()
-    expect(buscarBoton(montado.contenedor, 'Ondas de Elliott').getAttribute('aria-pressed')).toBe('true')
+    expect((await enElMenu('menu-elliott', 'ell')).getAttribute('aria-checked')).toBe('true')
+    await clic(montado.contenedor, porCapa('menu-elliott'))   // lo cierra
     expect(t).toContain('Un conteo posible: onda 5')
     expect(t).toContain('La teoría de Elliott dice que el precio suele avanzar en 5 ondas')
     expect(t).toContain('Según un conteo posible, el precio podría estar en la onda 5, que en la teoría es la última de la suba.')
@@ -85,7 +105,8 @@ describe('Ondas de Elliott en la ficha', () => {
     const despues = await tocar('Ondas de Elliott')
     expect(despues).not.toContain('Un conteo posible')
     expect(despues).not.toContain('Dejaría de valer')
-    expect(buscarBoton(montado.contenedor, 'Ondas de Elliott').getAttribute('aria-pressed')).toBe('false')
+    expect((await enElMenu('menu-elliott', 'ell')).getAttribute('aria-checked')).toBe('false')
+    await clic(montado.contenedor, porCapa('menu-elliott'))
     expect(await tocar('Ondas de Elliott')).toContain('Dejaría de valer · US$ 120,00')
   })
 
@@ -103,18 +124,20 @@ describe('Ondas de Elliott en la ficha', () => {
     expect(t).toContain('Sin conteo claro')
     expect(t).not.toContain('Dejaría de valer')
     // El botón queda, deshabilitado; tocarlo dice por qué (en el celular no hay globo).
-    const boton = buscarBoton(montado.contenedor, 'Ondas de Elliott')
-    expect(boton.getAttribute('aria-disabled')).toBe('true')
-    expect(boton.getAttribute('aria-pressed')).toBeNull()
-    const aviso = await tocar('Ondas de Elliott')
-    expect(aviso).toContain('Ondas de Elliott automáticas: Con los picos y pozos de este activo no aparece ningún conteo')
+    const opcion = await enElMenu('menu-elliott', 'ell')
+    expect(opcion.getAttribute('aria-disabled')).toBe('true')
+    expect(opcion.getAttribute('aria-checked')).toBeNull()
+    await clic(montado.contenedor, opcion)
+    for (let i = 0; i < 2; i++) await montado.redibujar(el())
+    const aviso = texto(montado.contenedor)
+    expect(aviso).toContain('Ondas de Elliott (automático): Con los picos y pozos de este activo no aparece ningún conteo')
     expect(aviso).not.toContain('Dejaría de valer')
   })
 
   it('una respuesta vieja sin el campo: el botón deshabilitado y nada dibujado', async () => {
     respuesta = DATOS(undefined)
     const t = await dibujar()
-    expect(buscarBoton(montado.contenedor, 'Ondas de Elliott').getAttribute('aria-disabled')).toBe('true')
+    expect((await enElMenu('menu-elliott', 'ell')).getAttribute('aria-disabled')).toBe('true')
     expect(t).not.toContain('Un conteo posible')
   })
 })
