@@ -63,6 +63,8 @@ import { useAlVerse } from '../hooks/useAlVerse'
 import PuntaViva, { puntaEsDeAhora } from '../components/PuntaViva'
 import { fechaCorta } from '../utils/lineaDelBono'
 import { urlDeActivo } from '../utils/buscadorRapido'
+import MapaCartera from '../components/MapaCartera'
+import { variacionDelDiaUsd } from '../utils/variacionDelDia'
 
 const REFRESH_MS = 90_000
 
@@ -87,6 +89,10 @@ function PersonalDashboard() {
   const [dolar, setDolar] = useState(null)
   const [brokers, setBrokers] = useState([])
   const [prices, setPrices] = useState({})
+  // Cierre de la rueda anterior por símbolo (las mismas claves que `prices`):
+  // base de cuánto se movió hoy cada cuadro del mapa de calor. Se pide junto a
+  // /prices, como la Cartera, y si falla el mapa pinta «sin dato» sin romper nada.
+  const [prevClose, setPrevClose] = useState({})
   const [snapshots, setSnapshots] = useState([])
   const [bench, setBench] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -226,6 +232,7 @@ function PersonalDashboard() {
       setLastUpdated(new Date())
       setTotalListo(true)
     } catch {}
+    try { setPrevClose(await api.get(`/prices/prev-close?symbols=${all}`)) } catch {}
   }
 
   const tcValuacion = pickFinancialRate(dolar, valuationDollar) || config.tc_blue || 1415
@@ -499,6 +506,9 @@ function PersonalDashboard() {
         // distribución vía assetClass/assetSector. El broker decide si el ticker
         // es un CEDEAR o la acción US; asset_type es la señal del importador.
         asset_type: p.asset_type, broker: p.broker, is_cash: p.is_cash,
+        // El lote entero, para el mapa de calor (lo junta por activo con la
+        // marca `local` lote por lote, ver utils/mapaCartera.js).
+        lote: p,
       }
     })
     // Cinturón anti-inconsistencia (dev-only): alerta si alguna fila no cierra
@@ -800,6 +810,18 @@ function PersonalDashboard() {
     () => (valorFotos > 0 ? computeDailyPnl(snapshots, { liveValue: valorFotos, liveNetDeposited: netDepositedPositions }) : null),
     [snapshots, valorFotos, netDepositedPositions],
   )
+  // El mapa de calor: cada lote con su «Var. día» (la de la Cartera, en dólares)
+  // y su resultado no realizado (el de `positionsForInsight`). El mapa los junta
+  // por activo; el peso y la tendencia los pide él mismo al servidor.
+  const lotesDelMapa = useMemo(() => {
+    const ctx = { prices, prevClose, tcCedear, tcCripto, exchangeBrokers }
+    return positionsForInsight.map(r => ({
+      p: r.lote,
+      dia: variacionDelDiaUsd(r.lote, arsBrokerNames.has(r.lote.broker), ctx),
+      valueUsd: r.value_usd,
+      pnlUsd: r.pnl_usd,
+    }))
+  }, [positionsForInsight, prices, prevClose, tcCedear, tcCripto, exchangeBrokers, arsBrokerNames])
   const monthlyVar = useMemo(() => {
     if (!(valorFotos > 0)) return null
     const d = new Date()
@@ -1325,6 +1347,19 @@ function PersonalDashboard() {
           de cinco años no se puede accionar. Lo reemplazó el año en curso, que
           ahora es una card más de la fila "Rendimiento" de arriba. */}
       <div className="mb-8" />
+
+      {/* ── Mapa de calor de tu cartera (pieza 8) ───────────────────────────
+          Arriba, el MISMO «Hoy» de la tarjeta de rendimiento (dailyVar): no
+          se suma de los cuadros. Ver components/MapaCartera.jsx. */}
+      <div className="mb-8">
+        <MapaCartera
+          lotes={lotesDelMapa}
+          encabezado={dailyVar ? { label: dailyVar.dayDiff === 1 ? 'Hoy' : `En los últimos ${dailyVar.dayDiff} días`, pct: dailyVar.pct, usd: dailyVar.usd } : null}
+          fmtMonto={fmtSigned}
+          oculto={hidden}
+          recarga={positions}
+        />
+      </div>
 
       {/* ── Portfolio Evolution chart ────────────────────────────────────────── */}
       <AskAIAbout

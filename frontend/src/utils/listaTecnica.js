@@ -149,6 +149,13 @@ function conDetalle(filas) {
     : f))
 }
 
+/** Cuánto pesa en tu plata, en palabras cortas: «12%» o «menos de 1%». `peso`
+ *  en escala 0–100, como lo traen las filas. Lo usan Tu lista («Sí · 12%») y
+ *  el mapa de calor del Dashboard. */
+export function textoDelPeso(peso) {
+  return peso < 1 ? 'menos de 1%' : `${Math.round(peso)}%`
+}
+
 /** Cuántas hay en cada filtro. «Watchlist» = lo que seguís y no tenés. */
 export function contarFilas(filas) {
   const tenes = filas.filter(f => f.tenes).length

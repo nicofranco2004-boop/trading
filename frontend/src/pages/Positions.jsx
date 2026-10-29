@@ -52,6 +52,7 @@ import { linkDeAlerta } from '../components/alerts/alertaDePosicion'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { EtiquetaMoneda, EtiquetaEfectivo, EtiquetaBono, EtiquetaFaltaTc } from '../components/EtiquetaFila'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
+import { variacionDelDia, variacionDelDiaUsd } from '../utils/variacionDelDia'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
 import PageHeader from '../components/PageHeader'
@@ -1667,46 +1668,11 @@ function PositionsDesktop() {
     return { valueUsd, investedUsd: invUsd, pnlUsd, pnlPct: invUsd > 0 ? pnlUsd / invUsd : 0 }
   }
 
-  // Variación del día por posición (market-based): (precio actual − cierre
-  // anterior) × cantidad, más el % de movimiento. Usa el MISMO precio que
-  // muestra la fila para que los números reconcilien. Devuelve null cuando es
-  // cash, falta el cierre anterior (símbolo sin cobertura yfinance, ej. bonos
-  // AR) o todavía no llegó el precio actual.
-  function dayVarOf(p, symbolKey, currentPrice) {
-    // Cash y precios manuales no tienen variación de mercado comparable: el
-    // precio override no proviene de la misma fuente que el cierre anterior.
-    if (p.is_cash || p.price_override) return null
-    const prev = prevClose[symbolKey]
-    if (prev == null || !(prev > 0) || currentPrice == null) return null
-    const perUnit = currentPrice - prev
-    return { amount: perUnit * (p.quantity || 0), pct: perUnit / prev }
-  }
-
-  // Var-día CEDEAR-aware. Para un CEDEAR en broker USD, la variación se computa
-  // sobre el precio LOCAL (.BA, ARS) — mismo símbolo para precio actual y cierre
-  // previo — y el monto se pasa a USD via blue. El % es invariante a la moneda.
-  // Para el resto, usa el símbolo nativo del contexto (ARS → .BA, USD → ticker US).
+  // Variación del día por posición: la cuenta vive en utils/variacionDelDia.js
+  // (la misma que pinta el mapa de calor del Dashboard). En un broker en pesos
+  // el monto va en pesos; en uno en dólares, en dólares. El % es invariante.
   function dvFor(p, isARS) {
-    // costInPesos: lote en ARS en broker USD (IOL sin sibling) — se valúa por su
-    // .BA (calcUSDT/pesoLotUsd), así que la Var. día usa el MISMO símbolo local.
-    // Sin esto caía a priceSymbol(asset, false) → 'GGAL' (el ADR): si el ADR no
-    // estaba priceado daba '—' garantizado; si SÍ estaba (otra posición lo trae),
-    // computaba perUnit del ADR × nominales locales → monto ×ratio inflado.
-    const local = !isARS && !isCrypto(p.asset) && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker) || costInPesos(p))
-    const symKey = local ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, isARS)
-    const curPrice = p.price_override ?? prices[symKey]
-    const dv = dayVarOf(p, symKey, curPrice)
-    if (!dv) return dv
-    if (local) return { amount: dv.amount / tcCedear, pct: dv.pct }
-    // Factor cripto: SÓLO en el riel en dólares, donde el precio es el spot. En el
-    // riel en PESOS el '<c>.BA' ya trae el premium adentro (spot × dólar-cripto), y
-    // multiplicarlo de nuevo lo duplicaba: el monto salía ~4% más grande que el de
-    // mobile, que ya usaba `isAR ? 1 : …`. Hoy, en dólares, el factor vale 1 (la
-    // cuenta en dólares no lleva premium); queda por si cambia la regla. El % es
-    // invariante.
-    const f = isARS ? 1 : cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear, 'USD')
-    if (f !== 1) return { amount: dv.amount * f, pct: dv.pct }
-    return dv
+    return variacionDelDia(p, isARS, { prices, prevClose, tcCedear, tcCripto, exchangeBrokers })
   }
 
   // sticky top-0 + bg matched al thead row para que al scrollear la tabla
@@ -2337,9 +2303,9 @@ function PositionsDesktop() {
           let dayUsd = 0
           for (const p of bposRaw) {
             const pEsArs = patasArs.has(p.broker)
-            const dv = dvFor(p, pEsArs)
+            const dv = variacionDelDiaUsd(p, pEsArs, { prices, prevClose, tcCedear, tcCripto, exchangeBrokers })
             if (dv) {
-              dayUsd += pEsArs ? dv.amount / tcCedear : dv.amount
+              dayUsd += dv.amount
               brokerHasDay = true
             }
           }

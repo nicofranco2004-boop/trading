@@ -52,6 +52,12 @@ export const CORTES_DIA = { plano: 0.05, pasos: [0.5, 1] }
  *  Bajo medio punto es un mes plano; 2 % es normal y 5 % es un mes grande. */
 export const CORTES_MES = { plano: 0.5, pasos: [2, 5] }
 
+/** Precio de hoy contra TU precio promedio de compra (mapa de calor de la
+ *  cartera, «Contra tu promedio»). Es lo acumulado desde que compraste, no una
+ *  rueda: estar 1 % arriba es estar donde compraste, 10 % ya se nota y 25 % es
+ *  mucho. */
+export const CORTES_PROMEDIO = { plano: 1, pasos: [10, 25] }
+
 /**
  * Qué paso de la rampa le toca a una variación.
  *

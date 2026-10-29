@@ -11748,7 +11748,10 @@ def post_tecnico_lista(body: CarteraTecnicaIn, uid: int = Depends(get_effective_
     `tenencias`: [{asset, local, peso, tipo}] — lo que tenés y cuánto pesa sobre
     toda tu plata, con la valuación del servidor (`senales_semana.cartera`, LA
     misma de `reparto` y de la pestaña Señales: el «Sí · 12%» de cada fila no
-    se calcula en la pantalla). De cada una viene también su lectura."""
+    se calcula en la pantalla). De cada una viene también su lectura.
+    `sin_medir`: {efectivo, plazos_fijos}, la parte de tu plata que es cada uno
+    (`senales_semana.pesos_sin_medir`). Lo usa el mapa de calor del
+    Dashboard (que pide sin watchlist: `activos` vacío)."""
     import tecnico
     import senales_semana
     with db_abierta() as conn:
@@ -11759,6 +11762,9 @@ def post_tecnico_lista(body: CarteraTecnicaIn, uid: int = Depends(get_effective_
     out["tenencias"] = [
         {"asset": a, "local": l, "peso": senales_semana.peso(car, a, l), "tipo": car["tipos"].get((a, l)) or None}
         for (a, l), v in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
+    # Efectivo y plazos fijos: cuentan en el total (por eso los pesos de arriba no
+    # suman 1) y el mapa de calor del Dashboard los dibuja como dos cuadros más.
+    out["sin_medir"] = senales_semana.pesos_sin_medir(car)
     return out
 
 

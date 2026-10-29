@@ -19,6 +19,7 @@ import { api } from '../../utils/api'
 import { pctVar, pctVarSign, nfmt } from '../../utils/format'
 import { polarityColor, CORTES_DIA } from '../../utils/polarityScale'
 import { urlDeActivo } from '../../utils/buscadorRapido'
+import { squarify } from '../../utils/squarify'
 
 // Los colores salen de la rampa única (utils/polarityScale.js), que conoce los
 // dos temas. Acá vivían dos arrays de 9 hex y una función propia — construidos
@@ -47,93 +48,13 @@ function shortSymbol(symbol) {
   return clean.length > 6 ? clean.slice(0, 5) : clean
 }
 
-// ─── Squarified-ish layout ───────────────────────────────────────────────────
-// Layout simple: dividimos el área en filas, cada fila proporcional a un grupo
-// de blocks. Para V1 usamos un algoritmo greedy: tomamos los más grandes en una
-// fila hasta que el aspect ratio se vuelve mejor en una nueva.
-//
 // Compresión de pesos: usamos sqrt(market_cap) para que cripto y Merval
 // (donde 1-2 nombres dominan) no aplaste el resto en celdas invisibles.
 // Con market_cap raw, BTC vs AVAX es ratio ~120:1; con sqrt queda ~11:1.
-
+// El armado de los cuadros es `squarify` (utils/squarify.js), el mismo del mapa
+// de calor de tu cartera en el Dashboard.
 function weightOf(b) {
   return Math.sqrt(Math.max(b.market_cap, 1))
-}
-
-function squarify(blocks, width, height) {
-  const total = blocks.reduce((s, b) => s + weightOf(b), 0)
-  if (total === 0) return []
-  const totalArea = width * height
-  const items = blocks.map(b => ({
-    ...b,
-    area: (weightOf(b) / total) * totalArea,
-  }))
-  // Ordenar desc
-  items.sort((a, b) => b.area - a.area)
-
-  const result = []
-  let x = 0, y = 0
-  let availW = width, availH = height
-  let i = 0
-
-  while (i < items.length) {
-    // Tomamos una "fila" en la dirección más corta
-    const isHoriz = availW >= availH
-    const lineLen = isHoriz ? availW : availH
-    const lineThickness = isHoriz ? availH : availW
-
-    // Acumulamos hasta que el aspect ratio empeore
-    let row = []
-    let rowArea = 0
-    let bestAspect = Infinity
-
-    while (i < items.length) {
-      const next = items[i]
-      const tryArea = rowArea + next.area
-      const tryRowDepth = tryArea / lineLen
-      // Aspect ratio peor de la fila
-      let worst = 0
-      for (const it of [...row, next]) {
-        const w = isHoriz ? (it.area / tryRowDepth) : tryRowDepth
-        const h = isHoriz ? tryRowDepth : (it.area / tryRowDepth)
-        const ar = Math.max(w / h, h / w)
-        if (ar > worst) worst = ar
-      }
-      if (worst < bestAspect || row.length === 0) {
-        row.push(next)
-        rowArea = tryArea
-        bestAspect = worst
-        i++
-      } else {
-        break
-      }
-    }
-
-    // Render fila
-    const rowDepth = Math.min(rowArea / lineLen, lineThickness)
-    let cursor = 0
-    for (const it of row) {
-      const sideLen = it.area / rowDepth
-      const block = {
-        ...it,
-        x: isHoriz ? (x + cursor) : x,
-        y: isHoriz ? y : (y + cursor),
-        w: isHoriz ? sideLen : rowDepth,
-        h: isHoriz ? rowDepth : sideLen,
-      }
-      result.push(block)
-      cursor += sideLen
-    }
-
-    if (isHoriz) {
-      y += rowDepth
-      availH -= rowDepth
-    } else {
-      x += rowDepth
-      availW -= rowDepth
-    }
-  }
-  return result
 }
 
 
@@ -226,7 +147,7 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
     </div>
   )
 
-  const laid = loading || err || blocks.length === 0 ? [] : squarify(blocks, WIDTH, HEIGHT)
+  const laid = loading || err || blocks.length === 0 ? [] : squarify(blocks, WIDTH, HEIGHT, weightOf)
   // El cuadro con el mouse encima: su borde va arriba de todos y lleva el globo.
   const resaltado = encima ? laid.find(x => x.symbol === encima) : null
 

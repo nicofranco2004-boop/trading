@@ -27,7 +27,7 @@ import { indexarLecturas } from '../utils/radiografia'
 import { RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE } from '../utils/tecnico'
 import {
   activosDeLaLista, filasDeLaLista, contarFilas, filtrarFilas, ordenarFilas,
-  FILTROS, ORDENES, MAX_POR_PEDIDO, trazoDeLinea,
+  FILTROS, ORDENES, MAX_POR_PEDIDO, trazoDeLinea, textoDelPeso,
 } from '../utils/listaTecnica'
 
 /**
@@ -183,7 +183,7 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
                   </td>
                   <td className="px-3 py-2.5 whitespace-nowrap">
                     {f.tenes
-                      ? <span className="text-data-violet">Sí{!oculto && f.peso > 0 ? ` · ${f.peso < 1 ? 'menos de 1%' : `${Math.round(f.peso)}%`}` : ''}</span>
+                      ? <span className="text-data-violet">Sí{!oculto && f.peso > 0 ? ` · ${textoDelPeso(f.peso)}` : ''}</span>
                       : <span className="text-ink-2">Watchlist</span>}
                   </td>
                   <td className="px-3 py-2.5"><Linea linea={f.linea} /></td>
