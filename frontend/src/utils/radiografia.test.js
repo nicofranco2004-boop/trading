@@ -102,23 +102,15 @@ describe('radiografia, con la valuación de la Cartera', () => {
     expect(r.grupos.alcista.pct).toBe(60)
     expect(r.grupos.alcista.nombres).toEqual(['NVDA'])
     expect(r.grupos.sin.nombres).toEqual(['plazos fijos', 'efectivo'])
-    expect(r.cambios).toEqual([
-      { asset: 'NVDA', tono: 'pos', texto: 'pasó arriba de su promedio de 200 días (martes 20/10)' },
-      { asset: 'KO', tono: 'neg', texto: 'quedó abajo de su promedio de 50 días (miércoles 21/10)' },
-      { asset: 'KO', tono: 'aviso', texto: `tiene la fuerza en 24 de 100: ${veredictoRsi(24).toLowerCase()}` },
-    ])
+    // «Lo que cambió» ya no sale de acá (se mudó a Análisis técnico, con la
+    // cuenta única de la pieza 15: tests/test_cambios_desde.py).
+    expect(r.cambios).toBeUndefined()
   })
 
   it('sin lecturas todavía, todo va sin lectura (no se inventa una tendencia)', () => {
     const r = radiografia(POS, valorDe, new Map())
     expect(r.grupos.sin.pct).toBe(100)
     expect(r.grupos.alcista.valor).toBe(0)
-    expect(r.cambios).toEqual([])
-  })
-
-  it('el RSI en la zona del medio no es un cambio; 70 justo tampoco', () => {
-    const indice = indexarLecturas([lec('NVDA', false, { ...ALCISTA, rsi: 70 }), lec('KO', false, { ...BAJISTA, rsi: 30 })])
-    expect(radiografia(POS, valorDe, indice).cambios).toEqual([])
   })
 })
 
@@ -135,7 +127,7 @@ describe('lo que no se puede leer no se inventa', () => {
     expect(tendencia(finde, HOY).id).toBe('alcista')
   })
 
-  it('la radiografía no cuenta como alcista una lectura vieja ni su RSI como cambio', () => {
+  it('la radiografía no cuenta como alcista una lectura vieja', () => {
     const lotes = [
       { id: 1, broker: 'Schwab', asset: 'MSFT', asset_type: 'STOCK' },
       { id: 2, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK' },
@@ -147,7 +139,6 @@ describe('lo que no se puede leer no se inventa', () => {
     const r = radiografia(lotes, () => 100, indice, [], HOY)
     expect(r.grupos.alcista.nombres).toEqual(['NVDA'])
     expect(r.grupos.sin.nombres).toEqual(['MSFT'])
-    expect(r.cambios).toEqual([])
   })
 
   it('si el pedido falla, la fila dice error, no «sin lectura»', () => {

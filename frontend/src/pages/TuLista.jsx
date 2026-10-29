@@ -1,8 +1,7 @@
-// TuLista — «Análisis técnico» (menú → Análisis): tu lista con su lectura
-// técnica, lo que tenés y lo que seguís (watchlist) juntos en una tabla. Vive en
-// /analisis-tecnico (pedido de Nico, 28/10: «una sección nueva de la parte de
-// análisis»); también se abre desde el inicio → panel Watchlist → «Ver como
-// tablero». /tu-lista, la dirección de antes, lleva acá.
+// TuLista — la pestaña «Tu lista» de Análisis técnico (pages/AnalisisTecnico.jsx):
+// lo que tenés y lo que seguís (watchlist), juntos en una tabla, con su lectura
+// técnica. También se llega desde el inicio → panel Watchlist → «Ver como
+// tablero» (/analisis-tecnico?tab=lista).
 // ════════════════════════════════════════════════════════════════════════════
 // Una sola pantalla para compu y celular (R6): en el celular la tabla se
 // desliza de costado, con la columna del activo fija, como la de Cartera.
@@ -21,7 +20,6 @@ import { useNavigate, Link } from 'react-router-dom'
 import { ArrowDown, ArrowUp } from 'lucide-react'
 import { api } from '../utils/api'
 import Panel from '../components/Panel'
-import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import { PildoraTendencia } from '../components/RadiografiaTecnica'
 import { usePrivacy } from '../contexts/PrivacyContext'
@@ -40,7 +38,7 @@ import {
  * watchlist y la lectura técnica de todos. → { cargando, error, lotes,
  * valorDe, extra, seguidos, indice }
  */
-function useListaTecnica() {
+export function useListaTecnica() {
   const { valuationDollar, costBasis } = useCurrency()
   const [base, setBase] = useState(null)        // { positions, brokers, config, dolar, seguidos }
   const [prices, setPrices] = useState(null)
@@ -299,35 +297,32 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
   )
 }
 
-export default function TuLista() {
+/** La pestaña «Tu lista» de Análisis técnico. `datos`: lo de useListaTecnica
+ *  (la página lo pide una vez: lo usa también el Panorama); `filas`: las de
+ *  filasDeLaLista con esos datos. */
+export default function TuLista({ datos, filas }) {
   const navigate = useNavigate()
   const { hidden } = usePrivacy()
-  const datos = useListaTecnica()
-  const filas = useMemo(
-    () => (datos.cargando || datos.error ? [] : filasDeLaLista(datos)),
-    [datos.cargando, datos.error, datos.lotes, datos.seguidos, datos.valorDe, datos.extra, datos.indice])
-
-  return (
-    <div className="page-shell-wide py-4">
-      <PageHeader eyebrow="Análisis" title="Análisis técnico"
-        subtitle="Lo que tenés y lo que seguís, juntos, con su lectura técnica. Medido en dólares, al cierre del último día de mercado. Tocá una fila para abrir su ficha." />
-
-      {datos.error === 'base' ? (
-        <Panel padding="lg" className="text-center text-[13px] text-ink-2">No pudimos cargar tu cartera y tu watchlist. Probá de nuevo en un rato.</Panel>
-      ) : datos.error === 'lectura' ? (
-        <Panel padding="lg" className="text-center text-[13px] text-ink-2">No pudimos traer la lectura técnica. Probá de nuevo en un rato.</Panel>
-      ) : datos.cargando ? (
-        <div className="space-y-2">
-          <Skeleton className="h-9 w-80" />
-          <Skeleton className="h-72 w-full rounded-xl" />
-        </div>
-      ) : !filas.length ? (
-        <Panel padding="lg" className="text-center text-[13px] text-ink-2">
-          Todavía no tenés activos ni seguís ninguno. Buscá un ticker en el inicio y agregalo a tu watchlist desde su ficha.
-        </Panel>
-      ) : (
-        <TablaLista filas={filas} oculto={hidden} onAbrir={f => navigate(`/activo/${encodeURIComponent(f.ruta)}`)} />
-      )}
-    </div>
-  )
+  if (datos.error === 'base') {
+    return <Panel padding="lg" className="text-center text-[13px] text-ink-2">No pudimos cargar tu cartera y tu watchlist. Probá de nuevo en un rato.</Panel>
+  }
+  if (datos.error === 'lectura') {
+    return <Panel padding="lg" className="text-center text-[13px] text-ink-2">No pudimos traer la lectura técnica. Probá de nuevo en un rato.</Panel>
+  }
+  if (datos.cargando) {
+    return (
+      <div className="space-y-2" aria-label="Cargando tu lista">
+        <Skeleton className="h-9 w-80" />
+        <Skeleton className="h-72 w-full rounded-xl" />
+      </div>
+    )
+  }
+  if (!filas.length) {
+    return (
+      <Panel padding="lg" className="text-center text-[13px] text-ink-2">
+        Todavía no tenés activos ni seguís ninguno. Buscá un ticker en el inicio y agregalo a tu watchlist desde su ficha.
+      </Panel>
+    )
+  }
+  return <TablaLista filas={filas} oculto={hidden} onAbrir={f => navigate(`/activo/${encodeURIComponent(f.ruta)}`)} />
 }

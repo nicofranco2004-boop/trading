@@ -4,6 +4,7 @@
 // no tiene velas guardadas (GGAL, en la copia con las 4 piezas juntas, 22/10).
 import { describe, it, expect, beforeEach } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { MemoryRouter } from 'react-router-dom'
 import RadiografiaTecnica, { TendenciaChip } from './RadiografiaTecnica'
 import { PrivacyProvider } from '../contexts/PrivacyContext'
 import { indexarLecturas, MOTIVOS_SIN_LECTURA } from '../utils/radiografia'
@@ -17,9 +18,9 @@ beforeEach(() => setBrokersRegistry([
 const hoy = new Date().toISOString().slice(0, 10)
 const ALCISTA = { ruedas: 760, fecha: hoy, media200: 90, dist_media200: 11, pendiente_media200: 2, media50: 95, dist_media50: 5, rsi: 60 }
 const dibujar = (lotes, lecturas) => renderToStaticMarkup(
-  <PrivacyProvider>
+  <MemoryRouter><PrivacyProvider>
     <RadiografiaTecnica lotes={lotes} valorDe={() => 100} indice={indexarLecturas(lecturas)} cargando={false} />
-  </PrivacyProvider>,
+  </PrivacyProvider></MemoryRouter>,
 )
 const sinEtiquetas = (html) => html.replace(/<[^>]+>/g, '').replace(/&#x27;|&#39;/g, "'")
 
@@ -57,5 +58,20 @@ describe('radiografía: por qué cada uno va sin lectura', () => {
     expect(bono).toContain('no se les mide la tendencia')
     expect(accion).toContain('aparece en un día')
     expect(accion).not.toContain('Bonos')
+  })
+})
+
+describe('radiografía: «Lo que cambió esta semana» se mudó a Análisis técnico (28/10)', () => {
+  it('la Cartera queda con el % y un link a Análisis técnico, sin la caja de cambios', () => {
+    const html = dibujar(
+      [{ id: 2, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK' }],
+      [{ asset: 'NVDA', local: false, disponible: true, lectura: ALCISTA, cambios: [{ tipo: 'media200', sentido: 'arriba', fecha: hoy }] }],
+    )
+    const texto = sinEtiquetas(html)
+    expect(texto).toContain('100% de tu plata está en activos con tendencia de fondo alcista')
+    expect(html).toContain('href="/analisis-tecnico"')
+    expect(texto).toContain('Ver análisis técnico')
+    expect(texto).not.toContain('Lo que cambió esta semana')
+    expect(texto).not.toContain('pasó arriba de su promedio')
   })
 })

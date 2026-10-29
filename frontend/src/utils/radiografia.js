@@ -13,7 +13,7 @@
 
 import { fciLabel, isFciSym, isFixedIncome } from './valuation'
 import { esLoteLocal, esAccionLocal } from './accionLocal'
-import { tarjetas, veredictoRsi, RSI_CASTIGADO, RSI_ESTIRADO } from './tecnico'
+import { tarjetas, veredictoRsi } from './tecnico'
 import { hoyISO } from './fecha'
 
 // Una lectura cuya última vela tiene más días corridos que esto no describe el
@@ -159,20 +159,12 @@ export function valorPorActivo(lotes = [], valorDe, extra = []) {
   return { porActivo, total }
 }
 
-const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado']
-function cuando(iso) {
-  const [y, m, d] = iso.split('-').map(Number)
-  const f = new Date(Date.UTC(y, m - 1, d))
-  return `${DIAS[f.getUTCDay()]} ${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`
-}
-
 /**
  * La radiografía. `lotes`: todas las posiciones (efectivo incluido); `valorDe(p)`:
  * el valor en dólares de ESE lote, el que usa la pantalla para su total;
  * `extra`: [{ nombre, valor }] lo que suma al total sin ser una posición (los
  * plazos fijos). Devuelve:
- *   { total, grupos: { alcista, bajista, sin } con { valor, pct, nombres[] },
- *     cambios: [{ asset, tono: 'pos'|'neg'|'aviso', texto }] }
+ *   { total, grupos: { alcista, bajista, sin } con { valor, pct, nombres[] } }
  */
 export function radiografia(lotes = [], valorDe, indice, extra = [], hoy = hoyISO()) {
   const { porActivo } = valorPorActivo(lotes, valorDe, extra)
@@ -198,32 +190,8 @@ export function radiografia(lotes = [], valorDe, indice, extra = [], hoy = hoyIS
   salida.sin.motivos = Object.keys(MOTIVOS_SIN_LECTURA).filter(k => motivos[k])
     .map(k => ({ porque: k, nombres: motivos[k], texto: MOTIVOS_SIN_LECTURA[k] }))
 
-  // Lo que cambió: primero los cruces del promedio de 200 (la tendencia de
-  // fondo), después los de 50, después el RSI en un extremo; dentro de cada
-  // uno, lo que más pesa en tu cartera primero.
-  // Sólo lecturas de hoy: una serie cortada no tiene «esta semana» (el servidor
-  // ya cuenta los cruces desde hoy; el RSI viejo se saca acá).
-  const conLectura = [...porActivo.values()].filter(a => a.x?.disponible && !lecturaVieja(a.x, hoy)).sort((a, b) => b.valor - a.valor)
-  const cambios = []
-  for (const n of [200, 50]) {
-    for (const a of conLectura) {
-      // `cambios` sale de tecnico.cambios_desde (la cuenta de «Tus señales»).
-      const c = (a.x.cambios || []).find(c => c.tipo === `media${n}`)
-      if (!c) continue
-      const arriba = c.sentido === 'arriba'
-      cambios.push({
-        asset: a.nombre, tono: arriba ? 'pos' : 'neg',
-        texto: `${arriba ? 'pasó arriba' : 'quedó abajo'} de su promedio de ${n} días (${cuando(c.fecha)})`,
-      })
-    }
-  }
-  for (const a of conLectura) {
-    const r = a.x.lectura?.rsi
-    if (r == null || (r >= RSI_CASTIGADO && r <= RSI_ESTIRADO)) continue
-    cambios.push({
-      asset: a.nombre, tono: 'aviso',
-      texto: `tiene la fuerza en ${Math.round(r)} de 100: ${veredictoRsi(r).toLowerCase()}`,
-    })
-  }
-  return { total, grupos: salida, cambios }
+  // «Lo que cambió esta semana» ya no se arma acá: se mudó al Panorama de
+  // Análisis técnico (28/10), que lo trae de GET /api/tus-senales
+  // (tecnico.cambios_desde + texto_del_cambio, la cuenta única).
+  return { total, grupos: salida }
 }

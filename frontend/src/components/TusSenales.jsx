@@ -23,7 +23,7 @@ import {
   FILTROS, CANALES, NO_ES_RECOMENDACION, filtrar, porDia, tarjetas, deQuien, boton, rutaDeFicha,
 } from '../utils/tusSenales'
 
-const PASTILLA = {
+export const PASTILLA = {
   pos: 'text-rendi-pos bg-rendi-pos/10',
   neg: 'text-rendi-neg bg-rendi-neg/10',
   rsi: 'text-rendi-warn bg-rendi-warn/10',
@@ -56,7 +56,8 @@ function Tarjeta({ t, children }) {
   )
 }
 
-function Cambio({ s, hidden, onVer }) {
+/** Un cambio, como en la lista de la semana. Lo usa también el Panorama. */
+export function Cambio({ s, hidden, onVer }) {
   return (
     // Celular: la pastilla arriba y el botón al costado del texto; compu: en fila.
     <li className="grid grid-cols-[1fr_auto] sm:grid-cols-[150px_1fr_auto] gap-x-3 sm:gap-x-3.5 gap-y-1.5 items-start py-3 border-t border-line/60 first:border-t-0">
@@ -110,22 +111,26 @@ function Preferencia({ canal, onCambiar, guardando }) {
   )
 }
 
-export default function TusSenales() {
-  const navigate = useNavigate()
-  const { hidden } = usePrivacy()
+/**
+ * Lo que trae GET /api/tus-senales y cómo se cambia el canal del resumen de los
+ * sábados. Lo usan esta pestaña y el Panorama de Análisis técnico: la página lo
+ * pide una vez y se lo pasa a los dos. → { datos, error, cambiarCanal,
+ * guardando, errorCanal }
+ */
+export function useTusSenales({ pedir = true } = {}) {
   const [datos, setDatos] = useState(null)
   const [error, setError] = useState(false)
-  const [filtro, setFiltro] = useState('todo')
   const [guardando, setGuardando] = useState(false)
   const [errorCanal, setErrorCanal] = useState(null)
 
   useEffect(() => {
+    if (!pedir) return undefined
     let vivo = true
     api.get('/tus-senales')
       .then(r => { if (vivo) setDatos(r) })
       .catch(() => { if (vivo) setError(true) })
     return () => { vivo = false }
-  }, [])
+  }, [pedir])
 
   const cambiarCanal = (canal) => {
     const antes = datos?.canal
@@ -136,10 +141,20 @@ export default function TusSenales() {
       .catch(() => { setDatos(d => ({ ...d, canal: antes })); setErrorCanal('No pudimos guardarlo. Probá de nuevo.') })
       .finally(() => setGuardando(false))
   }
+  return { datos, error, cambiarCanal, guardando, errorCanal }
+}
 
+/** La pestaña con sus propios datos (`senales`: lo de useTusSenales, si la
+ *  página ya lo pidió). */
+export default function TusSenales({ senales = null }) {
+  const propios = useTusSenales({ pedir: !senales })
+  const s = senales || propios
+  const navigate = useNavigate()
+  const { hidden } = usePrivacy()
+  const [filtro, setFiltro] = useState('todo')
   return (
-    <TusSenalesVista datos={datos} error={error} hidden={hidden} filtro={filtro} onFiltro={setFiltro}
-      onVer={(x) => navigate(rutaDeFicha(x))} onCanal={cambiarCanal} guardando={guardando} errorCanal={errorCanal} />
+    <TusSenalesVista datos={s.datos} error={s.error} hidden={hidden} filtro={filtro} onFiltro={setFiltro}
+      onVer={(x) => navigate(rutaDeFicha(x))} onCanal={s.cambiarCanal} guardando={s.guardando} errorCanal={s.errorCanal} />
   )
 }
 

@@ -1,7 +1,9 @@
 // RadiografiaTecnica — arriba de la Cartera: cuánto de TU plata está en activos
-// con tendencia de fondo alcista, la barra partida alcista / bajista / sin
-// lectura, y «Lo que cambió esta semana». Más las dos celdas que la tabla de
-// posiciones suma por fila: la tendencia y la fuerza del movimiento (RSI).
+// con tendencia de fondo alcista y la barra partida alcista / bajista / sin
+// lectura, con un link a Análisis técnico (adonde se mudó «Lo que cambió esta
+// semana», 28/10). Más las dos celdas que la tabla de posiciones suma por fila:
+// la tendencia y la fuerza del movimiento (RSI). La misma tarjeta (TarjetaPlata)
+// arma el Panorama de Análisis técnico.
 // ════════════════════════════════════════════════════════════════════════════
 // Una sola pieza para compu y celular (R6): la montan Positions.jsx y
 // PositionsMobile.jsx con SU valuación (`valorDe`), la misma que arma el total
@@ -18,6 +20,7 @@
 // proporción también es información de la cartera (como PesoEnCartera).
 
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../utils/api'
 import { usePrivacy } from '../contexts/PrivacyContext'
 import {
@@ -125,22 +128,45 @@ function Lista({ nombres, max = 6 }) {
 }
 
 /**
- * La tarjeta. `lotes`: todas las posiciones (con el efectivo); `valorDe(p)`: el
- * valor en dólares de ese lote, el de la pantalla; `extra`: [{ nombre, valor }]
- * lo que suma al total sin ser posición (plazos fijos); `indice`/`cargando`: lo
- * que devuelve `useLecturasCartera`.
+ * La tarjeta de la Cartera: el % de tu plata en tendencia de fondo alcista, la
+ * barra y los grupos, y un link a Análisis técnico. «Lo que cambió esta
+ * semana» se mudó al Panorama de Análisis técnico (recuadro 21c, 28/10).
+ * `lotes`: todas las posiciones (con el efectivo); `valorDe(p)`: el valor en
+ * dólares de cada lote, el de la pantalla; `extra`: lo que suma al total sin ser
+ * posición (plazos fijos); `indice`/`cargando`: lo que devuelve `useLecturasCartera`.
  */
 export default function RadiografiaTecnica({ lotes, valorDe, extra = [], indice, cargando, error, className = '' }) {
+  if (!lotes?.some(p => !p.is_cash)) return null
+  return (
+    <TarjetaPlata lotes={lotes} valorDe={valorDe} extra={extra} indice={indice} cargando={cargando} error={error}
+      titulo="Radiografía técnica · medida en dólares" className={className}
+      enlace={<Link to="/analisis-tecnico" className="text-[13px] font-medium text-data-violet hover:underline whitespace-nowrap">Ver análisis técnico →</Link>} />
+  )
+}
+
+/**
+ * El % de tu plata en tendencia de fondo alcista, con la regla de la
+ * radiografía (`radiografia()`: tu cartera valuada como la Cartera + la lectura
+ * de cada activo). La usan la Cartera y el Panorama de Análisis técnico: UNA
+ * cuenta y UN dibujo. `antes`: «la semana pasada, 61%» (con `tonoAntes`
+ * 'pos'|'neg'); `nota`: una línea abajo; `enlace`: un link al costado del título.
+ */
+export function TarjetaPlata({ lotes, valorDe, extra = [], indice, cargando, error, titulo, antes = null, tonoAntes = null, nota = null, enlace = null, className = '' }) {
   const { hidden } = usePrivacy()
   const r = useMemo(
     () => (indice ? radiografia(lotes, valorDe, indice, extra) : null),
     [lotes, valorDe, indice, extra])
 
-  if (!lotes?.some(p => !p.is_cash)) return null
+  const cabecera = (
+    <div className="flex items-baseline justify-between gap-3 flex-wrap">
+      <div className="text-[12px] text-ink-2 font-medium">{titulo}</div>
+      {enlace}
+    </div>
+  )
   if (error) {
     return (
       <section aria-label="Radiografía técnica" className={`bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 ${className}`}>
-        <div className="text-[12px] text-ink-2 font-medium">Radiografía técnica · medida en dólares</div>
+        {cabecera}
         <p className="text-[13.5px] text-ink-1 mt-1.5">No pudimos traer el análisis técnico de tus activos ahora. Probá recargar la página en un rato.</p>
       </section>
     )
@@ -148,80 +174,69 @@ export default function RadiografiaTecnica({ lotes, valorDe, extra = [], indice,
   if (cargando || !r) {
     return <div className={`h-36 rounded-xl bg-bg-2/40 border border-line esqueleto ${className}`} aria-label="Cargando la radiografía técnica" />
   }
+  if (!lotes?.some(p => !p.is_cash)) {
+    return (
+      <section aria-label="Radiografía técnica" className={`bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 ${className}`}>
+        {cabecera}
+        <p className="text-[14px] text-ink-1 mt-1.5">Cuando cargues lo que tenés, acá vas a ver qué parte de tu plata está en tendencia de fondo alcista.</p>
+      </section>
+    )
+  }
   const { alcista, bajista, sin } = r.grupos
   const sinNinguna = alcista.valor === 0 && bajista.valor === 0
   const etiqueta = `${pctTxt(alcista)} alcista, ${pctTxt(bajista)} bajista, ${pctTxt(sin)} sin lectura`
 
   return (
     <section aria-label="Radiografía técnica"
-      className={`bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-wrap gap-x-7 gap-y-4 ${className}`}>
-      <div className="flex-[3_1_380px] min-w-0 flex flex-col gap-3">
-        <div className="text-[12px] text-ink-2 font-medium">Radiografía técnica · medida en dólares</div>
-        {sinNinguna ? (
-          <p className="text-[15px] text-ink-1 leading-snug">
-            Ninguno de tus activos tiene todavía una tendencia de fondo para leer: bonos, fondos y
-            efectivo no tienen historia de precios en Rendi, y una acción o un CEDEAR necesita 200
-            días de mercado con precios guardados.
-          </p>
-        ) : (
-          <p className="text-[19px] sm:text-[21px] font-semibold leading-snug text-ink-0">
-            {hidden
-              ? 'Así está repartida tu plata entre tendencias de fondo.'
-              : <><span className="text-rendi-pos tabular">{pctTxt(alcista)}</span> de tu plata está en activos con tendencia de fondo alcista.</>}
-          </p>
-        )}
-        {!hidden && (
-          <div className="flex h-3 rounded-full overflow-hidden gap-0.5" role="img" aria-label={etiqueta}>
-            {['alcista', 'bajista', 'sin'].map(id => r.grupos[id].fraccion > 0 && (
-              <div key={id} className={`barra-intensidad ${TONO[id].barra}`} style={{ width: `${r.grupos[id].fraccion * 100}%` }} />
-            ))}
-          </div>
-        )}
-        <div className="flex flex-col sm:flex-row sm:flex-wrap gap-x-5 gap-y-1.5 text-[13px] text-ink-1">
-          {['alcista', 'bajista', 'sin'].map(id => {
-            const g = r.grupos[id]
-            if (!g.nombres.length) return null
-            const palabra = id === 'alcista' ? 'alcista' : id === 'bajista' ? 'bajista' : 'sin lectura'
-            return (
-              <span key={id}>
-                <b className={`font-semibold ${TONO[id].texto}`}>{hidden ? '' : `${pctTxt(g)} `}{palabra}</b>
-                <Lista nombres={g.nombres} />
-              </span>
-            )
-          })}
-        </div>
-        {sin.motivos.length > 0 && (
-          <ul className="flex flex-col gap-1 text-[12px] text-ink-2 leading-relaxed" aria-label="Por qué algunos van sin lectura">
-            {sin.motivos.map(m => (
-              <li key={m.porque}><b className="font-semibold text-ink-1">{m.nombres.join(', ')}</b>: {m.texto}</li>
-            ))}
-          </ul>
-        )}
-        <p className="text-[12px] text-ink-3 leading-relaxed">
-          «Alcista» = el precio está arriba de su promedio de los últimos 200 días. Describe el precio; no es una recomendación.
+      className={`bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-3 ${className}`}>
+      {cabecera}
+      {sinNinguna ? (
+        <p className="text-[15px] text-ink-1 leading-snug">
+          Ninguno de tus activos tiene todavía una tendencia de fondo para leer: bonos, fondos y
+          efectivo no tienen historia de precios en Rendi, y una acción o un CEDEAR necesita 200
+          días de mercado con precios guardados.
         </p>
+      ) : (
+        <p className="text-[19px] sm:text-[21px] font-semibold leading-snug text-ink-0">
+          {hidden
+            ? 'Así está repartida tu plata entre tendencias de fondo.'
+            : <><span className="text-rendi-pos tabular">{pctTxt(alcista)}</span> de tu plata está en activos con tendencia de fondo alcista.</>}
+          {antes && !hidden && (
+            <span className={`ml-2 text-[14px] font-medium ${tonoAntes === 'pos' ? 'text-rendi-pos' : tonoAntes === 'neg' ? 'text-rendi-neg' : 'text-ink-2'}`}>({antes})</span>
+          )}
+        </p>
+      )}
+      {!hidden && (
+        <div className="flex h-3 rounded-full overflow-hidden gap-0.5" role="img" aria-label={etiqueta}>
+          {['alcista', 'bajista', 'sin'].map(id => r.grupos[id].fraccion > 0 && (
+            <div key={id} className={`barra-intensidad ${TONO[id].barra}`} style={{ width: `${r.grupos[id].fraccion * 100}%` }} />
+          ))}
+        </div>
+      )}
+      <div className="flex flex-col sm:flex-row sm:flex-wrap gap-x-5 gap-y-1.5 text-[13px] text-ink-1">
+        {['alcista', 'bajista', 'sin'].map(id => {
+          const g = r.grupos[id]
+          if (!g.nombres.length) return null
+          const palabra = id === 'alcista' ? 'alcista' : id === 'bajista' ? 'bajista' : 'sin lectura'
+          return (
+            <span key={id}>
+              <b className={`font-semibold ${TONO[id].texto}`}>{hidden ? '' : `${pctTxt(g)} `}{palabra}</b>
+              <Lista nombres={g.nombres} />
+            </span>
+          )
+        })}
       </div>
-
-      <div className="flex-[2_1_260px] min-w-0 flex flex-col gap-2.5 sm:border-l sm:border-line sm:pl-6">
-        <div className="text-[12px] text-ink-2 font-medium">Lo que cambió esta semana</div>
-        {r.cambios.length === 0 ? (
-          <p className="text-[13px] text-ink-2 leading-relaxed">
-            Ninguno de tus activos cruzó su promedio de 50 o de 200 días, y ninguno subió o cayó muy rápido.
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {r.cambios.slice(0, 6).map((c, i) => (
-              <li key={i} className="flex gap-2.5 text-[13.5px] text-ink-1 leading-snug">
-                <span aria-hidden="true" className={`font-semibold ${c.tono === 'pos' ? 'text-rendi-pos' : c.tono === 'neg' ? 'text-rendi-neg' : 'text-rendi-warn'}`}>
-                  {c.tono === 'pos' ? '↑' : c.tono === 'neg' ? '↓' : '!'}
-                </span>
-                <span><span className="font-semibold text-ink-0">{c.asset}</span> {c.texto}</span>
-              </li>
-            ))}
-            {r.cambios.length > 6 && <li className="text-[12.5px] text-ink-3">y {r.cambios.length - 6} más</li>}
-          </ul>
-        )}
-      </div>
+      {sin.motivos.length > 0 && (
+        <ul className="flex flex-col gap-1 text-[12px] text-ink-2 leading-relaxed" aria-label="Por qué algunos van sin lectura">
+          {sin.motivos.map(m => (
+            <li key={m.porque}><b className="font-semibold text-ink-1">{m.nombres.join(', ')}</b>: {m.texto}</li>
+          ))}
+        </ul>
+      )}
+      {nota && <p className="text-[13px] text-ink-1 leading-snug">{nota}</p>}
+      <p className="text-[12px] text-ink-3 leading-relaxed">
+        «Alcista» = el precio está arriba de su promedio de los últimos 200 días. Describe el precio; no es una recomendación.
+      </p>
     </section>
   )
 }

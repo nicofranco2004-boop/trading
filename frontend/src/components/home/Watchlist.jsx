@@ -122,7 +122,7 @@ export default function Watchlist() {
           {/* Lo que tenés y lo que seguís en una tabla, con su lectura técnica
               (pages/TuLista.jsx, «Análisis técnico» en el menú). Va aunque la watchlist esté vacía: también
               muestra tu cartera. */}
-          <Link to="/analisis-tecnico"
+          <Link to="/analisis-tecnico?tab=lista"
             className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-line-2 px-2.5 py-1 text-[12.5px] text-ink-1 hover:text-ink-0 hover:border-data-violet/50 transition-colors">
             <Table2 size={13} strokeWidth={1.75} aria-hidden="true" />
             Ver como tablero

@@ -86,7 +86,7 @@ const Wrapped = lazy(() => import('./pages/Wrapped'))
 const Analisis = lazy(() => import('./pages/Analisis'))
 const Fundamentals = lazy(() => import('./pages/Fundamentals'))
 const AssetDetail = lazy(() => import('./pages/AssetDetail'))
-const TuLista = lazy(() => import('./pages/TuLista'))
+const AnalisisTecnico = lazy(() => import('./pages/AnalisisTecnico'))
 const Cartera = lazy(() => import('./pages/Cartera'))
 const PerfilInversor = lazy(() => import('./pages/PerfilInversor'))
 // Plan Asesor: roster de clientes + drill-down + operación grupal (tier advisor)
@@ -257,11 +257,12 @@ function AppRoutes() {
       <Route path="/analisis" element={<Analisis />} />
       <Route path="/fundamentals" element={<Fundamentals />} />
       <Route path="/activo/:ticker" element={<AssetDetail />} />
-      {/* «Análisis técnico» (menú → Análisis): tu lista con su lectura técnica.
-          También se abre desde el panel Watchlist del inicio («Ver como
-          tablero»). /tu-lista era su dirección antes de tener lugar en el menú. */}
-      <Route path="/analisis-tecnico" element={<TuLista />} />
-      <Route path="/tu-lista" element={<Navigate to="/analisis-tecnico" replace />} />
+      {/* «Análisis técnico» (menú → Análisis de mercado), en pestañas: Panorama,
+          Tu lista (?tab=lista, también desde «Ver como tablero» del inicio) y
+          Señales de la semana (?tab=senales). /tu-lista era la dirección de la
+          lista antes de tener lugar en el menú. */}
+      <Route path="/analisis-tecnico" element={<AnalisisTecnico />} />
+      <Route path="/tu-lista" element={<Navigate to="/analisis-tecnico?tab=lista" replace />} />
       {/* Dashboard vuelve a ser página propia (ítem "Dashboard" del sidebar,
           principal dentro de "Tu Cartera"). Antes era un tab de Cartera. */}
       {/* Informe del período: el link público TAMBIÉN debe resolver con

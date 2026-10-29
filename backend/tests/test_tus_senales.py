@@ -238,8 +238,10 @@ class TusSenalesTest(unittest.TestCase):
                       "la watchlist también, y dice que no la tenés")
         self.assertIn("no es una recomendación para comprar ni vender", m["texto"])
         self.assertIn("no es una recomendación", self.pushes[0]["body"])
-        self.assertEqual(self.pushes[0]["url"], "/novedades?tab=senales")
-        self.assertIn("/novedades?tab=senales", m["html"])
+        # La pestaña «Señales de la semana» de Análisis técnico (antes, Novedades).
+        self.assertEqual(self.pushes[0]["url"], "/analisis-tecnico?tab=senales")
+        self.assertIn("/analisis-tecnico?tab=senales", m["html"])
+        self.assertNotIn("/novedades?tab=senales", m["html"])
         fila = self._filas()[0]
         self.assertEqual((fila["semana"], fila["pct_alcista"], fila["canal"], fila["mail_ok"], fila["push_ok"]),
                          (sabado.isoformat(), 94, "ambos", 1, 1))

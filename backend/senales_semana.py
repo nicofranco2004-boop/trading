@@ -48,6 +48,11 @@ HORA_RESUMEN = 10
 DIAS_SEMANA_PASADA = 13
 CANALES = ("mail", "push", "ambos", "no")
 
+# Adonde llevan el botón del mail, el «Cambiar o apagar» y la notificación: la
+# pestaña «Señales de la semana» de Análisis técnico (se mudó de Novedades el
+# 28/10; /novedades?tab=senales redirige ahí para los mails viejos).
+URL_SENALES = "/analisis-tecnico?tab=senales"
+
 NO_ES_RECOMENDACION = ("Muestra cómo se movieron los precios: no es una "
                        "recomendación para comprar ni vender.")
 # La frase del mockup (recuadro 15). Sale de la medición de la ficha
@@ -424,9 +429,9 @@ def contenido_del_mail(semana: dict) -> dict:
         detail = "esto se movió esta semana en lo tuyo y en tu watchlist:"
     return {
         "heading": _titular(semana["senales"]), "detail": detail, "lines": lineas,
-        "cta_path": "/novedades?tab=senales", "cta_label": "Ver los cambios",
+        "cta_path": URL_SENALES, "cta_label": "Ver los cambios",
         "pie": ("Te llega los sábados porque lo pediste.", "Cambiar o apagar",
-                "/novedades?tab=senales"),
+                URL_SENALES),
         "aclaracion": NO_ES_RECOMENDACION,
     }
 
@@ -457,7 +462,7 @@ def _entregar(conn, via: str, envio: tuple) -> tuple:
             push_ok = main._send_push_to_user(destino, {
                 "title": "Rendi · Tu semana",
                 "body": f"{contenido['heading']}. {NO_ES_RECOMENDACION}",
-                "url": "/novedades?tab=senales" if not cliente else "/clientes",
+                "url": URL_SENALES if not cliente else "/clientes",
                 "tag": "resumen-semanal",
             }) > 0
         except Exception as ex:
