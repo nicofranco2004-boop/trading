@@ -25,13 +25,20 @@ export const COLOR_DIBUJO = 'rgb(var(--data-cyan))'
  * Una horizontal va de borde a borde; un Fibonacci, el tramo y cada nivel
  * desde donde arranca hasta el borde derecho; un conteo, de onda a onda.
  */
-export function trazosDeDibujos(dibujos, pctX, pctY) {
+export function trazosDeDibujos(dibujos, pctX, pctY, extendidos = []) {
   const out = []
   for (const d of dibujos) {
     if (d.tipo === 'horizontal') {
       out.push({ id: d.id, tipo: d.tipo, x1: 0, y1: pctY(d.precio), x2: 100, y2: pctY(d.precio), precio: d.precio })
     } else if (d.tipo === 'tendencia') {
       out.push({ id: d.id, tipo: d.tipo, x1: pctX(d.a.k), y1: pctY(d.a.precio), x2: pctX(d.b.k), y2: pctY(d.b.precio) })
+      // Con un aviso, la línea sigue hacia la derecha, punteada: así la mira el
+      // aviso (backend/tecnico.valor_de_linea), en la misma dirección.
+      const [p, q] = d.a.k <= d.b.k ? [d.a, d.b] : [d.b, d.a]
+      if (extendidos.includes(d.id) && q.k > p.k && pctX(q.k) < 100) {
+        const xq = pctX(q.k), yq = pctY(q.precio), xp = pctX(p.k), yp = pctY(p.precio)
+        out.push({ id: d.id, tipo: d.tipo, x1: xq, y1: yq, x2: 100, y2: yq + ((yq - yp) * (100 - xq)) / (xq - xp), correccion: true })
+      }
     } else if (d.tipo === 'fibonacci') {
       const x0 = pctX(d.a.k)
       out.push({ id: d.id, tipo: d.tipo, x1: x0, y1: pctY(d.a.precio), x2: pctX(d.b.k), y2: pctY(d.b.precio), tramo: true })
@@ -64,11 +71,11 @@ export function trazosDeDibujos(dibujos, pctX, pctY) {
  * `cursor` dónde está el mouse: la línea, el Fibonacci o el conteo siguen al
  * mouse hasta el próximo toque.
  */
-export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo, cursor, pctX, pctY, precio }) {
+export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo, cursor, pctX, pctY, precio, extendidos = [] }) {
   // Lo que se está dibujando, como si ya estuviera: hasta el mouse.
   const enCurso = trazo && cursor?.precio != null ? enCursoHasta(trazo, cursor) : null
   const todos = enCurso ? [...dibujos, enCurso] : dibujos
-  const trazos = trazosDeDibujos(todos, pctX, pctY)
+  const trazos = trazosDeDibujos(todos, pctX, pctY, extendidos)
   if (!trazos.length && !trazo) return null
   // Elegido, el más grueso; con el mouse encima (`resaltado`), un poco más.
   const grueso = (id) => (id === elegido ? 3 : id === resaltado ? 2.6 : 1.8)

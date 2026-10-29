@@ -107,6 +107,75 @@ export function BotonAvisame({ avisos, className = '', ...datos }) {
   )
 }
 
+/** El aviso activo de tu línea del gráfico (`dibujo`: su id), o null. La
+ *  referencia la guarda main._crear_alerta_de_linea: { asset, moneda, id, tipo }. */
+export function alertaDeLinea(items = [], { asset, moneda = 'usd', dibujo }) {
+  const sym = String(asset || '').toUpperCase()
+  const mon = moneda === 'ars' ? 'ars' : 'usd'
+  return items.find(a => {
+    if (a.kind !== 'tecnica' || a.senal !== 'linea' || !a.active) return false
+    try {
+      const r = JSON.parse(a.dibujo || 'null')
+      return r?.id === dibujo && r?.asset === sym && r?.moneda === mon
+    } catch { return false }
+  }) || null
+}
+
+/**
+ * «Avisame si el precio la toca», en el cartel de tu línea elegida (Nico,
+ * 28/10). Abre el formulario de siempre ya armado con esa línea; si ya hay un
+ * aviso, dice «Te avisamos» y deja dejar de avisar.
+ */
+export function BotonAvisameLinea({ avisos, asset, accionLocal = false, moneda = 'usd', dibujo, tipoLinea }) {
+  const plan = usePlanFeatures()
+  const toast = useToast()
+  const [abierto, setAbierto] = useState(false)
+  const ya = alertaDeLinea(avisos?.items, { asset, moneda, dibujo })
+  if (ya) {
+    return (
+      <span className="inline-flex items-center gap-2">
+        <Link to="/alertas?tab=mis" className="inline-flex items-center gap-1 min-h-10 sm:min-h-8 text-[12.5px] text-rendi-pos hover:underline">
+          <Check size={14} strokeWidth={2.25} aria-hidden="true" /> Te avisamos si la toca
+        </Link>
+        <button type="button" onClick={async () => {
+          try { await api.patch(`/alerts/${ya.id}`, { active: false }); avisos?.recargar?.() }
+          catch { toast.push('No se pudo apagar el aviso. Probá de nuevo.', { type: 'warn' }) }
+        }} className="min-h-10 sm:min-h-8 px-2 rounded text-[12.5px] text-ink-2 hover:text-ink-0 underline-offset-2 hover:underline">
+          Dejar de avisar
+        </button>
+      </span>
+    )
+  }
+  const prefill = {
+    kind: 'tecnica', fijo: true, symbol: String(asset || '').toUpperCase(), senal: 'linea', direction: 'either',
+    currency: moneda === 'ars' ? 'ARS' : 'USD', accionLocal: !!accionLocal, dibujo, tipoLinea,
+  }
+  return (
+    <>
+      <button type="button" onClick={() => setAbierto(true)}
+        className="inline-flex items-center gap-1.5 min-h-10 sm:min-h-8 px-3 rounded-lg border border-data-violet/50 bg-data-violet/10 text-ink-0 font-medium">
+        <Bell size={14} aria-hidden="true" /> Avisame si la toca
+      </button>
+      {abierto && (
+        <AlertaForm plan={plan} prefill={prefill} onClose={() => setAbierto(false)}
+          crear={async (payload) => {
+            const res = await api.post('/alerts', payload)
+            track('alerta_creada', { tipo: 'tecnica', senal: 'linea' })
+            return res
+          }}
+          onCreada={(res, payload, pedidoPush) => {
+            toast.push('Listo: te avisamos si el precio toca tu línea.', { type: 'success' })
+            pedidoPush?.catch((ex) => {
+              if (ex?.motivo === 'bloqueadas') return
+              toast.push('Las notificaciones no se activaron: por ahora te llega por mail.', { type: 'warn', duration: 7000 })
+            })
+            avisos?.recargar?.()
+          }} />
+      )}
+    </>
+  )
+}
+
 /**
  * Qué señal ofrece el «Avisame» de cada tarjeta de la ficha (ids de
  * `tarjetas()` en utils/tecnico.js), según cómo está hoy: si el precio está

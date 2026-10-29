@@ -39,7 +39,7 @@ import { api } from '../../utils/api'
 import { parseNum, numACampo } from '../../utils/format'
 import { confirmar } from '../../utils/confirmar'
 import AvisoNotificaciones from '../AvisoNotificaciones'
-import { monedaDe, simbolo, fmtPrecio, fmtPct, confirmacion, canal, monedasPosibles, SENALES_TECNICAS, conSentido, activoTecnico } from './alertasTexto'
+import { monedaDe, simbolo, fmtPrecio, fmtPct, confirmacion, canal, monedasPosibles, SENALES_TECNICAS, conSentido, activoTecnico, textoDeLinea } from './alertasTexto'
 import { cargarCedears, dolaresPorSimbolo } from '../../utils/opcionesCedear'
 import { setBrokersRegistry } from '../../utils/valuation'
 
@@ -66,9 +66,11 @@ const VACIO = {
 // algo de mi cartera se mueve 3 %» recibía un aviso y nunca más (21/10/2026).
 //
 // La técnica arranca en «Cada vez que pase»: un cruce del promedio de 200 días
-// pasa pocas veces por año y quien lo pide quiere enterarse de todos.
-export function repeticionPorDefecto(kind, scope) {
-  if (kind === 'tecnica') return 'always'
+// pasa pocas veces por año y quien lo pide quiere enterarse de todos. Salvo
+// tocar tu línea: un precio que anda alrededor de la línea la tocaría todos
+// los días (y TradingView también arranca en «una vez»).
+export function repeticionPorDefecto(kind, scope, senal) {
+  if (kind === 'tecnica') return senal === 'linea' ? 'once' : 'always'
   return kind === 'pct_move' && scope === 'holdings' ? 'always' : 'once'
 }
 
@@ -109,7 +111,9 @@ export function borradorInicial({ alerta, prefill, puedeMovimiento }) {
       ...VACIO, kind: 'tecnica', scope: 'ticker', symbol: prefill.symbol || '',
       senal: prefill.senal || 'media200', direction: prefill.direction || 'either',
       currency: prefill.currency === 'ARS' ? 'ARS' : 'USD', accion_local: !!prefill.accionLocal,
-      repeat: repeticionPorDefecto('tecnica', 'ticker'),
+      // Tu línea del gráfico: cuál (su id) y de qué tipo, para decirlo.
+      ...(prefill.senal === 'linea' ? { dibujo: prefill.dibujo, tipoLinea: prefill.tipoLinea } : {}),
+      repeat: repeticionPorDefecto('tecnica', 'ticker', prefill.senal),
     }
   }
   const base = { ...VACIO, symbol: prefill.symbol || '', currency: prefill.currency || monedaDe(prefill.symbol) }
@@ -142,6 +146,9 @@ export function pedidoTecnico(f, fijo, posiciones = []) {
     direction: conSentido(f.senal) ? f.direction : 'either',
     currency: f.currency === 'ARS' ? 'ARS' : 'USD', accion_local,
     channel: f.channel, repeat: f.repeat,
+    // Tu línea: el activo como lo guarda la ficha (con su «.BA» si lo tiene)
+    // y cuál de tus dibujos (main._crear_alerta_de_linea).
+    ...(f.senal === 'linea' ? { symbol: (f.symbol || '').trim().toUpperCase(), dibujo: f.dibujo } : {}),
   }
 }
 
@@ -488,10 +495,15 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
 // moneda quedan fijas (para otra, se arma otra alerta); el lado se cambia.
 function CamposTecnica({ form, set, editando }) {
   const actual = SENALES_TECNICAS.find(s => s.id === form.senal)
+  const linea = form.senal === 'linea'
   return (
     <>
-      <Campo rotulo="Avisame cuando">
-        {editando ? (
+      <Campo rotulo="Avisame cuando" ayuda={linea
+        ? 'Lo miramos con el precio más alto y el más bajo de cada día: si la tocó, te llega a la mañana siguiente. Si movés la línea, el aviso la sigue; si la borrás, se apaga.'
+        : undefined}>
+        {linea ? (
+          <Fijo>{textoDeLinea(form)}</Fijo>
+        ) : editando ? (
           <Fijo>{actual?.texto}</Fijo>
         ) : (
           <div role="radiogroup" aria-label="Avisame cuando" className="grid gap-1.5 sm:grid-cols-2">
@@ -522,7 +534,7 @@ function CamposTecnica({ form, set, editando }) {
       <Campo rotulo="Medido en" ayuda={form.currency === 'ARS'
         ? 'En pesos el precio también sube con el dólar, aunque la empresa no se mueva.'
         : 'Como la ficha: en dólares se ve la tendencia de la empresa, sin el dólar en el medio.'}>
-        {editando ? (
+        {editando || linea ? (
           <Fijo>{form.currency === 'ARS' ? 'Pesos' : 'Dólares'}</Fijo>
         ) : (
           <Segmentos etiqueta="Medido en" grande valor={form.currency === 'ARS' ? 'ARS' : 'USD'}

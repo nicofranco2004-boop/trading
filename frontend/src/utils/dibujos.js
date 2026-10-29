@@ -138,6 +138,36 @@ export function diaDelPunto(puntos, p) {
   return i == null ? -1 : i + p.mas
 }
 
+/**
+ * Las puntas de un dibujo, con su nombre: ['a', p], ['b', p], ['c', p] o, en
+ * un conteo de Elliott, [n, p] por onda. Una horizontal no tiene: se agarra entera.
+ */
+export function puntasDe(d) {
+  if (d.tipo === 'horizontal') return []
+  if (d.tipo === 'elliott') return d.puntos.map((p, n) => [n, p])
+  return ['a', 'b', 'c'].filter(c => d[c]).map(c => [c, d[c]])
+}
+
+/**
+ * El dibujo arrastrado (Nico, 28/10: «mover y corregir un dibujo ya hecho»):
+ * `que` es la punta agarrada (su nombre en `puntasDe`) o 'todo', para moverlo
+ * entero. `correr(p)` da el punto nuevo de una punta; `correrPrecio(x)`, el
+ * precio nuevo de una horizontal. La MISMA cuenta para lo que se ve mientras
+ * se arrastra (puntos en lugares de la pantalla) y para lo que se guarda
+ * (puntos por día).
+ */
+export function dibujoCorrido(d, que, correr, correrPrecio) {
+  if (d.tipo === 'horizontal') return { ...d, precio: correrPrecio(d.precio) }
+  const mueve = (nombre) => que === 'todo' || que === nombre
+  if (d.tipo === 'elliott') return { ...d, puntos: d.puntos.map((p, n) => (mueve(n) ? correr(p) : p)) }
+  const out = { ...d }
+  for (const c of ['a', 'b', 'c']) if (d[c] && mueve(c)) out[c] = correr(d[c])
+  return out
+}
+
+/** Un precio corrido `dp`, que nunca llega a 0 (arrastrar una línea muy abajo la deja en el piso). */
+export const precioCorrido = (precio, dp) => Math.max(precio + dp, precio * 0.02)
+
 /** La distancia de (x, y) al segmento de (ax, ay) a (bx, by), todo en píxeles. */
 export function distanciaASegmento(x, y, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay

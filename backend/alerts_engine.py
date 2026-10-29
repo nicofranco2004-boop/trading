@@ -45,6 +45,7 @@ Los disparos se acumulan durante el loop y salen agrupados al final.
 from __future__ import annotations
 from money_fmt import fmt_num
 
+import json
 import logging
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -1447,6 +1448,10 @@ def _mensaje_tecnico(alert, symbol, ev) -> str:
     tendencia de fondo se volvió alcista»."""
     quien = _quien_tecnico(alert, symbol)
     senal, arriba = alert["senal"], ev["sentido"] == "arriba"
+    if senal == "linea":
+        ccy = "ARS" if str(alert["currency"] or "").upper() == "ARS" else "USD"
+        return (f"{quien} {'subió' if arriba else 'bajó'} hasta tu {_nombre_de_linea(alert)}, "
+                f"en {_fmt(ev['referencia'], ccy)}")
     if senal == "media200":
         return (f"{quien} pasó para arriba su promedio de 200 días: la tendencia de fondo se volvió alcista"
                 if arriba else
@@ -1477,6 +1482,12 @@ def _detalle_tecnico(alert, symbol, ev) -> str:
     cuando = dia_txt(ev["fecha"], hoy_art())
     cierre = _fmt(ev["cierre"], ccy)
     senal, arriba = alert["senal"], ev["sentido"] == "arriba"
+    if senal == "linea":
+        # El día con su mínimo y su máximo: «la tocó» puede ser en el medio de
+        # la rueda y cerrar lejos.
+        return (f"{cuando} {sym} tocó tu {_nombre_de_linea(alert)}, que ese día estaba en "
+                f"{_fmt(ev['referencia'], ccy)}: fue de {_fmt(ev['minimo'], ccy)} a "
+                f"{_fmt(ev['maximo'], ccy)} y cerró en {cierre}. Es la línea que dibujaste en su gráfico.")
     if senal in ("media200", "media50"):
         dias = 200 if senal == "media200" else 50
         prom = _fmt(ev["referencia"], ccy)
@@ -1501,6 +1512,12 @@ def _detalle_tecnico(alert, symbol, ev) -> str:
         }[senal]
         return f"{fuerza} {lectura}"
     return f"{cuando} {sym} cerró en {cierre}, el cierre más alto de los últimos 12 meses."
+
+
+def _nombre_de_linea(alert) -> str:
+    """«línea horizontal» o «línea de tendencia» (lo dice la referencia al dibujo)."""
+    ref = referencia_de_linea(_campo(alert, "dibujo")) or {}
+    return "línea de tendencia" if ref.get("tipo") == "tendencia" else "línea horizontal"
 
 
 def _fmt_rsi(r, nivel) -> str:
@@ -1568,11 +1585,21 @@ def _evaluar_una_tecnica(conn, a, series: dict, ultima_global, piso: str, now, p
     (nada nuevo que mirar), 'mirada' o 'avisó'."""
     import tecnico
     sym = a["symbol"]
-    if not sym or a["senal"] not in _senales():
+    if not sym or (a["senal"] not in _senales() and a["senal"] != tecnico.SENAL_LINEA):
         return "nada"
     visto = _visto_hasta(conn, a["id"], sym)
     if visto and ultima_global and visto >= ultima_global:
         return "nada"
+    linea = None
+    if a["senal"] == tecnico.SENAL_LINEA:
+        # La línea como está AHORA en tu gráfico (si la moviste, la nueva).
+        linea = linea_de_la_alerta(conn, a)
+        if linea is None:
+            # Borraste la línea: el aviso no tiene qué mirar y se apaga (no se
+            # borra: queda en Mis alertas, apagado, por si fue sin querer).
+            conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
+            log.info("alert %s %s: la línea %s ya no está, se apaga", a["id"], sym, _campo(a, "dibujo"))
+            return "nada"
     clave = (sym, str(a["currency"] or "").upper(), bool(_campo(a, "accion_local")))
     if clave not in series:
         series[clave] = _serie_tecnica(conn, a)
@@ -1590,7 +1617,8 @@ def _evaluar_una_tecnica(conn, a, series: dict, ultima_global, piso: str, now, p
     if not mirables or mirables[-1]["date"] <= visto:
         return "nada"
     ultima = mirables[-1]["date"]
-    ev = tecnico.senal_desde(mirables, a["senal"], visto, _sentido_pedido(a))
+    ev = (tecnico.toque_de_linea(mirables, linea, visto) if linea is not None
+          else tecnico.senal_desde(mirables, a["senal"], visto, _sentido_pedido(a)))
     if ev and ev["fecha"] < piso:
         log.info("alert %s %s: %s del %s llegó tarde, no aviso", a["id"], sym, a["senal"], ev["fecha"])
         ev = None
@@ -1599,6 +1627,38 @@ def _evaluar_una_tecnica(conn, a, series: dict, ultima_global, piso: str, now, p
         _cumplio_una_vez(conn, a)
     _marcar_visto(conn, a["id"], sym, ultima)
     return "avisó" if ev else "mirada"
+
+
+def referencia_de_linea(texto):
+    """Qué línea mira una alerta (columna `dibujo`): {'asset', 'moneda', 'id',
+    'tipo'} o None si está vacía o rota."""
+    try:
+        r = json.loads(texto or "null")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(r, dict) or not all(isinstance(r.get(k), str) and r.get(k) for k in ("asset", "moneda", "id")):
+        return None
+    return r
+
+
+def linea_de_la_alerta(conn, alert):
+    """La línea que dibujaste, TAL COMO ESTÁ AHORA en tu gráfico (tabla
+    `dibujos_grafico`, la misma que lee la ficha): {'tipo', 'precio'} o
+    {'tipo', 'a', 'b'}. None si ya no está (la borraste)."""
+    ref = referencia_de_linea(_campo(alert, "dibujo"))
+    if not ref:
+        return None
+    fila = conn.execute(
+        "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+        (alert["user_id"], ref["asset"], ref["moneda"])).fetchone()
+    try:
+        dibujos = json.loads(fila[0]) if fila else []
+    except (TypeError, ValueError):
+        dibujos = []
+    for d in dibujos if isinstance(dibujos, list) else []:
+        if isinstance(d, dict) and d.get("id") == ref["id"] and d.get("tipo") in ("horizontal", "tendencia"):
+            return d
+    return None
 
 
 def _senales() -> tuple:

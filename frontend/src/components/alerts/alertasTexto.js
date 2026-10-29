@@ -26,6 +26,18 @@ export const SENALES_TECNICAS = [
 ]
 export const conSentido = (senal) => !!SENALES_TECNICAS.find(s => s.id === senal)?.conSentido
 
+// Tu línea del gráfico (senal 'linea', Nico 28/10): no es una señal de la
+// lista, se pide desde la línea elegida. De qué tipo es lo dice el borrador
+// (`tipoLinea`) o, en una alerta guardada, su referencia al dibujo (`dibujo`,
+// el JSON que guarda main._crear_alerta_de_linea).
+export function tipoDeLinea(a) {
+  if (a?.tipoLinea) return a.tipoLinea
+  try { return JSON.parse(a?.dibujo || 'null')?.tipo || null } catch { return null }
+}
+const nombreDeLinea = (a) => (tipoDeLinea(a) === 'tendencia' ? 'tu línea de tendencia' : 'tu línea horizontal')
+/** «Toque tu línea horizontal», para el formulario. */
+export const textoDeLinea = (a) => `Toque ${nombreDeLinea(a)}`
+
 // Qué pasa, en presente («pasa para arriba su promedio de 200 días») o en
 // subjuntivo para la confirmación («cuando pase para arriba…»).
 function queTecnico(senal, direction, subj) {
@@ -132,6 +144,7 @@ export function frase(a) {
   if (!a) return { quien: '', que: '' }
   if (a.kind === 'tecnica') {
     const quien = quienTecnico(a)
+    if (a.senal === 'linea') return { quien, que: `toca ${nombreDeLinea(a)}` }
     return esRsi(a.senal)
       ? { quien, que: `la fuerza (RSI) ${queTecnico(a.senal, a.direction, false)}`, sep: ': ' }
       : { quien, que: queTecnico(a.senal, a.direction, false) }
@@ -159,6 +172,7 @@ export function confirmacion(a) {
   if (a.kind === 'tecnica') {
     if (!a.symbol || !a.senal) return null
     const quien = quienTecnico(a)
+    if (a.senal === 'linea') return `Te avisamos cuando ${quien} toque ${nombreDeLinea(a)}. Lo miramos cada día con el precio más alto y el más bajo del día.`
     const que = esRsi(a.senal)
       ? `la fuerza (RSI) de ${quien} ${queTecnico(a.senal, a.direction, true)}`
       : `${quien} ${queTecnico(a.senal, a.direction, true)}`

@@ -228,7 +228,11 @@ export function LeyendaIndicadores({ items, onAviso, deFabrica, onFabrica, ancho
   const usables = items.filter(i => !i.sinDatos)
   const prendidos = usables.filter(i => i.activo).length
   return (
-    <div className="max-w-[calc(100%-8px)] text-[11.5px]" role="group" aria-label="Indicadores">
+    // `w-max`: del ancho de la lista, no del gráfico. Como bloque ocupaba todo
+    // el ancho de arriba del gráfico (invisible) y se comía los clicks: no se
+    // podía elegir el Fibonacci automático ni arrastrar una línea hacia arriba
+    // (Nico, 29/10).
+    <div className="w-max max-w-[calc(100%-8px)] text-[11.5px]" role="group" aria-label="Indicadores">
       <button type="button" onClick={() => setAbierta(!abierta)} aria-expanded={abierta}
         className="inline-flex items-center gap-1 min-h-8 sm:min-h-6 px-2 rounded border border-line/60 bg-bg-1/85 text-ink-1 hover:text-ink-0">
         Indicadores <span className="tabular text-ink-2">· {prendidos} de {usables.length}</span>
