@@ -425,7 +425,9 @@ export default function AssetDetail() {
           a pedir el gráfico ni el fundamental. */}
       {enOrden(fundamentalArriba, [
       !esFci(asset) && !(agg.lots.length > 0 && esFci(symbolFor(agg.lots[0], brokers))) && (
-        <SeccionFicha key="tecnico" titulo="Análisis técnico">
+        <SeccionFicha key="tecnico" titulo="Análisis técnico"
+          accion={<button type="button" onClick={() => navigate(`/fundamentals?cmp=${encodeURIComponent(asset)}&vista=precio`)}
+            className="text-[12.5px] text-data-violet hover:underline">Comparar con…</button>}>
         <LecturaTecnica
           titulo={null}
           key={`${asset}|${accionLocal}`}
