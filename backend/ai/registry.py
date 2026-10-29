@@ -101,7 +101,7 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     "reports": (build_reports, prompts.render_reports_prompt),
     "operations": (build_operations, prompts.render_operations_prompt),
     "operations.trade": (build_operation_trade, prompts.render_operation_trade_prompt),
-    # Calidad de cartera — análisis curado de UNA dimensión fundamental de una acción.
+    # Análisis fundamental — análisis curado de UNA dimensión fundamental de una acción.
     "fundamentals.category": (build_fundamentals_category, prompts.render_fundamentals_category_prompt),
     # ── Libro del asesor ────────────────────────────────────────────────────
     # Los primeros topics que NO miran una cuenta sino el conjunto de las

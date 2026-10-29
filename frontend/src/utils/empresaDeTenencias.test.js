@@ -6,7 +6,7 @@ import { empresaDeTenencias, tickerDeEmpresa } from './buscadorRapido'
 import { ARG_LIDER, ARG_GENERAL, ADR_DE_ACCION_AR } from './tickers'
 
 // "Ver fundamentals" de la ficha del activo y los botones "Tus posiciones" de
-// Calidad de cartera: a qué empresa lleva un activo TUYO. Antes la ficha miraba
+// Análisis fundamental: a qué empresa lleva un activo TUYO. Antes la ficha miraba
 // sólo el ticker: Telecom (TECO2) no llevaba a TEO, el CEDEAR de Disney abría
 // "DISN" (no es Disney en EE.UU.) y Agrometal (AGRO) abría Adecoagro.
 const BROKERS = [
@@ -74,7 +74,7 @@ describe('empresaDeTenencias: la empresa correcta de tu activo, o ninguna', () =
     expect(empresa({ asset: 'TECO2', broker: 'Cocos', type: 'Venta' })).toBe('TEO')
   })
 
-  it('tickerDeEmpresa de un CEDEAR (la lista con puntaje de Calidad de cartera)', () => {
+  it('tickerDeEmpresa de un CEDEAR (la lista con puntaje de Análisis fundamental)', () => {
     expect(tickerDeEmpresa('DISN', 'cedear')).toBe('DIS')
     expect(tickerDeEmpresa('SI', 'cedear')).toBe('SID')
     expect(tickerDeEmpresa('SPY', 'cedear')).toBe(null)
@@ -96,12 +96,12 @@ describe('las pantallas usan la regla única', () => {
     expect(src).not.toMatch(/fundamentals\?ticker=/)
     expect(src).not.toMatch(/inferType/)
   })
-  it('los botones "Tus posiciones" de Calidad de cartera', () => {
+  it('los botones "Tus posiciones" de Análisis fundamental', () => {
     const src = fuente('../components/fundamentals/AnalyzeView.jsx')
     expect(src).toMatch(/empresaDeTenencias\(/)
     expect(src).not.toMatch(/inferType/)
   })
-  it('la lista con puntaje de Calidad de cartera (CEDEARs)', () => {
+  it('la lista con puntaje de Análisis fundamental (CEDEARs)', () => {
     const src = fuente('../components/fundamentals/CarteraList.jsx')
     expect(src).toMatch(/tickerDeEmpresa\(p\.asset, 'cedear'\)/)
     expect(src).not.toMatch(/cedearEspecieBase/)

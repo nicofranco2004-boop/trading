@@ -824,7 +824,7 @@ function InsightsDesktop({ _embeddedTab }) {
       if (p.is_cash) continue
       const val = holdingValueUsd(p)   // clamp anti-distorsión incluido (fuente única)
       // Contexto AR/BYMA: colapsamos la especie a su canónico (la pata pesos 'SI' y la
-      // dólar 'SID' del CEDEAR de CSN → UN activo). Espeja Calidad de cartera.
+      // dólar 'SID' del CEDEAR de CSN → UN activo). Espeja Análisis fundamental.
       const onBA = arsBrokerNames.has(p.broker) || isArUsdBroker(p.broker) || costInPesos(p)
       const k = onBA ? cedearEspecieBase(p.asset) : (p.asset || '').toUpperCase()
       valuesByAsset[k] = (valuesByAsset[k] || 0) + val

@@ -37039,7 +37039,7 @@ _US_EXCHANGES = {"NMS", "NYQ", "NGM", "NCM", "ASE", "PCX", "BTS", "NAS", "NYS"}
 def search_tickers(q: str, uid: int = Depends(get_effective_user)):
     """Resuelve texto libre —incluido el NOMBRE de la empresa— a tickers reales.
 
-    Existe porque el buscador de "Calidad de cartera" filtraba contra
+    Existe porque el buscador de "Análisis fundamental" filtraba contra
     POPULAR_TICKERS, una allowlist de 104 símbolos con apenas 21 acciones US.
     Reportado por un usuario: no podía comparar AMD contra INTEL. La causa no era
     el backend (que acepta cualquier ticker y responde por `quoteType`) sino que
@@ -37087,11 +37087,11 @@ def search_tickers(q: str, uid: int = Depends(get_effective_user)):
 
 @app.get("/api/fundamentals/{ticker}")
 def get_fundamentals(ticker: str, uid: int = Depends(get_effective_user)):
-    """Scorecard de fundamentales de una acción ("Calidad de cartera").
+    """Scorecard de fundamentales de una acción ("Análisis fundamental").
 
     Auth requerida, TODOS los tiers, SIN cupo (data de yfinance cacheada).
     (Estuvo admin-only 2026-06-28→06-29 mientras se rediferenciaba de Vesty;
-    rehabilitado para usuarios al lanzar "Calidad de cartera".)
+    rehabilitado para usuarios al lanzar "Análisis fundamental".)
     Orquesta los fetchers existentes (scorecard + analysts + fundamentals/
     profile) y arma el contrato. Para cripto/ETF/bono/CEDEAR-ARS/inválido
     devuelve {available:false, reason} con HTTP 200 (no es un error).

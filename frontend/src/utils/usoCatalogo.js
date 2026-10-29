@@ -67,7 +67,7 @@ export const EVENTOS = {
   analisis_tab_viewed: { label: 'Cambió de pestaña', donde: 'Análisis', tipo: 'vista' },
   behavioral_viewed: { label: 'Abrió Comportamiento', donde: 'Análisis', tipo: 'vista' },
   behavioral_card_opened: { label: 'Abrió una tarjeta de Comportamiento', donde: 'Análisis' },
-  calidad_cartera_view: { label: 'Vio la calidad de la cartera', donde: 'Fundamentals', tipo: 'vista' },
+  calidad_cartera_view: { label: 'Vio el análisis fundamental', donde: 'Fundamentals', tipo: 'vista' },
   fundamentals_ticker_viewed: { label: 'Analizó un ticker', donde: 'Fundamentals', tipo: 'vista' },
   fundamentals_compared: { label: 'Comparó tickers', donde: 'Fundamentals' },
   fundamentals_ai_summary_loaded: { label: 'Leyó el resumen IA de un ticker', donde: 'Fundamentals', tipo: 'vista' },

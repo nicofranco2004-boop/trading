@@ -298,7 +298,7 @@ export default function AssetDetail() {
     }
   }, [positions, operations, brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis])
 
-  // La empresa de este activo en "Calidad de cartera", con la misma regla que
+  // La empresa de este activo en "Análisis fundamental", con la misma regla que
   // el buscador (empresaDeTenencias): mira en qué mercado está cada lote, no
   // sólo el ticker. Sin lotes abiertos, deciden las operaciones (tienen broker).
   const tenes = positions.length > 0 || operations.length > 0
@@ -518,7 +518,7 @@ export default function AssetDetail() {
       {/* Análisis fundamental de la empresa, al final: técnico → lo tuyo
           (operatoria, lotes, historial) → fundamental, para no tener que pasar
           todo el fundamental para llegar a tus lotes (Nico, 23/10). Es la MISMA
-          vista de "Calidad de cartera" (AnalyzeView), sin buscador ni resumen
+          vista de "Análisis fundamental" (AnalyzeView), sin buscador ni resumen
           con IA; para compararla con otras, el link lleva ahí. Sin empresa
           (cripto, ETF, bono, fondo) no aparece. */}
       {empresa && <AnalyzeView ticker={empresa.ticker} enFicha irACalidad={empresa.ir} />}

@@ -3,7 +3,7 @@
 // (Nico, 24/10: «separá dentro de la ficha análisis técnico y fundamental»).
 // La usan la ficha (técnico, tu operatoria) y AnalyzeView en la ficha
 // (fundamental), que decide si aparece: sin empresa no queda un título suelto.
-// `accion`: algo a la derecha del título (el link a Calidad de cartera).
+// `accion`: algo a la derecha del título (el link a Análisis fundamental).
 
 export default function SeccionFicha({ titulo, accion = null, children, etiqueta }) {
   return (

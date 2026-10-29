@@ -9,10 +9,13 @@ import {
 } from 'lucide-react'
 
 // ── 3 secciones acordeón ──────────────────────────────────────────────────
-// • Tu Cartera: lo que tenés y moviste (lo que navegás seguido).
-// • Análisis:   entender e interpretar eso mismo (performance, calidad de tenencias,
-//               lectura técnica).
-// • Mercado:    qué pasa afuera (el pulso del día + las noticias).
+// «Arriba, cómo está tu plata. Abajo, cómo están los activos» (recuadro 22 del
+// tablero, aprobado por Nico el 28/10):
+// • Tu Cartera:          lo que tenés y moviste (lo que navegás seguido).
+// • Salud de cartera:    cómo le va a tu plata (rendimiento y perfil).
+// • Análisis de mercado: cómo están los activos (el pulso del día, la lectura
+//                        técnica, el análisis fundamental y las noticias).
+// Los `id` de los grupos no cambian (otras pantallas los usan): sólo el nombre.
 // EL ORDEN ES EL DEL MENÚ, y va lo tuyo junto y primero (pedido de Nico,
 // 2026-10-11): antes era Tu Cartera · Mercado · Análisis, y Mercado cortaba al
 // medio las dos secciones que hablan de tu cartera. De acá lo toman el menú
@@ -30,20 +33,21 @@ export const GROUPS = [
     ],
   },
   {
-    id: 'analisis', label: 'Análisis', icon: Compass,
+    id: 'analisis', label: 'Salud de cartera', icon: Compass,
     items: [
       { to: '/analisis',        label: 'Métricas',           icon: TrendingUp },
-      { to: '/fundamentals',    label: 'Calidad de cartera', icon: Gauge },
-      // Lo que tenés y lo que seguís con su lectura técnica (pages/TuLista.jsx).
-      { to: '/analisis-tecnico', label: 'Análisis técnico',  icon: CandlestickChart },
       { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound },
     ],
   },
   {
-    id: 'mercado', label: 'Mercado', icon: LineChart,
+    id: 'mercado', label: 'Análisis de mercado', icon: LineChart,
     items: [
-      { to: '/',          label: 'Resumen',   icon: Activity },
-      { to: '/novedades', label: 'Novedades', icon: Newspaper },
+      { to: '/',                label: 'Resumen',              icon: Activity },
+      // Lo que tenés y lo que seguís con su lectura técnica (pages/TuLista.jsx).
+      { to: '/analisis-tecnico', label: 'Análisis técnico',    icon: CandlestickChart },
+      // Antes «Calidad de cartera»: la dirección no cambia (links guardados).
+      { to: '/fundamentals',    label: 'Análisis fundamental', icon: Gauge },
+      { to: '/novedades',       label: 'Novedades',            icon: Newspaper },
     ],
   },
 ]

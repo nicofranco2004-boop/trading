@@ -480,7 +480,7 @@ export function cryptoUsdLotValue(p, prices, { cedearRate, tcCripto = null, isEx
 /**
  * valueEquityLot — valuación USD de UN lote de EQUITY o CEDEAR (no cripto, no cash).
  * Espeja las patas no-cripto de valueLot (pages/AssetDetail) para que la lista
- * holding-first de "Calidad de cartera" valúe IGUAL que la ficha del activo.
+ * holding-first de "Análisis fundamental" valúe IGUAL que la ficha del activo.
  * Usar solo con posiciones equity/CEDEAR (la cripto/cash van por otra matriz).
  */
 export function valueEquityLot(p, broker, prices, tcValuacion, cedearRate = tcValuacion, costBasis = 'today') {

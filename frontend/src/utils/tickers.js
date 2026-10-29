@@ -642,7 +642,7 @@ export const POPULAR_TICKERS = [
   { symbol: 'USDC',  name: 'USD Coin',                  exchange: 'CRYPTO', type: 'crypto' },
 ]
 
-// "Calidad de cartera" arma el puntaje con la acción que cotiza en dólares en
+// "Análisis fundamental" arma el puntaje con la acción que cotiza en dólares en
 // EE.UU. Estas dos tablas dicen cuál es, cuando el ticker de acá no sirve tal
 // cual (verificado contra yfinance, que es lo que usa el servidor, 2026-10-01):
 //   • CEDEARs cuyo ticker de BYMA no es el de EE.UU. (los demás coinciden).

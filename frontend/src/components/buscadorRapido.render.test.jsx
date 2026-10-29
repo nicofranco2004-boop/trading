@@ -32,6 +32,16 @@ describe('⌘K abierto', () => {
     expect(buscar('apple', { tier: 'advisor' })).not.toContain('Ver el gráfico')
     expect(buscar('apple', { tier: 'advisor' }, { id: 7, label: 'Ana' })).toContain('Ver el gráfico')
   })
+  it('«calidad» sigue encontrando Análisis fundamental (se llamaba «Calidad de cartera»)', () => {
+    const html = buscar('calidad', { tier: 'pro' })
+    expect(html).toContain('Análisis fundamental')
+    expect(html).not.toContain('Calidad de cartera')
+  })
+  it('«técnico» encuentra Análisis técnico, dentro de Análisis de mercado', () => {
+    const html = buscar('técnico', { tier: 'pro' })
+    expect(html).toContain('Análisis técnico')
+    expect(html).toContain('Análisis de mercado')
+  })
   it('un bono que no tenés no se ofrece (no tiene gráfico técnico: la ficha quedaría vacía)', () => {
     const html = buscar('al30', { tier: 'pro' })
     expect(html).not.toMatch(/AL30[^<]*<\/span><span[^>]*>Ver el gráfico/)
