@@ -28,14 +28,22 @@ import { clave, tendencia, fuerza, lecturaVieja, MOTIVOS_SIN_LECTURA } from './r
  * su ADR; un CEDEAR (AAPL.BA) por su acción de afuera; una cripto guardada con
  * '-USD' (BTC-USD) es la misma BTC que tenés. → { asset, local, simbolo }
  * (`asset` sin '.BA' ni '-USD': la clave con que la Cartera nombra el activo).
+ * `tipo`: el `asset_type` de la fila, si lo trae. Uno que no es de acción
+ * argentina manda sobre la lista: «AGRO» de tipo STOCK es Adecoagro de Nueva
+ * York, no Agrometal. Espejo de backend/accion_local.seguido (misma tabla de
+ * casos: fixtures/accionLocal.json).
  */
-export function lecturaDeSeguido(simbolo) {
+export function lecturaDeSeguido(simbolo, tipo = null) {
   const s = String(simbolo || '').trim().toUpperCase()
-  const local = inferType(s) === 'stock_ar'
+  const t = String(tipo || '').trim().toUpperCase()
+  const local = inferType(s) === 'stock_ar' && (!t || TIPOS_ACCION_AR.has(t))
   let asset = s.endsWith('.BA') ? s.slice(0, -3) : s
   if (asset.endsWith('-USD') && isCrypto(asset.slice(0, -4))) asset = asset.slice(0, -4)
   return { asset, local, simbolo: s }
 }
+
+/** Los `asset_type` que dicen «acción argentina» (los demás dicen otra cosa). */
+export const TIPOS_ACCION_AR = new Set(['ACCION', 'STOCK_AR'])
 
 // Lo que el servidor deja leer por pedido (tecnico.MAX_ACTIVOS_CARTERA). La
 // watchlist tiene tope de 100 (main.WATCHLIST_TOPE): entra en uno.
@@ -46,7 +54,7 @@ export const MAX_POR_PEDIDO = 200
 export function activosDeLaLista(seguidos = []) {
   const vistos = new Map()
   for (const it of seguidos) {
-    const { asset, local } = lecturaDeSeguido(it?.symbol)
+    const { asset, local } = lecturaDeSeguido(it?.symbol, it?.asset_type)
     if (asset && !vistos.has(clave(asset, local))) vistos.set(clave(asset, local), { asset, local })
   }
   return [...vistos.values()].sort((a, b) => clave(a.asset, a.local).localeCompare(clave(b.asset, b.local)))
@@ -130,7 +138,7 @@ export function filasDeLaLista({ tenencias = [], seguidos = [], indice, hoy = ho
     })
   }
   for (const it of seguidos) {
-    const { asset, local, simbolo } = lecturaDeSeguido(it?.symbol)
+    const { asset, local, simbolo } = lecturaDeSeguido(it?.symbol, it?.asset_type)
     const k = clave(asset, local)
     if (!asset || filas.has(k)) continue
     armar(k, { nombre: isCrypto(asset) ? asset : simbolo, ruta: simbolo, tenes: false, peso: 0, p: loteDeSeguido(it, asset) })

@@ -46,17 +46,24 @@ def es_lote_local(p: dict, ars: set, ar_usd: set) -> bool:
     return str(position_price_key(p, ars, ar_usd)).upper().endswith(".BA")
 
 
-def seguido(simbolo: str) -> tuple:
+# Los `asset_type` que dicen «acción argentina» (TIPOS_ACCION_AR de la pantalla).
+TIPOS_ACCION_AR = frozenset({"ACCION", "STOCK_AR"})
+
+
+def seguido(simbolo: str, asset_type: str = None) -> tuple:
     """(asset, local) de un símbolo de la watchlist. Espejo de
     `lecturaDeSeguido`: `asset` sin «.BA» ni «-USD» (la clave con que se nombra
     lo que tenés), `local` = es una acción del panel argentino. Una cripto
     pelada (BTC) no es acción aunque comparta código con una (`inferType` mira
-    la cripto antes)."""
+    la cripto antes). Si la fila trae su `asset_type` y no es de acción
+    argentina, el tipo manda: «AGRO» de tipo STOCK es Adecoagro de Nueva York."""
     from ai.trade_tickers import AR_STOCK_TICKERS
     from cripto import es_cripto
     s = (simbolo or "").strip().upper()
+    tipo = (asset_type or "").strip().upper()
     base = s[:-3] if s.endswith(".BA") else s
-    local = base in AR_STOCK_TICKERS and (s.endswith(".BA") or not es_cripto(s))
+    local = (base in AR_STOCK_TICKERS and (s.endswith(".BA") or not es_cripto(s))
+             and (not tipo or tipo in TIPOS_ACCION_AR))
     if base.endswith("-USD") and es_cripto(base[:-4]):
         base = base[:-4]
     return base, local

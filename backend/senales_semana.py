@@ -207,10 +207,10 @@ def watchlist(conn, uid: int) -> dict:
     AAPL. Antes se decidía por el sufijo «.BA» y «GGAL» era el ADR (A1, 29/10)."""
     import accion_local
     out = {}
-    for r in conn.execute("SELECT symbol FROM watchlist WHERE user_id=?", (uid,)).fetchall():
+    for r in conn.execute("SELECT symbol, asset_type FROM watchlist WHERE user_id=?", (uid,)).fetchall():
         s = (r["symbol"] or "").strip().upper()
         if s:
-            out[accion_local.seguido(s)] = s
+            out[accion_local.seguido(s, r["asset_type"])] = s
     return out
 
 

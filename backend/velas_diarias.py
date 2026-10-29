@@ -197,7 +197,8 @@ def _seguimiento(conn):
     from accion_local import seguido
     for r in conn.execute("SELECT symbol, asset_type FROM watchlist").fetchall():
         sym = (r['symbol'] or '').upper()
-        _sumar(_yahoo_de(sym, r['asset_type'], sym.endswith('.BA') or seguido(sym)[1], yahoo_de_cripto, cedears))
+        _sumar(_yahoo_de(sym, r['asset_type'], sym.endswith('.BA') or seguido(sym, r['asset_type'])[1],
+                         yahoo_de_cripto, cedears))
 
     # Las alertas técnicas (alerts_engine.evaluar_tecnicas) miran la serie de la
     # ficha: sin esto, una alerta sobre un activo que nadie tiene no avisaba

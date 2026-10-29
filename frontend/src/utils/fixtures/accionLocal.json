@@ -28,6 +28,9 @@
     { "por_que": "un CEDEAR (con «.BA») se lee por su acción de afuera", "simbolo": "AAPL.BA", "asset": "AAPL", "local": false },
     { "por_que": "un «.BA» que no es del panel argentino se trata como CEDEAR, sin depender de que data912 conteste (P2)", "simbolo": "ZZZZ.BA", "asset": "ZZZZ", "local": false },
     { "por_que": "acción de EE.UU.", "simbolo": "MSFT", "asset": "MSFT", "local": false },
-    { "por_que": "una cripto guardada con «-USD» es la misma que tenés", "simbolo": "BTC-USD", "asset": "BTC", "local": false }
+    { "por_que": "una cripto guardada con «-USD» es la misma que tenés", "simbolo": "BTC-USD", "asset": "BTC", "local": false },
+    { "por_que": "AGRO sin tipo es Agrometal, la acción argentina (la lista del panel)", "simbolo": "AGRO", "asset": "AGRO", "local": true },
+    { "por_que": "con su tipo guardado (STOCK = EE.UU.), el tipo manda: Adecoagro de Nueva York", "simbolo": "AGRO", "tipo": "STOCK", "asset": "AGRO", "local": false },
+    { "por_que": "con tipo de acción argentina, igual que sin tipo", "simbolo": "GGAL", "tipo": "ACCION", "asset": "GGAL", "local": true }
   ]
 }

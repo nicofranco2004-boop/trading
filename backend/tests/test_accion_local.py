@@ -40,7 +40,7 @@ class AccionLocal(unittest.TestCase):
     def test_lo_que_seguis(self):
         for c in CASOS["seguidos"]:
             with self.subTest(c["por_que"]):
-                self.assertEqual(accion_local.seguido(c["simbolo"]), (c["asset"], c["local"]))
+                self.assertEqual(accion_local.seguido(c["simbolo"], c.get("tipo")), (c["asset"], c["local"]))
 
     def test_no_depende_de_data912(self):
         # P2: con data912 caído (lista de CEDEARs de BYMA vacía) la respuesta
@@ -50,7 +50,7 @@ class AccionLocal(unittest.TestCase):
             for c in CASOS["lotes"]:
                 self.assertEqual(accion_local.es_lote_local(c["lote"], ars, ar_usd), c["local"], c["por_que"])
             for c in CASOS["seguidos"]:
-                self.assertEqual(accion_local.seguido(c["simbolo"]), (c["asset"], c["local"]), c["por_que"])
+                self.assertEqual(accion_local.seguido(c["simbolo"], c.get("tipo")), (c["asset"], c["local"]), c["por_que"])
 
 
 if __name__ == "__main__":

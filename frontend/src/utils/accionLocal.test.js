@@ -22,10 +22,10 @@ describe('lo que tenés (esLoteLocal)', () => {
 describe('lo que seguís (lecturaDeSeguido, y la ficha sin tenencia)', () => {
   for (const c of casos.seguidos) {
     it(c.por_que, () => {
-      const { asset, local } = lecturaDeSeguido(c.simbolo)
+      const { asset, local } = lecturaDeSeguido(c.simbolo, c.tipo)
       expect({ asset, local }).toEqual({ asset: c.asset, local: c.local })
-      // «Ver gráfico» abre la ficha: la mira con la misma regla.
-      expect(miradaSinTenencia(c.simbolo).accionLocal).toBe(c.local)
+      // «Ver gráfico» abre la ficha sin el tipo: la mira con la misma regla.
+      if (!c.tipo) expect(miradaSinTenencia(c.simbolo).accionLocal).toBe(c.local)
     })
   }
 })
