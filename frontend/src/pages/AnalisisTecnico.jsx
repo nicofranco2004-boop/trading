@@ -27,6 +27,7 @@ import TuLista, { useListaTecnica } from './TuLista'
 import { TusSenalesVista, useTusSenales, Cambio } from '../components/TusSenales'
 import { TarjetaPlata } from '../components/RadiografiaTecnica'
 import { usePrivacy } from '../contexts/PrivacyContext'
+import { clicNormal } from '../utils/clicNormal'
 import { filasDeLaLista, contarFilas } from '../utils/listaTecnica'
 import { tarjetas as tarjetasDeLaSemana, rutaDeFicha, NO_ES_RECOMENDACION, TITULO_PLATA_ALCISTA, TITULO_CAMBIOS, QUE_ES_ESTA_SEMANA } from '../utils/tusSenales'
 
@@ -175,10 +176,10 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
           <ul>{ultimos.map((s, i) => <Cambio key={`${s.asset}-${s.tipo}-${i}`} s={s} hidden={hidden} onVer={onVer} />)}</ul>
         )}
         {total > 0 && (
-          <button type="button" onClick={() => onPestana('senales')}
+          <a href={urlDePestana('senales')} onClick={(e) => { if (clicNormal(e)) { e.preventDefault(); onPestana('senales') } }}
             className="w-full text-left text-[14px] font-medium text-data-violet border-t border-line/60 py-3 hover:underline inline-flex items-center gap-1.5">
             Ver {total === 1 ? 'la señal' : `las ${total} señales`} de la semana <ArrowRight size={14} aria-hidden="true" />
-          </button>
+          </a>
         )}
       </section>
 

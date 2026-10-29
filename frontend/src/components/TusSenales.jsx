@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../utils/api'
 import { usePrivacy } from '../contexts/PrivacyContext'
+import { clicNormal } from '../utils/clicNormal'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import AvisoNotificaciones from './AvisoNotificaciones'
 import {
@@ -73,10 +74,11 @@ export function Cambio({ s, hidden, onVer }) {
         {s.tesis && <p className="text-[13px] leading-snug text-ink-1">Tu tesis: «{s.tesis}»</p>}
         <p className={`text-[12px] ${s.tenes ? 'text-data-violet' : 'text-ink-2'}`}>{deQuien(s, hidden)}</p>
       </div>
-      <button type="button" onClick={() => onVer(s)}
-        className="self-end sm:self-start text-[13px] font-medium text-ink-1 bg-bg-2/60 border border-line rounded-full px-3.5 py-1.5 min-h-[34px] hover:text-ink-0 hover:border-rendi-accent/40 transition">
+      {/* Un link de verdad: se puede abrir en otra pestaña (D12). */}
+      <a href={rutaDeFicha(s)} onClick={(e) => { if (clicNormal(e)) { e.preventDefault(); onVer(s) } }}
+        className="self-end sm:self-start text-[13px] font-medium text-ink-1 bg-bg-2/60 border border-line rounded-full px-3.5 py-1.5 min-h-[34px] inline-flex items-center hover:text-ink-0 hover:border-rendi-accent/40 transition">
         {boton(s)}
-      </button>
+      </a>
     </li>
   )
 }
