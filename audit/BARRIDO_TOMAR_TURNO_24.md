@@ -614,3 +614,63 @@ conviene unificarlo y no hacerlo dos veces.
 
 Sonda: `test_sync_unrealized_come_el_deposito.py` (en el scratchpad de la
 auditoría). Rojo en los dos motores a propósito: ese rojo ES el bug.
+
+
+---
+
+# ❌ REFUTADO (en parte): el dividendo NO se cobra dos veces con dos clicks (28/10)
+
+Segundo de los 14 medido. La lente afirmaba: «El mismo dividendo entra dos
+veces: dos filas en Movimientos, dos acreditaciones en la cuenta en dólares y
+dos descuentos de comisión».
+
+## Medido: 8 de 8, en los dos motores, UN solo dividendo
+
+    SQLite    4 corridas:  dividendos=1  saldo_caja=100.0  resultados=[409, ok]
+    Postgres  4 corridas:  dividendos=1  saldo_caja=100.0  resultados=[409, ok]
+
+Dos clicks simultáneos sobre el mismo dividendo: entra uno, el otro recibe un
+409 limpio, la caja queda con los 100 que corresponden. **El escenario que
+describe la lente no se reproduce.**
+
+## 🔑 Y por qué NO se reproduce, que es el resultado que más importa
+
+Porque **el turno se pide ANTES del chequeo**, y el propio código dice para qué
+(`main.py:15601`): «El turno ANTES de mirar si ya está anotado: dos clicks a la
+vez no pueden pasar los dos el chequeo y anotarlo dos veces».
+
+Y acá el turno **sí alcanza en Postgres**, por un motivo que vale para todo el
+hallazgo 12: `_tomar_turno` es `UPDATE users SET tier=tier WHERE id=?`, y **los
+dos pedidos son del MISMO usuario**, así que escriben LA MISMA fila y el segundo
+espera. El turno no protege contra cualquiera — **protege contra los otros 23**,
+y «dos clicks en el mismo botón» cae justo adentro de eso.
+
+👉 **Esto refina el hallazgo 12 y conviene leerlo junto:** «24 sitios colgados de
+una protección que sólo sirve en SQLite» es demasiado fuerte. Lo correcto es:
+**el turno protege a los 24 entre sí en los dos motores, y no protege contra los
+16 que no lo piden.** El accidente más común —el doble click— está cubierto.
+
+## ⚠️ Lo que queda ABIERTO, y no lo medí
+
+El intruso real de este sitio no es el otro click: es **el importador**.
+`importing/persister.py:1149` inserta filas `op_type='Dividendo'`, y
+`import_confirm` **no pide el turno** (está en los 16). Así que confirmar un
+import que trae el dividendo, al mismo tiempo que la persona lo confirma desde
+la bandeja, es el cruce que el turno NO cubre.
+
+No lo medí: hace falta armar un lote de import de verdad. Lo que sí verifiqué es
+que **el guardián mira también los dividendos importados** —tiene una segunda
+consulta sin filtrar por origen, que empareja por activo dentro de la ventana
+(`dividendos.py`)—, así que el agujero, si existe, es sólo de tiempo y no de
+alcance. Eso descarta la sospecha peor, que era que el guardián ni los viera.
+
+## Los dos hermanos, por forma
+
+`bond_cashflow` (`main.py:14802`) y `bond_pago` (`main.py:14901`) tienen la forma
+IDÉNTICA: turno, después `cobros_bonos.ya_registrado`, después la escritura — el
+comentario de `14803` dice «El mismo freno que la bandeja». **Por forma les cabe
+la misma refutación para el doble click y la misma pregunta abierta con el
+importador.** Medido uno de los tres; los otros dos por forma, y lo digo así.
+
+Sonda: `test_dividendo_dos_clicks.py` (scratchpad de la auditoría). Verde en los
+dos motores: acá el verde es el resultado.
