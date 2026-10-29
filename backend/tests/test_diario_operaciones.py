@@ -467,6 +467,35 @@ class TesisTest(Base):
         self.assertTrue(any("KeyError" in x and "AAPL" in x for x in logs.output), logs.output)
         self.assertEqual([m["heading"] for m in mails], ["Quedaste en revisar tu tesis de NVDA"])
 
+    def test_mis_alertas_no_reactiva_ni_borra_un_recordatorio(self):
+        """Auditoría B-P4 (29/10): PATCH /api/alerts/{id} con `active: true`
+        reactivaba un recordatorio ya mandado y, con la fecha vencida, salía de
+        nuevo en la pasada siguiente. Y el DELETE lo borraba dejando la tesis
+        apuntando a una alerta que no existe. Se manejan desde la tesis."""
+        tid = self._guardar("Data centers")
+        self.client.put(f"/api/tesis/{tid}/recordatorio", json={"tipo": "3m"}, headers=self.h)
+        with main.db_abierta() as conn:
+            conn.execute("UPDATE tesis SET recordar_el=? WHERE id=?", (self.hoy.isoformat(), tid))
+            conn.commit()
+            aid = conn.execute("SELECT alert_id FROM tesis WHERE id=?", (tid,)).fetchone()[0]
+        mails = []
+        with mock.patch("billing.emails.send_alert_email", lambda **kw: mails.append(kw) or True), \
+             mock.patch("main._send_push_to_user", lambda uid, p: 1), \
+             mock.patch("alerts_engine.HORA_RECORDATORIO", 0):
+            main._evaluar_alertas_job()
+            r = self.client.patch(f"/api/alerts/{aid}", json={"active": True}, headers=self.h)
+            self.assertEqual(r.status_code, 400, r.text)
+            main._evaluar_alertas_job()
+        self.assertEqual(len(mails), 1, "una sola vez")
+        r = self.client.delete(f"/api/alerts/{aid}", headers=self.h)
+        self.assertEqual(r.status_code, 400, r.text)
+        with main.db_abierta() as conn:
+            self.assertIsNotNone(conn.execute("SELECT 1 FROM alerts WHERE id=?", (aid,)).fetchone())
+        self.assertNotIn(aid, [a["id"] for a in self.client.get("/api/alerts", headers=self.h).json()["items"]])
+        # Una alerta del formulario se sigue editando y borrando.
+        r = self.client.delete("/api/alerts/999999", headers=self.h)
+        self.assertEqual(r.status_code, 200)
+
     def test_reescribirla_otro_dia_muda_el_recordatorio(self):
         tid = self._guardar("v1")
         self.client.put(f"/api/tesis/{tid}/recordatorio", json={"tipo": "3m"}, headers=self.h)
