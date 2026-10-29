@@ -919,6 +919,121 @@ cajas, el bloqueo mutuo de las conversiones y el del depósito borrado.
 
 ---
 
+## 🔴 HALLAZGO 13 — El «plan B» después de un error de SQL: en Postgres no corre, y la red queda sin funcionar
+
+**Qué se ve, sin jerga:** alguien se registra con un email que ya está en Rendi.
+Tiene que salir el cartel amable «Este email ya está registrado» con el botón «Ir
+al login». En Postgres salía un error 500 — la pantalla de «algo falló», sin
+botón y sin explicación. En SQLite, el cartel correcto.
+
+**El mecanismo, de atrás para adelante.** El alta de un usuario tiene una red:
+intenta el INSERT con la columna `requires_plan` y, si esa columna todavía no
+existe (un deploy a mitad de camino), repite el INSERT sin ella. Esa red se
+tragaba el error de verdad:
+
+1. El primer INSERT falla, pero no por la columna: falla porque el email ya está
+   (`duplicate key value violates unique constraint "users_email_key"` — quedó en
+   el log, tapado).
+2. En Postgres, **una sentencia que falla invalida la transacción entera**. Todo
+   lo que venga después recibe `InFailedSqlTransaction: current transaction is
+   aborted`, sin importar qué pida.
+3. Así que el INSERT de respaldo no falla por «email repetido»: falla por
+   «transacción abortada». Un error de otra familia.
+4. El `except ERR_INTEGRIDAD` del final —el que armaba el 409— no lo reconoce, y
+   el pedido termina en 500.
+5. En SQLite nada de esto pasa: la sentencia que falla no deja secuela, el plan B
+   corre, vuelve a chocar contra el UNIQUE, y el 409 sale bien. **Por eso el test
+   estaba verde de un lado y rojo del otro durante toda la migración.**
+
+**La cadena de por qués, hasta algo del proceso:** ¿por qué un 500? porque llegó
+otro error → ¿por qué otro? porque el plan B reventó antes → ¿por qué reventó?
+porque la transacción estaba abortada → ¿por qué nadie lo vio? porque SQLite no
+abort nada y el verde tapaba → **¿por qué hay nueve lugares iguales? porque «si
+falla, probá de nuevo sin la columna nueva» es la forma en que este repo se
+protege de un deploy a mitad de camino, y se escribió nueve veces a mano, sin un
+lugar común que la implemente.** Ahí está la causa de proceso: arreglar los nueve
+no impide el décimo.
+
+### Los 9 sitios (barrido con AST, no con grep)
+
+El grep no sirve acá: la forma no es una palabra, es «un `except` que vuelve a
+hablar con la base». Se barrió el AST de todo el backend buscando `try` con SQL
+adentro cuyo `except` también ejecuta SQL, sin un `rollback()` ni un punto de
+guardado en el medio.
+
+| sitio | cuándo aparece | arreglado |
+|---|---|---|
+| `main.py` · `register` (INSERT con requires_plan) | **email repetido: uso normal** | ✅ `035f3de4` |
+| `main.py` · `get_current_user` (leer requires_plan) | columna ausente — y corre en **todos** los pedidos con sesión | ✅ `035f3de4` |
+| `main.py` · `_rollover_to_current_month` | **carrera: dos pedidos creando la fila del mes** | ✅ `035f3de4` |
+| `main.py` · `register` (anotar el origen) † | fallo al anotar de dónde vino | ✅ `035f3de4` |
+| `ai/quota.py` · `_window_floor` | base a medio migrar (sin `pro_trial_until`) | ⬜ 3 líneas |
+| `main.py` · `advisor_set_profile` (logo) | columna `logo_data` ausente; el plan B es un `ALTER TABLE` | ⬜ 3 líneas |
+| `snapshots_job.py` · `run_daily_snapshot` | base a medio migrar; es el motor de la noche | ⬜ 3 líneas |
+| `main.py` · `_db_internals` | diagnóstico de admin, **SQLite puro** (`dbstat`, `sqlite_master`) | ⬜ no aplica |
+| `main.py` · `wallbit_connect` / `wallbit_sync_endpoint` | el `except` atrapa un error de **red**, no de base | ⬜ pide leer `_wallbit_do_sync` |
+
+† Este cuarto no es un «plan B»: su `except` sólo loguea. Entró porque es la otra
+cara del mismo mecanismo — si anotar el origen falla, la transacción queda
+abortada y el `conn.commit()` del final se vuelve un ROLLBACK: **el alta entera
+se pierde y register contesta 200 igual.** Es el hallazgo 11 otra vez, en otro
+endpoint.
+
+⚠️ **Corrección a mi propio mensaje de commit `035f3de4`:** dice «los 5 que
+quedan» y nombra 6 sitios. Quedan **6** (y de esos, 3 valen la pena, 1 no aplica
+y 2 piden una lectura más).
+
+### Cómo se verificó (y cómo se verificó que la verificación sirve)
+
+`backend/tests/test_plan_b_con_transaccion_abortada.py`, por el camino real —el
+endpoint HTTP, no la función de adentro— y con la condición de producción: para
+el caso de la columna ausente **se borra la columna de verdad** (`ALTER TABLE
+users DROP COLUMN requires_plan`) y se devuelve al final. No se fuerza el error
+con un parche: si el forzado tapara justo lo que falla en producción, el verde no
+significaría nada.
+
+Mutación en las dos direcciones, que es lo que hace que el test valga:
+
+```
+con el arreglo      → Postgres 2/2 ✅   SQLite 2/2 ✅
+sin el arreglo      → Postgres 1 ROJO   SQLite 2/2 ✅   ← la firma exacta de la migración
+```
+
+Que quede **verde en SQLite y rojo en Postgres** es la prueba de que el test mide
+el mecanismo del motor y no otra cosa. Y el rojo original ya existía en el repo
+sin que nadie lo atribuyera: `test_email_verification::…_returns_409_with_code`,
+uno de los ~13 rojos de Postgres sin explicar. Ahora 11/11 en los dos motores.
+
+### El guardián, que es el arreglo de verdad
+
+`backend/tests/test_plan_b_tiene_punto_de_guardado.py` barre el AST en cada
+corrida y falla si aparece un plan B nuevo sin protección, diciendo qué poner. El
+censo de los 6 que quedan está **adentro del test con el motivo de cada uno**, y
+falla también **al revés**: si uno de la lista se arregla, pide que se lo saquen,
+para que la lista no se vuelva un cementerio. Probado en las dos direcciones.
+
+No es una lista de exclusión que «falla abierta»: un sitio que no está en el
+censo es rojo, no es permiso.
+
+### Lo que falta, y por qué no lo hice yo
+
+Los 3 que valen (`ai/quota.py` · `_window_floor`, `snapshots_job.py` ·
+`run_daily_snapshot`, `main.py` · `advisor_set_profile`) **no se arreglan con
+`conn.rollback()`**, aunque sea la salida obvia: el rollback descarta TODO lo que
+haya sin guardar en esa transacción, no sólo la sentencia que falló. `_window_floor`
+se llama desde el medio de las reservas de cuota, que ya escribieron: ahí un
+rollback se llevaría plata ya anotada. El punto de guardado es la herramienta
+correcta justamente porque deshace **sólo eso**.
+
+Y el punto de guardado hoy vive adentro de `main.py`. `ai/quota.py` y
+`snapshots_job.py` no lo pueden importar sin armar un círculo (main importa a los
+dos). **Mi recomendación es mudarlo a `backend/pgsesion.py`** —que ya es el lugar
+de «todo lo que una conexión a Postgres necesita» y lo importa todo el backend— y
+recién entonces aplicarlo en los tres. Es un cambio en 3 archivos a la vez y toca
+`main.py`, así que lo dejo para la sesión que tiene ese archivo en la mano, con
+el guardián ya puesto para que no se olvide: mientras los 6 sigan así, el censo
+del test los nombra con el motivo.
+
 ## ✅ Lo que ataqué y aguantó
 
 * **Los seis `UPDATE` de cobros, verificados por máquina y no a ojo.** El guard
