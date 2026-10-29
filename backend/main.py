@@ -1245,6 +1245,18 @@ def _init_db_postgres():
     import psycopg
     ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema_pg.sql")
     ddl = open(ruta).read()
+    # ANTES del esquema: el índice único `ux_tesis_un_dia` no se puede crear
+    # sobre una base que ya tenga dos tesis del mismo día (de antes de la regla),
+    # y el CREATE de abajo reventaría el arranque. Primero se juntan, con la misma
+    # función que usa SQLite (tesis.unificar_repetidas). En una base nueva la
+    # tabla todavía no existe y no hay nada que juntar. `idx_tesis_user_asset`
+    # tenía las mismas columnas sin ser único: lo reemplaza (igual que en SQLite).
+    with db_abierta() as conn:
+        if conn.execute("SELECT to_regclass('tesis')").fetchone()[0]:
+            import tesis as _tesis
+            _tesis.unificar_repetidas(conn)
+            conn.execute("DROP INDEX IF EXISTS idx_tesis_user_asset")
+        conn.commit()
     import pgsesion
     with pgsesion.conectar(DATABASE_URL, autocommit=True) as c:
         for s in [x.strip() for x in ddl.split(";\n") if x.strip()]:
@@ -2612,8 +2624,12 @@ def init_db():
 
         # Tu tesis: por qué compraste un activo (tesis.py). Una por (usuario,
         # activo) y por día: reescribirla otro día guarda otra y la vieja queda
-        # para las ventas que hiciste mientras valía. Tabla nueva, sin ALTER: el
-        # índice va en el mismo bloque y es seguro en una base ya creada.
+        # para las ventas que hiciste mientras valía. «Una por día» la hace
+        # cumplir el índice único `ux_tesis_un_dia`, no el código: dos «Guardar»
+        # a la vez escribían dos (auditoría C, hallazgo 4). El índice va DESPUÉS
+        # de la tabla y de juntar las repetidas que ya hubiera (con repetidas no
+        # se puede crear). Reemplaza a `idx_tesis_user_asset`, que tenía las
+        # mismas columnas sin ser único.
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS tesis (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2629,7 +2645,12 @@ def init_db():
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_tesis_user_asset ON tesis(user_id, asset, escrita_el);
+        """)
+        import tesis as _tesis
+        _tesis.unificar_repetidas(conn)
+        conn.executescript("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_tesis_un_dia ON tesis(user_id, asset, escrita_el);
+            DROP INDEX IF EXISTS idx_tesis_user_asset;
         """)
 
         # Los dibujos a mano del gráfico técnico (líneas de tendencia y
