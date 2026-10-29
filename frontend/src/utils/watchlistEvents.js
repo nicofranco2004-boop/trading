@@ -2,7 +2,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Problema que resuelve: el componente <Watchlist> en /home fetcheaba al
 // montar pero no escuchaba cambios externos. Si agregabas un ticker desde
-// /buscar, MobileSearch o AssetQuickView, el watchlist quedaba stale hasta
+// /buscar, MobileSearch o la ficha del activo, el watchlist quedaba stale hasta
 // que volvieras a recargar la página o re-montar el componente.
 //
 // Patrón: window-level CustomEvent. Sin store global (no Zustand/Redux),

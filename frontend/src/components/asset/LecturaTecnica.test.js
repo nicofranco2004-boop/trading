@@ -303,6 +303,60 @@ describe('LecturaTecnica', () => {
     expect(barras()).toBe(0)
   })
 
+  it('Bandas de Bollinger: prendidas de entrada; el botón las apaga junto con su tarjeta', async () => {
+    const conBandas = {
+      ...USD,
+      puntos: USD.puntos.map((p, i) => (i < 19 ? p : { ...p, bb_arriba: p.c * 1.04, bb_abajo: p.c * 0.96 })),
+      lectura: { ...USD.lectura, bb_arriba: 240, bb_abajo: 226, bb_posicion: 0.64, bb_ancho_relativo: 0.5, mov_dia: 2.04, mov_mes: 9.4 },
+    }
+    respuestas = { '/tecnico/AAPL?moneda=usd': conBandas, '/tecnico/AAPL?moneda=ars': ARS }
+    const relleno = () => {
+      let n = 0
+      const pila = [montado.contenedor]
+      while (pila.length) {
+        const x = pila.shift()
+        if (x.nodeName === 'PATH' && x.getAttribute?.('fill-opacity') === '0.08') n++
+        pila.push(...(x.childNodes || []))
+      }
+      return n
+    }
+    const t = await dibujar({ pnlPctUsd: 0.1 })
+    expect(t).toContain('Bandas de Bollinger')        // el botón de la leyenda
+    expect(t).toContain('más angostas que de costumbre')
+    expect(t).toContain('Entre las bandas')           // la tarjeta, de entrada
+    expect(t).toContain('Cuánto se mueve')           // ésta va siempre
+    expect(t).toContain('alrededor de 2,0%')
+    expect(relleno()).toBe(1)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Bandas de Bollinger'))
+    for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
+    const t2 = texto(montado.contenedor)
+    expect(t2).not.toContain('Entre las bandas')
+    expect(relleno()).toBe(0)
+  })
+
+  it('una banda de abajo negativa (un salto brusco) no lleva el eje abajo de 0', async () => {
+    const salto = {
+      ...USD,
+      puntos: USD.puntos.map((p, i) => (i < 480 ? p : { ...p, bb_arriba: p.c * 1.6, bb_abajo: -5.44 })),
+      lectura: { ...USD.lectura, bb_arriba: 400, bb_abajo: -5.44, bb_posicion: 0.6, bb_ancho_relativo: 3 },
+    }
+    respuestas = { '/tecnico/AAPL?moneda=usd': salto, '/tecnico/AAPL?moneda=ars': ARS }
+    // La prueba de las velas deja guardado «velas»: ésta mira la línea.
+    try { localStorage.setItem('rendi_grafico_tipo', 'linea') } catch { /* sin almacenamiento */ }
+    await dibujar({ pnlPctUsd: 0.1 })
+    // La línea del precio sigue ocupando el alto del gráfico (con el eje hasta
+    // −5,44 y +400 quedaba aplastada en una franja finita).
+    const pila = [montado.contenedor]
+    let linea = null
+    while (pila.length) {
+      const x = pila.shift()
+      if (x.nodeName === 'PATH' && x.getAttribute?.('stroke-width') === '1.7') linea = x
+      pila.push(...(x.childNodes || []))
+    }
+    const ys = [...linea.getAttribute('d').matchAll(/,(-?[\d.]+)/g)].map(m => Number(m[1]))
+    expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThan(100)   // de 260 de alto
+  })
+
   it('sin volumen en los datos el botón queda deshabilitado y, al tocarlo, dice por qué', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     await dibujar({ pnlPctUsd: 0.1 })
@@ -346,7 +400,7 @@ describe('LecturaTecnica', () => {
     expect(t).toContain('Fuerza de la tendencia (ADX)')
     expect(t).toContain('a favor de la suba')
     expect(t).toContain('La tendencia se afirma')
-    expect(t).toContain('la fuerza (ADX) pasó 23 para arriba con el Squeeze en verde: suele leerse como el arranque de una suba con fuerza.')
+    expect(t).toContain('la fuerza (ADX) pasó 23 para arriba con el Squeeze en verde: el precio viene subiendo con fuerza.')
     // El panel: una barra por día con Squeeze y la línea del ADX.
     const nodos = (n) => [n, ...(n.childNodes || []).flatMap(nodos)]
     const panel = nodos(montado.contenedor).find(n => n.getAttribute?.('aria-label')?.startsWith('Fuerza de la tendencia'))

@@ -1074,19 +1074,44 @@ export function valuePositionLot(p, ctx = {}) {
  *
  * `extraValorUsd`/`extraCostoUsd`: lo que no son posiciones (los plazos fijos),
  * ya al dólar de hoy.
- * @returns {{ monto, pct }}  monto en la moneda de la vista; pct en fracción
+ *
+ * Es el ÚNICO cálculo del no realizado de la cartera: lo usan el Dashboard, el
+ * inicio del celular, el encabezado de Cartera (Positions.jsx) y el reporte en
+ * PDF de Análisis. (Hubo una copia en utils/pnlNoRealizado.js; se borró.)
+ * @returns {{ monto, pct, valor, costo }}  montos en la moneda de la vista; pct en fracción
  */
 export function noRealizadoEnVista({ positions, prices, brokers, tcValuacion, tcCedear = tcValuacion, tcCripto = null,
-                                     costBasis = 'today', moneda = 'USD', extraValorUsd = 0, extraCostoUsd = 0 }) {
+                                     costBasis = 'today', moneda = 'USD', extraValorUsd = 0, extraCostoUsd = 0,
+                                     totales = null }) {
+  // `totales`: la suma de brokers YA hecha con la base que corresponde (la de
+  // `costBasis` en dólares, la de 'today' en pesos). Cartera la tiene memoizada
+  // y la pasa para no recorrer los lotes dos veces; los demás no la pasan.
   const base = moneda === 'ARS' ? 'today' : costBasis
-  let valor = extraValorUsd, costo = extraCostoUsd
-  for (const b of brokers || []) {
-    const r = computeBrokerValue(positions || [], prices || {}, b, tcValuacion, tcCedear, tcCripto, base)
-    valor += r.value
-    costo += r.invested
-  }
+  const t = totales || sumarBrokers({ brokers, positions, prices, tcValuacion, tcCedear, tcCripto, costBasis: base })
+  const valor = extraValorUsd + (t.value || 0)
+  const costo = extraCostoUsd + (t.invested || 0)
   const pct = costo > 0 ? (valor - costo) / costo : 0
-  return { monto: (valor - costo) * (moneda === 'ARS' ? tcValuacion : 1), pct }
+  const tc = moneda === 'ARS' ? tcValuacion : 1
+  // `valor` y `costo` también en la moneda de la vista: son el "Valor actual" y
+  // el "Invertido" del encabezado de Cartera.
+  return { monto: (valor - costo) * tc, pct, valor: valor * tc, costo: costo * tc }
+}
+
+/**
+ * sumarBrokers — lo que valen y lo que costaron todos los brokers, con un modo
+ * de costo. La suma que hacen el encabezado de Cartera, el Dashboard y Análisis.
+ */
+export function sumarBrokers({ brokers = [], positions, prices, tcValuacion, tcCedear = tcValuacion, tcCripto = null, costBasis = 'today' }) {
+  let value = 0
+  let invested = 0
+  const byBroker = {}
+  for (const b of brokers || []) {
+    const r = computeBrokerValue(positions || [], prices || {}, b, tcValuacion, tcCedear, tcCripto, costBasis)
+    byBroker[b.name] = r
+    value += r.value || 0
+    invested += r.invested || 0
+  }
+  return { value, invested, byBroker }
 }
 
 /**
@@ -1098,6 +1123,10 @@ export function computeBrokerValue(allPositions, prices, broker, tcValuacion, ce
   const ctx = { broker, prices, tcValuacion, tcCedear: cedearRate, tcCripto, costBasis }
   let value = 0, invested = 0
   let valueArs = 0, invArs = 0
+  // El valor en USD de cada lote (id → valor): las piezas EXACTAS de `value`.
+  // Lo usa la radiografía técnica de la Cartera para pesar cada activo sin
+  // valuarlo por otro camino (su suma es el total de arriba).
+  const porLote = new Map()
 
   for (const p of bpos) {
     const r = valuePositionLot(p, ctx)
@@ -1105,6 +1134,7 @@ export function computeBrokerValue(allPositions, prices, broker, tcValuacion, ce
     invested += r.investedUsd
     valueArs += r.valueArs
     invArs   += r.invArs
+    porLote.set(p.id, r.valueUsd)
   }
 
   return {
@@ -1112,6 +1142,7 @@ export function computeBrokerValue(allPositions, prices, broker, tcValuacion, ce
     invested,
     valueArs,
     invArs,
+    porLote,
     pnlUsd: value - invested,
     pnlArs: valueArs - invArs,
   }

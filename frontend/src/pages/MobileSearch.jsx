@@ -47,9 +47,10 @@ export default function MobileSearch() {
   // A dónde lleva cada fila: la MISMA regla que el ⌘K de la compu
   // (destinoDeTicker, utils/buscadorRapido.js). Iba a `/posiciones#X` y
   // `/posiciones?search=X`, que la Cartera del celular no lee: quedabas arriba
-  // de tu lista sin nada abierto. null = no hay pantalla para ese ticker (un
-  // bono, una cripto) o es el asesor en su nivel, que no tiene "Calidad de
-  // cartera" en su menú: la fila no lleva a ningún lado y queda sólo la estrella.
+  // de tu lista sin nada abierto. Lo tengas o no, la ficha del activo con su
+  // gráfico. null = un bono o un fondo que no tenés (no tienen gráfico técnico)
+  // o es el asesor en su nivel, sin cartera propia: la fila no lleva a ningún
+  // lado y queda sólo la estrella.
   const destinoDe = (t) => (atOwnLevel && !t.fromUser) ? null
     : destinoDeTicker(t.symbol, { tuyo: t.fromUser, tipo: t.type })
   const puedeSeguir = !atOwnLevel   // la estrella de watchlist (cuenta propia)

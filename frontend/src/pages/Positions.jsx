@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
+import { useCallback, useEffect, useMemo, useState, useRef, Fragment } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Plus, ChevronDown, ChevronUp, Wallet, TrendingUp, TrendingDown, Layers as LayersIcon, Rows3 as RowsIcon, Search, X, Eye, EyeOff } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
@@ -46,7 +46,8 @@ import StalePricesNotice from '../components/StalePricesNotice'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass, pctTxt, parseNum, parseNumOrNull, numToInput, numACampo } from '../utils/format'
 import { leerVenta, cuerpoDeVenta, leerConversion, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { api, errorMessage } from '../utils/api'
-import { computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, avgCostArsPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
+import { pfUsd } from '../hooks/usePfRollup'
+import { sumarBrokers, noRealizadoEnVista, computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, avgCostArsPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
 import { linkDeAlerta } from '../components/alerts/alertaDePosicion'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { EtiquetaMoneda, EtiquetaEfectivo, EtiquetaBono, EtiquetaFaltaTc } from '../components/EtiquetaFila'
@@ -64,6 +65,7 @@ import { preciosQueCambiaron, hayPrecios } from '../utils/preciosEnVivo'
 import { useUltimoPedido } from '../hooks/useUltimoPedido'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import PesoEnCartera from '../components/PesoEnCartera'
+import RadiografiaTecnica, { useLecturasCartera, lecturaDeLaFila, TendenciaChip, FuerzaRsi } from '../components/RadiografiaTecnica'
 import { relojVisible, PRECIOS_CARTERA_MS } from '../utils/relojVisible'
 import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
 import { impactoFueraDeHorario, sumarTenencias } from '../utils/fueraDeHorario'
@@ -1735,14 +1737,7 @@ function PositionsDesktop() {
   // IMPORTANTE: useMemo va ANTES del early return — los hooks deben llamarse
   // en el mismo orden en cada render (rules of hooks).
   const totals = useMemo(() => {
-    let value = 0, invested = 0
-    const byBroker = {}
-    for (const b of brokers) {
-      const r = computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis)
-      byBroker[b.name] = r
-      value += r.value || 0
-      invested += r.invested || 0
-    }
+    const { value, invested, byBroker } = sumarBrokers({ brokers, positions, prices, tcValuacion, tcCedear, tcCripto, costBasis })
     const pnl = value - invested
     const pct = invested > 0 ? pnl / invested : 0
     return { value, invested, pnl, pct, byBroker }
@@ -1756,12 +1751,7 @@ function PositionsDesktop() {
   // computeBrokerValue solo los acumula para brokers ARS (0 para USD) → dropearía las
   // tenencias en dólares. El hero en display USD usa `totals` (que sí refleja el modo).
   const totalsToday = useMemo(() => {
-    let value = 0, invested = 0
-    for (const b of brokers) {
-      const r = computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, 'today')
-      value += r.value || 0
-      invested += r.invested || 0
-    }
+    const { value, invested } = sumarBrokers({ brokers, positions, prices, tcValuacion, tcCedear, tcCripto, costBasis: 'today' })
     return { value, invested }
   }, [brokers, positions, prices, tcValuacion, tcCedear, tcCripto])
 
@@ -1807,19 +1797,46 @@ function PositionsDesktop() {
   // Plazos fijos → USD, coherente: valor (capital + devengado), capital
   // (invertido) y P&L (devengado). Suma al titular del patrimonio. No entra en
   // la variación diaria (los snapshots históricos no tienen PF).
-  const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcValuacion
-  const pfInvestedUsd = (pfTotals.USD?.capital || 0) + (pfTotals.ARS?.capital || 0) / tcValuacion
-  const heroValue = totals.value + pfValueUsd
-  const heroInvested = totals.invested + pfInvestedUsd
-  const heroPnl = heroValue - heroInvested
-  const heroPct = heroInvested > 0 ? heroPnl / heroInvested : 0
+  // La cuenta es `noRealizadoEnVista` (valuation.js), la misma del Dashboard y
+  // del reporte en PDF: acá se le pasan las sumas ya memoizadas.
+  const pfRoll = pfUsd(pfTotals, tcValuacion)
+  const pfValueUsd = pfRoll.valueUsd
+  const extraPf = { extraValorUsd: pfRoll.valueUsd, extraCostoUsd: pfRoll.investedUsd }
+  const heroUsd = noRealizadoEnVista({ ...extraPf, tcValuacion, moneda: 'USD', totales: totals })
+  const heroValue = heroUsd.valor
+  const heroInvested = heroUsd.costo
+  const heroPnl = heroUsd.monto
+  const heroPct = heroUsd.pct
+
+  // Radiografía técnica: cada lote pesa lo que vale en `totals` (las piezas de
+  // computeBrokerValue, cuya suma es este total) y los plazos fijos suman sin
+  // lectura. Las lecturas, una sola vez para toda la página.
+  const lecturas = useLecturasCartera(positions)
+  const valorDeLote = useCallback(p => totals.byBroker[p.broker]?.porLote?.get(p.id) ?? 0, [totals])
+  const radiografiaExtra = useMemo(() => (pfValueUsd > 0 ? [{ nombre: 'plazos fijos', valor: pfValueUsd }] : []), [pfValueUsd])
+  // Las dos columnas técnicas de una fila (las dos tablas). El lote de una fila
+  // abierta no las repite; el efectivo no tiene.
+  const celdasTecnicas = (p, isLot) => {
+    const { estado, x } = lecturaDeLaFila(lecturas, p)
+    const gris = (t, title) => <span className="text-ink-3" title={title}>{t}</span>
+    const celda = (lleno) => (
+      <td className={tdClass}>
+        {(p.is_cash || isLot) ? gris(isLot ? '' : '—')
+          : estado === 'cargando' ? gris('…')
+            : estado === 'error' ? gris('—', 'No pudimos traer el análisis técnico')
+              : lleno}
+      </td>
+    )
+    return <>{celda(<TendenciaChip x={x} p={p} />)}{celda(<FuerzaRsi x={x} />)}</>
+  }
   // Hero en display ARS: cifras mode-INDEPENDENT (pesos nativos + tenencias USD al
   // dólar de hoy), a partir del total 'today' ×tcValuacion. Incluye PF. Así ARS-nativo
   // queda nativo y USD queda USD×hoy, sin filtrar el modo ni dropear brokers USD.
-  const heroValueArs = (totalsToday.value + pfValueUsd) * tcValuacion
-  const heroInvestedArs = (totalsToday.invested + pfInvestedUsd) * tcValuacion
-  const heroPnlArs = heroValueArs - heroInvestedArs
-  const heroPctArs = heroInvestedArs > 0 ? heroPnlArs / heroInvestedArs : 0
+  const heroArs = noRealizadoEnVista({ ...extraPf, tcValuacion, moneda: 'ARS', totales: totalsToday })
+  const heroValueArs = heroArs.valor
+  const heroInvestedArs = heroArs.costo
+  const heroPnlArs = heroArs.monto
+  const heroPctArs = heroArs.pct
   // Cifras del hero según el display: ARS → nativas (mode-independent); USD → reflejan
   // el modo (en 'purchase' el invertido/P&L en USD absorben la devaluación).
   const isArsDisp = displayCurrency === 'ARS'
@@ -2121,6 +2138,11 @@ function PositionsDesktop() {
             total={isArsDisp ? heroValueArs + impactoFdh.total.ars : heroValue + impactoFdh.total.usd} />
         )}
       </div>
+
+      {/* Radiografía técnica: cuánto de tu plata está en tendencia alcista. La
+          MISMA pieza que en el celular (R6). */}
+      <RadiografiaTecnica lotes={positions} valorDe={valorDeLote} extra={radiografiaExtra}
+        indice={lecturas.indice} cargando={lecturas.cargando} error={lecturas.error} className="mb-5" />
 
       {/* Banner de variación diaria deshabilitado — requiere snapshots
           confiables (cron server-side) que aún no están implementados. */}
@@ -2490,6 +2512,8 @@ function PositionsDesktop() {
                       {showDetail && isArsDisp && <th className={thClass}>P&L USD</th>}
                       <th className={thClass}>Var. día</th>
                       {fdhAca && <th className={thClass}><EncabezadoColumna sesion={sesionFdh} /></th>}
+                      <th className={thClass} title="Tendencia de fondo, en dólares: el precio contra su promedio de los últimos 200 días">Tendencia</th>
+                      <th className={thClass} title="Fuerza (RSI): compara las subas con las bajas de las últimas 3 semanas, de 0 a 100">Fuerza (RSI)</th>
                       <th className={thClassStickyRight}></th>
                     </tr>
                   </thead>
@@ -2561,7 +2585,7 @@ function PositionsDesktop() {
                       // + Invertido si showDetail (+1) + TC Compra/Inv.USD/P&L USD si
                       // showDetail && vista ARS (+3). USD: los 3 helpers cross-moneda
                       // se ocultan (redundantes con las columnas ya-en-USD).
-                      const arsColSpan = (showDetail ? (isArsDisp ? 13 : 10) : 9) + (fdhAca ? 1 : 0)
+                      const arsColSpan = (showDetail ? (isArsDisp ? 13 : 10) : 9) + (fdhAca ? 1 : 0) + 2   // +2: Tendencia y Fuerza (RSI)
                       const cobradoDisp = isArsDisp ? cobradoUsd * tcValuacion : cobradoUsd
                       return (
                         <Fragment key={rowKey}>
@@ -2723,6 +2747,7 @@ function PositionsDesktop() {
                                 moneda={displayCurrency} oculto={hidden} />
                             </td>
                           )}
+                          {celdasTecnicas(p, isLot)}
                           <td className={tdClassStickyRight}>
                             <div className="flex items-center gap-1 justify-end">
                               {!p.is_cash && (
@@ -2793,6 +2818,7 @@ function PositionsDesktop() {
                             moneda={displayCurrency} oculto={hidden} />
                         </td>
                       )}
+                      <td colSpan={2} />
                       <td />
                     </tr>
                   </tfoot>
@@ -2820,6 +2846,8 @@ function PositionsDesktop() {
                     <th className={thClass}>P&L</th>
                     <th className={thClass}>Var. día</th>
                     {fdhAca && <th className={thClass}><EncabezadoColumna sesion={sesionFdh} /></th>}
+                    <th className={thClass} title="Tendencia de fondo, en dólares: el precio contra su promedio de los últimos 200 días">Tendencia</th>
+                    <th className={thClass} title="Fuerza (RSI): compara las subas con las bajas de las últimas 3 semanas, de 0 a 100">Fuerza (RSI)</th>
                     <th className={thClassStickyRight}></th>
                   </tr>
                 </thead>
@@ -2970,6 +2998,7 @@ function PositionsDesktop() {
                               moneda={displayCurrency} oculto={hidden} />
                           </td>
                         )}
+                        {celdasTecnicas(p, isLot)}
                         <td className={tdClassStickyRight}>
                           <div className="flex items-center gap-1 justify-end">
                             {!p.is_cash && (
@@ -2987,7 +3016,7 @@ function PositionsDesktop() {
                         <BondDetailRow
                           p={p}
                           filaFusionada={filaSinUnaPata(p)}
-                          colSpan={(showDetail ? 10 : 9) + (fdhAca ? 1 : 0)}
+                          colSpan={(showDetail ? 10 : 9) + (fdhAca ? 1 : 0) + 2}
                           summary={bondSummary}
                           pendingDates={pendientesDeLaFila(p)}
                           cobros={cobrosRenta}
@@ -3032,6 +3061,7 @@ function PositionsDesktop() {
                           moneda={displayCurrency} oculto={hidden} />
                       </td>
                     )}
+                    <td colSpan={2} />
                     <td />
                   </tr>
                 </tfoot>

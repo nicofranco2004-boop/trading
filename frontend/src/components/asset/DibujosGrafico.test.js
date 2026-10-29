@@ -386,7 +386,7 @@ describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos
     expect(enLaBarra).toEqual(['tendencia', 'horizontal', 'menu-fibonacci', 'menu-elliott', 'medir', 'borrarDibujos'])
     const lista = todos(montado.contenedor, n => n.getAttribute?.('role') === 'group' && n.getAttribute('aria-label') === 'Indicadores')[0]
     const enLaLista = todos(lista, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa')).filter(Boolean)
-    expect(enLaLista).toEqual(['vol', 's200', 's50', 'rsi', 'fuerza', 'eventos', 'globo', 'fabrica'])
+    expect(enLaLista).toEqual(['vol', 's200', 's50', 'bb', 'rsi', 'fuerza', 'eventos', 'globo', 'fabrica'])
     const tipo = todos(montado.contenedor, n => n.getAttribute?.('aria-label') === 'Tipo de gráfico')[0]
     expect(todos(tipo, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa'))).toEqual(['linea', 'velas'])
   })

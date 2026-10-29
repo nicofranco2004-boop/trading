@@ -1,10 +1,15 @@
 // AlertaForm — el formulario del aviso de precio, para crearlo y para editarlo.
 // ═══════════════════════════════════════════════════════════════════════════
-// Dos tipos, elegidos arriba con un selector:
+// Tres tipos, elegidos arriba con un selector:
 //   • Llega a un precio  (price_target): "avisame cuando GGAL suba a $ 8.000".
 //     Todos los planes.
 //   • Se mueve un %      (pct_move): "avisame si algo de mi cartera cae 5 %".
 //     Plus o más; el backend lo gatea igual (403 con {upgrade}).
+//   • Señal técnica      (tecnica): "avisame cuando AAPL cruce su promedio de
+//     200 días". Todos los planes. Se mira una vez por día con el cierre
+//     (alerts_engine.evaluar_tecnicas). Desde la ficha técnica llega ya armada
+//     (`prefill.fijo`: el activo y la marca de acción argentina los decidió la
+//     ficha), sin el selector de tipo.
 //
 // Es un formulario de CAMPOS con su nombre, uno debajo del otro y todos del
 // mismo alto. La versión anterior armaba una frase con casilleros adentro y se
@@ -34,8 +39,9 @@ import { api } from '../../utils/api'
 import { parseNum, numACampo } from '../../utils/format'
 import { confirmar } from '../../utils/confirmar'
 import AvisoNotificaciones from '../AvisoNotificaciones'
-import { monedaDe, simbolo, fmtPrecio, fmtPct, confirmacion, canal, monedasPosibles } from './alertasTexto'
+import { monedaDe, simbolo, fmtPrecio, fmtPct, confirmacion, canal, monedasPosibles, SENALES_TECNICAS, conSentido, activoTecnico } from './alertasTexto'
 import { cargarCedears, dolaresPorSimbolo } from '../../utils/opcionesCedear'
+import { setBrokersRegistry } from '../../utils/valuation'
 
 const VACIO = {
   kind: 'price_target',
@@ -47,6 +53,8 @@ const VACIO = {
   up_pct: '',          // pct_move: sube más de
   down_pct: '',        // pct_move: cae más de
   baseline: 'prev_close', // pct_move de un activo: 'prev_close' (en el día) | 'set_price' (desde ahora)
+  senal: 'media200',   // tecnica: qué señal (alertasTexto → SENALES_TECNICAS)
+  accion_local: false, // tecnica: acción argentina (la regla de la ficha)
   channel: 'both',
   repeat: 'once',      // el de precio; al cambiar de tipo lo decide repeticionPorDefecto
 }
@@ -56,7 +64,11 @@ const VACIO = {
 // la de toda la cartera se apagaba con el primer activo que pasaba el % —y
 // avisaba sólo de ése aunque se movieran tres juntos—: quien pedía «avisame si
 // algo de mi cartera se mueve 3 %» recibía un aviso y nunca más (21/10/2026).
+//
+// La técnica arranca en «Cada vez que pase»: un cruce del promedio de 200 días
+// pasa pocas veces por año y quien lo pide quiere enterarse de todos.
 export function repeticionPorDefecto(kind, scope) {
+  if (kind === 'tecnica') return 'always'
   return kind === 'pct_move' && scope === 'holdings' ? 'always' : 'once'
 }
 
@@ -71,7 +83,7 @@ export function alCambiarVigilancia(f, cambios, repeticionElegida) {
 // el uso más común; con un activo ya elegido, sigue con ese.
 export function alElegirTipo(f, kind, repeticionElegida) {
   return alCambiarVigilancia(f, {
-    kind, direction: 'above', threshold: '', up_pct: '', down_pct: '',
+    kind, direction: kind === 'tecnica' ? 'either' : 'above', threshold: '', up_pct: '', down_pct: '',
     scope: kind === 'pct_move' && !(f.symbol || '').trim() ? 'holdings' : 'ticker',
   }, repeticionElegida)
 }
@@ -91,6 +103,15 @@ export function borradorInicial({ alerta, prefill, puedeMovimiento }) {
     }
   }
   if (!prefill) return VACIO
+  if (prefill.kind === 'tecnica') {
+    // Desde la ficha (o la Radiografía): la señal de la tarjeta, ya armada.
+    return {
+      ...VACIO, kind: 'tecnica', scope: 'ticker', symbol: prefill.symbol || '',
+      senal: prefill.senal || 'media200', direction: prefill.direction || 'either',
+      currency: prefill.currency === 'ARS' ? 'ARS' : 'USD', accion_local: !!prefill.accionLocal,
+      repeat: repeticionPorDefecto('tecnica', 'ticker'),
+    }
+  }
   const base = { ...VACIO, symbol: prefill.symbol || '', currency: prefill.currency || monedaDe(prefill.symbol) }
   // "Crear alerta BTC −10%" desde Mervall-E AI → por %, ya cargada. Sin el
   // permiso queda el de precio (el selector de % muestra que es de Plus).
@@ -102,6 +123,26 @@ export function borradorInicial({ alerta, prefill, puedeMovimiento }) {
     }
   }
   return base
+}
+
+// El activo de un aviso técnico: el de la ficha tal cual (`fijo`: ya viene
+// pelado y con su marca de acción argentina) o el del buscador, decidido con
+// tus lotes como lo decide la ficha (`activoTecnico`).
+function activoDelBorrador(f, fijo, posiciones) {
+  const sym = (f.symbol || '').trim().toUpperCase()
+  return fijo ? { symbol: sym, accion_local: !!f.accion_local } : activoTecnico(sym, posiciones)
+}
+
+// Lo que se manda al crear un aviso técnico (POST /api/alerts, ver
+// main._crear_alerta_tecnica). Exportada para las pruebas.
+export function pedidoTecnico(f, fijo, posiciones = []) {
+  const { symbol, accion_local } = activoDelBorrador(f, fijo, posiciones)
+  return {
+    kind: 'tecnica', scope: 'ticker', symbol, senal: f.senal,
+    direction: conSentido(f.senal) ? f.direction : 'either',
+    currency: f.currency === 'ARS' ? 'ARS' : 'USD', accion_local,
+    channel: f.channel, repeat: f.repeat,
+  }
 }
 
 const CAMPO = 'h-12 w-full rounded-lg border border-line bg-bg-2 px-3.5 text-ink-0 outline-none focus-within:border-data-violet'
@@ -122,7 +163,9 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const esPrecio = form.kind === 'price_target'
-  const cartera = !esPrecio && form.scope === 'holdings'
+  const esTecnica = form.kind === 'tecnica'
+  const fijo = !!prefill?.fijo
+  const cartera = !esPrecio && !esTecnica && form.scope === 'holdings'
 
   // Los CEDEARs que cotizan en dólares (AAPLD): el buscador los ofrece en las
   // dos monedas y de acá sale su precio en dólares — la misma lista que el
@@ -135,6 +178,24 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
   }, [])
   const dolares = useMemo(() => (cedears === undefined ? undefined : dolaresPorSimbolo(cedears)), [cedears])
 
+  // Tus tenencias, para decidir como la ficha si un activo del buscador es una
+  // acción argentina (`activoTecnico`). Sólo para el aviso técnico armado acá:
+  // desde la ficha la marca ya viene, y editando no se cambia.
+  const [posiciones, setPosiciones] = useState([])
+  const buscaTecnica = form.kind === 'tecnica' && !prefill?.fijo && !alerta
+  useEffect(() => {
+    if (!buscaTecnica) return
+    let vivo = true
+    Promise.all([api.get('/positions').catch(() => []), api.get('/brokers').catch(() => [])])
+      .then(([pos, bkrs]) => {
+        if (!vivo) return
+        // `isBymaHolding` mira la moneda del broker en el registro, como la ficha.
+        setBrokersRegistry(bkrs || [])
+        setPosiciones(pos || [])
+      })
+    return () => { vivo = false }
+  }, [buscaTecnica])
+
   const sym = (form.symbol || '').trim().toUpperCase()
   // La moneda del precio es una que el activo TIENE (la regla del servidor,
   // main._moneda_del_aviso): antes el selector $/US$ era libre y «AAPL baja a
@@ -146,7 +207,8 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
   // El precio de ahora del activo elegido: contexto para la persona y para el
   // «le falta X %» del campo de precio.
   useEffect(() => {
-    if (!sym || cartera) { setPrecio(null); return }
+    // La técnica no muestra precio (se mira con el cierre del día).
+    if (!sym || cartera || esTecnica) { setPrecio(null); return }
     if (enDolaresDeLaBolsa) { setPrecio(dolares?.get(sym)?.px ?? null); return }
     let cancelado = false
     const t = setTimeout(async () => {
@@ -156,20 +218,24 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
       } catch { if (!cancelado) setPrecio(null) }
     }, 400)
     return () => { cancelado = true; clearTimeout(t) }
-  }, [sym, cartera, enDolaresDeLaBolsa, dolares])
+  }, [sym, cartera, esTecnica, enDolaresDeLaBolsa, dolares])
 
   function elegirTipo(kind) {
     if (editando) return
-    if (kind === 'pct_move' && !puedeMovimiento) { setUpsell(true); return }
+    if (kind === 'pct_move' && !puedeMovimiento) { setUpsell('pct'); return }
     setUpsell(false)
     setForm(f => alElegirTipo(f, kind, repeticionElegida))
   }
 
   // Lo que se manda es lo que se ve: el borrador con los números leídos.
+  // La técnica: el activo como lo pide la ficha (pelado + marca de acción
+  // argentina). Desde la ficha ya viene así; del buscador se deduce.
+  const tec = esTecnica ? activoDelBorrador(form, fijo || editando, posiciones) : null
   const borrador = {
     ...form,
-    symbol: cartera ? null : sym,
-    currency: moneda,
+    ...(tec || {}),
+    symbol: cartera ? null : (tec ? tec.symbol : sym),
+    currency: esTecnica ? form.currency : moneda,
     threshold: parseNum(form.threshold),
     up_pct: parseNum(form.up_pct),
     down_pct: parseNum(form.down_pct),
@@ -182,7 +248,9 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
     e.preventDefault()
     setErr(null)
     const up = borrador.up_pct, down = borrador.down_pct
-    if (esPrecio) {
+    if (esTecnica) {
+      if (!sym) { setErr('Elegí un activo.'); return }
+    } else if (esPrecio) {
       if (!sym) { setErr('Elegí un activo.'); return }
       if (!(thr > 0)) { setErr('Poné el precio.'); return }
     } else {
@@ -199,6 +267,14 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
     pedidoPush?.catch(() => {})   // se atiende en la página; esto evita el «rechazo sin atender» si falla el alta
     setOcupado(true)
     try {
+      if (editando && esTecnica) {
+        await actualizar(alerta.id, {
+          ...(conSentido(form.senal) ? { direction: form.direction } : {}),
+          channel: form.channel, repeat: form.repeat,
+        })
+        onClose()
+        return
+      }
       if (editando) {
         await actualizar(alerta.id, esPrecio
           ? { threshold: thr, direction: form.direction, channel: form.channel, repeat: form.repeat }
@@ -207,7 +283,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
         onClose()
         return
       }
-      const pedido = {
+      const pedido = esTecnica ? pedidoTecnico(form, fijo, posiciones) : {
         kind: form.kind,
         scope: esPrecio ? 'ticker' : form.scope,
         symbol: cartera ? null : sym,
@@ -222,8 +298,15 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
       onCreada?.(res, pedido, pedidoPush)
       onClose()
     } catch (e2) {
-      if (e2?.status === 403 && e2?.payload?.upgrade) setUpsell(true)
-      setErr(e2?.payload?.error || e2?.message || 'No se pudo guardar.')
+      // El 403 del servidor trae {error, upgrade, quota | feature} en `detail`
+      // (api.js deja la respuesta entera en `payload`). Antes se leía
+      // `payload.upgrade`, que no existe: el cartel de planes no salía nunca.
+      const det = e2?.payload?.detail
+      if (e2?.status === 403 && det?.upgrade) {
+        setUpsell(det.feature ? 'pct' : 'tope')
+        if (!det.feature) return     // el cartel ya lo dice, con el link
+      }
+      setErr(e2?.message || 'No se pudo guardar.')
     } finally {
       setOcupado(false)
     }
@@ -237,26 +320,22 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
     finally { setOcupado(false) }
   }
 
-  const veces = form.repeat === 'once' ? 'una vez' : esPrecio ? 'cada vez que cruce' : 'todos los días'
+  const veces = form.repeat === 'once' ? 'una vez' : esPrecio ? 'cada vez que cruce' : esTecnica ? 'cada vez que pase' : 'todos los días'
 
   return (
-    <Modal title={editando ? 'Editar aviso' : 'Nuevo aviso de precio'} onClose={onClose}>
+    <Modal title={editando ? 'Editar aviso' : esTecnica ? 'Nuevo aviso técnico' : 'Nuevo aviso de precio'} onClose={onClose}>
       <form onSubmit={enviar} className="space-y-5">
-        {!editando && (
+        {!editando && !fijo && (
           <Segmentos etiqueta="Tipo de aviso" valor={form.kind} onChange={elegirTipo} opciones={[
             { valor: 'price_target', texto: 'Llega a un precio' },
             { valor: 'pct_move', texto: <>Se mueve un %{!puedeMovimiento && <Pill tone="info" className="ml-1.5">Plus</Pill>}</> },
+            { valor: 'tecnica', texto: 'Señal técnica' },
           ]} />
         )}
 
-        {upsell && (
-          <p className="text-sm text-ink-1 rounded-lg bg-bg-2 px-3.5 py-3">
-            Los avisos por % son de Rendi Plus.{' '}
-            <Link to="/config?tab=planes" className="text-data-violet font-medium hover:underline">Ver planes</Link>
-          </p>
-        )}
+        {upsell === 'pct' && <Upsell texto="Los avisos por % son de Rendi Plus." />}
 
-        {!esPrecio && (
+        {!esPrecio && !esTecnica && (
           <Campo rotulo="Qué vigilar">
             {editando ? (
               <Fijo>{cartera ? 'Toda mi cartera' : simbolo(sym)}</Fijo>
@@ -272,19 +351,24 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
 
         {!cartera && (
           <Campo rotulo="Activo">
-            {editando ? (
+            {editando || fijo ? (
               <Fijo>
                 <span className="font-semibold">{simbolo(sym)}</span>
-                {precio != null && <span className="ml-auto tabular text-ink-1">{fmtPrecio(precio, moneda)}</span>}
+                {precio != null && !esTecnica && <span className="ml-auto tabular text-ink-1">{fmtPrecio(precio, moneda)}</span>}
               </Fijo>
             ) : (
               <BuscadorTicker valor={form.symbol} precio={precio} moneda={moneda} dolares={dolares}
-                onChange={(v, ccy) => setForm(f => ({ ...f, symbol: v, currency: ccy || monedaDe(v) }))} />
+                // En la técnica la moneda es «en qué se mira» (Dólares por
+                // defecto), no la del precio del activo: el buscador no la toca.
+                onChange={(v, ccy) => setForm(f => (f.kind === 'tecnica' ? { ...f, symbol: v }
+                  : { ...f, symbol: v, currency: ccy || monedaDe(v) }))} />
             )}
           </Campo>
         )}
 
-        {esPrecio ? (
+        {esTecnica ? (
+          <CamposTecnica form={form} set={set} editando={editando} />
+        ) : esPrecio ? (
           <div className="grid gap-4 sm:grid-cols-2">
             <Campo rotulo="Avisame cuando">
               <Segmentos etiqueta="Dirección" grande valor={form.direction} onChange={v => set('direction', v)} opciones={[
@@ -363,7 +447,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
               <Segmentos etiqueta="Cuántas veces" grande valor={form.repeat}
                 onChange={v => { setRepeticionElegida(true); set('repeat', v) }} opciones={[
                 { valor: 'once', texto: 'Una vez' },
-                { valor: 'always', texto: esPrecio ? 'Cada vez que cruce' : 'Todos los días' },
+                { valor: 'always', texto: esPrecio ? 'Cada vez que cruce' : esTecnica ? 'Cada vez que pase' : 'Todos los días' },
               ]} />
             </Campo>
           </div>
@@ -376,6 +460,9 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
         )}
 
         {err && <p className="text-sm text-rendi-neg">{err}</p>}
+        {/* El tope del plan sale al lado del botón que se acaba de tocar: arriba
+            del formulario quedaba fuera de la vista. */}
+        {upsell === 'tope' && <Upsell texto="Llegaste al máximo de alertas de tu plan." />}
 
         {!opciones && editando && <Resumen canal={form.channel} veces={veces} onCambiar={() => setOpciones(true)} />}
 
@@ -393,6 +480,68 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
         </div>
       </form>
     </Modal>
+  )
+}
+
+// Lo que se elige en un aviso técnico: qué señal, para qué lado (sólo los
+// cruces de un promedio) y en qué moneda se mira. Editando, la señal y la
+// moneda quedan fijas (para otra, se arma otra alerta); el lado se cambia.
+function CamposTecnica({ form, set, editando }) {
+  const actual = SENALES_TECNICAS.find(s => s.id === form.senal)
+  return (
+    <>
+      <Campo rotulo="Avisame cuando">
+        {editando ? (
+          <Fijo>{actual?.texto}</Fijo>
+        ) : (
+          <div role="radiogroup" aria-label="Avisame cuando" className="grid gap-1.5 sm:grid-cols-2">
+            {SENALES_TECNICAS.map(o => {
+              const activo = o.id === form.senal
+              return (
+                <button key={o.id} type="button" role="radio" aria-checked={activo}
+                  onClick={() => set('senal', o.id)}
+                  className={`min-h-11 px-3.5 py-2 rounded-lg border text-left text-sm transition-colors ${activo ? 'border-data-violet bg-data-violet/10 text-ink-0' : 'border-line text-ink-1 hover:text-ink-0'}`}>
+                  {o.texto}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </Campo>
+      {conSentido(form.senal) && (
+        <Campo rotulo="Para qué lado">
+          <Segmentos etiqueta="Para qué lado" grande valor={form.direction} onChange={v => set('direction', v)} opciones={[
+            { valor: 'above', texto: <><TrendingUp size={15} /> Para arriba</> },
+            { valor: 'below', texto: <><TrendingDown size={15} /> Para abajo</> },
+            { valor: 'either', texto: 'Los dos' },
+          ]} />
+        </Campo>
+      )}
+      {/* Siempre a la vista, también en cripto (la ficha también la muestra en
+          pesos): escondido, se mandaba igual lo último que se había elegido. */}
+      <Campo rotulo="Medido en" ayuda={form.currency === 'ARS'
+        ? 'En pesos el precio también sube con el dólar, aunque la empresa no se mueva.'
+        : 'Como la ficha: en dólares se ve la tendencia de la empresa, sin el dólar en el medio.'}>
+        {editando ? (
+          <Fijo>{form.currency === 'ARS' ? 'Pesos' : 'Dólares'}</Fijo>
+        ) : (
+          <Segmentos etiqueta="Medido en" grande valor={form.currency === 'ARS' ? 'ARS' : 'USD'}
+            onChange={v => set('currency', v)} opciones={[
+              { valor: 'USD', texto: 'Dólares' },
+              { valor: 'ARS', texto: 'Pesos' },
+            ]} />
+        )}
+      </Campo>
+    </>
+  )
+}
+
+function Upsell({ texto }) {
+  return (
+    <p className="text-sm text-ink-1 rounded-lg bg-bg-2 px-3.5 py-3">
+      {texto}{' '}
+      <Link to="/config?tab=planes" className="text-data-violet font-medium hover:underline">Ver planes</Link>
+    </p>
   )
 }
 

@@ -9,6 +9,64 @@
 //
 // Los números salen en convención argentina: $ 7.350 · US$ 231,80 · 8,8 %.
 import { nfmt } from '../../utils/format'
+import { esAccionLocal } from '../../utils/accionLocal'
+
+// ── Alertas técnicas ─────────────────────────────────────────────────────────
+// Las señales que se pueden vigilar (backend/tecnico.py → SENALES), dichas con
+// las palabras de la ficha técnica: «promedio de 200 días», «fuerza (RSI)».
+// `tarjeta` = la tarjeta de la ficha donde va su botón «Avisame».
+export const SENALES_TECNICAS = [
+  { id: 'media200', texto: 'Cruce su promedio de 200 días', conSentido: true, tarjeta: 'fondo' },
+  { id: 'media50', texto: 'Cruce su promedio de 50 días', conSentido: true, tarjeta: 'corto' },
+  { id: 'rsi_bajo_30', texto: 'La fuerza (RSI) baje de 30', tarjeta: 'rsi' },
+  { id: 'rsi_sobre_70', texto: 'La fuerza (RSI) pase 70', tarjeta: 'rsi' },
+  { id: 'rsi_sube_30', texto: 'La fuerza (RSI) vuelva a pasar 30', tarjeta: 'rsi' },
+  { id: 'rsi_baja_70', texto: 'La fuerza (RSI) vuelva a bajar de 70', tarjeta: 'rsi' },
+  { id: 'maximo_12m', texto: 'Cierre en su máximo del año', tarjeta: 'maximo' },
+]
+export const conSentido = (senal) => !!SENALES_TECNICAS.find(s => s.id === senal)?.conSentido
+
+// Qué pasa, en presente («pasa para arriba su promedio de 200 días») o en
+// subjuntivo para la confirmación («cuando pase para arriba…»).
+function queTecnico(senal, direction, subj) {
+  const v = (pres, sub) => (subj ? sub : pres)
+  if (senal === 'media200' || senal === 'media50') {
+    const dias = senal === 'media200' ? 200 : 50
+    if (direction === 'above') return `${v('pasa', 'pase')} para arriba su promedio de ${dias} días`
+    if (direction === 'below') return `${v('queda', 'quede')} abajo de su promedio de ${dias} días`
+    return `${v('cruza', 'cruce')} su promedio de ${dias} días`
+  }
+  if (senal === 'rsi_bajo_30') return `${v('baja', 'baje')} de 30`
+  if (senal === 'rsi_sobre_70') return `${v('pasa', 'pase')} 70`
+  if (senal === 'rsi_sube_30') return `${v('vuelve', 'vuelva')} a pasar 30`
+  if (senal === 'rsi_baja_70') return `${v('vuelve', 'vuelva')} a bajar de 70`
+  return `${v('cierra', 'cierre')} en su máximo del año`
+}
+const esRsi = (senal) => String(senal || '').startsWith('rsi_')
+
+// «AAPL» o «AAPL en pesos»: la ficha y la alerta miran en dólares por defecto
+// (en pesos el precio también sube con el dólar). La misma regla que el mail
+// (alerts_engine._quien_tecnico).
+function quienTecnico(a) {
+  const s = simbolo(a.symbol)
+  const ccy = String(a.currency || '').toUpperCase()
+  if (ccy === 'ARS' && !a.accion_local) return `${s} en pesos`
+  if (ccy === 'USD' && a.accion_local) return `${s} en dólares`
+  return s
+}
+
+// Lo que se guarda de un activo elegido en el buscador para una alerta técnica:
+// el activo pelado (como lo pide la ficha) y si es una acción argentina (su
+// precio de BYMA ÷ MEP, no el ADR). Con la MISMA regla que la ficha
+// (`esAccionLocal`, por tus lotes de ese activo): así el aviso mira la misma
+// serie que muestra la ficha a la que lleva el botón del mail. Antes se
+// deducía del ticker y GGAL sin lotes miraba BYMA mientras la ficha mostraba
+// el ADR (auditoría 22/10).
+export function activoTecnico(symbol, posiciones = []) {
+  const pelado = String(symbol || '').trim().toUpperCase().replace(/\.BA$/, '')
+  const lotes = (posiciones || []).filter(p => !p.is_cash && String(p.asset || '').toUpperCase() === pelado)
+  return { symbol: pelado, accion_local: esAccionLocal(pelado, lotes) }
+}
 
 export function monedaDe(symbol) {
   return String(symbol || '').toUpperCase().endsWith('.BA') ? 'ARS' : 'USD'
@@ -67,8 +125,17 @@ export function fmtPct(v) {
 // Sirve igual para una alerta guardada que para el borrador del formulario.
 //   { quien: 'GGAL', que: 'sube a $ 8.000' }
 //   { quien: 'Mi cartera', que: 'algo sube 8 % o cae 5 % en el día' }
+//   { quien: 'AAPL', que: 'pasa para arriba su promedio de 200 días' }
+//   { quien: 'AAPL', que: 'la fuerza (RSI) baja de 30', sep: ': ' }
+// `sep` = lo que va entre las dos mitades cuando no es un espacio.
 export function frase(a) {
   if (!a) return { quien: '', que: '' }
+  if (a.kind === 'tecnica') {
+    const quien = quienTecnico(a)
+    return esRsi(a.senal)
+      ? { quien, que: `la fuerza (RSI) ${queTecnico(a.senal, a.direction, false)}`, sep: ': ' }
+      : { quien, que: queTecnico(a.senal, a.direction, false) }
+  }
   if (a.kind === 'price_target') {
     const verbo = a.direction === 'below' ? 'baja a' : 'sube a'
     // «AAPL (CEDEAR)»: sin eso, el CEDEAR en dólares y la acción de Nasdaq se
@@ -83,12 +150,20 @@ export function frase(a) {
   const mov = partes.join(' o ') || 'se mueve'
   const cuando = !cartera && a.baseline === 'set_price' ? 'desde que la armé' : 'en el día'
   return cartera
-    ? { quien: 'Mi cartera', que: `algo ${mov} ${cuando}` }
+    ? { quien: 'Mi cartera', que: `algo ${mov} ${cuando}`, sep: ': ' }
     : { quien: simbolo(a.symbol), que: `${mov} ${cuando}` }
 }
 
 // La confirmación del formulario: la frase de arriba contada en segunda persona.
 export function confirmacion(a) {
+  if (a.kind === 'tecnica') {
+    if (!a.symbol || !a.senal) return null
+    const quien = quienTecnico(a)
+    const que = esRsi(a.senal)
+      ? `la fuerza (RSI) de ${quien} ${queTecnico(a.senal, a.direction, true)}`
+      : `${quien} ${queTecnico(a.senal, a.direction, true)}`
+    return `Te avisamos cuando ${que}. Lo miramos cada día con el precio de cierre.`
+  }
   if (a.kind === 'price_target') {
     if (!a.symbol || !(Number(a.threshold) > 0)) return null
     const quien = esCedearEnDolares(a) ? `el CEDEAR de ${simbolo(a.symbol)} en dólares` : simbolo(a.symbol)
@@ -141,6 +216,10 @@ export function estado(a, precio, eventos = [], hoy = '') {
   }
   const ultimo = eventos.find(e => e.alert_id === a.id)
   const avisoHoy = ultimo && hoy && diaArgentina(ultimo.fired_at) === hoy
+  if (a.kind === 'tecnica') {
+    if (avisoHoy) return { texto: `Hoy avisó: ${ultimo.message}`, tono: 'aviso' }
+    return { texto: ultimo ? `Último aviso el ${fechaCorta(ultimo.fired_at)} · se mira cada día con el cierre` : 'Se mira cada día con el precio de cierre', tono: 'normal' }
+  }
   if (a.kind === 'price_target') {
     if (precio == null) return { texto: 'Esperando el precio', tono: 'normal' }
     const falta = (Number(a.threshold) / precio - 1) * 100

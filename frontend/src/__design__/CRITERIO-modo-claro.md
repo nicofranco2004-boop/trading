@@ -41,11 +41,11 @@ cambiaría colores en oscuro sin ganar nada. Se dejan.
 
 ## NO TOCAR — 3. Los `bg-white` que son blanco de verdad
 
-Quedan 8 y los 8 son deliberados. No son tema, son objetos blancos:
+Quedan 9 y los 9 son deliberados. No son tema, son objetos blancos:
 
 - `AssetLogo.jsx`, `PfFormModal.jsx`, `AdvisorDashboard.jsx` → el fondo blanco **detrás
   del logo de una empresa** (los logos vienen con fondo transparente).
-- `BriefPrefs.jsx`, `MisAlertas.jsx` → **la perilla de un interruptor**, blanca
+- `BriefPrefs.jsx`, `MisAlertas.jsx`, `RendiAI.jsx` (el de la isla flotante) → **la perilla de un interruptor**, blanca
   en los dos temas.
 - `InsightChip.jsx` → `hover:bg-black/5 dark:hover:bg-white/5`, el par correcto.
 

@@ -27,6 +27,7 @@ import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { api } from '../utils/api'
 import ModoRendimiento from '../components/ModoRendimiento'
 import { useCurrency } from '../contexts/CurrencyContext'
+import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 import { PesosDelPeriodoProvider, usePesosDelPeriodo } from '../hooks/usePesosDelPeriodo'
 import { hoyISO, fechaISO } from '../utils/fecha'
 import { claveSemanaISO } from '../utils/semanas'
@@ -153,10 +154,10 @@ export default function Reports() {
   const [broker, setBroker] = useState('global')
   // El MISMO par de controles que Métricas y Dashboard, con el mismo motor
   // detrás: la moneda la manda el selector global (vive en el shell) y el modo
-  // es local a la pantalla, igual que en Dashboard.
+  // es el guardado de toda la app (ModoRendimientoContext), igual que en Dashboard.
   const { currency } = useCurrency()
   const moneda = currency === 'ARS' ? 'ars' : 'usd'
-  const [modoRend, setModoRend] = useState('certero')
+  const [modoRend, setModoRend] = useModoRendimiento()
   // 36 meses, no 12: el calendario dibuja una banda por AÑO, y con 12 meses los
   // años anteriores salían con la mitad de las celdas vacías — que además era lo
   // que el total paralelo del calendario tomaba como "+0%".

@@ -1,4 +1,5 @@
 import ModoRendimiento from '../components/ModoRendimiento'
+import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
@@ -42,6 +43,8 @@ import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDonut'
+import BotonCompartir from '../components/BotonCompartir'
+import { specDeAportes } from '../utils/shareCard'
 import { computeClassBreakdown } from '../utils/assetClass'
 import { assetSlicesFromPositions } from '../utils/bookComposition'
 import DistribucionPorActivo from '../components/DistribucionPorActivo'
@@ -59,6 +62,7 @@ import { hoyISO } from '../utils/fecha'
 import { useAlVerse } from '../hooks/useAlVerse'
 import PuntaViva, { puntaEsDeAhora } from '../components/PuntaViva'
 import { fechaCorta } from '../utils/lineaDelBono'
+import { urlDeActivo } from '../utils/buscadorRapido'
 
 const REFRESH_MS = 90_000
 
@@ -99,8 +103,9 @@ function PersonalDashboard() {
   const plan = usePlanFeatures()
   // El rendimiento histórico sale del MOTOR CANÓNICO (`/goals/cagr`, que es
   // `twr.curva_indexada`), no de un cálculo propio del Dashboard. Y con los mismos
-  // dos modos que la tarjeta de Performance de Métricas.
-  const [modoRend, setModoRend] = useState('certero')
+  // dos modos que la tarjeta de Performance de Métricas — y la MISMA elección,
+  // guardada hasta que el usuario la cambie (ModoRendimientoContext).
+  const [modoRend, setModoRend] = useModoRendimiento()
   const [rendHist, setRendHist] = useState(null)
   // Fase A (2026-05-31): toggle currency global compartido entre Dashboard,
   // HomeMobile, PositionsMobile via CurrencyContext. Antes era local state
@@ -1390,7 +1395,32 @@ function PersonalDashboard() {
               el destino es un candado, y un enlace que promete y no cumple es
               peor que no estar. */}
           <div className="flex flex-col items-end gap-2">
-            <RangeTabs value={range} onChange={setRange} />
+            <div className="flex items-center gap-2">
+              {/* Bajar el gráfico como imagen: aportes vs mercado. Espera a los
+                  precios (`lastUpdated`): antes el valor vivo es el COSTO y la
+                  imagen diría que el mercado no puso nada. */}
+              {lastUpdated && evoSeries.length >= 2 && resultado.valor > 0 && (
+                <BotonCompartir
+                  source="dashboard"
+                  etiqueta="Compartir aportes vs mercado"
+                  filename="rendi-aportes-vs-mercado.png"
+                  buildSpec={({ mostrarMontos, nombre }) => specDeAportes({
+                    aportado: resultado.aportado,
+                    valor: resultado.valor,
+                    ganancia: resultado.ganancia,
+                    pct: resultado.pct,
+                    // La misma serie que dibuja el gráfico, en la moneda de la vista.
+                    serie: evoSeriesDisplay.map(p => ({ ts: Date.parse(p.date), valor: p.valueUsd, aportado: p.netDeposited })),
+                    periodo: PERIODO_IMAGEN[range] || rangeLabel(range),
+                    fmt: fmtDirect,
+                    fmtConSigno: fmtSignedDirect,
+                    mostrarMontos,
+                    nombre,
+                  })}
+                />
+              )}
+              <RangeTabs value={range} onChange={setRange} />
+            </div>
             {range === '1W' && plan.can('reportes.historicos') && (
               <Link
                 to="/analisis?tab=reportes&periodo=week"
@@ -1576,6 +1606,9 @@ function PersonalDashboard() {
           >
           <CompositionDonut
             title="Distribución por tipo de activo"
+            // Sin precios (`lastUpdated`) las tortas valen al costo: no se exportan.
+            compartir={lastUpdated ? 'dashboard' : null}
+            compartirConDetalle
             items={classBreakdown.items}
             fmt={compFmt}
             info={
@@ -1603,6 +1636,8 @@ function PersonalDashboard() {
           >
           <CompositionDonut
             title="Distribución por sector"
+            // Sin precios (`lastUpdated`) las tortas valen al costo: no se exportan.
+            compartir={lastUpdated ? 'dashboard' : null}
             items={sectorBreakdown.items}
             fmt={compFmt}
             info={
@@ -1676,6 +1711,13 @@ function PersonalDashboard() {
       <MonthlyTeaser mesEnCurso={monthlyVar} />
     </div>
   )
+}
+
+// El período como lo dice la imagen para compartir ("Último año"); el de
+// rangeLabel va en medio de una frase ("en 1 año").
+const PERIODO_IMAGEN = {
+  '1D': 'Último día', '1W': 'Última semana', '1M': 'Último mes',
+  '6M': 'Últimos 6 meses', '1Y': 'Último año', MAX: 'Desde el inicio',
 }
 
 function rangeLabel(id) {
@@ -1774,7 +1816,8 @@ function KpiCell({ label, value, sub, tone, info, infoAlign = 'right',
 }
 
 // ─── Top holdings panel ──────────────────────────────────────────────────────
-// Tabla compacta: top 5 holdings por value_usd, con sparkline 30d lazy.
+// Tabla compacta: top 5 holdings por value_usd, con sparkline 30d lazy. Cada
+// fila abre la ficha del activo con su análisis técnico (el efectivo no tiene).
 
 function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
   const fmt = (v) => currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v)
@@ -1790,7 +1833,7 @@ function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
     const byAsset = new Map()
     for (const p of positions) {
       if (!p.value_usd || p.value_usd <= 0) continue
-      const cur = byAsset.get(p.asset) || { asset: p.asset, value_usd: 0, pnl_usd: 0 }
+      const cur = byAsset.get(p.asset) || { asset: p.asset, value_usd: 0, pnl_usd: 0, is_cash: !!p.is_cash }
       cur.value_usd += p.value_usd
       cur.pnl_usd += (p.pnl_usd || 0)
       byAsset.set(p.asset, cur)
@@ -1820,8 +1863,10 @@ function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
       <div className="px-5 pb-4">
         {top.map((h, i) => {
           const positive = (h.pnl_pct ?? 0) >= 0
+          const Fila = h.is_cash ? 'div' : Link
           return (
-            <div key={h.asset} className={`flex items-center gap-3 py-2.5 ${i > 0 ? 'border-t border-line/40' : ''}`}>
+            <Fila key={h.asset} {...(h.is_cash ? {} : { to: urlDeActivo(h.asset), 'aria-label': `${h.asset}: ver la ficha` })}
+              className={`flex items-center gap-3 py-2.5 -mx-2 px-2 rounded-lg ${h.is_cash ? '' : 'hover:bg-bg-2/50 transition-colors'} ${i > 0 ? 'border-t border-line/40' : ''}`}>
               <AssetLogo asset={h.asset} size={30} className="flex-shrink-0" />
               <div className="min-w-0 flex-1">
                 <div className="text-[13.5px] font-semibold text-ink-0 truncate leading-tight">{h.asset}</div>
@@ -1838,7 +1883,7 @@ function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
                   </span>
                 )}
               </div>
-            </div>
+            </Fila>
           )
         })}
       </div>

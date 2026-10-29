@@ -1,10 +1,12 @@
-// AssetMiniChart — chart histórico compacto para AssetQuickView.
+// AssetMiniChart — chart histórico compacto: el de la ficha de un activo que
+// todavía no tiene velas para el análisis técnico (LecturaTecnica) y el del
+// detalle de un lote en el celular (PositionDetailMobile).
 //
 // Diferencia con MiniSparkline:
 //   - Range selector (1S | 1M | 3M | 1A)
 //   - Muestra primer/último close + delta del período
 //   - Renderea ejes mínimos (high/low del período en esquinas)
-//   - Mantiene la estética del modal "quick view" (sin labels innecesarios)
+//   - Compacto, sin rótulos de más
 //   - Con el dedo o el mouse encima: línea vertical, punto y globo con la
 //     fecha, el precio y el cambio desde el inicio del período. Va en HTML
 //     encima del SVG: el SVG se estira (preserveAspectRatio "none") y un

@@ -8,6 +8,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { CurrencyProvider } from './contexts/CurrencyContext'
 import { PrivacyProvider } from './contexts/PrivacyContext'
+import { ModoRendimientoProvider } from './contexts/ModoRendimientoContext'
 import { CoachDrawerProvider } from './contexts/CoachDrawerContext'
 import { AlertsProvider } from './contexts/AlertsContext'
 import { AdvisorProvider, useAdvisorContext } from './contexts/AdvisorContext'
@@ -85,6 +86,7 @@ const Wrapped = lazy(() => import('./pages/Wrapped'))
 const Analisis = lazy(() => import('./pages/Analisis'))
 const Fundamentals = lazy(() => import('./pages/Fundamentals'))
 const AssetDetail = lazy(() => import('./pages/AssetDetail'))
+const TuLista = lazy(() => import('./pages/TuLista'))
 const Cartera = lazy(() => import('./pages/Cartera'))
 const PerfilInversor = lazy(() => import('./pages/PerfilInversor'))
 // Plan Asesor: roster de clientes + drill-down + operación grupal (tier advisor)
@@ -255,6 +257,11 @@ function AppRoutes() {
       <Route path="/analisis" element={<Analisis />} />
       <Route path="/fundamentals" element={<Fundamentals />} />
       <Route path="/activo/:ticker" element={<AssetDetail />} />
+      {/* «Análisis técnico» (menú → Análisis): tu lista con su lectura técnica.
+          También se abre desde el panel Watchlist del inicio («Ver como
+          tablero»). /tu-lista era su dirección antes de tener lugar en el menú. */}
+      <Route path="/analisis-tecnico" element={<TuLista />} />
+      <Route path="/tu-lista" element={<Navigate to="/analisis-tecnico" replace />} />
       {/* Dashboard vuelve a ser página propia (ítem "Dashboard" del sidebar,
           principal dentro de "Tu Cartera"). Antes era un tab de Cartera. */}
       {/* Informe del período: el link público TAMBIÉN debe resolver con
@@ -508,6 +515,7 @@ export default function App() {
       <AuthProvider>
         <CurrencyProvider>
           <PrivacyProvider>
+          <ModoRendimientoProvider>
           <CoachDrawerProvider>
           <VozProvider>
             <div className="min-h-screen bg-bg-0 text-ink-0">
@@ -535,6 +543,7 @@ export default function App() {
             </div>
           </VozProvider>
           </CoachDrawerProvider>
+          </ModoRendimientoProvider>
           </PrivacyProvider>
         </CurrencyProvider>
       </AuthProvider>

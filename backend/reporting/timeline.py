@@ -159,7 +159,7 @@ def build_timeline(
     live_value: Optional[float] = None,
     prices: Optional[Dict[str, Any]] = None,
     tc_blue: float = 1415.0,
-    modo: str = "certero", moneda: str = "usd",
+    modo: Optional[str] = None, moneda: str = "usd",
 ) -> List[PeriodReport]:
     """Devuelve los últimos N meses con sus semanas como children.
 
@@ -168,6 +168,9 @@ def build_timeline(
     # El par padre ↔ '· USD' es el MISMO para los ~200 build_period_report que
     # siguen (uno por mes + uno por semana). Sin el memo se resuelve 459 veces.
     from .builder import pair_cache
+    import twr as _twr_tl
+    # Una vez para toda la línea de tiempo: sin `modo`, el del usuario.
+    modo = _twr_tl.modo_de(conn, uid, modo)
     with pair_cache():
         return _build_timeline(
             conn, uid, broker_filter=broker_filter, months=months, bench=bench,
@@ -184,7 +187,7 @@ def _build_timeline(
     live_value: Optional[float] = None,
     prices: Optional[Dict[str, Any]] = None,
     tc_blue: float = 1415.0,
-    modo: str = "certero", moneda: str = "usd",
+    modo: Optional[str] = None, moneda: str = "usd",
 ) -> List[PeriodReport]:
     # Pre-cómputo de contexto reusable entre detectores
     historical_wr = _compute_user_historical_win_rate(conn, uid)

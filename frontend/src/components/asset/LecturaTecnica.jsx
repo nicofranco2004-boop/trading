@@ -1,6 +1,8 @@
 // LecturaTecnica — el gráfico técnico y su lectura en la ficha del activo.
 // ════════════════════════════════════════════════════════════════════════════
-// Gráfico de precio con las medias de 50 y 200 días, tu precio promedio y tus
+// Gráfico de precio con las medias de 50 y 200 días, las Bandas de Bollinger
+// (prendidas de entrada, Nico 28/10: apagadas no las encontraba; su ojito de la
+// leyenda las apaga junto con su tarjeta), tu precio promedio y tus
 // compras y ventas; la fuerza del movimiento (RSI) abajo; y tarjetas en
 // castellano. El Fibonacci muestra la capa del último tramo de suba o bajada
 // (CapaFibonacci.jsx) y las ondas de Elliott un conteo posible (CapaElliott.jsx).
@@ -15,9 +17,11 @@
 // «Cuánto se mueve este papel» (backend/movimiento.py). Todo es lo que YA pasó:
 // nada de esto anticipa nada. Las palabras: utils/cuantoSeMueve.js.
 //
-// Los números vienen de GET /api/tecnico (las velas que se guardan de noche).
-// Si el activo todavía no tiene velas (recién agregado, o un bono/fondo), se
-// muestra el gráfico de 30 días de siempre (`AssetMiniChart`).
+// Los números vienen de GET /api/tecnico (las velas que se guardan de noche, o
+// que el servidor baja en el momento si nadie seguía el activo). Sirve también
+// para un activo que no tenés: sin lotes no hay tu precio, tus compras ni
+// «Contra lo que pagaste». Si no hay velas (un bono/fondo, o el servidor no las
+// pudo traer), se muestra el gráfico de 30 días de siempre (`AssetMiniChart`).
 //
 // Una sola vista para compu y celular (R6): el gráfico es `width: 100%`, los
 // precios del eje van en su propia columna a la derecha (no tapan la línea) y
@@ -35,6 +39,7 @@ import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, gua
 import CapaFibonacci, { COLOR_FIB, ID_FIB_AUTO, TarjetaFibonacci, preciosDeLaCapa, trazosDelFibonacci, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
 import CapaElliott, { COLOR_ELLIOTT, ID_ELL_AUTO, TarjetaElliott, fechaDelConteo, preciosDelConteo, trazosDelConteo } from './CapaElliott'
 import CapaDibujos, { trazosDeDibujos } from './CapaDibujos'
+import { BotonAvisame, useAvisosTecnicos, senalDeTarjeta } from '../alerts/AvisameTecnico'
 import { api } from '../../utils/api'
 import { factorDeFechas, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
 import { PRIORIDAD, taparRotulos } from '../../utils/rotulos'
@@ -43,7 +48,7 @@ import {
   marcarSubidos, precioRedondo, puntoDelDia, subirDibujos,
 } from '../../utils/dibujos'
 import {
-  RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
+  RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, tarjetaBandas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, moverVentana, RUEDAS_MINIMAS,
   ventanaInicial, margenDerecho, futuroMaximo,
 } from '../../utils/tecnico'
@@ -67,6 +72,10 @@ const COLOR = {
   // Tus dibujos (líneas de tendencia y horizontales): cian, que no es ninguna
   // de las capas calculadas.
   dibujo: v('data-cyan'),
+  // Bandas de Bollinger: verde oliva. No se confunde con el azul de la de 200,
+  // el naranja de la de 50, el magenta del Fibonacci ni el verde azulado de
+  // los dividendos.
+  bandas: v('cat-olive'),
 }
 const W = 1000
 const H = 260
@@ -125,6 +134,8 @@ export default function LecturaTecnica({
   asset, symbolMiniChart, lotes = [], operaciones = [], pnlPctUsd = null,
   pnlPctLinea = undefined, lineaSinTc = false, referencia = null,
   costoPesos = null, accionLocal = false, tenencia = null, valorCartera = null,
+  // La ficha pone el título de la sección («Análisis técnico») y pasa null.
+  titulo = 'Análisis técnico',
 }) {
   const [moneda, setMoneda] = useState('usd')
   const [rango, setRango] = useState('1a')
@@ -252,6 +263,9 @@ export default function LecturaTecnica({
     return () => { document.body.style.overflow = antes; window.removeEventListener('keydown', tecla) }
   }, [grande])
   const elegirRango = (r) => { setRango(r); setVentana(null) }
+  // Las alertas de la cuenta, para que cada «Avisame» sepa si ya hay una igual.
+  // Arriba de los return de abajo: un hook después de un return rompe la ficha.
+  const avisos = useAvisosTecnicos()
 
   // Dólares al abrir; pesos recién la primera vez que se tocan (la mayoría no
   // los mira y es otra cuenta en el servidor). Otro activo = otro componente
@@ -282,6 +296,17 @@ export default function LecturaTecnica({
   // «Desde que lo tenés»: sólo si tenés el activo hoy.
   const primera = primeraCompra(lotes)
 
+  // Otra persona está bajando la historia de este activo ahora mismo
+  // (`motivo: 'bajando'`): el servidor no deja un pedido esperando, así que se
+  // vuelve a pedir solo, unas pocas veces.
+  const intentos = useRef(0)
+  useEffect(() => {
+    if (actual?.motivo !== 'bajando' || intentos.current >= 5) return
+    const t = setTimeout(() => { intentos.current += 1; reintentar() }, 3000)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actual])
+
   // Tu resultado para dibujar la LÍNEA de tu precio:
   //   · dólares: al dólar del día de cada compra (`pnlPctLinea`), sin importar
   //     la preferencia de la pantalla; null si a alguna compra le falta ese dólar;
@@ -299,7 +324,7 @@ export default function LecturaTecnica({
   const marco = (hijos, conPesos = datos.ars?.disponible !== false) => (
     <Marco moneda={moneda} setMoneda={setMoneda} rango={ventana ? null : rango} setRango={elegirRango}
       conPesos={conPesos} conTuyo={!!primera} tipo={tipo} setTipo={setTipo} intervalo={intervalo} setIntervalo={setIntervalo}
-      grande={grande} setGrande={setGrande}>{hijos}</Marco>
+      grande={grande} setGrande={setGrande} titulo={titulo}>{hijos}</Marco>
   )
   // Cargando: el marco con sus botones queda quieto y el gris va adentro, con la
   // altura del gráfico ya reservada (antes desaparecía todo y la página saltaba).
@@ -321,9 +346,18 @@ export default function LecturaTecnica({
     if (moneda === 'ars' && datos.usd?.disponible) {
       return marco(<p className="text-sm text-ink-2">Este activo no tiene precio en pesos.</p>, false)
     }
-    // Sin velas todavía: el gráfico de siempre.
+    // Sin velas: el gráfico de siempre. Si el servidor no las pudo traer en el
+    // momento (un activo que nadie sigue), se dice por qué (`motivo`).
+    const aviso = actual?.motivo === 'bajando' && intentos.current < 5
+      ? 'Estamos trayendo la historia de este activo…'
+      : actual?.motivo === 'tope' || actual?.motivo === 'bajando'
+      ? 'Ahora no pudimos traer la historia completa de este activo. Probá de nuevo en un rato.'
+      : actual?.motivo === 'sin_datos'
+        ? 'No encontramos la historia de precios de este activo para el análisis técnico.'
+        : null
     return symbolMiniChart ? (
       <section className="mb-5">
+        {aviso && <p className="text-[13px] text-ink-1 mb-2">{aviso}</p>}
         <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Precio · últimos 30 días</div>
         <div className="bg-bg-1 border border-line/60 rounded-lg p-3">
           <AssetMiniChart symbol={symbolMiniChart} />
@@ -587,7 +621,15 @@ export default function LecturaTecnica({
         {ver.ell && actual.elliott && (
           <TarjetaElliott elliott={actual.elliott} precio={(x) => fmtPrecio(x, moneda)} fecha={fechaCorta} />
         )}
-        {lista.map(t => <Tarjeta key={t.id} t={t} />)}
+        {ver.bb && tarjetaBandas(actual.lectura) && <Tarjeta t={tarjetaBandas(actual.lectura)} />}
+        {lista.map(t => {
+          const s = senalDeTarjeta(t.id, actual.lectura)
+          return (
+            <Tarjeta key={t.id} t={t} pie={s && (
+              <BotonAvisame avisos={avisos} asset={asset} accionLocal={accionLocal} moneda={moneda} {...s} />
+            )} />
+          )
+        })}
         {(() => {
           // La tarjeta: en dólares, el MISMO resultado de arriba de la ficha; en
           // pesos, el de lo que pagaste en pesos.
@@ -685,7 +727,7 @@ function periodoDeMovimiento(m) {
   return dias >= 700 ? 'Últimos 2 años' : `Desde el ${fechaCorta(m.desde)}`
 }
 
-function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, conTuyo = false, tipo, setTipo, intervalo, setIntervalo, grande = false, setGrande, children }) {
+function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, conTuyo = false, tipo, setTipo, intervalo, setIntervalo, grande = false, setGrande, titulo, children }) {
   // En la ficha, ya ampliado (Nico, 24/10: «que sea automáticamente ampliado»).
   // Con «Pantalla completa», la MISMA sección fija sobre toda la página (no es
   // otra vista: mismos datos, mismos botones; R6). Arriba a la derecha, con la
@@ -695,7 +737,7 @@ function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, conTuyo = 
     <section aria-label="Análisis técnico" role={grande ? 'dialog' : undefined} aria-modal={grande || undefined}
       className={grande ? 'fixed inset-0 z-[70] overflow-y-auto bg-bg-0 px-3 py-3 sm:px-6 sm:py-4' : 'mb-5'}>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-        <div className="text-[12.5px] text-ink-2 font-medium">Análisis técnico</div>
+        {titulo ? <div className="text-[12.5px] text-ink-2 font-medium">{titulo}</div> : <span />}
         <div className="flex flex-wrap items-center gap-2">
           {setGrande && (
             <button type="button" data-capa="pantalla" onClick={() => setGrande(!grande)} aria-pressed={grande}
@@ -840,6 +882,7 @@ function botonesDeLaBarra({
       capa('vol', 'Volumen', <IconoVolumen />, actual.puntos.some(p => p.v > 0) ? null : 'Este activo no trae volumen en los datos de Yahoo.'),
       capa('s200', 'Promedio 200 días', <IconoLinea color={COLOR.media200} grueso />, hay('s200') ? null : 'Faltan datos: hacen falta 200 días de mercado.'),
       capa('s50', 'Promedio 50 días', <IconoLinea color={COLOR.media50} />, hay('s50') ? null : 'Faltan datos: hacen falta 50 días de mercado.'),
+      capa('bb', 'Bandas de Bollinger', <IconoBandas />, hay('bb_arriba') ? null : 'Faltan datos: hacen falta 20 días de mercado.'),
       capa('rsi', 'RSI', <IconoRsi />, hay('rsi') ? null : 'Faltan datos: hacen falta al menos 15 días de mercado.'),
       capa('fuerza', 'Fuerza de la tendencia', <IconoFuerza />, hay('adx') || hay('squeeze') ? null : 'Faltan datos para calcularla.'),
       capa('eventos', 'Balances y dividendos', <span className="inline-flex gap-px"><Letra tipo="balance" /><Letra tipo="dividendo" /></span>,
@@ -869,6 +912,16 @@ function IconoVelas() {
       <rect x="2.5" y="5" width="5" height="7" rx="0.6" fill={v('rendi-pos-fill')} />
       <line x1="13" y1="3" x2="13" y2="16" stroke={v('rendi-neg-fill')} strokeWidth="1.3" />
       <rect x="10.5" y="6" width="5" height="6" rx="0.6" fill={v('rendi-neg-fill')} />
+    </svg>
+  )
+}
+// Las dos bandas y el relleno de entre medio, como se ven en el gráfico.
+function IconoBandas() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke={COLOR.bandas} strokeWidth="1.5" strokeLinecap="round">
+      <path d="M1 7c4-3 6-3 8-1s5 1 8-2V12c-3 3-6 3-8 1s-4-2-8 1Z" fill={COLOR.bandas} fillOpacity="0.15" stroke="none" />
+      <path d="M1 7c4-3 6-3 8-1s5 1 8-2" />
+      <path d="M1 14c4-3 6-3 8-1s5 1 8-1" />
     </svg>
   )
 }
@@ -965,11 +1018,16 @@ function Letra({ tipo, grande: g = false }) {
   )
 }
 
-function Tarjeta({ t }) {
+// `pie`: el «Avisame» de la señal de esa tarjeta (AvisameTecnico), arriba a la
+// derecha, chico, para no competir con la lectura.
+function Tarjeta({ t, pie }) {
   const tono = t.tono === 'pos' ? 'text-rendi-pos' : t.tono === 'neg' ? 'text-rendi-neg' : 'text-ink-0'
   return (
     <div className="rounded-lg border border-line/60 bg-bg-2/40 px-3.5 py-3">
-      <div className="text-[12px] text-ink-2 font-medium">{t.titulo}</div>
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-[12px] text-ink-2 font-medium">{t.titulo}</div>
+        {pie && <div className="-mt-1.5 flex-shrink-0">{pie}</div>}
+      </div>
       <div className={`text-[15px] font-semibold mt-0.5 tabular ${tono}`}>{t.veredicto}</div>
       {t.rsi != null && <BarraRsi rsi={t.rsi} />}
       {t.adx != null && <BarraAdx adx={t.adx} />}
@@ -1141,6 +1199,22 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
     }
     valores.push(...preciosDeLaCapa(fibonacci, puntos), ...preciosDelConteo(elliott, puntos))
     let lo = Math.min(...valores), hi = Math.max(...valores)
+    // Las bandas estiran la escala sólo cerca de lo que se ve, y nunca abajo de
+    // 0: después de un salto brusco (un pump, un cambio de ratio que Yahoo no
+    // corrige) la de abajo da un precio negativo y aplastaba todo el gráfico
+    // contra un eje con precios bajo cero (auditoría 28/10). Lo que queda
+    // afuera se corta en el borde, como en TradingView.
+    if (ver.bb) {
+      const rangoPrecio = hi - lo || hi * 0.1 || 1
+      const piso = Math.max(0, lo - rangoPrecio * 0.35), techo = hi + rangoPrecio * 0.35
+      let bLo = lo, bHi = hi
+      for (const p of puntos) {
+        if (p.bb_arriba == null || p.bb_abajo == null) continue
+        if (p.bb_abajo >= piso) bLo = Math.min(bLo, p.bb_abajo)
+        if (p.bb_arriba <= techo) bHi = Math.max(bHi, p.bb_arriba)
+      }
+      lo = bLo; hi = bHi
+    }
     // Tu precio entra en la escala sólo si está cerca de lo que se ve. Si está
     // muy lejos (ganás 70 %, o perdés 60 %), estirar la escala aplastaría el
     // gráfico contra un borde: va una etiqueta en ese borde con una flecha.
@@ -1173,6 +1247,21 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
       return d
     }
     const c = linea('c')
+    // El relleno entre las bandas: cada tramo seguido va por la de arriba hacia
+    // adelante y vuelve por la de abajo.
+    let bandas = ''
+    if (ver.bb) {
+      let tramo = []
+      const cerrar = () => {
+        if (tramo.length > 1) {
+          bandas += tramo.map((i, k) => `${k ? 'L' : 'M'}${x(i).toFixed(1)},${y(puntos[i].bb_arriba).toFixed(1)}`).join('')
+            + [...tramo].reverse().map(i => `L${x(i).toFixed(1)},${y(puntos[i].bb_abajo).toFixed(1)}`).join('') + 'Z'
+        }
+        tramo = []
+      }
+      puntos.forEach((p, i) => { if (p.bb_arriba != null && p.bb_abajo != null) tramo.push(i); else cerrar() })
+      cerrar()
+    }
     // Las velas: el ancho de cada una es el 65 % de su lugar, la mecha va del
     // mínimo al máximo y el cuerpo de la apertura al cierre.
     const ancho = Math.max((W / Math.max(lugares, 1)) * 0.65, 1)
@@ -1199,10 +1288,10 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
     }).filter(Boolean) : []
     return {
       escalaY: y, min: lo, max: hi, velas, volumen, promFuera: fuera,
-      path: { c, s50: linea('s50'), s200: linea('s200') },
+      path: { c, s50: linea('s50'), s200: linea('s200'), bbArriba: linea('bb_arriba'), bbAbajo: linea('bb_abajo'), bandas },
       area: c ? `${c}L${x(puntos.length - 1).toFixed(1)},${H}L0,${H}Z` : '',
     }
-  }, [puntos, lugares, promedio, ver.s50, ver.s200, ver.vol, conVelas, fibonacci, elliott, precioMano])
+  }, [puntos, lugares, promedio, ver.s50, ver.s200, ver.bb, ver.vol, conVelas, fibonacci, elliott, precioMano])
 
   const rsiPath = useMemo(() => {
     let d = '', abierto = false
@@ -1449,6 +1538,13 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
               <rect key={`v${b.k}`} x={b.x - b.ancho / 2} width={b.ancho} y={b.y} height={b.alto}
                 fill={b.sube ? v('rendi-pos-fill') : v('rendi-neg-fill')} fillOpacity="0.28" />
             ))}
+            {ver.bb && (
+              <>
+                <path d={path.bandas} fill={COLOR.bandas} fillOpacity="0.08" stroke="none" />
+                <path d={path.bbArriba} fill="none" stroke={COLOR.bandas} strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+                <path d={path.bbAbajo} fill="none" stroke={COLOR.bandas} strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+              </>
+            )}
             {ver.s200 && <path d={path.s200} fill="none" stroke={COLOR.media200} strokeWidth="2.5" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
             {ver.s50 && <path d={path.s50} fill="none" stroke={COLOR.media50} strokeWidth="1.6" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
             {promedio != null && !promFuera && (
@@ -1553,6 +1649,13 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
                   {ph.s50 != null && <Fila color={COLOR.media50} k="50" v={fmtPrecio(ph.s50, moneda).replace(/^US\$ |^\$ /, '')} />}
                   {ver.vol && ph.v > 0 && <Fila k="Vol." v={fmtVolumen(ph.v)} />}
                 </div>
+                {ver.bb && ph.bb_arriba != null && (
+                  <div className="flex gap-2.5 mt-0.5">
+                    {/* La de abajo puede dar negativa después de un salto brusco: un
+                        precio bajo cero no existe, se dice «menos de 0». */}
+                    <Fila color={COLOR.bandas} k="Bandas" v={`${ph.bb_abajo < 0 ? 'menos de 0' : fmtPrecio(ph.bb_abajo, moneda).replace(/^US\$ |^\$ /, '')} – ${fmtPrecio(ph.bb_arriba, moneda).replace(/^US\$ |^\$ /, '')}`} />
+                  </div>
+                )}
                 {/* RSI y ADX en su propio renglón: en uno solo el globo no
                     entraba en un celular. */}
                 {((verRsi && ph.rsi != null) || (verAdx && ph.adx != null)) && (

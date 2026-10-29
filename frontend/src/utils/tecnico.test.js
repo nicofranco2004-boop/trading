@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { tarjetas, tarjetaFuerza, colorSqueeze, fmtAdx, textoCruceAdx, textoSqueeze, velasSemanales, ADX_CLAVE, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
+import { tarjetas, tarjetaFuerza, tarjetaBandas, tarjetaMovimiento, textoRendPorMovimiento, colorSqueeze, fmtAdx, textoCruceAdx, textoSqueeze, velasSemanales, ADX_CLAVE, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
 
 const L = {
   ruedas: 760, fecha: '2026-10-21', precio: 228.97,
@@ -47,9 +47,9 @@ describe('veredictoRsi', () => {
 
   it('cuenta cuándo volvió a pasar 30 para arriba o bajó de 70', () => {
     expect(textoCruceRsi({ tipo: 'salio_de_abajo', hace: 3 }))
-      .toBe('Hace 3 días de mercado volvió a pasar 30 para arriba: suele leerse como que dejó de caer y empieza a tomar fuerza.')
+      .toBe('Hace 3 días de mercado volvió a pasar 30 para arriba: dejó de caer tan rápido.')
     expect(textoCruceRsi({ tipo: 'salio_de_arriba', hace: 0 }))
-      .toBe('En el último día de mercado bajó de 70: suele leerse como que empieza a perder fuerza.')
+      .toBe('En el último día de mercado bajó de 70: dejó de subir tan rápido.')
     expect(textoCruceRsi(null)).toBeNull()
   })
 })
@@ -234,7 +234,7 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     expect(tarjetaFuerza({ ...F, adx_pendiente: -1.5 }).veredicto).toBe('La tendencia afloja')
     // «Apretado» sólo sin tendencia, y dicho como lectura, no como pronóstico.
     expect(tarjetaFuerza({ ...F, adx: 17, squeeze_activo: true }).texto)
-      .toContain('el precio se mueve poco («apretado»): suele leerse como la antesala')
+      .toContain('el precio se mueve poco («apretado»): sus subas y bajas de estas semanas son más chicas que de costumbre.')
     expect(tarjetaFuerza({ ...F, squeeze_activo: true }).texto).not.toContain('apretado')
   })
 
@@ -242,12 +242,12 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     const t = tarjetaFuerza({ ...F, adx: 24.4, adx_cruce: { tipo: 'paso_arriba', hace: 1, squeeze: 1 } })
     expect(t.veredicto).toBe('La tendencia se afirma')
     expect(t.cruce).toBe('Hace 1 día de mercado la fuerza (ADX) pasó 23 para arriba con el Squeeze en verde: '
-      + 'suele leerse como el arranque de una suba con fuerza.')
+      + 'el precio viene subiendo con fuerza.')
     expect(textoCruceAdx({ tipo: 'paso_arriba', hace: 0, squeeze: -1 }, -2))
-      .toBe('En el último día de mercado la fuerza (ADX) pasó 23 para arriba con el Squeeze en rojo: suele leerse como el arranque de una baja con fuerza.')
+      .toBe('En el último día de mercado la fuerza (ADX) pasó 23 para arriba con el Squeeze en rojo: el precio viene bajando con fuerza.')
     // El Squeeze cambió de lado desde el cruce: no se dice para dónde.
     expect(textoCruceAdx({ tipo: 'paso_arriba', hace: 4, squeeze: -1 }, 2))
-      .toBe('Hace 4 días de mercado la fuerza (ADX) pasó 23 para arriba: suele leerse como que la tendencia se afirma.')
+      .toBe('Hace 4 días de mercado la fuerza (ADX) pasó 23 para arriba: la tendencia tomó fuerza.')
     expect(textoCruceAdx({ tipo: 'paso_abajo', hace: 2, squeeze: 1 }, 1)).toContain('bajó de 23')
     expect(textoCruceAdx(null, 1)).toBeNull()
   })
@@ -260,10 +260,83 @@ describe('fuerza de la tendencia (ADX + Squeeze)', () => {
     expect(ADX_CLAVE).toBe(23)
   })
 
-  it('nunca promete: «suele leerse», ni «se viene» ni «comprá»', () => {
+  it('nunca promete: ni «suele», ni «se viene», ni «comprá»', () => {
+    // Medido (backtest 28/10, y «Tus señales»: 70 activos, 2 años): ni el RSI ni
+    // el ADX anticiparon el precio mejor que el azar. Los textos describen lo que
+    // ya pasó; ninguno dice qué «suele» venir.
+    const rsi = tarjetas({ ruedas: 300, rsi: 75 }).find(c => c.id === 'rsi')
     const textos = [textoSqueeze('verde_fuerte'), textoSqueeze('rojo_fuerte'),
-      textoCruceAdx({ tipo: 'paso_arriba', hace: 1, squeeze: 1 }, 1), tarjetaFuerza(F).texto].join(' ')
-    expect(textos).not.toMatch(/se viene|comprá|vendé|va a subir|va a bajar/i)
+      ...['paso_arriba', 'paso_abajo'].flatMap(tipo => [-1, 1].map(sq => textoCruceAdx({ tipo, hace: 1, squeeze: sq }, sq))),
+      tarjetaFuerza(F).texto, tarjetaFuerza({ ...F, adx: 17, squeeze_activo: true }).texto,
+      rsi.texto, textoCruceRsi({ tipo: 'salio_de_abajo', hace: 1 }), textoCruceRsi({ tipo: 'salio_de_arriba', hace: 1 }),
+      // Las Bollinger en todas sus posiciones y anchos: tocar una banda no anticipa nada.
+      ...[-0.2, 0.1, 0.5, 0.9, 1.2, null].flatMap(bb_posicion => [0.5, 1, 2].map(bb_ancho_relativo =>
+        tarjetaBandas({ ruedas: 300, bb_arriba: 110, bb_abajo: 90, bb_posicion, bb_ancho_relativo }).texto)),
+      tarjetaBandas({ ruedas: 10, bb_arriba: null }).texto,
+      textoRendPorMovimiento({ rend_12m: 32, mov_anual: 24, rend_por_movimiento: 1.33 }), textoRendPorMovimiento({ rend_12m: -22, mov_anual: 41, rend_por_movimiento: -0.54 }),
+      ...[0.8, 2, 4].flatMap(mov_dia => [null, 1, 3].map(mov_dia_anio => tarjetaMovimiento({ ruedas: 300, mov_dia, mov_dia_anio, mov_mes: mov_dia * 4.6 }).texto))].join(' ')
+    expect(textos).not.toMatch(/suele|se viene|comprá|vendé|va a subir|va a bajar|rebota|frena|antesala|arranque|esperad|potencial|oportunidad|anticipa\b/i)
+  })
+
+  it('las Bandas de Bollinger dicen dónde está el precio y cuánto se movió', () => {
+    const B = { ruedas: 300, bb_arriba: 110, bb_abajo: 90, bb_ancho_relativo: 1 }
+    const arriba = tarjetaBandas({ ...B, bb_posicion: 0.9 })
+    expect(arriba.veredicto).toBe('Cerca de la banda de arriba')
+    expect(arriba.texto).toContain('El precio está pegado a la banda de arriba: está en la parte alta de lo que se movió en esos 20 días.')
+    expect(arriba.texto).not.toContain('angostas')
+    expect(tarjetaBandas({ ...B, bb_posicion: 1.3 }).texto).toContain('Cerró arriba de la banda de arriba: más alto que casi todos los precios de esos 20 días.')
+    expect(tarjetaBandas({ ...B, bb_posicion: -0.1 }).veredicto).toBe('Abajo de las bandas')
+    expect(tarjetaBandas({ ...B, bb_posicion: 0.15 }).veredicto).toBe('Cerca de la banda de abajo')
+    expect(tarjetaBandas({ ...B, bb_posicion: 0.5 }).veredicto).toBe('Entre las bandas')
+    expect(tarjetaBandas({ ...B, bb_posicion: 0.5, bb_ancho_relativo: 0.5 }).texto).toContain('más angostas que de costumbre')
+    expect(tarjetaBandas({ ...B, bb_posicion: 0.5, bb_ancho_relativo: 1.8 }).texto).toContain('más anchas que de costumbre')
+    expect(arriba.tono).toBe('neutro')
+    // Pocos días o un precio quieto: lo dice, no inventa.
+    expect(tarjetaBandas({ ruedas: 12, bb_arriba: null }).texto).toContain('hacen falta 20 días de mercado y este activo tiene 12')
+    expect(tarjetaBandas({ ...B, bb_posicion: null }).veredicto).toBe('Sin movimiento')
+    expect(tarjetaBandas(null)).toBeNull()
+  })
+
+  it('cuánto se mueve: el tamaño del día normal, contra su último año', () => {
+    const t = tarjetaMovimiento({ ruedas: 300, mov_dia: 3.49, mov_dia_anio: 2.1, mov_mes: 16.0 })
+    expect(t.veredicto).toBe('Movimiento alto')
+    expect(t.texto).toBe('En un día normal de los últimos 20 días de mercado subió o bajó alrededor de 3,5%. '
+      + 'Llevado a un mes, son unos 16% para cualquiera de los dos lados. Es más que su día normal del último año (2,1%). '
+      + 'Mide el tamaño del movimiento, no para dónde va.')
+    expect(t.tono).toBe('neutro')
+    expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 1.2, mov_dia_anio: 2 }).veredicto).toBe('Movimiento bajo')
+    expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 1.2, mov_dia_anio: 2 }).texto).toContain('Es menos que su día normal')
+    expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 2, mov_dia_anio: 2.1 }).veredicto).toBe('Movimiento medio')
+    expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 2, mov_dia_anio: 2.1 }).texto).toContain('Es parecido')
+    // Sin año medido no compara; con pocos días o precio quieto lo dice.
+    expect(tarjetaMovimiento({ ruedas: 60, mov_dia: 2, mov_dia_anio: null }).texto).not.toContain('último año')
+    expect(tarjetaMovimiento({ ruedas: 15, mov_dia: null }).texto).toContain('hacen falta 21 días de mercado y este activo tiene 15')
+    expect(tarjetaMovimiento({ ruedas: 60, mov_dia: 0 }).veredicto).toBe('Sin movimiento')
+    expect(tarjetas({ ruedas: 300, mov_dia: 2 }).map(x => x.id)).toContain('movimiento')
+    // Ganancia por punto de movimiento, en pasado y con la aclaración.
+    const con = tarjetaMovimiento({ ruedas: 760, mov_dia: 0.84, rend_12m: 32.07, mov_anual: 24.13, rend_por_movimiento: 1.329 })
+    expect(con.cruce).toBe('En los últimos 12 meses subió 32,1%. Su movimiento de un día normal, llevado a un año, da unos 24%: 1,3 de ganancia por cada 1 de movimiento. '
+      + 'Es lo que ya pasó: medido en 15 acciones, este número no anticipó cuál iba a rendir más después.')
+    expect(textoRendPorMovimiento({ rend_12m: -22.2, mov_anual: 41.2, rend_por_movimiento: -0.539 }))
+      .toContain('bajó 22,2%. Su movimiento de un día normal, llevado a un año, da unos 41%: 0,5 de pérdida por cada 1 de movimiento')
+    // Lo que redondea a cero va en palabras (auditoría 28/10).
+    expect(textoRendPorMovimiento({ rend_12m: 0.9, mov_anual: 40, rend_por_movimiento: 0.0225 })).toContain('subió 0,9%')
+    expect(textoRendPorMovimiento({ rend_12m: 0.9, mov_anual: 40, rend_por_movimiento: 0.0225 })).toContain('casi nada de ganancia para todo lo que se movió')
+    expect(textoRendPorMovimiento({ rend_12m: -0.03, mov_anual: 40, rend_por_movimiento: -0.00075 })).toContain('quedó casi en el mismo precio')
+    expect(textoRendPorMovimiento({ rend_12m: -0.03, mov_anual: 40, rend_por_movimiento: -0.00075 })).not.toMatch(/0,0/)
+    expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 0.04, mov_mes: 0.2 }).veredicto).toBe('Sin movimiento')
+    expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 0.9, mov_mes: 4.2 }).texto).toContain('unos 4,2% para cualquiera')
+    // Un servidor de antes (sin las claves nuevas): sin tarjeta, no «faltan datos».
+    expect(tarjetaMovimiento({ ruedas: 760, rsi: 50 })).toBeNull()
+    expect(tarjetaBandas({ ruedas: 760, rsi: 50 })).toBeNull()
+    expect(textoRendPorMovimiento({ rend_12m: 5, mov_anual: 20, rend_por_movimiento: null })).toBeNull()
+    expect(tarjetaMovimiento({ ruedas: 300, mov_dia: 2 }).cruce).toBeNull()
+  })
+
+  it('las velas semanales llevan las bandas del último día', () => {
+    const pts = ['2026-10-12', '2026-10-13'].map((d, i) => ({ d, c: 10 + i, bb_arriba: 12 + i, bb_abajo: 8 + i }))
+    const [semana] = velasSemanales(pts)
+    expect([semana.bb_arriba, semana.bb_abajo]).toEqual([13, 9])
   })
 
   it('las velas semanales llevan el ADX y el Squeeze del último día', () => {

@@ -73,9 +73,10 @@ compartidos primero — no las hojas.
 ### R4 — La familia también se cambia por atributo, por estilo inline y por canvas.
 
 `fontFamily`, `style.fontFamily` y `ctx.font` con un valor mono cuentan igual que la clase.
-Son 22 usos que `grep font-mono` no ve: `ReturnsDiagram.jsx` (16, vía la constante `MONO`),
-`utils/shareCard.js` (5 `ctx.font`) y `Heatmap.jsx` (1 `fontFamily="monospace"` sobre un
-porcentaje).
+Son 21 usos que `grep font-mono` no ve: `ReturnsDiagram.jsx` (16, vía la constante `MONO`),
+`utils/shareCard.js` (4 `ctx.font`, todos en el armado de las tarjetas de insight y de mes; las
+de métricas —distribución y rendimiento— son Geist entero) y `Heatmap.jsx` (1
+`fontFamily="monospace"` sobre un porcentaje).
 
 **Acoplamiento a mirar a mano:** `shareCard.js` precarga los specs `12px "JetBrains Mono"`,
 `13px` y `14px` con `document.fonts.load()`. Cambiar `FONT_MONO` sin tocar esos tres literales

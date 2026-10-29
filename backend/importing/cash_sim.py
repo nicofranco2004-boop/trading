@@ -36,6 +36,8 @@ class CashWarning:
 class CashSimResult:
     final_balances: Dict[Tuple[str, str], float]  # (broker, currency) → balance
     warnings: List[CashWarning] = field(default_factory=list)
+    # Las sub-cuentas "· USD" en pesos que el confirm va a adoptar (pasan a USDT).
+    pasan_a_dolares: frozenset = frozenset()
 
 
 def simulate(
@@ -89,7 +91,28 @@ def simulate(
             return sib
         return tx.broker
 
+    # Las sub-cuentas que el confirm va a crear o ADOPTAR: las de los padres con
+    # filas ruteadas en este lote (mismo criterio que `persister.persist_batch`).
+    # Una adoptada deja de ser padre: el confirm recorre los brokers en orden
+    # ("Cocos" antes que "Cocos · USD") y cuando le toca ya está en dólares.
+    def _patas():
+        return {sibling_for[t.broker] for t in sorted_txs
+                if t.broker in sibling_for
+                and ((t.currency or "").upper() in ("USD", "USDT")
+                     or t.operation_type in (OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS))}
+    for _p in _patas():
+        sibling_for.pop(_p, None)
+    # Las que hoy están en PESOS pasan a dólares al adoptarlas: simularlas con su
+    # moneda de hoy le pedía a la persona el "Estado inicial" en pesos de su
+    # cuenta en dólares, y el confirm frenaba esos pesos. Las que ya están en
+    # dólares (USD o USDT) se simulan con la suya: su saldo de hoy está guardado
+    # con esa moneda (`starting_cash`).
+    pasan_a_dolares = {p for p in _patas()
+                       if (user_brokers.get(p) or {}).get("currency") == "ARS"}
+
     def _broker_currency(broker: str) -> str:
+        if broker in pasan_a_dolares:
+            return "USDT"
         info = user_brokers.get(broker)
         if info:
             return info.get("currency", "USDT")
@@ -181,4 +204,5 @@ def simulate(
                 key = (tx.broker, "ARS")
                 balances[key] = balances.get(key, 0.0) + ars
 
-    return CashSimResult(final_balances=balances, warnings=warnings)
+    return CashSimResult(final_balances=balances, warnings=warnings,
+                         pasan_a_dolares=frozenset(pasan_a_dolares))

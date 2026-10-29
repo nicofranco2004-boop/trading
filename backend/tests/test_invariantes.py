@@ -7,9 +7,11 @@ dato legítimo parecido.
 
 Corre con: cd backend && python3 -m pytest tests/test_invariantes.py
 """
+import io
 import os
 import sqlite3
 import sys
+import uuid
 
 import pytest
 
@@ -18,6 +20,8 @@ BACKEND = os.path.dirname(HERE)
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
 
+import main                                                          # noqa: E402
+from fastapi.testclient import TestClient                            # noqa: E402
 from importing.invariantes import (                                  # noqa: E402
     correr, check_moneda_posicion_vs_broker, check_broker_inexistente,
     check_costo_no_positivo, check_subbroker_usd_bien_formado, check_cash_moneda,
@@ -64,6 +68,16 @@ def _pos(db, broker, asset, ccy, qty=10, invested=1000.0, is_cash=0):
                   VALUES (?,?,?,?,?,?,?)""", (UID, broker, asset, is_cash, qty, invested, ccy))
 
 
+def _caja(db, broker, saldo, tc=None, rotulo="USDT", currency=None):
+    """Una caja como la arma producción (`efectivo.mover`): el saldo en `invested`,
+    `quantity` vacía, y `currency` vacía hasta que el arranque (init_db) la completa
+    desde el rótulo. Hasta 2026-10-27 estos tests la armaban con el saldo en
+    `quantity` —lo contrario de producción— y el chequeo de la caja cruzada, que
+    filtraba por `quantity`, pasaba en verde sin poder disparar nunca."""
+    db.execute("INSERT INTO positions (user_id,broker,asset,is_cash,invested,tc_compra,currency) "
+               "VALUES (?,?,?,1,?,?,?)", (UID, broker, rotulo, saldo, tc, currency))
+
+
 # ── 1. moneda de la posición vs la del broker ────────────────────────────────
 
 def test_pesos_en_broker_dolar_es_error(db):
@@ -91,8 +105,8 @@ def test_la_cuenta_sana_no_dispara_nada(db):
     _broker(db, "Cocos · USD", "USDT", parent=pid)
     _pos(db, "Cocos", "GGAL", "ARS")
     _pos(db, "Cocos · USD", "AAPL", "USD")
-    _pos(db, "Cocos", "ARS", "ARS", qty=5000, invested=0, is_cash=1)
-    _pos(db, "Cocos · USD", "USD", "USD", qty=300, invested=0, is_cash=1)
+    _caja(db, "Cocos", 5000, rotulo="ARS", currency="ARS")
+    _caja(db, "Cocos · USD", 300, rotulo="USDT", currency="USD")
     r = correr(db, UID)
     assert r["ok"] is True, r["violaciones"]
     assert r["errores"] == 0 and r["avisos"] == 0
@@ -124,9 +138,12 @@ def test_tenencia_con_costo_cero_o_negativo(db):
 
 
 def test_el_cash_no_cuenta_como_costo_no_positivo(db):
-    """La caja tiene invested=0 por diseño: no es una tenencia comprada."""
+    """La caja no es una tenencia comprada: su `invested` es el saldo, y un saldo en
+    cero o en rojo es legítimo."""
     _broker(db, "Cocos", "ARS")
-    _pos(db, "Cocos", "ARS", "ARS", qty=5000, invested=0, is_cash=1)
+    _broker(db, "Balanz", "ARS")
+    _caja(db, "Cocos", 0, rotulo="ARS")
+    _caja(db, "Balanz", -70, rotulo="ARS")
     assert check_costo_no_positivo(db, UID) == []
 
 
@@ -151,16 +168,182 @@ def test_subbroker_bien_formado_no_dispara(db):
 
 def test_caja_en_pesos_dentro_de_un_broker_dolar(db):
     _broker(db, "Schwab", "USD")
-    _pos(db, "Schwab", "ARS", "ARS", qty=100000, invested=0, is_cash=1)
+    _caja(db, "Schwab", 100000, rotulo="ARS")
     v = check_cash_moneda(db, UID)
     assert len(v) == 1 and v[0]["severidad"] == "aviso"
+    assert v[0]["detalle"]["marcas"] == ["asset"] and v[0]["detalle"]["saldo"] == 100000
 
 
-def test_caja_en_cero_no_dispara(db):
-    """Un saldo residual de redondeo no es plata en la moneda equivocada."""
+def test_caja_en_rojo_cruzada_tambien_dispara(db):
+    """Una deuda contada en la moneda equivocada también es plata mal contada."""
+    _broker(db, "Cocos", "ARS")
+    _caja(db, "Cocos", -250, rotulo="USD")
+    assert len(check_cash_moneda(db, UID)) == 1
+
+
+def test_caja_vacia_cruzada_avisa_que_lo_proximo_se_cuenta_mal(db):
+    """Vacía no es sana: es la caja que deja un import revertido en un broker que
+    después cambió de moneda, y lo próximo que entre se cuenta en la equivocada.
+    El saldo es `invested`: un `quantity` viejo no la hace "con plata"."""
     _broker(db, "Schwab", "USD")
-    _pos(db, "Schwab", "ARS", "ARS", qty=0.001, invested=0, is_cash=1)
+    _caja(db, "Schwab", 0.001, rotulo="ARS")
+    db.execute("UPDATE positions SET quantity=100000 WHERE broker='Schwab'")
+    v = check_cash_moneda(db, UID)
+    assert len(v) == 1 and v[0]["detalle"]["vacia"] is True
+    assert "lo próximo que entre" in v[0]["que_pasa"]
+
+
+def test_caja_sana_vacia_con_quantity_viejo_no_dispara(db):
+    """Lo que hacía disparar a la versión que miraba `quantity`: una caja vacía, con
+    sus marcas de acuerdo con el broker, y un número viejo en `quantity`."""
+    _broker(db, "Schwab", "USD")
+    _caja(db, "Schwab", 0, rotulo="USD")
+    db.execute("UPDATE positions SET quantity=100000 WHERE broker='Schwab'")
     assert check_cash_moneda(db, UID) == []
+
+
+def test_caja_con_currency_cruzada_dispara(db):
+    """El rótulo coincide con el broker pero `currency` no. Es la marca que lee
+    PRIMERO `behavioral._native_ccy`: metas, reportes e insights de la IA
+    (`_position_value_usd`) valúan esos pesos como dólares."""
+    from behavioral import _position_value_usd
+    _broker(db, "Cocos", "ARS")
+    _caja(db, "Cocos", 1_500_000, rotulo="ARS", currency="USD")
+    v = check_cash_moneda(db, UID)
+    assert len(v) == 1 and v[0]["detalle"]["marcas"] == ["currency"]
+    fila = dict(db.execute("SELECT * FROM positions WHERE broker='Cocos'").fetchone())
+    assert _position_value_usd(fila, tc_blue=1000.0) == 1_500_000.0    # no US$1.500
+
+
+def test_caja_sin_currency_o_con_la_del_broker_no_dispara(db):
+    """`currency` vacía es la caja recién creada, antes de que el arranque la
+    complete: `_native_ccy` cae al rótulo, que acá coincide. Y 'USD' en un broker
+    'USDT' (el sub-broker "· USD", un exchange) es el mismo dólar."""
+    pid = _broker(db, "Cocos", "ARS")
+    _broker(db, "Cocos · USD", "USDT", parent=pid)
+    _broker(db, "Binance", "USDT")
+    _caja(db, "Cocos", 1_500_000, rotulo="ARS")
+    _caja(db, "Cocos · USD", 500, rotulo="USDT", currency="USD")
+    _caja(db, "Binance", 80, rotulo="USDT", currency="USD")
+    assert check_cash_moneda(db, UID) == []
+
+
+# ── 5b. cash cruzado, armado por las puertas reales ──────────────────────────
+# Las cajas de arriba se arman a mano. Éstas las arma producción: la plantilla de
+# Rendi entra por la vista previa y la confirmación HTTP, el arranque es
+# `main.init_db`, y el chequeo se pide por `/api/admin/check-invariantes`, que es
+# su único llamador.
+
+HDR = ("fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,"
+       "comisiones,moneda,notas\n")
+
+
+class TestCajaCruzadaPorLasPuertasReales:
+
+    @pytest.fixture(autouse=True)
+    def _admin(self):
+        self.client = TestClient(main.app)
+        conn = main.get_db()
+        self.uid = conn.execute(
+            "INSERT INTO users (email, password_hash, approved, email_verified, is_admin) "
+            "VALUES (?, 'x', 1, 1, 1)", (f"invariantes-{uuid.uuid4().hex[:10]}@rendi.test",),
+        ).lastrowid
+        conn.commit()
+        conn.close()
+        self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
+
+    def importar(self, broker, filas):
+        r = self.client.post(
+            "/api/imports/preview", headers=self.h,
+            files=[("files", ("plantilla.csv", io.BytesIO((HDR + filas).encode("utf-8")),
+                              "text/csv"))],
+            data={"format": "rendi_generic", "broker": broker})
+        assert r.status_code == 200, r.text
+        assert r.json()["errors"] == []
+        sid = r.json()["session_id"]
+        r = self.client.post("/api/imports/confirm", headers=self.h, json={"session_id": sid})
+        assert r.status_code == 200, r.text
+        return sid
+
+    def sql(self, q, *a):
+        conn = main.get_db()
+        try:
+            with conn:
+                return [dict(r) for r in conn.execute(q, a).fetchall()]
+        finally:
+            conn.close()
+
+    def cajas(self):
+        return {r["broker"]: r for r in self.sql(
+            "SELECT broker, asset, currency, quantity, invested FROM positions "
+            "WHERE user_id=? AND is_cash=1", self.uid)}
+
+    def cajas_cruzadas(self):
+        r = self.client.get("/api/admin/check-invariantes", headers=self.h,
+                            params={"user_id": self.uid})
+        assert r.status_code == 200, r.text
+        assert r.json()["chequeos_rotos"] == {}
+        return [v for v in r.json()["violaciones"] if v["chequeo"] == "cash_moneda"]
+
+    def test_la_cuenta_en_dos_monedas_no_dispara(self):
+        """Pesos en el broker, dólares en "· USD": cada caja en la moneda de su broker,
+        antes y después de que el arranque les complete `currency`."""
+        self.importar("MiBroker", "2026-01-05,DEPOSITO,MiBroker,,,,1000000,,,,ARS,\n"
+                                  "2026-01-06,DEPOSITO,MiBroker,,,,500,,,,USD,\n")
+        cajas = self.cajas()
+        # Así guarda producción la caja: el saldo en `invested`, nada en `quantity`.
+        assert cajas["MiBroker"]["invested"] == 1_000_000.0
+        assert cajas["MiBroker · USD"]["invested"] == 500.0
+        assert not cajas["MiBroker"]["quantity"] and not cajas["MiBroker · USD"]["quantity"]
+        assert self.cajas_cruzadas() == []
+        main.init_db()
+        # En Postgres el arranque no corre las correcciones de SQLite (la base nace
+        # de schema_pg.sql): `currency` queda vacía y `_native_ccy` lee el rótulo.
+        assert {b: c["currency"] for b, c in self.cajas().items()} == (
+            {"MiBroker": None, "MiBroker · USD": None} if main.USANDO_PG
+            else {"MiBroker": "ARS", "MiBroker · USD": "USD"})
+        assert self.cajas_cruzadas() == []
+
+    def test_la_caja_que_quedo_en_la_otra_moneda_dispara(self):
+        """Hasta 86a2559, cambiarle la moneda a un broker a mano (PUT /api/brokers/{id})
+        cambiaba sólo `brokers.currency`: la caja seguía con el rótulo y la
+        `currency` viejos. Es el daño que este chequeo vino a medir, y el que no
+        podía ver mientras miraba `quantity`."""
+        self.importar("MiIBKR", "2026-01-05,DEPOSITO,MiIBKR,,,,1000,,,,USD,\n")
+        main.init_db()
+        assert self.cajas_cruzadas() == []
+        # La única escritura que hacía el PUT de entonces.
+        self.sql("UPDATE brokers SET currency='ARS' WHERE user_id=? AND name='MiIBKR'", self.uid)
+        v = self.cajas_cruzadas()
+        assert len(v) == 1, v
+        assert v[0]["detalle"]["broker"] == "MiIBKR" and v[0]["detalle"]["saldo"] == 1000.0
+        # `currency` sólo la completa el arranque de SQLite (ver el test de arriba).
+        assert v[0]["detalle"]["marcas"] == (["asset"] if main.USANDO_PG
+                                             else ["asset", "currency"])
+
+    def test_la_caja_vacia_que_deja_revertir_tambien_avisa(self):
+        """Revertir el import deja la caja en cero con sus marcas en dólares; cambiar
+        la moneda como antes de 86a2559 la deja cruzada. Vacía, pero lo próximo que
+        entre se cuenta mal (es el caso de `escrituras_para_cambiar_moneda`)."""
+        sid = self.importar("MiIBKR", "2026-01-05,DEPOSITO,MiIBKR,,,,1000,,,,USD,\n")
+        r = self.client.post(f"/api/imports/{sid}/revert", headers=self.h)
+        assert r.status_code == 200, r.text
+        assert abs(self.cajas()["MiIBKR"]["invested"] or 0) < 0.005
+        self.sql("UPDATE brokers SET currency='ARS' WHERE user_id=? AND name='MiIBKR'", self.uid)
+        v = self.cajas_cruzadas()
+        assert len(v) == 1 and v[0]["detalle"]["vacia"] is True, v
+
+    def test_el_cambio_de_moneda_de_hoy_no_deja_la_caja_cruzada(self):
+        """El mismo cambio por el PUT de hoy lleva las dos marcas de la caja con la
+        moneda (`escrituras_para_cambiar_moneda`): el chequeo no tiene nada que decir."""
+        self.importar("MiIBKR", "2026-01-05,DEPOSITO,MiIBKR,,,,1000,,,,USD,\n")
+        main.init_db()
+        bid = self.sql("SELECT id FROM brokers WHERE user_id=? AND name='MiIBKR'", self.uid)[0]["id"]
+        r = self.client.put(f"/api/brokers/{bid}", headers=self.h,
+                            json={"name": "MiIBKR", "currency": "ARS"})
+        assert r.status_code == 200, r.text
+        assert (self.cajas()["MiIBKR"]["asset"], self.cajas()["MiIBKR"]["currency"]) == ("ARS", "ARS")
+        assert self.cajas_cruzadas() == []
 
 
 # ── el runner ────────────────────────────────────────────────────────────────
@@ -308,11 +491,6 @@ def test_futuro_cerrado_o_en_broker_vivo_no_dispara(db):
 
 
 # ── 9. caja vacía con precio de compra ───────────────────────────────────────
-def _caja(db, broker, saldo, tc):
-    db.execute("INSERT INTO positions (user_id,broker,asset,is_cash,invested,tc_compra) "
-               "VALUES (?,?,?,1,?,?)", (UID, broker, "USDT", saldo, tc))
-
-
 def test_caja_vacia_o_en_rojo_con_precio_es_error(db):
     """El precio es de los dólares que hay. En cero, con centavos que la pantalla
     muestra como 0,00, o en rojo, el que quede guardado no es de ninguno."""

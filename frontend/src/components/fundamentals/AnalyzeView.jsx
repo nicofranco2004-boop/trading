@@ -7,8 +7,16 @@
 // props:
 //   ticker     — ticker activo (string, upper)
 //   onSelect   — (symbol) => void, sube la selección al padre (setea ?ticker=)
+//   enFicha    — se muestra adentro de la ficha del activo (/activo/X), debajo
+//                del análisis técnico: la MISMA vista, con tres diferencias. Sin
+//                buscador. Sin el resumen con IA, que se pide solo al abrir y
+//                gasta el cupo semanal: abriendo fichas desde el mapa de calor
+//                se lo comía mirando. Y si la empresa no tiene fundamentales (o
+//                no cargan), no ocupa lugar: la ficha sigue con lo demás.
 
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
+import SeccionFicha from '../asset/SeccionFicha'
 import {
   Search, Tag, TrendingUp, Zap, ShieldCheck, AlertCircle, Gauge, Coins, Scale,
 } from 'lucide-react'
@@ -105,7 +113,7 @@ function AxisCard({ title, read }) {
   )
 }
 
-export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = false, onCompareWith }) {
+export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = false, onCompareWith, enFicha = false, irACalidad = null }) {
   const { analizar } = useVoz()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -119,8 +127,10 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
   // (YPFD) no aparecían, y el CEDEAR de Disney abría "DISN" en vez de DIS.
   // Con el buscador oculto (hoy: siempre, en "Calidad de cartera") los chips no
   // se muestran y no se pide nada.
+  const sinBuscador = hideSearch || enFicha
+  const TituloEmpresa = enFicha ? 'h3' : 'h2'
   useEffect(() => {
-    if (hideSearch) return
+    if (sinBuscador) return
     let cancelled = false
     Promise.all([api.get('/positions'), api.get('/brokers').catch(() => [])])
       .then(([list, bkrs]) => {
@@ -145,7 +155,7 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
       })
       .catch(() => {})
     return () => { cancelled = true }
-  }, [hideSearch])
+  }, [sinBuscador])
 
   // Cargar scorecard cuando cambia el ticker.
   useEffect(() => {
@@ -171,11 +181,16 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
   const categories = data?.available ? (data.score?.categories || []) : []
   const categoriesDetail = data?.available ? (data.categories_detail || []) : []
 
-  return (
+  // En la ficha: sin fundamentales (cripto, ETF, bono, o no cargaron) no queda
+  // un título suelto; con ellos, el título y el camino a "Calidad de cartera"
+  // para compararla con otras.
+  if (enFicha && !loading && !data?.available) return null
+
+  const cuerpo = (
     <div>
       {/* Search card + chips de posiciones — se oculta cuando el buscador vive en
           el overlay global (modo detalle de "Calidad de cartera"). */}
-      {!hideSearch && (
+      {!sinBuscador && (
       <Panel className="mb-6">
         <TickerSearch onSelect={onSelect} autoFocus={!ticker} />
 
@@ -210,7 +225,7 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
       )}
 
       {/* Empty state — todavía no eligió ticker */}
-      {!ticker && !loading && (
+      {!ticker && !loading && !enFicha && (
         <Panel padding="lg">
           <EmptyState
             icon={<Gauge size={20} strokeWidth={1.75} />}
@@ -223,7 +238,7 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
 
       {loading && <ScorecardSkeleton />}
 
-      {!loading && error && ticker && (
+      {!loading && error && ticker && !enFicha && (
         <Panel padding="lg">
           <div className="flex items-start gap-2 text-sm text-rendi-neg">
             <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
@@ -233,7 +248,7 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
       )}
 
       {/* available:false */}
-      {!loading && !error && data && data.available === false && (
+      {!loading && !error && data && data.available === false && !enFicha && (
         <Panel padding="lg">
           <EmptyState
             icon={<Search size={20} strokeWidth={1.75} />}
@@ -256,9 +271,10 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
             <AssetLogo asset={data.ticker} size={36} />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <h2 className="text-lg font-semibold text-ink-0 leading-tight">
+                {/* En la ficha va adentro de la sección «Análisis fundamental» (h2): es un h3. */}
+                <TituloEmpresa className="text-lg font-semibold text-ink-0 leading-tight">
                   {data.company_name || data.ticker}
-                </h2>
+                </TituloEmpresa>
                 <span className="font-mono text-xs text-ink-3">{data.ticker}</span>
                 {watchlist && (
                   <StarToggle
@@ -296,13 +312,17 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
 
           {/* Lo que diferencia a Rendi: tu posición (costo/P&L + espectro con tu
               costo) y "¿rinde más que?" vs tus alternativas del inversor AR. */}
-          <DetailPortfolioBlocks ticker={data.ticker} data={data} />
+          {/* En la ficha (ancha), los dos bloques lado a lado; en Calidad de
+              cartera, uno abajo del otro como siempre. */}
+          <div className={enFicha ? 'grid grid-cols-1 xl:grid-cols-2 gap-6 xl:items-start' : 'space-y-6'}>
+            <DetailPortfolioBlocks ticker={data.ticker} data={data} />
+          </div>
 
           {data.analysts?.available && (
             <AnalystConsensus analysts={data.analysts} />
           )}
 
-          <AISummaryCard ticker={data.ticker} />
+          {!enFicha && <AISummaryCard ticker={data.ticker} />}
 
           {/* DETALLE POR CATEGORÍA — desglose métrica por métrica (wave 3) */}
           {categoriesDetail.length > 0 && (
@@ -310,7 +330,7 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
               <p className="text-[12.5px] text-ink-2 font-medium">
                 Detalle por categoría
               </p>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className={`grid grid-cols-1 lg:grid-cols-2 gap-4 ${enFicha ? '2xl:grid-cols-3' : ''}`}>
                 {categoriesDetail.map(cat => (
                   <CategoryDetail
                     key={cat.key}
@@ -333,6 +353,19 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
       )}
 
     </div>
+  )
+  // En la ficha, la sección con su título (SeccionFicha, la misma de las otras)
+  // y el camino a "Calidad de cartera" para compararla con otras.
+  if (!enFicha) return cuerpo
+  return (
+    <SeccionFicha titulo="Análisis fundamental"
+      accion={irACalidad && (
+        <Link to={irACalidad} className="inline-flex items-center min-h-10 sm:min-h-0 text-[13px] text-data-violet hover:underline">
+          Compararla en Calidad de cartera →
+        </Link>
+      )}>
+      {cuerpo}
+    </SeccionFicha>
   )
 }
 

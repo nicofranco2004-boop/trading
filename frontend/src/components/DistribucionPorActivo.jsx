@@ -18,12 +18,13 @@
 import CompositionDonut from './CompositionDonut'
 import { DEFAULT_TOP_ASSETS } from '../utils/bookComposition'
 
-export default function DistribucionPorActivo({ items = [], fmt, className = '' }) {
+export default function DistribucionPorActivo({ items = [], fmt, compartir = null, className = '' }) {
   if (items.length === 0) return null
   const efectivo = items.find(i => i.key === 'efectivo')?.pct ?? 0
   return (
     <CompositionDonut
       className={className}
+      compartir={compartir}
       title="Distribución de activos"
       items={items}
       fmt={fmt}

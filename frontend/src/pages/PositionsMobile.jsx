@@ -68,6 +68,7 @@ import { useCerSeries } from '../hooks/useCerSeries'
 import { getBondMeta } from '../utils/bondMeta'
 import { hoyISO } from '../utils/fecha'
 import PesoEnCartera from '../components/PesoEnCartera'
+import RadiografiaTecnica, { useLecturasCartera, LecturasTecnicasProvider, useLecturaDeFila, TendenciaChip, FuerzaRsi } from '../components/RadiografiaTecnica'
 import PreciosEnVivo from '../components/PreciosEnVivo'
 import { preciosQueCambiaron, hayPrecios } from '../utils/preciosEnVivo'
 import { PRECIOS_CARTERA_MS } from '../utils/relojVisible'
@@ -1461,6 +1462,12 @@ export default function PositionsMobile() {
   const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcValuacion  // PF → USD para el total
   const pfInvestedUsd = (pfTotals.USD?.capital || 0) + (pfTotals.ARS?.capital || 0) / tcValuacion
 
+  // Radiografía técnica: la MISMA pieza que en la compu (R6). Cada lote pesa
+  // su `valueUsd` de `enriched`, el que suma `total` (el número de arriba); los
+  // plazos fijos suman sin lectura.
+  const lecturas = useLecturasCartera(positions)
+  const radiografiaExtra = useMemo(() => (pfValueUsd > 0 ? [{ nombre: 'plazos fijos', valor: pfValueUsd }] : []), [pfValueUsd])
+
   // ─── El P&L no realizado del hero ───────────────────────────────────────
   // Espejo del desktop (Positions.jsx:1377-1398). Se deriva SUMANDO lo mismo
   // que publica cada fila —`investedUsd` / `investedUsdToday`— en vez de
@@ -1575,6 +1582,7 @@ export default function PositionsMobile() {
 
   return (
     <FdhCtx.Provider value={fdhCtx}>
+    <LecturasTecnicasProvider value={lecturas}>
     <div className="pb-8">
       <RecalculoDeCartera cobro={recalculo.cobro} recalculando={recalculo.recalculando}
         total={heroValor} formato={fmtRecalculo} />
@@ -1716,6 +1724,9 @@ export default function PositionsMobile() {
         <DividendosPorCobrar positions={positions} brokers={brokers}
           mep={dolar?.mep?.medio ?? dolar?.mep?.venta ?? tcValuacion}
           onCambio={(cobro) => recalculo.anotar(cobro, loadAll)} className="mt-3" />
+        {/* Radiografía técnica: el MISMO componente que Cartera de escritorio (R6). */}
+        <RadiografiaTecnica lotes={enriched} valorDe={valorUsdDeFila} extra={radiografiaExtra}
+          indice={lecturas.indice} cargando={lecturas.cargando} error={lecturas.error} className="mt-3" />
       </div>
 
       {/* Los ajustes de vista viven en un sheet, así que la lista tiene que
@@ -2253,6 +2264,7 @@ export default function PositionsMobile() {
         />
       )}
     </div>
+    </LecturasTecnicasProvider>
     </FdhCtx.Provider>
   )
 
@@ -2542,6 +2554,8 @@ function tickerKey(p) {
 }
 
 const ANCHO_ANCLA = 118
+// El valor de una fila para la radiografía técnica: el que ya suma el total.
+const valorUsdDeFila = p => p.valueUsd || 0
 const ANCHO_COL = 108
 
 // El orden es el del desktop (Valor · P&L · Var. día) y después lo que hasta
@@ -2552,6 +2566,7 @@ const COLUMNAS = [
   { id: 'day', label: 'Hoy' },
   { id: 'qty', label: 'Cantidad' },
   { id: 'avg', label: 'Precio prom.' },
+  { id: 'tend', label: 'Tendencia' },
 ]
 
 // Celda de valores: 108px, alineada a la derecha, hasta dos renglones (monto
@@ -2801,6 +2816,8 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
   // "Analizar" le pregunta a Rendi por esta posición y la respuesta cae en el
   // acompañante flotante. Antes abría un panel lateral (ver AnalyzeButton).
   const { analizar } = useVoz()
+  // La lectura técnica de la fila (tendencia y RSI), del contexto que llena la página.
+  const tecnica = useLecturaDeFila(p)
 
   // El MONTO del P&L sigue al toggle global, como el desktop
   // (Positions.jsx:979: `const basePnl = isARS ? c.pnlArs : c.pnl`). Antes iba
@@ -3099,6 +3116,19 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
       <Celda>
         {(p.is_cash || avgDisp == null) ? <Vacio /> : (
           <div className={`${LINEA_1} text-ink-0`}>{precioCard(avgDisp, displayCurrency)}</div>
+        )}
+      </Celda>
+
+      {/* Tendencia de fondo y fuerza (RSI): las mismas celdas que la compu. El
+          lote de una fila abierta no las repite. */}
+      <Celda>
+        {(p.is_cash || p._isLot) ? <Vacio /> : tecnica.estado === 'cargando' ? (
+          <div className={`${LINEA_1} text-ink-3`}>…</div>
+        ) : tecnica.estado === 'error' ? <Vacio /> : (
+          <>
+            <TendenciaChip x={tecnica.x} p={p} className="text-[11.5px]" />
+            <FuerzaRsi x={tecnica.x} sinGuion className="mt-[5px]" />
+          </>
         )}
       </Celda>
 

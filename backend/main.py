@@ -2312,6 +2312,12 @@ def init_db():
         #   • pct_move: avisar cuando un activo se mueve `threshold`% vs `baseline`
         #     (prev_close por ahora). `scope='holdings'` (symbol NULL) evalúa TODAS
         #     las tenencias del user; `scope='ticker'` un símbolo puntual.
+        #   • tecnica: avisar cuando pasa una señal de la ficha técnica
+        #     (`senal`, ver tecnico.SENALES), una vez por día con las velas de la
+        #     noche. `symbol` es el activo como lo pide la ficha ('AAPL', 'GGAL'),
+        #     `currency` en qué moneda se mira ('USD' por defecto, como la ficha)
+        #     y `accion_local` la misma marca que la ficha (acción argentina →
+        #     su precio de BYMA ÷ MEP, no el ADR). Ver alerts_engine.evaluar_tecnicas.
         #
         # `armed` = estado del edge-trigger: la alerta dispara SOLO en el cruce
         # (armed=1 → 0), no mientras el precio sigue del lado disparado. `repeat`
@@ -2322,7 +2328,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
-                kind TEXT NOT NULL,                 -- 'price_target' | 'pct_move'
+                kind TEXT NOT NULL,                 -- 'price_target' | 'pct_move' | 'tecnica'
                 symbol TEXT,                        -- riel-aware; NULL = todas las tenencias
                 scope TEXT NOT NULL DEFAULT 'ticker',-- 'ticker' | 'holdings'
                 direction TEXT NOT NULL DEFAULT 'either', -- price_target: 'above'|'below'
@@ -2341,7 +2347,9 @@ def init_db():
                 created_at TEXT DEFAULT (datetime('now')),
                 last_evaluated_at TEXT,
                 last_fired_at TEXT,
-                last_fired_price REAL
+                last_fired_price REAL,
+                senal TEXT,                         -- tecnica: qué señal (tecnico.SENALES)
+                accion_local INTEGER NOT NULL DEFAULT 0 -- tecnica: acción argentina (como la ficha)
             );
             CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id);
             CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active);
@@ -2421,6 +2429,34 @@ def init_db():
         if _mbl_cols and 'narrative' not in _mbl_cols:
             conn.executescript(
                 "ALTER TABLE market_brief_log ADD COLUMN narrative TEXT;")
+
+        # «Tus señales» (pieza 15, senales_semana.py). La preferencia del
+        # resumen de los sábados: sin fila, 'no' — opt-in, como el resumen del
+        # mercado. Y el % de la plata en tendencia alcista de cada sábado: la
+        # «semana pasada» de la pestaña y del mail. Para atrás no se reconstruye.
+        # La fila se escribe ANTES de mandar: re-correr no manda dos veces.
+        # El índice va DESPUÉS de crear la tabla con sus columnas (el orden que
+        # rompió producción el 2026-08-02).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS resumen_semanal_prefs (
+                user_id INTEGER PRIMARY KEY,
+                canal TEXT NOT NULL DEFAULT 'no',   -- 'mail' | 'push' | 'ambos' | 'no'
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS tendencia_semanal (
+                user_id INTEGER NOT NULL,
+                semana TEXT NOT NULL,                -- el sábado, día ARGENTINO
+                pct_alcista REAL,                    -- NULL: ningún activo con lectura
+                cambios INTEGER NOT NULL DEFAULT 0,
+                canal TEXT,                          -- por dónde se mandó (NULL: no se mandó)
+                push_ok INTEGER,
+                mail_ok INTEGER,
+                created_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (user_id, semana)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tendencia_semanal_semana ON tendencia_semanal(semana);
+        """)
 
         # Grupos de clientes del asesor: filtros GUARDADOS y dinámicos (se
         # recalculan solos). `rules` es JSON con las condiciones; `excluded` la
@@ -2640,6 +2676,11 @@ def init_db():
         _alert_cols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
         if _alert_cols and 'anchor_price' not in _alert_cols:
             conn.executescript("ALTER TABLE alerts ADD COLUMN anchor_price REAL;")
+        # Migración: las alertas técnicas (qué señal y la marca de acción argentina).
+        if _alert_cols and 'senal' not in _alert_cols:
+            conn.executescript("ALTER TABLE alerts ADD COLUMN senal TEXT;")
+        if _alert_cols and 'accion_local' not in _alert_cols:
+            conn.executescript("ALTER TABLE alerts ADD COLUMN accion_local INTEGER NOT NULL DEFAULT 0;")
 
         # Migración: last_fired_date en alert_symbol_state (la tabla ya existe en prod
         # sin esta columna, se creó en el deploy anterior).
@@ -3174,6 +3215,11 @@ def init_db():
         # poda a los 13 meses y sólo se manda si la persona tocó la pantalla.
         if user_cols_after and 'app_instalada_at' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN app_instalada_at TEXT")
+        # La elección Certero/Estimado del usuario ('certero'|'estimado'|NULL).
+        # La escribe PUT /api/preferencias/modo-rendimiento; la lee `twr.modo_de`,
+        # que es el default de todo cálculo de rendimiento (pantallas, IA, informes).
+        if user_cols_after and 'modo_rendimiento' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN modo_rendimiento TEXT")
         if user_cols_after and 'aviso_vencimiento_de' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN aviso_vencimiento_de TEXT")
             conn.commit()
@@ -5238,6 +5284,10 @@ _RESET_PORTFOLIO_TABLES = (
     # Es parte de `monthly_entries`: un reset que borra la suma y deja el detalle
     # dejaría renglones que no suman a nada.
     "flujos_a_mano",
+    # Agregada 2026-10-24 (pieza 15): el % semanal en tendencia alcista es de
+    # ESTA cartera. Sin borrarlo, la cuenta vaciada mostraba «la semana pasada
+    # era 61 %» de la cartera de antes.
+    "tendencia_semanal",
 )
 # Keys de config que son de CARTERA (se borran); el resto —onboarding,
 # welcome_email_sent_at, diag_*— son prefs de UX y sobreviven. Borrar fx_version
@@ -5265,6 +5315,8 @@ _RESET_CONFIG_KEYS = ("fx_version", "tc_blue", "tc_mep")
 _RESET_ADMIN_EXTRA_TABLES = (
     "alerts", "alert_events", "watchlist",
     "user_broker_credentials", "import_mappings",
+    # Cómo le llega el resumen de los sábados (pieza 15): lo configuró.
+    "resumen_semanal_prefs",
 )
 
 
@@ -5918,6 +5970,10 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
             ).fetchone()
             if not parent:
                 raise HTTPException(400, "Broker padre inválido")
+            # Una sub-cuenta es la pata en DÓLARES de su padre (el mismo motivo
+            # que el PUT, que no deja pasarla a pesos).
+            if data.currency == "ARS":
+                raise HTTPException(400, "Una sub-cuenta va en dólares (USD o USDT).")
         try:
             cur = conn.execute(
                 "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES (?,?,?,?)",
@@ -6205,6 +6261,19 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
                     "message": "El sub-broker USD se renombra automáticamente con su broker padre.",
                 },
             )
+        # 2.1) Ni se pasa a pesos: es la caja en dólares de su padre. Pasarla
+        #      remarcaba sus dólares como pesos (US$500 → $500) y después ningún
+        #      dólar podía volver a entrar a la cuenta (`por_que_no_hay_pata_usd`),
+        #      con la única salida —volver a ponerla en dólares— remarcando como
+        #      dólares los pesos que hubieran entrado mientras tanto.
+        if is_sibling and new_currency == "ARS" and row["currency"] != "ARS":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "sibling_currency_forbidden",
+                    "message": "Es la cuenta en dólares de su broker: siempre está en dólares.",
+                },
+            )
 
         # 2.5) Nombre reservado: 'global' es la CLAVE del agregado cross-broker en
         #      monthly_entries (no es un broker real — ver _update_monthly_flow(...,'global',...)).
@@ -6246,10 +6315,10 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
         if not name_changed:
             if new_currency != row["currency"]:
                 with conn:
-                    conn.execute(
-                        "UPDATE brokers SET currency=? WHERE id=? AND user_id=?",
-                        (new_currency, bid, uid),
-                    )
+                    # La moneda y el rótulo de la caja, juntos (ver la función).
+                    for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(
+                            uid, old_name, new_currency):
+                        conn.execute(_sql, _params)
                 _ai_cache_invalidate(uid)
             updated = conn.execute(
                 "SELECT * FROM brokers WHERE id=? AND user_id=?", (bid, uid)
@@ -6387,6 +6456,12 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
                 if sibling is not None:
                     _renombre_broker.anotar_nombre_anterior(
                         conn, uid, sibling["id"], old_sibling, new_sibling)
+                # Si además cambió la moneda, el rótulo de la caja la acompaña (con
+                # el nombre nuevo: las posiciones ya se renombraron arriba).
+                if new_currency != row["currency"]:
+                    for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(
+                            uid, new_name, new_currency):
+                        conn.execute(_sql, _params)
         except ERR_INTEGRIDAD as ex:
             raise HTTPException(
                 status_code=409,
@@ -10184,8 +10259,11 @@ def _fetch_data912_equities():
                     # `mercado`: de qué lista vino. El buscador de CEDEARs
                     # (cedears_dolar) lee SÓLO los de arg_cedears: con las acciones
                     # argentinas mezcladas, YPFD se leía como "YPF en dólares".
+                    # px_bid/px_ask: las mejores puntas de compra y venta, para
+                    # la liquidez de la ficha (liquidez.py).
                     result[sym] = {'c': float(close), 'pct': item.get('pct_change'),
-                                   'v': item.get('v'), 'mercado': endpoint}
+                                   'v': item.get('v'), 'mercado': endpoint,
+                                   'px_bid': item.get('px_bid'), 'px_ask': item.get('px_ask')}
         if result:  # sólo pisamos el cache si hubo data nueva
             _data912_eq_cache['data'] = result
             _data912_eq_cache['ts'] = now
@@ -11534,10 +11612,15 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
                 uid: int = Depends(get_effective_user)):
     """La serie del gráfico técnico (precio, medias de 50 y 200, RSI) y los
     números de la lectura, en dólares (default) o en pesos. Sale de las velas
-    guardadas (velas_diarias.py), no de Yahoo: si el activo todavía no tiene
-    velas, `disponible` es False y la ficha lo dice. `local=1`: es una acción
-    argentina (en dólares va su precio de BYMA ÷ MEP, no el ADR). Las cuentas:
-    tecnico.py."""
+    guardadas (velas_diarias.py). Si el activo no las tiene (nadie lo sigue: se
+    abrió desde el mapa de calor o el buscador) o están viejas, se bajan en el
+    momento con frenos (`velas_diarias.asegurar`), sólo si la app conoce el
+    activo (`velas_diarias.se_puede_pedir`). Si igual no hay, `disponible` es
+    False y `motivo` dice por qué: 'sin_serie' (un bono, un fondo), 'tope' (el
+    cupo), 'bajando' (otra persona lo está bajando: volver a pedir) o
+    'sin_datos' (Yahoo no lo tiene, o la app no lo conoce). `local=1`: es una
+    acción argentina (en dólares va su precio de BYMA ÷ MEP, no el ADR). Las
+    cuentas: tecnico.py."""
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
@@ -11545,8 +11628,119 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
     if ref and not _SYMBOL_RE.match(ref):
         raise HTTPException(400, f"Símbolo inválido: {ref}")
     import tecnico
+    import velas_diarias
     with db_abierta() as conn:
-        return tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
+        tickers, motivo = [], None
+        try:
+            tickers = velas_diarias.tickers_a_pedido(sym, bool(local))
+            if tickers and velas_diarias.se_puede_pedir(conn, sym, uid):
+                motivo = velas_diarias.asegurar(conn, tickers, uid)
+        except Exception as ex:
+            # Sin la descarga, la ficha muestra lo que haya guardado.
+            log.warning("tecnico: velas a pedido de %s fallaron: %r", sym, ex)
+        res = tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
+        if not res.get("disponible"):
+            res["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
+        return res
+
+
+@app.get("/api/liquidez/{papel}")
+def get_liquidez(papel: str, uid: int = Depends(get_effective_user)):
+    """Liquidez en BYMA de un CEDEAR o una acción argentina, para la ficha:
+    plata operada por día, días sin operaciones, diferencia entre puntas y un
+    veredicto (mucha / media / poca). Sólo papeles que cotizan en BYMA (los que
+    lista data912); lo demás contesta `disponible: False`. Las cuentas y los
+    cortes: liquidez.py."""
+    sym = (papel or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {papel}")
+    import liquidez
+    return liquidez.para_la_ficha(sym)
+
+
+class ActivoTecnicoIn(BaseModel):
+    asset: str = Field(..., max_length=40)
+    local: bool = False
+
+
+from tecnico import MAX_ACTIVOS_CARTERA  # noqa: E402 (tecnico sólo importa datetime arriba)
+
+
+class CarteraTecnicaIn(BaseModel):
+    # El tope va en el modelo: una lista gigante se corta al leerla, antes de
+    # armar un objeto por elemento.
+    activos: List[ActivoTecnicoIn] = Field(default_factory=list, max_length=MAX_ACTIVOS_CARTERA)
+
+
+def _lecturas_tecnicas(body: CarteraTecnicaIn, leer) -> dict:
+    """Separa lo que es un ticker de lo que no (un fondo con espacios en el
+    nombre) y lee lo válido con `leer(conn, [(asset, local)])`. Lo inválido
+    vuelve como «sin lectura», sin tirar abajo el resto del pedido."""
+    validos, invalidos = [], []
+    for a in body.activos:
+        sym = (a.asset or "").strip().upper()
+        (validos if _SYMBOL_RE.match(sym) else invalidos).append((sym, a.local))
+    with db_abierta() as conn:
+        lecturas = leer(conn, validos)
+    return {"lecturas": lecturas + [{"asset": s, "local": bool(l), "disponible": False}
+                                    for s, l in invalidos]}
+
+
+@app.post("/api/tecnico/cartera")
+def post_tecnico_cartera(body: CarteraTecnicaIn, uid: int = Depends(get_effective_user)):
+    """La lectura técnica en dólares de varios activos de una vez, para la
+    radiografía de la Cartera (tecnico.para_la_cartera). La pantalla manda sus
+    activos con la marca `local` de la ficha. Un símbolo que no es un ticker
+    (un fondo con espacios en el nombre) vuelve como «sin lectura», sin tirar
+    abajo el resto del pedido."""
+    import tecnico
+    return _lecturas_tecnicas(body, tecnico.para_la_cartera)
+
+
+@app.post("/api/tecnico/lista")
+def post_tecnico_lista(body: CarteraTecnicaIn, uid: int = Depends(get_effective_user)):
+    """«Tu lista, con su lectura técnica» (inicio → Watchlist → «Ver como
+    tablero»): lo que tenés y lo que seguís, en dólares (tecnico.para_la_lista).
+    La pantalla manda cada activo con la marca `local` de la ficha. Mismo tope y
+    misma regla que /api/tecnico/cartera: un símbolo que no es un ticker vuelve
+    «sin lectura» sin tirar abajo el resto."""
+    import tecnico
+    return _lecturas_tecnicas(body, tecnico.para_la_lista)
+
+
+@app.get("/api/tus-senales")
+def get_tecnico_semana(uid: int = Depends(get_effective_user)):
+    """«Tus señales» (Mercado → Novedades). Ruta propia y no /api/tecnico/semana:
+    ésa la atrapa la ficha (`/api/tecnico/{asset}`, «SEMANA» como ticker).
+    Lo que cambió en los últimos 7 días
+    corridos, contados desde HOY, en lo que tenés y en tu watchlist; el % de tu
+    plata en tendencia alcista y el del sábado anterior si está guardado; y cómo
+    te llega el resumen de los sábados. La misma cuenta que el mail
+    (senales_semana.armar_semana)."""
+    import senales_semana
+    from fechas import hoy_art_date
+    with db_abierta() as conn:
+        out = senales_semana.armar_semana(conn, uid, hoy_art_date())
+        out["canal"] = senales_semana.canal(conn, uid)
+    return out
+
+
+class ResumenSemanalIn(BaseModel):
+    canal: str = Field(..., pattern="^(mail|push|ambos|no)$")
+
+
+@app.put("/api/tus-senales/canal")
+def put_tecnico_semana_canal(data: ResumenSemanalIn, uid: int = Depends(get_effective_user)):
+    """Cómo le llega el resumen de los sábados: Mail / Notificación / Las dos /
+    No quiero. Sin fila es 'no' (opt-in)."""
+    with db_abierta() as conn:
+        conn.execute(
+            """INSERT INTO resumen_semanal_prefs (user_id, canal) VALUES (?, ?)
+               ON CONFLICT(user_id) DO UPDATE
+                 SET canal = excluded.canal, updated_at = datetime('now')""",
+            (uid, data.canal))
+        conn.commit()
+    return {"ok": True, "canal": data.canal}
 
 
 # Lo que la ficha espera a Yahoo por los balances y dividendos la primera vez
@@ -11725,11 +11919,19 @@ def admin_velas(uid: int = Depends(get_admin_user)):
         # Atrasados y fallados, sólo de lo que se sigue HOY: lo que alguien vendió
         # o dejó de seguir no se actualiza más (a propósito) y no es un problema.
         seguidos = set(velas_diarias.simbolos_a_seguir(conn))
-        e = conn.execute(
-            """SELECT COUNT(*) AS activos, COALESCE(SUM(ok), 0) AS ok,
-                      COALESCE(SUM(CASE WHEN ultima_completa IS NULL THEN 1 ELSE 0 END), 0) AS sin_historia,
-                      MAX(ultima_corrida) AS ultima_corrida
-                 FROM velas_estado""").fetchone()
+        # El estado, también sólo de lo que se sigue: las fichas abiertas a pedido
+        # (velas_diarias.asegurar) escriben en la misma tabla, y "Última corrida"
+        # mostraba la hora de la última ficha aunque la noche hubiera dejado de
+        # correr; "sin historia" contaba cada símbolo inventado que falló a pedido.
+        estado = [r for r in conn.execute(
+            "SELECT symbol, ok, ultima_completa, ultima_corrida FROM velas_estado").fetchall()
+            if r["symbol"] in seguidos]
+        e = {"activos": len(estado), "ok": sum(1 for r in estado if r["ok"]),
+             "sin_historia": sum(1 for r in estado if not r["ultima_completa"]),
+             "ultima_corrida": None}
+        noche = conn.execute("SELECT ultima_corrida FROM velas_estado WHERE symbol=?",
+                             (velas_diarias.MARCA_CORRIDA_NOCHE,)).fetchone()
+        e["ultima_corrida"] = noche["ultima_corrida"] if noche else None
         v = conn.execute(
             """SELECT COUNT(*) AS filas, MIN(date) AS desde, MAX(date) AS hasta
                  FROM velas_diarias""").fetchone()
@@ -11779,7 +11981,7 @@ def admin_velas_correr(uid: int = Depends(get_admin_user)):
     return {"ok": True, "status": "started"}
 
 
-# ─── Historical prices (mini-chart en AssetQuickView) ───────────────────────
+# ─── Historical prices (gráfico de 30 días: AssetMiniChart) ───────────────────────
 # Cache simple in-memory keyed por (symbol, period). yfinance fetchea las
 # series históricas — para periods chicos (1mo) es rápido. TTL 1h porque
 # las velas diarias no cambian dentro del día.
@@ -15951,16 +16153,33 @@ def _ensure_usd_sibling(conn, uid: int, parent_broker_row) -> dict:
     if sibling:
         return dict(sibling)
     sibling_name = f"{parent_name} · USD"
-    # Si por algún motivo ya existe un broker con ese nombre (sin parent), lo
-    # reutilizamos asignándole parent.
+    # Si ya existe un broker con ese nombre (lo creó la persona a mano, o un
+    # import), se lo adopta: padre y moneda USDT, con la caja cambiando de moneda
+    # junto con él (`escrituras_para_cambiar_moneda`). Hasta 2026-10-28 cambiaba
+    # sólo `brokers.currency`: un "Cocos · USD" creado en pesos, con $100.000,
+    # quedaba en dólares con su caja marcada 'ARS', y los US$500 que entraban se
+    # sumaban ahí ("100.500"). Si no se puede adoptar sin cambiarle el sentido a
+    # lo que tiene, 409 con el motivo (`por_que_no_hay_pata_usd`). Todo lo que
+    # crea la pata pasa por acá (import, foto, conversiones, cargas a mano, chat,
+    # compra grupal): el rechazo vale para todas las puertas, y cada una lo
+    # deshace en su transacción. La única que no es la conversión importada
+    # (`persister._persist_fx`), que corre en el SAVEPOINT de su fila; no se
+    # llega, porque el ruteo del mismo import (`persister.persist_batch`) crea la
+    # pata antes y, si no puede, rechaza el lote.
+    motivo = _import_pipeline.por_que_no_hay_pata_usd(conn, uid, parent_broker_row)
+    if motivo:
+        raise HTTPException(409, motivo)
     existing = conn.execute(
         "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, sibling_name)
     ).fetchone()
     if existing:
         conn.execute(
-            "UPDATE brokers SET parent_broker_id=?, currency='USDT' WHERE id=? AND user_id=?",
+            "UPDATE brokers SET parent_broker_id=? WHERE id=? AND user_id=?",
             (parent_id, existing['id'], uid),
         )
+        for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(
+                uid, sibling_name, 'USDT'):
+            conn.execute(_sql, _params)
         return dict(conn.execute(
             "SELECT * FROM brokers WHERE id=? AND user_id=?", (existing['id'], uid)
         ).fetchone())
@@ -17090,7 +17309,7 @@ def insights_performance(
     hasta: str = None,
     valor_live: float = None,
     incluir_indeterminado: bool = False,
-    modo: str = "certero",
+    modo: str = None,
     moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
@@ -17119,7 +17338,8 @@ def insights_performance(
             except Exception:
                 data = {}
         import twr as _twr
-        _modo = _twr.MODO_ESTIMADO if modo == "estimado" else _twr.MODO_CERTERO
+        # Sin `modo` (o con uno inválido), el que eligió el usuario.
+        _modo = _twr.modo_de(conn, uid, modo)
         # `moneda=ars` mide la MISMA cartera en pesos: cada punta al TC de su
         # fecha, el flujo al TC medio del tramo. Antes la sección en pesos la
         # armaba el frontend sobre la cadena contable de los brokers ARS
@@ -21033,8 +21253,11 @@ def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
             meses = None
     finally:
         conn.close()
+    # `inflacion_mensual`: build_wrapped mide la inflación sobre el MISMO tramo
+    # que el retorno (el que el motor declara), no sobre el año calendario.
     return build_wrapped(year, monthly, ops, behavioral_cards, benchmarks,
-                         inflation_ytd, fx_de, rendimiento=rendimiento, meses=meses)
+                         inflation_ytd, fx_de, rendimiento=rendimiento, meses=meses,
+                         inflacion_mensual=inflation_monthly or None)
 
 
 @app.get("/api/behavioral/insights")
@@ -23401,7 +23624,9 @@ def _historical_cagr_global(conn, uid: int, modo: str = None, moneda: str = None
     "+54 % desde el 3 de julio" en vez de un anualizado inventado.
     """
     import twr as _twr
-    _modo = _twr.MODO_ESTIMADO if modo == "estimado" else _twr.MODO_CERTERO
+    # Sin `modo`: el que eligió el usuario (Metas, el diagnóstico y la IA llaman
+    # sin modo y tienen que decir el mismo número que la pantalla).
+    _modo = _twr.modo_de(conn, uid, modo)
     _moneda = _twr.MONEDA_ARS if str(moneda or "").lower() == "ars" else _twr.MONEDA_USD
     try:
         c = _twr.curva_indexada(conn, uid, modo=_modo, moneda=_moneda)
@@ -23450,7 +23675,7 @@ def _historical_cagr_global(conn, uid: int, modo: str = None, moneda: str = None
 
 
 @app.get("/api/goals/cagr")
-def historical_cagr(modo: str = "certero", moneda: str = "usd",
+def historical_cagr(modo: str = None, moneda: str = "usd",
                     uid: int = Depends(get_effective_user)):
     """El rendimiento histórico, del MISMO motor que la sección Performance
     (`twr.curva_indexada`): mismos cortes, misma cota de plausibilidad, mismo piso
@@ -42897,6 +43122,45 @@ def import_tenencia_preview(
                 raise HTTPException(400, "La tanda no existe o no es tuya.")
         if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone():
             raise HTTPException(400, f"No encontramos el broker '{broker}'. {broker_hint}")
+        # ⚠️ LA FOTO TAMBIÉN PUEDE METER PESOS EN UN BROKER EN DÓLARES.
+        # Todo lo de abajo da por hecho que el broker es en pesos y que sus dólares
+        # van a "<broker> · USD". Si quedó en dólares (una plantilla de Rendi sólo
+        # con filas en dólares, o un import viejo con la regla de mayoría), los
+        # pesos de la foto se guardaban como dólares: medido, una caja de
+        # $1.500.000 quedaba "US$1.500.000" y el CEDEAR en pesos adentro del broker
+        # en dólares (AUDIT_plantilla_rendi_2026-10-27.md, PL1). La regla es la
+        # misma que la del import de movimientos (`que_hacer_con_pesos`): vacío →
+        # pasa a pesos; con datos, o si es la sub-cuenta en dólares → se rechaza.
+        # El cambio de moneda queda en la transacción del lote: si la vista previa
+        # no llega a guardarse, no queda escrito.
+        if (any((h.currency or "").upper() == "ARS" for h in snap.holdings)
+                or abs(snap.cash_ars or 0) > 0.005):
+            _ub = _import_pipeline.fetch_user_brokers(conn, uid)
+            _accion = _import_pipeline.que_hacer_con_pesos(conn, uid, _ub, broker)
+            if _accion == "rechazar" and _ub[broker].get("parent_broker_id"):
+                _padre = next((n for n, b in _ub.items()
+                               if b["id"] == _ub[broker]["parent_broker_id"]), "el broker principal")
+                raise HTTPException(400, f"«{broker}» es la cuenta en dólares de «{_padre}». "
+                                         f"Esta foto trae pesos: subila al broker «{_padre}» "
+                                         f"(sus dólares van solos a «{broker}»).")
+            _padre_de_nombre = broker[:-len(" · USD")] if broker.endswith(" · USD") else None
+            if (_accion == "rechazar" and _padre_de_nombre
+                    and (_ub.get(_padre_de_nombre) or {}).get("currency") == "ARS"):
+                # "Cocos · USD" sin padre todavía: el primer dólar de "Cocos" la
+                # adopta (`por_que_no_hay_pata_usd`), así que no se cura a pesos.
+                raise HTTPException(400, f"«{broker}» es el nombre de la cuenta en dólares de "
+                                         f"«{_padre_de_nombre}». Esta foto trae pesos: subila "
+                                         f"al broker «{_padre_de_nombre}».")
+            if _accion == "rechazar":
+                raise HTTPException(400, (
+                    f"Tu broker «{broker}» está en dólares y esta foto trae pesos: Rendi no "
+                    f"puede guardar pesos en una cuenta en dólares. Los brokers argentinos van "
+                    f"en pesos (sus dólares van solos a «{broker} · USD»). Para arreglarlo, "
+                    f"revertí los imports de «{broker}», cambiale la moneda a pesos y volvé a "
+                    f"subir los movimientos y la foto."))
+            if _accion == "curar":
+                for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(uid, broker, "ARS"):
+                    conn.execute(_sql, _params)
         # 🔴 CUANDO NO SE PUDO LEER LA FECHA, DECIRLO. Antes esto caía al reloj
         # del servidor en silencio y la respuesta devolvía `date: null`, que el
         # frontend ni renderiza. Medido en prod: 93 de 152 fotos confirmadas
@@ -47299,7 +47563,7 @@ def _tiene_reportes_historicos(conn, uid: int) -> bool:
 def reports_timeline(
     broker: str = "global",
     months: int = 12,
-    modo: str = "certero",
+    modo: str = None,
     moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
@@ -47319,6 +47583,8 @@ def reports_timeline(
         raise HTTPException(400, "months debe estar entre 1 y 36")
     conn = get_db()
     try:
+        import twr as _twr_rt
+        modo = _twr_rt.modo_de(conn, uid, modo)
         # Los meses pasados son de plan pago (igual que /reports/years): a quien no
         # lo tiene se le da sólo el mes en curso. Antes se mandaban los 36 y el
         # front los escondía — datos pagos viajando igual. El teaser lo pinta el
@@ -47375,7 +47641,7 @@ _REPORTES_MAX_ANOS = 12
 @app.get("/api/reports/years")
 def reports_years(
     broker: str = "global",
-    modo: str = "certero",
+    modo: str = None,
     moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
@@ -47389,11 +47655,14 @@ def reports_years(
     es como se fabricaron las divergencias que este repo viene cerrando.
 
     Cada año trae su rendimiento, la ventana que ese número cubre, y el veredicto
-    contra el S&P (y contra la inflación cuando se mide en pesos; en dólares la
-    inflación argentina no es un comparable, ver `compute_metrics_for_period`).
+    contra el S&P y contra la inflación — ésta SIEMPRE en pesos, también con el
+    selector en dólares (`builder.veredicto_inflacion`). Si el año entero no se
+    puede medir, el tramo que sí, con los mismos dos veredictos (`parcial_*`).
     """
     conn = get_db()
     try:
+        import twr as _twr_ry
+        modo = _twr_ry.modo_de(conn, uid, modo)
         hoy = _hoy_art_date()
         # El rango de años con historia: lo más viejo entre la contabilidad y las
         # fotos. Sin filtro de broker a propósito — el rango es del usuario; el
@@ -47438,6 +47707,7 @@ def reports_years(
             except Exception:
                 pass
 
+        from reporting import builder as _rb
         from reporting.builder import pair_cache
         out = []
         with pair_cache():
@@ -47459,67 +47729,12 @@ def reports_years(
                     continue
                 m = rep.metrics
                 # ⚠️ SI EL AÑO ENTERO NO SE PUEDE MEDIR, EL TRAMO QUE SÍ VALE MÁS
-                # QUE NADA. El año exige que la medición CUBRA el período: con las
-                # fotos arrancando a mitad de año, el número no se publica — y la
-                # pantalla decía "sin dos fotos a precio de mercado" con sesenta
-                # fotos en la base. Reportado desde producción: al lado, el propio
-                # Dashboard mostraba "Desde que medimos · +5,9 % · 74 días".
-                # El motor sí sabe medir ese tramo. Se publica APARTE, nunca como
-                # `pct`, y siempre con la fecha desde la que corre: "+2,15 % desde
-                # el 30 de junio" es verdadero y accionable; llamarlo "2026" sería
-                # exactamente la mentira que este trabajo viene cerrando.
-                parcial = {"parcial_pct": None, "parcial_desde": None, "parcial_hasta": None,
-                           "parcial_vs_sp500_pct": None}
-                # ⚠️ SIN EL GUARD DE `basis_incomparable`. Esa bandera dice que las dos
-                # puntas DEL AÑO están en bases distintas (el arranque de la contabilidad,
-                # el cierre a mercado) — y es exactamente el caso en que el tramo del motor
-                # más sirve, porque él sólo encadena puntos MEDIDOS y por definición no
-                # mezcla bases. Con el guard puesto, el caso reportado desde producción
-                # —fotos desde el 30/06, año incomparable— se quedaba sin nada que mostrar.
-                if m.delta_pct is None:
-                    try:
-                        import twr as _twr_p
-                        _c = _twr_p.curva_indexada(
-                            conn, uid, f"{y}-01-01", f"{y}-12-31",
-                            modo=(_twr_p.MODO_ESTIMADO if modo == "estimado" else _twr_p.MODO_CERTERO),
-                            moneda=(_twr_p.MONEDA_ARS if str(moneda).lower() == "ars"
-                                    else _twr_p.MONEDA_USD))
-                        if _c.get("twr") is not None and _c.get("ventana_desde"):
-                            parcial["parcial_pct"] = round(_c["twr"] * 100, 2)
-                            parcial["parcial_desde"] = _c["ventana_desde"]
-                            parcial["parcial_hasta"] = _c["ventana_hasta"]
-                            # El veredicto del tramo se mide en el MISMO tramo.
-                            # ⚠️ Y EN LA MISMA MONEDA (F6). `parcial_pct` sale de
-                            # `curva_indexada`, que recibe `moneda` cuatro líneas
-                            # arriba y devuelve pesos cuando el selector está en
-                            # Pesos. El S&P de esta resta salía SIEMPRE en dólares,
-                            # así que con el selector en Pesos le regalaba la
-                            # devaluación entera al veredicto — el mismo defecto
-                            # que el `vs_sp500_pct` del año completo, en el tramo
-                            # parcial, que es justamente el que se publica cuando
-                            # el año completo no se puede medir.
-                            #
-                            # TERCER call site del mismo patrón en la misma
-                            # pantalla; los otros dos viven en `reporting/builder`
-                            # y ya lo tienen. La conversión NO se copia acá: se le
-                            # pide a `benchmark_entre_fechas` declarando `moneda`,
-                            # y el primitivo decide. Sin TC devuelve None y no se
-                            # publica, que es mejor que publicarlo cruzado.
-                            from reporting.builder import benchmark_entre_fechas as _bef
-                            _fx_parcial = None
-                            if str(moneda).lower() == "ars":
-                                try:
-                                    _fx_parcial = _twr_p.serie_fx(
-                                        conn, None, _c["ventana_hasta"])[0]
-                                except Exception:
-                                    log.exception("serie_fx tramo parcial uid=%s", uid)
-                            _sp = _bef(bench_data, _c["ventana_desde"], _c["ventana_hasta"],
-                                       "sp500", fx=_fx_parcial, moneda=moneda)
-                            if _sp is not None:
-                                parcial["parcial_vs_sp500_pct"] = round(
-                                    parcial["parcial_pct"] - _sp, 2)
-                    except Exception:
-                        log.exception("tramo parcial uid=%s year=%s", uid, y)
+                # QUE NADA — con su "vs S&P" y su "vs inflación", medidos en ese
+                # tramo y en el modo pedido. Lo mide `compute_metrics_for_period`
+                # con la MISMA curva que el año (valor vivo, sólo cartera entera);
+                # acá sólo se copia. Antes se pedía acá una segunda curva, que traía
+                # el S&P y no la inflación.
+                parcial = _rb.tramo_parcial(m)
                 # Un año sin una sola operación, sin flujos y sin movimiento no se
                 # lista: ocupa una fila y no dice nada. El año en curso siempre va
                 # —es el que el inicio muestra— aunque todavía esté vacío.
@@ -47567,6 +47782,8 @@ def reports_years(
                     # la pantalla pueda mostrar los dos números de la misma resta: si
                     # muestra un retorno y el veredicto salió de otro, se contradice sola.
                     "retorno_ars_pct": m.retorno_ars_pct,
+                    # Por qué no hay veredicto contra la inflación, si hay número.
+                    "vs_inflation_motivo": m.vs_inflation_motivo,
                     "deposits": m.deposits,
                     "withdrawals": m.withdrawals,
                     "realized_pnl": m.realized_pnl,
@@ -47585,7 +47802,7 @@ def reports_years(
 def reports_period_detail(
     period_type: str, period_key: str,
     broker: str = "global",
-    modo: str = "certero",
+    modo: str = None,
     moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
@@ -47595,6 +47812,8 @@ def reports_period_detail(
         raise HTTPException(400, "period_type inválido")
     conn = get_db()
     try:
+        import twr as _twr_pd
+        modo = _twr_pd.modo_de(conn, uid, modo)
         # Los períodos CERRADOS son de plan pago; el EN CURSO es gratis (lo muestra
         # el inicio). Un deep-link directo a un período pasado desde una cuenta sin
         # plan se corta acá, no sólo en la pantalla.
@@ -47735,7 +47954,12 @@ class WatchlistAddIn(BaseModel):
     @classmethod
     def normalize_symbol(cls, v):
         v = v.strip().upper()
-        if not re.match(r'^[A-Z0-9]{1,10}(\.BA|-USD)?$', v):
+        # Acción con clase (Berkshire, Brown-Forman): se guarda como la cotiza
+        # Yahoo y como la manda el mapa de calor, con guión (BRK.B → BRK-B).
+        # Antes se rechazaba: la estrella de su ficha fallaba siempre.
+        if re.match(r'^[A-Z0-9]{1,10}\.[A-Z]$', v):
+            v = v.replace('.', '-')
+        if not re.match(r'^[A-Z0-9]{1,10}(\.BA|-USD|-[A-Z])?$', v):
             raise ValueError('Símbolo inválido')
         return ticker_vigente(v)   # SQ → XYZ: el que cotiza (tickers_renombrados.py)
 
@@ -47820,7 +48044,7 @@ def watchlist_remove(symbol: str, uid: int = Depends(get_effective_user)):
 
 
 class AlertCreateIn(BaseModel):
-    kind: str = Field(..., max_length=20)              # 'price_target' | 'pct_move'
+    kind: str = Field(..., max_length=20)              # 'price_target' | 'pct_move' | 'tecnica'
     symbol: Optional[str] = Field(None, max_length=24)  # requerido si scope='ticker'
     scope: str = Field('ticker', max_length=12)         # 'ticker' | 'holdings'
     direction: str = Field('above', max_length=8)       # 'above' | 'below' | 'either'
@@ -47833,11 +48057,13 @@ class AlertCreateIn(BaseModel):
     repeat: str = Field('once', max_length=8)           # 'once' | 'daily' | 'always'
     cooldown_min: int = Field(360, ge=0, le=100000)
     note: Optional[str] = Field(None, max_length=200)
+    senal: Optional[str] = Field(None, max_length=20)   # tecnica: tecnico.SENALES
+    accion_local: bool = False                          # tecnica: acción argentina (como la ficha)
 
     @field_validator('kind')
     @classmethod
     def _v_kind(cls, v):
-        if v not in ('price_target', 'pct_move'):
+        if v not in ('price_target', 'pct_move', 'tecnica'):
             raise ValueError('kind inválido')
         return v
 
@@ -47978,6 +48204,59 @@ def _moneda_del_aviso(symbol: str, currency) -> str:
     return "USD"
 
 
+def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn") -> dict:
+    """El alta de una alerta técnica (ver alerts_engine.evaluar_tecnicas).
+
+    El activo se guarda como lo pide la ficha técnica: pelado ('AAPL', 'GGAL',
+    'BTC'), con la moneda en que se mira y la marca de acción argentina. La
+    marca de «ya miré hasta acá» arranca en la última vela que hay: un cruce de
+    antes de crearla no avisa."""
+    import alerts_engine as _ae
+    import tecnico
+    if data.scope != "ticker" or not data.symbol:
+        raise HTTPException(400, "Una alerta técnica necesita un activo.")
+    if data.senal not in tecnico.SENALES:
+        raise HTTPException(400, "Elegí qué querés que te avisemos.")
+    symbol = data.symbol
+    if symbol.endswith(".BA"):
+        symbol = symbol[:-3]
+    symbol = _ae._norm_sym(symbol)
+    if not symbol or symbol.startswith("FCI:") or not _SYMBOL_RE.match(symbol):
+        raise HTTPException(400, "Ese activo no tiene análisis técnico.")
+    currency = "ARS" if (data.currency or "").strip().upper() == "ARS" else "USD"
+    # El sentido sólo vale para los cruces de un promedio; el RSI y el máximo
+    # ya lo dicen en el nombre de la señal.
+    direction = data.direction if data.senal in tecnico.SENALES_CON_SENTIDO else "either"
+    local = 1 if data.accion_local else 0
+    # Dos alertas que avisan lo mismo son dos mails por el mismo cruce. Se
+    # pisan si es la misma señal y una de las dos es «los dos lados» o las dos
+    # piden el mismo lado. La ficha ya muestra «Te avisamos» (alertaExistente,
+    # la misma regla); esto cubre el formulario de Alertas.
+    igual = conn.execute(
+        """SELECT id FROM alerts WHERE user_id=? AND kind='tecnica' AND active=1
+             AND symbol=? AND senal=? AND currency=? AND accion_local=?
+             AND (direction=? OR direction='either' OR ?='either')""",
+        (uid, symbol, data.senal, currency, local, direction, direction)).fetchone()
+    if igual:
+        raise HTTPException(409, "Ya tenés una alerta que avisa esto: está en Mis alertas, para cambiarla.")
+    cur = conn.execute(
+        """INSERT INTO alerts
+           (user_id, kind, symbol, scope, direction, currency, channel, repeat,
+            cooldown_min, armed, active, note, senal, accion_local)
+           VALUES (?,'tecnica',?,'ticker',?,?,?,?,?,1,1,?,?,?)""",
+        (uid, symbol, direction, currency, data.channel, data.repeat,
+         data.cooldown_min, data.note, data.senal, local))
+    aid = cur.lastrowid
+    row = conn.execute("SELECT * FROM alerts WHERE id=?", (aid,)).fetchone()
+    _ae.arrancar_tecnica(conn, row)
+    conn.commit()
+    # ¿Se va a poder mirar? Si ya hay velas, seguro. Si no (nadie lo tenía), se
+    # guardan desde esta noche: el precio de ahora dice si el ticker existe.
+    tiene_velas = bool(_ae._serie_tecnica(conn, row))
+    resolved = tiene_velas or _ae.price_for_alert(f"{symbol}.BA" if local else symbol) is not None
+    return {"ok": True, "id": aid, "armed": True, "resolved": resolved, "velas": tiene_velas}
+
+
 @app.post("/api/alerts")
 def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
     """Crea una alerta. Gatea por cantidad (check_alert_quota) y por capacidad
@@ -48010,6 +48289,8 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
             if not (threshold and threshold > 0):
                 raise HTTPException(400, "Ingresá el precio objetivo.")
             currency = _moneda_del_aviso(symbol, currency)
+        elif data.kind == "tecnica":
+            return _crear_alerta_tecnica(conn, uid, data)
         else:  # pct_move — umbral asimétrico (sube ≥ up_pct% y/o cae ≥ down_pct%)
             if data.scope == "ticker" and not symbol:
                 raise HTTPException(400, "Elegí un ticker o la opción 'toda mi cartera'.")
@@ -48078,6 +48359,13 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
         if not row:
             raise HTTPException(404, "Alerta no encontrada.")
         sets, params = [], []
+        tecnica = row["kind"] == "tecnica"
+        if tecnica and data.direction is not None:
+            import tecnico
+            if row["senal"] not in tecnico.SENALES_CON_SENTIDO:
+                raise HTTPException(400, "Esta señal no tiene para qué lado.")
+        if tecnica and data.threshold is not None:
+            raise HTTPException(400, "Una alerta técnica no tiene precio.")
         if data.up_pct is not None or data.down_pct is not None:
             if row["kind"] != "pct_move":
                 raise HTTPException(400, "Los % son sólo de los avisos por movimiento.")
@@ -48112,6 +48400,10 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
         params.append(alert_id)
         with conn:
             conn.execute(f"UPDATE alerts SET {', '.join(sets)} WHERE id=?", params)
+            if tecnica and data.active:
+                # Reactivar una técnica = mirar desde ahora: lo que cruzó mientras
+                # estaba pausada no avisa de golpe.
+                _ae.arrancar_tecnica(conn, row)
         return {"ok": True}
     finally:
         conn.close()
@@ -48150,6 +48442,30 @@ def alerts_events_seen(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+def _resumen_semanal_job(conn, now=None) -> dict:
+    """Una pasada del resumen de los sábados, con su guarda propia: un error acá
+    no puede dejar sin evaluar las alertas del libro que vienen después."""
+    import senales_semana
+    try:
+        if not senales_semana.toca(now or datetime.utcnow()):
+            return {"esperando": "sábados desde las 10:00"}
+        if "velas_diarias" in _corridas_en_curso:
+            return {"esperando": "las velas se están guardando"}
+        if not _tomar_corrida("resumen_semanal"):
+            return {"esperando": "ya hay una corrida en curso"}
+        try:
+            return senales_semana.correr_si_toca(conn, now)
+        finally:
+            _soltar_corrida("resumen_semanal")
+    except Exception as _ex:
+        log.error("resumen semanal en el cron: %s", _ex, exc_info=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {"error": str(_ex)}
+
+
 def _evaluar_alertas_job() -> dict:
     """Una corrida de las alertas: las de precio y las del libro del asesor."""
     import alerts_engine as _ae
@@ -48171,6 +48487,29 @@ def _evaluar_alertas_job() -> dict:
                 conn.rollback()
             except Exception:
                 pass
+        # Las técnicas: una vez por día, con las velas de la noche (adentro se
+        # fija si ya es hora y si hay velas nuevas). Su propia guarda, igual que
+        # las de arriba y las del libro.
+        try:
+            if "velas_diarias" in _corridas_en_curso:
+                # Las velas se están guardando (de noche, o el botón de /admin a
+                # media mañana): entre que se bajan y que se corrigen los cambios
+                # de ratio de un CEDEAR, la serie en pesos está a medio arreglar.
+                # Se miran en la pasada siguiente, cuando terminó.
+                result["tecnicas"] = {"esperando": "las velas se están guardando"}
+            else:
+                result["tecnicas"] = _ae.evaluar_tecnicas(conn)
+        except Exception as _ex:
+            log.error("alertas técnicas en el cron: %s", _ex)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        # El resumen de «Tus señales» (senales_semana.py): sábados desde las
+        # 10:00 de Argentina. Adentro se fija si es la hora; cada persona tiene
+        # su fila de la semana, así que las pasadas siguientes no mandan nada.
+        # No mientras se guardan las velas (la misma razón que las técnicas).
+        result["semana"] = _resumen_semanal_job(conn)
         # Mismo ciclo: las alertas del LIBRO del asesor (movimiento de la
         # cartera de un cliente) se evalúan acá → el asesor no tiene que dar
         # de alta ningún cron nuevo.
@@ -48921,6 +49260,43 @@ def push_status(uid: int = Depends(get_effective_user)):
         return {"subscribed_devices": _contar_dispositivos_push(conn, uid)}
     finally:
         conn.close()
+
+
+class ModoRendimientoIn(BaseModel):
+    modo: str
+
+
+@app.get("/api/preferencias/modo-rendimiento")
+def leer_modo_rendimiento(uid: int = Depends(get_current_user)):
+    """La elección guardada de la PERSONA autenticada (un asesor mirando a un
+    cliente ve su propio toggle). `modo: null` = nunca eligió."""
+    import twr as _twr_pm
+    with db_abierta() as conn:
+        try:
+            r = conn.execute("SELECT modo_rendimiento FROM users WHERE id = ?", (uid,)).fetchone()
+        except Exception:
+            r = None
+    v = (r["modo_rendimiento"] if r else None)
+    return {"modo": v if v in _twr_pm.MODOS else None}
+
+
+@app.put("/api/preferencias/modo-rendimiento")
+def guardar_modo_rendimiento(body: ModoRendimientoIn, request: Request,
+                             uid: int = Depends(get_current_user)):
+    """Guarda la elección Certero/Estimado del usuario. Dura hasta que la cambie.
+
+    La lee `twr.modo_de`, que es el default de TODO cálculo de rendimiento: las
+    pantallas que no mandan `modo`, la IA, los informes. Antes la elección vivía
+    en cuatro `useState` de cuatro pantallas y en ningún lado más."""
+    import twr as _twr_pm
+    modo = str(body.modo or "").strip().lower()
+    if modo not in _twr_pm.MODOS:
+        raise HTTPException(400, "modo debe ser 'certero' o 'estimado'")
+    _check_rate_limit(request, max_calls=120, window_seconds=3600, suffix=f"modo_rend:{uid}")
+    with db_abierta() as conn:
+        conn.execute("UPDATE users SET modo_rendimiento = ? WHERE id = ?", (modo, uid))
+        conn.commit()
+    return {"modo": modo}
 
 
 @app.get("/api/primeros-pasos")
@@ -51277,7 +51653,16 @@ def _advisor_group_op_apply(uid: int, asset: str, asset_type, currency, entry_da
             # (_pata_de_la_moneda, adentro de _insert_manual_position), igual que
             # una compra del propio cliente. Pesos en un broker en dólares, no.
             if batch_ccy and _ccy_family(batch_ccy) == "USD" and bc == "ARS":
-                pass
+                # Salvo que ese cliente no pueda tener la pata (un "· USD" suyo en
+                # pesos con movimientos): `_ensure_usd_sibling` rechazaría con 409
+                # y, como todo se aplica en UNA transacción, se caía el lote de
+                # todos los clientes por uno solo.
+                _padre = conn.execute("SELECT id, name FROM brokers WHERE user_id=? AND name=?",
+                                      (cid, row["broker"])).fetchone()
+                _motivo = _import_pipeline.por_que_no_hay_pata_usd(conn, cid, _padre)
+                if _motivo:
+                    skipped.append({"client_uid": cid, "reason": _motivo})
+                    continue
             elif batch_ccy and _ccy_family(batch_ccy) != _ccy_family(bc):
                 hint = ""
                 skipped.append({"client_uid": cid,

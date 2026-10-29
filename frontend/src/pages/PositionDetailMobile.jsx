@@ -6,12 +6,12 @@
 // Layout:
 //   Top bar con back + ticker
 //   Hero: P/L USD grande + %, value actual debajo
-//   Chart 30d full-width
+//   Chart 30d full-width + "Ver el análisis técnico" (la ficha del activo)
 //   Stats: qty, precio promedio, precio actual, invested, value
 //   Lots: lista de operaciones de ese ticker (compra/venta histórico)
 
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, TrendingUp, TrendingDown, Calendar } from 'lucide-react'
 import AssetLogo from '../components/AssetLogo'
 import AssetMiniChart from '../components/home/AssetMiniChart'
@@ -26,6 +26,7 @@ import Panel from '../components/Panel'
 import { operacionesEnUsd } from '../utils/assetPnl'
 import { esCobro } from '../utils/tradeStats'
 import { patasDeLaCuenta } from '../utils/pendingCashflows'
+import { urlDeActivo } from '../utils/buscadorRapido'
 
 export default function PositionDetailMobile() {
   const { id } = useParams()
@@ -291,6 +292,13 @@ export default function PositionDetailMobile() {
             <Panel padding="sm">
               <AssetMiniChart symbol={priceSymbol(p.asset, isAR)} />
             </Panel>
+            {/* El análisis completo (velas, promedios, fuerza) vive en UN lugar:
+                la ficha del activo, con todos tus lotes juntos. */}
+            <Link to={urlDeActivo(p.asset)}
+              className="mt-2 flex items-center justify-between min-h-11 px-3 rounded-lg border border-line bg-bg-1 text-[13px] text-ink-1 hover:border-data-violet/40">
+              <span>Ver el análisis técnico de {p.asset}</span>
+              <span className="text-data-violet" aria-hidden="true">→</span>
+            </Link>
           </section>
         </AskAIAbout>
       )}
