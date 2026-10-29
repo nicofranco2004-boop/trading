@@ -215,6 +215,19 @@ def cartera(conn, uid: int, cedears=None, dolar=None) -> dict:
     return out
 
 
+def peso(car: dict, asset: str, local=None):
+    """Qué parte de toda tu plata (`car['total']`, de `cartera`) es `asset`: LA
+    cuenta del peso de un activo, la de Tu lista («Sí · 12%»), la de Señales
+    («Lo tenés · 12% de tu plata») y la de la ficha («Es el 12% de tu
+    cartera», en «Cuánto se mueve»). Con `local` (True/False), sólo esa lectura
+    (GGAL de BYMA aparte del ADR de Schwab, como Tu lista y Señales); sin
+    `local`, el activo entero (la ficha: todos tus lotes de ese papel). None si
+    no lo tenés o no hay total."""
+    a = (asset or "").strip().upper()
+    v = sum(x for (k, l), x in car["tenencias"].items() if k == a and (local is None or l == bool(local)))
+    return v / car["total"] if v > 0 and car["total"] > 0 else None
+
+
 def watchlist(conn, uid: int, cedears=None) -> dict:
     """{(asset, local): símbolo tal como está en la watchlist}. «GGAL.BA» es la
     acción argentina (local); «AAPL.BA» es el CEDEAR, que se lee por AAPL."""
@@ -379,7 +392,6 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
         return series[k]
 
     senales, con_lectura, con_cambios = [], 0, set()
-    total = car["total"]
     for k in sorted(set(car["tenencias"]) | set(wl)):
         x = _leer(k)
         tiene = k in car["tenencias"]
@@ -395,7 +407,7 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
             senales.append({
                 "asset": k[0], "local": k[1], "ficha": k[0] if tiene else wl[k],
                 "tenes": tiene, "watchlist": k in wl,
-                "peso": (car["tenencias"][k] / total) if (tiene and total > 0) else None,
+                "peso": peso(car, *k) if tiene else None,
                 "tesis": tesis.get(k[0]),
                 **c, **texto_del_cambio(c),
             })

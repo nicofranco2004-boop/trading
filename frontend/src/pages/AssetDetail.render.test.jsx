@@ -1,8 +1,10 @@
 // La ficha del activo ENTERA, montada (testing/navegadorMinimo.js), con los
 // pedidos al servidor simulados en la frontera (utils/api): que lo que vale tu
-// tenencia (la cuenta de la ficha) y el total de tu cartera (la última foto
-// que sirve como medición) lleguen hasta «En tu cartera» de «Cuánto se mueve
-// este papel». Las cuentas del servidor se prueban en backend/tests/test_movimiento.py.
+// tenencia (la cuenta de la ficha) y qué parte de tu plata es (la cuenta del
+// servidor, GET /api/tecnico/{activo}/peso: la misma de Tu lista y de Señales)
+// lleguen hasta «En tu cartera» de «Cuánto se mueve este papel». Las cuentas
+// del servidor se prueban en backend/tests/test_movimiento.py y, el peso, en
+// backend/tests/test_tus_senales.py.
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -29,16 +31,16 @@ const TECNICO = {
     desde_el_maximo: null,
   },
 }
-let fotos
+let peso
 const RESPUESTAS = {
   '/positions': () => [{ id: 1, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK', quantity: 25, buy_price: 118,
     invested: 2950, entry_date: '2024-12-10', is_cash: 0 }],
   '/brokers': () => [{ id: 1, name: 'Schwab', currency: 'USD' }],
   '/dolar': () => ({ mep: { venta: 1555, compra: 1550 } }),
   '/operations': () => [],
-  '/snapshots': () => fotos,
   '/prices': () => ({ NVDA: 212.21 }),
   '/tecnico/NVDA/eventos': () => ({ empresa: 'NVDA', eventos: [] }),
+  '/tecnico/NVDA/peso': () => peso,
   '/tecnico/NVDA': () => TECNICO,
 }
 vi.mock('../utils/api', () => ({
@@ -70,18 +72,18 @@ async function ficha() {
 
 describe('ficha del activo: «En tu cartera»', () => {
   it('lo tuyo por el día malo normal, y qué parte de tu cartera es', async () => {
-    // Las fotos llegan de la más nueva a la más vieja (como el demo): manda la fecha.
-    fotos = [{ date: '2026-10-22', apto: 1, total_value: 8695 }, { date: '2026-10-21', apto: 1, total_value: 99999 },
-      { date: '2026-10-23', apto: 0, total_value: 1 }]
+    // El % lo manda el servidor: la ficha no lo calcula (antes dividía lo tuyo
+    // de hoy por la última foto y decía otro % que Tu lista).
+    peso = { peso: 0.61 }
     const t = await ficha()
-    // 25 × US$ 212,21 = US$ 5.305; × 2,76 % = US$ 146; 5.305 de 8.695 = 61 %.
+    // 25 × US$ 212,21 = US$ 5.305; × 2,76 % = US$ 146.
     expect(t).toContain('Cuánto se mueve este papel')
     expect(t).toContain('−US$ 146')
     expect(t).toContain('Es el 61% de tu cartera')
   })
 
-  it('sin una foto que sirva, la plata sí y el % de tu cartera no', async () => {
-    fotos = []
+  it('si el servidor no sabe el %, la plata sí y el % de tu cartera no', async () => {
+    peso = { peso: null }
     const t = await ficha()
     expect(t).toContain('−US$ 146')
     expect(t).not.toContain('de tu cartera')

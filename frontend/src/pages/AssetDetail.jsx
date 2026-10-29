@@ -19,7 +19,7 @@
 // Responsive: una sola página sirve desktop y mobile (max-w centrado en desktop,
 // full-width en mobile). Reusa la matriz de valuación de PositionDetailMobile.
 
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, TrendingUp, TrendingDown, Calendar, Star, Check,
@@ -33,6 +33,7 @@ import Panel from '../components/Panel'
 import TesisDelActivo from '../components/tesis/TesisDelActivo'
 import { useTesis } from '../hooks/useDiario'
 import { tesisVigente } from '../utils/diarioOperaciones'
+import Segmento from '../components/asset/Segmento'
 import Skeleton from '../components/Skeleton'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
@@ -50,7 +51,6 @@ import { ChipDelActivo } from '../components/FueraDeHorario'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { operacionesEnUsd } from '../utils/assetPnl'
 import { esCobro } from '../utils/tradeStats'
-import { ultimaFotoApta } from '../utils/cuantoSeMueve'
 
 // ─── Matriz de valuación por lote (reusa la lógica de PositionDetailMobile) ──
 // Costo económico del lote, en SU moneda = lo pagado + las comisiones de compra.
@@ -152,6 +152,17 @@ function symbolFor(p, brokers) {
   return valuationPriceKey(p, isAR)
 }
 
+// «Ordenar por» (Nico, 28/10): técnico primero (el de entrada) o fundamental
+// primero. Se recuerda para la próxima ficha que abras, en este navegador; si
+// el almacenamiento está bloqueado (modo privado), técnico primero.
+const CLAVE_ORDEN = 'rendi_ficha_orden'
+function ordenGuardado() {
+  try { return localStorage.getItem(CLAVE_ORDEN) === 'fundamental' ? 'fundamental' : 'tecnico' } catch { return 'tecnico' }
+}
+function guardarOrden(o) {
+  try { localStorage.setItem(CLAVE_ORDEN, o) } catch { /* sin almacenamiento */ }
+}
+
 // Un FCI no tiene serie de precios: se valúa por el NAV del día. Sirve para no
 // pedir un gráfico que la API no puede devolver.
 const esFci = (sym) => String(sym || '').toUpperCase().startsWith('FCI:')
@@ -177,11 +188,11 @@ export default function AssetDetail() {
   const [prices, setPrices] = useState({})
   const [dolar, setDolar] = useState(null)
   const [operations, setOperations] = useState([])
-  // El valor de toda tu cartera (la última foto que sirve como medición), para
-  // decir qué parte de tu cartera es este papel en «Cuánto se mueve».
-  const [valorCartera, setValorCartera] = useState(null)
   // Tu tesis de este activo (la misma de Movimientos). Arriba de los return.
   const tesis = useTesis()
+  // El valor de toda tu cartera (la última foto que sirve como medición), para
+  // decir qué parte de tu cartera es este papel en «Cuánto se mueve».
+  const [pesoEnCartera, setPesoEnCartera] = useState(null)
   const [loading, setLoading] = useState(true)
   // Sólo si no lo tenés: el último precio, el cierre anterior y si está en tu watchlist.
   const [cotizacion, setCotizacion] = useState(null)
@@ -189,6 +200,15 @@ export default function AssetDetail() {
   // carga, una respuesta vieja te mandaba a OTRA ficha o mostraba el precio y
   // la estrella del activo anterior (auditoría 22/10).
   const nuevoPedido = useUltimoPedido()
+  const [orden, setOrden] = useState(ordenGuardado)
+  // Si la empresa trajo fundamentales ({ ticker, hay }, lo avisa AnalyzeView al
+  // cargar): el «Ordenar por» sólo aparece si hay un fundamental que poner arriba.
+  const [fundamental, setFundamental] = useState(null)
+  const alSaberSiHay = useCallback((ticker, hay) => setFundamental({ ticker, hay }), [])
+  function elegirOrden(o) {
+    setOrden(o)
+    guardarOrden(o)
+  }
 
   useEffect(() => { loadAll() /* eslint-disable-next-line */ }, [asset])
 
@@ -198,12 +218,14 @@ export default function AssetDetail() {
     setCotizacion(null)
     let redirige = false
     try {
-      const [pos, bkrs, dol, ops, fotos] = await Promise.all([
+      const [pos, bkrs, dol, ops, enCartera] = await Promise.all([
         api.get('/positions').catch(() => []),
         api.get('/brokers').catch(() => []),
         api.get('/dolar').catch(() => null),
         api.get('/operations').catch(() => []),
-        api.get('/snapshots?days=10').catch(() => []),
+        // Qué parte de tu plata es este papel: la cuenta del servidor, la misma
+        // de Tu lista y de Señales (senales_semana.peso).
+        api.get(`/tecnico/${encodeURIComponent(asset)}/peso`).catch(() => null),
       ])
       if (!vigente()) return
       // Sin el registry, isArUsdBroker cae al fallback por NOMBRE y esta ficha
@@ -222,7 +244,7 @@ export default function AssetDetail() {
           return
         }
       }
-      setValorCartera(ultimaFotoApta(fotos)?.total_value ?? null)
+      setPesoEnCartera(enCartera?.peso ?? null)
       setPositions(myLots)
       setBrokers(bkrs || [])
       setDolar(dol)
@@ -332,6 +354,14 @@ export default function AssetDetail() {
     : !tenes ? ((asset.endsWith('.BA') || libre.accionLocal) ? asset.replace(/\.BA$/, '') : null)
       : (agg.lots.length ? agg.lots : operations).some(p => isBymaHolding(p)) ? asset.replace(/\.BA$/, '') : null
 
+  const sabido = empresa && fundamental?.ticker === empresa.ticker ? fundamental.hay : null
+  const ordenar = sabido ? { valor: orden, alElegir: elegirOrden } : null
+  // Fundamental arriba sólo si hay una empresa que puede tenerlo. Mientras carga
+  // se da por hecho que sí (si no, el técnico saltaría abajo al llegar); si
+  // resulta que no (un ETF), vuelve al orden de siempre. Sin empresa (una
+  // cripto) nunca se da vuelta: quedaría tu operatoria arriba del técnico.
+  const fundamentalArriba = orden === 'fundamental' && !!empresa && sabido !== false
+
   if (loading) {
     return (
       <div className="page-shell-wide py-4 space-y-4">
@@ -346,7 +376,7 @@ export default function AssetDetail() {
     // Todo el ancho de la página (Nico, 24/10: con `max-w-3xl` el gráfico quedaba
     // chico y con mucho negro alrededor). En el celular, el mismo ancho que antes.
     <div className="page-shell-wide py-2 sm:py-4">
-      <BackBar onBack={() => navigate(-1)} asset={asset} name={name} brokerCount={agg.brokerCount} />
+      <BackBar onBack={() => navigate(-1)} asset={asset} name={name} brokerCount={agg.brokerCount} ordenar={ordenar} />
 
       {/* Lo que no tenés: el precio de hoy y la watchlist, en vez de tu resultado. */}
       {!tenes && (
@@ -389,9 +419,13 @@ export default function AssetDetail() {
       {/* Lectura técnica (medias, RSI, tus compras y tu precio). Si el activo
           todavía no tiene velas guardadas, adentro cae al gráfico de 30 días. */}
       {/* Tres secciones separadas, cada una con su título (Nico, 24/10):
-          técnico → tu operatoria → fundamental. */}
-      {!esFci(asset) && !(agg.lots.length > 0 && esFci(symbolFor(agg.lots[0], brokers))) && (
-        <SeccionFicha titulo="Análisis técnico">
+          técnico → tu operatoria → fundamental. Con «Fundamental primero» la
+          lista se da vuelta y tu operatoria queda siempre en el medio. Van con
+          `key`: React las MUEVE sin desarmarlas, así cambiar el orden no vuelve
+          a pedir el gráfico ni el fundamental. */}
+      {enOrden(fundamentalArriba, [
+      !esFci(asset) && !(agg.lots.length > 0 && esFci(symbolFor(agg.lots[0], brokers))) && (
+        <SeccionFicha key="tecnico" titulo="Análisis técnico">
         <LecturaTecnica
           titulo={null}
           key={`${asset}|${accionLocal}`}
@@ -409,33 +443,35 @@ export default function AssetDetail() {
           costoPesos={costoEnPesos(agg.lots)}
           accionLocal={accionLocal}
           // «En tu cartera» de «Cuánto se mueve»: lo que vale hoy lo tuyo (y el
-          // dólar de la pantalla, para decirlo en pesos) y el total de tu cartera.
+          // dólar de la pantalla, para decirlo en pesos) y qué parte de tu plata es.
           tenencia={agg.lots.length > 0 && agg.valueUsd > 0 ? { valorUsd: agg.valueUsd, tc: tcValuacion } : null}
-          valorCartera={valorCartera}
+          pesoEnCartera={pesoEnCartera}
         />
 
         {/* Cuánto se opera en BYMA y cuánto cuesta entrar y salir (CEDEARs y
             acciones argentinas): el gráfico de un CEDEAR mira Nueva York. */}
         {papelByma && <LiquidezByma papel={papelByma} />}
         </SeccionFicha>
-      )}
+      ),
 
-      {/* Tu tesis: por qué lo compraste, la tendencia de ese día y la de hoy, y
-          «Recordarme revisarla». Va si lo tenés o si escribiste una (la ficha
-          de un activo que vendiste todo la sigue mostrando). */}
-      {(agg.lots.length > 0 || tesisVigente(tesis.items, asset)) && tesis.estado !== 'error' && (
-        <section className="mb-5" aria-label={`Tu tesis de ${asset}`}>
-          <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu tesis</div>
-          <Panel padding="md">
-            {/* `key`: pasar de la ficha de AAPL a la de NVDA no deja a la vista
-                lo que estabas escribiendo para AAPL. */}
-            <TesisDelActivo key={asset} asset={asset} local={esAccionLocal(asset, agg.lots)} tesis={tesis} />
-          </Panel>
-        </section>
-      )}
+      // Lo tuyo: tu tesis y tu operatoria (tus lotes y tu historial), juntas en
+      // UN lugar del orden: con «Fundamental primero» siguen las dos en el medio.
+      <Fragment key="tuya">
+        {/* Tu tesis: por qué lo compraste, la tendencia de ese día y la de hoy, y
+            «Recordarme revisarla». Va si lo tenés o si escribiste una (la ficha
+            de un activo que vendiste todo la sigue mostrando). */}
+        {(agg.lots.length > 0 || tesisVigente(tesis.items, asset)) && tesis.estado !== 'error' && (
+          <section className="mb-5" aria-label={`Tu tesis de ${asset}`}>
+            <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu tesis</div>
+            <Panel padding="md">
+              {/* `key`: pasar de la ficha de AAPL a la de NVDA no deja a la vista
+                  lo que estabas escribiendo para AAPL. */}
+              <TesisDelActivo key={asset} asset={asset} local={esAccionLocal(asset, agg.lots)} tesis={tesis} />
+            </Panel>
+          </section>
+        )}
 
-      {/* Lo tuyo: tu operatoria, tus lotes y tu historial. */}
-      {tenes && <SeccionFicha titulo={`Tu operatoria en ${asset}`}>
+        {tenes && <SeccionFicha titulo={`Tu operatoria en ${asset}`}>
       <section className="mb-5" aria-label="Resumen de tu operatoria">
         {/* Con ancho, las cajitas se reparten todo el renglón (3 o 6, según si
             vendiste algo): con 6 columnas fijas, 3 cajitas dejaban medio vacío. */}
@@ -544,19 +580,27 @@ export default function AssetDetail() {
       )}
       </div>
       </SeccionFicha>}
+      </Fragment>,
 
-      {/* Análisis fundamental de la empresa, al final: técnico → lo tuyo
-          (operatoria, lotes, historial) → fundamental, para no tener que pasar
-          todo el fundamental para llegar a tus lotes (Nico, 23/10). Es la MISMA
-          vista de "Análisis fundamental" (AnalyzeView), sin buscador ni resumen
-          con IA; para compararla con otras, el link lleva ahí. Sin empresa
-          (cripto, ETF, bono, fondo) no aparece. */}
-      {empresa && <AnalyzeView ticker={empresa.ticker} enFicha irACalidad={empresa.ir} />}
+      // Análisis fundamental de la empresa, de entrada al final: técnico → lo
+      // tuyo (operatoria, lotes, historial) → fundamental, para no tener que
+      // pasar todo el fundamental para llegar a tus lotes (Nico, 23/10). Es la
+      // MISMA vista de "Análisis fundamental" (AnalyzeView), sin buscador ni
+      // resumen con IA; para compararla con otras, el link lleva ahí. Sin
+      // empresa (cripto, ETF, bono, fondo) no aparece.
+      empresa && <AnalyzeView key="fundamental" ticker={empresa.ticker} enFicha irACalidad={empresa.ir} alSaberSiHay={alSaberSiHay} />,
+      ])}
     </div>
   )
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────
+
+// Las secciones de la ficha en el orden elegido: al revés pone el fundamental
+// arriba y el técnico abajo, con lo tuyo siempre en el medio.
+function enOrden(alReves, secciones) {
+  return alReves ? [...secciones].reverse() : secciones
+}
 
 // El arriba de la ficha de un activo que no tenés: su último precio (en pesos
 // si cotiza en BYMA, en dólares si no), cuánto se movió hoy y la estrella de
@@ -630,9 +674,13 @@ function HeroSinTenencia({ cotizacion, alCambiarWatchlist }) {
   )
 }
 
-function BackBar({ onBack, asset, name, brokerCount }) {
+// `ordenar`: { valor, alElegir } para el «Ordenar por», o null si el activo no
+// tiene fundamental (cripto, ETF, bono): ahí no hay nada que ordenar. En la
+// compu va al lado del nombre (no contra el borde derecho: ahí flota la burbuja
+// de Mervall-E y lo tapaba); en el celular, en su propio renglón abajo.
+function BackBar({ onBack, asset, name, brokerCount, ordenar }) {
   return (
-    <div className="flex items-center gap-3 mb-5">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mb-5">
       <button type="button" onClick={onBack} aria-label="Volver" className="text-ink-2 hover:text-ink-0 -ml-2 rounded-sm hover:bg-bg-2 transition-colors flex items-center justify-center min-w-[44px] min-h-[44px]">
         <ArrowLeft size={18} strokeWidth={1.75} />
       </button>
@@ -643,6 +691,13 @@ function BackBar({ onBack, asset, name, brokerCount }) {
           {asset}{brokerCount > 1 ? ` · ${brokerCount} brokers` : ''}
         </div>
       </div>
+      {ordenar && (
+        <div className="w-full sm:w-auto sm:ml-4 flex items-center gap-2">
+          <span className="text-[12.5px] text-ink-3 font-medium whitespace-nowrap">Ordenar por</span>
+          <Segmento etiqueta="Ordenar la ficha" valor={ordenar.valor} alElegir={ordenar.alElegir} estirar
+            opciones={[['tecnico', 'Técnico primero'], ['fundamental', 'Fundamental primero']]} />
+        </div>
+      )}
     </div>
   )
 }

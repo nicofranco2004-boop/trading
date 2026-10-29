@@ -206,8 +206,6 @@ def _seguimiento(conn):
             (r['currency'] or '').upper() == 'ARS' and simbolo_byma(sym)[:-3] in cedears)
         _sumar(_yahoo_de(sym, None, en_pesos, yahoo_de_cripto, cedears))
 
-    tickers.add(SP500)
-
     # Lo que alguien VENDIÓ y compró dentro de lo que se guarda: el diario de
     # operaciones de Movimientos dice cómo estaba la tendencia el día de la
     # compra (tecnico.tendencias_en_fechas). Sin esto, un activo que ya no tenés
@@ -229,6 +227,7 @@ def _seguimiento(conn):
         en_pesos = str(clave).upper().endswith('.BA')
         _sumar(_yahoo_de(p['asset'], None, en_pesos, yahoo_de_cripto, cedears))
 
+    tickers.add(SP500)
     tickers.discard('')
     tickers.discard(None)
     return tickers, pares

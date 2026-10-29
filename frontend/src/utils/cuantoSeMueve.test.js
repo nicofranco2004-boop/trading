@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   duracion, medicion, pctConSigno, plata, primeraCompra, puntosDesde, tarjetasMovimiento,
-  textoEvento, textoGrupo, textoMedicion, ultimaFotoApta,
+  textoEvento, textoGrupo, textoMedicion,
 } from './cuantoSeMueve'
 
 const precio = (x) => `US$ ${x.toLocaleString('es-AR', { maximumFractionDigits: 2 })}`
@@ -151,15 +151,5 @@ describe('cuánto se mueve este papel', () => {
   it('sin datos, nada', () => {
     expect(tarjetasMovimiento({ disponible: false })).toEqual([])
     expect(tarjetasMovimiento(undefined)).toEqual([])
-  })
-})
-
-describe('ultimaFotoApta', () => {
-  it('la última que sirve como medición', () => {
-    const fotos = [{ date: '2026-10-20', apto: 1, total_value: 10 }, { date: '2026-10-21', apto: 1, total_value: 20 },
-      { date: '2026-10-22', apto: 0, total_value: 30 }]
-    expect(ultimaFotoApta(fotos).total_value).toBe(20)
-    expect(ultimaFotoApta([...fotos].reverse()).total_value).toBe(20)   // el demo las manda al revés
-    expect(ultimaFotoApta([])).toBeNull()
   })
 })

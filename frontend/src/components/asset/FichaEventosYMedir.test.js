@@ -299,14 +299,14 @@ describe('desde que lo tenés', () => {
 
 describe('cuánto se mueve este papel', () => {
   it('con lo que manda el servidor y tu tenencia', async () => {
-    await dibujar({ tenencia: { valorUsd: 5300, tc: 1400 }, valorCartera: 48000, lotes: [{ entry_date: puntos[620].d, quantity: 2 }] })
+    await dibujar({ tenencia: { valorUsd: 5300, tc: 1400 }, pesoEnCartera: 0.11, lotes: [{ entry_date: puntos[620].d, quantity: 2 }] })
     const t = texto(montado.contenedor)
     expect(t).toContain('Cuánto se mueve este papel')
     expect(t).toContain('Últimos 2 años, en dólares')
     expect(t).toContain('Su peor caída')
     expect(t).toContain('Todavía no volvió a US$ 122,50.')
     expect(t).toContain('±1,6%')
-    // 5.300 × 1,6 % = 84,8 → −US$ 85; 5.300 de 48.000 = 11 %.
+    // 5.300 × 1,6 % = 84,8 → −US$ 85; el 11 % lo manda el servidor (senales_semana.peso).
     expect(t).toContain('−US$ 85')
     expect(t).toContain('Es el 11% de tu cartera')
     expect(t).toContain('no dice cuánto se va a mover de acá en adelante')

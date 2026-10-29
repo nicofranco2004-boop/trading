@@ -220,14 +220,3 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
 function diasEntre(a, b) {
   return Math.round((Date.parse(b + 'T12:00:00Z') - Date.parse(a + 'T12:00:00Z')) / 86400000)
 }
-
-/** La foto de la cartera más nueva que sirve como medición (`apto`) con valor.
- *  Por FECHA, no por el orden de la lista: el servidor las manda de la más vieja
- *  a la más nueva y el demo al revés. */
-export function ultimaFotoApta(fotos = []) {
-  let mejor = null
-  for (const f of fotos || []) {
-    if (f?.apto && f.total_value > 0 && (!mejor || String(f.date) > String(mejor.date))) mejor = f
-  }
-  return mejor
-}

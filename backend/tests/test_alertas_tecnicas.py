@@ -614,6 +614,62 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.assertIsNone(ev)
         bajando = [{"date": "2026-10-01", "close": 104.0}, {"date": "2026-10-02", "close": 100.0}]
         self.assertEqual(tecnico.toque_de_linea(bajando, {"tipo": "horizontal", "precio": 102}, "2026-10-01")["sentido"], "abajo")
+    def test_precio_tecnica_y_recordatorio_en_la_misma_pasada_cada_una_por_su_camino(self):
+        """Las tres clases de alerta del mismo motor, en UNA pasada del cron de
+        siempre (`main._evaluar_alertas_job`): la de precio la mira
+        `evaluate_alerts` (precios en vivo), la técnica `evaluar_tecnicas` (las
+        velas de la noche) y el recordatorio de una tesis `evaluar_recordatorios`
+        (su día). Cada una dispara una vez y por su rama: si el filtro de
+        `evaluate_alerts` dejara entrar a la técnica o al recordatorio, caerían
+        en la rama del % (pieza 11 + alertas técnicas, mezcla del 29/10)."""
+        # La técnica: MSFT cruza ayer su promedio de 200 días.
+        self.yahoo.precios["MSFT"] = self._sube_ayer
+        self._seguir_por_alerta_y_crear()
+        self._noche(self.ayer)
+        # La de precio: KO arriba de 110 (está en 100 al crearla).
+        r = self.client.post("/api/alerts", json={
+            "kind": "price_target", "symbol": "KO", "threshold": 110, "direction": "above",
+            "channel": "both", "repeat": "always"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        # El recordatorio: la tesis de NVDA, con su día hoy.
+        r = self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "Data centers e IA"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        tid = r.json()["id"]
+        r = self.client.put(f"/api/tesis/{tid}/recordatorio", json={"tipo": "3m"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        with main.db_abierta() as conn:
+            conn.execute("UPDATE tesis SET recordar_el=? WHERE id=?", (self.hoy.isoformat(), tid))
+            conn.commit()
+
+        with mock.patch("alerts_engine._prices_for", lambda syms: {s: 120.0 for s in syms}), \
+             mock.patch("alerts_engine._market_open_now", lambda now: True), \
+             mock.patch("alerts_engine.HORA_RECORDATORIO", 0):
+            res = self._cron()
+            self._cron()                       # la segunda pasada no repite nada
+        # La pasada en vivo mira SÓLO la de precio: la técnica y el recordatorio
+        # no disparan por ahí (no tienen límite de precio), así que lo que se ve
+        # de afuera es cuántas alertas miró.
+        self.assertEqual(res["alerts"], 1, res)
+        self.assertEqual(res["tecnicas"]["fired"], 1, res)
+        self.assertEqual(res["recordatorios"], 1, res)
+        with main.db_abierta() as conn:
+            ev = [dict(x) for x in conn.execute(
+                "SELECT a.kind, e.symbol, e.message, e.delivered_email, e.delivered_push "
+                "FROM alert_events e JOIN alerts a ON a.id = e.alert_id WHERE e.user_id=? ORDER BY e.id",
+                (self.uid,)).fetchall()]
+        self.assertEqual(sorted((e["kind"], e["symbol"]) for e in ev),
+                         [("price_target", "KO"), ("recordatorio", "NVDA"), ("tecnica", "MSFT")], ev)
+        por = {e["kind"]: e for e in ev}
+        self.assertTrue(por["price_target"]["message"].startswith("KO"), por["price_target"])
+        self.assertTrue(por["tecnica"]["message"].startswith("MSFT pasó para arriba su promedio de 200 días"))
+        self.assertEqual(por["recordatorio"]["message"], "Quedaste en revisar tu tesis de NVDA")
+        for e in ev:
+            self.assertEqual((e["delivered_email"], e["delivered_push"]), (1, 1), e)
+        # Cada push abre lo suyo: la de precio «Mis alertas», la técnica la ficha
+        # con el gráfico del cruce, el recordatorio la ficha con tu tesis.
+        self.assertEqual(sorted(p["url"] for p in self.pushes),
+                         ["/activo/MSFT", "/activo/NVDA", "/alertas?tab=mis"])
+        self.assertEqual(len(self.mails), 3)
 
 
 class SenalesTest(unittest.TestCase):

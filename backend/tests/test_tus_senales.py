@@ -404,6 +404,14 @@ class TusSenalesTest(unittest.TestCase):
                 self.assertAlmostEqual(x["peso"], pesos[(x["asset"], x["local"])], places=12, msg=x["asset"])
         self.assertTrue(any(x["tenes"] for x in senales), "la prueba tiene que comparar al menos uno")
         self.assertEqual(next(t["tipo"] for t in lista["tenencias"] if t["asset"] == "AAPL"), "CEDEAR")
+        # Y la ficha («Es el 12% de tu cartera» en «Cuánto se mueve»): el mismo
+        # número, pedido por su camino (GET /api/tecnico/{activo}/peso).
+        for (a, l), p in pesos.items():
+            r = self.client.get(f"/api/tecnico/{a}/peso", headers=self.h)
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertAlmostEqual(r.json()["peso"], p, places=12, msg=a)
+        self.assertIsNone(self.client.get("/api/tecnico/MSFT/peso", headers=self.h).json()["peso"],
+                          "lo que sólo seguís no pesa nada en tu plata")
 
     def test_sin_nada_con_lectura_no_hay_porcentaje(self):
         # Sólo un bono: no hay tendencia que medir. Ni la Cartera ni la pestaña
