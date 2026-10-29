@@ -443,7 +443,10 @@ def correr(conn) -> dict:
     no toca las velas."""
     tickers, pares = _seguimiento(conn)
     res = actualizar(conn, sorted(tickers))
-    res["podados_a_pedido"] = _podar_a_pedido(conn, tickers)
+    # El universo del termómetro (termometro.py) lo baja su propio trabajo, no
+    # esta corrida; igual no es «basura a pedido»: no se poda.
+    import termometro
+    res["podados_a_pedido"] = _podar_a_pedido(conn, set(tickers) | set(termometro.tickers_yahoo()))
     # Cuándo corrió la NOCHE, aparte de cada activo: las fichas abiertas a pedido
     # también anotan su `ultima_corrida`, y /admin no tiene que confundirlas.
     _anotar(conn, MARCA_CORRIDA_NOCHE, completa=False, ok=True, filas=res["filas"])
@@ -651,6 +654,28 @@ def asegurar(conn, tickers: list, uid, *, bajar=None, hoy: str = None):
             _a_pedido_en_curso.difference_update(faltan)
             _a_pedido_cond.notify_all()
     return None
+
+
+def poner_al_dia(conn, tickers: list, *, bajar=None, hoy: str = None) -> dict:
+    """Baja de `tickers` sólo lo que no esté al día (`_necesita`: lo que ya
+    bajó la corrida de la noche, o ya se intentó hoy, no se vuelve a pedir), sin
+    cupos por persona: lo usa un trabajo del servidor con una lista fija (el
+    termómetro), no una pantalla. Sin podar (eso lo hace la noche)."""
+    from fechas import hoy_art
+    hoy = hoy or hoy_art()
+    ahora = _ahora_utc()
+    faltan = [t for t in dict.fromkeys(tickers or []) if t and _necesita(conn, t, hoy, ahora)]
+    # Se cierra la lectura antes de esperar a Yahoo (en Postgres quedaba abierta).
+    conn.commit()
+    if not faltan:
+        return {"pedidos": 0, "completas": 0, "incrementales": 0, "sin_datos": [], "filas": 0}
+    return actualizar(conn, faltan, bajar=bajar, hoy=hoy, podar=False)
+
+
+def anotar_marca(conn, marca: str, filas: int = 0) -> None:
+    """Anota en `velas_estado` que un trabajo corrió ahora (como
+    `MARCA_CORRIDA_NOCHE`). La marca empieza con `~`: no es un ticker."""
+    _anotar(conn, marca, completa=False, ok=True, filas=filas)
 
 
 def _podar_a_pedido(conn, seguidos) -> int:

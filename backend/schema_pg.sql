@@ -1962,6 +1962,22 @@ ALTER TABLE tendencia_semanal ADD COLUMN IF NOT EXISTS mail_ok bigint;
 
 ALTER TABLE tendencia_semanal ADD COLUMN IF NOT EXISTS created_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS');
 
+CREATE TABLE IF NOT EXISTS termometro_diario (
+  fecha text,
+  puntaje bigint NOT NULL,
+  detalle text NOT NULL,
+  calculado_el text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS'),
+  PRIMARY KEY (fecha)
+);
+
+ALTER TABLE termometro_diario ADD COLUMN IF NOT EXISTS fecha text;
+
+ALTER TABLE termometro_diario ADD COLUMN IF NOT EXISTS puntaje bigint;
+
+ALTER TABLE termometro_diario ADD COLUMN IF NOT EXISTS detalle text;
+
+ALTER TABLE termometro_diario ADD COLUMN IF NOT EXISTS calculado_el text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS');
+
 CREATE TABLE IF NOT EXISTS trial_consumed (
   email_key text,
   consumed_at text NOT NULL,

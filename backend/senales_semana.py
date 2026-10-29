@@ -253,22 +253,28 @@ def _tesis(conn, uid: int) -> dict:
 
 # ─── La cuenta ───────────────────────────────────────────────────────────────
 
-def _repartir_cien(valores: list) -> list:
-    """Porcentajes enteros que suman 100 por el método del resto mayor
-    (redondear cada uno por su lado puede dar 99 o 101). Era el espejo de
-    `repartirCien` de la pantalla, que se borró el 28/10: el % se cuenta sólo acá."""
-    total = sum(valores)
-    if not total > 0:
-        return [0 for _ in valores]
-    crudos = [v / total * 100 for v in valores]
+def repartir_enteros(crudos: list, total: int) -> list:
+    """Enteros, uno por cada valor de `crudos` (todos ≥ 0), que suman `total`,
+    por el método del resto mayor: redondear cada uno por su lado puede dar uno
+    de más o de menos. Lo usan el % de tu plata (`_repartir_cien`) y las tres
+    partes del termómetro (termometro.py), que tienen que sumar el número."""
     pisos = [int(c) for c in crudos]
-    falta = 100 - sum(pisos)
+    falta = total - sum(pisos)
     for _, i in sorted(((c - p, i) for i, (c, p) in enumerate(zip(crudos, pisos))), reverse=True):
         if falta <= 0:
             break
         pisos[i] += 1
         falta -= 1
     return pisos
+
+
+def _repartir_cien(valores: list) -> list:
+    """Porcentajes enteros que suman 100 (`repartir_enteros`). Era el espejo de
+    `repartirCien` de la pantalla, que se borró el 28/10: el % se cuenta sólo acá."""
+    total = sum(valores)
+    if not total > 0:
+        return [0 for _ in valores]
+    return repartir_enteros([v / total * 100 for v in valores], 100)
 
 
 def _lectura_vieja(lectura: dict, hoy: date) -> bool:

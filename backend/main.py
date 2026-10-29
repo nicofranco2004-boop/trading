@@ -2581,6 +2581,18 @@ def init_db():
             );
         """)
 
+        # El termómetro del mercado (termometro.py): un número por día de
+        # mercado, guardado desde que se lanzó (para atrás no se reconstruye).
+        # Tabla nueva, sin ALTER ni índice aparte: la clave es la fecha.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS termometro_diario (
+                fecha TEXT PRIMARY KEY,          -- la última vela del S&P: un día de mercado
+                puntaje INTEGER NOT NULL,        -- 0 a 100
+                detalle TEXT NOT NULL,           -- la cuenta entera (JSON): cada parte y los sectores
+                calculado_el TEXT DEFAULT (datetime('now'))
+            );
+        """)
+
         # Cambios de ratio de CEDEAR (cambios_ratio.py): la lista única que leen
         # el aviso «Ajustar» de Posiciones y los gráficos en pesos. Tabla nueva,
         # sin ALTER: segura en una base ya creada.
@@ -11777,6 +11789,18 @@ def get_tecnico_semana(uid: int = Depends(get_effective_user)):
         out = senales_semana.armar_semana(conn, uid, hoy_art_date())
         out["canal"] = senales_semana.canal(conn, uid)
     return out
+
+
+@app.get("/api/termometro")
+def get_termometro(uid: int = Depends(get_effective_user)):
+    """El termómetro del mercado (termometro.py), para el Resumen de Análisis de
+    mercado: el último número guardado, cada parte de la cuenta y el de hace
+    una semana (si ya hay). El número es el mismo para todos; lo de cada
+    persona (`tu_plata`) sale de la valuación del servidor."""
+    import termometro
+    from fechas import hoy_art_date
+    with db_abierta() as conn:
+        return termometro.ultimo(conn, hoy_art_date())
 
 
 class ResumenSemanalIn(BaseModel):
@@ -48727,6 +48751,37 @@ def _resumen_semanal_job(conn, now=None) -> dict:
         return {"error": str(_ex)}
 
 
+def _run_termometro_job() -> None:
+    """La corrida del termómetro (termometro.py): baja lo que falte del universo
+    y guarda el número del día. Su conexión, en su hilo."""
+    import termometro
+    with db_abierta() as conn:
+        log.info("termómetro: %s", termometro.correr(conn))
+
+
+def _termometro_job(conn, now=None) -> dict:
+    """Una vez por día, un rato después de las velas de la noche (adentro de
+    `termometro.toca`). Lo pega el cron de las alertas cada 10 minutos y corre
+    en su propio hilo: le pide a Yahoo hasta ~500 tickers y las alertas no
+    pueden esperarlo. Su propia guarda, como el resumen de los sábados."""
+    import termometro
+    try:
+        if "velas_diarias" in _corridas_en_curso:
+            return {"esperando": "las velas se están guardando"}
+        if not termometro.toca(conn, now or datetime.utcnow()):
+            return {"esperando": "ya corrió hoy, o falta la corrida de la noche"}
+        # Se cierra la lectura antes de soltar el hilo (en Postgres quedaba abierta).
+        conn.commit()
+        return _correr_en_fondo("termometro", _run_termometro_job)
+    except Exception as _ex:
+        log.error("termómetro en el cron: %s", _ex, exc_info=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {"error": str(_ex)}
+
+
 def _evaluar_alertas_job() -> dict:
     """Una corrida de las alertas: las de precio y las del libro del asesor."""
     import alerts_engine as _ae
@@ -48771,6 +48826,9 @@ def _evaluar_alertas_job() -> dict:
         # su fila de la semana, así que las pasadas siguientes no mandan nada.
         # No mientras se guardan las velas (la misma razón que las técnicas).
         result["semana"] = _resumen_semanal_job(conn)
+        # El termómetro del mercado: una vez por día, después de las velas de
+        # la noche, en su propio hilo (adentro se fija si toca).
+        result["termometro"] = _termometro_job(conn)
         # Mismo ciclo: las alertas del LIBRO del asesor (movimiento de la
         # cartera de un cliente) se evalúan acá → el asesor no tiene que dar
         # de alta ningún cron nuevo.
