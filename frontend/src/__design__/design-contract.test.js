@@ -209,6 +209,13 @@ describe('contrato de diseño — R6, no se bifurca por viewport', () => {
                                         // x=297 y el globo se cortaba entero. Se
                                         // corre lo justo para entrar; no decide
                                         // NADA por tamaño de pantalla.
+      'src/components/asset/BarraGrafico.jsx',  // ídem: el menú de Fibonacci y
+                                        // Elliott se abre al lado de su botón si
+                                        // entra y, si no, debajo (la fila del
+                                        // celular), recortado contra los bordes.
+                                        // No decide NADA por tamaño de pantalla
+                                        // (la lista de indicadores mira el ancho
+                                        // del GRÁFICO, que mide el gráfico).
       'src/components/tour/TourNovedades.jsx',  // ídem: ubica el cartel del
                                         // tutorial al lado de lo que resalta y
                                         // lo recorta contra los bordes.

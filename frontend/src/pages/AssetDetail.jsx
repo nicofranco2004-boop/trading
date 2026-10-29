@@ -50,6 +50,7 @@ import { ChipDelActivo } from '../components/FueraDeHorario'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { operacionesEnUsd } from '../utils/assetPnl'
 import { esCobro } from '../utils/tradeStats'
+import { ultimaFotoApta } from '../utils/cuantoSeMueve'
 
 // ─── Matriz de valuación por lote (reusa la lógica de PositionDetailMobile) ──
 // Costo económico del lote, en SU moneda = lo pagado + las comisiones de compra.
@@ -178,6 +179,9 @@ export default function AssetDetail() {
   const [operations, setOperations] = useState([])
   // Tu tesis de este activo (la misma de Movimientos). Arriba de los return.
   const tesis = useTesis()
+  // El valor de toda tu cartera (la última foto que sirve como medición), para
+  // decir qué parte de tu cartera es este papel en «Cuánto se mueve».
+  const [valorCartera, setValorCartera] = useState(null)
   const [loading, setLoading] = useState(true)
   // Sólo si no lo tenés: el último precio, el cierre anterior y si está en tu watchlist.
   const [cotizacion, setCotizacion] = useState(null)
@@ -194,11 +198,12 @@ export default function AssetDetail() {
     setCotizacion(null)
     let redirige = false
     try {
-      const [pos, bkrs, dol, ops] = await Promise.all([
+      const [pos, bkrs, dol, ops, fotos] = await Promise.all([
         api.get('/positions').catch(() => []),
         api.get('/brokers').catch(() => []),
         api.get('/dolar').catch(() => null),
         api.get('/operations').catch(() => []),
+        api.get('/snapshots?days=10').catch(() => []),
       ])
       if (!vigente()) return
       // Sin el registry, isArUsdBroker cae al fallback por NOMBRE y esta ficha
@@ -217,6 +222,7 @@ export default function AssetDetail() {
           return
         }
       }
+      setValorCartera(ultimaFotoApta(fotos)?.total_value ?? null)
       setPositions(myLots)
       setBrokers(bkrs || [])
       setDolar(dol)
@@ -402,6 +408,10 @@ export default function AssetDetail() {
           } : null}
           costoPesos={costoEnPesos(agg.lots)}
           accionLocal={accionLocal}
+          // «En tu cartera» de «Cuánto se mueve»: lo que vale hoy lo tuyo (y el
+          // dólar de la pantalla, para decirlo en pesos) y el total de tu cartera.
+          tenencia={agg.lots.length > 0 && agg.valueUsd > 0 ? { valorUsd: agg.valueUsd, tc: tcValuacion } : null}
+          valorCartera={valorCartera}
         />
 
         {/* Cuánto se opera en BYMA y cuánto cuesta entrar y salir (CEDEARs y

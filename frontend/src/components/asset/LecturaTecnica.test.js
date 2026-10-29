@@ -56,7 +56,53 @@ let montado
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
+  localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
 })
+
+// Un botón de la barra de herramientas, por su capa (data-capa).
+function botonDe(id) {
+  const pila = [montado.contenedor]
+  while (pila.length) {
+    const n = pila.shift()
+    if (n.nodeName === 'BUTTON' && n.getAttribute?.('data-capa') === id) return n
+    pila.push(...(n.childNodes || []))
+  }
+  return null
+}
+function porEtiqueta(parte) {
+  const pila = [montado.contenedor]
+  while (pila.length) {
+    const n = pila.shift()
+    if ((n.getAttribute?.('aria-label') || '').startsWith(parte)) return n
+    pila.push(...(n.childNodes || []))
+  }
+  return null
+}
+function contar(pred) {
+  let k = 0
+  const pila = [montado.contenedor]
+  while (pila.length) {
+    const n = pila.shift()
+    if (pred(n)) k++
+    pila.push(...(n.childNodes || []))
+  }
+  return k
+}
+function buscarRol(rol, parte) {
+  const pila = [montado.contenedor]
+  while (pila.length) {
+    const n = pila.shift()
+    if (n.getAttribute?.('role') === rol && texto(n).includes(parte)) return n
+    pila.push(...(n.childNodes || []))
+  }
+  return null
+}
+// Una vela es un <g> con su mecha (line) y su cuerpo (rect).
+const velasDibujadas = () => contar(n => n.nodeName === 'G' && (n.childNodes || []).some(c => c.nodeName === 'RECT'))
+const puntosDeCompra = () => contar(n => n.nodeName === 'SPAN' && (n.getAttribute?.('title') || '').startsWith('Compraste el'))
+async function otraVez(props) {
+  for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', ...props }))
+}
 
 async function dibujar(props) {
   const el = () => h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', ...props })
@@ -111,22 +157,29 @@ describe('LecturaTecnica', () => {
   it('la línea de tu precio usa el dólar de compra; sin ese dato no se dibuja y lo dice', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD }
     let t = await dibujar({ pnlPctUsd: 0.4, pnlPctLinea: 0.1 })
-    expect(t).toContain('Tu precio promedio')
+    expect(botonDe('prom').getAttribute('aria-pressed')).toBe('true')
+    expect(t).toContain('Tu precio')               // el cartel de la línea, en la columna de precios
     expect(t).toContain('Ganás 40,0%')            // la tarjeta: el mismo resultado de arriba
     await montado.desmontar(); montado = null
     t = await dibujar({ pnlPctUsd: 0.4, pnlPctLinea: null, lineaSinTc: true })
-    expect(t).not.toContain('Tu precio promedio')
+    expect(botonDe('prom').getAttribute('aria-disabled')).toBe('true')
+    expect(texto(botonDe('prom'))).toContain('A alguna de tus compras le falta el dólar de ese día')
     expect(t).toContain('le falta el dólar de ese día')
   })
 
-  it('compras y ventas en la leyenda sólo si hay alguna en el rango', async () => {
+  it('tus compras y ventas: sin ninguna, el botón deshabilitado con el porqué', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD }
-    let t = await dibujar({ pnlPctUsd: 0.1 })
-    expect(t).not.toContain('Tus compras y ventas')
+    await dibujar({ pnlPctUsd: 0.1 })
+    expect(botonDe('marcas').getAttribute('aria-disabled')).toBe('true')
+    expect(texto(botonDe('marcas'))).toContain('No hay compras ni ventas tuyas de este activo')
     await montado.desmontar(); montado = null
     const ultimo = USD.puntos[USD.puntos.length - 10].d
-    t = await dibujar({ pnlPctUsd: 0.1, lotes: [{ entry_date: ultimo, quantity: 1 }] })
-    expect(t).toContain('Tus compras y ventas')
+    await dibujar({ pnlPctUsd: 0.1, lotes: [{ entry_date: ultimo, quantity: 1 }] })
+    expect(botonDe('marcas').getAttribute('aria-pressed')).toBe('true')
+    expect(puntosDeCompra()).toBe(1)
+    await clic(montado.contenedor, botonDe('marcas'))
+    await otraVez({ pnlPctUsd: 0.1, lotes: [{ entry_date: ultimo, quantity: 1 }] })
+    expect(puntosDeCompra()).toBe(0)
   })
 
   it('pide pesos recién al tocarlos, y una acción argentina pide su precio local', async () => {
@@ -136,11 +189,15 @@ describe('LecturaTecnica', () => {
     const el = () => h(LecturaTecnica, { asset: 'GGAL', accionLocal: true })
     montado = await montar(el())
     for (let i = 0; i < 4; i++) await montado.redibujar(el())
-    const pedidos = () => api.get.mock.calls.map(c => c[0]).filter(r => r.startsWith('/tecnico'))
+    const todos = () => api.get.mock.calls.map(c => c[0]).filter(r => r.startsWith('/tecnico'))
+    const pedidos = () => todos().filter(r => !r.includes('/eventos') && !r.includes('/dibujos'))
     expect(pedidos()).toEqual(['/tecnico/GGAL?moneda=usd&local=1'])
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos'))
     for (let i = 0; i < 4; i++) await montado.redibujar(el())
     expect(pedidos()).toEqual(['/tecnico/GGAL?moneda=usd&local=1', '/tecnico/GGAL?moneda=ars&local=1'])
+    // Los balances y dividendos, también por moneda y con la acción local.
+    expect(todos().filter(r => r.includes('/eventos'))).toEqual(
+      ['/tecnico/GGAL/eventos?moneda=usd&local=1', '/tecnico/GGAL/eventos?moneda=ars&local=1'])
   })
 
   it('en pesos, tu precio sale de lo que pagaste en pesos (con comisiones)', async () => {
@@ -156,9 +213,13 @@ describe('LecturaTecnica', () => {
   it('con el botón Velas dibuja velas diarias, y semanales sólo si se eligen', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     await dibujar({ pnlPctUsd: 0.1 })
+    expect(velasDibujadas()).toBe(0)
+    expect(botonDe('linea').getAttribute('aria-pressed')).toBe('true')
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Velas'))
     for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
-    expect(texto(montado.contenedor)).toContain('Velas: subió · bajó')
+    expect(botonDe('velas').getAttribute('aria-pressed')).toBe('true')
+    expect(botonDe('linea').getAttribute('aria-pressed')).toBe('false')
+    expect(velasDibujadas()).toBeGreaterThan(200)     // un año de ruedas, una vela por día
     expect(texto(montado.contenedor)).not.toContain('Cada vela es una semana')
     // En 2 años siguen siendo diarias; las semanales se eligen.
     await clic(montado.contenedor, buscarBoton(montado.contenedor, '2A'))
@@ -169,26 +230,55 @@ describe('LecturaTecnica', () => {
     expect(texto(montado.contenedor)).toContain('Cada vela es una semana')
   })
 
-  it('Agrandar pone el gráfico a pantalla completa; Achicar y Esc lo devuelven', async () => {
+  it('siempre ampliado, dentro de la ficha: sin Agrandar/Achicar ni pantalla completa (Nico, 24/10)', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
+    await dibujar({ pnlPctUsd: 0.1 })
+    const seccion = buscar(montado.contenedor, 'section')
+    expect(seccion.getAttribute('role')).toBeNull()
+    expect(seccion.getAttribute('class')).not.toContain('fixed')
+    expect(buscarBoton(montado.contenedor, 'Agrandar')).toBeNull()
+    expect(buscarBoton(montado.contenedor, 'Achicar')).toBeNull()
+    // El alto del modo ampliado de antes en compu; en el celular, uno que no se come la pantalla.
+    const area = porEtiqueta('Precio con su promedio')
+    expect(area.getAttribute('class')).toContain('sm:h-[58vh]')
+    expect(area.getAttribute('class')).toMatch(/(^| )h-\[42vh\]/)
+    // Esc ya no hace nada raro (no hay nada que achicar) y la página no queda trabada.
+    await enActo(() => { window.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Escape' })) })
+    expect(document.body.style.overflow).not.toBe('hidden')
+  })
+
+  it('«Pantalla completa» pone el gráfico sobre toda la página; «Achicar» y Esc vuelven a la ficha (Nico, 28/10)', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     await dibujar({ pnlPctUsd: 0.1 })
     const otra = () => montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     const seccion = () => buscar(montado.contenedor, 'section')
-    expect(seccion().getAttribute('role')).toBeNull()
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Agrandar'))
+    const area = () => porEtiqueta('Precio con su promedio')
+    const altoNormal = area().getAttribute('class')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pantalla completa'))
     await otra()
     expect(seccion().getAttribute('role')).toBe('dialog')
-    expect(seccion().getAttribute('class')).toContain('fixed')
-    expect(document.body.style.overflow).toBe('hidden')   // la página de atrás no se mueve
+    expect(seccion().getAttribute('class')).toContain('fixed inset-0')
+    expect(document.body.style.overflow).toBe('hidden')        // la página de atrás no se mueve
+    expect(area().getAttribute('class')).toContain('sm:h-[74vh]')   // el gráfico, más alto
+    expect(area().getAttribute('class')).not.toEqual(altoNormal)
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Achicar'))
     await otra()
     expect(seccion().getAttribute('role')).toBeNull()
     expect(document.body.style.overflow).not.toBe('hidden')
-    // Esc también achica.
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Agrandar'))
+    // Esc también achica…
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pantalla completa'))
     await otra()
-    await enActo(() => { window.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Escape' })) })
+    const esc = () => enActo(() => { window.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Escape' })) })
+    await esc(); await otra()
+    expect(seccion().getAttribute('role')).toBeNull()
+    // …pero si hay algo a medio dibujar, el primer Esc cancela eso y el gráfico sigue grande.
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pantalla completa'))
     await otra()
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Medir entre dos puntos'))
+    await otra()
+    await esc(); await otra()
+    expect(seccion().getAttribute('role')).toBe('dialog')
+    await esc(); await otra()
     expect(seccion().getAttribute('role')).toBeNull()
   })
 
@@ -267,16 +357,41 @@ describe('LecturaTecnica', () => {
     expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThan(100)   // de 260 de alto
   })
 
-  it('sin volumen en los datos no hay botón de volumen', async () => {
+  it('sin volumen en los datos el botón queda deshabilitado y, al tocarlo, dice por qué', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
-    expect(await dibujar({ pnlPctUsd: 0.1 })).not.toContain('Volumen')
+    await dibujar({ pnlPctUsd: 0.1 })
+    const b = botonDe('vol')
+    expect(b.getAttribute('aria-disabled')).toBe('true')
+    expect(b.getAttribute('aria-pressed')).toBeNull()
+    expect(texto(montado.contenedor)).not.toContain('Volumen: Este activo no trae volumen en los datos de Yahoo.Cerrar')
+    await clic(montado.contenedor, b)
+    await otraVez({ pnlPctUsd: 0.1 })
+    const aviso = buscarRol('status', 'Volumen: ')
+    expect(texto(aviso)).toContain('Volumen: Este activo no trae volumen en los datos de Yahoo.')
+    // Tocar otro botón lo saca.
+    await clic(montado.contenedor, botonDe('s50'))
+    await otraVez({ pnlPctUsd: 0.1 })
+    expect(buscarRol('status', 'Volumen: ')).toBeNull()
   })
 
   it('sin tenencia no dibuja tu precio', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     const t = await dibujar({ pnlPctUsd: null })
     expect(t).not.toContain('Contra lo que pagaste')
+    expect(t).not.toContain('Tu precio·')
+    // Sin tenerlo ni haberlo operado, la barra no muestra nada tuyo (Nico, 24/10).
+    expect(botonDe('prom')).toBeNull()
+    expect(botonDe('marcas')).toBeNull()
     expect(t).not.toContain('Tu precio promedio')
+    expect(t).not.toContain('Tus compras y ventas')
+  })
+
+  it('vendiste todo: tus compras y ventas siguen, tu precio promedio no', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD }
+    const ultimo = USD.puntos[USD.puntos.length - 10].d
+    await dibujar({ pnlPctUsd: null, operaciones: [{ date: ultimo, type: 'SELL', quantity: 1 }] })
+    expect(botonDe('marcas')).not.toBeNull()
+    expect(botonDe('prom')).toBeNull()
   })
 
   it('fuerza de la tendencia: panel del ADX con el Squeeze y la tarjeta con su frase destacada', async () => {

@@ -35,6 +35,7 @@ let montado
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
+  localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
 })
 
 const el = () => h(LecturaTecnica, { asset: 'ZZEJ' })

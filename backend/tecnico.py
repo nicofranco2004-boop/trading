@@ -20,7 +20,10 @@ Las velas llegan ya corregidas por `velas_diarias.serie` (cambios de ratio de un
 CEDEAR y precios rotos de un día, que Yahoo no corrige): acá no se corrige nada.
 
 EL FIBONACCI (picos, pozos, tramos de suba y de bajada) vive en
-`estructura.py`; acá sólo se le pasa la misma serie que va al gráfico.
+`estructura.py`, las ONDAS DE ELLIOTT (sobre esos mismos picos y pozos) en
+`elliott.py`, y «Cuánto se mueve este papel» (peor caída, un día normal contra
+el S&P 500, lo que se movió con cada balance y dividendo) en `movimiento.py`;
+acá sólo se les pasa la misma serie que va al gráfico.
 
 QUÉ NO HACE. No sabe nada del usuario: tu precio promedio y tus compras se
 dibujan en la pantalla con lo que ya tiene la ficha.
@@ -29,8 +32,10 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import elliott
 import estructura
-from velas_diarias import DIAS_GUARDADOS
+import movimiento
+from velas_diarias import DIAS_GUARDADOS, SP500
 
 # Todo lo que es "un año" o "un mes" se corta por FECHA (días corridos), no por
 # cantidad de velas: una cripto cotiza los 7 días y la bolsa 5.
@@ -598,6 +603,26 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     return {"velas": []}
 
 
+def sp500(conn, moneda: str = "usd") -> list:
+    """Las velas del S&P 500 en `moneda` (en pesos, × el MEP de cada día, con
+    la misma regla que un papel de afuera visto en pesos)."""
+    import velas_diarias
+    velas = velas_diarias.serie(conn, SP500)
+    return _convertir(conn, velas, "multiplicar") if moneda == "ars" else velas
+
+
+def ticker_de_la_empresa(conn, asset: str, local: bool = False):
+    """El ticker de Yahoo con el que se buscan los balances y dividendos de la
+    empresa: el de la serie en dólares de la ficha (`serie`, la misma regla:
+    la acción de afuera de un CEDEAR, el '.BA' de una acción argentina). None
+    para una cripto (no tiene ni balances ni dividendos) o sin velas."""
+    from cripto import yahoo_de_cripto
+    a = (asset or "").strip().upper()
+    if not a or yahoo_de_cripto(a[:-3] if a.endswith(".BA") else a):
+        return None
+    return serie(conn, a, "usd", local).get("ticker")
+
+
 def cierre_de(conn, simbolo: str):
     """El último cierre guardado de un símbolo tal como lo pide la valuación
     ('AAPL.BA', 'AAPL', 'BTC', 'BRK.B'), con su fecha. Sirve para saber cuánto se
@@ -626,6 +651,7 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
     m50, m200, r = media(cierres, 50), media(cierres, 200), rsi(cierres)
     dmi, sqz, bb = adx(velas), squeeze(velas), bollinger(cierres)
     desde = _desde_dias(velas, DIAS_GRAFICO)
+    lect = lectura(velas, m50, m200, r, dmi, sqz, bb)
 
     def _r(x, d=4):
         return round(x, d) if x is not None else None
@@ -651,7 +677,7 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         "ticker": s["ticker"],
         "convertida": s["convertida"],
         "puntos": puntos,
-        "lectura": lectura(velas, m50, m200, r, dmi, sqz, bb),
+        "lectura": lect,
         # El último cierre del instrumento con el que se valúa tu tenencia
         # (`ref`): la pantalla lo compara con el precio en vivo para que la línea
         # de tu precio no se corra lo que se movió hoy (auditoría 22/10).
@@ -659,6 +685,12 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         # Fibonacci del último tramo (estructura.py), sobre TODA la historia
         # guardada de esta misma serie: los niveles quedan en la moneda del gráfico.
         "fibonacci": estructura.fibonacci(velas),
+        # Un conteo POSIBLE de ondas de Elliott (elliott.py) sobre los mismos
+        # picos y pozos del Fibonacci y la misma serie.
+        "elliott": elliott.conteo(velas),
+        # «Cuánto se mueve este papel» (movimiento.py), sobre esta misma serie y
+        # en su moneda; el S&P 500 en la misma moneda para comparar.
+        "movimiento": movimiento.calcular(velas, sp500(conn, moneda), lect),
     }
 
 

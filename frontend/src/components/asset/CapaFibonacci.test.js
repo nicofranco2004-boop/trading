@@ -40,6 +40,7 @@ let montado
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
+  localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
 })
 
 const el = () => h(LecturaTecnica, { asset: 'ZZFB' })
@@ -48,8 +49,26 @@ async function dibujar() {
   for (let i = 0; i < 4; i++) await montado.redibujar(el())
   return texto(montado.contenedor)
 }
+
+// Un botón por su `data-capa` (la barra, su menú o el ojito de la lista).
+function porCapa(id) {
+  const pila = [montado.contenedor]
+  while (pila.length) {
+    const n = pila.shift()
+    if (n.nodeName === 'BUTTON' && n.getAttribute?.('data-capa') === id) return n
+    pila.push(...(n.childNodes || []))
+  }
+  return null
+}
+// Fibonacci y Elliott: el automático y el «a mano» viven en el menú de su botón.
+async function enElMenu(menu, opcion) {
+  await clic(montado.contenedor, porCapa(menu))
+  for (let i = 0; i < 2; i++) await montado.redibujar(el())
+  const b = porCapa(opcion)
+  return b
+}
 async function tocarFibonacci() {
-  await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Fibonacci'))
+  await clic(montado.contenedor, await enElMenu('menu-fibonacci', 'fib'))
   for (let i = 0; i < 2; i++) await montado.redibujar(el())
   return texto(montado.contenedor)
 }
@@ -134,9 +153,13 @@ describe('Fibonacci en la ficha', () => {
     expect(posicion(semanal, '2026-10-19').donde).toBe('despues')
   })
 
-  it('una respuesta vieja sin el campo no muestra el botón', async () => {
+  it('una respuesta vieja sin el campo: el botón deshabilitado, con el porqué, y nada dibujado', async () => {
     respuesta = DATOS(undefined)
     const t = await dibujar()
-    expect(t).not.toContain('Fibonacci')
+    expect(t).not.toContain('Fibonacci de la')
+    expect(t).not.toContain('61,8 % ·')
+    expect((await enElMenu('menu-fibonacci', 'fib')).getAttribute('aria-disabled')).toBe('true')
+    await clic(montado.contenedor, porCapa('menu-fibonacci'))   // lo cierra
+    expect(await tocarFibonacci()).toContain('Fibonacci (automático): Este activo todavía no tiene el cálculo del Fibonacci.')
   })
 })

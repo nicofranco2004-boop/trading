@@ -62,8 +62,11 @@ class YahooFalso:
         self.hoy, self.precios, self.pedidos = hoy, {}, []
 
     def __call__(self, ticker, period, interval, auto_adjust, timeout):
-        self.pedidos.append((ticker, period, auto_adjust))
-        f = self.precios.get(ticker)
+        # El S&P 500 se guarda todas las noches (velas_diarias.SP500): precio fijo
+        # salvo que la prueba le dé otro, y fuera de `pedidos`.
+        if ticker != "^GSPC":
+            self.pedidos.append((ticker, period, auto_adjust))
+        f = self.precios.get(ticker) or ((lambda i, d: 5000.0) if ticker == "^GSPC" else None)
         if f is None:
             return pd.DataFrame()
         dias = _ruedas(self.hoy, 760 if period == "3y" else 22)
@@ -629,6 +632,7 @@ class FichaTest(unittest.TestCase):
         # TODA la historia guardada (antes arrancaba después de 200 días).
         self.assertEqual(por_dia[f["puntos"][0]["d"]], 0, "el gráfico lleva toda la historia")
         self.assertEqual(len(f["puntos"]), len(velas), "el gráfico trae toda la historia guardada")
+        self.assertIsNone(f["puntos"][0]["adx"], "en la primera vela el ADX todavía no tiene memoria")
         for q in f["puntos"]:
             i = por_dia[q["d"]]
             self.assertEqual(q["adx"], round(d["adx"][i], 2) if d["adx"][i] is not None else None, q["d"])
@@ -677,9 +681,10 @@ class FichaTest(unittest.TestCase):
         self.assertEqual(antes["activos"], 0)
         main._run_velas_diarias_job()
         e = self.client.get("/api/admin/velas", headers=self.h_admin).json()
-        self.assertEqual((e["activos"], e["ok"]), (2, 1))
+        # 3 activos: MSFT, NOEXISTE y el S&P 500 (que se guarda siempre).
+        self.assertEqual((e["activos"], e["ok"]), (3, 2))
         self.assertEqual([f["symbol"] for f in e["fallados"]], ["NOEXISTE"])
-        self.assertEqual(e["filas"], 760)
+        self.assertEqual(e["filas"], 2 * 760)
         self.assertEqual(e["hasta"], self.dias[-1].isoformat())
         self.assertFalse(e["corriendo"])
 
@@ -838,7 +843,8 @@ class FichaTest(unittest.TestCase):
             conn.execute("INSERT INTO velas_estado (symbol, ok, error) VALUES ('VIEJO', 0, 'x')")
             conn.commit()
         e = self.client.get("/api/admin/velas", headers=self.h_admin).json()
-        self.assertEqual((e["seguidos"], e["atrasados"], e["fallados"]), (1, [], []))
+        self.assertEqual((e["seguidos"], e["atrasados"], e["fallados"]), (2, [], []),
+                         "MSFT y el S&P 500")
 
 
     def test_cierre_del_instrumento_de_tu_tenencia(self):
@@ -994,7 +1000,8 @@ class FichaTest(unittest.TestCase):
             conn.execute("UPDATE velas_estado SET ultima_corrida=? WHERE symbol='MSFT'", (viejo,))
             conn.commit()
             self.assertEqual(velas_diarias._podar_a_pedido(conn, {"MSFT"}), 0)
-        self.assertEqual(hay, {"MSFT", "AMD"}, "NVDA nadie la miró en 50 días; AMD sí")
+        # El S&P 500 se guarda siempre (velas_diarias.SP500).
+        self.assertEqual(hay, {"MSFT", "AMD", "^GSPC"}, "NVDA nadie la miró en 50 días; AMD sí")
 
     def test_dos_a_la_vez_bajan_una_sola_vez(self):
         import threading
@@ -1125,7 +1132,9 @@ class FichaTest(unittest.TestCase):
         e = self.client.get("/api/admin/velas", headers=self.h_admin).json()
         self.assertEqual(e["ultima_corrida"], "2026-01-01 03:00:00",
                          "si la noche dejó de correr, la última ficha abierta no lo tapa")
-        self.assertEqual((e["activos"], e["sin_historia"]), (1, 0), "sólo lo que se sigue")
+        # MSFT y el S&P 500, que se guarda siempre (velas_diarias.SP500: contra
+        # él se compara «Cuánto se mueve»); ni NVDA ni ZZZZ, que sólo se abrieron.
+        self.assertEqual((e["activos"], e["sin_historia"]), (2, 0), "sólo lo que se sigue")
 
 
 if __name__ == "__main__":

@@ -840,6 +840,25 @@ ALTER TABLE deleted_ops_journal ADD COLUMN IF NOT EXISTS created_at text DEFAULT
 
 ALTER TABLE deleted_ops_journal ADD COLUMN IF NOT EXISTS undone_at text;
 
+CREATE TABLE IF NOT EXISTS dibujos_grafico (
+  user_id bigint NOT NULL,
+  asset text NOT NULL,
+  moneda text NOT NULL,
+  datos text NOT NULL,
+  updated_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS'),
+  PRIMARY KEY (user_id, asset, moneda)
+);
+
+ALTER TABLE dibujos_grafico ADD COLUMN IF NOT EXISTS user_id bigint;
+
+ALTER TABLE dibujos_grafico ADD COLUMN IF NOT EXISTS asset text;
+
+ALTER TABLE dibujos_grafico ADD COLUMN IF NOT EXISTS moneda text;
+
+ALTER TABLE dibujos_grafico ADD COLUMN IF NOT EXISTS datos text;
+
+ALTER TABLE dibujos_grafico ADD COLUMN IF NOT EXISTS updated_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS');
+
 CREATE TABLE IF NOT EXISTS dividendos_emisor (
   ticker text,
   pais text,

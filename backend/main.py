@@ -6,8 +6,8 @@ from starlette.concurrency import iterate_in_threadpool
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.exception_handlers import http_exception_handler
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from pydantic import BaseModel, field_validator, Field
-from typing import Any, Optional, List
+from pydantic import BaseModel, field_validator, model_validator, Field
+from typing import Any, Literal, Optional, List
 import sqlite3, os, secrets, time, hashlib, hmac, json, threading, asyncio
 from contextlib import contextmanager
 import dberrors
@@ -50,7 +50,7 @@ except ImportError:
     # python-dotenv opcional — si no está, seguimos con env vars del sistema.
     pass
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _esperar_futuros
-from eventos_guardados import eventos_guardados
+from eventos_guardados import balances_entre, eventos_guardados
 from tickers_renombrados import ticker_vigente   # SQ → XYZ: el código que cotiza hoy
 import yfinance as yf
 from pricing import yahoo as _yahoo   # toda llamada a Yahoo con alguien esperando
@@ -2629,6 +2629,23 @@ def init_db():
                 updated_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_tesis_user_asset ON tesis(user_id, asset, escrita_el);
+        """)
+
+        # Los dibujos a mano del gráfico técnico (líneas de tendencia y
+        # horizontales, como TradingView), de cada persona por activo y moneda,
+        # para verlos en todos sus dispositivos. `datos` es la lista entera en
+        # JSON (la pantalla la manda completa: frontend/src/utils/dibujos.js).
+        # `user_id` con ese nombre: el borrado de cuenta la barre solo. Tabla
+        # nueva, sin ALTER: segura en una base ya creada.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS dibujos_grafico (
+                user_id INTEGER NOT NULL,
+                asset TEXT NOT NULL,             -- el símbolo de la ficha: 'AAPL', 'GGAL'
+                moneda TEXT NOT NULL,            -- 'usd' | 'ars': en cada una los precios son otros
+                datos TEXT NOT NULL,             -- JSON: [{id, tipo, precio | a, b}]
+                updated_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (user_id, asset, moneda)
+            );
         """)
 
         # ─── TWR: períodos SELLADOS ──────────────────────────────────────────
@@ -8657,6 +8674,117 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
     return sum(1 for f in terminados if not f.cancelled() and f.result() is True)
 
 
+# ─── Balances PASADOS (los «B» del gráfico de la ficha) ───────────────────────
+# El calendario de arriba sólo trae el PRÓXIMO balance; los que ya pasaron se
+# piden aparte (`get_earnings_dates`, con la hora del anuncio) y se guardan en
+# la MISMA tabla `financial_events`, como 'earnings', sólo con fecha anterior a
+# hoy. Nadie que muestre "lo que se viene" los ve: todos leen de hoy en adelante
+# (eventos_guardados, el mail del día, el radar del asesor). La pide sólo la
+# ficha del activo (/api/tecnico/{asset}/eventos), no la renovación de 6 h de
+# Novedades: es un pedido más a Yahoo por papel y los pasados no cambian.
+_earnings_pasados_at = {}            # { ticker: timestamp del último pedido bueno }
+EARNINGS_PASADOS_TTL = 7 * 24 * 3600
+# Cuántos balances para atrás: 16 trimestres cubren los 3 años de velas.
+EARNINGS_PASADOS_CUANTOS = 16
+# Hora de cierre de cada mercado, en su hora local: un balance anunciado antes
+# se nota ese mismo día; después, al día de mercado siguiente.
+_CIERRE_MERCADO = {"America/New_York": 16, "America/Argentina/Buenos_Aires": 17}
+
+
+def _fetch_yf_earnings_pasados(ticker: str):
+    """Los balances ya anunciados de `ticker`: [{event_date, momento, hora}] con
+    `momento` 'antes_del_cierre' | 'despues_del_cierre' | None (Yahoo no dio la
+    hora: medianoche justa). None si Yahoo no contestó (≠ [] = no tiene)."""
+    try:
+        ed = yf.Ticker(ticker).get_earnings_dates(limit=EARNINGS_PASADOS_CUANTOS)
+    except Exception:
+        return None
+    if ed is None or not len(ed):
+        return []
+    zona = "America/Argentina/Buenos_Aires" if ticker.endswith(".BA") else "America/New_York"
+    hoy = _iso_today()
+    out = []
+    for ts in ed.index:
+        try:
+            local = ts.tz_convert(zona) if ts.tzinfo else ts.tz_localize(zona)
+        except Exception:
+            continue
+        d = local.strftime("%Y-%m-%d")
+        if not _DATE_RE.match(d) or d >= hoy:
+            continue
+        sin_hora = local.hour == 0 and local.minute == 0
+        out.append({
+            "event_date": d,
+            "momento": None if sin_hora else (
+                "antes_del_cierre" if local.hour < _CIERRE_MERCADO[zona] else "despues_del_cierre"),
+            "hora": None if sin_hora else local.strftime("%H:%M"),
+        })
+    return out
+
+
+def _buscar_y_guardar_earnings_pasados(ticker: str) -> bool:
+    """Un trabajador: pide los balances pasados y los guarda (su propia
+    conexión). Lo que ya estaba guardado de esa fecha (el EPS estimado del
+    calendario) se conserva: sólo se le suma la hora."""
+    clave = f"{ticker}|pasados"
+    try:
+        lista = _fetch_yf_earnings_pasados(ticker)
+        if lista is None:
+            _earnings_pasados_at[ticker] = time.time() - EARNINGS_PASADOS_TTL + EVENTOS_REINTENTO_SEG
+            return False
+        if lista:
+            iso_now = datetime.utcnow().isoformat() + "Z"
+            conn = get_db()
+            try:
+                with conn:
+                    for e in lista:
+                        fila = conn.execute(
+                            "SELECT details FROM financial_events WHERE ticker=? AND event_type='earnings' "
+                            "AND event_date=?", (ticker, e["event_date"])).fetchone()
+                        try:
+                            details = json.loads(fila["details"]) if fila and fila["details"] else {}
+                        except (TypeError, ValueError):
+                            details = {}
+                        details = details if isinstance(details, dict) else {}
+                        details.update({"momento": e["momento"], "hora": e["hora"]})
+                        conn.execute(
+                            """INSERT INTO financial_events
+                               (ticker, event_type, event_date, details, confirmed, source, fetched_at)
+                               VALUES (?, 'earnings', ?, ?, 1, 'yfinance', ?)
+                               ON CONFLICT(ticker, event_type, event_date) DO UPDATE SET
+                                   details = excluded.details, confirmed = 1,
+                                   fetched_at = excluded.fetched_at""",
+                            (ticker, e["event_date"], json.dumps(details), iso_now))
+            finally:
+                conn.close()
+        _earnings_pasados_at[ticker] = time.time()
+        return True
+    except Exception as ex:
+        logging.getLogger(__name__).warning("earnings pasados %s: %s", ticker, ex)
+        return False
+    finally:
+        with _events_en_vuelo_lock:
+            _events_en_vuelo.pop(clave, None)
+
+
+def _earnings_pasados_al_dia(ticker: str, esperar_segundos=None) -> None:
+    """Pide los balances pasados de `ticker` si nunca se pidieron o hace más de
+    una semana (de a uno a la vez por ticker, en el mismo pool que los eventos).
+    `esperar_segundos`: cuánto espera la pantalla (None = de fondo)."""
+    if not ticker or not _SYMBOL_RE.match(ticker):
+        return
+    clave = f"{ticker}|pasados"
+    with _events_en_vuelo_lock:
+        if time.time() - _earnings_pasados_at.get(ticker, 0) < EARNINGS_PASADOS_TTL:
+            return
+        fut = _events_en_vuelo.get(clave)
+        if fut is None:
+            fut = _events_fetch_executor.submit(_buscar_y_guardar_earnings_pasados, ticker)
+            _events_en_vuelo[clave] = fut
+    if esperar_segundos:
+        _esperar_futuros([fut], timeout=esperar_segundos)
+
+
 def _eventos_al_dia(conn, tickers: list) -> int:
     """La regla ÚNICA para tener los eventos al día antes de leerlos de la DB
     (stale-while-revalidate). La usan /events/portfolio, /events/popular y el
@@ -11696,6 +11824,170 @@ def tecnico_en_fechas(data: TendenciasEnFechasIn, uid: int = Depends(get_effecti
     with db_abierta() as conn:
         out.update(tecnico.tendencias_en_fechas(conn, pedidos))
     return {"resultados": out}
+
+
+# Lo que la ficha espera a Yahoo por los balances y dividendos la primera vez
+# (después sale de lo guardado al instante). El gráfico no espera: esto llega aparte.
+_TOPE_EVENTOS_FICHA = 5.0
+
+
+@app.get("/api/tecnico/{asset}/eventos")
+def get_tecnico_eventos(asset: str, moneda: str = "usd", local: int = 0,
+                        uid: int = Depends(get_effective_user)):
+    """Los balances («B») y dividendos («D») de la empresa dentro del gráfico de
+    la ficha, cada uno con lo que se movió el precio en la serie del gráfico y
+    en su moneda (movimiento.eventos_del_grafico). Las fuentes son las de
+    siempre: los dividendos, la caché de la bandeja de cobros (dividendos.py);
+    los balances, `financial_events` (la de Novedades) con los pasados que trae
+    `_earnings_pasados_al_dia`."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    moneda = "ars" if moneda == "ars" else "usd"
+    import movimiento
+    import tecnico
+    with db_abierta() as conn:
+        empresa = tecnico.ticker_de_la_empresa(conn, sym, bool(local))
+        velas = tecnico.serie(conn, sym, moneda, bool(local))["velas"]
+        if not empresa or not velas:
+            return {"empresa": empresa, "eventos": []}
+        desde = velas[0]["date"]
+        hasta = velas[-1]["date"]
+        incompleto = False
+        try:
+            incompleto = bool(_dividendos.actualizar(conn, [empresa], tope=_TOPE_EVENTOS_FICHA))
+        except Exception as ex:   # Yahoo caído: lo guardado
+            log.warning("ficha eventos: dividendos de %s: %s", empresa, ex)
+            incompleto = True
+        dividendos = _dividendos.historial(conn, [empresa], desde)[empresa]["pagos"]
+        # Sin ningún balance pasado guardado, se espera a Yahoo (con tope); si
+        # ya hay, se responde con eso y se renueva de fondo.
+        ya = balances_entre(conn, empresa, desde, hasta)
+        _earnings_pasados_al_dia(empresa, esperar_segundos=None if ya else _TOPE_EVENTOS_FICHA)
+        balances = balances_entre(conn, empresa, desde, hasta)
+        return {
+            "empresa": empresa,
+            "eventos": movimiento.eventos_del_grafico(
+                velas, balances, dividendos, "ars" if empresa.endswith(".BA") else "usd"),
+            "incompleto": incompleto,
+        }
+
+
+# ─── Dibujos a mano en el gráfico de la ficha ────────────────────────────────
+# Líneas de tendencia y horizontales, y Fibonacci y ondas de Elliott marcados a
+# mano, como TradingView (Nico, 24/10: «que se guarden por activo», «en todos
+# los dispositivos»; 28/10: Fibonacci y Elliott también a mano). La pantalla manda la lista
+# ENTERA cada vez que cambia (frontend/src/utils/dibujos.js): no hay que mezclar
+# nada acá. Son de quien los dibuja: un asesor mirando la cuenta de un cliente
+# guarda los suyos, no le escribe al cliente.
+
+_DIBUJOS_MAXIMOS = 60
+
+
+class _PuntoDibujo(BaseModel):
+    d: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")      # el día
+    mas: int = Field(ge=0, le=5000)                     # días de mercado después (hacia adelante)
+    precio: float = Field(gt=0, allow_inf_nan=False)
+
+
+# Un conteo de Elliott a mano: el impulso (0 y las ondas 1 a 5), la corrección
+# (el arranque y A, B, C) o, en los guardados antes de separarlos, las dos
+# juntas (0-1-2-3-4-5-A-B-C). Se puede cortar antes.
+_PUNTOS_ELLIOTT = {"impulso": 6, "correccion": 4, None: 9}
+
+
+class _Dibujo(BaseModel):
+    id: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    # «fibonacci» y «elliott»: los que la persona marca a mano en vez del
+    # automático (Nico, 28/10: «poder calcularlo como ellos estiman»).
+    # «extension»: la extensión de Fibonacci (tres puntos: a, b y c).
+    tipo: Literal["tendencia", "horizontal", "fibonacci", "extension", "elliott"]
+    precio: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    a: Optional[_PuntoDibujo] = None
+    b: Optional[_PuntoDibujo] = None
+    c: Optional[_PuntoDibujo] = None
+    forma: Optional[Literal["impulso", "correccion"]] = None
+    puntos: Optional[List[_PuntoDibujo]] = Field(None, max_length=_PUNTOS_ELLIOTT[None])
+
+    @model_validator(mode="after")
+    def _completo(self):
+        if self.tipo == "horizontal" and self.precio is None:
+            raise ValueError("una línea horizontal necesita su precio")
+        if self.tipo in ("tendencia", "fibonacci") and (self.a is None or self.b is None):
+            raise ValueError("una línea de tendencia o un Fibonacci necesitan sus dos puntos")
+        if self.tipo == "extension" and (self.a is None or self.b is None or self.c is None):
+            raise ValueError("una extensión de Fibonacci necesita sus tres puntos")
+        if self.tipo == "elliott":
+            if not self.puntos or len(self.puntos) < 2:
+                raise ValueError("un conteo de Elliott necesita al menos el arranque y la primera onda")
+            if len(self.puntos) > _PUNTOS_ELLIOTT[self.forma]:
+                raise ValueError("un conteo de Elliott con más ondas de las que tiene su forma")
+        return self
+
+
+class DibujosIn(BaseModel):
+    dibujos: List[_Dibujo] = Field(max_length=_DIBUJOS_MAXIMOS)
+
+
+def _dueno_de_los_dibujos(request: Request, uid: int) -> int:
+    # El uid AUTENTICADO (lo dejó get_effective_user), no el del cliente que se mira.
+    return getattr(request.state, "rendi_auth_uid", None) or uid
+
+
+@app.get("/api/tecnico/{asset}/dibujos")
+def get_tecnico_dibujos(asset: str, request: Request, moneda: str = "usd",
+                        uid: int = Depends(get_effective_user)):
+    """Tus dibujos en el gráfico de este activo, en esta moneda. Sin ninguno: []."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    moneda = "ars" if moneda == "ars" else "usd"
+    dueno = _dueno_de_los_dibujos(request, uid)
+    with db_abierta() as conn:
+        fila = conn.execute(
+            "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+            (dueno, sym, moneda)).fetchone()
+    if not fila:
+        return {"dibujos": []}
+    # Lo guardado se vuelve a validar: una fila rota no rompe la ficha.
+    try:
+        crudo = json.loads(fila[0])
+    except (TypeError, ValueError):
+        return {"dibujos": []}
+    dibujos = []
+    for d in crudo if isinstance(crudo, list) else []:
+        try:
+            dibujos.append(_Dibujo.model_validate(d).model_dump(exclude_none=True))
+        except Exception:
+            continue
+    return {"dibujos": dibujos[:_DIBUJOS_MAXIMOS]}
+
+
+@app.put("/api/tecnico/{asset}/dibujos")
+def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: str = "usd",
+                        uid: int = Depends(get_effective_user)):
+    """Reemplaza tus dibujos de este activo en esta moneda por la lista que
+    llega (la entera). Una lista vacía los borra."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    moneda = "ars" if moneda == "ars" else "usd"
+    dueno = _dueno_de_los_dibujos(request, uid)
+    lista = [d.model_dump(exclude_none=True) for d in data.dibujos]
+    with db_abierta() as conn:
+        if lista:
+            conn.execute(
+                """INSERT INTO dibujos_grafico (user_id, asset, moneda, datos)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(user_id, asset, moneda) DO UPDATE
+                     SET datos = excluded.datos,
+                         updated_at = datetime('now')""",
+                (dueno, sym, moneda, json.dumps(lista, separators=(",", ":"))))
+        else:
+            conn.execute("DELETE FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+                         (dueno, sym, moneda))
+        conn.commit()
+    return {"ok": True, "dibujos": len(lista)}
 
 
 @app.get("/api/admin/velas")

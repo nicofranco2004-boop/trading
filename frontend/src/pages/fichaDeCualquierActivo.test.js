@@ -373,7 +373,9 @@ describe('lo que encontró la auditoría (22/10)', () => {
     try {
       let veces = 0
       respuestas = { ...SIN_CARTERA, '/prices?symbols=NVDA': { NVDA: 182.4 }, '/prices/history': { points: [] },
-        '/tecnico/': () => (++veces === 1 ? { disponible: false, motivo: 'bajando' } : TECNICO) }
+        // Sólo la serie cuenta: la ficha también pide tus dibujos y los eventos.
+        '/tecnico/': (ruta) => (/\/(dibujos|eventos)/.test(ruta) ? { dibujos: [] }
+          : ++veces === 1 ? { disponible: false, motivo: 'bajando' } : TECNICO) }
       const t = await abrir('/activo/NVDA')
       expect(t).toContain('Estamos trayendo la historia')
       await enActo(async () => { vi.advanceTimersByTime(3100) })
