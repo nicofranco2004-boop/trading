@@ -162,8 +162,11 @@ export function tarjetas(l) {
   if (!l || !l.ruedas) return []
   const out = []
 
-  if (l.media200 != null && l.dist_media200 != null) {
-    const arriba = l.dist_media200 >= 0
+  // Alcista o bajista lo decide el servidor (`tendencia` de la lectura,
+  // tecnico.tendencia_de: precio ≥ promedio de 200): acá no se vuelve a
+  // escribir la regla (auditoría A 29/10, P6).
+  if (l.tendencia && l.dist_media200 != null) {
+    const arriba = l.tendencia === 'alcista'
     // Sin el dato de hace un mes (un activo con 200 a 220 ruedas) no se sabe
     // hacia dónde va la media: se corta la frase, no se supone "subiendo".
     const hacia = l.pendiente_media200 == null ? ''
@@ -561,7 +564,7 @@ export function indiceDeFecha(puntos, fecha) {
  * en pesos sube con el dólar aunque la empresa no se mueva.
  */
 export function tendenciasDistintas(lUsd, lArs) {
-  const a = lUsd?.dist_media200, b = lArs?.dist_media200
-  if (a == null || b == null) return false
-  return (a >= 0) !== (b >= 0)
+  const a = lUsd?.tendencia, b = lArs?.tendencia
+  if (!a || !b) return false
+  return a !== b
 }

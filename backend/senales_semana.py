@@ -257,13 +257,12 @@ def _se_lee(x: dict, hoy: date) -> bool:
 
 def _alcista(x: dict, hoy: date):
     """'alcista' | 'bajista' | None (sin lectura): la tarjeta «Largo plazo» de
-    la ficha (precio ≥ promedio de 200 días), como `tendencia()` de la radiografía."""
+    la ficha (precio ≥ promedio de 200 días, `tecnico.tendencia_de`)."""
     if not _se_lee(x, hoy):
         return None
-    l = x.get("lectura") or {}
-    if l.get("media200") is None or l.get("dist_media200") is None:
-        return None
-    return "alcista" if l["dist_media200"] >= 0 else "bajista"
+    # LA regla (`tecnico.tendencia_de`), ya resuelta en la lectura: no se
+    # vuelve a escribir acá (P6, 29/10).
+    return (x.get("lectura") or {}).get("tendencia")
 
 
 # Por qué algo va «sin lectura» (las claves de MOTIVOS_SIN_LECTURA de

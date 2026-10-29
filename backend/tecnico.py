@@ -521,6 +521,7 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=Non
         "dist_media50": _pct(ultimo, m50[-1]),
         "media200": m200[-1],
         "dist_media200": _pct(ultimo, m200[-1]),
+        "tendencia": tendencia_de(ultimo, m200[-1]),
         "pendiente_media200": _pct(m200[-1], m200_antes),
         "rsi": r[-1],
         "rsi_cruce": cruce_rsi(r),
@@ -1058,6 +1059,19 @@ def cambios_desde(velas: list, desde: str) -> list:
 DIAS_SIN_VELA = 7
 
 
+def tendencia_de(precio, media200):
+    """'alcista' | 'bajista' | None: LA regla de la tendencia de fondo (precio ≥
+    su promedio de 200 días = alcista; sin promedio, None). La misma que
+    `ultimo_cruce` usa para decir «pasó arriba». La lectura la manda resuelta
+    (`tendencia`) y la leen la tarjeta «Largo plazo», la radiografía, Tu lista,
+    el % de tu plata (`senales_semana._alcista`) y el diario de operaciones
+    (`tendencia_del_dia`): antes cada uno la reescribía (`cierre >= media` acá,
+    `dist_media200 >= 0` en el servidor y en la pantalla). Auditoría A 29/10, P6."""
+    if precio is None or media200 is None:
+        return None
+    return "alcista" if precio >= media200 else "bajista"
+
+
 def tendencia_del_dia(velas: list, m200: list, fecha: str) -> dict:
     """{tendencia: 'alcista'|'bajista', fecha, precio, media200, dist} con la
     vela del día `fecha` (o la última de antes, hasta `DIAS_SIN_VELA`). Sin
@@ -1088,7 +1102,7 @@ def tendencia_del_dia(velas: list, m200: list, fecha: str) -> dict:
     if m is None:
         return {"tendencia": None, "motivo": "pocos_dias", "fecha": v["date"]}
     return {
-        "tendencia": "alcista" if v["close"] >= m else "bajista",
+        "tendencia": tendencia_de(v["close"], m),
         "fecha": v["date"],
         "precio": estructura.precio_redondo(v["close"]),
         "media200": estructura.precio_redondo(m),

@@ -25,7 +25,7 @@ vi.mock('../contexts/AdvisorContext', () => ({ useAdvisorContext: () => ({ clien
 
 const HOY = new Date().toISOString().slice(0, 10)
 const LECTURA = (l = {}) => ({
-  ruedas: 760, fecha: HOY, media200: 90, dist_media200: 11, pendiente_media200: 2, media50: 95,
+  ruedas: 760, fecha: HOY, media200: 90, dist_media200: 11, tendencia: 'alcista', pendiente_media200: 2, media50: 95,
   dist_media50: 5, rsi: 60, adx: 30, dist_maximo_12m: -3, anio_completo: true, ...l,
 })
 const CAMBIO = (asset, tipo, fecha, extra = {}) => ({
@@ -78,7 +78,7 @@ function servidor() {
       const todos = [...tenencias, ...body.activos]
       return { tenencias, lecturas: todos.map(a => ({
         asset: a.asset, local: a.local, disponible: true, linea: [{ d: HOY, c: 1 }, { d: HOY, c: 2 }], ultimo_cambio: null,
-        lectura: a.asset === 'KO' ? LECTURA({ dist_media200: -5, media200: 110 }) : LECTURA(),
+        lectura: a.asset === 'KO' ? LECTURA({ dist_media200: -5, tendencia: 'bajista', media200: 110 }) : LECTURA(),
       })) }
     }
     throw new Error(`POST inesperado ${url}`)

@@ -21,8 +21,8 @@ const html = (props) => renderToStaticMarkup(
 
 describe('la señal de cada tarjeta', () => {
   it('arriba del promedio ofrece avisar cuando quede abajo, y al revés', () => {
-    expect(senalDeTarjeta('fondo', { dist_media200: 4.2 })).toEqual({ senal: 'media200', direction: 'below' })
-    expect(senalDeTarjeta('fondo', { dist_media200: -1 })).toEqual({ senal: 'media200', direction: 'above' })
+    expect(senalDeTarjeta('fondo', { dist_media200: 4.2, tendencia: 'alcista' })).toEqual({ senal: 'media200', direction: 'below' })
+    expect(senalDeTarjeta('fondo', { dist_media200: -1, tendencia: 'bajista' })).toEqual({ senal: 'media200', direction: 'above' })
     expect(senalDeTarjeta('corto', { dist_media50: 2 })).toEqual({ senal: 'media50', direction: 'below' })
     expect(senalDeTarjeta('fondo', {})).toEqual({ senal: 'media200', direction: 'either' })
   })

@@ -19,11 +19,11 @@ const USD = {
   disponible: true, moneda: 'usd', ticker: 'AAPL', convertida: null,
   puntos: puntos(504, i => 250 - i * 0.03),
   lectura: { ruedas: 760, fecha: '2026-10-21', precio: 235, media50: 241, dist_media50: -2.5,
-    media200: 250, dist_media200: -6, pendiente_media200: -1, rsi: 38, dist_maximo_12m: -14, anio_completo: true },
+    media200: 250, dist_media200: -6, tendencia: 'bajista', pendiente_media200: -1, rsi: 38, dist_maximo_12m: -14, anio_completo: true },
 }
 const ARS = {
   ...USD, moneda: 'ars', ticker: 'AAPL.BA',
-  lectura: { ...USD.lectura, dist_media200: 24, pendiente_media200: 3 },
+  lectura: { ...USD.lectura, dist_media200: 24, tendencia: 'alcista', pendiente_media200: 3 },
 }
 
 // Con la fuerza de la tendencia: el ADX pasó 23 ayer con el Squeeze en verde.

@@ -136,6 +136,23 @@ class CuentasTest(unittest.TestCase):
         # Lo mismo arriba: bajó de 70 y volvió a pasarlo.
         self.assertIsNone(tecnico.cruce_rsi([60, 75, 68, 66, 72, 74]))
 
+    def test_una_sola_regla_de_alcista(self):
+        # P6 (auditoría 29/10): la regla estaba escrita tres veces. Ahora es
+        # `tendencia_de`; la lectura la manda resuelta y el diario de operaciones
+        # (`tendencia_del_dia`) dice lo mismo el mismo día, también en el borde.
+        self.assertEqual(tecnico.tendencia_de(100.0, 100.0), "alcista", "igual al promedio cuenta como arriba")
+        self.assertEqual(tecnico.tendencia_de(99.99999999999999, 100.0), "bajista")
+        self.assertIsNone(tecnico.tendencia_de(100.0, None))
+        cierres = [100 + (i % 7) - 3 + i * 0.01 for i in range(260)]
+        velas = [{"date": (date(2025, 1, 1) + timedelta(days=i)).isoformat(), "open": c, "high": c, "low": c,
+                  "close": c, "volume": 1} for i, c in enumerate(cierres)]
+        m200 = tecnico.media(cierres, 200)
+        velas[-1]["close"] = cierres[-1] = m200[-1]          # justo en el promedio
+        m200 = tecnico.media(cierres, 200)
+        l = tecnico.lectura(velas, m200=m200)
+        self.assertEqual(l["tendencia"], tecnico.tendencia_de(cierres[-1], m200[-1]))
+        self.assertEqual(l["tendencia"], tecnico.tendencia_del_dia(velas, m200, velas[-1]["date"])["tendencia"])
+
     def test_rsi_extremos(self):
         sube = [float(i) for i in range(1, 40)]
         self.assertEqual(tecnico.rsi(sube)[-1], 100.0)
