@@ -97,9 +97,20 @@ for t in tablas:
     sql_orig = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()[0] or ""
     cols = conn.execute(f'PRAGMA table_info("{t}")').fetchall()
-    pks = [c for c in cols if c[5]]
-    # AUTOINCREMENT real: un solo PK INTEGER
-    auto = (len(pks) == 1 and (pks[0][2] or "").upper().startswith("INT"))
+    # En el orden de la CLAVE (`pk` = 1, 2, 3…), no en el de las columnas: en
+    # `uso_diario` la clave es (dia, user_id, evento) a propósito —todas las
+    # lecturas cortan por día— y ordenada por columna salía (user_id, dia, …).
+    pks = sorted((c for c in cols if c[5]), key=lambda c: c[5])
+    # Un número que la BASE inventa (IDENTITY) sólo para un id de verdad: con
+    # AUTOINCREMENT o una columna `id`. «Un solo PK INTEGER» no alcanza: en
+    # `resumen_semanal_prefs`, `market_brief_prefs`, `mtm_huella`,
+    # `advisor_alerts` y `advisor_profile` la clave es el número de la PERSONA
+    # (`user_id`, `advisor_uid`), que siempre se escribe a mano. Como IDENTITY,
+    # una fila sin ese número no fallaba: Postgres le inventaba un dueño
+    # (auditoría C, hallazgo 5). La columna `id` sin AUTOINCREMENT sigue siendo
+    # IDENTITY porque en SQLite se numera sola y el código puede contar con eso.
+    auto = (len(pks) == 1 and (pks[0][2] or "").upper().startswith("INT")
+            and ("AUTOINCREMENT" in sql_orig.upper() or pks[0][1] == "id"))
 
     piezas = []
     for cid, nombre, decl, notnull, default, pk in cols:
@@ -234,10 +245,15 @@ salida = "\n\n".join(ddl + fks)
 # el archivo tiene que decir se emite DESDE ACÁ (las tablas, los ALTER del camino
 # de upgrade, los índices, las vistas y las FKs) — un arreglo hecho a mano allá
 # sobrevive hasta la próxima regeneración y no más.
-open(os.path.join(BACKEND, "schema_pg.sql"), "w").write(salida + "\n")
+#
+# Con un argumento escribe ahí en vez de pisar el archivo: es lo que usa
+# `tests/test_schema_pg_del_generador.py` para comparar lo que saldría con lo
+# que está commiteado, sin tocarlo.
+destino = sys.argv[1] if len(sys.argv) > 1 else os.path.join(BACKEND, "schema_pg.sql")
+open(destino, "w").write(salida + "\n")
 _n_alter = sum(1 for d in ddl if d.startswith("ALTER TABLE"))
 _n_idx = len(ddl) - len(tablas) - _n_alter
 print(f"{len(tablas)} tablas + {_n_alter} ALTER de upgrade + {_n_idx} índices/vistas "
-      f"+ {len(fks)} FKs → schema_pg.sql")
+      f"+ {len(fks)} FKs → {destino}")
 for n in notas:
     print("  nota:", n)
