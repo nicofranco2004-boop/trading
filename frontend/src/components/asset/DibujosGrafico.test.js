@@ -138,6 +138,8 @@ const status = () => todos(montado.contenedor, n => n.getAttribute?.('role') ===
 
 const linea = () => todos(montado.contenedor, n => n.nodeName === 'LINE' && n.getAttribute?.('data-dibujo') != null)
 const boton = (id) => todos(montado.contenedor, n => n.nodeName === 'BUTTON' && n.getAttribute?.('data-capa') === id)[0]
+// Un botón con menú no es un interruptor (no lleva aria-pressed): se marca con el color de lo prendido.
+const marcado = (id) => (boton(id).getAttribute('class') || '').includes('bg-rendi-accent/15')
 // Lo que quedó guardado en la cuenta (el servidor simulado).
 const guardados = (moneda = 'usd') => cuenta[moneda]
 const copia = (moneda = 'usd') => JSON.parse(localStorage.getItem(`rendi_dibujos:ZZEV:${moneda}`) || 'null')
@@ -145,7 +147,8 @@ const copia = (moneda = 'usd') => JSON.parse(localStorage.getItem(`rendi_dibujos
 // se lee del rótulo que la línea horizontal pone en la columna de precios.
 const num = (t) => Number(t.replace(/\./g, '').replace(',', '.'))
 // Fibonacci y Elliott a mano se eligen en el menú de su botón de la barra.
-const MENU = { fibonacci: 'menu-fibonacci', extension: 'menu-fibonacci', impulso: 'menu-elliott', correccion: 'menu-elliott' }
+const MENU = { fibonacci: 'menu-fibonacci', extension: 'menu-fibonacci', impulso: 'menu-elliott', correccion: 'menu-elliott',
+  tendencia: 'menu-lineas', horizontal: 'menu-lineas', canal: 'menu-lineas', pincel: 'menu-lineas' }
 async function usar(id) {
   if (MENU[id]) { await clic(montado.contenedor, boton(MENU[id])); await redibujar() }
   await clic(montado.contenedor, boton(id)); await redibujar()
@@ -155,7 +158,7 @@ describe('línea horizontal', () => {
   it('un click a una altura: la línea de borde a borde, su precio a la derecha, guardada; la herramienta se apaga', async () => {
     await dibujar()
     await usar('horizontal')
-    expect(boton('horizontal').getAttribute('aria-pressed')).toBe('true')
+    expect(marcado('menu-lineas')).toBe(true)                                    // el grupo «Líneas» queda marcado
     expect(status()).toContain('Tocá la altura del gráfico (el precio) donde va la línea horizontal.')
     await clickEn(400, 100)
     const [l] = linea()
@@ -170,7 +173,7 @@ describe('línea horizontal', () => {
       && /^[\d.]+,\d+$/.test(texto(n)))
     expect(rotulo).toHaveLength(1)
     expect(num(texto(rotulo[0]))).toBeCloseTo(g[0].precio, 2)
-    expect(boton('horizontal').getAttribute('aria-pressed')).toBe('false')   // una línea por vez
+    expect(marcado('menu-lineas')).toBe(false)                               // una línea por vez
     // Otro click ya no dibuja: vuelve a ser mirar el gráfico.
     await clickEn(600, 200)
     expect(linea()).toHaveLength(1)
@@ -310,9 +313,9 @@ describe('elegir y borrar', () => {
     await usar('medir')
     await usar('tendencia')
     expect(boton('medir').getAttribute('aria-pressed')).toBe('false')
-    expect(boton('tendencia').getAttribute('aria-pressed')).toBe('true')
+    expect(marcado('menu-lineas')).toBe(true)
     await usar('medir')
-    expect(boton('tendencia').getAttribute('aria-pressed')).toBe('false')
+    expect(marcado('menu-lineas')).toBe(false)
   })
 })
 
@@ -405,6 +408,111 @@ describe('mover y corregir un dibujo ya hecho (Nico, 28/10)', () => {
     expect(await deslizar()).toBe(true)                              // elegida: la página queda quieta
     expect(guardados()[0].precio).toBeLessThan(antes.precio)
     expect(Number(linea()[0].getAttribute('y1'))).toBeCloseTo(60, 1)
+  })
+})
+
+describe('deshacer y rehacer (Nico, 29/10)', () => {
+  const tecla = (key, extra = {}) => enActo(() => { window.dispatchEvent(Object.assign(new Event('keydown'), { key, ...extra })) })
+  const apagado = (id) => boton(id).getAttribute('aria-disabled') === 'true'
+
+  it('con los botones y con Cmd/Ctrl+Z: vuelve atrás de a un paso y adelante otra vez; lo guardado acompaña', async () => {
+    await dibujar()
+    expect(apagado('deshacer')).toBe(true)
+    expect(apagado('rehacer')).toBe(true)
+    await usar('horizontal'); await clickEn(500, 100)
+    await usar('tendencia'); await clickEn(200, 200); await clickEn(800, 50)
+    expect(guardados().map(d => d.tipo)).toEqual(['horizontal', 'tendencia'])
+    await usar('deshacer')
+    expect(guardados().map(d => d.tipo)).toEqual(['horizontal'])
+    expect(linea()).toHaveLength(1)
+    await tecla('z', { metaKey: true }); await redibujar()
+    expect(guardados()).toEqual([])
+    expect(apagado('deshacer')).toBe(true)
+    await usar('rehacer')
+    expect(guardados().map(d => d.tipo)).toEqual(['horizontal'])
+    await tecla('z', { ctrlKey: true, shiftKey: true }); await redibujar()
+    expect(guardados().map(d => d.tipo)).toEqual(['horizontal', 'tendencia'])
+    expect(apagado('rehacer')).toBe(true)
+  })
+
+  it('un cambio nuevo después de deshacer borra lo que había para rehacer; mover y borrar también se deshacen', async () => {
+    await dibujar()
+    await usar('horizontal'); await clickEn(500, 100)
+    const [h] = guardados()
+    // Moverla y deshacer: vuelve a su precio.
+    await evento('mousedown', grafico(), { clientX: 300, clientY: 100 })
+    await evento('mousemove', grafico(), { clientX: 300, clientY: 130 })
+    await evento('mouseup', grafico(), { clientX: 300, clientY: 130 }); await redibujar()
+    expect(guardados()[0].precio).toBeLessThan(h.precio)
+    await usar('deshacer')
+    expect(guardados()[0].precio).toBe(h.precio)
+    // Borrarla y deshacer: vuelve.
+    await clickEn(300, 101)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Borrar esta línea')); await redibujar()
+    expect(guardados()).toEqual([])
+    await tecla('z', { ctrlKey: true }); await redibujar()
+    expect(guardados()).toEqual([h])
+    // Deshacer el alta, y dibujar otra cosa: no hay nada para rehacer.
+    await usar('deshacer')
+    expect(apagado('rehacer')).toBe(false)
+    await usar('horizontal'); await clickEn(500, 200)
+    expect(apagado('rehacer')).toBe(true)
+  })
+
+  it('deshacer tu Fibonacci a mano también vuelve a prender el automático que había apagado', async () => {
+    await dibujar()
+    const fib = () => JSON.parse(localStorage.getItem('rendi_grafico_capas') || '{}').fib
+    await usar('fibonacci'); await clickEn(200, 220); await clickEn(400, 60)
+    expect(fib()).toBe(false)
+    await usar('deshacer')
+    expect(guardados()).toEqual([])
+    expect(fib()).toBe(true)
+  })
+
+  it('deshacer el borrado de una línea con aviso vuelve a prender el aviso', async () => {
+    await dibujar()
+    await usar('horizontal'); await clickEn(500, 100)
+    const [h] = guardados()
+    cuenta.alertas = [{ id: 7, kind: 'tecnica', senal: 'linea', active: 1, symbol: 'ZZEV', currency: 'USD',
+      dibujo: JSON.stringify({ asset: 'ZZEV', moneda: 'usd', id: h.id, tipo: 'horizontal' }) }]
+    await montado.desmontar(); await dibujar()
+    await clickEn(300, 101)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Borrar esta línea')); await redibujar()
+    await usar('deshacer')
+    expect(guardados()).toEqual([h])
+    expect(cuenta.pedidos).toEqual([['PATCH', '/alerts/7', { active: false }], ['PATCH', '/alerts/7', { active: true }]])
+  })
+})
+
+describe('el color de cada dibujo (Nico, 29/10)', () => {
+  const color = (id) => todos(montado.contenedor, n => n.nodeName === 'BUTTON' && n.getAttribute?.('data-color') === id)[0]
+
+  it('con el dibujo tocado se elige el color; queda guardado, vuelve en otra visita y es el de los nuevos', async () => {
+    await dibujar()
+    await usar('horizontal'); await clickEn(500, 100)
+    expect(color('ambar')).toBeFalsy()                                  // sin elegir nada, no hay colores
+    await clickEn(300, 101)
+    expect(color('cian').getAttribute('aria-pressed')).toBe('true')     // el de siempre
+    await clic(montado.contenedor, color('ambar')); await redibujar()
+    expect(guardados()[0].color).toBe('ambar')
+    expect(linea()[0].getAttribute('stroke')).toBe('rgb(var(--data-amber))')
+    expect(color('ambar').getAttribute('aria-pressed')).toBe('true')
+    // Otra visita: vuelve de ese color.
+    await montado.desmontar(); await dibujar()
+    expect(linea()[0].getAttribute('stroke')).toBe('rgb(var(--data-amber))')
+    // Y lo nuevo sale de ese color.
+    await usar('tendencia'); await clickEn(200, 200); await clickEn(800, 50)
+    expect(guardados()[1]).toMatchObject({ tipo: 'tendencia', color: 'ambar' })
+  })
+
+  it('deshacer devuelve el color de antes', async () => {
+    await dibujar()
+    await usar('horizontal'); await clickEn(500, 100)
+    await clickEn(300, 101)
+    await clic(montado.contenedor, color('rosa')); await redibujar()
+    expect(guardados()[0].color).toBe('rosa')
+    await usar('deshacer')
+    expect(guardados()[0].color).toBeUndefined()
   })
 })
 
@@ -652,7 +760,7 @@ describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos
     await dibujar()
     const barra = todos(montado.contenedor, n => n.getAttribute?.('role') === 'toolbar')[0]
     const enLaBarra = todos(barra, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa'))
-    expect(enLaBarra).toEqual(['tendencia', 'horizontal', 'canal', 'pincel', 'menu-fibonacci', 'menu-elliott', 'medir', 'borrarDibujos'])
+    expect(enLaBarra).toEqual(['menu-lineas', 'menu-fibonacci', 'menu-elliott', 'medir', 'deshacer', 'rehacer', 'borrarDibujos'])
     const lista = todos(montado.contenedor, n => n.getAttribute?.('role') === 'group' && n.getAttribute('aria-label') === 'Indicadores')[0]
     const enLaLista = todos(lista, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa')).filter(Boolean)
     expect(enLaLista).toEqual(['vol', 's200', 's50', 'bb', 'rsi', 'fuerza', 'eventos', 'globo', 'fabrica'])

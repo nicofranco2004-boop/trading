@@ -162,6 +162,14 @@ class DibujosGraficoTest(unittest.TestCase):
                      [{**trazo, "puntos": [p(1, 100.0, f=1.0), p(2, 99.0)]}]):      # la fracción es < 1
             self.assertEqual(self._guardar(malo).status_code, 422, malo)
 
+    def test_el_color_de_cada_dibujo(self):
+        # Nico, 29/10: el color que elegís queda guardado en el dibujo.
+        con_color = {**H, "id": "c1", "color": "ambar"}
+        self.assertEqual(self._guardar([con_color, H]).status_code, 200)
+        self.assertEqual(self._leer(), [con_color, H])
+        for malo in ("#ff0000", "magenta", ""):            # sólo los de la lista (un hex no sigue al tema)
+            self.assertEqual(self._guardar([{**H, "color": malo}]).status_code, 422, malo)
+
     def test_lo_que_no_es_un_dibujo_se_rechaza(self):
         malos = [
             [{"id": "x", "tipo": "flecha", "precio": 1}],

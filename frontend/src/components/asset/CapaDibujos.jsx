@@ -7,19 +7,25 @@
 // A-B-C, por separado, uno por toque. Y (Nico, 29/10) el canal paralelo (la
 // línea de abajo, su paralela y la del medio, con la franja sombreada) y el
 // pincel (un trazo a mano alzada). Todo en
-// el color de lo tuyo (cian), para no confundirlo con lo calculado: el
-// Fibonacci automático es magenta y las ondas automáticas, índigo.
+// el color de lo tuyo (celeste, o el que elijas para cada dibujo: utils/dibujos
+// COLORES_DIBUJO), para no confundirlo con lo calculado: el Fibonacci
+// automático es magenta y las ondas automáticas, índigo.
 //
 // Recibe los dibujos ya ubicados en lo que se ve (`k`: el lugar en el ancho;
 // LecturaTecnica los pasa de día a lugar) y los dibuja en un SVG de 0 a 100,
 // como las capas automáticas; los textos van en HTML encima (adentro del SVG
 // estirado se deformarían). Guardado y formato: utils/dibujos.js.
 
-import { etiquetasDe, puntasDe } from '../../utils/dibujos'
+import { COLORES_DIBUJO, etiquetasDe, puntasDe } from '../../utils/dibujos'
 import { extensionFibonacci, fibonacciAMano, nivelPct, rayas, rotuloNivel, rotulosQueEntran } from '../../utils/fibonacci'
 import { PRIORIDAD } from '../../utils/rotulos'
 
 export const COLOR_DIBUJO = 'rgb(var(--data-cyan))'
+/** El color de un dibujo (el que eligió la persona, o el celeste de siempre). */
+export const colorDe = (d) => {
+  const c = COLORES_DIBUJO.find(x => x.id === d?.color)
+  return c ? `rgb(var(--${c.token}))` : COLOR_DIBUJO
+}
 
 /**
  * Los trazos de cada dibujo en lo que se ve (de 0 a 100), para dibujarlos y
@@ -30,6 +36,7 @@ export const COLOR_DIBUJO = 'rgb(var(--data-cyan))'
 export function trazosDeDibujos(dibujos, pctX, pctY, extendidos = []) {
   const out = []
   for (const d of dibujos) {
+    const desde = out.length
     if (d.tipo === 'horizontal') {
       out.push({ id: d.id, tipo: d.tipo, x1: 0, y1: pctY(d.precio), x2: 100, y2: pctY(d.precio), precio: d.precio })
     } else if (d.tipo === 'tendencia') {
@@ -75,6 +82,8 @@ export function trazosDeDibujos(dibujos, pctX, pctY, extendidos = []) {
         out.push({ id: d.id, tipo: d.tipo, x1: pctX(a.k), y1: pctY(a.precio), x2: pctX(b.k), y2: pctY(b.precio), correccion: corr })
       }
     }
+    const color = colorDe(d)
+    for (let k = desde; k < out.length; k++) out[k].color = color
   }
   return out
 }
@@ -84,9 +93,11 @@ export function trazosDeDibujos(dibujos, pctX, pctY, extendidos = []) {
  * `cursor` dónde está el mouse: la línea, el Fibonacci o el conteo siguen al
  * mouse hasta el próximo toque.
  */
-export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo, cursor, pctX, pctY, precio, extendidos = [] }) {
-  // Lo que se está dibujando, como si ya estuviera: hasta el mouse.
-  const enCurso = trazo && cursor?.precio != null ? enCursoHasta(trazo, cursor) : null
+export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo, cursor, pctX, pctY, precio, extendidos = [], colorNuevo = null }) {
+  // Lo que se está dibujando, como si ya estuviera: hasta el mouse (en el
+  // color que va a tener).
+  const enCursoSolo = trazo && cursor?.precio != null ? enCursoHasta(trazo, cursor) : null
+  const enCurso = enCursoSolo && colorNuevo ? { ...enCursoSolo, color: colorNuevo } : enCursoSolo
   const todos = enCurso ? [...dibujos, enCurso] : dibujos
   const trazos = trazosDeDibujos(todos, pctX, pctY, extendidos)
   if (!trazos.length && !trazo) return null
@@ -97,7 +108,7 @@ export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo,
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
         {/* La franja de cada canal, apenas sombreada. */}
         {todos.filter(d => d.tipo === 'canal').map(d => (
-          <polygon key={`f-${d.id}`} fill={COLOR_DIBUJO} fillOpacity={d.id === elegido ? 0.12 : 0.07} stroke="none"
+          <polygon key={`f-${d.id}`} fill={colorDe(d)} fillOpacity={d.id === elegido ? 0.12 : 0.07} stroke="none"
             points={[[d.a.k, d.a.precio], [d.b.k, d.b.precio], [d.b.k, d.b.precio + d.ancho], [d.a.k, d.a.precio + d.ancho]]
               .map(([k, p]) => `${pctX(k)},${pctY(p)}`).join(' ')} />
         ))}
@@ -106,7 +117,7 @@ export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo,
           const punteado = provisorio || t.correccion || (t.nivel && !t.nivel.extremo)
           return (
             <line key={`${t.id}-${k}`} data-dibujo={provisorio ? undefined : t.id} data-tipo={t.tipo}
-              x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2} stroke={COLOR_DIBUJO}
+              x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2} stroke={t.color || COLOR_DIBUJO}
               strokeWidth={t.nivel || t.medio ? (t.id === elegido || t.id === resaltado ? 1.8 : 1) : grueso(t.id)} strokeLinecap="round"
               strokeDasharray={punteado ? '5 4' : undefined} opacity={t.nivel ? 0.85 : 1} vectorEffect="non-scaling-stroke" />
           )
@@ -126,10 +137,10 @@ export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo,
       {[
         ...(trazo && !ELLIOTT[trazo.tipo] ? trazo.puntos.map((p, k) => ({ k: `t${k}`, x: pctX(p.k), y: pctY(p.precio) })) : []),
         ...dibujos.filter(d => d.id === elegido && (d.tipo === 'tendencia' || d.tipo === 'fibonacci' || d.tipo === 'extension' || d.tipo === 'canal'))
-          .flatMap(d => puntasDe(d).map(([, p], k) => ({ k: `e${k}`, x: pctX(p.k), y: pctY(p.precio) }))),
+          .flatMap(d => puntasDe(d).map(([, p], k) => ({ k: `e${k}`, x: pctX(p.k), y: pctY(p.precio), color: colorDe(d) }))),
       ].filter(p => p.x >= 0 && p.x <= 100 && p.y >= 0 && p.y <= 100).map(p => (
         <span key={p.k} className="absolute w-2.5 h-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-bg-1"
-          style={{ left: `${p.x}%`, top: `${p.y}%`, background: COLOR_DIBUJO }} />
+          style={{ left: `${p.x}%`, top: `${p.y}%`, background: p.color || COLOR_DIBUJO }} />
       ))}
     </div>
   )
@@ -167,7 +178,7 @@ function RotulosExtension({ d, pctX, pctY, precio }) {
   return lista.map((n, k) => conRotulo.has(k) && tops[k] >= 0 && tops[k] <= 100 && (
     <span key={n.nivel} data-rotulo={PRIORIDAD.nivelFib}
       className={`absolute rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1 ${adentro ? '-translate-y-full' : '-translate-x-full -translate-y-1/2'}`}
-      style={{ left: adentro ? `calc(${Math.max(0, x0)}% + 4px)` : `calc(${x0}% - 4px)`, top: `${tops[k]}%`, borderLeft: `2px solid ${COLOR_DIBUJO}` }}>
+      style={{ left: adentro ? `calc(${Math.max(0, x0)}% + 4px)` : `calc(${x0}% - 4px)`, top: `${tops[k]}%`, borderLeft: `2px solid ${colorDe(d)}` }}>
       {nivelPct(n.nivel)} · {precio(n.precio)}
     </span>
   ))
@@ -185,7 +196,7 @@ function RotulosFibonacci({ d, pctX, pctY, precio }) {
   return lista.map((r, k) => conRotulo.has(k) && tops[k] >= 0 && tops[k] <= 100 && (
     <span key={r.nivel} data-rotulo={PRIORIDAD.nivelFib}
       className={`absolute rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1 ${adentro ? '-translate-y-full' : '-translate-x-full -translate-y-1/2'}`}
-      style={{ left: adentro ? `calc(${Math.max(0, x0)}% + 4px)` : `calc(${x0}% - 4px)`, top: `${tops[k]}%`, borderLeft: `2px solid ${COLOR_DIBUJO}` }}>
+      style={{ left: adentro ? `calc(${Math.max(0, x0)}% + 4px)` : `calc(${x0}% - 4px)`, top: `${tops[k]}%`, borderLeft: `2px solid ${colorDe(d)}` }}>
       {rotuloNivel(r.nivel, fib.dir)} · {precio(r.precio)}
     </span>
   ))
@@ -199,14 +210,14 @@ function RotulosElliott({ d, pctX, pctY, precio }) {
     const x = pctX(p.k), y = pctY(p.precio)
     if (x < 0 || x > 100 || y < 0 || y > 100) return null
     if (!etiquetas[k]) {
-      return <span key={k} className="absolute -translate-x-1/2 -translate-y-1/2 w-2 h-2 rounded-full" style={{ left: `${x}%`, top: `${y}%`, background: COLOR_DIBUJO }} />
+      return <span key={k} className="absolute -translate-x-1/2 -translate-y-1/2 w-2 h-2 rounded-full" style={{ left: `${x}%`, top: `${y}%`, background: colorDe(d) }} />
     }
     const vecino = d.puntos[k === 0 ? 1 : k - 1]
     const pico = vecino ? p.precio >= vecino.precio : true
     return (
       <span key={k} data-rotulo={PRIORIDAD.onda} title={`Onda ${etiquetas[k]}: ${precio(p.precio)}`}
         className={`absolute -translate-x-1/2 ${pico ? '-translate-y-[calc(100%+4px)]' : 'translate-y-1'} inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full border bg-bg-1 text-[11px] font-semibold leading-none tabular text-ink-0`}
-        style={{ left: `${x}%`, top: `${y}%`, borderColor: COLOR_DIBUJO }}>
+        style={{ left: `${x}%`, top: `${y}%`, borderColor: colorDe(d) }}>
         {etiquetas[k]}
       </span>
     )

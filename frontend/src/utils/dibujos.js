@@ -33,6 +33,31 @@ const punto = (p) => !!p && typeof p.d === 'string' && /^\d{4}-\d{2}-\d{2}$/.tes
 // guardan en tu cuenta con los demás dibujos: sin tope, un garabato largo
 // pesaría como cien líneas).
 export const PINCEL_MAXIMO = 200
+
+// El color de cada dibujo (Nico, 29/10): se elige con el dibujo tocado y queda
+// guardado en el dibujo (en tu cuenta). Sin color, el de siempre (celeste). Son
+// colores del tema (se ven bien en claro y en oscuro) y ninguno es el de una
+// capa calculada (Fibonacci magenta, Elliott índigo, Bollinger oliva). El
+// último elegido es también el de los dibujos nuevos (en este navegador).
+export const COLORES_DIBUJO = [
+  { id: 'cian', nombre: 'Celeste', token: 'data-cyan' },
+  { id: 'ambar', nombre: 'Ámbar', token: 'data-amber' },
+  { id: 'rosa', nombre: 'Rosa', token: 'cat-pink' },
+  { id: 'verde', nombre: 'Verde', token: 'rendi-pos' },
+  { id: 'rojo', nombre: 'Rojo', token: 'rendi-neg' },
+  { id: 'violeta', nombre: 'Violeta', token: 'data-violet' },
+  { id: 'tinta', nombre: 'Blanco o negro (según el tema)', token: 'ink-0' },
+]
+const COLOR_GUARDADO = 'rendi_dibujo_color'
+export function colorDeLosNuevos() {
+  try {
+    const c = localStorage.getItem(COLOR_GUARDADO)
+    return COLORES_DIBUJO.some(x => x.id === c) ? c : 'cian'
+  } catch { return 'cian' }
+}
+export function recordarColor(id) {
+  try { localStorage.setItem(COLOR_GUARDADO, id) } catch { /* sin almacenamiento: dura la visita */ }
+}
 // Un conteo de Elliott a mano, en dos formas por separado (Nico, 28/10), como
 // TradingView: el IMPULSO (0, 1, 2, 3, 4, 5) y la CORRECCIÓN (el arranque y
 // A, B, C). Se puede terminar antes (un impulso que va por la 3). Los conteos
@@ -48,6 +73,7 @@ export const etiquetasDe = (forma) => (forma === 'impulso' ? ETIQUETAS_IMPULSO
  *  extension: tres (a, b, c) · elliott: de 2 puntos al máximo de su forma. */
 export function dibujoValido(x) {
   if (!x || typeof x.id !== 'string') return false
+  if (x.color != null && !COLORES_DIBUJO.some(c => c.id === x.color)) return false
   if (x.tipo === 'horizontal') return numero(x.precio) && x.precio > 0
   if (x.tipo === 'tendencia' || x.tipo === 'fibonacci') return punto(x.a) && punto(x.b)
   // El canal: la línea de abajo (a → b) y cuánto más arriba (o abajo) va su

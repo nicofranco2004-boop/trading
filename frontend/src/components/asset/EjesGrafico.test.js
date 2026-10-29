@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, puntero, enActo, medidas, clic, buscarBoton } from '../../testing/navegadorMinimo'
+import { margenDerecho } from '../../utils/tecnico'
 
 const puntos = Array.from({ length: 700 }, (_, i) => {
   const d = new Date(Date.UTC(2024, 9, 1) + i * 86400000).toISOString().slice(0, 10)
@@ -100,14 +101,16 @@ describe('arrastrar los ejes del gráfico', () => {
     const columna = porTitulo(montado.contenedor, 'Arrastrá hacia arriba o hacia abajo')
     expect(columna).not.toBeNull()
     // Cada rótulo de la columna (la grilla y el último precio), por separado.
-    const grilla = () => columna.childNodes.map(n => numeros(texto(n))[0]).filter(x => x != null)
-    const ancho = (g) => Math.max(...g) - Math.min(...g)
+    const grilla = () => columna.childNodes.filter(n => n.getAttribute?.('data-mira') == null).map(n => numeros(texto(n))[0]).filter(x => x != null)
     const antes = grilla()
     expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
 
     await arrastrar(columna, { dy: 140 })
     const achicado = grilla()
-    expect(ancho(achicado)).toBeGreaterThan(ancho(antes) * 1.5)    // entró el doble de rango de precio
+    // Entró el doble de rango de precio: los precios redondos de la columna
+    // (como TradingView) van de a saltos más grandes (de 20 en 20 → de 50 en 50).
+    const paso = (g) => { const r = g.filter(Number.isInteger).sort((x, y) => x - y); return Math.min(...r.slice(1).map((x, k) => x - r[k])) }
+    expect(paso(achicado)).toBeGreaterThan(paso(antes) * 1.5)
     expect(buscarBoton(montado.contenedor, 'Automático')).not.toBeNull()
 
     // Con el precio a mano, arrastrar el gráfico hacia abajo muestra precios más altos.
@@ -132,6 +135,51 @@ describe('arrastrar los ejes del gráfico', () => {
 
   })
 
+  it('arrastrar el gráfico para arriba o para abajo lo mueve a donde quieras, aunque no haya precios ahí (Nico, 29/10)', async () => {
+    await dibujar()
+    const columna = porTitulo(montado.contenedor, 'Arrastrá hacia arriba o hacia abajo')
+    const grilla = () => columna.childNodes.filter(n => n.getAttribute?.('data-mira') == null).map(n => numeros(texto(n))[0]).filter(x => x != null)
+    const antes = grilla()
+    const grafico = porRol(montado.contenedor, 'img')
+    // Un temblor de la mano (6 px para abajo) no mueve el precio ni lo saca de automático.
+    await raton('mousedown', grafico, { clientX: 500, clientY: 100 })
+    await raton('mousemove', grafico, { clientX: 500, clientY: 106 })
+    await raton('mouseup', grafico, { clientX: 500, clientY: 106 })
+    expect(grilla()).toEqual(antes)
+    expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
+    // Hacia abajo, mucho: muestra precios bastante más altos que el máximo que hubo.
+    await raton('mousedown', grafico, { clientX: 500, clientY: 20 })
+    for (const y of [60, 120, 180, 240]) await raton('mousemove', grafico, { clientX: 500, clientY: y })
+    await raton('mouseup', grafico, { clientX: 500, clientY: 240 })
+    expect(buscarBoton(montado.contenedor, 'Automático')).not.toBeNull()
+    expect(Math.min(...grilla())).toBeGreaterThan(Math.max(...antes))  // ya no se ve ningún precio de los de antes
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Automático'))
+    for (let i = 0; i < 2; i++) await montado.redibujar(el())
+    expect(grilla()).toEqual(antes)
+  })
+
+  it('el mouse lleva su precio a la columna y su día a la fila de fechas, como TradingView (Nico, 29/10)', async () => {
+    await dibujar()
+    const grafico = porRol(montado.contenedor, 'img')
+    const miras = () => {
+      const out = [], pila = [montado.contenedor]
+      while (pila.length) { const n = pila.shift(); if (n.getAttribute?.('data-mira') != null) out.push(texto(n)); pila.push(...(n.childNodes || [])) }
+      return out
+    }
+    expect(miras()).toEqual([])
+    // Arriba de todo del gráfico (y = 0) y en el último día con precio.
+    const ultimoLugar = 1000 * (364 / (364 + 1 + margenDerecho(365) - 1))
+    await raton('mousemove', grafico, { clientX: ultimoLugar, clientY: 0 })
+    const precio = miras().find(t => /^[\d.,]+$/.test(t))
+    const dia = miras().find(t => /[a-z]/.test(t))
+    expect(miras()).toHaveLength(2)
+    expect(numeros(precio)[0]).toBeGreaterThan(Math.max(...puntos.slice(-365).map(p => p.c)))   // lo más alto que se ve
+    const d = new Date(puntos[699].d + 'T12:00:00Z')
+    expect(dia).toContain(`${d.getUTCDate()} `)
+    await raton('mouseout', grafico, { relatedTarget: null })
+    expect(miras()).toEqual([])
+  })
+
   // Otro rango, moneda, tipo de gráfico o diarias/semanales: el precio vuelve a
   // automático (cada uno con su prueba, como pidió la sesión central).
   for (const [nombre, pasos] of [
@@ -143,7 +191,7 @@ describe('arrastrar los ejes del gráfico', () => {
     it(`${nombre} vuelve el precio a automático`, async () => {
       await dibujar()
       const columna = () => porTitulo(montado.contenedor, 'Arrastrá hacia arriba o hacia abajo')
-      const grilla = () => columna().childNodes.map(n => numeros(texto(n))[0]).filter(x => x != null)
+      const grilla = () => columna().childNodes.filter(n => n.getAttribute?.('data-mira') == null).map(n => numeros(texto(n))[0]).filter(x => x != null)
       // Lo que se cambia ANTES de estirar (marcado con '@') no cuenta: es el punto de partida.
       const antes = pasos.includes('@') ? pasos.slice(0, pasos.indexOf('@')) : []
       const despues = pasos.includes('@') ? pasos.slice(pasos.indexOf('@') + 1) : pasos

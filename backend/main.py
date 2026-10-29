@@ -11933,6 +11933,9 @@ class _Dibujo(BaseModel):
     forma: Optional[Literal["impulso", "correccion"]] = None
     puntos: Optional[List[_PuntoDibujo]] = Field(None, max_length=_PINCEL_MAXIMO)
     ancho: Optional[float] = Field(None, ge=-1e9, le=1e9, allow_inf_nan=False)
+    # El color que eligió la persona (frontend/src/utils/dibujos.COLORES_DIBUJO);
+    # sin color, el de siempre.
+    color: Optional[Literal["cian", "ambar", "rosa", "verde", "rojo", "violeta", "tinta"]] = None
 
     @model_validator(mode="after")
     def _completo(self):

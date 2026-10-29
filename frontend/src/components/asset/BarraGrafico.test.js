@@ -283,6 +283,7 @@ describe('la barra de herramientas del gráfico', () => {
       expect(attr(area(), 'class')).toContain('cursor-pointer')
       await evento('mousedown', { clientX: 950, clientY: y + 3 }); await evento('mouseup', { clientX: 950, clientY: y + 3 }); await otra()
       expect(estado()).toContain('Fibonacci automático, elegido.')
+      expect(nodos(n => n.getAttribute?.('data-color') != null)).toEqual([])   // lo calculado no se pinta
       await clic(montado.contenedor, nodos(n => n.nodeName === 'BUTTON' && texto(n).includes('Borrar el Fibonacci automático'))[0]); await otra()
       expect(SE_VE.fib()).toBe(false)
       expect(await prendido('fib')).toBe('false')                 // borrado = apagado: se prende de nuevo desde su botón
