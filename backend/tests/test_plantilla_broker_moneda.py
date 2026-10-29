@@ -223,6 +223,28 @@ class LaPlantillaNoGuardaPesosComoDolares(unittest.TestCase):
         self.assertEqual(self.brokers()["MiIBKR"], "USD")
         self.assertEqual(self.cajas()["MiIBKR"][1], 500.0)     # no 1.000.500
 
+    def test_un_export_de_cocos_a_un_cocos_en_dolares_con_datos_rechaza_los_pesos(self):
+        """Auditoría 28/10: la guarda de arriba era sólo de la plantilla. Un export de
+        broker (Cocos, Balanz…) a un broker que quedó en dólares (un import viejo con
+        la regla de mayoría) y ya tiene datos no se cura —cambiarle la moneda
+        reinterpretaría lo que tiene— y sus pesos entraban a la caja en dólares tal
+        cual: $1.000.000 quedaban como US$ 1.000.000."""
+        self.crear_broker("Cocos", "USD", con_datos=True)
+        mov = ("nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;tipoOperacion;"
+               "instrumento;moneda;mercado;cantidad;precio;montoBruto;comision;ddmm;iva;otros;"
+               "total\n1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;1.000.000;0;0;0;0;"
+               "1.000.000\n")
+        r = self.client.post(
+            "/api/imports/preview", headers=self.h,
+            files=[("files", ("mov.csv", io.BytesIO(mov.encode()), "text/csv"))],
+            data={"format": "cocos", "broker": "Cocos"})
+        self.assertEqual(r.status_code, 200, r.text)
+        prev = r.json()
+        self.assertEqual([e["code"] for e in prev["errors"]], ["PESOS_EN_BROKER_EN_DOLARES"])
+        self.confirmar(prev)
+        self.assertEqual(self.brokers()["Cocos"], "USD")
+        self.assertEqual(self.cajas()["Cocos"][1], 0.0)        # no 1.000.000
+
     def test_confirmar_con_estado_inicial_tampoco_deja_pasar_los_pesos(self):
         """El confirm con "Estado inicial" re-valida por otro camino."""
         self.crear_broker("MiIBKR", "USD", con_datos=True)

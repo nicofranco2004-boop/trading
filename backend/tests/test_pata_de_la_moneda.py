@@ -275,6 +275,92 @@ class PataDeLaMonedaTest(unittest.TestCase):
         self.assertEqual(r.status_code, 400, r.text)
         self.assertEqual(self._caja("IBKR"), 0.0)
 
+    # ── pesos en un broker que sólo tiene caja en dólares ─────────────────
+    # Auditoría 28/10: la guarda de arriba vivía sólo en el depósito/retiro. Una
+    # compra o una venta en pesos en IBKR pasaba: los pesos se sumaban o restaban
+    # de la caja en DÓLARES y el faltante se anotaba como aporte en dólares.
+    def _ibkr_con_dolares(self, monto=300):
+        conn = main.get_db()
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                     (self.uid, "IBKR", "USDT"))
+        conn.commit()
+        conn.close()
+        r = self._post("/api/cash/flow", {"broker_name": "IBKR", "direction": "deposit",
+                                          "amount": monto, "currency": "USD"})
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def _aportes(self):
+        flujos = self._q("SELECT COALESCE(SUM(monto_usd),0) AS s FROM flujos_a_mano "
+                         "WHERE user_id=? AND direction='deposit'", self.uid)[0]["s"]
+        mensual = self._q("SELECT COALESCE(SUM(deposits),0) AS s FROM monthly_entries "
+                          "WHERE user_id=? AND broker='IBKR'", self.uid)[0]["s"]
+        return float(flujos), float(mensual)
+
+    def test_compra_en_pesos_en_broker_en_dolares_se_rechaza(self):
+        self._ibkr_con_dolares(300)
+        antes = self._aportes()
+        r = self._post("/api/positions", {
+            "broker": "IBKR", "asset": "GGAL", "quantity": 10, "buy_price": 5000,
+            "currency": "ARS", "entry_date": "2026-10-20"})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("pesos", r.json()["detail"])
+        # Nada se movió: ni la caja, ni el capital aportado, ni el lote.
+        self.assertAlmostEqual(self._caja("IBKR"), 300.0, places=6)
+        self.assertEqual(self._aportes(), antes)
+        self.assertEqual(self._q("SELECT id FROM positions WHERE user_id=? AND asset='GGAL'",
+                                 self.uid), [])
+
+    def test_venta_en_pesos_en_broker_en_dolares_se_rechaza(self):
+        self._ibkr_con_dolares(300)
+        r = self._post("/api/positions", {
+            "broker": "IBKR", "asset": "KO", "quantity": 3, "buy_price": 60,
+            "currency": "USD", "entry_date": "2026-10-01"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertAlmostEqual(self._caja("IBKR"), 120.0, places=6)
+        r = self._post("/api/positions/sell", {
+            "broker": "IBKR", "asset": "KO", "quantity": 1, "exit_price": 70000,
+            "currency": "ARS", "date": "2026-10-20"})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertAlmostEqual(self._caja("IBKR"), 120.0, places=6)
+        lote = self._q("SELECT quantity FROM positions WHERE user_id=? AND asset='KO' "
+                       "AND is_cash=0", self.uid)
+        self.assertEqual([x["quantity"] for x in lote], [3])
+
+    def test_cobro_de_bono_en_pesos_en_broker_en_dolares_se_rechaza(self):
+        # La misma forma en el cobro de un cupón: la moneda sólo rotulaba la fila y
+        # el monto entraba tal cual a la caja en dólares.
+        self._ibkr_con_dolares(300)
+        r = self._post("/api/positions", {
+            "broker": "IBKR", "asset": "AL30", "quantity": 100, "buy_price": 0.6,
+            "currency": "USD", "asset_type": "BOND", "entry_date": "2026-10-01"})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self._post("/api/bonds/cashflow", {
+            "broker": "IBKR", "asset": "AL30", "flow_type": "coupon", "amount": 50000,
+            "date": "2026-10-20", "currency": "ARS"})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertAlmostEqual(self._caja("IBKR"), 240.0, places=6)
+
+    def test_cobro_de_bono_en_dolares_en_cocos_entra_a_la_pata_de_dolares(self):
+        # Antes: los US$ 44 se sumaban a la caja de PESOS de Cocos como $44.
+        r = self._post("/api/positions", {
+            "broker": "Cocos", "asset": "AL30", "quantity": 100, "buy_price": 0.6,
+            "currency": "USD", "asset_type": "BOND", "entry_date": "2026-10-01"})
+        self.assertEqual(r.status_code, 200, r.text)
+        dolares = self._caja(SUB)
+        r = self._post("/api/bonds/cashflow/pago", {
+            "broker": "Cocos", "asset": "AL30", "date": "2026-10-20",
+            "coupon_amount": 4, "amort_amount": 40, "currency": "USD"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._caja("Cocos"), 0.0)
+        self.assertAlmostEqual(self._caja(SUB), dolares + 44, places=6)
+
+    def test_chat_compra_en_pesos_en_broker_en_dolares_se_rechaza(self):
+        self._ibkr_con_dolares(300)
+        r = self._chat({"action": "buy", "asset": "GGAL", "broker": "IBKR", "currency": "ARS",
+                        "asset_type": "STOCK", "quantity": 10, "price": 5000}, "A")
+        self.assertIn("error", r, r)
+        self.assertAlmostEqual(self._caja("IBKR"), 300.0, places=6)
+
     # ── chat ──────────────────────────────────────────────────────────────
     def _chat(self, data, req):
         return main._register_trade_handler(data, self.uid, request_id=req, confirm_signal="")
