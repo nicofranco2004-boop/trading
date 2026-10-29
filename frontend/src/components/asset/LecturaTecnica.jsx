@@ -25,6 +25,7 @@ import { factorDeFechas, rangoCorrido, rangoEstirado } from '../../utils/ejesGra
 import {
   RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, tarjetas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, moverVentana,
+  ventanaInicial, margenDerecho, futuroMaximo,
 } from '../../utils/tecnico'
 
 const v = (t) => `rgb(var(--${t}))`
@@ -173,11 +174,17 @@ export default function LecturaTecnica({
   }
 
   const total = actual.puntos.length
-  const nVista = Math.min(ventana?.n ?? puntosEnDias(actual.puntos, RANGOS.find(r => r.id === rango)?.dias || 365), total)
-  const finVista = Math.min(ventana?.fin ?? total, total)
-  const diarios = actual.puntos.slice(Math.max(0, finVista - nVista), finVista)
+  // La ventana en LUGARES (ver tecnico.margenDerecho): los días que se ven más
+  // el aire vacío de la derecha, por donde se puede arrastrar hacia el futuro.
+  const inicial = ventanaInicial(puntosEnDias(actual.puntos, RANGOS.find(r => r.id === rango)?.dias || 365), total)
+  const v0 = ventana || inicial
+  const nVista = v0.n
+  const finVista = Math.min(v0.fin, total + futuroMaximo(nVista))
+  const diarios = actual.puntos.slice(Math.max(0, finVista - nVista), Math.min(finVista, total))
+  const huecosDias = Math.max(0, finVista - total)
   const semanales = tipo === 'velas' && intervalo === 'semana'
   const puntos = semanales ? velasSemanales(diarios) : diarios
+  const huecos = semanales ? Math.round(huecosDias / 5) : huecosDias
   const vista = { n: nVista, fin: finVista, total }
   const zoom = (factor, f) => { const v2 = zoomVentana(vista, factor, f); if (v2) setVentana(v2); return !!v2 }
   const mover = (frac) => { const v2 = moverVentana(vista, frac); if (v2) setVentana(v2) }
@@ -215,7 +222,7 @@ export default function LecturaTecnica({
             opciones={[['dia', 'Diarias'], ['semana', 'Semanales']]} />
         </div>
       )}
-      <Grafico puntos={puntos} moneda={moneda} promedio={ver.prom ? promedio : null}
+      <Grafico puntos={puntos} huecos={huecos} moneda={moneda} promedio={ver.prom ? promedio : null}
         marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo} grande={grande}
         fibonacci={ver.fib ? actual.fibonacci : null} onZoom={zoom} onMover={mover}
         onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rango}|${tipo}|${intervalo}`} />
@@ -245,7 +252,7 @@ export default function LecturaTecnica({
           <Chip activo={ver.fib} onClick={() => {
             // Al prenderlo, el gráfico se acerca al tramo medido (si se ve chico).
             const v2 = !ver.fib && ventanaDelTramo(actual.puntos, actual.fibonacci, nVista)
-            if (v2) setVentana(v2)
+            if (v2) setVentana({ n: v2.n + margenDerecho(v2.n), fin: v2.fin + margenDerecho(v2.n) })
             alternar('fib')
           }} color={COLOR_FIB}>Fibonacci</Chip>
         )}
@@ -415,8 +422,10 @@ function rotulosDeMeses(puntos) {
   })
 }
 
-function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', grande = false, fibonacci = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio }) {
+function Grafico({ puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', grande = false, fibonacci = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio }) {
   const conVelas = tipo === 'velas'
+  // Los lugares del ancho: los días más el aire vacío de la derecha.
+  const lugares = puntos.length + huecos
   const ref = useRef(null)
   const arrastre = useRef(null)
   // Los ejes se arrastran como en TradingView (utils/ejesGrafico.js): la
@@ -494,7 +503,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
       fuera = promedio == null ? null : promedio < lo ? 'abajo' : promedio > hi ? 'arriba' : null
     }
     const y = (val) => H - ((val - lo) / (hi - lo)) * H
-    const x = (i) => (puntos.length > 1 ? (i / (puntos.length - 1)) * W : W / 2)
+    const x = (i) => (lugares > 1 ? (i / (lugares - 1)) * W : W / 2)
     const linea = (k) => {
       let d = '', abierto = false
       puntos.forEach((p, i) => {
@@ -507,7 +516,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
     const c = linea('c')
     // Las velas: el ancho de cada una es el 65 % de su lugar, la mecha va del
     // mínimo al máximo y el cuerpo de la apertura al cierre.
-    const ancho = Math.max((W / Math.max(puntos.length, 1)) * 0.65, 1)
+    const ancho = Math.max((W / Math.max(lugares, 1)) * 0.65, 1)
     let pc = null
     const velas = conVelas ? puntos.map((p, i) => {
       const vela = velaCompleta(p, pc)
@@ -520,7 +529,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
     }) : []
     // Las barras del volumen, abajo de todo, del color de la vela (o de si cerró
     // arriba o abajo del día anterior, en el gráfico de línea).
-    const anchoVol = Math.max((W / Math.max(puntos.length, 1)) * 0.65, 1)
+    const anchoVol = Math.max((W / Math.max(lugares, 1)) * 0.65, 1)
     const volumen = maxVol > 0 ? puntos.map((p, i) => {
       if (!(p.v > 0)) return null
       const antes = i > 0 ? puntos[i - 1].c : null
@@ -534,20 +543,20 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
       path: { c, s50: linea('s50'), s200: linea('s200') },
       area: c ? `${c}L${x(puntos.length - 1).toFixed(1)},${H}L0,${H}Z` : '',
     }
-  }, [puntos, promedio, ver.s50, ver.s200, ver.vol, conVelas, fibonacci, precioMano])
+  }, [puntos, lugares, promedio, ver.s50, ver.s200, ver.vol, conVelas, fibonacci, precioMano])
 
   const rsiPath = useMemo(() => {
     let d = '', abierto = false
     puntos.forEach((p, i) => {
       if (p.rsi == null) { abierto = false; return }
-      const xx = puntos.length > 1 ? (i / (puntos.length - 1)) * W : W / 2
+      const xx = lugares > 1 ? (i / (lugares - 1)) * W : W / 2
       d += `${abierto ? 'L' : 'M'}${xx.toFixed(1)},${(H_RSI - (p.rsi / 100) * H_RSI).toFixed(1)}`
       abierto = true
     })
     return d
-  }, [puntos])
+  }, [puntos, lugares])
 
-  const pctX = (i) => (puntos.length > 1 ? (i / (puntos.length - 1)) * 100 : 50)
+  const pctX = (i) => (lugares > 1 ? (i / (lugares - 1)) * 100 : 50)
   const pctY = (val) => (escalaY(val) / H) * 100
   const desde = puntos[0]?.d
   const visibles = lista
@@ -559,8 +568,9 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
   function mover(clientX) {
     const r = ref.current?.getBoundingClientRect()
     if (!r || !puntos.length) return
-    const i = Math.round(((clientX - r.left) / r.width) * (puntos.length - 1))
-    setHover(Math.max(0, Math.min(puntos.length - 1, i)))
+    const i = Math.round(((clientX - r.left) / r.width) * (lugares - 1))
+    // En el aire de la derecha (el futuro) no hay día que mostrar.
+    setHover(i > puntos.length - 1 ? null : Math.max(0, i))
   }
   const ph = hover != null ? puntos[hover] : null
   const ultimo = puntos[puntos.length - 1]
@@ -645,7 +655,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
           ))}
           {ultimo && (
             <span aria-hidden="true" className="absolute w-2 h-2 -translate-x-1/2 -translate-y-1/2 rounded-full"
-              style={{ left: '100%', top: `${pctY(ultimo.c)}%`, background: COLOR.precio }} />
+              style={{ left: `${pctX(puntos.length - 1)}%`, top: `${pctY(ultimo.c)}%`, background: COLOR.precio }} />
           )}
           {ph && (
             <>
