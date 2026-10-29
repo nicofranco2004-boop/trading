@@ -248,13 +248,20 @@ def _lectura_vieja(lectura: dict, hoy: date) -> bool:
     return bool(f) and (hoy - date.fromisoformat(f)).days > DIAS_LECTURA_VIEJA
 
 
+def _se_lee(x: dict, hoy: date) -> bool:
+    """¿Esta serie tiene algo que leer HOY? Está y su última vela no es vieja.
+    Una serie cortada no tiene «esta semana» (los cambios ya cuentan desde hoy,
+    pero una lectura vieja tampoco describe el precio)."""
+    return bool(x) and bool(x.get("disponible")) and not _lectura_vieja(x.get("lectura"), hoy)
+
+
 def _alcista(x: dict, hoy: date):
     """'alcista' | 'bajista' | None (sin lectura): la tarjeta «Largo plazo» de
     la ficha (precio ≥ promedio de 200 días), como `tendencia()` de la radiografía."""
-    if not x or not x.get("disponible"):
+    if not _se_lee(x, hoy):
         return None
     l = x.get("lectura") or {}
-    if _lectura_vieja(l, hoy) or l.get("media200") is None or l.get("dist_media200") is None:
+    if l.get("media200") is None or l.get("dist_media200") is None:
         return None
     return "alcista" if l["dist_media200"] >= 0 else "bajista"
 
@@ -342,7 +349,7 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, dolar=None) 
     {
       'desde', 'hasta': el período (desde exclusive: las velas posteriores),
       'alcista': lo de `reparto` (pct, grupos, motivos, semana_pasada) | None,
-      'tenes': {'activos': con lectura, 'con_cambios'},
+      'tenes': {'activos': con algo que leer (`_se_lee`), 'con_cambios'},
       'watchlist': cuántos activos sigue,
       'senales': [{asset, ficha, local, tenes, watchlist, peso, tesis,
                    tipo, fecha, sentido, …números…, etiqueta, tono, texto, extra}],
@@ -365,12 +372,13 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, dolar=None) 
     for k in sorted(set(car["tenencias"]) | set(wl)):
         x = _leer(k)
         tiene = k in car["tenencias"]
-        if tiene:
-            con_lectura += _alcista(x, hoy) is not None
-        # Una serie cortada no tiene «esta semana» (los cambios ya cuentan desde
-        # hoy, pero una lectura vieja tampoco describe el precio).
-        if not x.get("disponible") or _lectura_vieja(x.get("lectura"), hoy):
+        # «Con lectura» = tiene algo que leer esta semana, la MISMA regla que
+        # deja entrar sus cambios: así «en N de tus M» nunca da N > M. Antes se
+        # contaba con la del % (tener promedio de 200) y un papel con 120 días,
+        # que ya tiene promedio de 50 y RSI, cambiaba sin contar (A2, 29/10).
+        if not _se_lee(x, hoy):
             continue
+        con_lectura += tiene
         for c in x.get("cambios") or []:
             if tiene:
                 con_cambios.add(k)

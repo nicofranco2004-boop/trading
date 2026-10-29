@@ -51,6 +51,25 @@ from tests.test_radiografia_tecnica import YahooFalso, _ruedas  # noqa: E402
 MEP = 1000.0
 
 
+class YahooConHuecos(YahooFalso):
+    """Como YahooFalso, pero `precios[t](i, d)` puede dar None: ese día el papel
+    no cotizaba (uno que salió a la bolsa hace poco)."""
+
+    def __call__(self, ticker, period, interval, auto_adjust, timeout):
+        import pandas as pd
+        f = self.precios.get(ticker)
+        base = _ruedas(self.hoy, 760)
+        filas = {} if f is None else {
+            pd.Timestamp(d): c for d in _ruedas(self.hoy, 760 if period == "3y" else 22)
+            for c in [f(base.index(d), d)] if c is not None}
+        if not filas:
+            return pd.DataFrame()
+        idx = sorted(filas)
+        c = [filas[k] for k in idx]
+        return pd.DataFrame({"Open": c, "High": [x * 1.01 for x in c], "Low": [x * 0.99 for x in c],
+                             "Close": c, "Volume": [1000.0] * len(c)}, index=pd.DatetimeIndex(idx))
+
+
 def _sabado_de(hoy):
     """El último sábado hasta `hoy` (inclusive): sus velas ya están en el pasado."""
     return hoy - timedelta(days=(hoy.weekday() - 5) % 7)
@@ -526,6 +545,32 @@ class TusSenalesTest(unittest.TestCase):
         with main.db_abierta() as conn:
             self.assertIsNone(conn.execute("SELECT 1 FROM velas_diarias WHERE symbol='GGAL' LIMIT 1").fetchone(),
                               "el ADR no lo sigue nadie: no se baja")
+
+    def test_los_activos_con_cambios_son_parte_de_los_que_tienen_lectura(self):
+        # A2 (auditoría 29/10): «6 cambios · en 2 de tus 1 activo con lectura».
+        # NVDA tiene 3 años de precios; NUEVA cotiza hace 120 ruedas (tiene
+        # promedio de 50 y RSI, no de 200) y cambió esta semana. Las dos tienen
+        # algo que leer: «con lectura» y «con cambios» se cuentan con la MISMA
+        # regla (la que decide si un cambio entra a la semana).
+        hoy = hoy_art_date()
+        self.yahoo = YahooConHuecos(hoy)
+        p = mock.patch("pricing.yahoo._historia", self.yahoo)
+        p.start()
+        self._p.append(p)
+        n = len(_ruedas(hoy, 760))
+        self.yahoo.precios["NVDA"] = lambda i, d: 150.0 if i >= n - 3 else 100 - i * 0.01
+        self.yahoo.precios["NUEVA"] = lambda i, d: (None if i < n - 120 else
+                                                     60.0 if i >= n - 2 else 50 - 0.01 * (i - (n - 120)))
+        self._post("/api/brokers", {"name": "Schwab", "currency": "USD"})
+        for a, compra in (("NVDA", 140), ("NUEVA", 55)):
+            self._post("/api/positions", {"broker": "Schwab", "asset": a, "quantity": 10, "buy_price": compra,
+                                          "asset_type": "STOCK"})
+        main._run_velas_diarias_job()
+        s = self.client.get("/api/tus-senales", headers=self.h).json()
+        cambiaron = {x["asset"] for x in s["senales"] if x["tenes"]}
+        self.assertEqual(cambiaron, {"NVDA", "NUEVA"}, "la prueba necesita que cambien las dos")
+        self.assertEqual(s["tenes"], {"activos": 2, "con_cambios": 2})
+        self.assertLessEqual(s["tenes"]["con_cambios"], s["tenes"]["activos"])
 
     def test_sin_nada_con_lectura_no_hay_porcentaje(self):
         # Sólo un bono: no hay tendencia que medir. Ni la Cartera ni la pestaña
