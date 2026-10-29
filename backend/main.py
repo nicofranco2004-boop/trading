@@ -3985,6 +3985,28 @@ CLIENT_CTX_EXEMPT_PREFIXES = (
 # de cliente. Si agregás un endpoint de IDENTIDAD/CUENTA/PAGO nuevo, agregalo acá.
 
 
+def no_escribe_en_el_cliente(fn):
+    """Marca un endpoint que NO es GET y no escribe nada en la cuenta del cliente
+    que se mira: una lectura que manda una lista en el cuerpo (POST
+    /api/tecnico/lista) o algo que se guarda en la cuenta del que pide (los
+    dibujos del asesor). La regla de sólo lectura (`_resolve_client_context`)
+    pregunta si el pedido escribe en el cliente, no qué verbo usa: sin esto, la
+    asesora de sólo lectura no veía la radiografía ni «Tu lista» de su cliente
+    (auditoría E6, 29/10). Marcar uno que sí escribe abre la cuenta del cliente:
+    el test de la marca cuenta las filas de toda la base antes y después."""
+    fn._rendi_no_escribe_en_el_cliente = True
+    return fn
+
+
+def _escribe_en_la_cuenta(request: Request) -> bool:
+    """¿Este pedido escribe en la cuenta que se mira? Un GET no; un endpoint
+    marcado con `no_escribe_en_el_cliente` tampoco. La usan la regla de sólo
+    lectura y la marca de «contabilidad tocada» (`get_effective_user`)."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return False
+    return not getattr(request.scope.get("endpoint"), "_rendi_no_escribe_en_el_cliente", False)
+
+
 def _resolve_client_context(request: Request, uid: int) -> Optional[int]:
     """Devuelve el uid del cliente si el contexto aplica, None si no.
 
@@ -4019,7 +4041,7 @@ def _resolve_client_context(request: Request, uid: int) -> Optional[int]:
     if not row:
         # 403 explícito — jamás degradar en silencio al uid propio.
         raise HTTPException(403, "Sin acceso a ese cliente")
-    if request.method not in ("GET", "HEAD", "OPTIONS") and row["permission"] != "read_write":
+    if _escribe_en_la_cuenta(request) and row["permission"] != "read_write":
         raise HTTPException(403, "Acceso de solo lectura a ese cliente")
     return client_id
 
@@ -4206,8 +4228,13 @@ def get_effective_user(
     # esta cuenta con la que describe su historia reconstruida y, si cambió, se
     # rehace (`_ReconstruirAlTerminar`). Se anota ACÁ por la misma razón que el
     # muro: es el paso obligado de todos los endpoints de datos, así que cubre
-    # también al que se agregue mañana sin acordarse de esto.
-    _contabilidad_tocada(uid_efectivo)
+    # también al que se agregue mañana sin acordarse de esto. Un pedido que no
+    # escribe (`_escribe_en_la_cuenta`: «Tu lista», la radiografía) no la toca:
+    # sin esto, la asesora de SÓLO LECTURA que miraba la radiografía de un
+    # cliente le reconstruía la historia (escribía fotos y `mtm_huella` en su
+    # cuenta), y cada «Tu lista» pagaba la comparación (auditoría E6, 29/10).
+    if _escribe_en_la_cuenta(request):
+        _contabilidad_tocada(uid_efectivo)
     return uid_efectivo
 
 
@@ -11800,6 +11827,7 @@ def _lecturas_tecnicas(body: CarteraTecnicaIn, leer) -> dict:
 
 
 @app.post("/api/tecnico/cartera")
+@no_escribe_en_el_cliente
 def post_tecnico_cartera(body: CarteraTecnicaIn, request: Request, uid: int = Depends(get_effective_user)):
     """La lectura técnica en dólares de varios activos de una vez, para la
     radiografía de la Cartera (tecnico.para_la_cartera). La pantalla manda sus
@@ -11822,6 +11850,7 @@ def post_tecnico_cartera(body: CarteraTecnicaIn, request: Request, uid: int = De
 
 
 @app.post("/api/tecnico/lista")
+@no_escribe_en_el_cliente
 def post_tecnico_lista(body: CarteraTecnicaIn, request: Request, uid: int = Depends(get_effective_user)):
     """«Tu lista, con su lectura técnica» (inicio → Watchlist → «Ver como
     tablero»): lo que tenés y lo que seguís, en dólares (tecnico.para_la_lista).
@@ -11900,6 +11929,7 @@ class TendenciasEnFechasIn(BaseModel):
 
 
 @app.post("/api/tecnico/en-fechas")
+@no_escribe_en_el_cliente
 def tecnico_en_fechas(data: TendenciasEnFechasIn, request: Request, uid: int = Depends(get_effective_user)):
     """¿Cómo estaba la tendencia de fondo de cada activo en cada fecha? Para el
     diario de operaciones: la del día en que compraste cada operación cerrada.
@@ -12089,6 +12119,7 @@ def get_tecnico_dibujos(asset: str, request: Request, moneda: str = "usd",
 
 
 @app.put("/api/tecnico/{asset}/dibujos")
+@no_escribe_en_el_cliente
 def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: str = "usd",
                         uid: int = Depends(get_effective_user)):
     """Reemplaza tus dibujos de este activo en esta moneda por la lista que
