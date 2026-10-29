@@ -309,6 +309,33 @@ class TusSenalesTest(unittest.TestCase):
         self._cron(_utc(sabado, 10, 15))
         self.assertEqual(len(self.mails), 1)
 
+    def test_una_persona_que_falla_en_la_base_no_deja_sin_resumen_a_las_siguientes(self):
+        """Auditoría C1 (29/10), el resumen del sábado: en Postgres una consulta
+        que falla aborta la transacción, y la persona SIGUIENTE reventaba en su
+        primer SELECT: nadie después de ella recibía el resumen. En SQLite no se
+        ve (una sentencia que falla no deja secuela): la corrida que importa es
+        la de Postgres (DATABASE_URL)."""
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("mail")
+        with main.db_abierta() as conn:
+            otro = conn.execute(
+                "INSERT INTO users (email, name, password_hash, approved, email_verified, tier) "
+                "VALUES (?, 'Ana', 'x', 1, 1, 'pro')", (f"otra-{self.uid}@rendi.test",)).lastrowid
+            conn.execute("INSERT INTO watchlist (user_id, symbol) VALUES (?, 'MSFT')", (otro,))
+            conn.execute("INSERT INTO resumen_semanal_prefs (user_id, canal) VALUES (?, 'mail')", (otro,))
+            conn.commit()
+        real = senales_semana.armar_semana
+
+        def armar(conn, uid, hoy, **kw):
+            if uid == self.uid:
+                conn.execute("SELECT * FROM tabla_que_no_existe")
+            return real(conn, uid, hoy, **kw)
+        with mock.patch("senales_semana.armar_semana", armar):
+            r = self._cron(_utc(sabado, 10, 5))
+        self.assertEqual((r["errores"], r["mandadas"]), (1, 1), r)
+        self.assertEqual([m["to"] for m in self.mails], [f"otra-{self.uid}@rendi.test"])
+
     def test_no_quiero_no_manda(self):
         sabado = _sabado_de(hoy_art_date())
         self._velas(sabado)

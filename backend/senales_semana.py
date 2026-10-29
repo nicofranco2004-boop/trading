@@ -618,17 +618,18 @@ def correr(conn, hoy: date, *, solo: int = None) -> dict:
         if conn.execute("SELECT 1 FROM tendencia_semanal WHERE user_id=? AND semana=?",
                         (uid, semana_iso)).fetchone():
             continue
+        # Armar lo de cada persona va en su punto de guardado (auditoría C1,
+        # 29/10): en Postgres, una consulta que falla aborta la transacción y la
+        # persona SIGUIENTE reventaba en su primer SELECT: nadie después de ella
+        # recibía el resumen ese sábado. Con esto se deshace sólo lo suyo.
+        from pgsesion import si_falla_se_deshace_solo_esto
         try:
-            sem = armar_semana(conn, uid, hoy, series=series, cedears=cedears,
-                               desde=desde_del_mail(conn, uid, hoy))
-        except Exception as ex:
-            log.warning("semana: uid=%s falló: %s", uid, ex, exc_info=True)
-            res["errores"] += 1
-            continue
-        via = canal(conn, uid)
-        mandar = via != "no" and bool(sem["senales"])
-        try:
-            envio = _armar_envio(conn, uid, sem) if mandar else None
+            with si_falla_se_deshace_solo_esto(conn, "semana_de_una_persona"):
+                sem = armar_semana(conn, uid, hoy, series=series, cedears=cedears,
+                                   desde=desde_del_mail(conn, uid, hoy))
+                via = canal(conn, uid)
+                mandar = via != "no" and bool(sem["senales"])
+                envio = _armar_envio(conn, uid, sem) if mandar else None
         except Exception as ex:
             log.error("semana: no pude armar el resumen de uid=%s: %s: %s", uid,
                       type(ex).__name__, ex, exc_info=True)

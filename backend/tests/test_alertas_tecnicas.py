@@ -190,6 +190,85 @@ class AlertasTecnicasTest(unittest.TestCase):
         self._cron()
         self.assertEqual(len(self._eventos()), 1)
 
+    def test_un_error_despues_de_avisar_no_repite_el_mail_cada_10_minutos(self):
+        """Auditoría C, hallazgo 1 (29/10), la forma que se ve también en SQLite:
+        la alerta avisa (`_fire` escribe el evento y encola el mail) y DESPUÉS
+        algo de esa misma alerta falla (acá, correr su marca). Antes: el mail
+        salía igual y la marca quedaba atrás → el cron, 10 minutos después,
+        volvía a avisar el mismo cruce, y así toda la jornada. Ahora lo de esa
+        alerta se deshace entero (su punto de guardado) y no se manda nada hasta
+        que se pueda guardar; arreglado el error, avisa una vez."""
+        self.yahoo.precios["MSFT"] = self._sube_ayer
+        self._seguir_por_alerta_y_crear()
+        self._noche(self.ayer)
+        roto = mock.patch("alerts_engine._marcar_visto", side_effect=RuntimeError("la base no responde"))
+        with roto, self.assertLogs("alerts", level="ERROR") as logs:
+            r1 = self._cron()
+            r2 = self._cron()
+        self.assertEqual((r1["tecnicas"].get("errores"), r2["tecnicas"].get("errores")), (1, 1))
+        self.assertTrue(any("RuntimeError" in x for x in logs.output))
+        self.assertEqual(len(self.mails), 0, "no se manda un aviso que no quedó guardado")
+        self.assertEqual(self._eventos(), [], "lo de la alerta rota se deshizo entero")
+        self._cron()
+        self._cron()
+        self.assertEqual((len(self.mails), len(self._eventos())), (1, 1), "arreglado, avisa UNA vez")
+
+    def test_una_alerta_rota_en_la_base_no_se_lleva_el_aviso_de_la_otra(self):
+        """C1 tal cual lo midió la auditoría: dos alertas cruzan, a la de AAPL le
+        falla una consulta a la BASE. En Postgres eso abortaba la transacción
+        compartida: el commit de después deshacía el aviso de MSFT, que salía
+        igual y se repetía cada 10 minutos (pgshim de esta punta) o no salía
+        nunca (pgshim de la migración). En los dos motores: MSFT avisa una vez
+        y queda guardado; AAPL queda contada como error."""
+        self.yahoo.precios["MSFT"] = self._sube_ayer
+        self.yahoo.precios["AAPL"] = self._sube_ayer
+        for sym in ("MSFT", "AAPL"):
+            self.client.post("/api/watchlist", json={"symbol": sym}, headers=self.h)
+        self._noche(self.anteayer)
+        for sym in ("MSFT", "AAPL"):
+            self._crear(creada_el=self._siguiente(self.anteayer), symbol=sym)
+        self._noche(self.ayer)
+        original = ae._serie_tecnica
+
+        def serie(conn, alert):
+            if alert["symbol"] == "AAPL":
+                conn.execute("SELECT * FROM tabla_que_no_existe")
+            return original(conn, alert)
+        with mock.patch("alerts_engine._serie_tecnica", serie), self.assertLogs("alerts", level="ERROR"):
+            r = [self._cron() for _ in range(3)]
+        self.assertEqual([x["tecnicas"].get("errores") for x in r], [1, 1, 1])
+        self.assertEqual([e["symbol"] for e in self._eventos()], ["MSFT"])
+        self.assertEqual(len(self.mails), 1)
+
+    def test_si_lo_disparado_no_quedo_guardado_no_se_entrega(self):
+        """La otra mitad del C1: el commit puede «salir bien» sin guardar (en
+        Postgres, el de una transacción abortada es un ROLLBACK callado). La
+        entrega pregunta a la base qué avisos existen y sólo manda esos."""
+        self.yahoo.precios["MSFT"] = self._sube_ayer
+        self._seguir_por_alerta_y_crear()
+        self._noche(self.ayer)
+
+        class CommitQueMiente:
+            """El commit «sale bien» pero lo disparado no está en la base (en
+            Postgres: el commit de una transacción abortada). En SQLite el punto
+            de guardado ya confirma al soltarse, así que la mentira se arma
+            borrando lo escrito: lo que se mide es que la entrega le pregunte a
+            la BASE y no al commit."""
+            def __init__(self, c):
+                self._c = c
+
+            def commit(self):
+                self._c.commit()
+                self._c.execute("DELETE FROM alert_events")
+                self._c.commit()
+
+            def __getattr__(self, k):
+                return getattr(self._c, k)
+        with main.db_abierta() as conn, self.assertLogs("alerts", level="ERROR") as logs:
+            ae.evaluar_tecnicas(CommitQueMiente(conn))
+        self.assertEqual(len(self.mails), 0)
+        self.assertTrue(any("no quedó guardado" in x for x in logs.output))
+
     def test_cruza_su_promedio_de_200_y_avisa_una_sola_vez_con_el_mail_armado(self):
         self.yahoo.precios["MSFT"] = self._sube_ayer
         self._seguir_por_alerta_y_crear()

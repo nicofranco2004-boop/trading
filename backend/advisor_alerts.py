@@ -393,6 +393,13 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                      for it in pendientes])
                 conn.commit()
         except Exception as ex:
-            log.error("advisor alerts uid=%s falló: %s", uid, ex)
+            log.error("advisor alerts uid=%s falló: %s: %s", uid, type(ex).__name__, ex, exc_info=True)
+            # En Postgres un error de base deja la transacción abortada y el
+            # asesor SIGUIENTE reventaba en su primera consulta: nadie después de
+            # él recibía avisos (auditoría C1, la misma forma). Sin punto de
+            # guardado porque el cuerpo confirma solo (`live_book_values`). Lo
+            # que se pierde: re-armados sin confirmar, que la pasada siguiente
+            # vuelve a calcular; los avisos se confirman de a uno al dispararse.
+            conn.rollback()
     conn.commit()
     return {"advisors": len(cfgs), "fired": fired}

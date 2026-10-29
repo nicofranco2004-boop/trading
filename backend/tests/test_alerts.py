@@ -1686,3 +1686,46 @@ def test_alerta_de_precio_propia_el_push_sigue_yendo_a_mis_alertas(clean, monkey
     assert pushes[0][1]["url"] == "/alertas?tab=mis"
     assert mails[0]["cta_path"] == "/activo/AAPL"
     assert not mails[0]["detail"].startswith("en la cuenta")
+
+
+# ── Una alerta rota no apaga a las demás (auditoría B-P1, 29/10) ──────────────
+
+def test_una_alerta_de_precio_rota_no_apaga_a_las_otras(clean, monkeypatch, caplog):
+    """Antes `evaluate_alerts` no tenía guarda por alerta: una fila que reventaba
+    cortaba el ciclo ENTERO y el cron lo dejaba en un renglón sin nombre de
+    error ni traza, cada 10 minutos. Es lo que se le arregló a las técnicas en
+    2cc64ca8 y no se había propagado. Ahora: la rota se cuenta y se nombra, y
+    las otras avisan."""
+    conn = clean
+    _mk_alert(conn, symbol="ROTO", threshold=1)
+    _mk_alert(conn, symbol="AAPL", threshold=200)
+    monkeypatch.setattr(ae, "_prices_for", lambda syms: {"ROTO": 5.0, "AAPL": 210.0})
+    real = ae.condition_met
+
+    def condicion(kind, direction, threshold, price, change):
+        if threshold == 1:
+            raise ZeroDivisionError("un dato raro")
+        return real(kind, direction, threshold, price, change)
+    monkeypatch.setattr(ae, "condition_met", condicion)
+    with caplog.at_level("ERROR", logger="alerts"):
+        res = ae.evaluate_alerts(conn, only_user=1)
+    assert res["fired"] == 1 and res.get("errores") == 1
+    assert any("ZeroDivisionError" in r.getMessage() and "ROTO" in r.getMessage() for r in caplog.records)
+    assert any(r.exc_info for r in caplog.records), "con la traza"
+    assert [e["symbol"] for e in _events(conn)] == ["AAPL"]
+
+
+def test_lo_que_falla_despues_de_disparar_se_deshace_entero(clean, monkeypatch):
+    """C1 en precio: dispara (evento + mail encolado) y falla al apagar la
+    «una sola vez». Antes: el mail salía, la alerta quedaba prendida y armada
+    otra vez a la próxima. Ahora: nada de esa alerta queda ni se manda."""
+    conn = clean
+    _mk_alert(conn, symbol="AAPL", threshold=200, repeat="once")
+    monkeypatch.setattr(ae, "_prices_for", lambda syms: {"AAPL": 210.0})
+    entregados = []
+    monkeypatch.setattr(ae, "_deliver", lambda c, a, items: entregados.append(items) or (True, True))
+    monkeypatch.setattr(ae, "_cumplio_una_vez", lambda c, a: (_ for _ in ()).throw(RuntimeError("x")))
+    res = ae.evaluate_alerts(conn, only_user=1)
+    assert (res["fired"], res.get("errores")) == (0, 1)
+    assert entregados == [] and _events(conn) == []
+    assert conn.execute("SELECT armed FROM alerts").fetchone()["armed"] == 1
