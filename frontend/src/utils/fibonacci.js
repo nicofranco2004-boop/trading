@@ -48,6 +48,18 @@ export function fibonacciAMano(desde, hasta) {
 }
 
 /**
+ * La EXTENSIÓN de Fibonacci a mano (la «Trend-Based Fib Extension» de
+ * TradingView): tres toques — dónde arranca un movimiento (a), dónde termina
+ * (b) y dónde termina el retroceso (c) — y los niveles hacia adelante desde c,
+ * medidos con el tamaño del movimiento: nivel r → c + r × (b − a). Los niveles
+ * son los más usados (0 %, 61,8 %, 100 %, 161,8 %, 200 % y 261,8 %).
+ */
+export const NIVELES_EXTENSION = [0, 0.618, 1, 1.618, 2, 2.618]
+export function extensionFibonacci(a, b, c) {
+  return NIVELES_EXTENSION.map(r => ({ nivel: r, precio: c + r * (b - a) }))
+}
+
+/**
  * Las rayas del gráfico: [{ nivel, precio, extremo }]. 0 es el final del tramo
  * (el pico de una suba) y 1 su arranque; en el medio, los cinco niveles.
  */

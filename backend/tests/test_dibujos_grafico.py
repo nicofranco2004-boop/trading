@@ -132,6 +132,19 @@ class DibujosGraficoTest(unittest.TestCase):
                      [{**ell, "puntos": [*ell["puntos"][:2], {"d": "x", "mas": 0, "precio": 1}]}]):
             self.assertEqual(self._guardar(malo).status_code, 422, malo)
 
+    def test_extension_y_las_dos_formas_de_elliott(self):
+        p = lambda m, x: {"d": f"2026-0{m}-01", "mas": 0, "precio": x}
+        ext = {"id": "x1", "tipo": "extension", "a": p(1, 100.0), "b": p(2, 150.0), "c": p(3, 130.0)}
+        imp = {"id": "i1", "tipo": "elliott", "forma": "impulso", "puntos": [p(m, 100.0 + m) for m in range(1, 7)]}
+        cor = {"id": "c1", "tipo": "elliott", "forma": "correccion", "puntos": [p(m, 100.0 + m) for m in range(1, 5)]}
+        self.assertEqual(self._guardar([ext, imp, cor]).status_code, 200)
+        self.assertEqual(self._leer(), [ext, imp, cor])
+        for malo in ([{**ext, "c": None}],                                          # le falta el retroceso
+                     [{**imp, "puntos": imp["puntos"] + imp["puntos"][:1]}],        # un impulso con 7
+                     [{**cor, "puntos": cor["puntos"] + cor["puntos"][:1]}],        # una corrección con 5
+                     [{**imp, "forma": "triangulo"}]):
+            self.assertEqual(self._guardar(malo).status_code, 422, malo)
+
     def test_lo_que_no_es_un_dibujo_se_rechaza(self):
         malos = [
             [{"id": "x", "tipo": "flecha", "precio": 1}],

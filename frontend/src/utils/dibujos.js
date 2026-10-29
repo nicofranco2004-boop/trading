@@ -26,19 +26,27 @@ export const DIBUJOS_MAXIMOS = 60
 const numero = (x) => typeof x === 'number' && Number.isFinite(x)
 const punto = (p) => !!p && typeof p.d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(p.d)
   && Number.isInteger(p.mas) && p.mas >= 0 && numero(p.precio) && p.precio > 0
-// Un conteo de Elliott a mano: el arranque (0), las cinco ondas y la corrección
-// A-B-C, uno por toque. Se puede terminar antes (un conteo que va por la 3).
+// Un conteo de Elliott a mano, en dos formas por separado (Nico, 28/10), como
+// TradingView: el IMPULSO (0, 1, 2, 3, 4, 5) y la CORRECCIÓN (el arranque y
+// A, B, C). Se puede terminar antes (un impulso que va por la 3). Los conteos
+// guardados antes de separarlos no traen `forma`: son 0-1-2-3-4-5-A-B-C.
 export const ETIQUETAS_ELLIOTT = ['0', '1', '2', '3', '4', '5', 'A', 'B', 'C']
+export const ETIQUETAS_IMPULSO = ['0', '1', '2', '3', '4', '5']
+export const ETIQUETAS_CORRECCION = ['', 'A', 'B', 'C']   // el arranque, sin nombre
+export const etiquetasDe = (forma) => (forma === 'impulso' ? ETIQUETAS_IMPULSO
+  : forma === 'correccion' ? ETIQUETAS_CORRECCION : ETIQUETAS_ELLIOTT)
 
 /** ¿Es un dibujo que se puede dibujar? (lo guardado puede venir roto o de otra versión)
- *  horizontal: un precio · tendencia y fibonacci: dos puntos (a, b) ·
- *  elliott: de 2 a 9 puntos, en el orden de ETIQUETAS_ELLIOTT. */
+ *  horizontal: un precio · tendencia y fibonacci (retroceso): dos puntos (a, b) ·
+ *  extension: tres (a, b, c) · elliott: de 2 puntos al máximo de su forma. */
 export function dibujoValido(x) {
   if (!x || typeof x.id !== 'string') return false
   if (x.tipo === 'horizontal') return numero(x.precio) && x.precio > 0
   if (x.tipo === 'tendencia' || x.tipo === 'fibonacci') return punto(x.a) && punto(x.b)
+  if (x.tipo === 'extension') return punto(x.a) && punto(x.b) && punto(x.c)
   if (x.tipo === 'elliott') {
-    return Array.isArray(x.puntos) && x.puntos.length >= 2 && x.puntos.length <= ETIQUETAS_ELLIOTT.length && x.puntos.every(punto)
+    if (x.forma != null && x.forma !== 'impulso' && x.forma !== 'correccion') return false
+    return Array.isArray(x.puntos) && x.puntos.length >= 2 && x.puntos.length <= etiquetasDe(x.forma).length && x.puntos.every(punto)
   }
   return false
 }

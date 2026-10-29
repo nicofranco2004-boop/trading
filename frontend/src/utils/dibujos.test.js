@@ -2,7 +2,7 @@
 // punto queda en su día y qué línea se tocó.
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest'
 import { instalarNavegadorMinimo } from '../testing/navegadorMinimo'
-import { fibonacciAMano, rayas } from './fibonacci'
+import { extensionFibonacci, fibonacciAMano, rayas } from './fibonacci'
 import {
   DIBUJOS_MAXIMOS, ETIQUETAS_ELLIOTT, copiaLocal, diaDelPunto, dibujoTocado, dibujoValido, dibujosGuardados, distanciaASegmento, guardarDibujos,
   marcarSubidos, puntoDelDia,
@@ -142,5 +142,27 @@ describe('Fibonacci y Elliott a mano', () => {
     expect(dibujoValido({ id: 'e', tipo: 'elliott', puntos: puntos.slice(0, 1) })).toBe(false)
     expect(dibujoValido({ id: 'e', tipo: 'elliott', puntos: [...puntos, puntos[0]] })).toBe(false)
     expect(dibujoValido({ id: 'e', tipo: 'elliott', puntos: [...puntos.slice(0, 2), { d: 'x' }] })).toBe(false)
+  })
+})
+
+describe('extensión de Fibonacci y las dos formas de Elliott', () => {
+  const p = (precio) => ({ d: '2026-10-01', mas: 0, precio })
+  it('la extensión proyecta el movimiento desde el fin del retroceso: c + r × (b − a)', () => {
+    const niveles = extensionFibonacci(100, 150, 130)       // sube 50, retrocede a 130
+    expect(niveles.map(n => n.nivel)).toEqual([0, 0.618, 1, 1.618, 2, 2.618])
+    expect(niveles.find(n => n.nivel === 1).precio).toBe(180)
+    expect(niveles.find(n => n.nivel === 1.618).precio).toBeCloseTo(210.9, 9)
+    expect(extensionFibonacci(200, 150, 170).find(n => n.nivel === 1).precio).toBe(120)   // en una bajada, hacia abajo
+  })
+  it('qué se puede guardar', () => {
+    expect(dibujoValido({ id: 'x', tipo: 'extension', a: p(1), b: p(2), c: p(3) })).toBe(true)
+    expect(dibujoValido({ id: 'x', tipo: 'extension', a: p(1), b: p(2) })).toBe(false)
+    const n = (k) => Array.from({ length: k }, (_, i) => p(100 + i))
+    expect(dibujoValido({ id: 'e', tipo: 'elliott', forma: 'impulso', puntos: n(6) })).toBe(true)
+    expect(dibujoValido({ id: 'e', tipo: 'elliott', forma: 'impulso', puntos: n(7) })).toBe(false)
+    expect(dibujoValido({ id: 'e', tipo: 'elliott', forma: 'correccion', puntos: n(4) })).toBe(true)
+    expect(dibujoValido({ id: 'e', tipo: 'elliott', forma: 'correccion', puntos: n(5) })).toBe(false)
+    expect(dibujoValido({ id: 'e', tipo: 'elliott', forma: 'triangulo', puntos: n(3) })).toBe(false)
+    expect(dibujoValido({ id: 'e', tipo: 'elliott', puntos: n(9) })).toBe(true)          // los guardados antes de separarlos
   })
 })

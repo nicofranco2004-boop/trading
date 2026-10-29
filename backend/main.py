@@ -11613,19 +11613,24 @@ class _PuntoDibujo(BaseModel):
     precio: float = Field(gt=0, allow_inf_nan=False)
 
 
-# Un conteo de Elliott a mano: el 0, las ondas 1 a 5 y A, B, C (se puede cortar antes).
-_PUNTOS_ELLIOTT = 9
+# Un conteo de Elliott a mano: el impulso (0 y las ondas 1 a 5), la corrección
+# (el arranque y A, B, C) o, en los guardados antes de separarlos, las dos
+# juntas (0-1-2-3-4-5-A-B-C). Se puede cortar antes.
+_PUNTOS_ELLIOTT = {"impulso": 6, "correccion": 4, None: 9}
 
 
 class _Dibujo(BaseModel):
     id: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
     # «fibonacci» y «elliott»: los que la persona marca a mano en vez del
     # automático (Nico, 28/10: «poder calcularlo como ellos estiman»).
-    tipo: Literal["tendencia", "horizontal", "fibonacci", "elliott"]
+    # «extension»: la extensión de Fibonacci (tres puntos: a, b y c).
+    tipo: Literal["tendencia", "horizontal", "fibonacci", "extension", "elliott"]
     precio: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
     a: Optional[_PuntoDibujo] = None
     b: Optional[_PuntoDibujo] = None
-    puntos: Optional[List[_PuntoDibujo]] = Field(None, max_length=_PUNTOS_ELLIOTT)
+    c: Optional[_PuntoDibujo] = None
+    forma: Optional[Literal["impulso", "correccion"]] = None
+    puntos: Optional[List[_PuntoDibujo]] = Field(None, max_length=_PUNTOS_ELLIOTT[None])
 
     @model_validator(mode="after")
     def _completo(self):
@@ -11633,8 +11638,13 @@ class _Dibujo(BaseModel):
             raise ValueError("una línea horizontal necesita su precio")
         if self.tipo in ("tendencia", "fibonacci") and (self.a is None or self.b is None):
             raise ValueError("una línea de tendencia o un Fibonacci necesitan sus dos puntos")
-        if self.tipo == "elliott" and (not self.puntos or len(self.puntos) < 2):
-            raise ValueError("un conteo de Elliott necesita al menos el 0 y la onda 1")
+        if self.tipo == "extension" and (self.a is None or self.b is None or self.c is None):
+            raise ValueError("una extensión de Fibonacci necesita sus tres puntos")
+        if self.tipo == "elliott":
+            if not self.puntos or len(self.puntos) < 2:
+                raise ValueError("un conteo de Elliott necesita al menos el arranque y la primera onda")
+            if len(self.puntos) > _PUNTOS_ELLIOTT[self.forma]:
+                raise ValueError("un conteo de Elliott con más ondas de las que tiene su forma")
         return self
 
 

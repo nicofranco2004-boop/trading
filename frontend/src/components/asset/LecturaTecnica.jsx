@@ -39,7 +39,7 @@ import { api } from '../../utils/api'
 import { factorDeFechas, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
 import { PRIORIDAD, taparRotulos } from '../../utils/rotulos'
 import {
-  DIBUJOS_MAXIMOS, ETIQUETAS_ELLIOTT, copiaLocal, diaDelPunto, dibujoTocado, dibujosDelServidor, dibujosGuardados, guardarDibujos, idNuevo,
+  DIBUJOS_MAXIMOS, copiaLocal, etiquetasDe, diaDelPunto, dibujoTocado, dibujosDelServidor, dibujosGuardados, guardarDibujos, idNuevo,
   marcarSubidos, precioRedondo, puntoDelDia, subirDibujos,
 } from '../../utils/dibujos'
 import {
@@ -145,9 +145,9 @@ export default function LecturaTecnica({
   // esperando el segundo toque.
   const [medir, setMedirEstado] = useState({ activo: false, a: null, b: null })
   // Dibujar (utils/dibujos.js): la herramienta elegida ('tendencia',
-  // 'horizontal', 'fibonacci' o 'elliott', las dos últimas «a mano») y los
-  // toques ya hechos ({ i, precio }). Una herramienta por vez: medir, dibujar o
-  // ninguna.
+  // 'horizontal'; a mano: 'fibonacci' (retroceso) y 'extension' de Fibonacci,
+  // 'impulso' y 'correccion' de Elliott) y los toques ya hechos ({ i, precio }).
+  // Una herramienta por vez: medir, dibujar o ninguna.
   const [dibujar, setDibujarEstado] = useState({ tipo: null, puntos: [] })
   const setMedir = (f) => { setDibujarEstado({ tipo: null, puntos: [] }); setMedirEstado(f) }
   const setDibujar = (f) => { setMedirEstado({ activo: false, a: null, b: null }); setDibujarEstado(f) }
@@ -195,11 +195,18 @@ export default function LecturaTecnica({
   const borrarDibujo = (id) => { cambiarDibujos(misDibujos.filter(d => d.id !== id)); setElegido(null) }
   // ¿Borrar todos? Se pregunta antes: es trabajo de la persona y no se deshace.
   const [borrarTodos, setBorrarTodos] = useState(false)
-  // Con una línea elegida, la tecla Suprimir (o la de borrar) la borra.
+  // Con una línea elegida, la tecla Suprimir (o la de borrar) la borra. Y Esc,
+  // como en TradingView, cancela lo que se está dibujando o midiendo (se borra
+  // lo marcado a medias y la herramienta se apaga).
   const borrarRef = useRef(null)
   borrarRef.current = elegido ? () => borrarDibujo(elegido) : null
+  const cancelarRef = useRef(null)
+  cancelarRef.current = (dibujar.tipo || medir.activo)
+    ? () => { setDibujarEstado({ tipo: null, puntos: [] }); setMedirEstado({ activo: false, a: null, b: null }) }
+    : null
   useEffect(() => {
     const tecla = (e) => {
+      if (e.key === 'Escape' && cancelarRef.current) { cancelarRef.current(); return }
       if (!borrarRef.current || !['Delete', 'Backspace'].includes(e.key)) return
       if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName || '') || e.target?.isContentEditable) return
       e.preventDefault()
@@ -373,28 +380,45 @@ export default function LecturaTecnica({
       // el automático se vuelve a prender desde su botón.
       if (dibujar.tipo === 'fibonacci') setVer(x => ({ ...x, fib: false }))
       setDibujarEstado({ tipo: null, puntos: [] })
-    } else if (dibujar.tipo === 'elliott') {
+    } else if (dibujar.tipo === 'extension') {
       const puntos = [...dibujar.puntos, p]
-      if (puntos.length >= ETIQUETAS_ELLIOTT.length) terminarElliott(puntos)
-      else setDibujarEstado({ tipo: 'elliott', puntos })
+      if (puntos.length < 3) { setDibujarEstado({ tipo: 'extension', puntos }); return }
+      const [a, b, c] = puntos.map(guardado)
+      cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'extension', a, b, c }])
+      setDibujarEstado({ tipo: null, puntos: [] })
+    } else if (FORMA_ELLIOTT[dibujar.tipo]) {
+      // El segundo click de un doble click cae en el mismo lugar que el
+      // primero: no es una onda nueva (el doble click termina el conteo).
+      const ult = dibujar.puntos[dibujar.puntos.length - 1]
+      if (ult && ult.i === p.i && Math.abs(ult.precio - p.precio) <= ult.precio * 0.002) return
+      const puntos = [...dibujar.puntos, p]
+      if (puntos.length >= etiquetasDe(FORMA_ELLIOTT[dibujar.tipo]).length) terminarElliott(puntos)
+      else setDibujarEstado({ tipo: dibujar.tipo, puntos })
     } else {
       setMedirEstado(m => (m.a && !m.b ? { ...m, b: p } : { activo: true, a: p, b: null }))
     }
   }
-  // Tu conteo de Elliott se termina con «Terminar» (uno que va por la onda 3)
-  // o solo, al llegar a la C. Como con el Fibonacci, apaga el automático.
+  // Tu conteo de Elliott se termina con «Terminar acá», con doble click o click
+  // derecho en el gráfico (uno que va por la onda 3) o solo, al llegar a la 5
+  // (impulso) o a la C (corrección). Como con el Fibonacci, apaga el automático.
   function terminarElliott(puntos = dibujar.puntos) {
-    if (puntos.length >= 2) {
-      cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'elliott', puntos: puntos.map(q => puntoDelDia(actual.puntos, q.i, q.precio)) }])
+    const forma = FORMA_ELLIOTT[dibujar.tipo]
+    if (puntos.length >= 2 && forma) {
+      cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'elliott', forma, puntos: puntos.map(q => puntoDelDia(actual.puntos, q.i, q.precio)) }])
       setVer(x => ({ ...x, ell: false }))
     }
     setDibujarEstado({ tipo: null, puntos: [] })
+  }
+  // Doble click o click derecho en el gráfico mientras se cuenta: «hasta acá».
+  const terminarDesdeElGrafico = () => {
+    if (FORMA_ELLIOTT[dibujar.tipo] && dibujar.puntos.length >= 2) { terminarElliott(); return true }
+    return false
   }
   // Los dibujos en lo que se ve: cada punto en su lugar (`k`) y su precio.
   const enVista = (q) => ({ k: lugarDelDia(diaDelPunto(actual.puntos, q)), precio: q.precio })
   const dibujosEnVista = misDibujos.map(d => (d.tipo === 'horizontal' ? d
     : d.tipo === 'elliott' ? { ...d, puntos: d.puntos.map(enVista) }
-      : { ...d, a: enVista(d.a), b: enVista(d.b) }))
+      : { ...d, a: enVista(d.a), b: enVista(d.b), ...(d.c ? { c: enVista(d.c) } : {}) }))
   const herramienta = medir.activo ? 'medir' : dibujar.tipo
   const medida = medir.activo ? medirEntre(actual.puntos, medir.a, medir.b) : null
   // Lo que dice un punto medido: su día, o cuántos días de mercado después de hoy.
@@ -489,7 +513,7 @@ export default function LecturaTecnica({
                 </>
               ) : (
                 <>
-                  {dibujar.tipo === 'elliott' && dibujar.puntos.length >= 2 && (
+                  {FORMA_ELLIOTT[dibujar.tipo] && dibujar.puntos.length >= 2 && (
                     <button type="button" onClick={() => terminarElliott()}
                       className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-data-cyan/60 bg-data-cyan/15 text-ink-0 font-medium">Terminar acá</button>
                   )}
@@ -512,7 +536,7 @@ export default function LecturaTecnica({
               // Con el primer punto puesto, lo que daría la medición hasta el mouse.
               hasta: medir.a && !medir.b ? (k, precio) => medirEntre(actual.puntos, medir.a, { i: diaDelLugar(k), precio }) : null,
             } : null}
-            onToque={herramienta ? tocar : null}
+            onToque={herramienta ? tocar : null} onTerminar={terminarDesdeElGrafico}
             dibujos={dibujosEnVista} elegido={elegido} onElegir={setElegido}
             trazo={dibujar.puntos.length ? { tipo: dibujar.tipo, puntos: dibujar.puntos.map(q => ({ k: lugarDelDia(q.i), precio: q.precio })) } : null} />
           {rango === 'tuyo' && !ventana && primera && primera < actual.puntos[0].d && (
@@ -582,22 +606,34 @@ export default function LecturaTecnica({
   )
 }
 
-// Lo que dice el cartel mientras se dibuja.
+// Las herramientas de Elliott a mano y la forma de conteo que dibujan.
+const FORMA_ELLIOTT = { impulso: 'impulso', correccion: 'correccion' }
+
+// Lo que dice el cartel mientras se dibuja. «Esc cancela», como TradingView.
 function textoDibujando({ tipo, puntos }) {
-  if (tipo === 'horizontal') return 'Tocá la altura del gráfico (el precio) donde va la línea horizontal.'
+  const esc = ' (Esc cancela.)'
+  if (tipo === 'horizontal') return 'Tocá la altura del gráfico (el precio) donde va la línea horizontal.' + esc
   if (tipo === 'tendencia') {
-    return puntos.length ? 'Ahora tocá donde termina la línea (también podés tocar el espacio vacío de la derecha).'
-      : 'Tocá donde empieza la línea de tendencia.'
+    return (puntos.length ? 'Ahora tocá donde termina la línea (también podés tocar el espacio vacío de la derecha).'
+      : 'Tocá donde empieza la línea de tendencia.') + esc
   }
   if (tipo === 'fibonacci') {
-    return puntos.length ? 'Ahora tocá donde termina el tramo (el pico de la suba o el piso de la bajada).'
-      : 'Tocá donde arranca el tramo que querés medir (el pozo de una suba o el techo de una bajada). Al terminar se apaga el Fibonacci automático, para que no se mezclen.'
+    return (puntos.length ? 'Ahora tocá donde termina el tramo (el pico de la suba o el piso de la bajada).'
+      : 'Retroceso: tocá donde arranca el tramo que querés medir (el pozo de una suba o el techo de una bajada). Al terminar se apaga el Fibonacci automático, para que no se mezclen.') + esc
   }
-  if (tipo === 'elliott') {
-    const sigue = ETIQUETAS_ELLIOTT[puntos.length]
-    return !puntos.length
-      ? 'Tocá el arranque del conteo (el 0). Después, una por una, las ondas 1 a 5 y, si querés, A, B y C. Al terminar se apaga el conteo automático.'
-      : `Ahora tocá la onda ${sigue}${puntos.length >= 2 ? ', o «Terminar acá» si tu conteo va por ahí' : ''}.`
+  if (tipo === 'extension') {
+    return ['Extensión: tocá donde arranca el movimiento (por ejemplo, el pozo de la suba).',
+      'Ahora tocá donde termina el movimiento (el pico).',
+      'Ahora tocá donde terminó el retroceso: desde ahí se proyectan los niveles hacia adelante.'][puntos.length] + esc
+  }
+  if (FORMA_ELLIOTT[tipo]) {
+    const etiquetas = etiquetasDe(FORMA_ELLIOTT[tipo])
+    if (!puntos.length) {
+      return (tipo === 'impulso'
+        ? 'Impulso: tocá el arranque (el 0) y después, una por una, las ondas 1 a 5.'
+        : 'Corrección: tocá dónde arranca y después las ondas A, B y C.') + ' Al terminar se apaga el conteo automático.' + esc
+    }
+    return `Ahora tocá la onda ${etiquetas[puntos.length]}${puntos.length >= 2 ? '. Para terminar acá: doble click, click derecho o «Terminar acá»' : ''}.${esc}`
   }
   return ''
 }
@@ -607,6 +643,7 @@ const ELEGIDO = {
   horizontal: ['Línea horizontal elegida.', 'Borrar esta línea'],
   tendencia: ['Línea de tendencia elegida.', 'Borrar esta línea'],
   fibonacci: ['Tu Fibonacci, elegido.', 'Borrar este Fibonacci'],
+  extension: ['Tu extensión de Fibonacci, elegida.', 'Borrar esta extensión'],
   elliott: ['Tu conteo de Elliott, elegido.', 'Borrar este conteo'],
 }
 
@@ -706,10 +743,8 @@ function botonesDeLaBarra({
     estado: dibujar.tipo === id ? estadoOn : estadoOff,
     onClick: () => setDibujar(d => (d.tipo === id ? { tipo: null, puntos: [] } : { tipo: id, puntos: [] })),
   })
-  const aMano = (id) => ({
-    id, nombre: 'A mano', activo: dibujar.tipo === id, sinDatos: lleno,
-    detalle: id === 'fibonacci' ? 'Marcá vos el tramo: dónde arranca y dónde termina. Apaga el automático.'
-      : 'Contá vos las ondas, un toque por onda (0, 1, 2…). Apaga el automático.',
+  const aMano = (id, nombre, detalle) => ({
+    id, nombre, detalle, activo: dibujar.tipo === id, sinDatos: lleno,
     onClick: () => setDibujar({ tipo: id, puntos: [] }),
   })
   return {
@@ -722,8 +757,8 @@ function botonesDeLaBarra({
       // Fibonacci y Elliott: el automático y el «a mano» desde UN lugar.
       [
         { id: 'menu-fibonacci', nombre: 'Fibonacci', icono: <IconoFibonacci />,
-          activo: (!sinFib && !!ver.fib) || dibujar.tipo === 'fibonacci',
-          estado: dibujar.tipo === 'fibonacci' ? 'Marcando a mano' : !sinFib && ver.fib ? 'El automático, prendido' : 'El automático o a mano',
+          activo: (!sinFib && !!ver.fib) || dibujar.tipo === 'fibonacci' || dibujar.tipo === 'extension',
+          estado: dibujar.tipo === 'fibonacci' || dibujar.tipo === 'extension' ? 'Marcando a mano' : !sinFib && ver.fib ? 'El automático, prendido' : 'El automático o a mano',
           menu: [
             { id: 'fib', nombre: 'Automático', interruptor: true, activo: !!ver.fib, sinDatos: sinFib,
               detalle: 'Rendi busca el último tramo de suba o de bajada y dibuja sus niveles.',
@@ -732,11 +767,12 @@ function botonesDeLaBarra({
                 if (!ver.fib) acercar(ventanaDelTramo(actual.puntos, fib, nVista))
                 alternar('fib')
               } },
-            aMano('fibonacci'),
+            aMano('fibonacci', 'Retroceso a mano', 'Marcá vos el tramo: dónde arranca y dónde termina. Apaga el automático.'),
+            aMano('extension', 'Extensión a mano', 'Tres toques: dónde arranca y termina un movimiento y dónde terminó su retroceso. Proyecta niveles hacia adelante.'),
           ] },
         { id: 'menu-elliott', nombre: 'Ondas de Elliott', icono: <IconoElliott />,
-          activo: (!sinEll && !!ver.ell) || dibujar.tipo === 'elliott',
-          estado: dibujar.tipo === 'elliott' ? 'Contando a mano' : !sinEll && ver.ell ? 'El automático, prendido' : 'El automático o a mano',
+          activo: (!sinEll && !!ver.ell) || !!FORMA_ELLIOTT[dibujar.tipo],
+          estado: FORMA_ELLIOTT[dibujar.tipo] ? 'Contando a mano' : !sinEll && ver.ell ? 'El automático, prendido' : 'El automático o a mano',
           menu: [
             { id: 'ell', nombre: 'Automático', interruptor: true, activo: !!ver.ell, sinDatos: sinEll,
               detalle: 'Rendi busca un conteo posible sobre los picos y pozos del gráfico.',
@@ -744,7 +780,8 @@ function botonesDeLaBarra({
                 if (!ver.ell) acercar(ventanaDesde(actual.puntos, fechaDelConteo(ell), nVista))
                 alternar('ell')
               } },
-            aMano('elliott'),
+            aMano('impulso', 'Impulso 1-5 a mano', 'Tocá el 0 y las ondas 1 a 5. Apaga el automático.'),
+            aMano('correccion', 'Corrección A-B-C a mano', 'Tocá dónde arranca y las ondas A, B y C. Apaga el automático.'),
           ] },
       ],
       [
@@ -957,7 +994,7 @@ function rotulosDeMeses(puntos) {
   })
 }
 
-function Grafico({ leyenda = null, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null }) {
+function Grafico({ leyenda = null, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null }) {
   const conVelas = tipo === 'velas'
   // Los lugares del ancho: los días más el aire vacío de la derecha.
   const lugares = puntos.length + huecos
@@ -1276,9 +1313,11 @@ function Grafico({ leyenda = null, puntos, huecos = 0, moneda, promedio, marcas:
         <div ref={ref} className={`relative mr-[72px] h-[42vh] min-h-56 sm:h-[58vh] sm:min-h-64 select-none touch-pan-y cursor-crosshair ${precioMano ? 'overflow-hidden' : ''}`}
           onMouseDown={e => { arrastre.current = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY } }}
           onMouseUp={e => {
-            // Un click sin arrastrar, en el modo medir, marca ese día.
+            // Un click sin arrastrar, en el modo medir, marca ese día. Sólo el
+            // botón izquierdo: el derecho termina un conteo (onContextMenu).
             const a = arrastre.current
             arrastre.current = null
+            if (e.button != null && e.button !== 0) return
             if (!a || Date.now() - ultimoDedo.current < 800) return
             if (Math.abs(e.clientX - a.x0) >= 5 || Math.abs(e.clientY - a.y0) >= 5) return
             if (onToque) tocarEn(e.clientX, e.clientY)
@@ -1298,6 +1337,8 @@ function Grafico({ leyenda = null, puntos, huecos = 0, moneda, promedio, marcas:
             if (onToque) setCursor({ k: lugarEn(e.clientX), precio: precioEn(e.clientY) })
           }}
           onMouseLeave={() => { setHover(null); setCursor(null); arrastre.current = null }}
+          onDoubleClick={() => { onTerminar?.() }}
+          onContextMenu={e => { if (onToque && onTerminar?.()) e.preventDefault(); else if (onToque) e.preventDefault() }}
           onTouchStart={e => {
             const t = e.touches[0]
             dedo.current = { x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, quieto: e.touches.length === 1 }
