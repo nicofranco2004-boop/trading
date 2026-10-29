@@ -1462,11 +1462,9 @@ export default function PositionsMobile() {
   const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcValuacion  // PF → USD para el total
   const pfInvestedUsd = (pfTotals.USD?.capital || 0) + (pfTotals.ARS?.capital || 0) / tcValuacion
 
-  // Radiografía técnica: la MISMA pieza que en la compu (R6). Cada lote pesa
-  // su `valueUsd` de `enriched`, el que suma `total` (el número de arriba); los
-  // plazos fijos suman sin lectura.
+  // Radiografía técnica: la MISMA pieza que en la compu (R6). El % lo manda el
+  // servidor en el mismo pedido que la lectura de cada fila (senales_semana.reparto).
   const lecturas = useLecturasCartera(positions)
-  const radiografiaExtra = useMemo(() => (pfValueUsd > 0 ? [{ nombre: 'plazos fijos', valor: pfValueUsd }] : []), [pfValueUsd])
 
   // ─── El P&L no realizado del hero ───────────────────────────────────────
   // Espejo del desktop (Positions.jsx:1377-1398). Se deriva SUMANDO lo mismo
@@ -1725,8 +1723,8 @@ export default function PositionsMobile() {
           mep={dolar?.mep?.medio ?? dolar?.mep?.venta ?? tcValuacion}
           onCambio={(cobro) => recalculo.anotar(cobro, loadAll)} className="mt-3" />
         {/* Radiografía técnica: el MISMO componente que Cartera de escritorio (R6). */}
-        <RadiografiaTecnica lotes={enriched} valorDe={valorUsdDeFila} extra={radiografiaExtra}
-          indice={lecturas.indice} cargando={lecturas.cargando} error={lecturas.error} className="mt-3" />
+        <RadiografiaTecnica lotes={enriched} reparto={lecturas.reparto}
+          cargando={lecturas.cargando} error={lecturas.error} className="mt-3" />
       </div>
 
       {/* Los ajustes de vista viven en un sheet, así que la lista tiene que
@@ -2554,8 +2552,6 @@ function tickerKey(p) {
 }
 
 const ANCHO_ANCLA = 118
-// El valor de una fila para la radiografía técnica: el que ya suma el total.
-const valorUsdDeFila = p => p.valueUsd || 0
 const ANCHO_COL = 108
 
 // El orden es el del desktop (Valor · P&L · Var. día) y después lo que hasta

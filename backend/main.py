@@ -2627,6 +2627,28 @@ def init_db():
             );
         """)
 
+        # Tu tesis: por qué compraste un activo (tesis.py). Una por (usuario,
+        # activo) y por día: reescribirla otro día guarda otra y la vieja queda
+        # para las ventas que hiciste mientras valía. Tabla nueva, sin ALTER: el
+        # índice va en el mismo bloque y es seguro en una base ya creada.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tesis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                asset TEXT NOT NULL,             -- el ticker, como lo guarda la cartera
+                texto TEXT NOT NULL,
+                escrita_el TEXT NOT NULL,        -- 'YYYY-MM-DD', día argentino
+                accion_local INTEGER NOT NULL DEFAULT 0,  -- acción argentina: la tendencia sale de BYMA
+                tendencia_json TEXT,             -- tecnico.tendencia_del_dia del día que se escribió
+                recordar_tipo TEXT,              -- '3m' | 'fecha' | 'balance'
+                recordar_el TEXT,                -- día del aviso
+                alert_id INTEGER,                -- alerts.id (kind='recordatorio')
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_tesis_user_asset ON tesis(user_id, asset, escrita_el);
+        """)
+
         # ─── TWR: períodos SELLADOS ──────────────────────────────────────────
         # Append-only. Cada mes cerrado se calcula UNA vez y no se reescribe nunca.
         # Sin esto el número de ayer cambia hoy: `_migrate_snapshots_netdep` corre
@@ -5321,6 +5343,9 @@ _RESET_ADMIN_EXTRA_TABLES = (
     "user_broker_credentials", "import_mappings",
     # Cómo le llega el resumen de los sábados (pieza 15): lo configuró.
     "resumen_semanal_prefs",
+    # Las tesis van con sus recordatorios (que son alertas): el reset del
+    # usuario no las toca, como a las alertas.
+    "tesis",
 )
 
 
@@ -11696,20 +11721,46 @@ def post_tecnico_cartera(body: CarteraTecnicaIn, uid: int = Depends(get_effectiv
     radiografía de la Cartera (tecnico.para_la_cartera). La pantalla manda sus
     activos con la marca `local` de la ficha. Un símbolo que no es un ticker
     (un fondo con espacios en el nombre) vuelve como «sin lectura», sin tirar
-    abajo el resto del pedido."""
+    abajo el resto del pedido.
+
+    `reparto`: el % de tu plata en tendencia de fondo alcista con su «semana
+    pasada» (senales_semana.reparto, LA cuenta: la misma del Panorama, de la
+    pestaña Señales y del mail de los sábados). Viene en este pedido, que la
+    Cartera ya hace, para no sumar otro."""
     import tecnico
-    return _lecturas_tecnicas(body, tecnico.para_la_cartera)
+    import senales_semana
+    from fechas import hoy_art_date
+    out = _lecturas_tecnicas(body, tecnico.para_la_cartera)
+    with db_abierta() as conn:
+        out["reparto"] = senales_semana.reparto(conn, uid, hoy_art_date())
+    return out
 
 
 @app.post("/api/tecnico/lista")
 def post_tecnico_lista(body: CarteraTecnicaIn, uid: int = Depends(get_effective_user)):
     """«Tu lista, con su lectura técnica» (inicio → Watchlist → «Ver como
     tablero»): lo que tenés y lo que seguís, en dólares (tecnico.para_la_lista).
-    La pantalla manda cada activo con la marca `local` de la ficha. Mismo tope y
-    misma regla que /api/tecnico/cartera: un símbolo que no es un ticker vuelve
-    «sin lectura» sin tirar abajo el resto."""
+    La pantalla manda lo que sigue (su watchlist) con la marca `local` de la
+    ficha; lo que TENÉS lo pone el servidor. Mismo tope y misma regla que
+    /api/tecnico/cartera: un símbolo que no es un ticker vuelve «sin lectura»
+    sin tirar abajo el resto.
+
+    `tenencias`: [{asset, local, peso, tipo}] — lo que tenés y cuánto pesa sobre
+    toda tu plata, con la valuación del servidor (`senales_semana.cartera`, LA
+    misma de `reparto` y de la pestaña Señales: el «Sí · 12%» de cada fila no
+    se calcula en la pantalla). De cada una viene también su lectura."""
     import tecnico
-    return _lecturas_tecnicas(body, tecnico.para_la_lista)
+    import senales_semana
+    with db_abierta() as conn:
+        car = senales_semana.cartera(conn, uid)
+    tuyas = list(car["tenencias"])
+    out = _lecturas_tecnicas(
+        body, lambda conn, pedidos: tecnico.para_la_lista(conn, tuyas + [k for k in pedidos if k not in car["tenencias"]]))
+    total = car["total"]
+    out["tenencias"] = [
+        {"asset": a, "local": l, "peso": (v / total) if total > 0 else None, "tipo": car["tipos"].get((a, l)) or None}
+        for (a, l), v in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
+    return out
 
 
 @app.get("/api/tus-senales")
@@ -11909,6 +11960,38 @@ def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: s
                          (dueno, sym, moneda))
         conn.commit()
     return {"ok": True, "dibujos": len(lista)}
+
+
+class _PedidoTendencia(BaseModel):
+    id: str = Field(..., max_length=40)
+    asset: str = Field(..., max_length=40)
+    local: bool = False
+    fecha: str = Field(..., max_length=10)
+
+
+class TendenciasEnFechasIn(BaseModel):
+    # Tope al leer el pedido (422), no después de armar la lista.
+    items: List[_PedidoTendencia] = Field(..., max_length=2000)
+
+
+@app.post("/api/tecnico/en-fechas")
+def tecnico_en_fechas(data: TendenciasEnFechasIn, uid: int = Depends(get_effective_user)):
+    """¿Cómo estaba la tendencia de fondo de cada activo en cada fecha? Para el
+    diario de operaciones: la del día en que compraste cada operación cerrada.
+    Misma regla y misma serie que la ficha (tecnico.tendencia_del_dia).
+    {resultados: {id: {tendencia, fecha, precio, media200, dist} | {tendencia: None, motivo}}}"""
+    import tecnico
+    pedidos = []
+    out = {}
+    for it in data.items:
+        sym = (it.asset or "").strip().upper()
+        if not _SYMBOL_RE.match(sym):
+            out[it.id] = {"tendencia": None, "motivo": "sin_velas"}
+            continue
+        pedidos.append({"id": it.id, "asset": sym, "local": it.local, "fecha": it.fecha})
+    with db_abierta() as conn:
+        out.update(tecnico.tendencias_en_fechas(conn, pedidos))
+    return {"resultados": out}
 
 
 @app.get("/api/admin/velas")
@@ -31151,7 +31234,7 @@ Además el JSON acepta "blocks" (máx 2): bloques VISUALES pre-armados que el fr
 · {"type":"alloc","items":[{"l":"Nvidia","pct":28},{"l":"Efectivo","pct":45}]} — composición de la cartera (pct reales del snapshot, máx 6 segmentos, que sumen ~100). Labels con el NOMBRE corto que usás al hablar ("Bitcoin", "YPF", "Galicia", "S&P 500"), no el ticker: "YPFD" o "SPY" no le dicen nada a quien no opera.
 · {"type":"scenario","if":"Nvidia cae 15%","then":"Tu cartera cae ~4%","tone":"neg"} — hipotéticos si→entonces (para "¿qué pasa si...?"). El "then" dice cuánto se mueve TODA la cartera, en % o en plata — nunca "pp" (puntos porcentuales): medido, salía "−19 pp en tu cartera total" y nadie fuera de finanzas lo entiende.
 · {"type":"table","cols":["Activo","Peso","Mes"],"rows":[["NVDA","28%","+9,1%"]]} — rankings/listas. Máx 4 columnas × 5 filas; valores numéricos con signo (+/−) para que se coloreen.
-· {"type":"actions","items":[{"label":"Crear alerta Nvidia −10%","to":"/alertas?new=NVDA&down=10"},{"label":"Ver atribución","to":"/analisis"}]} — botones que llevan al usuario a Rendi. SOLO estas rutas: /alertas (acepta ?new=TICKER&down=N o &up=N), /analisis, /posiciones, /operaciones, /fundamentals, /novedades, /activo/TICKER, /imports. Máx 3. Usalo cuando la respuesta invita a una acción concreta en la app. EL LINK CUMPLE LO QUE PROMETE EL LABEL: "Crear alerta X −10%" lleva &down=10 (sin eso el formulario abría "precio ≥ ___", vacío y al revés). Lo que el usuario tiene EN PESOS (acciones argentinas y CEDEARs, brokers en ARS) va con .BA: /alertas?new=GGAL.BA&down=10 — sin el .BA la alerta queda sobre la acción que cotiza en Nueva York, no sobre la que tiene.
+· {"type":"actions","items":[{"label":"Crear alerta Nvidia −10%","to":"/alertas?new=NVDA&down=10"},{"label":"Ver atribución","to":"/analisis"}]} — botones que llevan al usuario a Rendi. SOLO estas rutas: /alertas (acepta ?new=TICKER&down=N o &up=N), /analisis, /analisis-tecnico (Análisis técnico: tendencia de lo que tiene y de su watchlist; ?tab=lista la tabla, ?tab=senales lo que cambió esta semana), /posiciones, /operaciones, /fundamentals (Análisis fundamental), /novedades, /activo/TICKER, /imports. Máx 3. Usalo cuando la respuesta invita a una acción concreta en la app. EL LINK CUMPLE LO QUE PROMETE EL LABEL: "Crear alerta X −10%" lleva &down=10 (sin eso el formulario abría "precio ≥ ___", vacío y al revés). Lo que el usuario tiene EN PESOS (acciones argentinas y CEDEARs, brokers en ARS) va con .BA: /alertas?new=GGAL.BA&down=10 — sin el .BA la alerta queda sobre la acción que cotiza en Nueva York, no sobre la que tiene.
 
 RECETA — "¿cómo viene/está mi cartera?" (la pregunta más común, cuidala): prosa de 3-4 oraciones — estado general, qué lo explica, y LO más notable (riesgo, concentración o racha; UNO, no una lista). stats = el retorno del período, el versus benchmark (si summary.benchmarks está) y el dato saliente. blocks ideales: "compare" con los números REALES de summary.benchmarks (tu cartera vs S&P 500 e inflación) + "alloc" con la composición, o "actions" si detectaste algo accionable. Las posiciones NUNCA una por una en la prosa — para eso está la tabla.
 
@@ -31295,7 +31378,7 @@ BLOQUE ESTRUCTURADO PARA LA UI (obligatorio en respuestas de análisis)
 Al FINAL de cada respuesta de análisis, agregá una línea EXACTA `---RENDI---` seguida de UNA sola línea de JSON minificado:
 {"voz":"el resumen hablado — ver más abajo; VA PRIMERO","verdict":"2-3 palabras","tone":"pos|warn|neg|neutral","headline":"el dato principal en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor","t":"pos|warn|neg|neutral"}],"sources":["ej: 12 posiciones"]}
 Reglas: stats máx 3 con números REALES del snapshot (nunca inventados), y NUNCA un número que ya dibuja un block (la leyenda del "alloc", una fila de la "table") — si el gráfico ya lo muestra, la tarjeta sobra (medido: 18 de 24 tarjetas repetían el gráfico de abajo); sources máx 2; NO incluyas "followups" (este plan no tiene chat libre); la prosa va antes y no menciona el bloque; omitilo en saludos y en el flujo de registro de operaciones.
-El JSON también acepta "blocks" (máx 2) — bloques visuales: {"type":"compare","items":[{"l":"Tu cartera","v":"+18%","pct":90},...]} (comparaciones, primer item = el usuario, máx 4) · {"type":"alloc","items":[{"l":"Nvidia","pct":28},...]} (composición, máx 6, pct reales, labels con el nombre y no el ticker) · {"type":"scenario","if":"...","then":"...","tone":"neg"} (si→entonces) · {"type":"table","cols":[...],"rows":[[...]]} (máx 4×5, valores con signo) · {"type":"actions","items":[{"label":"Crear alerta Nvidia −10%","to":"/alertas?new=NVDA&down=10"}]} (lo que tiene en pesos va con .BA: GGAL.BA; cada atajo hace algo de ESTA respuesta — nada de links genéricos como "Ver posiciones", que salía en todas; solo rutas internas /alertas /analisis /posiciones /operaciones /fundamentals /novedades /activo/TICKER /imports, máx 3). En respuestas de análisis incluí al menos 1. Guía rápida por pregunta: riesgo/concentración → "alloc" o "scenario" + "actions" (crear alerta del activo pesado); comparaciones vs benchmark → "compare" con summary.benchmarks; earnings/listas → "table" + action a /novedades. Los valores como STRINGS formateados ("+6,7%"), no números crudos. "actions" son atajos DE LA APP — nunca consejo de comprar/vender.""" + tts.SUMMARY_PROMPT
+El JSON también acepta "blocks" (máx 2) — bloques visuales: {"type":"compare","items":[{"l":"Tu cartera","v":"+18%","pct":90},...]} (comparaciones, primer item = el usuario, máx 4) · {"type":"alloc","items":[{"l":"Nvidia","pct":28},...]} (composición, máx 6, pct reales, labels con el nombre y no el ticker) · {"type":"scenario","if":"...","then":"...","tone":"neg"} (si→entonces) · {"type":"table","cols":[...],"rows":[[...]]} (máx 4×5, valores con signo) · {"type":"actions","items":[{"label":"Crear alerta Nvidia −10%","to":"/alertas?new=NVDA&down=10"}]} (lo que tiene en pesos va con .BA: GGAL.BA; cada atajo hace algo de ESTA respuesta — nada de links genéricos como "Ver posiciones", que salía en todas; solo rutas internas /alertas /analisis /analisis-tecnico (?tab=lista o ?tab=senales) /posiciones /operaciones /fundamentals /novedades /activo/TICKER /imports, máx 3). En respuestas de análisis incluí al menos 1. Guía rápida por pregunta: riesgo/concentración → "alloc" o "scenario" + "actions" (crear alerta del activo pesado); comparaciones vs benchmark → "compare" con summary.benchmarks; earnings/listas → "table" + action a /novedades. Los valores como STRINGS formateados ("+6,7%"), no números crudos. "actions" son atajos DE LA APP — nunca consejo de comprar/vender.""" + tts.SUMMARY_PROMPT
 
 
 # Strip markdown que el modelo a veces inyecta a pesar del prompt. Aplicamos
@@ -37335,7 +37418,7 @@ _US_EXCHANGES = {"NMS", "NYQ", "NGM", "NCM", "ASE", "PCX", "BTS", "NAS", "NYS"}
 def search_tickers(q: str, uid: int = Depends(get_effective_user)):
     """Resuelve texto libre —incluido el NOMBRE de la empresa— a tickers reales.
 
-    Existe porque el buscador de "Calidad de cartera" filtraba contra
+    Existe porque el buscador de "Análisis fundamental" filtraba contra
     POPULAR_TICKERS, una allowlist de 104 símbolos con apenas 21 acciones US.
     Reportado por un usuario: no podía comparar AMD contra INTEL. La causa no era
     el backend (que acepta cualquier ticker y responde por `quoteType`) sino que
@@ -37383,11 +37466,11 @@ def search_tickers(q: str, uid: int = Depends(get_effective_user)):
 
 @app.get("/api/fundamentals/{ticker}")
 def get_fundamentals(ticker: str, uid: int = Depends(get_effective_user)):
-    """Scorecard de fundamentales de una acción ("Calidad de cartera").
+    """Scorecard de fundamentales de una acción ("Análisis fundamental").
 
     Auth requerida, TODOS los tiers, SIN cupo (data de yfinance cacheada).
     (Estuvo admin-only 2026-06-28→06-29 mientras se rediferenciaba de Vesty;
-    rehabilitado para usuarios al lanzar "Calidad de cartera".)
+    rehabilitado para usuarios al lanzar "Análisis fundamental".)
     Orquesta los fetchers existentes (scorecard + analysts + fundamentals/
     profile) y arma el contrato. Para cripto/ETF/bono/CEDEAR-ARS/inválido
     devuelve {available:false, reason} con HTTP 200 (no es un error).
@@ -48162,7 +48245,11 @@ def alerts_list(uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         rows = conn.execute(
-            "SELECT * FROM alerts WHERE user_id=? ORDER BY created_at DESC", (uid,)
+            # Los recordatorios de una tesis (`kind='recordatorio'`, tesis.py) son
+            # alertas del mismo motor, pero se ven y se manejan desde la tesis:
+            # «Mis alertas» no sabe dibujarlos. Sus avisos sí salen abajo.
+            "SELECT * FROM alerts WHERE user_id=? AND kind != 'recordatorio' "
+            "ORDER BY created_at DESC", (uid,)
         ).fetchall()
         events = conn.execute(
             """SELECT id, alert_id, symbol, fired_at, price, message, seen
@@ -48491,6 +48578,105 @@ def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+# ─── Tu tesis (tesis.py) ──────────────────────────────────────────────────────
+
+class TesisIn(BaseModel):
+    # El activo como lo guarda la cartera ('GGAL', 'FCI:COCOS-RENDIMIENTO-A'):
+    # viaja en el cuerpo y no en la ruta porque un fondo no tiene forma de
+    # ticker (`_SYMBOL_RE` lo rechazaba y no se podía escribir su tesis).
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
+    texto: str = Field(..., max_length=2000)
+    # Acción argentina: la tendencia sale de su precio en BYMA ÷ el MEP, no del
+    # ADR (lo decide la pantalla, como en la ficha: `esAccionLocal`).
+    local: bool = False
+
+
+class RecordatorioIn(BaseModel):
+    tipo: str = Field(..., max_length=10)          # '3m' | 'fecha' | 'balance'
+    fecha: Optional[str] = Field(None, max_length=10)
+
+
+def _proximo_balance(conn, asset: str):
+    """La fecha del próximo balance (earnings) guardada en `financial_events`,
+    con la misma regla de «tener los eventos al día» que la pantalla de Eventos
+    (`_eventos_al_dia`). None si no hay (acción sin balances, ETF, bono)."""
+    _eventos_al_dia(conn, [asset])
+    for e in eventos_guardados(conn, [asset], 200):
+        if e["event_type"] == "earnings":
+            return e["event_date"]
+    return None
+
+
+@app.get("/api/tesis")
+def tesis_list(uid: int = Depends(get_effective_user)):
+    """Tus tesis (con su historia) y la tendencia de hoy de cada activo."""
+    import tesis as _tesis
+    with db_abierta() as conn:
+        return _tesis.listar(conn, uid)
+
+
+@app.put("/api/tesis")
+def tesis_guardar(data: TesisIn, uid: int = Depends(get_effective_user)):
+    """Escribe o corrige la tesis de un activo (el mismo día se corrige; otro
+    día se guarda una nueva y la vieja queda: ver tesis.py)."""
+    import tesis as _tesis
+    # Sin pasarlo a mayúsculas: tiene que coincidir con `positions.asset` tal
+    # cual, que es contra lo que la pantalla lo busca.
+    sym = (data.asset or "").strip()
+    if not sym or any(ord(c) < 32 or c in "<>" for c in sym):
+        raise HTTPException(400, "Ese activo no es válido.")
+    with db_abierta() as conn:
+        try:
+            tid = _tesis.guardar(conn, uid, sym, data.texto, data.local)
+        except _tesis.TesisError as e:
+            raise HTTPException(400, str(e))
+        conn.commit()
+        return {"ok": True, "id": tid}
+
+
+@app.delete("/api/tesis/{tesis_id}")
+def tesis_borrar(tesis_id: int, uid: int = Depends(get_effective_user)):
+    import tesis as _tesis
+    with db_abierta() as conn:
+        try:
+            _tesis.borrar(conn, uid, tesis_id)
+        except LookupError as e:
+            raise HTTPException(404, str(e))
+        conn.commit()
+        return {"ok": True}
+
+
+@app.put("/api/tesis/{tesis_id}/recordatorio")
+def tesis_recordatorio(tesis_id: int, data: RecordatorioIn, uid: int = Depends(get_effective_user)):
+    """«Recordarme revisarla»: en 3 meses, una fecha o el día después del
+    próximo balance. Es una alerta del motor de siempre (mail + push)."""
+    import tesis as _tesis
+    with db_abierta() as conn:
+        t = conn.execute("SELECT asset FROM tesis WHERE id=? AND user_id=?",
+                         (tesis_id, uid)).fetchone()
+        if not t:
+            raise HTTPException(404, "No encontramos esa tesis.")
+        balance = _proximo_balance(conn, t["asset"]) if data.tipo == "balance" else None
+        try:
+            dia = _tesis.fijar_recordatorio(conn, uid, tesis_id, data.tipo, data.fecha, balance)
+        except _tesis.TesisError as e:
+            raise HTTPException(400, str(e))
+        conn.commit()
+        return {"ok": True, "fecha": dia, "balance": balance}
+
+
+@app.delete("/api/tesis/{tesis_id}/recordatorio")
+def tesis_sin_recordatorio(tesis_id: int, uid: int = Depends(get_effective_user)):
+    import tesis as _tesis
+    with db_abierta() as conn:
+        try:
+            _tesis.quitar_recordatorio(conn, uid, tesis_id)
+        except LookupError as e:
+            raise HTTPException(404, str(e))
+        conn.commit()
+        return {"ok": True}
+
+
 @app.post("/api/alerts/events/seen")
 def alerts_events_seen(uid: int = Depends(get_effective_user)):
     """Marca los eventos de alerta como vistos (apaga el badge in-app)."""
@@ -48574,6 +48760,16 @@ def _evaluar_alertas_job() -> dict:
         # Mismo ciclo: las alertas del LIBRO del asesor (movimiento de la
         # cartera de un cliente) se evalúan acá → el asesor no tiene que dar
         # de alta ningún cron nuevo.
+        # Los recordatorios de las tesis («Recordarme revisarla»): mismo
+        # cron, misma entrega, su propia guarda.
+        try:
+            result.update(_ae.evaluar_recordatorios(conn))
+        except Exception as _ex:
+            log.error("recordatorios de tesis en el cron: %s", _ex)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         try:
             import advisor_alerts
             result["advisor"] = advisor_alerts.evaluate(
@@ -49379,7 +49575,8 @@ def primeros_pasos(uid: int = Depends(get_current_user)):
         import market_brief
         fila = conn.execute("SELECT app_instalada_at FROM users WHERE id = ?", (uid,)).fetchone()
         alertas = conn.execute(
-            "SELECT COUNT(*) FROM alerts WHERE user_id = ?", (uid,)).fetchone()[0]
+            "SELECT COUNT(*) FROM alerts WHERE user_id = ? AND kind != 'recordatorio'",
+            (uid,)).fetchone()[0]
         return {
             "app_instalada": bool(fila and fila["app_instalada_at"]),
             "dispositivos_push": _contar_dispositivos_push(conn, uid),

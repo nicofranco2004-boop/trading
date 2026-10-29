@@ -124,9 +124,9 @@ export const urlDeActivo = (simbolo) => `/activo/${encodeURIComponent((simbolo |
 // del celular, pages/MobileSearch). Una sola regla: la lupa tenía la suya y
 // llevaba a /posiciones#X, que nadie lee.
 //   • A la ficha del activo, lo tengas o no (con tus lotes si lo tenés).
-//     Antes, lo que no tenías iba a "Calidad de cartera" y una cripto o un ETF
+//     Antes, lo que no tenías iba a "Análisis fundamental" y una cripto o un ETF
 //     a ningún lado: no había forma de ver su gráfico sin agregarlo a la
-//     watchlist. "Calidad de cartera" sigue a un toque, desde la ficha.
+//     watchlist. "Análisis fundamental" sigue a un toque, desde la ficha.
 //   • Un bono o un fondo que no tenés: a ningún lado (null). No tienen gráfico
 //     técnico y la ficha quedaría casi vacía.
 const SIN_FICHA_SI_NO_LO_TENES = new Set(['bond', 'fci'])
@@ -139,7 +139,7 @@ export function destinoDeTicker(simbolo, { tuyo = false, tipo = null } = {}) {
 
 export const urlDeEmpresa = (ticker) => `/fundamentals?ticker=${encodeURIComponent(ticker)}`
 
-// La empresa de un ticker en "Calidad de cartera", que sólo arma el puntaje de
+// La empresa de un ticker en "Análisis fundamental", que sólo arma el puntaje de
 // acciones que cotizan en dólares en EE.UU.:
 //   • Un CEDEAR (AAPL.BA) se abre por esa acción (AAPL; DISN → DIS:
 //     CEDEAR_EN_EEUU): en pesos el servidor no lo arma y él mismo sugiere ese
@@ -165,7 +165,7 @@ export function tickerDeEmpresa(simbolo, tipo) {
 }
 
 // La empresa de un activo TUYO: la ficha del activo y los botones "Tus
-// posiciones" de Calidad de cartera. Es la regla del buscador, pero el tipo
+// posiciones" de Análisis fundamental. Es la regla del buscador, pero el tipo
 // sale de la clase de la torta (assetClass.classifyAsset), que mira en qué
 // MERCADO está cada tenencia y no sólo el ticker. La ficha preguntaba sólo por
 // el ticker: TECO2 no llevaba a Telecom (TEO), DISN abría "DISN" y no Disney

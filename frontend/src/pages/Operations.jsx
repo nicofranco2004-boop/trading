@@ -43,6 +43,10 @@ import NumeroQueCambia, { textoDeDiferencia } from '../components/NumeroQueCambi
 import { useNumeroQueCambia } from '../hooks/useNumeroQueCambia'
 import TradesTable, { PAGE_SIZE } from '../components/operations/TradesTable'
 import TradesFeed from '../components/operations/TradesFeed'
+import DiarioResumen from '../components/operations/DiarioResumen'
+import TesisPosiciones from '../components/tesis/TesisPosiciones'
+import { useDiario } from '../hooks/useDiario'
+import { resumenDiario } from '../utils/diarioOperaciones'
 import MovementsTable, { MOV_PAGE_SIZE } from '../components/operations/MovementsTable'
 import MovementsFeed from '../components/operations/MovementsFeed'
 import CobrosView from '../components/operations/CobrosView'
@@ -76,6 +80,7 @@ function confirmarDeshacerCobroPf(pf) {
   )
 }
 
+const SIN_OPS = []
 const EMPTY = { date: hoyISO(), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: '', pnl_pct: '', commissions: '', mueve_efectivo: false }
 
 const RESULT_OPTIONS = [
@@ -407,6 +412,18 @@ export default function Operations() {
     [ops, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
   )
   const patterns = useMemo(() => patronesDeOperaciones(ops), [ops])
+  // El diario (pieza 11): la tendencia del día de cada compra y tus tesis, pedidos
+  // UNA vez acá y pasados por prop a la tabla, al feed y a las tarjetas.
+  // Sólo con la pestaña abierta: en «Todos los movimientos» no se muestra y el
+  // pedido de tendencias lee una serie por activo.
+  const opsDelDiario = tab === 'trades' ? ops : SIN_OPS
+  const diarioDatos = useDiario(opsDelDiario)
+  const diario = useMemo(() => ({
+    tendencias: diarioDatos.tendencias,
+    estadoTendencias: diarioDatos.estadoTendencias,
+    tesis: diarioDatos.tesis.items,
+  }), [diarioDatos.tendencias, diarioDatos.estadoTendencias, diarioDatos.tesis.items])
+  const resumen = useMemo(() => resumenDiario(ops, diarioDatos.tendencias), [ops, diarioDatos.tendencias])
   const periodOptions = useMemo(() => buildPeriodOptions(ops), [ops])
 
   const filteredOps = useMemo(() => {
@@ -665,6 +682,18 @@ export default function Operations() {
         </header>
       )}
 
+      {/* El diario: tiempo, rendimiento por año y tendencia al comprar, «Lo que
+          dicen tus números» y la tesis de una posición abierta. El mismo bloque
+          en las dos anchuras (R6): la grilla se acomoda sola. */}
+      {!loadingOps && (
+        <DiarioResumen
+          className={isMobile ? 'px-4 pt-3' : 'mb-4'}
+          resumen={resumen}
+          estadoTendencias={diarioDatos.estadoTendencias}
+          aparte={<TesisPosiciones tesis={diarioDatos.tesis} />}
+        />
+      )}
+
       {/* Strip de patrones — observaciones derivadas de las operaciones. */}
       {!isMobile && patterns.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-4">
@@ -765,6 +794,7 @@ export default function Operations() {
           page={currentPage}
           totalPages={totalPages}
           onPage={setPage}
+          diario={diario}
         />
       )}
 
@@ -792,7 +822,7 @@ export default function Operations() {
         </div>
       )}
       {isMobile && !loadingOps && groups.length > 0 && (
-        <TradesFeed groups={groups} histMoney={histMoney} onDelete={del} borrando={borrando.activo} nuevas={nuevas} />
+        <TradesFeed groups={groups} histMoney={histMoney} onDelete={del} borrando={borrando.activo} nuevas={nuevas} diario={diario} />
       )}
 
       {/* Sheet de filtros — sólo la rama angosta. */}

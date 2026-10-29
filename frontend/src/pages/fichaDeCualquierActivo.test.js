@@ -105,7 +105,7 @@ const SIN_CARTERA = {
   '/liquidez/': { disponible: false },
 }
 
-// Lo que contesta /api/fundamentals/{ticker} (el contrato de "Calidad de cartera").
+// Lo que contesta /api/fundamentals/{ticker} (el contrato de "Análisis fundamental").
 const FUNDAMENTALES = (ticker, nombre) => ({
   available: true, ticker, company_name: nombre, sector: 'Technology', currency: 'USD',
   score: { categories: [
@@ -140,7 +140,7 @@ describe('la ficha de un activo que no tenés', () => {
     expect(t).toContain('Sólido')
     expect(t).toContain('El precio hoy')
     expect(t).toContain('Caro')
-    expect(t).toContain('Compararla en Calidad de cartera')
+    expect(t).toContain('Compararla en Análisis fundamental')
     expect(t).not.toContain('Ver fundamentals de')
     const link = porAtributo(montado.contenedor, 'href', '/fundamentals?ticker=NVDA')
     expect(link).toBeTruthy()
@@ -623,7 +623,10 @@ describe('la ficha a todo el ancho y en secciones (Nico, 24/10)', () => {
     expect(titulos()).toEqual(['Análisis técnico', 'Tu operatoria en NVDA', 'Análisis fundamental'])
     // El título del técnico no queda repetido adentro del gráfico.
     expect(veces(t, 'Análisis técnico')).toBe(1)
-    expect(veces(t, 'Análisis fundamental')).toBe(1)
+    // El título de la sección y el link «Compararla en Análisis fundamental →»
+    // (la página se llamaba «Calidad de cartera»): dos, no un título repetido.
+    expect(veces(t, 'Análisis fundamental')).toBe(2)
+    expect(t).toContain('Compararla en Análisis fundamental')
   })
 
   it('lo que no tenés: técnico → fundamental, sin la sección tuya', async () => {

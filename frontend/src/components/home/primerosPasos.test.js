@@ -83,13 +83,17 @@ afterEach(async () => {
 const tocar = (parte) => enActo(() => clic(montado.contenedor, buscarBoton(montado.contenedor, parte)))
 
 describe('primeros pasos: tener Rendi a mano', () => {
-  it('arranca por instalar, notificaciones y alerta, y después la cartera', async () => {
+  // Desde el 2026-10-27 (9cc73167, pedido de Nico) la cartera va PRIMERO: quien
+  // se creaba la cuenta nunca cargaba nada. Antes esta prueba pedía «a mano»
+  // arriba y quedó roja porque nadie la actualizó con ese cambio.
+  it('arranca por la cartera (importar primero) y después instalar, notificaciones y alerta', async () => {
     dispositivo({ ua: IPHONE, conPush: false })
     montado = await montarLista()
     const t = texto(montado.contenedor)
-    const orden = ['Para tener Rendi a mano', 'Agregá Rendi a tu celular', 'Recomendado',
-      'Activá las notificaciones', 'Armá tu primera alerta', 'Para tener tu cartera bien',
-      'Importá tu historial', 'Conocé tus posiciones activas', 'Probá Mervall-E AI', 'Quiz de perfil inversor']
+    const orden = ['Para tener tu cartera bien', 'Importá tu historial', 'Recomendado',
+      'Conocé tus posiciones activas', 'Probá Mervall-E AI', 'Quiz de perfil inversor',
+      'Para tener Rendi a mano', 'Agregá Rendi a tu celular', 'Recomendado',
+      'Activá las notificaciones', 'Armá tu primera alerta']
     let desde = 0
     for (const parte of orden) {
       const i = t.indexOf(parte, desde)
@@ -97,6 +101,34 @@ describe('primeros pasos: tener Rendi a mano', () => {
       desde = i
     }
     expect(t).toContain('0 de 7 listos')
+  })
+
+  it('importar es obligatorio: sin «Ahora no» y la lista no se cierra hasta que haya un import', async () => {
+    const cerrar = (c) => {
+      const pila = [c]
+      while (pila.length) {
+        const n = pila.shift()
+        if (n.nodeName === 'BUTTON' && n.getAttribute?.('aria-label') === 'Cerrar checklist') return n
+        pila.push(...(n.childNodes || []))
+      }
+      return null
+    }
+    dispositivo({ ua: IPHONE, conPush: false })
+    montado = await montarLista()
+    let t = texto(montado.contenedor)
+    // El primer «Ahora no» de la lista es el de instalar, no el de importar.
+    const importar = t.indexOf('Importá tu historial')
+    expect(importar).toBeGreaterThanOrEqual(0)
+    expect(t.indexOf('Ahora no')).toBeGreaterThan(t.indexOf('Agregá Rendi a tu celular'))
+    expect(t.slice(importar, t.indexOf('Para tener Rendi a mano'))).not.toContain('Ahora no')
+    expect(cerrar(montado.contenedor)).toBeNull()
+    await montado.desmontar()
+
+    // Con un import hecho, aparece la X.
+    importo = true
+    dispositivo({ ua: IPHONE, conPush: false })
+    montado = await montarLista()
+    expect(cerrar(montado.contenedor)).not.toBeNull()
   })
 
   it('iPhone en Safari: «Activar» explica que primero hay que agregarla al inicio, con el botón al paso a paso', async () => {
@@ -140,8 +172,12 @@ describe('primeros pasos: tener Rendi a mano', () => {
     expect(t).toContain('Agregá Rendi a tu celular · para después')       // 1 día: escondido
     expect(t).not.toContain('Activá las notificaciones · para después')   // 4 días: volvió
     expect(t).toContain('Te avisamos al momento cuando se mueve lo que seguís')
-    // Volvió en su lugar (arriba, en «a mano»), no al final.
-    expect(t.indexOf('Activá las notificaciones')).toBeLessThan(t.indexOf('Para tener tu cartera bien'))
+    // Volvió en su lugar (en su grupo, «a mano»), no al final con lo dejado
+    // para después. Se mide contra su grupo y contra la lista de «para después»,
+    // no contra el otro grupo: el orden de los grupos es decisión de producto.
+    const enSuGrupo = t.indexOf('Activá las notificaciones')
+    expect(enSuGrupo).toBeGreaterThan(t.indexOf('Para tener Rendi a mano'))
+    expect(enSuGrupo).toBeLessThan(t.indexOf('Agregá Rendi a tu celular · para después'))
 
     // Justo antes de los 3 días, todavía no.
     await montado.desmontar()

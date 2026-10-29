@@ -206,7 +206,7 @@ describe('destinoDeTicker: a dónde lleva un ticker en los dos buscadores (⌘K 
   })
 })
 
-describe('tickerDeEmpresa: la empresa correcta en Calidad de cartera, o ninguna', () => {
+describe('tickerDeEmpresa: la empresa correcta en Análisis fundamental, o ninguna', () => {
   // Buscar el ticker tal cual abría OTRA empresa (verificado contra yfinance):
   // TEN era una naviera griega, AGRO Adecoagro, BOLT/CELU/PCAR/HAVA otras.
   it('una acción de EE.UU. es ella misma; un CEDEAR, su acción de EE.UU.', () => {

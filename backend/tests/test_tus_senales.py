@@ -15,7 +15,12 @@ Los casos que importan:
     22 (en UTC ya es sábado), no a las 9:59, y una sola vez;
   · sin cambios en la semana no se manda nada (pero el % se guarda igual);
   · «No quiero» (o no haber elegido): no se manda nada;
-  · el % de cada sábado se guarda y el sábado siguiente es «la semana pasada».
+  · el % de cada sábado se guarda y el sábado siguiente es «la semana pasada»;
+  · el % es UNA cuenta (senales_semana.reparto, 28/10): la Cartera (POST
+    /api/tecnico/cartera), el Panorama y la pestaña Señales (GET
+    /api/tus-senales) y el mail dicen el MISMO número, con sus grupos y el
+    porqué de cada «sin lectura»; y «la semana pasada» llega también a quien
+    nunca pidió el resumen.
 
 Corre con: cd backend && python3 -m pytest tests/test_tus_senales.py
 """
@@ -238,8 +243,10 @@ class TusSenalesTest(unittest.TestCase):
                       "la watchlist también, y dice que no la tenés")
         self.assertIn("no es una recomendación para comprar ni vender", m["texto"])
         self.assertIn("no es una recomendación", self.pushes[0]["body"])
-        self.assertEqual(self.pushes[0]["url"], "/novedades?tab=senales")
-        self.assertIn("/novedades?tab=senales", m["html"])
+        # La pestaña «Señales de la semana» de Análisis técnico (antes, Novedades).
+        self.assertEqual(self.pushes[0]["url"], "/analisis-tecnico?tab=senales")
+        self.assertIn("/analisis-tecnico?tab=senales", m["html"])
+        self.assertNotIn("/novedades?tab=senales", m["html"])
         fila = self._filas()[0]
         self.assertEqual((fila["semana"], fila["pct_alcista"], fila["canal"], fila["mail_ok"], fila["push_ok"]),
                          (sabado.isoformat(), 94, "ambos", 1, 1))
@@ -329,6 +336,85 @@ class TusSenalesTest(unittest.TestCase):
         self._cron(_utc(sabado, 10, 5))
         self.assertIn("94% de tu plata está en activos con tendencia de fondo alcista (la semana pasada, 61%)",
                       self.mails[0]["texto"])
+
+    # — el % es UNA cuenta (28/10) —
+
+    def _cartera_pide(self):
+        """Lo que pide la Cartera al abrirse (useLecturasCartera)."""
+        r = self.client.post("/api/tecnico/cartera", json={"activos": [{"asset": "NVDA"}, {"asset": "GGAL", "local": True}]},
+                             headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()["reparto"]
+
+    def test_el_mismo_porcentaje_en_cartera_panorama_senales_y_mail(self):
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._post("/api/positions", {"broker": "IOL", "asset": "AL30", "quantity": 100, "buy_price": 800,
+                                      "asset_type": "BONO"})
+        self._canal("mail")
+        cartera = self._cartera_pide()
+        semana = self.client.get("/api/tus-senales", headers=self.h).json()["alcista"]   # Panorama y Señales
+        self._cron(_utc(sabado, 10, 5))
+        pct = cartera["pct"]
+        self.assertEqual(semana["pct"], pct, "el Panorama y la pestaña Señales = la Cartera")
+        self.assertIn(f"el {pct}% de tu plata está en activos con tendencia de fondo alcista", self.mails[0]["texto"],
+                      "el mail = la Cartera")
+        self.assertEqual(self._filas()[0]["pct_alcista"], pct, "y lo que se guarda para «la semana pasada»")
+        # Lo demás de la cuenta, igual en los dos pedidos: grupos que suman 100, de
+        # más a menos plata, y el porqué de cada «sin lectura».
+        self.assertEqual(semana["grupos"], cartera["grupos"])
+        self.assertEqual(sum(g["pct"] for g in cartera["grupos"].values()), 100)
+        self.assertEqual(cartera["grupos"]["alcista"]["nombres"], ["NVDA", "KO", "GGAL"])
+        self.assertEqual(cartera["grupos"]["bajista"]["nombres"], ["AAPL"])
+        self.assertIn("AL30", cartera["grupos"]["sin"]["nombres"])
+        self.assertEqual(cartera["motivos"], [{"porque": "no_se_mide", "nombres": ["AL30"]}],
+                         "un bono no se mide así: no es «todavía no hay historia»")
+
+    def test_la_semana_pasada_llega_aunque_nunca_haya_pedido_el_resumen(self):
+        # La mayoría nunca elige un canal (opt-in): el % se guarda igual cada
+        # sábado, y el siguiente la Cartera y el Panorama dicen «la semana pasada».
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        anterior = sabado - timedelta(days=7)
+        r = self._cron(_utc(anterior, 10, 5))
+        self.assertEqual((r["guardadas"], r["mandadas"], self.mails, self.pushes), (1, 0, [], []))
+        guardado = self._filas()[0]["pct_alcista"]
+        cartera = self._cartera_pide()
+        self.assertEqual(cartera["semana_pasada"], {"semana": anterior.isoformat(), "pct": guardado})
+        self.assertEqual(self.client.get("/api/tus-senales", headers=self.h).json()["alcista"]["semana_pasada"],
+                         cartera["semana_pasada"])
+
+    def test_el_mismo_peso_en_tu_lista_y_en_senales(self):
+        # «Sí · 12%» de Tu lista y «Lo tenés · 12% de tu plata» de Señales son el
+        # MISMO número (senales_semana.cartera, 29/10): la pantalla ya no lo calcula.
+        self._velas(hoy_art_date())
+        lista = self.client.post("/api/tecnico/lista", json={"activos": [{"asset": "MSFT"}]}, headers=self.h)
+        self.assertEqual(lista.status_code, 200, lista.text)
+        lista = lista.json()
+        pesos = {(t["asset"], t["local"]): t["peso"] for t in lista["tenencias"]}
+        self.assertEqual(set(pesos), {("NVDA", False), ("KO", False), ("AAPL", False), ("GGAL", True)},
+                         "lo que tenés lo pone el servidor, aunque la pantalla sólo mande la watchlist")
+        self.assertAlmostEqual(sum(pesos.values()), 1.0, places=9, msg="sin efectivo ni plazos fijos, suman todo")
+        self.assertEqual([t["asset"] for t in lista["tenencias"]][:2], ["NVDA", "KO"], "de más a menos plata")
+        self.assertEqual({(x["asset"], x["local"]) for x in lista["lecturas"]} >= set(pesos) | {("MSFT", False)}, True,
+                         "y de cada cosa que tenés viene su lectura")
+        senales = self.client.get("/api/tus-senales", headers=self.h).json()["senales"]
+        for x in senales:
+            if x["tenes"]:
+                self.assertAlmostEqual(x["peso"], pesos[(x["asset"], x["local"])], places=12, msg=x["asset"])
+        self.assertTrue(any(x["tenes"] for x in senales), "la prueba tiene que comparar al menos uno")
+        self.assertEqual(next(t["tipo"] for t in lista["tenencias"] if t["asset"] == "AAPL"), "CEDEAR")
+
+    def test_sin_nada_con_lectura_no_hay_porcentaje(self):
+        # Sólo un bono: no hay tendencia que medir. Ni la Cartera ni la pestaña
+        # inventan un 0 % (la pantalla lo dice con palabras).
+        self._post("/api/brokers", {"name": "IOL", "currency": "ARS"})
+        self._post("/api/positions", {"broker": "IOL", "asset": "AL30", "quantity": 100, "buy_price": 800,
+                                      "asset_type": "BONO"})
+        cartera = self._cartera_pide()
+        self.assertIsNone(cartera["pct"])
+        self.assertIsNone(cartera["semana_pasada"])
+        self.assertIsNone(self.client.get("/api/tus-senales", headers=self.h).json()["alcista"])
 
     def test_cuenta_administrada_le_llega_al_asesor(self):
         sabado = _sabado_de(hoy_art_date())

@@ -207,6 +207,28 @@ def _seguimiento(conn):
         _sumar(_yahoo_de(sym, None, en_pesos, yahoo_de_cripto, cedears))
 
     tickers.add(SP500)
+
+    # Lo que alguien VENDIÓ y compró dentro de lo que se guarda: el diario de
+    # operaciones de Movimientos dice cómo estaba la tendencia el día de la
+    # compra (tecnico.tendencias_en_fechas). Sin esto, un activo que ya no tenés
+    # no tenía velas y toda tu historia de cerradas decía «sin dato». La
+    # operación no guarda `asset_type`: un CEDEAR en pesos se reconoce por la
+    # lista de BYMA (`cedears`), igual que uno importado sin tipo. Los
+    # dividendos e intereses no son una compra y no entran; un cupón es de un
+    # bono, que no tiene serie técnica (`_yahoo_de` devuelve []).
+    from fechas import hoy_art_date
+    piso = (hoy_art_date() - timedelta(days=DIAS_GUARDADOS)).isoformat()
+    for r in conn.execute(
+            """SELECT DISTINCT user_id, broker, asset, currency FROM operations
+               WHERE entry_date IS NOT NULL AND entry_date >= ?
+                 AND COALESCE(op_type, '') NOT IN ('Compra', 'Dividendo', 'Interés')""",
+            (piso,)).fetchall():
+        p = dict(r)
+        ars, ar_usd = sets.get(p['user_id'], (set(), set()))
+        clave = position_price_key(p, ars, ar_usd)
+        en_pesos = str(clave).upper().endswith('.BA')
+        _sumar(_yahoo_de(p['asset'], None, en_pesos, yahoo_de_cripto, cedears))
+
     tickers.discard('')
     tickers.discard(None)
     return tickers, pares

@@ -15,7 +15,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Bell, LineChart, Briefcase, List, Gauge, Newspaper, TrendingUp, Upload,
-  Sparkles, ChevronRight, PencilLine, Check, Loader2, Users, LayoutDashboard,
+  Sparkles, ChevronRight, PencilLine, Check, Loader2, Users, LayoutDashboard, CandlestickChart,
 } from 'lucide-react'
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
 import { parseNum } from '../../utils/format'
@@ -302,12 +302,13 @@ function ClientListBlock({ items, title, animar = false }) {
 
 // ── 06 · Acciones (deep-links internos, ya whitelisted por el parser) ───────
 const ROUTE_ICONS = [
-  ['/alertas', Bell], ['/analisis', LineChart], ['/posiciones', Briefcase],
+  // Antes que '/analisis': /analisis-tecnico empieza igual y se llevaba su ícono.
+  ['/alertas', Bell], ['/analisis-tecnico', CandlestickChart], ['/analisis', LineChart], ['/posiciones', Briefcase],
   ['/operaciones', List], ['/fundamentals', Gauge], ['/novedades', Newspaper],
   ['/activo/', TrendingUp], ['/imports', Upload],
   ['/clientes', Users], ['/dashboard', LayoutDashboard],
 ]
-function iconForRoute(to) {
+export function iconForRoute(to) {
   const hit = ROUTE_ICONS.find(([p]) => to.startsWith(p))
   return hit ? hit[1] : Sparkles
 }

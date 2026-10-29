@@ -29,6 +29,10 @@ import LecturaTecnica from '../components/asset/LecturaTecnica'
 import AnalyzeView from '../components/fundamentals/AnalyzeView'
 import LiquidezByma from '../components/asset/LiquidezByma'
 import SeccionFicha from '../components/asset/SeccionFicha'
+import Panel from '../components/Panel'
+import TesisDelActivo from '../components/tesis/TesisDelActivo'
+import { useTesis } from '../hooks/useDiario'
+import { tesisVigente } from '../utils/diarioOperaciones'
 import Skeleton from '../components/Skeleton'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
@@ -176,6 +180,8 @@ export default function AssetDetail() {
   // El valor de toda tu cartera (la última foto que sirve como medición), para
   // decir qué parte de tu cartera es este papel en «Cuánto se mueve».
   const [valorCartera, setValorCartera] = useState(null)
+  // Tu tesis de este activo (la misma de Movimientos). Arriba de los return.
+  const tesis = useTesis()
   const [loading, setLoading] = useState(true)
   // Sólo si no lo tenés: el último precio, el cierre anterior y si está en tu watchlist.
   const [cotizacion, setCotizacion] = useState(null)
@@ -304,7 +310,7 @@ export default function AssetDetail() {
     }
   }, [positions, operations, brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis])
 
-  // La empresa de este activo en "Calidad de cartera", con la misma regla que
+  // La empresa de este activo en "Análisis fundamental", con la misma regla que
   // el buscador (empresaDeTenencias): mira en qué mercado está cada lote, no
   // sólo el ticker. Sin lotes abiertos, deciden las operaciones (tienen broker).
   const tenes = positions.length > 0 || operations.length > 0
@@ -412,6 +418,20 @@ export default function AssetDetail() {
             acciones argentinas): el gráfico de un CEDEAR mira Nueva York. */}
         {papelByma && <LiquidezByma papel={papelByma} />}
         </SeccionFicha>
+      )}
+
+      {/* Tu tesis: por qué lo compraste, la tendencia de ese día y la de hoy, y
+          «Recordarme revisarla». Va si lo tenés o si escribiste una (la ficha
+          de un activo que vendiste todo la sigue mostrando). */}
+      {(agg.lots.length > 0 || tesisVigente(tesis.items, asset)) && tesis.estado !== 'error' && (
+        <section className="mb-5" aria-label={`Tu tesis de ${asset}`}>
+          <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu tesis</div>
+          <Panel padding="md">
+            {/* `key`: pasar de la ficha de AAPL a la de NVDA no deja a la vista
+                lo que estabas escribiendo para AAPL. */}
+            <TesisDelActivo key={asset} asset={asset} local={esAccionLocal(asset, agg.lots)} tesis={tesis} />
+          </Panel>
+        </section>
       )}
 
       {/* Lo tuyo: tu operatoria, tus lotes y tu historial. */}
@@ -528,7 +548,7 @@ export default function AssetDetail() {
       {/* Análisis fundamental de la empresa, al final: técnico → lo tuyo
           (operatoria, lotes, historial) → fundamental, para no tener que pasar
           todo el fundamental para llegar a tus lotes (Nico, 23/10). Es la MISMA
-          vista de "Calidad de cartera" (AnalyzeView), sin buscador ni resumen
+          vista de "Análisis fundamental" (AnalyzeView), sin buscador ni resumen
           con IA; para compararla con otras, el link lleva ahí. Sin empresa
           (cripto, ETF, bono, fondo) no aparece. */}
       {empresa && <AnalyzeView ticker={empresa.ticker} enFicha irACalidad={empresa.ir} />}

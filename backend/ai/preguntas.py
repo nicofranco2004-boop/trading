@@ -128,7 +128,7 @@ PREGUNTAS: Dict[str, Union[str, Tuple[str, str]]] = {
 
 # ─── Los tres filtros ────────────────────────────────────────────────────────
 
-# Las cinco dimensiones de Calidad de cartera, dichas como se leen en pantalla.
+# Las cinco dimensiones de Análisis fundamental, dichas como se leen en pantalla.
 # Tabla cerrada: si mañana aparece una sexta y no está acá, la pregunta cae a
 # la versión genérica en vez de meter en el prompt lo que haya mandado el
 # navegador.

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useRef, Fragment } from 'react'
+import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Plus, ChevronDown, ChevronUp, Wallet, TrendingUp, TrendingDown, Layers as LayersIcon, Rows3 as RowsIcon, Search, X, Eye, EyeOff } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
@@ -1808,12 +1808,10 @@ function PositionsDesktop() {
   const heroPnl = heroUsd.monto
   const heroPct = heroUsd.pct
 
-  // Radiografía técnica: cada lote pesa lo que vale en `totals` (las piezas de
-  // computeBrokerValue, cuya suma es este total) y los plazos fijos suman sin
-  // lectura. Las lecturas, una sola vez para toda la página.
+  // Radiografía técnica: la lectura de cada fila y, en el mismo pedido, el % de
+  // tu plata en tendencia alcista (lo arma el servidor: senales_semana.reparto,
+  // la misma cuenta que Análisis técnico). Una sola vez para toda la página.
   const lecturas = useLecturasCartera(positions)
-  const valorDeLote = useCallback(p => totals.byBroker[p.broker]?.porLote?.get(p.id) ?? 0, [totals])
-  const radiografiaExtra = useMemo(() => (pfValueUsd > 0 ? [{ nombre: 'plazos fijos', valor: pfValueUsd }] : []), [pfValueUsd])
   // Las dos columnas técnicas de una fila (las dos tablas). El lote de una fila
   // abierta no las repite; el efectivo no tiene.
   const celdasTecnicas = (p, isLot) => {
@@ -2141,8 +2139,8 @@ function PositionsDesktop() {
 
       {/* Radiografía técnica: cuánto de tu plata está en tendencia alcista. La
           MISMA pieza que en el celular (R6). */}
-      <RadiografiaTecnica lotes={positions} valorDe={valorDeLote} extra={radiografiaExtra}
-        indice={lecturas.indice} cargando={lecturas.cargando} error={lecturas.error} className="mb-5" />
+      <RadiografiaTecnica lotes={positions} reparto={lecturas.reparto}
+        cargando={lecturas.cargando} error={lecturas.error} className="mb-5" />
 
       {/* Banner de variación diaria deshabilitado — requiere snapshots
           confiables (cron server-side) que aún no están implementados. */}

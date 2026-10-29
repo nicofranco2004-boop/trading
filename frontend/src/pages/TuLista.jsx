@@ -1,17 +1,16 @@
-// TuLista — «Análisis técnico» (menú → Análisis): tu lista con su lectura
-// técnica, lo que tenés y lo que seguís (watchlist) juntos en una tabla. Vive en
-// /analisis-tecnico (pedido de Nico, 28/10: «una sección nueva de la parte de
-// análisis»); también se abre desde el inicio → panel Watchlist → «Ver como
-// tablero». /tu-lista, la dirección de antes, lleva acá.
+// TuLista — la pestaña «Tu lista» de Análisis técnico (pages/AnalisisTecnico.jsx):
+// lo que tenés y lo que seguís (watchlist), juntos en una tabla, con su lectura
+// técnica. También se llega desde el inicio → panel Watchlist → «Ver como
+// tablero» (/analisis-tecnico?tab=lista).
 // ════════════════════════════════════════════════════════════════════════════
 // Una sola pantalla para compu y celular (R6): en el celular la tabla se
 // desliza de costado, con la columna del activo fija, como la de Cartera.
 //
 // De dónde sale cada cosa (utils/listaTecnica.js):
 //   · los números técnicos, de POST /api/tecnico/lista (la misma lectura que la
-//     ficha y la radiografía, en dólares);
-//   · cuánto pesa cada activo, con la valuación de la Cartera
-//     (`computeBrokerValue`, lote por lote, más los plazos fijos en el total);
+//     ficha, en dólares);
+//   · qué tenés y cuánto pesa cada activo, del mismo pedido (`tenencias`: la
+//     valuación del servidor, LA misma del % alcista y de la pestaña Señales);
 //   · el último cambio, de la cuenta única de «qué cambió esta semana».
 // Con «Ocultar saldos» no se muestra cuánto pesa (la proporción también es
 // información de la cartera, como en la radiografía).
@@ -21,13 +20,9 @@ import { useNavigate, Link } from 'react-router-dom'
 import { ArrowDown, ArrowUp } from 'lucide-react'
 import { api } from '../utils/api'
 import Panel from '../components/Panel'
-import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import { PildoraTendencia } from '../components/RadiografiaTecnica'
 import { usePrivacy } from '../contexts/PrivacyContext'
-import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
-import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
-import { computeBrokerValue, buildPriceSymbols, setBrokersRegistry } from '../utils/valuation'
 import { indexarLecturas } from '../utils/radiografia'
 import { RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE } from '../utils/tecnico'
 import {
@@ -36,85 +31,34 @@ import {
 } from '../utils/listaTecnica'
 
 /**
- * Lo que necesita la tabla: tus lotes valuados como en la Cartera, tu
- * watchlist y la lectura técnica de todos. → { cargando, error, lotes,
- * valorDe, extra, seguidos, indice }
+ * Lo que necesita la tabla: tu watchlist y, del servidor, la lectura técnica de
+ * todo más lo que tenés y cuánto pesa (`tenencias`: la valuación del servidor,
+ * la misma del % alcista y de la pestaña Señales). → { cargando, error,
+ * tenencias, seguidos, indice }
  */
-function useListaTecnica() {
-  const { valuationDollar, costBasis } = useCurrency()
-  const [base, setBase] = useState(null)        // { positions, brokers, config, dolar, seguidos }
-  const [prices, setPrices] = useState(null)
-  const [indice, setIndice] = useState(null)
-  const [error, setError] = useState(null)      // 'base' | 'lectura'
-  const pf = usePfRollup()
+export function useListaTecnica() {
+  const [estado, setEstado] = useState(null)   // { seguidos, tenencias, indice }
+  const [error, setError] = useState(null)     // 'base' | 'lectura'
 
   useEffect(() => {
     let vivo = true
-    Promise.all([
-      api.get('/positions'),
-      api.get('/brokers'),
-      api.get('/config').catch(() => ({})),
-      api.get('/dolar').catch(() => null),
-      api.get('/watchlist').catch(() => ({ items: [] })),
-    ])
-      .then(([positions, brokers, config, dolar, wl]) => {
-        if (!vivo) return
-        setBrokersRegistry(brokers)   // isArUsdBroker sabe de sub-brokers (como la Cartera)
-        setBase({ positions: positions || [], brokers: brokers || [], config: config || {}, dolar, seguidos: wl?.items || [] })
+    api.get('/watchlist')
+      .catch(() => ({ items: [] }))
+      .then(wl => {
+        const seguidos = wl?.items || []
+        return api.post('/tecnico/lista', { activos: activosDeLaLista(seguidos).slice(0, MAX_POR_PEDIDO) })
+          .then(r => { if (vivo) setEstado({ seguidos, tenencias: r?.tenencias || [], indice: indexarLecturas(r?.lecturas || []) }) })
+          .catch(() => { if (vivo) setError('lectura') })
       })
-      .catch(() => { if (vivo) setError('base') })
     return () => { vivo = false }
   }, [])
 
-  // Precios: los mismos símbolos que pide la Cartera (buildPriceSymbols).
-  useEffect(() => {
-    if (!base) return undefined
-    let vivo = true
-    const simbolos = buildPriceSymbols(base.positions, base.brokers).join(',')
-    if (!simbolos) { setPrices({}); return undefined }
-    api.get(`/prices?symbols=${simbolos}`)
-      .then(d => { if (vivo) setPrices(d || {}) })
-      // Sin precios la valuación cae al costo, igual que en la Cartera.
-      .catch(() => { if (vivo) setPrices({}) })
-    return () => { vivo = false }
-  }, [base])
-
-  // La lectura técnica: de a MAX_POR_PEDIDO activos (el tope del servidor).
-  useEffect(() => {
-    if (!base) return undefined
-    let vivo = true
-    const pedido = activosDeLaLista(base.positions, base.seguidos)
-    if (!pedido.length) { setIndice(new Map()); return undefined }
-    const tandas = []
-    for (let i = 0; i < pedido.length; i += MAX_POR_PEDIDO) tandas.push(pedido.slice(i, i + MAX_POR_PEDIDO))
-    Promise.all(tandas.map(activos => api.post('/tecnico/lista', { activos })))
-      .then(rs => { if (vivo) setIndice(indexarLecturas(rs.flatMap(r => r?.lecturas || []))) })
-      .catch(() => { if (vivo) setError('lectura') })
-    return () => { vivo = false }
-  }, [base])
-
-  const tcValuacion = base ? (pickFinancialRate(base.dolar, valuationDollar) || base.config.tc_mep || base.config.tc_blue || 1415) : null
-  // El valor de cada lote, el mismo de la Cartera de la compu (Positions.jsx,
-  // `valorDeLote`): las piezas de computeBrokerValue, cuya suma es su total.
-  const porBroker = useMemo(() => {
-    if (!base || !prices) return null
-    const tcCripto = base.dolar?.cripto?.venta
-    const out = {}
-    for (const b of base.brokers) {
-      out[b.name] = computeBrokerValue(base.positions, prices, b, tcValuacion, tcValuacion, tcCripto, costBasis)
-    }
-    return out
-  }, [base, prices, tcValuacion, costBasis])
-  const valorDe = useMemo(() => (p) => porBroker?.[p.broker]?.porLote?.get(p.id) ?? 0, [porBroker])
-  const pfValor = pfUsd(pf, tcValuacion).valueUsd
-  const extra = useMemo(() => (pfValor > 0 ? [{ nombre: 'plazos fijos', valor: pfValor }] : []), [pfValor])
-
   return {
-    cargando: !error && (!base || !prices || !indice),
+    cargando: !error && !estado,
     error,
-    lotes: base?.positions || [],
-    seguidos: base?.seguidos || [],
-    valorDe, extra, indice,
+    tenencias: estado?.tenencias || [],
+    seguidos: estado?.seguidos || [],
+    indice: estado?.indice || null,
   }
 }
 
@@ -299,35 +243,32 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
   )
 }
 
-export default function TuLista() {
+/** La pestaña «Tu lista» de Análisis técnico. `datos`: lo de useListaTecnica
+ *  (la página lo pide una vez: lo usa también el Panorama); `filas`: las de
+ *  filasDeLaLista con esos datos. */
+export default function TuLista({ datos, filas }) {
   const navigate = useNavigate()
   const { hidden } = usePrivacy()
-  const datos = useListaTecnica()
-  const filas = useMemo(
-    () => (datos.cargando || datos.error ? [] : filasDeLaLista(datos)),
-    [datos.cargando, datos.error, datos.lotes, datos.seguidos, datos.valorDe, datos.extra, datos.indice])
-
-  return (
-    <div className="page-shell-wide py-4">
-      <PageHeader eyebrow="Análisis" title="Análisis técnico"
-        subtitle="Lo que tenés y lo que seguís, juntos, con su lectura técnica. Medido en dólares, al cierre del último día de mercado. Tocá una fila para abrir su ficha." />
-
-      {datos.error === 'base' ? (
-        <Panel padding="lg" className="text-center text-[13px] text-ink-2">No pudimos cargar tu cartera y tu watchlist. Probá de nuevo en un rato.</Panel>
-      ) : datos.error === 'lectura' ? (
-        <Panel padding="lg" className="text-center text-[13px] text-ink-2">No pudimos traer la lectura técnica. Probá de nuevo en un rato.</Panel>
-      ) : datos.cargando ? (
-        <div className="space-y-2">
-          <Skeleton className="h-9 w-80" />
-          <Skeleton className="h-72 w-full rounded-xl" />
-        </div>
-      ) : !filas.length ? (
-        <Panel padding="lg" className="text-center text-[13px] text-ink-2">
-          Todavía no tenés activos ni seguís ninguno. Buscá un ticker en el inicio y agregalo a tu watchlist desde su ficha.
-        </Panel>
-      ) : (
-        <TablaLista filas={filas} oculto={hidden} onAbrir={f => navigate(`/activo/${encodeURIComponent(f.ruta)}`)} />
-      )}
-    </div>
-  )
+  if (datos.error === 'base') {
+    return <Panel padding="lg" className="text-center text-[13px] text-ink-2">No pudimos cargar tu cartera y tu watchlist. Probá de nuevo en un rato.</Panel>
+  }
+  if (datos.error === 'lectura') {
+    return <Panel padding="lg" className="text-center text-[13px] text-ink-2">No pudimos traer la lectura técnica. Probá de nuevo en un rato.</Panel>
+  }
+  if (datos.cargando) {
+    return (
+      <div className="space-y-2" aria-label="Cargando tu lista">
+        <Skeleton className="h-9 w-80" />
+        <Skeleton className="h-72 w-full rounded-xl" />
+      </div>
+    )
+  }
+  if (!filas.length) {
+    return (
+      <Panel padding="lg" className="text-center text-[13px] text-ink-2">
+        Todavía no tenés activos ni seguís ninguno. Buscá un ticker en el inicio y agregalo a tu watchlist desde su ficha.
+      </Panel>
+    )
+  }
+  return <TablaLista filas={filas} oculto={hidden} onAbrir={f => navigate(`/activo/${encodeURIComponent(f.ruta)}`)} />
 }

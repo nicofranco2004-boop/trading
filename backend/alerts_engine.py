@@ -653,6 +653,14 @@ def _deliver(conn, alert, items) -> tuple:
         heading = f"[{client_label}] {heading}"
     channel = alert["channel"] or "both"
     push_ok = email_ok = False
+    # Un aviso que trae su mail ya armado (el recordatorio de una tesis,
+    # `evaluar_recordatorios`) no pasa por el de precio y %. Para el asesor se
+    # le pone lo mismo que a los otros: de qué cliente es y a dónde entrar.
+    armado = items[0].get("contenido")
+    if armado:
+        armado = {**armado, "heading": heading}
+        if client_label:
+            _para_el_asesor(armado, client_label)
 
     tecnica = alert["kind"] == "tecnica"
     if channel in ("push", "both"):
@@ -670,9 +678,11 @@ def _deliver(conn, alert, items) -> tuple:
                 # «Mis alertas»: la alerta que salto, con su estado y para
                 # pausarla.
                 # La técnica abre la ficha del activo: ahí está el gráfico con
-                # el promedio que cruzó.
-                "url": (f"/activo/{quote(_display_symbol(items[0]['symbol']), safe='')}"
-                        if tecnica and not client_label else "/alertas?tab=mis"),
+                # el promedio que cruzó. El aviso que trae su mail armado (el
+                # recordatorio de una tesis) va a donde dice su botón.
+                "url": ((armado or {}).get("cta_path")
+                        or (f"/activo/{quote(_display_symbol(items[0]['symbol']), safe='')}"
+                            if tecnica and not client_label else "/alertas?tab=mis")),
                 "tag": (f"alert-{alert['id']}-{items[0]['symbol'] or ''}"
                         if len(items) == 1 else f"alert-{alert['id']}-grupo"),
             })
@@ -685,9 +695,10 @@ def _deliver(conn, alert, items) -> tuple:
             row = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
             if row and row["email"]:
                 from billing import emails
+                contenido = armado or _contenido_del_mail(
+                    alert, items, fuera, mixto, client_label, heading)
                 email_ok = emails.send_alert_email(
-                    to=row["email"], user_name=(row["name"] or ""),
-                    **_contenido_del_mail(alert, items, fuera, mixto, client_label, heading))
+                    to=row["email"], user_name=(row["name"] or ""), **contenido)
         except Exception as ex:
             log.warning("alerts email uid=%s falló: %s", uid, ex)
 
@@ -824,19 +835,24 @@ def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading)
                      "filas": [_fila(it, mixto) for it in items],
                      "cta_label": "Ver mi cartera", "cta_path": "/posiciones"}
 
-    if client_label:
-        # Plan Asesor: la alerta es de una cuenta que administra. Su cartera, su
-        # ficha y su «Mis alertas» no son las de esa cuenta: se entra desde
-        # Clientes. El asunto ya lleva «[Cliente]» adelante.
-        contenido["detail"] = contenido["detail"].rstrip(".") + f", en la cuenta de {client_label}."
-        contenido["cta_label"], contenido["cta_path"] = "Ver mis clientes", "/clientes"
-        pie = (f"Para cambiarla, entrá a la cuenta de {client_label}.",
-               "Ir a mis clientes", "/clientes")
     contenido["pie"] = pie
     contenido["heading"] = heading
     if alert["kind"] == "tecnica":
         contenido["aclaracion"] = _NO_ES_RECOMENDACION
+    if client_label:
+        _para_el_asesor(contenido, client_label)
     return contenido
+
+
+def _para_el_asesor(contenido: dict, client_label: str) -> None:
+    """Plan Asesor: el aviso es de una cuenta que administra. Su cartera, su
+    ficha y su «Mis alertas» no son las de esa cuenta: se entra desde Clientes.
+    El asunto ya lleva «[Cliente]» adelante (`_deliver`). Lo usan el mail de
+    precio y % y el que llega ya armado (el recordatorio de una tesis)."""
+    contenido["detail"] = contenido["detail"].rstrip(".") + f", en la cuenta de {client_label}."
+    contenido["cta_label"], contenido["cta_path"] = "Ver mis clientes", "/clientes"
+    contenido["pie"] = (f"Para cambiarla, entrá a la cuenta de {client_label}.",
+                        "Ir a mis clientes", "/clientes")
 
 
 def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: list,
@@ -1119,7 +1135,9 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     ANTES de entregar y cada entrega por separado (ver `_entregar_pendientes`):
     la entrega es red y no puede llevar el lock de escritura."""
     now = datetime.utcnow()
-    # Las técnicas no se miran acá: van una vez por día (`evaluar_tecnicas`).
+    # Sólo las de precio y %: las técnicas van una vez por día
+    # (`evaluar_tecnicas`) y un recordatorio de tesis (`kind='recordatorio'`)
+    # no mira precios y caería en la rama del % (`evaluar_recordatorios`).
     en_vivo = "kind IN (" + ",".join(f"'{k}'" for k in KINDS_EN_VIVO) + ")"
     q = f"SELECT * FROM alerts WHERE active=1 AND {en_vivo}"
     params: tuple = ()
@@ -1664,3 +1682,55 @@ def linea_de_la_alerta(conn, alert):
 def _senales() -> tuple:
     import tecnico
     return tecnico.SENALES
+
+
+# ─── Recordatorios de una tesis («Recordarme revisarla») ─────────────────────
+# Una alerta más del mismo motor: `kind='recordatorio'`, una sola vez, mail +
+# push. La fecha y el texto viven en la tabla `tesis` (tesis.py). Llega desde
+# las 9:00 de Argentina del día marcado: el cron de alertas corre cada ~10 min
+# y a medianoche un push despierta gente.
+HORA_RECORDATORIO = 9
+
+
+def evaluar_recordatorios(conn, now: datetime = None) -> dict:
+    """Dispara los recordatorios de tesis que llegaron a su día. Mismo circuito
+    que las de precio: anota el evento en `alert_events` (la lista de avisos de
+    la app), apaga la alerta (es «una vez»), confirma, y DESPUÉS entrega
+    (`_entregar_pendientes`, que no lleva el lock de escritura a la red)."""
+    import tesis as _tesis
+    from fechas import ART_OFFSET_HORAS, dia_art
+    now = now or datetime.utcnow()
+    hoy = dia_art(now)
+    if (now - timedelta(hours=ART_OFFSET_HORAS)).hour < HORA_RECORDATORIO:
+        return {"recordatorios": 0}
+    filas = conn.execute(
+        """SELECT a.*, t.asset AS t_asset, t.texto AS t_texto, t.escrita_el AS t_escrita_el,
+                  t.tendencia_json AS t_tendencia_json, t.accion_local AS t_accion_local
+             FROM alerts a JOIN tesis t ON t.alert_id = a.id AND t.user_id = a.user_id
+            WHERE a.kind = 'recordatorio' AND a.active = 1 AND t.recordar_el <= ?""",
+        (hoy.isoformat(),)).fetchall()
+    pendientes = []
+    for a in filas:
+        t = {k[2:]: a[k] for k in a.keys() if k.startswith("t_")}
+        try:
+            contenido = _tesis.para_el_aviso(conn, t)
+        except Exception as ex:
+            log.warning("recordatorio %s: no se pudo armar: %s", a["id"], ex)
+            continue
+        contenido["heading"] = contenido["titulo"]
+        contenido["pie"] = ("Te lo recordamos una sola vez.", "Ver tu tesis",
+                            contenido["cta_path"])
+        cur = conn.execute(
+            """INSERT INTO alert_events (alert_id, user_id, symbol, fired_at, price, message,
+                                         delivered_push, delivered_email)
+               VALUES (?,?,?,?,NULL,?,0,0)""",
+            (a["id"], a["user_id"], t["asset"], now.isoformat(), contenido["titulo"]))
+        conn.execute("UPDATE alerts SET active=0, last_fired_at=? WHERE id=?",
+                     (now.isoformat(), a["id"]))
+        pendientes.append({"alert": a, "symbol": t["asset"], "price": None, "change_pct": None,
+                           "message": contenido["titulo"], "label": contenido["titulo"],
+                           "event_id": cur.lastrowid, "fuera": None, "doble": False,
+                           "contenido": contenido})
+    conn.commit()
+    _entregar_pendientes(conn, pendientes)
+    return {"recordatorios": len(pendientes)}

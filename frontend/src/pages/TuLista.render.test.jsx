@@ -19,12 +19,13 @@ const lec = (asset, local, l = {}, extra = {}) => ({
     dist_media50: -2, rsi: 28, adx: 31, dist_maximo_12m: -24.3, anio_completo: true, ...l },
   linea: [{ d: '2026-08-01', c: 10 }, { d: hoy, c: 12 }], ultimo_cambio: null, ...extra,
 })
-const LOTES = [
-  { id: 1, broker: 'Schwab', asset: 'MELI', asset_type: 'STOCK' },
-  { id: 2, broker: 'IOL', asset: 'AL30', asset_type: 'BONO' },
+// Como lo manda el servidor (POST /api/tecnico/lista → tenencias).
+const TENENCIAS = [
+  { asset: 'AL30', local: true, peso: 0.88, tipo: 'BONO' },
+  { asset: 'MELI', local: false, peso: 0.12, tipo: 'STOCK' },
 ]
 const filas = filasDeLaLista({
-  lotes: LOTES, valorDe: p => (p.asset === 'MELI' ? 120 : 880), seguidos: [{ symbol: 'TSLA' }],
+  tenencias: TENENCIAS, seguidos: [{ symbol: 'TSLA' }],
   indice: indexarLecturas([lec('MELI', false, {}, { ultimo_cambio: {
     tipo: 'media200', sentido: 'arriba', fecha: hoy, etiqueta: 'Tendencia de fondo', tono: 'pos', extra: null,
     texto: 'pasó arriba de su promedio de 200 días: la tendencia de fondo se volvió alcista.' } }), lec('TSLA', false, { adx: 12 }), { asset: 'AL30', local: true, disponible: false }]),

@@ -36,8 +36,9 @@ log = logging.getLogger("senales_semana")
 
 # Los 7 días corridos del período: los de la radiografía (`tecnico.DIAS_CAMBIOS`).
 from tecnico import DIAS_CAMBIOS as DIAS_SEMANA  # noqa: E402
-# La regla de la radiografía (frontend/src/utils/radiografia.js): una lectura
-# cuya última vela es más vieja que esto no describe el precio de hoy.
+# La regla de las filas de la Cartera (DIAS_LECTURA_VIEJA de
+# frontend/src/utils/radiografia.js): una lectura cuya última vela es más vieja
+# que esto no describe el precio de hoy.
 DIAS_LECTURA_VIEJA = 10
 # El resumen sale los sábados desde esta hora de Argentina (las velas del
 # viernes se guardan a la medianoche; a las 10 ya no despierta a nadie).
@@ -47,6 +48,11 @@ HORA_RESUMEN = 10
 # un sábado, más viejo que eso ya no es «la semana pasada»).
 DIAS_SEMANA_PASADA = 13
 CANALES = ("mail", "push", "ambos", "no")
+
+# Adonde llevan el botón del mail, el «Cambiar o apagar» y la notificación: la
+# pestaña «Señales de la semana» de Análisis técnico (se mudó de Novedades el
+# 28/10; /novedades?tab=senales redirige ahí para los mails viejos).
+URL_SENALES = "/analisis-tecnico?tab=senales"
 
 NO_ES_RECOMENDACION = ("Muestra cómo se movieron los precios: no es una "
                        "recomendación para comprar ni vender.")
@@ -156,11 +162,13 @@ def _dolar(conn, uid: int):
 
 
 def cartera(conn, uid: int, cedears=None, dolar=None) -> dict:
-    """{'tenencias': {(asset, local): valor_usd}, 'sin_medir': valor_usd,
-    'total': valor_usd}. Efectivo, bonos y plazos fijos suman al total (son
-    plata tuya) pero no tienen tendencia: van a `sin_medir` o, los bonos, a su
-    propia tenencia sin lectura. Valor de cada lote = el motor del servidor
-    (`compute_broker_value_usd`) con el último precio guardado."""
+    """{'tenencias': {(asset, local): valor_usd}, 'tipos': {(asset, local):
+    asset_type}, 'sin_medir': valor_usd, 'efectivo': valor_usd, 'plazos_fijos':
+    valor_usd, 'total': valor_usd}. Efectivo, bonos y plazos fijos suman al
+    total (son plata tuya) pero no tienen tendencia: van a `sin_medir` (que es
+    efectivo + plazos fijos) o, los bonos, a su propia tenencia sin lectura.
+    Valor de cada lote = el motor del servidor (`compute_broker_value_usd`) con
+    el último precio guardado."""
     import main
     from snapshots_job import (_broker_name_sets, build_price_symbols, compute_broker_value_usd,
                                read_last_prices)
@@ -173,7 +181,7 @@ def cartera(conn, uid: int, cedears=None, dolar=None) -> dict:
         (uid,)).fetchall()]
     pfs = [dict(r) for r in conn.execute(
         "SELECT * FROM plazos_fijos WHERE user_id=? AND closed_at IS NULL", (uid,)).fetchall()]
-    out = {"tenencias": {}, "sin_medir": 0.0, "total": 0.0}
+    out = {"tenencias": {}, "tipos": {}, "sin_medir": 0.0, "efectivo": 0.0, "plazos_fijos": 0.0, "total": 0.0}
     if not positions and not pfs:
         return out
     tc, tc_cedear = dolar or _dolar(conn, uid)
@@ -192,15 +200,18 @@ def cartera(conn, uid: int, cedears=None, dolar=None) -> dict:
         out["total"] += v
         if p.get("is_cash"):
             out["sin_medir"] += v
+            out["efectivo"] += v
             continue
         k = ((p["asset"] or "").upper(), _es_lote_local(p, ars, ar_usd, cedears))
         out["tenencias"][k] = out["tenencias"].get(k, 0.0) + v
+        out["tipos"].setdefault(k, (p.get("asset_type") or "").upper())
     for pf in pfs:
         v = main._pf_value(pf)["valor_hoy"]
         v = v / tc_cedear if (pf.get("moneda") or "ARS").upper() == "ARS" and tc_cedear else v
         if v and v > 0:
             out["total"] += v
             out["sin_medir"] += v
+            out["plazos_fijos"] += v
     return out
 
 
@@ -230,8 +241,9 @@ def _tesis(conn, uid: int) -> dict:
 # ─── La cuenta ───────────────────────────────────────────────────────────────
 
 def _repartir_cien(valores: list) -> list:
-    """Espejo de `repartirCien` (utils/radiografia.js): porcentajes enteros que
-    suman 100 por el método del resto mayor."""
+    """Porcentajes enteros que suman 100 por el método del resto mayor
+    (redondear cada uno por su lado puede dar 99 o 101). Era el espejo de
+    `repartirCien` de la pantalla, que se borró el 28/10: el % se cuenta sólo acá."""
     total = sum(valores)
     if not total > 0:
         return [0 for _ in valores]
@@ -262,6 +274,73 @@ def _alcista(x: dict, hoy: date):
     return "alcista" if l["dist_media200"] >= 0 else "bajista"
 
 
+# Por qué algo va «sin lectura» (las claves de MOTIVOS_SIN_LECTURA de
+# utils/radiografia.js, que pone las palabras): un bono o un fondo no se mide
+# así; una acción sin velas todavía, aparece en un día; con menos de 200 días
+# de mercado no hay promedio de 200; una última vela de hace más de 10 días no
+# describe el precio de hoy.
+# Como `noSeMide` de la pantalla: renta fija (`_FIXED_INCOME_TYPES`) y fondos.
+_FONDOS = ("FCI", "FUND")
+
+
+def _porque(x: dict, tipo: str, asset: str, hoy: date) -> str:
+    from snapshots_job import _FIXED_INCOME_TYPES
+    if tipo in _FIXED_INCOME_TYPES or tipo in _FONDOS or asset.startswith("FCI:"):
+        return "no_se_mide"
+    if not x or not x.get("disponible"):
+        return "sin_historia"
+    if _lectura_vieja(x.get("lectura"), hoy):
+        return "vieja"
+    return "pocos_dias"
+
+
+def reparto(conn, uid: int, hoy: date, *, series: dict = None, cedears=None, dolar=None, car=None) -> dict:
+    """LA cuenta del «% de tu plata en tendencia de fondo alcista» (28/10: una
+    sola para la Cartera, el Panorama y la pestaña Señales de Análisis técnico y
+    el mail de los sábados). Tu plata valuada por el servidor (`cartera`) y la
+    tendencia de fondo de cada tenencia con la regla de la ficha (`_alcista`):
+
+    {'pct': % alcista entero | None si nada tiene lectura,
+     'grupos': {'alcista'|'bajista'|'sin': {'pct', 'nombres': [de más a menos plata]}},
+     'motivos': [{'porque', 'nombres'}] de los sin lectura (las palabras las pone
+                la pantalla, MOTIVOS_SIN_LECTURA),
+     'semana_pasada': {'semana', 'pct'} | None}
+
+    Los tres % suman 100 (`_repartir_cien`). Efectivo y plazos fijos cuentan en
+    el total, sin lectura. `series`: el caché de lecturas de `armar_semana`."""
+    import tecnico
+    series = {} if series is None else series
+    cedears = _cedears() if cedears is None else cedears
+    car = car if car is not None else cartera(conn, uid, cedears, dolar)
+    grupos = {"alcista": {}, "bajista": {}, "sin": {}}
+    motivos = {}
+    for k, valor in car["tenencias"].items():
+        if k not in series:
+            series[k] = tecnico.para_la_cartera(conn, [k], hoy=hoy)[0]
+        g = _alcista(series[k], hoy) or "sin"
+        grupos[g][k[0]] = grupos[g].get(k[0], 0.0) + valor
+        if g == "sin":
+            motivos.setdefault(_porque(series[k], car["tipos"].get(k, ""), k[0], hoy), []).append((valor, k[0]))
+    for nombre, clave in (("efectivo", "efectivo"), ("plazos fijos", "plazos_fijos")):
+        if car.get(clave, 0) > 0:
+            grupos["sin"][nombre] = grupos["sin"].get(nombre, 0.0) + car[clave]
+            motivos.setdefault("no_se_mide", []).append((car[clave], nombre))
+    ids = ("alcista", "bajista", "sin")
+    valores = [sum(grupos[g].values()) for g in ids]
+    pcts = _repartir_cien(valores)
+    con_lectura = valores[0] + valores[1] > 0
+    orden = ("no_se_mide", "sin_historia", "pocos_dias", "vieja")
+    return {
+        "pct": pcts[0] if con_lectura else None,
+        "grupos": {g: {"pct": pcts[i], "fraccion": (valores[i] / sum(valores)) if sum(valores) > 0 else 0,
+                       "nombres": [n for n, _ in sorted(grupos[g].items(), key=lambda x: -x[1])]}
+                   for i, g in enumerate(ids)},
+        "motivos": [{"porque": m, "nombres": [n for _, n in sorted(motivos[m], key=lambda x: -x[0])]}
+                    for m in orden if m in motivos],
+        "semana_pasada": semana_pasada(conn, uid, hoy) if con_lectura else None,
+    }
+
+
 def semana_pasada(conn, uid: int, hoy: date):
     """{'semana', 'pct'} del último % guardado ANTES de hoy (hasta 13 días), o
     None: para atrás no se reconstruye, mientras no haya dato no aparece."""
@@ -278,7 +357,7 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
 
     {
       'desde', 'hasta': el período (desde exclusive: las velas posteriores),
-      'alcista': {'pct', 'semana_pasada': {'semana','pct'}|None} | None,
+      'alcista': lo de `reparto` (pct, grupos, motivos, semana_pasada) | None,
       'tenes': {'activos': con lectura, 'con_cambios'},
       'watchlist': cuántos activos sigue,
       'senales': [{asset, ficha, local, tenes, watchlist, peso, tesis,
@@ -299,16 +378,13 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
             series[k] = tecnico.para_la_cartera(conn, [k], hoy=hoy)[0]
         return series[k]
 
-    valores = {"alcista": 0.0, "bajista": 0.0, None: car["sin_medir"]}
     senales, con_lectura, con_cambios = [], 0, set()
     total = car["total"]
     for k in sorted(set(car["tenencias"]) | set(wl)):
         x = _leer(k)
         tiene = k in car["tenencias"]
         if tiene:
-            grupo = _alcista(x, hoy)
-            valores[grupo] = valores.get(grupo, 0.0) + car["tenencias"][k]
-            con_lectura += grupo is not None
+            con_lectura += _alcista(x, hoy) is not None
         # Una serie cortada no tiene «esta semana» (los cambios ya cuentan desde
         # hoy, pero una lectura vieja tampoco describe el precio).
         if not x.get("disponible") or _lectura_vieja(x.get("lectura"), hoy):
@@ -327,10 +403,10 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
     # El día más nuevo primero; adentro, lo tuyo por peso y después la watchlist.
     senales.sort(key=lambda s: (s["fecha"], s["tenes"], s["peso"] or 0, -orden[s["tipo"]]), reverse=True)
 
-    alcista = None
-    if valores["alcista"] + valores["bajista"] > 0:
-        pcts = _repartir_cien([valores["alcista"], valores["bajista"], valores[None]])
-        alcista = {"pct": pcts[0], "semana_pasada": semana_pasada(conn, uid, hoy)}
+    # El % y su reparto: LA cuenta (`reparto`), la misma que la Cartera y el
+    # Panorama. Sin nada con lectura, None (como siempre).
+    r = reparto(conn, uid, hoy, series=series, cedears=cedears, car=car)
+    alcista = r if r["pct"] is not None else None
     return {
         "desde": desde, "hasta": hoy.isoformat(),
         "alcista": alcista,
@@ -424,9 +500,9 @@ def contenido_del_mail(semana: dict) -> dict:
         detail = "esto se movió esta semana en lo tuyo y en tu watchlist:"
     return {
         "heading": _titular(semana["senales"]), "detail": detail, "lines": lineas,
-        "cta_path": "/novedades?tab=senales", "cta_label": "Ver los cambios",
+        "cta_path": URL_SENALES, "cta_label": "Ver los cambios",
         "pie": ("Te llega los sábados porque lo pediste.", "Cambiar o apagar",
-                "/novedades?tab=senales"),
+                URL_SENALES),
         "aclaracion": NO_ES_RECOMENDACION,
     }
 
@@ -457,7 +533,7 @@ def _entregar(conn, via: str, envio: tuple) -> tuple:
             push_ok = main._send_push_to_user(destino, {
                 "title": "Rendi · Tu semana",
                 "body": f"{contenido['heading']}. {NO_ES_RECOMENDACION}",
-                "url": "/novedades?tab=senales" if not cliente else "/clientes",
+                "url": URL_SENALES if not cliente else "/clientes",
                 "tag": "resumen-semanal",
             }) > 0
         except Exception as ex:

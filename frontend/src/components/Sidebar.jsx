@@ -302,7 +302,7 @@ export default function Sidebar() {
                     type="button"
                     onClick={() => setOpenGroup(o => (o === group.id ? null : group.id))}
                     aria-expanded={isOpen}
-                    className={`w-full flex items-center gap-3 pl-3 pr-2.5 py-3.5 rounded-md text-[15px] font-semibold transition-colors ${
+                    className={`w-full flex items-center gap-2.5 pl-3 pr-2.5 py-3.5 rounded-md text-[15px] font-semibold transition-colors ${
                       isOpen ? 'text-ink-0' : 'text-ink-1 hover:text-ink-0 hover:bg-bg-1'
                     }`}
                   >
@@ -312,7 +312,8 @@ export default function Sidebar() {
                         dice lo mismo en "Más"). */}
                     {/* Un nombre largo ocupaba 4 renglones (y uno sin espacios, como
                         un mail, empujaba la flecha fuera del menú): se recorta,
-                        y entero al pasar el mouse. */}
+                        y entero al pasar el mouse. Con gap-3, «Análisis de
+                        mercado» quedaba 2 px más ancho que su lugar (28/10). */}
                     {(() => {
                       const titulo = etiquetaDeGrupo(group, clientCtx)
                       return <span className="flex-1 min-w-0 truncate text-left" title={titulo}>{titulo}</span>

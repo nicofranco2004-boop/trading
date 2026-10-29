@@ -1,4 +1,4 @@
-// CarteraList — la HOME de Calidad de cartera (holding-first, sin pestañas).
+// CarteraList — la HOME de Análisis fundamental (holding-first, sin pestañas).
 // ═══════════════════════════════════════════════════════════════════════════
 // Abre con TUS acciones y CEDEARs valuadas (peso, P&L) y los dos ejes Negocio /
 // Precio por fila. Debajo, "Que seguís" (watchlist que no tenés). Tocar una fila

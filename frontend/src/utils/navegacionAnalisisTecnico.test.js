@@ -1,28 +1,47 @@
-// «Análisis técnico» es una sección de Análisis (pedido de Nico, 28/10): en el
-// menú de la compu, en «Más» del celular y en el buscador ⌘K, porque los tres
-// leen la misma lista (utils/navegacion.js). La de la compu contra la del
-// celular dibujadas la cuida menuMas.render.test.jsx.
+// El menú del recuadro 22 (aprobado por Nico el 28/10): «Arriba, cómo está tu
+// plata. Abajo, cómo están los activos». Tu Cartera igual; «Análisis» pasa a
+// «Salud de cartera» (Métricas, Perfil de inversor); «Mercado» pasa a «Análisis
+// de mercado» (Resumen, Análisis técnico, Análisis fundamental, Novedades).
+// Las direcciones no cambian. El menú de la compu, «Más» del celular y el
+// buscador ⌘K leen esta misma lista (utils/navegacion.js); la compu contra el
+// celular, dibujados, la cuida menuMas.render.test.jsx.
 import { describe, it, expect } from 'vitest'
 import { GROUPS, pantallasVisibles } from './navegacion'
 import { seccionesDelMenuMas } from '../pages/More'
 
-describe('Análisis técnico en el menú', () => {
-  it('está en el grupo Análisis, después de Calidad de cartera', () => {
-    const analisis = GROUPS.find(g => g.id === 'analisis').items.map(i => i.to)
-    expect(analisis).toEqual(['/analisis', '/fundamentals', '/analisis-tecnico', '/perfil-inversor'])
+const grupo = (id) => GROUPS.find(g => g.id === id)
+const items = (id) => grupo(id).items.map(i => [i.to, i.label])
+
+describe('el menú del recuadro 22', () => {
+  it('Tu Cartera queda igual', () => {
+    expect(grupo('cartera').label).toBe('Tu Cartera')
+    expect(items('cartera')).toEqual([['/dashboard', 'Dashboard'], ['/posiciones', 'Cartera'], ['/operaciones', 'Movimientos']])
   })
 
-  it('el buscador y «Más» del celular la ofrecen, con su explicación', () => {
-    const pantallas = pantallasVisibles({ user: { tier: 'pro' } })
-    const item = pantallas.find(p => p.to === '/analisis-tecnico')
-    expect(item).toMatchObject({ label: 'Análisis técnico', grupoId: 'analisis' })
-    const enMas = seccionesDelMenuMas(pantallas).flatMap(s => s.items.map(i => ({ ...i, seccion: s.label })))
-    const fila = enMas.find(i => i.to === '/analisis-tecnico')
-    expect(fila.sub).toBe('Lo que tenés y lo que seguís, con su lectura técnica')
-    expect(enMas.find(i => i.to === '/fundamentals').seccion).toBe(fila.seccion)
+  it('Salud de cartera: Métricas y Perfil de inversor', () => {
+    expect(grupo('analisis').label).toBe('Salud de cartera')
+    expect(items('analisis')).toEqual([['/analisis', 'Métricas'], ['/perfil-inversor', 'Perfil de inversor']])
   })
 
-  it('el asesor en su nivel no la ve (no tiene cartera propia), adentro de un cliente sí', () => {
+  it('Análisis de mercado: Resumen, Análisis técnico, Análisis fundamental, Novedades (las direcciones de siempre)', () => {
+    expect(grupo('mercado').label).toBe('Análisis de mercado')
+    expect(items('mercado')).toEqual([
+      ['/', 'Resumen'], ['/analisis-tecnico', 'Análisis técnico'],
+      ['/fundamentals', 'Análisis fundamental'], ['/novedades', 'Novedades'],
+    ])
+  })
+
+  it('«Más» del celular: las mismas secciones, en el mismo orden, con su explicación', () => {
+    const secciones = seccionesDelMenuMas(pantallasVisibles({ user: { tier: 'pro' } }))
+    const de = (label) => secciones.find(s => s.label === label)?.items.map(i => i.to)
+    expect(de('Salud de cartera')).toEqual(['/analisis', '/perfil-inversor'])
+    expect(de('Análisis de mercado')).toEqual(['/', '/analisis-tecnico', '/fundamentals', '/novedades'])
+    const tecnico = secciones.flatMap(s => s.items).find(i => i.to === '/analisis-tecnico')
+    expect(tecnico.sub).toBe('Lo que tenés y lo que seguís, con su lectura técnica')
+    expect(secciones.flatMap(s => s.items).some(i => /calidad de cartera/i.test(i.label))).toBe(false)
+  })
+
+  it('el asesor en su nivel no ve las secciones de la cartera; adentro de un cliente, sí', () => {
     const asesor = { tier: 'advisor' }
     expect(pantallasVisibles({ user: asesor }).some(p => p.to === '/analisis-tecnico')).toBe(false)
     expect(pantallasVisibles({ user: asesor, clientCtx: { id: 3, label: 'Ana' } }).some(p => p.to === '/analisis-tecnico')).toBe(true)

@@ -125,7 +125,7 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
   // (empresaDeTenencias, que mira en qué mercado está cada lote). Antes sólo
   // salían las acciones de EE.UU. según el ticker: Telecom (TECO2 → TEO) o YPF
   // (YPFD) no aparecían, y el CEDEAR de Disney abría "DISN" en vez de DIS.
-  // Con el buscador oculto (hoy: siempre, en "Calidad de cartera") los chips no
+  // Con el buscador oculto (hoy: siempre, en "Análisis fundamental") los chips no
   // se muestran y no se pide nada.
   const sinBuscador = hideSearch || enFicha
   const TituloEmpresa = enFicha ? 'h3' : 'h2'
@@ -182,14 +182,14 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
   const categoriesDetail = data?.available ? (data.categories_detail || []) : []
 
   // En la ficha: sin fundamentales (cripto, ETF, bono, o no cargaron) no queda
-  // un título suelto; con ellos, el título y el camino a "Calidad de cartera"
+  // un título suelto; con ellos, el título y el camino a "Análisis fundamental"
   // para compararla con otras.
   if (enFicha && !loading && !data?.available) return null
 
   const cuerpo = (
     <div>
       {/* Search card + chips de posiciones — se oculta cuando el buscador vive en
-          el overlay global (modo detalle de "Calidad de cartera"). */}
+          el overlay global (modo detalle de "Análisis fundamental"). */}
       {!sinBuscador && (
       <Panel className="mb-6">
         <TickerSearch onSelect={onSelect} autoFocus={!ticker} />
@@ -229,7 +229,7 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
         <Panel padding="lg">
           <EmptyState
             icon={<Gauge size={20} strokeWidth={1.75} />}
-            eyebrow="CALIDAD DE CARTERA"
+            eyebrow="Análisis fundamental"
             title="Buscá un activo o tocá una de tus posiciones"
             description="Escribí un ticker (NVDA, AAPL, MELI…) o elegí algo que ya tengas. Vas a ver qué tan sólido es el negocio, si el precio de hoy lo acompaña y un resumen en criollo."
           />
@@ -355,13 +355,13 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
     </div>
   )
   // En la ficha, la sección con su título (SeccionFicha, la misma de las otras)
-  // y el camino a "Calidad de cartera" para compararla con otras.
+  // y el camino a "Análisis fundamental" para compararla con otras.
   if (!enFicha) return cuerpo
   return (
     <SeccionFicha titulo="Análisis fundamental"
       accion={irACalidad && (
         <Link to={irACalidad} className="inline-flex items-center min-h-10 sm:min-h-0 text-[13px] text-data-violet hover:underline">
-          Compararla en Calidad de cartera →
+          Compararla en Análisis fundamental →
         </Link>
       )}>
       {cuerpo}

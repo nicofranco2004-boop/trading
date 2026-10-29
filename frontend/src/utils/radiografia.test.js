@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   esLoteLocal, esAccionLocal, activosParaLeer, indexarLecturas, lecturaDeFila, tendencia, fuerza,
-  repartirCien, radiografia, lecturaVieja, MOTIVOS_SIN_LECTURA,
+  lecturaVieja, MOTIVOS_SIN_LECTURA,
 } from './radiografia'
 import { lecturaDeLaFila } from '../components/RadiografiaTecnica'
-import { computeBrokerValue, setBrokersRegistry } from './valuation'
+import { setBrokersRegistry } from './valuation'
 import { tarjetas, veredictoRsi } from './tecnico'
 
 const BROKERS = [
@@ -65,62 +65,11 @@ describe('las palabras son las de la ficha', () => {
   })
 })
 
-describe('repartirCien', () => {
-  it('suma 100 aunque redondear cada uno diera 99 o 101', () => {
-    expect(repartirCien([1, 1, 1])).toEqual([34, 33, 33])
-    expect(repartirCien([54.4, 29.4, 16.2]).reduce((a, b) => a + b, 0)).toBe(100)
-    expect(repartirCien([0, 0, 0])).toEqual([0, 0, 0])
-  })
-})
-
-describe('radiografia, con la valuación de la Cartera', () => {
-  // Una cartera chica valuada por el MISMO motor que el total de la Cartera de
-  // compu (computeBrokerValue → valuePositionLot): el peso de cada activo es su
-  // pedazo de ese total, no otra cuenta.
-  const POS = [
-    { id: 1, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK', quantity: 10, invested: 1000, buy_price: 100 },
-    { id: 2, broker: 'Schwab', asset: 'KO', asset_type: 'STOCK', quantity: 10, invested: 600, buy_price: 60 },
-    { id: 3, broker: 'Schwab', asset: 'USD', is_cash: true, quantity: 500, invested: 500 },
-    { id: 4, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK', quantity: 10, invested: 1000, buy_price: 100 },
-  ]
-  const PRICES = { NVDA: 150, KO: 50 }
-  const totales = BROKERS.map(b => computeBrokerValue(POS, PRICES, b, 1000, 1000))
-  const valorDe = p => totales.find((r, i) => BROKERS[i].name === p.broker).porLote.get(p.id) ?? 0
-  const totalCartera = totales.reduce((s, r) => s + r.value, 0)
-
-  it('los tres grupos suman el total de la Cartera (más los plazos fijos)', () => {
-    const indice = indexarLecturas([
-      lec('NVDA', false, ALCISTA, [{ tipo: 'media200', sentido: 'arriba', fecha: '2026-10-20' }]),
-      lec('KO', false, { ...BAJISTA, rsi: 24 }, [{ tipo: 'media50', sentido: 'abajo', fecha: '2026-10-21' }]),
-    ])
-    const r = radiografia(POS, valorDe, indice, [{ nombre: 'plazos fijos', valor: 1000 }])
-    expect(r.total).toBeCloseTo(totalCartera + 1000, 9)
-    expect(r.grupos.alcista.valor).toBeCloseTo(3000, 9)     // 2 lotes de NVDA × 10 × 150
-    expect(r.grupos.bajista.valor).toBeCloseTo(500, 9)      // KO
-    expect(r.grupos.sin.valor).toBeCloseTo(1500, 9)         // efectivo + plazos fijos
-    expect(r.grupos.alcista.pct + r.grupos.bajista.pct + r.grupos.sin.pct).toBe(100)
-    expect(r.grupos.alcista.pct).toBe(60)
-    expect(r.grupos.alcista.nombres).toEqual(['NVDA'])
-    expect(r.grupos.sin.nombres).toEqual(['plazos fijos', 'efectivo'])
-    expect(r.cambios).toEqual([
-      { asset: 'NVDA', tono: 'pos', texto: 'pasó arriba de su promedio de 200 días (martes 20/10)' },
-      { asset: 'KO', tono: 'neg', texto: 'quedó abajo de su promedio de 50 días (miércoles 21/10)' },
-      { asset: 'KO', tono: 'aviso', texto: `tiene la fuerza en 24 de 100: ${veredictoRsi(24).toLowerCase()}` },
-    ])
-  })
-
-  it('sin lecturas todavía, todo va sin lectura (no se inventa una tendencia)', () => {
-    const r = radiografia(POS, valorDe, new Map())
-    expect(r.grupos.sin.pct).toBe(100)
-    expect(r.grupos.alcista.valor).toBe(0)
-    expect(r.cambios).toEqual([])
-  })
-
-  it('el RSI en la zona del medio no es un cambio; 70 justo tampoco', () => {
-    const indice = indexarLecturas([lec('NVDA', false, { ...ALCISTA, rsi: 70 }), lec('KO', false, { ...BAJISTA, rsi: 30 })])
-    expect(radiografia(POS, valorDe, indice).cambios).toEqual([])
-  })
-})
+// El % de tu plata en tendencia alcista, sus tres grupos (que suman 100) y el
+// motivo de cada «sin lectura» ya no se cuentan en la pantalla (28/10): los arma
+// el servidor una vez (senales_semana.reparto). Sus pruebas viven en
+// backend/tests/test_reparto_tendencia.py, que además comprueba que la Cartera,
+// el Panorama, la pestaña Señales y el mail dan el MISMO %.
 
 describe('lo que no se puede leer no se inventa', () => {
   const HOY = '2026-10-22'
@@ -135,21 +84,6 @@ describe('lo que no se puede leer no se inventa', () => {
     expect(tendencia(finde, HOY).id).toBe('alcista')
   })
 
-  it('la radiografía no cuenta como alcista una lectura vieja ni su RSI como cambio', () => {
-    const lotes = [
-      { id: 1, broker: 'Schwab', asset: 'MSFT', asset_type: 'STOCK' },
-      { id: 2, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK' },
-    ]
-    const indice = indexarLecturas([
-      lec('MSFT', false, { ...ALCISTA, rsi: 80, fecha: '2026-09-17' }),
-      lec('NVDA', false, { ...ALCISTA, fecha: '2026-10-21' }),
-    ])
-    const r = radiografia(lotes, () => 100, indice, [], HOY)
-    expect(r.grupos.alcista.nombres).toEqual(['NVDA'])
-    expect(r.grupos.sin.nombres).toEqual(['MSFT'])
-    expect(r.cambios).toEqual([])
-  })
-
   it('si el pedido falla, la fila dice error, no «sin lectura»', () => {
     const p = { asset: 'NVDA', asset_type: 'STOCK', broker: 'Schwab' }
     expect(lecturaDeLaFila({ cargando: false, error: true, indice: null }, p).estado).toBe('error')
@@ -160,32 +94,18 @@ describe('lo que no se puede leer no se inventa', () => {
   })
 })
 
-describe('el motivo de cada «sin lectura»', () => {
+describe('el motivo de cada «sin lectura» de una fila', () => {
   const HOY = '2026-10-22'
   it('bono y fondo no se miden; acción sin velas aparece en un día; pocos días y vieja, los suyos', () => {
-    const lotes = [
-      { id: 1, broker: 'IOL', asset: 'AL30', asset_type: 'BONO' },
-      { id: 2, broker: 'IOL', asset: 'FCI:PIONERO-PESOS', asset_type: 'FUND' },
-      { id: 3, broker: 'IOL', asset: 'ARS', is_cash: true },
-      { id: 4, broker: 'IOL', asset: 'GGAL', asset_type: 'ACCION' },
-      { id: 5, broker: 'Schwab', asset: 'IREN', asset_type: 'STOCK' },
-      { id: 6, broker: 'Schwab', asset: 'MSFT', asset_type: 'STOCK' },
-    ]
-    const indice = indexarLecturas([
-      { asset: 'AL30', local: true, disponible: false },
-      { asset: 'GGAL', local: true, disponible: false },
-      lec('IREN', false, { ...ALCISTA, ruedas: 120, media200: null, dist_media200: null, fecha: HOY }),
-      lec('MSFT', false, { ...ALCISTA, fecha: '2026-09-17' }),
-    ])
-    const r = radiografia(lotes, () => 100, indice, [{ nombre: 'plazos fijos', valor: 50 }], HOY)
-    expect(r.grupos.sin.motivos.map(m => [m.porque, m.nombres])).toEqual([
-      ['no_se_mide', ['AL30', 'Pionero Pesos', 'efectivo', 'plazos fijos']],
-      ['sin_historia', ['GGAL']],
-      ['pocos_dias', ['IREN']],
-      ['vieja', ['MSFT']],
-    ])
-    expect(r.grupos.sin.motivos[1].texto).toBe(MOTIVOS_SIN_LECTURA.sin_historia)
-    expect(tendencia(null, HOY, lotes[3]).motivo).toContain('aparece en un día')
-    expect(tendencia(null, HOY, lotes[0]).porque).toBe('no_se_mide')
+    const bono = { id: 1, broker: 'IOL', asset: 'AL30', asset_type: 'BONO' }
+    const fondo = { id: 2, broker: 'IOL', asset: 'FCI:PIONERO-PESOS', asset_type: 'FUND' }
+    const accion = { id: 4, broker: 'IOL', asset: 'GGAL', asset_type: 'ACCION' }
+    expect(tendencia({ asset: 'AL30', local: true, disponible: false }, HOY, bono).porque).toBe('no_se_mide')
+    expect(tendencia(null, HOY, fondo).porque).toBe('no_se_mide')
+    expect(tendencia({ asset: 'GGAL', local: true, disponible: false }, HOY, accion).porque).toBe('sin_historia')
+    expect(tendencia(null, HOY, accion).motivo).toContain('aparece en un día')
+    expect(tendencia(lec('IREN', false, { ...ALCISTA, ruedas: 120, media200: null, dist_media200: null, fecha: HOY }), HOY).porque).toBe('pocos_dias')
+    expect(tendencia(lec('MSFT', false, { ...ALCISTA, fecha: '2026-09-17' }), HOY).porque).toBe('vieja')
+    for (const k of ['no_se_mide', 'sin_historia', 'pocos_dias', 'vieja']) expect(MOTIVOS_SIN_LECTURA[k]).toBeTruthy()
   })
 })

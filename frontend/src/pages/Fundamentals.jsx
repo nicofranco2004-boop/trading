@@ -1,4 +1,4 @@
-// Calidad de cartera — cartera-first, SIN pestañas (a propósito, para no replicar
+// Análisis fundamental (antes «Calidad de cartera») — cartera-first, SIN pestañas (a propósito, para no replicar
 // la navegación de Vesty: Analizar/Comparar/Favoritos + buscador-héroe).
 // ═══════════════════════════════════════════════════════════════════════════
 // La página ABRE en tu cartera (CarteraList) + una sección "Que seguís". El
@@ -107,8 +107,8 @@ export default function Fundamentals() {
   return (
     <div className="page-shell">
       <PageHeader
-        eyebrow="ANALYTICS"
-        title="Calidad de cartera"
+        eyebrow="Análisis de mercado"
+        title="Análisis fundamental"
         subtitle="Qué tan sólidas son las empresas detrás de tus acciones y CEDEARs, y si el precio de hoy las acompaña."
       />
 

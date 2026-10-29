@@ -267,9 +267,9 @@ export default function InsightsYReportes() {
         ponderamos todo por tiempo — así el % mide tu cartera, no tu timing.
       </blockquote>
 
-      <h2>Calidad de cartera</h2>
+      <h2>Análisis fundamental</h2>
       <p>
-        En <strong>Calidad de cartera</strong> (en el sidebar, disponible en{' '}
+        En <strong>Análisis fundamental</strong> (en el menú, dentro de Análisis de mercado; disponible en{' '}
         <strong>todos los planes</strong>) analizamos tus acciones y CEDEARs en 2 ejes:{' '}
         <strong>Negocio</strong> (qué tan sólida es la empresa) y <strong>Precio</strong>{' '}
         (si está cara o atractiva hoy).

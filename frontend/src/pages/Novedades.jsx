@@ -1,4 +1,4 @@
-// Novedades — hub unificado de Eventos + Noticias + Tus señales.
+// Novedades — hub unificado de Eventos + Noticias.
 // ════════════════════════════════════════════════════════════════════════════
 // Reúne los dos bloques de "qué pasa en el mercado y en tu cartera". Reduce
 // la complejidad del navbar (en lugar de 2 items, 1).
@@ -6,21 +6,21 @@
 // Diseño: PageHeader con live-dot. Tabs outer prominentes con icono. Cada
 // sección hija (Events/News) maneja su propio KPI strip + sub-tabs en URL.
 //
-// «Tus señales» (pieza 15): qué cambió esta semana en lo tuyo y en tu
-// watchlist, el análisis técnico de cada uno (components/TusSenales.jsx). Es
-// adonde lleva el mail y la notificación de los sábados (?tab=senales).
+// «Tus señales» (pieza 15) se mudó a Análisis técnico → «Señales de la
+// semana» (recuadro 21c, 28/10). La pestaña queda como link (así nadie que la
+// buscaba acá se pierde) y /novedades?tab=senales —la dirección de los mails y
+// notificaciones viejos— redirige allá.
 //
 // URL state:
-//   • ?tab=eventos|noticias|senales  → sección activa (este componente)
+//   • ?tab=eventos|noticias  → sección activa (este componente)
 //   • ?sub=…                 → sub-tab dentro de la sección (componente hijo)
 
 import { useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { Activity, Calendar, Newspaper } from 'lucide-react'
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
+import { Activity, ArrowUpRight, Calendar, Newspaper } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Events from './Events'
 import News from './News'
-import TusSenales from '../components/TusSenales'
 import AdvisorNovedades from './AdvisorNovedades'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
@@ -28,14 +28,15 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 const SECTIONS = [
   { value: 'eventos',  label: 'Eventos',  icon: Calendar },
   { value: 'noticias', label: 'Noticias', icon: Newspaper },
-  { value: 'senales',  label: 'Tus señales', icon: Activity },
+  // Se mudó: tocarla lleva a la pestaña de Análisis técnico.
+  { value: 'senales',  label: 'Tus señales', icon: Activity, fuera: '/analisis-tecnico?tab=senales' },
 ]
 
 const DEFAULT_SECTION = 'eventos'
 
 function readSection(searchParams) {
   const t = searchParams.get('tab')
-  return SECTIONS.find(s => s.value === t) ? t : DEFAULT_SECTION
+  return SECTIONS.find(s => s.value === t && !s.fuera) ? t : DEFAULT_SECTION
 }
 
 // El asesor, en su propio nivel (sin haber entrado a un cliente), no tiene
@@ -51,7 +52,9 @@ export default function Novedades() {
 
 function PersonalNovedades() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const section = readSection(searchParams)
+  const mudada = SECTIONS.find(s => s.fuera && s.value === searchParams.get('tab'))
 
   // Normalizamos URL una vez si llegamos sin ?tab=
   useEffect(() => {
@@ -64,17 +67,22 @@ function PersonalNovedades() {
   }, [])
 
   function selectSection(value) {
+    const fuera = SECTIONS.find(s => s.value === value)?.fuera
+    if (fuera) { navigate(fuera); return }
     const next = new URLSearchParams(searchParams)
     next.set('tab', value)
     next.delete('sub')  // reset sub-tab al cambiar de sección
     setSearchParams(next, { replace: true })
   }
 
+  // La dirección vieja de «Tus señales» (mails y notificaciones de antes).
+  if (mudada) return <Navigate to={mudada.fuera} replace />
+
   return (
     <div className="page-shell-wide">
       <PageHeader
         title="Novedades"
-        subtitle="Eventos, noticias del mercado y lo que cambió en lo tuyo — todo en un solo lugar."
+        subtitle="Eventos y noticias del mercado, todo en un solo lugar."
         meta="Google News + yfinance"
       />
 
@@ -108,6 +116,7 @@ function PersonalNovedades() {
                 className={active ? 'text-rendi-accent' : 'text-ink-3 group-hover:text-ink-1 transition-colors'}
               />
               {s.label}
+              {s.fuera && <ArrowUpRight size={13} strokeWidth={2} aria-hidden="true" className="text-data-violet" />}
             </button>
           )
         })}
@@ -121,7 +130,6 @@ function PersonalNovedades() {
       >
         {section === 'eventos'  && <Events  embedded />}
         {section === 'noticias' && <News    embedded />}
-        {section === 'senales'  && <TusSenales />}
       </div>
     </div>
   )
