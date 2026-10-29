@@ -1034,6 +1034,102 @@ recién entonces aplicarlo en los tres. Es un cambio en 3 archivos a la vez y to
 el guardián ya puesto para que no se olvide: mientras los 6 sigan así, el censo
 del test los nombra con el motivo.
 
+## 🔴 HALLAZGO 14 — En Postgres las reparaciones del arranque NO CORREN, y no dejan rastro
+
+**Qué se ve, sin jerga:** Rendi arregla sola, cada vez que el servidor arranca,
+un puñado de cosas de los datos: las cajas de efectivo que el importador dejó
+marcadas «USDT» en brokers que son de dólares pasan a «USD»; las cajas vacías
+pierden el precio de compra de unos dólares que ya no están; la fecha del último
+ingreso se completa desde el historial. **Después de pasar a Postgres, ninguna de
+esas reparaciones vuelve a correr** — y no avisa: no hay error, no hay línea en el
+registro, no hay nada.
+
+**El mecanismo, en una línea:** `init_db()` arranca con
+
+```python
+def init_db():
+    if USANDO_PG:
+        _init_db_postgres()
+        return
+```
+
+y **adentro de esa misma función, 2.400 líneas más abajo**, están las
+reparaciones. El `return` pasa antes.
+
+**Y el motivo del `return` es correcto… para la mitad de la función.** Lo que hay
+arriba son las 46 migraciones incrementales del esquema: crear la tabla, después
+agregarle una columna, después el índice. Eso es la **historia** del esquema de
+SQLite, y Postgres no la necesita porque arranca del **resultado**
+(`schema_pg.sql`). Traducir 46 migraciones serían 46 oportunidades de equivocarse
+para llegar al mismo lugar. Hasta ahí, bien.
+
+El problema es lo que comparte la función sin ser esquema. Contado:
+
+| qué hay en `init_db` (2.444 líneas) | cuántas | ¿la necesita Postgres? |
+|---|---|---|
+| `CREATE TABLE` | 77 | no — `schema_pg.sql` las trae |
+| `CREATE INDEX` | 72 | no — idem |
+| `ALTER TABLE` | 101 | no — idem |
+| **sentencias que tocan DATOS** (`UPDATE`/`DELETE`/`INSERT`) | **18** | **sí, y no corren** |
+
+### Las 18, y cuáles importan de verdad
+
+No todas son iguales, y la diferencia decide el arreglo. **Unas son históricas**
+(reparan datos viejos de SQLite, y la base de Postgres se va a crear copiando
+datos ya reparados: ahí el salteo no hace daño). **Otras están escritas para
+correr en CADA boot**, y sus propios comentarios lo dicen — «en cada boot y en
+WARNING, como el de arriba: "quedan 0" es la confirmación». Ésas son
+mantenimiento permanente de una regla, no una migración:
+
+| línea | qué repara | por boot |
+|---|---|---|
+| `main.py:3736` | cajas `USDT` de brokers en dólares → `USD` | **sí** |
+| `main.py:3756` | cajas vacías que se quedaron con el precio de compra | **sí** |
+| `main.py:3019` | `last_login_at` desde el historial de ingresos | **sí** |
+| `main.py:3694` | borra del caché los `.BA` (ratio de CEDEAR) | **sí** |
+| `main.py:3712` | notas de posiciones | sí |
+| `main.py:1588` | marca admin al email del dueño | **sí** — y si no corre, nadie es admin |
+| `main.py:3325` y `3335` | `credit_ledger` (**plata**) | revisar |
+| `main.py:1440`, `1449` | aprobar / verificar a todos | histórica |
+| `main.py:1625`, `1748`, `1820` | datos heredados (`user_id=0`) | histórica |
+| `main.py:1962`, `2041` | poda de noticias, `config_old` → `config` | histórica |
+
+### Cómo se verificó, y por qué el arreglo es simple
+
+`backend/tests/test_reparaciones_del_arranque.py`, dos preguntas separadas a
+propósito:
+
+```
+¿el SQL de la reparación FUNCIONA en Postgres?   → SÍ  (2/2 en los dos motores)
+¿`init_db()` la CORRE en Postgres?               → NO  (la caja queda 'USDT')
+```
+
+Que la primera sea verde es la noticia buena: **no hay nada que traducir.** El
+arreglo es **sacar las reparaciones por-boot de `init_db` a una función propia**
+(por ejemplo `reparaciones_de_arranque(conn)`) y llamarla en los dos motores,
+después del esquema. El `return` de `init_db` queda como está, y pasa a ser
+inofensivo.
+
+La segunda prueba está escrita para **darse vuelta**: cuando las reparaciones
+salgan y se llamen en los dos motores, su rama de Postgres se cae y el mensaje
+dice qué hacer («es la noticia buena: dar vuelta el test»). Es un recordatorio con
+fecha de vencimiento, no un deseo.
+
+### Por qué esto explica 4 de los 12 rojos de Postgres
+
+Los cuatro dicen «el arranque» o «al arrancar» en el nombre, y son los que miden
+estas reparaciones:
+
+```
+test_efectivo_una_puerta.py::LasCajasViejasSeRenombranAlArrancar      → 3736
+test_efectivo_una_puerta.py::LasCajasVaciasPierdenElPrecioAlArrancar  → 3756
+test_admin_ingresos.py::UltimoLoginAtrasado                           → 3019
+test_admin_uso.py::Poda                                               → la poda
+```
+
+Una causa, cuatro rojos. Y el riesgo real no son los rojos: es que **el día de la
+mudanza esas reparaciones dejan de correr en producción sin que nada lo diga.**
+
 ## ✅ Lo que ataqué y aguantó
 
 * **Los seis `UPDATE` de cobros, verificados por máquina y no a ojo.** El guard
