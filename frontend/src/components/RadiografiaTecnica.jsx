@@ -28,6 +28,7 @@ import {
 } from '../utils/radiografia'
 import { fciLabel } from '../utils/valuation'
 import { hoyISO } from '../utils/fecha'
+import { semanaPasadaTxt } from '../utils/tusSenales'
 import { RSI_CASTIGADO, RSI_ESTIRADO } from '../utils/tecnico'
 
 /**
@@ -132,12 +133,11 @@ function Lista({ nombres, max = 6 }) {
   return <span className="text-ink-2"> · {vista.join(', ')}{resto > 0 ? ` y ${resto} más` : ''}</span>
 }
 
-/** «la semana pasada, 61%» si es el sábado de hace 7 días; si no, «el sábado 17/10, 61%». */
+/** «la semana pasada, 61%» o «el sábado 17/10, 61%»: la frase de «Tus
+ *  señales» (`semanaPasadaTxt`, una sola regla para las tres pantallas). */
 function antesTxt(sp) {
   if (!sp?.semana) return null
-  const dias = (Date.parse(hoyISO() + 'T00:00:00Z') - Date.parse(sp.semana + 'T00:00:00Z')) / 86400000
-  const [, m, d] = sp.semana.split('-')
-  return `${dias <= 7 ? 'la semana pasada' : `el sábado ${d}/${m}`}, ${Math.round(sp.pct)}%`
+  return `${semanaPasadaTxt(sp, hoyISO())}, ${Math.round(sp.pct)}%`
 }
 
 /**

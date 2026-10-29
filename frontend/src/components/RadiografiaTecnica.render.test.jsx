@@ -20,7 +20,9 @@ beforeEach(() => setBrokersRegistry([
   { id: 2, name: 'Schwab', currency: 'USD' },
 ]))
 
-const haceSiete = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10)
+import { hoyISO } from '../utils/fecha'
+const diasAtras = (n) => new Date(Date.parse(hoyISO() + 'T00:00:00Z') - n * 86400000).toISOString().slice(0, 10)
+const haceSiete = diasAtras(7)
 // Como lo manda el servidor (POST /api/tecnico/cartera → reparto, GET /api/tus-senales → alcista).
 const REPARTO = {
   pct: 54,
@@ -48,6 +50,12 @@ describe('la Cartera, corta (recuadro 21c)', () => {
     expect(t).toContain('Ver análisis técnico')
     expect(html).not.toContain('role="img"')                 // la barra vive en el Panorama
     expect(t).not.toContain('Lo que cambió esta semana')
+  })
+  it('«la semana pasada» sólo a los 7 días justos; si no, el sábado con su fecha (la regla de Señales)', () => {
+    const cinco = diasAtras(5)
+    const [, m, d] = cinco.split('-')
+    const t = sinEtiquetas(conRouter(<RadiografiaTecnica lotes={LOTES} reparto={{ ...REPARTO, semana_pasada: { semana: cinco, pct: 61 } }} cargando={false} />))
+    expect(t).toContain(`(el sábado ${d}/${m}, 61%)`)
   })
   it('sin la semana pasada guardada, esa parte no aparece', () => {
     const t = sinEtiquetas(conRouter(<RadiografiaTecnica lotes={LOTES} reparto={{ ...REPARTO, semana_pasada: null }} cargando={false} />))
