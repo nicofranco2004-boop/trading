@@ -122,3 +122,17 @@ describe('alertas técnicas', () => {
     expect(activoTecnico('BTC')).toEqual({ symbol: 'BTC', accion_local: false })
   })
 })
+
+describe('el aviso de tu línea del gráfico (Nico, 28/10)', () => {
+  const guardada = (tipo) => ({ kind: 'tecnica', senal: 'linea', symbol: 'AAPL', currency: 'USD', direction: 'either',
+    dibujo: JSON.stringify({ asset: 'AAPL', moneda: 'usd', id: 'd1', tipo }) })
+  it('en Mis alertas dice qué línea; en pesos, que es en pesos', () => {
+    expect(frase(guardada('horizontal'))).toEqual({ quien: 'AAPL', que: 'toca tu línea horizontal' })
+    expect(frase(guardada('tendencia')).que).toBe('toca tu línea de tendencia')
+    expect(frase({ ...guardada('horizontal'), currency: 'ARS' }).quien).toBe('AAPL en pesos')
+  })
+  it('la confirmación del formulario, con el borrador (aún sin guardar)', () => {
+    expect(confirmacion({ kind: 'tecnica', senal: 'linea', symbol: 'AAPL', currency: 'USD', tipoLinea: 'tendencia' }))
+      .toBe('Te avisamos cuando AAPL toque tu línea de tendencia. Lo miramos cada día con el precio más alto y el más bajo del día.')
+  })
+})

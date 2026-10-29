@@ -190,8 +190,8 @@ export default function AssetDetail() {
   const [operations, setOperations] = useState([])
   // Tu tesis de este activo (la misma de Movimientos). Arriba de los return.
   const tesis = useTesis()
-  // El valor de toda tu cartera (la última foto que sirve como medición), para
-  // decir qué parte de tu cartera es este papel en «Cuánto se mueve».
+  // Qué parte de tu plata es este papel, para «Cuánto se mueve»: la cuenta del
+  // servidor (senales_semana.peso), la misma de Tu lista y de Señales.
   const [pesoEnCartera, setPesoEnCartera] = useState(null)
   const [loading, setLoading] = useState(true)
   // Sólo si no lo tenés: el último precio, el cierre anterior y si está en tu watchlist.

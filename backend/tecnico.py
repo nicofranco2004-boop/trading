@@ -30,6 +30,7 @@ dibujan en la pantalla con lo que ya tiene la ficha.
 """
 from __future__ import annotations
 
+from bisect import bisect_right
 from datetime import date, timedelta
 
 import elliott
@@ -838,6 +839,67 @@ def _en_maximo(velas: list, cierres: list, desde_i: int) -> dict:
             j += 1
         out[i] = cierres[i] >= max(cierres[j:i + 1]) * (1 - TOLERANCIA_MAXIMO)
     return out
+
+
+# ─── Tu línea (las alertas de un dibujo del gráfico) ─────────────────────────
+# «Avisame si el precio toca esta línea» (Nico, 28/10): una línea horizontal o
+# de tendencia que la persona dibujó en la ficha (tabla `dibujos_grafico`). No es
+# una señal de la ficha: no va en SENALES. La línea se lee de lo dibujado cada
+# vez (alerts_engine), así que si la mueven, el aviso la sigue.
+SENAL_LINEA = "linea"
+
+
+def _indice_del_punto(velas: list, p: dict):
+    """En qué vela cae un punto dibujado ({d, mas, precio}): el último día con
+    fecha ≤ `d` más `mas` días de mercado. La misma cuenta que `diaDelPunto` de
+    la ficha (frontend/src/utils/dibujos.js). Antes del primer día: None."""
+    fechas = [v["date"] for v in velas]
+    i = bisect_right(fechas, str(p.get("d") or "")) - 1
+    return None if i < 0 else i + int(p.get("mas") or 0)
+
+
+def valor_de_linea(velas: list, linea: dict, i: int):
+    """El precio de la línea en la vela `i`. Una horizontal, su precio; una de
+    tendencia, la recta que pasa por sus dos puntos, también después de su
+    segundo punto (sigue en la misma dirección). None si no se puede saber."""
+    if linea.get("tipo") == "horizontal":
+        return linea.get("precio")
+    a, b = linea.get("a") or {}, linea.get("b") or {}
+    ia, ib = _indice_del_punto(velas, a), _indice_del_punto(velas, b)
+    if ia is None or ib is None or ia == ib:
+        return None
+    return a["precio"] + (b["precio"] - a["precio"]) * (i - ia) / (ib - ia)
+
+
+def toque_de_linea(velas: list, linea: dict, desde: str = None):
+    """La PRIMERA vela posterior a `desde` que tocó la línea: su mínimo y su
+    máximo la encierran, o el cierre quedó del otro lado del de la vela
+    anterior (un salto por encima de la línea, sin tocarla en el día).
+    {'fecha', 'sentido', 'cierre', 'referencia', 'rsi', 'minimo', 'maximo'}
+    o None. `sentido`: 'arriba' si venía de abajo (subió hasta la línea),
+    'abajo' si venía de arriba. `referencia`: el precio de la línea ese día."""
+    if not velas:
+        return None
+    desde_i = 0
+    if desde:
+        desde_i = next((i for i, v in enumerate(velas) if v["date"] > desde), len(velas))
+    for i in range(desde_i, len(velas)):
+        nivel = valor_de_linea(velas, linea, i)
+        if nivel is None or nivel <= 0:
+            continue
+        v = velas[i]
+        cierre = v["close"]
+        alto, bajo = v.get("high") or cierre, v.get("low") or cierre
+        antes = velas[i - 1]["close"] if i > 0 else None
+        nivel_antes = valor_de_linea(velas, linea, i - 1) if i > 0 else None
+        salto = (antes is not None and nivel_antes is not None
+                 and (antes - nivel_antes) * (cierre - nivel) < 0)
+        if bajo <= nivel <= alto or salto:
+            venia_de_abajo = antes is not None and nivel_antes is not None and antes < nivel_antes
+            return {"fecha": v["date"], "sentido": "arriba" if venia_de_abajo else "abajo",
+                    "cierre": cierre, "referencia": nivel, "rsi": None,
+                    "minimo": bajo, "maximo": alto}
+    return None
 
 
 def senal_desde(velas: list, senal: str, desde: str = None, sentido: str = None):

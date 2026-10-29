@@ -2349,7 +2349,8 @@ def init_db():
                 last_fired_at TEXT,
                 last_fired_price REAL,
                 senal TEXT,                         -- tecnica: qué señal (tecnico.SENALES)
-                accion_local INTEGER NOT NULL DEFAULT 0 -- tecnica: acción argentina (como la ficha)
+                accion_local INTEGER NOT NULL DEFAULT 0, -- tecnica: acción argentina (como la ficha)
+                dibujo TEXT                         -- tecnica 'linea': qué línea dibujada ({asset, moneda, id, tipo})
             );
             CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id);
             CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active);
@@ -2703,6 +2704,9 @@ def init_db():
             conn.executescript("ALTER TABLE alerts ADD COLUMN senal TEXT;")
         if _alert_cols and 'accion_local' not in _alert_cols:
             conn.executescript("ALTER TABLE alerts ADD COLUMN accion_local INTEGER NOT NULL DEFAULT 0;")
+        # Migración: el aviso de una línea dibujada guarda a qué línea mira.
+        if _alert_cols and 'dibujo' not in _alert_cols:
+            conn.executescript("ALTER TABLE alerts ADD COLUMN dibujo TEXT;")
 
         # Migración: last_fired_date en alert_symbol_state (la tabla ya existe en prod
         # sin esta columna, se creó en el deploy anterior).
@@ -48156,6 +48160,9 @@ class AlertCreateIn(BaseModel):
     note: Optional[str] = Field(None, max_length=200)
     senal: Optional[str] = Field(None, max_length=20)   # tecnica: tecnico.SENALES
     accion_local: bool = False                          # tecnica: acción argentina (como la ficha)
+    # tecnica 'linea': el id de tu línea en el gráfico y la moneda en que la
+    # dibujaste (`symbol` es el activo como lo pide la ficha).
+    dibujo: Optional[str] = Field(None, max_length=40)
 
     @field_validator('kind')
     @classmethod
@@ -48316,6 +48323,8 @@ def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn") -> dict:
     import tecnico
     if data.scope != "ticker" or not data.symbol:
         raise HTTPException(400, "Una alerta técnica necesita un activo.")
+    if data.senal == tecnico.SENAL_LINEA:
+        return _crear_alerta_de_linea(conn, uid, data)
     if data.senal not in tecnico.SENALES:
         raise HTTPException(400, "Elegí qué querés que te avisemos.")
     symbol = data.symbol
@@ -48356,6 +48365,58 @@ def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn") -> dict:
     tiene_velas = bool(_ae._serie_tecnica(conn, row))
     resolved = tiene_velas or _ae.price_for_alert(f"{symbol}.BA" if local else symbol) is not None
     return {"ok": True, "id": aid, "armed": True, "resolved": resolved, "velas": tiene_velas}
+
+
+def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn") -> dict:
+    """«Avisame si el precio toca esta línea» (Nico, 28/10): una alerta técnica
+    atada a una línea horizontal o de tendencia que dibujaste en la ficha. No
+    copia el precio: el motor lee la línea de lo dibujado cada vez
+    (alerts_engine.linea_de_la_alerta), así que si la movés el aviso la sigue y
+    si la borrás se apaga. Se mira con las velas del día (su mínimo y su
+    máximo), como las demás técnicas: avisa a la mañana siguiente."""
+    import alerts_engine as _ae
+    import tecnico
+    asset = (data.symbol or "").strip().upper()
+    moneda = "ars" if (data.currency or "").strip().upper() == "ARS" else "usd"
+    if not asset or not data.dibujo:
+        raise HTTPException(400, "Elegí la línea del gráfico.")
+    fila = conn.execute(
+        "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+        (uid, asset, moneda)).fetchone()
+    try:
+        dibujos = json.loads(fila[0]) if fila else []
+    except (TypeError, ValueError):
+        dibujos = []
+    linea = next((d for d in dibujos if isinstance(d, dict) and d.get("id") == data.dibujo), None)
+    if not linea:
+        raise HTTPException(404, "No encontramos esa línea: puede que todavía no se haya guardado. Probá de nuevo en un momento.")
+    if linea.get("tipo") not in ("horizontal", "tendencia"):
+        raise HTTPException(400, "Por ahora el aviso es para líneas horizontales y de tendencia.")
+    ref = json.dumps({"asset": asset, "moneda": moneda, "id": data.dibujo, "tipo": linea["tipo"]},
+                     separators=(",", ":"))
+    symbol = _ae._norm_sym(asset[:-3] if asset.endswith(".BA") else asset)
+    if not symbol or not _SYMBOL_RE.match(symbol):
+        raise HTTPException(400, "Ese activo no tiene análisis técnico.")
+    # Una línea, un aviso: dos serían dos mails por el mismo toque.
+    for r in conn.execute(
+            "SELECT dibujo FROM alerts WHERE user_id=? AND kind='tecnica' AND active=1 AND senal=?",
+            (uid, tecnico.SENAL_LINEA)).fetchall():
+        otra = _ae.referencia_de_linea(r["dibujo"]) or {}
+        if (otra.get("asset"), otra.get("moneda"), otra.get("id")) == (asset, moneda, data.dibujo):
+            raise HTTPException(409, "Ya te avisamos cuando el precio toque esta línea.")
+    cur = conn.execute(
+        """INSERT INTO alerts
+           (user_id, kind, symbol, scope, direction, currency, channel, repeat,
+            cooldown_min, armed, active, note, senal, accion_local, dibujo)
+           VALUES (?,'tecnica',?,'ticker','either',?,?,?,?,1,1,?,?,?,?)""",
+        (uid, symbol, moneda.upper(), data.channel, data.repeat, data.cooldown_min,
+         data.note, tecnico.SENAL_LINEA, 1 if data.accion_local else 0, ref))
+    aid = cur.lastrowid
+    row = conn.execute("SELECT * FROM alerts WHERE id=?", (aid,)).fetchone()
+    _ae.arrancar_tecnica(conn, row)
+    conn.commit()
+    return {"ok": True, "id": aid, "armed": True, "resolved": True,
+            "velas": bool(_ae._serie_tecnica(conn, row))}
 
 
 @app.post("/api/alerts")

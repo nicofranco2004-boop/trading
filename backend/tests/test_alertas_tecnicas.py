@@ -83,7 +83,8 @@ class AlertasTecnicasTest(unittest.TestCase):
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
             for t in ("velas_diarias", "velas_estado", "watchlist",
-                      "positions", "brokers", "alerts", "alert_events", "alert_symbol_state"):
+                      "positions", "brokers", "alerts", "alert_events", "alert_symbol_state",
+                      "dibujos_grafico"):
                 conn.execute(f"DELETE FROM {t}")
             cur = conn.execute(
                 "INSERT INTO users (email, name, password_hash, approved, email_verified, tier) "
@@ -485,17 +486,23 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.assertEqual((g["symbol"], g["accion_local"], g["currency"]), ("GGAL", 1, "ARS"))
         self.assertEqual(g["direction"], "either")
 
-    def test_precio_tecnica_y_recordatorio_en_la_misma_pasada_cada_una_por_su_camino(self):
-        """Las tres clases de alerta del mismo motor, en UNA pasada del cron de
+    def test_precio_tecnica_linea_y_recordatorio_en_la_misma_pasada_cada_una_por_su_camino(self):
+        """Todas las clases de alerta del mismo motor, en UNA pasada del cron de
         siempre (`main._evaluar_alertas_job`): la de precio la mira
-        `evaluate_alerts` (precios en vivo), la técnica `evaluar_tecnicas` (las
-        velas de la noche) y el recordatorio de una tesis `evaluar_recordatorios`
-        (su día). Cada una dispara una vez y por su rama: si el filtro de
-        `evaluate_alerts` dejara entrar a la técnica o al recordatorio, caerían
-        en la rama del % (pieza 11 + alertas técnicas, mezcla del 29/10)."""
+        `evaluate_alerts` (precios en vivo); la técnica y la de tu línea
+        dibujada (`kind='tecnica'`, `senal='linea'`) `evaluar_tecnicas` (las
+        velas de la noche: la línea se mira contra el mínimo y el máximo del
+        día, que en vivo no hay); el recordatorio de una tesis
+        `evaluar_recordatorios` (su día). Cada una dispara una vez y por su
+        rama: si el filtro de `evaluate_alerts` (`KINDS_EN_VIVO`) dejara entrar
+        a las técnicas o al recordatorio, caerían en la rama del % (pieza 11 +
+        alertas técnicas + líneas, mezclas del 29/10)."""
         # La técnica: MSFT cruza ayer su promedio de 200 días.
         self.yahoo.precios["MSFT"] = self._sube_ayer
         self._seguir_por_alerta_y_crear()
+        # Tu línea: una horizontal en 120 que el precio toca ayer (de 90 a 120).
+        self._dibujar(self._horizontal(120))
+        self._crear_linea()
         self._noche(self.ayer)
         # La de precio: KO arriba de 110 (está en 100 al crearla).
         r = self.client.post("/api/alerts", json={
@@ -517,11 +524,11 @@ class AlertasTecnicasTest(unittest.TestCase):
              mock.patch("alerts_engine.HORA_RECORDATORIO", 0):
             res = self._cron()
             self._cron()                       # la segunda pasada no repite nada
-        # La pasada en vivo mira SÓLO la de precio: la técnica y el recordatorio
-        # no disparan por ahí (no tienen límite de precio), así que lo que se ve
-        # de afuera es cuántas alertas miró.
+        # La pasada en vivo mira SÓLO la de precio: las técnicas y el
+        # recordatorio no disparan por ahí (no tienen límite de precio), así que
+        # lo que se ve de afuera es cuántas alertas miró.
         self.assertEqual(res["alerts"], 1, res)
-        self.assertEqual(res["tecnicas"]["fired"], 1, res)
+        self.assertEqual(res["tecnicas"]["fired"], 2, res)      # el cruce y la línea
         self.assertEqual(res["recordatorios"], 1, res)
         with main.db_abierta() as conn:
             ev = [dict(x) for x in conn.execute(
@@ -529,18 +536,149 @@ class AlertasTecnicasTest(unittest.TestCase):
                 "FROM alert_events e JOIN alerts a ON a.id = e.alert_id WHERE e.user_id=? ORDER BY e.id",
                 (self.uid,)).fetchall()]
         self.assertEqual(sorted((e["kind"], e["symbol"]) for e in ev),
-                         [("price_target", "KO"), ("recordatorio", "NVDA"), ("tecnica", "MSFT")], ev)
+                         [("price_target", "KO"), ("recordatorio", "NVDA"), ("tecnica", "MSFT"), ("tecnica", "MSFT")], ev)
         por = {e["kind"]: e for e in ev}
         self.assertTrue(por["price_target"]["message"].startswith("KO"), por["price_target"])
-        self.assertTrue(por["tecnica"]["message"].startswith("MSFT pasó para arriba su promedio de 200 días"))
+        self.assertEqual(sorted(e["message"][:40] for e in ev if e["kind"] == "tecnica"),
+                         ["MSFT pasó para arriba su promedio de 200", "MSFT subió hasta tu línea horizontal, en"])
         self.assertEqual(por["recordatorio"]["message"], "Quedaste en revisar tu tesis de NVDA")
         for e in ev:
             self.assertEqual((e["delivered_email"], e["delivered_push"]), (1, 1), e)
-        # Cada push abre lo suyo: la de precio «Mis alertas», la técnica la ficha
-        # con el gráfico del cruce, el recordatorio la ficha con tu tesis.
+        # Cada push abre lo suyo: la de precio «Mis alertas», las técnicas la
+        # ficha con el gráfico (el cruce, tu línea), el recordatorio la ficha con
+        # tu tesis.
         self.assertEqual(sorted(p["url"] for p in self.pushes),
-                         ["/activo/MSFT", "/activo/NVDA", "/alertas?tab=mis"])
-        self.assertEqual(len(self.mails), 3)
+                         ["/activo/MSFT", "/activo/MSFT", "/activo/NVDA", "/alertas?tab=mis"])
+        self.assertEqual(len(self.mails), 4)
+
+    # — tu línea: «avisame si el precio toca esta línea» (Nico, 28/10) —
+    # La línea se guarda como la guarda la ficha (PUT /api/tecnico/…/dibujos) y
+    # el aviso se crea como lo crea el botón del cartel de la línea elegida.
+
+    def _dibujar(self, *dibujos, asset="MSFT", moneda="usd", headers=None):
+        r = self.client.put(f"/api/tecnico/{asset}/dibujos?moneda={moneda}",
+                            json={"dibujos": list(dibujos)}, headers=headers or self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+
+    @staticmethod
+    def _horizontal(precio, id="h1"):
+        return {"id": id, "tipo": "horizontal", "precio": precio}
+
+    def _crear_linea(self, dibujo="h1", esperado=200, **kw):
+        body = {"kind": "tecnica", "symbol": "MSFT", "senal": "linea", "dibujo": dibujo,
+                "currency": "USD", "channel": "both", "repeat": "once", **kw}
+        with self._el_dia(self._siguiente(self.anteayer)):
+            r = self.client.post("/api/alerts", json=body, headers=self.h)
+        self.assertEqual(r.status_code, esperado, r.text)
+        return r.json()
+
+    def _preparar_linea(self, *dibujos, **kw):
+        """Alguien seguía MSFT, la noche guardó hasta anteayer; ayer (antes del
+        cierre) dibujaste y pediste el aviso. Lo que cerró ayer es nuevo."""
+        self.client.post("/api/watchlist", json={"symbol": "MSFT"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._dibujar(*dibujos)
+        res = self._crear_linea(**kw)
+        self._cron()
+        self.assertEqual(self._eventos(), [], "lo que cerró antes de pedirlo no avisa")
+        return res
+
+    def _salta_ayer(self, d):
+        return 110.0 if d >= self.ayer else 100.0    # ayer: de 108,90 a 111,10
+
+    def test_linea_horizontal_tocada_en_el_dia_avisa_una_vez_con_el_minimo_y_el_maximo(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        res = self._preparar_linea(self._horizontal(109.5))
+        self._noche(self.ayer)
+        self._cron()
+        ev = self._eventos()
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0]["message"], "MSFT subió hasta tu línea horizontal, en US$ 109,50")
+        self.assertEqual(self.mails[0]["asunto"], ev[0]["message"])
+        texto = self.mails[0]["texto"]
+        self.assertIn("tocó tu línea horizontal, que ese día estaba en US$ 109,50", texto)
+        self.assertIn("fue de US$ 108,90 a US$ 111,10 y cerró en US$ 110,00", texto)
+        self.assertIn("no es una recomendación", texto)
+        self.assertEqual(len(self.pushes), 1)
+        self.assertEqual(self._alerta(res["id"])["active"], 0, "«una vez»: avisó y se apagó")
+        self._cron()
+        self.assertEqual(len(self._eventos()), 1, "no repite")
+
+    def test_linea_que_el_precio_no_toca_no_avisa(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        res = self._preparar_linea(self._horizontal(115))
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual(self._eventos(), [])
+        self.assertEqual(self._alerta(res["id"])["active"], 1)
+
+    def test_linea_de_tendencia_sigue_en_su_direccion_despues_del_segundo_punto(self):
+        # De 80 a 100 en 10 ruedas (2 por rueda): ayer, 10 ruedas después del
+        # segundo punto, la línea pasa por 120; anteayer estaba en 118 y el
+        # precio en 100 (no la tocaba). Ayer el precio salta a 120 y la toca.
+        r = _ruedas(self.hoy, 30)
+        a, b = r[-21], r[-11]        # 20 y 10 ruedas antes de ayer
+        self.yahoo.precios["MSFT"] = lambda d: 120.0 if d >= self.ayer else 100.0
+        linea = {"id": "t1", "tipo": "tendencia", "a": {"d": a.isoformat(), "mas": 0, "precio": 80},
+                 "b": {"d": b.isoformat(), "mas": 0, "precio": 100}}
+        self._preparar_linea(linea, dibujo="t1")
+        self._noche(self.ayer)
+        self._cron()
+        ev = self._eventos()
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0]["message"], "MSFT subió hasta tu línea de tendencia, en US$ 120,00")
+
+    def test_si_moves_la_linea_el_aviso_la_sigue(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self._preparar_linea(self._horizontal(130))
+        self._dibujar(self._horizontal(109.5))       # la arrastraste (mismo id)
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT subió hasta tu línea horizontal, en US$ 109,50"])
+
+    def test_si_borras_la_linea_el_aviso_se_apaga_sin_avisar(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        res = self._preparar_linea(self._horizontal(109.5))
+        self._dibujar(self._horizontal(50, id="otra"))
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual(self._eventos(), [])
+        self.assertEqual(self._alerta(res["id"])["active"], 0)
+
+    def test_el_alta_de_una_linea_pide_que_sea_tuya_y_una_sola_vez(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self._noche(self.anteayer)
+        self._crear_linea(esperado=404)                         # todavía no está guardada
+        # La de otra persona tampoco.
+        with main.db_abierta() as conn:
+            otro = conn.execute(
+                "INSERT INTO users (email, name, password_hash, approved, email_verified, tier) "
+                "VALUES (?, 'Otra', 'x', 1, 1, 'pro')", (f"otra-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+            conn.commit()
+        self._dibujar(self._horizontal(109.5), headers={"Authorization": f"Bearer {main.create_token(otro)}"})
+        self._crear_linea(esperado=404)
+        # Un Fibonacci no es una línea.
+        self._dibujar({"id": "f1", "tipo": "fibonacci", "a": {"d": self.anteayer.isoformat(), "mas": 0, "precio": 90},
+                       "b": {"d": self.anteayer.isoformat(), "mas": 3, "precio": 110}})
+        self._crear_linea(dibujo="f1", esperado=400)
+        self._dibujar(self._horizontal(109.5))
+        self._crear_linea()
+        self.assertIn("Ya te avisamos", self._crear_linea(esperado=409)["detail"])
+        # En pesos es otra línea (otro dibujo): no choca con la de dólares.
+        self._dibujar(self._horizontal(150000), moneda="ars")
+        self._crear_linea(currency="ARS")
+
+    def test_toque_de_linea_tambien_con_un_salto_por_encima(self):
+        # Sin máximo ni mínimo (una vela guardada sólo con cierre): pasar de un
+        # lado al otro de la línea entre un cierre y el siguiente es tocarla.
+        velas = [{"date": "2026-10-01", "close": 100.0}, {"date": "2026-10-02", "close": 104.0}]
+        ev = tecnico.toque_de_linea(velas, {"tipo": "horizontal", "precio": 102}, "2026-10-01")
+        self.assertEqual((ev["fecha"], ev["sentido"]), ("2026-10-02", "arriba"))
+        ev = tecnico.toque_de_linea(velas, {"tipo": "horizontal", "precio": 106}, "2026-10-01")
+        self.assertIsNone(ev)
+        bajando = [{"date": "2026-10-01", "close": 104.0}, {"date": "2026-10-02", "close": 100.0}]
+        self.assertEqual(tecnico.toque_de_linea(bajando, {"tipo": "horizontal", "precio": 102}, "2026-10-01")["sentido"], "abajo")
 
 
 class SenalesTest(unittest.TestCase):
@@ -662,7 +800,6 @@ class TestDetalleNoPromete(unittest.TestCase):
         bajo = ae._detalle_tecnico({"currency": "USD", "senal": "rsi_bajo_30"}, "AAPL",
                                    {"fecha": hoy, "sentido": "abajo", "cierre": 100.0, "referencia": 30.0, "rsi": 25.0})
         self.assertIn(POSIBILIDAD_REBOTE, bajo, "la caída lleva la MISMA frase que «Tus señales»")
-
 
 if __name__ == "__main__":
     unittest.main()

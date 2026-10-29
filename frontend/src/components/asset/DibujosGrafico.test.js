@@ -12,6 +12,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, enActo, medidas, clic, buscarBoton } from '../../testing/navegadorMinimo'
+import { MemoryRouter } from 'react-router-dom'
 import { margenDerecho } from '../../utils/tecnico'
 
 const puntos = Array.from({ length: 700 }, (_, i) => {
@@ -43,12 +44,16 @@ const EVENTOS = {
 
 // La cuenta, del otro lado de la frontera: GET y PUT de /tecnico/ZZEV/dibujos
 // guardan acá, por moneda. `cuenta.caida` = el guardado falla (sin conexión).
-const cuenta = { usd: [], ars: [], caida: false, puts: 0 }
+const cuenta = { usd: [], ars: [], caida: false, puts: 0, alertas: [], pedidos: [] }
 const monedaDe = (ruta) => (ruta.includes('moneda=ars') ? 'ars' : 'usd')
 vi.mock('../../utils/api', () => ({
   api: {
     get: vi.fn((ruta) => Promise.resolve(ruta.includes('/dibujos') ? { dibujos: cuenta[monedaDe(ruta)] }
-      : ruta.includes('/eventos') ? EVENTOS : DATOS)),
+      : ruta.startsWith('/alerts') ? { items: cuenta.alertas }
+        : ruta.includes('/eventos') ? EVENTOS : DATOS)),
+    // Las alertas (el aviso de tu línea): se anota lo que se pide.
+    post: vi.fn((ruta, body) => { cuenta.pedidos.push(['POST', ruta, body]); return Promise.resolve({ ok: true, id: 7 }) }),
+    patch: vi.fn((ruta, body) => { cuenta.pedidos.push(['PATCH', ruta, body]); return Promise.resolve({ ok: true }) }),
     put: vi.fn((ruta, body) => {
       cuenta.puts++
       if (cuenta.caida) return Promise.reject(new Error('sin conexión'))
@@ -71,9 +76,10 @@ afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
   localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
-  Object.assign(cuenta, { usd: [], ars: [], caida: false, puts: 0 })
+  Object.assign(cuenta, { usd: [], ars: [], caida: false, puts: 0, alertas: [], pedidos: [] })
 })
-const el = () => h(LecturaTecnica, { asset: 'ZZEV', ...props })
+// Con el router: el «Te avisamos» de tu línea es un link a Mis alertas.
+const el = () => h(MemoryRouter, null, h(LecturaTecnica, { asset: 'ZZEV', ...props }))
 async function dibujar(p = {}) {
   props = p
   montado = await montar(el())
@@ -307,6 +313,180 @@ describe('elegir y borrar', () => {
     expect(boton('tendencia').getAttribute('aria-pressed')).toBe('true')
     await usar('medir')
     expect(boton('tendencia').getAttribute('aria-pressed')).toBe('false')
+  })
+})
+
+describe('mover y corregir un dibujo ya hecho (Nico, 28/10)', () => {
+  async function arrastrar(x0, y0, x1, y1, { soltar = true } = {}) {
+    await evento('mousedown', grafico(), { clientX: x0, clientY: y0 })
+    await evento('mousemove', grafico(), { clientX: (x0 + x1) / 2, clientY: (y0 + y1) / 2 })
+    await evento('mousemove', grafico(), { clientX: x1, clientY: y1 })
+    if (soltar) await evento('mouseup', grafico(), { clientX: x1, clientY: y1 })
+    await redibujar()
+  }
+  const dk = (dx) => Math.round((dx / 1000) * (LUGARES - 1))
+
+  it('una horizontal se arrastra a otro precio; mientras se arrastra no se guarda ni se mueve el gráfico', async () => {
+    await dibujar()
+    await usar('horizontal'); await clickEn(500, 100)
+    const [antes] = guardados()
+    const fechas = () => todos(montado.contenedor, n => n.getAttribute?.('title')?.startsWith('Arrastrá hacia los costados'))[0]
+    const mesesAntes = texto(fechas())
+    await arrastrar(300, 100, 700, 150, { soltar: false })
+    expect(Number(linea()[0].getAttribute('y1'))).toBeCloseTo(60, 1)   // 150 de 250 px, ya corrida
+    expect(guardados()[0].precio).toBe(antes.precio)                  // todavía no se soltó
+    expect(grafico().getAttribute('class')).toContain('cursor-grabbing')
+    await evento('mouseup', grafico(), { clientX: 700, clientY: 150 }); await redibujar()
+    expect(guardados()[0].precio).toBeLessThan(antes.precio)
+    expect(Number(linea()[0].getAttribute('y1'))).toBeCloseTo(60, 1)
+    expect(texto(fechas())).toBe(mesesAntes)                          // el gráfico no se corrió
+    expect(status()).toContain('Línea horizontal elegida.')           // queda elegida, como TradingView
+  })
+
+  it('agarrada de una punta, se corre esa punta sola', async () => {
+    await dibujar()
+    await usar('tendencia'); await clickEn(200, 200); await clickEn(800, 50)
+    const [antes] = guardados()
+    await arrastrar(802, 52, 902, 30)
+    const [t] = guardados()
+    expect(t.a).toEqual(antes.a)
+    expect(t.b).toMatchObject({ d: puntos[bajo(800) + dk(100)].d, mas: 0 })
+    expect(t.b.precio).toBeGreaterThan(antes.b.precio)
+  })
+
+  it('agarrada del medio, se mueve entera: los dos puntos los mismos días y el mismo precio de más', async () => {
+    await dibujar()
+    await usar('tendencia'); await clickEn(200, 200); await clickEn(800, 50)
+    const [antes] = guardados()
+    await arrastrar(500, 125, 600, 125)
+    const [t] = guardados()
+    expect(t.a).toMatchObject({ d: puntos[bajo(200) + dk(100)].d, mas: 0, precio: antes.a.precio })
+    expect(t.b).toMatchObject({ d: puntos[bajo(800) + dk(100)].d, mas: 0, precio: antes.b.precio })
+    // Hacia adelante, más allá del último día: cuenta días de mercado después de hoy.
+    await arrastrar(600, 125, 900, 125)
+    expect(guardados()[0].b).toMatchObject({ d: puntos[699].d, mas: bajo(800) + dk(100) + dk(300) - 699 })
+  })
+
+  it('arrastrar lejos de tus dibujos mueve el gráfico, no la línea', async () => {
+    await dibujar()
+    await usar('tendencia'); await clickEn(200, 200); await clickEn(800, 50)
+    const [antes] = guardados()
+    const x = Number(linea()[0].getAttribute('x1'))
+    await arrastrar(300, 230, 500, 230)                               // lejos de tu línea
+    expect(guardados()[0]).toEqual(antes)
+    expect(Number(linea()[0].getAttribute('x1'))).toBeGreaterThan(x)  // el gráfico fue para atrás
+    expect(status()).not.toContain('elegida')
+  })
+
+  it('con el dedo sólo se arrastra la elegida (si no, deslizar la página agarraría líneas)', async () => {
+    await dibujar()
+    await usar('horizontal'); await clickEn(500, 100)
+    const [antes] = guardados()
+    const t = (cx, cy) => ({ touches: [{ clientX: cx, clientY: cy }], changedTouches: [{ clientX: cx, clientY: cy }] })
+    const quieta = async (cx, cy) => {
+      let prevenido = false
+      await enActo(async () => {
+        for (const fn of grafico().escuchas.touchmove || []) fn({ ...t(cx, cy), cancelable: true, preventDefault() { prevenido = true } })
+      })
+      return prevenido
+    }
+    const deslizar = async () => {
+      await evento('touchstart', grafico(), t(300, 100))
+      const prevenido = await quieta(300, 150)
+      await evento('touchmove', grafico(), t(300, 150))
+      await evento('touchend', grafico(), { touches: [], changedTouches: [{ clientX: 300, clientY: 150 }] })
+      await redibujar()
+      return prevenido
+    }
+    expect(await deslizar()).toBe(false)                            // sin elegir: la página se mueve
+    expect(guardados()[0].precio).toBe(antes.precio)
+    await toqueEn(300, 300, 100)                                      // la elige
+    expect(status()).toContain('Línea horizontal elegida.')
+    expect(await deslizar()).toBe(true)                              // elegida: la página queda quieta
+    expect(guardados()[0].precio).toBeLessThan(antes.precio)
+    expect(Number(linea()[0].getAttribute('y1'))).toBeCloseTo(60, 1)
+  })
+})
+
+describe('avisarte cuando el precio toca tu línea (Nico, 28/10)', () => {
+  const avisoDe = (id, tipo = 'horizontal') => ({ id: 7, kind: 'tecnica', senal: 'linea', active: 1, symbol: 'ZZEV',
+    currency: 'USD', dibujo: JSON.stringify({ asset: 'ZZEV', moneda: 'usd', id, tipo }) })
+
+  it('la línea elegida ofrece «Avisame si la toca»; el formulario manda cuál línea es', async () => {
+    // El formulario pregunta por el tamaño de pantalla (el navegador de prueba no lo trae).
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }))
+    window.matchMedia = globalThis.matchMedia
+    await dibujar()
+    await usar('horizontal'); await clickEn(500, 100)
+    await clickEn(300, 101)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Avisame si la toca')); await redibujar()
+    const t = texto(montado.contenedor)
+    expect(t).toContain('Toque tu línea horizontal')
+    expect(t).toContain('Te avisamos cuando ZZEV toque tu línea horizontal.')
+    expect(t).not.toContain('La fuerza (RSI) baje de 30')          // no es la lista de señales
+    // «Crear aviso»: el navegador manda el «submit» del formulario.
+    await evento('submit', todos(montado.contenedor, n => n.nodeName === 'FORM')[0]); await redibujar()
+    const [[, ruta, body]] = cuenta.pedidos
+    expect(ruta).toBe('/alerts')
+    expect(body).toMatchObject({ kind: 'tecnica', senal: 'linea', symbol: 'ZZEV', currency: 'USD',
+      dibujo: guardados()[0].id, repeat: 'once' })
+  })
+
+  it('con el aviso puesto dice «Te avisamos»; borrar la línea apaga su aviso', async () => {
+    await dibujar()
+    await usar('horizontal'); await clickEn(500, 100)
+    cuenta.alertas = [avisoDe(guardados()[0].id)]
+    await montado.desmontar(); await dibujar()                     // vuelve con el aviso ya puesto
+    await clickEn(300, 101)
+    expect(texto(montado.contenedor)).toContain('Te avisamos si la toca')
+    expect(buscarBoton(montado.contenedor, 'Avisame si la toca')).toBeFalsy()
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Borrar esta línea')); await redibujar()
+    expect(cuenta.pedidos).toEqual([['PATCH', '/alerts/7', { active: false }]])
+  })
+
+  it('un Fibonacci no ofrece aviso; una de tendencia con aviso se ve seguir hacia la derecha', async () => {
+    await dibujar()
+    await usar('tendencia'); await clickEn(200, 200); await clickEn(600, 100)
+    expect(linea()).toHaveLength(1)
+    cuenta.alertas = [avisoDe(guardados()[0].id, 'tendencia')]
+    await montado.desmontar(); await dibujar()
+    const ls = linea()
+    expect(ls).toHaveLength(2)                                        // la línea y su continuación
+    expect(Number(ls[1].getAttribute('x2'))).toBe(100)
+    expect(ls[1].getAttribute('stroke-dasharray')).toBe('5 4')
+    // Sigue en la misma dirección: sube 100 px cada 400 → en el borde, 100 px más arriba.
+    expect(Number(ls[1].getAttribute('y2'))).toBeLessThan(Number(ls[1].getAttribute('y1')))
+    await usar('fibonacci'); await clickEn(200, 220); await clickEn(400, 60)
+    await clickEn(300, 140)
+    expect(status()).toContain('Tu Fibonacci, elegido.')
+    expect(buscarBoton(montado.contenedor, 'Avisame si la toca')).toBeFalsy()
+  })
+})
+
+describe('pellizcar para acercar, en el celular (Nico, 28/10)', () => {
+  it('abrir los dedos acerca con el último día quieto; cerrarlos aleja; la página no hace zoom', async () => {
+    await dibujar()
+    await usar('tendencia'); await clickEn(200, 200); await clickEn(800, 50)
+    const x1 = () => Number(linea()[0].getAttribute('x1'))
+    const antes = x1()
+    const dedos = (sep) => ({ touches: [{ clientX: 500 - sep / 2, clientY: 100 }, { clientX: 500 + sep / 2, clientY: 100 }] })
+    await evento('touchstart', grafico(), dedos(100))
+    let prevenido = false
+    await enActo(async () => {
+      for (const fn of grafico().escuchas.touchmove || []) fn({ ...dedos(200), cancelable: true, preventDefault() { prevenido = true } })
+    })
+    expect(prevenido).toBe(true)
+    for (const sep of [140, 200]) await evento('touchmove', grafico(), dedos(sep))
+    await evento('touchend', grafico(), { touches: [dedos(200).touches[0]], changedTouches: [] })
+    await redibujar()
+    expect(x1()).toBeLessThan(antes)                                   // más cerca: el punto se va a la izquierda
+    expect(guardados()).toHaveLength(1)                                // pellizcar no dibuja ni mueve nada
+    const acercado = x1()
+    await evento('touchstart', grafico(), dedos(200))
+    for (const sep of [150, 100]) await evento('touchmove', grafico(), dedos(sep))
+    await evento('touchend', grafico(), { touches: [], changedTouches: [] })
+    await redibujar()
+    expect(x1()).toBeGreaterThan(acercado)                             // alejó
   })
 })
 
