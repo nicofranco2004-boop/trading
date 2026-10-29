@@ -1161,11 +1161,24 @@ Las reparaciones por-boot salieron de `init_db` a **`reparaciones_de_arranque(co
 que `init_db` llama en **los dos motores**. El `return` queda donde estaba: para el
 esquema está bien.
 
-🔴 **Y al mudarlas apareció algo que no estaba en la lista: DOS DE SEGURIDAD.** El
-bloque del final incluye las dos migraciones que pasan los **tokens de
-recuperación de contraseña** y los de los **links de asesor** de texto en claro a
-huella (RENDI-10). En Postgres **no corrían**: los tokens se quedaban en claro.
-No es un dato que falta en una pantalla — es una credencial guardada sin tapar.
+**Y al mudarlas apareció algo que no estaba en la lista: las dos migraciones de
+RENDI-10**, las que pasan los tokens de recuperación de contraseña y los de los
+links de asesor de texto en claro a huella. En Postgres no corrían.
+
+⚠️ **CORRIJO MI PROPIA PRIMERA VERSIÓN de esto** (y del mensaje de `ddbe9940`),
+que decía «los tokens se quedaban en claro: una credencial guardada sin tapar».
+**Eso está mal, y la diferencia importa.** Fui a mirar cómo se GUARDA un token
+nuevo y los tres lugares que los crean ya escriben la huella
+(`_hash_token(token)` en `main.py:5004`, `:49501`, `:49615`): el token crudo va
+sólo al mail. O sea que la mitad «pasar a huella» de esas dos migraciones es
+**histórica** — repara tokens viejos de SQLite, y a Postgres llegan **ya
+hasheados** en la copia.
+
+Lo que sí deja de pasar para siempre, y es el efecto real: la **purga**.
+`DELETE FROM password_reset_tokens WHERE used_at IS NOT NULL OR expires_at < ahora`
+no corría, así que los tokens usados y vencidos **se acumulan sin fin**. Es
+higiene y crecimiento de la tabla, no una credencial expuesta. Queda arreglado
+igual al mudar el bloque, pero el tamaño del problema es ése y no el que dije.
 
 Lo que se mudó: la marca de admin del dueño, `last_login_at` desde el historial,
 la poda de uso de +13 meses, la purga del caché `.BA`, las notas del asistente,
