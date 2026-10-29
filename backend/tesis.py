@@ -26,13 +26,20 @@ cron de alertas (`alerts_engine.evaluar_recordatorios`) y la entrega
 `_entregar_pendientes`, como cualquier aviso. La FECHA vive acá
 (`recordar_el`), no en `alerts`: la alerta sólo dice «está pendiente / ya avisó».
 No cuenta para el tope de alertas del plan: es un recordatorio tuyo, no un
-aviso del mercado (`ai/plan._count_alerts` la excluye).
+aviso del mercado (`ai/plan._count_alerts` la excluye). Tiene su PROPIO tope
+(`RECORDATORIOS_MAX`): el de alertas era también, sin que nadie lo dijera, el
+tope de mails por cuenta, y al sacarlo de ahí no se puso otro (auditoría E2,
+29/10: 300 recordatorios de una cuenta gratis → 302 mails en una pasada).
+
+QUÉ ACTIVO. Uno que existe: lo valida la API (`main._exigir_activo_valido`,
+la misma regla que los dibujos y las alertas técnicas) antes de llegar acá.
 """
 from __future__ import annotations
 
 import calendar
 import json
 from datetime import date, timedelta
+from urllib.parse import quote
 
 import tecnico
 from fechas import hoy_art_date
@@ -41,10 +48,26 @@ TEXTO_MAX = 1000
 # Lo más lejos que se puede poner un recordatorio (una fecha a mano).
 DIAS_MAX_RECORDATORIO = 2 * 366
 TIPOS_RECORDATORIO = ("3m", "fecha", "balance")
+# Tesis NUEVAS por persona por día (corregir la de hoy no es una nueva). Una
+# persona escribe unas pocas; esto frena a un script.
+TESIS_NUEVAS_POR_DIA = 20
+# Recordatorios pendientes por persona: cada uno es un mail y una notificación.
+RECORDATORIOS_MAX = 20
 
 
 class TesisError(ValueError):
     """Un pedido que no se puede cumplir, con el texto para la persona."""
+
+
+class TesisTope(TesisError):
+    """Llegó al tope de tesis nuevas del día (la API contesta 429)."""
+
+
+def _tomar_turno(conn, uid: int) -> None:
+    # Contar y guardar en un solo turno: el de main (sin él, diez pedidos juntos
+    # contaban todos «18 de 20» y guardaban los diez).
+    from main import _tomar_turno as tomar
+    tomar(conn, uid)
 
 
 def _sumar_meses(d: date, meses: int) -> date:
@@ -116,7 +139,12 @@ def guardar(conn, uid: int, asset: str, texto: str, local: bool = False) -> int:
         raise TesisError(f"La tesis puede tener hasta {TEXTO_MAX} letras.")
     hoy = hoy_art_date().isoformat()
     tendencia = json.dumps(_tendencia(conn, asset, local, hoy))
+    _tomar_turno(conn, uid)
     ultima = _ultima(conn, uid, asset)
+    if not (ultima and ultima["escrita_el"] == hoy) and conn.execute(
+            "SELECT COUNT(*) FROM tesis WHERE user_id=? AND escrita_el=?",
+            (uid, hoy)).fetchone()[0] >= TESIS_NUEVAS_POR_DIA:
+        raise TesisTope(f"Hoy ya escribiste {TESIS_NUEVAS_POR_DIA} tesis. Mañana podés seguir.")
     if ultima and ultima["escrita_el"] == hoy:
         conn.execute(
             """UPDATE tesis SET texto=?, accion_local=?, tendencia_json=?,
@@ -179,9 +207,16 @@ def fijar_recordatorio(conn, uid: int, tesis_id: int, tipo: str, fecha: str = No
     t = _de_la_persona(conn, uid, tesis_id)
     dia = fecha_del_recordatorio(tipo, fecha, balance).isoformat()
     alert_id = t["alert_id"]
+    _tomar_turno(conn, uid)
     existe = alert_id and conn.execute(
-        "SELECT 1 FROM alerts WHERE id=? AND user_id=? AND kind='recordatorio'",
+        "SELECT active FROM alerts WHERE id=? AND user_id=? AND kind='recordatorio'",
         (alert_id, uid)).fetchone()
+    # Mover la fecha de uno pendiente no suma; activar uno (nuevo o ya avisado), sí.
+    if not (existe and existe["active"]) and conn.execute(
+            "SELECT COUNT(*) FROM alerts WHERE user_id=? AND kind='recordatorio' AND active=1",
+            (uid,)).fetchone()[0] >= RECORDATORIOS_MAX:
+        raise TesisError(f"Ya tenés {RECORDATORIOS_MAX} recordatorios pendientes. "
+                         "Sacale el recordatorio a alguna tesis para poner otro.")
     if existe:
         conn.execute("UPDATE alerts SET active=1, armed=1, last_fired_at=NULL WHERE id=?",
                      (alert_id,))
@@ -252,5 +287,7 @@ def para_el_aviso(conn, t) -> dict:
         "titulo": f"Quedaste en revisar tu tesis de {asset}",
         "detail": " ".join(partes),
         "cta_label": f"Ver {asset}",
-        "cta_path": f"/activo/{asset}",
+        # Codificado, como el de las alertas técnicas (alerts_engine): un fondo
+        # lleva «:», espacios y «/», y el link tiene que abrir SU ficha.
+        "cta_path": f"/activo/{quote(asset, safe='')}",
     }

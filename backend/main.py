@@ -10038,6 +10038,27 @@ import re
 # pegado ('POPCAT28782-USD', ver `_YAHOO_CRIPTO_DISTINTO`).
 _SYMBOL_RE = re.compile(r'^[A-Z0-9]{1,12}([\.\-][A-Z0-9]{1,4})?$')
 
+
+def _exigir_activo_valido(conn, asset: str, *uids) -> None:
+    """400 si `asset` no es un activo VÁLIDO para alguna de estas personas. LA
+    definición es una sola, `velas_diarias.se_puede_pedir` (la que ya decide qué
+    se baja a pedido para la ficha): un activo de las listas de la app o de
+    BYMA, o uno que la persona tiene, operó o sigue. La usan la tesis, los
+    dibujos y las alertas técnicas.
+
+    `_SYMBOL_RE` dice si algo TIENE FORMA de ticker, no si existe: con sólo eso
+    (o con texto libre, la tesis), cada símbolo inventado era una fila nueva sin
+    tope —300 recordatorios = 302 mails en un día, 400 gráficos = 14 MB— y una
+    pregunta a Yahoo esa noche (auditoría E2/E3/E4, 29/10). `uids`: de quién
+    puede ser (los dibujos son del asesor que los hace, sobre el activo del
+    cliente que mira)."""
+    import velas_diarias
+    a = (asset or "").strip()
+    if a and any(u and velas_diarias.se_puede_pedir(conn, a, u) for u in uids):
+        return
+    raise HTTPException(400, "No conocemos ese activo. Buscalo con su ticker en el buscador.")
+
+
 MAX_SYMBOLS = 60  # hard cap on number of symbols per request
 
 
@@ -48719,8 +48740,14 @@ def tesis_guardar(data: TesisIn, uid: int = Depends(get_effective_user)):
     if not sym or any(ord(c) < 32 or c in "<>" for c in sym):
         raise HTTPException(400, "Ese activo no es válido.")
     with db_abierta() as conn:
+        # Un activo que existe, no texto libre: cada texto era una tesis nueva
+        # con su recordatorio, y su nombre iba al link del mail y a Yahoo
+        # (auditoría E2/E7/E8).
+        _exigir_activo_valido(conn, sym, uid)
         try:
             tid = _tesis.guardar(conn, uid, sym, data.texto, data.local)
+        except _tesis.TesisTope as e:
+            raise HTTPException(429, str(e))
         except _tesis.TesisError as e:
             raise HTTPException(400, str(e))
         conn.commit()

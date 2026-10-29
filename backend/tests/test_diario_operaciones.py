@@ -403,6 +403,9 @@ class TesisTest(Base):
     def test_un_fondo_tambien_tiene_tesis(self):
         # Un fondo no tiene forma de ticker: con el activo en la ruta, el servidor
         # lo rechazaba («Símbolo inválido») y no había forma de escribir su tesis.
+        # Es un fondo de SU cartera: la tesis es de un activo que tiene, operó o
+        # sigue (main._exigir_activo_valido), no de texto libre.
+        self._compra("Schwab", "FCI:COCOS-RENDIMIENTO-A", self.dias[700], asset_type="FCI")
         tid = self._guardar("Liquidez para la cuota del auto", asset="FCI:COCOS-RENDIMIENTO-A")
         l = self._lista()
         t = next(i for i in l["items"] if i["id"] == tid)
