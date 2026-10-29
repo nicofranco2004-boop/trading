@@ -1947,6 +1947,7 @@ CREATE TABLE IF NOT EXISTS tendencia_semanal (
   push_ok bigint,
   mail_ok bigint,
   created_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS'),
+  hasta_vela text,
   PRIMARY KEY (user_id, semana)
 );
 
@@ -1961,6 +1962,8 @@ ALTER TABLE tendencia_semanal ADD COLUMN IF NOT EXISTS push_ok bigint;
 ALTER TABLE tendencia_semanal ADD COLUMN IF NOT EXISTS mail_ok bigint;
 
 ALTER TABLE tendencia_semanal ADD COLUMN IF NOT EXISTS created_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS');
+
+ALTER TABLE tendencia_semanal ADD COLUMN IF NOT EXISTS hasta_vela text;
 
 CREATE TABLE IF NOT EXISTS trial_consumed (
   email_key text,

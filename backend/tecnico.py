@@ -708,7 +708,7 @@ DIAS_CAMBIOS = 7
 MAX_ACTIVOS_CARTERA = 200
 
 
-def para_la_cartera(conn, activos: list, hoy: date = None) -> list:
+def para_la_cartera(conn, activos: list, hoy: date = None, desde: str = None) -> list:
     """La lectura en DÓLARES de varios activos, para la radiografía de la Cartera.
 
     `activos`: [(asset, local)], con `local` igual que en la ficha (acción
@@ -717,9 +717,10 @@ def para_la_cartera(conn, activos: list, hoy: date = None) -> list:
     `cambios`: lo que cambió en los últimos `DIAS_CAMBIOS` días (`cambios_desde`,
     la misma cuenta que «Tus señales»). Sin velas: `disponible` False, nunca se
     inventa. `hoy` (día argentino) lo pasa quien ya tiene su reloj: el resumen
-    de los sábados."""
+    de los sábados. `desde` (exclusive): otro comienzo para los cambios; lo usa
+    el mail de los sábados, que cuenta desde lo que ya contó el anterior."""
     from fechas import hoy_art_date
-    desde = ((hoy or hoy_art_date()) - timedelta(days=DIAS_CAMBIOS)).isoformat()
+    desde = desde or ((hoy or hoy_art_date()) - timedelta(days=DIAS_CAMBIOS)).isoformat()
     out = []
     for a, local, velas in _series_en_dolares(conn, activos):
         if not velas:

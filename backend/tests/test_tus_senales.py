@@ -537,5 +537,76 @@ class TusSenalesTest(unittest.TestCase):
         self.assertIn("Tu tesis: «" + "x" * 277 + "…».", self.mails[0]["texto"])
 
 
+class _YahooConCripto(YahooFalso):
+    """El Yahoo de mentira de siempre, más BTC-USD con velas los 7 días (la
+    cripto cotiza sábados y domingos). `hasta_btc`: el primer día que Yahoo
+    todavía NO publicó (la vela de ese día no existe)."""
+
+    def __init__(self, hoy):
+        super().__init__(hoy)
+        self.btc = None
+        self.hasta_btc = hoy
+
+    def __call__(self, ticker, period, interval, auto_adjust, timeout):
+        if ticker != "BTC-USD" or self.btc is None:
+            return super().__call__(ticker, period, interval, auto_adjust, timeout)
+        import pandas as pd
+        n = 1100 if period == "3y" else 30
+        dias = [self.hasta_btc - timedelta(days=k) for k in range(n, 0, -1)]
+        cs = [self.btc(d) for d in dias]
+        return pd.DataFrame({"Open": cs, "High": [c * 1.01 for c in cs], "Low": [c * 0.99 for c in cs],
+                             "Close": cs, "Volume": [1000.0] * len(cs)},
+                            index=pd.DatetimeIndex([pd.Timestamp(d) for d in dias]))
+
+
+class CriptoDelSabadoTest(unittest.TestCase):
+    """Auditoría B, hallazgo B3 (29/10): una cripto que cruza en una vela de
+    SÁBADO no salía en ningún mail. El sábado S a las 10:00 su vela no existe
+    (la de hoy no entra hasta la noche) y el del sábado siguiente miraba sólo
+    «después de S». Dos sábados seguidos, cada uno con las velas que había ESE
+    sábado a las 10:00."""
+    setUp, tearDown = TusSenalesTest.setUp, TusSenalesTest.tearDown
+    _post, _canal, _cron = TusSenalesTest._post, TusSenalesTest._canal, TusSenalesTest._cron
+
+    def _dos_sabados(self, dia_del_cruce, viernes_tarde=False):
+        s2 = _sabado_de(hoy_art_date())
+        s1 = s2 - timedelta(days=7)
+        cruce = s1 + timedelta(days=dia_del_cruce)
+        self.yahoo = _YahooConCripto(s1)
+        p = mock.patch("pricing.yahoo._historia", self.yahoo)
+        p.start()
+        self._p.append(p)
+        self._post("/api/watchlist", {"symbol": "BTC"})
+        # Bajando hasta el cruce (abajo de su promedio), 150 desde ese día.
+        self.yahoo.btc = lambda d: 150.0 if d >= cruce else 100.0 + (cruce - d).days * 0.001
+        self._canal("mail")
+        # `viernes_tarde`: la noche del viernes falló y las velas del viernes
+        # se guardaron el sábado DESPUÉS del resumen (el botón de /admin).
+        self.yahoo.hasta_btc = s1 - timedelta(days=1) if viernes_tarde else s1
+        main._run_velas_diarias_job()
+        self._cron(_utc(s1, 10, 5))
+        if viernes_tarde:
+            self.yahoo.hasta_btc = s1
+            main._run_velas_diarias_job()
+        self.yahoo.hasta_btc = s2
+        main._run_velas_diarias_job()
+        self._cron(_utc(s2, 10, 5))
+        return [m for m in self.mails if "BTC" in m["texto"] and "promedio de 200" in m["texto"]]
+
+    def test_control_cruce_en_domingo_llega(self):
+        self.assertEqual(len(self._dos_sabados(dia_del_cruce=1)), 1)
+
+    def test_cruce_en_sabado_llega_el_sabado_siguiente(self):
+        self.assertEqual(len(self._dos_sabados(dia_del_cruce=0)), 1,
+                         "el cruce de una vela de SÁBADO no salía en ningún resumen")
+
+    def test_viernes_cuyas_velas_llegaron_despues_del_resumen_sale_el_sabado_siguiente(self):
+        self.assertEqual(len(self._dos_sabados(dia_del_cruce=-1, viernes_tarde=True)), 1)
+
+    def test_cruce_en_viernes_sale_una_sola_vez(self):
+        """La otra punta: lo que ya salió el sábado 1 no se repite el sábado 2."""
+        self.assertEqual(len(self._dos_sabados(dia_del_cruce=-1)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

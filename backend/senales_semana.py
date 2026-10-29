@@ -365,7 +365,8 @@ def semana_pasada(conn, uid: int, hoy: date):
     return {"semana": row["semana"], "pct": row["pct_alcista"]} if row else None
 
 
-def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None, dolar=None) -> dict:
+def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None, dolar=None,
+                 desde: str = None) -> dict:
     """Lo que ve la pestaña y lo que dice el mail del sábado.
 
     {
@@ -377,23 +378,32 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
                    tipo, fecha, sentido, …números…, etiqueta, tono, texto, extra}],
     }
     `series` es un caché {(asset, local): lectura} para la corrida del sábado,
-    que arma la de cada activo una sola vez para todas las personas."""
+    que arma la de cada activo una sola vez para todas las personas.
+    `desde` (exclusive): desde cuándo se cuentan los cambios. La pestaña usa los
+    últimos 7 días corridos; el mail, desde lo que ya contó el resumen anterior
+    (`desde_del_mail`). Agrega 'hasta_vela': la última vela que se miró."""
     import tecnico
     series = {} if series is None else series
     cedears = _cedears() if cedears is None else cedears
-    desde = (hoy - timedelta(days=DIAS_SEMANA)).isoformat()
+    desde = desde or (hoy - timedelta(days=DIAS_SEMANA)).isoformat()
     car = cartera(conn, uid, cedears, dolar)
     wl = watchlist(conn, uid, cedears)
     tesis = _tesis(conn, uid)
 
     def _leer(k):
-        if k not in series:
-            series[k] = tecnico.para_la_cartera(conn, [k], hoy=hoy)[0]
-        return series[k]
+        # La lectura no depende de `desde`, los cambios sí: el caché va por
+        # (activo, desde), y `reparto` (que sólo lee la lectura) reusa la misma.
+        if (k, desde) not in series:
+            series[(k, desde)] = tecnico.para_la_cartera(conn, [k], hoy=hoy, desde=desde)[0]
+            series.setdefault(k, series[(k, desde)])
+        return series[(k, desde)]
 
-    senales, con_lectura, con_cambios = [], 0, set()
+    senales, con_lectura, con_cambios, hasta_vela = [], 0, set(), None
     for k in sorted(set(car["tenencias"]) | set(wl)):
         x = _leer(k)
+        f = (x.get("lectura") or {}).get("fecha") if x.get("disponible") else None
+        if f and (hasta_vela is None or f > hasta_vela):
+            hasta_vela = f
         tiene = k in car["tenencias"]
         if tiene:
             con_lectura += _alcista(x, hoy) is not None
@@ -425,6 +435,7 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
         "tenes": {"activos": con_lectura, "con_cambios": len(con_cambios)},
         "watchlist": len(wl),
         "senales": senales,
+        "hasta_vela": hasta_vela,
     }
 
 
@@ -567,6 +578,31 @@ def _entregar(conn, via: str, envio: dict) -> tuple:
     return push_ok, mail_ok
 
 
+def desde_del_mail(conn, uid: int, hoy: date) -> str:
+    """Desde cuándo (exclusive) cuenta los cambios el mail de ESTE sábado: desde
+    la última vela que vio el resumen anterior (`hasta_vela` de su fila), o el
+    viernes anterior al sábado anterior si la fila es vieja; nunca después de
+    los 7 días corridos de la pestaña. Sin resumen anterior (el primero, o hace
+    más de 13 días): los 7 días.
+
+    🔴 POR QUÉ NO ALCANZAN LOS 7 DÍAS CORRIDOS (auditoría B3, 29/10). El sábado
+    a las 10:00 la vela del sábado todavía no existe (la de hoy no entra hasta
+    la noche), y el sábado siguiente «los últimos 7 días» empiezan justo
+    DESPUÉS de ese sábado: una cripto que cruzaba un sábado no salía en ningún
+    mail. Lo mismo un viernes cuyas velas llegaron tarde (la noche falló y se
+    corrieron el sábado después de las 10). El mail tiene que contar desde lo
+    que ya contó, como las alertas técnicas (su marca '#velas')."""
+    base = (hoy - timedelta(days=DIAS_SEMANA)).isoformat()
+    row = conn.execute(
+        "SELECT semana, hasta_vela FROM tendencia_semanal WHERE user_id=? AND semana < ? AND semana >= ? "
+        "ORDER BY semana DESC LIMIT 1",
+        (uid, hoy.isoformat(), (hoy - timedelta(days=DIAS_SEMANA_PASADA)).isoformat())).fetchone()
+    if not row:
+        return base
+    marca = row["hasta_vela"] or (date.fromisoformat(row["semana"]) - timedelta(days=1)).isoformat()
+    return min(base, marca)
+
+
 def correr(conn, hoy: date, *, solo: int = None) -> dict:
     """El resumen de ESTA semana (`hoy` = el sábado) para todas las personas:
     guarda el % de cada una (la «semana pasada» de dentro de 7 días) y manda el
@@ -583,7 +619,8 @@ def correr(conn, hoy: date, *, solo: int = None) -> dict:
                         (uid, semana_iso)).fetchone():
             continue
         try:
-            sem = armar_semana(conn, uid, hoy, series=series, cedears=cedears)
+            sem = armar_semana(conn, uid, hoy, series=series, cedears=cedears,
+                               desde=desde_del_mail(conn, uid, hoy))
         except Exception as ex:
             log.warning("semana: uid=%s falló: %s", uid, ex, exc_info=True)
             res["errores"] += 1
@@ -598,10 +635,10 @@ def correr(conn, hoy: date, *, solo: int = None) -> dict:
             res["errores"] += 1
             continue
         conn.execute(
-            "INSERT INTO tendencia_semanal (user_id, semana, pct_alcista, cambios, canal) "
-            "VALUES (?,?,?,?,?)",
+            "INSERT INTO tendencia_semanal (user_id, semana, pct_alcista, cambios, canal, hasta_vela) "
+            "VALUES (?,?,?,?,?,?)",
             (uid, semana_iso, sem["alcista"]["pct"] if sem["alcista"] else None,
-             len(sem["senales"]), via if mandar else None))
+             len(sem["senales"]), via if mandar else None, sem["hasta_vela"]))
         conn.commit()
         res["guardadas"] += 1
         if not mandar:
