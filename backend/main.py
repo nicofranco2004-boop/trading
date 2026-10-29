@@ -5465,6 +5465,43 @@ def _borrar_en_chunks(conn, uid: int, tabla: str, where: str, args: tuple,
             time.sleep(pausa)
 
 
+def _colgadas_de_alerts(esquema: dict) -> list:
+    """Las tablas que cuelgan de `alerts` por `alert_id` y NO tienen `user_id`
+    (hoy, `alert_symbol_state`: «ya avisé hoy», «miré las velas hasta acá»).
+
+    Los dos barridos de «todo lo de una persona» —el reset de admin y el borrado
+    de cuenta— van por `user_id`, así que estas tablas se les escapaban y sus filas
+    quedaban huérfanas (auditoría C, hallazgo 6). Se leen del esquema y no de una
+    lista para que una tabla nueva de este tipo quede cubierta sola. Se borran
+    ANTES que las alertas: después, el `alert_id IN (…)` ya no las encuentra."""
+    return sorted(t for t, cols in esquema.items()
+                  if "alert_id" in cols and "user_id" not in cols)
+
+
+_DE_SUS_ALERTAS = "alert_id IN (SELECT id FROM alerts WHERE user_id=?)"
+
+
+def _reset_plan(conn, uid: int, tablas) -> list:
+    """[(tabla, where, args)] de lo que borra un reset, EN ORDEN. Lo usan el
+    borrado (`_reset_data_worker`) y el aviso previo del admin
+    (`_reset_admin_conteo`): el número que se mira para decidir es el que después
+    se borra porque sale del mismo plan."""
+    batch_ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
+    _ph = ",".join("?" * len(batch_ids)) if batch_ids else ""
+    plan = []
+    if batch_ids:
+        for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
+            plan.append((t, f"batch_id IN ({_ph})", tuple(batch_ids)))
+        plan.append(("import_batches", "user_id=?", (uid,)))
+    if "alerts" in tablas:
+        for t in _colgadas_de_alerts(_esquema_por_tabla(conn)):
+            plan.append((t, _DE_SUS_ALERTAS, (uid,)))
+    for t in tablas:
+        plan.append((t, "user_id=?", (uid,)))
+    return plan
+
+
 def _reset_data_worker(uid: int, *, tablas: tuple = None, toda_la_config: bool = False,
                        borrar_perfil: bool = False, pausa: float = 0.0) -> None:
     """Corre el borrado completo. Publica progreso en `_reset_progress`.
@@ -5491,18 +5528,8 @@ def _reset_data_worker(uid: int, *, tablas: tuple = None, toda_la_config: bool =
     """
     conn = get_db()
     try:
-        batch_ids = [r["id"] for r in conn.execute(
-            "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
-        _ph = ",".join("?" * len(batch_ids)) if batch_ids else ""
-
         # Plan de trabajo + total, para que la barra sea real y no una animación.
-        plan = []
-        if batch_ids:
-            for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
-                plan.append((t, f"batch_id IN ({_ph})", tuple(batch_ids)))
-            plan.append(("import_batches", "user_id=?", (uid,)))
-        for t in (tablas or _RESET_PORTFOLIO_TABLES):
-            plan.append((t, "user_id=?", (uid,)))
+        plan = _reset_plan(conn, uid, tablas or _RESET_PORTFOLIO_TABLES)
 
         total = 0
         vivas = []
@@ -5662,6 +5689,10 @@ def _wipe_user_rows(conn, _uid: int, esquema: dict) -> dict:
         _ph = ",".join("?" * len(batch_ids))
         for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
             conn.execute(f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids))
+    for t in _colgadas_de_alerts(esquema):          # antes que las alertas
+        n = conn.execute(f"DELETE FROM {t} WHERE {_DE_SUS_ALERTAS}", (_uid,)).rowcount
+        if n:
+            wiped[t] = n
     for t, cols in esquema.items():
         if t in _NO_BORRAR_ANONIMIZAR:
             continue                     # se anonimizan abajo, no se borran
@@ -24310,17 +24341,7 @@ def _reset_admin_conteo(conn, uid: int) -> dict:
     Es la parte que faltaba en el botón viejo: saber, antes de tocar la base, si
     esta cuenta son 3.000 filas o un millón. De eso depende si conviene correrlo
     ahora o a la madrugada."""
-    batch_ids = [r["id"] for r in conn.execute(
-        "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
-    _ph = ",".join("?" * len(batch_ids)) if batch_ids else ""
-
-    plan = []
-    if batch_ids:
-        for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
-            plan.append((t, f"batch_id IN ({_ph})", tuple(batch_ids)))
-        plan.append(("import_batches", "user_id=?", (uid,)))
-    for t in _reset_admin_tablas():
-        plan.append((t, "user_id=?", (uid,)))
+    plan = _reset_plan(conn, uid, _reset_admin_tablas())
     plan.append(("config", "user_id=?", (uid,)))
 
     filas, total, faltantes = [], 0, []
