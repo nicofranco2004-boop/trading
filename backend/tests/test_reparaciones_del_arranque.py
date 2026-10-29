@@ -11,13 +11,17 @@ como confirmación:
     main.py:3756  las cajas vacías pierden el precio de compra que ya no tienen
     main.py:3019  last_login_at se completa desde el historial de ingresos
 
-En Postgres **ninguna corre**, y no deja rastro: el `return` pasa antes. Esto
-separa las dos preguntas, porque el arreglo depende de la respuesta:
+Hasta el 2026-10-29 **en Postgres no corría ninguna**, y sin dejar rastro: el
+`return` pasaba antes. Se midieron las dos preguntas por separado, porque el
+arreglo dependía de la respuesta:
 
-  1. ¿corren?            → NO (lo prueba el test de abajo, en los dos motores)
-  2. ¿funcionarían?      → si la respuesta es SÍ, el arreglo es sacarlas de
-                           `init_db` y llamarlas en los dos motores. Si es NO,
-                           además hay que traducir el SQL.
+  1. ¿el SQL FUNCIONA en Postgres?  → **SÍ** → no había nada que traducir
+  2. ¿`init_db` las CORRE?          → **NO** → el arreglo es estructural
+
+Arreglado sacándolas a `main.reparaciones_de_arranque(conn)`, que `init_db` llama
+en LOS DOS MOTORES. Este archivo se queda como el candado de que siga así: si
+alguien vuelve a meterlas detrás del `return`, el segundo test se pone rojo sólo
+en Postgres.
 """
 import os, sys, unittest
 
@@ -77,24 +81,37 @@ class ReparacionesDelArranqueTest(unittest.TestCase):
         self.assertEqual(self._caja(), "USD",
                          f"[{_motor()}] la caja quedó sin renombrar")
 
-    def test_el_arranque_NO_la_corre_en_postgres(self):
-        """`init_db()` por el camino real. En SQLite repara; en Postgres no.
+    def test_el_arranque_la_corre_en_LOS_DOS_motores(self):
+        """`init_db()` por el camino real tiene que reparar en los dos.
 
-        Este test no es un deseo: documenta el agujero con un número. Cuando las
-        reparaciones salgan de `init_db` y se llamen en los dos motores, se cae
-        la rama de Postgres de acá y hay que darlo vuelta — eso es lo que se
-        quiere.
+        Antes del 2026-10-29 esto era al revés: el test exigía que en Postgres
+        quedara SIN reparar, y su mensaje decía «si esto se pone rojo es la
+        noticia buena». Se puso rojo, y acá está dado vuelta.
         """
         main.init_db()
-        quedo = self._caja()
-        if getattr(main, "USANDO_PG", False):
-            self.assertEqual(
-                quedo, "USDT",
-                "init_db ya repara en Postgres: dar vuelta este test (es la "
-                "noticia buena) y sacar la nota del docstring")
-        else:
-            self.assertEqual(quedo, "USD",
-                             "[SQLite] init_db dejó de reparar: eso sí es una regresión")
+        self.assertEqual(
+            self._caja(), "USD",
+            f"[{_motor()}] init_db no reparó la caja. En Postgres el sospechoso "
+            f"es el `return` de init_db: las reparaciones tienen que estar en "
+            f"`reparaciones_de_arranque`, llamada en LOS DOS motores.")
+
+    def test_la_funcion_de_reparaciones_existe_y_init_db_la_llama_dos_veces(self):
+        """El candado estructural: que la llamada esté en las DOS ramas.
+
+        Un test de comportamiento no alcanza acá: alguien puede dejar la función
+        y borrar la llamada de la rama de Postgres, y el otro test sólo se cae
+        cuando la suite corre contra Postgres — que no es lo que corre siempre.
+        """
+        import ast, inspect, textwrap
+        arbol = ast.parse(textwrap.dedent(inspect.getsource(main.init_db)))
+        llamadas = [n for n in ast.walk(arbol)
+                    if isinstance(n, ast.Call)
+                    and getattr(n.func, "id", "") == "reparaciones_de_arranque"]
+        self.assertEqual(
+            len(llamadas), 2,
+            "`init_db` tiene que llamar a `reparaciones_de_arranque` DOS veces: "
+            "una en la rama de Postgres (después de _init_db_postgres) y una al "
+            f"final de la de SQLite. Encontré {len(llamadas)}.")
 
 
 if __name__ == "__main__":

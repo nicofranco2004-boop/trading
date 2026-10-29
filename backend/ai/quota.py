@@ -340,10 +340,17 @@ def _window_floor(conn, user_id: int):
     en vez de 7— y cerrarlo pide pasar el esquema a timestamps. En la práctica
     no se cruza: el cron que baja de etapa corre de madrugada.
     """
+    import pgsesion as _ps
     try:
-        row = conn.execute(
-            "SELECT quota_window_from, credit_active_until, pro_trial_until "
-            "  FROM users WHERE id=?", (user_id,)).fetchone()
+        # Punto de guardado: sin él, en Postgres la consulta que falla (esquema sin
+        # la columna) deja la transacción abortada, y entonces NO falla sólo el
+        # plan B de abajo — se cae todo lo que venga después, y esto se llama
+        # desde el medio de las reservas de cuota, que ya escribieron. Un
+        # `rollback()` acá sería peor: se llevaría esa plata ya anotada.
+        with _ps.si_falla_se_deshace_solo_esto(conn, "leer_piso_de_la_ventana"):
+            row = conn.execute(
+                "SELECT quota_window_from, credit_active_until, pro_trial_until "
+                "  FROM users WHERE id=?", (user_id,)).fetchone()
     except Exception:
         try:                   # esquema sin pro_trial_until (tests viejos)
             row = conn.execute(
