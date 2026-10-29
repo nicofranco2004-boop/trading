@@ -1673,7 +1673,28 @@ def test_una_rafaga_de_mails_sueltos_no_congela_la_app_ni_se_saltea_la_fila():
         f"{max(tardanzas):.2f}s y esperar la fila entera cuesta "
         f"{espera_la_fila:.2f}s — {sorted(tardanzas)[-3:]}")
     assert len(resend.pedidos) == 20                          # salieron todos
-    assert min(_separaciones(resend.horas())) >= pausa * 0.9  # y ninguno se coló
+    # ⏱️ Y ninguno se coló — en DOS afirmaciones, no en un mínimo ajustado, por el
+    # mismo motivo que arriba. La pausa se cuenta desde que ARRANCA el envío
+    # anterior, y la hora que queda registrada acá es la del pedido a la red: si
+    # la máquina está cargada, al anterior le cuesta llegar a la red y el hueco
+    # entre horas registradas sale MÁS CORTO que la pausa sin que el código haya
+    # hecho nada mal. Medido el 2026-10-29 con tres suites más corriendo: 82,8 ms
+    # con la pausa en 100 ms, o sea 17 % por debajo del 0,9 que se exigía.
+    #   · el ritmo DEL CONJUNTO: 20 mails no pueden salir en menos de 19 pausas.
+    #     Ese número sólo puede CRECER si la máquina está lenta, nunca encogerse,
+    #     así que no se vuelve a mover; y si alguien le baja la pausa a la mitad,
+    #     se rompe.
+    #   · y ninguno PEGADO al anterior: un envío que se saltea la fila sale con un
+    #     hueco cerca de cero, no de 83 ms.
+    horas = resend.horas()
+    minimo_del_conjunto = pausa * (len(hilos) - 1) * 0.9
+    assert horas[-1] - horas[0] >= minimo_del_conjunto, (
+        f"los 20 mails salieron en {horas[-1] - horas[0]:.2f}s y la fila entera "
+        f"no puede costar menos de {minimo_del_conjunto:.2f}s: alguno se salteó "
+        f"la pausa")
+    assert min(_separaciones(horas)) >= pausa * 0.5, (
+        f"hay un mail pegado al anterior ({min(_separaciones(horas)) * 1000:.0f} ms "
+        f"con la pausa en {pausa * 1000:.0f} ms): se salteó la fila")
 
 
 def test_los_envios_masivos_hacen_la_fila_completa():
