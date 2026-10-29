@@ -231,6 +231,30 @@ class TusSenalesTest(unittest.TestCase):
         self._canal("no")
         self.assertEqual(self.client.get("/api/tus-senales", headers=self.h).json()["canal"], "no")
 
+    def test_cuando_llega_el_proximo_resumen_lo_dice_el_que_lo_manda(self):
+        # A9 (auditoría 29/10): el sábado a la tarde el Panorama decía «te llega
+        # el sábado 31/10 a las 10:00» de un resumen que ya había salido. La
+        # pantalla lo calculaba con la fecha sola; ahora lo dice el servidor con
+        # la regla del envío (`toca`) y la fila de la semana que deja el envío.
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("mail")
+
+        def proximo(now):
+            with mock.patch("senales_semana._ahora", lambda: now):
+                return self.client.get("/api/tus-senales", headers=self.h).json()["proximo_resumen"]
+
+        miercoles = sabado - timedelta(days=3)
+        self.assertEqual(proximo(_utc(miercoles, 15)), sabado.isoformat())
+        self.assertEqual(proximo(_utc(sabado, 9, 30)), sabado.isoformat(), "el sábado antes de las 10: hoy")
+        self.assertEqual(proximo(_utc(sabado, 10, 3)), sabado.isoformat(),
+                         "pasadas las 10 pero el cron todavía no pasó: sale hoy")
+        self._cron(_utc(sabado, 10, 5))
+        self.assertEqual(len(self.mails), 1)
+        siguiente = (sabado + timedelta(days=7)).isoformat()
+        self.assertEqual(proximo(_utc(sabado, 15)), siguiente, "el de hoy ya salió: el sábado que viene")
+        self.assertEqual(proximo(_utc(sabado, 23, 30)), siguiente, "23:30 en Argentina ya es domingo en UTC")
+
     def test_sin_sesion_no(self):
         self.assertIn(self.client.get("/api/tus-senales").status_code, (401, 403))
 

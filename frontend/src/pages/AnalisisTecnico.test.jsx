@@ -50,7 +50,7 @@ function servidor() {
     if (url.startsWith('/prices')) return { NVDA: 150, KO: 50 }
     if (url === '/plazos-fijos') return []
     if (url === '/tus-senales') return {
-      desde: '2026-10-21', hasta: HOY, canal: 'mail',
+      desde: '2026-10-21', hasta: HOY, canal: 'mail', proximo_resumen: '2026-11-07',
       // LA cuenta del servidor (senales_semana.reparto). 74 y no 75 a propósito:
       // la cuenta vieja de la pantalla (NVDA 1.500 contra KO 500) daba 75; el
       // Panorama tiene que decir lo que manda el servidor.
@@ -185,7 +185,7 @@ describe('Análisis técnico: el Panorama', () => {
     expect(t).toContain('TSLA cerró en su precio más alto')
     expect(t).not.toContain('tiene la fuerza (RSI) en 25')  // el 4.º, más viejo, no va en el Panorama
     expect(t).toContain('Ver las 4 señales de la semana')
-    expect(t).toContain('El resumen de la semana te llega el sábado')
+    expect(t).toContain('El resumen de la semana te llega el sábado 07/11 a las 10:00')
     expect(t).toContain('3 activos: 2 que tenés y 1 que seguís')
     expect(t).toContain('no es una recomendación para comprar ni vender')
   })
@@ -202,8 +202,12 @@ describe('las direcciones de antes', () => {
 describe('textoDelResumen', () => {
   it('el próximo sábado y por dónde, o que no llega', async () => {
     const { textoDelResumen } = await import('./AnalisisTecnico')
-    expect(textoDelResumen('mail', '2026-10-28')).toBe('El resumen de la semana te llega el sábado 31/10 a las 10:00, por mail.')
-    expect(textoDelResumen('ambos', '2026-10-31')).toBe('El resumen de la semana te llega el sábado 31/10 a las 10:00, por mail y notificación.')
+    // El sábado lo pone el servidor (`proximo_resumen`): acá sólo se escribe.
+    expect(textoDelResumen('mail', '2026-10-31')).toBe('El resumen de la semana te llega el sábado 31/10 a las 10:00, por mail.')
+    // A9: el sábado a la tarde, ya salido el de hoy, el servidor manda el que viene.
+    expect(textoDelResumen('ambos', '2026-11-07')).toBe('El resumen de la semana te llega el sábado 07/11 a las 10:00, por mail y notificación.')
+    // Un servidor de antes (sin el dato): no se inventa una fecha.
+    expect(textoDelResumen('push', undefined)).toBe('El resumen de la semana te llega los sábados a las 10:00, por notificación.')
     expect(textoDelResumen('no', '2026-10-28')).toBe('No te llega el resumen de los sábados.')
   })
 })

@@ -11776,6 +11776,8 @@ def get_tecnico_semana(uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         out = senales_semana.armar_semana(conn, uid, hoy_art_date())
         out["canal"] = senales_semana.canal(conn, uid)
+        # Cuándo sale el próximo resumen: lo dice el que lo manda (A9).
+        out["proximo_resumen"] = senales_semana.proximo_resumen(conn, uid)
     return out
 
 

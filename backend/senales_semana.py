@@ -423,6 +423,27 @@ def toca(now: datetime) -> bool:
     return art.weekday() == DIA_RESUMEN and art.hour >= HORA_RESUMEN
 
 
+def _ahora() -> datetime:
+    """El instante UTC (naive, como lo pega el cron). Aparte para las pruebas."""
+    return datetime.utcnow()
+
+
+def proximo_resumen(conn, uid: int, now: datetime = None) -> str:
+    """El sábado (ISO) en que sale el próximo resumen de esta persona, con LA
+    regla del envío: sale el sábado desde las 10:00 de Argentina (`toca`) y una
+    vez por semana (la fila de `tendencia_semanal` que deja `correr`). Hoy
+    sábado: hoy, salvo que la fila de hoy ya esté (ya salió, o ya pasó y no tocaba
+    mandarlo). Antes la pantalla lo calculaba con la fecha sola y el sábado a la
+    tarde anunciaba en futuro el resumen que ya había salido (A9, 29/10)."""
+    from fechas import dia_art
+    hoy = dia_art(now or _ahora())
+    sabado = hoy + timedelta(days=(DIA_RESUMEN - hoy.weekday()) % 7)
+    if sabado == hoy and conn.execute("SELECT 1 FROM tendencia_semanal WHERE user_id=? AND semana=?",
+                                      (uid, hoy.isoformat())).fetchone():
+        sabado += timedelta(days=7)
+    return sabado.isoformat()
+
+
 def _personas(conn) -> list:
     """Quiénes tienen algo que mirar: posiciones abiertas, plazos fijos o watchlist."""
     rows = conn.execute(
@@ -591,7 +612,7 @@ def correr_si_toca(conn, now: datetime = None) -> dict:
     de Argentina corre; las pasadas siguientes no hacen nada (cada persona ya
     tiene su fila de esta semana)."""
     from fechas import dia_art
-    now = now or datetime.utcnow()
+    now = now or _ahora()
     if not toca(now):
         return {"esperando": "sábados desde las 10:00"}
     return correr(conn, dia_art(now))
