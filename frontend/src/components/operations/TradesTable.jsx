@@ -51,8 +51,8 @@ export default function TradesTable({
               <th className="text-right px-3 py-2.5 font-medium">Cant.</th>
               <th className="text-right px-3 py-2.5 font-medium">P&L USD</th>
               <th className="text-right px-3 py-2.5 font-medium">P&L %</th>
-              <th className="text-right px-3 py-2.5 font-medium">Tiempo</th>
-              <th className="text-right px-3 py-2.5 font-medium whitespace-nowrap">
+              <th className="text-right px-2 py-2.5 font-medium">Tiempo</th>
+              <th className="text-right px-2 py-2.5 font-medium whitespace-nowrap">
                 <span className="inline-flex items-center gap-1">Por año
                   {/* El encabezado es `whitespace-nowrap`: sin `whitespace-normal`
                       el globo hereda eso y su texto sale en un solo renglón,
@@ -65,8 +65,11 @@ export default function TradesTable({
                   </InfoTooltip>
                 </span>
               </th>
-              <th className="text-left px-3 py-2.5 font-medium whitespace-nowrap">
-                <span className="inline-flex items-center gap-1">Tendencia al comprar
+              {/* En dos renglones: en una sola línea el título medía 164 px para
+                  una pastilla de 70, y la tabla quedaba más ancha que su caja en
+                  la compu (los botones Editar/Eliminar, tapados; auditoría D12). */}
+              <th className="text-left px-2 py-2.5 font-medium">
+                <span className="inline-flex items-center gap-1 leading-tight max-w-[96px]">Tendencia al comprar
                   <InfoTooltip label="Qué es la tendencia al comprar" align="center">
                     <div className="whitespace-normal text-left font-normal">
                       <p>Cómo estaba el papel el día que lo compraste: Alcista si el precio estaba arriba de su promedio de los últimos 200 días de mercado, Bajista si estaba abajo. Es la misma lectura de la ficha del activo, en dólares.</p>
@@ -75,7 +78,7 @@ export default function TradesTable({
                   </InfoTooltip>
                 </span>
               </th>
-              <th className="text-left px-3 py-2.5 font-medium">Tu tesis</th>
+              <th className="text-left px-2 py-2.5 font-medium">Tu tesis</th>
               <th className="px-3 py-2.5 w-[60px]"></th>
               <th className="px-3 py-2.5 w-[28px] text-center font-medium"></th>
             </tr>
@@ -199,18 +202,18 @@ function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = fal
       <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(op.pnl_pct)} ${indent ? 'opacity-75' : ''}`}>
         {op.pnl_pct != null ? pctSigned(op.pnl_pct / 100) : '—'}
       </td>
-      <td className={`px-3 py-2 text-xs tabular text-right text-ink-2 whitespace-nowrap ${atenuada}`}
+      <td className={`px-2 py-2 text-xs tabular text-right text-ink-2 whitespace-nowrap ${atenuada}`}
         title={c && op.entry_date ? `Compra ${fechaCorta(op.entry_date)} → venta ${fechaCorta(op.date)}` : undefined}>
         {c ? c.tiempo : '—'}
       </td>
-      <td className={`px-3 py-2 text-xs tabular text-right whitespace-nowrap ${c?.porAnioValor != null ? colorClass(c.porAnioValor) : 'text-ink-3'} ${atenuada}`}
+      <td className={`px-2 py-2 text-xs tabular text-right whitespace-nowrap ${c?.porAnioValor != null ? colorClass(c.porAnioValor) : 'text-ink-3'} ${atenuada}`}
         title={c?.porAnioPorQue || undefined}>
         {c ? c.porAnio : '—'}
       </td>
-      <td className={`px-3 py-2 ${atenuada}`}>
+      <td className={`px-2 py-2 ${atenuada}`}>
         {c ? <ChipTendencia celdas={c} /> : <span className="text-ink-3 text-xs">—</span>}
       </td>
-      <td className={`px-3 py-2 text-xs text-ink-2 ${atenuada}`}>
+      <td className={`px-2 py-2 text-xs text-ink-2 ${atenuada}`}>
         {c?.tesis
           ? <span className="block max-w-[180px] truncate" title={`«${c.tesis.texto}» · escrita el ${fechaCorta(c.tesis.escrita_el)}`}>{c.tesis.texto}</span>
           : <span className="text-ink-3">—</span>}
