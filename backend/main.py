@@ -12000,6 +12000,11 @@ def get_tecnico_eventos(asset: str, moneda: str = "usd", local: int = 0,
 # guarda los suyos, no le escribe al cliente.
 
 _DIBUJOS_MAXIMOS = 60
+# Gráficos con dibujos por persona. Los 60 de arriba son por gráfico (lo de ADENTRO
+# de cada fila); sin un tope de filas, cada activo era un gráfico más con sus 60
+# (auditoría E3, 29/10: 400 gráficos = 14 MB de una cuenta gratis). Una persona
+# que dibuja mucho anda por decenas.
+GRAFICOS_CON_DIBUJOS_MAX = 200
 
 
 class _PuntoDibujo(BaseModel):
@@ -12094,6 +12099,17 @@ def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: s
     lista = [d.model_dump(exclude_none=True) for d in data.dibujos]
     with db_abierta() as conn:
         if lista:
+            _exigir_activo_valido(conn, sym, dueno, uid)
+            # Contar y guardar en un solo turno (sin él, varios pedidos juntos
+            # contaban todos lo mismo y pasaban el tope).
+            _tomar_turno(conn, dueno)
+            nuevo = not conn.execute(
+                "SELECT 1 FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+                (dueno, sym, moneda)).fetchone()
+            if nuevo and conn.execute("SELECT COUNT(*) FROM dibujos_grafico WHERE user_id = ?",
+                                      (dueno,)).fetchone()[0] >= GRAFICOS_CON_DIBUJOS_MAX:
+                raise HTTPException(400, f"Ya dibujaste en {GRAFICOS_CON_DIBUJOS_MAX} gráficos. "
+                                         "Borrá los dibujos de alguno para dibujar en otro.")
             conn.execute(
                 """INSERT INTO dibujos_grafico (user_id, asset, moneda, datos)
                    VALUES (?, ?, ?, ?)
