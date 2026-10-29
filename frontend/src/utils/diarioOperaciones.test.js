@@ -98,7 +98,7 @@ describe('tarjetas y frase', () => {
     expect([r.cerradas, r.ganadas, r.perdidas]).toEqual([5, 2, 3])
     expect(r.diasGanadoras).toBeCloseTo((365 + 182) / 2)
     expect(r.diasPerdedoras).toBeCloseTo((31 + 61 + 91) / 3)
-    expect(r.nPorAnio).toBe(3)   // las de 365, 182 y 91 días
+    expect(r.nPorAnio).toBe(5)   // ponderado por plata y tiempo, entran todas (D7)
     expect([r.ganadorasConTendencia, r.ganadorasAFavor]).toEqual([2, 1])
     expect([r.perdedorasConTendencia, r.perdedorasEnContra]).toEqual([2, 2])
   })
@@ -141,3 +141,39 @@ describe('la tesis de cada venta', () => {
   })
 })
 
+
+// D7 (auditoría D, 29/10): «P&L Realizado US$ 1.100» y, al lado, «Rendimiento por
+// año −1,0 %». Era el promedio simple de los «por año» de cada venta: una
+// pérdida chica y corta pesaba lo mismo que una ganancia grande y larga.
+// Decisión de Nico: ponderar por la plata invertida y el tiempo que estuvo.
+describe('D7 · rendimiento por año, ponderado por plata y tiempo', () => {
+  // Las dos ventas de la auditoría, cargadas con «Nueva operación».
+  const MSFT = { id: 1, asset: 'MSFT', op_type: 'Venta', currency: 'USD', entry_date: '2025-03-10', date: '2026-10-20',
+    quantity: 10, entry_price: 380, exit_price: 520, pnl_usd: 1400, pnl_pct: 36.84 }
+  const TSLA = { id: 2, asset: 'TSLA', op_type: 'Venta', currency: 'USD', entry_date: '2026-02-02', date: '2026-09-01',
+    quantity: 5, entry_price: 420, exit_price: 360, pnl_usd: -300, pnl_pct: -14.29 }
+
+  it('ganaste US$ 1.100: el por año da positivo (+15 %), no −1 %', () => {
+    const r = resumenDiario([MSFT, TSLA])
+    // 1.100 / (3.800 × 589 días + 2.100 × 211 días) × 365 = 14,97 % por año.
+    expect(r.porAnio).toBeCloseTo(1100 / (3800 * 589 / 365 + 2100 * 211 / 365), 3)
+    expect(r.porAnio).toBeGreaterThan(0)
+    expect(r.nPorAnio).toBe(2)
+  })
+
+  it('una venta grande y larga pesa más que una chica y corta', () => {
+    const chica = { ...TSLA, id: 3, quantity: 1, entry_date: '2026-08-01', pnl_usd: -60, pnl_pct: -14.29 }
+    expect(resumenDiario([MSFT, chica]).porAnio).toBeGreaterThan(0.2)
+  })
+
+  it('una venta de un mes entra, pero con el peso de su mes (no infla)', () => {
+    const corta = { ...MSFT, id: 4, entry_date: '2026-09-20', pnl_usd: 190, pnl_pct: 5 }
+    const r = resumenDiario([corta])
+    expect(r.porAnio).toBeCloseTo(190 / (3800 * 30 / 365), 3)   // como interés simple, sin componer
+  })
+
+  it('sin plata o sin fechas no inventa: «—»', () => {
+    expect(resumenDiario([{ ...MSFT, entry_date: null }]).porAnio).toBeNull()
+    expect(resumenDiario([]).porAnio).toBeNull()
+  })
+})

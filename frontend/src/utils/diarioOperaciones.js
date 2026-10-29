@@ -112,6 +112,49 @@ export function tendenciaDe(op, tendencias) {
 const promedio = (xs) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null)
 
 /**
+ * La plata que se puso en la operación, en dólares: el precio de compra por la
+ * cantidad. En una venta en pesos, al dólar con que el servidor la pasó a
+ * dólares (`fx_to_usd`, pesos por dólar; en una en dólares estampa 1). Sin
+ * precio de compra (algunas importadas), en una venta en dólares sale del
+ * resultado y su %: 100 ganados al 10 % = 1.000 puestos. null si no se sabe.
+ */
+export function capitalUsd(op) {
+  const enDolares = !op?.currency || op.currency === 'USD' || op.currency === 'USDT'
+  const c = Number(op?.entry_price) * Number(op?.quantity)
+  if (!(c > 0)) {
+    const pct = Number(op?.pnl_pct)
+    return enDolares && pct && op.pnl_usd != null ? Math.abs(op.pnl_usd / (pct / 100)) : null
+  }
+  if (enDolares) return c
+  const fx = Number(op.fx_to_usd)
+  return fx > 1 ? c / fx : null
+}
+
+/**
+ * «Rendimiento por año» de la tarjeta, ponderado por plata y tiempo (decisión
+ * de Nico, 29/10): todo lo que ganaste y perdiste, en dólares, dividido por la
+ * plata que pusiste multiplicada por los años que estuvo puesta. Una venta
+ * grande y larga pesa más que una chica y corta, y una de un mes entra con el
+ * peso de su mes (no hace falta el piso de 3 meses de la columna).
+ *
+ * Antes era el promedio simple de los «por año» de cada venta: con una ganancia
+ * de US$ 1.400 en 19 meses y una pérdida de US$ 300 en 7, daba −1,0 % al lado de
+ * «P&L Realizado US$ 1.100» (auditoría D7). Así da +15,0 %.
+ * { valor, n } — null si no hay ninguna con plata y fechas.
+ */
+export function rendimientoPonderado(filas) {
+  let gano = 0, plataPorAnio = 0, n = 0
+  for (const o of filas) {
+    const dias = diasTenida(o), cap = capitalUsd(o)
+    if (dias == null || cap == null || o.pnl_usd == null) continue
+    gano += o.pnl_usd
+    plataPorAnio += cap * Math.max(dias, 1) / 365
+    n++
+  }
+  return n && plataPorAnio > 0 ? { valor: gano / plataPorAnio, n } : { valor: null, n: 0 }
+}
+
+/**
  * Los números de las tarjetas y de la frase, sobre las operaciones del diario.
  * `tendencias`: lo que devolvió /api/tecnico/en-fechas ({id: {tendencia}}).
  */
@@ -120,7 +163,7 @@ export function resumenDiario(ops, tendencias = {}) {
   const gan = filas.filter(o => o.pnl_usd > 0)
   const per = filas.filter(o => o.pnl_usd < 0)
   const dias = (xs) => xs.map(diasTenida).filter(d => d != null)
-  const anuales = filas.map(rendimientoPorAnio).filter(x => x != null)
+  const ponderado = rendimientoPonderado(filas)
   const t = (o) => tendenciaDe(o, tendencias)?.tendencia
   const ganConT = gan.filter(o => t(o))
   const perConT = per.filter(o => t(o))
@@ -132,8 +175,8 @@ export function resumenDiario(ops, tendencias = {}) {
     diasPerdedoras: promedio(dias(per)),
     nGanadorasConDias: dias(gan).length,
     nPerdedorasConDias: dias(per).length,
-    porAnio: promedio(anuales),
-    nPorAnio: anuales.length,
+    porAnio: ponderado.valor,
+    nPorAnio: ponderado.n,
     ganadorasConTendencia: ganConT.length,
     ganadorasAFavor: ganConT.filter(o => t(o) === 'alcista').length,
     perdedorasConTendencia: perConT.length,

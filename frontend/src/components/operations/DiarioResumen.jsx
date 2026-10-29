@@ -50,10 +50,10 @@ export default function DiarioResumen({ resumen, estadoTendencias = 'listo', apa
         <Tarjeta
           titulo="Rendimiento por año"
           ayuda={<>
-            <p>Lo que rindió cada operación llevado a un año, y el promedio de todas. Es el mismo % de la columna P&L %: en una venta en pesos, el % en pesos.</p>
-            <p className="mt-1 text-ink-3">Sólo las que tuviste 3 meses o más: pasar a un año un mes bueno infla el número.</p>
+            <p>Todo lo que ganaste y perdiste, en dólares, dividido por la plata que pusiste multiplicada por el tiempo que estuvo puesta. Una venta grande y larga pesa más que una chica y corta.</p>
+            <p className="mt-1 text-ink-3">Por eso puede no coincidir con el promedio de la columna «Por año», que mira cada venta sola.</p>
           </>}
-          sub={r.nPorAnio ? `promedio de ${r.nPorAnio === 1 ? 'la' : 'las'} ${r.nPorAnio} que tuviste 3 meses o más` : 'ninguna la tuviste 3 meses o más'}
+          sub={r.nPorAnio ? `por cada dólar y cada año que estuvo invertido, en ${r.nPorAnio === 1 ? 'tu venta' : `tus ${r.nPorAnio} ventas`}` : 'faltan las fechas o el precio de compra'}
         >
           <span className={r.porAnio != null ? colorClass(r.porAnio) : ''}>{r.porAnio != null ? pctSigned(r.porAnio) : '—'}</span>
         </Tarjeta>
