@@ -5970,7 +5970,9 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         # Feature gate: el tope de brokers de cada plan (PLAN_LIMITS). Grandfather:
         # usuarios preexistentes con más conservan sus brokers pero no agregan
-        # más hasta upgrade. Admin/Pro: sin tope.
+        # más hasta upgrade. Admin/Pro: sin tope. El turno antes de contar: sin
+        # él, diez altas juntas contaban todas «0» (auditoría E5, 29/10).
+        _tomar_turno(conn, uid)
         allowed, quota_info = plan.check_broker_quota(conn, uid)
         if not allowed:
             tier = quota_info["tier"]
@@ -48223,6 +48225,10 @@ def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:
+            # El turno antes de contar: sin él, diez altas juntas contaban todas
+            # «98» y pasaban el tope (auditoría E5, 29/10; la nota de capacidad
+            # midió 101 a 105).
+            _tomar_turno(conn, uid)
             ya = conn.execute("SELECT 1 FROM watchlist WHERE user_id=? AND symbol=?",
                               (uid, data.symbol)).fetchone()
             if not ya and conn.execute("SELECT COUNT(*) FROM watchlist WHERE user_id=?",
@@ -48458,6 +48464,7 @@ def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn") -> dict:
     # ya lo dicen en el nombre de la señal.
     direction = data.direction if data.senal in tecnico.SENALES_CON_SENTIDO else "either"
     local = 1 if data.accion_local else 0
+    _exigir_cupo_de_alertas(conn, uid)
     # Dos alertas que avisan lo mismo son dos mails por el mismo cruce. Se
     # pisan si es la misma señal y una de las dos es «los dos lados» o las dos
     # piden el mismo lado. La ficha ya muestra «Te avisamos» (alertaExistente,
@@ -48517,6 +48524,7 @@ def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn") -> dict:
     symbol = _ae._norm_sym(asset[:-3] if asset.endswith(".BA") else asset)
     if not symbol or not _SYMBOL_RE.match(symbol):
         raise HTTPException(400, "Ese activo no tiene análisis técnico.")
+    _exigir_cupo_de_alertas(conn, uid)
     # Una línea, un aviso: dos serían dos mails por el mismo toque.
     for r in conn.execute(
             "SELECT dibujo FROM alerts WHERE user_id=? AND kind='tecnica' AND active=1 AND senal=?",
@@ -48539,6 +48547,24 @@ def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn") -> dict:
             "velas": bool(_ae._serie_tecnica(conn, row))}
 
 
+def _exigir_cupo_de_alertas(conn, uid: int, *, con_turno: bool = True) -> None:
+    """403 si la persona llegó al tope de alertas de su plan (check_alert_quota).
+
+    `con_turno`: toma antes el turno de escritura de la cuenta (`_tomar_turno`),
+    así contar y guardar son un solo paso. Sin él, diez altas que llegaban juntas
+    contaban todas «1 de 3» y guardaban las diez (auditoría E5, 29/10). Se llama
+    sin turno al principio (para contestar rápido, antes de ir a Yahoo) y CON
+    turno justo antes del INSERT, que es el conteo que decide."""
+    from ai import plan as _plan
+    if con_turno:
+        _tomar_turno(conn, uid)
+    allowed, info = _plan.check_alert_quota(conn, uid)
+    if not allowed:
+        raise HTTPException(403, {
+            "error": "Llegaste al límite de alertas de tu plan.",
+            "quota": info, "upgrade": True})
+
+
 @app.post("/api/alerts")
 def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
     """Crea una alerta. Gatea por cantidad (check_alert_quota) y por capacidad
@@ -48547,11 +48573,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
     from ai import plan as _plan
     conn = get_db()
     try:
-        allowed, info = _plan.check_alert_quota(conn, uid)
-        if not allowed:
-            raise HTTPException(403, {
-                "error": "Llegaste al límite de alertas de tu plan.",
-                "quota": info, "upgrade": True})
+        _exigir_cupo_de_alertas(conn, uid, con_turno=False)
         if data.kind == "pct_move" and not _plan.can_access(conn, uid, "alerts.pct_move"):
             raise HTTPException(403, {
                 "error": "Las alertas de variación (%) son de Rendi Plus.",
@@ -48610,6 +48632,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
             elif baseline == "set_price":
                 anchor_price = current_price   # "Desde ahora": ancla = precio actual
 
+        _exigir_cupo_de_alertas(conn, uid)
         cur = conn.execute(
             """INSERT INTO alerts
                (user_id, kind, symbol, scope, direction, threshold, up_pct, down_pct,
