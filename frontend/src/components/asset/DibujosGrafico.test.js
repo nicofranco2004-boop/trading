@@ -408,6 +408,95 @@ describe('mover y corregir un dibujo ya hecho (Nico, 28/10)', () => {
   })
 })
 
+describe('el canal paralelo y el pincel (Nico, 29/10)', () => {
+  const poligonos = () => todos(montado.contenedor, n => n.nodeName === 'POLYGON')
+
+  it('el canal: dos toques para la línea, el tercero para el ancho; se ven las dos paralelas, la del medio y la franja', async () => {
+    await dibujar()
+    await usar('canal')
+    expect(status()).toContain('Canal: tocá donde empieza la línea de abajo')
+    await clickEn(200, 200); await clickEn(800, 100)
+    expect(status()).toContain('a qué altura va la paralela')
+    await clickEn(500, 100)                                           // 50 px arriba de la línea (que en 500 está en 150)
+    const [c] = guardados()
+    expect(c).toMatchObject({ tipo: 'canal', a: { d: puntos[bajo(200)].d }, b: { d: puntos[bajo(800)].d } })
+    expect(c.ancho).toBeGreaterThan(0)
+    const ls = linea()
+    expect(ls).toHaveLength(3)
+    const ys = ls.map(l => Number(l.getAttribute('y1')))
+    expect(ys[0] - ys[1]).toBeCloseTo(20, 0)                          // la paralela, 50 de 250 px más arriba
+    expect(ls[2].getAttribute('stroke-dasharray')).toBe('5 4')        // la del medio, punteada
+    expect(Number(ls[2].getAttribute('y1'))).toBeCloseTo((ys[0] + ys[1]) / 2, 4)
+    expect(poligonos()).toHaveLength(1)
+    expect(status()).not.toContain('Canal:')                          // la herramienta se apaga
+  })
+
+  it('el canal se ensancha agarrando su paralela; la línea de abajo no se mueve', async () => {
+    await dibujar()
+    await usar('canal'); await clickEn(200, 200); await clickEn(800, 100); await clickEn(500, 100)
+    const [antes] = guardados()
+    // La paralela pasa por (500, 100): se agarra de su mitad y se sube 25 px.
+    await evento('mousedown', grafico(), { clientX: 500, clientY: 100 })
+    await evento('mousemove', grafico(), { clientX: 500, clientY: 90 })
+    await evento('mousemove', grafico(), { clientX: 500, clientY: 75 })
+    await evento('mouseup', grafico(), { clientX: 500, clientY: 75 }); await redibujar()
+    const [c] = guardados()
+    expect(c.a).toEqual(antes.a)
+    expect(c.b).toEqual(antes.b)
+    expect(c.ancho).toBeGreaterThan(antes.ancho)
+    expect(status()).toContain('Tu canal, elegido.')
+  })
+
+  it('el pincel: apretar y arrastrar dibuja un trazo (no mueve el gráfico); sigue prendido para otro; Esc lo apaga', async () => {
+    await dibujar()
+    const fechas = () => texto(todos(montado.contenedor, n => n.getAttribute?.('title')?.startsWith('Arrastrá hacia los costados'))[0])
+    const antes = fechas()
+    await usar('pincel')
+    expect(status()).toContain('Dibujá con el mouse apretado')
+    const trazar = async (pts) => {
+      await evento('mousedown', grafico(), { clientX: pts[0][0], clientY: pts[0][1] })
+      for (const [x, y] of pts.slice(1)) await evento('mousemove', grafico(), { clientX: x, clientY: y })
+      await evento('mouseup', grafico(), { clientX: pts.at(-1)[0], clientY: pts.at(-1)[1] }); await redibujar()
+    }
+    await trazar([[300, 100], [301, 101], [310, 120], [330, 140], [360, 130]])
+    const [t] = guardados()
+    expect(t.tipo).toBe('pincel')
+    expect(t.puntos).toHaveLength(4)                                   // el de 1 px no cuenta
+    expect(t.puntos.some(p => p.f > 0)).toBe(true)                    // sin escalones de a un día
+    expect(linea()).toHaveLength(3)
+    expect(fechas()).toBe(antes)                                       // el gráfico no se movió
+    expect(status()).toContain('Dibujá con el mouse apretado')        // sigue prendido
+    expect(buscarBoton(montado.contenedor, 'Cancelar')).toBeFalsy()  // lo dibujado ya quedó: «Listo»
+    await trazar([[500, 200], [520, 180], [540, 200]])
+    expect(guardados()).toHaveLength(2)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Listo')); await redibujar()
+    expect(status()).not.toContain('Dibujá')
+    expect(guardados()).toHaveLength(2)
+    await usar('pincel')
+    await enActo(() => { window.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Escape' })) }); await redibujar()
+    expect(status()).not.toContain('Dibujá')
+    // Elegido con un click encima, se borra entero.
+    await clickEn(320, 130)
+    expect(status()).toContain('Tu trazo, elegido.')
+  })
+
+  it('con el dedo también dibuja, y la página no se mueve mientras', async () => {
+    await dibujar()
+    await usar('pincel')
+    const t = (cx, cy) => ({ touches: [{ clientX: cx, clientY: cy }], changedTouches: [{ clientX: cx, clientY: cy }] })
+    await evento('touchstart', grafico(), t(300, 100))
+    let prevenido = false
+    await enActo(async () => {
+      for (const fn of grafico().escuchas.touchmove || []) fn({ ...t(320, 120), cancelable: true, preventDefault() { prevenido = true } })
+    })
+    expect(prevenido).toBe(true)
+    for (const [x, y] of [[320, 120], [340, 150]]) await evento('touchmove', grafico(), t(x, y))
+    await evento('touchend', grafico(), { touches: [], changedTouches: [{ clientX: 340, clientY: 150 }] }); await redibujar()
+    expect(guardados()).toHaveLength(1)
+    expect(guardados()[0].puntos).toHaveLength(3)
+  })
+})
+
 describe('avisarte cuando el precio toca tu línea (Nico, 28/10)', () => {
   const avisoDe = (id, tipo = 'horizontal') => ({ id: 7, kind: 'tecnica', senal: 'linea', active: 1, symbol: 'ZZEV',
     currency: 'USD', dibujo: JSON.stringify({ asset: 'ZZEV', moneda: 'usd', id, tipo }) })
@@ -563,7 +652,7 @@ describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos
     await dibujar()
     const barra = todos(montado.contenedor, n => n.getAttribute?.('role') === 'toolbar')[0]
     const enLaBarra = todos(barra, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa'))
-    expect(enLaBarra).toEqual(['tendencia', 'horizontal', 'menu-fibonacci', 'menu-elliott', 'medir', 'borrarDibujos'])
+    expect(enLaBarra).toEqual(['tendencia', 'horizontal', 'canal', 'pincel', 'menu-fibonacci', 'menu-elliott', 'medir', 'borrarDibujos'])
     const lista = todos(montado.contenedor, n => n.getAttribute?.('role') === 'group' && n.getAttribute('aria-label') === 'Indicadores')[0]
     const enLaLista = todos(lista, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa')).filter(Boolean)
     expect(enLaLista).toEqual(['vol', 's200', 's50', 'bb', 'rsi', 'fuerza', 'eventos', 'globo', 'fabrica'])

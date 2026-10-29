@@ -145,6 +145,23 @@ class DibujosGraficoTest(unittest.TestCase):
                      [{**imp, "forma": "triangulo"}]):
             self.assertEqual(self._guardar(malo).status_code, 422, malo)
 
+    def test_canal_y_pincel(self):
+        # El canal paralelo y el pincel (Nico, 29/10). El pincel lleva la
+        # fracción del lugar (`f`) para que el trazo no quede en escalones.
+        p = lambda m, x, **kw: {"d": f"2026-0{m}-01", "mas": 0, "precio": x, **kw}
+        canal = {"id": "k1", "tipo": "canal", "a": p(1, 100.0), "b": p(2, 120.0), "ancho": -8.5}
+        trazo = {"id": "p1", "tipo": "pincel", "puntos": [p(1, 100.0, f=0.25), p(1, 101.0, f=0.75), p(2, 99.0)]}
+        self.assertEqual(self._guardar([canal, trazo]).status_code, 200)
+        self.assertEqual(self._leer(), [canal, trazo])
+        largo = {**trazo, "puntos": [p(1, 100.0 + k / 10) for k in range(200)]}
+        self.assertEqual(self._guardar([largo]).status_code, 200, "200 puntos, el tope")
+        for malo in ([{**canal, "ancho": 0}],                                       # sin ancho no es canal
+                     [{**canal, "b": None}],
+                     [{**trazo, "puntos": trazo["puntos"][:1]}],                    # un punto no es un trazo
+                     [{**largo, "puntos": largo["puntos"] + largo["puntos"][:1]}],  # 201: más del tope
+                     [{**trazo, "puntos": [p(1, 100.0, f=1.0), p(2, 99.0)]}]):      # la fracción es < 1
+            self.assertEqual(self._guardar(malo).status_code, 422, malo)
+
     def test_lo_que_no_es_un_dibujo_se_rechaza(self):
         malos = [
             [{"id": "x", "tipo": "flecha", "precio": 1}],

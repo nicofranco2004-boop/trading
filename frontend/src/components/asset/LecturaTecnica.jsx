@@ -33,19 +33,19 @@
 // TradingView), con su tarjeta «Fuerza de la tendencia».
 
 import { cloneElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { LineChart, Maximize2, Minimize2, RotateCcw, Ruler, Trash2 } from 'lucide-react'
+import { Brush, LineChart, Maximize2, Minimize2, RotateCcw, Ruler, Trash2 } from 'lucide-react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica } from './BarraGrafico'
 import CapaFibonacci, { COLOR_FIB, ID_FIB_AUTO, TarjetaFibonacci, preciosDeLaCapa, trazosDelFibonacci, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
 import CapaElliott, { COLOR_ELLIOTT, ID_ELL_AUTO, TarjetaElliott, fechaDelConteo, preciosDelConteo, trazosDelConteo } from './CapaElliott'
-import CapaDibujos, { trazosDeDibujos } from './CapaDibujos'
+import CapaDibujos, { anchoDelCanal, trazosDeDibujos } from './CapaDibujos'
 import { BotonAvisame, BotonAvisameLinea, alertaDeLinea, useAvisosTecnicos, senalDeTarjeta } from '../alerts/AvisameTecnico'
 import { api } from '../../utils/api'
 import { factorDeFechas, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
 import { PRIORIDAD, taparRotulos } from '../../utils/rotulos'
 import {
   DIBUJOS_MAXIMOS, copiaLocal, etiquetasDe, diaDelPunto, dibujoCorrido, dibujoTocado, dibujosDelServidor, dibujosGuardados, guardarDibujos, idNuevo,
-  marcarSubidos, precioCorrido, precioRedondo, puntasDe, puntoDelDia, subirDibujos,
+  marcarSubidos, PINCEL_MAXIMO, precioCorrido, precioRedondo, puntasDe, puntoDelDia, subirDibujos,
 } from '../../utils/dibujos'
 import {
   RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, tarjetaBandas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
@@ -457,6 +457,15 @@ export default function LecturaTecnica({
       // el automático se vuelve a prender desde su botón.
       if (dibujar.tipo === 'fibonacci') setVer(x => ({ ...x, fib: false }))
       setDibujarEstado({ tipo: null, puntos: [] })
+    } else if (dibujar.tipo === 'canal') {
+      // El canal paralelo (Nico, 29/10): dos toques para la línea de abajo y
+      // el tercero, a la altura de la paralela (arriba o abajo).
+      const puntos = [...dibujar.puntos, p]
+      if (puntos.length < 3) { setDibujarEstado({ tipo: 'canal', puntos }); return }
+      const [a, b] = puntos.map(guardado)
+      const ancho = anchoDelCanal({ k: puntos[0].i, precio: puntos[0].precio }, { k: puntos[1].i, precio: puntos[1].precio }, { k: p.i, precio: p.precio })
+      if (Math.abs(ancho) > 0) cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'canal', a, b, ancho: Math.round(ancho * 1e4) / 1e4 || ancho }])
+      setDibujarEstado({ tipo: null, puntos: [] })
     } else if (dibujar.tipo === 'extension') {
       const puntos = [...dibujar.puntos, p]
       if (puntos.length < 3) { setDibujarEstado({ tipo: 'extension', puntos }); return }
@@ -486,6 +495,16 @@ export default function LecturaTecnica({
     }
     setDibujarEstado({ tipo: null, puntos: [] })
   }
+  // Un trazo del pincel (Nico, 29/10), ya soltado: cada punto a su día, con
+  // la fracción del lugar para que no quede en escalones. La herramienta
+  // sigue prendida (se dibuja de a varios trazos) hasta Esc o «Listo».
+  const trazarPincel = (lista) => {
+    const puntos = lista.map(q => {
+      const base = Math.max(0, Math.floor(q.k))
+      return puntoDelDia(actual.puntos, diaDelLugar(base), q.precio, q.k - base)
+    })
+    if (puntos.length >= 2) cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'pincel', puntos: puntos.slice(0, PINCEL_MAXIMO) }])
+  }
   // Doble click o click derecho en el gráfico mientras se cuenta: «hasta acá».
   const terminarDesdeElGrafico = () => {
     if (FORMA_ELLIOTT[dibujar.tipo] && dibujar.puntos.length >= 2) { terminarElliott(); return true }
@@ -505,12 +524,12 @@ export default function LecturaTecnica({
       return puntoDelDia(actual.puntos, Math.max(0, i2), precioCorrido(q.precio, dp))
     }
     cambiarDibujos(misDibujos.map(d => (d.id !== id ? d
-      : dibujoCorrido(d, que, correr, (x) => precioRedondo(precioCorrido(x, dp))))))
+      : dibujoCorrido(d, que, correr, (x) => precioRedondo(precioCorrido(x, dp)), dp))))
   }
   // Los dibujos en lo que se ve: cada punto en su lugar (`k`) y su precio.
-  const enVista = (q) => ({ k: lugarDelDia(diaDelPunto(actual.puntos, q)), precio: q.precio })
+  const enVista = (q) => ({ k: lugarDelDia(diaDelPunto(actual.puntos, q)) + (q.f || 0), precio: q.precio })
   const dibujosEnVista = misDibujos.map(d => (d.tipo === 'horizontal' ? d
-    : d.tipo === 'elliott' ? { ...d, puntos: d.puntos.map(enVista) }
+    : d.tipo === 'elliott' || d.tipo === 'pincel' ? { ...d, puntos: d.puntos.map(enVista) }
       : { ...d, a: enVista(d.a), b: enVista(d.b), ...(d.c ? { c: enVista(d.c) } : {}) }))
   const herramienta = medir.activo ? 'medir' : dibujar.tipo
   const medida = medir.activo ? medirEntre(actual.puntos, medir.a, medir.b) : null
@@ -615,7 +634,10 @@ export default function LecturaTecnica({
                       className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-data-cyan/60 bg-data-cyan/15 text-ink-0 font-medium">Terminar acá</button>
                   )}
                   <button type="button" onClick={() => setDibujarEstado({ tipo: null, puntos: [] })}
-                    className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-line-2 text-ink-1 hover:text-ink-0">Cancelar</button>
+                    className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-line-2 text-ink-1 hover:text-ink-0">
+                    {/* Con el pincel lo dibujado ya quedó guardado: no se cancela nada, se termina. */}
+                    {dibujar.tipo === 'pincel' ? 'Listo' : 'Cancelar'}
+                  </button>
                 </>
               )}
             </div>
@@ -633,7 +655,8 @@ export default function LecturaTecnica({
               // Con el primer punto puesto, lo que daría la medición hasta el mouse.
               hasta: medir.a && !medir.b ? (k, precio) => medirEntre(actual.puntos, medir.a, { i: diaDelLugar(k), precio }) : null,
             } : null}
-            onToque={herramienta ? tocar : null} onTerminar={terminarDesdeElGrafico}
+            onToque={herramienta && herramienta !== 'pincel' ? tocar : null} onTerminar={terminarDesdeElGrafico}
+            onPincel={herramienta === 'pincel' ? trazarPincel : null}
             dibujos={dibujosEnVista} elegido={elegido} onElegir={setElegido} onMoverDibujo={moverDibujo}
             conAviso={misDibujos.filter(d => d.tipo === 'tendencia' && alertaDeLinea(avisos.items, { asset, moneda, dibujo: d.id })).map(d => d.id)}
             trazo={dibujar.puntos.length ? { tipo: dibujar.tipo, puntos: dibujar.puntos.map(q => ({ k: lugarDelDia(q.i), precio: q.precio })) } : null} />
@@ -727,6 +750,11 @@ function textoDibujando({ tipo, puntos }) {
     return (puntos.length ? 'Ahora tocá donde termina el tramo (el pico de la suba o el piso de la bajada).'
       : 'Retroceso: tocá donde arranca el tramo que querés medir (el pozo de una suba o el techo de una bajada). Al terminar se apaga el Fibonacci automático, para que no se mezclen.') + esc
   }
+  if (tipo === 'canal') {
+    return ['Canal: tocá donde empieza la línea de abajo (o la de arriba).', 'Ahora tocá donde termina esa línea.',
+      'Ahora tocá a qué altura va la paralela: el ancho del canal.'][puntos.length] + esc
+  }
+  if (tipo === 'pincel') return 'Dibujá con el mouse apretado (en el celular, con el dedo). Podés hacer varios trazos; Esc o «Listo» para terminar.'
   if (tipo === 'extension') {
     return ['Extensión: tocá donde arranca el movimiento (por ejemplo, el pozo de la suba).',
       'Ahora tocá donde termina el movimiento (el pico).',
@@ -753,6 +781,8 @@ const ELEGIDO = {
   fibAuto: ['Fibonacci automático, elegido. Si lo borrás se apaga; lo volvés a prender desde el botón Fibonacci de la barra.', 'Borrar el Fibonacci automático'],
   ellAuto: ['Conteo automático de Elliott, elegido. Si lo borrás se apaga; lo volvés a prender desde el botón Ondas de Elliott de la barra.', 'Borrar el conteo automático'],
   elliott: ['Tu conteo de Elliott, elegido. Arrastralo para moverlo, o de una onda para corregirla.', 'Borrar este conteo'],
+  canal: ['Tu canal, elegido. Arrastralo para moverlo; de una punta para corregir la línea, o de la paralela para ensancharlo.', 'Borrar este canal'],
+  pincel: ['Tu trazo, elegido. Arrastralo para moverlo.', 'Borrar este trazo'],
 }
 
 // «Últimos 2 años» o, si hay menos guardado, desde cuándo.
@@ -871,6 +901,8 @@ function botonesDeLaBarra({
       [
         herramienta('tendencia', 'Línea de tendencia', <IconoTendencia />, 'Tocá dos puntos del gráfico', 'De un punto a otro, para marcar una tendencia'),
         herramienta('horizontal', 'Línea horizontal', <IconoHorizontal />, 'Tocá la altura del precio', 'Un precio que querés vigilar (un soporte, un techo)'),
+        herramienta('canal', 'Canal paralelo', <IconoCanal />, 'Tocá tres puntos del gráfico', 'Dos líneas paralelas: el piso y el techo de un precio que va de costado o en tendencia'),
+        herramienta('pincel', 'Pincel', <Brush size={17} color={COLOR.dibujo} />, 'Dibujá con el mouse apretado', 'Para marcar a mano alzada, como con una birome'),
       ],
       // Fibonacci y Elliott: el automático y el «a mano» desde UN lugar.
       [
@@ -1015,6 +1047,16 @@ function IconoTendencia() {
     </svg>
   )
 }
+// Dos paralelas con la franja de entre medio, como se ve el canal.
+function IconoCanal() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18">
+      <path d="M2 11 L16 4 L16 9 L2 16 Z" fill={COLOR.dibujo} fillOpacity="0.15" />
+      <line x1="2" y1="11" x2="16" y2="4" stroke={COLOR.dibujo} strokeWidth="1.6" strokeLinecap="round" />
+      <line x1="2" y1="16" x2="16" y2="9" stroke={COLOR.dibujo} strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  )
+}
 function IconoHorizontal() {
   return (
     <svg width="18" height="18" viewBox="0 0 18 18">
@@ -1140,7 +1182,7 @@ function rotulosDeMeses(puntos) {
   })
 }
 
-function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [] }) {
+function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null }) {
   const conVelas = tipo === 'velas'
   // Los lugares del ancho: los días más el aire vacío de la derecha.
   const lugares = puntos.length + huecos
@@ -1202,7 +1244,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
     }
     // Con dos dedos (pellizcar para acercar) o arrastrando un dibujo, la
     // página no se tiene que mover: lo mismo, un escucha no pasivo.
-    const quieta = (e) => { if (e.cancelable && (e.touches.length >= 2 || dedo.current?.agarre)) e.preventDefault() }
+    const quieta = (e) => { if (e.cancelable && (e.touches.length >= 2 || dedo.current?.agarre || dedo.current?.pincel)) e.preventDefault() }
     el.addEventListener('wheel', rueda, { passive: false })
     el.addEventListener('touchmove', quieta, { passive: false })
     return () => { el.removeEventListener('wheel', rueda); el.removeEventListener('touchmove', quieta) }
@@ -1419,7 +1461,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   const [agarrado, setAgarrado] = useState(null)
   const vistos = agarrado ? dibujos.map(d => (d.id !== agarrado.id ? d
     : dibujoCorrido(d, agarrado.que, (p) => ({ ...p, k: p.k + agarrado.dk, precio: precioCorrido(p.precio, agarrado.dp) }),
-      (x) => precioCorrido(x, agarrado.dp)))) : dibujos
+      (x) => precioCorrido(x, agarrado.dp), agarrado.dp))) : dibujos
   // Tus dibujos en pantalla (CapaDibujos.jsx), como trazos: para saber a cuál
   // se le tocó encima y para el precio de las horizontales en la columna.
   const trazos = trazosDeDibujos(vistos, pctX, pctY, conAviso)
@@ -1434,10 +1476,41 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
     const px = (t) => ({ id: t.id, ax: (t.x1 / 100) * r.width, ay: (t.y1 / 100) * r.height, bx: (t.x2 / 100) * r.width, by: (t.y2 / 100) * r.height })
     return dibujoTocado(elegibles.map(px), clientX - r.left, clientY - r.top, radio)
   }
+  // El pincel (Nico, 29/10): con la herramienta prendida, apretar y arrastrar
+  // dibuja. El trazo se ve mientras se hace (`pincel`: [{ k, precio }], k con
+  // decimales para que no quede en escalones) y al soltar se guarda
+  // (onPincel). Un punto cada 3 px como mínimo y, si son más de los que se
+  // guardan, se toman parejos a lo largo del trazo.
+  const [pincel, setPincel] = useState(null)
+  const trazoPincel = useRef(null)
+  function lugarExacto(clientX) {
+    const r = ref.current.getBoundingClientRect()
+    return Math.min(lugares - 1, Math.max(0, ((clientX - r.left) / r.width) * (lugares - 1)))
+  }
+  function empezarPincel(x, y) {
+    trazoPincel.current = { x, y, puntos: [{ k: lugarExacto(x), precio: precioEn(y) }] }
+    setPincel(trazoPincel.current.puntos)
+  }
+  function seguirPincel(x, y) {
+    const t = trazoPincel.current
+    if (!t || Math.hypot(x - t.x, y - t.y) < 3) return
+    t.x = x; t.y = y
+    t.puntos = [...t.puntos, { k: lugarExacto(x), precio: precioEn(y) }]
+    setPincel(t.puntos)
+  }
+  function terminarPincel() {
+    const t = trazoPincel.current
+    trazoPincel.current = null
+    setPincel(null)
+    if (!t || t.puntos.length < 2) return
+    let ps = t.puntos
+    if (ps.length > PINCEL_MAXIMO) ps = Array.from({ length: PINCEL_MAXIMO }, (_, n) => ps[Math.round((n * (ps.length - 1)) / (PINCEL_MAXIMO - 1))])
+    onPincel?.(ps)
+  }
   // Qué se agarra apretando en (clientX, clientY): uno de TUS dibujos (el
   // automático no se mueve: es una cuenta) y de dónde. `soloId`: con el dedo, el elegido.
   function agarreEn(clientX, clientY, radio, soloId) {
-    if (!onMoverDibujo || onToque) return null
+    if (!onMoverDibujo || onToque || onPincel) return null
     const id = dibujoBajo(clientX, clientY, radio)
     const d = id && (!soloId || id === soloId) ? dibujos.find(x => x.id === id) : null
     if (!d) return null
@@ -1540,6 +1613,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
         <div ref={ref} className={`relative mr-[72px] ${grande ? 'h-[68vh] min-h-72 sm:h-[74vh]' : 'h-[42vh] min-h-56 sm:h-[58vh] sm:min-h-64'} select-none touch-pan-y ${agarrado ? 'cursor-grabbing' : sobreDibujo ? 'cursor-pointer' : 'cursor-crosshair'} ${precioMano ? 'overflow-hidden' : ''}`}
           onMouseDown={e => {
             if (e.button != null && e.button !== 0) return
+            if (onPincel) { arrastre.current = { pincel: true }; empezarPincel(e.clientX, e.clientY); return }
             arrastre.current = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, agarre: agarreEn(e.clientX, e.clientY, 8) }
           }}
           onMouseUp={e => {
@@ -1548,6 +1622,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             const a = arrastre.current
             arrastre.current = null
             if (e.button != null && e.button !== 0) return
+            if (a?.pincel) { terminarPincel(); return }
             if (a?.movido) { soltar(a.ultimo); return }
             if (!a || Date.now() - ultimoDedo.current < 800) return
             if (Math.abs(e.clientX - a.x0) >= 5 || Math.abs(e.clientY - a.y0) >= 5) return
@@ -1556,6 +1631,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
           }}
           onMouseMove={e => {
             const a = arrastre.current
+            if (a?.pincel) { seguirPincel(e.clientX, e.clientY); mover(e.clientX); return }
             if (a?.agarre) {
               // Arrastrando un dibujo tuyo: el gráfico queda quieto.
               if (!a.movido && Math.abs(e.clientX - a.x0) < 5 && Math.abs(e.clientY - a.y0) < 5) return
@@ -1575,11 +1651,12 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             }
             mover(e.clientX)
             if (onToque) setCursor({ k: lugarEn(e.clientX), precio: precioEn(e.clientY) })
-            else if (onElegir) setSobreDibujo(a ? null : dibujoBajo(e.clientX, e.clientY, 8))
+            else if (onElegir && !onPincel) setSobreDibujo(a ? null : dibujoBajo(e.clientX, e.clientY, 8))
           }}
           onMouseLeave={() => {
             // Sacar el mouse del gráfico arrastrando un dibujo es soltarlo ahí.
-            if (arrastre.current?.movido) soltar(arrastre.current.ultimo)
+            if (arrastre.current?.pincel) terminarPincel()
+            else if (arrastre.current?.movido) soltar(arrastre.current.ultimo)
             setHover(null); setCursor(null); setSobreDibujo(null); arrastre.current = null
           }}
           onDoubleClick={() => { onTerminar?.() }}
@@ -1588,8 +1665,14 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             const t = e.touches[0]
             // Dos dedos: pellizcar acerca o aleja, como la ruedita (Nico, 28/10).
             if (e.touches.length >= 2) {
-              setAgarrado(null)
+              // Un segundo dedo a mitad de un trazo: era para acercar, el trazo no va.
+              setAgarrado(null); trazoPincel.current = null; setPincel(null)
               dedo.current = { pellizco: distanciaDedos(e.touches), quieto: false }
+              return
+            }
+            if (onPincel) {
+              dedo.current = { pincel: true, quieto: false }
+              empezarPincel(t.clientX, t.clientY)
               return
             }
             dedo.current = { x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, quieto: true,
@@ -1606,6 +1689,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
               if (ahora > 0 && onZoom?.(d.pellizco / ahora, 1)) d.pellizco = ahora
               return
             }
+            if (d?.pincel) { seguirPincel(t.clientX, t.clientY); return }
             if (d?.agarre) {
               d.x = t.clientX
               d.y = t.clientY
@@ -1628,7 +1712,11 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             const d = dedo.current
             dedo.current = null
             setHover(null)
-            if (d?.movido) {
+            if (d?.pincel) {
+              terminarPincel()
+              ultimoDedo.current = Date.now()
+              if (e.cancelable) e.preventDefault()
+            } else if (d?.movido) {
               soltar(d.ultimo)
               ultimoDedo.current = Date.now()
               if (e.cancelable) e.preventDefault()
@@ -1703,7 +1791,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
           <CapaElliott elliott={elliott} puntos={puntos} pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)}
             marcado={sobreDibujo === ID_ELL_AUTO || elegido === ID_ELL_AUTO} />
           {/* Tus dibujos, y lo que se está dibujando (hasta el mouse). */}
-          <CapaDibujos dibujos={vistos} extendidos={conAviso} elegido={elegido} resaltado={agarrado?.id || sobreDibujo} trazo={trazo} cursor={onToque ? cursor : null}
+          <CapaDibujos dibujos={pincel ? [...vistos, { id: '__pincel__', tipo: 'pincel', puntos: pincel }] : vistos} extendidos={conAviso} elegido={elegido} resaltado={agarrado?.id || sobreDibujo} trazo={trazo} cursor={onToque ? cursor : null}
             pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
           {/* Marcas y el punto del mouse van en HTML: un círculo dentro de un
               SVG estirado (preserveAspectRatio=none) se deformaría en óvalo. */}

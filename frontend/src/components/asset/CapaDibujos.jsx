@@ -4,7 +4,9 @@
 // que elige, con los mismos niveles y rótulos que el automático:
 // utils/fibonacci.js), una extensión de Fibonacci (tres toques: los niveles hacia
 // adelante) y conteos propios de Elliott: el impulso 0-1-2-3-4-5 y la corrección
-// A-B-C, por separado, uno por toque. Todo en
+// A-B-C, por separado, uno por toque. Y (Nico, 29/10) el canal paralelo (la
+// línea de abajo, su paralela y la del medio, con la franja sombreada) y el
+// pincel (un trazo a mano alzada). Todo en
 // el color de lo tuyo (cian), para no confundirlo con lo calculado: el
 // Fibonacci automático es magenta y las ondas automáticas, índigo.
 //
@@ -13,7 +15,7 @@
 // como las capas automáticas; los textos van en HTML encima (adentro del SVG
 // estirado se deformarían). Guardado y formato: utils/dibujos.js.
 
-import { etiquetasDe } from '../../utils/dibujos'
+import { etiquetasDe, puntasDe } from '../../utils/dibujos'
 import { extensionFibonacci, fibonacciAMano, nivelPct, rayas, rotuloNivel, rotulosQueEntran } from '../../utils/fibonacci'
 import { PRIORIDAD } from '../../utils/rotulos'
 
@@ -38,6 +40,17 @@ export function trazosDeDibujos(dibujos, pctX, pctY, extendidos = []) {
       if (extendidos.includes(d.id) && q.k > p.k && pctX(q.k) < 100) {
         const xq = pctX(q.k), yq = pctY(q.precio), xp = pctX(p.k), yp = pctY(p.precio)
         out.push({ id: d.id, tipo: d.tipo, x1: xq, y1: yq, x2: 100, y2: yq + ((yq - yp) * (100 - xq)) / (xq - xp), correccion: true })
+      }
+    } else if (d.tipo === 'canal') {
+      // La de abajo (a → b), su paralela `ancho` más arriba (o más abajo) y la
+      // del medio, punteada, como el canal paralelo de TradingView.
+      for (const [mas, medio] of [[0, false], [d.ancho, false], [d.ancho / 2, true]]) {
+        out.push({ id: d.id, tipo: d.tipo, x1: pctX(d.a.k), y1: pctY(d.a.precio + mas), x2: pctX(d.b.k), y2: pctY(d.b.precio + mas), correccion: medio, medio })
+      }
+    } else if (d.tipo === 'pincel') {
+      for (let k = 1; k < d.puntos.length; k++) {
+        const a = d.puntos[k - 1], b = d.puntos[k]
+        out.push({ id: d.id, tipo: d.tipo, x1: pctX(a.k), y1: pctY(a.precio), x2: pctX(b.k), y2: pctY(b.precio), pincel: true })
       }
     } else if (d.tipo === 'fibonacci') {
       const x0 = pctX(d.a.k)
@@ -82,13 +95,19 @@ export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo,
   return (
     <div className="pointer-events-none absolute inset-0" aria-hidden="true">
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
+        {/* La franja de cada canal, apenas sombreada. */}
+        {todos.filter(d => d.tipo === 'canal').map(d => (
+          <polygon key={`f-${d.id}`} fill={COLOR_DIBUJO} fillOpacity={d.id === elegido ? 0.12 : 0.07} stroke="none"
+            points={[[d.a.k, d.a.precio], [d.b.k, d.b.precio], [d.b.k, d.b.precio + d.ancho], [d.a.k, d.a.precio + d.ancho]]
+              .map(([k, p]) => `${pctX(k)},${pctY(p)}`).join(' ')} />
+        ))}
         {trazos.map((t, k) => {
           const provisorio = t.id === '__en_curso__'
           const punteado = provisorio || t.correccion || (t.nivel && !t.nivel.extremo)
           return (
             <line key={`${t.id}-${k}`} data-dibujo={provisorio ? undefined : t.id} data-tipo={t.tipo}
               x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2} stroke={COLOR_DIBUJO}
-              strokeWidth={t.nivel ? (t.id === elegido || t.id === resaltado ? 1.8 : 1) : grueso(t.id)} strokeLinecap="round"
+              strokeWidth={t.nivel || t.medio ? (t.id === elegido || t.id === resaltado ? 1.8 : 1) : grueso(t.id)} strokeLinecap="round"
               strokeDasharray={punteado ? '5 4' : undefined} opacity={t.nivel ? 0.85 : 1} vectorEffect="non-scaling-stroke" />
           )
         })}
@@ -106,8 +125,8 @@ export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo,
           de la línea o el Fibonacci elegidos. */}
       {[
         ...(trazo && !ELLIOTT[trazo.tipo] ? trazo.puntos.map((p, k) => ({ k: `t${k}`, x: pctX(p.k), y: pctY(p.precio) })) : []),
-        ...dibujos.filter(d => d.id === elegido && (d.tipo === 'tendencia' || d.tipo === 'fibonacci' || d.tipo === 'extension'))
-          .flatMap(d => [d.a, d.b, d.c].filter(Boolean).map((p, k) => ({ k: `e${k}`, x: pctX(p.k), y: pctY(p.precio) }))),
+        ...dibujos.filter(d => d.id === elegido && (d.tipo === 'tendencia' || d.tipo === 'fibonacci' || d.tipo === 'extension' || d.tipo === 'canal'))
+          .flatMap(d => puntasDe(d).map(([, p], k) => ({ k: `e${k}`, x: pctX(p.k), y: pctY(p.precio) }))),
       ].filter(p => p.x >= 0 && p.x <= 100 && p.y >= 0 && p.y <= 100).map(p => (
         <span key={p.k} className="absolute w-2.5 h-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-bg-1"
           style={{ left: `${p.x}%`, top: `${p.y}%`, background: COLOR_DIBUJO }} />
@@ -119,12 +138,21 @@ export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo,
 // Las herramientas de Elliott a mano y la forma que dibujan.
 const ELLIOTT = { impulso: 'impulso', correccion: 'correccion', elliott: undefined }
 
+/** Cuánto más arriba (o abajo) de la línea a → b está el punto c, en precio:
+ *  el ancho del canal. Con a y b en el mismo lugar, contra el precio de a. */
+export function anchoDelCanal(a, b, c) {
+  const enC = b.k === a.k ? a.precio : a.precio + ((b.precio - a.precio) * (c.k - a.k)) / (b.k - a.k)
+  return c.precio - enC
+}
+
 // Lo que se está dibujando, con el mouse como el próximo toque.
 function enCursoHasta(trazo, cursor) {
   const ps = [...trazo.puntos, { k: cursor.k, precio: cursor.precio }]
   if (trazo.tipo in ELLIOTT) return ps.length >= 2 ? { id: '__en_curso__', tipo: 'elliott', forma: ELLIOTT[trazo.tipo], puntos: ps } : null
   if (ps.length < 2) return null
   if (trazo.tipo === 'extension') return { id: '__en_curso__', tipo: 'extension', a: ps[0], b: ps[1], c: ps[2] }
+  // El canal: con dos toques, la línea de abajo; el tercero (el mouse) dice el ancho.
+  if (trazo.tipo === 'canal' && ps.length >= 3) return { id: '__en_curso__', tipo: 'canal', a: ps[0], b: ps[1], ancho: anchoDelCanal(ps[0], ps[1], ps[2]) || 1e-9 }
   return { id: '__en_curso__', tipo: trazo.tipo === 'fibonacci' ? 'fibonacci' : 'tendencia', a: ps[0], b: ps[1] }
 }
 

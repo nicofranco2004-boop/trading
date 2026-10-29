@@ -24,8 +24,15 @@ const clave = (asset, moneda) => `rendi_dibujos:${String(asset || '').toUpperCas
 export const DIBUJOS_MAXIMOS = 60
 
 const numero = (x) => typeof x === 'number' && Number.isFinite(x)
+// `f` (opcional, sólo el pincel): la fracción del lugar, para que un trazo a
+// mano no quede en escalones de a un día cuando el gráfico está muy acercado.
 const punto = (p) => !!p && typeof p.d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(p.d)
   && Number.isInteger(p.mas) && p.mas >= 0 && numero(p.precio) && p.precio > 0
+  && (p.f == null || (numero(p.f) && p.f >= 0 && p.f < 1))
+// El pincel (Nico, 29/10): un trazo a mano alzada, hasta tantos puntos (se
+// guardan en tu cuenta con los demás dibujos: sin tope, un garabato largo
+// pesaría como cien líneas).
+export const PINCEL_MAXIMO = 200
 // Un conteo de Elliott a mano, en dos formas por separado (Nico, 28/10), como
 // TradingView: el IMPULSO (0, 1, 2, 3, 4, 5) y la CORRECCIÓN (el arranque y
 // A, B, C). Se puede terminar antes (un impulso que va por la 3). Los conteos
@@ -43,6 +50,10 @@ export function dibujoValido(x) {
   if (!x || typeof x.id !== 'string') return false
   if (x.tipo === 'horizontal') return numero(x.precio) && x.precio > 0
   if (x.tipo === 'tendencia' || x.tipo === 'fibonacci') return punto(x.a) && punto(x.b)
+  // El canal: la línea de abajo (a → b) y cuánto más arriba (o abajo) va su
+  // paralela, en precio (Nico, 29/10: «el lateral»).
+  if (x.tipo === 'canal') return punto(x.a) && punto(x.b) && numero(x.ancho) && x.ancho !== 0
+  if (x.tipo === 'pincel') return Array.isArray(x.puntos) && x.puntos.length >= 2 && x.puntos.length <= PINCEL_MAXIMO && x.puntos.every(punto)
   if (x.tipo === 'extension') return punto(x.a) && punto(x.b) && punto(x.c)
   if (x.tipo === 'elliott') {
     if (x.forma != null && x.forma !== 'impulso' && x.forma !== 'correccion') return false
@@ -121,10 +132,11 @@ export const idNuevo = () => `d${Date.now().toString(36)}${(contador++).toString
  * El punto a guardar para el día `i` (contado sobre los puntos DIARIOS del
  * gráfico; puede pasar del último, hacia adelante) y un precio.
  */
-export function puntoDelDia(puntos, i, precio) {
+export function puntoDelDia(puntos, i, precio, f = 0) {
   const ultimo = puntos.length - 1
-  if (i <= ultimo) return { d: puntos[Math.max(0, i)].d, mas: 0, precio: precioRedondo(precio) }
-  return { d: puntos[ultimo].d, mas: i - ultimo, precio: precioRedondo(precio) }
+  const fr = f > 0 && f < 1 ? { f: Math.min(0.99, Math.round(f * 100) / 100) } : {}
+  if (i <= ultimo) return { d: puntos[Math.max(0, i)].d, mas: 0, precio: precioRedondo(precio), ...(fr.f ? fr : {}) }
+  return { d: puntos[ultimo].d, mas: i - ultimo, precio: precioRedondo(precio), ...(fr.f ? fr : {}) }
 }
 
 /**
@@ -143,23 +155,28 @@ export function diaDelPunto(puntos, p) {
  * un conteo de Elliott, [n, p] por onda. Una horizontal no tiene: se agarra entera.
  */
 export function puntasDe(d) {
-  if (d.tipo === 'horizontal') return []
+  if (d.tipo === 'horizontal' || d.tipo === 'pincel') return []
   if (d.tipo === 'elliott') return d.puntos.map((p, n) => [n, p])
+  // El canal se ensancha agarrando la paralela de su mitad (como TradingView).
+  if (d.tipo === 'canal') {
+    return [['a', d.a], ['b', d.b], ['ancho', { k: (d.a.k + d.b.k) / 2, precio: (d.a.precio + d.b.precio) / 2 + d.ancho }]]
+  }
   return ['a', 'b', 'c'].filter(c => d[c]).map(c => [c, d[c]])
 }
 
 /**
  * El dibujo arrastrado (Nico, 28/10: «mover y corregir un dibujo ya hecho»):
  * `que` es la punta agarrada (su nombre en `puntasDe`) o 'todo', para moverlo
- * entero. `correr(p)` da el punto nuevo de una punta; `correrPrecio(x)`, el
+ * entero; en un canal, 'ancho' corre su paralela `dp` de precio. `correr(p)` da el punto nuevo de una punta; `correrPrecio(x)`, el
  * precio nuevo de una horizontal. La MISMA cuenta para lo que se ve mientras
  * se arrastra (puntos en lugares de la pantalla) y para lo que se guarda
  * (puntos por día).
  */
-export function dibujoCorrido(d, que, correr, correrPrecio) {
+export function dibujoCorrido(d, que, correr, correrPrecio, dp = 0) {
   if (d.tipo === 'horizontal') return { ...d, precio: correrPrecio(d.precio) }
+  if (d.tipo === 'canal' && que === 'ancho') return { ...d, ancho: d.ancho + dp || d.ancho }
   const mueve = (nombre) => que === 'todo' || que === nombre
-  if (d.tipo === 'elliott') return { ...d, puntos: d.puntos.map((p, n) => (mueve(n) ? correr(p) : p)) }
+  if (d.tipo === 'elliott' || d.tipo === 'pincel') return { ...d, puntos: d.puntos.map((p, n) => (mueve(n) ? correr(p) : p)) }
   const out = { ...d }
   for (const c of ['a', 'b', 'c']) if (d[c] && mueve(c)) out[c] = correr(d[c])
   return out

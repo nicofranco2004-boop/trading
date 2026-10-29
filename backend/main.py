@@ -11906,12 +11906,16 @@ class _PuntoDibujo(BaseModel):
     d: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")      # el día
     mas: int = Field(ge=0, le=5000)                     # días de mercado después (hacia adelante)
     precio: float = Field(gt=0, allow_inf_nan=False)
+    # Sólo el pincel: la fracción del lugar (que el trazo no quede en escalones).
+    f: Optional[float] = Field(None, ge=0, lt=1, allow_inf_nan=False)
 
 
 # Un conteo de Elliott a mano: el impulso (0 y las ondas 1 a 5), la corrección
 # (el arranque y A, B, C) o, en los guardados antes de separarlos, las dos
 # juntas (0-1-2-3-4-5-A-B-C). Se puede cortar antes.
 _PUNTOS_ELLIOTT = {"impulso": 6, "correccion": 4, None: 9}
+# El pincel: los puntos de un trazo (frontend/src/utils/dibujos.PINCEL_MAXIMO).
+_PINCEL_MAXIMO = 200
 
 
 class _Dibujo(BaseModel):
@@ -11919,13 +11923,16 @@ class _Dibujo(BaseModel):
     # «fibonacci» y «elliott»: los que la persona marca a mano en vez del
     # automático (Nico, 28/10: «poder calcularlo como ellos estiman»).
     # «extension»: la extensión de Fibonacci (tres puntos: a, b y c).
-    tipo: Literal["tendencia", "horizontal", "fibonacci", "extension", "elliott"]
+    # «canal»: el canal paralelo (a → b y la paralela `ancho` más arriba o más
+    # abajo); «pincel»: un trazo a mano alzada (Nico, 29/10).
+    tipo: Literal["tendencia", "horizontal", "fibonacci", "extension", "elliott", "canal", "pincel"]
     precio: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
     a: Optional[_PuntoDibujo] = None
     b: Optional[_PuntoDibujo] = None
     c: Optional[_PuntoDibujo] = None
     forma: Optional[Literal["impulso", "correccion"]] = None
-    puntos: Optional[List[_PuntoDibujo]] = Field(None, max_length=_PUNTOS_ELLIOTT[None])
+    puntos: Optional[List[_PuntoDibujo]] = Field(None, max_length=_PINCEL_MAXIMO)
+    ancho: Optional[float] = Field(None, ge=-1e9, le=1e9, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _completo(self):
@@ -11940,6 +11947,10 @@ class _Dibujo(BaseModel):
                 raise ValueError("un conteo de Elliott necesita al menos el arranque y la primera onda")
             if len(self.puntos) > _PUNTOS_ELLIOTT[self.forma]:
                 raise ValueError("un conteo de Elliott con más ondas de las que tiene su forma")
+        if self.tipo == "canal" and (self.a is None or self.b is None or not self.ancho):
+            raise ValueError("un canal necesita su línea (dos puntos) y su ancho")
+        if self.tipo == "pincel" and (not self.puntos or len(self.puntos) < 2):
+            raise ValueError("un trazo del pincel necesita al menos dos puntos")
         return self
 
 
