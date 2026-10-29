@@ -425,3 +425,22 @@ siete el número cerraba perfecto. El antídoto que funcionó todas las veces:
 · No trates un hallazgo «sin verificar» como un hallazgo.
 · No borres `test_dos_pedidos_a_la_vez.py` ni ningún test viejo «porque molesta»:
   ése, escrito el 3/10 para otra cosa, fue el que agarró la regresión del envoltorio.
+
+---
+
+## 10 · Estado al 29/10 10:20 — 5.B medido y guarda de commit aplicada
+
+| corrida | resultado | duración |
+|---|---|---|
+| Postgres sobre `28f0d20d` (sólo 5.B) | 7.152 pasados, **12 fallas = las 12 PREEXISTENTES**; la roja del mes en verde | 893 s (carga 13 al arrancar) |
+| Postgres sobre `f1e43cd4` (con la guarda `22d6bb4e`) | 7.161 pasados, **11 fallas** = las 12 menos `test_email_verification` (lo arregló `035f3de4`) | 654 s (máquina quieta) |
+| SQLite sobre la punta | **NO CORRIDA** (se acabó el uso): es lo primero que falta | — |
+
+Los 28 rojos que agregaba la guarda eran **todos** el `commit()` de la limpieza de los propios tests
+(`reset_admin:105` ×13, `reset_data:67` ×7, `tickers_renombrados:100` ×8). Ningún caso legítimo y
+ninguno de la app: el primer borrado de cada limpieza falla en Postgres (`users` no tiene `user_id`;
+`price_alerts` no existe) y la limpieza entera se tiraba callada. Arreglado en `fb3a1b9d` con un punto
+de guardado por borrado. La guarda queda como estaba (`22d6bb4e`).
+
+Latente, sin tocar (familia «plan B», hallazgo 13): `_reset_data_worker` cuenta cada tabla con
+`except ERR_OPERACIONAL`; en Postgres una tabla ausente aborta la transacción y el resto del reset revienta.
