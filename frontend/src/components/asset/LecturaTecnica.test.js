@@ -219,12 +219,13 @@ describe('LecturaTecnica', () => {
     for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     expect(botonDe('velas').getAttribute('aria-pressed')).toBe('true')
     expect(botonDe('linea').getAttribute('aria-pressed')).toBe('false')
-    expect(velasDibujadas()).toBeGreaterThan(200)     // un año de ruedas, una vela por día
+    expect(velasDibujadas()).toBeGreaterThan(200)     // toda la historia, una vela por día
     expect(texto(montado.contenedor)).not.toContain('Cada vela es una semana')
-    // En 2 años siguen siendo diarias; las semanales se eligen.
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, '2A'))
-    for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
+    // Con toda la historia siguen siendo diarias; las semanales se eligen en el
+    // menú de las velas («1D», como TradingView).
     expect(texto(montado.contenedor)).toContain('Cada vela es un día')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, '1D'))
+    for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Semanales'))
     for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     expect(texto(montado.contenedor)).toContain('Cada vela es una semana')

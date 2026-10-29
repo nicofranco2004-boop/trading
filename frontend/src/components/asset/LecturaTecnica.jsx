@@ -33,7 +33,7 @@
 // TradingView), con su tarjeta «Fuerza de la tendencia».
 
 import { cloneElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Brush, LineChart, Maximize2, Minimize2, Redo2, RotateCcw, Ruler, Trash2, Undo2 } from 'lucide-react'
+import { Brush, ChevronDown, LineChart, Maximize2, Minimize2, Redo2, RotateCcw, Ruler, Trash2, Undo2 } from 'lucide-react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica } from './BarraGrafico'
 import CapaFibonacci, { COLOR_FIB, ID_FIB_AUTO, TarjetaFibonacci, preciosDeLaCapa, trazosDelFibonacci, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
@@ -48,7 +48,7 @@ import {
   marcarSubidos, PINCEL_MAXIMO, COLORES_DIBUJO, colorDeLosNuevos, recordarColor, precioCorrido, precioRedondo, puntasDe, puntoDelDia, subirDibujos,
 } from '../../utils/dibujos'
 import {
-  RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, tarjetaBandas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
+  RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, tarjetaBandas, lineaPromedio, marcas, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, moverVentana, RUEDAS_MINIMAS,
   ventanaInicial, margenDerecho, futuroMaximo,
 } from '../../utils/tecnico'
@@ -139,7 +139,10 @@ export default function LecturaTecnica({
   titulo = 'Análisis técnico',
 }) {
   const [moneda, setMoneda] = useState('usd')
-  const [rango, setRango] = useState('1a')
+  // «Todo» (toda la historia que guarda Rendi) o «Desde que lo tenés»: los
+  // rangos cortos (3M, 1A, 2A) se sacaron (Nico, 29/10); para acercar está la
+  // ruedita, pellizcar o arrastrar las fechas.
+  const [rango, setRango] = useState('todo')
   const [datos, setDatos] = useState({ usd: undefined, ars: undefined })
   // Qué capas se ven: la barra de herramientas prende y apaga cada una. De
   // entrada, todas (Nico, 24/10); lo que cada uno apaga queda guardado.
@@ -316,7 +319,7 @@ export default function LecturaTecnica({
   const [tipo, setTipoEstado] = useState(tipoGuardado)
   const setTipo = (t) => { setTipoEstado(t); guardarTipo(t) }
   // Zoom con la rueda y arrastre: qué ruedas se ven ({ n: cuántas, fin: hasta
-  // cuál, sin incluirla }). null = el rango del botón (3M/1A/2A).
+  // cuál, sin incluirla }). null = el del rango elegido («Todo» o «Desde que lo tenés»).
   const [ventana, setVentana] = useState(null)
   // Velas diarias siempre; semanales sólo si se eligen (para mirar el panorama
   // de 2 años). El análisis (Fibonacci, giros) se hace sobre las diarias.
@@ -444,7 +447,7 @@ export default function LecturaTecnica({
   // primera compra.
   const nRango = rango === 'tuyo' && primera
     ? Math.max(RUEDAS_MINIMAS, puntosDesde(actual.puntos, primera))
-    : puntosEnDias(actual.puntos, RANGOS.find(r => r.id === rango)?.dias || 365)
+    : actual.puntos.length
   // La ventana en LUGARES (ver tecnico.margenDerecho): los días que se ven más
   // el aire vacío de la derecha, por donde se puede arrastrar hacia el futuro.
   const inicial = ventanaInicial(nRango, total)
@@ -892,17 +895,56 @@ function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, conTuyo = 
             </div>
           )}
           {tipo === 'velas' && setIntervalo && (
-            <Segmento etiqueta="Cada vela es" valor={intervalo} alElegir={setIntervalo}
-              opciones={[['dia', 'Diarias'], ['semana', 'Semanales']]} />
+            <ElegirIntervalo valor={intervalo} alElegir={setIntervalo} />
           )}
           <Segmento etiqueta="Moneda" valor={moneda} alElegir={setMoneda}
             opciones={[['usd', 'Dólares'], ...(conPesos ? [['ars', 'Pesos']] : [])]} />
           <Segmento etiqueta="Rango" valor={rango} alElegir={setRango}
-            opciones={[...RANGOS.map(r => [r.id, r.label]), ...(conTuyo ? [['tuyo', 'Desde que lo tenés']] : [])]} />
+            opciones={[['todo', 'Todo'], ...(conTuyo ? [['tuyo', 'Desde que lo tenés']] : [])]} />
         </div>
       </div>
       <div className="bg-bg-1 border border-line/60 rounded-xl p-3 sm:p-4">{children}</div>
     </section>
+  )
+}
+
+// Cada cuánto es una vela, como TradingView (Nico, 29/10): un botón con lo
+// elegido («1D») que al tocarlo despliega las opciones. Por ahora diarias y
+// semanales: las de 1 y 4 horas necesitan precios de cada hora, que Rendi
+// todavía no guarda.
+const INTERVALOS = [['dia', '1D', 'Diarias'], ['semana', '1S', 'Semanales']]
+function ElegirIntervalo({ valor, alElegir }) {
+  const [abierto, setAbierto] = useState(false)
+  const caja = useRef(null)
+  useEffect(() => {
+    if (!abierto) return
+    const fuera = (e) => { if (!caja.current?.contains?.(e.target)) setAbierto(false) }
+    const esc = (e) => { if (e.key === 'Escape') setAbierto(false) }
+    document.addEventListener('pointerdown', fuera)
+    document.addEventListener('keydown', esc)
+    return () => { document.removeEventListener('pointerdown', fuera); document.removeEventListener('keydown', esc) }
+  }, [abierto])
+  const actual = INTERVALOS.find(i => i[0] === valor) || INTERVALOS[0]
+  return (
+    <div ref={caja} className="relative">
+      <button type="button" data-capa="intervalo" aria-haspopup="menu" aria-expanded={abierto} onClick={() => setAbierto(!abierto)}
+        title={`Cada vela es: ${actual[2].toLowerCase()}`}
+        className="inline-flex items-center gap-1 min-h-10 sm:min-h-8 px-3 rounded-lg border border-line bg-bg-2 text-xs font-medium text-ink-0 hover:border-ink-3">
+        <span className="sr-only">Cada vela es </span>{actual[1]}
+        <ChevronDown size={13} aria-hidden="true" className={`text-ink-2 transition-transform ${abierto ? 'rotate-180' : ''}`} />
+      </button>
+      {abierto && (
+        <div role="menu" aria-label="Cada vela es" className="absolute left-0 top-full mt-1 z-[60] w-44 rounded-lg border border-line-2 bg-bg-raised p-1 shadow-lg">
+          {INTERVALOS.map(([id, corto, nombre]) => (
+            <button key={id} type="button" role="menuitemradio" aria-checked={valor === id} data-intervalo={id}
+              onClick={() => { alElegir(id); setAbierto(false) }}
+              className={`flex w-full items-center justify-between gap-2 min-h-10 sm:min-h-8 px-2.5 rounded text-left text-[12.5px] ${valor === id ? 'bg-bg-2 text-ink-0 font-medium' : 'text-ink-1 hover:bg-bg-2 hover:text-ink-0'}`}>
+              <span>{nombre}</span><span className="tabular text-ink-2">{corto}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 

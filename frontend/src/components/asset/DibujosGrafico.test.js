@@ -129,11 +129,11 @@ async function toqueEn(x, hastaX = x, y = 100) {
   await redibujar()
   return fin
 }
-// Lo que se ve en 1A: los últimos 365 puntos (uno por día) más el aire vacío de
+// Lo que se ve de entrada («Todo»): los 700 puntos (uno por día) más el aire vacío de
 // la derecha (como TradingView): el ancho se reparte en LUGARES. El punto bajo
 // x: round(x / 1000 × (lugares − 1)) dentro de lo que se ve.
-const LUGARES = 365 + margenDerecho(365)
-const bajo = (x) => 700 - 365 + Math.round((x / 1000) * (LUGARES - 1))
+const LUGARES = 700 + margenDerecho(700)
+const bajo = (x) => Math.round((x / 1000) * (LUGARES - 1))
 const status = () => todos(montado.contenedor, n => n.getAttribute?.('role') === 'status').map(n => texto(n)).join(' ')
 
 const linea = () => todos(montado.contenedor, n => n.nodeName === 'LINE' && n.getAttribute?.('data-dibujo') != null)
@@ -194,7 +194,7 @@ describe('línea de tendencia', () => {
       && n.getAttribute?.('stroke') === 'rgb(var(--data-cyan))')).toHaveLength(1)
     await clickEn(995, 40)                                     // el espacio vacío de la derecha
     const [l] = linea()
-    const pctX = (x) => (bajo(x) - (700 - 365)) / (LUGARES - 1) * 100
+    const pctX = (x) => bajo(x) / (LUGARES - 1) * 100
     expect(Number(l.getAttribute('x1'))).toBeCloseTo(pctX(200), 6)
     expect(Number(l.getAttribute('x2'))).toBeCloseTo(pctX(995), 6)
     expect(Number(l.getAttribute('y1'))).toBeCloseTo(72, 2)    // 180 de 250 px
@@ -219,11 +219,12 @@ describe('línea de tendencia', () => {
   })
 
   it('con el zoom, la línea sigue en sus días', async () => {
-    await dibujar()
-    await usar('tendencia'); await clickEn(700, 180); await clickEn(900, 60)
+    // «Desde que lo tenés» con la primera compra hace 91 días: acerca a esos 91.
+    await dibujar({ lotes: [{ entry_date: puntos[609].d, quantity: 1 }] })
+    await usar('tendencia'); await clickEn(860, 180); await clickEn(940, 60)   // los dos, días con precio
     const [t] = guardados()
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, '3M')); await redibujar()
-    // 3M: los últimos 91 días más su aire.
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Desde que lo tenés')); await redibujar()
+    // Los últimos 91 días más su aire.
     const lug = 91 + margenDerecho(91)
     const enX = (d) => ((puntos.findIndex(p => p.d === d) - (700 - 91)) / (lug - 1)) * 100
     const [l] = linea()
@@ -375,9 +376,10 @@ describe('mover y corregir un dibujo ya hecho (Nico, 28/10)', () => {
     await usar('tendencia'); await clickEn(200, 200); await clickEn(800, 50)
     const [antes] = guardados()
     const x = Number(linea()[0].getAttribute('x1'))
-    await arrastrar(300, 230, 500, 230)                               // lejos de tu línea
+    // Con «Todo» el gráfico arranca en el primer día: se arrastra hacia el futuro.
+    await arrastrar(500, 230, 300, 230)                               // lejos de tu línea
     expect(guardados()[0]).toEqual(antes)
-    expect(Number(linea()[0].getAttribute('x1'))).toBeGreaterThan(x)  // el gráfico fue para atrás
+    expect(Number(linea()[0].getAttribute('x1'))).toBeLessThan(x)     // el gráfico fue para adelante
     expect(status()).not.toContain('elegida')
   })
 

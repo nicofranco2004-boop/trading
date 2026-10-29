@@ -108,11 +108,11 @@ async function toqueEn(x, hastaX = x) {
   return fin
 }
 const fecha = (iso) => { const [y, m, d] = iso.split('-'); return `${d}/${m}/${y.slice(2)}` }
-// Lo que se ve en 1A: los últimos 365 puntos (uno por día) más el aire vacío de
+// Lo que se ve de entrada («Todo»): los 700 puntos (uno por día) más el aire vacío de
 // la derecha (como TradingView): el ancho se reparte en LUGARES. El punto bajo
 // x: round(x / 1000 × (lugares − 1)) dentro de lo que se ve.
-const LUGARES = 365 + margenDerecho(365)
-const bajo = (x) => 700 - 365 + Math.round((x / 1000) * (LUGARES - 1))
+const LUGARES = 700 + margenDerecho(700)
+const bajo = (x) => Math.round((x / 1000) * (LUGARES - 1))
 const pct = (a, b) => ((puntos[b].c / puntos[a].c - 1) * 100).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 
 // Los precios que dice la medición, como números («US$ 1.234,56» → 1234.56).
@@ -188,9 +188,10 @@ describe('medir entre dos puntos (como la regla de TradingView)', () => {
     await dibujar()
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Medir entre dos puntos'))
     await redibujar()
-    await evento('mousedown', grafico(), { clientX: 300, clientY: 100 })
-    await evento('mousemove', grafico(), { clientX: 600, clientY: 100 })
-    await evento('mouseup', grafico(), { clientX: 600, clientY: 100 })
+    // Con «Todo» arranca en el primer día: se arrastra hacia el futuro.
+    await evento('mousedown', grafico(), { clientX: 600, clientY: 100 })
+    await evento('mousemove', grafico(), { clientX: 300, clientY: 100 })
+    await evento('mouseup', grafico(), { clientX: 300, clientY: 100 })
     await redibujar()
     expect(status()).toContain(EMPEZAR)
     // Se movió: ya no hay un rango elegido y aparece «Automático».
@@ -232,7 +233,7 @@ describe('balances y dividendos en el gráfico', () => {
     expect(ms.map(n => texto(n))).toEqual(['B', 'D'])
     // En el mismo lugar que la vela de ese día (el ancho se reparte en lugares,
     // con el aire de la derecha): no corridas.
-    const lugarDe = (i) => `${((i - (700 - 365)) / (LUGARES - 1)) * 100}%`
+    const lugarDe = (i) => `${(i / (LUGARES - 1)) * 100}%`
     expect(ms[0].style.left).toBe(lugarDe(600))
     expect(ms[1].style.left).toBe(lugarDe(610))
     expect(ms[0].getAttribute('aria-label')).toBe(
@@ -249,9 +250,9 @@ describe('balances y dividendos en el gráfico', () => {
   })
 
   it('los que no entran en lo que se ve no se dibujan', async () => {
-    await dibujar()
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, '3M')); await redibujar()
-    // 3M = los últimos 91 días: el balance (hace 99) queda afuera y el dividendo (hace 89) adentro.
+    // «Desde que lo tenés», con la primera compra hace 91 días: el balance (hace 99) queda afuera y el dividendo (hace 89) adentro.
+    await dibujar({ lotes: [{ entry_date: puntos[609].d, quantity: 1 }] })
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Desde que lo tenés')); await redibujar()
     expect(marcas().map(n => texto(n))).toEqual(['D'])
   })
 })

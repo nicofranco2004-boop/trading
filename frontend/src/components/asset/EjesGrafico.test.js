@@ -39,7 +39,8 @@ afterEach(async () => {
   localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
 })
 
-const el = () => h(LecturaTecnica, { asset: 'ZZEJ' })
+// Con una compra hace 200 días: hay «Desde que lo tenés» (el otro rango además de «Todo»).
+const el = () => h(LecturaTecnica, { asset: 'ZZEJ', lotes: [{ entry_date: puntos[500].d, quantity: 1 }] })
 async function dibujar() {
   montado = await montar(el())
   for (let i = 0; i < 4; i++) await montado.redibujar(el())
@@ -108,9 +109,9 @@ describe('arrastrar los ejes del gráfico', () => {
     await arrastrar(columna, { dy: 140 })
     const achicado = grilla()
     // Entró el doble de rango de precio: los precios redondos de la columna
-    // (como TradingView) van de a saltos más grandes (de 20 en 20 → de 50 en 50).
+    // (como TradingView) van de a saltos más grandes (de 40 en 40 → de 50 en 50).
     const paso = (g) => { const r = g.filter(Number.isInteger).sort((x, y) => x - y); return Math.min(...r.slice(1).map((x, k) => x - r[k])) }
-    expect(paso(achicado)).toBeGreaterThan(paso(antes) * 1.5)
+    expect(paso(achicado)).toBeGreaterThan(paso(antes))
     expect(buscarBoton(montado.contenedor, 'Automático')).not.toBeNull()
 
     // Con el precio a mano, arrastrar el gráfico hacia abajo muestra precios más altos.
@@ -168,12 +169,12 @@ describe('arrastrar los ejes del gráfico', () => {
     }
     expect(miras()).toEqual([])
     // Arriba de todo del gráfico (y = 0) y en el último día con precio.
-    const ultimoLugar = 1000 * (364 / (364 + 1 + margenDerecho(365) - 1))
+    const ultimoLugar = 1000 * (699 / (699 + margenDerecho(700)))
     await raton('mousemove', grafico, { clientX: ultimoLugar, clientY: 0 })
     const precio = miras().find(t => /^[\d.,]+$/.test(t))
     const dia = miras().find(t => /[a-z]/.test(t))
     expect(miras()).toHaveLength(2)
-    expect(numeros(precio)[0]).toBeGreaterThan(Math.max(...puntos.slice(-365).map(p => p.c)))   // lo más alto que se ve
+    expect(numeros(precio)[0]).toBeGreaterThan(Math.max(...puntos.map(p => p.c)))   // lo más alto que se ve
     const d = new Date(puntos[699].d + 'T12:00:00Z')
     expect(dia).toContain(`${d.getUTCDate()} `)
     await raton('mouseout', grafico, { relatedTarget: null })
@@ -183,10 +184,10 @@ describe('arrastrar los ejes del gráfico', () => {
   // Otro rango, moneda, tipo de gráfico o diarias/semanales: el precio vuelve a
   // automático (cada uno con su prueba, como pidió la sesión central).
   for (const [nombre, pasos] of [
-    ['otro rango', ['2A']],
+    ['otro rango', ['Desde que lo tenés']],
     ['otra moneda', ['Pesos']],
     ['otro tipo de gráfico', ['Velas']],
-    ['de diarias a semanales', ['Velas', '@', 'Semanales']],
+    ['de diarias a semanales', ['Velas', '@', '1D', 'Semanales']],   // «1D» abre el menú de las velas
   ]) {
     it(`${nombre} vuelve el precio a automático`, async () => {
       await dibujar()
@@ -208,38 +209,39 @@ describe('arrastrar los ejes del gráfico', () => {
         for (let i = 0; i < 3; i++) await montado.redibujar(el())
       }
       expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
-    })
+    }, 15000)   // muchos redibujos de toda la historia: con la suite entera corriendo pasa los 5 s
   }
 
   it('las fechas a mano también muestran «Automático» (en el celular no hay doble click)', async () => {
     await dibujar()
     const fechas = porTitulo(montado.contenedor, 'Arrastrá hacia los costados')
     expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
-    await arrastrar(fechas, { dx: 200, pointerType: 'touch' })
+    await arrastrar(fechas, { dx: -200, pointerType: 'touch' })   // acerca (con «Todo» ya no se puede alejar más)
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
-    expect(botonPresionado(montado.contenedor, '1A')).toBe(false)
+    expect(botonPresionado(montado.contenedor, 'Todo')).toBe(false)
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Automático'))
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
-    expect(botonPresionado(montado.contenedor, '1A')).toBe(true)
+    expect(botonPresionado(montado.contenedor, 'Todo')).toBe(true)
     expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
   })
 
-  it('la fila de fechas, con el dedo: hacia la izquierda acerca; doble click, vuelve al 1A', async () => {
+  it('la fila de fechas, con el dedo: hacia la izquierda acerca; doble click, vuelve a «Todo»', async () => {
     await dibujar()
     const fechas = porTitulo(montado.contenedor, 'Arrastrá hacia los costados')
     expect(fechas).not.toBeNull()
-    expect(botonPresionado(montado.contenedor, '1A')).toBe(true)
+    expect(botonPresionado(montado.contenedor, 'Todo')).toBe(true)
     const meses = () => texto(fechas)
     const antes = meses()
-    const rotulos = () => fechas.childNodes.filter(n => n.nodeName === 'SPAN').length
-    const rotulosAntes = rotulos()
     await arrastrar(fechas, { dx: -280, pointerType: 'touch' })
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
     expect(meses()).not.toBe(antes)
-    expect(rotulos()).toBeLessThan(rotulosAntes)   // acercó: menos meses a la vista
-    expect(botonPresionado(montado.contenedor, '1A')).toBe(false)  // ya no es el rango del botón
+    // Acercó: los rótulos van parejos a cualquier zoom (como TradingView), pero el
+    // período que se ve se achicó: el año del principio ya no entra.
+    expect(antes).toContain('2025')
+    expect(meses()).not.toContain('2025')
+    expect(botonPresionado(montado.contenedor, 'Todo')).toBe(false)  // ya no es el rango del botón
     await dobleClick(fechas)
-    expect(botonPresionado(montado.contenedor, '1A')).toBe(true)
+    expect(botonPresionado(montado.contenedor, 'Todo')).toBe(true)
     expect(meses()).toBe(antes)
   })
 
@@ -248,6 +250,14 @@ describe('arrastrar los ejes del gráfico', () => {
     const fechas = porTitulo(montado.contenedor, 'Arrastrá hacia los costados')
     const rotulos = () => fechas.childNodes.filter(n => n.nodeName === 'SPAN').map(n => texto(n))
     const antes = rotulos()
+    // El punto del último precio: su lugar en el ancho.
+    const ultimoPunto = () => {
+      const pila = [montado.contenedor]
+      while (pila.length) { const n = pila.shift(); if (String(n.getAttribute?.('class') || '').startsWith('absolute w-2 h-2 -translate-x-1/2')) return n.style.left; pila.push(...(n.childNodes || [])) }
+      return null
+    }
+    const ultimoAntes = ultimoPunto()
+    expect(ultimoAntes).not.toBeNull()
     // El gráfico (role="img") tiene el escucha de la rueda; el mouse, a la izquierda de todo.
     const pila = [montado.contenedor]
     let area = null
@@ -264,7 +274,10 @@ describe('arrastrar los ejes del gráfico', () => {
     }
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
     const despues = rotulos()
-    expect(despues.length).toBeLessThan(antes.length)               // acercó
-    expect(despues[despues.length - 1]).toBe(antes[antes.length - 1])   // el final quedó quieto
+    expect(antes).toContain('2025')
+    expect(despues).not.toContain('2025')                            // acercó: el principio ya no entra
+    // El último día sigue a la vista, contra la derecha (no se fue para el costado).
+    expect(parseFloat(ultimoPunto())).toBeGreaterThan(85)
+    expect(parseFloat(ultimoPunto())).toBeLessThan(100)
   })
 })
