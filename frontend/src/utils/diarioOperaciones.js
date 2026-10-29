@@ -99,6 +99,7 @@ export const MOTIVO_SIN_TENDENCIA = {
   sin_precio: 'No hay precios de ese día: guardamos los últimos 3 años.',
   pocos_dias: 'Ese día todavía no había 200 días de mercado guardados para calcular el promedio.',
   sin_fecha: 'La operación no tiene fecha de compra.',
+  tope: 'Miramos la tendencia del día de compra en hasta 200 activos distintos.',
   // No es un motivo del servidor: el pedido falló (o es el demo, que no lo simula).
   sin_respuesta: 'No pudimos traer los precios de cada día. Probá de nuevo en un rato.',
 }

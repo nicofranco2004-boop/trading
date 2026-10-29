@@ -30,7 +30,10 @@ dibujan en la pantalla con lo que ya tiene la ficha.
 """
 from __future__ import annotations
 
+import copy
+import threading
 from bisect import bisect_right
+from collections import OrderedDict
 from datetime import date, timedelta
 
 import elliott
@@ -717,33 +720,132 @@ def para_la_cartera(conn, activos: list, hoy: date = None) -> list:
     `cambios`: lo que cambió en los últimos `DIAS_CAMBIOS` días (`cambios_desde`,
     la misma cuenta que «Tus señales»). Sin velas: `disponible` False, nunca se
     inventa. `hoy` (día argentino) lo pasa quien ya tiene su reloj: el resumen
-    de los sábados."""
+    de los sábados. Lo ya leído no se vuelve a calcular (`_leer_varios`)."""
     from fechas import hoy_art_date
     desde = ((hoy or hoy_art_date()) - timedelta(days=DIAS_CAMBIOS)).isoformat()
-    out = []
-    for a, local, velas in _series_en_dolares(conn, activos):
+
+    def _armar(a, local, velas):
         if not velas:
-            out.append({"asset": a, "local": local, "disponible": False})
-            continue
+            return {"asset": a, "local": local, "disponible": False}
         cierres = [v["close"] for v in velas]
-        out.append({"asset": a, "local": local, "disponible": True,
-                    "lectura": lectura(velas, media(cierres, 50), media(cierres, 200)),
-                    "cambios": cambios_desde(velas, desde)})
+        return {"asset": a, "local": local, "disponible": True,
+                "lectura": lectura(velas, media(cierres, 50), media(cierres, 200)),
+                "cambios": cambios_desde(velas, desde)}
+    return _leer_varios(conn, "cartera", activos, desde, _armar)
+
+
+def _claves(activos: list) -> list:
+    """[(asset, local)] normalizados, una vez cada uno y en el orden pedido."""
+    vistos, out = set(), []
+    for asset, local in activos:
+        clave = ((asset or "").strip().upper(), bool(local))
+        if clave[0] and clave not in vistos:
+            vistos.add(clave)
+            out.append(clave)
     return out
 
 
-def _series_en_dolares(conn, activos: list):
-    """(asset, local, velas en dólares) de cada activo de `activos` [(asset,
-    local)], una vez cada uno. La serie es la de la ficha (`serie`, con la
-    misma marca `local`)."""
-    vistos = set()
-    for asset, local in activos:
-        a = (asset or "").strip().upper()
-        clave = (a, bool(local))
-        if not a or clave in vistos:
-            continue
-        vistos.add(clave)
-        yield a, bool(local), serie(conn, a, "usd", bool(local))["velas"]
+# ─── Lo ya leído: la lectura de un activo no se recalcula si sus velas no cambiaron ──
+#
+# «Tu lista» y la radiografía leen hasta 200 activos por pedido, y cada lectura
+# (medias, RSI, ADX, Squeeze, la línea de 3 meses) cuesta ~15 ms: 3 s de cálculo
+# puro por pedido, en un servidor de UN proceso. Calculadas en cada pedido, 45
+# pedidos a la vez de una cuenta gratis lo dejaron sin contestar 5 minutos
+# (auditoría E1, 29/10). Pero las velas cambian una vez por noche: lo que se
+# calculó para uno sirve para el siguiente, de la misma persona o de otra.
+#
+# QUÉ DECIDE SI SIRVE. Todo lo que entra a la cuenta, no sólo «la fecha de la
+# última vela»:
+#   · las velas de cada ticker que `serie` puede leer para ese activo (la acción
+#     de afuera y la de BYMA): cuántas hay, la última fecha y la suma de sus
+#     precios y volúmenes. La suma ve lo que la fecha no: cuando Yahoo reescribe
+#     la historia por un split, la última fecha queda igual y cambian todos los
+#     precios de antes (`velas_diarias._historia_reescrita`);
+#   · los dólares de cada día (`fx_rates_daily`, hasta ayer: la vela de hoy no
+#     se guarda), que convierten una acción argentina;
+#   · la lista de cambios de ratio (`cambios_ratio`), que empalma la serie en pesos;
+#   · el día de hoy (`desde`: «esta semana», «el último año»).
+# Si algo de eso cambió, se calcula de nuevo. Averiguarlo para 200 activos es UNA
+# consulta (~50 ms), contra 3 s de calcularlos.
+#
+# Vive en la memoria del proceso (prod es uno solo); un reinicio la vacía y el
+# primer pedido la vuelve a llenar.
+LEIDAS_MAX = 5000
+_leidas: OrderedDict = OrderedDict()
+_leidas_candado = threading.Lock()
+
+
+def olvidar_lo_leido() -> None:
+    """Vacía lo ya leído (para las pruebas que miden el cálculo)."""
+    with _leidas_candado:
+        _leidas.clear()
+
+
+def _tickers_de(a: str) -> tuple:
+    """Los tickers que `serie` puede leer para `a` (con `local` o sin él): la
+    acción de afuera (o la cripto) y la de BYMA. La misma traducción que `serie`."""
+    from cripto import yahoo_de_cripto
+    from snapshots_job import simbolo_byma
+    import velas_diarias
+    base = a[:-3] if a.endswith(".BA") else a
+    cripto = yahoo_de_cripto(base)
+    if cripto:
+        return (cripto,)
+    return (velas_diarias.ticker_de_afuera(base), simbolo_byma(base))
+
+
+def _huellas(conn, tickers: set, desde: str) -> dict:
+    """{ticker: huella de sus velas} y, en la clave None, la de lo que comparten
+    todos (los dólares y los cambios de ratio). Ver «Lo ya leído»."""
+    from fechas import hoy_art_date
+    from fx import SQL_MEDIO_BLUE, SQL_MEDIO_MEP
+    out = {}
+    lista = sorted(tickers)
+    for i in range(0, len(lista), 400):
+        parte = lista[i:i + 400]
+        for r in conn.execute(
+                f"""SELECT symbol, COUNT(*) AS n, MAX(date) AS ultima, SUM(close) AS c,
+                           SUM(COALESCE(high, 0)) AS h, SUM(COALESCE(low, 0)) AS l,
+                           SUM(COALESCE(open, 0)) AS o, SUM(COALESCE(volume, 0)) AS v
+                      FROM velas_diarias WHERE symbol IN ({",".join("?" * len(parte))})
+                     GROUP BY symbol""", parte).fetchall():
+            out[r["symbol"]] = (r["n"], r["ultima"], r["c"], r["h"], r["l"], r["o"], r["v"])
+    dolar = conn.execute(
+        f"SELECT COUNT(*) AS n, MAX(date) AS ultima, SUM({SQL_MEDIO_MEP}) AS mep, "
+        f"SUM({SQL_MEDIO_BLUE}) AS blue FROM fx_rates_daily WHERE date < ?", (hoy_art_date().isoformat(),)).fetchone()
+    ratio = conn.execute(
+        "SELECT COUNT(*) AS n, MAX(actualizado) AS a, SUM(en_la_serie) AS s, "
+        "SUM(COALESCE(factor, 0) + COALESCE(factor_medido, 0)) AS f FROM cambios_ratio").fetchone()
+    out[None] = (tuple(dolar), tuple(ratio), desde)
+    return out
+
+
+def _leer_varios(conn, que: str, activos: list, desde: str, armar) -> list:
+    """`armar(asset, local, velas en dólares)` de cada activo de `activos`
+    [(asset, local)], una vez cada uno, con lo ya leído si sus velas no
+    cambiaron (ver «Lo ya leído»). `que` separa las formas de respuesta
+    ('cartera', 'lista'). Cada pedido recibe su copia: lo que uno le agregue no
+    lo ve el siguiente."""
+    claves = _claves(activos)
+    if not claves:
+        return []
+    tickers = {t for a, _ in claves for t in _tickers_de(a)}
+    huellas = _huellas(conn, tickers, desde)
+    out = []
+    for a, local in claves:
+        llave = (que, a, local, huellas[None], tuple(huellas.get(t) for t in _tickers_de(a)))
+        with _leidas_candado:
+            hecho = _leidas.get(llave)
+            if hecho is not None:
+                _leidas.move_to_end(llave)
+        if hecho is None:
+            hecho = armar(a, local, serie(conn, a, "usd", local)["velas"])
+            with _leidas_candado:
+                _leidas[llave] = hecho
+                while len(_leidas) > LEIDAS_MAX:
+                    _leidas.popitem(last=False)
+        out.append(copy.deepcopy(hecho))
+    return out
 
 
 # ─── Tu lista (cartera + watchlist) con su lectura técnica ──────────────────
@@ -777,21 +879,21 @@ def para_la_lista(conn, activos: list) -> list:
     al máximo del año), `linea`: los cierres de los últimos 3 meses para la
     línea chica de la fila, y `ultimo_cambio` (ver `_ultimo_cambio`). Sin
     velas: `disponible` False, nunca se inventa. Cuánto pesa cada uno lo pone
-    la pantalla, con la valuación de la Cartera."""
+    la pantalla, con la valuación de la Cartera. Lo ya leído no se vuelve a
+    calcular (`_leer_varios`)."""
     from fechas import hoy_art_date
     desde = (hoy_art_date() - timedelta(days=DIAS_ULTIMO_CAMBIO)).isoformat()
-    out = []
-    for a, local, velas in _series_en_dolares(conn, activos):
+
+    def _armar(a, local, velas):
         if not velas:
-            out.append({"asset": a, "local": local, "disponible": False})
-            continue
+            return {"asset": a, "local": local, "disponible": False}
         cierres = [v["close"] for v in velas]
         linea = [{"d": v["date"], "c": estructura.precio_redondo(v["close"])}
                  for v in velas[_desde_dias(velas, DIAS_LINEA):]]
-        out.append({"asset": a, "local": local, "disponible": True,
-                    "lectura": lectura(velas, media(cierres, 50), media(cierres, 200)),
-                    "linea": linea, "ultimo_cambio": _ultimo_cambio(velas, desde)})
-    return out
+        return {"asset": a, "local": local, "disponible": True,
+                "lectura": lectura(velas, media(cierres, 50), media(cierres, 200)),
+                "linea": linea, "ultimo_cambio": _ultimo_cambio(velas, desde)}
+    return _leer_varios(conn, "lista", activos, desde, _armar)
 
 
 # ─── Señales para las alertas técnicas ───────────────────────────────────────

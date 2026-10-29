@@ -11701,6 +11701,67 @@ class CarteraTecnicaIn(BaseModel):
     activos: List[ActivoTecnicoIn] = Field(default_factory=list, max_length=MAX_ACTIVOS_CARTERA)
 
 
+# ─── Freno por persona para las lecturas técnicas de muchos activos ──────────
+# «Tu lista», la radiografía y el diario de operaciones leen hasta 200 activos
+# por pedido. Lo ya leído se guarda (tecnico._leer_varios), pero el PRIMER
+# pedido de cada activo se calcula, y el servidor es un solo proceso con 40
+# lugares: 45 pedidos a la vez de una cuenta gratis lo dejaron 5 minutos sin
+# contestarle a nadie (auditoría E1, 29/10). El tope de 200 era de TAMAÑO (por
+# pedido); esto es el de FRECUENCIA (por persona): hasta
+# `FRENO_TECNICO_POR_MINUTO` pedidos por minuto entre los tres y hasta
+# `FRENO_TECNICO_A_LA_VEZ` corriendo al mismo tiempo. Lo que pasa de ahí
+# contesta 429 en el momento: esperar en una fila ocuparía otro de los 40
+# lugares, que es justo lo que traba al servidor. Una pantalla normal pide uno
+# por vez (Tu lista, la Cartera y Movimientos piden uno cada una al abrir).
+# Es de la persona que pide (el asesor mirando un cliente gasta el suyo), en
+# la memoria del proceso como `_rate_store`, y con candado: contar y anotar
+# son un solo paso (sin él, 45 pedidos juntos contaban todos «0»).
+FRENO_TECNICO_POR_MINUTO = 30
+FRENO_TECNICO_A_LA_VEZ = 3
+_freno_hechos: dict = {}       # quién → deque de instantes (los del último minuto)
+_freno_corriendo: dict = {}    # quién → cuántos están corriendo
+_freno_candado = threading.Lock()
+_freno_reloj = time.monotonic
+
+
+def _freno_reiniciar() -> None:
+    with _freno_candado:
+        _freno_hechos.clear()
+        _freno_corriendo.clear()
+
+
+@contextmanager
+def _freno_tecnico(request: Request, uid: int):
+    from collections import deque
+    quien = getattr(request.state, "rendi_auth_uid", None) or uid
+    ahora = _freno_reloj()
+    with _freno_candado:
+        hechos = _freno_hechos.setdefault(quien, deque())
+        while hechos and ahora - hechos[0] >= 60:
+            hechos.popleft()
+        if len(hechos) >= FRENO_TECNICO_POR_MINUTO:
+            espera = max(1, int(60 - (ahora - hechos[0])) + 1)
+            raise HTTPException(429, "Pediste muchas lecturas seguidas. Esperá un minuto y probá de nuevo.",
+                                headers={"Retry-After": str(espera)})
+        if _freno_corriendo.get(quien, 0) >= FRENO_TECNICO_A_LA_VEZ:
+            raise HTTPException(429, "Ya estamos preparando tus lecturas. Esperá unos segundos y probá de nuevo.",
+                                headers={"Retry-After": "5"})
+        hechos.append(ahora)
+        _freno_corriendo[quien] = _freno_corriendo.get(quien, 0) + 1
+        if len(_freno_hechos) > 10_000:
+            for k in [k for k, v in _freno_hechos.items() if not v and k not in _freno_corriendo]:
+                del _freno_hechos[k]
+    try:
+        yield
+    finally:
+        with _freno_candado:
+            n = _freno_corriendo.get(quien, 1) - 1
+            if n > 0:
+                _freno_corriendo[quien] = n
+            else:
+                _freno_corriendo.pop(quien, None)
+
+
 def _lecturas_tecnicas(body: CarteraTecnicaIn, leer) -> dict:
     """Separa lo que es un ticker de lo que no (un fondo con espacios en el
     nombre) y lee lo válido con `leer(conn, [(asset, local)])`. Lo inválido
@@ -11716,7 +11777,7 @@ def _lecturas_tecnicas(body: CarteraTecnicaIn, leer) -> dict:
 
 
 @app.post("/api/tecnico/cartera")
-def post_tecnico_cartera(body: CarteraTecnicaIn, uid: int = Depends(get_effective_user)):
+def post_tecnico_cartera(body: CarteraTecnicaIn, request: Request, uid: int = Depends(get_effective_user)):
     """La lectura técnica en dólares de varios activos de una vez, para la
     radiografía de la Cartera (tecnico.para_la_cartera). La pantalla manda sus
     activos con la marca `local` de la ficha. Un símbolo que no es un ticker
@@ -11730,20 +11791,23 @@ def post_tecnico_cartera(body: CarteraTecnicaIn, uid: int = Depends(get_effectiv
     import tecnico
     import senales_semana
     from fechas import hoy_art_date
-    out = _lecturas_tecnicas(body, tecnico.para_la_cartera)
-    with db_abierta() as conn:
-        out["reparto"] = senales_semana.reparto(conn, uid, hoy_art_date())
-    return out
+    with _freno_tecnico(request, uid):
+        out = _lecturas_tecnicas(body, tecnico.para_la_cartera)
+        with db_abierta() as conn:
+            out["reparto"] = senales_semana.reparto(conn, uid, hoy_art_date())
+        return out
 
 
 @app.post("/api/tecnico/lista")
-def post_tecnico_lista(body: CarteraTecnicaIn, uid: int = Depends(get_effective_user)):
+def post_tecnico_lista(body: CarteraTecnicaIn, request: Request, uid: int = Depends(get_effective_user)):
     """«Tu lista, con su lectura técnica» (inicio → Watchlist → «Ver como
     tablero»): lo que tenés y lo que seguís, en dólares (tecnico.para_la_lista).
     La pantalla manda lo que sigue (su watchlist) con la marca `local` de la
     ficha; lo que TENÉS lo pone el servidor. Mismo tope y misma regla que
     /api/tecnico/cartera: un símbolo que no es un ticker vuelve «sin lectura»
-    sin tirar abajo el resto.
+    sin tirar abajo el resto. El tope (`MAX_ACTIVOS_CARTERA`) es de LECTURAS:
+    lo tuyo más lo que seguís; lo tuyo va primero (auditoría E1: con 200
+    seguidos más lo que tenés, se leían más de 200).
 
     `tenencias`: [{asset, local, peso, tipo}] — lo que tenés y cuánto pesa sobre
     toda tu plata, con la valuación del servidor (`senales_semana.cartera`, LA
@@ -11751,15 +11815,18 @@ def post_tecnico_lista(body: CarteraTecnicaIn, uid: int = Depends(get_effective_
     se calcula en la pantalla). De cada una viene también su lectura."""
     import tecnico
     import senales_semana
-    with db_abierta() as conn:
-        car = senales_semana.cartera(conn, uid)
-    tuyas = list(car["tenencias"])
-    out = _lecturas_tecnicas(
-        body, lambda conn, pedidos: tecnico.para_la_lista(conn, tuyas + [k for k in pedidos if k not in car["tenencias"]]))
-    out["tenencias"] = [
-        {"asset": a, "local": l, "peso": senales_semana.peso(car, a, l), "tipo": car["tipos"].get((a, l)) or None}
-        for (a, l), v in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
-    return out
+    with _freno_tecnico(request, uid):
+        with db_abierta() as conn:
+            car = senales_semana.cartera(conn, uid)
+        tuyas = [k for k, _ in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
+        out = _lecturas_tecnicas(
+            body, lambda conn, pedidos: tecnico.para_la_lista(
+                conn, (tuyas + [k for k in pedidos if k not in car["tenencias"]])[:MAX_ACTIVOS_CARTERA]))
+        out["lecturas"] = out["lecturas"][:MAX_ACTIVOS_CARTERA]
+        out["tenencias"] = [
+            {"asset": a, "local": l, "peso": senales_semana.peso(car, a, l), "tipo": car["tipos"].get((a, l)) or None}
+            for (a, l), v in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
+        return out
 
 
 @app.get("/api/tus-senales")
@@ -11810,23 +11877,35 @@ class TendenciasEnFechasIn(BaseModel):
 
 
 @app.post("/api/tecnico/en-fechas")
-def tecnico_en_fechas(data: TendenciasEnFechasIn, uid: int = Depends(get_effective_user)):
+def tecnico_en_fechas(data: TendenciasEnFechasIn, request: Request, uid: int = Depends(get_effective_user)):
     """¿Cómo estaba la tendencia de fondo de cada activo en cada fecha? Para el
     diario de operaciones: la del día en que compraste cada operación cerrada.
     Misma regla y misma serie que la ficha (tecnico.tendencia_del_dia).
-    {resultados: {id: {tendencia, fecha, precio, media200, dist} | {tendencia: None, motivo}}}"""
+    {resultados: {id: {tendencia, fecha, precio, media200, dist} | {tendencia: None, motivo}}}
+
+    Hasta 2000 operaciones, pero de hasta `MAX_ACTIVOS_CARTERA` activos
+    distintos: lo que cuesta es leer cada serie, no cada fecha (auditoría E1:
+    2000 operaciones de 2000 activos eran 2000 series). Las de más contestan
+    `motivo: 'tope'`."""
     import tecnico
     pedidos = []
     out = {}
+    series = set()
     for it in data.items:
         sym = (it.asset or "").strip().upper()
         if not _SYMBOL_RE.match(sym):
             out[it.id] = {"tendencia": None, "motivo": "sin_velas"}
             continue
+        clave = (sym, bool(it.local))
+        if clave not in series and len(series) >= MAX_ACTIVOS_CARTERA:
+            out[it.id] = {"tendencia": None, "motivo": "tope"}
+            continue
+        series.add(clave)
         pedidos.append({"id": it.id, "asset": sym, "local": it.local, "fecha": it.fecha})
-    with db_abierta() as conn:
-        out.update(tecnico.tendencias_en_fechas(conn, pedidos))
-    return {"resultados": out}
+    with _freno_tecnico(request, uid):
+        with db_abierta() as conn:
+            out.update(tecnico.tendencias_en_fechas(conn, pedidos))
+        return {"resultados": out}
 
 
 @app.get("/api/tecnico/{asset}/peso")

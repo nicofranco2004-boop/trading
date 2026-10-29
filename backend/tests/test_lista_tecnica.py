@@ -204,6 +204,9 @@ class ListaTecnicaTest(unittest.TestCase):
         self.assertEqual(x["ultimo_cambio"]["sentido"], "arriba")
         self.assertEqual(x["ultimo_cambio"]["fecha"], self.dias[n - 3].isoformat())
 
+        # La cuenta cambia sin que cambien las velas: lo ya leído (tecnico._leer_varios)
+        # contestaría lo de antes, que es lo correcto en producción.
+        tecnico.olvidar_lo_leido()
         with mock.patch.object(tecnico, "cambios_desde", lambda v, d: []):
             self.assertIsNone(self._lista([{"asset": "MSFT"}])[("MSFT", False)]["ultimo_cambio"])
 
