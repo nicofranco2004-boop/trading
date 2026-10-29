@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { HelpCircle } from 'lucide-react'
+import { ESPACIO_ABAJO_CELULAR } from './mobile/espacioAbajo'
 
 /**
  * InfoTooltip — small (?) icon that opens a popover with explanation.
@@ -71,6 +72,11 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
   // `estiloDeCorrimiento`.
   const [corrimiento, setCorrimiento] = useState(0)
   const corrimientoRef = useRef(0)
+  // Abajo o arriba del «?». Abajo, en el celular, puede caer detrás de la barra
+  // de pestañas y de los botones flotantes (auditoría D8: la ayuda de «Beta» de
+  // la ficha no se leía): si no entra abajo y sí arriba, se da vuelta.
+  const [lado, setLado] = useState(side)
+  useLayoutEffect(() => { if (!open) setLado(side) }, [open, side])
 
   useLayoutEffect(() => {
     if (!open) {
@@ -87,6 +93,12 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
       const izq = r.left - corrimientoRef.current
       const der = r.right - corrimientoRef.current
       const ancho = anchoVisible()
+      if (side === 'bottom') {
+        const alto = window.innerHeight || document.documentElement?.clientHeight || 0
+        const libreAbajo = alto - (ancho < 768 ? ESPACIO_ABAJO_CELULAR : 0)
+        const boton = ref.current?.getBoundingClientRect()
+        if (alto && boton && r.bottom > libreAbajo && boton.top - r.height - 4 > 0) setLado('top')
+      }
       let d = 0
       if (der > ancho - MARGEN) d = (ancho - MARGEN) - der
       if (izq + d < MARGEN) d = MARGEN - izq
@@ -139,7 +151,7 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
           className={`absolute z-30 ${ancho} max-w-[80vw] px-3 py-2.5 rounded-lg bg-bg-1 border border-line shadow-lg text-xs leading-relaxed text-ink-1 space-y-1.5 ${
             align === 'center' ? 'left-1/2 -translate-x-1/2'
               : align === 'right' ? 'right-0' : 'left-0'
-          } ${side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}
+          } ${lado === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}
           role="tooltip"
         >
           {children}

@@ -24,6 +24,7 @@ import {
   LayoutDashboard, Users, Newspaper,
 } from 'lucide-react'
 import BottomSheet from './BottomSheet'
+import { ESPACIO_ABAJO_CELULAR } from './espacioAbajo'
 import { track } from '../../utils/track'
 import { prefetchRoute } from '../../utils/routePrefetch'
 import { useAuth } from '../../contexts/AuthContext'
@@ -57,6 +58,8 @@ const ADVISOR_TABS = [
   { to: '/mas',        label: 'Más',       icon: MoreHorizontal },
 ]
 
+const ESPACIO_STYLE = { height: `calc(${ESPACIO_ABAJO_CELULAR}px + env(safe-area-inset-bottom, 0px))` }
+
 export default function MobileTabBar() {
   const [fabOpen, setFabOpen] = useState(false)
   const { user } = useAuth()
@@ -68,7 +71,7 @@ export default function MobileTabBar() {
   if (atOwnLevel) {
     return (
       <>
-        <div aria-hidden className="h-[64px]" />
+        <div aria-hidden data-espacio-abajo="" style={ESPACIO_STYLE} />
         <nav
           className="fixed bottom-0 left-0 right-0 z-40 bg-bg-0/95 backdrop-blur-md border-t border-line"
           role="navigation"
@@ -85,8 +88,10 @@ export default function MobileTabBar() {
 
   return (
     <>
-      {/* Spacer para que el contenido no quede tapado por la tab bar */}
-      <div aria-hidden className="h-[64px]" />
+      {/* Lo que se deja libre al final: la barra Y los botones flotantes que se
+          apoyan encima (espacioAbajo.js; auditoría D8: con 64 px el final de
+          cada página quedaba debajo de Mervall-E y WhatsApp). */}
+      <div aria-hidden data-espacio-abajo="" style={ESPACIO_STYLE} />
 
       <nav
         className="fixed bottom-0 left-0 right-0 z-40 bg-bg-0/95 backdrop-blur-md border-t border-line"
