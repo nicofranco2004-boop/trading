@@ -34,6 +34,7 @@
 
 import { cloneElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { LineChart, Maximize2, Minimize2, RotateCcw, Ruler, Trash2 } from 'lucide-react'
+import { usePrivacy } from '../../contexts/PrivacyContext'
 import AssetMiniChart from '../home/AssetMiniChart'
 import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica } from './BarraGrafico'
 import CapaFibonacci, { COLOR_FIB, ID_FIB_AUTO, TarjetaFibonacci, preciosDeLaCapa, trazosDelFibonacci, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
@@ -139,6 +140,7 @@ export default function LecturaTecnica({
   // La ficha pone el título de la sección («Análisis técnico») y pasa null.
   titulo = 'Análisis técnico',
 }) {
+  const { hidden: oculto } = usePrivacy()
   const [moneda, setMoneda] = useState('usd')
   const [rango, setRango] = useState('1a')
   const [datos, setDatos] = useState({ usd: undefined, ars: undefined })
@@ -520,7 +522,7 @@ export default function LecturaTecnica({
     ? { valor: moneda === 'usd' ? tenencia.valorUsd : tenencia.valorUsd * (tenencia.tc || 0) } : null
   const cuanto = tarjetasMovimiento(actual.movimiento, {
     moneda, precio: (x) => fmtPrecio(x, moneda), tenencia: tenenciaEnMoneda,
-    peso: tenencia?.valorUsd > 0 ? pesoEnCartera : null,
+    peso: tenencia?.valorUsd > 0 ? pesoEnCartera : null, oculto,
   })
 
   const botones = botonesDeLaBarra({

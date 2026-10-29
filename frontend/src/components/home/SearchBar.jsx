@@ -15,6 +15,7 @@ import { useNavigate } from 'react-router-dom'
 import { Search, X, CornerDownLeft, ArrowUp, ArrowDown, Plus, Check } from 'lucide-react'
 import { api } from '../../utils/api'
 import AssetLogo from '../AssetLogo'
+import { usePrivacy, OCULTO } from '../../contexts/PrivacyContext'
 import AssetTypeBadge from '../AssetTypeBadge'
 import { destinoDeTicker } from '../../utils/buscadorRapido'
 import { notifyWatchlistChanged, subscribeWatchlistChanged } from '../../utils/watchlistEvents'
@@ -382,6 +383,7 @@ function Shortcut({ icon, text, label }) {
 }
 
 function ResultRow({ ticker, active, highlight, onPick, onHover, inWatchlist = false, actionDisabled = false, onAction }) {
+  const { hidden: oculto } = usePrivacy()
   return (
     <div
       onMouseEnter={onHover}
@@ -409,7 +411,7 @@ function ResultRow({ ticker, active, highlight, onPick, onHover, inWatchlist = f
           <div className="text-[12.5px] text-ink-2 mt-0.5 font-medium">
             En posición
             {ticker.quantity > 0 && <> · {ticker.quantity.toLocaleString('es-AR', { maximumFractionDigits: 4 })} {ticker.type === 'crypto' ? 'unid.' : 'acc.'}</>}
-            {ticker.invested > 0 && <> · invertido {fmtUsd(ticker.invested)}</>}
+            {ticker.invested > 0 && <> · invertido {oculto ? OCULTO : fmtUsd(ticker.invested)}</>}
           </div>
         )}
       </div>

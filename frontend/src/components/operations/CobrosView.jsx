@@ -30,6 +30,7 @@ import Panel from '../Panel'
 import EmptyState from '../EmptyState'
 import { api } from '../../utils/api'
 import { fmtMoney, pct, pctSigned } from '../../utils/format'
+import { usePrivacy, OCULTO } from '../../contexts/PrivacyContext'
 import { useCurrency, pickFinancialRate } from '../../contexts/CurrencyContext'
 import { setBrokersRegistry } from '../../utils/valuation'
 import { upcomingBondEvents, normalizeBackendEvents } from '../../utils/upcomingEvents'
@@ -56,9 +57,11 @@ function guardarVista(v) {
   try { localStorage.setItem('rendi_cobros_vista', v) } catch { /* sin almacenamiento */ }
 }
 
-/** US$ con decimales sólo cuando el número es chico. */
-function usd(v) {
+/** US$ con decimales sólo cuando el número es chico. Con «Ocultar saldos»
+ *  prendido (`oculto`), la máscara: auditorías A3/D4, 29/10. */
+function usd(v, oculto = false) {
   if (v == null) return '—'
+  if (oculto) return OCULTO
   return fmtMoney(v, 'USD', { decimals: Math.abs(v) >= 1000 ? 0 : 2 })
 }
 
@@ -72,7 +75,7 @@ function Kpi({ label, children, sub, subClass = 'text-ink-2' }) {
   )
 }
 
-function Barras({ filas, vista, anio }) {
+function Barras({ filas, vista, anio, oculto = false }) {
   const max = Math.max(1, ...filas.map(f => Math.max(f.cobrado + f.estimado, f.anterior || 0)))
   // 88 % y no 100 %: arriba de la barra más alta queda lugar para su monto.
   const alto = (v) => `${Math.max(0, (v / max) * 88)}%`
@@ -88,9 +91,9 @@ function Barras({ filas, vista, anio }) {
       >
         {filas.map(f => {
           const titulo = [
-            `${f.etiqueta}: ${usd(f.cobrado)} cobrado`,
-            f.estimado > 0 ? `${usd(f.estimado)} estimado` : null,
-            f.anterior != null ? `${usd(f.anterior)} en ${anio - 1}` : null,
+            `${f.etiqueta}: ${usd(f.cobrado, oculto)} cobrado`,
+            f.estimado > 0 ? `${usd(f.estimado, oculto)} estimado` : null,
+            f.anterior != null ? `${usd(f.anterior, oculto)} en ${anio - 1}` : null,
           ].filter(Boolean).join(' · ')
           return (
             <div key={f.clave} className="flex-1 min-w-0 h-full flex items-end justify-center gap-px sm:gap-0.5" title={titulo}>
@@ -98,7 +101,7 @@ function Barras({ filas, vista, anio }) {
                 <div className="w-2/5 bg-ink-3/40 rounded-t-sm" style={{ height: alto(f.anterior) }} />
               )}
               <div className={`${f.anterior != null ? 'w-2/5' : 'w-3/5'} h-full flex flex-col justify-end`}>
-                {conMonto(f.cobrado + f.estimado) && (
+                {!oculto && conMonto(f.cobrado + f.estimado) && (
                   <div className="flex justify-center mb-0.5">
                     <span className="whitespace-nowrap text-[10px] leading-none text-ink-1 tabular">
                       {Math.round(f.cobrado + f.estimado).toLocaleString('es-AR')}
@@ -143,6 +146,7 @@ function Leyenda({ vista, anio }) {
 }
 
 export default function CobrosView({ conTitulo = false }) {
+  const { hidden: oculto } = usePrivacy()
   const { valuationDollar } = useCurrency()
   const [vista, setVistaEstado] = useState(leerVista)
   const setVista = (v) => { setVistaEstado(v); guardarVista(v) }
@@ -280,16 +284,16 @@ export default function CobrosView({ conTitulo = false }) {
             : `Sin cobros en el mismo período de ${anio - 1}`}
           subClass={variacion == null ? 'text-ink-2' : variacion >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}
         >
-          {usd(resumen.total_anio)}
+          {usd(resumen.total_anio, oculto)}
         </Kpi>
         <Kpi
           label="Próximos 12 meses (estimado)"
           sub={falloEstimado ? 'No se pudo calcular: no llegaron tus posiciones u operaciones. Probá recargar.'
             : !estimado ? 'Calculando…'
             : pctCartera != null ? `${pct(pctCartera, 1)} de tu cartera por año`
-            : `${usd(estimado.total / 12)} por mes`}
+            : `${usd(estimado.total / 12, oculto)} por mes`}
         >
-          {estimado ? usd(estimado.total) : falloEstimado ? '—' : '…'}
+          {estimado ? usd(estimado.total, oculto) : falloEstimado ? '—' : '…'}
         </Kpi>
         <Kpi
           label="Próximo cobro"
@@ -305,7 +309,7 @@ export default function CobrosView({ conTitulo = false }) {
                 : 'estimado por lo que te pagó el año pasado'}`}
         >
           {proximo
-            ? <span className="text-xl">{proximo.activo} · {proximo.usd != null ? usd(proximo.usd) : 'monto a confirmar'}</span>
+            ? <span className="text-xl">{proximo.activo} · {proximo.usd != null ? usd(proximo.usd, oculto) : 'monto a confirmar'}</span>
             : '—'}
         </Kpi>
       </div>
@@ -320,7 +324,7 @@ export default function CobrosView({ conTitulo = false }) {
             </h3>
             <Leyenda vista={vista} anio={anio} />
           </div>
-          <Barras filas={filas} vista={vista} anio={anio} />
+          <Barras filas={filas} vista={vista} anio={anio} oculto={oculto} />
           <p className="text-xs text-ink-2">
             Lo punteado es lo que falta cobrar este año según el estimado.
           </p>
@@ -340,12 +344,12 @@ export default function CobrosView({ conTitulo = false }) {
               <div className="h-2 bg-bg-2 rounded-full overflow-hidden">
                 <div className="h-2 bg-rendi-accent" style={{ width: `${Math.max(0, (a.usd / maxActivo) * 100)}%` }} />
               </div>
-              <p className="tabular font-semibold text-ink-0 text-right">{usd(a.usd)}</p>
+              <p className="tabular font-semibold text-ink-0 text-right">{usd(a.usd, oculto)}</p>
             </div>
           ))}
           {estimado && estimado.total > 0 && (
             <p className="mt-auto pt-3 text-sm text-ink-1">
-              Lo estimado te da <span className="font-semibold text-ink-0 tabular">{usd(estimado.total / 12)} por mes</span>.
+              Lo estimado te da <span className="font-semibold text-ink-0 tabular">{usd(estimado.total / 12, oculto)} por mes</span>.
             </p>
           )}
         </Panel>
@@ -355,7 +359,7 @@ export default function CobrosView({ conTitulo = false }) {
         <Panel padding="sm">
           <p className="text-xs text-ink-2 leading-relaxed">
             <span className="font-medium text-ink-1">Falta una parte: </span>
-            {resumen.mixtos.sinSeparar === 1 ? 'un pago de bono trae' : `${resumen.mixtos.sinSeparar} pagos de bonos traen`} el cupón y la amortización juntos (<span className="tabular">{usd(resumen.mixtos.usdSinSeparar)}</span> en total) y el cronograma no dice cuánto es cupón, así que no {resumen.mixtos.sinSeparar === 1 ? 'entra' : 'entran'} en lo cobrado. Contarlos enteros sumaría como renta el capital que te devolvieron.
+            {resumen.mixtos.sinSeparar === 1 ? 'un pago de bono trae' : `${resumen.mixtos.sinSeparar} pagos de bonos traen`} el cupón y la amortización juntos (<span className="tabular">{usd(resumen.mixtos.usdSinSeparar, oculto)}</span> en total) y el cronograma no dice cuánto es cupón, así que no {resumen.mixtos.sinSeparar === 1 ? 'entra' : 'entran'} en lo cobrado. Contarlos enteros sumaría como renta el capital que te devolvieron.
           </p>
         </Panel>
       )}
@@ -373,7 +377,7 @@ export default function CobrosView({ conTitulo = false }) {
               <> {estimado.sinHistoria.join(', ')} {estimado.sinHistoria.length === 1 ? 'tiene' : 'tienen'} un dividendo anunciado pero no {estimado.sinHistoria.length === 1 ? 'entra' : 'entran'}: todavía no hay cobros {estimado.sinHistoria.length === 1 ? 'suyos' : 'de ellos'} anotados para saber cada cuánto paga{estimado.sinHistoria.length === 1 ? '' : 'n'}.</>
             )}
             {estimado.sinActivoUsd > 0 && (
-              <> Tampoco entran <span className="tabular">{usd(estimado.sinActivoUsd)}</span> de cobros sin activo: tu broker no dice de qué inversión son.</>
+              <> Tampoco entran <span className="tabular">{usd(estimado.sinActivoUsd, oculto)}</span> de cobros sin activo: tu broker no dice de qué inversión son.</>
             )}
             {estimado.cuponesSinDolar > 0 && (
               <> Faltan cupones en pesos: no llegó el dólar de hoy para pasarlos.</>
