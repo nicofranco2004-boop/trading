@@ -413,6 +413,71 @@ class TusSenalesTest(unittest.TestCase):
         self.assertIsNone(self.client.get("/api/tecnico/MSFT/peso", headers=self.h).json()["peso"],
                           "lo que sólo seguís no pesa nada en tu plata")
 
+    def test_el_efectivo_y_los_plazos_fijos_son_tu_plata(self):
+        # A0 (auditoría 29/10): el efectivo se guarda con el saldo en `invested` y
+        # sin cantidad, y `cartera()` pedía «cantidad > 0»: la caja nunca entraba y
+        # con US$ 1.500 en NVDA + US$ 1.500 en efectivo decía «100 % alcista» y
+        # «NVDA es el 100 % de tu cartera». El efectivo se carga por donde lo carga
+        # la pantalla (POST /api/cash/flow), en dólares y en pesos, y un plazo fijo
+        # por POST /api/plazos-fijos. Lo esperado sale del valuador que ya valúa la
+        # cartera entera (`compute_live_portfolio_value`, Reportes y el ✦ del
+        # inicio) más los plazos fijos (`_pf_value` al MEP), no de esta cuenta.
+        from snapshots_job import _LIVE_VALUE_CACHE, compute_live_portfolio_value, read_last_prices
+        self._velas(hoy_art_date())
+        self._post("/api/cash/flow", {"broker_name": "Schwab", "direction": "deposit", "amount": 1500})
+        self._post("/api/cash/flow", {"broker_name": "IOL", "direction": "deposit", "amount": 500_000})
+        self._post("/api/plazos-fijos", {"banco": "Galicia", "capital": 1_000_000, "moneda": "ARS", "tasa": 0.3,
+                                         "fecha_inicio": hoy_art_date().isoformat(), "plazo_dias": 30})
+        with main.db_abierta() as conn:
+            caja = conn.execute("SELECT COUNT(*) FROM positions WHERE user_id=? AND is_cash=1 AND invested > 0",
+                                (self.uid,)).fetchone()[0]
+            self.assertEqual(caja, 2, "las dos cajas quedaron guardadas")
+            _LIVE_VALUE_CACHE.clear()
+            precios = read_last_prices(conn, [r[0] for r in conn.execute("SELECT symbol FROM asset_last_price")])
+            posiciones = compute_live_portfolio_value(conn, self.uid, MEP, {}, precios=precios)
+            pfs = sum(main._pf_value(dict(r))["valor_hoy"] / MEP for r in conn.execute(
+                "SELECT * FROM plazos_fijos WHERE user_id=? AND closed_at IS NULL", (self.uid,)))
+        total = posiciones + pfs
+        # NVDA y KO: 10 × US$ 150 cada una (el último precio guardado).
+        self.assertAlmostEqual(self.client.get("/api/tecnico/NVDA/peso", headers=self.h).json()["peso"],
+                               1500 / total, places=9, msg="la ficha: el peso sobre TODA tu plata")
+        lista = self.client.post("/api/tecnico/lista", json={"activos": []}, headers=self.h).json()
+        pesos = {t["asset"]: t["peso"] for t in lista["tenencias"]}
+        self.assertAlmostEqual(pesos["KO"], 1500 / total, places=9, msg="Tu lista")
+        efectivo_y_pf = 1500 + 500 + pfs
+        self.assertAlmostEqual(sum(pesos.values()), 1 - efectivo_y_pf / total, places=9,
+                               msg="lo que falta para el 100 % es el efectivo y el plazo fijo")
+        cartera = self._cartera_pide()
+        semana = self.client.get("/api/tus-senales", headers=self.h).json()
+        for r in (cartera, semana["alcista"]):
+            self.assertEqual(r["grupos"]["sin"]["nombres"], ["efectivo", "plazos fijos"], "de más a menos plata (US$ 2.000 contra ~US$ 1.000)")
+            self.assertAlmostEqual(r["grupos"]["sin"]["fraccion"], efectivo_y_pf / total, places=9)
+        self.assertEqual(semana["alcista"]["grupos"], cartera["grupos"])
+        self.assertTrue(all(abs(x["peso"] - pesos[x["asset"]]) < 1e-12 for x in semana["senales"] if x["tenes"]),
+                        "Señales: el mismo peso")
+
+    def test_mitad_en_efectivo_es_la_mitad_alcista(self):
+        # El caso de la auditoría, en números redondos: NVDA (alcista) US$ 1.500 +
+        # US$ 1.500 en efectivo en el mismo broker = 50 %, y NVDA pesa la mitad.
+        hoy = hoy_art_date()
+        self.yahoo = YahooFalso(hoy)
+        p = mock.patch("pricing.yahoo._historia", self.yahoo)
+        p.start()
+        self._p.append(p)
+        self._post("/api/brokers", {"name": "Schwab", "currency": "USD"})
+        self._post("/api/positions", {"broker": "Schwab", "asset": "NVDA", "quantity": 10, "buy_price": 140,
+                                      "asset_type": "STOCK"})
+        self._post("/api/cash/flow", {"broker_name": "Schwab", "direction": "deposit", "amount": 1500})
+        with main.db_abierta() as conn:
+            conn.execute("INSERT INTO asset_last_price (symbol, price, updated_at) VALUES ('NVDA', 150.0, datetime('now'))")
+            conn.commit()
+        self.yahoo.precios["NVDA"] = lambda i, d: 100 + i * 0.07
+        main._run_velas_diarias_job()
+        r = self.client.post("/api/tecnico/cartera", json={"activos": [{"asset": "NVDA"}]}, headers=self.h).json()
+        self.assertEqual(r["reparto"]["pct"], 50)
+        self.assertEqual(r["reparto"]["grupos"]["sin"]["nombres"], ["efectivo"])
+        self.assertAlmostEqual(self.client.get("/api/tecnico/NVDA/peso", headers=self.h).json()["peso"], 0.5, places=9)
+
     def test_sin_nada_con_lectura_no_hay_porcentaje(self):
         # Sólo un bono: no hay tendencia que medir. Ni la Cartera ni la pestaña
         # inventan un 0 % (la pantalla lo dice con palabras).

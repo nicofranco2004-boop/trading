@@ -167,18 +167,15 @@ def cartera(conn, uid: int, cedears=None, dolar=None) -> dict:
     valor_usd, 'total': valor_usd}. Efectivo, bonos y plazos fijos suman al
     total (son plata tuya) pero no tienen tendencia: van a `sin_medir` (que es
     efectivo + plazos fijos) o, los bonos, a su propia tenencia sin lectura.
-    Valor de cada lote = el motor del servidor (`compute_broker_value_usd`) con
-    el último precio guardado."""
+    Las posiciones y su valor lote por lote salen del valuador de la cartera
+    entera (`snapshots_job.leer_cartera` + `valuar_lotes`, los mismos de
+    `compute_live_portfolio_value`) con el último precio guardado: no hay otra
+    regla de qué es «tu plata» (A0, 29/10: acá se filtraba por cantidad y el
+    efectivo, que no tiene, quedaba afuera)."""
     import main
-    from snapshots_job import (_broker_name_sets, build_price_symbols, compute_broker_value_usd,
-                               read_last_prices)
+    from snapshots_job import _broker_name_sets, build_price_symbols, leer_cartera, read_last_prices, valuar_lotes
     cedears = _cedears() if cedears is None else cedears
-    brokers = [dict(r) for r in conn.execute(
-        "SELECT id, name, currency, parent_broker_id FROM brokers WHERE user_id=?", (uid,)).fetchall()]
-    positions = [dict(r) for r in conn.execute(
-        "SELECT id, broker, asset, asset_type, is_cash, invested, quantity, commissions, "
-        "price_override, currency FROM positions WHERE user_id=? AND COALESCE(quantity, 0) > 0",
-        (uid,)).fetchall()]
+    brokers, positions = leer_cartera(conn, uid)
     pfs = [dict(r) for r in conn.execute(
         "SELECT * FROM plazos_fijos WHERE user_id=? AND closed_at IS NULL", (uid,)).fetchall()]
     out = {"tenencias": {}, "tipos": {}, "sin_medir": 0.0, "efectivo": 0.0, "plazos_fijos": 0.0, "total": 0.0}
@@ -187,14 +184,7 @@ def cartera(conn, uid: int, cedears=None, dolar=None) -> dict:
     tc, tc_cedear = dolar or _dolar(conn, uid)
     precios = read_last_prices(conn, build_price_symbols(positions, brokers))
     ars, ar_usd = _broker_name_sets(brokers)
-    moneda = {b["name"]: b["currency"] for b in brokers}
-    for p in positions:
-        try:
-            v = compute_broker_value_usd([p], precios, moneda.get(p["broker"], "USD"), tc,
-                                         broker_name=p["broker"], cedear_rate=tc_cedear)["value"]
-        except Exception as ex:
-            log.warning("semana: no pude valuar %s de uid=%s: %s", p.get("asset"), uid, ex)
-            continue
+    for p, v in valuar_lotes(positions, brokers, precios, tc, tc_cedear):
         if not v or v <= 0:
             continue
         out["total"] += v
