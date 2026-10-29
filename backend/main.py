@@ -11752,9 +11752,8 @@ def post_tecnico_lista(body: CarteraTecnicaIn, uid: int = Depends(get_effective_
     tuyas = list(car["tenencias"])
     out = _lecturas_tecnicas(
         body, lambda conn, pedidos: tecnico.para_la_lista(conn, tuyas + [k for k in pedidos if k not in car["tenencias"]]))
-    total = car["total"]
     out["tenencias"] = [
-        {"asset": a, "local": l, "peso": (v / total) if total > 0 else None, "tipo": car["tipos"].get((a, l)) or None}
+        {"asset": a, "local": l, "peso": senales_semana.peso(car, a, l), "tipo": car["tipos"].get((a, l)) or None}
         for (a, l), v in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
     return out
 
@@ -11824,6 +11823,21 @@ def tecnico_en_fechas(data: TendenciasEnFechasIn, uid: int = Depends(get_effecti
     with db_abierta() as conn:
         out.update(tecnico.tendencias_en_fechas(conn, pedidos))
     return {"resultados": out}
+
+
+@app.get("/api/tecnico/{asset}/peso")
+def get_tecnico_peso(asset: str, uid: int = Depends(get_effective_user)):
+    """Qué parte de toda tu plata es este activo, para «En tu cartera» de
+    «Cuánto se mueve» en la ficha: `senales_semana.peso`, LA misma cuenta de Tu
+    lista y de Señales (antes la ficha dividía lo tuyo de hoy por el total de la
+    última foto, y el mismo papel decía otro % en cada pantalla). Todos tus
+    lotes de ese papel juntos, como los suma la ficha. {peso: 0..1 | None}."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    import senales_semana
+    with db_abierta() as conn:
+        return {"peso": senales_semana.peso(senales_semana.cartera(conn, uid), sym)}
 
 
 # Lo que la ficha espera a Yahoo por los balances y dividendos la primera vez

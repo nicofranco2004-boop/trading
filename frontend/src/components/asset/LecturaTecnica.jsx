@@ -133,7 +133,7 @@ function fechaCorta(iso) {
 export default function LecturaTecnica({
   asset, symbolMiniChart, lotes = [], operaciones = [], pnlPctUsd = null,
   pnlPctLinea = undefined, lineaSinTc = false, referencia = null,
-  costoPesos = null, accionLocal = false, tenencia = null, valorCartera = null,
+  costoPesos = null, accionLocal = false, tenencia = null, pesoEnCartera = null,
   // La ficha pone el título de la sección («Análisis técnico») y pasa null.
   titulo = 'Análisis técnico',
 }) {
@@ -490,7 +490,7 @@ export default function LecturaTecnica({
     ? { valor: moneda === 'usd' ? tenencia.valorUsd : tenencia.valorUsd * (tenencia.tc || 0) } : null
   const cuanto = tarjetasMovimiento(actual.movimiento, {
     moneda, precio: (x) => fmtPrecio(x, moneda), tenencia: tenenciaEnMoneda,
-    peso: tenencia?.valorUsd > 0 && valorCartera > 0 ? tenencia.valorUsd / valorCartera : null,
+    peso: tenencia?.valorUsd > 0 ? pesoEnCartera : null,
   })
 
   const botones = botonesDeLaBarra({

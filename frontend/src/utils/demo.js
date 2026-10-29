@@ -3104,6 +3104,9 @@ export function handleDemoRequest(method, path, body) {
     // La lectura técnica: el demo no tiene velas guardadas. "Sin serie" hace
     // que la ficha muestre el gráfico de 30 días (que sí se simula), en vez de
     // "No se pudo cargar el gráfico" (el null de una ruta que el demo no conoce).
+    // Qué parte de tu plata es (la ficha): el demo no tiene velas, así que la
+    // tarjeta «Cuánto se mueve» no aparece y el % tampoco.
+    if (basePath.startsWith('/tecnico/') && basePath.endsWith('/peso')) return { peso: null }
     if (basePath.startsWith('/tecnico/')) {
       return { asset: decodeURIComponent(basePath.slice('/tecnico/'.length)).toUpperCase(), disponible: false, motivo: 'sin_serie' }
     }
