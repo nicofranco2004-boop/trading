@@ -96,7 +96,7 @@ export default function CapaElliott({ elliott, puntos, pctX, pctY, precio, marca
         return (
           <div key={k} className="absolute h-0" style={{ left: `${xInv}%`, right: 0, top: `${y}%`, borderTop: `${marcado ? 2.5 : 1.5}px dashed ${indigo(0.8)}` }}>
             <span data-rotulo={PRIORIDAD.invalidaElliott} data-rotulo-voltear="" className={`absolute ${r.lado === 'debajo' ? 'top-0.5' : '-translate-y-full'} ${xInv < 60 ? 'left-1' : 'right-1'} rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1`}>
-              Dejaría de valer · {precio(r.precio)}
+              El conteo dejaría de tener sentido · {precio(r.precio)}
             </span>
           </div>
         )

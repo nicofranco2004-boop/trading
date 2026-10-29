@@ -176,7 +176,8 @@ function Punto({ x, y, titulo }) {
   )
 }
 
-// Sin tramo para medir: el tramo vivo y el cierre que lo daría por terminado.
+// Sin tramo para medir: el tramo vivo y el cierre que podría ser una señal de
+// que pierde fuerza.
 function CorteEnCurso({ e, puntos, pctX, pctY, precio, marcado = false }) {
   if (!e) return null
   const suba = e.dir === 'suba'
@@ -188,7 +189,8 @@ function CorteEnCurso({ e, puntos, pctX, pctY, precio, marcado = false }) {
     <div className="pointer-events-none absolute inset-0" aria-hidden="true">
       <div className="absolute h-0" style={{ left: `${x}%`, right: 0, top: `${pctY(corte)}%`, borderTop: `${marcado ? 2.5 : 1.5}px dashed ${COLOR_FIB}` }}>
         <span data-rotulo={PRIORIDAD.corteFib} data-rotulo-voltear="" className={`absolute ${suba ? 'top-0.5' : '-translate-y-full'} ${x < 70 ? 'left-1' : 'right-1'} rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1`}>
-          {suba ? 'Cierre debajo: termina la suba' : 'Cierre encima: termina la bajada'} · {precio(corte)}
+          {/* Como posibilidad, igual que la tarjeta (fibonacci.js, Nico 23/10). */}
+          {suba ? 'Si cierra debajo, la suba podría perder fuerza' : 'Si cierra encima, la bajada podría perder fuerza'} · {precio(corte)}
         </span>
       </div>
     </div>

@@ -6,11 +6,11 @@ import { PRIORIDAD, rotulosTapados, taparRotulos } from './rotulos'
 const caja = (prioridad, x0, y0, ancho = 120, alto = 14) => ({ prioridad, x0, x1: x0 + ancho, y0, y1: y0 + alto })
 
 describe('rotulosTapados', () => {
-  it('el caso de AAPL (24/10): el corte del Fibonacci pisaba el «Dejaría de valer» y la onda 4', () => {
+  it('el caso de AAPL (24/10): el corte del Fibonacci pisaba el «El conteo dejaría de tener sentido» y la onda 4', () => {
     // Medidas tomadas del gráfico de AAPL en dólares, 1 año, todo prendido.
     const cajas = [
-      caja(PRIORIDAD.corteFib, 540, 84, 200, 14),        // «Cierre debajo: termina la suba · US$ 325»
-      caja(PRIORIDAD.invalidaElliott, 448, 97, 120, 14),  // «Dejaría de valer · US$ 317,40»
+      caja(PRIORIDAD.corteFib, 540, 84, 200, 14),        // «Si cierra debajo, la suba podría perder fuerza · US$ 325»
+      caja(PRIORIDAD.invalidaElliott, 448, 97, 120, 14),  // «El conteo dejaría de tener sentido · US$ 317,40»
       caja(PRIORIDAD.onda, 650, 82, 18, 18),              // la onda 4
       caja(PRIORIDAD.onda, 515, 74, 18, 18),              // la onda 1, lejos
     ]
