@@ -227,6 +227,39 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.assertEqual(len(self._eventos()), 1, "el mismo cruce no se avisa dos veces")
         self.assertEqual(len(self.mails), 1)
 
+    def test_de_un_cliente_el_push_y_el_mail_llevan_a_mis_clientes(self):
+        """Auditoría B, hallazgo B2 (29/10): el push de la alerta técnica de
+        Juan abría «Mis alertas» de LAURA (donde la de Juan no está) mientras el
+        mail llevaba a /clientes; y «en la cuenta de Juan» quedaba pegado al
+        final de la lectura («…la tendencia de fondo es alcista, en la cuenta
+        de Juan.»). El destino del push y el del botón se calculaban en dos
+        lugares; ahora salen de `alerts_engine.entrega`."""
+        with main.db_abierta() as conn:
+            adv = conn.execute(
+                "INSERT INTO users (email, name, password_hash, approved, email_verified, tier) "
+                "VALUES (?, 'Laura Asesora', 'x', 1, 1, 'pro')",
+                (f"asesor-{uuid.uuid4().hex[:6]}@rendi.test",)).lastrowid
+            conn.execute("UPDATE users SET managed_by=? WHERE id=?", (adv, self.uid))
+            conn.execute("INSERT INTO advisor_clients (advisor_uid, client_uid, label) VALUES (?,?,?)",
+                         (adv, self.uid, "Juan"))
+            conn.commit()
+        self.yahoo.precios["MSFT"] = self._sube_ayer
+        self._seguir_por_alerta_y_crear()
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual((len(self.mails), len(self.pushes)), (1, 1))
+        m, p = self.mails[0], self.pushes[0]
+        self.assertTrue(m["asunto"].startswith("[Juan] MSFT pasó para arriba"))
+        self.assertIn("Hola Laura, en la cuenta de Juan, ", m["texto"])
+        self.assertIn("la tendencia de fondo es alcista.\n", m["texto"],
+                      "la lectura termina en su punto, sin «, en la cuenta de Juan» pegado")
+        self.assertIn("/clientes", m["html"])
+        self.assertNotIn("/activo/MSFT", m["html"], "la ficha del asesor no es la de Juan")
+        self.assertEqual(p["url"], "/clientes",
+                         "el push abría «Mis alertas» del ASESOR, donde la alerta de Juan no está")
+        self.assertTrue(p["body"].startswith("[Juan] MSFT pasó para arriba"))
+        self.assertIn("no es una recomendación", p["body"])
+
     def _seguir_por_alerta_y_crear(self, hasta=None, **kw):
         """El camino del botón «Avisame» de la ficha: alguien ya seguía MSFT (acá,
         por la watchlist), la noche guardó velas hasta anteayer y al día

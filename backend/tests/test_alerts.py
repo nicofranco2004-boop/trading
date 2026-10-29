@@ -26,7 +26,8 @@ from ai import plan              # noqa: E402
 @pytest.fixture(autouse=True)
 def clean(monkeypatch):
     conn = main.get_db()
-    for t in ("alert_symbol_state", "alert_events", "alerts", "positions", "brokers", "users"):
+    for t in ("alert_symbol_state", "alert_events", "alerts", "positions", "brokers",
+              "advisor_clients", "users"):
         try:
             conn.execute(f"DELETE FROM {t}")
         except Exception:
@@ -374,7 +375,7 @@ def _todo_el_mail(a, symbol, price, change_pct) -> str:
     camino que `_deliver`."""
     it = {"symbol": symbol, "price": price, "change_pct": change_pct,
           "message": ae._compose_message(a, symbol, price, change_pct)}
-    c = ae._contenido_del_mail(a, [it], None, False, None, it["message"])
+    c = ae._contenido_del_mail(a, [it], None, False, it["message"])
     return " | ".join([c["heading"], c["titulo"], c["detail"]])
 
 
@@ -400,7 +401,7 @@ def test_el_cuerpo_del_mail_trae_los_numeros_y_no_manda_a_buscarlos():
     a = _alert()
     it = {"symbol": "MELI", "price": 2145.30, "change_pct": -3.14,
           "message": ae._compose_message(a, "MELI", 2145.30, -3.14)}
-    c = ae._contenido_del_mail(a, [it], None, False, None, it["message"])
+    c = ae._contenido_del_mail(a, [it], None, False, it["message"])
     assert "3,1%" in c["titulo"] and "US$ 2.145,30" in c["detail"]
     assert "Entrá a Rendi" not in c["detail"]
 
@@ -1642,3 +1643,46 @@ def test_borrar_alerta_no_toca_el_estado_de_otro_usuario(clean):
     assert conn.execute("SELECT 1 FROM alerts WHERE id=?", (aid_a,)).fetchone() is None
     assert conn.execute(
         "SELECT 1 FROM alert_symbol_state WHERE alert_id=?", (aid_a,)).fetchone() is None
+
+
+# ── Una cuenta administrada (Plan Asesor): mail Y push llevan a /clientes ─────
+
+def test_alerta_de_precio_de_un_cliente_el_push_lleva_a_mis_clientes(clean, monkeypatch):
+    """Auditoría B, hallazgo B2 (29/10), la parte de precio y %: el push de la
+    alerta de un cliente abría «Mis alertas» del ASESOR (`/alertas?tab=mis`),
+    donde esa alerta no está; el mail del mismo aviso ya iba a /clientes. Por
+    el ciclo real (`evaluate_alerts` → `_entregar_pendientes` → `_deliver`)."""
+    conn = clean
+    conn.execute("INSERT INTO users (id,email,name,password_hash) VALUES (3,'laura@a.co','Laura','x')")
+    conn.execute("UPDATE users SET managed_by=3 WHERE id=1")
+    conn.execute("INSERT INTO advisor_clients (advisor_uid, client_uid, label) VALUES (3, 1, 'Juan')")
+    conn.commit()
+    monkeypatch.setattr(ae, "_deliver", _ENTREGA_REAL)
+    mails, pushes = [], []
+    monkeypatch.setattr("billing.emails.send_alert_email", lambda **kw: mails.append(kw) or True)
+    monkeypatch.setattr("main._send_push_to_user", lambda uid, p: pushes.append((uid, p)) or 1)
+    _mk_alert(conn, kind="pct_move", threshold=None, up_pct=3, down_pct=3,
+              channel="both", repeat="always")
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": _q(210.0, 5.2)})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert [u for u, _ in pushes] == [3]
+    assert pushes[0][1]["url"] == "/clientes"
+    assert pushes[0][1]["body"].startswith("[Juan] ")
+    assert mails[0]["to"] == "laura@a.co"
+    assert (mails[0]["cta_path"], mails[0]["pie"][2]) == ("/clientes", "/clientes")
+    assert mails[0]["detail"].startswith("en la cuenta de Juan, pasó el límite que marcaste.")
+
+
+def test_alerta_de_precio_propia_el_push_sigue_yendo_a_mis_alertas(clean, monkeypatch):
+    conn = clean
+    monkeypatch.setattr(ae, "_deliver", _ENTREGA_REAL)
+    mails, pushes = [], []
+    monkeypatch.setattr("billing.emails.send_alert_email", lambda **kw: mails.append(kw) or True)
+    monkeypatch.setattr("main._send_push_to_user", lambda uid, p: pushes.append((uid, p)) or 1)
+    _mk_alert(conn, kind="pct_move", threshold=None, up_pct=3, down_pct=3,
+              channel="both", repeat="always")
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": _q(210.0, 5.2)})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert pushes[0][1]["url"] == "/alertas?tab=mis"
+    assert mails[0]["cta_path"] == "/activo/AAPL"
+    assert not mails[0]["detail"].startswith("en la cuenta")

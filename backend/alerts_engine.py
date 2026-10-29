@@ -626,6 +626,36 @@ def _delivery_target(conn, uid: int):
     return uid, None
 
 
+def entrega(conn, uid: int, armar, *, push_titulo: str = None, push_url: str = None) -> dict:
+    """LA forma de armar un aviso para la cuenta `uid`: a quién le llega, qué
+    dice y adónde lleva. La usan todos los avisos (precio, %, técnica,
+    recordatorio de tesis, el resumen de los sábados).
+
+    `armar(cuenta)` devuelve los argumentos de `emails.send_alert_email` (sin el
+    destinatario), escritos para quien los va a leer: `cuenta` es None si es la
+    cuenta propia y el nombre del cliente («Juan») si la administra un asesor,
+    para quien quiera cambiar «tu plata» por «la plata de Juan».
+    `push_titulo` / `push_url`: el texto y el destino del push; sin ellos, el
+    asunto y el botón del mail.
+
+    Devuelve {'destino': uid a quien se le entrega, 'cliente': nombre | None,
+              'mail': {…}, 'push': {'titulo', 'url'}}.
+
+    🔴 POR QUÉ ES UNA SOLA FUNCIÓN (auditoría B, 29/10). La regla «un aviso de un
+    cliente le llega al asesor» eran dos funciones sueltas: `_delivery_target`
+    (A QUIÉN) y `_para_el_asesor` (QUÉ DICE y ADÓNDE LLEVA), y cada aviso nuevo
+    tenía que acordarse de las dos. El resumen de los sábados usó sólo la
+    primera: a Laura le llegaba «el 94% de tu plata» de Juan, con los links a SUS
+    señales (B1). Y el destino del push se calculaba aparte del botón del mail:
+    el push de la técnica de Juan abría «Mis alertas» de Laura (B2)."""
+    destino, cliente = _delivery_target(conn, uid)
+    mail = dict(armar(cliente))
+    push = {"titulo": push_titulo or mail["heading"], "url": push_url or mail["cta_path"]}
+    if cliente:
+        _para_el_asesor(mail, push, cliente)
+    return {"destino": destino, "cliente": cliente, "mail": mail, "push": push}
+
+
 def _deliver(conn, alert, items) -> tuple:
     """Manda UN push + UN email por alerta y por ciclo, con todo lo que disparó.
     Devuelve (push_ok, email_ok).
@@ -639,7 +669,6 @@ def _deliver(conn, alert, items) -> tuple:
 
     Los avisos de la app siguen siendo uno por activo (`alert_events`): se
     movieron cuatro cosas, no una. Lo que se agrupa es la ENTREGA."""
-    uid, client_label = _delivery_target(conn, alert["user_id"])
     # Más grande primero: si hay que nombrar dos en el asunto, que sean los dos
     # que más se movieron.
     items = sorted(items, key=lambda it: abs(it.get("change_pct") or 0), reverse=True)
@@ -648,41 +677,34 @@ def _deliver(conn, alert, items) -> tuple:
     fuera = None if mixto else items[0].get("fuera")
     heading = (items[0]["message"] if len(items) == 1
                else _compose_group_message(items, fuera, mixto=mixto))
-    if client_label:
-        # El asesor recibe alertas de N clientes: el prefijo dice de quién es.
-        heading = f"[{client_label}] {heading}"
+    tecnica = alert["kind"] == "tecnica"
+    # Un aviso que trae su mail ya armado (el recordatorio de una tesis,
+    # `evaluar_recordatorios`) no pasa por el de precio y %.
+    armado = items[0].get("contenido")
+    e = entrega(
+        conn, alert["user_id"],
+        lambda _cuenta: ({**armado, "heading": heading} if armado
+                         else _contenido_del_mail(alert, items, fuera, mixto, heading)),
+        # El push de precio y % abre «Mis alertas»: la alerta que saltó, con su
+        # estado y para pausarla. (Iba a /config?tab=notificaciones, ruta MUERTA
+        # desde que las alertas se mudaron a /alertas; después a /dashboard, que
+        # no dice nada del aviso.) La técnica y el recordatorio van adonde va el
+        # botón del mail: la ficha del activo, con el gráfico.
+        push_titulo=heading, push_url=None if (tecnica or armado) else _MIS_ALERTAS)
+    uid = e["destino"]
     channel = alert["channel"] or "both"
     push_ok = email_ok = False
-    # Un aviso que trae su mail ya armado (el recordatorio de una tesis,
-    # `evaluar_recordatorios`) no pasa por el de precio y %. Para el asesor se
-    # le pone lo mismo que a los otros: de qué cliente es y a dónde entrar.
-    armado = items[0].get("contenido")
-    if armado:
-        armado = {**armado, "heading": heading}
-        if client_label:
-            _para_el_asesor(armado, client_label)
 
-    tecnica = alert["kind"] == "tecnica"
     if channel in ("push", "both"):
         try:
             import main
+            titulo = e["push"]["titulo"]
             sent = main._send_push_to_user(uid, {
                 "title": "Rendi · Alerta",
                 # La señal técnica lleva la aclaración también en el push: es lo
                 # único que lee quien no abre el mail.
-                "body": f"{heading}. {_NO_ES_RECOMENDACION}" if tecnica else heading,
-                # Iba a /config?tab=notificaciones: ruta MUERTA desde que las
-                # alertas se mudaron a /alertas (en Config ya no existe esa
-                # pestana), asi que tocar el push caia en Config > Cuenta.
-                # Despues fue /dashboard, que no dice nada del aviso. Ahora abre
-                # «Mis alertas»: la alerta que salto, con su estado y para
-                # pausarla.
-                # La técnica abre la ficha del activo: ahí está el gráfico con
-                # el promedio que cruzó. El aviso que trae su mail armado (el
-                # recordatorio de una tesis) va a donde dice su botón.
-                "url": ((armado or {}).get("cta_path")
-                        or (f"/activo/{quote(_display_symbol(items[0]['symbol']), safe='')}"
-                            if tecnica and not client_label else "/alertas?tab=mis")),
+                "body": f"{titulo}. {_NO_ES_RECOMENDACION}" if tecnica else titulo,
+                "url": e["push"]["url"],
                 "tag": (f"alert-{alert['id']}-{items[0]['symbol'] or ''}"
                         if len(items) == 1 else f"alert-{alert['id']}-grupo"),
             })
@@ -695,10 +717,8 @@ def _deliver(conn, alert, items) -> tuple:
             row = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
             if row and row["email"]:
                 from billing import emails
-                contenido = armado or _contenido_del_mail(
-                    alert, items, fuera, mixto, client_label, heading)
                 email_ok = emails.send_alert_email(
-                    to=row["email"], user_name=(row["name"] or ""), **contenido)
+                    to=row["email"], user_name=(row["name"] or ""), **e["mail"])
         except Exception as ex:
             log.warning("alerts email uid=%s falló: %s", uid, ex)
 
@@ -768,7 +788,7 @@ def _fila(it, mixto: bool) -> dict:
             "pct_txt": _pct_con_signo(it.get("change_pct")), "nota": " · ".join(notas)}
 
 
-def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading) -> dict:
+def _contenido_del_mail(alert, items, fuera, mixto: bool, heading) -> dict:
     """Todo lo que lleva el mail: asunto, titular, oración, lista, botón y pie.
     Devuelve los argumentos de `emails.send_alert_email` (menos el destinatario).
 
@@ -810,7 +830,7 @@ def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading)
         elif alert["kind"] == "price_target":
             titulo = _titulo_precio(alert, it["symbol"], it["price"])
             detail = _email_detail(alert, it["symbol"], it["price"])
-            heading = f"[{client_label}] {titulo}" if client_label else titulo
+            heading = titulo
         else:
             titulo = it["message"]
             detail = _email_detail(alert, it["symbol"], it["price"], it["change_pct"],
@@ -839,20 +859,25 @@ def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading)
     contenido["heading"] = heading
     if alert["kind"] == "tecnica":
         contenido["aclaracion"] = _NO_ES_RECOMENDACION
-    if client_label:
-        _para_el_asesor(contenido, client_label)
     return contenido
 
 
-def _para_el_asesor(contenido: dict, client_label: str) -> None:
+def _para_el_asesor(mail: dict, push: dict, cliente: str) -> None:
     """Plan Asesor: el aviso es de una cuenta que administra. Su cartera, su
-    ficha y su «Mis alertas» no son las de esa cuenta: se entra desde Clientes.
-    El asunto ya lleva «[Cliente]» adelante (`_deliver`). Lo usan el mail de
-    precio y % y el que llega ya armado (el recordatorio de una tesis)."""
-    contenido["detail"] = contenido["detail"].rstrip(".") + f", en la cuenta de {client_label}."
-    contenido["cta_label"], contenido["cta_path"] = "Ver mis clientes", "/clientes"
-    contenido["pie"] = (f"Para cambiarla, entrá a la cuenta de {client_label}.",
-                        "Ir a mis clientes", "/clientes")
+    ficha, su «Mis alertas» y sus señales no son las de esa cuenta: se entra
+    desde Clientes. Sólo la llama `entrega`.
+
+    «en la cuenta de Juan» va ADELANTE de la oración («Hola Laura, en la cuenta
+    de Juan, pasó el límite…»): pegado al final quedaba colgando de la última
+    frase de la lectura («…la tendencia de fondo es alcista, en la cuenta de
+    Juan.», auditoría B2)."""
+    mail["heading"] = f"[{cliente}] {mail['heading']}"
+    push["titulo"] = f"[{cliente}] {push['titulo']}"
+    mail["detail"] = f"en la cuenta de {cliente}, {mail['detail']}"
+    mail["cta_label"], mail["cta_path"] = "Ver mis clientes", "/clientes"
+    mail["pie"] = (f"Para cambiar este aviso, entrá a la cuenta de {cliente}.",
+                   "Ir a mis clientes", "/clientes")
+    push["url"] = "/clientes"
 
 
 def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: list,

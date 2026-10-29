@@ -432,7 +432,9 @@ class TesisTest(Base):
         self.assertEqual([u for u, _ in pushes], [asesor])
         self.assertTrue(mails[0]["to"].startswith("asesor-"))
         self.assertEqual(mails[0]["heading"], "[Laura] Quedaste en revisar tu tesis de NVDA")
-        self.assertIn("en la cuenta de Laura.", mails[0]["detail"])
+        # Adelante de la oración, no pegado a la última frase (auditoría B2, 29/10).
+        self.assertTrue(mails[0]["detail"].startswith("en la cuenta de Laura, escribiste esta tesis"),
+                        mails[0]["detail"])
         self.assertEqual((mails[0]["cta_path"], pushes[0][1]["url"]), ("/clientes", "/clientes"),
                          "la ficha del asesor no es la de su cliente")
 
