@@ -188,6 +188,9 @@ describe('la barra de herramientas del gráfico', () => {
     for (const id of ['vol', 'fib', 'ell', 'rsi', 'prom']) await tocar(id)
     await tocar('velas')
     await tocar('medir')
+    // Con una herramienta prendida la lista se pliega sola (D1): se abre a mano.
+    await clic(montado.contenedor, nodos(n => n.nodeName === 'BUTTON' && attr(n, 'aria-expanded') != null && texto(n).startsWith('Indicadores'))[0])
+    for (let i = 0; i < 2; i++) await montado.redibujar(el())
     expect(attr(boton('fabrica'), 'disabled')).toBeNull()
     await tocar('fabrica')
     for (const id of CAPAS) {

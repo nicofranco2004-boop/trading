@@ -1797,7 +1797,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
 
         {/* Los indicadores, arriba a la izquierda (como TradingView): afuera del
             área que escucha el mouse, para que tocar un ojito no sea tocar el gráfico. */}
-        {leyenda && <div className="absolute left-1 top-1 right-[76px] z-20 pointer-events-none [&>*]:pointer-events-auto">{cloneElement(leyenda, { anchoDisponible: ancho })}</div>}
+        {leyenda && <div className="absolute left-1 top-1 right-[76px] z-20 pointer-events-none">{cloneElement(leyenda, { anchoDisponible: ancho, plegada: !!onToque })}</div>}
         {/* Columna de precios: la grilla, tu precio y el último precio. Se
             arrastra para estirar el gráfico en vertical (ver ejesGrafico.js). */}
         <div className="absolute inset-y-0 right-0 w-[68px] cursor-ns-resize touch-none select-none"
