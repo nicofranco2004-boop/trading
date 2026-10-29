@@ -74,7 +74,7 @@ describe('tusSenales: cuentas', () => {
     expect(t.plata.antes).toBeNull()
     expect(deQuien(DATOS.senales[0], true)).toBe('Lo tenés')
     expect(deQuien(DATOS.senales[0], false)).toBe('Lo tenés · 12% de tu plata')
-    expect(pesoTxt(0.004, false)).toBe('menos del 1% de tu plata')
+    expect(pesoTxt(0.004, false)).toBe('menos de 1% de tu plata')
     expect(deQuien(DATOS.senales[3], false)).toBe('En tu watchlist')
   })
 

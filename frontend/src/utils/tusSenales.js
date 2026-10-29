@@ -5,6 +5,8 @@
 // (backend/senales_semana.py, la MISMA cuenta que el mail de los sábados). Acá
 // sólo se filtra, se agrupa por día y se arman los textos de las tres tarjetas.
 
+import { parteDeTuPlata } from './parteDeTuPlata'
+
 export const FILTROS = [
   { id: 'todo', label: 'Todo' },
   { id: 'tenes', label: 'Lo que tenés' },
@@ -53,8 +55,7 @@ const plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`
  *  saldos» no va: la proporción también es información de la cartera. */
 export function pesoTxt(peso, hidden) {
   if (hidden || peso == null) return null
-  const pct = peso * 100
-  return pct < 1 ? 'menos del 1% de tu plata' : `${Math.round(pct)}% de tu plata`
+  return `${parteDeTuPlata(peso * 100)} de tu plata`
 }
 
 /** La línea de abajo de cada cambio: «Lo tenés · 12% de tu plata» / «En tu watchlist». */

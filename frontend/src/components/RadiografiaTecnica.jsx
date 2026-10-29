@@ -23,6 +23,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../utils/api'
 import { usePrivacy } from '../contexts/PrivacyContext'
+import { parteDeTuPlata } from '../utils/parteDeTuPlata'
 import {
   activosParaLeer, indexarLecturas, lecturaDeFila, tendencia, fuerza, MOTIVOS_SIN_LECTURA,
 } from '../utils/radiografia'
@@ -189,7 +190,8 @@ export function TarjetaPlata({ reparto, cargando, error, titulo, nota = null, cl
     return <div className={`h-36 rounded-xl bg-bg-2/40 border border-line esqueleto ${className}`} aria-label="Cargando la radiografía técnica" />
   }
   const g = reparto.grupos || {}
-  const pct = (id) => (g[id]?.pct === 0 && g[id]?.fraccion > 0 ? 'menos de 1%' : `${g[id]?.pct ?? 0}%`)
+  // Con el redondeo del servidor (pct entero), «0» con algo adentro es «menos de 1%».
+  const pct = (id) => parteDeTuPlata(g[id]?.pct === 0 && g[id]?.fraccion > 0 ? g[id].fraccion * 100 : (g[id]?.pct ?? 0))
   const etiqueta = `${pct('alcista')} alcista, ${pct('bajista')} bajista, ${pct('sin')} sin lectura`
   const antes = !hidden ? antesTxt(reparto.semana_pasada) : null
   const tonoAntes = reparto.semana_pasada && reparto.pct != null

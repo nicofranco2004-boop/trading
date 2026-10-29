@@ -11,6 +11,7 @@
 // (sobre los mismos puntos que dibuja el gráfico) y lo que te toca a vos de un
 // día malo normal (tu tenencia la sabe la ficha, no el servidor).
 import { OCULTO, AVISO_OCULTO } from './ocultarSaldos'
+import { esElDeTuCartera } from './parteDeTuPlata'
 
 const NUM1 = { minimumFractionDigits: 1, maximumFractionDigits: 1 }
 const num1 = (v) => Math.abs(v).toLocaleString('es-AR', NUM1)
@@ -218,7 +219,7 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
       if (oculto) {
         out.push({ id: 'cartera', titulo: 'En tu cartera', tono: 'neutro', veredicto: OCULTO, texto: `${partesT[0]} ${AVISO_OCULTO}` })
       } else if (peso > 0 && peso <= 1) {
-        partesT.push(`Es el ${Math.round(peso * 100).toLocaleString('es-AR')}% de tu cartera: a toda tu cartera ese día la mueve ${pctConSigno(-peso * d.desvio_pct)}.`)
+        partesT.push(`${esElDeTuCartera(peso * 100)}: a toda tu cartera ese día la mueve ${pctConSigno(-peso * d.desvio_pct)}.`)
       }
       if (!oculto) out.push({ id: 'cartera', titulo: 'En tu cartera', tono: 'neutro', veredicto: plata(mueve, moneda), texto: partesT.join(' ') })
     }
