@@ -201,3 +201,54 @@ class VentaYOperacionALaVez(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ElRecalculoQueFallaNoSeLlevaLaOperacion(Base):
+    """La segunda mitad del hallazgo 11: aunque el choque del mes ya no pase, la
+    forma «try → except que loguea → commit» seguía ahí. Si CUALQUIER error de SQL
+    salta adentro del recálculo, en Postgres la transacción queda abortada y el
+    commit descarta la operación, con 200 al usuario.
+
+    El error se provoca adentro del recálculo REAL de `create_operation` y de
+    `update_operation` (no se saltea nada de su camino): es exactamente la clase
+    de falla que abortaba la transacción en producción."""
+
+    def setUp(self):
+        super().setUp()
+        self._orig = main._recalc_pnl_realized_from_ops
+
+        def recalc_que_falla(conn, uid):
+            conn.execute("SELECT columna_que_no_existe FROM monthly_entries")
+        main._recalc_pnl_realized_from_ops = recalc_que_falla
+
+    def tearDown(self):
+        main._recalc_pnl_realized_from_ops = self._orig
+        super().tearDown()
+
+    def test_crear_con_el_recalculo_roto_guarda_la_operacion(self):
+        r = main.create_operation(main.OperationIn(
+            date=MES[0], broker=BROKER, asset="AAPL", op_type="Venta",
+            pnl_usd=25.0), uid=self.uid)
+        self.conn.rollback()
+        fila = self.conn.execute("SELECT pnl_usd FROM operations WHERE id=? AND user_id=?",
+                                 (r["id"], self.uid)).fetchone()
+        print(f"\n>>> {_motor()} crear+recalc roto: id={r['id']} en_la_base={fila is not None}")
+        self.assertIsNotNone(fila, "contestó 200 con una operación que no se guardó")
+        self.assertAlmostEqual(float(fila["pnl_usd"]), 25.0, places=2)
+
+    def test_editar_con_el_recalculo_roto_guarda_la_edicion(self):
+        main._recalc_pnl_realized_from_ops = self._orig
+        r = main.create_operation(main.OperationIn(
+            date=MES[0], broker=BROKER, asset="AAPL", op_type="Venta",
+            pnl_usd=25.0), uid=self.uid)
+        main._recalc_pnl_realized_from_ops = lambda conn, uid: conn.execute(
+            "SELECT columna_que_no_existe FROM monthly_entries")
+        main.update_operation(r["id"], main.OperationIn(
+            date=MES[0], broker=BROKER, asset="AAPL", op_type="Venta",
+            pnl_usd=70.0), uid=self.uid)
+        self.conn.rollback()
+        fila = self.conn.execute("SELECT pnl_usd FROM operations WHERE id=? AND user_id=?",
+                                 (r["id"], self.uid)).fetchone()
+        print(f"\n>>> {_motor()} editar+recalc roto: pnl_en_la_base={fila and fila['pnl_usd']}")
+        self.assertAlmostEqual(float(fila["pnl_usd"]), 70.0, places=2,
+                               msg="contestó 200 y la edición se descartó")

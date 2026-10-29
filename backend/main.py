@@ -733,6 +733,33 @@ def db_abierta():
         conn.close()
 
 
+@contextmanager
+def _si_falla_se_deshace_solo_esto(conn, nombre: str):
+    """Un punto de guardado: si lo de adentro revienta, se deshace SÓLO eso y la
+    excepción sigue su camino; lo escrito antes queda en pie.
+
+    🔴 POR QUÉ HACE FALTA, y por qué sólo se nota en Postgres. La forma
+    «try: escribir → except: log → commit» supone que un error deja la
+    transacción como estaba. En SQLite es así. En Postgres un error de SQL deja la
+    transacción ENTERA abortada, y el `commit()` de después es un ROLLBACK: se
+    descarta también lo de antes del `try`. Medido el 28/10/2026 en
+    `create_operation`: contestaba 200 con el id de una operación que ya no
+    existía (test_pnl_del_mes_dos_pedidos). Con esto los dos motores hacen lo
+    mismo: lo que falló no se aplica y lo demás se guarda.
+
+    El `except` lo sigue poniendo quien llama: es el que sabe si el error se puede
+    tragar (un recálculo que se rearma solo después) o tiene que llegar al usuario.
+    """
+    conn.execute(f"SAVEPOINT {nombre}")
+    try:
+        yield
+    except BaseException:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {nombre}")
+        conn.execute(f"RELEASE SAVEPOINT {nombre}")
+        raise
+    conn.execute(f"RELEASE SAVEPOINT {nombre}")
+
+
 def _run_with_lock_retry(fn, *, attempts: int = 4, base_delay: float = 0.3):
     """Reintenta `fn` ante 'database is locked' de SQLite (contención de escritura),
     con backoff exponencial. Sólo para operaciones de escritura IDEMPOTENTES (wipe,
@@ -14010,30 +14037,38 @@ def _update_monthly_pnl_realized(conn, uid: int, broker: str, year: int, month: 
                                   pnl_amount: float) -> None:
     """Suma pnl_amount a pnl_realized del mes (año/mes exacto) y recalcula capital_final.
     Si la fila no existe la crea con `_capital_inicio_de_fila_nueva` (el
-    capital_final del mes ANTERIOR), salvo que no haya nada que anotar."""
-    row = conn.execute(
-        "SELECT * FROM monthly_entries WHERE user_id=? AND broker=? AND year=? AND month=?",
-        (uid, broker, year, month),
-    ).fetchone()
+    capital_final del mes ANTERIOR), salvo que no haya nada que anotar.
 
-    if row:
-        new_pnl_realized = round((row['pnl_realized'] or 0) + pnl_amount, 4)
-        new_cap_final = round(
-            (row['capital_inicio'] or 0)
-            + (row['deposits'] or 0)
-            - (row['withdrawals'] or 0)
-            + new_pnl_realized
-            + (row['pnl_unrealized'] or 0),
-            4,
-        )
-        conn.execute(
-            """UPDATE monthly_entries
-               SET pnl_realized = ?, capital_final = ?
-               WHERE user_id=? AND broker=? AND year=? AND month=?""",
-            (new_pnl_realized, new_cap_final, uid, broker, year, month),
-        )
-    else:
-        pnl = round(pnl_amount, 4)
+    🔴 LA SUMA LA HACE LA BASE, Y ESCRIBE ANTES DE MIRAR. Hasta 2026-10-28 leía la
+    fila, sumaba en Python y escribía el resultado: leer-y-después-escribir, el lado
+    que ningún motor hace cumplir. La hermana `_update_monthly_flow` ya se había
+    arreglado (`d4742484`) y ésta no — 47 líneas de distancia. Tres consecuencias,
+    todas de Postgres (SQLite deja escribir a uno por vez y las tapaba):
+      · Dos primeras operaciones del mes a la vez: las dos veían que la fila no
+        existía, las dos la insertaban, la segunda chocaba con el UNIQUE, la
+        transacción quedaba abortada y `create_operation` contestaba 200 con una
+        operación que se había descartado entera (test_pnl_del_mes_dos_pedidos).
+      · Dos ganancias a la vez sobre una fila existente: la segunda pisaba a la
+        primera. Lo tapa el recálculo de `create_operation`, pero la venta FIFO no
+        recalcula — y de 15 llamadores, alcanza con uno sin recálculo.
+      · `capital_final` se armaba con el `deposits` LEÍDO: un depósito que la
+        hermana sumaba en la base en el medio quedaba fuera del capital.
+    Ahora el UPDATE va primero y arma `capital_final` con las columnas que hay EN
+    ESE MOMENTO (del lado derecho del SET, en los dos motores, son las de antes del
+    UPDATE); si no tocó ninguna fila, el INSERT lleva ON CONFLICT, como la hermana.
+    Sin ROUND en el SQL: en Postgres las columnas son double precision y `round(x, 4)`
+    sólo existe para numeric."""
+    pnl = round(pnl_amount, 4)
+    actualizada = conn.execute(
+        """UPDATE monthly_entries
+           SET pnl_realized = COALESCE(pnl_realized, 0) + ?,
+               capital_final = COALESCE(capital_inicio, 0) + COALESCE(deposits, 0)
+                               - COALESCE(withdrawals, 0) + COALESCE(pnl_realized, 0) + ?
+                               + COALESCE(pnl_unrealized, 0)
+           WHERE user_id=? AND broker=? AND year=? AND month=?""",
+        (pnl, pnl, uid, broker, year, month),
+    )
+    if actualizada.rowcount == 0:
         if pnl == 0:
             # Nada que anotar (una venta al mismo precio, un cupón en cero). Crear la
             # fila igual dejaba un mes vacío que la limpieza borra en el mismo pedido,
@@ -14044,11 +14079,22 @@ def _update_monthly_pnl_realized(conn, uid: int, broker: str, year: int, month: 
             return
         cap_inicio = _capital_inicio_de_fila_nueva(conn, uid, broker, year, month)
         cap_final = round(cap_inicio + pnl, 4)
+        # ON CONFLICT: otro pedido creó la fila entre el UPDATE de arriba y este
+        # INSERT. Se suma igual que en el UPDATE, sobre la fila que dejó el otro.
         conn.execute(
             """INSERT INTO monthly_entries
                (user_id, year, month, broker, deposits, withdrawals,
                 pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-               VALUES (?,?,?,?,0,0,?,0,?,?)""",
+               VALUES (?,?,?,?,0,0,?,0,?,?)
+               ON CONFLICT (user_id, year, month, broker) DO UPDATE SET
+                   pnl_realized = COALESCE(monthly_entries.pnl_realized, 0)
+                                  + EXCLUDED.pnl_realized,
+                   capital_final = COALESCE(monthly_entries.capital_inicio, 0)
+                                   + COALESCE(monthly_entries.deposits, 0)
+                                   - COALESCE(monthly_entries.withdrawals, 0)
+                                   + COALESCE(monthly_entries.pnl_realized, 0)
+                                   + EXCLUDED.pnl_realized
+                                   + COALESCE(monthly_entries.pnl_unrealized, 0)""",
             (uid, year, month, broker, pnl, cap_inicio, cap_final),
         )
 
@@ -21043,18 +21089,20 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
         row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
         # Sync cache de pnl_realized en monthly_entries
         try:
-            # Asegurar que exista la fila del mes ANTES del recalc: `_recalc` solo recompone
-            # meses YA presentes en monthly_entries, así que un trade tipeado en un mes sin
-            # actividad previa no aterrizaba en el P&L mensual (quedaba solo en operations →
-            # el total del mes no lo contaba). El recalc de abajo pisa el valor con
-            # SUM(operations), así que esto no puede doblar el conteo.
-            if op.pnl_usd:
-                _y, _m = int(op.date[:4]), int(op.date[5:7])
-                _update_monthly_pnl_realized(conn, uid, op.broker, _y, _m, float(op.pnl_usd))
-                _update_monthly_pnl_realized(conn, uid, 'global', _y, _m, float(op.pnl_usd))
-            _recalc_pnl_realized_from_ops(conn, uid)
+            with _si_falla_se_deshace_solo_esto(conn, "recalc_create_operation"):
+                # Asegurar que exista la fila del mes ANTES del recalc: `_recalc` solo recompone
+                # meses YA presentes en monthly_entries, así que un trade tipeado en un mes sin
+                # actividad previa no aterrizaba en el P&L mensual (quedaba solo en operations →
+                # el total del mes no lo contaba). El recalc de abajo pisa el valor con
+                # SUM(operations), así que esto no puede doblar el conteo.
+                if op.pnl_usd:
+                    _y, _m = int(op.date[:4]), int(op.date[5:7])
+                    _update_monthly_pnl_realized(conn, uid, op.broker, _y, _m, float(op.pnl_usd))
+                    _update_monthly_pnl_realized(conn, uid, 'global', _y, _m, float(op.pnl_usd))
+                _recalc_pnl_realized_from_ops(conn, uid)
         except Exception as ex:
-            log.error("Recalc tras create_operation falló: %s", ex)
+            log.error("create_operation: la operación SE GUARDÓ, pero falló el recálculo "
+                      "del mes (se rearma en el próximo): %s", ex)
         conn.commit()
         conn.close()
         _ai_cache_invalidate(uid)
@@ -21235,9 +21283,11 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
             conn.close()
             raise HTTPException(404, "Not found")
         try:
-            _recalc_pnl_realized_from_ops(conn, uid)
+            with _si_falla_se_deshace_solo_esto(conn, "recalc_update_operation"):
+                _recalc_pnl_realized_from_ops(conn, uid)
         except Exception as ex:
-            log.error("Recalc tras update_operation falló: %s", ex)
+            log.error("update_operation: la edición SE GUARDÓ, pero falló el recálculo "
+                      "del mes (se rearma en el próximo): %s", ex)
         conn.commit()
         conn.close()
         _ai_cache_invalidate(uid)
