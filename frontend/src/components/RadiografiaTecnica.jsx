@@ -29,7 +29,7 @@ import {
 } from '../utils/radiografia'
 import { fciLabel } from '../utils/valuation'
 import { hoyISO } from '../utils/fecha'
-import { semanaPasadaTxt } from '../utils/tusSenales'
+import { antesConPct, PLATA_ALCISTA_OCULTA } from '../utils/tusSenales'
 import { RSI_CASTIGADO, RSI_ESTIRADO } from '../utils/tecnico'
 
 /**
@@ -137,8 +137,7 @@ function Lista({ nombres, max = 6 }) {
 /** «la semana pasada, 61%» o «el sábado 17/10, 61%»: la frase de «Tus
  *  señales» (`semanaPasadaTxt`, una sola regla para las tres pantallas). */
 function antesTxt(sp) {
-  if (!sp?.semana) return null
-  return `${semanaPasadaTxt(sp, hoyISO())}, ${Math.round(sp.pct)}%`
+  return antesConPct(sp, hoyISO())
 }
 
 /**
@@ -160,7 +159,7 @@ export default function RadiografiaTecnica({ lotes, reparto, cargando, error, cl
       <p className="text-[14px] sm:text-[15px] text-ink-0 leading-snug min-w-0">
         {error ? 'No pudimos traer el análisis técnico de tus activos ahora.'
           : reparto?.pct == null ? 'Ninguno de tus activos tiene todavía una tendencia de fondo para leer.'
-            : hidden ? 'Mirá cómo está repartida tu plata entre tendencias de fondo.'
+            : hidden ? PLATA_ALCISTA_OCULTA
               : <><b className="font-semibold text-rendi-pos tabular">{reparto.pct}%</b> de tu plata está en tendencia de fondo alcista{antes && <span className="text-ink-2"> ({antes})</span>}</>}
       </p>
       {enlace}
@@ -209,8 +208,8 @@ export function TarjetaPlata({ reparto, cargando, error, titulo, nota = null, cl
       ) : (
         <p className="text-[19px] sm:text-[21px] font-semibold leading-snug text-ink-0">
           {hidden
-            ? 'Así está repartida tu plata entre tendencias de fondo.'
-            : <><span className="text-rendi-pos tabular">{reparto.pct}%</span> de tu plata está en activos con tendencia de fondo alcista.</>}
+            ? PLATA_ALCISTA_OCULTA
+            : <><span className="text-rendi-pos tabular">{reparto.pct}%</span> de tu plata está en tendencia de fondo alcista.</>}
           {antes && (
             <span className={`ml-2 text-[14px] font-medium ${tonoAntes === 'pos' ? 'text-rendi-pos' : tonoAntes === 'neg' ? 'text-rendi-neg' : 'text-ink-2'}`}>({antes})</span>
           )}

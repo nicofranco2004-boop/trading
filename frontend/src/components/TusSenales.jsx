@@ -21,6 +21,7 @@ import { usePushNotifications } from '../hooks/usePushNotifications'
 import AvisoNotificaciones from './AvisoNotificaciones'
 import {
   FILTROS, CANALES, NO_ES_RECOMENDACION, filtrar, porDia, tarjetas, deQuien, boton, rutaDeFicha,
+  TITULO_CAMBIOS, QUE_ES_ESTA_SEMANA,
 } from '../utils/tusSenales'
 
 export const PASTILLA = {
@@ -184,8 +185,8 @@ export function TusSenalesVista({ datos, error, hidden, filtro, onFiltro, onVer,
     <div className="flex flex-col lg:flex-row gap-4 lg:gap-5">
       <div className="flex-1 min-w-0 flex flex-col gap-3">
         <div>
-          <h2 className="text-[18px] sm:text-[20px] font-semibold text-ink-0">Qué cambió esta semana en lo tuyo</h2>
-          <p className="text-[13px] text-ink-2 mt-0.5">Los últimos 7 días, contados desde hoy. Medido en dólares.</p>
+          <h2 className="text-[18px] sm:text-[20px] font-semibold text-ink-0">{TITULO_CAMBIOS}</h2>
+          <p className="text-[13px] text-ink-2 mt-0.5">{QUE_ES_ESTA_SEMANA} Medido en dólares.</p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -209,7 +210,7 @@ export function TusSenalesVista({ datos, error, hidden, filtro, onFiltro, onVer,
             <p className="py-5 text-[14px] text-ink-1">
               {filtro === 'watchlist' ? 'Esta semana no cambió nada en tu watchlist.'
                 : filtro === 'tenes' ? 'Esta semana no cambió nada en lo que tenés.'
-                  : 'Esta semana no cambió nada en lo tuyo ni en tu watchlist.'}
+                  : 'Esta semana no cambió nada en lo que tenés ni en tu watchlist.'}
             </p>
           ) : dias.map(d => (
             <div key={d.fecha}>

@@ -28,7 +28,7 @@ import { TusSenalesVista, useTusSenales, Cambio } from '../components/TusSenales
 import { TarjetaPlata } from '../components/RadiografiaTecnica'
 import { usePrivacy } from '../contexts/PrivacyContext'
 import { filasDeLaLista, contarFilas } from '../utils/listaTecnica'
-import { tarjetas as tarjetasDeLaSemana, rutaDeFicha, NO_ES_RECOMENDACION } from '../utils/tusSenales'
+import { tarjetas as tarjetasDeLaSemana, rutaDeFicha, NO_ES_RECOMENDACION, TITULO_PLATA_ALCISTA, TITULO_CAMBIOS, QUE_ES_ESTA_SEMANA } from '../utils/tusSenales'
 
 // Las pestañas, en orden. `corto`: el nombre en el celular. `pronto`: todavía
 // no está (se ve, no se toca).
@@ -122,7 +122,7 @@ function PanoramaPlata({ semana, hidden }) {
   const reparto = datos ? (datos.alcista || { pct: null, grupos: {}, motivos: [] }) : null
   return (
     <TarjetaPlata reparto={reparto} cargando={!datos && !semana.error} error={!!semana.error}
-      titulo="Tu plata en tendencia de fondo alcista"
+      titulo={TITULO_PLATA_ALCISTA}
       nota={datos?.alcista && !hidden ? plata.texto : null} />
   )
 }
@@ -140,7 +140,7 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] gap-3.5">
         <PanoramaPlata semana={semana} hidden={hidden} />
         <section aria-label="Esta semana" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-3">
-          <div className="text-[12px] text-ink-2 font-medium">Esta semana</div>
+          <div className="text-[12px] text-ink-2 font-medium">Esta semana <span className="font-normal">· {QUE_ES_ESTA_SEMANA.replace(/\.$/, '').toLowerCase()}</span></div>
           {semana.error ? (
             <p className="text-[13.5px] text-ink-1">No pudimos traer los cambios de la semana. Probá recargar en un rato.</p>
           ) : !datos ? (
@@ -164,13 +164,13 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
 
       <section aria-label="Lo que cambió esta semana" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-1">
         <div className="flex items-baseline justify-between gap-3 pt-3 pb-1">
-          <h2 className="text-[15px] font-semibold text-ink-0">Lo que cambió esta semana en lo tuyo</h2>
+          <h2 className="text-[15px] font-semibold text-ink-0">{TITULO_CAMBIOS}</h2>
           {ultimos.length > 0 && <span className="text-[12px] text-ink-2">{ultimos.length === 1 ? 'el único' : `los ${ultimos.length} más nuevos`}</span>}
         </div>
         {!datos ? (
           semana.error ? null : <div className="h-28 my-2 rounded-lg bg-bg-2/40 esqueleto" />
         ) : ultimos.length === 0 ? (
-          <p className="py-4 text-[14px] text-ink-1">Esta semana no cambió nada en lo tuyo ni en tu watchlist.</p>
+          <p className="py-4 text-[14px] text-ink-1">Esta semana no cambió nada en lo que tenés ni en tu watchlist.</p>
         ) : (
           <ul>{ultimos.map((s, i) => <Cambio key={`${s.asset}-${s.tipo}-${i}`} s={s} hidden={hidden} onVer={onVer} />)}</ul>
         )}

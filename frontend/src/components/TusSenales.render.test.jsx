@@ -59,7 +59,7 @@ describe('tusSenales: cuentas', () => {
     const t = tarjetas(DATOS, false)
     expect([t.tenes.valor, t.tenes.texto]).toEqual(['3 cambios', 'en 3 de tus 7 activos con lectura'])
     expect([t.watch.valor, t.watch.texto]).toEqual(['1 cambio', 'PAMP'])
-    expect([t.plata.valor, t.plata.antes, t.plata.tono]).toEqual(['54%', 'la semana pasada 61%', 'neg'])
+    expect([t.plata.valor, t.plata.antes, t.plata.tono]).toEqual(['54%', 'la semana pasada, 61%', 'neg'])
     expect(t.plata.texto).toBe('AAPL pasó a bajista esta semana')
   })
 
@@ -88,8 +88,8 @@ describe('tusSenales: cuentas', () => {
 describe('tusSenales: lo que se dibuja', () => {
   it('la pantalla del recuadro 15', () => {
     const t = texto(dibujar())
-    expect(t).toContain('Qué cambió esta semana en lo tuyo')
-    for (const x of ['En lo que tenés', 'En tu watchlist', 'Tu plata en tendencia alcista', '54%', 'la semana pasada 61%',
+    expect(t).toContain('Qué cambió esta semana en lo que tenés y en tu watchlist')
+    for (const x of ['En lo que tenés', 'En tu watchlist', 'Tu plata en tendencia de fondo alcista', '54%', 'la semana pasada, 61%',
       'Todo', 'Lo que tenés', 'Watchlist', 'Viernes 23/10', 'Lunes 19/10', 'Ver gráfico',
       'MELI cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 28', 'Lo tenés · 12% de tu plata', 'En tu watchlist',
       'Tu tesis: «El recambio de iPhone.»', 'Revisar tu tesis',
@@ -108,11 +108,11 @@ describe('tusSenales: lo que se dibuja', () => {
   it('con «Ocultar saldos» no aparece ningún porcentaje de la cartera', () => {
     const t = texto(dibujar({ hidden: true }))
     expect(t).not.toMatch(/\d+%/)
-    expect(t).toContain('Oculto porque tenés prendido «Ocultar saldos».')
+    expect(t).toContain('Cuánto de tu plata está en tendencia de fondo alcista: oculto porque tenés prendido «Ocultar saldos».')
   })
 
   it('semana quieta y pedido fallido dicen cada uno lo suyo', () => {
-    expect(texto(dibujar({ datos: { ...DATOS, senales: [] } }))).toContain('Esta semana no cambió nada en lo tuyo ni en tu watchlist.')
+    expect(texto(dibujar({ datos: { ...DATOS, senales: [] } }))).toContain('Esta semana no cambió nada en lo que tenés ni en tu watchlist.')
     expect(texto(dibujar({ filtro: 'watchlist', datos: { ...DATOS, senales: [DATOS.senales[0]] } })))
       .toContain('Esta semana no cambió nada en tu watchlist.')
     expect(texto(dibujar({ error: true }))).toContain('No pudimos traer tus señales ahora')

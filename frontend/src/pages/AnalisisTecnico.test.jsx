@@ -151,7 +151,7 @@ describe('Análisis técnico: las pestañas', () => {
     expect(montado.t()).toContain('Ordenar por')
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Señales de la semana')))
     expect(montado.donde.actual.search).toBe('?tab=senales')
-    expect(montado.t()).toContain('Qué cambió esta semana en lo tuyo')
+    expect(montado.t()).toContain('Qué cambió esta semana en lo que tenés y en tu watchlist')
     expect(montado.t()).toContain('Crear una alerta técnica en Alertas')
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Panorama')))
     expect(montado.donde.actual.search).toBe('')
@@ -175,7 +175,7 @@ describe('Análisis técnico: el Panorama', () => {
   it('el % del servidor (no el de la pantalla), los 3 cambios más nuevos y cuántas señales hay', async () => {
     montado = await abrir('/analisis-tecnico')
     const t = montado.t()
-    expect(t).toContain('74% de tu plata está en activos con tendencia de fondo alcista')
+    expect(t).toContain('74% de tu plata está en tendencia de fondo alcista')
     expect(t).toContain('(la semana pasada, 70%)')
     expect(t).toContain('26% bajista')
     expect(t).toContain('3 cambiosen lo que tenés')        // NVDA, KO del día y KO del RSI

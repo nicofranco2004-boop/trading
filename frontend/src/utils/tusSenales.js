@@ -6,6 +6,16 @@
 // sólo se filtra, se agrupa por día y se arman los textos de las tres tarjetas.
 
 import { parteDeTuPlata } from './parteDeTuPlata'
+import { AVISO_OCULTO } from './ocultarSaldos'
+
+// Lo mismo, dicho igual en la Cartera (RadiografiaTecnica), el Panorama y
+// Señales (auditoría D12, 29/10: había tres frases para «Ocultar saldos», dos
+// títulos distintos y «la semana pasada» con y sin coma).
+export const TITULO_PLATA_ALCISTA = 'Tu plata en tendencia de fondo alcista'
+export const PLATA_ALCISTA_OCULTA = `Cuánto de tu plata está en tendencia de fondo alcista: ${AVISO_OCULTO.charAt(0).toLowerCase()}${AVISO_OCULTO.slice(1)}`
+// Los cambios incluyen la watchlist: «en lo tuyo» a secas hacía pensar que no.
+export const TITULO_CAMBIOS = 'Qué cambió esta semana en lo que tenés y en tu watchlist'
+export const QUE_ES_ESTA_SEMANA = 'Los últimos 7 días, contados desde hoy.'
 
 export const FILTROS = [
   { id: 'todo', label: 'Todo' },
@@ -96,13 +106,13 @@ export function tarjetas(datos, hidden) {
     ? vueltas.map(s => `${s.asset} pasó a ${s.sentido === 'arriba' ? 'alcista' : 'bajista'}`).join(', ') + ' esta semana'
     : null
   const plata = {
-    titulo: 'Tu plata en tendencia alcista',
+    titulo: TITULO_PLATA_ALCISTA,
     valor: !a ? '—' : hidden ? '••' : `${a.pct}%`,
-    antes: a?.semana_pasada && !hidden ? `${semanaPasadaTxt(a.semana_pasada, datos.hasta)} ${Math.round(a.semana_pasada.pct)}%` : null,
+    antes: a?.semana_pasada && !hidden ? antesConPct(a.semana_pasada, datos.hasta) : null,
     // Subió o bajó contra la semana pasada (el color del «antes»).
     tono: !a?.semana_pasada || hidden ? null : a.pct > a.semana_pasada.pct ? 'pos' : a.pct < a.semana_pasada.pct ? 'neg' : null,
     texto: !a ? 'Ninguno de tus activos tiene todavía una tendencia de fondo para leer.'
-      : hidden ? 'Oculto porque tenés prendido «Ocultar saldos».'
+      : hidden ? PLATA_ALCISTA_OCULTA
         : giro || 'Medido en dólares, con el último cierre.',
   }
   return { tenes, watch, plata }
@@ -114,6 +124,12 @@ export function semanaPasadaTxt(sp, hasta) {
   const dias = (Date.parse(hasta + 'T00:00:00Z') - Date.parse(sp.semana + 'T00:00:00Z')) / 86400000
   if (dias === 7) return 'la semana pasada'
   return `el ${diaLargo(sp.semana).toLowerCase()}`
+}
+
+/** «el sábado 24/10, 86%»: la semana pasada con su %, con coma, en las tres pantallas. */
+export function antesConPct(sp, hasta) {
+  if (!sp?.semana) return null
+  return `${semanaPasadaTxt(sp, hasta)}, ${Math.round(sp.pct)}%`
 }
 
 /** El texto del botón: si escribiste una tesis, revisarla; si no, el gráfico. */
