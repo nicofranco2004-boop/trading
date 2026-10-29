@@ -51,7 +51,9 @@ const ASSET_PALETTE = [
   'rgb(var(--cat-olive))', 'rgb(var(--cat-orange))', 'rgb(var(--cat-indigo))', 'rgb(var(--cat-pink))', 'rgb(var(--cat-teal))', 'rgb(var(--cat-brown))',
   'rgb(var(--cat-steel))', 'rgb(var(--cat-bronze))',
 ]
-const REST_COLOR = 'rgb(var(--ink-3))'
+// Gris intermedio: más claro que antes (ink-3) para que el rótulo oscuro de la
+// imagen para compartir se lea, y distinto del gris claro de Efectivo.
+const REST_COLOR = 'rgb(var(--ink-2))'
 
 /**
  * assetSlicesFromRows — la torta "Distribución de activos" del libro.

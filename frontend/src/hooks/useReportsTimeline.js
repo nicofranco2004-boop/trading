@@ -6,11 +6,13 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../utils/api'
+import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 
 /**
  * @param {string} broker        broker_filter: 'global' | nombre del broker
  * @param {number} months        cantidad de meses a mostrar (default 12)
- * @param {string} modo          'certero' | 'estimado' — el mismo control que Métricas
+ * @param {string} [modo]        'certero' | 'estimado'. Sin él, la elección guardada
+ *                               del usuario (ModoRendimientoContext).
  * @param {string} moneda        'usd' | 'ars' — sigue al selector global de moneda
  * @returns {{
  *   loading: boolean,
@@ -22,7 +24,9 @@ import { api } from '../utils/api'
  * }}
  */
 export default function useReportsTimeline(broker = 'global', months = 12,
-                                          modo = 'certero', moneda = 'usd') {
+                                          modoPedido, moneda = 'usd') {
+  const [modoApp] = useModoRendimiento()
+  const modo = modoPedido || modoApp
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [reports, setReports] = useState([])

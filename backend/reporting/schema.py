@@ -138,6 +138,23 @@ class PeriodMetrics:
     # Con qué modo y en qué moneda se midió — los mismos dos controles que Métricas.
     modo: str = "certero"
     moneda: str = "usd"
+    # Por qué no hay "vs inflación" cuando hay número (el IPC es mensual y la
+    # ventana arranca a mitad de mes, el INDEC no publicó, falta el dólar). La
+    # pantalla lo dice en vez de mostrar el "vs S&P" solo, que se leía como error.
+    vs_inflation_motivo: Optional[str] = None
+    # ── El TRAMO del año, cuando el año entero no se puede publicar ──────────
+    # Sale de la MISMA curva del motor que el año (`compute_metrics_for_period`),
+    # con sus dos veredictos medidos en ese tramo y en el modo pedido. Nunca va en
+    # `delta_pct`: se publica aparte y con la fecha desde la que corre.
+    parcial_pct: Optional[float] = None
+    parcial_desde: Optional[str] = None
+    parcial_hasta: Optional[str] = None
+    parcial_sp500_return_pct: Optional[float] = None
+    parcial_vs_sp500_pct: Optional[float] = None
+    parcial_inflation_pct: Optional[float] = None
+    parcial_retorno_ars_pct: Optional[float] = None
+    parcial_vs_inflation_pct: Optional[float] = None
+    parcial_vs_inflation_motivo: Optional[str] = None
 
 
 @dataclass

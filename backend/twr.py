@@ -768,9 +768,14 @@ def rendimiento_publicable(conn, uid: int, *, modo=None, moneda=None,
     número, y los 65 que lo pierden son los de capital bajo el piso o porcentaje
     sobre el techo — casos donde el número no significaba nada.
     """
-    _modo = modo if modo is not None else MODO_CERTERO
+    _modo = modo_de(conn, uid, modo)
     _moneda = moneda if moneda is not None else MONEDA_USD
-    vacio = {"pct": None, "base": None, "motivo": None, "motivo_texto": None, "meses": 0}
+    # `desde`/`hasta`: la ventana que el número CUBRE de verdad (la que declara el
+    # motor), no la pedida. Quien lo compare contra un benchmark tiene que medir
+    # el benchmark entre ESTAS dos puntas (`performance.bench_pct_entre`): con la
+    # pedida, un número medido desde junio se comparaba con 12 meses de inflación.
+    vacio = {"pct": None, "base": None, "motivo": None, "motivo_texto": None, "meses": 0,
+             "modo": _modo, "desde": None, "hasta": None}
 
     # ⚠️ LA VENTANA SE VALIDA ACÁ Y SE DICE. Con una fecha mal formada el resto de
     # la función devolvía None en silencio y el usuario se quedaba sin número por
@@ -787,8 +792,12 @@ def rendimiento_publicable(conn, uid: int, *, modo=None, moneda=None,
         c = curva_indexada(conn, uid, desde, hasta, modo=_modo, moneda=_moneda,
                            valor_live=valor_live)
         if c.get("twr") is not None:
-            return {"pct": round(c["twr"] * 100, 2), "base": "mercado",
-                    "motivo": None, "motivo_texto": None, "meses": 0}
+            # La base la declara el motor: en estimado el número puede ser la
+            # cadena CONTABLE, y etiquetarlo "mercado" le hacía decir a la IA
+            # "medido a precio real" sobre una reconstrucción.
+            return {**vacio, "pct": round(c["twr"] * 100, 2),
+                    "base": c.get("base_del_twr") or "mercado",
+                    "desde": c.get("ventana_desde"), "hasta": c.get("ventana_hasta")}
         motivo = c.get("motivo")
     except Exception:
         log.exception("rendimiento_publicable: motor uid=%s", uid)
@@ -809,7 +818,9 @@ def rendimiento_publicable(conn, uid: int, *, modo=None, moneda=None,
     if pct is None:
         return {**vacio, "motivo": motivo,
                 "motivo_texto": MOTIVO_TEXTO.get(motivo) if motivo else None}
-    return {"pct": round(pct, 2), "base": "contable", "motivo": motivo,
+    # La rama contable compone el último tramo continuo de `monthly_entries`, y
+    # no informa qué meses: sin ventana, nadie puede compararla contra un índice.
+    return {**vacio, "pct": round(pct, 2), "base": "contable", "motivo": motivo,
             "motivo_texto": MOTIVO_TEXTO.get(motivo) if motivo else None,
             "meses": meses}
 
@@ -2176,6 +2187,39 @@ def estampar_base(conn, uids=None, solo_faltantes: bool = True) -> dict:
 
 MODO_CERTERO = "certero"
 MODO_ESTIMADO = "estimado"
+MODOS = (MODO_CERTERO, MODO_ESTIMADO)
+
+
+def modo_de(conn, uid, pedido=None) -> str:
+    """EL modo con el que se mide el rendimiento de `uid`. Un solo lugar.
+
+    · `pedido` válido ('certero'/'estimado') → ése: la pantalla manda lo que muestra.
+    · si no → la elección GUARDADA del usuario (`users.modo_rendimiento`), la que
+      hizo con el toggle Certero/Estimado y dura hasta que la cambie.
+    · sin elección → certero.
+
+    ⚠️ POR QUÉ EL DEFAULT ES LA ELECCIÓN DEL USUARIO Y NO 'certero'. Cada
+    superficie que no pasaba `modo` —la IA (dashboard, insights, reportes,
+    metas, Wrapped), el inicio del celular, el informe mensual— medía en
+    certero aunque el usuario mirara la app en estimado: la pantalla decía un
+    número y la IA otro, y el "vs inflación" se comparaba con otra regla. Con el
+    default acá, el que se olvida de pasar el modo recibe el del usuario.
+
+    Las lecturas del CAMINO de precios (drawdown, pico, guards de costura) no
+    pasan por acá: van por `serie_medible`, que sigue en certero por regla.
+    """
+    p = str(pedido or "").strip().lower()
+    if p in MODOS:
+        return p
+    if conn is None or uid is None:
+        return MODO_CERTERO
+    try:
+        r = conn.execute("SELECT modo_rendimiento FROM users WHERE id = ?", (uid,)).fetchone()
+        v = str((r["modo_rendimiento"] if r else None) or "").strip().lower()
+        return v if v in MODOS else MODO_CERTERO
+    except Exception:
+        # Base sin la columna (copias viejas, fixtures): el default histórico.
+        return MODO_CERTERO
 
 MONEDA_USD = "usd"
 MONEDA_ARS = "ars"
@@ -2815,7 +2859,7 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
 
 
 def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
-                   modo: str = MODO_CERTERO,
+                   modo: str = None,
                    aceptar: tuple = ACEPTA_LINEA,
                    max_hueco_dias: int = MAX_HUECO_DIAS,
                    valor_live: float = None,
@@ -2836,6 +2880,8 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         Es exactamente el defecto que reportó el usuario ("yo nunca llegué tan
         arriba"): el pico lo había puesto el sistema.
     """
+    # Sin `modo` explícito, el que eligió el usuario (`modo_de`).
+    modo = modo_de(conn, uid, modo)
     s = serie_medible(conn, uid, desde, hasta, modo=modo, aceptar=aceptar,
                       max_hueco_dias=max_hueco_dias, moneda=moneda)
     if not s["tramos"]:

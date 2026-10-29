@@ -23,7 +23,10 @@ import { pctTxt } from '../utils/format'
 
 // La paleta del PAPEL. Hex fijos a propósito: el informe se ve igual para
 // todo el que abra el link y para la impresora. No son variables de tema.
-const P = {
+// Exportada: el reporte en PDF de la cartera del usuario (components/reporte/
+// ReporteCartera) es el mismo papel, y una segunda copia de estos hex sería
+// un segundo papel que diverge.
+export const P = {
   paper: '#FDFDFB', paper2: '#F4F4F1', ink0: '#191D26', ink2: '#5C6474',
   ink3: '#8B92A3', line: '#E6E6E0', brand: '#1E1840',
   up: '#0FA968', down: '#E04250',

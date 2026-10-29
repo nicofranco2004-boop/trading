@@ -10,6 +10,7 @@ import {
   veredictoInflacion,
   compararEnPesos,
   patrimonioEnPesos,
+  mesInicialDeLasSimulaciones,
 } from './benchmarkSim.js'
 
 const month = (y, m, capInicio, capFinal, deposits = 0, withdrawals = 0) => ({
@@ -315,6 +316,58 @@ describe('veredictoInflacion', () => {
   it('sin un solo mes de inflación contada no hay veredicto', () => {
     const v = veredictoInflacion({ ...args, inflationMap: { '2025-01': 10 }, valorHoyUsd: 121, valorHoyArs: 121_000, valorHoyMedido: true })
     expect(v).toBeNull()
+  })
+
+  // El caso reportado: "le gano al S&P y le pierdo a la inflación". Con los
+  // precios subiendo 20 % y el dólar 5 %, algo en dólares que rindió 12 % —un
+  // S&P del año— le pierde a la inflación medida en pesos. La celda lo explica
+  // con el período, los precios, el dólar y lo que hacía falta para empatar.
+  it('dice desde cuándo mide, cuánto subió el dólar y cuánto hacía falta en dólares', () => {
+    const hist = [month(2026, 1, 0, 0, 100), month(2026, 2, 0, 0)]
+    const v = veredictoInflacion({
+      globalMonthly: hist,
+      inflationMap: { '2026-02': 20 },
+      blueMap: { '2026-01': 1000, '2026-02': 1050 },
+      // US$ 112 hoy (+12 % en dólares), al blue de cierre.
+      valorHoyUsd: 112, valorHoyArs: 112 * 1050, valorHoyMedido: true,
+    })
+    expect(v.desdeMes).toBe('2026-01')
+    expect(v.dolarPct).toBeCloseTo(5, 6)
+    expect(v.inflacionPct).toBeCloseTo(20, 6)
+    expect(v.dolarParaEmpatarPct).toBeCloseTo((1.2 / 1.05 - 1) * 100, 6)   // 14,3 %
+    // 12 % en dólares no llega al 14,3 % que hacía falta: le perdés.
+    expect(v.pct).toBeLessThan(0)
+    expect(v.pct).toBeCloseTo((1.12 * 1.05 / 1.2 - 1) * 100, 6)
+  })
+})
+
+describe('veredictoInflacion — el dólar de los MISMOS meses que la inflación', () => {
+  it('con el INDEC atrasado, el dólar se mide hasta el último mes con IPC, no hasta hoy', () => {
+    // Historia de enero a abril; el INDEC publicó hasta febrero. El dólar sigue
+    // subiendo en marzo y abril: eso no entra en "los precios subieron X y el
+    // dólar Y", porque los precios de esos meses todavía no se conocen.
+    const hist = [month(2026, 1, 0, 0, 100), month(2026, 4, 0, 0)]
+    const v = veredictoInflacion({
+      globalMonthly: hist,
+      inflationMap: { '2026-02': 3 },
+      blueMap: { '2026-01': 1000, '2026-02': 1010, '2026-03': 1100, '2026-04': 1200 },
+      valorHoyUsd: 100, valorHoyArs: 100 * 1200, valorHoyMedido: true,
+    })
+    expect(v.hastaMes).toBe('2026-02')
+    expect(v.dolarPct).toBeCloseTo(1, 6)                                   // 1000 → 1010
+    expect(v.dolarParaEmpatarPct).toBeCloseTo((1.03 / 1.01 - 1) * 100, 6)
+  })
+})
+
+describe('mesInicialDeLasSimulaciones', () => {
+  it('es el primer mes de la historia, aunque las filas lleguen desordenadas', () => {
+    expect(mesInicialDeLasSimulaciones([month(2025, 3, 0, 0), month(2024, 11, 0, 0, 100)])).toBe('2024-11')
+    expect(mesInicialDeLasSimulaciones([])).toBeNull()
+  })
+  it('es el mismo mes desde el que arranca la simulación de inflación', () => {
+    const hist = [month(2025, 2, 0, 0), month(2024, 11, 0, 0, 100)]
+    const sim = simulateInflacionAr(hist, { '2024-12': 1 }, { '2024-11': 1000 })
+    expect(sim.desdeMes).toBe(mesInicialDeLasSimulaciones(hist))
   })
 })
 

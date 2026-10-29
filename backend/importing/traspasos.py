@@ -215,6 +215,19 @@ def _posiciones_que_deja_el_lote(txs: List[NormalizedTx],
     return {k: v for k, v in _neto_del_lote(txs, repetidas).items() if v > 0}
 
 
+def _pata_de_su_moneda(conn, uid: int, origen, moneda) -> Optional[str]:
+    """El broker del par `origen` cuya caja es de la moneda `moneda` (pesos o
+    dólares); None si no hay uno solo."""
+    lado = "ARS" if (moneda or "").upper() == "ARS" else "USD"
+    nombres = sorted(origen)
+    filas = conn.execute(
+        f"SELECT name, currency FROM brokers WHERE user_id=? AND name IN "
+        f"({','.join('?' * len(nombres))})", (uid, *nombres)).fetchall()
+    suyas = [r["name"] for r in filas
+             if ("ARS" if (r["currency"] or "").upper() == "ARS" else "USD") == lado]
+    return suyas[0] if len(suyas) == 1 else None
+
+
 def cerrar_origen_de_traspasos(
     conn, uid: int, txs: List[NormalizedTx],
     existing_positions: Dict[Tuple[str, str], float],
@@ -315,12 +328,16 @@ def cerrar_origen_de_traspasos(
         cierra = min(abierto, restante)
         if cierra <= 0:
             continue
-        # UNA venta para todo el broker, asentada donde está la señal de salida.
-        # El rebuild repasa el par padre↔"· USD" como un solo libro, así que la
-        # venta consume también los lotes comprados en dólares; y la caja no se
-        # mueve en ninguno de los dos (la venta acredita y el retiro debita en
-        # el mismo lugar).
-        broker = sorted(b for b in origen if (b, fecha) in salidas)[0]
+        # UNA venta para todo el broker, asentada en la pata de SU moneda (la de
+        # la entrada): pesos → el padre, dólares → el "· USD". El rebuild repasa
+        # el par padre↔"· USD" como un solo libro, así que la venta consume
+        # también los lotes de la otra moneda; y la caja no se mueve en ninguna
+        # (la venta acredita y el retiro debita en el mismo lugar). Antes iba
+        # donde estaba la señal de salida: si Bull Market cobró el trámite en
+        # dólares, una venta y un retiro EN PESOS caían en la caja en dólares, y
+        # el confirm ahora frena eso (`persister.persist_batch`).
+        broker = (_pata_de_su_moneda(conn, uid, origen, e["currency"])
+                  or sorted(b for b in origen if (b, fecha) in salidas)[0])
         valor = float(e["gross_amount"] or 0) * cierra / float(e["quantity"])
         precio = (valor / cierra) if cierra else 0.0
         idx = _BASE_ROW_INDEX - len(nuevas)

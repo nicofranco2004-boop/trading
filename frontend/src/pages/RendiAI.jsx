@@ -12,7 +12,7 @@
 // consumimos una sola vez y AICoach la auto-envía (autoAsk).
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { AlertCircle, Plus, Volume2, VolumeX } from 'lucide-react'
+import { AlertCircle, PictureInPicture2, Plus, Volume2, VolumeX } from 'lucide-react'
 import AICoach from '../components/AICoach'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAuth } from '../contexts/AuthContext'
@@ -36,7 +36,8 @@ export default function RendiAI() {
   const { user } = useAuth()
   const { clientCtx } = useAdvisorContext()
   const { enabled: vozEnabled, setEnabled: setVozEnabled, status: vozStatus,
-          limpiar: limpiarConversacion, thread: hilo, cartera, leerCartera, persona } = useVoz()
+          limpiar: limpiarConversacion, thread: hilo, cartera, leerCartera, persona,
+          islaVisible, setIslaVisible } = useVoz()
   const vozHablando = vozStatus === 'playing' || vozStatus === 'preparing'
   // Book-mode: el asesor en su propio nivel chatea sobre EL LIBRO — el
   // backend arma el contexto server-side e IGNORA el snapshot personal.
@@ -203,6 +204,29 @@ export default function RendiAI() {
           </div>
         </div>
         <div className="flex items-center gap-2.5 flex-shrink-0">
+          {/* LA ISLA FLOTANTE, PRENDIDA O APAGADA. Lo pidió un usuario: la
+              burbuja de Mervall-E lo sigue por toda la app y a veces estorba.
+              Va acá y no en la propia isla: apagada, la isla no está, y el
+              interruptor para volver a prenderla tiene que estar en algún
+              lugar que siempre exista — esta pantalla, que además es donde
+              vive la misma conversación. En celular va el ícono y el
+              interruptor, sin el texto (ver la medida a 375px del parlante). */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={islaVisible}
+            onClick={() => setIslaVisible(!islaVisible)}
+            aria-label="Isla flotante de Mervall-E"
+            title={islaVisible ? 'La burbuja de Mervall-E te acompaña en todas las pantallas — tocá para apagarla'
+                               : 'La burbuja de Mervall-E está apagada — tocá para prenderla'}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-ink-2 hover:text-ink-0 rounded-lg px-2 py-1.5 transition-colors"
+          >
+            <PictureInPicture2 size={13} strokeWidth={2} aria-hidden="true" />
+            <span className="hidden sm:inline">Isla flotante</span>
+            <span aria-hidden="true" className={`relative block w-7 h-4 rounded-full transition-colors flex-none ${islaVisible ? 'bg-data-violet' : 'bg-bg-3'}`}>
+              <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${islaVisible ? 'left-[14px]' : 'left-0.5'}`} />
+            </span>
+          </button>
           {/* SILENCIAR / DES-SILENCIAR, acá arriba del chat. El mismo
               interruptor está en la cabecera del acompañante flotante, pero
               esta es la pantalla donde el usuario pregunta: tener que

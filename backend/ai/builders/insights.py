@@ -184,9 +184,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # publicable` mide a mercado cuando hay fotos y, cuando no, publica la
     # contabilidad DICIENDO que es contabilidad (`twr_base`).
     from datetime import timedelta
-    from ai.builders.caida_medida import leer_modo
     _cutoff_iso = (today - timedelta(days=window_days)).isoformat()
-    _modo_twr = leer_modo(kwargs.get("modo"))
+    # El modo de la pantalla si lo mandó; si no, el que eligió el usuario.
+    _modo_twr = _twr.modo_de(conn, user_id, kwargs.get("modo"))
     _rend = _twr.rendimiento_publicable(conn, user_id, desde=_cutoff_iso, modo=_modo_twr,
                                         valor_live=kwargs.get("valor_live"))
     twr_pct: Optional[float] = _rend["pct"]
@@ -531,34 +531,27 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     ]
 
     # ── 4. Benchmarks ────────────────────────────────────────────────────────
+    # ⚠️ CADA BENCHMARK SE MIDE SOBRE LA VENTANA DEL NÚMERO CONTRA EL QUE SE
+    # COMPARA, no sobre los `window_days` pedidos. El motor mide desde el primer
+    # cierre que puede afirmar (en certero puede ser hace semanas): con la ventana
+    # pedida, "+3 % desde junio" se comparaba contra 12 meses de inflación.
+    # S&P ↔ `_rend` (dólares); inflación ↔ `_rend_ars` (pesos).
+    # Sin número medido (sin ventana) el índice se sigue INFORMANDO, sobre la
+    # ventana pedida y diciendo cuál es (`*_ventana`): es contexto, y la resta
+    # (`delta_*`) ya no se hace en ese caso.
     sp500_pct: Optional[float] = None
     inflation_pct: Optional[float] = None
+    _pedida = (_cutoff_iso, "hoy")
+    _v_sp = ((_rend.get("desde"), _rend.get("hasta")) if _rend.get("desde") else _pedida)
+    _v_inf = ((_rend_ars.get("desde"), _rend_ars.get("hasta")) if _rend_ars.get("desde")
+              else _pedida)
     try:
         import main as _m
+        import performance as _perf
         cache_bench = getattr(_m, "_bench_cache", {}) or {}
         data = cache_bench.get("data") or {}
-        sp = data.get("sp500") or {}
-        infl = data.get("inflation_ar") or {}
-
-        # Ventana: tomamos los meses dentro del window y compoundeamos
-        from datetime import timedelta
-        cutoff_date = today - timedelta(days=window_days)
-
-        # SPY: % change desde el primer close ≥ cutoff hasta el último close
-        sp_in_window = sorted([(k, v) for k, v in sp.items() if k >= cutoff_date.strftime("%Y-%m")])
-        if len(sp_in_window) >= 2:
-            v0 = sp_in_window[0][1]
-            vN = sp_in_window[-1][1]
-            if v0:
-                sp500_pct = round((vN - v0) / v0 * 100, 2)
-
-        # Inflación: compound de los % mensuales dentro de la ventana
-        infl_in_window = sorted([(k, v) for k, v in infl.items() if k >= cutoff_date.strftime("%Y-%m")])
-        if infl_in_window:
-            comp = 1.0
-            for _, pct in infl_in_window:
-                comp *= (1 + pct / 100)
-            inflation_pct = round((comp - 1) * 100, 2)
+        sp500_pct = _perf.bench_pct_entre(data, "sp500", *_v_sp)
+        inflation_pct = _perf.bench_pct_entre(data, "inflation_ar", *_v_inf)
     except Exception:
         pass
 
@@ -570,6 +563,10 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     vs_benchmarks = {
         "sp500_pct": sp500_pct,
         "inflation_ar_pct": inflation_pct,
+        # El período de cada índice: el del número contra el que se compara, o el
+        # pedido cuando no hay número (y entonces no hay resta).
+        "sp500_ventana": list(_v_sp),
+        "inflation_ventana": list(_v_inf),
         # Sólo a mercado: la contabilidad al costo contra el S&P compara el
         # realizado con un índice que sí ve el mercado.
         "delta_sp500_pp": (
@@ -609,7 +606,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             # `window_days: 365` el modelo podía leer una caída de hace dos años
             # como "del último año".
             "drawdown": "Caída MEDIDA COMO RENDIMIENTO (un depósito o un retiro no cuenta) sobre TODA la historia medida, desde drawdown.medido_desde — NO sobre window_days: una caída vieja no es 'del último año'. Es el mismo número que la pantalla. Si trae insufficient_data, `reason` dice por qué no hay número.",
-            "twr_pct": "Rendimiento del período (window_days), en dólares: el MISMO motor que la pantalla. twr_base dice de dónde sale: 'mercado' = medido con el valor real de la cartera; 'contable' = la contabilidad al costo (no ve cuánto subieron o bajaron los papeles): decilo así y no lo compares contra nada. NO descompone realizado vs unrealized — usar realized_pnl_usd + unrealized_pnl_total_usd para eso.",
+            "twr_pct": "Rendimiento en dólares entre twr_desde y twr_hasta (la ventana que el motor pudo medir: puede ser MÁS CORTA que window_days, y entonces se dice desde cuándo), con el modo twr_modo ('certero' o 'estimado', el que eligió el usuario): el MISMO motor y el mismo modo que la pantalla. vs_benchmarks está medido sobre esa MISMA ventana. twr_base dice de dónde sale: 'mercado' = medido con el valor real de la cartera; 'contable' = la contabilidad al costo (no ve cuánto subieron o bajaron los papeles): decilo así y no lo compares contra nada. NO descompone realizado vs unrealized — usar realized_pnl_usd + unrealized_pnl_total_usd para eso.",
             "realized_pnl_usd": "USD ABSOLUTO sumado de trades CERRADOS. No es %, no es vs invested. Si negativo, perdiste en operaciones cerradas. Si chico vs total_equity_usd, casi todo el resultado está en unrealized.",
             "realized_avg_pct_per_trade": "Promedio simple de pnl_pct por trade cerrado. NO acumulado, NO compounded. Solo describe performance media por operación.",
             "unrealized_pnl_total_usd": "USD mark-to-market HOY de TODAS las posiciones abiertas. Cambia con el mercado. Si twr_pct alto y realized_pnl_usd bajo, este campo explica la diferencia.",
@@ -622,6 +619,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "window_days": window_days,
         "twr_pct": twr_pct,
         "twr_base": _rend["base"],
+        "twr_modo": _rend.get("modo"),
+        "twr_desde": _rend.get("desde"),
+        "twr_hasta": _rend.get("hasta"),
         "twr_motivo_texto": _rend["motivo_texto"],
         # Métricas de trades cerrados — REPLACE del viejo twr_realized_pct
         # que era engañoso (denominador inflado por capital rotativo). Ahora:

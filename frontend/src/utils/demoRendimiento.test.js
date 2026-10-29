@@ -166,3 +166,40 @@ describe('demo: el 1° del mes, "Hoy" no carga el mes entero', () => {
     }
   })
 })
+
+describe('demo: los cierres de mes no dependen del día en que se mira', () => {
+  // El test de arriba corre con el reloj de verdad y sólo puede ver el bug los
+  // días en que se dispara: el 28/10/2026 febrero de 2025 cerraba en 41.307 (la
+  // cartera de ayer) en vez de 32.145, porque "¿es el mes en curso?" se
+  // preguntaba como `tramo === hoyD` y un mes cerrado de 28 días tiene tramo 28.
+  // El 30 y el 31 pasaba lo mismo con los meses de 30 y 31 días. Acá se recorren
+  // los días que lo disparaban, el 1° y las horas de 21 a 23 (UTC ya es mañana).
+  const MOMENTOS = [
+    [2026, 9, 28, 15, 0], [2026, 9, 30, 12, 0], [2026, 9, 31, 22, 30],
+    [2026, 10, 30, 23, 59], [2026, 11, 31, 21, 0], [2027, 0, 31, 10, 0],
+    [2027, 1, 28, 22, 0], [2028, 1, 29, 23, 0], [2026, 10, 1, 0, 5],
+    [2026, 11, 1, 10, 0], [2027, 2, 1, 21, 30], [2026, 9, 15, 23, 30],
+  ]
+  for (const [y, mo, dd, hh, mm] of MOMENTOS) {
+    const rotulo = `${y}-${String(mo + 1).padStart(2, '0')}-${String(dd).padStart(2, '0')} ${hh}:${String(mm).padStart(2, '0')}`
+    it(`mirado el ${rotulo}: el último día de cada mes cerrado ES su capital_final`, async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(y, mo, dd, hh, mm))
+      try {
+        vi.resetModules()
+        const demo = await import('./demo.js')
+        const snaps = demo.handleDemoRequest('GET', '/snapshots?days=3650')
+        const g = demo.handleDemoRequest('GET', '/monthly').filter(m => m.broker === 'global')
+        for (const m of g.slice(0, -1)) {
+          const ultimo = new Date(m.year, m.month, 0).getDate()
+          const fecha = `${m.year}-${String(m.month).padStart(2, '0')}-${String(ultimo).padStart(2, '0')}`
+          const fila = snaps.find(s => s.date === fecha)
+          expect(fila, `falta el cierre del ${fecha}`).toBeTruthy()
+          expect(fila.total_value, `cierre del ${fecha}`).toBeCloseTo(m.capital_final, 2)
+        }
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  }
+})
