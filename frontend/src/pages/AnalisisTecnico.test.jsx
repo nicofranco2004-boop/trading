@@ -9,7 +9,7 @@
 //   · la página pide UNA vez lo de la semana y UNA vez tu lista, aunque los
 //     usen varias pestañas;
 //   · /novedades?tab=senales (los mails viejos) lleva a la pestaña nueva.
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic, enActo } from '../testing/navegadorMinimo'
 
@@ -111,6 +111,16 @@ const pestanaActiva = (c) => {
   }
   return null
 }
+
+// La primera vez que se importa la página, vite la traduce con todo lo que
+// arrastra (la ficha y Novedades): en la suite completa, en paralelo, eso solo
+// pasaba los 5 s de la primera prueba. Se hace una vez acá, con tiempo; después
+// `vi.resetModules` la vuelve a importar ya traducida.
+beforeAll(async () => {
+  instalarNavegadorMinimo()
+  await import('./AnalisisTecnico')
+  await import('./Novedades')
+}, 60000)
 
 let montado
 beforeEach(() => {
