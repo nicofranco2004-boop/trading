@@ -3861,9 +3861,15 @@ def get_current_user(
     # misma forma que la caída del 2026-08-02 (el índice antes que su columna).
     with db_abierta() as conn:
         try:
-            row = conn.execute(
-                "SELECT id, password_changed_at, requires_plan FROM users WHERE id=?",
-                (uid,)).fetchone()
+            # Punto de guardado: en Postgres, la consulta que falla deja la
+            # transacción abortada y el plan B de abajo reventaba con otro error
+            # — o sea que la red escrita justamente para que una columna que
+            # falta no tumbe la app (la caída del 2026-08-02) no funcionaba del
+            # otro lado del motor. Y esto corre en TODOS los pedidos con sesión.
+            with _si_falla_se_deshace_solo_esto(conn, "leer_requires_plan"):
+                row = conn.execute(
+                    "SELECT id, password_changed_at, requires_plan FROM users WHERE id=?",
+                    (uid,)).fetchone()
             marca = None if row is None else bool(row["requires_plan"])
         except Exception:
             # Base sin la columna: se sigue como siempre y el muro pregunta él.
@@ -4623,13 +4629,21 @@ def register(data: RegisterIn, request: Request, response: Response,
             # lo último que se puede permitir romper en un cambio cuyo objetivo
             # es cobrar. Sin la columna, el alta entra como los de antes.
             try:
-                cur = conn.execute(
-                    """INSERT INTO users (email, name, password_hash, is_admin, approved,
-                                         email_verified, requires_plan)
-                       VALUES (?,?,?,?,?,?,?)""",
-                    (data.email, data.name, h, 1 if is_admin_signup else 0, approved,
-                     email_verified, requires_plan),
-                )
+                # El punto de guardado es LO QUE HACE QUE LA RED FUNCIONE. En
+                # Postgres el INSERT que falla deja la transacción abortada, así
+                # que el plan B de abajo reventaba con `InFailedSqlTransaction` —
+                # otro error, que el `except ERR_INTEGRIDAD` del final no
+                # reconoce. Medido 2026-10-29: un email repetido devolvía 500 en
+                # vez del 409 "ese email ya está registrado"
+                # (test_email_verification::…_returns_409_with_code).
+                with _si_falla_se_deshace_solo_esto(conn, "alta_con_requires_plan"):
+                    cur = conn.execute(
+                        """INSERT INTO users (email, name, password_hash, is_admin, approved,
+                                             email_verified, requires_plan)
+                           VALUES (?,?,?,?,?,?,?)""",
+                        (data.email, data.name, h, 1 if is_admin_signup else 0, approved,
+                         email_verified, requires_plan),
+                    )
             except Exception as ex:
                 log.error("INSERT con requires_plan falló (%s); alta sin la marca", ex)
                 cur = conn.execute(
@@ -4645,10 +4659,16 @@ def register(data: RegisterIn, request: Request, response: Response,
             # que `requires_plan`: anotar el origen no puede tumbar un registro.
             if data.origen:
                 try:
-                    conn.execute(
-                        "UPDATE users SET origen=?, origen_visto_at=? WHERE id=?",
-                        (data.origen, data.origen_visto, uid),
-                    )
+                    # Con punto de guardado: sin él, en Postgres un fallo acá
+                    # abortaba la transacción y el `conn.commit()` del final se
+                    # volvía un ROLLBACK — el alta entera se perdía y register
+                    # contestaba 200 igual. Anotar de dónde vino no puede costar
+                    # la cuenta.
+                    with _si_falla_se_deshace_solo_esto(conn, "anotar_origen"):
+                        conn.execute(
+                            "UPDATE users SET origen=?, origen_visto_at=? WHERE id=?",
+                            (data.origen, data.origen_visto, uid),
+                        )
                 except Exception as ex:
                     log.error("No se pudo anotar el origen del registro uid=%s: %s", uid, ex)
 
@@ -16549,14 +16569,21 @@ def _rollover_to_current_month(conn, uid: int, broker: str) -> int:
             break  # Pasamos el current → fin del loop
 
         try:
-            conn.execute(
-                """INSERT INTO monthly_entries
-                   (user_id, year, month, broker, deposits, withdrawals,
-                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-                   VALUES (?, ?, ?, ?, 0, 0, 0, 0, ?, ?)""",
-                (uid, cur_year, cur_month, broker,
-                 round(cur_cap_final, 4), round(cur_cap_final, 4)),
-            )
+            # Punto de guardado: el `except` de abajo existe PARA la carrera (dos
+            # pedidos creando la fila del mes a la vez), y sin esto en Postgres el
+            # INSERT perdedor abortaba la transacción, así que el SELECT de
+            # recuperación reventaba con `InFailedSqlTransaction` — un error que
+            # este `except` no atrapa: 500 en vez de seguir desde el capital que
+            # dejó el otro.
+            with _si_falla_se_deshace_solo_esto(conn, "crear_fila_del_mes"):
+                conn.execute(
+                    """INSERT INTO monthly_entries
+                       (user_id, year, month, broker, deposits, withdrawals,
+                        pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                       VALUES (?, ?, ?, ?, 0, 0, 0, 0, ?, ?)""",
+                    (uid, cur_year, cur_month, broker,
+                     round(cur_cap_final, 4), round(cur_cap_final, 4)),
+                )
             created += 1
         except ERR_INTEGRIDAD:
             # Race: otra request creó la row. Leerla y seguir desde su cap_final.
