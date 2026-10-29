@@ -37,7 +37,7 @@ import Segmento from '../components/asset/Segmento'
 import Skeleton from '../components/Skeleton'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
-import { lotMissingPurchaseRate, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
+import { isBymaHolding, lotMissingPurchaseRate, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { empresaDeTenencias, empresaDeTicker, urlDeActivo, miradaSinTenencia, mismoPapel } from '../utils/buscadorRapido'
 // ¿Es una acción argentina? Una regla (utils/accionLocal.js) para la ficha, la
