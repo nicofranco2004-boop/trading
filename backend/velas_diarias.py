@@ -143,10 +143,21 @@ def _es_bono(asset: str) -> bool:
         return False
 
 
+# Cuántos tickers de Yahoo puede sumar UNA persona a la descarga de la noche, por
+# todas las puertas juntas (lo que tiene, lo que sigue, sus alertas técnicas, lo
+# que operó). El 22/10 se topeó la watchlist (100); las alertas técnicas fueron
+# otra puerta a la misma lista, sin tope y con cualquier símbolo con forma de
+# ticker: una cuenta metió 89 inventados (auditoría E4, 29/10). El tope va acá,
+# en la SALA, no en cada puerta: la próxima puerta que se abra queda cubierta.
+# Una cartera grande tiene ~60 activos (un CEDEAR son dos tickers) más 100 de
+# watchlist: 300 sobra para una persona y frena a un script.
+TICKERS_POR_PERSONA = 300
+
+
 def simbolos_a_seguir(conn) -> list:
     """Todos los tickers de Yahoo que hacen falta: lo que alguien tiene en
-    cartera, lo que alguien sigue en su watchlist y lo que alguien vigila con
-    una alerta técnica."""
+    cartera, lo que alguien sigue en su watchlist, lo que alguien vigila con
+    una alerta técnica y lo que alguien operó."""
     return sorted(_seguimiento(conn)[0])
 
 
@@ -162,17 +173,21 @@ def _seguimiento(conn):
     "En pesos" se decide con la MISMA regla que la valuación
     (`snapshots_job.position_price_key`): si la posición se valúa por su '.BA',
     su serie en pesos es la del '.BA'. Reinventar esa regla acá es lo que hizo
-    que un CEDEAR comprado por dólar-MEP pidiera el ticker equivocado (bug C1)."""
+    que un CEDEAR comprado por dólar-MEP pidiera el ticker equivocado (bug C1).
+
+    Cada persona suma hasta `TICKERS_POR_PERSONA`, en este orden: lo que
+    tiene, lo que sigue, sus alertas técnicas, lo que operó. Lo que pasa de ahí
+    queda afuera (y se anota en el log)."""
     from cripto import yahoo_de_cripto
     from snapshots_job import _broker_name_sets, position_price_key, simbolo_byma
 
     cedears = _cedears_de_byma()
-    tickers, pares = set(), {}
+    # {uid: [lista de tickers de un activo]} en el orden de las puertas.
+    por_persona = {}
 
-    def _sumar(ys):
-        tickers.update(ys)
-        if len(ys) == 2:   # la forma de un CEDEAR: [afuera, pesos]
-            pares[ys[1]] = ys[0]
+    def _anotar_de(uid, ys):
+        if ys:
+            por_persona.setdefault(uid, []).append(ys)
     brokers = [dict(r) for r in conn.execute(
         "SELECT id, user_id, name, currency, parent_broker_id FROM brokers").fetchall()]
     por_usuario = {}
@@ -188,23 +203,27 @@ def _seguimiento(conn):
         ars, ar_usd = sets.get(p['user_id'], (set(), set()))
         clave = position_price_key(p, ars, ar_usd)
         en_pesos = str(clave).upper().endswith('.BA')
-        _sumar(_yahoo_de(p['asset'], p.get('asset_type'), en_pesos, yahoo_de_cripto, cedears))
+        _anotar_de(p['user_id'], _yahoo_de(p['asset'], p.get('asset_type'), en_pesos, yahoo_de_cripto, cedears))
 
-    for r in conn.execute("SELECT symbol, asset_type FROM watchlist").fetchall():
+    for r in conn.execute("SELECT user_id, symbol, asset_type FROM watchlist").fetchall():
         sym = (r['symbol'] or '').upper()
-        _sumar(_yahoo_de(sym, r['asset_type'], sym.endswith('.BA'), yahoo_de_cripto, cedears))
+        _anotar_de(r['user_id'], _yahoo_de(sym, r['asset_type'], sym.endswith('.BA'), yahoo_de_cripto, cedears))
 
     # Las alertas técnicas (alerts_engine.evaluar_tecnicas) miran la serie de la
     # ficha: sin esto, una alerta sobre un activo que nadie tiene no avisaba
     # nunca. El activo viene pelado ('AAPL', 'GGAL'): en pesos hace falta el
     # '.BA' — el de una acción argentina, o el de un CEDEAR que BYMA lista.
+    # Sólo las de un activo VÁLIDO (`se_puede_pedir`, la regla del alta): una
+    # alerta vieja con un símbolo inventado no le pide nada a Yahoo.
     for r in conn.execute(
-            "SELECT symbol, currency, accion_local FROM alerts "
+            "SELECT user_id, symbol, currency, accion_local FROM alerts "
             "WHERE kind = 'tecnica' AND active = 1").fetchall():
         sym = (r['symbol'] or '').upper()
+        if not se_puede_pedir(conn, sym, r['user_id']):
+            continue
         en_pesos = bool(r['accion_local']) or (
             (r['currency'] or '').upper() == 'ARS' and simbolo_byma(sym)[:-3] in cedears)
-        _sumar(_yahoo_de(sym, None, en_pesos, yahoo_de_cripto, cedears))
+        _anotar_de(r['user_id'], _yahoo_de(sym, None, en_pesos, yahoo_de_cripto, cedears))
 
     # Lo que alguien VENDIÓ y compró dentro de lo que se guarda: el diario de
     # operaciones de Movimientos dice cómo estaba la tendencia el día de la
@@ -219,13 +238,31 @@ def _seguimiento(conn):
     for r in conn.execute(
             """SELECT DISTINCT user_id, broker, asset, currency FROM operations
                WHERE entry_date IS NOT NULL AND entry_date >= ?
-                 AND COALESCE(op_type, '') NOT IN ('Compra', 'Dividendo', 'Interés')""",
+                 AND COALESCE(op_type, '') NOT IN ('Compra', 'Dividendo', 'Interés')
+               ORDER BY user_id, entry_date DESC""",
             (piso,)).fetchall():
         p = dict(r)
         ars, ar_usd = sets.get(p['user_id'], (set(), set()))
         clave = position_price_key(p, ars, ar_usd)
         en_pesos = str(clave).upper().endswith('.BA')
-        _sumar(_yahoo_de(p['asset'], None, en_pesos, yahoo_de_cripto, cedears))
+        _anotar_de(p['user_id'], _yahoo_de(p['asset'], None, en_pesos, yahoo_de_cripto, cedears))
+
+    tickers, pares, topados = set(), {}, {}
+    for uid, listas in por_persona.items():
+        suyos = set()
+        for ys in listas:
+            nuevos = [y for y in ys if y and y not in suyos]
+            if len(suyos) + len(nuevos) > TICKERS_POR_PERSONA:
+                topados[uid] = topados.get(uid, 0) + 1
+                continue
+            suyos.update(nuevos)
+            if len(ys) == 2:   # la forma de un CEDEAR: [afuera, pesos]
+                pares[ys[1]] = ys[0]
+        tickers |= suyos
+    if topados:
+        log.warning("velas: %d persona(s) pasaron el tope de %d tickers por persona; quedaron "
+                    "afuera %d activos (uid: %s)", len(topados), TICKERS_POR_PERSONA,
+                    sum(topados.values()), sorted(topados)[:20])
 
     tickers.add(SP500)
     tickers.discard('')
