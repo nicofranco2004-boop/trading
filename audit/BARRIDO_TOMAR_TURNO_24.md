@@ -540,3 +540,77 @@ toda la pantalla Mensual y Reportes. Y de ésos, por `sync_unrealized`: es el ú
 de los 12 que **ya tiene un hallazgo propio de una lente** («se come un
 depósito»), así que tiene las dos mitades —intruso mecánico y consecuencia
 afirmada— y es el más barato de cerrar.
+
+
+---
+
+# ✅ VERIFICADO: `sync_unrealized` SÍ se come el depósito (28/10)
+
+Primero de los 14 medido. Lo elegí porque era el único con las dos mitades:
+intruso mecánico (es uno de los 12 que escriben `monthly_entries` sin pedir
+turno) y consecuencia afirmada por una lente («recalcula el capital del mes con
+números viejos y se come un depósito»).
+
+**El hallazgo es CIERTO, y el cuánto también.** Es el primero de los cuatro
+medidos esta tanda en el que la lente no exageró ni se quedó corta.
+
+## La forma (`main.py:15947`)
+
+    current = SELECT capital_inicio, deposits, withdrawals, pnl_realized …   ← lee
+    UPDATE monthly_entries SET pnl_unrealized=0 WHERE … id != ?              ← escribe (otras filas)
+    new_cap_final = current['capital_inicio'] + current['deposits'] − … + pnl ← calcula con la FOTO
+    UPDATE monthly_entries SET pnl_unrealized=?, capital_final=? WHERE id=?   ← escribe el ABSOLUTO
+    _repair_monthly_chain(…)
+    conn.commit()
+
+Lee `deposits`, calcula en Python y escribe el absoluto. Un depósito que entre en
+el medio suma **en la base** (`deposits = deposits + ?`), así que el
+`capital_final` que esta función escribe **no lo incluye**.
+
+Y no lo repara nadie: los invariantes de `_repair_monthly_chain` dicen
+«Meses cerrados (**NO el current calendar month**): capital_final = …». Al mes en
+curso no se le recalcula.
+
+## Medido, con la ventana forzada, 6 de 6
+
+| base | corridas | `deposits` | `pnl_unrealized` | `capital_final` | debería ser |
+|---|---|---|---|---|---|
+| SQLite | 3 | 500 | 200 | **1.200** | 1.700 |
+| Postgres | 3 | 500 | 200 | **1.200** | 1.700 |
+
+**Se pierden los 500 del depósito**, idéntico en los dos motores. Lo que ve la
+persona es exactamente lo que decía la lente: cargó 500, «Capital aportado» lo
+muestra, y «Capital final» del mes no se movió. Y como el `capital_final` del mes
+es el `capital_inicio` del siguiente, el error se arrastra.
+
+🔴 **NO es una regresión de la migración: está vivo en producción hoy.** Cae del
+lado malo del discriminador — **lo primero que hace el camino es LEER**, así que
+SQLite no lo cubre.
+
+## ⚠️ Pero la EXPOSICIÓN no es la misma en los dos motores, y esto es lo que NO medí
+
+La ventana se forzó con el envoltorio de conexión del repo
+(`tests/test_dos_pedidos_a_la_vez.py`). **No medí cada cuánto se da sola**, y por
+la estructura del código no es igual en cada motor:
+
+· En **SQLite**, la sentencia siguiente al SELECT es un `UPDATE` que toma la base
+  entera. O sea que la ventana natural es **entre el SELECT y ese UPDATE:
+  microsegundos de aritmética en Python**. Real, pero angosta.
+· En **Postgres**, ese `UPDATE` traba sólo las OTRAS filas (`id != ?`) y no toca
+  ni `positions` ni `flujos_a_mano`, así que el depósito pasa igual. La ventana
+  se estira **hasta el commit**, e incluye `_repair_monthly_chain`.
+
+👉 **Mismo bug en los dos; la ventana se agranda muchísimo al pasar a Postgres.**
+Eso lo digo por la estructura del código, no medido: para medirlo haría falta una
+corrida sin forzar, con muchos intentos.
+
+## El arreglo
+
+El mismo de la hermana del mes (hallazgo 11, punto 3): **no recalcular
+`capital_final` desde una foto propia.** O se suma en la base, o se relee la fila
+después de escribir `pnl_unrealized`. Son los dos el mismo arreglo, en dos
+funciones distintas que escriben la misma columna de la misma fila — así que
+conviene unificarlo y no hacerlo dos veces.
+
+Sonda: `test_sync_unrealized_come_el_deposito.py` (en el scratchpad de la
+auditoría). Rojo en los dos motores a propósito: ese rojo ES el bug.
