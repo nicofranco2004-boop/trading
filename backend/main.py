@@ -735,27 +735,14 @@ def db_abierta():
 
 @contextmanager
 def _si_falla_se_deshace_solo_esto(conn, nombre: str):
-    """Un punto de guardado: si lo de adentro revienta, se deshace SÓLO eso y la
-    excepción sigue su camino; lo escrito antes queda en pie.
-
-    🔴 POR QUÉ HACE FALTA, y por qué sólo se nota en Postgres. La forma
-    «try: escribir → except: log → commit» supone que un error deja la
-    transacción como estaba. En SQLite es así. En Postgres un error de SQL deja la
-    transacción ENTERA abortada, y el `commit()` de después es un ROLLBACK: se
-    descarta también lo de antes del `try`. Medido el 28/10/2026 en
-    `create_operation`: contestaba 200 con el id de una operación que ya no
-    existía (test_pnl_del_mes_dos_pedidos). Con esto los dos motores hacen lo
-    mismo: lo que falló no se aplica y lo demás se guarda.
-
-    El `except` lo sigue poniendo quien llama: es el que sabe si el error se puede
-    tragar (un recálculo que se rearma solo después) o tiene que llegar al usuario.
+    """Un punto de guardado. La implementación y el por qué viven en
+    `pgsesion.si_falla_se_deshace_solo_esto`: `ai/quota.py` y `snapshots_job.py`
+    lo necesitan igual y no pueden importar `main` (sería un círculo). Acá queda
+    sólo el nombre, para no tocar los seis lugares que ya lo usan.
     """
-    conn.execute(f"SAVEPOINT {nombre}")
-    try:
+    import pgsesion as _ps
+    with _ps.si_falla_se_deshace_solo_esto(conn, nombre):
         yield
-    except BaseException:
-        conn.execute(f"ROLLBACK TO SAVEPOINT {nombre}")
-        conn.execute(f"RELEASE SAVEPOINT {nombre}")
         raise
     conn.execute(f"RELEASE SAVEPOINT {nombre}")
 
@@ -1337,6 +1324,163 @@ _NOTA_COMPRA_POR_CHAT = "Registrado por Mervall-E AI"
 _NOTAS_COMPRA_POR_CHAT_VIEJAS = ("Registrado por Coach IA", "Registrado por Rendi AI")
 
 
+def reparaciones_de_arranque(conn):
+    """Lo que Rendi se arregla sola CADA VEZ que arranca. Corre en LOS DOS MOTORES.
+
+    🔴 POR QUÉ ES UNA FUNCIÓN APARTE, y no un trozo más de `init_db`. Hasta el
+    2026-10-29 esto vivía adentro de `init_db`, 2.400 líneas abajo de su primera
+    línea — que es `if USANDO_PG: _init_db_postgres(); return`. O sea que **en
+    Postgres no corría ninguna**, y sin dejar rastro: ni un error, ni la línea de
+    WARNING que varias de éstas dejan a propósito. Lo agarraron cuatro tests cuyo
+    nombre dice «al arrancar» (`test_efectivo_una_puerta` ×2,
+    `test_admin_ingresos`, `test_admin_uso`), y la causa era una sola.
+
+    Y el `return` de `init_db` **está bien** para lo que quedó allá: las 46
+    migraciones incrementales son la HISTORIA del esquema de SQLite (crear la
+    tabla, después la columna, después el índice) y Postgres arranca del
+    RESULTADO (`schema_pg.sql`). Lo que estaba mal era compartir la función con
+    esto, que no es esquema: son DATOS, y hay que repararlos en los dos motores.
+
+    QUÉ ENTRÓ ACÁ: lo que corre en cada boot y es idempotente — sus propios
+    comentarios lo dicen («en cada boot», «quedan 0» como confirmación). Entre
+    ellas DOS DE SEGURIDAD: los tokens de recuperación de contraseña y los de los
+    links de asesor pasan de texto en claro a huella. En Postgres no pasaban.
+    Medido: el SQL funciona igual en los dos motores, no hubo que traducir nada
+    (`tests/test_reparaciones_del_arranque.py`).
+
+    QUÉ NO ENTRÓ, a propósito: los arreglos HISTÓRICOS, que reparan datos viejos
+    de SQLite y ya están aplicados en los datos que se copian a Postgres —
+    `_marcar_bienvenidas_previas` (tiene fecha de corte), el relleno de
+    `credit_ledger` para quien pagó antes de la proration, y los `if not cols:`
+    que rearman tablas que nunca existieron. Si alguno hiciera falta del lado de
+    Postgres, hay que traerlo acá a mano.
+    """
+    # Sincronizar is_admin + approved para usuarios con email admin
+    rows = conn.execute("SELECT id, email FROM users").fetchall()
+    for r in rows:
+        if _is_admin_email(r["email"]):
+            conn.execute("UPDATE users SET is_admin=1, approved=1 WHERE id=?", (r["id"],))
+    conn.commit()
+
+    # "Último login" atrasado: hasta que existió `_registrar_ingreso`, verificar
+    # el mail anotaba el ingreso en login_history pero NO en users.last_login_at,
+    # así que quien entró así figuraba "—" en /admin aunque hubiera entrado.
+    # Se completa desde el historial. Idempotente: sólo toca filas donde el
+    # historial tiene un ingreso MÁS NUEVO que la columna; corrida dos veces
+    # no cambia nada. DESPUÉS del CREATE de login_history, a propósito.
+    try:
+        conn.execute("""
+            UPDATE users SET last_login_at = (
+                SELECT MAX(h.created_at) FROM login_history h WHERE h.user_id = users.id)
+             WHERE (SELECT MAX(h.created_at) FROM login_history h WHERE h.user_id = users.id)
+                   > COALESCE(last_login_at, '')
+        """)
+        conn.commit()
+    except Exception as _ex:
+        logging.getLogger(__name__).warning("completar last_login_at desde login_history falló (no fatal): %s", _ex)
+
+    _podar_uso(conn, siempre=True)
+
+    # B-7 (audit IA #2): purga del cache yfinance envenenado — fundamentals/
+    # analysts de tickers .BA cacheados ANTES del guard traen ARS bajo campos
+    # *_usd y se servirían hasta 12-24h (7 días vía stale-fallback). Post-guard,
+    # esos kinds para .BA devuelven available:false (payload mínimo) → borrar
+    # en cada boot es idempotente y de costo trivial.
+    try:
+        conn.execute(
+            "DELETE FROM yfinance_cache WHERE ticker LIKE '%.BA' "
+            "AND kind IN ('fundamentals', 'analysts')")
+    except Exception:
+        pass  # tabla puede no existir en DBs muy viejas pre-migración
+
+    # Las compras registradas por chat guardaron la nota con el nombre que el
+    # asistente tenía ese día ("Coach IA", después "Rendi AI"), y se ve en
+    # "Editar posición → Notas".
+    # Sólo la nota EXACTA que escribía el sistema: si alguien la editó a mano,
+    # queda como la dejó. En cada boot, como la purga de arriba: después de la
+    # primera vez no encuentra nada. Es cosmético, así que no puede voltear el
+    # arranque.
+    try:
+        # Tantos `?` como nombres viejos: con dos escritos a mano, sumar un
+        # tercero a la lista hacía fallar la consulta — y como el error se
+        # descarta (es cosmético), no se renombraba ninguna nota.
+        huecos = ", ".join("?" * len(_NOTAS_COMPRA_POR_CHAT_VIEJAS))
+        n = conn.execute(
+            f"UPDATE positions SET notes = ? WHERE notes IN ({huecos})",
+            (_NOTA_COMPRA_POR_CHAT, *_NOTAS_COMPRA_POR_CHAT_VIEJAS)).rowcount or 0
+        if n:
+            log.info("notas de compras por chat renombradas: %d", n)
+    except Exception as ex:
+        log.warning("no se pudieron renombrar las notas de compras por chat: %s", ex)
+
+    # Cajas de brokers en DÓLARES que se llaman 'USDT'. Hasta 2026-10-07 el
+    # importador tenía su propia copia de "sumar al saldo" y creaba 'USDT' para
+    # todo lo que no fuera pesos: el efectivo de un Schwab importado se veía como
+    # Tether (en la base de prod del 2026-08-16: 35 cajas, ninguna de un exchange).
+    # Desde la puerta única (efectivo.py) ya no se crean; acá se renombran las que
+    # quedaron, con la misma regla (`asset_de_caja`). Sólo cambia el rótulo: la
+    # valuación mira la moneda del broker. En cada boot, como el de arriba:
+    # después de la primera vez no encuentra nada.
+    # El renglón va en WARNING y en CADA boot, a propósito: init_db corre antes
+    # del `logging.basicConfig(level=INFO)` de este archivo, así que un INFO acá
+    # se descarta en silencio (le pasó a la primera versión de esto, 2026-10-07:
+    # el renombre corrió y no quedó dicho cuántas). "quedan 0" es la confirmación.
+    _usdt_en_usd = ("is_cash=1 AND asset='USDT' AND EXISTS (SELECT 1 FROM brokers b "
+                    "WHERE b.user_id=positions.user_id AND b.name=positions.broker "
+                    "AND b.currency='USD')")
+    try:
+        n = conn.execute(
+            f"UPDATE positions SET asset=? WHERE {_usdt_en_usd}",
+            (_efectivo.asset_de_caja('USD'),)).rowcount or 0
+        quedan = conn.execute(
+            f"SELECT COUNT(*) c FROM positions WHERE {_usdt_en_usd}").fetchone()["c"]
+        log.warning("cajas USDT de brokers en dólares: %d renombradas a USD ahora, "
+                    "quedan %d", n, quedan)
+    except Exception as ex:
+        log.warning("no se pudieron renombrar las cajas USDT de brokers en dólares: %s", ex)
+
+    # Cajas VACÍAS (o en rojo) que quedaron con el precio de compra de dólares
+    # que ya no tienen. Hasta 2026-10-11 la caja lo conservaba al vaciarse y los
+    # dólares que entraban después sin precio lo heredaban (ver efectivo.py; en
+    # la base de prod del 2026-08-16: 9 cajas, todas en cero).
+    # Desde entonces `efectivo.mover` ya no lo deja y tampoco lo lee, así que
+    # esto no cambia ningún saldo ni ningún resultado: deja la base diciendo lo
+    # mismo que la regla, que es lo que vigila el chequeo de invariantes
+    # (`caja_vacia_con_precio`). En cada boot y en WARNING, como el de arriba:
+    # "quedan 0" es la confirmación.
+    try:
+        n = conn.execute(
+            "UPDATE positions SET tc_compra=NULL "
+            f"WHERE {_efectivo.SQL_CAJA_VACIA_CON_PRECIO}").rowcount or 0
+        quedan = conn.execute(
+            "SELECT COUNT(*) c FROM positions "
+            f"WHERE {_efectivo.SQL_CAJA_VACIA_CON_PRECIO}").fetchone()["c"]
+        log.warning("cajas vacías con precio de compra: %d limpiadas ahora, quedan %d",
+                    n, quedan)
+    except Exception as ex:
+        log.warning("no se pudo limpiar el precio de las cajas vacías: %s", ex)
+
+    # Tokens de reseteo: hasta 2026-10 se guardaban en claro y no se borraban
+    # los vencidos (RENDI-10). La migración (borrar usados/vencidos + pasar a
+    # huella los vivos) vive en una función para que el test la atraviese. En
+    # WARNING como las de arriba (init_db corre antes del basicConfig).
+    try:
+        _vivos, _migrados = _migrar_reset_tokens_a_huella(conn)
+        log.warning("tokens de reseteo: %d vivos, %d pasados a huella ahora",
+                    _vivos, _migrados)
+    except Exception as ex:
+        log.warning("no se pudieron migrar los tokens de reseteo a huella: %s", ex)
+
+    # Links de asesor (claim + pedido de acceso): misma huella, sin borrar filas.
+    try:
+        _n = _migrar_tokens_link_a_huella(conn)
+        log.warning("tokens de links de asesor: %d pasados a huella ahora", _n)
+    except Exception as ex:
+        log.warning("no se pudieron migrar los tokens de links de asesor a huella: %s", ex)
+
+    conn.commit()
+
+
 def init_db():
     if USANDO_PG:
         # En Postgres NO se replican las 46 migraciones incrementales: son la
@@ -1346,6 +1490,11 @@ def init_db():
         # migraciones sería 46 oportunidades de equivocarse para llegar al mismo
         # lugar.
         _init_db_postgres()
+        # El esquema de Postgres sale de schema_pg.sql, pero las REPARACIONES de
+        # datos hay que correrlas igual: antes de 2026-10-29 este `return` se las
+        # llevaba todas, en silencio. Ver `reparaciones_de_arranque`.
+        with db_abierta() as conn:
+            reparaciones_de_arranque(conn)
         return
     with db_abierta() as conn:
 
@@ -1581,12 +1730,6 @@ def init_db():
                     conn.execute(f"ALTER TABLE advisor_op_batch_items ADD COLUMN {_c} {_t}")
             conn.commit()
 
-        # Sincronizar is_admin + approved para usuarios con email admin
-        rows = conn.execute("SELECT id, email FROM users").fetchall()
-        for r in rows:
-            if _is_admin_email(r["email"]):
-                conn.execute("UPDATE users SET is_admin=1, approved=1 WHERE id=?", (r["id"],))
-        conn.commit()
 
         # positions
         cols = _table_cols(conn, 'positions')
@@ -3008,22 +3151,6 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_login_history_ua ON login_history(user_id, ua_hash);
         """)
 
-        # "Último login" atrasado: hasta que existió `_registrar_ingreso`, verificar
-        # el mail anotaba el ingreso en login_history pero NO en users.last_login_at,
-        # así que quien entró así figuraba "—" en /admin aunque hubiera entrado.
-        # Se completa desde el historial. Idempotente: sólo toca filas donde el
-        # historial tiene un ingreso MÁS NUEVO que la columna; corrida dos veces
-        # no cambia nada. DESPUÉS del CREATE de login_history, a propósito.
-        try:
-            conn.execute("""
-                UPDATE users SET last_login_at = (
-                    SELECT MAX(h.created_at) FROM login_history h WHERE h.user_id = users.id)
-                 WHERE (SELECT MAX(h.created_at) FROM login_history h WHERE h.user_id = users.id)
-                       > COALESCE(last_login_at, '')
-            """)
-            conn.commit()
-        except Exception as _ex:
-            logging.getLogger(__name__).warning("completar last_login_at desde login_history falló (no fatal): %s", _ex)
 
         # ─── uso_diario: qué toca cada usuario, contado por día ────────────────────
         # Un CONTADOR por (usuario, día argentino, evento), no una fila por clic:
@@ -3044,7 +3171,6 @@ def init_db():
                 PRIMARY KEY (dia, user_id, evento)
             );
         """)
-        _podar_uso(conn, siempre=True)
 
         # Migración de las prefs del brief — DESPUÉS del CREATE de advisor_profile
         # (una migración antes de su tabla es no-op en DB nueva y rompe en la vieja).
@@ -3684,103 +3810,8 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_import_mappings_user ON import_mappings(user_id);
         """)
 
-        # B-7 (audit IA #2): purga del cache yfinance envenenado — fundamentals/
-        # analysts de tickers .BA cacheados ANTES del guard traen ARS bajo campos
-        # *_usd y se servirían hasta 12-24h (7 días vía stale-fallback). Post-guard,
-        # esos kinds para .BA devuelven available:false (payload mínimo) → borrar
-        # en cada boot es idempotente y de costo trivial.
-        try:
-            conn.execute(
-                "DELETE FROM yfinance_cache WHERE ticker LIKE '%.BA' "
-                "AND kind IN ('fundamentals', 'analysts')")
-        except Exception:
-            pass  # tabla puede no existir en DBs muy viejas pre-migración
 
-        # Las compras registradas por chat guardaron la nota con el nombre que el
-        # asistente tenía ese día ("Coach IA", después "Rendi AI"), y se ve en
-        # "Editar posición → Notas".
-        # Sólo la nota EXACTA que escribía el sistema: si alguien la editó a mano,
-        # queda como la dejó. En cada boot, como la purga de arriba: después de la
-        # primera vez no encuentra nada. Es cosmético, así que no puede voltear el
-        # arranque.
-        try:
-            # Tantos `?` como nombres viejos: con dos escritos a mano, sumar un
-            # tercero a la lista hacía fallar la consulta — y como el error se
-            # descarta (es cosmético), no se renombraba ninguna nota.
-            huecos = ", ".join("?" * len(_NOTAS_COMPRA_POR_CHAT_VIEJAS))
-            n = conn.execute(
-                f"UPDATE positions SET notes = ? WHERE notes IN ({huecos})",
-                (_NOTA_COMPRA_POR_CHAT, *_NOTAS_COMPRA_POR_CHAT_VIEJAS)).rowcount or 0
-            if n:
-                log.info("notas de compras por chat renombradas: %d", n)
-        except Exception as ex:
-            log.warning("no se pudieron renombrar las notas de compras por chat: %s", ex)
-
-        # Cajas de brokers en DÓLARES que se llaman 'USDT'. Hasta 2026-10-07 el
-        # importador tenía su propia copia de "sumar al saldo" y creaba 'USDT' para
-        # todo lo que no fuera pesos: el efectivo de un Schwab importado se veía como
-        # Tether (en la base de prod del 2026-08-16: 35 cajas, ninguna de un exchange).
-        # Desde la puerta única (efectivo.py) ya no se crean; acá se renombran las que
-        # quedaron, con la misma regla (`asset_de_caja`). Sólo cambia el rótulo: la
-        # valuación mira la moneda del broker. En cada boot, como el de arriba:
-        # después de la primera vez no encuentra nada.
-        # El renglón va en WARNING y en CADA boot, a propósito: init_db corre antes
-        # del `logging.basicConfig(level=INFO)` de este archivo, así que un INFO acá
-        # se descarta en silencio (le pasó a la primera versión de esto, 2026-10-07:
-        # el renombre corrió y no quedó dicho cuántas). "quedan 0" es la confirmación.
-        _usdt_en_usd = ("is_cash=1 AND asset='USDT' AND EXISTS (SELECT 1 FROM brokers b "
-                        "WHERE b.user_id=positions.user_id AND b.name=positions.broker "
-                        "AND b.currency='USD')")
-        try:
-            n = conn.execute(
-                f"UPDATE positions SET asset=? WHERE {_usdt_en_usd}",
-                (_efectivo.asset_de_caja('USD'),)).rowcount or 0
-            quedan = conn.execute(
-                f"SELECT COUNT(*) c FROM positions WHERE {_usdt_en_usd}").fetchone()["c"]
-            log.warning("cajas USDT de brokers en dólares: %d renombradas a USD ahora, "
-                        "quedan %d", n, quedan)
-        except Exception as ex:
-            log.warning("no se pudieron renombrar las cajas USDT de brokers en dólares: %s", ex)
-
-        # Cajas VACÍAS (o en rojo) que quedaron con el precio de compra de dólares
-        # que ya no tienen. Hasta 2026-10-11 la caja lo conservaba al vaciarse y los
-        # dólares que entraban después sin precio lo heredaban (ver efectivo.py; en
-        # la base de prod del 2026-08-16: 9 cajas, todas en cero).
-        # Desde entonces `efectivo.mover` ya no lo deja y tampoco lo lee, así que
-        # esto no cambia ningún saldo ni ningún resultado: deja la base diciendo lo
-        # mismo que la regla, que es lo que vigila el chequeo de invariantes
-        # (`caja_vacia_con_precio`). En cada boot y en WARNING, como el de arriba:
-        # "quedan 0" es la confirmación.
-        try:
-            n = conn.execute(
-                "UPDATE positions SET tc_compra=NULL "
-                f"WHERE {_efectivo.SQL_CAJA_VACIA_CON_PRECIO}").rowcount or 0
-            quedan = conn.execute(
-                "SELECT COUNT(*) c FROM positions "
-                f"WHERE {_efectivo.SQL_CAJA_VACIA_CON_PRECIO}").fetchone()["c"]
-            log.warning("cajas vacías con precio de compra: %d limpiadas ahora, quedan %d",
-                        n, quedan)
-        except Exception as ex:
-            log.warning("no se pudo limpiar el precio de las cajas vacías: %s", ex)
-
-        # Tokens de reseteo: hasta 2026-10 se guardaban en claro y no se borraban
-        # los vencidos (RENDI-10). La migración (borrar usados/vencidos + pasar a
-        # huella los vivos) vive en una función para que el test la atraviese. En
-        # WARNING como las de arriba (init_db corre antes del basicConfig).
-        try:
-            _vivos, _migrados = _migrar_reset_tokens_a_huella(conn)
-            log.warning("tokens de reseteo: %d vivos, %d pasados a huella ahora",
-                        _vivos, _migrados)
-        except Exception as ex:
-            log.warning("no se pudieron migrar los tokens de reseteo a huella: %s", ex)
-
-        # Links de asesor (claim + pedido de acceso): misma huella, sin borrar filas.
-        try:
-            _n = _migrar_tokens_link_a_huella(conn)
-            log.warning("tokens de links de asesor: %d pasados a huella ahora", _n)
-        except Exception as ex:
-            log.warning("no se pudieron migrar los tokens de links de asesor a huella: %s", ex)
-
+        reparaciones_de_arranque(conn)
         conn.commit()
 
 
@@ -50862,9 +50893,14 @@ def advisor_set_profile(data: AdvisorProfileIn, uid: int = Depends(get_current_u
             # Logo aparte: None = no tocar · "" = borrar · data-URI = guardar
             if data.logo_data is not None:
                 try:
-                    conn.execute(
-                        "UPDATE advisor_profile SET logo_data=?, updated_at=datetime('now') WHERE advisor_uid=?",
-                        (data.logo_data or None, uid))
+                    # Punto de guardado: en Postgres el UPDATE que falla por la
+                    # columna ausente abortaba la transacción, y el ALTER de
+                    # abajo —la auto-reparación que existe PARA ese caso— moría
+                    # con otro error. La red no reparaba nada: 500 igual.
+                    with _si_falla_se_deshace_solo_esto(conn, "guardar_logo_del_asesor"):
+                        conn.execute(
+                            "UPDATE advisor_profile SET logo_data=?, updated_at=datetime('now') WHERE advisor_uid=?",
+                            (data.logo_data or None, uid))
                 except ERR_OPERACIONAL:
                     # Columna ausente (deploy a mitad de camino / migración no
                     # corrida): auto-reparar y reintentar en vez de un 500.

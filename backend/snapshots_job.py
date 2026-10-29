@@ -1455,13 +1455,20 @@ def run_daily_snapshot(
         # excluirlos del cron — acumulaban un snapshot por noche para siempre
         # (audit). Fallback a la query vieja si la tabla aún no existe.
         try:
-            user_ids = [r[0] for r in conn.execute(
-                """SELECT id FROM users u
-                   WHERE NOT (u.managed_by IS NOT NULL AND u.approved = 0
-                              AND NOT EXISTS (SELECT 1 FROM advisor_clients ac
-                                              WHERE ac.client_uid = u.id
-                                                AND ac.status = 'active'))"""
-            ).fetchall()]
+            # Punto de guardado: en Postgres esta consulta fallando (una base a
+            # medio migrar, sin `managed_by` o sin `advisor_clients`) abortaba la
+            # transacción, y entonces la consulta vieja de abajo —el plan B que
+            # existe PARA ese caso— levantaba `InFailedSqlTransaction`, que no es
+            # ERR_OPERACIONAL: se caía el cron de la noche para TODOS.
+            import pgsesion as _ps
+            with _ps.si_falla_se_deshace_solo_esto(conn, "listar_usuarios_del_cron"):
+                user_ids = [r[0] for r in conn.execute(
+                    """SELECT id FROM users u
+                       WHERE NOT (u.managed_by IS NOT NULL AND u.approved = 0
+                                  AND NOT EXISTS (SELECT 1 FROM advisor_clients ac
+                                                  WHERE ac.client_uid = u.id
+                                                    AND ac.status = 'active'))"""
+                ).fetchall()]
         except ERR_OPERACIONAL:
             user_ids = [r[0] for r in conn.execute(
                 "SELECT id FROM users WHERE id IS NOT NULL"

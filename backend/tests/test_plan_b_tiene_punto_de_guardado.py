@@ -29,12 +29,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BACKEND = pathlib.Path(os.path.dirname(HERE))
 
 # (archivo, función) → por qué sigue así. Censo al 2026-10-29.
+#
+# Eran 9. Seis se arreglaron con el punto de guardado (register ×2,
+# get_current_user, _rollover_to_current_month, _window_floor,
+# advisor_set_profile, run_daily_snapshot). Quedan los tres de abajo, y los tres
+# por un motivo que NO es «ya lo vemos»: uno no aplica y dos piden una lectura
+# que todavía nadie hizo.
 CONOCIDOS = {
-    ("ai/quota.py", "_window_floor"):
-        "sólo falla con la base a medio migrar (esquema sin pro_trial_until); "
-        "el plan B devuelve «sin piso», pero deja la transacción abortada para "
-        "quien siga. Vale arreglarlo: son 3 líneas.",
-    ("main.py", "_db_internals"):
+        ("main.py", "_db_internals"):
         "diagnóstico de admin y SQLite puro (dbstat, sqlite_master): en Postgres "
         "el endpoint entero no aplica. No vale tocarlo.",
     ("main.py", "wallbit_connect"):
@@ -43,13 +45,7 @@ CONOCIDOS = {
         "decidirlo pide leer _wallbit_do_sync.",
     ("main.py", "wallbit_sync_endpoint"):
         "mismo caso que wallbit_connect.",
-    ("main.py", "advisor_set_profile"):
-        "sólo con la columna logo_data ausente; el plan B es un ALTER TABLE + "
-        "reintento, y en Postgres el ALTER revienta. 3 líneas.",
-    ("snapshots_job.py", "run_daily_snapshot"):
-        "sólo con la base a medio migrar (sin managed_by / advisor_clients). Es "
-        "el motor de la noche: si el plan B muere, se cae para todos. 3 líneas.",
-}
+        }
 
 
 def _nodos(lista):

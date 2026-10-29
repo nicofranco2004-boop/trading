@@ -1034,6 +1034,60 @@ recién entonces aplicarlo en los tres. Es un cambio en 3 archivos a la vez y to
 el guardián ya puesto para que no se olvide: mientras los 6 sigan así, el censo
 del test los nombra con el motivo.
 
+### ✅ Cómo quedó el 13 (`8b60c32e`)
+
+**6 de 9 arreglados.** A los 4 de `035f3de4` se sumaron los 3 que faltaban, y para
+eso hubo que mudar el punto de guardado a `pgsesion.si_falla_se_deshace_solo_esto`:
+`ai/quota.py` y `snapshots_job.py` lo necesitan y **no pueden importar `main`**
+(main los importa a ellos: sería un círculo). `main.py` ahora delega con un import
+local, como el resto del repo, y sus 6 llamadas quedaron sin tocar.
+
+| sitio | por qué importaba |
+|---|---|
+| `ai/quota.py` · `_window_floor` | se llama **desde el medio de las reservas de cuota, que ya escribieron**: un `rollback()` acá se llevaría plata ya anotada. Es el caso que prueba por qué la salida obvia no sirve |
+| `main.py` · `advisor_set_profile` | el `ALTER TABLE` de auto-reparación moría con otro error: la red no reparaba nada y salía 500 igual |
+| `snapshots_job.py` · `run_daily_snapshot` | el plan B muerto se llevaba **el cron de la noche para todos** |
+
+**Quedan 3, y el censo del guardián los nombra con el motivo:** `_db_internals`
+(diagnóstico de admin, SQLite puro: `dbstat`, `sqlite_master` — no aplica) y los
+dos de Wallbit, que tragan un error de **red**, no de base; decidirlos pide leer
+`_wallbit_do_sync`.
+
+⚠️ **Un punto ciego del barrido, encontrado por la sesión de migración y no por
+mí:** `_reset_data_worker` cuenta cada tabla dentro de un `for`, con
+`except ERR_OPERACIONAL` que no hace SQL. Mi detector busca SQL **en el `except`**,
+así que no lo ve — pero el plan B ahí es **la vuelta siguiente del loop**. Es la
+misma forma con otra cara.
+
+**Lo medí: 14 sitios con esa forma** (un `try` con SQL adentro de un loop, cuyo
+`except` se lo traga sin rollback ni punto de guardado):
+
+```
+advisor_alerts.py:223          evaluate()
+billing/trial.py:644, :893     step_down_due_trials(), _trial_stats()
+importing/recompute_backfill.py:344   _reapply_fund_overrides()
+main.py:1265                   _init_db_postgres()
+main.py:5441                   _reset_data_worker()      ← el que encontraron ellos
+main.py:5615                   _wipe_user_rows()
+main.py:7057                   _backfill_compras_if_missing()
+main.py:9410                   _persist_news_items()
+main.py:23771                  _reset_admin_conteo()
+main.py:26898                  _db_internals()
+market_brief.py:1183           run_briefs()
+sim_import.py:37               run()
+twr.py:401                     primeras_fechas_con_posiciones()
+```
+
+🔴 **Y NO sumé estos 14 al censo del guardián, a propósito.** Hay un discriminador
+que el detector no puede ver: **si la conexión está en `autocommit`, el problema
+no existe** — cada sentencia es su propia transacción y la que falla no arrastra a
+las demás. `_init_db_postgres` es exactamente ese caso (abre con
+`autocommit=True`), así que es un falso positivo de los 14. Meter catorce entradas
+sin triar, varias de ellas falsas, convertiría el censo en una lista de exclusión
+que no enseña nada — que es justo lo que el guardián quiere evitar. **Quedan como
+deuda medida y nombrada:** hay que mirar uno por uno si su conexión está en
+autocommit, y recién entonces ampliar el detector con los que sobrevivan.
+
 ## 🔴 HALLAZGO 14 — En Postgres las reparaciones del arranque NO CORREN, y no dejan rastro
 
 **Qué se ve, sin jerga:** Rendi arregla sola, cada vez que el servidor arranca,
@@ -1129,6 +1183,58 @@ test_admin_uso.py::Poda                                               → la pod
 
 Una causa, cuatro rojos. Y el riesgo real no son los rojos: es que **el día de la
 mudanza esas reparaciones dejan de correr en producción sin que nada lo diga.**
+
+### ✅ Cómo quedó el 14 (`8b60c32e`), y lo que apareció al mudarlo
+
+Las reparaciones por-boot salieron de `init_db` a **`reparaciones_de_arranque(conn)`**,
+que `init_db` llama en **los dos motores**. El `return` queda donde estaba: para el
+esquema está bien.
+
+**Y al mudarlas apareció algo que no estaba en la lista: las dos migraciones de
+RENDI-10**, las que pasan los tokens de recuperación de contraseña y los de los
+links de asesor de texto en claro a huella. En Postgres no corrían.
+
+⚠️ **CORRIJO MI PROPIA PRIMERA VERSIÓN de esto** (y del mensaje de `ddbe9940`),
+que decía «los tokens se quedaban en claro: una credencial guardada sin tapar».
+**Eso está mal, y la diferencia importa.** Fui a mirar cómo se GUARDA un token
+nuevo y los tres lugares que los crean ya escriben la huella
+(`_hash_token(token)` en `main.py:5004`, `:49501`, `:49615`): el token crudo va
+sólo al mail. O sea que la mitad «pasar a huella» de esas dos migraciones es
+**histórica** — repara tokens viejos de SQLite, y a Postgres llegan **ya
+hasheados** en la copia.
+
+Lo que sí deja de pasar para siempre, y es el efecto real: la **purga**.
+`DELETE FROM password_reset_tokens WHERE used_at IS NOT NULL OR expires_at < ahora`
+no corría, así que los tokens usados y vencidos **se acumulan sin fin**. Es
+higiene y crecimiento de la tabla, no una credencial expuesta. Queda arreglado
+igual al mudar el bloque, pero el tamaño del problema es ése y no el que dije.
+
+Lo que se mudó: la marca de admin del dueño, `last_login_at` desde el historial,
+la poda de uso de +13 meses, la purga del caché `.BA`, las notas del asistente,
+las cajas USDT de brokers en dólares, las cajas vacías con precio, y las dos de
+seguridad.
+
+Lo que **no** se mudó, a propósito y dicho en el docstring: los históricos
+(`_marcar_bienvenidas_previas`, que tiene fecha de corte; el relleno de
+`credit_ledger` para quien pagó antes de la proration; los `if not cols:` que
+rearman tablas que nunca existieron). Reparan datos viejos de SQLite que llegan
+**ya reparados** en la copia. Si alguno hiciera falta del lado de Postgres, hay
+que traerlo a mano.
+
+**Dos candados, no uno,** porque el de comportamiento solo no alcanza:
+
+```
+saco la llamada de la rama de Postgres
+  → Postgres: 'USDT' != 'USD'                        (el de comportamiento)
+  → SQLite:   «tiene que llamarla DOS veces: encontré 1»   (el estructural)
+```
+
+El estructural es el que importa: alguien puede dejar la función y borrar la
+llamada de la rama de Postgres, y el test de comportamiento sólo se cae cuando la
+suite corre contra Postgres — que **no es la que corre siempre**.
+
+**Medido: 67/67 en los dos motores** (los 4 que fallaban sólo en Postgres + los
+dos guardianes + la prueba del plan B).
 
 ## ✅ Lo que ataqué y aguantó
 
