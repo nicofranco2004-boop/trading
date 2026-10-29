@@ -12,12 +12,14 @@ gráfico: un CEDEAR en dólares es la acción de afuera; en pesos, el CEDEAR. La
 palabras las pone la pantalla (`frontend/src/utils/movimiento.js`).
 
 LAS CUENTAS
-  · Un día normal: el desvío típico de la variación de un día (desvío estándar
-    de muestra de cierre contra cierre anterior), en los últimos 2 años. Un «día
-    malo normal» es una baja de ese tamaño; se cuenta además cada cuántos días
-    de mercado pasó una baja así o peor, para que el «normal» sea un dato.
-  · El S&P 500 en el MISMO período y la misma moneda (en pesos, × el MEP de
-    cada día), para comparar.
+  · Un día normal: NO se calcula acá con otra regla: es el de la lectura
+    técnica (`tecnico.movimiento_diario`, desvío de la variación de cierre
+    contra cierre anterior) sobre el ÚLTIMO AÑO, el mismo número que la tarjeta
+    «Cuánto se mueve» (A5, 29/10). Un «día malo normal» es una baja de ese
+    tamaño; se cuenta además cada cuántos días de mercado pasó una baja así o
+    peor, para que el «normal» sea un dato.
+  · El S&P 500 en el MISMO año y la misma moneda (en pesos, × el MEP de cada
+    día), con la misma cuenta, para comparar.
   · La peor caída: la mayor baja de un máximo a un piso posterior dentro de los
     2 años (de cierre a cierre), y cuántos días tardó desde el piso en volver a
     cerrar a la altura de aquel máximo (o que todavía no volvió).
@@ -26,7 +28,6 @@ LAS CUENTAS
 """
 from __future__ import annotations
 
-import math
 from datetime import date, timedelta
 
 # El período de «Cuánto se mueve»: 2 años de calendario.
@@ -45,25 +46,6 @@ def ventana(velas: list, dias: int = DIAS_VENTANA) -> list:
         return []
     piso = (date.fromisoformat(velas[-1]["date"]) - timedelta(days=dias)).isoformat()
     return [v for v in velas if v["date"] > piso]
-
-
-def variaciones(velas: list) -> list:
-    """La variación de cada día contra el cierre anterior (la primera vela no
-    tiene: no hay anterior dentro de la serie)."""
-    out = []
-    for a, b in zip(velas, velas[1:]):
-        if a["close"] and b["close"] is not None:
-            out.append(b["close"] / a["close"] - 1.0)
-    return out
-
-
-def desvio(xs: list):
-    """Desvío estándar de muestra. None con menos de 2 datos."""
-    n = len(xs)
-    if n < 2:
-        return None
-    m = sum(xs) / n
-    return math.sqrt(sum((x - m) ** 2 for x in xs) / (n - 1))
 
 
 def peor_caida(velas: list):
@@ -98,21 +80,31 @@ def peor_caida(velas: list):
 
 
 def dia_normal(velas: list, sp: list = None):
-    """El desvío de un día del papel y del S&P 500 en el mismo período. `sp`:
-    las velas del S&P en la misma moneda (se cortan a las fechas del papel)."""
-    xs = variaciones(velas)
-    d = desvio(xs)
-    if d is None:
+    """Un día normal del papel y del S&P 500 en el ÚLTIMO AÑO, con LA cuenta de
+    la lectura técnica (`tecnico.movimiento_diario` sobre `tecnico.velas_del_anio`):
+    es el mismo número que «su día normal del último año» de la tarjeta «Cuánto
+    se mueve». Antes era otra cuenta (desvío de muestra) sobre los 2 años del
+    gráfico y la misma ficha decía «1,1 %» y «±2,3 %» (auditoría A 29/10, A5).
+    `sp`: las velas del S&P en la misma moneda (se cortan a las fechas del
+    papel). {desvio_pct, desde, dias, dias_malos, sp500_desvio_pct,
+    veces_el_sp500} o None."""
+    import tecnico
+    anio = tecnico.velas_del_anio(velas)
+    cierres = [v["close"] for v in anio]
+    xs = tecnico.cambios_diarios(cierres)
+    d = tecnico.movimiento_diario(cierres)
+    if d is None or len(xs) < MIN_DIAS:
         return None
-    malos = sum(1 for x in xs if x <= -d)
-    desde, hasta = velas[0]["date"], velas[-1]["date"]
-    sp_v = [v for v in (sp or []) if desde <= v["date"] <= hasta]
-    d_sp = desvio(variaciones(sp_v)) if len(sp_v) >= MIN_DIAS else None
+    malos = sum(1 for x in xs if x * 100.0 <= -d)
+    desde, hasta = anio[0]["date"], anio[-1]["date"]
+    sp_v = [v["close"] for v in (sp or []) if desde <= v["date"] <= hasta]
+    d_sp = tecnico.movimiento_diario(sp_v) if len(sp_v) >= MIN_DIAS else None
     return {
-        "desvio_pct": d * 100.0,
+        "desvio_pct": d,
+        "desde": desde,
         "dias": len(xs),
         "dias_malos": malos,
-        "sp500_desvio_pct": d_sp * 100.0 if d_sp is not None else None,
+        "sp500_desvio_pct": d_sp,
         "veces_el_sp500": (d / d_sp) if d_sp else None,
     }
 

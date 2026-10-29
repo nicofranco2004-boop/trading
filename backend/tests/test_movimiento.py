@@ -105,12 +105,18 @@ class DiferencialTest(unittest.TestCase):
             sp = _caminata(300, semilla + 1000, vol=0.01)
             v, vsp = _serie(cierres), _serie(sp)
             r = movimiento.dia_normal(v, vsp)
-            rets = pd.Series(cierres).pct_change().dropna()
-            ref = rets.std(ddof=1)
+            # La cuenta independiente: el último año (365 días corridos hasta la
+            # última vela) y el desvío de población, el de la lectura técnica (A5).
+            piso = (date.fromisoformat(v[-1]["date"]) - timedelta(days=365)).isoformat()
+            anio = [k for k, x in enumerate(v) if x["date"] > piso]
+            self.assertLess(len(anio), len(v), "la serie tiene que pasar del año para que el corte importe")
+            rets = pd.Series([cierres[k] for k in anio]).pct_change().dropna()
+            ref = rets.std(ddof=0)
             self.assertAlmostEqual(r["desvio_pct"], ref * 100, places=9)
+            self.assertEqual(r["desde"], v[anio[0]]["date"])
             self.assertEqual(r["dias"], len(rets))
             self.assertEqual(r["dias_malos"], int((rets <= -ref).sum()))
-            ref_sp = pd.Series(sp).pct_change().dropna().std(ddof=1)
+            ref_sp = pd.Series([sp[k] for k in anio]).pct_change().dropna().std(ddof=0)
             self.assertAlmostEqual(r["sp500_desvio_pct"], ref_sp * 100, places=9)
             self.assertAlmostEqual(r["veces_el_sp500"], ref / ref_sp, places=9)
 
@@ -121,7 +127,7 @@ class DiferencialTest(unittest.TestCase):
         antes = [x for x in antes if x["date"] < "2025-01-01"]
         mismo = _serie(_caminata(100, 2, vol=0.01), desde=date(2025, 1, 1))
         r = movimiento.dia_normal(v, antes + mismo)
-        ref = pd.Series([x["close"] for x in mismo]).pct_change().dropna().std(ddof=1)
+        ref = pd.Series([x["close"] for x in mismo]).pct_change().dropna().std(ddof=0)
         self.assertAlmostEqual(r["sp500_desvio_pct"], ref * 100, places=9)
 
     def test_reaccion(self):
@@ -233,21 +239,42 @@ class FichaMovimientoTest(unittest.TestCase):
         m = f["movimiento"]
         self.assertTrue(m["disponible"])
 
-        # La cuenta independiente: pandas sobre los cierres de los últimos 730 días.
+        # La cuenta independiente: pandas sobre los cierres de los últimos 730 días
+        # (la peor caída) y del último año (el día normal, A5).
         piso = (self.dias[-1] - timedelta(days=730)).isoformat()
         dias = [d for d in self.dias if d.isoformat() > piso]
         ix = [self.dias.index(d) for d in dias]
         nv = pd.Series([self.yahoo.precios["NVDA"](i, None) for i in ix])
-        sp = pd.Series([self.yahoo.precios["^GSPC"](i, None) for i in ix])
-        ref = nv.pct_change().dropna().std(ddof=1)
-        self.assertAlmostEqual(m["dia_normal"]["desvio_pct"], ref * 100, places=6)
+        piso_anio = (self.dias[-1] - timedelta(days=365)).isoformat()
+        ix_anio = [self.dias.index(d) for d in self.dias if d.isoformat() > piso_anio]
+        nv_anio = pd.Series([self.yahoo.precios["NVDA"](i, None) for i in ix_anio])
+        sp_anio = pd.Series([self.yahoo.precios["^GSPC"](i, None) for i in ix_anio])
+        self.assertAlmostEqual(m["dia_normal"]["desvio_pct"], nv_anio.pct_change().dropna().std(ddof=0) * 100, places=6)
         self.assertAlmostEqual(m["dia_normal"]["sp500_desvio_pct"],
-                               sp.pct_change().dropna().std(ddof=1) * 100, places=6)
+                               sp_anio.pct_change().dropna().std(ddof=0) * 100, places=6)
         i, j, c, vuelta = _peor_caida_fuerza_bruta(list(nv))
         self.assertAlmostEqual(m["peor_caida"]["pct"], c * 100, places=6)
         self.assertEqual(m["peor_caida"]["piso"]["fecha"], dias[j].isoformat())
         # La caída desde el máximo del año es LA de la lectura, no otra cuenta.
         self.assertEqual(m["desde_el_maximo"]["pct"], f["lectura"]["dist_maximo_12m"])
+
+    def test_un_solo_dia_normal_en_la_ficha(self):
+        # A5 (auditoría 29/10): la tarjeta «Cuánto se mueve» decía «su día normal
+        # del último año (1,1 %)» y la sección «Cuánto se mueve este papel», «Un
+        # día normal ±2,3 %»: dos cuentas (desvío de población y de muestra) sobre
+        # dos ventanas (1 y 2 años). Un papel que el año anterior se movía ±3 % por
+        # día y el último año ±1 %. Tiene que ser UN número: el de la lectura.
+        self._posicion("Schwab", "USD", "MSFT", "STOCK")
+        n, c, x = len(self.dias), [], 100.0
+        for i in range(n):
+            x *= (1 + (0.03 if i < n - 252 else 0.01) * (1 if i % 2 else -1))
+            c.append(x)
+        self.yahoo.precios["MSFT"] = lambda i, d: c[i]
+        self.yahoo.precios["^GSPC"] = self._precio(8, 0.01)
+        main._run_velas_diarias_job()
+        f = self._get("/api/tecnico/MSFT?moneda=usd")
+        self.assertIsNotNone(f["lectura"]["mov_dia_anio"])
+        self.assertEqual(f["movimiento"]["dia_normal"]["desvio_pct"], f["lectura"]["mov_dia_anio"])
 
     def test_en_pesos_el_sp500_tambien_va_en_pesos(self):
         self._posicion("IOL", "ARS", "AAPL", "CEDEAR")
@@ -266,9 +293,9 @@ class FichaMovimientoTest(unittest.TestCase):
         self.assertAlmostEqual(usd["sp500_desvio_pct"], 0.0, places=9)
         # En pesos, el S&P quieto en dólares se mueve lo que se mueve el dólar:
         # su desvío es el del MEP de esos días (cuenta independiente con pandas).
-        piso = (self.dias[-1] - timedelta(days=730)).isoformat()
+        piso = (self.dias[-1] - timedelta(days=365)).isoformat()
         meps = pd.Series([self._mep(k) for k, d in enumerate(self.dias) if d.isoformat() > piso])
-        self.assertAlmostEqual(ars["sp500_desvio_pct"], meps.pct_change().dropna().std(ddof=1) * 100, places=6)
+        self.assertAlmostEqual(ars["sp500_desvio_pct"], meps.pct_change().dropna().std(ddof=0) * 100, places=6)
 
     def test_balances_y_dividendos_con_lo_que_se_movio(self):
         self._posicion("IOL", "ARS", "AAPL", "CEDEAR")

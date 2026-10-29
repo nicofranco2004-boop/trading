@@ -430,13 +430,29 @@ def _ancho_relativo(bb: dict, velas: list):
     return hoy / mediana if (mediana > 0 and hoy > 0) else None
 
 
+def cambios_diarios(cierres: list) -> list:
+    """Los cambios de cada día contra el anterior (0,02 = subió 2 %). Un cierre
+    en 0 (una vela rota) se saltea con su cambio."""
+    return [cierres[i] / cierres[i - 1] - 1.0 for i in range(1, len(cierres))
+            if cierres[i - 1] > 0 and cierres[i] > 0]
+
+
+def velas_del_anio(velas: list) -> list:
+    """Las velas de los últimos `DIAS_ANIO` días corridos: la ventana de «su
+    día normal del último año» (la tarjeta «Cuánto se mueve» y la sección
+    «Cuánto se mueve este papel», `movimiento.dia_normal`)."""
+    return velas[_desde_dias(velas, DIAS_ANIO):]
+
+
 def movimiento_diario(cierres: list) -> float:
     """Cuánto se movió el precio en un día normal, en %: el desvío
     (poblacional) de los cambios de un día al otro. Para arriba o para abajo:
-    2,0 es «un día normal sube o baja alrededor de 2 %». Un cierre en 0 (una
-    vela rota) se saltea con su cambio. None con menos de 2 cambios."""
-    cambios = [cierres[i] / cierres[i - 1] - 1.0 for i in range(1, len(cierres))
-               if cierres[i - 1] > 0 and cierres[i] > 0]
+    2,0 es «un día normal sube o baja alrededor de 2 %». None con menos de 2
+    cambios. Es LA cuenta del día normal de la ficha: la tarjeta y la sección
+    «Cuánto se mueve este papel» (`movimiento.dia_normal`) la usan las dos
+    (auditoría A 29/10, A5: eran dos cuentas con dos ventanas y la misma ficha
+    decía «1,1 %» y «±2,3 %»)."""
+    cambios = cambios_diarios(cierres)
     if len(cambios) < 2:
         return None
     prom = sum(cambios) / len(cambios)
@@ -470,8 +486,8 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=Non
     a = dmi["adx"]
     ultimo = cierres[-1]
     bb_arriba, bb_abajo = bb["arriba"][-1], bb["abajo"][-1]
-    i_anio = _desde_dias(velas, DIAS_ANIO)
-    anio = velas[i_anio:]
+    anio = velas_del_anio(velas)
+    i_anio = n - len(anio)
     # El máximo y el mínimo del año, de CIERRE contra CIERRE: el pico dentro del
     # día de hoy nunca se alcanza al cierre, así que con el máximo intradiario
     # "En su máximo" no aparecía nunca (Apple cerró en récord 36 días del año).
