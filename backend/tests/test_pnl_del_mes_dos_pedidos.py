@@ -252,3 +252,27 @@ class ElRecalculoQueFallaNoSeLlevaLaOperacion(Base):
         print(f"\n>>> {_motor()} editar+recalc roto: pnl_en_la_base={fila and fila['pnl_usd']}")
         self.assertAlmostEqual(float(fila["pnl_usd"]), 70.0, places=2,
                                msg="contestó 200 y la edición se descartó")
+
+
+class ElPuntoDeGuardadoDejaPasarLoQueSaleBien(unittest.TestCase):
+    """El camino FELIZ del punto de guardado, directo. Al mudarlo a `pgsesion`
+    (29/10) quedaron en `main._si_falla_se_deshace_solo_esto` dos renglones del
+    cuerpo viejo —un `raise` después del `yield`—: TODO lo que salía bien
+    reventaba con «No active exception to reraise», el `except` de afuera lo
+    tragaba y el recálculo del mes no se aplicaba nunca. Ningún test del punto de
+    guardado lo vio porque todos probaban el camino que FALLA."""
+
+    def test_lo_de_adentro_se_guarda_y_no_levanta_nada(self):
+        conn = main.get_db()
+        email = f"pg-ok-{os.urandom(5).hex()}@rendi.test"
+        try:
+            with main._si_falla_se_deshace_solo_esto(conn, "camino_feliz"):
+                conn.execute("INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+                             (email, "x"))
+            conn.commit()
+            self.assertIsNotNone(conn.execute("SELECT 1 FROM users WHERE email=?",
+                                              (email,)).fetchone())
+        finally:
+            conn.execute("DELETE FROM users WHERE email=?", (email,))
+            conn.commit()
+            conn.close()

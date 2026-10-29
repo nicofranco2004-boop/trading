@@ -743,8 +743,6 @@ def _si_falla_se_deshace_solo_esto(conn, nombre: str):
     import pgsesion as _ps
     with _ps.si_falla_se_deshace_solo_esto(conn, nombre):
         yield
-        raise
-    conn.execute(f"RELEASE SAVEPOINT {nombre}")
 
 
 def _run_with_lock_retry(fn, *, attempts: int = 4, base_delay: float = 0.3):
