@@ -36,7 +36,33 @@ export function preciosDelConteo(e, puntos) {
 /** La fecha desde la que hay que ver el gráfico para que entre el conteo. */
 export const fechaDelConteo = (e) => (e?.disponible ? e.principal.ondas[0].fecha : null)
 
-export default function CapaElliott({ elliott, puntos, pctX, pctY, precio }) {
+/** El id con el que el conteo automático se elige y se «borra» (se apaga). */
+export const ID_ELL_AUTO = 'auto-ell'
+
+/** Las líneas del conteo automático tal como se dibujan (de 0 a 100), para saber
+ *  si el mouse está encima: los tramos entre ondas y las rayas de «dejaría de valer». */
+export function trazosDelConteo(elliott, puntos, pctX, pctY) {
+  const c = elliott?.disponible ? elliott.principal : null
+  if (!c || !puntos?.length) return []
+  const pos = c.ondas.map(o => ({ ...o, p: posicion(puntos, o.fecha) }))
+  if (pos.every(o => o.p.donde !== 'adentro')) return []
+  const out = []
+  for (let k = 1; k < pos.length; k++) {
+    const a = pos[k - 1], b = pos[k]
+    if (a.p.donde === 'adentro' && b.p.donde === 'adentro') {
+      out.push({ id: ID_ELL_AUTO, x1: pctX(a.p.i), y1: pctY(a.precio), x2: pctX(b.p.i), y2: pctY(b.precio) })
+    }
+  }
+  const xInv = pos[0].p.donde === 'adentro' ? pctX(pos[0].p.i) : 0
+  for (const r of [c.invalida, c.invalida.otro].filter(Boolean)) {
+    const y = pctY(r.precio)
+    if (y >= 0 && y <= 100) out.push({ id: ID_ELL_AUTO, x1: xInv, y1: y, x2: 100, y2: y })
+  }
+  return out
+}
+
+// `marcado`: con el mouse encima o elegido para borrarlo: las líneas más gruesas.
+export default function CapaElliott({ elliott, puntos, pctX, pctY, precio, marcado = false }) {
   const c = elliott?.disponible ? elliott.principal : null
   if (!c || !puntos.length) return null
   const pos = c.ondas.map(o => ({ ...o, p: posicion(puntos, o.fecha) }))
@@ -57,7 +83,7 @@ export default function CapaElliott({ elliott, puntos, pctX, pctY, precio }) {
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
         {segs.map(s => (
           <line key={s.k} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={COLOR_ELLIOTT}
-            strokeWidth="2" strokeLinecap="round" strokeDasharray={s.corr ? '5 4' : undefined}
+            strokeWidth={marcado ? 3.2 : 2} strokeLinecap="round" strokeDasharray={s.corr ? '5 4' : undefined}
             vectorEffect="non-scaling-stroke" opacity="0.85" />
         ))}
       </svg>
@@ -68,7 +94,7 @@ export default function CapaElliott({ elliott, puntos, pctX, pctY, precio }) {
         const y = k === 0 ? yInv : pctY(r.precio)
         if (k > 0 && (y < 0 || y > 100)) return null
         return (
-          <div key={k} className="absolute h-0" style={{ left: `${xInv}%`, right: 0, top: `${y}%`, borderTop: `1.5px dashed ${indigo(0.8)}` }}>
+          <div key={k} className="absolute h-0" style={{ left: `${xInv}%`, right: 0, top: `${y}%`, borderTop: `${marcado ? 2.5 : 1.5}px dashed ${indigo(0.8)}` }}>
             <span data-rotulo={PRIORIDAD.invalidaElliott} data-rotulo-voltear="" className={`absolute ${r.lado === 'debajo' ? 'top-0.5' : '-translate-y-full'} ${xInv < 60 ? 'left-1' : 'right-1'} rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1`}>
               Dejaría de valer · {precio(r.precio)}
             </span>

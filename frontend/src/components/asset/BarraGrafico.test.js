@@ -10,7 +10,7 @@
 // LecturaTecnica.test.js, CapaElliott.test.js y CapaFibonacci.test.js.
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
-import { instalarNavegadorMinimo, montar, texto, clic, medidas } from '../../testing/navegadorMinimo'
+import { instalarNavegadorMinimo, montar, texto, clic, medidas, enActo } from '../../testing/navegadorMinimo'
 
 const puntos = Array.from({ length: 300 }, (_, i) => {
   const d = new Date(Date.UTC(2025, 9, 1) + i * 86400000).toISOString().slice(0, 10)
@@ -258,6 +258,43 @@ describe('la barra de herramientas del gráfico', () => {
       expect(visibles()).toHaveLength(1)
       expect(visibles()[0]).toMatch(/·/)
       expect(tapados().every(n => attr(n, 'data-rotulo') === '4')).toBe(true)
+    } finally {
+      medidas(null)
+    }
+  })
+
+  it('el Fibonacci y el conteo AUTOMÁTICOS también se eligen con la manito, y borrarlos los apaga (Nico, 28/10)', async () => {
+    // El área del gráfico mide 1000 × 250 (lo demás, nada: no estorba).
+    medidas(n => (attr(n, 'aria-label')?.startsWith('Precio con su promedio') ? { left: 0, top: 0, width: 1000, height: 250 } : null))
+    const evento = (tipo, datos) => enActo(() => {
+      const ev = { type: tipo, target: area(), bubbles: true, cancelable: true, button: 0, defaultPrevented: false,
+        preventDefault() { this.defaultPrevented = true }, stopPropagation() {}, ...datos }
+      for (const fn of montado.contenedor.escuchas[tipo] || []) fn(ev)
+    })
+    const area = () => nodos(n => attr(n, 'aria-label')?.startsWith('Precio con su promedio'))[0]
+    const otra = async () => { for (let i = 0; i < 2; i++) await montado.redibujar(el()) }
+    const estado = () => nodos(n => attr(n, 'role') === 'status').map(n => texto(n)).join(' ')
+    try {
+      await dibujar()
+      // La raya del «Pico» del Fibonacci: su altura, en píxeles, sale de su lugar en el dibujo.
+      const pico = nodos(n => n.nodeName === 'SPAN' && texto(n).startsWith('Pico ·'))[0].parentNode
+      const y = (parseFloat(pico.style.top) / 100) * 250
+      await evento('mousemove', { clientX: 950, clientY: y + 3 }); await otra()
+      expect(attr(area(), 'class')).toContain('cursor-pointer')
+      await evento('mousedown', { clientX: 950, clientY: y + 3 }); await evento('mouseup', { clientX: 950, clientY: y + 3 }); await otra()
+      expect(estado()).toContain('Fibonacci automático, elegido.')
+      await clic(montado.contenedor, nodos(n => n.nodeName === 'BUTTON' && texto(n).includes('Borrar el Fibonacci automático'))[0]); await otra()
+      expect(SE_VE.fib()).toBe(false)
+      expect(await prendido('fib')).toBe('false')                 // borrado = apagado: se prende de nuevo desde su botón
+      expect(SE_VE.ell()).toBe(true)                               // el conteo no se tocó
+      // El conteo automático, igual: su raya de «Dejaría de valer».
+      const inv = nodos(n => n.nodeName === 'SPAN' && texto(n).startsWith('Dejaría de valer'))[0].parentNode
+      const yi = (parseFloat(inv.style.top) / 100) * 250
+      await evento('mousedown', { clientX: 980, clientY: yi }); await evento('mouseup', { clientX: 980, clientY: yi }); await otra()
+      expect(estado()).toContain('Conteo automático de Elliott, elegido.')
+      await enActo(() => { window.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Delete' })) }); await otra()
+      expect(SE_VE.ell()).toBe(false)
+      expect(await prendido('ell')).toBe('false')
     } finally {
       medidas(null)
     }

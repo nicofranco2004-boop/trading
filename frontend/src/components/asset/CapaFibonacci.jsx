@@ -75,9 +75,41 @@ export function posicion(puntos, fecha) {
   return { donde: 'adentro', i: indiceDeFecha(puntos, fecha) }
 }
 
-export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio }) {
+/** El id con el que el Fibonacci automático se elige y se «borra» (se apaga)
+ *  tocándolo en el gráfico, como un dibujo tuyo (Nico, 28/10). */
+export const ID_FIB_AUTO = 'auto-fib'
+
+/**
+ * Las rayas del Fibonacci automático tal como se dibujan (de 0 a 100), para
+ * saber si el mouse está encima: [{ id, x1, y1, x2, y2 }]. Las mismas cuentas
+ * que la capa de abajo.
+ */
+export function trazosDelFibonacci(fib, puntos, pctX, pctY) {
+  if (!fib || !puntos?.length) return []
+  const raya = (x, precio) => ({ id: ID_FIB_AUTO, x1: x, y1: pctY(precio), x2: 100, y2: pctY(precio) })
+  if (!fib.disponible) {
+    const e = fib.en_curso
+    if (!e) return []
+    const pos = posicion(puntos, e.se_rompe_si_cierra.fecha)
+    if (pos.donde === 'despues') return []
+    const corte = e.dir === 'suba' ? e.se_rompe_si_cierra.debajo_de : e.se_rompe_si_cierra.encima_de
+    return [raya(pos.donde === 'adentro' ? pctX(pos.i) : 0, corte)]
+  }
+  const p0 = posicion(puntos, fib.desde.fecha)
+  if (p0.donde === 'despues') return []
+  const p1 = posicion(puntos, fib.hasta.fecha)
+  const x0 = p0.donde === 'adentro' ? pctX(p0.i) : 0
+  const out = rayas(fib).map(r => raya(x0, r.precio))
+  if (p0.donde === 'adentro' && p1.donde === 'adentro') {
+    out.push({ id: ID_FIB_AUTO, x1: x0, y1: pctY(fib.desde.precio), x2: pctX(p1.i), y2: pctY(fib.hasta.precio) })
+  }
+  return out
+}
+
+// `marcado`: con el mouse encima o elegido para borrarlo: las rayas más gruesas.
+export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio, marcado = false }) {
   if (!fib || !puntos.length) return null
-  if (!fib.disponible) return <CorteEnCurso e={fib.en_curso} puntos={puntos} pctX={pctX} pctY={pctY} precio={precio} />
+  if (!fib.disponible) return <CorteEnCurso e={fib.en_curso} puntos={puntos} pctX={pctX} pctY={pctY} precio={precio} marcado={marcado} />
 
   const p0 = posicion(puntos, fib.desde.fecha)
   if (p0.donde === 'despues') return null
@@ -110,7 +142,7 @@ export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio }) {
       )}
       {lista.map((r, k) => (
         <div key={r.nivel} className="absolute h-0"
-          style={{ left: `${x0}%`, right: 0, top: `${tops[k]}%`, borderTop: `1px ${r.extremo ? 'solid' : 'dashed'} ${COLOR_FIB}`, opacity: r.extremo ? 0.9 : 0.7 }}>
+          style={{ left: `${x0}%`, right: 0, top: `${tops[k]}%`, borderTop: `${marcado ? 2 : 1}px ${r.extremo ? 'solid' : 'dashed'} ${COLOR_FIB}`, opacity: marcado ? 1 : r.extremo ? 0.9 : 0.7 }}>
           {conRotulo.has(k) && (
             <span data-rotulo={PRIORIDAD.nivelFib} className={`absolute rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1 ${rotuloAdentro ? 'left-1 -translate-y-full' : 'right-full mr-1 -translate-y-1/2'}`}>
               {rotuloNivel(r.nivel, fib.dir)} · {precio(r.precio)}
@@ -123,7 +155,7 @@ export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio }) {
       {p0.donde === 'adentro' && x1 != null && (
         <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
           <line x1={x0} y1={pctY(fib.desde.precio)} x2={x1} y2={pctY(fib.hasta.precio)} stroke={COLOR_FIB}
-            strokeWidth="3" strokeLinecap="round" vectorEffect="non-scaling-stroke" opacity="0.85" />
+            strokeWidth={marcado ? 4.5 : 3} strokeLinecap="round" vectorEffect="non-scaling-stroke" opacity="0.85" />
         </svg>
       )}
       {p0.donde === 'adentro' && <Punto x={x0} y={pctY(fib.desde.precio)} titulo="Arranque del tramo" />}
@@ -145,7 +177,7 @@ function Punto({ x, y, titulo }) {
 }
 
 // Sin tramo para medir: el tramo vivo y el cierre que lo daría por terminado.
-function CorteEnCurso({ e, puntos, pctX, pctY, precio }) {
+function CorteEnCurso({ e, puntos, pctX, pctY, precio, marcado = false }) {
   if (!e) return null
   const suba = e.dir === 'suba'
   const corte = suba ? e.se_rompe_si_cierra.debajo_de : e.se_rompe_si_cierra.encima_de
@@ -154,7 +186,7 @@ function CorteEnCurso({ e, puntos, pctX, pctY, precio }) {
   const x = pos.donde === 'adentro' ? pctX(pos.i) : 0
   return (
     <div className="pointer-events-none absolute inset-0" aria-hidden="true">
-      <div className="absolute h-0" style={{ left: `${x}%`, right: 0, top: `${pctY(corte)}%`, borderTop: `1.5px dashed ${COLOR_FIB}` }}>
+      <div className="absolute h-0" style={{ left: `${x}%`, right: 0, top: `${pctY(corte)}%`, borderTop: `${marcado ? 2.5 : 1.5}px dashed ${COLOR_FIB}` }}>
         <span data-rotulo={PRIORIDAD.corteFib} data-rotulo-voltear="" className={`absolute ${suba ? 'top-0.5' : '-translate-y-full'} ${x < 70 ? 'left-1' : 'right-1'} rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1`}>
           {suba ? 'Cierre debajo: termina la suba' : 'Cierre encima: termina la bajada'} · {precio(corte)}
         </span>

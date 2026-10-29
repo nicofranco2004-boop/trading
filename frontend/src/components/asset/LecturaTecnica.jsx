@@ -32,8 +32,8 @@ import { cloneElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useSt
 import { LineChart, Maximize2, Minimize2, RotateCcw, Ruler, Trash2 } from 'lucide-react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica } from './BarraGrafico'
-import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
-import CapaElliott, { COLOR_ELLIOTT, TarjetaElliott, fechaDelConteo, preciosDelConteo } from './CapaElliott'
+import CapaFibonacci, { COLOR_FIB, ID_FIB_AUTO, TarjetaFibonacci, preciosDeLaCapa, trazosDelFibonacci, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
+import CapaElliott, { COLOR_ELLIOTT, ID_ELL_AUTO, TarjetaElliott, fechaDelConteo, preciosDelConteo, trazosDelConteo } from './CapaElliott'
 import CapaDibujos, { trazosDeDibujos } from './CapaDibujos'
 import { api } from '../../utils/api'
 import { factorDeFechas, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
@@ -192,7 +192,21 @@ export default function LecturaTecnica({
     })
     return () => { vivo = false }
   }, [asset, moneda])
-  const borrarDibujo = (id) => { cambiarDibujos(misDibujos.filter(d => d.id !== id)); setElegido(null) }
+  // Borrar el Fibonacci o el conteo AUTOMÁTICOS es apagarlos (Nico, 28/10: «si
+  // el usuario la borra, es como desactivarla»); se prenden de nuevo desde su
+  // botón de la barra. Lo demás son tus dibujos.
+  const borrarDibujo = (id) => {
+    if (id === ID_FIB_AUTO) setVer(x => ({ ...x, fib: false }))
+    else if (id === ID_ELL_AUTO) setVer(x => ({ ...x, ell: false }))
+    else cambiarDibujos(misDibujos.filter(d => d.id !== id))
+    setElegido(null)
+  }
+  // Si el automático elegido se apaga por otro lado (su botón), deja de estar elegido.
+  useEffect(() => {
+    if ((elegido === ID_FIB_AUTO && !ver.fib) || (elegido === ID_ELL_AUTO && !ver.ell)) setElegido(null)
+  }, [elegido, ver.fib, ver.ell])
+  const queEsElegido = elegido === ID_FIB_AUTO ? 'fibAuto' : elegido === ID_ELL_AUTO ? 'ellAuto'
+    : misDibujos.find(d => d.id === elegido)?.tipo
   // ¿Borrar todos? Se pregunta antes: es trabajo de la persona y no se deshace.
   const [borrarTodos, setBorrarTodos] = useState(false)
   // Con una línea elegida, la tecla Suprimir (o la de borrar) la borra. Y Esc,
@@ -508,7 +522,7 @@ export default function LecturaTecnica({
               <span className="flex-1 min-w-[12rem]">
                 {borrarTodos ? `¿Borrar ${misDibujos.length === 1 ? 'tu dibujo' : `tus ${misDibujos.length} dibujos`} de este activo en ${moneda === 'usd' ? 'dólares' : 'pesos'}? No se puede deshacer.`
                   : dibujar.tipo ? textoDibujando(dibujar)
-                    : ELEGIDO[misDibujos.find(d => d.id === elegido)?.tipo]?.[0]}
+                    : ELEGIDO[queEsElegido]?.[0]}
               </span>
               {borrarTodos ? (
                 <>
@@ -521,7 +535,7 @@ export default function LecturaTecnica({
                 <>
                   <button type="button" onClick={() => borrarDibujo(elegido)}
                     className="inline-flex items-center gap-1.5 min-h-10 sm:min-h-8 px-3 rounded-lg border border-rendi-neg/50 bg-rendi-neg/10 text-ink-0 font-medium">
-                    <Trash2 size={14} aria-hidden="true" />{ELEGIDO[misDibujos.find(d => d.id === elegido)?.tipo]?.[1] || 'Borrar esta línea'}
+                    <Trash2 size={14} aria-hidden="true" />{ELEGIDO[queEsElegido]?.[1] || 'Borrar esta línea'}
                   </button>
                   <button type="button" onClick={() => setElegido(null)}
                     className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-line-2 text-ink-1 hover:text-ink-0">Listo</button>
@@ -659,6 +673,8 @@ const ELEGIDO = {
   tendencia: ['Línea de tendencia elegida.', 'Borrar esta línea'],
   fibonacci: ['Tu Fibonacci, elegido.', 'Borrar este Fibonacci'],
   extension: ['Tu extensión de Fibonacci, elegida.', 'Borrar esta extensión'],
+  fibAuto: ['Fibonacci automático, elegido. Si lo borrás se apaga; lo volvés a prender desde el botón Fibonacci de la barra.', 'Borrar el Fibonacci automático'],
+  ellAuto: ['Conteo automático de Elliott, elegido. Si lo borrás se apaga; lo volvés a prender desde el botón Ondas de Elliott de la barra.', 'Borrar el conteo automático'],
   elliott: ['Tu conteo de Elliott, elegido.', 'Borrar este conteo'],
 }
 
@@ -1269,13 +1285,16 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   // Tus dibujos en pantalla (CapaDibujos.jsx), como trazos: para saber a cuál
   // se le tocó encima y para el precio de las horizontales en la columna.
   const trazos = trazosDeDibujos(dibujos, pctX, pctY)
+  // Lo que se puede elegir tocándolo: tus dibujos y también el Fibonacci y el
+  // conteo AUTOMÁTICOS (elegirlos y borrarlos los apaga).
+  const elegibles = [...trazos, ...trazosDelFibonacci(fibonacci, puntos, pctX, pctY), ...trazosDelConteo(elliott, puntos, pctX, pctY)]
   // Un click (o un toque) sin herramienta, cerca de un dibujo: lo elige (para
   // borrarlo); lejos de todos, suelta el que estaba elegido.
   function dibujoBajo(clientX, clientY, radio) {
     const r = ref.current?.getBoundingClientRect()
-    if (!r || !r.width || !trazos.length) return null
+    if (!r || !r.width || !elegibles.length) return null
     const px = (t) => ({ id: t.id, ax: (t.x1 / 100) * r.width, ay: (t.y1 / 100) * r.height, bx: (t.x2 / 100) * r.width, by: (t.y2 / 100) * r.height })
-    return dibujoTocado(trazos.map(px), clientX - r.left, clientY - r.top, radio)
+    return dibujoTocado(elegibles.map(px), clientX - r.left, clientY - r.top, radio)
   }
   function elegirEn(clientX, clientY, radio) {
     if (!onElegir) return false
@@ -1463,8 +1482,10 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             )}
           </svg>
 
-          <CapaFibonacci fib={fibonacci} puntos={puntos} pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
-          <CapaElliott elliott={elliott} puntos={puntos} pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
+          <CapaFibonacci fib={fibonacci} puntos={puntos} pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)}
+            marcado={sobreDibujo === ID_FIB_AUTO || elegido === ID_FIB_AUTO} />
+          <CapaElliott elliott={elliott} puntos={puntos} pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)}
+            marcado={sobreDibujo === ID_ELL_AUTO || elegido === ID_ELL_AUTO} />
           {/* Tus dibujos, y lo que se está dibujando (hasta el mouse). */}
           <CapaDibujos dibujos={dibujos} elegido={elegido} resaltado={sobreDibujo} trazo={trazo} cursor={onToque ? cursor : null}
             pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
