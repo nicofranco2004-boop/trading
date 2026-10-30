@@ -6,6 +6,8 @@
 //   · Tu lista (?tab=lista): la tabla de pages/TuLista.jsx;
 //   · Señales de la semana (?tab=senales): «Tus señales» de la pieza 15
 //     (components/TusSenales.jsx), que vivía en Novedades;
+//   · Gráfico (?tab=grafico&activo=GGAL): sólo el gráfico, con el activo
+//     arriba a la izquierda como en TradingView (pages/GraficoTecnico.jsx);
 //   · Comparar y Mercado: «Próximamente», no se pueden tocar.
 // «Panorama» y no «Resumen»: Resumen es la primera pantalla del mismo grupo.
 // ════════════════════════════════════════════════════════════════════════════
@@ -24,6 +26,7 @@ import { ArrowRight } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import TuLista, { useListaTecnica } from './TuLista'
+import GraficoTecnico from './GraficoTecnico'
 import { TusSenalesVista, useTusSenales, Cambio } from '../components/TusSenales'
 import { TarjetaPlata } from '../components/RadiografiaTecnica'
 import { usePrivacy } from '../contexts/PrivacyContext'
@@ -37,6 +40,7 @@ export const PESTANAS = [
   { id: 'panorama', label: 'Panorama' },
   { id: 'lista', label: 'Tu lista' },
   { id: 'senales', label: 'Señales de la semana', corto: 'Señales' },
+  { id: 'grafico', label: 'Gráfico' },
   { id: 'comparar', label: 'Comparar', pronto: true },
   { id: 'mercado', label: 'Mercado', pronto: true },
 ]
@@ -230,6 +234,7 @@ export default function AnalisisTecnico() {
       <div role="tabpanel" id="analisis-tecnico-panel" aria-labelledby={`analisis-tecnico-tab-${activa}`}>
         {activa === 'panorama' && <Panorama lista={lista} filas={filas} semana={semana} hidden={hidden} onVer={ver} onPestana={elegir} />}
         {activa === 'lista' && <TuLista datos={lista} filas={filas} />}
+        {activa === 'grafico' && <GraficoTecnico />}
         {activa === 'senales' && (
           <div className="flex flex-col gap-3">
             <TusSenalesVista datos={semana.datos} error={semana.error} hidden={hidden} filtro={filtro} onFiltro={setFiltro}
