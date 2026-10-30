@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { api, clearClientContext, EVENTO_PLAN_REQUERIDO } from '../utils/api'
+import { api, clearClientContext, EVENTO_PLAN_REQUERIDO, marcarPersonaCambiada } from '../utils/api'
 import { setBrokersRegistry } from '../utils/valuation'
 import { isDemoMode, enableDemoMode, disableDemoMode, vencerDemoSiCorresponde } from '../utils/demo'
 import { track } from '../utils/track'
@@ -169,16 +169,25 @@ export function AuthProvider({ children }) {
   // Se mira un instante DESPUÉS del aviso y no en el aviso mismo: hay cambios
   // que llegan en dos pasos —el "limpiar" del cartel de error vacía todo y
   // vuelve a poner la misma sesión— y en el medio parece que no hay nadie.
+  // Pero en ese instante la cookie YA es de la otra persona: api.js no deja
+  // salir nada mientras tanto (marcarPersonaCambiada). Sin eso, un «Guardar»
+  // tocado en esos 300 ms guardaba lo de una persona en la cuenta de otra
+  // (re-test a ciegas 3, 30/10).
   useEffect(() => {
     if (isDemoMode()) return
     let espera = null
-    const mirar = () => {
+    const otraPersona = () => {
       let ahora = null
       try { ahora = JSON.parse(leerDelAlmacen(CATALOGO.usuario)) } catch { /* basura → nadie */ }
-      if (quienEs(ahora) !== quienEs(user)) window.location.reload()
+      return quienEs(ahora) !== quienEs(user)
+    }
+    const mirar = () => {
+      if (otraPersona()) window.location.reload()
+      else marcarPersonaCambiada(false)
     }
     const alCambiarEnOtraPestana = (e) => {
       if (e.key !== null && e.key !== 'rendi_user') return
+      marcarPersonaCambiada(otraPersona())
       clearTimeout(espera)
       espera = setTimeout(mirar, 300)
     }

@@ -44,8 +44,9 @@ export function duenoDeLaPestana() {
   return `${quien}|${cliente != null ? `cliente-${cliente}` : 'propia'}`
 }
 
-/** El dueño, para una pantalla: cambia cuando el asesor cambia de cliente (en
- *  esta pestaña o en otra) o cuando otra pestaña cambia la sesión. */
+/** El dueño, para una pantalla: cambia cuando el asesor cambia de cliente en
+ *  esta pestaña o cuando otra pestaña cambia la sesión. (Si otra pestaña entra
+ *  a otro cliente, ésta no cambia: queda desfasada, ver utils/api.) */
 export function useDuenoDeLaPestana() {
   const [dueno, setDueno] = useState(duenoDeLaPestana)
   useEffect(() => {

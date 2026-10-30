@@ -125,7 +125,12 @@ describe('Análisis: de quién es lo que la pestaña recuerda', () => {
     log('[S1b] antes  :', antes)
     log('[S1b] después:', claves())
     log('[S1b] pestaña vieja →', desde(t))
-    // Ahora el asesor abre el cliente 3 de nuevo (otra visita, montaje limpio).
+    // La pestaña vieja ya no adopta el 3: queda desfasada, con el cartel
+    // (re-test a ciegas 3). El asesor elige «Ir a Tres», que recarga: acá, la
+    // pestaña pasa al 3 como lo haría la recarga, y se abre de nuevo (otra
+    // visita, montaje limpio).
+    expect(api.pestanaDesfasada()?.motivo).toBe('cliente')
+    api.setClientContext({ id: 3, label: 'Tres' })
     const t3 = await abrirAnalisis()
     log('[S1b] cliente 3, visita siguiente →', desde(t3))
     expect(desde(t3), 'el cliente 3 contra sí mismo: 0 %').toMatch(/Tu cartera: (\+?0(,0)? ?%|0,0 %)/)

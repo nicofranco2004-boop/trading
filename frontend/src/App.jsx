@@ -13,6 +13,7 @@ import { CoachDrawerProvider } from './contexts/CoachDrawerContext'
 import { AlertsProvider } from './contexts/AlertsContext'
 import { AdvisorProvider, useAdvisorContext } from './contexts/AdvisorContext'
 import ClientContextBar from './components/advisor/ClientContextBar'
+import CuentaCambiadaEnOtraPestana from './components/CuentaCambiadaEnOtraPestana'
 import Sidebar from './components/Sidebar'
 import TransicionDePantalla from './components/TransicionDePantalla'
 import BuscadorRapido from './components/BuscadorRapido'
@@ -445,6 +446,7 @@ function Layout() {
       <AlertsProvider>
       <AdvisorProvider>
         <AdvisorLandingRedirect />
+        <CuentaCambiadaEnOtraPestana />
         {/* Los avisos de arriba de todo van ADENTRO de la barra: así su alto
             entra en lo que la barra mide y nada de lo que se pega debajo
             queda tapado (ver components/mobile/avisos.js). */}
@@ -481,6 +483,7 @@ function Layout() {
     <AlertsProvider>
     <AdvisorProvider>
       <AdvisorLandingRedirect />
+      <CuentaCambiadaEnOtraPestana />
       <Sidebar />
       {/* main content shifteado dinámicamente por --sidebar-w
           (la sidebar setea esta CSS var según expandida/colapsada) */}

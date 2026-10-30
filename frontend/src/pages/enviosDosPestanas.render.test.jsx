@@ -19,7 +19,7 @@ import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { createElement as h } from 'react'
 import { appendFileSync } from 'node:fs'
 import { prepararApp, estado, respuestaEscalada, textoConCortes, cargando } from '../testing/pantallaConOjito'
-import { montar, enActo, buscarBoton, clic, texto, otraPestanaEscribe } from '../testing/navegadorMinimo'
+import { montar, enActo, buscarBoton, clic, texto, otraPestanaEscribe, escribir } from '../testing/navegadorMinimo'
 
 vi.mock('../components/ai/mervalle/motor', async (io) => ({
   ...(await io()), crearMervallE: () => new Proxy({}, { get: () => () => {} }),
@@ -100,6 +100,9 @@ const vencer = async () => {
 const limpio = () => {
   if (m) { /* se desmonta en abrir */ }
   localStorage.clear(); sessionStorage.clear(); api.setClientContext(null)
+  // La recarga de AuthContext acá es de mentira: no limpia la memoria del
+  // «cambió la persona» que la de verdad sí tira.
+  api.marcarPersonaCambiada?.(false)
   servidor.vencida = false; servidor.demora = 0; servidor.pedidos = []
   localStorage.setItem('rendi:tour:novedades:v2', '1'); localStorage.setItem('rendi_display_currency', 'USD')
 }
@@ -216,6 +219,127 @@ describe('lo que se manda al servidor con dos pestañas', () => {
     const escrituras = servidor.pedidos.filter(x => x.method !== 'GET' && x.path.startsWith('/monthly'))
     log('  escrituras a /monthly tras el clic:', escrituras.map(x => `${x.method} ${x.path} ${x.cuenta} ${x.body?.broker ?? ''} ${x.body?.capital_final ?? ''}`))
     expect(escrituras.filter(x => x.cuenta === 'c3'), 'el cierre del 2 a nombre del 3').toEqual([])
-    expect(texto(m.contenedor), 'la persona se entera de por qué no se guardó').toMatch(/se cambió de cuenta/)
+    // Desde que la pestaña no adopta el cliente de la otra, el cierre ni sale:
+    // espera, y la persona ve el cartel que le deja elegir.
+    expect(texto(m.contenedor), 'la persona se entera de por qué no se guardó').toMatch(/Cambiaste de cuenta en otra pestaña/)
+  }, 500000)
+})
+
+// 🔴 LA PESTAÑA VIEJA NO PUEDE MOSTRAR UNA CUENTA Y MANDAR OTRA (re-test 3,
+// pedido de la sesión central, 30/10). El freno de enviarDe cubría lo que la
+// pantalla manda sola; lo que toca la persona —agregar un mes, registrar una
+// compra— salía con el cliente que la pestaña tenía AHORA, mostrando el
+// anterior. Ahora, cuando otra pestaña cambia la cuenta, ésta deja de hablar
+// con el servidor y lo dice con un cartel hasta que la persona elige.
+describe('la pestaña vieja: lo que toca la persona después del cambio', () => {
+  const escrituras = (cuenta) => servidor.pedidos.filter(x => x.method !== 'GET' && x.cuenta === cuenta)
+  const enLaPagina = (parte) => texto(m.contenedor).includes(parte) || texto(document.body).includes(parte)
+  // Los menús y los cuadros van a document.body (createPortal). Un botón se
+  // busca por su texto o por su etiqueta (aria-label: el de los tres puntitos).
+  function buscarEn(raiz, parte) {
+    const pila = [raiz]
+    while (pila.length) {
+      const n = pila.shift()
+      if (n.nodeName === 'BUTTON' && (texto(n).includes(parte) || (n.getAttribute?.('aria-label') || '').includes(parte))) return n
+      pila.push(...(n.childNodes || []))
+    }
+    return null
+  }
+  const boton = (parte) => buscarEn(m.contenedor, parte) || buscarEn(document.body, parte)
+  const tocar = async (parte, ruta) => {
+    const b = boton(parte)
+    expect(b, `botón «${parte}»`).toBeTruthy()
+    const raiz = buscarEn(m.contenedor, parte) ? m.contenedor : document.body
+    await enActo(() => clic(raiz, b))
+    await quieta(() => el(ruta))
+  }
+  function campo(etiqueta) {
+    const pila = [m.contenedor, document.body]
+    while (pila.length) {
+      const n = pila.shift()
+      if (n.nodeName === 'LABEL' && texto(n).trim().startsWith(etiqueta)) {
+        const pilaB = [n.parentNode]
+        while (pilaB.length) { const x = pilaB.shift(); if (x.nodeName === 'INPUT') return x; pilaB.push(...(x.childNodes || [])) }
+      }
+      pila.push(...(n.childNodes || []))
+    }
+    return null
+  }
+  const pasarAlTres = async () => {
+    await enActo(async () => otraPestanaEscribe('rendi_client_ctx', JSON.stringify({ id: 3, label: 'Tres' })))
+    await esperar(400)
+    servidor.pedidos = []
+  }
+
+  it('«Agregar mes» en el Mensual del cliente 2 después de que otra pestaña entró al 3: nada llega al 3', async () => {
+    log('\n[Vieja: Agregar mes] ──────'); limpio(); persona('asesora', 'advisor')
+    api.setClientContext({ id: 2, label: 'Dos' })
+    await abrir('/mensual')
+    await pasarAlTres()
+    await tocar('Agregar mes', '/mensual')
+    await tocar('Guardar', '/mensual')
+    log('  escrituras:', servidor.pedidos.filter(x => x.method !== 'GET').map(x => `${x.method} ${x.path} ${x.cuenta}`))
+    expect(escrituras('c3'), 'un mes tipeado sobre el 2, guardado en el 3').toEqual([])
+    expect(enLaPagina('Cambiaste de cuenta en otra pestaña'), 'el cartel').toBe(true)
+  }, 500000)
+
+  it('una compra a mano en la Cartera del cliente 2 después de que otra pestaña entró al 3: nada llega al 3', async () => {
+    log('\n[Vieja: compra] ──────'); limpio(); persona('asesora', 'advisor')
+    api.setClientContext({ id: 2, label: 'Dos' })
+    await abrir('/posiciones')
+    await pasarAlTres()
+    await tocar('Más acciones', '/posiciones')
+    await tocar('Agregar compra', '/posiciones')
+    const cantidad = campo('Cantidad'), precio = campo('Precio de compra')
+    expect(cantidad && precio, 'los campos de la compra').toBeTruthy()
+    await escribir(cantidad, '3')
+    await escribir(precio, '100')
+    await tocar('Guardar', '/posiciones')
+    log('  escrituras:', servidor.pedidos.filter(x => x.method !== 'GET').map(x => `${x.method} ${x.path} ${x.cuenta} ${JSON.stringify(x.body).slice(0, 80)}`))
+    expect(escrituras('c3'), 'una compra hecha mirando al 2, registrada en el 3').toEqual([])
+    expect(enLaPagina('Cambiaste de cuenta en otra pestaña'), 'el cartel').toBe(true)
+  }, 500000)
+
+  it('«Seguir con Dos en esta pestaña»: lo tipeado se guarda en el 2, que es lo que se ve', async () => {
+    log('\n[Vieja: seguir] ──────'); limpio(); persona('asesora', 'advisor')
+    api.setClientContext({ id: 2, label: 'Dos' })
+    await abrir('/mensual')
+    await pasarAlTres()
+    await tocar('Agregar mes', '/mensual')
+    await tocar('Seguir con Dos', '/mensual')
+    expect(enLaPagina('Cambiaste de cuenta en otra pestaña'), 'el cartel se fue').toBe(false)
+    servidor.pedidos = []
+    await tocar('Guardar', '/mensual')
+    log('  escrituras:', servidor.pedidos.filter(x => x.method !== 'GET').map(x => `${x.method} ${x.path} ${x.cuenta}`))
+    expect(escrituras('c3')).toEqual([])
+    expect(escrituras('c2').filter(x => x.method === 'POST' && x.path === '/monthly'), 'el mes, en el 2').toHaveLength(1)
+  }, 500000)
+
+  it('«Ir a Tres» recarga la página (lo de memoria del 2 no pasa al 3)', async () => {
+    limpio(); persona('asesora', 'advisor')
+    api.setClientContext({ id: 2, label: 'Dos' })
+    await abrir('/mensual')
+    await pasarAlTres()
+    window.location.reload.mockClear()
+    await tocar('Ir a Tres', '/mensual')
+    expect(window.location.reload).toHaveBeenCalled()
+  }, 500000)
+
+  it('otra persona entra en otra pestaña: en los 300 ms antes de recargar, nada sale con la sesión nueva', async () => {
+    log('\n[Vieja: persona] ──────'); limpio(); persona('ana')
+    await abrir('/mensual')
+    await tocar('Agregar mes', '/mensual')
+    const guardar = boton('Guardar')
+    expect(guardar, 'el mes a medio cargar, con su Guardar').toBeTruthy()
+    servidor.me = { quien: 'bruno', name: 'bruno', email: 'bruno@retest.test', tier: 'pro' }   // la cookie ya es de Bruno
+    await enActo(async () => otraPestanaEscribe('rendi_user', JSON.stringify({ name: 'bruno', email: 'bruno@retest.test', tier: 'pro' })))
+    servidor.pedidos = []
+    window.location.reload.mockClear()
+    await enActo(() => clic(buscarEn(m.contenedor, 'Guardar') ? m.contenedor : document.body, guardar))   // antes de los 300 ms
+    await esperar(50)
+    log('  escrituras:', servidor.pedidos.filter(x => x.method !== 'GET').map(x => `${x.method} ${x.path} ${x.cuenta}`))
+    expect(escrituras('bruno'), 'el mes de Ana, guardado en la cuenta de Bruno').toEqual([])
+    await esperar(400)
+    expect(window.location.reload, 'y se recarga con la sesión nueva').toHaveBeenCalled()
   }, 500000)
 })

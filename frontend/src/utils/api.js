@@ -48,8 +48,9 @@ export function getClientContext() {
 // del cliente B abierta — la IA contestaba sobre B con las operaciones, los
 // brokers y la charla de A (medido en el navegador, 2026-10-05).
 // Se avisa desde ACÁ y no desde AdvisorContext porque éste es el único lugar
-// por el que pasan todas las formas de cambiar de cliente: entrar, salir,
-// cerrar sesión adentro de uno y lo que haga otra pestaña. (Que cambie la
+// por el que pasan todas las formas de cambiar de cliente EN ESTA PESTAÑA:
+// entrar, salir, cerrar sesión adentro de uno. Lo que haga OTRA pestaña ya no
+// cambia la cuenta de ésta: la deja desfasada (ver más abajo). (Que cambie la
 // PERSONA logueada lo mira VozContext aparte: no pasa por acá.)
 export const EVENTO_CUENTA_CAMBIADA = 'rendi:cuenta-cambiada'
 function avisarSiCambioLaCuenta(antes) {
@@ -60,31 +61,128 @@ function avisarSiCambioLaCuenta(antes) {
 export function setClientContext(ctx) {
   // ctx: { id: <client_uid>, label: <string> }
   const antes = _clientCtx
+  const estabaDesfasada = !!pestanaDesfasada()
   _clientCtx = ctx && typeof ctx.id === 'number' ? { id: ctx.id, label: ctx.label || '' } : null
+  _clienteEnLasOtras = _clientCtx       // queda escrito para todas
   try {
     if (_clientCtx) guardarEnAlmacen(CATALOGO.clienteAbierto, JSON.stringify(_clientCtx))
     else borrarDelAlmacen(CATALOGO.clienteAbierto)
   } catch { /* ignore */ }
   avisarSiCambioLaCuenta(antes)
+  avisarSiCambioElDesfase(estabaDesfasada)
+}
+
+// 🔴 UNA PESTAÑA NO MUESTRA UNA CUENTA MIENTRAS MANDA OTRA (re-test a ciegas 3,
+// 30/10). El cliente abierto queda escrito para todas las pestañas, y la
+// sesión es una cookie: UNA para todas. Antes, si en otra el asesor entraba a
+// otro cliente, ésta lo adoptaba (sus pedidos pasaban a ir a la cuenta nueva)
+// mientras la pantalla seguía mostrando la anterior: lo que la persona tocaba
+// —agregar un mes, registrar una compra— se guardaba en una cuenta que no
+// estaba viendo, y cada pantalla tenía que acordarse de su propio freno
+// (utils/enviosConDueno cubría sólo lo que sale solo). Ahora:
+//   · `_clientCtx` es la cuenta de ESTA pestaña, la que muestra: la de cuando
+//     se cargó o la que se eligió acá (setClientContext). Lo que escribe otra
+//     pestaña va a `_clienteEnLasOtras` y no la cambia.
+//   · Si no coinciden, o si otra pestaña cambió la PERSONA (AuthContext llama a
+//     marcarPersonaCambiada mientras decide si recargar), la pestaña está
+//     DESFASADA: no sale ningún pedido —ni de lectura— por ninguna de las
+//     salidas de este archivo (frenoDeLaPestana), y components/
+//     CuentaCambiadaEnOtraPestana lo dice con un cartel que deja elegir: seguir
+//     acá con la cuenta que se ve, o recargar con la nueva.
+//   · Si cambió el CLIENTE, los pedidos ESPERAN: con «seguir» salen —a la
+//     cuenta de la pantalla que los armó, que es la que se ve—; con «recargar»
+//     se pierden con la página. Si fallaran, las pantallas quedarían con
+//     errores (o con un error guardado en alguna memoria) después de «seguir».
+//     Un pedido que espera sale sólo si la pestaña sigue en la cuenta con la
+//     que se armó. Si cambió la PERSONA fallan en el acto: no hay a qué volver
+//     (la cookie ya es de la otra) y la página se recarga sola.
+// Tampoco salen lecturas: una lectura de la cuenta nueva dibujada en la
+// pantalla de la vieja también mezcla (y es lo que después se sigue tocando).
+let _clienteEnLasOtras = _clientCtx
+let _personaCambiada = false
+export const EVENTO_PESTANA_DESFASADA = 'rendi:pestana-desfasada'
+
+/** null si la pestaña muestra la cuenta a la que van los pedidos; si no, por qué. */
+export function pestanaDesfasada() {
+  if (isDemoMode()) return null
+  if (_personaCambiada) return { motivo: 'persona' }
+  if ((_clientCtx?.id ?? null) !== (_clienteEnLasOtras?.id ?? null)) {
+    return { motivo: 'cliente', mostrado: _clientCtx, abierto: _clienteEnLasOtras }
+  }
+  return null
+}
+
+let _esperando = []
+function avisarSiCambioElDesfase(estaba) {
+  const esta = !!pestanaDesfasada()
+  if (!esta && _esperando.length) {
+    const soltar = _esperando
+    _esperando = []
+    soltar.forEach(f => f())
+  }
+  if (estaba !== esta && typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(EVENTO_PESTANA_DESFASADA))
+  }
+}
+
+/** AuthContext: otra pestaña cambió la persona (true) o volvió a la misma (false). */
+export function marcarPersonaCambiada(si) {
+  const estaba = !!pestanaDesfasada()
+  _personaCambiada = !!si
+  if (_personaCambiada && _esperando.length) {
+    // Los que esperaban por un cliente tampoco salen: la sesión ya es otra.
+    // Al soltarlos se vuelven a fijar y, desfasados por la persona, fallan.
+    const soltar = _esperando
+    _esperando = []
+    soltar.forEach(f => f())
+  }
+  avisarSiCambioElDesfase(estaba)
+}
+
+/** «Seguir con <la cuenta que se ve> en esta pestaña»: vuelve a abrir ese
+ *  cliente (o la cuenta propia). Las OTRAS pestañas quedan desfasadas ahora. */
+export function seguirConLaCuentaMostrada() {
+  setClientContext(_clientCtx)
+}
+
+function errorCuentaCambiada() {
+  const err = new Error('Cambiaste de cuenta en otra pestaña: esta pestaña muestra la anterior y no mandó nada.')
+  err.cuentaCambiada = true
+  return err
+}
+
+/** Ningún pedido sale de una pestaña desfasada: espera (otro cliente) o falla
+ *  (otra persona). Sin desfase, sigue de largo. */
+async function frenoDeLaPestana() {
+  const desfase = pestanaDesfasada()
+  if (!desfase) return
+  if (desfase.motivo === 'persona') throw errorCuentaCambiada()
+  const cuenta = _clientCtx?.id ?? null
+  await new Promise((seguir, cortar) => {
+    _esperando.push(() => ((_clientCtx?.id ?? null) === cuenta ? seguir() : cortar(errorCuentaCambiada())))
+  })
+  if (pestanaDesfasada()) throw errorCuentaCambiada()
 }
 
 export function clearClientContext() {
   setClientContext(null)
 }
 
-// Sync multi-pestaña: si OTRA pestaña limpia/cambia el contexto (logout, salir
-// del cliente), el mirror en memoria de ESTA pestaña se actualiza — sin esto,
-// una pestaña vieja seguía mandando el header de un cliente ajeno tras el
-// logout+login de otro usuario (403 en toda la app hasta un F5).
+// Lo que otra pestaña escribe (entrar a otro cliente, salir, vaciar todo) se
+// anota acá y deja a ésta desfasada, sin cambiarle la cuenta (ver arriba).
+// Antes se adoptaba, para que una pestaña vieja no siguiera mandando el
+// encabezado de un cliente ajeno tras el logout+login de otro usuario (403
+// hasta un F5): ahora esa pestaña no manda nada, y si cambió la persona
+// AuthContext la recarga.
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
     if (e.key !== null && e.key !== CLIENT_CTX_KEY) return
-    const antes = _clientCtx
+    const estabaDesfasada = !!pestanaDesfasada()
     try {
       const parsed = e.key === null ? null : (e.newValue ? JSON.parse(e.newValue) : null)
-      _clientCtx = parsed && typeof parsed.id === 'number' ? parsed : null
-    } catch { _clientCtx = null }
-    avisarSiCambioLaCuenta(antes)
+      _clienteEnLasOtras = parsed && typeof parsed.id === 'number' ? parsed : null
+    } catch { _clienteEnLasOtras = null }
+    avisarSiCambioElDesfase(estabaDesfasada)
   })
 }
 
@@ -132,6 +230,7 @@ async function req(method, path, body, opts) {
     throw err
   }
 
+  await frenoDeLaPestana()
   const headers = { 'Content-Type': 'application/json' }
   // Plan Asesor: contexto de cliente activo → el backend resuelve la cuenta
   // del cliente (o ignora el header en los prefijos exentos).
@@ -347,6 +446,7 @@ async function upload(path, formData, opts) {
     err.demoBlocked = true
     throw err
   }
+  await frenoDeLaPestana()
   // No setear Content-Type — el browser agrega multipart/form-data con su boundary.
   // Contexto de cliente (Plan Asesor): mismo header que req() — sin esto el
   // import caía SILENCIOSAMENTE en la cuenta del asesor con el ctx activo.
@@ -388,6 +488,7 @@ async function getBlob(path) {
     err.demoBlocked = true
     throw err
   }
+  await frenoDeLaPestana()
   // Contexto de cliente (Plan Asesor): mismo header que req() — sin esto el
   // export CSV bajaba la cartera del ASESOR presentada como la del cliente.
   const blobHeaders = {}
@@ -428,6 +529,7 @@ async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, onVoz, s
     return { tier: res?.tier, portfolioChanged: !!res?.portfolio_changed }
   }
 
+  await frenoDeLaPestana()
   // Contexto de cliente (Plan Asesor): la IA SIGUE al contexto — con ctx
   // activo el coach lee/escribe la cuenta del CLIENTE (IA per-cliente).
   const chatHeaders = { 'Content-Type': 'application/json' }

@@ -103,6 +103,54 @@ function enviosAutomaticos(texto) {
 
 const rel = (p) => relative(SRC, p).split('\\').join('/')
 
+// Lo que sale con `fetch` directo, sin pasar por utils/api: ahí no llega el
+// freno de la pestaña desfasada (otra pestaña cambió la cuenta) ni el
+// encabezado del cliente. Lista cerrada: ninguno guarda datos de una cuenta.
+const FETCH_DIRECTO = {
+  'contexts/AuthContext.jsx': 'despierta al servidor (/api/health) cada 4 minutos: no manda nada',
+  'utils/uso.js': 'el uso de la app (qué pantallas abre la persona): es de la persona, no de una cuenta',
+  'utils/autoUpdate.js': '/version.json, para saber si hay una versión nueva de la app',
+  'pages/Admin.jsx': '/version.json, la versión publicada',
+  'components/import/ImportWizard.jsx': 'baja la planilla modelo del importador, vacía: igual para todos',
+  'hooks/useDictado.js': 'manda el audio para pasarlo a texto; vuelve el texto, no guarda nada en la cuenta',
+  'pages/ResetPassword.jsx': 'cambiar la contraseña con el link del mail: antes de tener sesión',
+  'pages/Login.jsx': 'entrar, crear la cuenta, «olvidé mi contraseña»: antes de tener sesión',
+  'pages/VerifyEmail.jsx': 'verificar el mail: antes de tener sesión',
+  'pages/ClaimAccount.jsx': 'reclamar una cuenta creada por un asesor: antes de tener sesión',
+  'pages/AdvisorAccessRequest.jsx': 'responder el pedido de acceso de un asesor, con el link del mail',
+  'pages/ReportPublic.jsx': 'el informe público por link: sin sesión',
+  'pages/Landing.jsx': 'los números públicos de la portada: sin sesión',
+}
+
+describe('lo que sale sin pasar por utils/api', () => {
+  it('el fetch directo es una lista cerrada, cada uno con su porqué', () => {
+    const usan = new Set()
+    for (const p of archivos()) {
+      const r = rel(p)
+      if (r === 'utils/api.js') continue
+      const t = readFileSync(p, 'utf8').replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
+      if (/\bfetch\s*\(|navigator\.sendBeacon|new\s+(XMLHttpRequest|EventSource|WebSocket)\b/.test(t)) usan.add(r)
+    }
+    expect([...usan].sort(), 'Esto habla con el servidor sin pasar por utils/api: no lo frena la pestaña '
+      + 'desfasada ni lleva el cliente. Usá api.get/post/… (o, si de verdad no toca una cuenta, '
+      + 'sumalo a FETCH_DIRECTO con su porqué).').toEqual(Object.keys(FETCH_DIRECTO).sort())
+  })
+
+  it('cada salida de utils/api pasa por el freno de la pestaña desfasada antes del fetch', () => {
+    const t = readFileSync(join(SRC, 'utils/api.js'), 'utf8').replace(/\/\/.*$/gm, '')
+    // Las funciones de arriba del archivo (async function x(…) { … }) que llaman a fetch.
+    const sinFreno = []
+    for (const m of t.matchAll(/^(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/gm)) {
+      const cuerpo = t.slice(m.index, cierre(t, t.indexOf('{', m.index + m[0].length), '{', '}'))
+      const iFetch = cuerpo.search(/\bfetch\s*\(/)
+      if (iFetch < 0 || m[1] === 'withGatewayRetry') continue
+      const iFreno = cuerpo.indexOf('await frenoDeLaPestana()')
+      if (iFreno < 0 || iFreno > iFetch) sinFreno.push(m[1])
+    }
+    expect(sinFreno).toEqual([])
+  })
+})
+
 describe('lo que la pantalla manda sola al servidor', () => {
   it('cada envío de la lista dice qué manda y por qué', () => {
     for (const [nombre, e] of Object.entries(ENVIOS)) {
