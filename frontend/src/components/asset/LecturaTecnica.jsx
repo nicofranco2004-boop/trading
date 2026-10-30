@@ -32,6 +32,9 @@
 // (diasRecientes) y, si los dividendos se pisarían, muestra sólo los balances
 // (dividendosAmontonados).
 //
+// «Compartir» (CompartirGrafico.jsx) arma una imagen de lo que se ve para
+// WhatsApp (utils/imagenGrafico.js), sin nada de tu cartera.
+//
 // Debajo del RSI, la fuerza de la tendencia en dos franjas: el ADX con su línea
 // de 23 y las barras del Squeeze (el combo «DMI/ADX/KEYLEVEL» + «SQZMOM_LB» de
 // TradingView), con su tarjeta «Fuerza de la tendencia».
@@ -43,10 +46,12 @@ import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, gua
 import CapaFibonacci, { COLOR_FIB, ID_FIB_AUTO, TarjetaFibonacci, preciosDeLaCapa, trazosDelFibonacci, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
 import CapaElliott, { COLOR_ELLIOTT, ID_ELL_AUTO, TarjetaElliott, fechaDelConteo, preciosDelConteo, trazosDelConteo } from './CapaElliott'
 import CapaDibujos, { anchoDelCanal, trazosDeDibujos } from './CapaDibujos'
+import CompartirGrafico from './CompartirGrafico'
 import { BotonAvisame, BotonAvisameLinea, alertaDeLinea, useAvisosTecnicos, senalDeTarjeta } from '../alerts/AvisameTecnico'
 import { api } from '../../utils/api'
 import { factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecio, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
 import { PRIORIDAD, taparRotulos } from '../../utils/rotulos'
+import { archivoDelGrafico, specDelGrafico } from '../../utils/imagenGrafico'
 import {
   DIBUJOS_MAXIMOS, copiaLocal, etiquetasDe, diaDelPunto, dibujoCorrido, dibujoTocado, dibujosDelServidor, dibujosGuardados, guardarDibujos, idNuevo,
   marcarSubidos, PINCEL_MAXIMO, COLORES_DIBUJO, colorDeLosNuevos, recordarColor, precioCorrido, precioRedondo, puntasDe, puntoDelDia, subirDibujos,
@@ -404,6 +409,9 @@ export default function LecturaTecnica({
   // Las alertas de la cuenta, para que cada «Avisame» sepa si ya hay una igual.
   // Arriba de los return de abajo: un hook después de un return rompe la ficha.
   const avisos = useAvisosTecnicos()
+  // La escala de precios que dibujó el gráfico (también la estirada a mano),
+  // para que la imagen de «Compartir» use la misma.
+  const escala = useRef(null)
 
   // Dólares al abrir; pesos recién la primera vez que se tocan (la mayoría no
   // los mira y es otra cuenta en el servidor). Otro activo = otro componente
@@ -461,8 +469,8 @@ export default function LecturaTecnica({
 
   // `visto`: el rango que se está viendo (null si se acercó o movió a mano);
   // `recientes`: cuántos días es «Lo reciente» (null = no hace falta).
-  const marco = (hijos, { conPesos = datos.ars?.disponible !== false, visto = ventana ? null : rango ?? (anchoGrafico > 0 && anchoGrafico < ANCHO_ANGOSTO ? 'reciente' : 'todo'), recientes = null } = {}) => (
-    <Marco moneda={moneda} setMoneda={setMoneda} rango={visto} setRango={elegirRango} recientes={recientes}
+  const marco = (hijos, { conPesos = datos.ars?.disponible !== false, visto = ventana ? null : rango ?? (anchoGrafico > 0 && anchoGrafico < ANCHO_ANGOSTO ? 'reciente' : 'todo'), recientes = null, compartir = null } = {}) => (
+    <Marco moneda={moneda} setMoneda={setMoneda} rango={visto} setRango={elegirRango} recientes={recientes} compartir={compartir} archivo={archivoDelGrafico(asset)}
       conPesos={conPesos} conTuyo={!!primera} tipo={tipo} setTipo={setTipo} intervalo={intervalo} setIntervalo={setIntervalo}
       grande={grande} setGrande={setGrande} titulo={titulo}>{hijos}</Marco>
   )
@@ -672,6 +680,18 @@ export default function LecturaTecnica({
     peso: tenencia?.valorUsd > 0 ? pesoEnCartera : null,
   })
 
+  // «Compartir» (Nico, 29/10): la imagen de lo que se ve, con las capas
+  // prendidas y tus dibujos (utils/imagenGrafico.js). No recibe tu precio,
+  // tus compras ni tus avisos: la imagen no lleva nada de tu cartera.
+  const compartir = () => specDelGrafico({
+    activo: asset, moneda, puntos, huecos, lo: escala.current?.min, hi: escala.current?.max,
+    ver, tipo, semanales, dibujos: dibujosEnVista, fibonacci: actual.fibonacci, elliott: actual.elliott,
+    eventos: losEventos, convertida: actual.convertida, fechaDatos: actual.lectura?.fecha,
+    precio: (x) => fmtPrecio(x, moneda), volAlto: VOL_ALTO, adxTope: ADX_TOPE, squeeze: SQUEEZE,
+    colores: { ...COLOR, fibonacci: COLOR_FIB, elliott: COLOR_ELLIOTT, grilla: v('chart-grid'),
+      sube: v('rendi-pos-fill'), baja: v('rendi-neg-fill'), positivo: v('rendi-pos'), negativo: v('rendi-neg') },
+  })
+
   const botones = botonesDeLaBarra({
     actual, ver, alternar, losEventos, eventosCargando: eventos[moneda] === undefined,
     misMarcas, promedio, moneda, pnlPctUsd, lineaSinTc, medir, setMedir,
@@ -789,12 +809,16 @@ export default function LecturaTecnica({
               // (antes hablaba de «la ruedita»). Va pegado a las fechas, antes
               // del RSI y la fuerza: abajo de todo, con esos paneles prendidos,
               // caía donde flotan WhatsApp y Mervall-E y quedaba tapado.
-              <p data-ayuda="" className="text-[11.5px] text-ink-2 mt-0.5 leading-snug">
-                {semanales && 'Cada vela es una semana. '}
-                {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá o pasá a velas semanales. '}
-                <span className="sm:hidden">Pellizcá para acercar o alejar, deslizá para moverte, mantené apretado para ver cada día y tocá un dibujo para elegirlo.</span>
-                <span className="hidden sm:inline">Ruedita: acercar o alejar. Arrastrar: moverte. Doble click en los precios o las fechas: vuelve a automático.</span>
-              </p>
+              <div className="flex items-start gap-2">
+                <p data-ayuda="" className="flex-1 min-w-0 text-[11.5px] text-ink-2 mt-0.5 leading-snug">
+                  {semanales && 'Cada vela es una semana. '}
+                  {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá o pasá a velas semanales. '}
+                  <span className="sm:hidden">Pellizcá para acercar o alejar, deslizá para moverte, mantené apretado para ver cada día y tocá un dibujo para elegirlo.</span>
+                  <span className="hidden sm:inline">Ruedita: acercar o alejar. Arrastrar: moverte. Doble click en los precios o las fechas: vuelve a automático.</span>
+                </p>
+                {/* «Compartir» en el celular: arriba no entra en el renglón de los controles. */}
+                <CompartirGrafico armar={compartir} archivo={archivoDelGrafico(asset)} className="sm:hidden shrink-0" />
+              </div>
             }
             lugaresMinimos={(RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS)) / (semanales ? 5 : 1)}
             onAncho={setAnchoGrafico} onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rangoVisto}|${tipo}|${intervalo}`}
@@ -808,7 +832,7 @@ export default function LecturaTecnica({
             onToque={herramienta && herramienta !== 'pincel' ? tocar : null} onTerminar={terminarDesdeElGrafico}
             onPincel={herramienta === 'pincel' ? trazarPincel : null}
             colorNuevo={colorNuevo === 'cian' ? null : colorNuevo}
-            dibujos={dibujosEnVista} elegido={elegido} onElegir={setElegido} onMoverDibujo={moverDibujo}
+            dibujos={dibujosEnVista} elegido={elegido} onElegir={setElegido} onMoverDibujo={moverDibujo} escala={escala}
             conAviso={misDibujos.filter(d => d.tipo === 'tendencia' && alertaDeLinea(avisos.items, { asset, moneda, dibujo: d.id })).map(d => d.id)}
             trazo={dibujar.puntos.length ? { tipo: dibujar.tipo, puntos: dibujar.puntos.map(q => ({ k: lugarDelDia(q.i), precio: q.precio })) } : null} />
           {rangoVisto === 'tuyo' && !ventana && primera && primera < actual.puntos[0].d && (
@@ -877,7 +901,7 @@ export default function LecturaTecnica({
         Datos al cierre del {fechaCorta(actual.lectura?.fecha)}. Muestra cómo se movió el precio: no es una recomendación para comprar ni vender.
       </p>
     </>,
-    { visto: ventana ? null : rangoVisto, recientes },
+    { visto: ventana ? null : rangoVisto, recientes, compartir },
   )
 }
 
@@ -938,7 +962,7 @@ function periodoDeMovimiento(m) {
   return dias >= 700 ? 'Últimos 2 años' : `Desde el ${fechaCorta(m.desde)}`
 }
 
-function Marco({ moneda, setMoneda, rango, setRango, recientes = null, conPesos = true, conTuyo = false, tipo, setTipo, intervalo, setIntervalo, grande = false, setGrande, titulo, children }) {
+function Marco({ moneda, setMoneda, rango, setRango, recientes = null, conPesos = true, conTuyo = false, tipo, setTipo, intervalo, setIntervalo, grande = false, setGrande, titulo, compartir = null, archivo, children }) {
   // En la ficha, ya ampliado (Nico, 24/10: «que sea automáticamente ampliado»).
   // Con «Pantalla completa», la MISMA sección fija sobre toda la página (no es
   // otra vista: mismos datos, mismos botones; R6). Arriba a la derecha, en UN
@@ -952,6 +976,9 @@ function Marco({ moneda, setMoneda, rango, setRango, recientes = null, conPesos 
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         {titulo ? <div className="text-[12.5px] text-ink-2 font-medium">{titulo}</div> : <span />}
         <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">
+          {/* «Compartir»: la imagen del gráfico (CompartirGrafico.jsx); sólo con
+              gráfico. En el celular va al lado de la ayuda, abajo de las fechas. */}
+          {compartir && <CompartirGrafico armar={compartir} archivo={archivo} className="hidden sm:inline-flex" />}
           {setGrande && (
             <button type="button" data-capa="pantalla" onClick={() => setGrande(!grande)} aria-pressed={grande}
               title={grande ? 'Volver a la ficha, con el menú de Rendi (también con Esc)' : 'El gráfico en toda la pantalla, para un análisis a fondo'}
@@ -1445,7 +1472,7 @@ function BarraAdx({ adx }) {
   )
 }
 
-function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null, onAncho = null, pie = null, lugaresMinimos = RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS) }) {
+function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null, onAncho = null, pie = null, lugaresMinimos = RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS), escala: escalaRef = null }) {
   const conVelas = tipo === 'velas'
   // Los lugares del ancho: los días más el aire vacío de la derecha.
   const lugares = puntos.length + huecos
@@ -1647,6 +1674,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
       area: c ? `${c}L${x(puntos.length - 1).toFixed(1)},${H}L0,${H}Z` : '',
     }
   }, [puntos, lugares, promedio, ver.s50, ver.s200, ver.bb, ver.vol, conVelas, fibonacci, elliott, precioMano])
+  if (escalaRef) escalaRef.current = { min, max }
 
   const rsiPath = useMemo(() => {
     let d = '', abierto = false
