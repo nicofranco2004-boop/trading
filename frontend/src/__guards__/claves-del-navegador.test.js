@@ -39,6 +39,7 @@ const CON_DUENO = {
   'utils/valoresVistos.js|k': { via: 'duenoDeLaPestana', porque: 'el «antes» de los números que cambian (montos)' },
   'hooks/useLastVisit.js|LS_PREFIX + keyRef.current': { via: 'useDuenoDeLaPestana', porque: '«desde tu última visita»: el valor de la cartera y los hallazgos' },
   'hooks/useDescartesDelDiagnostico.js|PREFIJO + dueno': { via: 'useDuenoDeLaPestana', porque: 'las tarjetas del diagnóstico que se descartaron' },
+  'utils/dibujos.js|k': { via: 'duenoDeLaPestana', porque: 'los dibujos del gráfico, que se suben a la cuenta si quedaron pendientes' },
 }
 
 const DUENO_PROPIO = {
@@ -73,6 +74,10 @@ const SIN_DATOS_DE_CUENTA = {
   'pages/Insights.jsx|\'rendi_insights_bench_usd\'': 'contra qué índice se compara en dólares',
   'pages/Insights.jsx|\'rendi_insights_bench_ars\'': 'contra qué índice se compara en pesos',
   'hooks/useArrastrable.js|clave': 'dónde quedó una ventana arrastrable, mientras dure la pestaña',
+  'components/asset/BarraGrafico.jsx|CLAVE': 'qué indicadores del gráfico están prendidos',
+  'components/asset/BarraGrafico.jsx|CLAVE_LEYENDA': 'la lista de indicadores abierta o plegada',
+  'components/asset/LecturaTecnica.jsx|CLAVE_TIPO': 'línea o velas',
+  'pages/AssetDetail.jsx|CLAVE_ORDEN': 'el orden de las secciones de la ficha',
   // Ayudas y primeros pasos: a lo sumo una ayuda de más o de menos; no muestran datos.
   'components/ai/AIDiscoveryBanner.jsx|AI_DISCOVERY_KEY': 'ya conoció la IA',
   'components/ai/mervalle/estadoDelChat.js|CLAVE_SALUDO': 'el saludo del día de Mervall-E ya se dio',
