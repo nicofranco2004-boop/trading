@@ -1,16 +1,16 @@
 // Los rótulos de capas distintas que se pisarían con todo prendido
 // (utils/rotulos.js): se esconde el de menos prioridad, nunca la capa.
 import { describe, it, expect } from 'vitest'
-import { PRIORIDAD, rotulosTapados, taparRotulos } from './rotulos'
+import { PRIORIDAD, rotulosTapados, taparRotulos, rotuloCorteFib, rotuloInvalidaElliott, ANCHO_GRAFICO_CELULAR } from './rotulos'
 
 const caja = (prioridad, x0, y0, ancho = 120, alto = 14) => ({ prioridad, x0, x1: x0 + ancho, y0, y1: y0 + alto })
 
 describe('rotulosTapados', () => {
-  it('el caso de AAPL (24/10): el corte del Fibonacci pisaba el «El conteo dejaría de tener sentido» y la onda 4', () => {
+  it('el caso de AAPL (24/10): el corte del Fibonacci pisaba el «El conteo dejaría de valer» y la onda 4', () => {
     // Medidas tomadas del gráfico de AAPL en dólares, 1 año, todo prendido.
     const cajas = [
-      caja(PRIORIDAD.corteFib, 540, 84, 200, 14),        // «Si cierra debajo, la suba podría perder fuerza · US$ 325»
-      caja(PRIORIDAD.invalidaElliott, 448, 97, 120, 14),  // «El conteo dejaría de tener sentido · US$ 317,40»
+      caja(PRIORIDAD.corteFib, 540, 84, 200, 14),        // «Si cierra debajo, podría frenar · US$ 325»
+      caja(PRIORIDAD.invalidaElliott, 448, 97, 120, 14),  // «El conteo dejaría de valer · US$ 317,40»
       caja(PRIORIDAD.onda, 650, 82, 18, 18),              // la onda 4
       caja(PRIORIDAD.onda, 515, 74, 18, 18),              // la onda 1, lejos
     ]
@@ -129,5 +129,28 @@ describe('taparRotulos (lo dibujado)', () => {
     taparRotulos(raiz(a, b))
     expect(b.style.visibility).toBe('')
     expect(b.getAttribute('data-tapado')).toBeNull()
+  })
+})
+
+// D2 (re-test de la auditoría D, 29/10): en el celular el rótulo del corte del
+// Fibonacci medía más que el gráfico (x −16 a 270 en 245 px) y se escondía:
+// quedaba la raya sin texto. Ancho estimado: 5 px por carácter con la letra de
+// 10,5 px, calibrado con lo medido en el navegador (el rótulo viejo, 44
+// caracteres = 217 px; el de 60 = 286 px), más 8 de margen. Tiene que entrar
+// con el precio más largo que puede tener.
+describe('los rótulos de raya entran en el gráfico del celular', () => {
+  const ancho = (t) => t.length * 5 + 8
+  const PRECIOS = ['US$ 38,84', 'US$ 1.854,88', '$ 12.345,67', '$ 1.234.567']
+  it('el corte del Fibonacci y el del conteo de Elliott, con cualquier precio', () => {
+    for (const p of PRECIOS) {
+      for (const t of [rotuloCorteFib(true, p), rotuloCorteFib(false, p), rotuloInvalidaElliott(p)]) {
+        expect(ancho(t), t).toBeLessThanOrEqual(ANCHO_GRAFICO_CELULAR)
+      }
+    }
+  })
+  it('y siguen hablando como posibilidad', () => {
+    for (const t of [rotuloCorteFib(true, 'US$ 1'), rotuloCorteFib(false, 'US$ 1'), rotuloInvalidaElliott('US$ 1')]) {
+      expect(t).toMatch(/podría|dejaría/)
+    }
   })
 })

@@ -15,7 +15,7 @@
 
 import { posicion } from './CapaFibonacci'
 import { rotuloOnda, tarjetaElliott } from '../../utils/elliott'
-import { PRIORIDAD } from '../../utils/rotulos'
+import { PRIORIDAD, rotuloInvalidaElliott } from '../../utils/rotulos'
 
 // Índigo: no se confunde con el magenta del Fibonacci, el azul de la media de
 // 200, el naranja de la de 50 ni las velas verdes y rojas.
@@ -96,7 +96,7 @@ export default function CapaElliott({ elliott, puntos, pctX, pctY, precio, marca
         return (
           <div key={k} className="absolute h-0" style={{ left: `${xInv}%`, right: 0, top: `${y}%`, borderTop: `${marcado ? 2.5 : 1.5}px dashed ${indigo(0.8)}` }}>
             <span data-rotulo={PRIORIDAD.invalidaElliott} data-rotulo-voltear="" className={`absolute ${r.lado === 'debajo' ? 'top-0.5' : '-translate-y-full'} ${xInv < 60 ? 'left-1' : 'right-1'} rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1`}>
-              El conteo dejaría de tener sentido · {precio(r.precio)}
+              {rotuloInvalidaElliott(precio(r.precio))}
             </span>
           </div>
         )

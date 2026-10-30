@@ -19,8 +19,8 @@ export const PRIORIDAD = {
   medicion: 6,          // lo que la persona acaba de medir
   onda: 5,              // los números de las ondas: sin ellos el conteo no se lee
   nivelFib: 4,          // los niveles del Fibonacci, lo primero que se mira
-  corteFib: 3,          // «Si cierra debajo, la suba podría perder fuerza»
-  invalidaElliott: 2,   // «El conteo dejaría de tener sentido»
+  corteFib: 3,          // «Si cierra debajo, podría frenar» (rotuloCorteFib)
+  invalidaElliott: 2,   // «El conteo dejaría de valer» (rotuloInvalidaElliott)
 }
 
 /**
@@ -115,4 +115,26 @@ export function taparRotulos(raiz) {
     nodos[k].style.visibility = 'hidden'
     nodos[k].setAttribute('data-tapado', '')
   }
+}
+
+// ─── Los textos de los rótulos de raya ───────────────────────────────────────
+// Un rótulo más ancho que el gráfico no tiene lugar: `rotulosQueEntran` lo
+// esconde y queda la raya sola. En el celular el gráfico mide ~245 px (375 de
+// pantalla menos márgenes, ejes y la barra de herramientas). El 29/10 el corte
+// del Fibonacci pasó a «Si cierra encima, la bajada podría perder fuerza · …»
+// (D2: como posibilidad) y en el celular desapareció (re-test de la auditoría
+// D). Los textos viven acá para que la prueba de ancho (rotulos.test.js) mida
+// los mismos que se dibujan.
+export const ANCHO_GRAFICO_CELULAR = 245
+
+/** La raya del Fibonacci en curso: el cierre que podría ser una señal. */
+export function rotuloCorteFib(suba, precioTxt) {
+  // Corto a propósito (ver arriba); el detalle («esa bajada podría estar
+  // perdiendo fuerza») lo dice la tarjeta de Fibonacci, abajo del gráfico.
+  return `${suba ? 'Si cierra debajo, podría frenar' : 'Si cierra encima, podría frenar'} · ${precioTxt}`
+}
+
+/** La raya del conteo de Elliott: el precio que lo dejaría sin sentido. */
+export function rotuloInvalidaElliott(precioTxt) {
+  return `El conteo dejaría de valer · ${precioTxt}`
 }
