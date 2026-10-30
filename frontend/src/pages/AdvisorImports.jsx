@@ -67,8 +67,8 @@ function serializar(filas, momento, inicio, fin, tandaId = null) {
     filas: filas.map(f => ({ ...f, archivos: (f.archivos || []).map(a => ({ name: a.name, size: a.size })) })),
   }
 }
-function guardarLocal(x) { const k = claveLocal(); if (!k) return; try { sessionStorage.setItem(k, JSON.stringify(x)) } catch {} }
-function leerLocal() {
+export function guardarLocal(x) { const k = claveLocal(); if (!k) return; try { sessionStorage.setItem(k, JSON.stringify(x)) } catch {} }
+export function leerLocal() {
   try {
     const k = claveLocal()
     const raw = k ? sessionStorage.getItem(k) : null

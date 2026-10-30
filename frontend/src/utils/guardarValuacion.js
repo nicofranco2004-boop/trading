@@ -16,9 +16,20 @@
 // un escritor nuevo no puede olvidársela (lo vigila coberturaEscritores.test.js).
 
 import { COBERTURA_MINIMA } from './valuation'
+import { duenoDeLaPestana } from './duenoDeLaPestana'
 
 export function sePuedeGuardar({ cobertura }) {
   return cobertura >= COBERTURA_MINIMA
+}
+
+// La marca de «ya guardé la foto de hoy» (localStorage, una por día): de la
+// persona Y de la cuenta (utils/duenoDeLaPestana). Era una sola para todo el
+// navegador: el asesor que abría el inicio del cliente 2 dejaba al 3 sin su foto
+// ese día, y tras una sesión que vence, el siguiente se quedaba sin la suya.
+// null = nadie logueado: no se guarda foto.
+export function claveFotoDeHoy() {
+  const dueno = duenoDeLaPestana()
+  return dueno ? `rendi_snapshot_date:${dueno}` : null
 }
 
 // filas: [{ broker, pnl }] (incluida la fila 'global'), calculadas AL MEP.
