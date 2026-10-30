@@ -285,7 +285,7 @@ describe('la barra de herramientas del gráfico', () => {
       await evento('mousemove', { clientX: 950, clientY: y + 3 }); await otra()
       expect(attr(area(), 'class')).toContain('cursor-pointer')
       await evento('mousedown', { clientX: 950, clientY: y + 3 }); await evento('mouseup', { clientX: 950, clientY: y + 3 }); await otra()
-      expect(estado()).toContain('Fibonacci automático, elegido.')
+      expect(estado()).toContain('Fibonacci automático seleccionado.')
       await clic(montado.contenedor, nodos(n => n.nodeName === 'BUTTON' && texto(n).includes('Borrar el Fibonacci automático'))[0]); await otra()
       expect(SE_VE.fib()).toBe(false)
       expect(await prendido('fib')).toBe('false')                 // borrado = apagado: se prende de nuevo desde su botón
@@ -294,7 +294,7 @@ describe('la barra de herramientas del gráfico', () => {
       const inv = nodos(n => n.nodeName === 'SPAN' && texto(n).startsWith('El conteo dejaría de valer'))[0].parentNode
       const yi = (parseFloat(inv.style.top) / 100) * 250
       await evento('mousedown', { clientX: 980, clientY: yi }); await evento('mouseup', { clientX: 980, clientY: yi }); await otra()
-      expect(estado()).toContain('Conteo automático de Elliott, elegido.')
+      expect(estado()).toContain('Conteo automático de Elliott seleccionado.')
       await enActo(() => { window.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Delete' })) }); await otra()
       expect(SE_VE.ell()).toBe(false)
       expect(await prendido('ell')).toBe('false')

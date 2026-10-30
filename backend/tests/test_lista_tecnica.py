@@ -198,8 +198,8 @@ class ListaTecnicaTest(unittest.TestCase):
         esperado = tecnico.cambios_desde(velas, desde)[0]
         self.assertEqual(x["ultimo_cambio"], {**esperado, **senales_semana.texto_del_cambio(esperado)},
                          "el cambio y sus palabras: los mismos de «Tus señales»")
-        self.assertEqual(x["ultimo_cambio"]["etiqueta"], "Tendencia de fondo")
-        self.assertTrue(x["ultimo_cambio"]["texto"].startswith("pasó arriba de su promedio de 200 días"))
+        self.assertEqual(x["ultimo_cambio"]["etiqueta"], "Tendencia de largo plazo")
+        self.assertTrue(x["ultimo_cambio"]["texto"].startswith("superó su promedio de 200 días"))
         self.assertEqual(x["ultimo_cambio"]["tipo"], "media200")
         self.assertEqual(x["ultimo_cambio"]["sentido"], "arriba")
         self.assertEqual(x["ultimo_cambio"]["fecha"], self.dias[n - 3].isoformat())

@@ -132,7 +132,7 @@ describe('LecturaTecnica', () => {
     // Pesos se piden recién ahora: que vuelva el pedido.
     for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     const t = texto(montado.contenedor)
-    expect(t).toContain('En pesos la tendencia es otra que en dólares')
+    expect(t).toContain('En pesos, la tendencia es distinta que en dólares')
     expect(t).toContain('Alcista')
   })
 
@@ -163,8 +163,8 @@ describe('LecturaTecnica', () => {
     await montado.desmontar(); montado = null
     t = await dibujar({ pnlPctUsd: 0.4, pnlPctLinea: null, lineaSinTc: true })
     expect(botonDe('prom').getAttribute('aria-disabled')).toBe('true')
-    expect(texto(botonDe('prom'))).toContain('A alguna de tus compras le falta el dólar de ese día')
-    expect(t).toContain('le falta el dólar de ese día')
+    expect(texto(botonDe('prom'))).toContain('A alguna de tus compras le falta la cotización del dólar de ese día')
+    expect(t).toContain('le falta la cotización del dólar de ese día')
   })
 
   it('tus compras y ventas: sin ninguna, el botón deshabilitado con el porqué', async () => {
@@ -322,7 +322,7 @@ describe('LecturaTecnica', () => {
     }
     const t = await dibujar({ pnlPctUsd: 0.1 })
     expect(t).toContain('Bandas de Bollinger')        // el botón de la leyenda
-    expect(t).toContain('más angostas que de costumbre')
+    expect(t).toContain('más angostas que lo habitual')
     expect(t).toContain('Entre las bandas')           // la tarjeta, de entrada
     expect(t).toContain('Cuánto se mueve')           // ésta va siempre
     expect(t).toContain('alrededor de 2,0%')
@@ -363,11 +363,11 @@ describe('LecturaTecnica', () => {
     const b = botonDe('vol')
     expect(b.getAttribute('aria-disabled')).toBe('true')
     expect(b.getAttribute('aria-pressed')).toBeNull()
-    expect(texto(montado.contenedor)).not.toContain('Volumen: Este activo no trae volumen en los datos de Yahoo.Cerrar')
+    expect(texto(montado.contenedor)).not.toContain('Volumen: No hay datos de volumen para este activo.Cerrar')
     await clic(montado.contenedor, b)
     await otraVez({ pnlPctUsd: 0.1 })
     const aviso = buscarRol('status', 'Volumen: ')
-    expect(texto(aviso)).toContain('Volumen: Este activo no trae volumen en los datos de Yahoo.')
+    expect(texto(aviso)).toContain('Volumen: No hay datos de volumen para este activo.')
     // Tocar otro botón lo saca.
     await clic(montado.contenedor, botonDe('s50'))
     await otraVez({ pnlPctUsd: 0.1 })
@@ -398,9 +398,9 @@ describe('LecturaTecnica', () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': CON_FUERZA }
     const t = await dibujar({ pnlPctUsd: null })
     expect(t).toContain('Fuerza de la tendencia (ADX)')
-    expect(t).toContain('a favor de la suba')
-    expect(t).toContain('La tendencia se afirma')
-    expect(t).toContain('la fuerza (ADX) pasó 23 para arriba con el Squeeze (un indicador de para qué lado viene empujando el precio) en verde: el precio viene subiendo con fuerza.')
+    expect(t).toContain('al alza')
+    expect(t).toContain('La tendencia se fortalece')
+    expect(t).toContain('la fuerza de la tendencia (ADX) superó 23 con el Squeeze (indica si el precio empuja al alza o a la baja) en verde: el precio viene subiendo con fuerza.')
     // El panel: una barra por día con Squeeze y la línea del ADX.
     const nodos = (n) => [n, ...(n.childNodes || []).flatMap(nodos)]
     const panel = nodos(montado.contenedor).find(n => n.getAttribute?.('aria-label')?.startsWith('Fuerza de la tendencia'))
@@ -413,7 +413,7 @@ describe('LecturaTecnica', () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': { ...USD, lectura: { ...USD.lectura, ruedas: 20, adx: null, squeeze: null } } }
     const t = await dibujar({ pnlPctUsd: null })
     expect(t).not.toContain('Fuerza de la tendencia (ADX)')
-    expect(t).toContain('Para medirla hacen falta unos 28 días de mercado y este activo tiene 20')
+    expect(t).toContain('Para calcularla hacen falta unos 28 días de mercado y este activo tiene 20')
   })
 
   it('el globo del mouse nunca se sale del gráfico (celular: gráfico de 250 px, globo de 200)', () => {

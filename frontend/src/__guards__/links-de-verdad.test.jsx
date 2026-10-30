@@ -1,4 +1,4 @@
-// D12 (auditoría D, 29/10): «Ver gráfico» (cada cambio de Señales y del
+// D12 (auditoría D, 29/10): «Ver el gráfico» (cada cambio de Señales y del
 // Panorama), «Ver las 2 señales de la semana» y la pestaña «Tus señales ↗» de
 // Novedades llevan a OTRA página pero eran botones: no se podían abrir en otra
 // pestaña (botón del medio, ⌘+click) ni copiar el link, y la pestaña anunciaba
@@ -14,13 +14,13 @@ import fuenteNovedades from '../pages/Novedades.jsx?raw'
 
 vi.mock('../utils/api', async (orig) => ({ ...(await orig()), api: { get: vi.fn(() => new Promise(() => {})) } }))
 
-const S = { asset: 'AAPL', ficha: 'AAPL', local: false, tenes: true, peso: 0.1, tipo: 'media200', etiqueta: 'Tendencia de fondo',
-  tono: 'neg', texto: 'quedó abajo de su promedio de 200 días.', tesis: null }
+const S = { asset: 'AAPL', ficha: 'AAPL', local: false, tenes: true, peso: 0.1, tipo: 'media200', etiqueta: 'Tendencia de largo plazo',
+  tono: 'neg', texto: 'cayó por debajo de su promedio de 200 días.', tesis: null }
 
 describe('lo que lleva a otra página es un link', () => {
-  it('«Ver gráfico» de cada cambio: <a href> a la ficha', () => {
+  it('«Ver el gráfico» de cada cambio: <a href> a la ficha', () => {
     const html = renderToStaticMarkup(<MemoryRouter><ul><Cambio s={S} hidden={false} onVer={() => {}} /></ul></MemoryRouter>)
-    expect(html).toMatch(/<a [^>]*href="\/activo\/AAPL"[^>]*>Ver gráfico<\/a>/)
+    expect(html).toMatch(/<a [^>]*href="\/activo\/AAPL"[^>]*>Ver el gráfico<\/a>/)
   })
 
   it('un click normal navega adentro; con ⌘, Ctrl, Shift o el botón del medio, no se intercepta', () => {

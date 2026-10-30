@@ -65,7 +65,7 @@ export function textoInvalida(c, precio) {
   const x = cruza(lado, p, precio)
   const primero = {
     arranque_1: `Si el precio ${x} (donde arrancó la onda 1), este conteo dejaría de tener sentido: en la teoría, la onda 2 no va más allá de ese punto.`,
-    final_1: `Si el precio ${x} (donde terminó la onda 1), este conteo dejaría de tener sentido: en la teoría, la onda 4 no se mete en el terreno de la 1.`,
+    final_1: `Si el precio ${x} (donde terminó la onda 1), este conteo dejaría de tener sentido: en la teoría, la onda 4 no baja hasta la zona de precios de la onda 1.`,
     final_5: `Si el precio ${x} (el final de la onda 5), esta lectura dejaría de tener sentido: podría ser que la 5 todavía no haya terminado.`,
     arranque_A: `Si el precio ${x} (donde arrancó la onda A), este conteo dejaría de tener sentido: en la teoría, la B no va más allá de ese punto.`,
     final_C: `Si el precio ${x} (el final de la onda C), esta lectura dejaría de tener sentido: podría ser que la corrección siga.`,
@@ -73,8 +73,8 @@ export function textoInvalida(c, precio) {
   if (!otro) return primero
   const y = cruza(otro.lado, otro.precio, precio)
   const segundo = {
-    tope_3_corta: `También dejaría de tener sentido si ${y}: con una onda 3 más corta que la 1, en la teoría la 5 no mide más que la 3.`,
-    arranque_1: `Y también si ${y} (donde arrancó la onda 1): sería devolver todo el movimiento de 5 ondas.`,
+    tope_3_corta: `También dejaría de tener sentido si ${y}: como la onda 3 fue más corta que la 1, en la teoría la 5 no puede ser más larga que la 3.`,
+    arranque_1: `Y también si ${y} (donde arrancó la onda 1): significaría perder todo el movimiento de las 5 ondas.`,
     borro_lo_corregido: `Y también si ${y}: la corrección habría borrado todo el movimiento que venía corrigiendo.`,
     arranque_A: `Y también si ${y} (donde arrancó la onda A): ya no se vería como una corrección.`,
   }[otro.por]
@@ -91,17 +91,17 @@ export function textoInvalida(c, precio) {
 export function textoPauta(p) {
   const v = p.valor
   const con = p.desde != null && p.hasta != null
-  const entre = (f) => (con ? ` (lo habitual, con margen: entre ${f(p.desde)} y ${f(p.hasta)})` : '')
+  const entre = (f) => (con ? ` (lo habitual es entre ${f(p.desde)} y ${f(p.hasta)})` : '')
   switch (p.id) {
-    case 'onda2': return `La onda 2 devolvió el ${pct(v)} de la 1${entre(pct)}.`
-    case 'onda3': return `La onda 3 midió ${veces(v)} veces la 1${rangoVeces(p)}.`
-    case 'onda4': return `La onda 4 devolvió el ${pct(v)} de la 3${entre(pct)}.`
+    case 'onda2': return `La onda 2 retrocedió el ${pct(v)} de lo que avanzó la onda 1${entre(pct)}.`
+    case 'onda3': return `La onda 3 fue ${veces(v)} veces el tamaño de la onda 1${rangoVeces(p)}.`
+    case 'onda4': return `La onda 4 retrocedió el ${pct(v)} de lo que avanzó la onda 3${entre(pct)}.`
     case 'alternancia': return p.cumple
-      ? 'Las ondas 2 y 4 fueron distintas (una devolvió la mitad o más y la otra poco, o una duró el triple), como suele pasar.'
+      ? 'Las ondas 2 y 4 fueron distintas (una retrocedió la mitad o más y la otra poco, o una duró el triple que la otra), como suele pasar.'
       : 'Las ondas 2 y 4 se parecieron; lo habitual es que sean distintas.'
-    case 'onda5': return `La onda 5 midió ${veces(v)} veces la 1${rangoVeces(p)}.`
-    case 'ondaB': return `La onda B devolvió el ${pct(v)} de la A${entre(pct)}.`
-    case 'ondaC': return `La onda C midió ${veces(v)} veces la A${rangoVeces(p)}.`
+    case 'onda5': return `La onda 5 fue ${veces(v)} veces el tamaño de la onda 1${rangoVeces(p)}.`
+    case 'ondaB': return `La onda B retrocedió el ${pct(v)} de lo que bajó o subió la A${entre(pct)}.`
+    case 'ondaC': return `La onda C fue ${veces(v)} veces el tamaño de la onda A${rangoVeces(p)}.`
     default: return ''
   }
 }
@@ -109,7 +109,7 @@ export function textoPauta(p) {
 // «(lo habitual, con margen: entre 1,38 y 1,9 veces)»
 function rangoVeces(p) {
   if (p.desde == null || p.hasta == null) return ''
-  return ` (lo habitual, con margen: entre ${veces(p.desde)} y ${veces(p.hasta)} veces)`
+  return ` (lo habitual es entre ${veces(p.desde)} y ${veces(p.hasta)} veces)`
 }
 
 export function textoConfianza(c) {
@@ -127,16 +127,16 @@ export function textoConfianza(c) {
 export function tarjetaElliott(e, precio, fecha) {
   if (!e) return null
   const n = e.n_pivote ?? 3
-  const pie = 'Es una de varias lecturas posibles: dos personas pueden contar distinto el mismo gráfico. '
-    + `Un pico o un pozo recién se confirma ${n} días de mercado después. `
-    + 'No dice qué va a pasar ni es una recomendación de compra o venta.'
+  const pie = 'Es una de varias lecturas posibles: dos analistas pueden contar distinto el mismo gráfico. '
+    + `Un máximo o un mínimo recién se confirma ${n} días de mercado después. `
+    + 'No es un pronóstico ni una recomendación de compra ni de venta.'
   if (!e.disponible) {
     if (e.motivo === 'pocos_datos') {
       return { titulo: 'Ondas de Elliott', veredicto: 'Faltan datos', pie,
         texto: `${QUE_ES} Para contarlas hacen falta al menos 30 días de mercado y este activo tiene ${e.ruedas}.` }
     }
     return { titulo: 'Ondas de Elliott', veredicto: 'Sin conteo claro', pie,
-      texto: `${QUE_ES} Con los picos y pozos de este activo no aparece ningún conteo que cumpla las reglas, y no se fuerza uno.` }
+      texto: `${QUE_ES} Con los máximos y mínimos de este activo no aparece ningún conteo que cumpla las reglas de la teoría, y Rendi no fuerza uno.` }
   }
   const c = e.principal
   const a = e.alternativo

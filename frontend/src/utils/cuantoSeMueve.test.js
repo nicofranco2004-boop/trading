@@ -84,7 +84,7 @@ describe('globos de balances y dividendos', () => {
     const t = textoEvento({ tipo: 'balance', fecha: '2025-07-31', momento: 'despues_del_cierre',
       reaccion: { pct: -4.21, cuando: 'al_otro_dia' } })
     expect(t.titulo).toBe('Balance del 31/07/25')
-    expect(t.lineas).toEqual(['Lo presentó con el mercado ya cerrado.', 'Al otro día el precio: −4,2%'])
+    expect(t.lineas).toEqual(['Presentó resultados después del cierre del mercado.', 'Al día siguiente, el precio: −4,2%'])
   })
   it('sin hora conocida: los dos días juntos', () => {
     const t = textoEvento({ tipo: 'balance', fecha: '2025-07-31', momento: null, reaccion: { pct: 3 } })
@@ -107,20 +107,20 @@ describe('marcas juntas', () => {
     ])
     expect(t.titulo).toBe('2 dividendos')
     expect(t.lineas).toEqual(['06/07/26: pagó $ 8,301 · ese día +4,5%', '03/08/26: pagó $ 8,301',
-      'Por acción. Desde el día de corte, el que compra ya no cobra ese pago.'])
+      'Por acción. Quien compra desde el día de corte ya no cobra este dividendo.'])
   })
   it('balances juntos dicen cuándo se midió cada uno; uno solo, el globo de siempre', () => {
     const t = textoGrupo([
       { tipo: 'balance', fecha: '2026-05-13', momento: 'despues_del_cierre', reaccion: { pct: -0.25 } },
       { tipo: 'balance', fecha: '2026-05-20', momento: 'antes_del_cierre', reaccion: { pct: 1.7 } },
     ])
-    expect(t.lineas).toEqual(['13/05/26: al otro día −0,3%', '20/05/26: ese día +1,7%'])
+    expect(t.lineas).toEqual(['13/05/26: al día siguiente −0,3%', '20/05/26: ese día +1,7%'])
     const e = { tipo: 'balance', fecha: '2026-05-13', momento: null, reaccion: { pct: 2 } }
     expect(textoGrupo([e])).toEqual(textoEvento(e))
   })
 })
 
-describe('cuánto se mueve este papel', () => {
+describe('cuánto se mueve este activo', () => {
   it('las cuatro tarjetas, como el mockup', () => {
     const t = tarjetasMovimiento(MOV, { precio, tenencia: { valor: 5300 }, peso: 0.11 })
     expect(t.map(x => x.id)).toEqual(['caida', 'desde_maximo', 'dia', 'cartera'])
@@ -128,11 +128,11 @@ describe('cuánto se mueve este papel', () => {
     expect(t[0].texto).toBe('De US$ 274 el 10/02/25 a US$ 181 el 21/04/25. Desde ese piso tardó 7 meses (148 días de mercado) en volver a US$ 274.')
     expect(t[1].veredicto).toBe('−16,6%')
     expect(t[2].veredicto).toBe('±1,6%')
-    expect(t[2].texto).toContain('este papel se mueve 1,8 veces lo que el S&P 500')
+    expect(t[2].texto).toContain('este activo se mueve 1,8 veces lo que el S&P 500')
     expect(t[2].texto).toContain('1 de cada 6 días de mercado')
     // 5.300 × 1,6 % = 84,8 → −US$ 85; a la cartera: 11 % × 1,6 % = 0,18 %.
     expect(t[3].veredicto).toBe('−US$ 85')
-    expect(t[3].texto).toContain('Es el 11% de tu cartera: a toda tu cartera ese día la mueve −0,2%.')
+    expect(t[3].texto).toContain('Es el 11% de tu cartera: ese día, tu cartera completa cambiaría −0,2%.')
   })
   it('todavía no volvió', () => {
     const t = tarjetasMovimiento({ ...MOV, peor_caida: { ...MOV.peor_caida, volvio: null, dias_para_volver: null } }, { precio })

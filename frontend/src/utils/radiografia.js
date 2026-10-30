@@ -58,10 +58,10 @@ export function lecturaDeFila(indice, p) {
 // con su explicación: un bono no se mide así y nunca va a tener; una acción
 // recién agregada sí, a partir de la noche en que se guardan sus precios.
 export const MOTIVOS_SIN_LECTURA = {
-  no_se_mide: 'bonos, fondos, efectivo y plazos fijos no tienen historia de precios en Rendi: no se les mide la tendencia.',
-  sin_historia: 'todavía no hay historia de precios guardada. Se guarda cada noche: aparece en un día.',
-  pocos_dias: 'para leer la tendencia hacen falta 200 días de mercado de precios guardados, y todavía no los tienen.',
-  vieja: `su último precio guardado tiene más de ${DIAS_LECTURA_VIEJA} días: no describe el de hoy.`,
+  no_se_mide: 'Rendi no guarda la historia de precios de bonos, fondos, efectivo ni plazos fijos, así que no se les calcula la tendencia.',
+  sin_historia: 'todavía no hay historia de precios guardada. Se guarda cada noche, así que va a aparecer mañana.',
+  pocos_dias: 'para calcular la tendencia hacen falta 200 días de mercado de precios guardados, y todavía no los tienen.',
+  vieja: `su último precio guardado tiene más de ${DIAS_LECTURA_VIEJA} días, así que no refleja cómo está hoy.`,
 }
 
 /** ¿Este lote es de los que no se miden con velas? (efectivo, fondo, bono, plazo fijo) */
@@ -79,11 +79,11 @@ function noSeMide(p) {
 export function tendencia(x, hoy = hoyISO(), p = null) {
   const sin = (porque, motivo) => ({ id: 'sin', palabra: 'Sin lectura', porque, motivo })
   if (!x || !x.disponible || !x.lectura) {
-    if (noSeMide(p)) return sin('no_se_mide', 'Bonos, fondos y efectivo no tienen historia de precios en Rendi: no se les mide la tendencia.')
-    return sin('sin_historia', 'Todavía no hay historia de precios guardada para este activo. Se guarda cada noche: aparece en un día.')
+    if (noSeMide(p)) return sin('no_se_mide', 'Rendi no guarda la historia de precios de bonos, fondos ni efectivo, así que no se les calcula la tendencia.')
+    return sin('sin_historia', 'Todavía no hay historia de precios guardada para este activo. Se guarda cada noche, así que va a aparecer mañana.')
   }
   if (lecturaVieja(x, hoy)) {
-    return sin('vieja', `El último precio guardado es del ${fechaCorta(x.lectura.fecha)}: no describe el de hoy.`)
+    return sin('vieja', `El último precio guardado es del ${fechaCorta(x.lectura.fecha)}, así que no refleja cómo está hoy.`)
   }
   const fondo = tarjetas(x.lectura).find(t => t.id === 'fondo')
   if (fondo?.veredicto === 'Alcista') return { id: 'alcista', palabra: 'Alcista', motivo: fondo.texto }

@@ -20,16 +20,16 @@ const DATOS = {
   senales: [
     { asset: 'MELI', local: false, ficha: 'MELI', tenes: true, watchlist: false, peso: 0.12, tesis: null,
       tipo: 'rsi_bajo_30', fecha: '2026-10-23', sentido: 'abajo', etiqueta: 'Cayó muy rápido', tono: 'rsi',
-      corta: 'cayó muy rápido', texto: 'cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 28; una semana de mercado antes estaba en 52.', extra: POSIBILIDAD },
+      corta: 'cayó muy rápido', texto: 'cayó muy rápido: el impulso (RSI) bajó de 30 y quedó en 28; una semana de mercado antes estaba en 52.', extra: POSIBILIDAD },
     { asset: 'YPFD', local: true, ficha: 'YPFD', tenes: true, watchlist: false, peso: 0.14, tesis: null,
       tipo: 'maximo_12m', fecha: '2026-10-23', sentido: 'arriba', etiqueta: 'Máximo del año', tono: 'pos',
       corta: 'empezó a marcar máximos del año', texto: 'empezó a marcar máximos del año (cerró en su precio más alto de los últimos 12 meses), después de un mes sin hacerlo.', extra: null },
     { asset: 'AAPL', local: false, ficha: 'AAPL', tenes: true, watchlist: false, peso: 0.11, tesis: 'El recambio de iPhone.',
-      tipo: 'media200', fecha: '2026-10-20', sentido: 'abajo', etiqueta: 'Tendencia de fondo', tono: 'neg',
-      texto: 'quedó abajo de su promedio de 200 días: la tendencia de fondo se volvió bajista.', extra: null },
+      tipo: 'media200', fecha: '2026-10-20', sentido: 'abajo', etiqueta: 'Tendencia de largo plazo', tono: 'neg',
+      texto: 'cayó por debajo de su promedio de 200 días: la tendencia de largo plazo pasó a ser bajista.', extra: null },
     { asset: 'PAMP', local: true, ficha: 'PAMP.BA', tenes: false, watchlist: true, peso: null, tesis: null,
       tipo: 'adx23', fecha: '2026-10-19', sentido: 'arriba', etiqueta: 'Fuerza de la tendencia', tono: 'adx',
-      corta: 'dejó de ir de costado y marca dirección (para arriba)', texto: 'dejó de ir de costado y marca dirección (para arriba): la fuerza de la tendencia (ADX) pasó 23 y quedó en 24.', extra: null },
+      corta: 'dejó de moverse de forma lateral y tomó una dirección (al alza)', texto: 'dejó de moverse de forma lateral y tomó una dirección (al alza): la fuerza de la tendencia (ADX) superó 23 y quedó en 24.', extra: null },
   ],
 }
 
@@ -89,28 +89,28 @@ describe('tusSenales: cuentas', () => {
     const t = tarjetas(DATOS, true)
     expect(t.plata.valor).toBe('••')
     expect(t.plata.antes).toBeNull()
-    expect(deQuien(DATOS.senales[0], true)).toBe('Lo tenés')
-    expect(deQuien(DATOS.senales[0], false)).toBe('Lo tenés · 12% de tu plata')
-    expect(pesoTxt(0.004, false)).toBe('menos de 1% de tu plata')
+    expect(deQuien(DATOS.senales[0], true)).toBe('En tu cartera')
+    expect(deQuien(DATOS.senales[0], false)).toBe('En tu cartera · 12% de tu cartera')
+    expect(pesoTxt(0.004, false)).toBe('menos de 1% de tu cartera')
     expect(deQuien(DATOS.senales[3], false)).toBe('En tu watchlist')
   })
 
   it('el botón abre la ficha por el símbolo que dio el servidor; con tesis, «Revisar tu tesis»', () => {
     expect(rutaDeFicha(DATOS.senales[3])).toBe('/activo/PAMP.BA')
     expect(boton(DATOS.senales[2])).toBe('Revisar tu tesis')
-    expect(boton(DATOS.senales[0])).toBe('Ver gráfico')
+    expect(boton(DATOS.senales[0])).toBe('Ver el gráfico')
   })
 })
 
 describe('tusSenales: lo que se dibuja', () => {
   it('la pantalla del recuadro 15', () => {
     const t = texto(dibujar())
-    expect(t).toContain('Qué cambió esta semana en lo que tenés y en tu watchlist')
-    for (const x of ['En lo que tenés', 'En tu watchlist', 'Tu plata en tendencia de fondo alcista', '54%', 'la semana pasada, 61%',
-      'Todo', 'Lo que tenés', 'Watchlist', 'Viernes 23/10', 'Lunes 19/10', 'Ver gráfico',
-      'MELI cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 28', 'Lo tenés · 12% de tu plata', 'En tu watchlist',
+    expect(t).toContain('Qué cambió esta semana en tu cartera y en tu watchlist')
+    for (const x of ['En tu cartera', 'En tu watchlist', 'Tu cartera en tendencia alcista de largo plazo', '54%', 'la semana pasada, 61%',
+      'Todo', 'Tu cartera', 'Watchlist', 'Viernes 23/10', 'Lunes 19/10', 'Ver el gráfico',
+      'MELI cayó muy rápido: el impulso (RSI) bajó de 30 y quedó en 28', 'En tu cartera · 12% de tu cartera', 'En tu watchlist',
       'Tu tesis: «El recambio de iPhone.»', 'Revisar tu tesis',
-      'Mail', 'Notificación', 'Las dos', 'No quiero', 'Sábados a las 10:00. Si en la semana no cambió nada, no te escribimos.',
+      'Mail', 'Notificación', 'Mail y notificación', 'No recibirlo', 'Llega los sábados a las 10:00. Si en la semana no cambió nada, no te mandamos nada.',
       'no es una recomendación para comprar ni vender']) {
       expect(t).toContain(x)
     }
@@ -125,11 +125,11 @@ describe('tusSenales: lo que se dibuja', () => {
   it('con «Ocultar saldos» no aparece ningún porcentaje de la cartera', () => {
     const t = texto(dibujar({ hidden: true }))
     expect(t).not.toMatch(/\d+%/)
-    expect(t).toContain('Cuánto de tu plata está en tendencia de fondo alcista: oculto porque tenés prendido «Ocultar saldos».')
+    expect(t).toContain('Qué parte de tu cartera está en tendencia alcista de largo plazo: oculto porque tenés prendido «Ocultar saldos».')
   })
 
   it('semana quieta y pedido fallido dicen cada uno lo suyo', () => {
-    expect(texto(dibujar({ datos: { ...DATOS, senales: [] } }))).toContain('Esta semana no cambió nada en lo que tenés ni en tu watchlist.')
+    expect(texto(dibujar({ datos: { ...DATOS, senales: [] } }))).toContain('Esta semana no cambió nada en tu cartera ni en tu watchlist.')
     expect(texto(dibujar({ filtro: 'watchlist', datos: { ...DATOS, senales: [DATOS.senales[0]] } })))
       .toContain('Esta semana no cambió nada en tu watchlist.')
     expect(texto(dibujar({ error: true }))).toContain('No pudimos traer tus señales ahora')
@@ -137,7 +137,7 @@ describe('tusSenales: lo que se dibuja', () => {
 
   it('la preferencia marca lo elegido', () => {
     const html = dibujar({ datos: { ...DATOS, canal: 'ambos' } })
-    expect(html).toMatch(/aria-pressed="true"[^>]*>Las dos</)
+    expect(html).toMatch(/aria-pressed="true"[^>]*>Mail y notificación</)
     expect(html).not.toMatch(/aria-pressed="true"[^>]*>No quiero</)
   })
 })

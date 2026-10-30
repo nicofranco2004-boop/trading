@@ -1,4 +1,4 @@
-// D3 (auditoría D, 29/10): «✓ La onda 2 devolvió el 68 % de la 1 (lo habitual:
+// D3 (auditoría D, 29/10): «✓ La onda 2 retrocedió el 68 % de la 1 (lo habitual:
 // entre 50 % y 61,8 %)». El ✓ lo decide el servidor con su rango (40–72 %,
 // backend/elliott.py) y el texto escribía otro, a mano. Ahora cada pauta llega
 // con `desde`/`hasta` y el texto escribe ESE rango: lo que se muestra y lo que
@@ -12,9 +12,9 @@ const RANGOS = {
   onda5: [0.75, 1.33], ondaB: [0.40, 0.79], ondaC: [0.75, 1.33],
 }
 const num = (s) => Number(s.replace(/\./g, '').replace(',', '.'))
-// «… el 68 % de la 1 (lo habitual, con margen: entre 40 % y 72 %)» → [68, 40, 72]
+// «… el 68 % de la 1 (lo habitual es entre 40 % y 72 %)» → [68, 40, 72]
 function leer(t) {
-  const m = t.match(/(?:el|midió) (\d+(?:,\d+)?).*entre (\d+(?:,\d+)?)(?: %)? y (\d+(?:,\d+)?)/)
+  const m = t.match(/(?:el|fue) (\d+(?:,\d+)?).*entre (\d+(?:,\d+)?)(?: %)? y (\d+(?:,\d+)?)/)
   return m ? [num(m[1]), num(m[2]), num(m[3])] : []
 }
 
@@ -40,7 +40,7 @@ describe('D3 · Elliott: el ✓ y el rango escrito son el mismo', () => {
 
   it('un servidor viejo sin rango: no se inventa uno', () => {
     const t = textoPauta({ id: 'onda2', valor: 0.68, cumple: true })
-    expect(t).toBe('La onda 2 devolvió el 68 % de la 1.')
+    expect(t).toBe('La onda 2 retrocedió el 68 % de lo que avanzó la onda 1.')
   })
 
   it('la alternancia no tiene rango y sigue igual', () => {

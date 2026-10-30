@@ -144,19 +144,19 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
         <section aria-label="Esta semana" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-3">
           <div className="text-[12px] text-ink-2 font-medium">Esta semana <span className="font-normal">· {QUE_ES_ESTA_SEMANA.replace(/\.$/, '').toLowerCase()}</span></div>
           {semana.error ? (
-            <p className="text-[13.5px] text-ink-1">No pudimos traer los cambios de la semana. Probá recargar en un rato.</p>
+            <p className="text-[13.5px] text-ink-1">No pudimos cargar los cambios de la semana. Probá recargar la página en unos minutos.</p>
           ) : !datos ? (
             <div className="h-20 rounded-lg bg-bg-2/40 esqueleto" aria-label="Cargando la semana" />
           ) : (
             <>
               <div className="grid grid-cols-2 gap-3">
-                <div><div className="text-[24px] font-semibold tabular text-ink-0">{t.tenes.valor}</div><div className="text-[13px] text-ink-1">en lo que tenés</div></div>
+                <div><div className="text-[24px] font-semibold tabular text-ink-0">{t.tenes.valor}</div><div className="text-[13px] text-ink-1">en tu cartera</div></div>
                 <div><div className="text-[24px] font-semibold tabular text-ink-0">{t.watch.valor}</div><div className="text-[13px] text-ink-1">en tu watchlist</div></div>
               </div>
               <p className="text-[13px] text-ink-1 leading-snug border-t border-line pt-3">
                 {textoDelResumen(datos.canal, datos.proximo_resumen)}{' '}
                 <button type="button" onClick={() => onPestana('senales')} className="text-data-violet font-medium hover:underline">
-                  {datos.canal && datos.canal !== 'no' ? 'Cambiar' : 'Elegir cómo te llega'}
+                  {datos.canal && datos.canal !== 'no' ? 'Cambiar' : 'Elegir cómo recibirlo'}
                 </button>
               </p>
             </>
@@ -172,7 +172,7 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
         {!datos ? (
           semana.error ? null : <div className="h-28 my-2 rounded-lg bg-bg-2/40 esqueleto" />
         ) : ultimos.length === 0 ? (
-          <p className="py-4 text-[14px] text-ink-1">Esta semana no cambió nada en lo que tenés ni en tu watchlist.</p>
+          <p className="py-4 text-[14px] text-ink-1">Esta semana no cambió nada en tu cartera ni en tu watchlist.</p>
         ) : (
           <ul>{ultimos.map((s, i) => <Cambio key={`${s.asset}-${s.tipo}-${i}`} s={s} hidden={hidden} onVer={onVer} />)}</ul>
         )}
@@ -186,12 +186,12 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
         <Tarjeta titulo="Tu lista" ir={urlDePestana('lista')} accion="Abrir tu lista →"
-          texto={lista.cargando || lista.error ? 'Lo que tenés y lo que seguís, con su tendencia, fuerza y último cambio.'
-            : `${c.todo} ${c.todo === 1 ? 'activo' : 'activos'}: ${c.tenes} que tenés y ${c.watchlist} que seguís, con su tendencia, fuerza y último cambio.`} />
+          texto={lista.cargando || lista.error ? 'Tus activos y los de tu watchlist, con su tendencia, su impulso y su último cambio.'
+            : `${c.todo} ${c.todo === 1 ? 'activo' : 'activos'}: ${c.tenes} en tu cartera y ${c.watchlist} en tu watchlist, con su tendencia, su impulso y su último cambio.`} />
         <Tarjeta titulo="Señales de la semana" ir={urlDePestana('senales')} accion="Ver las señales →"
-          texto={`${datos ? `${total === 1 ? 'El cambio' : `Los ${total} cambios`}` : 'Los cambios'}, día por día, y cómo te llega el resumen de los sábados.`} />
-        <Tarjeta titulo="Comparar" pronto accion="Todavía no está"
-          texto="¿Qué rindió más desde que compraste? Contra guardar dólares, la inflación y el S&P 500." />
+          texto={`${datos ? `${total === 1 ? 'El cambio' : `Los ${total} cambios`}` : 'Los cambios'} de los últimos 7 días, día por día, y cómo recibir el resumen de los sábados.`} />
+        <Tarjeta titulo="Comparar" pronto accion="Próximamente"
+          texto="¿Qué rindió más desde que compraste? Compará tus activos con haber guardado dólares, con la inflación y con el S&P 500." />
       </div>
       <p className="text-[12px] text-ink-2 leading-relaxed">{NO_ES_RECOMENDACION}</p>
     </div>
@@ -225,7 +225,7 @@ export default function AnalisisTecnico() {
   return (
     <div className="page-shell-wide py-4">
       <PageHeader eyebrow="Análisis de mercado" title="Análisis técnico"
-        subtitle="Cómo se están moviendo los precios de lo que tenés y de lo que seguís. Medido en dólares, al cierre del último día de mercado." />
+        subtitle="Cómo se están moviendo los precios de tus activos y de los de tu watchlist. En dólares, con el precio de cierre del último día de mercado." />
       <Pestanas activa={activa} cuentas={cuentas} onElegir={elegir} />
       <div role="tabpanel" id="analisis-tecnico-panel" aria-labelledby={`analisis-tecnico-tab-${activa}`}>
         {activa === 'panorama' && <Panorama lista={lista} filas={filas} semana={semana} hidden={hidden} onVer={ver} onPestana={elegir} />}
@@ -235,7 +235,7 @@ export default function AnalisisTecnico() {
             <TusSenalesVista datos={semana.datos} error={semana.error} hidden={hidden} filtro={filtro} onFiltro={setFiltro}
               onVer={ver} onCanal={semana.cambiarCanal} guardando={semana.guardando} errorCanal={semana.errorCanal} />
             <p className="text-[13px] text-ink-2">
-              ¿Querés que te avisemos cuando pase algo así?{' '}
+              ¿Querés recibir un aviso cuando pase algo así?{' '}
               <Link to="/alertas?tab=crear" className="text-data-violet font-medium hover:underline">Crear una alerta técnica en Alertas →</Link>
             </p>
           </div>

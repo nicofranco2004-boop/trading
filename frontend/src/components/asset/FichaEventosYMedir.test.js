@@ -4,7 +4,7 @@
 //   · los balances («B») y dividendos («D») sobre el eje de fechas, con su
 //     globo, y el botón de la leyenda que los prende y los apaga;
 //   · el rango «Desde que lo tenés», que arranca en tu primera compra;
-//   · «Cuánto se mueve este papel» con lo que manda el servidor y tu tenencia.
+//   · «Cuánto se mueve este activo» con lo que manda el servidor y tu tenencia.
 // Lo que manda el servidor tiene la forma de backend/movimiento.py (sus
 // cuentas se prueban allá, contra una cuenta independiente).
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
@@ -167,7 +167,7 @@ describe('medir entre dos puntos (como la regla de TradingView)', () => {
     const t = status()
     expect(t).toContain(`en ${bajo(995) - bajo(300)} días de mercado`)
     expect(t).toContain(`(dentro de ${bajo(995) - 699} días de mercado)`)
-    expect(t).toContain('Lo que queda a la derecha de hoy es una cuenta: todavía no hay precios ahí.')
+    expect(t).toContain('La parte a la derecha de hoy es una proyección: todavía no hay precios ahí.')
     // Y con el dedo, igual.
     await toqueEn(995)
     expect(status()).toContain(`dentro de ${bajo(995) - 699} días de mercado. Ahora tocá el otro punto.`)
@@ -236,7 +236,7 @@ describe('balances y dividendos en el gráfico', () => {
     expect(ms[0].style.left).toBe(lugarDe(600))
     expect(ms[1].style.left).toBe(lugarDe(610))
     expect(ms[0].getAttribute('aria-label')).toBe(
-      `Balance del ${fecha(puntos[600].d)}. Lo presentó con el mercado ya cerrado. Al otro día el precio: −4,2%`)
+      `Balance del ${fecha(puntos[600].d)}. Presentó resultados después del cierre del mercado. Al día siguiente, el precio: −4,2%`)
     // Con un toque, el globo.
     await clic(montado.contenedor, ms[1]); await redibujar()
     const t = texto(montado.contenedor)
@@ -297,11 +297,11 @@ describe('desde que lo tenés', () => {
   })
 })
 
-describe('cuánto se mueve este papel', () => {
+describe('cuánto se mueve este activo', () => {
   it('con lo que manda el servidor y tu tenencia', async () => {
     await dibujar({ tenencia: { valorUsd: 5300, tc: 1400 }, pesoEnCartera: 0.11, lotes: [{ entry_date: puntos[620].d, quantity: 2 }] })
     const t = texto(montado.contenedor)
-    expect(t).toContain('Cuánto se mueve este papel')
+    expect(t).toContain('Cuánto se mueve este activo')
     expect(t).toContain('Últimos 2 años, en dólares')
     expect(t).toContain('Su peor caída')
     expect(t).toContain('Todavía no volvió a US$ 122,50.')
@@ -315,7 +315,7 @@ describe('cuánto se mueve este papel', () => {
   it('sin tenencia, sin la tarjeta de tu cartera', async () => {
     await dibujar()
     const t = texto(montado.contenedor)
-    expect(t).toContain('Un día normal')
+    expect(t).toContain('Un día típico')
     expect(t).not.toContain('En tu cartera')
   })
 })

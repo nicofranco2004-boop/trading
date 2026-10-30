@@ -20,7 +20,7 @@ const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const sinComentarios = (s) => s.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ''))
   .replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1')
 
-// Un número pegado a «de tu cartera / de tu plata», o el peso dibujado con
+// Un número pegado a «de tu cartera / de tu cartera», o el peso dibujado con
 // pct()/toFixed. Los nombres con que viaja el peso: impactPct, weight_pct, peso.
 // Segunda versión (re-test D, ronda 2): la primera buscaba nombres fijos
 // (impactPct, weight_pct…) y sólo frases con `${…}`; Análisis fundamental dibuja
