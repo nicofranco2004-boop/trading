@@ -676,6 +676,77 @@ FROM t
 ;
 
 
+-- ────────────────────────────────────────────────────────────────────────────
+-- Q15 · C-4 — Tenencias con código de cripto y tipo de acción o fondo
+-- ────────────────────────────────────────────────────────────────────────────
+-- Medido para decidir el arreglo de Seagate (2026-10-30), ANTES de publicarlo.
+-- Hoy «¿es cripto?» se responde sólo por el código: si está en CRYPTO_SYMBOLS se
+-- valúa como la cripto, diga lo que diga el tipo que la persona eligió al cargar.
+-- STX es Stacks (US$ 0,28) y también Seagate (US$ 700): una Seagate cargada como
+-- acción vale hoy lo que Stacks. El arreglo hace que el TIPO guardado mande: con
+-- tipo de acción o fondo (STOCK, AR_STOCK, CEDEAR, ETF, BOND, LETRA, FUND, FIAT)
+-- se valúa como la acción de EE.UU. La regla vale para TODOS los códigos de la
+-- lista, no sólo para los que también son acciones: un BTC cargado como STOCK
+-- pasaría a valer lo que el código pelado en Yahoo (un fondo), no el bitcoin.
+-- Esta consulta cuenta exactamente las tenencias a las que el arreglo les cambia
+-- el precio el día que se publica: código en la lista Y tipo de acción o fondo,
+-- en cualquier broker, abiertas y sin precio manual.
+-- Las listas de acá las compara tests/test_alcance_auditoria.py contra el código.
+--
+-- PREOCUPANTE SI: > 0 tenencias. No es daño: es lo que hay que mirar antes de
+-- publicar. Al lado: las que viven en un exchange (ahí casi seguro son la cripto
+-- con el tipo mal puesto, y el arreglo las pasaría a valer la acción), las que
+-- están en una cuenta en pesos (la acción de EE.UU. no tiene precio en pesos) y
+-- los códigos en uso.
+
+WITH t AS (
+    SELECT
+        p.user_id                                   AS uid,
+        UPPER(TRIM(p.asset))                        AS sim,
+        CASE WHEN LOWER(TRIM(COALESCE(b.name, ''))) IN (
+                      'binance', 'bitget', 'buenbit', 'bybit', 'coinbase',
+                      'crypto.com', 'fiwind', 'gemini', 'huobi', 'kraken',
+                      'kucoin', 'okx', 'ripio', 'satoshitango'
+                  )
+             THEN 1 ELSE 0 END                      AS en_exchange,
+        CASE WHEN UPPER(TRIM(COALESCE(b.currency, ''))) = 'ARS'
+             THEN 1 ELSE 0 END                      AS en_pesos
+    FROM positions p
+    LEFT JOIN brokers b
+      ON b.user_id = p.user_id
+     AND b.name    = p.broker
+    WHERE COALESCE(p.is_cash, 0) = 0
+      AND COALESCE(p.quantity, 0) > 0
+      AND p.price_override IS NULL
+      AND UPPER(TRIM(COALESCE(p.asset_type, ''))) IN (
+              'STOCK', 'AR_STOCK', 'CEDEAR', 'ETF', 'BOND', 'LETRA', 'FUND', 'FIAT'
+          )
+      AND UPPER(TRIM(COALESCE(p.asset, ''))) IN (
+              '1INCH', 'AAVE', 'ADA', 'ALGO', 'ALT', 'ANKR', 'APE', 'APT', 'AR', 'ARB',
+              'ARKM', 'ATOM', 'AVAX', 'AXS', 'BAL', 'BAT', 'BCH', 'BLUR', 'BNB', 'BOME',
+              'BONK', 'BTC', 'CELO', 'CFX', 'CHZ', 'COMP', 'CORE', 'CRV', 'CYBER', 'DEGEN',
+              'DOGE', 'DOT', 'DYDX', 'EGLD', 'ENA', 'ENJ', 'ENS', 'EOS', 'ETC', 'ETH',
+              'FET', 'FIL', 'FLOKI', 'FLOW', 'FRAX', 'FTM', 'FXS', 'GALA', 'GMT', 'GMX',
+              'GRT', 'HBAR', 'ICP', 'ICX', 'ID', 'ILV', 'IMX', 'INJ', 'IOTA', 'JASMY',
+              'JTO', 'JUP', 'KAS', 'KAVA', 'KSM', 'LDO', 'LINK', 'LRC', 'LTC', 'MANA',
+              'MANTA', 'MATIC', 'MEW', 'MINA', 'MKR', 'NEAR', 'NEO', 'OCEAN', 'ONE', 'ONT',
+              'OP', 'ORDI', 'PENDLE', 'PEPE', 'POL', 'POPCAT', 'PYTH', 'QNT', 'QTUM', 'RDNT',
+              'REN', 'RENDER', 'RNDR', 'RPL', 'RUNE', 'SAND', 'SEI', 'SHIB', 'SNX', 'SOL',
+              'SSV', 'STETH', 'STRK', 'STX', 'SUI', 'SUSHI', 'THETA', 'TIA', 'TON', 'TRX',
+              'UNI', 'VET', 'WAVES', 'WBTC', 'WIF', 'WLD', 'XLM', 'XMR', 'XRP', 'XTZ',
+              'YFI', 'ZEC', 'ZIL', 'ZRX'
+          )
+)
+SELECT
+    COUNT(*)                                        AS tenencias_que_cambian_de_valor,
+    COUNT(DISTINCT uid)                             AS usuarios_afectados,
+    SUM(CASE WHEN en_exchange = 1 THEN 1 ELSE 0 END) AS en_un_exchange,
+    SUM(CASE WHEN en_pesos = 1 THEN 1 ELSE 0 END)   AS en_cuenta_en_pesos,
+    STRING_AGG(DISTINCT sim, ',')                               AS simbolos_en_uso
+FROM t
+;
+
+
 -- ============================================================================
 -- CHEQUEO DE SEGURIDAD DEL ARCHIVO
 -- ============================================================================
