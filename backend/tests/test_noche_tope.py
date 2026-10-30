@@ -9,8 +9,11 @@ Pro metió 89 inventados, y lo que nunca se intentó va primero en la fila.
 
 Lo que se prueba, con `velas_diarias.simbolos_a_seguir` (la lista que usa la
 corrida real) y lo cargado por HTTP:
-  · cada persona aporta hasta `TICKERS_POR_PERSONA`, en orden: lo que tiene, lo
-    que sigue, sus alertas técnicas, lo que operó; a otra persona no le cambia nada;
+  · lo CONOCIDO (listas de la app, BYMA, ya bajado) entra siempre, sea de quien
+    sea; de lo desconocido, cada persona —con los clientes que creó, si es
+    asesor— aporta hasta `DESCONOCIDOS_POR_PERSONA`, en orden: lo que tiene, lo
+    que sigue, sus alertas técnicas, lo que operó; a otra persona no le cambia
+    nada (re-test E4, ronda 2: el tope no puede dejar afuera nada real);
   · una alerta técnica de un activo que no es válido (una vieja, de antes de
     que el alta lo pidiera) no entra.
 
@@ -75,23 +78,23 @@ class NocheTopeTest(unittest.TestCase):
         with main.db_abierta() as conn:
             return set(velas_diarias.simbolos_a_seguir(conn))
 
-    def test_cada_persona_aporta_hasta_su_tope_y_en_orden(self):
+    def test_lo_desconocido_tiene_tope_y_lo_conocido_entra_siempre(self):
         self._ok("/api/brokers", {"name": "Schwab", "currency": "USD"}, self.ana)
         self._ok("/api/positions", {"broker": "Schwab", "asset": "AAPL", "quantity": 1,
                                     "buy_price": 100, "asset_type": "STOCK"}, self.ana)
-        for s in ("MSFT", "NVDA"):
+        for s in ("QX0001", "QX0002", "QX0003", "MSFT"):
             self._ok("/api/watchlist", {"symbol": s}, self.ana)
-        for s in ("KO", "TSLA"):
-            self._ok("/api/alerts", {"kind": "tecnica", "symbol": s, "senal": "media200",
-                                     "direction": "either"}, self.ana)
-        self._ok("/api/watchlist", {"symbol": "AMZN"}, self.beto)
-        with mock.patch("velas_diarias.TICKERS_POR_PERSONA", 4, create=True):
+        self._ok("/api/alerts", {"kind": "tecnica", "symbol": "KO", "senal": "media200",
+                                 "direction": "either"}, self.ana)
+        self._ok("/api/watchlist", {"symbol": "QX0009"}, self.beto)
+        with mock.patch("velas_diarias.DESCONOCIDOS_POR_PERSONA", 2):
             noche = self._noche()
-        self.assertTrue({"AAPL", "MSFT", "NVDA", "KO"} <= noche, noche)
-        self.assertNotIn("TSLA", noche, "la quinta de Ana queda afuera")
-        self.assertIn("AMZN", noche, "a Beto no le cambia nada")
+        self.assertTrue({"QX0001", "QX0002"} <= noche, noche)
+        self.assertNotIn("QX0003", noche, "el tercer desconocido de Ana queda afuera")
+        self.assertTrue({"AAPL", "MSFT", "KO"} <= noche, "lo conocido entra aunque el tope esté lleno")
+        self.assertIn("QX0009", noche, "a Beto no le cambia nada")
         # Sin el tope chico, entra todo.
-        self.assertIn("TSLA", self._noche())
+        self.assertIn("QX0003", self._noche())
 
     def test_una_alerta_tecnica_de_un_activo_invalido_no_entra(self):
         with main.db_abierta() as conn:   # una vieja, de antes de que el alta lo pidiera
@@ -141,15 +144,16 @@ class NocheTopeTest(unittest.TestCase):
             pedidos.append(t)
             return None
         # La corrida de la noche entera, de a un ticker por tanda para ver el orden.
+        # El tope de desconocidos, más alto que los 120: acá se mira el orden.
         with main.db_abierta() as conn, mock.patch("velas_diarias._bajar", bajar), \
-                mock.patch("velas_diarias.TANDA", 1):
+                mock.patch("velas_diarias.TANDA", 1), mock.patch("velas_diarias.DESCONOCIDOS_POR_PERSONA", 200):
             velas_diarias.correr(conn)
         self.assertLess(max(pedidos.index("KO"), pedidos.index("PEP")), 6, pedidos[:8])
         self.assertEqual(len(set(pedidos)), 123)   # todo se pide igual: sólo cambia el orden
 
-    def _asesor_con_clientes(self, n, inventados_por_cliente):
+    def _asesor_con_clientes(self, n, inventados_por_cliente, reales=()):
         """Un asesor y `n` clientes creados por él (`managed_by`), cada uno con
-        símbolos inventados en su lista de seguimiento."""
+        símbolos inventados (y `reales`) en su lista de seguimiento."""
         with main.db_abierta() as conn:
             ase = conn.execute("INSERT INTO users (email, password_hash, approved, email_verified, tier) "
                                "VALUES (?, 'x', 1, 1, 'advisor')",
@@ -161,16 +165,22 @@ class NocheTopeTest(unittest.TestCase):
                 for i in range(inventados_por_cliente):
                     conn.execute("INSERT INTO watchlist (user_id, symbol) VALUES (?, ?)",
                                  (cli, f"QZ{c:03d}{i:03d}"))
+                for r in reales[c::n]:       # los reales, repartidos entre los clientes
+                    conn.execute("INSERT INTO watchlist (user_id, symbol) VALUES (?, ?)", (cli, r))
             conn.commit()
         return ase
 
-    def test_los_clientes_que_creo_un_asesor_suman_a_su_tope(self):
-        """Re-test E4, ronda 2: cada cliente creado era otra persona con 300
-        lugares. Ahora suman al tope del asesor."""
-        self._asesor_con_clientes(5, 3)                       # 15 inventados entre 5 clientes
-        with mock.patch("velas_diarias.TICKERS_POR_PERSONA", 4, create=True):
+    def test_los_clientes_que_creo_un_asesor_suman_a_su_tope_sin_dejar_afuera_lo_real(self):
+        """Re-test E4, ronda 2: cada cliente creado era otra persona con su
+        propio tope. Ahora lo desconocido de todos sus clientes suma al tope
+        del asesor; lo real de sus clientes entra entero."""
+        from ai import trade_tickers
+        reales = sorted(trade_tickers.US_TICKERS)[:40]
+        self._asesor_con_clientes(5, 3, reales)               # 15 inventados y 40 reales entre 5 clientes
+        with mock.patch("velas_diarias.DESCONOCIDOS_POR_PERSONA", 4):
             noche = self._noche()
         self.assertEqual(len([t for t in noche if t.startswith("QZ")]), 4, sorted(noche))
+        self.assertTrue(set(reales) <= noche, "ningún activo real de un cliente queda afuera")
 
     def test_lo_conocido_va_antes_que_lo_desconocido(self):
         """Re-test E4, ronda 2: un asesor con 100 clientes dejó 36 de 189 reales

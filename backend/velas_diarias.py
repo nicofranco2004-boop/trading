@@ -143,15 +143,18 @@ def _es_bono(asset: str) -> bool:
         return False
 
 
-# Cuántos tickers de Yahoo puede sumar UNA persona a la descarga de la noche, por
-# todas las puertas juntas (lo que tiene, lo que sigue, sus alertas técnicas, lo
-# que operó). El 22/10 se topeó la watchlist (100); las alertas técnicas fueron
-# otra puerta a la misma lista, sin tope y con cualquier símbolo con forma de
-# ticker: una cuenta metió 89 inventados (auditoría E4, 29/10). El tope va acá,
-# en la SALA, no en cada puerta: la próxima puerta que se abra queda cubierta.
-# Una cartera grande tiene ~60 activos (un CEDEAR son dos tickers) más 100 de
-# watchlist: 300 sobra para una persona y frena a un script.
-TICKERS_POR_PERSONA = 300
+# Cuántos tickers DESCONOCIDOS (`_es_conocido` no los reconoce: ni las listas de
+# la app ni BYMA, y nunca se bajaron bien) puede sumar UNA persona —con los
+# clientes que creó, si es asesor— a la descarga de la noche, por todas las
+# puertas juntas (lo que tiene, lo que sigue, sus alertas técnicas, lo que
+# operó). El 22/10 se topeó la watchlist (100); las alertas técnicas fueron otra
+# puerta a la misma lista: una cuenta metió 89 inventados (auditoría E4, 29/10).
+# Lo CONOCIDO no tiene tope: un asesor con 100 clientes de verdad tiene miles
+# de activos reales, y ninguno puede quedar sin actualizar por un tope pensado
+# para frenar inventados (re-test E4, ronda 2). Un papel raro de verdad que
+# alguien suma entra como desconocido y, cuando se baja bien una vez, pasa a
+# conocido. 100 sobra para lo raro de una persona y frena a un script.
+DESCONOCIDOS_POR_PERSONA = 100
 
 
 def simbolos_a_seguir(conn) -> list:
@@ -182,8 +185,9 @@ def _seguimiento_por_persona(conn):
     su serie en pesos es la del '.BA'. Reinventar esa regla acá es lo que hizo
     que un CEDEAR comprado por dólar-MEP pidiera el ticker equivocado (bug C1).
 
-    Cada persona (con los clientes que creó, si es asesor) suma hasta
-    `TICKERS_POR_PERSONA`, en este orden: lo que
+    Lo conocido entra siempre. De lo desconocido, cada persona (con los
+    clientes que creó, si es asesor) suma hasta `DESCONOCIDOS_POR_PERSONA`, en
+    este orden: lo que
     tiene, lo que sigue, sus alertas técnicas, lo que operó. Lo que pasa de ahí
     queda afuera (y se anota en el log). `de_cada_una`: {uid: [sus tickers, en
     ese orden]}, para repartir la noche por turnos (`_por_turnos`)."""
@@ -267,14 +271,17 @@ def _seguimiento_por_persona(conn):
         en_pesos = str(clave).upper().endswith('.BA')
         _anotar_de(p['user_id'], _yahoo_de(p['asset'], None, en_pesos, yahoo_de_cripto, cedears))
 
+    es_conocido = _es_conocido(conn)
     tickers, pares, topados, de_cada_una = set(), {}, {}, {}
     for uid, listas in por_persona.items():
-        suyos, orden = set(), []
+        suyos, orden, raros = set(), [], 0
         for ys in listas:
             nuevos = [y for y in ys if y and y not in suyos]
-            if len(suyos) + len(nuevos) > TICKERS_POR_PERSONA:
+            nuevos_raros = sum(1 for y in nuevos if not es_conocido(y))
+            if nuevos_raros and raros + nuevos_raros > DESCONOCIDOS_POR_PERSONA:
                 topados[uid] = topados.get(uid, 0) + 1
                 continue
+            raros += nuevos_raros
             suyos.update(nuevos)
             orden += nuevos
             if len(ys) == 2:   # la forma de un CEDEAR: [afuera, pesos]
@@ -282,14 +289,26 @@ def _seguimiento_por_persona(conn):
         tickers |= suyos
         de_cada_una[uid] = orden
     if topados:
-        log.warning("velas: %d persona(s) pasaron el tope de %d tickers por persona; quedaron "
-                    "afuera %d activos (uid: %s)", len(topados), TICKERS_POR_PERSONA,
+        log.warning("velas: %d persona(s) pasaron el tope de %d tickers desconocidos; quedaron "
+                    "afuera %d activos (uid: %s)", len(topados), DESCONOCIDOS_POR_PERSONA,
                     sum(topados.values()), sorted(topados)[:20])
 
     tickers.add(SP500)
     tickers.discard('')
     tickers.discard(None)
     return tickers, pares, de_cada_una
+
+
+def _es_conocido(conn):
+    """La pregunta «¿este ticker de Yahoo es algo conocido?», armada una vez para
+    toda la noche: está en las listas de la app o en BYMA (`_lista_de_la_app`),
+    o ya se bajó bien entero alguna vez (Yahoo lo conoce). Lo usan el tope de la
+    noche (sólo cuenta lo desconocido) y el orden (`_por_turnos`: lo conocido
+    primero)."""
+    app = _lista_de_la_app()
+    bajados = {r['symbol'] for r in conn.execute(
+        "SELECT symbol FROM velas_estado WHERE ultima_completa IS NOT NULL").fetchall()}
+    return lambda t: t in bajados or bool(_variantes(t) & app)
 
 
 def _turno(estado: dict, t: str, hoy: str) -> int:
@@ -310,9 +329,8 @@ def _turno(estado: dict, t: str, hoy: str) -> int:
 def _por_turnos(conn, de_cada_una: dict, hoy: str) -> list:
     """El orden de la noche, en tres vueltas, y en cada una por TURNOS entre
     personas (ronda 1: lo primero de cada una; ronda 2: lo segundo; …):
-      1. lo CONOCIDO: lo de las listas de la app o BYMA (`_lista_de_la_app`), o
-         lo que ya se bajó bien alguna vez (Yahoo lo conoce). Cada persona lo
-         ordena por `_turno` (nunca intentado, historia entera, puesta al día);
+      1. lo CONOCIDO (`_es_conocido`). Cada persona lo ordena por `_turno`
+         (nunca intentado, historia entera, puesta al día, lo que falló);
       2. lo desconocido que nunca se intentó: lo que alguien sumó y la app no
          tiene en sus listas (un papel raro de verdad, o algo inventado). Va
          con el tiempo que sobre;
@@ -327,13 +345,12 @@ def _por_turnos(conn, de_cada_una: dict, hoy: str) -> list:
     ritmo: los que meten mucho sólo se atrasan a sí mismos."""
     estado = {r['symbol']: dict(r) for r in conn.execute(
         "SELECT symbol, ultima_completa, ok FROM velas_estado").fetchall()}
-    app = _lista_de_la_app()
+    es_conocido = _es_conocido(conn)
 
     def vuelta(t):
-        tu = _turno(estado, t, hoy)
-        if tu in (1, 2) or (_variantes(t) & app):
+        if es_conocido(t):
             return 0
-        return 1 if tu == 0 else 2
+        return 1 if _turno(estado, t, hoy) == 0 else 2
 
     vueltas = ([], [], [])
     for uid in sorted(de_cada_una, key=str):
