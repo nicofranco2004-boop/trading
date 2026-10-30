@@ -1,7 +1,8 @@
 // La pestaña «Gráfico» de Análisis técnico MONTADA con react-dom, como la ve el
 // usuario: la página entera (/analisis-tecnico?tab=grafico), los pedidos al
 // servidor simulados en el borde (`api`) y el gráfico reemplazado por uno que
-// muestra su título (donde va el botón del activo) y anota lo que recibe.
+// anota lo que recibe (y no dibuja nada: como con un activo sin historia de
+// precios, cuando el gráfico no muestra ni sus botones).
 // Lo que importa:
 //   · abre en el último activo que miraste (o el de la dirección, o lo tuyo) y
 //     lo deja en la dirección (?activo=…);
@@ -25,7 +26,7 @@ vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: { tier: 'pro
 vi.mock('../contexts/AdvisorContext', () => ({ useAdvisorContext: () => ({ clientCtx: null }) }))
 const recibido = vi.hoisted(() => [])
 vi.mock('../components/asset/LecturaTecnica', () => ({
-  default: (props) => { recibido.push(props); return props.titulo },
+  default: (props) => { recibido.push(props); return null },
 }))
 
 const CLAVE = 'rendi_grafico:ana@x.com:propia'
@@ -160,6 +161,13 @@ describe('Análisis técnico → Gráfico', () => {
     await tecla(campo(montado.contenedor), 'Enter')
     await esperar()
     expect(recibido.at(-1).asset).toBe('GGAL')
+  })
+
+  it('el botón del activo está aunque el gráfico no dibuje nada (un activo sin historia de precios)', async () => {
+    montado = await abrir('/analisis-tecnico?tab=grafico&activo=AL30')
+    expect(recibido.at(-1).asset).toBe('AL30')
+    expect(botonDelActivo(montado.contenedor)).not.toBeNull()
+    expect(recibido.at(-1).titulo).toBeNull()
   })
 
   it('pedido con otro nombre (GGAL.BA) abre el tuyo (GGAL), con tus lotes', async () => {

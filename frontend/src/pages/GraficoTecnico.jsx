@@ -12,9 +12,11 @@
 // El gráfico es EL de la ficha (LecturaTecnica, sin tocarlo) con lo que le pasa
 // la ficha, armado por la MISMA cuenta (hooks/useFichaDelActivo.js): tu precio,
 // tus compras y «Desde que lo tenés» salen igual que en /activo/:ticker. El
-// botón del activo va en el lugar del título del gráfico, a la izquierda de sus
-// botones (pantalla completa, línea o velas, moneda y período): así sigue a mano
-// también en pantalla completa.
+// botón del activo va en su propio renglón, arriba de los botones del gráfico,
+// y no en el lugar de su título: el gráfico no dibuja ese renglón mientras
+// carga la primera vez ni con un activo sin historia de precios (un bono, uno
+// que el servidor no pudo traer), y el botón desaparecía — sin él no había cómo
+// cambiar de activo. En pantalla completa no está: se achica y se cambia.
 //
 // Una sola pantalla para compu y celular (R6): en el celular el buscador ocupa
 // el ancho de la pantalla.
@@ -88,33 +90,31 @@ function GraficoDe({ activo, recientes, onElegir }) {
   // Lo tenés con otro nombre (GGAL.BA y tu lote es GGAL): el tuyo, con tu precio.
   useEffect(() => { if (ficha.otroNombre) onElegir(ficha.otroNombre) }, [ficha.otroNombre]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const encabezado = <Encabezado activo={activo} recientes={recientes} onElegir={onElegir} />
-  if (ficha.loading) return <Cargando encabezado={encabezado} />
-  if (!ficha.grafico) {
-    return (
-      <div className="flex flex-col gap-3">
-        {encabezado}
-        <div className="bg-bg-1 border border-line rounded-xl px-4 py-6 text-[14px] text-ink-1">
-          Los fondos comunes no tienen gráfico de precios: se valúan una vez por día, por el valor de la cuotaparte.
-          Elegí otro activo arriba a la izquierda.
-        </div>
-      </div>
-    )
-  }
-  return <LecturaTecnica key={`${activo}|${ficha.accionLocal}`} titulo={encabezado} {...ficha.grafico} />
+  return (
+    <div className="flex flex-col gap-2">
+      <Encabezado activo={activo} recientes={recientes} onElegir={onElegir} />
+      {ficha.loading ? <Skeleton className="h-[420px] w-full rounded-xl" />
+        : !ficha.grafico ? (
+          <div className="bg-bg-1 border border-line rounded-xl px-4 py-6 text-[14px] text-ink-1">
+            Los fondos comunes no tienen gráfico de precios: se valúan una vez por día, por el valor de la cuotaparte.
+            Elegí otro activo arriba a la izquierda.
+          </div>
+        ) : <LecturaTecnica key={`${activo}|${ficha.accionLocal}`} titulo={null} {...ficha.grafico} />}
+    </div>
+  )
 }
 
-function Cargando({ encabezado = null }) {
+function Cargando() {
   return (
-    <div className="flex flex-col gap-3" aria-busy="true">
-      {encabezado || <Skeleton className="h-10 w-48" />}
+    <div className="flex flex-col gap-2" aria-busy="true">
+      <Skeleton className="h-10 w-48" />
       <Skeleton className="h-[420px] w-full rounded-xl" />
     </div>
   )
 }
 
-// A la izquierda de los botones del gráfico: el activo (abre el buscador), los
-// últimos que miraste y la ficha completa.
+// Arriba del gráfico: el activo (abre el buscador), los últimos que miraste y
+// la ficha completa.
 function Encabezado({ activo, recientes, onElegir }) {
   const [abierto, setAbierto] = useState(false)
   const caja = useRef(null)
@@ -183,9 +183,6 @@ function Buscador({ activo, recientes, caja, onCerrar, onElegir }) {
 
   function tecla(e) {
     if (e.key === 'Escape') {
-      // Sólo el buscador: en pantalla completa, Esc no tiene que achicar también.
-      e.stopPropagation()
-      e.nativeEvent?.stopImmediatePropagation?.()
       onCerrar()
     } else if (e.key === 'ArrowDown') {
       e.preventDefault(); setMarcado(i => Math.min(filas.length - 1, i + 1))
