@@ -12,6 +12,7 @@ import datetime as _d
 os.environ.setdefault("DB_PATH", tempfile.NamedTemporaryFile(suffix=".db", delete=False).name)
 
 import main
+from tests._limpieza import vaciar  # noqa: E402
 import twr
 from reporting import builder
 
@@ -29,20 +30,10 @@ def _todos(s):
 class _Base(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
-        for t in ("snapshots", "positions", "operations", "monthly_entries", "users",
-                  "brokers", "import_normalized_tx", "import_raw_rows", "import_batches"):
-            try:
-                self.conn.execute(f"DELETE FROM {t}")
-            except Exception:
-                # Deshacer, no sólo ignorar: en Postgres una instrucción que falla
-                # DEJA LA TRANSACCIÓN INUTILIZABLE, y todo lo que venga después
-                # revienta con «current transaction is aborted» sin relación
-                # aparente. (Acá falla al borrar `users` con filas que lo
-                # apuntan.) SQLite no hace eso, por eso nunca se notó.
-                try:
-                    self.conn.rollback()
-                except Exception:
-                    pass
+        # Hijas antes que madres y sin tragar errores: ver tests/_limpieza.py.
+        vaciar(self.conn, "snapshots", "positions", "operations", "monthly_entries",
+               "users", "brokers", "import_normalized_tx", "import_raw_rows",
+               "import_batches")
         self.uid = self.conn.execute(
             "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
             (f"r2-{id(self)}@t", "x")).lastrowid
