@@ -141,7 +141,10 @@ function esElMismo(pedido, x) {
 // `conCotizacion`: lo que no tenés trae además el último precio, el cierre
 // anterior y si está en tu watchlist (el encabezado de la ficha). La pestaña
 // «Gráfico» no lo muestra y no lo pide.
-export function useFichaDelActivo(asset, { conCotizacion = true } = {}) {
+// `aceptaOtroNombre(nombre)`: si lo tenés con otro nombre, ¿esa pantalla puede
+// abrirlo? Si no (un nombre que no sabe abrir), se carga lo pedido en vez de
+// quedarse esperando un cambio que no va a llegar.
+export function useFichaDelActivo(asset, { conCotizacion = true, aceptaOtroNombre = () => true } = {}) {
   const { valuationDollar, costBasis } = useCurrency()
 
   const [positions, setPositions] = useState([])
@@ -193,7 +196,7 @@ export function useFichaDelActivo(asset, { conCotizacion = true } = {}) {
         // nombre (la ficha cambia de dirección, la pestaña cambia de activo).
         // Sigue «cargando» hasta que la pantalla pida el otro nombre.
         const mismo = [...todas, ...misOps].find(x => esElMismo(asset, x))
-        if (mismo && (mismo.asset || '').toUpperCase() !== asset) {
+        if (mismo && (mismo.asset || '').toUpperCase() !== asset && aceptaOtroNombre(mismo.asset)) {
           redirige = true
           setOtroNombre(mismo.asset)
           return

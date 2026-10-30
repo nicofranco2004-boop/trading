@@ -95,7 +95,7 @@ export const SIN_OJITO = {
   'hooks/usePfRollup.js': 'lo suma la Cartera, que mira el ojito',
   'hooks/useReportYears.js': 'años con informe, sin montos',
   'hooks/useReportsTimeline.js': 'lo muestran los informes',
-  'hooks/useFichaDelActivo.js': 'lo muestran la ficha (AssetDetail) y la pestaña Gráfico (LecturaTecnica): las dos miran el ojito',
+  'hooks/useFichaDelActivo.js': 'trae el dato; quien lo usa entra al censo por su cuenta (USA_LA_FICHA)',
   // DEUDA: muestran montos con el ojito prendido. Ya era así en main (29/10);
   // fuera de la ronda del análisis técnico, para una ronda propia.
   'components/MonthlySummary.jsx': 'DEUDA: el resumen del mes',
@@ -130,7 +130,11 @@ const TODOS = archivos(SRC).map((r) => {
   const src = sinComentarios(fs.readFileSync(r, 'utf8'))
   return { ruta: rel(r), src, rutas: [...new Set([...src.matchAll(RUTA)].map((m) => m[1]))] }
 })
-const conPlata = TODOS.filter((a) => a.rutas.some((r) => PLATA.has(r)))
+// Traer tu plata también es usar el gancho de la ficha (hooks/useFichaDelActivo,
+// que la pide): así la ficha, la pestaña «Gráfico» y cualquier pantalla nueva
+// que lo use entran al censo, no sólo el gancho.
+const USA_LA_FICHA = /\buseFichaDelActivo\(/
+const conPlata = TODOS.filter((a) => a.rutas.some((r) => PLATA.has(r)) || USA_LA_FICHA.test(a.src))
 
 describe('«Ocultar saldos»: censo de lo que trae tu plata', () => {
   it('cada ruta que pide la pantalla está clasificada (una nueva obliga a decidir)', () => {
@@ -140,10 +144,7 @@ describe('«Ocultar saldos»: censo de lo que trae tu plata', () => {
 
   it('el censo encuentra las pantallas conocidas (contra el falso verde)', () => {
     const rutas = conPlata.map((a) => a.ruta)
-    // La ficha trae lo tuyo por hooks/useFichaDelActivo.js (lo comparte con la
-    // pestaña «Gráfico»): el censo la ve ahí. Que la ficha tape tu plata lo
-    // prueba montada ocultar-saldos.render.test.jsx.
-    for (const r of ['pages/Positions.jsx', 'pages/Operations.jsx', 'hooks/useFichaDelActivo.js', 'pages/Dashboard.jsx',
+    for (const r of ['pages/Positions.jsx', 'pages/Operations.jsx', 'pages/AssetDetail.jsx', 'hooks/useFichaDelActivo.js', 'pages/Dashboard.jsx',
       'components/FuturosGroup.jsx', 'components/novedades/CalendarioEventos.jsx', 'components/PlazosFijosGroup.jsx']) {
       expect(rutas, r).toContain(r)
     }

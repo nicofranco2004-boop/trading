@@ -178,3 +178,18 @@ describe('la ficha del activo, antes y después de compartir sus cuentas', () =>
     })
   }
 })
+
+describe('pedido con otro nombre', () => {
+  it('la ficha salta UNA vez a tu nombre (GGAL.BA → GGAL), no dos', async () => {
+    caso = CASOS['pedido con otro nombre (GGAL.BA, lo tenés como GGAL)']
+    const pasos = []
+    const { useLocation } = await import('react-router-dom')
+    function Mirar() { const l = useLocation(); if (pasos.at(-1) !== l.key) pasos.push(l.key); return null }
+    const el = () => h(MemoryRouter, { initialEntries: [caso.ruta] }, h(Mirar),
+      h(Routes, null, h(Route, { path: '/activo/:ticker', element: h(AssetDetail) })))
+    montado = await montar(el())
+    for (let i = 0; i < 10; i++) await montado.redibujar(el())
+    // La de entrada y una más.
+    expect(pasos).toHaveLength(2)
+  })
+})

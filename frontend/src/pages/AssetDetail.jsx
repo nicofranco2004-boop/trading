@@ -75,9 +75,11 @@ export default function AssetDetail() {
     cotizacion, setCotizacion, tcValuacion, tcCedear, tcCripto, agg, tenes, libre, accionLocal, grafico,
   } = useFichaDelActivo(asset)
   // Llegaste por GGAL.BA y lo tenés como GGAL: a TU ficha, con su nombre.
+  // Sólo cuando llega el aviso: `navigate` cambia con la dirección y volvía a
+  // saltar una vez de más (auditoría 30/10).
   useEffect(() => {
     if (otroNombre) navigate(urlDeActivo(otroNombre), { replace: true })
-  }, [otroNombre, navigate])
+  }, [otroNombre]) // eslint-disable-line react-hooks/exhaustive-deps
   // Tu tesis de este activo (la misma de Movimientos). Arriba de los return.
   const tesis = useTesis()
   const [orden, setOrden] = useState(ordenGuardado)

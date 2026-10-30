@@ -31,6 +31,8 @@ vi.mock('../components/asset/LecturaTecnica', () => ({
 
 const CLAVE = 'rendi_grafico:ana@x.com:propia'
 let pedidos
+// Lotes de más, por prueba (una cripto cargada como BTC-USD, un nombre raro).
+let extra = []
 function servidor() {
   pedidos = []
   api.get.mockImplementation(async (url) => {
@@ -38,8 +40,9 @@ function servidor() {
     if (url === '/positions') return [
       { id: 1, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK', quantity: 10, invested: 1000, buy_price: 100 },
       { id: 2, broker: 'IOL', asset: 'GGAL', asset_type: 'ACCION', quantity: 100, invested: 500000, buy_price: 5000, currency: 'ARS', tc_compra: 1200 },
+      ...extra,
     ]
-    if (url === '/brokers') return [{ id: 1, name: 'Schwab', currency: 'USD' }, { id: 2, name: 'IOL', currency: 'ARS' }]
+    if (url === '/brokers') return [{ id: 1, name: 'Schwab', currency: 'USD' }, { id: 2, name: 'IOL', currency: 'ARS' }, { id: 3, name: 'Binance', currency: 'USD', is_exchange: 1 }]
     if (url === '/dolar') return { mep: { venta: 1500 } }
     if (url === '/operations') return []
     if (url === '/watchlist') return { items: [{ symbol: 'TSLA' }] }
@@ -98,6 +101,7 @@ beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
   recibido.length = 0
+  extra = []
   ;({ local: almacen } = instalarNavegadorMinimo())
   window.scrollTo = () => {}
   servidor()
@@ -174,11 +178,36 @@ describe('Análisis técnico → Gráfico', () => {
     expect(recibido.at(-1).titulo).toBeNull()
   })
 
+  it('tu cripto cargada como BTC-USD: pedir BTC abre la tuya, no queda cargando', async () => {
+    extra = [{ id: 7, broker: 'Binance', asset: 'BTC-USD', asset_type: 'CRYPTO', quantity: 0.1, invested: 6000, buy_price: 60000 }]
+    montado = await abrir('/analisis-tecnico?tab=grafico&activo=BTC')
+    expect(recibido.at(-1)?.asset).toBe('BTC-USD')
+    expect(recibido.at(-1).lotes.map(l => l.id)).toEqual([7])
+    // La dirección dice el tuyo y no rebota a BTC.
+    expect(activoDe(montado.donde)).toBe('BTC-USD')
+    expect(JSON.parse(almacen.get(CLAVE)).recientes).toEqual(['BTC'])
+  })
+
+  it('tu lote con un nombre que no se puede abrir («BRK B»): el gráfico de lo pedido, sin esperar', async () => {
+    extra = [{ id: 8, broker: 'Schwab', asset: 'BRK B', asset_type: 'STOCK', quantity: 1, invested: 400, buy_price: 400 }]
+    montado = await abrir('/analisis-tecnico?tab=grafico&activo=BRK-B')
+    expect(recibido.at(-1)?.asset).toBe('BRK-B')
+  })
+
+  it('Esc cierra el buscador también desde un filtro', async () => {
+    montado = await abrir('/analisis-tecnico?tab=grafico')
+    await clic(montado.contenedor, botonDelActivo(montado.contenedor))
+    await tecla(buscarBoton(montado.contenedor, 'Tu cartera'), 'Escape')
+    expect(campo(montado.contenedor)).toBeNull()
+  })
+
   it('pedido con otro nombre (GGAL.BA) abre el tuyo (GGAL), con tus lotes', async () => {
     montado = await abrir('/analisis-tecnico?tab=grafico&activo=GGAL.BA')
     expect(recibido.at(-1).asset).toBe('GGAL')
     expect(recibido.at(-1).lotes.map(l => l.id)).toEqual([2])
     expect(recibido.at(-1).accionLocal).toBe(true)
     expect(activoDe(montado.donde)).toBe('GGAL')
+    // Un solo atajo para el mismo papel (no «GGAL.BA» al lado de GGAL).
+    expect(JSON.parse(almacen.get(CLAVE)).recientes).toEqual(['GGAL'])
   })
 })

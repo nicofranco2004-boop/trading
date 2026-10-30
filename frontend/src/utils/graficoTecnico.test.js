@@ -3,7 +3,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { instalarNavegadorMinimo } from '../testing/navegadorMinimo'
 import {
-  ACTIVO_DE_ENTRADA, RECIENTES_MAXIMOS, activoDeEntrada, activoValido, guardado, opcionesDelBuscador, recordar, tuyos,
+  ACTIVO_DE_ENTRADA, RECIENTES_MAXIMOS, activoDeEntrada, activoValido, canonico, guardado, opcionesDelBuscador, recordar, tuyos,
 } from './graficoTecnico'
 
 const ANA = 'ana@x.com:propia'
@@ -17,11 +17,24 @@ describe('activoValido: sólo lo que tiene forma de ticker (la de _SYMBOL_RE del
   it('pasa a mayúsculas y acepta .BA', () => {
     expect(activoValido(' ggal.ba ')).toBe('GGAL.BA')
   })
-  it('una cripto, por su nombre corto (tu lista dice BTC-USD, tus lotes BTC: los dibujos son unos)', () => {
-    expect(activoValido('btc-usd')).toBe('BTC')
-    expect(activoValido('ETH-USDT')).toBe('ETH')
-    // Lo que no es cripto queda como está.
-    expect(activoValido('BRK-B')).toBe('BRK-B')
+  it('tal cual: BTC-USD es BTC-USD (puede ser el nombre de tus lotes)', () => {
+    expect(activoValido('btc-usd')).toBe('BTC-USD')
+  })
+})
+
+describe('canonico: un nombre por papel (los dibujos se guardan por nombre)', () => {
+  it('una cripto, por su código corto', () => {
+    expect(canonico('btc-usd')).toBe('BTC')
+    expect(canonico('ETH-USDT')).toBe('ETH')
+  })
+  it('una acción argentina, sin .BA (la estrella de la ficha guarda GGAL.BA, el buscador GGAL)', () => {
+    expect(canonico('GGAL.BA')).toBe('GGAL')
+    expect(canonico('ypfd.ba')).toBe('YPFD')
+  })
+  it('un CEDEAR no: AAPL.BA y AAPL son dos papeles; lo demás queda como está', () => {
+    expect(canonico('AAPL.BA')).toBe('AAPL.BA')
+    expect(canonico('BRK-B')).toBe('BRK-B')
+    expect(canonico('FCI:X')).toBeNull()
   })
   it('no acepta un fondo, texto suelto ni nada', () => {
     expect(activoValido('FCI:FIMA-AHORRO')).toBeNull()
@@ -71,6 +84,15 @@ describe('qué activo abre la pestaña', () => {
     expect(activoDeEntrada({ deLaDireccion: null, persona: BETO, posiciones })).toBe('NVDA')
     expect(activoDeEntrada({ deLaDireccion: null, persona: BETO, posiciones: [] })).toBe(ACTIVO_DE_ENTRADA)
   })
+  it('la primera vez no abre un bono (no tiene gráfico técnico): el primero tuyo que sí', () => {
+    const conBono = [{ asset: 'AL30', asset_type: 'BOND', broker: 'IOL', currency: 'ARS' }, { asset: 'GGAL', asset_type: 'ACCION', broker: 'IOL', currency: 'ARS' }]
+    expect(activoDeEntrada({ deLaDireccion: null, persona: BETO, posiciones: conBono })).toBe('GGAL')
+  })
+  it('lo guardado y la dirección, por el nombre del papel', () => {
+    expect(activoDeEntrada({ deLaDireccion: 'GGAL.BA', persona: BETO })).toBe('GGAL')
+    recordar(ANA, 'GGAL.BA'); recordar(ANA, 'GGAL')
+    expect(guardado(ANA).recientes).toEqual(['GGAL'])
+  })
   it('lo tuyo con gráfico: sin el efectivo ni los fondos', () => {
     expect(tuyos(posiciones).map(f => f.simbolo)).toEqual(['NVDA'])
   })
@@ -98,6 +120,22 @@ describe('el buscador', () => {
   it('un bono que tenés aparece (es tuyo); uno que no, no (no tiene gráfico técnico)', () => {
     expect(simbolos(opcionesDelBuscador({ consulta: 'al3', posiciones }))).toContain('AL30')
     expect(simbolos(opcionesDelBuscador({ consulta: 'al3', posiciones: [] }))).not.toContain('AL30')
+  })
+  it('GGAL una sola vez aunque tu lista la tenga como GGAL.BA (y los dibujos, en un solo lugar)', () => {
+    const s = opcionesDelBuscador({ consulta: 'ggal', posiciones: [], lista: [{ symbol: 'GGAL.BA' }] })
+    expect(s[0].filas.map(f => [f.simbolo, f.origen])).toEqual([['GGAL', 'lista']])
+  })
+  it('tu lote BTC-USD y el BTC del catálogo son uno: queda el tuyo', () => {
+    const s = opcionesDelBuscador({ consulta: 'btc', posiciones: [{ asset: 'BTC-USD', asset_type: 'CRYPTO', broker: 'Binance' }] })
+    expect(s[0].filas.map(f => [f.simbolo, f.origen])).toEqual([['BTC-USD', 'cartera']])
+  })
+  it('«Abrir» sólo si no se encontró nada y tiene largo de ticker', () => {
+    const t = (consulta) => opcionesDelBuscador({ consulta, posiciones: [], lista: [] }).flatMap(x => x.filas)
+    expect(t('agrometal').some(f => f.origen === 'escrito')).toBe(false)
+    // AAPL.BA (el CEDEAR, del catálogo) no se confunde con AAPL (Nueva York).
+    expect(t('AAPL.BA')[0]).toMatchObject({ simbolo: 'AAPL.BA', tipo: 'cedear' })
+    expect(t('ZZZQ.BA').at(-1)).toMatchObject({ simbolo: 'ZZZQ.BA', origen: 'escrito' })
+    expect(t('aapl').some(f => f.origen === 'escrito')).toBe(false)
   })
   it('Bitcoin una sola vez, con su nombre, aunque tu lista lo tenga como BTC-USD', () => {
     const s = opcionesDelBuscador({ consulta: 'btc', posiciones, lista })
