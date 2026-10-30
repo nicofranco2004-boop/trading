@@ -28,6 +28,8 @@ import { useUltimoPedido } from '../hooks/useUltimoPedido'
 import { useDemora } from '../hooks/useDemora'
 import { useAlVerse, entrada } from '../hooks/useAlVerse'
 import { pasosNoticias } from '../utils/cargaPorPasos'
+import { usePrivacy } from '../contexts/PrivacyContext'
+import { deTuCartera } from '../utils/parteDeTuPlata'
 
 const TABS = [
   { value: 'portfolio', label: 'Para ti',  desc: 'Noticias de los activos de tu cartera' },
@@ -41,9 +43,12 @@ const TAB_VALUES = TABS.map(t => t.value)
 // utils/sentiment.js — el lugar correcto es ese y no adentro de una página.
 
 // "afecta X% de tu cartera" cuando el backend adjunta weight_pct (top holdings).
-function weightLabel(weightPct) {
+// Con la regla única del peso (utils/parteDeTuPlata): nada con el ojito prendido
+// y «menos de 1%» como en las demás pantallas (re-test de la auditoría D, 29/10).
+function weightLabel(weightPct, oculto) {
   if (weightPct == null || weightPct < 0.05) return null
-  return `afecta ${weightPct.toFixed(1).replace('.', ',')}% de tu cartera`
+  const p = deTuCartera(weightPct, oculto)
+  return p ? `afecta ${p}` : null
 }
 
 export default function News({ embedded = false }) {
@@ -370,10 +375,11 @@ function groupByFreshness(items) {
 }
 
 function NewsFeatured({ news, tab, onTagClick }) {
+  const { hidden: oculto } = usePrivacy()
   const { title, summary, url, published_at, ticker, tags, sentiment, weight_pct } = news
   const { cleanTitle, sourceName } = splitTitleSource(title)
   const sm = sentimentMeta(sentiment)
-  const wLabel = weightLabel(weight_pct)
+  const wLabel = weightLabel(weight_pct, oculto)
   return (
     <div className="group relative bg-bg-1 border border-line rounded-xl hover:border-rendi-accent/40 transition">
     <a
@@ -451,10 +457,11 @@ function NewsFeatured({ news, tab, onTagClick }) {
 }
 
 function NewsTile({ news, tab, onTagClick }) {
+  const { hidden: oculto } = usePrivacy()
   const { title, summary, url, published_at, ticker, tags, sentiment, weight_pct } = news
   const { cleanTitle, sourceName } = splitTitleSource(title)
   const sm = sentimentMeta(sentiment)
-  const wLabel = weightLabel(weight_pct)
+  const wLabel = weightLabel(weight_pct, oculto)
 
   return (
     <div className={`group bg-bg-1 border border-line border-l-2 ${sm.stripe} rounded hover:border-rendi-accent/40 transition relative flex flex-col`}>

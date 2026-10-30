@@ -16,3 +16,20 @@ export function esElDeTuCartera(pct) {
   const p = parteDeTuPlata(pct)
   return p == null ? null : p.startsWith('menos') ? `Es ${p} de tu cartera` : `Es el ${p} de tu cartera`
 }
+
+/**
+ * El peso de un activo en tu cartera, para dibujarlo: null con «Ocultar
+ * saldos» prendido (la proporción también es información de tu cartera). La
+ * usan TODAS las pantallas que dibujan un peso; lo vigila
+ * __guards__/peso-de-tu-cartera.test.js (re-test de la auditoría D, 29/10:
+ * Eventos tapaba el peso en un renglón y no en otros dos).
+ */
+export function pesoVisible(pct, oculto) {
+  return oculto ? null : parteDeTuPlata(pct)
+}
+
+/** «12% de tu cartera» / «menos de 1% de tu cartera»; null con el ojito prendido. */
+export function deTuCartera(pct, oculto) {
+  const p = pesoVisible(pct, oculto)
+  return p == null ? null : `${p} de tu cartera`
+}

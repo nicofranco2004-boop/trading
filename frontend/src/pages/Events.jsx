@@ -58,6 +58,7 @@ import {
 import { hayPrecios } from '../utils/preciosEnVivo'
 import { urlDeActivo } from '../utils/buscadorRapido'
 import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
+import { pesoVisible, deTuCartera } from '../utils/parteDeTuPlata'
 
 const WINDOW_OPTIONS = [
   { value: 30,  label: '30D' },
@@ -673,6 +674,7 @@ const PRECIOS_TEXTO = {
 }
 
 function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotalUsd, precios = null }) {
+  const { hidden: oculto } = usePrivacy()
   const buckets = useMemo(
     () => buildDayBuckets(events, windowDays, tickerValueUsd, portfolioTotalUsd),
     [events, windowDays, tickerValueUsd, portfolioTotalUsd]
@@ -727,8 +729,8 @@ function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotal
                           <span className={`w-1.5 h-1.5 rounded-sm ${it.tone} shrink-0`} />
                           <span className="font-mono font-semibold text-ink-0">{it.ticker}</span>
                           <span className="text-ink-3">{it.typeLabel}</span>
-                          {it.impactPct != null && it.impactPct > 0.0001 && (
-                            <span className="text-rendi-accent ml-2">{pct(it.impactPct)}</span>
+                          {it.impactPct != null && it.impactPct > 0.0001 && pesoVisible(it.impactPct * 100, oculto) && (
+                            <span className="text-rendi-accent ml-2">{pesoVisible(it.impactPct * 100, oculto)}</span>
                           )}
                         </div>
                       ))}
@@ -964,7 +966,7 @@ function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx })
   const personal = cobro?.amount != null
     ? `tenés ${cuantos} → ~+${oculto ? OCULTO : `${cobro.currency === 'USD' ? 'US$ ' : `${cobro.currency} `}${formatCompact(cobro.amount)}`}`
     : (tab === 'portfolio' && shares && impactPct != null && impactPct > 0.0001)
-      ? `tenés ${formatCompact(shares)} nominales${oculto ? '' : ` (${pct(impactPct)} de tu cartera)`}`
+      ? `tenés ${formatCompact(shares)} nominales${oculto ? '' : ` (${deTuCartera(impactPct * 100, oculto)})`}`
       : (tab === 'popular' && inPortfolio) ? 'está en tu cartera' : null
 
   return (
@@ -1153,6 +1155,7 @@ function renderDetail(event, payout) {
 // El próximo evento que más te toca, arriba de todo, con tu cobro/impacto ya
 // calculado. Solo se muestra en "Para ti".
 function SpotlightHero({ event, impactPct, cobro, onView }) {
+  const { hidden: oculto } = usePrivacy()
   const days = daysUntil(event.eventDate)
   const countdown = days == null ? '—' : days === 0 ? 'HOY' : days === 1 ? 'MAÑANA' : days
   const detail = renderDetail(event, cobro)
@@ -1173,7 +1176,9 @@ function SpotlightHero({ event, impactPct, cobro, onView }) {
   } else if (cobro?.shares) {
     contextParts.push(`tenés ${formatCompact(cobro.shares)} acc`)
   }
-  if (impactPct != null && impactPct > 0.0001) contextParts.push(`${pct(impactPct)} de tu cartera`)
+  // El peso, con la regla única (sin el ojito prendido; re-test D, 29/10).
+  const peso = impactPct != null && impactPct > 0.0001 ? deTuCartera(impactPct * 100, oculto) : null
+  if (peso) contextParts.push(peso)
 
   return (
     <div className="bg-bg-1 border border-data-violet/40 rounded-lg p-4 mb-4 flex flex-wrap items-center gap-4">
