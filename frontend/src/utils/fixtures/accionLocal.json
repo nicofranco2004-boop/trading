@@ -1,0 +1,36 @@
+{
+  "_que_es": "¿Es una acción ARGENTINA (se lee en BYMA ÷ MEP) o no (su acción de afuera)? La misma tabla la leen las dos copias de la regla: la pantalla (utils/accionLocal.test.js → esLoteLocal, lecturaDeSeguido) y el servidor (backend/tests/test_accion_local.py → accion_local.es_lote_local, accion_local.seguido). Si una copia cambia sin la otra, se pone roja la suya. Auditoría A 29/10 (A1, P1, P2).",
+  "brokers": [
+    { "id": 1, "name": "IOL", "currency": "ARS" },
+    { "id": 2, "name": "Schwab", "currency": "USD" },
+    { "id": 3, "name": "Cocos", "currency": "ARS" },
+    { "id": 4, "name": "Cocos · USD", "currency": "USDT", "parent_broker_id": 3 }
+  ],
+  "lotes": [
+    { "por_que": "acción argentina en un broker en pesos", "lote": { "asset": "GGAL", "broker": "IOL", "asset_type": "ACCION" }, "local": true },
+    { "por_que": "acción argentina sin tipo en un broker en pesos", "lote": { "asset": "YPFD", "broker": "IOL" }, "local": true },
+    { "por_que": "el ADR de Nueva York en un broker de afuera", "lote": { "asset": "GGAL", "broker": "Schwab", "asset_type": "STOCK" }, "local": false },
+    { "por_que": "acción argentina comprada por dólar-MEP (sub-broker «· USD»)", "lote": { "asset": "GGAL", "broker": "Cocos · USD" }, "local": true },
+    { "por_que": "acción argentina con costo en pesos en una cuenta de dólares", "lote": { "asset": "PAMP", "broker": "Schwab", "currency": "ARS" }, "local": true },
+    { "por_que": "CEDEAR con su tipo", "lote": { "asset": "AAPL", "broker": "IOL", "asset_type": "CEDEAR" }, "local": false },
+    { "por_que": "CEDEAR sin tipo (importado así)", "lote": { "asset": "SPY", "broker": "IOL" }, "local": false },
+    { "por_que": "CEDEAR sin tipo y sin ratio conocido: la pantalla decía «acción argentina» porque miraba la tabla de ratios (P1)", "lote": { "asset": "BLK", "broker": "IOL" }, "local": false },
+    { "por_que": "CEDEAR con código de especie propio (SI = SID)", "lote": { "asset": "SI", "broker": "IOL" }, "local": false },
+    { "por_que": "cripto en un broker en pesos", "lote": { "asset": "BTC", "broker": "IOL" }, "local": false },
+    { "por_que": "efectivo", "lote": { "asset": "ARS", "broker": "IOL", "is_cash": 1 }, "local": false },
+    { "por_que": "acción de EE.UU. en un broker de afuera", "lote": { "asset": "NVDA", "broker": "Schwab", "asset_type": "STOCK" }, "local": false }
+  ],
+  "seguidos": [
+    { "por_que": "la estrella del buscador del inicio guarda la acción argentina sin «.BA»", "simbolo": "GGAL", "asset": "GGAL", "local": true },
+    { "por_que": "la estrella de la ficha la guarda con «.BA»", "simbolo": "GGAL.BA", "asset": "GGAL", "local": true },
+    { "por_que": "en minúsculas", "simbolo": "bma", "asset": "BMA", "local": true },
+    { "por_que": "YPF es el ADR; la acción argentina es YPFD", "simbolo": "YPF", "asset": "YPF", "local": false },
+    { "por_que": "un CEDEAR (con «.BA») se lee por su acción de afuera", "simbolo": "AAPL.BA", "asset": "AAPL", "local": false },
+    { "por_que": "un «.BA» que no es del panel argentino se trata como CEDEAR, sin depender de que data912 conteste (P2)", "simbolo": "ZZZZ.BA", "asset": "ZZZZ", "local": false },
+    { "por_que": "acción de EE.UU.", "simbolo": "MSFT", "asset": "MSFT", "local": false },
+    { "por_que": "una cripto guardada con «-USD» es la misma que tenés", "simbolo": "BTC-USD", "asset": "BTC", "local": false },
+    { "por_que": "AGRO sin tipo es Agrometal, la acción argentina (la lista del panel)", "simbolo": "AGRO", "asset": "AGRO", "local": true },
+    { "por_que": "con su tipo guardado (STOCK = EE.UU.), el tipo manda: Adecoagro de Nueva York", "simbolo": "AGRO", "tipo": "STOCK", "asset": "AGRO", "local": false },
+    { "por_que": "con tipo de acción argentina, igual que sin tipo", "simbolo": "GGAL", "tipo": "ACCION", "asset": "GGAL", "local": true }
+  ]
+}

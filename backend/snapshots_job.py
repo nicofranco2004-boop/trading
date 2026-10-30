@@ -1261,14 +1261,7 @@ def compute_live_portfolio_value(
         cached_at, cached_val = cached
         if _time.time() - cached_at < _LIVE_VALUE_TTL_SEC:
             return cached_val
-    brokers = [dict(r) for r in conn.execute(
-        "SELECT id, name, currency, parent_broker_id FROM brokers WHERE user_id=?", (uid,)
-    ).fetchall()]
-    positions = [dict(r) for r in conn.execute(
-        "SELECT broker, asset, asset_type, is_cash, invested, quantity, commissions, price_override, currency "
-        "FROM positions WHERE user_id=?",
-        (uid,)
-    ).fetchall()]
+    brokers, positions = leer_cartera(conn, uid)
     if not brokers or not positions:
         return None
 
@@ -1334,19 +1327,50 @@ def compute_live_portfolio_value(
         )
         return None
 
-    total_value = 0.0
-    for b in brokers:
-        bpos = [p for p in positions if p['broker'] == b['name']]
-        try:
-            r = compute_broker_value_usd(bpos, prices, b['currency'], tc_blue,
-                                         broker_name=b['name'], cedear_rate=tc_cedear)
-            total_value += r['value']
-        except Exception as e:
-            log.warning(f"compute_live_portfolio_value: broker {b['name']} failed: {e}")
-            continue
+    total_value = sum(v for _, v in valuar_lotes(positions, brokers, prices, tc_blue, tc_cedear))
     result = round(total_value, 2)
     _LIVE_VALUE_CACHE[cache_key] = (_time.time(), result)
     return result
+
+
+def leer_cartera(conn, uid: int) -> tuple:
+    """(brokers, positions) con los que se valúa la cartera ENTERA: todas las
+    filas de `positions`, efectivo incluido. El efectivo guarda el saldo en
+    `invested` y la cantidad en 0 (NULL en Postgres): un filtro por cantidad lo
+    deja afuera. Pasó (A0, 29/10): «tu plata» del análisis técnico pedía
+    `quantity > 0` y con la mitad en efectivo decía «100 % alcista». La usan
+    `compute_live_portfolio_value` y `senales_semana.cartera`."""
+    brokers = [dict(r) for r in conn.execute(
+        "SELECT id, name, currency, parent_broker_id FROM brokers WHERE user_id=?", (uid,)
+    ).fetchall()]
+    positions = [dict(r) for r in conn.execute(
+        "SELECT id, broker, asset, asset_type, is_cash, invested, quantity, commissions, price_override, currency "
+        "FROM positions WHERE user_id=?",
+        (uid,)
+    ).fetchall()]
+    return brokers, positions
+
+
+def valuar_lotes(positions: list, brokers: list, prices: dict, tc_blue: float,
+                 tc_cedear: float) -> list:
+    """[(posición, valor_usd)] de cada lote, con el motor (`compute_broker_value_usd`)
+    y la moneda de su broker. Un lote de un broker que no existe (huérfano) no
+    se valúa: no se sabe en qué moneda está. La suma es el valor de la cartera
+    de `compute_live_portfolio_value`; lote por lote, el peso de cada activo
+    (`senales_semana.cartera`)."""
+    moneda = {b['name']: b['currency'] for b in brokers}
+    out = []
+    for p in positions:
+        if p['broker'] not in moneda:
+            continue
+        try:
+            r = compute_broker_value_usd([p], prices, moneda[p['broker']], tc_blue,
+                                         broker_name=p['broker'], cedear_rate=tc_cedear)
+        except Exception as e:
+            log.warning(f"valuar_lotes: {p.get('asset')} de {p['broker']} falló: {e}")
+            continue
+        out.append((p, r['value']))
+    return out
 
 
 # ─── Job runner: itera todos los usuarios activos ────────────────────────────

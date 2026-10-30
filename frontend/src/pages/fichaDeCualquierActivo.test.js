@@ -24,7 +24,7 @@ const TECNICO = {
   disponible: true, moneda: 'usd', ticker: 'NVDA', convertida: null,
   puntos: puntos(504, i => 150 + i * 0.05),
   lectura: { ruedas: 760, fecha: '2026-10-21', precio: 175, media50: 170, dist_media50: 3,
-    media200: 160, dist_media200: 9, pendiente_media200: 2, rsi: 58, dist_maximo_12m: -4, anio_completo: true },
+    media200: 160, dist_media200: 9, tendencia: 'alcista', pendiente_media200: 2, rsi: 58, dist_maximo_12m: -4, anio_completo: true },
 }
 
 let respuestas

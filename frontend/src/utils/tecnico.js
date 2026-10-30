@@ -158,12 +158,33 @@ export function recortar(puntos = [], ruedas) {
  * veredicto, tono: 'pos'|'neg'|'neutro', texto }. Con pocos datos la tarjeta lo
  * dice en vez de inventar.
  */
+/**
+ * La tendencia de fondo de una lectura ('alcista' | 'bajista' | null): la que
+ * decide el servidor (`tendencia`, tecnico.tendencia_de: precio ≥ promedio de
+ * 200). LA única lectura de la regla en la pantalla (P6, 29/10): la usan la
+ * tarjeta «Largo plazo» (y con ella la radiografía y Tu lista), el aviso de
+ * pesos/dólares y el «Avisame».
+ * Plan B, sólo mientras se publica: la web (Vercel) sale antes que el servidor
+ * (Railway) con el mismo push, y un servidor de antes no manda `tendencia`.
+ * Sin el campo, la distancia al promedio (la misma regla, la que mandaba el
+ * servidor viejo). Con el servidor nuevo manda siempre el campo, aunque sea null.
+ */
+export function tendenciaDe(l) {
+  if (!l) return null
+  if (l.tendencia !== undefined) return l.tendencia
+  return l.dist_media200 == null ? null : l.dist_media200 >= 0 ? 'alcista' : 'bajista'
+}
+
 export function tarjetas(l) {
   if (!l || !l.ruedas) return []
   const out = []
 
-  if (l.media200 != null && l.dist_media200 != null) {
-    const arriba = l.dist_media200 >= 0
+  // Alcista o bajista lo decide el servidor (`tendencia` de la lectura,
+  // tecnico.tendencia_de: precio ≥ promedio de 200): acá no se vuelve a
+  // escribir la regla (auditoría A 29/10, P6).
+  const tendencia = tendenciaDe(l)
+  if (tendencia && l.dist_media200 != null) {
+    const arriba = tendencia === 'alcista'
     // Sin el dato de hace un mes (un activo con 200 a 220 ruedas) no se sabe
     // hacia dónde va la media: se corta la frase, no se supone "subiendo".
     const hacia = l.pendiente_media200 == null ? ''
@@ -561,7 +582,7 @@ export function indiceDeFecha(puntos, fecha) {
  * en pesos sube con el dólar aunque la empresa no se mueva.
  */
 export function tendenciasDistintas(lUsd, lArs) {
-  const a = lUsd?.dist_media200, b = lArs?.dist_media200
-  if (a == null || b == null) return false
-  return (a >= 0) !== (b >= 0)
+  const a = tendenciaDe(lUsd), b = tendenciaDe(lArs)
+  if (!a || !b) return false
+  return a !== b
 }

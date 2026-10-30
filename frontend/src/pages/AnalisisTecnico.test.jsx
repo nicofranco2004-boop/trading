@@ -25,7 +25,7 @@ vi.mock('../contexts/AdvisorContext', () => ({ useAdvisorContext: () => ({ clien
 
 const HOY = new Date().toISOString().slice(0, 10)
 const LECTURA = (l = {}) => ({
-  ruedas: 760, fecha: HOY, media200: 90, dist_media200: 11, pendiente_media200: 2, media50: 95,
+  ruedas: 760, fecha: HOY, media200: 90, dist_media200: 11, tendencia: 'alcista', pendiente_media200: 2, media50: 95,
   dist_media50: 5, rsi: 60, adx: 30, dist_maximo_12m: -3, anio_completo: true, ...l,
 })
 const CAMBIO = (asset, tipo, fecha, extra = {}) => ({
@@ -50,7 +50,7 @@ function servidor() {
     if (url.startsWith('/prices')) return { NVDA: 150, KO: 50 }
     if (url === '/plazos-fijos') return []
     if (url === '/tus-senales') return {
-      desde: '2026-10-21', hasta: HOY, canal: 'mail',
+      desde: '2026-10-21', hasta: HOY, canal: 'mail', proximo_resumen: '2026-11-07',
       // LA cuenta del servidor (senales_semana.reparto). 74 y no 75 a propósito:
       // la cuenta vieja de la pantalla (NVDA 1.500 contra KO 500) daba 75; el
       // Panorama tiene que decir lo que manda el servidor.
@@ -78,7 +78,7 @@ function servidor() {
       const todos = [...tenencias, ...body.activos]
       return { tenencias, lecturas: todos.map(a => ({
         asset: a.asset, local: a.local, disponible: true, linea: [{ d: HOY, c: 1 }, { d: HOY, c: 2 }], ultimo_cambio: null,
-        lectura: a.asset === 'KO' ? LECTURA({ dist_media200: -5, media200: 110 }) : LECTURA(),
+        lectura: a.asset === 'KO' ? LECTURA({ dist_media200: -5, tendencia: 'bajista', media200: 110 }) : LECTURA(),
       })) }
     }
     throw new Error(`POST inesperado ${url}`)
@@ -151,7 +151,7 @@ describe('Análisis técnico: las pestañas', () => {
     expect(montado.t()).toContain('Ordenar por')
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Señales de la semana')))
     expect(montado.donde.actual.search).toBe('?tab=senales')
-    expect(montado.t()).toContain('Qué cambió esta semana en lo tuyo')
+    expect(montado.t()).toContain('Qué cambió esta semana en lo tuyo y en tu watchlist')
     expect(montado.t()).toContain('Crear una alerta técnica en Alertas')
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Panorama')))
     expect(montado.donde.actual.search).toBe('')
@@ -183,9 +183,13 @@ describe('Análisis técnico: el Panorama', () => {
     expect(t).toContain('los 3 más nuevos')
     expect(t).toContain('NVDA pasó arriba de su promedio de 200 días')
     expect(t).toContain('TSLA cerró en su precio más alto')
+    // P5 (auditoría A 29/10): el título decía «en lo tuyo» y la lista trae
+    // también lo que seguís (TSLA): el título dice las dos cosas.
+    expect(t).toContain('Lo que cambió esta semana en lo tuyo y en tu watchlist')
+    expect(t).toContain('En tu watchlist')
     expect(t).not.toContain('tiene la fuerza (RSI) en 25')  // el 4.º, más viejo, no va en el Panorama
     expect(t).toContain('Ver las 4 señales de la semana')
-    expect(t).toContain('El resumen de la semana te llega el sábado')
+    expect(t).toContain('El resumen de la semana te llega el sábado 07/11 a las 10:00')
     expect(t).toContain('3 activos: 2 que tenés y 1 que seguís')
     expect(t).toContain('no es una recomendación para comprar ni vender')
   })
@@ -202,8 +206,12 @@ describe('las direcciones de antes', () => {
 describe('textoDelResumen', () => {
   it('el próximo sábado y por dónde, o que no llega', async () => {
     const { textoDelResumen } = await import('./AnalisisTecnico')
-    expect(textoDelResumen('mail', '2026-10-28')).toBe('El resumen de la semana te llega el sábado 31/10 a las 10:00, por mail.')
-    expect(textoDelResumen('ambos', '2026-10-31')).toBe('El resumen de la semana te llega el sábado 31/10 a las 10:00, por mail y notificación.')
+    // El sábado lo pone el servidor (`proximo_resumen`): acá sólo se escribe.
+    expect(textoDelResumen('mail', '2026-10-31')).toBe('El resumen de la semana te llega el sábado 31/10 a las 10:00, por mail.')
+    // A9: el sábado a la tarde, ya salido el de hoy, el servidor manda el que viene.
+    expect(textoDelResumen('ambos', '2026-11-07')).toBe('El resumen de la semana te llega el sábado 07/11 a las 10:00, por mail y notificación.')
+    // Un servidor de antes (sin el dato): no se inventa una fecha.
+    expect(textoDelResumen('push', undefined)).toBe('El resumen de la semana te llega los sábados a las 10:00, por notificación.')
     expect(textoDelResumen('no', '2026-10-28')).toBe('No te llega el resumen de los sábados.')
   })
 })

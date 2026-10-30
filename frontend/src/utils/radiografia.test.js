@@ -15,8 +15,8 @@ beforeEach(() => setBrokersRegistry(BROKERS))
 
 // Lecturas como las devuelve POST /api/tecnico/cartera.
 const lec = (asset, local, l, cambios = []) => ({ asset, local, disponible: true, lectura: { ruedas: 760, ...l }, cambios })
-const ALCISTA = { media200: 90, dist_media200: 11.1, pendiente_media200: 2, media50: 95, dist_media50: 5, rsi: 64 }
-const BAJISTA = { media200: 110, dist_media200: -9.1, pendiente_media200: -1, media50: 105, dist_media50: -4.8, rsi: 38 }
+const ALCISTA = { media200: 90, dist_media200: 11.1, tendencia: 'alcista', pendiente_media200: 2, media50: 95, dist_media50: 5, rsi: 64 }
+const BAJISTA = { media200: 110, dist_media200: -9.1, tendencia: 'bajista', pendiente_media200: -1, media50: 105, dist_media50: -4.8, rsi: 38 }
 
 describe('la marca local (acción argentina)', () => {
   it('es la regla de la ficha, lote por lote', () => {
@@ -49,7 +49,7 @@ describe('las palabras son las de la ficha', () => {
       const x = lec('X', false, l)
       expect(tendencia(x).palabra).toBe(tarjetas(x.lectura).find(t => t.id === 'fondo').veredicto)
     }
-    expect(tendencia(lec('X', false, { ...ALCISTA, media200: null, dist_media200: null })).id).toBe('sin')
+    expect(tendencia(lec('X', false, { ...ALCISTA, media200: null, dist_media200: null, tendencia: null })).id).toBe('sin')
     expect(tendencia({ asset: 'AL30', local: true, disponible: false }).palabra).toBe('Sin lectura')
     expect(tendencia(null).id).toBe('sin')
     expect(fuerza(lec('X', false, ALCISTA))).toEqual({ rsi: 64, palabra: veredictoRsi(64) })
@@ -104,7 +104,7 @@ describe('el motivo de cada «sin lectura» de una fila', () => {
     expect(tendencia(null, HOY, fondo).porque).toBe('no_se_mide')
     expect(tendencia({ asset: 'GGAL', local: true, disponible: false }, HOY, accion).porque).toBe('sin_historia')
     expect(tendencia(null, HOY, accion).motivo).toContain('aparece en un día')
-    expect(tendencia(lec('IREN', false, { ...ALCISTA, ruedas: 120, media200: null, dist_media200: null, fecha: HOY }), HOY).porque).toBe('pocos_dias')
+    expect(tendencia(lec('IREN', false, { ...ALCISTA, ruedas: 120, media200: null, dist_media200: null, tendencia: null, fecha: HOY }), HOY).porque).toBe('pocos_dias')
     expect(tendencia(lec('MSFT', false, { ...ALCISTA, fecha: '2026-09-17' }), HOY).porque).toBe('vieja')
     for (const k of ['no_se_mide', 'sin_historia', 'pocos_dias', 'vieja']) expect(MOTIVOS_SIN_LECTURA[k]).toBeTruthy()
   })

@@ -21,7 +21,9 @@ const html = (props) => renderToStaticMarkup(
 
 describe('la señal de cada tarjeta', () => {
   it('arriba del promedio ofrece avisar cuando quede abajo, y al revés', () => {
-    expect(senalDeTarjeta('fondo', { dist_media200: 4.2 })).toEqual({ senal: 'media200', direction: 'below' })
+    expect(senalDeTarjeta('fondo', { dist_media200: 4.2, tendencia: 'alcista' })).toEqual({ senal: 'media200', direction: 'below' })
+    expect(senalDeTarjeta('fondo', { dist_media200: -1, tendencia: 'bajista' })).toEqual({ senal: 'media200', direction: 'above' })
+    // Un servidor de antes (sin `tendencia`, mientras se publica): igual.
     expect(senalDeTarjeta('fondo', { dist_media200: -1 })).toEqual({ senal: 'media200', direction: 'above' })
     expect(senalDeTarjeta('corto', { dist_media50: 2 })).toEqual({ senal: 'media50', direction: 'below' })
     expect(senalDeTarjeta('fondo', {})).toEqual({ senal: 'media200', direction: 'either' })
@@ -56,12 +58,17 @@ describe('de la ficha al servidor', () => {
     })
   })
 
-  it('desde el buscador de Alertas, GGAL es la acción argentina si la tenés en BYMA (como la ficha)', () => {
+  it('desde el buscador de Alertas, GGAL es la acción argentina en BYMA, la tengas o no (como la ficha)', () => {
     setBrokersRegistry([{ name: 'IOL', currency: 'ARS' }])
     const f = { ...borradorInicial({ prefill: { kind: 'tecnica' } }), symbol: 'GGAL' }
     const lotes = [{ asset: 'GGAL', broker: 'IOL', asset_type: 'ACCION', quantity: 10 }]
     expect(pedidoTecnico(f, false, lotes)).toMatchObject({ symbol: 'GGAL', accion_local: true, currency: 'USD' })
-    expect(pedidoTecnico(f, false, [])).toMatchObject({ symbol: 'GGAL', accion_local: false })
+    // Sin tenerla, la ficha la muestra en BYMA (miradaSinTenencia): el aviso también.
+    expect(pedidoTecnico(f, false, [])).toMatchObject({ symbol: 'GGAL', accion_local: true })
+    // Tenerla sólo como ADR en Schwab: el ADR, como la ficha.
+    setBrokersRegistry([{ name: 'IOL', currency: 'ARS' }, { name: 'Schwab', currency: 'USD' }])
+    expect(pedidoTecnico(f, false, [{ asset: 'GGAL', broker: 'Schwab', asset_type: 'STOCK', quantity: 1 }]))
+      .toMatchObject({ symbol: 'GGAL', accion_local: false })
   })
 
   it('el formulario desde la ficha: sin selector de tipo, con el activo fijo y la frase', () => {

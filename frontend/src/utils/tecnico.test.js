@@ -3,7 +3,7 @@ import { tarjetas, tarjetaFuerza, tarjetaBandas, tarjetaMovimiento, textoRendPor
 
 const L = {
   ruedas: 760, fecha: '2026-10-21', precio: 228.97,
-  media50: 241.49, dist_media50: -5.18, media200: 250.08, dist_media200: -8.44,
+  media50: 241.49, dist_media50: -5.18, media200: 250.08, dist_media200: -8.44, tendencia: 'bajista',
   pendiente_media200: -1.2, rsi: 37.8, maximo_12m: 274.63, dist_maximo_12m: -16.63,
   anio_completo: true,
 }
@@ -23,11 +23,29 @@ describe('tarjetas', () => {
   })
 
   it('con pocas ruedas dice que faltan datos en vez de inventar la media', () => {
-    const t = tarjetas({ ruedas: 120, media200: null, dist_media200: null, media50: 10, dist_media50: 2, rsi: 50, dist_maximo_12m: -3, anio_completo: false })
+    const t = tarjetas({ ruedas: 120, media200: null, dist_media200: null, tendencia: null, media50: 10, dist_media50: 2, rsi: 50, dist_maximo_12m: -3, anio_completo: false })
     const fondo = t.find(x => x.id === 'fondo')
     expect(fondo.veredicto).toBe('Faltan datos')
     expect(fondo.texto).toContain('tiene 120')
     expect(t.find(x => x.id === 'maximo').titulo).toBe('Máximo del período')
+  })
+
+  it('la tendencia de fondo la decide el servidor (P6: una sola regla, tecnico.tendencia_de)', () => {
+    // Un cierre a una millonésima abajo del promedio: la distancia redondea a 0,
+    // pero el servidor (precio ≥ promedio) dice bajista. La tarjeta no la recalcula.
+    const fondo = tarjetas({ ruedas: 760, media200: 100, dist_media200: 0, tendencia: 'bajista', rsi: 50 }).find(x => x.id === 'fondo')
+    expect(fondo.veredicto).toBe('Bajista')
+    expect(tendenciasDistintas({ dist_media200: 0, tendencia: 'bajista' }, { dist_media200: 0, tendencia: 'alcista' })).toBe(true)
+  })
+
+  it('con un servidor de antes (sin `tendencia`, mientras se publica) no dice «Faltan datos» (re-test P6, 29/10)', () => {
+    // La web (Vercel) sale antes que el servidor (Railway) con el mismo push.
+    const viejo = { ruedas: 760, media200: 100, dist_media200: 4, rsi: 50 }
+    expect(tarjetas(viejo).find(x => x.id === 'fondo').veredicto).toBe('Alcista')
+    expect(tarjetas({ ...viejo, dist_media200: -4 }).find(x => x.id === 'fondo').veredicto).toBe('Bajista')
+    expect(tendenciasDistintas({ dist_media200: -8 }, { dist_media200: 24 })).toBe(true)
+    // Con el servidor nuevo, lo que diga él (aunque sea «no hay»).
+    expect(tarjetas({ ...viejo, tendencia: null }).find(x => x.id === 'fondo').veredicto).toBe('Faltan datos')
   })
 
   it('sin lectura no hay tarjetas', () => {
@@ -99,9 +117,9 @@ describe('recortar y tendenciasDistintas', () => {
     expect(recortar([1, 2], 10)).toEqual([1, 2])
   })
   it('avisa cuando en pesos parece alcista y en dólares no', () => {
-    expect(tendenciasDistintas({ dist_media200: -8 }, { dist_media200: 24 })).toBe(true)
-    expect(tendenciasDistintas({ dist_media200: 3 }, { dist_media200: 24 })).toBe(false)
-    expect(tendenciasDistintas(null, { dist_media200: 24 })).toBe(false)
+    expect(tendenciasDistintas({ dist_media200: -8, tendencia: 'bajista' }, { dist_media200: 24, tendencia: 'alcista' })).toBe(true)
+    expect(tendenciasDistintas({ dist_media200: 3, tendencia: 'alcista' }, { dist_media200: 24, tendencia: 'alcista' })).toBe(false)
+    expect(tendenciasDistintas(null, { dist_media200: 24, tendencia: 'alcista' })).toBe(false)
   })
 })
 
@@ -185,7 +203,7 @@ describe('arreglos de la auditoría', () => {
     expect(puntosEnDias(habiles, 365)).toBeLessThan(265)
   })
   it('sin el dato de hace un mes no dice hacia dónde va la media', () => {
-    const t = tarjetas({ ruedas: 210, media200: 10, dist_media200: 5, pendiente_media200: null })
+    const t = tarjetas({ ruedas: 210, media200: 10, dist_media200: 5, tendencia: 'alcista', pendiente_media200: null })
     expect(t.find(x => x.id === 'fondo').texto).toBe('El precio está 5,0% arriba de su promedio de los últimos 200 días. '
       + 'Estar arriba de ese promedio es la señal más usada de que la tendencia de fondo es alcista.')
   })

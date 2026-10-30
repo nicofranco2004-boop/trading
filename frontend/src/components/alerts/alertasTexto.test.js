@@ -113,9 +113,14 @@ describe('alertas técnicas', () => {
     // GGAL en IOL: la acción de BYMA (÷ MEP), como la ficha.
     expect(activoTecnico('GGAL', enIol)).toEqual({ symbol: 'GGAL', accion_local: true })
     expect(activoTecnico('GGAL.BA', enIol)).toEqual({ symbol: 'GGAL', accion_local: true })
-    // El ADR en Schwab, o sin lotes: la ficha muestra el ADR, la alerta también.
+    // El ADR en Schwab: la ficha muestra el ADR, la alerta también.
     expect(activoTecnico('GGAL', enSchwab)).toEqual({ symbol: 'GGAL', accion_local: false })
-    expect(activoTecnico('GGAL.BA')).toEqual({ symbol: 'GGAL', accion_local: false })
+    // Sin lotes, la ficha mira BYMA (miradaSinTenencia, AssetDetail): la alerta
+    // también. Hasta el 29/10 esta prueba decía «sin lotes, el ADR», que era lo
+    // que mostraba la ficha el 22/10 (re-test de la auditoría A, A1a).
+    expect(activoTecnico('GGAL.BA')).toEqual({ symbol: 'GGAL', accion_local: true })
+    expect(activoTecnico('GGAL')).toEqual({ symbol: 'GGAL', accion_local: true })
+    expect(activoTecnico('NVDA')).toEqual({ symbol: 'NVDA', accion_local: false })
     // Un CEDEAR va pelado (se mira la acción de afuera) aunque esté en IOL.
     expect(activoTecnico('AAPL.BA', [{ asset: 'AAPL', broker: 'IOL', asset_type: 'CEDEAR', quantity: 1 }]))
       .toEqual({ symbol: 'AAPL', accion_local: false })

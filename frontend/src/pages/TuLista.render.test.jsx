@@ -15,7 +15,7 @@ beforeEach(() => setBrokersRegistry([{ id: 1, name: 'IOL', currency: 'ARS' }, { 
 const hoy = new Date().toISOString().slice(0, 10)
 const lec = (asset, local, l = {}, extra = {}) => ({
   asset, local, disponible: true,
-  lectura: { ruedas: 760, fecha: hoy, media200: 90, dist_media200: 11, pendiente_media200: 2, media50: 95,
+  lectura: { ruedas: 760, fecha: hoy, media200: 90, dist_media200: 11, tendencia: 'alcista', pendiente_media200: 2, media50: 95,
     dist_media50: -2, rsi: 28, adx: 31, dist_maximo_12m: -24.3, anio_completo: true, ...l },
   linea: [{ d: '2026-08-01', c: 10 }, { d: hoy, c: 12 }], ultimo_cambio: null, ...extra,
 })

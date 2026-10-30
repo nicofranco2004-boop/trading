@@ -21,7 +21,7 @@ const HOY = '2026-10-24'
 // Lecturas como las devuelve POST /api/tecnico/lista.
 const lec = (asset, local, l = {}, extra = {}) => ({
   asset, local, disponible: true,
-  lectura: { ruedas: 760, fecha: '2026-10-23', media200: 90, dist_media200: 11.1, pendiente_media200: 2,
+  lectura: { ruedas: 760, fecha: '2026-10-23', media200: 90, dist_media200: 11.1, tendencia: 'alcista', pendiente_media200: 2,
     media50: 95, dist_media50: 5, rsi: 64, adx: 27.4, dist_maximo_12m: -3.2, anio_completo: true, ...l },
   linea: [{ d: '2026-07-24', c: 90 }, { d: '2026-09-01', c: 95 }, { d: '2026-10-23', c: 100 }],
   ultimo_cambio: null, ...extra,
@@ -53,7 +53,7 @@ describe('las filas, con lo que manda el servidor', () => {
   ]
   const indice = indexarLecturas([
     lec('NVDA', false),
-    lec('KO', false, { dist_media200: -9.1, media200: 110, dist_media50: -4.8, rsi: 24, adx: 18.2, dist_maximo_12m: -24.3 }),
+    lec('KO', false, { dist_media200: -9.1, tendencia: 'bajista', media200: 110, dist_media50: -4.8, rsi: 24, adx: 18.2, dist_maximo_12m: -24.3 }),
     lec('TSLA', false, { rsi: 71, dist_maximo_12m: 0 }),
     { asset: 'AL30', local: true, disponible: false },
   ])

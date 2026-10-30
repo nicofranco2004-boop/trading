@@ -105,14 +105,16 @@ def _ref(referencia, i):
     return referencia[i] if isinstance(referencia, list) else referencia
 
 
-def ultimo_cruce(valores: list, referencia, desde_i: int = 1, hacia: str = None):
+def ultimo_cruce(valores: list, referencia, desde_i: int = 1):
     """El ÚLTIMO cruce de `valores` con `referencia` desde el índice `desde_i`:
     (índice, 'arriba'|'abajo'), o None si no cruzó.
 
     `referencia` es una serie (la media de 200 de cada día) o un nivel fijo (el
     30 del RSI). «Arriba» es valor ≥ referencia: la MISMA regla que la tarjeta de
-    la ficha (precio ≥ media es «Alcista»). `hacia` busca sólo los cruces en ese
-    sentido. Es LA cuenta de "cruzó": la usan el aviso de la ficha
+    la ficha (precio ≥ media es «Alcista»). Devuelve el último en CUALQUIER
+    sentido, a propósito: el que lo quiere en uno solo mira si el último fue
+    para ese lado (buscar sólo en un sentido saltea la vuelta: A4, 29/10). Es LA
+    cuenta de "cruzó": la usan el aviso de la ficha
     (`cruce_rsi`) y las alertas técnicas (`senal_desde`). Con una media o un
     valor que todavía no existe (None) ese día no cruza nada."""
     for i in range(len(valores) - 1, max(desde_i, 1) - 1, -1):
@@ -120,11 +122,10 @@ def ultimo_cruce(valores: list, referencia, desde_i: int = 1, hacia: str = None)
         ra, rb = _ref(referencia, i - 1), _ref(referencia, i)
         if a is None or b is None or ra is None or rb is None:
             continue
-        antes, ahora = a >= ra, b >= rb
+        # «Arriba» con LA regla de la tendencia (`tendencia_de`, P6).
+        antes, ahora = tendencia_de(a, ra) == "alcista", tendencia_de(b, rb) == "alcista"
         if antes != ahora:
-            sentido = "arriba" if ahora else "abajo"
-            if hacia in (None, sentido):
-                return i, sentido
+            return i, "arriba" if ahora else "abajo"
     return None
 
 
@@ -133,11 +134,20 @@ def cruce_rsi(r: list, abajo: float = 30.0, arriba: float = 70.0):
     `RUEDAS_CRUCE_RSI` ruedas: {'tipo': 'salio_de_abajo'|'salio_de_arriba',
     'hace': ruedas}. Salir de abajo de 30 es lo que muchos leen como "vuelve a
     tomar fuerza"; salir de arriba de 70, "pierde fuerza". None si no hubo.
-    Sale de `ultimo_cruce`, la misma cuenta que las alertas técnicas."""
+    Sale de `ultimo_cruce`, la misma cuenta que las alertas técnicas, y con su
+    misma regla (`senal_desde`): vale el ÚLTIMO cruce de cada nivel, en
+    cualquier sentido. Si pasó 30 para arriba y después volvió a bajar, ya no
+    «salió»: buscando sólo los cruces para arriba la ficha decía «dejó de caer
+    tan rápido» con el RSI en 24 (auditoría A 29/10, A4; la regla se había
+    arreglado en las alertas el 22/10 y no acá)."""
     n = len(r)
     desde = max(1, n - RUEDAS_CRUCE_RSI)
-    de_abajo = ultimo_cruce(r, abajo, desde, "arriba")
-    de_arriba = ultimo_cruce(r, arriba, desde, "abajo")
+
+    def _ultimo(nivel, sentido):
+        c = ultimo_cruce(r, nivel, desde)
+        return c if c and c[1] == sentido else None
+    de_abajo = _ultimo(abajo, "arriba")
+    de_arriba = _ultimo(arriba, "abajo")
     if not de_abajo and not de_arriba:
         return None
     if de_abajo and (not de_arriba or de_abajo[0] > de_arriba[0]):
@@ -421,13 +431,29 @@ def _ancho_relativo(bb: dict, velas: list):
     return hoy / mediana if (mediana > 0 and hoy > 0) else None
 
 
+def cambios_diarios(cierres: list) -> list:
+    """Los cambios de cada día contra el anterior (0,02 = subió 2 %). Un cierre
+    en 0 (una vela rota) se saltea con su cambio."""
+    return [cierres[i] / cierres[i - 1] - 1.0 for i in range(1, len(cierres))
+            if cierres[i - 1] > 0 and cierres[i] > 0]
+
+
+def velas_del_anio(velas: list) -> list:
+    """Las velas de los últimos `DIAS_ANIO` días corridos: la ventana de «su
+    día normal del último año» (la tarjeta «Cuánto se mueve» y la sección
+    «Cuánto se mueve este papel», `movimiento.dia_normal`)."""
+    return velas[_desde_dias(velas, DIAS_ANIO):]
+
+
 def movimiento_diario(cierres: list) -> float:
     """Cuánto se movió el precio en un día normal, en %: el desvío
     (poblacional) de los cambios de un día al otro. Para arriba o para abajo:
-    2,0 es «un día normal sube o baja alrededor de 2 %». Un cierre en 0 (una
-    vela rota) se saltea con su cambio. None con menos de 2 cambios."""
-    cambios = [cierres[i] / cierres[i - 1] - 1.0 for i in range(1, len(cierres))
-               if cierres[i - 1] > 0 and cierres[i] > 0]
+    2,0 es «un día normal sube o baja alrededor de 2 %». None con menos de 2
+    cambios. Es LA cuenta del día normal de la ficha: la tarjeta y la sección
+    «Cuánto se mueve este papel» (`movimiento.dia_normal`) la usan las dos
+    (auditoría A 29/10, A5: eran dos cuentas con dos ventanas y la misma ficha
+    decía «1,1 %» y «±2,3 %»)."""
+    cambios = cambios_diarios(cierres)
     if len(cambios) < 2:
         return None
     prom = sum(cambios) / len(cambios)
@@ -461,8 +487,8 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=Non
     a = dmi["adx"]
     ultimo = cierres[-1]
     bb_arriba, bb_abajo = bb["arriba"][-1], bb["abajo"][-1]
-    i_anio = _desde_dias(velas, DIAS_ANIO)
-    anio = velas[i_anio:]
+    anio = velas_del_anio(velas)
+    i_anio = n - len(anio)
     # El máximo y el mínimo del año, de CIERRE contra CIERRE: el pico dentro del
     # día de hoy nunca se alcanza al cierre, así que con el máximo intradiario
     # "En su máximo" no aparecía nunca (Apple cerró en récord 36 días del año).
@@ -496,6 +522,7 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=Non
         "dist_media50": _pct(ultimo, m50[-1]),
         "media200": m200[-1],
         "dist_media200": _pct(ultimo, m200[-1]),
+        "tendencia": tendencia_de(ultimo, m200[-1]),
         "pendiente_media200": _pct(m200[-1], m200_antes),
         "rsi": r[-1],
         "rsi_cruce": cruce_rsi(r),
@@ -570,7 +597,8 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     `local`: es una acción ARGENTINA (lo sabe la ficha por tus lotes). Entonces
     en dólares se usa SU precio de BYMA ÷ el MEP, aunque haya guardado un ticker
     pelado igual: GGAL "de afuera" es el ADR (10 acciones), que otro usuario
-    puede tener en Schwab, y su precio no es el de tu acción."""
+    puede tener en Schwab, y su precio no es el de tu acción. Sin la serie de
+    BYMA, no hay serie: nunca la de otro papel."""
     from cripto import yahoo_de_cripto
     from snapshots_job import simbolo_byma
     import velas_diarias
@@ -583,7 +611,11 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     cripto = yahoo_de_cripto(a)
     de_afuera = cripto or velas_diarias.ticker_de_afuera(a)
     byma = [] if cripto else velas_diarias.serie(conn, simbolo_byma(a))
-    afuera = [] if (local and byma) else velas_diarias.serie(conn, de_afuera)
+    # Una acción argentina se lee SÓLO con su serie de BYMA: sin ella no hay
+    # lectura. Antes, si faltaba, se usaba la de afuera, que para GGAL es el ADR
+    # que otro tiene en Schwab: otro papel, sin avisar, y volvía el mail «GGAL
+    # quedó abajo» con la ficha diciendo otra cosa (re-test A1d, 29/10).
+    afuera = [] if local else velas_diarias.serie(conn, de_afuera)
 
     if moneda == "ars":
         # La serie en pesos de un CEDEAR que alguien tuvo y nadie sigue queda
@@ -1034,6 +1066,19 @@ def cambios_desde(velas: list, desde: str) -> list:
 DIAS_SIN_VELA = 7
 
 
+def tendencia_de(precio, media200):
+    """'alcista' | 'bajista' | None: LA regla de la tendencia de fondo (precio ≥
+    su promedio de 200 días = alcista; sin promedio, None). La misma que
+    `ultimo_cruce` usa para decir «pasó arriba». La lectura la manda resuelta
+    (`tendencia`) y la leen la tarjeta «Largo plazo», la radiografía, Tu lista,
+    el % de tu plata (`senales_semana._alcista`) y el diario de operaciones
+    (`tendencia_del_dia`): antes cada uno la reescribía (`cierre >= media` acá,
+    `dist_media200 >= 0` en el servidor y en la pantalla). Auditoría A 29/10, P6."""
+    if precio is None or media200 is None:
+        return None
+    return "alcista" if precio >= media200 else "bajista"
+
+
 def tendencia_del_dia(velas: list, m200: list, fecha: str) -> dict:
     """{tendencia: 'alcista'|'bajista', fecha, precio, media200, dist} con la
     vela del día `fecha` (o la última de antes, hasta `DIAS_SIN_VELA`). Sin
@@ -1064,7 +1109,7 @@ def tendencia_del_dia(velas: list, m200: list, fecha: str) -> dict:
     if m is None:
         return {"tendencia": None, "motivo": "pocos_dias", "fecha": v["date"]}
     return {
-        "tendencia": "alcista" if v["close"] >= m else "bajista",
+        "tendencia": tendencia_de(v["close"], m),
         "fecha": v["date"],
         "precio": estructura.precio_redondo(v["close"]),
         "media200": estructura.precio_redondo(m),

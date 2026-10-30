@@ -81,16 +81,17 @@ function Pestanas({ activa, cuentas, onElegir }) {
 }
 
 /** «El resumen de la semana te llega el sábado 31/10 a las 10:00, por mail».
- *  `hasta`: el día de hoy que manda el servidor. */
-export function textoDelResumen(canal, hasta) {
+ *  `proximo`: el sábado en que sale el próximo, que lo dice el servidor
+ *  (`proximo_resumen`, con la regla del envío). Antes se calculaba acá con la
+ *  fecha sola, y el sábado a la tarde anunciaba en futuro el resumen que ya
+ *  había salido (auditoría A 29/10, A9). Sin el dato (un servidor de antes,
+ *  mientras se despliega), no se inventa una fecha. */
+export function textoDelResumen(canal, proximo) {
   if (!canal || canal === 'no') return 'No te llega el resumen de los sábados.'
   const como = { mail: 'por mail', push: 'por notificación', ambos: 'por mail y notificación' }[canal]
-  const [y, m, d] = String(hasta).split('-').map(Number)
-  const hoy = new Date(Date.UTC(y, m - 1, d))
-  const faltan = (6 - hoy.getUTCDay() + 7) % 7
-  const sab = new Date(hoy.getTime() + faltan * 86400000)
-  const dia = `${String(sab.getUTCDate()).padStart(2, '0')}/${String(sab.getUTCMonth() + 1).padStart(2, '0')}`
-  return `El resumen de la semana te llega el sábado ${dia} a las 10:00, ${como}.`
+  const [, m, d] = String(proximo || '').split('-')
+  if (!m || !d) return `El resumen de la semana te llega los sábados a las 10:00, ${como}.`
+  return `El resumen de la semana te llega el sábado ${d}/${m} a las 10:00, ${como}.`
 }
 
 function Tarjeta({ titulo, texto, ir, accion, pronto = false }) {
@@ -152,7 +153,7 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
                 <div><div className="text-[24px] font-semibold tabular text-ink-0">{t.watch.valor}</div><div className="text-[13px] text-ink-1">en tu watchlist</div></div>
               </div>
               <p className="text-[13px] text-ink-1 leading-snug border-t border-line pt-3">
-                {textoDelResumen(datos.canal, datos.hasta)}{' '}
+                {textoDelResumen(datos.canal, datos.proximo_resumen)}{' '}
                 <button type="button" onClick={() => onPestana('senales')} className="text-data-violet font-medium hover:underline">
                   {datos.canal && datos.canal !== 'no' ? 'Cambiar' : 'Elegir cómo te llega'}
                 </button>
@@ -164,7 +165,7 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
 
       <section aria-label="Lo que cambió esta semana" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-1">
         <div className="flex items-baseline justify-between gap-3 pt-3 pb-1">
-          <h2 className="text-[15px] font-semibold text-ink-0">Lo que cambió esta semana en lo tuyo</h2>
+          <h2 className="text-[15px] font-semibold text-ink-0">Lo que cambió esta semana en lo tuyo y en tu watchlist</h2>
           {ultimos.length > 0 && <span className="text-[12px] text-ink-2">{ultimos.length === 1 ? 'el único' : `los ${ultimos.length} más nuevos`}</span>}
         </div>
         {!datos ? (

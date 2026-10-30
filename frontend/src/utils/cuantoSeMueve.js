@@ -182,7 +182,10 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
   const dm = m.desde_el_maximo
   if (dm && dm.pct != null) {
     const enMaximo = dm.pct >= -0.1
-    const deCuando = dm.anio_completo ? 'el máximo del año' : 'el máximo del período'
+    // Es el CIERRE más alto (la lectura técnica): Fibonacci, en el gráfico, dice
+    // «lo más alto que llegó» con el pico de adentro del día, que puede ser otro
+    // número. Cada uno dice cuál es (auditoría A 29/10, A5/D10).
+    const deCuando = dm.anio_completo ? 'el cierre más alto del año' : 'el cierre más alto del período'
     out.push({
       id: 'desde_maximo', titulo: 'Caída desde el máximo', tono: enMaximo ? 'neutro' : 'neg',
       veredicto: enMaximo ? 'En su máximo' : pctConSigno(dm.pct),
@@ -203,7 +206,10 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
       const cada = Math.round(d.dias / d.dias_malos)
       partes.push(`Bajó ${num1(d.desvio_pct)}% o más en 1 de cada ${cada} días de mercado.`)
     }
-    out.push({ id: 'dia', titulo: 'Un día normal', tono: 'neutro', veredicto: `±${num1(d.desvio_pct)}%`, texto: partes.join(' ') })
+    // Del último año, como «su día normal del último año» de la tarjeta «Cuánto
+    // se mueve»: es el MISMO número (movimiento.dia_normal usa la cuenta de la
+    // lectura), aunque el resto de esta sección mire 2 años (A5, 29/10).
+    out.push({ id: 'dia', titulo: 'Un día normal del último año', tono: 'neutro', veredicto: `±${num1(d.desvio_pct)}%`, texto: partes.join(' ') })
 
     if (tenencia?.valor > 0) {
       const mueve = -tenencia.valor * d.desvio_pct / 100

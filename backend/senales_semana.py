@@ -133,25 +133,6 @@ def texto_del_cambio(c: dict) -> dict:
 
 # ─── Qué tiene y qué sigue cada persona ──────────────────────────────────────
 
-def _cedears():
-    import velas_diarias
-    return velas_diarias._cedears_de_byma()
-
-
-def _es_lote_local(p: dict, ars: set, ar_usd: set, cedears) -> bool:
-    """¿Acción ARGENTINA (no CEDEAR)? Espejo de `esLoteLocal` (utils/accionLocal.js):
-    no es efectivo, ni CEDEAR (por tipo o por la lista de BYMA), ni cripto, y se
-    valúa por su precio de BYMA (`position_price_key` termina en .BA — broker en
-    pesos, sub-broker «· USD» o costo en pesos)."""
-    from snapshots_job import position_price_key, _crypto_symbol_set
-    if p.get("is_cash"):
-        return False
-    a = (p.get("asset") or "").upper()
-    if (p.get("asset_type") or "").upper() == "CEDEAR" or a in cedears or a in _crypto_symbol_set():
-        return False
-    return str(position_price_key(p, ars, ar_usd)).upper().endswith(".BA")
-
-
 def _dolar(conn, uid: int):
     """(tc, tc_cedear): el dólar de valuación de la pantalla y el de los .BA,
     como `compute_live_portfolio_value` (Reportes, el ✦ del inicio)."""
@@ -161,24 +142,21 @@ def _dolar(conn, uid: int):
     return tc, _user_tc_cedear(conn, uid, tc)
 
 
-def cartera(conn, uid: int, cedears=None, dolar=None) -> dict:
+def cartera(conn, uid: int, dolar=None) -> dict:
     """{'tenencias': {(asset, local): valor_usd}, 'tipos': {(asset, local):
     asset_type}, 'sin_medir': valor_usd, 'efectivo': valor_usd, 'plazos_fijos':
     valor_usd, 'total': valor_usd}. Efectivo, bonos y plazos fijos suman al
     total (son plata tuya) pero no tienen tendencia: van a `sin_medir` (que es
     efectivo + plazos fijos) o, los bonos, a su propia tenencia sin lectura.
-    Valor de cada lote = el motor del servidor (`compute_broker_value_usd`) con
-    el último precio guardado."""
+    Las posiciones y su valor lote por lote salen del valuador de la cartera
+    entera (`snapshots_job.leer_cartera` + `valuar_lotes`, los mismos de
+    `compute_live_portfolio_value`) con el último precio guardado: no hay otra
+    regla de qué es «tu plata» (A0, 29/10: acá se filtraba por cantidad y el
+    efectivo, que no tiene, quedaba afuera)."""
     import main
-    from snapshots_job import (_broker_name_sets, build_price_symbols, compute_broker_value_usd,
-                               read_last_prices)
-    cedears = _cedears() if cedears is None else cedears
-    brokers = [dict(r) for r in conn.execute(
-        "SELECT id, name, currency, parent_broker_id FROM brokers WHERE user_id=?", (uid,)).fetchall()]
-    positions = [dict(r) for r in conn.execute(
-        "SELECT id, broker, asset, asset_type, is_cash, invested, quantity, commissions, "
-        "price_override, currency FROM positions WHERE user_id=? AND COALESCE(quantity, 0) > 0",
-        (uid,)).fetchall()]
+    import accion_local
+    from snapshots_job import _broker_name_sets, build_price_symbols, leer_cartera, read_last_prices, valuar_lotes
+    brokers, positions = leer_cartera(conn, uid)
     pfs = [dict(r) for r in conn.execute(
         "SELECT * FROM plazos_fijos WHERE user_id=? AND closed_at IS NULL", (uid,)).fetchall()]
     out = {"tenencias": {}, "tipos": {}, "sin_medir": 0.0, "efectivo": 0.0, "plazos_fijos": 0.0, "total": 0.0}
@@ -187,14 +165,7 @@ def cartera(conn, uid: int, cedears=None, dolar=None) -> dict:
     tc, tc_cedear = dolar or _dolar(conn, uid)
     precios = read_last_prices(conn, build_price_symbols(positions, brokers))
     ars, ar_usd = _broker_name_sets(brokers)
-    moneda = {b["name"]: b["currency"] for b in brokers}
-    for p in positions:
-        try:
-            v = compute_broker_value_usd([p], precios, moneda.get(p["broker"], "USD"), tc,
-                                         broker_name=p["broker"], cedear_rate=tc_cedear)["value"]
-        except Exception as ex:
-            log.warning("semana: no pude valuar %s de uid=%s: %s", p.get("asset"), uid, ex)
-            continue
+    for p, v in valuar_lotes(positions, brokers, precios, tc, tc_cedear):
         if not v or v <= 0:
             continue
         out["total"] += v
@@ -202,7 +173,7 @@ def cartera(conn, uid: int, cedears=None, dolar=None) -> dict:
             out["sin_medir"] += v
             out["efectivo"] += v
             continue
-        k = ((p["asset"] or "").upper(), _es_lote_local(p, ars, ar_usd, cedears))
+        k = ((p["asset"] or "").upper(), accion_local.es_lote_local(p, ars, ar_usd))
         out["tenencias"][k] = out["tenencias"].get(k, 0.0) + v
         out["tipos"].setdefault(k, (p.get("asset_type") or "").upper())
     for pf in pfs:
@@ -228,41 +199,42 @@ def peso(car: dict, asset: str, local=None):
     return v / car["total"] if v > 0 and car["total"] > 0 else None
 
 
-def _clave_de_la_watchlist(simbolo: str, cedears) -> tuple:
+def _clave_de_la_watchlist(simbolo: str, asset_type: str = None) -> tuple:
     """(asset, local) de un símbolo de la watchlist: LA regla, la usan
-    `watchlist` y `agregado_a_la_watchlist`. «GGAL.BA» es la acción argentina
-    (local); «AAPL.BA» es el CEDEAR, que se lee por AAPL."""
-    s = (simbolo or "").strip().upper()
-    base = s[:-3] if s.endswith(".BA") else s
-    return (base, s.endswith(".BA") and base not in cedears)
+    `watchlist` y `agregado_a_la_watchlist`. Es la regla de la pantalla
+    (`accion_local.seguido`, espejo de `lecturaDeSeguido`): «GGAL» (buscador del
+    inicio) y «GGAL.BA» (estrella de la ficha) son la acción argentina;
+    «AAPL.BA» es el CEDEAR, que se lee por AAPL. Antes se decidía por el sufijo
+    «.BA» y «GGAL» era el ADR (A1, 29/10)."""
+    import accion_local
+    return accion_local.seguido((simbolo or "").strip().upper(), asset_type)
 
 
-def watchlist(conn, uid: int, cedears=None) -> dict:
+def watchlist(conn, uid: int) -> dict:
     """{(asset, local): símbolo tal como está en la watchlist} (la clave:
     `_clave_de_la_watchlist`)."""
-    cedears = _cedears() if cedears is None else cedears
     out = {}
-    for r in conn.execute("SELECT symbol FROM watchlist WHERE user_id=?", (uid,)).fetchall():
+    for r in conn.execute("SELECT symbol, asset_type FROM watchlist WHERE user_id=?", (uid,)).fetchall():
         s = (r["symbol"] or "").strip().upper()
         if s:
-            out[_clave_de_la_watchlist(s, cedears)] = s
+            out[_clave_de_la_watchlist(s, r["asset_type"])] = s
     return out
 
 
-def agregado_a_la_watchlist(conn, uid: int, cedears=None) -> dict:
+def agregado_a_la_watchlist(conn, uid: int) -> dict:
     """{(asset, local): día ARGENTINO en que se agregó a la watchlist}, con la
     misma clave que `watchlist`. Sacar un activo borra su fila y volver a
     ponerlo crea otra con la fecha de ese día (`added_at`, en UTC)."""
     from fechas import dia_art
-    cedears = _cedears() if cedears is None else cedears
     out = {}
-    for r in conn.execute("SELECT symbol, added_at FROM watchlist WHERE user_id=?", (uid,)).fetchall():
+    for r in conn.execute("SELECT symbol, asset_type, added_at FROM watchlist WHERE user_id=?",
+                          (uid,)).fetchall():
         try:
             dia = dia_art(datetime.fromisoformat(str(r["added_at"])[:19]))
         except (TypeError, ValueError):
             continue          # sin fecha (una fila muy vieja): no se recorta
         if (r["symbol"] or "").strip():
-            out[_clave_de_la_watchlist(r["symbol"], cedears)] = dia.isoformat()
+            out[_clave_de_la_watchlist(r["symbol"], r["asset_type"])] = dia.isoformat()
     return out
 
 
@@ -300,15 +272,21 @@ def _lectura_vieja(lectura: dict, hoy: date) -> bool:
     return bool(f) and (hoy - date.fromisoformat(f)).days > DIAS_LECTURA_VIEJA
 
 
+def _se_lee(x: dict, hoy: date) -> bool:
+    """¿Esta serie tiene algo que leer HOY? Está y su última vela no es vieja.
+    Una serie cortada no tiene «esta semana» (los cambios ya cuentan desde hoy,
+    pero una lectura vieja tampoco describe el precio)."""
+    return bool(x) and bool(x.get("disponible")) and not _lectura_vieja(x.get("lectura"), hoy)
+
+
 def _alcista(x: dict, hoy: date):
     """'alcista' | 'bajista' | None (sin lectura): la tarjeta «Largo plazo» de
-    la ficha (precio ≥ promedio de 200 días), como `tendencia()` de la radiografía."""
-    if not x or not x.get("disponible"):
+    la ficha (precio ≥ promedio de 200 días, `tecnico.tendencia_de`)."""
+    if not _se_lee(x, hoy):
         return None
-    l = x.get("lectura") or {}
-    if _lectura_vieja(l, hoy) or l.get("media200") is None or l.get("dist_media200") is None:
-        return None
-    return "alcista" if l["dist_media200"] >= 0 else "bajista"
+    # LA regla (`tecnico.tendencia_de`), ya resuelta en la lectura: no se
+    # vuelve a escribir acá (P6, 29/10).
+    return (x.get("lectura") or {}).get("tendencia")
 
 
 # Por qué algo va «sin lectura» (las claves de MOTIVOS_SIN_LECTURA de
@@ -331,7 +309,7 @@ def _porque(x: dict, tipo: str, asset: str, hoy: date) -> str:
     return "pocos_dias"
 
 
-def reparto(conn, uid: int, hoy: date, *, series: dict = None, cedears=None, dolar=None, car=None) -> dict:
+def reparto(conn, uid: int, hoy: date, *, series: dict = None, dolar=None, car=None) -> dict:
     """LA cuenta del «% de tu plata en tendencia de fondo alcista» (28/10: una
     sola para la Cartera, el Panorama y la pestaña Señales de Análisis técnico y
     el mail de los sábados). Tu plata valuada por el servidor (`cartera`) y la
@@ -347,8 +325,7 @@ def reparto(conn, uid: int, hoy: date, *, series: dict = None, cedears=None, dol
     el total, sin lectura. `series`: el caché de lecturas de `armar_semana`."""
     import tecnico
     series = {} if series is None else series
-    cedears = _cedears() if cedears is None else cedears
-    car = car if car is not None else cartera(conn, uid, cedears, dolar)
+    car = car if car is not None else cartera(conn, uid, dolar)
     grupos = {"alcista": {}, "bajista": {}, "sin": {}}
     motivos = {}
     for k, valor in car["tenencias"].items():
@@ -389,14 +366,14 @@ def semana_pasada(conn, uid: int, hoy: date):
     return {"semana": row["semana"], "pct": row["pct_alcista"]} if row else None
 
 
-def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None, dolar=None,
+def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, dolar=None,
                  desde: str = None, desde_de: dict = None) -> dict:
     """Lo que ve la pestaña y lo que dice el mail del sábado.
 
     {
       'desde', 'hasta': el período (desde exclusive: las velas posteriores),
       'alcista': lo de `reparto` (pct, grupos, motivos, semana_pasada) | None,
-      'tenes': {'activos': con lectura, 'con_cambios'},
+      'tenes': {'activos': con algo que leer (`_se_lee`), 'con_cambios'},
       'watchlist': cuántos activos sigue,
       'senales': [{asset, ficha, local, tenes, watchlist, peso, tesis,
                    tipo, fecha, sentido, …números…, etiqueta, tono, texto, extra}],
@@ -410,16 +387,15 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
     la última vela que se miró de ese activo} (lo que guarda el sábado)."""
     import tecnico
     series = {} if series is None else series
-    cedears = _cedears() if cedears is None else cedears
     desde = desde or (hoy - timedelta(days=DIAS_SEMANA)).isoformat()
-    car = cartera(conn, uid, cedears, dolar)
-    wl = watchlist(conn, uid, cedears)
+    car = cartera(conn, uid, dolar)
+    wl = watchlist(conn, uid)
     tesis = _tesis(conn, uid)
     # Lo que seguís en la watchlist (y no tenés) cuenta desde el día en que lo
     # agregaste: si lo sacaste y lo volviste a poner, lo que cruzó mientras no
     # lo seguías no es «tu semana» (decisión de Nico, 29/10). Lo que TENÉS
     # cuenta siempre, aunque además esté en la watchlist.
-    agregado = agregado_a_la_watchlist(conn, uid, cedears)
+    agregado = agregado_a_la_watchlist(conn, uid)
     recorte = {k: (date.fromisoformat(agregado[k]) - timedelta(days=1)).isoformat()
                for k in wl if k in agregado and k not in car["tenencias"]}
 
@@ -440,12 +416,13 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
         if f:
             hasta_vela[_clave_marca(k)] = f
         tiene = k in car["tenencias"]
-        if tiene:
-            con_lectura += _alcista(x, hoy) is not None
-        # Una serie cortada no tiene «esta semana» (los cambios ya cuentan desde
-        # hoy, pero una lectura vieja tampoco describe el precio).
-        if not x.get("disponible") or _lectura_vieja(x.get("lectura"), hoy):
+        # «Con lectura» = tiene algo que leer esta semana, la MISMA regla que
+        # deja entrar sus cambios: así «en N de tus M» nunca da N > M. Antes se
+        # contaba con la del % (tener promedio de 200) y un papel con 120 días,
+        # que ya tiene promedio de 50 y RSI, cambiaba sin contar (A2, 29/10).
+        if not _se_lee(x, hoy):
             continue
+        con_lectura += tiene
         for c in x.get("cambios") or []:
             if tiene:
                 con_cambios.add(k)
@@ -462,7 +439,7 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
 
     # El % y su reparto: LA cuenta (`reparto`), la misma que la Cartera y el
     # Panorama. Sin nada con lectura, None (como siempre).
-    r = reparto(conn, uid, hoy, series=series, cedears=cedears, car=car)
+    r = reparto(conn, uid, hoy, series=series, car=car)
     alcista = r if r["pct"] is not None else None
     return {
         "desde": desde, "hasta": hoy.isoformat(),
@@ -489,6 +466,27 @@ def toca(now: datetime) -> bool:
     from fechas import en_art
     art = en_art(now)
     return art.weekday() == DIA_RESUMEN and art.hour >= HORA_RESUMEN
+
+
+def _ahora() -> datetime:
+    """El instante UTC (naive, como lo pega el cron). Aparte para las pruebas."""
+    return datetime.utcnow()
+
+
+def proximo_resumen(conn, uid: int, now: datetime = None) -> str:
+    """El sábado (ISO) en que sale el próximo resumen de esta persona, con LA
+    regla del envío: sale el sábado desde las 10:00 de Argentina (`toca`) y una
+    vez por semana (la fila de `tendencia_semanal` que deja `correr`). Hoy
+    sábado: hoy, salvo que la fila de hoy ya esté (ya salió, o ya pasó y no tocaba
+    mandarlo). Antes la pantalla lo calculaba con la fecha sola y el sábado a la
+    tarde anunciaba en futuro el resumen que ya había salido (A9, 29/10)."""
+    from fechas import dia_art
+    hoy = dia_art(now or _ahora())
+    sabado = hoy + timedelta(days=(DIA_RESUMEN - hoy.weekday()) % 7)
+    if sabado == hoy and conn.execute("SELECT 1 FROM tendencia_semanal WHERE user_id=? AND semana=?",
+                                      (uid, hoy.isoformat())).fetchone():
+        sabado += timedelta(days=7)
+    return sabado.isoformat()
 
 
 def _personas(conn) -> list:
@@ -676,7 +674,6 @@ def correr(conn, hoy: date, *, solo: int = None) -> dict:
     fila de `tendencia_semanal` se escribe ANTES de mandar (como las alertas: un
     deploy a mitad no duplica, a lo sumo se pierde uno)."""
     series: dict = {}
-    cedears = _cedears()
     semana_iso = hoy.isoformat()
     res = {"personas": 0, "guardadas": 0, "mandadas": 0, "sin_cambios": 0, "errores": 0}
     for uid in ([solo] if solo else _personas(conn)):
@@ -692,7 +689,7 @@ def correr(conn, hoy: date, *, solo: int = None) -> dict:
         try:
             with si_falla_se_deshace_solo_esto(conn, "semana_de_una_persona"):
                 desde, desde_de = desde_del_mail(conn, uid, hoy)
-                sem = armar_semana(conn, uid, hoy, series=series, cedears=cedears,
+                sem = armar_semana(conn, uid, hoy, series=series,
                                    desde=desde, desde_de=desde_de)
                 via = canal(conn, uid)
                 mandar = via != "no" and bool(sem["senales"])
@@ -725,7 +722,7 @@ def correr_si_toca(conn, now: datetime = None) -> dict:
     de Argentina corre; las pasadas siguientes no hacen nada (cada persona ya
     tiene su fila de esta semana)."""
     from fechas import dia_art
-    now = now or datetime.utcnow()
+    now = now or _ahora()
     if not toca(now):
         return {"esperando": "sábados desde las 10:00"}
     return correr(conn, dia_art(now))

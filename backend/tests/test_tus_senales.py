@@ -51,6 +51,25 @@ from tests.test_radiografia_tecnica import YahooFalso, _ruedas  # noqa: E402
 MEP = 1000.0
 
 
+class YahooConHuecos(YahooFalso):
+    """Como YahooFalso, pero `precios[t](i, d)` puede dar None: ese día el papel
+    no cotizaba (uno que salió a la bolsa hace poco)."""
+
+    def __call__(self, ticker, period, interval, auto_adjust, timeout):
+        import pandas as pd
+        f = self.precios.get(ticker)
+        base = _ruedas(self.hoy, 760)
+        filas = {} if f is None else {
+            pd.Timestamp(d): c for d in _ruedas(self.hoy, 760 if period == "3y" else 22)
+            for c in [f(base.index(d), d)] if c is not None}
+        if not filas:
+            return pd.DataFrame()
+        idx = sorted(filas)
+        c = [filas[k] for k in idx]
+        return pd.DataFrame({"Open": c, "High": [x * 1.01 for x in c], "Low": [x * 0.99 for x in c],
+                             "Close": c, "Volume": [1000.0] * len(c)}, index=pd.DatetimeIndex(idx))
+
+
 def _sabado_de(hoy):
     """El último sábado hasta `hoy` (inclusive): sus velas ya están en el pasado."""
     return hoy - timedelta(days=(hoy.weekday() - 5) % 7)
@@ -222,6 +241,30 @@ class TusSenalesTest(unittest.TestCase):
         self.assertEqual(r.status_code, 422)
         self._canal("no")
         self.assertEqual(self.client.get("/api/tus-senales", headers=self.h).json()["canal"], "no")
+
+    def test_cuando_llega_el_proximo_resumen_lo_dice_el_que_lo_manda(self):
+        # A9 (auditoría 29/10): el sábado a la tarde el Panorama decía «te llega
+        # el sábado 31/10 a las 10:00» de un resumen que ya había salido. La
+        # pantalla lo calculaba con la fecha sola; ahora lo dice el servidor con
+        # la regla del envío (`toca`) y la fila de la semana que deja el envío.
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("mail")
+
+        def proximo(now):
+            with mock.patch("senales_semana._ahora", lambda: now):
+                return self.client.get("/api/tus-senales", headers=self.h).json()["proximo_resumen"]
+
+        miercoles = sabado - timedelta(days=3)
+        self.assertEqual(proximo(_utc(miercoles, 15)), sabado.isoformat())
+        self.assertEqual(proximo(_utc(sabado, 9, 30)), sabado.isoformat(), "el sábado antes de las 10: hoy")
+        self.assertEqual(proximo(_utc(sabado, 10, 3)), sabado.isoformat(),
+                         "pasadas las 10 pero el cron todavía no pasó: sale hoy")
+        self._cron(_utc(sabado, 10, 5))
+        self.assertEqual(len(self.mails), 1)
+        siguiente = (sabado + timedelta(days=7)).isoformat()
+        self.assertEqual(proximo(_utc(sabado, 15)), siguiente, "el de hoy ya salió: el sábado que viene")
+        self.assertEqual(proximo(_utc(sabado, 23, 30)), siguiente, "23:30 en Argentina ya es domingo en UTC")
 
     def test_sin_sesion_no(self):
         self.assertIn(self.client.get("/api/tus-senales").status_code, (401, 403))
@@ -524,6 +567,146 @@ class TusSenalesTest(unittest.TestCase):
             self.assertAlmostEqual(r.json()["peso"], p, places=12, msg=a)
         self.assertIsNone(self.client.get("/api/tecnico/MSFT/peso", headers=self.h).json()["peso"],
                           "lo que sólo seguís no pesa nada en tu plata")
+
+    def test_el_efectivo_y_los_plazos_fijos_son_tu_plata(self):
+        # A0 (auditoría 29/10): el efectivo se guarda con el saldo en `invested` y
+        # sin cantidad, y `cartera()` pedía «cantidad > 0»: la caja nunca entraba y
+        # con US$ 1.500 en NVDA + US$ 1.500 en efectivo decía «100 % alcista» y
+        # «NVDA es el 100 % de tu cartera». El efectivo se carga por donde lo carga
+        # la pantalla (POST /api/cash/flow), en dólares y en pesos, y un plazo fijo
+        # por POST /api/plazos-fijos. Lo esperado sale del valuador que ya valúa la
+        # cartera entera (`compute_live_portfolio_value`, Reportes y el ✦ del
+        # inicio) más los plazos fijos (`_pf_value` al MEP), no de esta cuenta.
+        from snapshots_job import _LIVE_VALUE_CACHE, compute_live_portfolio_value, read_last_prices
+        self._velas(hoy_art_date())
+        self._post("/api/cash/flow", {"broker_name": "Schwab", "direction": "deposit", "amount": 1500})
+        self._post("/api/cash/flow", {"broker_name": "IOL", "direction": "deposit", "amount": 500_000})
+        self._post("/api/plazos-fijos", {"banco": "Galicia", "capital": 1_000_000, "moneda": "ARS", "tasa": 0.3,
+                                         "fecha_inicio": hoy_art_date().isoformat(), "plazo_dias": 30})
+        with main.db_abierta() as conn:
+            caja = conn.execute("SELECT COUNT(*) FROM positions WHERE user_id=? AND is_cash=1 AND invested > 0",
+                                (self.uid,)).fetchone()[0]
+            self.assertEqual(caja, 2, "las dos cajas quedaron guardadas")
+            _LIVE_VALUE_CACHE.clear()
+            precios = read_last_prices(conn, [r[0] for r in conn.execute("SELECT symbol FROM asset_last_price")])
+            posiciones = compute_live_portfolio_value(conn, self.uid, MEP, {}, precios=precios)
+            pfs = sum(main._pf_value(dict(r))["valor_hoy"] / MEP for r in conn.execute(
+                "SELECT * FROM plazos_fijos WHERE user_id=? AND closed_at IS NULL", (self.uid,)))
+        total = posiciones + pfs
+        # NVDA y KO: 10 × US$ 150 cada una (el último precio guardado).
+        self.assertAlmostEqual(self.client.get("/api/tecnico/NVDA/peso", headers=self.h).json()["peso"],
+                               1500 / total, places=9, msg="la ficha: el peso sobre TODA tu plata")
+        lista = self.client.post("/api/tecnico/lista", json={"activos": []}, headers=self.h).json()
+        pesos = {t["asset"]: t["peso"] for t in lista["tenencias"]}
+        self.assertAlmostEqual(pesos["KO"], 1500 / total, places=9, msg="Tu lista")
+        efectivo_y_pf = 1500 + 500 + pfs
+        self.assertAlmostEqual(sum(pesos.values()), 1 - efectivo_y_pf / total, places=9,
+                               msg="lo que falta para el 100 % es el efectivo y el plazo fijo")
+        cartera = self._cartera_pide()
+        semana = self.client.get("/api/tus-senales", headers=self.h).json()
+        for r in (cartera, semana["alcista"]):
+            self.assertEqual(r["grupos"]["sin"]["nombres"], ["efectivo", "plazos fijos"], "de más a menos plata (US$ 2.000 contra ~US$ 1.000)")
+            self.assertAlmostEqual(r["grupos"]["sin"]["fraccion"], efectivo_y_pf / total, places=9)
+        self.assertEqual(semana["alcista"]["grupos"], cartera["grupos"])
+        self.assertTrue(all(abs(x["peso"] - pesos[x["asset"]]) < 1e-12 for x in semana["senales"] if x["tenes"]),
+                        "Señales: el mismo peso")
+
+    def test_mitad_en_efectivo_es_la_mitad_alcista(self):
+        # El caso de la auditoría, en números redondos: NVDA (alcista) US$ 1.500 +
+        # US$ 1.500 en efectivo en el mismo broker = 50 %, y NVDA pesa la mitad.
+        hoy = hoy_art_date()
+        self.yahoo = YahooFalso(hoy)
+        p = mock.patch("pricing.yahoo._historia", self.yahoo)
+        p.start()
+        self._p.append(p)
+        self._post("/api/brokers", {"name": "Schwab", "currency": "USD"})
+        self._post("/api/positions", {"broker": "Schwab", "asset": "NVDA", "quantity": 10, "buy_price": 140,
+                                      "asset_type": "STOCK"})
+        self._post("/api/cash/flow", {"broker_name": "Schwab", "direction": "deposit", "amount": 1500})
+        with main.db_abierta() as conn:
+            conn.execute("INSERT INTO asset_last_price (symbol, price, updated_at) VALUES ('NVDA', 150.0, datetime('now'))")
+            conn.commit()
+        self.yahoo.precios["NVDA"] = lambda i, d: 100 + i * 0.07
+        main._run_velas_diarias_job()
+        r = self.client.post("/api/tecnico/cartera", json={"activos": [{"asset": "NVDA"}]}, headers=self.h).json()
+        self.assertEqual(r["reparto"]["pct"], 50)
+        self.assertEqual(r["reparto"]["grupos"]["sin"]["nombres"], ["efectivo"])
+        self.assertAlmostEqual(self.client.get("/api/tecnico/NVDA/peso", headers=self.h).json()["peso"], 0.5, places=9)
+
+    def test_una_accion_argentina_seguida_se_lee_en_byma_en_todas_las_pantallas(self):
+        # A1 + P4 (auditoría 29/10). «GGAL» lo guarda la estrella del buscador del
+        # inicio (sin «.BA») y «BMA.BA» la de la ficha. Nadie las tiene en BYMA:
+        # la noche tiene que bajar la serie de BYMA porque alguien la SIGUE. Los
+        # ADR de Nueva York se caen abajo de su promedio de 200 hace 2 ruedas; en
+        # BYMA ÷ MEP siguen subiendo. Señales (y el mail), Tu lista y la ficha a la
+        # que lleva «Ver gráfico» tienen que leer lo mismo: la acción de BYMA.
+        hoy = hoy_art_date()
+        self.yahoo = YahooFalso(hoy)
+        p = mock.patch("pricing.yahoo._historia", self.yahoo)
+        p.start()
+        self._p.append(p)
+        dias = _ruedas(hoy, 760)
+        n = len(dias)
+        self._post("/api/watchlist", {"symbol": "GGAL"})
+        self._post("/api/watchlist", {"symbol": "BMA.BA"})
+        with main.db_abierta() as conn:
+            for d in dias:
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
+                             (d.isoformat(), MEP * 1.1, MEP))
+            conn.commit()
+        for a in ("GGAL", "BMA"):
+            self.yahoo.precios[f"{a}.BA"] = lambda i, d: 5000 + i * 20
+            self.yahoo.precios[a] = lambda i, d: 30.0 if i >= n - 2 else 50 + i * 0.02
+        main._run_velas_diarias_job()
+
+        senales = self.client.get("/api/tus-senales", headers=self.h).json()["senales"]
+        # Lo que manda Tu lista: `activosDeLaLista` de la pantalla (accionLocal.test.js
+        # prueba que GGAL y BMA.BA salen local=true con la misma tabla que el servidor).
+        lista = self.client.post("/api/tecnico/lista", json={"activos": [{"asset": "GGAL", "local": True},
+                                                                         {"asset": "BMA", "local": True}]},
+                                 headers=self.h).json()["lecturas"]
+        for a, ficha_de in (("GGAL", "GGAL"), ("BMA", "BMA.BA")):
+            with self.subTest(a):
+                suyas = [s for s in senales if s["asset"] == a]
+                self.assertFalse([s for s in suyas if s["tipo"] == "media200"],
+                                 "Señales no puede avisar el cruce del ADR")
+                self.assertTrue(all(s["local"] and s["ficha"] == ficha_de for s in suyas))
+                fila = next(x for x in lista if x["asset"] == a)
+                self.assertTrue(fila["disponible"], "la noche bajó la serie de BYMA aunque nadie la tenga")
+                self.assertGreater(fila["lectura"]["dist_media200"], 0)
+                ficha = self.client.get(f"/api/tecnico/{a}?moneda=usd&local=1", headers=self.h).json()
+                self.assertEqual(ficha["ticker"], f"{a}.BA")
+                self.assertEqual(ficha["lectura"]["fecha"], fila["lectura"]["fecha"], "al día, la misma vela")
+                self.assertAlmostEqual(ficha["lectura"]["dist_media200"], fila["lectura"]["dist_media200"], places=9)
+        with main.db_abierta() as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM velas_diarias WHERE symbol='GGAL' LIMIT 1").fetchone(),
+                              "el ADR no lo sigue nadie: no se baja")
+
+    def test_los_activos_con_cambios_son_parte_de_los_que_tienen_lectura(self):
+        # A2 (auditoría 29/10): «6 cambios · en 2 de tus 1 activo con lectura».
+        # NVDA tiene 3 años de precios; NUEVA cotiza hace 120 ruedas (tiene
+        # promedio de 50 y RSI, no de 200) y cambió esta semana. Las dos tienen
+        # algo que leer: «con lectura» y «con cambios» se cuentan con la MISMA
+        # regla (la que decide si un cambio entra a la semana).
+        hoy = hoy_art_date()
+        self.yahoo = YahooConHuecos(hoy)
+        p = mock.patch("pricing.yahoo._historia", self.yahoo)
+        p.start()
+        self._p.append(p)
+        n = len(_ruedas(hoy, 760))
+        self.yahoo.precios["NVDA"] = lambda i, d: 150.0 if i >= n - 3 else 100 - i * 0.01
+        self.yahoo.precios["NUEVA"] = lambda i, d: (None if i < n - 120 else
+                                                     60.0 if i >= n - 2 else 50 - 0.01 * (i - (n - 120)))
+        self._post("/api/brokers", {"name": "Schwab", "currency": "USD"})
+        for a, compra in (("NVDA", 140), ("NUEVA", 55)):
+            self._post("/api/positions", {"broker": "Schwab", "asset": a, "quantity": 10, "buy_price": compra,
+                                          "asset_type": "STOCK"})
+        main._run_velas_diarias_job()
+        s = self.client.get("/api/tus-senales", headers=self.h).json()
+        cambiaron = {x["asset"] for x in s["senales"] if x["tenes"]}
+        self.assertEqual(cambiaron, {"NVDA", "NUEVA"}, "la prueba necesita que cambien las dos")
+        self.assertEqual(s["tenes"], {"activos": 2, "con_cambios": 2})
+        self.assertLessEqual(s["tenes"]["con_cambios"], s["tenes"]["activos"])
 
     def test_sin_nada_con_lectura_no_hay_porcentaje(self):
         # Sólo un bono: no hay tendencia que medir. Ni la Cartera ni la pestaña

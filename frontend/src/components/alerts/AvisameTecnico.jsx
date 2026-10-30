@@ -29,6 +29,7 @@ import { useToast } from '../Toast'
 import { api } from '../../utils/api'
 import { track } from '../../utils/track'
 import { conSentido, SENALES_TECNICAS } from './alertasTexto'
+import { tendenciaDe } from '../../utils/tecnico'
 
 /** La alerta técnica que se arma desde una señal (lo que se manda al formulario). */
 export function prefillTecnico({ asset, accionLocal = false, moneda = 'usd', senal, direction }) {
@@ -184,7 +185,11 @@ export function BotonAvisameLinea({ avisos, asset, accionLocal = false, moneda =
  */
 export function senalDeTarjeta(id, l) {
   const lado = (d) => (d == null ? 'either' : d >= 0 ? 'below' : 'above')
-  if (id === 'fondo') return { senal: 'media200', direction: lado(l?.dist_media200) }
+  // La de fondo, con la tendencia que manda el servidor (P6): una sola regla.
+  if (id === 'fondo') {
+    const t = tendenciaDe(l)
+    return { senal: 'media200', direction: !t ? 'either' : t === 'alcista' ? 'below' : 'above' }
+  }
   if (id === 'corto') return { senal: 'media50', direction: lado(l?.dist_media50) }
   if (id === 'rsi') {
     // Lo próximo que puede pasar: abajo de 30, que vuelva a pasarlo; arriba de

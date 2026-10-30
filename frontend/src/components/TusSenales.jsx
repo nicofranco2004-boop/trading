@@ -184,7 +184,7 @@ export function TusSenalesVista({ datos, error, hidden, filtro, onFiltro, onVer,
     <div className="flex flex-col lg:flex-row gap-4 lg:gap-5">
       <div className="flex-1 min-w-0 flex flex-col gap-3">
         <div>
-          <h2 className="text-[18px] sm:text-[20px] font-semibold text-ink-0">Qué cambió esta semana en lo tuyo</h2>
+          <h2 className="text-[18px] sm:text-[20px] font-semibold text-ink-0">Qué cambió esta semana en lo tuyo y en tu watchlist</h2>
           <p className="text-[13px] text-ink-2 mt-0.5">Los últimos 7 días, contados desde hoy. Medido en dólares.</p>
         </div>
 

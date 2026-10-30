@@ -9,7 +9,7 @@
 //
 // Los números salen en convención argentina: $ 7.350 · US$ 231,80 · 8,8 %.
 import { nfmt } from '../../utils/format'
-import { esAccionLocal } from '../../utils/accionLocal'
+import { esAccionLocal, esLocalSinTenencia } from '../../utils/accionLocal'
 
 // ── Alertas técnicas ─────────────────────────────────────────────────────────
 // Las señales que se pueden vigilar (backend/tecnico.py → SENALES), dichas con
@@ -69,15 +69,18 @@ function quienTecnico(a) {
 
 // Lo que se guarda de un activo elegido en el buscador para una alerta técnica:
 // el activo pelado (como lo pide la ficha) y si es una acción argentina (su
-// precio de BYMA ÷ MEP, no el ADR). Con la MISMA regla que la ficha
-// (`esAccionLocal`, por tus lotes de ese activo): así el aviso mira la misma
-// serie que muestra la ficha a la que lleva el botón del mail. Antes se
-// deducía del ticker y GGAL sin lotes miraba BYMA mientras la ficha mostraba
-// el ADR (auditoría 22/10).
+// precio de BYMA ÷ MEP, no el ADR). Con la MISMA regla que la ficha: por tus
+// lotes si lo tenés (`esAccionLocal`), y si no por la regla de lo que no tenés
+// (`esLocalSinTenencia`, la de `miradaSinTenencia`). Así el aviso mira la
+// misma serie que muestra la ficha a la que lleva el botón del mail. El 22/10
+// se pasó a «sólo tus lotes» porque la ficha sin lotes mostraba el ADR; después
+// la ficha pasó a mostrar BYMA y esto no se movió: GGAL sin tenerla miraba el
+// ADR y la ficha BYMA (re-test de la auditoría A, 29/10).
 export function activoTecnico(symbol, posiciones = []) {
-  const pelado = String(symbol || '').trim().toUpperCase().replace(/\.BA$/, '')
+  const s = String(symbol || '').trim().toUpperCase()
+  const pelado = s.replace(/\.BA$/, '')
   const lotes = (posiciones || []).filter(p => !p.is_cash && String(p.asset || '').toUpperCase() === pelado)
-  return { symbol: pelado, accion_local: esAccionLocal(pelado, lotes) }
+  return { symbol: pelado, accion_local: lotes.length ? esAccionLocal(pelado, lotes) : esLocalSinTenencia(s) }
 }
 
 export function monedaDe(symbol) {

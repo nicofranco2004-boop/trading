@@ -129,6 +129,29 @@ class CuentasTest(unittest.TestCase):
         self.assertIsNone(tecnico.cruce_rsi([40, 35, 29, 25]))
         # Un cruce de hace más de 10 ruedas ya no cuenta.
         self.assertIsNone(tecnico.cruce_rsi([25, 35] + [40] * 12))
+        # A4 (auditoría 29/10): pasó 30 para arriba y DESPUÉS volvió a bajar.
+        # Vale el último cruce, en cualquier sentido (la regla de `senal_desde`):
+        # no se avisa «dejó de caer tan rápido» con el RSI en 24.
+        self.assertIsNone(tecnico.cruce_rsi([40, 28, 25, 35, 39, 29, 24]))
+        # Lo mismo arriba: bajó de 70 y volvió a pasarlo.
+        self.assertIsNone(tecnico.cruce_rsi([60, 75, 68, 66, 72, 74]))
+
+    def test_una_sola_regla_de_alcista(self):
+        # P6 (auditoría 29/10): la regla estaba escrita tres veces. Ahora es
+        # `tendencia_de`; la lectura la manda resuelta y el diario de operaciones
+        # (`tendencia_del_dia`) dice lo mismo el mismo día, también en el borde.
+        self.assertEqual(tecnico.tendencia_de(100.0, 100.0), "alcista", "igual al promedio cuenta como arriba")
+        self.assertEqual(tecnico.tendencia_de(99.99999999999999, 100.0), "bajista")
+        self.assertIsNone(tecnico.tendencia_de(100.0, None))
+        cierres = [100 + (i % 7) - 3 + i * 0.01 for i in range(260)]
+        velas = [{"date": (date(2025, 1, 1) + timedelta(days=i)).isoformat(), "open": c, "high": c, "low": c,
+                  "close": c, "volume": 1} for i, c in enumerate(cierres)]
+        m200 = tecnico.media(cierres, 200)
+        velas[-1]["close"] = cierres[-1] = m200[-1]          # justo en el promedio
+        m200 = tecnico.media(cierres, 200)
+        l = tecnico.lectura(velas, m200=m200)
+        self.assertEqual(l["tendencia"], tecnico.tendencia_de(cierres[-1], m200[-1]))
+        self.assertEqual(l["tendencia"], tecnico.tendencia_del_dia(velas, m200, velas[-1]["date"])["tendencia"])
 
     def test_rsi_extremos(self):
         sube = [float(i) for i in range(1, 40)]
@@ -601,6 +624,38 @@ class FichaTest(unittest.TestCase):
         self.assertEqual(f["lectura"]["ruedas"], 100)
         self.assertIsNone(f["lectura"]["media200"], "con 100 ruedas no hay media de 200")
 
+    def test_rsi_que_salio_de_abajo_y_volvio_a_caer(self):
+        # A4 por el camino de la ficha (GET /api/tecnico/KO): el RSI baja de 30,
+        # sube a 39 dos días y vuelve a caer a ~24. La tarjeta dice «Cayó muy
+        # rápido»: el aviso de abajo no puede decir «dejó de caer tan rápido».
+        n = len(self.dias)
+        c = [100 + i * 0.05 + (1 if i % 2 else -0.8) for i in range(n - 19)]
+        x = c[-1]
+        for paso, veces in ((-3, 12), (6, 2), (-4, 5)):
+            for _ in range(veces):
+                x += paso
+                c.append(x)
+        self.yahoo.precios["KO"] = lambda i, d: c[i]
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "KO", "STOCK")
+        main._run_velas_diarias_job()
+        l = self._ficha("KO")["lectura"]
+        self.assertLess(l["rsi"], 30, "la prueba necesita el RSI abajo de 30 hoy")
+        self.assertIsNone(l["rsi_cruce"])
+
+    def test_accion_local_sin_su_serie_no_cambia_de_papel(self):
+        # Re-test A1d (29/10): otra persona tiene el ADR de GGAL (se guarda
+        # «GGAL»), y la serie de BYMA (GGAL.BA) todavía no está. Pedida como
+        # acción argentina (local), la ficha leía el ADR sin avisar: otro papel.
+        # Sin su serie, no hay lectura; nunca la de otro papel.
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "GGAL", "STOCK")
+        self.yahoo.precios["GGAL"] = lambda i, d: 30 + i * 0.01
+        main._run_velas_diarias_job()
+        self.assertFalse(self._ficha("GGAL", local=True)["disponible"])
+        self.assertFalse(self._ficha("GGAL", moneda="ars", local=True)["disponible"])
+        self.assertTrue(self._ficha("GGAL")["disponible"], "el ADR, pedido como ADR, sí")
+
     def test_bono_y_lo_que_no_tiene_velas(self):
         self._broker("IOL", "ARS")
         self._posicion("IOL", "AL30", "BONO")
@@ -905,11 +960,18 @@ class FichaTest(unittest.TestCase):
         self.assertEqual((f["ticker"], f["convertida"]), ("GGAL.BA", "mep"))
         self.assertAlmostEqual(f["puntos"][-1]["c"], 5.0, places=6)
         self.assertEqual(self._pedidos("GGAL"), [], "el ADR no se baja para la acción local")
-        # Un '.BA' sin saber si es CEDEAR (data912 caído en esta prueba) no se
-        # baja, salvo que sea una acción argentina conocida.
+        # Un '.BA' con data912 caído (en esta prueba): un CEDEAR de la lista fija
+        # de la app (XLE) se reconoce igual y se lee por su acción de afuera; su
+        # serie en pesos cruda no se baja (re-test A1c, 29/10: antes no se sabía
+        # que era un CEDEAR y no había lectura).
+        self.yahoo.precios["XLE"] = lambda i, d: 90.0
         g = self._ficha("XLE.BA")
-        self.assertEqual((g["disponible"], g["motivo"]), (False, "sin_serie"))
+        self.assertEqual((g["disponible"], g["ticker"]), (True, "XLE"))
         self.assertEqual(self._pedidos("XLE.BA"), [])
+        # Un '.BA' que no está en ninguna lista ni es del panel argentino: no se baja.
+        z = self._ficha("ZZZZ.BA")
+        self.assertEqual((z["disponible"], z["motivo"]), (False, "sin_serie"))
+        self.assertEqual(self._pedidos("ZZZZ.BA"), [])
         self.yahoo.precios["YPFD.BA"] = lambda i, d: 40000.0
         self.assertTrue(self._ficha("YPFD.BA")["disponible"])
 
@@ -1081,7 +1143,7 @@ class FichaTest(unittest.TestCase):
         # (sin sus cambios de ratio) quedaría guardada para todos.
         self.yahoo.precios["XLE.BA"] = lambda i, d: 30000.0
         f = self._ficha("XLE", local=True)
-        self.assertEqual((f["disponible"], f["motivo"]), (False, "sin_serie"))
+        self.assertFalse(f["disponible"])
         self.assertEqual(self._pedidos("XLE.BA"), [])
         # Una acción argentina conocida sí, aunque data912 no conteste.
         self._mep(lambda i: 1000.0)
