@@ -538,6 +538,26 @@ def _moneda(alert, symbol) -> str:
     return _ccy_for(symbol, _campo(alert, "currency"))
 
 
+def _fmt_linea(price, currency) -> str:
+    """El precio de tu línea o de tu canal, y los del día que la tocó: con los
+    decimales que hacen falta para que no se confundan. «cerró en $45, con el
+    borde en $45» (pesos sin decimales) o «US$ 0,00» (una cripto de centavos)
+    no dicen nada (auditoría 29/10)."""
+    from money_fmt import fmt_money
+    import math
+    if price is None or not price:
+        return fmt_money(price, currency)
+    x = abs(float(price))
+    ars = str(currency or "").upper() == "ARS"
+    if x >= 1000:
+        decimales = 0 if ars else 2
+    elif x >= 1:
+        decimales = 2
+    else:
+        decimales = min(10, 2 - int(math.floor(math.log10(x))))   # 3 cifras: 0,00456
+    return fmt_money(price, currency, decimales)
+
+
 def _fmt(price, currency) -> str:
     """Precio en convención argentina. Mostraba los pesos bien ($7.350) y los
     dólares a la inglesa (US$2,145.30) en el MISMO mail; ahora los dos salen
@@ -681,7 +701,7 @@ def _deliver(conn, alert, items) -> tuple:
                 # el promedio que cruzó. El aviso que trae su mail armado (el
                 # recordatorio de una tesis) va a donde dice su botón.
                 "url": ((armado or {}).get("cta_path")
-                        or (f"/activo/{quote(_display_symbol(items[0]['symbol']), safe='')}"
+                        or (_camino_a_la_ficha(alert, items[0]["symbol"])
                             if tecnica and not client_label else "/alertas?tab=mis")),
                 "tag": (f"alert-{alert['id']}-{items[0]['symbol'] or ''}"
                         if len(items) == 1 else f"alert-{alert['id']}-grupo"),
@@ -815,8 +835,10 @@ def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading)
             titulo = it["message"]
             detail = _email_detail(alert, it["symbol"], it["price"], it["change_pct"],
                                    doble=bool(it.get("doble")))
+        linea = alert["kind"] == "tecnica" and alert["senal"] == "linea"
         contenido = {"titulo": titulo, "detail": detail, "filas": None,
-                     "cta_label": f"Ver {sym}", "cta_path": f"/activo/{quote(sym, safe='')}"}
+                     "cta_label": "Ver en el gráfico" if linea else f"Ver {sym}",
+                     "cta_path": _camino_a_la_ficha(alert, it["symbol"]) if linea else f"/activo/{quote(sym, safe='')}"}
     else:
         n = len(items)
         if mixto:
@@ -1468,8 +1490,15 @@ def _mensaje_tecnico(alert, symbol, ev) -> str:
     senal, arriba = alert["senal"], ev["sentido"] == "arriba"
     if senal == "linea":
         ccy = "ARS" if str(alert["currency"] or "").upper() == "ARS" else "USD"
+        if _es_canal(alert):
+            lado = "arriba" if arriba else "abajo"
+            if _modo_del_canal(alert) == "cierre":
+                return (f"{quien} cerró {lado} de tu canal: {_fmt_linea(ev['cierre'], ccy)}, "
+                        f"con el borde en {_fmt_linea(ev['referencia'], ccy)}")
+            return (f"{quien} {'subió' if arriba else 'bajó'} hasta el borde de {lado} de tu canal, "
+                    f"en {_fmt_linea(ev['referencia'], ccy)}")
         return (f"{quien} {'subió' if arriba else 'bajó'} hasta tu {_nombre_de_linea(alert)}, "
-                f"en {_fmt(ev['referencia'], ccy)}")
+                f"en {_fmt_linea(ev['referencia'], ccy)}")
     if senal == "media200":
         return (f"{quien} pasó para arriba su promedio de 200 días: la tendencia de fondo se volvió alcista"
                 if arriba else
@@ -1501,11 +1530,23 @@ def _detalle_tecnico(alert, symbol, ev) -> str:
     cierre = _fmt(ev["cierre"], ccy)
     senal, arriba = alert["senal"], ev["sentido"] == "arriba"
     if senal == "linea":
+        cierre = _fmt_linea(ev["cierre"], ccy)
+    if senal == "linea" and _es_canal(alert):
+        lado = "arriba" if arriba else "abajo"
+        borde = _fmt_linea(ev["referencia"], ccy)
+        if _modo_del_canal(alert) == "cierre":
+            return (f"{cuando} {sym} cerró en {cierre}, {lado} del borde de {lado} de tu canal, "
+                    f"que ese día estaba en {borde}. Es el canal que dibujaste en su gráfico.")
+        vuelta = ", o sea que volvió a quedar adentro" if ev.get("adentro") else ""
+        return (f"{cuando} {sym} tocó el borde de {lado} de tu canal, que ese día estaba en {borde}: "
+                f"fue de {_fmt_linea(ev['minimo'], ccy)} a {_fmt_linea(ev['maximo'], ccy)} y cerró en {cierre}"
+                f"{vuelta}. Es el canal que dibujaste en su gráfico.")
+    if senal == "linea":
         # El día con su mínimo y su máximo: «la tocó» puede ser en el medio de
         # la rueda y cerrar lejos.
         return (f"{cuando} {sym} tocó tu {_nombre_de_linea(alert)}, que ese día estaba en "
-                f"{_fmt(ev['referencia'], ccy)}: fue de {_fmt(ev['minimo'], ccy)} a "
-                f"{_fmt(ev['maximo'], ccy)} y cerró en {cierre}. Es la línea que dibujaste en su gráfico.")
+                f"{_fmt_linea(ev['referencia'], ccy)}: fue de {_fmt_linea(ev['minimo'], ccy)} a "
+                f"{_fmt_linea(ev['maximo'], ccy)} y cerró en {cierre}. Es la línea que dibujaste en su gráfico.")
     if senal in ("media200", "media50"):
         dias = 200 if senal == "media200" else 50
         prom = _fmt(ev["referencia"], ccy)
@@ -1533,9 +1574,9 @@ def _detalle_tecnico(alert, symbol, ev) -> str:
 
 
 def _nombre_de_linea(alert) -> str:
-    """«línea horizontal» o «línea de tendencia» (lo dice la referencia al dibujo)."""
+    """«línea horizontal», «línea de tendencia» o «canal» (lo dice la referencia al dibujo)."""
     ref = referencia_de_linea(_campo(alert, "dibujo")) or {}
-    return "línea de tendencia" if ref.get("tipo") == "tendencia" else "línea horizontal"
+    return {"tendencia": "línea de tendencia", "canal": "canal"}.get(ref.get("tipo"), "línea horizontal")
 
 
 def _fmt_rsi(r, nivel) -> str:
@@ -1635,8 +1676,18 @@ def _evaluar_una_tecnica(conn, a, series: dict, ultima_global, piso: str, now, p
     if not mirables or mirables[-1]["date"] <= visto:
         return "nada"
     ultima = mirables[-1]["date"]
-    ev = (tecnico.toque_de_linea(mirables, linea, visto) if linea is not None
-          else tecnico.senal_desde(mirables, a["senal"], visto, _sentido_pedido(a)))
+    if linea is not None:
+        # Tu línea o tu canal: la PRIMERA vez que pasó. Si esa vez llegó tarde
+        # (velas atrasadas), se sigue buscando después: una salida vieja no
+        # tapa otra nueva (auditoría 29/10).
+        buscar = ((lambda desde: tecnico.salida_de_canal(mirables, linea, desde, a["direction"] or "either", _modo_del_canal(a)))
+                  if linea.get("tipo") == "canal" else (lambda desde: tecnico.toque_de_linea(mirables, linea, desde)))
+        ev = buscar(visto)
+        while ev and ev["fecha"] < piso:
+            log.info("alert %s %s: %s del %s llegó tarde, se busca otra después", a["id"], sym, a["senal"], ev["fecha"])
+            ev = buscar(ev["fecha"])
+    else:
+        ev = tecnico.senal_desde(mirables, a["senal"], visto, _sentido_pedido(a))
     if ev and ev["fecha"] < piso:
         log.info("alert %s %s: %s del %s llegó tarde, no aviso", a["id"], sym, a["senal"], ev["fecha"])
         ev = None
@@ -1662,7 +1713,9 @@ def referencia_de_linea(texto):
 def linea_de_la_alerta(conn, alert):
     """La línea que dibujaste, TAL COMO ESTÁ AHORA en tu gráfico (tabla
     `dibujos_grafico`, la misma que lee la ficha): {'tipo', 'precio'} o
-    {'tipo', 'a', 'b'}. None si ya no está (la borraste)."""
+    {'tipo', 'a', 'b'} o {'tipo': 'canal', 'a', 'b', 'ancho'}. None si ya no
+    está (la borraste)."""
+    import tecnico
     ref = referencia_de_linea(_campo(alert, "dibujo"))
     if not ref:
         return None
@@ -1674,9 +1727,82 @@ def linea_de_la_alerta(conn, alert):
     except (TypeError, ValueError):
         dibujos = []
     for d in dibujos if isinstance(dibujos, list) else []:
-        if isinstance(d, dict) and d.get("id") == ref["id"] and d.get("tipo") in ("horizontal", "tendencia"):
+        if isinstance(d, dict) and d.get("id") == ref["id"] and d.get("tipo") in tecnico.TIPOS_CON_AVISO:
             return d
     return None
+
+
+def resumen_de_dibujo(velas: list, d: dict, n: int = 60):
+    """Lo que muestran «Mis alertas» y el formulario de una línea tuya: dónde
+    está hoy, el último cierre y un gráfico chiquito (los últimos `n` cierres y
+    la línea, o los dos bordes del canal, en esos mismos días). Con la MISMA
+    cuenta que el motor (tecnico.valor_de_linea / bordes_de_canal), para que lo
+    que se ve sea lo que se vigila. None sin velas."""
+    import tecnico
+    if not velas or not isinstance(d, dict) or d.get("tipo") not in tecnico.TIPOS_CON_AVISO:
+        return None
+    ultimo = len(velas) - 1
+    desde = max(0, len(velas) - n)
+
+    def valores(i):
+        if d["tipo"] == "canal":
+            b = tecnico.bordes_de_canal(velas, d, i)
+            return list(b) if b else [None, None]
+        return [tecnico.valor_de_linea(velas, d, i)]
+
+    filas = [valores(i) for i in range(desde, ultimo + 1)]
+    # Seis cifras significativas, como la ficha: con decimales fijos una cripto
+    # de centavos (PEPE a 0,0000098) quedaba en 0 o plana (auditoría 29/10).
+    redondo = lambda x: None if x is None else float(f"{float(x):.6g}")
+    return {"id": d.get("id"), "tipo": d["tipo"], "color": d.get("color"),
+            "fecha": velas[ultimo]["date"], "ultimo": redondo(velas[ultimo]["close"]),
+            "hoy": [redondo(x) for x in filas[-1]],
+            "serie": [redondo(v["close"]) for v in velas[desde:]],
+            "lineas": [[redondo(f[k]) for f in filas] for k in range(len(filas[-1]))]}
+
+
+def resumen_de_lineas_con_aviso(conn, uid: int) -> dict:
+    """Para «Mis alertas»: {id de la alerta: resumen} de cada aviso de una línea
+    tuya. La línea como está AHORA en tu gráfico; si ya no está: {'borrada': True}."""
+    import tecnico
+    filas = conn.execute(
+        "SELECT * FROM alerts WHERE user_id=? AND kind='tecnica' AND senal=?",
+        (uid, tecnico.SENAL_LINEA)).fetchall()
+    series, out = {}, {}
+    for a in filas:
+        linea = linea_de_la_alerta(conn, a)
+        if linea is None:
+            out[a["id"]] = {"borrada": True}
+            continue
+        clave = (a["symbol"], str(a["currency"] or "").upper(), bool(_campo(a, "accion_local")))
+        if clave not in series:
+            series[clave] = _serie_tecnica(conn, a)
+        r = resumen_de_dibujo(series[clave], linea)
+        if r:
+            out[a["id"]] = r
+    return out
+
+
+def _camino_a_la_ficha(alert, symbol) -> str:
+    """A dónde lleva el botón del mail y el push de una técnica: la ficha del
+    activo. La de tu línea, con esa línea ya elegida en el gráfico (la ficha lee
+    `linea` y `moneda`: LecturaTecnica)."""
+    ref = referencia_de_linea(_campo(alert, "dibujo")) if alert["senal"] == "linea" else None
+    if ref:
+        return (f"/activo/{quote(ref['asset'], safe='')}?linea={quote(ref['id'], safe='')}"
+                f"&moneda={quote(ref['moneda'], safe='')}")
+    return f"/activo/{quote(_display_symbol(symbol), safe='')}"
+
+
+def _modo_del_canal(alert) -> str:
+    """Cuándo cuenta salir del canal: 'toque' (lo tocó o lo pasó en el día) o
+    'cierre' (cerró afuera). Lo guarda la referencia al dibujo."""
+    ref = referencia_de_linea(_campo(alert, "dibujo")) or {}
+    return "cierre" if ref.get("modo") == "cierre" else "toque"
+
+
+def _es_canal(alert) -> bool:
+    return (referencia_de_linea(_campo(alert, "dibujo")) or {}).get("tipo") == "canal"
 
 
 def _senales() -> tuple:

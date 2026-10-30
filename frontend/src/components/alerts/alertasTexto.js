@@ -10,6 +10,7 @@
 // Los números salen en convención argentina: $ 7.350 · US$ 231,80 · 8,8 %.
 import { nfmt } from '../../utils/format'
 import { esAccionLocal } from '../../utils/accionLocal'
+import { miradaSinTenencia } from '../../utils/buscadorRapido'
 
 // ── Alertas técnicas ─────────────────────────────────────────────────────────
 // Las señales que se pueden vigilar (backend/tecnico.py → SENALES), dichas con
@@ -27,16 +28,51 @@ export const SENALES_TECNICAS = [
 export const conSentido = (senal) => !!SENALES_TECNICAS.find(s => s.id === senal)?.conSentido
 
 // Tu línea del gráfico (senal 'linea', Nico 28/10): no es una señal de la
-// lista, se pide desde la línea elegida. De qué tipo es lo dice el borrador
-// (`tipoLinea`) o, en una alerta guardada, su referencia al dibujo (`dibujo`,
-// el JSON que guarda main._crear_alerta_de_linea).
+// lista, se pide desde la línea elegida (o, en Alertas, eligiéndola de tus
+// dibujos). Una horizontal, una de tendencia o (29/10) un canal. De qué tipo es
+// lo dice el borrador (`tipoLinea`) o, en una alerta guardada, su referencia
+// al dibujo (`dibujo`, el JSON que guarda main._crear_alerta_de_linea).
+function referenciaDeLinea(a) {
+  try {
+    const r = JSON.parse(a?.dibujo || 'null')
+    return r && typeof r === 'object' ? r : null
+  } catch { return null }
+}
 export function tipoDeLinea(a) {
   if (a?.tipoLinea) return a.tipoLinea
-  try { return JSON.parse(a?.dibujo || 'null')?.tipo || null } catch { return null }
+  return referenciaDeLinea(a)?.tipo || null
 }
-const nombreDeLinea = (a) => (tipoDeLinea(a) === 'tendencia' ? 'tu línea de tendencia' : 'tu línea horizontal')
-/** «Toque tu línea horizontal», para el formulario. */
-export const textoDeLinea = (a) => `Toque ${nombreDeLinea(a)}`
+/** El id de tu dibujo: el del borrador (`dibujo` ya es el id) o el de la referencia guardada. */
+export function idDeLinea(a) {
+  return referenciaDeLinea(a)?.id || (typeof a?.dibujo === 'string' && !a.dibujo.startsWith('{') ? a.dibujo : null)
+}
+/** El activo como lo guarda la ficha (la clave de tus dibujos), de una alerta guardada. */
+export function assetDeLinea(a) {
+  return referenciaDeLinea(a)?.asset || null
+}
+/** Un canal: cuándo cuenta salir. 'toque' (lo toca o lo pasa en el día) o 'cierre' (cierra afuera). */
+export function modoDeCanal(a) {
+  return (a?.modo || referenciaDeLinea(a)?.modo) === 'cierre' ? 'cierre' : 'toque'
+}
+const NOMBRE_LINEA = { tendencia: 'tu línea de tendencia', canal: 'tu canal' }
+const nombreDeLinea = (a) => NOMBRE_LINEA[tipoDeLinea(a)] || 'tu línea horizontal'
+const esCanal = (a) => tipoDeLinea(a) === 'canal'
+/** Por qué borde sale el canal, dicho corto: «por cualquier borde», «por arriba». */
+export const POR_BORDE = { either: 'por cualquier borde', above: 'por arriba', below: 'por abajo' }
+/** «Toque tu línea horizontal» o «Salga de tu canal», para el formulario. */
+export const textoDeLinea = (a) => (esCanal(a) ? 'Salga de tu canal' : `Toque ${nombreDeLinea(a)}`)
+
+/** ¿Ya hay un aviso activo de esta línea tuya (`dibujo`: su id)? La referencia
+ *  la guarda main._crear_alerta_de_linea: { asset, moneda, id, tipo }. */
+export function alertaDeLinea(items = [], { asset, moneda = 'usd', dibujo }) {
+  const sym = String(asset || '').toUpperCase()
+  const mon = moneda === 'ars' ? 'ars' : 'usd'
+  return items.find(a => {
+    if (a.kind !== 'tecnica' || a.senal !== 'linea' || !a.active) return false
+    const r = referenciaDeLinea(a)
+    return r?.id === dibujo && r?.asset === sym && r?.moneda === mon
+  }) || null
+}
 
 // Qué pasa, en presente («pasa para arriba su promedio de 200 días») o en
 // subjuntivo para la confirmación («cuando pase para arriba…»).
@@ -74,10 +110,15 @@ function quienTecnico(a) {
 // serie que muestra la ficha a la que lleva el botón del mail. Antes se
 // deducía del ticker y GGAL sin lotes miraba BYMA mientras la ficha mostraba
 // el ADR (auditoría 22/10).
+//
+// Sin lotes, la ficha decide por el ticker (`miradaSinTenencia`: GGAL que no
+// tenés se mira en BYMA, no por su ADR) y acá también: antes acá caía siempre
+// al ADR, y el aviso de un canal dibujado en la ficha de GGAL (unos US$ 5)
+// miraba el precio de Nueva York (unos US$ 50) (auditoría 29/10).
 export function activoTecnico(symbol, posiciones = []) {
   const pelado = String(symbol || '').trim().toUpperCase().replace(/\.BA$/, '')
   const lotes = (posiciones || []).filter(p => !p.is_cash && String(p.asset || '').toUpperCase() === pelado)
-  return { symbol: pelado, accion_local: esAccionLocal(pelado, lotes) }
+  return { symbol: pelado, accion_local: lotes.length ? esAccionLocal(pelado, lotes) : miradaSinTenencia(pelado).accionLocal }
 }
 
 export function monedaDe(symbol) {
@@ -144,6 +185,10 @@ export function frase(a) {
   if (!a) return { quien: '', que: '' }
   if (a.kind === 'tecnica') {
     const quien = quienTecnico(a)
+    if (a.senal === 'linea' && esCanal(a)) {
+      const borde = POR_BORDE[a.direction] || POR_BORDE.either
+      return { quien, que: `${modoDeCanal(a) === 'cierre' ? 'cierra afuera de tu canal' : 'sale de tu canal'}, ${borde}` }
+    }
     if (a.senal === 'linea') return { quien, que: `toca ${nombreDeLinea(a)}` }
     return esRsi(a.senal)
       ? { quien, que: `la fuerza (RSI) ${queTecnico(a.senal, a.direction, false)}`, sep: ': ' }
@@ -172,6 +217,15 @@ export function confirmacion(a) {
   if (a.kind === 'tecnica') {
     if (!a.symbol || !a.senal) return null
     const quien = quienTecnico(a)
+    if (a.senal === 'linea' && esCanal(a)) {
+      const inclinado = 'Los bordes de un canal inclinado cambian de precio cada día: miramos dónde está cada uno ese día.'
+      if (modoDeCanal(a) === 'cierre') {
+        const lado = a.direction === 'above' ? ', por arriba' : a.direction === 'below' ? ', por abajo' : ''
+        return `Te avisamos cuando ${quien} cierre afuera de tu canal${lado}. ${inclinado} Lo miramos cada día con el precio de cierre: te llega a la mañana siguiente.`
+      }
+      const bordes = a.direction === 'above' ? 'el borde de arriba' : a.direction === 'below' ? 'el borde de abajo' : 'cualquiera de los dos bordes'
+      return `Te avisamos cuando ${quien} toque o pase ${bordes} de tu canal. ${inclinado} Lo miramos con el precio más alto y el más bajo del día: si lo tocó, te llega a la mañana siguiente.`
+    }
     if (a.senal === 'linea') return `Te avisamos cuando ${quien} toque ${nombreDeLinea(a)}. Lo miramos cada día con el precio más alto y el más bajo del día.`
     const que = esRsi(a.senal)
       ? `la fuerza (RSI) de ${quien} ${queTecnico(a.senal, a.direction, true)}`
@@ -222,7 +276,12 @@ export function fechaCorta(iso) {
 // La línea gris de abajo de cada fila. `precio` es el de ahora (puede no
 // llegar); `eventos` son los avisos recientes de la cuenta; `hoy` es la fecha
 // AAAA-MM-DD de Argentina, para no confundir un aviso de ayer con uno de hoy.
-export function estado(a, precio, eventos = [], hoy = '') {
+// `linea`: el de una línea tuya, lo que dice GET /api/alerts/lineas (dónde está
+// hoy la línea y el último cierre), o undefined mientras no llegó.
+export function estado(a, precio, eventos = [], hoy = '', linea = undefined) {
+  if (a.kind === 'tecnica' && a.senal === 'linea' && linea?.borrada) {
+    return { texto: 'Se apagó: borraste la línea del gráfico', tono: 'apagada', borrada: true }
+  }
   if (!a.active) {
     // Una alerta de «una sola vez» que ya avisó: el motor la apaga sola.
     if (a.repeat === 'once' && a.last_fired_at) return { texto: `Cumplida el ${fechaCorta(a.last_fired_at)}`, tono: 'apagada' }
@@ -232,6 +291,14 @@ export function estado(a, precio, eventos = [], hoy = '') {
   const avisoHoy = ultimo && hoy && diaArgentina(ultimo.fired_at) === hoy
   if (a.kind === 'tecnica') {
     if (avisoHoy) return { texto: `Hoy avisó: ${ultimo.message}`, tono: 'aviso' }
+    if (a.senal === 'linea') {
+      const donde = dondeEstaLaLinea(a, linea)
+      if (donde) return { texto: donde, tono: 'normal' }
+      // Tus líneas se miran con el más alto y el más bajo del día (salvo un
+      // canal que pide «cierra afuera»): decir «con el cierre» era otra regla.
+      const como = esCanal(a) && modoDeCanal(a) === 'cierre' ? 'el precio de cierre' : 'el precio más alto y el más bajo'
+      return { texto: ultimo ? `Último aviso el ${fechaCorta(ultimo.fired_at)} · se mira cada día con ${como}` : `Se mira cada día con ${como}`, tono: 'normal' }
+    }
     return { texto: ultimo ? `Último aviso el ${fechaCorta(ultimo.fired_at)} · se mira cada día con el cierre` : 'Se mira cada día con el precio de cierre', tono: 'normal' }
   }
   if (a.kind === 'price_target') {
@@ -251,6 +318,34 @@ export function estado(a, precio, eventos = [], hoy = '') {
     return { texto: `Va ${va < 0 ? '−' : '+'}${fmtPct(va)} % desde que la armaste`, tono: 'normal' }
   }
   return { texto: a.scope === 'holdings' ? 'Mira tus activos cada día' : 'Mira el movimiento de cada día', tono: 'normal' }
+}
+
+// «Está en US$ 187,60 · adentro, a 3,3 % del borde de arriba» / «· le falta
+// 4,2 %»: dónde está el precio contra tu línea hoy (con el último cierre
+// guardado, el mismo que mira el aviso). null si todavía no hay con qué decirlo.
+export function dondeEstaLaLinea(a, linea) {
+  const ult = Number(linea?.ultimo)
+  const hoy = linea?.hoy
+  if (!(ult > 0) || !Array.isArray(hoy) || hoy.some(x => x == null)) return null
+  const ccy = String(a.currency || '').toUpperCase() === 'ARS' ? 'ARS' : 'USD'
+  const esta = `Está en ${fmtPrecio(ult, ccy)}`
+  const dist = (nivel) => fmtPct(Math.abs((nivel / ult - 1) * 100))
+  if (linea.tipo === 'canal' && hoy.length === 2) {
+    const [abajo, arriba] = hoy
+    // Sólo dónde está: si ya salió, el aviso de la mañana lo puede estar por
+    // mandar (llega desde las 9); prometer «la próxima vez» mentía (auditoría 29/10).
+    if (ult > arriba) return `${esta} · afuera del canal, por arriba`
+    if (ult < abajo) return `${esta} · afuera del canal, por abajo`
+    // Un borde de abajo en cero o menos no existe: el precio no llega ahí.
+    const hayAbajo = abajo > 0
+    const lado = a.direction === 'above' || !hayAbajo ? 'arriba' : a.direction === 'below' ? 'abajo'
+      : arriba - ult <= ult - abajo ? 'arriba' : 'abajo'
+    return `${esta} · adentro, a ${dist(lado === 'arriba' ? arriba : abajo)} % del borde de ${lado}`
+  }
+  const nivel = hoy[0]
+  if (!(nivel > 0)) return null
+  if (Math.abs(nivel / ult - 1) < 0.0005) return `${esta} · justo en tu línea`
+  return `${esta} · le falta ${dist(nivel)} %`
 }
 
 export function canal(ch) {

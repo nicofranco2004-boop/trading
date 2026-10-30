@@ -37,12 +37,12 @@
 // TradingView), con su tarjeta «Fuerza de la tendencia».
 
 import { cloneElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Brush, ChevronDown, LineChart, Maximize2, Minimize2, Redo2, RotateCcw, Ruler, Trash2, Undo2 } from 'lucide-react'
+import { Bell, Brush, ChevronDown, LineChart, Maximize2, Minimize2, Redo2, RotateCcw, Ruler, Trash2, Undo2 } from 'lucide-react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica } from './BarraGrafico'
 import CapaFibonacci, { COLOR_FIB, ID_FIB_AUTO, TarjetaFibonacci, preciosDeLaCapa, trazosDelFibonacci, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
 import CapaElliott, { COLOR_ELLIOTT, ID_ELL_AUTO, TarjetaElliott, fechaDelConteo, preciosDelConteo, trazosDelConteo } from './CapaElliott'
-import CapaDibujos, { anchoDelCanal, trazosDeDibujos } from './CapaDibujos'
+import CapaDibujos, { anchoDelCanal, colorDe, preciosAlBorde, trazosDeDibujos } from './CapaDibujos'
 import { BotonAvisame, BotonAvisameLinea, alertaDeLinea, useAvisosTecnicos, senalDeTarjeta } from '../alerts/AvisameTecnico'
 import { api } from '../../utils/api'
 import { factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecio, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
@@ -180,6 +180,17 @@ function fechaCorta(iso) {
   return `${d}/${m}/${y.slice(2)}`
 }
 
+// La ficha abierta desde el aviso de una línea tuya («Ver en el gráfico» de
+// Mis alertas, el botón del mail o el push: /activo/AAPL?linea=…&moneda=…):
+// cuál y en qué moneda (alerts_engine._camino_a_la_ficha). null si no vino.
+function lineaDeLaDireccion() {
+  try {
+    const q = new URLSearchParams(window.location.search)
+    const id = q.get('linea')
+    return id ? { id, moneda: q.get('moneda') === 'ars' ? 'ars' : 'usd' } : null
+  } catch { return null }
+}
+
 export default function LecturaTecnica({
   asset, symbolMiniChart, lotes = [], operaciones = [], pnlPctUsd = null,
   pnlPctLinea = undefined, lineaSinTc = false, referencia = null,
@@ -187,7 +198,7 @@ export default function LecturaTecnica({
   // La ficha pone el título de la sección («Análisis técnico») y pasa null.
   titulo = 'Análisis técnico',
 }) {
-  const [moneda, setMoneda] = useState('usd')
+  const [moneda, setMoneda] = useState(() => (lineaDeLaDireccion()?.moneda === 'ars' ? 'ars' : 'usd'))
   // «Todo» (toda la historia que guarda Rendi), «Desde que lo tenés» o, en un
   // gráfico angosto, «Lo reciente» (diasRecientes). null = el de entrada: lo
   // reciente si el gráfico es angosto, si no «Todo». Los rangos cortos (3M,
@@ -262,6 +273,7 @@ export default function LecturaTecnica({
       Promise.all(e.avisos.ids.map(id => api.patch(`/alerts/${id}`, { active: e.avisos.prender }).catch(() => null)))
         .then(() => avisos.recargar())
     }
+    setNotaAviso(null)
     setElegido(null)
     setDibujarEstado({ tipo: null, puntos: [] })
   }
@@ -276,6 +288,8 @@ export default function LecturaTecnica({
     const lista = sinAnotar || colorNuevo === 'cian' ? listaPedida
       : listaPedida.map(d => (d.color || misDibujos.some(x => x.id === d.id) ? d : { ...d, color: colorNuevo }))
     if (!sinAnotar) anotar({ dibujos: misDibujos, ...(apaga ? { ver: { [apaga]: !!ver[apaga] } } : {}) })
+    // Otro cambio: el cartel del aviso (y su «Deshacer») era del anterior.
+    setNotaAviso(null)
     tocados.current.add(moneda)
     guardarDibujos(asset, moneda, lista)
     setDibujos(x => ({ ...x, [moneda]: lista }))
@@ -309,8 +323,13 @@ export default function LecturaTecnica({
     if (id === ID_FIB_AUTO) { anotar({ ver: { fib: !!ver.fib } }); setVer(x => ({ ...x, fib: false })) }
     else if (id === ID_ELL_AUTO) { anotar({ ver: { ell: !!ver.ell } }); setVer(x => ({ ...x, ell: false })) }
     else {
-      cambiarDibujos(misDibujos.filter(d => d.id !== id))
-      anotarAvisos(apagarAvisosDe([id]))
+      const d = misDibujos.find(x => x.id === id)
+      cambiarDibujos(misDibujos.filter(x => x.id !== id))
+      const apagados = apagarAvisosDe([id])
+      anotarAvisos(apagados)
+      if (apagados.length) {
+        setNotaAviso({ texto: `Borraste ${d?.tipo === 'canal' ? 'tu canal' : 'tu línea'} y se apagó su aviso. Queda en Mis alertas, apagado.`, deshacer: true, tono: 'borrado' })
+      }
     }
     setElegido(null)
   }
@@ -395,6 +414,20 @@ export default function LecturaTecnica({
   // Las alertas de la cuenta, para que cada «Avisame» sepa si ya hay una igual.
   // Arriba de los return de abajo: un hook después de un return rompe la ficha.
   const avisos = useAvisosTecnicos()
+  // Lo que le pasó al aviso de la línea que moviste o borraste (Nico, 29/10):
+  // { texto, deshacer, tono } o null. Lo limpia el próximo cambio.
+  const [notaAviso, setNotaAviso] = useState(null)
+  // Abierta desde el aviso de una línea: esa línea elegida, cuando tus dibujos
+  // de esa moneda están (la copia del navegador o, después, los de la cuenta).
+  const lineaPedida = useRef(lineaDeLaDireccion())
+  const anclaLinea = useRef(null)
+  useEffect(() => {
+    const p = lineaPedida.current
+    if (!p || p.moneda !== moneda || !misDibujos.some(d => d.id === p.id)) return
+    lineaPedida.current = null
+    setElegido(p.id)
+    anclaLinea.current?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+  }, [moneda, misDibujos])
 
   // Dólares al abrir; pesos recién la primera vez que se tocan (la mayoría no
   // los mira y es otra cuenta en el servidor). Otro activo = otro componente
@@ -558,6 +591,9 @@ export default function LecturaTecnica({
   // un lugar afuera del ancho; el gráfico lo dibuja contra el borde).
   const lugarDelDia = (i) => {
     if (i > total - 1) return puntos.length - 1 + (i - (total - 1)) / porVela
+    // Antes de la historia guardada (un punto anclado en un día que ya se
+    // borró): afuera a la izquierda, a su distancia (utils/dibujos diaDelPunto).
+    if (i < 0) return lugarDelDia(0) + i / porVela
     if (!semanales) return i - inicioVista
     const d = actual.puntos[i]?.d
     const k = d ? indiceDeFecha(puntos, d) : null
@@ -646,6 +682,11 @@ export default function LecturaTecnica({
     }
     cambiarDibujos(misDibujos.map(d => (d.id !== id ? d
       : dibujoCorrido(d, que, correr, (x) => precioRedondo(precioCorrido(x, dp)), dp))))
+    // Con aviso: el aviso la sigue (lee la línea guardada cada noche). Se dice.
+    if (alertaDeLinea(avisos.items, { asset, moneda, dibujo: id })) {
+      const canal = misDibujos.find(d => d.id === id)?.tipo === 'canal'
+      setNotaAviso({ texto: `Moviste ${canal ? 'tu canal' : 'tu línea'}. El aviso ${canal ? 'lo' : 'la'} sigue: desde la próxima rueda mira esta posición.`, deshacer: true })
+    }
   }
   // Los dibujos en lo que se ve: cada punto en su lugar (`k`) y su precio.
   const enVista = (q) => ({ k: lugarDelDia(diaDelPunto(actual.puntos, q)) + (q.f || 0), precio: q.precio })
@@ -721,6 +762,20 @@ export default function LecturaTecnica({
               )}
             </div>
           )}
+          <span ref={anclaLinea} aria-hidden="true" />
+          {notaAviso && (
+            <div role="status" aria-live="polite"
+              className={`mb-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border px-3 py-2 text-[12.5px] text-ink-1 leading-relaxed ${notaAviso.tono === 'borrado' ? 'border-rendi-warn/45 bg-rendi-warn/10' : 'border-data-cyan/40 bg-data-cyan/10'}`}>
+              <Bell size={14} aria-hidden="true" className={`flex-shrink-0 ${notaAviso.tono === 'borrado' ? 'text-rendi-warn' : 'text-data-cyan'}`} />
+              <span className="flex-1 min-w-[12rem]">{notaAviso.texto}</span>
+              {notaAviso.deshacer && (
+                <button type="button" onClick={deshacer}
+                  className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-data-violet/50 bg-data-violet/10 text-ink-0 font-medium">Deshacer</button>
+              )}
+              <button type="button" onClick={() => setNotaAviso(null)}
+                className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-line-2 text-ink-1 hover:text-ink-0">Listo</button>
+            </div>
+          )}
           {(dibujar.tipo || elegido || borrarTodos) && (
             <div role="status" aria-live="polite"
               className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-data-cyan/40 bg-data-cyan/10 px-3 py-2 text-[12.5px] text-ink-1 leading-relaxed">
@@ -731,7 +786,10 @@ export default function LecturaTecnica({
               </span>
               {borrarTodos ? (
                 <>
-                  <button type="button" onClick={() => { const off = apagarAvisosDe(misDibujos.map(d => d.id)); cambiarDibujos([]); anotarAvisos(off); setBorrarTodos(false); setElegido(null) }}
+                  <button type="button" onClick={() => {
+                    const off = apagarAvisosDe(misDibujos.map(d => d.id)); cambiarDibujos([]); anotarAvisos(off); setBorrarTodos(false); setElegido(null)
+                    if (off.length) setNotaAviso({ texto: off.length === 1 ? 'Se apagó el aviso de una de tus líneas. Queda en Mis alertas, apagado.' : `Se apagaron los avisos de ${off.length} de tus líneas. Quedan en Mis alertas, apagados.`, deshacer: true, tono: 'borrado' })
+                  }}
                     className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-rendi-neg/50 bg-rendi-neg/10 text-ink-0 font-medium">Sí, borrar</button>
                   <button type="button" onClick={() => setBorrarTodos(false)}
                     className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-line-2 text-ink-1 hover:text-ink-0">No</button>
@@ -748,7 +806,7 @@ export default function LecturaTecnica({
                       setColorNuevo(c); recordarColor(c)
                     }} />
                   )}
-                  {(queEsElegido === 'horizontal' || queEsElegido === 'tendencia') && (
+                  {(queEsElegido === 'horizontal' || queEsElegido === 'tendencia' || queEsElegido === 'canal') && (
                     <BotonAvisameLinea avisos={avisos} asset={asset} accionLocal={accionLocal} moneda={moneda}
                       dibujo={elegido} tipoLinea={queEsElegido} />
                   )}
@@ -799,7 +857,7 @@ export default function LecturaTecnica({
             onPincel={herramienta === 'pincel' ? trazarPincel : null}
             colorNuevo={colorNuevo === 'cian' ? null : colorNuevo}
             dibujos={dibujosEnVista} elegido={elegido} onElegir={setElegido} onMoverDibujo={moverDibujo}
-            conAviso={misDibujos.filter(d => d.tipo === 'tendencia' && alertaDeLinea(avisos.items, { asset, moneda, dibujo: d.id })).map(d => d.id)}
+            conAviso={misDibujos.filter(d => alertaDeLinea(avisos.items, { asset, moneda, dibujo: d.id })).map(d => d.id)}
             trazo={dibujar.puntos.length ? { tipo: dibujar.tipo, puntos: dibujar.puntos.map(q => ({ k: lugarDelDia(q.i), precio: q.precio })) } : null} />
           {rangoVisto === 'tuyo' && !ventana && primera && primera < actual.puntos[0].d && (
             <p className="text-[11.5px] text-ink-2 mt-1">Lo tenés desde el {fechaCorta(primera)}; el gráfico empieza el {fechaCorta(actual.puntos[0].d)}, que es lo que hay guardado.</p>
@@ -2215,11 +2273,25 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             </span>
           )}
           {trazos.filter(t => t.tipo === 'horizontal' && t.y1 >= 0 && t.y1 <= 100).map(t => (
-            <span key={t.id} className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular whitespace-nowrap"
+            <span key={t.id} data-aviso={conAviso.includes(t.id) ? '' : undefined}
+              className="absolute left-0 -translate-y-1/2 inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular whitespace-nowrap"
               style={{ top: `${t.y1}%`, background: t.color || COLOR.dibujo, color: v('bg-0') }}>
+              {conAviso.includes(t.id) && <Bell size={10} strokeWidth={2.5} aria-label="Con aviso" />}
               {fmtPrecio(t.precio, moneda).replace(/^US\$ /, '')}
             </span>
           ))}
+          {/* Tu línea de tendencia o tu canal con aviso (Nico, 29/10): en la
+              columna, con la campanita, dónde está hoy (en la última vela, la
+              que mira el aviso; no en el borde derecho, que es el futuro). */}
+          {vistos.filter(d => d.tipo !== 'horizontal' && conAviso.includes(d.id))
+            .flatMap(d => preciosAlBorde(d, puntos.length - 1).map((p, k) => ({ key: `${d.id}-${k}`, p, color: colorDe(d) })))
+            .filter(t => t.p > 0 && pctY(t.p) >= 0 && pctY(t.p) <= 100).map(t => (
+              <span key={t.key} data-aviso="" className="absolute left-0 -translate-y-1/2 inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular whitespace-nowrap"
+                style={{ top: `${pctY(t.p)}%`, background: t.color, color: v('bg-0') }}>
+                <Bell size={10} strokeWidth={2.5} aria-label="Con aviso" />
+                {fmtPrecio(t.p, moneda).replace(/^US\$ /, '')}
+              </span>
+            ))}
           {cursor?.precio != null && (
             <span aria-hidden="true" data-mira="" className="pointer-events-none absolute left-0 z-10 -translate-y-1/2 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular whitespace-nowrap"
               style={{ top: `${yDe(cursor.precio)}%`, background: v('ink-2'), color: v('bg-0') }}>

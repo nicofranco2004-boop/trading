@@ -2350,7 +2350,7 @@ def init_db():
                 last_fired_price REAL,
                 senal TEXT,                         -- tecnica: qué señal (tecnico.SENALES)
                 accion_local INTEGER NOT NULL DEFAULT 0, -- tecnica: acción argentina (como la ficha)
-                dibujo TEXT                         -- tecnica 'linea': qué línea dibujada ({asset, moneda, id, tipo})
+                dibujo TEXT                         -- tecnica 'linea': qué línea dibujada ({asset, moneda, id, tipo}; un canal, + modo)
             );
             CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id);
             CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active);
@@ -48200,6 +48200,16 @@ class AlertCreateIn(BaseModel):
     # tecnica 'linea': el id de tu línea en el gráfico y la moneda en que la
     # dibujaste (`symbol` es el activo como lo pide la ficha).
     dibujo: Optional[str] = Field(None, max_length=40)
+    # Un canal: cuándo cuenta salir ('toque': lo toca o lo pasa en el día;
+    # 'cierre': cierra afuera). Por qué borde va en `direction`.
+    modo: Optional[str] = Field(None, max_length=8)
+
+    @field_validator('modo')
+    @classmethod
+    def _v_modo(cls, v):
+        if v is not None and v not in ('toque', 'cierre'):
+            raise ValueError('modo inválido')
+        return v
 
     @field_validator('kind')
     @classmethod
@@ -48257,6 +48267,14 @@ class AlertUpdateIn(BaseModel):
     repeat: Optional[str] = Field(None, max_length=8)
     cooldown_min: Optional[int] = Field(None, ge=0, le=100000)
     note: Optional[str] = Field(None, max_length=200)
+    modo: Optional[str] = Field(None, max_length=8)      # el de un canal (AlertCreateIn)
+
+    @field_validator('modo')
+    @classmethod
+    def _v_modo(cls, v):
+        if v is not None and v not in ('toque', 'cierre'):
+            raise ValueError('modo inválido')
+        return v
 
     # Los mismos valores válidos que el alta (AlertCreateIn). Antes la edición
     # no validaba: un PATCH con channel='x' quedaba guardado y el motor no
@@ -48313,6 +48331,60 @@ def alerts_list(uid: int = Depends(get_effective_user)):
         }
     finally:
         conn.close()
+
+
+@app.get("/api/alerts/lineas")
+def alerts_lineas(uid: int = Depends(get_effective_user)):
+    """«Mis alertas»: dónde está hoy cada línea tuya con aviso y un gráfico
+    chiquito para reconocerla (alerts_engine.resumen_de_lineas_con_aviso). Va
+    aparte de GET /api/alerts, que lo pide cada ficha y no necesita velas."""
+    import alerts_engine as _ae
+    with db_abierta() as conn:
+        return {"lineas": {str(k): v for k, v in _ae.resumen_de_lineas_con_aviso(conn, uid).items()}}
+
+
+@app.get("/api/tecnico/{asset}/lineas")
+def get_tecnico_lineas(asset: str, request: Request, moneda: str = "usd", accion_local: bool = False,
+                       uid: int = Depends(get_effective_user)):
+    """Tus líneas de este activo que pueden tener aviso (horizontales, de
+    tendencia y canales), cada una con dónde está hoy y un gráfico chiquito:
+    las que ofrece «Alertas → Una línea que dibujaste»."""
+    import alerts_engine as _ae
+    import tecnico
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    moneda = "ars" if moneda == "ars" else "usd"
+    # La ficha guarda tus dibujos bajo el activo como se abrió: «GGAL» desde la
+    # cartera, «GGAL.BA» desde el buscador. Se miran los dos y cada línea dice
+    # bajo cuál está (es lo que pide el alta: main._crear_alerta_de_linea).
+    # Los de la cuenta que mira (`uid`): los mismos que lee el alta y el motor.
+    pelado = sym[:-3] if sym.endswith(".BA") else sym
+    con_aviso = []
+    with db_abierta() as conn:
+        for clave in dict.fromkeys((sym, pelado, f"{pelado}.BA")):
+            fila = conn.execute(
+                "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+                (uid, clave, moneda)).fetchone()
+            try:
+                crudos = json.loads(fila[0]) if fila else []
+            except (TypeError, ValueError):
+                crudos = []
+            for d in crudos if isinstance(crudos, list) else []:
+                try:
+                    d = _Dibujo.model_validate(d).model_dump(exclude_none=True)
+                except Exception:
+                    continue
+                if d.get("tipo") in tecnico.TIPOS_CON_AVISO:
+                    con_aviso.append((clave, d))
+        if not con_aviso:
+            return {"lineas": []}
+        velas = tecnico.serie(conn, pelado, moneda, accion_local)["velas"]
+    lineas = []
+    for clave, d in con_aviso:
+        r = _ae.resumen_de_dibujo(velas, d)
+        lineas.append({**(r or {"id": d["id"], "tipo": d["tipo"], "color": d.get("color")}), "asset": clave})
+    return {"lineas": lineas}
 
 
 def _moneda_del_aviso(symbol: str, currency) -> str:
@@ -48406,8 +48478,10 @@ def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn") -> dict:
 
 def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn") -> dict:
     """«Avisame si el precio toca esta línea» (Nico, 28/10): una alerta técnica
-    atada a una línea horizontal o de tendencia que dibujaste en la ficha. No
-    copia el precio: el motor lee la línea de lo dibujado cada vez
+    atada a una línea horizontal o de tendencia que dibujaste en la ficha, o
+    (29/10) «avisame si sale del canal»: por qué borde va en `direction` y
+    cuándo cuenta (`modo`: lo toca en el día o cierra afuera), en la referencia
+    al dibujo. No copia el precio: el motor lee la línea de lo dibujado cada vez
     (alerts_engine.linea_de_la_alerta), así que si la movés el aviso la sigue y
     si la borrás se apaga. Se mira con las velas del día (su mínimo y su
     máximo), como las demás técnicas: avisa a la mañana siguiente."""
@@ -48427,9 +48501,13 @@ def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn") -> dict:
     linea = next((d for d in dibujos if isinstance(d, dict) and d.get("id") == data.dibujo), None)
     if not linea:
         raise HTTPException(404, "No encontramos esa línea: puede que todavía no se haya guardado. Probá de nuevo en un momento.")
-    if linea.get("tipo") not in ("horizontal", "tendencia"):
-        raise HTTPException(400, "Por ahora el aviso es para líneas horizontales y de tendencia.")
-    ref = json.dumps({"asset": asset, "moneda": moneda, "id": data.dibujo, "tipo": linea["tipo"]},
+    if linea.get("tipo") not in tecnico.TIPOS_CON_AVISO:
+        raise HTTPException(400, "El aviso es para líneas horizontales, de tendencia y canales.")
+    canal = linea["tipo"] == "canal"
+    # Una línea avisa la toque de donde venga; un canal, por el borde que elegiste.
+    direction = data.direction if canal else "either"
+    ref = json.dumps({"asset": asset, "moneda": moneda, "id": data.dibujo, "tipo": linea["tipo"],
+                      **({"modo": data.modo or "toque"} if canal else {})},
                      separators=(",", ":"))
     symbol = _ae._norm_sym(asset[:-3] if asset.endswith(".BA") else asset)
     if not symbol or not _SYMBOL_RE.match(symbol):
@@ -48440,13 +48518,14 @@ def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn") -> dict:
             (uid, tecnico.SENAL_LINEA)).fetchall():
         otra = _ae.referencia_de_linea(r["dibujo"]) or {}
         if (otra.get("asset"), otra.get("moneda"), otra.get("id")) == (asset, moneda, data.dibujo):
-            raise HTTPException(409, "Ya te avisamos cuando el precio toque esta línea.")
+            raise HTTPException(409, "Ya te avisamos cuando el precio salga de este canal." if linea["tipo"] == "canal"
+                                else "Ya te avisamos cuando el precio toque esta línea.")
     cur = conn.execute(
         """INSERT INTO alerts
            (user_id, kind, symbol, scope, direction, currency, channel, repeat,
             cooldown_min, armed, active, note, senal, accion_local, dibujo)
-           VALUES (?,'tecnica',?,'ticker','either',?,?,?,?,1,1,?,?,?,?)""",
-        (uid, symbol, moneda.upper(), data.channel, data.repeat, data.cooldown_min,
+           VALUES (?,'tecnica',?,'ticker',?,?,?,?,?,1,1,?,?,?,?)""",
+        (uid, symbol, direction, moneda.upper(), data.channel, data.repeat, data.cooldown_min,
          data.note, tecnico.SENAL_LINEA, 1 if data.accion_local else 0, ref))
     aid = cur.lastrowid
     row = conn.execute("SELECT * FROM alerts WHERE id=?", (aid,)).fetchone()
@@ -48559,10 +48638,20 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
             raise HTTPException(404, "Alerta no encontrada.")
         sets, params = [], []
         tecnica = row["kind"] == "tecnica"
+        ref_canal = None
+        if tecnica and row["senal"] == "linea":
+            ref_canal = _ae.referencia_de_linea(row["dibujo"])
+            if (ref_canal or {}).get("tipo") != "canal":
+                ref_canal = None
+        if data.modo is not None and ref_canal is None:
+            raise HTTPException(400, "Sólo un canal tiene cuándo cuenta salir.")
         if tecnica and data.direction is not None:
             import tecnico
-            if row["senal"] not in tecnico.SENALES_CON_SENTIDO:
+            if row["senal"] not in tecnico.SENALES_CON_SENTIDO and ref_canal is None:
                 raise HTTPException(400, "Esta señal no tiene para qué lado.")
+        if data.modo is not None:
+            sets.append("dibujo=?")
+            params.append(json.dumps({**ref_canal, "modo": data.modo}, separators=(",", ":")))
         if tecnica and data.threshold is not None:
             raise HTTPException(400, "Una alerta técnica no tiene precio.")
         if data.up_pct is not None or data.down_pct is not None:
@@ -48581,6 +48670,17 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
             val = getattr(data, col)
             if val is not None:
                 sets.append(f"{col}=?"); params.append(val)
+        if data.active and not row["active"] and tecnica and row["senal"] == "linea":
+            # Una línea, un aviso (como el alta): reactivar uno pausado cuando
+            # ya armaste otro para la misma línea serían dos mails por el mismo
+            # toque (auditoría 29/10).
+            ref = _ae.referencia_de_linea(row["dibujo"]) or {}
+            for r in conn.execute(
+                    "SELECT id, dibujo FROM alerts WHERE user_id=? AND kind='tecnica' AND active=1 AND senal='linea' AND id<>?",
+                    (uid, alert_id)).fetchall():
+                otra = _ae.referencia_de_linea(r["dibujo"]) or {}
+                if (otra.get("asset"), otra.get("moneda"), otra.get("id")) == (ref.get("asset"), ref.get("moneda"), ref.get("id")):
+                    raise HTTPException(409, "Ya tenés otro aviso prendido para esta línea.")
         if data.active is not None:
             sets.append("active=?"); params.append(1 if data.active else 0)
             # Reactivar o editar → re-armar para que vuelva a poder disparar.
