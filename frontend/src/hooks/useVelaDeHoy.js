@@ -8,9 +8,10 @@
 // mismo. Con la rueda cerrada (`en_rueda` false) no se vuelve a pedir: la vela
 // de hoy ya no cambia hasta que la guarde la corrida de la noche.
 //
-// Devuelve { d, o, h, l, c, v, hoy: true, enCurso, actualizada } o null.
-// `enCurso`: la rueda sigue abierta y la vela se mueve; cerrada, es la de hoy
-// completa que todavía no se guardó. Un pedido que falla deja la última que
+// Devuelve { d, o, h, l, c, v, hoy: true, enCurso, actualizada, demora } o null.
+// `enCurso`: la rueda sigue abierta (contando la demora de sus precios) y la
+// vela se mueve; cerrada, es la de hoy completa que todavía no se guardó.
+// `demora`: minutos que tardan en llegar los precios de esa bolsa (BYMA, 20). Un pedido que falla deja la última que
 // llegó: no borra lo que se ve.
 
 import { useEffect, useRef, useState } from 'react'
@@ -33,7 +34,8 @@ export function useVelaDeHoy(asset, moneda, local, activo = true) {
         .then(r => {
           if (!vivo) return
           enRueda.current = !!r?.en_rueda
-          setVela(r?.vela ? { ...r.vela, hoy: true, enCurso: !!r.en_rueda, actualizada: r.actualizada || null } : null)
+          setVela(r?.vela ? { ...r.vela, hoy: true, enCurso: !!r.en_rueda, actualizada: r.actualizada || null,
+            demora: r.demora_min || 0 } : null)
         })
         .catch(() => {})
     }

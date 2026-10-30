@@ -134,13 +134,18 @@ export function sumarVelaDeHoy({ puntos = [], huecos = 0, vela = null, ultimaGua
 
 /**
  * Lo que dice el pie del gráfico de la vela de hoy (`vela`: la última que se
- * dibuja, con `hoy`). Con la rueda abierta, a qué hora llegó el último dato:
- * se vuelve a pedir cada minuto, y un "hace 0 s" quieto mentiría.
+ * dibuja, con `hoy`). Con la rueda abierta, a qué hora es el precio: se vuelve
+ * a pedir cada minuto, y un "hace 0 s" quieto mentiría. En una bolsa cuyos
+ * precios llegan con demora (`demora`, BYMA: 20 min) la hora del pedido NO es
+ * la del precio: se dice la demora en vez de una hora que no es.
  */
 export function textoVelaDeHoy(vela, semanales = false) {
   if (!vela?.hoy) return ''
   const cual = semanales ? 'La última vela incluye hoy' : 'La última vela es la de hoy'
   if (!vela.enCurso) return `${cual}: la rueda cerró y se guarda esta noche.`
+  if (vela.demora > 0) {
+    return `${cual}, en curso: se actualiza sola cada minuto, pero los precios de esta bolsa llegan con unos ${vela.demora} minutos de demora.`
+  }
   const t = vela.actualizada ? new Date(vela.actualizada) : null
   const hora = t && Number.isFinite(t.getTime())
     ? t.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'America/Argentina/Buenos_Aires' })

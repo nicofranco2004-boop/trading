@@ -108,17 +108,22 @@ class VelaDeHoyTest(unittest.TestCase):
         self.yahoo = YahooFalso(self.hoy)
         self.dolar = {"mep": {"compra": 990.0, "venta": 1010.0, "medio": 1000.0}}
         self.en_horario = True
+        self.horarios = []
         self._p = [mock.patch("main._check_rate_limit"),
                    mock.patch("pricing.yahoo._historia", self.yahoo),
                    mock.patch("cambios_ratio._splits_de_yahoo", lambda t: []),
                    mock.patch("cambios_ratio._historia_byma", lambda c: {}),
                    mock.patch("main._fetch_data912_equities", lambda: {}),
                    mock.patch("main._get_dolar_data", lambda: self.dolar),
-                   mock.patch("alerts_engine.rueda_en_horario", lambda m, now: self.en_horario)]
+                   mock.patch("alerts_engine.rueda_en_horario", self._horario)]
         for p in self._p:
             p.start()
         velas_diarias._en_curso.clear()
         velas_diarias._a_pedido_hechos.clear()
+
+    def _horario(self, mercado, now):
+        self.horarios.append((mercado, now))
+        return self.en_horario
 
     def tearDown(self):
         for p in self._p:
@@ -161,6 +166,7 @@ class VelaDeHoyTest(unittest.TestCase):
         self.assertEqual(r["vela"], {"d": session_today("AAPL"), "o": 301.0, "h": 306.0,
                                      "l": 299.0, "c": 304.5, "v": 5_000_000.0})
         self.assertTrue(r["en_rueda"])
+        self.assertEqual(r["demora_min"], 0)
         self.assertTrue(r["actualizada"])
         # La ficha no cambia: la vela de hoy no se guarda en la tabla.
         ficha = self.client.get("/api/tecnico/AAPL", headers=self.h).json()
@@ -203,6 +209,14 @@ class VelaDeHoyTest(unittest.TestCase):
         r = self._hoy("GGAL", "ars", local=True)
         self.assertEqual(r["vela"], {"d": session_today("GGAL.BA"), "o": 5000.0, "h": 5200.0,
                                      "l": 4900.0, "c": 4980.0, "v": 600.0})
+        # BYMA llega con ~20 min de demora: se dice, y «en rueda» se mide 20 min
+        # atrás (lo de 16:40 a 17 llega hasta las 17:20).
+        self.assertEqual(r["demora_min"], 20)
+        from datetime import datetime, timezone
+        mercado, cuando = self.horarios[-1]
+        self.assertEqual(mercado, "byma")
+        atras = (datetime.now(timezone.utc) - cuando).total_seconds() / 60
+        self.assertAlmostEqual(atras, 20, delta=1)
         # En dólares: el mismo papel de BYMA ÷ el MEP de HOY (el medio, como el resto).
         usd = self._hoy("GGAL", "usd", local=True)
         self.assertAlmostEqual(usd["vela"]["c"], 4.98, places=6)

@@ -539,6 +539,10 @@ describe('textoVelaDeHoy', () => {
     expect(textoVelaDeHoy({ hoy: true, enCurso: true, actualizada: '2026-10-30T17:32:05Z' }, true))
       .toMatch(/^La última vela incluye hoy, en curso/)
   })
+  it('en BYMA no dice una hora: dice la demora de sus precios', () => {
+    expect(textoVelaDeHoy({ hoy: true, enCurso: true, actualizada: '2026-10-30T15:07:28Z', demora: 20 }))
+      .toBe('La última vela es la de hoy, en curso: se actualiza sola cada minuto, pero los precios de esta bolsa llegan con unos 20 minutos de demora.')
+  })
   it('cerrada la rueda, dice que se guarda a la noche; sin vela de hoy, nada', () => {
     expect(textoVelaDeHoy({ hoy: true, enCurso: false })).toBe('La última vela es la de hoy: la rueda cerró y se guarda esta noche.')
     expect(textoVelaDeHoy({ d: '2026-10-29', c: 1 })).toBe('')

@@ -1026,6 +1026,13 @@ def ultima_vela(conn, ticker: str):
 # precios (`_PRICE_CACHE` en main.py, `_QUOTE_CACHE` en home/market.py): pedir
 # más seguido no trae nada más nuevo.
 VELA_EN_CURSO_TTL_S = 60
+# Cuántos minutos tarda en llegar por Yahoo el precio de cada rueda. BYMA: el
+# 30/10 el primer dato de la rueda (11:00 a 11:05) apareció a las 11:20, y
+# TradingView gratis la da igual (`delayed_streaming_1200`). Sirve para dos
+# cosas: la pantalla lo dice (la hora del pedido no es la del precio) y la vela
+# se sigue pidiendo ese rato después del cierre, hasta que llega lo último. La
+# misma cuenta que las velas de 1 y 4 horas (velas_horarias): una sola.
+DEMORA_MIN = {"byma": 20}
 _en_curso: dict = {}          # ticker → (time.time() del pedido, vela | None)
 _en_curso_lock = threading.Lock()
 

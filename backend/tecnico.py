@@ -668,7 +668,8 @@ def ticker_de_la_empresa(conn, asset: str, local: bool = False):
 def vela_de_hoy(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     """La vela de HOY, mientras se mueve, de la MISMA serie que dibuja la ficha
     (`serie`: el mismo ticker y la misma conversión). {vela: {d,o,h,l,c,v} | None,
-    en_rueda, actualizada}.
+    en_rueda, demora_min, actualizada}. `demora_min`: cuánto tardan en llegar
+    los precios de esa rueda (`velas_diarias.DEMORA_MIN`).
 
     La vela no pasa por las medias, el RSI ni la lectura: la tendencia y los
     avisos siguen con el cierre de ayer, porque con el precio de las 11 podrían
@@ -706,10 +707,16 @@ def vela_de_hoy(conn, asset: str, moneda: str = "usd", local: bool = False) -> d
         precios = {k: (x / tc if s["por"] == "dividir" else x * tc) if x is not None else None
                    for k, x in precios.items()}
     p = estructura.precio_redondo
+    mercado = mercado_de(ticker)
+    demora = velas_diarias.DEMORA_MIN.get(mercado, 0)
     return {
         "vela": {"d": v["date"], "o": p(precios["open"]), "h": p(precios["high"]),
                  "l": p(precios["low"]), "c": p(precios["close"]), "v": v.get("volume")},
-        "en_rueda": rueda_en_horario(mercado_de(ticker), datetime.now(timezone.utc)),
+        # «En rueda» con la demora de sus precios: BYMA cierra a las 17 pero lo
+        # de 16:40 a 17 llega hasta las 17:20, y la pantalla deja de pedir
+        # cuando esto da False.
+        "en_rueda": rueda_en_horario(mercado, datetime.now(timezone.utc) - timedelta(minutes=demora)),
+        "demora_min": demora,
         "actualizada": v.get("actualizada"),
     }
 
