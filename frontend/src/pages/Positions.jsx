@@ -47,7 +47,7 @@ import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass, pctTxt, parseNum,
 import { leerVenta, cuerpoDeVenta, leerConversion, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { api, errorMessage } from '../utils/api'
 import { pfUsd } from '../hooks/usePfRollup'
-import { sumarBrokers, noRealizadoEnVista, computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, avgCostArsPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
+import { sumarBrokers, noRealizadoEnVista, computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, valuePositionLot, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, avgCostArsPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
 import { linkDeAlerta } from '../components/alerts/alertaDePosicion'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { EtiquetaMoneda, EtiquetaEfectivo, EtiquetaBono, EtiquetaFaltaTc } from '../components/EtiquetaFila'
@@ -1694,6 +1694,17 @@ function PositionsDesktop() {
     const local = !isARS && !isCrypto(p.asset) && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker) || costInPesos(p))
     const symKey = local ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, isARS)
     const curPrice = p.price_override ?? prices[symKey]
+    // Si la valuación NO confía en este precio (trustMktValue: un bono con el
+    // costo en otra escala que el precio), la fila lo muestra al costo y su
+    // movimiento del día no existe. Se le pregunta a la MISMA valuación que suma
+    // el total del broker (valuePositionLot), no a una copia. Antes la columna
+    // publicaba el movimiento del precio descartado (AL30: «vale» USD 89 al costo
+    // y «se movía» −USD 217; sesión del mapa de calor, 30/10). El celular ya lo
+    // cortaba así (`priceTrusted` en PositionsMobile).
+    if (curPrice != null && !p.price_override && !p.is_cash &&
+        valuePositionLot(p, { broker: _brokerDe(p.broker), prices, tcValuacion, tcCedear, tcCripto, costBasis }).priceTrusted === false) {
+      return null
+    }
     const dv = dayVarOf(p, symKey, curPrice)
     if (!dv) return dv
     if (local) return { amount: dv.amount / tcCedear, pct: dv.pct }
