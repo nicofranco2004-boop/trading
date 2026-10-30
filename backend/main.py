@@ -8,7 +8,7 @@ from fastapi.exception_handlers import http_exception_handler
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, field_validator, model_validator, Field
 from typing import Any, Literal, Optional, List
-import sqlite3, os, secrets, time, hashlib, hmac, json, threading, asyncio
+import sqlite3, os, secrets, time, hashlib, hmac, json, threading, asyncio, unicodedata
 from contextlib import contextmanager
 import dberrors
 from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
@@ -11939,6 +11939,41 @@ class _PuntoDibujo(BaseModel):
 _PUNTOS_ELLIOTT = {"impulso": 6, "correccion": 4, None: 9}
 # El pincel: los puntos de un trazo (frontend/src/utils/dibujos.PINCEL_MAXIMO).
 _PINCEL_MAXIMO = 200
+# Una nota de texto (Nico, 30/10: «compré acá por el balance»): corta, como un
+# tuit. Para la explicación larga está tu tesis (tesis.TEXTO_MAX, 1000). Se
+# cuentan letras (puntos de código), igual que la pantalla
+# (frontend/src/utils/dibujos.NOTA_MAXIMA): un emoji es una.
+_NOTA_MAXIMA = 280
+
+
+def _texto_de_nota(x):
+    """El texto de una nota, limpio: sin caracteres de control (salvo el salto
+    de renglón; el tab pasa a espacio), con los saltos de Windows como uno solo,
+    a lo sumo dos renglones vacíos seguidos y sin espacios en las puntas. None
+    sin texto, o si lo que queda no se ve (sólo espacios o marcas invisibles,
+    como el espacio de ancho cero): sería una banderita vacía. La MISMA regla
+    que frontend/src/utils/dibujos.limpiarNota: si no coinciden, una nota que la
+    pantalla acepta y el servidor no traba el guardado de TODOS los dibujos de
+    ese activo (la lista va entera)."""
+    if x is None:
+        return None
+    if not isinstance(x, str):
+        raise ValueError("el texto de una nota es texto")
+    t = x.replace("\r\n", "\n").replace("\r", "\n").replace("\t", " ")
+    # Tampoco medio emoji (una «mitad» suelta, de un texto cortado): al
+    # devolverlo, la respuesta no se podría escribir y la ficha perdería TODOS
+    # tus dibujos de ese activo.
+    # Afuera también los de control «C1» (U+0080 a U+009F: el U+0085 viene
+    # pegado de algunos textos de Windows o PDF, y strip() lo recortaba pero la
+    # pantalla no) y la marca BOM (U+FEFF: al revés).
+    t = "".join(c for c in t if c == "\n" or (ord(c) >= 32 and not 0x7F <= ord(c) <= 0x9F
+                                              and ord(c) != 0xFEFF and not 0xD800 <= ord(c) <= 0xDFFF))
+    while "\n\n\n" in t:
+        t = t.replace("\n\n\n", "\n\n")
+    t = t.strip()
+    if not any(not c.isspace() and unicodedata.category(c) != "Cf" for c in t):
+        return None
+    return t
 
 
 class _Dibujo(BaseModel):
@@ -11948,7 +11983,8 @@ class _Dibujo(BaseModel):
     # «extension»: la extensión de Fibonacci (tres puntos: a, b y c).
     # «canal»: el canal paralelo (a → b y la paralela `ancho` más arriba o más
     # abajo); «pincel»: un trazo a mano alzada (Nico, 29/10).
-    tipo: Literal["tendencia", "horizontal", "fibonacci", "extension", "elliott", "canal", "pincel"]
+    # «nota»: un texto tuyo en un día y un precio (`a`), con su banderita.
+    tipo: Literal["tendencia", "horizontal", "fibonacci", "extension", "elliott", "canal", "pincel", "nota"]
     precio: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
     a: Optional[_PuntoDibujo] = None
     b: Optional[_PuntoDibujo] = None
@@ -11959,9 +11995,24 @@ class _Dibujo(BaseModel):
     # El color que eligió la persona (frontend/src/utils/dibujos.COLORES_DIBUJO);
     # sin color, el de siempre.
     color: Optional[Literal["cian", "ambar", "rosa", "verde", "rojo", "violeta", "tinta"]] = None
+    # Sólo la nota: lo que escribiste. El tope se mide ya limpio (_texto_limpio).
+    texto: Optional[str] = Field(None, max_length=_NOTA_MAXIMA)
+
+    @field_validator("texto", mode="before")
+    @classmethod
+    def _texto_limpio(cls, v):
+        return _texto_de_nota(v)
 
     @model_validator(mode="after")
     def _completo(self):
+        if self.tipo == "nota":
+            if self.a is None:
+                raise ValueError("una nota necesita su día y su precio")
+            if not self.texto:
+                raise ValueError("una nota sin texto no se guarda")
+        else:
+            # El texto es de las notas: otro dibujo no guarda texto suelto.
+            self.texto = None
         if self.tipo == "horizontal" and self.precio is None:
             raise ValueError("una línea horizontal necesita su precio")
         if self.tipo in ("tendencia", "fibonacci") and (self.a is None or self.b is None):
@@ -11982,11 +12033,41 @@ class _Dibujo(BaseModel):
 
 class DibujosIn(BaseModel):
     dibujos: List[_Dibujo] = Field(max_length=_DIBUJOS_MAXIMOS)
+    # La pantalla conoce las notas (desde el 30/10). Una pestaña abierta desde
+    # antes las descarta al leer (no sabe qué son) y, como la lista va entera,
+    # al guardar una línea las borraría de tu cuenta: sin esta marca, las notas
+    # guardadas se quedan como estaban.
+    notas: bool = False
+
+
+def _notas_guardadas(conn, dueno: int, sym: str, moneda: str) -> list:
+    """Las notas que ya están guardadas en este activo y moneda (validadas)."""
+    fila = conn.execute(
+        "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+        (dueno, sym, moneda)).fetchone()
+    try:
+        crudo = json.loads(fila[0]) if fila else []
+    except (TypeError, ValueError):
+        return []
+    out = []
+    for d in crudo if isinstance(crudo, list) else []:
+        if isinstance(d, dict) and d.get("tipo") == "nota":
+            try:
+                out.append(_Dibujo.model_validate(d).model_dump(exclude_none=True))
+            except Exception:
+                continue
+    return out
 
 
 def _dueno_de_los_dibujos(request: Request, uid: int) -> int:
     # El uid AUTENTICADO (lo dejó get_effective_user), no el del cliente que se mira.
     return getattr(request.state, "rendi_auth_uid", None) or uid
+
+
+# Tus NOTAS no se ven mirando la cuenta de un cliente: son tuyas y no dicen de
+# qué cliente son. Una nota del asesor sobre Juan («compró acá por el balance»)
+# aparecía en el AAPL de María, quizás con la pantalla compartida con ella
+# (auditoría 30/10). Ahí se dibujan líneas, pero tus notas ni llegan ni se tocan.
 
 
 @app.get("/api/tecnico/{asset}/dibujos")
@@ -12015,6 +12096,8 @@ def get_tecnico_dibujos(asset: str, request: Request, moneda: str = "usd",
             dibujos.append(_Dibujo.model_validate(d).model_dump(exclude_none=True))
         except Exception:
             continue
+    if dueno != uid:                                        # mirando a un cliente
+        dibujos = [d for d in dibujos if d["tipo"] != "nota"]
     return {"dibujos": dibujos[:_DIBUJOS_MAXIMOS]}
 
 
@@ -12030,6 +12113,12 @@ def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: s
     dueno = _dueno_de_los_dibujos(request, uid)
     lista = [d.model_dump(exclude_none=True) for d in data.dibujos]
     with db_abierta() as conn:
+        # Una pantalla que no conoce las notas, o mirando a un cliente: las
+        # notas guardadas quedan como estaban (las que lleguen, no).
+        if not data.notas or dueno != uid:
+            lista = [d for d in lista if d["tipo"] != "nota"] + _notas_guardadas(conn, dueno, sym, moneda)
+            if len(lista) > _DIBUJOS_MAXIMOS:
+                raise HTTPException(409, f"Llegaste a {_DIBUJOS_MAXIMOS} dibujos y notas en este activo: borrá alguno.")
         if lista:
             conn.execute(
                 """INSERT INTO dibujos_grafico (user_id, asset, moneda, datos)

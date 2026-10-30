@@ -21,6 +21,7 @@ const USD = {
 
 let respuestas
 vi.mock('../../utils/api', () => ({
+  getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
   api: {
     get: vi.fn((ruta) => {
       const clave = Object.keys(respuestas).find(k => ruta.startsWith(k))
@@ -148,6 +149,29 @@ describe('Compartir el gráfico técnico', () => {
     expect(json).not.toContain('Compraste')
     expect(json).not.toContain('249,9')
     expect(json).not.toContain('Tus compras')
+  })
+
+  it('no lleva tus notas ni tu tesis: la imagen con notas es la misma que sin ellas (Nico, 30/10)', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD }
+    await dibujar({ asset: 'AAPL', symbolMiniChart: 'AAPL' })
+    const sinNotas = await compartir()
+    await montado.desmontar(); montado = null
+    for (const n of [...document.body.childNodes]) document.body.removeChild(n)
+    const NOTAS = [
+      { id: 'n1', tipo: 'nota', a: { d: dia(220), mas: 0, precio: 246 }, texto: 'compré acá por el balance', color: 'violeta' },
+      { id: 'n2', tipo: 'nota', a: { d: dia(299), mas: 3, precio: 255 }, texto: 'vendo si pasa 300' },
+    ]
+    localStorage.setItem('rendi_dibujos:AAPL:usd', JSON.stringify({ pendiente: false, dibujos: [...MIS_DIBUJOS, ...NOTAS] }))
+    const TESIS = [{ id: 5, asset: 'AAPL', texto: 'el recambio de iPhone', escrita_el: dia(150) }]
+    await dibujar({ asset: 'AAPL', symbolMiniChart: 'AAPL', tesis: TESIS })
+    // En la pantalla están…
+    expect(todos(montado.contenedor, n => n.getAttribute?.('data-banderita') != null).map(n => n.getAttribute('data-banderita')).sort())
+      .toEqual(['n1', 'n2', 'tesis:5'])
+    const conNotas = await compartir()
+    // …en la imagen no: ni el texto, ni una marca, ni una escala distinta.
+    const json = JSON.stringify(conNotas)
+    for (const t of ['compré acá', 'vendo si pasa', 'recambio', 'nota', 'tesis']) expect(json).not.toContain(t)
+    expect(json).toBe(JSON.stringify(sinNotas))
   })
 
   it('tu precio no estira la escala de la imagen (si no, la franja vacía delataría a cuánto compraste)', async () => {

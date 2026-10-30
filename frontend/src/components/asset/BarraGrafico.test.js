@@ -49,6 +49,7 @@ const EVENTOS = {
 }
 
 vi.mock('../../utils/api', () => ({
+  getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
   api: { get: vi.fn((ruta) => Promise.resolve(ruta.includes('/eventos') ? EVENTOS : DATOS)) },
 }))
 

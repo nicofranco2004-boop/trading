@@ -49,6 +49,7 @@ const EVENTOS = {
 const cuenta = { usd: [], ars: [], caida: false, puts: 0, alertas: [], pedidos: [] }
 const monedaDe = (ruta) => (ruta.includes('moneda=ars') ? 'ars' : 'usd')
 vi.mock('../../utils/api', () => ({
+  getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
   api: {
     get: vi.fn((ruta) => Promise.resolve(ruta.includes('/dibujos') ? { dibujos: cuenta[monedaDe(ruta)] }
       : ruta.startsWith('/alerts') ? { items: cuenta.alertas }
@@ -773,7 +774,7 @@ describe('en todos tus dispositivos', () => {
     cuenta.usd = [H]
     await dibujar()
     expect(linea()).toHaveLength(1)
-    expect(copia()).toEqual({ pendiente: false, dibujos: [H] })   // queda la copia, ya en la cuenta
+    expect(copia()).toMatchObject({ pendiente: false, dibujos: [H] })   // queda la copia, ya en la cuenta
   })
 
   it('lo borrado en otro dispositivo no revive desde la copia de este navegador', async () => {
@@ -839,7 +840,7 @@ describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos
     await dibujar()
     const barra = todos(montado.contenedor, n => n.getAttribute?.('role') === 'toolbar')[0]
     const enLaBarra = todos(barra, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa'))
-    expect(enLaBarra).toEqual(['menu-lineas', 'menu-fibonacci', 'menu-elliott', 'medir', 'deshacer', 'rehacer', 'borrarDibujos'])
+    expect(enLaBarra).toEqual(['menu-lineas', 'nota', 'menu-fibonacci', 'menu-elliott', 'medir', 'deshacer', 'rehacer', 'borrarDibujos'])
     const lista = todos(montado.contenedor, n => n.getAttribute?.('role') === 'group' && n.getAttribute('aria-label') === 'Indicadores')[0]
     const enLaLista = todos(lista, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa')).filter(Boolean)
     expect(enLaLista).toEqual(['vol', 's200', 's50', 'bb', 'rsi', 'fuerza', 'eventos', 'globo', 'fabrica'])

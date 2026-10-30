@@ -12,7 +12,10 @@
 // Privacidad: la imagen NO lleva nada de tu cartera. Esta función ni siquiera
 // recibe tu precio promedio, tus compras y ventas, tus montos ni tus avisos:
 // sólo el precio, los indicadores y tus dibujos. Tampoco lo que es de un
-// momento (lo que estás midiendo, el dibujo elegido, el globo del mouse).
+// momento (lo que estás midiendo, el dibujo elegido, el globo del mouse). Ni
+// tus NOTAS (lo que escribiste: «compré acá por…») ni tu tesis: son
+// personales. La tesis ni llega acá; las notas viajan con tus dibujos y se
+// sacan acá abajo (`tuyos`), que es el único lugar por donde pasa la imagen.
 
 import { indiceDeFecha, velaCompleta, ADX_CLAVE, RSI_CASTIGADO, RSI_ESTIRADO } from './tecnico'
 import { marcasDeFechas, marcasDePrecio } from './ejesGrafico'
@@ -226,7 +229,8 @@ export function specDelGrafico({
   // ── Tus dibujos, en su color (CapaDibujos) ──────────────────────────────
   // Sin `extendidos`: la línea que sigue punteada es la de un AVISO tuyo, y
   // tus avisos no van en la imagen.
-  const tuyos = dibujos.filter(Boolean)
+  // Las notas no: son lo que escribiste (ver arriba, «Privacidad»).
+  const tuyos = dibujos.filter(d => d && d.tipo !== 'nota')
   for (const d of tuyos.filter(d => d.tipo === 'canal')) {
     poligonos.push({ color: colorDe(d), alpha: 0.08,
       puntos: [[d.a.k, d.a.precio], [d.b.k, d.b.precio], [d.b.k, d.b.precio + d.ancho], [d.a.k, d.a.precio + d.ancho]].map(([k, p]) => [pctX(k), pctY(p)]) })

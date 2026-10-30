@@ -37,6 +37,7 @@ const DATOS = (elliott) => ({
 
 let respuesta
 vi.mock('../../utils/api', () => ({
+  getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
   api: { get: vi.fn(() => Promise.resolve(respuesta)) },
 }))
 

@@ -38,6 +38,7 @@ const CON_FUERZA = {
 
 let respuestas
 vi.mock('../../utils/api', () => ({
+  getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
   api: {
     get: vi.fn((ruta) => {
       const clave = Object.keys(respuestas).find(k => ruta.startsWith(k))

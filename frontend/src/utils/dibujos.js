@@ -21,6 +21,15 @@ import { indiceDeFecha } from './tecnico'
 import { api } from './api'
 
 const clave = (asset, moneda) => `rendi_dibujos:${String(asset || '').toUpperCase()}:${moneda === 'ars' ? 'ars' : 'usd'}`
+// De quién es la copia de este navegador (el mail de la sesión). Cerrar sesión
+// la borra, pero cuando la sesión VENCE sólo se borra el usuario: en una compu
+// compartida, lo pendiente de una persona (con notas, texto suyo) se le
+// mostraba a la siguiente y se subía a SU cuenta (auditoría 30/10). Una copia
+// de otra persona se ignora; las guardadas antes de esto no dicen de quién son
+// y se usan como siempre.
+function quienSoy() {
+  try { return String(JSON.parse(localStorage.getItem('rendi_user') || 'null')?.email || '').toLowerCase() || null } catch { return null }
+}
 export const DIBUJOS_MAXIMOS = 60
 
 const numero = (x) => typeof x === 'number' && Number.isFinite(x)
@@ -33,6 +42,49 @@ const punto = (p) => !!p && typeof p.d === 'string' && /^\d{4}-\d{2}-\d{2}$/.tes
 // guardan en tu cuenta con los demás dibujos: sin tope, un garabato largo
 // pesaría como cien líneas).
 export const PINCEL_MAXIMO = 200
+
+// Las notas de texto (Nico, 30/10: «compré acá por el balance»): un texto tuyo
+// en un día y un precio (`a`), con su banderita. Cortas, como un tuit: hasta
+// 280 letras (el servidor también lo hace cumplir, main._NOTA_MAXIMA); para la
+// explicación larga está tu tesis (1000). Se cuentan igual que el servidor
+// (puntos de código): un emoji simple es una; uno compuesto (una bandera, una
+// familia, un pulgar con color de piel) cuenta sus partes. `length` contaría
+// dos por cada emoji simple.
+export const NOTA_MAXIMA = 280
+export const largoDeNota = (t) => Array.from(String(t || '')).length
+/** Lo que se tipea, cortado al máximo sin partir un emoji al medio (tampoco
+ *  uno compuesto: se corta antes de la bandera o la familia entera). */
+export function recortarNota(t) {
+  const s = String(t || '')
+  if (largoDeNota(s) <= NOTA_MAXIMA) return s
+  let out = '', n = 0
+  const partes = typeof Intl !== 'undefined' && Intl.Segmenter
+    ? Array.from(new Intl.Segmenter('es', { granularity: 'grapheme' }).segment(s), x => x.segment) : Array.from(s)
+  for (const p of partes) {
+    const largo = largoDeNota(p)
+    if (n + largo > NOTA_MAXIMA) break
+    out += p; n += largo
+  }
+  return out
+}
+/**
+ * El texto de una nota como lo guarda el servidor (main._texto_de_nota): sin
+ * caracteres de control (salvo el salto de renglón; el tab pasa a espacio;
+ * también los «C1», U+0080 a U+009F, y la marca BOM), a lo sumo dos renglones
+ * vacíos seguidos y sin espacios en las puntas. '' sin texto o si lo que queda
+ * no se ve (sólo marcas invisibles, como el espacio de ancho cero). Tiene que
+ * ser la MISMA regla: una nota que la pantalla acepta y el servidor no, traba
+ * el guardado de todos tus dibujos de ese activo (la lista va entera).
+ */
+export function limpiarNota(t) {
+  const s = String(t ?? '').replace(/\r\n?/g, '\n').replace(/\t/g, ' ')
+  const sinControl = Array.from(s).filter(c => {
+    const n = c.codePointAt(0)
+    return c === '\n' || (n >= 32 && !(n >= 0x7F && n <= 0x9F) && n !== 0xFEFF && !(n >= 0xD800 && n <= 0xDFFF))
+  }).join('')
+  const limpio = sinControl.replace(/\n{3,}/g, '\n\n').trim()
+  return /[^\s\p{Cf}]/u.test(limpio) ? limpio : ''
+}
 
 // El color de cada dibujo (Nico, 29/10): se elige con el dibujo tocado y queda
 // guardado en el dibujo (en tu cuenta). Sin color, el de siempre (celeste). Son
@@ -70,7 +122,8 @@ export const etiquetasDe = (forma) => (forma === 'impulso' ? ETIQUETAS_IMPULSO
 
 /** ¿Es un dibujo que se puede dibujar? (lo guardado puede venir roto o de otra versión)
  *  horizontal: un precio · tendencia y fibonacci (retroceso): dos puntos (a, b) ·
- *  extension: tres (a, b, c) · elliott: de 2 puntos al máximo de su forma. */
+ *  extension: tres (a, b, c) · elliott: de 2 puntos al máximo de su forma ·
+ *  nota: un punto (a) y su texto. */
 export function dibujoValido(x) {
   if (!x || typeof x.id !== 'string') return false
   if (x.color != null && !COLORES_DIBUJO.some(c => c.id === x.color)) return false
@@ -81,6 +134,7 @@ export function dibujoValido(x) {
   if (x.tipo === 'canal') return punto(x.a) && punto(x.b) && numero(x.ancho) && x.ancho !== 0
   if (x.tipo === 'pincel') return Array.isArray(x.puntos) && x.puntos.length >= 2 && x.puntos.length <= PINCEL_MAXIMO && x.puntos.every(punto)
   if (x.tipo === 'extension') return punto(x.a) && punto(x.b) && punto(x.c)
+  if (x.tipo === 'nota') return punto(x.a) && typeof x.texto === 'string' && !!limpiarNota(x.texto) && largoDeNota(limpiarNota(x.texto)) <= NOTA_MAXIMA
   if (x.tipo === 'elliott') {
     if (x.forma != null && x.forma !== 'impulso' && x.forma !== 'correccion') return false
     return Array.isArray(x.puntos) && x.puntos.length >= 2 && x.puntos.length <= etiquetasDe(x.forma).length && x.puntos.every(punto)
@@ -99,6 +153,7 @@ export function dibujoValido(x) {
 export function copiaLocal(asset, moneda) {
   try {
     const g = JSON.parse(localStorage.getItem(clave(asset, moneda)) || 'null')
+    if (g && !Array.isArray(g) && g.dueno !== undefined && (g.dueno || null) !== quienSoy()) return { dibujos: [], pendiente: false }
     const lista = Array.isArray(g) ? g : Array.isArray(g?.dibujos) ? g.dibujos : []
     return { dibujos: lista.filter(dibujoValido).slice(0, DIBUJOS_MAXIMOS), pendiente: Array.isArray(g) || !!g?.pendiente }
   } catch {
@@ -112,7 +167,7 @@ export const dibujosGuardados = (asset, moneda) => copiaLocal(asset, moneda).dib
 export function guardarDibujos(asset, moneda, lista, pendiente = true) {
   try {
     if (!pendiente && !lista.length) localStorage.removeItem(clave(asset, moneda))
-    else localStorage.setItem(clave(asset, moneda), JSON.stringify({ pendiente, dibujos: lista.slice(0, DIBUJOS_MAXIMOS) }))
+    else localStorage.setItem(clave(asset, moneda), JSON.stringify({ pendiente, dueno: quienSoy(), dibujos: lista.slice(0, DIBUJOS_MAXIMOS) }))
   } catch { /* sin almacenamiento: el dibujo vive mientras la página esté abierta */ }
 }
 
@@ -145,7 +200,8 @@ const enFila = {}
 export function subirDibujos(asset, moneda, lista) {
   const k = clave(asset, moneda)
   const sigue = (enFila[k] || Promise.resolve(true))
-    .then(() => api.put(ruta(asset, moneda), { dibujos: lista.slice(0, DIBUJOS_MAXIMOS) }))
+    // `notas`: esta pantalla conoce las notas (si no, el servidor no las toca).
+    .then(() => api.put(ruta(asset, moneda), { dibujos: lista.slice(0, DIBUJOS_MAXIMOS), notas: true }))
     .then(() => true, () => false)
   enFila[k] = sigue
   return sigue
@@ -192,10 +248,11 @@ export function diasHabilesEntre(desde, hasta) {
 
 /**
  * Las puntas de un dibujo, con su nombre: ['a', p], ['b', p], ['c', p] o, en
- * un conteo de Elliott, [n, p] por onda. Una horizontal no tiene: se agarra entera.
+ * un conteo de Elliott, [n, p] por onda. Una horizontal, un trazo o una nota
+ * no tienen: se agarran enteros.
  */
 export function puntasDe(d) {
-  if (d.tipo === 'horizontal' || d.tipo === 'pincel') return []
+  if (d.tipo === 'horizontal' || d.tipo === 'pincel' || d.tipo === 'nota') return []
   if (d.tipo === 'elliott') return d.puntos.map((p, n) => [n, p])
   // El canal se ensancha agarrando la paralela de su mitad (como TradingView).
   if (d.tipo === 'canal') {

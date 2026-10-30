@@ -40,21 +40,23 @@
 // TradingView), con su tarjeta «Fuerza de la tendencia».
 
 import { cloneElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Bell, Brush, ChevronDown, LineChart, Maximize2, Minimize2, Redo2, RotateCcw, Ruler, Trash2, Undo2 } from 'lucide-react'
+import { Bell, Brush, ChevronDown, LineChart, Maximize2, Minimize2, Redo2, RotateCcw, Ruler, StickyNote, Trash2, Undo2 } from 'lucide-react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica } from './BarraGrafico'
 import CapaFibonacci, { COLOR_FIB, ID_FIB_AUTO, TarjetaFibonacci, preciosDeLaCapa, trazosDelFibonacci, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
 import CapaElliott, { COLOR_ELLIOTT, ID_ELL_AUTO, TarjetaElliott, fechaDelConteo, preciosDelConteo, trazosDelConteo } from './CapaElliott'
 import CapaDibujos, { anchoDelCanal, colorDe, preciosAlBorde, trazosDeDibujos } from './CapaDibujos'
 import CompartirGrafico from './CompartirGrafico'
+import Banderitas, { CartelDeNotas, banderitaEn, banderitasEnVista, esClaveDeGrupo, esClaveDeTesis } from './NotasGrafico'
 import { BotonAvisame, BotonAvisameLinea, alertaDeLinea, useAvisosTecnicos, senalDeTarjeta } from '../alerts/AvisameTecnico'
-import { api } from '../../utils/api'
+import { api, getClientContext } from '../../utils/api'
 import { factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecio, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
 import { PRIORIDAD, taparRotulos } from '../../utils/rotulos'
 import { ANCHO_DEL_GRAFICO, archivoDelGrafico, specDelGrafico } from '../../utils/imagenGrafico'
 import {
   DIBUJOS_MAXIMOS, copiaLocal, etiquetasDe, diaDelPunto, dibujoCorrido, dibujoTocado, dibujosDelServidor, dibujosGuardados, guardarDibujos, idNuevo,
   marcarSubidos, PINCEL_MAXIMO, COLORES_DIBUJO, colorDeLosNuevos, recordarColor, precioCorrido, precioRedondo, puntasDe, puntoDelDia, subirDibujos,
+  limpiarNota,
 } from '../../utils/dibujos'
 import {
   RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, tarjetaBandas, lineaPromedio, marcas, variacionDeHoy,
@@ -211,6 +213,10 @@ export default function LecturaTecnica({
   costoPesos = null, accionLocal = false, tenencia = null, pesoEnCartera = null,
   // La ficha pone el título de la sección («Análisis técnico») y pasa null.
   titulo = 'Análisis técnico',
+  // Tu tesis de este activo, cada versión (los `items` de /api/tesis de este
+  // activo): una banderita por versión, en el día en que la escribiste
+  // (NotasGrafico.jsx). `onVerTesis` lleva a la tesis de la ficha, donde se edita.
+  tesis = [], onVerTesis = null,
 }) {
   const [moneda, setMoneda] = useState(() => (lineaDeLaDireccion()?.moneda === 'ars' ? 'ars' : 'usd'))
   // «Todo» (toda la historia que guarda Rendi), «Desde que lo tenés» o, en un
@@ -243,18 +249,30 @@ export default function LecturaTecnica({
   // Una herramienta por vez: medir, dibujar o ninguna.
   const [dibujar, setDibujarEstado] = useState({ tipo: null, puntos: [] })
   const setMedir = (f) => { setDibujarEstado({ tipo: null, puntos: [] }); setMedirEstado(f) }
-  const setDibujar = (f) => { setMedirEstado({ activo: false, a: null, b: null }); setDibujarEstado(f) }
+  // Prender una herramienta suelta lo elegido: si no, con una nota elegida y
+  // otra escribiéndose, Suprimir borraba la elegida sin que se viera.
+  const setDibujar = (f) => { setMedirEstado({ activo: false, a: null, b: null }); setElegido(null); setDibujarEstado(f) }
   useEffect(() => {
     setMedirEstado(m => ({ ...m, a: null, b: null }))
     setDibujarEstado(d => ({ ...d, puntos: [] }))
     setElegido(null)
+    setTextoNota('')
   }, [moneda])
   // Tus dibujos, por moneda (en pesos y en dólares los precios son otros), y el
   // que está elegido para borrarlo. Se muestra al instante la copia de este
   // navegador; los de tu cuenta llegan después y mandan (utils/dibujos.js).
   const [dibujos, setDibujos] = useState({})
   const [elegido, setElegido] = useState(null)
-  const misDibujos = dibujos[moneda] ?? dibujosGuardados(asset, moneda)
+  // Tus notas (NotasGrafico.jsx): lo que se está escribiendo, en una nota
+  // nueva o en la elegida (`editandoNota`: true mientras se corrige).
+  const [textoNota, setTextoNota] = useState('')
+  const [editandoNota, setEditandoNota] = useState(false)
+  useEffect(() => { setEditandoNota(false) }, [elegido])
+  useEffect(() => { if (dibujar.tipo !== 'nota') setTextoNota('') }, [dibujar.tipo])
+  // Mirando la cuenta de un cliente (asesor), tus notas no van: son tuyas y no
+  // dicen de qué cliente son (el servidor tampoco las manda ni las toca ahí).
+  const conNotas = !getClientContext()
+  const misDibujos = (dibujos[moneda] ?? dibujosGuardados(asset, moneda)).filter(d => conNotas || d.tipo !== 'nota')
   // Las monedas en las que ya dibujaste algo en esta visita: si los de la
   // cuenta llegan después, no pisan lo recién dibujado.
   const tocados = useRef(new Set())
@@ -374,12 +392,17 @@ export default function LecturaTecnica({
   // como en TradingView, cancela lo que se está dibujando o midiendo (se borra
   // lo marcado a medias y la herramienta se apaga).
   const borrarRef = useRef(null)
-  borrarRef.current = elegido ? () => borrarDibujo(elegido) : null
+  // Una banderita de tu tesis o un grupo de banderitas no se borran con la tecla:
+  // la tesis se borra donde se edita (la ficha) y el grupo es varias cosas.
+  // Con una nota escribiéndose o corrigiéndose, las teclas son del texto
+  // (aunque el foco haya quedado afuera): ni Suprimir ni Cmd+Z tocan los dibujos.
+  const escribiendo = (dibujar.tipo === 'nota' && dibujar.puntos.length > 0) || editandoNota
+  borrarRef.current = elegido && !escribiendo && !dibujar.tipo && !esClaveDeTesis(elegido) && !esClaveDeGrupo(elegido) ? () => borrarDibujo(elegido) : null
   const cancelarRef = useRef(null)
   const deshacerRef = useRef(null)
   const rehacerRef = useRef(null)
-  deshacerRef.current = deshacer
-  rehacerRef.current = rehacer
+  deshacerRef.current = escribiendo ? null : deshacer
+  rehacerRef.current = escribiendo ? null : rehacer
   cancelarRef.current = (dibujar.tipo || medir.activo)
     ? () => { setDibujarEstado({ tipo: null, puntos: [] }); setMedirEstado({ activo: false, a: null, b: null }) }
     : null
@@ -620,7 +643,11 @@ export default function LecturaTecnica({
     if (!(precio > 0)) return
     const p = { i: diaDelLugar(k), precio }
     const guardado = (q) => puntoDelDia(actual.puntos, q.i, q.precio)
-    if (dibujar.tipo === 'horizontal') {
+    if (dibujar.tipo === 'nota') {
+      // Una nota: el punto y después el texto (el cartel de arriba). Tocar
+      // otro punto antes de guardar la cambia de lugar.
+      setDibujarEstado({ tipo: 'nota', puntos: [p] })
+    } else if (dibujar.tipo === 'horizontal') {
       cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'horizontal', precio: precioRedondo(precio) }])
       setDibujarEstado({ tipo: null, puntos: [] })     // una línea por vez, como TradingView
     } else if (dibujar.tipo === 'tendencia' || dibujar.tipo === 'fibonacci') {
@@ -709,7 +736,31 @@ export default function LecturaTecnica({
   const enVista = (q) => ({ k: lugarDelDia(diaDelPunto(actual.puntos, q)) + (q.f || 0), precio: q.precio })
   const dibujosEnVista = misDibujos.map(d => (d.tipo === 'horizontal' ? d
     : d.tipo === 'elliott' || d.tipo === 'pincel' ? { ...d, puntos: d.puntos.map(enVista) }
-      : { ...d, a: enVista(d.a), b: enVista(d.b), ...(d.c ? { c: enVista(d.c) } : {}) }))
+      : { ...d, a: enVista(d.a), ...(d.b ? { b: enVista(d.b) } : {}), ...(d.c ? { c: enVista(d.c) } : {}) }))
+  // Cada versión de tu tesis, en el día en que la escribiste (o el día de
+  // mercado de antes, si fue un fin de semana) y al cierre de ese día. Antes
+  // de lo que hay guardado, no va.
+  const tesisEnVista = tesis.map(t => {
+    const i = indiceDeFecha(actual.puntos, String(t.escrita_el || '').slice(0, 10))
+    if (i == null || !(actual.puntos[i]?.c > 0)) return null
+    return { id: t.id, texto: t.texto, escrita_el: t.escrita_el, k: lugarDelDia(i), precio: actual.puntos[i].c }
+  }).filter(Boolean)
+  // La nota nueva, ya escrita: se guarda con el resto (deshacer la incluye).
+  const guardarNota = () => {
+    const texto = limpiarNota(textoNota), p = dibujar.puntos[0]
+    if (!texto || !p) return
+    cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'nota', a: puntoDelDia(actual.puntos, p.i, p.precio), texto }])
+    setDibujarEstado({ tipo: null, puntos: [] })
+    setTextoNota('')
+  }
+  const corregirNota = (id, texto) => {
+    const t = limpiarNota(texto)
+    if (!t) return
+    cambiarDibujos(misDibujos.map(d => (d.id === id ? { ...d, texto: t } : d)))
+    setEditandoNota(false)
+  }
+  // «Ver tu tesis»: desde pantalla completa, primero vuelve a la ficha.
+  const verTesis = onVerTesis ? () => { setElegido(null); if (grande) setGrande(false); setTimeout(onVerTesis, 0) } : null
   const herramienta = medir.activo ? 'medir' : dibujar.tipo
   const medida = medir.activo ? medirEntre(actual.puntos, medir.a, medir.b) : null
   // Lo que dice un punto medido: su día, o cuántos días de mercado después de hoy.
@@ -728,6 +779,11 @@ export default function LecturaTecnica({
   // período» sería casi lo que ganaste): antes de armarla, el gráfico pasa a
   // «Todo», así lo que se manda sigue siendo lo que se ve (auditoría 29/10).
   const antesDeCompartir = rangoVisto === 'tuyo' && !ventana ? () => elegirRango('todo') : null
+  // El cartel de las notas: escribiendo una nueva (con su punto ya tocado) o
+  // con una nota, una versión de tu tesis o un grupo de banderitas elegido.
+  const cartelDeNotas = borrarTodos ? null
+    : dibujar.tipo === 'nota' ? (dibujar.puntos.length ? 'escribir' : null)
+      : !dibujar.tipo && elegido && (queEsElegido === 'nota' || esClaveDeTesis(elegido) || esClaveDeGrupo(elegido)) ? 'elegido' : null
   const lugaresMinimos = (RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS)) / (semanales ? 5 : 1)
   const compartir = () => specDelGrafico({
     activo: asset, moneda, puntos, huecos, lo: escala.current?.min, hi: escala.current?.max,
@@ -744,7 +800,7 @@ export default function LecturaTecnica({
     actual, ver, alternar, losEventos, eventosCargando: eventos[moneda] === undefined,
     misMarcas, promedio, moneda, pnlPctUsd, lineaSinTc, medir, setMedir,
     tenes: pnlPctUsd != null, operaste: pnlPctUsd != null || lotes.length > 0 || operaciones.length > 0,
-    dibujar, setDibujar, cuantosDibujos: misDibujos.length, pedirBorrarTodos: () => { setElegido(null); setBorrarTodos(true) },
+    dibujar, setDibujar, cuantosDibujos: misDibujos.length, conNotas, cuantosSon: cuantosSon(misDibujos), pedirBorrarTodos: () => { setElegido(null); setBorrarTodos(true) },
     deshacer, rehacer, puedeDeshacer: historia.current.atras.length > 0, puedeRehacer: historia.current.adelante.length > 0,
     nVista, acercar,
   })
@@ -812,11 +868,30 @@ export default function LecturaTecnica({
                 className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-line-2 text-ink-1 hover:text-ink-0">Listo</button>
             </div>
           )}
-          {(dibujar.tipo || elegido || borrarTodos) && (
+          {cartelDeNotas ? (
+            // Tus notas y tu tesis (NotasGrafico.jsx): escribir la nueva, o
+            // leer, corregir, colorear o borrar la elegida. Arriba del
+            // gráfico y a todo el ancho: en el celular, se lee entera.
+            <div role="group" aria-label={cartelDeNotas === 'escribir' ? 'Tu nota nueva' : 'Tu nota'}
+              className="mb-2 rounded-lg border border-data-cyan/40 bg-data-cyan/10 px-3 py-2 text-[12.5px] text-ink-1 leading-relaxed">
+              <CartelDeNotas modo={cartelDeNotas} elegido={elegido} notas={misDibujos.filter(d => d.tipo === 'nota')} tesis={tesis}
+                texto={textoNota} setTexto={setTextoNota} onGuardar={guardarNota}
+                onCancelar={() => { setDibujarEstado({ tipo: null, puntos: [] }); setTextoNota('') }}
+                editando={editandoNota} setEditando={setEditandoNota} onCorregir={corregirNota}
+                onBorrar={borrarDibujo} onElegir={setElegido} onListo={() => setElegido(null)} onVerTesis={verTesis}
+                precio={(x) => fmtPrecio(x, moneda)} fecha={fechaCorta}
+                colores={(n) => (
+                  <ColoresDelDibujo actual={n.color || 'cian'} onElegir={(c) => {
+                    cambiarDibujos(misDibujos.map(d => (d.id === n.id ? { ...d, color: c } : d)))
+                    setColorNuevo(c); recordarColor(c)
+                  }} />
+                )} />
+            </div>
+          ) : (dibujar.tipo || elegido || borrarTodos) && (
             <div role="status" aria-live="polite"
               className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-data-cyan/40 bg-data-cyan/10 px-3 py-2 text-[12.5px] text-ink-1 leading-relaxed">
               <span className="flex-1 min-w-[12rem]">
-                {borrarTodos ? `¿Borrar ${misDibujos.length === 1 ? 'tu dibujo' : `tus ${misDibujos.length} dibujos`} de este activo en ${moneda === 'usd' ? 'dólares' : 'pesos'}? No se puede deshacer.`
+                {borrarTodos ? `¿Borrar ${cuantosSon(misDibujos)} de este activo en ${moneda === 'usd' ? 'dólares' : 'pesos'}? No se puede deshacer.`
                   : dibujar.tipo ? textoDibujando(dibujar)
                     : ELEGIDO[queEsElegido]?.[0]}
               </span>
@@ -897,7 +972,7 @@ export default function LecturaTecnica({
             onToque={herramienta && herramienta !== 'pincel' ? tocar : null} onTerminar={terminarDesdeElGrafico}
             onPincel={herramienta === 'pincel' ? trazarPincel : null}
             colorNuevo={colorNuevo === 'cian' ? null : colorNuevo}
-            dibujos={dibujosEnVista} elegido={elegido} onElegir={setElegido} onMoverDibujo={moverDibujo} escala={escala}
+            dibujos={dibujosEnVista} elegido={elegido} onElegir={setElegido} onMoverDibujo={moverDibujo} escala={escala} tesis={tesisEnVista}
             conAviso={misDibujos.filter(d => alertaDeLinea(avisos.items, { asset, moneda, dibujo: d.id })).map(d => d.id)}
             trazo={dibujar.puntos.length ? { tipo: dibujar.tipo, puntos: dibujar.puntos.map(q => ({ k: lugarDelDia(q.i), precio: q.precio })) } : null} />
           {rangoVisto === 'tuyo' && !ventana && primera && primera < actual.puntos[0].d && (
@@ -977,6 +1052,7 @@ const FORMA_ELLIOTT = { impulso: 'impulso', correccion: 'correccion' }
 function textoDibujando({ tipo, puntos }) {
   const esc = ' (Esc cancela.)'
   if (tipo === 'horizontal') return 'Tocá la altura del gráfico (el precio) donde va la línea horizontal.' + esc
+  if (tipo === 'nota') return 'Tocá el punto del gráfico donde va tu nota: el día y el precio. Después la escribís.' + esc
   if (tipo === 'tendencia') {
     return (puntos.length ? 'Ahora tocá donde termina la línea (también podés tocar el espacio vacío de la derecha).'
       : 'Tocá donde empieza la línea de tendencia.') + esc
@@ -1005,6 +1081,13 @@ function textoDibujando({ tipo, puntos }) {
     return `Ahora tocá la onda ${etiquetas[puntos.length]}${puntos.length >= 2 ? '. Para terminar acá: doble click, click derecho o «Terminar acá»' : ''}.${esc}`
   }
   return ''
+}
+
+// «tu dibujo», «tus 3 dibujos», «tus 2 dibujos y tu nota»: las notas, aparte.
+function cuantosSon(lista) {
+  const n = lista.filter(d => d.tipo === 'nota').length, d = lista.length - n
+  const dib = d === 1 ? 'dibujo' : `${d} dibujos`, not = n === 1 ? 'nota' : `${n} notas`
+  return d && n ? `tus ${dib} y ${n === 1 ? 'tu' : 'tus'} ${not}` : n ? (n === 1 ? 'tu nota' : `tus ${not}`) : (d === 1 ? 'tu dibujo' : `tus ${dib}`)
 }
 
 // El cartel de un dibujo elegido: [qué es, el botón de borrar].
@@ -1191,7 +1274,7 @@ function ElegirVista({ moneda, setMoneda, conPesos, rango, setRango, recientes, 
 function botonesDeLaBarra({
   actual, ver, alternar, losEventos, eventosCargando, misMarcas, promedio, moneda,
   pnlPctUsd, lineaSinTc, tenes, operaste, medir, setMedir, nVista, acercar,
-  dibujar, setDibujar, cuantosDibujos, pedirBorrarTodos,
+  dibujar, setDibujar, cuantosDibujos, cuantosSon: cuantosLista = '', conNotas = true, pedirBorrarTodos,
   deshacer, rehacer, puedeDeshacer, puedeRehacer,
 }) {
   const capa = (id, nombre, icono, sinDatos, onClick) => ({
@@ -1230,7 +1313,12 @@ function botonesDeLaBarra({
           activo: LINEAS.some(l => l.id === dibujar.tipo),
           estado: LINEAS.find(l => l.id === dibujar.tipo)?.estado || 'Tendencia, horizontal, canal o a mano alzada',
           menu: LINEAS.map(l => aMano(l.id, l.nombre, l.detalle)) },
-      ],
+        // Una nota de texto en un punto (Nico, 30/10): «compré acá por el balance».
+        // Mirando a un cliente, no (ver `conNotas`).
+        conNotas && { id: 'nota', nombre: 'Nota', icono: <StickyNote size={17} color={COLOR.dibujo} />, activo: dibujar.tipo === 'nota', herramienta: true,
+          sinDatos: lleno, estado: dibujar.tipo === 'nota' ? 'Tocá el punto del gráfico' : 'Escribí una nota en un día y un precio; sólo la ves vos',
+          onClick: () => setDibujar(dibujar.tipo === 'nota' ? { tipo: null, puntos: [] } : { tipo: 'nota', puntos: [] }) },
+      ].filter(Boolean),
       // Fibonacci y Elliott: el automático y el «a mano» desde UN lugar.
       [
         { id: 'menu-fibonacci', nombre: 'Fibonacci', icono: <IconoFibonacci />,
@@ -1276,8 +1364,8 @@ function botonesDeLaBarra({
       ],
       [
         { id: 'borrarDibujos', nombre: 'Borrar mis dibujos', icono: <Trash2 size={17} />,
-          sinDatos: cuantosDibujos ? null : 'Todavía no dibujaste nada en este activo (en esta moneda).',
-          estado: `${cuantosDibujos === 1 ? 'Tu dibujo' : `Tus ${cuantosDibujos} dibujos`} de este activo. Para borrar uno solo, tocalo en el gráfico.`,
+          sinDatos: cuantosDibujos ? null : 'Todavía no dibujaste ni anotaste nada en este activo (en esta moneda).',
+          estado: `${cuantosLista.charAt(0).toUpperCase()}${cuantosLista.slice(1)} de este activo. Para borrar uno solo, tocalo en el gráfico.`,
           onClick: pedirBorrarTodos },
       ],
     ],
@@ -1537,7 +1625,7 @@ function BarraAdx({ adx }) {
   )
 }
 
-function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null, onAncho = null, pie = null, lugaresMinimos = RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS), escala: escalaRef = null }) {
+function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null, onAncho = null, pie = null, lugaresMinimos = RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS), escala: escalaRef = null, tesis = [] }) {
   const conVelas = tipo === 'velas'
   // Los lugares del ancho: los días más el aire vacío de la derecha.
   const lugares = puntos.length + huecos
@@ -1845,11 +1933,22 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   // Lo que se puede elegir tocándolo: tus dibujos y también el Fibonacci y el
   // conteo AUTOMÁTICOS (elegirlos y borrarlos los apaga).
   const elegibles = [...trazos, ...trazosDelFibonacci(fibonacci, puntos, pctX, pctY), ...trazosDelConteo(elliott, puntos, pctX, pctY)]
+  // Las banderitas de tus notas y de tu tesis (NotasGrafico.jsx), ya juntadas
+  // las que se pisarían. La nota que se está escribiendo, con la suya.
+  const notaNueva = trazo?.tipo === 'nota' ? trazo.puntos[0] : null
+  const banderitas = banderitasEnVista({
+    notas: vistos.filter(d => d.tipo === 'nota'), tesis, pctX, pctY, ancho, alto, elegido,
+    provisoria: notaNueva && { ...notaNueva, color: colorDe({ color: colorNuevo }) },
+  })
   // Un click (o un toque) sin herramienta, cerca de un dibujo: lo elige (para
-  // borrarlo); lejos de todos, suelta el que estaba elegido.
+  // borrarlo); lejos de todos, suelta el que estaba elegido. Una banderita
+  // gana: está encima de todo.
   function dibujoBajo(clientX, clientY, radio) {
     const r = ref.current?.getBoundingClientRect()
-    if (!r || !r.width || !elegibles.length) return null
+    if (!r || !r.width) return null
+    const bandera = banderitaEn(banderitas, clientX - r.left, clientY - r.top, radio / 2, elegido)
+    if (bandera) return bandera
+    if (!elegibles.length) return null
     const px = (t) => ({ id: t.id, ax: (t.x1 / 100) * r.width, ay: (t.y1 / 100) * r.height, bx: (t.x2 / 100) * r.width, by: (t.y2 / 100) * r.height })
     return dibujoTocado(elegibles.map(px), clientX - r.left, clientY - r.top, radio)
   }
@@ -2220,8 +2319,10 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
           <CapaElliott elliott={elliott} puntos={puntos} pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)}
             marcado={sobreDibujo === ID_ELL_AUTO || elegido === ID_ELL_AUTO} />
           {/* Tus dibujos, y lo que se está dibujando (hasta el mouse). */}
-          <CapaDibujos dibujos={pincel ? [...vistos, { id: '__pincel__', tipo: 'pincel', puntos: pincel, ...(colorNuevo ? { color: colorNuevo } : {}) }] : vistos} extendidos={conAviso} colorNuevo={colorNuevo} elegido={elegido} resaltado={agarrado?.id || sobreDibujo} trazo={trazo} cursor={onToque ? cursor : null}
+          <CapaDibujos dibujos={pincel ? [...vistos, { id: '__pincel__', tipo: 'pincel', puntos: pincel, ...(colorNuevo ? { color: colorNuevo } : {}) }] : vistos} extendidos={conAviso} colorNuevo={colorNuevo} elegido={elegido} resaltado={agarrado?.id || sobreDibujo} trazo={notaNueva ? null : trazo} cursor={onToque && !notaNueva ? cursor : null}
             pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
+          {/* Tus notas y tu tesis: banderitas (sin línea). */}
+          <Banderitas grupos={banderitas} elegido={elegido} resaltado={agarrado?.id || sobreDibujo} ancho={ancho} />
           {/* Marcas y el punto del mouse van en HTML: un círculo dentro de un
               SVG estirado (preserveAspectRatio=none) se deformaría en óvalo. */}
           {visibles.map((m, k) => (

@@ -19,7 +19,7 @@
 // Responsive: una sola página sirve desktop y mobile (max-w centrado en desktop,
 // full-width en mobile). Reusa la matriz de valuación de PositionDetailMobile.
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, TrendingUp, TrendingDown, Calendar, Star, Check,
@@ -190,6 +190,8 @@ export default function AssetDetail() {
   const [operations, setOperations] = useState([])
   // Tu tesis de este activo (la misma de Movimientos). Arriba de los return.
   const tesis = useTesis()
+  // «Ver o editar tu tesis» desde su banderita en el gráfico: lleva acá.
+  const seccionTesis = useRef(null)
   // El valor de toda tu cartera (la última foto que sirve como medición), para
   // decir qué parte de tu cartera es este papel en «Cuánto se mueve».
   const [pesoEnCartera, setPesoEnCartera] = useState(null)
@@ -446,6 +448,10 @@ export default function AssetDetail() {
           // dólar de la pantalla, para decirlo en pesos) y qué parte de tu plata es.
           tenencia={agg.lots.length > 0 && agg.valueUsd > 0 ? { valorUsd: agg.valueUsd, tc: tcValuacion } : null}
           pesoEnCartera={pesoEnCartera}
+          // Cada versión de tu tesis, como banderita en el día que la
+          // escribiste (no se copia: es la misma de la sección «Tu tesis»).
+          tesis={tesis.estado === 'listo' ? (tesis.items || []).filter(t => t.asset === asset) : []}
+          onVerTesis={() => seccionTesis.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' })}
         />
 
         {/* Cuánto se opera en BYMA y cuánto cuesta entrar y salir (CEDEARs y
@@ -461,7 +467,7 @@ export default function AssetDetail() {
             «Recordarme revisarla». Va si lo tenés o si escribiste una (la ficha
             de un activo que vendiste todo la sigue mostrando). */}
         {(agg.lots.length > 0 || tesisVigente(tesis.items, asset)) && tesis.estado !== 'error' && (
-          <section className="mb-5" aria-label={`Tu tesis de ${asset}`}>
+          <section ref={seccionTesis} className="mb-5 scroll-mt-20" aria-label={`Tu tesis de ${asset}`}>
             <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu tesis</div>
             <Panel padding="md">
               {/* `key`: pasar de la ficha de AAPL a la de NVDA no deja a la vista
