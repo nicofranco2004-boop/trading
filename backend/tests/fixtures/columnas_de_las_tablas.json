@@ -682,6 +682,11 @@
   "updated_at",
   "user_id"
  ],
+ "tesis_del_dia": [
+  "dia",
+  "nuevas",
+  "user_id"
+ ],
  "trial_consumed": [
   "consumed_at",
   "email_key"

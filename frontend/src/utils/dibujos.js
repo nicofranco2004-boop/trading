@@ -104,12 +104,21 @@ export async function dibujosDelServidor(asset, moneda) {
 // va entera, y si dos salieran juntos el viejo podría llegar después y pisar
 // al nuevo.
 const enFila = {}
-/** Guarda la lista entera en tu cuenta. Resuelve true si quedó guardada. */
+/**
+ * Guarda la lista entera en tu cuenta. Resuelve `true` si quedó guardada; si la
+ * cuenta la RECHAZÓ (400/429: un activo que no conocemos, el tope de gráficos),
+ * el motivo que mandó el servidor, para mostrarlo tal cual; si no, `false` (sin
+ * conexión). Antes un rechazo y una caída decían lo mismo, «no se pudo guardar»,
+ * y nadie sabía por qué (re-test E3, 29/10).
+ */
 export function subirDibujos(asset, moneda, lista) {
   const k = clave(asset, moneda)
   const sigue = (enFila[k] || Promise.resolve(true))
     .then(() => api.put(ruta(asset, moneda), { dibujos: lista.slice(0, DIBUJOS_MAXIMOS) }))
-    .then(() => true, () => false)
+    .then(() => true, (e) => {
+      const motivo = e?.payload?.detail
+      return [400, 429].includes(e?.status) && typeof motivo === 'string' && motivo.trim() ? motivo : false
+    })
   enFila[k] = sigue
   return sigue
 }

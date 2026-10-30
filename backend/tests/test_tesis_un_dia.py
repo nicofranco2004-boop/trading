@@ -69,7 +69,15 @@ class DosGuardarALaVez(_Base):
         """Por HTTP, como la app. El pedido «segunda» lee primero y se queda
         esperando; «primera» entra, guarda y confirma; recién ahí «segunda» sigue
         y escribe. Es el orden de un doble click: no se fuerza el resultado, sólo
-        el turno de cada uno."""
+        el turno de cada uno.
+
+        Al juntar con Arreglos E (30/10): `guardar` ahora toma el turno de la
+        persona (`_tomar_turno`, para contar el tope de 20 por día) ANTES de leer,
+        así que «primera» ya no puede confirmar mientras «segunda» espera: se
+        queda esperando el turno. Por eso a «segunda» la suelta un reloj y no el
+        fin de «primera»; y «vale la última» es la que terminó última, sea cuál
+        sea (con el turno, «primera»; sin él, «segunda»). Lo que no cambia: una
+        sola de hoy y los dos pedidos hablan de la misma."""
         main.app.dependency_overrides[main.get_effective_user] = lambda: self.UID
         cli = TestClient(main.app)
         leyo, seguir = threading.Event(), threading.Event()
@@ -84,16 +92,19 @@ class DosGuardarALaVez(_Base):
                 seguir.wait(10)
             return r
 
-        resultado = {}
+        resultado, terminaron = {}, []
 
         def _segunda():
             resultado["r"] = cli.put("/api/tesis", json={"asset": "AAPL", "texto": "segunda"})
+            terminaron.append("segunda")
 
         with mock.patch.object(tesis, "_ultima", _ultima_con_turno):
             t = threading.Thread(target=_segunda)
             t.start()
             self.assertTrue(leyo.wait(10), "el pedido «segunda» no llegó a leer")
+            threading.Timer(1.0, seguir.set).start()
             r1 = cli.put("/api/tesis", json={"asset": "AAPL", "texto": "primera"})
+            terminaron.append("primera")
             seguir.set()
             t.join(30)
         self.assertEqual(r1.status_code, 200, r1.text)
@@ -102,7 +113,7 @@ class DosGuardarALaVez(_Base):
         hoy = hoy_art_date().isoformat()
         filas = self._filas()
         self.assertEqual(len(filas), 1, f"dos tesis del mismo día: {filas}")
-        self.assertEqual(filas[0][1], "segunda", "vale la última que se guardó")
+        self.assertEqual(filas[0][1], terminaron[-1], "vale la última que se guardó")
         self.assertEqual(filas[0][2], hoy)
         self.assertEqual(r1.json()["id"], resultado["r"].json()["id"],
                          "los dos pedidos hablan de la misma tesis")

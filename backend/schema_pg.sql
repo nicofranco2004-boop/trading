@@ -2037,6 +2037,19 @@ ALTER TABLE tesis ADD COLUMN IF NOT EXISTS created_at text DEFAULT to_char(now()
 
 ALTER TABLE tesis ADD COLUMN IF NOT EXISTS updated_at text;
 
+CREATE TABLE IF NOT EXISTS tesis_del_dia (
+  user_id bigint NOT NULL,
+  dia text NOT NULL,
+  nuevas bigint NOT NULL DEFAULT 0,
+  PRIMARY KEY (dia, user_id)
+);
+
+ALTER TABLE tesis_del_dia ADD COLUMN IF NOT EXISTS user_id bigint;
+
+ALTER TABLE tesis_del_dia ADD COLUMN IF NOT EXISTS dia text;
+
+ALTER TABLE tesis_del_dia ADD COLUMN IF NOT EXISTS nuevas bigint DEFAULT 0;
+
 CREATE TABLE IF NOT EXISTS trial_consumed (
   email_key text,
   consumed_at text NOT NULL,

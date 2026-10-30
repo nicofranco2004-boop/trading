@@ -148,15 +148,42 @@ def _es_bono(asset: str) -> bool:
         return False
 
 
+# Cuántos tickers RAROS —los que no están en las listas de la app ni en BYMA
+# (`_es_de_la_app`), se bajen bien o no— puede sumar UNA persona, con los
+# clientes que creó si es asesor, a la descarga de la noche, por todas las
+# puertas juntas (lo que tiene, lo que sigue, sus alertas técnicas, lo que
+# operó). Lo de las listas de la app entra siempre, de quien sea: se baja una
+# vez para todos y un asesor con 100 clientes de verdad no puede quedar afuera
+# (re-test E4, ronda 2).
+#
+# Lo raro cuenta aunque ya se baje bien: si no, una cuenta sumaba 100 raros por
+# noche, que al bajarse pasaban a «conocidos» y se acumulaban sin fin (7.400
+# acumulados: 0 de 40 activos nuevos de los demás se bajaban; re-test E4,
+# ronda 3). Y dentro del cupo va primero lo que se baja bien, después lo nunca
+# intentado y al final lo que falla, rotando (`_raros_que_entran`): si no, un
+# asesor con más códigos que fallan que lugares los llenaba todas las noches y
+# sus papeles raros de verdad no se bajaban nunca (0 de 30 en 3 noches).
+# 300 alcanza para lo raro real de una persona (o de un asesor y sus clientes)
+# y frena a un script.
+RAROS_POR_PERSONA = 300
+
+
 def simbolos_a_seguir(conn) -> list:
     """Todos los tickers de Yahoo que hacen falta: lo que alguien tiene en
-    cartera, lo que alguien sigue en su watchlist y lo que alguien vigila con
-    una alerta técnica."""
+    cartera, lo que alguien sigue en su watchlist, lo que alguien vigila con
+    una alerta técnica y lo que alguien operó."""
     return sorted(_seguimiento(conn)[0])
 
 
 def _seguimiento(conn):
-    """(tickers, pares): los tickers de Yahoo a seguir y, de cada CEDEAR, su
+    """(tickers, pares): lo de `_seguimiento_por_persona` sin el detalle de
+    quién aporta qué."""
+    tickers, pares, _ = _seguimiento_por_persona(conn)
+    return tickers, pares
+
+
+def _seguimiento_por_persona(conn):
+    """(tickers, pares, de_cada_una): los tickers de Yahoo a seguir y, de cada CEDEAR, su
     par {'XLE.BA': 'XLE'} (el CEDEAR en pesos y la acción de afuera), que es
     contra lo que la lista de cambios de ratio (`cambios_ratio`) compara la
     serie en pesos.
@@ -167,17 +194,31 @@ def _seguimiento(conn):
     "En pesos" se decide con la MISMA regla que la valuación
     (`snapshots_job.position_price_key`): si la posición se valúa por su '.BA',
     su serie en pesos es la del '.BA'. Reinventar esa regla acá es lo que hizo
-    que un CEDEAR comprado por dólar-MEP pidiera el ticker equivocado (bug C1)."""
+    que un CEDEAR comprado por dólar-MEP pidiera el ticker equivocado (bug C1).
+
+    Lo de las listas de la app entra siempre. De lo raro, cada persona (con los
+    clientes que creó, si es asesor) suma hasta `RAROS_POR_PERSONA`, elegido
+    por `_raros_que_entran`. Lo que pasa de ahí queda afuera (y se anota en el
+    log). Las puertas, en orden: lo que tiene, lo que sigue, sus alertas
+    técnicas, lo que operó. `de_cada_una`: {uid: [sus tickers, en
+    ese orden]}, para repartir la noche por turnos (`_por_turnos`)."""
     from cripto import yahoo_de_cripto
     from snapshots_job import _broker_name_sets, position_price_key, simbolo_byma
 
     cedears = _cedears_de_byma()
-    tickers, pares = set(), {}
+    # {uid: [lista de tickers de un activo]} en el orden de las puertas.
+    por_persona = {}
+    # Un cliente que creó un asesor (`users.managed_by`, una cuenta sin dueño
+    # que entre) suma al tope del ASESOR, no tiene uno propio: si no, cada
+    # cliente creado era otra persona con 300 lugares y otro turno en la fila
+    # (re-test E4, ronda 2: un asesor con 100 clientes dejó 36 de 189 activos
+    # reales sin actualizar).
+    dueno = {r['id']: r['managed_by'] for r in conn.execute(
+        "SELECT id, managed_by FROM users WHERE managed_by IS NOT NULL").fetchall()}
 
-    def _sumar(ys):
-        tickers.update(ys)
-        if len(ys) == 2:   # la forma de un CEDEAR: [afuera, pesos]
-            pares[ys[1]] = ys[0]
+    def _anotar_de(uid, ys):
+        if ys:
+            por_persona.setdefault(dueno.get(uid, uid), []).append(ys)
     brokers = [dict(r) for r in conn.execute(
         "SELECT id, user_id, name, currency, parent_broker_id FROM brokers").fetchall()]
     por_usuario = {}
@@ -193,29 +234,34 @@ def _seguimiento(conn):
         ars, ar_usd = sets.get(p['user_id'], (set(), set()))
         clave = position_price_key(p, ars, ar_usd)
         en_pesos = str(clave).upper().endswith('.BA')
-        _sumar(_yahoo_de(p['asset'], p.get('asset_type'), en_pesos, yahoo_de_cripto, cedears))
+        _anotar_de(p['user_id'], _yahoo_de(p['asset'], p.get('asset_type'), en_pesos, yahoo_de_cripto, cedears))
 
     # Lo que se sigue, con LA regla de la pantalla (`accion_local.seguido`):
     # «GGAL» del buscador es la acción argentina, igual que «GGAL.BA» de la
     # ficha. Por el sufijo se bajaba sólo el ADR y Tu lista y la ficha (que piden
     # la de BYMA) quedaban sin serie al día (auditoría A 29/10, A1 y P4).
     from accion_local import seguido
-    for r in conn.execute("SELECT symbol, asset_type FROM watchlist").fetchall():
+    for r in conn.execute("SELECT user_id, symbol, asset_type FROM watchlist").fetchall():
         sym = (r['symbol'] or '').upper()
-        _sumar(_yahoo_de(sym, r['asset_type'], sym.endswith('.BA') or seguido(sym, r['asset_type'])[1],
-                         yahoo_de_cripto, cedears))
+        _anotar_de(r['user_id'], _yahoo_de(sym, r['asset_type'],
+                                           sym.endswith('.BA') or seguido(sym, r['asset_type'])[1],
+                                           yahoo_de_cripto, cedears))
 
     # Las alertas técnicas (alerts_engine.evaluar_tecnicas) miran la serie de la
     # ficha: sin esto, una alerta sobre un activo que nadie tiene no avisaba
     # nunca. El activo viene pelado ('AAPL', 'GGAL'): en pesos hace falta el
     # '.BA' — el de una acción argentina, o el de un CEDEAR que BYMA lista.
+    # Sólo las de un activo REAL (`es_activo_real`, la regla del alta): una
+    # alerta vieja con un símbolo inventado no le pide nada a Yahoo.
     for r in conn.execute(
-            "SELECT symbol, currency, accion_local FROM alerts "
+            "SELECT user_id, symbol, currency, accion_local FROM alerts "
             "WHERE kind = 'tecnica' AND active = 1").fetchall():
         sym = (r['symbol'] or '').upper()
+        if not es_activo_real(conn, sym, r['user_id']):
+            continue
         en_pesos = bool(r['accion_local']) or (
             (r['currency'] or '').upper() == 'ARS' and simbolo_byma(sym)[:-3] in cedears)
-        _sumar(_yahoo_de(sym, None, en_pesos, yahoo_de_cripto, cedears))
+        _anotar_de(r['user_id'], _yahoo_de(sym, None, en_pesos, yahoo_de_cripto, cedears))
 
     # Lo que alguien VENDIÓ y compró dentro de lo que se guarda: el diario de
     # operaciones de Movimientos dice cómo estaba la tendencia el día de la
@@ -227,21 +273,162 @@ def _seguimiento(conn):
     # bono, que no tiene serie técnica (`_yahoo_de` devuelve []).
     from fechas import hoy_art_date
     piso = (hoy_art_date() - timedelta(days=DIAS_GUARDADOS)).isoformat()
+    # GROUP BY + MAX y no DISTINCT + ORDER BY entry_date: Postgres no deja
+    # ordenar un DISTINCT por una columna que no está en el SELECT, y la
+    # consulta entera (y con ella la noche) se caía (re-test E4, 29/10).
     for r in conn.execute(
-            """SELECT DISTINCT user_id, broker, asset, currency FROM operations
+            """SELECT user_id, broker, asset, currency, MAX(entry_date) AS ultima FROM operations
                WHERE entry_date IS NOT NULL AND entry_date >= ?
-                 AND COALESCE(op_type, '') NOT IN ('Compra', 'Dividendo', 'Interés')""",
+                 AND COALESCE(op_type, '') NOT IN ('Compra', 'Dividendo', 'Interés')
+               GROUP BY user_id, broker, asset, currency
+               ORDER BY user_id, ultima DESC""",
             (piso,)).fetchall():
         p = dict(r)
         ars, ar_usd = sets.get(p['user_id'], (set(), set()))
         clave = position_price_key(p, ars, ar_usd)
         en_pesos = str(clave).upper().endswith('.BA')
-        _sumar(_yahoo_de(p['asset'], None, en_pesos, yahoo_de_cripto, cedears))
+        _anotar_de(p['user_id'], _yahoo_de(p['asset'], None, en_pesos, yahoo_de_cripto, cedears))
+
+    es_de_la_app = _es_de_la_app()
+    estado = _estado_de_cada_ticker(conn)
+    tickers, pares, topados, de_cada_una = set(), {}, {}, {}
+    for uid, listas in por_persona.items():
+        entran = _raros_que_entran(listas, es_de_la_app, estado)
+        topados_suyos = 0
+        suyos, orden = set(), []
+        for k, ys in enumerate(listas):
+            if k not in entran:
+                topados_suyos += 1
+                continue
+            nuevos = [y for y in ys if y and y not in suyos]
+            suyos.update(nuevos)
+            orden += nuevos
+            if len(ys) == 2:   # la forma de un CEDEAR: [afuera, pesos]
+                pares[ys[1]] = ys[0]
+        if topados_suyos:
+            topados[uid] = topados_suyos
+        tickers |= suyos
+        de_cada_una[uid] = orden
+    if topados:
+        log.warning("velas: %d persona(s) pasaron el tope de %d tickers raros; quedaron "
+                    "afuera %d activos (uid: %s)", len(topados), RAROS_POR_PERSONA,
+                    sum(topados.values()), sorted(topados)[:20])
 
     tickers.add(SP500)
     tickers.discard('')
     tickers.discard(None)
-    return tickers, pares
+    return tickers, pares, de_cada_una
+
+
+def _es_de_la_app():
+    """La pregunta «¿este ticker de Yahoo está en las listas de la app o en
+    BYMA?» (`_lista_de_la_app`), armada una vez para toda la noche. Lo que no,
+    es «raro»: tiene cupo por persona (`RAROS_POR_PERSONA`) y va después en la
+    fila (`_por_turnos`)."""
+    app = _lista_de_la_app()
+    return lambda t: bool(_variantes(t) & app)
+
+
+def _estado_de_cada_ticker(conn) -> dict:
+    return {r['symbol']: dict(r) for r in conn.execute(
+        "SELECT symbol, ultima_corrida, ultima_completa, ok FROM velas_estado").fetchall()}
+
+
+def _raros_que_entran(listas: list, es_de_la_app, estado: dict) -> set:
+    """Cuáles de los activos de UNA persona (`listas`: los tickers de cada
+    activo, en el orden de las puertas) entran a la noche: los que no tienen
+    nada raro, todos; de los que tienen, hasta `RAROS_POR_PERSONA` tickers
+    raros, en este orden:
+      1. los que se bajan bien (ya son de esa persona, y de verdad);
+      2. los nunca intentados (un papel raro recién sumado);
+      3. los que fallaron, el que hace más que no se intenta primero: cada
+         noche se prueban otros, así un código mal escrito no tapa para
+         siempre a los demás.
+    Devuelve los índices de `listas` que entran."""
+    def prioridad(y):
+        e = estado.get(y)
+        if e is None:
+            return (1, '')
+        if e.get('ok'):
+            return (0, '')
+        return (2, str(e.get('ultima_corrida') or ''))
+
+    entran, con_raros, vistos = set(), [], set()
+    for k, ys in enumerate(listas):
+        raros = [y for y in ys if y and not es_de_la_app(y)]
+        if not raros:
+            entran.add(k)
+        else:
+            con_raros.append((max(prioridad(y) for y in raros), k, raros))
+    usados = 0
+    for _, k, raros in sorted(con_raros):
+        nuevos = [y for y in raros if y not in vistos]
+        if usados + len(nuevos) > RAROS_POR_PERSONA:
+            continue
+        usados += len(nuevos)
+        vistos.update(nuevos)
+        entran.add(k)
+    return entran
+
+
+def _turno(estado: dict, t: str, hoy: str) -> int:
+    """Primero lo que nunca se intentó (0), después lo que necesita la historia
+    entera (1), después la puesta al día (2), y AL FINAL lo que falló la última
+    vez (3). Antes "lo que nunca se bajó" iba primero siempre, y un símbolo que
+    nunca trae datos (inventado en una watchlist) nunca deja de ser "nunca
+    bajado": con miles, se comían el tope de la noche y los activos de verdad no
+    se actualizaban (auditoría de seguridad 22/10)."""
+    e = estado.get(t)
+    if e is None:
+        return 0
+    if not e.get('ok'):
+        return 3
+    return 1 if _toca_completa(e, hoy) else 2
+
+
+def _por_turnos(conn, de_cada_una: dict, hoy: str) -> list:
+    """El orden de la noche, en tres vueltas, y en cada una por TURNOS entre
+    personas (ronda 1: lo primero de cada una; ronda 2: lo segundo; …):
+      1. lo de las listas de la app o BYMA (`_es_de_la_app`). Cada persona lo
+         ordena por `_turno` (nunca intentado, historia entera, puesta al día,
+         lo que falló);
+      2. lo raro (ya dentro del cupo de cada persona) que no falló: lo nunca
+         intentado, la historia entera y la puesta al día;
+      3. lo raro que falló la última vez.
+
+    Por qué: lo «nunca intentado» iba primero para todos, y una cuenta (o un
+    asesor con cientos de clientes) con símbolos inventados los tiene siempre
+    nunca intentados. Con 1.300 inventados, los reales salían en la última
+    tanda (re-test E4); con un asesor de 100 clientes, 36 de 189 reales sin
+    actualizar en una noche de 15 minutos (ronda 2). Ahora lo inventado nunca
+    va delante de algo de las listas, y entre personas cada una avanza al mismo
+    ritmo: los que meten mucho sólo se atrasan a sí mismos. Lo raro de UNA
+    persona no tapa a lo raro nuevo de las demás (ronda 3: 7.400 raros ya
+    bajados de una cuenta dejaban sin bajar los 40 nuevos de otros)."""
+    estado = _estado_de_cada_ticker(conn)
+    es_de_la_app = _es_de_la_app()
+
+    def vuelta(t):
+        if es_de_la_app(t):
+            return 0
+        return 2 if _turno(estado, t, hoy) == 3 else 1
+
+    vueltas = ([], [], [])
+    for uid in sorted(de_cada_una, key=str):
+        suyos = sorted(de_cada_una[uid], key=lambda t: _turno(estado, t, hoy))   # estable: el orden de las puertas
+        por_vuelta = ([], [], [])
+        for t in suyos:
+            por_vuelta[vuelta(t)].append(t)
+        for v in range(3):
+            vueltas[v].append(por_vuelta[v])
+    orden, puestos = [SP500], {SP500}
+    for listas in vueltas:
+        for k in range(max((len(x) for x in listas), default=0)):
+            for lista in listas:
+                if k < len(lista) and lista[k] not in puestos:
+                    puestos.add(lista[k])
+                    orden.append(lista[k])
+    return orden
 
 
 # ─── Bajar y guardar ─────────────────────────────────────────────────────────
@@ -349,7 +536,7 @@ def _toca_completa(est: dict, hoy: str) -> bool:
 
 def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
                tope_seg: float = TOPE_CORRIDA_SEG, tope_tanda: float = TOPE_TANDA_SEG,
-               podar: bool = True) -> dict:
+               podar: bool = True, en_orden: bool = False) -> dict:
     """Pone al día las velas de estos tickers. Idempotente: correrlo dos veces
     seguidas no cambia nada.
 
@@ -364,7 +551,9 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
 
     `tope_tanda`: cuánto se espera a Yahoo por tanda (la ficha a pedido espera
     poco). `podar`: borrar lo que quedó más viejo que 3 años; la ficha a pedido
-    no lo hace (es un borrado de toda la tabla y lo hace la corrida de la noche)."""
+    no lo hace (es un borrado de toda la tabla y lo hace la corrida de la noche).
+    `en_orden`: respetar el orden de `tickers` (la noche lo trae repartido por
+    personas, `_por_turnos`) en vez de ordenar por `_turno`."""
     from fechas import hoy_art
     from pricing import yahoo as _yahoo
     bajar = bajar or _bajar
@@ -376,20 +565,11 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
 
     estado = {r['symbol']: dict(r) for r in conn.execute(
         "SELECT symbol, ultima_completa, ok FROM velas_estado").fetchall()}
-    def _turno(t):
-        # Primero lo que nunca se intentó, después lo que necesita la historia
-        # entera, después la puesta al día, y AL FINAL lo que falló la última
-        # vez. Antes "lo que nunca se bajó" iba primero siempre, y un símbolo
-        # que nunca trae datos (inventado en una watchlist) nunca deja de ser
-        # "nunca bajado": con miles, se comían el tope de la noche y los activos
-        # de verdad no se actualizaban (auditoría de seguridad 22/10).
-        e = estado.get(t)
-        if e is None:
-            return 0
-        if not e.get('ok'):
-            return 3
-        return 1 if _toca_completa(e, hoy) else 2
-    pendientes = sorted(set(t for t in (tickers or []) if t), key=lambda t: (_turno(t), t))
+    if en_orden:
+        # El orden ya viene decidido (la noche: `_por_turnos`).
+        pendientes = list(dict.fromkeys(t for t in (tickers or []) if t))
+    else:
+        pendientes = sorted(set(t for t in (tickers or []) if t), key=lambda t: (_turno(estado, t, hoy), t))
 
     res = {"pedidos": len(pendientes), "completas": 0, "incrementales": 0,
            "reescritas": [], "sin_datos": [], "sin_tiempo": 0, "filas": 0}
@@ -452,8 +632,9 @@ def correr(conn) -> dict:
     ya guardadas, la lista única de cambios de ratio (`cambios_ratio`), a la que
     se le pasa de cada CEDEAR cuál es su acción de afuera. Un error de la lista
     no toca las velas."""
-    tickers, pares = _seguimiento(conn)
-    res = actualizar(conn, sorted(tickers))
+    from fechas import hoy_art
+    tickers, pares, de_cada_una = _seguimiento_por_persona(conn)
+    res = actualizar(conn, _por_turnos(conn, de_cada_una, hoy_art()), en_orden=True)
     res["podados_a_pedido"] = _podar_a_pedido(conn, tickers)
     # Cuándo corrió la NOCHE, aparte de cada activo: las fichas abiertas a pedido
     # también anotan su `ultima_corrida`, y /admin no tiene que confundirlas.
@@ -512,35 +693,80 @@ def _variantes(asset: str) -> set:
     return {a, base, base.replace('.', '-'), base.replace('-', '.')}
 
 
-def se_puede_pedir(conn, asset: str, uid) -> bool:
-    """¿La app conoce este activo? Lo que ofrecen los buscadores y lo que se
-    puede tocar en Mercado (la lista de tickers de la app, `ai.trade_tickers`,
-    y el mapa de calor/movers, `home.market`), lo que cotiza en BYMA (data912)
-    y lo que la persona tiene, operó o sigue. Lo demás no se baja a pedido:
-    sin esto, cualquier cuenta podía llenar la base pidiendo, de a 30 por hora,
-    las decenas de miles de tickers reales que existen (auditoría 22/10)."""
+def _lista_de_la_app() -> set:
+    """Las listas de la app: lo que ofrecen los buscadores y lo que se puede
+    tocar en Mercado (`ai.trade_tickers`, `home.market`) y lo que cotiza en BYMA
+    (data912), con todas sus variantes (`_variantes`)."""
     from ai import trade_tickers as tt
     from home import market as mk
-    v = _variantes(asset)
-    conocidos = (tt.CRYPTO_TICKERS | tt.US_TICKERS | tt.CEDEAR_TICKERS | tt.AR_STOCK_TICKERS)
-    if v & conocidos:
-        return True
-    mercado = {x for lista in (mk.SP500_TOP_50, mk.MERVAL_TOP_25, mk.CRYPTO_TOP_30)
-               for s in lista for x in _variantes(s)}
-    if v & mercado:
-        return True
+    out = set(tt.CRYPTO_TICKERS | tt.US_TICKERS | tt.CEDEAR_TICKERS | tt.AR_STOCK_TICKERS)
+    out |= {x for lista in (mk.SP500_TOP_50, mk.MERVAL_TOP_25, mk.CRYPTO_TOP_30)
+            for s in lista for x in _variantes(s)}
     try:
         from main import _fetch_data912_equities
-        if v & set((_fetch_data912_equities() or {}).keys()):
-            return True
+        out |= set((_fetch_data912_equities() or {}).keys())
     except Exception:
         pass
+    return out
+
+
+def _lo_conoce_la_app(v: set) -> bool:
+    """¿Está en las listas de la app (`_lista_de_la_app`)? `v`: las variantes
+    del activo (`_variantes`)."""
+    return bool(v & _lista_de_la_app())
+
+
+def _lo_tiene(conn, v: set, uid, tablas) -> bool:
     marcas = ",".join("?" * len(v))
-    for tabla, col in (("positions", "asset"), ("operations", "asset"), ("watchlist", "symbol")):
+    for tabla, col in tablas:
         if conn.execute(f"SELECT 1 FROM {tabla} WHERE user_id=? AND UPPER({col}) IN ({marcas}) LIMIT 1",
                         (uid, *v)).fetchone():
             return True
     return False
+
+
+def se_puede_pedir(conn, asset: str, uid) -> bool:
+    """¿Se BAJA a pedido? Lo que la app conoce (`_lo_conoce_la_app`) y lo que la
+    persona tiene, operó o sigue. Lo demás no se baja a pedido: sin esto,
+    cualquier cuenta podía llenar la base pidiendo, de a 30 por hora, las
+    decenas de miles de tickers reales que existen (auditoría 22/10).
+
+    NO es la regla de qué se puede GUARDAR (una tesis, un dibujo, una alerta):
+    ésa es `es_activo_real`. La lista de seguimiento acepta cualquier texto con
+    forma de ticker, y si «lo sigo» bastara para guardar, cualquier símbolo
+    inventado pasaba por esa puerta (re-test E4, 29/10)."""
+    v = _variantes(asset)
+    return _lo_conoce_la_app(v) or _lo_tiene(
+        conn, v, uid, (("positions", "asset"), ("operations", "asset"), ("watchlist", "symbol")))
+
+
+def es_activo_real(conn, asset: str, *uids) -> bool:
+    """¿Existe este activo, para guardarle algo encima (una tesis, un dibujo,
+    una alerta técnica)? LA regla, una sola:
+      · lo conoce la app (`_lo_conoce_la_app`), o
+      · tiene velas guardadas: lo bajó la noche o la ficha de alguien, o sea
+        que Yahoo lo conoce y la ficha lo muestra con su gráfico. «Lo que la
+        ficha muestra se puede dibujar, avisar y comentar»: YPF, SMCI o ARM no
+        están en las listas de la app, y sin esto no se podían dibujar aunque
+        el gráfico estuviera a la vista (re-test E3, 29/10), o
+      · alguna de estas personas lo tiene o lo operó (un fondo no tiene
+        velas, y su tesis igual vale).
+    La lista de seguimiento NO alcanza: acepta cualquier texto, y un símbolo
+    real que alguien sigue ya tiene velas (lo baja la noche, o su ficha).
+    `uids`: de quién puede ser (los dibujos son del asesor que los hace, sobre
+    el activo del cliente que mira)."""
+    v = {x for x in _variantes(asset) if x}
+    if not v:
+        return False
+    if _lo_conoce_la_app(v):
+        return True
+    yahoo = v | {x + '.BA' for x in v} | {x + '-USD' for x in v}
+    marcas = ",".join("?" * len(yahoo))
+    if conn.execute(f"SELECT 1 FROM velas_diarias WHERE symbol IN ({marcas}) LIMIT 1",
+                    tuple(yahoo)).fetchone():
+        return True
+    return any(u and _lo_tiene(conn, v, u, (("positions", "asset"), ("operations", "asset")))
+               for u in uids)
 
 
 def tickers_a_pedido(asset: str, local: bool = False, cedears=None) -> list:

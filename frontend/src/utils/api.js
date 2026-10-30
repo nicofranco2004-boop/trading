@@ -147,8 +147,10 @@ async function req(method, path, body, opts) {
     signal: opts?.signal,
   })
   // GET es idempotente → se reintenta solo. El resto (POST/PATCH/DELETE) no:
-  // repetirlo podría duplicar un alta.
-  const res = method === 'GET'
+  // repetirlo podría duplicar un alta. Salvo las lecturas que van por POST
+  // (`esLecturaPorPost`): no escriben nada, y el servidor las frena con un 503
+  // cuando hay demasiadas a la vez entre todos.
+  const res = method === 'GET' || esLecturaPorPost(method, path)
     ? await withGatewayRetry(doFetch, { signal: opts?.signal })
     : await doFetch()
 
@@ -168,8 +170,21 @@ async function req(method, path, body, opts) {
   }
 
   const datos = await res.json()
-  if (method !== 'GET') avisarEscritura(path)
+  if (method !== 'GET' && !esLecturaPorPost(method, path)) avisarEscritura(path)
   return datos
+}
+
+// Las lecturas que van por POST porque mandan una lista larga en el cuerpo
+// («Tu lista», la radiografía de la Cartera, la tendencia del diario). Son las
+// del servidor marcadas `@no_escribe_en_el_cliente` que sólo LEEN (los dibujos
+// también están marcados, pero guardan). Con varias cuentas pidiendo lecturas
+// pesadas a la vez, el servidor contesta 503 «probá en unos segundos» (el tope
+// entre todos, `PESADOS_A_LA_VEZ`); antes sólo se reintentaban los GET, y estas
+// tres mostraban el error en el 37 % de los pedidos con 3 cuentas atacando
+// (re-test E1, ronda 2). Tampoco avisan «cambió la cartera»: no la cambian.
+const LECTURAS_POR_POST = ['/tecnico/cartera', '/tecnico/lista', '/tecnico/en-fechas']
+export function esLecturaPorPost(method, path) {
+  return method === 'POST' && LECTURAS_POR_POST.includes(String(path || '').split('?')[0])
 }
 
 // ¿Cambió la cartera en el servidor desde esta pestaña? Cada escritura que sale

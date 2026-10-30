@@ -9,7 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, field_validator, model_validator, Field
 from typing import Any, Literal, Optional, List
 import sqlite3, os, secrets, time, hashlib, hmac, json, threading, asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import dberrors
 from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 # Las filas importadas que CUENTAN (confirmadas y sin lápida). Va arriba de todo:
@@ -512,6 +512,11 @@ class _ReconstruirAlTerminar:
 
 
 app.add_middleware(_ReconstruirAlTerminar)
+
+# Marca cada pedido HTTP para el guardián de las lecturas pesadas (pesado.py):
+# una función `@pesado` que corre en un pedido sin `_freno_tecnico` se anota.
+import pesado as _pesado  # noqa: E402
+app.add_middleware(_pesado.MarcarPedido)
 
 
 # ─── Modo mantenimiento ───────────────────────────────────────────────────────
@@ -2717,6 +2722,19 @@ def init_db():
             DROP INDEX IF EXISTS idx_tesis_user_asset;
         """)
 
+        # Cuántas tesis NUEVAS escribió cada persona cada día (`tesis.guardar`).
+        # Aparte de `tesis` porque borrar una tesis no puede devolver el cupo: el
+        # tope de 20 por día se renovaba borrando (re-test E2, 29/10). Se poda
+        # sola (`tesis.guardar` borra los días viejos).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tesis_del_dia (
+                user_id INTEGER NOT NULL,
+                dia TEXT NOT NULL,               -- 'YYYY-MM-DD', día argentino
+                nuevas INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (dia, user_id)
+            );
+        """)
+
         # Los dibujos a mano del gráfico técnico (líneas de tendencia y
         # horizontales, como TradingView), de cada persona por activo y moneda,
         # para verlos en todos sus dispositivos. `datos` es la lista entera en
@@ -4074,6 +4092,28 @@ CLIENT_CTX_EXEMPT_PREFIXES = (
 # de cliente. Si agregás un endpoint de IDENTIDAD/CUENTA/PAGO nuevo, agregalo acá.
 
 
+def no_escribe_en_el_cliente(fn):
+    """Marca un endpoint que NO es GET y no escribe nada en la cuenta del cliente
+    que se mira: una lectura que manda una lista en el cuerpo (POST
+    /api/tecnico/lista) o algo que se guarda en la cuenta del que pide (los
+    dibujos del asesor). La regla de sólo lectura (`_resolve_client_context`)
+    pregunta si el pedido escribe en el cliente, no qué verbo usa: sin esto, la
+    asesora de sólo lectura no veía la radiografía ni «Tu lista» de su cliente
+    (auditoría E6, 29/10). Marcar uno que sí escribe abre la cuenta del cliente:
+    el test de la marca cuenta las filas de toda la base antes y después."""
+    fn._rendi_no_escribe_en_el_cliente = True
+    return fn
+
+
+def _escribe_en_la_cuenta(request: Request) -> bool:
+    """¿Este pedido escribe en la cuenta que se mira? Un GET no; un endpoint
+    marcado con `no_escribe_en_el_cliente` tampoco. La usan la regla de sólo
+    lectura y la marca de «contabilidad tocada» (`get_effective_user`)."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return False
+    return not getattr(request.scope.get("endpoint"), "_rendi_no_escribe_en_el_cliente", False)
+
+
 def _resolve_client_context(request: Request, uid: int) -> Optional[int]:
     """Devuelve el uid del cliente si el contexto aplica, None si no.
 
@@ -4108,7 +4148,7 @@ def _resolve_client_context(request: Request, uid: int) -> Optional[int]:
     if not row:
         # 403 explícito — jamás degradar en silencio al uid propio.
         raise HTTPException(403, "Sin acceso a ese cliente")
-    if request.method not in ("GET", "HEAD", "OPTIONS") and row["permission"] != "read_write":
+    if _escribe_en_la_cuenta(request) and row["permission"] != "read_write":
         raise HTTPException(403, "Acceso de solo lectura a ese cliente")
     return client_id
 
@@ -4295,8 +4335,13 @@ def get_effective_user(
     # esta cuenta con la que describe su historia reconstruida y, si cambió, se
     # rehace (`_ReconstruirAlTerminar`). Se anota ACÁ por la misma razón que el
     # muro: es el paso obligado de todos los endpoints de datos, así que cubre
-    # también al que se agregue mañana sin acordarse de esto.
-    _contabilidad_tocada(uid_efectivo)
+    # también al que se agregue mañana sin acordarse de esto. Un pedido que no
+    # escribe (`_escribe_en_la_cuenta`: «Tu lista», la radiografía) no la toca:
+    # sin esto, la asesora de SÓLO LECTURA que miraba la radiografía de un
+    # cliente le reconstruía la historia (escribía fotos y `mtm_huella` en su
+    # cuenta), y cada «Tu lista» pagaba la comparación (auditoría E6, 29/10).
+    if _escribe_en_la_cuenta(request):
+        _contabilidad_tocada(uid_efectivo)
     return uid_efectivo
 
 
@@ -5478,6 +5523,10 @@ _RESET_ADMIN_CONSERVADAS = {
                         "freno para no mandar dos veces el del día",
     "uso_diario": "lo que Rendi midió de su uso (panel de uso del admin): borrarlo cambia la "
                   "historia de cuántos usaron la app cada día",
+    # Decidido al juntar Arreglos C (este censo) con Arreglos E (que creó la
+    # tabla), 30/10: es un contador de cupo, como el de la IA.
+    "tesis_del_dia": "contador del tope de tesis nuevas por día (E2): borrarlo es regalarse "
+                     "cupo; se poda solo al día siguiente",
 }
 
 # Tablas con `user_id` que el reset de admin SÍ borra, pero no por la lista.
@@ -6101,7 +6150,9 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         # Feature gate: el tope de brokers de cada plan (PLAN_LIMITS). Grandfather:
         # usuarios preexistentes con más conservan sus brokers pero no agregan
-        # más hasta upgrade. Admin/Pro: sin tope.
+        # más hasta upgrade. Admin/Pro: sin tope. El turno antes de contar: sin
+        # él, diez altas juntas contaban todas «0» (auditoría E5, 29/10).
+        _tomar_turno(conn, uid)
         allowed, quota_info = plan.check_broker_quota(conn, uid)
         if not allowed:
             tier = quota_info["tier"]
@@ -10169,6 +10220,31 @@ import re
 # pegado ('POPCAT28782-USD', ver `_YAHOO_CRIPTO_DISTINTO`).
 _SYMBOL_RE = re.compile(r'^[A-Z0-9]{1,12}([\.\-][A-Z0-9]{1,4})?$')
 
+
+def _exigir_activo_valido(conn, asset: str, *uids) -> None:
+    """400 si `asset` no es un activo REAL para alguna de estas personas. LA
+    definición es una sola, `velas_diarias.es_activo_real`: un activo de las
+    listas de la app o de BYMA, uno con velas guardadas (lo que la ficha
+    muestra con gráfico), o uno que la persona tiene u operó. La usan la tesis,
+    los dibujos y las alertas técnicas, y la noche para las alertas técnicas.
+
+    `_SYMBOL_RE` dice si algo TIENE FORMA de ticker, no si existe: con sólo eso
+    (o con texto libre, la tesis), cada símbolo inventado era una fila nueva sin
+    tope —300 recordatorios = 302 mails en un día, 400 gráficos = 14 MB— y una
+    pregunta a Yahoo esa noche (auditoría E2/E3/E4, 29/10). `uids`: de quién
+    puede ser (los dibujos son del asesor que los hace, sobre el activo del
+    cliente que mira).
+
+    El texto lo muestra la pantalla tal cual: tiene que decir el motivo, no
+    «no se pudo guardar» (re-test E3)."""
+    import velas_diarias
+    a = (asset or "").strip()
+    if a and velas_diarias.es_activo_real(conn, a, *uids):
+        return
+    raise HTTPException(400, f"Todavía no tenemos el gráfico de «{a[:20]}». Si es un activo real, "
+                             "sumalo a tu lista de seguimiento, abrí su ficha y probá de nuevo.")
+
+
 MAX_SYMBOLS = 60  # hard cap on number of symbols per request
 
 
@@ -11768,7 +11844,7 @@ def _variacion_del_dia(symbols, uid=None, *, tope=None) -> dict:
 # ─── Lectura técnica de la ficha del activo ─────────────────────────────────
 
 @app.get("/api/tecnico/{asset}")
-def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None,
+def get_tecnico(request: Request, asset: str, moneda: str = "usd", local: int = 0, ref: str = None,
                 uid: int = Depends(get_effective_user)):
     """La serie del gráfico técnico (precio, medias de 50 y 200, RSI) y los
     números de la lectura, en dólares (default) o en pesos. Sale de las velas
@@ -11789,7 +11865,9 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
         raise HTTPException(400, f"Símbolo inválido: {ref}")
     import tecnico
     import velas_diarias
-    with db_abierta() as conn:
+    # El freno de la ficha (`_freno_tecnico`, tipo «uno»): 45 fichas distintas a
+    # la vez dejaron el «¿estás vivo?» en 33 s (re-test E1, 29/10).
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         tickers, motivo = [], None
         try:
             tickers = velas_diarias.tickers_a_pedido(sym, bool(local))
@@ -11832,6 +11910,110 @@ class CarteraTecnicaIn(BaseModel):
     activos: List[ActivoTecnicoIn] = Field(default_factory=list, max_length=MAX_ACTIVOS_CARTERA)
 
 
+# ─── Freno para las lecturas técnicas ────────────────────────────────────────
+# «Tu lista», la radiografía, el diario de operaciones y «Tus señales» leen
+# hasta 200 activos por pedido; la ficha lee uno, con 3 años de velas. Lo ya
+# leído se guarda (tecnico._leer_varios), pero el PRIMER pedido de cada activo
+# se calcula, y el servidor es un solo proceso con 40 lugares: 45 pedidos a la
+# vez de una cuenta gratis lo dejaron 5 minutos sin contestarle a nadie
+# (auditoría E1, 29/10).
+#
+# Dos frenos, los dos en el momento (esperar en una fila ocuparía otro de los
+# 40 lugares, que es justo lo que traba al servidor):
+#   · POR PERSONA (la que pide: el asesor mirando un cliente gasta el suyo),
+#     en «Tu lista», la radiografía, el diario, «Tus señales» y tus tesis
+#     («muchos»), y en la ficha (la serie, sus fechas y su peso: «uno»),
+#     por tipo de lectura: `FRENO_TECNICO` = {tipo: (por minuto, a la vez)}.
+#     Pasado eso, 429. Una pantalla normal pide una lectura de muchos activos
+#     por vez, y la ficha una lectura por activo y moneda.
+#   · ENTRE TODOS: hasta `PESADOS_A_LA_VEZ` lecturas corriendo en todo el
+#     servidor, sean de quien sean. Pasado eso, 503 con `Retry-After`: la
+#     pantalla lo reintenta sola (utils/gatewayRetry.js). Sin éste, el freno
+#     por persona se esquivaba con más cuentas: 14 cuentas gratis × 3 a la vez
+#     dejaron el «¿estás vivo?» en 48,8 s (re-test E1, 29/10). Así quedan
+#     siempre 40 − 8 lugares para el resto de la app. Y cuando ya va la mitad
+#     ocupada, cada persona tiene UNA corriendo como mucho: los lugares que
+#     quedan se reparten entre más gente, en vez de que tres cuentas con 3
+#     cada una los tomen todos (re-test E1, ronda 2).
+# En la memoria del proceso como `_rate_store`, y con candado: contar y anotar
+# son un solo paso (sin él, 45 pedidos juntos contaban todos «0»).
+FRENO_TECNICO_POR_MINUTO = 30
+FRENO_TECNICO_A_LA_VEZ = 3
+FRENO_TECNICO = {
+    "muchos": (FRENO_TECNICO_POR_MINUTO, FRENO_TECNICO_A_LA_VEZ),   # lista, radiografía, diario, señales
+    # La ficha pide tres cosas al abrirse (la serie, sus fechas importantes y
+    # cuánto pesa en tu cartera): 90 por minuto son 30 fichas por minuto.
+    "uno": (90, 3),
+}
+PESADOS_A_LA_VEZ = 8
+_freno_hechos: dict = {}       # (quién, tipo) → deque de instantes (los del último minuto)
+_freno_corriendo: dict = {}    # (quién, tipo) → cuántos están corriendo
+_freno_total = [0]             # cuántas lecturas corren en todo el servidor
+_freno_de_cada_uno: dict = {}  # quién → cuántas tiene corriendo (de cualquier tipo)
+_freno_candado = threading.Lock()
+_freno_reloj = time.monotonic
+
+
+def _freno_reiniciar() -> None:
+    with _freno_candado:
+        _freno_hechos.clear()
+        _freno_corriendo.clear()
+        _freno_total[0] = 0
+        _freno_de_cada_uno.clear()
+
+
+@contextmanager
+def _freno_tecnico(request: Request, uid: int, tipo: str = "muchos"):
+    from collections import deque
+    # `request` falta cuando la ruta se llama a mano (un test, otra función):
+    # el freno cuenta igual, a nombre de `uid`.
+    quien = (getattr(getattr(request, "state", None), "rendi_auth_uid", None) or uid, tipo)
+    por_minuto, a_la_vez = FRENO_TECNICO[tipo]
+    if tipo == "muchos":   # las pruebas cambian estos dos
+        por_minuto, a_la_vez = FRENO_TECNICO_POR_MINUTO, FRENO_TECNICO_A_LA_VEZ
+    ahora = _freno_reloj()
+    with _freno_candado:
+        hechos = _freno_hechos.setdefault(quien, deque())
+        while hechos and ahora - hechos[0] >= 60:
+            hechos.popleft()
+        if len(hechos) >= por_minuto:
+            espera = max(1, int(60 - (ahora - hechos[0])) + 1)
+            raise HTTPException(429, "Pediste muchas lecturas seguidas. Esperá un minuto y probá de nuevo.",
+                                headers={"Retry-After": str(espera)})
+        if _freno_corriendo.get(quien, 0) >= a_la_vez:
+            raise HTTPException(429, "Ya estamos preparando tus lecturas. Esperá unos segundos y probá de nuevo.",
+                                headers={"Retry-After": "5"})
+        if _freno_total[0] >= PESADOS_A_LA_VEZ or (
+                _freno_total[0] >= PESADOS_A_LA_VEZ // 2 and _freno_de_cada_uno.get(quien[0], 0) >= 1):
+            raise HTTPException(503, "Hay mucha gente mirando gráficos en este momento. "
+                                     "Probá de nuevo en unos segundos.",
+                                headers={"Retry-After": "3"})
+        hechos.append(ahora)
+        _freno_corriendo[quien] = _freno_corriendo.get(quien, 0) + 1
+        _freno_total[0] += 1
+        _freno_de_cada_uno[quien[0]] = _freno_de_cada_uno.get(quien[0], 0) + 1
+        if len(_freno_hechos) > 10_000:
+            for k in [k for k, v in _freno_hechos.items() if not v and k not in _freno_corriendo]:
+                del _freno_hechos[k]
+    marca = _pesado._con_freno.set(True)
+    try:
+        yield
+    finally:
+        _pesado._con_freno.reset(marca)
+        with _freno_candado:
+            _freno_total[0] = max(0, _freno_total[0] - 1)
+            m = _freno_de_cada_uno.get(quien[0], 1) - 1
+            if m > 0:
+                _freno_de_cada_uno[quien[0]] = m
+            else:
+                _freno_de_cada_uno.pop(quien[0], None)
+            n = _freno_corriendo.get(quien, 1) - 1
+            if n > 0:
+                _freno_corriendo[quien] = n
+            else:
+                _freno_corriendo.pop(quien, None)
+
+
 def _lecturas_tecnicas(body: CarteraTecnicaIn, leer) -> dict:
     """Separa lo que es un ticker de lo que no (un fondo con espacios en el
     nombre) y lee lo válido con `leer(conn, [(asset, local)])`. Lo inválido
@@ -11847,7 +12029,8 @@ def _lecturas_tecnicas(body: CarteraTecnicaIn, leer) -> dict:
 
 
 @app.post("/api/tecnico/cartera")
-def post_tecnico_cartera(body: CarteraTecnicaIn, uid: int = Depends(get_effective_user)):
+@no_escribe_en_el_cliente
+def post_tecnico_cartera(body: CarteraTecnicaIn, request: Request, uid: int = Depends(get_effective_user)):
     """La lectura técnica en dólares de varios activos de una vez, para la
     radiografía de la Cartera (tecnico.para_la_cartera). La pantalla manda sus
     activos con la marca `local` de la ficha. Un símbolo que no es un ticker
@@ -11861,20 +12044,24 @@ def post_tecnico_cartera(body: CarteraTecnicaIn, uid: int = Depends(get_effectiv
     import tecnico
     import senales_semana
     from fechas import hoy_art_date
-    out = _lecturas_tecnicas(body, tecnico.para_la_cartera)
-    with db_abierta() as conn:
-        out["reparto"] = senales_semana.reparto(conn, uid, hoy_art_date())
-    return out
+    with _freno_tecnico(request, uid):
+        out = _lecturas_tecnicas(body, tecnico.para_la_cartera)
+        with db_abierta() as conn:
+            out["reparto"] = senales_semana.reparto(conn, uid, hoy_art_date())
+        return out
 
 
 @app.post("/api/tecnico/lista")
-def post_tecnico_lista(body: CarteraTecnicaIn, uid: int = Depends(get_effective_user)):
+@no_escribe_en_el_cliente
+def post_tecnico_lista(body: CarteraTecnicaIn, request: Request, uid: int = Depends(get_effective_user)):
     """«Tu lista, con su lectura técnica» (inicio → Watchlist → «Ver como
     tablero»): lo que tenés y lo que seguís, en dólares (tecnico.para_la_lista).
     La pantalla manda lo que sigue (su watchlist) con la marca `local` de la
     ficha; lo que TENÉS lo pone el servidor. Mismo tope y misma regla que
     /api/tecnico/cartera: un símbolo que no es un ticker vuelve «sin lectura»
-    sin tirar abajo el resto.
+    sin tirar abajo el resto. El tope (`MAX_ACTIVOS_CARTERA`) es de LECTURAS:
+    lo tuyo más lo que seguís; lo tuyo va primero (auditoría E1: con 200
+    seguidos más lo que tenés, se leían más de 200).
 
     `tenencias`: [{asset, local, peso, tipo}] — lo que tenés y cuánto pesa sobre
     toda tu plata, con la valuación del servidor (`senales_semana.cartera`, LA
@@ -11882,19 +12069,22 @@ def post_tecnico_lista(body: CarteraTecnicaIn, uid: int = Depends(get_effective_
     se calcula en la pantalla). De cada una viene también su lectura."""
     import tecnico
     import senales_semana
-    with db_abierta() as conn:
-        car = senales_semana.cartera(conn, uid)
-    tuyas = list(car["tenencias"])
-    out = _lecturas_tecnicas(
-        body, lambda conn, pedidos: tecnico.para_la_lista(conn, tuyas + [k for k in pedidos if k not in car["tenencias"]]))
-    out["tenencias"] = [
-        {"asset": a, "local": l, "peso": senales_semana.peso(car, a, l), "tipo": car["tipos"].get((a, l)) or None}
-        for (a, l), v in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
-    return out
+    with _freno_tecnico(request, uid):
+        with db_abierta() as conn:
+            car = senales_semana.cartera(conn, uid)
+        tuyas = [k for k, _ in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
+        out = _lecturas_tecnicas(
+            body, lambda conn, pedidos: tecnico.para_la_lista(
+                conn, (tuyas + [k for k in pedidos if k not in car["tenencias"]])[:MAX_ACTIVOS_CARTERA]))
+        out["lecturas"] = out["lecturas"][:MAX_ACTIVOS_CARTERA]
+        out["tenencias"] = [
+            {"asset": a, "local": l, "peso": senales_semana.peso(car, a, l), "tipo": car["tipos"].get((a, l)) or None}
+            for (a, l), v in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
+        return out
 
 
 @app.get("/api/tus-senales")
-def get_tecnico_semana(uid: int = Depends(get_effective_user)):
+def get_tecnico_semana(request: Request, uid: int = Depends(get_effective_user)):
     """«Tus señales» (Mercado → Novedades). Ruta propia y no /api/tecnico/semana:
     ésa la atrapa la ficha (`/api/tecnico/{asset}`, «SEMANA» como ticker).
     Lo que cambió en los últimos 7 días
@@ -11904,7 +12094,10 @@ def get_tecnico_semana(uid: int = Depends(get_effective_user)):
     (senales_semana.armar_semana)."""
     import senales_semana
     from fechas import hoy_art_date
-    with db_abierta() as conn:
+    # La misma lectura de muchos activos que «Tu lista» (hasta 100 de tu
+    # watchlist más lo que tenés): el mismo freno. Sin él, 45 a la vez de una
+    # cuenta dejaron el «¿estás vivo?» en 44 s (re-test E1, 29/10).
+    with _freno_tecnico(request, uid), db_abierta() as conn:
         out = senales_semana.armar_semana(conn, uid, hoy_art_date())
         out["canal"] = senales_semana.canal(conn, uid)
         # Cuándo sale el próximo resumen: lo dice el que lo manda (A9).
@@ -11943,27 +12136,40 @@ class TendenciasEnFechasIn(BaseModel):
 
 
 @app.post("/api/tecnico/en-fechas")
-def tecnico_en_fechas(data: TendenciasEnFechasIn, uid: int = Depends(get_effective_user)):
+@no_escribe_en_el_cliente
+def tecnico_en_fechas(data: TendenciasEnFechasIn, request: Request, uid: int = Depends(get_effective_user)):
     """¿Cómo estaba la tendencia de fondo de cada activo en cada fecha? Para el
     diario de operaciones: la del día en que compraste cada operación cerrada.
     Misma regla y misma serie que la ficha (tecnico.tendencia_del_dia).
-    {resultados: {id: {tendencia, fecha, precio, media200, dist} | {tendencia: None, motivo}}}"""
+    {resultados: {id: {tendencia, fecha, precio, media200, dist} | {tendencia: None, motivo}}}
+
+    Hasta 2000 operaciones, pero de hasta `MAX_ACTIVOS_CARTERA` activos
+    distintos: lo que cuesta es leer cada serie, no cada fecha (auditoría E1:
+    2000 operaciones de 2000 activos eran 2000 series). Las de más contestan
+    `motivo: 'tope'`."""
     import tecnico
     pedidos = []
     out = {}
+    series = set()
     for it in data.items:
         sym = (it.asset or "").strip().upper()
         if not _SYMBOL_RE.match(sym):
             out[it.id] = {"tendencia": None, "motivo": "sin_velas"}
             continue
+        clave = (sym, bool(it.local))
+        if clave not in series and len(series) >= MAX_ACTIVOS_CARTERA:
+            out[it.id] = {"tendencia": None, "motivo": "tope"}
+            continue
+        series.add(clave)
         pedidos.append({"id": it.id, "asset": sym, "local": it.local, "fecha": it.fecha})
-    with db_abierta() as conn:
-        out.update(tecnico.tendencias_en_fechas(conn, pedidos))
-    return {"resultados": out}
+    with _freno_tecnico(request, uid):
+        with db_abierta() as conn:
+            out.update(tecnico.tendencias_en_fechas(conn, pedidos))
+        return {"resultados": out}
 
 
 @app.get("/api/tecnico/{asset}/peso")
-def get_tecnico_peso(asset: str, uid: int = Depends(get_effective_user)):
+def get_tecnico_peso(request: Request, asset: str, uid: int = Depends(get_effective_user)):
     """Qué parte de toda tu plata es este activo, para «En tu cartera» de
     «Cuánto se mueve» en la ficha: `senales_semana.peso`, LA misma cuenta de Tu
     lista y de Señales (antes la ficha dividía lo tuyo de hoy por el total de la
@@ -11973,7 +12179,8 @@ def get_tecnico_peso(asset: str, uid: int = Depends(get_effective_user)):
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
     import senales_semana
-    with db_abierta() as conn:
+    # Valúa toda tu cartera: el freno de la ficha, como sus otras dos lecturas.
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         return {"peso": senales_semana.peso(senales_semana.cartera(conn, uid), sym)}
 
 
@@ -11983,7 +12190,7 @@ _TOPE_EVENTOS_FICHA = 5.0
 
 
 @app.get("/api/tecnico/{asset}/eventos")
-def get_tecnico_eventos(asset: str, moneda: str = "usd", local: int = 0,
+def get_tecnico_eventos(request: Request, asset: str, moneda: str = "usd", local: int = 0,
                         uid: int = Depends(get_effective_user)):
     """Los balances («B») y dividendos («D») de la empresa dentro del gráfico de
     la ficha, cada uno con lo que se movió el precio en la serie del gráfico y
@@ -11997,7 +12204,8 @@ def get_tecnico_eventos(asset: str, moneda: str = "usd", local: int = 0,
     moneda = "ars" if moneda == "ars" else "usd"
     import movimiento
     import tecnico
-    with db_abierta() as conn:
+    # Lee la serie entera y puede ir a Yahoo: el mismo freno que la ficha.
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         empresa = tecnico.ticker_de_la_empresa(conn, sym, bool(local))
         velas = tecnico.serie(conn, sym, moneda, bool(local))["velas"]
         if not empresa or not velas:
@@ -12033,6 +12241,11 @@ def get_tecnico_eventos(asset: str, moneda: str = "usd", local: int = 0,
 # guarda los suyos, no le escribe al cliente.
 
 _DIBUJOS_MAXIMOS = 60
+# Gráficos con dibujos por persona. Los 60 de arriba son por gráfico (lo de ADENTRO
+# de cada fila); sin un tope de filas, cada activo era un gráfico más con sus 60
+# (auditoría E3, 29/10: 400 gráficos = 14 MB de una cuenta gratis). Una persona
+# que dibuja mucho anda por decenas.
+GRAFICOS_CON_DIBUJOS_MAX = 200
 
 
 class _PuntoDibujo(BaseModel):
@@ -12115,6 +12328,7 @@ def get_tecnico_dibujos(asset: str, request: Request, moneda: str = "usd",
 
 
 @app.put("/api/tecnico/{asset}/dibujos")
+@no_escribe_en_el_cliente
 def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: str = "usd",
                         uid: int = Depends(get_effective_user)):
     """Reemplaza tus dibujos de este activo en esta moneda por la lista que
@@ -12127,6 +12341,17 @@ def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: s
     lista = [d.model_dump(exclude_none=True) for d in data.dibujos]
     with db_abierta() as conn:
         if lista:
+            _exigir_activo_valido(conn, sym, dueno, uid)
+            # Contar y guardar en un solo turno (sin él, varios pedidos juntos
+            # contaban todos lo mismo y pasaban el tope).
+            _tomar_turno(conn, dueno)
+            nuevo = not conn.execute(
+                "SELECT 1 FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+                (dueno, sym, moneda)).fetchone()
+            if nuevo and conn.execute("SELECT COUNT(*) FROM dibujos_grafico WHERE user_id = ?",
+                                      (dueno,)).fetchone()[0] >= GRAFICOS_CON_DIBUJOS_MAX:
+                raise HTTPException(400, f"Ya dibujaste en {GRAFICOS_CON_DIBUJOS_MAX} gráficos. "
+                                         "Borrá los dibujos de alguno para dibujar en otro.")
             conn.execute(
                 """INSERT INTO dibujos_grafico (user_id, asset, moneda, datos)
                    VALUES (?, ?, ?, ?)
@@ -42615,6 +42840,9 @@ def _atomic_insert_fact(conn, uid: int, content: str, source: str):
     default es BEGIN DEFERRED y el SELECT no toma write lock → TOCTOU.
     """
     try:
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         cur = conn.execute(
             """INSERT INTO ai_user_facts(user_id, content, source)
                SELECT ?, ?, ?
@@ -48230,6 +48458,10 @@ def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:
+            # El turno antes de contar: sin él, diez altas juntas contaban todas
+            # «98» y pasaban el tope (auditoría E5, 29/10; la nota de capacidad
+            # midió 101 a 105).
+            _tomar_turno(conn, uid)
             ya = conn.execute("SELECT 1 FROM watchlist WHERE user_id=? AND symbol=?",
                               (uid, data.symbol)).fetchone()
             if not ya and conn.execute("SELECT COUNT(*) FROM watchlist WHERE user_id=?",
@@ -48458,11 +48690,16 @@ def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn") -> dict:
     symbol = _ae._norm_sym(symbol)
     if not symbol or symbol.startswith("FCI:") or not _SYMBOL_RE.match(symbol):
         raise HTTPException(400, "Ese activo no tiene análisis técnico.")
+    # Antes de guardarla y de preguntarle el precio a Yahoo: un símbolo inventado
+    # entraba a la descarga de la noche (velas_diarias._seguimiento) adelante de
+    # los de verdad (auditoría E4).
+    _exigir_activo_valido(conn, data.symbol, uid)
     currency = "ARS" if (data.currency or "").strip().upper() == "ARS" else "USD"
     # El sentido sólo vale para los cruces de un promedio; el RSI y el máximo
     # ya lo dicen en el nombre de la señal.
     direction = data.direction if data.senal in tecnico.SENALES_CON_SENTIDO else "either"
     local = 1 if data.accion_local else 0
+    _exigir_cupo_de_alertas(conn, uid)
     # Dos alertas que avisan lo mismo son dos mails por el mismo cruce. Se
     # pisan si es la misma señal y una de las dos es «los dos lados» o las dos
     # piden el mismo lado. La ficha ya muestra «Te avisamos» (alertaExistente,
@@ -48522,6 +48759,7 @@ def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn") -> dict:
     symbol = _ae._norm_sym(asset[:-3] if asset.endswith(".BA") else asset)
     if not symbol or not _SYMBOL_RE.match(symbol):
         raise HTTPException(400, "Ese activo no tiene análisis técnico.")
+    _exigir_cupo_de_alertas(conn, uid)
     # Una línea, un aviso: dos serían dos mails por el mismo toque.
     for r in conn.execute(
             "SELECT dibujo FROM alerts WHERE user_id=? AND kind='tecnica' AND active=1 AND senal=?",
@@ -48544,19 +48782,33 @@ def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn") -> dict:
             "velas": bool(_ae._serie_tecnica(conn, row))}
 
 
+def _exigir_cupo_de_alertas(conn, uid: int, *, con_turno: bool = True) -> None:
+    """403 si la persona llegó al tope de alertas de su plan (check_alert_quota).
+
+    `con_turno`: toma antes el turno de escritura de la cuenta (`_tomar_turno`),
+    así contar y guardar son un solo paso. Sin él, diez altas que llegaban juntas
+    contaban todas «1 de 3» y guardaban las diez (auditoría E5, 29/10). Se llama
+    sin turno al principio (para contestar rápido, antes de ir a Yahoo) y CON
+    turno justo antes del INSERT, que es el conteo que decide."""
+    from ai import plan as _plan
+    if con_turno:
+        _tomar_turno(conn, uid)
+    allowed, info = _plan.check_alert_quota(conn, uid)
+    if not allowed:
+        raise HTTPException(403, {
+            "error": "Llegaste al límite de alertas de tu plan.",
+            "quota": info, "upgrade": True})
+
+
 @app.post("/api/alerts")
-def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
+def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user), request: Request = None):
     """Crea una alerta. Gatea por cantidad (check_alert_quota) y por capacidad
     (pct_move = Plus+). Arma el edge-trigger según el precio actual."""
     import alerts_engine as _ae
     from ai import plan as _plan
     conn = get_db()
     try:
-        allowed, info = _plan.check_alert_quota(conn, uid)
-        if not allowed:
-            raise HTTPException(403, {
-                "error": "Llegaste al límite de alertas de tu plan.",
-                "quota": info, "upgrade": True})
+        _exigir_cupo_de_alertas(conn, uid, con_turno=False)
         if data.kind == "pct_move" and not _plan.can_access(conn, uid, "alerts.pct_move"):
             raise HTTPException(403, {
                 "error": "Las alertas de variación (%) son de Rendi Plus.",
@@ -48577,7 +48829,10 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
                 raise HTTPException(400, "Ingresá el precio objetivo.")
             currency = _moneda_del_aviso(symbol, currency)
         elif data.kind == "tecnica":
-            return _crear_alerta_tecnica(conn, uid, data)
+            # Lee la serie del activo para arrancar desde la última vela: una
+            # lectura pesada, con el freno de la ficha (pesado.py).
+            with _freno_tecnico(request, uid, "uno"):
+                return _crear_alerta_tecnica(conn, uid, data)
         else:  # pct_move — umbral asimétrico (sube ≥ up_pct% y/o cae ≥ down_pct%)
             if data.scope == "ticker" and not symbol:
                 raise HTTPException(400, "Elegí un ticker o la opción 'toda mi cartera'.")
@@ -48615,6 +48870,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
             elif baseline == "set_price":
                 anchor_price = current_price   # "Desde ahora": ancla = precio actual
 
+        _exigir_cupo_de_alertas(conn, uid)
         cur = conn.execute(
             """INSERT INTO alerts
                (user_id, kind, symbol, scope, direction, threshold, up_pct, down_pct,
@@ -48657,7 +48913,8 @@ def _alerta_de_mis_alertas(conn, alert_id: int, uid: int):
 
 
 @app.patch("/api/alerts/{alert_id}")
-def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_effective_user)):
+def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_effective_user),
+                  request: Request = None):
     """Edita/activa/pausa una alerta. Si se reactiva o cambia el umbral,
     re-arma el edge-trigger (y re-ancla si es 'Desde ahora')."""
     import alerts_engine as _ae
@@ -48704,7 +48961,9 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
         if not sets:
             return {"ok": True, "unchanged": True}
         params.append(alert_id)
-        with conn:
+        # Reactivar una técnica lee su serie (arrancar desde la última vela): el
+        # freno de la ficha, como el alta (pesado.py).
+        with (_freno_tecnico(request, uid, "uno") if tecnica and data.active else nullcontext()), conn:
             conn.execute(f"UPDATE alerts SET {', '.join(sets)} WHERE id=?", params)
             if tecnica and data.active:
                 # Reactivar una técnica = mirar desde ahora: lo que cruzó mientras
@@ -48774,15 +49033,19 @@ def _proximo_balance(conn, asset: str):
 
 
 @app.get("/api/tesis")
-def tesis_list(uid: int = Depends(get_effective_user)):
+def tesis_list(request: Request, uid: int = Depends(get_effective_user)):
     """Tus tesis (con su historia) y la tendencia de hoy de cada activo."""
     import tesis as _tesis
-    with db_abierta() as conn:
+    # Lee la tendencia de cada tesis en su fecha (`tecnico.tendencias_en_fechas`),
+    # la misma lectura de muchos activos que el diario: el mismo freno. Sin él,
+    # 10 cuentas con 20 tesis y 200 pedidos dejaron el «¿estás vivo?» en 64 s
+    # (re-test E1, ronda 2).
+    with _freno_tecnico(request, uid), db_abierta() as conn:
         return _tesis.listar(conn, uid)
 
 
 @app.put("/api/tesis")
-def tesis_guardar(data: TesisIn, uid: int = Depends(get_effective_user)):
+def tesis_guardar(data: TesisIn, uid: int = Depends(get_effective_user), request: Request = None):
     """Escribe o corrige la tesis de un activo (el mismo día se corrige; otro
     día se guarda una nueva y la vieja queda: ver tesis.py)."""
     import tesis as _tesis
@@ -48791,9 +49054,16 @@ def tesis_guardar(data: TesisIn, uid: int = Depends(get_effective_user)):
     sym = (data.asset or "").strip()
     if not sym or any(ord(c) < 32 or c in "<>" for c in sym):
         raise HTTPException(400, "Ese activo no es válido.")
-    with db_abierta() as conn:
+    # Guarda la tendencia del día de compra (lee la serie): el freno de la ficha.
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        # Un activo que existe, no texto libre: cada texto era una tesis nueva
+        # con su recordatorio, y su nombre iba al link del mail y a Yahoo
+        # (auditoría E2/E7/E8).
+        _exigir_activo_valido(conn, sym, uid)
         try:
             tid = _tesis.guardar(conn, uid, sym, data.texto, data.local)
+        except _tesis.TesisTope as e:
+            raise HTTPException(429, str(e))
         except _tesis.TesisError as e:
             raise HTTPException(400, str(e))
         conn.commit()
@@ -49229,6 +49499,9 @@ def advisor_groups_create(data: AdvisorGroupIn, uid: int = Depends(get_current_u
         rules = ag.normalize_rules(data.rules)
         if not rules:
             raise HTTPException(400, "Elegí al menos una condición para el grupo.")
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         n = conn.execute("SELECT COUNT(*) c FROM advisor_groups WHERE advisor_uid=?",
                          (uid,)).fetchone()["c"]
         if n >= ag.MAX_GROUPS:
@@ -50072,15 +50345,19 @@ def advisor_create_client(
         # Cap duro de clientes activos: sin esto, una cuenta advisor comprometida
         # podría inflar `users` sin límite (los shadows no los recolecta nadie), y
         # los IN(...) del roster/book reventarían el tope de variables de SQLite.
+        synthetic_email = f"cliente.{_secrets.token_hex(6)}@{_SHADOW_EMAIL_DOMAIN}"
+        # Password random hasheado: nadie puede loguear con esta cuenta hasta
+        # que el flujo de invitación/claim (F4) setee una contraseña real. ANTES
+        # del turno: el hash tarda ~0,3 s y con el turno tomado nadie escribe.
+        random_hash = pwd_ctx.hash(_secrets.token_urlsafe(24))
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         n_active = conn.execute(
             "SELECT COUNT(*) c FROM advisor_clients WHERE advisor_uid=? AND status='active'",
             (uid,)).fetchone()["c"]
         if n_active >= ADVISOR_MAX_CLIENTS:
             raise HTTPException(400, f"Llegaste al máximo de {ADVISOR_MAX_CLIENTS} clientes activos.")
-        synthetic_email = f"cliente.{_secrets.token_hex(6)}@{_SHADOW_EMAIL_DOMAIN}"
-        # Password random hasheado: nadie puede loguear con esta cuenta hasta
-        # que el flujo de invitación/claim (F4) setee una contraseña real.
-        random_hash = pwd_ctx.hash(_secrets.token_urlsafe(24))
         with conn:
             cur = conn.execute(
                 """INSERT INTO users (email, name, password_hash, is_admin,
@@ -50419,6 +50696,9 @@ def advisor_invite_client(
         # a alguien usando el mismo shadow para probar/spammear muchos emails
         # de terceros — esto es además del rate-limit general de arriba
         # (10/300s por asesor).
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         sent_today = conn.execute(
             """SELECT COUNT(*) AS n FROM advisor_claim_tokens
                WHERE user_id=? AND created_at > datetime('now', '-1 day')""",
@@ -50531,6 +50811,9 @@ def _advisor_link_request(conn, uid: int, shadow_uid: int, target, data: Advisor
 
     # Tope diario por (asesor, cuenta): del otro lado hay una persona real que
     # todavía no contestó.
+    # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+    # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+    _tomar_turno(conn, uid)
     recientes = conn.execute(
         """SELECT COUNT(*) c FROM advisor_link_requests
            WHERE advisor_uid=? AND client_uid=? AND created_at > datetime('now', '-1 day')""",
@@ -50616,6 +50899,9 @@ def _apply_link_request(conn, req, accept: bool) -> dict:
         # El cap del plan se chequea al ACEPTAR, no al pedir: entre el pedido y
         # el sí pueden haber pasado dos semanas y un libro entero. Solo descuenta
         # la ficha si de verdad va a salir del libro.
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, advisor_uid)
         n_active = conn.execute(
             "SELECT COUNT(*) c FROM advisor_clients WHERE advisor_uid=? AND status='active'",
             (advisor_uid,)).fetchone()["c"]
