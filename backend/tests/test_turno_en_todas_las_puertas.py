@@ -40,21 +40,21 @@ import main
 
 TABLAS_DE_LA_PLATA = ("monthly_entries", "snapshots", "operations", "positions", "flujos_a_mano")
 
-PIDE_TURNO = re.compile(r"\b_tomar_turno(_de_la_puerta)?\(")
+PIDE_TURNO = re.compile(r"\b_tomar_turno(_de_la_puerta|s_en_orden)?\(")
+
+# Ayudantes que piden el turno ADENTRO de cada una de sus transacciones (porque
+# hacen más de una, o recorren varios usuarios): quien los llama queda cubierto.
+# `test_los_que_piden_adentro_lo_piden` verifica que cada uno lo pida de verdad.
+PIDEN_ADENTRO = {
+    "_wipe_broker_data": "tres transacciones; pedirlo una vez en la puerta dejaba dos sin él",
+    "_repair_snapshots_summary": "un usuario por transacción",
+    "_repair_interes_pf": "varios usuarios, en orden",
+    "_repair_caja_1415": "varios usuarios, en orden",
+}
 
 # Lo que falta, con el motivo. Sólo puede achicarse (ver el docstring del módulo).
 PENDIENTES = {
     "init_db": "el arranque: corre antes de atender pedidos, sin usuario",
-    "admin_recompute_snapshots_netdep": "admin: recorre usuarios",
-    "admin_repair_user_history": "admin: repara la historia de un usuario ajeno",
-    "admin_repair_snapshots_all": "admin: recorre todos los usuarios",
-    "admin_cleanup_future_snapshots": "admin: recorre usuarios",
-    "admin_repair_comisiones": "admin: recorre usuarios",
-    "admin_repair_caja_1415": "admin: recorre usuarios",
-    "admin_repair_interes_pf": "admin: recorre usuarios",
-    "admin_delete_snapshot": "admin: borra la foto de un usuario ajeno",
-    "admin_wipe_broker_data": "admin: limpia el broker de un usuario ajeno",
-    "_migrate_snapshots_netdep": "migración: recorre usuarios",
     "_reconstruir_mtm": "sale a Yahoo durante minutos; se protege con su huella (backfill_user)",
     "advisor_tanda_revert": "asesor: escribe en las cuentas de varios clientes",
     "_advisor_group_op_apply": "asesor: escribe en las cuentas de varios clientes",
@@ -95,7 +95,7 @@ def _duenos_de_conexion_sin_turno():
     faltan = {}
     for k in duenos:
         tablas = set().union(*(escribe[x] for x in con_su_conexion(k)))
-        if tablas and not PIDE_TURNO.search(cuerpo[k]):
+        if tablas and not PIDE_TURNO.search(cuerpo[k]) and not (llama[k] & set(PIDEN_ADENTRO)):
             faltan[k] = f"{k} (main.py:{top[k].lineno}) escribe {sorted(tablas)}"
     return faltan
 
@@ -115,6 +115,16 @@ class ElCensoDeLasPuertas(unittest.TestCase):
         ya_arreglados = sorted(k for k in PENDIENTES if k not in faltan)
         self.assertEqual(ya_arreglados, [], "Ya piden el turno (o ya no existen): sacalos de "
                                             "PENDIENTES para que no vuelvan a entrar sin él.")
+
+    def test_los_que_piden_adentro_lo_piden(self):
+        src = open(os.path.join(BACKEND, "main.py"), encoding="utf-8").read()
+        lineas = src.splitlines()
+        top = {n.name: n for n in ast.parse(src).body
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        no_lo_piden = sorted(k for k in PIDEN_ADENTRO
+                             if k not in top or not PIDE_TURNO.search(
+                                 "\n".join(lineas[top[k].lineno - 1:top[k].end_lineno])))
+        self.assertEqual(no_lo_piden, [], "PIDEN_ADENTRO dice que piden el turno y no")
 
     def test_el_censo_ve_lo_que_tiene_que_ver(self):
         """Contra un caso cuya respuesta ya se conoce: `delete_monthly` abre una

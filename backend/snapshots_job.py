@@ -980,6 +980,7 @@ def take_snapshot_for_user(
     crypto_yf: dict,
     target_date: Optional[str] = None,
     tc_mep: Optional[float] = None,
+    tomar_turno=None,
 ) -> dict:
     """Computa y persiste el snapshot del portfolio del usuario `uid` para
     la fecha `target_date` (default: hoy ART). Idempotente vía UPSERT.
@@ -1170,7 +1171,11 @@ def take_snapshot_for_user(
     # 4. Calcular net_deposited desde monthly_entries
     net_deposited = compute_net_deposited(monthly)
 
-    # 5. UPSERT en snapshots
+    # 5. UPSERT en snapshots. El turno del usuario ACÁ y no antes: lo de arriba
+    # salió a Yahoo, y pedirlo al principio tenía la cuenta tomada durante esa
+    # espera. Es la misma ventana que tenía SQLite (lee, busca precios, escribe).
+    if tomar_turno is not None:
+        tomar_turno(conn, uid)
     # SQLite UPSERT syntax: INSERT...ON CONFLICT(user_id, date) DO UPDATE
     # Phase C: stampamos fx_to_usd_blue (= tc_blue del día) para que cuando
     # el user mire la curva en ARS, cada punto use SU PROPIO blue (no el de hoy).
@@ -1358,6 +1363,7 @@ def run_daily_snapshot(
     target_date: Optional[str] = None,
     fetch_tc_mep=None,
     abrir=None,
+    tomar_turno=None,
 ) -> dict:
     """Función entry-point del scheduler. Itera todos los usuarios activos y
     toma snapshot para cada uno. Manejo de errores per-user — si uno falla,
@@ -1370,6 +1376,11 @@ def run_daily_snapshot(
             disparadores de producción lo pasan: sin esto, en Postgres la foto se
             leía y se guardaba en el archivo SQLite congelado y la app —que lee de
             Postgres— se quedaba sin la foto de ayer, sin un error a la vista.
+        tomar_turno: `main._tomar_turno_de_la_puerta`. La foto de cada usuario va
+            en su propia transacción y con su turno, pedido justo antes de
+            escribir (ver `take_snapshot_for_user`): en Postgres, sin él, la foto
+            se metía en el medio de un import o de un borrado del mismo usuario
+            (tests/test_turno_en_todas_las_puertas.py explica el porqué).
         fetch_tc_blue: callable que devuelve el blue rate actual (float) — HOY
             solo para el stamp display fx_to_usd_blue / fx_rates_daily (la
             valuación va al MEP).
@@ -1503,7 +1514,7 @@ def run_daily_snapshot(
         for uid in user_ids:
             try:
                 result = take_snapshot_for_user(conn, uid, tc_blue, crypto_yf, target,
-                                                tc_mep=tc_mep)
+                                                tc_mep=tc_mep, tomar_turno=tomar_turno)
                 conn.commit()
                 huecos = result.get('sin_precio') or []
                 if result['ok']:

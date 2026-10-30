@@ -58,6 +58,22 @@ class LaFotoDeLaNocheLaVeLaApp(unittest.TestCase):
         self.assertIsNotNone(foto, "la foto de la noche no está en la base que lee la app")
         self.assertAlmostEqual(float(foto["total_value"]), 1000.0, places=2)
 
+    @unittest.skipUnless(getattr(main, "USANDO_PG", False),
+                         "en SQLite la escritura toma la base entera y el turno no se pide")
+    def test_la_foto_de_cada_usuario_pide_su_turno(self):
+        pedidos = []
+        real = main._tomar_turno
+
+        def anotar(conn, uid):
+            pedidos.append(uid)
+            return real(conn, uid)
+        with mock.patch.object(main, "_get_blue_for_scheduler", lambda: 1500.0), \
+                mock.patch.object(main, "_get_mep_for_scheduler", lambda: 1450.0), \
+                mock.patch.object(main, "_run_velas_diarias_job", lambda: None), \
+                mock.patch.object(main, "_tomar_turno", anotar):
+            main._run_daily_snapshot_job()
+        self.assertIn(self.uid, pedidos, "la foto se guardó sin pedir el turno del usuario")
+
 
 if __name__ == "__main__":
     unittest.main()

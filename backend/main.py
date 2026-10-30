@@ -6342,6 +6342,7 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
         if not name_changed:
             if new_currency != row["currency"]:
                 with conn:
+                    _tomar_turno_de_la_puerta(conn, uid)
                     # La moneda y el rótulo de la caja, juntos (ver la función).
                     for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(
                             uid, old_name, new_currency):
@@ -18887,6 +18888,18 @@ def _tomar_turno_de_la_puerta(conn, uid: int) -> None:
         _tomar_turno(conn, uid)
 
 
+def _tomar_turnos_en_orden(conn, uids) -> None:
+    """El turno de VARIOS usuarios en la misma transacción (reparaciones del admin,
+    el asesor sobre varios clientes): de menor a mayor, siempre. Dos procesos que
+    piden los mismos turnos en el mismo orden no pueden quedar esperándose el uno
+    al otro; en distinto orden, sí (A tiene el 3 y espera el 7, B tiene el 7 y
+    espera el 3). Un pedido de un usuario pide sólo el suyo y no entra en ese
+    cruce. Como `_tomar_turno_de_la_puerta`: va PRIMERO en la transacción, y en
+    SQLite no hace nada."""
+    for u in sorted({int(x) for x in uids if x is not None}):
+        _tomar_turno_de_la_puerta(conn, u)
+
+
 def _primer_dia_en_las_fotos(fecha_mov, confirmado: Optional[str]) -> Optional[str]:
     """Desde qué día las fotos tienen un movimiento importado (si nadie las
     re-estampó después): desde el día en que se confirmó su import, AUNQUE ESTÉ
@@ -23570,6 +23583,7 @@ def admin_recompute_snapshots_netdep(uid: int = Depends(get_admin_user)):
     """
     conn = get_db()
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         result = _recompute_snapshots_netdep_for_user(conn, uid, with_details=True)
         corrupt_removed = _detect_and_remove_corrupt_snapshots(conn, uid)
         conn.commit()
@@ -23684,6 +23698,7 @@ def _repair_snapshots_summary(real_conn, users, apply: bool) -> dict:
         out = {"users_changed": 0, "snapshots_removed": 0, "changes": [], "errors": []}
         for u in users:
             try:
+                _tomar_turno_de_la_puerta(conn, u)    # un usuario por transacción
                 r = _repair_user_snapshots(conn, u)
             except Exception as ex:
                 conn.rollback()
@@ -23742,6 +23757,7 @@ def admin_repair_user_history(data: RepairUserIn, uid: int = Depends(get_admin_u
             raise HTTPException(404, f"No hay usuario con email '{data.email}'.")
         tu = row["id"]
         with conn:
+            _tomar_turno_de_la_puerta(conn, tu)
             res = _repair_user_snapshots(conn, tu)
         log.info("admin_repair_user_history email=%s uid=%s snaps %s→%s corrupt=%s",
                  row["email"], tu, res["snapshots_before"], res["snapshots_after"], res["corrupt_removed"])
@@ -25540,6 +25556,7 @@ def admin_cleanup_future_snapshots(apply: bool = False,
         total = sum(f["n"] for f in futuros)
         if apply and total:
             with conn:
+                _tomar_turnos_en_orden(conn, [f["user_id"] for f in futuros])
                 conn.execute("DELETE FROM snapshots WHERE date > ?", (hoy,))
             log.info("cleanup-future-snapshots: borrados %s de %s cuentas",
                      total, len(futuros))
@@ -25918,6 +25935,7 @@ def admin_repair_comisiones(apply: bool = False, limite: int = 5000,
             hechas = 0
             for i in range(0, len(objetivo), 200):
                 with conn:
+                    _tomar_turnos_en_orden(conn, [o["user_id"] for o in objetivo[i:i + 200]])
                     for o in objetivo[i:i + 200]:
                         try:
                             meta = json.loads(o["_undo"]) if o["_undo"] else {}
@@ -26605,6 +26623,7 @@ def _repair_interes_pf(conn, apply: bool) -> dict:
         cambios.append(item); usuarios.add(r["user_id"])
     if apply and cambios:
         with conn:
+            _tomar_turnos_en_orden(conn, usuarios)
             for c in cambios:
                 conn.execute("UPDATE operations SET fx_to_usd=? WHERE id=? AND fx_to_usd IS NULL",
                              (c["tc"], c["id"]))
@@ -26693,6 +26712,7 @@ def _repair_caja_1415(conn, apply: bool) -> dict:
         cambios.append(item); usuarios.add(r["user_id"])
     if apply and cambios:
         with conn:
+            _tomar_turnos_en_orden(conn, usuarios)
             for c in cambios:
                 sets, args = c["_sql"]
                 conn.execute(f"UPDATE monthly_entries SET {', '.join(sets)} WHERE id=?",
@@ -27010,6 +27030,7 @@ def admin_delete_snapshot(date: str, uid: int = Depends(get_admin_user)):
             return {"ok": False, "deleted_count": 0, "reason": f"No hay snapshot del {date} para este user"}
         snap_dict = dict(existing)
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             cur = conn.execute(
                 "DELETE FROM snapshots WHERE user_id=? AND date=?",
                 (uid, date),
@@ -30351,7 +30372,10 @@ def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
     ph = ",".join("?" * len(broker_names))
 
     counts: dict = {}
+    # El turno va adentro de CADA transacción: el commit de la primera lo suelta,
+    # y pedirlo una vez en la puerta dejaba la segunda y la tercera sin él.
     with conn:
+        _tomar_turno_de_la_puerta(conn, uid)
         # La MISMA función que usa delete_broker: una sola lista de qué se lleva
         # el borrado de un broker (BROKER_POR_NOMBRE), futuros y secciones
         # archivadas incluidos.
@@ -30376,6 +30400,7 @@ def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
     # Recalcular aggregates globales (el 'global' sumaba el broker borrado).
     try:
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             _recalc_pnl_realized_from_ops(conn, uid)
     except Exception as ex:
         log.error("Recalc tras wipe falló (uid=%s broker=%s): %s", uid, broker, ex)
@@ -30387,6 +30412,7 @@ def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
     try:
         today = _iso_today()          # la fila a borrar la escriben cron/browser en ART
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             conn.execute(
                 "DELETE FROM snapshots WHERE user_id=? AND date=?", (uid, today),
             )
@@ -30409,7 +30435,7 @@ def admin_wipe_broker_data(broker: str, uid: int = Depends(get_admin_user)):
         ).fetchone()
         if not b:
             raise HTTPException(404, f"Broker '{broker}' no existe para este usuario")
-        counts = _wipe_broker_data(conn, uid, broker)
+        counts = _wipe_broker_data(conn, uid, broker)   # pide el turno en cada transacción
         return {"ok": True, "broker": broker, **counts}
     finally:
         conn.close()
@@ -45872,6 +45898,7 @@ def _run_daily_snapshot_job():
             crypto_yf=CRYPTO_YF,
             fetch_tc_mep=_get_mep_for_scheduler,
             abrir=get_db,
+            tomar_turno=_tomar_turno_de_la_puerta,
         )
         _snapshot_log.info(f"Daily snapshot result: {result}")
     except Exception as e:
@@ -46211,6 +46238,7 @@ def _migrate_snapshots_netdep():
                 for u in users:
                     uid = u["user_id"]
                     try:
+                        _tomar_turno_de_la_puerta(conn, uid)   # un usuario por transacción
                         result = _recompute_snapshots_netdep_for_user(conn, uid)
                         if result["snapshots_updated"] > 0:
                             total_snapshots_fixed += result["snapshots_updated"]
@@ -49083,6 +49111,7 @@ def admin_run_snapshot(uid: int = Depends(get_admin_user)):
             crypto_yf=CRYPTO_YF,
             fetch_tc_mep=_get_mep_for_scheduler,
             abrir=get_db,
+            tomar_turno=_tomar_turno_de_la_puerta,
         )
     finally:
         _soltar_corrida("snapshot_diario")
