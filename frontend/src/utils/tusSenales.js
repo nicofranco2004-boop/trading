@@ -104,11 +104,9 @@ export function tarjetas(datos, hidden) {
   }
 
   const a = datos?.alcista
-  // Lo que se dio vuelta esta semana en lo tuyo: los cruces del promedio de 200.
-  const vueltas = tuyas.filter(s => s.tipo === 'media200')
-  const giro = vueltas.length
-    ? vueltas.map(s => `${s.asset} pasó a ${s.sentido === 'arriba' ? 'alcista' : 'bajista'}`).join(', ') + ' esta semana'
-    : null
+  // Lo que se dio vuelta esta semana en lo tuyo (los cruces del promedio de
+  // 200): la MISMA frase que «Qué lo movió» del Panorama, `queLoMovio`.
+  const giro = queLoMovio(datos, hidden)
   const plata = {
     titulo: TITULO_PLATA_ALCISTA,
     valor: !a ? '—' : hidden ? '••' : `${a.pct}%`,
@@ -134,6 +132,37 @@ export function semanaPasadaTxt(sp, hasta) {
 export function antesConPct(sp, hasta) {
   if (!sp?.semana) return null
   return `${semanaPasadaTxt(sp, hasta)}, ${Math.round(sp.pct)}%`
+}
+
+/** El chip del Panorama contra la semana pasada: «▲ 8 puntos más que la semana
+ *  pasada» / «▼ 3 puntos menos que el sábado 17/10» / «Igual que la semana
+ *  pasada». `a`: el reparto del servidor (pct + semana_pasada). null sin semana
+ *  pasada o con «Ocultar saldos» (la diferencia también dice cuánto se movió tu
+ *  plata). → { texto, tono: 'pos' | 'neg' | null } */
+export function cambioContraAntes(a, hasta, hidden) {
+  const sp = a?.semana_pasada
+  if (hidden || a?.pct == null || !sp?.semana || sp.pct == null) return null
+  const d = Math.round(a.pct) - Math.round(sp.pct)
+  const cuando = semanaPasadaTxt(sp, hasta)
+  if (d === 0) return { texto: `Igual que ${cuando}`, tono: null }
+  const n = Math.abs(d)
+  return {
+    texto: `${d > 0 ? '▲' : '▼'} ${n} ${n === 1 ? 'punto' : 'puntos'} ${d > 0 ? 'más' : 'menos'} que ${cuando}`,
+    tono: d > 0 ? 'pos' : 'neg',
+  }
+}
+
+/** «GGAL (18% de tu cartera) pasó a alcista el jueves 29/10»: lo que se dio
+ *  vuelta esta semana en lo que tenés (los cruces del promedio de 200, lo único
+ *  que cambia de grupo a un activo). null si no se dio vuelta nada. Con
+ *  «Ocultar saldos», sin el peso. */
+export function queLoMovio(datos, hidden) {
+  const vueltas = (datos?.senales || []).filter(s => s.tenes && s.tipo === 'media200')
+  if (!vueltas.length) return null
+  return vueltas.map(s => {
+    const p = pesoTxt(s.peso, hidden)
+    return `${s.asset}${p ? ` (${p})` : ''} pasó a ${s.sentido === 'arriba' ? 'alcista' : 'bajista'} el ${diaLargo(s.fecha).toLowerCase()}`
+  }).join('; ') + '.'
 }
 
 /** El texto del botón: si escribiste una tesis, revisarla; si no, el gráfico. */

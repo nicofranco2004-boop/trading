@@ -77,10 +77,15 @@ describe('la Cartera, corta (recuadro 21c)', () => {
 
 describe('la tarjeta grande del Panorama', () => {
   it('barra, grupos con nombres y por qué cada uno va sin lectura', () => {
-    const html = conRouter(<TarjetaPlata reparto={REPARTO} titulo="Tu cartera en tendencia alcista de largo plazo" />)
+    const html = conRouter(<TarjetaPlata reparto={REPARTO} titulo="Tu cartera en tendencia alcista de largo plazo"
+      cambio={{ texto: '▼ 7 puntos menos que la semana pasada', tono: 'neg' }} queLoMovio="MELI (20% de tu cartera) pasó a bajista el jueves 29/10." />)
     const t = sinEtiquetas(html)
-    expect(t).toContain('54% de tu cartera está en activos con tendencia alcista de largo plazo.')
-    expect(t).toContain('(la semana pasada, 61%)')
+    expect(t).toContain('54%de tu cartera está en activos con tendencia alcista de largo plazo')
+    // El chip contra la semana pasada (lienzo «1 · Panorama», 30/10) y qué lo movió.
+    expect(t).toContain('▼ 7 puntos menos que la semana pasada')
+    expect(t).toContain('Qué lo movió: MELI (20% de tu cartera) pasó a bajista el jueves 29/10.')
+    // El «no es una recomendación» va una sola vez, al pie de la página.
+    expect(t).not.toContain('no es una recomendación')
     expect(html).toContain('aria-label="54% alcista, 29% bajista, 17% sin lectura"')
     expect(t).toContain('29% bajista · MELI')
     expect(t).toContain(`AL30, Pionero Pesos, efectivo: ${MOTIVOS_SIN_LECTURA.no_se_mide}`)

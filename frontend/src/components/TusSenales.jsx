@@ -20,6 +20,7 @@ import { usePrivacy } from '../contexts/PrivacyContext'
 import { clicNormal } from '../utils/clicNormal'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import AvisoNotificaciones from './AvisoNotificaciones'
+import { BotonAvisame, senalDelCambio } from './alerts/AvisameTecnico'
 import {
   FILTROS, CANALES, NO_ES_RECOMENDACION, filtrar, porDia, tarjetas, deQuien, boton, rutaDeFicha,
   TITULO_CAMBIOS, QUE_ES_ESTA_SEMANA,
@@ -58,8 +59,11 @@ function Tarjeta({ t, children }) {
   )
 }
 
-/** Un cambio, como en la lista de la semana. Lo usa también el Panorama. */
-export function Cambio({ s, hidden, onVer }) {
+/** Un cambio, como en la lista de la semana. Lo usa también el Panorama, que
+ *  le pasa `avisos` (useAvisosTecnicos) para la campanita «Avisame» de cada
+ *  renglón; sin `avisos`, sólo «Ver el gráfico». */
+export function Cambio({ s, hidden, onVer, avisos = null }) {
+  const aviso = avisos ? senalDelCambio(s) : null
   return (
     // Celular: la pastilla arriba y el botón al costado del texto; compu: en fila.
     <li className="grid grid-cols-[1fr_auto] sm:grid-cols-[150px_1fr_auto] gap-x-3 sm:gap-x-3.5 gap-y-1.5 items-start py-3 border-t border-line/60 first:border-t-0">
@@ -74,11 +78,18 @@ export function Cambio({ s, hidden, onVer }) {
         {s.tesis && <p className="text-[13px] leading-snug text-ink-1">Tu tesis: «{s.tesis}»</p>}
         <p className={`text-[12px] ${s.tenes ? 'text-data-violet' : 'text-ink-2'}`}>{deQuien(s, hidden)}</p>
       </div>
-      {/* Un link de verdad: se puede abrir en otra pestaña (D12). */}
-      <a href={rutaDeFicha(s)} onClick={(e) => { if (clicNormal(e)) { e.preventDefault(); onVer(s) } }}
-        className="self-end sm:self-start text-[13px] font-medium text-ink-1 bg-bg-2/60 border border-line rounded-full px-3.5 py-1.5 min-h-[34px] inline-flex items-center hover:text-ink-0 hover:border-rendi-accent/40 transition">
-        {boton(s)}
-      </a>
+      {/* Con la campanita, en el celular los dos botones van abajo del texto:
+          al costado le dejaban al texto media pantalla. */}
+      <div className={`sm:self-start flex items-center gap-1.5 ${aviso ? 'col-span-2 sm:col-span-1 justify-self-start' : 'self-end'}`}>
+        {/* Un link de verdad: se puede abrir en otra pestaña (D12). */}
+        <a href={rutaDeFicha(s)} onClick={(e) => { if (clicNormal(e)) { e.preventDefault(); onVer(s) } }}
+          className="text-[13px] font-medium text-ink-1 bg-bg-2/60 border border-line rounded-full px-3.5 py-1.5 min-h-[34px] inline-flex items-center whitespace-nowrap hover:text-ink-0 hover:border-rendi-accent/40 transition">
+          {boton(s)}
+        </a>
+        {aviso && (
+          <BotonAvisame soloIcono avisos={avisos} asset={s.asset} accionLocal={!!s.local} moneda="usd" {...aviso} />
+        )}
+      </div>
     </li>
   )
 }

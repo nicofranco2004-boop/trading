@@ -1,20 +1,23 @@
 // AnalisisTecnico — «Análisis técnico» (menú → Análisis de mercado): cómo se
 // mueven los precios de lo que tenés y de lo que seguís, en pestañas
 // (recuadro 21 del tablero, aprobado por Nico el 28/10):
-//   · Panorama (?tab=panorama): el % de tu plata en tendencia de fondo
-//     alcista, los 3 cambios más nuevos de la semana y por dónde seguir (fue
-//     la de entrada hasta el 30/10);
+//   · Panorama (?tab=panorama), como la pantalla «1 · Panorama» del lienzo que
+//     aprobó Nico el 30/10: el % de tu cartera en tendencia alcista de largo
+//     plazo con el cambio contra la semana pasada, el mapa de tu cartera, los 3
+//     cambios más nuevos de la semana por día (con «Avisame»), tu lista de un
+//     vistazo y el resumen de los sábados (fue la de entrada hasta el 30/10);
 //   · Tu lista (?tab=lista): la tabla de pages/TuLista.jsx;
 //   · Señales de la semana (?tab=senales): «Tus señales» de la pieza 15
 //     (components/TusSenales.jsx), que vivía en Novedades;
 //   · Gráfico (de entrada, sin ?tab; ?activo=GGAL), la primera de la fila
 //     (Nico, 30/10): sólo el gráfico, con el activo arriba a la izquierda como
 //     en TradingView (pages/GraficoTecnico.jsx);
-//   · Comparar y Mercado: «Próximamente», no se pueden tocar.
+//   · Comparar y Mercado: todavía no están; un solo «Pronto: Comparar ·
+//     Mercado» a la derecha de la fila, no dos pestañas grises.
 // «Panorama» y no «Resumen»: Resumen es la primera pantalla del mismo grupo.
 // ════════════════════════════════════════════════════════════════════════════
 // Una sola pantalla para compu y celular (R6): en el celular las pestañas se
-// deslizan de costado, con nombres cortos («Señales», «Pronto»).
+// deslizan de costado, con nombres cortos («Señales»), y el «Pronto» no va.
 //
 // Nada se calcula acá. La página pide UNA vez lo de tu lista
 // (useListaTecnica: POST /api/tecnico/lista, con lo que tenés y cuánto pesa
@@ -26,15 +29,16 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowRight } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
-import Panel from '../components/Panel'
 import TuLista, { useListaTecnica } from './TuLista'
 import GraficoTecnico from './GraficoTecnico'
 import { TusSenalesVista, useTusSenales, Cambio } from '../components/TusSenales'
 import { TarjetaPlata } from '../components/RadiografiaTecnica'
+import MapaCartera from '../components/MapaCartera'
+import { useAvisosTecnicos } from '../components/alerts/AvisameTecnico'
 import { usePrivacy } from '../contexts/PrivacyContext'
 import { clicNormal } from '../utils/clicNormal'
 import { filasDeLaLista, contarFilas } from '../utils/listaTecnica'
-import { tarjetas as tarjetasDeLaSemana, rutaDeFicha, NO_ES_RECOMENDACION, TITULO_PLATA_ALCISTA, TITULO_CAMBIOS, QUE_ES_ESTA_SEMANA } from '../utils/tusSenales'
+import { porDia, rutaDeFicha, cambioContraAntes, queLoMovio, NO_ES_RECOMENDACION, TITULO_PLATA_ALCISTA, TITULO_CAMBIOS, QUE_ES_ESTA_SEMANA } from '../utils/tusSenales'
 
 // Las pestañas, en orden. `corto`: el nombre en el celular. `pronto`: todavía
 // no está (se ve, no se toca).
@@ -64,30 +68,32 @@ export function pestanaDe(searchParams) {
 export const urlDePestana = (id) => (id === DE_ENTRADA ? '/analisis-tecnico' : `/analisis-tecnico?tab=${id}`)
 
 function Pestanas({ activa, cuentas, onElegir }) {
+  const pronto = PESTANAS.filter(p => p.pronto)
   return (
-    <div role="tablist" aria-label="Partes del análisis técnico"
-      className="flex items-center gap-0.5 sm:gap-1 mb-5 border-b border-line overflow-x-auto overscroll-x-contain scrollbar-none -mx-4 px-4 sm:mx-0 sm:px-0">
-      {PESTANAS.map(p => {
-        const on = activa === p.id
-        const n = cuentas[p.id]
-        return (
-          <button key={p.id} type="button" role="tab" aria-selected={on} disabled={p.pronto}
-            aria-controls="analisis-tecnico-panel" id={`analisis-tecnico-tab-${p.id}`}
-            onClick={() => !p.pronto && onElegir(p.id)}
-            className={`flex items-center gap-1.5 px-2.5 sm:px-3.5 py-3 text-[14px] sm:text-[15px] whitespace-nowrap border-b-2 -mb-px transition-colors ${
-              on ? 'border-rendi-accent text-ink-0 font-semibold'
-                : p.pronto ? 'border-transparent text-ink-3 cursor-default'
-                  : 'border-transparent text-ink-2 hover:text-ink-0 font-medium'}`}>
-            {p.corto ? <><span className="sm:hidden">{p.corto}</span><span className="hidden sm:inline">{p.label}</span></> : p.label}
-            {n != null && <span className="text-[12px] font-medium text-ink-2 tabular">{n}</span>}
-            {p.pronto && (
-              <span className="text-[11px] font-semibold text-rendi-warn bg-rendi-warn/10 rounded-full px-1.5 py-0.5">
-                <span className="sm:hidden">Pronto</span><span className="hidden sm:inline">Próximamente</span>
-              </span>
-            )}
-          </button>
-        )
-      })}
+    <div className="flex items-center gap-3 mb-5 border-b border-line -mx-4 px-4 sm:mx-0 sm:px-0">
+      <div role="tablist" aria-label="Partes del análisis técnico"
+        className="flex items-center gap-0.5 sm:gap-1 min-w-0 overflow-x-auto overscroll-x-contain scrollbar-none">
+        {PESTANAS.filter(p => !p.pronto).map(p => {
+          const on = activa === p.id
+          const n = cuentas[p.id]
+          return (
+            <button key={p.id} type="button" role="tab" aria-selected={on}
+              aria-controls="analisis-tecnico-panel" id={`analisis-tecnico-tab-${p.id}`}
+              onClick={() => onElegir(p.id)}
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3.5 py-3 text-[14px] sm:text-[15px] whitespace-nowrap border-b-2 -mb-px transition-colors ${
+                on ? 'border-rendi-accent text-ink-0 font-semibold' : 'border-transparent text-ink-2 hover:text-ink-0 font-medium'}`}>
+              {p.corto ? <><span className="sm:hidden">{p.corto}</span><span className="hidden sm:inline">{p.label}</span></> : p.label}
+              {n != null && <span className="text-[12px] font-medium text-ink-2 tabular">{n}</span>}
+            </button>
+          )
+        })}
+      </div>
+      {/* Lo que todavía no está: un texto, no pestañas que no se pueden tocar. */}
+      {pronto.length > 0 && (
+        <span className="hidden sm:inline ml-auto text-[12px] text-ink-2 whitespace-nowrap px-1">
+          Pronto: <span className="text-rendi-warn font-medium">{pronto.map(p => p.label).join(' · ')}</span>
+        </span>
+      )}
     </div>
   )
 }
@@ -106,104 +112,144 @@ export function textoDelResumen(canal, proximo) {
   return `El resumen de la semana te llega el sábado ${d}/${m} a las 10:00, ${como}.`
 }
 
-function Tarjeta({ titulo, texto, ir, accion, pronto = false }) {
-  const cuerpo = (
-    <>
-      <span className="text-[15px] font-semibold text-ink-0 flex items-center gap-2">
-        {titulo}
-        {pronto && <span className="text-[11px] font-semibold text-rendi-warn bg-rendi-warn/10 rounded-full px-1.5 py-0.5">Próximamente</span>}
-      </span>
-      <span className="text-[13px] text-ink-1 leading-snug">{texto}</span>
-      <span className={`text-[13px] font-medium ${pronto ? 'text-ink-3' : 'text-data-violet'}`}>{accion}</span>
-    </>
-  )
-  if (pronto) return <div className="bg-bg-1 border border-line rounded-xl px-4 py-3.5 flex flex-col gap-1.5 opacity-80">{cuerpo}</div>
-  return <Link to={ir} className="bg-bg-1 border border-line rounded-xl px-4 py-3.5 flex flex-col gap-1.5 hover:border-rendi-accent/40 transition-colors">{cuerpo}</Link>
-}
-
 /**
- * La tarjeta grande del Panorama: el % de tu plata en tendencia de fondo
- * alcista, la barra, los grupos y «la semana pasada». El número viene de GET
- * /api/tus-senales (`alcista`: senales_semana.reparto, LA cuenta, la misma de la
- * Cartera, de la pestaña Señales y del mail). La frase de lo que se dio vuelta
- * es la de `tarjetas` de utils/tusSenales.js, sin palabras nuevas.
+ * La tarjeta grande del Panorama: el % de tu cartera en tendencia alcista de
+ * largo plazo, el cambio contra la semana pasada, la barra, los grupos y qué lo
+ * movió. El número viene de GET /api/tus-senales (`alcista`:
+ * senales_semana.reparto, LA cuenta, la misma de la Cartera, de la pestaña
+ * Señales y del mail).
  */
 function PanoramaPlata({ semana, hidden }) {
   const datos = semana.datos
-  const plata = tarjetasDeLaSemana(datos, hidden).plata
   // Sin nada con lectura el servidor manda `alcista: null`: la tarjeta lo dice.
   const reparto = datos ? (datos.alcista || { pct: null, grupos: {}, motivos: [] }) : null
   return (
     <TarjetaPlata reparto={reparto} cargando={!datos && !semana.error} error={!!semana.error}
       titulo={TITULO_PLATA_ALCISTA}
-      nota={datos?.alcista && !hidden ? plata.texto : null} />
+      cambio={datos?.alcista ? cambioContraAntes(datos.alcista, datos.hasta, hidden) : null}
+      queLoMovio={datos?.alcista ? queLoMovio(datos, hidden) : null} />
   )
 }
+
+/** Un número de «Tu lista de un vistazo». */
+function Numero({ valor, texto, tono = '' }) {
+  return (
+    <div className="bg-bg-2/60 rounded-lg px-3 py-2.5 min-w-0">
+      <div className={`text-[22px] font-semibold tabular leading-tight ${tono || 'text-ink-0'}`}>{valor}</div>
+      <div className="text-[12px] text-ink-2 leading-snug">{texto}</div>
+    </div>
+  )
+}
+
+/** Un link que cambia de pestaña sin recargar (y se puede abrir en otra). */
+function APestana({ id, onPestana, className, children }) {
+  return (
+    <a href={urlDePestana(id)} onClick={(e) => { if (clicNormal(e)) { e.preventDefault(); onPestana(id) } }} className={className}>
+      {children}
+    </a>
+  )
+}
+
+const BOTON = 'text-[13px] font-medium text-ink-1 bg-bg-2/60 border border-line rounded-full px-3.5 py-1.5 min-h-[34px] inline-flex items-center hover:text-ink-0 hover:border-rendi-accent/40 transition'
 
 /** El Panorama. `lista`: lo de useListaTecnica; `filas`: las de tu lista;
  *  `semana`: lo de useTusSenales. */
 export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
   const datos = semana.datos
-  const t = useMemo(() => tarjetasDeLaSemana(datos, hidden), [datos, hidden])
-  const ultimos = (datos?.senales || []).slice(0, 3)
+  // Las alertas de la cuenta, para que cada campanita sepa si ya hay una igual:
+  // una vez por pantalla, no una por botón, y sólo si se abre el Panorama.
+  const avisos = useAvisosTecnicos()
+  const ultimos = useMemo(() => (datos?.senales || []).slice(0, 3), [datos])
+  const dias = useMemo(() => porDia(ultimos), [ultimos])
   const total = datos?.senales?.length || 0
   const c = contarFilas(filas)
+  const alcistas = filas.filter(f => f.fondo?.id === 'alcista').length
+  const enMaximo = filas.filter(f => f.desdeMax?.enMaximo && f.desdeMax.anioCompleto).length
+  const sinLectura = datos?.alcista?.grupos?.sin?.nombres
   return (
     <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] gap-3.5">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] gap-4">
         <PanoramaPlata semana={semana} hidden={hidden} />
-        <section aria-label="Esta semana" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-3">
-          <div className="text-[12px] text-ink-2 font-medium">Esta semana <span className="font-normal">· {QUE_ES_ESTA_SEMANA.replace(/\.$/, '').toLowerCase()}</span></div>
-          {semana.error ? (
-            <p className="text-[13.5px] text-ink-1">No pudimos cargar los cambios de la semana. Probá recargar la página en unos minutos.</p>
-          ) : !datos ? (
-            <div className="h-20 rounded-lg bg-bg-2/40 esqueleto" aria-label="Cargando la semana" />
-          ) : (
-            <>
-              <div className="grid grid-cols-2 gap-3">
-                <div><div className="text-[24px] font-semibold tabular text-ink-0">{t.tenes.valor}</div><div className="text-[13px] text-ink-1">en tu cartera</div></div>
-                <div><div className="text-[24px] font-semibold tabular text-ink-0">{t.watch.valor}</div><div className="text-[13px] text-ink-1">en tu watchlist</div></div>
-              </div>
-              <p className="text-[13px] text-ink-1 leading-snug border-t border-line pt-3">
-                {textoDelResumen(datos.canal, datos.proximo_resumen)}{' '}
-                <button type="button" onClick={() => onPestana('senales')} className="text-data-violet font-medium hover:underline">
-                  {datos.canal && datos.canal !== 'no' ? 'Cambiar' : 'Elegir cómo recibirlo'}
-                </button>
-              </p>
-            </>
+        <MapaCartera filas={filas} cargando={lista.cargando} error={!!lista.error} hidden={hidden}
+          sinLectura={sinLectura || undefined} rutaOtros={urlDePestana('lista')} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] gap-4 items-start">
+        <section aria-label="Lo que cambió esta semana" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-1 min-w-0">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 pt-3 pb-1">
+            <div>
+              <h2 className="text-[15px] sm:text-[16px] font-semibold text-ink-0">{TITULO_CAMBIOS}</h2>
+              <p className="text-[12px] text-ink-2 mt-0.5">{QUE_ES_ESTA_SEMANA}</p>
+            </div>
+            {ultimos.length > 0 && (
+              <span className="text-[12px] text-ink-2 font-medium">
+                {total === 1 ? '1 cambio' : `${total} cambios`}{total > ultimos.length ? ` · los ${ultimos.length} más nuevos` : ''}
+              </span>
+            )}
+          </div>
+          {!datos ? (
+            semana.error
+              ? <p className="py-4 text-[13.5px] text-ink-1">No pudimos cargar los cambios de la semana. Probá recargar la página en unos minutos.</p>
+              : <div className="h-28 my-2 rounded-lg bg-bg-2/40 esqueleto" aria-label="Cargando la semana" />
+          ) : ultimos.length === 0 ? (
+            <p className="py-4 text-[14px] text-ink-1">Esta semana no cambió nada en tu cartera ni en tu watchlist.</p>
+          ) : dias.map(d => (
+            <div key={d.fecha}>
+              <h3 className="text-[12px] text-ink-2 font-semibold pt-3 pb-0.5">{d.dia}</h3>
+              <ul>
+                {d.items.map((s, i) => <Cambio key={`${s.asset}-${s.local}-${s.tipo}-${i}`} s={s} hidden={hidden} onVer={onVer} avisos={avisos} />)}
+              </ul>
+            </div>
+          ))}
+          {total > 0 && (
+            <a href={urlDePestana('senales')} onClick={(e) => { if (clicNormal(e)) { e.preventDefault(); onPestana('senales') } }}
+              className="w-full text-left text-[14px] font-medium text-data-violet border-t border-line/60 mt-1 py-3 hover:underline inline-flex items-center gap-1.5">
+              Ver {total === 1 ? 'la señal' : `las ${total} señales`} de la semana <ArrowRight size={14} aria-hidden="true" />
+            </a>
           )}
         </section>
-      </div>
 
-      <section aria-label="Lo que cambió esta semana" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-1">
-        <div className="flex items-baseline justify-between gap-3 pt-3 pb-1">
-          <h2 className="text-[15px] font-semibold text-ink-0">{TITULO_CAMBIOS}</h2>
-          {ultimos.length > 0 && <span className="text-[12px] text-ink-2">{ultimos.length === 1 ? 'el único' : `los ${ultimos.length} más nuevos`}</span>}
+        <div className="flex flex-col gap-4 min-w-0">
+          {/* En el celular no va: la pestaña «Tu lista» ya dice cuántos son. */}
+          <section aria-label="Tu lista de un vistazo" className="hidden sm:flex bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex-col gap-2.5">
+            <h2 className="text-[15px] font-semibold text-ink-0">Tu lista de un vistazo</h2>
+            {lista.error ? (
+              <p className="text-[13.5px] text-ink-1">No pudimos cargar tu lista. Probá recargar la página en unos minutos.</p>
+            ) : lista.cargando ? (
+              <div className="h-16 rounded-lg bg-bg-2/40 esqueleto" aria-label="Cargando tu lista" />
+            ) : (
+              <div className="grid grid-cols-3 gap-2.5">
+                <Numero valor={c.todo} texto={c.todo === 1 ? 'activo' : 'activos'} />
+                <Numero valor={alcistas} texto="con tendencia alcista de largo plazo" tono={alcistas ? 'text-rendi-pos' : ''} />
+                <Numero valor={enMaximo} texto="en su máximo del año" />
+              </div>
+            )}
+            <APestana id="lista" onPestana={onPestana} className="text-[13.5px] font-medium text-data-violet hover:underline self-start">
+              Abrir tu lista →
+            </APestana>
+          </section>
+
+          <section aria-label="El resumen del sábado" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-2.5">
+            <h2 className="text-[15px] font-semibold text-ink-0">El resumen del sábado</h2>
+            {semana.error ? (
+              <p className="text-[13.5px] text-ink-1">No pudimos cargar cómo te llega el resumen. Probá recargar la página en unos minutos.</p>
+            ) : !datos ? (
+              <div className="h-12 rounded-lg bg-bg-2/40 esqueleto" />
+            ) : (
+              <>
+                <p className="text-[13.5px] text-ink-1 leading-relaxed">{textoDelResumen(datos.canal, datos.proximo_resumen)}</p>
+                <div className="flex flex-wrap gap-2">
+                  <APestana id="senales" onPestana={onPestana} className={BOTON}>
+                    {datos.canal && datos.canal !== 'no' ? 'Cambiar cómo me llega' : 'Elegir cómo recibirlo'}
+                  </APestana>
+                  <Link to="/alertas?tab=crear" className={BOTON}>Crear una alerta técnica</Link>
+                </div>
+              </>
+            )}
+          </section>
         </div>
-        {!datos ? (
-          semana.error ? null : <div className="h-28 my-2 rounded-lg bg-bg-2/40 esqueleto" />
-        ) : ultimos.length === 0 ? (
-          <p className="py-4 text-[14px] text-ink-1">Esta semana no cambió nada en tu cartera ni en tu watchlist.</p>
-        ) : (
-          <ul>{ultimos.map((s, i) => <Cambio key={`${s.asset}-${s.tipo}-${i}`} s={s} hidden={hidden} onVer={onVer} />)}</ul>
-        )}
-        {total > 0 && (
-          <a href={urlDePestana('senales')} onClick={(e) => { if (clicNormal(e)) { e.preventDefault(); onPestana('senales') } }}
-            className="w-full text-left text-[14px] font-medium text-data-violet border-t border-line/60 py-3 hover:underline inline-flex items-center gap-1.5">
-            Ver {total === 1 ? 'la señal' : `las ${total} señales`} de la semana <ArrowRight size={14} aria-hidden="true" />
-          </a>
-        )}
-      </section>
-
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
-        <Tarjeta titulo="Tu lista" ir={urlDePestana('lista')} accion="Abrir tu lista →"
-          texto={lista.cargando || lista.error ? 'Tus activos y los de tu watchlist, con su tendencia, su impulso y su último cambio.'
-            : `${c.todo} ${c.todo === 1 ? 'activo' : 'activos'}: ${c.tenes} en tu cartera y ${c.watchlist} en tu watchlist, con su tendencia, su impulso y su último cambio.`} />
-        <Tarjeta titulo="Señales de la semana" ir={urlDePestana('senales')} accion="Ver las señales →"
-          texto={`${datos ? `${total === 1 ? 'El cambio' : `Los ${total} cambios`}` : 'Los cambios'} de los últimos 7 días, día por día, y cómo recibir el resumen de los sábados.`} />
-        <Tarjeta titulo="Comparar" pronto accion="Próximamente"
-          texto="¿Qué rindió más desde que compraste? Compará tus activos con haber guardado dólares, con la inflación y con el S&P 500." />
       </div>
+
       <p className="text-[12px] text-ink-2 leading-relaxed">{NO_ES_RECOMENDACION}</p>
     </div>
   )

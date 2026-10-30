@@ -171,13 +171,16 @@ export default function RadiografiaTecnica({ lotes, reparto, cargando, error, cl
 }
 
 /**
- * El % de tu plata en tendencia de fondo alcista, con la barra, los grupos y
- * por qué algunos van sin lectura: la tarjeta grande del Panorama de Análisis
- * técnico. Sólo dibuja: `reparto` lo arma el servidor (senales_semana.reparto,
- * LA cuenta de la Cartera, el Panorama, Señales y el mail). `nota`: una línea
- * abajo (lo que se dio vuelta esta semana).
+ * El % de tu cartera en tendencia alcista de largo plazo, con la barra, los
+ * grupos y por qué algunos van sin lectura: la tarjeta grande del Panorama de
+ * Análisis técnico (lienzo «1 · Panorama», 30/10). Sólo dibuja: `reparto` lo
+ * arma el servidor (senales_semana.reparto, LA cuenta de la Cartera, el
+ * Panorama, Señales y el mail). `cambio`: el chip contra la semana pasada
+ * (`cambioContraAntes` de utils/tusSenales.js); `queLoMovio`: lo que se dio
+ * vuelta esta semana (`queLoMovio`, ídem). El «no es una recomendación» va una
+ * sola vez, al pie de la página.
  */
-export function TarjetaPlata({ reparto, cargando, error, titulo, nota = null, className = '' }) {
+export function TarjetaPlata({ reparto, cargando, error, titulo, cambio = null, queLoMovio = null, className = '' }) {
   const { hidden } = usePrivacy()
   const cabecera = <div className="text-[12px] text-ink-2 font-medium">{titulo}</div>
   if (error) {
@@ -195,10 +198,12 @@ export function TarjetaPlata({ reparto, cargando, error, titulo, nota = null, cl
   // Con el redondeo del servidor (pct entero), «0» con algo adentro es «menos de 1%».
   const pct = (id) => parteDeTuPlata(g[id]?.pct === 0 && g[id]?.fraccion > 0 ? g[id].fraccion * 100 : (g[id]?.pct ?? 0))
   const etiqueta = `${pct('alcista')} alcista, ${pct('bajista')} bajista, ${pct('sin')} sin lectura`
-  const antes = !hidden ? antesTxt(reparto.semana_pasada) : null
-  const tonoAntes = reparto.semana_pasada && reparto.pct != null
-    ? (reparto.pct > reparto.semana_pasada.pct ? 'pos' : reparto.pct < reparto.semana_pasada.pct ? 'neg' : null) : null
-
+  // El servidor manda los nombres de más a menos plata: con «Ocultar saldos» ese
+  // orden diría cuál pesa más, así que van por orden alfabético.
+  const enOrden = (nombres) => {
+    const n = nombres.map(fciLabel)
+    return hidden ? [...n].sort((a, b) => a.localeCompare(b, 'es')) : n
+  }
   return (
     <section aria-label="Radiografía técnica" className={`bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-3 ${className}`}>
       {cabecera}
@@ -208,15 +213,21 @@ export function TarjetaPlata({ reparto, cargando, error, titulo, nota = null, cl
           guarda la historia de precios de bonos, fondos ni efectivo, y una acción o un CEDEAR
           necesita 200 días de mercado con precios guardados.
         </p>
+      ) : hidden ? (
+        <p className="text-[17px] sm:text-[19px] font-semibold leading-snug text-ink-0">{PLATA_ALCISTA_OCULTA}</p>
       ) : (
-        <p className="text-[19px] sm:text-[21px] font-semibold leading-snug text-ink-0">
-          {hidden
-            ? PLATA_ALCISTA_OCULTA
-            : <><span className="text-rendi-pos tabular">{reparto.pct}%</span> de tu cartera está en activos con tendencia alcista de largo plazo.</>}
-          {antes && (
-            <span className={`ml-2 text-[14px] font-medium ${tonoAntes === 'pos' ? 'text-rendi-pos' : tonoAntes === 'neg' ? 'text-rendi-neg' : 'text-ink-2'}`}>({antes})</span>
-          )}
+        <p className="flex flex-wrap items-baseline gap-x-3.5 gap-y-1.5">
+          <span className="text-[44px] sm:text-[56px] font-semibold leading-none text-rendi-pos tabular">{reparto.pct}%</span>
+          <span className="text-[15px] sm:text-[18px] font-medium leading-snug text-ink-0 max-w-[22rem]">de tu cartera está en activos con tendencia alcista de largo plazo</span>
         </p>
+      )}
+      {cambio && (
+        <div>
+          <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[12px] font-medium tabular ${
+            cambio.tono === 'pos' ? 'text-rendi-pos bg-rendi-pos/10' : cambio.tono === 'neg' ? 'text-rendi-neg bg-rendi-neg/10' : 'text-ink-1 bg-bg-2'}`}>
+            {cambio.texto}
+          </span>
+        </div>
       )}
       {!hidden && (
         <div className="flex h-3 rounded-full overflow-hidden gap-0.5" role="img" aria-label={etiqueta}>
@@ -232,7 +243,7 @@ export function TarjetaPlata({ reparto, cargando, error, titulo, nota = null, cl
           return (
             <span key={id}>
               <b className={`font-semibold ${TONO[id].texto}`}>{hidden ? '' : `${pct(id)} `}{palabra}</b>
-              <Lista nombres={g[id].nombres.map(fciLabel)} />
+              <Lista nombres={enOrden(g[id].nombres)} />
             </span>
           )
         })}
@@ -240,13 +251,17 @@ export function TarjetaPlata({ reparto, cargando, error, titulo, nota = null, cl
       {reparto.motivos?.length > 0 && (
         <ul className="flex flex-col gap-1 text-[12px] text-ink-2 leading-relaxed" aria-label="Por qué algunos van sin lectura">
           {reparto.motivos.filter(m => MOTIVOS_SIN_LECTURA[m.porque]).map(m => (
-            <li key={m.porque}><b className="font-semibold text-ink-1">{m.nombres.map(fciLabel).join(', ')}</b>: {MOTIVOS_SIN_LECTURA[m.porque]}</li>
+            <li key={m.porque}><b className="font-semibold text-ink-1">{enOrden(m.nombres).join(', ')}</b>: {MOTIVOS_SIN_LECTURA[m.porque]}</li>
           ))}
         </ul>
       )}
-      {nota && <p className="text-[13px] text-ink-1 leading-snug">{nota}</p>}
+      {queLoMovio && (
+        <p className="text-[13.5px] text-ink-1 leading-relaxed border-t border-line pt-3">
+          <b className="font-semibold text-ink-0">Qué lo movió:</b> {queLoMovio}
+        </p>
+      )}
       <p className="text-[12px] text-ink-2 leading-relaxed">
-        «Alcista» significa que el precio está por encima de su promedio de los últimos 200 días. Describe cómo se movió el precio; no es una recomendación.
+        «Alcista» significa que el precio está por encima de su promedio de los últimos 200 días.
       </p>
     </section>
   )

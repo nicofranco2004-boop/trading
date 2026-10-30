@@ -12,7 +12,7 @@ vi.mock('../../hooks/usePushNotifications', () => ({
 vi.mock('../../utils/api', () => ({ api: { get: vi.fn(() => Promise.resolve({})) } }))
 
 import AlertaForm, { borradorInicial, pedidoTecnico, repeticionPorDefecto } from './AlertaForm'
-import { prefillTecnico, alertaExistente, senalDeTarjeta } from './AvisameTecnico'
+import { prefillTecnico, alertaExistente, senalDeTarjeta, senalDelCambio } from './AvisameTecnico'
 import { setBrokersRegistry } from '../../utils/valuation'
 
 const plan = { can: () => true, limit: () => null }
@@ -101,5 +101,20 @@ describe('«Te avisamos» si ya hay una igual', () => {
     expect(alertaExistente([{ ...a, active: false }], p)).toBeNull()
     expect(alertaExistente([{ ...a, currency: 'ARS' }], p)).toBeNull()
     expect(alertaExistente([{ ...a, senal: 'media50' }], p)).toBeNull()
+  })
+})
+
+describe('la campanita de cada cambio de la semana (Panorama)', () => {
+  it('ofrece avisar cuando vuelva a cambiar; el ADX no tiene alerta', () => {
+    expect(senalDelCambio({ tipo: 'media200', sentido: 'arriba' })).toEqual({ senal: 'media200', direction: 'below' })
+    expect(senalDelCambio({ tipo: 'media50', sentido: 'abajo' })).toEqual({ senal: 'media50', direction: 'above' })
+    expect(senalDelCambio({ tipo: 'rsi_bajo_30' })).toEqual({ senal: 'rsi_sube_30' })
+    expect(senalDelCambio({ tipo: 'rsi_sobre_70' })).toEqual({ senal: 'rsi_baja_70' })
+    expect(senalDelCambio({ tipo: 'maximo_12m' })).toEqual({ senal: 'maximo_12m' })
+    expect(senalDelCambio({ tipo: 'adx23' })).toBeNull()
+  })
+  it('lo que ofrece arma el mismo borrador que la ficha (el activo sin .BA y la marca de acción local)', () => {
+    const p = prefillTecnico({ asset: 'GGAL', accionLocal: true, moneda: 'usd', ...senalDelCambio({ tipo: 'media200', sentido: 'arriba' }) })
+    expect(p).toMatchObject({ kind: 'tecnica', symbol: 'GGAL', senal: 'media200', direction: 'below', currency: 'USD', accionLocal: true })
   })
 })

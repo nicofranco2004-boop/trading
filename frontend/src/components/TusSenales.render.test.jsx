@@ -60,7 +60,8 @@ describe('tusSenales: cuentas', () => {
     expect([t.tenes.valor, t.tenes.texto]).toEqual(['3 cambios', 'en 3 de tus 7 activos con precios al día'])
     expect([t.watch.valor, t.watch.texto]).toEqual(['1 cambio', 'PAMP'])
     expect([t.plata.valor, t.plata.antes, t.plata.tono]).toEqual(['54%', 'la semana pasada, 61%', 'neg'])
-    expect(t.plata.texto).toBe('AAPL pasó a bajista esta semana')
+    // La misma frase que «Qué lo movió» del Panorama (queLoMovio), con el peso y el día.
+    expect(t.plata.texto).toBe('AAPL (11% de tu cartera) pasó a bajista el martes 20/10.')
   })
 
   it('«con lectura» quiere decir una sola cosa (re-test A2, 29/10)', () => {

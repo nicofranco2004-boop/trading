@@ -61,14 +61,28 @@ export function useAvisosTecnicos() {
   return { items: items || [], cargado: items !== null, recargar }
 }
 
-export function BotonAvisame({ avisos, className = '', ...datos }) {
+/** `soloIcono`: la campanita sola, como botón redondo (los renglones de «Lo que
+ *  cambió esta semana» del Panorama); el texto va en el globo y para el lector
+ *  de pantalla. */
+export function BotonAvisame({ avisos, className = '', soloIcono = false, ...datos }) {
   const plan = usePlanFeatures()
   const toast = useToast()
   const [abierto, setAbierto] = useState(false)
   const prefill = prefillTecnico(datos)
   const ya = alertaExistente(avisos?.items, prefill)
 
+  const queAvisa = `Avisame cuando ${(SENALES_TECNICAS.find(x => x.id === prefill.senal)?.texto || '').replace(/^./, c => c.toLowerCase())}`
+  const redondo = 'inline-flex items-center justify-center w-[34px] h-[34px] rounded-full border border-line bg-bg-2/60'
+
   if (ya) {
+    if (soloIcono) {
+      return (
+        <Link to="/alertas?tab=mis" title="Ya te avisamos: ver tus alertas" aria-label="Ya te avisamos: ver tus alertas"
+          className={`${redondo} text-rendi-pos hover:border-rendi-pos/40 ${className}`}>
+          <Check size={14} strokeWidth={2.25} aria-hidden="true" />
+        </Link>
+      )
+    }
     return (
       <Link to="/alertas?tab=mis" className={`inline-flex items-center gap-1 min-h-8 text-[12px] text-rendi-pos hover:underline ${className}`}>
         <Check size={13} strokeWidth={2.25} aria-hidden="true" /> Te avisamos
@@ -95,11 +109,17 @@ export function BotonAvisame({ avisos, className = '', ...datos }) {
 
   return (
     <>
-      <button type="button" onClick={() => setAbierto(true)}
-        title={`Avisame cuando ${(SENALES_TECNICAS.find(x => x.id === prefill.senal)?.texto || '').replace(/^./, c => c.toLowerCase())}`}
-        className={`inline-flex items-center gap-1 min-h-8 px-2 -mx-2 rounded text-[12px] text-data-violet hover:bg-data-violet/10 ${className}`}>
-        <Bell size={13} strokeWidth={2} aria-hidden="true" /> Avisame
-      </button>
+      {soloIcono ? (
+        <button type="button" onClick={() => setAbierto(true)} title={queAvisa} aria-label={queAvisa}
+          className={`${redondo} text-ink-1 hover:text-ink-0 hover:border-rendi-accent/40 transition ${className}`}>
+          <Bell size={14} strokeWidth={2} aria-hidden="true" />
+        </button>
+      ) : (
+        <button type="button" onClick={() => setAbierto(true)} title={queAvisa}
+          className={`inline-flex items-center gap-1 min-h-8 px-2 -mx-2 rounded text-[12px] text-data-violet hover:bg-data-violet/10 ${className}`}>
+          <Bell size={13} strokeWidth={2} aria-hidden="true" /> Avisame
+        </button>
+      )}
       {abierto && (
         <AlertaForm plan={plan} prefill={prefill} onClose={() => setAbierto(false)}
           crear={crear} onCreada={creada} />
@@ -199,5 +219,22 @@ export function senalDeTarjeta(id, l) {
     return { senal: r < 30 ? 'rsi_sube_30' : r >= 70 ? 'rsi_baja_70' : r > 50 ? 'rsi_sobre_70' : 'rsi_bajo_30' }
   }
   if (id === 'maximo') return { senal: 'maximo_12m' }
+  return null
+}
+
+/**
+ * Qué aviso ofrece la campanita de un cambio de la semana (`tipo` y `sentido`
+ * de GET /api/tus-senales): que vuelva a cambiar. Cruzó para arriba su promedio
+ * → avisar si lo vuelve a cruzar para abajo; el impulso bajó de 30 → si vuelve
+ * a superarlo; superó 70 → si vuelve a quedar debajo; empezó a marcar máximos →
+ * la próxima vez que marque uno. La fuerza de la tendencia (ADX) no tiene
+ * alerta: null, sin campanita.
+ */
+export function senalDelCambio(s) {
+  const vuelta = s?.sentido === 'arriba' ? 'below' : s?.sentido === 'abajo' ? 'above' : 'either'
+  if (s?.tipo === 'media200' || s?.tipo === 'media50') return { senal: s.tipo, direction: vuelta }
+  if (s?.tipo === 'rsi_bajo_30') return { senal: 'rsi_sube_30' }
+  if (s?.tipo === 'rsi_sobre_70') return { senal: 'rsi_baja_70' }
+  if (s?.tipo === 'maximo_12m') return { senal: 'maximo_12m' }
   return null
 }

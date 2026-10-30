@@ -3,9 +3,10 @@
 // servidor (simulado en el borde, `api`), corren sus efectos y se mira lo que
 // queda dibujado. Lo que importa:
 //   · la dirección decide la pestaña (?tab=lista / ?tab=senales; sin tab,
-//     Panorama; Comparar y Mercado se ven y no se tocan);
+//     Gráfico); Comparar y Mercado son un solo «Pronto», no pestañas;
 //   · el Panorama dice el % que manda el servidor (senales_semana.reparto, la
-//     cuenta única), los 3 cambios más nuevos de la semana y cuántas señales hay;
+//     cuenta única) con el cambio contra la semana pasada, el mapa de tu
+//     cartera, los 3 cambios más nuevos de la semana por día y cuántas señales hay;
 //   · la página pide UNA vez lo de la semana y UNA vez tu lista, aunque los
 //     usen varias pestañas;
 //   · /novedades?tab=senales (los mails viejos) lleva a la pestaña nueva.
@@ -49,6 +50,7 @@ function servidor() {
     if (url === '/watchlist') return { items: [{ symbol: 'TSLA' }] }
     if (url.startsWith('/prices')) return { NVDA: 150, KO: 50 }
     if (url === '/plazos-fijos') return []
+    if (url === '/alerts') return { items: [] }
     if (url === '/tus-senales') return {
       desde: '2026-10-21', hasta: HOY, canal: 'mail', proximo_resumen: '2026-11-07',
       // LA cuenta del servidor (senales_semana.reparto). 74 y no 75 a propósito:
@@ -112,6 +114,16 @@ const pestanaActiva = (c) => {
   return null
 }
 
+const conEtiqueta = (c, etiqueta) => {
+  const pila = [c]
+  while (pila.length) {
+    const n = pila.shift()
+    if (n.atributos?.['aria-label'] === etiqueta) return true
+    pila.push(...(n.childNodes || []))
+  }
+  return false
+}
+
 // La primera vez que se importa la página, vite la traduce con todo lo que
 // arrastra (la ficha y Novedades): en la suite completa, en paralelo, eso solo
 // pasaba los 5 s de la primera prueba. Se hace una vez acá, con tiempo; después
@@ -133,16 +145,14 @@ beforeEach(() => {
 afterEach(async () => { await montado?.desmontar?.(); montado = null; vi.unstubAllGlobals() })
 
 describe('Análisis técnico: las pestañas', () => {
-  it('sin ?tab abre Gráfico (la de entrada desde el 30/10, Nico); Comparar y Mercado se ven «Próximamente» y no se tocan', async () => {
+  it('sin ?tab abre Gráfico (la de entrada desde el 30/10, Nico); Comparar y Mercado son un solo «Pronto», no pestañas', async () => {
     montado = await abrir('/analisis-tecnico')
     expect(pestanaActiva(montado.contenedor)).toBe('Gráfico')
-    const t = montado.t()
-    expect(t).toContain('Comparar')
-    expect(t).toContain('Próximamente')
-    const comparar = buscarBoton(montado.contenedor, 'Comparar')
-    expect(comparar.atributos.disabled).not.toBeUndefined()
-    await enActo(async () => clic(montado.contenedor, comparar))
-    expect(pestanaActiva(montado.contenedor)).toBe('Gráfico')
+    // Lienzo «1 · Panorama» (30/10): un texto a la derecha de la fila, no dos
+    // pestañas grises que no se pueden tocar.
+    expect(montado.t()).toContain('Pronto: Comparar · Mercado')
+    expect(montado.t()).not.toContain('Próximamente')
+    expect(buscarBoton(montado.contenedor, 'Comparar')).toBeFalsy()
   })
 
   it('?tab=lista abre la tabla y ?tab=senales las señales; tocar una pestaña cambia la dirección', async () => {
@@ -175,12 +185,19 @@ describe('Análisis técnico: el Panorama', () => {
   it('el % del servidor (no el de la pantalla), los 3 cambios más nuevos y cuántas señales hay', async () => {
     montado = await abrir('/analisis-tecnico?tab=panorama')
     const t = montado.t()
-    expect(t).toContain('74% de tu cartera está en activos con tendencia alcista de largo plazo')
-    expect(t).toContain('(la semana pasada, 70%)')
+    expect(t).toContain('74%de tu cartera está en activos con tendencia alcista de largo plazo')
+    expect(t).toContain('▲ 4 puntos más que la semana pasada')
     expect(t).toContain('26% bajista')
-    expect(t).toContain('3 cambiosen tu cartera')        // NVDA, KO del día y KO del RSI
-    expect(t).toContain('1 cambioen tu watchlist')         // TSLA
-    expect(t).toContain('los 3 más nuevos')
+    // Qué lo movió: el cruce del promedio de 200 de lo que tenés (NVDA), con su peso.
+    expect(t).toContain('Qué lo movió: NVDA (50% de tu cartera) pasó a alcista el')
+    expect(t).toContain('4 cambios · los 3 más nuevos')
+    // El mapa: los pesos y la tendencia de Tu lista (NVDA 75 % alcista, KO 25 % bajista).
+    expect(t).toContain('Mapa de tu cartera')
+    expect(conEtiqueta(montado.contenedor, 'NVDA · 75% de tu cartera · tendencia alcista')).toBe(true)
+    expect(conEtiqueta(montado.contenedor, 'KO · 25% de tu cartera · tendencia bajista')).toBe(true)
+    // Una campanita por cambio que tiene alerta (la del máximo de TSLA también).
+    expect(conEtiqueta(montado.contenedor, 'Avisame cuando cruce su promedio de 200 días')).toBe(true)
+    expect(conEtiqueta(montado.contenedor, 'Avisame cuando cierre en su máximo del año')).toBe(true)
     expect(t).toContain('NVDA superó su promedio de 200 días')
     expect(t).toContain('TSLA empezó a marcar máximos del año')
     // P5 (auditoría A 29/10): el título decía «en lo tuyo» y la lista trae
@@ -191,7 +208,8 @@ describe('Análisis técnico: el Panorama', () => {
     expect(t).not.toContain('el impulso (RSI) bajó de 30 y quedó en 25')  // el 4.º, más viejo, no va en el Panorama
     expect(t).toContain('Ver las 4 señales de la semana')
     expect(t).toContain('El resumen de la semana te llega el sábado 07/11 a las 10:00')
-    expect(t).toContain('3 activos: 2 en tu cartera y 1 en tu watchlist')
+    expect(t).toContain('Tu lista de un vistazo')
+    expect(t).toContain('3activos')
     expect(t).toContain('no es una recomendación para comprar ni vender')
   })
 })
