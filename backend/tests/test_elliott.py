@@ -409,6 +409,34 @@ class ElliottFichaTest(unittest.TestCase):
         fechas = {p["d"] for p in r.json()["puntos"]}
         self.assertTrue(all(o["fecha"] in fechas for o in c["ondas"]))
 
+    def test_precios_de_fracciones_de_centavo_no_llegan_en_cero(self):
+        # PEPE o SHIB (US$ 0,00001): con 4 decimales fijos todas las ondas y la
+        # raya de «dejaría de valer» llegaban en 0 y el gráfico estiraba la
+        # escala hasta cero (29/10). Mismo arreglo que el Fibonacci:
+        # estructura.precio_redondo.
+        escala = 1e-7
+        self.yahoo.velas["ZZEL"] = _velas([x * escala for x in _dibujo(LIBRO + [141])])
+        main._run_velas_diarias_job()
+        r = self.client.get("/api/tecnico/ZZEL", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        e = r.json()["elliott"]
+        self.assertTrue(e["disponible"], e)
+        c = e["principal"]
+        self.assertEqual(c["tipo"], "impulso")
+        # Cada onda en el máximo (pico) o el mínimo (pozo) de la vela: el
+        # cierre ± el 0,3 % de _velas.
+        for o, esperado in zip(c["ondas"], [100, 120, 108, 140, 128, 150]):
+            mecha = 1.003 if o["tipo"] == "pico" else 0.997
+            self.assertAlmostEqual(o["precio"] / (esperado * mecha * escala), 1, places=4)
+        self.assertAlmostEqual(c["invalida"]["precio"] / (150 * 1.003 * escala), 1, places=4)
+        self.assertAlmostEqual(e["precio_hoy"] / (141 * escala), 1, places=4)
+        # El alternativo y su «otro» nivel pasan por el mismo redondeo.
+        alt = e["alternativo"]
+        self.assertTrue(all(o["precio"] > 0 for o in alt["ondas"]), alt)
+        self.assertGreater(alt["invalida"]["precio"], 0)
+        if alt["invalida"]["otro"]:
+            self.assertGreater(alt["invalida"]["otro"]["precio"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

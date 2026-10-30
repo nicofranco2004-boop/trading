@@ -12186,6 +12186,7 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_ef
             hist = yf.Ticker(f"{sym}-USD").history(period=yf_period, interval=interval, auto_adjust=False)
         return hist
 
+    from estructura import precio_redondo as _precio_redondo
     points = []
     yahoo_no_respondio = False
     try:
@@ -12197,7 +12198,9 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_ef
                     continue
                 points.append({
                     "date": idx.strftime("%Y-%m-%d"),
-                    "close": round(float(close), 4),
+                    # Abajo de 1, cifras significativas: con 4 decimales fijos
+                    # PEPE o SHIB (US$ 0,00001) dibujaban una línea chata en 0.
+                    "close": _precio_redondo(float(close)),
                 })
     except _yahoo.YahooNoRespondio:
         yahoo_no_respondio = True
@@ -12217,7 +12220,7 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_ef
         _ratio = CEDEAR_USD_RATIOS.get(cedear_base) or 1
         if _ccl and _ccl > 0:
             for pt in points:
-                pt["close"] = round(pt["close"] * _ccl / _ratio, 4)
+                pt["close"] = _precio_redondo(pt["close"] * _ccl / _ratio)
         else:
             points = []
 

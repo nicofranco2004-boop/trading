@@ -550,5 +550,9 @@ def _para_afuera(c: dict, velas: list) -> dict:
     }
 
 
-def _r(x, d=4):
+def _r(x, d=None):
+    # Sin `d`, un precio: ver estructura.precio_redondo (con 4 decimales fijos
+    # PEPE o SHIB llegaban con todas las ondas en 0, 29/10).
+    if d is None:
+        return estructura.precio_redondo(x)
     return round(x, d) if x is not None else None
