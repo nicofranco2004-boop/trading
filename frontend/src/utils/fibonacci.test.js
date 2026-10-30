@@ -13,7 +13,7 @@ const SUBA = {
   desde: { fecha: '2026-05-13', precio: 1495 }, hasta: { fecha: '2026-09-03', precio: 2066 },
   ruptura: { fecha: '2026-09-09', cierre: 1876.33, nivel: 1900, nivel_fecha: '2026-09-01' },
   niveles: [0.236, 0.382, 0.5, 0.618, 0.786].map(n => ({ nivel: n, precio: 2066 - n * 571 })),
-  precio_hoy: 1854.88, retroceso_hoy: 0.3697, retroceso_maximo: { valor: 0.6963, precio: 1668.44, fecha: '2026-10-01' }, entre: [0.236, 0.382],
+  precio_hoy: 1854.88, fecha_hoy: '2026-10-22', retroceso_hoy: 0.3697, retroceso_maximo: { valor: 0.6963, precio: 1668.44, fecha: '2026-10-01' }, entre: [0.236, 0.382],
 }
 
 describe('tarjetaFibonacci', () => {
@@ -23,7 +23,7 @@ describe('tarjetaFibonacci', () => {
     expect(t.veredicto).toBe('Devolvió el 37 % de la suba')
     expect(t.texto).toContain('La última suba fue de US$ 1.495 (13/05/2026) a US$ 2.066 (03/09/2026).')
     expect(t.texto).toContain('El 09/09/2026 cerró debajo de su último pozo más alto (US$ 1.900, del 01/09/2026): ahí terminó la suba.')
-    expect(t.texto).toContain('Hoy está en US$ 1.854,88: está entre el 23,6 % y el 38,2 % de la suba.')
+    expect(t.texto).toContain('Al cierre del 22/10/2026 estaba en US$ 1.854,88: está entre el 23,6 % y el 38,2 % de la suba.')
     expect(t.texto).toContain('Lo más bajo que llegó fue US$ 1.668,44, el 01/10/2026 (70 % de la suba).')
     // Cada nivel dicho por lo que significa; el porcentaje, como dato.
     expect(t.explicacion).toContain('hasta dónde podría volver a bajar antes de seguir subiendo')

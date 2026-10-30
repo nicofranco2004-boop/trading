@@ -220,26 +220,37 @@ export const ANCHO_PARA_LEYENDA_ABIERTA = 420
  * y se acuerda de cómo la dejaste. `items`: { id, nombre, icono, activo,
  * sinDatos, onClick }; al pie, «Volver a lo de fábrica». `anchoDisponible`: el
  * ancho del gráfico en píxeles (lo pasa el gráfico, que lo mide).
+ * `plegada`: hay una herramienta de dibujar o de medir prendida. Abierta, la
+ * lista tapa la franja izquierda del gráfico (en la compu, 9 renglones = dos
+ * tercios del alto) y ahí no se podía dibujar ni medir (auditoría D, 29/10):
+ * mientras dure la herramienta se pliega sola, sin guardarlo como elección, y
+ * con el botón se puede abrir igual.
  */
-export function LeyendaIndicadores({ items, onAviso, deFabrica, onFabrica, anchoDisponible = 1000 }) {
+export function LeyendaIndicadores({ items, onAviso, deFabrica, onFabrica, anchoDisponible = 1000, plegada = false }) {
   const [elegida, setElegida] = useState(leyendaGuardada)
-  const abierta = elegida ?? anchoDisponible >= ANCHO_PARA_LEYENDA_ABIERTA
-  const setAbierta = (x) => { setElegida(x); try { localStorage.setItem(CLAVE_LEYENDA, x ? 'abierta' : 'cerrada') } catch { /* sin almacenamiento */ } }
+  const [abiertaIgual, setAbiertaIgual] = useState(false)
+  useEffect(() => { setAbiertaIgual(false) }, [plegada])
+  const abierta = plegada ? abiertaIgual : (elegida ?? anchoDisponible >= ANCHO_PARA_LEYENDA_ABIERTA)
+  const setAbierta = (x) => {
+    if (plegada) { setAbiertaIgual(x); return }
+    setElegida(x); try { localStorage.setItem(CLAVE_LEYENDA, x ? 'abierta' : 'cerrada') } catch { /* sin almacenamiento */ }
+  }
   const usables = items.filter(i => !i.sinDatos)
   const prendidos = usables.filter(i => i.activo).length
   return (
     // `w-max`: del ancho de la lista, no del gráfico. Como bloque ocupaba todo
     // el ancho de arriba del gráfico (invisible) y se comía los clicks: no se
     // podía elegir el Fibonacci automático ni arrastrar una línea hacia arriba
-    // (Nico, 29/10).
-    <div className="w-max max-w-[calc(100%-8px)] text-[11.5px]" role="group" aria-label="Indicadores">
+    // (Nico, 29/10). Y por si la caja vuelve a crecer: los clicks los toma sólo
+    // lo que se ve (el botón y la lista), nunca la caja que los envuelve.
+    <div className="w-max max-w-[calc(100%-8px)] text-[11.5px] pointer-events-none" role="group" aria-label="Indicadores">
       <button type="button" onClick={() => setAbierta(!abierta)} aria-expanded={abierta}
-        className="inline-flex items-center gap-1 min-h-8 sm:min-h-6 px-2 rounded border border-line/60 bg-bg-1/85 text-ink-1 hover:text-ink-0">
+        className="pointer-events-auto inline-flex items-center gap-1 min-h-8 sm:min-h-6 px-2 rounded border border-line/60 bg-bg-1/85 text-ink-1 hover:text-ink-0">
         Indicadores <span className="tabular text-ink-2">· {prendidos} de {usables.length}</span>
         <ChevronDown size={13} aria-hidden="true" className={`transition-transform ${abierta ? 'rotate-180' : ''}`} />
       </button>
       {abierta && (
-        <ul className="mt-1 w-max max-w-full rounded-lg border border-line/60 bg-bg-1/85 p-0.5">
+        <ul className="pointer-events-auto mt-1 w-max max-w-full rounded-lg border border-line/60 bg-bg-1/85 p-0.5">
           {items.map(i => {
             const ve = i.activo && !i.sinDatos
             return (

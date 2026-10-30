@@ -74,7 +74,7 @@ describe('la tarjeta grande del Panorama', () => {
   it('barra, grupos con nombres y por qué cada uno va sin lectura', () => {
     const html = conRouter(<TarjetaPlata reparto={REPARTO} titulo="Tu plata en tendencia de fondo alcista" />)
     const t = sinEtiquetas(html)
-    expect(t).toContain('54% de tu plata está en activos con tendencia de fondo alcista.')
+    expect(t).toContain('54% de tu plata está en tendencia de fondo alcista.')
     expect(t).toContain('(la semana pasada, 61%)')
     expect(html).toContain('aria-label="54% alcista, 29% bajista, 17% sin lectura"')
     expect(t).toContain('29% bajista · MELI')

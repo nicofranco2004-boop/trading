@@ -400,7 +400,7 @@ describe('LecturaTecnica', () => {
     expect(t).toContain('Fuerza de la tendencia (ADX)')
     expect(t).toContain('a favor de la suba')
     expect(t).toContain('La tendencia se afirma')
-    expect(t).toContain('la fuerza (ADX) pasó 23 para arriba con el Squeeze en verde: el precio viene subiendo con fuerza.')
+    expect(t).toContain('la fuerza (ADX) pasó 23 para arriba con el Squeeze (un indicador de para qué lado viene empujando el precio) en verde: el precio viene subiendo con fuerza.')
     // El panel: una barra por día con Squeeze y la línea del ADX.
     const nodos = (n) => [n, ...(n.childNodes || []).flatMap(nodos)]
     const panel = nodos(montado.contenedor).find(n => n.getAttribute?.('aria-label')?.startsWith('Fuerza de la tendencia'))

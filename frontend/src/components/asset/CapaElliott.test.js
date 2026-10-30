@@ -99,15 +99,15 @@ describe('Ondas de Elliott en la ficha', () => {
     expect(t).toContain('Otra lectura posible: el precio podría estar en la onda 4')
     expect(t).toContain('Es una de varias lecturas posibles')
     expect(t).toContain('no es una recomendación')
-    expect(t).toContain('Dejaría de valer · US$ 120,00')
+    expect(t).toContain('El conteo dejaría de valer · US$ 120,00')
     for (const n of ['1', '2', '3', '4']) expect(t).toContain(n)
     // Apagarlo lo saca, y volverlo a prender lo trae.
     const despues = await tocar('Ondas de Elliott')
     expect(despues).not.toContain('Un conteo posible')
-    expect(despues).not.toContain('Dejaría de valer')
+    expect(despues).not.toContain('El conteo dejaría de valer')
     expect((await enElMenu('menu-elliott', 'ell')).getAttribute('aria-checked')).toBe('false')
     await clic(montado.contenedor, porCapa('menu-elliott'))
-    expect(await tocar('Ondas de Elliott')).toContain('Dejaría de valer · US$ 120,00')
+    expect(await tocar('Ondas de Elliott')).toContain('El conteo dejaría de valer · US$ 120,00')
   })
 
   it('convive con el Fibonacci: los dos prendidos', async () => {
@@ -122,7 +122,7 @@ describe('Ondas de Elliott en la ficha', () => {
     respuesta = DATOS({ disponible: false, motivo: 'sin_conteo', n_pivote: 3, ruedas: 252 })
     const t = await dibujar()
     expect(t).toContain('Sin conteo claro')
-    expect(t).not.toContain('Dejaría de valer')
+    expect(t).not.toContain('El conteo dejaría de valer')
     // El botón queda, deshabilitado; tocarlo dice por qué (en el celular no hay globo).
     const opcion = await enElMenu('menu-elliott', 'ell')
     expect(opcion.getAttribute('aria-disabled')).toBe('true')
@@ -131,7 +131,7 @@ describe('Ondas de Elliott en la ficha', () => {
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
     const aviso = texto(montado.contenedor)
     expect(aviso).toContain('Ondas de Elliott (automático): Con los picos y pozos de este activo no aparece ningún conteo')
-    expect(aviso).not.toContain('Dejaría de valer')
+    expect(aviso).not.toContain('El conteo dejaría de valer')
   })
 
   it('una respuesta vieja sin el campo: el botón deshabilitado y nada dibujado', async () => {
@@ -216,7 +216,7 @@ describe('la zona de fin de onda se sacó (23/10: acertaba menos que una franja 
     respuesta = DATOS(conZona)
     const vis = await dibujar()
     expect(vis).toContain('Un conteo posible: onda 5')            // el conteo sigue
-    expect(vis).toContain('Dejaría de valer · US$ 120,00')
+    expect(vis).toContain('El conteo dejaría de valer · US$ 120,00')
     expect(vis).not.toMatch(/terminar acá|acertó/)
   })
 

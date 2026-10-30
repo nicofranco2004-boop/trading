@@ -28,7 +28,9 @@ import { pctTxt } from '../utils/format'
 // un segundo papel que diverge.
 export const P = {
   paper: '#FDFDFB', paper2: '#F4F4F1', ink0: '#191D26', ink2: '#5C6474',
-  ink3: '#8B92A3', line: '#E6E6E0', brand: '#1E1840',
+  // ink3 era más claro: 3,1 a 1 sobre el papel, con letra de 9-12 px (el aviso
+  // legal, las notas). Éste llega a 5,0 y 4,65 (re-test D, ronda 2, 29/10).
+  ink3: '#666E7E', line: '#E6E6E0', brand: '#1E1840',
   up: '#0FA968', down: '#E04250',
   // Estaban sueltos en el JSX, cada uno escrito a mano donde se usaba. Mismos
   // valores, una sola fuente: `line2` es el divisor de filas de la tabla de

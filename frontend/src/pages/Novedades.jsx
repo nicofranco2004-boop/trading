@@ -16,7 +16,7 @@
 //   • ?sub=…                 → sub-tab dentro de la sección (componente hijo)
 
 import { useEffect } from 'react'
-import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import { Activity, ArrowUpRight, Calendar, Newspaper } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Events from './Events'
@@ -93,7 +93,7 @@ function PersonalNovedades() {
         aria-label="Secciones de Novedades"
         className="flex items-center gap-0.5 sm:gap-1 mb-5 border-b border-line overflow-x-auto scrollbar-none"
       >
-        {SECTIONS.map(s => {
+        {SECTIONS.filter(s => !s.fuera).map(s => {
           const Icon = s.icon
           const active = section === s.value
           return (
@@ -116,8 +116,21 @@ function PersonalNovedades() {
                 className={active ? 'text-rendi-accent' : 'text-ink-3 group-hover:text-ink-1 transition-colors'}
               />
               {s.label}
-              {s.fuera && <ArrowUpRight size={13} strokeWidth={2} aria-hidden="true" className="text-data-violet" />}
             </button>
+          )
+        })}
+        {/* Lo que se mudó a otra página no es una pestaña (una pestaña no te saca
+            de la página): es un link, afuera de las pestañas (auditoría D12). */}
+        {SECTIONS.filter(s => s.fuera).map(s => {
+          const Icon = s.icon
+          return (
+            <Link key={s.value} to={s.fuera}
+              className="group flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-3 text-[14px] sm:text-[15px] font-semibold whitespace-nowrap border-b-2 border-transparent -mb-px text-ink-2 hover:text-ink-0 transition-colors">
+              <Icon size={15} strokeWidth={1.75} className="text-ink-3 group-hover:text-ink-1 transition-colors" />
+              {s.label}
+              <ArrowUpRight size={13} strokeWidth={2} aria-hidden="true" className="text-data-violet" />
+              <span className="sr-only">(en Análisis técnico)</span>
+            </Link>
           )
         })}
       </div>

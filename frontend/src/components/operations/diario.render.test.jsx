@@ -126,11 +126,11 @@ describe('tarjetas y frase', () => {
 })
 
 describe('la tesis de una posición abierta', () => {
-  const tesis = { estado: 'listo', items: diario.tesis, hoy: { NVDA: { tendencia: 'bajista', dist: -8.1 } }, recargar: () => {} }
+  const tesis = { estado: 'listo', items: diario.tesis, hoy: { NVDA: { tendencia: 'bajista', dist: -8.1, fecha: '2026-10-28' } }, recargar: () => {} }
   it('muestra el texto, la tendencia de ese día y la de hoy, y el recordatorio', () => {
     const html = sinTags(renderToStaticMarkup(<TesisDelActivo asset="NVDA" tesis={{ ...tesis, items: [{ ...diario.tesis[0], tendencia: { tendencia: 'alcista' } }] }} />))
     expect(html).toContain('«Data centers e IA»')
-    expect(html).toContain('Cuando la escribiste el precio estaba arriba de su promedio de 200 días (alcista). Hoy está 8,1 % abajo: bajista.')
+    expect(html).toContain('Cuando la escribiste el precio estaba arriba de su promedio de 200 días (alcista). Al cierre del 28/10/26 estaba 8,1 % abajo de su promedio de 200 días: bajista.')
     expect(html).toContain('Recordarme revisarla')
     expect(html).toContain('Después del próximo balance')
   })

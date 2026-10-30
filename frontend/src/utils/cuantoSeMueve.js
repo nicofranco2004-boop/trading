@@ -10,6 +10,8 @@
 // Lo único que se cuenta acá es la medición entre dos días que toca la persona
 // (sobre los mismos puntos que dibuja el gráfico) y lo que te toca a vos de un
 // día malo normal (tu tenencia la sabe la ficha, no el servidor).
+import { OCULTO, AVISO_OCULTO } from './ocultarSaldos'
+import { esElDeTuCartera } from './parteDeTuPlata'
 
 const NUM1 = { minimumFractionDigits: 1, maximumFractionDigits: 1 }
 const num1 = (v) => Math.abs(v).toLocaleString('es-AR', NUM1)
@@ -160,8 +162,11 @@ export function textoGrupo(eventos = []) {
  *   · `tenencia`: { valor } lo que vale hoy lo tuyo, en la moneda del gráfico;
  *     null si no lo tenés.
  *   · `peso`: qué parte de tu cartera es (0 a 1); null si no se sabe.
+ *   · `oculto`: «Ocultar saldos» prendido. Ni lo que te mueve en plata ni qué
+ *     parte de tu cartera es (ni el % que mueve a toda la cartera, que con el
+ *     del día normal deja sacar el peso): auditorías A3/D4, 29/10.
  */
-export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenencia = null, peso = null } = {}) {
+export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenencia = null, peso = null, oculto = false } = {}) {
   if (!m?.disponible) return []
   const out = []
 
@@ -189,7 +194,10 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
     out.push({
       id: 'desde_maximo', titulo: 'Caída desde el máximo', tono: enMaximo ? 'neutro' : 'neg',
       veredicto: enMaximo ? 'En su máximo' : pctConSigno(dm.pct),
-      texto: enMaximo ? `Hoy cerró en ${deCuando}.` : `Hoy, contra ${deCuando} (${precio(dm.maximo)}).`,
+      // Del último cierre, con su fecha (auditoría D5): no es el precio en vivo.
+      texto: m.hasta
+        ? (enMaximo ? `El ${fechaCorta(m.hasta)} cerró en ${deCuando}.` : `Al cierre del ${fechaCorta(m.hasta)}, contra ${deCuando} (${precio(dm.maximo)}).`)
+        : (enMaximo ? `En el último cierre estaba en ${deCuando}.` : `En el último cierre, contra ${deCuando} (${precio(dm.maximo)}).`),
     })
   }
 
@@ -214,10 +222,12 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
     if (tenencia?.valor > 0) {
       const mueve = -tenencia.valor * d.desvio_pct / 100
       const partesT = [`Lo que te mueve un día malo normal de este papel (una baja de ${num1(d.desvio_pct)}%).`]
-      if (peso > 0 && peso <= 1) {
-        partesT.push(`Es el ${Math.round(peso * 100).toLocaleString('es-AR')}% de tu cartera: a toda tu cartera ese día la mueve ${pctConSigno(-peso * d.desvio_pct)}.`)
+      if (oculto) {
+        out.push({ id: 'cartera', titulo: 'En tu cartera', tono: 'neutro', veredicto: OCULTO, texto: `${partesT[0]} ${AVISO_OCULTO}` })
+      } else if (peso > 0 && peso <= 1) {
+        partesT.push(`${esElDeTuCartera(peso * 100)}: a toda tu cartera ese día la mueve ${pctConSigno(-peso * d.desvio_pct)}.`)
       }
-      out.push({ id: 'cartera', titulo: 'En tu cartera', tono: 'neutro', veredicto: plata(mueve, moneda), texto: partesT.join(' ') })
+      if (!oculto) out.push({ id: 'cartera', titulo: 'En tu cartera', tono: 'neutro', veredicto: plata(mueve, moneda), texto: partesT.join(' ') })
     }
   }
   return out

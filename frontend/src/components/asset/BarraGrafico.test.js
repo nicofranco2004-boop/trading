@@ -115,7 +115,7 @@ const SE_VE = {
   s200: () => nodos(n => n.nodeName === 'PATH' && attr(n, 'stroke') === 'rgb(var(--rendi-accent))' && attr(n, 'stroke-width') === '2.5').length > 0,
   s50: () => nodos(n => n.nodeName === 'PATH' && attr(n, 'stroke') === 'rgb(var(--cat-orange))' && attr(n, 'stroke-width') === '1.6').length > 0,
   fib: () => texto(montado.contenedor).includes('Pico · US$ 172,00'),
-  ell: () => texto(montado.contenedor).includes('Dejaría de valer · US$ 156,00'),
+  ell: () => texto(montado.contenedor).includes('El conteo dejaría de valer · US$ 156,00'),
   rsi: () => nodos(n => n.nodeName === 'SVG' && attr(n, 'viewBox') === '0 0 1000 64').length > 0,
   fuerza: () => nodos(n => n.nodeName === 'SVG' && attr(n, 'viewBox') === '0 0 1000 56').length > 0,
   eventos: () => nodos(n => attr(n, 'role') === 'group' && attr(n, 'aria-label') === 'Balances y dividendos').length > 0,
@@ -188,6 +188,9 @@ describe('la barra de herramientas del gráfico', () => {
     for (const id of ['vol', 'fib', 'ell', 'rsi', 'prom']) await tocar(id)
     await tocar('velas')
     await tocar('medir')
+    // Con una herramienta prendida la lista se pliega sola (D1): se abre a mano.
+    await clic(montado.contenedor, nodos(n => n.nodeName === 'BUTTON' && attr(n, 'aria-expanded') != null && texto(n).startsWith('Indicadores'))[0])
+    for (let i = 0; i < 2; i++) await montado.redibujar(el())
     expect(attr(boton('fabrica'), 'disabled')).toBeNull()
     await tocar('fabrica')
     for (const id of CAPAS) {
@@ -287,8 +290,8 @@ describe('la barra de herramientas del gráfico', () => {
       expect(SE_VE.fib()).toBe(false)
       expect(await prendido('fib')).toBe('false')                 // borrado = apagado: se prende de nuevo desde su botón
       expect(SE_VE.ell()).toBe(true)                               // el conteo no se tocó
-      // El conteo automático, igual: su raya de «Dejaría de valer».
-      const inv = nodos(n => n.nodeName === 'SPAN' && texto(n).startsWith('Dejaría de valer'))[0].parentNode
+      // El conteo automático, igual: su raya de «El conteo dejaría de valer».
+      const inv = nodos(n => n.nodeName === 'SPAN' && texto(n).startsWith('El conteo dejaría de valer'))[0].parentNode
       const yi = (parseFloat(inv.style.top) / 100) * 250
       await evento('mousedown', { clientX: 980, clientY: yi }); await evento('mouseup', { clientX: 980, clientY: yi }); await otra()
       expect(estado()).toContain('Conteo automático de Elliott, elegido.')

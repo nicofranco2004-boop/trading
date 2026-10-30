@@ -412,3 +412,33 @@ class ElliottFichaTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RangoDeLasPautasTest(unittest.TestCase):
+    """D3 (auditoría D, 29/10): AAPL decía «✓ La onda 2 devolvió el 68 % de la
+    1 (lo habitual: entre 50 % y 61,8 %)». El ✓ lo decide `P_ONDA2` (40–72 %) y
+    el texto escribía otro rango a mano en la pantalla. Ahora cada pauta viaja
+    con el rango que usó (`desde`/`hasta`) y la pantalla escribe ESE."""
+
+    RANGOS = {"onda2": elliott.P_ONDA2, "onda3": elliott.P_ONDA3, "onda4": elliott.P_ONDA4,
+              "onda5": elliott.P_ONDA5, "ondaB": elliott.P_ONDA_B, "ondaC": elliott.P_ONDA_C}
+
+    def _todas(self, c):
+        return [p for p in c["pautas"] if p["id"] != "alternancia"]
+
+    def test_cada_pauta_lleva_el_rango_con_el_que_se_decidio(self):
+        vistas = set()
+        for serie in (LIBRO + [141], LIBRO + [141, 150, 136]):
+            r = _conteo(serie)
+            for c in filter(None, [r.get("principal"), r.get("alternativo")]):
+                for p in self._todas(c):
+                    vistas.add(p["id"])
+                    self.assertEqual((p["desde"], p["hasta"]), self.RANGOS[p["id"]], p)
+                    self.assertEqual(p["cumple"], p["desde"] <= p["valor"] <= p["hasta"], p)
+        self.assertTrue({"onda2", "onda3", "onda4", "onda5"} <= vistas, vistas)
+
+    def test_la_alternancia_no_tiene_rango(self):
+        c = _conteo(LIBRO + [141])["principal"]
+        alt = [p for p in c["pautas"] if p["id"] == "alternancia"]
+        self.assertEqual(len(alt), 1)
+        self.assertNotIn("desde", alt[0])

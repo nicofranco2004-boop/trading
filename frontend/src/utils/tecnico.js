@@ -368,6 +368,11 @@ function ladoDeLaLinea(adx) {
   return Math.floor(adx * 10) / 10 === ADX_CLAVE ? `justo en la línea de ${ADX_CLAVE}` : `arriba de la línea de ${ADX_CLAVE}`
 }
 
+/** «Squeeze» en inglés y sin explicar no se entiende (auditoría D9, 29/10):
+ *  cada oración que lo nombra dice qué es, con estas palabras. */
+const mayus = (t) => t.charAt(0).toUpperCase() + t.slice(1)
+export const SQUEEZE_QUE_ES = 'el Squeeze (un indicador de para qué lado viene empujando el precio)'
+
 /** El color del Squeeze dicho en palabras: hacia dónde empuja y si con más o
  *  menos empuje que el día anterior. */
 export function textoSqueeze(color) {
@@ -419,11 +424,11 @@ export function tarjetaFuerza(l) {
       : bajando ? ', y bajando' : ''
   const empuje = lado > 0 ? 'a favor de la suba' : 'a favor de la baja'
   const direccion = l.squeeze == null
-    ? `Para ver para dónde empuja (el Squeeze) hacen falta unos ${DIAS_SQUEEZE} días de mercado y este activo tiene ${l.ruedas}.`
-    : lado === 0 ? 'El Squeeze está en cero: no empuja para ningún lado.'
-      : conFuerza ? `La dirección la marca el Squeeze, que ${textoSqueeze(l.squeeze_color)}.`
+    ? `Para ver para qué lado empuja el precio (lo que mide el Squeeze) hacen falta unos ${DIAS_SQUEEZE} días de mercado y este activo tiene ${l.ruedas}.`
+    : lado === 0 ? `${mayus(SQUEEZE_QUE_ES)} está en cero: no empuja para ningún lado.`
+      : conFuerza ? `La dirección la marca ${SQUEEZE_QUE_ES}, que ${textoSqueeze(l.squeeze_color)}.`
         // Sin tendencia, «la dirección la marca…» chocaba con «Sin tendencia clara».
-        : `Por ahora el Squeeze está en ${lado > 0 ? 'verde' : 'rojo'}: empuja ${empuje}, pero sin fuerza para hablar de tendencia.`
+        : `Por ahora ${SQUEEZE_QUE_ES} está en ${lado > 0 ? 'verde' : 'rojo'}: empuja ${empuje}, pero sin fuerza para hablar de tendencia.`
   return {
     ...base, veredicto, adx: l.adx,
     // El color es la dirección de una tendencia firme; «afloja» no se pinta
@@ -460,7 +465,7 @@ export function textoCruceAdx(c, squeezeHoy, bajando = false) {
   if (bajando) return `${cuando} la fuerza (ADX) pasó ${ADX_CLAVE} para arriba; en los últimos 3 días de mercado viene bajando.`
   const hoy = squeezeHoy > 0 ? 1 : squeezeHoy < 0 ? -1 : 0
   if (hoy !== 0 && c.squeeze === hoy) {
-    return `${cuando} la fuerza (ADX) pasó ${ADX_CLAVE} para arriba con el Squeeze en ${hoy > 0 ? 'verde' : 'rojo'}: `
+    return `${cuando} la fuerza (ADX) pasó ${ADX_CLAVE} para arriba con ${SQUEEZE_QUE_ES} en ${hoy > 0 ? 'verde' : 'rojo'}: `
       + `el precio viene ${hoy > 0 ? 'subiendo' : 'bajando'} con fuerza.`
   }
   return `${cuando} la fuerza (ADX) pasó ${ADX_CLAVE} para arriba: la tendencia tomó fuerza.`

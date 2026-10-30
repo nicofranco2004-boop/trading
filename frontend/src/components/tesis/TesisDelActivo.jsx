@@ -21,19 +21,22 @@ const MAX = 1000
 
 function comoEstaba(t) {
   if (!t?.tendencia) return null
-  return { arriba: t.tendencia === 'alcista', palabra: t.tendencia, dist: t.dist }
+  return { arriba: t.tendencia === 'alcista', palabra: t.tendencia, dist: t.dist, fecha: t.fecha }
 }
 
 const pct1 = (x) => `${Math.abs(x).toLocaleString('es-AR', { maximumFractionDigits: 1 })} %`
 
-/** «Cuando la escribiste estaba alcista. Hoy está 8,1 % abajo de su promedio de 200 días: bajista.» */
+/** «Cuando la escribiste estaba alcista. Al cierre del 28/10/26 estaba 8,1 % abajo de su
+ *  promedio de 200 días: bajista.» La de ahora es la del último cierre, con su fecha
+ *  (auditoría D5, 29/10: decía «Hoy» al lado del precio en vivo de la ficha). */
 export function lineaDeTendencias(antes, hoy) {
   const a = comoEstaba(antes), h = comoEstaba(hoy)
   const partes = []
   if (a) partes.push(`Cuando la escribiste el precio estaba ${a.arriba ? 'arriba' : 'abajo'} de su promedio de 200 días (${a.palabra}).`)
   if (h) {
     const d = h.dist != null ? `${pct1(h.dist)} ` : ''
-    partes.push(`Hoy está ${d}${h.arriba ? 'arriba' : 'abajo'}: ${h.palabra}.`)
+    const cuando = h.fecha ? `Al cierre del ${fechaCorta(h.fecha)}` : 'En el último cierre'
+    partes.push(`${cuando} estaba ${d}${h.arriba ? 'arriba' : 'abajo'} de su promedio de 200 días: ${h.palabra}.`)
   }
   if (!a && !h) partes.push('Sin lectura de tendencia: no hay precios guardados de este activo (pasa con bonos y fondos).')
   return partes.join(' ')

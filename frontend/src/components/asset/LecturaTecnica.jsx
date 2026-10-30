@@ -34,6 +34,7 @@
 
 import { cloneElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { LineChart, Maximize2, Minimize2, RotateCcw, Ruler, Trash2 } from 'lucide-react'
+import { usePrivacy } from '../../contexts/PrivacyContext'
 import AssetMiniChart from '../home/AssetMiniChart'
 import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica } from './BarraGrafico'
 import CapaFibonacci, { COLOR_FIB, ID_FIB_AUTO, TarjetaFibonacci, preciosDeLaCapa, trazosDelFibonacci, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
@@ -139,6 +140,7 @@ export default function LecturaTecnica({
   // La ficha pone el título de la sección («Análisis técnico») y pasa null.
   titulo = 'Análisis técnico',
 }) {
+  const { hidden: oculto } = usePrivacy()
   const [moneda, setMoneda] = useState('usd')
   const [rango, setRango] = useState('1a')
   const [datos, setDatos] = useState({ usd: undefined, ars: undefined })
@@ -196,8 +198,9 @@ export default function LecturaTecnica({
       if (!vivo || deLaCuenta == null || tocados.current.has(m)) return
       const local = copiaLocal(asset, m)
       if (local.pendiente) {
-        // Un cambio hecho acá que no llegó a la cuenta (el guardado falló, o
-        // se dibujó antes de que existiera el guardado en la cuenta): se sube.
+        // Un cambio hecho acá que no llegó a la cuenta (el guardado falló): se sube.
+        // `=== true`: si el servidor lo rechaza, `subirDibujos` devuelve el motivo
+        // (un texto, E3) y eso no es «subido».
         subirDibujos(asset, m, local.dibujos).then(ok => { if (ok === true) marcarSubidos(asset, m, local.dibujos) })
         return
       }
@@ -521,7 +524,7 @@ export default function LecturaTecnica({
     ? { valor: moneda === 'usd' ? tenencia.valorUsd : tenencia.valorUsd * (tenencia.tc || 0) } : null
   const cuanto = tarjetasMovimiento(actual.movimiento, {
     moneda, precio: (x) => fmtPrecio(x, moneda), tenencia: tenenciaEnMoneda,
-    peso: tenencia?.valorUsd > 0 ? pesoEnCartera : null,
+    peso: tenencia?.valorUsd > 0 ? pesoEnCartera : null, oculto,
   })
 
   const botones = botonesDeLaBarra({
@@ -1798,7 +1801,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
 
         {/* Los indicadores, arriba a la izquierda (como TradingView): afuera del
             área que escucha el mouse, para que tocar un ojito no sea tocar el gráfico. */}
-        {leyenda && <div className="absolute left-1 top-1 right-[76px] z-20 pointer-events-none [&>*]:pointer-events-auto">{cloneElement(leyenda, { anchoDisponible: ancho })}</div>}
+        {leyenda && <div className="absolute left-1 top-1 right-[76px] z-20 pointer-events-none">{cloneElement(leyenda, { anchoDisponible: ancho, plegada: !!onToque })}</div>}
         {/* Columna de precios: la grilla, tu precio y el último precio. Se
             arrastra para estirar el gráfico en vertical (ver ejesGrafico.js). */}
         <div className="absolute inset-y-0 right-0 w-[68px] cursor-ns-resize touch-none select-none"
@@ -1974,14 +1977,14 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-x-2 mt-2 text-[12px] text-ink-2 mr-[72px]">
-            <span>Squeeze</span>
+            <span>Squeeze · para qué lado empuja el precio</span>
             <span className="inline-flex items-center gap-1 text-[11px]">
               <span className="w-1.5 h-2.5 rounded-xs bg-rendi-pos-fill" aria-hidden="true" />a favor de la suba
               <span className="w-1.5 h-2.5 rounded-xs bg-rendi-neg-fill ml-1.5" aria-hidden="true" />de la baja
             </span>
           </div>
           <div className="relative mr-[72px] h-10 sm:h-16 mt-1" role="img"
-            aria-label={`Barras del Squeeze: verdes a favor de la suba, rojas a favor de la baja.${ultimo?.squeeze ? ` Hoy, ${ultimo.squeeze > 0 ? 'verde' : 'roja'}.` : ''}`}>
+            aria-label={`Barras del Squeeze (para qué lado empuja el precio): verdes a favor de la suba, rojas a favor de la baja.${ultimo?.squeeze ? ` La última, ${ultimo.squeeze > 0 ? 'verde' : 'roja'}.` : ''}`}>
             <svg viewBox={`0 0 ${W} ${H_SQUEEZE}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
               <line x1="0" x2={W} y1={H_SQUEEZE / 2} y2={H_SQUEEZE / 2} stroke={v('chart-grid')} strokeWidth="1" vectorEffect="non-scaling-stroke" />
               {fuerza.barras.map(b => (

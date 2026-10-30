@@ -14,7 +14,7 @@
 
 import { indiceDeFecha } from '../../utils/tecnico'
 import { rayas, rotuloNivel, rotulosQueEntran, tarjetaFibonacci } from '../../utils/fibonacci'
-import { PRIORIDAD } from '../../utils/rotulos'
+import { PRIORIDAD, rotuloCorteFib } from '../../utils/rotulos'
 
 // Magenta: no se confunde con ninguna otra línea del gráfico (precio, media de
 // 200 azul, media de 50 naranja, velas verdes y rojas). Variable del tema (R8),
@@ -176,7 +176,8 @@ function Punto({ x, y, titulo }) {
   )
 }
 
-// Sin tramo para medir: el tramo vivo y el cierre que lo daría por terminado.
+// Sin tramo para medir: el tramo vivo y el cierre que podría ser una señal de
+// que pierde fuerza.
 function CorteEnCurso({ e, puntos, pctX, pctY, precio, marcado = false }) {
   if (!e) return null
   const suba = e.dir === 'suba'
@@ -188,7 +189,8 @@ function CorteEnCurso({ e, puntos, pctX, pctY, precio, marcado = false }) {
     <div className="pointer-events-none absolute inset-0" aria-hidden="true">
       <div className="absolute h-0" style={{ left: `${x}%`, right: 0, top: `${pctY(corte)}%`, borderTop: `${marcado ? 2.5 : 1.5}px dashed ${COLOR_FIB}` }}>
         <span data-rotulo={PRIORIDAD.corteFib} data-rotulo-voltear="" className={`absolute ${suba ? 'top-0.5' : '-translate-y-full'} ${x < 70 ? 'left-1' : 'right-1'} rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1`}>
-          {suba ? 'Cierre debajo: termina la suba' : 'Cierre encima: termina la bajada'} · {precio(corte)}
+          {/* Como posibilidad, igual que la tarjeta (fibonacci.js, Nico 23/10). */}
+          {rotuloCorteFib(suba, precio(corte))}
         </span>
       </div>
     </div>
@@ -205,7 +207,7 @@ export function TarjetaFibonacci({ fib, precio, fecha }) {
       <div className="text-[15px] font-semibold mt-0.5 text-ink-0">{t.veredicto}</div>
       <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.texto}</div>
       {t.explicacion && <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.explicacion}</div>}
-      <div className="text-[11.5px] text-ink-3 leading-relaxed mt-2">{t.pie}</div>
+      <div className="text-[11.5px] text-ink-2 leading-relaxed mt-2">{t.pie}</div>
     </div>
   )
 }

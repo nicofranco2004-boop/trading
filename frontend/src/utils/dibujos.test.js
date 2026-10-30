@@ -74,9 +74,11 @@ describe('la copia del navegador y la cuenta', () => {
     expect(copiaLocal('AAPL', 'usd').pendiente).toBe(true)
   })
 
-  it('la copia de antes del guardado en la cuenta (la lista sola) cuenta como pendiente: se sube', () => {
+  it('la copia de antes del guardado en la cuenta (la lista sola) NO cuenta como pendiente: no se sube', () => {
+    // Revivía dibujos borrados después de un reset (auditoría C, 29/10), y esa
+    // versión nunca se publicó: no hay usuarios con una copia así para migrar.
     localStorage.setItem('rendi_dibujos:AAPL:usd', JSON.stringify([horizontal]))
-    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [horizontal], pendiente: true })
+    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [horizontal], pendiente: false })
   })
 })
 

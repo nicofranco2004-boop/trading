@@ -20,16 +20,16 @@ const DATOS = {
   senales: [
     { asset: 'MELI', local: false, ficha: 'MELI', tenes: true, watchlist: false, peso: 0.12, tesis: null,
       tipo: 'rsi_bajo_30', fecha: '2026-10-23', sentido: 'abajo', etiqueta: 'Cayó muy rápido', tono: 'rsi',
-      texto: 'tiene la fuerza (RSI) en 28: una semana de mercado antes estaba en 52.', extra: POSIBILIDAD },
+      corta: 'cayó muy rápido', texto: 'cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 28; una semana de mercado antes estaba en 52.', extra: POSIBILIDAD },
     { asset: 'YPFD', local: true, ficha: 'YPFD', tenes: true, watchlist: false, peso: 0.14, tesis: null,
       tipo: 'maximo_12m', fecha: '2026-10-23', sentido: 'arriba', etiqueta: 'Máximo del año', tono: 'pos',
-      texto: 'cerró en su precio más alto de los últimos 12 meses.', extra: null },
+      corta: 'empezó a marcar máximos del año', texto: 'empezó a marcar máximos del año (cerró en su precio más alto de los últimos 12 meses), después de un mes sin hacerlo.', extra: null },
     { asset: 'AAPL', local: false, ficha: 'AAPL', tenes: true, watchlist: false, peso: 0.11, tesis: 'El recambio de iPhone.',
       tipo: 'media200', fecha: '2026-10-20', sentido: 'abajo', etiqueta: 'Tendencia de fondo', tono: 'neg',
       texto: 'quedó abajo de su promedio de 200 días: la tendencia de fondo se volvió bajista.', extra: null },
     { asset: 'PAMP', local: true, ficha: 'PAMP.BA', tenes: false, watchlist: true, peso: null, tesis: null,
       tipo: 'adx23', fecha: '2026-10-19', sentido: 'arriba', etiqueta: 'Fuerza de la tendencia', tono: 'adx',
-      texto: 'tiene el ADX en 24: pasó 23, deja de ir de costado y marca dirección, para arriba.', extra: null },
+      corta: 'dejó de ir de costado y marca dirección (para arriba)', texto: 'dejó de ir de costado y marca dirección (para arriba): la fuerza de la tendencia (ADX) pasó 23 y quedó en 24.', extra: null },
   ],
 }
 
@@ -59,7 +59,7 @@ describe('tusSenales: cuentas', () => {
     const t = tarjetas(DATOS, false)
     expect([t.tenes.valor, t.tenes.texto]).toEqual(['3 cambios', 'en 3 de tus 7 activos con precios al día'])
     expect([t.watch.valor, t.watch.texto]).toEqual(['1 cambio', 'PAMP'])
-    expect([t.plata.valor, t.plata.antes, t.plata.tono]).toEqual(['54%', 'la semana pasada 61%', 'neg'])
+    expect([t.plata.valor, t.plata.antes, t.plata.tono]).toEqual(['54%', 'la semana pasada, 61%', 'neg'])
     expect(t.plata.texto).toBe('AAPL pasó a bajista esta semana')
   })
 
@@ -91,7 +91,7 @@ describe('tusSenales: cuentas', () => {
     expect(t.plata.antes).toBeNull()
     expect(deQuien(DATOS.senales[0], true)).toBe('Lo tenés')
     expect(deQuien(DATOS.senales[0], false)).toBe('Lo tenés · 12% de tu plata')
-    expect(pesoTxt(0.004, false)).toBe('menos del 1% de tu plata')
+    expect(pesoTxt(0.004, false)).toBe('menos de 1% de tu plata')
     expect(deQuien(DATOS.senales[3], false)).toBe('En tu watchlist')
   })
 
@@ -105,10 +105,10 @@ describe('tusSenales: cuentas', () => {
 describe('tusSenales: lo que se dibuja', () => {
   it('la pantalla del recuadro 15', () => {
     const t = texto(dibujar())
-    expect(t).toContain('Qué cambió esta semana en lo tuyo y en tu watchlist')
-    for (const x of ['En lo que tenés', 'En tu watchlist', 'Tu plata en tendencia alcista', '54%', 'la semana pasada 61%',
+    expect(t).toContain('Qué cambió esta semana en lo que tenés y en tu watchlist')
+    for (const x of ['En lo que tenés', 'En tu watchlist', 'Tu plata en tendencia de fondo alcista', '54%', 'la semana pasada, 61%',
       'Todo', 'Lo que tenés', 'Watchlist', 'Viernes 23/10', 'Lunes 19/10', 'Ver gráfico',
-      'MELI tiene la fuerza (RSI) en 28', 'Lo tenés · 12% de tu plata', 'En tu watchlist',
+      'MELI cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 28', 'Lo tenés · 12% de tu plata', 'En tu watchlist',
       'Tu tesis: «El recambio de iPhone.»', 'Revisar tu tesis',
       'Mail', 'Notificación', 'Las dos', 'No quiero', 'Sábados a las 10:00. Si en la semana no cambió nada, no te escribimos.',
       'no es una recomendación para comprar ni vender']) {
@@ -125,11 +125,11 @@ describe('tusSenales: lo que se dibuja', () => {
   it('con «Ocultar saldos» no aparece ningún porcentaje de la cartera', () => {
     const t = texto(dibujar({ hidden: true }))
     expect(t).not.toMatch(/\d+%/)
-    expect(t).toContain('Oculto porque tenés prendido «Ocultar saldos».')
+    expect(t).toContain('Cuánto de tu plata está en tendencia de fondo alcista: oculto porque tenés prendido «Ocultar saldos».')
   })
 
   it('semana quieta y pedido fallido dicen cada uno lo suyo', () => {
-    expect(texto(dibujar({ datos: { ...DATOS, senales: [] } }))).toContain('Esta semana no cambió nada en lo tuyo ni en tu watchlist.')
+    expect(texto(dibujar({ datos: { ...DATOS, senales: [] } }))).toContain('Esta semana no cambió nada en lo que tenés ni en tu watchlist.')
     expect(texto(dibujar({ filtro: 'watchlist', datos: { ...DATOS, senales: [DATOS.senales[0]] } })))
       .toContain('Esta semana no cambió nada en tu watchlist.')
     expect(texto(dibujar({ error: true }))).toContain('No pudimos traer tus señales ahora')
