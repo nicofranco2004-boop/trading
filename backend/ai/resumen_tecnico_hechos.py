@@ -22,6 +22,7 @@ el mismo día que un giro, se dice que no se repita su precio, para que nunca
 haya dos precios para un mismo día.
 """
 import math
+import re
 from datetime import date, timedelta
 
 MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
@@ -108,7 +109,13 @@ def _mov(p0, p1, moneda, hoy):
             f"a {plata(p1['precio'], moneda)} ({fecha(p1['fecha'], hoy)})")
 
 
-def hechos(nombre, r):
+def hechos(nombre, r, siglas=True, todos_los_indicadores=False):
+    """`siglas`: el resumen de la ficha nombra los indicadores con su sigla entre
+    paréntesis («la fuerza de la tendencia (ADX)», decisión del 23/10); el chat no
+    (Nico, 30/10: «que use palabras normales»). Mismos números, otras palabras.
+    `todos_los_indicadores`: el chat recibe además todos los indicadores leídos
+    (alguien puede preguntar «¿tiene fuerza?» aunque ninguno «sume» a la historia)."""
+    k = _clave if siglas else _clave_sin_sigla
     l, pts, mon = r["lectura"], r["puntos"], r["moneda"]
     hoy = l["fecha"]
     precio = l["precio"]
@@ -301,7 +308,7 @@ def hechos(nombre, r):
             lect = (f"hace {c['hace']} días de mercado salió de abajo de 30, o sea que dejó de caer tan rápido"
                     if c["tipo"] == "salio_de_abajo" else
                     f"hace {c['hace']} días de mercado bajó de 70, o sea que dejó de subir tan rápido")
-        ind["fuerza_del_precio_RSI"] = f"{round(rsi)} ({lect})"
+        ind[k("fuerza_del_precio_RSI")] = f"{round(rsi)} ({lect})"
     a = l.get("adx")
     if a is not None:
         lect = "arriba de 23: la tendencia es firme" if a >= 23 else "abajo de 23: la tendencia es floja, sin un rumbo firme"
@@ -312,10 +319,10 @@ def hechos(nombre, r):
         if c:
             lect += (f"; hace {c['hace']} días de mercado pasó arriba de 23" if c["tipo"] == "paso_arriba"
                      else f"; hace {c['hace']} días de mercado bajó de 23")
-        ind["fuerza_de_la_tendencia_ADX"] = f"{round(a)} ({lect}; no dice para dónde va)"
+        ind[k("fuerza_de_la_tendencia_ADX")] = f"{round(a)} ({lect}; no dice para dónde va)"
     col = l.get("squeeze_color")
     if col:
-        ind["empuje_de_los_ultimos_dias_Squeeze"] = {
+        ind[k("empuje_de_los_ultimos_dias_Squeeze")] = {
             "verde_fuerte": "verde y creciendo: empuja para arriba cada vez más",
             "verde_apagado": "verde pero achicándose: empuja para arriba cada vez menos",
             "rojo_fuerte": "rojo y creciendo: empuja para abajo cada vez más",
@@ -336,25 +343,37 @@ def hechos(nombre, r):
     # v18: la lectura combinada ADX + Squeeze (como Jaime Merino, pedido de Nico) va
     # PRIMERO cuando cuenta un hecho: tomó fuerza, se está cansando o se quedó sin
     # fuerza (con el día en que cambió el empuje, que es el momento que él mira).
-    fz = fuerza(r)
+    fz = fuerza(r, siglas)
     elegido = None
     if fz and fz[1]:
-        ind["fuerza_del_movimiento_ADX_y_Squeeze"] = fz[0][0].upper() + fz[0][1:]
-        elegido = "fuerza_del_movimiento_ADX_y_Squeeze"
+        elegido = k("fuerza_del_movimiento_ADX_y_Squeeze")
+        ind[elegido] = fz[0][0].upper() + fz[0][1:]
     elif rsi is not None and (rsi >= 70 or rsi <= 30 or l.get("rsi_cruce")):
-        elegido = "fuerza_del_precio_RSI"
+        elegido = k("fuerza_del_precio_RSI")
     elif col and mov_dir and sq_arriba != (mov_dir == "suba"):
-        elegido = "empuje_de_los_ultimos_dias_Squeeze"
+        elegido = k("empuje_de_los_ultimos_dias_Squeeze")
     if elegido and elegido in ind:
         h["indicador_que_suma"] = {elegido: ind[elegido]}
+    if todos_los_indicadores and ind:
+        h["todos_los_indicadores"] = ind
     return h
+
+
+def _clave(nombre):
+    return nombre
+
+
+def _clave_sin_sigla(nombre):
+    """«fuerza_del_precio_RSI» → «fuerza_del_precio»: en el chat el nombre de la
+    clave también es parte del pedido (el modelo repite lo que lee)."""
+    return re.sub(r"_(RSI|ADX_y_Squeeze|ADX|Squeeze)$", "", nombre)
 
 
 def _lado(sq):
     return "suba" if sq > 0 else "bajada"
 
 
-def fuerza(ficha):
+def fuerza(ficha, siglas=True):
     """La fuerza del movimiento leída como Jaime Merino: ADX (cuánta fuerza, si crece o se
     cansa) + Squeeze (para dónde empuja), en UNA frase. Devuelve (frase, cuenta_algo):
     `cuenta_algo` es True cuando hay un hecho (tomó fuerza, se está cansando, se quedó sin
@@ -387,6 +406,7 @@ def fuerza(ficha):
     sqs = [x.get("squeeze") for x in pts if x.get("squeeze") is not None]
     giro = next((k for k in range(1, min(len(sqs), 15)) if (sqs[-k - 1] > 0) != (sqs[-1] > 0)), None)
     para = "para arriba" if sq > 0 else "para abajo"
+    S = (lambda x: x) if siglas else (lambda x: "")
     if cruce and cruce["tipo"] == "paso_abajo":
         i = -1 - cruce["hace"]
         antes = "suba" if arriba(i) else "bajada"
@@ -394,7 +414,7 @@ def fuerza(ficha):
         # Se nombra el movimiento sólo si las líneas del ADX y el empuje coinciden ese día
         # (Pampa en pesos, 8/10: el ADX decía suba y el empuje bajada).
         quien = f"la {antes} se quedó sin fuerza" if (antes == "suba") == (sq_antes > 0) else "el precio se quedó sin una tendencia firme"
-        txt = f"{quien}: {el(cruce['hace'])} la fuerza de la tendencia (ADX) bajó de 23, o sea que dejó de ser firme"
+        txt = f"{quien}: {el(cruce['hace'])} la fuerza de la tendencia{S(' (ADX)')} bajó de 23, o sea que dejó de ser firme"
         if giro is not None and (sq_antes > 0) != (sq > 0):
             # v18: frase más corta (con las dos partes enteras pasaba de 95 palabras): el
             # segundo día sin el mes si es el mismo, y «el empuje (Squeeze)».
@@ -402,29 +422,38 @@ def fuerza(ficha):
             dia2 = f"el {int(d2[8:])}" if d1[:7] == d2[:7] else el(giro - 1)
             # v20: «el empuje de los últimos días» completo: el juez marcó que «el empuje
             # (Squeeze)» a secas no se entiende (v19 perdió 10 de 10 contra la frase larga).
-            txt += f"; y {dia2}, el empuje de los últimos días (Squeeze) cambió {para}"
+            txt += f"; y {dia2}, el empuje de los últimos días{S(' (Squeeze)')} cambió {para}"
         else:
             txt += f", y el empuje {para} se achica" if "apagado" in color else f", aunque el empuje sigue {para}"
         return txt, True
     if cruce and cruce["tipo"] == "paso_arriba" and sube and (sq > 0) == (lado == "suba"):
-        return (f"la {lado} tomó fuerza: {el(cruce['hace'])} la fuerza de la tendencia (ADX) pasó de 23"
-                f", o sea que se volvió firme, y sigue creciendo; el empuje de los últimos días (Squeeze) es {para}"), True
+        return (f"la {lado} tomó fuerza: {el(cruce['hace'])} la fuerza de la tendencia{S(' (ADX)')} pasó de 23"
+                f", o sea que se volvió firme, y sigue creciendo; el empuje de los últimos días{S(' (Squeeze)')} es {para}"), True
     if n >= 23 and baja and dias_lado >= 10:
-        return (f"la {lado} todavía es firme (la fuerza de la tendencia, ADX, está en {n}, arriba de 23), pero se está "
+        return (f"la {lado} todavía es firme (la fuerza de la tendencia{S(', ADX,')} está en {n}, arriba de 23), pero se está "
                 f"cansando: esa fuerza viene bajando" + (" y el empuje se achica" if "apagado" in color else "")), True
     if n >= 23 and dias_lado >= 10:
-        return (f"la {lado} viene firme (ADX en {n})"
+        return (f"la {lado} viene firme ({'ADX en' if siglas else 'su fuerza está en'} {n}" + (")" if siglas else ", arriba de 23)")
                 + (" y ganando fuerza" if sube and "fuerte" in color else
                    ", aunque el empuje de los últimos días se achica" if "apagado" in color else "")), False
     if n >= 23:
         return None  # firme, pero el lado que manda cambió hace poco: no se sabe de qué movimiento habla
-    return (f"no hay una tendencia firme (ADX en {n}, abajo de 23); el empuje de los últimos días es {para}"
+    return (f"no hay una tendencia firme ({'ADX en' if siglas else 'su fuerza está en'} {n}, abajo de 23); el empuje de los últimos días es {para}"
             + (", cada vez más" if "fuerte" in color else ", cada vez menos")), False
+
+def _hay_con_que(ficha: dict) -> bool:
+    return bool(ficha and ficha.get("disponible") and len(ficha.get("puntos") or []) >= 30
+                and (ficha.get("lectura") or {}).get("fecha"))
+
 
 def para_el_resumen(ficha: dict, nombre: str):
     """Los hechos del resumen, o None si la ficha no tiene con qué contar."""
-    if not ficha or not ficha.get("disponible") or len(ficha.get("puntos") or []) < 30:
-        return None
-    if not (ficha.get("lectura") or {}).get("fecha"):
-        return None
-    return hechos(nombre, ficha)
+    return hechos(nombre, ficha) if _hay_con_que(ficha) else None
+
+
+def para_el_chat(ficha: dict, nombre: str):
+    """Los MISMOS hechos para el chat de Mervall-E (ai/lectura_tecnica_chat.py),
+    con los indicadores nombrados por lo que significan (sin RSI, ADX ni Squeeze)
+    y todos los indicadores leídos. Mismos números que la ficha y el resumen:
+    salen de la misma respuesta de `tecnico.para_la_ficha` y de esta función."""
+    return hechos(nombre, ficha, siglas=False, todos_los_indicadores=True) if _hay_con_que(ficha) else None

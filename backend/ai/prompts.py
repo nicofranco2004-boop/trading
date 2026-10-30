@@ -494,6 +494,36 @@ def render_fundamentals_category_prompt(tier: str = "pro") -> str:
     )
 
 
+def render_tecnico_prompt(tier: str = "pro") -> str:
+    view = "Cómo viene el precio de un activo (la lectura técnica de su ficha)"
+    pkt = (
+        "hechos ya escritos en palabras: el titular, el último cierre con su fecha, el precio más "
+        "alto y más bajo del año, cuánto arriba o abajo está de su promedio de los últimos meses, "
+        "los últimos movimientos con sus precios y fechas, la fuerza del precio y de la tendencia, "
+        "y lo que se mira de acá en adelante."
+    )
+    free = _maybe_free("tecnico", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Cómo viene el precio y la tendencia de fondo, con los números del packet copiados tal cual.",
+            "Si el packet trae «indicador_que_suma», esa es la oración que matiza la historia.",
+            "Cerrá con «lo_que_se_mira», como posibilidad: «si pasa, podría ser una señal de que…».",
+        ],
+        insight_examples=[
+            "En un año subió 18 %, pero desde fines de agosto viene bajando: de fondo sigue para arriba, 8 % arriba de su promedio de los últimos 10 meses.",
+        ],
+        pitfalls=[
+            "Palabras de todos los días: nada de RSI, ADX, Squeeze, Bollinger, soporte, resistencia ni sobrecompra.",
+            "Nunca digas qué va a pasar ni recomiendes comprar, vender o esperar: los indicadores describen el pasado.",
+            "SOLO números del packet, sin calcular nada nuevo.",
+        ],
+    )
+
+
 def render_position_prompt(tier: str = "pro") -> str:
     view = "Detalle de posición individual"
     pkt = (

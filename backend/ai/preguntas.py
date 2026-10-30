@@ -93,6 +93,8 @@ PREGUNTAS: Dict[str, Union[str, Tuple[str, str]]] = {
     "fundamentals.category": ("¿Cómo está {activo} en {categoria}?",
                               "¿Cómo está esta empresa en esa parte?"),
 
+    # ── Cómo viene el precio (la ficha del activo) ───────────────────────
+    "tecnico": ("¿Cómo viene {activo}?", "¿Cómo viene este activo?"),
     # ── Operaciones ──────────────────────────────────────────────────────
     "operations": "¿Cómo vengo operando?",
     "operations.trade": "¿Qué tal me salió esta operación?",

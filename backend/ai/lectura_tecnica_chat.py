@@ -1,0 +1,142 @@
+"""lectura_tecnica_chat — que el chat de Mervall-E entienda el análisis técnico.
+═══════════════════════════════════════════════════════════════════════════
+Pedido de Nico (30/10): «¿cómo viene GGAL?», «¿AAPL está en tendencia?» → que
+Mervall-E conteste con la lectura técnica de ESE activo, «con el vocabulario
+normal… apertura de mercado, cierre de mercado, fuerza, tendencia».
+
+DE DÓNDE SALEN LOS NÚMEROS. De un solo lugar: `tecnico.para_la_ficha` (la misma
+respuesta que dibuja la ficha) pasada a palabras por `resumen_tecnico_hechos`
+(la misma función que arma el resumen de la ficha). El chat recibe esos hechos
+con los indicadores nombrados por lo que significan («la fuerza del precio») y
+no por su sigla (RSI). El modelo no calcula: cuenta lo que le pasa el servidor.
+La serie es la de la ficha de entrada: en dólares (una acción argentina, su
+precio de BYMA ÷ el MEP) salvo que la persona pida pesos o nombre un CEDEAR
+(«AAPL.BA»), que es la ficha en pesos.
+
+CÓMO HABLA. Las reglas viven en el pedido del chat (main._AI_CHAT_SYSTEM, «CÓMO
+VIENE UN ACTIVO») y `problemas()` revisa la respuesta antes de que llegue: jerga
+técnica, una certeza sobre lo que viene o un consejo de compra o venta → el chat
+la pide de nuevo UNA vez (main._corregir_lectura_tecnica). La sigla que la
+persona escribió en su pregunta («¿qué dice el RSI?») no cuenta como jerga: se
+puede nombrar, siempre explicada.
+
+Todo lo que se dice es POSIBILIDAD: un backtest de 2 años × 70 activos mostró
+que los indicadores describen el pasado pero no anticipan mejor que el azar.
+"""
+from __future__ import annotations
+
+import re
+
+# Jerga del análisis técnico que la persona no tiene por qué saber. La lista
+# del resumen de la ficha (resumen_tecnico._PROHIBIDAS) más las siglas: el
+# resumen las nombra entre paréntesis (decisión del 23/10) y el chat no.
+_JERGA = [
+    r"rsi", r"adx", r"squeeze", r"bollinger", r"macd", r"fibonacci", r"elliott", r"estoc[áa]stico",
+    r"[+−]di", r"dmi", r"ema", r"sma", r"medias? m[óo]vil(es)?", r"soportes?", r"resistencias?",
+    r"sobrecompr\w*", r"sobrevend\w*", r"sobreventa", r"alcistas?", r"bajistas?", r"momentum",
+    r"pullback", r"breakout", r"golden cross", r"death cross", r"cruce (dorado|de la muerte)",
+    r"divergencias?", r"retrocesos?", r"consolidaci[óo]n", r"lateraliz\w*", r"velas? japonesas?",
+]
+# Lo que viene dicho como seguro. El pasado («se terminó el 6 de octubre») es un
+# hecho y no se toca; «podría ser una señal de…» es la forma.
+_CERTEZAS = [
+    r"va(n)? a (subir|bajar|seguir|caer|romper|rebotar|recuperar|explotar)",
+    r"(subir|bajar|caer|seguir|rebotar|recuperar)(á|án)",
+    r"se (termin|cort|confirm)(a|an|ar[áa]n?|ar[íi]an?)", r"(termin|confirm)ar[íi]an?",
+    r"sin duda", r"seguro que", r"seguramente", r"con seguridad", r"es inminente",
+    r"est[áa] por (subir|bajar|explotar|caer)",
+]
+# Consejos de compra o venta (CNV: Rendi no asesora).
+_CONSEJOS = [
+    r"comprá(lo|la|los|las)?", r"compral[oa]s?", r"vendé(lo|la|los|las)?", r"vendel[oa]s?", r"aprovechá",
+    r"te (conviene|recomiendo|sugiero|aconsejo)", r"(es|ser[íi]a) (un )?buen momento",
+    r"momento (justo )?(de|para) (comprar|vender|entrar|salir)",
+    r"(deber[íi]as|tendr[íi]as que) (comprar|vender|entrar|salir|esperar|mantener)",
+    r"(es|ser[íi]a) una (buena |gran )?oportunidad",
+]
+
+
+def _re(lista):
+    return re.compile(r"(?<![\w+−-])(" + "|".join(lista) + r")(?!\w)", re.IGNORECASE)
+
+
+_RE_JERGA, _RE_CERTEZAS, _RE_CONSEJOS = _re(_JERGA), _re(_CERTEZAS), _re(_CONSEJOS)
+
+
+def problemas(texto: str, pregunta: str = "") -> list:
+    """Lo que está mal en una respuesta del chat sobre cómo viene un activo, en
+    palabras para el modelo (va en el pedido de corrección). Vacío si está bien.
+    Mira la respuesta ENTERA, incluido el bloque de tarjetas y la voz: también se
+    leen y se escuchan."""
+    t = texto or ""
+    dichas = {m.group(0).lower() for m in _RE_JERGA.finditer(pregunta or "")}
+    out = []
+    jerga = sorted({m.group(0).lower() for m in _RE_JERGA.finditer(t)} - dichas)
+    if jerga:
+        out.append("usaste palabras técnicas que la persona no tiene por qué saber ("
+                   + ", ".join(jerga) + "): decilo con palabras de todos los días "
+                   "(«la fuerza del precio», «la tendencia de fondo», «el precio más alto del año»)")
+    cert = sorted({m.group(0).lower() for m in _RE_CERTEZAS.finditer(t)})
+    if cert:
+        out.append("dijiste como seguro lo que viene (" + ", ".join(cert) + "): nadie lo sabe, "
+                   "decilo como posibilidad («podría ser una señal de que…»)")
+    cons = sorted({m.group(0).lower() for m in _RE_CONSEJOS.finditer(t)})
+    if cons:
+        out.append("le dijiste qué hacer (" + ", ".join(cons) + "): Rendi no recomienda comprar ni "
+                   "vender; contá cómo viene y qué es lo que se mira")
+    return out
+
+
+# Si la respuesta corregida tampoco sirve, no se publica: esto en su lugar.
+TEXTO_SIN_LECTURA = ("Esta vez no me salió contarlo bien con palabras simples. "
+                     "Probá preguntarme de nuevo en un rato, o mirá la ficha del activo, "
+                     "que tiene el gráfico y la lectura de hoy.")
+
+# Para el modelo, al lado de los hechos. Corto: las reglas largas están en el
+# pedido del chat, que se cobra una vez y se reusa (caché).
+_COMO_CONTARLO = (
+    "Contá cómo viene con estos hechos y nada más: copiá los números como vienen, sin calcular. "
+    "Palabras de todos los días (fuerza, tendencia, el promedio de los últimos meses, el precio más "
+    "alto del año), nunca siglas ni jerga. Lo que viene, sólo como posibilidad. Cerrá con «lo_que_se_mira» "
+    "si viene. Nunca le digas que compre, venda o espere."
+)
+
+
+def resolver(activo: str, moneda: str = None) -> tuple | None:
+    """(símbolo, moneda, local, nombre) de lo que nombró el modelo, o None.
+    'GGAL' y 'GGAL.BA' son la acción argentina (BYMA); 'AAPL.BA' el CEDEAR, en
+    pesos; 'BTC-USD' es Bitcoin. La moneda de entrada es la de la ficha
+    (dólares), salvo un CEDEAR nombrado con «.BA» o que la persona pida pesos."""
+    from accion_local import seguido, es_cedear
+    from ai.asset_names import asset_name
+    s = (activo or "").strip().upper()
+    if not s or not re.fullmatch(r"[A-Z0-9.\-]{1,20}", s):
+        return None
+    base, local = seguido(s)
+    if moneda in ("ars", "pesos"):
+        mon = "ars"
+    elif moneda in ("usd", "dolares", "dólares"):
+        mon = "usd"
+    else:
+        mon = "ars" if s.endswith(".BA") and es_cedear(base) else "usd"
+    return base, mon, local, asset_name(base) or base
+
+
+def para_el_chat(ficha: dict, nombre: str) -> dict:
+    """Lo que recibe el modelo (la herramienta `get_technical_reading` y el botón
+    de la ficha). `ficha` = `tecnico.para_la_ficha` de esa serie."""
+    from ai.resumen_tecnico_hechos import para_el_chat as hechos_del_chat
+    h = hechos_del_chat(ficha, nombre)
+    if not h:
+        motivo = (ficha or {}).get("motivo")
+        return {
+            "available": False,
+            "activo": nombre,
+            "reason": ("no tiene gráfico de precios (un bono o un fondo se miran de otra forma)"
+                       if motivo == "sin_serie" else
+                       "todavía no hay precios de este activo; probá de nuevo en un rato"
+                       if motivo in ("tope", "bajando") else
+                       "no hay historia de precios suficiente para contar cómo viene"),
+            "_como_contarlo": "Decilo en una oración, sin inventar nada, y ofrecé otra cosa que sí puedas mirar.",
+        }
+    return {"available": True, "activo": nombre, "hechos": h, "_como_contarlo": _COMO_CONTARLO}

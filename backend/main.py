@@ -27,6 +27,7 @@ from ai.voz import VOZ
 # un deploy sin OPENAI_API_KEY arranca igual (el endpoint responde 503).
 from ai import tts
 from ai import preguntas as _preguntas
+from ai import lectura_tecnica_chat as _lectura_tecnica_chat
 from pricing import letras as _letras_mod
 from collections import defaultdict
 
@@ -31518,6 +31519,25 @@ def _get_anthropic_client():
 
 # ─── Chat conversacional con la IA ───────────────────────────────────────────
 
+# Cómo cuenta Mervall-E cómo viene un activo (Nico, 30/10: «que hable como apertura de
+# mercado, cierre de mercado, fuerza, tendencia, que use palabras normales»). Va en
+# los dos pedidos del chat: Pro lo pide con get_technical_reading; Free y Plus lo
+# reciben con el botón de la ficha (analisis_del_boton). Sin nombrar la
+# herramienta: el pedido de Free no nombra las que su plan no tiene (M20). La revisión que frena la
+# jerga, las certezas y los consejos: ai/lectura_tecnica_chat.problemas.
+_COMO_VIENE_UN_ACTIVO = """
+CÓMO VIENE UN ACTIVO (el precio y su tendencia)
+Cuando preguntan cómo viene el precio de UN activo, si está en tendencia o si tiene fuerza, contestás con la lectura técnica de su ficha: la trae la herramienta de la lectura técnica (si la tenés, llamala ANTES de escribir) o ya viene en analisis_del_boton. Son hechos ya escritos en palabras y con los mismos números que ve la persona en la ficha.
+- Hablá como en la radio a la apertura o al cierre del mercado: subió, bajó, cerró en, la tendencia de fondo, la fuerza del precio, el precio más alto del año, su promedio de los últimos X meses.
+- Nunca digas RSI, ADX, Squeeze, Bollinger, MACD, Fibonacci, Elliott, media móvil, soporte, resistencia, sobrecompra, sobreventa, alcista, bajista ni momentum: decí lo que significan. Si la persona usó una de esas palabras, podés nombrarla una vez, explicada en la misma oración.
+- Los números se copian como vienen: no calcules ni redondees otra vez. El último dato es del día de «ultimo_cierre»: nombralo por su fecha.
+- Lo que viene es siempre una posibilidad («podría ser una señal de que…»), nunca «va a subir», «se termina» ni «seguro»: estos datos describen lo que pasó, no anticipan.
+- Nunca digas que compre, venda o espere, ni que es buen momento.
+- Si viene «lo_que_se_mira», cerrá con eso, neutro: «Lo que se mira es si cierra arriba de 51 dólares, el último pico del 3 de septiembre: si pasa, podría ser una señal de que la bajada está perdiendo fuerza».
+- Si viene available=false, decilo en una oración (un bono no tiene gráfico de precios) y ofrecé otra cosa. Nunca inventes una lectura.
+- En las tarjetas, los rótulos también en palabras comunes («Tendencia de fondo», «Fuerza del precio»).
+"""
+
 _AI_CHAT_SYSTEM = """Sos Mervall-E AI, el asistente de inversiones de Rendi (una app argentina de seguimiento de portfolios personales), con rol de coach. Si te preguntan quién sos o cómo te llamás, sos Mervall-E AI. Tu usuario es un inversor retail argentino que opera cripto, acciones US, CEDEARs, ETFs e índices, en brokers locales (Cocos, IOL, Bull, Balanz, Lemon) y exchanges (Binance).
 
 ROL
@@ -31548,6 +31568,9 @@ Para EQUITIES (acciones US, CEDEARs listados en US — yfinance):
 - get_analyst_ratings: recomendación consenso + price target.
 - get_company_profile: a qué se dedica la empresa.
 
+Para CÓMO VIENE EL PRECIO de cualquier activo (acción, CEDEAR, acción argentina o cripto):
+- get_technical_reading: la lectura técnica de su ficha, en palabras — tendencia de fondo, fuerza, último movimiento, lo que se mira (ver CÓMO VIENE UN ACTIVO).
+
 Para BONOS ARGENTINOS soberanos (AL/GD/AE/AL41 + TX/T2X/TZX/T2X CER):
 - get_ar_bond_metadata: maturity, ley aplicable (local/NY), step-up cupones, indexado CER, descripción contextual. Cubre TODOS los soberanos AR canje 2020 + los CER principales. NO cubre ONs corporativas ni provinciales.
 
@@ -31573,7 +31596,7 @@ ANTI-SPAM DE TOOLS:
 - Antes de llamar una tool, preguntate: "¿esta respuesta sería significativamente peor SIN este dato?". Si no, no la llames.
 - Si una tool devuelve `available: false`, NO inventes la data — decile al user "no tengo acceso a fundamentales de cripto/bonos en esta sesión" y seguí adelante.
 
-""" + VOZ + """
+""" + VOZ + _COMO_VIENE_UN_ACTIVO + """
 EXTENSIÓN Y FORMATO
 CORTO — PERO NUNCA CORTADO. Es la regla que más define cómo se siente Rendi, y tiene dos mitades que NO se contradicen.
 
@@ -31903,7 +31926,7 @@ ROL
 - Respondés con DATOS, no con análisis. Si el snapshot tiene el número, lo decís. Si no, decís "no tengo ese dato" sin elaborar.
 - Sin recomendaciones operativas (comprá/vendé). Si insisten, redirigí: "no doy recomendaciones, podés revisar la sección de Posiciones".
 
-""" + VOZ + """
+""" + VOZ + _COMO_VIENE_UN_ACTIVO + """
 EXTENSIÓN Y FORMATO — REGLAS HARD
 - 1 o 2 ORACIONES MÁXIMO por respuesta. Una sola idea. Sin párrafos múltiples, sin secciones, sin listas, sin bullets.
 - CERO markdown. Sin **bold**, sin guiones de listas, sin headers con #. La UI muestra el texto plano. ÚNICA EXCEPCIÓN: la línea ---RENDI--- del bloque final para la UI — es un marcador técnico, no markdown, y va siempre que la respuesta sea de análisis.
@@ -36813,6 +36836,34 @@ _AI_TOOLS = [
             "required": ["ticker"],
         },
     },
+    # La lectura técnica de la ficha, dicha en palabras (Nico, 30/10: «que
+    # Mervall-E empiece a entender el análisis técnico»). Los hechos salen de
+    # la MISMA función que el resumen de la ficha: ai/lectura_tecnica_chat.py.
+    {
+        "name": "get_technical_reading",
+        "description": (
+            "Cómo viene el PRECIO de un activo, con los mismos datos que muestra su ficha en Rendi "
+            "(gráfico de precios, su promedio de los últimos meses, la fuerza del precio y de la "
+            "tendencia, el precio más alto y más bajo del año, el último movimiento y qué se mira "
+            "de acá en adelante). Sirve para acciones, CEDEARs, acciones argentinas y cripto, lo "
+            "tenga o no el usuario.\n\n"
+            "USALA cuando pregunta por el precio o la tendencia de UN activo: '¿cómo viene GGAL?', "
+            "'¿AAPL está en tendencia?', '¿tiene fuerza la suba de NVDA?', '¿qué pasó con Bitcoin "
+            "este año?'.\n"
+            "NO LA USES para el movimiento del día de la cartera (get_portfolio_today), para el "
+            "precio de ahora (get_current_prices) ni para si está cara o barata (get_value_scorecard)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string",
+                           "description": "Símbolo (GGAL, YPFD, AAPL, BTC). Un CEDEAR en pesos con .BA (AAPL.BA)."},
+                "moneda": {"type": "string", "enum": ["dolares", "pesos"],
+                           "description": "Sólo si la persona pidió una moneda. Sin esto, la de la ficha."},
+            },
+            "required": ["ticker"],
+        },
+    },
     {
         "name": "get_ar_bond_metadata",
         "description": (
@@ -37079,6 +37130,62 @@ _AI_TOOLS_ADVISOR = [t for t in _AI_TOOLS
                                           "get_asset_operations", "get_monthly_detail",
                                           "get_realized_vs_unrealized",
                                           "get_portfolio_today")] + [_GROUP_OP_TOOL]
+
+
+def _lectura_tecnica_para_el_chat(input_data: dict, uid: int) -> dict:
+    """`get_technical_reading`: la lectura técnica de un activo con la MISMA
+    cuenta que su ficha (tecnico.para_la_ficha → resumen_tecnico_hechos). Un
+    activo que nadie sigue se baja en el momento con los frenos de la ficha
+    (`_velas_a_pedido`). Las reglas: ai/lectura_tecnica_chat.py."""
+    import tecnico
+    from ai import lectura_tecnica_chat
+    r = lectura_tecnica_chat.resolver(input_data.get("ticker"), input_data.get("moneda"))
+    if not r:
+        return {"error": "ticker requerido"}
+    sym, moneda, local, nombre = r
+    # El mismo freno que la ficha (`_freno_tecnico`, tipo «uno»): lee la serie
+    # entera. Si está lleno, se le dice al modelo en vez de romper el turno.
+    try:
+        with _freno_tecnico(None, uid, "uno"), db_abierta() as conn:
+            tickers, motivo = _velas_a_pedido(conn, [(sym, local)], uid)[sym]
+            ficha = tecnico.para_la_ficha(conn, sym, moneda, local)
+    except HTTPException:
+        return {"available": False, "activo": nombre,
+                "reason": "hay mucha gente mirando gráficos en este momento; probá de nuevo en un rato"}
+    if not ficha.get("disponible"):
+        ficha["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
+    return lectura_tecnica_chat.para_el_chat(ficha, nombre)
+
+
+def _corregir_lectura_tecnica(client, texto: str, messages_loop: list, pregunta: str, *,
+                              chat_model, max_tokens, system_text, quiere_voz, chat_tools,
+                              costo, tier, uid) -> Optional[str]:
+    """La respuesta de un turno que contó cómo viene un activo, revisada antes de
+    entregarla: jerga técnica, una certeza sobre lo que viene o un consejo de
+    compra o venta (ai/lectura_tecnica_chat.problemas) → se le muestra al modelo
+    lo que escribió y qué estuvo mal, y se pide de nuevo UNA vez (como el resumen
+    de la ficha). None = estaba bien. Si la segunda tampoco sirve, no se publica:
+    va un texto fijo. La usan los cuatro finales del chat (con y sin streaming,
+    respuesta y síntesis forzada)."""
+    from ai import lectura_tecnica_chat
+    mal = lectura_tecnica_chat.problemas(texto, pregunta)
+    if not mal:
+        return None
+    log.info("ai_chat lectura técnica: se pide de nuevo (tier=%s uid=%s): %s", tier, uid, mal)
+    resp = client.messages.create(
+        model=chat_model, max_tokens=max_tokens, output_config=_CHAT_EFFORT,
+        system=_bloques_de_sistema(system_text, quiere_voz),
+        tools=chat_tools, tool_choice={"type": "none"},
+        messages=messages_loop + [
+            {"role": "assistant", "content": texto},
+            {"role": "user", "content": "Esa respuesta no sirve: " + "; ".join(mal)
+             + ". Escribila de nuevo entera, corregida, con los mismos datos y el mismo formato."}])
+    costo.sumar(resp, "lectura_tecnica")
+    nuevo = next((b.text for b in resp.content if hasattr(b, "text")), "")
+    if not nuevo.strip() or lectura_tecnica_chat.problemas(nuevo, pregunta):
+        log.warning("ai_chat lectura técnica: la segunda tampoco sirvió (tier=%s uid=%s)", tier, uid)
+        return lectura_tecnica_chat.TEXTO_SIN_LECTURA
+    return nuevo
 
 
 def _execute_ai_tool(name: str, input_data: dict, uid: int, request_id=None,
@@ -37602,6 +37709,9 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
             }
         finally:
             conn.close()
+
+    elif name == "get_technical_reading":
+        return _lectura_tecnica_para_el_chat(input_data, uid)
 
     elif name == "get_ar_bond_metadata":
         # Bonos AR fallback (audit crítico #2): si user pregunta por AL30/GD30,
@@ -40524,6 +40634,7 @@ _PASOS_HUMANOS = {
     "get_analyst_ratings":       "Viendo qué opinan los analistas",
     "get_company_profile":       "Averiguando a qué se dedica la empresa",
     "get_ar_bond_metadata":      "Buscando la letra chica del bono",
+    "get_technical_reading":     "Mirando cómo viene el precio",
     "get_fx_rates":              "Mirando el dólar",
     "remember_user_fact":        "Anotando eso para la próxima",
     "register_trade":            "Registrando la operación",
@@ -40655,6 +40766,10 @@ def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total:
                     turn_flags.add("undo_ok")
                 elif block.name == "register_group_op" and result.get("status") == "undone":
                     turn_flags.add("undo_ok")
+                elif block.name == "get_technical_reading" and result.get("available"):
+                    # La respuesta habla de cómo viene un activo: se revisa
+                    # antes de entregarla (_corregir_lectura_tecnica).
+                    turn_flags.add("lectura_tecnica")
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
@@ -41864,6 +41979,12 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     import secrets as _secrets
     _req_id = _secrets.token_hex(8)  # turn-boundary de la confirmación
     _turn_flags: set = set()
+    # El botón de Mervall-E de la ficha («¿Cómo viene GGAL?») ya trae la lectura
+    # técnica en el paquete: la respuesta se revisa igual que si la hubiera
+    # pedido con get_technical_reading (_corregir_lectura_tecnica).
+    if (data.analisis and str(data.analisis.screen or "").strip().lower() == "tecnico"
+            and ((snapshot_clean or {}).get("analisis_del_boton") or {}).get("available")):
+        _turn_flags.add("lectura_tecnica")
     # Book-mode usa SU draft (registro grupal); el resto, el draft personal.
     _draft0 = (_GROUP_DRAFT if book_mode else _TRADE_DRAFT).get(uid)
     _flow_open = bool(_draft0 and (time.time() - _draft0.get("ts", 0)) <= _TRADE_DRAFT_TTL)
@@ -42046,6 +42167,23 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 yield ("data: " + json.dumps({"t": "pregunta", "d": last_user_msg},
                                              ensure_ascii=False) + "\n\n")
             tcalls = 0
+
+            def _revisar_en_vivo(resp, mt):
+                """La revisión de la lectura técnica (_corregir_lectura_tecnica)
+                con la respuesta ya escrita en pantalla: si hay que cambiarla, se
+                borra (`reset`) y llega la corregida entera."""
+                if "lectura_tecnica" not in _turn_flags:
+                    return
+                _txt = state["synth_text"][voz_adelantada["desde"]:]
+                _ok = _corregir_lectura_tecnica(client, _txt, messages_loop, last_user_msg,
+                                                chat_model=chat_model, max_tokens=mt, system_text=system_text, quiere_voz=_quiere_voz, chat_tools=chat_tools, costo=_costo, tier=tier, uid=uid)
+                if _ok is None:
+                    return
+                yield "data: " + json.dumps({"t": "reset"}) + "\n\n"
+                state["synth_text"] = _ok
+                voz_adelantada["desde"] = 0
+                yield "data: " + json.dumps({"t": "delta", "d": _ok}, ensure_ascii=False) + "\n\n"
+
             # B-9 (review): contabilidad del slot reservado.
             # - settled: done/error emitido → la cuota quedó resuelta (cobrada
             #   o refundeada). Si el generator muere SIN settled (GeneratorExit
@@ -42111,6 +42249,10 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                                 # de silencio que medimos (ver _voz_temprana).
                                 if _puede_adelantar_voz and not voz_adelantada["ya"]:
                                     _vt = _voz_temprana(state["synth_text"][voz_adelantada["desde"]:])
+                                    # En un turno de lectura técnica, una voz con jerga no se
+                                    # adelanta: la respuesta se va a pedir de nuevo.
+                                    if _vt and "lectura_tecnica" in _turn_flags and _lectura_tecnica_chat.problemas(_vt, last_user_msg):
+                                        _vt = None
                                     if _vt:
                                         voz_adelantada["ya"] = True
                                         yield ("data: " + json.dumps(
@@ -42137,6 +42279,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         _repedir_el_registro(messages_loop, resp, _forced_tool)
                         continue
                     if resp.stop_reason != "tool_use":
+                        for _f in _revisar_en_vivo(resp, max_tokens):
+                            yield _f
                         # Garantía de visibilidad: si quedó un pendiente y el
                         # modelo no mostró sus números, anexar el resumen.
                         _ep = _pending_summary_epilogue(uid, state["synth_text"])
@@ -42231,6 +42375,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                     for _f in _frames_de_negativa(tier, _turn_flags, bool(state["synth_deltas"])):
                         yield _f
                     return
+                for _f in _revisar_en_vivo(resp, max_tokens_fallback):
+                    yield _f
                 _ep = _pending_summary_epilogue(uid, state["synth_text"])
                 if _ep:
                     yield "data: " + json.dumps({"t": "delta", "d": _ep}, ensure_ascii=False) + "\n\n"
@@ -42322,6 +42468,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 # Sin esto no podemos detectar regresiones del cache (cuando
                 # cache_read cae a 0, el costo se multiplica por ~10× y solo
                 # nos enteramos por la factura mensual de Anthropic).
+                if "lectura_tecnica" in _turn_flags:
+                    text = _corregir_lectura_tecnica(client, text, messages_loop, last_user_msg,
+                                                     chat_model=chat_model, max_tokens=max_tokens, system_text=system_text, quiere_voz=_quiere_voz, chat_tools=chat_tools, costo=_costo, tier=tier, uid=uid) or text
                 usage_obj = getattr(response, "usage", None)
                 _warn_if_truncated(response, tier, uid, "json_final")
                 # Registrar el costo del turno ENTERO (B-9: el slot ya estaba reservado).
@@ -42389,6 +42538,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
             return _respuesta_json(_TEXTO_NEGATIVA, tier, _turn_flags,
                                    pregunta=last_user_msg if data.analisis else None)
         text = next((b.text for b in response.content if hasattr(b, "text")), "")
+        if "lectura_tecnica" in _turn_flags:
+            text = _corregir_lectura_tecnica(client, text, messages_loop, last_user_msg,
+                                             chat_model=chat_model, max_tokens=max_tokens_fallback, system_text=system_text, quiere_voz=_quiere_voz, chat_tools=chat_tools, costo=_costo, tier=tier, uid=uid) or text
         usage_obj = getattr(response, "usage", None)
         _warn_if_truncated(response, tier, uid, "json_fallback")
         _record_chat_quota(uid, _costo.centavos())   # el turno entero (B-9: slot ya reservado)
