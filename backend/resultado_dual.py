@@ -271,10 +271,27 @@ def _compras_importadas(conn, uid: int, op: Dict[str, Any]):
     par = broker_pair(conn, uid, op["broker"])
     ph = ",".join("?" * len(par))
     return conn.execute(
-        f"""SELECT n.currency, n.tc_compra FROM {TX_VIVAS}
+        f"""SELECT n.currency, n.tc_compra, n.quantity, n.gross_amount, n.fees FROM {TX_VIVAS}
              WHERE b.user_id=? AND n.broker IN ({ph}) AND n.asset_symbol=?
                AND n.operation_type=? AND n.date=?""",
         (uid, *par, op["asset"], OP_BUY, str(op["entry_date"])[:10])).fetchall()
+
+
+def _costo_unitario_importado(compras):
+    """El costo por unidad, CON la comisión de compra, de las compras importadas de ese día:
+    (Σ bruto + Σ comisión) ÷ Σ cantidad — lo mismo que arma el rebuild (invested = bruto,
+    commissions = fees). Es el "nominal" exacto contra el que se valida el costo despejado
+    (con precio × cantidad solo, la comisión confundía el dólar de compra). None si el
+    archivo no trae montos."""
+    if len({(_moneda(r[0]) or "") for r in compras}) > 1:
+        return None                      # compras en monedas distintas el mismo día: no se suman
+    try:
+        q = sum(float(r[2] or 0) for r in compras)
+        g = sum(float(r[3] or 0) for r in compras)
+        f = sum(float(r[4] or 0) for r in compras)
+    except (TypeError, ValueError, IndexError):
+        return None
+    return (g + f) / q if q > 0 and g > 0 else None
 
 
 def _costo_de_la_foto(foto: Dict[str, Any], moneda_venta: str):
@@ -304,7 +321,36 @@ def _pnl_viejo_esperado(cobrado, costo_lote, moneda_lote, moneda_venta, fx_fila)
     return (cobrado - costo_venta) / fx_fila
 
 
-def _costo_del_par(conn, op, *, cobrado, moneda_venta, fx_fila, entry_date, permitidas):
+def _cierra_con_la_foto(conn, op, cobrado, costo_lote, moneda_lote, moneda_venta, fx_fila, entry_date):
+    """¿Los números guardados en la fila son los que escribió el motor viejo con este lote
+    exacto? Compara pnl_usd Y pnl_pct. Un lote en pesos vendido en dólares depende del dólar de
+    compra con que costeó el motor de entonces (MEP en v2, blue en v1): se aceptan los dos."""
+    pnl, pct = op.get("pnl_usd"), op.get("pnl_pct")
+    candidatos = []     # (pnl_usd esperado, costo en la moneda de la venta)
+    if moneda_venta == "USD":
+        if moneda_lote == "USD":
+            candidatos.append((cobrado - costo_lote, costo_lote))
+        else:
+            for riel in (_fx.RIEL_MEP, _fx.RIEL_BLUE):
+                tc = _dolar(conn, entry_date, riel)
+                if tc:
+                    candidatos.append((cobrado - costo_lote / tc, costo_lote / tc))
+    elif fx_fila:
+        costo_venta = costo_lote * fx_fila if moneda_lote == "USD" else costo_lote
+        candidatos.append(((cobrado - costo_venta) / fx_fila, costo_venta / fx_fila))
+    if not candidatos or (pnl is None and pct is None):
+        return True                 # no hay con qué comparar: se confía en la foto
+    for esperado, costo_usd in candidatos:
+        ok = pnl is None or abs(float(pnl) - esperado) <= 0.02 + 1e-3 * abs(esperado)
+        if ok and pct is not None and costo_usd > 0:
+            ok = abs(float(pct) - esperado / costo_usd * 100) <= 0.02 + 1e-3 * abs(esperado / costo_usd * 100)
+        if ok:
+            return True
+    return False
+
+
+def _costo_del_par(conn, op, *, cobrado, moneda_venta, fx_fila, entry_date, permitidas,
+                   unitario_exacto=None):
     """Sin foto del lote: `(moneda_del_lote, costo_en_esa_moneda, None)` despejado del
     par que dejó el motor viejo, o `(None, None, motivo)` si no cierra.
 
@@ -350,8 +396,13 @@ def _costo_del_par(conn, op, *, cobrado, moneda_venta, fx_fila, entry_date, perm
                 hipotesis.append(("ARS", costo_venta * tc))
     if permitidas:
         hipotesis = [h for h in hipotesis if h[0] in permitidas]
+    # El nominal: con las compras importadas es EXACTO (incluye la comisión de compra); sin
+    # ellas es precio de entrada × cantidad, que la deja afuera.
     try:
-        nominal = float(op.get("entry_price")) * float(op.get("quantity"))
+        if unitario_exacto:
+            nominal = float(unitario_exacto) * float(op.get("quantity"))
+        else:
+            nominal = float(op.get("entry_price")) * float(op.get("quantity"))
     except (TypeError, ValueError):
         nominal = 0.0
     if nominal <= 0:
@@ -365,7 +416,19 @@ def _costo_del_par(conn, op, *, cobrado, moneda_venta, fx_fila, entry_date, perm
     if not validas:
         return None, None, (NO_CIERRA if permitidas or entry_date else MONEDA_DEL_LOTE)
     validas.sort(key=lambda t: t[0])
-    return validas[0][1], validas[0][2], None
+    mejor = validas[0]
+    # No se elige por cercanía entre candidatos que SIGUEN siendo distintos: con el nominal
+    # inexacto (sin las compras importadas, la comisión no está en ningún lado) el MEP y el
+    # blue de ese día —o la misma venta leída como lote en pesos o en dólares cuando el dólar
+    # estampado es 1,0— caían los dos en la banda y ganaba el equivocado (una pérdida pasaba a
+    # ganancia). Si hay dos candidatos que difieren más de 0,5 %, no se adivina.
+    if len(validas) > 1 and any(
+            (m != mejor[1] or abs(c / mejor[2] - 1) > 0.005) for _d, m, c in validas[1:]):
+        if not unitario_exacto or mejor[0] > 0.01:
+            return None, None, NO_CIERRA
+    elif unitario_exacto and mejor[0] > 0.01:
+        return None, None, NO_CIERRA
+    return mejor[1], mejor[2], None
 
 
 def _tc_compra_del_lote(conn, uid: int, op: Dict[str, Any], foto: Dict[str, Any]) -> Optional[float]:
@@ -381,7 +444,7 @@ def _tc_compra_del_lote(conn, uid: int, op: Dict[str, Any], foto: Dict[str, Any]
         return _pos(foto.get("tc_compra"))
     compras = _compras_importadas(conn, uid, op)
     if compras:
-        tcs = {_pos(r[1]) for r in compras}
+        tcs = {_pos(r[1]) for r in compras} - {None}      # las compras en otra moneda no traen
         if len(tcs) == 1:
             return tcs.pop()
     return None
@@ -444,17 +507,22 @@ def resultado_de_la_fila(conn, uid: int, op: Dict[str, Any], *, riel: str) -> Op
     costo_foto = _costo_de_la_foto(foto, moneda_venta) if foto else None
     if costo_foto:
         costo_lote, moneda_lote, _tc = costo_foto
-        esperado = _pnl_viejo_esperado(cobrado, costo_lote, moneda_lote, moneda_venta, fx_fila)
-        pnl = op.get("pnl_usd")
-        if (esperado is not None and pnl is not None
-                and abs(float(pnl) - esperado) > 0.02 + 1e-3 * abs(esperado)):
+        # Una edición de la CANTIDAD deja la foto con lo consumido originalmente.
+        try:
+            if abs(float(foto.get("consumed") or 0) - float(op["quantity"])) > 1e-6 * max(1.0, float(op["quantity"])):
+                return _sin_dato(NO_CIERRA)
+        except (TypeError, ValueError):
+            return _sin_dato(NO_CIERRA)
+        if not _cierra_con_la_foto(conn, op, cobrado, costo_lote, moneda_lote, moneda_venta,
+                                   fx_fila, entry_date):
             return _sin_dato(NO_CIERRA)      # la editó el usuario: sus números no son los del motor
     else:
         compras = _compras_importadas(conn, uid, op)
         permitidas = ({(_moneda(r[0]) or moneda_venta) for r in compras} if compras else None)
         moneda_lote, costo_lote, motivo = _costo_del_par(
             conn, op, cobrado=cobrado, moneda_venta=moneda_venta, fx_fila=fx_fila,
-            entry_date=entry_date, permitidas=permitidas)
+            entry_date=entry_date, permitidas=permitidas,
+            unitario_exacto=(_costo_unitario_importado(compras) if compras else None))
         if motivo:
             return _sin_dato(motivo)
 
@@ -521,6 +589,10 @@ def al_editar(conn, uid: int, op_id: int, antes: Optional[Dict[str, Any]],
     «guardar» sin tocar, o sólo la nota), la fila queda como estaba: sigue pendiente si
     lo era. Si cambió, pasa a ser del usuario (`MANUAL`) y sus columnas se vacían; si
     ya no es la venta de un lote, se vacían sin más."""
+    if antes is not None and not _moneda(antes.get("currency")):
+        # Las ventas anteriores al 28/7 tienen currency NULL y `update_operation` escribe la
+        # moneda resuelta por el broker: sin esto un «guardar» sin tocar contaba como cambio.
+        antes = {**antes, "currency": moneda_de_la_venta(conn, uid, antes)}
     if antes is not None and not _cambio_economico(antes, despues):
         return
     guardar(conn, uid, op_id, _sin_dato(MANUAL) if es_venta_de_un_lote(despues) else None)

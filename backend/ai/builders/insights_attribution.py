@@ -96,7 +96,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         asset = (p.get("asset") or "").upper()
         if not asset:
             continue
-        mv_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
+        # Valor y costo al MISMO dólar (el de compra): con el valor al de hoy, un lote sin
+        # cotización caía a su costo / dólar de hoy y la resta daba una pérdida fantasma.
+        mv_usd = _position_value_usd(p, prices, tc_blue, tc_cedear, costo="compra")
         # El costo al dólar de COMPRA del lote (el de Cartera): lo realizado de la misma
         # tenencia se anota con ese dólar (resultado_dual), y sumar realizado + no
         # realizado con dos dólares distintos daba un número que no es de ninguna regla.

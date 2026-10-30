@@ -64,6 +64,13 @@ def _metricas(conn, uid: int) -> Dict[str, Any]:
         "SELECT COUNT(*) n, ROUND(COALESCE(SUM(pnl_usd),0),2) s, "
         "       ROUND(COALESCE(SUM(CASE WHEN cobrado_ars IS NOT NULL AND costo_ars IS NOT NULL "
         "                                AND UPPER(COALESCE(currency,''))='ARS' AND fx_to_usd > 0 "
+        # Sólo si el LOTE es en pesos: con un lote en dólares vendido en pesos el costo en
+        # pesos es costo_usd × el dólar de la COMPRA, y la regla vieja lo llevaba al dólar de
+        # la venta (se cancelaba): ahí la regla vieja ES cobrado_usd − costo_usd = pnl_usd.
+        # Se reconoce porque el costo en pesos no se parece a precio de entrada × cantidad.
+        "                                AND entry_price > 0 AND quantity > 0 "
+        "                                AND costo_ars BETWEEN 0.8 * entry_price * quantity "
+        "                                                  AND 1.25 * entry_price * quantity "
         "                           THEN (cobrado_ars - costo_ars) / fx_to_usd "
         "                           ELSE pnl_usd END),0),2) s_vieja "
         "FROM operations WHERE user_id=? AND op_type='Venta'", (uid,)).fetchone()

@@ -211,6 +211,31 @@ class FxMigrateTest(unittest.TestCase):
         pnl, _dep = self._estado()
         self.assertAlmostEqual(pnl, round(20000000 / 1500.0 - 5000000 / MEP_DEP, 2), places=1)
 
+    def test_metricas_lote_en_dolares_vendido_en_pesos_no_infla_la_regla_vieja(self):
+        """Lote de US$ 40.000 (comprado con el dólar a 200: costo en pesos 8.000.000) vendido por
+        $ 90.000.000 con el dólar a 1.500 = US$ 60.000: la regla vieja ya daba +US$ 20.000 (se
+        cancelaba el dólar). `(cobrado_ars − costo_ars) / fx` daba 54.667 y el freno de la migración
+        tomaba por corrupta una cuenta sana."""
+        self.conn.execute(
+            "INSERT INTO operations (user_id,date,broker,asset,op_type,entry_price,exit_price,quantity,"
+            "pnl_usd,pnl_pct,currency,fx_to_usd,costo_ars,costo_usd,cobrado_ars,cobrado_usd) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (self.uid, "2024-06-10", "IOL", "AL30", "Venta", 40.0, 90000.0, 1000, 20000.0, 50.0,
+             "ARS", 1500.0, 8000000.0, 40000.0, 90000000.0, 60000.0))
+        self.conn.commit()
+        m = fxm._metricas(self.conn, self.uid)
+        self.assertAlmostEqual(m["pnl_ventas_regla_vieja_usd"], 20000.0, places=1)
+        # Y un lote en pesos sigue midiéndose con la regla vieja: (cobrado − costo) / dólar de la venta.
+        self.conn.execute(
+            "INSERT INTO operations (user_id,date,broker,asset,op_type,entry_price,exit_price,quantity,"
+            "pnl_usd,pnl_pct,currency,fx_to_usd,costo_ars,costo_usd,cobrado_ars,cobrado_usd) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (self.uid, "2024-06-10", "IOL", "GGAL", "Venta", 4500.0, 6900.0, 100, 10.0, 2.22,
+             "ARS", 1500.0, 450000.0, 450.0, 690000.0, 460.0))
+        self.conn.commit()
+        m = fxm._metricas(self.conn, self.uid)
+        self.assertAlmostEqual(m["pnl_ventas_regla_vieja_usd"], 20000.0 + 160.0, places=1)
+
     def test_migracion_es_idempotente(self):
         self._importar_historia_v1()
         with self.conn:
