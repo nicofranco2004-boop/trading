@@ -12059,6 +12059,32 @@ def get_comparar_precio(request: Request, activos: str, local: str = "", moneda:
         return res
 
 
+@app.get("/api/tecnico/{asset}/horas")
+def get_tecnico_horas(asset: str, request: Request, cada: str = "1h", moneda: str = "usd", local: int = 0,
+                      desde: Optional[int] = None, uid: int = Depends(get_effective_user)):
+    """Las velas de 1 hora o de 4 horas (`cada`) del gráfico técnico, con la
+    vela en curso al final (`enCurso`), sus medias de 50 y 200 VELAS, RSI,
+    Bollinger, ADX y Squeeze. La misma serie que el gráfico diario (qué ticker
+    y si va convertida con el MEP: tecnico.serie). No se guarda en la base: en
+    memoria y compartido entre usuarios (velas_horarias.py). `desde`: sólo
+    las velas que empiezan en ese momento o después (segundos UTC), para el
+    refresco de cada minuto. La primera descarga de un ticker que no está en
+    memoria cuenta para un cupo por persona (velas_horarias.NUEVOS_*):
+    pasado, `motivo: 'tope'`."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    if cada not in ("1h", "4h"):
+        raise HTTPException(400, "Las velas por hora son de 1h o 4h.")
+    if desde is not None and not 0 <= desde <= 4102444800:
+        raise HTTPException(400, "`desde` es un momento en segundos UTC.")
+    import velas_horarias
+    # Lee la serie para saber qué ticker y con qué dólar: el freno único de las
+    # lecturas pesadas (E1, el de la ficha; al juntar, 30/10).
+    with _freno_tecnico(request, uid, "uno"):
+        return velas_horarias.para_la_ficha(db_abierta, sym, cada, moneda, bool(local), desde, uid)
+
+
 @app.get("/api/liquidez/{papel}")
 def get_liquidez(papel: str, uid: int = Depends(get_effective_user)):
     """Liquidez en BYMA de un CEDEAR o una acción argentina, para la ficha:
@@ -12479,6 +12505,10 @@ class _PuntoDibujo(BaseModel):
     precio: float = Field(gt=0, allow_inf_nan=False)
     # Sólo el pincel: la fracción del lugar (que el trazo no quede en escalones).
     f: Optional[float] = Field(None, ge=0, lt=1, allow_inf_nan=False)
+    # Un punto dibujado en velas de 1 o 4 horas: el momento exacto, en segundos
+    # UTC (frontend/src/utils/velasPorHora.js). `d` y `mas` siguen siendo el día,
+    # que es lo que leen las diarias y los avisos (tecnico._indice_del_punto).
+    t: Optional[int] = Field(None, ge=0, le=4102444800)
 
 
 # Un conteo de Elliott a mano: el impulso (0 y las ondas 1 a 5), la corrección

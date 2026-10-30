@@ -811,23 +811,21 @@ def cierre_de(conn, simbolo: str):
     return {"fecha": v["date"], "cierre": v["close"]} if v else None
 
 
-@pesado
-def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, ref: str = None) -> dict:
-    """Lo que necesita la ficha: la serie del gráfico (2 años de calendario) con
-    sus medias y su RSI ya calculados sobre TODA la historia guardada (la media
-    de 200 del primer punto del gráfico necesita los 10 meses de antes) y la
-    lectura."""
-    moneda = "ars" if moneda == "ars" else "usd"
-    s = serie(conn, asset, moneda, local)
-    velas = s["velas"]
-    if not velas:
-        return {"asset": (asset or "").upper(), "moneda": moneda, "disponible": False}
+def indicadores(velas: list) -> dict:
+    """Las cuentas del gráfico sobre TODA la serie `velas`, vela por vela: las
+    medias de 50 y 200 velas, el RSI, el ADX, el Squeeze y las Bandas de
+    Bollinger. Una vela es un día en el gráfico diario y una hora (o cuatro)
+    en el de horas (velas_horarias.py): la media de 200 es de 200 VELAS."""
     cierres = [v["close"] for v in velas]
-    m50, m200, r = media(cierres, 50), media(cierres, 200), rsi(cierres)
-    dmi, sqz, bb = adx(velas), squeeze(velas), bollinger(cierres)
-    desde = _desde_dias(velas, DIAS_GRAFICO)
-    lect = lectura(velas, m50, m200, r, dmi, sqz, bb)
+    return {"m50": media(cierres, 50), "m200": media(cierres, 200), "rsi": rsi(cierres),
+            "dmi": adx(velas), "sqz": squeeze(velas), "bb": bollinger(cierres)}
 
+
+def puntos_del_grafico(velas: list, ind: dict, desde: int = 0) -> list:
+    """Los puntos que dibuja la pantalla, de la vela `desde` en adelante, con
+    las cuentas de `indicadores(velas)`. Es UN armado para el gráfico diario
+    (`para_la_ficha`) y el de horas (velas_horarias.py): mismos redondeos,
+    mismos nombres."""
     def _r(x, d=4):
         return round(x, d) if x is not None else None
 
@@ -839,12 +837,30 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
     # o/h/l: apertura, máximo y mínimo, para el gráfico de velas. Pueden venir
     # vacíos (una vela de Yahoo con el máximo roto se guarda sólo con cierre).
     p = estructura.precio_redondo   # abajo de 1, cifras significativas (SHIB, PEPE)
-    puntos = [{"d": velas[i]["date"], "o": p(velas[i].get("open")), "h": p(velas[i].get("high")),
-               "l": p(velas[i].get("low")), "c": p(cierres[i]), "s50": p(m50[i]),
-               "s200": p(m200[i]), "bb_arriba": p(bb["arriba"][i]), "bb_abajo": p(bb["abajo"][i]),
-               "rsi": _r(r[i], 2), "adx": _r(dmi["adx"][i], 2),
-               "squeeze": _sig(sqz["valor"][i]), "squeeze_color": sqz["color"][i],
-               "v": velas[i].get("volume")} for i in range(desde, len(velas))]
+    m50, m200, r, dmi, sqz, bb = ind["m50"], ind["m200"], ind["rsi"], ind["dmi"], ind["sqz"], ind["bb"]
+    return [{"d": velas[i]["date"], "o": p(velas[i].get("open")), "h": p(velas[i].get("high")),
+             "l": p(velas[i].get("low")), "c": p(velas[i]["close"]), "s50": p(m50[i]),
+             "s200": p(m200[i]), "bb_arriba": p(bb["arriba"][i]), "bb_abajo": p(bb["abajo"][i]),
+             "rsi": _r(r[i], 2), "adx": _r(dmi["adx"][i], 2),
+             "squeeze": _sig(sqz["valor"][i]), "squeeze_color": sqz["color"][i],
+             "v": velas[i].get("volume")} for i in range(desde, len(velas))]
+
+
+@pesado
+def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, ref: str = None) -> dict:
+    """Lo que necesita la ficha: la serie del gráfico (2 años de calendario) con
+    sus medias y su RSI ya calculados sobre TODA la historia guardada (la media
+    de 200 del primer punto del gráfico necesita los 10 meses de antes) y la
+    lectura."""
+    moneda = "ars" if moneda == "ars" else "usd"
+    s = serie(conn, asset, moneda, local)
+    velas = s["velas"]
+    if not velas:
+        return {"asset": (asset or "").upper(), "moneda": moneda, "disponible": False}
+    ind = indicadores(velas)
+    desde = _desde_dias(velas, DIAS_GRAFICO)
+    lect = lectura(velas, ind["m50"], ind["m200"], ind["rsi"], ind["dmi"], ind["sqz"], ind["bb"])
+    puntos = puntos_del_grafico(velas, ind, desde)
     return {
         "asset": (asset or "").upper(),
         "moneda": moneda,

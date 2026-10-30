@@ -1492,10 +1492,13 @@ function pintarGrafico(ctx, spec) {
     ctx.strokeStyle = c
     ctx.fillStyle = c
     ctx.lineWidth = 1.5
+    // La vela en curso (todavía se mueve), más transparente, como en la pantalla.
+    ctx.globalAlpha = v.enCurso ? 0.55 : 1
     linea(ctx, X(v.x), Y(v.h), X(v.x), Y(v.l))
     const yA = Math.min(Y(v.o), Y(v.c))
     ctx.fillRect(X(v.x) - anchoVela / 2, yA, anchoVela, Math.max(Math.abs(Y(v.o) - Y(v.c)), 1.5))
   }
+  ctx.globalAlpha = 1
   const principal = g.etiquetas.find(e => e.principal)
   if (principal) {
     ctx.globalAlpha = 0.55
