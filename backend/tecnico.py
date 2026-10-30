@@ -1012,18 +1012,34 @@ def valor_de_linea(velas: list, linea: dict, i: int):
     return a["precio"] + (b["precio"] - a["precio"]) * (i - ia) / (ib - ia)
 
 
-def toque_de_linea(velas: list, linea: dict, desde: str = None):
-    """La PRIMERA vela posterior a `desde` que tocó la línea: su mínimo y su
+def toque_de_linea(velas: list, linea: dict, desde: str = None, pedida_el: str = None):
+    """La ÚLTIMA vela posterior a `desde` que tocó la línea: su mínimo y su
     máximo la encierran, o el cierre quedó del otro lado del de la vela
     anterior (un salto por encima de la línea, sin tocarla en el día).
     {'fecha', 'sentido', 'cierre', 'referencia', 'rsi', 'minimo', 'maximo'}
     o None. `sentido`: 'arriba' si venía de abajo (subió hasta la línea),
-    'abajo' si venía de arriba. `referencia`: el precio de la línea ese día."""
+    'abajo' si venía de arriba, None si el cierre anterior estaba EN la línea
+    (o no hay): no se inventa de qué lado venía. `referencia`: el precio de la
+    línea ese día.
+
+    `pedida_el`: el día (argentino) en que se pidió el aviso. Esa vela tiene
+    también las horas de ANTES de pedirlo y no se sabe en qué orden pasó cada
+    cosa: ese día cuenta sólo si el CIERRE (que es al final del día) llegó a la
+    línea o la pasó desde el lado del cierre anterior. Si no, dibujar la línea
+    donde está el precio avisaba a la mañana siguiente por lo que ya había
+    pasado (auditoría de la junta, 30/10; el aviso de precio ya nacía
+    desarmado en ese caso).
+
+    La última y no la primera (auditoría de la junta, 30/10): si llegan muchas
+    velas juntas (Yahoo atrasado), la primera puede ser vieja y el motor la
+    descarta por vieja; la de anteayer, que sí es noticia, se perdía. Es la
+    regla de `senal_desde`."""
     if not velas:
         return None
     desde_i = 0
     if desde:
         desde_i = next((i for i, v in enumerate(velas) if v["date"] > desde), len(velas))
+    hallado = None
     for i in range(desde_i, len(velas)):
         nivel = valor_de_linea(velas, linea, i)
         if nivel is None or nivel <= 0:
@@ -1033,14 +1049,19 @@ def toque_de_linea(velas: list, linea: dict, desde: str = None):
         alto, bajo = v.get("high") or cierre, v.get("low") or cierre
         antes = velas[i - 1]["close"] if i > 0 else None
         nivel_antes = valor_de_linea(velas, linea, i - 1) if i > 0 else None
-        salto = (antes is not None and nivel_antes is not None
-                 and (antes - nivel_antes) * (cierre - nivel) < 0)
-        if bajo <= nivel <= alto or salto:
-            venia_de_abajo = antes is not None and nivel_antes is not None and antes < nivel_antes
-            return {"fecha": v["date"], "sentido": "arriba" if venia_de_abajo else "abajo",
-                    "cierre": cierre, "referencia": nivel, "rsi": None,
-                    "minimo": bajo, "maximo": alto}
-    return None
+        lado_antes = (None if antes is None or nivel_antes is None or antes == nivel_antes
+                      else antes - nivel_antes)
+        salto = lado_antes is not None and lado_antes * (cierre - nivel) < 0
+        if pedida_el and v["date"] == pedida_el:
+            toco = lado_antes is not None and lado_antes * (cierre - nivel) <= 0
+        else:
+            toco = bajo <= nivel <= alto or salto
+        if toco:
+            hallado = {"fecha": v["date"],
+                       "sentido": None if lado_antes is None else ("arriba" if lado_antes < 0 else "abajo"),
+                       "cierre": cierre, "referencia": nivel, "rsi": None,
+                       "minimo": bajo, "maximo": alto}
+    return hallado
 
 
 def senal_desde(velas: list, senal: str, desde: str = None, sentido: str = None):

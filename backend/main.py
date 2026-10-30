@@ -2424,7 +2424,8 @@ def init_db():
                 last_fired_price REAL,
                 senal TEXT,                         -- tecnica: qué señal (tecnico.SENALES)
                 accion_local INTEGER NOT NULL DEFAULT 0, -- tecnica: acción argentina (como la ficha)
-                dibujo TEXT                         -- tecnica 'linea': qué línea dibujada ({asset, moneda, id, tipo})
+                dibujo TEXT,                        -- tecnica 'linea': qué línea dibujada ({asset, moneda, id, tipo})
+                mirando_desde TEXT                  -- tecnica: día argentino en que se creó o reactivó
             );
             CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id);
             CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active);
@@ -2810,6 +2811,10 @@ def init_db():
         # Migración: el aviso de una línea dibujada guarda a qué línea mira.
         if _alert_cols and 'dibujo' not in _alert_cols:
             conn.executescript("ALTER TABLE alerts ADD COLUMN dibujo TEXT;")
+        # Migración: desde qué día mira una técnica (el de una línea, ese día,
+        # sólo cuenta si el cierre la cruzó: `tecnico.toque_de_linea`).
+        if _alert_cols and 'mirando_desde' not in _alert_cols:
+            conn.executescript("ALTER TABLE alerts ADD COLUMN mirando_desde TEXT;")
 
         # Migración: last_fired_date en alert_symbol_state (la tabla ya existe en prod
         # sin esta columna, se creó en el deploy anterior).
@@ -48726,7 +48731,7 @@ def _moneda_del_aviso(symbol: str, currency) -> str:
     return "USD"
 
 
-def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn") -> dict:
+def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn", dueno: int = None) -> dict:
     """El alta de una alerta técnica (ver alerts_engine.evaluar_tecnicas).
 
     El activo se guarda como lo pide la ficha técnica: pelado ('AAPL', 'GGAL',
@@ -48738,7 +48743,7 @@ def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn") -> dict:
     if data.scope != "ticker" or not data.symbol:
         raise HTTPException(400, "Una alerta técnica necesita un activo.")
     if data.senal == tecnico.SENAL_LINEA:
-        return _crear_alerta_de_linea(conn, uid, data)
+        return _crear_alerta_de_linea(conn, uid, data, dueno or uid)
     if data.senal not in tecnico.SENALES:
         raise HTTPException(400, "Elegí qué querés que te avisemos.")
     symbol = data.symbol
@@ -48786,13 +48791,19 @@ def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn") -> dict:
     return {"ok": True, "id": aid, "armed": True, "resolved": resolved, "velas": tiene_velas}
 
 
-def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn") -> dict:
+def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn", dueno: int) -> dict:
     """«Avisame si el precio toca esta línea» (Nico, 28/10): una alerta técnica
     atada a una línea horizontal o de tendencia que dibujaste en la ficha. No
     copia el precio: el motor lee la línea de lo dibujado cada vez
     (alerts_engine.linea_de_la_alerta), así que si la movés el aviso la sigue y
     si la borrás se apaga. Se mira con las velas del día (su mínimo y su
-    máximo), como las demás técnicas: avisa a la mañana siguiente."""
+    máximo), como las demás técnicas: avisa a la mañana siguiente.
+
+    `dueno`: de quién son los dibujos (`_dueno_de_los_dibujos`): la persona, o
+    la asesora que dibuja en la ficha de su cliente. La alerta vive en la cuenta
+    del cliente (`uid`) y la línea se busca entre los dibujos de quien la hizo,
+    que queda escrito en la referencia («de»). Antes se buscaba en los del
+    cliente y a la asesora le daba 404 siempre (auditoría de la junta, 30/10)."""
     import alerts_engine as _ae
     import tecnico
     asset = (data.symbol or "").strip().upper()
@@ -48801,7 +48812,7 @@ def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn") -> dict:
         raise HTTPException(400, "Elegí la línea del gráfico.")
     fila = conn.execute(
         "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
-        (uid, asset, moneda)).fetchone()
+        (dueno, asset, moneda)).fetchone()
     try:
         dibujos = json.loads(fila[0]) if fila else []
     except (TypeError, ValueError):
@@ -48811,11 +48822,25 @@ def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn") -> dict:
         raise HTTPException(404, "No encontramos esa línea: puede que todavía no se haya guardado. Probá de nuevo en un momento.")
     if linea.get("tipo") not in ("horizontal", "tendencia"):
         raise HTTPException(400, "Por ahora el aviso es para líneas horizontales y de tendencia.")
-    ref = json.dumps({"asset": asset, "moneda": moneda, "id": data.dibujo, "tipo": linea["tipo"]},
-                     separators=(",", ":"))
+    ref = {"asset": asset, "moneda": moneda, "id": data.dibujo, "tipo": linea["tipo"]}
+    if dueno != uid:
+        ref["de"] = dueno
+    ref = json.dumps(ref, separators=(",", ":"))
     symbol = _ae._norm_sym(asset[:-3] if asset.endswith(".BA") else asset)
     if not symbol or not _SYMBOL_RE.match(symbol):
         raise HTTPException(400, "Ese activo no tiene análisis técnico.")
+    # La misma puerta que las otras técnicas (`_crear_alerta_tecnica`): antes
+    # esta la salteaba y quedaba cubierta sólo porque guardar un dibujo ya la
+    # pide; un dibujo guardado de antes de esa regla entraba igual.
+    _exigir_activo_valido(conn, asset, uid, dueno)
+    if linea["tipo"] == "tendencia" and linea.get("a") and linea.get("b"):
+        velas = tecnico.serie(conn, symbol, moneda, bool(data.accion_local))["velas"]
+        ultimo = len(velas) - 1
+        mismo_dia = (tecnico.valor_de_linea(velas, linea, max(ultimo, 0)) is None if velas
+                     else (linea["a"].get("d"), linea["a"].get("mas")) == (linea["b"].get("d"), linea["b"].get("mas")))
+        if mismo_dia:
+            raise HTTPException(400, "Las dos puntas de esa línea caen en el mismo día: no tiene "
+                                     "inclinación para seguirla. Corré una de las dos.")
     _exigir_cupo_de_alertas(conn, uid)
     # Una línea, un aviso: dos serían dos mails por el mismo toque.
     for r in conn.execute(
@@ -48889,7 +48914,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user), r
             # Lee la serie del activo para arrancar desde la última vela: una
             # lectura pesada, con el freno de la ficha (pesado.py).
             with _freno_tecnico(request, uid, "uno"):
-                return _crear_alerta_tecnica(conn, uid, data)
+                return _crear_alerta_tecnica(conn, uid, data, _dueno_de_los_dibujos(request, uid))
         else:  # pct_move — umbral asimétrico (sube ≥ up_pct% y/o cae ≥ down_pct%)
             if data.scope == "ticker" and not symbol:
                 raise HTTPException(400, "Elegí un ticker o la opción 'toda mi cartera'.")
@@ -48975,6 +49000,7 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
     """Edita/activa/pausa una alerta. Si se reactiva o cambia el umbral,
     re-arma el edge-trigger (y re-ancla si es 'Desde ahora')."""
     import alerts_engine as _ae
+    import tecnico
     conn = get_db()
     try:
         row = _alerta_de_mis_alertas(conn, alert_id, uid)
@@ -49020,6 +49046,11 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
         params.append(alert_id)
         # Reactivar una técnica lee su serie (arrancar desde la última vela): el
         # freno de la ficha, como el alta (pesado.py).
+        if (tecnica and data.active and row["senal"] == tecnico.SENAL_LINEA
+                and _ae.linea_de_la_alerta(conn, row) is None):
+            # Si no, quedaba activa hasta la vela siguiente y se apagaba sola,
+            # sin decir por qué (auditoría de la junta, 30/10).
+            raise HTTPException(400, "Esa línea ya no está en el gráfico: dibujala de nuevo y pedí el aviso desde ahí.")
         with (_freno_tecnico(request, uid, "uno") if tecnica and data.active else nullcontext()), conn:
             conn.execute(f"UPDATE alerts SET {', '.join(sets)} WHERE id=?", params)
             if tecnica and data.active:

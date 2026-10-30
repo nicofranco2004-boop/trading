@@ -1598,6 +1598,9 @@ def arrancar_tecnica(conn, alert) -> None:
     velas = _serie_tecnica(conn, alert)
     hasta = max(velas[-1]["date"], ayer) if velas else ayer
     _marcar_visto(conn, alert["id"], alert["symbol"], hasta)
+    # El día en que se pidió: para una línea, esa vela sólo cuenta si el cierre
+    # la cruzó (`tecnico.toque_de_linea`, `pedida_el`).
+    conn.execute("UPDATE alerts SET mirando_desde=? WHERE id=?", (hoy_art_date().isoformat(), alert["id"]))
 
 
 def _sentido_pedido(alert):
@@ -1624,8 +1627,9 @@ def _mensaje_tecnico(alert, symbol, ev) -> str:
     senal, arriba = alert["senal"], ev["sentido"] == "arriba"
     if senal == "linea":
         ccy = "ARS" if str(alert["currency"] or "").upper() == "ARS" else "USD"
-        return (f"{quien} {'subió' if arriba else 'bajó'} hasta tu {_nombre_de_linea(alert)}, "
-                f"en {_fmt(ev['referencia'], ccy)}")
+        verbo = ("tocó tu" if ev["sentido"] is None
+                 else f"{'subió' if arriba else 'bajó'} hasta tu")
+        return f"{quien} {verbo} {_nombre_de_linea(alert)}, en {_fmt(ev['referencia'], ccy)}"
     if senal == "media200":
         return (f"{quien} pasó para arriba su promedio de 200 días: la tendencia de fondo se volvió alcista"
                 if arriba else
@@ -1794,7 +1798,7 @@ def _evaluar_una_tecnica(conn, a, series: dict, ultima_global, piso: str, now, p
     if not mirables or mirables[-1]["date"] <= visto:
         return "nada"
     ultima = mirables[-1]["date"]
-    ev = (tecnico.toque_de_linea(mirables, linea, visto) if linea is not None
+    ev = (tecnico.toque_de_linea(mirables, linea, visto, _campo(a, "mirando_desde")) if linea is not None
           else tecnico.senal_desde(mirables, a["senal"], visto, _sentido_pedido(a)))
     if ev and ev["fecha"] < piso:
         log.info("alert %s %s: %s del %s llegó tarde, no aviso", a["id"], sym, a["senal"], ev["fecha"])
@@ -1815,6 +1819,8 @@ def referencia_de_linea(texto):
         return None
     if not isinstance(r, dict) or not all(isinstance(r.get(k), str) and r.get(k) for k in ("asset", "moneda", "id")):
         return None
+    if r.get("de") is not None and not isinstance(r.get("de"), int):
+        return None
     return r
 
 
@@ -1825,9 +1831,17 @@ def linea_de_la_alerta(conn, alert):
     ref = referencia_de_linea(_campo(alert, "dibujo"))
     if not ref:
         return None
+    # La línea es de quien la dibujó: la persona, o la asesora que la dibujó en
+    # su ficha («de», lo escribe el alta). La de una asesora vale mientras pueda
+    # escribir en esta cuenta: si dejó de poder, es como si la hubiera borrado.
+    dueno = ref.get("de") or alert["user_id"]
+    if dueno != alert["user_id"] and not conn.execute(
+            "SELECT 1 FROM advisor_clients WHERE advisor_uid=? AND client_uid=? "
+            "AND status='active' AND permission='read_write'", (dueno, alert["user_id"])).fetchone():
+        return None
     fila = conn.execute(
         "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
-        (alert["user_id"], ref["asset"], ref["moneda"])).fetchone()
+        (dueno, ref["asset"], ref["moneda"])).fetchone()
     try:
         dibujos = json.loads(fila[0]) if fila else []
     except (TypeError, ValueError):

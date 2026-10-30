@@ -792,6 +792,135 @@ class AlertasTecnicasTest(unittest.TestCase):
         bajando = [{"date": "2026-10-01", "close": 104.0}, {"date": "2026-10-02", "close": 100.0}]
         self.assertEqual(tecnico.toque_de_linea(bajando, {"tipo": "horizontal", "precio": 102}, "2026-10-01")["sentido"], "abajo")
 
+    # — auditoría chica de la integración (30/10), sobre lo que trajo la barra
+    # lateral (ae7b8636) y ninguna auditoría había revisado —
+
+    def test_el_dia_que_la_pedis_no_avisa_por_lo_que_el_precio_hizo_antes(self):
+        """Dibujás la línea donde está el precio (100) y pedís el aviso a la
+        tarde. Ese día el precio no se movió (de 99 a 101, cierre 100). Antes
+        avisaba «bajó hasta tu línea» a la mañana siguiente: la vela del día
+        contaba entera, también las horas de antes de pedirlo. El aviso de
+        precio ya nacía desarmado en ese caso (`armed = 0 if met`)."""
+        self.yahoo.precios["MSFT"] = lambda d: 100.0
+        res = self._preparar_linea(self._horizontal(100))
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual(self._eventos(), [], "el día que lo pediste sólo cuenta si el cierre la cruzó")
+        self.assertEqual(self._alerta(res["id"])["active"], 1)
+
+    def test_un_dia_entero_despues_de_pedirla_cuenta_el_minimo_y_el_maximo(self):
+        """Lo mismo, pero pedida un día antes: la vela de ayer es entera
+        posterior al pedido y la tocó. Sin venir de un lado (cerró en la línea
+        el día anterior), no se inventa «subió» ni «bajó»."""
+        self.yahoo.precios["MSFT"] = lambda d: 100.0
+        self.client.post("/api/watchlist", json={"symbol": "MSFT"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._dibujar(self._horizontal(100))
+        body = {"kind": "tecnica", "symbol": "MSFT", "senal": "linea", "dibujo": "h1",
+                "currency": "USD", "channel": "both", "repeat": "once"}
+        with self._el_dia(self.anteayer):
+            r = self.client.post("/api/alerts", json=body, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT tocó tu línea horizontal, en US$ 100,00"])
+
+    def test_el_dia_que_la_pedis_cuenta_si_el_cierre_la_cruzo(self):
+        # El caso de siempre (de 100 a 110 con la línea en 109,50, pedida ayer):
+        # el cierre quedó del otro lado, eso es posterior a pedirlo.
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self._preparar_linea(self._horizontal(109.5))
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT subió hasta tu línea horizontal, en US$ 109,50"])
+
+    def _asesor_de_mi_cuenta(self, permiso="read_write"):
+        with main.db_abierta() as conn:
+            asesor = conn.execute(
+                "INSERT INTO users (email, name, password_hash, approved, email_verified, tier) "
+                "VALUES (?, 'Laura', 'x', 1, 1, 'advisor')", (f"asesora-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+            conn.execute("INSERT INTO advisor_clients (advisor_uid, client_uid, status, permission) "
+                         "VALUES (?, ?, 'active', ?)", (asesor, self.uid, permiso))
+            conn.commit()
+        return asesor, {"Authorization": f"Bearer {main.create_token(asesor)}",
+                        "X-Rendi-Client-Id": str(self.uid)}
+
+    def test_la_asesora_con_permiso_pide_el_aviso_de_su_linea_en_la_ficha_del_cliente(self):
+        """Los dibujos son de quien los hace (la asesora); la alerta vive en la
+        cuenta del cliente. Antes la alerta buscaba la línea entre los dibujos
+        del cliente: 404 «Probá de nuevo en un momento», siempre."""
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        asesor, h = self._asesor_de_mi_cuenta()
+        self.client.post("/api/watchlist", json={"symbol": "MSFT"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._dibujar(self._horizontal(109.5), headers=h)
+        body = {"kind": "tecnica", "symbol": "MSFT", "senal": "linea", "dibujo": "h1",
+                "currency": "USD", "channel": "both", "repeat": "once"}
+        with self._el_dia(self.ayer):
+            r = self.client.post("/api/alerts", json=body, headers=h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT subió hasta tu línea horizontal, en US$ 109,50"])
+
+    def test_si_la_asesora_deja_de_poder_escribir_el_aviso_de_su_linea_se_apaga(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        asesor, h = self._asesor_de_mi_cuenta()
+        self.client.post("/api/watchlist", json={"symbol": "MSFT"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._dibujar(self._horizontal(109.5), headers=h)
+        body = {"kind": "tecnica", "symbol": "MSFT", "senal": "linea", "dibujo": "h1",
+                "currency": "USD", "channel": "both", "repeat": "once"}
+        with self._el_dia(self.ayer):
+            aid = self.client.post("/api/alerts", json=body, headers=h).json()["id"]
+        with main.db_abierta() as conn:
+            conn.execute("UPDATE advisor_clients SET permission='read' WHERE advisor_uid=?", (asesor,))
+            conn.commit()
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual(self._eventos(), [], "la línea de alguien que ya no escribe en tu cuenta no te avisa")
+        self.assertEqual(self._alerta(aid)["active"], 0)
+
+    def test_una_linea_de_tendencia_sin_inclinacion_no_se_acepta(self):
+        """Las dos puntas en el mismo día: no se puede seguir. Antes la alerta
+        quedaba activa y no avisaba nunca, sin decirlo."""
+        self._noche(self.anteayer)
+        d = self.anteayer.isoformat()
+        self._dibujar({"id": "t1", "tipo": "tendencia", "a": {"d": d, "mas": 0, "precio": 90},
+                       "b": {"d": d, "mas": 0, "precio": 110}})
+        r = self._crear_linea(dibujo="t1", esperado=400)
+        self.assertIn("mismo día", r["detail"])
+
+    def test_el_aviso_de_linea_pide_un_activo_valido_como_las_otras_tecnicas(self):
+        # Un dibujo guardado de antes de que los dibujos pidieran activo válido.
+        with main.db_abierta() as conn:
+            conn.execute("INSERT INTO dibujos_grafico (user_id, asset, moneda, datos) VALUES (?, 'QXZZQ', 'usd', ?)",
+                         (self.uid, '[{"id": "h1", "tipo": "horizontal", "precio": 10}]'))
+            conn.commit()
+        r = self._crear_linea(symbol="QXZZQ", esperado=400)
+        self.assertNotIn("Listo", r.get("detail", ""))
+
+    def test_reactivar_un_aviso_cuya_linea_borraste_lo_dice(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        res = self._preparar_linea(self._horizontal(109.5))
+        self.client.patch(f"/api/alerts/{res['id']}", json={"active": False}, headers=self.h)
+        self._dibujar()                                    # borraste la línea
+        r = self.client.patch(f"/api/alerts/{res['id']}", json={"active": True}, headers=self.h)
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("ya no está", r.json()["detail"])
+        self.assertEqual(self._alerta(res["id"])["active"], 0)
+
+    def test_el_toque_que_vale_es_el_ultimo(self):
+        """Si llegan muchas velas juntas (Yahoo atrasado), el primer toque puede
+        ser viejo y descartarse; el de anteayer, que sí es noticia, se perdía."""
+        velas = [{"date": f"2026-10-{d:02d}", "close": c, "high": c + 1, "low": c - 1}
+                 for d, c in [(1, 90.0), (2, 100.0), (3, 90.0), (15, 90.0), (16, 100.0)]]
+        ev = tecnico.toque_de_linea(velas, {"tipo": "horizontal", "precio": 100}, "2026-10-01")
+        self.assertEqual(ev["fecha"], "2026-10-16")
+
 
 class SenalesTest(unittest.TestCase):
     """Las señales sobre velas armadas a mano (`tecnico.senal_desde`)."""
