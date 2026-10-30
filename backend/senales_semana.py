@@ -218,6 +218,15 @@ def peso(car: dict, asset: str, local=None):
     return v / car["total"] if v > 0 and car["total"] > 0 else None
 
 
+def pesos_sin_medir(car: dict) -> dict:
+    """Qué parte de toda tu plata es efectivo y qué parte plazos fijos, con la
+    misma división que `peso` (sobre `car['total']`). Suman al total pero no son
+    tenencias con lectura: el mapa de calor del Dashboard los dibuja como dos
+    cuadros más. {'efectivo': fracción | None, 'plazos_fijos': fracción | None}."""
+    t = car.get("total") or 0
+    return {k: (car[k] / t if car.get(k, 0) > 0 and t > 0 else None) for k in ("efectivo", "plazos_fijos")}
+
+
 def _clave_de_la_watchlist(simbolo: str, asset_type: str = None) -> tuple:
     """(asset, local) de un símbolo de la watchlist: LA regla, la usan
     `watchlist` y `agregado_a_la_watchlist`. Es la regla de la pantalla
