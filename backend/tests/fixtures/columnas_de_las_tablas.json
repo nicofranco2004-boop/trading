@@ -668,6 +668,12 @@
   "semana",
   "user_id"
  ],
+ "termometro_diario": [
+  "calculado_el",
+  "detalle",
+  "fecha",
+  "puntaje"
+ ],
  "tesis": [
   "accion_local",
   "alert_id",

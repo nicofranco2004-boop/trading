@@ -41,7 +41,9 @@ const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 export const RUTAS = {
   plata: ['advisor', 'positions', 'operations', 'imports', 'monthly', 'plazos-fijos', 'goals', 'events', 'snapshots',
     'cash', 'bonds', 'home', 'dividendos', 'movements', 'iol', 'wallbit', 'futures', 'insights', 'reports', 'wrapped',
-    'behavioral', 'diagnostics', 'cobros', 'pf', 'conversions', 'primeros-pasos', 'tus-senales', 'tecnico'],
+    'behavioral', 'diagnostics', 'cobros', 'pf', 'conversions', 'primeros-pasos', 'tus-senales', 'tecnico',
+    // El termómetro (pieza 7): el número es del mercado, pero `tu_plata` es tu cartera por sector.
+    'termometro'],
   // Precios, noticias, datos de empresas: lo mismo para todos.
   mercado: ['prices', 'dolar', 'fundamentals', 'market-brief', 'news', 'benchmarks', 'assets', 'tickers', 'fci',
     'fx-rates', 'cedears', 'bond-indices', 'liquidez', 'sections'],
