@@ -156,7 +156,7 @@ export default function AISummaryCard({ ticker }) {
             </div>
           )}
 
-          <p className="text-[10px] text-ink-3 leading-relaxed pt-2 border-t border-line/40">
+          <p className="text-[10px] text-ink-2 leading-relaxed pt-2 border-t border-line/40">
             Resumen generado por IA en base a los fundamentales. No constituye recomendación de inversión.
           </p>
         </div>
