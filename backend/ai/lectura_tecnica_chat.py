@@ -36,7 +36,13 @@ _JERGA = [
     r"sobrecompr\w*", r"sobrevend\w*", r"sobreventa", r"alcistas?", r"bajistas?", r"momentum",
     r"pullback", r"breakout", r"golden cross", r"death cross", r"cruce (dorado|de la muerte)",
     r"divergencias?", r"retrocesos?", r"consolidaci[óo]n", r"lateraliz\w*", r"velas? japonesas?",
+    # Las del resumen que se colaron en la primera prueba real (30/10): «perdiendo
+    # impulso» (NVIDIA), «rebotó» (MercadoLibre, Bitcoin), «el piso de junio».
+    r"impulsos?", r"rebot\w*", r"pisos?", r"techos?", r"zonas?", r"tramos?",
 ]
+# Los hechos traen fechas, nunca días de la semana: uno escrito por el modelo es
+# inventado (MercadoLibre, 30/10: «cerró el miércoles» por el jueves 29).
+_DIAS = [r"lunes", r"martes", r"mi[ée]rcoles", r"jueves", r"viernes", r"s[áa]bado", r"domingo"]
 # Lo que viene dicho como seguro. El pasado («se terminó el 6 de octubre») es un
 # hecho y no se toca; «podría ser una señal de…» es la forma.
 _CERTEZAS = [
@@ -60,14 +66,50 @@ def _re(lista):
     return re.compile(r"(?<![\w+−-])(" + "|".join(lista) + r")(?!\w)", re.IGNORECASE)
 
 
-_RE_JERGA, _RE_CERTEZAS, _RE_CONSEJOS = _re(_JERGA), _re(_CERTEZAS), _re(_CONSEJOS)
+_RE_JERGA, _RE_CERTEZAS, _RE_CONSEJOS, _RE_DIAS = _re(_JERGA), _re(_CERTEZAS), _re(_CONSEJOS), _re(_DIAS)
+_RE_NUMERO = re.compile(r"\d+(?:[.,]\d+)*")
+# Números que el pedido usa para explicar los indicadores (la línea de 50, los
+# extremos de 70 y 30, el 23 de la fuerza de la tendencia, los 200 días).
+_NUMEROS_LIBRES = {0.0, 23.0, 30.0, 50.0, 70.0, 100.0, 200.0}
 
 
-def problemas(texto: str, pregunta: str = "") -> list:
+def _valores(token: str, tambien_json: bool) -> set:
+    """«1.660» → {1660}; «0,000006» → {0.000006}; «77.800» → {77800}. Del
+    contexto (JSON) también se lee «1660.4» como 1660,4 y sus redondeos, para
+    que un número de la cartera escrito a la argentina no cuente como inventado."""
+    t = token.rstrip(".,")
+    out = set()
+    a = t.replace(".", "").replace(",", ".") if re.fullmatch(r"\d{1,3}(\.\d{3})+(,\d+)?", t) else t.replace(",", ".")
+    try:
+        out.add(float(a))
+    except ValueError:
+        pass
+    if tambien_json and "," not in t and t.count(".") == 1:
+        try:
+            v = float(t)
+            out |= {v, round(v), round(v, 1), round(v, 2)}
+        except ValueError:
+            pass
+    return out
+
+
+def inventados(texto: str, contexto: str) -> list:
+    """Los números del texto que no están en ningún dato del turno (los hechos,
+    lo que trajeron las herramientas, la cartera, la pregunta)."""
+    hay = set(_NUMEROS_LIBRES)
+    for x in _RE_NUMERO.findall(contexto or ""):
+        hay |= _valores(x, True)
+    return sorted({x.rstrip(".,") for x in _RE_NUMERO.findall(texto or "")
+                   if not (_valores(x, False) & hay)})
+
+
+def problemas(texto: str, pregunta: str = "", contexto: str = None) -> list:
     """Lo que está mal en una respuesta del chat sobre cómo viene un activo, en
     palabras para el modelo (va en el pedido de corrección). Vacío si está bien.
     Mira la respuesta ENTERA, incluido el bloque de tarjetas y la voz: también se
-    leen y se escuchan."""
+    leen y se escuchan. `contexto`: todo lo que el modelo tenía a la vista en el
+    turno; si viene, un número que no está ahí es inventado (como en el resumen
+    de la ficha: el modelo no calcula)."""
     t = texto or ""
     dichas = {m.group(0).lower() for m in _RE_JERGA.finditer(pregunta or "")}
     out = []
@@ -84,6 +126,16 @@ def problemas(texto: str, pregunta: str = "") -> list:
     if cons:
         out.append("le dijiste qué hacer (" + ", ".join(cons) + "): Rendi no recomienda comprar ni "
                    "vender; contá cómo viene y qué es lo que se mira")
+    dias = sorted({m.group(0).lower() for m in _RE_DIAS.finditer(t)}
+                  - {m.group(0).lower() for m in _RE_DIAS.finditer(pregunta or "")})
+    if dias:
+        out.append("nombraste un día de la semana (" + ", ".join(dias) + ") que los datos no traen: "
+                   "decí la fecha («el 29 de octubre»), también en la voz")
+    if contexto is not None:
+        malos = inventados(t, contexto + " " + (pregunta or ""))
+        if malos:
+            out.append("usaste números que no están en los datos (" + ", ".join(malos) + "): "
+                       "copiá los números tal cual vienen, sin calcular ni redondear de nuevo")
     return out
 
 

@@ -256,6 +256,29 @@ class LecturaTecnicaChatTest(unittest.TestCase):
                 self.assertEqual(texto, BUENO)
                 self.assertSinProblemas(texto)
 
+    def test_un_numero_que_no_esta_en_los_datos_se_pide_de_nuevo(self):
+        """Como el resumen de la ficha: el modelo no calcula. Un precio inventado
+        (o recalculado) se corrige; el de los hechos, copiado tal cual, pasa."""
+        claude = ClaudeDelChat([BUENO])
+        self._chat(claude)
+        precio = claude.lectura_enviada()["hechos"]["precio_al_ultimo_cierre"]   # «150 dólares»
+        bien = f"Microsoft cerró en {precio}. " + BUENO
+        claude = ClaudeDelChat([f"Microsoft cerró en 987.654 dólares y subió 12,5 %. " + BUENO, bien])
+        texto, _ = self._chat(claude)
+        self.assertEqual(texto, bien)
+        aviso = claude.pedidos[-1]["messages"][-1]["content"]
+        self.assertIn("987.654", aviso)
+        self.assertIn("12,5", aviso)
+        claude = ClaudeDelChat([bien])
+        self.assertEqual(self._chat(claude)[0], bien)
+        self.assertEqual(len(claude.pedidos), 2, "el número de los hechos no dispara la corrección")
+
+    def test_un_dia_de_la_semana_inventado_se_pide_de_nuevo(self):
+        claude = ClaudeDelChat(["Microsoft cerró el miércoles un poco más abajo. " + BUENO, BUENO])
+        texto, _ = self._chat(claude)
+        self.assertEqual(texto, BUENO)
+        self.assertIn("miércoles", claude.pedidos[-1]["messages"][-1]["content"])
+
     def test_si_insiste_no_se_publica(self):
         for stream in (False, True):
             with self.subTest(stream=stream):
@@ -324,7 +347,8 @@ class ProblemasTest(unittest.TestCase):
         malos = ["El RSI está en 72", "rebotó en el soporte", "está sobrecomprado", "la media móvil de 200",
                  "va a subir", "subirá", "se termina la bajada", "seguramente pase", "comprá ahora",
                  "te conviene esperar", "es un buen momento", "es una oportunidad", "el ADX en 30",
-                 "el Squeeze cambió", "las bandas de Bollinger", "es alcista"]
+                 "el Squeeze cambió", "las bandas de Bollinger", "es alcista", "viene perdiendo impulso",
+                 "rebotó desde el mínimo", "el piso de junio", "cerró el miércoles"]
         buenos = ["La fuerza del precio está en 72", "tu compra fue a 40", "se terminó el 6 de octubre",
                   "podría ser una señal de que la bajada pierde fuerza", "si bajara de 40",
                   "cerró en su precio más alto del año", "el tema del sistema", "le di una mirada"]

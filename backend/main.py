@@ -37168,7 +37168,9 @@ def _corregir_lectura_tecnica(client, texto: str, messages_loop: list, pregunta:
     va un texto fijo. La usan los cuatro finales del chat (con y sin streaming,
     respuesta y síntesis forzada)."""
     from ai import lectura_tecnica_chat
-    mal = lectura_tecnica_chat.problemas(texto, pregunta)
+    # Lo que el modelo tenía a la vista: un número que no está acá, lo inventó.
+    contexto = json.dumps(messages_loop, ensure_ascii=False, default=str)
+    mal = lectura_tecnica_chat.problemas(texto, pregunta, contexto)
     if not mal:
         return None
     log.info("ai_chat lectura técnica: se pide de nuevo (tier=%s uid=%s): %s", tier, uid, mal)
@@ -37182,7 +37184,7 @@ def _corregir_lectura_tecnica(client, texto: str, messages_loop: list, pregunta:
              + ". Escribila de nuevo entera, corregida, con los mismos datos y el mismo formato."}])
     costo.sumar(resp, "lectura_tecnica")
     nuevo = next((b.text for b in resp.content if hasattr(b, "text")), "")
-    if not nuevo.strip() or lectura_tecnica_chat.problemas(nuevo, pregunta):
+    if not nuevo.strip() or lectura_tecnica_chat.problemas(nuevo, pregunta, contexto):
         log.warning("ai_chat lectura técnica: la segunda tampoco sirvió (tier=%s uid=%s)", tier, uid)
         return lectura_tecnica_chat.TEXTO_SIN_LECTURA
     return nuevo
