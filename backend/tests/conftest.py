@@ -315,6 +315,8 @@ def _aislar_postgres(main, nombre_modulo: str):
     _pre = f"t{os.getpid()}_"
     esquema = _pre + re.sub(r"\W", "_", nombre_modulo)[-(60 - len(_pre)):]
 
+    # Las conexiones que quedaron quietas en el pozo apuntan al esquema anterior.
+    pgshim.cerrar_pozos()
     with psycopg.connect(_PG_DSN_BASE, autocommit=True) as c:
         # SÓLO nuestras conexiones. Antes esto mataba todas las de la base y se
         # llevaba puesta cualquier otra corrida de la suite — ver _APP_NAME.

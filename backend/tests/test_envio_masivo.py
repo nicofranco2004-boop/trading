@@ -193,6 +193,10 @@ class EnvioMasivo(unittest.TestCase):
     def _cada_campaña(self):
         for campaña in CAMPAÑAS:
             with self.subTest(campaña=campaña):
+                # La conexión de la vuelta anterior se cierra ACÁ: el addCleanup
+                # del setUp la retenía hasta el final del test, ~30 abiertas a la
+                # vez. Contra Supabase eso llenó el cupo del pooler (HANDOFF 5.F).
+                self.conn.close()
                 self.setUp()
                 yield campaña
 
@@ -577,6 +581,10 @@ class EnvioMasivo(unittest.TestCase):
     def _cada_reenvio(self):
         for campaña in ("re-engagement", "gift-plan"):
             with self.subTest(campaña=campaña):
+                # La conexión de la vuelta anterior se cierra ACÁ: el addCleanup
+                # del setUp la retenía hasta el final del test, ~30 abiertas a la
+                # vez. Contra Supabase eso llenó el cupo del pooler (HANDOFF 5.F).
+                self.conn.close()
                 self.setUp()
                 yield campaña
 

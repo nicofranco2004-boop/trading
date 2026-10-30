@@ -20,6 +20,7 @@ _TMP.close()
 os.environ["DB_PATH"] = _TMP.name
 
 import main                          # noqa: E402
+import pgshim                        # noqa: E402
 from billing import trial as tr      # noqa: E402
 from billing import credits as cr    # noqa: E402
 
@@ -186,8 +187,10 @@ class TopeMensualTest(Base):
                 c.close()
 
         hilos = [threading.Thread(target=correr, args=(u,)) for u in uids]
-        [h.start() for h in hilos]
-        [h.join() for h in hilos]
+        # Cada hilo toma su conexión ANTES de la barrera: ver pgshim.tope_temporal.
+        with pgshim.tope_temporal(len(uids) + 5):
+            [h.start() for h in hilos]
+            [h.join() for h in hilos]
         self.assertEqual(len(entraron), 5)
         self.assertEqual(tr._activations_this_month(self.conn), 5)
 

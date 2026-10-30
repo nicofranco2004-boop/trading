@@ -17,6 +17,7 @@ if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
 
 import main
+import pgshim
 import efectivo as _ef
 from ai import quota as _q
 
@@ -52,8 +53,10 @@ def _en_paralelo(n, trabajo):
                 except Exception: pass
 
     hilos = [threading.Thread(target=correr, args=(i,)) for i in range(n)]
-    [h.start() for h in hilos]
-    [h.join(timeout=90) for h in hilos]
+    # +5: la del setUp del test y alguna que abra el código adentro.
+    with pgshim.tope_temporal(n + 5):
+        [h.start() for h in hilos]
+        [h.join(timeout=90) for h in hilos]
     return res, errs
 
 

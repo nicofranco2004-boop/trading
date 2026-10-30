@@ -72,6 +72,7 @@ Lo que NO traduce, a propósito:
 """
 import logging
 import re
+from contextlib import contextmanager
 
 import psycopg
 
@@ -899,6 +900,156 @@ class Cursor:
         self._cur.close()
 
 
+# ── El pozo de conexiones ────────────────────────────────────────────────────
+# Hasta el 30/10/2026 cada `get_db()` abría una conexión nueva y `close()` la
+# cerraba. Contra el Supabase real eso falló de dos maneras (HANDOFF 5.F):
+#
+#   1. El session pooler admite un CUPO de clientes a la vez. Un envío masivo con
+#      hilos lo llenó: `EMAXCONNSESSION max clients reached`. En producción el
+#      mismo patrón, con varios usuarios a la vez, es un pedido que revienta.
+#   2. Abrir cuesta caro con red de por medio: 0,37 s desde la Mac (TLS + los
+#      ajustes de pgsesion), contra 1 ms local. Hay ~270 `get_db()` en el código.
+#
+# El pozo atiende las dos: guarda las conexiones que se devuelven para el próximo
+# que pida, y nunca deja que haya más de `RENDI_PG_POOL_MAX` prestadas a la vez.
+# Si están todas prestadas, el que pide ESPERA (hasta `RENDI_PG_POOL_ESPERA`
+# segundos) en vez de reventar contra el cupo del pooler. Si se vence la espera,
+# levanta un error que dice qué pasó.
+#
+# Una conexión vuelve al pozo SÓLO si está limpia:
+#   · sin transacción abierta: lo que quedó abierto se deshace (es lo mismo que
+#     pasaba al cerrarla, que también descarta lo no confirmado);
+#   · sin ajustes de sesión cambiados: un `SET lock_timeout` de un pedido no puede
+#     heredarlo el siguiente. Esas se cierran (ver `_RE_ENSUCIA`). La app no hace
+#     ninguno hoy; los tests sí.
+#   · viva: si estuvo quieta más de `_PING_SI_QUIETA` s, se le pregunta antes de
+#     prestarla, porque el pooler o el servidor pueden haberla cortado.
+_RE_ENSUCIA = re.compile(
+    r"^\s*(SET(?!\s+(LOCAL|TRANSACTION|CONSTRAINTS)\b)|RESET|LISTEN|PREPARE|DISCARD)\b"
+    r"|\bCREATE\s+(GLOBAL\s+|LOCAL\s+)?TEMP(ORARY)?\b"
+    r"|\bset_config\s*\([^)]*,\s*false\s*\)", re.I)
+_PING_SI_QUIETA = 30.0
+_QUIETA_MAXIMO = 300.0
+
+
+class PozoAgotado(psycopg.OperationalError):
+    pass
+
+
+class _Pozo:
+    def __init__(self, dsn: str, maximo: int, espera: float):
+        import threading
+        self._dsn = dsn
+        self._maximo = maximo
+        self._espera = espera
+        self._cupo = threading.BoundedSemaphore(maximo)
+        self._lock = threading.Lock()
+        self._libres = []            # (conexión psycopg, momento en que volvió)
+        self._cerrado = False
+
+    def tomar(self):
+        import time
+        import pgsesion
+        if not self._cupo.acquire(timeout=self._espera):
+            raise PozoAgotado(
+                f"Las {self._maximo} conexiones a la base están prestadas y ninguna "
+                f"volvió en {self._espera:.0f} s (RENDI_PG_POOL_MAX). Ver pgshim._Pozo.")
+        try:
+            while True:
+                with self._lock:
+                    c, desde = self._libres.pop() if self._libres else (None, 0.0)
+                if c is None:
+                    return pgsesion.conectar(self._dsn, autocommit=True)
+                quieta = time.monotonic() - desde
+                if c.closed or quieta > _QUIETA_MAXIMO:
+                    _cerrar_sin_ruido(c)
+                    continue
+                if quieta > _PING_SI_QUIETA:
+                    try:
+                        c.execute("SELECT 1")
+                    except Exception:
+                        _cerrar_sin_ruido(c)
+                        continue
+                return c
+        except BaseException:
+            self._cupo.release()
+            raise
+
+    def devolver(self, c, sucia: bool = False):
+        import time
+        try:
+            if not (c.closed or sucia or self._cerrado):
+                if c.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+                    c.rollback()
+                if c.info.transaction_status == psycopg.pq.TransactionStatus.IDLE:
+                    with self._lock:
+                        self._libres.append((c, time.monotonic()))
+                    c = None
+        except Exception:
+            pass
+        finally:
+            if c is not None:
+                _cerrar_sin_ruido(c)
+            self._cupo.release()
+
+    def cerrar(self):
+        """Cierra las que están quietas; las prestadas se cierran al volver."""
+        with self._lock:
+            self._cerrado = True
+            libres, self._libres = self._libres, []
+        for c, _ in libres:
+            _cerrar_sin_ruido(c)
+
+
+def _cerrar_sin_ruido(c):
+    try:
+        c.close()
+    except Exception:
+        pass
+
+
+_POZOS: dict = {}
+
+
+def _pozo_de(dsn: str) -> "_Pozo":
+    import os
+    p = _POZOS.get(dsn)
+    if p is None:
+        p = _POZOS.setdefault(dsn, _Pozo(
+            dsn,
+            maximo=int(os.environ.get("RENDI_PG_POOL_MAX", "10")),
+            espera=float(os.environ.get("RENDI_PG_POOL_ESPERA", "30"))))
+    return p
+
+
+def cerrar_pozos():
+    """Los tests cambian de esquema (y de DSN) en cada módulo: las conexiones
+    quietas del módulo anterior apuntan a un esquema que se va a borrar."""
+    for dsn in list(_POZOS):
+        _POZOS.pop(dsn).cerrar()
+
+
+@contextmanager
+def tope_temporal(maximo: int):
+    """Para los tests de carreras: arrancan N hilos con la conexión YA tomada y
+    los sueltan juntos con una barrera. Con N por encima del tope, el hilo N+1
+    espera una conexión que nadie devuelve hasta pasar la barrera, y la barrera
+    espera al hilo N+1. En la app no pasa: ningún pedido espera a otro con la
+    conexión en la mano para arrancar."""
+    import os
+    previo = os.environ.get("RENDI_PG_POOL_MAX")
+    os.environ["RENDI_PG_POOL_MAX"] = str(maximo)
+    cerrar_pozos()
+    try:
+        yield
+    finally:
+        if previo is None:
+            os.environ.pop("RENDI_PG_POOL_MAX", None)
+        else:
+            os.environ["RENDI_PG_POOL_MAX"] = previo
+        cerrar_pozos()
+
+
 class Connection:
     """Emula la conexión de sqlite3 sobre psycopg."""
 
@@ -913,8 +1064,10 @@ class Connection:
         # Por `pgsesion.conectar` y no por `psycopg.connect`: sin
         # `extra_float_digits=3` esta conexión lee los floats redondeados a 15
         # dígitos, y el rebuild los REESCRIBE así. Ver pgsesion.py.
-        import pgsesion
-        self._c = pgsesion.conectar(dsn, autocommit=True)
+        # La conexión sale del pozo y vuelve en `close()`. Ver `_Pozo`.
+        self._pozo = _pozo_de(dsn)
+        self._c = self._pozo.tomar()
+        self._sucia = False
         self._dsn = dsn              # para leer el catálogo aparte (ver _pk_de)
         self.row_factory = None      # el código lo setea; acá siempre devolvemos Row
 
@@ -1091,6 +1244,8 @@ class Connection:
         """El BEGIN que sqlite3 manda solo antes de la primera escritura. Ver
         `es_lectura_pura`. Si ya hay una transacción abierta (o arruinada), la
         sentencia va adentro de ésa, como siempre."""
+        if _RE_ENSUCIA.search(q):
+            self._sucia = True       # no vuelve al pozo: ver _Pozo.devolver
         if es_lectura_pura(q):
             return
         if self._c.info.transaction_status == psycopg.pq.TransactionStatus.IDLE:
@@ -1162,8 +1317,15 @@ class Connection:
         self._c.rollback()
 
     def close(self):
+        c, self._c = self._c, None
+        if c is not None:
+            self._pozo.devolver(c, sucia=self._sucia)
+
+    def __del__(self):
+        # Quien se olvida de cerrar no se lleva un lugar del pozo para siempre.
+        # En CPython esto corre apenas se suelta la última referencia.
         try:
-            self._c.close()
+            self.close()
         except Exception:
             pass
 
