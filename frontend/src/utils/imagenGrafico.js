@@ -29,8 +29,9 @@ import { posicion, trazosDelFibonacci } from '../components/asset/CapaFibonacci'
 // un celular), así que entran menos.
 const PX_ALTO_NOMINAL = 600
 const PX_POR_PRECIO = 95
-const PX_ANCHO_NOMINAL = 820
 const PX_POR_FECHA = 120
+/** El ancho del gráfico en la imagen, en px (shareCard.pintarGrafico: 1080 − 2 × 72 − 118). */
+export const ANCHO_DEL_GRAFICO = 818
 // Dos balances o dividendos a menos de esto (en % del ancho) van en una marca.
 const MARCAS_JUNTAS = 5
 
@@ -54,11 +55,13 @@ const pctTexto = (x) => `${x > 0 ? '+' : x < 0 ? '−' : ''}${Math.abs(x * 100).
  * @param {Array}  a.dibujos    tus dibujos, ya ubicados en lo que se ve (con `k`)
  * @param {Function} a.precio   formatea un precio como la ficha («US$ 1,23»)
  * @param {object} a.colores    los colores del gráfico (`rgb(var(--x))`, los de la pantalla)
+ * @param {string} a.ultimaFecha el último día con precio (si lo que se ve termina antes, el precio grande dice de qué día es)
+ * @param {Function} a.amontonados (eventos, pctX) → true si los dividendos se pisarían (la regla de la pantalla)
  */
 export function specDelGrafico({
   activo, moneda = 'usd', puntos = [], huecos = 0, lo, hi, ver = {}, tipo = 'linea', semanales = false,
-  dibujos = [], fibonacci = null, elliott = null, eventos = [], convertida = null, fechaDatos = null,
-  precio = (x) => String(x), colores = {}, volAlto = 0.15, adxTope = 50, squeeze = {}, now = new Date(),
+  dibujos = [], fibonacci = null, elliott = null, eventos = [], convertida = null, fechaDatos = null, ultimaFecha = null,
+  precio = (x) => String(x), colores = {}, volAlto = 0.15, adxTope = 50, squeeze = {}, amontonados = null, now = new Date(),
 }) {
   if (!puntos?.length || !(puntos[puntos.length - 1]?.c > 0)) return null
   // La escala: la de la pantalla. Sin ella (no debería pasar), los cierres con aire.
@@ -258,7 +261,10 @@ export function specDelGrafico({
       })
     }
   }
-  if (tuyos.length) leyenda.push({ nombre: tuyos.length === 1 ? 'Tu dibujo' : 'Tus dibujos', color: colorDe(tuyos[0]), forma: 'linea' })
+  // La referencia, sólo con los que se ven (uno fuera de la vista no se dibuja).
+  const aLaVista = trazosDeDibujos(tuyos, pctX, pctY, []).filter(cruzaLaVista)
+  const vistos = tuyos.filter(d => aLaVista.some(t => t.id === d.id))
+  if (vistos.length) leyenda.push({ nombre: vistos.length === 1 ? 'Tu dibujo' : 'Tus dibujos', color: colorDe(vistos[0]), forma: 'linea' })
 
   // ── La columna de precios y la fila de fechas ───────────────────────────
   const ultimo = puntos[puntos.length - 1]
@@ -272,7 +278,7 @@ export function specDelGrafico({
   const etiquetas = [{ y: pctY(ultimo.c), texto: sinUS(ultimo.c), color: colorDelDia, principal: true },
     ...tuyos.filter(d => d.tipo === 'horizontal').map(d => ({ y: pctY(d.precio), texto: sinUS(d.precio), color: colorDe(d) }))]
     .filter(e => e.y >= 0 && e.y <= 100)
-  const anchoDias = (PX_ANCHO_NOMINAL * puntos.length) / Math.max(lugares, 1)
+  const anchoDias = (ANCHO_DEL_GRAFICO * puntos.length) / Math.max(lugares, 1)
   const fechas = marcasDeFechas(puntos, anchoDias, PX_POR_FECHA).map(m => ({ x: pctX(m.i), texto: m.texto }))
 
   // ── Balances y dividendos de la empresa (no son tuyos) ──────────────────
@@ -284,7 +290,8 @@ export function specDelGrafico({
       .map(e => ({ ...e, i: indiceDeFecha(puntos, e.fecha) }))
       .filter(e => e.i != null)
       .sort((a, b) => a.i - b.i)
-    for (const e of visibles) {
+    const sinDividendos = !!amontonados?.(visibles, pctX)
+    for (const e of visibles.filter(e => !sinDividendos || e.tipo !== 'dividendo')) {
       const x = pctX(e.i)
       const previa = marcas[marcas.length - 1]
       if (previa && x - previa.x0 < MARCAS_JUNTAS) {
@@ -335,7 +342,9 @@ export function specDelGrafico({
     kind: 'grafico',
     activo: String(activo || '').toUpperCase(),
     subtitulo: `${conVelas ? (semanales ? 'Velas semanales' : 'Velas diarias') : 'Línea'} · del ${fechaCorta(desde)} al ${fechaCorta(ultimo.d)} · en ${moneda === 'ars' ? 'pesos' : 'dólares'}`,
-    precio: { texto: precio(ultimo.c) },
+    // Mirando el pasado (arrastrado o acercado), el precio grande no es el de
+    // hoy: dice de qué día es.
+    precio: { texto: precio(ultimo.c), ...((ultimaFecha || fechaDatos) > ultimo.d ? { fecha: `Cierre del ${fechaCorta(ultimo.d)}` } : {}) },
     cambio: cambio == null ? null : { texto: `${pctTexto(cambio)} en el período`, tono: cambio > 0 ? 'green' : cambio < 0 ? 'red' : 'gray' },
     leyenda,
     grafico: {
@@ -350,6 +359,19 @@ export function specDelGrafico({
     pie,
     date: `Hecho con Rendi el ${fechaDeHoy(now)}`,
   }
+}
+
+// ¿La raya pasa por lo que se ve (el cuadro de 0 a 100)? Recorte de Liang-Barsky.
+function cruzaLaVista({ x1, y1, x2, y2 }) {
+  let t0 = 0, t1 = 1
+  const dx = x2 - x1, dy = y2 - y1
+  for (const [p, q] of [[-dx, x1], [dx, 100 - x1], [-dy, y1], [dy, 100 - y1]]) {
+    if (p === 0) { if (q < 0) return false; continue }
+    const r = q / p
+    if (p < 0) t0 = Math.max(t0, r)
+    else t1 = Math.min(t1, r)
+  }
+  return t0 <= t1
 }
 
 // El rótulo de un nivel (de un Fibonacci): adentro, arriba de la raya, si la

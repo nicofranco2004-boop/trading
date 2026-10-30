@@ -260,13 +260,18 @@ export async function downloadShareCard(spec, filename = 'rendi-card.png') {
 }
 
 // Devuelve true si compartió con el sistema, false si no hay soporte o canceló.
-export async function tryNativeShare(spec, { title = 'Rendi', text = '' } = {}) {
+// `blob`: la imagen ya dibujada (la de la vista previa). Con ella se llama al
+// compartir del sistema sin esperar nada después del toque: Safari en el
+// iPhone puede rechazarlo si entre el toque y el pedido pasa demasiado tiempo
+// (volver a dibujar espera las fuentes y el logo). `filename`: el nombre con
+// el que llega el archivo (antes, siempre «rendi-card.png»).
+export async function tryNativeShare(spec, { title = 'Rendi', text = '', filename = 'rendi-card.png', blob: lista = null } = {}) {
   if (typeof navigator === 'undefined' || !navigator.canShare || !navigator.share) {
     return false
   }
-  const blob = await shareCardToBlob(spec)
+  const blob = lista || await shareCardToBlob(spec)
   if (!blob) return false
-  const file = new File([blob], 'rendi-card.png', { type: 'image/png' })
+  const file = new File([blob], filename, { type: 'image/png' })
   if (!navigator.canShare({ files: [file] })) return false
   try {
     await navigator.share({ title, text, files: [file] })
@@ -1382,19 +1387,28 @@ function pintarGrafico(ctx, spec) {
   ajustarFuente(ctx, spec.activo, W - 2 * PAD - anchoPrecio - 40, 64, 600, 32)
   ctx.fillText(spec.activo, PAD, y)
   y += 80
+  // A la derecha: cuánto se movió en lo que se ve y, si lo que se ve termina
+  // antes de hoy, de qué día es el precio grande («Cierre del 30/04/25 · »).
   let anchoCambio = 0
+  ctx.textAlign = 'right'
+  ctx.font = `500 24px ${FONT_SANS}`
   if (spec.cambio) {
-    ctx.textAlign = 'right'
-    ctx.font = `500 24px ${FONT_SANS}`
     ctx.fillStyle = TONE[spec.cambio.tono] || INK_2
     ctx.fillText(spec.cambio.texto, W - PAD, y)
-    anchoCambio = ctx.measureText(spec.cambio.texto).width + 32
-    ctx.textAlign = 'left'
+    anchoCambio = ctx.measureText(spec.cambio.texto).width
   }
+  if (spec.precio.fecha) {
+    const fecha = spec.cambio ? `${spec.precio.fecha} · ` : spec.precio.fecha
+    ctx.fillStyle = INK_2
+    ctx.fillText(fecha, W - PAD - anchoCambio, y)
+    anchoCambio += ctx.measureText(fecha).width
+  }
+  if (anchoCambio) anchoCambio += 32
+  ctx.textAlign = 'left'
+  // El período, en uno o dos renglones (no se achica: se lee en un celular).
   ctx.fillStyle = INK_2
-  ajustarFuente(ctx, spec.subtitulo, W - 2 * PAD - anchoCambio, 24, 400, 18)
-  ctx.fillText(spec.subtitulo, PAD, y)
-  y += 48
+  ctx.font = `24px ${FONT_SANS}`
+  y = wrapText(ctx, spec.subtitulo, PAD, y, W - 2 * PAD - anchoCambio, 32, 2) + 16
 
   // ── Qué se ve: una referencia de cada capa, con su color ──────────────
   ctx.font = `22px ${FONT_SANS}`
@@ -1904,7 +1918,7 @@ async function ensureFontsReady() {
   } catch { /* ignore */ }
 }
 
-function dataURLToBlob(dataURL) {
+export function dataURLToBlob(dataURL) {
   const parts = dataURL.split(',')
   const mime = (parts[0].match(/:(.*?);/) || [])[1] || 'image/png'
   const bstr = atob(parts[1])

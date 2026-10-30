@@ -51,7 +51,7 @@ import { BotonAvisame, BotonAvisameLinea, alertaDeLinea, useAvisosTecnicos, sena
 import { api } from '../../utils/api'
 import { factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecio, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
 import { PRIORIDAD, taparRotulos } from '../../utils/rotulos'
-import { archivoDelGrafico, specDelGrafico } from '../../utils/imagenGrafico'
+import { ANCHO_DEL_GRAFICO, archivoDelGrafico, specDelGrafico } from '../../utils/imagenGrafico'
 import {
   DIBUJOS_MAXIMOS, copiaLocal, etiquetasDe, diaDelPunto, dibujoCorrido, dibujoTocado, dibujosDelServidor, dibujosGuardados, guardarDibujos, idNuevo,
   marcarSubidos, PINCEL_MAXIMO, COLORES_DIBUJO, colorDeLosNuevos, recordarColor, precioCorrido, precioRedondo, puntasDe, puntoDelDia, subirDibujos,
@@ -409,8 +409,8 @@ export default function LecturaTecnica({
   // Las alertas de la cuenta, para que cada «Avisame» sepa si ya hay una igual.
   // Arriba de los return de abajo: un hook después de un return rompe la ficha.
   const avisos = useAvisosTecnicos()
-  // La escala de precios que dibujó el gráfico (también la estirada a mano),
-  // para que la imagen de «Compartir» use la misma.
+  // La escala de precios del gráfico para la imagen de «Compartir»: la de la
+  // pantalla (también la estirada a mano), salvo que la estire tu precio.
   const escala = useRef(null)
 
   // Dólares al abrir; pesos recién la primera vez que se tocan (la mayoría no
@@ -469,8 +469,8 @@ export default function LecturaTecnica({
 
   // `visto`: el rango que se está viendo (null si se acercó o movió a mano);
   // `recientes`: cuántos días es «Lo reciente» (null = no hace falta).
-  const marco = (hijos, { conPesos = datos.ars?.disponible !== false, visto = ventana ? null : rango ?? (anchoGrafico > 0 && anchoGrafico < ANCHO_ANGOSTO ? 'reciente' : 'todo'), recientes = null, compartir = null } = {}) => (
-    <Marco moneda={moneda} setMoneda={setMoneda} rango={visto} setRango={elegirRango} recientes={recientes} compartir={compartir} archivo={archivoDelGrafico(asset)}
+  const marco = (hijos, { conPesos = datos.ars?.disponible !== false, visto = ventana ? null : rango ?? (anchoGrafico > 0 && anchoGrafico < ANCHO_ANGOSTO ? 'reciente' : 'todo'), recientes = null, compartir = null, antesDeCompartir = null } = {}) => (
+    <Marco moneda={moneda} setMoneda={setMoneda} rango={visto} setRango={elegirRango} recientes={recientes} compartir={compartir} antesDeCompartir={antesDeCompartir} archivo={archivoDelGrafico(asset)}
       conPesos={conPesos} conTuyo={!!primera} tipo={tipo} setTipo={setTipo} intervalo={intervalo} setIntervalo={setIntervalo}
       grande={grande} setGrande={setGrande} titulo={titulo}>{hijos}</Marco>
   )
@@ -683,11 +683,18 @@ export default function LecturaTecnica({
   // «Compartir» (Nico, 29/10): la imagen de lo que se ve, con las capas
   // prendidas y tus dibujos (utils/imagenGrafico.js). No recibe tu precio,
   // tus compras ni tus avisos: la imagen no lleva nada de tu cartera.
+  // «Desde que lo tenés» arranca el día de tu primera compra (y el «% en el
+  // período» sería casi lo que ganaste): antes de armarla, el gráfico pasa a
+  // «Todo», así lo que se manda sigue siendo lo que se ve (auditoría 29/10).
+  const antesDeCompartir = rangoVisto === 'tuyo' && !ventana ? () => elegirRango('todo') : null
+  const lugaresMinimos = (RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS)) / (semanales ? 5 : 1)
   const compartir = () => specDelGrafico({
     activo: asset, moneda, puntos, huecos, lo: escala.current?.min, hi: escala.current?.max,
     ver, tipo, semanales, dibujos: dibujosEnVista, fibonacci: actual.fibonacci, elliott: actual.elliott,
     eventos: losEventos, convertida: actual.convertida, fechaDatos: actual.lectura?.fecha,
-    precio: (x) => fmtPrecio(x, moneda), volAlto: VOL_ALTO, adxTope: ADX_TOPE, squeeze: SQUEEZE,
+    precio: (x) => fmtPrecio(x, moneda), volAlto: VOL_ALTO, adxTope: ADX_TOPE, squeeze: SQUEEZE, ultimaFecha,
+    // Los dividendos que se pisarían se esconden con la misma regla que en la pantalla, al ancho de la imagen.
+    amontonados: (evs, pctX) => dividendosAmontonados(evs, pctX, ANCHO_DEL_GRAFICO, ANCHO_DEL_GRAFICO / Math.max(1, lugaresMinimos - 1)),
     colores: { ...COLOR, fibonacci: COLOR_FIB, elliott: COLOR_ELLIOTT, grilla: v('chart-grid'),
       sube: v('rendi-pos-fill'), baja: v('rendi-neg-fill'), positivo: v('rendi-pos'), negativo: v('rendi-neg') },
   })
@@ -817,10 +824,10 @@ export default function LecturaTecnica({
                   <span className="hidden sm:inline">Ruedita: acercar o alejar. Arrastrar: moverte. Doble click en los precios o las fechas: vuelve a automático.</span>
                 </p>
                 {/* «Compartir» en el celular: arriba no entra en el renglón de los controles. */}
-                <CompartirGrafico armar={compartir} archivo={archivoDelGrafico(asset)} className="sm:hidden shrink-0" />
+                <CompartirGrafico armar={compartir} antes={antesDeCompartir} archivo={archivoDelGrafico(asset)} className="sm:hidden shrink-0" />
               </div>
             }
-            lugaresMinimos={(RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS)) / (semanales ? 5 : 1)}
+            lugaresMinimos={lugaresMinimos}
             onAncho={setAnchoGrafico} onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rangoVisto}|${tipo}|${intervalo}`}
             eventos={ver.eventos ? losEventos : []}
             medicion={medir.activo ? {
@@ -901,7 +908,7 @@ export default function LecturaTecnica({
         Datos al cierre del {fechaCorta(actual.lectura?.fecha)}. Muestra cómo se movió el precio: no es una recomendación para comprar ni vender.
       </p>
     </>,
-    { visto: ventana ? null : rangoVisto, recientes, compartir },
+    { visto: ventana ? null : rangoVisto, recientes, compartir, antesDeCompartir },
   )
 }
 
@@ -962,7 +969,7 @@ function periodoDeMovimiento(m) {
   return dias >= 700 ? 'Últimos 2 años' : `Desde el ${fechaCorta(m.desde)}`
 }
 
-function Marco({ moneda, setMoneda, rango, setRango, recientes = null, conPesos = true, conTuyo = false, tipo, setTipo, intervalo, setIntervalo, grande = false, setGrande, titulo, compartir = null, archivo, children }) {
+function Marco({ moneda, setMoneda, rango, setRango, recientes = null, conPesos = true, conTuyo = false, tipo, setTipo, intervalo, setIntervalo, grande = false, setGrande, titulo, compartir = null, antesDeCompartir = null, archivo, children }) {
   // En la ficha, ya ampliado (Nico, 24/10: «que sea automáticamente ampliado»).
   // Con «Pantalla completa», la MISMA sección fija sobre toda la página (no es
   // otra vista: mismos datos, mismos botones; R6). Arriba a la derecha, en UN
@@ -978,7 +985,7 @@ function Marco({ moneda, setMoneda, rango, setRango, recientes = null, conPesos 
         <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">
           {/* «Compartir»: la imagen del gráfico (CompartirGrafico.jsx); sólo con
               gráfico. En el celular va al lado de la ayuda, abajo de las fechas. */}
-          {compartir && <CompartirGrafico armar={compartir} archivo={archivo} className="hidden sm:inline-flex" />}
+          {compartir && <CompartirGrafico armar={compartir} antes={antesDeCompartir} archivo={archivo} className="hidden sm:inline-flex" />}
           {setGrande && (
             <button type="button" data-capa="pantalla" onClick={() => setGrande(!grande)} aria-pressed={grande}
               title={grande ? 'Volver a la ficha, con el menú de Rendi (también con Esc)' : 'El gráfico en toda la pantalla, para un análisis a fondo'}
@@ -1566,7 +1573,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   // (utils/rotulos.js). La raya queda; sólo se va el texto.
   useLayoutEffect(() => { taparRotulos(ref.current) })
 
-  const { escalaY, path, area, min, max, velas, volumen, promFuera } = useMemo(() => {
+  const { escalaY, path, area, min, max, velas, volumen, promFuera, compartible } = useMemo(() => {
     const valores = []
     let prevC = null
     for (const p of puntos) {
@@ -1597,6 +1604,10 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
       }
       lo = bLo; hi = bHi
     }
+    // La escala sin tu precio: la de la imagen de «Compartir», que no lleva
+    // nada de tu cartera (si se estirara hasta tu precio, la franja vacía
+    // diría más o menos a cuánto compraste).
+    const sinTuPrecio = [lo, hi]
     // Tu precio entra en la escala sólo si está cerca de lo que se ve. Si está
     // muy lejos (ganás 70 %, o perdés 60 %), estirar la escala aplastaría el
     // gráfico contra un borde: va una etiqueta en ese borde con una flecha.
@@ -1607,14 +1618,20 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
       else if (promedio > hi + rango * 0.35) fuera = 'arriba'
       else { lo = Math.min(lo, promedio); hi = Math.max(hi, promedio) }
     }
-    const margen = (hi - lo) * 0.08 || hi * 0.02 || 1
-    lo -= margen; hi += margen
     // El volumen va en la franja de abajo (el 20 % del alto): se le deja ese
     // lugar para que las barras no tapen las velas.
     const maxVol = ver.vol ? Math.max(0, ...puntos.map(p => p.v || 0)) : 0
-    if (maxVol > 0) lo -= (hi - lo) * 0.25
+    const conAire = ([a, b]) => {
+      const margen = (b - a) * 0.08 || b * 0.02 || 1
+      a -= margen; b += margen
+      if (maxVol > 0) a -= (b - a) * 0.25
+      return [a, b]
+    }
+    ;[lo, hi] = conAire([lo, hi])
+    let compartible = conAire(sinTuPrecio)
     if (precioMano) {
       lo = precioMano.lo; hi = precioMano.hi
+      compartible = [lo, hi]
       fuera = promedio == null ? null : promedio < lo ? 'abajo' : promedio > hi ? 'arriba' : null
     }
     const y = (val) => H - ((val - lo) / (hi - lo)) * H
@@ -1669,12 +1686,12 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
       return { k: i, x: x(i), y: H - alto, alto, ancho: anchoVol, sube }
     }).filter(Boolean) : []
     return {
-      escalaY: y, min: lo, max: hi, velas, volumen, promFuera: fuera,
+      escalaY: y, min: lo, max: hi, velas, volumen, promFuera: fuera, compartible,
       path: { c, s50: linea('s50'), s200: linea('s200'), bbArriba: linea('bb_arriba'), bbAbajo: linea('bb_abajo'), bandas },
       area: c ? `${c}L${x(puntos.length - 1).toFixed(1)},${H}L0,${H}Z` : '',
     }
   }, [puntos, lugares, promedio, ver.s50, ver.s200, ver.bb, ver.vol, conVelas, fibonacci, elliott, precioMano])
-  if (escalaRef) escalaRef.current = { min, max }
+  if (escalaRef) escalaRef.current = { min: compartible[0], max: compartible[1] }
 
   const rsiPath = useMemo(() => {
     let d = '', abierto = false

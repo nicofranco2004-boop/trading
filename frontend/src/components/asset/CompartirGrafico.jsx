@@ -9,6 +9,10 @@
 // La imagen se arma AL TOCAR (`armar()`) y queda congelada: si mientras está
 // abierta llega un precio nuevo o se mueve el gráfico, lo que se manda es lo
 // que se vio en la vista previa. No lleva nada de tu cartera (ver imagenGrafico).
+// `antes`: lo que el gráfico tiene que cambiar ANTES de armarla (con «Desde
+// que lo tenés» pasa a «Todo»: ver LecturaTecnica). Entonces se arma recién
+// después de que el gráfico se vuelve a dibujar (dos vueltas: en la primera el
+// gráfico también vuelve su escala a automática), así la imagen es lo que se ve.
 //
 // Dónde va (LecturaTecnica): en la compu, en el encabezado del gráfico, con
 // su nombre. En el celular ese renglón ya está lleno (pantalla completa, línea
@@ -20,25 +24,43 @@
 // La ventana va por portal al <body> y por encima de la pantalla completa del
 // gráfico (z-70): sin eso, con el gráfico en grande se abría detrás. Mientras
 // está abierta, las teclas no llegan al gráfico: Esc cierra sólo la ventana (no
-// también la pantalla completa) y Suprimir no borra el dibujo elegido.
+// también la pantalla completa) y Suprimir no borra el dibujo elegido. Se
+// frenan en `window` en la bajada (captura), antes que nadie: frenarlas en
+// `document` no alcanzaba, porque la ventana se cierra con el mismo Esc y React
+// saca el freno antes de que le llegue la tecla (auditoría 29/10).
 
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Share2 } from 'lucide-react'
 import ShareCardModal from '../ShareCardModal'
 
-export default function CompartirGrafico({ armar, archivo = 'rendi-grafico.png', className = '' }) {
+export default function CompartirGrafico({ armar, antes = null, archivo = 'rendi-grafico.png', className = '' }) {
   const [spec, setSpec] = useState(null)
+  // Vueltas de dibujo que faltan para armar la imagen (ver `antes`).
+  const [esperando, setEsperando] = useState(0)
   const abierto = spec !== null
   useEffect(() => {
+    if (!esperando) return
+    if (esperando > 1) { setEsperando(esperando - 1); return }
+    setEsperando(0)
+    setSpec(armar() || false)
+  }, [esperando, armar])
+  useEffect(() => {
     if (!abierto) return undefined
-    const frenar = (e) => e.stopPropagation()
-    document.addEventListener('keydown', frenar)
-    return () => document.removeEventListener('keydown', frenar)
+    const frenar = (e) => {
+      e.stopPropagation()
+      e.stopImmediatePropagation?.()
+      if (e.key === 'Escape') setSpec(null)
+    }
+    window.addEventListener('keydown', frenar, true)
+    return () => window.removeEventListener('keydown', frenar, true)
   }, [abierto])
+  const tocar = () => {
+    if (antes) { antes(); setEsperando(2) } else setSpec(armar() || false)
+  }
   return (
     <>
-      <button type="button" data-capa="compartir" onClick={() => setSpec(armar() || false)}
+      <button type="button" data-capa="compartir" onClick={tocar}
         title="Una imagen de este gráfico, como lo estás viendo, para mandar por WhatsApp"
         className={`inline-flex items-center justify-center gap-1.5 min-h-11 min-w-11 sm:min-h-8 sm:min-w-0 sm:px-3 rounded-lg border border-line-2 bg-bg-2 text-ink-0 text-xs font-medium hover:border-ink-3 transition-colors ${className}`}>
         <Share2 size={16} aria-hidden="true" />

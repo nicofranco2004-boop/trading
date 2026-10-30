@@ -129,6 +129,30 @@ describe('specDelGrafico: qué lleva la imagen', () => {
     expect(specDelGrafico(base({ eventos })).marcas).toEqual([])
     const m = specDelGrafico(base({ eventos, ver: { eventos: true } })).marcas
     expect(m.map(x => [x.letra, x.cuantos])).toEqual([['B·D', 2], ['D', 1]])
+    // Si los dividendos se pisarían (la regla de la pantalla), van sólo los balances.
+    const amontonados = vi.fn(() => true)
+    const sinD = specDelGrafico(base({ eventos, ver: { eventos: true }, amontonados })).marcas
+    expect(sinD.map(x => x.letra)).toEqual(['B'])
+    expect(amontonados.mock.calls[0][0].map(e => e.tipo)).toEqual(['balance', 'dividendo', 'dividendo'])
+  })
+
+  it('mirando el pasado, el precio grande dice de qué día es (no parece el de hoy)', () => {
+    const pasado = specDelGrafico(base({ fechaDatos: dia(200) }))
+    expect(pasado.precio).toEqual({ texto: 'US$ 159,00', fecha: 'Cierre del 01/03/26' })
+    // Con lo último a la vista, no hace falta decirlo.
+    expect(specDelGrafico(base({ fechaDatos: dia(59) })).precio.fecha).toBeUndefined()
+  })
+
+  it('«Tus dibujos» sólo si alguno se ve', () => {
+    const p = (k, precio) => ({ k, precio })
+    const afuera = [
+      { id: 'h', tipo: 'horizontal', precio: 900 },
+      { id: 'e', tipo: 'elliott', forma: 'impulso', puntos: [p(-80, 100), p(-60, 120), p(-40, 110)] },
+    ]
+    expect(specDelGrafico(base({ dibujos: afuera })).leyenda.map(l => l.nombre)).not.toContain('Tus dibujos')
+    const unoAdentro = [...afuera, { id: 't', tipo: 'tendencia', a: p(5, 105), b: p(40, 140), color: 'rosa' }]
+    const s = specDelGrafico(base({ dibujos: unoAdentro }))
+    expect(s.leyenda.find(l => l.nombre === 'Tu dibujo')?.color).toBe('rgb(var(--cat-pink))')
   })
 
   it('sin precios no hay imagen', () => {
@@ -190,6 +214,13 @@ describe('pintarGrafico: lo que se ve en la imagen', () => {
       'Línea · del 01/01/26 al 01/03/26 · en dólares', '+59,0 % en el período', 'Datos al cierre del 01/03/26.',
       'Muestra cómo se movió el precio: no es una recomendación para comprar ni vender.']))
     expect(t).toContain('159,00')                        // el último precio en la columna
+    // Mirando el pasado, de qué día es el precio grande, y el subtítulo entra igual.
+    const { textos: pasado } = await pintar(specDelGrafico(base({ fechaDatos: dia(300) })))
+    expect(pasado.map(x => x.t)).toContain('Cierre del 01/03/26 · ')
+    const der = pasado.find(x => x.t.startsWith('Cierre del'))
+    const sub = pasado.filter(x => x.y >= der.y - 2 && x.y < der.y + 70 && x.x0 < 100)
+    expect(sub.map(x => x.t).join(' ')).toBe('Línea · del 01/01/26 al 01/03/26 · en dólares')
+    for (const x of sub) expect(x.x1).toBeLessThan(der.x0)
     expect(t.some(x => /^(ene|feb|mar)$/.test(x))).toBe(true)   // las fechas de abajo
   })
 

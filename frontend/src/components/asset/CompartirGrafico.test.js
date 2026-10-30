@@ -122,7 +122,8 @@ describe('Compartir el gráfico técnico', () => {
 
   it('la imagen lleva el activo, tus dibujos en su color y la MISMA escala que la pantalla', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD }
-    await dibujar()
+    // Sin tu precio en el gráfico (con él, ver la prueba de abajo).
+    await dibujar({ asset: 'AAPL', symbolMiniChart: 'AAPL' })
     const spec = await compartir()
     expect(spec.activo).toBe('AAPL')
     expect(spec.precio.texto).toBe('US$ 259,80')
@@ -149,20 +150,80 @@ describe('Compartir el gráfico técnico', () => {
     expect(json).not.toContain('Tus compras')
   })
 
-  it('lo que se ve: con el período cambiado, la imagen dice el período nuevo', async () => {
+  it('tu precio no estira la escala de la imagen (si no, la franja vacía delataría a cuánto compraste)', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD }
+    // Ganás 40 %: tu precio (US$ 185,57) queda cerca de lo que se ve y la
+    // pantalla estira su escala hasta él.
+    await dibujar()
+    const conTuPrecio = await compartir()
+    await montado.desmontar(); montado = null
+    for (const n of [...document.body.childNodes]) document.body.removeChild(n)
+    await dibujar({ asset: 'AAPL', symbolMiniChart: 'AAPL' })
+    const sinCartera = await compartir()
+    expect(conTuPrecio.grafico.etiquetas.find(e => e.principal).y).toBeCloseTo(sinCartera.grafico.etiquetas.find(e => e.principal).y, 6)
+    expect(conTuPrecio.grafico.eje.map(t => t.texto)).toEqual(sinCartera.grafico.eje.map(t => t.texto))
+  })
+
+  it('«Desde que lo tenés» diría el día de tu compra y casi lo que ganaste: la imagen sale con «Todo», y la pantalla pasa a «Todo»', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD }
+    await dibujar()
+    const { elegirEnLaVista, periodoElegido } = await import('../../testing/menuGrafico')
+    await elegirEnLaVista(montado.contenedor, 'Desde que lo tenés')
+    for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, PROPS))
+    const spec = await compartir()
+    expect(spec.subtitulo).toContain('del 01/01/25 al 27/10/25')       // toda la historia, no desde tu compra (08/09/25)
+    expect(JSON.stringify(spec)).not.toContain('08/09/25')
+    expect(periodoElegido(montado.contenedor)).toBe('Todo')            // lo que se ve es lo que se manda
+  })
+
+  it('lo que se ve: acercado con la ruedita, la imagen dice el período nuevo', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD }
     await dibujar()
     const todo = await compartir()
-    expect(todo.subtitulo).toContain(`del ${'01/01/25'}`)
+    expect(todo.subtitulo).toContain('del 01/01/25 al 27/10/25')
     await clic(document.body, buscarEn(document.body, n => n.getAttribute?.('aria-label') === 'Cerrar'))
     await enActo(async () => {})
-    // «Desde que lo tenés»: desde tu primera compra.
-    const { elegirEnLaVista } = await import('../../testing/menuGrafico')
-    await elegirEnLaVista(montado.contenedor, 'Desde que lo tenés')
+    // La ruedita hacia arriba acerca (con el último día quieto).
+    const conRueda = buscarEn(montado.contenedor, n => n.getAttribute?.('role') === 'img' && n.escuchas?.wheel?.length)
+    for (let k = 0; k < 4; k++) {
+      await enActo(async () => { for (const fn of conRueda.escuchas.wheel) fn({ deltaY: -100, deltaMode: 0, clientX: 0, preventDefault() {} }) })
+    }
     for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, PROPS))
-    const tuyo = await compartir()
-    expect(tuyo.subtitulo).not.toContain('del 01/01/25')
+    const cerca = await compartir()
+    expect(cerca.subtitulo).not.toContain('del 01/01/25')
+    expect(cerca.subtitulo).toContain('al 27/10/25')
+    expect(cerca.grafico.area[0].length).toBeLessThan(todo.grafico.area[0].length)
   })
+
+  it('en el celular: «Compartir» de la ventana abre el compartir del sistema con la imagen de la vista previa y su nombre', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD }
+    const compartidos = []
+    const original = globalThis.navigator
+    vi.stubGlobal('navigator', { ...globalThis.navigator, canShare: () => true, share: vi.fn(async (d) => { compartidos.push(d) }) })
+    const { shareCardToBlob } = await import('../../utils/shareCard')
+    try {
+      await dibujar()
+      await compartir()
+      const enLaVentana = buscarEn(document.body, n => n.nodeName === 'BUTTON' && texto(n).trim() === 'Compartir')
+      expect(enLaVentana).toBeTruthy()
+      const dibujadas = pedidas.length
+      await clic(document.body, enLaVentana)
+      for (let i = 0; i < 3; i++) await enActo(async () => {})
+      expect(compartidos).toHaveLength(1)
+      expect(compartidos[0].files[0].name).toMatch(/^aapl-grafico-\d{4}-\d{2}-\d{2}\.png$/)
+      expect(compartidos[0].files[0].type).toBe('image/png')
+      expect(compartidos[0].text).not.toMatch(/Tu precio|Ganás/)
+      // No se volvió a dibujar: es la imagen que se vio en la vista previa.
+      expect(pedidas.length).toBe(dibujadas)
+      expect(vi.isMockFunction(shareCardToBlob) ? shareCardToBlob.mock.calls.length : 0).toBe(0)
+    } finally {
+      vi.stubGlobal('navigator', original)
+    }
+  })
+
+  // Esc en pantalla completa (cierra sólo la ventana) se probó en un navegador
+  // de verdad: acá `window` no tiene la fase de bajada (captura) antes que la de
+  // subida, que es justo lo que decide el caso.
 
   it('sin gráfico (cargando, o un activo sin velas) no hay botón', async () => {
     respuestas = { '/tecnico/': { disponible: false }, '/prices/history': { points: [] } }
