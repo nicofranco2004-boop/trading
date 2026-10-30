@@ -39,7 +39,7 @@ import { api } from '../../utils/api'
 import { parseNum, numACampo } from '../../utils/format'
 import { confirmar } from '../../utils/confirmar'
 import AvisoNotificaciones from '../AvisoNotificaciones'
-import { monedaDe, simbolo, fmtPrecio, fmtPct, confirmacion, canal, monedasPosibles, SENALES_TECNICAS, conSentido, activoTecnico, textoDeLinea } from './alertasTexto'
+import { monedaDe, simbolo, fmtPrecio, fmtPct, confirmacion, canal, monedasPosibles, SENALES_TECNICAS, conSentido, activoTecnico, textoDeLinea, simboloDelAviso } from './alertasTexto'
 import { cargarCedears, dolaresPorSimbolo } from '../../utils/opcionesCedear'
 import { setBrokersRegistry } from '../../utils/valuation'
 
@@ -116,7 +116,10 @@ export function borradorInicial({ alerta, prefill, puedeMovimiento }) {
       repeat: repeticionPorDefecto('tecnica', 'ticker', prefill.senal),
     }
   }
-  const base = { ...VACIO, symbol: prefill.symbol || '', currency: prefill.currency || monedaDe(prefill.symbol) }
+  const base = {
+    ...VACIO, symbol: prefill.symbol || '', monedaDelLink: prefill.currency,
+    currency: prefill.currency || monedaDe(simboloDelAviso(prefill.symbol, prefill.currency)),
+  }
   // "Crear alerta BTC −10%" desde Mervall-E AI → por %, ya cargada. Sin el
   // permiso queda el de precio (el selector de % muestra que es de Plus).
   if ((prefill.downPct || prefill.upPct) && puedeMovimiento) {
@@ -132,7 +135,7 @@ export function borradorInicial({ alerta, prefill, puedeMovimiento }) {
 // El activo de un aviso técnico: el de la ficha tal cual (`fijo`: ya viene
 // pelado y con su marca de acción argentina) o el del buscador, decidido con
 // tus lotes como lo decide la ficha (`activoTecnico`).
-function activoDelBorrador(f, fijo, posiciones) {
+function activoTecnicoDelBorrador(f, fijo, posiciones) {
   const sym = (f.symbol || '').trim().toUpperCase()
   return fijo ? { symbol: sym, accion_local: !!f.accion_local } : activoTecnico(sym, posiciones)
 }
@@ -140,7 +143,7 @@ function activoDelBorrador(f, fijo, posiciones) {
 // Lo que se manda al crear un aviso técnico (POST /api/alerts, ver
 // main._crear_alerta_tecnica). Exportada para las pruebas.
 export function pedidoTecnico(f, fijo, posiciones = []) {
-  const { symbol, accion_local } = activoDelBorrador(f, fijo, posiciones)
+  const { symbol, accion_local } = activoTecnicoDelBorrador(f, fijo, posiciones)
   return {
     kind: 'tecnica', scope: 'ticker', symbol, senal: f.senal,
     direction: conSentido(f.senal) ? f.direction : 'either',
@@ -150,6 +153,20 @@ export function pedidoTecnico(f, fijo, posiciones = []) {
     // y cuál de tus dibujos (main._crear_alerta_de_linea).
     ...(f.senal === 'linea' ? { symbol: (f.symbol || '').trim().toUpperCase(), dibujo: f.dibujo } : {}),
   }
+}
+
+// El activo que se vigila de verdad (el que se pide al servidor y del que se
+// muestra el precio): una alerta que se edita no cambia de activo; una nueva
+// pasa por la regla de acción argentina (alertasTexto.simboloDelAviso).
+export function activoDelBorrador(f, editando) {
+  const crudo = (f.symbol || '').trim().toUpperCase()
+  return editando ? crudo : simboloDelAviso(crudo, f.monedaDelLink)
+}
+
+// Elegir o escribir otro activo en el buscador: la moneda del link ya no
+// vale (era del activo que traía el link) y la del precio sale del activo.
+export function alElegirActivo(f, valor, ccy) {
+  return { ...f, symbol: valor, monedaDelLink: undefined, currency: ccy || monedaDe(simboloDelAviso(valor)) }
 }
 
 const CAMPO = 'h-12 w-full rounded-lg border border-line bg-bg-2 px-3.5 text-ink-0 outline-none focus-within:border-data-violet'
@@ -203,7 +220,9 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
     return () => { vivo = false }
   }, [buscaTecnica])
 
-  const sym = (form.symbol || '').trim().toUpperCase()
+  // El de un aviso de precio o % pasa por la regla de acción argentina
+  // (`activoDelBorrador`); el técnico decide su mercado aparte (`tec`, abajo).
+  const sym = form.kind === 'tecnica' ? (form.symbol || '').trim().toUpperCase() : activoDelBorrador(form, editando)
   // La moneda del precio es una que el activo TIENE (la regla del servidor,
   // main._moneda_del_aviso): antes el selector $/US$ era libre y «AAPL baja a
   // US$ 15» se comparaba contra los pesos del CEDEAR — no avisaba nunca.
@@ -237,7 +256,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
   // Lo que se manda es lo que se ve: el borrador con los números leídos.
   // La técnica: el activo como lo pide la ficha (pelado + marca de acción
   // argentina). Desde la ficha ya viene así; del buscador se deduce.
-  const tec = esTecnica ? activoDelBorrador(form, fijo || editando, posiciones) : null
+  const tec = esTecnica ? activoTecnicoDelBorrador(form, fijo || editando, posiciones) : null
   const borrador = {
     ...form,
     ...(tec || {}),
@@ -368,7 +387,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
                 // En la técnica la moneda es «en qué se mira» (Dólares por
                 // defecto), no la del precio del activo: el buscador no la toca.
                 onChange={(v, ccy) => setForm(f => (f.kind === 'tecnica' ? { ...f, symbol: v }
-                  : { ...f, symbol: v, currency: ccy || monedaDe(v) }))} />
+                  : alElegirActivo(f, v, ccy)))} />
             )}
           </Campo>
         )}
