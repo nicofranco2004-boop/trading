@@ -14,9 +14,12 @@
 //
 // El P&L se escribe SOLO por guardarPnlNoRealizado, que aplica la regla adentro:
 // un escritor nuevo no puede olvidársela (lo vigila coberturaEscritores.test.js).
+// Y los dos salen por utils/enviosConDueno, con el dueño de los datos.
 
 import { COBERTURA_MINIMA } from './valuation'
 import { leerDe, guardarDe } from './almacen'
+import { sigueSiendoDe } from './duenoDeLaPestana'
+import { ENVIOS, enviarDe } from './enviosConDueno'
 import { CATALOGO } from './catalogoDelAlmacen'
 
 export function sePuedeGuardar({ cobertura }) {
@@ -38,13 +41,16 @@ export function marcarFotoDeHoy(dueno, hoy) {
   return guardarDe(CATALOGO.fotoDelDia, dueno, hoy)
 }
 
-// filas: [{ broker, pnl }] (incluida la fila 'global'), calculadas AL MEP.
-// Una fila sin número (NaN, null) no se guarda: antes `Number(pnl || 0)` la
-// convertía en un 0 guardado. Devuelve si guardó.
-export async function guardarPnlNoRealizado(post, filas, condiciones) {
-  if (!sePuedeGuardar(condiciones)) return false
+// filas: [{ broker, pnl }] (incluida la fila 'global'), calculadas AL MEP con
+// los datos de `dueno` (useDuenoDeLosDatos de la pantalla). Una fila sin número
+// (NaN, null) no se guarda: antes `Number(pnl || 0)` la convertía en un 0
+// guardado. Sale por utils/enviosConDueno: si la pestaña ya está en otra cuenta,
+// no se manda (la ganancia del cliente 2 pisaba el mes del 3, re-test a ciegas
+// 3). Devuelve si se pudo mandar. `enviar` es para las pruebas.
+export async function guardarPnlNoRealizado(dueno, filas, condiciones, enviar = enviarDe) {
+  if (!sePuedeGuardar(condiciones) || !sigueSiendoDe(dueno)) return false
   const validas = filas.filter(({ pnl }) => typeof pnl === 'number' && Number.isFinite(pnl))
   await Promise.all(validas.map(({ broker, pnl }) =>
-    post('/monthly/sync-unrealized', { broker, pnl_unrealized_usd: +pnl.toFixed(4) }).catch(() => {})))
+    enviar(ENVIOS.pnlNoRealizado, dueno, { broker, pnl_unrealized_usd: +pnl.toFixed(4) }).catch(() => {})))
   return true
 }

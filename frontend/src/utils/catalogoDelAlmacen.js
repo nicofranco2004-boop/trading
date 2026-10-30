@@ -3,7 +3,8 @@
 // que no está acá no se puede leer ni escribir.
 //
 // Cada entrada declara:
-//   · `clave` (una sola) o `prefijo` (una familia: la clave sigue con algo más);
+//   · `clave` (una sola) o `prefijo` (una familia: la clave sigue con algo más;
+//     si no es de una cuenta, `restos` dice qué puede seguir);
 //   · `donde`: LOCAL (queda) o SESION (dura lo que la pestaña);
 //   · `tipo`:
 //       CON_DUENO    — datos de UNA cuenta. Se guardan a nombre de la persona y
@@ -55,6 +56,7 @@ export const CATALOGO = Object.freeze({
 
   // ── Dueño propio, anterior a la regla (lista cerrada) ─────────────────────
   conversacionIA: e({ prefijo: 'rendi_chat_', donde: SESION, tipo: DUENO_PROPIO,
+    restos: /^(v1(_c\d+)?|demo_v1|dueno)$/,
     porque: 'la conversación con la IA: chatSession.adoptarConversaciones anota de quién es y la borra si entra otra persona' }),
   instaladaAvisada: e({ clave: 'rendi_instalada_avisada', donde: LOCAL, tipo: DUENO_PROPIO,
     porque: 'guarda la persona a la que ya se le avisó al servidor que instaló la app; si entra otra, no coincide' }),

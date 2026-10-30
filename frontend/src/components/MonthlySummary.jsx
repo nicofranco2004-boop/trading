@@ -10,6 +10,8 @@ import { api } from '../utils/api'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, COBERTURA_MINIMA } from '../utils/valuation'
 import { guardarPnlNoRealizado } from '../utils/guardarValuacion'
+import { useDuenoDeLosDatos } from '../utils/duenoDeLaPestana'
+import { ENVIOS, enviarDe } from '../utils/enviosConDueno'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { aportesDelMesEnPesos } from '../utils/capitalAportado'
 import { useDolarMensual } from '../hooks/useFxHistory'
@@ -17,6 +19,7 @@ import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { confirmar } from '../utils/confirmar'
+import { useToast } from './Toast'
 
 const RECENT_MONTHS_DEFAULT = 6
 
@@ -56,6 +59,10 @@ function nextMonthOf(entry) {
 }
 
 export default function MonthlySummary({ refreshKey = 0 } = {}) {
+  // De qué cuenta son los datos de esta pantalla (utils/duenoDeLaPestana): el
+  // cierre automático del mes y la ganancia no realizada salen SÓLO si la
+  // pestaña sigue en esa cuenta (utils/enviosConDueno).
+  const duenoDatos = useDuenoDeLosDatos()
   // Deeplink desde /reportes?broker=Cocos → abrir el tab de Cocos por default.
   // Si el param no matchea con los brokers cargados, queda en 'global'.
   const [searchParams] = useSearchParams()
@@ -74,6 +81,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   // de verdad es la referencia, que corta el segundo click del mismo turno.
   // El borrado de un mes usa el mismo, con el id del mes como clave.
   const enVuelo = useEnVuelo()
+  const toast = useToast()
   const saving = enVuelo.activo()
   const [tcValuacion, setTcValuacion] = useState(1415)
   // El dólar elegido (MEP) al cierre de cada mes — ver utils/tcHistorico.js.
@@ -120,7 +128,14 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     setTcValuacion(tc)
     setEntries(ents)
 
-    await autoRolloverIfNeeded(ents, bkrs)
+    try {
+      await autoRolloverIfNeeded(ents, bkrs)
+    } catch (e) {
+      // La pestaña pasó a otra cuenta mientras cargaba: lo que sigue (cerrar el
+      // mes, la ganancia no realizada) es de los datos de la anterior. No se manda.
+      if (e?.cuentaCambiada) return
+      throw e
+    }
 
     // Nota: la reparación de cadena (capital_inicio[N+1] = capital_final[N],
     // pnl_unrealized=0 en cerrados, fórmula canónica de capital_final) la hace
@@ -157,10 +172,10 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
           + (last.pnl_realized || 0)
         const closedLast = { ...last, pnl_unrealized: 0, capital_final: cleanCapFinal }
         if (last.pnl_unrealized !== 0 || Math.abs((last.capital_final || 0) - cleanCapFinal) > 1e-4) {
-          await api.put(`/monthly/${last.id}`, closedLast)
+          await enviarDe(ENVIOS.cierreDelMes, duenoDatos, closedLast, String(last.id))
         }
         const { year: ny, month: nm } = nextMonthOf(last)
-        const created = await api.post('/monthly', {
+        const created = await enviarDe(ENVIOS.mesNuevo, duenoDatos, {
           ...EMPTY,
           broker: brokerName,
           year: ny,
@@ -350,7 +365,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         filas.push({ broker: b.name, pnl: pnlForBroker })
       }
       filas.push({ broker: 'global', pnl: globalPnlUsd })
-      await guardarPnlNoRealizado(api.post, filas, { cobertura, valuationDollar })
+      await guardarPnlNoRealizado(duenoDatos, filas, { cobertura, valuationDollar })
       // El "Valor actual (live)" de la conciliación dice "con precios actuales de
       // mercado": sin precios sería el costo, y al lado del mes guardado (que ya
       // no se pisa) marcaba una "Diferencia" que culpaba al dólar. Sin precios,
@@ -361,12 +376,20 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     }
   }
 
-  const save = () => enVuelo.correr(guardar)
+  // El cierre del mes no salió porque otra pestaña ya cambió de cuenta: se avisa
+  // en vez de dejar el botón sin respuesta (no se guardó nada).
+  const save = () => enVuelo.correr(guardar).catch((e) => {
+    if (!e?.cuentaCambiada) throw e
+    toast.push('No se guardó: en otra pestaña se cambió de cuenta y esta muestra la anterior. Recargá la página.', { type: 'warn', duration: 8000 })
+  })
   async function guardar() {
     if (modal === 'edit') {
       await api.put(`/monthly/${form.id}`, { ...form, ...numsDe(form) })
 
     } else if (modal === 'next') {
+      // El mismo cierre y la misma apertura que autoRolloverIfNeeded, con el
+      // capital calculado de las filas que esta pantalla cargó: si otra pestaña
+      // ya cambió de cuenta, enviarDe no los manda (CuentaCambiada).
       const allBrokerNames = ['global', ...brokers.map(b => b.name)]
       for (const brokerName of allBrokerNames) {
         const brokerEntries = entries
@@ -384,14 +407,14 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
           + (lastEnt.deposits || 0) - (lastEnt.withdrawals || 0)
           + (lastEnt.pnl_realized || 0)
         if (lastEnt.pnl_unrealized !== 0 || Math.abs((lastEnt.capital_final || 0) - cleanCapFinal) > 1e-4) {
-          await api.put(`/monthly/${lastEnt.id}`, { ...lastEnt, pnl_unrealized: 0, capital_final: cleanCapFinal })
+          await enviarDe(ENVIOS.cierreDelMes, duenoDatos, { ...lastEnt, pnl_unrealized: 0, capital_final: cleanCapFinal }, String(lastEnt.id))
         }
 
         if (!nextExists) {
           const newEntry = brokerName === tab
             ? { ...form, capital_inicio: cleanCapFinal, capital_final: cleanCapFinal }
             : { ...EMPTY, broker: brokerName, year: nextYear, month: nextMonth, capital_inicio: cleanCapFinal, capital_final: cleanCapFinal }
-          await api.post('/monthly', newEntry)
+          await enviarDe(ENVIOS.mesNuevo, duenoDatos, newEntry)
         }
       }
 

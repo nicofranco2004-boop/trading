@@ -14,9 +14,18 @@
 // clasificado como «sin datos» para guardar un total. Con una sola puerta no
 // hay formas que adivinar: o se pasa por ella, o hay una mención afuera.
 //
+// Re-test a ciegas 3 (30/10) encontró cuatro puntos ciegos más, cerrados acá:
+// los archivos .ts/.tsx no se miraban; src/testing/ queda afuera del censo, así
+// que la app no puede importar de ahí; la familia de la conversación con la IA
+// aceptaba cualquier sufijo (ahora declara `restos`); y nada impedía guardar con
+// el dueño de la PESTAÑA en vez del de los DATOS (ahora quién lo pide es una
+// lista cerrada).
+//
 // Lo que queda abierto, dicho: armar el nombre a propósito para esquivarlo
-// ('local' + 'Storage'), y reusar una entrada del catálogo para guardar otra
-// cosa. Eso no lo frena una máquina: lo frena que cada entrada dice qué guarda.
+// ('local' + 'Storage'), reusar una entrada del catálogo para guardar otra
+// cosa, y otros almacenes del navegador (cookies, IndexedDB, window.name: hoy
+// la app no usa ninguno). Eso no lo frena una máquina: lo frena que cada
+// entrada dice qué guarda.
 import { describe, it, expect, beforeAll, afterEach } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
@@ -33,7 +42,7 @@ function archivos(dir = SRC, out = []) {
     if (statSync(p).isDirectory()) {
       if (n === '__guards__' || n === 'testing' || n === '__design__') continue
       archivos(p, out)
-    } else if (/\.(js|jsx)$/.test(n) && !/\.test\.|\.spec\./.test(n)) out.push(p)
+    } else if (/\.(js|jsx|ts|tsx)$/.test(n) && !/\.test\.|\.spec\./.test(n)) out.push(p)
   }
   return out
 }
@@ -97,6 +106,40 @@ describe('una sola puerta al almacenamiento del navegador', () => {
     }
   })
 
+  it('una familia que no es de una cuenta dice qué sufijos acepta', () => {
+    for (const [nombre, e] of Object.entries(CATALOGO)) {
+      if (e.prefijo == null || e.tipo === CON_DUENO) continue
+      expect(e.restos instanceof RegExp, `${nombre}: falta \`restos\``).toBe(true)
+      expect(e.restos.source, `${nombre}: \`restos\` va anclado (^…$)`).toMatch(/^\^.*\$$/)
+    }
+  })
+
+  it('la app no importa de src/testing (queda afuera de este censo)', () => {
+    const importan = []
+    for (const p of archivos()) {
+      const rel = relative(SRC, p).split('\\').join('/')
+      if (/from\s+['"][^'"]*\/testing\/|import\(\s*['"][^'"]*\/testing\//.test(sinComentarios(readFileSync(p, 'utf8')))) importan.push(rel)
+    }
+    expect(importan).toEqual([])
+  })
+
+  // Guardar con el dueño de la PESTAÑA (el de ahora) en vez del de los DATOS
+  // (el de cuando se cargaron) es justo lo que la regla frena. Quién pregunta
+  // por el dueño de la pestaña es una lista cerrada, cada uno con su porqué.
+  const PIDEN_EL_DE_LA_PESTANA = {
+    'utils/duenoDeLaPestana.js': 'es la regla',
+    'utils/valoresVistos.js': 'sube la versión de la cartera de la pestaña tras una escritura que hizo esta misma pestaña, en el mismo instante',
+  }
+  it('pedir el dueño de la pestaña (no el de los datos) es una lista cerrada', () => {
+    const piden = new Set()
+    for (const p of archivos()) {
+      const rel = relative(SRC, p).split('\\').join('/')
+      if (/\b(duenoDeLaPestana|useDuenoDeLaPestana|duenoPropioDeLaPestana)\s*\(/.test(sinComentarios(readFileSync(p, 'utf8')))) piden.add(rel)
+    }
+    expect([...piden].sort(), 'Para guardar o mandar algo de una cuenta, usá useDuenoDeLosDatos (el dueño '
+      + 'de cuando la pantalla pidió los datos), no el de la pestaña.').toEqual(Object.keys(PIDEN_EL_DE_LA_PESTANA).sort())
+  })
+
   it('«dueño propio» es una lista cerrada', () => {
     const propios = Object.entries(CATALOGO).filter(([, e]) => e.tipo === DUENO_PROPIO).map(([n]) => n).sort()
     expect(propios, 'no se suman datos con un dueño propio: usan la regla (CON_DUENO)')
@@ -136,6 +179,12 @@ describe('la puerta frena', () => {
     api.setClientContext({ id: 3, label: 'Tres' })
     expect(almacen.guardarDe(CATALOGO.fotoDelDia, 'bruno@prueba.test|propia', 'x')).toBe(false)
     expect(almacen.guardarDe(CATALOGO.fotoDelDia, null, 'x')).toBe(false)
+  })
+
+  it('la familia de la conversación sólo acepta los sufijos que declara', () => {
+    expect(() => almacen.guardar(CATALOGO.conversacionIA, '[]', 'v1_c3')).not.toThrow()
+    expect(() => almacen.guardar(CATALOGO.conversacionIA, '1', 'total_cartera')).toThrow(/no es de las que declara/)
+    expect(() => almacen.leer(CATALOGO.conversacionIA, 'v1_c3_x')).toThrow(/no es de las que declara/)
   })
 
   it('lo del asesor a su nivel (la tanda) es de la persona aunque tenga un cliente abierto', () => {
