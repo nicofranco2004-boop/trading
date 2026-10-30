@@ -148,7 +148,8 @@ describe('Reportes · el globo de una barra del año', () => {
   // Junio: la GGAL que ya estaba (240.000 exactos, −US$ 440 en dólares) + un dividendo de US$ 20;
   // la cartera vale US$ 450 al arrancar (dólar de mayo 1.000) y US$ 480 al cerrar (dólar 1.200).
   const junioCompleto = mes('2024-06', { delta_pct: 2, delta_usd: 30, start_value: 450, end_value: 480,
-    realized_pnl: -420, realized_ars: 240000, realized_ars_cubre_usd: -440, unrealized_pnl: 450 })
+    realized_pnl: -420, realized_ars: 240000, realized_ars_cubre_usd: -440, unrealized_pnl: 450,
+    medicion: 'mercado', puntas_desde: '2024-05-31', puntas_hasta: '2024-06-30' })
   const celdas = Array.from({ length: 12 }, (_, idx) => ({ idx, month: idx === 5 ? junioCompleto : undefined }))
   const globo = (moneda) => texto(renderToStaticMarkup(
     <BarrasDelAnio cells={celdas} pesos={pesosDe(moneda)} enPesos={moneda === 'ARS'} tipAbajo encimaInicial={5} />))
@@ -161,10 +162,50 @@ describe('Reportes · el globo de una barra del año', () => {
   it('la leyenda dice cómo se arma', () => {
     expect(globo('ARS')).toContain('en pesos, cada punta a su dólar')
   })
+  it('un mes medido AL COSTO no dice "cada punta a su dólar": su monto es lo vendido, exacto', () => {
+    // La cadena contable: start/end_value son costo en dólares, no hay puntas a mercado.
+    const costo = mes('2024-06', { delta_pct: 2, delta_usd: 10, start_value: 450, end_value: 460,
+      realized_pnl: 10, realized_ars: 240000, realized_ars_cubre_usd: 10, unrealized_pnl: 0,
+      medicion: 'costo', puntas_desde: null, puntas_hasta: null })
+    const c = Array.from({ length: 12 }, (_, idx) => ({ idx, month: idx === 5 ? costo : undefined }))
+    const t = texto(renderToStaticMarkup(
+      <BarrasDelAnio cells={c} pesos={pesosDe('ARS')} enPesos tipAbajo encimaInicial={5} />))
+    expect(t).not.toContain('cada punta a su dólar')
+    expect(t).toContain('lo vendido, exacto')
+    expect(t).toContain('+$240.000')   // y no 460 × 1.200 − 450 × 1.000 = +$102.000
+  })
+  it('un mes del motor sí: su monto también es de dos puntas, cada una a su dólar', () => {
+    const motor = mes('2024-06', { delta_pct: 2, delta_usd: 10, start_value: 450, end_value: 460,
+      realized_pnl: 10, realized_ars: 240000, realized_ars_cubre_usd: 10, unrealized_pnl: 0,
+      medicion: 'motor', delta_ars: 31000, puntas_desde: null, puntas_hasta: null })
+    const c = Array.from({ length: 12 }, (_, idx) => ({ idx, month: idx === 5 ? motor : undefined }))
+    const t = texto(renderToStaticMarkup(
+      <BarrasDelAnio cells={c} pesos={pesosDe('ARS')} enPesos tipAbajo encimaInicial={5} />))
+    expect(t).toContain('cada punta a su dólar')
+    expect(t).toContain('+$31.000')
+  })
   it('lo cerrado va aparte, con los pesos de verdad de las ventas, y avisa lo convertido', () => {
     const t = globo('ARS')
     expect(t).toContain('de operaciones cerradas: +$264.000')   // 240.000 + US$ 20 × 1.200
     expect(t).toContain('incluye US$ 20 convertidos al dólar del cierre')
+  })
+  it('el aviso de lo convertido baja de renglón y tiene ancho propio (si no, el globo se estira)', () => {
+    const h = renderToStaticMarkup(
+      <BarrasDelAnio cells={celdas} pesos={pesosDe('ARS')} enPesos tipAbajo encimaInicial={5} />)
+    const aviso = h.slice(h.indexOf('incluye US$ 20'))
+    // Antes del texto del aviso, el contenedor que lo envuelve:
+    const caja = h.slice(h.lastIndexOf('<div', h.indexOf('incluye US$ 20')), h.indexOf('incluye US$ 20'))
+    expect(aviso).toBeTruthy()
+    expect(caja).toContain('whitespace-normal')
+    expect(caja).toContain('max-w-[240px]')
+    expect(caja).toContain('mt-1')
+  })
+  it('la leyenda del globo va en su propio renglón, debajo del monto', () => {
+    const h = renderToStaticMarkup(
+      <BarrasDelAnio cells={celdas} pesos={pesosDe('ARS')} enPesos tipAbajo encimaInicial={5} />)
+    const i = h.indexOf('en pesos, cada punta a su dólar')
+    expect(i).toBeGreaterThan(0)
+    expect(h.slice(h.lastIndexOf('<div', i), i)).toContain('mt-1')
   })
   it('en Dólares: dólares y sin leyenda ni aviso de conversión', () => {
     const t = globo('USD')

@@ -446,7 +446,7 @@ function Detalle({ medida, modo, porBroker, enPesos, fmtPlata }) {
           ? 'Sólo lo que se movió el precio de lo que seguís teniendo.'
           : porBroker
           ? 'De un broker solo se puede medir lo que cerraste: el valor de lo que tenés se mide sobre la cartera completa.'
-          : 'Lo de las posiciones abiertas sale de restarle al total lo que dejaron las ventas, así que también recoge cualquier otro movimiento de la cuenta — por ejemplo, pesos quietos cuando cambia el dólar.'}
+          : 'Lo de las posiciones abiertas sale de restarle al total lo que dejaron las ventas, así que también recoge cualquier otro movimiento de la cuenta — por ejemplo, ' + (enPesos ? 'lo que el dólar mueve de lo que tenés en dólares.' : 'pesos quietos cuando cambia el dólar.')}
       </p>
     </div>
   )

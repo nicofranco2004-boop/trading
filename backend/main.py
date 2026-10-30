@@ -20272,8 +20272,12 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
             r["pct_ars"], r["pct_usd"] = _pa, _pu
             # La cuenta única del resultado en pesos (la de Operaciones, Reportes y el Resumen
             # mensual); sólo para ventas de un lote: un cobro no lleva esta columna.
-            r["resultado_ars"] = (_resultado_dual.resultado_en_pesos(_op)[0]
-                                  if _resultado_dual.es_venta_de_un_lote(_op) else None)
+            _res_ars = (_resultado_dual.resultado_en_pesos(_op)
+                        if _resultado_dual.es_venta_de_un_lote(_op) else (None, None))
+            r["resultado_ars"] = _res_ars[0]
+            # «exacto» = pesos de un broker en pesos; «valuado» = una punta en dólares llevada al
+            # dólar de su fecha. Sin esto la planilla del contador toma por cobrado lo que no se cobró.
+            r["tipo_resultado_ars"] = _res_ars[1] if _res_ars[0] is not None else None
             if _mon:
                 r["pnl_pct"] = _pa if _mon == "ARS" else _pu
         # Mismo techo que la app: arriba de 1000 % el cociente dejó de ser un
@@ -20323,6 +20327,8 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
         ("resultado_ars", "Resultado en pesos"),
         ("pct_ars",       "% en pesos"),
         ("pct_usd",       "% en USD"),
+        # Va AL FINAL: las hojas ya armadas leen por posición.
+        ("tipo_resultado_ars", "Tipo de resultado en pesos (exacto o valuado al dólar de cada fecha)"),
     ]
     today = date.today().isoformat()
     return _csv_response(rows, headers, f"rendi_operaciones_{today}.csv")
@@ -20647,7 +20653,8 @@ def export_monthly_csv(request: Request, uid: int = Depends(get_effective_user))
         # dólares (dividendos en dólares, lo cargado a mano en /mensual) no se convierte acá.
         # Una venta en dólares (o una compra en dólares vendida en pesos) también entra, VALUADA al
         # dólar de cada fecha, no a pesos de un broker: la tercera columna lo dice ("sí") para que
-        # la hoja no tome ese número por pesos cobrados. Es el mismo aviso que muestra la pantalla.
+        # la hoja no tome ese número por pesos cobrados. Es el mismo aviso que muestra la pantalla
+        # («ventas o compras en dólares valuadas al dólar de cada fecha»), con su misma frase.
         p = pesos_mes.get((r["broker"], r["periodo"]))
         r["pnl_realized_ars"] = p[0] if p else None
         r["pnl_realized_ars_valuado"] = ("sí" if p[2] else "no") if p else None
@@ -20662,8 +20669,8 @@ def export_monthly_csv(request: Request, uid: int = Depends(get_effective_user))
         ("pnl_realized",     "P&L realizado"),
         # Va AL FINAL y con la moneda en el nombre: las columnas de arriba son dólares y no se
         # tocan (hojas de cálculo ya armadas leen por posición).
-        ("pnl_realized_ars", "P&L realizado en pesos (ventas en pesos; las ventas en dólares, al dólar de cada fecha)"),
-        ("pnl_realized_ars_valuado", "El P&L en pesos incluye ventas en dólares valuadas"),
+        ("pnl_realized_ars", "P&L realizado en pesos (ventas en pesos — lo comprado o vendido en dólares, al dólar de cada fecha)"),
+        ("pnl_realized_ars_valuado", "El P&L en pesos incluye compras o ventas en dólares valuadas"),
     ]
     today = date.today().isoformat()
     return _csv_response(rows, headers, f"rendi_mensual_{today}.csv")

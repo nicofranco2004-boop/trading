@@ -146,6 +146,11 @@ function DepositsDriveEvidence({ ev, fmtUsd, fmtFlujo = fmtUsd, vistaEnPesos = n
           <div className={`font-mono tabular ${market >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
             {fmtMercado(market)}
           </div>
+          {/* El hallazgo se calcula en dólares; en Pesos el mercado trae también lo que subió el
+              dólar, y sin decirlo el número parecía contradecir al título («vino de aportes»). */}
+          {vistaEnPesos?.conDolar && (
+            <div className="text-ink-3 text-[11px] leading-snug">incluye lo que movió el dólar</div>
+          )}
         </div>
       </div>
     </div>
@@ -340,7 +345,9 @@ export default function InsightEvidence({ insight }) {
   // El resultado y los depósitos del período ya en pesos (no se vuelven a convertir): para la
   // evidencia que repite la cifra de la cabecera de la tarjeta.
   const vistaEnPesos = enPesos && periodo.resultado != null
-    ? { resultado: periodo.resultado, depositos: periodo.depositos, fmt: conFx(1) }
+    ? { resultado: periodo.resultado, depositos: periodo.depositos, fmt: conFx(1),
+        // Con puntas a mercado, el resultado incluye lo que el dólar movió sobre lo que ya tenías.
+        conDolar: periodo.medicion === 'mercado' || periodo.medicion === 'motor' }
     : null
   return <Renderer ev={insight.evidence} fmtUsd={fmtUsd} fmtFlujo={fmtFlujo} fmtHoy={fmtHoy}
                    enPesos={enPesos} vistaEnPesos={vistaEnPesos} />

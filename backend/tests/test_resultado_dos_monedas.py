@@ -805,8 +805,10 @@ class RealizadoEnPesosEnTodasLasPantallas(_Base):
     período, «Última op cerrada», el CSV del contador) y dé el MISMO número."""
 
     # Las dos columnas que el CSV mensual trae al final (backend/main.py, export_monthly_csv).
-    COL_PESOS = "P&L realizado en pesos (ventas en pesos; las ventas en dólares, al dólar de cada fecha)"
-    COL_VALUADO = "El P&L en pesos incluye ventas en dólares valuadas"
+    COL_PESOS = "P&L realizado en pesos (ventas en pesos — lo comprado o vendido en dólares, al dólar de cada fecha)"
+    COL_VALUADO = "El P&L en pesos incluye compras o ventas en dólares valuadas"
+    # La del CSV de operaciones (al final, igual que las del mensual).
+    COL_TIPO = "Tipo de resultado en pesos (exacto o valuado al dólar de cada fecha)"
 
     def _plantar(self, sql, params=()):
         conn = main.get_db()
@@ -1266,6 +1268,47 @@ class RealizadoEnPesosEnTodasLasPantallas(_Base):
         self.assertEqual(junio[DOLARES][self.COL_VALUADO], "sí")
         self.assertEqual(float(junio["global"][self.COL_PESOS]), 240000 + 1250000)
         self.assertEqual(junio["global"][self.COL_VALUADO], "sí")
+
+    def test_el_global_marca_valuado_aunque_la_venta_en_dolares_sea_la_primera(self):
+        """La marca no depende del orden de carga: con la venta en dólares ANTES que la de pesos, el global
+        también avisa. (Si gana la última operación, un contador lee $1.490.000 como pesos cobrados.)"""
+        self._alta(broker=DOLARES, asset="AAPL", quantity=10, buy_price=100, entry_date="2024-01-10")
+        self._vender(broker=DOLARES, asset="AAPL", quantity=10, exit_price=150, date="2024-06-10")
+        self._ggal()
+        junio = {f["Broker"]: f for f in self._csv_mensual() if f["Período"] == "2024-06"}
+        self.assertEqual(junio["global"][self.COL_VALUADO], "sí")
+        self.assertEqual(junio[PESOS][self.COL_VALUADO], "no")
+
+    def test_un_mes_con_solo_un_cupon_en_dolares_no_dice_cero_en_pesos(self):
+        """Un cupón de US$ 25 y nada más: no se pasa a pesos acá. La celda va VACÍA —un 0 dice «no ganaste
+        nada en pesos» donde el dato es «no se pudo pasar»— y la marca de valuado también."""
+        r = self.client.post("/api/operations", headers=self.h, json={
+            "date": "2024-07-12", "broker": DOLARES, "asset": "KO", "op_type": "Cupón", "quantity": 1,
+            "entry_price": 0, "exit_price": 0, "pnl_usd": 25, "pnl_pct": 0, "commissions": 0,
+            "currency": "USD", "fx_to_usd": 1})
+        self.assertEqual(r.status_code, 200, r.text)
+        filas = self._csv_mensual()
+        julio = [f for f in filas if f["Período"] == "2024-07" and f["Broker"] == DOLARES]
+        self.assertTrue(julio, "el mes del cupón tiene que figurar en el CSV")
+        self.assertEqual(float(julio[0]["P&L realizado"]), 25)
+        self.assertEqual(julio[0][self.COL_PESOS], "")
+        self.assertEqual(julio[0][self.COL_VALUADO], "")
+
+    def test_el_csv_de_operaciones_dice_cuales_son_valuadas(self):
+        """El que se le manda al contador distingue lo exacto de lo valuado, como la pantalla y el mensual."""
+        import csv
+        self._ggal()
+        self._alta(broker=DOLARES, asset="AAPL", quantity=10, buy_price=100, entry_date="2024-01-10")
+        self._vender(broker=DOLARES, asset="AAPL", quantity=10, exit_price=150, date="2024-06-10")
+        self._plantar("UPDATE users SET tier='plus' WHERE id=?", (self.uid,))
+        r = self.client.get("/api/export/operations.csv", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        filas = list(csv.DictReader(io.StringIO(r.text.lstrip("\ufeff"))))
+        por_activo = {f["Activo"]: f for f in filas if f.get("Resultado en pesos")}
+        self.assertEqual(por_activo["GGAL"][self.COL_TIPO], "exacto")
+        self.assertEqual(por_activo["AAPL"][self.COL_TIPO], "valuado")
+        # La columna va al final: las hojas ya armadas leen por posición.
+        self.assertEqual(list(filas[0].keys())[-1], self.COL_TIPO)
 
     def test_el_csv_mensual_deja_vacio_el_mes_sin_ventas(self):
         """Un mes sin ninguna operación con pesos: celda VACÍA (no 0, que diría «no ganaste»)."""

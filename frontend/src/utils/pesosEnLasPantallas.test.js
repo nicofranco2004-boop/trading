@@ -208,7 +208,8 @@ describe('Reportes — cada período a los pesos de su momento', () => {
   })
 
   it('valor de inicio y de cierre, cada uno al dólar de su día', () => {
-    const v = pesos.enVista(mes(2026, 3, { start_value: 100, end_value: 110, delta_usd: 10 }))
+    const v = pesos.enVista(mes(2026, 3, { start_value: 100, end_value: 110, delta_usd: 10, medicion: 'mercado',
+      puntas_desde: '2026-02-27', puntas_hasta: '2026-03-31' }))
     expect(v.inicio).toBeCloseTo(100 * mep('2026-02-27'), 6)   // 28/02 fue sábado: el viernes
     expect(v.cierre).toBeCloseTo(110 * mep('2026-03-31'), 6)
     // El resultado es la resta de ESOS dos pesos (sin flujos): cada punta a su dólar, así la tarjeta cierra.
@@ -217,6 +218,16 @@ describe('Reportes — cada período a los pesos de su momento', () => {
     // no podía contener al realizado exacto de una venta (ver utils/periodoEnPesos.js).
     expect(v.resultado).toBeCloseTo(110 * mep('2026-03-31') - 100 * mep('2026-02-27'), 6)
     expect(v.inicio + v.depositos - v.retiros + v.resultado).toBeCloseTo(v.cierre, 6)
+  })
+
+  it('la punta de inicio va al dólar de la FOTO que usó el servidor, no al del día anterior al período', () => {
+    // El servidor puede arrancar con una foto de hasta cinco días antes (semana) o corrida un día (mes):
+    // `puntas_desde` lo dice y la pantalla no lo adivina.
+    const v = pesos.enVista(mes(2026, 3, { start_value: 100, end_value: 110, delta_usd: 10, medicion: 'mercado',
+      puntas_desde: '2026-02-25', puntas_hasta: '2026-03-30' }))
+    expect(v.fxInicio).toBeCloseTo(mep('2026-02-25'), 6)
+    expect(v.inicio).toBeCloseTo(100 * mep('2026-02-25'), 6)
+    expect(v.cierre).toBeCloseTo(110 * mep('2026-03-30'), 6)
   })
 
   it('en dólares, los números del servidor tal cual', () => {

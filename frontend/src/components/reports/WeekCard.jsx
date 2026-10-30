@@ -27,6 +27,8 @@ export default function WeekCard({ week, defaultOpen = false }) {
   const pesos = usePesosDelPeriodo()
   const enVista = pesos.enVista(week)
   const fmtPlata = (v) => pesos.fmt(v, { signed: true })
+  // En Pesos el % de una semana sigue en dólares: se rotula (ver periodoEnPesos.pctEnDolares).
+  const pctUsd = deltaPct != null && pesos.pctEnDolares(week)
   // Con % el color es el del número que se ve (lo que redondea a cero, neutro). Sin %, el signo
   // del monto que se muestra (en Pesos puede ser otro que el de los dólares del servidor).
   const tono = deltaPct != null
@@ -54,8 +56,9 @@ export default function WeekCard({ week, defaultOpen = false }) {
         <span className="text-xs font-mono text-ink-2 min-w-[80px]">{week.period_label}</span>
         <span className={`text-xs font-semibold tabular min-w-[64px] ${
           noBasis ? 'text-ink-3' : tono
-        }`}>
+        }`} title={pctUsd ? 'Porcentaje en dólares' : undefined}>
           {pctVar(deltaPct, 2)}
+          {pctUsd && <span className="ml-1 text-[10px] font-normal text-ink-3">en US$</span>}
         </span>
         <span className="text-xs text-ink-2 flex-1 truncate" title={week.headline}>
           {week.headline}

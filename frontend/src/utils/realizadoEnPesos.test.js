@@ -156,18 +156,19 @@ describe('Reportes en Pesos (periodoEnPesos.enVista)', () => {
       // Con un broker elegido el servidor pone delta = realizado y no realizado = 0 (no mide las
       // abiertas del broker). −US$ 130 en dólares, +$30.000 en pesos: el resultado es el de los pesos.
       const v = pesos.enVista({ ...periodo, period_type: 'week', metrics: { realized_pnl: -130,
-        realized_ars: 30000, realized_ars_cubre_usd: -130, unrealized_pnl: 0, delta_usd: -130 } })
+        realized_ars: 30000, realized_ars_cubre_usd: -130, unrealized_pnl: 0, delta_usd: -130,
+        medicion: 'realizado' } })
       expect(v.resultado).toBe(30000)
       expect(v.noRealizado).toBe(0)
       expect(v.resultado).toBe(v.realizado + v.noRealizado)
     })
-    it('si el servidor midió el delta con otra medida y hay abiertas, no se le pegan pesos exactos encima', () => {
-      // Sin las dos puntas no hay resta que repetir en pesos. Mezclar el realizado exacto con un
-      // delta en dólares que ya trae lo latente era lo que inflaba el resultado: queda el delta.
-      const v = pesos.enVista({ ...periodo, period_type: 'week', metrics: { realized_pnl: -130,
-        realized_ars: 30000, realized_ars_cubre_usd: -130, unrealized_pnl: 30, delta_usd: -100 } })
-      expect(v.resultado).toBe(-100 * 1500)
-      expect(v.noRealizado).toBe(30 * 1500)
+    it('un delta del motor mensual sin el monto en pesos: queda el delta × dólar, sin pesos exactos encima', () => {
+      // Mezclar el realizado exacto con un delta en dólares que ya trae lo latente era lo que inflaba
+      // el resultado (+$4.500 donde se ganaron $2.400).
+      const v = pesos.enVista({ ...periodo, metrics: { realized_pnl: 0.1, realized_ars: 2400,
+        realized_ars_cubre_usd: 0.1, unrealized_pnl: 0, delta_usd: 1.5, medicion: 'motor' } })
+      expect(v.resultado).toBe(1.5 * 1500)
+      expect(v.resultado).not.toBe(4500)   // 1,5 × 1.500 + (2.400 − 0,1 × 1.500) = lo que inflaba
     })
     it('lo que no es ni vendido ni abierto (el efecto del dólar) queda en el resultado', () => {
       const v = pesos.enVista({ ...periodo, metrics: { ...periodo.metrics, delta_usd: 14 } })
@@ -191,8 +192,10 @@ describe('Reportes en Pesos (periodoEnPesos.enVista)', () => {
     const pesos = crearPesosDelPeriodo({
       moneda: 'ARS', tcHoy: 1500, tcEnFecha, dolarMes: {}, monthly: [], brokers: [],
     })
+    // Un período medido a mercado: el servidor dice de qué fotos son las dos puntas.
     const mes = (metrics) => ({ period_type: 'month', period_start: '2024-06-01', period_end: '2024-06-30',
-      is_current: false, metrics: { realized_ars_valuado: false, deposits: 0, withdrawals: 0, ...metrics } })
+      is_current: false, metrics: { realized_ars_valuado: false, deposits: 0, withdrawals: 0,
+        medicion: 'mercado', puntas_desde: '2024-05-31', puntas_hasta: '2024-06-30', ...metrics } })
     // La tarjeta cierra: valor de inicio + depósitos − retiros + resultado = valor de cierre.
     const cierra = (v) => expect(v.inicio + v.depositos - v.retiros + v.resultado).toBeCloseTo(v.cierre, 6)
 
@@ -255,11 +258,108 @@ describe('Reportes en Pesos (periodoEnPesos.enVista)', () => {
       expect(v.resultado).toBe(100 * 1500 - 100 * 1000)
       cierra(v)
     })
-    it('el delta del servidor no es la resta de las puntas (motor mensual): no se inventa la resta', () => {
+    it('el delta del motor mensual NO es la resta de las puntas: el monto es el que manda el servidor', () => {
+      // start/end_value son contables y el delta es de la ventana del motor (3 → 28 del mes): la
+      // resta de la tarjeta no aplica. El servidor trae el resultado en pesos de ESA ventana.
       const v = pesos.enVista(mes({ start_value: 450, end_value: 460, delta_usd: 25, realized_pnl: 5,
-        realized_ars: 0, realized_ars_cubre_usd: 0, unrealized_pnl: 20 }))
+        realized_ars: 0, realized_ars_cubre_usd: 0, unrealized_pnl: 0, medicion: 'motor',
+        puntas_desde: null, puntas_hasta: null, delta_ars: 31000 }))
+      expect(v.resultado).toBe(31000)
+      expect(v.noRealizado).toBe(31000 - v.realizado)
+      expect(v.resultado).not.toBe(460 * 1500 - 450 * 1000)   // la resta de la tarjeta daría 240.000
+    })
+    it('un mes del motor con un dólar que sube más que lo que cae la cartera: el monto en pesos es positivo', () => {
+      // El caso B de la auditoría: −US$ 2 en dólares (−0,2 %) con el dólar +34 %. En pesos ganó.
+      const v = pesos.enVista(mes({ start_value: 1000, end_value: 998, delta_usd: -2, realized_pnl: 0,
+        unrealized_pnl: 0, medicion: 'motor', puntas_desde: null, puntas_hasta: null, delta_ars: 340000 }))
+      expect(v.resultado).toBe(340000)
+      expect(v.resultado).toBeGreaterThan(0)
+    })
+    it('el motor sin el monto en pesos (no había dólar): queda el delta × dólar, sin inventar nada', () => {
+      const v = pesos.enVista(mes({ start_value: 450, end_value: 460, delta_usd: 25, realized_pnl: 5,
+        realized_ars: 0, realized_ars_cubre_usd: 0, unrealized_pnl: 0, medicion: 'motor',
+        puntas_desde: null, puntas_hasta: null, delta_ars: null }))
       expect(v.resultado).toBe(25 * 1500)
-      expect(v.noRealizado).toBe(20 * 1500)
+    })
+    it('el motor con ventas en pesos Y un delta que no es lo vendido no vuelve a sumar los pesos exactos encima', () => {
+      // El caso del comentario: GGAL que valía US$ 3,10 al arrancar (dólar 1.450) y se vende a
+      // US$ 4,6 (dólar 1.500). Se ganaron $2.400, todos realizados. delta 1,5 ≠ realizado 0,1.
+      const v = pesos.enVista(mes({ start_value: 4.5, end_value: 4.6, delta_usd: 1.5, realized_pnl: 0.1,
+        realized_ars: 2400, realized_ars_cubre_usd: 0.1, unrealized_pnl: 0, medicion: 'motor',
+        puntas_desde: null, puntas_hasta: null, delta_ars: 2400 }))
+      expect(v.resultado).toBe(2400)
+      expect(v.realizado).toBe(2400)
+      expect(v.noRealizado).toBe(0)
+    })
+    it('un período AL COSTO cumple la identidad por construcción y aun así no se convierte con el dólar de las fechas', () => {
+      // La cadena contable: costo US$ 450, vendido a US$ 460 (+$240.000 exactos). start/end_value son
+      // costo en dólares: multiplicarlos por 1.000 y 1.500 inventaría +$37.500 y un «no realizado»
+      // de −$202.500 donde no queda nada abierto.
+      const v = pesos.enVista(mes({ start_value: 450, end_value: 460, delta_usd: 10, realized_pnl: 10,
+        realized_ars: 240000, realized_ars_cubre_usd: 10, unrealized_pnl: 0, medicion: 'costo',
+        puntas_desde: null, puntas_hasta: null }))
+      expect(v.resultado).toBe(240000)
+      expect(v.realizado).toBe(240000)
+      expect(v.noRealizado).toBe(0)
+    })
+    it('un año al costo con el dólar que se movió mucho: el resultado es lo vendido, no costo × dólar', () => {
+      // La auditoría 3: +$32.546 reales salían +$66.771 (+105 %).
+      const v = pesos.enVista({ ...mes({ start_value: 0, end_value: 985.88, delta_usd: 31.5,
+        realized_pnl: 31.5, realized_ars: 32546, realized_ars_cubre_usd: 31.5, unrealized_pnl: 0,
+        deposits: 954.4, medicion: 'costo', puntas_desde: null, puntas_hasta: null }),
+        period_type: 'year', period_start: '2024-01-01', period_end: '2024-12-31' })
+      expect(v.resultado).toBe(32546)
+    })
+    it('un broker filtrado en una semana: el delta ES lo vendido', () => {
+      const v = pesos.enVista({ ...mes({ start_value: 0, end_value: 0, delta_usd: 10, realized_pnl: 10,
+        realized_ars: 240000, realized_ars_cubre_usd: 10, unrealized_pnl: 0, medicion: 'realizado',
+        puntas_desde: null, puntas_hasta: null }), period_type: 'week' })
+      expect(v.resultado).toBe(240000)
+      expect(v.noRealizado).toBe(0)
+    })
+    it('una respuesta sin el tipo se trata como al costo (la lectura que no inventa pesos)', () => {
+      // La resta de la tarjeta daría 460 × 1.500 − 450 × 1.000 = $240.000; lo vendido exacto es $100.000.
+      const v = pesos.enVista(mes({ start_value: 450, end_value: 460, delta_usd: 10, realized_pnl: 10,
+        realized_ars: 100000, realized_ars_cubre_usd: 10, unrealized_pnl: 0, medicion: undefined,
+        puntas_desde: null, puntas_hasta: null }))
+      expect(v.resultado).toBe(100000)
+    })
+    it('un período de base incomparable (el servidor no publica monto) no mezcla nada', () => {
+      const v = pesos.enVista(mes({ start_value: 450, end_value: 460, delta_usd: 0, realized_pnl: 10,
+        realized_ars: 240000, realized_ars_cubre_usd: 10, unrealized_pnl: 0, medicion: 'costo',
+        puntas_desde: null, puntas_hasta: null, basis_incomparable: true }))
+      expect(v.resultado).toBe(0)
+    })
+    it('a mercado sin saldo de arranque: no hay resta que repetir, queda el delta × dólar', () => {
+      const v = pesos.enVista(mes({ start_value: null, end_value: 460, delta_usd: 10, realized_pnl: 0,
+        unrealized_pnl: 10 }))
+      expect(v.resultado).toBe(10 * 1500)
+    })
+    it('cada punta al dólar de SU FOTO, no al del día anterior al período', () => {
+      // La semana del 10 al 16/6 arranca con la foto del VIERNES 7/6 (dólar 1.000); el domingo 9/6,
+      // el día anterior al período, el dólar valía 1.100. Con el dólar del domingo el cierre del
+      // propio viernes contaba como ganancia del dólar sobre todo el capital.
+      const tcF = (iso) => ({ '2024-06-07': 1000, '2024-06-09': 1100, '2024-06-16': 1100 }[iso] ?? 1100)
+      const p = crearPesosDelPeriodo({ moneda: 'ARS', tcHoy: 1500, tcEnFecha: tcF, dolarMes: {}, monthly: [], brokers: [] })
+      const v = p.enVista({ period_type: 'week', period_start: '2024-06-10', period_end: '2024-06-16',
+        is_current: false, metrics: { start_value: 1000, end_value: 1000, delta_usd: 0, deposits: 0, withdrawals: 0,
+          realized_pnl: 0, unrealized_pnl: 0, medicion: 'mercado',
+          puntas_desde: '2024-06-07', puntas_hasta: '2024-06-16' } })
+      expect(v.fxInicio).toBe(1000)
+      expect(v.inicio).toBe(1000 * 1000)
+      expect(v.cierre).toBe(1000 * 1100)
+      expect(v.resultado).toBe(1000 * 1100 - 1000 * 1000)
+    })
+    it('pesos quietos en caja: el mismo valor en pesos al inicio y al cierre es resultado cero', () => {
+      const tcF = (iso) => (iso === '2024-06-07' ? 1000 : 1100)
+      const p = crearPesosDelPeriodo({ moneda: 'ARS', tcHoy: 1500, tcEnFecha: tcF, dolarMes: {}, monthly: [], brokers: [] })
+      // $1.000.000 al 1.000 = US$ 1.000; los mismos $1.000.000 al 1.100 = US$ 909,0909…
+      const usdFin = 1000000 / 1100
+      const v = p.enVista({ period_type: 'week', period_start: '2024-06-10', period_end: '2024-06-16',
+        is_current: false, metrics: { start_value: 1000, end_value: usdFin, delta_usd: usdFin - 1000,
+          deposits: 0, withdrawals: 0, realized_pnl: 0, unrealized_pnl: usdFin - 1000, medicion: 'mercado',
+          puntas_desde: '2024-06-07', puntas_hasta: '2024-06-16' } })
+      expect(v.resultado).toBeCloseTo(0, 6)
     })
     it('sin saldo en ninguna punta tampoco se repite la resta (no hay con qué)', () => {
       const v = pesos.enVista(mes({ start_value: 0, end_value: 0, delta_usd: 0, realized_pnl: 10,
@@ -270,13 +370,15 @@ describe('Reportes en Pesos (periodoEnPesos.enVista)', () => {
       // Repetir la resta daría 0 − 0 − 0 = 0 aunque se haya vendido: el resultado no se queda en cero.
       expect(v.resultado).toBeGreaterThan(0)
     })
-    it('lo que no es ni vendido ni abierto (con otros) sale del dólar del cierre y no rompe la suma', () => {
+    it('lo que no es ni vendido ni abierto (con otros) queda en lo que sobra y no rompe la suma', () => {
       // delta 30 = realizado −440 + abiertas +440 + otros +30 (p. ej. un dividendo ya contado aparte).
       const v = pesos.enVista(mes({ start_value: 450, end_value: 480, delta_usd: 30, realized_pnl: -440,
         realized_ars: 240000, realized_ars_cubre_usd: -440, unrealized_pnl: 440 }))
       expect(v.resultado).toBe(480 * 1500 - 450 * 1000)
-      expect(v.noRealizado).toBe(v.resultado - v.realizado - 30 * 1500)
-      expect(v.resultado).toBe(v.realizado + v.noRealizado + 30 * 1500)
+      // Lo que no es vendido (US$ 30 aparte) queda en lo que sobra: el resultado siempre contiene al
+      // realizado y la suma de las dos partes cierra con él.
+      expect(v.noRealizado).toBe(v.resultado - v.realizado)
+      expect(v.resultado).toBe(v.realizado + v.noRealizado)
     })
     it('sin realizado en el período (no vendió nada) el no realizado es el de las abiertas al dólar del cierre', () => {
       const tres = crearPesosDelPeriodo({ moneda: 'ARS', tcHoy: 1500, dolarMes: {}, monthly: [], brokers: [],
@@ -313,6 +415,26 @@ describe('Reportes en Pesos (periodoEnPesos.enVista)', () => {
       expect(v.cierre).toBe(460 * 1500)
       expect(v.resultado).toBe(460 * 1500 - 450 * 1000)
       cierra(v)
+    })
+    it('con RETIROS: la resta descuenta lo que sacaste y no lo suma', () => {
+      // Valía US$ 1.000 (dólar 1.000), sacó US$ 500 y hoy vale US$ 800 (dólar 1.500): puso $1.000.000,
+      // sacó $750.000 y tiene $1.200.000. Ganó 1.200.000 − 1.000.000 + 750.000 = $950.000.
+      const v = pesos.enVista(mes({ start_value: 1000, end_value: 800, delta_usd: 300, withdrawals: 500,
+        realized_pnl: 0, unrealized_pnl: 300 }))
+      expect(v.retiros).toBe(500 * 1500)
+      expect(v.resultado).toBe(800 * 1500 - 1000 * 1000 + 500 * 1500)
+      cierra(v)
+    })
+    it('un período al costo convierte lo que no es vendido (dividendos y demás) al dólar del CIERRE, no al de hoy', () => {
+      // Tres dólares: inicio 1.000, cierre 1.200, hoy 1.500. realizado 30 = vendido 10 (exacto) + dividendo
+      // 20, y el delta trae US$ 10 más que no son vendidos (40).
+      const tres = crearPesosDelPeriodo({ moneda: 'ARS', tcHoy: 1500, dolarMes: {}, monthly: [], brokers: [],
+        tcEnFecha: (iso) => (String(iso) < '2024-06' ? 1000 : 1200) })
+      const v = tres.enVista(mes({ start_value: 450, end_value: 490, delta_usd: 40, realized_pnl: 30,
+        realized_ars: 240000, realized_ars_cubre_usd: 10, unrealized_pnl: 0, medicion: 'costo',
+        puntas_desde: null, puntas_hasta: null }))
+      expect(v.resultado).toBe(240000 + 20 * 1200 + 10 * 1200)
+      expect(v.resultado).not.toBe(240000 + 20 * 1500 + 10 * 1500)
     })
     it('en dólares sigue todo como lo manda el servidor', () => {
       const d = crearPesosDelPeriodo({ moneda: 'USD', tcHoy: 1500, tcEnFecha, dolarMes: {}, monthly: [], brokers: [] })
@@ -381,6 +503,11 @@ describe('el Dashboard y el Resumen mensual leen el realizado de la fila de /api
     it('un mes valuado marca el total', () => {
       expect(sumarRealizadoMeses([fila(2024, 6, 10, 240000, 10, { realized_ars_valuado: true })], fx).valuado).toBe(true)
       expect(sumarRealizadoMeses([fila(2024, 6, 10, 240000, 10)], fx).valuado).toBe(false)
+      // Mayo tuvo una venta en dólares valuada y junio no: el aviso no se pierde porque el ÚLTIMO mes
+      // sea exacto (en cualquier orden).
+      const mayoValuado = fila(2024, 5, 10, 240000, 10, { realized_ars_valuado: true })
+      expect(sumarRealizadoMeses([mayoValuado, fila(2024, 6, 10, 240000, 10)], fx).valuado).toBe(true)
+      expect(sumarRealizadoMeses([fila(2024, 6, 10, 240000, 10), mayoValuado], fx).valuado).toBe(true)
     })
     it('sin filas: cero', () => {
       expect(sumarRealizadoMeses([], fx)).toEqual({ monto: 0, restoUsd: 0, valuado: false })
@@ -404,6 +531,18 @@ describe('el Dashboard y el Resumen mensual leen el realizado de la fila de /api
         fila(2024, 6, 10, 240000, 10, { broker: 'Cocos' }),
       ], { moneda: 'ARS', fxDelMes })
       expect(r.monto).toBe(240000)
+      // Y en dólares también: el total cuenta una sola vez.
+      const d = realizadoGlobalDeLosMeses([fila(2024, 6, 10, 240000, 10), fila(2024, 6, 10, 240000, 10, { broker: 'Cocos' })],
+        { moneda: 'USD', fxDelMes })
+      expect(d.monto).toBe(10)
+    })
+    it('el aviso de valuado no se pierde si el último mes no tuvo ventas en dólares', () => {
+      const r = realizadoGlobalDeLosMeses([
+        fila(2024, 5, 500, 1250000, 500, { realized_ars_valuado: true }),
+        fila(2024, 6, 10, 240000, 10),
+      ], { moneda: 'ARS', fxDelMes })
+      expect(r.valuado).toBe(true)
+      expect(r.nota).toMatch(/valuadas/)
     })
     it('cada mes convierte su resto con el dólar de ese mes, no el de hoy ni el del mes anterior', () => {
       const r = realizadoGlobalDeLosMeses([fila(2024, 5, 20, 0, 0), fila(2024, 6, 20, 0, 0)], { moneda: 'ARS', fxDelMes })
@@ -433,6 +572,11 @@ describe('el Dashboard y el Resumen mensual leen el realizado de la fila de /api
     it('el resto de ese mes va al dólar que se le pasa', () => {
       expect(realizadoGlobalDelMes([fila(2024, 6, 30, 240000, 10)], { year: 2024, month: 6, moneda: 'ARS', fx: 1200 }))
         .toBe(240000 + 20 * 1200)
+    })
+    it('la fila de un broker que viene ANTES de la del total no se cuela', () => {
+      const alReves = [fila(2024, 6, 777, 777000, 777, { broker: 'Cocos' }), fila(2024, 6, 10, 240000, 10)]
+      expect(realizadoGlobalDelMes(alReves, { year: 2024, month: 6, moneda: 'ARS', fx: 1500 })).toBe(240000)
+      expect(realizadoGlobalDelMes(alReves, { year: 2024, month: 6, moneda: 'USD', fx: 1500 })).toBe(10)
     })
     it('en dólares: los dólares', () => {
       expect(realizadoGlobalDelMes(meses, { year: 2024, month: 6, moneda: 'USD', fx: 1500 })).toBe(10)

@@ -331,7 +331,12 @@ def realizado_en_pesos_por_mes(ops):
     """El realizado en pesos de cada mes y broker: `{(broker, 'AAAA-MM'): (pesos, usd_cubierto,
     hay_valuado)}`, con el broker `'global'` = todos juntos. Los meses y los brokers se
     agrupan como el recálculo de `monthly_entries` (`operations.broker`, mes de `date`), así
-    cada fila de /api/monthly tiene SU suma. `ops`: filas de `operations`."""
+    cada fila de /api/monthly tiene SU suma. `ops`: filas de `operations`.
+
+    Un mes (o broker) donde NINGUNA operación tiene resultado en pesos —un cupón en dólares, una
+    venta cargada a mano— no figura: no hay nada que convertir, y un `0.0` diría «ganaste cero en
+    pesos» donde el dato es «no se pudo pasar a pesos». Quien lo lee (`.get`) trata la clave
+    ausente como sin pesos exactos, igual que antes con el cero."""
     por_clave = {}
     for o in ops:
         fecha = str(o.get("date") or "")[:7]
@@ -340,7 +345,8 @@ def realizado_en_pesos_por_mes(ops):
         for b in (o.get("broker"), "global"):
             if b:
                 por_clave.setdefault((b, fecha), []).append(o)
-    return {k: realizado_en_pesos(v) for k, v in por_clave.items()}
+    return {k: realizado_en_pesos(v) for k, v in por_clave.items()
+            if any(resultado_en_pesos(o)[0] is not None for o in v)}
 
 
 # ─── Desde una fila ya guardada (histórico) ───────────────────────────────────

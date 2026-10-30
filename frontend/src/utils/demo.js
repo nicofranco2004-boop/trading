@@ -617,6 +617,10 @@ function _medirPeriodoDemo(inicio, fin) {
     vs_sp500_pct: null,
     vs_inflation_pct: null,
     basis_incomparable: false,
+    // Las dos puntas son fotos del demo (a mercado): en Pesos, cada una al dólar de su fecha, como el servidor.
+    medicion: 'mercado',
+    puntas_desde: base.date,
+    puntas_hasta: cierre.date,
     _ops: ops,
   }
 }

@@ -44,6 +44,21 @@ describe('WeekCard — el resultado de la semana contiene al realizado', () => {
   })
 })
 
+// El % de una semana sigue en DÓLARES aunque el monto se vea en pesos (el servidor sólo pasa a pesos el
+// de un mes o un año): una cartera que cae 0,2 % en dólares con el dólar +0,5 % ganó en pesos, y los dos
+// números en la misma fila se leen mal si no se dice en qué moneda está cada uno.
+describe('WeekCard — el porcentaje de la semana dice en qué moneda está', () => {
+  it('en Pesos lo rotula «en US$»', () => {
+    expect(render('ARS')).toContain('en US$')
+  })
+  it('en Dólares no hay rotulo: un solo idioma', () => {
+    expect(render('USD')).not.toContain('en US$')
+  })
+  it('sin porcentaje (semana de un broker filtrado) no hay nada que rotular', () => {
+    expect(render('ARS', { ...semana, metrics: { ...semana.metrics, delta_pct: null } })).not.toContain('en US$')
+  })
+})
+
 // La celda «Realizado» vive adentro de la tarjeta desplegada: se dibuja abierta.
 describe('WeekCard abierta — la celda «Realizado»', () => {
   const abierta = (currency, week = semana) => {

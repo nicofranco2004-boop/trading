@@ -11,24 +11,28 @@
 // LA REGLA — la misma que Movimientos (cada fila al dólar de su fecha) y que
 // "Capital aportado" (utils/capitalAportado.js), con el dólar que eligió el
 // usuario (MEP; ver utils/tcHistorico.js):
-//   • Lo que tenías al EMPEZAR el período, al dólar del día anterior al inicio
-//     (es el cierre del período anterior).
-//   • Lo que tenías al CERRAR, al dólar del cierre (hoy, si el período sigue).
+//   • Lo que tenías al EMPEZAR el período, al dólar de la foto que usó el servidor
+//     (`puntas_desde`; si no la dice, el del día anterior al inicio).
+//   • Lo que tenías al CERRAR, al dólar de la foto de cierre (hoy, si el período sigue).
 //   • Depósitos y retiros de un mes o un año: los pesos que se pusieron o
 //     sacaron (`aportesDelMesEnPesos`, la regla del Dashboard). De una semana o
 //     un día —`monthly_entries` no baja a esa escala—, al dólar del cierre.
-//   • Lo que se ganó o perdió en el período (resultado): la resta de los pesos de la propia
-//     tarjeta —valor de cierre − valor de inicio − (depósitos − retiros)—, cada punta a su
-//     dólar, así que la tarjeta cierra. Sólo cuando el servidor midió el delta con otra medida
-//     (motor mensual, broker filtrado) queda el delta en dólares al dólar del cierre.
+//   • Lo que se ganó o perdió en el período (resultado) depende de DE QUÉ TIPO es el delta que
+//     manda el servidor (`metrics.medicion`), que la pantalla NO adivina:
+//       'mercado' → la resta de los pesos de la propia tarjeta (cierre − inicio − flujos), cada
+//                   punta a su dólar: cierra con la tarjeta e incluye lo que el dólar movió sobre
+//                   lo que ya tenías.
+//       'motor'   → el resultado en pesos de la ventana que midió el motor mensual (`delta_ars`).
+//       'costo' / 'realizado' → lo realizado en pesos exactos más el resto al dólar del cierre
+//                   (las puntas son costo en dólares: multiplicarlas por un dólar inventa ganancia).
 //   • El REALIZADO en pesos es el de las ventas en pesos (cobrado − costo, los
 //     pesos de verdad: la cuenta única de backend/resultado_dual.py, la misma de
 //     Movimientos); sólo lo que no tiene pesos (dividendos en dólares, lo cargado
 //     a mano) va al dólar del cierre, y se avisa (`realizadoNota`).
-//   • El RESULTADO del período contiene a ese realizado, y lo que sobra es el no realizado
-//     (resultado = realizado + no realizado + otros, también en pesos). NO se arma cambiando
-//     el pedazo realizado adentro del delta en dólares: ese delta trae el vaciado de lo latente
-//     que la posición traía de antes, y en pesos no es ganancia (ver el bloque de `enVista`).
+//   • El RESULTADO del período contiene a ese realizado, y lo que sobra es el no realizado.
+//     NO se arma cambiando el pedazo realizado adentro del delta en dólares: ese delta trae el
+//     vaciado de lo latente que la posición traía de antes, y en pesos no es ganancia (ver el
+//     bloque de `enVista`).
 //
 // En dólares devuelve los mismos números del servidor, sin tocar.
 
@@ -93,7 +97,18 @@ export function crearPesosDelPeriodo({
       }
     }
     const fxCierre = (p?.is_current || !p?.period_end) ? tcHoy : tc(p.period_end)
-    const fxInicio = p?.period_start ? tc(diaAnterior(p.period_start)) : fxCierre
+    // DE QUÉ TIPO ES EL DELTA que mandó el servidor (`metrics.medicion`): la pantalla no lo adivina
+    // mirando los números, porque la identidad `delta == fin − inicio − flujos` también se cumple en
+    // una cadena al costo (por construcción) y no se cumple en el delta del motor mensual.
+    const medicion = m.medicion
+    // A mercado, cada punta va al dólar de la FOTO que usó el servidor (`puntas_desde/hasta`): la
+    // semana arranca con la foto de hasta cinco días antes y el mes acepta bordes corridos un día,
+    // así que adivinar por la fecha del período toma el dólar de otro día.
+    const puntasMercado = medicion === 'mercado' && !!m.puntas_desde && !!m.puntas_hasta
+    const fxInicio = puntasMercado
+      ? tc(m.puntas_desde)
+      : (p?.period_start ? tc(diaAnterior(p.period_start)) : fxCierre)
+    const fxPuntaCierre = puntasMercado && !p?.is_current ? tc(m.puntas_hasta) : fxCierre
 
     let depositos = dep * fxCierre
     let retiros = ret * fxCierre
@@ -118,65 +133,67 @@ export function crearPesosDelPeriodo({
 
     const x = (v, fx) => (num(v) == null ? null : num(v) * fx)
     const inicio = x(m.start_value, fxInicio)
-    const cierre = x(m.end_value, fxCierre)
+    const cierre = x(m.end_value, fxPuntaCierre)
     // El realizado: los pesos EXACTOS que manda el servidor (la cuenta única de Operaciones) y,
     // sólo de lo que no tiene pesos, los dólares al dólar del cierre. Ver realizadoEnPesos.js.
-    const real = num(m.realized_pnl) == null ? null : realizadoEnPesos({
+    const realUsd = num(m.realized_pnl)
+    const real = realUsd == null ? null : realizadoEnPesos({
       usd: m.realized_pnl, ars: m.realized_ars, cubreUsd: m.realized_ars_cubre_usd, fx: fxCierre,
     })
-
-    // EL RESULTADO TIENE QUE CONTENER AL REALIZADO, y la tarjeta tiene que cerrar:
-    // valor inicio + depósitos − retiros + resultado = valor cierre.
-    //
-    // POR QUÉ NO ALCANZA CON `delta_usd × dólar` NI CON CAMBIARLE EL PEDAZO REALIZADO.
-    // `delta_usd` mide la cartera a mercado en DÓLARES: trae el realizado en dólares MÁS el
-    // vaciado de la ganancia o pérdida latente que la posición traía de antes. GGAL comprada a
-    // $4.500 (dólar 1.000), que valía $4.500 al arrancar el mes (dólar 1.450 → US$ 3,10) y se
-    // vende a $6.900 (dólar 1.500): en dólares el costo es US$ 4,5 y la cartera pasó de 3,10 a
-    // 4,6, o sea +1,5 de los cuales sólo 0,1 es "realizado" y 1,4 es el latente que se vació. En
-    // pesos no hay latente que vaciar (costaba $4.500 y valía $4.500): se ganaron $2.400, todos
-    // realizados. Cambiar sólo el pedazo realizado (+$2.400 en vez de 0,1 × 1.500) y dejar el
-    // vaciado en dólares (1,4 × 1.500 = $2.095) sumaba $4.495: casi el doble.
-    //
-    // Por eso, cuando el servidor midió el período como "valor de cierre − valor de inicio −
-    // flujos" (el caso normal: su `delta_usd` es exactamente esa resta), el resultado en pesos
-    // es la MISMA resta con los números en pesos que la propia tarjeta muestra, cada punta a su
-    // dólar. Es lo que ya hace el porcentaje de Pesos del servidor (`_pct_en_pesos`) y el
-    // resultado del Dashboard (valor − capital aportado en pesos). Cierra por construcción, y
-    // lo realizado es una PARTE de él: lo que sobra (`noRealizado`) sale de restar.
-    const dolaresDelServidor = num(m.delta_usd)
-    const noRealizadoUsd = num(m.unrealized_pnl)
-    const iniUsd = num(m.start_value)
-    const finUsd = num(m.end_value)
-    const sumaDelServidor = iniUsd != null && finUsd != null && dolaresDelServidor != null
-      && (iniUsd !== 0 || finUsd !== 0)
-      && Math.abs(dolaresDelServidor - (finUsd - iniUsd - (dep - ret))) <= 0.05
+    const conRealizado = !!real && real.monto != null
     const delta = x(m.delta_usd, fxCierre)
 
+    // EL RESULTADO, SEGÚN DE QUÉ TIPO ES EL DELTA. Tiene que contener al realizado.
+    //
+    // POR QUÉ NO ALCANZA CON `delta_usd × dólar` NI CON CAMBIARLE EL PEDAZO REALIZADO.
+    // `delta_usd` a mercado trae el realizado en dólares MÁS el vaciado de la ganancia o pérdida
+    // latente que la posición traía de antes. GGAL comprada a $4.500 (dólar 1.000), que valía
+    // $4.500 al arrancar el mes (dólar 1.450 → US$ 3,10) y se vende a $6.900 (dólar 1.500): en
+    // dólares el costo es US$ 4,5 y la cartera pasó de 3,10 a 4,6, o sea +1,5 de los cuales sólo
+    // 0,1 es "realizado" y 1,4 es el latente que se vació. En pesos no hay latente que vaciar
+    // (costaba $4.500 y valía $4.500): se ganaron $2.400, todos realizados. Cambiar sólo el pedazo
+    // realizado y dejar el vaciado en dólares sumaba $4.495: casi el doble.
+    //
+    //  · 'mercado': la resta de los pesos de la propia tarjeta —valor de cierre − valor de inicio −
+    //    (depósitos − retiros)—, cada punta a su dólar. Es la cuenta del porcentaje de Pesos del
+    //    servidor y del «Resultado total» del Dashboard; cierra por construcción, e incluye lo que
+    //    el dólar movió sobre lo que ya se tenía. Lo realizado es una PARTE: lo que sobra es el no
+    //    realizado.
+    //  · 'motor': el delta es de OTRA ventana que start/end_value (la que midió el motor mensual),
+    //    así que la resta de la tarjeta no aplica: el servidor manda el resultado en pesos de esa
+    //    ventana (`delta_ars`, las mismas patas que su % en pesos).
+    //  · 'costo' y 'realizado': start/end_value son COSTO en dólares (a cada dólar de depósito) o el
+    //    delta es lo vendido de un broker filtrado: multiplicar por el dólar de las fechas fabrica
+    //    una ganancia que no existió. Ahí el resultado es lo realizado en pesos exactos más lo que
+    //    el delta trae aparte (dividendos y demás) al dólar del cierre.
+    // Si el tipo no viene (una respuesta anterior al campo) se trata como 'costo', la lectura que
+    // no inventa pesos. Con base incomparable el servidor ya no publica monto: no se mezcla nada.
+    // (Sin saldo en ninguna de las dos puntas no hay resta que repetir: daría 0 − 0 − 0 aunque se haya
+    // vendido. Y un delta del motor sin su monto en pesos queda en delta × dólar, sin mezclar nada.)
+    const sumaMercado = medicion === 'mercado' && inicio != null && cierre != null
+      && (num(m.start_value) !== 0 || num(m.end_value) !== 0)
+    const delMotor = medicion === 'motor' && num(m.delta_ars) != null
+    const alCosto = !m.basis_incomparable && !sumaMercado && !delMotor && medicion !== 'motor'
+
     let resultado, noRealizado
-    if (sumaDelServidor && inicio != null && cierre != null) {
+    if (sumaMercado) {
       resultado = cierre - inicio - (depositos - retiros)
-      // Lo que no es ni vendido ni abierto (dividendos y demás) va al dólar del cierre, como siempre.
-      const otrosUsd = (real && num(m.realized_pnl) != null && noRealizadoUsd != null)
-        ? dolaresDelServidor - num(m.realized_pnl) - noRealizadoUsd : 0
-      noRealizado = real && real.monto != null
-        ? resultado - real.monto - otrosUsd * fxCierre
-        : x(m.unrealized_pnl, fxCierre)
+      noRealizado = conRealizado ? resultado - real.monto : x(m.unrealized_pnl, fxCierre)
+    } else if (delMotor) {
+      resultado = num(m.delta_ars)
+      noRealizado = conRealizado ? resultado - real.monto : x(m.unrealized_pnl, fxCierre)
+    } else if (alCosto && conRealizado && delta != null) {
+      resultado = real.monto + (num(m.delta_usd) - realUsd) * fxCierre
+      noRealizado = x(m.unrealized_pnl, fxCierre)
     } else {
-      // El servidor pisó el delta con otra medida (el motor mensual, un broker filtrado en una
-      // semana, base incomparable): no hay resta que repetir en pesos. Si no hay posiciones
-      // abiertas que se hayan movido (`unrealized_pnl` 0, como las semanas con un broker
-      // filtrado, donde el delta ES lo realizado), el resultado es el realizado en pesos. Si las
-      // hay, queda el delta en dólares × dólar del cierre, sin meterle pesos exactos encima:
-      // mezclar las dos medidas era lo que inflaba el resultado.
-      const sinAbiertas = noRealizadoUsd != null && Math.abs(noRealizadoUsd) < 0.005
-      resultado = delta == null || !real || real.monto == null || num(m.realized_pnl) == null || !sinAbiertas
-        ? delta
-        : delta + (real.monto - num(m.realized_pnl) * fxCierre)
+      resultado = delta
       noRealizado = x(m.unrealized_pnl, fxCierre)
     }
     return {
       moneda: 'ARS', fxInicio, fxCierre, fxDepositos,
+      // De qué tipo es el resultado ('mercado' | 'motor' | 'costo' | 'realizado'): quien lo repite
+      // (la evidencia de un hallazgo) sabe si incluye lo que el dólar movió sobre lo que ya se tenía.
+      medicion: medicion ?? null,
       inicio, cierre,
       depositos, retiros,
       resultado,
@@ -204,6 +221,14 @@ export function crearPesosDelPeriodo({
     return a && cerca(a.usd, cumUsd) ? a.ars : null
   }
 
+  /**
+   * ¿El % de este período sigue en DÓLARES aunque el monto se vea en pesos? El servidor sólo pasa a
+   * pesos el % de un mes o un año; el de un día o una semana sale de las fotos en dólares. Mirándolos
+   * juntos pueden tener signos opuestos (la cartera cae 0,2 % en dólares, el dólar sube 0,5 %: en
+   * pesos ganó), así que la pantalla lo rotula en vez de dejarlos como si fueran la misma cuenta.
+   */
+  const pctEnDolares = (p) => enPesos && (p?.period_type === 'day' || p?.period_type === 'week')
+
   /** Un resultado en dólares de un período, al dólar de su cierre (hoy si sigue). */
   const alCierre = (usd, periodEnd, enCurso) => (num(usd) == null ? null
     : (enPesos ? num(usd) * ((enCurso || !periodEnd) ? tcHoy : tc(periodEnd)) : num(usd)))
@@ -212,5 +237,5 @@ export function crearPesosDelPeriodo({
   /** Un monto en dólares de HOY (el valor actual, variaciones recientes). */
   const deHoy = (usd) => (num(usd) == null ? null : (enPesos ? num(usd) * tcHoy : num(usd)))
 
-  return { moneda: enPesos ? 'ARS' : 'USD', enVista, aportadoHasta, alCierre, deFecha, deHoy }
+  return { moneda: enPesos ? 'ARS' : 'USD', enVista, pctEnDolares, aportadoHasta, alCierre, deFecha, deHoy }
 }

@@ -151,6 +151,32 @@ class PeriodMetrics:
     realized_ars: Optional[float] = None
     realized_ars_cubre_usd: Optional[float] = None
     realized_ars_valuado: bool = False
+    # DE QUÉ TIPO ES `delta_usd`, para que la pantalla en Pesos no lo adivine. La
+    # misma columna se arma de cuatro maneras y cada una pide una cuenta distinta:
+    #   'mercado'   = fin − inicio − flujos con las dos puntas a MERCADO (fotos del
+    #                 cron / valor vivo). En pesos la pantalla hace la misma resta con
+    #                 los pesos que puso de verdad, cada punta al dólar de su fecha
+    #                 (`puntas_desde` / `puntas_hasta`).
+    #   'motor'     = el delta del motor mensual (otra ventana que start/end_value,
+    #                 con el valor de mercado de sus puntos). Su monto en pesos viaja
+    #                 en `delta_ars`.
+    #   'costo'     = la cadena contable: fin − inicio − flujos son COSTO en dólares
+    #                 (a cada dólar de depósito), o sea el realizado y nada más.
+    #   'realizado' = día/semana con un broker filtrado: delta = el realizado.
+    # Sin esto la pantalla trataba como mercado lo que era costo (+105 % de más en un
+    # año) y como costo lo que era del motor (signo contrario al %).
+    medicion: str = "costo"
+    # EL RESULTADO DEL TRAMO EN PESOS cuando el delta es del motor mensual: cada
+    # punta al dólar de su fecha y el flujo al dólar medio, las mismas patas que el
+    # `delta_pct` en pesos (`_delta_en_pesos`). Sólo con el selector en Pesos. None =
+    # no aplica o no se pudo afirmar (sin dólar).
+    delta_ars: Optional[float] = None
+    # Las fechas de las dos fotos cuando `medicion` es 'mercado' (start_value es de
+    # `puntas_desde`, end_value de `puntas_hasta`): la pantalla no tiene por qué
+    # adivinarlas por la fecha del período (la semana arranca con la foto de hasta 5
+    # días antes, el mes acepta bordes corridos un día).
+    puntas_desde: Optional[str] = None
+    puntas_hasta: Optional[str] = None
 
 
 @dataclass

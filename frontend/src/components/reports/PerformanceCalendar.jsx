@@ -70,6 +70,9 @@ export function BarrasDelAnio({ cells, pesos, enPesos, tipAbajo, encimaInicial =
       realizado: v.realizado,
       // Qué parte del realizado no son pesos de verdad (dividendos en dólares, lo cargado a mano).
       realizadoNota: v.realizadoNota,
+      // Si el monto sale de dos puntas a mercado (o de la ventana del motor) o es lo vendido de la
+      // cadena al costo: la leyenda del globo dice cómo se armó, no una sola cosa para todos.
+      aMercado: m.medicion === 'mercado' || m.medicion === 'motor',
       label: month.period_label,
       actual: month.is_current,
     }
@@ -117,13 +120,14 @@ export function BarrasDelAnio({ cells, pesos, enPesos, tipAbajo, encimaInicial =
               {pesos.fmt(activo.usd, { signed: true })}
             </b>
           </div>
-          {/* En Pesos el monto es la ganancia del mes como resta de los pesos de la tarjeta (valor de
-              cierre − valor de inicio − aportes, cada punta a su dólar: utils/periodoEnPesos.js), la
-              misma cuenta que mide el % del motor. Vale para todos los meses, hayan vendido o no;
-              lo realizado va aparte, en el renglón de abajo, con los pesos de verdad de las ventas. */}
+          {/* En Pesos, con las puntas a mercado el monto es la ganancia del mes como resta de los pesos de
+              la tarjeta (valor de cierre − valor de inicio − aportes, cada punta a su dólar:
+              utils/periodoEnPesos.js); en un mes medido al costo no hay puntas a mercado y el monto es lo
+              vendido, exacto. La leyenda dice cuál. Lo realizado va aparte, en el renglón de abajo,
+              con los pesos de verdad de las ventas. */}
           {enPesos && (
             <div className="text-[10px] text-ink-3 mt-1 leading-none">
-              en pesos, cada punta a su dólar
+              {activo.aMercado ? 'en pesos, cada punta a su dólar' : 'en pesos: lo vendido, exacto'}
             </div>
           )}
           {/* El renglón de abajo sólo cuando hubo ventas: en un mes sin operaciones

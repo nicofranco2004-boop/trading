@@ -482,6 +482,10 @@ export function PeriodRow({ period, expanded, onToggle }) {
   // Uno o dos decimales según el tamaño, y el color del número que se ve.
   const decs = pct != null && Math.abs(pct) >= 10 ? 1 : 2
   const tono = pct == null ? 'text-ink-3' : pctColor(pct, decs)
+  // El monto lleva el color de SU signo: en Pesos puede ser otro que el del % (un día o una semana
+  // tiene el % en dólares), y un monto positivo en rojo contradice al resto de la fila.
+  const tonoMonto = usdVista == null ? 'text-ink-3' : (usdVista >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
+  const pctUsd = pct != null && pesos.pctEnDolares(period)
 
   return (
     <div className={`border rounded bg-bg-1/60 overflow-hidden transition-colors ${
@@ -514,12 +518,14 @@ export function PeriodRow({ period, expanded, onToggle }) {
 
         <div className="flex items-center gap-4 flex-shrink-0">
           {pct != null && (
-            <span className={`text-sm font-mono font-semibold tabular ${tono}`}>
+            <span className={`text-sm font-mono font-semibold tabular ${tono}`}
+              title={pctUsd ? 'Porcentaje en dólares' : undefined}>
               {pctVar(pct, decs)}
+              {pctUsd && <span className="ml-1 text-[11px] font-normal text-ink-3">en US$</span>}
             </span>
           )}
           {usd != null && (
-            <span className={`text-xs font-mono tabular ${tono} hidden sm:inline`}>
+            <span className={`text-xs font-mono tabular ${tonoMonto} hidden sm:inline`}>
               {plata(usdVista, pesos.moneda, { signed: true })}
             </span>
           )}
@@ -628,9 +634,11 @@ export function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     kpis.push({
       label: `P&L ${periodLabel}`,
       value: usd != null ? plata(v.resultado, mon, { signed: true }) : '—',
-      sub: pct != null ? `${pctVar(pct, 2)}`
+      sub: pct != null ? `${pctVar(pct, 2)}${pesos.pctEnDolares(period) ? ' en dólares' : ''}`
         : noBasis ? 'falta el cierre del arranque' : null,
-      tone: noBasis ? undefined : (isPos ? 'pos' : 'neg'),
+      // El color es el del monto que se ve; el % puede estar en otra moneda (día y semana en Pesos).
+      tone: noBasis ? undefined : (usd == null || v.resultado == null ? (isPos ? 'pos' : 'neg')
+        : (v.resultado >= 0 ? 'pos' : 'neg')),
     })
   }
 
@@ -647,12 +655,15 @@ export function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     })
   }
 
-  if (!isFlat && m.unrealized_pnl != null && m.unrealized_pnl !== 0) {
+  // Lo que se muestra y su color salen del NÚMERO QUE SE VE (en Pesos es `resultado − realizado`, con
+  // otro signo posible que los dólares del servidor, y el servidor deja 0 en todo mes cerrado).
+  const noRealVisto = v.noRealizado ?? m.unrealized_pnl
+  if (!isFlat && noRealVisto != null && Math.abs(noRealVisto) >= (mon === 'ARS' ? 0.5 : 0.005)) {
     kpis.push({
       label: 'P&L no realizado',
-      value: plata(v.noRealizado, mon, { signed: true }),
+      value: plata(v.noRealizado ?? noRealVisto, mon, { signed: true }),
       sub: 'mark-to-market',
-      tone: m.unrealized_pnl >= 0 ? 'pos' : 'neg',
+      tone: noRealVisto >= 0 ? 'pos' : 'neg',
     })
   }
 

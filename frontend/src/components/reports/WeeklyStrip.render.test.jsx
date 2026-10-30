@@ -65,4 +65,11 @@ describe('WeeklyStrip — en Pesos, lo cerrado es lo mismo que dice la tarjeta d
     expect(html).toMatch(/US\$\s?10\b/)
     expect(html).not.toContain('240.000')
   })
+  // «Pesos quietos cuando cambia el dólar» es el caso de la vista en DÓLARES (los pesos valen menos
+  // dólares). En Pesos es al revés: lo que se mueve es lo que tenés en dólares.
+  it('la nota de las posiciones abiertas explica el caso de la moneda en que se mira', () => {
+    expect(render('ARS')).toContain('lo que el dólar mueve de lo que tenés en dólares')
+    expect(render('ARS')).not.toContain('pesos quietos cuando cambia el dólar')
+    expect(render('USD')).toContain('pesos quietos cuando cambia el dólar')
+  })
 })

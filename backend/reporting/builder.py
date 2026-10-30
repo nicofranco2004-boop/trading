@@ -1045,7 +1045,55 @@ def _pct_comp_en_pesos(conn, pct, ventana):
 
 def _pct_en_pesos(conn, d0: str, d1: str, v0: float, v1: float,
                   deposits: float, withdrawals: float):
-    """El MISMO tramo medido a mercado, pero contestando la pregunta en pesos.
+    """El % del tramo en pesos. La cuenta de las patas vive en `_patas_en_pesos`
+    (y el MONTO en pesos del mismo tramo en `_delta_en_pesos`): % y monto salen de
+    las mismas patas, así que no pueden contradecirse."""
+    patas = _patas_en_pesos(conn, d0, d1, v0, v1, deposits, withdrawals)
+    if patas is None:
+        return None
+    sv, ev, flujo = patas
+    try:
+        pct = _modified_dietz_pct(sv, ev, flujo)
+        return round(pct, 2) if pct is not None else None
+    except Exception:
+        log.exception("_pct_en_pesos %s..%s", d0, d1)
+        return None
+
+
+def _delta_en_pesos(conn, d0: str, d1: str, v0: float, v1: float,
+                    deposits: float, withdrawals: float):
+    """El RESULTADO del tramo en pesos: `fin − inicio − flujo`, cada punta al dólar
+    de SU fecha y el flujo al dólar medio del tramo. None si no se puede afirmar.
+
+    ⚠️ ES EL MONTO DEL % DE `_pct_en_pesos`, de las mismas patas. Hasta acá la
+    pantalla armaba este monto adivinando de qué tipo era el `delta_usd` que
+    recibía (resta de puntas a mercado, realizado de la cadena al costo, delta del
+    motor mensual de OTRA ventana) y adivinaba mal en cada tipo distinto: la
+    auditoría del 30/10 lo midió en períodos al costo (+105 % de más en el año) y
+    en los meses del motor (signo contrario al %). Ahora el servidor, que sabe
+    qué puntas usó y de qué fechas son, lo calcula una sola vez.
+
+    Sólo tiene sentido con puntas A MERCADO. En la cadena al costo la resta
+    `fin − inicio` es costo en dólares a cada dólar de depósito, y multiplicarla
+    por el dólar de las fechas fabrica una ganancia que no existió: ahí no se
+    llama (queda None) y la pantalla muestra el realizado exacto.
+    """
+    patas = _patas_en_pesos(conn, d0, d1, v0, v1, deposits, withdrawals)
+    if patas is None:
+        return None
+    sv, ev, flujo = patas
+    try:
+        return round(float(ev) - float(sv) - float(flujo), 2)
+    except Exception:
+        log.exception("_delta_en_pesos %s..%s", d0, d1)
+        return None
+
+
+def _patas_en_pesos(conn, d0: str, d1: str, v0: float, v1: float,
+                    deposits: float, withdrawals: float):
+    """(inicio, fin, flujo neto) del tramo, en pesos. None si no se puede.
+
+    El MISMO tramo medido a mercado, pero contestando la pregunta en pesos.
 
     ⚠️ POR QUÉ HACE FALTA. `bordes_mercado_periodo` devuelve dólares. Sin esto,
     con el selector global en Pesos el calendario mezclaba las dos monedas en la
@@ -1097,10 +1145,9 @@ def _pct_en_pesos(conn, d0: str, d1: str, v0: float, v1: float,
             p0, {"fx": f1, "net_deposited": float(deposits or 0)}, v0, v1)
         _, _, wd = _twr_fx._leg_en_moneda(
             p0, {"fx": f1, "net_deposited": float(withdrawals or 0)}, v0, v1)
-        pct = _modified_dietz_pct(sv, ev, dep - wd)
-        return round(pct, 2) if pct is not None else None
+        return sv, ev, dep - wd
     except Exception:
-        log.exception("_pct_en_pesos %s..%s", d0, d1)
+        log.exception("_patas_en_pesos %s..%s", d0, d1)
         return None
 
 
@@ -1514,6 +1561,14 @@ def compute_metrics_for_period(
     _ventana_comp = (None, None)
     _ventana_puntas = (None, None)
     _start_is_mtm = False   # start_value salió de un cierre real a mercado
+    # Las DOS PUNTAS A MERCADO con la fecha de cada una —(desde, hasta, inicio, fin)—
+    # y, aparte, el tramo del motor mensual —(desde, hasta, v0, v1, flujo neto)—.
+    # Los llena cada rama que sabe de qué fechas son sus puntas; al final de la
+    # función sirven para publicar el resultado en pesos (`delta_ars`) con el dólar
+    # de ESAS fechas y no con uno que la pantalla adivine.
+    _tramo_mercado = None
+    _tramo_motor = None
+    _hoy_p = today.isoformat() if today else _hoy_iso()
     _live_month_unmeasured = False  # (año) el mes vivo no tiene borde medido
 
     if period_type == "month":
@@ -1587,6 +1642,8 @@ def compute_metrics_for_period(
                 if _snap_prev:
                     start_value = float(_snap_prev["total_value"])
                     _start_is_mtm = True
+                    _tramo_mercado = (str(_snap_prev["date"])[:10], _hoy_p,
+                                      start_value, end_value)
                     # Sin fila monthly, los flows del mes salen del net_deposited
                     # canónico (Δ vs el stamp del snapshot) — si no, un depósito
                     # intra-mes contaría como ganancia.
@@ -1668,6 +1725,7 @@ def compute_metrics_for_period(
                 start_value, end_value, _bd0, _bd1 = _b
                 _basis = "mercado"
                 _start_is_mtm = True
+                _tramo_mercado = (_bd0, _bd1, start_value, end_value)
                 if str(moneda).lower() == "ars":
                     _pct_puntas_ars = _pct_en_pesos(
                         conn, _bd0, _bd1, start_value, end_value,
@@ -1729,6 +1787,10 @@ def compute_metrics_for_period(
                                         - float(_v0["net_deposited"] or 0))
                             month_twr_usd = round(
                                 (float(_v1["value"]) - float(_v0["value"])) - _flujo_v, 2)
+                            _tramo_motor = (str(_v0.get("date"))[:10],
+                                            str(_v1.get("date"))[:10],
+                                            float(_v0["value"]), float(_v1["value"]),
+                                            _flujo_v)
                     else:
                         _motor_nego = _cm.get("motivo")
                         _motor_nego_texto = _cm.get("motivo_texto")
@@ -1808,6 +1870,8 @@ def compute_metrics_for_period(
                     # El cierre del que arranca, y hoy: las dos fechas que este
                     # `delta_pct` de puntas realmente cubre.
                     _ventana_puntas = (str(_snap_y["date"])[:10], _hoy_iso())
+                    _tramo_mercado = (str(_snap_y["date"])[:10], _hoy_p,
+                                      start_value, end_value)
             # AUDIT D-1: mismo cruce que el mes — sin cierre medido de borde, el
             # año resta cadena contra mercado. (Y con la cadena rota, igual que el
             # mes: medido, enero en −5.000 publicaba "Año: +US$ 16.000".)
@@ -1830,6 +1894,7 @@ def compute_metrics_for_period(
                 _basis = "mercado"
                 _start_is_mtm = True
                 _ventana_puntas = (_bd0, _bd1)
+                _tramo_mercado = (_bd0, _bd1, start_value, end_value)
                 if str(moneda).lower() == "ars":
                     _pct_puntas_ars = _pct_en_pesos(
                         conn, _bd0, _bd1, start_value, end_value,
@@ -2126,6 +2191,7 @@ def compute_metrics_for_period(
         if snap_start and not _border_is_fresh(snap_start.get("date"), period_start,
                                                max_lag_days=_dw_lag):
             snap_start = None
+        _dw_start_mtm = snap_start is not None   # arranque = un cierre MEDIDO y fresco
         _sin_medicion_previa = False
         _arranque_fabricado = False   # la fila cruda la escribió el import
         if snap_start is None:
@@ -2156,6 +2222,23 @@ def compute_metrics_for_period(
             end_value = float(live_value)
         else:
             end_value = float(snap_end["total_value"]) if snap_end else start_value
+        # Las dos puntas A MERCADO y sus fechas, para el resultado en pesos. El
+        # arranque tiene que ser un cierre medido y el cierre, el valor vivo o una
+        # foto también medida (la fila cruda de `snap_end` puede ser la que el
+        # import fabricó al costo). Si después `start_value` cambia (la rama de las
+        # anclas lo reemplaza por el capital de la cadena), el chequeo del final lo
+        # descarta: no son más las puntas que se anotaron.
+        if _dw_start_mtm and snap_start is not None:
+            if _dw_current:
+                _tramo_mercado = (str(snap_start["date"])[:10], _hoy_p,
+                                  start_value, end_value)
+            elif snap_end is not None:
+                _se_m = fetch_snapshot_at_or_before(
+                    conn, uid, period_end, mtm_only=True, require_positive=False)
+                if _se_m and str(_se_m["date"])[:10] == str(snap_end["date"])[:10]:
+                    _tramo_mercado = (str(snap_start["date"])[:10],
+                                      str(snap_end["date"])[:10],
+                                      start_value, end_value)
         # flows sub-mensuales vía net_deposited de los snapshots (descuenta
         # aportes/retiros para que no se cuenten como P&L del período).
         start_netdep = float(snap_start["net_deposited"] or 0) if snap_start else 0.0
@@ -2533,6 +2616,49 @@ def compute_metrics_for_period(
             # un dato propio, así que ese se respeta.
             unrealized = 0.0
 
+    # ⚠️ DE QUÉ TIPO ES `delta_usd`, Y SU RESULTADO EN PESOS (PeriodMetrics.medicion).
+    #
+    # Va ACÁ, cuando `delta_usd` ya es el que se publica: arriba se arma de cuatro
+    # maneras (resta de puntas a mercado, resta de la cadena al costo, delta del
+    # motor mensual, realizado de un broker filtrado) y la pantalla en Pesos no
+    # tiene cómo distinguirlas mirando los números — lo intentó con la identidad
+    # `delta == fin − inicio − flujos` y se equivocó en las dos direcciones (el
+    # costo cumple la identidad por construcción; el motor no la cumple y no es
+    # costo). El servidor sí sabe por qué rama pasó.
+    #
+    # Sólo se afirma 'mercado' si las puntas que se anotaron son las MISMAS que
+    # quedaron al final: una rama posterior que cambie `start_value` o `end_value`
+    # (el capital de la cadena en las anclas de día/semana, el arranque pisado en
+    # el mes en curso) deja de medir el tramo anotado, y ahí el resultado cae a
+    # 'costo' en vez de convertir con las fechas equivocadas. (Hoy ninguna rama lo
+    # dispara, por eso no tiene una prueba que lo ejecute: queda de seguro para la
+    # rama que se agregue mañana.)
+    _medicion = "costo"
+    _delta_ars = None
+    _tramo_ars = None
+    _puntas = (None, None)
+    if period_type in ("day", "week") and broker_filter != "global":
+        _medicion = "realizado"
+    elif basis_incomparable:
+        pass
+    elif (period_type == "month" and month_twr_pct is not None
+          and month_twr_usd is not None and _tramo_motor is not None):
+        _medicion = "motor"
+        _m0, _m1, _mv0, _mv1, _mflujo = _tramo_motor
+        _tramo_ars = (_m0, _m1, _mv0, _mv1, max(_mflujo, 0.0), max(-_mflujo, 0.0))
+    elif (_tramo_mercado is not None
+          and abs(_tramo_mercado[2] - start_value) < 1e-9
+          and abs(_tramo_mercado[3] - end_value) < 1e-9):
+        _medicion = "mercado"
+        # Las fechas de las dos fotos, para que la pantalla ponga cada punta a SU
+        # dólar. El monto en pesos de este tipo lo arma ella: sabe los pesos que de
+        # verdad entraron (el servidor sólo conoce un dólar medio para los aportes).
+        _puntas = (_tramo_mercado[0], _tramo_mercado[1])
+    # El MONTO en pesos lo publica el servidor sólo donde la pantalla no tiene con
+    # qué armarlo: el motor mensual mide OTRA ventana que start/end_value.
+    if _tramo_ars is not None and str(moneda).lower() == "ars":
+        _delta_ars = _delta_en_pesos(conn, *_tramo_ars)
+
     # AUDIT D-2: `benchmark_return_for_period` devuelve el retorno PROPIO del
     # benchmark. Antes se guardaba tal cual en un campo llamado `vs_sp500_pct` y
     # nunca se le restaba el retorno de la cartera: la narrativa leía ese número
@@ -2692,6 +2818,10 @@ def compute_metrics_for_period(
         inflation_pct=round(inflation_ret, 2) if inflation_ret is not None else None,
         basis_incomparable=basis_incomparable,
         basis=_basis,
+        medicion=_medicion,
+        delta_ars=_delta_ars,
+        puntas_desde=_puntas[0],
+        puntas_hasta=_puntas[1],
         motor_motivo=_motor_nego,
         motor_motivo_texto=_motor_nego_texto,
         medido_desde=_ventana_medida[0],

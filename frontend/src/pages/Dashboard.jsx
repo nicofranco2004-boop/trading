@@ -1231,7 +1231,7 @@ function PersonalDashboard() {
               <div className="border-t border-line/60 my-1.5" />
               <p className="text-ink-3">⚠ Medido en USD. Si tenés posiciones en ARS (CEDEARs, bonos), los movimientos del dólar blue afectan la variación aunque el precio en pesos no haya cambiado — porque tus pesos valen más o menos dólares.</p>
               {currency === 'ARS' && (
-                <p className="text-ink-3 mt-1">En pesos, el «realizado» que aparece bajo «Este mes» es el de tus ventas en pesos (lo que cobraste menos lo que pagaste, como lo ve tu broker). El monto de la tarjeta, en cambio, está medido en dólares y pasado al dólar de hoy, así que pueden no coincidir.</p>
+                <p className="text-ink-3 mt-1">En pesos, el «realizado» que aparece bajo «Este mes» es el de tus ventas en pesos (lo que cobraste menos lo que pagaste, como lo ve tu broker); si vendiste o compraste en dólares, esas operaciones van al dólar de cada fecha. El monto de la tarjeta, en cambio, está medido en dólares y pasado al dólar de hoy, así que pueden no coincidir.</p>
               )}
             </InfoTooltip>
           </div>
