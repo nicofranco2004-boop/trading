@@ -136,11 +136,15 @@ function Encabezado({ activo, recientes, cliente, enfocar, onElegir }) {
   const caja = useRef(null)
   const boton = useRef(null)
   const otros = recientes.filter(s => s !== activo).slice(0, CHIPS)
-  // Al cerrar el buscador, el teclado vuelve al botón (como el ⌘K).
+  // Al cerrar el buscador, el teclado vuelve al botón (como el ⌘K). Si elegiste
+  // otro activo, este renglón se arma de nuevo: el botón nuevo toma el foco al
+  // aparecer (`autoFocus` de React no lo hacía: medido en el navegador, quedaba
+  // en la página).
   const cerrar = () => { setAbierto(false); boton.current?.focus?.() }
+  useEffect(() => { if (enfocar) boton.current?.focus?.() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div ref={caja} className="relative flex flex-wrap items-center gap-2 text-ink-0">
-      <button ref={boton} type="button" autoFocus={enfocar} onClick={() => setAbierto(a => !a)} aria-haspopup="dialog" aria-expanded={abierto}
+      <button ref={boton} type="button" onClick={() => setAbierto(a => !a)} aria-haspopup="dialog" aria-expanded={abierto}
         aria-label={`Cambiar de activo (ahora: ${activo})`} data-capa="activo"
         className="inline-flex items-center gap-2 min-h-11 sm:min-h-9 pl-2.5 pr-3 rounded-lg border border-line-3 bg-bg-2 hover:border-ink-3 transition-colors">
         <Search size={15} aria-hidden="true" className="text-ink-1" />
