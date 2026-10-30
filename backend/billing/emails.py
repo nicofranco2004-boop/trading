@@ -1380,20 +1380,22 @@ _IMAGEN_PROPIA = re.compile(
 def _custom_body_to_html(body: str) -> str:
     """Texto plano del admin → HTML: escapa, párrafos por doble salto de línea,
     <br> por salto simple, y auto-linkea URLs http(s). El admin escribe texto, no
-    HTML (evita romper el mail con markup accidental). Un párrafo que es sólo
+    HTML (evita romper el mail con markup accidental). Un renglón que es sólo
     la dirección de una imagen de rendi.finance va como imagen (_IMAGEN_PROPIA)."""
     import re as _re
+
+    def _renglon(linea: str) -> str:
+        if _IMAGEN_PROPIA.fullmatch(linea.strip()):
+            return (f'<img src="{html.escape(linea.strip())}" alt="" '
+                    'style="display:block;width:100%;max-width:100%;height:auto;border:0;'
+                    'border-radius:8px;margin:8px 0;">')
+        esc = html.escape(linea)
+        return _re.sub(r'(https?://[^\s<]+)',
+                       r'<a href="\1" style="color:#5b4ddb;">\1</a>', esc)
+
     out = []
     for para in body.split("\n\n"):
-        if _IMAGEN_PROPIA.fullmatch(para.strip()):
-            out.append(f'<p style="margin:0 0 14px;"><img src="{html.escape(para.strip())}" alt="" '
-                       'style="display:block;width:100%;max-width:100%;height:auto;border:0;'
-                       'border-radius:8px;"></p>')
-            continue
-        esc = html.escape(para.strip())
-        esc = _re.sub(r'(https?://[^\s<]+)',
-                      r'<a href="\1" style="color:#5b4ddb;">\1</a>', esc)
-        esc = esc.replace("\n", "<br>")
+        esc = "<br>".join(_renglon(l) for l in para.strip().split("\n"))
         if esc:
             out.append(f'<p style="margin:0 0 14px;">{esc}</p>')
     return "".join(out)

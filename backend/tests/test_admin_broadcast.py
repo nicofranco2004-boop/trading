@@ -31,11 +31,19 @@ class SendCustomTest(unittest.TestCase):
         self.assertNotIn('href="https://rendi.finance/mail/', h)
         self.assertEqual(h.count("<p "), 3)
 
+    def test_body_to_html_imagen_en_renglon_pegado_al_texto(self):
+        # Sin renglón en blanco antes: igual es imagen, y la frase queda arriba.
+        h = emails._custom_body_to_html("Te dejamos un adelanto:\nhttps://rendi.finance/mail/a.png")
+        self.assertIn("Te dejamos un adelanto:<br><img src=\"https://rendi.finance/mail/a.png\"", h)
+        self.assertEqual(h.count("<p "), 1)
+
     def test_body_to_html_imagen_ajena_o_en_frase_queda_link(self):
         # Otro dominio, o la dirección en medio de una frase: link, nunca imagen.
         for body in ("https://otro.com/x.png",
                      "https://rendi.finance.otro.com/x.png",
                      "Mirá https://rendi.finance/mail/a.png ahora",
+                     "https://rendi.finance/mail/a.png?x=1",
+                     "http://rendi.finance/mail/a.png",
                      'https://rendi.finance/a.png" onerror="x'):
             h = emails._custom_body_to_html(body)
             self.assertNotIn("<img", h, body)

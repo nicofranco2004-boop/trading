@@ -836,7 +836,7 @@ function BroadcastPanel({ toast }) {
           placeholder="Escribí el cuerpo del mail…&#10;&#10;Un párrafo por línea en blanco. Podés poner links (https://rendi.finance)."
           rows={7} className={inputCls + ' resize-y font-normal leading-relaxed'} maxLength={20000} />
         <p className="text-[11px] text-ink-3">
-          <code className="px-1 rounded bg-bg-1/60">{'{nombre}'}</code> se reemplaza por el nombre de cada usuario (vacío si no tiene). El texto va como párrafos; los links se activan solos. Para una imagen, pegá su dirección de rendi.finance sola en un párrafo (las de otros sitios quedan como link).
+          <code className="px-1 rounded bg-bg-1/60">{'{nombre}'}</code> se reemplaza por el nombre de cada usuario (vacío si no tiene). El texto va como párrafos; los links se activan solos. Para una imagen, pegá su dirección de rendi.finance sola en un renglón (las de otros sitios quedan como link).
         </p>
       </div>
 
