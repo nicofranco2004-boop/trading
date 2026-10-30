@@ -630,6 +630,25 @@
   "updated_at",
   "user_id"
  ],
+ "resumenes_tecnicos": [
+  "cost_usd_cents",
+  "dia",
+  "empezado_at",
+  "error",
+  "estado",
+  "fecha_vela",
+  "hechos_json",
+  "input_tokens",
+  "llamadas",
+  "model",
+  "moneda",
+  "output_tokens",
+  "palabras",
+  "pedido_por",
+  "terminado_at",
+  "texto",
+  "ticker"
+ ],
  "snapshots": [
   "date",
   "id",

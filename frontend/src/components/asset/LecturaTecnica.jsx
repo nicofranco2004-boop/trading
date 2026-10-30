@@ -31,6 +31,9 @@
 // Debajo del RSI, la fuerza de la tendencia en dos franjas: el ADX con su línea
 // de 23 y las barras del Squeeze (el combo «DMI/ADX/KEYLEVEL» + «SQZMOM_LB» de
 // TradingView), con su tarjeta «Fuerza de la tendencia».
+//
+// Debajo de la leyenda, el resumen de Mervall-E (ResumenMervalle.jsx): un
+// párrafo a pedido, uno por activo y por día, que ven todos.
 
 import { cloneElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { LineChart, Maximize2, Minimize2, RotateCcw, Ruler, Trash2 } from 'lucide-react'
@@ -40,6 +43,7 @@ import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, gua
 import CapaFibonacci, { COLOR_FIB, ID_FIB_AUTO, TarjetaFibonacci, preciosDeLaCapa, trazosDelFibonacci, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
 import CapaElliott, { COLOR_ELLIOTT, ID_ELL_AUTO, TarjetaElliott, fechaDelConteo, preciosDelConteo, trazosDelConteo } from './CapaElliott'
 import CapaDibujos, { trazosDeDibujos } from './CapaDibujos'
+import ResumenMervalle from './ResumenMervalle'
 import { BotonAvisame, BotonAvisameLinea, alertaDeLinea, useAvisosTecnicos, senalDeTarjeta } from '../alerts/AvisameTecnico'
 import { api } from '../../utils/api'
 import { factorDeFechas, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
@@ -652,6 +656,11 @@ export default function LecturaTecnica({
           </p>
         </div>
       </div>
+
+      {/* El resumen de Mervall-E de esta serie y este día de velas: uno para
+          todos. `key` por moneda: en pesos es otro resumen, con su propio botón. */}
+      <ResumenMervalle key={moneda} asset={asset} moneda={moneda} local={accionLocal} resumen={actual.resumen}
+        alTenerlo={(r) => setDatos(d => ({ ...d, [moneda]: { ...d[moneda], resumen: r } }))} />
 
       <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
         {ver.fib && actual.fibonacci && (

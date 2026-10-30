@@ -83,6 +83,7 @@ export const SIN_OJITO = {
   'components/home/EventsPreview.jsx': 'sólo /events/popular: el mercado',
   'hooks/useMarketIndices.js': 'sólo índices del mercado',
   'hooks/useDiario.js': 'sólo /tecnico/en-fechas: tendencias de precios',
+  'components/asset/ResumenMervalle.jsx': 'sólo POST /tecnico/{activo}/resumen: el resumen del activo, el mismo para todos (no lleva nada tuyo)',
   'components/fundamentals/PrecioComparado.jsx': 'Comparar → Precio (pieza 16): precios del mercado en base 100; de tu cartera sólo usa qué activos tenés y la fecha de tu primera compra, sin montos',
   'utils/instalarApp.js': 'sólo marca un paso de «primeros pasos»',
   'components/mobile/InsightDelDiaHero.jsx': 'textos de comportamiento, sin montos',
