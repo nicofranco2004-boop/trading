@@ -31,6 +31,8 @@ import AnimatedNumber from '../components/AnimatedNumber'
 import { detectoresVisibles } from '../utils/detectoresVisibles'
 import { planQueDestraba } from '../utils/planes'
 import { pctTxt } from '../utils/format'
+import { usePrivacy } from '../contexts/PrivacyContext'
+import { taparMontosEnTodo } from '../utils/ocultarSaldos'
 import { porcionColor } from '../utils/chartTheme'
 
 // Mapeo code → icono + tono visual + descripción educativa.
@@ -116,6 +118,10 @@ export default function Behavioral() {
   const [selectedCard, setSelectedCard] = useState(null)
   // Los números del resumen cuentan al verse (arriba de los returns: es un hook).
   const [refResumen, resumenVisto] = useAlVerse()
+  // «Ocultar saldos»: las tarjetas vienen del servidor con montos escritos en
+  // el texto («hubieras hecho ~US$ 10.383 más»): se tapan, quedan los % y los
+  // conteos (30/10: Comportamiento no miraba el ojito).
+  const { hidden: oculto } = usePrivacy()
 
   useEffect(() => {
     track('behavioral_viewed')
@@ -148,7 +154,7 @@ export default function Behavioral() {
     )
   }
 
-  const cards = data?.cards || []
+  const cards = (data?.cards || []).map(c => (oculto ? taparMontosEnTodo(c) : c))
   const allInsufficient = cards.length > 0 && cards.every(c => c.insufficient_data)
 
   return (

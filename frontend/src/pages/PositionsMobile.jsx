@@ -77,7 +77,7 @@ import { useEnVuelo } from '../hooks/useEnVuelo'
 import { avisoBorrarBroker } from '../utils/avisoBorrarBroker'
 import { confirmar } from '../utils/confirmar'
 import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
-import { usePrivacy } from '../contexts/PrivacyContext'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import { impactoFueraDeHorario, sumarTenencias, nombreCorto } from '../utils/fueraDeHorario'
 import { ChipFueraDeHorario, SiAbrieraAsi, IconoSesion, tonoDeSesion } from '../components/FueraDeHorario'
 
@@ -168,6 +168,7 @@ export function EncabezadoCompacto({ valor, currency, onMoneda, onBuscar }) {
 // botón «Registrar» del menú lateral y la Cartera de la compu.
 
 export default function PositionsMobile() {
+  const montoCard = useMontoCard()
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard/HomeMobile.
   const { currency, toggle: toggleCurrency, setTcValuacion: publishTcValuacion, valuationDollar, costBasis } = useCurrency()
   const navigate = useNavigate()
@@ -1484,8 +1485,7 @@ export default function PositionsMobile() {
     () => impactoFueraDeHorario(positions, brokers, { prices, tcValuacion, tcCedear, tcCripto }, fdh),
     [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, fdh])
   const sesionFdh = impactoFdh.aplica ? fdh.sesion : null
-  // El ojito de los saldos: el resto de esta pantalla todavía no lo respeta,
-  // pero lo nuevo sí (auditoría 2026-10-15).
+  // El ojito de los saldos (ver useMontoCard, abajo de todo).
   const { hidden: ocultoFdh } = usePrivacy()
   const fdhCtx = useMemo(() => (sesionFdh ? { sesion: sesionFdh, impacto: impactoFdh, oculto: ocultoFdh } : null),
     [sesionFdh, impactoFdh, ocultoFdh])
@@ -1495,7 +1495,7 @@ export default function PositionsMobile() {
   // Posiciones Y precios llegaron: recién ahí los números son los de verdad.
   const numerosListos = !loading && !pricesLoading
   const recalculo = useRecalculoDeCartera({ total: heroValor, moneda: currency, listo: numerosListos })
-  const fmtRecalculo = n => `${currency === 'ARS' ? '$' : 'US$'} ${Number(n).toLocaleString(LOCALE, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const fmtRecalculo = n => ocultoFdh ? OCULTO : `${currency === 'ARS' ? '$' : 'US$'} ${Number(n).toLocaleString(LOCALE, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   const heroPnl = heroValor - heroInvertido
   const heroPct = heroInvertido > 0 ? heroPnl / heroInvertido : 0
   // Contador de posiciones reales (lotes), independiente de la vista
@@ -1518,7 +1518,7 @@ export default function PositionsMobile() {
   // para "$41.417" pero no para "$58.977.218". Se mide por largo del string, que
   // es lo que determina el ancho con dígitos tabulares.
   // Un solo formato para el texto que se mide y el que cuenta (AnimatedNumber).
-  const fmtHero = n => '$' + Math.round(n).toLocaleString(LOCALE)
+  const fmtHero = n => (ocultoFdh ? OCULTO : '$' + Math.round(n).toLocaleString(LOCALE))
   const heroTexto = fmtHero(heroValor)
   const heroClass = heroTexto.length >= 13 ? 'text-3xl' : heroTexto.length >= 10 ? 'text-4xl' : 'text-5xl'
 
@@ -2368,6 +2368,7 @@ const BrokerSection = memo(function BrokerSection({
   onSellPosition, onBuyPosition, onAlertPosition, onCashFlowPosition, onConvertPosition,
   onBondCashflowPosition, onEditPosition, onEditGroupPosition, onDeletePosition, onToggleTicker,
 }) {
+  const montoCard = useMontoCard()
   // Color asignado por nombre — estable entre re-renders. Antes el header
   // de cada broker era casi invisible (text-[11px] mono sobre bg-0). Ahora
   // cada sección tiene identidad visual clara: avatar circular con la
@@ -2562,6 +2563,7 @@ const FdhCtx = createContext(null)
 
 // «☾ +0,85 % · +$53» debajo del valor de la fila. Nada si no aplica.
 function FdhDeLaFila({ p, moneda }) {
+  const montoCard = useMontoCard()
   const ctx = useContext(FdhCtx)
   if (!ctx || p.is_cash) return null
   const r = sumarTenencias((p._lots || [p]).map(l => l.id), ctx.impacto)
@@ -2583,6 +2585,7 @@ function FdhDeLaFila({ p, moneda }) {
 // «☾ +$118» debajo del valor del broker. Suma sus filas (sin contar dos veces
 // los lotes de una fila abierta).
 function FdhDelBroker({ filas, moneda }) {
+  const montoCard = useMontoCard()
   const ctx = useContext(FdhCtx)
   if (!ctx) return null
   const ids = filas.filter(p => !p._isLot).flatMap(p => (p._lots || [p]).map(l => l.id))
@@ -2658,6 +2661,7 @@ function PistaDeScroll() {
 //
 // Dos renglones para que entre en 375px con cifras en pesos de 8 dígitos.
 function PieDelBroker({ valorUsd, invertidoUsd, pnlUsd, pnlPct, moneda, tcValuacion }) {
+  const montoCard = useMontoCard()
   const aMoneda = n => (n == null ? null : moneda === 'ARS' ? n * tcValuacion : n)
   const pnl = aMoneda(pnlUsd)
   return (
@@ -2793,6 +2797,7 @@ const TOLERANCIA_PX = 8
 
 const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada = false, displayCurrency = 'USD', tcValuacion = 1, totalCuenta = null, nombreCuenta = null,
   onSell, onBuy, onAlert, onCashFlow, onConvert, onBondCashflow, onEditPos, onEditGroup, onDeletePos, onToggleTicker }) {
+  const montoCard = useMontoCard()
   // El broker de LA FILA, no el de la sección: en una cuenta unificada conviven
   // la pata en pesos y la pata en dólares, y de cuál sea depende si el efectivo
   // ofrece "Comprar USD" o "Vender USD a ARS". Espeja `_brokerDe(p.broker)` del
@@ -3221,7 +3226,7 @@ const TONO_ACCION = {
 // la argentina, ver LOCALE en utils/format— pero sigue en la firma porque el
 // tercer argumento (`{ signed }`) se correría de posición. No volver a usarlo
 // para ramificar el idioma del número.
-function montoCard(n, currency, { signed = false } = {}) {
+function montoCardRaw(n, currency, { signed = false } = {}) {
   if (n == null || isNaN(n)) return '—'
   const abs = Math.abs(n)
   const body = abs.toLocaleString(LOCALE, { maximumFractionDigits: 0 })
@@ -3236,6 +3241,16 @@ function formatQty(q) {
   // hacía el .replace(/\.00$/), pero con la coma decimal que corresponde.
   if (Math.abs(q) >= 1) return q.toLocaleString(LOCALE, { maximumFractionDigits: 2 })
   return q.toLocaleString(LOCALE, { minimumFractionDigits: 4, maximumFractionDigits: 4 })
+}
+
+// «Ocultar saldos»: cada monto de la Cartera del celular pasa por acá. Lo pide
+// cada componente que dibuja plata (también las filas, que están en `memo`: al
+// pedirlo se redibujan cuando cambia el ojito). Antes esta pantalla sólo lo
+// miraba para el «si abriera así»: con el ojito prendido se veían el total, lo
+// invertido, lo ganado y cada posición (30/10). Precios, cantidades y % quedan.
+function useMontoCard() {
+  const { hidden } = usePrivacy()
+  return (n, currency, opts) => (hidden ? OCULTO : montoCardRaw(n, currency, opts))
 }
 
 // El PRECIO sí lleva decimales: `montoCard` redondea a entero (sirve para un

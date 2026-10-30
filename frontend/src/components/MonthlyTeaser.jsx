@@ -19,6 +19,7 @@ import { Link } from 'react-router-dom'
 import { TrendingUp, TrendingDown, ArrowRight, Calendar } from 'lucide-react'
 import useMonthlyData from '../hooks/useMonthlyData'
 import { usd, pctSigned } from '../utils/format'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 
 // Días restantes en el mes en curso (Date local del usuario).
 // Devuelve number >= 0. Si el mes ya pasó (raro), devuelve 0.
@@ -40,6 +41,8 @@ export default function MonthlyTeaser({ mesEnCurso } = {}) {
   // Esto incluye un re-fetch en cada mount del Dashboard, pero el costo es
   // bajo (los endpoints son cacheables del lado del browser).
   const { loading, years, hasAnyData } = useMonthlyData({ broker: 'global' })
+  // «Ocultar saldos»: queda el % del mes, como en la Cartera.
+  const { hidden: oculto } = usePrivacy()
 
   if (loading || !hasAnyData) return null
 
@@ -100,7 +103,7 @@ export default function MonthlyTeaser({ mesEnCurso } = {}) {
             <span className={`text-base font-semibold tabular ${
               isPositive ? 'text-rendi-pos' : 'text-rendi-neg'
             }`}>
-              {isPositive ? '+' : '−'}USD {usd(Math.abs(deltaUsd))}
+              {oculto ? OCULTO : `${isPositive ? '+' : '−'}USD ${usd(Math.abs(deltaUsd))}`}
             </span>
             {showPct && (
               <span className={`text-sm tabular ${

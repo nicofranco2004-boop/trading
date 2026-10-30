@@ -42,6 +42,7 @@ import InfoTooltip from './InfoTooltip'
 import BotonCompartir from './BotonCompartir'
 import { withAlpha } from '../utils/chartTheme'
 import { specDeDistribucion, specDeComposicion, nombreDeArchivo } from '../utils/shareCard'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 
 // Debajo de este peso la porción no se lista aparte: se agrupa en "Otros" para
 // que la leyenda no se llene de slivers ilegibles. 10 clases de activo ya es
@@ -176,6 +177,13 @@ export default function CompositionDonut({
   // para quien pidió menos movimiento: el giro lo hace recharts en JavaScript
   // y el bloque de prefers-reduced-motion de index.css no lo alcanza.
   const [animar, setAnimar] = useState(() => !prefiereSinMovimiento())
+  // «Ocultar saldos»: toda torta de este componente es plata de alguien (tu
+  // cartera, la de un cliente, el libro del asesor), así que lo decide ACÁ y no
+  // cada pantalla que la monta (el inicio y Análisis le pasaban un formateador
+  // que no sabía del ojito y mostraban cada porción en dólares, 30/10). Quedan
+  // los %. La imagen para compartir tiene su propia pregunta («¿con montos?»).
+  const { hidden: oculto } = usePrivacy()
+  const fmtVer = oculto ? () => OCULTO : fmt
 
   const toggle = (key) => setOpen(prev => {
     const next = new Set(prev)
@@ -262,7 +270,7 @@ export default function CompositionDonut({
                 <Tooltip
                   cursor={false}
                   wrapperStyle={{ outline: 'none' }}
-                  content={<DonutTooltip fmt={fmt} />}
+                  content={<DonutTooltip fmt={fmtVer} />}
                 />
               </PieChart>
             </ResponsiveContainer>
@@ -282,7 +290,8 @@ export default function CompositionDonut({
               <LegendRow
                 key={s.key}
                 slice={s}
-                fmt={fmt}
+                fmt={fmtVer}
+                oculto={oculto}
                 highlighted={active === i}
                 expanded={open.has(s.key)}
                 onHover={() => setActive(i)}
@@ -307,7 +316,7 @@ export default function CompositionDonut({
 // Una fila de la leyenda. Desplegable solo si tiene detalle — las porciones
 // sintéticas (plazo fijo, que no viene de `positions`) no tienen qué mostrar,
 // y darles un chevron que no hace nada es peor que no tenerlo.
-function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onToggle, onAssetClick }) {
+function LegendRow({ slice, fmt, oculto = false, highlighted, expanded, onHover, onLeave, onToggle, onAssetClick }) {
   // Se despliega si hay algo que mostrar: activos, o al menos el resultado
   // (el plazo fijo no tiene activos pero sí interés devengado).
   const canExpand = slice.detail?.length > 0 || Boolean(slice.pnl)
@@ -376,7 +385,7 @@ function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onTogg
               <span className="text-ink-2">Resultado</span>
               <div className="flex items-baseline gap-2 flex-shrink-0">
                 <span className={`tabular font-medium ${toneOf(slice.pnl.total)}`}>
-                  {signed(slice.pnl.total)}{fmt(Math.abs(slice.pnl.total))}
+                  {oculto ? OCULTO : <>{signed(slice.pnl.total)}{fmt(Math.abs(slice.pnl.total))}</>}
                 </span>
                 {slice.pnl.pct != null && (
                   <span className={`tabular font-medium min-w-[46px] text-right ${toneOf(slice.pnl.total)}`}>

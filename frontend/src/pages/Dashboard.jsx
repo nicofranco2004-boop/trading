@@ -31,7 +31,7 @@ import { useNumeroQueCambia } from '../hooks/useNumeroQueCambia'
 import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
-import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
+import { usePrivacy, PrivacyMask, OCULTO } from '../contexts/PrivacyContext'
 import { useFxHistory, useDolarMensual } from '../hooks/useFxHistory'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
@@ -875,8 +875,15 @@ function PersonalDashboard() {
   // Helper: convierte USD → moneda activa para mostrar.
   // Para ARS multiplica por tcValuacion actual (snapshot). No es histórico — los
   // valores de snapshot se ven al FX de hoy. Lo aclaramos en el hero.
+  //
+  // «Ocultar saldos» vive en estos formateadores y no tarjeta por tarjeta: todo
+  // lo que formatean es plata tuya. Antes cada tarjeta tenía que acordarse
+  // (`oculto={hidden}`, <PrivacyMask>) y las que no se acordaron —Rendimiento
+  // «Hoy/Este mes», las tres tortas, Principales posiciones— mostraban los
+  // montos con el ojito prendido (30/10). Los % no pasan por acá.
   const fmt = (usdValue) => {
     if (usdValue == null) return '—'
+    if (hidden) return OCULTO
     return currency === 'ARS'
       ? fmtArs(usdValue * tcValuacion)
       : fmtUsd(usdValue)
@@ -884,6 +891,7 @@ function PersonalDashboard() {
   const sign = (v) => v == null ? '' : (v >= 0 ? '+' : '−')
   const fmtSigned = (usdValue) => {
     if (usdValue == null) return '—'
+    if (hidden) return OCULTO
     return currency === 'ARS'
       ? `${sign(usdValue)}ARS ${ars(Math.abs(usdValue * tcValuacion))}`
       : `${sign(usdValue)}USD ${usd(Math.abs(usdValue))}`
@@ -892,12 +900,14 @@ function PersonalDashboard() {
   // el dólar de su fecha, o son pesos guardados) — no vuelven a multiplicar.
   const fmtDirect = (v) => {
     if (v == null) return '—'
+    if (hidden) return OCULTO
     return currency === 'ARS' ? fmtArs(v) : fmtUsd(v)
   }
   // Igual que fmtSigned pero para valores que YA vienen en la moneda de display
   // (los que convertimos nosotros con FX histórico) — no vuelve a multiplicar.
   const fmtSignedDirect = (v) => {
     if (v == null) return '—'
+    if (hidden) return OCULTO
     return currency === 'ARS'
       ? `${sign(v)}ARS ${ars(Math.abs(v))}`
       : `${sign(v)}USD ${usd(Math.abs(v))}`
@@ -1473,6 +1483,9 @@ function PersonalDashboard() {
                     axisLine={false}
                     tickLine={false}
                     tickFormatter={v => {
+                      // «Ocultar saldos»: el eje dice cuánto vale tu cartera
+                      // («US$42k»); con el ojito, sin números (la forma queda).
+                      if (hidden) return ''
                       // Audit fix C1: evoSeriesDisplay YA está convertido a la
                       // currency del toggle. Acá solo formateamos con símbolo.
                       const abs = Math.abs(v)
@@ -1494,7 +1507,7 @@ function PersonalDashboard() {
                       // Audit fix C1: data ya está en la currency target.
                       // Solo formateamos. Mismo valor que el axis.
                       const label = name === 'valueUsd' ? 'Valor' : 'Aportado'
-                      return [currency === 'ARS' ? fmtArs(v) : fmtUsd(v), label]
+                      return [hidden ? OCULTO : currency === 'ARS' ? fmtArs(v) : fmtUsd(v), label]
                     }}
                     labelFormatter={(label, payload) => {
                       // Mostramos la fecha + el FX que se usó para ese punto
@@ -1578,6 +1591,7 @@ function PersonalDashboard() {
           >
             <TopHoldingsPanel
               positions={positionsForInsight}
+              oculto={hidden}
               currency={currency}
               tcValuacion={tcValuacion}
             />
@@ -1817,10 +1831,12 @@ function KpiCell({ label, value, sub, tone, info, infoAlign = 'right',
 // ─── Top holdings panel ──────────────────────────────────────────────────────
 // Tabla compacta: top 5 holdings por value_usd, con sparkline 30d lazy.
 
-function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
-  const fmt = (v) => currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v)
+function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1, oculto = false }) {
+  // Con «Ocultar saldos» quedan el activo y su %, como en la Cartera.
+  const fmt = (v) => oculto ? OCULTO : currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v)
   const fmtSigned = (v) => {
     if (v == null) return ''
+    if (oculto) return OCULTO
     const s = v >= 0 ? '+' : '−'
     return currency === 'ARS'
       ? `${s}${ars(Math.abs(v * tcValuacion))}`

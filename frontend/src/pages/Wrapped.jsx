@@ -19,6 +19,8 @@ import ShareCardModal from '../components/ShareCardModal'
 import { api } from '../utils/api'
 import { track } from '../utils/track'
 import { pctSigned } from '../utils/format'
+import { usePrivacy } from '../contexts/PrivacyContext'
+import { taparMontosEnTodo } from '../utils/ocultarSaldos'
 
 const TONE_BG = {
   positive: 'from-green-400/15 via-green-300/[0.04] to-bg-0',
@@ -45,6 +47,7 @@ export default function Wrapped() {
   const [error, setError] = useState(null)
   const [idx, setIdx] = useState(0)
   const [shareOpen, setShareOpen] = useState(false)
+  const { hidden: oculto } = usePrivacy()
 
   useEffect(() => {
     track('wrapped_viewed', { year })
@@ -57,7 +60,9 @@ export default function Wrapped() {
       .finally(() => setLoading(false))
   }, [year])
 
-  const slides = data?.slides || []
+  // «Ocultar saldos»: las diapositivas llegan del servidor con los montos ya
+  // escritos («P&L total +$12,861»): se tapan; quedan los % y los conteos.
+  const slides = (data?.slides || []).map(s => (oculto ? taparMontosEnTodo(s) : s))
   const total = slides.length
   const slide = slides[idx]
 

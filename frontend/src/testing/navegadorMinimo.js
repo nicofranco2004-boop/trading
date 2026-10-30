@@ -111,6 +111,64 @@ class Nodo {
   load() {}
   pause() { this.paused = true }
   play() { this.paused = false; return Promise.resolve() }
+  // Lo que piden las pantallas enteras montadas con su shell (el tema prende
+  // `dark` en <html>, el menú pregunta por sus hijos): ver
+  // __guards__/ocultar-saldos-pantallas.render.test.jsx.
+  get classList() {
+    const yo = this
+    const lista = () => (yo.atributos.class || '').split(/\s+/).filter(Boolean)
+    const poner = (l) => { yo.atributos.class = l.join(' ') }
+    return {
+      contains: c => lista().includes(c),
+      add: (...cs) => poner([...new Set([...lista(), ...cs])]),
+      remove: (...cs) => poner(lista().filter(x => !cs.includes(x))),
+      toggle: (c, si) => {
+        const tiene = lista().includes(c)
+        const quiere = si === undefined ? !tiene : !!si
+        poner(quiere ? [...new Set([...lista(), c])] : lista().filter(x => x !== c))
+        return quiere
+      },
+    }
+  }
+  get className() { return this.atributos.class || '' }
+  set className(v) { this.atributos.class = String(v) }
+  // React arma un <script> escribiendo `<script></script>` adentro de un div y
+  // sacándolo: alcanza con crear el primer elemento que nombra el texto.
+  set innerHTML(v) {
+    this.childNodes = []
+    const m = /<(\w+)/.exec(String(v))
+    if (m) this.appendChild(new Nodo(m[1], this.ownerDocument))
+  }
+  get innerHTML() { return '' }
+  get dataset() { return (this._dataset ||= {}) }
+  get offsetWidth() { return this.getBoundingClientRect().width }
+  get offsetHeight() { return this.getBoundingClientRect().height }
+  get clientWidth() { return this.getBoundingClientRect().width }
+  get clientHeight() { return this.getBoundingClientRect().height }
+  get firstElementChild() { return this.childNodes.find(n => n.nodeType === 1) || null }
+  get children() { return this.childNodes.filter(n => n.nodeType === 1) }
+  contains(otro) {
+    for (let n = otro; n; n = n.parentNode) if (n === this) return true
+    return false
+  }
+  querySelector() { return null }
+  querySelectorAll() { return [] }
+  getElementsByTagName() { return [] }
+  // Lo que piden los gráficos (recharts) al dibujar sus ejes.
+  getElementsByClassName(c) {
+    const out = []
+    const pila = [...this.childNodes]
+    while (pila.length) {
+      const n = pila.shift()
+      if (n.nodeType === 1 && (n.atributos.class || '').split(/\s+/).includes(c)) out.push(n)
+      pila.push(...(n.childNodes || []))
+    }
+    return out
+  }
+  getBBox() { const r = this.getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: r.height } }
+  getComputedTextLength() { return 0 }
+  scrollTo() {}
+  scrollIntoView() {}
 }
 
 // `style` con lo que React usa para las variables CSS (`--x`).
@@ -151,6 +209,14 @@ export function instalarNavegadorMinimo() {
     createTextNode: texto => ({ nodeType: 3, nodeValue: texto, textContent: texto, parentNode: null }),
     addEventListener() {},
     removeEventListener() {},
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    // Lo que usa quien mide un texto (Range, TreeWalker): nada ocupa lugar.
+    createTreeWalker: () => ({ nextNode: () => null }),
+    createRange: () => ({ selectNodeContents() {}, setStart() {}, setEnd() {}, detach() {},
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 }),
+      getClientRects: () => [] }),
+    getElementById: () => null,
     activeElement: null,
     defaultView: win,
     capturas: new Map(),     // puntero → elemento que lo tiene agarrado
@@ -160,7 +226,9 @@ export function instalarNavegadorMinimo() {
     oninput: null,
   }
   doc.body = new Nodo('body', doc)
+  doc.head = new Nodo('head', doc)
   doc.documentElement = new Nodo('html', doc)
+  doc.getElementsByTagName = (t) => ({ head: [doc.head], body: [doc.body], html: [doc.documentElement] }[String(t).toLowerCase()] || [])
   Object.assign(win, {
     document: doc,
     HTMLIFrameElement: class {},
@@ -174,6 +242,9 @@ export function instalarNavegadorMinimo() {
     innerWidth: 1280,
     innerHeight: 800,
   })
+  win.getComputedStyle = (n) => n?.style || estilo()
+  vi.stubGlobal('NodeFilter', { SHOW_ELEMENT: 1, SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2, FILTER_SKIP: 3 })
+  vi.stubGlobal('getComputedStyle', win.getComputedStyle)
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
   // El reloj de las animaciones (los números que cuentan, AnimatedNumber): un
   // cuadro cada 16 ms, como un navegador a 60 por segundo.

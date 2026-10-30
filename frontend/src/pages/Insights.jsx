@@ -118,6 +118,7 @@ import { esConversion } from '../utils/tradeStats'
 import AssetLogo from '../components/AssetLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 import {
   computeAllocationMatch,
@@ -364,6 +365,11 @@ function InsightsDesktop({ _embeddedTab }) {
   const isMobile = useIsMobile()
   const { user } = useAuth()
   const { valuationDollar, currency, costBasis } = useCurrency()
+  // «Ocultar saldos» (el ojito del inicio y la Cartera): Análisis no lo miraba en
+  // ningún lado y mostraba la atribución, las tortas y los textos del
+  // diagnóstico con tu plata (30/10). Lo deciden `amt`/`amtEnVista` (todos los
+  // montos de esta pantalla pasan por ahí) y `selectDiagnostics` (`oculto`).
+  const { hidden: oculto } = usePrivacy()
   // El dólar de cada mes, para lo aportado en pesos (capitalAportado.js).
   const { dolarMes, tcEnFecha } = useDolarMensual()
   const plan = usePlanFeatures()
@@ -2632,6 +2638,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // muestran los más relevantes (severidad alta primero) con una rotación
   // estable dentro del día para dar variedad sin perder lo importante.
   const diagnosisPool = selectDiagnostics({
+    oculto,
     // Diagnósticos de concentración por activo (concentration_extreme/high/few_assets)
     // necesitan datos por instrumento, no por broker. brokerPieData se usa solo para
     // diagnósticos que filtran por moneda del broker (high_ars_exposure).
@@ -2858,6 +2865,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // multiplicar por el dólar de hoy.
   function amtEnVista(value, opts = {}) {
     if (value == null || isNaN(value)) return '—'
+    if (oculto) return OCULTO
     // El signo menos de verdad, como pctVar/pctTxt y el texto del diagnóstico
     // ("−USD 240"): la lista de atribución decía "-USD 240,00" con guion.
     const sign = opts.signed ? (value >= 0 ? '+' : '−') : ''
@@ -3950,11 +3958,11 @@ function InsightsDesktop({ _embeddedTab }) {
               <CartesianGrid {...chartGrid} strokeDasharray={undefined} />
               <XAxis dataKey="label" tick={chartTick} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
               <YAxis tick={chartTick} axisLine={false} tickLine={false} width={56}
-                     tickFormatter={v => `US$${Math.round(v / 1000)}k`} />
+                     tickFormatter={v => (oculto ? '' : `US$${Math.round(v / 1000)}k`)} />
               <Tooltip
                 contentStyle={{ ...chartTooltip.contentStyle, padding: '10px 14px' }}
                 labelStyle={chartTooltip.labelStyle}
-                formatter={(v) => [`US$${Number(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`, 'Reconstrucción contable']}
+                formatter={(v) => [oculto ? OCULTO : `US$${Number(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`, 'Reconstrucción contable']}
               />
               <Line isAnimationActive={animarGraficos} animationDuration={900} type="monotone" dataKey="usd" name="Reconstrucción contable"
                     stroke="rgb(var(--ink-2))" strokeWidth={1.75} strokeDasharray="4 4" dot={false} />

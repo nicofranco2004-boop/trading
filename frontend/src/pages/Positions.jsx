@@ -2669,7 +2669,7 @@ function PositionsDesktop() {
                               <LazySparkline symbol={(p.asset || '').toUpperCase()} variant="row" />
                             )}
                           </td>
-                          <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
+                          <td className={`${tdClass} text-ink-2 tabular`}>{hidden && p.is_cash ? '••••••' : (p.quantity ?? '—')}</td>
                           <td className={`${tdClass} text-ink-2 tabular`}>{isArsDisp
                             ? (avgPriceArs != null ? `ARS ${ars(avgPriceArs)}` : '—')
                             : (avgPriceUsdDisp != null ? `USD ${usd(avgPriceUsdDisp)}` : '—')}</td>
@@ -2704,7 +2704,7 @@ function PositionsDesktop() {
                           <td className={`${tdClass} tabular`}>
                             {dvArs ? (
                               <div className="leading-tight">
-                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{dvArs.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvArs.amount))}` : `USD ${usd(Math.abs(dvArs.amount / tcValuacion))}`}</div>
+                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{hidden ? '••••••' : <>{dvArs.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvArs.amount))}` : `USD ${usd(Math.abs(dvArs.amount / tcValuacion))}`}</>}</div>
                                 <div className={`text-[10px] font-mono ${colorClass(dvArs.amount)}`}>{pctSigned(dvArs.pct)}</div>
                               </div>
                             ) : (
@@ -2928,7 +2928,7 @@ function PositionsDesktop() {
                             <LazySparkline symbol={(p.asset || '').toUpperCase()} variant="row" />
                           )}
                         </td>
-                        <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
+                        <td className={`${tdClass} text-ink-2 tabular`}>{hidden && p.is_cash ? '••••••' : (p.quantity ?? '—')}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{avgPrice != null ? (isArsDisp ? fmtArs(avgPrice * tcValuacion) : fmtUsd(avgPrice)) : '—'}</td>
                         <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? <FlashValue value={c.price}>{isArsDisp ? fmtArs(c.price * tcValuacion) : fmtUsd(c.price)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                         {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : (isArsDisp ? fmtArs((c.investedUsd ?? p.invested) * tcValuacion) : fmtUsd(c.investedUsd ?? p.invested))}</td>}
@@ -2951,7 +2951,7 @@ function PositionsDesktop() {
                         <td className={`${tdClass} tabular`}>
                           {dvUsd ? (
                             <div className="leading-tight">
-                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{dvUsd.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvUsd.amount * tcValuacion))}` : `USD ${usd(Math.abs(dvUsd.amount))}`}</div>
+                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{hidden ? '••••••' : <>{dvUsd.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvUsd.amount * tcValuacion))}` : `USD ${usd(Math.abs(dvUsd.amount))}`}</>}</div>
                               <div className={`text-[10px] font-mono ${colorClass(dvUsd.amount)}`}>{pctSigned(dvUsd.pct)}</div>
                             </div>
                           ) : (
