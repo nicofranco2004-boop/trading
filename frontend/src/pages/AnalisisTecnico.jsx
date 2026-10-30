@@ -6,7 +6,10 @@
 //   · Tu lista (?tab=lista): la tabla de pages/TuLista.jsx;
 //   · Señales de la semana (?tab=senales): «Tus señales» de la pieza 15
 //     (components/TusSenales.jsx), que vivía en Novedades;
-//   · Comparar y Mercado: «Próximamente», no se pueden tocar.
+//   · Comparar: lleva a LA pantalla de comparar (Análisis fundamental →
+//     Comparar → Precio, pieza 16) con tus 4 activos que más pesan ya cargados.
+//     No hay un segundo «Comparar» acá adentro (decisión de Nico);
+//   · Mercado: «Próximamente», no se puede tocar.
 // «Panorama» y no «Resumen»: Resumen es la primera pantalla del mismo grupo.
 // ════════════════════════════════════════════════════════════════════════════
 // Una sola pantalla para compu y celular (R6): en el celular las pestañas se
@@ -30,23 +33,30 @@ import { usePrivacy } from '../contexts/PrivacyContext'
 import { clicNormal } from '../utils/clicNormal'
 import { filasDeLaLista, contarFilas } from '../utils/listaTecnica'
 import { tarjetas as tarjetasDeLaSemana, rutaDeFicha, NO_ES_RECOMENDACION, TITULO_PLATA_ALCISTA, TITULO_CAMBIOS, QUE_ES_ESTA_SEMANA } from '../utils/tusSenales'
+import { urlDeComparar } from '../utils/comparadorPrecio'
 
 // Las pestañas, en orden. `corto`: el nombre en el celular. `pronto`: todavía
-// no está (se ve, no se toca).
+// no está (se ve, no se toca). `afuera`: lleva a otra pantalla (no se queda acá).
 export const PESTANAS = [
   { id: 'panorama', label: 'Panorama' },
   { id: 'lista', label: 'Tu lista' },
   { id: 'senales', label: 'Señales de la semana', corto: 'Señales' },
-  { id: 'comparar', label: 'Comparar', pronto: true },
+  { id: 'comparar', label: 'Comparar', afuera: true },
   { id: 'mercado', label: 'Mercado', pronto: true },
 ]
 
-/** La pestaña de la dirección (?tab=…). Sin tab, una que no existe o una que
- *  todavía no está: Panorama. */
+/** La pestaña de la dirección (?tab=…). Sin tab, una que no existe, una que
+ *  todavía no está o una que lleva afuera: Panorama. */
 export function pestanaDe(searchParams) {
   const t = searchParams.get('tab')
-  const p = PESTANAS.find(x => x.id === t && !x.pronto)
+  const p = PESTANAS.find(x => x.id === t && !x.pronto && !x.afuera)
   return p ? p.id : 'panorama'
+}
+
+/** Comparar → Precio con tus 4 activos que más pesan (los de «Tu lista» que
+ *  tenés, por su peso del servidor). Sin ninguno, abre vacío para elegir. */
+export function urlDeCompararTuyos(filas = []) {
+  return urlDeComparar(filas.filter(f => f.tenes).sort((a, b) => (b.peso || 0) - (a.peso || 0)).map(f => f.ruta))
 }
 
 /** La dirección de una pestaña (Panorama va sin ?tab, es la de entrada). */
@@ -190,7 +200,7 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
             : `${c.todo} ${c.todo === 1 ? 'activo' : 'activos'}: ${c.tenes} que tenés y ${c.watchlist} que seguís, con su tendencia, fuerza y último cambio.`} />
         <Tarjeta titulo="Señales de la semana" ir={urlDePestana('senales')} accion="Ver las señales →"
           texto={`${datos ? `${total === 1 ? 'El cambio' : `Los ${total} cambios`}` : 'Los cambios'}, día por día, y cómo te llega el resumen de los sábados.`} />
-        <Tarjeta titulo="Comparar" pronto accion="Todavía no está"
+        <Tarjeta titulo="Comparar" ir={urlDeCompararTuyos(filas)} accion="Comparar precios →"
           texto="¿Qué rindió más desde que compraste? Contra guardar dólares, la inflación y el S&P 500." />
       </div>
       <p className="text-[12px] text-ink-2 leading-relaxed">{NO_ES_RECOMENDACION}</p>
@@ -211,6 +221,7 @@ export default function AnalisisTecnico() {
     [lista.cargando, lista.error, lista.tenencias, lista.seguidos, lista.indice])
 
   const elegir = (id) => {
+    if (id === 'comparar') { navigate(urlDeCompararTuyos(filas)); return }
     const next = new URLSearchParams(searchParams)
     if (id === 'panorama') next.delete('tab'); else next.set('tab', id)
     setSearchParams(next)

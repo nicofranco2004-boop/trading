@@ -11872,21 +11872,103 @@ def get_tecnico(request: Request, asset: str, moneda: str = "usd", local: int = 
     if ref and not _SYMBOL_RE.match(ref):
         raise HTTPException(400, f"Símbolo inválido: {ref}")
     import tecnico
-    import velas_diarias
     # El freno de la ficha (`_freno_tecnico`, tipo «uno»): 45 fichas distintas a
     # la vez dejaron el «¿estás vivo?» en 33 s (re-test E1, 29/10).
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
-        tickers, motivo = [], None
-        try:
-            tickers = velas_diarias.tickers_a_pedido(sym, bool(local))
-            if tickers and velas_diarias.se_puede_pedir(conn, sym, uid):
-                motivo = velas_diarias.asegurar(conn, tickers, uid)
-        except Exception as ex:
-            # Sin la descarga, la ficha muestra lo que haya guardado.
-            log.warning("tecnico: velas a pedido de %s fallaron: %r", sym, ex)
+        tickers, motivo = _velas_a_pedido(conn, [(sym, bool(local))], uid)[sym]
         res = tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
         if not res.get("disponible"):
             res["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
+        return res
+
+
+def _velas_a_pedido(conn, pedidos: list, uid) -> dict:
+    """Las velas de los activos que nadie sigue (o viejas) se bajan en el momento,
+    con los frenos de `velas_diarias.asegurar` y sólo si la app los conoce
+    (`se_puede_pedir`). La usan la ficha (uno) y el comparador de precios
+    (hasta 4, juntos: UNA espera a Yahoo con un solo tope, no una por activo).
+    `pedidos`: [(símbolo, local)]. {símbolo: (tickers, motivo)}: `tickers` vacío
+    = no tiene serie (un bono, un fondo); `motivo` 'tope' o 'bajando' si no se pudo."""
+    import velas_diarias
+    out, bajar = {}, []
+    for sym, local in pedidos:
+        tickers = []
+        try:
+            tickers = velas_diarias.tickers_a_pedido(sym, local)
+            if tickers and velas_diarias.se_puede_pedir(conn, sym, uid):
+                bajar.extend(tickers)
+        except Exception as ex:
+            log.warning("tecnico: velas a pedido de %s fallaron: %r", sym, ex)
+        out[sym] = tickers
+    motivo = None
+    if bajar:
+        try:
+            motivo = velas_diarias.asegurar(conn, bajar, uid)
+        except Exception as ex:
+            # Sin la descarga, se muestra lo que haya guardado.
+            log.warning("tecnico: velas a pedido de %s fallaron: %r", bajar, ex)
+    return {s: (t, motivo if t else None) for s, t in out.items()}
+
+
+@app.get("/api/comparar/precio")
+def get_comparar_precio(request: Request, activos: str, local: str = "", moneda: str = "usd",
+                        plazo: str = "1a", desde: str = None, uid: int = Depends(get_effective_user)):
+    """El comparador de precios (pieza 16, pestaña «Precio» de Comparar): de 1 a
+    4 activos y las varas (S&P 500, guardar dólares, inflación en pesos), todos
+    en 100 el mismo día y en la misma moneda. Las cuentas: comparar.py.
+
+    `activos`: 'GGAL,AAPL'. `local`: los que son acción argentina ('GGAL'), la
+    misma marca que `/api/tecnico?local=1`. `plazo`: '1a', '3a' o 'compra' (con
+    `desde`='YYYY-MM-DD', tu primera compra). Un activo que nadie sigue se baja
+    en el momento, como en la ficha (`_velas_a_pedido`)."""
+    import comparar
+    from fechas import hoy_art_date
+    lista = list(dict.fromkeys(s.strip().upper() for s in (activos or "").split(",") if s.strip()))
+    locales = {s.strip().upper() for s in (local or "").split(",") if s.strip()}
+    if not lista or len(lista) > comparar.MAX_ACTIVOS:
+        raise HTTPException(400, f"Elegí de 1 a {comparar.MAX_ACTIVOS} activos")
+    for s in lista + sorted(locales):
+        if not _SYMBOL_RE.match(s):
+            raise HTTPException(400, f"Símbolo inválido: {s}")
+    moneda = "ars" if moneda == "ars" else "usd"
+    hoy = hoy_art_date()
+    if plazo == "compra":
+        if not desde or not _DATE_RE.match(desde):
+            raise HTTPException(400, "Falta la fecha de tu primera compra")
+        try:
+            d = date.fromisoformat(desde)
+        except ValueError:
+            raise HTTPException(400, "Fecha inválida")
+        if d >= hoy:
+            raise HTTPException(400, "La fecha tiene que ser anterior a hoy")
+        inicio = d.isoformat()
+    elif plazo in comparar.PLAZOS:
+        inicio = comparar.desde_plazo(plazo, hoy)
+    else:
+        raise HTTPException(400, "Plazo inválido")
+    # Hasta 4 series y la bajada a pedido: el freno de la ficha (`_freno_tecnico`,
+    # tipo «uno»), como toda lectura pesada (E1). Sin él, el guardián de
+    # pesado.py lo marca (visto al juntar la pieza 16 con E, 30/10).
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        motivos = {s: motivo or ("sin_serie" if not tickers else "sin_datos") for s, (tickers, motivo)
+                   in _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid).items()}
+        cer, basis = [], None
+        if moneda == "ars":
+            try:
+                basis = _serie_cer_o_uva(conn, "CER")
+                _ensure_index_cached(conn, basis)
+                cer = [(r["date"], float(r["value"])) for r in conn.execute(
+                    "SELECT date, value FROM bond_indices_daily WHERE index_name=? AND date >= "
+                    "COALESCE((SELECT MAX(date) FROM bond_indices_daily WHERE index_name=? AND date <= ?), ?) "
+                    "ORDER BY date", (basis, basis, inicio, inicio)).fetchall()]
+            except Exception as ex:   # sin la fuente, la vara no aparece y se dice
+                log.warning("comparar: CER no disponible: %r", ex)
+        res = comparar.comparar(conn, [(s, s in locales) for s in lista], moneda, inicio,
+                                cer=cer, cer_basis=basis, hoy=hoy)
+        for f in res["faltan"]:
+            if f["clave"] in motivos and f["motivo"] == "sin_datos":
+                f["motivo"] = motivos[f["clave"]]
+        res["plazo"] = plazo
         return res
 
 

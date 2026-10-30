@@ -133,16 +133,24 @@ beforeEach(() => {
 afterEach(async () => { await montado?.desmontar?.(); montado = null; vi.unstubAllGlobals() })
 
 describe('Análisis técnico: las pestañas', () => {
-  it('sin ?tab abre Panorama; Comparar y Mercado se ven «Próximamente» y no se tocan', async () => {
+  it('sin ?tab abre Panorama; Mercado se ve «Próximamente» y no se toca', async () => {
     montado = await abrir('/analisis-tecnico')
     expect(pestanaActiva(montado.contenedor)).toBe('Panorama')
-    const t = montado.t()
-    expect(t).toContain('Comparar')
-    expect(t).toContain('Próximamente')
-    const comparar = buscarBoton(montado.contenedor, 'Comparar')
-    expect(comparar.atributos.disabled).not.toBeUndefined()
-    await enActo(async () => clic(montado.contenedor, comparar))
+    expect(montado.t()).toContain('Próximamente')
+    const mercado = buscarBoton(montado.contenedor, 'Mercado')
+    expect(mercado.atributos.disabled).not.toBeUndefined()
+    await enActo(async () => clic(montado.contenedor, mercado))
     expect(pestanaActiva(montado.contenedor)).toBe('Panorama')
+  })
+
+  it('Comparar lleva a LA pantalla de comparar precios, con lo tuyo que más pesa ya cargado', async () => {
+    montado = await abrir('/analisis-tecnico')
+    const comparar = buscarBoton(montado.contenedor, 'Comparar')
+    expect(comparar.atributos.disabled).toBeUndefined()
+    await enActo(async () => clic(montado.contenedor, comparar))
+    // NVDA pesa 75 % y KO 25 %: en ese orden.
+    expect(montado.donde.actual.pathname).toBe('/fundamentals')
+    expect(montado.donde.actual.search).toBe('?vista=precio&cmp=NVDA,KO')
   })
 
   it('?tab=lista abre la tabla y ?tab=senales las señales; tocar una pestaña cambia la dirección', async () => {

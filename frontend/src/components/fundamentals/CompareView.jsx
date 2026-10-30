@@ -1,6 +1,9 @@
-// CompareView — vista "Comparar" de Fundamentals (hasta 5 acciones lado a lado).
+// CompareView — vista "Comparar" de Fundamentals: UN solo «Comparar», con dos
+// pestañas. «Balances» (hasta 5 acciones lado a lado, lo de siempre) y «Precio»
+// (pieza 16, PrecioComparado: de 1 a 4 activos desde la misma base). Los
+// activos elegidos son los mismos en las dos; la pestaña va en ?vista=precio.
 // ═══════════════════════════════════════════════════════════════════════════
-// Flujo:
+// Flujo de «Balances»:
 //   1. Selector: chips removibles (AssetLogo + symbol + ×) + TickerSearch para
 //      agregar (cap 5) + "N de 5 seleccionadas". La lista se persiste en
 //      ?cmp=NVDA,MSFT,… (compartible).
@@ -13,7 +16,8 @@
 //
 // Toda la lógica de "quién gana" es pura → utils/fundamentalsCompare.js.
 
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   X, Plus, Zap, Check, ChevronDown, ChevronRight, Layers, AlertCircle,
   Tag, TrendingUp, ShieldCheck,
@@ -26,6 +30,8 @@ import AssetLogo from '../AssetLogo'
 import { api } from '../../utils/api'
 import { track } from '../../utils/track'
 import TickerSearch from './TickerSearch'
+import Segmento from '../asset/Segmento'
+import { MAX_ACTIVOS as MAX_PRECIO } from '../../utils/comparadorPrecio'
 import StarToggle from './StarToggle'
 import { businessQuality, priceRead, AXIS_PILL } from './axes'
 import {
@@ -34,6 +40,8 @@ import {
 } from '../../utils/fundamentalsCompare'
 
 const MAX = 5
+// Recharts entra sólo si alguien abre la pestaña «Precio».
+const PrecioComparado = lazy(() => import('./PrecioComparado'))
 
 const CATEGORY_ICON = {
   valuation: Tag,
@@ -49,6 +57,18 @@ export default function CompareView({ tickers, onChangeTickers, onOpenTicker, wa
   const [results, setResults] = useState({})
 
   const selected = tickers // array de strings upper, controlado por el padre
+  const [searchParams, setSearchParams] = useSearchParams()
+  const vista = searchParams.get('vista') === 'precio' ? 'precio' : 'balances'
+  const precio = vista === 'precio'
+  const tope = precio ? MAX_PRECIO : MAX
+  function elegirVista(v) {
+    setSearchParams(prev => {
+      const sp = new URLSearchParams(prev)
+      if (v === 'precio') sp.set('vista', 'precio')
+      else sp.delete('vista')
+      return sp
+    })
+  }
 
   const mounted = useRef(true)
   useEffect(() => () => { mounted.current = false }, [])
@@ -59,6 +79,7 @@ export default function CompareView({ tickers, onChangeTickers, onOpenTicker, wa
   // skeletons eternos (mismo bug que CarteraList). El filtro `missing` evita pedir
   // dos veces; solo frenamos al desmontar.
   useEffect(() => {
+    if (precio) return   // la pestaña de precios no usa los balances
     const missing = selected.filter(t => !results[t])
     if (missing.length === 0) return
     setResults(prev => {
@@ -71,7 +92,7 @@ export default function CompareView({ tickers, onChangeTickers, onOpenTicker, wa
         .then(res => { if (mounted.current) setResults(prev => ({ ...prev, [t]: { loading: false, data: res, error: null } })) })
         .catch(e => { if (mounted.current) setResults(prev => ({ ...prev, [t]: { loading: false, data: null, error: e?.message || 'Error' } })) })
     }
-  }, [selected.join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selected.join(','), precio]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Track comparación cuando hay ≥2 con data lista.
   const readyEntries = useMemo(() => selected
@@ -89,7 +110,7 @@ export default function CompareView({ tickers, onChangeTickers, onOpenTicker, wa
 
   function addTicker(symbol) {
     const sym = (symbol || '').toUpperCase()
-    if (!sym || selected.includes(sym) || selected.length >= MAX) return
+    if (!sym || selected.includes(sym) || selected.length >= tope) return
     onChangeTickers([...selected, sym])
   }
 
@@ -108,14 +129,19 @@ export default function CompareView({ tickers, onChangeTickers, onOpenTicker, wa
 
   return (
     <div className="space-y-6">
+      <div className="flex">
+        <Segmento etiqueta="Qué comparar" valor={vista} alElegir={elegirVista} estirar
+          opciones={[['balances', 'Balances'], ['precio', 'Precio']]} />
+      </div>
+
       {/* ── Selector ───────────────────────────────────────────────────────── */}
       <Panel>
         <div className="flex items-center justify-between gap-3 mb-3">
           <p className="text-[12px] text-ink-3 font-medium">
-            Acciones a comparar
+            {precio ? 'Activos a comparar' : 'Acciones a comparar'}
           </p>
-          <span className="text-[11px] font-mono text-ink-3 tabular">
-            {selected.length} de {MAX} seleccionadas
+          <span className="text-[11px] text-ink-3 tabular">
+            {Math.min(selected.length, tope)} de {tope} {precio ? 'elegidos' : 'seleccionadas'}
           </span>
         </div>
 
@@ -141,15 +167,22 @@ export default function CompareView({ tickers, onChangeTickers, onOpenTicker, wa
           </div>
         )}
 
-        {selected.length < MAX ? (
+        {selected.length < tope ? (
           <TickerSearch onSelect={addTicker} autoFocus={selected.length === 0} />
         ) : (
           <p className="text-xs text-ink-3 flex items-center gap-1.5">
-            <Plus size={13} className="rotate-45" /> Llegaste al máximo de {MAX}. Quitá una para agregar otra.
+            <Plus size={13} className="rotate-45" /> Llegaste al máximo de {tope}. {precio ? 'Quitá uno para agregar otro.' : 'Quitá una para agregar otra.'}
           </p>
         )}
       </Panel>
 
+      {precio && (
+        <Suspense fallback={<Skeleton className="h-80 w-full rounded-xl" />}>
+          <PrecioComparado tickers={selected} />
+        </Suspense>
+      )}
+
+      {!precio && <>
       {/* Avisos de tickers sin fundamentales / con error */}
       {(unavailable.length > 0 || errored.length > 0) && (
         <div className="space-y-2">
@@ -196,6 +229,7 @@ export default function CompareView({ tickers, onChangeTickers, onOpenTicker, wa
           <MetricDetail comparison={comparison} />
         </>
       )}
+      </>}
     </div>
   )
 }
