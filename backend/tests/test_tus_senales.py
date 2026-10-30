@@ -120,6 +120,7 @@ class TusSenalesTest(unittest.TestCase):
             self._post("/api/positions", {"broker": broker, "asset": asset, "quantity": 10,
                                           "buy_price": compra, "asset_type": tipo})
         self._post("/api/watchlist", {"symbol": "MSFT"})
+        self._seguida_desde("MSFT", dias[0])
         with main.db_abierta() as conn:
             for i, d in enumerate(dias):
                 conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
@@ -140,6 +141,16 @@ class TusSenalesTest(unittest.TestCase):
     def _post(self, url, body):
         r = self.client.post(url, json=body, headers=self.h)
         self.assertIn(r.status_code, (200, 201), r.text)
+
+    def _seguida_desde(self, symbol, dia, uid=None):
+        """La watchlist la sigue desde `dia` (la pestaña y el mail cuentan lo
+        de la watchlist desde que se agregó: ver `agregado_a_la_watchlist`). El
+        alta por HTTP la fecha hoy; esto es la historia de alguien que la sigue
+        desde antes."""
+        with main.db_abierta() as conn:
+            conn.execute("UPDATE watchlist SET added_at=? WHERE user_id=? AND symbol=?",
+                         (f"{dia.isoformat()} 12:00:00", uid or self.uid, symbol))
+            conn.commit()
 
     def _canal(self, canal):
         r = self.client.put("/api/tus-senales/canal", json={"canal": canal}, headers=self.h)
@@ -322,7 +333,8 @@ class TusSenalesTest(unittest.TestCase):
             otro = conn.execute(
                 "INSERT INTO users (email, name, password_hash, approved, email_verified, tier) "
                 "VALUES (?, 'Ana', 'x', 1, 1, 'pro')", (f"otra-{self.uid}@rendi.test",)).lastrowid
-            conn.execute("INSERT INTO watchlist (user_id, symbol) VALUES (?, 'MSFT')", (otro,))
+            conn.execute("INSERT INTO watchlist (user_id, symbol, added_at) VALUES (?, 'MSFT', '2020-01-01 12:00:00')",
+                         (otro,))
             conn.execute("INSERT INTO resumen_semanal_prefs (user_id, canal) VALUES (?, 'mail')", (otro,))
             conn.commit()
         real = senales_semana.armar_semana
@@ -369,6 +381,45 @@ class TusSenalesTest(unittest.TestCase):
             self._cron(_utc(sabado, 10, 5))
             self._cron(_utc(sabado, 10, 15))
         self.assertEqual(sum(f"uid={self.uid}" in x and "ConnectionError" in x for x in logs.output), 1)
+
+    # — sacar un activo de la watchlist y volver a ponerlo (decisión de Nico) —
+
+    def _volver_a_poner(self, symbol):
+        r = self.client.delete(f"/api/watchlist/{symbol}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._post("/api/watchlist", {"symbol": symbol})
+
+    def _msft(self, senales):
+        return [x for x in senales if x["asset"] == "MSFT"]
+
+    def test_lo_que_volviste_a_poner_en_la_watchlist_cuenta_desde_que_lo_pusiste_en_la_pestana(self):
+        """Decisión de Nico (29/10, re-test B): si sacás un activo de la
+        watchlist y lo volvés a poner, los cambios cuentan sólo desde el día en
+        que lo volviste a agregar. MSFT cruzó hace 2 ruedas; se vuelve a poner
+        hoy: la pestaña no lo cuenta."""
+        self._velas(hoy_art_date())
+        self.assertTrue(self._msft(self.client.get("/api/tus-senales", headers=self.h).json()["senales"]),
+                        "control: sin sacarlo, el cruce de MSFT está")
+        self._volver_a_poner("MSFT")
+        self.assertEqual(self._msft(self.client.get("/api/tus-senales", headers=self.h).json()["senales"]), [])
+
+    def test_lo_que_volviste_a_poner_en_la_watchlist_no_sale_en_el_mail(self):
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("mail")
+        self._volver_a_poner("MSFT")          # hoy, después del cruce
+        self._cron(_utc(sabado, 10, 5))
+        self.assertTrue(self.mails, "NVDA sigue cambiando: el mail sale")
+        self.assertNotIn("MSFT", self.mails[0]["texto"])
+
+    def test_si_esta_en_la_cartera_y_en_la_watchlist_manda_la_cartera(self):
+        """NVDA está en la cartera (cruzó hace 3 ruedas). Agregarla hoy a la
+        watchlist no la recorta: lo que tenés cuenta siempre."""
+        self._velas(hoy_art_date())
+        self._post("/api/watchlist", {"symbol": "NVDA"})
+        pestana = self.client.get("/api/tus-senales", headers=self.h).json()
+        nvda = [x for x in pestana["senales"] if x["asset"] == "NVDA" and x["tipo"] == "media200"]
+        self.assertTrue(nvda and nvda[0]["tenes"], pestana["senales"])
 
     def test_no_quiero_no_manda(self):
         sabado = _sabado_de(hoy_art_date())
@@ -647,6 +698,7 @@ class CriptoDelSabadoTest(unittest.TestCase):
     sábado a las 10:00."""
     setUp, tearDown = TusSenalesTest.setUp, TusSenalesTest.tearDown
     _post, _canal, _cron = TusSenalesTest._post, TusSenalesTest._canal, TusSenalesTest._cron
+    _seguida_desde = TusSenalesTest._seguida_desde
 
     def _dos_sabados(self, dia_del_cruce, viernes_tarde=False, otro_al_dia=False, sin_cron_en=None, sabados=2):
         """`sabados` sábados seguidos (el último, el de esta semana), cada uno con
@@ -664,9 +716,11 @@ class CriptoDelSabadoTest(unittest.TestCase):
         p.start()
         self._p.append(p)
         self._post("/api/watchlist", {"symbol": "BTC"})
+        self._seguida_desde("BTC", s1 - timedelta(days=30))
         if otro_al_dia:
             self.yahoo.precios["MSFT"] = lambda i, d: 300 - i * 0.01
             self._post("/api/watchlist", {"symbol": "MSFT"})
+            self._seguida_desde("MSFT", s1 - timedelta(days=30))
         # Bajando hasta el cruce (abajo de su promedio), 150 desde ese día.
         self.yahoo.btc = lambda d: 150.0 if d >= cruce else 100.0 + (cruce - d).days * 0.001
         self._canal("mail")

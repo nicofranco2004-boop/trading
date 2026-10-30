@@ -242,6 +242,24 @@ def watchlist(conn, uid: int, cedears=None) -> dict:
     return out
 
 
+def agregado_a_la_watchlist(conn, uid: int, cedears=None) -> dict:
+    """{(asset, local): día ARGENTINO en que se agregó a la watchlist}, con la
+    misma clave que `watchlist`. Sacar un activo borra su fila y volver a
+    ponerlo crea otra con la fecha de ese día (`added_at`, en UTC)."""
+    from fechas import dia_art
+    cedears = _cedears() if cedears is None else cedears
+    out = {}
+    for r in conn.execute("SELECT symbol, added_at FROM watchlist WHERE user_id=?", (uid,)).fetchall():
+        s = (r["symbol"] or "").strip().upper()
+        try:
+            dia = dia_art(datetime.fromisoformat(str(r["added_at"])[:19]))
+        except (TypeError, ValueError):
+            continue          # sin fecha (una fila muy vieja): no se recorta
+        base = s[:-3] if s.endswith(".BA") else s
+        out[(base, s.endswith(".BA") and base not in cedears)] = dia.isoformat()
+    return out
+
+
 def _tesis(conn, uid: int) -> dict:
     """{ACTIVO: texto} de la última tesis de cada activo (pieza 11, «Tu
     tesis», `tesis.ultimas`). Hasta el 29/10 devolvía {} con un «al juntar:
@@ -391,11 +409,19 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
     car = cartera(conn, uid, cedears, dolar)
     wl = watchlist(conn, uid, cedears)
     tesis = _tesis(conn, uid)
+    # Lo que seguís en la watchlist (y no tenés) cuenta desde el día en que lo
+    # agregaste: si lo sacaste y lo volviste a poner, lo que cruzó mientras no
+    # lo seguías no es «tu semana» (decisión de Nico, 29/10). Lo que TENÉS
+    # cuenta siempre, aunque además esté en la watchlist.
+    agregado = agregado_a_la_watchlist(conn, uid, cedears)
+    recorte = {k: (date.fromisoformat(agregado[k]) - timedelta(days=1)).isoformat()
+               for k in wl if k in agregado and k not in car["tenencias"]}
 
     def _leer(k):
         # La lectura no depende de `desde`, los cambios sí: el caché va por
         # (activo, desde), y `reparto` (que sólo lee la lectura) reusa la misma.
         d = (desde_de or {}).get(k) or desde
+        d = max(d, recorte.get(k, d))
         if (k, d) not in series:
             series[(k, d)] = tecnico.para_la_cartera(conn, [k], hoy=hoy, desde=d)[0]
             series.setdefault(k, series[(k, d)])
