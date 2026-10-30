@@ -41,4 +41,17 @@ describe('variacionDelDia', () => {
     expect(variacionDelDia({ broker: 'Schwab', asset: 'KO', quantity: 1 }, false, c)).toBeNull()
     expect(variacionDelDia({ broker: 'Schwab', asset: 'NVDA', quantity: 1 }, false, ctx({}, { NVDA: 140 }))).toBeNull()
   })
+
+  it('si la valuación no confía en el precio, no hay movimiento del día (lo mismo que el celular)', () => {
+    // AL30 de la cuenta de prueba: costo $0,70 por lámina contra un precio de $847.
+    // La fila lo valúa al costo; la Var. día decía −USD 217.
+    const al30 = { broker: 'IOL', asset: 'AL30', asset_type: 'BONO', quantity: 200000, invested: 140000, currency: 'ARS' }
+    expect(variacionDelDia(al30, true, ctx({ 'AL30.BA': 847.5 }, { 'AL30.BA': 849.2 }))).toBeNull()
+    // El mismo bono con su costo de verdad: sí.
+    const sano = { ...al30, invested: 170000000 }
+    expect(variacionDelDia(sano, true, ctx({ 'AL30.BA': 847.5 }, { 'AL30.BA': 849.2 })).pct).toBeCloseTo(-1.7 / 849.2, 12)
+    // Un CEDEAR en dólares con costo en USD se compara contra su .BA pasado a dólares.
+    const aapl = { broker: 'Schwab', asset: 'AAPL', asset_type: 'CEDEAR', quantity: 10, invested: 200 }
+    expect(variacionDelDia(aapl, false, ctx({ 'AAPL.BA': 20000 }, { 'AAPL.BA': 19000 }))).not.toBeNull()
+  })
 })

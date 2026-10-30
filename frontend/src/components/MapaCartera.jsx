@@ -238,9 +238,17 @@ export default function MapaCartera({ lotes = [], encabezado = null, fmtMonto, o
           <div className="relative" style={{ height: alto }} onPointerLeave={() => setEncima(null)}>
             {laid.map(b => {
               const col = colorDelCuadro(b, modo)
-              const grande = b.w >= 64 && b.h >= 44
-              const conPeso = !oculto && b.w >= 72 && b.h >= 66
+              // Cuánto texto entra, por el tamaño del cuadro: nombre, número y
+              // peso uno abajo del otro; en un cuadro bajo, nombre y número en un
+              // renglón; en uno chico, sólo el nombre (el resto, en el globo).
+              const texto = b.h >= 74 && b.w >= 72 ? 'completo' : b.h >= 34 && b.w >= 72 ? 'renglon' : 'nombre'
+              const conPeso = !oculto && texto === 'completo'
               const Tag = b.ruta ? 'button' : 'div'
+              const nombre = (
+                <span className={`font-semibold truncate min-w-0 ${texto === 'nombre' ? 'text-[12px]' : 'text-[14px] sm:text-[15px]'}`}>
+                  {b.nombre}{texto !== 'nombre' && b.detalle ? <span className="font-normal opacity-80"> {b.detalle}</span> : null}
+                </span>
+              )
               return (
                 <Tag
                   key={b.clave}
@@ -249,13 +257,14 @@ export default function MapaCartera({ lotes = [], encabezado = null, fmtMonto, o
                   onClick={b.ruta ? () => abrir(b) : undefined}
                   onPointerEnter={e => { if (e.pointerType === 'mouse') setEncima(b.clave) }}
                   aria-label={etiquetaDe(b)}
-                  className={`absolute rounded-lg overflow-hidden text-left flex flex-col justify-between p-2 sm:p-3 ${b.ruta ? 'cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-data-violet' : ''} ${resaltado?.clave === b.clave ? 'ring-2 ring-ink-0/60 z-[1]' : ''}`}
+                  className={`absolute rounded-lg overflow-hidden text-left flex ${texto === 'renglon' ? 'flex-row items-center gap-2' : 'flex-col'} justify-between ${texto === 'completo' ? 'p-2 sm:p-3' : 'px-2 py-1'} ${b.ruta ? 'cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-data-violet' : ''} ${resaltado?.clave === b.clave ? 'ring-2 ring-ink-0/60 z-[1]' : ''}`}
                   style={{ left: b.x + 1.5, top: b.y + 1.5, width: Math.max(b.w - 3, 0), height: Math.max(b.h - 3, 0), background: col.bg, color: col.ink }}
                 >
-                  <span className={`font-semibold truncate ${grande ? 'text-[14px] sm:text-[15px]' : 'text-[12px]'}`}>
-                    {b.nombre}{grande && b.detalle ? <span className="font-normal opacity-80"> {b.detalle}</span> : null}
-                  </span>
-                  {grande && (
+                  {nombre}
+                  {texto === 'renglon' && (
+                    <span className="font-semibold tabular text-[14px] shrink-0">{valorDelModo(b, modo)}</span>
+                  )}
+                  {texto === 'completo' && (
                     <span className="min-w-0">
                       <span className={`block font-semibold tabular truncate ${b.w >= 120 && b.h >= 90 ? 'text-[20px]' : 'text-[15px]'}`}>{valorDelModo(b, modo)}</span>
                       {conPeso && <span className="block text-[12px] tabular opacity-85 truncate">{textoDelPeso(b.peso * 100)}</span>}

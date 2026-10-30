@@ -45,15 +45,22 @@ const CORTES_TENDENCIA = { plano: 0.5, pasos: [1, 2] }
 /**
  * Los lotes del Dashboard, juntos por cuadro. `lotes`: [{ p (el lote de
  * /positions), dia ({ amount, base } en dólares | null), valueUsd, pnlUsd }].
- * → Map clave → { diaUsd, diaBase, conDia, valor, resultado }
+ * → Map clave → { diaUsd, diaBase, conDia, diaPct, valor, resultado }
  */
 export function sumarLotes(lotes = []) {
   const out = new Map()
   for (const { p, dia, valueUsd, pnlUsd } of lotes) {
     if (!p || p.is_cash || !p.asset) continue
     const k = clave(String(p.asset).toUpperCase(), esLoteLocal(p))
-    const a = out.get(k) || { diaUsd: 0, diaBase: 0, conDia: false, valor: 0, resultado: 0, conValor: false }
-    if (dia) { a.diaUsd += dia.amount; a.diaBase += dia.base; a.conDia = true }
+    const a = out.get(k) || { diaUsd: 0, diaBase: 0, conDia: false, diaPct: undefined, valor: 0, resultado: 0, conValor: false }
+    if (dia) {
+      a.diaUsd += dia.amount; a.diaBase += dia.base; a.conDia = true
+      // Si todos los lotes se movieron el mismo % (cotizan con el mismo precio,
+      // que es lo normal), ése es el % del cuadro, tal cual lo dice la fila de la
+      // Cartera. Dividir los montos da el mismo número con otro último decimal, y
+      // en un empate de redondeo la Cartera decía −3,8 % y el mapa −3,9 % (YPFD).
+      a.diaPct = a.diaPct === undefined || a.diaPct === dia.pct ? dia.pct : null
+    }
     if (valueUsd != null && pnlUsd != null) { a.valor += valueUsd; a.resultado += pnlUsd; a.conValor = true }
     out.set(k, a)
   }
@@ -81,7 +88,7 @@ export function cuadrosDelMapa({ tenencias = [], sinMedir = null, indice = null,
       ruta: f.ruta,
       peso: f.peso / 100,
       fondo: f.fondo,
-      hoy: a?.conDia && a.diaBase > 0 ? { pct: a.diaUsd / a.diaBase, usd: a.diaUsd, base: a.diaBase } : null,
+      hoy: a?.conDia && a.diaBase > 0 ? { pct: a.diaPct ?? a.diaUsd / a.diaBase, usd: a.diaUsd, base: a.diaBase } : null,
       promedio: a?.conValor && costo > 0 ? { pct: a.resultado / costo } : null,
       tipo: 'activo',
     }

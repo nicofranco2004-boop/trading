@@ -24,6 +24,17 @@ describe('mapaCartera', () => {
     expect(m.get('GGAL|0')).toMatchObject({ conDia: false, valor: 300, resultado: -20 })
   })
 
+  it('el % de hoy es el de la fila de la Cartera, sin re-redondear (YPFD: −3,8 %, no −3,9 %)', () => {
+    const pct = (7870 - 8185.127405096204) / 8185.127405096204   // −0,038499…
+    const dia = { amount: (7870 - 8185.127405096204) * 15 / 1563, base: 8185.127405096204 * 15 / 1563, pct }
+    expect(dia.amount / dia.base).not.toBe(pct)   // dividir montos da otro último decimal
+    const [c] = cuadrosDelMapa({
+      tenencias: [{ asset: 'YPFD', local: true, peso: 1, tipo: 'ACCION' }],
+      lotes: [{ p: { broker: 'IOL', asset: 'YPFD', asset_type: 'ACCION', quantity: 15, currency: 'ARS' }, dia, valueUsd: 75, pnlUsd: -327 }],
+    })
+    expect(c.hoy.pct).toBe(pct)
+  })
+
   it('los cuadros: el peso del servidor, % del día y contra tu promedio, efectivo y plazos fijos', () => {
     const cuadros = cuadrosDelMapa({
       tenencias: [{ asset: 'GGAL', local: true, peso: 0.5, tipo: 'ACCION' }, { asset: 'GGAL', local: false, peso: 0.3, tipo: 'STOCK' }],
