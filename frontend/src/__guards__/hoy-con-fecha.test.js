@@ -41,10 +41,21 @@ describe('D5 · lo que sale del último cierre dice de qué día es', () => {
     const m = { disponible: true, hasta: '2026-10-28', peor_caida: null, dia_normal: null,
       desde_el_maximo: { pct: -1.3, maximo: 348.22, anio_completo: true } }
     const c = tarjetasMovimiento(m, { precio }).find(x => x.id === 'desde_maximo')
-    expect(c.texto).toBe('Al cierre del 28/10/26, contra el máximo del año (US$ 348,22).')
+    // Al juntar con Arreglos A (A5): la caída se mide contra el CIERRE más alto
+    // (Fibonacci usa el pico de adentro del día), y lo dice así.
+    expect(c.texto).toBe('Al cierre del 28/10/26, contra el cierre más alto del año (US$ 348,22).')
     const enMax = tarjetasMovimiento({ ...m, desde_el_maximo: { pct: 0, maximo: 1, anio_completo: true } }, { precio })
       .find(x => x.id === 'desde_maximo')
-    expect(enMax.texto).toBe('El 28/10/26 cerró en el máximo del año.')
+    // Al juntar A5 («el cierre más alto») con D5 («El 28/10/26 cerró en…») salía
+    // «cerró en el cierre más alto»: la frase dice lo mismo sin repetirse.
+    expect(enMax.texto).toBe('El 28/10/26 tuvo el cierre más alto del año.')
+    const sinFecha = (x) => tarjetasMovimiento({ ...m, hasta: null, desde_el_maximo: x }, { precio })
+      .find(c => c.id === 'desde_maximo').texto
+    expect(sinFecha({ pct: 0, maximo: 1, anio_completo: true })).toBe('Su último cierre fue el más alto del año.')
+    expect(sinFecha({ pct: 0, maximo: 1, anio_completo: false })).toBe('Su último cierre fue el más alto del período.')
+    for (const x of [enMax.texto, sinFecha({ pct: 0, maximo: 1, anio_completo: true })]) {
+      expect(x).not.toMatch(/cierr\w* .*cierre más alto/)
+    }
   })
 
   it('la tesis: «Al cierre del 28/10/26 estaba 8,1 % abajo»', () => {

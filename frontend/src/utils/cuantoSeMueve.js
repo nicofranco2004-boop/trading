@@ -191,13 +191,14 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
     // «lo más alto que llegó» con el pico de adentro del día, que puede ser otro
     // número. Cada uno dice cuál es (auditoría A 29/10, A5/D10).
     const deCuando = dm.anio_completo ? 'el cierre más alto del año' : 'el cierre más alto del período'
+    const elMasAlto = dm.anio_completo ? 'el más alto del año' : 'el más alto del período'
     out.push({
       id: 'desde_maximo', titulo: 'Caída desde el máximo', tono: enMaximo ? 'neutro' : 'neg',
       veredicto: enMaximo ? 'En su máximo' : pctConSigno(dm.pct),
       // Del último cierre, con su fecha (auditoría D5): no es el precio en vivo.
       texto: m.hasta
-        ? (enMaximo ? `El ${fechaCorta(m.hasta)} cerró en ${deCuando}.` : `Al cierre del ${fechaCorta(m.hasta)}, contra ${deCuando} (${precio(dm.maximo)}).`)
-        : (enMaximo ? `En el último cierre estaba en ${deCuando}.` : `En el último cierre, contra ${deCuando} (${precio(dm.maximo)}).`),
+        ? (enMaximo ? `El ${fechaCorta(m.hasta)} tuvo ${deCuando}.` : `Al cierre del ${fechaCorta(m.hasta)}, contra ${deCuando} (${precio(dm.maximo)}).`)
+        : (enMaximo ? `Su último cierre fue ${elMasAlto}.` : `En el último cierre, contra ${deCuando} (${precio(dm.maximo)}).`),
     })
   }
 
