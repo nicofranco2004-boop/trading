@@ -310,11 +310,6 @@ export function ubicadorPorHora(serie, { sesion, cada, diarios = [] }) {
       const f = fraccion && pos != null && k <= ultima + 0.99 ? Math.min(0.99, Math.max(0, (k - pos) / vpd)) : 0
       return { ...enDiarias, t, precio: precioRedondo(precio), ...(f > 0 ? { f: Math.round(f * 100) / 100 } : {}) }
     },
-    /** La última vela del día `fecha` (su cierre es el del día): ahí va tu tesis. */
-    ultimaVelaDelDia(fecha) {
-      const j = indiceDeFecha(serie, fecha)
-      return j != null && serie[j].d === fecha ? j : null
-    },
   }
 }
 
