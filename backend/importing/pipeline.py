@@ -33,6 +33,7 @@ from .excel import to_csv_text, is_xlsx, xlsx_to_csv, is_html_table, html_table_
 from . import seed as _seed
 from tickers_renombrados import codigos_anteriores   # GOLD → B: la huella vieja
 import renombre_broker as _renombre_broker   # los nombres anteriores de cada broker
+import pgsesion as _ps                        # el turno de la cuenta (`tomar_turno`)
 from efectivo import asset_de_caja
 
 log = logging.getLogger(__name__)
@@ -805,7 +806,37 @@ def moneda_de_broker_nuevo(nombre: str, filas, fmt_base=None) -> str:
     return "USDT" if usdt > usd else "USD"
 
 
-def run_preview(
+class _BrokersCambiaron(Exception):
+    """Entre que la vista previa leyó los brokers y fue a escribir, alguien los
+    renombró, creó o borró. Lo decidido con los nombres de antes no vale."""
+
+
+def _brokers_por_id(conn, uid: int) -> Dict[int, str]:
+    return {r["id"]: r["name"] for r in conn.execute(
+        "SELECT id, name FROM brokers WHERE user_id=?", (uid,)).fetchall()}
+
+
+def run_preview(conn, *, uid: int, **kw) -> Dict[str, Any]:
+    """Ejecuta el pipeline hasta preview. Persiste el batch (status='preview')
+    y devuelve el preview + session_id (== batch_id).
+
+    🔴 UN RENOMBRE EN EL MEDIO. La vista previa lee los brokers al principio y
+    escribe todo al final (ver `_escrituras_diferidas`). Si en ese rato se renombra
+    un broker, el renombre reescribe el nombre en las filas que YA existen, y el
+    lote se escribía después con el nombre viejo: filas de ningún broker, que al
+    confirmar llegaban a posiciones y cierres mensuales (medido el 30/10/2026 en
+    los dos motores, tests/test_renombrar_broker_durante_import.py). Antes de
+    escribir se toma el turno de la cuenta y se compara con lo leído; si cambió,
+    se rehace con el turno ya tomado, y ahí ya nadie puede meterse en el medio.
+    Rehacer es raro (hace falta renombrar justo en ese segundo) y no deja nada a
+    medias: hasta ese punto la vista previa sólo leyó."""
+    try:
+        return _run_preview_una_vez(conn, uid=uid, **kw)
+    except _BrokersCambiaron:
+        return _run_preview_una_vez(conn, uid=uid, **kw)
+
+
+def _run_preview_una_vez(
     conn,
     *,
     uid: int,
@@ -816,8 +847,15 @@ def run_preview(
     mapping: Optional[Dict[str, Any]] = None,   # mapping de columnas (formato libre)
     route_by_currency: bool = False,            # si True y broker es ARS, rutear USD al sub-broker
 ) -> Dict[str, Any]:
-    """Ejecuta el pipeline hasta preview. Persiste el batch (status='preview')
-    y devuelve el preview + session_id (== batch_id)."""
+    # Lo PRIMERO que se lee de los brokers: contra esto se compara antes de escribir.
+    brokers_leidos = _brokers_por_id(conn, uid)
+    # El broker fijo del mapeo lo eligió la persona en el asistente: es una
+    # referencia a uno de SUS brokers. Si la pantalla quedó abierta mientras lo
+    # renombraban en otra, manda el nombre de antes — y el importador creaba de
+    # nuevo un broker con ese nombre y metía el archivo ahí (auditoría
+    # 2026-10-11). Lo que dice el ARCHIVO (su columna de broker) no se toca.
+    if mapping:
+        mapping = _renombre_broker.plantilla_con_broker_de_hoy(conn, uid, mapping)
     if len(file_bytes) > MAX_FILE_BYTES:
         return {"error": f"El archivo excede el límite de {MAX_FILE_BYTES // 1_000_000} MB."}
 
@@ -1093,6 +1131,13 @@ def run_preview(
     # de arriba dejó pendientes (curar moneda / crear), después la limpieza y el
     # batch. En SQLite la primera escritura es la que TOMA el candado: hasta esta
     # línea la función sólo leyó, así que el candado dura lo que dura escribir.
+    #
+    # El turno de la cuenta PRIMERO, en los dos motores, y con él tomado, ¿los
+    # brokers siguen como se leyeron? (ver `run_preview`). En SQLite esto ya era la
+    # primera escritura; en Postgres pone en fila al renombre, que pide lo mismo.
+    _ps.tomar_turno(conn, uid)
+    if _brokers_por_id(conn, uid) != brokers_leidos:
+        raise _BrokersCambiaron()
     for _sql, _params, _cb in _escrituras_diferidas:
         _cur = conn.execute(_sql, _params)
         if _cb:
@@ -1612,15 +1657,19 @@ def load_session_with_seed_revalidate(
     # Re-normalizar
     normalized, _ = normalize_rows(raw_rows)
 
-    # Aplicar el mismo broker-canonicalization que run_preview.
+    # El broker de cada fila, como se llama HOY. El archivo crudo dice el nombre
+    # que tenía al subirlo; si se renombró entre la vista previa y la
+    # confirmación, el renombre ya reescribió el lote guardado (lo que usa la
+    # confirmación sin «Estado inicial») pero no lo escrito en el archivo, y con
+    # sólo mayúsculas/espacios las filas de ese broker caían como «broker
+    # inexistente» y se descartaban callando: el import decía «ok» con 0
+    # operaciones (medido el 30/10/2026 en los dos motores). Misma regla que el
+    # broker fijo de una plantilla (`renombre_broker.traductor_de_hoy`).
     user_brokers = fetch_user_brokers(conn, uid)
-    canonical_by_norm = {name.strip().lower(): name for name in user_brokers}
+    _de_hoy = _renombre_broker.traductor_de_hoy(conn, uid)
     for tx in normalized:
-        if not tx.broker:
-            continue
-        key = tx.broker.strip().lower()
-        if key in canonical_by_norm:
-            tx.broker = canonical_by_norm[key]
+        if tx.broker:
+            tx.broker = _de_hoy(tx.broker)
 
     # Existing positions + seed posiciones sintéticas → con esto los SELLs
     # antes inválidos pasan validación.

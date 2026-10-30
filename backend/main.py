@@ -1371,8 +1371,10 @@ _NOTAS_COMPRA_POR_CHAT_VIEJAS = ("Registrado por Coach IA", "Registrado por Rend
 def _tomar_turno(conn, uid: int) -> None:
     """Toma el turno de escritura (ver `_foto_contable`). `tier` y no `id`:
     reescribir la clave primaria hacía 14 chequeos de claves foráneas por borrado.
-    Aparte para que un test pueda sacarlo sin copiar lo demás."""
-    conn.execute("UPDATE users SET tier=tier WHERE id=?", (uid,))
+    Aparte para que un test pueda sacarlo sin copiar lo demás. La sentencia vive
+    en `pgsesion.tomar_turno` (la vista previa del import la usa sin `main`)."""
+    import pgsesion as _ps
+    _ps.tomar_turno(conn, uid)
 
 
 def _tomar_turno_de_la_puerta(conn, uid: int) -> None:
@@ -43711,12 +43713,9 @@ def import_preview(
                 raise HTTPException(400, "La tanda no existe o no es tuya.")
         def _previsualizar():
             with conn:
-                # El broker fijo del mapeo lo eligió la persona en el asistente: es
-                # una referencia a uno de SUS brokers. Si la pantalla quedó abierta
-                # mientras lo renombraban en otra, manda el nombre de antes — y el
-                # importador creaba de nuevo un broker con ese nombre y metía el
-                # archivo ahí (auditoría 2026-10-11). Misma regla que al guardar una
-                # plantilla. Lo que dice el ARCHIVO (su columna de broker) no se toca.
+                # El broker fijo del mapeo se lleva al nombre de HOY adentro de
+                # `run_preview` (`plantilla_con_broker_de_hoy`), después de la foto
+                # de los brokers con la que compara antes de escribir.
                 return _import_pipeline.run_preview(
                     conn,
                     uid=uid,
@@ -43724,7 +43723,7 @@ def import_preview(
                     file_name=combined_name,
                     broker_hint=broker,
                     parser_format=format,
-                    mapping=_renombre_broker.plantilla_con_broker_de_hoy(conn, uid, parsed_mapping),
+                    mapping=parsed_mapping,
                     route_by_currency=flag_route,
                 )
         # Si otro usuario tiene el candado de la base (un confirm largo, la tanda
@@ -44156,10 +44155,22 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
                 raise HTTPException(400, "La foto se comparó contra un historial que después se revirtió: "
                                          "volvé a subirla para compararla de nuevo.")
         with conn:
-            _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
+            # El turno de verdad, también en SQLite (no el «de la puerta», que allá
+            # no hace nada). Lo de abajo LEE el lote con el nombre de cada broker y
+            # después lo escribe en posiciones y operaciones; en SQLite la
+            # transacción se abría recién en la primera escritura, y un renombre
+            # que entraba en ese hueco dejaba posiciones a nombre del broker viejo
+            # (medido: tests/test_renombrar_broker_durante_import.py). Entre acá y
+            # esa escritura sólo hay lecturas de la base, sin red: el candado de
+            # toda la base dura casi lo mismo que antes.
+            _tomar_turno(conn, uid)
+            # El «Estado inicial» lo armó la pantalla con los nombres que tenía al
+            # cargar: si el broker se renombró después, lo sembrado caía en uno
+            # que ya no existe. Con el turno tomado, nada lo cambia hasta escribir.
+            seed_state = _renombre_broker.seed_con_brokers_de_hoy(conn, uid, data.seed_state)
             try:
                 txs, raw_id_by_index = _import_pipeline.load_session_with_seed_revalidate(
-                    conn, uid=uid, session_id=data.session_id, seed_state=data.seed_state,
+                    conn, uid=uid, session_id=data.session_id, seed_state=seed_state,
                 )
             except ValueError as ex:
                 raise HTTPException(400, str(ex))
@@ -44221,7 +44232,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
                     txs=txs,
                     raw_row_ids_by_index=raw_id_by_index,
                     helpers=_import_helpers,
-                    seed_state=data.seed_state,
+                    seed_state=seed_state,
                 )
             except _import_persister.PersistError as ex:
                 if ex.row_index is None:   # no es de una fila: el lote ya estaba confirmado
