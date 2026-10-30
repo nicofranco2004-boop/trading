@@ -1,5 +1,5 @@
 // La «Var. día» de un lote (utils/variacionDelDia.js): la de la Cartera de la
-// compu, mudada sin cambios para que el mapa de calor del Dashboard use la misma.
+// compu, mudada sin cambios a su propio archivo.
 import { describe, it, expect, beforeEach } from 'vitest'
 import { variacionDelDia, variacionDelDiaUsd } from './variacionDelDia'
 import { setBrokersRegistry } from './valuation'

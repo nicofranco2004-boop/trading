@@ -1670,8 +1670,8 @@ function PositionsDesktop() {
     return { valueUsd, investedUsd: invUsd, pnlUsd, pnlPct: invUsd > 0 ? pnlUsd / invUsd : 0 }
   }
 
-  // Variación del día por posición: la cuenta vive en utils/variacionDelDia.js
-  // (la misma que pinta el mapa de calor del Dashboard). En un broker en pesos
+  // Variación del día por posición: la cuenta vive en utils/variacionDelDia.js.
+  // En un broker en pesos
   // el monto va en pesos; en uno en dólares, en dólares. El % es invariante.
   // Lo que pide la cuenta del día; la valuación (`brokerDe`, `tcValuacion`,
   // `costBasis`) decide si confía en el precio, como en el total del broker.

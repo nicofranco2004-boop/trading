@@ -3,9 +3,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Es la columna «Var. día» de la Cartera de la compu. Vivía adentro de
 // Positions.jsx (`dayVarOf` + `dvFor`); se mudó acá sin cambiarle una cuenta
-// para que el mapa de calor del Dashboard pinte cada cuadro con el MISMO número
-// que muestra la fila de la Cartera. Usa el mismo precio que la fila, así los
-// números reconcilian.
+// (la pieza 8 la usaba también para su mapa de calor, que al juntar el 30/10
+// se reemplazó por el «Mapa de tu cartera» del Panorama, sin «Var. día»).
+// Usa el mismo precio que la fila, así los números reconcilian.
 //
 // ⚠️ La Cartera del celular (PositionsMobile.jsx) tiene su propia copia, metida
 // adentro de su valuación lote por lote, con dos casos más (la cripto en dólares

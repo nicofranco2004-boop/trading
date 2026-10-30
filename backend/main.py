@@ -12287,7 +12287,8 @@ def post_tecnico_lista(body: CarteraTecnicaIn, request: Request, uid: int = Depe
             {"asset": a, "local": l, "peso": senales_semana.peso(car, a, l), "tipo": car["tipos"].get((a, l)) or None}
             for (a, l), v in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
         # Efectivo y plazos fijos: cuentan en el total (por eso los pesos de arriba no
-        # suman 1) y el mapa de calor del Dashboard los dibuja como dos cuadros más.
+        # suman 1); el «Mapa de tu cartera» (Panorama y Dashboard) nombra con esto el
+        # cuadrito de lo que falta para 100 % (utils/mapaCartera.sinLecturaDe).
         out["sin_medir"] = senales_semana.pesos_sin_medir(car)
         return out
 
