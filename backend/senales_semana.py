@@ -569,7 +569,7 @@ def _entregar(conn, via: str, envio: dict) -> tuple:
                 "tag": "resumen-semanal",
             }) > 0
         except Exception as ex:
-            log.warning("semana: push uid=%s falló: %s", destino, ex)
+            log.warning("semana: push uid=%s falló: %s: %s", destino, type(ex).__name__, ex, exc_info=True)
     if via in ("mail", "ambos"):
         try:
             row = conn.execute("SELECT email, name FROM users WHERE id=?", (destino,)).fetchone()
@@ -577,7 +577,7 @@ def _entregar(conn, via: str, envio: dict) -> tuple:
                 mail_ok = bool(emails.send_alert_email(to=row["email"], user_name=row["name"] or "",
                                                        **envio["mail"]))
         except Exception as ex:
-            log.warning("semana: mail uid=%s falló: %s", destino, ex)
+            log.warning("semana: mail uid=%s falló: %s: %s", destino, type(ex).__name__, ex, exc_info=True)
     return push_ok, mail_ok
 
 

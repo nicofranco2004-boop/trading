@@ -1729,3 +1729,46 @@ def test_lo_que_falla_despues_de_disparar_se_deshace_entero(clean, monkeypatch):
     assert (res["fired"], res.get("errores")) == (0, 1)
     assert entregados == [] and _events(conn) == []
     assert conn.execute("SELECT armed FROM alerts").fetchone()["armed"] == 1
+
+
+def test_fuera_de_la_rueda_lo_que_quedo_guardado_se_manda_aunque_falle_lo_que_sigue(clean, monkeypatch):
+    """Re-test de la auditoría B (29/10), residuo 1: cada aviso fuera de la rueda
+    va en su punto de guardado, y en SQLite soltarlo YA lo confirma. Si después
+    reventaba algo del mismo tramo (fuera de esas guardas), el except descartaba
+    la lista de avisos del tramo — pero el primero ya estaba anotado: quedaba
+    registrado como avisado y no se mandaba nunca. Ahora lo que quedó guardado se
+    manda (la entrega le pregunta a la base, `_solo_lo_guardado`)."""
+    conn = clean
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3,
+              threshold=None, repeat="always")
+    _invierno_nvda(monkeypatch, ["NVDA", "NVDA.BA"])
+    real = _fdh.con_operaciones
+
+    class VelasQueFallanALaSegunda(dict):
+        n = 0
+
+        def get(self, *a):
+            VelasQueFallanALaSegunda.n += 1
+            if VelasQueFallanALaSegunda.n == 2:
+                raise RuntimeError("se cortó algo a mitad del tramo")
+            return super().get(*a)
+    monkeypatch.setattr(_fdh, "con_operaciones", lambda refs, s: VelasQueFallanALaSegunda(real(refs, s)))
+    entregados = []
+    monkeypatch.setattr(ae, "_deliver", lambda c, a, items: entregados.extend(items) or (True, True))
+    res = ae.evaluate_alerts(conn, only_user=1)
+    guardados = [e["message"] for e in _events(conn)]
+    assert res.get("errores") == 1
+    assert len(guardados) == 1, guardados
+    assert [it["message"] for it in entregados] == guardados, "lo anotado como avisado se manda"
+
+
+def test_el_cron_dice_que_error_fue_y_donde(clean, monkeypatch, caplog):
+    """Re-test de la auditoría B (29/10), residuo 2: el cron de alertas anotaba
+    «alertas de precio en el cron: 'x'» — sin el NOMBRE del error ni la traza,
+    la guarda que 2cc64ca8 le puso a las técnicas. Ahora los cinco motores del
+    cron dicen las dos cosas."""
+    monkeypatch.setattr(ae, "evaluate_alerts", lambda conn: (_ for _ in ()).throw(KeyError("x")))
+    with caplog.at_level("ERROR"):
+        main._evaluar_alertas_job()
+    r = [x for x in caplog.records if "alertas de precio en el cron" in x.getMessage()]
+    assert r and "KeyError" in r[0].getMessage() and r[0].exc_info

@@ -48753,7 +48753,7 @@ def _resumen_semanal_job(conn, now=None) -> dict:
         finally:
             _soltar_corrida("resumen_semanal")
     except Exception as _ex:
-        log.error("resumen semanal en el cron: %s", _ex, exc_info=True)
+        log.error("resumen semanal en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
         try:
             conn.rollback()
         except Exception:
@@ -48773,7 +48773,7 @@ def _evaluar_alertas_job() -> dict:
         try:
             result = _ae.evaluate_alerts(conn)
         except Exception as _ex:
-            log.error("alertas de precio en el cron: %s", _ex)
+            log.error("alertas de precio en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
             result = {"error_precio": str(_ex)}
             # Lo que quedó a medias no puede confirmarse con el primer commit
             # de las alertas del libro, que usan esta misma conexión: alertas
@@ -48795,7 +48795,7 @@ def _evaluar_alertas_job() -> dict:
             else:
                 result["tecnicas"] = _ae.evaluar_tecnicas(conn)
         except Exception as _ex:
-            log.error("alertas técnicas en el cron: %s", _ex)
+            log.error("alertas técnicas en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
             try:
                 conn.rollback()
             except Exception:
@@ -48813,7 +48813,7 @@ def _evaluar_alertas_job() -> dict:
         try:
             result.update(_ae.evaluar_recordatorios(conn))
         except Exception as _ex:
-            log.error("recordatorios de tesis en el cron: %s", _ex)
+            log.error("recordatorios de tesis en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
             try:
                 conn.rollback()
             except Exception:
@@ -48823,7 +48823,7 @@ def _evaluar_alertas_job() -> dict:
             result["advisor"] = advisor_alerts.evaluate(
                 conn, market_open=_ae._market_open_now(_dtmod.utcnow()))
         except Exception as _ex:
-            log.error("advisor alerts en el cron: %s", _ex)
+            log.error("advisor alerts en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
         log.info("alertas: %s", result)
         return result
     finally:

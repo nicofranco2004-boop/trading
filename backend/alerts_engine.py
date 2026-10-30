@@ -710,7 +710,7 @@ def _deliver(conn, alert, items) -> tuple:
             })
             push_ok = sent > 0
         except Exception as ex:
-            log.warning("alerts push uid=%s falló: %s", uid, ex)
+            log.warning("alerts push uid=%s falló: %s: %s", uid, type(ex).__name__, ex, exc_info=True)
 
     if channel in ("email", "both"):
         try:
@@ -720,7 +720,7 @@ def _deliver(conn, alert, items) -> tuple:
                 email_ok = emails.send_alert_email(
                     to=row["email"], user_name=(row["name"] or ""), **e["mail"])
         except Exception as ex:
-            log.warning("alerts email uid=%s falló: %s", uid, ex)
+            log.warning("alerts email uid=%s falló: %s: %s", uid, type(ex).__name__, ex, exc_info=True)
 
     return push_ok, email_ok
 
@@ -1421,19 +1421,23 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     # conexión). Adentro, la red va antes que cualquier escritura.
     conn.commit()
     # Cada aviso de adentro va con su guarda (`_guarda_por_alerta`). Si revienta
-    # lo demás (una lectura), se deshace con un rollback: es seguro porque todo
-    # lo anterior se acaba de confirmar, y hace falta porque en Postgres la
-    # transacción quedó abortada y la entrega de abajo no podría ni leer. NO va
-    # un punto de guardado alrededor: abriría la transacción antes de ir a
-    # Yahoo (test_los_dias_de_byma_se_piden_sin_la_base_tomada).
+    # lo demás (una lectura), se hace rollback: es seguro porque todo lo anterior
+    # se acaba de confirmar, y hace falta porque en Postgres la transacción quedó
+    # abortada y la entrega de abajo no podría ni leer. NO va un punto de
+    # guardado alrededor: abriría la transacción antes de ir a Yahoo
+    # (test_los_dias_de_byma_se_piden_sin_la_base_tomada).
+    # Los avisos del tramo pasan a la entrega IGUAL, salió bien o no: en SQLite
+    # soltar la guarda de cada uno ya lo confirmó, y el rollback no lo deshace.
+    # Descartarlos dejaba un aviso anotado que no se mandaba nunca (re-test de la
+    # auditoría B). Qué se manda lo decide la base (`_solo_lo_guardado`).
     propios: list = []
     try:
         fired += _evaluar_fuera_de_rueda(conn, units, propios, now)
-        pendientes.extend(propios)
     except Exception as ex:
         errores += 1
         log.error("alerts fuera de la rueda falló: %s: %s", type(ex).__name__, ex, exc_info=True)
         conn.rollback()
+    pendientes.extend(propios)
 
     # La entrega va DESPUÉS del loop: recién cuando terminó de evaluarse toda la
     # cartera se sabe cuántos activos se movieron y puede salir un mail solo.
