@@ -38,7 +38,10 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 import AdvisorDashboard from './AdvisorDashboard'
 import { api } from '../utils/api'
 import { computeBrokerValue, noRealizadoEnVista, valorAlMep, priceSymbol, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, setBrokersRegistry } from '../utils/valuation'
-import { sePuedeGuardar, guardarPnlNoRealizado } from '../utils/guardarValuacion'
+import { sePuedeGuardar, guardarPnlNoRealizado, yaSeGuardoLaFotoDeHoy, marcarFotoDeHoy } from '../utils/guardarValuacion'
+import { useDuenoDeLosDatos, sigueSiendoDe } from '../utils/duenoDeLaPestana'
+import { leer as leerDelAlmacen, borrar as borrarDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
@@ -84,6 +87,9 @@ export default function Dashboard() {
 }
 
 function PersonalDashboard() {
+  // De qué cuenta son los datos de esta pantalla (utils/duenoDeLaPestana): la
+  // foto del día se manda y se marca SÓLO si la pestaña sigue en esa cuenta.
+  const duenoDatos = useDuenoDeLosDatos()
   const [positions, setPositions] = useState([])
   const [operations, setOperations] = useState([])
   const [monthly, setMonthly] = useState([])
@@ -120,10 +126,10 @@ function PersonalDashboard() {
   const { hidden, toggle: togglePrivacy } = usePrivacy()
   useEffect(() => {
     try {
-      const legacy = localStorage.getItem('rendi_dashboard_currency')
+      const legacy = leerDelAlmacen(CATALOGO.monedaDelInicioVieja)
       if (legacy && (legacy === 'ARS' || legacy === 'USD')) {
         if (legacy !== currency) setCurrency(legacy)
-        localStorage.removeItem('rendi_dashboard_currency')
+        borrarDelAlmacen(CATALOGO.monedaDelInicioVieja)
       }
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -592,12 +598,15 @@ function PersonalDashboard() {
     // Comparación robusta: NaN/no-finito NO pasa (NaN >= x es false → no escribe).
     if (!sePuedeGuardar({ cobertura: priceCoverage })) return
     const today = hoyISO()
-    const key = 'rendi_snapshot_date'
-    if (localStorage.getItem(key) === today) return
+    // Los datos son de `duenoDatos`: si la pestaña ya está en otra cuenta, la
+    // foto NO se manda (el pedido saldría a nombre de la cuenta nueva con los
+    // números de la anterior) ni se marca. «Ya guardé la de hoy» es de la
+    // persona Y de la cuenta (utils/guardarValuacion).
+    if (!sigueSiendoDe(duenoDatos) || yaSeGuardoLaFotoDeHoy(duenoDatos, today)) return
     // Snapshots positions-only (sin PF) → la historia/gráfico/daily se mantienen
     // consistentes; el PF solo entra en las métricas estáticas del titular.
     api.post('/snapshots', { total_value: totalValuePositions, total_invested: totalCostBasisPositions, net_deposited: netDepositedPositions })
-      .then(() => localStorage.setItem(key, today))
+      .then(() => marcarFotoDeHoy(duenoDatos, today))
       .catch((e) => {
         // Un 5xx marca el día IGUAL. Antes el catch se tragaba el error sin
         // marcar, así que mientras el backend fallara esto se reintentaba en
@@ -610,7 +619,7 @@ function PersonalDashboard() {
         // El snapshot es oportunista: si hoy no salió, mañana sale, y el cron
         // del backend snapshotea igual. Reintentar sin techo nunca valió lo que
         // costaba. Un 4xx tampoco se reintenta: no se va a arreglar solo.
-        if (e?.status >= 400) localStorage.setItem(key, today)
+        if (e?.status >= 400) marcarFotoDeHoy(duenoDatos, today)
       })
   }, [loading, lastUpdated, totalValuePositions, totalCostBasisPositions, netDepositedPositions, priceCoverage, valuationDollar])
 

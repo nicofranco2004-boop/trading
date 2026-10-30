@@ -45,7 +45,9 @@ const EVENTOS = {
 // La vela de hoy (GET /tecnico/{activo}/hoy): sin velas, salvo que la prueba ponga una.
 const HOY = vi.hoisted(() => ({ resp: { velas: [], en_rueda: false } }))
 vi.mock('../../utils/api', () => ({
-  getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
+  // La copia de los dibujos es de la persona y la cuenta (utils/duenoDeLaPestana).
+  getClientContext: () => null,
+  EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada',
   api: { get: vi.fn((ruta) => Promise.resolve(ruta.includes('/hoy?') ? HOY.resp : ruta.includes('/eventos') ? EVENTOS : DATOS)) },
 }))
 

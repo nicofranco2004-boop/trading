@@ -77,6 +77,8 @@ import { MENSAJE_FALLA, textoSinPush } from '../../utils/notificaciones'
 import InstalarAppModal, { precargarFotosDeInstalar } from '../InstalarAppModal'
 import AvisoNotificaciones from '../AvisoNotificaciones'
 import { useToast } from '../Toast'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../../utils/almacen'
+import { CATALOGO } from '../../utils/catalogoDelAlmacen'
 
 const CHECKLIST_DISMISSED_KEY = 'rendi_checklist_dismissed'
 const OMITIDOS_KEY = 'rendi_checklist_omitidos'
@@ -87,13 +89,13 @@ const MS_PARA_VOLVER = DIAS_PARA_VOLVER * 24 * 60 * 60 * 1000
 // el paso vuelve a mostrarse, que es lo seguro para una sugerencia.
 function leerOmitidos() {
   try {
-    const v = JSON.parse(localStorage.getItem(OMITIDOS_KEY) || '{}')
+    const v = JSON.parse(leerDelAlmacen(CATALOGO.pasosOmitidos) || '{}')
     return v && typeof v === 'object' && !Array.isArray(v) ? v : {}
   } catch { return {} }
 }
 
 function guardarOmitidos(omitidos) {
-  try { localStorage.setItem(OMITIDOS_KEY, JSON.stringify(omitidos)) } catch {}
+  try { guardarEnAlmacen(CATALOGO.pasosOmitidos, JSON.stringify(omitidos)) } catch {}
 }
 
 // La cartera va PRIMERO (pedido de Nico, 2026-10-27): al sacar «Importar» de la
@@ -131,7 +133,7 @@ export default function OnboardingChecklist() {
     loaded: false,
   })
   const [dismissed, setDismissed] = useState(() => {
-    try { return localStorage.getItem(CHECKLIST_DISMISSED_KEY) === '1' } catch { return false }
+    try { return leerDelAlmacen(CATALOGO.listaDeInicioCerrada) === '1' } catch { return false }
   })
   const [omitidos, setOmitidos] = useState(leerOmitidos)
   const [instalarOpen, setInstalarOpen] = useState(false)
@@ -431,7 +433,7 @@ export default function OnboardingChecklist() {
   function handleDismiss() {
     trackEvent('checklist_dismissed', { items_done: doneCount })
     track('checklist_dismissed', { items_done: doneCount })
-    try { localStorage.setItem(CHECKLIST_DISMISSED_KEY, '1') } catch {}
+    try { guardarEnAlmacen(CATALOGO.listaDeInicioCerrada, '1') } catch {}
     setDismissed(true)
   }
 

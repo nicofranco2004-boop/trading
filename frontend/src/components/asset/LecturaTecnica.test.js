@@ -38,7 +38,9 @@ const CON_FUERZA = {
 
 let respuestas
 vi.mock('../../utils/api', () => ({
-  getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
+  // La copia de los dibujos es de la persona y la cuenta (utils/duenoDeLaPestana).
+  getClientContext: () => null,
+  EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada',
   api: {
     get: vi.fn((ruta) => {
       const clave = Object.keys(respuestas).find(k => ruta.startsWith(k))

@@ -8,8 +8,16 @@
 // Se guardan en tu CUENTA, por activo y por moneda (en pesos y en dólares los
 // precios son otros), para verlos en todos tus dispositivos (Nico, 24/10):
 // GET/PUT /api/tecnico/{activo}/dibujos (tabla `dibujos_grafico`). Además queda
-// una copia en el navegador (`rendi_dibujos:AAPL:usd`): aparecen al instante,
-// antes de que conteste el servidor, y no se pierden si el guardado falla.
+// una copia en el navegador: aparecen al instante, antes de que conteste el
+// servidor, y no se pierden si el guardado falla.
+//
+// 🔴 LA COPIA ES DE QUIEN LA HIZO: `rendi_dibujos:<persona>|<cuenta>:AAPL:usd`
+// (`duenoDeLaCopia`). Antes era del ACTIVO (`rendi_dibujos:AAPL:usd`) y la
+// usaba cualquiera: si a Ana no se le pudo guardar un dibujo y después Bruno
+// abría AAPL en la misma compu, se le mostraba y se SUBÍA a la cuenta de Bruno;
+// y el asesor que dibujaba en un cliente se lo llevaba al siguiente (auditoría
+// de la pestaña Gráfico, 30/10). Sin nadie logueado no hay copia, y una copia
+// sin dueño (la clave vieja) no se lee: no se sube a nadie.
 //
 // Un punto se guarda por DÍA y precio, no por lugar en la pantalla, así queda
 // en su lugar con el zoom, con las velas semanales y cuando llegan días nuevos:
@@ -20,17 +28,19 @@
 
 import { indiceDeFecha } from './tecnico'
 import { api } from './api'
+import { duenoDeLaPestana, useDuenoDeLaPestana } from './duenoDeLaPestana'
+import { leer, guardar, leerDe, guardarDe, borrarDe } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
 
-const clave = (asset, moneda) => `rendi_dibujos:${String(asset || '').toUpperCase()}:${moneda === 'ars' ? 'ars' : 'usd'}`
-// De quién es la copia de este navegador (el mail de la sesión). Cerrar sesión
-// la borra, pero cuando la sesión VENCE sólo se borra el usuario: en una compu
-// compartida, lo pendiente de una persona (con notas, texto suyo) se le
-// mostraba a la siguiente y se subía a SU cuenta (auditoría 30/10). Una copia
-// de otra persona se ignora; las guardadas antes de esto no dicen de quién son
-// y se usan como siempre.
-function quienSoy() {
-  try { return String(JSON.parse(localStorage.getItem('rendi_user') || 'null')?.email || '').toLowerCase() || null } catch { return null }
-}
+/** De quién es lo que se dibuja ahora en esta pestaña (utils/duenoDeLaPestana:
+ *  la persona logueada y la cuenta abierta). null = nadie: no se guarda copia. */
+export const duenoDeLaCopia = duenoDeLaPestana
+export const useDuenoDeLaCopia = useDuenoDeLaPestana
+
+// La copia va por la única puerta (utils/almacen), a nombre de su dueño:
+// `rendi_dibujos:<dueño>:AAPL:usd`. La puerta no la guarda si el dueño ya no es
+// el de la pestaña.
+const resto = (asset, moneda) => `:${String(asset || '').toUpperCase()}:${moneda === 'ars' ? 'ars' : 'usd'}`
 export const DIBUJOS_MAXIMOS = 60
 
 const numero = (x) => typeof x === 'number' && Number.isFinite(x)
@@ -104,15 +114,14 @@ export const COLORES_DIBUJO = [
   { id: 'violeta', nombre: 'Violeta', token: 'data-violet' },
   { id: 'tinta', nombre: 'Blanco o negro (según el tema)', token: 'ink-0' },
 ]
-const COLOR_GUARDADO = 'rendi_dibujo_color'
 export function colorDeLosNuevos() {
   try {
-    const c = localStorage.getItem(COLOR_GUARDADO)
+    const c = leer(CATALOGO.colorDibujo)
     return COLORES_DIBUJO.some(x => x.id === c) ? c : 'cian'
   } catch { return 'cian' }
 }
 export function recordarColor(id) {
-  try { localStorage.setItem(COLOR_GUARDADO, id) } catch { /* sin almacenamiento: dura la visita */ }
+  try { guardar(CATALOGO.colorDibujo, id) } catch { /* sin almacenamiento: dura la visita */ }
 }
 // Un conteo de Elliott a mano, en dos formas por separado (Nico, 28/10), como
 // TradingView: el IMPULSO (0, 1, 2, 3, 4, 5) y la CORRECCIÓN (el arranque y
@@ -157,10 +166,10 @@ export function dibujoValido(x) {
  * con una copia así que haga falta subir.
  * Sin almacenamiento o con un valor roto: ninguno.
  */
-export function copiaLocal(asset, moneda) {
+export function copiaLocal(asset, moneda, dueno = duenoDeLaCopia()) {
+  if (!dueno) return { dibujos: [], pendiente: false }
   try {
-    const g = JSON.parse(localStorage.getItem(clave(asset, moneda)) || 'null')
-    if (g && !Array.isArray(g) && g.dueno !== undefined && (g.dueno || null) !== quienSoy()) return { dibujos: [], pendiente: false }
+    const g = JSON.parse(leerDe(CATALOGO.dibujos, dueno, resto(asset, moneda)) || 'null')
     const lista = Array.isArray(g) ? g : Array.isArray(g?.dibujos) ? g.dibujos : []
     return { dibujos: lista.filter(dibujoValido).slice(0, DIBUJOS_MAXIMOS), pendiente: !Array.isArray(g) && !!g?.pendiente }
   } catch {
@@ -171,16 +180,18 @@ export function copiaLocal(asset, moneda) {
 /** Los dibujos de la copia de este navegador. */
 export const dibujosGuardados = (asset, moneda) => copiaLocal(asset, moneda).dibujos
 
-export function guardarDibujos(asset, moneda, lista, pendiente = true) {
+export function guardarDibujos(asset, moneda, lista, pendiente = true, dueno = duenoDeLaCopia()) {
+  if (!dueno) return            // sin nadie logueado no queda copia
   try {
-    if (!pendiente && !lista.length) localStorage.removeItem(clave(asset, moneda))
-    else localStorage.setItem(clave(asset, moneda), JSON.stringify({ pendiente, dueno: quienSoy(), dibujos: lista.slice(0, DIBUJOS_MAXIMOS) }))
+    if (!pendiente && !lista.length) borrarDe(CATALOGO.dibujos, dueno, resto(asset, moneda))
+    else guardarDe(CATALOGO.dibujos, dueno, JSON.stringify({ pendiente, dibujos: lista.slice(0, DIBUJOS_MAXIMOS) }), resto(asset, moneda))
   } catch { /* sin almacenamiento: el dibujo vive mientras la página esté abierta */ }
 }
 
-/** Ya llegó a la cuenta: si la copia sigue siendo ESA lista, deja de estar pendiente. */
-export function marcarSubidos(asset, moneda, lista) {
-  if (JSON.stringify(copiaLocal(asset, moneda).dibujos) === JSON.stringify(lista)) guardarDibujos(asset, moneda, lista, false)
+/** Ya llegó a la cuenta: si la copia (la de `dueno`, el de cuando se subió)
+ *  sigue siendo ESA lista, deja de estar pendiente. */
+export function marcarSubidos(asset, moneda, lista, dueno = duenoDeLaCopia()) {
+  if (JSON.stringify(copiaLocal(asset, moneda, dueno).dibujos) === JSON.stringify(lista)) guardarDibujos(asset, moneda, lista, false, dueno)
 }
 
 /** El precio a guardar: el del toque viene con 15 decimales. 4 decimales y,
@@ -211,10 +222,18 @@ const enFila = {}
  * y nadie sabía por qué (re-test E3, 29/10).
  */
 export function subirDibujos(asset, moneda, lista) {
-  const k = clave(asset, moneda)
+  // De quién es esta lista: de la cuenta abierta AHORA. Si cuando le toca salir
+  // la cuenta ya es otra (el asesor cambió de cliente con el guardado en fila),
+  // no sale: api.js la mandaría a la cuenta nueva. Queda en la copia de su dueño.
+  const dueno = duenoDeLaCopia()
+  if (!dueno) return Promise.resolve(false)
+  const k = `${dueno}${resto(asset, moneda)}`
   const sigue = (enFila[k] || Promise.resolve(true))
-    // `notas`: esta pantalla conoce las notas (si no, el servidor no las toca).
-    .then(() => api.put(ruta(asset, moneda), { dibujos: lista.slice(0, DIBUJOS_MAXIMOS), notas: true }))
+    .then(() => {
+      if (duenoDeLaCopia() !== dueno) throw new Error('cambió la cuenta')
+      // `notas`: esta pantalla conoce las notas (si no, el servidor no las toca).
+      return api.put(ruta(asset, moneda), { dibujos: lista.slice(0, DIBUJOS_MAXIMOS), notas: true })
+    })
     // Si el servidor lo rechaza con un motivo (los topes y el activo válido de
     // E3), se devuelve ese texto para decirlo; si no, false.
     .then(() => true, (e) => {

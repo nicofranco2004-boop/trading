@@ -15,15 +15,18 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { recordarTotalVisto, tomarCambioPendiente } from '../utils/cambioDeMovimiento'
+import { useDuenoDeLosDatos } from '../utils/duenoDeLaPestana'
 
 export function useRecalculoDeCartera({ total, moneda, listo, pantalla = 'cartera' }) {
   const [cobro, setCobro] = useState(null)
   const [enCurso, setEnCurso] = useState(false)
+  // De la cuenta de los datos que muestra esta pantalla (utils/duenoDeLaPestana).
+  const dueno = useDuenoDeLosDatos()
 
   // Lo que quedó anotado en otra pantalla. En un efecto y no al crear el estado:
   // tomarlo lo borra, y en desarrollo React crea el estado dos veces.
   useEffect(() => {
-    const p = tomarCambioPendiente(moneda, pantalla)
+    const p = tomarCambioPendiente(moneda, pantalla, dueno)
     if (p) setCobro({ ...p, sinAntes: p.antes == null, id: `pendiente-${Date.now()}` })
     // sólo al entrar
   }, [])  // eslint-disable-line react-hooks/exhaustive-deps
@@ -31,8 +34,8 @@ export function useRecalculoDeCartera({ total, moneda, listo, pantalla = 'carter
   const recalculando = enCurso || (!!cobro && !listo)
 
   useEffect(() => {
-    if (listo && !recalculando) recordarTotalVisto(total, moneda, pantalla)
-  }, [total, moneda, listo, recalculando, pantalla])
+    if (listo && !recalculando) recordarTotalVisto(total, moneda, pantalla, dueno)
+  }, [total, moneda, listo, recalculando, pantalla, dueno])
 
   const anotar = useCallback(async (info, recargar) => {
     setCobro({ ...info, id: `${Date.now()}-${Math.random()}` })

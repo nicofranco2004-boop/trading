@@ -22,6 +22,8 @@ import { hoyISO } from './fecha'
 import { tarjetas, fmtAdx, ADX_CLAVE, RSI_GANA } from './tecnico'
 import { fciLabel } from './valuation'
 import { clave, tendencia, fuerza, lecturaVieja, MOTIVOS_SIN_LECTURA } from './radiografia'
+import { leer, guardar } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
 
 /**
  * Cómo se lee un símbolo de la watchlist, con la regla de la ficha para lo que
@@ -286,17 +288,13 @@ export function resumenDeLaLista(filas = []) {
 // Cómo se ve la lista: de entrada en tarjetas (Nico, 30/10). Lo que elige cada
 // persona queda en ESTE navegador; sin almacenamiento, siempre en tarjetas.
 export const VISTAS = [{ id: 'tarjetas', label: 'Tarjetas' }, { id: 'tabla', label: 'Tabla' }]
-const claveVista = (persona) => (persona ? `rendi_lista_vista:${persona}` : null)
-
 export function vistaGuardada(persona) {
-  const k = claveVista(persona)
-  if (!k) return 'tarjetas'
-  try { return localStorage.getItem(k) === 'tabla' ? 'tabla' : 'tarjetas' } catch { return 'tarjetas' }
+  if (!persona) return 'tarjetas'
+  try { return leer(CATALOGO.vistaDeLaLista, persona) === 'tabla' ? 'tabla' : 'tarjetas' } catch { return 'tarjetas' }
 }
 
 export function guardarVista(persona, vista) {
-  const k = claveVista(persona)
-  if (!k) return
-  try { localStorage.setItem(k, vista === 'tabla' ? 'tabla' : 'tarjetas') } catch { /* sin almacenamiento */ }
+  if (!persona) return
+  try { guardar(CATALOGO.vistaDeLaLista, vista === 'tabla' ? 'tabla' : 'tarjetas', persona) } catch { /* sin almacenamiento */ }
 }
 

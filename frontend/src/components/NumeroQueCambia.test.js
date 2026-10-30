@@ -25,12 +25,14 @@ const pasa = (ms) => act(async () => { vi.advanceTimersByTime(ms) })
 const numero = (props) => h(NumeroQueCambia, { clave: 'prueba:aportado', format, moneda: 'USD', ...props })
 
 let montado
-beforeEach(() => { vi.useFakeTimers() })
+// Ana logueada: lo visto es de la persona y de la cuenta (utils/duenoDeLaPestana).
+beforeEach(() => { vi.useFakeTimers(); localStorage.setItem('rendi_user', JSON.stringify({ email: 'ana@prueba.test' })) })
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
   vi.useRealTimers()
   sesion.clear()
+  localStorage.clear()
   delete globalThis.IntersectionObserver
 })
 
@@ -82,6 +84,16 @@ describe('lo recordado (utils/valoresVistos)', () => {
     api.setClientContext({ id: 11, label: 'A' })
     expect(vistos.valorAntesDelCambio('a', 'USD')).toBeNull()    // en A no cambió nada
     api.clearClientContext()
+  })
+
+  it('es de UNA persona: si a Ana se le vence la sesión y entra Bruno, no ve el número de Ana (30/10)', async () => {
+    vistos.recordarValor('a', 500000, 'USD')
+    await elUsuarioCambioAlgo()                                 // Ana cambió algo
+    expect(vistos.valorAntesDelCambio('a', 'USD')).toBe(500000)
+    localStorage.removeItem('rendi_user')                       // lo que hace api.js con un 401
+    expect(vistos.valorAntesDelCambio('a', 'USD')).toBeNull()   // sin nadie, nada
+    localStorage.setItem('rendi_user', JSON.stringify({ email: 'bruno@prueba.test' }))
+    expect(vistos.valorAntesDelCambio('a', 'USD')).toBeNull()   // Bruno no ve los 500.000 de Ana
   })
 
   it('las claves empiezan con rendi_ (las borra el cierre de sesión)', async () => {
@@ -154,13 +166,13 @@ describe('volver a una pantalla después de un cambio', () => {
     montado = await montar(numero({ value: 0, listo: false }))   // todavía no llegaron los precios
     await pasa(1500)
     expect(texto(montado.contenedor)).toBe('US$ 5000.00')
-    expect(JSON.parse(sesion.get('rendi_valor_visto:propia:prueba:aportado')).valor).toBe(5000)
+    expect(JSON.parse(sesion.get('rendi_valor_visto:ana@prueba.test|propia:prueba:aportado')).valor).toBe(5000)
     await montado.redibujar(numero({ value: 5010.33, listo: true }))
     await pasa(1500)
     const t = texto(montado.contenedor)
     expect(t).toContain('US$ 5010.33')
     expect(t).toContain('+US$ 10.33')
-    expect(JSON.parse(sesion.get('rendi_valor_visto:propia:prueba:aportado')).valor).toBeCloseTo(5010.33, 2)
+    expect(JSON.parse(sesion.get('rendi_valor_visto:ana@prueba.test|propia:prueba:aportado')).valor).toBeCloseTo(5010.33, 2)
   })
 
   it('si los datos no llegan nunca, no se queda mostrando lo de antes', async () => {

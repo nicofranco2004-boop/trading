@@ -5,7 +5,7 @@
 // de arriba ya había bajado a US$ 7.987. El cambio de fase cancelaba la cuenta
 // recién empezada. Estas pruebas montan el componente de verdad (ver
 // testing/navegadorMinimo.js) y miran el número con el que termina.
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { createElement as h, act } from 'react'
 import { instalarNavegadorMinimo, montar, texto } from '../testing/navegadorMinimo'
 
@@ -23,11 +23,14 @@ const formato = (n) => `US$ ${Number(n).toFixed(2)}`
 const KO = { texto: 'dividendo de KO', monto: '+US$ 10,33' }
 
 let montado
+// Ana logueada: lo anotado es de la persona y de la cuenta (utils/duenoDeLaPestana).
+beforeEach(() => { localStorage.setItem('rendi_user', JSON.stringify({ email: 'ana@prueba.test' })) })
 afterEach(async () => {
   vi.useRealTimers()
   if (montado) await montado.desmontar()
   montado = null
   sesion.clear()
+  localStorage.clear()
 })
 const aviso = (props) => h(RecalculoDeCartera, { formato, ...props })
 // Deja pasar la cuenta (900 ms + el arranque) con el reloj falso.
@@ -80,7 +83,7 @@ describe('borrado en Movimientos, visto en la próxima pantalla con total', () =
     expect(t).toContain('US$ 7986.92')
     expect(t).toContain('Borrado: US$10,33')
     // Y queda anotado el total nuevo para la próxima.
-    expect(JSON.parse(sesion.get('rendi_ultimo_total:propia:cartera')).total).toBeCloseTo(7986.92, 2)
+    expect(JSON.parse(sesion.get('rendi_ultimo_total:ana@prueba.test|propia:cartera')).total).toBeCloseTo(7986.92, 2)
   })
 
   it('lo anotado se muestra una sola vez', async () => {
@@ -134,6 +137,14 @@ describe('borrado en Movimientos, visto en la próxima pantalla con total', () =
     const p = cambio.tomarCambioPendiente('USD', 'cartera')
     expect(p.antes).toBe(21000)                                          // el de B, no los 500.000 de A
     api.clearClientContext()
+  })
+
+  it('es de UNA persona: si a Ana se le vence la sesión y entra Bruno, no ve el total de Ana (30/10)', () => {
+    cambio.recordarTotalVisto(500000, 'USD', 'cartera')
+    cambio.anotarCambioDeMovimiento({ texto: 'depósito', monto: 'US$1.000,00', deshecho: true })
+    localStorage.removeItem('rendi_user')                                // lo que hace api.js con un 401
+    localStorage.setItem('rendi_user', JSON.stringify({ email: 'bruno@prueba.test' }))
+    expect(cambio.tomarCambioPendiente('USD', 'cartera')).toBeNull()      // ni el cambio ni el total de Ana
   })
 
   it('las claves empiezan con rendi_ (las borra el cierre de sesión)', () => {

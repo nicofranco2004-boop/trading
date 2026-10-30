@@ -67,6 +67,7 @@ vi.mock('../../utils/api', () => ({
     patch: vi.fn(() => Promise.resolve({})),
   },
   getClientContext: () => null,
+  EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada',
 }))
 
 let LecturaTecnica
@@ -86,6 +87,8 @@ beforeEach(() => {
   }
   // Velas, no línea: el menú «1D ▾» sólo está con velas.
   localStorage.setItem('rendi_grafico_tipo', 'velas')
+  // Ana logueada en su cuenta: los dibujos del navegador son a su nombre (utils/dibujos.js).
+  localStorage.setItem('rendi_user', JSON.stringify({ email: 'ana@prueba.test' }))
   // El reloj del refresco (setInterval) lo maneja la prueba.
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
 })
@@ -215,7 +218,7 @@ describe('velas de 1 hora y de 4 horas', () => {
   })
 
   it('tus dibujos se ubican por fecha y hora; el que arranca antes de las velas de horas no se dibuja', async () => {
-    localStorage.setItem('rendi_dibujos:AAPL:usd', JSON.stringify({ pendiente: false, dibujos: [
+    localStorage.setItem('rendi_dibujos:ana@prueba.test|propia:AAPL:usd', JSON.stringify({ pendiente: false, dibujos: [
       { id: 'horizontal', tipo: 'horizontal', precio: 320 },
       // Dibujada en diarias del 14 al 27: en 1H va de la primera hora del 14 a la del 27.
       { id: 'adentro', tipo: 'tendencia', a: { d: '2026-10-14', mas: 0, precio: 305 }, b: { d: '2026-10-27', mas: 0, precio: 340 } },
@@ -298,8 +301,8 @@ async function clickEn(x, y, extra) {
   await evento('mouseup', grafico(), { clientX: x, clientY: y })
   await otraVez(extra)
 }
-const guardados = () => JSON.parse(localStorage.getItem('rendi_dibujos:AAPL:usd') || 'null')?.dibujos || []
-const sembrar = (dibujos) => localStorage.setItem('rendi_dibujos:AAPL:usd', JSON.stringify({ pendiente: false, dibujos }))
+const guardados = () => JSON.parse(localStorage.getItem('rendi_dibujos:ana@prueba.test|propia:AAPL:usd') || 'null')?.dibujos || []
+const sembrar = (dibujos) => localStorage.setItem('rendi_dibujos:ana@prueba.test|propia:AAPL:usd', JSON.stringify({ pendiente: false, dibujos }))
 
 describe('lo que encontró la auditoría', () => {
   afterEach(() => { medidas(null); vi.restoreAllMocks() })

@@ -32,6 +32,7 @@ const monedaDe = (ruta) => (ruta.includes('moneda=ars') ? 'ars' : 'usd')
 vi.mock('../../utils/api', () => ({
   // null: tu propia cuenta; { id }: un asesor mirando la de un cliente.
   getClientContext: () => cuenta.cliente,
+  EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada',
   api: {
     get: vi.fn((ruta) => Promise.resolve(ruta.includes('/dibujos') ? { dibujos: cuenta[monedaDe(ruta)] }
       : ruta.startsWith('/alerts') ? { items: [] }
@@ -55,7 +56,11 @@ beforeAll(async () => {
 afterAll(() => { medidas(null); vi.unstubAllGlobals() })
 
 let montado, props
-beforeEach(() => { localStorage.setItem('rendi_grafico_capas', JSON.stringify(CAPAS_TODAS)) })
+beforeEach(() => {
+  localStorage.setItem('rendi_grafico_capas', JSON.stringify(CAPAS_TODAS))
+  // Ana logueada en su cuenta: los dibujos del navegador son a su nombre (utils/dibujos.js).
+  localStorage.setItem('rendi_user', JSON.stringify({ email: 'ana@prueba.test' }))
+})
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
@@ -165,7 +170,7 @@ describe('la herramienta «Nota»', () => {
     // pestaña vieja, que no sabe qué son, las borraría al guardar).
     expect(cuenta.ultimoPut.notas).toBe(true)
     // Otra visita: vuelve (está en tu cuenta).
-    await montado.desmontar(); localStorage.removeItem('rendi_dibujos:ZZEV:usd')
+    await montado.desmontar(); localStorage.removeItem('rendi_dibujos:ana@prueba.test|propia:ZZEV:usd')
     await dibujar()
     expect(banderitas().map(b => b.getAttribute('data-banderita'))).toEqual([n.id])
   })
@@ -358,7 +363,7 @@ describe('lo que encontró la auditoría (30/10)', () => {
   it('un asesor mirando la cuenta de un cliente no ve sus notas ni la herramienta (son suyas y no dicen de qué cliente)', async () => {
     const mia = { id: 'n1', tipo: 'nota', a: { d: puntos[400].d, mas: 0, precio: 110 }, texto: 'Juan compró acá' }
     const linea = { id: 'h1', tipo: 'horizontal', precio: 110 }
-    localStorage.setItem('rendi_dibujos:ZZEV:usd', JSON.stringify({ pendiente: false, dibujos: [linea, mia] }))
+    localStorage.setItem('rendi_dibujos:ana@prueba.test|propia:ZZEV:usd', JSON.stringify({ pendiente: false, dibujos: [linea, mia] }))
     cuenta.cliente = { id: 5, label: 'María' }
     cuenta.usd = [linea]                                                // el servidor tampoco las manda ahí
     await dibujar()

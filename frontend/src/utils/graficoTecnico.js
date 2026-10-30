@@ -3,9 +3,10 @@
 // activo lo dejaste. Acá, sin React: qué activo abrir, los últimos que miraste
 // y qué ofrece el buscador de la pestaña.
 // ════════════════════════════════════════════════════════════════════════════
-// Se guarda en ESTE navegador, por persona y por cuenta (claveDeActivos, la del
-// ⌘K: en una compu compartida el siguiente no ve lo que miró el anterior; un
-// asesor adentro de un cliente tiene su lista aparte). No va al servidor: no
+// Se guarda en ESTE navegador, a nombre de la persona y la cuenta (`dueno`,
+// utils/duenoDeLaPestana, por la única puerta utils/almacen): en una compu
+// compartida el siguiente no ve lo que miró el anterior; un asesor adentro de
+// un cliente tiene su lista aparte. No va al servidor: no
 // abre ningún pedido nuevo ni guarda nada en tu cuenta.
 //
 // Los dibujos de cada activo NO viven acá: se guardan solos en tu cuenta, por
@@ -24,12 +25,13 @@ import { normalizar, puntaje, mismoPapel, miradaSinTenencia } from './buscadorRa
 import { POPULAR_TICKERS, tickerName, inferType, isBondPosition } from './tickers'
 import { isFciSym, isBymaHolding } from './valuation'
 import { esLoteLocal } from './accionLocal'
+import { leerDe, guardarDe } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
 
 export const RECIENTES_MAXIMOS = 8
 // Con nada guardado ni nada tuyo para mostrar: el S&P 500.
 export const ACTIVO_DE_ENTRADA = 'SPY'
 
-const clave = (persona) => (persona ? `rendi_grafico:${persona}` : null)
 
 // Forma de ticker, la misma de `_SYMBOL_RE` del servidor (main.py): lo que no
 // la tiene no se guarda ni se abre (una dirección inventada, un fondo «FCI:»).
@@ -40,13 +42,12 @@ export function activoValido(s) {
   return FORMA.test(t) ? t : null
 }
 
-/** Lo guardado de esta persona: { activo, recientes }. Sin persona, sin
- *  almacenamiento o con algo roto: vacío. */
-export function guardado(persona) {
-  const k = clave(persona)
-  if (!k) return { activo: null, recientes: [] }
+/** Lo guardado de `dueno` (la persona y la cuenta): { activo, recientes }. Sin
+ *  dueño, sin almacenamiento o con algo roto: vacío. */
+export function guardado(dueno) {
+  if (!dueno) return { activo: null, recientes: [] }
   try {
-    const g = JSON.parse(localStorage.getItem(k) || 'null')
+    const g = JSON.parse(leerDe(CATALOGO.graficoRecientes, dueno) || 'null')
     const recientes = (Array.isArray(g?.recientes) ? g.recientes : [])
       .map(activoValido).filter(Boolean)
     return {
@@ -60,14 +61,14 @@ export function guardado(persona) {
 
 /** Abriste `activo`: queda como el último y primero de los recientes. Devuelve
  *  lo que quedó guardado (o lo que hubiera quedado, si no se pudo guardar). */
-export function recordar(persona, activo) {
+export function recordar(dueno, activo) {
   const a = activoValido(activo)
-  const antes = guardado(persona)
+  const antes = guardado(dueno)
   if (!a) return antes
   const nuevo = { activo: a, recientes: [a, ...antes.recientes.filter(x => x !== a)].slice(0, RECIENTES_MAXIMOS) }
-  const k = clave(persona)
-  if (k) {
-    try { localStorage.setItem(k, JSON.stringify(nuevo)) } catch { /* sin almacenamiento */ }
+  // La puerta no lo guarda si `dueno` ya no es el de la pestaña.
+  if (dueno) {
+    try { guardarDe(CATALOGO.graficoRecientes, dueno, JSON.stringify(nuevo)) } catch { /* sin almacenamiento */ }
   }
   return nuevo
 }

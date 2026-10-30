@@ -31,6 +31,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, Eye, EyeOff, RotateCcw } from 'lucide-react'
+import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../../utils/almacen'
+import { CATALOGO } from '../../utils/catalogoDelAlmacen'
 
 const CLAVE = 'rendi_grafico_capas'
 
@@ -53,7 +55,7 @@ export const CAPAS_TODAS = Object.freeze(Object.fromEntries(Object.keys(CAPAS_DE
 export function capasGuardadas() {
   const capas = { ...CAPAS_DE_FABRICA }
   try {
-    const g = JSON.parse(localStorage.getItem(CLAVE) || 'null')
+    const g = JSON.parse(leerDelAlmacen(CATALOGO.graficoCapas) || 'null')
     if (g && typeof g === 'object') {
       for (const k of Object.keys(capas)) if (typeof g[k] === 'boolean') capas[k] = g[k]
     }
@@ -62,11 +64,11 @@ export function capasGuardadas() {
 }
 
 export function guardarCapas(capas) {
-  try { localStorage.setItem(CLAVE, JSON.stringify(capas)) } catch { /* sin almacenamiento */ }
+  try { guardarEnAlmacen(CATALOGO.graficoCapas, JSON.stringify(capas)) } catch { /* sin almacenamiento */ }
 }
 
 export function olvidarCapas() {
-  try { localStorage.removeItem(CLAVE) } catch { /* sin almacenamiento */ }
+  try { borrarDelAlmacen(CATALOGO.graficoCapas) } catch { /* sin almacenamiento */ }
 }
 
 export const sonDeFabrica = (capas) => Object.keys(CAPAS_DE_FABRICA).every(k => capas[k] === CAPAS_DE_FABRICA[k])
@@ -209,7 +211,7 @@ const CLAVE_LEYENDA = 'rendi_grafico_leyenda'
 // null (nunca la tocó).
 function leyendaGuardada() {
   try {
-    const g = localStorage.getItem(CLAVE_LEYENDA)
+    const g = leerDelAlmacen(CATALOGO.graficoLeyenda)
     if (g === 'abierta' || g === 'cerrada') return g === 'abierta'
   } catch { /* sin almacenamiento */ }
   return null
@@ -238,7 +240,7 @@ export function LeyendaIndicadores({ items, onAviso, deFabrica, onFabrica, ancho
   const abierta = plegada ? abiertaIgual : (elegida ?? anchoDisponible >= ANCHO_PARA_LEYENDA_ABIERTA)
   const setAbierta = (x) => {
     if (plegada) { setAbiertaIgual(x); return }
-    setElegida(x); try { localStorage.setItem(CLAVE_LEYENDA, x ? 'abierta' : 'cerrada') } catch { /* sin almacenamiento */ }
+    setElegida(x); try { guardarEnAlmacen(CATALOGO.graficoLeyenda, x ? 'abierta' : 'cerrada') } catch { /* sin almacenamiento */ }
   }
   const usables = items.filter(i => !i.sinDatos)
   const prendidos = usables.filter(i => i.activo).length

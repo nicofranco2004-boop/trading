@@ -5,12 +5,18 @@ import { instalarNavegadorMinimo } from '../testing/navegadorMinimo'
 import {
   ACTIVO_DE_ENTRADA, RECIENTES_MAXIMOS, activoDeEntrada, activoValido, guardado, opcionesDelBuscador, recordar, tuyos,
 } from './graficoTecnico'
+// La regla del dueño (la persona y la cuenta de la pestaña): se registra al cargarse.
+import './duenoDeLaPestana'
 
-const ANA = 'ana@x.com:propia'
-const BETO = 'beto@x.com:propia'
+// Los dueños, como los arma utils/duenoDeLaPestana: `persona|cuenta`.
+const ANA = 'ana@x.com|propia'
+const BETO = 'beto@x.com|propia'
 
 let almacen
-beforeEach(() => { ({ local: almacen } = instalarNavegadorMinimo()) })
+beforeEach(() => {
+  ({ local: almacen } = instalarNavegadorMinimo())
+  localStorage.setItem('rendi_user', JSON.stringify({ email: 'ana@x.com' }))   // Ana logueada en su cuenta
+})
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('activoValido: sólo lo que tiene forma de ticker (la de _SYMBOL_RE del servidor)', () => {
@@ -44,7 +50,12 @@ describe('qué queda guardado', () => {
     recordar(ANA, 'GGAL')
     expect(guardado(BETO)).toEqual({ activo: null, recientes: [] })
   })
+  it('lo de otra persona no se guarda con la pestaña de Ana (la puerta lo frena)', () => {
+    recordar(BETO, 'GGAL')
+    expect(guardado(BETO)).toEqual({ activo: null, recientes: [] })
+  })
   it('sin sesión no se guarda nada', () => {
+    localStorage.removeItem('rendi_user')
     recordar(null, 'GGAL')
     expect(almacen.size).toBe(0)
     expect(guardado(null).activo).toBeNull()

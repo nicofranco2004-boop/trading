@@ -141,10 +141,12 @@ class Nodo {
   }
   get innerHTML() { return '' }
   get dataset() { return (this._dataset ||= {}) }
-  get offsetWidth() { return this.getBoundingClientRect().width }
-  get offsetHeight() { return this.getBoundingClientRect().height }
   // Medido del dibujo, salvo que la prueba lo fije a mano (el ancho de la
   // ventana del celular: espacioAbajo, InfoTooltip.globo).
+  get offsetWidth() { return this._offsetWidth ?? this.getBoundingClientRect().width }
+  set offsetWidth(v) { this._offsetWidth = v }
+  get offsetHeight() { return this._offsetHeight ?? this.getBoundingClientRect().height }
+  set offsetHeight(v) { this._offsetHeight = v }
   get clientWidth() { return this._clientWidth ?? this.getBoundingClientRect().width }
   set clientWidth(v) { this._clientWidth = v }
   get clientHeight() { return this._clientHeight ?? this.getBoundingClientRect().height }

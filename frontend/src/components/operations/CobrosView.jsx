@@ -40,6 +40,8 @@ import {
   resumirCobros, estimarProximos12, proximoCobro, dividendosAnunciados, barras,
   variacionAnual, tipoDeCobro, fechaLarga,
 } from '../../utils/cobros'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../../utils/almacen'
+import { CATALOGO } from '../../utils/catalogoDelAlmacen'
 
 const VISTAS = [
   { id: 'mes', label: 'Por mes' },
@@ -51,10 +53,10 @@ const VISTAS = [
 // (modo privado de algunos navegadores) leer o escribir tira un error: la
 // pestaña sigue andando, sólo no recuerda la vista.
 function leerVista() {
-  try { return localStorage.getItem('rendi_cobros_vista') || 'mes' } catch { return 'mes' }
+  try { return leerDelAlmacen(CATALOGO.vistaCobros) || 'mes' } catch { return 'mes' }
 }
 function guardarVista(v) {
-  try { localStorage.setItem('rendi_cobros_vista', v) } catch { /* sin almacenamiento */ }
+  try { guardarEnAlmacen(CATALOGO.vistaCobros, v) } catch { /* sin almacenamiento */ }
 }
 
 /** US$ con decimales sólo cuando el número es chico. Con «Ocultar saldos»

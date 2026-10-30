@@ -76,6 +76,8 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { useCerSeries } from '../hooks/useCerSeries'
 import { hoyISO } from '../utils/fecha'
 import { confirmar } from '../utils/confirmar'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 
 export const today = () => hoyISO()
@@ -255,12 +257,12 @@ function PositionsDesktop() {
   // Densidad de la tabla (cómodo/compacto), persistida. Feedback de un usuario
   // Pro: con muchas columnas la tabla scrollea de costado y se hace tediosa.
   const [compact, setCompact] = useState(() => {
-    try { return localStorage.getItem('rendi_pos_density') === 'compact' } catch { return false }
+    try { return leerDelAlmacen(CATALOGO.densidadCartera) === 'compact' } catch { return false }
   })
   function toggleCompact() {
     setCompact(v => {
       const next = !v
-      try { localStorage.setItem('rendi_pos_density', next ? 'compact' : 'comfortable') } catch { /* no-op */ }
+      try { guardarEnAlmacen(CATALOGO.densidadCartera, next ? 'compact' : 'comfortable') } catch { /* no-op */ }
       return next
     })
   }
@@ -277,14 +279,14 @@ function PositionsDesktop() {
   // otra abierta. El control vive en el header de cada tarjeta — en la toolbar
   // quedaba como el sexto botón de una fila y no lo encontraba nadie.
   const [cuentasSeparadas, setCuentasSeparadas] = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem('rendi_cuentas_separadas') || '[]')) }
+    try { return new Set(JSON.parse(leerDelAlmacen(CATALOGO.cuentasSeparadas) || '[]')) }
     catch { return new Set() }
   })
   function toggleCuentaSeparada(key) {
     setCuentasSeparadas(prev => {
       const next = new Set(prev)
       next.has(key) ? next.delete(key) : next.add(key)
-      try { localStorage.setItem('rendi_cuentas_separadas', JSON.stringify([...next])) } catch { /* no-op */ }
+      try { guardarEnAlmacen(CATALOGO.cuentasSeparadas, JSON.stringify([...next])) } catch { /* no-op */ }
       return next
     })
   }

@@ -23,6 +23,7 @@ const USD = { disponible: true, moneda: 'usd', ticker: 'AAPL', convertida: null,
 let respuestas
 vi.mock('../../utils/api', () => ({
   getClientContext: () => null,
+  EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada',
   api: {
     get: vi.fn((ruta) => {
       const clave = Object.keys(respuestas).find(k => ruta.startsWith(k))

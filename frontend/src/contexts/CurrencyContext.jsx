@@ -3,6 +3,8 @@ import { track } from '../utils/track'
 import { api } from '../utils/api'
 import { enfocarCambios } from '../utils/enfocarCambios'
 import { usePrivacy, OCULTO } from './PrivacyContext'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 // Fase A — Toggle global ARS/USD (2026-05-31).
 // El user elige en qué moneda ver TODOS los números del Dashboard / Home /
@@ -60,7 +62,7 @@ export function CurrencyProvider({ children }) {
   const [currency, setCurrencyRaw] = useState(() => {
     if (typeof window === 'undefined') return 'USD'
     try {
-      const v = localStorage.getItem(STORAGE_KEY)
+      const v = leerDelAlmacen(CATALOGO.moneda)
       return v === 'ARS' ? 'ARS' : 'USD'
     } catch {
       return 'USD'
@@ -72,7 +74,7 @@ export function CurrencyProvider({ children }) {
   const [valuationDollar, setValuationDollarRaw] = useState(() => {
     if (typeof window === 'undefined') return 'mep'
     try {
-      return localStorage.getItem(VAL_STORAGE_KEY) === 'ccl' ? 'ccl' : 'mep'
+      return leerDelAlmacen(CATALOGO.dolar) === 'ccl' ? 'ccl' : 'mep'
     } catch {
       return 'mep'
     }
@@ -105,7 +107,7 @@ export function CurrencyProvider({ children }) {
   const [costBasis, setCostBasisRaw] = useState(() => {
     if (typeof window === 'undefined') return 'purchase'
     try {
-      return localStorage.getItem(CB_STORAGE_KEY) === 'today' ? 'today' : 'purchase'
+      return leerDelAlmacen(CATALOGO.costo) === 'today' ? 'today' : 'purchase'
     } catch {
       return 'purchase'
     }
@@ -154,20 +156,20 @@ export function CurrencyProvider({ children }) {
     const norm = next === 'ARS' ? 'ARS' : 'USD'
     if (norm !== currency) { enfocarCambios(); track('moneda_cambiada') }
     setCurrencyRaw(norm)
-    try { localStorage.setItem(STORAGE_KEY, norm) } catch {}
+    try { guardarEnAlmacen(CATALOGO.moneda, norm) } catch {}
   }
 
   function setValuationDollar(next) {
     const norm = next === 'ccl' ? 'ccl' : 'mep'
     if (norm !== valuationDollar) { enfocarCambios(); track('dolar_valuacion_cambiado') }
     setValuationDollarRaw(norm)
-    try { localStorage.setItem(VAL_STORAGE_KEY, norm) } catch {}
+    try { guardarEnAlmacen(CATALOGO.dolar, norm) } catch {}
   }
 
   function setCostBasis(next) {
     const norm = next === 'purchase' ? 'purchase' : 'today'
     setCostBasisRaw(norm)
-    try { localStorage.setItem(CB_STORAGE_KEY, norm) } catch {}
+    try { guardarEnAlmacen(CATALOGO.costo, norm) } catch {}
   }
 
   function toggle() {

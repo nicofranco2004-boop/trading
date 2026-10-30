@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { useAuth } from './AuthContext'
 import { api } from '../utils/api'
 import { isDemoMode } from '../utils/demo'
+import { almacenDe } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 /**
  * ModoRendimientoContext — la elección Certero / Estimado, UNA para toda la app.
@@ -29,14 +31,14 @@ import { isDemoMode } from '../utils/demo'
 export const MODOS_RENDIMIENTO = ['certero', 'estimado']
 const STORAGE_KEY = 'rendi_modo_rendimiento'
 
-export function leerModoGuardado(storage = globalThis.localStorage) {
+export function leerModoGuardado(storage = almacenDe(CATALOGO.modoRendimiento)) {
   try {
     const v = storage.getItem(STORAGE_KEY)
     return MODOS_RENDIMIENTO.includes(v) ? v : 'certero'
   } catch { return 'certero' }
 }
 
-export function guardarModo(v, storage = globalThis.localStorage) {
+export function guardarModo(v, storage = almacenDe(CATALOGO.modoRendimiento)) {
   try { storage.setItem(STORAGE_KEY, v) } catch {}
 }
 

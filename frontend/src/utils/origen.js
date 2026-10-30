@@ -1,3 +1,5 @@
+import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
 // origen — de dónde vino quien se registra (qué post, qué campaña).
 // ═══════════════════════════════════════════════════════════════════════════
 // El link de cada post lleva un código: `rendi.finance/?d=x-20261019`. También
@@ -50,7 +52,7 @@ export function codigoDeLaDireccion(search) {
 
 function leerGuardado() {
   try {
-    const raw = localStorage.getItem(ORIGEN_KEY)
+    const raw = leerDelAlmacen(CATALOGO.origen)
     if (!raw) return null
     const o = JSON.parse(raw)
     return o && typeof o.codigo === 'string' && typeof o.visto === 'string' ? o : null
@@ -77,7 +79,7 @@ export function anotarOrigen(ahora = Date.now()) {
     try {
       const previo = leerGuardado()
       if (!previo || vencido(previo, ahora)) {
-        localStorage.setItem(ORIGEN_KEY, JSON.stringify({
+        guardarEnAlmacen(CATALOGO.origen, JSON.stringify({
           codigo,
           visto: new Date(ahora).toISOString(),
           pagina: window.location.pathname || '/',
@@ -108,5 +110,5 @@ export function origenParaElRegistro(ahora = Date.now()) {
 
 /** Ya se registró con este origen: se borra para que una segunda cuenta en el mismo navegador no lo herede. */
 export function olvidarOrigen() {
-  try { localStorage.removeItem(ORIGEN_KEY) } catch { /* nada */ }
+  try { borrarDelAlmacen(CATALOGO.origen) } catch { /* nada */ }
 }

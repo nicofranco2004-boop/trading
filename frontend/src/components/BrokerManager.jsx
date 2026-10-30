@@ -31,6 +31,8 @@ import { usd, ars, fmtUsd, fmtArs, pctSigned } from '../utils/format'
 import { avisoBorrarBroker } from '../utils/avisoBorrarBroker'
 import { confirmar } from '../utils/confirmar'
 import { LineaBroker } from './FueraDeHorario'
+import { leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 function currencyTone(c) {
   switch (c) {
@@ -47,7 +49,7 @@ export default function BrokerManager({ brokers, onChange, totals, hidden, fuera
   // las cuentas separadas acá y unificadas abajo era la contradicción más
   // visible que podía quedar.
   const separadas = (() => {
-    try { return new Set(JSON.parse(localStorage.getItem('rendi_cuentas_separadas') || '[]')) }
+    try { return new Set(JSON.parse(leerDelAlmacen(CATALOGO.cuentasSeparadas) || '[]')) }
     catch { return new Set() }
   })()
   const cuentas = groupBrokersIntoAccounts(brokers).map(cuenta => ({

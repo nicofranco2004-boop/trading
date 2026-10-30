@@ -17,6 +17,8 @@
 // recargamos si el user está escribiendo, ni en flujos críticos (auth/billing),
 // ni en los primeros segundos de vida de la página (evita pisar el post-login).
 import { useEffect, useRef } from 'react'
+import { almacenDe } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
 
 // Vite reemplaza __BUILD_ID__ via `define`. El typeof + fallback evita un
 // ReferenceError si el define no se aplicó (ej. el test runner de vitest).
@@ -120,7 +122,7 @@ function onCriticalPath() {
 // (iOS privado / webview), devolvemos false (no recargar) — nunca sin freno.
 function reloadBudgetOk(target) {
   try {
-    const store = window.sessionStorage
+    const store = almacenDe(CATALOGO.guardaDeActualizacion)
     const now = Date.now()
     let g = null
     try {

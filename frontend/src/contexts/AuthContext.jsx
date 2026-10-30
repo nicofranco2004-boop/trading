@@ -9,6 +9,8 @@ import { trackMetaEvent } from '../utils/metaPixel'
 import { quienEs } from '../utils/quienEs'
 import { activarUso, mandar as mandarUso } from '../utils/uso'
 import { avisarSiEstaInstalada } from '../utils/instalarApp'
+import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen, claves, quitarClaves } from '../utils/almacen'
+import { CATALOGO, LOCAL, SESION } from '../utils/catalogoDelAlmacen'
 
 const AuthContext = createContext(null)
 
@@ -115,7 +117,7 @@ export function AuthProvider({ children }) {
     // Hidratación optimista: usamos lo que dejamos en localStorage la última
     // vez (solo metadata: nombre, email, tier — sin token). En paralelo
     // /auth/me valida la cookie y refresca los valores.
-    try { return JSON.parse(localStorage.getItem('rendi_user')) } catch { return null }
+    try { return JSON.parse(leerDelAlmacen(CATALOGO.usuario)) } catch { return null }
   })
   const [bootstrapped, setBootstrapped] = useState(false)
 
@@ -126,7 +128,7 @@ export function AuthProvider({ children }) {
     api.get('/auth/me')
       .then(me => {
         const fresh = mapMeToUser(me)
-        localStorage.setItem('rendi_user', JSON.stringify(fresh))
+        guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(fresh))
         setUser(fresh)
         refreshPlanFeatures()
         // Analytics: identificar al user y setear propiedades para segmentación
@@ -147,7 +149,7 @@ export function AuthProvider({ children }) {
         // usuario guardado; si la sesión de verdad venció, el primer pedido
         // que reciba un 401 la cierra (api.js).
         if (err?.status !== 401) return
-        localStorage.removeItem('rendi_user')
+        borrarDelAlmacen(CATALOGO.usuario)
         setUser(null)
         refreshPlanFeatures()
         setUserId(null)
@@ -172,7 +174,7 @@ export function AuthProvider({ children }) {
     let espera = null
     const mirar = () => {
       let ahora = null
-      try { ahora = JSON.parse(localStorage.getItem('rendi_user')) } catch { /* basura → nadie */ }
+      try { ahora = JSON.parse(leerDelAlmacen(CATALOGO.usuario)) } catch { /* basura → nadie */ }
       if (quienEs(ahora) !== quienEs(user)) window.location.reload()
     }
     const alCambiarEnOtraPestana = (e) => {
@@ -246,7 +248,7 @@ export function AuthProvider({ children }) {
     // pantalla repoblara el registro. Cambio de identidad = registro afuera.
     setBrokersRegistry([])
     const u = { name, ...extra }
-    localStorage.setItem('rendi_user', JSON.stringify(u))
+    guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(u))
     setUser(u)
     // Identity change → forzar refetch del plan features.
     refreshPlanFeatures()
@@ -293,7 +295,7 @@ export function AuthProvider({ children }) {
   function updateUser(patch) {
     setUser(prev => {
       const next = { ...(prev || {}), ...patch }
-      localStorage.setItem('rendi_user', JSON.stringify(next))
+      guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(next))
       return next
     })
   }
@@ -311,7 +313,7 @@ export function AuthProvider({ children }) {
   async function refreshUser() {
     const me = await api.get('/auth/me')
     const fresh = mapMeToUser(me)
-    localStorage.setItem('rendi_user', JSON.stringify(fresh))
+    guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(fresh))
     setUser(fresh)
     refreshPlanFeatures()
     return fresh
@@ -357,30 +359,18 @@ export function AuthProvider({ children }) {
     //     vs UX bug recurrente. Si en el futuro tracking server-side, mover
     //     este flag al endpoint /api/plan/features o similar.
     try {
-      const preserve = new Set(['rendi_theme', 'rendi_ai_discovered'])
-      const keysToRemove = []
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i)
-        if (key && key.startsWith('rendi_') && !preserve.has(key)) {
-          keysToRemove.push(key)
-        }
-      }
-      keysToRemove.forEach((k) => localStorage.removeItem(k))
+      const preserve = new Set([CATALOGO.tema.clave, CATALOGO.conocioLaIA.clave])
+      quitarClaves(LOCAL, claves(LOCAL).filter(k => k.startsWith('rendi_') && !preserve.has(k)))
     } catch {
       // localStorage puede no estar disponible (private mode iOS antiguo) — best effort
-      localStorage.removeItem('rendi_user')
+      borrarDelAlmacen(CATALOGO.usuario)
     }
     // sessionStorage TAMBIÉN (audit): la conversación del chat persiste ahí
     // (rendi_chat_v1*) — si otra persona loguea en la misma pestaña veía el
     // chat del anterior (en un asesor: nombres de clientes, AUM, colas).
     // Mismo criterio rendi_-prefix que arriba.
     try {
-      const sKeys = []
-      for (let i = 0; i < sessionStorage.length; i++) {
-        const key = sessionStorage.key(i)
-        if (key && key.startsWith('rendi_')) sKeys.push(key)
-      }
-      sKeys.forEach((k) => sessionStorage.removeItem(k))
+      quitarClaves(SESION, claves(SESION).filter(k => k.startsWith('rendi_')))
     } catch { /* best effort */ }
     setUser(null)
     refreshPlanFeatures()  // limpiamos cache para el próximo login

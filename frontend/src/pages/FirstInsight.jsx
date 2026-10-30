@@ -27,6 +27,8 @@ import { entrada } from '../hooks/useAlVerse'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import MervallE from '../components/ai/MervallE'
+import { borrar as borrarDelAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 export default function FirstInsight() {
   // «Ocultar saldos»: el valor, lo invertido y lo ganado salen tapados; quedan
@@ -59,9 +61,9 @@ export default function FirstInsight() {
   // en vez de quedar varado en FirstInsight sin guidance hacia el dashboard.
   useEffect(() => {
     let pending = false
-    try { pending = localStorage.getItem('rendi_onboarding_pending') === '1' } catch {}
+    try { pending = leerDelAlmacen(CATALOGO.volverABienvenida) === '1' } catch {}
     if (pending) {
-      try { localStorage.removeItem('rendi_onboarding_pending') } catch {}
+      try { borrarDelAlmacen(CATALOGO.volverABienvenida) } catch {}
       navigate('/onboarding?step=complete', { replace: true })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

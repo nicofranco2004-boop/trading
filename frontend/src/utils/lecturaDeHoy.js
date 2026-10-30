@@ -10,6 +10,8 @@
 // dibujado), para decir desde cuándo está arriba o abajo.
 
 import { veredictoRsi } from './tecnico'
+import { leer, guardar } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
 
 /**
  * El último día en que el cierre cruzó su promedio (`clave`: 's200' o 's50')
@@ -113,12 +115,11 @@ export function tonoDelTema(tema, lista = []) {
 
 // La pestaña elegida, en este navegador (el almacenamiento puede estar
 // bloqueado: modo privado; entonces, la primera).
-const CLAVE_TEMA = 'rendi_ficha_tema_tecnico'
 export function temaGuardado() {
-  try { return localStorage.getItem(CLAVE_TEMA) } catch { return null }
+  try { return leer(CATALOGO.temaDeLaFicha) } catch { return null }
 }
 export function guardarTema(id) {
-  try { localStorage.setItem(CLAVE_TEMA, id) } catch { /* sin almacenamiento */ }
+  try { guardar(CATALOGO.temaDeLaFicha, id) } catch { /* sin almacenamiento */ }
 }
 
 // ─── Los dibujitos ──────────────────────────────────────────────────────────

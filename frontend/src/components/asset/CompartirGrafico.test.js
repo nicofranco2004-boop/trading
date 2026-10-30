@@ -22,6 +22,7 @@ const USD = {
 let respuestas
 vi.mock('../../utils/api', () => ({
   getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
+  EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada',
   api: {
     get: vi.fn((ruta) => {
       const clave = Object.keys(respuestas).find(k => ruta.startsWith(k))
@@ -54,9 +55,11 @@ const MIS_DIBUJOS = [
 let montado
 beforeEach(() => {
   pedidas.length = 0
+  // Ana logueada en su cuenta: los dibujos del navegador son a su nombre (utils/dibujos.js).
+  localStorage.setItem('rendi_user', JSON.stringify({ email: 'ana@prueba.test' }))
   // Todo prendido, también tu precio y tus compras: lo que NO tiene que viajar.
   localStorage.setItem('rendi_grafico_capas', JSON.stringify(CAPAS_TODAS))
-  localStorage.setItem('rendi_dibujos:AAPL:usd', JSON.stringify({ pendiente: false, dibujos: MIS_DIBUJOS }))
+  localStorage.setItem('rendi_dibujos:ana@prueba.test|propia:AAPL:usd', JSON.stringify({ pendiente: false, dibujos: MIS_DIBUJOS }))
 })
 afterEach(async () => {
   if (montado) await montado.desmontar()
@@ -161,7 +164,7 @@ describe('Compartir el gráfico técnico', () => {
       { id: 'n1', tipo: 'nota', a: { d: dia(220), mas: 0, precio: 246 }, texto: 'compré acá por el balance', color: 'violeta' },
       { id: 'n2', tipo: 'nota', a: { d: dia(299), mas: 3, precio: 255 }, texto: 'vendo si pasa 300' },
     ]
-    localStorage.setItem('rendi_dibujos:AAPL:usd', JSON.stringify({ pendiente: false, dibujos: [...MIS_DIBUJOS, ...NOTAS] }))
+    localStorage.setItem('rendi_dibujos:ana@prueba.test|propia:AAPL:usd', JSON.stringify({ pendiente: false, dibujos: [...MIS_DIBUJOS, ...NOTAS] }))
     const TESIS = [{ id: 5, asset: 'AAPL', texto: 'el recambio de iPhone', escrita_el: dia(150) }]
     await dibujar({ asset: 'AAPL', symbolMiniChart: 'AAPL', tesis: TESIS })
     // En la pantalla están…

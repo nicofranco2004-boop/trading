@@ -27,11 +27,11 @@ import { ChevronDown, Search, X } from 'lucide-react'
 import LecturaTecnica from '../components/asset/LecturaTecnica'
 import AssetTypeBadge from '../components/AssetTypeBadge'
 import Skeleton from '../components/Skeleton'
-import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { useFichaDelActivo } from '../hooks/useFichaDelActivo'
 import { api } from '../utils/api'
-import { claveDeActivos, urlDeActivo } from '../utils/buscadorRapido'
+import { urlDeActivo } from '../utils/buscadorRapido'
+import { useDuenoDeLaPestana } from '../utils/duenoDeLaPestana'
 import { nombreDelCliente } from '../utils/navegacion'
 import {
   FILTROS, activoDeEntrada, activoValido, guardado, opcionesDelBuscador, recordar,
@@ -41,9 +41,10 @@ import {
 const CHIPS = 3
 
 export default function GraficoTecnico() {
-  const { user } = useAuth()
   const { clientCtx } = useAdvisorContext()
-  const persona = claveDeActivos(user, clientCtx)
+  // De quién es lo que se recuerda (la persona y la cuenta abierta): la misma
+  // regla que los dibujos (utils/duenoDeLaPestana).
+  const persona = useDuenoDeLaPestana()
   const cliente = nombreDelCliente(clientCtx)
   const [searchParams, setSearchParams] = useSearchParams()
   const deLaDireccion = activoValido(searchParams.get('activo'))
@@ -171,9 +172,9 @@ function Encabezado({ activo, recientes, cliente, enfocar, onElegir }) {
   )
 }
 
-// El buscador. No dice cuántos dibujos hay en cada activo: la copia de los
-// dibujos que guarda el navegador no es por persona (utils/dibujos.js), y en una
-// compu compartida mostraba los de la persona anterior (auditoría 30/10).
+// El buscador. No dice cuántos dibujos hay en cada activo: contados de la copia
+// del navegador, en una compu compartida mostraba los de la persona anterior
+// (auditoría 30/10; hoy esa copia va a nombre de su dueño, utils/dibujos.js).
 function Buscador({ activo, recientes, cliente, caja, onCerrar, onElegir }) {
   const [consulta, setConsulta] = useState('')
   const [filtro, setFiltro] = useState('todo')

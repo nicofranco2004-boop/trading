@@ -46,16 +46,18 @@ import AskAIAbout from '../components/ai/AskAIAbout'
 import { ChipDelActivo } from '../components/FueraDeHorario'
 import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import { esCobro } from '../utils/tradeStats'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 // «Ordenar por» (Nico, 28/10): técnico primero (el de entrada) o fundamental
 // primero. Se recuerda para la próxima ficha que abras, en este navegador; si
 // el almacenamiento está bloqueado (modo privado), técnico primero.
 const CLAVE_ORDEN = 'rendi_ficha_orden'
 function ordenGuardado() {
-  try { return localStorage.getItem(CLAVE_ORDEN) === 'fundamental' ? 'fundamental' : 'tecnico' } catch { return 'tecnico' }
+  try { return leerDelAlmacen(CATALOGO.ordenDeLaFicha) === 'fundamental' ? 'fundamental' : 'tecnico' } catch { return 'tecnico' }
 }
 function guardarOrden(o) {
-  try { localStorage.setItem(CLAVE_ORDEN, o) } catch { /* sin almacenamiento */ }
+  try { guardarEnAlmacen(CATALOGO.ordenDeLaFicha, o) } catch { /* sin almacenamiento */ }
 }
 
 export default function AssetDetail() {

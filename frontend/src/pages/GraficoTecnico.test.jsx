@@ -16,7 +16,7 @@ import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic, enActo, escribir, tecla } from '../testing/navegadorMinimo'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn(), patch: vi.fn() }))
-vi.mock('../utils/api', () => ({ api }))
+vi.mock('../utils/api', () => ({ api, getClientContext: () => null, EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada' }))
 vi.mock('../contexts/CurrencyContext', () => ({
   useCurrency: () => ({ valuationDollar: 'mep', costBasis: 'today', currency: 'USD' }),
   pickFinancialRate: (d) => d?.mep?.venta || null,
@@ -29,7 +29,7 @@ vi.mock('../components/asset/LecturaTecnica', () => ({
   default: (props) => { recibido.push(props); return null },
 }))
 
-const CLAVE = 'rendi_grafico:ana@x.com:propia'
+const CLAVE = 'rendi_grafico:ana@x.com|propia'
 let pedidos
 // Lotes de más, por prueba (una cripto cargada como BTC-USD, un nombre raro).
 let extra = []
@@ -103,6 +103,8 @@ beforeEach(() => {
   recibido.length = 0
   extra = []
   ;({ local: almacen } = instalarNavegadorMinimo())
+  // La sesión que guarda la app: de ahí sale el dueño de lo recordado.
+  localStorage.setItem('rendi_user', JSON.stringify({ email: 'Ana@X.com' }))
   window.scrollTo = () => {}
   servidor()
 })
