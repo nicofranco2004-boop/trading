@@ -9,12 +9,18 @@ DE DÓNDE. Yahoo, velas de 1 hora (`interval='1h'`, hasta ~2 años; medido el
 30/10 bien en AAPL, AAPL.BA, GGAL.BA y BTC-USD). La última que manda es la hora
 en curso: la vela viva sale de la MISMA descarga, no de otro precio.
 
-4 HORAS. Yahoo no las tiene: se arman juntando las de 1 hora, cortadas como
-TradingView, desde la apertura de cada rueda (alerts_engine._SESION_US y
-_SESION_BYMA, LA definición del horario de Rendi):
-  · Nueva York: 9:30–13:30 y 13:30–16:00, hora de Nueva York;
-  · BYMA: 11:00–15:00 y 15:00–17:00, hora argentina;
-  · cripto: cada 4 horas corridas desde las 00:00 UTC (21:00 hora argentina).
+CORTADAS COMO TRADINGVIEW, desde la apertura de cada rueda:
+  · Nueva York (alerts_engine._SESION_US): 1 hora desde las 9:30 de allá, como
+    las da Yahoo; 4 horas, 9:30–13:30 y 13:30–16:00;
+  · BYMA: TradingView toma la rueda desde la PRE-APERTURA de las 10:30 (medido
+    contra BCBA:GGAL el 30/10): 1 hora = 10:30, 11:30, …, 16:30 (la última de
+    media hora) y 4 horas = 10:30–14:30 y 14:30–17:00. Yahoo da las de 1 hora a
+    la hora en punto (11, 12, …): otra caja. Por eso, en BYMA, los últimos 60
+    días (lo que Yahoo da de a 30 minutos) se arman juntando las de 30 minutos
+    con el corte de TradingView, y dan IGUAL que TradingView salvo la de las
+    10:30, donde TradingView suma la subasta de 10:30 a 11:00 que Yahoo no
+    tiene. Lo de antes queda con las de 1 hora a la hora en punto;
+  · cripto: cada hora y cada 4 horas corridas desde las 00:00 UTC (21:00 acá).
 El bloque en curso incluye la hora en curso.
 
 QUÉ SERIE. La misma que el gráfico diario: `tecnico.serie` decide qué ticker
@@ -72,17 +78,23 @@ VELAS_A_LA_PANTALLA = 1000
 # una cripto eran ~0,5 s por pedido.
 VELAS_DE_CALENTAMIENTO = 600
 
-# El horario de cada rueda: zona horaria y (hora, minuto) de apertura y cierre.
+# La zona horaria de cada rueda.
 ZONAS = {"us": "America/New_York", "byma": "America/Argentina/Buenos_Aires", "cripto": "UTC"}
+# Desde dónde corta TradingView las velas de BYMA: la pre-apertura de las
+# 10:30, no la rueda de las 11 (ver arriba). Sólo para cortar las velas: para
+# «¿hay rueda ahora?» sigue mandando alerts_engine._SESION_BYMA.
+APERTURA_BYMA_GRAFICO = 10 * 60 + 30
+# Lo que Yahoo da de a 30 minutos (más atrás no: «must be within the last 60 days»).
+PERIODO_30_MIN = "60d"
 
 
 def _sesion(mercado: str):
-    """(abre, cierra) en minutos del día local; cripto, el día entero."""
+    """(abre, cierra) de las velas, en minutos del día local; cripto, el día entero."""
     if mercado == "cripto":
         return 0, 24 * 60
     from alerts_engine import _SESION_BYMA, _SESION_US
     h1, m1, h2, m2 = _SESION_BYMA if mercado == "byma" else _SESION_US
-    return h1 * 60 + m1, h2 * 60 + m2
+    return (APERTURA_BYMA_GRAFICO if mercado == "byma" else h1 * 60 + m1), h2 * 60 + m2
 
 
 def _ahora() -> float:
@@ -139,14 +151,32 @@ def _velas_de(df, mercado: str) -> list:
     return out
 
 
-def _bajar(ticker: str, periodo: str, mercado: str) -> list:
-    """Las velas de 1 hora de `ticker` (sólo por pricing.yahoo, con su tope)."""
+def _tabla(ticker: str, periodo: str, intervalo: str, mercado: str) -> list:
+    """Las velas de `intervalo` de `ticker` (sólo por pricing.yahoo, con su tope)."""
     from pricing import yahoo
-    tabla = yahoo.descargar(ticker, period=periodo, interval="1h", auto_adjust=False,
-                            group_by="ticker", que="velas de 1 hora")
+    tabla = yahoo.descargar(ticker, period=periodo, interval=intervalo, auto_adjust=False,
+                            group_by="ticker", que=f"velas de {intervalo}")
     if tabla is None or tabla.empty or ticker not in tabla.columns.get_level_values(0):
         return []
     return _velas_de(tabla[ticker].dropna(how="all"), mercado)
+
+
+def _bajar(ticker: str, periodo: str, mercado: str) -> list:
+    """Las velas de 1 hora de `ticker`, cortadas como TradingView. En BYMA, lo
+    que Yahoo tiene de a 30 minutos (60 días) se junta en horas desde las 10:30;
+    lo de antes, las de 1 hora a la hora en punto."""
+    if mercado != "byma":
+        return _tabla(ticker, periodo, "1h", mercado)
+    largo = periodo == PERIODO_HISTORIA
+    medias = [_como_tupla(v) for v in _juntar([_como_vela(x) for x in _tabla(
+        ticker, PERIODO_30_MIN if largo else periodo, "30m", mercado)], 60, APERTURA_BYMA_GRAFICO)]
+    if not largo:
+        return medias
+    horas = _tabla(ticker, periodo, "1h", mercado)
+    if not medias:
+        return horas
+    # Las de 1 hora, sólo de los días que no están de a 30 minutos.
+    return [x for x in horas if x[1] < medias[0][1]] + medias
 
 
 def _lock_de(ticker: str) -> threading.Lock:
@@ -213,16 +243,25 @@ def _como_vela(x) -> dict:
     return {"t": t, "date": fecha, "minuto": minuto, "open": o, "high": h, "low": l, "close": c, "volume": v}
 
 
+def _como_tupla(v: dict) -> tuple:
+    return (v["t"], v["date"], v["minuto"], v["open"], v["high"], v["low"], v["close"], v["volume"])
+
+
 def bloques(velas: list, cada: str, mercado: str) -> list:
     """Las velas de `cada` ('1h' o '4h') a partir de las de 1 hora (dicts de
-    `_como_vela`). Un bloque de 4 horas se corta desde la apertura de su rueda,
-    como TradingView: apertura de la primera hora, máximo y mínimo del bloque,
-    cierre de la última, volumen sumado. Una hora con el máximo roto aporta su
-    apertura y su cierre (como la completa `velaCompleta` de la pantalla)."""
+    `_como_vela`): las de 4 horas, cortadas desde la apertura de su rueda."""
     if cada != "4h":
         return velas
-    abre, _ = _sesion(mercado)
-    largo = CADAS["4h"]
+    return _juntar(velas, CADAS["4h"], _sesion(mercado)[0])
+
+
+def _juntar(velas: list, largo: int, abre: int) -> list:
+    """Velas de `largo` minutos juntando las más cortas, cortadas cada `largo`
+    desde el minuto `abre` de cada día, como TradingView: apertura de la
+    primera, máximo y mínimo del bloque, cierre de la última, volumen sumado.
+    Una vela con el máximo roto aporta su apertura y su cierre (como la
+    completa `velaCompleta` de la pantalla). Lo usan las 4 horas y, en BYMA,
+    las horas hechas con las de 30 minutos."""
     out, clave = [], None
     for v in velas:
         b = (v["minuto"] - abre) // largo

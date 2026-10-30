@@ -631,7 +631,8 @@ export default function LecturaTecnica({
   const promedio = lineaPromedio(actual.puntos, pnlPct,
     moneda === 'usd' ? variacionDeHoy(referencia?.precio, actual.cierre_ref) : 0)
   const ultimaFecha = actual.puntos[actual.puntos.length - 1]?.d
-  const misMarcas = marcas(lotes, operaciones).filter(m => m.fecha <= ultimaFecha)
+  // Hasta el último día que se dibuja: en 1H/4H, hoy (las diarias todavía no lo tienen).
+  const misMarcas = marcas(lotes, operaciones).filter(m => m.fecha <= (horas ? serie[total - 1].d : ultimaFecha))
   // Si los precios no se pudieron actualizar en más de una semana, se avisa
   // arriba (antes sólo se veía la fecha en letra chica al pie).
   const diasViejo = ultimaFecha ? Math.floor((Date.now() - Date.parse(ultimaFecha + 'T12:00:00Z')) / 86400000) : 0

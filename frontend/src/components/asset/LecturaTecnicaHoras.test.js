@@ -66,6 +66,7 @@ vi.mock('../../utils/api', () => ({
     put: vi.fn(() => Promise.resolve({ ok: true })),
     patch: vi.fn(() => Promise.resolve({})),
   },
+  getClientContext: () => null,
 }))
 
 let LecturaTecnica
@@ -238,6 +239,18 @@ describe('velas de 1 hora y de 4 horas', () => {
     const lugares = DIAS_HORAS.length * 7 + 5
     // La primera hora del 21 es la vela 49 (7 ruedas de 7 antes).
     expect(parseFloat(marca.style.left)).toBeCloseTo((49 / (lugares - 1)) * 100, 6)
+  })
+
+  it('una compra de hoy se marca en 1H aunque las diarias todavía no tengan el día de hoy', async () => {
+    localStorage.setItem('rendi_grafico_capas', JSON.stringify(CAPAS_TODAS))
+    const lotes = [{ entry_date: '2026-10-29', quantity: 1 }]
+    await abrir({ lotes })
+    expect(uno(n => n.nodeName === 'SPAN' && (n.getAttribute?.('title') || '') === 'Compraste el 29/10/26')).toBeNull()
+    await elegirIntervalo('1h', { lotes })
+    const marca = uno(n => n.nodeName === 'SPAN' && (n.getAttribute?.('title') || '') === 'Compraste el 29/10/26')
+    expect(marca).not.toBeNull()
+    const lugares = DIAS_HORAS.length * 7 + 5
+    expect(parseFloat(marca.style.left)).toBeCloseTo((91 / (lugares - 1)) * 100, 6)   // la primera hora del 29
   })
 
   it('si Yahoo no tiene velas de 1 hora de este activo, lo dice y ofrece volver a diarias', async () => {
