@@ -20,6 +20,7 @@ from datetime import date, datetime, timedelta
 from fastapi.testclient import TestClient
 
 import main
+from tests._limpieza import vaciar  # noqa: E402
 from fechas import hoy_art_date
 
 ESCENARIOS = 40
@@ -60,8 +61,8 @@ class PanelContraLaCuentaAMano(unittest.TestCase):
     def _limpiar(self):
         conn = main.get_db()
         try:
-            for t in TABLAS:
-                conn.execute(f"DELETE FROM {t}")
+            # `users` iba primero y `brokers` lo apunta: ver tests/_limpieza.py.
+            vaciar(conn, *TABLAS)
             conn.commit()
         finally:
             conn.close()
