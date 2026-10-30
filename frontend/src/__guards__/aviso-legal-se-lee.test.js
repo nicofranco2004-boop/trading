@@ -1,34 +1,48 @@
-// D12 (auditoría D, 29/10): el aviso «Muestra cómo se movieron los precios: no
-// es una recomendación…» del final de Análisis técnico daba 4,0 a 1 de
-// contraste en modo claro con letra de 12 px (el mínimo para letra chica es
-// 4,5): estaba en `text-ink-3`, el color de «pistas, deshabilitado» (index.css).
-// El aviso legal no es una pista: va en `text-ink-2` (rótulos, ~6,8 a 1 en
-// claro). Lo mismo los pies de Fibonacci y Elliott, que dicen lo mismo.
+// El aviso «no es una recomendación» (y sus parientes: los pies de Fibonacci y
+// Elliott, la aclaración del diario) se lee: va en `text-ink-2`, el gris de los
+// rótulos (≈ 6,8 a 1 en claro), no en `text-ink-3`, el de «pistas, deshabilitado»
+// (index.css), que con letra de 12 px daba 4,0 a 1 en claro (el mínimo es 4,5).
+//
+// POR QUÉ ESTE TEST (auditoría D12 y su re-test, 29/10)
+// ─────────────────────────────────────────────────────
+// La primera versión miraba una LISTA de seis archivos y se arregló aviso por
+// aviso: el del Resumen del mercado (ResumenMercado.jsx) y la aclaración del
+// diario quedaron con el gris viejo. Ahora recorre TODA la app: cualquier
+// renglón con el aviso (o sus constantes), y los dos renglones de arriba (donde
+// suele estar la etiqueta con la clase), no pueden usar `text-ink-3`.
 import { describe, it, expect } from 'vitest'
-import panorama from '../pages/AnalisisTecnico.jsx?raw'
-import senales from '../components/TusSenales.jsx?raw'
-import radiografia from '../components/RadiografiaTecnica.jsx?raw'
-import ficha from '../components/asset/LecturaTecnica.jsx?raw'
-import fibonacci from '../components/asset/CapaFibonacci.jsx?raw'
-import elliott from '../components/asset/CapaElliott.jsx?raw'
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
 
-// El renglón del aviso y el anterior (donde suele estar la etiqueta con la clase).
-function clasesDelAviso(fuente, marca) {
-  const l = fuente.split('\n')
-  return l.flatMap((x, i) => (x.includes(marca) ? [`${l[i - 1] || ''}\n${x}`] : []))
+const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const AVISO = /no es una recomendaci[oó]n|\{NO_ES_RECOMENDACION\}|\{ACLARACION_DIARIO\}|\{t\.pie\}/
+
+function archivos(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const r = path.join(dir, e.name)
+    if (e.isDirectory()) return ['__guards__', 'testing'].includes(e.name) ? [] : archivos(r)
+    return /\.jsx$/.test(e.name) && !/\.test\./.test(e.name) ? [r] : []
+  })
 }
 
-describe('el aviso «no es una recomendación» se lee', () => {
-  const casos = [
-    ['Panorama', panorama, '{NO_ES_RECOMENDACION}'], ['Señales', senales, '{NO_ES_RECOMENDACION}'],
-    ['Cartera/Panorama', radiografia, 'no es una recomendación'], ['Ficha', ficha, 'no es una recomendación para comprar'],
-    ['Fibonacci', fibonacci, '{t.pie}'], ['Elliott', elliott, '{t.pie}'],
-  ]
-  for (const [nombre, fuente, marca] of casos) {
-    it(nombre, () => {
-      const avisos = clasesDelAviso(fuente, marca)
-      expect(avisos.length, nombre).toBeGreaterThan(0)
-      for (const a of avisos) expect(a, nombre).not.toMatch(/text-ink-3/)
-    })
-  }
+describe('el aviso «no es una recomendación» se lee, en toda la app', () => {
+  const avisos = archivos(SRC).flatMap((r) => {
+    const l = fs.readFileSync(r, 'utf8').split('\n')
+    return l.flatMap((x, i) => (AVISO.test(x) && !/^\s*(\/\/|\*|\{\/\*)/.test(x)
+      ? [{ donde: `${path.relative(SRC, r)}:${i + 1}`, bloque: l.slice(Math.max(0, i - 2), i + 1).join('\n') }] : []))
+  })
+
+  it('el recorrido encuentra los avisos conocidos (contra el falso verde)', () => {
+    const donde = avisos.map((a) => a.donde.split(':')[0])
+    for (const f of ['pages/AnalisisTecnico.jsx', 'components/TusSenales.jsx', 'pages/ResumenMercado.jsx',
+      'components/asset/CapaFibonacci.jsx', 'components/operations/DiarioResumen.jsx']) {
+      expect(donde, f).toContain(f)
+    }
+  })
+
+  it('ninguno está en el gris de «pistas, deshabilitado»', () => {
+    const grises = avisos.filter((a) => /text-ink-3/.test(a.bloque)).map((a) => a.donde)
+    expect(grises, 'usá text-ink-2').toEqual([])
+  })
 })

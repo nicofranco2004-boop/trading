@@ -12,7 +12,7 @@ D11. «Máximo del año · hace 5 semanas» cuando el último cierre en máximo 
 semana: la regla (`tecnico.senal_desde('maximo_12m')`) marca el PRIMER máximo
 después de un mes sin máximos (para no avisar todos los días mientras sube). La
 regla queda —es la de la alerta— y el texto dice lo que mide: «empezó a marcar
-máximos del año… después de un mes sin hacerlo», en la frase CORTA (la de la celda).
+máximos del año» en la frase CORTA (la que va sola en la celda), y «después de un mes sin hacerlo» en la larga.
 
 Corre con: cd backend && python3 -m pytest tests/test_palabras_del_cambio.py
 """

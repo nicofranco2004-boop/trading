@@ -81,7 +81,7 @@ export default function DiarioResumen({ resumen, estadoTendencias = 'listo', apa
               <strong className="font-semibold text-ink-0">Lo que dicen tus números:</strong>{' '}
               {frase.join(' ')}
             </p>
-            <p className="mt-1.5 text-[12.5px] text-ink-3">{ACLARACION_DIARIO}</p>
+            <p className="mt-1.5 text-[12.5px] text-ink-2">{ACLARACION_DIARIO}</p>
           </Panel>
         )}
         {aparte}

@@ -98,7 +98,7 @@ export default function ResumenMercado() {
       {!cargando && !error && resumen && (
         <Panel className="max-w-2xl" padding="lg">
           <ResumenMercadoCuerpo resumen={resumen} />
-          <p className="text-xs text-ink-3 leading-relaxed mt-8 pt-4 border-t border-line/40">
+          <p className="text-xs text-ink-2 leading-relaxed mt-8 pt-4 border-t border-line/40">
             Lo escribimos a partir de las noticias del día; no es una recomendación
             de inversión. Te llega también por mail. Podés apagarlo en{' '}
             <Link to="/alertas" className="text-rendi-accent hover:underline">Alertas</Link>.
