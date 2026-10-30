@@ -656,6 +656,53 @@ def entrega(conn, uid: int, armar, *, push_titulo: str = None, push_url: str = N
     return {"destino": destino, "cliente": cliente, "mail": mail, "push": push}
 
 
+def enviar(conn, destino: int, que: str, *, push: dict = None, mail: dict = None) -> tuple:
+    """LA puerta de envío de los avisos: manda el push (`push`, el payload de
+    `_send_push_to_user`) y/o el mail (`mail`, los argumentos de
+    `emails.send_alert_email` sin el destinatario) a `destino`, y devuelve
+    (push_ok, mail_ok). `que`: de qué aviso es, para el registro.
+
+    Lo que NO sale no se reintenta (quien llama ya anotó el aviso antes de
+    mandarlo: nunca sale dos veces), pero deja SIEMPRE un renglón en el registro
+    con la persona y el motivo (decisión de Nico, 29/10):
+      · mail rechazado sin excepción → el motivo del proveedor
+        (`emails.resultado_del_ultimo_envio()`: no_salio, incierto, no_intentado);
+      · push que no llegó a ningún dispositivo (0, sin error) → eso;
+      · cualquiera que revienta → el nombre del error y su traza;
+      · la persona sin mail → eso.
+
+    🔴 POR QUÉ UNA SOLA PUERTA (re-test de la auditoría B, 29/10). Cada lugar
+    que mandaba decidía qué anotar: el resumen del sábado anotaba el rechazo del
+    proveedor, las alertas y el libro del asesor no, y ninguno anotaba el push
+    que no llegaba. Lo vigila `test_avisos_mandan_por_una_puerta.py`."""
+    import main
+    from billing import emails
+    push_ok = mail_ok = False
+    if push is not None:
+        try:
+            n = main._send_push_to_user(destino, push)
+            push_ok = bool(n and n > 0)
+            if not push_ok:
+                log.warning("aviso %s a uid=%s: el push no salió: ningún dispositivo lo recibió", que, destino)
+        except Exception as ex:
+            log.error("aviso %s a uid=%s: el push no salió: %s: %s", que, destino,
+                      type(ex).__name__, ex, exc_info=True)
+    if mail is not None:
+        try:
+            row = conn.execute("SELECT email, name FROM users WHERE id=?", (destino,)).fetchone()
+            if not row or not row["email"]:
+                log.warning("aviso %s a uid=%s: el mail no salió: la cuenta no tiene mail", que, destino)
+            else:
+                mail_ok = bool(emails.send_alert_email(to=row["email"], user_name=(row["name"] or ""), **mail))
+                if not mail_ok:
+                    log.error("aviso %s a uid=%s: el mail no salió: %s (no se reintenta)", que, destino,
+                              emails.resultado_del_ultimo_envio())
+        except Exception as ex:
+            log.error("aviso %s a uid=%s: el mail no salió: %s: %s (no se reintenta)", que, destino,
+                      type(ex).__name__, ex, exc_info=True)
+    return push_ok, mail_ok
+
+
 def _deliver(conn, alert, items) -> tuple:
     """Manda UN push + UN email por alerta y por ciclo, con todo lo que disparó.
     Devuelve (push_ok, email_ok).
@@ -691,38 +738,20 @@ def _deliver(conn, alert, items) -> tuple:
         # no dice nada del aviso.) La técnica y el recordatorio van adonde va el
         # botón del mail: la ficha del activo, con el gráfico.
         push_titulo=heading, push_url=None if (tecnica or armado) else _MIS_ALERTAS)
-    uid = e["destino"]
     channel = alert["channel"] or "both"
-    push_ok = email_ok = False
-
-    if channel in ("push", "both"):
-        try:
-            import main
-            titulo = e["push"]["titulo"]
-            sent = main._send_push_to_user(uid, {
-                "title": "Rendi · Alerta",
-                # La señal técnica lleva la aclaración también en el push: es lo
-                # único que lee quien no abre el mail.
-                "body": f"{titulo}. {_NO_ES_RECOMENDACION}" if tecnica else titulo,
-                "url": e["push"]["url"],
-                "tag": (f"alert-{alert['id']}-{items[0]['symbol'] or ''}"
-                        if len(items) == 1 else f"alert-{alert['id']}-grupo"),
-            })
-            push_ok = sent > 0
-        except Exception as ex:
-            log.warning("alerts push uid=%s falló: %s: %s", uid, type(ex).__name__, ex, exc_info=True)
-
-    if channel in ("email", "both"):
-        try:
-            row = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
-            if row and row["email"]:
-                from billing import emails
-                email_ok = emails.send_alert_email(
-                    to=row["email"], user_name=(row["name"] or ""), **e["mail"])
-        except Exception as ex:
-            log.warning("alerts email uid=%s falló: %s: %s", uid, type(ex).__name__, ex, exc_info=True)
-
-    return push_ok, email_ok
+    titulo = e["push"]["titulo"]
+    return enviar(
+        conn, e["destino"], f"alerta {alert['id']}",
+        push=({
+            "title": "Rendi · Alerta",
+            # La señal técnica lleva la aclaración también en el push: es lo
+            # único que lee quien no abre el mail.
+            "body": f"{titulo}. {_NO_ES_RECOMENDACION}" if tecnica else titulo,
+            "url": e["push"]["url"],
+            "tag": (f"alert-{alert['id']}-{items[0]['symbol'] or ''}"
+                    if len(items) == 1 else f"alert-{alert['id']}-grupo"),
+        } if channel in ("push", "both") else None),
+        mail=e["mail"] if channel in ("email", "both") else None)
 
 
 # ─── El mail ──────────────────────────────────────────────────────────────────
@@ -1430,13 +1459,17 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     # soltar la guarda de cada uno ya lo confirmó, y el rollback no lo deshace.
     # Descartarlos dejaba un aviso anotado que no se mandaba nunca (re-test de la
     # auditoría B). Qué se manda lo decide la base (`_solo_lo_guardado`).
+    # Lo que avisó el tramo se cuenta por sus avisos (uno por guarda que salió
+    # bien), no por lo que devuelve: si revienta a mitad, los que ya avisaron
+    # se mandan y también se cuentan (antes el cron decía «fired: 0»).
     propios: list = []
     try:
-        fired += _evaluar_fuera_de_rueda(conn, units, propios, now)
+        _evaluar_fuera_de_rueda(conn, units, propios, now)
     except Exception as ex:
         errores += 1
         log.error("alerts fuera de la rueda falló: %s: %s", type(ex).__name__, ex, exc_info=True)
         conn.rollback()
+    fired += len(propios)
     pendientes.extend(propios)
 
     # La entrega va DESPUÉS del loop: recién cuando terminó de evaluarse toda la

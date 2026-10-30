@@ -1759,6 +1759,7 @@ def test_fuera_de_la_rueda_lo_que_quedo_guardado_se_manda_aunque_falle_lo_que_si
     guardados = [e["message"] for e in _events(conn)]
     assert res.get("errores") == 1
     assert len(guardados) == 1, guardados
+    assert res["fired"] == 1, "el cron cuenta el aviso que sí salió (re-test B: decía 0)"
     assert [it["message"] for it in entregados] == guardados, "lo anotado como avisado se manda"
 
 
@@ -1772,3 +1773,65 @@ def test_el_cron_dice_que_error_fue_y_donde(clean, monkeypatch, caplog):
         main._evaluar_alertas_job()
     r = [x for x in caplog.records if "alertas de precio en el cron" in x.getMessage()]
     assert r and "KeyError" in r[0].getMessage() and r[0].exc_info
+
+
+# ── Un envío que no sale deja rastro, en TODOS los avisos (re-test B, 29/10) ──
+
+def _envios_que_no_salen(monkeypatch):
+    """El proveedor de mails rechaza (False, «no_salio») y el push no llega a
+    ningún dispositivo (0): las dos fallas que no levantan excepción."""
+    from billing import emails
+
+    def rechaza(**kw):
+        emails._anotar(emails.NO_SALIO)
+        return False
+    monkeypatch.setattr("billing.emails.send_alert_email", rechaza)
+    monkeypatch.setattr("main._send_push_to_user", lambda uid, p: 0)
+
+
+def _rastro(caplog, uid):
+    return [r.getMessage() for r in caplog.records if f"uid={uid}" in r.getMessage()]
+
+
+def test_el_envio_que_no_sale_deja_rastro_en_las_alertas(clean, monkeypatch, caplog):
+    """Decisión de Nico (29/10): cada envío que no sale queda en el registro con
+    la persona y el motivo. Se había aplicado sólo al resumen del sábado; el
+    re-test de la auditoría B encontró el mismo hueco en las alertas (precio,
+    %, técnica, recordatorio) y en el libro del asesor: cada lugar que manda
+    decidía qué anotar. Ahora mandan todos por `alerts_engine.enviar`."""
+    conn = clean
+    monkeypatch.setattr(ae, "_deliver", _ENTREGA_REAL)
+    _envios_que_no_salen(monkeypatch)
+    _mk_alert(conn, kind="pct_move", threshold=None, up_pct=3, down_pct=3, channel="both", repeat="always")
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": _q(210.0, 5.2)})
+    with caplog.at_level("WARNING"):
+        assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    rastro = _rastro(caplog, 1)
+    assert any("mail" in x and "no_salio" in x for x in rastro), rastro
+    assert any("push" in x and "ningún dispositivo" in x for x in rastro), rastro
+
+
+def test_el_envio_que_no_sale_deja_rastro_en_el_libro_del_asesor(clean, monkeypatch, caplog):
+    import advisor_alerts
+    _envios_que_no_salen(monkeypatch)
+    items = [{"msg": "La cartera de Juan subió 5%", "detail": "…", "label": "Juan", "pct": 5.0,
+              "dias": 1, "rotulo": "hoy", "line": "Juan: subió 5%", "event_id": 1}]
+    with caplog.at_level("WARNING"):
+        assert advisor_alerts._deliver(clean, 1, "both", "Rendi · Movimiento en tu libro", items) == (False, False)
+    rastro = _rastro(caplog, 1)
+    assert any("mail" in x and "no_salio" in x for x in rastro), rastro
+    assert any("push" in x and "ningún dispositivo" in x for x in rastro), rastro
+
+
+def test_el_envio_que_revienta_en_el_libro_dice_que_error_fue(clean, monkeypatch, caplog):
+    import advisor_alerts
+    monkeypatch.setattr("billing.emails.send_alert_email", lambda **kw: (_ for _ in ()).throw(ConnectionError("x")))
+    monkeypatch.setattr("main._send_push_to_user", lambda uid, p: (_ for _ in ()).throw(TimeoutError("y")))
+    items = [{"msg": "m", "detail": "d", "label": "Juan", "pct": 5.0, "dias": 1, "rotulo": "hoy",
+              "line": "l", "event_id": 1}]
+    with caplog.at_level("WARNING"):
+        advisor_alerts._deliver(clean, 1, "both", "t", items)
+    rastro = [r for r in caplog.records if "uid=1" in r.getMessage()]
+    assert any("ConnectionError" in r.getMessage() and r.exc_info for r in rastro)
+    assert any("TimeoutError" in r.getMessage() and r.exc_info for r in rastro)
+

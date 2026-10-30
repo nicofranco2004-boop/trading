@@ -228,17 +228,24 @@ def peso(car: dict, asset: str, local=None):
     return v / car["total"] if v > 0 and car["total"] > 0 else None
 
 
+def _clave_de_la_watchlist(simbolo: str, cedears) -> tuple:
+    """(asset, local) de un símbolo de la watchlist: LA regla, la usan
+    `watchlist` y `agregado_a_la_watchlist`. «GGAL.BA» es la acción argentina
+    (local); «AAPL.BA» es el CEDEAR, que se lee por AAPL."""
+    s = (simbolo or "").strip().upper()
+    base = s[:-3] if s.endswith(".BA") else s
+    return (base, s.endswith(".BA") and base not in cedears)
+
+
 def watchlist(conn, uid: int, cedears=None) -> dict:
-    """{(asset, local): símbolo tal como está en la watchlist}. «GGAL.BA» es la
-    acción argentina (local); «AAPL.BA» es el CEDEAR, que se lee por AAPL."""
+    """{(asset, local): símbolo tal como está en la watchlist} (la clave:
+    `_clave_de_la_watchlist`)."""
     cedears = _cedears() if cedears is None else cedears
     out = {}
     for r in conn.execute("SELECT symbol FROM watchlist WHERE user_id=?", (uid,)).fetchall():
         s = (r["symbol"] or "").strip().upper()
-        if not s:
-            continue
-        base = s[:-3] if s.endswith(".BA") else s
-        out[(base, s.endswith(".BA") and base not in cedears)] = s
+        if s:
+            out[_clave_de_la_watchlist(s, cedears)] = s
     return out
 
 
@@ -250,13 +257,12 @@ def agregado_a_la_watchlist(conn, uid: int, cedears=None) -> dict:
     cedears = _cedears() if cedears is None else cedears
     out = {}
     for r in conn.execute("SELECT symbol, added_at FROM watchlist WHERE user_id=?", (uid,)).fetchall():
-        s = (r["symbol"] or "").strip().upper()
         try:
             dia = dia_art(datetime.fromisoformat(str(r["added_at"])[:19]))
         except (TypeError, ValueError):
             continue          # sin fecha (una fila muy vieja): no se recorta
-        base = s[:-3] if s.endswith(".BA") else s
-        out[(base, s.endswith(".BA") and base not in cedears)] = dia.isoformat()
+        if (r["symbol"] or "").strip():
+            out[_clave_de_la_watchlist(r["symbol"], cedears)] = dia.isoformat()
     return out
 
 
@@ -580,40 +586,19 @@ def _armar_envio(conn, uid: int, semana: dict) -> dict:
 
 
 def _entregar(conn, via: str, envio: dict) -> tuple:
-    """(push_ok, mail_ok). Por el camino de las alertas: `send_alert_email` y
-    `_send_push_to_user`, con lo que armó `entrega`."""
-    import main
-    from billing import emails
-    destino = envio["destino"]
-    push_ok = mail_ok = False
-    if via in ("push", "ambos"):
-        try:
-            push_ok = main._send_push_to_user(destino, {
-                "title": "Rendi · Tu semana",
-                "body": f"{envio['push']['titulo']}. {NO_ES_RECOMENDACION}",
-                "url": envio["push"]["url"],
-                "tag": "resumen-semanal",
-            }) > 0
-        except Exception as ex:
-            log.warning("semana: push uid=%s falló: %s: %s", destino, type(ex).__name__, ex, exc_info=True)
-    if via in ("mail", "ambos"):
-        # Un mail que no sale NO se reintenta (la semana ya quedó marcada antes
-        # de mandar: nunca puede salir dos veces), pero cada falla queda en el
-        # registro con la persona y el motivo, para enterarse si pasa seguido
-        # (decisión de Nico, 29/10). Antes, si el proveedor lo rechazaba sin
-        # excepción, no quedaba nada: sólo `mail_ok = 0`.
-        try:
-            row = conn.execute("SELECT email, name FROM users WHERE id=?", (destino,)).fetchone()
-            if row and row["email"]:
-                mail_ok = bool(emails.send_alert_email(to=row["email"], user_name=row["name"] or "",
-                                                       **envio["mail"]))
-                if not mail_ok:
-                    log.error("semana: el mail de uid=%s no salió: %s (no se reintenta)",
-                              destino, emails.resultado_del_ultimo_envio())
-        except Exception as ex:
-            log.error("semana: el mail de uid=%s no salió: %s: %s (no se reintenta)", destino,
-                      type(ex).__name__, ex, exc_info=True)
-    return push_ok, mail_ok
+    """(push_ok, mail_ok), por `alerts_engine.enviar` con lo que armó `entrega`
+    — la misma puerta que todos los avisos. Un mail que no sale NO se reintenta
+    (la semana ya quedó marcada antes de mandar: nunca puede salir dos veces),
+    pero deja un renglón en el registro con la persona y el motivo (decisión de
+    Nico, 29/10): eso lo hace `enviar` para todos."""
+    from alerts_engine import enviar
+    return enviar(
+        conn, envio["destino"], "resumen del sábado",
+        push=({"title": "Rendi · Tu semana",
+               "body": f"{envio['push']['titulo']}. {NO_ES_RECOMENDACION}",
+               "url": envio["push"]["url"], "tag": "resumen-semanal"}
+              if via in ("push", "ambos") else None),
+        mail=envio["mail"] if via in ("mail", "ambos") else None)
 
 
 # Lo más atrás que mira el mail de los sábados, aunque el resumen anterior

@@ -364,7 +364,7 @@ class TusSenalesTest(unittest.TestCase):
             intentos.append(to)
             emails._anotar(emails.NO_SALIO)
             return False
-        with mock.patch("billing.emails._send", rechaza), self.assertLogs("senales_semana", level="ERROR") as logs:
+        with mock.patch("billing.emails._send", rechaza), self.assertLogs("alerts", level="ERROR") as logs:
             self._cron(_utc(sabado, 10, 5))
             self._cron(_utc(sabado, 10, 15))
             self._cron(_utc(sabado, 10, 25))
@@ -377,7 +377,7 @@ class TusSenalesTest(unittest.TestCase):
         self._velas(sabado)
         self._canal("mail")
         with mock.patch("billing.emails._send", side_effect=ConnectionError("Resend no contesta")), \
-             self.assertLogs("senales_semana", level="ERROR") as logs:
+             self.assertLogs("alerts", level="ERROR") as logs:
             self._cron(_utc(sabado, 10, 5))
             self._cron(_utc(sabado, 10, 15))
         self.assertEqual(sum(f"uid={self.uid}" in x and "ConnectionError" in x for x in logs.output), 1)

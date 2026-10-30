@@ -160,32 +160,21 @@ def _deliver(conn, uid: int, channel: str, title: str, items) -> tuple:
     cuatro CEDEARs. Con un solo cliente el mail es idéntico al de siempre."""
     items = sorted(items, key=lambda it: abs(it.get("pct") or 0), reverse=True)
     body = _titular(items)
-    push_ok = email_ok = False
-    if channel in ("push", "both"):
-        try:
-            import main
-            push_ok = main._send_push_to_user(uid, {
-                "title": title, "body": body, "url": "/alertas", "tag": "advisor-alert"}) > 0
-        except Exception as ex:
-            log.warning("advisor alert push uid=%s: %s", uid, ex)
-    if channel in ("email", "both"):
-        try:
-            row = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
-            if row and row["email"]:
-                from billing import emails
-                if len(items) == 1:
-                    detail = items[0]["detail"] or items[0]["msg"]
-                    lines = None
-                else:
-                    detail = f"se movieron {len(items)} carteras de tu libro {_cuando(items)}:"
-                    lines = [it["line"] for it in items]
-                email_ok = emails.send_alert_email(
-                    to=row["email"], user_name=(row["name"] or ""),
-                    heading=body, detail=detail, lines=lines,
-                    cta_path="/clientes")
-        except Exception as ex:
-            log.warning("advisor alert email uid=%s: %s", uid, ex)
-    return push_ok, email_ok
+    if len(items) == 1:
+        detail = items[0]["detail"] or items[0]["msg"]
+        lines = None
+    else:
+        detail = f"se movieron {len(items)} carteras de tu libro {_cuando(items)}:"
+        lines = [it["line"] for it in items]
+    # Por la misma puerta que todos los avisos (`alerts_engine.enviar`): lo que
+    # no sale deja un renglón con la persona y el motivo (re-test B, 29/10).
+    from alerts_engine import enviar
+    return enviar(
+        conn, uid, "del libro del asesor",
+        push=({"title": title, "body": body, "url": "/alertas", "tag": "advisor-alert"}
+              if channel in ("push", "both") else None),
+        mail=({"heading": body, "detail": detail, "lines": lines, "cta_path": "/clientes"}
+              if channel in ("email", "both") else None))
 
 
 def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
