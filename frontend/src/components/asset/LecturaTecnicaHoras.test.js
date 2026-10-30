@@ -186,6 +186,13 @@ describe('velas de 1 hora y de 4 horas', () => {
     expect(pedidos.slice(antes).filter(r => r.includes('/horas'))).toHaveLength(1)
   })
 
+  it('en BYMA dice la demora de sus precios junto a la vela en curso', async () => {
+    respuestas['/tecnico/AAPL/horas?cada=1h&moneda=usd'] = { ...HORA(), mercado: 'byma', demora_min: 20 }
+    await abrir()
+    await elegirIntervalo('1h')
+    expect(texto(montado.contenedor)).toMatch(/La última vela está en curso · hace \d+ s \(los precios de esta bolsa llegan con unos 20 minutos de demora\)\./)
+  })
+
   it('con la rueda cerrada no pide cada minuto', async () => {
     respuestas['/tecnico/AAPL/horas?cada=1h&moneda=usd'] = { ...HORA(horas().map(p => ({ ...p, enCurso: undefined }))), en_horario: false }
     await abrir()

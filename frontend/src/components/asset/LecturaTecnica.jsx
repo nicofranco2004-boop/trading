@@ -1036,7 +1036,7 @@ export default function LecturaTecnica({
                   {horas && (
                     <>
                       {`Cada vela es ${cadaHoras === '4h' ? 'un bloque de 4 horas' : 'una hora'}, en hora de Argentina. `}
-                      <EnCurso puntos={serie} actualizada={horas.actualizada} />
+                      <EnCurso puntos={serie} actualizada={horas.actualizada} demora={horas.demora_min} />
                       {sinLugarEnHoras > 0 && `${sinLugarEnHoras === 1 ? 'Uno de tus dibujos arranca' : `${sinLugarEnHoras} de tus dibujos arrancan`} antes de las velas de ${INTERVALOS_POR_HORA[cadaHoras].nombre} que hay: ${sinLugarEnHoras === 1 ? 'se ve' : 'se ven'} en diarias. `}
                     </>
                   )}
@@ -1136,9 +1136,9 @@ export default function LecturaTecnica({
 }
 
 // La vela que todavía se mueve, en 1H/4H: «La última vela está en curso ·
-// hace 20 s.» Se reescribe sola (cada segundo; cada 15 s cuando ya dice
-// minutos), sin redibujar el gráfico entero.
-function EnCurso({ puntos, actualizada }) {
+// hace 20 s.» (en BYMA, con la demora de sus precios). Se reescribe sola
+// (cada segundo; cada 15 s cuando ya dice minutos), sin redibujar el gráfico entero.
+function EnCurso({ puntos, actualizada, demora = 0 }) {
   const [ahora, setAhora] = useState(Date.now)
   const ultima = puntos[puntos.length - 1]
   const enCurso = !!ultima?.enCurso
@@ -1149,7 +1149,9 @@ function EnCurso({ puntos, actualizada }) {
   }, [ahora, actualizada, enCurso])
   if (!ultima) return null
   if (!enCurso) return `La última vela es la del ${fechaHoraCorta(ultima.t)}. `
-  return <span data-en-curso="">{`La última vela está ${textoEnCurso(actualizada, ahora)}. `}</span>
+  // BYMA llega con demora (velas_horarias.DEMORA_MIN): se dice, así el «hace
+  // 20 s» no parece el precio de hace 20 s.
+  return <span data-en-curso="">{`La última vela está ${textoEnCurso(actualizada, ahora)}${demora > 0 ? ` (los precios de esta bolsa llegan con unos ${demora} minutos de demora)` : ''}. `}</span>
 }
 
 // Las herramientas de Elliott a mano y la forma de conteo que dibujan.

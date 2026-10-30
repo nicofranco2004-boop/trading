@@ -86,6 +86,10 @@ ZONAS = {"us": "America/New_York", "byma": "America/Argentina/Buenos_Aires", "cr
 APERTURA_BYMA_GRAFICO = 10 * 60 + 30
 # Lo que Yahoo da de a 30 minutos (más atrás no: «must be within the last 60 days»).
 PERIODO_30_MIN = "60d"
+# BYMA llega por Yahoo con demora: el 30/10 el primer dato de la rueda (las
+# 11:00 a 11:05) apareció a las 11:20. La pantalla lo dice junto a la vela en
+# curso: «hace 20 s» es cuándo se le preguntó a Yahoo, no de cuándo es el precio.
+DEMORA_MIN = {"byma": 20}
 
 
 def _sesion(mercado: str):
@@ -381,6 +385,7 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
         # Para el ritmo del refresco de la pantalla (60 s con la rueda en
         # horario; con todo cerrado, espaciado: utils/relojVisible.refrescoSegunRueda).
         "en_horario": rueda_en_horario(mercado, datetime.now(timezone.utc)),
+        "demora_min": DEMORA_MIN.get(mercado, 0),
         "actualizada": datetime.fromtimestamp(actualizada, timezone.utc).isoformat().replace("+00:00", "Z"),
         "puntos": puntos,
     }

@@ -186,6 +186,7 @@ class HorasTest(unittest.TestCase):
         self.assertEqual([p for p in h1["puntos"] if p.get("enCurso")], [h1["puntos"][-1]])
         self.assertEqual(h1["sesion"]["velas_por_dia"], 7)
         self.assertEqual(h1["sesion"]["desfase"], -240, "Nueva York en verano: UTC−4")
+        self.assertEqual(h1["demora_min"], 0)
 
         h4 = self._horas("AAPL", "4h")
         inicios = [(p["d"], datetime.fromtimestamp(p["t"], timezone.utc).astimezone(
@@ -262,6 +263,7 @@ class HorasTest(unittest.TestCase):
         self.assertEqual((b["o"], b["c"], b["v"]), (5011.0, 5012.0, 100.0))
         self.assertTrue(h1["puntos"][-1].get("enCurso"), "son las 15:10: la hora de 14:30 a 15:30 está en curso")
         self.assertEqual(h1["sesion"]["abre"], 10 * 60 + 30)
+        self.assertEqual(h1["demora_min"], 20, "BYMA llega por Yahoo con ~20 min de demora: la pantalla lo dice")
         self.assertEqual(h1["sesion"]["velas_por_dia"], 7)
         self.assertEqual(h1["sesion"]["desfase"], -180)
 
