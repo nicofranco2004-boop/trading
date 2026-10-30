@@ -23,7 +23,7 @@
 // Con «Ocultar saldos» no se muestran el % ni el peso de cada tenencia, y el
 // orden de cada día no es por peso (`enOrden`).
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Mail } from 'lucide-react'
 import AssetLogo from './AssetLogo'
@@ -94,14 +94,17 @@ export function Cambio({ s, hidden, onVer, avisos = null }) {
   )
 }
 
-/** El resumen del sábado: cómo te llega, como opciones de radio (lienzo).
+/** El resumen del sábado: cómo te llega, con el aspecto de opciones de radio
+ *  del lienzo pero botones con `aria-pressed` (un `radiogroup` promete moverse
+ *  con las flechas, y estos no lo hacen; revisión a ciegas, 30/10). Mientras
+ *  se guarda no se deshabilitan (el foco se perdía): se ignora el toque.
  *  Elegir notificación pide el permiso del navegador en el mismo toque (como
  *  el formulario de Alertas). */
 function Preferencia({ canal, proximo, onCambiar, guardando }) {
   const push = usePushNotifications()
   const conPush = canal === 'push' || canal === 'ambos'
   const elegir = (c) => {
-    if (c === canal) return
+    if (c === canal || guardando) return
     if ((c === 'push' || c === 'ambos') && push && !push.subscribed && !push.motivo) {
       push.subscribe()?.catch(() => {})
     }
@@ -110,7 +113,7 @@ function Preferencia({ canal, proximo, onCambiar, guardando }) {
   return (
     <section aria-labelledby="senales-resumen-titulo" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-2.5">
       <div className="flex items-center gap-2.5">
-        <span className="w-9 h-9 rounded-lg bg-data-violet/12 text-data-violet grid place-items-center flex-none">
+        <span className="w-9 h-9 rounded-lg bg-data-violet/10 text-data-violet grid place-items-center flex-none">
           <Mail size={17} strokeWidth={2} aria-hidden="true" />
         </span>
         <div className="min-w-0">
@@ -118,12 +121,12 @@ function Preferencia({ canal, proximo, onCambiar, guardando }) {
           <p className="text-[12px] text-ink-2 leading-snug">Un mail o una notificación con lo de esta pantalla.</p>
         </div>
       </div>
-      <div className="flex flex-col gap-1.5" role="radiogroup" aria-labelledby="senales-resumen-titulo">
+      <div className="flex flex-col gap-1.5" role="group" aria-labelledby="senales-resumen-titulo" aria-busy={guardando || undefined}>
         {CANALES.map(c => {
           const on = canal === c.id
           return (
-            <button key={c.id} type="button" role="radio" aria-checked={on} disabled={guardando} onClick={() => elegir(c.id)}
-              className={`flex items-center gap-2.5 text-left text-[13.5px] px-3 py-2.5 min-h-[40px] rounded-lg border transition disabled:opacity-60 ${
+            <button key={c.id} type="button" aria-pressed={on} onClick={() => elegir(c.id)}
+              className={`flex items-center gap-2.5 text-left text-[13.5px] px-3 py-2.5 min-h-[40px] rounded-lg border transition ${guardando ? 'opacity-60' : ''} ${
                 on ? 'border-data-violet bg-data-violet/10 text-ink-0' : 'border-line bg-bg-1 text-ink-1 hover:text-ink-0'}`}>
               <span aria-hidden="true" className={`w-3.5 h-3.5 rounded-full flex-none box-border ${on ? 'border-4 border-data-violet' : 'border border-ink-3'}`} />
               {c.label}
@@ -188,13 +191,15 @@ export default function TusSenales({ senales = null }) {
   )
 }
 
-// El color de cada tipo: la barra, el cuadradito del cartel y la etiqueta.
+// El color de cada cambio (`colorDelCambio`, el mismo `lado` que cuenta la
+// franja): la barra (con los rellenos `-fill`, que son los de barras), el
+// cuadradito del cartel y la etiqueta.
 const COLOR = {
-  pos: { barra: 'bg-rendi-pos', pastilla: 'text-rendi-pos bg-rendi-pos/10' },
-  neg: { barra: 'bg-rendi-neg', pastilla: 'text-rendi-neg bg-rendi-neg/10' },
-  azul: { barra: 'bg-data-blue', pastilla: 'text-data-blue bg-data-blue/10' },
+  pos: { barra: 'bg-rendi-pos-fill', pastilla: 'text-rendi-pos bg-rendi-pos/10', leyenda: 'a favor' },
+  neg: { barra: 'bg-rendi-neg-fill', pastilla: 'text-rendi-neg bg-rendi-neg/10', leyenda: 'en contra' },
+  azul: { barra: 'bg-data-blue', pastilla: 'text-data-blue bg-data-blue/10', leyenda: 'sin dirección' },
 }
-const LEYENDA = [['pos', 'a favor'], ['neg', 'en contra'], ['azul', 'máximo / fuerza']]
+const ORDEN_COLOR = ['pos', 'neg', 'azul']
 const DIA_CORTO = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb']
 const DIA_LARGO = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado']
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
@@ -214,7 +219,7 @@ function Numero({ titulo, valor, tonoValor = 'text-ink-0', children, borde }) {
 /** Los 3 números de arriba (como la franja de Eventos). */
 function Franja({ f }) {
   const { cambios, lados, plata } = f
-  const conLado = lados.favor + lados.contra
+  const conLado = lados.favor + lados.contra + lados.sin
   return (
     <section aria-label="La semana en números" className="bg-bg-1 border border-line rounded-xl grid grid-cols-1 sm:grid-cols-3">
       <Numero titulo={cambios.titulo} valor={cambios.valor} borde>
@@ -225,11 +230,12 @@ function Franja({ f }) {
       }>
         {conLado > 0 && (
           <span className="flex gap-0.5 mt-1 h-[5px]" aria-hidden="true">
-            {lados.favor > 0 && <span className="rounded-xs bg-rendi-pos" style={{ flex: lados.favor }} />}
-            {lados.contra > 0 && <span className="rounded-xs bg-rendi-neg" style={{ flex: lados.contra }} />}
+            {lados.favor > 0 && <span className="rounded-xs bg-rendi-pos-fill" style={{ flex: lados.favor }} />}
+            {lados.contra > 0 && <span className="rounded-xs bg-rendi-neg-fill" style={{ flex: lados.contra }} />}
+            {lados.sin > 0 && <span className="rounded-xs bg-data-blue" style={{ flex: lados.sin }} />}
           </span>
         )}
-        <span className="text-[12px] text-ink-2 leading-snug mt-0.5">A favor: el precio subió. En contra: bajó.</span>
+        <span className="text-[12px] text-ink-2 leading-snug mt-0.5">{lados.texto}</span>
       </Numero>
       <Numero titulo={plata.titulo} valor={plata.valor}
         tonoValor={plata.cambio?.tono === 'pos' ? 'text-rendi-pos' : plata.cambio?.tono === 'neg' ? 'text-rendi-neg' : 'text-ink-0'}>
@@ -244,47 +250,61 @@ function Franja({ f }) {
   )
 }
 
-/** Las barras por día, como la «Distribución» de Eventos: una por día, un
- *  pedacito por cambio con el color de su tipo, y el cartel de qué pasó al
- *  pasar el mouse o al tocarla. Con más de 7 días (cuando el servidor los
- *  mande), la semana actual va resaltada. */
+/** Las barras por día, como la «Distribución» de Eventos: una por día, alta
+ *  según cuántos cambios hubo, partida por color (a favor / en contra / sin
+ *  dirección), y el cartel de qué pasó. Partida por color y no por cambio: con
+ *  40 cambios en un día (una caída general con la watchlist llena) los
+ *  pedacitos daban altura negativa y la barra quedaba vacía (revisión 30/10).
+ *  El cartel se abre al pasar el mouse, con el teclado o al TOCAR la barra (en
+ *  el celular no hay mouse, y en iOS tocar un botón no le da el foco). Con más
+ *  de 7 días (cuando el servidor los mande), la semana actual va resaltada. */
 function BarrasPorDia({ dias }) {
+  const [abierto, setAbierto] = useState(null)
+  const puntero = useRef('')
   const max = Math.max(2, ...dias.map(d => d.items.length))
   const largo = dias.length > 7
   const ultimo = dias.length - 1
   const etiqueta = (d) => `${d.dia}: ${d.items.length ? d.items.map(s => `${s.asset} ${s.corta || s.etiqueta}`).join('; ') : 'sin cambios'}`
+  const colores = new Set(dias.flatMap(d => d.items.map(colorDelCambio)))
   return (
     <section aria-label="Cambios por día" className="bg-bg-1 border border-line rounded-xl px-4 py-3.5">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-2.5">
         <h2 className="text-[12px] text-ink-2 font-medium">Cambios por día · últimos {dias.length} días</h2>
-        <ul className="flex flex-wrap gap-x-3 gap-y-1 text-[11.5px] text-ink-2">
-          {LEYENDA.map(([c, t]) => (
-            <li key={c} className="flex items-center gap-1.5"><span className={`w-2 h-2 rounded-xs ${COLOR[c].barra}`} aria-hidden="true" />{t}</li>
+        <ul aria-label="Colores" className="flex flex-wrap gap-x-3 gap-y-1 text-[11.5px] text-ink-2">
+          {ORDEN_COLOR.filter(c => c !== 'azul' || colores.has('azul')).map(c => (
+            <li key={c} className="flex items-center gap-1.5"><span className={`w-2 h-2 rounded-xs ${COLOR[c].barra}`} aria-hidden="true" />{COLOR[c].leyenda}</li>
           ))}
         </ul>
       </div>
-      <div className="relative">
+      <div className="relative" onKeyDown={(e) => { if (e.key === 'Escape') setAbierto(null) }}>
         <ol className="flex items-end gap-[3px] h-16">
           {dias.map((d, i) => {
             const semana = !largo || i > ultimo - 7
             // El cartel no se sale de la tarjeta en las puntas.
             const lugar = i < 2 ? 'left-0' : i > ultimo - 2 ? 'right-0' : 'left-1/2 -translate-x-1/2'
+            const partes = ORDEN_COLOR.map(c => [c, d.items.filter(s => colorDelCambio(s) === c).length]).filter(([, n]) => n)
             return (
-              <li key={d.fecha} className="flex-1 min-w-0 h-full relative group">
-                {/* Tocarla muestra el cartel (el celular no tiene «pasar el
-                    mouse») y lleva al día en la agenda. */}
+              <li key={d.fecha} className="flex-1 min-w-0 h-full relative"
+                onPointerEnter={(e) => { if (e.pointerType === 'mouse') setAbierto(i) }}
+                onPointerLeave={(e) => { if (e.pointerType === 'mouse') setAbierto(a => (a === i ? null : a)) }}>
                 <button type="button" aria-label={etiqueta(d)} disabled={!d.items.length}
-                  onClick={() => document.getElementById(`senales-dia-${d.fecha}`)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })}
-                  className={`w-full h-full mx-auto ${largo ? '' : 'max-w-[44px]'} flex flex-col justify-end gap-0.5 rounded-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-data-violet ${semana ? '' : 'opacity-55'}`}>
+                  onPointerDown={(e) => { puntero.current = e.pointerType }}
+                  onFocus={() => setAbierto(i)} onBlur={() => setAbierto(a => (a === i ? null : a))}
+                  // Con el dedo, tocar abre y cierra; con el mouse ya se abrió al pasar.
+                  onClick={() => { if (puntero.current === 'touch' || puntero.current === 'pen') setAbierto(a => (a === i ? null : i)) }}
+                  className={`w-full h-full mx-auto ${largo ? '' : 'max-w-[44px]'} flex flex-col justify-end rounded-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-data-violet ${semana ? '' : 'opacity-55'}`}>
                   {d.items.length === 0
                     ? <span className="w-full h-[3px] rounded-xs bg-line" />
-                    : d.items.map((s, k) => (
-                      <span key={k} className={`w-full rounded-xs ${COLOR[colorDelCambio(s)].barra} opacity-85 group-hover:opacity-100`}
-                        style={{ height: `${(100 / max) - 3}%` }} />
-                    ))}
+                    : (
+                      <span className={`w-full flex flex-col gap-0.5 ${abierto === i ? '' : 'opacity-85'}`} style={{ height: `${Math.max(12, (d.items.length / max) * 100)}%` }}>
+                        {partes.map(([c, n]) => (
+                          <span key={c} className={`w-full min-h-[3px] rounded-xs ${COLOR[c].barra}`} style={{ flex: n }} />
+                        ))}
+                      </span>
+                    )}
                 </button>
-                {d.items.length > 0 && (
-                  <div aria-hidden="true" className={`pointer-events-none absolute bottom-full mb-1.5 ${lugar} hidden group-hover:block group-focus-within:block z-20 w-max max-w-[260px] bg-bg-3 border border-line-2 rounded-lg px-2.5 py-1.5 shadow-lg`}>
+                {d.items.length > 0 && abierto === i && (
+                  <div aria-hidden="true" className={`pointer-events-none absolute bottom-full mb-1.5 ${lugar} z-20 w-max max-w-[260px] bg-bg-3 border border-line-2 rounded-lg px-2.5 py-1.5 shadow-lg`}>
                     <div className="text-[11.5px] text-ink-2 mb-1">{DIA_LARGO[fechaUTC(d.fecha).getUTCDay()]} {d.dia.split(' ')[1]}</div>
                     <div className="flex flex-col gap-0.5">
                       {d.items.slice(0, 6).map((s, k) => (
@@ -337,10 +357,10 @@ function TarjetaCambio({ s, hidden, hasta, onVer, avisos }) {
           <h4 className="text-[14px] font-semibold text-ink-0 leading-snug">{s.asset} {s.corta || s.etiqueta?.toLowerCase()}</h4>
           <span className={`text-[11px] font-semibold rounded px-1.5 py-0.5 whitespace-nowrap ${c.pastilla}`}>{ETIQUETA_CORTA[s.tipo] || s.etiqueta}</span>
           {/* En el celular «hace 2 días» va acá: abajo, con los dos botones, no entraba. */}
-          {cuando && <span className="lg:hidden text-[11.5px] font-bold text-data-violet bg-data-violet/12 rounded-full px-2.5 py-0.5 whitespace-nowrap">{cuando}</span>}
+          {cuando && <span className="lg:hidden text-[11.5px] font-bold text-data-violet bg-data-violet/10 rounded-full px-2.5 py-0.5 whitespace-nowrap">{cuando}</span>}
         </div>
         <p className="text-[12.5px] text-ink-2 mt-1 leading-snug">
-          {detalleDe(s)}{' '}
+          {detalleDe(s) && <>{detalleDe(s)}{' '}</>}
           <b className={`font-semibold ${s.tenes ? 'text-data-violet' : 'text-ink-2'}`}>· {quienCorto(s, hidden)}</b>
         </p>
         {s.extra && <p className="text-[12.5px] text-ink-1 mt-1 leading-snug">{s.extra}</p>}
@@ -356,7 +376,7 @@ function TarjetaCambio({ s, hidden, hasta, onVer, avisos }) {
         </a>
         {aviso && <BotonAvisame soloIcono avisos={avisos} asset={s.asset} accionLocal={!!s.local} moneda="usd" {...aviso} />}
         {cuando && (
-          <span className="hidden lg:inline text-[11.5px] font-bold text-data-violet bg-data-violet/12 rounded-full px-2.5 py-1 whitespace-nowrap">{cuando}</span>
+          <span className="hidden lg:inline text-[11.5px] font-bold text-data-violet bg-data-violet/10 rounded-full px-2.5 py-1 whitespace-nowrap">{cuando}</span>
         )}
       </div>
     </li>
@@ -460,7 +480,7 @@ export function TusSenalesVista({ datos, error, hidden, filtro, onFiltro, onVer,
           <section aria-labelledby="senales-momento-titulo" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-2">
             <h2 id="senales-momento-titulo" className="text-[15px] font-semibold text-ink-0">¿Querés enterarte en el momento?</h2>
             <p className="text-[13px] text-ink-1 leading-relaxed">
-              Una alerta técnica te avisa el mismo día en que pasa algo así, sin esperar al sábado.
+              Una alerta técnica te avisa a la mañana siguiente de que pase algo así, sin esperar al sábado.
             </p>
             <Link to="/alertas?tab=crear"
               className="self-start text-[13px] font-medium text-ink-1 bg-bg-2/60 border border-line rounded-full px-3.5 py-1.5 min-h-[34px] inline-flex items-center hover:text-ink-0 hover:border-rendi-accent/40 transition">

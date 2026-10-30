@@ -67,7 +67,8 @@ describe('tusSenales: cuentas', () => {
     // MELI cayó muy rápido (en contra), YPFD máximo (a favor), AAPL bajó del
     // promedio de 200 (en contra), PAMP tomó dirección al alza (sin `squeeze`
     // en el dato: no cuenta para ningún lado).
-    expect([f.lados.favor, f.lados.contra]).toEqual([1, 2])
+    expect([f.lados.favor, f.lados.contra, f.lados.sin]).toEqual([1, 2, 1])
+    expect(f.lados.texto).toBe('Del lado del precio: a favor, subió; en contra, bajó. 1 cambio sin dirección.')
     expect([f.plata.valor, f.plata.cambio]).toEqual(['54%', { texto: '▼ 7 puntos menos que la semana pasada', tono: 'neg' }])
     // La misma frase que «Qué lo movió» del Panorama (queLoMovio), con el peso y el día.
     expect(f.plata.texto).toBe('AAPL (11% de tu cartera) pasó a bajista el martes 20/10.')
@@ -80,7 +81,29 @@ describe('tusSenales: cuentas', () => {
     expect(lado({ tipo: 'rsi_sobre_70' })).toBe('favor')
     expect(lado({ tipo: 'maximo_12m' })).toBe('favor')
     expect([lado({ tipo: 'adx23', squeeze: 1 }), lado({ tipo: 'adx23', squeeze: -1 }), lado({ tipo: 'adx23', squeeze: 0 })]).toEqual(['favor', 'contra', null])
-    expect(DATOS.senales.map(colorDelCambio)).toEqual(['neg', 'azul', 'neg', 'azul'])
+    // El color es el MISMO lado que cuenta la franja: el máximo (YPFD) es verde
+    // en la barra porque suma «a favor» arriba; azul sólo lo que no tiene dirección.
+    expect(DATOS.senales.map(colorDelCambio)).toEqual(['neg', 'pos', 'neg', 'azul'])
+  })
+
+  it('la franja cuenta igual que los filtros: lo que tenés Y seguís va en los dos', () => {
+    const ko = { asset: 'KO', fecha: '2026-10-23', tenes: true, watchlist: true, peso: 0.1, tipo: 'media200', sentido: 'arriba', corta: 'superó su promedio de 200 días' }
+    const datos = { ...DATOS, senales: [ko] }
+    expect(franja(datos, false).cambios.texto).toBe('1 en tu cartera · 1 en tu watchlist')
+    const t = texto(dibujar({ datos }))
+    expect(t).toContain('Tu cartera · 1')
+    expect(t).toContain('Watchlist · 1')
+  })
+
+  it('un día con 40 cambios: la barra se parte por color, sin alturas negativas', () => {
+    const muchos = Array.from({ length: 40 }, (_, k) => ({ asset: `A${k}`, fecha: '2026-10-23', tenes: false, watchlist: true, peso: null,
+      tipo: 'media200', sentido: k % 4 ? 'abajo' : 'arriba', corta: 'x' }))
+    const html = dibujar({ datos: { ...DATOS, senales: muchos } })
+    expect(html).not.toMatch(/height:\s*-/)
+    const barra = html.slice(html.indexOf('aria-label="Viernes 23/10:'), html.indexOf('</button>', html.indexOf('aria-label="Viernes 23/10:')))
+    // Dos pedazos (10 a favor, 30 en contra), cada uno del alto de lo suyo.
+    expect(barra.match(/flex:\s*\d+/g)).toEqual(['flex:10', 'flex:30'])
+    expect(barra).toContain('height:100%')
   })
 
   it('«hace 2 días» se cuenta desde el hoy del servidor', () => {
@@ -103,7 +126,11 @@ describe('tusSenales: cuentas', () => {
       alcista: { pct: 50, semana_pasada: null, grupos: { alcista: { nombres: ['NVDA'] }, bajista: { nombres: [] }, sin: { nombres: ['NUEVA'] } } },
     }
     expect(franja(resp, false).cambios.texto).toBe('Nada cambió en tus 2 activos con precios al día.')
-    expect(franja({ ...resp, tenes: { activos: 0 } }, false).cambios.texto).toBe('Todavía no hay precios guardados de ninguno de tus activos.')
+    expect(franja({ ...resp, watchlist: 3 }, false).cambios.texto).toBe('Nada cambió en tus 2 activos con precios al día ni en tu watchlist.')
+    // Quien sólo sigue una watchlist (revisión 30/10): antes leía «no hay precios
+    // guardados de ninguno de tus activos», con precios de sus 5 a la vista.
+    expect(franja({ ...resp, tenes: { activos: 0 }, watchlist: 5 }, false).cambios.texto).toBe('Nada cambió en tu watchlist.')
+    expect(franja({ ...resp, tenes: { activos: 0 }, watchlist: 0 }, false).cambios.texto).toBe('Todavía no hay precios guardados de tus activos ni de tu watchlist.')
   })
 
   it('sin dato de la semana pasada, no hay chip; uno que no es de hace 7 días lleva su fecha', () => {
@@ -139,11 +166,15 @@ describe('tusSenales: cuentas', () => {
     const datos = { ...DATOS, senales: dia }
     const conOjo = texto(dibujar({ datos, hidden: true }))
     expect(conOjo.indexOf('MELI superó')).toBeLessThan(conOjo.indexOf('YPFD superó'))
+    // Las barras tampoco: su descripción nombra a MELI primero con el ojito, a YPFD sin él.
+    expect(dibujar({ datos, hidden: true })).toContain('aria-label="Viernes 23/10: MELI superó su promedio de 200 días; YPFD superó')
+    expect(dibujar({ datos, hidden: false })).toContain('aria-label="Viernes 23/10: YPFD superó su promedio de 200 días; MELI superó')
   })
 
-  it('la segunda línea: `detalle` del servidor; uno de antes, `texto` entero', () => {
+  it('la segunda línea: `detalle` del servidor; uno de antes no repite el título', () => {
     expect(detalleDe(DATOS.senales[0])).toBe('Su impulso (RSI) bajó de 30 y quedó en 28; una semana antes estaba en 52.')
-    expect(detalleDe(DATOS.senales[2])).toBe(DATOS.senales[2].texto)
+    expect(detalleDe(DATOS.senales[2])).toBeNull()
+    expect(texto(dibujar())).not.toContain('cayó por debajo de su promedio de 200 días: la tendencia')
   })
 
   it('el botón abre la ficha por el símbolo que dio el servidor; con tesis, «Revisar tu tesis»', () => {
@@ -157,9 +188,9 @@ describe('tusSenales: lo que se dibuja', () => {
   it('la pantalla del lienzo «4 · Señales de la semana»', () => {
     const t = texto(dibujar())
     for (const x of ['Cambios esta semana', '3 en tu cartera · 1 en tu watchlist', 'A favor · en contra',
-      'A favor: el precio subió. En contra: bajó.',
+      'Del lado del precio: a favor, subió; en contra, bajó.',
       'Tu cartera en tendencia alcista de largo plazo', '54%', '▼ 7 puntos menos que la semana pasada',
-      'Cambios por día · últimos 7 días', 'a favor', 'en contra', 'máximo / fuerza',
+      'Cambios por día · últimos 7 días',
       'Qué cambió esta semana en tu cartera y en tu watchlist', 'Todo · 4', 'Tu cartera · 3', 'Watchlist · 1',
       'viernes', '23 oct', 'lunes', '19 oct',
       'MELI cayó muy rápido', 'Impulso', 'Su impulso (RSI) bajó de 30 y quedó en 28', '· 12% de tu cartera',
@@ -168,10 +199,15 @@ describe('tusSenales: lo que se dibuja', () => {
       'Tu tesis: «El recambio de iPhone.»', 'Revisar tu tesis',
       'El resumen del sábado', 'Mail', 'Notificación', 'Mail y notificación', 'No recibirlo',
       'No te llega el resumen de los sábados. Si en la semana no cambió nada, no te mandamos nada.',
-      '¿Querés enterarte en el momento?', 'Crear una alerta técnica',
+      '¿Querés enterarte en el momento?', 'Una alerta técnica te avisa a la mañana siguiente de que pase algo así', 'Crear una alerta técnica',
       'no es una recomendación para comprar ni vender']) {
       expect(t).toContain(x)
     }
+    // La leyenda de las barras: sus tres colores (PAMP no tiene dirección).
+    const html = dibujar()
+    const ul = html.slice(html.indexOf('aria-label="Colores"'), html.indexOf('</ul>', html.indexOf('aria-label="Colores"')))
+    expect((ul.match(/<li[^>]*>.*?<\/li>/g) || []).map(x => texto(x).trim())).toEqual(['a favor', 'en contra', 'sin dirección'])
+    expect(texto(dibujar({ datos: { ...DATOS, senales: DATOS.senales.slice(0, 3) } }))).not.toContain('sin dirección')
     // Un solo aviso de «no es una recomendación», al pie.
     expect(t.split('no es una recomendación').length - 1).toBe(1)
     // El cartel de cada barra dice qué pasó ese día; la del lector de pantalla, también.
@@ -203,11 +239,15 @@ describe('tusSenales: lo que se dibuja', () => {
     expect(texto(dibujar({ error: true }))).toContain('No pudimos traer tus señales ahora')
   })
 
-  it('la preferencia marca lo elegido (un grupo de radio) y dice cuándo llega', () => {
+  it('la preferencia marca lo elegido y dice cuándo llega', () => {
     const html = dibujar({ datos: { ...DATOS, canal: 'ambos', proximo_resumen: '2026-10-31' } })
-    expect(html).toContain('role="radiogroup"')
-    expect(html).toMatch(/role="radio" aria-checked="true"[^>]*>(<span[^>]*><\/span>)?Mail y notificación</)
-    expect(html.match(/aria-checked="true"/g)).toHaveLength(1)
+    // Botones con aria-pressed, no un radiogroup: ése promete moverse con las
+    // flechas y estos no (revisión 30/10). Mientras guarda, no se deshabilitan.
+    expect(html).not.toContain('radiogroup')
+    expect(html).toMatch(/aria-pressed="true"[^>]*>(<span[^>]*><\/span>)?Mail y notificación</)
+    const resumen = html.slice(html.indexOf('id="senales-resumen-titulo"'))
+    expect(resumen.slice(0, resumen.indexOf('</section>')).match(/aria-pressed="true"/g)).toHaveLength(1)
+    expect(dibujar({ guardando: true })).not.toMatch(/<button[^>]*disabled=""[^>]*aria-pressed/)
     expect(texto(html)).toContain('El resumen de la semana te llega el sábado 31/10 a las 10:00, por mail y notificación.')
   })
 })

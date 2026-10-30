@@ -87,10 +87,12 @@ export function lado(s) {
   return null
 }
 
-/** El color de un cambio en las barras y en su etiqueta: 'azul' el máximo y
- *  la fuerza (como el lienzo de Nico); los demás, verde o rojo según `lado`. */
+/** El color de un cambio en las barras y en su etiqueta: verde a favor, rojo
+ *  en contra y azul sin dirección, el MISMO `lado` que cuenta la franja. El
+ *  lienzo pintaba de azul el máximo y la fuerza, pero la franja los contaba
+ *  verdes: un día con un máximo sumaba «a favor» arriba y no tenía nada verde
+ *  en su barra (revisión a ciegas, 30/10). */
 export function colorDelCambio(s) {
-  if (s?.tipo === 'maximo_12m' || s?.tipo === 'adx23') return 'azul'
   const l = lado(s)
   return l === 'favor' ? 'pos' : l === 'contra' ? 'neg' : 'azul'
 }
@@ -110,10 +112,11 @@ export function hace(fecha, hasta) {
   return d === 0 ? 'hoy' : d === 1 ? 'ayer' : `hace ${d} días`
 }
 
-/** La segunda línea de la tarjeta: `detalle` del servidor (un servidor de
- *  antes, mientras se despliega, no lo manda: va `texto` entero). */
+/** La segunda línea de la tarjeta: `detalle` del servidor. Un servidor de
+ *  antes (mientras se despliega) no lo manda: no va nada, porque `texto`
+ *  repetía el título en minúscula («superó su promedio…: la tendencia…»). */
 export function detalleDe(s) {
-  return s.detalle || s.texto
+  return s.detalle || null
 }
 
 /** De quién es, al pie de la tarjeta: «18% de tu cartera» / «en tu cartera»
@@ -149,27 +152,42 @@ export function diasDeLasBarras(senales = [], desde, hasta) {
   return out
 }
 
+/** La semana sin cambios, según lo que haya para mirar: «con precios al
+ *  día», no «con lectura» (re-test A2, 29/10; lo que se cuenta es `_se_lee`
+ *  del servidor). Quien sólo sigue una watchlist no tiene «tus activos». */
+function sinCambios(activos, sigue) {
+  if (!activos && !sigue) return 'Todavía no hay precios guardados de tus activos ni de tu watchlist.'
+  if (!activos) return 'Nada cambió en tu watchlist.'
+  const tus = `tus ${plural(activos, 'activo', 'activos')} con precios al día`
+  return sigue ? `Nada cambió en ${tus} ni en tu watchlist.` : `Nada cambió en ${tus}.`
+}
+
 /** La franja de 3 números de arriba. `datos` = la respuesta del servidor. */
 export function franja(datos, hidden) {
   const senales = datos?.senales || []
-  const tuyas = senales.filter(s => s.tenes).length
-  const deWatch = senales.filter(s => s.watchlist && !s.tenes).length
+  // Las MISMAS cuentas que los filtros de abajo (`filtrar`): un activo que
+  // tenés y además seguís cuenta en los dos, como en «Tu cartera · N» y
+  // «Watchlist · N». Antes la franja contaba la watchlist sin lo que tenés y
+  // la pantalla decía «0 en tu watchlist» arriba y «Watchlist · 1» abajo.
+  const tuyas = filtrar(senales, 'tenes').length
+  const deWatch = filtrar(senales, 'watchlist').length
   const activos = datos?.tenes?.activos || 0
+  const sigue = datos?.watchlist || 0
 
   const cambios = {
     titulo: 'Cambios esta semana',
     valor: senales.length,
-    texto: senales.length
-      ? `${tuyas} en tu cartera · ${deWatch} en tu watchlist`
-      : activos === 0 ? 'Todavía no hay precios guardados de ninguno de tus activos.'
-        // «Con precios al día», no «con lectura» (re-test A2, 29/10): lo que se
-        // cuenta es `_se_lee` del servidor.
-        : `Nada cambió en tus ${plural(activos, 'activo', 'activos')} con precios al día.`,
+    texto: senales.length ? `${tuyas} en tu cartera · ${deWatch} en tu watchlist`
+      : sinCambios(activos, sigue),
   }
+  const favor = senales.filter(s => lado(s) === 'favor').length
+  const contra = senales.filter(s => lado(s) === 'contra').length
+  const sin = senales.length - favor - contra
   const lados = {
     titulo: 'A favor · en contra',
-    favor: senales.filter(s => lado(s) === 'favor').length,
-    contra: senales.filter(s => lado(s) === 'contra').length,
+    favor, contra, sin,
+    // De qué lado se movió el PRECIO, también en lo que no tenés.
+    texto: `Del lado del precio: a favor, subió; en contra, bajó.${sin ? ` ${plural(sin, 'cambio', 'cambios')} sin dirección.` : ''}`,
   }
 
   const a = datos?.alcista
