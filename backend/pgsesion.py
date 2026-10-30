@@ -292,3 +292,9 @@ TURNO_TOPE_DEL_PLAN_POR_USUARIO = 823471005
 # El arranque (esquema + reparaciones). De sesión y no de transacción: abarca
 # varias conexiones. Ver `main._de_a_un_arranque_por_vez`.
 TURNO_ARRANQUE = 823471006
+
+# La tabla donde el arranque anota qué `schema_pg.sql` ya aplicó (la huella:
+# `main._init_db_postgres`). Es del arranque, no de los datos: no existe en SQLite
+# y la copia SQLite→Postgres no la compara (`scripts/verificar_copia.esquema_pg`).
+# El nombre vive acá, en un solo lugar, porque los dos lo necesitan.
+TABLA_DEL_ARRANQUE = "esquema_aplicado"

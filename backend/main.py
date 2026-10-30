@@ -1252,18 +1252,189 @@ def _derive_manual_flows(conn, uid: int, broker: str, year, month,
             max(0.0, float(withdrawals or 0) - imp_wit))
 
 
-def _init_db_postgres():
-    """Aplica el schema de Postgres (idempotente: todo va con IF NOT EXISTS)."""
-    import psycopg
+# Cuánto puede esperar UN cambio de estructura a que la copia vieja de la app
+# suelte su tabla, y cuántas veces lo vuelve a intentar. Ver `_aplicar_esquema_pg`.
+_DDL_ESPERA_MAX = "3s"
+_DDL_REINTENTOS = 20
+_DDL_PAUSA_S = 1.0
+
+
+def _sentencias_esquema_pg() -> list:
     ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema_pg.sql")
-    ddl = open(ruta).read()
+    with open(ruta) as f:
+        return [x.strip() for x in f.read().split(";\n") if x.strip()]
+
+
+def _huella_esquema_pg(sentencias) -> str:
+    """Todo lo que decide qué estructura deja el arranque: las sentencias de
+    `schema_pg.sql` y CÓMO se aplican (el código de `_aplicar_esquema_pg`). Un
+    cambio en cualquiera de las dos —aunque sea un comentario de la función—
+    vuelve a correr todo una vez, que es el lado seguro."""
+    import inspect
+    texto = "\n;\n".join(sentencias) + "\n#receta\n" + inspect.getsource(_aplicar_esquema_pg)
+    return hashlib.sha256(texto.encode("utf-8")).hexdigest()
+
+
+def _lo_que_falta_del_esquema(c, sentencias) -> list:
+    """Lo que `schema_pg.sql` crea y la base NO tiene, preguntado al catálogo:
+    tablas, columnas, índices, claves foráneas (todas con nombre) y vistas.
+    Leer el catálogo no traba ninguna tabla, así que no espera a nadie.
+
+    Existe para que la huella no sea un acto de fe: «huella al día» dice que el
+    archivo no cambió desde la última vez que se aplicó entero, no que nadie
+    tocó la base a mano después. Con esto, si falta algo, se vuelve a aplicar."""
+    import re as _re
+    tablas, columnas, indices, fks, vistas = set(), set(), set(), set(), set()
+    for s in sentencias:
+        m = _re.match(r"CREATE TABLE IF NOT EXISTS (\w+) \((.*)\)$", s, _re.S)
+        if m:
+            tablas.add(m.group(1))
+            for linea in m.group(2).split("\n"):
+                p = linea.strip().rstrip(",").split()
+                if p and p[0].upper() not in ("PRIMARY", "UNIQUE", "FOREIGN", "CHECK", "CONSTRAINT"):
+                    columnas.add((m.group(1), p[0].strip('"')))
+            continue
+        m = _re.match(r"ALTER TABLE (\w+) ADD COLUMN IF NOT EXISTS (\w+)", s)
+        if m:
+            columnas.add((m.group(1), m.group(2)))
+            continue
+        m = _re.match(r"ALTER TABLE \w+ ADD CONSTRAINT (\w+) FOREIGN KEY", s)
+        if m:
+            fks.add(m.group(1))
+            continue
+        m = _re.match(r"CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+)", s)
+        if m:
+            indices.add(m.group(1))
+            continue
+        m = _re.match(r"CREATE OR REPLACE VIEW (\w+)", s)
+        if m:
+            vistas.add(m.group(1))
+
+    def _hay(sql):
+        return {tuple(r) if len(r) > 1 else r[0] for r in c.execute(sql).fetchall()}
+    hay_tablas = _hay("SELECT table_name FROM information_schema.tables "
+                      "WHERE table_schema = current_schema()")
+    hay_columnas = _hay("SELECT table_name, column_name FROM information_schema.columns "
+                        "WHERE table_schema = current_schema()")
+    hay_indices = _hay("SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()")
+    hay_fks = _hay("SELECT conname FROM pg_constraint WHERE contype = 'f' "
+                   "AND connamespace = current_schema()::regnamespace")
+    falta = ([f"tabla {t}" for t in sorted(tablas - hay_tablas)]
+             + [f"columna {t}.{k}" for t, k in sorted(columnas - hay_columnas)]
+             + [f"índice {i}" for i in sorted(indices - hay_indices)]
+             + [f"clave foránea {f}" for f in sorted(fks - hay_fks)]
+             + [f"vista {v}" for v in sorted(vistas - hay_tablas)])
+    return falta
+
+
+def _aplicar_esquema_pg(c, sentencias) -> int:
+    """Corre las sentencias de `schema_pg.sql`. Devuelve cuántas veces tuvo que
+    reintentar una porque la tabla estaba ocupada.
+
+    🔴 EL TOPE DE ESPERA. Un `ALTER TABLE … ADD COLUMN IF NOT EXISTS` toma la
+    tabla ENTERA en exclusiva aunque la columna ya exista, y la toma ANTES de
+    mirar si existe. Si la copia vieja de la app (que en Postgres sigue
+    atendiendo durante el arranque de la nueva) tiene una transacción abierta en
+    esa tabla, el ALTER espera; y mientras espera, todo pedido NUEVO que quiera
+    leer esa tabla queda en fila detrás de él. Medido el 30/10/2026 en el
+    Postgres local: un pedido abierto, el ALTER esperando y un lector nuevo
+    trabado. En producción `lock_timeout` vale 0: esperaría para siempre.
+
+    Con el tope, cada intento traba la tabla como mucho `_DDL_ESPERA_MAX`;
+    después se rinde, la fila se vacía y la copia vieja sigue atendiendo.
+
+    POR QUÉ REINTENTA Y NO FALLA ENSEGUIDA. Las transacciones de la app son
+    cortas (el turno se pide justo antes de escribir y nunca durante la red),
+    así que en el segundo intento la tabla casi siempre está libre. Fallar el
+    arranque en el primero dejaría sin publicar por un pedido de 200 ms.
+    POR QUÉ, AL FINAL, FALLA Y NO SALTEA LA SENTENCIA: saltear dejaría a la
+    copia nueva atendiendo sin una columna que su código usa (errores en pedidos
+    de verdad). Fallar deja a la vieja atendiendo —con el chequeo de salud,
+    Railway no le pasa tráfico a la nueva— y lo dice en el registro.
+
+    El tope vive en ESTA conexión (una propia del arranque, que se cierra al
+    terminar) y se devuelve a su valor al salir: detrás de un pooler la conexión
+    del servidor puede seguir viva para otro cliente."""
+    import psycopg
+    reintentos = 0
+    c.execute(f"SET lock_timeout = '{_DDL_ESPERA_MAX}'")
+    try:
+        for s in sentencias:
+            for intento in range(_DDL_REINTENTOS + 1):
+                try:
+                    c.execute(s)
+                    break
+                except psycopg.errors.DuplicateObject:
+                    break     # la FK ya existía (ADD FOREIGN KEY no tiene IF NOT EXISTS)
+                except psycopg.errors.LockNotAvailable:
+                    if intento == _DDL_REINTENTOS:
+                        raise
+                    reintentos += 1
+                    time.sleep(_DDL_PAUSA_S)
+    finally:
+        c.execute("RESET lock_timeout")
+    return reintentos
+
+
+def _init_db_postgres() -> dict:
+    """Deja la base con la estructura de `schema_pg.sql`, corriendo los ~800
+    cambios SÓLO si hace falta.
+
+    🔴 POR QUÉ NO CORRE TODO EN CADA ARRANQUE, como hasta el 30/10/2026. Cada
+    `ALTER TABLE` traba su tabla entera aunque no cambie nada (ver
+    `_aplicar_esquema_pg`), y en Postgres el arranque de la copia nueva corre
+    mientras la vieja atiende: 646 trabas por publicación, cada una capaz de
+    dejar en fila a todos los pedidos de su tabla.
+
+    Se saltea cuando se cumplen LAS DOS: la huella guardada es la de este
+    archivo (`_huella_esquema_pg`) y el catálogo tiene todo lo que el archivo
+    crea (`_lo_que_falta_del_esquema`). Ante la duda, corre — que es lo que
+    hacía siempre.
+
+    La huella se guarda recién cuando TODO salió bien y el catálogo lo
+    confirma. Si el arranque muere a mitad, no queda huella nueva y el próximo
+    vuelve a correr todo (cada sentencia aguanta repetirse:
+    tests/test_esquema_pg_reaplicable.py).
+
+    Devuelve {"corridas", "reintentos", "salteado", "motivo"} para las pruebas
+    y el registro."""
     import pgsesion
+    sentencias = _sentencias_esquema_pg()
+    huella = _huella_esquema_pg(sentencias)
     with pgsesion.conectar(DATABASE_URL, autocommit=True) as c:
-        for s in [x.strip() for x in ddl.split(";\n") if x.strip()]:
-            try:
-                c.execute(s)
-            except psycopg.errors.DuplicateObject:
-                pass          # la FK ya existía (ADD FOREIGN KEY no tiene IF NOT EXISTS)
+        # Fuera de schema_pg.sql a propósito: ese archivo lo regenera
+        # scripts/mkschema.py desde el esquema de SQLite, y esta tabla es del
+        # arranque de Postgres, no de los datos (ver `pgsesion.TABLA_DEL_ARRANQUE`).
+        tabla = pgsesion.TABLA_DEL_ARRANQUE
+        c.execute(f"CREATE TABLE IF NOT EXISTS {tabla} ("
+                  "clave text PRIMARY KEY, huella text NOT NULL, aplicado_en text)")
+        fila = c.execute(f"SELECT huella FROM {tabla} WHERE clave = 'schema_pg'").fetchone()
+        guardada = fila[0] if fila else None
+        falta = _lo_que_falta_del_esquema(c, sentencias)
+        if guardada == huella and not falta:
+            # WARNING y no INFO: init_db corre antes del basicConfig (ver
+            # `reparaciones_de_arranque`) y un INFO acá se pierde.
+            log.warning("esquema de Postgres al día (huella %s): 0 cambios de estructura",
+                        huella[:12])
+            return {"corridas": 0, "reintentos": 0, "salteado": True, "motivo": None}
+        motivo = ("la base no tiene huella" if guardada is None
+                  else "cambió schema_pg.sql o cómo se aplica" if guardada != huella
+                  else f"falta en la base: {', '.join(falta[:5])}"
+                       + (f" (y {len(falta) - 5} más)" if len(falta) > 5 else ""))
+        log.warning("esquema de Postgres: se aplican %d sentencias (%s)", len(sentencias), motivo)
+        reintentos = _aplicar_esquema_pg(c, sentencias)
+        falta = _lo_que_falta_del_esquema(c, sentencias)
+        if falta:
+            raise RuntimeError("schema_pg.sql se aplicó y el catálogo sigue sin: "
+                               + ", ".join(falta[:10]))
+        c.execute(f"INSERT INTO {tabla} (clave, huella, aplicado_en) "
+                  "VALUES ('schema_pg', %s, %s) ON CONFLICT (clave) DO UPDATE "
+                  "SET huella = excluded.huella, aplicado_en = excluded.aplicado_en",
+                  (huella, datetime.utcnow().isoformat()))
+        log.warning("esquema de Postgres aplicado: %d sentencias, %d reintentos por tabla ocupada",
+                    len(sentencias), reintentos)
+        return {"corridas": len(sentencias), "reintentos": reintentos, "salteado": False,
+                "motivo": motivo}
 
 
 @contextmanager
@@ -1608,7 +1779,17 @@ def reparaciones_de_arranque(conn):
         log.warning("no se pudieron migrar los tokens de links de asesor a huella: %s", ex)
 
 
+# ¿Terminó `init_db`? Lo lee `/api/health`, que Railway usa para decidir cuándo
+# pasarle tráfico a una copia nueva. Hoy uvicorn no abre el puerto hasta que
+# `import main` (que corre `init_db()`) termina, así que «contesta» ya implica
+# «terminó»; esto lo hace explícito, para que siga siendo cierto si un día el
+# arranque se muda a un hilo o a un evento de inicio.
+_ARRANQUE_LISTO = False
+
+
 def init_db():
+    global _ARRANQUE_LISTO
+    _ARRANQUE_LISTO = False
     if USANDO_PG:
         # En Postgres NO se replican las 46 migraciones incrementales: son la
         # HISTORIA del schema de SQLite (crear, después ALTER, después el índice).
@@ -1623,6 +1804,7 @@ def init_db():
             _init_db_postgres()
             with db_abierta() as conn:
                 reparaciones_de_arranque(conn)
+        _ARRANQUE_LISTO = True
         return
     with db_abierta() as conn:
 
@@ -3941,6 +4123,7 @@ def init_db():
 
         reparaciones_de_arranque(conn)
         conn.commit()
+    _ARRANQUE_LISTO = True
 
 
 init_db()
@@ -49217,9 +49400,18 @@ def health_check():
        del daily snapshot (01:00 UTC) y la app se levanta antes.
     2. Monitoreo / uptime checks (UptimeRobot, etc.)
 
-    Devuelve siempre 200 con timestamp para que el caller verifique que
-    la app está respondiendo.
+    3. El chequeo de salud de Railway (`healthcheckPath` en railway.toml): una
+       copia nueva recibe tráfico recién cuando esto da 200. Por eso contesta
+       503 hasta que terminó el arranque (`_ARRANQUE_LISTO`): esquema +
+       reparaciones. Liviano a propósito: sin base y sin red, porque Railway
+       lo consulta en el arranque y un chequeo lento es un arranque fallido.
+
+    Devuelve 200 con timestamp para que el caller verifique que la app está
+    respondiendo.
     """
+    if not _ARRANQUE_LISTO:
+        return JSONResponse(status_code=503,
+                            content={"ok": False, "detail": "arrancando"})
     return {
         "ok": True,
         "timestamp": datetime.utcnow().isoformat() + "Z",

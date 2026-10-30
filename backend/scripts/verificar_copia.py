@@ -45,9 +45,14 @@ cuando encuentra algo que no sabe normalizar en vez de adivinar.
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
+import sys
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pgsesion import TABLA_DEL_ARRANQUE  # noqa: E402
 
 NULO = "\x00NULO"          # sentinela: distingue el NULL del texto "None"
 _MOD = 1 << 128            # los hashes se suman módulo esto
@@ -176,6 +181,11 @@ def esquema_pg(cur) -> Dict[str, List[Tuple[str, str]]]:
     sin el filtro `esquema_pg()` devuelve 61 y `tablas_sqlite()` 60; con el filtro,
     60 y 60. Una vista no se copia —se recrea desde el esquema— así que no tiene
     nada que hacer en una comparación origen-vs-destino de DATOS.
+
+    Por el mismo motivo queda afuera `TABLA_DEL_ARRANQUE` (`esquema_aplicado`):
+    la crea el arranque de la app en Postgres para anotar qué estructura ya
+    aplicó, no existe en SQLite y no tiene datos de nadie. Sin esto, la primera
+    copia después de un arranque contra el destino abortaba igual que con la vista.
     """
     filas = cur.execute("""
         SELECT c.table_name, c.column_name, c.data_type
@@ -189,6 +199,8 @@ def esquema_pg(cur) -> Dict[str, List[Tuple[str, str]]]:
     """).fetchall()
     out: Dict[str, List[Tuple[str, str]]] = {}
     for t, c, d in filas:
+        if t == TABLA_DEL_ARRANQUE:
+            continue
         out.setdefault(t, []).append((c, d))
     return out
 
