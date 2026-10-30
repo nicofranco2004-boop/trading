@@ -103,6 +103,9 @@ export function textoMedicion(m) {
  *   · balance: cuándo lo presentó y cuánto se movió el precio con eso;
  *   · dividendo: cuánto pagó por acción y cuánto se movió el día de corte.
  */
+// Una sola manera de decirlo, en el globo de un dividendo y en el de varios.
+export const SIN_DIVIDENDO_DESDE_EL_CORTE = 'Quien compra desde el día de corte ya no cobra este dividendo.'
+
 export function textoEvento(e) {
   const r = e.reaccion
   const mov = r ? pctConSigno(r.pct) : null
@@ -113,10 +116,10 @@ export function textoEvento(e) {
     const eps = textoGananciaPorAccion(e)
     if (eps) lineas.push(eps)
     if (e.momento === 'despues_del_cierre') {
-      lineas.push('Lo presentó con el mercado ya cerrado.')
-      lineas.push(mov ? `Al otro día el precio: ${mov}` : 'Todavía no hay precio del día siguiente.')
+      lineas.push('Presentó resultados después del cierre del mercado.')
+      lineas.push(mov ? `Al día siguiente, el precio: ${mov}` : 'Todavía no hay precio del día siguiente.')
     } else if (e.momento === 'antes_del_cierre') {
-      lineas.push('Lo presentó antes del cierre de ese día.')
+      lineas.push('Presentó resultados antes del cierre del mercado.')
       lineas.push(mov ? `Ese día el precio: ${mov}` : 'No hay precio de ese día.')
     } else {
       lineas.push(mov ? `Entre ese día y el siguiente, el precio: ${mov}` : 'No hay precio de esos días.')
@@ -132,7 +135,7 @@ export function textoEvento(e) {
     lineas.push(`Pagó ${e.moneda === 'ars' ? '$' : 'US$'} ${m} por acción${parte}.`)
     if (e.anterior > 0) lineas.push(comparadoConElAnterior(e.monto, e.anterior, e.moneda))
   }
-  lineas.push('Desde el día de corte, el que compra ya no cobra ese pago.')
+  lineas.push(SIN_DIVIDENDO_DESDE_EL_CORTE)
   if (mov) lineas.push(`Ese día el precio: ${mov}`)
   return { titulo: `Dividendo · día de corte ${fechaCorta(e.fecha)}`, lineas }
 }
@@ -179,7 +182,7 @@ export function textoGrupo(eventos = []) {
   const lineas = eventos.map(e => {
     const r = e.reaccion ? pctConSigno(e.reaccion.pct) : null
     if (e.tipo === 'balance') {
-      const cuando = e.momento === 'despues_del_cierre' ? 'al otro día' : e.momento === 'antes_del_cierre' ? 'ese día' : 'en dos días'
+      const cuando = e.momento === 'despues_del_cierre' ? 'al día siguiente' : e.momento === 'antes_del_cierre' ? 'ese día' : 'en dos días'
       const sorpresa = e.sorpresa_pct != null && Math.abs(e.sorpresa_pct) >= 0.5
         ? ` · ${pctSinSigno(e.sorpresa_pct)} ${e.sorpresa_pct > 0 ? 'más' : 'menos'} de lo esperado` : ''
       const quien = tipos.size > 1 ? 'balance · ' : ''   // sólo si hay de los dos tipos en la marca
@@ -190,7 +193,7 @@ export function textoGrupo(eventos = []) {
       : 'dividendo'
     return `${fechaCorta(e.fecha)}: ${monto}${r ? ` · ese día ${r}` : ''}`
   })
-  if (tipos.has('dividendo')) lineas.push('Por acción. Desde el día de corte, el que compra ya no cobra ese pago.')
+  if (tipos.has('dividendo')) lineas.push(`Por acción. ${SIN_DIVIDENDO_DESDE_EL_CORTE}`)
   const titulo = tipos.size > 1 ? `${eventos.length} balances y dividendos`
     : `${eventos.length} ${tipos.has('balance') ? 'balances' : 'dividendos'}`
   return { titulo, lineas }
@@ -225,7 +228,7 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
     })
   } else {
     out.push({ id: 'caida', titulo: 'Su peor caída', tono: 'neutro', veredicto: 'No tuvo',
-      texto: 'En este período nunca cerró por debajo de un máximo anterior.' })
+      texto: 'En este período nunca cerró por debajo de un máximo anterior: no tuvo caídas.' })
   }
 
   const dm = m.desde_el_maximo
@@ -248,12 +251,12 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
 
   const d = m.dia_normal
   if (d) {
-    const partes = [`Es lo que sube o baja en un día típico.`]
+    const partes = [`Es cuánto subió o bajó en un día típico.`]
     if (d.sp500_desvio_pct != null && d.veces_el_sp500 != null) {
       const v = d.veces_el_sp500
       const cuanto = v >= 1.15 ? `se mueve ${v.toLocaleString('es-AR', { maximumFractionDigits: 1 })} veces lo que el S&P 500`
         : v <= 0.87 ? 'se mueve menos que el S&P 500' : 'se mueve parecido al S&P 500'
-      partes.push(`El S&P 500 (las 500 empresas más grandes de EE.UU.) se mueve ±${num1(d.sp500_desvio_pct)}% en ${moneda === 'ars' ? 'pesos' : 'dólares'}: este papel ${cuanto}.`)
+      partes.push(`El S&P 500 (las 500 empresas más grandes de EE.UU.) se mueve ±${num1(d.sp500_desvio_pct)}% en ${moneda === 'ars' ? 'pesos' : 'dólares'}: este activo ${cuanto}.`)
     }
     if (d.dias_malos > 0) {
       const cada = Math.round(d.dias / d.dias_malos)
@@ -262,15 +265,15 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
     // Del último año, como «su día normal del último año» de la tarjeta «Cuánto
     // se mueve»: es el MISMO número (movimiento.dia_normal usa la cuenta de la
     // lectura), aunque el resto de esta sección mire 2 años (A5, 29/10).
-    out.push({ id: 'dia', titulo: 'Un día normal del último año', tono: 'neutro', veredicto: `±${num1(d.desvio_pct)}%`, texto: partes.join(' ') })
+    out.push({ id: 'dia', titulo: 'Un día típico del último año', tono: 'neutro', veredicto: `±${num1(d.desvio_pct)}%`, texto: partes.join(' ') })
 
     if (tenencia?.valor > 0) {
       const mueve = -tenencia.valor * d.desvio_pct / 100
-      const partesT = [`Lo que te mueve un día malo normal de este papel (una baja de ${num1(d.desvio_pct)}%).`]
+      const partesT = [`Cuánto cambiaría tu inversión en un día de baja típico de este activo (una caída de ${num1(d.desvio_pct)}%).`]
       if (oculto) {
         out.push({ id: 'cartera', titulo: 'En tu cartera', tono: 'neutro', veredicto: OCULTO, texto: `${partesT[0]} ${AVISO_OCULTO}` })
       } else if (peso > 0 && peso <= 1) {
-        partesT.push(`${esElDeTuCartera(peso * 100)}: a toda tu cartera ese día la mueve ${pctConSigno(-peso * d.desvio_pct)}.`)
+        partesT.push(`${esElDeTuCartera(peso * 100)}: ese día, tu cartera completa cambiaría ${pctConSigno(-peso * d.desvio_pct)}.`)
       }
       if (!oculto) out.push({ id: 'cartera', titulo: 'En tu cartera', tono: 'neutro', veredicto: plata(mueve, moneda), texto: partesT.join(' ') })
     }

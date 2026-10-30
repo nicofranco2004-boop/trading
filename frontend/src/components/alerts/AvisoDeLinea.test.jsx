@@ -56,7 +56,7 @@ describe('Alertas → Una línea que dibujaste', () => {
     // El activo, como si se hubiera elegido en el buscador (el navegador de
     // prueba no tipea en un campo controlado).
     montado = await montar(h(MemoryRouter, null, h(AlertaForm, { plan, prefill: { kind: 'tecnica', symbol: 'AAPL' }, onClose() {}, crear })))
-    expect(texto(montado.contenedor)).toContain('La fuerza (RSI) baje de 30')     // de entrada, la lista de señales
+    expect(texto(montado.contenedor)).toContain('Su impulso (RSI) baje de 30')     // de entrada, la lista de señales
     await tocar('Una línea que dibujaste')
     await esperar()
     expect(pedidos).toContain('/tecnico/AAPL/lineas?moneda=usd&accion_local=false')

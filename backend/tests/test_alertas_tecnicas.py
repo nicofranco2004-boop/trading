@@ -280,7 +280,7 @@ class AlertasTecnicasTest(unittest.TestCase):
         ev = self._eventos()
         self.assertEqual(len(ev), 1, "el cruce de ayer avisa")
         self.assertEqual(ev[0]["message"],
-                         "MSFT pasó para arriba su promedio de 200 días: la tendencia de fondo se volvió alcista")
+                         "MSFT superó su promedio de 200 días: la tendencia de largo plazo pasó a ser alcista")
         self.assertEqual(ev[0]["delivered_email"], 1)
         self.assertEqual(ev[0]["delivered_push"], 1)
 
@@ -291,7 +291,7 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.assertEqual(m["asunto"], ev[0]["message"])
         self.assertIn("Hola Nico, ", m["texto"])
         self.assertIn("MSFT cerró en US$ 120,00 y su promedio de 200 días está en US$ ", m["texto"])
-        self.assertIn("la señal más usada de que la tendencia de fondo es alcista", m["texto"])
+        self.assertIn("la referencia más usada para decir que la tendencia de largo plazo es alcista", m["texto"])
         self.assertIn("no es una recomendación para comprar ni vender", m["texto"])
         self.assertIn("no es una recomendación para comprar ni vender", m["html"])
         self.assertIn("/activo/MSFT", m["html"])
@@ -331,15 +331,15 @@ class AlertasTecnicasTest(unittest.TestCase):
         self._cron()
         self.assertEqual((len(self.mails), len(self.pushes)), (1, 1))
         m, p = self.mails[0], self.pushes[0]
-        self.assertTrue(m["asunto"].startswith("[Juan] MSFT pasó para arriba"))
+        self.assertTrue(m["asunto"].startswith("[Juan] MSFT superó su promedio"))
         self.assertIn("Hola Laura, en la cuenta de Juan, ", m["texto"])
-        self.assertIn("la tendencia de fondo es alcista.\n", m["texto"],
+        self.assertIn("la tendencia de largo plazo es alcista.\n", m["texto"],
                       "la lectura termina en su punto, sin «, en la cuenta de Juan» pegado")
         self.assertIn("/clientes", m["html"])
         self.assertNotIn("/activo/MSFT", m["html"], "la ficha del asesor no es la de Juan")
         self.assertEqual(p["url"], "/clientes",
                          "el push abría «Mis alertas» del ASESOR, donde la alerta de Juan no está")
-        self.assertTrue(p["body"].startswith("[Juan] MSFT pasó para arriba"))
+        self.assertTrue(p["body"].startswith("[Juan] MSFT superó su promedio"))
         self.assertIn("no es una recomendación", p["body"])
 
     def _seguir_por_alerta_y_crear(self, hasta=None, **kw):
@@ -553,7 +553,7 @@ class AlertasTecnicasTest(unittest.TestCase):
         self._cron()
         ev = self._eventos()
         self.assertEqual(len(ev), 1)
-        self.assertTrue(ev[0]["message"].startswith("MSFT quedó abajo de su promedio de 200 días"))
+        self.assertTrue(ev[0]["message"].startswith("MSFT cayó por debajo de su promedio de 200 días"))
         self.assertIn(f"{dia.day}/{dia.month}", self.mails[0]["texto"], "el mail dice el día del cruce")
 
     def test_la_misma_alerta_dos_veces_no(self):
@@ -655,7 +655,7 @@ class AlertasTecnicasTest(unittest.TestCase):
         por = {e["kind"]: e for e in ev}
         self.assertTrue(por["price_target"]["message"].startswith("KO"), por["price_target"])
         self.assertEqual(sorted(e["message"][:40] for e in ev if e["kind"] == "tecnica"),
-                         ["MSFT pasó para arriba su promedio de 200", "MSFT subió hasta tu línea horizontal, en"])
+                         ["MSFT subió hasta tu línea horizontal, en", "MSFT superó su promedio de 200 días: la "])
         self.assertEqual(por["recordatorio"]["message"], "Quedaste en revisar tu tesis de NVDA")
         for e in ev:
             self.assertEqual((e["delivered_email"], e["delivered_push"]), (1, 1), e)

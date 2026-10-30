@@ -610,8 +610,8 @@ function CamposTecnica({ form, set, setForm, editando, fijo, repeticionElegida, 
       {/* Siempre a la vista, también en cripto (la ficha también la muestra en
           pesos): escondido, se mandaba igual lo último que se había elegido. */}
       <Campo rotulo="Medido en" ayuda={form.currency === 'ARS'
-        ? 'En pesos el precio también sube con el dólar, aunque la empresa no se mueva.'
-        : 'Como la ficha: en dólares se ve la tendencia de la empresa, sin el dólar en el medio.'}>
+        ? 'En pesos, el precio también sube cuando sube el dólar, aunque a la empresa no le cambie nada.'
+        : 'Igual que en la ficha: en dólares se ve la tendencia del activo sin el efecto de la suba del dólar.'}>
         {editando || lineaFija ? (
           <Fijo>{form.currency === 'ARS' ? 'Pesos' : 'Dólares'}</Fijo>
         ) : (

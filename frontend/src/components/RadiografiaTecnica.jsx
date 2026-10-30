@@ -114,7 +114,7 @@ export function FuerzaRsi({ x, className = '', sinGuion = false }) {
   if (!f) return sinGuion ? null : <span className={`text-ink-3 ${className}`}>—</span>
   const pos = Math.min(100, Math.max(0, f.rsi))
   return (
-    <span className={`inline-flex items-center gap-2 ${className}`} title={`Fuerza (RSI): ${Math.round(f.rsi)} de 100 · ${f.palabra}`}>
+    <span className={`inline-flex items-center gap-2 ${className}`} title={`Impulso (RSI): ${Math.round(f.rsi)} de 100 · ${f.palabra}`}>
       <span aria-hidden="true" className="relative w-14 h-1.5 rounded-full bg-bg-3 flex-none">
         <span className="absolute inset-y-0 left-0 rounded-l-full bg-rendi-neg-fill/35" style={{ width: `${RSI_CASTIGADO}%` }} />
         <span className="absolute inset-y-0 right-0 rounded-r-full bg-rendi-pos-fill/35" style={{ width: `${100 - RSI_ESTIRADO}%` }} />
@@ -160,10 +160,10 @@ export default function RadiografiaTecnica({ lotes, reparto, cargando, error, cl
     <section aria-label="Radiografía técnica"
       className={`bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 ${className}`}>
       <p className="text-[14px] sm:text-[15px] text-ink-0 leading-snug min-w-0">
-        {error ? 'No pudimos traer el análisis técnico de tus activos ahora.'
-          : reparto?.pct == null ? 'Ninguno de tus activos tiene todavía una tendencia de fondo para leer.'
+        {error ? 'En este momento no pudimos cargar el análisis técnico de tus activos.'
+          : reparto?.pct == null ? 'Ninguno de tus activos tiene todavía suficiente historia de precios para calcular su tendencia de largo plazo.'
             : hidden ? PLATA_ALCISTA_OCULTA
-              : <><b className="font-semibold text-rendi-pos tabular">{reparto.pct}%</b> de tu plata está en tendencia de fondo alcista{antes && <span className="text-ink-2"> ({antes})</span>}</>}
+              : <><b className="font-semibold text-rendi-pos tabular">{reparto.pct}%</b> de tu cartera está en activos con tendencia alcista de largo plazo{antes && <span className="text-ink-2"> ({antes})</span>}</>}
       </p>
       {enlace}
     </section>
@@ -184,7 +184,7 @@ export function TarjetaPlata({ reparto, cargando, error, titulo, nota = null, cl
     return (
       <section aria-label="Radiografía técnica" className={`bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 ${className}`}>
         {cabecera}
-        <p className="text-[13.5px] text-ink-1 mt-1.5">No pudimos traer el análisis técnico de tus activos ahora. Probá recargar la página en un rato.</p>
+        <p className="text-[13.5px] text-ink-1 mt-1.5">En este momento no pudimos cargar el análisis técnico de tus activos. Probá recargar la página en unos minutos.</p>
       </section>
     )
   }
@@ -204,15 +204,15 @@ export function TarjetaPlata({ reparto, cargando, error, titulo, nota = null, cl
       {cabecera}
       {reparto.pct == null ? (
         <p className="text-[15px] text-ink-1 leading-snug">
-          Ninguno de tus activos tiene todavía una tendencia de fondo para leer: bonos, fondos y
-          efectivo no tienen historia de precios en Rendi, y una acción o un CEDEAR necesita 200
-          días de mercado con precios guardados.
+          Ninguno de tus activos tiene todavía una tendencia de largo plazo para mostrar: Rendi no
+          guarda la historia de precios de bonos, fondos ni efectivo, y una acción o un CEDEAR
+          necesita 200 días de mercado con precios guardados.
         </p>
       ) : (
         <p className="text-[19px] sm:text-[21px] font-semibold leading-snug text-ink-0">
           {hidden
             ? PLATA_ALCISTA_OCULTA
-            : <><span className="text-rendi-pos tabular">{reparto.pct}%</span> de tu plata está en tendencia de fondo alcista.</>}
+            : <><span className="text-rendi-pos tabular">{reparto.pct}%</span> de tu cartera está en activos con tendencia alcista de largo plazo.</>}
           {antes && (
             <span className={`ml-2 text-[14px] font-medium ${tonoAntes === 'pos' ? 'text-rendi-pos' : tonoAntes === 'neg' ? 'text-rendi-neg' : 'text-ink-2'}`}>({antes})</span>
           )}
@@ -246,7 +246,7 @@ export function TarjetaPlata({ reparto, cargando, error, titulo, nota = null, cl
       )}
       {nota && <p className="text-[13px] text-ink-1 leading-snug">{nota}</p>}
       <p className="text-[12px] text-ink-2 leading-relaxed">
-        «Alcista» = el precio está arriba de su promedio de los últimos 200 días. Describe el precio; no es una recomendación.
+        «Alcista» significa que el precio está por encima de su promedio de los últimos 200 días. Describe cómo se movió el precio; no es una recomendación.
       </p>
     </section>
   )

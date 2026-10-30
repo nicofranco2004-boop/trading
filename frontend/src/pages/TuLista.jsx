@@ -112,10 +112,10 @@ function Encabezado({ id, orden, onOrdenar, children, className = '' }) {
 }
 
 const EXPLICACIONES = [
-  { k: 'De fondo y corto plazo', t: 'Si el precio está arriba (alcista) o abajo (bajista) de su promedio de los últimos 200 o 50 días de mercado.' },
-  { k: 'Fuerza (RSI)', t: `De 0 a 100, qué tan rápido subió o bajó. Arriba de ${RSI_ESTIRADO} subió muy rápido; abajo de ${RSI_CASTIGADO}, cayó muy rápido.` },
-  { k: 'Fuerza de la tendencia (ADX)', t: `De 0 a 100, qué tan marcada es la dirección. Debajo de ${ADX_CLAVE} el precio va de costado.` },
-  { k: 'Último cambio', t: 'El último cruce de un promedio, máximo del año o salto de la fuerza, y hace cuánto pasó.' },
+  { k: 'Largo y mediano plazo', t: 'Si el precio está por encima (alcista) o por debajo (bajista) de su promedio de los últimos 200 días de mercado (largo plazo) o de los últimos 50 (mediano plazo).' },
+  { k: 'Impulso (RSI)', t: `De 0 a 100, qué tan rápido subió o bajó el precio en las últimas 3 semanas. Arriba de ${RSI_ESTIRADO}, subió muy rápido; abajo de ${RSI_CASTIGADO}, cayó muy rápido.` },
+  { k: 'Fuerza de la tendencia (ADX)', t: `De 0 a 100, qué tan marcada es la dirección del precio. Debajo de ${ADX_CLAVE}, se mueve sin una dirección clara (de forma lateral).` },
+  { k: 'Último cambio', t: 'Lo último que cambió (cruzó uno de sus promedios, marcó un máximo del año, cambió su impulso o la fuerza de su tendencia) y hace cuánto pasó.' },
 ]
 
 /**
@@ -161,11 +161,11 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
             <thead className="text-[12px] text-ink-2 border-b border-line">
               <tr>
                 <th scope="col" className="sticky left-0 z-[1] bg-bg-1 px-3 py-2.5 font-medium align-bottom" style={BORDE_FIJO}>Activo</th>
-                <Encabezado id="tenes" orden={orden} onOrdenar={ordenar}>¿Lo tenés?</Encabezado>
+                <Encabezado id="tenes" orden={orden} onOrdenar={ordenar}>¿En tu cartera?</Encabezado>
                 <Encabezado id="linea" orden={orden} onOrdenar={ordenar}>3 meses</Encabezado>
-                <Encabezado id="fondo" orden={orden} onOrdenar={ordenar}>De fondo <span className="block text-ink-3">200 días</span></Encabezado>
-                <Encabezado id="corto" orden={orden} onOrdenar={ordenar}>Corto plazo <span className="block text-ink-3">50 días</span></Encabezado>
-                <Encabezado id="rsi" orden={orden} onOrdenar={ordenar} className="text-right">Fuerza (RSI)</Encabezado>
+                <Encabezado id="fondo" orden={orden} onOrdenar={ordenar}>Largo plazo <span className="block text-ink-3">200 días</span></Encabezado>
+                <Encabezado id="corto" orden={orden} onOrdenar={ordenar}>Mediano plazo <span className="block text-ink-3">50 días</span></Encabezado>
+                <Encabezado id="rsi" orden={orden} onOrdenar={ordenar} className="text-right">Impulso (RSI)</Encabezado>
                 <Encabezado id="adx" orden={orden} onOrdenar={ordenar} className="text-right">Fuerza de la{' '}<br />tendencia (ADX)</Encabezado>
                 <Encabezado id="maximo" orden={orden} onOrdenar={ordenar} className="text-right">Desde el{' '}<br />máximo del año</Encabezado>
                 <Encabezado id="cambio" orden={orden} onOrdenar={ordenar}>Último cambio</Encabezado>
@@ -223,7 +223,7 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
               ))}
               {!vista.length && (
                 <tr><td colSpan={9} className="px-3 py-6 text-center text-[13px] text-ink-2">
-                  {filtro === 'watchlist' ? 'No seguís nada que no tengas. Agregá un activo a tu watchlist desde su ficha.' : 'No hay activos para mostrar.'}
+                  {filtro === 'watchlist' ? 'Tu watchlist no tiene activos que no estén en tu cartera. Para sumar uno, entrá a su ficha y tocá «Agregar a watchlist».' : 'No hay activos para mostrar.'}
                 </td></tr>
               )}
             </tbody>
@@ -239,7 +239,7 @@ export function TablaLista({ filas, oculto = false, onAbrir }) {
           </Panel>
         ))}
       </div>
-      <p className="text-[12px] text-ink-2">Describe cómo se movieron los precios. No es una recomendación de compra o venta.</p>
+      <p className="text-[12px] text-ink-2">Describe cómo se movieron los precios. No es una recomendación de compra ni de venta.</p>
     </div>
   )
 }
@@ -251,10 +251,10 @@ export default function TuLista({ datos, filas }) {
   const navigate = useNavigate()
   const { hidden } = usePrivacy()
   if (datos.error === 'base') {
-    return <Panel padding="lg" className="text-center text-[13px] text-ink-2">No pudimos cargar tu cartera y tu watchlist. Probá de nuevo en un rato.</Panel>
+    return <Panel padding="lg" className="text-center text-[13px] text-ink-2">No pudimos cargar tu cartera y tu watchlist. Probá de nuevo en unos minutos.</Panel>
   }
   if (datos.error === 'lectura') {
-    return <Panel padding="lg" className="text-center text-[13px] text-ink-2">No pudimos traer la lectura técnica. Probá de nuevo en un rato.</Panel>
+    return <Panel padding="lg" className="text-center text-[13px] text-ink-2">No pudimos cargar el análisis técnico. Probá de nuevo en unos minutos.</Panel>
   }
   if (datos.cargando) {
     return (

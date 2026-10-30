@@ -81,17 +81,17 @@ describe('alertas técnicas', () => {
   const tec = { id: 9, kind: 'tecnica', scope: 'ticker', symbol: 'AAPL', senal: 'media200', direction: 'below', currency: 'USD', accion_local: 0, active: true, repeat: 'always' }
 
   it('el cruce de un promedio, con su lado', () => {
-    expect(frase(tec)).toEqual({ quien: 'AAPL', que: 'queda abajo de su promedio de 200 días' })
-    expect(confirmacion(tec)).toBe('Te avisamos cuando AAPL quede abajo de su promedio de 200 días. Lo miramos cada día con el precio de cierre.')
-    expect(frase({ ...tec, direction: 'above' }).que).toBe('pasa para arriba su promedio de 200 días')
+    expect(frase(tec)).toEqual({ quien: 'AAPL', que: 'cae por debajo de su promedio de 200 días' })
+    expect(confirmacion(tec)).toBe('Te avisamos cuando AAPL caiga por debajo de su promedio de 200 días. Lo miramos cada día con el precio de cierre.')
+    expect(frase({ ...tec, direction: 'above' }).que).toBe('supera su promedio de 200 días')
     expect(frase({ ...tec, senal: 'media50', direction: 'either' }).que).toBe('cruza su promedio de 50 días')
   })
 
   it('el RSI se dice como fuerza, y el máximo del año', () => {
-    expect(frase({ ...tec, senal: 'rsi_bajo_30' })).toEqual({ quien: 'AAPL', que: 'la fuerza (RSI) baja de 30', sep: ': ' })
-    expect(confirmacion({ ...tec, senal: 'rsi_sube_30' })).toBe('Te avisamos cuando la fuerza (RSI) de AAPL vuelva a pasar 30. Lo miramos cada día con el precio de cierre.')
+    expect(frase({ ...tec, senal: 'rsi_bajo_30' })).toEqual({ quien: 'AAPL', que: 'el impulso (RSI) baja de 30', sep: ': ' })
+    expect(confirmacion({ ...tec, senal: 'rsi_sube_30' })).toBe('Te avisamos cuando el impulso (RSI) de AAPL vuelva a superar 30. Lo miramos cada día con el precio de cierre.')
     expect(frase({ ...tec, senal: 'maximo_12m' }).que).toBe('cierra en su máximo del año')
-    expect(frase({ ...tec, senal: 'rsi_baja_70' }).que).toBe('la fuerza (RSI) vuelve a bajar de 70')
+    expect(frase({ ...tec, senal: 'rsi_baja_70' }).que).toBe('el impulso (RSI) vuelve a quedar debajo de 70')
   })
 
   it('en pesos lo dice; una acción argentina en dólares también', () => {
@@ -102,7 +102,7 @@ describe('alertas técnicas', () => {
 
   it('el estado no habla de precio: se mira con el cierre', () => {
     expect(estado(tec, null, [], '2026-10-22').texto).toBe('Se mira cada día con el precio de cierre')
-    const ev = [{ alert_id: 9, fired_at: '2026-10-22 12:05:00', message: 'AAPL quedó abajo de su promedio de 200 días: la tendencia de fondo se volvió bajista' }]
+    const ev = [{ alert_id: 9, fired_at: '2026-10-22 12:05:00', message: 'AAPL cayó por debajo de su promedio de 200 días: la tendencia de largo plazo pasó a ser bajista' }]
     expect(estado(tec, null, ev, '2026-10-22')).toEqual({ texto: `Hoy avisó: ${ev[0].message}`, tono: 'aviso' })
   })
 

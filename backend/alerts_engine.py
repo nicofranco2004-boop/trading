@@ -1667,21 +1667,21 @@ def _mensaje_tecnico(alert, symbol, ev) -> str:
                  else f"{'subió' if arriba else 'bajó'} hasta tu")
         return f"{quien} {verbo} {_nombre_de_linea(alert)}, en {_fmt_linea(ev['referencia'], ccy)}"
     if senal == "media200":
-        return (f"{quien} pasó para arriba su promedio de 200 días: la tendencia de fondo se volvió alcista"
+        return (f"{quien} superó su promedio de 200 días: la tendencia de largo plazo pasó a ser alcista"
                 if arriba else
-                f"{quien} quedó abajo de su promedio de 200 días: la tendencia de fondo se volvió bajista")
+                f"{quien} cayó por debajo de su promedio de 200 días: la tendencia de largo plazo pasó a ser bajista")
     if senal == "media50":
-        return (f"{quien} pasó para arriba su promedio de 50 días: en el corto plazo viene subiendo"
+        return (f"{quien} superó su promedio de 50 días: la tendencia de mediano plazo pasó a ser alcista"
                 if arriba else
-                f"{quien} quedó abajo de su promedio de 50 días: en el corto plazo viene bajando")
+                f"{quien} cayó por debajo de su promedio de 50 días: la tendencia de mediano plazo pasó a ser bajista")
     if senal == "rsi_bajo_30":
-        return f"La fuerza (RSI) de {quien} bajó de 30: cayó muy rápido"
+        return f"El impulso (RSI) de {quien} bajó de 30: cayó muy rápido"
     if senal == "rsi_sobre_70":
-        return f"La fuerza (RSI) de {quien} pasó 70: subió muy rápido"
+        return f"El impulso (RSI) de {quien} superó 70: subió muy rápido"
     if senal == "rsi_sube_30":
-        return f"La fuerza (RSI) de {quien} volvió a pasar 30: dejó de caer tan rápido"
+        return f"El impulso (RSI) de {quien} volvió a superar 30: dejó de caer tan rápido"
     if senal == "rsi_baja_70":
-        return f"La fuerza (RSI) de {quien} volvió a bajar de 70: dejó de subir tan rápido"
+        return f"El impulso (RSI) de {quien} volvió a quedar debajo de 70: dejó de subir tan rápido"
     return f"{quien} cerró en su precio más alto del año"
 
 
@@ -1718,23 +1718,23 @@ def _detalle_tecnico(alert, symbol, ev) -> str:
         dias = 200 if senal == "media200" else 50
         prom = _fmt(ev["referencia"], ccy)
         if senal == "media200":
-            lectura = (f"Estar {'arriba' if arriba else 'abajo'} de ese promedio es la señal más usada "
-                       f"de que la tendencia de fondo es {'alcista' if arriba else 'bajista'}.")
+            lectura = (f"Estar {'arriba' if arriba else 'abajo'} de ese promedio es la referencia más usada "
+                       f"para decir que la tendencia de largo plazo es {'alcista' if arriba else 'bajista'}.")
         else:
-            lectura = (f"Quiere decir que en los últimos meses viene "
+            lectura = (f"Quiere decir que en los últimos meses el precio viene "
                        f"{'subiendo' if arriba else 'bajando'}.")
         return f"{cuando} {sym} cerró en {cierre} y su promedio de {dias} días está en {prom}. {lectura}"
     if senal.startswith("rsi_"):
-        fuerza = f"{cuando} la fuerza (RSI) de {sym} quedó en {_fmt_rsi(ev['rsi'], ev['referencia'])} de 100, con un cierre de {cierre}."
+        fuerza = f"{cuando} el impulso (RSI) de {sym} quedó en {_fmt_rsi(ev['rsi'], ev['referencia'])} de 100, con un cierre de {cierre}."
         # Describen, no anticipan: «suele frenar» y «suele rebotar» no se cumplieron
         # en la medición. La caída es la única con algo de ventaja, y su frase es
         # la de «Tus señales» (UNA, en senales_semana), no otra escrita acá.
         from senales_semana import POSIBILIDAD_REBOTE
         lectura = {
-            "rsi_bajo_30": f"Bajar de 30 es caer muy rápido. {POSIBILIDAD_REBOTE}",
-            "rsi_sobre_70": "Pasar 70 es subir muy rápido.",
-            "rsi_sube_30": "Volver a pasar 30: dejó de caer tan rápido.",
-            "rsi_baja_70": "Volver a bajar de 70: dejó de subir tan rápido.",
+            "rsi_bajo_30": f"Abajo de 30, el precio cayó muy rápido. {POSIBILIDAD_REBOTE}",
+            "rsi_sobre_70": "Arriba de 70, el precio subió muy rápido.",
+            "rsi_sube_30": "Volver a superar 30 significa que dejó de caer tan rápido.",
+            "rsi_baja_70": "Volver a quedar debajo de 70 significa que dejó de subir tan rápido.",
         }[senal]
         return f"{fuerza} {lectura}"
     return f"{cuando} {sym} cerró en {cierre}, el cierre más alto de los últimos 12 meses."

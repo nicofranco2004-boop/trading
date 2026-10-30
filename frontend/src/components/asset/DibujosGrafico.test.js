@@ -248,7 +248,7 @@ describe('elegir y borrar', () => {
     await usar('horizontal'); await clickEn(500, 200)
     expect(linea()).toHaveLength(2)
     await clickEn(300, 103)                                    // a 3 px de la primera
-    expect(status()).toContain('Línea horizontal elegida.')
+    expect(status()).toContain('Línea horizontal seleccionada.')
     expect(linea().map(n => n.getAttribute('stroke-width'))).toEqual(['3', '1.8'])
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Borrar esta línea')); await redibujar()
     expect(linea()).toHaveLength(1)
@@ -285,7 +285,7 @@ describe('elegir y borrar', () => {
     await usar('tendencia'); await clickEn(200, 200); await clickEn(800, 50)
     // A mitad de camino, sobre la línea: x 500 → y 125.
     await clickEn(500, 128)
-    expect(status()).toContain('Línea de tendencia elegida.')
+    expect(status()).toContain('Línea de tendencia seleccionada.')
     await clickEn(500, 20)
     expect(status()).not.toContain('elegida')
     await clickEn(500, 122)
@@ -299,7 +299,7 @@ describe('elegir y borrar', () => {
     await dibujar()
     await usar('horizontal'); await clickEn(500, 100)
     await toqueEn(300, 300, 112)                              // a 12 px: con el mouse no alcanzaría
-    expect(status()).toContain('Línea horizontal elegida.')
+    expect(status()).toContain('Línea horizontal seleccionada.')
   })
 
   it('«Borrar mis dibujos» pregunta antes; «No» no borra nada', async () => {
@@ -352,7 +352,7 @@ describe('mover y corregir un dibujo ya hecho (Nico, 28/10)', () => {
     expect(guardados()[0].precio).toBeLessThan(antes.precio)
     expect(Number(linea()[0].getAttribute('y1'))).toBeCloseTo(60, 1)
     expect(texto(fechas())).toBe(mesesAntes)                          // el gráfico no se corrió
-    expect(status()).toContain('Línea horizontal elegida.')           // queda elegida, como TradingView
+    expect(status()).toContain('Línea horizontal seleccionada.')           // queda elegida, como TradingView
   })
 
   it('agarrada de una punta, se corre esa punta sola', async () => {
@@ -414,7 +414,7 @@ describe('mover y corregir un dibujo ya hecho (Nico, 28/10)', () => {
     expect(await deslizar()).toBe(false)                            // sin elegir: la página se mueve
     expect(guardados()[0].precio).toBe(antes.precio)
     await toqueEn(300, 300, 100)                                      // la elige
-    expect(status()).toContain('Línea horizontal elegida.')
+    expect(status()).toContain('Línea horizontal seleccionada.')
     expect(await deslizar()).toBe(true)                              // elegida: la página queda quieta
     expect(guardados()[0].precio).toBeLessThan(antes.precio)
     expect(Number(linea()[0].getAttribute('y1'))).toBeCloseTo(60, 1)
@@ -562,7 +562,7 @@ describe('el canal paralelo y el pincel (Nico, 29/10)', () => {
     expect(c.a).toEqual(antes.a)
     expect(c.b).toEqual(antes.b)
     expect(c.ancho).toBeGreaterThan(antes.ancho)
-    expect(status()).toContain('Tu canal, elegido.')
+    expect(status()).toContain('Canal seleccionado.')
   })
 
   it('el pincel: apretar y arrastrar dibuja un trazo (no mueve el gráfico); sigue prendido para otro; Esc lo apaga', async () => {
@@ -595,7 +595,7 @@ describe('el canal paralelo y el pincel (Nico, 29/10)', () => {
     expect(status()).not.toContain('Dibujá')
     // Elegido con un click encima, se borra entero.
     await clickEn(320, 130)
-    expect(status()).toContain('Tu trazo, elegido.')
+    expect(status()).toContain('Trazo seleccionado.')
   })
 
   it('con el dedo también dibuja, y la página no se mueve mientras', async () => {
@@ -630,7 +630,7 @@ describe('avisarte cuando el precio toca tu línea (Nico, 28/10)', () => {
     const t = texto(montado.contenedor)
     expect(t).toContain('ZZEV toque tu línea horizontal')         // la tarjeta de la línea elegida
     expect(t).toContain('Te avisamos cuando ZZEV toque tu línea horizontal.')
-    expect(t).not.toContain('La fuerza (RSI) baje de 30')          // no es la lista de señales
+    expect(t).not.toContain('Su impulso (RSI) baje de 30')          // no es la lista de señales
     // «Crear aviso»: el navegador manda el «submit» del formulario.
     await evento('submit', todos(montado.contenedor, n => n.nodeName === 'FORM')[0]); await redibujar()
     const [[, ruta, body]] = cuenta.pedidos
@@ -665,7 +665,7 @@ describe('avisarte cuando el precio toca tu línea (Nico, 28/10)', () => {
     expect(Number(ls[1].getAttribute('y2'))).toBeLessThan(Number(ls[1].getAttribute('y1')))
     await usar('fibonacci'); await clickEn(200, 220); await clickEn(400, 60)
     await clickEn(300, 140)
-    expect(status()).toContain('Tu Fibonacci, elegido.')
+    expect(status()).toContain('Fibonacci seleccionado.')
     expect(buscarBoton(montado.contenedor, 'Avisame si la toca')).toBeFalsy()
   })
 
@@ -681,7 +681,7 @@ describe('avisarte cuando el precio toca tu línea (Nico, 28/10)', () => {
     await dibujar()
     await canal()
     await clickEn(500, 151)
-    expect(status()).toContain('Tu canal, elegido.')
+    expect(status()).toContain('Canal seleccionado.')
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Avisame si sale del canal')); await redibujar()
     let t = texto(montado.contenedor)
     expect(t).toContain('ZZEV salga de tu canal')
@@ -736,7 +736,7 @@ describe('avisarte cuando el precio toca tu línea (Nico, 28/10)', () => {
     window.location.search = '?linea=c9&moneda=usd'
     try {
       await dibujar()
-      expect(status()).toContain('Tu canal, elegido.')
+      expect(status()).toContain('Canal seleccionado.')
     } finally { window.location.search = '' }
   })
 })
@@ -904,7 +904,7 @@ describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos
   it('tu Fibonacci: dos toques (arranque y final del tramo), los niveles con su precio, guardado; apaga el automático', async () => {
     await dibujar()
     await usar('fibonacci')
-    expect(status()).toContain('Retroceso: tocá donde arranca el tramo que querés medir')
+    expect(status()).toContain('Retroceso: tocá donde empieza el tramo que querés medir')
     await clickEn(300, 200)                                    // el pozo
     expect(status()).toContain('Ahora tocá donde termina el tramo')
     await clickEn(800, 50)                                     // el pico
@@ -969,7 +969,7 @@ describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos
   it('la extensión de Fibonacci: tres toques y los niveles hacia adelante desde el tercero', async () => {
     await dibujar()
     await usar('extension')
-    expect(status()).toContain('Extensión: tocá donde arranca el movimiento')
+    expect(status()).toContain('Extensión: tocá donde empieza el movimiento')
     // Un movimiento chico, para que los niveles (hasta 261,8 %) entren en el gráfico.
     await clickEn(200, 210)                                    // arranca la suba
     expect(status()).toContain('Ahora tocá donde termina el movimiento')
@@ -1030,7 +1030,7 @@ describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos
     await usar('fibonacci'); await clickEn(300, 200); await clickEn(800, 50)
     // El nivel del 50 %: a mitad de altura entre los dos toques.
     await clickEn(900, 125)
-    expect(status()).toContain('Tu Fibonacci, elegido.')
+    expect(status()).toContain('Fibonacci seleccionado.')
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Borrar este Fibonacci')); await redibujar()
     expect(guardados()).toEqual([])
     expect(rotulos().some(t => t.startsWith('61,8 %'))).toBe(false)

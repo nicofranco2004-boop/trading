@@ -133,7 +133,7 @@ export function BotonAvisameLinea({ avisos, asset, accionLocal = false, moneda =
         </Link>
         <button type="button" onClick={async () => {
           try { await api.patch(`/alerts/${ya.id}`, { active: false }); avisos?.recargar?.() }
-          catch { toast.push('No se pudo apagar el aviso. Probá de nuevo.', { type: 'warn' }) }
+          catch { toast.push('No se pudo desactivar el aviso. Probá de nuevo.', { type: 'warn' }) }
         }} className="min-h-10 sm:min-h-8 px-2 rounded text-[12.5px] text-ink-2 hover:text-ink-0 underline-offset-2 hover:underline">
           Dejar de avisar
         </button>

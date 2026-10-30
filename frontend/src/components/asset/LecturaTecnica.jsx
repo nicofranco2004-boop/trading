@@ -822,7 +822,7 @@ export default function LecturaTecnica({
       )}
       {moneda === 'ars' && distintas && (
         <div className="rounded-lg border border-rendi-warn/40 bg-rendi-warn/10 px-3.5 py-3 mb-3">
-          <div className="text-sm font-semibold text-rendi-warn">En pesos la tendencia es otra que en dólares.</div>
+          <div className="text-sm font-semibold text-rendi-warn">En pesos, la tendencia es distinta que en dólares.</div>
           <p className="text-[13px] text-ink-1 leading-relaxed mt-1">
             Parte de lo que se mueve en pesos es el dólar, no la empresa. Por eso Rendi mira la tendencia en dólares.
           </p>
@@ -856,7 +856,7 @@ export default function LecturaTecnica({
                   {medida.diferencia !== 0 && (
                     <span className="tabular">{`: de ${fmtPrecio(medida.precioDesde, moneda)} (${diaDicho(medida.desde, medida.adelanteDesde)}) a ${fmtPrecio(medida.precioHasta, moneda)} (${diaDicho(medida.hasta, medida.adelanteHasta)}), ${medida.diferencia > 0 ? '+' : '−'}${fmtPrecio(Math.abs(medida.diferencia), moneda)}. `}</span>
                   )}
-                  {medida.adelanteHasta > 0 && 'Lo que queda a la derecha de hoy es una cuenta: todavía no hay precios ahí. '}
+                  {medida.adelanteHasta > 0 && 'La parte a la derecha de hoy es una proyección: todavía no hay precios ahí. '}
                   Tocá otro punto para medir de nuevo.
                 </>
               )}
@@ -984,7 +984,7 @@ export default function LecturaTecnica({
             conAviso={misDibujos.filter(d => alertaDeLinea(avisos.items, { asset, moneda, dibujo: d.id })).map(d => d.id)}
             trazo={dibujar.puntos.length ? { tipo: dibujar.tipo, puntos: dibujar.puntos.map(q => ({ k: lugarDelDia(q.i), precio: q.precio })) } : null} />
           {rangoVisto === 'tuyo' && !ventana && primera && primera < actual.puntos[0].d && (
-            <p className="text-[11.5px] text-ink-2 mt-1">Lo tenés desde el {fechaCorta(primera)}; el gráfico empieza el {fechaCorta(actual.puntos[0].d)}, que es lo que hay guardado.</p>
+            <p className="text-[11.5px] text-ink-2 mt-1">Lo tenés desde el {fechaCorta(primera)}; el gráfico empieza el {fechaCorta(actual.puntos[0].d)}, porque desde ahí hay historia de precios guardada.</p>
           )}
         </div>
       </div>
@@ -1021,7 +1021,7 @@ export default function LecturaTecnica({
               veredicto: `${r >= 0 ? 'Ganás' : 'Perdés'} ${Math.abs(r * 100).toLocaleString('es-AR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })}%`,
               texto: moneda === 'usd'
                 ? (lineaSinTc
-                  ? 'Es el mismo resultado de arriba. La línea de tu precio promedio no se dibuja porque a alguna compra le falta el dólar de ese día.'
+                  ? 'Es el mismo resultado de arriba. La línea de tu precio promedio no se dibuja porque a alguna compra le falta la cotización del dólar de ese día.'
                   : 'Es el mismo resultado de arriba. La línea punteada es tu precio promedio, con el dólar del día de cada compra.')
                 : 'Lo que vale hoy contra lo que pagaste, todo en pesos.',
             }} />
@@ -1030,9 +1030,9 @@ export default function LecturaTecnica({
       </div>
 
       {cuanto.length > 0 && (
-        <section aria-label="Cuánto se mueve este papel" className="mt-5">
+        <section aria-label="Cuánto se mueve este activo" className="mt-5">
           <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 mb-2">
-            <h3 className="text-[14px] font-semibold text-ink-0">Cuánto se mueve este papel</h3>
+            <h3 className="text-[14px] font-semibold text-ink-0">Cuánto se mueve este activo</h3>
             <span className="text-[12px] text-ink-2">
               {periodoDeMovimiento(actual.movimiento)}, en {moneda === 'usd' ? 'dólares' : 'pesos'}
             </span>
@@ -1071,8 +1071,8 @@ function textoDibujando({ tipo, puntos }) {
       : 'Tocá donde empieza la línea de tendencia.') + esc
   }
   if (tipo === 'fibonacci') {
-    return (puntos.length ? 'Ahora tocá donde termina el tramo (el pico de la suba o el piso de la bajada).'
-      : 'Retroceso: tocá donde arranca el tramo que querés medir (el pozo de una suba o el techo de una bajada). Al terminar se apaga el Fibonacci automático, para que no se mezclen.') + esc
+    return (puntos.length ? 'Ahora tocá donde termina el tramo (el máximo de la suba o el mínimo de la bajada).'
+      : 'Retroceso: tocá donde empieza el tramo que querés medir (el mínimo donde arrancó una suba o el máximo donde arrancó una bajada). Al terminar se desactiva el Fibonacci automático, para que no se superpongan.') + esc
   }
   if (tipo === 'canal') {
     return ['Canal: tocá donde empieza la línea de abajo (o la de arriba).', 'Ahora tocá donde termina esa línea.',
@@ -1080,16 +1080,16 @@ function textoDibujando({ tipo, puntos }) {
   }
   if (tipo === 'pincel') return 'Dibujá con el mouse apretado (en el celular, con el dedo). Podés hacer varios trazos; Esc o «Listo» para terminar.'
   if (tipo === 'extension') {
-    return ['Extensión: tocá donde arranca el movimiento (por ejemplo, el pozo de la suba).',
-      'Ahora tocá donde termina el movimiento (el pico).',
-      'Ahora tocá donde terminó el retroceso: desde ahí se proyectan los niveles hacia adelante.'][puntos.length] + esc
+    return ['Extensión: tocá donde empieza el movimiento (por ejemplo, el mínimo donde arrancó la suba).',
+      'Ahora tocá donde termina el movimiento (por ejemplo, el máximo de la suba).',
+      'Ahora tocá donde terminó el retroceso: desde ese punto se proyectan los niveles hacia adelante.'][puntos.length] + esc
   }
   if (FORMA_ELLIOTT[tipo]) {
     const etiquetas = etiquetasDe(FORMA_ELLIOTT[tipo])
     if (!puntos.length) {
       return (tipo === 'impulso'
         ? 'Impulso: tocá el arranque (el 0) y después, una por una, las ondas 1 a 5.'
-        : 'Corrección: tocá dónde arranca y después las ondas A, B y C.') + ' Al terminar se apaga el conteo automático.' + esc
+        : 'Corrección: tocá dónde arranca y después las ondas A, B y C.') + ' Al terminar se desactiva el conteo automático.' + esc
     }
     return `Ahora tocá la onda ${etiquetas[puntos.length]}${puntos.length >= 2 ? '. Para terminar acá: doble click, click derecho o «Terminar acá»' : ''}.${esc}`
   }
@@ -1105,15 +1105,15 @@ function cuantosSon(lista) {
 
 // El cartel de un dibujo elegido: [qué es, el botón de borrar].
 const ELEGIDO = {
-  horizontal: ['Línea horizontal elegida. Arrastrala para cambiarle el precio.', 'Borrar esta línea'],
-  tendencia: ['Línea de tendencia elegida. Arrastrala para moverla, o de una punta para corregirla.', 'Borrar esta línea'],
-  fibonacci: ['Tu Fibonacci, elegido. Arrastralo para moverlo, o de una punta para corregir el tramo.', 'Borrar este Fibonacci'],
-  extension: ['Tu extensión de Fibonacci, elegida. Arrastrala para moverla, o de un punto para corregirla.', 'Borrar esta extensión'],
-  fibAuto: ['Fibonacci automático, elegido. Si lo borrás se apaga; lo volvés a prender desde el botón Fibonacci de la barra.', 'Borrar el Fibonacci automático'],
-  ellAuto: ['Conteo automático de Elliott, elegido. Si lo borrás se apaga; lo volvés a prender desde el botón Ondas de Elliott de la barra.', 'Borrar el conteo automático'],
-  elliott: ['Tu conteo de Elliott, elegido. Arrastralo para moverlo, o de una onda para corregirla.', 'Borrar este conteo'],
-  canal: ['Tu canal, elegido. Arrastralo para moverlo; de una punta para corregir la línea, o de la paralela para ensancharlo.', 'Borrar este canal'],
-  pincel: ['Tu trazo, elegido. Arrastralo para moverlo.', 'Borrar este trazo'],
+  horizontal: ['Línea horizontal seleccionada. Arrastrala para cambiarle el precio.', 'Borrar esta línea'],
+  tendencia: ['Línea de tendencia seleccionada. Arrastrala para moverla, o arrastrá una punta para corregirla.', 'Borrar esta línea'],
+  fibonacci: ['Fibonacci seleccionado. Arrastralo para moverlo, o arrastrá una punta para corregir el tramo.', 'Borrar este Fibonacci'],
+  extension: ['Extensión de Fibonacci seleccionada. Arrastrala para moverla, o arrastrá uno de sus puntos para corregirla.', 'Borrar esta extensión'],
+  fibAuto: ['Fibonacci automático seleccionado. Si lo borrás, se desactiva; podés volver a activarlo desde el botón Fibonacci de la barra.', 'Borrar el Fibonacci automático'],
+  ellAuto: ['Conteo automático de Elliott seleccionado. Si lo borrás, se desactiva; podés volver a activarlo desde el botón Ondas de Elliott de la barra.', 'Borrar el conteo automático'],
+  elliott: ['Conteo de Elliott seleccionado. Arrastralo para moverlo, o arrastrá una onda para corregirla.', 'Borrar este conteo'],
+  canal: ['Canal seleccionado. Arrastralo para moverlo, arrastrá una punta para corregir la línea, o la paralela para ensancharlo.', 'Borrar este canal'],
+  pincel: ['Trazo seleccionado. Arrastralo para moverlo.', 'Borrar este trazo'],
 }
 
 // «Últimos 2 años» o, si hay menos guardado, desde cuándo.
@@ -1142,7 +1142,7 @@ function Marco({ moneda, setMoneda, rango, setRango, recientes = null, conPesos 
           {compartir && <CompartirGrafico armar={compartir} antes={antesDeCompartir} archivo={archivo} className="hidden sm:inline-flex" />}
           {setGrande && (
             <button type="button" data-capa="pantalla" onClick={() => setGrande(!grande)} aria-pressed={grande}
-              title={grande ? 'Volver a la ficha, con el menú de Rendi (también con Esc)' : 'El gráfico en toda la pantalla, para un análisis a fondo'}
+              title={grande ? 'Volver a la ficha, con el menú de Rendi (también con Esc)' : 'Ver el gráfico en pantalla completa'}
               className={`inline-flex items-center justify-center gap-1.5 min-h-11 min-w-11 sm:min-h-8 sm:min-w-0 sm:px-3 rounded-lg border text-xs font-medium transition-colors ${grande ? 'border-line-2 bg-bg-2 text-ink-0 hover:border-ink-3' : 'border-rendi-accent/55 bg-rendi-accent/15 text-ink-0 hover:border-rendi-accent'}`}>
               {grande ? <Minimize2 size={16} aria-hidden="true" /> : <Maximize2 size={16} aria-hidden="true" />}
               <span className="sr-only sm:not-sr-only">{grande ? 'Achicar' : 'Pantalla completa'}</span>
@@ -1304,11 +1304,11 @@ function botonesDeLaBarra({
     : !ell.disponible
       ? (ell.motivo === 'pocos_datos'
         ? `Faltan datos: para contar ondas hacen falta al menos 30 días de mercado y este activo tiene ${ell.ruedas}.`
-        : 'Con los picos y pozos de este activo no aparece ningún conteo que cumpla las reglas, y no se fuerza uno.')
+        : 'Con los máximos y mínimos de este activo no aparece ningún conteo que cumpla las reglas de la teoría, y Rendi no fuerza uno.')
       : null
   const sinProm = promedio != null ? null
-    : moneda === 'usd' && lineaSinTc ? 'A alguna de tus compras le falta el dólar de ese día: sin él, la línea no sería cierta.'
-      : moneda === 'ars' && pnlPctUsd != null ? 'En pesos sólo se dibuja si compraste todo en pesos y el gráfico es el de la Bolsa de acá.'
+    : moneda === 'usd' && lineaSinTc ? 'A alguna de tus compras le falta la cotización del dólar de ese día: sin ese dato, la línea quedaría mal ubicada.'
+      : moneda === 'ars' && pnlPctUsd != null ? 'En pesos, sólo se dibuja si compraste todo en pesos y el gráfico es el de la Bolsa de Buenos Aires.'
         : 'Falta el resultado de tu compra para ubicar la línea.'
   const lleno = cuantosDibujos >= DIBUJOS_MAXIMOS ? `Llegaste a ${DIBUJOS_MAXIMOS} dibujos en este activo: borrá alguno para hacer otro.` : null
   const aMano = (id, nombre, detalle) => ({
@@ -1336,7 +1336,7 @@ function botonesDeLaBarra({
       [
         { id: 'menu-fibonacci', nombre: 'Fibonacci', icono: <IconoFibonacci />,
           activo: (!sinFib && !!ver.fib) || dibujar.tipo === 'fibonacci' || dibujar.tipo === 'extension',
-          estado: dibujar.tipo === 'fibonacci' || dibujar.tipo === 'extension' ? 'Marcando a mano' : !sinFib && ver.fib ? 'El automático, prendido' : 'El automático o a mano',
+          estado: dibujar.tipo === 'fibonacci' || dibujar.tipo === 'extension' ? 'Marcando a mano' : !sinFib && ver.fib ? 'Activado: lo calcula Rendi' : 'Lo calcula Rendi o lo marcás a mano',
           menu: [
             { id: 'fib', nombre: 'Automático', interruptor: true, activo: !!ver.fib, sinDatos: sinFib,
               detalle: 'Rendi busca el último tramo de suba o de bajada y dibuja sus niveles.',
@@ -1345,21 +1345,21 @@ function botonesDeLaBarra({
                 if (!ver.fib) acercar(ventanaDelTramo(actual.puntos, fib, nVista))
                 alternar('fib')
               } },
-            aMano('fibonacci', 'Retroceso a mano', 'Marcá vos el tramo: dónde arranca y dónde termina. Apaga el automático.'),
-            aMano('extension', 'Extensión a mano', 'Tres toques: dónde arranca y termina un movimiento y dónde terminó su retroceso. Proyecta niveles hacia adelante.'),
+            aMano('fibonacci', 'Retroceso a mano', 'Marcá el tramo: dónde empieza y dónde termina. Desactiva el automático.'),
+            aMano('extension', 'Extensión a mano', 'Tres toques: dónde empieza y dónde termina un movimiento, y dónde terminó su retroceso. Proyecta niveles hacia adelante.'),
           ] },
         { id: 'menu-elliott', nombre: 'Ondas de Elliott', icono: <IconoElliott />,
           activo: (!sinEll && !!ver.ell) || !!FORMA_ELLIOTT[dibujar.tipo],
-          estado: FORMA_ELLIOTT[dibujar.tipo] ? 'Contando a mano' : !sinEll && ver.ell ? 'El automático, prendido' : 'El automático o a mano',
+          estado: FORMA_ELLIOTT[dibujar.tipo] ? 'Contando a mano' : !sinEll && ver.ell ? 'Activado: lo calcula Rendi' : 'Lo calcula Rendi o lo marcás a mano',
           menu: [
             { id: 'ell', nombre: 'Automático', interruptor: true, activo: !!ver.ell, sinDatos: sinEll,
-              detalle: 'Rendi busca un conteo posible sobre los picos y pozos del gráfico.',
+              detalle: 'Rendi busca un conteo posible sobre los máximos y mínimos del gráfico.',
               onClick: () => {
                 if (!ver.ell) acercar(ventanaDesde(actual.puntos, fechaDelConteo(ell), nVista))
                 alternar('ell')
               } },
-            aMano('impulso', 'Impulso 1-5 a mano', 'Tocá el 0 y las ondas 1 a 5. Apaga el automático.'),
-            aMano('correccion', 'Corrección A-B-C a mano', 'Tocá dónde arranca y las ondas A, B y C. Apaga el automático.'),
+            aMano('impulso', 'Impulso 1-5 a mano', 'Tocá el 0 y las ondas 1 a 5. Desactiva el automático.'),
+            aMano('correccion', 'Corrección A-B-C a mano', 'Tocá dónde empieza y las ondas A, B y C. Desactiva el automático.'),
           ] },
       ],
       [
@@ -1384,7 +1384,7 @@ function botonesDeLaBarra({
     ],
     // La lista de arriba a la izquierda del gráfico: los indicadores, con su ojito.
     indicadores: [
-      capa('vol', 'Volumen', <IconoVolumen />, actual.puntos.some(p => p.v > 0) ? null : 'Este activo no trae volumen en los datos de Yahoo.'),
+      capa('vol', 'Volumen', <IconoVolumen />, actual.puntos.some(p => p.v > 0) ? null : 'No hay datos de volumen para este activo.'),
       capa('s200', 'Promedio 200 días', <IconoLinea color={COLOR.media200} grueso />, hay('s200') ? null : 'Faltan datos: hacen falta 200 días de mercado.'),
       capa('s50', 'Promedio 50 días', <IconoLinea color={COLOR.media50} />, hay('s50') ? null : 'Faltan datos: hacen falta 50 días de mercado.'),
       capa('bb', 'Bandas de Bollinger', <IconoBandas />, hay('bb_arriba') ? null : 'Faltan datos: hacen falta 20 días de mercado.'),
@@ -1490,7 +1490,7 @@ const LINEAS = [
   { id: 'tendencia', nombre: 'Línea de tendencia', icono: <IconoTendencia />, estado: 'Tocá dos puntos del gráfico',
     detalle: 'De un punto a otro, para marcar una tendencia.' },
   { id: 'horizontal', nombre: 'Línea horizontal', icono: <IconoHorizontal />, estado: 'Tocá la altura del precio',
-    detalle: 'Un precio que querés vigilar (un soporte, un techo).' },
+    detalle: 'Un precio que querés seguir de cerca (un soporte o una resistencia).' },
   { id: 'canal', nombre: 'Canal paralelo', icono: <IconoCanal />, estado: 'Tocá tres puntos del gráfico',
     detalle: 'Dos líneas paralelas: el piso y el techo de un precio que va de costado o en tendencia.' },
   { id: 'pincel', nombre: 'Pincel', icono: <Brush size={17} color={COLOR.dibujo} />, estado: 'Dibujá con el mouse apretado',
@@ -1608,7 +1608,7 @@ function BarraRsi({ rsi }) {
         <span className="absolute right-0">100</span>
       </div>
       <div className="flex justify-between text-[11px] text-ink-2 mt-0.5">
-        <span>← pierde fuerza</span><span>toma fuerza →</span>
+        <span>← pierde impulso</span><span>gana impulso →</span>
       </div>
     </div>
   )
@@ -2436,7 +2436,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
         {/* Columna de precios: la grilla, tu precio y el último precio. Se
             arrastra para estirar el gráfico en vertical (ver ejesGrafico.js). */}
         <div className="absolute inset-y-0 right-0 w-[68px] cursor-ns-resize touch-none select-none"
-          title="Arrastrá hacia arriba o hacia abajo para estirar o achicar. Doble click: automático."
+          title="Arrastrá hacia arriba o hacia abajo para estirar o achicar el gráfico. Doble click: vuelve a la escala automática."
           onPointerDown={e => { e.currentTarget.setPointerCapture?.(e.pointerId); ejeY.current = { y: e.clientY, lo: min, hi: max } }}
           onPointerMove={e => { const t = ejeY.current; if (t) setPrecioMano(rangoEstirado(t.lo, t.hi, e.clientY - t.y)) }}
           onPointerUp={() => { ejeY.current = null }} onPointerCancel={() => { ejeY.current = null }}
@@ -2543,7 +2543,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
       {/* Meses. Se arrastran para acercar o alejar en el tiempo, con el último
           día quieto (ver ejesGrafico.js). */}
       <div className="relative mr-[72px] h-6 mt-1 pt-0.5 text-[11px] text-ink-2 cursor-ew-resize touch-none select-none"
-        title="Arrastrá hacia los costados para acercar o alejar. Doble click: automático."
+        title="Arrastrá hacia los costados para acercar o alejar el gráfico. Doble click: vuelve a la escala automática."
         onPointerDown={e => { e.currentTarget.setPointerCapture?.(e.pointerId); ejeX.current = { x: e.clientX } }}
         onPointerMove={e => {
           if (!ejeX.current || !onZoom) return
@@ -2570,7 +2570,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
       {ver.rsi !== false && (
       <div className="mt-2 border-t border-line/40 pt-2.5">
         <div className="flex justify-between items-baseline text-[12px] text-ink-2 mr-[72px]">
-          <span>Fuerza (RSI)</span>
+          <span>Impulso (RSI)</span>
         </div>
         <div className="relative mt-1.5">
           <div className="relative mr-[72px] h-14 sm:h-24">
@@ -2631,14 +2631,14 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-x-2 mt-2 text-[12px] text-ink-2 mr-[72px]">
-            <span>Squeeze · para qué lado empuja el precio</span>
+            <span>Squeeze · si el precio empuja al alza o a la baja</span>
             <span className="inline-flex items-center gap-1 text-[11px]">
-              <span className="w-1.5 h-2.5 rounded-xs bg-rendi-pos-fill" aria-hidden="true" />a favor de la suba
-              <span className="w-1.5 h-2.5 rounded-xs bg-rendi-neg-fill ml-1.5" aria-hidden="true" />de la baja
+              <span className="w-1.5 h-2.5 rounded-xs bg-rendi-pos-fill" aria-hidden="true" />al alza
+              <span className="w-1.5 h-2.5 rounded-xs bg-rendi-neg-fill ml-1.5" aria-hidden="true" />a la baja
             </span>
           </div>
           <div className="relative mr-[72px] h-10 sm:h-16 mt-1" role="img"
-            aria-label={`Barras del Squeeze (para qué lado empuja el precio): verdes a favor de la suba, rojas a favor de la baja.${ultimo?.squeeze ? ` La última, ${ultimo.squeeze > 0 ? 'verde' : 'roja'}.` : ''}`}>
+            aria-label={`Barras del Squeeze (si el precio empuja al alza o a la baja): verdes al alza, rojas a la baja.${ultimo?.squeeze ? ` La última, ${ultimo.squeeze > 0 ? 'verde' : 'roja'}.` : ''}`}>
             <svg viewBox={`0 0 ${W} ${H_SQUEEZE}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
               <line x1="0" x2={W} y1={H_SQUEEZE / 2} y2={H_SQUEEZE / 2} stroke={v('chart-grid')} strokeWidth="1" vectorEffect="non-scaling-stroke" />
               {fuerza.barras.map(b => (

@@ -64,7 +64,7 @@ const EN_EL_CELULAR = {
   '/analisis':        { sub: 'Diagnóstico, comportamiento, reportes' },
   '/perfil-inversor': { sub: 'Perfil declarado vs. la cartera real' },
   '/':                { label: 'Inicio', sub: 'Saldo del día, mapa del mercado y noticias' },
-  '/analisis-tecnico': { sub: 'Lo que tenés y lo que seguís, con su lectura técnica' },
+  '/analisis-tecnico': { sub: 'Tu cartera y tu watchlist, con su análisis técnico' },
   '/fundamentals':    { sub: 'Las empresas de tus acciones y CEDEARs + buscador de empresas' },
   '/novedades':       { sub: 'Noticias y eventos de los activos' },
 }

@@ -375,7 +375,7 @@ describe('lo que encontró la auditoría (22/10)', () => {
       let veces = 0
       respuestas = { ...SIN_CARTERA, '/prices?symbols=NVDA': { NVDA: 182.4 }, '/prices/history': { points: [] },
         // Sólo la serie cuenta: la ficha también pide tus dibujos, los eventos
-        // y qué parte de tu plata es (el peso).
+        // y qué parte de tu cartera es (el peso).
         '/tecnico/': (ruta) => (/\/peso$/.test(ruta) ? { peso: null }
           : /\/(dibujos|eventos)/.test(ruta) ? { dibujos: [] }
             : ++veces === 1 ? { disponible: false, motivo: 'bajando' } : TECNICO) }
@@ -459,7 +459,7 @@ describe('la liquidez en BYMA', () => {
     expect(t).toContain('Se opera mucho en BYMA')
     expect(t).toContain('$ 5.727 millones por día')
     expect(t).toContain('0,08 %')
-    expect(t).toContain('Podés comprar o vender enseguida, a un precio cerca del último')
+    expect(t).toContain('Podés comprar o vender enseguida, a un precio cercano al último')
     expect(t).not.toContain('Liquidez en BYMA')
     // Debajo del análisis técnico.
     expect(t.indexOf('Se opera mucho en BYMA')).toBeGreaterThan(t.indexOf('Largo plazo'))
@@ -472,9 +472,9 @@ describe('la liquidez en BYMA', () => {
     const t = await abrir('/activo/XLE.BA')
     expect(t).toContain('Liquidez en BYMA')
     expect(t).toContain('Media')
-    expect(t).toContain('$ 171 millones por día y se operó todos los días de las últimas 20 ruedas')
-    expect(t).toContain('Qué te cambia al operar')
-    expect(t).toContain('En montos grandes, tu propia orden puede mover el precio en contra')
+    expect(t).toContain('$ 171 millones por día y tuvo operaciones en cada uno de los últimos 20 días de mercado')
+    expect(t).toContain('Qué significa a la hora de operar')
+    expect(t).toContain('En montos grandes, tu propia orden puede mover el precio en tu contra')
     expect(t).not.toContain('Puede no haber quién te compre')
   })
 
@@ -484,12 +484,12 @@ describe('la liquidez en BYMA', () => {
         ruedas: 20, dias_sin_operar: 6, spread_pct: 2.4 } }
     const t = await abrir('/activo/MUX.BA')
     expect(t).toContain('Poca')
-    expect(t).toContain('no tuvo ninguna operación en 6 de las últimas 20 ruedas')
+    expect(t).toContain('no tuvo ninguna operación en 6 de los últimos 20 días de mercado')
     expect(t).toContain('Ahora, entre el precio de compra y el de venta hay 2,40 %')
-    expect(t).toContain('Qué te cambia al operar')
+    expect(t).toContain('Qué significa a la hora de operar')
     expect(t).toContain('Puede no haber quién te compre o te venda enseguida al precio que ves')
     expect(t).toContain('perdés ese 2,40 % aunque el precio no se mueva')
-    expect(t).toContain('Una orden grande puede mover el precio en contra')
+    expect(t).toContain('Una orden grande puede mover el precio en tu contra')
     expect(t).toContain('puede alejarse del de la acción en Nueva York, que se opera mucho más')
     expect(t).not.toContain('gráfico de arriba')
     // Describe el riesgo; nunca dice qué hacer.
@@ -503,8 +503,8 @@ describe('la liquidez en BYMA', () => {
     const t = await abrir('/activo/AGRO')
     expect(t).toContain('Poca')
     expect(t).not.toContain('Nueva York')
-    expect(t).toContain('Comprar y vender al toque cuesta 0,96 %')
-    expect(t).toContain('Entrar y salir seguido cuesta más que en un papel que se opera mucho')
+    expect(t).toContain('Comprar y vender de inmediato cuesta 0,96 %')
+    expect(t).toContain('Comprar y vender seguido cuesta más que en un activo que se opera mucho')
   })
 
   it('sin historia, sólo la diferencia de puntas (no inventa días sin operar)', async () => {
@@ -567,7 +567,7 @@ describe('la liquidez cuando falta el dato (auditoría 24/10)', () => {
 
   it('si data912 no contesta, lo dice (callar haría pensar que no hay riesgo)', async () => {
     const t = await ficha('MUX', { disponible: false, motivo: 'sin_fuente' })
-    expect(t).toContain('Ahora no pudimos medir cuánto se opera en BYMA')
+    expect(t).toContain('En este momento no pudimos medir cuánto se opera en BYMA')
   })
 
   it('si el papel no cotiza en BYMA, no dice nada', async () => {
@@ -578,13 +578,13 @@ describe('la liquidez cuando falta el dato (auditoría 24/10)', () => {
   it('sin historia: la última rueda, dicho así', async () => {
     let t = await ficha('ABC', { disponible: true, es_cedear: true, nivel: 'poca', periodo: 'ultima_rueda',
       pesos_por_dia: 3400000, ruedas: 1, dias_sin_operar: 0, spread_pct: null })
-    expect(t).toContain('En la última rueda se operaron unos $ 3 millones. No hay historia de los días anteriores.')
+    expect(t).toContain('En el último día de mercado se operaron unos $ 3 millones. No hay historia de los días anteriores.')
     expect(t).not.toContain('por día')
     await montado.desmontar(); montado = null
     t = await ficha('ABBVC', { disponible: true, es_cedear: true, nivel: 'poca', periodo: 'ultima_rueda',
       pesos_por_dia: 0, ruedas: 1, dias_sin_operar: 1, spread_pct: null, en_dolares: true })
-    expect(t).toContain('En la última rueda no tuvo ninguna operación')
-    expect(t).toContain('Es la especie en dólares: el monto está pasado a pesos.')
+    expect(t).toContain('En el último día de mercado no tuvo ninguna operación')
+    expect(t).toContain('Es la versión que cotiza en dólares: el monto está convertido a pesos.')
   })
 
   it('menos de un millón no es "$ 0 millones"', async () => {
