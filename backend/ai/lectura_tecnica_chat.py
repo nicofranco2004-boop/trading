@@ -33,12 +33,16 @@ import re
 _JERGA = [
     r"rsi", r"adx", r"squeeze", r"bollinger", r"macd", r"fibonacci", r"elliott", r"estoc[áa]stico",
     r"[+−]di", r"dmi", r"ema", r"sma", r"medias? m[óo]vil(es)?", r"soportes?", r"resistencias?",
-    r"sobrecompr\w*", r"sobrevend\w*", r"sobreventa", r"alcistas?", r"bajistas?", r"momentum",
+    r"sobrecompr\w*", r"sobrevend\w*", r"sobreventa", r"momentum",
     r"pullback", r"breakout", r"golden cross", r"death cross", r"cruce (dorado|de la muerte)",
     r"divergencias?", r"retrocesos?", r"consolidaci[óo]n", r"lateraliz\w*", r"velas? japonesas?",
     # Las del resumen que se colaron en la primera prueba real (30/10): «perdiendo
     # impulso» (NVIDIA), «rebotó» (MercadoLibre, Bitcoin), «el piso de junio».
     r"impulsos?", r"rebot\w*", r"pisos?", r"techos?", r"zonas?", r"tramos?",
+    # Lo que Nico marcó en el resumen de GGAL (30/10): «la bajada todavía es firme,
+    # pero se está cansando» → «la caída tiene fuerza aún, pero esa fuerza viene
+    # bajando». «Alcista» y «bajista» NO van acá: son las palabras que él usa.
+    r"firmes?", r"cansando",
 ]
 # Los hechos traen fechas, nunca días de la semana: uno escrito por el modelo es
 # inventado (MercadoLibre, 30/10: «cerró el miércoles» por el jueves 29).
@@ -203,9 +207,10 @@ TEXTO_SIN_LECTURA = ("Esta vez no me salió contarlo bien con palabras simples. 
 _COMO_CONTARLO = (
     "Contá cómo viene con estos hechos y nada más: copiá los números como vienen, sin calcular "
     "(tampoco en las tarjetas ni en la voz). Palabras de todos los días: subió, bajó, cerró en, la "
-    "tendencia de fondo, la fuerza, su promedio de los últimos meses, el precio más alto o más bajo "
-    "del año, volvió a subir. NUNCA: alcista, bajista, piso, techo, zona, rebote, rebotó, impulso, "
-    "soporte, resistencia, sobrecompra, ni siglas (RSI, ADX, Squeeze). Nunca nombres el día de la "
+    "tendencia de fondo es alcista o bajista, la caída (o la suba) tiene fuerza aún, esa fuerza viene "
+    "bajando, su promedio de los últimos meses, el precio más alto o más bajo del año, volvió a subir. "
+    "NUNCA: firme, se está cansando, piso, techo, zona, rebote, rebotó, impulso, soporte, resistencia, "
+    "sobrecompra, ni siglas (RSI, ADX, Squeeze). Nunca nombres el día de la "
     "semana: la fecha. Lo que viene, sólo como posibilidad. Cerrá con «lo_que_se_mira» si viene. "
     "Nunca le digas que compre, venda o espere."
 )

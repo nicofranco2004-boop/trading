@@ -90,10 +90,12 @@ export function rotulosQueEntran(lista, tops, entre, minimo = 6) {
 
 const pct0 = (r) => `${Math.round(r * 100)} %`
 
-// "Ahora sube desde US$ 349 (25/06/26). Si un día cierra debajo de US$ 486 (el
+// "Ahora sube desde US$ 349 (25/06/26). Si un día cierra por debajo de US$ 486 (el
 // último pozo más alto, del …), podría ser una señal de que esa suba está
 // perdiendo fuerza." Dicho como posibilidad, no como certeza (Nico, 23/10:
-// «ahí se termina la suba» sonaba a que iba a pasar seguro)."
+// «ahí se termina la suba» sonaba a que iba a pasar seguro). «Por encima / por
+// debajo» y «caída» (Nico, 30/10): las mismas palabras que Mervall-E
+// (backend/ai/resumen_tecnico_hechos.py, «lo_que_se_mira»).
 function textoEnCurso(e, precio, fecha) {
   if (!e) return ''
   const suba = e.dir === 'suba'
@@ -102,7 +104,7 @@ function textoEnCurso(e, precio, fecha) {
     ? 'donde arrancó'
     : `${suba ? 'el último pozo más alto' : 'el último techo más bajo'}, del ${fecha(e.se_rompe_si_cierra.fecha)}`
   return `Ahora ${suba ? 'sube' : 'baja'} desde ${precio(e.desde.precio)} (${fecha(e.desde.fecha)}). `
-    + `Si un día cierra ${suba ? 'debajo' : 'encima'} de ${precio(corte)} (${donde}), podría ser una señal de que esa ${e.dir} está perdiendo fuerza.`
+    + `Si un día cierra ${suba ? 'por debajo' : 'por encima'} de ${precio(corte)} (${donde}), podría ser una señal de que esa ${suba ? 'suba' : 'caída'} está perdiendo fuerza.`
 }
 
 /**

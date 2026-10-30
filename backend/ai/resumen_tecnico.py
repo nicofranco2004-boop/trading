@@ -72,7 +72,7 @@ PALABRAS_MAX_CON_FUERZA = 130
 TOLERANCIA_SEGUNDA = 13 / 12
 ORACIONES = (3, 6)
 ORACIONES_SEGUNDA = (3, 7)
-FRASE_DE_FUERZA = "fuerza_del_movimiento_ADX_y_Squeeze"
+FRASE_DE_FUERZA = "fuerza_del_movimiento"
 
 # Con effort low el modelo igual puede razonar antes de escribir (Pampa, 23/10:
 # 1.280 tokens en el segundo intento). Con 2.000 una vez se quedó sin lugar y el
@@ -91,7 +91,10 @@ SISTEMA = (Path(__file__).with_name("resumen_tecnico_pedido.txt")).read_text(enc
 _PROHIBIDAS = [
     r"devolvi[óo]", r"retroceso", r"recorte", r"correcci[óo]n", r"corrijo", r"lateral", r"de costado",
     r"consolidaci[óo]n", r"impulso", r"momentum", r"tracci[óo]n", r"zonas?", r"soportes?", r"resistencias?",
-    r"techos?", r"pisos?", r"alcista", r"bajista", r"media m[óo]vil", r"sobrecompra", r"sobreventa",
+    r"techos?", r"pisos?", r"firmes?", r"cansando", r"media m[óo]vil",
+    # Las siglas (Nico, 30/10: «nada de RSI, ADX, Squeeze»). «Alcista» y «bajista»
+    # salieron de la lista: son las palabras que él usa para la tendencia.
+    r"rsi", r"adx", r"squeeze", r"sobrecompra", r"sobreventa",
     r"rebot[eóa]", r"tramos?", r"nivel(es)?", r"fibonacci", r"ruedas?", r"volatilidad", r"recalentad[oa]",
     r"hoy", r"ayer", r"mañana",
     r"compr[áa](r|lo|la)?", r"vend[ée](r|lo|la)?", r"recomend\w*", r"te conviene", r"oportunidad",
@@ -152,7 +155,7 @@ def problemas(texto: str, hechos: dict, segunda: bool = False) -> tuple[list, li
         # Con la frase de la fuerza, lo que se achica es la oración 2: el aviso
         # decía «sacá la oración 4» y el modelo borraba justo esa frase (Pampa, 23/10).
         largo.append(f"tiene {palabras} palabras y el tope es {pedido}: acortá la oración 2 (el movimiento)"
-                     + (", pero la frase de la fuerza (ADX y Squeeze) va entera, sin recortarla" if con_fuerza
+                     + (", pero la frase de la fuerza del movimiento va entera, sin recortarla" if con_fuerza
                         else " o sacá la oración 4"))
     lo, hi = ORACIONES_SEGUNDA if segunda else ORACIONES
     oraciones = len([o for o in re.split(r"(?<=[.!?])\s+", t) if o.strip()])

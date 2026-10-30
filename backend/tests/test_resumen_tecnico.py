@@ -140,7 +140,7 @@ class PalabrasTest(unittest.TestCase):
         hechos = {"activo": "Apple", "moneda": "dólares", "ultimo_cierre": "21 de octubre",
                   "movimientos_recientes": {"el_movimiento_de_ahora": "subió de 309 dólares (31 de julio) a 344 dólares"}}
         graves, largo = resumen_tecnico.problemas(
-            "Apple subió de 309 a 344 dólares. Está arriba del promedio de 200 días. Viene firme. Sigue así.", hechos)
+            "Apple subió de 309 a 344 dólares. Está arriba del promedio de 200 días. Tiene fuerza. Sigue así.", hechos)
         self.assertEqual((graves, largo), ([], []))
         # Un número que la IA calculó (la diferencia, un porcentaje) no se publica.
         graves, _ = resumen_tecnico.problemas(
@@ -281,10 +281,11 @@ class ResumenTest(unittest.TestCase):
         self.assertEqual(kw["extra_body"], {"output_config": {"effort": "low"}})
         self.assertEqual(kw["system"], resumen_tecnico.SISTEMA, "el pedido del archivo, sin caché")
         self.assertIn("Sos Mervall-E", kw["system"])
-        self.assertIn("Lo que se mira es", kw["system"])
+        # La forma del cierre que pidió Nico el 30/10 (antes «Lo que se mira es si… : si pasa,…»).
+        self.assertIn("Lo que se mira:", kw["system"])
         self.assertNotRegex(kw["system"], r"[Yy]o miraría|mirarías vos")
         # 120 es un tope, no una meta (Nico, 23/10): nada de «entre 60 y 80».
-        self.assertIn("Nunca más de 120 (130 si los datos traen «fuerza_del_movimiento_ADX_y_Squeeze»)", kw["system"])
+        self.assertIn("Nunca más de 120 (130 si los datos traen «fuerza_del_movimiento»)", kw["system"])
         self.assertNotIn("entre 60 y 80", kw["system"])
         self.assertNotRegex(kw["system"], r"se terminar[íi]a|se termina\b", "lo que se mira, como posibilidad")
         self.assertIn("podría ser una señal de que", kw["system"])
@@ -340,7 +341,8 @@ class ResumenTest(unittest.TestCase):
         self.assertIn("de esa suba había perdido más o menos la mitad", ultima)
         self.assertEqual(datos["precio_al_ultimo_cierre"], "150 dólares")
         # Lo que se mira, como posibilidad y con la misma forma que la tarjeta de Fibonacci.
-        self.assertIn("podría ser una señal de que la bajada está perdiendo fuerza", movs["lo_que_se_mira"])
+        # «la caída», como pidió Nico el 30/10 (la tarjeta de Fibonacci dice lo mismo).
+        self.assertIn("podría ser una señal de que la caída está perdiendo fuerza", movs["lo_que_se_mira"])
         self.assertNotRegex(json.dumps(datos, ensure_ascii=False), r"terminar[íi]a")
         # El cierre más alto del año cae el día del pico: no se repite su precio.
         self.assertIn("no repitas su precio", datos["cierre_mas_alto_del_año"])

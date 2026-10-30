@@ -216,13 +216,8 @@ class LecturaTecnicaChatTest(unittest.TestCase):
             self.assertEqual(del_chat.get(clave), del_resumen.get(clave), clave)
         # Y el número del precio es el último cierre que dibuja la ficha.
         self.assertEqual(del_chat["precio_al_ultimo_cierre"], rh.plata(ficha["lectura"]["precio"], "usd"))
-        # Los indicadores: el mismo valor, sin la sigla.
-        ind_chat = list(del_chat["indicador_que_suma"].values()) if "indicador_que_suma" in del_chat else []
-        ind_res = list(del_resumen["indicador_que_suma"].values()) if "indicador_que_suma" in del_resumen else []
-        self.assertEqual(len(ind_chat), len(ind_res))
-        for a, b in zip(ind_chat, ind_res):
-            self.assertEqual(a, b.replace(" (ADX)", "").replace(" (Squeeze)", "").replace(", ADX,", "")
-                             .replace("(ADX en", "(su fuerza está en"))
+        # Los indicadores: las mismas palabras (los dos sin sigla, 30/10).
+        self.assertEqual(del_chat.get("indicador_que_suma"), del_resumen.get("indicador_que_suma"))
 
     def test_al_chat_no_le_llegan_siglas(self):
         claude = ClaudeDelChat([BUENO])
@@ -377,12 +372,12 @@ class ProblemasTest(unittest.TestCase):
         malos = ["El RSI está en 72", "rebotó en el soporte", "está sobrecomprado", "la media móvil de 200",
                  "va a subir", "subirá", "se termina la bajada", "seguramente pase", "comprá ahora",
                  "te conviene esperar", "es un buen momento", "es una oportunidad", "el ADX en 30",
-                 "el Squeeze cambió", "las bandas de Bollinger", "es alcista", "viene perdiendo impulso",
+                 "el Squeeze cambió", "las bandas de Bollinger", "la bajada todavía es firme", "se está cansando", "viene perdiendo impulso",
                  "rebotó desde el mínimo", "el piso de junio", "cerró el miércoles",
                  "Tenés razón: acá va corregida", "perdón por el error"]
         buenos = ["La fuerza del precio está en 72", "tu compra fue a 40", "se terminó el 6 de octubre",
                   "podría ser una señal de que la bajada pierde fuerza", "si bajara de 40",
-                  "cerró en su precio más alto del año", "el tema del sistema", "le di una mirada"]
+                  "cerró en su precio más alto del año", "la tendencia de fondo es bajista", "el tema del sistema", "le di una mirada"]
         malos += ["probablemente suba", "podría llegar a 250 dólares", "debería recuperarse",
                   "seguiría bajando", "tiene margen para subir", "el próximo objetivo es 260",
                   "va camino a 300", "en los próximos días sube", "Galicia va a subir. Nadie lo sabe"]

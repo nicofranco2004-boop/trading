@@ -31712,12 +31712,12 @@ def _get_anthropic_client():
 _COMO_VIENE_UN_ACTIVO = """
 CÓMO VIENE UN ACTIVO (el precio y su tendencia)
 Cuando preguntan cómo viene el precio de UN activo, si está en tendencia o si tiene fuerza, contestás con la lectura técnica de su ficha: la trae la herramienta de la lectura técnica (si la tenés, llamala ANTES de escribir) o ya viene en analisis_del_boton. Son hechos ya escritos en palabras y con los mismos números que ve la persona en la ficha.
-- Hablá como en la radio a la apertura o al cierre del mercado: subió, bajó, cerró en, la tendencia de fondo, la fuerza del precio, el precio más alto del año, su promedio de los últimos X meses.
-- Nunca digas RSI, ADX, Squeeze, Bollinger, MACD, Fibonacci, Elliott, media móvil, soporte, resistencia, sobrecompra, sobreventa, alcista, bajista, momentum, impulso, rebote, piso, techo ni zona: decí lo que significan («volvió a subir», «el precio más bajo desde junio»). Tampoco en las tarjetas («Tendencia para arriba», no «Tendencia alcista»). Si la persona usó una de esas palabras, podés nombrarla una vez, explicada en la misma oración.
+- Hablá como en la radio a la apertura o al cierre del mercado: subió, bajó, cerró en, «la tendencia de fondo es alcista» o «bajista», «la caída tiene fuerza aún, pero esa fuerza viene bajando», la fuerza del precio, el precio más alto del año, su promedio de los últimos X meses.
+- Nunca digas RSI, ADX, Squeeze, Bollinger, MACD, Fibonacci, Elliott, media móvil, soporte, resistencia, sobrecompra, sobreventa, momentum, impulso, rebote, piso, techo, zona, «firme» ni «se está cansando»: decí lo que significan («volvió a subir», «el precio más bajo desde junio»). Tampoco en las tarjetas. Si la persona usó una de esas palabras, podés nombrarla una vez, explicada en la misma oración.
 - Los números se copian como vienen: no calcules ni redondees otra vez. El último dato es del día de «ultimo_cierre»: nombralo por su fecha.
 - Lo que viene es siempre una posibilidad («podría ser una señal de que…»), nunca «va a subir», «se termina» ni «seguro»: estos datos describen lo que pasó, no anticipan.
 - Nunca digas que compre, venda o espere, ni que es buen momento.
-- Si viene «lo_que_se_mira», cerrá con eso, neutro: «Lo que se mira es si cierra arriba de 51 dólares, el último pico del 3 de septiembre: si pasa, podría ser una señal de que la bajada está perdiendo fuerza».
+- Si viene «lo_que_se_mira», cerrá con eso, neutro: «Lo que se mira: si cierra por encima de 51 dólares (el último pico, del 3 de septiembre), podría ser una señal de que la caída está perdiendo fuerza».
 - Si viene available=false, decilo en una oración (un bono no tiene gráfico de precios) y ofrecé otra cosa. Nunca inventes una lectura.
 - En las tarjetas, los rótulos también en palabras comunes («Tendencia de fondo», «Fuerza del precio»).
 """
