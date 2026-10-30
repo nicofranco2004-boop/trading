@@ -1462,6 +1462,10 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     # Lo que avisó el tramo se cuenta por sus avisos (uno por guarda que salió
     # bien), no por lo que devuelve: si revienta a mitad, los que ya avisaron
     # se mandan y también se cuentan (antes el cron decía «fired: 0»).
+    # Si revienta, cuenta lo que la BASE tiene (`_solo_lo_guardado`): en SQLite
+    # los que ya avisaron quedaron confirmados; en Postgres el rollback se los
+    # llevó y el cron decía «fired: 1» sin haber mandado nada (visto al juntar,
+    # 30/10). La pasada siguiente los vuelve a mirar.
     propios: list = []
     try:
         _evaluar_fuera_de_rueda(conn, units, propios, now)
@@ -1469,6 +1473,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
         errores += 1
         log.error("alerts fuera de la rueda falló: %s: %s", type(ex).__name__, ex, exc_info=True)
         conn.rollback()
+        propios = _solo_lo_guardado(conn, propios)
     fired += len(propios)
     pendientes.extend(propios)
 

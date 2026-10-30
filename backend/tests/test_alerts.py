@@ -1758,9 +1758,19 @@ def test_fuera_de_la_rueda_lo_que_quedo_guardado_se_manda_aunque_falle_lo_que_si
     res = ae.evaluate_alerts(conn, only_user=1)
     guardados = [e["message"] for e in _events(conn)]
     assert res.get("errores") == 1
-    assert len(guardados) == 1, guardados
-    assert res["fired"] == 1, "el cron cuenta el aviso que sí salió (re-test B: decía 0)"
+    # Lo que importa en los dos motores: lo anotado como avisado es lo que se
+    # manda, ni más ni menos.
     assert [it["message"] for it in entregados] == guardados, "lo anotado como avisado se manda"
+    # En SQLite soltar el punto de guardado ya confirma: el primero queda
+    # anotado y tiene que salir. En Postgres no confirma: el error del tramo lo
+    # deshace todo, no queda anotado ni se manda, y la pasada siguiente lo
+    # vuelve a mirar (visto al juntar, 30/10: esta prueba daba rojo en Postgres
+    # también en la punta de Arreglos B; pedía lo que sólo hace SQLite).
+    if hasattr(conn, "total_changes"):
+        assert len(guardados) == 1, guardados
+        assert res["fired"] == 1, "el cron cuenta el aviso que sí salió (re-test B: decía 0)"
+    else:
+        assert guardados == [] and res["fired"] == 0, guardados
 
 
 def test_el_cron_dice_que_error_fue_y_donde(clean, monkeypatch, caplog):
