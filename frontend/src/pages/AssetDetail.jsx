@@ -32,7 +32,7 @@ import SeccionFicha from '../components/asset/SeccionFicha'
 import Panel from '../components/Panel'
 import TesisDelActivo from '../components/tesis/TesisDelActivo'
 import { useTesis } from '../hooks/useDiario'
-import { tesisVigente, activoDeLaTesis } from '../utils/diarioOperaciones'
+import { tesisVigente } from '../utils/diarioOperaciones'
 import Segmento from '../components/asset/Segmento'
 import Skeleton from '../components/Skeleton'
 import { api } from '../utils/api'
@@ -472,10 +472,9 @@ export default function AssetDetail() {
             <Panel padding="md">
               {/* `key`: pasar de la ficha de AAPL a la de NVDA no deja a la vista
                   lo que estabas escribiendo para AAPL. */}
-              {/* El papel con el nombre de tus operaciones (GGAL, no GGAL.BA) y
-                  «¿acción argentina?» con la regla de la ficha (la misma del
-                  gráfico): vendida, no hay lotes que lo digan. */}
-              <TesisDelActivo key={asset} asset={activoDeLaTesis(asset)} local={accionLocal} tesis={tesis} />
+              {/* «¿Acción argentina?» con la regla de la ficha (la misma del
+                  gráfico): de lo que no tenés, o vendiste, no hay lotes que lo digan. */}
+              <TesisDelActivo key={asset} asset={asset} local={accionLocal} tesis={tesis} />
             </Panel>
           </section>
         )}

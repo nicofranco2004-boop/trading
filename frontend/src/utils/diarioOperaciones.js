@@ -230,22 +230,15 @@ export const ACLARACION_DIARIO =
  * vender no es «la que tenía» (ver backend/tesis.py: con historia por día).
  * `tesis`: los `items` de /api/tesis.
  */
-/**
- * De qué papel es una tesis: el nombre de tus operaciones, en mayúsculas y sin
- * «.BA». La ficha que abre Señales para lo que seguís es /activo/GGAL.BA (así
- * lo guarda la estrella de la ficha), y la tesis se escribió como «GGAL»: se
- * buscaba por el nombre de la ficha y no aparecía (auditoría B, re-test 29/10).
- * Una sola regla para buscar y para guardar.
- */
-export function activoDeLaTesis(asset) {
-  return String(asset || '').trim().toUpperCase().replace(/\.BA$/, '')
-}
-
+// La tesis se busca por el nombre EXACTO del papel (el de tus operaciones, como
+// lo guarda el servidor). «¿Es el mismo papel con otro nombre?» lo decide la
+// ficha antes (esElMismo: llegás por GGAL.BA y te lleva a tu GGAL); acá no se
+// adivina: AGRO (Adecoagro) y AGRO.BA (Agrometal) son empresas distintas
+// (auditoría D, re-test 29/10: sacarle el «.BA» las mezclaba).
 export function tesisDeLaOperacion(tesis, op) {
   let mejor = null
-  const activo = activoDeLaTesis(op?.asset)
   for (const t of (tesis || [])) {
-    if (activoDeLaTesis(t.asset) !== activo || !op?.date || t.escrita_el > String(op.date).slice(0, 10)) continue
+    if (t.asset !== op?.asset || !op?.date || t.escrita_el > String(op.date).slice(0, 10)) continue
     if (!mejor || t.escrita_el > mejor.escrita_el || (t.escrita_el === mejor.escrita_el && t.id > mejor.id)) mejor = t
   }
   return mejor
