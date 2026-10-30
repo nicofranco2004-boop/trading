@@ -5969,10 +5969,24 @@ def _borrar_usuario_y_datos(conn, uid: int) -> dict:
     aplicó nada y re-correrla no duplica. Eso es lo que la hace apta para
     `_run_with_lock_retry`."""
     esquema = _esquema_por_tabla(conn)   # ANTES de abrir la transacción (ver docstring)
+    _shadows = lambda: [r["id"] for r in conn.execute(  # noqa: E731
+        "SELECT id FROM users WHERE managed_by=?", (uid,)).fetchall()]
     with conn:
         deleted = {}
-        shadow_ids = [r["id"] for r in conn.execute(
-            "SELECT id FROM users WHERE managed_by=?", (uid,)).fetchall()]
+        # 🔒 EL TURNO PRIMERO, de la cuenta y de sus clientes shadow, de menor a
+        # mayor. Este borrado toca las fotos, posiciones, etc. de la cuenta y
+        # recién AL FINAL la fila de `users`. Una reconstrucción de esa cuenta en
+        # su hilo (`_reconstruir_mtm`) hace al revés: toma el turno —la fila de
+        # `users`— y después escribe las fotos. En Postgres eso se esperaba en
+        # cruz: el borrado con las fotos tomadas esperando `users`, la
+        # reconstrucción con `users` tomado esperando las fotos (`deadlock
+        # detected`, medido en el registro del servidor el 30/10/2026 con la
+        # limpieza de las pruebas, que borra en el mismo orden). Con el turno
+        # adelante, el que llega segundo espera entero al primero.
+        _tomar_turnos_en_orden(conn, [uid] + _shadows())
+        shadow_ids = _shadows()
+        # Un shadow creado entre la lectura de arriba y el turno: también el suyo.
+        _tomar_turnos_en_orden(conn, shadow_ids)
         # Los vínculos van PRIMERO: advisor_clients tiene FK a users(id) y
         # bloquearía el DELETE del shadow (FOREIGN KEY constraint).
         n_links_pre = conn.execute(

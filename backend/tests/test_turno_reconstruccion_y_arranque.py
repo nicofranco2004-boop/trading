@@ -212,6 +212,55 @@ class UnDepositoEntreLaComparacionYLaEscrituraEspera(_CuentaImportada):
         self.assertNotEqual(self._huella_guardada(), ahora)
 
 
+@unittest.skipUnless(PG, "en SQLite la primera escritura toma la base entera: no hay cruce")
+class BorrarLaCuentaMientrasSeReconstruye(_CuentaImportada):
+    """La persona borra su cuenta justo cuando su reconstrucción ya tomó el turno
+    y está por escribir las fotos. El borrado toca las fotos y al final `users`;
+    la reconstrucción tiene `users` y quiere las fotos. Sin el turno adelante en
+    el borrado, Postgres corta a uno de los dos con `deadlock detected`."""
+
+    def test_el_borrado_espera_entero_y_no_quedan_fotos(self):
+        real = bf._persist_mtm_snapshots
+        errores, listo = [], threading.Event()
+
+        def borrar():
+            c = main.get_db()
+            try:
+                main._borrar_cuenta(c, self.uid)
+            except Exception as ex:
+                errores.append(f"borrar: {ex!r}")
+            finally:
+                c.close()
+                listo.set()
+
+        def persistir(conn, uid, por_mes):
+            if not listo.is_set() and not getattr(persistir, "una_vez", False):
+                persistir.una_vez = True
+                threading.Thread(target=borrar, daemon=True).start()
+                listo.wait(timeout=1.5)          # el borrado no puede terminar: espera el turno
+            return real(conn, uid, por_mes)
+
+        with mock.patch.object(bf, "_persist_mtm_snapshots", persistir):
+            try:
+                r = main._reconstruir_mtm(self.uid)
+            except Exception as ex:
+                r = {"excepcion": repr(ex)}
+        self.assertTrue(listo.wait(timeout=30), "el borrado no terminó")
+        conn = main.get_db()
+        try:
+            queda_usuario = conn.execute("SELECT 1 FROM users WHERE id=?", (self.uid,)).fetchone()
+            fotos = conn.execute("SELECT count(*) c FROM snapshots WHERE user_id=?",
+                                 (self.uid,)).fetchone()["c"]
+        finally:
+            conn.close()
+        print(f"\n>>> borrar la cuenta durante la reconstrucción: r={r} err={errores} "
+              f"usuario={'queda' if queda_usuario else 'borrado'} fotos={fotos}")
+        self.assertEqual(errores, [], "el borrado de la cuenta falló")
+        self.assertTrue(r.get("reconstruida"), r)
+        self.assertIsNone(queda_usuario)
+        self.assertEqual(fotos, 0, "quedaron fotos de una cuenta borrada")
+
+
 class _CajaUSDTEnBrokerDeDolares(unittest.TestCase):
     """La reparación por-boot de `reparaciones_de_arranque`: la caja 'USDT' de un
     broker en dólares pasa a 'USD'."""
