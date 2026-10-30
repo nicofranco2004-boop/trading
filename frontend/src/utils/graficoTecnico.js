@@ -12,9 +12,10 @@
 // activo y por moneda (utils/dibujos.js). Cambiar de activo no borra nada.
 
 import { normalizar, puntaje, mismoPapel } from './buscadorRapido'
-import { POPULAR_TICKERS, tickerName, inferType } from './tickers'
+import { POPULAR_TICKERS, tickerName, inferType, isBondPosition } from './tickers'
 import { isFciSym } from './valuation'
 import { esLoteLocal } from './accionLocal'
+import { isCrypto } from './crypto'
 import { copiaLocal } from './dibujos'
 
 export const RECIENTES_MAXIMOS = 8
@@ -26,10 +27,14 @@ const clave = (persona) => (persona ? `rendi_grafico:${persona}` : null)
 // Forma de ticker, la misma de `_SYMBOL_RE` del servidor (main.py): lo que no
 // la tiene no se guarda ni se abre (una dirección inventada, un fondo «FCI:»).
 const FORMA = /^[A-Z0-9]{1,12}([.-][A-Z0-9]{1,4})?$/
+// Una cripto, siempre por su nombre corto: tu lista guarda «BTC-USD» y tus
+// lotes «BTC». Si fueran dos, los dibujos hechos en uno no se verían en el otro.
 export function activoValido(s) {
   if (typeof s !== 'string') return null
   const t = s.trim().toUpperCase()
-  return FORMA.test(t) ? t : null
+  if (!FORMA.test(t)) return null
+  const base = t.replace(/-(USD|USDT|USDC)$/, '')
+  return base !== t && isCrypto(base) ? base : t
 }
 
 /** Lo guardado de esta persona: { activo, recientes }. Sin persona, sin
@@ -100,9 +105,10 @@ export function tuyos(posiciones = []) {
     const s = activoValido(p?.asset)
     if (!s || p.is_cash || isFciSym(p.asset) || vistos.has(s)) continue
     vistos.add(s)
-    // El tipo lo dice tu lote: GGAL de IOL es la acción argentina, GGAL de
-    // Schwab el ADR (la regla única de utils/accionLocal.js).
-    const tipo = esLoteLocal(p) ? 'stock_ar' : p.asset_type === 'CEDEAR' ? 'cedear' : null
+    // El tipo lo dice tu lote: un bono es bono (también en BYMA); GGAL de IOL
+    // es la acción argentina y GGAL de Schwab el ADR (la regla única de
+    // utils/accionLocal.js).
+    const tipo = isBondPosition(p) ? 'bond' : esLoteLocal(p) ? 'stock_ar' : p.asset_type === 'CEDEAR' ? 'cedear' : null
     out.push(fila(s, { tipo, origen: 'cartera' }))
   }
   return out
@@ -179,9 +185,11 @@ export function opcionesDelBuscador({ consulta = '', filtro = 'todo', recientes 
     .map(e => e.x)
     .slice(0, 30)
   // Lo escrito tal cual, si no está entre lo encontrado (ni con otro nombre:
-  // GGAL.BA y GGAL son el mismo papel para esta pregunta). Sólo sin filtro: con
-  // «Cripto» elegido, «Abrir GG» no es una cripto.
-  const abrir = escrito && f.id === 'todo' && !encontrados.some(x => x.simbolo === escrito || mismoPapel(x.simbolo) === mismoPapel(escrito))
+  // GGAL.BA y GGAL son el mismo papel para esta pregunta). Sólo sin filtro (con
+  // «Cripto» elegido, «Abrir GG» no es una cripto) y si parece un ticker: un
+  // nombre largo que ya encontró algo («galicia») no es «Abrir GALICIA».
+  const pareceTicker = escrito && (escrito.length <= 6 || /[.-]/.test(escrito) || !encontrados.length)
+  const abrir = pareceTicker && f.id === 'todo' && !encontrados.some(x => x.simbolo === escrito || mismoPapel(x.simbolo) === mismoPapel(escrito))
     ? [{ simbolo: escrito, nombre: null, tipo: null, origen: 'escrito' }] : []
   const filas = [...encontrados, ...abrir]
   return filas.length ? [{ titulo: 'Resultados', filas }] : []

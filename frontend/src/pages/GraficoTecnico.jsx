@@ -86,7 +86,7 @@ export default function GraficoTecnico() {
 }
 
 function GraficoDe({ activo, recientes, onElegir }) {
-  const ficha = useFichaDelActivo(activo)
+  const ficha = useFichaDelActivo(activo, { conCotizacion: false })
   // Lo tenés con otro nombre (GGAL.BA y tu lote es GGAL): el tuyo, con tu precio.
   useEffect(() => { if (ficha.otroNombre) onElegir(ficha.otroNombre) }, [ficha.otroNombre]) // eslint-disable-line react-hooks/exhaustive-deps
 

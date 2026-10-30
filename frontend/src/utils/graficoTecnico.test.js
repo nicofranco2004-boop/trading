@@ -14,9 +14,14 @@ beforeEach(() => { ({ local: almacen } = instalarNavegadorMinimo()) })
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('activoValido: sólo lo que tiene forma de ticker (la de _SYMBOL_RE del servidor)', () => {
-  it('pasa a mayúsculas y acepta .BA y -USD', () => {
+  it('pasa a mayúsculas y acepta .BA', () => {
     expect(activoValido(' ggal.ba ')).toBe('GGAL.BA')
-    expect(activoValido('btc-usd')).toBe('BTC-USD')
+  })
+  it('una cripto, por su nombre corto (tu lista dice BTC-USD, tus lotes BTC: los dibujos son unos)', () => {
+    expect(activoValido('btc-usd')).toBe('BTC')
+    expect(activoValido('ETH-USDT')).toBe('ETH')
+    // Lo que no es cripto queda como está.
+    expect(activoValido('BRK-B')).toBe('BRK-B')
   })
   it('no acepta un fondo, texto suelto ni nada', () => {
     expect(activoValido('FCI:FIMA-AHORRO')).toBeNull()
@@ -77,18 +82,26 @@ describe('el buscador', () => {
     { asset: 'AL30', asset_type: 'BOND', broker: 'IOL', currency: 'ARS' },
     { asset: 'NVDA', asset_type: 'STOCK', broker: 'Schwab' },
   ]
-  const lista = [{ symbol: 'TSLA' }, { symbol: 'NVDA' }]
+  const lista = [{ symbol: 'TSLA' }, { symbol: 'NVDA' }, { symbol: 'BTC-USD' }]
   const titulos = (s) => s.map(x => x.titulo)
   const simbolos = (s) => s.flatMap(x => x.filas.map(f => f.simbolo))
 
   it('sin nada escrito: los últimos que miraste, tu cartera y tu lista (sin repetir lo tuyo)', () => {
     const s = opcionesDelBuscador({ recientes: ['MELI'], posiciones, lista })
     expect(titulos(s)).toEqual(['Últimos que miraste', 'Tu cartera', 'Tu lista'])
-    expect(s[2].filas.map(f => f.simbolo)).toEqual(['TSLA'])
+    expect(s[2].filas.map(f => f.simbolo)).toEqual(['TSLA', 'BTC'])
+  })
+  it('el cartelito lo dice tu lote: AL30 de IOL es un bono (no «Acción AR»), GGAL de IOL la acción argentina', () => {
+    const t = Object.fromEntries(tuyos(posiciones).map(f => [f.simbolo, f.tipo]))
+    expect(t).toEqual({ GGAL: 'stock_ar', AL30: 'bond', NVDA: 'stock_us' })
   })
   it('un bono que tenés aparece (es tuyo); uno que no, no (no tiene gráfico técnico)', () => {
     expect(simbolos(opcionesDelBuscador({ consulta: 'al3', posiciones }))).toContain('AL30')
     expect(simbolos(opcionesDelBuscador({ consulta: 'al3', posiciones: [] }))).not.toContain('AL30')
+  })
+  it('Bitcoin una sola vez, con su nombre, aunque tu lista lo tenga como BTC-USD', () => {
+    const s = opcionesDelBuscador({ consulta: 'btc', posiciones, lista })
+    expect(s[0].filas.map(f => [f.simbolo, f.nombre])).toEqual([['BTC', 'Bitcoin']])
   })
   it('por nombre, lo tuyo primero', () => {
     const s = opcionesDelBuscador({ consulta: 'galicia', posiciones, lista })
@@ -99,6 +112,9 @@ describe('el buscador', () => {
     expect(s[0].filas.at(-1)).toMatchObject({ simbolo: 'ZZZQ', origen: 'escrito' })
     const g = opcionesDelBuscador({ consulta: 'GGAL.BA', posiciones, lista })
     expect(g[0].filas.some(f => f.origen === 'escrito')).toBe(false)
+    // Un nombre que ya encontró algo no se ofrece como ticker.
+    const n = opcionesDelBuscador({ consulta: 'galicia', posiciones, lista })
+    expect(n[0].filas.map(f => f.simbolo)).toEqual(['GGAL'])
   })
   it('los filtros: tu cartera, acciones argentinas (lo dice tu lote: GGAL de IOL) y cripto', () => {
     expect(simbolos(opcionesDelBuscador({ filtro: 'cartera', posiciones, lista }))).toEqual(['GGAL', 'AL30', 'NVDA'])

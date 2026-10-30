@@ -138,7 +138,10 @@ function esElMismo(pedido, x) {
   return !pedido.endsWith('.BA') || isBymaHolding(x)
 }
 
-export function useFichaDelActivo(asset) {
+// `conCotizacion`: lo que no tenés trae además el último precio, el cierre
+// anterior y si está en tu watchlist (el encabezado de la ficha). La pestaña
+// «Gráfico» no lo muestra y no lo pide.
+export function useFichaDelActivo(asset, { conCotizacion = true } = {}) {
   const { valuationDollar, costBasis } = useCurrency()
 
   const [positions, setPositions] = useState([])
@@ -211,7 +214,7 @@ export function useFichaDelActivo(asset) {
           if (vigente()) setPrices(p)
         } catch { /* silent */ }
       }
-      if (!myLots.length && !opsDelActivo.length) {
+      if (conCotizacion && !myLots.length && !opsDelActivo.length) {
         const { simboloPrecio } = miradaSinTenencia(asset)
         const q = encodeURIComponent(simboloPrecio)
         const [precio, previo, wl] = await Promise.all([

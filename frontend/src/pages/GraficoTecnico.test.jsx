@@ -43,6 +43,7 @@ function servidor() {
     if (url === '/dolar') return { mep: { venta: 1500 } }
     if (url === '/operations') return []
     if (url === '/watchlist') return { items: [{ symbol: 'TSLA' }] }
+    if (url.startsWith('/prices/prev-close')) return {}
     if (url.startsWith('/prices')) return { NVDA: 150, 'GGAL.BA': 6000, TSLA: 400 }
     if (/^\/tecnico\/[^/]+\/peso$/.test(url)) return { peso: url.includes('NVDA') ? 0.4 : null }
     if (url === '/tus-senales') return { senales: [], alcista: null }
@@ -121,6 +122,9 @@ describe('Análisis técnico → Gráfico', () => {
     expect(recibido.at(-1).asset).toBe('TSLA')
     // TSLA no la tenés: el gráfico sin tu precio ni tus compras.
     expect(recibido.at(-1).lotes).toEqual([])
+    // Lo que la ficha muestra arriba de un activo que no tenés (el precio de
+    // hoy, el cierre anterior), la pestaña no lo pide.
+    expect(pedidos.filter(p => p.startsWith('GET /prices/prev-close'))).toEqual([])
     await montado.desmontar()
     montado = await abrir('/analisis-tecnico?tab=grafico&activo=ggal')
     expect(recibido.at(-1).asset).toBe('GGAL')
