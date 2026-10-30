@@ -1,5 +1,44 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR comprado en dólares > lo que recibe el gráfico técnico 1`] = `
+{
+  "accionLocal": false,
+  "asset": "KO",
+  "costoPesos": null,
+  "lineaSinTc": false,
+  "lotes": [
+    {
+      "asset": "KO",
+      "asset_type": "CEDEAR",
+      "broker": "IOL · USD",
+      "buy_price": 11,
+      "currency": "USD",
+      "entry_date": "2025-04-01",
+      "id": 7,
+      "invested": 660,
+      "is_cash": 0,
+      "quantity": 60,
+    },
+  ],
+  "operaciones": [],
+  "pesoEnCartera": 0.05,
+  "pnlPctLinea": 0.04063139432914342,
+  "pnlPctUsd": 0.04063139432914347,
+  "referencia": {
+    "precio": 17800,
+    "simbolo": "KO.BA",
+  },
+  "symbolMiniChart": "KO.BA",
+  "tenencia": {
+    "tc": 1555,
+    "valorUsd": 686.8167202572347,
+  },
+  "titulo": null,
+}
+`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR comprado en dólares > todo el texto de la ficha 1`] = `"KOKOValor actual $687USD+$27·+4,1%no realizadoAnálisis técnico[gráfico KO][liquidez KO]Tu tesisKO¿Por qué lo compraste?Se guarda con la fecha de hoy y cómo está la tendencia hoy.GuardarTu operatoria en KOCosto promedio$11,00por unidad (USD)Cantidad601 lote abiertoInvertido$660costo total (USD)Lotes abiertos · orden FIFOel más viejo se vende primeroFechaBrokerCantidadCostoP&L2025-04-01próximoIOL · USD60$660+$27"`;
+
 exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR en un broker en pesos > lo que recibe el gráfico técnico 1`] = `
 {
   "accionLocal": false,
@@ -42,6 +81,49 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR
 `;
 
 exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR en un broker en pesos > todo el texto de la ficha 1`] = `"AAPLAAPLValor actual $468USD−$6·−1,4%no realizadoAnálisis técnico[gráfico AAPL][liquidez AAPL]Tu tesisAAPL¿Por qué lo compraste?Se guarda con la fecha de hoy y cómo está la tendencia hoy.GuardarTu operatoria en AAPLCosto promedio$11,86por unidad (USD)Cantidad401 lote abiertoInvertido$475costo total (USD)Lotes abiertos · orden FIFOel más viejo se vende primeroFechaBrokerCantidadCostoP&L2025-02-20próximoBalanz40$475−$6"`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR pagado en pesos en una cuenta en dólares > lo que recibe el gráfico técnico 1`] = `
+{
+  "accionLocal": false,
+  "asset": "MSFT",
+  "costoPesos": {
+    "cantidad": 30,
+    "invertido": 630000,
+  },
+  "lineaSinTc": false,
+  "lotes": [
+    {
+      "asset": "MSFT",
+      "asset_type": "CEDEAR",
+      "broker": "IOL · USD",
+      "buy_price": 21000,
+      "currency": "ARS",
+      "entry_date": "2025-03-11",
+      "id": 6,
+      "invested": 630000,
+      "is_cash": 0,
+      "quantity": 30,
+      "tc_compra": 1210,
+    },
+  ],
+  "operaciones": [],
+  "pesoEnCartera": 0.15,
+  "pnlPctLinea": -0.09217577706323687,
+  "pnlPctUsd": -0.0921757770632369,
+  "referencia": {
+    "precio": 24500,
+    "simbolo": "MSFT.BA",
+  },
+  "symbolMiniChart": "MSFT.BA",
+  "tenencia": {
+    "tc": 1555,
+    "valorUsd": 472.66881028938906,
+  },
+  "titulo": null,
+}
+`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR pagado en pesos en una cuenta en dólares > todo el texto de la ficha 1`] = `"MSFTMSFTValor actual $473USD−$48·−9,2%no realizadoAnálisis técnico[gráfico MSFT][liquidez MSFT]Tu tesisMSFT¿Por qué lo compraste?Se guarda con la fecha de hoy y cómo está la tendencia hoy.GuardarTu operatoria en MSFTCosto promedio$17,36por unidad (USD)Cantidad301 lote abiertoInvertido$521costo total (USD)Lotes abiertos · orden FIFOel más viejo se vende primeroFechaBrokerCantidadCostoP&L2025-03-11próximoIOL · USD30$521−$48"`;
 
 exports[`la ficha del activo, antes y después de compartir sus cuentas > acción argentina en un broker en pesos > lo que recibe el gráfico técnico 1`] = `
 {

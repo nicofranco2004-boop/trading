@@ -4,9 +4,11 @@
 // ════════════════════════════════════════════════════════════════════════════
 // Las fotos de `__snapshots__/` se sacaron con la ficha de antes (punta
 // 9958c9b0, sin tocar): lo que la ficha le pasa al gráfico técnico y todo el
-// texto que se ve, en siete casos (un papel de EE.UU., una acción argentina en
-// un broker en pesos, un CEDEAR, una cripto en un exchange, un activo que no
-// tenés, uno que vendiste entero y uno pedido con otro nombre). Si una foto
+// texto que se ve, en nueve casos (un papel de EE.UU., una acción argentina en
+// un broker en pesos, un CEDEAR en un broker en pesos, uno pagado en pesos en
+// una cuenta en dólares y uno comprado en dólares, una cripto en un exchange,
+// un activo que no tenés, uno que vendiste entero y uno pedido con otro
+// nombre). Si una foto
 // cambia, la ficha cambió: no se regenera, se busca qué se rompió.
 //
 // La ficha entera montada (testing/navegadorMinimo.js) con los pedidos al
@@ -65,6 +67,24 @@ const CASOS = {
     operations: [],
     prices: { 'AAPL.BA': 18200 },
     peso: { peso: 0.2 },
+  },
+  'CEDEAR pagado en pesos en una cuenta en dólares': {
+    ruta: '/activo/MSFT',
+    positions: [{ id: 6, broker: 'IOL · USD', asset: 'MSFT', asset_type: 'CEDEAR', quantity: 30, buy_price: 21000,
+      invested: 630000, currency: 'ARS', tc_compra: 1210, entry_date: '2025-03-11', is_cash: 0 }],
+    brokers: [{ id: 5, name: 'IOL · USD', currency: 'USD' }],
+    operations: [],
+    prices: { 'MSFT.BA': 24500 },
+    peso: { peso: 0.15 },
+  },
+  'CEDEAR comprado en dólares': {
+    ruta: '/activo/KO',
+    positions: [{ id: 7, broker: 'IOL · USD', asset: 'KO', asset_type: 'CEDEAR', quantity: 60, buy_price: 11,
+      invested: 660, currency: 'USD', entry_date: '2025-04-01', is_cash: 0 }],
+    brokers: [{ id: 5, name: 'IOL · USD', currency: 'USD' }],
+    operations: [],
+    prices: { 'KO.BA': 17800 },
+    peso: { peso: 0.05 },
   },
   'cripto en un exchange': {
     ruta: '/activo/BTC',
