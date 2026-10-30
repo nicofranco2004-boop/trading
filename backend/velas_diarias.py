@@ -1013,3 +1013,105 @@ def ultima_vela(conn, ticker: str):
     desde = (date.fromisoformat(row["d"]) - timedelta(days=15)).isoformat()
     velas = serie(conn, ticker, desde)
     return velas[-1] if velas else None
+
+
+# ─── La vela de HOY, mientras se mueve ──────────────────────────────────────
+# Todo lo de arriba guarda ruedas CERRADAS, una vez por noche, y la de hoy se
+# tira (`_velas_de`). La ficha igual quiere ver la rueda que se está moviendo:
+# se le pide a Yahoo en el momento y NO se guarda en la tabla (mañana a la
+# noche entra completa por la puerta de siempre).
+#
+# Una por ticker, en memoria 60 s y compartida entre todos: si 200 personas
+# miran Apple, Yahoo recibe un pedido por minuto. Es el mismo plazo que los
+# precios (`_PRICE_CACHE` en main.py, `_QUOTE_CACHE` en home/market.py): pedir
+# más seguido no trae nada más nuevo.
+VELA_EN_CURSO_TTL_S = 60
+_en_curso: dict = {}          # ticker → (time.time() del pedido, vela | None)
+_en_curso_lock = threading.Lock()
+
+
+def _ohlcv(row):
+    o, h, l, c = (_numero(row.get(k)) for k in ('Open', 'High', 'Low', 'Close'))
+    v = _numero(row.get('Volume'))
+    return o if o and o > 0 else None, h, l, c, v if v and v >= 0 else None
+
+
+def _sana(h, l, c) -> bool:
+    # La misma regla que `_velas_de`, pero acá sin rebaja: una vela en curso con
+    # el máximo roto no se dibuja (no hay noche siguiente que la complete).
+    return bool(c and h and l and h >= c >= l > 0)
+
+
+def _filas_de(df, hoy: str) -> list:
+    """Las filas de una tabla de Yahoo cuya fecha (la del mercado: el índice
+    viene con su zona horaria) es `hoy`."""
+    if df is None or getattr(df, 'empty', True):
+        return []
+    return [_ohlcv(row) for idx, row in df.iterrows() if idx.date().isoformat() == hoy]
+
+
+def _diaria_de_hoy(df, hoy: str):
+    for o, h, l, c, v in _filas_de(df, hoy):
+        if _sana(h, l, c):
+            return {"date": hoy, "open": o, "high": h, "low": l, "close": c, "volume": v}
+    return None
+
+
+def _de_las_horas(df, hoy: str):
+    """La vela del día armada con las de 1 hora: la apertura de la primera, el
+    máximo y el mínimo de todas, el cierre de la última, el volumen sumado. Es
+    el plan B cuando la diaria viene vacía: con los '.BA' pasa (04/08: la barra
+    del día con volumen y los cuatro precios en NaN), y la de cada hora vino
+    bien (medido 30/10 con AAPL.BA y GGAL.BA)."""
+    horas = [f for f in _filas_de(df, hoy) if _sana(f[1], f[2], f[3])]
+    if not horas:
+        return None
+    vols = [f[4] for f in horas if f[4] is not None]
+    return {"date": hoy, "open": horas[0][0], "high": max(f[1] for f in horas),
+            "low": min(f[2] for f in horas), "close": horas[-1][3],
+            "volume": sum(vols) if vols else None}
+
+
+def _bajar_en_curso(ticker: str):
+    from pricing import yahoo as _yahoo
+    from home.market import mercado_de, session_today
+    from alerts_engine import rueda_en_horario
+    hoy = session_today(ticker)
+
+    def bajar(intervalo):
+        try:
+            return _yahoo.con_tope(_yahoo._historia, ticker, '5d', intervalo, False, 8.0,
+                                   que=f"vela en curso {ticker} {intervalo}")
+        except Exception as ex:
+            log.info("vela en curso de %s (%s): %s", ticker, intervalo, ex)
+            return None
+
+    vela = _diaria_de_hoy(bajar('1d'), hoy)
+    # Las de 1 hora sólo con la rueda abierta: antes de la apertura no hay
+    # ninguna de hoy, y serían dos pedidos por minuto para nada.
+    if vela is None and rueda_en_horario(mercado_de(ticker), datetime.now(timezone.utc)):
+        vela = _de_las_horas(bajar('1h'), hoy)
+    return vela
+
+
+def vela_en_curso(ticker: str):
+    """La vela de HOY de `ticker` (el de Yahoo, como en la tabla) mientras se
+    mueve: {date, open, high, low, close, volume, actualizada} o None (antes de
+    la apertura, un feriado, Yahoo sin dato o con la vela rota). `date` es el
+    día de SU mercado (`home.market.session_today`: el UTC para una cripto).
+    Quien la dibuja decide si esa fecha ya está guardada. No se guarda nunca en
+    `velas_diarias`."""
+    t = (ticker or '').strip().upper()
+    if not t:
+        return None
+    ahora = time.time()
+    with _en_curso_lock:
+        e = _en_curso.get(t)
+        if e and ahora - e[0] < VELA_EN_CURSO_TTL_S:
+            return e[1]
+    vela = _bajar_en_curso(t)
+    if vela:
+        vela["actualizada"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    with _en_curso_lock:
+        _en_curso[t] = (ahora, vela)
+    return vela

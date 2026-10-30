@@ -76,6 +76,11 @@ export function velasSemanales(puntos = [], previos = []) {
       if (actual) out.push(actual)
       clave = lunes
       actual = { ...p, d: p.d, o: v.o, h: v.h, l: v.l, c: v.c, v: p.v ?? null, semana: true }
+    } else if (p.hoy) {
+      // La vela de hoy (sumarVelaDeHoy) no trae medias ni RSI: la semana se
+      // queda con los del último día guardado y se marca como la de hoy.
+      actual = { ...actual, h: Math.max(actual.h, v.h), l: Math.min(actual.l, v.l), c: v.c,
+        v: p.v == null ? actual.v : (actual.v || 0) + p.v, hoy: true, enCurso: p.enCurso }
     } else {
       actual = { ...actual, h: Math.max(actual.h, v.h), l: Math.min(actual.l, v.l), c: v.c,
         v: p.v == null ? actual.v : (actual.v || 0) + p.v,
@@ -97,6 +102,50 @@ export function velasSemanales(puntos = [], previos = []) {
     if (s.squeeze != null) s.squeeze_color = colorSqueeze(s.squeeze, k > 0 ? out[k - 1].squeeze : antes)
   })
   return out
+}
+
+/**
+ * La vela de HOY (useVelaDeHoy) al final de lo que dibuja el gráfico. Las
+ * velas guardadas son de ruedas cerradas; la de hoy no se guarda hasta la
+ * noche, así que va aparte y SÓLO al dibujo: las cuentas de la pantalla (los
+ * lugares de los dibujos y las notas, el Fibonacci, las ondas, la lectura)
+ * siguen con las guardadas, y la de hoy ocupa el primer lugar vacío de la
+ * derecha, que es justamente el día siguiente al último guardado.
+ *
+ *   · diarias: se agrega si ese lugar se ve (`huecos` ≥ 1) y le saca uno al aire;
+ *   · semanales: se suma a la semana en curso (o abre una nueva un lunes) si el
+ *     último día guardado se ve (`alBorde`).
+ * Sin vela, con una fecha que ya está guardada o fuera de la vista: igual que antes.
+ *
+ * @returns {{ puntos: Array, huecos: number }} lo que recibe el gráfico.
+ */
+export function sumarVelaDeHoy({ puntos = [], huecos = 0, vela = null, ultimaGuardada = null,
+  semanales = false, diarios = [], previos = [], alBorde = false } = {}) {
+  const sin = { puntos, huecos }
+  if (!vela || !(vela.c > 0) || !ultimaGuardada || !(vela.d > ultimaGuardada)) return sin
+  if (!semanales) {
+    if (huecos < 1) return sin
+    return { puntos: [...puntos, vela], huecos: huecos - 1 }
+  }
+  if (!alBorde) return sin
+  const semanas = velasSemanales([...diarios, vela], previos)
+  return { puntos: semanas, huecos: Math.max(0, huecos - (semanas.length - puntos.length)) }
+}
+
+/**
+ * Lo que dice el pie del gráfico de la vela de hoy (`vela`: la última que se
+ * dibuja, con `hoy`). Con la rueda abierta, a qué hora llegó el último dato:
+ * se vuelve a pedir cada minuto, y un "hace 0 s" quieto mentiría.
+ */
+export function textoVelaDeHoy(vela, semanales = false) {
+  if (!vela?.hoy) return ''
+  const cual = semanales ? 'La última vela incluye hoy' : 'La última vela es la de hoy'
+  if (!vela.enCurso) return `${cual}: la rueda cerró y se guarda esta noche.`
+  const t = vela.actualizada ? new Date(vela.actualizada) : null
+  const hora = t && Number.isFinite(t.getTime())
+    ? t.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'America/Argentina/Buenos_Aires' })
+    : null
+  return `${cual}, en curso${hora ? ` (precio de las ${hora})` : ''}: se actualiza sola cada minuto.`
 }
 
 /**

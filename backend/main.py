@@ -12368,6 +12368,23 @@ def tecnico_en_fechas(data: TendenciasEnFechasIn, request: Request, uid: int = D
         return {"resultados": out}
 
 
+@app.get("/api/tecnico/{asset}/hoy")
+def get_tecnico_hoy(asset: str, moneda: str = "usd", local: int = 0,
+                    uid: int = Depends(get_effective_user)):
+    """La vela de HOY del gráfico de la ficha mientras la rueda se mueve
+    (`tecnico.vela_de_hoy`): {vela: {d,o,h,l,c,v} | None, en_rueda, actualizada}.
+    La pantalla la vuelve a pedir cada minuto con la ficha a la vista; Yahoo
+    recibe un pedido por minuto por activo, no por persona
+    (`velas_diarias.vela_en_curso`). No baja historia: si el activo no tiene
+    velas guardadas, no hay vela de hoy."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    import tecnico
+    with db_abierta() as conn:
+        return tecnico.vela_de_hoy(conn, sym, moneda, bool(local))
+
+
 @app.get("/api/tecnico/{asset}/peso")
 def get_tecnico_peso(request: Request, asset: str, uid: int = Depends(get_effective_user)):
     """Qué parte de toda tu plata es este activo, para «En tu cartera» de

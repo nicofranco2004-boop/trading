@@ -66,8 +66,9 @@ import {
 import {
   RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, tarjetaBandas, lineaPromedio, marcas, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, moverVentana, RUEDAS_MINIMAS,
-  ventanaInicial, margenDerecho, futuroMaximo,
+  ventanaInicial, margenDerecho, futuroMaximo, sumarVelaDeHoy, textoVelaDeHoy,
 } from '../../utils/tecnico'
+import { useVelaDeHoy } from '../../hooks/useVelaDeHoy'
 import {
   medicion as medirEntre, primeraCompra, puntosDesde, tarjetasMovimiento, textoGrupo, textoMedicion,
 } from '../../utils/cuantoSeMueve'
@@ -495,6 +496,9 @@ export default function LecturaTecnica({
 
   const actual = datos[moneda]
   const conGrafico = !!actual?.disponible
+  // La vela de hoy, que la noche todavía no guardó: sólo se dibuja
+  // (sumarVelaDeHoy), las cuentas siguen con las velas guardadas.
+  const velaHoy = useVelaDeHoy(asset, moneda, accionLocal, conGrafico)
   useEffect(() => {
     if (!conGrafico || eventos[moneda] !== undefined) return
     let vivo = true
@@ -599,6 +603,9 @@ export default function LecturaTecnica({
   const huecosDias = Math.max(0, finVista - total)
   const puntos = semanales ? velasSemanales(diarios, actual.puntos.slice(Math.max(0, inicioVista - 7), inicioVista)) : diarios
   const huecos = semanales ? Math.round(huecosDias / 5) : huecosDias
+  const dibujo = sumarVelaDeHoy({ puntos, huecos, vela: velaHoy, ultimaGuardada: actual.puntos[total - 1]?.d,
+    semanales, diarios, previos: actual.puntos.slice(Math.max(0, inicioVista - 7), inicioVista), alBorde: finVista >= total })
+  const conHoy = dibujo.puntos[dibujo.puntos.length - 1]?.hoy ? dibujo.puntos[dibujo.puntos.length - 1] : null
   const vista = { n: nVista, fin: finVista, total }
   const zoom = (factor, f) => { const v2 = zoomVentana(vista, factor, f); if (v2) setVentana(v2); return !!v2 }
   const mover = (frac) => { const v2 = moverVentana(vista, frac); if (v2) setVentana(v2) }
@@ -794,7 +801,7 @@ export default function LecturaTecnica({
       : !dibujar.tipo && elegido && (queEsElegido === 'nota' || esClaveDeTesis(elegido) || esClaveDeGrupo(elegido)) ? 'elegido' : null
   const lugaresMinimos = (RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS)) / (semanales ? 5 : 1)
   const compartir = () => specDelGrafico({
-    activo: asset, moneda, puntos, huecos, lo: escala.current?.min, hi: escala.current?.max,
+    activo: asset, moneda, puntos: dibujo.puntos, huecos: dibujo.huecos, lo: escala.current?.min, hi: escala.current?.max,
     ver, tipo, semanales, dibujos: dibujosEnVista, fibonacci: actual.fibonacci, elliott: actual.elliott,
     eventos: losEventos, convertida: actual.convertida, fechaDatos: actual.lectura?.fecha,
     precio: (x) => fmtPrecio(x, moneda), volAlto: VOL_ALTO, adxTope: ADX_TOPE, squeeze: SQUEEZE, ultimaFecha,
@@ -949,7 +956,7 @@ export default function LecturaTecnica({
           )}
           <Grafico leyenda={
             <LeyendaIndicadores items={botones.indicadores} onAviso={setAviso} deFabrica={deFabrica} onFabrica={volverDeFabrica} />
-          } grande={grande} puntos={puntos} huecos={huecos} moneda={moneda} promedio={ver.prom ? promedio : null}
+          } grande={grande} puntos={dibujo.puntos} huecos={dibujo.huecos} moneda={moneda} promedio={ver.prom ? promedio : null}
             marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo}
             fibonacci={ver.fib ? actual.fibonacci : null} elliott={ver.ell ? actual.elliott : null} onZoom={zoom} onMover={mover}
             pie={
@@ -961,6 +968,7 @@ export default function LecturaTecnica({
                 <p data-ayuda="" className="flex-1 min-w-0 text-[11.5px] text-ink-2 mt-0.5 leading-snug">
                   {semanales && 'Cada vela es una semana. '}
                   {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá o pasá a velas semanales. '}
+                  {conHoy && <span data-hoy="">{textoVelaDeHoy(conHoy, semanales)} </span>}
                   <span className="sm:hidden">Pellizcá para acercar o alejar, deslizá para moverte, mantené apretado para ver cada día y tocá un dibujo para elegirlo.</span>
                   <span className="hidden sm:inline">Ruedita: acercar o alejar. Arrastrar: moverte. Doble click en los precios o las fechas: vuelve a automático.</span>
                 </p>
@@ -1795,16 +1803,22 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
     }
     const y = (val) => H - ((val - lo) / (hi - lo)) * H
     const x = (i) => (lugares > 1 ? (i / (lugares - 1)) * W : W / 2)
-    const linea = (k) => {
+    const linea = (k, hasta = puntos.length) => {
       let d = '', abierto = false
       puntos.forEach((p, i) => {
-        if (p[k] == null) { abierto = false; return }
+        if (i >= hasta || p[k] == null) { abierto = false; return }
         d += `${abierto ? 'L' : 'M'}${x(i).toFixed(1)},${y(p[k]).toFixed(1)}`
         abierto = true
       })
       return d
     }
-    const c = linea('c')
+    // La vela de hoy (sumarVelaDeHoy) en la línea: el último tramo va
+    // punteado, porque ese precio todavía se mueve o no se guardó.
+    const n = puntos.length
+    const conHoy = n > 1 && puntos[n - 1].hoy && puntos[n - 2].c != null
+    const c = linea('c', conHoy ? n - 1 : n)
+    const tramoHoy = conHoy
+      ? `M${x(n - 2).toFixed(1)},${y(puntos[n - 2].c).toFixed(1)}L${x(n - 1).toFixed(1)},${y(puntos[n - 1].c).toFixed(1)}` : ''
     // El relleno entre las bandas: cada tramo seguido va por la de arriba hacia
     // adelante y vuelve por la de abajo.
     let bandas = ''
@@ -1830,7 +1844,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
       const arriba = Math.min(y(vela.o), y(vela.c))
       return {
         k: i, x: x(i), sube: vela.c >= vela.o, yh: y(vela.h), yl: y(vela.l),
-        cuerpoY: arriba, cuerpoH: Math.max(Math.abs(y(vela.o) - y(vela.c)), 0.8), ancho,
+        cuerpoY: arriba, cuerpoH: Math.max(Math.abs(y(vela.o) - y(vela.c)), 0.8), ancho, enCurso: !!p.enCurso,
       }
     }) : []
     // Las barras del volumen, abajo de todo, del color de la vela (o de si cerró
@@ -1842,12 +1856,12 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
       const vela = velaCompleta(p, antes)
       const sube = conVelas ? vela.c >= vela.o : (antes == null || p.c >= antes)
       const alto = (p.v / maxVol) * H * VOL_ALTO
-      return { k: i, x: x(i), y: H - alto, alto, ancho: anchoVol, sube }
+      return { k: i, x: x(i), y: H - alto, alto, ancho: anchoVol, sube, enCurso: !!p.enCurso }
     }).filter(Boolean) : []
     return {
       escalaY: y, min: lo, max: hi, velas, volumen, promFuera: fuera, compartible,
-      path: { c, s50: linea('s50'), s200: linea('s200'), bbArriba: linea('bb_arriba'), bbAbajo: linea('bb_abajo'), bandas },
-      area: c ? `${c}L${x(puntos.length - 1).toFixed(1)},${H}L0,${H}Z` : '',
+      path: { c, hoy: tramoHoy, s50: linea('s50'), s200: linea('s200'), bbArriba: linea('bb_arriba'), bbAbajo: linea('bb_abajo'), bandas },
+      area: c ? `${c}L${x(conHoy ? n - 2 : n - 1).toFixed(1)},${H}L0,${H}Z` : '',
     }
   }, [puntos, lugares, promedio, ver.s50, ver.s200, ver.bb, ver.vol, conVelas, fibonacci, elliott, precioMano])
   if (escalaRef) escalaRef.current = { min: compartible[0], max: compartible[1] }
@@ -2266,7 +2280,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
               if (e.cancelable) e.preventDefault()
             }
           }}
-          role="img" aria-label={`Precio con su promedio de 200 y de 50 días. Último cierre ${fmtPrecio(ultimo?.c, moneda)}.`}>
+          role="img" aria-label={`Precio con su promedio de 200 y de 50 días. ${ultimo?.enCurso ? 'Precio de hoy, en curso' : 'Último cierre'} ${fmtPrecio(ultimo?.c, moneda)}.`}>
           <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
             <defs>
               <linearGradient id={`area-${gid}`} x1="0" y1="0" x2="0" y2="1">
@@ -2283,7 +2297,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             {!conVelas && <path d={area} fill={`url(#area-${gid})`} />}
             {volumen.map(b => (
               <rect key={`v${b.k}`} x={b.x - b.ancho / 2} width={b.ancho} y={b.y} height={b.alto}
-                fill={b.sube ? v('rendi-pos-fill') : v('rendi-neg-fill')} fillOpacity="0.2" />
+                fill={b.sube ? v('rendi-pos-fill') : v('rendi-neg-fill')} fillOpacity={b.enCurso ? 0.1 : 0.2} />
             ))}
             {ver.bb && (
               <>
@@ -2302,13 +2316,17 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             {conVelas ? velas.map(b => {
               const color = b.sube ? v('rendi-pos-fill') : v('rendi-neg-fill')
               return (
-                <g key={b.k}>
+                // La vela de hoy mientras se mueve, más transparente: todavía no es una vela cerrada.
+                <g key={b.k} opacity={b.enCurso ? 0.55 : undefined} data-en-curso={b.enCurso ? '' : undefined}>
                   <line x1={b.x} x2={b.x} y1={b.yh} y2={b.yl} stroke={color} strokeWidth="1" vectorEffect="non-scaling-stroke" />
                   <rect x={b.x - b.ancho / 2} width={b.ancho} y={b.cuerpoY} height={b.cuerpoH} fill={color} />
                 </g>
               )
             }) : (
-              <path d={path.c} fill="none" stroke={COLOR.precio} strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+              <>
+                <path d={path.c} fill="none" stroke={COLOR.precio} strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+                {path.hoy && <path d={path.hoy} data-tramo-hoy="" fill="none" stroke={COLOR.precio} strokeWidth="1.7" strokeDasharray="3 3" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
+              </>
             )}
             {/* La raya del balance o dividendo que se está mirando (antes iba
                 una por cada balance, siempre: ensuciaba el gráfico). */}
@@ -2385,7 +2403,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
                 style={{ left: `${ladoGlobo(pctX(hover), ref.current?.clientWidth, anchoGlobo)}px`, top: `${pctY(ph.c)}%` }}>
                 <div className="flex items-baseline gap-2">
                   <span className="text-ink-0 font-semibold text-[12px]">{fmtPrecio(ph.c, moneda)}</span>
-                  <span className="text-ink-2">{ph.semana ? `semana del ${fechaCorta(ph.d)}` : fechaCorta(ph.d)}</span>
+                  <span className="text-ink-2">{ph.semana ? `semana del ${fechaCorta(ph.d)}` : fechaCorta(ph.d)}{ph.enCurso ? ' · en curso' : ph.hoy ? ' · hoy' : ''}</span>
                 </div>
                 {conVelas && (() => {
                   const vela = velaCompleta(ph, hover > 0 ? puntos[hover - 1].c : null)

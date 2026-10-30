@@ -336,7 +336,9 @@ export function specDelGrafico({
   const desde = puntos[0].d
   const cambio = puntos[0].c > 0 ? ultimo.c / puntos[0].c - 1 : null
   const pie = [
-    fechaDatos ? `Datos al cierre del ${fechaCorta(fechaDatos)}.` : null,
+    // La vela de hoy (sumarVelaDeHoy) no está en los datos guardados: se dice.
+    fechaDatos ? `Datos al cierre del ${fechaCorta(fechaDatos)}${ultimo.hoy
+      ? (ultimo.enCurso ? '; la última vela es la de hoy, en curso' : '; la última vela es la de hoy') : ''}.` : null,
     convertida === 'mep' ? (moneda === 'usd'
       ? 'El precio en pesos de cada día está pasado a dólares con el MEP de ese día.'
       : 'El precio en dólares de cada día está pasado a pesos con el MEP de ese día.') : null,

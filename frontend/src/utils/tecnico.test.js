@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { tarjetas, tarjetaFuerza, tarjetaBandas, tarjetaMovimiento, textoRendPorMovimiento, colorSqueeze, fmtAdx, textoCruceAdx, textoSqueeze, velasSemanales, ADX_CLAVE, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
+import { tarjetas, tarjetaFuerza, tarjetaBandas, tarjetaMovimiento, textoRendPorMovimiento, colorSqueeze, fmtAdx, textoCruceAdx, textoSqueeze, velasSemanales, ADX_CLAVE, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas, sumarVelaDeHoy, textoVelaDeHoy } from './tecnico'
 
 const L = {
   ruedas: 760, fecha: '2026-10-21', precio: 228.97,
@@ -474,5 +474,73 @@ describe('D9 · el Squeeze dice qué es en la misma oración', () => {
     const conSqueeze = textos.flatMap(oraciones).filter(o => /Squeeze/.test(o))
     expect(conSqueeze.length).toBeGreaterThan(5)
     for (const o of conSqueeze) expect(o, o).toMatch(/si (el precio )?(viene )?empuja(ndo)? al alza o a la baja/)
+  })
+})
+
+// La vela de HOY (useVelaDeHoy): va sólo al dibujo, en el primer lugar vacío
+// de la derecha; las cuentas de la pantalla siguen con las guardadas.
+describe('sumarVelaDeHoy', () => {
+  // Lunes 26/10 a jueves 29/10 guardados; hoy es el viernes 30.
+  const dias = ['2026-10-26', '2026-10-27', '2026-10-28', '2026-10-29']
+    .map((d, i) => ({ d, o: 100 + i, h: 102 + i, l: 99 + i, c: 101 + i, v: 10, s50: 95, s200: 90, rsi: 55 }))
+  const hoy = { d: '2026-10-30', o: 104, h: 110, l: 103, c: 108, v: 4, hoy: true, enCurso: true }
+  const base = { puntos: dias, huecos: 3, vela: hoy, ultimaGuardada: '2026-10-29', diarios: dias, alBorde: true }
+
+  it('diarias: la agrega al final y le saca un lugar al aire (el ancho no cambia)', () => {
+    const r = sumarVelaDeHoy(base)
+    expect(r.puntos).toHaveLength(5)
+    expect(r.puntos[4]).toBe(hoy)
+    expect(r.huecos).toBe(2)
+    expect(r.puntos.length + r.huecos).toBe(dias.length + 3)
+    expect(dias).toHaveLength(4)                       // lo guardado no se toca
+  })
+
+  it('sin ese lugar a la vista (mirando el pasado), no se dibuja', () => {
+    expect(sumarVelaDeHoy({ ...base, huecos: 0 })).toEqual({ puntos: dias, huecos: 0 })
+  })
+
+  it('sin vela, sin precio o con una fecha ya guardada: igual que antes', () => {
+    expect(sumarVelaDeHoy({ ...base, vela: null }).puntos).toBe(dias)
+    expect(sumarVelaDeHoy({ ...base, vela: { ...hoy, c: 0 } }).puntos).toBe(dias)
+    expect(sumarVelaDeHoy({ ...base, vela: { ...hoy, d: '2026-10-29' } }).puntos).toBe(dias)
+  })
+
+  it('semanales: se suma a la semana en curso con sus medias y el RSI del último día guardado', () => {
+    const semanas = velasSemanales(dias)
+    const r = sumarVelaDeHoy({ ...base, puntos: semanas, huecos: 1, semanales: true })
+    expect(r.puntos).toHaveLength(1)
+    expect(r.huecos).toBe(1)
+    const s = r.puntos[0]
+    expect([s.o, s.h, s.l, s.c, s.v]).toEqual([100, 110, 99, 108, 44])
+    expect([s.s50, s.s200, s.rsi]).toEqual([95, 90, 55])
+    expect(s.hoy).toBe(true)
+    expect(s.enCurso).toBe(true)
+  })
+
+  it('semanales: un lunes abre una semana nueva y ocupa un lugar del aire', () => {
+    const lunes = { ...hoy, d: '2026-11-02' }
+    const semanas = velasSemanales(dias)
+    const r = sumarVelaDeHoy({ ...base, vela: lunes, puntos: semanas, huecos: 1, semanales: true })
+    expect(r.puntos).toHaveLength(2)
+    expect(r.puntos[1]).toMatchObject({ d: '2026-11-02', c: 108, hoy: true, semana: true })
+    expect(r.huecos).toBe(0)
+  })
+
+  it('semanales: si el último día guardado no se ve, no se suma', () => {
+    const semanas = velasSemanales(dias)
+    expect(sumarVelaDeHoy({ ...base, puntos: semanas, semanales: true, alBorde: false }).puntos).toBe(semanas)
+  })
+})
+
+describe('textoVelaDeHoy', () => {
+  it('con la rueda abierta dice de qué hora es el precio (hora argentina)', () => {
+    expect(textoVelaDeHoy({ hoy: true, enCurso: true, actualizada: '2026-10-30T17:32:05Z' }))
+      .toBe('La última vela es la de hoy, en curso (precio de las 14:32): se actualiza sola cada minuto.')
+    expect(textoVelaDeHoy({ hoy: true, enCurso: true, actualizada: '2026-10-30T17:32:05Z' }, true))
+      .toMatch(/^La última vela incluye hoy, en curso/)
+  })
+  it('cerrada la rueda, dice que se guarda a la noche; sin vela de hoy, nada', () => {
+    expect(textoVelaDeHoy({ hoy: true, enCurso: false })).toBe('La última vela es la de hoy: la rueda cerró y se guarda esta noche.')
+    expect(textoVelaDeHoy({ d: '2026-10-29', c: 1 })).toBe('')
   })
 })

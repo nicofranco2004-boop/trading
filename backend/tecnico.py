@@ -597,7 +597,9 @@ def _atrasada(una: list, otra: list) -> bool:
 @pesado
 def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     """La serie de `asset` en `moneda` ('usd' | 'ars') con lo que hay guardado.
-    {velas, ticker, convertida} o {velas: []} si no hay.
+    {velas, ticker, convertida, por} o {velas: []} si no hay. `por`: cómo se
+    convirtió con el MEP ('multiplicar' | 'dividir'; sólo si `convertida`). Es LA
+    decisión de qué serie se dibuja: la vela de hoy (`vela_de_hoy`) la lee de acá.
 
     `local`: es una acción ARGENTINA (lo sabe la ficha por tus lotes). Entonces
     en dólares se usa SU precio de BYMA ÷ el MEP, aunque haya guardado un ticker
@@ -632,12 +634,14 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
         if byma:
             return {"velas": byma, "ticker": simbolo_byma(a), "convertida": None}
         if afuera:
-            return {"velas": _convertir(conn, afuera, "multiplicar"), "ticker": de_afuera, "convertida": "mep"}
+            return {"velas": _convertir(conn, afuera, "multiplicar"), "ticker": de_afuera,
+                    "convertida": "mep", "por": "multiplicar"}
         return {"velas": []}
     if afuera:
         return {"velas": afuera, "ticker": de_afuera, "convertida": None}
     if byma:
-        return {"velas": _convertir(conn, byma, "dividir"), "ticker": simbolo_byma(a), "convertida": "mep"}
+        return {"velas": _convertir(conn, byma, "dividir"), "ticker": simbolo_byma(a),
+                "convertida": "mep", "por": "dividir"}
     return {"velas": []}
 
 
@@ -659,6 +663,55 @@ def ticker_de_la_empresa(conn, asset: str, local: bool = False):
     if not a or yahoo_de_cripto(a[:-3] if a.endswith(".BA") else a):
         return None
     return serie(conn, a, "usd", local).get("ticker")
+
+
+def vela_de_hoy(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
+    """La vela de HOY, mientras se mueve, de la MISMA serie que dibuja la ficha
+    (`serie`: el mismo ticker y la misma conversión). {vela: {d,o,h,l,c,v} | None,
+    en_rueda, actualizada}.
+
+    La vela no pasa por las medias, el RSI ni la lectura: la tendencia y los
+    avisos siguen con el cierre de ayer, porque con el precio de las 11 podrían
+    cambiar y a las 15 volver.
+
+    Sin vela (None) si:
+      · el activo no tiene serie, o Yahoo no tiene la de hoy (`velas_diarias.vela_en_curso`);
+      · esa fecha ya está guardada (no hay vela doble);
+      · es un '.BA' con un salto de precio sin decidir (`serie` lo esconde desde
+        ese día, y hoy viene después);
+      · va convertida y no hay MEP de hoy: no se inventa con uno viejo."""
+    import velas_diarias
+    from alerts_engine import rueda_en_horario
+    from datetime import datetime, timezone
+    from home.market import mercado_de
+    moneda = "ars" if moneda == "ars" else "usd"
+    nada = {"vela": None}
+    s = serie(conn, asset, moneda, local)
+    if not s["velas"]:
+        return nada
+    ticker = s["ticker"]
+    v = velas_diarias.vela_en_curso(ticker)
+    if not v or v["date"] <= s["velas"][-1]["date"]:
+        return nada
+    if ticker.endswith(".BA"):
+        import cambios_ratio
+        if cambios_ratio.para_el_grafico(conn, ticker).get("pendientes"):
+            return nada
+    precios = {k: v[k] for k in ("open", "high", "low", "close")}
+    if s["convertida"]:
+        import main
+        tc = main._val_rate((main._get_dolar_data() or {}).get("mep"))
+        if not tc:
+            return nada
+        precios = {k: (x / tc if s["por"] == "dividir" else x * tc) if x is not None else None
+                   for k, x in precios.items()}
+    p = estructura.precio_redondo
+    return {
+        "vela": {"d": v["date"], "o": p(precios["open"]), "h": p(precios["high"]),
+                 "l": p(precios["low"]), "c": p(precios["close"]), "v": v.get("volume")},
+        "en_rueda": rueda_en_horario(mercado_de(ticker), datetime.now(timezone.utc)),
+        "actualizada": v.get("actualizada"),
+    }
 
 
 def cierre_de(conn, simbolo: str):
