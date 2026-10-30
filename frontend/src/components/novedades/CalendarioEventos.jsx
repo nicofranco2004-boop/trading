@@ -23,6 +23,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react'
 import Modal from '../Modal'
 import { api } from '../../utils/api'
 import { fmtMoney } from '../../utils/format'
+import { usePrivacy, OCULTO } from '../../contexts/PrivacyContext'
 import { hoyISO } from '../../utils/fecha'
 import {
   upcomingBondEvents, normalizeBackendEvents, mergeEvents, eventCobro,
@@ -64,6 +65,9 @@ function Leyenda() {
 }
 
 export default function CalendarioEventos({ positions = [], cerSeries, cobroCtx, eventosDelAnio = null, onClose, onVerActivo }) {
+  // «Ocultar saldos»: lo que cobrarías se tapa, como en la agenda de Eventos
+  // (pages/Events.jsx). Re-test A3, 29/10: sólo se había tapado la agenda.
+  const { hidden: oculto } = usePrivacy()
   const hoy = hoyISO()
   // `eventosDelAnio`: los eventos que Eventos ya trajo, cuando su ventana es de
   // un año (1Y). Entonces son exactamente los mismos y no se vuelven a pedir
@@ -251,7 +255,7 @@ export default function CalendarioEventos({ positions = [], cerSeries, cobroCtx,
                     {m && (
                       <>
                         <span className="block text-sm font-semibold text-ink-0 tabular">
-                          {fmtMoney(m.amount, m.currency || 'USD', { decimals: (m.currency || 'USD') === 'ARS' ? 0 : 2 })}
+                          {oculto ? OCULTO : fmtMoney(m.amount, m.currency || 'USD', { decimals: (m.currency || 'USD') === 'ARS' ? 0 : 2 })}
                         </span>
                         <span className="block text-[10px] text-ink-2">
                           {ev.eventType.startsWith('bond_') ? 'según cronograma' : 'antes de impuestos'}

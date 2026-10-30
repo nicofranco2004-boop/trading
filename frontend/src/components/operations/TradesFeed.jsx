@@ -18,7 +18,6 @@
 import { TrendingUp, TrendingDown, Calendar, Trash2 } from 'lucide-react'
 import AssetLogo from '../AssetLogo'
 import { pctSigned, colorClass } from '../../utils/format'
-import { fmtConvertedCompactRaw } from '../../contexts/CurrencyContext'
 import { formatQty } from './shared'
 import { esCobro } from '../../utils/tradeStats'
 
@@ -57,7 +56,7 @@ function DayGroup({ group, histMoney, onDelete, borrando, nuevas }) {
           </span>
         </div>
         <span className={`text-[11px] tabular ${colorClass(subtotalDisp)}`}>
-          {fmtConvertedCompactRaw(subtotalDisp, histMoney.currency, { signed: true })}
+          {histMoney.fmtMontoCorto(subtotalDisp, { signed: true })}
         </span>
       </div>
       <ul>

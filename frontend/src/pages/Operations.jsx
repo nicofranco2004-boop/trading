@@ -23,7 +23,7 @@ import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
 import { fmtUsd as fmtUsdRaw, fmtMoney, colorClass, parseNum, parseNumOrNull, numACampo } from '../utils/format'
 import { track } from '../utils/track'
-import { useMoneyFormat, fmtConvertedRaw } from '../contexts/CurrencyContext'
+import { useMoneyFormat } from '../contexts/CurrencyContext'
 import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
@@ -567,7 +567,7 @@ export default function Operations() {
             label="P&L Realizado"
             clave="movimientos:pnl-realizado" moneda={histMoney.currency}
             num={totalPnlDisp}
-            format={(n) => fmtConvertedRaw(n, histMoney.currency, { decimals: 2 })}
+            format={(n) => histMoney.fmtMonto(n, { decimals: 2 })}
             tone={totalPnlDisp >= 0 ? 'pos' : 'neg'}
             sub="acumulado histórico"
           />
@@ -615,7 +615,7 @@ export default function Operations() {
               </div>
               <div className={`text-xl font-medium tabular leading-none transition-opacity ${recalculando ? 'opacity-50' : ''} ${colorClass(totalPnlDisp)}`}>
                 <NumeroQueCambia clave="movimientos:pnl-realizado" value={totalPnlDisp} moneda={histMoney.currency}
-                  format={(n) => fmtConvertedRaw(n, histMoney.currency, { signed: true, decimals: 2 })}
+                  format={(n) => histMoney.fmtMonto(n, { signed: true, decimals: 2 })}
                   conDiferencia={false} desdeCero />
               </div>
             </div>
@@ -1239,7 +1239,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
   const money = useMoneyFormat()
   const histMoney = useHistoricalMoney()
   // Formatea un monto YA convertido a la moneda en que se mira (no reconvierte).
-  const fmtVista = (v) => fmtConvertedRaw(v, histMoney.currency)
+  const fmtVista = (v) => histMoney.fmtMonto(v)
   const sumarEnVista = (rows, getUsd) => histMoney.sumConvertedAt(rows, getUsd)
   const [movements, setMovements] = useState([])
   const [loading, setLoading] = useState(true)

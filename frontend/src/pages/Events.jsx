@@ -56,6 +56,7 @@ import {
   pasosEventosParaTi, pasosEventosPopulares, empresasDeLaCartera, chipsDeEmpresas,
 } from '../utils/cargaPorPasos'
 import { hayPrecios } from '../utils/preciosEnVivo'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 
 const WINDOW_OPTIONS = [
   { value: 30,  label: '30D' },
@@ -919,6 +920,8 @@ function EventAgenda({ events, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx 
 }
 
 function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx }) {
+  // «Ocultar saldos»: ni lo que cobrarías ni qué parte de tu cartera es (A3/D4).
+  const { hidden: oculto } = usePrivacy()
   const { ticker, eventType, eventDate, confirmed, inPortfolio, details } = event
   const isMacro = isMacroEvent(event)
   const cobro = tab === 'portfolio' ? eventCobro(event, cobroCtx) : null
@@ -958,9 +961,9 @@ function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx })
       ? `${formatCompact(nominales)} nominales (= ${formatCompact(cobro.shares)} acciones)`
       : `${formatCompact(nominales)} nominales`
   const personal = cobro?.amount != null
-    ? `tenés ${cuantos} → ~+${cobro.currency === 'USD' ? 'US$ ' : `${cobro.currency} `}${formatCompact(cobro.amount)}`
+    ? `tenés ${cuantos} → ~+${oculto ? OCULTO : `${cobro.currency === 'USD' ? 'US$ ' : `${cobro.currency} `}${formatCompact(cobro.amount)}`}`
     : (tab === 'portfolio' && shares && impactPct != null && impactPct > 0.0001)
-      ? `tenés ${formatCompact(shares)} nominales (${pct(impactPct)} de tu cartera)`
+      ? `tenés ${formatCompact(shares)} nominales${oculto ? '' : ` (${pct(impactPct)} de tu cartera)`}`
       : (tab === 'popular' && inPortfolio) ? 'está en tu cartera' : null
 
   return (
