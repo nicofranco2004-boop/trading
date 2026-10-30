@@ -8696,9 +8696,13 @@ _CIERRE_MERCADO = {"America/New_York": 16, "America/Argentina/Buenos_Aires": 17}
 
 
 def _fetch_yf_earnings_pasados(ticker: str):
-    """Los balances ya anunciados de `ticker`: [{event_date, momento, hora}] con
-    `momento` 'antes_del_cierre' | 'despues_del_cierre' | None (Yahoo no dio la
-    hora: medianoche justa). None si Yahoo no contestó (≠ [] = no tiene)."""
+    """Los balances ya anunciados de `ticker`: [{event_date, momento, hora,
+    eps_esperado, eps_declarado, sorpresa_pct}] con `momento`
+    'antes_del_cierre' | 'despues_del_cierre' | None (Yahoo no dio la hora:
+    medianoche justa). La ganancia por acción que esperaba el mercado, la que
+    declaró la empresa y cuánto se apartó (%), de la MISMA respuesta de Yahoo
+    (Nico, 29/10: «el detalle de lo declarado vs esperado»); None si no la da.
+    None si Yahoo no contestó (≠ [] = no tiene)."""
     try:
         ed = yf.Ticker(ticker).get_earnings_dates(limit=EARNINGS_PASADOS_CUANTOS)
     except Exception:
@@ -8717,13 +8721,28 @@ def _fetch_yf_earnings_pasados(ticker: str):
         if not _DATE_RE.match(d) or d >= hoy:
             continue
         sin_hora = local.hour == 0 and local.minute == 0
+        fila = ed.loc[ts] if hasattr(ed, "loc") else {}
+        if hasattr(fila, "ndim") and fila.ndim > 1:      # la misma hora dos veces: la primera
+            fila = fila.iloc[0]
         out.append({
             "event_date": d,
             "momento": None if sin_hora else (
                 "antes_del_cierre" if local.hour < _CIERRE_MERCADO[zona] else "despues_del_cierre"),
             "hora": None if sin_hora else local.strftime("%H:%M"),
+            "eps_esperado": _numero_o_none(fila, "EPS Estimate"),
+            "eps_declarado": _numero_o_none(fila, "Reported EPS"),
+            "sorpresa_pct": _numero_o_none(fila, "Surprise(%)"),
         })
     return out
+
+
+def _numero_o_none(fila, col):
+    """El número de esa columna de una fila de Yahoo, o None (falta o NaN)."""
+    try:
+        x = float(fila.get(col)) if hasattr(fila, "get") else None
+    except (TypeError, ValueError):
+        return None
+    return round(x, 4) if x is not None and math.isfinite(x) else None
 
 
 def _buscar_y_guardar_earnings_pasados(ticker: str) -> bool:
@@ -8751,6 +8770,10 @@ def _buscar_y_guardar_earnings_pasados(ticker: str) -> bool:
                             details = {}
                         details = details if isinstance(details, dict) else {}
                         details.update({"momento": e["momento"], "hora": e["hora"]})
+                        # Lo declarado y lo esperado: sólo si Yahoo los dio (no se
+                        # pisa un dato guardado con un vacío).
+                        details.update({k: e[k] for k in ("eps_esperado", "eps_declarado", "sorpresa_pct")
+                                        if e.get(k) is not None})
                         conn.execute(
                             """INSERT INTO financial_events
                                (ticker, event_type, event_date, details, confirmed, source, fetched_at)

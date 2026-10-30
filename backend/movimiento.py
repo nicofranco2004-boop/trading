@@ -182,7 +182,7 @@ def eventos_del_grafico(velas: list, balances: list, dividendos: list, moneda_di
       · balances: [{fecha, momento}] (momento puede ser None)
       · dividendos: [{ex_date, por_accion}] — el día de corte
     Cada uno: {tipo: 'balance'|'dividendo', fecha, momento, monto, moneda,
-    reaccion}."""
+    reaccion} y, los balances, {eps_esperado, eps_declarado, sorpresa_pct}."""
     if not velas:
         return []
     desde, hasta = velas[0]["date"], velas[-1]["date"]
@@ -191,7 +191,11 @@ def eventos_del_grafico(velas: list, balances: list, dividendos: list, moneda_di
         f = b.get("fecha")
         if f and desde <= f <= hasta:
             out.append({"tipo": "balance", "fecha": f, "momento": b.get("momento"),
-                        "reaccion": reaccion(velas, f, b.get("momento"))})
+                        "reaccion": reaccion(velas, f, b.get("momento")),
+                        # Ganancia por acción: la esperada, la declarada (en la
+                        # moneda de la empresa, como el dividendo) y la sorpresa.
+                        "eps_esperado": b.get("eps_esperado"), "eps_declarado": b.get("eps_declarado"),
+                        "sorpresa_pct": b.get("sorpresa_pct"), "moneda": moneda_dividendo})
     for d in dividendos or []:
         f = d.get("ex_date")
         if f and desde <= f <= hasta:

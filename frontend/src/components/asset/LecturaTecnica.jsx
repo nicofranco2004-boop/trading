@@ -85,7 +85,7 @@ const MARCA_PX = 34
 const H_RSI = 64
 // Cuánto hay entre los dos primeros dedos (para pellizcar).
 const distanciaDedos = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
-const VOL_ALTO = 0.2   // la franja del volumen: el 20 % de abajo del gráfico de precio
+const VOL_ALTO = 0.15  // la franja del volumen: el 15 % de abajo del gráfico de precio (más bajo y tenue: Nico, 29/10)
 const H_ADX = 56
 const H_SQUEEZE = 40
 // El ADX se dibuja de 0 a 50 (casi nunca pasa; si pasa, la escala se estira).
@@ -1234,11 +1234,14 @@ function IconoPuntos() {
 }
 
 // La «B» de un balance o la «D» de un dividendo: un círculo con la letra.
+// `mixto`: un balance y un dividendo en la misma marca (mitad y mitad).
 function Letra({ tipo, grande: g = false }) {
+  const fondo = tipo === 'mixto' ? `linear-gradient(90deg, ${COLOR.balance} 50%, ${COLOR.dividendo} 50%)`
+    : tipo === 'balance' ? COLOR.balance : COLOR.dividendo
   return (
     <span className={`inline-flex items-center justify-center rounded-full font-bold leading-none ${g ? 'w-[18px] h-[18px] text-[10px]' : 'w-3.5 h-3.5 text-[9px]'}`}
-      style={{ background: tipo === 'balance' ? COLOR.balance : COLOR.dividendo, color: v('bg-0') }}>
-      {tipo === 'balance' ? 'B' : 'D'}
+      style={{ background: fondo, color: v('bg-0') }}>
+      {tipo === 'balance' ? 'B' : tipo === 'dividendo' ? 'D' : ''}
     </span>
   )
 }
@@ -1693,25 +1696,36 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   // cuántas son (Galicia paga todos los meses: en el celular eran doce «D»
   // pisadas); su globo las lista.
   const hasta = puntos[puntos.length - 1]?.d
+  // Cada dividendo con el anterior (para comparar) y qué parte del precio de
+  // ese día fue, si el precio está en su misma moneda (Nico, 29/10).
+  const divs = eventos.filter(e => e.tipo === 'dividendo').sort((a, b) => (a.fecha < b.fecha ? -1 : 1))
   const evVisibles = eventos
     .filter(e => e.fecha >= (puntos[0]?.d || '') && e.fecha <= (hasta || ''))
     .map(e => ({ ...e, i: indiceDeFecha(puntos, e.fecha) }))
     .filter(e => e.i != null)
+    .map(e => {
+      if (e.tipo !== 'dividendo') return e
+      const k = divs.findIndex(x => x.fecha === e.fecha)
+      const c = puntos[e.i]?.c
+      return { ...e, anterior: k > 0 ? divs[k - 1].monto : null,
+        rendimiento: e.monto > 0 && c > 0 && e.moneda === moneda ? (e.monto / c) * 100 : null }
+    })
+  // Una sola fila de marcas sobre las fechas (antes, una por tipo): las que en
+  // la pantalla quedarían a menos de MARCA_PX se juntan en UNA, aunque sean un
+  // balance y un dividendo; su globo las lista.
   const grupos = []
-  for (const tipo of ['balance', 'dividendo']) {
-    let actual = null
-    for (const e of evVisibles.filter(x => x.tipo === tipo)) {
-      const x = pctX(e.i)
-      if (actual && ((x - actual.x0) / 100) * ancho < MARCA_PX) {
-        actual.items.push(e)
-        actual.x = (actual.x0 + x) / 2
-      } else {
-        actual = { clave: `${tipo}|${e.fecha}`, tipo, x0: x, x, items: [e] }
-        grupos.push(actual)
-      }
+  let actual = null
+  for (const e of [...evVisibles].sort((a, b) => a.i - b.i)) {
+    const x = pctX(e.i)
+    if (actual && ((x - actual.x0) / 100) * ancho < MARCA_PX) {
+      actual.items.push(e)
+      actual.x = (actual.x0 + x) / 2
+      if (actual.tipo !== e.tipo) actual.tipo = 'mixto'
+    } else {
+      actual = { clave: `${e.tipo}|${e.fecha}`, tipo: e.tipo, x0: x, x, items: [e] }
+      grupos.push(actual)
     }
   }
-  const dosRenglones = grupos.some(g => g.tipo === 'balance') && grupos.some(g => g.tipo === 'dividendo')
   const grupoSel = grupos.find(g => g.clave === eventoSel) || null
 
   // La medición, dibujada: cada punto tocado en su lugar (`k`, que manda la
@@ -1730,6 +1744,16 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   // Los ejes como TradingView (utils/ejesGrafico.js): precios redondos a lo
   // largo de la columna y fechas con el detalle que entra.
   const ticks = marcasDePrecio(min, max, alto)
+  // Los precios del costado sin «,00» cuando son redondos («400», no
+  // «400,00»); con decimales si el paso los necesita (una cripto de centavos).
+  // El último precio y el del mouse siguen con todos sus decimales.
+  const enteros = ticks.every(t => Number.isInteger(t))
+  const rotuloDePrecio = (t) => (enteros ? t.toLocaleString('es-AR') : fmtPrecio(t, moneda).replace(/^US\$ /, ''))
+  // El último precio, como TradingView: verde si el día cerró arriba del
+  // anterior, rojo si abajo (gris si igual), con su raya punteada a lo ancho.
+  const penultimo = puntos[puntos.length - 2]
+  const colorDelDia = !ultimo || !penultimo || ultimo.c === penultimo.c ? COLOR.precio
+    : ultimo.c > penultimo.c ? v('rendi-pos') : v('rendi-neg')
   const meses = marcasDeFechas(puntos, (ancho * puntos.length) / Math.max(lugares, 1))
   // Los rótulos del eje se esconden si chocan con la etiqueta del último precio
   // o con la de tu precio (que pesan más).
@@ -1887,20 +1911,23 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
                 <stop offset="100%" style={{ stopColor: COLOR.precio, stopOpacity: 0 }} />
               </linearGradient>
             </defs>
+            {/* La grilla: lisa y suave, sólo a la altura de los precios del
+                costado (como TradingView; antes, punteada y más marcada). */}
             {ticks.map((t, k) => (
               <line key={k} x1="0" x2={W} y1={escalaY(t)} y2={escalaY(t)} stroke={v('chart-grid')} strokeWidth="1"
-                strokeDasharray="2 4" vectorEffect="non-scaling-stroke" />
+                strokeOpacity="0.55" vectorEffect="non-scaling-stroke" />
             ))}
             {!conVelas && <path d={area} fill={`url(#area-${gid})`} />}
             {volumen.map(b => (
               <rect key={`v${b.k}`} x={b.x - b.ancho / 2} width={b.ancho} y={b.y} height={b.alto}
-                fill={b.sube ? v('rendi-pos-fill') : v('rendi-neg-fill')} fillOpacity="0.28" />
+                fill={b.sube ? v('rendi-pos-fill') : v('rendi-neg-fill')} fillOpacity="0.2" />
             ))}
             {ver.bb && (
               <>
-                <path d={path.bandas} fill={COLOR.bandas} fillOpacity="0.08" stroke="none" />
-                <path d={path.bbArriba} fill="none" stroke={COLOR.bandas} strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
-                <path d={path.bbAbajo} fill="none" stroke={COLOR.bandas} strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+                {/* Más livianas (Nico, 29/10): eran lo que más pesaba en la vista. */}
+                <path d={path.bandas} fill={COLOR.bandas} fillOpacity="0.045" stroke="none" />
+                <path d={path.bbArriba} fill="none" stroke={COLOR.bandas} strokeWidth="0.9" strokeOpacity="0.75" vectorEffect="non-scaling-stroke" />
+                <path d={path.bbAbajo} fill="none" stroke={COLOR.bandas} strokeWidth="0.9" strokeOpacity="0.75" vectorEffect="non-scaling-stroke" />
               </>
             )}
             {ver.s200 && <path d={path.s200} fill="none" stroke={COLOR.media200} strokeWidth="2.5" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
@@ -1920,8 +1947,9 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             }) : (
               <path d={path.c} fill="none" stroke={COLOR.precio} strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
             )}
-            {/* Una raya tenue por balance; la del que se mira, marcada. */}
-            {grupos.flatMap(g => g.items.filter(() => g.tipo === 'balance' || g === grupoSel).map(e => (
+            {/* La raya del balance o dividendo que se está mirando (antes iba
+                una por cada balance, siempre: ensuciaba el gráfico). */}
+            {grupos.filter(g => g === grupoSel).flatMap(g => g.items.map(e => (
               <line key={`e${e.tipo}${e.fecha}`} x1={(pctX(e.i) / 100) * W} x2={(pctX(e.i) / 100) * W} y1="0" y2={H}
                 stroke={e.tipo === 'balance' ? COLOR.balance : COLOR.dividendo}
                 strokeOpacity={g === grupoSel ? 0.9 : 0.3} strokeWidth="1" strokeDasharray="2 4" vectorEffect="non-scaling-stroke" />
@@ -1967,6 +1995,10 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
           )}
           {/* Midiendo: la cruz del mouse, como en TradingView (la vertical, sólo
               en el aire de la derecha: sobre los días ya está la del globo). */}
+          {ultimo && pctY(ultimo.c) >= 0 && pctY(ultimo.c) <= 100 && (
+            <div aria-hidden="true" data-raya-ultimo="" className="pointer-events-none absolute inset-x-0 h-0 border-t border-dashed"
+              style={{ top: `${pctY(ultimo.c)}%`, borderColor: colorDelDia, opacity: 0.55 }} />
+          )}
           {cursor?.precio != null && (
             <>
               <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 h-0 border-t border-dashed border-ink-2/70" style={{ top: `${yDe(cursor.precio)}%` }} />
@@ -2046,7 +2078,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
           onDoubleClick={() => setPrecioMano(null)}>
           {ticks.map((t, k) => !cerca(t) && (
             <span key={k} className="absolute left-1.5 -translate-y-1/2 text-[11px] text-ink-2 tabular whitespace-nowrap"
-              style={{ top: `${pctY(t)}%` }}>{fmtPrecio(t, moneda).replace(/^US\$ /, '')}</span>
+              style={{ top: `${pctY(t)}%` }}>{rotuloDePrecio(t)}</span>
           ))}
           {promVisible && !promCerca && pctY(promedio) >= 0 && pctY(promedio) <= 100 && (
             <span className="absolute left-0 -translate-y-1/2 rounded border border-dashed border-ink-3 bg-bg-1 px-1 text-[10.5px] text-ink-1 tabular whitespace-nowrap"
@@ -2059,8 +2091,8 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             </span>
           )}
           {ultimo && pctY(ultimo.c) >= 0 && pctY(ultimo.c) <= 100 && (
-            <span className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular whitespace-nowrap"
-              style={{ top: `${pctY(ultimo.c)}%`, background: COLOR.precio, color: v('bg-0') }}>
+            <span data-ultimo="" className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular whitespace-nowrap"
+              style={{ top: `${pctY(ultimo.c)}%`, background: colorDelDia, color: v('bg-0') }}>
               {fmtPrecio(ultimo.c, moneda).replace(/^US\$ /, '')}
             </span>
           )}
@@ -2094,20 +2126,20 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
           un botón: con el mouse encima, con el foco o con un toque, el globo
           dice qué fue y cuánto se movió el precio. */}
       {grupos.length > 0 && (
-        <div className={`relative mr-[72px] mt-1 ${dosRenglones ? 'h-10' : 'h-5'}`} role="group" aria-label="Balances y dividendos">
+        <div className="relative mr-[72px] mt-1 h-4" role="group" aria-label="Balances y dividendos">
           {grupos.map(g => {
             const t = textoGrupo(g.items)
             return (
               <button key={g.clave} type="button" aria-label={`${t.titulo}. ${t.lineas.join(' ')}`}
                 aria-expanded={g.clave === eventoSel}
-                className={`absolute -translate-x-1/2 inline-flex items-center p-0.5 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-rendi-accent ${dosRenglones && g.tipo === 'dividendo' ? 'top-5' : 'top-0'}`}
+                className="absolute top-0 -translate-x-1/2 inline-flex items-center rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-rendi-accent"
                 style={{ left: `${g.x}%` }}
                 onPointerEnter={ev => { if (ev.pointerType === 'mouse') { conMouse.current = true; setEventoSel(g.clave) } }}
                 onPointerLeave={ev => { if (ev.pointerType === 'mouse') { conMouse.current = false; setEventoSel(null) } }}
                 onFocus={() => setEventoSel(g.clave)} onBlur={() => setEventoSel(null)}
                 onClick={() => setEventoSel(s => (s === g.clave && !conMouse.current ? null : g.clave))}>
-                <Letra tipo={g.tipo} grande />
-                {g.items.length > 1 && <span className="ml-0.5 text-[10px] font-semibold text-ink-1 tabular">{g.items.length}</span>}
+                <Letra tipo={g.tipo} />
+                {g.items.length > 1 && <span className="ml-0.5 text-[9.5px] font-semibold text-ink-2 tabular">{g.items.length}</span>}
               </button>
             )
           })}

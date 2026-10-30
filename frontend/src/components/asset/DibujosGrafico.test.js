@@ -9,7 +9,8 @@
 //   · quedan en su día con el zoom;
 //   · tocar una línea la elige y se borra (botón o tecla); borrar todas pregunta antes.
 // Las cuentas (dónde se guardan, el día de cada punto) están en utils/dibujos.test.js.
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from 'vitest'
+import { CAPAS_TODAS } from './BarraGrafico'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, enActo, medidas, clic, buscarBoton } from '../../testing/navegadorMinimo'
 import { MemoryRouter } from 'react-router-dom'
@@ -72,6 +73,10 @@ beforeAll(async () => {
 afterAll(() => { medidas(null); vi.unstubAllGlobals() })
 
 let montado, props
+// De fábrica el gráfico viene limpio (precio, promedio de 200 y volumen). Estas
+// pruebas miran las demás capas: arrancan con todas prendidas, como quien las
+// prende desde «Indicadores» (lo que se prende queda guardado así).
+beforeEach(() => { try { localStorage.setItem('rendi_grafico_capas', JSON.stringify(CAPAS_TODAS)) } catch { /* sin almacenamiento */ } })
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null

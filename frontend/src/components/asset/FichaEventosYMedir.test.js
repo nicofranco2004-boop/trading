@@ -7,7 +7,8 @@
 //   · «Cuánto se mueve este papel» con lo que manda el servidor y tu tenencia.
 // Lo que manda el servidor tiene la forma de backend/movimiento.py (sus
 // cuentas se prueban allá, contra una cuenta independiente).
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from 'vitest'
+import { CAPAS_TODAS } from './BarraGrafico'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, enActo, medidas, clic, buscarBoton } from '../../testing/navegadorMinimo'
 import { margenDerecho } from '../../utils/tecnico'
@@ -33,7 +34,8 @@ const EVENTOS = {
   empresa: 'ZZEV',
   eventos: [
     { tipo: 'balance', fecha: puntos[600].d, momento: 'despues_del_cierre',
-      reaccion: { desde: puntos[600].d, hasta: puntos[601].d, pct: -4.21, cuando: 'al_otro_dia' } },
+      reaccion: { desde: puntos[600].d, hasta: puntos[601].d, pct: -4.21, cuando: 'al_otro_dia' },
+      eps_esperado: 1.5, eps_declarado: 1.65, sorpresa_pct: 10, moneda: 'usd' },
     { tipo: 'dividendo', fecha: puntos[610].d, monto: 0.26, moneda: 'usd',
       reaccion: { desde: puntos[609].d, hasta: puntos[610].d, pct: -0.4, cuando: 'ese_dia' } },
   ],
@@ -52,6 +54,10 @@ beforeAll(async () => {
 afterAll(() => { medidas(null); vi.unstubAllGlobals() })
 
 let montado, props
+// De fábrica el gráfico viene limpio (precio, promedio de 200 y volumen). Estas
+// pruebas miran las demás capas: arrancan con todas prendidas, como quien las
+// prende desde «Indicadores» (lo que se prende queda guardado así).
+beforeEach(() => { try { localStorage.setItem('rendi_grafico_capas', JSON.stringify(CAPAS_TODAS)) } catch { /* sin almacenamiento */ } })
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
@@ -227,26 +233,39 @@ describe('balances y dividendos en el gráfico', () => {
   const marcas = () => todos(montado.contenedor, n => n.nodeName === 'BUTTON'
     && /^(Balance|Dividendo)/.test(n.getAttribute?.('aria-label') || ''))
 
-  it('una «B» y una «D» con su globo, y el botón de la leyenda los apaga', async () => {
-    await dibujar()
+  it('una «B» y una «D» con su globo: lo declarado contra lo esperado y qué parte del precio fue el dividendo', async () => {
+    // Acercado a los últimos 110 días (la primera compra), quedan separadas.
+    await dibujar({ lotes: [{ entry_date: puntos[590].d, quantity: 1 }] })
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Desde que lo tenés')); await redibujar()
     const ms = marcas()
     expect(ms.map(n => texto(n))).toEqual(['B', 'D'])
     // En el mismo lugar que la vela de ese día (el ancho se reparte en lugares,
     // con el aire de la derecha): no corridas.
-    const lugarDe = (i) => `${(i / (LUGARES - 1)) * 100}%`
+    const lug = 110 + margenDerecho(110)
+    const lugarDe = (i) => `${((i - 590) / (lug - 1)) * 100}%`
     expect(ms[0].style.left).toBe(lugarDe(600))
     expect(ms[1].style.left).toBe(lugarDe(610))
     expect(ms[0].getAttribute('aria-label')).toBe(
-      `Balance del ${fecha(puntos[600].d)}. Lo presentó con el mercado ya cerrado. Al otro día el precio: −4,2%`)
-    // Con un toque, el globo.
+      `Balance del ${fecha(puntos[600].d)}. Declaró una ganancia de US$ 1,65 por acción; se esperaba US$ 1,50: 10% más de lo esperado. `
+      + 'Lo presentó con el mercado ya cerrado. Al otro día el precio: −4,2%')
+    // Con un toque, el globo del dividendo: qué parte del precio de ese día fue.
     await clic(montado.contenedor, ms[1]); await redibujar()
     const t = texto(montado.contenedor)
+    const parte = ((0.26 / puntos[610].c) * 100).toLocaleString('es-AR', { maximumFractionDigits: 2 })
     expect(t).toContain(`Dividendo · día de corte ${fecha(puntos[610].d)}`)
-    expect(t).toContain('Pagó US$ 0,26 por acción.')
+    expect(t).toContain(`Pagó US$ 0,26 por acción: el ${parte}% de lo que valía la acción ese día.`)
     expect(t).toContain('Ese día el precio: −0,4%')
 
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Balances y dividendos')); await redibujar()
     expect(marcas()).toEqual([])
+  })
+
+  it('con toda la historia a la vista, un balance y un dividendo cercanos van en UNA marca, en una sola fila', async () => {
+    await dibujar()
+    const ms = todos(montado.contenedor, n => n.nodeName === 'BUTTON' && /balances y dividendos/.test(n.getAttribute?.('aria-label') || ''))
+    expect(ms.map(n => texto(n))).toEqual(['2'])
+    const fila = todos(montado.contenedor, n => n.getAttribute?.('aria-label') === 'Balances y dividendos' && n.getAttribute?.('role') === 'group')[0]
+    expect(fila.getAttribute('class')).toContain('h-4')                     // un renglón, no dos
   })
 
   it('los que no entran en lo que se ve no se dibujan', async () => {
@@ -258,7 +277,7 @@ describe('balances y dividendos en el gráfico', () => {
 })
 
 describe('marcas que se pisarían', () => {
-  it('en un gráfico angosto, los dividendos de todos los meses se juntan en una marca con cuántos son', async () => {
+  it('en un gráfico angosto, las marcas que se pisarían se juntan en una sola, con cuántas son (aunque sean de tipos distintos)', async () => {
     const antes = { ...EVENTOS }
     EVENTOS.eventos = [
       EVENTOS.eventos[0],
@@ -270,11 +289,14 @@ describe('marcas que se pisarían', () => {
     try {
       await dibujar()
       const ms = todos(montado.contenedor, n => n.nodeName === 'BUTTON'
-        && /^(Balance|\d+ dividendos)/.test(n.getAttribute?.('aria-label') || ''))
-      expect(ms.map(n => texto(n))).toEqual(['B', 'D3'])
-      await clic(montado.contenedor, ms[1]); await redibujar()
+        && /^(Balance|\d+ (dividendos|balances))/.test(n.getAttribute?.('aria-label') || ''))
+      // Una sola fila: el balance y los tres dividendos, a menos de una marca
+      // de distancia entre sí, van en UNA marca (mitad y mitad) con cuántos son.
+      expect(ms.map(n => texto(n))).toEqual(['4'])
+      await clic(montado.contenedor, ms[0]); await redibujar()
       const t = texto(montado.contenedor)
-      expect(t).toContain('3 dividendos')
+      expect(t).toContain('4 balances y dividendos')
+      expect(t).toContain(`${fecha(puntos[600].d)}: balance · al otro día −4,2% · 10% más de lo esperado`)
       expect(t).toContain(`${fecha(puntos[650].d)}: pagó $ 8,3 · ese día +1,0%`)
     } finally {
       delete globalThis.ResizeObserver

@@ -8,7 +8,8 @@
 //   · con el almacenamiento bloqueado o un valor roto, todo prendido y sin romperse.
 // Los botones sin datos (sin volumen, sin conteo, sin compras) están en
 // LecturaTecnica.test.js, CapaElliott.test.js y CapaFibonacci.test.js.
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from 'vitest'
+import { CAPAS_DE_FABRICA, CAPAS_TODAS } from './BarraGrafico'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, clic, medidas, enActo } from '../../testing/navegadorMinimo'
 
@@ -58,6 +59,14 @@ beforeAll(async () => {
   ;({ default: LecturaTecnica } = await import('./LecturaTecnica'))
 })
 afterAll(() => { vi.unstubAllGlobals() })
+
+// De fábrica el gráfico viene limpio (Nico, 29/10). Para probar cada capa,
+// las pruebas arrancan con todas prendidas (lo guardado, como quien las prendió);
+// las que prueban lo de fábrica lo borran primero (`deFabrica()`).
+beforeEach(() => { localStorage.setItem('rendi_grafico_capas', JSON.stringify(CAPAS_TODAS)) })
+const deFabrica = () => localStorage.removeItem('rendi_grafico_capas')
+// Lo que viene de fábrica, para cada capa de la prueba: 'true' o 'false'.
+const fabrica = (id) => String(!!CAPAS_DE_FABRICA[id])
 
 let montado
 afterEach(async () => {
@@ -111,7 +120,7 @@ async function prendido(id) {
 
 // Cómo se reconoce cada capa en el gráfico dibujado.
 const SE_VE = {
-  vol: () => nodos(n => n.nodeName === 'RECT' && attr(n, 'fill-opacity') === '0.28').length > 0,
+  vol: () => nodos(n => n.nodeName === 'RECT' && attr(n, 'fill-opacity') === '0.2').length > 0,
   s200: () => nodos(n => n.nodeName === 'PATH' && attr(n, 'stroke') === 'rgb(var(--rendi-accent))' && attr(n, 'stroke-width') === '2.5').length > 0,
   s50: () => nodos(n => n.nodeName === 'PATH' && attr(n, 'stroke') === 'rgb(var(--cat-orange))' && attr(n, 'stroke-width') === '1.6').length > 0,
   fib: () => texto(montado.contenedor).includes('Pico · US$ 172,00'),
@@ -125,11 +134,13 @@ const SE_VE = {
 const CAPAS = Object.keys(SE_VE)
 
 describe('la barra de herramientas del gráfico', () => {
-  it('todo prendido de entrada, Fibonacci y Elliott incluidos', async () => {
+  it('de entrada, la vista limpia: precio, promedio de 200 y volumen; lo demás a un toque (Nico, 29/10)', async () => {
+    deFabrica()
     await dibujar()
+    expect(CAPAS.filter(id => CAPAS_DE_FABRICA[id])).toEqual(['vol', 's200'])
     for (const id of CAPAS) {
-      expect(await prendido(id), id).toBe('true')
-      expect(SE_VE[id](), id).toBe(true)
+      expect(await prendido(id), id).toBe(fabrica(id))
+      expect(SE_VE[id](), id).toBe(!!CAPAS_DE_FABRICA[id])
     }
     expect(await prendido('linea')).toBe('true')
     expect(await prendido('velas')).toBe('false')
@@ -183,7 +194,7 @@ describe('la barra de herramientas del gráfico', () => {
     expect(SE_VE.fib()).toBe(true)
   })
 
-  it('«Volver a lo de fábrica» prende todo, vuelve a la línea y olvida lo guardado', async () => {
+  it('«Volver a lo de fábrica» vuelve a la vista limpia, a la línea y olvida lo guardado', async () => {
     await dibujar()
     for (const id of ['vol', 'fib', 'ell', 'rsi', 'prom']) await tocar(id)
     await tocar('velas')
@@ -191,8 +202,8 @@ describe('la barra de herramientas del gráfico', () => {
     expect(attr(boton('fabrica'), 'disabled')).toBeNull()
     await tocar('fabrica')
     for (const id of CAPAS) {
-      expect(await prendido(id), id).toBe('true')
-      expect(SE_VE[id](), id).toBe(true)
+      expect(await prendido(id), id).toBe(fabrica(id))
+      expect(SE_VE[id](), id).toBe(!!CAPAS_DE_FABRICA[id])
     }
     expect(await prendido('linea')).toBe('true')
     expect(await prendido('medir')).toBe('false')
@@ -201,7 +212,7 @@ describe('la barra de herramientas del gráfico', () => {
     expect(attr(boton('fabrica'), 'disabled')).not.toBeNull()   // ya está todo como viene
     await montado.desmontar()
     await dibujar()
-    for (const id of CAPAS) expect(await prendido(id), id).toBe('true')
+    for (const id of CAPAS) expect(await prendido(id), id).toBe(fabrica(id))
   })
 
   it('medir es una herramienta: se prende, se usa y se apaga; no hay botón de agrandar (siempre ampliado)', async () => {
@@ -213,30 +224,34 @@ describe('la barra de herramientas del gráfico', () => {
     expect(texto(montado.contenedor)).not.toContain('Tocá cualquier punto del gráfico')
     expect(boton('grande')).toBeNull()
     // Medir no se guarda: la próxima vez el gráfico arranca normal.
-    expect(localStorage.getItem('rendi_grafico_capas')).toBeNull()
+    expect(JSON.parse(localStorage.getItem('rendi_grafico_capas'))).toEqual(CAPAS_TODAS)
   })
 
-  it('con el almacenamiento bloqueado (modo privado): todo prendido y los botones andan igual', async () => {
+  it('con el almacenamiento bloqueado (modo privado): lo de fábrica y los botones andan igual', async () => {
     const roto = () => { throw new Error('SecurityError') }
     vi.stubGlobal('localStorage', { getItem: roto, setItem: roto, removeItem: roto, clear: () => {} })
     await dibujar()
-    for (const id of CAPAS) expect(await prendido(id), id).toBe('true')
+    for (const id of CAPAS) expect(await prendido(id), id).toBe(fabrica(id))
     await tocar('vol')
     expect(SE_VE.vol()).toBe(false)
+    await tocar('rsi')
+    expect(SE_VE.rsi()).toBe(true)
     await tocar('fabrica')
     expect(SE_VE.vol()).toBe(true)
+    expect(SE_VE.rsi()).toBe(false)
   })
 
-  it('un valor guardado roto o de otra versión no apaga nada de más', async () => {
+  it('un valor guardado roto o de otra versión: lo de fábrica, y cuenta sólo lo que se entiende', async () => {
     localStorage.setItem('rendi_grafico_capas', '{esto no es json')
     await dibujar()
-    for (const id of CAPAS) expect(await prendido(id), id).toBe('true')
+    for (const id of CAPAS) expect(await prendido(id), id).toBe(fabrica(id))
     await montado.desmontar()
     // Sólo cuenta un sí/no de una capa conocida: lo demás, de fábrica.
-    localStorage.setItem('rendi_grafico_capas', JSON.stringify({ vol: false, ell: 'false', capaQueYaNoExiste: false }))
+    localStorage.setItem('rendi_grafico_capas', JSON.stringify({ vol: false, rsi: true, ell: 'true', capaQueYaNoExiste: true }))
     await dibujar()
     expect(await prendido('vol')).toBe('false')
-    for (const id of CAPAS.filter(k => k !== 'vol')) expect(await prendido(id), id).toBe('true')
+    expect(await prendido('rsi')).toBe('true')
+    for (const id of CAPAS.filter(k => k !== 'vol' && k !== 'rsi')) expect(await prendido(id), id).toBe(fabrica(id))
   })
 
   it('rótulos de capas distintas que se pisan: se esconde el menos importante, no la capa', async () => {

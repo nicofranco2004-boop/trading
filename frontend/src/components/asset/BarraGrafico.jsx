@@ -11,9 +11,10 @@
 //     uno con su ojito para mostrarlo u ocultarlo.
 // Línea o velas van arriba a la derecha, con los otros selectores de la ficha.
 //
-// Todo arranca PRENDIDO (pedido de Nico: «que estén todas puestas de manera
-// predeterminada y que ahí cada uno decida si la deja o no»). Lo que cada uno
-// apaga se guarda en el navegador (`rendi_grafico_capas`, como el tipo de
+// De fábrica, una VISTA LIMPIA (Nico, 29/10, en lugar del «todo prendido» del
+// 24/10): el precio, el promedio de 200 días y el volumen; el resto a un toque
+// desde «Indicadores» y los menús de Fibonacci y Elliott. Lo que cada uno prende
+// o apaga se guarda en el navegador (`rendi_grafico_capas`, como el tipo de
 // gráfico en `rendi_grafico_tipo`); «Volver a lo de fábrica» lo olvida.
 //
 // Una sola barra para compu y celular (R6): en compu va parada, pegada a la
@@ -31,18 +32,21 @@ import { ChevronDown, Eye, EyeOff, RotateCcw } from 'lucide-react'
 
 const CLAVE = 'rendi_grafico_capas'
 
-/** Cómo viene el gráfico: todo prendido. */
+/** Cómo viene el gráfico: la vista limpia (precio, promedio de 200 y volumen). */
 export const CAPAS_DE_FABRICA = Object.freeze({
-  vol: true, s200: true, s50: true, bb: true, fib: true, ell: true, rsi: true, fuerza: true,
-  eventos: true, marcas: true, prom: true,
-  globo: true,   // el cartel con los datos del día al pasar el mouse
+  vol: true, s200: true, s50: false, bb: false, fib: false, ell: false, rsi: false, fuerza: false,
+  eventos: false, marcas: false, prom: false,
+  globo: true,   // el cartel con los datos del día al pasar el mouse: no ensucia, aparece al pasar
 })
+
+/** Todo prendido: lo que las pruebas del gráfico dejan guardado para ver todas las capas. */
+export const CAPAS_TODAS = Object.freeze(Object.fromEntries(Object.keys(CAPAS_DE_FABRICA).map(k => [k, true])))
 
 /**
  * Lo que la persona dejó prendido y apagado la última vez. Lo que no está
  * guardado (nunca lo tocó, o es una capa nueva) viene de fábrica. El navegador
- * puede tener el almacenamiento bloqueado (modo privado) o un valor roto: todo
- * prendido.
+ * puede tener el almacenamiento bloqueado (modo privado) o un valor roto: de
+ * fábrica.
  */
 export function capasGuardadas() {
   const capas = { ...CAPAS_DE_FABRICA }

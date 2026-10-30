@@ -172,6 +172,7 @@ class FichaMovimientoTest(unittest.TestCase):
         self.yahoo = YahooFalso(self.hoy)
         self.balances = {}     # ticker → [pd.Timestamp con hora, en Nueva York]
         self.dividendos = {}   # ticker → [(fecha, monto)]
+        self.eps = {}          # ticker → [(esperado, declarado, sorpresa %)], uno por balance
         prueba = self
 
         class TickerFalso:
@@ -182,7 +183,13 @@ class FichaMovimientoTest(unittest.TestCase):
                 idx = prueba.balances.get(self.t)
                 if idx is None:
                     return None
-                return pd.DataFrame({"EPS Estimate": [1.0] * len(idx)}, index=pd.DatetimeIndex(idx))
+                # Con `prueba.eps[ticker]` = [(esperado, declarado, sorpresa)] por balance
+                # (NaN = Yahoo no lo dio, como el próximo, que todavía no se declaró).
+                eps = prueba.eps.get(self.t)
+                if eps is None:
+                    return pd.DataFrame({"EPS Estimate": [1.0] * len(idx)}, index=pd.DatetimeIndex(idx))
+                return pd.DataFrame({"EPS Estimate": [e[0] for e in eps], "Reported EPS": [e[1] for e in eps],
+                                     "Surprise(%)": [e[2] for e in eps]}, index=pd.DatetimeIndex(idx))
 
         def _div(pedido):
             t, _ = pedido
@@ -311,6 +318,28 @@ class FichaMovimientoTest(unittest.TestCase):
         # Novedades («lo que se viene») no ve los balances pasados.
         prox = self._get("/api/events/portfolio?days=90")["events"]
         self.assertFalse([e for e in prox if e["event_type"] == "earnings" and e["event_date"] < self.hoy.isoformat()])
+
+    def test_cada_balance_trae_lo_declarado_contra_lo_esperado(self):
+        # Nico, 29/10: «el detalle de lo declarado vs esperado». Sale de la MISMA
+        # respuesta de Yahoo que da la fecha del balance; si no lo dio, va vacío.
+        self._posicion("Schwab", "USD", "AAPL", "STOCK")
+        self.yahoo.precios["AAPL"] = lambda i, d: 100.0 + i
+        main._run_velas_diarias_job()
+        d1, d2 = self.dias[-100], self.dias[-50]
+        ny = "America/New_York"
+        nan = float("nan")
+        self.balances["AAPL"] = [pd.Timestamp(f"{d1.isoformat()} 16:30", tz=ny),
+                                 pd.Timestamp(f"{d2.isoformat()} 16:30", tz=ny)]
+        self.eps["AAPL"] = [(1.5, 1.65, 10.0), (nan, nan, nan)]
+        evs = {e["fecha"]: e for e in self._get("/api/tecnico/AAPL/eventos?moneda=usd")["eventos"] if e["tipo"] == "balance"}
+        self.assertEqual({k: evs[d1.isoformat()][k] for k in ("eps_esperado", "eps_declarado", "sorpresa_pct", "moneda")},
+                         {"eps_esperado": 1.5, "eps_declarado": 1.65, "sorpresa_pct": 10.0, "moneda": "usd"})
+        self.assertIsNone(evs[d2.isoformat()]["eps_declarado"])
+        # Una segunda pasada sin los números (Yahoo no los dio) no borra los guardados.
+        self.eps["AAPL"] = [(nan, nan, nan), (nan, nan, nan)]
+        main._earnings_pasados_at.clear()
+        evs = {e["fecha"]: e for e in self._get("/api/tecnico/AAPL/eventos?moneda=usd")["eventos"] if e["tipo"] == "balance"}
+        self.assertEqual(evs[d1.isoformat()]["eps_declarado"], 1.65)
 
     def test_cripto_no_tiene_eventos(self):
         self._posicion("Binance", "USD", "BTC", "CRYPTO")

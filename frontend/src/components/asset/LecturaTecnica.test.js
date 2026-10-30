@@ -5,7 +5,8 @@
 //     de la ficha;
 //   · en pesos, el aviso de que el dólar cambia la lectura;
 //   · sin velas (o si el pedido falla): el gráfico de 30 días de siempre.
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from 'vitest'
+import { CAPAS_TODAS } from './BarraGrafico'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscar, buscarBoton, clic, enActo } from '../../testing/navegadorMinimo'
 
@@ -53,6 +54,10 @@ beforeAll(async () => {
 afterAll(() => { vi.unstubAllGlobals() })
 
 let montado
+// De fábrica el gráfico viene limpio (precio, promedio de 200 y volumen). Estas
+// pruebas miran las demás capas: arrancan con todas prendidas, como quien las
+// prende desde «Indicadores» (lo que se prende queda guardado así).
+beforeEach(() => { try { localStorage.setItem('rendi_grafico_capas', JSON.stringify(CAPAS_TODAS)) } catch { /* sin almacenamiento */ } })
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
@@ -293,7 +298,7 @@ describe('LecturaTecnica', () => {
       const pila = [montado.contenedor]
       while (pila.length) {
         const x = pila.shift()
-        if (x.nodeName === 'RECT' && x.getAttribute?.('fill-opacity') === '0.28') n++
+        if (x.nodeName === 'RECT' && x.getAttribute?.('fill-opacity') === '0.2') n++
         pila.push(...(x.childNodes || []))
       }
       return n
@@ -316,7 +321,7 @@ describe('LecturaTecnica', () => {
       const pila = [montado.contenedor]
       while (pila.length) {
         const x = pila.shift()
-        if (x.nodeName === 'PATH' && x.getAttribute?.('fill-opacity') === '0.08') n++
+        if (x.nodeName === 'PATH' && x.getAttribute?.('fill-opacity') === '0.045') n++
         pila.push(...(x.childNodes || []))
       }
       return n
