@@ -138,11 +138,31 @@ function AlertasPropias({ plan }) {
     return () => { cancelado = true }
   }, [simbolos, hayCedearEnDolares])
 
+  // Tus líneas con aviso (Nico, 29/10): dónde está hoy cada una y su gráfico
+  // chiquito, para reconocerla en la lista (GET /api/alerts/lineas). Aparte de
+  // las alertas: lee velas, y sólo hace falta si hay alguna línea.
+  const idsDeLineas = useMemo(
+    () => items.filter(a => a.kind === 'tecnica' && a.senal === 'linea').map(a => `${a.id}:${a.active ? 1 : 0}`).join(','),
+    [items])
+  const [lineas, setLineas] = useState({})
+  useEffect(() => {
+    if (!idsDeLineas) { setLineas({}); return }
+    let vivo = true
+    api.get('/alerts/lineas').then(r => { if (vivo) setLineas(r?.lineas || {}) }).catch(() => {})
+    return () => { vivo = false }
+  }, [idsDeLineas])
+
   const cuantas = items.length + (resumen.prendido ? 1 : 0)
 
   async function pausar(a) {
     try { await update(a.id, { active: !a.active }) }
     catch { toast.push('No se pudo guardar', { type: 'error' }) }
+  }
+
+  // El aviso de una línea que borraste: ya no tiene qué mirar, se quita.
+  async function quitar(a) {
+    try { await remove(a.id) }
+    catch { toast.push('No se pudo quitar', { type: 'error' }) }
   }
 
   function creada(res, payload, pedidoPush) {
@@ -193,8 +213,8 @@ function AlertasPropias({ plan }) {
         <AvisoNotificaciones motivo={push.motivo} plataforma={push.plataforma} origen="alertas" />
       )}
       {tab === 'mis' && (
-        <MisAlertas items={items} events={events} precios={precios} resumen={resumen} hoy={hoy}
-          cargando={loading} onEditar={a => setFormulario({ alerta: a })} onPausar={pausar}
+        <MisAlertas items={items} events={events} precios={precios} resumen={resumen} hoy={hoy} lineas={lineas}
+          cargando={loading} onEditar={a => setFormulario({ alerta: a })} onPausar={pausar} onQuitar={quitar}
           onIrACrear={() => irA('crear')} />
       )}
       {tab == null && <p className="py-10 text-center text-sm text-ink-2">Cargando…</p>}

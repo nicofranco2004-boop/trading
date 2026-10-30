@@ -2,7 +2,7 @@
 // y la línea de estado. Son las tres caras de la misma alerta y tienen que
 // decir lo mismo.
 import { describe, it, expect } from 'vitest'
-import { frase, confirmacion, estado, fmtPrecio, fmtPct, diaArgentina, fechaCorta, simbolo, activoTecnico } from './alertasTexto'
+import { frase, confirmacion, estado, fmtPrecio, fmtPct, diaArgentina, fechaCorta, simbolo, activoTecnico, dondeEstaLaLinea, alertaDeLinea } from './alertasTexto'
 import { setBrokersRegistry } from '../../utils/valuation'
 
 const precio = { id: 1, kind: 'price_target', scope: 'ticker', symbol: 'GGAL.BA', currency: 'ARS', direction: 'above', threshold: 8000, active: true, repeat: 'once' }
@@ -113,9 +113,13 @@ describe('alertas técnicas', () => {
     // GGAL en IOL: la acción de BYMA (÷ MEP), como la ficha.
     expect(activoTecnico('GGAL', enIol)).toEqual({ symbol: 'GGAL', accion_local: true })
     expect(activoTecnico('GGAL.BA', enIol)).toEqual({ symbol: 'GGAL', accion_local: true })
-    // El ADR en Schwab, o sin lotes: la ficha muestra el ADR, la alerta también.
+    // El ADR en Schwab: la ficha muestra el ADR, la alerta también.
     expect(activoTecnico('GGAL', enSchwab)).toEqual({ symbol: 'GGAL', accion_local: false })
-    expect(activoTecnico('GGAL.BA')).toEqual({ symbol: 'GGAL', accion_local: false })
+    // Sin lotes, la ficha decide por el ticker (AssetDetail → miradaSinTenencia):
+    // GGAL que no tenés se mira en BYMA. Esta prueba esperaba el ADR, de cuando
+    // la ficha lo mostraba; la ficha cambió y la alerta no (auditoría 29/10).
+    expect(activoTecnico('GGAL.BA')).toEqual({ symbol: 'GGAL', accion_local: true })
+    expect(activoTecnico('NVDA')).toEqual({ symbol: 'NVDA', accion_local: false })
     // Un CEDEAR va pelado (se mira la acción de afuera) aunque esté en IOL.
     expect(activoTecnico('AAPL.BA', [{ asset: 'AAPL', broker: 'IOL', asset_type: 'CEDEAR', quantity: 1 }]))
       .toEqual({ symbol: 'AAPL', accion_local: false })
@@ -134,5 +138,45 @@ describe('el aviso de tu línea del gráfico (Nico, 28/10)', () => {
   it('la confirmación del formulario, con el borrador (aún sin guardar)', () => {
     expect(confirmacion({ kind: 'tecnica', senal: 'linea', symbol: 'AAPL', currency: 'USD', tipoLinea: 'tendencia' }))
       .toBe('Te avisamos cuando AAPL toque tu línea de tendencia. Lo miramos cada día con el precio más alto y el más bajo del día.')
+  })
+})
+
+describe('el aviso de tu canal (Nico, 29/10)', () => {
+  const canal = (extra = {}, modo) => ({ id: 5, kind: 'tecnica', senal: 'linea', symbol: 'AAPL', currency: 'USD', direction: 'either', active: true,
+    dibujo: JSON.stringify({ asset: 'AAPL', moneda: 'usd', id: 'c1', tipo: 'canal', ...(modo ? { modo } : {}) }), ...extra })
+  it('la fila dice por qué borde y cuándo cuenta', () => {
+    expect(frase(canal())).toEqual({ quien: 'AAPL', que: 'sale de tu canal, por cualquier borde' })
+    expect(frase(canal({ direction: 'above' })).que).toBe('sale de tu canal, por arriba')
+    expect(frase(canal({ direction: 'below' }, 'cierre')).que).toBe('cierra afuera de tu canal, por abajo')
+  })
+  it('la confirmación, con el borrador del formulario', () => {
+    const b = { kind: 'tecnica', senal: 'linea', symbol: 'AAPL', currency: 'USD', tipoLinea: 'canal', direction: 'above', modo: 'toque' }
+    expect(confirmacion(b)).toMatch(/^Te avisamos cuando AAPL toque o pase el borde de arriba de tu canal\. /)
+    expect(confirmacion(b)).toContain('si lo tocó, te llega a la mañana siguiente.')
+    expect(confirmacion({ ...b, modo: 'cierre', direction: 'either' })).toMatch(/^Te avisamos cuando AAPL cierre afuera de tu canal\. .*precio de cierre/)
+  })
+  it('el estado: adentro y a cuánto del borde; ya afuera; o que borraste la línea', () => {
+    const r = { tipo: 'canal', ultimo: 187.6, hoy: [182.23, 193.75] }
+    expect(estado(canal(), null, [], '', r).texto).toBe('Está en US$ 187,60 · adentro, a 2,9 % del borde de abajo')
+    expect(estado(canal({ direction: 'above' }), null, [], '', r).texto).toBe('Está en US$ 187,60 · adentro, a 3,3 % del borde de arriba')
+    // Ya afuera: sólo dónde está (el aviso de la mañana puede estar por llegar).
+    expect(estado(canal(), null, [], '', { ...r, ultimo: 195 }).texto).toBe('Está en US$ 195,00 · afuera del canal, por arriba')
+    // Un borde de abajo en cero o menos no existe: se mide contra el de arriba.
+    // (Más cerca del de abajo, en -1, que del de arriba: igual se mide contra el de arriba.)
+    expect(estado(canal(), null, [], '', { tipo: 'canal', ultimo: 4, hoy: [-1, 20] }).texto).toBe('Está en US$ 4,00 · adentro, a 400 % del borde de arriba')
+    const borrada = estado(canal({ active: false }), null, [], '', { borrada: true })
+    expect(borrada).toMatchObject({ texto: 'Se apagó: borraste la línea del gráfico', borrada: true })
+    expect(dondeEstaLaLinea(canal(), undefined)).toBeNull()
+  })
+  it('una línea: cuánto le falta; sin datos, con qué se mira (el más alto y el más bajo, no el cierre)', () => {
+    const h = { ...canal(), dibujo: JSON.stringify({ asset: 'MELI', moneda: 'usd', id: 'h1', tipo: 'horizontal' }) }
+    expect(estado(h, null, [], '', { tipo: 'horizontal', ultimo: 2140, hoy: [2050] }).texto).toBe('Está en US$ 2.140,00 · le falta 4,2 %')
+    expect(estado(h, null, [], '').texto).toBe('Se mira cada día con el precio más alto y el más bajo')
+    expect(estado(canal({}, 'cierre'), null, [], '').texto).toBe('Se mira cada día con el precio de cierre')
+  })
+  it('«ya te avisamos» reconoce el canal por su id, activo y moneda', () => {
+    expect(alertaDeLinea([canal()], { asset: 'aapl', moneda: 'usd', dibujo: 'c1' })).not.toBeNull()
+    expect(alertaDeLinea([canal()], { asset: 'AAPL', moneda: 'ars', dibujo: 'c1' })).toBeNull()
+    expect(alertaDeLinea([canal({ active: false })], { asset: 'AAPL', moneda: 'usd', dibujo: 'c1' })).toBeNull()
   })
 })

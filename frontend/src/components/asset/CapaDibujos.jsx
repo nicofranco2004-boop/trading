@@ -54,6 +54,16 @@ export function trazosDeDibujos(dibujos, pctX, pctY, extendidos = []) {
       for (const [mas, medio] of [[0, false], [d.ancho, false], [d.ancho / 2, true]]) {
         out.push({ id: d.id, tipo: d.tipo, x1: pctX(d.a.k), y1: pctY(d.a.precio + mas), x2: pctX(d.b.k), y2: pctY(d.b.precio + mas), correccion: medio, medio })
       }
+      // Con un aviso, sus dos bordes siguen hacia la derecha, punteados: así
+      // los mira el aviso (backend/tecnico.bordes_de_canal), como la tendencia.
+      const [p, q] = d.a.k <= d.b.k ? [d.a, d.b] : [d.b, d.a]
+      if (extendidos.includes(d.id) && q.k > p.k && pctX(q.k) < 100) {
+        const kFin = p.k + ((100 - pctX(p.k)) / (pctX(q.k) - pctX(p.k))) * (q.k - p.k)
+        for (const mas of [0, d.ancho]) {
+          const fin = p.precio + mas + ((q.precio - p.precio) * (kFin - p.k)) / (q.k - p.k)
+          out.push({ id: d.id, tipo: d.tipo, x1: pctX(q.k), y1: pctY(q.precio + mas), x2: 100, y2: pctY(fin), correccion: true })
+        }
+      }
     } else if (d.tipo === 'pincel') {
       for (let k = 1; k < d.puntos.length; k++) {
         const a = d.puntos[k - 1], b = d.puntos[k]
@@ -86,6 +96,19 @@ export function trazosDeDibujos(dibujos, pctX, pctY, extendidos = []) {
     for (let k = desde; k < out.length; k++) out[k].color = color
   }
   return out
+}
+
+/**
+ * Dónde está tu línea en el lugar `k` (la última vela, la que mira el aviso):
+ * un precio para una horizontal o una de tendencia, dos para un canal (sus
+ * bordes). La recta sigue en la misma dirección después de su segundo punto,
+ * como la mira el aviso. [] si no se puede saber.
+ */
+export function preciosAlBorde(d, k) {
+  if (d.tipo === 'horizontal') return [d.precio]
+  if ((d.tipo !== 'tendencia' && d.tipo !== 'canal') || !d.a || !d.b || d.a.k === d.b.k) return []
+  const base = d.a.precio + ((d.b.precio - d.a.precio) * (k - d.a.k)) / (d.b.k - d.a.k)
+  return d.tipo === 'canal' ? [base, base + d.ancho] : [base]
 }
 
 /**

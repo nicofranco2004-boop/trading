@@ -168,12 +168,26 @@ export function puntoDelDia(puntos, i, precio, f = 0) {
 /**
  * Y al revés: en qué día (índice de los puntos diarios) cae un punto guardado.
  * Si su fecha no está (un feriado, o datos que cambiaron) va al último día de
- * antes; si es anterior a todo el gráfico, -1 (queda afuera, a la izquierda).
+ * antes; si es anterior a todo el gráfico, un índice negativo: los días hábiles
+ * entre el punto y el primer día (queda afuera, a la izquierda, a su
+ * distancia). Antes iba siempre a -1 y la línea giraba a medida que se
+ * borraban los días viejos; el aviso la mira igual (backend
+ * tecnico._indice_del_punto) (auditoría 29/10).
  */
 export function diaDelPunto(puntos, p) {
   if (!puntos.length) return null
   const i = indiceDeFecha(puntos, p.d)
-  return i == null ? -1 : i + p.mas
+  if (i != null) return i + p.mas
+  return -diasHabilesEntre(p.d, puntos[0].d) + (p.mas || 0)
+}
+
+/** Los días de lunes a viernes desde `desde` (incluido) hasta `hasta` (sin incluir), 'AAAA-MM-DD'. */
+export function diasHabilesEntre(desde, hasta) {
+  const a = Date.parse(`${desde}T00:00:00Z`), b = Date.parse(`${hasta}T00:00:00Z`)
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return 1
+  let n = 0
+  for (let t = a; t < b; t += 86400000) { const dia = new Date(t).getUTCDay(); if (dia !== 0 && dia !== 6) n++ }
+  return Math.max(1, n)
 }
 
 /**

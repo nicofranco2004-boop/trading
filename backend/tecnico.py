@@ -843,19 +843,36 @@ def _en_maximo(velas: list, cierres: list, desde_i: int) -> dict:
 
 # ─── Tu línea (las alertas de un dibujo del gráfico) ─────────────────────────
 # «Avisame si el precio toca esta línea» (Nico, 28/10): una línea horizontal o
-# de tendencia que la persona dibujó en la ficha (tabla `dibujos_grafico`). No es
-# una señal de la ficha: no va en SENALES. La línea se lee de lo dibujado cada
-# vez (alerts_engine), así que si la mueven, el aviso la sigue.
+# de tendencia que la persona dibujó en la ficha (tabla `dibujos_grafico`), y
+# (29/10) un canal paralelo: avisa cuando el precio sale por uno de sus bordes.
+# No es una señal de la ficha: no va en SENALES. La línea se lee de lo dibujado
+# cada vez (alerts_engine), así que si la mueven, el aviso la sigue.
 SENAL_LINEA = "linea"
+TIPOS_CON_AVISO = ("horizontal", "tendencia", "canal")
 
 
 def _indice_del_punto(velas: list, p: dict):
     """En qué vela cae un punto dibujado ({d, mas, precio}): el último día con
     fecha ≤ `d` más `mas` días de mercado. La misma cuenta que `diaDelPunto` de
-    la ficha (frontend/src/utils/dibujos.js). Antes del primer día: None."""
+    la ficha (frontend/src/utils/dibujos.js).
+
+    Antes del primer día guardado (las velas viejas se van borrando: un canal
+    anclado en el borde izquierdo del gráfico queda afuera a los pocos días),
+    un índice negativo: los días hábiles que hay entre el punto y la primera
+    vela. Antes daba None y el aviso de esa línea dejaba de mirar sin decir nada
+    (auditoría 29/10). None sólo si la fecha no se puede leer."""
     fechas = [v["date"] for v in velas]
-    i = bisect_right(fechas, str(p.get("d") or "")) - 1
-    return None if i < 0 else i + int(p.get("mas") or 0)
+    d = str(p.get("d") or "")
+    i = bisect_right(fechas, d) - 1
+    mas = int(p.get("mas") or 0)
+    if i >= 0:
+        return i + mas
+    try:
+        desde, hasta = date.fromisoformat(d), date.fromisoformat(fechas[0])
+    except (ValueError, IndexError):
+        return None
+    habiles = sum(1 for k in range((hasta - desde).days) if (desde + timedelta(days=k)).weekday() < 5)
+    return -max(1, habiles) + mas
 
 
 def valor_de_linea(velas: list, linea: dict, i: int):
@@ -889,7 +906,9 @@ def toque_de_linea(velas: list, linea: dict, desde: str = None):
             continue
         v = velas[i]
         cierre = v["close"]
-        alto, bajo = v.get("high") or cierre, v.get("low") or cierre
+        # El cierre también es un precio del día: una vela con el máximo por
+        # debajo del cierre (dato parcial) no esconde que lo tocó.
+        alto, bajo = max(v.get("high") or cierre, cierre), min(v.get("low") or cierre, cierre)
         antes = velas[i - 1]["close"] if i > 0 else None
         nivel_antes = valor_de_linea(velas, linea, i - 1) if i > 0 else None
         salto = (antes is not None and nivel_antes is not None
@@ -899,6 +918,65 @@ def toque_de_linea(velas: list, linea: dict, desde: str = None):
             return {"fecha": v["date"], "sentido": "arriba" if venia_de_abajo else "abajo",
                     "cierre": cierre, "referencia": nivel, "rsi": None,
                     "minimo": bajo, "maximo": alto}
+    return None
+
+
+def bordes_de_canal(velas: list, canal: dict, i: int):
+    """Los dos bordes de tu canal en la vela `i`: (abajo, arriba). El canal es
+    su línea a → b (como una de tendencia, que sigue en la misma dirección
+    después de b) y la paralela `ancho` más arriba o más abajo, en precio: la
+    misma cuenta que la ficha (frontend utils/dibujos.js). None si no se puede."""
+    base = valor_de_linea(velas, {"tipo": "tendencia", "a": canal.get("a"), "b": canal.get("b")}, i)
+    ancho = canal.get("ancho")
+    if base is None or not isinstance(ancho, (int, float)) or not ancho:
+        return None
+    return (min(base, base + ancho), max(base, base + ancho))
+
+
+def salida_de_canal(velas: list, canal: dict, desde: str = None, borde: str = "either", modo: str = "toque"):
+    """La PRIMERA vela posterior a `desde` en que el precio salió de tu canal
+    (Nico, 29/10). `borde`: 'above' (sólo por arriba), 'below' o 'either'.
+    `modo`: 'toque' = su máximo llegó al borde de arriba o su mínimo al de
+    abajo (tocarlo o pasarlo en el día); 'cierre' = cerró afuera.
+
+    Cuenta sólo si el cierre ANTERIOR estaba adentro (o en el borde): si el
+    precio ya andaba afuera, no avisa cada día que sigue afuera; avisa la
+    próxima vez que salga. Sin vela anterior, cuenta.
+
+    {'fecha', 'sentido' ('arriba' = por el borde de arriba), 'cierre',
+     'referencia' (ese borde ese día), 'rsi', 'minimo', 'maximo', 'adentro'
+     (si cerró de nuevo adentro)} o None."""
+    if not velas:
+        return None
+    desde_i = 0
+    if desde:
+        desde_i = next((i for i, v in enumerate(velas) if v["date"] > desde), len(velas))
+    for i in range(desde_i, len(velas)):
+        bordes = bordes_de_canal(velas, canal, i)
+        if bordes is None:
+            continue
+        abajo, arriba = bordes
+        v = velas[i]
+        cierre = v["close"]
+        alto, bajo = max(v.get("high") or cierre, cierre), min(v.get("low") or cierre, cierre)
+        antes = velas[i - 1]["close"] if i > 0 else None
+        bordes_antes = bordes_de_canal(velas, canal, i - 1) if i > 0 else None
+        adentro_antes_arriba = antes is None or bordes_antes is None or antes <= bordes_antes[1]
+        adentro_antes_abajo = antes is None or bordes_antes is None or antes >= bordes_antes[0]
+        if modo == "cierre":
+            sube, baja = cierre > arriba, abajo > 0 and cierre < abajo
+        else:
+            sube, baja = alto >= arriba, abajo > 0 and bajo <= abajo
+        sube = sube and borde in ("above", "either") and adentro_antes_arriba
+        baja = baja and borde in ("below", "either") and adentro_antes_abajo
+        if not (sube or baja):
+            continue
+        if sube and baja:
+            # Un día tan grande que tocó los dos: el del lado donde cerró.
+            sube = cierre >= (abajo + arriba) / 2
+        return {"fecha": v["date"], "sentido": "arriba" if sube else "abajo", "cierre": cierre,
+                "referencia": arriba if sube else abajo, "rsi": None, "minimo": bajo, "maximo": alto,
+                "adentro": abajo <= cierre <= arriba}
     return None
 
 

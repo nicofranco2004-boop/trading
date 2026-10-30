@@ -626,7 +626,7 @@ describe('avisarte cuando el precio toca tu línea (Nico, 28/10)', () => {
     await clickEn(300, 101)
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Avisame si la toca')); await redibujar()
     const t = texto(montado.contenedor)
-    expect(t).toContain('Toque tu línea horizontal')
+    expect(t).toContain('ZZEV toque tu línea horizontal')         // la tarjeta de la línea elegida
     expect(t).toContain('Te avisamos cuando ZZEV toque tu línea horizontal.')
     expect(t).not.toContain('La fuerza (RSI) baje de 30')          // no es la lista de señales
     // «Crear aviso»: el navegador manda el «submit» del formulario.
@@ -665,6 +665,77 @@ describe('avisarte cuando el precio toca tu línea (Nico, 28/10)', () => {
     await clickEn(300, 140)
     expect(status()).toContain('Tu Fibonacci, elegido.')
     expect(buscarBoton(montado.contenedor, 'Avisame si la toca')).toBeFalsy()
+  })
+
+  // — tu canal (Nico, 29/10): «Avisame si sale del canal» —
+  // Dos toques para la línea de abajo (de 200,200 a 800,100: en x=500 pasa por
+  // y=150) y el tercero para la paralela (50 px más arriba).
+  const canal = async () => { await usar('canal'); await clickEn(200, 200); await clickEn(800, 100); await clickEn(500, 100) }
+  const enLaColumna = () => todos(montado.contenedor, n => n.getAttribute?.('data-aviso') != null)
+
+  it('el canal elegido ofrece «Avisame si sale del canal»: el formulario pregunta por qué borde y cuándo cuenta', async () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }))
+    window.matchMedia = globalThis.matchMedia
+    await dibujar()
+    await canal()
+    await clickEn(500, 151)
+    expect(status()).toContain('Tu canal, elegido.')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Avisame si sale del canal')); await redibujar()
+    let t = texto(montado.contenedor)
+    expect(t).toContain('ZZEV salga de tu canal')
+    expect(t).toContain('Por qué borde')
+    expect(t).toContain('Te avisamos cuando ZZEV toque o pase cualquiera de los dos bordes de tu canal.')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Por arriba')); await redibujar()
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Si cierra afuera')); await redibujar()
+    t = texto(montado.contenedor)
+    expect(t).toContain('Te avisamos cuando ZZEV cierre afuera de tu canal, por arriba.')
+    await evento('submit', todos(montado.contenedor, n => n.nodeName === 'FORM')[0]); await redibujar()
+    const [[, ruta, body]] = cuenta.pedidos
+    expect(ruta).toBe('/alerts')
+    expect(body).toMatchObject({ kind: 'tecnica', senal: 'linea', symbol: 'ZZEV', dibujo: guardados()[0].id,
+      direction: 'above', modo: 'cierre', repeat: 'once' })
+  })
+
+  it('un canal con aviso sigue hacia la derecha, con la campanita en sus dos bordes; moverlo lo dice', async () => {
+    await dibujar()
+    await canal()
+    expect(enLaColumna()).toHaveLength(0)
+    cuenta.alertas = [avisoDe(guardados()[0].id, 'canal')]
+    await montado.desmontar(); await dibujar()
+    const ls = linea()
+    expect(ls).toHaveLength(5)                                        // las tres del canal y sus dos bordes, siguiendo
+    expect(ls.slice(3).every(l => Number(l.getAttribute('x2')) === 100 && l.getAttribute('stroke-dasharray') === '5 4')).toBe(true)
+    expect(enLaColumna()).toHaveLength(2)                             // un precio con campanita por borde
+    // Lo arrastrás: el aviso lo sigue, y se dice.
+    await evento('mousedown', grafico(), { clientX: 500, clientY: 150 })
+    await evento('mousemove', grafico(), { clientX: 500, clientY: 160 })
+    await evento('mouseup', grafico(), { clientX: 500, clientY: 170 }); await redibujar()
+    expect(status()).toContain('Moviste tu canal. El aviso lo sigue')
+    expect(cuenta.pedidos).toEqual([])                                // el aviso no se toca: lee el canal guardado
+  })
+
+  it('borrar un canal con aviso lo apaga y lo dice; «Deshacer» trae el canal y prende el aviso', async () => {
+    await dibujar()
+    await canal()
+    const [c] = guardados()
+    cuenta.alertas = [avisoDe(c.id, 'canal')]
+    await montado.desmontar(); await dibujar()
+    await clickEn(500, 151)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Borrar este canal')); await redibujar()
+    expect(status()).toContain('Borraste tu canal y se apagó su aviso.')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Deshacer')); await redibujar()
+    expect(guardados()).toEqual([c])
+    expect(cuenta.pedidos).toEqual([['PATCH', '/alerts/7', { active: false }], ['PATCH', '/alerts/7', { active: true }]])
+    expect(status()).not.toContain('Borraste tu canal')
+  })
+
+  it('abierta desde el aviso («Ver en el gráfico»), la ficha llega con esa línea elegida', async () => {
+    cuenta.usd = [{ id: 'c9', tipo: 'canal', a: { d: puntos[300].d, mas: 0, precio: 110 }, b: { d: puntos[600].d, mas: 0, precio: 130 }, ancho: 15 }]
+    window.location.search = '?linea=c9&moneda=usd'
+    try {
+      await dibujar()
+      expect(status()).toContain('Tu canal, elegido.')
+    } finally { window.location.search = '' }
   })
 })
 

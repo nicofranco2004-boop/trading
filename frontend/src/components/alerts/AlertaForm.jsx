@@ -9,7 +9,9 @@
 //     200 días". Todos los planes. Se mira una vez por día con el cierre
 //     (alerts_engine.evaluar_tecnicas). Desde la ficha técnica llega ya armada
 //     (`prefill.fijo`: el activo y la marca de acción argentina los decidió la
-//     ficha), sin el selector de tipo.
+//     ficha), sin el selector de tipo. También «una línea que dibujaste»
+//     (Nico, 29/10): tu línea horizontal, de tendencia o tu canal, desde el
+//     cartel de la línea elegida o acá, eligiéndola de tus dibujos del activo.
 //
 // Es un formulario de CAMPOS con su nombre, uno debajo del otro y todos del
 // mismo alto. La versión anterior armaba una frase con casilleros adentro y se
@@ -39,7 +41,8 @@ import { api } from '../../utils/api'
 import { parseNum, numACampo } from '../../utils/format'
 import { confirmar } from '../../utils/confirmar'
 import AvisoNotificaciones from '../AvisoNotificaciones'
-import { monedaDe, simbolo, fmtPrecio, fmtPct, confirmacion, canal, monedasPosibles, SENALES_TECNICAS, conSentido, activoTecnico, textoDeLinea } from './alertasTexto'
+import { monedaDe, simbolo, fmtPrecio, fmtPct, confirmacion, canal, monedasPosibles, SENALES_TECNICAS, conSentido, activoTecnico, textoDeLinea, tipoDeLinea, idDeLinea, modoDeCanal, alertaDeLinea, assetDeLinea } from './alertasTexto'
+import MiniLinea from './MiniLinea'
 import { cargarCedears, dolaresPorSimbolo } from '../../utils/opcionesCedear'
 import { setBrokersRegistry } from '../../utils/valuation'
 
@@ -78,7 +81,15 @@ export function repeticionPorDefecto(kind, scope, senal) {
 // «Cuántas veces» a mano, se respeta; si no, sigue a lo que se vigila.
 export function alCambiarVigilancia(f, cambios, repeticionElegida) {
   const n = { ...f, ...cambios }
-  return repeticionElegida ? n : { ...n, repeat: repeticionPorDefecto(n.kind, n.scope) }
+  return repeticionElegida ? n : { ...n, repeat: repeticionPorDefecto(n.kind, n.scope, n.senal) }
+}
+
+// En «Señal técnica», qué vigilar: una señal de la lista o una línea que
+// dibujaste. Cambiar suelta la línea elegida.
+export function alElegirVigilanciaTecnica(f, que, repeticionElegida) {
+  return alCambiarVigilancia(f, que === 'linea'
+    ? { senal: 'linea', direction: 'either', dibujo: null, tipoLinea: null, modo: 'toque' }
+    : { senal: 'media200', direction: 'either', dibujo: null, tipoLinea: null }, repeticionElegida)
 }
 
 // Al pasar a «Se mueve un %» sin activo elegido arranca en «Toda mi cartera»,
@@ -96,6 +107,8 @@ export function borradorInicial({ alerta, prefill, puedeMovimiento }) {
   if (alerta) {
     return {
       ...VACIO, ...alerta,
+      // Tu línea: de qué tipo y, si es un canal, cuándo cuenta (lo dice su referencia).
+      ...(alerta.senal === 'linea' ? { tipoLinea: tipoDeLinea(alerta), modo: modoDeCanal(alerta), assetLinea: assetDeLinea(alerta) } : {}),
       symbol: alerta.symbol || '',
       currency: alerta.currency || monedaDe(alerta.symbol),
       threshold: alerta.threshold != null ? numACampo(alerta.threshold) : '',
@@ -112,7 +125,7 @@ export function borradorInicial({ alerta, prefill, puedeMovimiento }) {
       senal: prefill.senal || 'media200', direction: prefill.direction || 'either',
       currency: prefill.currency === 'ARS' ? 'ARS' : 'USD', accion_local: !!prefill.accionLocal,
       // Tu línea del gráfico: cuál (su id) y de qué tipo, para decirlo.
-      ...(prefill.senal === 'linea' ? { dibujo: prefill.dibujo, tipoLinea: prefill.tipoLinea } : {}),
+      ...(prefill.senal === 'linea' ? { dibujo: prefill.dibujo, tipoLinea: prefill.tipoLinea, modo: prefill.modo || 'toque' } : {}),
       repeat: repeticionPorDefecto('tecnica', 'ticker', prefill.senal),
     }
   }
@@ -141,14 +154,18 @@ function activoDelBorrador(f, fijo, posiciones) {
 // main._crear_alerta_tecnica). Exportada para las pruebas.
 export function pedidoTecnico(f, fijo, posiciones = []) {
   const { symbol, accion_local } = activoDelBorrador(f, fijo, posiciones)
+  const canal = f.senal === 'linea' && f.tipoLinea === 'canal'
   return {
     kind: 'tecnica', scope: 'ticker', symbol, senal: f.senal,
-    direction: conSentido(f.senal) ? f.direction : 'either',
+    // Un canal también tiene lado: por qué borde (Nico, 29/10).
+    direction: conSentido(f.senal) || canal ? f.direction : 'either',
     currency: f.currency === 'ARS' ? 'ARS' : 'USD', accion_local,
     channel: f.channel, repeat: f.repeat,
-    // Tu línea: el activo como lo guarda la ficha (con su «.BA» si lo tiene)
-    // y cuál de tus dibujos (main._crear_alerta_de_linea).
-    ...(f.senal === 'linea' ? { symbol: (f.symbol || '').trim().toUpperCase(), dibujo: f.dibujo } : {}),
+    // Tu línea: el activo como lo guarda la ficha (desde la ficha, con su «.BA»
+    // si lo tiene; desde acá, pelado, como abre la ficha) y cuál de tus
+    // dibujos (main._crear_alerta_de_linea).
+    ...(f.senal === 'linea' ? { symbol: fijo ? (f.symbol || '').trim().toUpperCase() : (f.assetLinea || symbol), dibujo: f.dibujo } : {}),
+    ...(canal ? { modo: f.modo === 'cierre' ? 'cierre' : 'toque' } : {}),
   }
 }
 
@@ -257,6 +274,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
     const up = borrador.up_pct, down = borrador.down_pct
     if (esTecnica) {
       if (!sym) { setErr('Elegí un activo.'); return }
+      if (form.senal === 'linea' && !form.dibujo) { setErr('Elegí una de tus líneas.'); return }
     } else if (esPrecio) {
       if (!sym) { setErr('Elegí un activo.'); return }
       if (!(thr > 0)) { setErr('Poné el precio.'); return }
@@ -275,8 +293,10 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
     setOcupado(true)
     try {
       if (editando && esTecnica) {
+        const canalEditado = form.senal === 'linea' && form.tipoLinea === 'canal'
         await actualizar(alerta.id, {
-          ...(conSentido(form.senal) ? { direction: form.direction } : {}),
+          ...(conSentido(form.senal) || canalEditado ? { direction: form.direction } : {}),
+          ...(canalEditado ? { modo: form.modo === 'cierre' ? 'cierre' : 'toque' } : {}),
           channel: form.channel, repeat: form.repeat,
         })
         onClose()
@@ -367,14 +387,17 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
               <BuscadorTicker valor={form.symbol} precio={precio} moneda={moneda} dolares={dolares}
                 // En la técnica la moneda es «en qué se mira» (Dólares por
                 // defecto), no la del precio del activo: el buscador no la toca.
-                onChange={(v, ccy) => setForm(f => (f.kind === 'tecnica' ? { ...f, symbol: v }
+                // Otro activo suelta la línea elegida: era de tus dibujos del anterior.
+                onChange={(v, ccy) => setForm(f => (f.kind === 'tecnica'
+                  ? { ...f, symbol: v, ...(f.senal === 'linea' && v !== f.symbol ? { dibujo: null, tipoLinea: null, assetLinea: null } : {}) }
                   : { ...f, symbol: v, currency: ccy || monedaDe(v) }))} />
             )}
           </Campo>
         )}
 
         {esTecnica ? (
-          <CamposTecnica form={form} set={set} editando={editando} />
+          <CamposTecnica form={form} set={set} setForm={setForm} editando={editando} fijo={fijo}
+            repeticionElegida={repeticionElegida} posiciones={posiciones} />
         ) : esPrecio ? (
           <div className="grid gap-4 sm:grid-cols-2">
             <Campo rotulo="Avisame cuando">
@@ -493,33 +516,50 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
 // Lo que se elige en un aviso técnico: qué señal, para qué lado (sólo los
 // cruces de un promedio) y en qué moneda se mira. Editando, la señal y la
 // moneda quedan fijas (para otra, se arma otra alerta); el lado se cambia.
-function CamposTecnica({ form, set, editando }) {
+//
+// O una línea que dibujaste (Nico, 29/10): desde la ficha ya viene elegida;
+// acá se elige de tus dibujos del activo (GET /api/tecnico/…/lineas), cada uno
+// con su gráfico chiquito. Un canal pregunta además por qué borde y cuándo
+// cuenta salir.
+function CamposTecnica({ form, set, setForm, editando, fijo, repeticionElegida, posiciones }) {
   const actual = SENALES_TECNICAS.find(s => s.id === form.senal)
   const linea = form.senal === 'linea'
+  const canal = linea && form.tipoLinea === 'canal'
+  // La línea ya decidida (desde la ficha, o editando): no se elige otra.
+  const lineaFija = linea && (fijo || editando)
   return (
     <>
-      <Campo rotulo="Avisame cuando" ayuda={linea
-        ? 'Lo miramos con el precio más alto y el más bajo de cada día: si la tocó, te llega a la mañana siguiente. Si movés la línea, el aviso la sigue; si la borrás, se apaga.'
-        : undefined}>
-        {linea ? (
-          <Fijo>{textoDeLinea(form)}</Fijo>
-        ) : editando ? (
-          <Fijo>{actual?.texto}</Fijo>
-        ) : (
-          <div role="radiogroup" aria-label="Avisame cuando" className="grid gap-1.5 sm:grid-cols-2">
-            {SENALES_TECNICAS.map(o => {
-              const activo = o.id === form.senal
-              return (
-                <button key={o.id} type="button" role="radio" aria-checked={activo}
-                  onClick={() => set('senal', o.id)}
-                  className={`min-h-11 px-3.5 py-2 rounded-lg border text-left text-sm transition-colors ${activo ? 'border-data-violet bg-data-violet/10 text-ink-0' : 'border-line text-ink-1 hover:text-ink-0'}`}>
-                  {o.texto}
-                </button>
-              )
-            })}
-          </div>
-        )}
-      </Campo>
+      {!editando && !fijo && (
+        <Campo rotulo="Qué vigilar">
+          <Segmentos etiqueta="Qué vigilar" grande valor={linea ? 'linea' : 'senal'}
+            onChange={v => setForm(f => alElegirVigilanciaTecnica(f, v, repeticionElegida))} opciones={[
+              { valor: 'senal', texto: 'Una señal' },
+              { valor: 'linea', texto: 'Una línea que dibujaste' },
+            ]} />
+        </Campo>
+      )}
+      {linea ? (
+        <TusLineas form={form} setForm={setForm} fija={lineaFija} posiciones={posiciones} />
+      ) : (
+        <Campo rotulo="Avisame cuando">
+          {editando ? (
+            <Fijo>{actual?.texto}</Fijo>
+          ) : (
+            <div role="radiogroup" aria-label="Avisame cuando" className="grid gap-1.5 sm:grid-cols-2">
+              {SENALES_TECNICAS.map(o => {
+                const activo = o.id === form.senal
+                return (
+                  <button key={o.id} type="button" role="radio" aria-checked={activo}
+                    onClick={() => set('senal', o.id)}
+                    className={`min-h-11 px-3.5 py-2 rounded-lg border text-left text-sm transition-colors ${activo ? 'border-data-violet bg-data-violet/10 text-ink-0' : 'border-line text-ink-1 hover:text-ink-0'}`}>
+                    {o.texto}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </Campo>
+      )}
       {conSentido(form.senal) && (
         <Campo rotulo="Para qué lado">
           <Segmentos etiqueta="Para qué lado" grande valor={form.direction} onChange={v => set('direction', v)} opciones={[
@@ -529,22 +569,135 @@ function CamposTecnica({ form, set, editando }) {
           ]} />
         </Campo>
       )}
+      {canal && (
+        <>
+          <Campo rotulo="Por qué borde">
+            <Segmentos etiqueta="Por qué borde" grande valor={form.direction} onChange={v => set('direction', v)} opciones={[
+              { valor: 'above', texto: <><TrendingUp size={15} /> Por arriba</> },
+              { valor: 'below', texto: <><TrendingDown size={15} /> Por abajo</> },
+              { valor: 'either', texto: 'Por cualquiera' },
+            ]} />
+          </Campo>
+          <Campo rotulo="Cuándo cuenta" ayuda={form.modo === 'cierre'
+            ? 'Sólo si cierra afuera: menos avisos, pero llega más tarde.'
+            : 'Si lo toca o lo pasa en el día: avisa antes, aunque a veces vuelve adentro.'}>
+            <Segmentos etiqueta="Cuándo cuenta" grande valor={form.modo === 'cierre' ? 'cierre' : 'toque'} onChange={v => set('modo', v)} opciones={[
+              { valor: 'toque', texto: 'Si lo toca en el día' },
+              { valor: 'cierre', texto: 'Si cierra afuera' },
+            ]} />
+          </Campo>
+        </>
+      )}
       {/* Siempre a la vista, también en cripto (la ficha también la muestra en
           pesos): escondido, se mandaba igual lo último que se había elegido. */}
       <Campo rotulo="Medido en" ayuda={form.currency === 'ARS'
         ? 'En pesos el precio también sube con el dólar, aunque la empresa no se mueva.'
         : 'Como la ficha: en dólares se ve la tendencia de la empresa, sin el dólar en el medio.'}>
-        {editando || linea ? (
+        {editando || lineaFija ? (
           <Fijo>{form.currency === 'ARS' ? 'Pesos' : 'Dólares'}</Fijo>
         ) : (
           <Segmentos etiqueta="Medido en" grande valor={form.currency === 'ARS' ? 'ARS' : 'USD'}
-            onChange={v => set('currency', v)} opciones={[
+            // Tus dibujos en pesos y en dólares son otros: cambiar suelta la línea elegida.
+            onChange={v => setForm(f => ({ ...f, currency: v, ...(linea ? { dibujo: null, tipoLinea: null } : {}) }))} opciones={[
               { valor: 'USD', texto: 'Dólares' },
               { valor: 'ARS', texto: 'Pesos' },
             ]} />
         )}
       </Campo>
     </>
+  )
+}
+
+const NOMBRE_DIBUJO = { horizontal: 'Línea horizontal', tendencia: 'Línea de tendencia', canal: 'Canal' }
+
+/** Dónde está hoy una línea tuya, para la lista: «US$ 196,00», «Hoy pasa por…», «Hoy va de … a …». */
+export function dondeEstaHoy(r, ccy) {
+  const hoy = r?.hoy
+  if (!Array.isArray(hoy) || hoy.some(x => x == null)) return ''
+  if (r.tipo === 'canal') return `Hoy va de ${fmtPrecio(hoy[0], ccy)} a ${fmtPrecio(hoy[1], ccy)}`
+  if (r.tipo === 'tendencia') return `Hoy pasa por ${fmtPrecio(hoy[0], ccy)}`
+  return fmtPrecio(hoy[0], ccy)
+}
+
+// Tus líneas del activo, para elegir una (o, ya elegida, para reconocerla).
+function TusLineas({ form, setForm, fija, posiciones }) {
+  // Ya elegida: el activo como lo guarda la ficha (editando, el de la referencia al dibujo).
+  const { symbol, accion_local } = fija ? { symbol: (form.assetLinea || form.symbol || '').trim().toUpperCase(), accion_local: !!form.accion_local }
+    : activoTecnico(form.symbol, posiciones)
+  const moneda = form.currency === 'ARS' ? 'ars' : 'usd'
+  const ccy = moneda === 'ars' ? 'ARS' : 'USD'
+  const [lineas, setLineas] = useState(undefined)
+  const [avisos, setAvisos] = useState([])
+  useEffect(() => {
+    if (!symbol) { setLineas(undefined); return }
+    let vivo = true
+    setLineas(undefined)
+    const t = setTimeout(() => {
+      api.get(`/tecnico/${encodeURIComponent(symbol)}/lineas?moneda=${moneda}&accion_local=${accion_local ? 'true' : 'false'}`)
+        .then(r => { if (vivo) setLineas(r?.lineas || []) })
+        .catch(() => { if (vivo) setLineas([]) })
+    }, fija ? 0 : 400)
+    return () => { vivo = false; clearTimeout(t) }
+  }, [symbol, moneda, accion_local, fija])
+  useEffect(() => {
+    if (fija) return
+    api.get('/alerts').then(r => setAvisos(r?.items || [])).catch(() => setAvisos([]))
+  }, [fija])
+  const elegida = idDeLinea(form)
+
+  if (fija) {
+    const r = (lineas || []).find(x => x.id === elegida)
+    return (
+      <Campo rotulo="Avisame cuando" ayuda={form.tipoLinea === 'canal'
+        ? 'Si movés o ensanchás el canal, el aviso lo sigue; si lo borrás, se apaga.'
+        : 'Lo miramos con el precio más alto y el más bajo de cada día: si la tocó, te llega a la mañana siguiente. Si movés la línea, el aviso la sigue; si la borrás, se apaga.'}>
+        <div className="flex items-center gap-3.5 rounded-lg bg-bg-2 px-3.5 py-2.5">
+          {r && <MiniLinea resumen={r} etiqueta={`${NOMBRE_DIBUJO[r.tipo]} de ${simbolo(symbol)}`} />}
+          <span className="min-w-0">
+            <span className="block text-[15px] font-semibold text-ink-0">{simbolo(symbol)} {textoDeLinea(form).replace(/^./, c => c.toLowerCase())}</span>
+            {r && <span className="block text-[13px] text-ink-2 tabular">{dondeEstaHoy(r, ccy)}</span>}
+          </span>
+        </div>
+      </Campo>
+    )
+  }
+
+  if (!symbol) return <p className="text-sm text-ink-2">Elegí el activo y te mostramos las líneas que dibujaste en su gráfico.</p>
+  return (
+    <Campo rotulo={`Tus dibujos en ${simbolo(symbol)} (en ${moneda === 'ars' ? 'pesos' : 'dólares'})`}>
+      {lineas === undefined ? (
+        <p className="text-sm text-ink-2 py-2">Buscando tus líneas…</p>
+      ) : lineas.length === 0 ? (
+        <p className="text-sm text-ink-1 rounded-lg bg-bg-2 px-3.5 py-3">
+          Todavía no dibujaste líneas en {simbolo(symbol)} {moneda === 'ars' ? 'en pesos' : 'en dólares'}.{' '}
+          <Link to={`/activo/${encodeURIComponent(symbol)}`} className="text-data-violet font-medium hover:underline">Dibujá una en su gráfico</Link>
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          <div role="radiogroup" aria-label="Elegí tu línea" className="space-y-1.5">
+            {lineas.map(r => {
+              const ya = alertaDeLinea(avisos, { asset: r.asset || symbol, moneda, dibujo: r.id })
+              const activa = r.id === elegida && (!form.assetLinea || form.assetLinea === (r.asset || symbol))
+              return (
+                <button key={`${r.asset || ''}:${r.id}`} type="button" role="radio" aria-checked={activa} disabled={!!ya}
+                  // `assetLinea`: bajo qué activo la guardó la ficha («GGAL» o «GGAL.BA»).
+                  onClick={() => setForm(f => ({ ...f, dibujo: r.id, tipoLinea: r.tipo, assetLinea: r.asset || symbol, direction: 'either', modo: 'toque' }))}
+                  className={`w-full flex items-center gap-3.5 rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-60 ${activa ? 'border-data-violet bg-data-violet/10' : 'border-line hover:border-line-2'}`}>
+                  <MiniLinea resumen={r} />
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-[15px] font-medium text-ink-0">{NOMBRE_DIBUJO[r.tipo]}</span>
+                    <span className={`block text-[13px] tabular ${ya ? 'text-rendi-pos' : 'text-ink-2'}`}>{ya ? 'Ya te avisamos' : dondeEstaHoy(r, ccy)}</span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+          <p className="text-[13px] text-ink-2">
+            ¿No está la que querés? <Link to={`/activo/${encodeURIComponent(symbol)}`} className="text-data-violet hover:underline">Dibujala en el gráfico de {simbolo(symbol)}</Link>. Fibonacci, Elliott y los trazos a mano no tienen aviso.
+          </p>
+        </div>
+      )}
+    </Campo>
   )
 }
 

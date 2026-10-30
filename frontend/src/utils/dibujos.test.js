@@ -4,7 +4,7 @@ import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest'
 import { instalarNavegadorMinimo } from '../testing/navegadorMinimo'
 import { extensionFibonacci, fibonacciAMano, rayas } from './fibonacci'
 import {
-  DIBUJOS_MAXIMOS, ETIQUETAS_ELLIOTT, copiaLocal, diaDelPunto, dibujoTocado, dibujoValido, dibujosGuardados, distanciaASegmento, guardarDibujos,
+  DIBUJOS_MAXIMOS, ETIQUETAS_ELLIOTT, copiaLocal, diaDelPunto, diasHabilesEntre, dibujoTocado, dibujoValido, dibujosGuardados, distanciaASegmento, guardarDibujos,
   marcarSubidos, puntoDelDia,
 } from './dibujos'
 
@@ -100,7 +100,9 @@ describe('un punto queda en su día', () => {
 
   it('una fecha que no está (un feriado) va al día de antes; una anterior al gráfico queda afuera', () => {
     expect(diaDelPunto(dias, { d: '2026-10-25', mas: 0 })).toBe(4)
-    expect(diaDelPunto(dias, { d: '2020-01-01', mas: 0 })).toBe(-1)
+    // Afuera a la izquierda, a su distancia en días hábiles (no pegada en -1:
+    // así la línea no gira a medida que se borran los días viejos).
+    expect(diaDelPunto(dias, { d: '2020-01-01', mas: 0 })).toBeLessThan(-1700)
   })
 })
 
@@ -164,5 +166,16 @@ describe('extensión de Fibonacci y las dos formas de Elliott', () => {
     expect(dibujoValido({ id: 'e', tipo: 'elliott', forma: 'correccion', puntos: n(5) })).toBe(false)
     expect(dibujoValido({ id: 'e', tipo: 'elliott', forma: 'triangulo', puntos: n(3) })).toBe(false)
     expect(dibujoValido({ id: 'e', tipo: 'elliott', puntos: n(9) })).toBe(true)          // los guardados antes de separarlos
+  })
+})
+
+describe('un punto anclado antes de la historia guardada (auditoría 29/10)', () => {
+  const pts = [{ d: '2026-10-05' }, { d: '2026-10-06' }, { d: '2026-10-07' }]
+  it('queda a su distancia en días hábiles, no pegado en -1 (la línea no gira cuando se borran días viejos)', () => {
+    expect(diaDelPunto(pts, { d: '2026-10-02', mas: 0 })).toBe(-1)          // viernes → lunes: 1 día hábil
+    expect(diaDelPunto(pts, { d: '2026-09-28', mas: 0 })).toBe(-5)          // una semana antes
+    expect(diaDelPunto(pts, { d: '2026-09-28', mas: 2 })).toBe(-3)
+    expect(diaDelPunto(pts, { d: '2026-10-06', mas: 0 })).toBe(1)
+    expect(diasHabilesEntre('2026-09-26', '2026-10-05')).toBe(5)            // de sábado a lunes de la otra semana
   })
 })
