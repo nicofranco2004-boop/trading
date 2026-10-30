@@ -56,9 +56,6 @@ PIDEN_ADENTRO = {
 PENDIENTES = {
     "init_db": "el arranque: corre antes de atender pedidos, sin usuario",
     "_reconstruir_mtm": "sale a Yahoo durante minutos; se protege con su huella (backfill_user)",
-    "advisor_tanda_revert": "asesor: escribe en las cuentas de varios clientes",
-    "_advisor_group_op_apply": "asesor: escribe en las cuentas de varios clientes",
-    "advisor_group_op_undo": "asesor: escribe en las cuentas de varios clientes",
 }
 
 

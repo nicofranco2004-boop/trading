@@ -48342,6 +48342,7 @@ def advisor_tanda_revert(tanda_id: str, uid: int = Depends(get_current_user)):
             # Cada lote en su propia transacción: si uno falla, los anteriores
             # quedan revertidos y el estado de la tanda refleja fila por fila.
             with conn:
+                _tomar_turno_de_la_puerta(conn, int(client_uid))
                 try:
                     _revert_batch_de(conn, int(client_uid), batch_id, nuclear=False)
                 except _import_persister.PersistError as ex:
@@ -51262,6 +51263,9 @@ def _advisor_group_op_apply(uid: int, asset: str, asset_type, currency, entry_da
 
         applied = []
         with conn:
+            # Los turnos de TODOS los clientes de la tanda, en orden, antes de
+            # escribir en ninguno (y antes del candado de la caja).
+            _tomar_turnos_en_orden(conn, [r["client_uid"] for r in valid])
             cur = conn.execute(
                 "INSERT INTO advisor_op_batches (advisor_uid, asset, op_kind) VALUES (?,?, 'buy')",
                 (uid, asset.strip()),
@@ -51629,6 +51633,7 @@ def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
         undone, skipped = [], []
         left_ok = 0  # items que NO pudimos deshacer y siguen 'ok' (reintentar)
         with conn:
+            _tomar_turnos_en_orden(conn, [it["client_uid"] for it in items])
             for it in items:
                 cid = it["client_uid"]
                 _contabilidad_tocada(cid)   # su historia reconstruida se revisa al terminar
