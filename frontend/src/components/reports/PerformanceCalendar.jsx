@@ -328,7 +328,7 @@ export function MetricasDelAno({ resumen, months, pesos, ranking }) {
   const notaRealizado = porMes
     ? notaDelRealizado({
         restoUsd: vistaMeses.reduce((s, v) => s + (v.realizadoRestoUsd || 0), 0),
-        valuado: vistaMeses.some(v => v.realizadoValuado), dolar: 'de cada mes',
+        valuado: vistaMeses.some(v => v.realizadoValuado), dolar: 'de cada mes', oculto: pesos.oculto,
       })
     : anio.realizadoNota
   const conDato = months.filter(m => m.is_relevant && m.metrics?.delta_pct != null)
@@ -432,7 +432,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
   const nota12 = enPesos
     ? notaDelRealizado({
         restoUsd: vistas12.reduce((s, v) => s + (v.realizadoRestoUsd || 0), 0),
-        valuado: vistas12.some(v => v.realizadoValuado), dolar: 'de cada mes',
+        valuado: vistas12.some(v => v.realizadoValuado), dolar: 'de cada mes', oculto: pesos.oculto,
       })
     : null
 

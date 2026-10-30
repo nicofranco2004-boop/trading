@@ -63,9 +63,10 @@ const cerca = (a, b) => Math.abs((a || 0) - (b || 0)) <= Math.max(1, 0.01 * Math
  *                                    dólar del cierre)
  * @param {Array}    [args.brokers]   /api/brokers
  * @param {string}   [args.broker]    'global' o el broker del filtro
+ * @param {boolean}  [args.oculto]    «Ocultar saldos»: la nota de lo convertido sale sin el monto
  */
 export function crearPesosDelPeriodo({
-  moneda, tcHoy, tcEnFecha, dolarMes, monthly, brokers, broker = 'global',
+  moneda, tcHoy, tcEnFecha, dolarMes, monthly, brokers, broker = 'global', oculto = false,
 } = {}) {
   const enPesos = moneda === 'ARS' && tcHoy > 0
   const meses = enPesos && Array.isArray(monthly) && monthly.length
@@ -211,7 +212,7 @@ export function crearPesosDelPeriodo({
       resultado,
       realizado: real ? real.monto : null,
       realizadoNota: real ? notaDelRealizado({
-        restoUsd: Math.abs(real.restoUsd), valuado: !!m.realized_ars_valuado,
+        restoUsd: Math.abs(real.restoUsd), valuado: !!m.realized_ars_valuado, oculto,
       }) : null,
       // Para quien junta varios períodos (el calendario del año): sumar `Math.abs` de estos y
       // armar UNA nota con `notaDelRealizado`, en vez de repetir la de cada mes.

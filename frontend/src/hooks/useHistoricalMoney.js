@@ -190,7 +190,10 @@ export function useHistoricalMoney() {
   const base = dineroHistorico({ currency, tcValuacion, getRateForDate: getRateOrFallback })
   return {
     ...base,
-    ...(hidden ? { fmtMoneyAt: () => OCULTO, fmtMoneyCompactAt: () => OCULTO } : {}),
+    // `fmtPnlAt` / `fmtPnlCompactAt` (el resultado de una operación en la moneda de la app) también: son
+    // montos tuyos y no pasan por `fmtMoneyAt`. Sin esto Movimientos mostraba cada P&L con el ojito prendido.
+    ...(hidden ? { fmtMoneyAt: () => OCULTO, fmtMoneyCompactAt: () => OCULTO,
+                   fmtPnlAt: () => OCULTO, fmtPnlCompactAt: () => OCULTO } : {}),
     fmtMonto: (v, opts) => (hidden ? OCULTO : fmtConvertedRaw(v, currency, opts)),
     fmtMontoCorto: (v, opts) => (hidden ? OCULTO : fmtConvertedCompactRaw(v, currency, opts)),
     oculto: hidden,

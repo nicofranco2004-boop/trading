@@ -8,6 +8,7 @@ import TradesTable from './TradesTable'
 import TradesFeed from './TradesFeed'
 import { pctEnMoneda } from './shared'
 import { dineroHistorico } from '../../hooks/useHistoricalMoney'
+import { fmtConvertedRaw, fmtConvertedCompactRaw } from '../../contexts/CurrencyContext'
 
 // GGAL de $4.500 a $6.900 con el dólar de 1.000 a 1.500: +53,33 % en pesos y
 // +2,22 % en dólares. Antes la columna mostraba el 53 % con la app en dólares.
@@ -28,7 +29,13 @@ const vieja = { id: 4, asset: 'ALUA', broker: 'Cocos', op_type: 'Venta', date: '
 const dividendo = { id: 3, asset: 'KO', broker: 'Bull', op_type: 'Dividendo', date: '2024-06-10',
   pnl_usd: 5, pnl_pct: 1.5, currency: 'USD' }
 
-const hm = currency => dineroHistorico({ currency, tcValuacion: 1500, getRateForDate: () => null })
+// Como el hook `useHistoricalMoney`: la fábrica pura más los formateadores de totales que le suma (ver ahí
+// «Ocultar saldos»). Sin `fmtMontoCorto` el subtotal del día de la tarjeta no se dibuja.
+const hm = currency => ({
+  ...dineroHistorico({ currency, tcValuacion: 1500, getRateForDate: () => null }),
+  fmtMonto: (v, opts) => fmtConvertedRaw(v, currency, opts),
+  fmtMontoCorto: (v, opts) => fmtConvertedCompactRaw(v, currency, opts),
+})
 const tabla = (ops, currency) => renderToStaticMarkup(
   <MemoryRouter>
     <TradesTable

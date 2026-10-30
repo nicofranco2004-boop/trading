@@ -317,6 +317,7 @@ function PersonalDashboard() {
   const { realizedPnlDisp, realizedNota } = useMemo(() => {
     const r = realizadoGlobalDeLosMeses(monthly, {
       moneda: currency,
+      oculto: hidden,
       fxDelMes: (m) => {
         // Último día del mes del asiento (Date.UTC con day=0 del mes siguiente)
         // → FX de ese momento. getHistoricalFx ya cae al dólar de hoy si no hay serie.
@@ -325,7 +326,7 @@ function PersonalDashboard() {
       },
     })
     return { realizedPnlDisp: r.monto, realizedNota: r.nota }
-  }, [monthly, currency, tcValuacion, getHistoricalFx])
+  }, [monthly, currency, tcValuacion, getHistoricalFx, hidden])
 
   // Total return = market value vs net deposited (so deposits aren't counted as performance)
   //

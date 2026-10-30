@@ -682,6 +682,32 @@ describe('el Dashboard y el Resumen mensual leen el realizado de la fila de /api
   })
 
 
+  // Fusión con main (30/10): «Ocultar saldos» tapa los montos en el formateador, pero esta nota lleva un monto
+  // ADENTRO del texto y se armaba aparte: Reportes en Pesos mostraba «incluye US$ 8.153» con el ojito prendido.
+  describe('la nota de lo convertido con «Ocultar saldos»', () => {
+    it('tapa el monto y deja la frase (se sigue sabiendo que hay una parte convertida)', () => {
+      const t = notaDelRealizado({ restoUsd: 8153, oculto: true, dolar: 'de cada mes' })
+      expect(t).toContain('convertidos al dólar de cada mes')
+      expect(t).not.toMatch(/\d/)
+    })
+    it('sin el ojito, el monto se ve', () => {
+      expect(notaDelRealizado({ restoUsd: 8153 })).toContain('US$ 8.153')
+    })
+    it('el período de Reportes y el Dashboard la piden tapada', () => {
+      const pesos = crearPesosDelPeriodo({ moneda: 'ARS', tcHoy: 1500, tcEnFecha: () => 1500, dolarMes: {},
+        monthly: [], brokers: [], oculto: true })
+      const v = pesos.enVista({ period_type: 'month', period_start: '2024-06-01', period_end: '2024-06-30',
+        is_current: false, metrics: { realized_pnl: 30, realized_ars: 15000, realized_ars_cubre_usd: 10,
+          delta_usd: 30, medicion: 'costo' } })
+      expect(v.realizadoNota).toContain('convertidos')
+      expect(v.realizadoNota).not.toMatch(/\d/)
+      const d = realizadoGlobalDeLosMeses([{ broker: 'global', year: 2024, month: 6, pnl_realized: 30,
+        pnl_realized_ars: 15000, pnl_realized_ars_cubre_usd: 10 }], { moneda: 'ARS', fxDelMes: () => 1500, oculto: true })
+      if (d.nota) expect(d.nota).not.toMatch(/\d/)
+    })
+  })
+
+
   // Guardia de texto: SÓLO ve que el nombre aparece en el archivo, no que se lo llame bien (D3: llamar a
   // la función y descartar el resultado la pasa en verde). Lo que prueba la cuenta son los tests de arriba.
   describe('las pantallas usan la cuenta', () => {

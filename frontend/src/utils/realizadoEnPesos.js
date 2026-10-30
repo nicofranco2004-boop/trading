@@ -20,6 +20,8 @@
 
 const num = (v) => (v == null || v === '' || !Number.isFinite(+v) ? null : +v)
 
+import { OCULTO } from './ocultarSaldos'
+
 const UMBRAL_RESTO_USD = 1   // menos de un dólar convertido no vale un cartel
 
 /**
@@ -80,13 +82,13 @@ export function sumarRealizadoMeses(filas, fxDelMes) {
  * convertido ya armada. Pura, para probarla sin montar la pantalla.
  * @returns {{ monto:number, restoUsd:number, valuado:boolean, nota:string|null }}
  */
-export function realizadoGlobalDeLosMeses(monthly, { moneda, fxDelMes } = {}) {
+export function realizadoGlobalDeLosMeses(monthly, { moneda, fxDelMes, oculto = false } = {}) {
   const globales = (monthly || []).filter(m => m.broker === 'global')
   if (moneda !== 'ARS') {
     return { monto: globales.reduce((s, m) => s + (m.pnl_realized || 0), 0), restoUsd: 0, valuado: false, nota: null }
   }
   const { monto, restoUsd, valuado } = sumarRealizadoMeses(globales, fxDelMes)
-  return { monto, restoUsd, valuado, nota: notaDelRealizado({ restoUsd, valuado, dolar: 'de cada mes' }) }
+  return { monto, restoUsd, valuado, nota: notaDelRealizado({ restoUsd, valuado, dolar: 'de cada mes', oculto }) }
 }
 
 /**
@@ -112,14 +114,18 @@ export function realizadoGlobalDelMes(monthly, { year, month, moneda, fx } = {})
  *                              pesos de verdad)
  * @param {string} [a.dolar]    cuál dólar se usó para el resto ('del cierre', 'del mes'…)
  */
-export function notaDelRealizado({ restoUsd, valuado = false, dolar = 'del cierre' } = {}) {
+export function notaDelRealizado({ restoUsd, valuado = false, dolar = 'del cierre', oculto = false } = {}) {
   const partes = []
   // Misma frase que el tooltip de Movimientos (TradesTable): vale para una venta en dólares y para
   // una compra en dólares vendida en pesos.
   if (valuado) partes.push('ventas o compras en dólares valuadas al dólar de cada fecha')
   const r = num(restoUsd)
   if (r != null && Math.abs(r) >= UMBRAL_RESTO_USD) {
-    partes.push(`incluye US$ ${Math.round(Math.abs(r)).toLocaleString('es-AR')} convertidos al dólar ${dolar}`)
+    // Con «Ocultar saldos» el monto se tapa (es tu plata) y la frase queda: se sigue sabiendo que hay una parte
+    // convertida. Vive ACÁ y no en cada pantalla: la nota la arman seis lugares (30/10, auditoría de la fusión
+    // con main: Reportes en Pesos mostraba «incluye US$ 8.153» con el ojito prendido).
+    const cuanto = oculto ? OCULTO : Math.round(Math.abs(r)).toLocaleString('es-AR')
+    partes.push(`incluye US$ ${cuanto} convertidos al dólar ${dolar}`)
   }
   return partes.length ? partes.join(' · ') : null
 }

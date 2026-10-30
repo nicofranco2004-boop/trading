@@ -454,7 +454,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   // restos en valor absoluto (+US$ 500 y −US$ 500 en meses distintos no se cancelan) y el «valuado»
   // los junta `sumarRealizadoMeses`, la misma función que usa el Dashboard: no se repite acá.
   const notaRealizado = tabIsARS
-    ? (({ restoUsd, valuado }) => notaDelRealizado({ restoUsd, valuado, dolar: 'de cada mes' }))(
+    ? (({ restoUsd, valuado }) => notaDelRealizado({ restoUsd, valuado, dolar: 'de cada mes', oculto }))(
         sumarRealizadoMeses(tabData, (m) => lookupHistoricalDolar(dolarMes, m.year, m.month, tcValuacion)))
     : null
   const totalRetPct = totals.retCompound - 1
