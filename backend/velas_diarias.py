@@ -143,18 +143,24 @@ def _es_bono(asset: str) -> bool:
         return False
 
 
-# Cuántos tickers DESCONOCIDOS (`_es_conocido` no los reconoce: ni las listas de
-# la app ni BYMA, y nunca se bajaron bien) puede sumar UNA persona —con los
-# clientes que creó, si es asesor— a la descarga de la noche, por todas las
+# Cuántos tickers RAROS —los que no están en las listas de la app ni en BYMA
+# (`_es_de_la_app`), se bajen bien o no— puede sumar UNA persona, con los
+# clientes que creó si es asesor, a la descarga de la noche, por todas las
 # puertas juntas (lo que tiene, lo que sigue, sus alertas técnicas, lo que
-# operó). El 22/10 se topeó la watchlist (100); las alertas técnicas fueron otra
-# puerta a la misma lista: una cuenta metió 89 inventados (auditoría E4, 29/10).
-# Lo CONOCIDO no tiene tope: un asesor con 100 clientes de verdad tiene miles
-# de activos reales, y ninguno puede quedar sin actualizar por un tope pensado
-# para frenar inventados (re-test E4, ronda 2). Un papel raro de verdad que
-# alguien suma entra como desconocido y, cuando se baja bien una vez, pasa a
-# conocido. 100 sobra para lo raro de una persona y frena a un script.
-DESCONOCIDOS_POR_PERSONA = 100
+# operó). Lo de las listas de la app entra siempre, de quien sea: se baja una
+# vez para todos y un asesor con 100 clientes de verdad no puede quedar afuera
+# (re-test E4, ronda 2).
+#
+# Lo raro cuenta aunque ya se baje bien: si no, una cuenta sumaba 100 raros por
+# noche, que al bajarse pasaban a «conocidos» y se acumulaban sin fin (7.400
+# acumulados: 0 de 40 activos nuevos de los demás se bajaban; re-test E4,
+# ronda 3). Y dentro del cupo va primero lo que se baja bien, después lo nunca
+# intentado y al final lo que falla, rotando (`_raros_que_entran`): si no, un
+# asesor con más códigos que fallan que lugares los llenaba todas las noches y
+# sus papeles raros de verdad no se bajaban nunca (0 de 30 en 3 noches).
+# 300 alcanza para lo raro real de una persona (o de un asesor y sus clientes)
+# y frena a un script.
+RAROS_POR_PERSONA = 300
 
 
 def simbolos_a_seguir(conn) -> list:
@@ -185,11 +191,11 @@ def _seguimiento_por_persona(conn):
     su serie en pesos es la del '.BA'. Reinventar esa regla acá es lo que hizo
     que un CEDEAR comprado por dólar-MEP pidiera el ticker equivocado (bug C1).
 
-    Lo conocido entra siempre. De lo desconocido, cada persona (con los
-    clientes que creó, si es asesor) suma hasta `DESCONOCIDOS_POR_PERSONA`, en
-    este orden: lo que
-    tiene, lo que sigue, sus alertas técnicas, lo que operó. Lo que pasa de ahí
-    queda afuera (y se anota en el log). `de_cada_una`: {uid: [sus tickers, en
+    Lo de las listas de la app entra siempre. De lo raro, cada persona (con los
+    clientes que creó, si es asesor) suma hasta `RAROS_POR_PERSONA`, elegido
+    por `_raros_que_entran`. Lo que pasa de ahí queda afuera (y se anota en el
+    log). Las puertas, en orden: lo que tiene, lo que sigue, sus alertas
+    técnicas, lo que operó. `de_cada_una`: {uid: [sus tickers, en
     ese orden]}, para repartir la noche por turnos (`_por_turnos`)."""
     from cripto import yahoo_de_cripto
     from snapshots_job import _broker_name_sets, position_price_key, simbolo_byma
@@ -271,26 +277,29 @@ def _seguimiento_por_persona(conn):
         en_pesos = str(clave).upper().endswith('.BA')
         _anotar_de(p['user_id'], _yahoo_de(p['asset'], None, en_pesos, yahoo_de_cripto, cedears))
 
-    es_conocido = _es_conocido(conn)
+    es_de_la_app = _es_de_la_app()
+    estado = _estado_de_cada_ticker(conn)
     tickers, pares, topados, de_cada_una = set(), {}, {}, {}
     for uid, listas in por_persona.items():
-        suyos, orden, raros = set(), [], 0
-        for ys in listas:
-            nuevos = [y for y in ys if y and y not in suyos]
-            nuevos_raros = sum(1 for y in nuevos if not es_conocido(y))
-            if nuevos_raros and raros + nuevos_raros > DESCONOCIDOS_POR_PERSONA:
-                topados[uid] = topados.get(uid, 0) + 1
+        entran = _raros_que_entran(listas, es_de_la_app, estado)
+        topados_suyos = 0
+        suyos, orden = set(), []
+        for k, ys in enumerate(listas):
+            if k not in entran:
+                topados_suyos += 1
                 continue
-            raros += nuevos_raros
+            nuevos = [y for y in ys if y and y not in suyos]
             suyos.update(nuevos)
             orden += nuevos
             if len(ys) == 2:   # la forma de un CEDEAR: [afuera, pesos]
                 pares[ys[1]] = ys[0]
+        if topados_suyos:
+            topados[uid] = topados_suyos
         tickers |= suyos
         de_cada_una[uid] = orden
     if topados:
-        log.warning("velas: %d persona(s) pasaron el tope de %d tickers desconocidos; quedaron "
-                    "afuera %d activos (uid: %s)", len(topados), DESCONOCIDOS_POR_PERSONA,
+        log.warning("velas: %d persona(s) pasaron el tope de %d tickers raros; quedaron "
+                    "afuera %d activos (uid: %s)", len(topados), RAROS_POR_PERSONA,
                     sum(topados.values()), sorted(topados)[:20])
 
     tickers.add(SP500)
@@ -299,16 +308,55 @@ def _seguimiento_por_persona(conn):
     return tickers, pares, de_cada_una
 
 
-def _es_conocido(conn):
-    """La pregunta «¿este ticker de Yahoo es algo conocido?», armada una vez para
-    toda la noche: está en las listas de la app o en BYMA (`_lista_de_la_app`),
-    o ya se bajó bien entero alguna vez (Yahoo lo conoce). Lo usan el tope de la
-    noche (sólo cuenta lo desconocido) y el orden (`_por_turnos`: lo conocido
-    primero)."""
+def _es_de_la_app():
+    """La pregunta «¿este ticker de Yahoo está en las listas de la app o en
+    BYMA?» (`_lista_de_la_app`), armada una vez para toda la noche. Lo que no,
+    es «raro»: tiene cupo por persona (`RAROS_POR_PERSONA`) y va después en la
+    fila (`_por_turnos`)."""
     app = _lista_de_la_app()
-    bajados = {r['symbol'] for r in conn.execute(
-        "SELECT symbol FROM velas_estado WHERE ultima_completa IS NOT NULL").fetchall()}
-    return lambda t: t in bajados or bool(_variantes(t) & app)
+    return lambda t: bool(_variantes(t) & app)
+
+
+def _estado_de_cada_ticker(conn) -> dict:
+    return {r['symbol']: dict(r) for r in conn.execute(
+        "SELECT symbol, ultima_corrida, ultima_completa, ok FROM velas_estado").fetchall()}
+
+
+def _raros_que_entran(listas: list, es_de_la_app, estado: dict) -> set:
+    """Cuáles de los activos de UNA persona (`listas`: los tickers de cada
+    activo, en el orden de las puertas) entran a la noche: los que no tienen
+    nada raro, todos; de los que tienen, hasta `RAROS_POR_PERSONA` tickers
+    raros, en este orden:
+      1. los que se bajan bien (ya son de esa persona, y de verdad);
+      2. los nunca intentados (un papel raro recién sumado);
+      3. los que fallaron, el que hace más que no se intenta primero: cada
+         noche se prueban otros, así un código mal escrito no tapa para
+         siempre a los demás.
+    Devuelve los índices de `listas` que entran."""
+    def prioridad(y):
+        e = estado.get(y)
+        if e is None:
+            return (1, '')
+        if e.get('ok'):
+            return (0, '')
+        return (2, str(e.get('ultima_corrida') or ''))
+
+    entran, con_raros, vistos = set(), [], set()
+    for k, ys in enumerate(listas):
+        raros = [y for y in ys if y and not es_de_la_app(y)]
+        if not raros:
+            entran.add(k)
+        else:
+            con_raros.append((max(prioridad(y) for y in raros), k, raros))
+    usados = 0
+    for _, k, raros in sorted(con_raros):
+        nuevos = [y for y in raros if y not in vistos]
+        if usados + len(nuevos) > RAROS_POR_PERSONA:
+            continue
+        usados += len(nuevos)
+        vistos.update(nuevos)
+        entran.add(k)
+    return entran
 
 
 def _turno(estado: dict, t: str, hoy: str) -> int:
@@ -329,28 +377,29 @@ def _turno(estado: dict, t: str, hoy: str) -> int:
 def _por_turnos(conn, de_cada_una: dict, hoy: str) -> list:
     """El orden de la noche, en tres vueltas, y en cada una por TURNOS entre
     personas (ronda 1: lo primero de cada una; ronda 2: lo segundo; …):
-      1. lo CONOCIDO (`_es_conocido`). Cada persona lo ordena por `_turno`
-         (nunca intentado, historia entera, puesta al día, lo que falló);
-      2. lo desconocido que nunca se intentó: lo que alguien sumó y la app no
-         tiene en sus listas (un papel raro de verdad, o algo inventado). Va
-         con el tiempo que sobre;
-      3. lo desconocido que falló la última vez.
+      1. lo de las listas de la app o BYMA (`_es_de_la_app`). Cada persona lo
+         ordena por `_turno` (nunca intentado, historia entera, puesta al día,
+         lo que falló);
+      2. lo raro (ya dentro del cupo de cada persona) que no falló: lo nunca
+         intentado, la historia entera y la puesta al día;
+      3. lo raro que falló la última vez.
 
     Por qué: lo «nunca intentado» iba primero para todos, y una cuenta (o un
     asesor con cientos de clientes) con símbolos inventados los tiene siempre
     nunca intentados. Con 1.300 inventados, los reales salían en la última
     tanda (re-test E4); con un asesor de 100 clientes, 36 de 189 reales sin
     actualizar en una noche de 15 minutos (ronda 2). Ahora lo inventado nunca
-    va delante de algo conocido, y entre personas cada una avanza al mismo
-    ritmo: los que meten mucho sólo se atrasan a sí mismos."""
-    estado = {r['symbol']: dict(r) for r in conn.execute(
-        "SELECT symbol, ultima_completa, ok FROM velas_estado").fetchall()}
-    es_conocido = _es_conocido(conn)
+    va delante de algo de las listas, y entre personas cada una avanza al mismo
+    ritmo: los que meten mucho sólo se atrasan a sí mismos. Lo raro de UNA
+    persona no tapa a lo raro nuevo de las demás (ronda 3: 7.400 raros ya
+    bajados de una cuenta dejaban sin bajar los 40 nuevos de otros)."""
+    estado = _estado_de_cada_ticker(conn)
+    es_de_la_app = _es_de_la_app()
 
     def vuelta(t):
-        if es_conocido(t):
+        if es_de_la_app(t):
             return 0
-        return 1 if _turno(estado, t, hoy) == 0 else 2
+        return 2 if _turno(estado, t, hoy) == 3 else 1
 
     vueltas = ([], [], [])
     for uid in sorted(de_cada_una, key=str):

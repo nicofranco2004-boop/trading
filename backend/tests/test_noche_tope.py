@@ -9,11 +9,11 @@ Pro metió 89 inventados, y lo que nunca se intentó va primero en la fila.
 
 Lo que se prueba, con `velas_diarias.simbolos_a_seguir` (la lista que usa la
 corrida real) y lo cargado por HTTP:
-  · lo CONOCIDO (listas de la app, BYMA, ya bajado) entra siempre, sea de quien
-    sea; de lo desconocido, cada persona —con los clientes que creó, si es
-    asesor— aporta hasta `DESCONOCIDOS_POR_PERSONA`, en orden: lo que tiene, lo
-    que sigue, sus alertas técnicas, lo que operó; a otra persona no le cambia
-    nada (re-test E4, ronda 2: el tope no puede dejar afuera nada real);
+  · lo de las listas de la app o BYMA entra siempre, sea de quien sea; de lo
+    RARO (lo demás, se baje bien o no), cada persona —con los clientes que
+    creó, si es asesor— aporta hasta `RAROS_POR_PERSONA`: primero lo que se
+    baja bien, después lo nunca intentado, y lo que falla rotando; a otra
+    persona no le cambia nada (re-test E4, rondas 2 y 3);
   · una alerta técnica de un activo que no es válido (una vieja, de antes de
     que el alta lo pidiera) no entra.
 
@@ -87,7 +87,7 @@ class NocheTopeTest(unittest.TestCase):
         self._ok("/api/alerts", {"kind": "tecnica", "symbol": "KO", "senal": "media200",
                                  "direction": "either"}, self.ana)
         self._ok("/api/watchlist", {"symbol": "QX0009"}, self.beto)
-        with mock.patch("velas_diarias.DESCONOCIDOS_POR_PERSONA", 2):
+        with mock.patch("velas_diarias.RAROS_POR_PERSONA", 2):
             noche = self._noche()
         self.assertTrue({"QX0001", "QX0002"} <= noche, noche)
         self.assertNotIn("QX0003", noche, "el tercer desconocido de Ana queda afuera")
@@ -146,7 +146,7 @@ class NocheTopeTest(unittest.TestCase):
         # La corrida de la noche entera, de a un ticker por tanda para ver el orden.
         # El tope de desconocidos, más alto que los 120: acá se mira el orden.
         with main.db_abierta() as conn, mock.patch("velas_diarias._bajar", bajar), \
-                mock.patch("velas_diarias.TANDA", 1), mock.patch("velas_diarias.DESCONOCIDOS_POR_PERSONA", 200):
+                mock.patch("velas_diarias.TANDA", 1), mock.patch("velas_diarias.RAROS_POR_PERSONA", 200):
             velas_diarias.correr(conn)
         self.assertLess(max(pedidos.index("KO"), pedidos.index("PEP")), 6, pedidos[:8])
         self.assertEqual(len(set(pedidos)), 123)   # todo se pide igual: sólo cambia el orden
@@ -177,7 +177,7 @@ class NocheTopeTest(unittest.TestCase):
         from ai import trade_tickers
         reales = sorted(trade_tickers.US_TICKERS)[:40]
         self._asesor_con_clientes(5, 3, reales)               # 15 inventados y 40 reales entre 5 clientes
-        with mock.patch("velas_diarias.DESCONOCIDOS_POR_PERSONA", 4):
+        with mock.patch("velas_diarias.RAROS_POR_PERSONA", 4):
             noche = self._noche()
         self.assertEqual(len([t for t in noche if t.startswith("QZ")]), 4, sorted(noche))
         self.assertTrue(set(reales) <= noche, "ningún activo real de un cliente queda afuera")
@@ -203,6 +203,52 @@ class NocheTopeTest(unittest.TestCase):
         reales = [pedidos.index(s) for s in ("KO", "PEP", "AAPL")]
         primer_inventado = min(i for i, t in enumerate(pedidos) if t.startswith("QZ"))
         self.assertLess(max(reales), primer_inventado, pedidos[:8])
+
+    def _estado(self, simbolo, ok, ultima_corrida, uid=None, en_watchlist=True):
+        with main.db_abierta() as conn:
+            if en_watchlist:
+                conn.execute("INSERT INTO watchlist (user_id, symbol) VALUES (?, ?)",
+                             (uid or self.uids[0], simbolo))
+            conn.execute("INSERT INTO velas_estado (symbol, ultima_corrida, ultima_completa, ok, filas) "
+                         "VALUES (?, ?, ?, ?, ?)",
+                         (simbolo, ultima_corrida, ultima_corrida if ok else None, 1 if ok else 0, 700 if ok else 0))
+            conn.commit()
+
+    def test_los_codigos_que_fallan_no_tapan_a_los_raros_de_verdad(self):
+        """Re-test E4, ronda 3: con más códigos que fallan que lugares, el cupo
+        se llenaba todas las noches con los mismos, y los raros reales nunca
+        se bajaban (0 de 30 en 3 noches). Ahora lo nunca intentado va antes
+        que lo que falla, y lo que falla rota: entra el que hace más que no se
+        prueba."""
+        for i in range(5):                                  # 5 códigos que fallan, probados a distintas horas
+            self._estado(f"QF{i:04d}", ok=False, ultima_corrida=f"2026-10-2{i} 03:00:00")
+        for s in ("QR0001", "QR0002", "QR0003"):             # 3 raros reales recién sumados
+            self._ok("/api/watchlist", {"symbol": s}, self.ana)
+        with mock.patch("velas_diarias.RAROS_POR_PERSONA", 4):
+            noche = self._noche()
+        self.assertTrue({"QR0001", "QR0002", "QR0003"} <= noche, sorted(noche))
+        fallados = sorted(t for t in noche if t.startswith("QF"))
+        self.assertEqual(fallados, ["QF0000"], "de los que fallan entra el que hace más que no se prueba")
+
+    def test_lo_raro_que_ya_se_baja_tambien_cuenta_y_no_tapa_lo_nuevo_de_otros(self):
+        """Re-test E4, ronda 3: lo raro que se bajaba bien pasaba a «conocido»
+        sin tope y se acumulaba (7.400 de una cuenta: 0 de 40 nuevos de los
+        demás). Ahora cuenta en el cupo, y en la fila lo raro va por turnos."""
+        for i in range(6):                                  # Ana: 6 raros que ya se bajan bien
+            self._estado(f"QK{i:04d}", ok=True, ultima_corrida="2026-10-01 03:00:00")
+        self._ok("/api/watchlist", {"symbol": "QN0001"}, self.beto)   # Beto: un raro nuevo
+        with mock.patch("velas_diarias.RAROS_POR_PERSONA", 3):
+            noche = self._noche()
+        self.assertEqual(len([t for t in noche if t.startswith("QK")]), 3, sorted(noche))
+        pedidos = []
+
+        def bajar(t, periodo):
+            pedidos.append(t)
+            return None
+        with main.db_abierta() as conn, mock.patch("velas_diarias._bajar", bajar), \
+                mock.patch("velas_diarias.TANDA", 1), mock.patch("velas_diarias.RAROS_POR_PERSONA", 100):
+            velas_diarias.correr(conn)
+        self.assertLess(pedidos.index("QN0001"), 4, pedidos[:8])
 
 
 if __name__ == "__main__":
