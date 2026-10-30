@@ -17,7 +17,7 @@
 // personales. La tesis ni llega acá; las notas viajan con tus dibujos y se
 // sacan acá abajo (`tuyos`), que es el único lugar por donde pasa la imagen.
 
-import { indiceDeFecha, velaCompleta, ADX_CLAVE, RSI_CASTIGADO, RSI_ESTIRADO } from './tecnico'
+import { velaCompleta, ADX_CLAVE, RSI_CASTIGADO, RSI_ESTIRADO } from './tecnico'
 import { marcasDeFechas, marcasDePrecio } from './ejesGrafico'
 import { extensionFibonacci, fibonacciAMano, nivelPct, rayas, rotuloNivel, rotulosQueEntran } from './fibonacci'
 import { rotuloOnda } from './elliott'
@@ -25,6 +25,7 @@ import { etiquetasDe } from './dibujos'
 import { PRIORIDAD } from './rotulos'
 import { fechaDeHoy } from './shareCard'
 import { colorDe, trazosDeDibujos } from '../components/asset/CapaDibujos'
+import { INTERVALOS_POR_HORA, fechaHoraCorta, marcasDeHoras, primeraVelaDelDia } from './velasPorHora'
 import { posicion, trazosDelFibonacci } from '../components/asset/CapaFibonacci'
 
 // Con cuánto aire se eligen los precios del costado y las fechas de abajo en
@@ -52,6 +53,7 @@ const pctTexto = (x) => `${x > 0 ? '+' : x < 0 ? '−' : ''}${Math.abs(x * 100).
  * @param {string} a.activo     el ticker («AAPL»)
  * @param {string} a.moneda     'usd' | 'ars'
  * @param {Array}  a.puntos     las velas que se ven (ya semanales si son semanales)
+ * @param {string} a.cada       '1h' | '4h' si son velas de horas (utils/velasPorHora.js); null en diarias y semanales
  * @param {number} a.huecos     los lugares vacíos de la derecha (el aire hacia el futuro)
  * @param {number} a.lo, a.hi   la escala de precios de la pantalla (abajo y arriba)
  * @param {object} a.ver        las capas prendidas (BarraGrafico)
@@ -62,7 +64,7 @@ const pctTexto = (x) => `${x > 0 ? '+' : x < 0 ? '−' : ''}${Math.abs(x * 100).
  * @param {Function} a.amontonados (eventos, pctX) → true si los dividendos se pisarían (la regla de la pantalla)
  */
 export function specDelGrafico({
-  activo, moneda = 'usd', puntos = [], huecos = 0, lo, hi, ver = {}, tipo = 'linea', semanales = false,
+  activo, moneda = 'usd', puntos = [], huecos = 0, lo, hi, ver = {}, tipo = 'linea', semanales = false, cada = null,
   dibujos = [], fibonacci = null, elliott = null, eventos = [], convertida = null, fechaDatos = null, ultimaFecha = null,
   precio = (x) => String(x), colores = {}, volAlto = 0.15, adxTope = 50, squeeze = {}, amontonados = null, now = new Date(),
 }) {
@@ -78,6 +80,8 @@ export function specDelGrafico({
   const pctX = (i) => (lugares > 1 ? (i / (lugares - 1)) * 100 : 50)
   const pctY = (val) => (1 - (val - lo) / (hi - lo)) * 100
   const conVelas = tipo === 'velas'
+  // Las medias son de 200 y 50 velas: días en diarias, horas en 1H.
+  const unidad = cada === '4h' ? 'velas de 4 h' : cada ? 'horas' : 'días'
   const anchoLugar = 100 / Math.max(lugares, 1)
 
   // Una serie de los puntos como tramos seguidos (se corta donde falta el dato).
@@ -107,7 +111,7 @@ export function specDelGrafico({
     velas = puntos.map((p, i) => {
       const v = velaCompleta(p, pc)
       pc = p.c
-      return { x: pctX(i), o: pctY(v.o), c: pctY(v.c), h: pctY(v.h), l: pctY(v.l), sube: v.c >= v.o }
+      return { x: pctX(i), o: pctY(v.o), c: pctY(v.c), h: pctY(v.h), l: pctY(v.l), sube: v.c >= v.o, ...(p.enCurso ? { enCurso: true } : {}) }
     })
   } else {
     area = serie('c')
@@ -146,11 +150,11 @@ export function specDelGrafico({
   }
   if (ver.s200 && puntos.some(p => p.s200 != null)) {
     for (const t of serie('s200')) lineas.push({ puntos: t, color: colores.media200, ancho: 4 })
-    leyenda.push({ nombre: 'Promedio 200 días', color: colores.media200, forma: 'linea' })
+    leyenda.push({ nombre: `Promedio 200 ${unidad}`, color: colores.media200, forma: 'linea' })
   }
   if (ver.s50 && puntos.some(p => p.s50 != null)) {
     for (const t of serie('s50')) lineas.push({ puntos: t, color: colores.media50, ancho: 2.6 })
-    leyenda.push({ nombre: 'Promedio 50 días', color: colores.media50, forma: 'linea' })
+    leyenda.push({ nombre: `Promedio 50 ${unidad}`, color: colores.media50, forma: 'linea' })
   }
 
   // ── El Fibonacci automático (CapaFibonacci) ─────────────────────────────
@@ -283,7 +287,7 @@ export function specDelGrafico({
     ...tuyos.filter(d => d.tipo === 'horizontal').map(d => ({ y: pctY(d.precio), texto: sinUS(d.precio), color: colorDe(d) }))]
     .filter(e => e.y >= 0 && e.y <= 100)
   const anchoDias = (ANCHO_DEL_GRAFICO * puntos.length) / Math.max(lugares, 1)
-  const fechas = marcasDeFechas(puntos, anchoDias, PX_POR_FECHA).map(m => ({ x: pctX(m.i), texto: m.texto }))
+  const fechas = (cada ? marcasDeHoras : marcasDeFechas)(puntos, anchoDias, PX_POR_FECHA).map(m => ({ x: pctX(m.i), texto: m.texto }))
 
   // ── Balances y dividendos de la empresa (no son tuyos) ──────────────────
   const marcas = []
@@ -291,7 +295,7 @@ export function specDelGrafico({
     const hasta = ultimo.d
     const visibles = eventos
       .filter(e => e.fecha >= puntos[0].d && e.fecha <= hasta)
-      .map(e => ({ ...e, i: indiceDeFecha(puntos, e.fecha) }))
+      .map(e => ({ ...e, i: primeraVelaDelDia(puntos, e.fecha) }))
       .filter(e => e.i != null)
       .sort((a, b) => a.i - b.i)
     const sinDividendos = !!amontonados?.(visibles, pctX)
@@ -335,7 +339,8 @@ export function specDelGrafico({
   const desde = puntos[0].d
   const cambio = puntos[0].c > 0 ? ultimo.c / puntos[0].c - 1 : null
   const pie = [
-    fechaDatos ? `Datos al cierre del ${fechaCorta(fechaDatos)}.` : null,
+    cada ? `Velas de ${INTERVALOS_POR_HORA[cada].nombre}, en hora de Argentina${ultimo.enCurso ? '; la última estaba en curso' : ''}.`
+      : fechaDatos ? `Datos al cierre del ${fechaCorta(fechaDatos)}.` : null,
     convertida === 'mep' ? (moneda === 'usd'
       ? 'El precio en pesos de cada día está pasado a dólares con el MEP de ese día.'
       : 'El precio en dólares de cada día está pasado a pesos con el MEP de ese día.') : null,
@@ -345,10 +350,13 @@ export function specDelGrafico({
   return {
     kind: 'grafico',
     activo: String(activo || '').toUpperCase(),
-    subtitulo: `${conVelas ? (semanales ? 'Velas semanales' : 'Velas diarias') : 'Línea'} · del ${fechaCorta(desde)} al ${fechaCorta(ultimo.d)} · en ${moneda === 'ars' ? 'pesos' : 'dólares'}`,
+    subtitulo: cada
+      ? `Velas de ${INTERVALOS_POR_HORA[cada].nombre} · del ${fechaHoraCorta(puntos[0].t)} al ${fechaHoraCorta(ultimo.t)} · en ${moneda === 'ars' ? 'pesos' : 'dólares'}`
+      : `${conVelas ? (semanales ? 'Velas semanales' : 'Velas diarias') : 'Línea'} · del ${fechaCorta(desde)} al ${fechaCorta(ultimo.d)} · en ${moneda === 'ars' ? 'pesos' : 'dólares'}`,
     // Mirando el pasado (arrastrado o acercado), el precio grande no es el de
-    // hoy: dice de qué día es.
-    precio: { texto: precio(ultimo.c), ...((ultimaFecha || fechaDatos) > ultimo.d ? { fecha: `Cierre del ${fechaCorta(ultimo.d)}` } : {}) },
+    // hoy: dice de qué día es (en 1H/4H, de qué vela, si no es la en curso).
+    precio: { texto: precio(ultimo.c), ...(cada ? (ultimo.enCurso ? {} : { fecha: `Vela del ${fechaHoraCorta(ultimo.t)}` })
+      : (ultimaFecha || fechaDatos) > ultimo.d ? { fecha: `Cierre del ${fechaCorta(ultimo.d)}` } : {}) },
     cambio: cambio == null ? null : { texto: `${pctTexto(cambio)} en el período`, tono: cambio > 0 ? 'green' : cambio < 0 ? 'red' : 'gray' },
     leyenda,
     grafico: {

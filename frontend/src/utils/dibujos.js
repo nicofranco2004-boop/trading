@@ -16,6 +16,7 @@
 // { d: 'AAAA-MM-DD', mas: n, precio }. `mas` son los días de mercado después de
 // `d`: un punto dibujado en el espacio vacío de la derecha (hacia adelante) es
 // «n días de mercado después del último día que había».
+// En velas de 1 o 4 horas, además, el momento (`t`): ver utils/velasPorHora.js.
 
 import { indiceDeFecha } from './tecnico'
 import { api } from './api'
@@ -35,9 +36,12 @@ export const DIBUJOS_MAXIMOS = 60
 const numero = (x) => typeof x === 'number' && Number.isFinite(x)
 // `f` (opcional, sólo el pincel): la fracción del lugar, para que un trazo a
 // mano no quede en escalones de a un día cuando el gráfico está muy acercado.
+// `t` (opcional): el momento exacto, en segundos UTC, de un punto dibujado en
+// velas de 1 o 4 horas (utils/velasPorHora.js); `d` y `mas` siguen siendo su día.
 const punto = (p) => !!p && typeof p.d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(p.d)
   && Number.isInteger(p.mas) && p.mas >= 0 && numero(p.precio) && p.precio > 0
   && (p.f == null || (numero(p.f) && p.f >= 0 && p.f < 1))
+  && (p.t == null || (Number.isInteger(p.t) && p.t >= 0 && p.t <= 4102444800))
 // El pincel (Nico, 29/10): un trazo a mano alzada, hasta tantos puntos (se
 // guardan en tu cuenta con los demás dibujos: sin tope, un garabato largo
 // pesaría como cien líneas).

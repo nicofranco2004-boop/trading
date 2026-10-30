@@ -155,6 +155,28 @@ describe('specDelGrafico: qué lleva la imagen', () => {
     expect(s.leyenda.find(l => l.nombre === 'Tu dibujo')?.color).toBe('rgb(var(--cat-pink))')
   })
 
+  it('en 1H/4H: dice las velas de horas, con día y hora (de Argentina), y la vela en curso va más transparente', () => {
+    // 14 velas de 1 hora de Nueva York (10:30 a 16:30 acá) del 28 y 29/10; la última, en curso.
+    const t0 = Date.UTC(2026, 9, 28, 13, 30) / 1000
+    const puntos = velas(14, i => 100 + i, i => ({
+      d: i < 7 ? '2026-10-28' : '2026-10-29', t: t0 + (i < 7 ? i : 24 + i - 7) * 3600, ...(i === 13 ? { enCurso: true } : {}),
+    }))
+    const s = specDelGrafico(base({ puntos, huecos: 2, tipo: 'velas', cada: '1h', ver: { s200: true, s50: true } }))
+    expect(s.subtitulo).toBe('Velas de 1 hora · del 28/10/26 10:30 al 29/10/26 16:30 · en dólares')
+    expect(s.leyenda.map(l => l.nombre)).toEqual(['Promedio 200 horas', 'Promedio 50 horas'])
+    expect(s.pie[0]).toBe('Velas de 1 hora, en hora de Argentina; la última estaba en curso.')
+    expect(s.precio.fecha).toBeUndefined()
+    expect(s.grafico.velas.map(v => !!v.enCurso)).toEqual([...Array(13).fill(false), true])
+    // Las fechas de abajo: horas y el cambio de día (no 14 veces «28»).
+    const fechas = s.fechas.map(f => f.texto)
+    expect(fechas).toContain('29 oct')
+    expect(fechas.filter(f => f === '28').length).toBe(0)
+    // Mirando una vela que ya cerró, el precio grande dice de cuál.
+    const pasado = specDelGrafico(base({ puntos: puntos.slice(0, 7), tipo: 'velas', cada: '1h' }))
+    expect(pasado.precio.fecha).toBe('Vela del 28/10/26 16:30')
+    expect(specDelGrafico(base({ puntos, tipo: 'velas', cada: '4h' })).subtitulo).toMatch(/^Velas de 4 horas · /)
+  })
+
   it('sin precios no hay imagen', () => {
     expect(specDelGrafico(base({ puntos: [] }))).toBe(null)
   })

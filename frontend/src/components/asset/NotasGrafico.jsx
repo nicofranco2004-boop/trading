@@ -22,6 +22,7 @@ import { useState } from 'react'
 import { Lightbulb, Pencil, StickyNote, Trash2 } from 'lucide-react'
 import { colorDe } from './CapaDibujos'
 import { NOTA_MAXIMA, largoDeNota, limpiarNota, recortarNota } from '../../utils/dibujos'
+import { fechaHoraCorta } from '../../utils/velasPorHora'
 
 // El cuadradito de la banderita y el palito que la une a su punto, en px.
 export const BANDERITA_PX = 22
@@ -156,7 +157,9 @@ const BOTON_LISTO = `${BOTON} border-line-2 text-ink-1 hover:text-ink-0`
 
 /** Dónde está una nota: «el 12/03/26, a US$ 180,25» (o días después del último día que había). */
 function dondeEsta(n, precio, fecha) {
-  const dia = n.a.mas > 0 ? `${n.a.mas} día${n.a.mas === 1 ? '' : 's'} de mercado después del ${fecha(n.a.d)}` : `el ${fecha(n.a.d)}`
+  // Una nota puesta en velas de 1 o 4 horas sabe también la hora (hora argentina).
+  const dia = Number.isInteger(n.a.t) ? `el ${fechaHoraCorta(n.a.t)}`
+    : n.a.mas > 0 ? `${n.a.mas} día${n.a.mas === 1 ? '' : 's'} de mercado después del ${fecha(n.a.d)}` : `el ${fecha(n.a.d)}`
   return `${dia}, a ${precio(n.a.precio)}`
 }
 

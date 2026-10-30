@@ -66,6 +66,11 @@ import {
 import {
   medicion as medirEntre, primeraCompra, puntosDesde, tarjetasMovimiento, textoGrupo, textoMedicion,
 } from '../../utils/cuantoSeMueve'
+import {
+  INTERVALOS_POR_HORA, esIntradia, fechaHoraCorta, fechaHoraDeLaMira, marcasDeHoras, primeraVelaDelDia, textoEnCurso,
+  textoMedicionPorHora, ubicadorPorHora, useVelasPorHora, velasRecientes,
+} from '../../utils/velasPorHora'
+import { proximoTic } from '../../utils/preciosEnVivo'
 
 const v = (t) => `rgb(var(--${t}))`
 const COLOR = {
@@ -432,7 +437,28 @@ export default function LecturaTecnica({
   const [ventana, setVentana] = useState(null)
   // Velas diarias siempre; semanales sólo si se eligen (para mirar el panorama
   // de 2 años). El análisis (Fibonacci, giros) se hace sobre las diarias.
+  // 1H y 4H (Nico, 30/10): sus velas vienen de su propio pedido y la última
+  // se mueve sola cada minuto (utils/velasPorHora.js). Sólo con velas.
   const [intervalo, setIntervalo] = useState('dia')
+  const cadaHoras = tipo === 'velas' && esIntradia(intervalo) ? intervalo : null
+  const porHoras = useVelasPorHora({ asset, moneda, local: accionLocal, cada: cadaHoras })
+  // Otra temporalidad son otros lugares: el zoom y lo marcado a medias eran de la anterior.
+  useEffect(() => {
+    setVentana(null)
+    setMedirEstado(m => ({ ...m, a: null, b: null }))
+    setDibujarEstado(d => ({ ...d, puntos: [] }))
+    setElegido(null)
+  }, [cadaHoras])
+  // Empezó otra hora y llegó una vela nueva: si se estaba mirando hasta la
+  // última (acercado o corrido a mano), la vista la sigue, como TradingView.
+  const velasHoras = porHoras.datos?.puntos?.length || 0
+  const antesHoras = useRef({ clave: null, n: 0 })
+  useEffect(() => {
+    const clave = `${moneda}|${cadaHoras}`, antes = antesHoras.current
+    antesHoras.current = { clave, n: velasHoras }
+    if (!cadaHoras || antes.clave !== clave || !antes.n || velasHoras <= antes.n) return
+    setVentana(v => (v && v.fin >= antes.n ? { ...v, fin: v.fin + (velasHoras - antes.n) } : v))
+  }, [velasHoras, cadaHoras, moneda])
   // Pantalla completa (Nico, 28/10: «para un análisis profundo, que toda la
   // pantalla sea el gráfico, como entrar a TradingView»): la misma sección, fija
   // sobre toda la página y con el gráfico más alto; «Achicar» o Esc vuelven a la
@@ -525,8 +551,8 @@ export default function LecturaTecnica({
 
   // `visto`: el rango que se está viendo (null si se acercó o movió a mano);
   // `recientes`: cuántos días es «Lo reciente» (null = no hace falta).
-  const marco = (hijos, { conPesos = datos.ars?.disponible !== false, visto = ventana ? null : rango ?? (anchoGrafico > 0 && anchoGrafico < ANCHO_ANGOSTO ? 'reciente' : 'todo'), recientes = null, compartir = null, antesDeCompartir = null } = {}) => (
-    <Marco moneda={moneda} setMoneda={setMoneda} rango={visto} setRango={elegirRango} recientes={recientes} compartir={compartir} antesDeCompartir={antesDeCompartir} archivo={archivoDelGrafico(asset)}
+  const marco = (hijos, { conPesos = datos.ars?.disponible !== false, visto = ventana ? null : rango ?? (anchoGrafico > 0 && anchoGrafico < ANCHO_ANGOSTO ? 'reciente' : 'todo'), recientes = null, textoReciente = null, compartir = null, antesDeCompartir = null } = {}) => (
+    <Marco moneda={moneda} setMoneda={setMoneda} rango={visto} setRango={elegirRango} recientes={recientes} textoReciente={textoReciente} compartir={compartir} antesDeCompartir={antesDeCompartir} archivo={archivoDelGrafico(asset)}
       conPesos={conPesos} conTuyo={!!primera} tipo={tipo} setTipo={setTipo} intervalo={intervalo} setIntervalo={setIntervalo}
       grande={grande} setGrande={setGrande} titulo={titulo}>{hijos}</Marco>
   )
@@ -570,16 +596,24 @@ export default function LecturaTecnica({
     ) : null
   }
 
-  const total = actual.puntos.length
+  // En 1H y 4H el gráfico dibuja las velas de horas (`serie`); la lectura, las
+  // tarjetas, tu precio y lo demás siguen saliendo de las diarias (`actual`).
+  // Lo que se guarda por día (tus dibujos, tus notas) se ubica por fecha y
+  // hora con `porHora` (utils/velasPorHora.ubicadorPorHora).
+  const horas = cadaHoras && porHoras.datos?.disponible && porHoras.datos.puntos?.length ? porHoras.datos : null
+  const serie = horas ? horas.puntos : actual.puntos
+  const porHora = horas ? ubicadorPorHora(serie, { sesion: horas.sesion, cada: cadaHoras, diarios: actual.puntos }) : null
+  const total = serie.length
   const semanales = tipo === 'velas' && intervalo === 'semana'
   // Cuántos días muestra el rango elegido; «Desde que lo tenés», desde tu
-  // primera compra; «Lo reciente», las velas que entran a un ancho legible.
-  const recientes = diasRecientes(anchoGrafico, total, semanales ? 5 : 1)
+  // primera compra; «Lo reciente», las velas que entran a un ancho legible
+  // (en 1H y 4H, también en la compu: «Todo» son ~1.000 velas).
+  const recientes = horas ? velasRecientes(anchoGrafico, total) : diasRecientes(anchoGrafico, total, semanales ? 5 : 1)
   const rangoVisto = rango ?? (recientes ? 'reciente' : 'todo')
   const nRango = rangoVisto === 'tuyo' && primera
-    ? Math.max(RUEDAS_MINIMAS, puntosDesde(actual.puntos, primera))
+    ? Math.max(RUEDAS_MINIMAS, puntosDesde(serie, primera))
     : rangoVisto === 'reciente' && recientes ? recientes
-      : actual.puntos.length
+      : total
   // La ventana en LUGARES (ver tecnico.margenDerecho): los días que se ven más
   // el aire vacío de la derecha, por donde se puede arrastrar hacia el futuro.
   const inicial = ventanaInicial(nRango, total)
@@ -587,7 +621,7 @@ export default function LecturaTecnica({
   const nVista = v0.n
   const finVista = Math.min(v0.fin, total + futuroMaximo(nVista))
   const inicioVista = Math.max(0, finVista - nVista)
-  const diarios = actual.puntos.slice(inicioVista, Math.min(finVista, total))
+  const diarios = serie.slice(inicioVista, Math.min(finVista, total))
   const huecosDias = Math.max(0, finVista - total)
   const puntos = semanales ? velasSemanales(diarios, actual.puntos.slice(Math.max(0, inicioVista - 7), inicioVista)) : diarios
   const huecos = semanales ? Math.round(huecosDias / 5) : huecosDias
@@ -596,7 +630,7 @@ export default function LecturaTecnica({
   const mover = (frac) => { const v2 = moverVentana(vista, frac); if (v2) setVentana(v2) }
   const promedio = lineaPromedio(actual.puntos, pnlPct,
     moneda === 'usd' ? variacionDeHoy(referencia?.precio, actual.cierre_ref) : 0)
-  const ultimaFecha = actual.puntos[total - 1]?.d
+  const ultimaFecha = actual.puntos[actual.puntos.length - 1]?.d
   const misMarcas = marcas(lotes, operaciones).filter(m => m.fecha <= ultimaFecha)
   // Si los precios no se pudieron actualizar en más de una semana, se avisa
   // arriba (antes sólo se veía la fecha en letra chica al pie).
@@ -639,10 +673,17 @@ export default function LecturaTecnica({
     const k = d ? indiceDeFecha(puntos, d) : null
     return k != null ? k : (d < (puntos[0]?.d || '') ? -1 : puntos.length)
   }
+  // Lo que se guarda de un punto tocado (`i`: su lugar en la serie del
+  // gráfico) y, al revés, en qué lugar cae un punto guardado: por día en
+  // diarias y semanales; por fecha y hora en 1H/4H (null: antes de las velas
+  // de horas que hay, no se sabe dónde va y no se dibuja).
+  const puntoGuardado = (i, precio, f = 0) => (porHora
+    ? porHora.puntoDelLugar(i + f, precio, { fraccion: f > 0 }) : puntoDelDia(actual.puntos, i, precio, f))
+  const lugarGuardado = (q) => (porHora ? porHora.lugarDelPunto(q) : diaDelPunto(actual.puntos, q))
   const tocar = (k, precio) => {
     if (!(precio > 0)) return
     const p = { i: diaDelLugar(k), precio }
-    const guardado = (q) => puntoDelDia(actual.puntos, q.i, q.precio)
+    const guardado = (q) => puntoGuardado(q.i, q.precio)
     if (dibujar.tipo === 'nota') {
       // Una nota: el punto y después el texto (el cartel de arriba). Tocar
       // otro punto antes de guardar la cambia de lugar.
@@ -691,7 +732,7 @@ export default function LecturaTecnica({
   function terminarElliott(puntos = dibujar.puntos) {
     const forma = FORMA_ELLIOTT[dibujar.tipo]
     if (puntos.length >= 2 && forma) {
-      cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'elliott', forma, puntos: puntos.map(q => puntoDelDia(actual.puntos, q.i, q.precio)) }], { apaga: 'ell' })
+      cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'elliott', forma, puntos: puntos.map(q => puntoGuardado(q.i, q.precio)) }], { apaga: 'ell' })
       setVer(x => ({ ...x, ell: false }))
     }
     setDibujarEstado({ tipo: null, puntos: [] })
@@ -702,7 +743,7 @@ export default function LecturaTecnica({
   const trazarPincel = (lista) => {
     const puntos = lista.map(q => {
       const base = Math.max(0, Math.floor(q.k))
-      return puntoDelDia(actual.puntos, diaDelLugar(base), q.precio, q.k - base)
+      return puntoGuardado(diaDelLugar(base), q.precio, q.k - base)
     })
     if (puntos.length >= 2) cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'pincel', puntos: puntos.slice(0, PINCEL_MAXIMO) }])
   }
@@ -717,12 +758,16 @@ export default function LecturaTecnica({
   // día; en semanales, el día de esa vela (o 5 días por vela antes del gráfico).
   const moverDibujo = (id, que, dk, dp) => {
     const correr = (q) => {
-      const i = diaDelPunto(actual.puntos, q)
+      const i = lugarGuardado(q)
+      // En 1H/4H se corre por velas y se guarda el momento nuevo.
+      if (porHora) return porHora.puntoDelLugar(Math.max(0, i + dk), precioCorrido(q.precio, dp), { fraccion: q.f != null })
       const k = lugarDelDia(i) + dk
       // Corrida sólo de precio, el día queda (en semanales, si no, iría al
-      // último día de su semana).
+      // último día de su semana) y también su hora, si se dibujó en 1H/4H.
+      // El pincel conserva dónde iba dentro del día (`f`).
       const i2 = !semanales || !dk ? i + dk : k >= 0 ? diaDelLugar(Math.round(k)) : i + Math.round(dk * porVela)
-      return puntoDelDia(actual.puntos, Math.max(0, i2), precioCorrido(q.precio, dp))
+      const nuevo = puntoDelDia(actual.puntos, Math.max(0, i2), precioCorrido(q.precio, dp), q.f || 0)
+      return !dk && q.t != null ? { ...nuevo, t: q.t } : nuevo
     }
     cambiarDibujos(misDibujos.map(d => (d.id !== id ? d
       : dibujoCorrido(d, que, correr, (x) => precioRedondo(precioCorrido(x, dp)), dp))))
@@ -733,23 +778,31 @@ export default function LecturaTecnica({
     }
   }
   // Los dibujos en lo que se ve: cada punto en su lugar (`k`) y su precio.
-  const enVista = (q) => ({ k: lugarDelDia(diaDelPunto(actual.puntos, q)) + (q.f || 0), precio: q.precio })
+  // En 1H/4H el lugar ya trae la fracción de la vela; un dibujo con algún
+  // punto sin lugar (antes de las velas de horas que hay) no se dibuja ahí.
+  const enVista = (q) => {
+    const i = lugarGuardado(q)
+    return i == null ? null : { k: lugarDelDia(i) + (porHora ? 0 : (q.f || 0)), precio: q.precio }
+  }
   const dibujosEnVista = misDibujos.map(d => (d.tipo === 'horizontal' ? d
     : d.tipo === 'elliott' || d.tipo === 'pincel' ? { ...d, puntos: d.puntos.map(enVista) }
       : { ...d, a: enVista(d.a), ...(d.b ? { b: enVista(d.b) } : {}), ...(d.c ? { c: enVista(d.c) } : {}) }))
+    .filter(d => !(d.puntos || [d.a, d.b, d.c]).some(q => q === null))
+  const sinLugarEnHoras = porHora ? misDibujos.length - dibujosEnVista.length : 0
   // Cada versión de tu tesis, en el día en que la escribiste (o el día de
   // mercado de antes, si fue un fin de semana) y al cierre de ese día. Antes
   // de lo que hay guardado, no va.
+  // En 1H/4H, la última vela de ese día: su cierre es el del día.
   const tesisEnVista = tesis.map(t => {
-    const i = indiceDeFecha(actual.puntos, String(t.escrita_el || '').slice(0, 10))
-    if (i == null || !(actual.puntos[i]?.c > 0)) return null
-    return { id: t.id, texto: t.texto, escrita_el: t.escrita_el, k: lugarDelDia(i), precio: actual.puntos[i].c }
+    const i = indiceDeFecha(serie, String(t.escrita_el || '').slice(0, 10))
+    if (i == null || !(serie[i]?.c > 0)) return null
+    return { id: t.id, texto: t.texto, escrita_el: t.escrita_el, k: lugarDelDia(i), precio: serie[i].c }
   }).filter(Boolean)
   // La nota nueva, ya escrita: se guarda con el resto (deshacer la incluye).
   const guardarNota = () => {
     const texto = limpiarNota(textoNota), p = dibujar.puntos[0]
     if (!texto || !p) return
-    cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'nota', a: puntoDelDia(actual.puntos, p.i, p.precio), texto }])
+    cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'nota', a: puntoGuardado(p.i, p.precio), texto }])
     setDibujarEstado({ tipo: null, puntos: [] })
     setTextoNota('')
   }
@@ -762,9 +815,16 @@ export default function LecturaTecnica({
   // «Ver tu tesis»: desde pantalla completa, primero vuelve a la ficha.
   const verTesis = onVerTesis ? () => { setElegido(null); if (grande) setGrande(false); setTimeout(onVerTesis, 0) } : null
   const herramienta = medir.activo ? 'medir' : dibujar.tipo
-  const medida = medir.activo ? medirEntre(actual.puntos, medir.a, medir.b) : null
-  // Lo que dice un punto medido: su día, o cuántos días de mercado después de hoy.
+  const medida = medir.activo ? medirEntre(serie, medir.a, medir.b) : null
+  // Lo que dice un punto medido: su día, o cuántos días de mercado después de
+  // hoy. En 1H/4H, su día y su hora, o cuántas velas después de la última.
   const diaDicho = (fecha, adelante) => (fecha ? `el ${fechaCorta(fecha)}` : `dentro de ${adelante} día${adelante === 1 ? '' : 's'} de mercado`)
+  const cuandoDicho = (i) => {
+    const adelante = i - (total - 1)
+    if (!horas) return diaDicho(serie[i]?.d && adelante <= 0 ? serie[i].d : null, adelante)
+    return adelante > 0 ? `dentro de ${adelante} vela${adelante === 1 ? '' : 's'}` : `el ${fechaHoraCorta(serie[i].t)}`
+  }
+  const textoDeMedicion = (m) => (horas ? textoMedicionPorHora(m, cadaHoras) : textoMedicion(m))
   const tenenciaEnMoneda = tenencia?.valorUsd > 0
     ? { valor: moneda === 'usd' ? tenencia.valorUsd : tenencia.valorUsd * (tenencia.tc || 0) } : null
   const cuanto = tarjetasMovimiento(actual.movimiento, {
@@ -787,7 +847,8 @@ export default function LecturaTecnica({
   const lugaresMinimos = (RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS)) / (semanales ? 5 : 1)
   const compartir = () => specDelGrafico({
     activo: asset, moneda, puntos, huecos, lo: escala.current?.min, hi: escala.current?.max,
-    ver, tipo, semanales, dibujos: dibujosEnVista, fibonacci: actual.fibonacci, elliott: actual.elliott,
+    ver, tipo, semanales, cada: horas ? cadaHoras : null, dibujos: dibujosEnVista,
+    fibonacci: horas ? null : actual.fibonacci, elliott: horas ? null : actual.elliott,
     eventos: losEventos, convertida: actual.convertida, fechaDatos: actual.lectura?.fecha,
     precio: (x) => fmtPrecio(x, moneda), volAlto: VOL_ALTO, adxTope: ADX_TOPE, squeeze: SQUEEZE, ultimaFecha,
     // Los dividendos que se pisarían se esconden con la misma regla que en la pantalla, al ancho de la imagen.
@@ -802,7 +863,7 @@ export default function LecturaTecnica({
     tenes: pnlPctUsd != null, operaste: pnlPctUsd != null || lotes.length > 0 || operaciones.length > 0,
     dibujar, setDibujar, cuantosDibujos: misDibujos.length, conNotas, cuantosSon: cuantosSon(misDibujos), pedirBorrarTodos: () => { setElegido(null); setBorrarTodos(true) },
     deshacer, rehacer, puedeDeshacer: historia.current.atras.length > 0, puedeRehacer: historia.current.adelante.length > 0,
-    nVista, acercar,
+    nVista, acercar, serie, cada: horas ? cadaHoras : null,
   })
 
   return marco(
@@ -840,13 +901,13 @@ export default function LecturaTecnica({
               className="mb-2 rounded-lg border border-rendi-accent/30 bg-rendi-accent/10 px-3 py-2 text-[12.5px] text-ink-1 leading-relaxed">
               {!medir.a && 'Tocá cualquier punto del gráfico para empezar a medir: el precio y el día donde tocás. También podés tocar el espacio vacío de la derecha, para medir hacia adelante.'}
               {medir.a && !medir.b && (
-                <span className="tabular">{`Desde ${fmtPrecio(medir.a.precio, moneda)}, ${diaDicho(actual.puntos[medir.a.i]?.d, medir.a.i - (total - 1))}. Ahora tocá el otro punto.`}</span>
+                <span className="tabular">{`Desde ${fmtPrecio(medir.a.precio, moneda)}, ${cuandoDicho(medir.a.i)}. Ahora tocá el otro punto.`}</span>
               )}
               {medida && (
                 <>
-                  <b className={`font-semibold tabular ${medida.diferencia === 0 ? 'text-ink-0' : medida.pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>{textoMedicion(medida)}</b>
+                  <b className={`font-semibold tabular ${medida.diferencia === 0 ? 'text-ink-0' : medida.pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>{textoDeMedicion(medida)}</b>
                   {medida.diferencia !== 0 && (
-                    <span className="tabular">{`: de ${fmtPrecio(medida.precioDesde, moneda)} (${diaDicho(medida.desde, medida.adelanteDesde)}) a ${fmtPrecio(medida.precioHasta, moneda)} (${diaDicho(medida.hasta, medida.adelanteHasta)}), ${medida.diferencia > 0 ? '+' : '−'}${fmtPrecio(Math.abs(medida.diferencia), moneda)}. `}</span>
+                    <span className="tabular">{`: de ${fmtPrecio(medida.precioDesde, moneda)} (${cuandoDicho(Math.min(medir.a.i, medir.b.i))}) a ${fmtPrecio(medida.precioHasta, moneda)} (${cuandoDicho(Math.max(medir.a.i, medir.b.i))}), ${medida.diferencia > 0 ? '+' : '−'}${fmtPrecio(Math.abs(medida.diferencia), moneda)}. `}</span>
                   )}
                   {medida.adelanteHasta > 0 && 'Lo que queda a la derecha de hoy es una cuenta: todavía no hay precios ahí. '}
                   Tocá otro punto para medir de nuevo.
@@ -939,11 +1000,30 @@ export default function LecturaTecnica({
               )}
             </div>
           )}
+          {cadaHoras && !horas ? (
+            // 1H o 4H todavía sin sus velas: cargando, o lo que pasó (la
+            // lectura y las tarjetas de abajo siguen siendo las diarias).
+            porHoras.datos === undefined ? cargando : (
+              <div role="status" className="h-[22rem] flex flex-col items-center justify-center gap-3 text-center text-sm text-ink-1 px-4">
+                {porHoras.datos?.error
+                  ? `No se pudieron traer las velas de ${INTERVALOS_POR_HORA[cadaHoras].nombre}.`
+                  : `No encontramos velas de ${INTERVALOS_POR_HORA[cadaHoras].nombre} de este activo.`}
+                <span className="flex flex-wrap justify-center gap-2">
+                  {porHoras.datos?.error && (
+                    <button type="button" onClick={porHoras.reintentar}
+                      className="min-h-10 px-3 rounded-lg border border-line-2 text-ink-0 hover:bg-bg-2">Reintentar</button>
+                  )}
+                  <button type="button" onClick={() => setIntervalo('dia')}
+                    className="min-h-10 px-3 rounded-lg border border-line-2 text-ink-0 hover:bg-bg-2">Ver velas diarias</button>
+                </span>
+              </div>
+            )
+          ) : (
           <Grafico leyenda={
             <LeyendaIndicadores items={botones.indicadores} onAviso={setAviso} deFabrica={deFabrica} onFabrica={volverDeFabrica} />
           } grande={grande} puntos={puntos} huecos={huecos} moneda={moneda} promedio={ver.prom ? promedio : null}
-            marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo}
-            fibonacci={ver.fib ? actual.fibonacci : null} elliott={ver.ell ? actual.elliott : null} onZoom={zoom} onMover={mover}
+            marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo} cada={horas ? cadaHoras : null}
+            fibonacci={ver.fib && !horas ? actual.fibonacci : null} elliott={ver.ell && !horas ? actual.elliott : null} onZoom={zoom} onMover={mover}
             pie={
               // Cómo se usa, corto (Nico, 29/10): en el celular, para el dedo
               // (antes hablaba de «la ruedita»). Va pegado a las fechas, antes
@@ -952,8 +1032,15 @@ export default function LecturaTecnica({
               <div className="flex items-start gap-2">
                 <p data-ayuda="" className="flex-1 min-w-0 text-[11.5px] text-ink-2 mt-0.5 leading-snug">
                   {semanales && 'Cada vela es una semana. '}
-                  {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá o pasá a velas semanales. '}
-                  <span className="sm:hidden">Pellizcá para acercar o alejar, deslizá para moverte, mantené apretado para ver cada día y tocá un dibujo para elegirlo.</span>
+                  {horas && (
+                    <>
+                      {`Cada vela es ${cadaHoras === '4h' ? 'un bloque de 4 horas' : 'una hora'}, en hora de Argentina. `}
+                      <EnCurso puntos={serie} actualizada={horas.actualizada} />
+                      {sinLugarEnHoras > 0 && `${sinLugarEnHoras === 1 ? 'Uno de tus dibujos arranca' : `${sinLugarEnHoras} de tus dibujos arrancan`} antes de las velas de ${INTERVALOS_POR_HORA[cadaHoras].nombre} que hay: ${sinLugarEnHoras === 1 ? 'se ve' : 'se ven'} en diarias. `}
+                    </>
+                  )}
+                  {tipo === 'velas' && !semanales && !horas && diarios.length > 300 && 'Cada vela es un día: acercá o pasá a velas semanales. '}
+                  <span className="sm:hidden">{`Pellizcá para acercar o alejar, deslizá para moverte, mantené apretado para ver cada ${horas ? 'vela' : 'día'} y tocá un dibujo para elegirlo.`}</span>
                   <span className="hidden sm:inline">Ruedita: acercar o alejar. Arrastrar: moverte. Doble click en los precios o las fechas: vuelve a automático.</span>
                 </p>
                 {/* «Compartir» en el celular: arriba no entra en el renglón de los controles. */}
@@ -967,7 +1054,7 @@ export default function LecturaTecnica({
               a: medir.a && { k: lugarDelDia(medir.a.i), precio: medir.a.precio },
               b: medir.b && { k: lugarDelDia(medir.b.i), precio: medir.b.precio }, m: medida,
               // Con el primer punto puesto, lo que daría la medición hasta el mouse.
-              hasta: medir.a && !medir.b ? (k, precio) => medirEntre(actual.puntos, medir.a, { i: diaDelLugar(k), precio }) : null,
+              hasta: medir.a && !medir.b ? (k, precio) => medirEntre(serie, medir.a, { i: diaDelLugar(k), precio }) : null,
             } : null}
             onToque={herramienta && herramienta !== 'pincel' ? tocar : null} onTerminar={terminarDesdeElGrafico}
             onPincel={herramienta === 'pincel' ? trazarPincel : null}
@@ -975,8 +1062,9 @@ export default function LecturaTecnica({
             dibujos={dibujosEnVista} elegido={elegido} onElegir={setElegido} onMoverDibujo={moverDibujo} escala={escala} tesis={tesisEnVista}
             conAviso={misDibujos.filter(d => alertaDeLinea(avisos.items, { asset, moneda, dibujo: d.id })).map(d => d.id)}
             trazo={dibujar.puntos.length ? { tipo: dibujar.tipo, puntos: dibujar.puntos.map(q => ({ k: lugarDelDia(q.i), precio: q.precio })) } : null} />
-          {rangoVisto === 'tuyo' && !ventana && primera && primera < actual.puntos[0].d && (
-            <p className="text-[11.5px] text-ink-2 mt-1">Lo tenés desde el {fechaCorta(primera)}; el gráfico empieza el {fechaCorta(actual.puntos[0].d)}, que es lo que hay guardado.</p>
+          )}
+          {rangoVisto === 'tuyo' && !ventana && primera && primera < serie[0].d && (
+            <p className="text-[11.5px] text-ink-2 mt-1">Lo tenés desde el {fechaCorta(primera)}; el gráfico empieza el {fechaCorta(serie[0].d)}, que es lo que hay guardado.</p>
           )}
         </div>
       </div>
@@ -1041,8 +1129,26 @@ export default function LecturaTecnica({
         Datos al cierre del {fechaCorta(actual.lectura?.fecha)}. Muestra cómo se movió el precio: no es una recomendación para comprar ni vender.
       </p>
     </>,
-    { visto: ventana ? null : rangoVisto, recientes, compartir, antesDeCompartir },
+    // En 1H/4H «Lo reciente» se cuenta en velas, no en días de mercado.
+    { visto: ventana ? null : rangoVisto, recientes, textoReciente: horas && recientes ? `${recientes} velas` : null, compartir, antesDeCompartir },
   )
+}
+
+// La vela que todavía se mueve, en 1H/4H: «La última vela está en curso ·
+// hace 20 s.» Se reescribe sola (cada segundo; cada 15 s cuando ya dice
+// minutos), sin redibujar el gráfico entero.
+function EnCurso({ puntos, actualizada }) {
+  const [ahora, setAhora] = useState(Date.now)
+  const ultima = puntos[puntos.length - 1]
+  const enCurso = !!ultima?.enCurso
+  useEffect(() => {
+    if (!enCurso) return
+    const t = setTimeout(() => setAhora(Date.now()), proximoTic(actualizada, ahora))
+    return () => clearTimeout(t)
+  }, [ahora, actualizada, enCurso])
+  if (!ultima) return null
+  if (!enCurso) return `La última vela es la del ${fechaHoraCorta(ultima.t)}. `
+  return <span data-en-curso="">{`La última vela está ${textoEnCurso(actualizada, ahora)}. `}</span>
 }
 
 // Las herramientas de Elliott a mano y la forma de conteo que dibujan.
@@ -1110,7 +1216,7 @@ function periodoDeMovimiento(m) {
   return dias >= 700 ? 'Últimos 2 años' : `Desde el ${fechaCorta(m.desde)}`
 }
 
-function Marco({ moneda, setMoneda, rango, setRango, recientes = null, conPesos = true, conTuyo = false, tipo, setTipo, intervalo, setIntervalo, grande = false, setGrande, titulo, compartir = null, antesDeCompartir = null, archivo, children }) {
+function Marco({ moneda, setMoneda, rango, setRango, recientes = null, textoReciente = null, conPesos = true, conTuyo = false, tipo, setTipo, intervalo, setIntervalo, grande = false, setGrande, titulo, compartir = null, antesDeCompartir = null, archivo, children }) {
   // En la ficha, ya ampliado (Nico, 24/10: «que sea automáticamente ampliado»).
   // Con «Pantalla completa», la MISMA sección fija sobre toda la página (no es
   // otra vista: mismos datos, mismos botones; R6). Arriba a la derecha, en UN
@@ -1150,7 +1256,7 @@ function Marco({ moneda, setMoneda, rango, setRango, recientes = null, conPesos 
             <ElegirIntervalo valor={intervalo} alElegir={setIntervalo} />
           )}
           <ElegirVista moneda={moneda} setMoneda={setMoneda} conPesos={conPesos}
-            rango={rango} setRango={setRango} recientes={recientes} conTuyo={conTuyo} />
+            rango={rango} setRango={setRango} recientes={recientes} textoReciente={textoReciente} conTuyo={conTuyo} />
         </div>
       </div>
       <div className="bg-bg-1 border border-line/60 rounded-xl p-3 sm:p-4">{children}</div>
@@ -1202,12 +1308,12 @@ function Opcion({ elegida, onClick, nombre, detalle, ...resto }) {
 }
 
 // Cada cuánto es una vela, como TradingView (Nico, 29/10): un botón con lo
-// elegido («1D») que al tocarlo despliega las opciones. Por ahora diarias y
-// semanales: las de 1 y 4 horas necesitan precios de cada hora, que Rendi
-// todavía no guarda.
-const INTERVALOS = [['dia', '1D', 'Diarias'], ['semana', '1S', 'Semanales']]
+// elegido («1D») que al tocarlo despliega las opciones. 1 hora y 4 horas
+// (Nico, 30/10): sus velas se piden a Yahoo al elegirlas y la última se mueve
+// sola (utils/velasPorHora.js); la lectura de abajo sigue siendo la diaria.
+const INTERVALOS = [['1h', '1H', '1 hora'], ['4h', '4H', '4 horas'], ['dia', '1D', 'Diarias'], ['semana', '1S', 'Semanales']]
 function ElegirIntervalo({ valor, alElegir }) {
-  const actual = INTERVALOS.find(i => i[0] === valor) || INTERVALOS[0]
+  const actual = INTERVALOS.find(i => i[0] === valor) || INTERVALOS.find(i => i[0] === 'dia')
   return (
     <Desplegable capa="intervalo" etiqueta="Cada vela es" titulo={`Cada vela es: ${actual[2].toLowerCase()}`}
       boton={<><span className="sr-only">Cada vela es </span>{actual[1]}</>}
@@ -1232,7 +1338,7 @@ function cuantoEsReciente(dias) {
   if (meses >= 2) return meses >= 24 ? `${Math.round(dias / 252)} años` : `${meses} meses`
   return `${Math.max(1, Math.round(dias / 5))} semanas`
 }
-function ElegirVista({ moneda, setMoneda, conPesos, rango, setRango, recientes, conTuyo }) {
+function ElegirVista({ moneda, setMoneda, conPesos, rango, setRango, recientes, textoReciente = null, conTuyo }) {
   const m = MONEDAS.find(x => x[0] === moneda) || MONEDAS[0]
   const rangos = [...(recientes || rango === 'reciente' ? ['reciente'] : []), 'todo', ...(conTuyo ? ['tuyo'] : [])]
   const titulo = (t) => <div className="px-2.5 pt-1.5 pb-0.5 text-[11px] font-semibold text-ink-2">{t}</div>
@@ -1253,7 +1359,7 @@ function ElegirVista({ moneda, setMoneda, conPesos, rango, setRango, recientes, 
             {titulo('Período')}
             {rangos.map(id => (
               <Opcion key={id} data-rango={id} elegida={rango === id} nombre={RANGOS[id]}
-                detalle={id === 'reciente' && recientes ? cuantoEsReciente(recientes) : null}
+                detalle={id === 'reciente' && recientes ? (textoReciente || cuantoEsReciente(recientes)) : null}
                 onClick={() => { setRango(id); cerrar() }} />
             ))}
           </div>
@@ -1275,19 +1381,24 @@ function botonesDeLaBarra({
   actual, ver, alternar, losEventos, eventosCargando, misMarcas, promedio, moneda,
   pnlPctUsd, lineaSinTc, tenes, operaste, medir, setMedir, nVista, acercar,
   dibujar, setDibujar, cuantosDibujos, cuantosSon: cuantosLista = '', conNotas = true, pedirBorrarTodos,
-  deshacer, rehacer, puedeDeshacer, puedeRehacer,
+  deshacer, rehacer, puedeDeshacer, puedeRehacer, serie = actual.puntos, cada = null,
 }) {
   const capa = (id, nombre, icono, sinDatos, onClick) => ({
     id, nombre, icono, activo: !sinDatos && !!ver[id], sinDatos: sinDatos || null, onClick: onClick || (() => alternar(id)),
   })
-  const hay = (k) => actual.puntos.some(p => p[k] != null)
+  const hay = (k) => serie.some(p => p[k] != null)
   const fib = actual.fibonacci
   const ell = actual.elliott
-  const sinFib = !fib ? 'Este activo todavía no tiene el cálculo del Fibonacci.'
+  // En 1H/4H: las velas de horas (las medias son de 200 y 50 VELAS).
+  const unidad = cada === '4h' ? 'velas de 4 h' : cada ? 'horas' : 'días'
+  const faltan = (n) => `Faltan datos: hacen falta ${n} ${cada ? unidad : 'días de mercado'}.`
+  const sinFib = cada ? 'El Fibonacci automático se calcula con las velas diarias: elegí «1D» para verlo.'
+    : !fib ? 'Este activo todavía no tiene el cálculo del Fibonacci.'
     : !fib.disponible && !fib.en_curso
       ? (fib.motivo === 'pocos_datos' ? 'Faltan datos: este activo tiene poca historia todavía.' : 'No hay un tramo de suba o de bajada para medir.')
       : null
-  const sinEll = !ell ? 'Este activo todavía no tiene el conteo de ondas.'
+  const sinEll = cada ? 'El conteo automático de ondas se hace con las velas diarias: elegí «1D» para verlo.'
+    : !ell ? 'Este activo todavía no tiene el conteo de ondas.'
     : !ell.disponible
       ? (ell.motivo === 'pocos_datos'
         ? `Faltan datos: para contar ondas hacen falta al menos 30 días de mercado y este activo tiene ${ell.ruedas}.`
@@ -1371,11 +1482,11 @@ function botonesDeLaBarra({
     ],
     // La lista de arriba a la izquierda del gráfico: los indicadores, con su ojito.
     indicadores: [
-      capa('vol', 'Volumen', <IconoVolumen />, actual.puntos.some(p => p.v > 0) ? null : 'Este activo no trae volumen en los datos de Yahoo.'),
-      capa('s200', 'Promedio 200 días', <IconoLinea color={COLOR.media200} grueso />, hay('s200') ? null : 'Faltan datos: hacen falta 200 días de mercado.'),
-      capa('s50', 'Promedio 50 días', <IconoLinea color={COLOR.media50} />, hay('s50') ? null : 'Faltan datos: hacen falta 50 días de mercado.'),
-      capa('bb', 'Bandas de Bollinger', <IconoBandas />, hay('bb_arriba') ? null : 'Faltan datos: hacen falta 20 días de mercado.'),
-      capa('rsi', 'RSI', <IconoRsi />, hay('rsi') ? null : 'Faltan datos: hacen falta al menos 15 días de mercado.'),
+      capa('vol', 'Volumen', <IconoVolumen />, serie.some(p => p.v > 0) ? null : 'Este activo no trae volumen en los datos de Yahoo.'),
+      capa('s200', `Promedio 200 ${unidad}`, <IconoLinea color={COLOR.media200} grueso />, hay('s200') ? null : faltan(200)),
+      capa('s50', `Promedio 50 ${unidad}`, <IconoLinea color={COLOR.media50} />, hay('s50') ? null : faltan(50)),
+      capa('bb', 'Bandas de Bollinger', <IconoBandas />, hay('bb_arriba') ? null : faltan(20)),
+      capa('rsi', 'RSI', <IconoRsi />, hay('rsi') ? null : cada ? faltan(15) : 'Faltan datos: hacen falta al menos 15 días de mercado.'),
       capa('fuerza', 'Fuerza de la tendencia', <IconoFuerza />, hay('adx') || hay('squeeze') ? null : 'Faltan datos para calcularla.'),
       capa('eventos', 'Balances y dividendos', <span className="inline-flex gap-px"><Letra tipo="balance" /><Letra tipo="dividendo" /></span>,
         eventosCargando ? 'Cargando los balances y dividendos…'
@@ -1625,7 +1736,7 @@ function BarraAdx({ adx }) {
   )
 }
 
-function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null, onAncho = null, pie = null, lugaresMinimos = RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS), escala: escalaRef = null, tesis = [] }) {
+function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', cada = null, fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null, onAncho = null, pie = null, lugaresMinimos = RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS), escala: escalaRef = null, tesis = [] }) {
   const conVelas = tipo === 'velas'
   // Los lugares del ancho: los días más el aire vacío de la derecha.
   const lugares = puntos.length + huecos
@@ -1817,7 +1928,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
       const arriba = Math.min(y(vela.o), y(vela.c))
       return {
         k: i, x: x(i), sube: vela.c >= vela.o, yh: y(vela.h), yl: y(vela.l),
-        cuerpoY: arriba, cuerpoH: Math.max(Math.abs(y(vela.o) - y(vela.c)), 0.8), ancho,
+        cuerpoY: arriba, cuerpoH: Math.max(Math.abs(y(vela.o) - y(vela.c)), 0.8), ancho, enCurso: !!p.enCurso,
       }
     }) : []
     // Las barras del volumen, abajo de todo, del color de la vela (o de si cerró
@@ -1883,9 +1994,11 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   const pctX = (i) => (lugares > 1 ? (i / (lugares - 1)) * 100 : 50)
   const pctY = (val) => (escalaY(val) / H) * 100
   const desde = puntos[0]?.d
+  // En la primera vela de ese día (en diarias y semanales, la del día; en
+  // 1H/4H, la primera hora de esa rueda).
   const visibles = lista
     .filter(m => m.fecha >= desde)
-    .map(m => ({ ...m, i: indiceDeFecha(puntos, m.fecha) }))
+    .map(m => ({ ...m, i: primeraVelaDelDia(puntos, m.fecha) }))
     .filter(m => m.i != null && pctY(puntos[m.i].c) >= 0 && pctY(puntos[m.i].c) <= 100)
 
   // El mouse o el dedo: el punto más cercano en el tiempo.
@@ -2031,12 +2144,13 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   const divs = eventos.filter(e => e.tipo === 'dividendo').sort((a, b) => (a.fecha < b.fecha ? -1 : 1))
   const evVisibles = eventos
     .filter(e => e.fecha >= (puntos[0]?.d || '') && e.fecha <= (hasta || ''))
-    .map(e => ({ ...e, i: indiceDeFecha(puntos, e.fecha) }))
+    .map(e => ({ ...e, i: primeraVelaDelDia(puntos, e.fecha) }))
     .filter(e => e.i != null)
     .map(e => {
       if (e.tipo !== 'dividendo') return e
       const k = divs.findIndex(x => x.fecha === e.fecha)
-      const c = puntos[e.i]?.c
+      // El cierre de ese día: en 1H/4H, el de su última vela.
+      const c = puntos[indiceDeFecha(puntos, e.fecha)]?.c
       return { ...e, anterior: k > 0 ? divs[k - 1].monto : null,
         rendimiento: e.monto > 0 && c > 0 && e.moneda === moneda ? (e.monto / c) * 100 : null }
     })
@@ -2086,7 +2200,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   const penultimo = puntos[puntos.length - 2]
   const colorDelDia = !ultimo || !penultimo || ultimo.c === penultimo.c ? COLOR.precio
     : ultimo.c > penultimo.c ? v('rendi-pos') : v('rendi-neg')
-  const meses = marcasDeFechas(puntos, (ancho * puntos.length) / Math.max(lugares, 1))
+  const meses = (cada ? marcasDeHoras : marcasDeFechas)(puntos, (ancho * puntos.length) / Math.max(lugares, 1))
   // Los rótulos del eje se esconden si chocan con la etiqueta del último precio
   // o con la de tu precio (que pesan más).
   const promVisible = promedio != null && !promFuera
@@ -2288,8 +2402,9 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             )}
             {conVelas ? velas.map(b => {
               const color = b.sube ? v('rendi-pos-fill') : v('rendi-neg-fill')
+              // La vela en curso (todavía se mueve), más transparente.
               return (
-                <g key={b.k}>
+                <g key={b.k} opacity={b.enCurso ? 0.55 : undefined} data-en-curso={b.enCurso ? '' : undefined}>
                   <line x1={b.x} x2={b.x} y1={b.yh} y2={b.yl} stroke={color} strokeWidth="1" vectorEffect="non-scaling-stroke" />
                   <rect x={b.x - b.ancho / 2} width={b.ancho} y={b.cuerpoY} height={b.cuerpoH} fill={color} />
                 </g>
@@ -2342,7 +2457,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             <span aria-hidden="true" data-rotulo={PRIORIDAD.medicion}
               className={`pointer-events-none absolute z-10 top-1 rounded border border-rendi-accent/40 bg-bg-raised/95 px-2 py-1 text-[12px] font-semibold tabular whitespace-nowrap shadow-sm ${(mA.x + mB.x) / 2 > 60 ? '-translate-x-full' : (mA.x + mB.x) / 2 < 40 ? '' : '-translate-x-1/2'} ${mMed.pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}
               style={{ left: `${(mA.x + mB.x) / 2}%` }}>
-              {textoMedicion(mMed)}
+              {cada ? textoMedicionPorHora(mMed, cada) : textoMedicion(mMed)}
             </span>
           )}
           {/* Midiendo: la cruz del mouse, como en TradingView (la vertical, sólo
@@ -2372,7 +2487,8 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
                 style={{ left: `${ladoGlobo(pctX(hover), ref.current?.clientWidth, anchoGlobo)}px`, top: `${pctY(ph.c)}%` }}>
                 <div className="flex items-baseline gap-2">
                   <span className="text-ink-0 font-semibold text-[12px]">{fmtPrecio(ph.c, moneda)}</span>
-                  <span className="text-ink-2">{ph.semana ? `semana del ${fechaCorta(ph.d)}` : fechaCorta(ph.d)}</span>
+                  <span className="text-ink-2">{ph.semana ? `semana del ${fechaCorta(ph.d)}` : cada ? fechaHoraCorta(ph.t) : fechaCorta(ph.d)}</span>
+                  {ph.enCurso && <span className="text-ink-2">· en curso</span>}
                 </div>
                 {conVelas && (() => {
                   const vela = velaCompleta(ph, hover > 0 ? puntos[hover - 1].c : null)
@@ -2408,7 +2524,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
                 )}
                 {visibles.filter(m => m.i === hover).map(m => (
                   <div key={m.tipo} className={`mt-0.5 font-medium ${m.tipo === 'compra' ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                    {m.tipo === 'compra' ? 'Compraste' : 'Vendiste'} {ph.semana ? 'esta semana' : 'este día'}
+                    {m.tipo === 'compra' ? 'Compraste' : 'Vendiste'} {ph.semana ? 'esta semana' : cada ? 'ese día' : 'este día'}
                   </div>
                 ))}
               </div>
@@ -2545,7 +2661,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
         {/* El día bajo el mouse, encima de los rótulos (como TradingView). */}
         {cursor?.k != null && puntos[cursor.k] && (
           <span aria-hidden="true" data-mira="" className="pointer-events-none absolute z-10 -translate-x-1/2 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular whitespace-nowrap"
-            style={{ left: `${pctX(cursor.k)}%`, top: 0, background: v('ink-2'), color: v('bg-0') }}>{fechaDeLaMira(puntos[cursor.k].d)}</span>
+            style={{ left: `${pctX(cursor.k)}%`, top: 0, background: v('ink-2'), color: v('bg-0') }}>{cada ? fechaHoraDeLaMira(puntos[cursor.k].t) : fechaDeLaMira(puntos[cursor.k].d)}</span>
         )}
       </div>
       {sinDividendos && (
