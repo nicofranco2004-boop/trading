@@ -196,9 +196,14 @@ class VelasDiariasTest(unittest.TestCase):
         self._broker("IOL", "ARS")
         self._posicion("IOL", "SPY")
         self._posicion("IOL", "AAPL", "CEDEAR")
+        self._posicion("IOL", "ZZZZ")
         with main.db_abierta() as conn:
             seguidos = set(velas_diarias.simbolos_a_seguir(conn))
-        self.assertEqual(seguidos, {"SPY.BA", "AAPL", "AAPL.BA", velas_diarias.SP500})
+        # SPY sin tipo es un CEDEAR de la lista fija de la app: se sigue igual que
+        # con la lista de BYMA (en dólares y en pesos). Hasta el re-test A1c (29/10)
+        # con data912 caído se guardaba sólo en pesos. Un «.BA» que no está en
+        # ninguna lista (ZZZZ) sigue sólo en pesos.
+        self.assertEqual(seguidos, {"SPY", "SPY.BA", "AAPL", "AAPL.BA", "ZZZZ.BA", velas_diarias.SP500})
 
     def test_el_sp500_se_guarda_aunque_nadie_lo_tenga(self):
         # Es contra lo que la ficha compara «un día normal» (movimiento.py).
