@@ -479,7 +479,7 @@ export function cryptoUsdLotValue(p, prices, { cedearRate, tcCripto = null, isEx
 
 /**
  * valueEquityLot — valuación USD de UN lote de EQUITY o CEDEAR (no cripto, no cash).
- * Espeja las patas no-cripto de valueLot (pages/AssetDetail) para que la lista
+ * Espeja las patas no-cripto de valueLot (hooks/useFichaDelActivo.js, la ficha) para que la lista
  * holding-first de "Análisis fundamental" valúe IGUAL que la ficha del activo.
  * Usar solo con posiciones equity/CEDEAR (la cripto/cash van por otra matriz).
  */
@@ -802,7 +802,7 @@ export function buildPriceSymbols(positions, brokers) {
  * y nada más.
  *
  * POR QUÉ EXISTE: había CINCO implementaciones de la valuación por lote
- * (computeBrokerValue, valueEquityLot, AssetDetail.valueLot,
+ * (computeBrokerValue, valueEquityLot, valueLot de hooks/useFichaDelActivo.js,
  * PositionDetailMobile y PositionsMobile) y ninguna era "la buena a la que
  * volver" — el desktop tampoco usa el motor canónico para sus filas, sólo para
  * tres totales. Esta es la que va a serlo. Fuera de computeBrokerValue la
@@ -835,12 +835,12 @@ export function buildPriceSymbols(positions, brokers) {
  *     cosas es lo que hacía que el guard comparara USD contra pesos.
  *   · `investedUsdDisplay` es el costo en USD al rate del MODO (tc_compra en
  *     'purchase'). Acá coincide siempre con `investedUsd` — se expone con su
- *     nombre porque en AssetDetail:49-50 y PositionDetailMobile:141 ese número
+ *     nombre porque en valueLot (hooks/useFichaDelActivo.js) y PositionDetailMobile:141 ese número
  *     y el del guard son dos variables distintas, y confundirlos afloja el
  *     filtro anti-distorsión en modo 'purchase'.
  *   · `priceLocal` es el precio por unidad TAL CUAL SALE de `prices`: en la
  *     moneda del símbolo con el que se lo leyó (.BA → ARS; ticker US y FCI: →
- *     USD). Ojo: AssetDetail y PositionDetailMobile llaman `priceLocal` a ese
+ *     USD). Ojo: valueLot (la ficha) y PositionDetailMobile llaman `priceLocal` a ese
  *     número YA dividido por el MEP en algunas ramas. Acá no se convierte nada.
  *   `priceTrusted` es null cuando no hubo precio que juzgar (cash, o sin dato).
  */
