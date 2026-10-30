@@ -23,7 +23,7 @@ const DATOS = {
       corta: 'cayó muy rápido', texto: 'cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 28; una semana de mercado antes estaba en 52.', extra: POSIBILIDAD },
     { asset: 'YPFD', local: true, ficha: 'YPFD', tenes: true, watchlist: false, peso: 0.14, tesis: null,
       tipo: 'maximo_12m', fecha: '2026-10-23', sentido: 'arriba', etiqueta: 'Máximo del año', tono: 'pos',
-      corta: 'volvió a cerrar en su precio más alto del año', texto: 'volvió a cerrar en su precio más alto de los últimos 12 meses, después de un mes sin hacerlo.', extra: null },
+      corta: 'empezó a marcar máximos del año', texto: 'empezó a marcar máximos del año (cerró en su precio más alto de los últimos 12 meses), después de un mes sin hacerlo.', extra: null },
     { asset: 'AAPL', local: false, ficha: 'AAPL', tenes: true, watchlist: false, peso: 0.11, tesis: 'El recambio de iPhone.',
       tipo: 'media200', fecha: '2026-10-20', sentido: 'abajo', etiqueta: 'Tendencia de fondo', tono: 'neg',
       texto: 'quedó abajo de su promedio de 200 días: la tendencia de fondo se volvió bajista.', extra: null },

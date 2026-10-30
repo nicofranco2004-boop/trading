@@ -131,12 +131,13 @@ def texto_del_cambio(c: dict) -> dict:
     elif t == "maximo_12m":
         # La regla (tecnico.senal_desde) marca el PRIMER cierre en máximo después
         # de un mes sin ninguno: si siguió subiendo, los máximos de después no son
-        # un cambio nuevo (y la alerta no avisa todos los días). El texto dice eso
-        # y no «cerró en su máximo» a secas: «hace 5 semanas» se leía como que no
-        # volvió a hacerlo, y el último había sido hace una (auditoría D11, 29/10).
-        corta = "volvió a cerrar en su precio más alto del año"
-        texto = ("volvió a cerrar en su precio más alto de los últimos 12 meses, "
-                 "después de un mes sin hacerlo.")
+        # un cambio nuevo (y la alerta no avisa todos los días). La frase CORTA lo
+        # dice sola, porque en la celda y en el asunto va sin la larga: «volvió a
+        # cerrar en su máximo · hace 5 semanas» se leía como la última vez, y el
+        # último había sido hace una (auditoría D11 y su re-test, 29/10).
+        corta = "empezó a marcar máximos del año"
+        texto = ("empezó a marcar máximos del año (cerró en su precio más alto de los últimos "
+                 "12 meses), después de un mes sin hacerlo.")
         tono = "pos"
     else:   # adx23
         lado = {1: " (para arriba)", -1: " (para abajo)"}.get(c.get("squeeze"), "")

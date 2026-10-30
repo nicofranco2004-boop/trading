@@ -8,11 +8,11 @@ afuera. La pantalla («Último cambio» de Tu lista) hacía el mismo corte por s
 lado. Ahora el servidor arma UNA frase corta que se entiende sola (`corta`) y
 las dos la usan: ninguna corta nada.
 
-D11. «Máximo del año · hace 5 semanas» cuando volvió a cerrar en máximo hace una
+D11. «Máximo del año · hace 5 semanas» cuando el último cierre en máximo fue hace una
 semana: la regla (`tecnico.senal_desde('maximo_12m')`) marca el PRIMER máximo
 después de un mes sin máximos (para no avisar todos los días mientras sube). La
-regla queda —es la de la alerta— y el texto dice lo que mide: «volvió a cerrar
-en su precio más alto… después de un mes sin hacerlo».
+regla queda —es la de la alerta— y el texto dice lo que mide: «empezó a marcar
+máximos del año… después de un mes sin hacerlo», en la frase CORTA (la de la celda).
 
 Corre con: cd backend && python3 -m pytest tests/test_palabras_del_cambio.py
 """
@@ -71,11 +71,18 @@ class CortaTest(unittest.TestCase):
 
 
 class MaximoTest(unittest.TestCase):
+    """D11 (re-test de la auditoría D): «Volvió a cerrar en su precio más alto del
+    año · hace 5 semanas» se leía como que hace 5 semanas fue la ÚLTIMA vez (el
+    último había sido hace una). La regla marca el PRIMERO de una racha: la frase
+    corta, la que va sola en la celda y en el asunto, tiene que decir eso."""
+
     def test_el_maximo_dice_lo_que_mide_la_regla(self):
         t = senales_semana.texto_del_cambio({"tipo": "maximo_12m", "sentido": "arriba"})
-        self.assertIn("volvió a cerrar en su precio más alto de los últimos 12 meses", t["texto"])
+        self.assertEqual(t["corta"], "empezó a marcar máximos del año")
+        self.assertIn("empezó a marcar máximos del año", t["texto"])
+        self.assertIn("los últimos 12 meses", t["texto"])
         self.assertIn("después de un mes sin hacerlo", t["texto"])
-        self.assertIn("volvió", t["corta"])
+        self.assertNotIn("volvió a cerrar", t["corta"])
 
 
 if __name__ == "__main__":
