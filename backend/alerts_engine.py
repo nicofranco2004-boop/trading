@@ -656,8 +656,8 @@ def _deliver(conn, alert, items) -> tuple:
                 # pestana), asi que tocar el push caia en Config > Cuenta.
                 # Despues fue /dashboard, que no dice nada del aviso. Ahora abre
                 # «Mis alertas»: la alerta que salto, con su estado y para
-                # pausarla.
-                "url": "/alertas?tab=mis",
+                # pausarla. La de un cliente, Clientes (`_adonde_lleva`).
+                "url": _adonde_lleva(client_label),
                 "tag": (f"alert-{alert['id']}-{items[0]['symbol'] or ''}"
                         if len(items) == 1 else f"alert-{alert['id']}-grupo"),
             })
@@ -689,6 +689,15 @@ def _deliver(conn, alert, items) -> tuple:
 # pausarla o volver a prenderla y el formulario para cambiarle el %. Es la misma
 # ruta a la que lleva el push.
 _MIS_ALERTAS = "/alertas?tab=mis"
+
+
+def _adonde_lleva(client_label) -> str:
+    """Adónde lleva tocar el aviso: el push y el pie del mail. UNA regla para
+    los dos. En una cuenta administrada (Plan Asesor) el aviso le llega al
+    asesor, y su «Mis alertas» no tiene la alerta del cliente: se entra desde
+    Clientes. Antes el mail ya llevaba a /clientes y el push, escrito aparte en
+    `_deliver`, seguía abriendo «Mis alertas» del asesor (auditoría B2, 29/10)."""
+    return "/clientes" if client_label else _MIS_ALERTAS
 
 
 def _pct_con_signo(v) -> str:
@@ -762,11 +771,11 @@ def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading)
     alertas». Antes el botón llevaba a /dashboard, que no dice nada del aviso."""
     una_vez = alert["repeat"] == "once"
     if una_vez:
-        pie = ("Esta alerta ya cumplió.", "Volver a activarla", _MIS_ALERTAS)
+        pie = ("Esta alerta ya cumplió.", "Volver a activarla", _adonde_lleva(None))
     elif alert["kind"] == "price_target":
-        pie = ("Te volvemos a avisar si lo cruza de nuevo.", "Pausarla o cambiarla", _MIS_ALERTAS)
+        pie = ("Te volvemos a avisar si lo cruza de nuevo.", "Pausarla o cambiarla", _adonde_lleva(None))
     else:
-        pie = ("¿Demasiados avisos?", "Cambiá el %", _MIS_ALERTAS)
+        pie = ("¿Demasiados avisos?", "Cambiá el %", _adonde_lleva(None))
 
     if len(items) == 1:
         it = items[0]
@@ -808,10 +817,12 @@ def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading)
         # Plan Asesor: la alerta es de una cuenta que administra. Su cartera, su
         # ficha y su «Mis alertas» no son las de esa cuenta: se entra desde
         # Clientes. El asunto ya lleva «[Cliente]» adelante.
-        contenido["detail"] = contenido["detail"].rstrip(".") + f", en la cuenta de {client_label}."
-        contenido["cta_label"], contenido["cta_path"] = "Ver mis clientes", "/clientes"
+        # «en la cuenta de Juan,» va ADELANTE: atrás quedaba colgado de la última
+        # frase de la oración (auditoría B2).
+        contenido["detail"] = f"en la cuenta de {client_label}, " + contenido["detail"]
+        contenido["cta_label"], contenido["cta_path"] = "Ver mis clientes", _adonde_lleva(client_label)
         pie = (f"Para cambiarla, entrá a la cuenta de {client_label}.",
-               "Ir a mis clientes", "/clientes")
+               "Ir a mis clientes", _adonde_lleva(client_label))
     contenido["pie"] = pie
     contenido["heading"] = heading
     return contenido

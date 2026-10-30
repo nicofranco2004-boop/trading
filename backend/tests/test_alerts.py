@@ -26,7 +26,8 @@ from ai import plan              # noqa: E402
 @pytest.fixture(autouse=True)
 def clean(monkeypatch):
     conn = main.get_db()
-    for t in ("alert_symbol_state", "alert_events", "alerts", "positions", "brokers", "users"):
+    for t in ("alert_symbol_state", "alert_events", "alerts", "positions", "brokers",
+              "advisor_clients", "users"):
         try:
             conn.execute(f"DELETE FROM {t}")
         except Exception:
@@ -1728,3 +1729,47 @@ def test_el_cron_dice_que_error_fue_y_donde(clean, monkeypatch, caplog):
         main._evaluar_alertas_job()
     r = [x for x in caplog.records if "alertas de precio en el cron" in x.getMessage()]
     assert r and "KeyError" in r[0].getMessage() and r[0].exc_info
+
+
+# ── Una cuenta administrada (Plan Asesor): mail Y push llevan a /clientes ─────
+
+def test_alerta_de_precio_de_un_cliente_el_push_lleva_a_mis_clientes(clean, monkeypatch):
+    """Auditoría B, hallazgo B2 (29/10): el push de la alerta de un cliente
+    abría «Mis alertas» del ASESOR (`/alertas?tab=mis`), donde esa alerta no
+    está; el mail del mismo aviso ya iba a /clientes. Y «en la cuenta de Juan»
+    colgaba al final de la oración. Por el ciclo real (`evaluate_alerts` →
+    `_entregar_pendientes` → `_deliver`)."""
+    conn = clean
+    conn.execute("INSERT INTO users (id,email,name,password_hash) VALUES (3,'laura@a.co','Laura','x')")
+    conn.execute("UPDATE users SET managed_by=3 WHERE id=1")
+    conn.execute("INSERT INTO advisor_clients (advisor_uid, client_uid, label) VALUES (3, 1, 'Juan')")
+    conn.commit()
+    monkeypatch.setattr(ae, "_deliver", _ENTREGA_REAL)
+    mails, pushes = [], []
+    monkeypatch.setattr("billing.emails.send_alert_email", lambda **kw: mails.append(kw) or True)
+    monkeypatch.setattr("main._send_push_to_user", lambda uid, p: pushes.append((uid, p)) or 1)
+    _mk_alert(conn, kind="pct_move", threshold=None, up_pct=3, down_pct=3,
+              channel="both", repeat="always")
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": _q(210.0, 5.2)})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert [u for u, _ in pushes] == [3]
+    assert pushes[0][1]["url"] == "/clientes"
+    assert pushes[0][1]["body"].startswith("[Juan] ")
+    assert mails[0]["to"] == "laura@a.co"
+    assert (mails[0]["cta_path"], mails[0]["pie"][2]) == ("/clientes", "/clientes")
+    assert mails[0]["detail"].startswith("en la cuenta de Juan, pasó el límite que marcaste.")
+
+
+def test_alerta_de_precio_propia_el_push_sigue_yendo_a_mis_alertas(clean, monkeypatch):
+    conn = clean
+    monkeypatch.setattr(ae, "_deliver", _ENTREGA_REAL)
+    mails, pushes = [], []
+    monkeypatch.setattr("billing.emails.send_alert_email", lambda **kw: mails.append(kw) or True)
+    monkeypatch.setattr("main._send_push_to_user", lambda uid, p: pushes.append((uid, p)) or 1)
+    _mk_alert(conn, kind="pct_move", threshold=None, up_pct=3, down_pct=3,
+              channel="both", repeat="always")
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": _q(210.0, 5.2)})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert pushes[0][1]["url"] == "/alertas?tab=mis"
+    assert mails[0]["cta_path"] == "/activo/AAPL"
+    assert not mails[0]["detail"].startswith("en la cuenta")
