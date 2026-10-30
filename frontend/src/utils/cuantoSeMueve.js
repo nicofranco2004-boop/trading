@@ -109,10 +109,10 @@ export function textoEvento(e) {
   if (e.tipo === 'balance') {
     const lineas = []
     if (e.momento === 'despues_del_cierre') {
-      lineas.push('Lo presentó con el mercado ya cerrado.')
-      lineas.push(mov ? `Al otro día el precio: ${mov}` : 'Todavía no hay precio del día siguiente.')
+      lineas.push('Presentó resultados después del cierre del mercado.')
+      lineas.push(mov ? `Al día siguiente, el precio: ${mov}` : 'Todavía no hay precio del día siguiente.')
     } else if (e.momento === 'antes_del_cierre') {
-      lineas.push('Lo presentó antes del cierre de ese día.')
+      lineas.push('Presentó resultados antes del cierre del mercado.')
       lineas.push(mov ? `Ese día el precio: ${mov}` : 'No hay precio de ese día.')
     } else {
       lineas.push(mov ? `Entre ese día y el siguiente, el precio: ${mov}` : 'No hay precio de esos días.')
@@ -124,7 +124,7 @@ export function textoEvento(e) {
     const m = e.monto.toLocaleString('es-AR', { maximumSignificantDigits: 4 })
     lineas.push(`Pagó ${e.moneda === 'ars' ? '$' : 'US$'} ${m} por acción.`)
   }
-  lineas.push('Desde el día de corte, el que compra ya no cobra ese pago.')
+  lineas.push('Quien compra desde el día de corte ya no cobra este dividendo.')
   if (mov) lineas.push(`Ese día el precio: ${mov}`)
   return { titulo: `Dividendo · día de corte ${fechaCorta(e.fecha)}`, lineas }
 }
@@ -140,7 +140,7 @@ export function textoGrupo(eventos = []) {
   const lineas = eventos.map(e => {
     const r = e.reaccion ? pctConSigno(e.reaccion.pct) : null
     if (balances) {
-      const cuando = e.momento === 'despues_del_cierre' ? 'al otro día' : e.momento === 'antes_del_cierre' ? 'ese día' : 'en dos días'
+      const cuando = e.momento === 'despues_del_cierre' ? 'al día siguiente' : e.momento === 'antes_del_cierre' ? 'ese día' : 'en dos días'
       return `${fechaCorta(e.fecha)}: ${r ? `${cuando} ${r}` : 'sin precio para comparar'}`
     }
     const monto = e.monto > 0
@@ -148,7 +148,7 @@ export function textoGrupo(eventos = []) {
       : 'dividendo'
     return `${fechaCorta(e.fecha)}: ${monto}${r ? ` · ese día ${r}` : ''}`
   })
-  if (!balances) lineas.push('Por acción. Desde el día de corte, el que compra ya no cobra ese pago.')
+  if (!balances) lineas.push('Por acción. Quien compra desde el día de corte ya no cobra este dividendo.')
   return { titulo: `${eventos.length} ${balances ? 'balances' : 'dividendos'}`, lineas }
 }
 
@@ -181,7 +181,7 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
     })
   } else {
     out.push({ id: 'caida', titulo: 'Su peor caída', tono: 'neutro', veredicto: 'No tuvo',
-      texto: 'En este período nunca cerró por debajo de un máximo anterior.' })
+      texto: 'En este período nunca cerró por debajo de un máximo anterior: no tuvo caídas.' })
   }
 
   const dm = m.desde_el_maximo
@@ -204,12 +204,12 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
 
   const d = m.dia_normal
   if (d) {
-    const partes = [`Es lo que sube o baja en un día típico.`]
+    const partes = [`Es cuánto subió o bajó en un día típico.`]
     if (d.sp500_desvio_pct != null && d.veces_el_sp500 != null) {
       const v = d.veces_el_sp500
       const cuanto = v >= 1.15 ? `se mueve ${v.toLocaleString('es-AR', { maximumFractionDigits: 1 })} veces lo que el S&P 500`
         : v <= 0.87 ? 'se mueve menos que el S&P 500' : 'se mueve parecido al S&P 500'
-      partes.push(`El S&P 500 (las 500 empresas más grandes de EE.UU.) se mueve ±${num1(d.sp500_desvio_pct)}% en ${moneda === 'ars' ? 'pesos' : 'dólares'}: este papel ${cuanto}.`)
+      partes.push(`El S&P 500 (las 500 empresas más grandes de EE.UU.) se mueve ±${num1(d.sp500_desvio_pct)}% en ${moneda === 'ars' ? 'pesos' : 'dólares'}: este activo ${cuanto}.`)
     }
     if (d.dias_malos > 0) {
       const cada = Math.round(d.dias / d.dias_malos)
@@ -218,15 +218,15 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
     // Del último año, como «su día normal del último año» de la tarjeta «Cuánto
     // se mueve»: es el MISMO número (movimiento.dia_normal usa la cuenta de la
     // lectura), aunque el resto de esta sección mire 2 años (A5, 29/10).
-    out.push({ id: 'dia', titulo: 'Un día normal del último año', tono: 'neutro', veredicto: `±${num1(d.desvio_pct)}%`, texto: partes.join(' ') })
+    out.push({ id: 'dia', titulo: 'Un día típico del último año', tono: 'neutro', veredicto: `±${num1(d.desvio_pct)}%`, texto: partes.join(' ') })
 
     if (tenencia?.valor > 0) {
       const mueve = -tenencia.valor * d.desvio_pct / 100
-      const partesT = [`Lo que te mueve un día malo normal de este papel (una baja de ${num1(d.desvio_pct)}%).`]
+      const partesT = [`Cuánto cambiaría tu inversión en un día de baja típico de este activo (una caída de ${num1(d.desvio_pct)}%).`]
       if (oculto) {
         out.push({ id: 'cartera', titulo: 'En tu cartera', tono: 'neutro', veredicto: OCULTO, texto: `${partesT[0]} ${AVISO_OCULTO}` })
       } else if (peso > 0 && peso <= 1) {
-        partesT.push(`${esElDeTuCartera(peso * 100)}: a toda tu cartera ese día la mueve ${pctConSigno(-peso * d.desvio_pct)}.`)
+        partesT.push(`${esElDeTuCartera(peso * 100)}: ese día, tu cartera completa cambiaría ${pctConSigno(-peso * d.desvio_pct)}.`)
       }
       if (!oculto) out.push({ id: 'cartera', titulo: 'En tu cartera', tono: 'neutro', veredicto: plata(mueve, moneda), texto: partesT.join(' ') })
     }

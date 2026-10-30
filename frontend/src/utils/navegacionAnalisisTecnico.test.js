@@ -37,7 +37,7 @@ describe('el menú del recuadro 22', () => {
     expect(de('Salud de cartera')).toEqual(['/analisis', '/perfil-inversor'])
     expect(de('Análisis de mercado')).toEqual(['/', '/analisis-tecnico', '/fundamentals', '/novedades'])
     const tecnico = secciones.flatMap(s => s.items).find(i => i.to === '/analisis-tecnico')
-    expect(tecnico.sub).toBe('Lo que tenés y lo que seguís, con su lectura técnica')
+    expect(tecnico.sub).toBe('Tu cartera y tu watchlist, con su análisis técnico')
     expect(secciones.flatMap(s => s.items).some(i => /calidad de cartera/i.test(i.label))).toBe(false)
   })
 

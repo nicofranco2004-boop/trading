@@ -97,15 +97,15 @@ function Preferencia({ canal, onCambiar, guardando }) {
   }
   return (
     <section aria-label="El resumen de los sábados" className="bg-bg-1 border border-line rounded-xl px-4 py-3.5 flex flex-col gap-2.5">
-      <div className="text-[12px] text-ink-2 font-medium">Lo mismo, los sábados, por mail o notificación</div>
-      <div className="text-[14px] text-ink-0 font-medium">¿Cómo te llega?</div>
+      <div className="text-[12px] text-ink-2 font-medium">Este resumen, todos los sábados por mail o notificación</div>
+      <div className="text-[14px] text-ink-0 font-medium">¿Cómo querés recibirlo?</div>
       <div className="flex flex-wrap gap-1.5" role="group" aria-label="Cómo te llega el resumen">
         {CANALES.map(c => (
           <Chip key={c.id} activo={canal === c.id} disabled={guardando} onClick={() => elegir(c.id)}>{c.label}</Chip>
         ))}
       </div>
       <p className="text-[13px] text-ink-1 leading-snug">
-        Sábados a las 10:00. Si en la semana no cambió nada, no te escribimos.
+        Llega los sábados a las 10:00. Si en la semana no cambió nada, no te mandamos nada.
       </p>
       {conPush && push?.motivo && (
         <AvisoNotificaciones motivo={push.motivo} plataforma={push.plataforma} origen="tus-senales" />
@@ -141,7 +141,7 @@ export function useTusSenales({ pedir = true } = {}) {
     setGuardando(true)
     setErrorCanal(null)
     api.put('/tus-senales/canal', { canal })
-      .catch(() => { setDatos(d => ({ ...d, canal: antes })); setErrorCanal('No pudimos guardarlo. Probá de nuevo.') })
+      .catch(() => { setDatos(d => ({ ...d, canal: antes })); setErrorCanal('No pudimos guardar el cambio. Probá de nuevo.') })
       .finally(() => setGuardando(false))
   }
   return { datos, error, cambiarCanal, guardando, errorCanal }
@@ -211,8 +211,8 @@ export function TusSenalesVista({ datos, error, hidden, filtro, onFiltro, onVer,
           {dias.length === 0 ? (
             <p className="py-5 text-[14px] text-ink-1">
               {filtro === 'watchlist' ? 'Esta semana no cambió nada en tu watchlist.'
-                : filtro === 'tenes' ? 'Esta semana no cambió nada en lo que tenés.'
-                  : 'Esta semana no cambió nada en lo que tenés ni en tu watchlist.'}
+                : filtro === 'tenes' ? 'Esta semana no cambió nada en tu cartera.'
+                  : 'Esta semana no cambió nada en tu cartera ni en tu watchlist.'}
             </p>
           ) : dias.map(d => (
             <div key={d.fecha}>

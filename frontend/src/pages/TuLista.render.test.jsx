@@ -27,8 +27,8 @@ const TENENCIAS = [
 const filas = filasDeLaLista({
   tenencias: TENENCIAS, seguidos: [{ symbol: 'TSLA' }],
   indice: indexarLecturas([lec('MELI', false, {}, { ultimo_cambio: {
-    tipo: 'media200', sentido: 'arriba', fecha: hoy, etiqueta: 'Tendencia de fondo', tono: 'pos', extra: null,
-    texto: 'pasó arriba de su promedio de 200 días: la tendencia de fondo se volvió alcista.' } }), lec('TSLA', false, { adx: 12 }), { asset: 'AL30', local: true, disponible: false }]),
+    tipo: 'media200', sentido: 'arriba', fecha: hoy, etiqueta: 'Tendencia de largo plazo', tono: 'pos', extra: null,
+    texto: 'superó su promedio de 200 días: la tendencia de largo plazo pasó a ser alcista.' } }), lec('TSLA', false, { adx: 12 }), { asset: 'AL30', local: true, disponible: false }]),
 })
 const dibujar = (oculto = false) => renderToStaticMarkup(
   <MemoryRouter><TablaLista filas={filas} oculto={oculto} /></MemoryRouter>,
@@ -39,9 +39,9 @@ describe('Tu lista: la tabla', () => {
   it('los filtros con su cantidad y el «Ordenar por»', () => {
     const t = texto(dibujar())
     expect(t).toContain('Todo · 3')
-    expect(t).toContain('Lo que tenés · 2')
+    expect(t).toContain('Tu cartera · 2')
     expect(t).toContain('Watchlist · 1')
-    for (const o of ['Lo último que cambió', 'Fuerza (RSI)', 'Desde el máximo', 'Lo que más pesa']) expect(t).toContain(o)
+    for (const o of ['Cambio más reciente', 'Impulso (RSI)', 'Desde el máximo', 'Mayor peso en tu cartera']) expect(t).toContain(o)
   })
 
   it('cada columna con las palabras de la ficha', () => {
@@ -51,27 +51,27 @@ describe('Tu lista: la tabla', () => {
     expect(t).toContain('Bajista')                 // corto plazo, debajo del de 50
     expect(t).toContain('28 cayó muy rápido')
     expect(t).toContain('31 marcada')
-    expect(t).toContain('12 de costado')
+    expect(t).toContain('12 lateral')
     expect(t).toContain('−24,3%')
-    expect(t).toContain('Pasó arriba de su promedio de 200 días · hoy')
-    expect(dibujar()).toContain('title="Pasó arriba de su promedio de 200 días: la tendencia de fondo se volvió alcista."')
+    expect(t).toContain('Superó su promedio de 200 días · hoy')
+    expect(dibujar()).toContain('title="Superó su promedio de 200 días: la tendencia de largo plazo pasó a ser alcista."')
   })
 
   it('el bono va «Sin lectura» y dice por qué; las filas abren la ficha', () => {
     const html = dibujar()
     const t = texto(html)
     expect(t).toContain('Sin lectura')
-    expect(t).toContain('no se les mide la tendencia')   // el motivo del globo de la radiografía
+    expect(t).toContain('no se les calcula la tendencia')   // el motivo del globo de la radiografía
     expect(html).toContain('href="/activo/MELI"')
     expect(html).toContain('href="/activo/TSLA"')
   })
 
   it('las cuatro explicaciones y «no es una recomendación»', () => {
     const t = texto(dibujar())
-    for (const k of ['De fondo y corto plazo', 'Fuerza de la tendencia (ADX)', 'Debajo de 23 el precio va de costado', 'Último cambio']) {
+    for (const k of ['Largo y mediano plazo', 'Fuerza de la tendencia (ADX)', 'Debajo de 23, se mueve sin una dirección clara', 'Último cambio']) {
       expect(t).toContain(k)
     }
-    expect(t).toContain('No es una recomendación de compra o venta.')
+    expect(t).toContain('No es una recomendación de compra ni de venta.')
   })
 
   it('con «Ocultar saldos» no se ve cuánto pesa', () => {

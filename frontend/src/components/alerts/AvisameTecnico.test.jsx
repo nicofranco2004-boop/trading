@@ -75,7 +75,7 @@ describe('de la ficha al servidor', () => {
     const h = html({ prefill: prefillTecnico({ asset: 'AAPL', senal: 'media200', direction: 'below' }) })
     expect(h).toContain('Nuevo aviso técnico')
     expect(h).not.toContain('Se mueve un %')
-    expect(h).toContain('Te avisamos cuando AAPL quede abajo de su promedio de 200 días.')
+    expect(h).toContain('Te avisamos cuando AAPL caiga por debajo de su promedio de 200 días.')
     expect(h).toContain('Para qué lado')
   })
 
@@ -83,7 +83,7 @@ describe('de la ficha al servidor', () => {
     const h = html({ prefill: { kind: 'tecnica' } })
     expect(h).toContain('Señal técnica')
     expect(h).toContain('Se mueve un %')
-    expect(h).toContain('La fuerza (RSI) baje de 30')
+    expect(h).toContain('Su impulso (RSI) baje de 30')
   })
 })
 

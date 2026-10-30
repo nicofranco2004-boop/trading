@@ -207,8 +207,8 @@ class TusSenalesTest(unittest.TestCase):
         total = 1500 + 1500 + 200 + 80
         self.assertAlmostEqual(nvda["media200"]["peso"], 1500 / total, places=6)
         self.assertEqual(nvda["media200"]["texto"],
-                         "pasó arriba de su promedio de 200 días: la tendencia de fondo se volvió alcista.")
-        self.assertEqual(nvda["media200"]["etiqueta"], "Tendencia de fondo")
+                         "superó su promedio de 200 días: la tendencia de largo plazo pasó a ser alcista.")
+        self.assertEqual(nvda["media200"]["etiqueta"], "Tendencia de largo plazo")
 
         # MSFT: no la tenés, la seguís; sin peso; «Ver gráfico» abre su ficha.
         msft = {x["tipo"]: x for x in por["MSFT"]}["media200"]
@@ -289,11 +289,11 @@ class TusSenalesTest(unittest.TestCase):
         self.assertEqual(len(self.pushes), 1)
         m = self.mails[0]
         self.assertEqual(m["to"], self.email)
-        self.assertTrue(m["asunto"].startswith("Tu semana: NVDA pasó arriba de su promedio de 200 días"),
+        self.assertTrue(m["asunto"].startswith("Tu semana: NVDA superó su promedio de 200 días"),
                         m["asunto"])
-        self.assertIn("Hola Nico, el 94% de tu plata está en activos con tendencia de fondo alcista",
+        self.assertIn("Hola Nico, el 94% de tu cartera está en activos con tendencia alcista de largo plazo",
                       m["texto"])
-        self.assertIn("MSFT (en tu watchlist) pasó arriba de su promedio de 200 días", m["texto"],
+        self.assertIn("MSFT (en tu watchlist) superó su promedio de 200 días", m["texto"],
                       "la watchlist también, y dice que no la tenés")
         self.assertIn("no es una recomendación para comprar ni vender", m["texto"])
         self.assertIn("no es una recomendación", self.pushes[0]["body"])
@@ -489,7 +489,7 @@ class TusSenalesTest(unittest.TestCase):
             hace_un_mes = senales_semana.semana_pasada(conn, self.uid, sabado - timedelta(days=8))
             self.assertIsNone(hace_un_mes, "más de 13 días: no aparece")
         self._cron(_utc(sabado, 10, 5))
-        self.assertIn("94% de tu plata está en activos con tendencia de fondo alcista (la semana pasada, 61%)",
+        self.assertIn("94% de tu cartera está en activos con tendencia alcista de largo plazo (la semana pasada, 61%)",
                       self.mails[0]["texto"])
 
     # — el % es UNA cuenta (28/10) —
@@ -512,7 +512,7 @@ class TusSenalesTest(unittest.TestCase):
         self._cron(_utc(sabado, 10, 5))
         pct = cartera["pct"]
         self.assertEqual(semana["pct"], pct, "el Panorama y la pestaña Señales = la Cartera")
-        self.assertIn(f"el {pct}% de tu plata está en activos con tendencia de fondo alcista", self.mails[0]["texto"],
+        self.assertIn(f"el {pct}% de tu cartera está en activos con tendencia alcista de largo plazo", self.mails[0]["texto"],
                       "el mail = la Cartera")
         self.assertEqual(self._filas()[0]["pct_alcista"], pct, "y lo que se guarda para «la semana pasada»")
         # Lo demás de la cuenta, igual en los dos pedidos: grupos que suman 100, de
@@ -763,7 +763,7 @@ class TusSenalesTest(unittest.TestCase):
         m = self.mails[0]
         self.assertTrue(m["asunto"].startswith("[Juan] Tu semana:"))
         self.assertIn("Hola Laura, en la cuenta de Juan, el ", m["texto"])
-        for tuyo in ("tu plata", "lo tuyo", "tu watchlist", "Tu tesis"):
+        for tuyo in ("tu cartera", "tus activos", "tu watchlist", "Tu tesis"):
             self.assertNotIn(tuyo, m["texto"], f"«{tuyo}» le habla a Laura de la plata de Juan")
         self.assertIn("La tesis de Juan: «Data centers»", m["texto"])
         self.assertIn("(en la watchlist de Juan)", m["texto"])
@@ -780,7 +780,7 @@ class TusSenalesTest(unittest.TestCase):
         self._cron(_utc(sabado, 10, 5))
         m = self.mails[0]
         self.assertIn("Hola Nico, el ", m["texto"])
-        self.assertIn("% de tu plata", m["texto"])
+        self.assertIn("% de tu cartera", m["texto"])
         self.assertIn("(en tu watchlist)", m["texto"])
         self.assertNotIn("en la cuenta de", m["texto"])
         self.assertIn(senales_semana.URL_SENALES, m["html"])
@@ -797,7 +797,7 @@ class TusSenalesTest(unittest.TestCase):
         r = self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "Data centers e IA"}, headers=self.h)
         self.assertEqual(r.status_code, 200, r.text)
         self._cron(_utc(sabado, 10, 5))
-        self.assertIn("NVDA pasó arriba", self.mails[0]["texto"])
+        self.assertIn("NVDA superó su promedio", self.mails[0]["texto"])
         self.assertIn("Tu tesis: «Data centers e IA».", self.mails[0]["texto"])
 
     def test_la_tesis_escrita_sale_en_la_pestana(self):

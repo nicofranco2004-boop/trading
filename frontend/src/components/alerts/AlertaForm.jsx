@@ -499,7 +499,7 @@ function CamposTecnica({ form, set, editando }) {
   return (
     <>
       <Campo rotulo="Avisame cuando" ayuda={linea
-        ? 'Lo miramos con el precio más alto y el más bajo de cada día: si la tocó, te llega a la mañana siguiente. Si movés la línea, el aviso la sigue; si la borrás, se apaga.'
+        ? 'Lo miramos con el precio más alto y el más bajo de cada día: si la tocó, te llega a la mañana siguiente. Si movés la línea, el aviso la sigue; si la borrás, el aviso se desactiva.'
         : undefined}>
         {linea ? (
           <Fijo>{textoDeLinea(form)}</Fijo>
@@ -532,8 +532,8 @@ function CamposTecnica({ form, set, editando }) {
       {/* Siempre a la vista, también en cripto (la ficha también la muestra en
           pesos): escondido, se mandaba igual lo último que se había elegido. */}
       <Campo rotulo="Medido en" ayuda={form.currency === 'ARS'
-        ? 'En pesos el precio también sube con el dólar, aunque la empresa no se mueva.'
-        : 'Como la ficha: en dólares se ve la tendencia de la empresa, sin el dólar en el medio.'}>
+        ? 'En pesos, el precio también sube cuando sube el dólar, aunque a la empresa no le cambie nada.'
+        : 'Igual que en la ficha: en dólares se ve la tendencia del activo sin el efecto de la suba del dólar.'}>
         {editando || linea ? (
           <Fijo>{form.currency === 'ARS' ? 'Pesos' : 'Dólares'}</Fijo>
         ) : (

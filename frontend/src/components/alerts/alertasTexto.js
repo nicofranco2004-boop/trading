@@ -18,10 +18,10 @@ import { esAccionLocal, esLocalSinTenencia } from '../../utils/accionLocal'
 export const SENALES_TECNICAS = [
   { id: 'media200', texto: 'Cruce su promedio de 200 días', conSentido: true, tarjeta: 'fondo' },
   { id: 'media50', texto: 'Cruce su promedio de 50 días', conSentido: true, tarjeta: 'corto' },
-  { id: 'rsi_bajo_30', texto: 'La fuerza (RSI) baje de 30', tarjeta: 'rsi' },
-  { id: 'rsi_sobre_70', texto: 'La fuerza (RSI) pase 70', tarjeta: 'rsi' },
-  { id: 'rsi_sube_30', texto: 'La fuerza (RSI) vuelva a pasar 30', tarjeta: 'rsi' },
-  { id: 'rsi_baja_70', texto: 'La fuerza (RSI) vuelva a bajar de 70', tarjeta: 'rsi' },
+  { id: 'rsi_bajo_30', texto: 'Su impulso (RSI) baje de 30', tarjeta: 'rsi' },
+  { id: 'rsi_sobre_70', texto: 'Su impulso (RSI) supere 70', tarjeta: 'rsi' },
+  { id: 'rsi_sube_30', texto: 'Su impulso (RSI) vuelva a superar 30', tarjeta: 'rsi' },
+  { id: 'rsi_baja_70', texto: 'Su impulso (RSI) vuelva a quedar debajo de 70', tarjeta: 'rsi' },
   { id: 'maximo_12m', texto: 'Cierre en su máximo del año', tarjeta: 'maximo' },
 ]
 export const conSentido = (senal) => !!SENALES_TECNICAS.find(s => s.id === senal)?.conSentido
@@ -44,14 +44,14 @@ function queTecnico(senal, direction, subj) {
   const v = (pres, sub) => (subj ? sub : pres)
   if (senal === 'media200' || senal === 'media50') {
     const dias = senal === 'media200' ? 200 : 50
-    if (direction === 'above') return `${v('pasa', 'pase')} para arriba su promedio de ${dias} días`
-    if (direction === 'below') return `${v('queda', 'quede')} abajo de su promedio de ${dias} días`
+    if (direction === 'above') return `${v('supera', 'supere')} su promedio de ${dias} días`
+    if (direction === 'below') return `${v('cae', 'caiga')} por debajo de su promedio de ${dias} días`
     return `${v('cruza', 'cruce')} su promedio de ${dias} días`
   }
   if (senal === 'rsi_bajo_30') return `${v('baja', 'baje')} de 30`
-  if (senal === 'rsi_sobre_70') return `${v('pasa', 'pase')} 70`
-  if (senal === 'rsi_sube_30') return `${v('vuelve', 'vuelva')} a pasar 30`
-  if (senal === 'rsi_baja_70') return `${v('vuelve', 'vuelva')} a bajar de 70`
+  if (senal === 'rsi_sobre_70') return `${v('supera', 'supere')} 70`
+  if (senal === 'rsi_sube_30') return `${v('vuelve', 'vuelva')} a superar 30`
+  if (senal === 'rsi_baja_70') return `${v('vuelve', 'vuelva')} a quedar debajo de 70`
   return `${v('cierra', 'cierre')} en su máximo del año`
 }
 const esRsi = (senal) => String(senal || '').startsWith('rsi_')
@@ -149,7 +149,7 @@ export function frase(a) {
     const quien = quienTecnico(a)
     if (a.senal === 'linea') return { quien, que: `toca ${nombreDeLinea(a)}` }
     return esRsi(a.senal)
-      ? { quien, que: `la fuerza (RSI) ${queTecnico(a.senal, a.direction, false)}`, sep: ': ' }
+      ? { quien, que: `el impulso (RSI) ${queTecnico(a.senal, a.direction, false)}`, sep: ': ' }
       : { quien, que: queTecnico(a.senal, a.direction, false) }
   }
   if (a.kind === 'price_target') {
@@ -177,7 +177,7 @@ export function confirmacion(a) {
     const quien = quienTecnico(a)
     if (a.senal === 'linea') return `Te avisamos cuando ${quien} toque ${nombreDeLinea(a)}. Lo miramos cada día con el precio más alto y el más bajo del día.`
     const que = esRsi(a.senal)
-      ? `la fuerza (RSI) de ${quien} ${queTecnico(a.senal, a.direction, true)}`
+      ? `el impulso (RSI) de ${quien} ${queTecnico(a.senal, a.direction, true)}`
       : `${quien} ${queTecnico(a.senal, a.direction, true)}`
     return `Te avisamos cuando ${que}. Lo miramos cada día con el precio de cierre.`
   }

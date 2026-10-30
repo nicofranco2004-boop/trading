@@ -274,7 +274,7 @@ export function LeyendaIndicadores({ items, onAviso, deFabrica, onFabrica, ancho
           })}
           <li className="border-t border-line/60 mt-0.5 pt-0.5">
             <button type="button" data-capa="fabrica" onClick={onFabrica} disabled={deFabrica}
-              title={deFabrica ? 'Ya está todo como viene: prendido y en línea' : 'Muestra todo de nuevo y vuelve a la línea'}
+              title={deFabrica ? 'El gráfico ya está como al principio: todo visible y en línea' : 'Vuelve a mostrar todo y pasa el gráfico a línea'}
               className="w-full inline-flex items-center gap-1.5 min-h-9 sm:min-h-7 px-1.5 rounded text-ink-2 enabled:hover:text-ink-0 enabled:hover:bg-bg-2 disabled:opacity-50">
               <RotateCcw size={13} aria-hidden="true" />Volver a lo de fábrica
             </button>
