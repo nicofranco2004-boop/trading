@@ -60,9 +60,11 @@ PERMITIDOS = {
         "anotado en el PLAN DE PASAJE (punto 0c) como algo a resolver ANTES de "
         "cortar — no como algo que esté bien.",
     ("snapshots_job.py", "run_daily_snapshot"):
-        "⚠️ PENDIENTE: la foto diaria, también sólo-SQLite, con TRES disparadores "
-        "(APScheduler 02:59, el cron externo /api/snapshots/run-cron y el botón "
-        "admin). Mismo problema y mismo lugar en el plan.",
+        "Sólo para los tests que arman su propia base SQLite y pasan `db_path`. "
+        "Los TRES disparadores de producción (APScheduler 02:59, el cron externo "
+        "/api/snapshots/run-cron y el botón admin) pasan `abrir=get_db` desde el "
+        "29/10/2026 y la foto se guarda en la base que lee la app — lo prueba "
+        "tests/test_foto_diaria_en_la_base_de_la_app.py por la puerta real.",
     ("seed.py", "seed"):
         "Script de desarrollo, no corre en producción.",
     ("scripts/escala_foto_bonos.py", "<module>"):
@@ -158,15 +160,15 @@ class EscritoresSoloSqliteTest(unittest.TestCase):
                          f"estos permisos ya no apuntan a nada: {muertos}. "
                          f"Sacalos de PERMITIDOS.")
 
-    def test_los_dos_pendientes_siguen_marcados_como_pendientes(self):
+    def test_el_pendiente_sigue_marcado_como_pendiente(self):
         """Fija la deuda para que no se olvide.
 
-        El día que `backup_db` y `snapshots_job` pasen por `get_db()`, estos dos
-        permisos hay que sacarlos — y este test lo va a pedir solo (el de arriba
-        falla si quedan permisos muertos).
+        El día que `backup_db` pase por `get_db()` (o se reemplace por los backups
+        de Supabase), este permiso hay que sacarlo — y este test lo va a pedir solo
+        (el de arriba falla si quedan permisos muertos). La foto diaria salió de
+        esta lista el 29/10/2026.
         """
-        for clave in [("scripts/backup_db.py", "dump_sqlite_consistent"),
-                      ("snapshots_job.py", "run_daily_snapshot")]:
+        for clave in [("scripts/backup_db.py", "dump_sqlite_consistent")]:
             self.assertIn("PENDIENTE", PERMITIDOS[clave],
                           f"{clave} dejó de estar marcado como deuda")
 

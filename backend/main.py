@@ -45871,6 +45871,7 @@ def _run_daily_snapshot_job():
             fetch_tc_blue=_get_blue_for_scheduler,
             crypto_yf=CRYPTO_YF,
             fetch_tc_mep=_get_mep_for_scheduler,
+            abrir=get_db,
         )
         _snapshot_log.info(f"Daily snapshot result: {result}")
     except Exception as e:
@@ -49081,6 +49082,7 @@ def admin_run_snapshot(uid: int = Depends(get_admin_user)):
             fetch_tc_blue=_get_blue_for_scheduler,
             crypto_yf=CRYPTO_YF,
             fetch_tc_mep=_get_mep_for_scheduler,
+            abrir=get_db,
         )
     finally:
         _soltar_corrida("snapshot_diario")

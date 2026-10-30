@@ -1357,13 +1357,19 @@ def run_daily_snapshot(
     crypto_yf: dict,
     target_date: Optional[str] = None,
     fetch_tc_mep=None,
+    abrir=None,
 ) -> dict:
     """Función entry-point del scheduler. Itera todos los usuarios activos y
     toma snapshot para cada uno. Manejo de errores per-user — si uno falla,
     los demás siguen.
 
     Args:
-        db_path: path al SQLite file
+        db_path: path al SQLite file. Sólo se usa si no viene `abrir` (los tests
+            que arman su propia base SQLite).
+        abrir: callable que abre la conexión de la app (`main.get_db`). Los tres
+            disparadores de producción lo pasan: sin esto, en Postgres la foto se
+            leía y se guardaba en el archivo SQLite congelado y la app —que lee de
+            Postgres— se quedaba sin la foto de ayer, sin un error a la vista.
         fetch_tc_blue: callable que devuelve el blue rate actual (float) — HOY
             solo para el stamp display fx_to_usd_blue / fx_rates_daily (la
             valuación va al MEP).
@@ -1424,13 +1430,16 @@ def run_daily_snapshot(
             log.error(f"MEP inválido ({tc_mep}), abortando job (fail-closed)")
             return {'ok': False, 'reason': 'invalid_mep', 'tc_mep': tc_mep}
 
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    # Mismas pragmas que el path de requests (get_db): esperar el lock (no fallar
-    # al instante con "database is locked") y WAL para no bloquear lectores.
-    # (Audit M-OPS2.)
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA journal_mode=WAL")
+    if abrir is not None:
+        conn = abrir()
+    else:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        # Mismas pragmas que el path de requests (get_db): esperar el lock (no fallar
+        # al instante con "database is locked") y WAL para no bloquear lectores.
+        # (Audit M-OPS2.)
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL")
 
     try:
         # Phase C: persist el blue de HOY en fx_rates_daily. Idempotent —
