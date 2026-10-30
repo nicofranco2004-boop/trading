@@ -1325,15 +1325,16 @@ class SilenciadaNoSePagaElResumenHabladoTest(unittest.TestCase):
         con = main._bloques_de_sistema("MANIFIESTO", True)
         self.assertEqual(len(con), 1, "el que escucha no paga tokens de más")
 
-    def test_los_CUATRO_llamados_del_endpoint_lo_usan(self):
-        """El guard de propagación: el endpoint le habla al modelo en cuatro
-        lugares (las dos rondas de herramientas, la síntesis y el respaldo).
-        Apagar la voz en tres y olvidarse del cuarto no se nota — la respuesta
-        sale igual, sólo que pagando."""
+    def test_los_CINCO_llamados_del_endpoint_lo_usan(self):
+        """El guard de propagación: el endpoint le habla al modelo en cinco
+        lugares (las dos rondas de herramientas, la síntesis, el respaldo y el
+        segundo pedido de una lectura técnica con jerga, 30/10). Apagar la voz
+        en cuatro y olvidarse del quinto no se nota — la respuesta sale igual,
+        sólo que pagando."""
         import inspect, re
         fuente = inspect.getsource(main)
         llamadas = re.findall(r"system=([^\n]+)", fuente)
-        self.assertEqual(len(llamadas), 4, "cambió la cantidad de llamados: %r" % (llamadas,))
+        self.assertEqual(len(llamadas), 5, "cambió la cantidad de llamados: %r" % (llamadas,))
         for c in llamadas:
             self.assertIn("_bloques_de_sistema", c,
                           "este llamado arma los bloques por su cuenta: %s" % c)

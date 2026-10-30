@@ -15,6 +15,10 @@
 // por variables del tema (R8); números en Geist `tabular` (R1).
 // La pestaña «Gráfico» de Análisis técnico no la muestra (`soloGrafico` de
 // LecturaTecnica).
+//
+// `boton` y `panel`: «✦ Analizar con Mervall-E» (ResumenMervalle.jsx, mockup
+// aprobado por Nico el 30/10). El botón va en la cabecera, al lado del día de
+// cierre; lo que abre, abajo de los casilleros, dentro de la misma tarjeta.
 
 import { useId } from 'react'
 import { RSI_CASTIGADO, RSI_ESTIRADO, fmtAdx } from '../../utils/tecnico'
@@ -40,7 +44,7 @@ function fechaDelCruce(iso, cierre) {
   return `${iso.slice(8, 10)}/${iso.slice(5, 7)}${iso.slice(0, 4) !== (cierre || '').slice(0, 4) ? `/${iso.slice(2, 4)}` : ''}`
 }
 
-export default function LecturaDeHoy({ lectura, lista, puntos = [], adxTope = 50 }) {
+export default function LecturaDeHoy({ lectura, lista, puntos = [], adxTope = 50, boton = null, panel = null }) {
   if (!lectura?.ruedas || !lista?.length) return null
   const de = (id) => lista.find(t => t.id === id)
   const frase = fraseDeHoy(lista)
@@ -58,7 +62,10 @@ export default function LecturaDeHoy({ lectura, lista, puntos = [], adxTope = 50
           <span><b className="font-semibold text-ink-0">La lectura de hoy:</b>{' '}
             <span className="text-ink-1">{frase?.texto || 'todavía no hay historia para leer la tendencia.'}</span></span>
         </p>
-        <span className="text-[12px] font-medium text-ink-2">cierre del {diaDeCierre(lectura.fecha)}</span>
+        <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-2 sm:w-auto">
+          <span className="text-[12px] font-medium text-ink-2">cierre del {diaDeCierre(lectura.fecha)}</span>
+          {boton}
+        </div>
       </div>
       <div className="flex snap-x snap-mandatory overflow-x-auto scrollbar-none lg:grid lg:grid-cols-4 lg:overflow-visible">
         <CasilleroPlazo t={de('fondo')} dias={200} dist={lectura.dist_media200} escala={escala} color={v('rendi-accent')}
@@ -68,6 +75,7 @@ export default function LecturaDeHoy({ lectura, lista, puntos = [], adxTope = 50
         <CasilleroRsi t={de('rsi')} ruedas={lectura.ruedas} />
         <CasilleroAdx t={de('fuerza')} adxTope={adxTope} />
       </div>
+      {panel}
     </div>
   )
 }

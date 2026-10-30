@@ -58,6 +58,7 @@ from .builders.reports import build as build_reports
 from .builders.operations import build as build_operations
 from .builders.operation_trade import build as build_operation_trade
 from .builders.fundamentals_category import build as build_fundamentals_category
+from .builders.tecnico import build as build_tecnico
 
 
 # topic_id → (builder_fn, prompt_fn)
@@ -103,6 +104,13 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     "operations.trade": (build_operation_trade, prompts.render_operation_trade_prompt),
     # Análisis fundamental — análisis curado de UNA dimensión fundamental de una acción.
     "fundamentals.category": (build_fundamentals_category, prompts.render_fundamentals_category_prompt),
+    # Cómo viene el precio de un activo: la lectura técnica de su ficha, en palabras.
+    "tecnico": (build_tecnico, prompts.render_tecnico_prompt),
+    # Las preguntas para seguir del botón «Analizar con Mervall-E» de la ficha
+    # (mockup aprobado por Nico, 30/10): el mismo paquete, otra pregunta.
+    "tecnico.tendencia": (build_tecnico, prompts.render_tecnico_prompt),
+    "tecnico.fuerza": (build_tecnico, prompts.render_tecnico_prompt),
+    "tecnico.que_se_mira": (build_tecnico, prompts.render_tecnico_prompt),
     # ── Libro del asesor ────────────────────────────────────────────────────
     # Los primeros topics que NO miran una cuenta sino el conjunto de las
     # carteras administradas. Se llaman `composition` y no `distribution`
