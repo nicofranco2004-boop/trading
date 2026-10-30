@@ -310,10 +310,14 @@ export function tarjetaMovimiento(l) {
 // El RSI dicho como fuerza que el precio gana o pierde. «Castigado/estirado»
 // no se entendía, y «pesan más las subas» tampoco decía cuándo toma fuerza y
 // cuándo no (Nico, 2026-10-22).
+// Entre estas dos el impulso no es claro; arriba de RSI_GANA «gana impulso»
+// (lo que cuenta «Ganando impulso» de Tu lista), abajo de RSI_PIERDE lo pierde.
+export const RSI_PIERDE = 45
+export const RSI_GANA = 55
 export function veredictoRsi(rsi) {
   if (rsi < RSI_CASTIGADO) return 'Cayó muy rápido'
-  if (rsi < 45) return 'Pierde impulso'
-  if (rsi <= 55) return 'Sin impulso claro'
+  if (rsi < RSI_PIERDE) return 'Pierde impulso'
+  if (rsi <= RSI_GANA) return 'Sin impulso claro'
   if (rsi <= RSI_ESTIRADO) return 'Gana impulso'
   return 'Subió muy rápido'
 }

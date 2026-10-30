@@ -2,14 +2,15 @@
 // Lo que importa: cada palabra es la de la ficha, cuánto pesa cada activo es su
 // pedazo del total de la Cartera (el mismo motor), lo que seguís se lee con la
 // regla de la ficha y lo que no tiene lectura lo dice en vez de inventar.
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   lecturaDeSeguido, activosDeLaLista, filasDeLaLista, contarFilas, filtrarFilas, ordenarFilas,
   haceCuanto, trazoDeLinea, motivosSinLectura,
+  barrasDeFuerza, resumenDeLaLista, vistaGuardada, guardarVista, nombreDeActivo, DIAS_SEMANA,
 } from './listaTecnica'
 import { indexarLecturas, MOTIVOS_SIN_LECTURA } from './radiografia'
 import { setBrokersRegistry } from './valuation'
-import { tarjetas, veredictoRsi } from './tecnico'
+import { tarjetas, veredictoRsi, ADX_CLAVE, RSI_GANA, RSI_PIERDE } from './tecnico'
 
 const BROKERS = [
   { id: 1, name: 'IOL', currency: 'ARS' },
@@ -198,5 +199,87 @@ describe('hace cuánto y la línea chica', () => {
     expect(t.d).toBe('M0.0,1.0L32.0,21.0L64.0,9.0')   // 10 arriba, 5 abajo, 8 al 60 %
     expect(t.sube).toBe(false)
     expect(trazoDeLinea([{ c: 1 }])).toBeNull()
+  })
+})
+
+describe('las tarjetas de Tu lista', () => {
+  it('la Fuerza: cada barrita es media línea del ADX; desde la tercera, dirección marcada', () => {
+    expect(barrasDeFuerza(null)).toBeNull()
+    expect(barrasDeFuerza(5)).toEqual({ prendidas: 1, clara: false })
+    expect(barrasDeFuerza(ADX_CLAVE - 0.1)).toEqual({ prendidas: 2, clara: false })
+    expect(barrasDeFuerza(ADX_CLAVE)).toEqual({ prendidas: 3, clara: true })
+    expect(barrasDeFuerza(90)).toEqual({ prendidas: 5, clara: true })
+  })
+
+  it('los cortes del impulso son los de la ficha (veredictoRsi), no números nuevos', () => {
+    expect(veredictoRsi(RSI_GANA + 0.1)).toBe('Gana impulso')
+    expect(veredictoRsi(RSI_GANA)).toBe('Sin impulso claro')
+    expect(veredictoRsi(RSI_PIERDE - 0.1)).toBe('Pierde impulso')
+  })
+
+  it('el nombre de la empresa; una acción argentina con el de BYMA', () => {
+    expect(nombreDeActivo('NVDA')).toBe('NVIDIA')
+    expect(nombreDeActivo('GGAL', true)).toBe('Grupo Financiero Galicia')
+    expect(nombreDeActivo('ZZZZ')).toBeNull()
+  })
+
+  it('cada fila trae su precio, cuánto cambió en 3 meses y si cambió esta semana', () => {
+    const hace = (n) => new Date(Date.parse(HOY + 'T00:00:00Z') - n * 86400000).toISOString().slice(0, 10)
+    const x = (asset, fecha) => ({ asset, local: false, disponible: true,
+      lectura: { ruedas: 760, fecha: HOY, precio: 150, media200: 90, dist_media200: 10, tendencia: 'alcista', rsi: 60, adx: 30 },
+      linea: [{ d: hace(90), c: 100 }, { d: HOY, c: 150 }], ultimo_cambio: { tipo: 'media200', fecha, texto: 'superó su promedio.' } })
+    const filas = filasDeLaLista({
+      seguidos: [{ symbol: 'AAA' }, { symbol: 'BBB' }], hoy: HOY,
+      indice: indexarLecturas([x('AAA', hace(DIAS_SEMANA - 1)), x('BBB', hace(DIAS_SEMANA))]),
+    })
+    const [a, b] = filas
+    expect(a.precio).toBe(150)
+    expect(a.var3m).toBeCloseTo(50)
+    expect(a.nuevo).toBe(true)
+    expect(b.nuevo).toBe(false)          // hace 7 días ya no es «esta semana» (la de Señales)
+  })
+
+  it('la franja cuenta activos, nunca plata', () => {
+    const f = (fondo, extra = {}) => ({ fondo: { id: fondo }, vigente: fondo !== 'sin', nombre: extra.nombre || fondo, ...extra })
+    const r = resumenDeLaLista([
+      f('alcista', { rsi: { rsi: 60 }, nuevo: true }),
+      f('alcista', { rsi: { rsi: RSI_GANA }, desdeMax: { enMaximo: true }, nombre: 'NVDA' }),
+      f('bajista', { rsi: { rsi: 20 } }),
+      f('sin'),
+    ])
+    expect(r).toEqual({ alcistas: 2, conLectura: 3, puntos: ['alcista', 'alcista', 'bajista'], ganando: 1, enMaximo: ['NVDA'], cambiaron: 1 })
+  })
+
+  it('el mini-gráfico trae el relleno de abajo de la línea', () => {
+    const t = trazoDeLinea([{ c: 1 }, { c: 2 }], 300, 70)
+    expect(t.area.startsWith(t.d)).toBe(true)
+    expect(t.area.endsWith('L300,70L0,70Z')).toBe(true)
+  })
+})
+
+describe('«Tarjetas / Tabla» se recuerda por persona en el navegador', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+  const memoria = () => {
+    const m = new Map()
+    return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)) }
+  }
+
+  it('de entrada, tarjetas; lo que elige uno no lo ve otro', () => {
+    vi.stubGlobal('localStorage', memoria())
+    expect(vistaGuardada('7:propia')).toBe('tarjetas')
+    guardarVista('7:propia', 'tabla')
+    expect(vistaGuardada('7:propia')).toBe('tabla')
+    expect(vistaGuardada('8:propia')).toBe('tarjetas')
+    expect(vistaGuardada('7:cliente:3')).toBe('tarjetas')
+  })
+
+  it('sin nadie logueado no se guarda; sin almacenamiento (o roto), tarjetas sin romper', () => {
+    const m = memoria()
+    vi.stubGlobal('localStorage', m)
+    guardarVista(null, 'tabla')
+    expect(vistaGuardada(null)).toBe('tarjetas')
+    vi.stubGlobal('localStorage', { getItem: () => { throw new Error('bloqueado') }, setItem: () => { throw new Error('bloqueado') } })
+    expect(() => guardarVista('7:propia', 'tabla')).not.toThrow()
+    expect(vistaGuardada('7:propia')).toBe('tarjetas')
   })
 })
