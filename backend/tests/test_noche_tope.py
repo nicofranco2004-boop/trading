@@ -147,6 +147,53 @@ class NocheTopeTest(unittest.TestCase):
         self.assertLess(max(pedidos.index("KO"), pedidos.index("PEP")), 6, pedidos[:8])
         self.assertEqual(len(set(pedidos)), 123)   # todo se pide igual: sólo cambia el orden
 
+    def _asesor_con_clientes(self, n, inventados_por_cliente):
+        """Un asesor y `n` clientes creados por él (`managed_by`), cada uno con
+        símbolos inventados en su lista de seguimiento."""
+        with main.db_abierta() as conn:
+            ase = conn.execute("INSERT INTO users (email, password_hash, approved, email_verified, tier) "
+                               "VALUES (?, 'x', 1, 1, 'advisor')",
+                               (f"noche-ase-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+            for c in range(n):
+                cli = conn.execute("INSERT INTO users (email, password_hash, approved, email_verified, tier, "
+                                   "managed_by) VALUES (?, 'x', 0, 0, 'free', ?)",
+                                   (f"noche-cli-{uuid.uuid4().hex[:8]}@rendi.test", ase)).lastrowid
+                for i in range(inventados_por_cliente):
+                    conn.execute("INSERT INTO watchlist (user_id, symbol) VALUES (?, ?)",
+                                 (cli, f"QZ{c:03d}{i:03d}"))
+            conn.commit()
+        return ase
+
+    def test_los_clientes_que_creo_un_asesor_suman_a_su_tope(self):
+        """Re-test E4, ronda 2: cada cliente creado era otra persona con 300
+        lugares. Ahora suman al tope del asesor."""
+        self._asesor_con_clientes(5, 3)                       # 15 inventados entre 5 clientes
+        with mock.patch("velas_diarias.TICKERS_POR_PERSONA", 4, create=True):
+            noche = self._noche()
+        self.assertEqual(len([t for t in noche if t.startswith("QZ")]), 4, sorted(noche))
+
+    def test_lo_conocido_va_antes_que_lo_desconocido(self):
+        """Re-test E4, ronda 2: un asesor con 100 clientes dejó 36 de 189 reales
+        sin actualizar, porque lo nunca intentado iba primero. Ahora lo de las
+        listas de la app (aunque nunca se haya bajado) y lo que ya tiene velas
+        va antes que cualquier desconocido."""
+        self._asesor_con_clientes(30, 4)                      # 120 inventados nunca intentados
+        with main.db_abierta() as conn:
+            for s in ("KO", "PEP", "AAPL"):                    # de las listas de la app, nunca bajados
+                conn.execute("INSERT INTO watchlist (user_id, symbol) VALUES (?, ?)", (self.uids[1], s))
+            conn.commit()
+        pedidos = []
+
+        def bajar(t, periodo):
+            pedidos.append(t)
+            return None
+        with main.db_abierta() as conn, mock.patch("velas_diarias._bajar", bajar), \
+                mock.patch("velas_diarias.TANDA", 1):
+            velas_diarias.correr(conn)
+        reales = [pedidos.index(s) for s in ("KO", "PEP", "AAPL")]
+        primer_inventado = min(i for i, t in enumerate(pedidos) if t.startswith("QZ"))
+        self.assertLess(max(reales), primer_inventado, pedidos[:8])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -182,7 +182,8 @@ def _seguimiento_por_persona(conn):
     su serie en pesos es la del '.BA'. Reinventar esa regla acá es lo que hizo
     que un CEDEAR comprado por dólar-MEP pidiera el ticker equivocado (bug C1).
 
-    Cada persona suma hasta `TICKERS_POR_PERSONA`, en este orden: lo que
+    Cada persona (con los clientes que creó, si es asesor) suma hasta
+    `TICKERS_POR_PERSONA`, en este orden: lo que
     tiene, lo que sigue, sus alertas técnicas, lo que operó. Lo que pasa de ahí
     queda afuera (y se anota en el log). `de_cada_una`: {uid: [sus tickers, en
     ese orden]}, para repartir la noche por turnos (`_por_turnos`)."""
@@ -192,10 +193,17 @@ def _seguimiento_por_persona(conn):
     cedears = _cedears_de_byma()
     # {uid: [lista de tickers de un activo]} en el orden de las puertas.
     por_persona = {}
+    # Un cliente que creó un asesor (`users.managed_by`, una cuenta sin dueño
+    # que entre) suma al tope del ASESOR, no tiene uno propio: si no, cada
+    # cliente creado era otra persona con 300 lugares y otro turno en la fila
+    # (re-test E4, ronda 2: un asesor con 100 clientes dejó 36 de 189 activos
+    # reales sin actualizar).
+    dueno = {r['id']: r['managed_by'] for r in conn.execute(
+        "SELECT id, managed_by FROM users WHERE managed_by IS NOT NULL").fetchall()}
 
     def _anotar_de(uid, ys):
         if ys:
-            por_persona.setdefault(uid, []).append(ys)
+            por_persona.setdefault(dueno.get(uid, uid), []).append(ys)
     brokers = [dict(r) for r in conn.execute(
         "SELECT id, user_id, name, currency, parent_broker_id FROM brokers").fetchall()]
     por_usuario = {}
@@ -300,26 +308,41 @@ def _turno(estado: dict, t: str, hoy: str) -> int:
 
 
 def _por_turnos(conn, de_cada_una: dict, hoy: str) -> list:
-    """El orden de la noche: por TURNOS entre personas, no todo lo de una
-    adelante de todo lo de otra. Ronda 1: lo primero de cada persona; ronda 2:
-    lo segundo; etc. Cada persona ordena lo suyo por `_turno`. Lo que falló la
-    última vez va en una segunda vuelta, después de todo lo demás de todos.
+    """El orden de la noche, en tres vueltas, y en cada una por TURNOS entre
+    personas (ronda 1: lo primero de cada una; ronda 2: lo segundo; …):
+      1. lo CONOCIDO: lo de las listas de la app o BYMA (`_lista_de_la_app`), o
+         lo que ya se bajó bien alguna vez (Yahoo lo conoce). Cada persona lo
+         ordena por `_turno` (nunca intentado, historia entera, puesta al día);
+      2. lo desconocido que nunca se intentó: lo que alguien sumó y la app no
+         tiene en sus listas (un papel raro de verdad, o algo inventado). Va
+         con el tiempo que sobre;
+      3. lo desconocido que falló la última vez.
 
-    Por qué: lo «nunca intentado» va primero (para que lo que alguien acaba de
-    sumar tenga su historia), y una cuenta que mete 300 inventados por día los
-    tiene siempre nunca intentados. Con 3 clientes de un asesor más una cuenta
-    Pro, la noche tuvo 1.300 inventados primero y los 7 reales en la última
-    tanda (re-test E4, 29/10): si la noche se cortaba por tiempo, lo de verdad
-    no se actualizaba. Por turnos, cada persona avanza al mismo ritmo: los que
-    meten mucho sólo se atrasan a sí mismos."""
+    Por qué: lo «nunca intentado» iba primero para todos, y una cuenta (o un
+    asesor con cientos de clientes) con símbolos inventados los tiene siempre
+    nunca intentados. Con 1.300 inventados, los reales salían en la última
+    tanda (re-test E4); con un asesor de 100 clientes, 36 de 189 reales sin
+    actualizar en una noche de 15 minutos (ronda 2). Ahora lo inventado nunca
+    va delante de algo conocido, y entre personas cada una avanza al mismo
+    ritmo: los que meten mucho sólo se atrasan a sí mismos."""
     estado = {r['symbol']: dict(r) for r in conn.execute(
         "SELECT symbol, ultima_completa, ok FROM velas_estado").fetchall()}
-    vueltas = ([], [])
+    app = _lista_de_la_app()
+
+    def vuelta(t):
+        tu = _turno(estado, t, hoy)
+        if tu in (1, 2) or (_variantes(t) & app):
+            return 0
+        return 1 if tu == 0 else 2
+
+    vueltas = ([], [], [])
     for uid in sorted(de_cada_una, key=str):
         suyos = sorted(de_cada_una[uid], key=lambda t: _turno(estado, t, hoy))   # estable: el orden de las puertas
-        for v, lista in enumerate(([t for t in suyos if _turno(estado, t, hoy) < 3],
-                                   [t for t in suyos if _turno(estado, t, hoy) == 3])):
-            vueltas[v].append(lista)
+        por_vuelta = ([], [], [])
+        for t in suyos:
+            por_vuelta[vuelta(t)].append(t)
+        for v in range(3):
+            vueltas[v].append(por_vuelta[v])
     orden, puestos = [SP500], {SP500}
     for listas in vueltas:
         for k in range(max((len(x) for x in listas), default=0)):
@@ -592,26 +615,27 @@ def _variantes(asset: str) -> set:
     return {a, base, base.replace('.', '-'), base.replace('-', '.')}
 
 
-def _lo_conoce_la_app(v: set) -> bool:
+def _lista_de_la_app() -> set:
     """Las listas de la app: lo que ofrecen los buscadores y lo que se puede
     tocar en Mercado (`ai.trade_tickers`, `home.market`) y lo que cotiza en BYMA
-    (data912). `v`: las variantes del activo (`_variantes`)."""
+    (data912), con todas sus variantes (`_variantes`)."""
     from ai import trade_tickers as tt
     from home import market as mk
-    conocidos = (tt.CRYPTO_TICKERS | tt.US_TICKERS | tt.CEDEAR_TICKERS | tt.AR_STOCK_TICKERS)
-    if v & conocidos:
-        return True
-    mercado = {x for lista in (mk.SP500_TOP_50, mk.MERVAL_TOP_25, mk.CRYPTO_TOP_30)
-               for s in lista for x in _variantes(s)}
-    if v & mercado:
-        return True
+    out = set(tt.CRYPTO_TICKERS | tt.US_TICKERS | tt.CEDEAR_TICKERS | tt.AR_STOCK_TICKERS)
+    out |= {x for lista in (mk.SP500_TOP_50, mk.MERVAL_TOP_25, mk.CRYPTO_TOP_30)
+            for s in lista for x in _variantes(s)}
     try:
         from main import _fetch_data912_equities
-        if v & set((_fetch_data912_equities() or {}).keys()):
-            return True
+        out |= set((_fetch_data912_equities() or {}).keys())
     except Exception:
         pass
-    return False
+    return out
+
+
+def _lo_conoce_la_app(v: set) -> bool:
+    """¿Está en las listas de la app (`_lista_de_la_app`)? `v`: las variantes
+    del activo (`_variantes`)."""
+    return bool(v & _lista_de_la_app())
 
 
 def _lo_tiene(conn, v: set, uid, tablas) -> bool:
