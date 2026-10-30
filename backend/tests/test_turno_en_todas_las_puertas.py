@@ -50,13 +50,17 @@ PIDEN_ADENTRO = {
     "_repair_snapshots_summary": "un usuario por transacción",
     "_repair_interes_pf": "varios usuarios, en orden",
     "_repair_caja_1415": "varios usuarios, en orden",
+    # Cubre a `init_db`. Su rama de Postgres sólo escribe datos a través de ésta;
+    # lo que `init_db` escribe en su propio cuerpo es la rama de SQLite (las
+    # migraciones históricas), donde la primera escritura toma la base entera y
+    # Railway no superpone copias con volumen.
+    "reparaciones_de_arranque": "cada reparación de positions, con los turnos de las cuentas que toca",
 }
 
 # Lo que falta, con el motivo. Sólo puede achicarse (ver el docstring del módulo).
-PENDIENTES = {
-    "init_db": "el arranque: corre antes de atender pedidos, sin usuario",
-    "_reconstruir_mtm": "sale a Yahoo durante minutos; se protege con su huella (backfill_user)",
-}
+# Vacía desde el 30/10/2026: `init_db` (arriba) y `_reconstruir_mtm`, que pide el
+# turno después de Yahoo y antes de escribir (tests/test_turno_reconstruccion_y_arranque.py).
+PENDIENTES: dict = {}
 
 
 def _duenos_de_conexion_sin_turno():

@@ -289,3 +289,6 @@ TURNO_TOPE_FACTS_POR_USUARIO = 823471002
 TURNO_CAJA_DEL_BROKER = 823471003
 TURNO_CUOTA_IA_POR_USUARIO = 823471004
 TURNO_TOPE_DEL_PLAN_POR_USUARIO = 823471005
+# El arranque (esquema + reparaciones). De sesión y no de transacción: abarca
+# varias conexiones. Ver `main._de_a_un_arranque_por_vez`.
+TURNO_ARRANQUE = 823471006

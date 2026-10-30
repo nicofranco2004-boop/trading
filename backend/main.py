@@ -1266,6 +1266,48 @@ def _init_db_postgres():
                 pass          # la FK ya existía (ADD FOREIGN KEY no tiene IF NOT EXISTS)
 
 
+@contextmanager
+def _de_a_un_arranque_por_vez():
+    """Esquema + reparaciones de arranque, DE A UNA COPIA DE LA APP POR VEZ.
+
+    🔴 POR QUÉ. En Railway, sin volumen, al publicar conviven la copia vieja y la
+    nueva: la nueva arranca (y corre esto) mientras la vieja todavía atiende, y la
+    vieja recién se apaga cuando la nueva quedó activa más el tiempo de
+    superposición (docs.railway.com/reference/deployments, «Deployment
+    Teardown»). Hoy hay volumen (`/data`, la base SQLite) y Railway no superpone
+    copias con volumen; con Postgres el volumen deja de ser necesario. Y no hace
+    falta Railway: cualquier script que haga `import main` con DATABASE_URL de
+    producción corre esto mismo.
+
+    Dos arranques a la vez se pisaban de dos formas: los `CREATE ... IF NOT EXISTS`
+    simultáneos sobre una base vacía chocan en el catálogo (uno de los dos
+    revienta y esa copia no levanta), y las reparaciones corrían dos veces
+    sobre las mismas filas. El candado las pone en fila.
+
+    POR QUÉ ESPERA Y NO SE SALTEA. Lo que se pierde si falla cada opción: la que
+    se saltea levantaría a atender pedidos con el esquema todavía a medio aplicar
+    por la otra (columnas que no existen = errores en pedidos de verdad); la que
+    espera tarda unos segundos más en levantar. Si la copia que lo tiene muere,
+    Postgres lo suelta solo al cerrarse su conexión.
+
+    La segunda clave es el esquema: en producción es uno (`public`); en las
+    pruebas cada módulo tiene el suyo y no tienen por qué esperarse entre sí.
+
+    El turno de cada cuenta lo piden las reparaciones mismas: este candado ordena
+    los arranques entre sí, no a un arranque contra los pedidos de la copia vieja.
+    """
+    import pgsesion
+    with pgsesion.conectar(DATABASE_URL, autocommit=True) as candado:
+        clave = (pgsesion.TURNO_ARRANQUE,)
+        candado.execute("SELECT pg_advisory_lock(%s, hashtext(current_schema()))", clave)
+        try:
+            yield
+        finally:
+            # Explícito y no sólo al cerrar: detrás de un pooler la conexión del
+            # servidor puede seguir viva para otro cliente, con el candado puesto.
+            candado.execute("SELECT pg_advisory_unlock(%s, hashtext(current_schema()))", clave)
+
+
 # Fecha en que el mail de bienvenida empezó a salir por Rebill. Todo lo anterior
 # a esto es "ya estaba cuando el mail no salía".
 BIENVENIDA_REBILL_DESDE = "2026-09-09"
@@ -1322,6 +1364,60 @@ _NOTA_COMPRA_POR_CHAT = "Registrado por Mervall-E AI"
 _NOTAS_COMPRA_POR_CHAT_VIEJAS = ("Registrado por Coach IA", "Registrado por Rendi AI")
 
 
+# El turno de escritura de una cuenta. Vive acá arriba y no al lado de
+# `_foto_contable`, donde nació, porque `reparaciones_de_arranque` lo pide y
+# corre al importar este archivo (`init_db()`), antes de llegar allá: más abajo
+# era un NameError que sólo saltaba el día que hubiera algo para reparar.
+def _tomar_turno(conn, uid: int) -> None:
+    """Toma el turno de escritura (ver `_foto_contable`). `tier` y no `id`:
+    reescribir la clave primaria hacía 14 chequeos de claves foráneas por borrado.
+    Aparte para que un test pueda sacarlo sin copiar lo demás."""
+    conn.execute("UPDATE users SET tier=tier WHERE id=?", (uid,))
+
+
+def _tomar_turno_de_la_puerta(conn, uid: int) -> None:
+    """El turno de `_tomar_turno` para las puertas que escriben la plata y no lo
+    pedían: depósitos y retiros, operaciones a mano, confirmar un import, vender,
+    editar lotes, plazos fijos, conversiones… (censo:
+    tests/test_turno_en_todas_las_puertas.py).
+
+    🔴 POR QUÉ HACE FALTA. En Postgres `_tomar_turno` traba sólo la fila de
+    `users`, así que espera únicamente quien también la escriba. Estas puertas no
+    la escribían y se metían en el medio de los borrados y los «deshacer» que sí
+    la piden. La auditoría de los 14 (audit/turno_14/): en los 9 cruces reales el
+    intruso era una de estas puertas. Medido: borrar un mes mientras entra un
+    depósito dejaba al mes siguiente con el capital del mes borrado (100.000 de
+    capital inicial donde iba 0), 3 de 3.
+
+    POR QUÉ EN SQLITE NO HACE NADA, a propósito. Allá la primera escritura de
+    cualquiera ya toma la base ENTERA, así que estas puertas ya esperaban a los
+    borrados. Pedir el turno antes de leer sólo agrandaría ese candado de toda la
+    base sobre lecturas y, en varias de estas puertas, sobre pedidos a la red
+    (cotizaciones, precios): cada usuario esperaría al Yahoo de otro. En Postgres
+    el candado es por usuario y esa espera es sólo suya.
+
+    Va PRIMERO en cada transacción —antes del candado de la caja
+    (`efectivo.tomar_saldo`)— para que el orden de candados sea uno solo: el
+    cruzado ya se pagó dos veces con un `deadlock detected`. Y en cada
+    transacción, no una vez por pedido: un `commit()` o un `rollback()` lo suelta.
+    """
+    import pgsesion as _ps
+    if _ps.habla_postgres(conn):
+        _tomar_turno(conn, uid)
+
+
+def _tomar_turnos_en_orden(conn, uids) -> None:
+    """El turno de VARIOS usuarios en la misma transacción (reparaciones del admin,
+    el asesor sobre varios clientes): de menor a mayor, siempre. Dos procesos que
+    piden los mismos turnos en el mismo orden no pueden quedar esperándose el uno
+    al otro; en distinto orden, sí (A tiene el 3 y espera el 7, B tiene el 7 y
+    espera el 3). Un pedido de un usuario pide sólo el suyo y no entra en ese
+    cruce. Como `_tomar_turno_de_la_puerta`: va PRIMERO en la transacción, y en
+    SQLite no hace nada."""
+    for u in sorted({int(x) for x in uids if x is not None}):
+        _tomar_turno_de_la_puerta(conn, u)
+
+
 def reparaciones_de_arranque(conn):
     """Lo que Rendi se arregla sola CADA VEZ que arranca. Corre en LOS DOS MOTORES.
 
@@ -1352,9 +1448,34 @@ def reparaciones_de_arranque(conn):
     `credit_ledger` para quien pagó antes de la proration, y los `if not cols:`
     que rearman tablas que nunca existieron. Si alguno hiciera falta del lado de
     Postgres, hay que traerlo acá a mano.
+
+    🔒 CADA REPARACIÓN ES SU PROPIA TRANSACCIÓN, y las que tocan `positions` piden
+    el turno de cada cuenta que tocan. En Postgres el arranque puede correr
+    mientras la copia anterior de la app todavía atiende pedidos (ver
+    `_de_a_un_arranque_por_vez`): sin el turno, una reparación se metía en el medio de un
+    depósito o de un borrado de esa cuenta. Y de a una porque en Postgres un error
+    arruina la transacción entera: con un solo commit al final, la primera que
+    fallaba se llevaba a todas las de abajo (el «plan B» del hallazgo 13). Ahora
+    la que falla se deshace sola y las demás corren.
     """
-    # Sincronizar is_admin + approved para usuarios con email admin
-    rows = conn.execute("SELECT id, email FROM users").fetchall()
+    def _en_positions_con_los_turnos(set_sql, donde, set_args=(), donde_args=()):
+        """UPDATE de `positions` con el turno de cada cuenta que toca, de menor a
+        mayor (`_tomar_turnos_en_orden`). Las cuentas se leen antes y el UPDATE se
+        limita a ellas: una que empiece a cumplir la condición mientras tanto queda
+        para el próximo arranque, en vez de escribirse sin su turno."""
+        uids = [r["user_id"] for r in conn.execute(
+            f"SELECT DISTINCT user_id FROM positions WHERE {donde}", donde_args).fetchall()]
+        if not uids:
+            return 0
+        _tomar_turnos_en_orden(conn, uids)
+        huecos = ", ".join("?" * len(uids))
+        return conn.execute(
+            f"UPDATE positions SET {set_sql} WHERE ({donde}) AND user_id IN ({huecos})",
+            (*set_args, *donde_args, *uids)).rowcount or 0
+
+    # Sincronizar is_admin + approved para usuarios con email admin. Por id: escribir
+    # la fila de `users` es tomar el turno de esa cuenta, y en orden no se cruza.
+    rows = conn.execute("SELECT id, email FROM users ORDER BY id").fetchall()
     for r in rows:
         if _is_admin_email(r["email"]):
             conn.execute("UPDATE users SET is_admin=1, approved=1 WHERE id=?", (r["id"],))
@@ -1375,9 +1496,11 @@ def reparaciones_de_arranque(conn):
         """)
         conn.commit()
     except Exception as _ex:
+        conn.rollback()
         logging.getLogger(__name__).warning("completar last_login_at desde login_history falló (no fatal): %s", _ex)
 
     _podar_uso(conn, siempre=True)
+    conn.rollback()   # si falló adentro (lo registra y sigue), que no arruine lo de abajo
 
     # B-7 (audit IA #2): purga del cache yfinance envenenado — fundamentals/
     # analysts de tickers .BA cacheados ANTES del guard traen ARS bajo campos
@@ -1388,8 +1511,9 @@ def reparaciones_de_arranque(conn):
         conn.execute(
             "DELETE FROM yfinance_cache WHERE ticker LIKE '%.BA' "
             "AND kind IN ('fundamentals', 'analysts')")
+        conn.commit()
     except Exception:
-        pass  # tabla puede no existir en DBs muy viejas pre-migración
+        conn.rollback()  # tabla puede no existir en DBs muy viejas pre-migración
 
     # Las compras registradas por chat guardaron la nota con el nombre que el
     # asistente tenía ese día ("Coach IA", después "Rendi AI"), y se ve en
@@ -1403,12 +1527,14 @@ def reparaciones_de_arranque(conn):
         # tercero a la lista hacía fallar la consulta — y como el error se
         # descarta (es cosmético), no se renombraba ninguna nota.
         huecos = ", ".join("?" * len(_NOTAS_COMPRA_POR_CHAT_VIEJAS))
-        n = conn.execute(
-            f"UPDATE positions SET notes = ? WHERE notes IN ({huecos})",
-            (_NOTA_COMPRA_POR_CHAT, *_NOTAS_COMPRA_POR_CHAT_VIEJAS)).rowcount or 0
+        n = _en_positions_con_los_turnos(
+            "notes = ?", f"notes IN ({huecos})",
+            (_NOTA_COMPRA_POR_CHAT,), _NOTAS_COMPRA_POR_CHAT_VIEJAS)
+        conn.commit()
         if n:
             log.info("notas de compras por chat renombradas: %d", n)
     except Exception as ex:
+        conn.rollback()
         log.warning("no se pudieron renombrar las notas de compras por chat: %s", ex)
 
     # Cajas de brokers en DÓLARES que se llaman 'USDT'. Hasta 2026-10-07 el
@@ -1427,14 +1553,15 @@ def reparaciones_de_arranque(conn):
                     "WHERE b.user_id=positions.user_id AND b.name=positions.broker "
                     "AND b.currency='USD')")
     try:
-        n = conn.execute(
-            f"UPDATE positions SET asset=? WHERE {_usdt_en_usd}",
-            (_efectivo.asset_de_caja('USD'),)).rowcount or 0
+        n = _en_positions_con_los_turnos("asset=?", _usdt_en_usd,
+                                         (_efectivo.asset_de_caja('USD'),))
+        conn.commit()
         quedan = conn.execute(
             f"SELECT COUNT(*) c FROM positions WHERE {_usdt_en_usd}").fetchone()["c"]
         log.warning("cajas USDT de brokers en dólares: %d renombradas a USD ahora, "
                     "quedan %d", n, quedan)
     except Exception as ex:
+        conn.rollback()
         log.warning("no se pudieron renombrar las cajas USDT de brokers en dólares: %s", ex)
 
     # Cajas VACÍAS (o en rojo) que quedaron con el precio de compra de dólares
@@ -1447,15 +1574,15 @@ def reparaciones_de_arranque(conn):
     # (`caja_vacia_con_precio`). En cada boot y en WARNING, como el de arriba:
     # "quedan 0" es la confirmación.
     try:
-        n = conn.execute(
-            "UPDATE positions SET tc_compra=NULL "
-            f"WHERE {_efectivo.SQL_CAJA_VACIA_CON_PRECIO}").rowcount or 0
+        n = _en_positions_con_los_turnos("tc_compra=NULL", _efectivo.SQL_CAJA_VACIA_CON_PRECIO)
+        conn.commit()
         quedan = conn.execute(
             "SELECT COUNT(*) c FROM positions "
             f"WHERE {_efectivo.SQL_CAJA_VACIA_CON_PRECIO}").fetchone()["c"]
         log.warning("cajas vacías con precio de compra: %d limpiadas ahora, quedan %d",
                     n, quedan)
     except Exception as ex:
+        conn.rollback()
         log.warning("no se pudo limpiar el precio de las cajas vacías: %s", ex)
 
     # Tokens de reseteo: hasta 2026-10 se guardaban en claro y no se borraban
@@ -1464,19 +1591,21 @@ def reparaciones_de_arranque(conn):
     # WARNING como las de arriba (init_db corre antes del basicConfig).
     try:
         _vivos, _migrados = _migrar_reset_tokens_a_huella(conn)
+        conn.commit()
         log.warning("tokens de reseteo: %d vivos, %d pasados a huella ahora",
                     _vivos, _migrados)
     except Exception as ex:
+        conn.rollback()
         log.warning("no se pudieron migrar los tokens de reseteo a huella: %s", ex)
 
     # Links de asesor (claim + pedido de acceso): misma huella, sin borrar filas.
     try:
         _n = _migrar_tokens_link_a_huella(conn)
+        conn.commit()
         log.warning("tokens de links de asesor: %d pasados a huella ahora", _n)
     except Exception as ex:
+        conn.rollback()
         log.warning("no se pudieron migrar los tokens de links de asesor a huella: %s", ex)
-
-    conn.commit()
 
 
 def init_db():
@@ -1487,12 +1616,13 @@ def init_db():
         # schema_pg.sql, generado a partir del schema final real. Traducir 46
         # migraciones sería 46 oportunidades de equivocarse para llegar al mismo
         # lugar.
-        _init_db_postgres()
         # El esquema de Postgres sale de schema_pg.sql, pero las REPARACIONES de
         # datos hay que correrlas igual: antes de 2026-10-29 este `return` se las
         # llevaba todas, en silencio. Ver `reparaciones_de_arranque`.
-        with db_abierta() as conn:
-            reparaciones_de_arranque(conn)
+        with _de_a_un_arranque_por_vez():
+            _init_db_postgres()
+            with db_abierta() as conn:
+                reparaciones_de_arranque(conn)
         return
     with db_abierta() as conn:
 
@@ -18848,56 +18978,6 @@ def _foto_contable(conn, uid: int) -> dict:
         conn.execute("ROLLBACK TO SAVEPOINT foto_contable")
         conn.execute("RELEASE SAVEPOINT foto_contable")
     return {"canon": canon, "tal_cual": tal_cual}
-
-
-def _tomar_turno(conn, uid: int) -> None:
-    """Toma el turno de escritura (ver `_foto_contable`). `tier` y no `id`:
-    reescribir la clave primaria hacía 14 chequeos de claves foráneas por borrado.
-    Aparte para que un test pueda sacarlo sin copiar lo demás."""
-    conn.execute("UPDATE users SET tier=tier WHERE id=?", (uid,))
-
-
-def _tomar_turno_de_la_puerta(conn, uid: int) -> None:
-    """El turno de `_tomar_turno` para las puertas que escriben la plata y no lo
-    pedían: depósitos y retiros, operaciones a mano, confirmar un import, vender,
-    editar lotes, plazos fijos, conversiones… (censo:
-    tests/test_turno_en_todas_las_puertas.py).
-
-    🔴 POR QUÉ HACE FALTA. En Postgres `_tomar_turno` traba sólo la fila de
-    `users`, así que espera únicamente quien también la escriba. Estas puertas no
-    la escribían y se metían en el medio de los borrados y los «deshacer» que sí
-    la piden. La auditoría de los 14 (audit/turno_14/): en los 9 cruces reales el
-    intruso era una de estas puertas. Medido: borrar un mes mientras entra un
-    depósito dejaba al mes siguiente con el capital del mes borrado (100.000 de
-    capital inicial donde iba 0), 3 de 3.
-
-    POR QUÉ EN SQLITE NO HACE NADA, a propósito. Allá la primera escritura de
-    cualquiera ya toma la base ENTERA, así que estas puertas ya esperaban a los
-    borrados. Pedir el turno antes de leer sólo agrandaría ese candado de toda la
-    base sobre lecturas y, en varias de estas puertas, sobre pedidos a la red
-    (cotizaciones, precios): cada usuario esperaría al Yahoo de otro. En Postgres
-    el candado es por usuario y esa espera es sólo suya.
-
-    Va PRIMERO en cada transacción —antes del candado de la caja
-    (`efectivo.tomar_saldo`)— para que el orden de candados sea uno solo: el
-    cruzado ya se pagó dos veces con un `deadlock detected`. Y en cada
-    transacción, no una vez por pedido: un `commit()` o un `rollback()` lo suelta.
-    """
-    import pgsesion as _ps
-    if _ps.habla_postgres(conn):
-        _tomar_turno(conn, uid)
-
-
-def _tomar_turnos_en_orden(conn, uids) -> None:
-    """El turno de VARIOS usuarios en la misma transacción (reparaciones del admin,
-    el asesor sobre varios clientes): de menor a mayor, siempre. Dos procesos que
-    piden los mismos turnos en el mismo orden no pueden quedar esperándose el uno
-    al otro; en distinto orden, sí (A tiene el 3 y espera el 7, B tiene el 7 y
-    espera el 3). Un pedido de un usuario pide sólo el suyo y no entra en ese
-    cruce. Como `_tomar_turno_de_la_puerta`: va PRIMERO en la transacción, y en
-    SQLite no hace nada."""
-    for u in sorted({int(x) for x in uids if x is not None}):
-        _tomar_turno_de_la_puerta(conn, u)
 
 
 def _primer_dia_en_las_fotos(fecha_mov, confirmado: Optional[str]) -> Optional[str]:
@@ -43860,8 +43940,13 @@ def _reconstruir_mtm(uid: int) -> dict:
         # transacción que las fotos. "Reintentar" (Yahoo falló, la contabilidad no
         # paró de cambiar) guarda la marca de fallida: el próximo pedido la rehace.
         _marca = _MTM_FALLIDA if res.get("reintentar") else res.get("huella")
+        # 🔒 EL TURNO. `backfill_user` lo pide recién después de Yahoo, antes de
+        # comparar y escribir, y vuelve con él tomado si escribió (ver el
+        # comentario allá). Si no escribió nada, acá se deshace y se vuelve a
+        # pedir para lo que escribe esta función: la huella y las fotos medidas.
         if res.get("skipped") and not res.get("snapshots_borrados"):
             conn.rollback()
+            _tomar_turno_de_la_puerta(conn, uid)
             if _marca:
                 _guardar_huella_escrita(conn, uid, _marca)
             # Sin historia que reconstruir (todo FCI, sin import…) igual puede haber
@@ -43897,6 +43982,7 @@ def _reconstruir_mtm(uid: int) -> dict:
         # (p. ej. la base ocupada más que el busy_timeout): que el próximo pedido
         # de esta persona la vuelva a pedir.
         try:
+            _tomar_turno_de_la_puerta(conn, uid)
             _guardar_huella_escrita(conn, uid, _MTM_FALLIDA)
             conn.commit()
         except Exception:
