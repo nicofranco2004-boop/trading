@@ -2548,3 +2548,10 @@ ALTER TABLE tesis ADD COLUMN IF NOT EXISTS created_at text DEFAULT to_char(now()
 ALTER TABLE tesis ADD COLUMN IF NOT EXISTS updated_at text;
 
 CREATE INDEX IF NOT EXISTS idx_tesis_user_asset ON tesis(user_id, asset, escrita_el);
+
+CREATE TABLE IF NOT EXISTS tesis_del_dia (
+  user_id bigint NOT NULL,
+  dia text NOT NULL,
+  nuevas bigint NOT NULL DEFAULT 0,
+  PRIMARY KEY (dia, user_id)
+);

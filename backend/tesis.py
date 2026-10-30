@@ -141,10 +141,8 @@ def guardar(conn, uid: int, asset: str, texto: str, local: bool = False) -> int:
     tendencia = json.dumps(_tendencia(conn, asset, local, hoy))
     _tomar_turno(conn, uid)
     ultima = _ultima(conn, uid, asset)
-    if not (ultima and ultima["escrita_el"] == hoy) and conn.execute(
-            "SELECT COUNT(*) FROM tesis WHERE user_id=? AND escrita_el=?",
-            (uid, hoy)).fetchone()[0] >= TESIS_NUEVAS_POR_DIA:
-        raise TesisTope(f"Hoy ya escribiste {TESIS_NUEVAS_POR_DIA} tesis. Mañana podés seguir.")
+    if not (ultima and ultima["escrita_el"] == hoy):
+        _contar_una_nueva(conn, uid, hoy)
     if ultima and ultima["escrita_el"] == hoy:
         conn.execute(
             """UPDATE tesis SET texto=?, accion_local=?, tendencia_json=?,
@@ -162,6 +160,25 @@ def guardar(conn, uid: int, asset: str, texto: str, local: bool = False) -> int:
         conn.execute("UPDATE tesis SET recordar_tipo=NULL, recordar_el=NULL, alert_id=NULL "
                      "WHERE id=? AND user_id=?", (ultima["id"], uid))
     return cur.lastrowid
+
+
+def _contar_una_nueva(conn, uid: int, hoy: str) -> None:
+    """Anota una tesis nueva de hoy, o TesisTope si ya van `TESIS_NUEVAS_POR_DIA`.
+    Cuenta en `tesis_del_dia`, no las filas de `tesis`: borrar una tesis no
+    devuelve el cupo (antes, 3 rondas de 20 en menos de un minuto borrando;
+    re-test E2, 29/10). Con el turno ya tomado."""
+    fila = conn.execute("SELECT nuevas FROM tesis_del_dia WHERE dia=? AND user_id=?",
+                        (hoy, uid)).fetchone()
+    # Las de hoy que ya estaban escritas antes de que existiera el contador.
+    ya = max(fila["nuevas"] if fila else 0, conn.execute(
+        "SELECT COUNT(*) FROM tesis WHERE user_id=? AND escrita_el=?", (uid, hoy)).fetchone()[0])
+    if ya >= TESIS_NUEVAS_POR_DIA:
+        raise TesisTope(f"Hoy ya escribiste {TESIS_NUEVAS_POR_DIA} tesis. Mañana podés seguir.")
+    if not fila:
+        conn.execute("DELETE FROM tesis_del_dia WHERE dia < ? AND user_id=?", (hoy, uid))
+    conn.execute("""INSERT INTO tesis_del_dia (user_id, dia, nuevas) VALUES (?, ?, ?)
+                    ON CONFLICT (dia, user_id) DO UPDATE SET nuevas = excluded.nuevas""",
+                 (uid, hoy, ya + 1))
 
 
 def _de_la_persona(conn, uid: int, tesis_id: int):

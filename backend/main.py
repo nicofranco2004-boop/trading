@@ -2632,6 +2632,19 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_tesis_user_asset ON tesis(user_id, asset, escrita_el);
         """)
 
+        # Cuántas tesis NUEVAS escribió cada persona cada día (`tesis.guardar`).
+        # Aparte de `tesis` porque borrar una tesis no puede devolver el cupo: el
+        # tope de 20 por día se renovaba borrando (re-test E2, 29/10). Se poda
+        # sola (`tesis.guardar` borra los días viejos).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tesis_del_dia (
+                user_id INTEGER NOT NULL,
+                dia TEXT NOT NULL,               -- 'YYYY-MM-DD', día argentino
+                nuevas INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (dia, user_id)
+            );
+        """)
+
         # Los dibujos a mano del gráfico técnico (líneas de tendencia y
         # horizontales, como TradingView), de cada persona por activo y moneda,
         # para verlos en todos sus dispositivos. `datos` es la lista entera en
@@ -48693,8 +48706,13 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
     import alerts_engine as _ae
     conn = get_db()
     try:
+        # Ve lo mismo que la lista (`GET /api/alerts`): los recordatorios de una
+        # tesis no están ahí y se manejan desde la tesis, que tiene su tope
+        # (`tesis.RECORDATORIOS_MAX`). Por acá se reactivaban los ya avisados
+        # sin pasar por él: 39 activos con tope 20, ~1.800 mails por día desde
+        # una cuenta gratis (re-test E2, 29/10).
         row = conn.execute(
-            "SELECT * FROM alerts WHERE id=? AND user_id=?", (alert_id, uid)
+            "SELECT * FROM alerts WHERE id=? AND user_id=? AND kind != 'recordatorio'", (alert_id, uid)
         ).fetchone()
         if not row:
             raise HTTPException(404, "Alerta no encontrada.")
@@ -48755,6 +48773,11 @@ def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:
+            # Lo mismo que el PATCH: un recordatorio de tesis no se toca por acá
+            # (se saca desde la tesis, que deja la tesis sin el recordatorio).
+            if not conn.execute("SELECT 1 FROM alerts WHERE id=? AND user_id=? AND kind != 'recordatorio'",
+                                (alert_id, uid)).fetchone():
+                return {"ok": True}
             # `alert_symbol_state` no tiene user_id: se ata por subquery a `alerts`
             # para no tocar el estado de alertas AJENAS, y se borra ANTES que la
             # alerta (después el subquery ya no la encontraría). Sin este candado,

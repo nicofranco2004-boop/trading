@@ -140,6 +140,38 @@ class TesisTest(Base):
         r = self.client.put(f"/api/tesis/{ids[tope]}/recordatorio", json={"tipo": "3m"}, headers=self.ana)
         self.assertEqual(r.status_code, 200, r.text)
 
+    def test_borrar_no_devuelve_el_cupo_del_dia(self):
+        """Re-test E2: el tope se renovaba borrando (3 rondas de 20 en un minuto)."""
+        tope = tesis.TESIS_NUEVAS_POR_DIA
+        for a in CONOCIDOS[:tope]:
+            tid = self._tesis(a)
+            self.assertEqual(self.client.delete(f"/api/tesis/{tid}", headers=self.ana).status_code, 200)
+        self._tesis(CONOCIDOS[tope], esperado=429)
+        self._tesis(CONOCIDOS[tope], self.beto)              # Beto, normal
+
+    def test_mis_alertas_no_reactiva_recordatorios(self):
+        """Re-test E2: PATCH /api/alerts/{id} {"active": true} reactivaba los
+        recordatorios ya avisados sin pasar por el tope: 39 activos con tope 20 y
+        39 mails. Un recordatorio se maneja desde su tesis."""
+        tid = self._tesis("AAPL")
+        r = self.client.put(f"/api/tesis/{tid}/recordatorio", json={"tipo": "3m"}, headers=self.ana)
+        self.assertEqual(r.status_code, 200, r.text)
+        with main.db_abierta() as conn:
+            aid = conn.execute("SELECT alert_id FROM tesis WHERE id=?", (tid,)).fetchone()[0]
+            conn.execute("UPDATE alerts SET active=0 WHERE id=?", (aid,))    # ya avisado
+            conn.commit()
+        self.assertEqual(self.client.patch(f"/api/alerts/{aid}", json={"active": True},
+                                           headers=self.ana).status_code, 404)
+        self.client.delete(f"/api/alerts/{aid}", headers=self.ana)
+        with main.db_abierta() as conn:
+            self.assertEqual(conn.execute("SELECT active FROM alerts WHERE id=?", (aid,)).fetchone()[0], 0)
+        # Una alerta de verdad, sí.
+        r = self.client.post("/api/alerts", json={"kind": "price_target", "symbol": "AAPL", "scope": "ticker",
+                                                  "direction": "above", "threshold": 1000}, headers=self.ana)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.client.patch(f"/api/alerts/{r.json()['id']}", json={"active": False},
+                                           headers=self.ana).status_code, 200)
+
     def test_diez_a_la_vez_no_pasan_el_tope_del_dia(self):
         tope = tesis.TESIS_NUEVAS_POR_DIA
         for a in CONOCIDOS[:tope - 2]:
