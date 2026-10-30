@@ -3,7 +3,8 @@
 // Nada se calcula de nuevo acá: los cambios, sus palabras, el peso de cada
 // tenencia y el % en tendencia alcista vienen armados de GET /api/tus-senales
 // (backend/senales_semana.py, la MISMA cuenta que el mail de los sábados). Acá
-// sólo se filtra, se agrupa por día y se arman los textos de las tres tarjetas.
+// sólo se filtra, se ordena, se agrupa por día y se arman los textos de la
+// franja de arriba y de cada tarjeta de la agenda.
 
 import { parteDeTuPlata } from './parteDeTuPlata'
 import { AVISO_OCULTO } from './ocultarSaldos'
@@ -75,49 +76,134 @@ export function deQuien(s, hidden) {
   return p ? `En tu cartera · ${p}` : 'En tu cartera'
 }
 
-/** Las tres tarjetas de arriba. `datos` = la respuesta del servidor. */
-export function tarjetas(datos, hidden) {
-  const senales = datos?.senales || []
-  const tuyas = senales.filter(s => s.tenes)
-  const deWatch = senales.filter(s => s.watchlist && !s.tenes)
-  const activos = datos?.tenes?.activos || 0
-  const conCambios = datos?.tenes?.con_cambios || 0
+/** De qué lado movió el precio un cambio: 'favor' (subió o se afirmó para
+ *  arriba), 'contra' (bajó) o null (la fuerza de la tendencia sin dirección).
+ *  Es lo que cuenta «A favor · en contra» y el color de cada cambio. */
+export function lado(s) {
+  if (s?.tipo === 'media200' || s?.tipo === 'media50') return s.sentido === 'arriba' ? 'favor' : s.sentido === 'abajo' ? 'contra' : null
+  if (s?.tipo === 'rsi_bajo_30') return 'contra'
+  if (s?.tipo === 'rsi_sobre_70' || s?.tipo === 'maximo_12m') return 'favor'
+  if (s?.tipo === 'adx23') return s.squeeze === 1 ? 'favor' : s.squeeze === -1 ? 'contra' : null
+  return null
+}
 
-  const tenes = {
-    titulo: 'En tu cartera',
-    valor: plural(tuyas.length, 'cambio', 'cambios'),
-    texto: activos === 0
-      ? 'Todavía no hay precios guardados de ninguno de tus activos.'
-      // «Con precios al día», no «con lectura»: en el Panorama y la Cartera «sin
-      // lectura» es «sin tendencia de fondo» (sin promedio de 200), y un papel de
-      // 120 días se contaba acá y salía allá «sin lectura» (re-test A2, 29/10).
-      // Lo que se cuenta es `_se_lee` del servidor: precios al día.
-      : tuyas.length === 0 ? `Nada cambió en tus ${plural(activos, 'activo', 'activos')} con precios al día.`
-        : `en ${conCambios} de tus ${plural(activos, 'activo', 'activos')} con precios al día`,
+/** El color de un cambio en las barras y en su etiqueta: verde a favor, rojo
+ *  en contra y azul sin dirección, el MISMO `lado` que cuenta la franja. El
+ *  lienzo pintaba de azul el máximo y la fuerza, pero la franja los contaba
+ *  verdes: un día con un máximo sumaba «a favor» arriba y no tenía nada verde
+ *  en su barra (revisión a ciegas, 30/10). */
+export function colorDelCambio(s) {
+  const l = lado(s)
+  return l === 'favor' ? 'pos' : l === 'contra' ? 'neg' : 'azul'
+}
+
+/** La etiqueta corta de la tarjeta de la agenda. */
+export const ETIQUETA_CORTA = {
+  media200: 'Largo plazo', media50: 'Mediano plazo',
+  rsi_bajo_30: 'Impulso', rsi_sobre_70: 'Impulso',
+  maximo_12m: 'Máximo', adx23: 'Fuerza',
+}
+
+/** «hoy» / «ayer» / «hace 3 días»: contado desde `hasta` (el hoy del
+ *  servidor), no desde el reloj de la compu. */
+export function hace(fecha, hasta) {
+  const d = Math.round((Date.parse(`${hasta}T00:00:00Z`) - Date.parse(`${fecha}T00:00:00Z`)) / 86400000)
+  if (!Number.isFinite(d) || d < 0) return null
+  return d === 0 ? 'hoy' : d === 1 ? 'ayer' : `hace ${d} días`
+}
+
+/** La segunda línea de la tarjeta: `detalle` del servidor. Un servidor de
+ *  antes (mientras se despliega) no lo manda: no va nada, porque `texto`
+ *  repetía el título en minúscula («superó su promedio…: la tendencia…»). */
+export function detalleDe(s) {
+  return s.detalle || null
+}
+
+/** De quién es, al pie de la tarjeta: «18% de tu cartera» / «en tu cartera»
+ *  (sin el peso, o con «Ocultar saldos») / «en tu watchlist». */
+export function quienCorto(s, hidden) {
+  if (!s.tenes) return 'en tu watchlist'
+  return pesoTxt(s.peso, hidden) || 'en tu cartera'
+}
+
+/** El orden en que se muestran. El servidor manda, dentro de cada día, lo
+ *  tuyo de más a menos peso: con «Ocultar saldos» ese orden delata cuál pesa
+ *  más (memoria «la privacidad se filtra por la forma»). Con el ojito, adentro
+ *  de cada día va lo tuyo y después la watchlist, cada parte por nombre. Lo
+ *  usan Señales, sus barras y el Panorama (que elige los 3 más nuevos). */
+export function enOrden(senales = [], hidden = false) {
+  if (!hidden) return senales
+  return [...senales].sort((a, b) => (a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0)
+    || (Number(!!b.tenes) - Number(!!a.tenes))
+    || String(a.asset).localeCompare(String(b.asset)))
+}
+
+/** Los días de las barras, de `desde` (exclusive, como el servidor) a `hasta`:
+ *  [{ fecha, dia, items }], el más viejo primero. */
+export function diasDeLasBarras(senales = [], desde, hasta) {
+  const out = []
+  const ini = Date.parse(`${desde}T00:00:00Z`)
+  const fin = Date.parse(`${hasta}T00:00:00Z`)
+  if (!Number.isFinite(ini) || !Number.isFinite(fin)) return out
+  for (let t = ini + 86400000; t <= fin; t += 86400000) {
+    const fecha = new Date(t).toISOString().slice(0, 10)
+    out.push({ fecha, dia: diaLargo(fecha), items: senales.filter(s => s.fecha === fecha) })
   }
-  const nombres = [...new Set(deWatch.map(s => s.asset))]
-  const watch = {
-    titulo: 'En tu watchlist',
-    valor: plural(deWatch.length, 'cambio', 'cambios'),
-    texto: !datos?.watchlist ? 'Tu watchlist está vacía.'
-      : nombres.length ? nombres.join(', ') : 'Nada cambió en tu watchlist.',
+  return out
+}
+
+/** La semana sin cambios, según lo que haya para mirar: «con precios al
+ *  día», no «con lectura» (re-test A2, 29/10; lo que se cuenta es `_se_lee`
+ *  del servidor). Quien sólo sigue una watchlist no tiene «tus activos». */
+function sinCambios(activos, sigue) {
+  if (!activos && !sigue) return 'Todavía no hay precios guardados de tus activos ni de tu watchlist.'
+  if (!activos) return 'Nada cambió en tu watchlist.'
+  const tus = `tus ${plural(activos, 'activo', 'activos')} con precios al día`
+  return sigue ? `Nada cambió en ${tus} ni en tu watchlist.` : `Nada cambió en ${tus}.`
+}
+
+/** La franja de 3 números de arriba. `datos` = la respuesta del servidor. */
+export function franja(datos, hidden) {
+  const senales = datos?.senales || []
+  // Las MISMAS cuentas que los filtros de abajo (`filtrar`): un activo que
+  // tenés y además seguís cuenta en los dos, como en «Tu cartera · N» y
+  // «Watchlist · N». Antes la franja contaba la watchlist sin lo que tenés y
+  // la pantalla decía «0 en tu watchlist» arriba y «Watchlist · 1» abajo.
+  const tuyas = filtrar(senales, 'tenes').length
+  const deWatch = filtrar(senales, 'watchlist').length
+  const activos = datos?.tenes?.activos || 0
+  const sigue = datos?.watchlist || 0
+
+  const cambios = {
+    titulo: 'Cambios esta semana',
+    valor: senales.length,
+    texto: senales.length ? `${tuyas} en tu cartera · ${deWatch} en tu watchlist`
+      : sinCambios(activos, sigue),
+  }
+  const favor = senales.filter(s => lado(s) === 'favor').length
+  const contra = senales.filter(s => lado(s) === 'contra').length
+  const sin = senales.length - favor - contra
+  const lados = {
+    titulo: 'A favor · en contra',
+    favor, contra, sin,
+    // De qué lado se movió el PRECIO, también en lo que no tenés.
+    texto: `Del lado del precio: a favor, subió; en contra, bajó.${sin ? ` ${plural(sin, 'cambio', 'cambios')} sin dirección.` : ''}`,
   }
 
   const a = datos?.alcista
-  // Lo que se dio vuelta esta semana en lo tuyo (los cruces del promedio de
-  // 200): la MISMA frase que «Qué lo movió» del Panorama, `queLoMovio`.
+  // Lo que se dio vuelta esta semana en lo tuyo: la MISMA frase que «Qué lo
+  // movió» del Panorama, `queLoMovio`.
   const giro = queLoMovio(datos, hidden)
   const plata = {
     titulo: TITULO_PLATA_ALCISTA,
     valor: !a ? '—' : hidden ? '••' : `${a.pct}%`,
-    antes: a?.semana_pasada && !hidden ? antesConPct(a.semana_pasada, datos.hasta) : null,
-    // Subió o bajó contra la semana pasada (el color del «antes»).
-    tono: !a?.semana_pasada || hidden ? null : a.pct > a.semana_pasada.pct ? 'pos' : a.pct < a.semana_pasada.pct ? 'neg' : null,
+    // El mismo chip del Panorama: «▲ 8 puntos más que la semana pasada».
+    cambio: a ? cambioContraAntes(a, datos.hasta, hidden) : null,
     texto: !a ? 'Ninguno de tus activos tiene todavía suficiente historia de precios para calcular su tendencia de largo plazo.'
       : hidden ? PLATA_ALCISTA_OCULTA
         : giro || 'Medido en dólares, con el último cierre.',
   }
-  return { tenes, watch, plata }
+  return { cambios, lados, plata }
 }
 
 /** «la semana pasada» si es el sábado de hace 7 días; si no, «el sábado 17/10». */
@@ -157,7 +243,7 @@ export function cambioContraAntes(a, hasta, hidden) {
  *  que cambia de grupo a un activo). null si no se dio vuelta nada. Con
  *  «Ocultar saldos», sin el peso. */
 export function queLoMovio(datos, hidden) {
-  const vueltas = (datos?.senales || []).filter(s => s.tenes && s.tipo === 'media200')
+  const vueltas = enOrden(datos?.senales || [], hidden).filter(s => s.tenes && s.tipo === 'media200')
   if (!vueltas.length) return null
   return vueltas.map(s => {
     const p = pesoTxt(s.peso, hidden)
@@ -174,4 +260,18 @@ export function boton(s) {
  *  dio el servidor (el de tu cartera, o el de tu watchlist: «GGAL.BA»). */
 export function rutaDeFicha(s) {
   return `/activo/${encodeURIComponent(s.ficha || s.asset)}`
+}
+
+/** «El resumen de la semana te llega el sábado 31/10 a las 10:00, por mail».
+ *  `proximo`: el sábado en que sale el próximo, que lo dice el servidor
+ *  (`proximo_resumen`, con la regla del envío). Antes se calculaba acá con la
+ *  fecha sola, y el sábado a la tarde anunciaba en futuro el resumen que ya
+ *  había salido (auditoría A 29/10, A9). Sin el dato (un servidor de antes,
+ *  mientras se despliega), no se inventa una fecha. */
+export function textoDelResumen(canal, proximo) {
+  if (!canal || canal === 'no') return 'No te llega el resumen de los sábados.'
+  const como = { mail: 'por mail', push: 'por notificación', ambos: 'por mail y notificación' }[canal]
+  const [, m, d] = String(proximo || '').split('-')
+  if (!m || !d) return `El resumen de la semana te llega los sábados a las 10:00, ${como}.`
+  return `El resumen de la semana te llega el sábado ${d}/${m} a las 10:00, ${como}.`
 }

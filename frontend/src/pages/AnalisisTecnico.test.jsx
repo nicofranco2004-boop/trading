@@ -177,7 +177,43 @@ describe('Análisis técnico: las pestañas', () => {
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Señales de la semana')))
     expect(montado.donde.actual.search).toBe('?tab=senales')
     expect(montado.t()).toContain('Qué cambió esta semana en tu cartera y en tu watchlist')
-    expect(montado.t()).toContain('Crear una alerta técnica en Alertas')
+    // Como el lienzo «4 · Señales de la semana»: la agenda y, al costado, el
+    // resumen del sábado y la alerta técnica; cada cambio con su campanita.
+    for (const x of ['Cambios esta semana', 'A favor · en contra', 'Cambios por día', '¿Querés enterarte en el momento?',
+      'Crear una alerta técnica', 'El resumen del sábado']) expect(montado.t()).toContain(x)
+    const nodos = (pred) => {
+      const out = []
+      const pila = [montado.contenedor]
+      while (pila.length) { const n = pila.shift(); if (pred(n)) out.push(n); pila.push(...(n.childNodes || [])) }
+      return out
+    }
+    // «hoy» en la pastilla de los cambios de hoy (no el «contados desde hoy» del subtítulo).
+    expect(nodos(n => n.nodeName === 'SPAN' && texto(n) === 'hoy' && /bg-data-violet/.test(n.getAttribute?.('class') || '')).length).toBeGreaterThan(0)
+    // Tocar una barra con el dedo abre su cartel; tocarla otra vez lo cierra.
+    const barra = nodos(n => n.nodeName === 'BUTTON' && /: NVDA /.test(n.getAttribute?.('aria-label') || ''))[0]
+    expect(barra).toBeTruthy()
+    const toque = async () => enActo(async () => {
+      for (const tipo of ['pointerdown', 'click']) {
+        const ev = { type: tipo, target: barra, bubbles: true, cancelable: true, button: 0, pointerType: 'touch', defaultPrevented: false,
+          timeStamp: Date.now(), preventDefault() { this.defaultPrevented = true }, stopPropagation() {} }
+        for (const fn of montado.contenedor.escuchas[tipo] || []) fn(ev)
+      }
+    })
+    const cartel = () => nodos(n => n.nodeName === 'DIV' && /bg-bg-3/.test(n.getAttribute?.('class') || '')).map(texto).join(' ')
+    expect(cartel()).toBe('')
+    await toque()
+    expect(cartel()).toContain('NVDA')
+    await toque()
+    expect(cartel()).toBe('')
+    const campanitas = []
+    const pila = [montado.contenedor]
+    while (pila.length) {
+      const n = pila.shift()
+      if (n.nodeName === 'BUTTON' && /^Avisame cuando/.test(n.getAttribute?.('aria-label') || '')) campanitas.push(n)
+      pila.push(...(n.childNodes || []))
+    }
+    // NVDA, KO (dos) y TSLA: los cuatro tipos tienen alerta.
+    expect(campanitas).toHaveLength(4)
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Panorama')))
     expect(montado.donde.actual.search).toBe('?tab=panorama')
   })
@@ -195,6 +231,23 @@ describe('Análisis técnico: las pestañas', () => {
     expect(pedidos.filter(p => p === 'POST /tecnico/lista')).toHaveLength(1)
   })
 })
+
+describe('Análisis técnico: el Panorama con «Ocultar saldos»', () => {
+  it('los 3 cambios más nuevos no se eligen por peso (el servidor ordena cada día por peso)', async () => {
+    const { renderToStaticMarkup } = await import('react-dom/server')
+    const { MemoryRouter } = await import('react-router-dom')
+    const { Panorama } = await import('./AnalisisTecnico')
+    const S = (asset, peso) => CAMBIO(asset, 'media200', HOY, { peso, corta: 'superó su promedio de 200 días' })
+    // Como lo manda el servidor: de más a menos peso. ZZZ pesa más que todo.
+    const semana = { datos: { hasta: HOY, senales: [S('ZZZ', 0.4), S('MMM', 0.3), S('BBB', 0.2), S('AAA', 0.1)] } }
+    const dibujar = (hidden) => texto2(renderToStaticMarkup(h(MemoryRouter, null,
+      h(Panorama, { lista: { cargando: false }, filas: [], semana, hidden, onVer: () => {}, onPestana: () => {} }))))
+    const nombres = (t) => ['AAA', 'BBB', 'MMM', 'ZZZ'].filter(x => t.includes(`${x} superó`))
+    expect(nombres(dibujar(false))).toEqual(['BBB', 'MMM', 'ZZZ'])
+    expect(nombres(dibujar(true))).toEqual(['AAA', 'BBB', 'MMM'])
+  })
+})
+const texto2 = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
 
 describe('Análisis técnico: el Panorama', () => {
   it('el % del servidor (no el de la pantalla), los 3 cambios más nuevos y cuántas señales hay', async () => {

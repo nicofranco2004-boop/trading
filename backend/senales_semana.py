@@ -95,9 +95,14 @@ def _adx_txt(a) -> str:
 
 
 def texto_del_cambio(c: dict) -> dict:
-    """{etiqueta, tono, texto, corta, extra} de un cambio de `tecnico.cambios_desde`.
+    """{etiqueta, tono, texto, corta, detalle, extra} de un cambio de `tecnico.cambios_desde`.
     `texto` va después del ticker («AAPL quedó abajo…»). `tono`: 'pos' | 'neg' |
     'rsi' | 'adx' (el color de la pastilla).
+
+    `detalle`: la segunda línea de la tarjeta de la agenda de Señales (el
+    título es el ticker + `corta`): lo que `texto` dice después de `corta`,
+    como oración que se lee sola. Antes la pantalla lo habría tenido que sacar
+    cortando `texto` en los dos puntos (lo que D6 prohibió) o repetir la frase.
 
     `corta`: la frase que se entiende SOLA, sin jerga ni números, para donde
     entra una sola (el asunto del mail y la notificación de los sábados,
@@ -109,22 +114,25 @@ def texto_del_cambio(c: dict) -> dict:
     if t == "media200":
         corta = ("superó su promedio de 200 días" if arriba
                  else "cayó por debajo de su promedio de 200 días")
-        texto = (f"{corta}: la tendencia de largo plazo pasó a ser {'alcista' if arriba else 'bajista'}.")
+        detalle = f"La tendencia de largo plazo pasó a ser {'alcista' if arriba else 'bajista'}."
+        texto = f"{corta}: {detalle[0].lower()}{detalle[1:]}"
         tono = "pos" if arriba else "neg"
     elif t == "media50":
         corta = ("superó su promedio de 50 días" if arriba
                  else "cayó por debajo de su promedio de 50 días")
-        texto = f"{corta}: la tendencia de mediano plazo pasó a ser {'alcista' if arriba else 'bajista'}."
+        detalle = f"La tendencia de mediano plazo pasó a ser {'alcista' if arriba else 'bajista'}."
+        texto = f"{corta}: {detalle[0].lower()}{detalle[1:]}"
         tono = "pos" if arriba else "neg"
     elif t in ("rsi_bajo_30", "rsi_sobre_70"):
         nivel = 30 if t == "rsi_bajo_30" else 70
         corta = "cayó muy rápido" if t == "rsi_bajo_30" else "subió muy rápido"
-        texto = (f"{corta}: su impulso (RSI) {'bajó de' if nivel == 30 else 'superó'} {nivel} "
-                 f"y quedó en {_rsi_txt(c.get('rsi'), nivel)}")
+        detalle = (f"Su impulso (RSI) {'bajó de' if nivel == 30 else 'superó'} {nivel} "
+                   f"y quedó en {_rsi_txt(c.get('rsi'), nivel)}")
         if c.get("rsi_antes") is not None:
-            texto += f"; una semana antes estaba en {round(c['rsi_antes'])}."
+            detalle += f"; una semana antes estaba en {round(c['rsi_antes'])}."
         else:
-            texto += "."
+            detalle += "."
+        texto = f"{corta}: {detalle[0].lower()}{detalle[1:]}"
         # Sólo la caída tiene la frase: subir muy rápido no anticipó nada
         # mejor que el azar, y decir «suele frenar» sería inventar.
         extra = POSIBILIDAD_REBOTE if t == "rsi_bajo_30" else None
@@ -139,14 +147,16 @@ def texto_del_cambio(c: dict) -> dict:
         corta = "empezó a marcar máximos del año"
         texto = ("empezó a marcar máximos del año (cerró en su precio más alto de los últimos "
                  "12 meses), después de un mes sin hacerlo.")
+        detalle = "Cerró en su precio más alto de los últimos 12 meses, después de un mes sin hacerlo."
         tono = "pos"
     else:   # adx23
         lado = {1: " (al alza)", -1: " (a la baja)"}.get(c.get("squeeze"), "")
         corta = f"dejó de moverse de forma lateral y tomó una dirección{lado}"
-        texto = (f"{corta}: la fuerza de la tendencia (ADX) superó 23 y quedó en "
-                 f"{_adx_txt(c.get('adx') or 0)}.")
+        detalle = f"La fuerza de la tendencia (ADX) superó 23 y quedó en {_adx_txt(c.get('adx') or 0)}."
+        texto = f"{corta}: {detalle[0].lower()}{detalle[1:]}"
         tono = "adx"
-    return {"etiqueta": ETIQUETA[t], "tono": tono, "texto": texto, "corta": corta, "extra": extra}
+    return {"etiqueta": ETIQUETA[t], "tono": tono, "texto": texto, "corta": corta, "detalle": detalle,
+            "extra": extra}
 
 
 # ─── Qué tiene y qué sigue cada persona ──────────────────────────────────────
