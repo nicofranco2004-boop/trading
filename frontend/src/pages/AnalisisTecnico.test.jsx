@@ -162,7 +162,19 @@ describe('Análisis técnico: las pestañas', () => {
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Señales de la semana')))
     expect(montado.donde.actual.search).toBe('?tab=senales')
     expect(montado.t()).toContain('Qué cambió esta semana en tu cartera y en tu watchlist')
-    expect(montado.t()).toContain('Crear una alerta técnica en Alertas')
+    // Como el lienzo «4 · Señales de la semana»: la agenda y, al costado, el
+    // resumen del sábado y la alerta técnica; cada cambio con su campanita.
+    for (const x of ['Cambios esta semana', 'A favor · en contra', 'Cambios por día', '¿Querés enterarte en el momento?',
+      'Crear una alerta técnica', 'El resumen del sábado', 'hoy']) expect(montado.t()).toContain(x)
+    const campanitas = []
+    const pila = [montado.contenedor]
+    while (pila.length) {
+      const n = pila.shift()
+      if (n.nodeName === 'BUTTON' && /^Avisame cuando/.test(n.getAttribute?.('aria-label') || '')) campanitas.push(n)
+      pila.push(...(n.childNodes || []))
+    }
+    // NVDA, KO (dos) y TSLA: los cuatro tipos tienen alerta.
+    expect(campanitas).toHaveLength(4)
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Panorama')))
     expect(montado.donde.actual.search).toBe('?tab=panorama')
   })

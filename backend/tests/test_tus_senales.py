@@ -209,6 +209,8 @@ class TusSenalesTest(unittest.TestCase):
         self.assertEqual(nvda["media200"]["texto"],
                          "superó su promedio de 200 días: la tendencia de largo plazo pasó a ser alcista.")
         self.assertEqual(nvda["media200"]["etiqueta"], "Tendencia de largo plazo")
+        # La segunda línea de la agenda de Señales: llega armada, no se corta `texto`.
+        self.assertEqual(nvda["media200"]["detalle"], "La tendencia de largo plazo pasó a ser alcista.")
 
         # MSFT: no la tenés, la seguís; sin peso; «Ver gráfico» abre su ficha.
         msft = {x["tipo"]: x for x in por["MSFT"]}["media200"]
@@ -1006,6 +1008,43 @@ class CriptoDelSabadoTest(unittest.TestCase):
     def test_cruce_en_viernes_sale_una_sola_vez(self):
         """La otra punta: lo que ya salió el sábado 1 no se repite el sábado 2."""
         self.assertEqual(len(self._dos_sabados(dia_del_cruce=-1)), 1)
+
+
+class DetalleDelCambio(unittest.TestCase):
+    """`detalle` (la segunda línea de la agenda de Señales) dice lo mismo que
+    `texto` después de `corta`, para cada tipo, y `texto` no cambió (lo usan el
+    mail y la notificación)."""
+
+    def test_cada_tipo(self):
+        import senales_semana as ss
+        casos = [
+            ({"tipo": "media200", "sentido": "abajo"},
+             "cayó por debajo de su promedio de 200 días: la tendencia de largo plazo pasó a ser bajista.",
+             "La tendencia de largo plazo pasó a ser bajista."),
+            ({"tipo": "media50", "sentido": "arriba"},
+             "superó su promedio de 50 días: la tendencia de mediano plazo pasó a ser alcista.",
+             "La tendencia de mediano plazo pasó a ser alcista."),
+            ({"tipo": "rsi_bajo_30", "rsi": 27.6, "rsi_antes": 51.2},
+             "cayó muy rápido: su impulso (RSI) bajó de 30 y quedó en 28; una semana antes estaba en 51.",
+             "Su impulso (RSI) bajó de 30 y quedó en 28; una semana antes estaba en 51."),
+            ({"tipo": "rsi_sobre_70", "rsi": 74.0},
+             "subió muy rápido: su impulso (RSI) superó 70 y quedó en 74.",
+             "Su impulso (RSI) superó 70 y quedó en 74."),
+            ({"tipo": "maximo_12m", "sentido": "arriba"},
+             "empezó a marcar máximos del año (cerró en su precio más alto de los últimos 12 meses), "
+             "después de un mes sin hacerlo.",
+             "Cerró en su precio más alto de los últimos 12 meses, después de un mes sin hacerlo."),
+            ({"tipo": "adx23", "sentido": "arriba", "adx": 33.4, "squeeze": 1},
+             "dejó de moverse de forma lateral y tomó una dirección (al alza): la fuerza de la tendencia "
+             "(ADX) superó 23 y quedó en 33.",
+             "La fuerza de la tendencia (ADX) superó 23 y quedó en 33."),
+        ]
+        for c, texto, detalle in casos:
+            t = ss.texto_del_cambio(c)
+            self.assertEqual(t["texto"], texto, c["tipo"])
+            self.assertEqual(t["detalle"], detalle, c["tipo"])
+            for no in ("suele", "anticipa", "compr", "vend"):
+                self.assertNotIn(no, t["detalle"].lower())
 
 
 if __name__ == "__main__":

@@ -8,7 +8,10 @@
 //     vistazo y el resumen de los sábados (fue la de entrada hasta el 30/10);
 //   · Tu lista (?tab=lista): la tabla de pages/TuLista.jsx;
 //   · Señales de la semana (?tab=senales): «Tus señales» de la pieza 15
-//     (components/TusSenales.jsx), que vivía en Novedades;
+//     (components/TusSenales.jsx), que vivía en Novedades; desde el 30/10 se
+//     ve como Novedades (lienzo «4 · Señales de la semana»): los 3 números,
+//     las barras por día, la agenda con el día a la izquierda y, al costado,
+//     el resumen del sábado y «¿Querés enterarte en el momento?»;
 //   · Gráfico (de entrada, sin ?tab; ?activo=GGAL), la primera de la fila
 //     (Nico, 30/10): sólo el gráfico, con el activo arriba a la izquierda como
 //     en TradingView (pages/GraficoTecnico.jsx);
@@ -38,7 +41,10 @@ import { useAvisosTecnicos } from '../components/alerts/AvisameTecnico'
 import { usePrivacy } from '../contexts/PrivacyContext'
 import { clicNormal } from '../utils/clicNormal'
 import { filasDeLaLista, contarFilas } from '../utils/listaTecnica'
-import { porDia, rutaDeFicha, cambioContraAntes, queLoMovio, NO_ES_RECOMENDACION, TITULO_PLATA_ALCISTA, TITULO_CAMBIOS, QUE_ES_ESTA_SEMANA } from '../utils/tusSenales'
+import {
+  porDia, enOrden, rutaDeFicha, cambioContraAntes, queLoMovio, textoDelResumen,
+  NO_ES_RECOMENDACION, TITULO_PLATA_ALCISTA, TITULO_CAMBIOS, QUE_ES_ESTA_SEMANA,
+} from '../utils/tusSenales'
 
 // Las pestañas, en orden. `corto`: el nombre en el celular. `pronto`: todavía
 // no está (se ve, no se toca).
@@ -98,19 +104,9 @@ function Pestanas({ activa, cuentas, onElegir }) {
   )
 }
 
-/** «El resumen de la semana te llega el sábado 31/10 a las 10:00, por mail».
- *  `proximo`: el sábado en que sale el próximo, que lo dice el servidor
- *  (`proximo_resumen`, con la regla del envío). Antes se calculaba acá con la
- *  fecha sola, y el sábado a la tarde anunciaba en futuro el resumen que ya
- *  había salido (auditoría A 29/10, A9). Sin el dato (un servidor de antes,
- *  mientras se despliega), no se inventa una fecha. */
-export function textoDelResumen(canal, proximo) {
-  if (!canal || canal === 'no') return 'No te llega el resumen de los sábados.'
-  const como = { mail: 'por mail', push: 'por notificación', ambos: 'por mail y notificación' }[canal]
-  const [, m, d] = String(proximo || '').split('-')
-  if (!m || !d) return `El resumen de la semana te llega los sábados a las 10:00, ${como}.`
-  return `El resumen de la semana te llega el sábado ${d}/${m} a las 10:00, ${como}.`
-}
+// La frase de cuándo llega el resumen vive en utils/tusSenales.js: la dicen
+// el Panorama y la pestaña Señales.
+export { textoDelResumen }
 
 /**
  * La tarjeta grande del Panorama: el % de tu cartera en tendencia alcista de
@@ -159,7 +155,8 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
   // Las alertas de la cuenta, para que cada campanita sepa si ya hay una igual:
   // una vez por pantalla, no una por botón, y sólo si se abre el Panorama.
   const avisos = useAvisosTecnicos()
-  const ultimos = useMemo(() => (datos?.senales || []).slice(0, 3), [datos])
+  // Con «Ocultar saldos», los 3 más nuevos no se eligen por peso (enOrden).
+  const ultimos = useMemo(() => enOrden(datos?.senales || [], hidden).slice(0, 3), [datos, hidden])
   const dias = useMemo(() => porDia(ultimos), [ultimos])
   const total = datos?.senales?.length || 0
   const c = contarFilas(filas)
@@ -255,6 +252,16 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
   )
 }
 
+/** La pestaña Señales, como Novedades (lienzo «4 · Señales de la semana», 30/10).
+ *  Las alertas de la cuenta se piden acá, una vez, para las campanitas. */
+function Senales({ semana, hidden, filtro, onFiltro, onVer }) {
+  const avisos = useAvisosTecnicos()
+  return (
+    <TusSenalesVista datos={semana.datos} error={semana.error} hidden={hidden} filtro={filtro} onFiltro={onFiltro}
+      onVer={onVer} onCanal={semana.cambiarCanal} guardando={semana.guardando} errorCanal={semana.errorCanal} avisos={avisos} />
+  )
+}
+
 export default function AnalisisTecnico() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
@@ -289,14 +296,7 @@ export default function AnalisisTecnico() {
         {activa === 'lista' && <TuLista datos={lista} filas={filas} />}
         {activa === 'grafico' && <GraficoTecnico />}
         {activa === 'senales' && (
-          <div className="flex flex-col gap-3">
-            <TusSenalesVista datos={semana.datos} error={semana.error} hidden={hidden} filtro={filtro} onFiltro={setFiltro}
-              onVer={ver} onCanal={semana.cambiarCanal} guardando={semana.guardando} errorCanal={semana.errorCanal} />
-            <p className="text-[13px] text-ink-2">
-              ¿Querés recibir un aviso cuando pase algo así?{' '}
-              <Link to="/alertas?tab=crear" className="text-data-violet font-medium hover:underline">Crear una alerta técnica en Alertas →</Link>
-            </p>
-          </div>
+          <Senales semana={semana} hidden={hidden} filtro={filtro} onFiltro={setFiltro} onVer={ver} />
         )}
       </div>
     </div>
