@@ -122,7 +122,8 @@ def ultimo_cruce(valores: list, referencia, desde_i: int = 1):
         ra, rb = _ref(referencia, i - 1), _ref(referencia, i)
         if a is None or b is None or ra is None or rb is None:
             continue
-        antes, ahora = a >= ra, b >= rb
+        # «Arriba» con LA regla de la tendencia (`tendencia_de`, P6).
+        antes, ahora = tendencia_de(a, ra) == "alcista", tendencia_de(b, rb) == "alcista"
         if antes != ahora:
             return i, "arriba" if ahora else "abajo"
     return None
@@ -596,7 +597,8 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     `local`: es una acción ARGENTINA (lo sabe la ficha por tus lotes). Entonces
     en dólares se usa SU precio de BYMA ÷ el MEP, aunque haya guardado un ticker
     pelado igual: GGAL "de afuera" es el ADR (10 acciones), que otro usuario
-    puede tener en Schwab, y su precio no es el de tu acción."""
+    puede tener en Schwab, y su precio no es el de tu acción. Sin la serie de
+    BYMA, no hay serie: nunca la de otro papel."""
     from cripto import yahoo_de_cripto
     from snapshots_job import simbolo_byma
     import velas_diarias
@@ -609,7 +611,11 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     cripto = yahoo_de_cripto(a)
     de_afuera = cripto or velas_diarias.ticker_de_afuera(a)
     byma = [] if cripto else velas_diarias.serie(conn, simbolo_byma(a))
-    afuera = [] if (local and byma) else velas_diarias.serie(conn, de_afuera)
+    # Una acción argentina se lee SÓLO con su serie de BYMA: sin ella no hay
+    # lectura. Antes, si faltaba, se usaba la de afuera, que para GGAL es el ADR
+    # que otro tiene en Schwab: otro papel, sin avisar, y volvía el mail «GGAL
+    # quedó abajo» con la ficha diciendo otra cosa (re-test A1d, 29/10).
+    afuera = [] if local else velas_diarias.serie(conn, de_afuera)
 
     if moneda == "ars":
         # La serie en pesos de un CEDEAR que alguien tuvo y nadie sigue queda

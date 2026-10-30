@@ -38,6 +38,16 @@ describe('tarjetas', () => {
     expect(tendenciasDistintas({ dist_media200: 0, tendencia: 'bajista' }, { dist_media200: 0, tendencia: 'alcista' })).toBe(true)
   })
 
+  it('con un servidor de antes (sin `tendencia`, mientras se publica) no dice «Faltan datos» (re-test P6, 29/10)', () => {
+    // La web (Vercel) sale antes que el servidor (Railway) con el mismo push.
+    const viejo = { ruedas: 760, media200: 100, dist_media200: 4, rsi: 50 }
+    expect(tarjetas(viejo).find(x => x.id === 'fondo').veredicto).toBe('Alcista')
+    expect(tarjetas({ ...viejo, dist_media200: -4 }).find(x => x.id === 'fondo').veredicto).toBe('Bajista')
+    expect(tendenciasDistintas({ dist_media200: -8 }, { dist_media200: 24 })).toBe(true)
+    // Con el servidor nuevo, lo que diga él (aunque sea «no hay»).
+    expect(tarjetas({ ...viejo, tendencia: null }).find(x => x.id === 'fondo').veredicto).toBe('Faltan datos')
+  })
+
   it('sin lectura no hay tarjetas', () => {
     expect(tarjetas(null)).toEqual([])
     expect(tarjetas({ ruedas: 0 })).toEqual([])
