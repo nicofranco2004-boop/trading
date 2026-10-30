@@ -89,19 +89,14 @@ export const SIN_OJITO = {
   // Traen el dato; lo muestra otro, que es el que tiene que mirar el ojito.
   'hooks/useCuponesPorCobrar.js': 'lo muestra DividendosPorCobrar (mira el ojito)',
   'hooks/useDividendosPorCobrar.js': 'lo muestra DividendosPorCobrar (mira el ojito)',
-  'hooks/useMonthlyData.js': 'lo muestra MonthlySummary (deuda, abajo)',
-  'hooks/usePesosDelPeriodo.jsx': 'lo muestran los informes (formatean con useMoneyFormat)',
+  'hooks/useMonthlyData.js': 'lo muestra MonthlySummary (mira el ojito)',
   'hooks/usePfRollup.js': 'lo suma la Cartera, que mira el ojito',
   'hooks/useReportYears.js': 'años con informe, sin montos',
   'hooks/useReportsTimeline.js': 'lo muestran los informes',
   // DEUDA: muestran montos con el ojito prendido. Ya era así en main (29/10);
-  // fuera de la ronda del análisis técnico, para una ronda propia.
-  'components/MonthlySummary.jsx': 'DEUDA: el resumen del mes',
-  'pages/Goals.jsx': 'DEUDA: las metas',
-  'pages/FirstInsight.jsx': 'DEUDA: la bienvenida (se ve una vez, antes de poder prender el ojito)',
-  'pages/Insights.jsx': 'DEUDA: Métricas',
-  'pages/Behavioral.jsx': 'DEUDA: los detectores de comportamiento',
-  'pages/Wrapped.jsx': 'DEUDA: el resumen del año',
+  // fuera de la ronda del análisis técnico, para una ronda propia. (El resumen
+  // del mes, Metas, la bienvenida, Métricas, Comportamiento y Wrapped salieron
+  // de esta lista al juntar lo publicado el 30/10: 9de79cf8 los tapa.)
   'pages/AdvisorClients.jsx': 'DEUDA: lista de clientes del asesor',
   'pages/AdvisorCobros.jsx': 'DEUDA: cobros de los clientes',
   'components/advisor/AdvisorAlerts.jsx': 'DEUDA: alertas del asesor',

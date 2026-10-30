@@ -12,6 +12,7 @@
 
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import { useCurrency, fmtConvertedRaw } from '../contexts/CurrencyContext'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import { useFxHistory, useDolarMensual } from './useFxHistory'
 import { api } from '../utils/api'
 import { crearPesosDelPeriodo } from '../utils/periodoEnPesos'
@@ -23,15 +24,19 @@ function usePesos({ monthly = null, brokers = null, broker = 'global' } = {}) {
   const { currency, tcValuacion } = useCurrency()
   const { getRateForDate, fxKey } = useFxHistory(tcValuacion)
   const { dolarMes } = useDolarMensual()
+  const { hidden: oculto } = usePrivacy()
   return useMemo(() => {
     const p = crearPesosDelPeriodo({
       moneda: currency, tcHoy: tcValuacion, tcEnFecha: getRateForDate, dolarMes,
       monthly, brokers, broker,
     })
-    // Formatea un monto que YA está en `p.moneda` (no reconvierte).
-    const fmt = (v, opts) => fmtConvertedRaw(v, p.moneda, opts)
-    return { ...p, fmt }
-  }, [currency, tcValuacion, fxKey, dolarMes, monthly, brokers, broker])  // eslint-disable-line react-hooks/exhaustive-deps
+    // Formatea un monto que YA está en `p.moneda` (no reconvierte). Con
+    // «Ocultar saldos» sale tapado: todo lo que formatea Reportes es tu plata
+    // (30/10: «Aportaste», «P&L realizado», «Capital actual» se veían con el
+    // ojito prendido). `oculto` es para quien arma el texto sin `fmt`.
+    const fmt = (v, opts) => (oculto ? OCULTO : fmtConvertedRaw(v, p.moneda, opts))
+    return { ...p, fmt, oculto }
+  }, [currency, tcValuacion, fxKey, dolarMes, monthly, brokers, broker, oculto])  // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 export function PesosDelPeriodoProvider({ broker = 'global', children }) {

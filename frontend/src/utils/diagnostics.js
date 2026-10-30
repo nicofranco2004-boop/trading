@@ -1,5 +1,6 @@
 import { pctTxt, pctVar, decimalesFinos } from './format'
 import { classifyAsset } from './assetClass'
+import { OCULTO } from './ocultarSaldos'
 // diagnostics.js
 // ──────────────
 // Motor de diagnóstico del portfolio. La idea es que existan MUCHOS
@@ -24,8 +25,13 @@ import { classifyAsset } from './assetClass'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+// «Ocultar saldos»: mientras `selectDiagnostics` arma los textos con
+// `data.oculto`, los montos salen tapados (los % no pasan por acá). Es el único
+// formateador de plata de este archivo: un texto nuevo que lo use ya nace tapado.
+let ocultarMontos = false
 const fmtUsd = (n) => {
   if (n == null || !isFinite(n)) return '—'
+  if (ocultarMontos) return OCULTO
   return `${n >= 0 ? '+' : '−'}USD ${Math.abs(n).toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
 }
 
@@ -975,7 +981,8 @@ export function selectDiagnostics(data, maxBullets = 5, today = new Date()) {
   const fired = []
   for (const gen of DIAGNOSTIC_GENERATORS) {
     let text
-    try { text = gen.generate(data) } catch (_) { text = null }
+    ocultarMontos = !!data.oculto
+    try { text = gen.generate(data) } catch (_) { text = null } finally { ocultarMontos = false }
     if (!text) continue
     const item = { id: gen.id, category: gen.category, severity: gen.severity, text }
     // Métricas de riesgo (premium): para Free se muestran como TEASER bloqueado

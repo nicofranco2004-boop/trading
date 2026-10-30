@@ -47,7 +47,7 @@ import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass, pctTxt, parseNum,
 import { leerVenta, cuerpoDeVenta, leerConversion, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { api, errorMessage } from '../utils/api'
 import { pfUsd } from '../hooks/usePfRollup'
-import { sumarBrokers, noRealizadoEnVista, computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, avgCostArsPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
+import { sumarBrokers, noRealizadoEnVista, computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, valuePositionLot, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, avgCostArsPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
 import { linkDeAlerta } from '../components/alerts/alertaDePosicion'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { EtiquetaMoneda, EtiquetaEfectivo, EtiquetaBono, EtiquetaFaltaTc } from '../components/EtiquetaFila'
@@ -1695,6 +1695,17 @@ function PositionsDesktop() {
     const local = !isARS && !isCrypto(p.asset) && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker) || costInPesos(p))
     const symKey = local ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, isARS)
     const curPrice = p.price_override ?? prices[symKey]
+    // Si la valuación NO confía en este precio (trustMktValue: un bono con el
+    // costo en otra escala que el precio), la fila lo muestra al costo y su
+    // movimiento del día no existe. Se le pregunta a la MISMA valuación que suma
+    // el total del broker (valuePositionLot), no a una copia. Antes la columna
+    // publicaba el movimiento del precio descartado (AL30: «vale» USD 89 al costo
+    // y «se movía» −USD 217; sesión del mapa de calor, 30/10). El celular ya lo
+    // cortaba así (`priceTrusted` en PositionsMobile).
+    if (curPrice != null && !p.price_override && !p.is_cash &&
+        valuePositionLot(p, { broker: _brokerDe(p.broker), prices, tcValuacion, tcCedear, tcCripto, costBasis }).priceTrusted === false) {
+      return null
+    }
     const dv = dayVarOf(p, symKey, curPrice)
     if (!dv) return dv
     if (local) return { amount: dv.amount / tcCedear, pct: dv.pct }
@@ -2697,7 +2708,7 @@ function PositionsDesktop() {
                               <LazySparkline symbol={(p.asset || '').toUpperCase()} variant="row" />
                             )}
                           </td>
-                          <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
+                          <td className={`${tdClass} text-ink-2 tabular`}>{hidden && p.is_cash ? '••••••' : (p.quantity ?? '—')}</td>
                           <td className={`${tdClass} text-ink-2 tabular`}>{isArsDisp
                             ? (avgPriceArs != null ? `ARS ${ars(avgPriceArs)}` : '—')
                             : (avgPriceUsdDisp != null ? `USD ${usd(avgPriceUsdDisp)}` : '—')}</td>
@@ -2732,7 +2743,7 @@ function PositionsDesktop() {
                           <td className={`${tdClass} tabular`}>
                             {dvArs ? (
                               <div className="leading-tight">
-                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{dvArs.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvArs.amount))}` : `USD ${usd(Math.abs(dvArs.amount / tcValuacion))}`}</div>
+                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{hidden ? '••••••' : <>{dvArs.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvArs.amount))}` : `USD ${usd(Math.abs(dvArs.amount / tcValuacion))}`}</>}</div>
                                 <div className={`text-[10px] font-mono ${colorClass(dvArs.amount)}`}>{pctSigned(dvArs.pct)}</div>
                               </div>
                             ) : (
@@ -2960,7 +2971,7 @@ function PositionsDesktop() {
                             <LazySparkline symbol={(p.asset || '').toUpperCase()} variant="row" />
                           )}
                         </td>
-                        <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
+                        <td className={`${tdClass} text-ink-2 tabular`}>{hidden && p.is_cash ? '••••••' : (p.quantity ?? '—')}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{avgPrice != null ? (isArsDisp ? fmtArs(avgPrice * tcValuacion) : fmtUsd(avgPrice)) : '—'}</td>
                         <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? <FlashValue value={c.price}>{isArsDisp ? fmtArs(c.price * tcValuacion) : fmtUsd(c.price)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                         {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : (isArsDisp ? fmtArs((c.investedUsd ?? p.invested) * tcValuacion) : fmtUsd(c.investedUsd ?? p.invested))}</td>}
@@ -2983,7 +2994,7 @@ function PositionsDesktop() {
                         <td className={`${tdClass} tabular`}>
                           {dvUsd ? (
                             <div className="leading-tight">
-                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{dvUsd.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvUsd.amount * tcValuacion))}` : `USD ${usd(Math.abs(dvUsd.amount))}`}</div>
+                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{hidden ? '••••••' : <>{dvUsd.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvUsd.amount * tcValuacion))}` : `USD ${usd(Math.abs(dvUsd.amount))}`}</>}</div>
                               <div className={`text-[10px] font-mono ${colorClass(dvUsd.amount)}`}>{pctSigned(dvUsd.pct)}</div>
                             </div>
                           ) : (

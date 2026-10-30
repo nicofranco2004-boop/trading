@@ -947,7 +947,7 @@ function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx })
     : ticker
 
   // Sub-línea: detalle + lo personal (cuánto te toca) en cyan.
-  const detail = renderDetail(event, cobro)
+  const detail = renderDetail(event, cobro, oculto)
   const shares = cobroCtx?.tickerShares?.get?.(ticker) || null
   // Los nominales que se muestran son los de TU tenencia (130 CEDEARs), pero el
   // cobro sale de las acciones equivalentes (3,33). Mezclarlos era el bug.
@@ -1109,7 +1109,7 @@ function EarningsExpectations({ symbol }) {
   )
 }
 
-function renderDetail(event, payout) {
+function renderDetail(event, payout, oculto = false) {
   const { eventType, details } = event
   if (eventType === 'macro') {
     return `${details?.country || ''} · ${macroCategoryLabel(details?.category)}`
@@ -1142,6 +1142,14 @@ function renderDetail(event, payout) {
   }
   if (eventType?.startsWith('bond_')) {
     const cur = details?.currency || 'USD'
+    // Lo del bono es lo que cobrás VOS (cupón y amortización de tu tenencia,
+    // utils/upcomingEvents.js): con «Ocultar saldos» se dice qué es, sin el monto.
+    if (oculto) {
+      if (details?.coupon > 0 && details?.amort > 0) return 'Cupón + amortización'
+      if (details?.coupon > 0) return 'Cupón'
+      if (details?.amort > 0) return eventType === 'bond_maturity' ? 'Vencimiento' : 'Amortización'
+      return ''
+    }
     if (details?.coupon > 0 && details?.amort > 0) {
       return `Cupón ${cur} ${details.coupon.toFixed(2).replace('.', ',')} + amort ${cur} ${details.amort.toFixed(2).replace('.', ',')}`
     }
@@ -1158,7 +1166,7 @@ function SpotlightHero({ event, impactPct, cobro, onView }) {
   const { hidden: oculto } = usePrivacy()
   const days = daysUntil(event.eventDate)
   const countdown = days == null ? '—' : days === 0 ? 'HOY' : days === 1 ? 'MAÑANA' : days
-  const detail = renderDetail(event, cobro)
+  const detail = renderDetail(event, cobro, oculto)
   const contextParts = []
   if (detail) contextParts.push(detail)
   // Lo que tenés se dice en LA UNIDAD QUE TENÉS (130 CEDEARs), no en acciones:
