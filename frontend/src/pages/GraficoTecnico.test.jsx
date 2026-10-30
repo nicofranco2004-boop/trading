@@ -109,6 +109,19 @@ beforeEach(() => {
 afterEach(async () => { await montado?.desmontar?.(); montado = null; vi.unstubAllGlobals() })
 
 describe('Análisis técnico → Gráfico', () => {
+  it('«Gráfico» es la primera pestaña de la fila (Nico, 30/10); la de entrada sigue siendo Panorama', async () => {
+    montado = await abrir('/analisis-tecnico')
+    const pestanas = []
+    const pila = [montado.contenedor]
+    while (pila.length) {
+      const n = pila.shift()
+      if (n.atributos?.role === 'tab') pestanas.push(n)
+      pila.push(...(n.childNodes || []))
+    }
+    expect(texto(pestanas[0])).toBe('Gráfico')
+    expect(pestanas.find(t => t.atributos['aria-selected'] === 'true') && texto(pestanas.find(t => t.atributos['aria-selected'] === 'true'))).toBe('Panorama')
+  })
+
   it('la primera vez abre lo tuyo, lo pone en la dirección y le pasa al gráfico la cuenta de la ficha', async () => {
     montado = await abrir('/analisis-tecnico?tab=grafico')
     expect(activoDe(montado.donde)).toBe('NVDA')

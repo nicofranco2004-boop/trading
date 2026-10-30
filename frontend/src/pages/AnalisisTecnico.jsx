@@ -6,8 +6,9 @@
 //   · Tu lista (?tab=lista): la tabla de pages/TuLista.jsx;
 //   · Señales de la semana (?tab=senales): «Tus señales» de la pieza 15
 //     (components/TusSenales.jsx), que vivía en Novedades;
-//   · Gráfico (?tab=grafico&activo=GGAL): sólo el gráfico, con el activo
-//     arriba a la izquierda como en TradingView (pages/GraficoTecnico.jsx);
+//   · Gráfico (?tab=grafico&activo=GGAL), la primera de la fila: sólo el
+//     gráfico, con el activo arriba a la izquierda como en TradingView
+//     (pages/GraficoTecnico.jsx);
 //   · Comparar y Mercado: «Próximamente», no se pueden tocar.
 // «Panorama» y no «Resumen»: Resumen es la primera pantalla del mismo grupo.
 // ════════════════════════════════════════════════════════════════════════════
@@ -37,10 +38,12 @@ import { tarjetas as tarjetasDeLaSemana, rutaDeFicha, NO_ES_RECOMENDACION, TITUL
 // Las pestañas, en orden. `corto`: el nombre en el celular. `pronto`: todavía
 // no está (se ve, no se toca).
 export const PESTANAS = [
+  // Gráfico, la primera de la fila (Nico, 30/10). La de entrada sigue siendo
+  // Panorama (sin ?tab: pestanaDe).
+  { id: 'grafico', label: 'Gráfico' },
   { id: 'panorama', label: 'Panorama' },
   { id: 'lista', label: 'Tu lista' },
   { id: 'senales', label: 'Señales de la semana', corto: 'Señales' },
-  { id: 'grafico', label: 'Gráfico' },
   { id: 'comparar', label: 'Comparar', pronto: true },
   { id: 'mercado', label: 'Mercado', pronto: true },
 ]
