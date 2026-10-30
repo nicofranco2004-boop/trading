@@ -12,7 +12,7 @@
 // servidor, y no se pierden si el guardado falla.
 //
 // 🔴 LA COPIA ES DE QUIEN LA HIZO: `rendi_dibujos:<persona>|<cuenta>:AAPL:usd`
-// (`duenoDeLaCopia`). Antes era del ACTIVO (`rendi_dibujos:AAPL:usd`) y la
+// (`useDuenoDeLaCopia`). Antes era del ACTIVO (`rendi_dibujos:AAPL:usd`) y la
 // usaba cualquiera: si a Ana no se le pudo guardar un dibujo y después Bruno
 // abría AAPL en la misma compu, se le mostraba y se SUBÍA a la cuenta de Bruno;
 // y el asesor que dibujaba en un cliente se lo llevaba al siguiente (auditoría
@@ -27,13 +27,18 @@
 
 import { indiceDeFecha } from './tecnico'
 import { api } from './api'
-import { duenoDeLaPestana, useDuenoDeLaPestana } from './duenoDeLaPestana'
+import { useDuenoDeLaPestana } from './duenoDeLaPestana'
 import { leerDe, guardarDe, borrarDe } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
+import { ENVIOS, enviarDe } from './enviosConDueno'
 
 /** De quién es lo que se dibuja ahora en esta pestaña (utils/duenoDeLaPestana:
- *  la persona logueada y la cuenta abierta). null = nadie: no se guarda copia. */
-export const duenoDeLaCopia = duenoDeLaPestana
+ *  la persona logueada y la cuenta abierta). null = nadie: no se guarda copia.
+ *  El gráfico SIGUE a la pestaña: si cambia la cuenta, arranca de cero con los
+ *  de la nueva. Pero lo que lee, guarda y sube lo hace con el `dueno` de lo que
+ *  muestra (el del dibujo en pantalla), nunca con el de la pestaña de ahora:
+ *  entre que otra pestaña cambia la cuenta y el gráfico se redibuja, los dos no
+ *  son el mismo (re-test a ciegas 3, 30/10). */
 export const useDuenoDeLaCopia = useDuenoDeLaPestana
 
 // La copia va por la única puerta (utils/almacen), a nombre de su dueño:
@@ -81,7 +86,7 @@ export function dibujoValido(x) {
  * con una copia así que haga falta subir.
  * Sin almacenamiento o con un valor roto: ninguno.
  */
-export function copiaLocal(asset, moneda, dueno = duenoDeLaCopia()) {
+export function copiaLocal(asset, moneda, dueno) {
   if (!dueno) return { dibujos: [], pendiente: false }
   try {
     const g = JSON.parse(leerDe(CATALOGO.dibujos, dueno, resto(asset, moneda)) || 'null')
@@ -93,9 +98,9 @@ export function copiaLocal(asset, moneda, dueno = duenoDeLaCopia()) {
 }
 
 /** Los dibujos de la copia de este navegador. */
-export const dibujosGuardados = (asset, moneda) => copiaLocal(asset, moneda).dibujos
+export const dibujosGuardados = (asset, moneda, dueno) => copiaLocal(asset, moneda, dueno).dibujos
 
-export function guardarDibujos(asset, moneda, lista, pendiente = true, dueno = duenoDeLaCopia()) {
+export function guardarDibujos(asset, moneda, lista, pendiente, dueno) {
   if (!dueno) return            // sin nadie logueado no queda copia
   try {
     if (!pendiente && !lista.length) borrarDe(CATALOGO.dibujos, dueno, resto(asset, moneda))
@@ -105,7 +110,7 @@ export function guardarDibujos(asset, moneda, lista, pendiente = true, dueno = d
 
 /** Ya llegó a la cuenta: si la copia (la de `dueno`, el de cuando se subió)
  *  sigue siendo ESA lista, deja de estar pendiente. */
-export function marcarSubidos(asset, moneda, lista, dueno = duenoDeLaCopia()) {
+export function marcarSubidos(asset, moneda, lista, dueno) {
   if (JSON.stringify(copiaLocal(asset, moneda, dueno).dibujos) === JSON.stringify(lista)) guardarDibujos(asset, moneda, lista, false, dueno)
 }
 
@@ -113,7 +118,8 @@ export function marcarSubidos(asset, moneda, lista, dueno = duenoDeLaCopia()) {
  *  abajo de 1, 6 cifras significativas (como backend/estructura.precio_redondo). */
 export const precioRedondo = (x) => (Math.abs(x) >= 1 ? Math.round(x * 1e4) / 1e4 : Number(x.toPrecision(6)))
 
-const ruta = (asset, moneda) => `/tecnico/${encodeURIComponent(String(asset || '').toUpperCase())}/dibujos?moneda=${moneda === 'ars' ? 'ars' : 'usd'}`
+const rutaDesdeTecnico = (asset, moneda) => `${encodeURIComponent(String(asset || '').toUpperCase())}/dibujos?moneda=${moneda === 'ars' ? 'ars' : 'usd'}`
+const ruta = (asset, moneda) => `/tecnico/${rutaDesdeTecnico(asset, moneda)}`
 
 /** Los de tu cuenta. null si no se pudieron traer (sin conexión): se sigue con la copia. */
 export async function dibujosDelServidor(asset, moneda) {
@@ -136,19 +142,18 @@ const enFila = {}
  * conexión). Antes un rechazo y una caída decían lo mismo, «no se pudo guardar»,
  * y nadie sabía por qué (re-test E3, 29/10).
  */
-export function subirDibujos(asset, moneda, lista) {
-  // De quién es esta lista: de la cuenta abierta AHORA. Si cuando le toca salir
-  // la cuenta ya es otra (el asesor cambió de cliente con el guardado en fila),
-  // no sale: api.js la mandaría a la cuenta nueva. Queda en la copia de su dueño.
-  const dueno = duenoDeLaCopia()
+export function subirDibujos(asset, moneda, lista, dueno) {
+  // `dueno`: de quién es esta lista (el de los dibujos en pantalla). Si cuando
+  // le toca salir ya no es el de la pestaña (el asesor cambió de cliente con el
+  // guardado en fila, u otra pestaña cambió la cuenta antes de que el gráfico
+  // se redibujara), no sale: api.js la mandaría a la cuenta nueva. El freno es
+  // el de utils/enviosConDueno, en el instante en que sale.
   if (!dueno) return Promise.resolve(false)
   const k = `${dueno}${resto(asset, moneda)}`
   const sigue = (enFila[k] || Promise.resolve(true))
-    .then(() => {
-      if (duenoDeLaCopia() !== dueno) throw new Error('cambió la cuenta')
-      return api.put(ruta(asset, moneda), { dibujos: lista.slice(0, DIBUJOS_MAXIMOS) })
-    })
+    .then(() => enviarDe(ENVIOS.dibujos, dueno, { dibujos: lista.slice(0, DIBUJOS_MAXIMOS) }, rutaDesdeTecnico(asset, moneda)))
     .then(() => true, (e) => {
+      if (e?.cuentaCambiada) return { cuentaCambiada: true }
       const motivo = e?.payload?.detail
       return [400, 429].includes(e?.status) && typeof motivo === 'string' && motivo.trim() ? motivo : false
     })

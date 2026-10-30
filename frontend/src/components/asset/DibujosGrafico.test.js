@@ -44,7 +44,7 @@ const EVENTOS = {
 
 // La cuenta, del otro lado de la frontera: GET y PUT de /tecnico/ZZEV/dibujos
 // guardan acá, por moneda. `cuenta.caida` = el guardado falla (sin conexión).
-const cuenta = { usd: [], ars: [], caida: false, rechazo: null, puts: 0, alertas: [], pedidos: [], subidas: [] }
+const cuenta = { usd: [], ars: [], caida: false, rechazo: null, puts: 0, alertas: [], pedidos: [], subidas: [], puerta: null }
 const monedaDe = (ruta) => (ruta.includes('moneda=ars') ? 'ars' : 'usd')
 // Quién está del otro lado, como lo ve el servidor de verdad: la persona de la
 // cookie (acá, la sesión que la app guarda en `rendi_user`) y el cliente que el
@@ -58,9 +58,10 @@ vi.mock('../../utils/api', () => ({
   getClientContext: () => (sesion.cliente != null ? { id: sesion.cliente, label: '' } : null),
   EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada',
   api: {
-    get: vi.fn((ruta) => Promise.resolve(ruta.includes('/dibujos') ? { dibujos: cuenta[monedaDe(ruta)] }
-      : ruta.startsWith('/alerts') ? { items: cuenta.alertas }
-        : ruta.includes('/eventos') ? EVENTOS : DATOS)),
+    // `cuenta.puerta`: los dibujos de la cuenta tardan hasta que la prueba la abre.
+    get: vi.fn((ruta) => (ruta.includes('/dibujos') ? (cuenta.puerta || Promise.resolve()).then(() => ({ dibujos: cuenta[monedaDe(ruta)] }))
+      : Promise.resolve(ruta.startsWith('/alerts') ? { items: cuenta.alertas }
+        : ruta.includes('/eventos') ? EVENTOS : DATOS))),
     // Las alertas (el aviso de tu línea): se anota lo que se pide.
     post: vi.fn((ruta, body) => { cuenta.pedidos.push(['POST', ruta, body]); return Promise.resolve({ ok: true, id: 7 }) }),
     patch: vi.fn((ruta, body) => { cuenta.pedidos.push(['PATCH', ruta, body]); return Promise.resolve({ ok: true }) }),
@@ -76,12 +77,13 @@ vi.mock('../../utils/api', () => ({
   },
 }))
 
-let LecturaTecnica, copiaLocal, guardarDibujos
+let LecturaTecnica, copiaLocal, guardarDibujos, duenoDeLaPestana
 beforeAll(async () => {
   instalarNavegadorMinimo()
   medidas(() => ({ left: 0, top: 0, width: 1000, height: 250, right: 1000, bottom: 250 }))
   ;({ default: LecturaTecnica } = await import('./LecturaTecnica'))
   ;({ copiaLocal, guardarDibujos } = await import('../../utils/dibujos'))
+  ;({ duenoDeLaPestana } = await import('../../utils/duenoDeLaPestana'))
 })
 afterAll(() => { medidas(null); vi.unstubAllGlobals() })
 
@@ -91,7 +93,7 @@ afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
   localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
-  Object.assign(cuenta, { usd: [], ars: [], caida: false, rechazo: null, puts: 0, alertas: [], pedidos: [], subidas: [] })
+  Object.assign(cuenta, { usd: [], ars: [], caida: false, rechazo: null, puts: 0, alertas: [], pedidos: [], subidas: [], puerta: null })
 })
 // Con el router: el «Te avisamos» de tu línea es un link a Mis alertas.
 const el = () => h(MemoryRouter, null, h(LecturaTecnica, { asset: 'ZZEV', ...props }))
@@ -157,7 +159,7 @@ const boton = (id) => todos(montado.contenedor, n => n.nodeName === 'BUTTON' && 
 const guardados = (moneda = 'usd') => cuenta[moneda]
 // La copia de este navegador, leída con la misma función que la pantalla (de
 // quien está logueado ahora), sin depender de cómo se arma la clave.
-const copia = (moneda = 'usd') => copiaLocal('ZZEV', moneda)
+const copia = (moneda = 'usd') => copiaLocal('ZZEV', moneda, duenoDeLaPestana())
 // El precio a una altura del gráfico (250 px de alto), con la escala que muestra:
 // se lee del rótulo que la línea horizontal pone en la columna de precios.
 const num = (t) => Number(t.replace(/\./g, '').replace(',', '.'))
@@ -518,7 +520,7 @@ describe('en todos tus dispositivos', () => {
   })
 
   it('lo borrado en otro dispositivo no revive desde la copia de este navegador', async () => {
-    guardarDibujos('ZZEV', 'usd', [H], false)        // la copia de Ana, ya subida
+    guardarDibujos('ZZEV', 'usd', [H], false, duenoDeLaPestana())   // la copia de Ana, ya subida
     cuenta.usd = []
     await dibujar()
     expect(linea()).toHaveLength(0)
@@ -623,6 +625,39 @@ describe('la copia de este navegador es de quien la hizo (auditoría de la pesta
     const alTres = subidasDe(ANA.email, 3)
     expect(alTres).toHaveLength(1)
     expect(alTres[0].dibujos.map(d => d.id)).not.toContain(H2.id)
+  })
+
+  // La ventana entre que OTRA pestaña cambia la cuenta y este gráfico se
+  // redibuja (re-test a ciegas 3, 30/10): el cliente ya es otro (api.js manda
+  // los pedidos al 3) pero el gráfico todavía muestra los dibujos del 2. Antes,
+  // la subida tomaba el dueño de la pestaña AHORA y le mandaba al 3 lo del 2.
+  it('el pendiente del cliente 2 no sube al 3 si la cuenta cambia mientras el gráfico espera a la cuenta', async () => {
+    sesion.cliente = 2
+    await anaDejaUnoPendiente()
+    let abrir
+    cuenta.puerta = new Promise(r => { abrir = r })
+    await dibujar()                                   // pidió los de la cuenta y espera
+    sesion.cliente = 3                                // otra pestaña: todavía sin avisar
+    await enActo(async () => { abrir(); await new Promise(r => setTimeout(r, 0)) })
+    await redibujar()
+    expect(subidasDe(ANA.email, 3)).toEqual([])
+    await montado.desmontar(); montado = null
+    cuenta.puerta = null
+    sesion.cliente = 2
+    await dibujar()
+    expect(subidasDe(ANA.email, 2), 'sigue pendiente y sube a SU cuenta').toHaveLength(1)
+  })
+
+  it('lo que se dibuja sobre el gráfico del 2 en esa ventana no se guarda ni se sube al 3, y lo dice', async () => {
+    sesion.cliente = 2
+    cuenta.usd = [H2]
+    await dibujar()
+    expect(linea()).toHaveLength(1)
+    sesion.cliente = 3                                // otra pestaña: todavía sin avisar
+    await usar('horizontal'); await clickEn(300, 100)
+    expect(subidasDe(ANA.email, 3)).toEqual([])
+    expect(copiaLocal('ZZEV', 'usd', 'ana@prueba.test|cliente-3').dibujos).toEqual([])
+    expect(texto(montado.contenedor)).toContain('en otra pestaña se cambió de cuenta')
   })
 
   it('una copia sin dueño (de antes de este arreglo) no se sube a nadie ni se muestra', async () => {

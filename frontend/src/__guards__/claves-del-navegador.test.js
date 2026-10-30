@@ -129,12 +129,16 @@ describe('una sola puerta al almacenamiento del navegador', () => {
   const PIDEN_EL_DE_LA_PESTANA = {
     'utils/duenoDeLaPestana.js': 'es la regla',
     'utils/valoresVistos.js': 'sube la versión de la cartera de la pestaña tras una escritura que hizo esta misma pestaña, en el mismo instante',
+    'utils/dibujos.js': 'el gráfico SIGUE a la pestaña (useDuenoDeLaCopia): si cambia la cuenta, se vacía y carga los de la nueva; lo que guarda y sube lo hace con el dueño de los dibujos en pantalla',
   }
   it('pedir el dueño de la pestaña (no el de los datos) es una lista cerrada', () => {
     const piden = new Set()
     for (const p of archivos()) {
       const rel = relative(SRC, p).split('\\').join('/')
-      if (/\b(duenoDeLaPestana|useDuenoDeLaPestana|duenoPropioDeLaPestana)\s*\(/.test(sinComentarios(readFileSync(p, 'utf8')))) piden.add(rel)
+      // Cualquier mención, no sólo la llamada: un alias (`const x = duenoDeLaPestana`) también cuenta.
+      // (La ruta del módulo, './duenoDeLaPestana', no es una mención.)
+      const codigo = sinComentarios(readFileSync(p, 'utf8')).replace(/(['"`])[^'"`\n]*\/duenoDeLaPestana(\.js)?\1/g, '')
+      if (/\b(duenoDeLaPestana|useDuenoDeLaPestana|duenoPropioDeLaPestana)\b/.test(codigo)) piden.add(rel)
     }
     expect([...piden].sort(), 'Para guardar o mandar algo de una cuenta, usá useDuenoDeLosDatos (el dueño '
       + 'de cuando la pantalla pidió los datos), no el de la pestaña.').toEqual(Object.keys(PIDEN_EL_DE_LA_PESTANA).sort())

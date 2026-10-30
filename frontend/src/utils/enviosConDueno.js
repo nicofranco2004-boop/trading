@@ -37,6 +37,8 @@ export const ENVIOS = Object.freeze({
     porque: 'al cambiar de mes, el resumen mensual cierra solo el mes anterior (capital final sin la ganancia no realizada)' }),
   mesNuevo: e({ metodo: 'post', ruta: '/monthly',
     porque: 'y abre el mes nuevo con el capital de cierre del anterior' }),
+  dibujos: e({ metodo: 'put', ruta: '/tecnico/',
+    porque: 'los dibujos del gráfico de un activo (sigue «ACTIVO/dibujos?moneda=…»): los de la persona en una cuenta, también los pendientes que se suben solos al abrir el gráfico' }),
 })
 
 /** El envío no salió: los datos son de una cuenta y la pestaña ya está en otra. */

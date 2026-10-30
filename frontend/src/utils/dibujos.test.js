@@ -5,8 +5,9 @@ import { instalarNavegadorMinimo } from '../testing/navegadorMinimo'
 import { extensionFibonacci, fibonacciAMano, rayas } from './fibonacci'
 import {
   DIBUJOS_MAXIMOS, ETIQUETAS_ELLIOTT, copiaLocal, diaDelPunto, dibujoTocado, dibujoValido, dibujosGuardados, distanciaASegmento, guardarDibujos,
-  duenoDeLaCopia, marcarSubidos, puntoDelDia,
+  marcarSubidos, puntoDelDia,
 } from './dibujos'
+import { duenoDeLaPestana } from './duenoDeLaPestana'
 import { setClientContext } from './api'
 
 beforeAll(() => { instalarNavegadorMinimo() })
@@ -15,6 +16,8 @@ beforeEach(() => { localStorage.setItem('rendi_user', JSON.stringify({ email: 'A
 afterEach(() => { localStorage.clear(); setClientContext(null) })
 // La clave de la copia de Ana, en su cuenta: el email como lo compara
 // utils/quienEs (minúsculas, sin espacios).
+// El dueño de la pestaña en este momento (en la app, el gráfico lo toma al dibujar).
+const D = () => duenoDeLaPestana()
 const K = (activo = 'AAPL', moneda = 'usd', cuenta = 'propia') => `rendi_dibujos:ana@prueba.test|${cuenta}:${activo}:${moneda}`
 
 const dias = ['2026-10-19', '2026-10-20', '2026-10-21', '2026-10-22', '2026-10-23'].map(d => ({ d }))
@@ -23,53 +26,53 @@ const tendencia = { id: 't1', tipo: 'tendencia', a: { d: '2026-10-19', mas: 0, p
 
 describe('de quién es la copia (auditoría de la pestaña Gráfico, 30/10)', () => {
   it('cada persona tiene la suya: la de Ana no la ve ni la sube Bruno', () => {
-    guardarDibujos('AAPL', 'usd', [horizontal])
+    guardarDibujos('AAPL', 'usd', [horizontal], true, D())
     localStorage.setItem('rendi_user', JSON.stringify({ email: 'bruno@prueba.test' }))
-    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [], pendiente: false })
+    expect(copiaLocal('AAPL', 'usd', D())).toEqual({ dibujos: [], pendiente: false })
     localStorage.setItem('rendi_user', JSON.stringify({ email: 'ana@prueba.test' }))
-    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [horizontal], pendiente: true })
+    expect(copiaLocal('AAPL', 'usd', D())).toEqual({ dibujos: [horizontal], pendiente: true })
   })
 
   it('el asesor: cada cliente tiene la suya, y la propia es otra', () => {
     setClientContext({ id: 2, label: 'Cliente 2' })
-    guardarDibujos('AAPL', 'usd', [horizontal])
-    expect(duenoDeLaCopia()).toBe('ana@prueba.test|cliente-2')
+    guardarDibujos('AAPL', 'usd', [horizontal], true, D())
+    expect(D()).toBe('ana@prueba.test|cliente-2')
     setClientContext({ id: 3, label: 'Cliente 3' })
-    expect(dibujosGuardados('AAPL', 'usd')).toEqual([])
+    expect(dibujosGuardados('AAPL', 'usd', D())).toEqual([])
     setClientContext(null)
-    expect(dibujosGuardados('AAPL', 'usd')).toEqual([])
+    expect(dibujosGuardados('AAPL', 'usd', D())).toEqual([])
     expect(copiaLocal('AAPL', 'usd', 'ana@prueba.test|cliente-2').dibujos).toEqual([horizontal])
   })
 
   it('sin nadie logueado no hay copia; y la de antes de este arreglo (sin dueño) no se lee', () => {
     localStorage.setItem('rendi_dibujos:AAPL:usd', JSON.stringify({ pendiente: true, dibujos: [horizontal] }))
-    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [], pendiente: false })
+    expect(copiaLocal('AAPL', 'usd', D())).toEqual({ dibujos: [], pendiente: false })
     localStorage.removeItem('rendi_user')
-    expect(duenoDeLaCopia()).toBeNull()
-    guardarDibujos('AAPL', 'usd', [tendencia])
+    expect(D()).toBeNull()
+    guardarDibujos('AAPL', 'usd', [tendencia], true, D())
     const claves = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i))
     expect(claves.filter(k => k.startsWith('rendi_dibujos:') && k !== 'rendi_dibujos:AAPL:usd')).toEqual([])
-    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [], pendiente: false })
+    expect(copiaLocal('AAPL', 'usd', D())).toEqual({ dibujos: [], pendiente: false })
   })
 })
 
 describe('dónde se guardan', () => {
   it('por activo y por moneda: los de AAPL en dólares no aparecen en pesos ni en otro activo', () => {
-    guardarDibujos('aapl', 'usd', [horizontal, tendencia])
-    expect(dibujosGuardados('AAPL', 'usd')).toEqual([horizontal, tendencia])
-    expect(dibujosGuardados('AAPL', 'ars')).toEqual([])
-    expect(dibujosGuardados('GGAL', 'usd')).toEqual([])
+    guardarDibujos('aapl', 'usd', [horizontal, tendencia], true, D())
+    expect(dibujosGuardados('AAPL', 'usd', D())).toEqual([horizontal, tendencia])
+    expect(dibujosGuardados('AAPL', 'ars', D())).toEqual([])
+    expect(dibujosGuardados('GGAL', 'usd', D())).toEqual([])
     // Sin ninguno y ya en la cuenta, la clave se borra (no queda un [] guardado).
-    guardarDibujos('AAPL', 'usd', [], false)
+    guardarDibujos('AAPL', 'usd', [], false, D())
     expect(localStorage.getItem(K())).toBeNull()
   })
 
   it('un valor roto o de otra versión no rompe nada: se ignora lo que no se puede dibujar', () => {
     localStorage.setItem(K(), '{roto')
-    expect(dibujosGuardados('AAPL', 'usd')).toEqual([])
+    expect(dibujosGuardados('AAPL', 'usd', D())).toEqual([])
     localStorage.setItem(K(), JSON.stringify([horizontal, { id: 'x', tipo: 'flecha' },
       { id: 'y', tipo: 'horizontal', precio: -3 }, { ...tendencia, id: 'z', b: { d: 'ayer', mas: 0, precio: 1 } }, null]))
-    expect(dibujosGuardados('AAPL', 'usd')).toEqual([horizontal])
+    expect(dibujosGuardados('AAPL', 'usd', D())).toEqual([horizontal])
     expect(dibujoValido(tendencia)).toBe(true)
   })
 
@@ -78,8 +81,8 @@ describe('dónde se guardan', () => {
     const real = globalThis.localStorage
     vi.stubGlobal('localStorage', { getItem: roto, setItem: roto, removeItem: roto })
     try {
-      expect(() => guardarDibujos('AAPL', 'usd', [horizontal])).not.toThrow()
-      expect(dibujosGuardados('AAPL', 'usd')).toEqual([])
+      expect(() => guardarDibujos('AAPL', 'usd', [horizontal], true, D())).not.toThrow()
+      expect(dibujosGuardados('AAPL', 'usd', D())).toEqual([])
     } finally {
       vi.stubGlobal('localStorage', real)
     }
@@ -87,36 +90,36 @@ describe('dónde se guardan', () => {
 
   it('tope de dibujos por activo', () => {
     const muchos = Array.from({ length: DIBUJOS_MAXIMOS + 5 }, (_, k) => ({ ...horizontal, id: `h${k}` }))
-    guardarDibujos('AAPL', 'usd', muchos)
-    expect(dibujosGuardados('AAPL', 'usd')).toHaveLength(DIBUJOS_MAXIMOS)
+    guardarDibujos('AAPL', 'usd', muchos, true, D())
+    expect(dibujosGuardados('AAPL', 'usd', D())).toHaveLength(DIBUJOS_MAXIMOS)
   })
 })
 
 describe('la copia del navegador y la cuenta', () => {
   it('un cambio sin subir queda pendiente; subido, deja de estarlo', () => {
-    guardarDibujos('AAPL', 'usd', [horizontal])
-    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [horizontal], pendiente: true })
-    marcarSubidos('AAPL', 'usd', [horizontal])
-    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [horizontal], pendiente: false })
+    guardarDibujos('AAPL', 'usd', [horizontal], true, D())
+    expect(copiaLocal('AAPL', 'usd', D())).toEqual({ dibujos: [horizontal], pendiente: true })
+    marcarSubidos('AAPL', 'usd', [horizontal], D())
+    expect(copiaLocal('AAPL', 'usd', D())).toEqual({ dibujos: [horizontal], pendiente: false })
   })
 
   it('borrar todo sin poder subirlo también queda pendiente (si no, la cuenta los traería de vuelta)', () => {
-    guardarDibujos('AAPL', 'usd', [])
-    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [], pendiente: true })
+    guardarDibujos('AAPL', 'usd', [], true, D())
+    expect(copiaLocal('AAPL', 'usd', D())).toEqual({ dibujos: [], pendiente: true })
   })
 
   it('si mientras subía se dibujó otra cosa, la copia sigue pendiente', () => {
-    guardarDibujos('AAPL', 'usd', [horizontal])
-    guardarDibujos('AAPL', 'usd', [horizontal, tendencia])     // el segundo cambio, antes de que vuelva el primero
-    marcarSubidos('AAPL', 'usd', [horizontal])                  // volvió el primero
-    expect(copiaLocal('AAPL', 'usd').pendiente).toBe(true)
+    guardarDibujos('AAPL', 'usd', [horizontal], true, D())
+    guardarDibujos('AAPL', 'usd', [horizontal, tendencia], true, D())     // el segundo cambio, antes de que vuelva el primero
+    marcarSubidos('AAPL', 'usd', [horizontal], D())                  // volvió el primero
+    expect(copiaLocal('AAPL', 'usd', D()).pendiente).toBe(true)
   })
 
   it('la copia de antes del guardado en la cuenta (la lista sola) NO cuenta como pendiente: no se sube', () => {
     // Revivía dibujos borrados después de un reset (auditoría C, 29/10), y esa
     // versión nunca se publicó: no hay usuarios con una copia así para migrar.
     localStorage.setItem(K(), JSON.stringify([horizontal]))
-    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [horizontal], pendiente: false })
+    expect(copiaLocal('AAPL', 'usd', D())).toEqual({ dibujos: [horizontal], pendiente: false })
   })
 })
 

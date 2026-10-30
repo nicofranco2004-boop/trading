@@ -37,6 +37,12 @@ const LIBRES = {
     'marca que LA PERSONA vio el aviso de precios: cuerpo vacío, el servidor lo anota por la sesión',
   'pages/AdvisorCobros.jsx|/advisor/cashflows/positions':
     'es una lectura (POST con cuerpo vacío) de la renta fija de los clientes del asesor',
+  'components/RadiografiaTecnica.jsx|/tecnico/cartera':
+    'es una lectura: manda los tickers de la cartera y vuelve su lectura técnica; el servidor no guarda nada',
+  'hooks/useDiario.js|/tecnico/en-fechas':
+    'es una lectura: manda ticker y fecha de cada operación y vuelve la tendencia de ese día; no guarda nada',
+  'pages/TuLista.jsx|/tecnico/lista':
+    'es una lectura: manda los tickers de la lista de seguidos y vuelve su lectura técnica; no guarda nada',
 }
 
 function archivos(dir = SRC, out = []) {
