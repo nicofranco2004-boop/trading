@@ -977,9 +977,13 @@ class RealizadoEnPesosEnTodasLasPantallas(_Base):
         self.assertFalse(self._reporte()["realized_ars_valuado"])
 
     def test_una_venta_en_dolares_de_un_lote_en_pesos_es_valuada(self):
-        self._alta(broker=DOLARES, asset="GGAL", quantity=10, buy_price=4500,
+        # Desde 539a1440 (main) un broker en dólares SIN caja en pesos no acepta un lote en pesos
+        # («Bull no tiene caja en pesos»). El caso real es el de una cuenta argentina: el lote se
+        # compra en pesos en Cocos y se vende en dólares desde Cocos; la plata cae en su caja
+        # «Cocos · USD» (`_pata_de_la_moneda`) y el FIFO mira el par entero.
+        self._alta(broker=PESOS, asset="GGAL", quantity=10, buy_price=4500,
                    entry_date="2024-01-10", currency="ARS")
-        self._vender(broker=DOLARES, asset="GGAL", quantity=10, exit_price=5, date="2024-06-10",
+        self._vender(broker=PESOS, asset="GGAL", quantity=10, exit_price=5, date="2024-06-10",
                      currency="USD")
         op = self._ventas("GGAL")[0]
         self.assertEqual(op["resultado_ars_tipo"], "valuado")
