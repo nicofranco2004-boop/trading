@@ -12,7 +12,7 @@ vi.mock('../../hooks/usePushNotifications', () => ({
 vi.mock('../../utils/api', () => ({ api: { get: vi.fn(() => Promise.resolve({})) } }))
 
 import AlertaForm, { borradorInicial, pedidoTecnico, repeticionPorDefecto } from './AlertaForm'
-import { prefillTecnico, alertaExistente, senalDeTarjeta } from './AvisameTecnico'
+import { prefillTecnico, alertaExistente, senalDeTarjeta, senalDelCambio } from './AvisameTecnico'
 import { setBrokersRegistry } from '../../utils/valuation'
 
 const plan = { can: () => true, limit: () => null }
@@ -71,11 +71,20 @@ describe('de la ficha al servidor', () => {
       .toMatchObject({ symbol: 'GGAL', accion_local: false })
   })
 
+  it('sin tenerla, GGAL se mira en BYMA y NVDA no: la regla de la ficha que no tenés (miradaSinTenencia)', () => {
+    // Antes caía siempre al ADR: el aviso de un canal dibujado en la ficha de
+    // GGAL (unos US$ 5) miraba el precio de Nueva York (unos US$ 50). Auditoría 29/10.
+    const f = { ...borradorInicial({ prefill: { kind: 'tecnica' } }), symbol: 'GGAL' }
+    expect(pedidoTecnico(f, false, [])).toMatchObject({ symbol: 'GGAL', accion_local: true })
+    expect(pedidoTecnico({ ...f, symbol: 'NVDA' }, false, [])).toMatchObject({ symbol: 'NVDA', accion_local: false })
+    expect(pedidoTecnico({ ...f, symbol: 'AAPL.BA' }, false, [])).toMatchObject({ symbol: 'AAPL', accion_local: false })
+  })
+
   it('el formulario desde la ficha: sin selector de tipo, con el activo fijo y la frase', () => {
     const h = html({ prefill: prefillTecnico({ asset: 'AAPL', senal: 'media200', direction: 'below' }) })
     expect(h).toContain('Nuevo aviso técnico')
     expect(h).not.toContain('Se mueve un %')
-    expect(h).toContain('Te avisamos cuando AAPL quede abajo de su promedio de 200 días.')
+    expect(h).toContain('Te avisamos cuando AAPL caiga por debajo de su promedio de 200 días.')
     expect(h).toContain('Para qué lado')
   })
 
@@ -83,7 +92,7 @@ describe('de la ficha al servidor', () => {
     const h = html({ prefill: { kind: 'tecnica' } })
     expect(h).toContain('Señal técnica')
     expect(h).toContain('Se mueve un %')
-    expect(h).toContain('La fuerza (RSI) baje de 30')
+    expect(h).toContain('Su impulso (RSI) baje de 30')
   })
 })
 
@@ -101,5 +110,20 @@ describe('«Te avisamos» si ya hay una igual', () => {
     expect(alertaExistente([{ ...a, active: false }], p)).toBeNull()
     expect(alertaExistente([{ ...a, currency: 'ARS' }], p)).toBeNull()
     expect(alertaExistente([{ ...a, senal: 'media50' }], p)).toBeNull()
+  })
+})
+
+describe('la campanita de cada cambio de la semana (Panorama)', () => {
+  it('ofrece avisar cuando vuelva a cambiar; el ADX no tiene alerta', () => {
+    expect(senalDelCambio({ tipo: 'media200', sentido: 'arriba' })).toEqual({ senal: 'media200', direction: 'below' })
+    expect(senalDelCambio({ tipo: 'media50', sentido: 'abajo' })).toEqual({ senal: 'media50', direction: 'above' })
+    expect(senalDelCambio({ tipo: 'rsi_bajo_30' })).toEqual({ senal: 'rsi_sube_30' })
+    expect(senalDelCambio({ tipo: 'rsi_sobre_70' })).toEqual({ senal: 'rsi_baja_70' })
+    expect(senalDelCambio({ tipo: 'maximo_12m' })).toEqual({ senal: 'maximo_12m' })
+    expect(senalDelCambio({ tipo: 'adx23' })).toBeNull()
+  })
+  it('lo que ofrece arma el mismo borrador que la ficha (el activo sin .BA y la marca de acción local)', () => {
+    const p = prefillTecnico({ asset: 'GGAL', accionLocal: true, moneda: 'usd', ...senalDelCambio({ tipo: 'media200', sentido: 'arriba' }) })
+    expect(p).toMatchObject({ kind: 'tecnica', symbol: 'GGAL', senal: 'media200', direction: 'below', currency: 'USD', accionLocal: true })
   })
 })

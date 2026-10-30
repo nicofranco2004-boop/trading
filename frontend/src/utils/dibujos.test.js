@@ -4,8 +4,8 @@ import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest'
 import { instalarNavegadorMinimo } from '../testing/navegadorMinimo'
 import { extensionFibonacci, fibonacciAMano, rayas } from './fibonacci'
 import {
-  DIBUJOS_MAXIMOS, ETIQUETAS_ELLIOTT, copiaLocal, diaDelPunto, dibujoTocado, dibujoValido, dibujosGuardados, distanciaASegmento, guardarDibujos,
-  marcarSubidos, puntoDelDia,
+  DIBUJOS_MAXIMOS, ETIQUETAS_ELLIOTT, copiaLocal, diaDelPunto, diasHabilesEntre, dibujoTocado, dibujoValido, dibujosGuardados, distanciaASegmento, guardarDibujos,
+  marcarSubidos, puntoDelDia, NOTA_MAXIMA, largoDeNota, limpiarNota, recortarNota,
 } from './dibujos'
 
 beforeAll(() => { instalarNavegadorMinimo() })
@@ -102,7 +102,9 @@ describe('un punto queda en su día', () => {
 
   it('una fecha que no está (un feriado) va al día de antes; una anterior al gráfico queda afuera', () => {
     expect(diaDelPunto(dias, { d: '2026-10-25', mas: 0 })).toBe(4)
-    expect(diaDelPunto(dias, { d: '2020-01-01', mas: 0 })).toBe(-1)
+    // Afuera a la izquierda, a su distancia en días hábiles (no pegada en -1:
+    // así la línea no gira a medida que se borran los días viejos).
+    expect(diaDelPunto(dias, { d: '2020-01-01', mas: 0 })).toBeLessThan(-1700)
   })
 })
 
@@ -166,5 +168,56 @@ describe('extensión de Fibonacci y las dos formas de Elliott', () => {
     expect(dibujoValido({ id: 'e', tipo: 'elliott', forma: 'correccion', puntos: n(5) })).toBe(false)
     expect(dibujoValido({ id: 'e', tipo: 'elliott', forma: 'triangulo', puntos: n(3) })).toBe(false)
     expect(dibujoValido({ id: 'e', tipo: 'elliott', puntos: n(9) })).toBe(true)          // los guardados antes de separarlos
+  })
+})
+
+describe('un punto anclado antes de la historia guardada (auditoría 29/10)', () => {
+  const pts = [{ d: '2026-10-05' }, { d: '2026-10-06' }, { d: '2026-10-07' }]
+  it('queda a su distancia en días hábiles, no pegado en -1 (la línea no gira cuando se borran días viejos)', () => {
+    expect(diaDelPunto(pts, { d: '2026-10-02', mas: 0 })).toBe(-1)          // viernes → lunes: 1 día hábil
+    expect(diaDelPunto(pts, { d: '2026-09-28', mas: 0 })).toBe(-5)          // una semana antes
+    expect(diaDelPunto(pts, { d: '2026-09-28', mas: 2 })).toBe(-3)
+    expect(diaDelPunto(pts, { d: '2026-10-06', mas: 0 })).toBe(1)
+    expect(diasHabilesEntre('2026-09-26', '2026-10-05')).toBe(5)            // de sábado a lunes de la otra semana
+  })
+})
+
+describe('las notas de texto (Nico, 30/10)', () => {
+  const a = { d: '2026-03-02', mas: 0, precio: 180.25 }
+  it('se limpian como en el servidor (main._texto_de_nota), así la copia del navegador y la de tu cuenta son la misma', () => {
+    // El mismo caso que backend/tests/test_dibujos_grafico.test_las_notas_de_texto.
+    expect(limpiarNota('  a\u0000b\u0007\r\nc\td\n\n\n\n\ne  ')).toBe('ab\nc d\n\ne')
+    expect(limpiarNota('subió \ud83d')).toBe('subió')          // medio emoji suelto: afuera
+    expect(limpiarNota('  \n\t ')).toBe('')
+    // Lo que no se ve no es una nota (sería una banderita vacía); el U+0085 y
+    // la marca BOM se sacan, igual que el servidor (auditoría 30/10: el U+0085
+    // la pantalla lo dejaba y el servidor no, y trababa el guardado entero).
+    for (const invisible of ['\u200b', '\u200b \u2060', '\x85', '\ufeff', '\u00a0\u3000']) expect(limpiarNota(invisible)).toBe('')
+    expect(limpiarNota('\x85\ufeffhola\x85')).toBe('hola')
+    expect(limpiarNota('👨\u200d👩\u200d👧')).toBe('👨\u200d👩\u200d👧')    // la unión de una familia queda
+  })
+  it('se cuentan letras: un emoji es una, y cortar no lo parte al medio', () => {
+    expect(largoDeNota('🚀a')).toBe(2)
+    expect(recortarNota('🚀'.repeat(NOTA_MAXIMA + 5))).toBe('🚀'.repeat(NOTA_MAXIMA))
+    // Una bandera son dos partes: si no entra entera, no queda media.
+    expect(recortarNota('a'.repeat(NOTA_MAXIMA - 1) + '🇦🇷')).toBe('a'.repeat(NOTA_MAXIMA - 1))
+    expect(largoDeNota('👍🏽')).toBe(2)                                     // como el servidor
+  })
+  it('la copia de este navegador es de quien la guardó: otra persona en la misma compu no la ve ni la sube', () => {
+    const nota = { id: 'n1', tipo: 'nota', a, texto: 'mi idea' }
+    localStorage.setItem('rendi_user', JSON.stringify({ email: 'A@rendi.test' }))
+    guardarDibujos('AAPL', 'usd', [nota])                                  // pendiente: no llegó a la cuenta
+    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [nota], pendiente: true })
+    localStorage.setItem('rendi_user', JSON.stringify({ email: 'b@rendi.test' }))   // la sesión venció y entró otra
+    expect(copiaLocal('AAPL', 'usd')).toEqual({ dibujos: [], pendiente: false })
+    localStorage.setItem('rendi_user', JSON.stringify({ email: 'a@rendi.test' }))   // vuelve la primera
+    expect(copiaLocal('AAPL', 'usd').dibujos).toEqual([nota])
+  })
+  it('una nota es un dibujo con su punto y su texto; sin texto o de más, no', () => {
+    expect(dibujoValido({ id: 'n', tipo: 'nota', a, texto: 'compré acá' })).toBe(true)
+    expect(dibujoValido({ id: 'n', tipo: 'nota', a, texto: '🚀'.repeat(NOTA_MAXIMA) })).toBe(true)
+    for (const malo of [{ texto: '' }, { texto: '   ' }, { texto: 'x'.repeat(NOTA_MAXIMA + 1) }, { texto: 5 }, { a: undefined }, { a: { ...a, precio: 0 } }]) {
+      expect(dibujoValido({ id: 'n', tipo: 'nota', a, texto: 'ok', ...malo })).toBe(false)
+    }
   })
 })

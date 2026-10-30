@@ -7,7 +7,8 @@
 //   · convive con el Fibonacci: los dos prendidos a la vez;
 //   · sin conteo claro: lo dice, no dibuja nada y el botón queda deshabilitado.
 // Y las palabras de cada estado (utils/elliott.js).
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from 'vitest'
+import { CAPAS_TODAS } from './BarraGrafico'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic } from '../../testing/navegadorMinimo'
 import { tarjetaElliott, dondeHoy, veredictoElliott, textoInvalida } from '../../utils/elliott'
@@ -36,6 +37,7 @@ const DATOS = (elliott) => ({
 
 let respuesta
 vi.mock('../../utils/api', () => ({
+  getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
   api: { get: vi.fn(() => Promise.resolve(respuesta)) },
 }))
 
@@ -47,6 +49,10 @@ beforeAll(async () => {
 afterAll(() => { vi.unstubAllGlobals() })
 
 let montado
+// De fábrica el gráfico viene limpio (precio, promedio de 200 y volumen). Estas
+// pruebas miran las demás capas: arrancan con todas prendidas, como quien las
+// prende desde «Indicadores» (lo que se prende queda guardado así).
+beforeEach(() => { try { localStorage.setItem('rendi_grafico_capas', JSON.stringify(CAPAS_TODAS)) } catch { /* sin almacenamiento */ } })
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
@@ -95,7 +101,7 @@ describe('Ondas de Elliott en la ficha', () => {
     expect(t).toContain('Según un conteo posible, el precio podría estar en la onda 5, que en la teoría es la última de la suba.')
     expect(t).toContain('Si el precio baja de US$ 120,00 (donde terminó la onda 1), este conteo dejaría de tener sentido')
     expect(t).toContain('Confianza alta: cumple 3 de 4 proporciones que suelen darse.')
-    expect(t).toContain('La onda 2 devolvió el 60 % de la 1')
+    expect(t).toContain('La onda 2 retrocedió el 60 % de lo que avanzó la onda 1')
     expect(t).toContain('Otra lectura posible: el precio podría estar en la onda 4')
     expect(t).toContain('Es una de varias lecturas posibles')
     expect(t).toContain('no es una recomendación')
@@ -130,7 +136,7 @@ describe('Ondas de Elliott en la ficha', () => {
     await clic(montado.contenedor, opcion)
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
     const aviso = texto(montado.contenedor)
-    expect(aviso).toContain('Ondas de Elliott (automático): Con los picos y pozos de este activo no aparece ningún conteo')
+    expect(aviso).toContain('Ondas de Elliott (automático): Con los máximos y mínimos de este activo no aparece ningún conteo')
     expect(aviso).not.toContain('El conteo dejaría de valer')
   })
 
@@ -169,7 +175,7 @@ describe('las palabras de cada estado', () => {
   it('el segundo nivel que también lo corta, del otro lado', () => {
     const c = con({ ahora: 'correccion', invalida: { precio: 150, lado: 'encima', por: 'final_5',
       otro: { precio: 100, lado: 'debajo', por: 'arranque_1' } } })
-    expect(textoInvalida(c, precio)).toContain('Y también si baja de $ 100 (donde arrancó la onda 1): sería devolver todo el movimiento de 5 ondas.')
+    expect(textoInvalida(c, precio)).toContain('Y también si baja de $ 100 (donde arrancó la onda 1): significaría perder todo el movimiento de las 5 ondas.')
     const tope = con({ invalida: { precio: 120, lado: 'debajo', por: 'final_1', otro: { precio: 155, lado: 'encima', por: 'tope_3_corta' } } })
     expect(textoInvalida(tope, precio)).toContain('También dejaría de tener sentido si sube de $ 155')
   })
@@ -200,7 +206,7 @@ describe('las palabras de cada estado', () => {
     // Todo menos la aclaración del pie (que dice justamente «no es una recomendación de compra»).
     const todo = [t.texto, t.invalida, t.confianza, t.alternativo, ...t.pautas.map(p => p.texto)].join(' ')
     expect(todo).not.toMatch(/\b(compr[áa]|vend[ée]|va a (subir|bajar)|seguro)\b/i)
-    expect(t.pie).toContain('No dice qué va a pasar')
+    expect(t.pie).toContain('No es un pronóstico')
   })
 })
 

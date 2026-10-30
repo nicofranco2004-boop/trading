@@ -2,14 +2,15 @@
 // Lo que importa: cada palabra es la de la ficha, cuánto pesa cada activo es su
 // pedazo del total de la Cartera (el mismo motor), lo que seguís se lee con la
 // regla de la ficha y lo que no tiene lectura lo dice en vez de inventar.
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   lecturaDeSeguido, activosDeLaLista, filasDeLaLista, contarFilas, filtrarFilas, ordenarFilas,
   haceCuanto, trazoDeLinea, motivosSinLectura,
+  barrasDeFuerza, resumenDeLaLista, vistaGuardada, guardarVista, nombreDeActivo, DIAS_SEMANA,
 } from './listaTecnica'
 import { indexarLecturas, MOTIVOS_SIN_LECTURA } from './radiografia'
 import { setBrokersRegistry } from './valuation'
-import { tarjetas, veredictoRsi } from './tecnico'
+import { tarjetas, veredictoRsi, ADX_CLAVE, RSI_GANA, RSI_PIERDE } from './tecnico'
 
 const BROKERS = [
   { id: 1, name: 'IOL', currency: 'ARS' },
@@ -81,7 +82,7 @@ describe('las filas, con lo que manda el servidor', () => {
     expect(ko.fondo.palabra).toBe(tarjetas(indice.get('KO|0').lectura).find(t => t.id === 'fondo').veredicto)
     expect(ko.corto.palabra).toBe('Bajista')
     expect(ko.rsi).toEqual({ rsi: 24, palabra: veredictoRsi(24) })
-    expect(ko.adx).toEqual({ valor: 18.2, texto: '18', palabra: 'de costado' })
+    expect(ko.adx).toEqual({ valor: 18.2, texto: '18', palabra: 'lateral' })
     expect(de('NVDA').adx.palabra).toBe('marcada')
     expect(de('TSLA').desdeMax.enMaximo).toBe(true)
     expect(ko.desdeMax).toMatchObject({ pct: -24.3, enMaximo: false })
@@ -91,7 +92,7 @@ describe('las filas, con lo que manda el servidor', () => {
     const f = filasDeLaLista({ seguidos: [{ symbol: 'X' }], indice: indexarLecturas([lec('X', false, { adx: 23 })]), hoy: HOY })
     expect(f[0].adx.palabra).toBe('marcada')
     const g = filasDeLaLista({ seguidos: [{ symbol: 'X' }], indice: indexarLecturas([lec('X', false, { adx: 22.96 })]), hoy: HOY })
-    expect(g[0].adx).toMatchObject({ texto: '22,9', palabra: 'de costado' })
+    expect(g[0].adx).toMatchObject({ texto: '22,9', palabra: 'lateral' })
   })
 
   it('bono, fondo o sin velas: «Sin lectura» con su motivo, sin números', () => {
@@ -102,13 +103,13 @@ describe('las filas, con lo que manda el servidor', () => {
     expect(motivosSinLectura(filas)).toEqual([{ porque: 'no_se_mide', nombres: ['AL30', 'AL29'], texto: MOTIVOS_SIN_LECTURA.no_se_mide }])
   })
 
-  it('una acción de la watchlist todavía sin velas: aparece en un día', () => {
+  it('una acción de la watchlist todavía sin velas: va a aparecer mañana', () => {
     const f = filasDeLaLista({ seguidos: [{ symbol: 'IREN' }], indice: new Map(), hoy: HOY })
     expect(f[0]).toMatchObject({ vigente: false, porque: 'sin_historia' })
   })
 
   it('velas de hace más de 10 días: sin lectura, con su fecha, y sin último cambio', () => {
-    const vieja = lec('MSFT', false, { fecha: '2026-10-10' }, { ultimo_cambio: { fecha: '2026-10-08', texto: 'pasó arriba de su promedio de 50 días: el corto plazo se volvió alcista.' } })
+    const vieja = lec('MSFT', false, { fecha: '2026-10-10' }, { ultimo_cambio: { fecha: '2026-10-08', texto: 'superó su promedio de 50 días: la tendencia de mediano plazo pasó a ser alcista.' } })
     const f = filasDeLaLista({ seguidos: [{ symbol: 'MSFT' }], indice: indexarLecturas([vieja]), hoy: HOY })
     expect(f[0]).toMatchObject({ vigente: false, porque: 'vieja', rsi: null, adx: null, cambio: null })
     expect(f[0].motivo).toContain('10/10/2026')
@@ -120,28 +121,28 @@ describe('las filas, con lo que manda el servidor', () => {
   it('el último cambio: el de la cuenta única, con hace cuánto', () => {
     // Como lo manda el servidor: cambios_desde + senales_semana.texto_del_cambio.
     const x = lec('TSLA', false, {}, { ultimo_cambio: {
-      tipo: 'media50', sentido: 'abajo', fecha: '2026-10-21', etiqueta: 'Corto plazo', tono: 'neg',
-      texto: 'quedó abajo de su promedio de 50 días: el corto plazo se volvió bajista.', extra: null } })
+      tipo: 'media50', sentido: 'abajo', fecha: '2026-10-21', etiqueta: 'Mediano plazo', tono: 'neg',
+      texto: 'cayó por debajo de su promedio de 50 días: la tendencia de mediano plazo pasó a ser bajista.', extra: null } })
     const f = filasDeLaLista({ seguidos: [{ symbol: 'TSLA' }], indice: indexarLecturas([x]), hoy: HOY })
     expect(f[0].cambio).toEqual({
-      corta: 'Quedó abajo de su promedio de 50 días',
-      completa: 'Quedó abajo de su promedio de 50 días: el corto plazo se volvió bajista.',
+      corta: 'Cayó por debajo de su promedio de 50 días',
+      completa: 'Cayó por debajo de su promedio de 50 días: la tendencia de mediano plazo pasó a ser bajista.',
       tono: 'neg', fecha: '2026-10-21', hace: 'hace 3 días',
     })
     // La aclaración de «cayó muy rápido» (la posibilidad de rebote) va al globo.
     const rsi = lec('KO', false, {}, { ultimo_cambio: {
       tipo: 'rsi_bajo_30', fecha: '2026-10-23', tono: 'rsi', corta: 'cayó muy rápido',
-      texto: 'cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 25.', extra: 'Es una posibilidad, no una certeza.' } })
+      texto: 'cayó muy rápido: el impulso (RSI) bajó de 30 y quedó en 25.', extra: 'Es una posibilidad, no una certeza.' } })
     const g = filasDeLaLista({ seguidos: [{ symbol: 'KO' }], indice: indexarLecturas([rsi]), hoy: HOY })
-    expect(g[0].cambio).toMatchObject({ corta: 'Cayó muy rápido', completa: 'Cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 25. Es una posibilidad, no una certeza.', hace: 'ayer' })
+    expect(g[0].cambio).toMatchObject({ corta: 'Cayó muy rápido', completa: 'Cayó muy rápido: el impulso (RSI) bajó de 30 y quedó en 25. Es una posibilidad, no una certeza.', hace: 'ayer' })
   })
 
   it('D6: la celda usa la frase corta del servidor, sin jerga (antes «Tiene el ADX en 23,3»)', () => {
     const adx = lec('KO', false, {}, { ultimo_cambio: {
-      tipo: 'adx23', fecha: '2026-10-23', tono: 'adx', corta: 'dejó de ir de costado y marca dirección (para arriba)',
-      texto: 'dejó de ir de costado y marca dirección (para arriba): la fuerza de la tendencia (ADX) pasó 23 y quedó en 23,3.' } })
+      tipo: 'adx23', fecha: '2026-10-23', tono: 'adx', corta: 'dejó de moverse de forma lateral y tomó una dirección (al alza)',
+      texto: 'dejó de moverse de forma lateral y tomó una dirección (al alza): la fuerza de la tendencia (ADX) superó 23 y quedó en 23,3.' } })
     const g = filasDeLaLista({ seguidos: [{ symbol: 'KO' }], indice: indexarLecturas([adx]), hoy: HOY })
-    expect(g[0].cambio.corta).toBe('Dejó de ir de costado y marca dirección (para arriba)')
+    expect(g[0].cambio.corta).toBe('Dejó de moverse de forma lateral y tomó una dirección (al alza)')
     expect(g[0].cambio.corta).not.toMatch(/ADX|\d/)
   })
 
@@ -178,7 +179,7 @@ describe('el orden', () => {
     expect(nombres(ordenarFilas(filas, 'fuerza'))).toEqual(['B', 'A', 'C', 'Z'])
     expect(nombres(ordenarFilas(filas, 'maximo'))).toEqual(['B', 'C', 'A', 'Z'])
     expect(nombres(ordenarFilas(filas, 'maximo', false))).toEqual(['A', 'C', 'B', 'Z'])
-    // Lo que más pesa: un bono sin lectura pesa igual; lo que sólo seguís, al final.
+    // Mayor peso en tu cartera: un bono sin lectura pesa igual; lo que sólo seguís, al final.
     expect(nombres(ordenarFilas(filas, 'peso'))).toEqual(['Z', 'B', 'A', 'C'])
   })
 })
@@ -198,5 +199,97 @@ describe('hace cuánto y la línea chica', () => {
     expect(t.d).toBe('M0.0,1.0L32.0,21.0L64.0,9.0')   // 10 arriba, 5 abajo, 8 al 60 %
     expect(t.sube).toBe(false)
     expect(trazoDeLinea([{ c: 1 }])).toBeNull()
+  })
+})
+
+describe('las tarjetas de Tu lista', () => {
+  it('la Fuerza: cada barrita es media línea del ADX; desde la tercera, dirección marcada', () => {
+    expect(barrasDeFuerza(null)).toBeNull()
+    expect(barrasDeFuerza(5)).toEqual({ prendidas: 1, clara: false })
+    expect(barrasDeFuerza(ADX_CLAVE - 0.1)).toEqual({ prendidas: 2, clara: false })
+    expect(barrasDeFuerza(ADX_CLAVE)).toEqual({ prendidas: 3, clara: true })
+    expect(barrasDeFuerza(90)).toEqual({ prendidas: 5, clara: true })
+  })
+
+  it('los cortes del impulso son los de la ficha (veredictoRsi), no números nuevos', () => {
+    expect(veredictoRsi(RSI_GANA + 0.1)).toBe('Gana impulso')
+    expect(veredictoRsi(RSI_GANA)).toBe('Sin impulso claro')
+    expect(veredictoRsi(RSI_PIERDE - 0.1)).toBe('Pierde impulso')
+  })
+
+  it('el nombre de la empresa; una acción argentina con el de BYMA', () => {
+    expect(nombreDeActivo('NVDA')).toBe('NVIDIA')
+    expect(nombreDeActivo('GGAL', true)).toBe('Grupo Financiero Galicia')
+    expect(nombreDeActivo('ZZZZ')).toBeNull()
+  })
+
+  it('cada fila trae su precio, cuánto cambió en 3 meses y si cambió esta semana', () => {
+    const hace = (n) => new Date(Date.parse(HOY + 'T00:00:00Z') - n * 86400000).toISOString().slice(0, 10)
+    const x = (asset, fecha) => ({ asset, local: false, disponible: true,
+      lectura: { ruedas: 760, fecha: HOY, precio: 150, media200: 90, dist_media200: 10, tendencia: 'alcista', rsi: 60, adx: 30 },
+      linea: [{ d: hace(90), c: 100 }, { d: HOY, c: 150 }], ultimo_cambio: { tipo: 'media200', fecha, texto: 'superó su promedio.' } })
+    const filas = filasDeLaLista({
+      seguidos: [{ symbol: 'AAA' }, { symbol: 'BBB' }], hoy: HOY,
+      indice: indexarLecturas([x('AAA', hace(DIAS_SEMANA - 1)), x('BBB', hace(DIAS_SEMANA))]),
+    })
+    const [a, b] = filas
+    expect(a.precio).toBe(150)
+    expect(a.var3m).toBeCloseTo(50)
+    expect(a.nuevo).toBe(true)
+    expect(b.nuevo).toBe(false)          // hace 7 días ya no es «esta semana» (la de Señales)
+  })
+
+  it('la franja cuenta activos, nunca plata', () => {
+    const f = (fondo, extra = {}) => ({ fondo: { id: fondo }, vigente: fondo !== 'sin', nombre: extra.nombre || fondo, ...extra })
+    const r = resumenDeLaLista([
+      f('alcista', { rsi: { rsi: 60 }, nuevo: true }),
+      f('alcista', { rsi: { rsi: RSI_GANA }, desdeMax: { enMaximo: true }, nombre: 'NVDA' }),
+      f('bajista', { rsi: { rsi: 20 } }),
+      f('sin'),
+    ])
+    expect(r).toEqual({ alcistas: 2, conLectura: 3, puntos: ['alcista', 'alcista', 'bajista'], ganando: 1, enMaximo: ['NVDA'], cambiaron: 1 })
+  })
+
+  it('el promedio de 200 días va en la MISMA escala que el precio, y corta donde no hay', () => {
+    // Precio de 10 a 20, promedio en 30: la escala se estira hasta 30 para que el
+    // promedio quede arriba de la línea (el precio está abajo de su promedio).
+    const t = trazoDeLinea([{ c: 10, m: null }, { c: 20, m: 30 }, { c: 15, m: 30 }], 100, 22, { promedio: true })
+    expect(t.ma).toBe('M50.0,1.0L100.0,1.0')
+    expect(t.d).toBe('M0.0,21.0L50.0,11.0L100.0,16.0')
+    expect(trazoDeLinea([{ c: 1 }, { c: 2 }], 100, 22, { promedio: true }).ma).toBeNull()
+    expect(trazoDeLinea([{ c: 1, m: 5 }, { c: 2, m: 5 }]).ma).toBeNull()   // la de la tabla no lo dibuja
+  })
+
+  it('el mini-gráfico trae el relleno de abajo de la línea', () => {
+    const t = trazoDeLinea([{ c: 1 }, { c: 2 }], 300, 70)
+    expect(t.area.startsWith(t.d)).toBe(true)
+    expect(t.area.endsWith('L300,70L0,70Z')).toBe(true)
+  })
+})
+
+describe('«Tarjetas / Tabla» se recuerda por persona en el navegador', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+  const memoria = () => {
+    const m = new Map()
+    return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)) }
+  }
+
+  it('de entrada, tarjetas; lo que elige uno no lo ve otro', () => {
+    vi.stubGlobal('localStorage', memoria())
+    expect(vistaGuardada('7:propia')).toBe('tarjetas')
+    guardarVista('7:propia', 'tabla')
+    expect(vistaGuardada('7:propia')).toBe('tabla')
+    expect(vistaGuardada('8:propia')).toBe('tarjetas')
+    expect(vistaGuardada('7:cliente:3')).toBe('tarjetas')
+  })
+
+  it('sin nadie logueado no se guarda; sin almacenamiento (o roto), tarjetas sin romper', () => {
+    const m = memoria()
+    vi.stubGlobal('localStorage', m)
+    guardarVista(null, 'tabla')
+    expect(vistaGuardada(null)).toBe('tarjetas')
+    vi.stubGlobal('localStorage', { getItem: () => { throw new Error('bloqueado') }, setItem: () => { throw new Error('bloqueado') } })
+    expect(() => guardarVista('7:propia', 'tabla')).not.toThrow()
+    expect(vistaGuardada('7:propia')).toBe('tarjetas')
   })
 })

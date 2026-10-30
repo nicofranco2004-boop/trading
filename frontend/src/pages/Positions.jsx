@@ -2480,7 +2480,7 @@ function PositionsDesktop() {
                       <th className={thClass}>Var. día</th>
                       {fdhAca && <th className={thClass}><EncabezadoColumna sesion={sesionFdh} /></th>}
                       <th className={thClass} title="Tendencia de fondo, en dólares: el precio contra su promedio de los últimos 200 días">Tendencia</th>
-                      <th className={thClass} title="Fuerza (RSI): compara las subas con las bajas de las últimas 3 semanas, de 0 a 100">Fuerza (RSI)</th>
+                      <th className={thClass} title="Impulso (RSI): de 0 a 100, qué tan rápido subió o bajó el precio en las últimas 3 semanas (como la ficha y Tu lista)">Impulso (RSI)</th>
                       <th className={thClassStickyRight}></th>
                     </tr>
                   </thead>
@@ -2552,7 +2552,7 @@ function PositionsDesktop() {
                       // + Invertido si showDetail (+1) + TC Compra/Inv.USD/P&L USD si
                       // showDetail && vista ARS (+3). USD: los 3 helpers cross-moneda
                       // se ocultan (redundantes con las columnas ya-en-USD).
-                      const arsColSpan = (showDetail ? (isArsDisp ? 13 : 10) : 9) + (fdhAca ? 1 : 0) + 2   // +2: Tendencia y Fuerza (RSI)
+                      const arsColSpan = (showDetail ? (isArsDisp ? 13 : 10) : 9) + (fdhAca ? 1 : 0) + 2   // +2: Tendencia e Impulso (RSI)
                       const cobradoDisp = isArsDisp ? cobradoUsd * tcValuacion : cobradoUsd
                       return (
                         <Fragment key={rowKey}>
@@ -2814,7 +2814,7 @@ function PositionsDesktop() {
                     <th className={thClass}>Var. día</th>
                     {fdhAca && <th className={thClass}><EncabezadoColumna sesion={sesionFdh} /></th>}
                     <th className={thClass} title="Tendencia de fondo, en dólares: el precio contra su promedio de los últimos 200 días">Tendencia</th>
-                    <th className={thClass} title="Fuerza (RSI): compara las subas con las bajas de las últimas 3 semanas, de 0 a 100">Fuerza (RSI)</th>
+                    <th className={thClass} title="Impulso (RSI): de 0 a 100, qué tan rápido subió o bajó el precio en las últimas 3 semanas (como la ficha y Tu lista)">Impulso (RSI)</th>
                     <th className={thClassStickyRight}></th>
                   </tr>
                 </thead>

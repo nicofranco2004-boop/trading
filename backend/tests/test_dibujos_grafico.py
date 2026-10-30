@@ -59,9 +59,23 @@ class DibujosGraficoTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()["dibujos"]
 
-    def _guardar(self, lista, asset="AAPL", moneda="usd", **kw):
+    def _guardar(self, lista, asset="AAPL", moneda="usd", notas=True, **kw):
+        # `notas`: la marca de la pantalla que conoce las notas (la de hoy).
         return self.http.put(f"/api/tecnico/{asset}/dibujos?moneda={moneda}",
-                             json={"dibujos": lista}, headers=self._h(**kw))
+                             json={"dibujos": lista, **({"notas": True} if notas else {})}, headers=self._h(**kw))
+
+    def _asesor_de_yo(self):
+        conn = main.get_db()
+        try:
+            asesor = _usuario(conn, f"asesor-{uuid.uuid4().hex[:8]}@rendi.test", tier="advisor")
+            conn.execute("UPDATE users SET managed_by = ? WHERE id = ?", (asesor, self.yo))
+            conn.execute(
+                "INSERT INTO advisor_clients (advisor_uid, client_uid, link_type, permission, status, label) "
+                "VALUES (?, ?, 'managed', 'read_write', 'active', 'Yo')", (asesor, self.yo))
+            conn.commit()
+        finally:
+            conn.close()
+        return asesor
 
     def test_se_guardan_y_vuelven_tal_cual(self):
         self.assertEqual(self._leer(), [])
@@ -100,16 +114,7 @@ class DibujosGraficoTest(unittest.TestCase):
         self.assertEqual(self._leer(), [H])
 
     def test_un_asesor_mirando_a_un_cliente_guarda_los_suyos(self):
-        conn = main.get_db()
-        try:
-            asesor = _usuario(conn, f"asesor-{uuid.uuid4().hex[:8]}@rendi.test", tier="advisor")
-            conn.execute("UPDATE users SET managed_by = ? WHERE id = ?", (asesor, self.yo))
-            conn.execute(
-                "INSERT INTO advisor_clients (advisor_uid, client_uid, link_type, permission, status, label) "
-                "VALUES (?, ?, 'managed', 'read_write', 'active', 'Yo')", (asesor, self.yo))
-            conn.commit()
-        finally:
-            conn.close()
+        asesor = self._asesor_de_yo()
         self._guardar([H])                                  # los del cliente, hechos por él
         r = self._guardar([T], uid=asesor, cliente=self.yo)
         self.assertEqual(r.status_code, 200, r.text)
@@ -144,6 +149,121 @@ class DibujosGraficoTest(unittest.TestCase):
                      [{**cor, "puntos": cor["puntos"] + cor["puntos"][:1]}],        # una corrección con 5
                      [{**imp, "forma": "triangulo"}]):
             self.assertEqual(self._guardar(malo).status_code, 422, malo)
+
+    def test_canal_y_pincel(self):
+        # El canal paralelo y el pincel (Nico, 29/10). El pincel lleva la
+        # fracción del lugar (`f`) para que el trazo no quede en escalones.
+        p = lambda m, x, **kw: {"d": f"2026-0{m}-01", "mas": 0, "precio": x, **kw}
+        canal = {"id": "k1", "tipo": "canal", "a": p(1, 100.0), "b": p(2, 120.0), "ancho": -8.5}
+        trazo = {"id": "p1", "tipo": "pincel", "puntos": [p(1, 100.0, f=0.25), p(1, 101.0, f=0.75), p(2, 99.0)]}
+        self.assertEqual(self._guardar([canal, trazo]).status_code, 200)
+        self.assertEqual(self._leer(), [canal, trazo])
+        largo = {**trazo, "puntos": [p(1, 100.0 + k / 10) for k in range(200)]}
+        self.assertEqual(self._guardar([largo]).status_code, 200, "200 puntos, el tope")
+        for malo in ([{**canal, "ancho": 0}],                                       # sin ancho no es canal
+                     [{**canal, "b": None}],
+                     [{**trazo, "puntos": trazo["puntos"][:1]}],                    # un punto no es un trazo
+                     [{**largo, "puntos": largo["puntos"] + largo["puntos"][:1]}],  # 201: más del tope
+                     [{**trazo, "puntos": [p(1, 100.0, f=1.0), p(2, 99.0)]}]):      # la fracción es < 1
+            self.assertEqual(self._guardar(malo).status_code, 422, malo)
+
+    def test_el_color_de_cada_dibujo(self):
+        # Nico, 29/10: el color que elegís queda guardado en el dibujo.
+        con_color = {**H, "id": "c1", "color": "ambar"}
+        self.assertEqual(self._guardar([con_color, H]).status_code, 200)
+        self.assertEqual(self._leer(), [con_color, H])
+        for malo in ("#ff0000", "magenta", ""):            # sólo los de la lista (un hex no sigue al tema)
+            self.assertEqual(self._guardar([{**H, "color": malo}]).status_code, 422, malo)
+
+    def test_las_notas_de_texto(self):
+        # Nico, 30/10: «compré acá por el balance», en un día y un precio.
+        nota = {"id": "n1", "tipo": "nota", "a": T["a"], "texto": "compré acá por el balance"}
+        self.assertEqual(self._guardar([H, nota]).status_code, 200)
+        self.assertEqual(self._leer(), [H, nota])
+        # Lo que escribís vuelve tal cual: emojis, comillas, HTML (la pantalla lo
+        # muestra como texto) y dos renglones.
+        raro = {**nota, "id": "n2", "color": "rosa",
+                "texto": 'Ojo 🚀👨‍👩‍👧 «el balance» "dijo" <b>no</b> & \'ya\'\nsegundo renglón'}
+        self.assertEqual(self._guardar([raro]).status_code, 200)
+        self.assertEqual(self._leer(), [raro])
+        # Hasta 280 letras: un emoji cuenta una (como la pantalla).
+        for ok in ("x" * 280, "🚀" * 280):
+            self.assertEqual(self._guardar([{**nota, "texto": ok}]).status_code, 200, len(ok))
+            self.assertEqual(self._leer()[0]["texto"], ok)
+        for malo in ([{**nota, "texto": "x" * 281}],
+                     [{**nota, "texto": ""}],                                       # sin texto no se guarda
+                     [{**nota, "texto": "  \n\t "}],
+                     [{k: v for k, v in nota.items() if k != "texto"}],
+                     [{k: v for k, v in nota.items() if k != "a"}],                 # sin día ni precio
+                     [{**nota, "texto": 5}],
+                     [{**nota, "a": {**T["a"], "precio": 0}}]):
+            self.assertEqual(self._guardar(malo).status_code, 422, malo)
+        # Lo invisible se limpia: caracteres de control, el salto de Windows,
+        # el tab, renglones vacíos de más y espacios en las puntas.
+        self._guardar([{**nota, "texto": "  a\x00b\x07\r\nc\td\n\n\n\n\ne  "}])
+        self.assertEqual(self._leer()[0]["texto"], "ab\nc d\n\ne")
+        # Otro dibujo no guarda texto suelto.
+        self._guardar([{**H, "texto": "no es una nota"}])
+        self.assertEqual(self._leer(), [H])
+        # Una nota que no se ve (sólo espacios raros o marcas invisibles) sería
+        # una banderita vacía: no se guarda. El U+0085 (pegado de Windows o un
+        # PDF) y la marca BOM se sacan, igual que en la pantalla.
+        for invisible in ("\u200b", "\u200b \u2060", "\x85", "\ufeff", "\u00a0\u3000"):
+            self.assertEqual(self._guardar([{**nota, "texto": invisible}]).status_code, 422, repr(invisible))
+        self._guardar([{**nota, "texto": "\x85\ufeffhola\x85"}])
+        self.assertEqual(self._leer()[0]["texto"], "hola")
+
+    def test_una_nota_con_medio_emoji_no_rompe_la_ficha(self):
+        # Un texto cortado a la mitad de un emoji llega con una «mitad» suelta.
+        # Si se guardara así, la respuesta no se podría escribir y la ficha
+        # perdería todos los dibujos de ese activo.
+        cuerpo = ('{"dibujos": [{"id": "h1", "tipo": "horizontal", "precio": 210.5},'
+                  ' {"id": "n1", "tipo": "nota", "a": {"d": "2026-03-02", "mas": 0, "precio": 180.25},'
+                  ' "texto": "subió \\ud83d"}], "notas": true}')
+        r = self.http.put("/api/tecnico/AAPL/dibujos?moneda=usd", content=cuerpo,
+                          headers={**self._h(), "Content-Type": "application/json"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual([d.get("texto") for d in self._leer()], [None, "subió"])
+
+    def test_una_pantalla_vieja_no_borra_tus_notas(self):
+        # Una pestaña abierta antes de que existieran las notas las descarta al
+        # leer y manda la lista entera sin ellas: las guardadas se quedan.
+        nota = {"id": "n1", "tipo": "nota", "a": T["a"], "texto": "compré acá"}
+        self._guardar([H, nota])
+        self.assertEqual(self._guardar([T], notas=False).status_code, 200)
+        self.assertEqual(self._leer(), [T, nota])
+        # Ni borrar todo desde ahí se lleva las notas; desde la de hoy, sí.
+        self._guardar([], notas=False)
+        self.assertEqual(self._leer(), [nota])
+        self._guardar([])
+        self.assertEqual(self._leer(), [])
+
+    def test_mirando_a_un_cliente_tus_notas_no_se_ven_ni_se_tocan(self):
+        asesor = self._asesor_de_yo()
+        mia = {"id": "n1", "tipo": "nota", "a": T["a"], "texto": "Juan compró acá por el balance"}
+        self._guardar([H, mia], uid=asesor)                      # en su propia cuenta
+        # Mirando a un cliente: sus líneas sí, la nota no.
+        self.assertEqual(self._leer(uid=asesor, cliente=self.yo), [H])
+        # Lo que guarda ahí no borra la nota (ni agrega notas nuevas).
+        otra = {**mia, "id": "n2", "texto": "nota sobre el cliente"}
+        self.assertEqual(self._guardar([T, otra], uid=asesor, cliente=self.yo).status_code, 200)
+        self.assertEqual(self._leer(uid=asesor), [T, mia])
+        # Y el cliente no ve nada del asesor.
+        self.assertEqual(self._leer(), [])
+
+    def test_las_notas_son_tuyas_y_no_son_lineas_con_aviso(self):
+        nota = {"id": "n1", "tipo": "nota", "a": T["a"], "texto": "mi idea"}
+        self._guardar([nota, H])
+        self.assertEqual(self._leer(uid=self.otro), [])
+        # «Alertas → Una línea que dibujaste» no ofrece las notas.
+        r = self.http.get("/api/tecnico/AAPL/lineas?moneda=usd", headers=self._h())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual([x["id"] for x in r.json()["lineas"]], ["h1"])
+        # Ni se les puede poner un aviso.
+        r = self.http.post("/api/alerts", headers=self._h(), json={
+            "kind": "tecnica", "senal": "linea", "symbol": "AAPL", "currency": "USD", "dibujo": "n1",
+            "channel": "both", "repeat": "once"})
+        self.assertNotEqual(r.status_code, 200, r.text)
 
     def test_lo_que_no_es_un_dibujo_se_rechaza(self):
         malos = [

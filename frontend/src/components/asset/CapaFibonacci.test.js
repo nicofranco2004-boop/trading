@@ -3,7 +3,8 @@
 //   · prendido de entrada: las rayas con su precio y la tarjeta en castellano;
 //   · el botón lo apaga (ni rayas ni tarjeta) y lo vuelve a prender;
 //   · sin tramo para medir: la tarjeta lo dice y no hay rayas de niveles.
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from 'vitest'
+import { CAPAS_TODAS } from './BarraGrafico'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscar, buscarBoton, clic } from '../../testing/navegadorMinimo'
 
@@ -26,6 +27,7 @@ const DATOS = (fibonacci) => ({
 
 let respuesta
 vi.mock('../../utils/api', () => ({
+  getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
   api: { get: vi.fn(() => Promise.resolve(respuesta)) },
 }))
 
@@ -37,6 +39,10 @@ beforeAll(async () => {
 afterAll(() => { vi.unstubAllGlobals() })
 
 let montado
+// De fábrica el gráfico viene limpio (precio, promedio de 200 y volumen). Estas
+// pruebas miran las demás capas: arrancan con todas prendidas, como quien las
+// prende desde «Indicadores» (lo que se prende queda guardado así).
+beforeEach(() => { try { localStorage.setItem('rendi_grafico_capas', JSON.stringify(CAPAS_TODAS)) } catch { /* sin almacenamiento */ } })
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null

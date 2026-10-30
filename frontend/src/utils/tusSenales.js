@@ -11,23 +11,23 @@ import { AVISO_OCULTO } from './ocultarSaldos'
 // Lo mismo, dicho igual en la Cartera (RadiografiaTecnica), el Panorama y
 // Señales (auditoría D12, 29/10: había tres frases para «Ocultar saldos», dos
 // títulos distintos y «la semana pasada» con y sin coma).
-export const TITULO_PLATA_ALCISTA = 'Tu plata en tendencia de fondo alcista'
-export const PLATA_ALCISTA_OCULTA = `Cuánto de tu plata está en tendencia de fondo alcista: ${AVISO_OCULTO.charAt(0).toLowerCase()}${AVISO_OCULTO.slice(1)}`
+export const TITULO_PLATA_ALCISTA = 'Tu cartera en tendencia alcista de largo plazo'
+export const PLATA_ALCISTA_OCULTA = `Qué parte de tu cartera está en tendencia alcista de largo plazo: ${AVISO_OCULTO.charAt(0).toLowerCase()}${AVISO_OCULTO.slice(1)}`
 // Los cambios incluyen la watchlist: «en lo tuyo» a secas hacía pensar que no.
-export const TITULO_CAMBIOS = 'Qué cambió esta semana en lo que tenés y en tu watchlist'
+export const TITULO_CAMBIOS = 'Qué cambió esta semana en tu cartera y en tu watchlist'
 export const QUE_ES_ESTA_SEMANA = 'Los últimos 7 días, contados desde hoy.'
 
 export const FILTROS = [
   { id: 'todo', label: 'Todo' },
-  { id: 'tenes', label: 'Lo que tenés' },
+  { id: 'tenes', label: 'Tu cartera' },
   { id: 'watchlist', label: 'Watchlist' },
 ]
 
 export const CANALES = [
   { id: 'mail', label: 'Mail' },
   { id: 'push', label: 'Notificación' },
-  { id: 'ambos', label: 'Las dos' },
-  { id: 'no', label: 'No quiero' },
+  { id: 'ambos', label: 'Mail y notificación' },
+  { id: 'no', label: 'No recibirlo' },
 ]
 
 export const NO_ES_RECOMENDACION = 'Muestra cómo se movieron los precios: no es una recomendación para comprar ni vender.'
@@ -65,14 +65,14 @@ const plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`
  *  saldos» no va: la proporción también es información de la cartera. */
 export function pesoTxt(peso, hidden) {
   if (hidden || peso == null) return null
-  return `${parteDeTuPlata(peso * 100)} de tu plata`
+  return `${parteDeTuPlata(peso * 100)} de tu cartera`
 }
 
 /** La línea de abajo de cada cambio: «Lo tenés · 12% de tu plata» / «En tu watchlist». */
 export function deQuien(s, hidden) {
   if (!s.tenes) return 'En tu watchlist'
   const p = pesoTxt(s.peso, hidden)
-  return p ? `Lo tenés · ${p}` : 'Lo tenés'
+  return p ? `En tu cartera · ${p}` : 'En tu cartera'
 }
 
 /** Las tres tarjetas de arriba. `datos` = la respuesta del servidor. */
@@ -84,10 +84,10 @@ export function tarjetas(datos, hidden) {
   const conCambios = datos?.tenes?.con_cambios || 0
 
   const tenes = {
-    titulo: 'En lo que tenés',
+    titulo: 'En tu cartera',
     valor: plural(tuyas.length, 'cambio', 'cambios'),
     texto: activos === 0
-      ? 'Todavía ninguno de tus activos tiene precios guardados para leer.'
+      ? 'Todavía no hay precios guardados de ninguno de tus activos.'
       // «Con precios al día», no «con lectura»: en el Panorama y la Cartera «sin
       // lectura» es «sin tendencia de fondo» (sin promedio de 200), y un papel de
       // 120 días se contaba acá y salía allá «sin lectura» (re-test A2, 29/10).
@@ -99,23 +99,21 @@ export function tarjetas(datos, hidden) {
   const watch = {
     titulo: 'En tu watchlist',
     valor: plural(deWatch.length, 'cambio', 'cambios'),
-    texto: !datos?.watchlist ? 'No seguís ningún activo todavía.'
-      : nombres.length ? nombres.join(', ') : 'Nada cambió en lo que seguís.',
+    texto: !datos?.watchlist ? 'Tu watchlist está vacía.'
+      : nombres.length ? nombres.join(', ') : 'Nada cambió en tu watchlist.',
   }
 
   const a = datos?.alcista
-  // Lo que se dio vuelta esta semana en lo tuyo: los cruces del promedio de 200.
-  const vueltas = tuyas.filter(s => s.tipo === 'media200')
-  const giro = vueltas.length
-    ? vueltas.map(s => `${s.asset} pasó a ${s.sentido === 'arriba' ? 'alcista' : 'bajista'}`).join(', ') + ' esta semana'
-    : null
+  // Lo que se dio vuelta esta semana en lo tuyo (los cruces del promedio de
+  // 200): la MISMA frase que «Qué lo movió» del Panorama, `queLoMovio`.
+  const giro = queLoMovio(datos, hidden)
   const plata = {
     titulo: TITULO_PLATA_ALCISTA,
     valor: !a ? '—' : hidden ? '••' : `${a.pct}%`,
     antes: a?.semana_pasada && !hidden ? antesConPct(a.semana_pasada, datos.hasta) : null,
     // Subió o bajó contra la semana pasada (el color del «antes»).
     tono: !a?.semana_pasada || hidden ? null : a.pct > a.semana_pasada.pct ? 'pos' : a.pct < a.semana_pasada.pct ? 'neg' : null,
-    texto: !a ? 'Ninguno de tus activos tiene todavía una tendencia de fondo para leer.'
+    texto: !a ? 'Ninguno de tus activos tiene todavía suficiente historia de precios para calcular su tendencia de largo plazo.'
       : hidden ? PLATA_ALCISTA_OCULTA
         : giro || 'Medido en dólares, con el último cierre.',
   }
@@ -136,9 +134,40 @@ export function antesConPct(sp, hasta) {
   return `${semanaPasadaTxt(sp, hasta)}, ${Math.round(sp.pct)}%`
 }
 
+/** El chip del Panorama contra la semana pasada: «▲ 8 puntos más que la semana
+ *  pasada» / «▼ 3 puntos menos que el sábado 17/10» / «Igual que la semana
+ *  pasada». `a`: el reparto del servidor (pct + semana_pasada). null sin semana
+ *  pasada o con «Ocultar saldos» (la diferencia también dice cuánto se movió tu
+ *  plata). → { texto, tono: 'pos' | 'neg' | null } */
+export function cambioContraAntes(a, hasta, hidden) {
+  const sp = a?.semana_pasada
+  if (hidden || a?.pct == null || !sp?.semana || sp.pct == null) return null
+  const d = Math.round(a.pct) - Math.round(sp.pct)
+  const cuando = semanaPasadaTxt(sp, hasta)
+  if (d === 0) return { texto: `Igual que ${cuando}`, tono: null }
+  const n = Math.abs(d)
+  return {
+    texto: `${d > 0 ? '▲' : '▼'} ${n} ${n === 1 ? 'punto' : 'puntos'} ${d > 0 ? 'más' : 'menos'} que ${cuando}`,
+    tono: d > 0 ? 'pos' : 'neg',
+  }
+}
+
+/** «GGAL (18% de tu cartera) pasó a alcista el jueves 29/10»: lo que se dio
+ *  vuelta esta semana en lo que tenés (los cruces del promedio de 200, lo único
+ *  que cambia de grupo a un activo). null si no se dio vuelta nada. Con
+ *  «Ocultar saldos», sin el peso. */
+export function queLoMovio(datos, hidden) {
+  const vueltas = (datos?.senales || []).filter(s => s.tenes && s.tipo === 'media200')
+  if (!vueltas.length) return null
+  return vueltas.map(s => {
+    const p = pesoTxt(s.peso, hidden)
+    return `${s.asset}${p ? ` (${p})` : ''} pasó a ${s.sentido === 'arriba' ? 'alcista' : 'bajista'} el ${diaLargo(s.fecha).toLowerCase()}`
+  }).join('; ') + '.'
+}
+
 /** El texto del botón: si escribiste una tesis, revisarla; si no, el gráfico. */
 export function boton(s) {
-  return s.tesis ? 'Revisar tu tesis' : 'Ver gráfico'
+  return s.tesis ? 'Revisar tu tesis' : 'Ver el gráfico'
 }
 
 /** A dónde lleva el botón: la ficha del activo (/activo/X), por el símbolo que

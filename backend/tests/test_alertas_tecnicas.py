@@ -280,7 +280,7 @@ class AlertasTecnicasTest(unittest.TestCase):
         ev = self._eventos()
         self.assertEqual(len(ev), 1, "el cruce de ayer avisa")
         self.assertEqual(ev[0]["message"],
-                         "MSFT pasó para arriba su promedio de 200 días: la tendencia de fondo se volvió alcista")
+                         "MSFT superó su promedio de 200 días: la tendencia de largo plazo pasó a ser alcista")
         self.assertEqual(ev[0]["delivered_email"], 1)
         self.assertEqual(ev[0]["delivered_push"], 1)
 
@@ -291,7 +291,7 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.assertEqual(m["asunto"], ev[0]["message"])
         self.assertIn("Hola Nico, ", m["texto"])
         self.assertIn("MSFT cerró en US$ 120,00 y su promedio de 200 días está en US$ ", m["texto"])
-        self.assertIn("la señal más usada de que la tendencia de fondo es alcista", m["texto"])
+        self.assertIn("la referencia más usada para decir que la tendencia de largo plazo es alcista", m["texto"])
         self.assertIn("no es una recomendación para comprar ni vender", m["texto"])
         self.assertIn("no es una recomendación para comprar ni vender", m["html"])
         self.assertIn("/activo/MSFT", m["html"])
@@ -331,15 +331,15 @@ class AlertasTecnicasTest(unittest.TestCase):
         self._cron()
         self.assertEqual((len(self.mails), len(self.pushes)), (1, 1))
         m, p = self.mails[0], self.pushes[0]
-        self.assertTrue(m["asunto"].startswith("[Juan] MSFT pasó para arriba"))
+        self.assertTrue(m["asunto"].startswith("[Juan] MSFT superó su promedio"))
         self.assertIn("Hola Laura, en la cuenta de Juan, ", m["texto"])
-        self.assertIn("la tendencia de fondo es alcista.\n", m["texto"],
+        self.assertIn("la tendencia de largo plazo es alcista.\n", m["texto"],
                       "la lectura termina en su punto, sin «, en la cuenta de Juan» pegado")
         self.assertIn("/clientes", m["html"])
         self.assertNotIn("/activo/MSFT", m["html"], "la ficha del asesor no es la de Juan")
         self.assertEqual(p["url"], "/clientes",
                          "el push abría «Mis alertas» del ASESOR, donde la alerta de Juan no está")
-        self.assertTrue(p["body"].startswith("[Juan] MSFT pasó para arriba"))
+        self.assertTrue(p["body"].startswith("[Juan] MSFT superó su promedio"))
         self.assertIn("no es una recomendación", p["body"])
 
     def _seguir_por_alerta_y_crear(self, hasta=None, **kw):
@@ -553,7 +553,7 @@ class AlertasTecnicasTest(unittest.TestCase):
         self._cron()
         ev = self._eventos()
         self.assertEqual(len(ev), 1)
-        self.assertTrue(ev[0]["message"].startswith("MSFT quedó abajo de su promedio de 200 días"))
+        self.assertTrue(ev[0]["message"].startswith("MSFT cayó por debajo de su promedio de 200 días"))
         self.assertIn(f"{dia.day}/{dia.month}", self.mails[0]["texto"], "el mail dice el día del cruce")
 
     def test_la_misma_alerta_dos_veces_no(self):
@@ -655,7 +655,7 @@ class AlertasTecnicasTest(unittest.TestCase):
         por = {e["kind"]: e for e in ev}
         self.assertTrue(por["price_target"]["message"].startswith("KO"), por["price_target"])
         self.assertEqual(sorted(e["message"][:40] for e in ev if e["kind"] == "tecnica"),
-                         ["MSFT pasó para arriba su promedio de 200", "MSFT subió hasta tu línea horizontal, en"])
+                         ["MSFT subió hasta tu línea horizontal, en", "MSFT superó su promedio de 200 días: la "])
         self.assertEqual(por["recordatorio"]["message"], "Quedaste en revisar tu tesis de NVDA")
         for e in ev:
             self.assertEqual((e["delivered_email"], e["delivered_push"]), (1, 1), e)
@@ -663,7 +663,7 @@ class AlertasTecnicasTest(unittest.TestCase):
         # ficha con el gráfico (el cruce, tu línea), el recordatorio la ficha con
         # tu tesis.
         self.assertEqual(sorted(p["url"] for p in self.pushes),
-                         ["/activo/MSFT", "/activo/MSFT", "/activo/NVDA", "/alertas?tab=mis"])
+                         ["/activo/MSFT", "/activo/MSFT?linea=h1&moneda=usd", "/activo/NVDA", "/alertas?tab=mis"])
         self.assertEqual(len(self.mails), 4)
 
     # — tu línea: «avisame si el precio toca esta línea» (Nico, 28/10) —
@@ -795,6 +795,215 @@ class AlertasTecnicasTest(unittest.TestCase):
         bajando = [{"date": "2026-10-01", "close": 104.0}, {"date": "2026-10-02", "close": 100.0}]
         self.assertEqual(tecnico.toque_de_linea(bajando, {"tipo": "horizontal", "precio": 102}, "2026-10-01")["sentido"], "abajo")
 
+    # — tu canal: «avisame si sale del canal» (Nico, 29/10) —
+    # Lo dibuja la ficha (PUT …/dibujos: la línea a → b y la paralela `ancho`
+    # más arriba) y el aviso sale del cartel del canal elegido, con por qué
+    # borde (`direction`) y cuándo cuenta (`modo`).
+
+    def _canal(self, ancho=10.0, id="c1", piso=95.0):
+        """Un canal plano de `piso` a `piso + ancho`: el precio en 100 va adentro."""
+        r = _ruedas(self.hoy, 30)
+        return {"id": id, "tipo": "canal", "a": {"d": r[-21].isoformat(), "mas": 0, "precio": piso},
+                "b": {"d": r[-11].isoformat(), "mas": 0, "precio": piso}, "ancho": ancho}
+
+    def test_canal_tocado_por_arriba_avisa_con_el_borde_del_dia(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer      # ayer: de 108,90 a 111,10, cierra 110
+        res = self._preparar_linea(self._canal(), dibujo="c1", direction="either")
+        g = self._alerta(res["id"])
+        self.assertEqual(g["direction"], "either")
+        self.assertEqual(ae.referencia_de_linea(g["dibujo"])["modo"], "toque")
+        self._noche(self.ayer)
+        self._cron()
+        ev = self._eventos()
+        self.assertEqual([e["message"] for e in ev], ["MSFT subió hasta el borde de arriba de tu canal, en US$ 105,00"])
+        texto = self.mails[0]["texto"]
+        self.assertIn("tocó el borde de arriba de tu canal, que ese día estaba en US$ 105,00", texto)
+        self.assertIn("fue de US$ 108,90 a US$ 111,10 y cerró en US$ 110,00. Es el canal que dibujaste", texto)
+        # El botón del mail y el push abren la ficha con el canal elegido.
+        self.assertIn("/activo/MSFT?linea=c1&amp;moneda=usd", self.mails[0]["html"])
+        self.assertEqual(self.pushes[0]["url"], "/activo/MSFT?linea=c1&moneda=usd")
+
+    def test_canal_pedido_por_abajo_no_avisa_si_sale_por_arriba(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        res = self._preparar_linea(self._canal(), dibujo="c1", direction="below")
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual(self._eventos(), [])
+        self.assertEqual(self._alerta(res["id"])["active"], 1)
+
+    def test_canal_que_baja_avisa_por_el_borde_de_abajo(self):
+        self.yahoo.precios["MSFT"] = lambda d: 90.0 if d >= self.ayer else 100.0
+        self._preparar_linea(self._canal(), dibujo="c1", direction="either")
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT bajó hasta el borde de abajo de tu canal, en US$ 95,00"])
+
+    def test_canal_si_cierra_afuera_no_avisa_un_toque_que_vuelve_adentro(self):
+        # Borde de arriba en 110,50: ayer lo tocó (máximo 111,10) pero cerró en 110.
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self._preparar_linea(self._canal(ancho=15.5), dibujo="c1", direction="either", modo="cierre")
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual(self._eventos(), [], "cerró adentro: con «si cierra afuera» no avisa")
+
+    def test_canal_que_cierra_afuera_avisa_con_el_cierre(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self._preparar_linea(self._canal(ancho=14.5), dibujo="c1", direction="above", modo="cierre")
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT cerró arriba de tu canal: US$ 110,00, con el borde en US$ 109,50"])
+        self.assertIn("cerró en US$ 110,00, arriba del borde de arriba de tu canal, que ese día estaba en US$ 109,50",
+                      self.mails[0]["texto"])
+
+    def test_canal_tocado_que_cierra_adentro_lo_dice(self):
+        # Pedido ANTEAYER: el toque de ayer es de un día entero posterior al
+        # pedido. Pedido ayer, ese toque que vuelve adentro podría ser de antes
+        # del pedido y no cuenta (`pedida_el`, al juntar con la auditoría chica,
+        # 30/10).
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self.client.post("/api/watchlist", json={"symbol": "MSFT"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._dibujar(self._canal(ancho=15.5))
+        body = {"kind": "tecnica", "symbol": "MSFT", "senal": "linea", "dibujo": "c1", "direction": "either",
+                "currency": "USD", "channel": "both", "repeat": "once"}
+        with self._el_dia(self.anteayer):
+            r = self.client.post("/api/alerts", json=body, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._noche(self.ayer)
+        self._cron()
+        self.assertIn("y cerró en US$ 110,00, o sea que volvió a quedar adentro.", self.mails[0]["texto"])
+
+    def test_salida_de_canal_no_avisa_cada_dia_que_sigue_afuera(self):
+        canal = {"tipo": "canal", "a": {"d": "2026-10-01", "mas": 0, "precio": 95},
+                 "b": {"d": "2026-10-02", "mas": 0, "precio": 95}, "ancho": 10}
+        afuera = [{"date": f"2026-10-0{d}", "close": c} for d, c in ((1, 108), (2, 109), (3, 110))]
+        self.assertIsNone(tecnico.salida_de_canal(afuera, canal, "2026-10-01"),
+                          "ya andaba afuera: avisa la próxima vez que salga, no cada día")
+        vuelve = afuera + [{"date": "2026-10-06", "close": 100}, {"date": "2026-10-07", "close": 106}]
+        self.assertEqual(tecnico.salida_de_canal(vuelve, canal, "2026-10-01")["fecha"], "2026-10-07")
+
+    # — lo que encontró la auditoría a ciegas del 29/10 —
+
+    def test_un_canal_anclado_antes_de_la_historia_guardada_sigue_vigilando(self):
+        # Las velas viejas se borran: el punto a (28/09) queda antes de la
+        # primera vela guardada. Antes daba None y el aviso se callaba.
+        velas = [{"date": d, "close": 100.0} for d in ("2026-10-05", "2026-10-06", "2026-10-07")]
+        canal = {"tipo": "canal", "a": {"d": "2026-09-28", "mas": 0, "precio": 90},
+                 "b": {"d": "2026-10-05", "mas": 0, "precio": 95}, "ancho": 10}
+        # De a (5 días hábiles antes) a b, sube 1 por día: el 07/10 está en 97..107.
+        self.assertEqual(tecnico.bordes_de_canal(velas, canal, 2), (97.0, 107.0))
+        sube = velas + [{"date": "2026-10-08", "close": 109.0}]
+        self.assertEqual(tecnico.salida_de_canal(sube, canal, "2026-10-07")["referencia"], 108.0)
+
+    def test_tocar_cuenta_tambien_con_el_cierre_si_el_maximo_vino_mal(self):
+        canal = {"tipo": "canal", "a": {"d": "2026-10-01", "mas": 0, "precio": 95},
+                 "b": {"d": "2026-10-02", "mas": 0, "precio": 95}, "ancho": 10}
+        velas = [{"date": "2026-10-01", "close": 100.0, "high": 101, "low": 99},
+                 {"date": "2026-10-02", "close": 106.0, "high": 104, "low": 99}]   # el máximo, parcial
+        self.assertEqual(tecnico.salida_de_canal(velas, canal, "2026-10-01")["sentido"], "arriba")
+        self.assertEqual(tecnico.toque_de_linea(velas, {"tipo": "horizontal", "precio": 105}, "2026-10-01")["fecha"], "2026-10-02")
+
+    def test_una_salida_vieja_por_velas_atrasadas_no_tapa_una_nueva(self):
+        r = _ruedas(self.hoy, 30)
+        vieja = r[-15]                       # más de una semana: llega tarde, no se avisa
+        self.yahoo.precios["MSFT"] = lambda d: 110.0 if d in (vieja, self.ayer) else 100.0
+        res = self._preparar_linea(self._canal(), dibujo="c1", direction="either")
+        # Velas atrasadas: el aviso quedó mirando desde antes de la salida vieja,
+        # y la vieja y la nueva llegan juntas.
+        with main.db_abierta() as conn:
+            ae._marcar_visto(conn, res["id"], "MSFT", r[-20].isoformat())
+            conn.commit()
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT subió hasta el borde de arriba de tu canal, en US$ 105,00"])
+
+    def test_los_precios_de_tu_linea_con_los_decimales_que_hacen_falta(self):
+        self.assertEqual(ae._fmt_linea(45.5, "ARS"), "$45,50")       # no «$46» al lado de un borde en «$45»
+        self.assertEqual(ae._fmt_linea(7350, "ARS"), "$7.350")
+        self.assertEqual(ae._fmt_linea(187.6, "USD"), "US$ 187,60")
+        self.assertEqual(ae._fmt_linea(0.00456, "USD"), "US$ 0,00456")   # una cripto de centavos, no «US$ 0,00»
+        r = ae.resumen_de_dibujo([{"date": "2026-10-01", "close": 0.0000098}, {"date": "2026-10-02", "close": 0.0000099}],
+                                 {"id": "h", "tipo": "horizontal", "precio": 0.00000975})
+        self.assertEqual((r["ultimo"], r["hoy"]), (0.0000099, [0.00000975]))
+
+    def test_reactivar_un_aviso_pausado_no_deja_dos_para_el_mismo_canal(self):
+        self.yahoo.precios["MSFT"] = lambda d: 100.0
+        self._noche(self.anteayer)
+        self._dibujar(self._canal())
+        a = self._crear_linea(dibujo="c1", direction="either")
+        self.assertIn("salga de este canal", self._crear_linea(dibujo="c1", direction="either", esperado=409)["detail"])
+        self.assertEqual(self.client.patch(f"/api/alerts/{a['id']}", json={"active": False}, headers=self.h).status_code, 200)
+        b = self._crear_linea(dibujo="c1", direction="above")     # pausado el primero, se puede armar otro
+        r = self.client.patch(f"/api/alerts/{a['id']}", json={"active": True}, headers=self.h)
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertEqual(self._alerta(a["id"])["active"], 0)
+        self.assertEqual(self._alerta(b["id"])["active"], 1)
+
+    def test_alertas_encuentra_tus_lineas_aunque_la_ficha_se_haya_abierto_como_ba(self):
+        self.yahoo.precios["MSFT"] = lambda d: 100.0
+        self._noche(self.anteayer)
+        self._dibujar(self._canal(), asset="MSFT.BA")              # la ficha abierta desde el buscador
+        lineas = self.client.get("/api/tecnico/MSFT/lineas?moneda=usd", headers=self.h).json()["lineas"]
+        self.assertEqual([(x["id"], x["asset"]) for x in lineas], [("c1", "MSFT.BA")])
+        # Y el alta, con ese activo, la encuentra.
+        body = {"kind": "tecnica", "symbol": "MSFT.BA", "senal": "linea", "dibujo": "c1", "currency": "USD",
+                "direction": "either", "channel": "both", "repeat": "once"}
+        r = self.client.post("/api/alerts", json=body, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(ae.referencia_de_linea(self._alerta(r.json()["id"])["dibujo"])["asset"], "MSFT.BA")
+
+    def test_el_alta_de_un_canal_y_cambiarle_el_borde_y_cuando_cuenta(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self._noche(self.anteayer)
+        self._dibujar(self._canal(), self._horizontal(130))
+        res = self._crear_linea(dibujo="c1", direction="above", modo="cierre")
+        g = self._alerta(res["id"])
+        self.assertEqual(g["direction"], "above")
+        self.assertEqual(ae.referencia_de_linea(g["dibujo"]),
+                         {"asset": "MSFT", "moneda": "usd", "id": "c1", "tipo": "canal", "modo": "cierre"})
+        r = self.client.patch(f"/api/alerts/{res['id']}", json={"direction": "either", "modo": "toque"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        g = self._alerta(res["id"])
+        self.assertEqual((g["direction"], ae.referencia_de_linea(g["dibujo"])["modo"]), ("either", "toque"))
+        # Una línea horizontal no tiene borde ni «cuándo cuenta»: avisa la toque de donde venga.
+        h = self._crear_linea(dibujo="h1", direction="above")
+        self.assertEqual(self._alerta(h["id"])["direction"], "either")
+        r = self.client.patch(f"/api/alerts/{h['id']}", json={"modo": "cierre"}, headers=self.h)
+        self.assertEqual(r.status_code, 400)
+        r = self.client.patch(f"/api/alerts/{h['id']}", json={"direction": "above"}, headers=self.h)
+        self.assertEqual(r.status_code, 400)
+
+    def test_mis_alertas_sabe_donde_esta_hoy_cada_linea_y_cual_borraste(self):
+        self.yahoo.precios["MSFT"] = lambda d: 100.0
+        self.client.post("/api/watchlist", json={"symbol": "MSFT"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._dibujar(self._canal(), self._horizontal(130))
+        c = self._crear_linea(dibujo="c1", direction="either")
+        h = self._crear_linea(dibujo="h1")
+        r = self.client.get("/api/alerts/lineas", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        lineas = r.json()["lineas"]
+        self.assertEqual(lineas[str(c["id"])]["hoy"], [95.0, 105.0])
+        self.assertEqual(lineas[str(c["id"])]["ultimo"], 100.0)
+        self.assertEqual(len(lineas[str(c["id"])]["lineas"]), 2, "los dos bordes del canal")
+        self.assertEqual(lineas[str(h["id"])]["hoy"], [130])
+        self.assertEqual(len(lineas[str(h["id"])]["serie"]), len(lineas[str(h["id"])]["lineas"][0]))
+        # Borraste el canal (la ficha guarda la lista sin él).
+        self._dibujar(self._horizontal(130))
+        lineas = self.client.get("/api/alerts/lineas", headers=self.h).json()["lineas"]
+        self.assertEqual(lineas[str(c["id"])], {"borrada": True})
+        # Y el formulario de Alertas ofrece tus líneas del activo (no un Fibonacci).
+        self._dibujar(self._canal(), self._horizontal(130),
+                      {"id": "f1", "tipo": "fibonacci", "a": {"d": self.anteayer.isoformat(), "mas": 0, "precio": 90},
+                       "b": {"d": self.anteayer.isoformat(), "mas": 3, "precio": 110}})
+        r = self.client.get("/api/tecnico/MSFT/lineas?moneda=usd", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual([(x["id"], x["tipo"], x["hoy"]) for x in r.json()["lineas"]],
+                         [("c1", "canal", [95.0, 105.0]), ("h1", "horizontal", [130])])
+
     # — auditoría chica de la integración (30/10), sobre lo que trajo la barra
     # lateral (ae7b8636) y ninguna auditoría había revisado —
 
@@ -916,13 +1125,30 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.assertIn("ya no está", r.json()["detail"])
         self.assertEqual(self._alerta(res["id"])["active"], 0)
 
-    def test_el_toque_que_vale_es_el_ultimo(self):
+    def test_un_toque_viejo_no_tapa_el_nuevo_de_tu_linea(self):
         """Si llegan muchas velas juntas (Yahoo atrasado), el primer toque puede
-        ser viejo y descartarse; el de anteayer, que sí es noticia, se perdía."""
+        ser viejo y el motor lo descarta; el de anteayer, que sí es noticia, se
+        perdía. El motor vuelve a buscar DESDE el viejo (`_evaluar_una_tecnica`),
+        el mismo mecanismo que el canal (al juntar la barra, 30/10: lo habían
+        arreglado las dos ramas, cada una a su manera; quedó uno)."""
         velas = [{"date": f"2026-10-{d:02d}", "close": c, "high": c + 1, "low": c - 1}
                  for d, c in [(1, 90.0), (2, 100.0), (3, 90.0), (15, 90.0), (16, 100.0)]]
-        ev = tecnico.toque_de_linea(velas, {"tipo": "horizontal", "precio": 100}, "2026-10-01")
-        self.assertEqual(ev["fecha"], "2026-10-16")
+        linea = {"tipo": "horizontal", "precio": 100}
+        self.assertEqual(tecnico.toque_de_linea(velas, linea, "2026-10-01")["fecha"], "2026-10-02")
+        self.assertEqual(tecnico.toque_de_linea(velas, linea, "2026-10-02")["fecha"], "2026-10-16")
+
+    def test_el_dia_que_pedis_el_aviso_del_canal_cuenta_por_el_cierre(self):
+        """Lo mismo que la línea (propagado al juntar, 30/10): el día del pedido,
+        en modo «toque», un máximo que llegó al borde ANTES de pedirlo no avisa;
+        un cierre afuera sí."""
+        canal = {"tipo": "canal", "a": {"d": "2026-10-01", "mas": 0, "precio": 100},
+                 "b": {"d": "2026-10-02", "mas": 0, "precio": 100}, "ancho": 10}
+        quieto = [{"date": "2026-10-01", "close": 105.0, "high": 106, "low": 104},
+                  {"date": "2026-10-02", "close": 105.0, "high": 110.5, "low": 104}]
+        self.assertIsNotNone(tecnico.salida_de_canal(quieto, canal, "2026-10-01"))
+        self.assertIsNone(tecnico.salida_de_canal(quieto, canal, "2026-10-01", pedida_el="2026-10-02"))
+        afuera = [quieto[0], {"date": "2026-10-02", "close": 111.0, "high": 112, "low": 104}]
+        self.assertIsNotNone(tecnico.salida_de_canal(afuera, canal, "2026-10-01", pedida_el="2026-10-02"))
 
 
 class SenalesTest(unittest.TestCase):

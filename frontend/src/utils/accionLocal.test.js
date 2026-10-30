@@ -25,7 +25,7 @@ describe('lo que seguís: Tu lista, la ficha sin tenencia y la alerta técnica, 
     it(c.por_que, () => {
       const { asset, local } = lecturaDeSeguido(c.simbolo, c.tipo)
       expect({ asset, local }).toEqual({ asset: c.asset, local: c.local })
-      // «Ver gráfico» abre la ficha: la mira con la misma regla (y el mismo tipo).
+      // «Ver el gráfico» abre la ficha: la mira con la misma regla (y el mismo tipo).
       expect(miradaSinTenencia(c.simbolo, c.tipo).accionLocal).toBe(c.local)
       // Una alerta técnica creada desde Alertas sin tenerlo mira la misma serie
       // que la ficha a la que lleva el mail (re-test A1a, 29/10).

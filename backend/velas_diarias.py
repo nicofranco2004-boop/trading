@@ -1013,3 +1013,156 @@ def ultima_vela(conn, ticker: str):
     desde = (date.fromisoformat(row["d"]) - timedelta(days=15)).isoformat()
     velas = serie(conn, ticker, desde)
     return velas[-1] if velas else None
+
+
+# ─── La vela de HOY, mientras se mueve ──────────────────────────────────────
+# Todo lo de arriba guarda ruedas CERRADAS, una vez por noche, y la de hoy se
+# tira (`_velas_de`). La ficha igual quiere ver la rueda que se está moviendo:
+# se le pide a Yahoo en el momento y NO se guarda en la tabla (mañana a la
+# noche entra completa por la puerta de siempre). Se piden las ruedas de los
+# últimos días, no sólo la de hoy: entre las 21 y la corrida de la noche, el día
+# de una cripto (UTC) ya es «mañana» y la de «hoy» todavía no se guardó; sin
+# ella, la de mañana quedaba pegada a la de anteayer (auditoría 30/10).
+#
+# Una tanda por ticker, en memoria 60 s y compartida entre todos: si 200
+# personas miran Apple, Yahoo recibe un pedido por minuto. Es el mismo plazo que
+# los precios (`_PRICE_CACHE` en main.py, `_QUOTE_CACHE` en home/market.py):
+# pedir más seguido no trae nada más nuevo. Y si 100 personas piden a la vez
+# justo cuando venció, sale UN pedido y los demás esperan su respuesta
+# (`_en_curso_bajando`): antes salían 100.
+VELA_EN_CURSO_TTL_S = 60
+# Lo máximo que un pedido espera a otro que está bajando el mismo ticker (el que
+# baja tiene tope de 8 s por Yahoo, dos veces con el plan B de las horas).
+ESPERA_OTRO_SEG = 20.0
+# Cuántos minutos tarda en llegar por Yahoo el precio de cada rueda. BYMA: el
+# 30/10 el primer dato de la rueda (11:00 a 11:05) apareció a las 11:20, y
+# TradingView gratis la da igual (`delayed_streaming_1200`). La pantalla lo dice
+# (la hora del pedido no es la del precio) y `en_rueda` la cuenta. La misma
+# cuenta que las velas de 1 y 4 horas (velas_horarias): una sola.
+DEMORA_MIN = {"byma": 20}
+_en_curso: dict = {}          # ticker → (time.time() de la respuesta, tanda | None)
+_en_curso_bajando: dict = {}  # ticker → threading.Event mientras alguien lo baja
+_en_curso_lock = threading.Lock()
+
+
+def en_rueda(ticker: str, ahora: datetime = None) -> bool:
+    """¿La rueda de `ticker` todavía manda precios nuevos? En horario
+    (`alerts_engine.rueda_en_horario`, LA definición del horario) contando la
+    demora con que llegan (`DEMORA_MIN`): BYMA cierra a las 17, pero lo de 16:40
+    a 17 llega hasta las 17:20. Es LA cuenta para las dos cosas que dependen de
+    eso: si se arma la vela con las de 1 hora y si la pantalla sigue pidiendo
+    (antes eran dos relojes distintos y el plan B se apagaba a las 17)."""
+    from alerts_engine import rueda_en_horario
+    from home.market import mercado_de
+    m = mercado_de(ticker)
+    ahora = ahora or datetime.now(timezone.utc)
+    return rueda_en_horario(m, ahora - timedelta(minutes=DEMORA_MIN.get(m, 0)))
+
+
+def _ohlcv(row):
+    o, h, l, c = (_numero(row.get(k)) for k in ('Open', 'High', 'Low', 'Close'))
+    v = _numero(row.get('Volume'))
+    return o if o and o > 0 else None, h, l, c, v if v and v >= 0 else None
+
+
+def _sana(h, l, c) -> bool:
+    # La misma regla que `_velas_de`, pero acá sin rebaja: una vela en curso con
+    # el máximo roto no se dibuja (no hay noche siguiente que la complete).
+    return bool(c and h and l and h >= c >= l > 0)
+
+
+def _vela(fecha, o, h, l, c, v) -> dict:
+    return {"date": fecha, "open": o, "high": h, "low": l, "close": c, "volume": v}
+
+
+def _diarias(df) -> list:
+    """Las ruedas sanas de una tabla diaria de Yahoo, de la más vieja a la más
+    nueva. La fecha es la del mercado: el índice viene con su zona horaria."""
+    if df is None or getattr(df, 'empty', True):
+        return []
+    out = {}
+    for idx, row in df.iterrows():
+        o, h, l, c, v = _ohlcv(row)
+        if _sana(h, l, c):
+            f = idx.date().isoformat()
+            out[f] = _vela(f, o, h, l, c, v)
+    return [out[f] for f in sorted(out)]
+
+
+def _de_las_horas(df, hoy: str):
+    """La vela del día armada con las de 1 hora: la apertura de la primera, el
+    máximo y el mínimo de todas, el cierre de la última, el volumen sumado. Es
+    el plan B cuando la diaria viene vacía: con los '.BA' pasa (04/08: la barra
+    del día con volumen y los cuatro precios en NaN), y la de cada hora vino
+    bien (medido 30/10 con AAPL.BA y GGAL.BA)."""
+    if df is None or getattr(df, 'empty', True):
+        return None
+    horas = [f for f in (_ohlcv(row) for idx, row in df.iterrows() if idx.date().isoformat() == hoy)
+             if _sana(f[1], f[2], f[3])]
+    if not horas:
+        return None
+    vols = [f[4] for f in horas if f[4] is not None]
+    return _vela(hoy, horas[0][0], max(f[1] for f in horas), min(f[2] for f in horas),
+                 horas[-1][3], sum(vols) if vols else None)
+
+
+def _bajar_en_curso(ticker: str):
+    from pricing import yahoo as _yahoo
+    from home.market import session_today
+    hoy = session_today(ticker)
+
+    def bajar(intervalo):
+        try:
+            return _yahoo.con_tope(_yahoo._historia, ticker, '5d', intervalo, False, 8.0,
+                                   que=f"vela en curso {ticker} {intervalo}")
+        except Exception as ex:
+            log.info("vela en curso de %s (%s): %s", ticker, intervalo, ex)
+            return None
+
+    ruedas = [r for r in _diarias(bajar('1d')) if r["date"] <= hoy]
+    # Las de 1 hora sólo con la rueda mandando precios: antes de la apertura
+    # no hay ninguna de hoy, y serían dos pedidos por minuto para nada.
+    if (not ruedas or ruedas[-1]["date"] != hoy) and en_rueda(ticker):
+        armada = _de_las_horas(bajar('1h'), hoy)
+        if armada:
+            ruedas.append(armada)
+    if not ruedas:
+        return None
+    return {"hoy": hoy, "ruedas": ruedas,
+            "actualizada": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+
+
+def ruedas_recientes(ticker: str):
+    """Las ruedas de los últimos días de `ticker` (el de Yahoo, como en la
+    tabla), con la de HOY mientras se mueve: {hoy, ruedas: [{date, open, high,
+    low, close, volume}], actualizada} o None (Yahoo sin dato). `hoy` es el día
+    de SU mercado (`home.market.session_today`: el UTC para una cripto). Quien
+    las dibuja decide cuáles ya están guardadas. Nunca se guardan en
+    `velas_diarias`, y lo que devuelve es compartido: no se modifica."""
+    t = (ticker or '').strip().upper()
+    if not t:
+        return None
+    with _en_curso_lock:
+        e = _en_curso.get(t)
+        if e and time.time() - e[0] < VELA_EN_CURSO_TTL_S:
+            return e[1]
+        bajando = _en_curso_bajando.get(t)
+        if bajando is None:
+            bajando = _en_curso_bajando[t] = threading.Event()
+            soy_yo = True
+        else:
+            soy_yo = False
+    if not soy_yo:
+        bajando.wait(ESPERA_OTRO_SEG)
+        with _en_curso_lock:
+            e = _en_curso.get(t)
+        return e[1] if e else None
+    tanda = None
+    try:
+        tanda = _bajar_en_curso(t)
+    finally:
+        with _en_curso_lock:
+            _en_curso[t] = (time.time(), tanda)
+            _en_curso_bajando.pop(t, None)
+        bajando.set()
+    return tanda

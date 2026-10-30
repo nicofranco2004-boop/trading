@@ -103,16 +103,23 @@ export function textoMedicion(m) {
  *   · balance: cuándo lo presentó y cuánto se movió el precio con eso;
  *   · dividendo: cuánto pagó por acción y cuánto se movió el día de corte.
  */
+// Una sola manera de decirlo, en el globo de un dividendo y en el de varios.
+export const SIN_DIVIDENDO_DESDE_EL_CORTE = 'Quien compra desde el día de corte ya no cobra este dividendo.'
+
 export function textoEvento(e) {
   const r = e.reaccion
   const mov = r ? pctConSigno(r.pct) : null
   if (e.tipo === 'balance') {
     const lineas = []
+    // Lo declarado contra lo esperado (Nico, 29/10): la ganancia por acción
+    // (lo que ganó la empresa en el trimestre, dividido por sus acciones).
+    const eps = textoGananciaPorAccion(e)
+    if (eps) lineas.push(eps)
     if (e.momento === 'despues_del_cierre') {
-      lineas.push('Lo presentó con el mercado ya cerrado.')
-      lineas.push(mov ? `Al otro día el precio: ${mov}` : 'Todavía no hay precio del día siguiente.')
+      lineas.push('Presentó resultados después del cierre del mercado.')
+      lineas.push(mov ? `Al día siguiente, el precio: ${mov}` : 'Todavía no hay precio del día siguiente.')
     } else if (e.momento === 'antes_del_cierre') {
-      lineas.push('Lo presentó antes del cierre de ese día.')
+      lineas.push('Presentó resultados antes del cierre del mercado.')
       lineas.push(mov ? `Ese día el precio: ${mov}` : 'No hay precio de ese día.')
     } else {
       lineas.push(mov ? `Entre ese día y el siguiente, el precio: ${mov}` : 'No hay precio de esos días.')
@@ -122,11 +129,44 @@ export function textoEvento(e) {
   const lineas = []
   if (e.monto > 0) {
     const m = e.monto.toLocaleString('es-AR', { maximumSignificantDigits: 4 })
-    lineas.push(`Pagó ${e.moneda === 'ars' ? '$' : 'US$'} ${m} por acción.`)
+    // Qué parte del precio de ese día fue (sólo si el precio está en la misma
+    // moneda que el dividendo: si no, sería mezclar pesos con dólares).
+    const parte = e.rendimiento > 0 ? `: el ${pctSinSigno(e.rendimiento)} de lo que valía la acción ese día` : ''
+    lineas.push(`Pagó ${e.moneda === 'ars' ? '$' : 'US$'} ${m} por acción${parte}.`)
+    if (e.anterior > 0) lineas.push(comparadoConElAnterior(e.monto, e.anterior, e.moneda))
   }
-  lineas.push('Desde el día de corte, el que compra ya no cobra ese pago.')
+  lineas.push(SIN_DIVIDENDO_DESDE_EL_CORTE)
   if (mov) lineas.push(`Ese día el precio: ${mov}`)
   return { titulo: `Dividendo · día de corte ${fechaCorta(e.fecha)}`, lineas }
+}
+
+// Con centavos (los dividendos y la ganancia por acción son de centavos; `plata` redondea).
+const centavos = (x, moneda) => `${moneda === 'ars' ? '$' : 'US$'} ${Math.abs(x).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+const pctSinSigno = (x) => `${Math.abs(x).toLocaleString('es-AR', { maximumFractionDigits: Math.abs(x) < 1 ? 2 : 1 })}%`
+// «una ganancia de US$ 1,65» o «una pérdida de US$ 0,12».
+const resultado = (x, moneda) => (x < 0 ? `una pérdida de ${centavos(x, moneda)}` : `una ganancia de ${centavos(x, moneda)}`)
+
+/**
+ * La línea de lo declarado contra lo esperado de un balance, o null si no se
+ * sabe. «Declaró una ganancia de US$ 1,65 por acción; se esperaba US$ 1,50:
+ * 10% más de lo esperado.» Describe lo que pasó; no anticipa nada.
+ */
+export function textoGananciaPorAccion(e) {
+  const dec = e.eps_declarado, esp = e.eps_esperado
+  if (dec == null && esp == null) return null
+  if (dec == null) return `Se esperaba ${resultado(esp, e.moneda)} por acción.`
+  if (esp == null) return `Declaró ${resultado(dec, e.moneda)} por acción.`
+  const sorpresa = e.sorpresa_pct != null ? e.sorpresa_pct : (esp !== 0 ? ((dec - esp) / Math.abs(esp)) * 100 : null)
+  const cuanto = sorpresa == null || Math.abs(sorpresa) < 0.5 ? 'lo mismo que se esperaba'
+    : `${pctSinSigno(sorpresa)} ${sorpresa > 0 ? 'más' : 'menos'} de lo esperado`
+  return `Declaró ${resultado(dec, e.moneda)} por acción; se esperaba ${centavos(esp, e.moneda)}${esp < 0 ? ' de pérdida' : ''}: ${cuanto}.`
+}
+
+/** «El anterior: US$ 0,24 (este es 8% más).» */
+function comparadoConElAnterior(monto, anterior, moneda) {
+  const dif = ((monto - anterior) / anterior) * 100
+  if (Math.abs(dif) < 0.5) return `Igual que el anterior (${centavos(anterior, moneda)}).`
+  return `El anterior: ${centavos(anterior, moneda)} (este es ${pctSinSigno(dif)} ${dif > 0 ? 'más' : 'menos'}).`
 }
 
 /**
@@ -136,20 +176,27 @@ export function textoEvento(e) {
  */
 export function textoGrupo(eventos = []) {
   if (eventos.length === 1) return textoEvento(eventos[0])
-  const balances = eventos[0]?.tipo === 'balance'
+  // Balances y dividendos pueden ir juntos en una marca (una sola fila sobre
+  // las fechas): cada renglón dice el suyo.
+  const tipos = new Set(eventos.map(e => e.tipo))
   const lineas = eventos.map(e => {
     const r = e.reaccion ? pctConSigno(e.reaccion.pct) : null
-    if (balances) {
-      const cuando = e.momento === 'despues_del_cierre' ? 'al otro día' : e.momento === 'antes_del_cierre' ? 'ese día' : 'en dos días'
-      return `${fechaCorta(e.fecha)}: ${r ? `${cuando} ${r}` : 'sin precio para comparar'}`
+    if (e.tipo === 'balance') {
+      const cuando = e.momento === 'despues_del_cierre' ? 'al día siguiente' : e.momento === 'antes_del_cierre' ? 'ese día' : 'en dos días'
+      const sorpresa = e.sorpresa_pct != null && Math.abs(e.sorpresa_pct) >= 0.5
+        ? ` · ${pctSinSigno(e.sorpresa_pct)} ${e.sorpresa_pct > 0 ? 'más' : 'menos'} de lo esperado` : ''
+      const quien = tipos.size > 1 ? 'balance · ' : ''   // sólo si hay de los dos tipos en la marca
+      return `${fechaCorta(e.fecha)}: ${quien}${r ? `${cuando} ${r}` : 'sin precio para comparar'}${sorpresa}`
     }
     const monto = e.monto > 0
       ? `pagó ${e.moneda === 'ars' ? '$' : 'US$'} ${e.monto.toLocaleString('es-AR', { maximumSignificantDigits: 4 })}`
       : 'dividendo'
     return `${fechaCorta(e.fecha)}: ${monto}${r ? ` · ese día ${r}` : ''}`
   })
-  if (!balances) lineas.push('Por acción. Desde el día de corte, el que compra ya no cobra ese pago.')
-  return { titulo: `${eventos.length} ${balances ? 'balances' : 'dividendos'}`, lineas }
+  if (tipos.has('dividendo')) lineas.push(`Por acción. ${SIN_DIVIDENDO_DESDE_EL_CORTE}`)
+  const titulo = tipos.size > 1 ? `${eventos.length} balances y dividendos`
+    : `${eventos.length} ${tipos.has('balance') ? 'balances' : 'dividendos'}`
+  return { titulo, lineas }
 }
 
 // ─── «Cuánto se mueve este papel» ───────────────────────────────────────────
@@ -181,7 +228,7 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
     })
   } else {
     out.push({ id: 'caida', titulo: 'Su peor caída', tono: 'neutro', veredicto: 'No tuvo',
-      texto: 'En este período nunca cerró por debajo de un máximo anterior.' })
+      texto: 'En este período nunca cerró por debajo de un máximo anterior: no tuvo caídas.' })
   }
 
   const dm = m.desde_el_maximo
@@ -204,12 +251,12 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
 
   const d = m.dia_normal
   if (d) {
-    const partes = [`Es lo que sube o baja en un día típico.`]
+    const partes = [`Es cuánto subió o bajó en un día típico.`]
     if (d.sp500_desvio_pct != null && d.veces_el_sp500 != null) {
       const v = d.veces_el_sp500
       const cuanto = v >= 1.15 ? `se mueve ${v.toLocaleString('es-AR', { maximumFractionDigits: 1 })} veces lo que el S&P 500`
         : v <= 0.87 ? 'se mueve menos que el S&P 500' : 'se mueve parecido al S&P 500'
-      partes.push(`El S&P 500 (las 500 empresas más grandes de EE.UU.) se mueve ±${num1(d.sp500_desvio_pct)}% en ${moneda === 'ars' ? 'pesos' : 'dólares'}: este papel ${cuanto}.`)
+      partes.push(`El S&P 500 (las 500 empresas más grandes de EE.UU.) se mueve ±${num1(d.sp500_desvio_pct)}% en ${moneda === 'ars' ? 'pesos' : 'dólares'}: este activo ${cuanto}.`)
     }
     if (d.dias_malos > 0) {
       const cada = Math.round(d.dias / d.dias_malos)
@@ -218,15 +265,15 @@ export function tarjetasMovimiento(m, { moneda = 'usd', precio = String, tenenci
     // Del último año, como «su día normal del último año» de la tarjeta «Cuánto
     // se mueve»: es el MISMO número (movimiento.dia_normal usa la cuenta de la
     // lectura), aunque el resto de esta sección mire 2 años (A5, 29/10).
-    out.push({ id: 'dia', titulo: 'Un día normal del último año', tono: 'neutro', veredicto: `±${num1(d.desvio_pct)}%`, texto: partes.join(' ') })
+    out.push({ id: 'dia', titulo: 'Un día típico del último año', tono: 'neutro', veredicto: `±${num1(d.desvio_pct)}%`, texto: partes.join(' ') })
 
     if (tenencia?.valor > 0) {
       const mueve = -tenencia.valor * d.desvio_pct / 100
-      const partesT = [`Lo que te mueve un día malo normal de este papel (una baja de ${num1(d.desvio_pct)}%).`]
+      const partesT = [`Cuánto cambiaría tu inversión en un día de baja típico de este activo (una caída de ${num1(d.desvio_pct)}%).`]
       if (oculto) {
         out.push({ id: 'cartera', titulo: 'En tu cartera', tono: 'neutro', veredicto: OCULTO, texto: `${partesT[0]} ${AVISO_OCULTO}` })
       } else if (peso > 0 && peso <= 1) {
-        partesT.push(`${esElDeTuCartera(peso * 100)}: a toda tu cartera ese día la mueve ${pctConSigno(-peso * d.desvio_pct)}.`)
+        partesT.push(`${esElDeTuCartera(peso * 100)}: ese día, tu cartera completa cambiaría ${pctConSigno(-peso * d.desvio_pct)}.`)
       }
       if (!oculto) out.push({ id: 'cartera', titulo: 'En tu cartera', tono: 'neutro', veredicto: plata(mueve, moneda), texto: partesT.join(' ') })
     }

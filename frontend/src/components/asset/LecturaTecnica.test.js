@@ -5,9 +5,11 @@
 //     de la ficha;
 //   · en pesos, el aviso de que el dólar cambia la lectura;
 //   · sin velas (o si el pedido falla): el gráfico de 30 días de siempre.
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from 'vitest'
+import { CAPAS_TODAS } from './BarraGrafico'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscar, buscarBoton, clic, enActo } from '../../testing/navegadorMinimo'
+import { elegirEnLaVista, opcionesDeLaVista, periodoElegido } from '../../testing/menuGrafico'
 
 function puntos(n, f) {
   return Array.from({ length: n }, (_, i) => ({
@@ -36,6 +38,7 @@ const CON_FUERZA = {
 
 let respuestas
 vi.mock('../../utils/api', () => ({
+  getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
   api: {
     get: vi.fn((ruta) => {
       const clave = Object.keys(respuestas).find(k => ruta.startsWith(k))
@@ -45,6 +48,19 @@ vi.mock('../../utils/api', () => ({
   },
 }))
 
+// Cada dibujo de la vela viva (para ver lo que pasa ENTRE dos pintadas, que
+// desde afuera no se ve): el precio de la última vela si es viva, o null.
+const espia = vi.hoisted(() => ({ dibujadas: [] }))
+vi.mock('../../utils/tecnico', async (original) => {
+  const m = await original()
+  return { ...m, sumarVelaDeHoy: (a) => {
+    const r = m.sumarVelaDeHoy(a)
+    const u = r.puntos[r.puntos.length - 1]
+    espia.dibujadas.push(u?.vivo ? u.c : null)
+    return r
+  } }
+})
+
 let LecturaTecnica, ladoGlobo
 beforeAll(async () => {
   instalarNavegadorMinimo()
@@ -53,6 +69,10 @@ beforeAll(async () => {
 afterAll(() => { vi.unstubAllGlobals() })
 
 let montado
+// De fábrica el gráfico viene limpio (precio, promedio de 200 y volumen). Estas
+// pruebas miran las demás capas: arrancan con todas prendidas, como quien las
+// prende desde «Indicadores» (lo que se prende queda guardado así).
+beforeEach(() => { try { localStorage.setItem('rendi_grafico_capas', JSON.stringify(CAPAS_TODAS)) } catch { /* sin almacenamiento */ } })
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
@@ -128,11 +148,11 @@ describe('LecturaTecnica', () => {
   it('en pesos avisa que el dólar cambia la lectura', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     await dibujar({ pnlPctUsd: 0.1 })
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos'))
+    await elegirEnLaVista(montado.contenedor, 'Pesos')
     // Pesos se piden recién ahora: que vuelva el pedido.
     for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     const t = texto(montado.contenedor)
-    expect(t).toContain('En pesos la tendencia es otra que en dólares')
+    expect(t).toContain('En pesos, la tendencia es distinta que en dólares')
     expect(t).toContain('Alcista')
   })
 
@@ -163,8 +183,8 @@ describe('LecturaTecnica', () => {
     await montado.desmontar(); montado = null
     t = await dibujar({ pnlPctUsd: 0.4, pnlPctLinea: null, lineaSinTc: true })
     expect(botonDe('prom').getAttribute('aria-disabled')).toBe('true')
-    expect(texto(botonDe('prom'))).toContain('A alguna de tus compras le falta el dólar de ese día')
-    expect(t).toContain('le falta el dólar de ese día')
+    expect(texto(botonDe('prom'))).toContain('A alguna de tus compras le falta la cotización del dólar de ese día')
+    expect(t).toContain('le falta la cotización del dólar de ese día')
   })
 
   it('tus compras y ventas: sin ninguna, el botón deshabilitado con el porqué', async () => {
@@ -190,14 +210,17 @@ describe('LecturaTecnica', () => {
     montado = await montar(el())
     for (let i = 0; i < 4; i++) await montado.redibujar(el())
     const todos = () => api.get.mock.calls.map(c => c[0]).filter(r => r.startsWith('/tecnico'))
-    const pedidos = () => todos().filter(r => !r.includes('/eventos') && !r.includes('/dibujos'))
+    const pedidos = () => todos().filter(r => !r.includes('/eventos') && !r.includes('/dibujos') && !r.includes('/hoy'))
     expect(pedidos()).toEqual(['/tecnico/GGAL?moneda=usd&local=1'])
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos'))
+    await elegirEnLaVista(montado.contenedor, 'Pesos')
     for (let i = 0; i < 4; i++) await montado.redibujar(el())
     expect(pedidos()).toEqual(['/tecnico/GGAL?moneda=usd&local=1', '/tecnico/GGAL?moneda=ars&local=1'])
     // Los balances y dividendos, también por moneda y con la acción local.
     expect(todos().filter(r => r.includes('/eventos'))).toEqual(
       ['/tecnico/GGAL/eventos?moneda=usd&local=1', '/tecnico/GGAL/eventos?moneda=ars&local=1'])
+    // La vela de hoy, igual: de la moneda que se ve y con la acción local.
+    expect([...new Set(todos().filter(r => r.includes('/hoy')))]).toEqual(
+      ['/tecnico/GGAL/hoy?moneda=usd&local=1', '/tecnico/GGAL/hoy?moneda=ars&local=1'])
   })
 
   it('en pesos, tu precio sale de lo que pagaste en pesos (con comisiones)', async () => {
@@ -205,7 +228,7 @@ describe('LecturaTecnica', () => {
     // Último cierre en pesos: 250 − 503 × 0,03 = 234,91. 10 unidades valen
     // 2.349,10; pagaste 2.000 + 100 de comisión → +11,9 %.
     await dibujar({ pnlPctUsd: 0.5, costoPesos: { invertido: 2100, cantidad: 10 } })
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos'))
+    await elegirEnLaVista(montado.contenedor, 'Pesos')
     for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.5, costoPesos: { invertido: 2100, cantidad: 10 } }))
     expect(texto(montado.contenedor)).toContain('Ganás 11,9%')
   })
@@ -219,12 +242,13 @@ describe('LecturaTecnica', () => {
     for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     expect(botonDe('velas').getAttribute('aria-pressed')).toBe('true')
     expect(botonDe('linea').getAttribute('aria-pressed')).toBe('false')
-    expect(velasDibujadas()).toBeGreaterThan(200)     // un año de ruedas, una vela por día
+    expect(velasDibujadas()).toBeGreaterThan(200)     // toda la historia, una vela por día
     expect(texto(montado.contenedor)).not.toContain('Cada vela es una semana')
-    // En 2 años siguen siendo diarias; las semanales se eligen.
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, '2A'))
-    for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
+    // Con toda la historia siguen siendo diarias; las semanales se eligen en el
+    // menú de las velas («1D», como TradingView).
     expect(texto(montado.contenedor)).toContain('Cada vela es un día')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, '1D'))
+    for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Semanales'))
     for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     expect(texto(montado.contenedor)).toContain('Cada vela es una semana')
@@ -292,7 +316,7 @@ describe('LecturaTecnica', () => {
       const pila = [montado.contenedor]
       while (pila.length) {
         const x = pila.shift()
-        if (x.nodeName === 'RECT' && x.getAttribute?.('fill-opacity') === '0.28') n++
+        if (x.nodeName === 'RECT' && x.getAttribute?.('fill-opacity') === '0.2') n++
         pila.push(...(x.childNodes || []))
       }
       return n
@@ -315,14 +339,14 @@ describe('LecturaTecnica', () => {
       const pila = [montado.contenedor]
       while (pila.length) {
         const x = pila.shift()
-        if (x.nodeName === 'PATH' && x.getAttribute?.('fill-opacity') === '0.08') n++
+        if (x.nodeName === 'PATH' && x.getAttribute?.('fill-opacity') === '0.045') n++
         pila.push(...(x.childNodes || []))
       }
       return n
     }
     const t = await dibujar({ pnlPctUsd: 0.1 })
     expect(t).toContain('Bandas de Bollinger')        // el botón de la leyenda
-    expect(t).toContain('más angostas que de costumbre')
+    expect(t).toContain('más angostas que lo habitual')
     expect(t).toContain('Entre las bandas')           // la tarjeta, de entrada
     expect(t).toContain('Cuánto se mueve')           // ésta va siempre
     expect(t).toContain('alrededor de 2,0%')
@@ -363,11 +387,11 @@ describe('LecturaTecnica', () => {
     const b = botonDe('vol')
     expect(b.getAttribute('aria-disabled')).toBe('true')
     expect(b.getAttribute('aria-pressed')).toBeNull()
-    expect(texto(montado.contenedor)).not.toContain('Volumen: Este activo no trae volumen en los datos de Yahoo.Cerrar')
+    expect(texto(montado.contenedor)).not.toContain('Volumen: No hay datos de volumen para este activo.Cerrar')
     await clic(montado.contenedor, b)
     await otraVez({ pnlPctUsd: 0.1 })
     const aviso = buscarRol('status', 'Volumen: ')
-    expect(texto(aviso)).toContain('Volumen: Este activo no trae volumen en los datos de Yahoo.')
+    expect(texto(aviso)).toContain('Volumen: No hay datos de volumen para este activo.')
     // Tocar otro botón lo saca.
     await clic(montado.contenedor, botonDe('s50'))
     await otraVez({ pnlPctUsd: 0.1 })
@@ -398,9 +422,9 @@ describe('LecturaTecnica', () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': CON_FUERZA }
     const t = await dibujar({ pnlPctUsd: null })
     expect(t).toContain('Fuerza de la tendencia (ADX)')
-    expect(t).toContain('a favor de la suba')
-    expect(t).toContain('La tendencia se afirma')
-    expect(t).toContain('la fuerza (ADX) pasó 23 para arriba con el Squeeze (un indicador de para qué lado viene empujando el precio) en verde: el precio viene subiendo con fuerza.')
+    expect(t).toContain('al alza')
+    expect(t).toContain('La tendencia se fortalece')
+    expect(t).toContain('la fuerza de la tendencia (ADX) superó 23 con el Squeeze (indica si el precio empuja al alza o a la baja) en verde: el precio viene subiendo con fuerza.')
     // El panel: una barra por día con Squeeze y la línea del ADX.
     const nodos = (n) => [n, ...(n.childNodes || []).flatMap(nodos)]
     const panel = nodos(montado.contenedor).find(n => n.getAttribute?.('aria-label')?.startsWith('Fuerza de la tendencia'))
@@ -413,7 +437,7 @@ describe('LecturaTecnica', () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': { ...USD, lectura: { ...USD.lectura, ruedas: 20, adx: null, squeeze: null } } }
     const t = await dibujar({ pnlPctUsd: null })
     expect(t).not.toContain('Fuerza de la tendencia (ADX)')
-    expect(t).toContain('Para medirla hacen falta unos 28 días de mercado y este activo tiene 20')
+    expect(t).toContain('Para calcularla hacen falta unos 28 días de mercado y este activo tiene 20')
   })
 
   it('el globo del mouse nunca se sale del gráfico (celular: gráfico de 250 px, globo de 200)', () => {
@@ -426,5 +450,133 @@ describe('LecturaTecnica', () => {
     // En la compu (gráfico ancho) va pegado al punto: a la derecha y, cerca del borde, a la izquierda.
     expect(ladoGlobo(50, 900, 200)).toBe(462)
     expect(ladoGlobo(95, 900, 200)).toBe(855 - 212)
+  })
+})
+
+// La vela de HOY (useVelaDeHoy + sumarVelaDeHoy): se pide aparte, se dibuja
+// al final y no toca la lectura.
+describe('LecturaTecnica — la vela de hoy', () => {
+  const ultimo = USD.puntos[USD.puntos.length - 1].d
+  const manana = new Date(Date.parse(ultimo + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10)
+  const VELA = { d: manana, o: 234.9, h: 238, l: 234, c: 237.5, v: 900, hoy: true }
+  const HOY = { velas: [VELA], en_rueda: true, demora_min: 0, actualizada: '2026-10-30T17:32:05Z', ultima_guardada: ultimo }
+  const RUTA = '/tecnico/AAPL/hoy?moneda=usd'
+  const pedidosDeHoy = async () => {
+    const { api } = await import('../../utils/api')
+    return api.get.mock.calls.filter(([r]) => r.startsWith('/tecnico/AAPL/hoy')).length
+  }
+  const enCurso = () => contar(n => n.nodeName === 'G' && n.getAttribute?.('data-en-curso') === '')
+  const tramoHoy = () => contar(n => n.getAttribute?.('data-tramo-hoy') === '')
+  const props = { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }
+  const repintar = async (otras = {}) => { for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { ...props, ...otras })) }
+  const nodos = (n) => [n, ...(n.childNodes || []).flatMap(nodos)]
+  const etiqueta = (inicio) => nodos(montado.contenedor).find(n => n.getAttribute?.('aria-label')?.startsWith(inicio))?.getAttribute('aria-label')
+
+  it('en línea: el último tramo punteado y el pie dice de qué hora es el precio; la lectura no cambia', async () => {
+    respuestas = { [RUTA]: HOY, '/tecnico/AAPL?moneda=usd': USD }
+    const t = await dibujar({ pnlPctUsd: 0.1 })
+    expect(t).toContain('La última vela es la de hoy, en curso (precio de las 14:32): se actualiza sola cada minuto.')
+    expect(tramoHoy()).toBe(1)
+    expect(etiqueta('Precio con su promedio')).toContain('Precio de hoy, en curso US$ 237,50')
+  })
+
+  it('en velas: una vela de más, transparente; en semanales se suma a la última semana y conserva la demora', async () => {
+    respuestas = { [RUTA]: { ...HOY, demora_min: 20 }, '/tecnico/AAPL?moneda=usd': USD }
+    await dibujar({ pnlPctUsd: 0.1 })
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Velas'))
+    await repintar()
+    expect(enCurso()).toBe(1)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, '1D'))
+    await repintar()
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Semanales'))
+    await repintar()
+    expect(texto(montado.contenedor)).toContain('La última vela incluye hoy, en curso: se actualiza sola cada minuto, pero los precios de esta bolsa llegan con unos 20 minutos de demora.')
+    expect(enCurso()).toBe(1)
+  })
+
+  it('con la vela de hoy siguen los números del ADX y del Squeeze (los del último cierre)', async () => {
+    const ultimoF = CON_FUERZA.puntos[CON_FUERZA.puntos.length - 1].d
+    respuestas = { [RUTA]: { ...HOY, ultima_guardada: ultimoF }, '/tecnico/AAPL?moneda=usd': CON_FUERZA }
+    await dibujar({ pnlPctUsd: null })
+    expect(tramoHoy()).toBe(1)
+    expect(etiqueta('Fuerza de la tendencia')).toContain('(ADX): 25, con la línea de 23')
+    expect(etiqueta('Barras del Squeeze')).toMatch(/Al último cierre, (verde|roja)\./)
+  })
+
+  it('si la vela no sigue a la serie que tiene la pantalla, no se dibuja y la serie se vuelve a pedir sola', async () => {
+    const { api } = await import('../../utils/api')
+    api.get.mockClear()
+    // La noche guardó una vela más (`ultima_guardada` es mañana para esta pantalla).
+    respuestas = { [RUTA]: { ...HOY, ultima_guardada: manana, velas: [{ ...VELA, d: '2099-01-01' }] }, '/tecnico/AAPL?moneda=usd': USD }
+    await dibujar({ pnlPctUsd: 0.1 })
+    expect(tramoHoy()).toBe(0)
+    const series = api.get.mock.calls.filter(([r]) => r.startsWith('/tecnico/AAPL?moneda=usd')).length
+    expect(series).toBe(2)
+  })
+
+  it('sin vela todavía (antes de la apertura) no dibuja nada, pero con la rueda abierta sigue pidiendo', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const { api } = await import('../../utils/api')
+      api.get.mockClear()
+      respuestas = { [RUTA]: { ...HOY, velas: [] }, '/tecnico/AAPL?moneda=usd': USD }
+      const t = await dibujar({ pnlPctUsd: 0.1 })
+      expect(t).not.toContain('La última vela')
+      expect(tramoHoy()).toBe(0)
+      // Llega el primer precio del día: aparece sola, sin volver a abrir la ficha.
+      respuestas[RUTA] = HOY
+      vi.advanceTimersByTime(60_000)
+      await repintar()
+      expect(await pedidosDeHoy()).toBe(2)
+      expect(tramoHoy()).toBe(1)
+      // Yahoo no contesta un minuto: la vela que se veía no se borra.
+      respuestas[RUTA] = { ...HOY, velas: [] }
+      vi.advanceTimersByTime(60_000)
+      await repintar()
+      expect(tramoHoy()).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cerrada la rueda se espacia a la próxima media hora, y vuelve a pedir sola', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+    try {
+      vi.setSystemTime(new Date('2026-10-30T20:05:00Z'))
+      const { api } = await import('../../utils/api')
+      api.get.mockClear()
+      respuestas = { [RUTA]: { ...HOY, en_rueda: false }, '/tecnico/AAPL?moneda=usd': USD }
+      await dibujar({ pnlPctUsd: 0.1 })
+      expect(await pedidosDeHoy()).toBe(1)
+      expect(texto(montado.contenedor)).toContain('la rueda cerró y se guarda esta noche')
+      // De a un minuto, como pasa de verdad (la respuesta llega entre tic y tic).
+      const minutos = async (n) => { for (let i = 0; i < n; i++) { vi.advanceTimersByTime(60_000); await repintar() } }
+      await minutos(20)                                 // 20:25: todavía no
+      expect(await pedidosDeHoy()).toBe(1)
+      await minutos(10)                                 // 20:35: pasó la media hora (+ margen)
+      expect(await pedidosDeHoy()).toBe(2)
+      await minutos(20)                                 // 20:55: la próxima es a las 21
+      expect(await pedidosDeHoy()).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('al volver a una moneda ya cargada no se dibuja ni un instante la vela de la otra', async () => {
+    const pesos = { ...VELA, o: 345000, h: 346000, l: 344000, c: 345500 }
+    respuestas = { [RUTA]: HOY, '/tecnico/AAPL/hoy?moneda=ars': { ...HOY, velas: [pesos] },
+      '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
+    await dibujar({ pnlPctUsd: 0.1 })
+    expect(etiqueta('Precio con su promedio')).toContain('237,50')
+    await elegirEnLaVista(montado.contenedor, 'Pesos')
+    for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, props))
+    expect(etiqueta('Precio con su promedio')).toContain('345.500')
+    // De vuelta a dólares: la serie ya está cargada y se dibuja enseguida; la
+    // vela de pesos (345.500) no puede aparecer sobre ella ni en un dibujo.
+    espia.dibujadas.length = 0
+    await elegirEnLaVista(montado.contenedor, 'Dólares')
+    for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, props))
+    expect(espia.dibujadas).not.toContain(345500)
+    expect(espia.dibujadas[espia.dibujadas.length - 1]).toBe(237.5)
   })
 })

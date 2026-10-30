@@ -11,15 +11,18 @@
 //     uno con su ojito para mostrarlo u ocultarlo.
 // Línea o velas van arriba a la derecha, con los otros selectores de la ficha.
 //
-// Todo arranca PRENDIDO (pedido de Nico: «que estén todas puestas de manera
-// predeterminada y que ahí cada uno decida si la deja o no»). Lo que cada uno
-// apaga se guarda en el navegador (`rendi_grafico_capas`, como el tipo de
+// De fábrica, una VISTA LIMPIA (Nico, 29/10, en lugar del «todo prendido» del
+// 24/10): el precio, el promedio de 200 días y el volumen; el resto a un toque
+// desde «Indicadores» y los menús de Fibonacci y Elliott. Lo que cada uno prende
+// o apaga se guarda en el navegador (`rendi_grafico_capas`, como el tipo de
 // gráfico en `rendi_grafico_tipo`); «Volver a lo de fábrica» lo olvida.
 //
 // Una sola barra para compu y celular (R6): en compu va parada, pegada a la
 // izquierda del gráfico, con el ícono solo y el nombre al pasar el mouse; en el
 // celular es la MISMA fila acostada arriba del gráfico, que se desliza de costado,
-// con botones de 44 px y el nombre a la vista (no hay mouse que pase por encima).
+// con botones de 44 × 44 px y también sólo el ícono (Nico, 29/10: con el nombre
+// al lado era un renglón más antes del gráfico). El nombre queda para el lector
+// de pantalla y, en los que abren un menú, como título del menú.
 // El menú de Fibonacci y Elliott se abre al lado del botón (o debajo, si al lado
 // no entra) y por encima de todo: adentro de la fila que se desliza quedaría cortado.
 //
@@ -31,18 +34,21 @@ import { ChevronDown, Eye, EyeOff, RotateCcw } from 'lucide-react'
 
 const CLAVE = 'rendi_grafico_capas'
 
-/** Cómo viene el gráfico: todo prendido. */
+/** Cómo viene el gráfico: la vista limpia (precio, promedio de 200 y volumen). */
 export const CAPAS_DE_FABRICA = Object.freeze({
-  vol: true, s200: true, s50: true, bb: true, fib: true, ell: true, rsi: true, fuerza: true,
-  eventos: true, marcas: true, prom: true,
-  globo: true,   // el cartel con los datos del día al pasar el mouse
+  vol: true, s200: true, s50: false, bb: false, fib: false, ell: false, rsi: false, fuerza: false,
+  eventos: false, marcas: false, prom: false,
+  globo: true,   // el cartel con los datos del día al pasar el mouse: no ensucia, aparece al pasar
 })
+
+/** Todo prendido: lo que las pruebas del gráfico dejan guardado para ver todas las capas. */
+export const CAPAS_TODAS = Object.freeze(Object.fromEntries(Object.keys(CAPAS_DE_FABRICA).map(k => [k, true])))
 
 /**
  * Lo que la persona dejó prendido y apagado la última vez. Lo que no está
  * guardado (nunca lo tocó, o es una capa nueva) viene de fábrica. El navegador
- * puede tener el almacenamiento bloqueado (modo privado) o un valor roto: todo
- * prendido.
+ * puede tener el almacenamiento bloqueado (modo privado) o un valor roto: de
+ * fábrica.
  */
 export function capasGuardadas() {
   const capas = { ...CAPAS_DE_FABRICA }
@@ -110,14 +116,13 @@ function Boton({ b, onAviso, refBoton, abierto }) {
         onAviso?.(null)
         b.onClick()
       }}
-      className={`group relative shrink-0 inline-flex items-center gap-1.5 h-11 min-w-11 px-3 sm:h-9 sm:w-9 sm:min-w-0 sm:px-0 sm:justify-center rounded-lg border text-[12.5px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-rendi-accent ${clase}`}>
+      className={`group relative shrink-0 inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg border text-[12.5px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-rendi-accent ${clase}`}>
       <span aria-hidden="true" className={`relative inline-flex items-center justify-center w-5 h-5 ${b.sinDatos ? 'opacity-45 grayscale' : ''}`}>
         {b.icono}
       </span>
-      <span className="whitespace-nowrap sm:sr-only">{b.nombre}</span>
-      {b.menu && <ChevronDown size={13} aria-hidden="true" className="sm:hidden -ml-0.5 text-ink-2" />}
-      {/* En compu, la marquita de «tiene opciones» en la esquina (como TradingView). */}
-      {b.menu && <span aria-hidden="true" className="hidden sm:block absolute right-0.5 bottom-0.5 w-0 h-0 border-l-4 border-l-transparent border-b-4 border-b-ink-3" />}
+      <span className="sr-only">{b.nombre}</span>
+      {/* La marquita de «tiene opciones» en la esquina (como TradingView). */}
+      {b.menu && <span aria-hidden="true" className="absolute right-0.5 bottom-0.5 w-0 h-0 border-l-4 border-l-transparent border-b-4 border-b-ink-3" />}
       {b.sinDatos && <span className="sr-only">{`: ${b.sinDatos}`}</span>}
       {/* El globo con el nombre, al pasar el mouse o con el foco (sólo compu). */}
       {!abierto && (
@@ -274,7 +279,7 @@ export function LeyendaIndicadores({ items, onAviso, deFabrica, onFabrica, ancho
           })}
           <li className="border-t border-line/60 mt-0.5 pt-0.5">
             <button type="button" data-capa="fabrica" onClick={onFabrica} disabled={deFabrica}
-              title={deFabrica ? 'Ya está todo como viene: prendido y en línea' : 'Muestra todo de nuevo y vuelve a la línea'}
+              title={deFabrica ? 'El gráfico ya está como al principio: todo visible y en línea' : 'Vuelve a mostrar todo y pasa el gráfico a línea'}
               className="w-full inline-flex items-center gap-1.5 min-h-9 sm:min-h-7 px-1.5 rounded text-ink-2 enabled:hover:text-ink-0 enabled:hover:bg-bg-2 disabled:opacity-50">
               <RotateCcw size={13} aria-hidden="true" />Volver a lo de fábrica
             </button>

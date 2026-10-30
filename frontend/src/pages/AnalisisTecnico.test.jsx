@@ -3,18 +3,22 @@
 // servidor (simulado en el borde, `api`), corren sus efectos y se mira lo que
 // queda dibujado. Lo que importa:
 //   · la dirección decide la pestaña (?tab=lista / ?tab=senales; sin tab,
-//     Panorama; Comparar y Mercado se ven y no se tocan);
+//     Gráfico); Comparar lleva a su pantalla y Mercado es un «Pronto»;
 //   · el Panorama dice el % que manda el servidor (senales_semana.reparto, la
-//     cuenta única), los 3 cambios más nuevos de la semana y cuántas señales hay;
+//     cuenta única) con el cambio contra la semana pasada, el mapa de tu
+//     cartera, los 3 cambios más nuevos de la semana por día y cuántas señales hay;
 //   · la página pide UNA vez lo de la semana y UNA vez tu lista, aunque los
 //     usen varias pestañas;
 //   · /novedades?tab=senales (los mails viejos) lleva a la pestaña nueva.
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic, enActo } from '../testing/navegadorMinimo'
+import { hoyISO } from '../utils/fecha'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn(), patch: vi.fn() }))
-vi.mock('../utils/api', () => ({ api }))
+// Lo real de utils/api (getClientContext: de quién es la copia de los dibujos
+// del gráfico, desde la barra) con `api` simulado.
+vi.mock('../utils/api', async (original) => ({ ...(await original()), api }))
 vi.mock('../contexts/CurrencyContext', () => ({
   useCurrency: () => ({ valuationDollar: 'mep', costBasis: 'today', currency: 'USD' }),
   pickFinancialRate: (d) => d?.mep?.venta || null,
@@ -29,8 +33,8 @@ const LECTURA = (l = {}) => ({
   dist_media50: 5, rsi: 60, adx: 30, dist_maximo_12m: -3, anio_completo: true, ...l,
 })
 const CAMBIO = (asset, tipo, fecha, extra = {}) => ({
-  asset, local: false, ficha: asset, tipo, fecha, sentido: 'arriba', etiqueta: 'Tendencia de fondo', tono: 'pos',
-  texto: 'pasó arriba de su promedio de 200 días: la tendencia de fondo se volvió alcista.', extra: null,
+  asset, local: false, ficha: asset, tipo, fecha, sentido: 'arriba', etiqueta: 'Tendencia de largo plazo', tono: 'pos',
+  texto: 'superó su promedio de 200 días: la tendencia de largo plazo pasó a ser alcista.', extra: null,
   tenes: true, watchlist: false, peso: 0.5, tesis: null, ...extra,
 })
 
@@ -49,6 +53,7 @@ function servidor() {
     if (url === '/watchlist') return { items: [{ symbol: 'TSLA' }] }
     if (url.startsWith('/prices')) return { NVDA: 150, KO: 50 }
     if (url === '/plazos-fijos') return []
+    if (url === '/alerts') return { items: [] }
     if (url === '/tus-senales') return {
       desde: '2026-10-21', hasta: HOY, canal: 'mail', proximo_resumen: '2026-11-07',
       // LA cuenta del servidor (senales_semana.reparto). 74 y no 75 a propósito:
@@ -57,14 +62,16 @@ function servidor() {
       alcista: {
         pct: 74,
         grupos: { alcista: { pct: 74, fraccion: 0.74, nombres: ['NVDA'] }, bajista: { pct: 26, fraccion: 0.26, nombres: ['KO'] }, sin: { pct: 0, fraccion: 0, nombres: [] } },
-        motivos: [], semana_pasada: { semana: new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10), pct: 70 },
+        // Hace 7 días contados desde el «hoy» de la pantalla (hoyISO, el día de
+        // acá): con toISOString (el de Londres) de 21 a 24 h daba 6 días.
+        motivos: [], semana_pasada: { semana: new Date(Date.parse(hoyISO() + 'T00:00:00Z') - 7 * 86400000).toISOString().slice(0, 10), pct: 70 },
       },
       tenes: { activos: 2, con_cambios: 2 }, watchlist: 1,
       senales: [
         CAMBIO('NVDA', 'media200', HOY),
-        CAMBIO('KO', 'media50', HOY, { etiqueta: 'Corto plazo', texto: 'quedó abajo de su promedio de 50 días: el corto plazo se volvió bajista.', sentido: 'abajo', tono: 'neg' }),
+        CAMBIO('KO', 'media50', HOY, { etiqueta: 'Mediano plazo', texto: 'cayó por debajo de su promedio de 50 días: la tendencia de mediano plazo pasó a ser bajista.', sentido: 'abajo', tono: 'neg' }),
         CAMBIO('TSLA', 'maximo_12m', HOY, { tenes: false, watchlist: true, peso: null, etiqueta: 'Máximo del año', corta: 'empezó a marcar máximos del año', texto: 'empezó a marcar máximos del año (cerró en su precio más alto de los últimos 12 meses), después de un mes sin hacerlo.' }),
-        CAMBIO('KO', 'rsi_bajo_30', '2026-10-21', { etiqueta: 'Cayó muy rápido', tono: 'rsi', corta: 'cayó muy rápido', texto: 'cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 25.' }),
+        CAMBIO('KO', 'rsi_bajo_30', '2026-10-21', { etiqueta: 'Cayó muy rápido', tono: 'rsi', corta: 'cayó muy rápido', texto: 'cayó muy rápido: el impulso (RSI) bajó de 30 y quedó en 25.' }),
       ],
     }
     throw new Error(`GET inesperado ${url}`)
@@ -112,6 +119,16 @@ const pestanaActiva = (c) => {
   return null
 }
 
+const conEtiqueta = (c, etiqueta) => {
+  const pila = [c]
+  while (pila.length) {
+    const n = pila.shift()
+    if (n.atributos?.['aria-label'] === etiqueta) return true
+    pila.push(...(n.childNodes || []))
+  }
+  return false
+}
+
 // La primera vez que se importa la página, vite la traduce con todo lo que
 // arrastra (la ficha y Novedades): en la suite completa, en paralelo, eso solo
 // pasaba los 5 s de la primera prueba. Se hace una vez acá, con tiempo; después
@@ -133,14 +150,14 @@ beforeEach(() => {
 afterEach(async () => { await montado?.desmontar?.(); montado = null; vi.unstubAllGlobals() })
 
 describe('Análisis técnico: las pestañas', () => {
-  it('sin ?tab abre Gráfico (la de entrada desde el 30/10, Nico); Mercado se ve «Próximamente» y no se toca', async () => {
+  it('sin ?tab abre Gráfico (la de entrada desde el 30/10, Nico); Mercado es un «Pronto», no una pestaña', async () => {
     montado = await abrir('/analisis-tecnico')
     expect(pestanaActiva(montado.contenedor)).toBe('Gráfico')
-    expect(montado.t()).toContain('Próximamente')
-    const mercado = buscarBoton(montado.contenedor, 'Mercado')
-    expect(mercado.atributos.disabled).not.toBeUndefined()
-    await enActo(async () => clic(montado.contenedor, mercado))
-    expect(pestanaActiva(montado.contenedor)).toBe('Gráfico')
+    // Lienzo «1 · Panorama» (30/10): lo que todavía no está es un texto a la
+    // derecha de la fila, no una pestaña gris. Comparar sí está (pieza 16).
+    expect(montado.t()).toContain('Pronto: Mercado')
+    expect(montado.t()).not.toContain('Próximamente')
+    expect(buscarBoton(montado.contenedor, 'Mercado')).toBeFalsy()
   })
 
   it('Comparar lleva a LA pantalla de comparar precios, con lo tuyo que más pesa ya cargado', async () => {
@@ -159,7 +176,7 @@ describe('Análisis técnico: las pestañas', () => {
     expect(montado.t()).toContain('Ordenar por')
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Señales de la semana')))
     expect(montado.donde.actual.search).toBe('?tab=senales')
-    expect(montado.t()).toContain('Qué cambió esta semana en lo que tenés y en tu watchlist')
+    expect(montado.t()).toContain('Qué cambió esta semana en tu cartera y en tu watchlist')
     expect(montado.t()).toContain('Crear una alerta técnica en Alertas')
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Panorama')))
     expect(montado.donde.actual.search).toBe('?tab=panorama')
@@ -183,23 +200,31 @@ describe('Análisis técnico: el Panorama', () => {
   it('el % del servidor (no el de la pantalla), los 3 cambios más nuevos y cuántas señales hay', async () => {
     montado = await abrir('/analisis-tecnico?tab=panorama')
     const t = montado.t()
-    expect(t).toContain('74% de tu plata está en tendencia de fondo alcista')
-    expect(t).toContain('(la semana pasada, 70%)')
+    expect(t).toContain('74%de tu cartera está en activos con tendencia alcista de largo plazo')
+    expect(t).toContain('▲ 4 puntos más que la semana pasada')
     expect(t).toContain('26% bajista')
-    expect(t).toContain('3 cambiosen lo que tenés')        // NVDA, KO del día y KO del RSI
-    expect(t).toContain('1 cambioen tu watchlist')         // TSLA
-    expect(t).toContain('los 3 más nuevos')
-    expect(t).toContain('NVDA pasó arriba de su promedio de 200 días')
+    // Qué lo movió: el cruce del promedio de 200 de lo que tenés (NVDA), con su peso.
+    expect(t).toContain('Qué lo movió: NVDA (50% de tu cartera) pasó a alcista el')
+    expect(t).toContain('4 cambios · los 3 más nuevos')
+    // El mapa: los pesos y la tendencia de Tu lista (NVDA 75 % alcista, KO 25 % bajista).
+    expect(t).toContain('Mapa de tu cartera')
+    expect(conEtiqueta(montado.contenedor, 'NVDA · 75% de tu cartera · tendencia alcista')).toBe(true)
+    expect(conEtiqueta(montado.contenedor, 'KO · 25% de tu cartera · tendencia bajista')).toBe(true)
+    // Una campanita por cambio que tiene alerta (la del máximo de TSLA también).
+    expect(conEtiqueta(montado.contenedor, 'Avisame cuando cruce su promedio de 200 días')).toBe(true)
+    expect(conEtiqueta(montado.contenedor, 'Avisame cuando cierre en su máximo del año')).toBe(true)
+    expect(t).toContain('NVDA superó su promedio de 200 días')
     expect(t).toContain('TSLA empezó a marcar máximos del año')
     // P5 (auditoría A 29/10): el título decía «en lo tuyo» y la lista trae
     // también lo que seguís (TSLA): el título dice las dos cosas. Al juntar con
     // Arreglos D (D12) el título es UNO, `TITULO_CAMBIOS` de utils/tusSenales.js.
-    expect(t).toContain('Qué cambió esta semana en lo que tenés y en tu watchlist')
+    expect(t).toContain('Qué cambió esta semana en tu cartera y en tu watchlist')
     expect(t).toContain('En tu watchlist')
-    expect(t).not.toContain('la fuerza (RSI) bajó de 30 y quedó en 25')  // el 4.º, más viejo, no va en el Panorama
+    expect(t).not.toContain('el impulso (RSI) bajó de 30 y quedó en 25')  // el 4.º, más viejo, no va en el Panorama
     expect(t).toContain('Ver las 4 señales de la semana')
     expect(t).toContain('El resumen de la semana te llega el sábado 07/11 a las 10:00')
-    expect(t).toContain('3 activos: 2 que tenés y 1 que seguís')
+    expect(t).toContain('Tu lista de un vistazo')
+    expect(t).toContain('3activos')
     expect(t).toContain('no es una recomendación para comprar ni vender')
   })
 })

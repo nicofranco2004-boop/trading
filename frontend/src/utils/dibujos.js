@@ -16,16 +16,104 @@
 // { d: 'AAAA-MM-DD', mas: n, precio }. `mas` son los días de mercado después de
 // `d`: un punto dibujado en el espacio vacío de la derecha (hacia adelante) es
 // «n días de mercado después del último día que había».
+// En velas de 1 o 4 horas, además, el momento (`t`): ver utils/velasPorHora.js.
 
 import { indiceDeFecha } from './tecnico'
 import { api } from './api'
 
 const clave = (asset, moneda) => `rendi_dibujos:${String(asset || '').toUpperCase()}:${moneda === 'ars' ? 'ars' : 'usd'}`
+// De quién es la copia de este navegador (el mail de la sesión). Cerrar sesión
+// la borra, pero cuando la sesión VENCE sólo se borra el usuario: en una compu
+// compartida, lo pendiente de una persona (con notas, texto suyo) se le
+// mostraba a la siguiente y se subía a SU cuenta (auditoría 30/10). Una copia
+// de otra persona se ignora; las guardadas antes de esto no dicen de quién son
+// y se usan como siempre.
+function quienSoy() {
+  try { return String(JSON.parse(localStorage.getItem('rendi_user') || 'null')?.email || '').toLowerCase() || null } catch { return null }
+}
 export const DIBUJOS_MAXIMOS = 60
 
 const numero = (x) => typeof x === 'number' && Number.isFinite(x)
+// `f` (opcional, sólo el pincel): la fracción del lugar, para que un trazo a
+// mano no quede en escalones de a un día cuando el gráfico está muy acercado.
+// `t` (opcional): el momento exacto, en segundos UTC, de un punto dibujado en
+// velas de 1 o 4 horas (utils/velasPorHora.js); `d` y `mas` siguen siendo su día.
 const punto = (p) => !!p && typeof p.d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(p.d)
   && Number.isInteger(p.mas) && p.mas >= 0 && numero(p.precio) && p.precio > 0
+  && (p.f == null || (numero(p.f) && p.f >= 0 && p.f < 1))
+  && (p.t == null || (Number.isInteger(p.t) && p.t >= 0 && p.t <= 4102444800))
+// El pincel (Nico, 29/10): un trazo a mano alzada, hasta tantos puntos (se
+// guardan en tu cuenta con los demás dibujos: sin tope, un garabato largo
+// pesaría como cien líneas).
+export const PINCEL_MAXIMO = 200
+
+// Las notas de texto (Nico, 30/10: «compré acá por el balance»): un texto tuyo
+// en un día y un precio (`a`), con su banderita. Cortas, como un tuit: hasta
+// 280 letras (el servidor también lo hace cumplir, main._NOTA_MAXIMA); para la
+// explicación larga está tu tesis (1000). Se cuentan igual que el servidor
+// (puntos de código): un emoji simple es una; uno compuesto (una bandera, una
+// familia, un pulgar con color de piel) cuenta sus partes. `length` contaría
+// dos por cada emoji simple.
+export const NOTA_MAXIMA = 280
+export const largoDeNota = (t) => Array.from(String(t || '')).length
+/** Lo que se tipea, cortado al máximo sin partir un emoji al medio (tampoco
+ *  uno compuesto: se corta antes de la bandera o la familia entera). */
+export function recortarNota(t) {
+  const s = String(t || '')
+  if (largoDeNota(s) <= NOTA_MAXIMA) return s
+  let out = '', n = 0
+  const partes = typeof Intl !== 'undefined' && Intl.Segmenter
+    ? Array.from(new Intl.Segmenter('es', { granularity: 'grapheme' }).segment(s), x => x.segment) : Array.from(s)
+  for (const p of partes) {
+    const largo = largoDeNota(p)
+    if (n + largo > NOTA_MAXIMA) break
+    out += p; n += largo
+  }
+  return out
+}
+/**
+ * El texto de una nota como lo guarda el servidor (main._texto_de_nota): sin
+ * caracteres de control (salvo el salto de renglón; el tab pasa a espacio;
+ * también los «C1», U+0080 a U+009F, y la marca BOM), a lo sumo dos renglones
+ * vacíos seguidos y sin espacios en las puntas. '' sin texto o si lo que queda
+ * no se ve (sólo marcas invisibles, como el espacio de ancho cero). Tiene que
+ * ser la MISMA regla: una nota que la pantalla acepta y el servidor no, traba
+ * el guardado de todos tus dibujos de ese activo (la lista va entera).
+ */
+export function limpiarNota(t) {
+  const s = String(t ?? '').replace(/\r\n?/g, '\n').replace(/\t/g, ' ')
+  const sinControl = Array.from(s).filter(c => {
+    const n = c.codePointAt(0)
+    return c === '\n' || (n >= 32 && !(n >= 0x7F && n <= 0x9F) && n !== 0xFEFF && !(n >= 0xD800 && n <= 0xDFFF))
+  }).join('')
+  const limpio = sinControl.replace(/\n{3,}/g, '\n\n').trim()
+  return /[^\s\p{Cf}]/u.test(limpio) ? limpio : ''
+}
+
+// El color de cada dibujo (Nico, 29/10): se elige con el dibujo tocado y queda
+// guardado en el dibujo (en tu cuenta). Sin color, el de siempre (celeste). Son
+// colores del tema (se ven bien en claro y en oscuro) y ninguno es el de una
+// capa calculada (Fibonacci magenta, Elliott índigo, Bollinger oliva). El
+// último elegido es también el de los dibujos nuevos (en este navegador).
+export const COLORES_DIBUJO = [
+  { id: 'cian', nombre: 'Celeste', token: 'data-cyan' },
+  { id: 'ambar', nombre: 'Ámbar', token: 'data-amber' },
+  { id: 'rosa', nombre: 'Rosa', token: 'cat-pink' },
+  { id: 'verde', nombre: 'Verde', token: 'rendi-pos' },
+  { id: 'rojo', nombre: 'Rojo', token: 'rendi-neg' },
+  { id: 'violeta', nombre: 'Violeta', token: 'data-violet' },
+  { id: 'tinta', nombre: 'Blanco o negro (según el tema)', token: 'ink-0' },
+]
+const COLOR_GUARDADO = 'rendi_dibujo_color'
+export function colorDeLosNuevos() {
+  try {
+    const c = localStorage.getItem(COLOR_GUARDADO)
+    return COLORES_DIBUJO.some(x => x.id === c) ? c : 'cian'
+  } catch { return 'cian' }
+}
+export function recordarColor(id) {
+  try { localStorage.setItem(COLOR_GUARDADO, id) } catch { /* sin almacenamiento: dura la visita */ }
+}
 // Un conteo de Elliott a mano, en dos formas por separado (Nico, 28/10), como
 // TradingView: el IMPULSO (0, 1, 2, 3, 4, 5) y la CORRECCIÓN (el arranque y
 // A, B, C). Se puede terminar antes (un impulso que va por la 3). Los conteos
@@ -38,12 +126,19 @@ export const etiquetasDe = (forma) => (forma === 'impulso' ? ETIQUETAS_IMPULSO
 
 /** ¿Es un dibujo que se puede dibujar? (lo guardado puede venir roto o de otra versión)
  *  horizontal: un precio · tendencia y fibonacci (retroceso): dos puntos (a, b) ·
- *  extension: tres (a, b, c) · elliott: de 2 puntos al máximo de su forma. */
+ *  extension: tres (a, b, c) · elliott: de 2 puntos al máximo de su forma ·
+ *  nota: un punto (a) y su texto. */
 export function dibujoValido(x) {
   if (!x || typeof x.id !== 'string') return false
+  if (x.color != null && !COLORES_DIBUJO.some(c => c.id === x.color)) return false
   if (x.tipo === 'horizontal') return numero(x.precio) && x.precio > 0
   if (x.tipo === 'tendencia' || x.tipo === 'fibonacci') return punto(x.a) && punto(x.b)
+  // El canal: la línea de abajo (a → b) y cuánto más arriba (o abajo) va su
+  // paralela, en precio (Nico, 29/10: «el lateral»).
+  if (x.tipo === 'canal') return punto(x.a) && punto(x.b) && numero(x.ancho) && x.ancho !== 0
+  if (x.tipo === 'pincel') return Array.isArray(x.puntos) && x.puntos.length >= 2 && x.puntos.length <= PINCEL_MAXIMO && x.puntos.every(punto)
   if (x.tipo === 'extension') return punto(x.a) && punto(x.b) && punto(x.c)
+  if (x.tipo === 'nota') return punto(x.a) && typeof x.texto === 'string' && !!limpiarNota(x.texto) && largoDeNota(limpiarNota(x.texto)) <= NOTA_MAXIMA
   if (x.tipo === 'elliott') {
     if (x.forma != null && x.forma !== 'impulso' && x.forma !== 'correccion') return false
     return Array.isArray(x.puntos) && x.puntos.length >= 2 && x.puntos.length <= etiquetasDe(x.forma).length && x.puntos.every(punto)
@@ -65,6 +160,7 @@ export function dibujoValido(x) {
 export function copiaLocal(asset, moneda) {
   try {
     const g = JSON.parse(localStorage.getItem(clave(asset, moneda)) || 'null')
+    if (g && !Array.isArray(g) && g.dueno !== undefined && (g.dueno || null) !== quienSoy()) return { dibujos: [], pendiente: false }
     const lista = Array.isArray(g) ? g : Array.isArray(g?.dibujos) ? g.dibujos : []
     return { dibujos: lista.filter(dibujoValido).slice(0, DIBUJOS_MAXIMOS), pendiente: !Array.isArray(g) && !!g?.pendiente }
   } catch {
@@ -78,7 +174,7 @@ export const dibujosGuardados = (asset, moneda) => copiaLocal(asset, moneda).dib
 export function guardarDibujos(asset, moneda, lista, pendiente = true) {
   try {
     if (!pendiente && !lista.length) localStorage.removeItem(clave(asset, moneda))
-    else localStorage.setItem(clave(asset, moneda), JSON.stringify({ pendiente, dibujos: lista.slice(0, DIBUJOS_MAXIMOS) }))
+    else localStorage.setItem(clave(asset, moneda), JSON.stringify({ pendiente, dueno: quienSoy(), dibujos: lista.slice(0, DIBUJOS_MAXIMOS) }))
   } catch { /* sin almacenamiento: el dibujo vive mientras la página esté abierta */ }
 }
 
@@ -117,10 +213,13 @@ const enFila = {}
 export function subirDibujos(asset, moneda, lista) {
   const k = clave(asset, moneda)
   const sigue = (enFila[k] || Promise.resolve(true))
-    .then(() => api.put(ruta(asset, moneda), { dibujos: lista.slice(0, DIBUJOS_MAXIMOS) }))
+    // `notas`: esta pantalla conoce las notas (si no, el servidor no las toca).
+    .then(() => api.put(ruta(asset, moneda), { dibujos: lista.slice(0, DIBUJOS_MAXIMOS), notas: true }))
+    // Si el servidor lo rechaza con un motivo (los topes y el activo válido de
+    // E3), se devuelve ese texto para decirlo; si no, false.
     .then(() => true, (e) => {
       const motivo = e?.payload?.detail
-      return [400, 429].includes(e?.status) && typeof motivo === 'string' && motivo.trim() ? motivo : false
+      return [400, 409, 429].includes(e?.status) && typeof motivo === 'string' && motivo.trim() ? motivo : false
     })
   enFila[k] = sigue
   return sigue
@@ -133,45 +232,66 @@ export const idNuevo = () => `d${Date.now().toString(36)}${(contador++).toString
  * El punto a guardar para el día `i` (contado sobre los puntos DIARIOS del
  * gráfico; puede pasar del último, hacia adelante) y un precio.
  */
-export function puntoDelDia(puntos, i, precio) {
+export function puntoDelDia(puntos, i, precio, f = 0) {
   const ultimo = puntos.length - 1
-  if (i <= ultimo) return { d: puntos[Math.max(0, i)].d, mas: 0, precio: precioRedondo(precio) }
-  return { d: puntos[ultimo].d, mas: i - ultimo, precio: precioRedondo(precio) }
+  const fr = f > 0 && f < 1 ? { f: Math.min(0.99, Math.round(f * 100) / 100) } : {}
+  if (i <= ultimo) return { d: puntos[Math.max(0, i)].d, mas: 0, precio: precioRedondo(precio), ...(fr.f ? fr : {}) }
+  return { d: puntos[ultimo].d, mas: i - ultimo, precio: precioRedondo(precio), ...(fr.f ? fr : {}) }
 }
 
 /**
  * Y al revés: en qué día (índice de los puntos diarios) cae un punto guardado.
  * Si su fecha no está (un feriado, o datos que cambiaron) va al último día de
- * antes; si es anterior a todo el gráfico, -1 (queda afuera, a la izquierda).
+ * antes; si es anterior a todo el gráfico, un índice negativo: los días hábiles
+ * entre el punto y el primer día (queda afuera, a la izquierda, a su
+ * distancia). Antes iba siempre a -1 y la línea giraba a medida que se
+ * borraban los días viejos; el aviso la mira igual (backend
+ * tecnico._indice_del_punto) (auditoría 29/10).
  */
 export function diaDelPunto(puntos, p) {
   if (!puntos.length) return null
   const i = indiceDeFecha(puntos, p.d)
-  return i == null ? -1 : i + p.mas
+  if (i != null) return i + p.mas
+  return -diasHabilesEntre(p.d, puntos[0].d) + (p.mas || 0)
+}
+
+/** Los días de lunes a viernes desde `desde` (incluido) hasta `hasta` (sin incluir), 'AAAA-MM-DD'. */
+export function diasHabilesEntre(desde, hasta) {
+  const a = Date.parse(`${desde}T00:00:00Z`), b = Date.parse(`${hasta}T00:00:00Z`)
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return 1
+  let n = 0
+  for (let t = a; t < b; t += 86400000) { const dia = new Date(t).getUTCDay(); if (dia !== 0 && dia !== 6) n++ }
+  return Math.max(1, n)
 }
 
 /**
  * Las puntas de un dibujo, con su nombre: ['a', p], ['b', p], ['c', p] o, en
- * un conteo de Elliott, [n, p] por onda. Una horizontal no tiene: se agarra entera.
+ * un conteo de Elliott, [n, p] por onda. Una horizontal, un trazo o una nota
+ * no tienen: se agarran enteros.
  */
 export function puntasDe(d) {
-  if (d.tipo === 'horizontal') return []
+  if (d.tipo === 'horizontal' || d.tipo === 'pincel' || d.tipo === 'nota') return []
   if (d.tipo === 'elliott') return d.puntos.map((p, n) => [n, p])
+  // El canal se ensancha agarrando la paralela de su mitad (como TradingView).
+  if (d.tipo === 'canal') {
+    return [['a', d.a], ['b', d.b], ['ancho', { k: (d.a.k + d.b.k) / 2, precio: (d.a.precio + d.b.precio) / 2 + d.ancho }]]
+  }
   return ['a', 'b', 'c'].filter(c => d[c]).map(c => [c, d[c]])
 }
 
 /**
  * El dibujo arrastrado (Nico, 28/10: «mover y corregir un dibujo ya hecho»):
  * `que` es la punta agarrada (su nombre en `puntasDe`) o 'todo', para moverlo
- * entero. `correr(p)` da el punto nuevo de una punta; `correrPrecio(x)`, el
+ * entero; en un canal, 'ancho' corre su paralela `dp` de precio. `correr(p)` da el punto nuevo de una punta; `correrPrecio(x)`, el
  * precio nuevo de una horizontal. La MISMA cuenta para lo que se ve mientras
  * se arrastra (puntos en lugares de la pantalla) y para lo que se guarda
  * (puntos por día).
  */
-export function dibujoCorrido(d, que, correr, correrPrecio) {
+export function dibujoCorrido(d, que, correr, correrPrecio, dp = 0) {
   if (d.tipo === 'horizontal') return { ...d, precio: correrPrecio(d.precio) }
+  if (d.tipo === 'canal' && que === 'ancho') return { ...d, ancho: d.ancho + dp || d.ancho }
   const mueve = (nombre) => que === 'todo' || que === nombre
-  if (d.tipo === 'elliott') return { ...d, puntos: d.puntos.map((p, n) => (mueve(n) ? correr(p) : p)) }
+  if (d.tipo === 'elliott' || d.tipo === 'pincel') return { ...d, puntos: d.puntos.map((p, n) => (mueve(n) ? correr(p) : p)) }
   const out = { ...d }
   for (const c of ['a', 'b', 'c']) if (d[c] && mueve(c)) out[c] = correr(d[c])
   return out

@@ -13,6 +13,7 @@
 //   specFromMonth(monthRow, now?)    → spec para un mes de MonthlySummary
 //   specDeDistribucion(args)         → spec para una torta de distribución
 //   specDeRendimiento(args)          → spec para "Cartera vs benchmark"
+//   (el del gráfico técnico de la ficha lo arma utils/imagenGrafico.js)
 //
 // Todas las tarjetas llevan el mismo encabezado de marca: el isotipo violeta,
 // "Rendi" y "rendi.finance" (el dominio real; antes decía RENDI.APP).
@@ -33,6 +34,8 @@
 // Sus shapes están en specDeDistribucion y specDeRendimiento. Los montos van
 // sólo si el usuario dijo que sí en el modal (`mostrarMontos`): por defecto la
 // imagen dice porcentajes, no cuánta plata tiene.
+
+import { ubicarRotulos } from './rotulos'
 
 // ── Constantes de diseño ──────────────────────────────────────────────────
 
@@ -115,6 +118,12 @@ export async function renderShareCard(spec) {
     pintarFondo(ctx, VIOLETA)
     pintarEncabezado(ctx, logo)
     pintarRendimiento(ctx, spec)
+    return canvas
+  }
+  if (spec.kind === 'grafico') {
+    pintarFondo(ctx, VIOLETA)
+    pintarEncabezado(ctx, logo)
+    pintarGrafico(ctx, spec)
     return canvas
   }
 
@@ -251,13 +260,18 @@ export async function downloadShareCard(spec, filename = 'rendi-card.png') {
 }
 
 // Devuelve true si compartió con el sistema, false si no hay soporte o canceló.
-export async function tryNativeShare(spec, { title = 'Rendi', text = '' } = {}) {
+// `blob`: la imagen ya dibujada (la de la vista previa). Con ella se llama al
+// compartir del sistema sin esperar nada después del toque: Safari en el
+// iPhone puede rechazarlo si entre el toque y el pedido pasa demasiado tiempo
+// (volver a dibujar espera las fuentes y el logo). `filename`: el nombre con
+// el que llega el archivo (antes, siempre «rendi-card.png»).
+export async function tryNativeShare(spec, { title = 'Rendi', text = '', filename = 'rendi-card.png', blob: lista = null } = {}) {
   if (typeof navigator === 'undefined' || !navigator.canShare || !navigator.share) {
     return false
   }
-  const blob = await shareCardToBlob(spec)
+  const blob = lista || await shareCardToBlob(spec)
   if (!blob) return false
-  const file = new File([blob], 'rendi-card.png', { type: 'image/png' })
+  const file = new File([blob], filename, { type: 'image/png' })
   if (!navigator.canShare({ files: [file] })) return false
   try {
     await navigator.share({ title, text, files: [file] })
@@ -1323,6 +1337,460 @@ function pintarRendimiento(ctx, spec) {
   pintarPie(ctx, spec)
 }
 
+// ── El gráfico técnico de la ficha ────────────────────────────────────────
+// El spec lo arma utils/imagenGrafico.js con las cuentas del gráfico de la
+// pantalla: todo viene en lugares de 0 a 100 (x a lo ancho, y de arriba abajo)
+// y acá sólo se lleva a píxeles. Vertical 4:5 como las demás tarjetas: en
+// WhatsApp se ve entera en el chat (una más alta se recorta en la vista
+// previa) y el gráfico conserva un ancho donde se distinguen las velas.
+// Letra de 20 a 24 px como mínimo: en un celular la imagen se mira a un
+// tercio de su tamaño.
+const COLUMNA_PRECIOS = 118
+const ALTO_FECHAS = 40
+const ALTO_RSI = 140
+const ALTO_ADX = 84
+const ALTO_SQUEEZE = 56
+const ENTRE_PANELES = 44
+
+// Todos los colores del spec (vienen como `rgb(var(--x))`, los del tema), en
+// UNA lectura al navegador.
+function coloresDelSpec(spec) {
+  const crudos = new Set()
+  const juntar = (x) => {
+    if (typeof x === 'string') { if (/^(rgb|#)/.test(x)) crudos.add(x) }
+    else if (Array.isArray(x)) x.forEach(juntar)
+    else if (x && typeof x === 'object') Object.values(x).forEach(juntar)
+  }
+  juntar(spec)
+  const lista = [...crudos]
+  const resueltos = resolverColores(lista)
+  const mapa = new Map(lista.map((c, k) => [c, resueltos[k]]))
+  return (c, defecto = INK_2) => (c ? mapa.get(c) || c : defecto)
+}
+
+function pintarGrafico(ctx, spec) {
+  const color = coloresDelSpec(spec)
+  const x0 = PAD
+  const x1 = W - PAD - COLUMNA_PRECIOS
+  const X = (p) => x0 + (p / 100) * (x1 - x0)
+  ctx.textBaseline = 'top'
+  ctx.textAlign = 'left'
+
+  // ── Arriba: el activo y su precio; el período y cuánto se movió ───────
+  let y = PAD + 44 + 40
+  ctx.fillStyle = INK_0
+  ctx.textAlign = 'right'
+  ctx.font = `600 48px ${FONT_SANS}`
+  ctx.fillText(spec.precio.texto, W - PAD, y + 8)
+  const anchoPrecio = ctx.measureText(spec.precio.texto).width
+  ctx.textAlign = 'left'
+  ajustarFuente(ctx, spec.activo, W - 2 * PAD - anchoPrecio - 40, 64, 600, 32)
+  ctx.fillText(spec.activo, PAD, y)
+  y += 80
+  // A la derecha: cuánto se movió en lo que se ve y, si lo que se ve termina
+  // antes de hoy, de qué día es el precio grande («Cierre del 30/04/25 · »).
+  let anchoCambio = 0
+  ctx.textAlign = 'right'
+  ctx.font = `500 24px ${FONT_SANS}`
+  if (spec.cambio) {
+    ctx.fillStyle = TONE[spec.cambio.tono] || INK_2
+    ctx.fillText(spec.cambio.texto, W - PAD, y)
+    anchoCambio = ctx.measureText(spec.cambio.texto).width
+  }
+  if (spec.precio.fecha) {
+    const fecha = spec.cambio ? `${spec.precio.fecha} · ` : spec.precio.fecha
+    ctx.fillStyle = INK_2
+    ctx.fillText(fecha, W - PAD - anchoCambio, y)
+    anchoCambio += ctx.measureText(fecha).width
+  }
+  if (anchoCambio) anchoCambio += 32
+  ctx.textAlign = 'left'
+  // El período, en uno o dos renglones (no se achica: se lee en un celular).
+  ctx.fillStyle = INK_2
+  ctx.font = `24px ${FONT_SANS}`
+  y = wrapText(ctx, spec.subtitulo, PAD, y, W - 2 * PAD - anchoCambio, 32, 2) + 16
+
+  // ── Qué se ve: una referencia de cada capa, con su color ──────────────
+  ctx.font = `22px ${FONT_SANS}`
+  let lx = PAD
+  for (const item of spec.leyenda || []) {
+    const ancho = 34 + ctx.measureText(item.nombre).width
+    if (lx > PAD && lx + ancho > W - PAD) { lx = PAD; y += 34 }
+    pintarMuestra(ctx, item, lx, y + 13, color(item.color))
+    ctx.fillStyle = INK_2
+    ctx.fillText(item.nombre, lx + 34, y + 1)
+    lx += ancho + 26
+  }
+  if (spec.leyenda?.length) y += 34
+  const arriba = y + 18
+
+  // ── Abajo: el pie (de abajo hacia arriba) ─────────────────────────────
+  const lineasPie = [...(spec.pie || []), spec.date].filter(Boolean)
+  ctx.font = `21px ${FONT_SANS}`
+  const alturaPie = lineasPie.length * 28
+  const pieY = H - 52 - alturaPie
+  lineasPie.forEach((l, k) => {
+    ctx.fillStyle = k === lineasPie.length - 1 ? INK_2 : INK_3
+    ctx.fillText(truncateToWidth(ctx, l, W - 2 * PAD), PAD, pieY + k * 28)
+  })
+
+  // ── El reparto del alto entre el precio y los paneles ─────────────────
+  const altoMarcas = spec.marcas?.length ? 46 : 0
+  const altoRsi = spec.rsi ? ENTRE_PANELES + ALTO_RSI : 0
+  const altoFuerza = spec.fuerza ? ENTRE_PANELES + ALTO_ADX + 10 + ALTO_SQUEEZE : 0
+  const abajo = pieY - 30
+  const altoPrecio = Math.max(260, abajo - arriba - altoMarcas - ALTO_FECHAS - altoRsi - altoFuerza)
+  const g = spec.grafico
+  const top = arriba
+  const Y = (p) => top + (p / 100) * altoPrecio
+
+  // La grilla, a la altura de los precios del costado.
+  ctx.strokeStyle = color(g.grilla, LINEA)
+  ctx.lineWidth = 1.5
+  for (const t of g.eje) linea(ctx, x0, Y(t.y), x1, Y(t.y))
+  ctx.strokeStyle = LINEA
+  linea(ctx, x0, top + altoPrecio, x1, top + altoPrecio)
+
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(x0, top, x1 - x0, altoPrecio)
+  ctx.clip()
+  const anchoVela = Math.max((g.anchoVela / 100) * (x1 - x0), 1.5)
+  for (const pol of g.poligonos) {
+    ctx.globalAlpha = pol.alpha ?? 0.1
+    ctx.fillStyle = color(pol.color)
+    ctx.beginPath()
+    pol.puntos.forEach(([px, py], k) => (k ? ctx.lineTo(X(px), Y(py)) : ctx.moveTo(X(px), Y(py))))
+    ctx.closePath()
+    ctx.fill()
+  }
+  ctx.globalAlpha = 0.28
+  for (const b of g.volumen) {
+    ctx.fillStyle = color(b.sube ? g.sube : g.baja)
+    ctx.fillRect(X(b.x) - anchoVela / 2, Y(b.y), anchoVela, Y(100) - Y(b.y))
+  }
+  ctx.globalAlpha = 1
+  if (g.area) {
+    const grad = ctx.createLinearGradient(0, top, 0, top + altoPrecio)
+    const tinta = color(g.precio, INK_0)
+    grad.addColorStop(0, conAlfa(tinta, 0.14))
+    grad.addColorStop(1, conAlfa(tinta, 0))
+    for (const tramo of g.area) {
+      ctx.fillStyle = grad
+      ctx.beginPath()
+      tramo.forEach(([px, py], k) => (k ? ctx.lineTo(X(px), Y(py)) : ctx.moveTo(X(px), Y(py))))
+      ctx.lineTo(X(tramo[tramo.length - 1][0]), Y(100))
+      ctx.lineTo(X(tramo[0][0]), Y(100))
+      ctx.closePath()
+      ctx.fill()
+    }
+  }
+  for (const l of g.lineas) polilinea(ctx, l.puntos, X, Y, color(l.color), l.ancho, l.alpha)
+  if (g.area) for (const tramo of g.area) polilinea(ctx, tramo, X, Y, color(g.precio, INK_0), 3)
+  for (const v of g.velas) {
+    const c = color(v.sube ? g.sube : g.baja)
+    ctx.strokeStyle = c
+    ctx.fillStyle = c
+    ctx.lineWidth = 1.5
+    // La vela en curso (todavía se mueve), más transparente, como en la pantalla.
+    ctx.globalAlpha = v.enCurso ? 0.55 : 1
+    linea(ctx, X(v.x), Y(v.h), X(v.x), Y(v.l))
+    const yA = Math.min(Y(v.o), Y(v.c))
+    ctx.fillRect(X(v.x) - anchoVela / 2, yA, anchoVela, Math.max(Math.abs(Y(v.o) - Y(v.c)), 1.5))
+  }
+  ctx.globalAlpha = 1
+  const principal = g.etiquetas.find(e => e.principal)
+  if (principal) {
+    ctx.globalAlpha = 0.55
+    ctx.strokeStyle = color(principal.color)
+    ctx.lineWidth = 1.5
+    ctx.setLineDash([6, 6])
+    linea(ctx, x0, Y(principal.y), x1, Y(principal.y))
+    ctx.setLineDash([])
+    ctx.globalAlpha = 1
+  }
+  for (const t of g.trazos) {
+    ctx.globalAlpha = t.alpha ?? 1
+    ctx.strokeStyle = color(t.color)
+    ctx.lineWidth = t.ancho || 3
+    ctx.lineCap = 'round'
+    ctx.setLineDash(t.punteada ? [12, 9] : [])
+    linea(ctx, X(t.x1), Y(t.y1), X(t.x2), Y(t.y2))
+  }
+  ctx.setLineDash([])
+  ctx.globalAlpha = 1
+  for (const p of g.puntitos) {
+    if (p.x < 0 || p.x > 100 || p.y < 0 || p.y > 100) continue
+    ctx.beginPath()
+    ctx.arc(X(p.x), Y(p.y), 7, 0, Math.PI * 2)
+    ctx.fillStyle = color(p.color)
+    ctx.fill()
+    ctx.lineWidth = 3
+    ctx.strokeStyle = FONDO_TINTA
+    ctx.stroke()
+  }
+  ctx.restore()
+
+  // Los rótulos (niveles, ondas): donde dos se pisarían, queda el más importante.
+  pintarRotulos(ctx, g.rotulos, X, Y, color, { x0, x1, top, bottom: top + altoPrecio })
+
+  // La columna de precios: los redondos y, encima, las etiquetas de color.
+  ctx.font = `22px ${FONT_SANS}`
+  ctx.textBaseline = 'middle'
+  for (const t of g.eje) {
+    if (g.etiquetas.some(e => Math.abs(Y(e.y) - Y(t.y)) < 30)) continue
+    ctx.fillStyle = INK_2
+    ctx.fillText(t.texto, x1 + 14, Y(t.y))
+  }
+  // Primero el último precio; después tus horizontales, las que entran sin
+  // pisar a una ya puesta (la raya se ve igual). Con muchas horizontales
+  // juntas, si no, quedaba una pila de etiquetas ilegible.
+  ctx.font = `600 22px ${FONT_SANS}`
+  const puestas = []
+  for (const e of [...g.etiquetas].sort((a, b) => Number(!!b.principal) - Number(!!a.principal))) {
+    if (puestas.some(y0 => Math.abs(y0 - Y(e.y)) < 36)) continue
+    puestas.push(Y(e.y))
+    const ancho = Math.min(ctx.measureText(e.texto).width + 16, W - (x1 + 4) - 8)
+    ctx.fillStyle = color(e.color)
+    roundRect(ctx, x1 + 4, Y(e.y) - 17, ancho, 34, 6)
+    ctx.fill()
+    ctx.fillStyle = FONDO_TINTA
+    ctx.fillText(truncateToWidth(ctx, e.texto, ancho - 12), x1 + 12, Y(e.y) + 1)
+  }
+  ctx.textBaseline = 'top'
+  y = top + altoPrecio
+
+  // ── Balances y dividendos, en una fila debajo del precio ──────────────
+  if (altoMarcas) {
+    ctx.font = `600 18px ${FONT_SANS}`
+    ctx.textBaseline = 'middle'
+    let fin = -Infinity
+    for (const m of spec.marcas) {
+      const txt = m.cuantos > 1 ? `${m.letra} ${m.cuantos}` : m.letra
+      const ancho = Math.max(ctx.measureText(txt).width + 18, 30)
+      const bx = Math.min(Math.max(X(m.x) - ancho / 2, x0), x1 - ancho)
+      if (bx < fin + 4) continue
+      const c = color(m.color)
+      ctx.fillStyle = conAlfa(c, 0.18)
+      roundRect(ctx, bx, y + 8, ancho, 30, 15)
+      ctx.fill()
+      ctx.strokeStyle = c
+      ctx.lineWidth = 2
+      ctx.stroke()
+      ctx.fillStyle = c
+      ctx.textAlign = 'center'
+      ctx.fillText(txt, bx + ancho / 2, y + 24)
+      ctx.textAlign = 'left'
+      fin = bx + ancho
+    }
+    ctx.textBaseline = 'top'
+    y += altoMarcas
+  }
+
+  // ── Las fechas ─────────────────────────────────────────────────────────
+  ctx.font = `22px ${FONT_SANS}`
+  ctx.fillStyle = INK_2
+  ctx.textAlign = 'center'
+  let finFecha = -Infinity
+  for (const f of spec.fechas) {
+    const ancho = ctx.measureText(f.texto).width
+    const cx = X(f.x)
+    if (cx - ancho / 2 < Math.max(x0, finFecha + 16) || cx + ancho / 2 > x1) continue
+    ctx.fillText(f.texto, cx, y + 10)
+    finFecha = cx + ancho / 2
+  }
+  ctx.textAlign = 'left'
+  y += ALTO_FECHAS
+
+  // ── RSI ────────────────────────────────────────────────────────────────
+  if (spec.rsi) {
+    y += ENTRE_PANELES
+    const Yr = (p) => y + (p / 100) * ALTO_RSI
+    tituloDePanel(ctx, 'RSI', x0, y)
+    ctx.strokeStyle = color(g.grilla, LINEA)
+    ctx.lineWidth = 1.5
+    ctx.setLineDash([6, 6])
+    for (const n of spec.rsi.niveles) linea(ctx, x0, Yr(n.y), x1, Yr(n.y))
+    ctx.setLineDash([])
+    panelRecortado(ctx, x0, y, x1 - x0, ALTO_RSI, () => {
+      for (const t of spec.rsi.lineas) polilinea(ctx, t, X, Yr, color(spec.rsi.color, INK_0), 2.5)
+    })
+    rotulosDeColumna(ctx, spec.rsi.niveles, spec.rsi.ultimo, x1, Yr)
+    y += ALTO_RSI
+  }
+
+  // ── Fuerza de la tendencia: el ADX con su 23 y las barras del Squeeze ─
+  if (spec.fuerza) {
+    y += ENTRE_PANELES
+    const Ya = (p) => y + (p / 100) * ALTO_ADX
+    tituloDePanel(ctx, 'Fuerza de la tendencia (ADX)', x0, y)
+    ctx.strokeStyle = color(g.grilla, LINEA)
+    ctx.lineWidth = 1.5
+    ctx.setLineDash([6, 6])
+    linea(ctx, x0, Ya(spec.fuerza.clave.y), x1, Ya(spec.fuerza.clave.y))
+    ctx.setLineDash([])
+    panelRecortado(ctx, x0, y, x1 - x0, ALTO_ADX, () => {
+      for (const t of spec.fuerza.lineas) polilinea(ctx, t, X, Ya, color(spec.fuerza.color, INK_0), 2.5)
+    })
+    rotulosDeColumna(ctx, [spec.fuerza.clave], null, x1, Ya)
+    y += ALTO_ADX + 10
+    const Ys = (p) => y + (p / 100) * ALTO_SQUEEZE
+    const anchoBarra = Math.max((g.anchoVela / 0.65) * 0.7 / 100 * (x1 - x0), 1.5)
+    panelRecortado(ctx, x0, y, x1 - x0, ALTO_SQUEEZE, () => {
+      for (const b of spec.fuerza.barras) {
+        ctx.globalAlpha = b.alpha ?? 1
+        ctx.fillStyle = color(b.color)
+        ctx.fillRect(X(b.x) - anchoBarra / 2, Ys(b.y), anchoBarra, Math.max((b.alto / 100) * ALTO_SQUEEZE, 1))
+      }
+      ctx.globalAlpha = 1
+    })
+  }
+}
+
+// La muestra de una capa en la leyenda: una raya, una raya cortada, una franja,
+// una barra o una letra, en su color.
+function pintarMuestra(ctx, item, x, y, c) {
+  ctx.save()
+  ctx.strokeStyle = c
+  ctx.fillStyle = c
+  ctx.lineCap = 'round'
+  if (item.forma === 'banda') {
+    ctx.globalAlpha = 0.25
+    ctx.fillRect(x, y - 8, 24, 16)
+    ctx.globalAlpha = 1
+    ctx.lineWidth = 2
+    linea(ctx, x, y - 8, x + 24, y - 8)
+    linea(ctx, x, y + 8, x + 24, y + 8)
+  } else if (item.forma === 'barra') {
+    ctx.globalAlpha = 0.6
+    ctx.fillRect(x + 2, y - 2, 5, 10)
+    ctx.fillRect(x + 10, y - 9, 5, 17)
+    ctx.fillRect(x + 18, y - 5, 5, 13)
+  } else if (item.forma === 'letra') {
+    ctx.font = `600 18px ${FONT_SANS}`
+    ctx.textBaseline = 'middle'
+    ctx.fillText('B', x + 2, y)
+  } else {
+    ctx.lineWidth = 4
+    if (item.forma === 'punteada') ctx.setLineDash([7, 5])
+    linea(ctx, x, y, x + 24, y)
+  }
+  ctx.restore()
+}
+
+function pintarRotulos(ctx, rotulos, X, Y, color, { x0, x1, top, bottom }) {
+  const alto = 32
+  const cajas = rotulos.map((r) => {
+    ctx.font = `${r.forma === 'circulo' ? '600 ' : ''}20px ${FONT_SANS}`
+    const ancho = r.forma === 'circulo' ? Math.max(ctx.measureText(r.texto).width + 18, alto) : ctx.measureText(r.texto).width + 20
+    const px = X(r.x), py = Y(r.y)
+    const bx = r.ancla === 'izq' ? px + 8 : r.ancla === 'der' ? px - 8 - ancho : px - ancho / 2
+    const separa = r.forma === 'circulo' ? 10 : 4
+    const by = r.vertical === 'arriba' ? py - alto - separa : r.vertical === 'abajo' ? py + separa : py - alto / 2
+    // Fuera de lo que se ve, el rótulo no se pinta (su raya tampoco se ve).
+    if (py < top || py > bottom) return null
+    return { prioridad: r.prioridad || 0, x0: bx, x1: bx + ancho, y0: by, y1: by + alto, limite: { x0, x1 } }
+  })
+  const { tapados } = ubicarRotulos(cajas.map(c => c || { x0: 0, x1: 0, y0: 0, y1: 0 }))
+  rotulos.forEach((r, k) => {
+    const c = cajas[k]
+    if (!c || tapados.has(k) || c.y0 < top - 4 || c.y1 > bottom + 4) return
+    const borde = color(r.borde)
+    ctx.textBaseline = 'middle'
+    if (r.forma === 'circulo') {
+      ctx.font = `600 20px ${FONT_SANS}`
+      roundRect(ctx, c.x0, c.y0, c.x1 - c.x0, alto, alto / 2)
+      ctx.fillStyle = FONDO_TINTA
+      ctx.fill()
+      ctx.lineWidth = 3
+      ctx.strokeStyle = borde
+      ctx.stroke()
+      ctx.fillStyle = INK_0
+      ctx.textAlign = 'center'
+      ctx.fillText(r.texto, (c.x0 + c.x1) / 2, c.y0 + alto / 2 + 1)
+      ctx.textAlign = 'left'
+    } else {
+      ctx.font = `20px ${FONT_SANS}`
+      ctx.globalAlpha = 0.9
+      ctx.fillStyle = FONDO_TINTA
+      roundRect(ctx, c.x0, c.y0, c.x1 - c.x0, alto, 5)
+      ctx.fill()
+      ctx.globalAlpha = 1
+      ctx.fillStyle = borde
+      ctx.fillRect(c.x0, c.y0, 4, alto)
+      ctx.fillStyle = INK_0
+      ctx.fillText(r.texto, c.x0 + 12, c.y0 + alto / 2 + 1)
+    }
+    ctx.textBaseline = 'top'
+  })
+}
+
+function tituloDePanel(ctx, texto, x, y) {
+  ctx.font = `500 21px ${FONT_SANS}`
+  ctx.fillStyle = INK_2
+  ctx.textBaseline = 'bottom'
+  ctx.fillText(texto, x, y - 8)
+  ctx.textBaseline = 'top'
+}
+
+// Los números del costado de un panel (70 y 30 del RSI, el 23 del ADX) y el
+// valor de hoy en su etiqueta.
+function rotulosDeColumna(ctx, niveles, ultimo, x1, Yp) {
+  ctx.font = `20px ${FONT_SANS}`
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = INK_3
+  for (const n of niveles) {
+    if (ultimo && Math.abs(Yp(n.y) - Yp(ultimo.y)) < 24) continue
+    ctx.fillText(n.texto, x1 + 14, Yp(n.y))
+  }
+  if (ultimo) {
+    ctx.font = `600 20px ${FONT_SANS}`
+    const ancho = ctx.measureText(ultimo.texto).width + 16
+    ctx.fillStyle = INK_2
+    roundRect(ctx, x1 + 4, Yp(ultimo.y) - 15, ancho, 30, 6)
+    ctx.fill()
+    ctx.fillStyle = FONDO_TINTA
+    ctx.fillText(ultimo.texto, x1 + 12, Yp(ultimo.y) + 1)
+  }
+  ctx.textBaseline = 'top'
+}
+
+function panelRecortado(ctx, x, y, w, h, pintar) {
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(x, y, w, h)
+  ctx.clip()
+  pintar()
+  ctx.restore()
+}
+
+function linea(ctx, ax, ay, bx, by) {
+  ctx.beginPath()
+  ctx.moveTo(ax, ay)
+  ctx.lineTo(bx, by)
+  ctx.stroke()
+}
+
+function polilinea(ctx, puntos, X, Y, c, ancho = 2, alpha = 1) {
+  if (!puntos?.length) return
+  ctx.globalAlpha = alpha
+  ctx.strokeStyle = c
+  ctx.lineWidth = ancho
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  puntos.forEach(([px, py], k) => (k ? ctx.lineTo(X(px), Y(py)) : ctx.moveTo(X(px), Y(py))))
+  ctx.stroke()
+  ctx.globalAlpha = 1
+}
+
+// Un color ya resuelto («rgb(70, 198, 224)» o un hex) con transparencia.
+function conAlfa(c, a) {
+  const m = String(c).match(/rgba?\(\s*([\d.]+)[ ,]+([\d.]+)[ ,]+([\d.]+)/)
+  if (m) return `rgba(${m[1]},${m[2]},${m[3]},${a})`
+  return String(c).startsWith('#') ? hexToRgba(c, a) : c
+}
+
 // Los colores de las porciones vienen como `rgb(var(--x))` (siguen al tema en
 // la app). El canvas no resuelve var(), así que se leen del navegador DENTRO de
 // un contenedor `.dark`: la imagen es oscura siempre, y una porción tiene que
@@ -1440,6 +1908,8 @@ async function ensureFontsReady() {
       `22px Geist`, `500 22px Geist`, `500 28px Geist`, `600 26px Geist`,
       `600 34px Geist`, `600 64px Geist`, `600 120px Geist`,
       `600 16px Geist`, `600 13px Geist`, `700 18px Geist`, `700 15px Geist`,
+      // La del gráfico técnico (imagenGrafico.js).
+      `20px Geist`, `600 20px Geist`, `600 48px Geist`, `600 22px Geist`,
       `12px "JetBrains Mono"`, `13px "JetBrains Mono"`, `14px "JetBrains Mono"`,
     ]
     const loads = SIZES.map((spec) => {
@@ -1451,7 +1921,7 @@ async function ensureFontsReady() {
   } catch { /* ignore */ }
 }
 
-function dataURLToBlob(dataURL) {
+export function dataURLToBlob(dataURL) {
   const parts = dataURL.split(',')
   const mime = (parts[0].match(/:(.*?);/) || [])[1] || 'image/png'
   const bstr = atob(parts[1])

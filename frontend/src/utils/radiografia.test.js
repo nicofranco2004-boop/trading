@@ -44,7 +44,7 @@ describe('la marca local (acción argentina)', () => {
 })
 
 describe('las palabras son las de la ficha', () => {
-  it('Alcista / Bajista / Sin lectura salen de la tarjeta «Tendencia de fondo»', () => {
+  it('Alcista / Bajista / Sin lectura salen de la tarjeta «Tendencia de largo plazo»', () => {
     for (const l of [ALCISTA, BAJISTA]) {
       const x = lec('X', false, l)
       expect(tendencia(x).palabra).toBe(tarjetas(x.lectura).find(t => t.id === 'fondo').veredicto)
@@ -65,7 +65,7 @@ describe('las palabras son las de la ficha', () => {
   })
 })
 
-// El % de tu plata en tendencia alcista, sus tres grupos (que suman 100) y el
+// El % de tu cartera en tendencia alcista, sus tres grupos (que suman 100) y el
 // motivo de cada «sin lectura» ya no se cuentan en la pantalla (28/10): los arma
 // el servidor una vez (senales_semana.reparto). Sus pruebas viven en
 // backend/tests/test_reparto_tendencia.py, que además comprueba que la Cartera,
@@ -96,14 +96,14 @@ describe('lo que no se puede leer no se inventa', () => {
 
 describe('el motivo de cada «sin lectura» de una fila', () => {
   const HOY = '2026-10-22'
-  it('bono y fondo no se miden; acción sin velas aparece en un día; pocos días y vieja, los suyos', () => {
+  it('bono y fondo no se miden; acción sin velas va a aparecer mañana; pocos días y vieja, los suyos', () => {
     const bono = { id: 1, broker: 'IOL', asset: 'AL30', asset_type: 'BONO' }
     const fondo = { id: 2, broker: 'IOL', asset: 'FCI:PIONERO-PESOS', asset_type: 'FUND' }
     const accion = { id: 4, broker: 'IOL', asset: 'GGAL', asset_type: 'ACCION' }
     expect(tendencia({ asset: 'AL30', local: true, disponible: false }, HOY, bono).porque).toBe('no_se_mide')
     expect(tendencia(null, HOY, fondo).porque).toBe('no_se_mide')
     expect(tendencia({ asset: 'GGAL', local: true, disponible: false }, HOY, accion).porque).toBe('sin_historia')
-    expect(tendencia(null, HOY, accion).motivo).toContain('aparece en un día')
+    expect(tendencia(null, HOY, accion).motivo).toContain('va a aparecer mañana')
     expect(tendencia(lec('IREN', false, { ...ALCISTA, ruedas: 120, media200: null, dist_media200: null, tendencia: null, fecha: HOY }), HOY).porque).toBe('pocos_dias')
     expect(tendencia(lec('MSFT', false, { ...ALCISTA, fecha: '2026-09-17' }), HOY).porque).toBe('vieja')
     for (const k of ['no_se_mide', 'sin_historia', 'pocos_dias', 'vieja']) expect(MOTIVOS_SIN_LECTURA[k]).toBeTruthy()

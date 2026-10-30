@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   duracion, medicion, pctConSigno, plata, primeraCompra, puntosDesde, tarjetasMovimiento,
-  textoEvento, textoGrupo, textoMedicion,
+  textoEvento, textoGananciaPorAccion, textoGrupo, textoMedicion,
 } from './cuantoSeMueve'
 
 const precio = (x) => `US$ ${x.toLocaleString('es-AR', { maximumFractionDigits: 2 })}`
@@ -84,7 +84,7 @@ describe('globos de balances y dividendos', () => {
     const t = textoEvento({ tipo: 'balance', fecha: '2025-07-31', momento: 'despues_del_cierre',
       reaccion: { pct: -4.21, cuando: 'al_otro_dia' } })
     expect(t.titulo).toBe('Balance del 31/07/25')
-    expect(t.lineas).toEqual(['Lo presentó con el mercado ya cerrado.', 'Al otro día el precio: −4,2%'])
+    expect(t.lineas).toEqual(['Presentó resultados después del cierre del mercado.', 'Al día siguiente, el precio: −4,2%'])
   })
   it('sin hora conocida: los dos días juntos', () => {
     const t = textoEvento({ tipo: 'balance', fecha: '2025-07-31', momento: null, reaccion: { pct: 3 } })
@@ -107,20 +107,20 @@ describe('marcas juntas', () => {
     ])
     expect(t.titulo).toBe('2 dividendos')
     expect(t.lineas).toEqual(['06/07/26: pagó $ 8,301 · ese día +4,5%', '03/08/26: pagó $ 8,301',
-      'Por acción. Desde el día de corte, el que compra ya no cobra ese pago.'])
+      'Por acción. Quien compra desde el día de corte ya no cobra este dividendo.'])
   })
   it('balances juntos dicen cuándo se midió cada uno; uno solo, el globo de siempre', () => {
     const t = textoGrupo([
       { tipo: 'balance', fecha: '2026-05-13', momento: 'despues_del_cierre', reaccion: { pct: -0.25 } },
       { tipo: 'balance', fecha: '2026-05-20', momento: 'antes_del_cierre', reaccion: { pct: 1.7 } },
     ])
-    expect(t.lineas).toEqual(['13/05/26: al otro día −0,3%', '20/05/26: ese día +1,7%'])
+    expect(t.lineas).toEqual(['13/05/26: al día siguiente −0,3%', '20/05/26: ese día +1,7%'])
     const e = { tipo: 'balance', fecha: '2026-05-13', momento: null, reaccion: { pct: 2 } }
     expect(textoGrupo([e])).toEqual(textoEvento(e))
   })
 })
 
-describe('cuánto se mueve este papel', () => {
+describe('cuánto se mueve este activo', () => {
   it('las cuatro tarjetas, como el mockup', () => {
     const t = tarjetasMovimiento(MOV, { precio, tenencia: { valor: 5300 }, peso: 0.11 })
     expect(t.map(x => x.id)).toEqual(['caida', 'desde_maximo', 'dia', 'cartera'])
@@ -128,11 +128,11 @@ describe('cuánto se mueve este papel', () => {
     expect(t[0].texto).toBe('De US$ 274 el 10/02/25 a US$ 181 el 21/04/25. Desde ese piso tardó 7 meses (148 días de mercado) en volver a US$ 274.')
     expect(t[1].veredicto).toBe('−16,6%')
     expect(t[2].veredicto).toBe('±1,6%')
-    expect(t[2].texto).toContain('este papel se mueve 1,8 veces lo que el S&P 500')
+    expect(t[2].texto).toContain('este activo se mueve 1,8 veces lo que el S&P 500')
     expect(t[2].texto).toContain('1 de cada 6 días de mercado')
     // 5.300 × 1,6 % = 84,8 → −US$ 85; a la cartera: 11 % × 1,6 % = 0,18 %.
     expect(t[3].veredicto).toBe('−US$ 85')
-    expect(t[3].texto).toContain('Es el 11% de tu cartera: a toda tu cartera ese día la mueve −0,2%.')
+    expect(t[3].texto).toContain('Es el 11% de tu cartera: ese día, tu cartera completa cambiaría −0,2%.')
   })
   it('todavía no volvió', () => {
     const t = tarjetasMovimiento({ ...MOV, peor_caida: { ...MOV.peor_caida, volvio: null, dias_para_volver: null } }, { precio })
@@ -151,5 +151,31 @@ describe('cuánto se mueve este papel', () => {
   it('sin datos, nada', () => {
     expect(tarjetasMovimiento({ disponible: false })).toEqual([])
     expect(tarjetasMovimiento(undefined)).toEqual([])
+  })
+})
+
+describe('lo declarado contra lo esperado, y el detalle del dividendo (Nico, 29/10)', () => {
+  it('la ganancia por acción en palabras: más, menos, igual, pérdida, o lo que se sepa', () => {
+    const b = (x) => textoGananciaPorAccion({ moneda: 'usd', ...x })
+    expect(b({ eps_esperado: 1.5, eps_declarado: 1.65, sorpresa_pct: 10 }))
+      .toBe('Declaró una ganancia de US$ 1,65 por acción; se esperaba US$ 1,50: 10% más de lo esperado.')
+    expect(b({ eps_esperado: 2, eps_declarado: 1.8, sorpresa_pct: -10 })).toContain('10% menos de lo esperado')
+    expect(b({ eps_esperado: 2, eps_declarado: 2.004, sorpresa_pct: 0.2 })).toContain('lo mismo que se esperaba')
+    expect(b({ eps_esperado: -0.1, eps_declarado: -0.12, sorpresa_pct: -20 }))
+      .toBe('Declaró una pérdida de US$ 0,12 por acción; se esperaba US$ 0,10 de pérdida: 20% menos de lo esperado.')
+    expect(b({ eps_esperado: 1.5 })).toBe('Se esperaba una ganancia de US$ 1,50 por acción.')
+    expect(textoGananciaPorAccion({ moneda: 'ars', eps_declarado: 120 })).toBe('Declaró una ganancia de $ 120,00 por acción.')
+    expect(b({})).toBeNull()
+  })
+
+  it('el dividendo: qué parte del precio fue y cómo se compara con el anterior', () => {
+    const d = (x) => textoEvento({ tipo: 'dividendo', fecha: '2026-05-13', monto: 0.26, moneda: 'usd', ...x }).lineas
+    expect(d({ rendimiento: 0.412, anterior: 0.24 })).toEqual([
+      'Pagó US$ 0,26 por acción: el 0,41% de lo que valía la acción ese día.',
+      'El anterior: US$ 0,24 (este es 8,3% más).',
+      'Quien compra desde el día de corte ya no cobra este dividendo.',
+    ])
+    expect(d({ anterior: 0.26 })[1]).toBe('Igual que el anterior (US$ 0,26).')
+    expect(d({})[0]).toBe('Pagó US$ 0,26 por acción.')            // sin precio en su moneda: no se mezcla
   })
 })

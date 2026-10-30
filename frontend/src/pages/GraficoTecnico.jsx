@@ -115,7 +115,7 @@ function GraficoDe({ activo, recientes, cliente, enfocar, onElegir, onTuyo, onAb
             Los fondos comunes no tienen gráfico de precios: se valúan una vez por día, por el valor de la cuotaparte.
             Elegí otro activo arriba a la izquierda.
           </div>
-        ) : <LecturaTecnica key={`${activo}|${ficha.accionLocal}`} titulo={null} {...ficha.grafico} />}
+        ) : <LecturaTecnica key={`${activo}|${ficha.accionLocal}`} titulo={null} {...ficha.grafico} soloGrafico />}
     </div>
   )
 }

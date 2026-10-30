@@ -56,7 +56,7 @@ class CortaTest(unittest.TestCase):
             t = senales_semana.texto_del_cambio(c)["texto"]
             for m in JERGA.finditer(t):
                 antes = t[max(0, m.start() - 30):m.start()]
-                self.assertIn("fuerza", antes, (c, t))
+                self.assertRegex(antes, "fuerza|impulso", (c, t))
 
     def test_el_asunto_del_sabado_usa_la_frase_corta(self):
         def senal(c, asset="KO"):

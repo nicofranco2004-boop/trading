@@ -28,7 +28,7 @@ import { usePlanFeatures } from '../../hooks/usePlanFeatures'
 import { useToast } from '../Toast'
 import { api } from '../../utils/api'
 import { track } from '../../utils/track'
-import { conSentido, SENALES_TECNICAS } from './alertasTexto'
+import { conSentido, SENALES_TECNICAS, alertaDeLinea } from './alertasTexto'
 import { tendenciaDe } from '../../utils/tecnico'
 
 /** La alerta técnica que se arma desde una señal (lo que se manda al formulario). */
@@ -61,14 +61,28 @@ export function useAvisosTecnicos() {
   return { items: items || [], cargado: items !== null, recargar }
 }
 
-export function BotonAvisame({ avisos, className = '', ...datos }) {
+/** `soloIcono`: la campanita sola, como botón redondo (los renglones de «Lo que
+ *  cambió esta semana» del Panorama); el texto va en el globo y para el lector
+ *  de pantalla. */
+export function BotonAvisame({ avisos, className = '', soloIcono = false, ...datos }) {
   const plan = usePlanFeatures()
   const toast = useToast()
   const [abierto, setAbierto] = useState(false)
   const prefill = prefillTecnico(datos)
   const ya = alertaExistente(avisos?.items, prefill)
 
+  const queAvisa = `Avisame cuando ${(SENALES_TECNICAS.find(x => x.id === prefill.senal)?.texto || '').replace(/^./, c => c.toLowerCase())}`
+  const redondo = 'inline-flex items-center justify-center w-[34px] h-[34px] rounded-full border border-line bg-bg-2/60'
+
   if (ya) {
+    if (soloIcono) {
+      return (
+        <Link to="/alertas?tab=mis" title="Ya te avisamos: ver tus alertas" aria-label="Ya te avisamos: ver tus alertas"
+          className={`${redondo} text-rendi-pos hover:border-rendi-pos/40 ${className}`}>
+          <Check size={14} strokeWidth={2.25} aria-hidden="true" />
+        </Link>
+      )
+    }
     return (
       <Link to="/alertas?tab=mis" className={`inline-flex items-center gap-1 min-h-8 text-[12px] text-rendi-pos hover:underline ${className}`}>
         <Check size={13} strokeWidth={2.25} aria-hidden="true" /> Te avisamos
@@ -95,11 +109,17 @@ export function BotonAvisame({ avisos, className = '', ...datos }) {
 
   return (
     <>
-      <button type="button" onClick={() => setAbierto(true)}
-        title={`Avisame cuando ${(SENALES_TECNICAS.find(x => x.id === prefill.senal)?.texto || '').replace(/^./, c => c.toLowerCase())}`}
-        className={`inline-flex items-center gap-1 min-h-8 px-2 -mx-2 rounded text-[12px] text-data-violet hover:bg-data-violet/10 ${className}`}>
-        <Bell size={13} strokeWidth={2} aria-hidden="true" /> Avisame
-      </button>
+      {soloIcono ? (
+        <button type="button" onClick={() => setAbierto(true)} title={queAvisa} aria-label={queAvisa}
+          className={`${redondo} text-ink-1 hover:text-ink-0 hover:border-rendi-accent/40 transition ${className}`}>
+          <Bell size={14} strokeWidth={2} aria-hidden="true" />
+        </button>
+      ) : (
+        <button type="button" onClick={() => setAbierto(true)} title={queAvisa}
+          className={`inline-flex items-center gap-1 min-h-8 px-2 -mx-2 rounded text-[12px] text-data-violet hover:bg-data-violet/10 ${className}`}>
+          <Bell size={13} strokeWidth={2} aria-hidden="true" /> Avisame
+        </button>
+      )}
       {abierto && (
         <AlertaForm plan={plan} prefill={prefill} onClose={() => setAbierto(false)}
           crear={crear} onCreada={creada} />
@@ -108,39 +128,32 @@ export function BotonAvisame({ avisos, className = '', ...datos }) {
   )
 }
 
-/** El aviso activo de tu línea del gráfico (`dibujo`: su id), o null. La
- *  referencia la guarda main._crear_alerta_de_linea: { asset, moneda, id, tipo }. */
-export function alertaDeLinea(items = [], { asset, moneda = 'usd', dibujo }) {
-  const sym = String(asset || '').toUpperCase()
-  const mon = moneda === 'ars' ? 'ars' : 'usd'
-  return items.find(a => {
-    if (a.kind !== 'tecnica' || a.senal !== 'linea' || !a.active) return false
-    try {
-      const r = JSON.parse(a.dibujo || 'null')
-      return r?.id === dibujo && r?.asset === sym && r?.moneda === mon
-    } catch { return false }
-  }) || null
-}
+// El aviso activo de tu línea del gráfico vive en alertasTexto (lo usa también
+// el formulario); se re-exporta para quien ya lo pedía de acá.
+export { alertaDeLinea }
 
 /**
  * «Avisame si el precio la toca», en el cartel de tu línea elegida (Nico,
- * 28/10). Abre el formulario de siempre ya armado con esa línea; si ya hay un
- * aviso, dice «Te avisamos» y deja dejar de avisar.
+ * 28/10), y «Avisame si sale del canal» en el de tu canal (29/10). Abre el
+ * formulario de siempre ya armado con esa línea (el canal pregunta por qué
+ * borde y cuándo cuenta); si ya hay un aviso, dice «Te avisamos» y deja dejar
+ * de avisar.
  */
 export function BotonAvisameLinea({ avisos, asset, accionLocal = false, moneda = 'usd', dibujo, tipoLinea }) {
   const plan = usePlanFeatures()
   const toast = useToast()
   const [abierto, setAbierto] = useState(false)
   const ya = alertaDeLinea(avisos?.items, { asset, moneda, dibujo })
+  const canal = tipoLinea === 'canal'
   if (ya) {
     return (
       <span className="inline-flex items-center gap-2">
         <Link to="/alertas?tab=mis" className="inline-flex items-center gap-1 min-h-10 sm:min-h-8 text-[12.5px] text-rendi-pos hover:underline">
-          <Check size={14} strokeWidth={2.25} aria-hidden="true" /> Te avisamos si la toca
+          <Check size={14} strokeWidth={2.25} aria-hidden="true" /> {canal ? 'Te avisamos si sale' : 'Te avisamos si la toca'}
         </Link>
         <button type="button" onClick={async () => {
           try { await api.patch(`/alerts/${ya.id}`, { active: false }); avisos?.recargar?.() }
-          catch { toast.push('No se pudo apagar el aviso. Probá de nuevo.', { type: 'warn' }) }
+          catch { toast.push('No se pudo desactivar el aviso. Probá de nuevo.', { type: 'warn' }) }
         }} className="min-h-10 sm:min-h-8 px-2 rounded text-[12.5px] text-ink-2 hover:text-ink-0 underline-offset-2 hover:underline">
           Dejar de avisar
         </button>
@@ -150,12 +163,13 @@ export function BotonAvisameLinea({ avisos, asset, accionLocal = false, moneda =
   const prefill = {
     kind: 'tecnica', fijo: true, symbol: String(asset || '').toUpperCase(), senal: 'linea', direction: 'either',
     currency: moneda === 'ars' ? 'ARS' : 'USD', accionLocal: !!accionLocal, dibujo, tipoLinea,
+    ...(canal ? { modo: 'toque' } : {}),
   }
   return (
     <>
       <button type="button" onClick={() => setAbierto(true)}
         className="inline-flex items-center gap-1.5 min-h-10 sm:min-h-8 px-3 rounded-lg border border-data-violet/50 bg-data-violet/10 text-ink-0 font-medium">
-        <Bell size={14} aria-hidden="true" /> Avisame si la toca
+        <Bell size={14} aria-hidden="true" /> {canal ? 'Avisame si sale del canal' : 'Avisame si la toca'}
       </button>
       {abierto && (
         <AlertaForm plan={plan} prefill={prefill} onClose={() => setAbierto(false)}
@@ -165,7 +179,7 @@ export function BotonAvisameLinea({ avisos, asset, accionLocal = false, moneda =
             return res
           }}
           onCreada={(res, payload, pedidoPush) => {
-            toast.push('Listo: te avisamos si el precio toca tu línea.', { type: 'success' })
+            toast.push(canal ? 'Listo: te avisamos si el precio sale de tu canal.' : 'Listo: te avisamos si el precio toca tu línea.', { type: 'success' })
             pedidoPush?.catch((ex) => {
               if (ex?.motivo === 'bloqueadas') return
               toast.push('Las notificaciones no se activaron: por ahora te llega por mail.', { type: 'warn', duration: 7000 })
@@ -199,5 +213,22 @@ export function senalDeTarjeta(id, l) {
     return { senal: r < 30 ? 'rsi_sube_30' : r >= 70 ? 'rsi_baja_70' : r > 50 ? 'rsi_sobre_70' : 'rsi_bajo_30' }
   }
   if (id === 'maximo') return { senal: 'maximo_12m' }
+  return null
+}
+
+/**
+ * Qué aviso ofrece la campanita de un cambio de la semana (`tipo` y `sentido`
+ * de GET /api/tus-senales): que vuelva a cambiar. Cruzó para arriba su promedio
+ * → avisar si lo vuelve a cruzar para abajo; el impulso bajó de 30 → si vuelve
+ * a superarlo; superó 70 → si vuelve a quedar debajo; empezó a marcar máximos →
+ * la próxima vez que marque uno. La fuerza de la tendencia (ADX) no tiene
+ * alerta: null, sin campanita.
+ */
+export function senalDelCambio(s) {
+  const vuelta = s?.sentido === 'arriba' ? 'below' : s?.sentido === 'abajo' ? 'above' : 'either'
+  if (s?.tipo === 'media200' || s?.tipo === 'media50') return { senal: s.tipo, direction: vuelta }
+  if (s?.tipo === 'rsi_bajo_30') return { senal: 'rsi_sube_30' }
+  if (s?.tipo === 'rsi_sobre_70') return { senal: 'rsi_baja_70' }
+  if (s?.tipo === 'maximo_12m') return { senal: 'maximo_12m' }
   return null
 }

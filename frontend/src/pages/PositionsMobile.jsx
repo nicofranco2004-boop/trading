@@ -3120,7 +3120,7 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
         )}
       </Celda>
 
-      {/* Tendencia de fondo y fuerza (RSI): las mismas celdas que la compu. El
+      {/* Tendencia de fondo e impulso (RSI): las mismas celdas que la compu. El
           lote de una fila abierta no las repite. */}
       <Celda>
         {(p.is_cash || p._isLot) ? <Vacio /> : tecnica.estado === 'cargando' ? (

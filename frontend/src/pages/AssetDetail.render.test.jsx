@@ -1,8 +1,8 @@
 // La ficha del activo ENTERA, montada (testing/navegadorMinimo.js), con los
 // pedidos al servidor simulados en la frontera (utils/api): que lo que vale tu
-// tenencia (la cuenta de la ficha) y qué parte de tu plata es (la cuenta del
+// tenencia (la cuenta de la ficha) y qué parte de tu cartera es (la cuenta del
 // servidor, GET /api/tecnico/{activo}/peso: la misma de Tu lista y de Señales)
-// lleguen hasta «En tu cartera» de «Cuánto se mueve este papel». Las cuentas
+// lleguen hasta «En tu cartera» de «Cuánto se mueve este activo». Las cuentas
 // del servidor se prueban en backend/tests/test_movimiento.py y, el peso, en
 // backend/tests/test_tus_senales.py.
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
@@ -44,6 +44,7 @@ const RESPUESTAS = {
   '/tecnico/NVDA': () => TECNICO,
 }
 vi.mock('../utils/api', () => ({
+  getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
   api: {
     get: vi.fn((ruta) => {
       const k = Object.keys(RESPUESTAS).find(c => ruta.startsWith(c))
@@ -77,7 +78,7 @@ describe('ficha del activo: «En tu cartera»', () => {
     peso = { peso: 0.61 }
     const t = await ficha()
     // 25 × US$ 212,21 = US$ 5.305; × 2,76 % = US$ 146.
-    expect(t).toContain('Cuánto se mueve este papel')
+    expect(t).toContain('Cuánto se mueve este activo')
     expect(t).toContain('−US$ 146')
     expect(t).toContain('Es el 61% de tu cartera')
   })

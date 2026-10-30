@@ -40,23 +40,23 @@ export default function LiquidezByma({ papel }) {
   if (liq?.motivo === 'sin_fuente') {
     return (
       <p className="mb-5 text-[13px] text-ink-2">
-        Ahora no pudimos medir cuánto se opera en BYMA. Probá de nuevo en un rato.
+        En este momento no pudimos medir cuánto se opera en BYMA. Probá de nuevo en unos minutos.
       </p>
     )
   }
   if (!liq?.disponible) return null
   const { nivel, pesos_por_dia: pesos, dias_sin_operar: sinOperar, ruedas, spread_pct: spread } = liq
   const ultimaRueda = liq.periodo === 'ultima_rueda'
-  const enDolares = liq.en_dolares ? ' Es la especie en dólares: el monto está pasado a pesos.' : ''
+  const enDolares = liq.en_dolares ? ' Es la versión que cotiza en dólares: el monto está convertido a pesos.' : ''
 
   if (nivel === 'mucha') {
     return (
       <p className="flex items-start gap-2 mb-5 text-[13px] text-ink-2">
         <ArrowLeftRight size={15} strokeWidth={1.75} className="text-rendi-pos mt-0.5 flex-shrink-0" aria-hidden="true" />
         <span>
-          Se opera mucho en BYMA{pesos != null && <>: <span className="text-ink-0 font-medium tabular">{millones(pesos)} {ultimaRueda ? 'en la última rueda' : 'por día'}</span></>}.{enDolares}
-          {' '}Podés comprar o vender enseguida, a un precio cerca del último.
-          {spread != null && <> Hacerlo al toque cuesta <span className="tabular">{pct(spread)}</span>.</>}
+          Se opera mucho en BYMA{pesos != null && <>: <span className="text-ink-0 font-medium tabular">{millones(pesos)} {ultimaRueda ? 'en el último día de mercado' : 'por día'}</span></>}.{enDolares}
+          {' '}Podés comprar o vender enseguida, a un precio cercano al último.
+          {spread != null && <> Comprar y vender de inmediato cuesta <span className="tabular">{pct(spread)}</span> (la diferencia entre el precio de compra y el de venta).</>}
         </span>
       </p>
     )
@@ -70,29 +70,29 @@ export default function LiquidezByma({ papel }) {
     ? 'No hay historia de cuánto se opera por día.'
     : ultimaRueda
       ? (sinOperar
-        ? 'En la última rueda no tuvo ninguna operación. No hay historia de los días anteriores.'
-        : `En la última rueda se operaron unos ${millones(pesos)}. No hay historia de los días anteriores.`)
+        ? 'En el último día de mercado no tuvo ninguna operación. No hay historia de los días anteriores.'
+        : `En el último día de mercado se operaron unos ${millones(pesos)}. No hay historia de los días anteriores.`)
       : `Se operan unos ${millones(pesos)} por día${sinOperar == null ? ''
         : sinOperar
-          ? ` y no tuvo ninguna operación en ${sinOperar} de las últimas ${ruedas} ruedas`
-          : ` y se operó todos los días de las últimas ${ruedas} ruedas`}.`) + enDolares
+          ? ` y no tuvo ninguna operación en ${sinOperar} de los últimos ${ruedas} días de mercado`
+          : ` y tuvo operaciones en cada uno de los últimos ${ruedas} días de mercado`}.`) + enDolares
   const puntas = spread == null ? null
     : poca && spread > 1
       ? `Ahora, entre el precio de compra y el de venta hay ${pct(spread)}.`
-      : `Comprar y vender al toque cuesta ${pct(spread)}.`
+      : `Comprar y vender de inmediato cuesta ${pct(spread)} (la diferencia entre el precio de compra y el de venta).`
   // Qué te cambia al operar. Sin "comprá", "vendé" ni "evitá": sólo qué pasa.
   const efectos = poca ? [
     'Puede no haber quién te compre o te venda enseguida al precio que ves: a veces hay que esperar o aceptar un precio peor.',
     spread != null && spread > 1
       ? `Si comprás y vendés enseguida, perdés ese ${pct(spread)} aunque el precio no se mueva.`
-      : 'Entrar y salir seguido cuesta más que en un papel que se opera mucho.',
-    'Una orden grande puede mover el precio en contra mientras se completa.',
+      : 'Comprar y vender seguido cuesta más que en un activo que se opera mucho.',
+    'Una orden grande puede mover el precio en tu contra mientras se completa.',
     // Sin nombrar "el gráfico de arriba": a veces no hay gráfico (IRENC), y
     // en pesos el gráfico es el del propio CEDEAR.
     liq.es_cedear && 'El precio del CEDEAR en BYMA puede alejarse del de la acción en Nueva York, que se opera mucho más.',
   ].filter(Boolean) : [
     'En montos chicos se compra y se vende sin problema.',
-    'En montos grandes, tu propia orden puede mover el precio en contra mientras se completa.',
+    'En montos grandes, tu propia orden puede mover el precio en tu contra mientras se completa.',
   ]
 
   return (
@@ -103,7 +103,7 @@ export default function LiquidezByma({ papel }) {
       <p className="text-[13px] text-ink-1 leading-relaxed mt-1.5 tabular">
         {operaciones}{puntas && <> {puntas}</>}
       </p>
-      <div className="text-[12.5px] text-ink-1 font-medium mt-2.5">Qué te cambia al operar</div>
+      <div className="text-[12.5px] text-ink-1 font-medium mt-2.5">Qué significa a la hora de operar</div>
       <ul className="mt-1 space-y-1">
         {efectos.map(e => (
           <li key={e} className="flex gap-2 text-[12.5px] text-ink-2 leading-relaxed">

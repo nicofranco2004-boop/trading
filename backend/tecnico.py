@@ -597,7 +597,9 @@ def _atrasada(una: list, otra: list) -> bool:
 @pesado
 def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     """La serie de `asset` en `moneda` ('usd' | 'ars') con lo que hay guardado.
-    {velas, ticker, convertida} o {velas: []} si no hay.
+    {velas, ticker, convertida, por} o {velas: []} si no hay. `por`: cómo se
+    convirtió con el MEP ('multiplicar' | 'dividir'; sólo si `convertida`). Es LA
+    decisión de qué serie se dibuja: la vela de hoy (`vela_de_hoy`) la lee de acá.
 
     `local`: es una acción ARGENTINA (lo sabe la ficha por tus lotes). Entonces
     en dólares se usa SU precio de BYMA ÷ el MEP, aunque haya guardado un ticker
@@ -632,12 +634,14 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
         if byma:
             return {"velas": byma, "ticker": simbolo_byma(a), "convertida": None}
         if afuera:
-            return {"velas": _convertir(conn, afuera, "multiplicar"), "ticker": de_afuera, "convertida": "mep"}
+            return {"velas": _convertir(conn, afuera, "multiplicar"), "ticker": de_afuera,
+                    "convertida": "mep", "por": "multiplicar"}
         return {"velas": []}
     if afuera:
         return {"velas": afuera, "ticker": de_afuera, "convertida": None}
     if byma:
-        return {"velas": _convertir(conn, byma, "dividir"), "ticker": simbolo_byma(a), "convertida": "mep"}
+        return {"velas": _convertir(conn, byma, "dividir"), "ticker": simbolo_byma(a),
+                "convertida": "mep", "por": "dividir"}
     return {"velas": []}
 
 
@@ -661,6 +665,138 @@ def ticker_de_la_empresa(conn, asset: str, local: bool = False):
     return serie(conn, a, "usd", local).get("ticker")
 
 
+def preparar_vela_de_hoy(conn, asset: str, moneda: str = "usd", local: bool = False):
+    """Lo que la vela de hoy (`vela_de_hoy`) necesita de la base, leído ANTES de
+    salir a la red: en Postgres, leer abre una transacción que queda abierta
+    hasta cerrar la conexión, y la vela espera a Yahoo y al dólar (auditoría
+    30/10: el patrón del hallazgo 15 de la migración). La MISMA serie que dibuja
+    la ficha (`serie`: el mismo ticker y la misma conversión). None si no hay."""
+    import velas_diarias
+    from fx import serie_diaria
+    moneda = "ars" if moneda == "ars" else "usd"
+    s = serie(conn, asset, moneda, local)
+    if not s["velas"]:
+        return None
+    ticker = s["ticker"]
+    # La última vela de la serie TAL COMO LA DIO YAHOO (sin convertir): contra
+    # ella se mide si lo que trae Yahoo hoy sigue a lo guardado.
+    cruda = velas_diarias.ultima_vela(conn, ticker)
+    if not cruda or cruda["date"] != s["velas"][-1]["date"]:
+        return None
+    pendiente = False
+    if ticker.endswith(".BA"):
+        import cambios_ratio
+        pendiente = bool(cambios_ratio.para_el_grafico(conn, ticker).get("pendientes"))
+    return {
+        "ticker": ticker, "convertida": s["convertida"], "por": s.get("por"),
+        "ultima": {"date": cruda["date"], "close": cruda["close"]},
+        "pendiente": pendiente,
+        # El MEP guardado de los días después de la última vela (si alguno quedó
+        # sin guardar, se convierte con el de ESE día, como la historia).
+        "dolares": serie_diaria(conn, cruda["date"]) if s["convertida"] else [],
+    }
+
+
+def _mep_de_hoy(ahora=None):
+    """El MEP de ahora para convertir la vela de hoy: el medio con la misma
+    regla que la historia (`fx.punta_media`, con su filtro de puntas raras) y
+    no más viejo que `MAX_DIAS_SIN_DOLAR` (la caché del dólar conserva el último
+    que llegó aunque la fuente esté caída días: auditoría 30/10)."""
+    import main
+    from datetime import datetime, timezone
+    from fx import punta_media
+    m = (main._get_dolar_data() or {}).get("mep")
+    if not isinstance(m, dict):
+        return None
+    tc = punta_media(m.get("compra"), m.get("venta"))
+    try:
+        cuando = datetime.fromisoformat(str(m.get("updated_at")).replace("Z", "+00:00"))
+        if cuando.tzinfo is None:
+            cuando = cuando.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    if (ahora or datetime.now(timezone.utc)) - cuando > timedelta(days=MAX_DIAS_SIN_DOLAR):
+        return None
+    return tc
+
+
+def _cambio_de_escala(antes: float, despues: float) -> bool:
+    """¿De un cierre al siguiente el precio saltó por un factor redondo (×2, ×3,
+    ÷4…)? En un '.BA' es la forma de un cambio de ratio que Yahoo no corrige y
+    que la lista de la noche (`cambios_ratio`) todavía no vio: dibujado, sería
+    una caída falsa de 50 % toda la rueda. Con la misma vara que esa lista (el
+    salto mínimo y lo que es "redondo"). Una suba de 40 % de una acción
+    argentina (factor 1,4) no es redonda y se dibuja; una caída real de 50 %
+    queda sin vela de hoy hasta la noche (mejor que una equivocada)."""
+    import cambios_ratio
+    if not (antes and despues and antes > 0 and despues > 0):
+        return False
+    return (abs(despues / antes - 1) > cambios_ratio.UMBRAL_SALTO
+            and cambios_ratio.factor_redondo(antes / despues) is not None)
+
+
+def vela_de_hoy(prep) -> dict:
+    """Las ruedas que la noche todavía no guardó, con la de HOY mientras se
+    mueve, de la serie que preparó `preparar_vela_de_hoy`:
+    {velas: [{d, o, h, l, c, v, hoy}], en_rueda, demora_min, actualizada,
+    ultima_guardada}. `hoy`: es la rueda de hoy (la última). `ultima_guardada`:
+    la vela guardada que siguen: si la pantalla tiene otra (quedó abierta de un
+    día para el otro y la noche guardó una más), tiene que pedir la serie de nuevo. `en_rueda`: la rueda todavía manda
+    precios (`velas_diarias.en_rueda`, con la demora): la pantalla sigue pidiendo
+    seguido. `demora_min`: cuánto tardan en llegar (`velas_diarias.DEMORA_MIN`).
+
+    Las velas no pasan por las medias, el RSI ni la lectura: la tendencia y los
+    avisos siguen con el cierre de ayer, porque con el precio de las 11 podrían
+    cambiar y a las 15 volver.
+
+    Sin velas ([]) —nunca una vela que no sigue a lo guardado— si:
+      · Yahoo no tiene nada después de la última guardada;
+      · lo que trae Yahoo no incluye esa última guardada con el MISMO cierre: o
+        falta un día en el medio (una serie atrasada), o Yahoo reescribió la
+        historia (un split de hoy: la vela vendría en otra escala);
+      · es un '.BA' con un salto sin decidir (`serie` lo esconde desde ese día)
+        o con un salto de factor redondo desde el último cierre (`_cambio_de_escala`);
+      · va convertida y no hay dólar de ese día ni MEP de hoy: no se inventa."""
+    import velas_diarias
+    from home.market import mercado_de
+    if not prep:
+        return {"velas": [], "en_rueda": False, "demora_min": 0, "actualizada": None, "ultima_guardada": None}
+    ticker = prep["ticker"]
+    respuesta = {"velas": [], "en_rueda": velas_diarias.en_rueda(ticker),
+                 "demora_min": velas_diarias.DEMORA_MIN.get(mercado_de(ticker), 0), "actualizada": None,
+                 "ultima_guardada": prep["ultima"]["date"]}
+    tanda = velas_diarias.ruedas_recientes(ticker)
+    if not tanda or prep["pendiente"]:
+        return respuesta
+    respuesta["actualizada"] = tanda["actualizada"]
+    ult = prep["ultima"]
+    previa = next((r for r in tanda["ruedas"] if r["date"] == ult["date"]), None)
+    if previa is None or abs(previa["close"] / ult["close"] - 1) > velas_diarias.TOLERANCIA_REESCRITURA:
+        return respuesta
+    nuevas = [r for r in tanda["ruedas"] if r["date"] > ult["date"]]
+    p = estructura.precio_redondo
+    cierre = ult["close"]
+    mep_hoy = None
+    for r in nuevas:
+        if ticker.endswith(".BA") and _cambio_de_escala(cierre, r["close"]):
+            break
+        cierre = r["close"]
+        precios = {k: r[k] for k in ("open", "high", "low", "close")}
+        if prep["convertida"]:
+            guardado = next((tc for f, tc, f_tc in prep["dolares"] if f == r["date"] and f_tc == r["date"]), None)
+            if guardado is None and mep_hoy is None:
+                mep_hoy = _mep_de_hoy()
+            tc = guardado or mep_hoy
+            if not tc:
+                break
+            precios = {k: (x / tc if prep["por"] == "dividir" else x * tc) if x is not None else None
+                       for k, x in precios.items()}
+        respuesta["velas"].append({
+            "d": r["date"], "o": p(precios["open"]), "h": p(precios["high"]), "l": p(precios["low"]),
+            "c": p(precios["close"]), "v": r.get("volume"), "hoy": r["date"] == tanda["hoy"]})
+    return respuesta
+
+
 def cierre_de(conn, simbolo: str):
     """El último cierre guardado de un símbolo tal como lo pide la valuación
     ('AAPL.BA', 'AAPL', 'BTC', 'BRK.B'), con su fecha. Sirve para saber cuánto se
@@ -675,23 +811,21 @@ def cierre_de(conn, simbolo: str):
     return {"fecha": v["date"], "cierre": v["close"]} if v else None
 
 
-@pesado
-def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, ref: str = None) -> dict:
-    """Lo que necesita la ficha: la serie del gráfico (2 años de calendario) con
-    sus medias y su RSI ya calculados sobre TODA la historia guardada (la media
-    de 200 del primer punto del gráfico necesita los 10 meses de antes) y la
-    lectura."""
-    moneda = "ars" if moneda == "ars" else "usd"
-    s = serie(conn, asset, moneda, local)
-    velas = s["velas"]
-    if not velas:
-        return {"asset": (asset or "").upper(), "moneda": moneda, "disponible": False}
+def indicadores(velas: list) -> dict:
+    """Las cuentas del gráfico sobre TODA la serie `velas`, vela por vela: las
+    medias de 50 y 200 velas, el RSI, el ADX, el Squeeze y las Bandas de
+    Bollinger. Una vela es un día en el gráfico diario y una hora (o cuatro)
+    en el de horas (velas_horarias.py): la media de 200 es de 200 VELAS."""
     cierres = [v["close"] for v in velas]
-    m50, m200, r = media(cierres, 50), media(cierres, 200), rsi(cierres)
-    dmi, sqz, bb = adx(velas), squeeze(velas), bollinger(cierres)
-    desde = _desde_dias(velas, DIAS_GRAFICO)
-    lect = lectura(velas, m50, m200, r, dmi, sqz, bb)
+    return {"m50": media(cierres, 50), "m200": media(cierres, 200), "rsi": rsi(cierres),
+            "dmi": adx(velas), "sqz": squeeze(velas), "bb": bollinger(cierres)}
 
+
+def puntos_del_grafico(velas: list, ind: dict, desde: int = 0) -> list:
+    """Los puntos que dibuja la pantalla, de la vela `desde` en adelante, con
+    las cuentas de `indicadores(velas)`. Es UN armado para el gráfico diario
+    (`para_la_ficha`) y el de horas (velas_horarias.py): mismos redondeos,
+    mismos nombres."""
     def _r(x, d=4):
         return round(x, d) if x is not None else None
 
@@ -703,12 +837,30 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
     # o/h/l: apertura, máximo y mínimo, para el gráfico de velas. Pueden venir
     # vacíos (una vela de Yahoo con el máximo roto se guarda sólo con cierre).
     p = estructura.precio_redondo   # abajo de 1, cifras significativas (SHIB, PEPE)
-    puntos = [{"d": velas[i]["date"], "o": p(velas[i].get("open")), "h": p(velas[i].get("high")),
-               "l": p(velas[i].get("low")), "c": p(cierres[i]), "s50": p(m50[i]),
-               "s200": p(m200[i]), "bb_arriba": p(bb["arriba"][i]), "bb_abajo": p(bb["abajo"][i]),
-               "rsi": _r(r[i], 2), "adx": _r(dmi["adx"][i], 2),
-               "squeeze": _sig(sqz["valor"][i]), "squeeze_color": sqz["color"][i],
-               "v": velas[i].get("volume")} for i in range(desde, len(velas))]
+    m50, m200, r, dmi, sqz, bb = ind["m50"], ind["m200"], ind["rsi"], ind["dmi"], ind["sqz"], ind["bb"]
+    return [{"d": velas[i]["date"], "o": p(velas[i].get("open")), "h": p(velas[i].get("high")),
+             "l": p(velas[i].get("low")), "c": p(velas[i]["close"]), "s50": p(m50[i]),
+             "s200": p(m200[i]), "bb_arriba": p(bb["arriba"][i]), "bb_abajo": p(bb["abajo"][i]),
+             "rsi": _r(r[i], 2), "adx": _r(dmi["adx"][i], 2),
+             "squeeze": _sig(sqz["valor"][i]), "squeeze_color": sqz["color"][i],
+             "v": velas[i].get("volume")} for i in range(desde, len(velas))]
+
+
+@pesado
+def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, ref: str = None) -> dict:
+    """Lo que necesita la ficha: la serie del gráfico (2 años de calendario) con
+    sus medias y su RSI ya calculados sobre TODA la historia guardada (la media
+    de 200 del primer punto del gráfico necesita los 10 meses de antes) y la
+    lectura."""
+    moneda = "ars" if moneda == "ars" else "usd"
+    s = serie(conn, asset, moneda, local)
+    velas = s["velas"]
+    if not velas:
+        return {"asset": (asset or "").upper(), "moneda": moneda, "disponible": False}
+    ind = indicadores(velas)
+    desde = _desde_dias(velas, DIAS_GRAFICO)
+    lect = lectura(velas, ind["m50"], ind["m200"], ind["rsi"], ind["dmi"], ind["sqz"], ind["bb"])
+    puntos = puntos_del_grafico(velas, ind, desde)
     return {
         "asset": (asset or "").upper(),
         "moneda": moneda,
@@ -916,7 +1068,7 @@ def para_la_lista(conn, activos: list) -> list:
     Cada uno trae la MISMA `lectura` que su ficha y que la radiografía (de ahí
     salen las palabras de las dos tendencias, la fuerza, el ADX y la distancia
     al máximo del año), `linea`: los cierres de los últimos 3 meses para la
-    línea chica de la fila, y `ultimo_cambio` (ver `_ultimo_cambio`). Sin
+    línea chica de la fila, cada uno con su promedio de 200 días (`m`), y `ultimo_cambio` (ver `_ultimo_cambio`). Sin
     velas: `disponible` False, nunca se inventa. Cuánto pesa cada uno lo pone
     la pantalla, con la valuación de la Cartera. Lo ya leído no se vuelve a
     calcular (`_leer_varios`)."""
@@ -927,10 +1079,16 @@ def para_la_lista(conn, activos: list) -> list:
         if not velas:
             return {"asset": a, "local": local, "disponible": False}
         cierres = [v["close"] for v in velas]
-        linea = [{"d": v["date"], "c": estructura.precio_redondo(v["close"])}
-                 for v in velas[_desde_dias(velas, DIAS_LINEA):]]
+        m200 = media(cierres, 200)
+        # Cada punto con su promedio de 200 días (`m`, la línea punteada del
+        # mini-gráfico de la tarjeta): el MISMO que decide la tendencia de
+        # largo plazo. None mientras no haya 200 días de mercado.
+        i0 = _desde_dias(velas, DIAS_LINEA)
+        linea = [{"d": v["date"], "c": estructura.precio_redondo(v["close"]),
+                  "m": estructura.precio_redondo(m200[i0 + j]) if m200[i0 + j] is not None else None}
+                 for j, v in enumerate(velas[i0:])]
         return {"asset": a, "local": local, "disponible": True,
-                "lectura": lectura(velas, media(cierres, 50), media(cierres, 200)),
+                "lectura": lectura(velas, media(cierres, 50), m200),
                 "linea": linea, "ultimo_cambio": _ultimo_cambio(velas, desde)}
     return _leer_varios(conn, "lista", activos, desde, _armar)
 
@@ -984,19 +1142,36 @@ def _en_maximo(velas: list, cierres: list, desde_i: int) -> dict:
 
 # ─── Tu línea (las alertas de un dibujo del gráfico) ─────────────────────────
 # «Avisame si el precio toca esta línea» (Nico, 28/10): una línea horizontal o
-# de tendencia que la persona dibujó en la ficha (tabla `dibujos_grafico`). No es
-# una señal de la ficha: no va en SENALES. La línea se lee de lo dibujado cada
-# vez (alerts_engine), así que si la mueven, el aviso la sigue.
+# de tendencia que la persona dibujó en la ficha (tabla `dibujos_grafico`), y
+# (29/10) un canal paralelo: avisa cuando el precio sale por uno de sus bordes.
+# No es una señal de la ficha: no va en SENALES. La línea se lee de lo dibujado
+# cada vez (alerts_engine), así que si la mueven, el aviso la sigue.
 SENAL_LINEA = "linea"
+TIPOS_CON_AVISO = ("horizontal", "tendencia", "canal")
 
 
 def _indice_del_punto(velas: list, p: dict):
     """En qué vela cae un punto dibujado ({d, mas, precio}): el último día con
     fecha ≤ `d` más `mas` días de mercado. La misma cuenta que `diaDelPunto` de
-    la ficha (frontend/src/utils/dibujos.js). Antes del primer día: None."""
+    la ficha (frontend/src/utils/dibujos.js).
+
+    Antes del primer día guardado (las velas viejas se van borrando: un canal
+    anclado en el borde izquierdo del gráfico queda afuera a los pocos días),
+    un índice negativo: los días hábiles que hay entre el punto y la primera
+    vela. Antes daba None y el aviso de esa línea dejaba de mirar sin decir nada
+    (auditoría 29/10). None sólo si la fecha no se puede leer."""
     fechas = [v["date"] for v in velas]
-    i = bisect_right(fechas, str(p.get("d") or "")) - 1
-    return None if i < 0 else i + int(p.get("mas") or 0)
+    d = str(p.get("d") or "")
+    i = bisect_right(fechas, d) - 1
+    mas = int(p.get("mas") or 0)
+    if i >= 0:
+        return i + mas
+    try:
+        desde, hasta = date.fromisoformat(d), date.fromisoformat(fechas[0])
+    except (ValueError, IndexError):
+        return None
+    habiles = sum(1 for k in range((hasta - desde).days) if (desde + timedelta(days=k)).weekday() < 5)
+    return -max(1, habiles) + mas
 
 
 def valor_de_linea(velas: list, linea: dict, i: int):
@@ -1013,7 +1188,7 @@ def valor_de_linea(velas: list, linea: dict, i: int):
 
 
 def toque_de_linea(velas: list, linea: dict, desde: str = None, pedida_el: str = None):
-    """La ÚLTIMA vela posterior a `desde` que tocó la línea: su mínimo y su
+    """La PRIMERA vela posterior a `desde` que tocó la línea: su mínimo y su
     máximo la encierran, o el cierre quedó del otro lado del de la vela
     anterior (un salto por encima de la línea, sin tocarla en el día).
     {'fecha', 'sentido', 'cierre', 'referencia', 'rsi', 'minimo', 'maximo'}
@@ -1030,23 +1205,22 @@ def toque_de_linea(velas: list, linea: dict, desde: str = None, pedida_el: str =
     pasado (auditoría de la junta, 30/10; el aviso de precio ya nacía
     desarmado en ese caso).
 
-    La última y no la primera (auditoría de la junta, 30/10): si llegan muchas
-    velas juntas (Yahoo atrasado), la primera puede ser vieja y el motor la
-    descarta por vieja; la de anteayer, que sí es noticia, se perdía. Es la
-    regla de `senal_desde`."""
+    Si la primera es vieja (velas atrasadas), el motor vuelve a buscar desde
+    ella (`alerts_engine._evaluar_una_tecnica`), igual que para el canal."""
     if not velas:
         return None
     desde_i = 0
     if desde:
         desde_i = next((i for i, v in enumerate(velas) if v["date"] > desde), len(velas))
-    hallado = None
     for i in range(desde_i, len(velas)):
         nivel = valor_de_linea(velas, linea, i)
         if nivel is None or nivel <= 0:
             continue
         v = velas[i]
         cierre = v["close"]
-        alto, bajo = v.get("high") or cierre, v.get("low") or cierre
+        # El cierre también es un precio del día: una vela con el máximo por
+        # debajo del cierre (dato parcial) no esconde que lo tocó.
+        alto, bajo = max(v.get("high") or cierre, cierre), min(v.get("low") or cierre, cierre)
         antes = velas[i - 1]["close"] if i > 0 else None
         nivel_antes = valor_de_linea(velas, linea, i - 1) if i > 0 else None
         lado_antes = (None if antes is None or nivel_antes is None or antes == nivel_antes
@@ -1057,11 +1231,75 @@ def toque_de_linea(velas: list, linea: dict, desde: str = None, pedida_el: str =
         else:
             toco = bajo <= nivel <= alto or salto
         if toco:
-            hallado = {"fecha": v["date"],
-                       "sentido": None if lado_antes is None else ("arriba" if lado_antes < 0 else "abajo"),
-                       "cierre": cierre, "referencia": nivel, "rsi": None,
-                       "minimo": bajo, "maximo": alto}
-    return hallado
+            return {"fecha": v["date"],
+                    "sentido": None if lado_antes is None else ("arriba" if lado_antes < 0 else "abajo"),
+                    "cierre": cierre, "referencia": nivel, "rsi": None,
+                    "minimo": bajo, "maximo": alto}
+    return None
+
+
+def bordes_de_canal(velas: list, canal: dict, i: int):
+    """Los dos bordes de tu canal en la vela `i`: (abajo, arriba). El canal es
+    su línea a → b (como una de tendencia, que sigue en la misma dirección
+    después de b) y la paralela `ancho` más arriba o más abajo, en precio: la
+    misma cuenta que la ficha (frontend utils/dibujos.js). None si no se puede."""
+    base = valor_de_linea(velas, {"tipo": "tendencia", "a": canal.get("a"), "b": canal.get("b")}, i)
+    ancho = canal.get("ancho")
+    if base is None or not isinstance(ancho, (int, float)) or not ancho:
+        return None
+    return (min(base, base + ancho), max(base, base + ancho))
+
+
+def salida_de_canal(velas: list, canal: dict, desde: str = None, borde: str = "either", modo: str = "toque",
+                    pedida_el: str = None):
+    """La PRIMERA vela posterior a `desde` en que el precio salió de tu canal
+    (Nico, 29/10). `borde`: 'above' (sólo por arriba), 'below' o 'either'.
+    `modo`: 'toque' = su máximo llegó al borde de arriba o su mínimo al de
+    abajo (tocarlo o pasarlo en el día); 'cierre' = cerró afuera.
+
+    Cuenta sólo si el cierre ANTERIOR estaba adentro (o en el borde): si el
+    precio ya andaba afuera, no avisa cada día que sigue afuera; avisa la
+    próxima vez que salga. Sin vela anterior, cuenta.
+
+    {'fecha', 'sentido' ('arriba' = por el borde de arriba), 'cierre',
+     'referencia' (ese borde ese día), 'rsi', 'minimo', 'maximo', 'adentro'
+     (si cerró de nuevo adentro)} o None.
+
+    `pedida_el`: el día en que se pidió el aviso. Esa vela tiene horas de antes
+    del pedido: ese día cuenta sólo si CERRÓ afuera, aunque el modo sea
+    'toque' (la misma regla que `toque_de_linea`; auditoría chica de la junta, 30/10)."""
+    if not velas:
+        return None
+    desde_i = 0
+    if desde:
+        desde_i = next((i for i, v in enumerate(velas) if v["date"] > desde), len(velas))
+    for i in range(desde_i, len(velas)):
+        bordes = bordes_de_canal(velas, canal, i)
+        if bordes is None:
+            continue
+        abajo, arriba = bordes
+        v = velas[i]
+        cierre = v["close"]
+        alto, bajo = max(v.get("high") or cierre, cierre), min(v.get("low") or cierre, cierre)
+        antes = velas[i - 1]["close"] if i > 0 else None
+        bordes_antes = bordes_de_canal(velas, canal, i - 1) if i > 0 else None
+        adentro_antes_arriba = antes is None or bordes_antes is None or antes <= bordes_antes[1]
+        adentro_antes_abajo = antes is None or bordes_antes is None or antes >= bordes_antes[0]
+        if modo == "cierre" or (pedida_el and v["date"] == pedida_el):
+            sube, baja = cierre > arriba, abajo > 0 and cierre < abajo
+        else:
+            sube, baja = alto >= arriba, abajo > 0 and bajo <= abajo
+        sube = sube and borde in ("above", "either") and adentro_antes_arriba
+        baja = baja and borde in ("below", "either") and adentro_antes_abajo
+        if not (sube or baja):
+            continue
+        if sube and baja:
+            # Un día tan grande que tocó los dos: el del lado donde cerró.
+            sube = cierre >= (abajo + arriba) / 2
+        return {"fecha": v["date"], "sentido": "arriba" if sube else "abajo", "cierre": cierre,
+                "referencia": arriba if sube else abajo, "rsi": None, "minimo": bajo, "maximo": alto,
+                "adentro": abajo <= cierre <= arriba}
+    return None
 
 
 def senal_desde(velas: list, senal: str, desde: str = None, sentido: str = None):

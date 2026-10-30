@@ -24,7 +24,10 @@ const BASE = {
 const TEXTO = 'En un año subió 23 %. Desde el 6 de octubre bajó de 243 a 213 dólares, y el 21 de octubre cerró en 222.'
 
 let respuestas, alPost
-vi.mock('../../utils/api', () => ({
+// Lo real de utils/api (getClientContext: de quién es la copia de los dibujos)
+// con `api` simulado.
+vi.mock('../../utils/api', async (original) => ({
+  ...(await original()),
   api: {
     get: vi.fn((ruta) => {
       const clave = Object.keys(respuestas).find(k => ruta.startsWith(k))
