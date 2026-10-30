@@ -47,6 +47,7 @@ import main  # noqa: E402
 import senales_semana  # noqa: E402
 from fechas import hoy_art_date  # noqa: E402
 from tests.test_radiografia_tecnica import YahooFalso, _ruedas  # noqa: E402
+from velas_diarias import PERIODO_COMPLETO  # noqa: E402
 
 MEP = 1000.0
 
@@ -60,7 +61,7 @@ class YahooConHuecos(YahooFalso):
         f = self.precios.get(ticker)
         base = _ruedas(self.hoy, 760)
         filas = {} if f is None else {
-            pd.Timestamp(d): c for d in _ruedas(self.hoy, 760 if period == "3y" else 22)
+            pd.Timestamp(d): c for d in _ruedas(self.hoy, 760 if period == PERIODO_COMPLETO else 22)
             for c in [f(base.index(d), d)] if c is not None}
         if not filas:
             return pd.DataFrame()
@@ -922,7 +923,7 @@ class _YahooConCripto(YahooFalso):
         if ticker != "BTC-USD" or self.btc is None:
             return super().__call__(ticker, period, interval, auto_adjust, timeout)
         import pandas as pd
-        n = 1100 if period == "3y" else 30
+        n = 1100 if period == PERIODO_COMPLETO else 30
         dias = [self.hasta_btc - timedelta(days=k) for k in range(n, 0, -1)]
         cs = [self.btc(d) for d in dias]
         return pd.DataFrame({"Open": cs, "High": [c * 1.01 for c in cs], "Low": [c * 0.99 for c in cs],

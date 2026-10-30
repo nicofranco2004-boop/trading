@@ -9,7 +9,9 @@ Yahoo, en su punto más bajo (`pricing.yahoo._historia`): todo lo que está arri
 Los casos que importan:
   · qué activos se siguen: un CEDEAR guarda la acción de afuera (dólares) y el
     CEDEAR en pesos; los bonos, fondos y efectivo no tienen serie;
-  · la primera vez se bajan 3 años, las noches siguientes sólo el último mes;
+  · la primera vez se baja la historia entera (5 años), las noches siguientes
+    sólo el último mes, y una vez por mes otra vez entera: así llegaron solos
+    los 2 años de más cuando se pasó de 3 a 5;
   · un split reescribe la historia en Yahoo: si lo guardado no se reemplaza, la
     pantalla mostraría una caída de 75% que no existió;
   · la vela de hoy (incompleta) y las filas rotas de Yahoo no entran;
@@ -55,6 +57,26 @@ def _ruedas(hasta: date, n: int) -> list:
     return sorted(out)
 
 
+def _ruedas_del_periodo(hoy: date, period: str) -> list:
+    """Las ruedas que trae Yahoo para `period`, sin la de hoy. Un período en
+    años ('5y') es de CALENDARIO, desde el mismo día de hace N años: medido el
+    29/10/2026, «5y» de GGAL.BA y de BTC-USD arranca el 29/10/2021 (1.826 días
+    antes) y el de AAPL el 01/11/2021. La puesta al día ('1mo'), las últimas 22."""
+    if not period.endswith("y"):
+        return _ruedas(hoy, 22)
+    anios = int(period[:-1])
+    try:
+        d = hoy.replace(year=hoy.year - anios)
+    except ValueError:                      # 29 de febrero
+        d = hoy.replace(year=hoy.year - anios, day=28)
+    out = []
+    while d < hoy:
+        if d.weekday() < 5:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
 def _tabla(filas: dict) -> pd.DataFrame:
     """{date: (o, h, l, c, v)} → la tabla que devuelve yfinance."""
     idx = pd.DatetimeIndex([pd.Timestamp(f) for f in sorted(filas)])
@@ -85,9 +107,8 @@ class YahooFalso:
             (lambda d: 5000.0) if ticker == velas_diarias.SP500 else None)
         if f is None:
             return pd.DataFrame()
-        n = 760 if period == "3y" else 22
         # Incluye la rueda de HOY: Yahoo la devuelve aunque esté a medias.
-        dias = _ruedas(self.hoy, n) + [self.hoy]
+        dias = _ruedas_del_periodo(self.hoy, period) + [self.hoy]
         filas = {}
         for d in dias:
             c = f(d)
@@ -112,6 +133,8 @@ class VelasDiariasTest(unittest.TestCase):
         self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
         self.hoy = hoy_art_date()
         self.yahoo = YahooFalso(self.hoy)
+        # Cuántas velas deja una bajada completa (sin la de hoy, que no entra).
+        self.completa = len(_ruedas_del_periodo(self.hoy, velas_diarias.PERIODO_COMPLETO))
         # La lista de CEDEARs de BYMA (data912) también es red: vacía salvo en
         # el test que la necesita.
         self.byma = {}
@@ -210,19 +233,25 @@ class VelasDiariasTest(unittest.TestCase):
         with main.db_abierta() as conn:
             self.assertEqual(velas_diarias.simbolos_a_seguir(conn), [velas_diarias.SP500])
         main._run_velas_diarias_job()
-        self.assertEqual(self.yahoo.pedidos_sp500, [(velas_diarias.SP500, "3y", False)])
+        self.assertEqual(self.yahoo.pedidos_sp500, [(velas_diarias.SP500, velas_diarias.PERIODO_COMPLETO, False)])
         with main.db_abierta() as conn:
             self.assertTrue(velas_diarias.serie(conn, velas_diarias.SP500))
 
-    def test_primera_noche_baja_3_anios_y_la_siguiente_un_mes(self):
+    def test_primera_noche_baja_la_historia_entera_y_la_siguiente_un_mes(self):
         self._broker("Schwab", "USD")
         self._posicion("Schwab", "MSFT", "STOCK")
         self.yahoo.precios["MSFT"] = lambda d: 400.0
         main._run_velas_diarias_job()
-        self.assertEqual(self.yahoo.pedidos, [("MSFT", "3y", False)],
-                         "la primera vez: 3 años, cierre ajustado por splits y no por dividendos")
+        self.assertEqual(self.yahoo.pedidos, [("MSFT", velas_diarias.PERIODO_COMPLETO, False)],
+                         "la primera vez: 5 años, cierre ajustado por splits y no por dividendos")
         velas = self._velas("MSFT")
-        self.assertEqual(len(velas), 760)
+        self.assertEqual(len(velas), self.completa, "la poda no le come el principio")
+        # 5 años de CALENDARIO (desde el mismo día de hace 5 años, la regla de
+        # Yahoo): 5 × 365 días se quedaba un día corto con un 29 de febrero en el
+        # medio y daba rojo cuando ese día caía en un fin de semana (30/10/2026).
+        self.assertEqual(velas[0]["date"],
+                         _ruedas_del_periodo(self.hoy, velas_diarias.PERIODO_COMPLETO)[0].isoformat(),
+                         "5 años de calendario")
         self.assertLess(velas[-1]["date"], self.hoy.isoformat(), "la vela de hoy no entra")
         self.assertEqual(velas[-1]["high"], 404.0)
 
@@ -231,7 +260,7 @@ class VelasDiariasTest(unittest.TestCase):
         main._run_velas_diarias_job()
         self.assertEqual(self.yahoo.pedidos, [("MSFT", "1mo", False)])
         velas = self._velas("MSFT")
-        self.assertEqual(len(velas), 760, "correr de nuevo no duplica")
+        self.assertEqual(len(velas), self.completa, "correr de nuevo no duplica")
         self.assertEqual(velas[-1]["close"], 410.0, "la última rueda se actualiza")
 
     def test_un_split_reemplaza_toda_la_historia(self):
@@ -243,12 +272,12 @@ class VelasDiariasTest(unittest.TestCase):
         self.yahoo.precios["NVDA"] = lambda d: 200.0
         self.yahoo.pedidos.clear()
         main._run_velas_diarias_job()
-        self.assertEqual([p[1] for p in self.yahoo.pedidos], ["1mo", "3y"],
+        self.assertEqual([p[1] for p in self.yahoo.pedidos], ["1mo", velas_diarias.PERIODO_COMPLETO],
                          "detecta que la historia cambió y la baja entera")
         cierres = {v["close"] for v in self._velas("NVDA")}
         self.assertEqual(cierres, {200.0},
                          "no puede quedar ningún 800 viejo: sería una caída de 75% inventada")
-        self.assertEqual(len(self._velas("NVDA")), 760)
+        self.assertEqual(len(self._velas("NVDA")), self.completa)
 
     def test_split_que_yahoo_ajusta_tarde(self):
         # Split hace 15 ruedas. Las primeras noches Yahoo muestra la caída real
@@ -265,7 +294,7 @@ class VelasDiariasTest(unittest.TestCase):
 
         def ajustado(d):
             # Mientras Rendi rebaja la historia, otro tiene que poder escribir.
-            if self.yahoo.pedidos and self.yahoo.pedidos[-1][1] == "3y":
+            if self.yahoo.pedidos and self.yahoo.pedidos[-1][1] == velas_diarias.PERIODO_COMPLETO:
                 c = sqlite3.connect(main.DB_PATH, timeout=0)
                 try:
                     c.execute("BEGIN IMMEDIATE")
@@ -279,7 +308,7 @@ class VelasDiariasTest(unittest.TestCase):
         self.yahoo.precios["NVDA"] = ajustado
         self.yahoo.pedidos.clear()
         main._run_velas_diarias_job()
-        self.assertEqual([p[1] for p in self.yahoo.pedidos], ["1mo", "3y"])
+        self.assertEqual([p[1] for p in self.yahoo.pedidos], ["1mo", velas_diarias.PERIODO_COMPLETO])
         self.assertEqual({v["close"] for v in self._velas("NVDA")}, {200.0})
         self.assertTrue(libre and all(libre),
                         "Rendi no puede tener la base tomada mientras espera a Yahoo")
@@ -307,8 +336,47 @@ class VelasDiariasTest(unittest.TestCase):
             conn.commit()
         self.yahoo.pedidos.clear()
         main._run_velas_diarias_job()
-        self.assertEqual([p[1] for p in self.yahoo.pedidos], ["3y"])
-        self.assertEqual(len(self._velas("MSFT")), 760)
+        self.assertEqual([p[1] for p in self.yahoo.pedidos], [velas_diarias.PERIODO_COMPLETO])
+        self.assertEqual(len(self._velas("MSFT")), self.completa)
+
+    def test_los_que_tenian_3_anios_completan_5_con_la_bajada_del_mes(self):
+        # Así se pasó de 3 a 5 años (29/10/2026) sin una noche especial: lo
+        # guardado antes del cambio tiene 3 años, las noches de puesta al día
+        # piden sólo el último mes (no lo alargan), y la bajada completa de cada
+        # mes ya pide 5 años. La poda nueva no borra lo recién bajado.
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "MSFT", "STOCK")
+        self.yahoo.precios["MSFT"] = lambda d: 400.0
+        with mock.patch("velas_diarias.PERIODO_COMPLETO", "3y"), \
+                mock.patch("velas_diarias.DIAS_GUARDADOS", 3 * 366):    # el código de antes
+            main._run_velas_diarias_job()
+        tres = len(_ruedas_del_periodo(self.hoy, "3y"))
+        self.assertEqual(len(self._velas("MSFT")), tres)
+
+        self.yahoo.pedidos.clear()
+        main._run_velas_diarias_job()
+        self.assertEqual([p[1] for p in self.yahoo.pedidos], ["1mo"], "todavía no le toca la del mes")
+        self.assertEqual(len(self._velas("MSFT")), tres)
+
+        hace_31 = (self.hoy - timedelta(days=31)).isoformat() + " 03:00:00"
+        with main.db_abierta() as conn:
+            conn.execute("UPDATE velas_estado SET ultima_completa=? WHERE symbol='MSFT'", (hace_31,))
+            conn.commit()
+        self.yahoo.pedidos.clear()
+        main._run_velas_diarias_job()
+        self.assertEqual(self.yahoo.pedidos, [("MSFT", "5y", False)])
+        velas = self._velas("MSFT")
+        self.assertEqual(len(velas), self.completa, "los 2 años nuevos quedan guardados")
+        self.assertGreater(self.completa, tres + 2 * 250)
+        self.assertEqual(velas[0]["date"], _ruedas_del_periodo(self.hoy, "5y")[0].isoformat(),
+                         "arranca el mismo día de hace 5 años: la poda no lo tocó")
+        self.assertEqual(self._estado("MSFT")["ultima_completa"][:10], hoy_art_date().isoformat())
+
+        # Y la noche siguiente sigue con lo de todas las noches, sin perder nada.
+        self.yahoo.pedidos.clear()
+        main._run_velas_diarias_job()
+        self.assertEqual([p[1] for p in self.yahoo.pedidos], ["1mo"])
+        self.assertEqual(len(self._velas("MSFT")), self.completa)
 
     def test_filas_rotas_de_yahoo_no_entran(self):
         self._broker("IOL", "ARS")
@@ -342,10 +410,10 @@ class VelasDiariasTest(unittest.TestCase):
         # Se reintenta con la historia entera, pero DESPUÉS de los que andan: un
         # símbolo que nunca trae datos no puede comerse la noche de los demás
         # (antes iba primero siempre; auditoría de seguridad 22/10).
-        self.assertEqual(self.yahoo.pedidos, [("ZZZ", "1mo", False), ("AAA", "3y", False)])
-        self.assertEqual(len(self._velas("AAA")), 760)
+        self.assertEqual(self.yahoo.pedidos, [("ZZZ", "1mo", False), ("AAA", velas_diarias.PERIODO_COMPLETO, False)])
+        self.assertEqual(len(self._velas("AAA")), self.completa)
 
-    def test_se_borra_lo_de_mas_de_3_anios(self):
+    def test_se_borra_lo_mas_viejo_que_lo_guardado(self):
         self._broker("Schwab", "USD")
         self._posicion("Schwab", "MSFT", "STOCK")
         self.yahoo.precios["MSFT"] = lambda d: 400.0
@@ -363,7 +431,7 @@ class VelasDiariasTest(unittest.TestCase):
         self.yahoo.precios["MSFT"] = lambda d: 400.0
         with mock.patch("main.run_daily_snapshot", side_effect=RuntimeError("foto rota")):
             main._run_daily_snapshot_job()
-        self.assertEqual(len(self._velas("MSFT")), 760)
+        self.assertEqual(len(self._velas("MSFT")), self.completa)
 
 
 if __name__ == "__main__":

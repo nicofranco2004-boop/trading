@@ -8875,8 +8875,11 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
 # Novedades: es un pedido más a Yahoo por papel y los pasados no cambian.
 _earnings_pasados_at = {}            # { ticker: timestamp del último pedido bueno }
 EARNINGS_PASADOS_TTL = 7 * 24 * 3600
-# Cuántos balances para atrás: 16 trimestres cubren los 3 años de velas.
-EARNINGS_PASADOS_CUANTOS = 16
+# Cuántos balances pide: Yahoo cuenta en ese tope también los ~4 que vienen, así
+# que 24 son ~20 trimestres pasados = los 5 años de velas
+# (velas_diarias.ANIOS_GUARDADOS). Con 16 el gráfico de 5 años quedaba sin «B»
+# en sus primeros dos años.
+EARNINGS_PASADOS_CUANTOS = 24
 # Hora de cierre de cada mercado, en su hora local: un balance anunciado antes
 # se nota ese mismo día; después, al día de mercado siguiente.
 _CIERRE_MERCADO = {"America/New_York": 16, "America/Argentina/Buenos_Aires": 17}
@@ -12438,7 +12441,7 @@ def admin_velas(uid: int = Depends(get_admin_user)):
 @app.post("/api/admin/velas/correr")
 def admin_velas_correr(uid: int = Depends(get_admin_user)):
     """Corre ahora el guardado de velas, sin esperar a la noche. En el fondo:
-    la primera vez baja 3 años de cada activo y tarda unos minutos."""
+    la primera vez baja 5 años de cada activo y tarda unos minutos."""
     if "velas_diarias" in _corridas_en_curso:
         return {"ok": True, "status": "already_running"}
     threading.Thread(target=_run_velas_diarias_job, daemon=True, name="corrida-velas").start()

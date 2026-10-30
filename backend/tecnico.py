@@ -45,7 +45,7 @@ from velas_diarias import DIAS_GUARDADOS, SP500
 # Todo lo que es "un año" o "un mes" se corta por FECHA (días corridos), no por
 # cantidad de velas: una cripto cotiza los 7 días y la bolsa 5.
 DIAS_ANIO = 365
-# Lo que se manda a la pantalla: TODO lo que se guarda (3 años de calendario),
+# Lo que se manda a la pantalla: TODO lo que se guarda (5 años de calendario),
 # para poder arrastrar el gráfico hasta el principio (Nico, 22/10: «no deja ir
 # más atrás»). Los botones 3M/1A/2A eligen qué parte se ve de entrada. La media
 # de 200 de los primeros ~10 meses no se puede calcular (no hay 200 días antes)
