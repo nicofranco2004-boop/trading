@@ -10,12 +10,20 @@
 //
 // Los dibujos de cada activo NO viven acá: se guardan solos en tu cuenta, por
 // activo y por moneda (utils/dibujos.js). Cambiar de activo no borra nada.
+//
+// Cada activo se abre con el NOMBRE con que lo abriría la ficha desde el mismo
+// lugar (tu lista dice «GGAL.BA», el catálogo «GGAL», tus lotes como los
+// cargaste): los dibujos se guardan por nombre, y así los de la ficha y los de
+// la pestaña son los mismos. Si lo tenés con otro nombre, decide la ficha
+// (useFichaDelActivo, otroNombre), que sabe en qué mercado está cada lote. No
+// hay una regla propia para «es el mismo papel» que pase por arriba de ésa:
+// la hubo (canonico, 30/10) y mezclaba GGAL.BA de BYMA con tu GGAL de Nueva
+// York, y AGRO.BA (Agrometal) con tu AGRO de Schwab (Adecoagro).
 
-import { normalizar, puntaje } from './buscadorRapido'
+import { normalizar, puntaje, mismoPapel, miradaSinTenencia } from './buscadorRapido'
 import { POPULAR_TICKERS, tickerName, inferType, isBondPosition } from './tickers'
-import { isFciSym } from './valuation'
-import { esLoteLocal, esLocalSinTenencia } from './accionLocal'
-import { isCrypto } from './crypto'
+import { isFciSym, isBymaHolding } from './valuation'
+import { esLoteLocal } from './accionLocal'
 
 export const RECIENTES_MAXIMOS = 8
 // Con nada guardado ni nada tuyo para mostrar: el S&P 500.
@@ -32,27 +40,6 @@ export function activoValido(s) {
   return FORMA.test(t) ? t : null
 }
 
-/** El nombre con que la pestaña abre un papel que pediste (el buscador, la
- *  dirección, lo guardado): UNO por papel, porque los dibujos se guardan por
- *  nombre y con dos, lo dibujado en uno no se vería en el otro.
- *    · una cripto, por su código corto: tu lista guarda «BTC-USD», el
- *      catálogo dice «BTC»;
- *    · una acción argentina, sin «.BA»: la estrella de la ficha guarda
- *      «GGAL.BA», el buscador «GGAL», y las dos son el papel de BYMA (la regla
- *      de lo que no tenés, esLocalSinTenencia). Un CEDEAR no: AAPL.BA y AAPL
- *      son dos papeles.
- *  Si lo TENÉS con otro nombre (un lote «BTC-USD»), la ficha lo encuentra y la
- *  pestaña abre ése (GraficoTecnico, otroNombre). */
-export function canonico(s) {
-  const t = activoValido(s)
-  if (!t) return null
-  const cripto = t.replace(/-(USD|USDT|USDC)$/, '')
-  if (cripto !== t && isCrypto(cripto)) return cripto
-  const local = t.replace(/\.BA$/, '')
-  if (local !== t && esLocalSinTenencia(local)) return local
-  return t
-}
-
 /** Lo guardado de esta persona: { activo, recientes }. Sin persona, sin
  *  almacenamiento o con algo roto: vacío. */
 export function guardado(persona) {
@@ -61,9 +48,9 @@ export function guardado(persona) {
   try {
     const g = JSON.parse(localStorage.getItem(k) || 'null')
     const recientes = (Array.isArray(g?.recientes) ? g.recientes : [])
-      .map(canonico).filter(Boolean)
+      .map(activoValido).filter(Boolean)
     return {
-      activo: canonico(g?.activo),
+      activo: activoValido(g?.activo),
       recientes: [...new Set(recientes)].slice(0, RECIENTES_MAXIMOS),
     }
   } catch {
@@ -74,7 +61,7 @@ export function guardado(persona) {
 /** Abriste `activo`: queda como el último y primero de los recientes. Devuelve
  *  lo que quedó guardado (o lo que hubiera quedado, si no se pudo guardar). */
 export function recordar(persona, activo) {
-  const a = canonico(activo)
+  const a = activoValido(activo)
   const antes = guardado(persona)
   if (!a) return antes
   const nuevo = { activo: a, recientes: [a, ...antes.recientes.filter(x => x !== a)].slice(0, RECIENTES_MAXIMOS) }
@@ -89,7 +76,7 @@ export function recordar(persona, activo) {
  *  recargar la página), si no el último que miraste, si no el primero de tu
  *  cartera que tiene gráfico técnico (un bono no: no tiene), si no el S&P 500. */
 export function activoDeEntrada({ deLaDireccion, persona, posiciones = [] }) {
-  return canonico(deLaDireccion)
+  return activoValido(deLaDireccion)
     || guardado(persona).activo
     || tuyos(posiciones).find(f => f.tipo !== 'bond')?.simbolo
     || ACTIVO_DE_ENTRADA
@@ -110,7 +97,19 @@ export const FILTROS = [
 ]
 
 const DEL_CATALOGO = new Map(POPULAR_TICKERS.map(t => [t.symbol.toUpperCase(), t]))
-const nombreDe = (s) => DEL_CATALOGO.get(s)?.name || tickerName(s) || null
+// El nombre de la empresa: el del catálogo o, con otro nombre del mismo papel
+// (GGAL.BA, BTC-USD), el del papel (Galicia, Bitcoin).
+const nombreDe = (s) => DEL_CATALOGO.get(s)?.name || tickerName(s)
+  || DEL_CATALOGO.get(mismoPapel(s))?.name || tickerName(mismoPapel(s)) || null
+
+// ¿Abren el mismo gráfico? El mismo papel (mismoPapel: GGAL y GGAL.BA, BTC y
+// BTC-USD, DISN y DIS) Y el mismo mercado: lo tuyo, donde está tu lote
+// (isBymaHolding); lo que no tenés, donde lo mira la ficha (miradaSinTenencia:
+// GGAL y GGAL.BA en BYMA; AAPL en Nueva York y AAPL.BA, el CEDEAR, en BYMA).
+// Sirve para no mostrar dos filas que abren lo mismo, no para cambiar el nombre
+// con que se abre.
+const enByma = (s) => miradaSinTenencia(s).simboloPrecio.endsWith('.BA')
+const grafico = (simbolo, byma) => `${mismoPapel(simbolo)}|${byma ? 'byma' : 'afuera'}`
 
 /** Tus activos con gráfico, uno por ticker, en el orden de tus lotes: sin el
  *  efectivo ni los fondos (FCI), que no tienen serie de precios. */
@@ -121,19 +120,25 @@ export function tuyos(posiciones = []) {
     const s = activoValido(p?.asset)
     if (!s || p.is_cash || isFciSym(p.asset) || vistos.has(s)) continue
     vistos.add(s)
+    const byma = isBymaHolding(p)
     // El tipo lo dice tu lote: un bono es bono (también en BYMA); GGAL de IOL
     // es la acción argentina y GGAL de Schwab el ADR (la regla única de
-    // utils/accionLocal.js).
-    const tipo = isBondPosition(p) ? 'bond' : esLoteLocal(p) ? 'stock_ar' : p.asset_type === 'CEDEAR' ? 'cedear' : null
-    out.push(fila(s, { tipo, origen: 'cartera' }))
+    // utils/accionLocal.js). Un ticker argentino que tenés AFUERA de BYMA es
+    // de Nueva York: AGRO de Schwab es Adecoagro, no Agrometal (el nombre del
+    // catálogo es el de BYMA y no se pone).
+    const deAca = inferType(s) === 'stock_ar' || inferType(s) === 'cedear'
+    const tipo = isBondPosition(p) ? 'bond' : esLoteLocal(p) ? 'stock_ar' : p.asset_type === 'CEDEAR' ? 'cedear'
+      : !byma && deAca ? 'stock_us' : null
+    const f = fila(s, { tipo, origen: 'cartera', byma })
+    out.push(!byma && deAca ? { ...f, nombre: null } : f)
   }
   return out
 }
 
 // Una fila del buscador. `tipo`: el del cartelito (si no lo dice tu lote, la
-// regla de la app para un ticker, inferType).
-function fila(simbolo, { tipo = null, origen }) {
-  return { simbolo, nombre: nombreDe(simbolo), tipo: tipo || inferType(simbolo), origen }
+// regla de la app para un ticker, inferType). `grafico`: qué abre (ver arriba).
+function fila(simbolo, { tipo = null, origen, byma = enByma(simbolo) }) {
+  return { simbolo, nombre: nombreDe(simbolo), tipo: tipo || inferType(simbolo), origen, grafico: grafico(simbolo, byma) }
 }
 
 /**
@@ -144,17 +149,25 @@ function fila(simbolo, { tipo = null, origen }) {
  * de ticker y no está, «Abrir XYZ». Los bonos que no tenés no se ofrecen: no
  * tienen gráfico técnico (la misma regla del ⌘K, destinoDeTicker).
  */
-export function opcionesDelBuscador({ consulta = '', filtro = 'todo', recientes = [], posiciones = [], lista = [] }) {
+export function opcionesDelBuscador({ consulta = '', filtro = 'todo', recientes = [], posiciones = [], lista = [], cliente = null }) {
   const mios = tuyos(posiciones)
   const deMiLista = []
-  // Uno por papel (canonico): tu lote «BTC-USD» y el «BTC» del catálogo son uno.
-  const vistos = new Set(mios.map(f => canonico(f.simbolo)))
+  // Sin dos filas que abren lo mismo: lo tuyo primero, después tu lista, al
+  // final el catálogo. Un nombre que ya está (tu GGAL de Schwab) tampoco se
+  // repite: abrirlo cae en tus lotes igual.
+  const vistos = new Set(mios.flatMap(f => [f.grafico, f.simbolo]))
+  const yaEsta = (x) => vistos.has(x.grafico) || vistos.has(x.simbolo)
   for (const item of lista || []) {
-    const s = canonico(item?.symbol)
-    if (!s || vistos.has(s)) continue
-    vistos.add(s)
-    deMiLista.push(fila(s, { origen: 'lista' }))
+    const s = activoValido(item?.symbol)
+    if (!s) continue
+    const x = fila(s, { origen: 'lista' })
+    if (yaEsta(x)) continue
+    vistos.add(x.grafico); vistos.add(x.simbolo)
+    deMiLista.push(x)
   }
+  // Un asesor adentro de la cuenta de un cliente: no es «tu» cartera (la
+  // misma regla del ⌘K).
+  const titulo = { cartera: cliente ? `Cartera de ${cliente}` : 'Tu cartera', lista: cliente ? `Lista de ${cliente}` : 'Tu lista' }
   const f = FILTROS.find(x => x.id === filtro) || FILTROS[0]
   const pasa = (x) => (f.id === 'cartera' ? x.origen === 'cartera'
     : f.id === 'lista' ? x.origen === 'lista'
@@ -164,16 +177,16 @@ export function opcionesDelBuscador({ consulta = '', filtro = 'todo', recientes 
   if (!q) {
     const secciones = []
     if (f.id === 'todo') {
-      const ult = recientes.map(s => [...mios, ...deMiLista].find(x => canonico(x.simbolo) === s) || fila(s, { origen: 'reciente' }))
+      const ult = recientes.map(s => [...mios, ...deMiLista].find(x => x.simbolo === s) || fila(s, { origen: 'reciente' }))
       if (ult.length) secciones.push({ titulo: 'Últimos que miraste', filas: ult })
     }
     const c = mios.filter(pasa)
-    if (c.length) secciones.push({ titulo: 'Tu cartera', filas: c })
+    if (c.length) secciones.push({ titulo: titulo.cartera, filas: c })
     const l = deMiLista.filter(pasa)
-    if (l.length) secciones.push({ titulo: 'Tu lista', filas: l })
+    if (l.length) secciones.push({ titulo: titulo.lista, filas: l })
     if (f.tipos) {
       const cat = POPULAR_TICKERS.map(t => fila(t.symbol.toUpperCase(), { origen: 'catalogo' }))
-        .filter(x => x.tipo !== 'bond' && pasa(x) && !vistos.has(x.simbolo))
+        .filter(x => x.tipo !== 'bond' && pasa(x) && !yaEsta(x))
       if (cat.length) secciones.push({ titulo: 'Otros', filas: cat })
     }
     return secciones
@@ -181,13 +194,15 @@ export function opcionesDelBuscador({ consulta = '', filtro = 'todo', recientes 
 
   const catalogo = POPULAR_TICKERS
     .map(t => fila(t.symbol.toUpperCase(), { origen: 'catalogo' }))
-    .filter(x => x.tipo !== 'bond' && !vistos.has(x.simbolo))
+    .filter(x => x.tipo !== 'bond' && !yaEsta(x))
   const PRIORIDAD = { cartera: 0, lista: 1, catalogo: 2 }
   const escrito = activoValido(consulta)
-  // El mismo papel con otro nombre cuenta como lo escrito, primero de todo:
-  // «GGAL.BA» encuentra GGAL y «BTC-USD» encuentra BTC. «AAPL.BA» (el CEDEAR)
-  // NO encuentra AAPL (la acción de Nueva York): son dos papeles.
-  const mismo = (x) => (escrito && canonico(x.simbolo) === canonico(escrito) ? 4 : 0)
+  // Primero de todo, lo escrito tal cual (tu AGRO de Schwab, si escribiste
+  // «agro»); después lo que abre el mismo gráfico: «GGAL.BA» encuentra tu GGAL
+  // de IOL (BYMA) y «BTC-USD» el BTC del catálogo. Tu GGAL de Schwab (Nueva
+  // York) no: «GGAL.BA» es el de BYMA.
+  const loEscrito = escrito && grafico(escrito, enByma(escrito))
+  const mismo = (x) => (escrito && x.simbolo === escrito ? 5 : loEscrito && x.grafico === loEscrito ? 4 : 0)
   const encontrados = [...mios, ...deMiLista, ...catalogo]
     .filter(pasa)
     .map((x, i) => ({ x, i, p: mismo(x) || puntaje({ titulo: x.simbolo, claves: x.nombre ? [x.nombre] : [] }, q) }))
@@ -200,7 +215,7 @@ export function opcionesDelBuscador({ consulta = '', filtro = 'todo', recientes 
   // encuentra VIST y «agrometal» no es un ticker (abría un gráfico vacío).
   const pareceTicker = escrito && (escrito.length <= 6 || /[.-]/.test(escrito))
   const abrir = pareceTicker && f.id === 'todo' && !encontrados.length
-    ? [{ simbolo: canonico(escrito), nombre: null, tipo: null, origen: 'escrito' }] : []
+    ? [{ simbolo: escrito, nombre: null, tipo: null, origen: 'escrito', grafico: loEscrito }] : []
   const filas = [...encontrados, ...abrir]
   return filas.length ? [{ titulo: 'Resultados', filas }] : []
 }

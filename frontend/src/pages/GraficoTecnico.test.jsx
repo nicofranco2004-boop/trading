@@ -185,13 +185,23 @@ describe('Análisis técnico → Gráfico', () => {
     expect(recibido.at(-1).lotes.map(l => l.id)).toEqual([7])
     // La dirección dice el tuyo y no rebota a BTC.
     expect(activoDe(montado.donde)).toBe('BTC-USD')
-    expect(JSON.parse(almacen.get(CLAVE)).recientes).toEqual(['BTC'])
+    // Queda el que abrió (el tuyo), no el pedido.
+    expect(JSON.parse(almacen.get(CLAVE)).recientes).toEqual(['BTC-USD'])
   })
 
   it('tu lote con un nombre que no se puede abrir («BRK B»): el gráfico de lo pedido, sin esperar', async () => {
     extra = [{ id: 8, broker: 'Schwab', asset: 'BRK B', asset_type: 'STOCK', quantity: 1, invested: 400, buy_price: 400 }]
     montado = await abrir('/analisis-tecnico?tab=grafico&activo=BRK-B')
     expect(recibido.at(-1)?.asset).toBe('BRK-B')
+  })
+
+  it('tu AGRO de Schwab (Adecoagro) no se mete cuando pedís AGRO.BA (Agrometal, BYMA)', async () => {
+    extra = [{ id: 9, broker: 'Schwab', asset: 'AGRO', asset_type: 'STOCK', quantity: 50, invested: 500, buy_price: 10 }]
+    montado = await abrir('/analisis-tecnico?tab=grafico&activo=AGRO.BA')
+    expect(recibido.at(-1)?.asset).toBe('AGRO.BA')
+    expect(recibido.at(-1).lotes).toEqual([])
+    expect(recibido.at(-1).accionLocal).toBe(true)
+    expect(activoDe(montado.donde)).toBe('AGRO.BA')
   })
 
   it('Esc cierra el buscador también desde un filtro', async () => {

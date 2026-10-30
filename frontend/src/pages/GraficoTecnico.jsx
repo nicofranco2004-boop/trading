@@ -32,8 +32,9 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { useFichaDelActivo } from '../hooks/useFichaDelActivo'
 import { api } from '../utils/api'
 import { claveDeActivos, urlDeActivo } from '../utils/buscadorRapido'
+import { nombreDelCliente } from '../utils/navegacion'
 import {
-  FILTROS, activoDeEntrada, activoValido, canonico, guardado, opcionesDelBuscador, recordar,
+  FILTROS, activoDeEntrada, activoValido, guardado, opcionesDelBuscador, recordar,
 } from '../utils/graficoTecnico'
 
 // Cuántos de los últimos que miraste van al lado del botón (el resto, en el buscador).
@@ -43,13 +44,17 @@ export default function GraficoTecnico() {
   const { user } = useAuth()
   const { clientCtx } = useAdvisorContext()
   const persona = claveDeActivos(user, clientCtx)
+  const cliente = nombreDelCliente(clientCtx)
   const [searchParams, setSearchParams] = useSearchParams()
-  const deLaDireccion = canonico(searchParams.get('activo'))
-  // El activo abierto. null mientras se decide (sin dirección ni nada guardado,
-  // hace falta saber qué tenés). Es el nombre de un papel (canonico) o, si lo
-  // tenés con otro nombre, el de tus lotes (un «BTC-USD» cargado así).
+  const deLaDireccion = activoValido(searchParams.get('activo'))
+  // El activo abierto, con el nombre con que lo pediste (el de tu lista, el
+  // del catálogo, el de tus lotes). null mientras se decide (sin dirección ni
+  // nada guardado, hace falta saber qué tenés).
   const [activo, setActivo] = useState(() => deLaDireccion || guardado(persona).activo)
   const [recientes, setRecientes] = useState(() => guardado(persona).recientes)
+  // Elegiste con el buscador o un atajo: el renglón del activo se arma de nuevo
+  // y el teclado tiene que seguir en su botón, no volver al principio.
+  const [enfocar, setEnfocar] = useState(false)
 
   // Sin nada guardado: el primero de tu cartera con gráfico, o el S&P 500.
   useEffect(() => {
@@ -61,51 +66,49 @@ export default function GraficoTecnico() {
     return () => { vivo = false }
   }, [activo, persona])
 
-  // Un link a otro activo con la pestaña ya abierta (?activo=…), o «atrás» en
-  // el navegador: ése. Se compara el papel, no el nombre: con tu lote
-  // «BTC-USD» abierto, la dirección dice BTC-USD y es el mismo.
+  // Un link a otro activo con la pestaña ya abierta (?activo=…): ése.
   useEffect(() => {
-    if (deLaDireccion && deLaDireccion !== canonico(activo)) setActivo(deLaDireccion)
+    if (deLaDireccion && deLaDireccion !== activo) setActivo(deLaDireccion)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deLaDireccion])
 
-  // El abierto queda guardado y en la dirección (sin sumar un paso al «atrás»
-  // del navegador por cada activo).
-  useEffect(() => {
-    if (!activo) return
-    setRecientes(recordar(persona, activo).recientes)
-    if (searchParams.get('activo') !== activo) {
-      const next = new URLSearchParams(searchParams)
-      next.set('activo', activo)
-      setSearchParams(next, { replace: true })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activo, persona])
-
-  // Lo que elegís (el buscador, un atajo): el nombre del papel.
-  const elegir = (s) => { const a = canonico(s); if (a) setActivo(a) }
-  // Lo tenés con otro nombre: el de tus lotes, tal cual (no el del papel:
-  // volvería a pedir el mismo y quedaría cargando para siempre).
-  const irAlTuyo = (s) => { const a = activoValido(s); if (a) setActivo(a) }
+  // Se guarda y va a la dirección recién cuando el gráfico ABRIÓ ese activo:
+  // pedido con otro nombre (GGAL.BA y tu lote es GGAL), queda el tuyo y no
+  // los dos. Sin sumar un paso al «atrás» del navegador por cada activo.
+  const abierto = (a) => {
+    setRecientes(recordar(persona, a).recientes)
+    setSearchParams(prev => {
+      if (prev.get('activo') === a) return prev
+      const next = new URLSearchParams(prev)
+      next.set('activo', a)
+      return next
+    }, { replace: true })
+  }
+  const elegir = (s) => { const a = activoValido(s); if (a) { setEnfocar(true); setActivo(a) } }
 
   if (!activo) return <Cargando />
-  return <GraficoDe key={activo} activo={activo} recientes={recientes} onElegir={elegir} onTuyo={irAlTuyo} />
+  return <GraficoDe key={activo} activo={activo} recientes={recientes} cliente={cliente} enfocar={enfocar}
+    onElegir={elegir} onTuyo={(s) => setActivo(s)} onAbierto={abierto} />
 }
 
-function GraficoDe({ activo, recientes, onElegir, onTuyo }) {
-  // Lo tenés con otro nombre (pediste GGAL.BA y tu lote es GGAL; BTC y tu lote
-  // es BTC-USD): el tuyo, con tu precio y tus compras. Sólo si ese nombre se
-  // puede abrir y es otro: si no («BRK B», con un espacio, o el mismo), el
-  // gráfico sigue con lo pedido en vez de quedarse esperando.
+function GraficoDe({ activo, recientes, cliente, enfocar, onElegir, onTuyo, onAbierto }) {
+  // Lo tenés con otro nombre (pediste GGAL.BA y tu lote es GGAL de IOL; BTC y
+  // tu lote es BTC-USD): el tuyo, con tu precio y tus compras. Lo decide la
+  // ficha, que sabe en qué mercado está cada lote (tu GGAL de Schwab NO es
+  // GGAL.BA). Sólo si ese nombre se puede abrir y es otro: si no («BRK B», con
+  // un espacio), el gráfico sigue con lo pedido en vez de quedarse esperando.
   const ficha = useFichaDelActivo(activo, {
     conCotizacion: false,
     aceptaOtroNombre: (s) => { const a = activoValido(s); return !!a && a !== activo },
   })
-  useEffect(() => { if (ficha.otroNombre) onTuyo(ficha.otroNombre) }, [ficha.otroNombre]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (ficha.otroNombre) onTuyo(activoValido(ficha.otroNombre))
+    else if (!ficha.loading) onAbierto(activo)
+  }, [ficha.otroNombre, ficha.loading]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex flex-col gap-2">
-      <Encabezado activo={activo} recientes={recientes} onElegir={onElegir} />
+      <Encabezado activo={activo} recientes={recientes} cliente={cliente} enfocar={enfocar} onElegir={onElegir} />
       {ficha.loading ? <Skeleton className="h-[420px] w-full rounded-xl" />
         : !ficha.grafico ? (
           <div className="bg-bg-1 border border-line rounded-xl px-4 py-6 text-[14px] text-ink-1">
@@ -128,16 +131,16 @@ function Cargando() {
 
 // Arriba del gráfico: el activo (abre el buscador), los últimos que miraste y
 // la ficha completa.
-function Encabezado({ activo, recientes, onElegir }) {
+function Encabezado({ activo, recientes, cliente, enfocar, onElegir }) {
   const [abierto, setAbierto] = useState(false)
   const caja = useRef(null)
   const boton = useRef(null)
-  const otros = recientes.filter(s => s !== canonico(activo)).slice(0, CHIPS)
+  const otros = recientes.filter(s => s !== activo).slice(0, CHIPS)
   // Al cerrar el buscador, el teclado vuelve al botón (como el ⌘K).
   const cerrar = () => { setAbierto(false); boton.current?.focus?.() }
   return (
     <div ref={caja} className="relative flex flex-wrap items-center gap-2 text-ink-0">
-      <button ref={boton} type="button" onClick={() => setAbierto(a => !a)} aria-haspopup="dialog" aria-expanded={abierto}
+      <button ref={boton} type="button" autoFocus={enfocar} onClick={() => setAbierto(a => !a)} aria-haspopup="dialog" aria-expanded={abierto}
         aria-label={`Cambiar de activo (ahora: ${activo})`} data-capa="activo"
         className="inline-flex items-center gap-2 min-h-11 sm:min-h-9 pl-2.5 pr-3 rounded-lg border border-line-3 bg-bg-2 hover:border-ink-3 transition-colors">
         <Search size={15} aria-hidden="true" className="text-ink-1" />
@@ -156,7 +159,7 @@ function Encabezado({ activo, recientes, onElegir }) {
       )}
       <Link to={urlDeActivo(activo)} className="text-[13px] font-medium text-data-violet hover:underline px-1">Ver ficha →</Link>
       {abierto && (
-        <Buscador activo={activo} recientes={recientes} caja={caja}
+        <Buscador activo={activo} recientes={recientes} cliente={cliente} caja={caja}
           onCerrar={cerrar}
           onElegir={(s) => { cerrar(); onElegir(s) }} />
       )}
@@ -167,7 +170,7 @@ function Encabezado({ activo, recientes, onElegir }) {
 // El buscador. No dice cuántos dibujos hay en cada activo: la copia de los
 // dibujos que guarda el navegador no es por persona (utils/dibujos.js), y en una
 // compu compartida mostraba los de la persona anterior (auditoría 30/10).
-function Buscador({ activo, recientes, caja, onCerrar, onElegir }) {
+function Buscador({ activo, recientes, cliente, caja, onCerrar, onElegir }) {
   const [consulta, setConsulta] = useState('')
   const [filtro, setFiltro] = useState('todo')
   const [marcado, setMarcado] = useState(0)
@@ -193,8 +196,8 @@ function Buscador({ activo, recientes, caja, onCerrar, onElegir }) {
   }, [caja, onCerrar])
 
   const secciones = useMemo(
-    () => opcionesDelBuscador({ consulta, filtro, recientes, ...datos }),
-    [consulta, filtro, recientes, datos])
+    () => opcionesDelBuscador({ consulta, filtro, recientes, cliente, ...datos }),
+    [consulta, filtro, recientes, cliente, datos])
   const filas = secciones.flatMap(s => s.filas)
   useEffect(() => { setMarcado(0) }, [consulta, filtro])
   // La opción marcada con las flechas, siempre a la vista.
@@ -221,10 +224,12 @@ function Buscador({ activo, recientes, caja, onCerrar, onElegir }) {
   let n = -1
   return (
     // En la compu, colgado del botón. En el celular y en la tablet, a todo el
-    // ancho: colgado del botón, en una tablet vertical con el menú abierto se
-    // salía por la derecha. Con el teclado del celular abierto, más bajo.
+    // ancho (colgado del botón, en una tablet vertical con el menú abierto se
+    // salía por la derecha), arriba de la página. En el celular, no más alto que
+    // media pantalla: el teclado tapa la otra mitad (el alto de la pantalla no
+    // se achica cuando aparece, ni en iPhone ni en Android).
     <div role="dialog" aria-label="Buscar un activo" onKeyDown={teclaEnElBuscador}
-      className="fixed inset-x-3 top-[calc(var(--alto-barra-celular,80px)_+_8px)] z-[80] lg:absolute lg:inset-x-auto lg:left-0 lg:top-full lg:mt-1.5 lg:w-[34rem] max-h-[60dvh] lg:max-h-[70vh] flex flex-col rounded-xl border border-line-2 bg-bg-raised shadow-lg overflow-hidden">
+      className="fixed inset-x-3 top-[calc(var(--alto-barra-celular,80px)_+_8px)] z-[80] lg:absolute lg:inset-x-auto lg:left-0 lg:top-full lg:mt-1.5 lg:w-[34rem] max-h-[45vh] lg:max-h-[70vh] flex flex-col rounded-xl border border-line-2 bg-bg-raised shadow-lg overflow-hidden">
       <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-line">
         <Search size={17} aria-hidden="true" className="text-ink-1 shrink-0" />
         <label htmlFor="grafico-buscar" className="sr-only">Buscar un activo</label>
@@ -243,7 +248,7 @@ function Buscador({ activo, recientes, caja, onCerrar, onElegir }) {
           <button key={f.id} type="button" onClick={() => setFiltro(f.id)} aria-pressed={filtro === f.id}
             className={`shrink-0 min-h-9 sm:min-h-7 px-2.5 rounded-full border text-[12.5px] font-medium whitespace-nowrap transition-colors ${
               filtro === f.id ? 'border-rendi-accent bg-rendi-accent/15 text-ink-0' : 'border-line text-ink-1 hover:text-ink-0'}`}>
-            {f.label}
+            {cliente && f.id === 'cartera' ? 'Cartera' : cliente && f.id === 'lista' ? 'Lista' : f.label}
           </button>
         ))}
       </div>
@@ -268,7 +273,7 @@ function Buscador({ activo, recientes, caja, onCerrar, onElegir }) {
                     {f.origen === 'escrito' ? `Abrir «${f.simbolo}»` : f.nombre || ''}
                   </span>
                   {f.origen !== 'escrito' && <AssetTypeBadge type={f.tipo} />}
-                  {canonico(f.simbolo) === canonico(activo) && <span className="shrink-0 text-[12px] text-ink-2">abierto</span>}
+                  {f.simbolo === activo && <span className="shrink-0 text-[12px] text-ink-2">abierto</span>}
                 </button>
               )
             })}
