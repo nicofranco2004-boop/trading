@@ -49,6 +49,7 @@ class MarcasDeAlertas(unittest.TestCase):
         main.app.dependency_overrides.pop(main.get_effective_user, None)
         main._reset_progress.pop(self.UID, None)
         with main.db_abierta() as c:
+            c.execute("DELETE FROM alert_symbol_state WHERE alert_id=987654321")
             for u in (self.UID, self.OTRO):
                 c.execute("DELETE FROM alert_symbol_state WHERE alert_id IN "
                           "(SELECT id FROM alerts WHERE user_id=?)", (u,))
@@ -108,6 +109,19 @@ class MarcasDeAlertas(unittest.TestCase):
         r = self.cli.delete(f"/api/alerts/{self.alertas[self.UID]}")
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(self._marcas(self.alertas[self.UID]), 0)
+        self._otro_intacto()
+
+    def test_el_arranque_limpia_las_sueltas_de_antes(self):
+        """Las marcas que ya quedaron sueltas (de antes del arreglo) no las borra
+        ningún barrido: el arranque las limpia una vez. Las de alertas vivas, no."""
+        with main.db_abierta() as c:
+            c.execute("INSERT INTO alert_symbol_state (alert_id, symbol, armed) VALUES (?,?,1)",
+                      (987654321, "AAPL"))
+            c.commit()
+        self.assertEqual(self._huerfanas(), 1)
+        main.init_db()
+        self.assertEqual(self._huerfanas(), 0)
+        self.assertEqual(self._marcas(self.alertas[self.UID]), 2)
         self._otro_intacto()
 
     def test_eliminar_la_alerta_de_otro_no_toca_sus_marcas(self):

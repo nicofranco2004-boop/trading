@@ -14,7 +14,8 @@ se resetea sola, y eso pasó dos veces:
     `iol_lab_runs`, `iol_lab_token_log`.
 
 La causa de proceso no era una tabla olvidada: era que NADA obligaba a decidir.
-Este test es esa obligación. Cada tabla con `user_id` de la base tiene que estar
+Este test es esa obligación. Cada tabla con `user_id` (o `advisor_uid`, las del
+plan asesor) de la base tiene que estar
 en exactamente UNO de estos lugares de main.py:
   · `_reset_admin_tablas()` → el reset la borra;
   · `_RESET_ADMIN_CONSERVADAS` → el reset la deja, con el motivo escrito;
@@ -42,13 +43,20 @@ os.environ.setdefault("DB_PATH", tempfile.NamedTemporaryFile(suffix=".db", delet
 import main
 
 
+# Las columnas con que una tabla dice «esto es de tal persona». `advisor_uid`
+# también: las tablas del plan asesor no tienen `user_id`, y su decisión («son
+# vínculos con OTRAS personas, el reset no las toca») estaba escrita sólo en un
+# comentario y se perdió al pasarlo al diccionario (re-test de la auditoría C).
+COLUMNAS_DE_PERSONA = ("user_id", "advisor_uid")
+
+
 def _tablas_con_user_id() -> set:
     conn = main.get_db()
     try:
         esquema = main._esquema_por_tabla(conn)
     finally:
         conn.close()
-    return {t for t, cols in esquema.items() if "user_id" in cols}
+    return {t for t, cols in esquema.items() if any(c in cols for c in COLUMNAS_DE_PERSONA)}
 
 
 def _borra() -> set:
