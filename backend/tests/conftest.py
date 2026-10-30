@@ -73,7 +73,9 @@ import pytest
 # En SQLite esto no pasaba por dos motivos: cada módulo tenía su archivo, y una
 # conexión de sqlite3 sólo abre transacción al ESCRIBIR. psycopg con
 # autocommit=False abre transacción hasta para un SELECT, y esa transacción se
-# queda con los locks de todo lo que tocó.
+# queda con los locks de todo lo que tocó. (Desde el 29/10/2026 el shim abre la
+# transacción al escribir, como sqlite3 — `pgshim.es_lectura_pura` —; lo de
+# abajo sigue haciendo falta para las conexiones que sí escribieron.)
 #
 # El arreglo tiene tres partes, y las tres hacen falta:
 #

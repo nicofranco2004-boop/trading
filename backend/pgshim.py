@@ -505,6 +505,37 @@ _SIN_PK: set = set()
 _COLS_CACHE: dict = {}
 _RE_DDL = re.compile(r"\b(ALTER|CREATE|DROP)\s+(TABLE|VIEW)\b", re.I)
 
+# ── ¿Esta sentencia abre la transacción? ────────────────────────────────────
+# sqlite3 (con isolation_level='', el de siempre) abre la transacción recién
+# ANTES DE LA PRIMERA ESCRITURA: los SELECT de antes corren sueltos y no dejan
+# nada tomado. psycopg con autocommit=False la abre en el PRIMER SELECT. Esa
+# diferencia hacía que todo pedido que lee y después sale a la red (Yahoo, la
+# inflación de argentinadatos) dejara la transacción abierta y ociosa mientras
+# espera: en la suite la mata el reloj de 6 s y el Wrapped publicaba «+0,00 %»
+# como mejor mes (medido el 29/10/2026); en producción retiene una conexión del
+# pooler de Supabase durante toda la espera.
+#
+# Por eso la conexión vive en autocommit y `Connection._abrir_si_escribe` manda
+# el BEGIN antes de la primera sentencia que NO sea una lectura pura. Falla
+# hacia lo de antes: lo que no se reconoce como lectura abre la transacción, que
+# es exactamente el comportamiento viejo. Una lectura pura que corre suelta ve lo
+# mismo que dentro de una transacción (READ COMMITTED toma una foto nueva por
+# sentencia); lo único que cambia es que no retiene nada.
+#
+# NO es lectura pura, aunque empiece con SELECT, lo que sólo vale DENTRO de una
+# transacción: `pg_advisory_xact_lock` (el turno exclusivo se soltaría al
+# instante), `FOR UPDATE/SHARE` (el candado de fila), `set_config` (el `SET
+# LOCAL`), y `SELECT ... INTO` (crea una tabla).
+_RE_LECTURA = re.compile(r"^\s*(SELECT|WITH|SHOW|EXPLAIN|VALUES)\b", re.I)
+_RE_NO_ES_LECTURA = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|MERGE|INTO|LOCK|pg_advisory_xact_\w+|set_config|"
+    r"FOR\s+(UPDATE|SHARE|NO\s+KEY\s+UPDATE|KEY\s+SHARE))\b", re.I)
+
+
+def es_lectura_pura(sql: str) -> bool:
+    """¿Esta sentencia (ya traducida) puede correr fuera de una transacción?"""
+    return bool(_RE_LECTURA.match(sql)) and not _RE_NO_ES_LECTURA.search(sql)
+
 
 def _invalidar_por_ddl():
     """Un DDL invalida los TRES cachés de catálogo, no sólo el de columnas.
@@ -872,15 +903,18 @@ class Connection:
     """Emula la conexión de sqlite3 sobre psycopg."""
 
     def __init__(self, dsn: str):
-        # autocommit=False + commit/rollback explícitos = lo mismo que hace
-        # sqlite3 con isolation_level=''.
+        # autocommit=True + un BEGIN antes de la primera escritura
+        # (`_abrir_si_escribe`) = lo mismo que hace sqlite3 con isolation_level=''.
+        # ⚠️ Hasta el 29/10/2026 decía «autocommit=False = lo mismo que sqlite3», y
+        # no lo era: así el primer SELECT ya abría la transacción. Ver
+        # `es_lectura_pura`.
         # Sin row_factory: el default de psycopg ya devuelve tuplas, y las
         # envolvemos nosotros en `Row` para poder leer por nombre Y por posición.
         # Por `pgsesion.conectar` y no por `psycopg.connect`: sin
         # `extra_float_digits=3` esta conexión lee los floats redondeados a 15
         # dígitos, y el rebuild los REESCRIBE así. Ver pgsesion.py.
         import pgsesion
-        self._c = pgsesion.conectar(dsn, autocommit=False)
+        self._c = pgsesion.conectar(dsn, autocommit=True)
         self._dsn = dsn              # para leer el catálogo aparte (ver _pk_de)
         self.row_factory = None      # el código lo setea; acá siempre devolvemos Row
 
@@ -1020,6 +1054,7 @@ class Connection:
 
         q = traducir(sql)
         p = _normalizar_params(params)
+        self._abrir_si_escribe(q)
         cur = self._c.cursor()
 
         m = _RE_INSERT_TABLA.match(q.lstrip())
@@ -1035,6 +1070,7 @@ class Connection:
 
     def executemany(self, sql, seq):
         q = traducir(sql)
+        self._abrir_si_escribe(q)
         cur = self._c.cursor()
         cur.executemany(q, [_normalizar_params(p) for p in seq])
         return Cursor(cur)
@@ -1046,8 +1082,19 @@ class Connection:
             _invalidar_por_ddl()     # casi todo executescript es DDL de migración
         cur = self._c.cursor()
         for s in [x.strip() for x in sql.split(";") if x.strip()]:
-            cur.execute(traducir(s))
+            q = traducir(s)
+            self._abrir_si_escribe(q)
+            cur.execute(q)
         return Cursor(cur)
+
+    def _abrir_si_escribe(self, q: str):
+        """El BEGIN que sqlite3 manda solo antes de la primera escritura. Ver
+        `es_lectura_pura`. Si ya hay una transacción abierta (o arruinada), la
+        sentencia va adentro de ésa, como siempre."""
+        if es_lectura_pura(q):
+            return
+        if self._c.info.transaction_status == psycopg.pq.TransactionStatus.IDLE:
+            self._c.execute("BEGIN")
 
     def cursor(self):
         return Cursor(self._c.cursor())
