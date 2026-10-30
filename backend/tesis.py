@@ -117,23 +117,63 @@ def guardar(conn, uid: int, asset: str, texto: str, local: bool = False) -> int:
     hoy = hoy_art_date().isoformat()
     tendencia = json.dumps(_tendencia(conn, asset, local, hoy))
     ultima = _ultima(conn, uid, asset)
-    if ultima and ultima["escrita_el"] == hoy:
-        conn.execute(
-            """UPDATE tesis SET texto=?, accion_local=?, tendencia_json=?,
-                      updated_at=datetime('now') WHERE id=? AND user_id=?""",
-            (texto, 1 if local else 0, tendencia, ultima["id"], uid))
-        return ultima["id"]
-    cur = conn.execute(
+    # «Una por día» la hace cumplir la BASE (índice único `ux_tesis_un_dia`), no
+    # este `ultima`: dos «Guardar» a la vez (doble click, dos pestañas) leen los
+    # dos «no hay de hoy» antes de que el otro confirme, en Postgres y también en
+    # SQLite. Por eso siempre es INSERT … ON CONFLICT: si la de hoy ya existe (la
+    # vio `ultima` o la acaba de escribir el otro pedido), se corrige esa. El
+    # recordatorio no se toca al corregir: lo tiene la fila de hoy.
+    mudar = ultima and ultima["escrita_el"] != hoy and ultima["alert_id"]
+    conn.execute(
         """INSERT INTO tesis (user_id, asset, texto, escrita_el, accion_local, tendencia_json,
                               recordar_tipo, recordar_el, alert_id)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?)
+           ON CONFLICT (user_id, asset, escrita_el) DO UPDATE SET
+               texto=excluded.texto, accion_local=excluded.accion_local,
+               tendencia_json=excluded.tendencia_json, updated_at=datetime('now')""",
         (uid, asset, texto, hoy, 1 if local else 0, tendencia,
          *((ultima["recordar_tipo"], ultima["recordar_el"], ultima["alert_id"])
-           if ultima and ultima["alert_id"] else (None, None, None))))
-    if ultima and ultima["alert_id"]:
+           if mudar else (None, None, None))))
+    if mudar:
         conn.execute("UPDATE tesis SET recordar_tipo=NULL, recordar_el=NULL, alert_id=NULL "
                      "WHERE id=? AND user_id=?", (ultima["id"], uid))
-    return cur.lastrowid
+    return conn.execute("SELECT id FROM tesis WHERE user_id=? AND asset=? AND escrita_el=?",
+                        (uid, asset, hoy)).fetchone()["id"]
+
+
+def unificar_repetidas(conn) -> int:
+    """Deja UNA tesis por (persona, activo, día): la última escrita. Devuelve
+    cuántas borró. No hace commit.
+
+    La corre el arranque ANTES de crear el índice único `ux_tesis_un_dia`: una
+    base con dos del mismo día (de antes de la regla: dos «Guardar» a la vez) no
+    deja crearlo, y en Postgres eso tiraría el arranque. Si alguna de las que se
+    van tenía recordatorio y la que queda no, la que queda hereda el más reciente;
+    los demás recordatorios quedarían sin tesis (no avisarían nunca y contarían
+    como alertas de la persona), así que se borran. Sin repetidas no hace nada."""
+    grupos = conn.execute(
+        """SELECT user_id, asset, escrita_el FROM tesis
+            GROUP BY user_id, asset, escrita_el HAVING COUNT(*) > 1""").fetchall()
+    borradas = 0
+    for g in grupos:
+        filas = conn.execute(
+            """SELECT id, recordar_tipo, recordar_el, alert_id FROM tesis
+                WHERE user_id=? AND asset=? AND escrita_el=? ORDER BY id""",
+            (g["user_id"], g["asset"], g["escrita_el"])).fetchall()
+        queda, van = filas[-1], filas[:-1]
+        hereda = None if queda["alert_id"] else next(
+            (f for f in reversed(van) if f["alert_id"]), None)
+        if hereda:
+            conn.execute("UPDATE tesis SET recordar_tipo=?, recordar_el=?, alert_id=? WHERE id=?",
+                         (hereda["recordar_tipo"], hereda["recordar_el"], hereda["alert_id"],
+                          queda["id"]))
+        for f in van:
+            if f["alert_id"] and f is not hereda:
+                conn.execute("DELETE FROM alerts WHERE id=? AND user_id=? AND kind='recordatorio'",
+                             (f["alert_id"], g["user_id"]))
+            conn.execute("DELETE FROM tesis WHERE id=?", (f["id"],))
+            borradas += 1
+    return borradas
 
 
 def _de_la_persona(conn, uid: int, tesis_id: int):

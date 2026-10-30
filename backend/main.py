@@ -1240,11 +1240,76 @@ def _derive_manual_flows(conn, uid: int, broker: str, year, month,
             max(0.0, float(withdrawals or 0) - imp_wit))
 
 
+# Estas tres van ANTES de `init_db`: el arranque (`init_db()`, que corre al
+# importar el módulo) llama a `_borrar_marcas_sueltas`, y una función definida
+# más abajo todavía no existe en ese momento.
+def _esquema_por_tabla(conn) -> dict:
+    """{tabla: set(columnas)} de toda la base.
+
+    Se lee UNA vez por borrado y, sobre todo, ANTES de abrir la transacción.
+    Antes se recorría el esquema entero (un PRAGMA por tabla, ~60 tablas) DENTRO
+    de la transacción de borrado, y otra vez por cada cliente shadow: un asesor
+    con 30 clientes hacía ~1.800 round-trips con el lock de escritura AGARRADO.
+    En SQLite el lock de escritura es uno solo para toda la base, así que ese
+    tiempo es tiempo en que cualquier otra escritura de la app se choca contra
+    `database is locked`. Leerlo antes achica la ventana de bloqueo a los DELETE.
+
+    A propósito NO se cachea entre borrados: el barrido dinámico es correcto
+    justamente porque ve TODAS las tablas, incluida cualquiera que se cree
+    después. Un caché de proceso convertiría una tabla nueva en datos que
+    sobreviven al borrado, en silencio. El ahorro serían microsegundos."""
+    return {r["name"]: {c["name"] for c in conn.execute(
+                f"PRAGMA table_info({r['name']})").fetchall()}
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%'").fetchall()}
+
+
+def _colgadas_de_alerts(esquema: dict) -> list:
+    """Las tablas que cuelgan de `alerts` por `alert_id` y NO tienen `user_id`
+    (hoy, `alert_symbol_state`: «ya avisé hoy», «miré las velas hasta acá»).
+
+    Los dos barridos de «todo lo de una persona» —el reset de admin y el borrado
+    de cuenta— van por `user_id`, así que estas tablas se les escapaban y sus filas
+    quedaban huérfanas (auditoría C, hallazgo 6). Se leen del esquema y no de una
+    lista para que una tabla nueva de este tipo quede cubierta sola. Se borran
+    ANTES que las alertas: después, el `alert_id IN (…)` ya no las encuentra."""
+    return sorted(t for t, cols in esquema.items()
+                  if "alert_id" in cols and "user_id" not in cols)
+
+
+_DE_SUS_ALERTAS = "alert_id IN (SELECT id FROM alerts WHERE user_id=?)"
+
+
+def _borrar_marcas_sueltas(conn) -> int:
+    """Borra las filas de las tablas colgadas de `alerts` cuya alerta ya no existe:
+    las que dejaron el reset y el borrado de cuenta antes de que se las llevaran
+    (auditoría C, hallazgo 6). Lo corre el arranque; con la base al día no
+    encuentra nada. No hace commit."""
+    n = 0
+    for t in _colgadas_de_alerts(_esquema_por_tabla(conn)):
+        n += conn.execute(f"DELETE FROM {t} WHERE NOT EXISTS "
+                          f"(SELECT 1 FROM alerts a WHERE a.id = {t}.alert_id)").rowcount or 0
+    return n
+
+
 def _init_db_postgres():
     """Aplica el schema de Postgres (idempotente: todo va con IF NOT EXISTS)."""
     import psycopg
     ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema_pg.sql")
     ddl = open(ruta).read()
+    # ANTES del esquema: el índice único `ux_tesis_un_dia` no se puede crear
+    # sobre una base que ya tenga dos tesis del mismo día (de antes de la regla),
+    # y el CREATE de abajo reventaría el arranque. Primero se juntan, con la misma
+    # función que usa SQLite (tesis.unificar_repetidas). En una base nueva la
+    # tabla todavía no existe y no hay nada que juntar. `idx_tesis_user_asset`
+    # tenía las mismas columnas sin ser único: lo reemplaza (igual que en SQLite).
+    with db_abierta() as conn:
+        if conn.execute("SELECT to_regclass('tesis')").fetchone()[0]:
+            import tesis as _tesis
+            _tesis.unificar_repetidas(conn)
+            conn.execute("DROP INDEX IF EXISTS idx_tesis_user_asset")
+        conn.commit()
     import pgsesion
     with pgsesion.conectar(DATABASE_URL, autocommit=True) as c:
         for s in [x.strip() for x in ddl.split(";\n") if x.strip()]:
@@ -1252,6 +1317,10 @@ def _init_db_postgres():
                 c.execute(s)
             except psycopg.errors.DuplicateObject:
                 pass          # la FK ya existía (ADD FOREIGN KEY no tiene IF NOT EXISTS)
+    # DESPUÉS del esquema (las tablas tienen que existir), igual que en SQLite.
+    with db_abierta() as conn:
+        _borrar_marcas_sueltas(conn)
+        conn.commit()
 
 
 # Fecha en que el mail de bienvenida empezó a salir por Rebill. Todo lo anterior
@@ -2612,8 +2681,12 @@ def init_db():
 
         # Tu tesis: por qué compraste un activo (tesis.py). Una por (usuario,
         # activo) y por día: reescribirla otro día guarda otra y la vieja queda
-        # para las ventas que hiciste mientras valía. Tabla nueva, sin ALTER: el
-        # índice va en el mismo bloque y es seguro en una base ya creada.
+        # para las ventas que hiciste mientras valía. «Una por día» la hace
+        # cumplir el índice único `ux_tesis_un_dia`, no el código: dos «Guardar»
+        # a la vez escribían dos (auditoría C, hallazgo 4). El índice va DESPUÉS
+        # de la tabla y de juntar las repetidas que ya hubiera (con repetidas no
+        # se puede crear). Reemplaza a `idx_tesis_user_asset`, que tenía las
+        # mismas columnas sin ser único.
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS tesis (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2629,7 +2702,12 @@ def init_db():
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_tesis_user_asset ON tesis(user_id, asset, escrita_el);
+        """)
+        import tesis as _tesis
+        _tesis.unificar_repetidas(conn)
+        conn.executescript("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_tesis_un_dia ON tesis(user_id, asset, escrita_el);
+            DROP INDEX IF EXISTS idx_tesis_user_asset;
         """)
 
         # Los dibujos a mano del gráfico técnico (líneas de tendencia y
@@ -2713,6 +2791,10 @@ def init_db():
         _st_cols = [r[1] for r in conn.execute("PRAGMA table_info(alert_symbol_state)").fetchall()]
         if _st_cols and 'last_fired_date' not in _st_cols:
             conn.executescript("ALTER TABLE alert_symbol_state ADD COLUMN last_fired_date TEXT;")
+        # Las marcas que dejaron sueltas el reset y el borrado de cuenta antes del
+        # arreglo del 29/10 (auditoría C, hallazgo 6). Con la base al día, nada.
+        _borrar_marcas_sueltas(conn)
+        conn.commit()
 
         # ─── AI v2 — cache de análisis + usage diario (Sprint AI v2) ───────────
         # ai_analyses_cache: cache_key = sha256(uid+screen+packet_json). TTL 24h.
@@ -5326,18 +5408,11 @@ _RESET_CONFIG_KEYS = ("fx_version", "tc_blue", "tc_mep")
 # login y el plan pago. Acá viven las cosas que el usuario configuró y que un
 # "empezar de cero" de verdad no debería heredar: sus alertas, lo que sigue, las
 # claves read-only con las que conectó un broker y los mapeos de columnas que
-# guardó el importador.
-# ⚠️ Lo que NO está acá y NO es casualidad:
-#   • users / subscriptions / billing_events / credit_ledger / plan_events /
-#     trial_* → identidad y plata. Tocarlas es resetearle el plan a alguien que
-#     pagó: la razón entera de que este allowlist sea explícito.
-#   • ai_usage_daily / ai_tool_usage → son el CONTADOR de la cuota de IA. Si se
-#     borran, "resetear" pasa a ser la forma de regalarse cuota.
-#   • push_subscriptions → es el permiso de notificaciones del DISPOSITIVO.
-#     Borrarlo deja al usuario sin push en silencio hasta que lo vuelva a dar.
-#   • advisor_* → son vínculos con OTRAS personas, no datos propios.
-#   • login_history / password_reset_tokens / email_verification_codes → rastro
-#     de seguridad de la cuenta, que sigue siendo la misma cuenta.
+# guardó el importador. Lo que NO se borra está en `_RESET_ADMIN_CONSERVADAS`,
+# con su motivo: toda tabla con `user_id` tiene que estar en una de las dos (o en
+# `_RESET_ADMIN_OTRO_CAMINO`), y `tests/test_reset_censo.py` se pone en rojo si
+# aparece una sin decidir. Sin ese censo, una tabla nueva quedaba afuera sola:
+# pasó con `futures_positions` y con `dibujos_grafico` (auditoría C, 29/10).
 _RESET_ADMIN_EXTRA_TABLES = (
     "alerts", "alert_events", "watchlist",
     "user_broker_credentials", "import_mappings",
@@ -5346,7 +5421,63 @@ _RESET_ADMIN_EXTRA_TABLES = (
     # Las tesis van con sus recordatorios (que son alertas): el reset del
     # usuario no las toca, como a las alertas.
     "tesis",
+    # Agregadas 2026-10-29 (auditoría C hallazgo 3), las cuatro quedaban
+    # después de «como la primera vez»:
+    # · las líneas, Fibonacci y Elliott que dibujó en cada gráfico;
+    "dibujos_grafico",
+    # · si quiere el resumen del mercado por mail: la hermana de
+    #   `resumen_semanal_prefs`, que sí se borraba;
+    "market_brief_prefs",
+    # · la prueba de IOL: el reset ya borraba la clave con que la corrió
+    #   (`user_broker_credentials`, broker='iol_lab'); quedaban sus resultados y
+    #   la bitácora de cuánto vivía esa clave, que sin la clave no miden nada.
+    "iol_lab_runs", "iol_lab_token_log",
 )
+
+# Tablas con `user_id` que el reset de admin NO borra, y por qué. No es una
+# lista de olvidos: cada una es una decisión. Una tabla nueva con `user_id` va
+# acá o en la lista de arriba; si no va en ninguna, `test_reset_censo` falla.
+_RESET_ADMIN_CONSERVADAS = {
+    "subscriptions": "plata: el plan pago sigue siendo de la misma cuenta",
+    "billing_events": "plata: el rastro de los cobros",
+    "credit_ledger": "plata: el crédito pago; además cuenta para el tope de pruebas gratis",
+    "plan_events": "plata: la historia del plan",
+    "trial_email_log": "los avisos de la prueba gratis ya mandados: borrarlo los vuelve a mandar",
+    "ai_usage_daily": "contador de la cuota de IA: borrarlo es regalarse cuota",
+    "ai_tool_usage": "contador de la cuota de IA: borrarlo es regalarse cuota",
+    "push_subscriptions": "el permiso de notificaciones del DISPOSITIVO: sin él, no hay push "
+                          "hasta que lo vuelva a dar, sin aviso",
+    "login_history": "rastro de seguridad de la cuenta, que sigue siendo la misma",
+    "password_reset_tokens": "rastro de seguridad de la cuenta, que sigue siendo la misma",
+    "email_verification_codes": "rastro de seguridad de la cuenta, que sigue siendo la misma",
+    "advisor_claim_tokens": "invitación de un ASESOR (otra persona) a reclamar la cuenta",
+    # El plan asesor: sus tablas van por `advisor_uid` (no `user_id`) y son su
+    # trabajo con OTRAS personas, sus clientes. Resetear la cuenta del asesor
+    # borra SU cartera, no su relación ni lo que armó para ellos (el aviso previo
+    # del admin lo dice: `_reset_admin_avisos`). El censo las cuenta desde el
+    # re-test de la auditoría C: antes la decisión vivía sólo en un comentario.
+    "advisor_clients": "asesor: el vínculo con sus clientes (otras personas)",
+    "advisor_link_requests": "asesor: pedidos de vínculo con otras personas",
+    "advisor_profile": "asesor: su perfil profesional, el que ven sus clientes",
+    "advisor_groups": "asesor: cómo agrupó a sus clientes",
+    "advisor_alerts": "asesor: las alertas que configuró sobre sus clientes",
+    "advisor_alert_state": "asesor: el estado de esas alertas, por cliente",
+    "advisor_alert_events": "asesor: lo que esas alertas ya le avisaron",
+    "advisor_brief_log": "asesor: los resúmenes que Rendi le mandó sobre sus clientes",
+    "advisor_reports": "asesor: los informes que armó para sus clientes",
+    "advisor_import_tandas": "asesor: las tandas de importación que hizo para sus clientes",
+    "advisor_op_batches": "asesor: las operaciones que cargó en grupo para sus clientes",
+    "market_brief_log": "lo que Rendi le mandó por mail, para poder releerlo; además es el "
+                        "freno para no mandar dos veces el del día",
+    "uso_diario": "lo que Rendi midió de su uso (panel de uso del admin): borrarlo cambia la "
+                  "historia de cuántos usaron la app cada día",
+}
+
+# Tablas con `user_id` que el reset de admin SÍ borra, pero no por la lista.
+_RESET_ADMIN_OTRO_CAMINO = {
+    "config": "`toda_la_config=True` en `_reset_data_worker`: se van todas sus prefs",
+    "import_batches": "`_reset_data_worker` la borra siempre, después de sus filas de import",
+}
 
 
 # ─── Progreso del reset ──────────────────────────────────────────────────────
@@ -5411,6 +5542,27 @@ def _borrar_en_chunks(conn, uid: int, tabla: str, where: str, args: tuple,
             time.sleep(pausa)
 
 
+def _reset_plan(conn, uid: int, tablas) -> list:
+    """[(tabla, where, args)] de lo que borra un reset, EN ORDEN. Lo usan el
+    borrado (`_reset_data_worker`) y el aviso previo del admin
+    (`_reset_admin_conteo`): el número que se mira para decidir es el que después
+    se borra porque sale del mismo plan."""
+    batch_ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
+    _ph = ",".join("?" * len(batch_ids)) if batch_ids else ""
+    plan = []
+    if batch_ids:
+        for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
+            plan.append((t, f"batch_id IN ({_ph})", tuple(batch_ids)))
+        plan.append(("import_batches", "user_id=?", (uid,)))
+    if "alerts" in tablas:
+        for t in _colgadas_de_alerts(_esquema_por_tabla(conn)):
+            plan.append((t, _DE_SUS_ALERTAS, (uid,)))
+    for t in tablas:
+        plan.append((t, "user_id=?", (uid,)))
+    return plan
+
+
 def _reset_data_worker(uid: int, *, tablas: tuple = None, toda_la_config: bool = False,
                        borrar_perfil: bool = False, pausa: float = 0.0) -> None:
     """Corre el borrado completo. Publica progreso en `_reset_progress`.
@@ -5437,18 +5589,8 @@ def _reset_data_worker(uid: int, *, tablas: tuple = None, toda_la_config: bool =
     """
     conn = get_db()
     try:
-        batch_ids = [r["id"] for r in conn.execute(
-            "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
-        _ph = ",".join("?" * len(batch_ids)) if batch_ids else ""
-
         # Plan de trabajo + total, para que la barra sea real y no una animación.
-        plan = []
-        if batch_ids:
-            for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
-                plan.append((t, f"batch_id IN ({_ph})", tuple(batch_ids)))
-            plan.append(("import_batches", "user_id=?", (uid,)))
-        for t in (tablas or _RESET_PORTFOLIO_TABLES):
-            plan.append((t, "user_id=?", (uid,)))
+        plan = _reset_plan(conn, uid, tablas or _RESET_PORTFOLIO_TABLES)
 
         total = 0
         vivas = []
@@ -5608,6 +5750,10 @@ def _wipe_user_rows(conn, _uid: int, esquema: dict) -> dict:
         _ph = ",".join("?" * len(batch_ids))
         for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
             conn.execute(f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids))
+    for t in _colgadas_de_alerts(esquema):          # antes que las alertas
+        n = conn.execute(f"DELETE FROM {t} WHERE {_DE_SUS_ALERTAS}", (_uid,)).rowcount
+        if n:
+            wiped[t] = n
     for t, cols in esquema.items():
         if t in _NO_BORRAR_ANONIMIZAR:
             continue                     # se anonimizan abajo, no se borran
@@ -5636,28 +5782,6 @@ def _wipe_user_rows(conn, _uid: int, esquema: dict) -> dict:
             log.warning("no pudimos anonimizar %s uid=%s: %s", t, _uid, ex)
     wiped["users"] = conn.execute("DELETE FROM users WHERE id=?", (_uid,)).rowcount
     return wiped
-
-
-def _esquema_por_tabla(conn) -> dict:
-    """{tabla: set(columnas)} de toda la base.
-
-    Se lee UNA vez por borrado y, sobre todo, ANTES de abrir la transacción.
-    Antes se recorría el esquema entero (un PRAGMA por tabla, ~60 tablas) DENTRO
-    de la transacción de borrado, y otra vez por cada cliente shadow: un asesor
-    con 30 clientes hacía ~1.800 round-trips con el lock de escritura AGARRADO.
-    En SQLite el lock de escritura es uno solo para toda la base, así que ese
-    tiempo es tiempo en que cualquier otra escritura de la app se choca contra
-    `database is locked`. Leerlo antes achica la ventana de bloqueo a los DELETE.
-
-    A propósito NO se cachea entre borrados: el barrido dinámico es correcto
-    justamente porque ve TODAS las tablas, incluida cualquiera que se cree
-    después. Un caché de proceso convertiría una tabla nueva en datos que
-    sobreviven al borrado, en silencio. El ahorro serían microsegundos."""
-    return {r["name"]: {c["name"] for c in conn.execute(
-                f"PRAGMA table_info({r['name']})").fetchall()}
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name NOT LIKE 'sqlite_%'").fetchall()}
 
 
 def _borrar_usuario_y_datos(conn, uid: int) -> dict:
@@ -24256,17 +24380,7 @@ def _reset_admin_conteo(conn, uid: int) -> dict:
     Es la parte que faltaba en el botón viejo: saber, antes de tocar la base, si
     esta cuenta son 3.000 filas o un millón. De eso depende si conviene correrlo
     ahora o a la madrugada."""
-    batch_ids = [r["id"] for r in conn.execute(
-        "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
-    _ph = ",".join("?" * len(batch_ids)) if batch_ids else ""
-
-    plan = []
-    if batch_ids:
-        for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
-            plan.append((t, f"batch_id IN ({_ph})", tuple(batch_ids)))
-        plan.append(("import_batches", "user_id=?", (uid,)))
-    for t in _reset_admin_tablas():
-        plan.append((t, "user_id=?", (uid,)))
+    plan = _reset_plan(conn, uid, _reset_admin_tablas())
     plan.append(("config", "user_id=?", (uid,)))
 
     filas, total, faltantes = [], 0, []
@@ -48576,14 +48690,16 @@ def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
     """Borra una alerta (y sus eventos)."""
     conn = get_db()
     try:
+        colgadas = _colgadas_de_alerts(_esquema_por_tabla(conn))
         with conn:
-            # `alert_symbol_state` no tiene user_id: se ata por subquery a `alerts`
-            # para no tocar el estado de alertas AJENAS, y se borra ANTES que la
-            # alerta (después el subquery ya no la encontraría). Sin este candado,
-            # pasar el id de una alerta de otro reseteaba su "ya te avisé".
-            conn.execute(
-                "DELETE FROM alert_symbol_state WHERE alert_id IN "
-                "(SELECT id FROM alerts WHERE id=? AND user_id=?)", (alert_id, uid))
+            # Las tablas que cuelgan de la alerta sin `user_id` (`alert_symbol_state`)
+            # se atan por subquery a `alerts` para no tocar el estado de alertas
+            # AJENAS, y se borran ANTES que la alerta (después el subquery ya no la
+            # encontraría). Sin este candado, pasar el id de una alerta de otro
+            # reseteaba su "ya te avisé". Las mismas tablas que los dos barridos.
+            for t in colgadas:
+                conn.execute(f"DELETE FROM {t} WHERE alert_id IN "
+                             "(SELECT id FROM alerts WHERE id=? AND user_id=?)", (alert_id, uid))
             conn.execute("DELETE FROM alerts WHERE id=? AND user_id=?", (alert_id, uid))
             conn.execute("DELETE FROM alert_events WHERE alert_id=? AND user_id=?",
                          (alert_id, uid))
