@@ -70,8 +70,9 @@ describe('D5 · lo que sale del último cierre dice de qué día es', () => {
     const archivos = archivosConTexto().filter(r => TECNICO.test(relativa(r)))
     expect(archivos.length).toBeGreaterThan(10)
     const vistos = archivos.flatMap(r => hallazgos(r, NO))
-      // «Lo que vale hoy contra lo que pagaste»: el precio en vivo, es de hoy.
-      .filter(h => !h.startsWith('src/components/asset/LecturaTecnica.jsx') || !/«hoy contra»/.test(h))
+      // «Lo que vale hoy contra lo que pagaste»: el precio en vivo, es de hoy. La
+      // tarjeta se mudó a TarjetasPorTema.jsx con la ficha en pestañas (30/10).
+      .filter(h => !/^src\/components\/asset\/(LecturaTecnica|TarjetasPorTema)\.jsx/.test(h) || !/«hoy contra»/.test(h))
     expect(vistos).toEqual([])
   })
 })

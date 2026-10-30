@@ -484,8 +484,11 @@ describe('en el celular (un gráfico angosto, Nico 29/10)', () => {
     // Pegada a las fechas, antes del panel del RSI: abajo de todo, con los paneles
     // prendidos, caía donde flotan WhatsApp y Mervall-E y quedaba tapada.
     const t = texto(montado.contenedor)
-    expect(t).toContain('Impulso (RSI)')
-    expect(t.indexOf('Pellizcá')).toBeLessThan(t.indexOf('Impulso (RSI)'))
+    // El panel del RSI es el primero DESPUÉS del título del gráfico: arriba de
+    // todo, «La lectura de hoy» también nombra el Impulso (RSI) (ficha-lectura).
+    const panel = t.indexOf('Impulso (RSI)', t.indexOf('Análisis técnico'))
+    expect(panel).toBeGreaterThan(-1)
+    expect(t.indexOf('Pellizcá')).toBeLessThan(panel)
   })
 })
 

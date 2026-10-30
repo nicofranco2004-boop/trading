@@ -51,6 +51,8 @@ import CapaFibonacci, { COLOR_FIB, ID_FIB_AUTO, TarjetaFibonacci, preciosDeLaCap
 import CapaElliott, { COLOR_ELLIOTT, ID_ELL_AUTO, TarjetaElliott, fechaDelConteo, preciosDelConteo, trazosDelConteo } from './CapaElliott'
 import CapaDibujos, { anchoDelCanal, colorDe, preciosAlBorde, trazosDeDibujos } from './CapaDibujos'
 import CompartirGrafico from './CompartirGrafico'
+import LecturaDeHoy from './LecturaDeHoy'
+import TarjetasPorTema from './TarjetasPorTema'
 import Banderitas, { CartelDeNotas, banderitaEn, banderitasEnVista, esClaveDeGrupo, esClaveDeTesis } from './NotasGrafico'
 import ResumenMervalle from './ResumenMervalle'
 import { BotonAvisame, BotonAvisameLinea, alertaDeLinea, useAvisosTecnicos, senalDeTarjeta } from '../alerts/AvisameTecnico'
@@ -228,6 +230,11 @@ export default function LecturaTecnica({
   // activo): una banderita por versión, en el día en que la escribiste
   // (NotasGrafico.jsx). `onVerTesis` lleva a la tesis de la ficha, donde se edita.
   tesis = [], onVerTesis = null,
+  // La pestaña «Gráfico» de Análisis técnico: sólo el gráfico, sin «La lectura
+  // de hoy» arriba y con las tarjetas de abajo como antes, en una grilla. En la
+  // ficha van la lectura y las tarjetas en pestañas (LecturaDeHoy.jsx,
+  // TarjetasPorTema.jsx).
+  soloGrafico = false,
 }) {
   const { hidden: oculto } = usePrivacy()
   const [moneda, setMoneda] = useState(() => (lineaDeLaDireccion()?.moneda === 'ars' ? 'ars' : 'usd'))
@@ -583,10 +590,12 @@ export default function LecturaTecnica({
 
   // `visto`: el rango que se está viendo (null si se acercó o movió a mano);
   // `recientes`: cuántos días es «Lo reciente» (null = no hace falta).
-  const marco = (hijos, { conPesos = datos.ars?.disponible !== false, visto = ventana ? null : rango ?? (anchoGrafico > 0 && anchoGrafico < ANCHO_ANGOSTO ? 'reciente' : 'todo'), recientes = null, textoReciente = null, compartir = null, antesDeCompartir = null } = {}) => (
-    <Marco moneda={moneda} setMoneda={setMoneda} rango={visto} setRango={elegirRango} recientes={recientes} textoReciente={textoReciente} compartir={compartir} antesDeCompartir={antesDeCompartir} archivo={archivoDelGrafico(asset)}
+  // `arriba`: «La lectura de hoy», encima del marco. Su lugar existe siempre
+  // (null mientras carga): así el marco no se vuelve a armar al llegar los datos.
+  const marco = (hijos, { conPesos = datos.ars?.disponible !== false, visto = ventana ? null : rango ?? (anchoGrafico > 0 && anchoGrafico < ANCHO_ANGOSTO ? 'reciente' : 'todo'), recientes = null, textoReciente = null, compartir = null, antesDeCompartir = null, arriba = null } = {}) => (
+    <>{arriba}<Marco moneda={moneda} setMoneda={setMoneda} rango={visto} setRango={elegirRango} recientes={recientes} textoReciente={textoReciente} compartir={compartir} antesDeCompartir={antesDeCompartir} archivo={archivoDelGrafico(asset)}
       conPesos={conPesos} conTuyo={!!primera} tipo={tipo} setTipo={setTipo} intervalo={intervalo} setIntervalo={setIntervalo}
-      grande={grande} setGrande={setGrande} titulo={titulo}>{hijos}</Marco>
+      grande={grande} setGrande={setGrande} titulo={titulo}>{hijos}</Marco></>
   )
   // Cargando: el marco con sus botones queda quieto y el gris va adentro, con la
   // altura del gráfico ya reservada (antes desaparecía todo y la página saltaba).
@@ -901,10 +910,6 @@ export default function LecturaTecnica({
   const textoDeMedicion = (m) => (horas ? textoMedicionPorHora(m, cadaHoras) : textoMedicion(m))
   const tenenciaEnMoneda = tenencia?.valorUsd > 0
     ? { valor: moneda === 'usd' ? tenencia.valorUsd : tenencia.valorUsd * (tenencia.tc || 0) } : null
-  const cuanto = tarjetasMovimiento(actual.movimiento, {
-    moneda, precio: (x) => fmtPrecio(x, moneda), tenencia: tenenciaEnMoneda,
-    peso: tenencia?.valorUsd > 0 ? pesoEnCartera : null, oculto,
-  })
 
   // «Compartir» (Nico, 29/10): la imagen de lo que se ve, con las capas
   // prendidas y tus dibujos (utils/imagenGrafico.js). No recibe tu precio,
@@ -1155,57 +1160,13 @@ export default function LecturaTecnica({
       <ResumenMervalle key={moneda} asset={asset} moneda={moneda} local={accionLocal} resumen={actual.resumen}
         alTenerlo={(r) => setDatos(d => ({ ...d, [moneda]: { ...d[moneda], resumen: r } }))} />
 
-      <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
-        {ver.fib && actual.fibonacci && (
-          <TarjetaFibonacci fib={actual.fibonacci} precio={(x) => fmtPrecio(x, moneda)} fecha={fechaCorta} />
-        )}
-        {ver.ell && actual.elliott && (
-          <TarjetaElliott elliott={actual.elliott} precio={(x) => fmtPrecio(x, moneda)} fecha={fechaCorta} />
-        )}
-        {ver.bb && tarjetaBandas(actual.lectura) && <Tarjeta t={tarjetaBandas(actual.lectura)} />}
-        {lista.map(t => {
-          const s = senalDeTarjeta(t.id, actual.lectura)
-          return (
-            <Tarjeta key={t.id} t={t} pie={s && (
-              <BotonAvisame avisos={avisos} asset={asset} accionLocal={accionLocal} moneda={moneda} {...s} />
-            )} />
-          )
-        })}
-        {(() => {
-          // La tarjeta: en dólares, el MISMO resultado de arriba de la ficha; en
-          // pesos, el de lo que pagaste en pesos.
-          const r = moneda === 'usd' ? pnlPctUsd : pnlPct
-          if (r == null) return null
-          return (
-            <Tarjeta t={{
-              id: 'tuyo', titulo: 'Contra lo que pagaste', tono: r >= 0 ? 'pos' : 'neg',
-              veredicto: `${r >= 0 ? 'Ganás' : 'Perdés'} ${Math.abs(r * 100).toLocaleString('es-AR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })}%`,
-              texto: moneda === 'usd'
-                ? (lineaSinTc
-                  ? 'Es el mismo resultado de arriba. La línea de tu precio promedio no se dibuja porque a alguna compra le falta la cotización del dólar de ese día.'
-                  : 'Es el mismo resultado de arriba. La línea punteada es tu precio promedio, con el dólar del día de cada compra.')
-                : 'Lo que vale hoy contra lo que pagaste, todo en pesos.',
-            }} />
-          )
-        })()}
-      </div>
-
-      {cuanto.length > 0 && (
-        <section aria-label="Cuánto se mueve este activo" className="mt-5">
-          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 mb-2">
-            <h3 className="text-[14px] font-semibold text-ink-0">Cuánto se mueve este activo</h3>
-            <span className="text-[12px] text-ink-2">
-              {periodoDeMovimiento(actual.movimiento)}, en {moneda === 'usd' ? 'dólares' : 'pesos'}
-            </span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
-            {cuanto.map(t => <Tarjeta key={t.id} t={t} />)}
-          </div>
-          <p className="text-[11.5px] text-ink-2 mt-2 leading-relaxed">
-            Es lo que pasó, de cierre a cierre: no dice cuánto se va a mover de acá en adelante.
-          </p>
-        </section>
-      )}
+      <TarjetasPorTema enPestanas={!soloGrafico} Tarjeta={Tarjeta} lista={lista} lectura={actual.lectura} puntos={actual.puntos}
+        ver={ver} fibonacci={actual.fibonacci} elliott={actual.elliott} moneda={moneda}
+        precio={(x) => fmtPrecio(x, moneda)} fecha={fechaCorta} avisos={avisos} asset={asset} accionLocal={accionLocal}
+        // En dólares, el MISMO resultado de arriba de la ficha; en pesos, el de lo que pagaste en pesos.
+        resultado={moneda === 'usd' ? pnlPctUsd : pnlPct} lineaSinTc={lineaSinTc}
+        movimiento={actual.movimiento} tenencia={tenenciaEnMoneda} peso={tenencia?.valorUsd > 0 ? pesoEnCartera : null}
+        periodo={periodoDeMovimiento(actual.movimiento)} colores={{ media200: COLOR.media200, media50: COLOR.media50 }} />
 
       <p className="text-[12px] text-ink-2 mt-3 leading-relaxed">
         {moneda === 'usd' && 'Se mira en dólares aunque uses la app en pesos, porque en pesos el precio también sube con el dólar. Para verlo en pesos, tocá «US$» arriba del gráfico y elegí «Pesos». '}
@@ -1216,7 +1177,8 @@ export default function LecturaTecnica({
       </p>
     </>,
     // En 1H/4H «Lo reciente» se cuenta en velas, no en días de mercado.
-    { visto: ventana ? null : rangoVisto, recientes, textoReciente: horas && recientes ? `${recientes} velas` : null, compartir, antesDeCompartir },
+    { visto: ventana ? null : rangoVisto, recientes, textoReciente: horas && recientes ? `${recientes} velas` : null, compartir, antesDeCompartir,
+      arriba: soloGrafico ? null : <LecturaDeHoy lectura={actual.lectura} lista={lista} puntos={actual.puntos} adxTope={ADX_TOPE} /> },
   )
 }
 
@@ -1752,8 +1714,9 @@ function Letra({ tipo, grande: g = false }) {
 }
 
 // `pie`: el «Avisame» de la señal de esa tarjeta (AvisameTecnico), arriba a la
-// derecha, chico, para no competir con la lectura.
-function Tarjeta({ t, pie }) {
+// derecha, chico, para no competir con la lectura. `dibujo`: el dibujito de la
+// tarjeta en la ficha (TarjetasPorTema), debajo del veredicto.
+function Tarjeta({ t, pie, dibujo = null }) {
   const tono = t.tono === 'pos' ? 'text-rendi-pos' : t.tono === 'neg' ? 'text-rendi-neg' : 'text-ink-0'
   return (
     <div className="rounded-lg border border-line/60 bg-bg-2/40 px-3.5 py-3">
@@ -1762,6 +1725,7 @@ function Tarjeta({ t, pie }) {
         {pie && <div className="-mt-1.5 flex-shrink-0">{pie}</div>}
       </div>
       <div className={`text-[15px] font-semibold mt-0.5 tabular ${tono}`}>{t.veredicto}</div>
+      {dibujo}
       {t.rsi != null && <BarraRsi rsi={t.rsi} />}
       {t.adx != null && <BarraAdx adx={t.adx} />}
       <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.texto}</div>
