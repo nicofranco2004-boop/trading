@@ -114,6 +114,22 @@ class AsesorSoloLecturaTest(unittest.TestCase):
         r = self.client.put("/api/tesis", json={"asset": "AAPL", "texto": "x"}, headers=self._h(self.beto))
         self.assertEqual(r.status_code, 200, r.text)
 
+    def test_la_lista_de_rutas_marcadas_es_exactamente_esta(self):
+        """Re-test E6: marcar con `@no_escribe_en_el_cliente` una ruta que SÍ
+        escribe abre la cuenta del cliente en silencio, y los tests de arriba no
+        lo verían (miran 3 rutas por nombre). Sumar una ruta a la marca es una
+        decisión: se agrega acá, en el mismo commit, y se prueba que no escribe."""
+        marcadas = sorted(
+            (m, r.path) for r in main.app.routes
+            if getattr(getattr(r, "endpoint", None), "_rendi_no_escribe_en_el_cliente", False)
+            for m in sorted(getattr(r, "methods", ()) or ()))
+        self.assertEqual(marcadas, [
+            ("POST", "/api/tecnico/cartera"),
+            ("POST", "/api/tecnico/en-fechas"),
+            ("POST", "/api/tecnico/lista"),
+            ("PUT", "/api/tecnico/{asset}/dibujos"),
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -39,10 +39,10 @@ from __future__ import annotations
 import calendar
 import json
 from datetime import date, timedelta
-from urllib.parse import quote
 
 import tecnico
 from fechas import hoy_art_date
+from rutas_app import ruta_de_la_ficha
 
 TEXTO_MAX = 1000
 # Lo más lejos que se puede poner un recordatorio (una fecha a mano).
@@ -306,5 +306,5 @@ def para_el_aviso(conn, t) -> dict:
         "cta_label": f"Ver {asset}",
         # Codificado, como el de las alertas técnicas (alerts_engine): un fondo
         # lleva «:», espacios y «/», y el link tiene que abrir SU ficha.
-        "cta_path": f"/activo/{quote(asset, safe='')}",
+        "cta_path": ruta_de_la_ficha(asset),
     }
