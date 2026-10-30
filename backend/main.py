@@ -12381,13 +12381,14 @@ def get_tecnico_hoy(asset: str, request: Request, moneda: str = "usd", local: in
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
-    # Una ficha pide 1 por minuto (2 si mira las dos monedas): 40 por minuto es
-    # mucho más que eso y frena recorrer todos los activos para hacer pegarle a Yahoo.
-    _check_rate_limit(request, max_calls=40, window_seconds=60, suffix=f"tecnico_hoy:{uid}")
     import tecnico
-    # La base se lee y se CIERRA antes de salir a Yahoo y al dólar: en Postgres,
-    # leer deja la transacción abierta hasta cerrar la conexión.
-    with db_abierta() as conn:
+    # Lee la serie: el freno único de las lecturas pesadas (E1, el de la ficha:
+    # «uno», 90 por minuto y 3 a la vez). Una ficha pide 1 por minuto (2 si mira
+    # las dos monedas); recorrer todos los activos para hacer pegarle a Yahoo
+    # choca con el tope. Traía un freno propio (40 por minuto): al juntar
+    # (30/10) quedó el único. La base se lee y se CIERRA antes de salir a Yahoo
+    # y al dólar: en Postgres, leer deja la transacción abierta hasta cerrarla.
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         prep = tecnico.preparar_vela_de_hoy(conn, sym, moneda, bool(local))
     return tecnico.vela_de_hoy(prep)
 

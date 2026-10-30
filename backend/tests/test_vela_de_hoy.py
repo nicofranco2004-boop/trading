@@ -233,7 +233,10 @@ class VelaDeHoyTest(unittest.TestCase):
         self._cedear_apple()
         self.yahoo.hoy_diaria["AAPL"] = (301.0, 306.0, 299.0, 304.5, 5_000_000.0)
         self.yahoo.espera = 0.3
-        with ThreadPoolExecutor(max_workers=8) as ex:
+        # Lo que se mide es que Yahoo reciba UN pedido, no el freno de la
+        # persona (3 a la vez, test_tecnico_freno): acá se lo abre.
+        with mock.patch.dict(main.FRENO_TECNICO, {"uno": (90, 20)}), \
+                mock.patch("main.PESADOS_A_LA_VEZ", 40), ThreadPoolExecutor(max_workers=8) as ex:
             respuestas = list(ex.map(lambda _: self._hoy("AAPL"), range(8)))
         self.assertTrue(all(r["velas"] and r["velas"][-1]["c"] == 304.5 for r in respuestas))
         cortos = [p for p in self.yahoo.pedidos if p == ("AAPL", "5d", "1d")]
