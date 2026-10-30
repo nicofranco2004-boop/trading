@@ -19,7 +19,7 @@
 // Responsive: una sola página sirve desktop y mobile (max-w centrado en desktop,
 // full-width en mobile). Reusa la matriz de valuación de PositionDetailMobile.
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, TrendingUp, TrendingDown, Calendar, Star, Check,
@@ -37,121 +37,15 @@ import Segmento from '../components/asset/Segmento'
 import Skeleton from '../components/Skeleton'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
-import { isBymaHolding, lotMissingPurchaseRate, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
-import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
-import { empresaDeTenencias, empresaDeTicker, urlDeActivo, miradaSinTenencia, mismoPapel } from '../utils/buscadorRapido'
-// ¿Es una acción argentina? Una regla (utils/accionLocal.js) para la ficha, la
-// Cartera y las alertas: leen el mismo activo con la misma marca `local`.
-import { esAccionLocal } from '../utils/accionLocal'
-import { useUltimoPedido } from '../hooks/useUltimoPedido'
+import { isBymaHolding, fciLabel } from '../utils/valuation'
+import { empresaDeTenencias, empresaDeTicker, urlDeActivo } from '../utils/buscadorRapido'
+import { useFichaDelActivo, esFci } from '../hooks/useFichaDelActivo'
 import { monedaDe } from '../components/home/Watchlist'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { ChipDelActivo } from '../components/FueraDeHorario'
-import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
-import { operacionesEnUsd } from '../utils/assetPnl'
 import { esCobro } from '../utils/tradeStats'
-
-// ─── Matriz de valuación por lote (reusa la lógica de PositionDetailMobile) ──
-// Costo económico del lote, en SU moneda = lo pagado + las comisiones de compra.
-// Es la definición de la casa: la usan computeBrokerValue (valuation.js:486), las
-// filas del desktop, usdLotValue, pesoLotUsd y el backend (persister.py:747).
-// El CASH no lleva comisión y por eso sigue con `invested`. Lo usan `valueLot` y
-// el costo en pesos de la lectura técnica: una sola cuenta para los dos.
-function costoDelLote(p) {
-  return (p.invested || 0) + (p.commissions || 0)
-}
-
-// Devuelve { valueUsd, investedUsd, pnlUsd, priceLocal } para UN lote.
-function valueLot(p, { brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis = 'today' }) {
-  const broker = brokers.find(b => b.name === p.broker)
-  const isAR = broker?.currency === 'ARS'
-  const qty = p.quantity || 0
-  const cashInvested = p.invested || 0
-  if (p.is_cash) {
-    const v = isAR ? cashInvested / tcValuacion : cashInvested
-    return { valueUsd: v, investedUsd: v, pnlUsd: 0, priceLocal: null }
-  }
-  const invested = costoDelLote(p)
-  // Lote en PESOS (currency='ARS') en una cuenta USD → estilo-ARS por el MEP
-  // (tcCedear): costo Y valor a USD por el mismo rate, no el costo en pesos como dólares.
-  if (costInPesos(p) && !isAR) {
-    const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
-    // Costo DISPLAY (modo 'purchase' → tc_compra); guardCost = costo a hoy, denominador
-    // del guard (mode-independent, así 'purchase' no afloja el filtro anti-distorsión).
-    const investedUsd = invested / costBasisRate(p, tcCedear, costBasis)
-    const guardCost = invested / tcCedear
-    const priceLocal = priceArs != null ? priceArs / tcCedear : null
-    const mkt = priceLocal != null ? priceLocal * qty : investedUsd
-    const valueUsd = trustMktValue(mkt, guardCost, p.asset_type, p.price_override != null) ? mkt : investedUsd
-    return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
-  }
-  // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
-  // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz).
-  // El costo YA está en USD (sin ÷MEP); el valor va por el tipo de instrumento
-  // (usdLotValue). Sin esto, la rama isAR de abajo dividía el costo USD por el
-  // blue → la ficha del activo colapsaba (~1/MEP).
-  if (costInUsd(p) && isAR) {
-    const { investedUsd, valueUsd, priceUsd } = usdLotValue(p, prices, tcCedear)
-    return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal: priceUsd }
-  }
-  // Lo mismo para la CRIPTO comprada en dólares (costInUsd la excluye): sin esto
-  // caía en la rama isAR de abajo y la ficha mostraba el costo ÷ dólar (~0).
-  if (cryptoCostInUsd(p) && isAR) {
-    const { investedUsd, valueUsd, priceUsd } = cryptoUsdLotValue(p, prices, { cedearRate: tcCedear, tcCripto, isExchange: !!broker?.is_exchange })
-    return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal: priceUsd }
-  }
-  if (isAR) {
-    const priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
-    const investedUsd = invested / costBasisRate(p, tcValuacion, costBasis)   // display (modo)
-    const guardCost = invested / tcValuacion                                  // hoy (guard)
-    const mkt = priceLocal != null ? (priceLocal * qty) / tcValuacion : investedUsd
-    const valueUsd = trustMktValue(mkt, guardCost, p.asset_type, p.price_override != null) ? mkt : investedUsd
-    return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
-  }
-  if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isFciSym(p.asset) && p.price_override == null && !isCrypto(p.asset)) {
-    const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
-    const priceLocal = priceArs != null ? priceArs / tcCedear : null
-    const mkt = priceLocal != null ? priceLocal * qty : invested
-    const valueUsd = trustMktValue(mkt, invested, p.asset_type, p.price_override != null) ? mkt : invested
-    return { valueUsd, investedUsd: invested, pnlUsd: valueUsd - invested, priceLocal }
-  }
-  // Cripto en broker AR (no exchange) se valúa al dólar MEP; en exchange queda a spot.
-  // El factor multiplica valor Y costo por igual → el P&L% no cambia.
-  const f = cryptoBrokerFactor(p.asset, !!broker?.is_exchange, p.price_override != null, tcCripto, tcCedear, broker?.currency)
-  // Misma key que pide symbolFor. Antes leía prices[p.asset] CRUDO: un
-  // class-share (BRK.B se pide como 'BRK-B') nunca matcheaba y el lote quedaba
-  // congelado al costo con P&L 0. El fallback a la cruda cubre el last-known
-  // del cron y los payloads legacy, igual que el motor canónico.
-  const priceLocal = p.price_override ?? prices[valuationPriceKey(p, isAR)] ?? prices[p.asset]
-  const investedUsd = invested * f
-  const mkt = (priceLocal != null ? priceLocal * qty : invested) * f
-  const valueUsd = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null) ? mkt : investedUsd
-  return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
-}
-
-// Lo que pagaste en PESOS por tus lotes abiertos ({ invertido, cantidad }), para
-// la lectura técnica en pesos. Sólo si TODO lo compraste en pesos: un lote
-// pagado en dólares no tiene un costo en pesos que sea verdad.
-function costoEnPesos(lots) {
-  const abiertos = lots.filter(p => !p.is_cash && Number(p.quantity) > 0)
-  if (!abiertos.length || !abiertos.every(costInPesos)) return null
-  return {
-    invertido: abiertos.reduce((s, p) => s + costoDelLote(p), 0),
-    cantidad: abiertos.reduce((s, p) => s + Number(p.quantity), 0),
-  }
-}
-
-// Símbolo de precio que necesita un lote (para fetchear el set correcto).
-// Delega en `valuationPriceKey`, que es LA key con la que la valuación lee — su
-// docstring existe justamente para este bug. La versión anterior le faltaba la
-// excepción de la cripto: en un sub-broker "· USD" pedía BTC.BA mientras la
-// valuación lee el spot (prices[BTC]) → el lote caía a costo.
-function symbolFor(p, brokers) {
-  const isAR = brokers.find(b => b.name === p.broker)?.currency === 'ARS'
-  return valuationPriceKey(p, isAR)
-}
 
 // «Ordenar por» (Nico, 28/10): técnico primero (el de entrada) o fundamental
 // primero. Se recuerda para la próxima ficha que abras, en este navegador; si
@@ -164,48 +58,30 @@ function guardarOrden(o) {
   try { localStorage.setItem(CLAVE_ORDEN, o) } catch { /* sin almacenamiento */ }
 }
 
-// Un FCI no tiene serie de precios: se valúa por el NAV del día. Sirve para no
-// pedir un gráfico que la API no puede devolver.
-const esFci = (sym) => String(sym || '').toUpperCase().startsWith('FCI:')
-
-// ¿Este lote u operación tuyo es el activo que pediste con otro nombre? El
-// mapa del Merval y el buscador mandan GGAL.BA y tu lote se llama GGAL; el del
-// S&P manda BRK-B y lo tenés como BRK.B o como el CEDEAR BRKB. Pedido con
-// ".BA" (BYMA), sólo cuenta lo que tenés en BYMA: tu ADR de GGAL en Schwab, o
-// Adecoagro (AGRO) cuando pediste Agrometal (AGRO.BA), son otra cosa.
-function esElMismo(pedido, x) {
-  if (!x || x.is_cash || mismoPapel(x.asset) !== mismoPapel(pedido)) return false
-  return !pedido.endsWith('.BA') || isBymaHolding(x)
-}
-
 export default function AssetDetail() {
   const { ticker } = useParams()
   const navigate = useNavigate()
   const asset = (ticker || '').toUpperCase()
-  const { valuationDollar, costBasis } = useCurrency()
   // «Ocultar saldos»: como en la Cartera, se esconden los montos (lo que vale,
   // lo invertido, lo ganado en plata); quedan el precio, la cantidad y los %.
   // Auditorías A3/D4, 29/10: la ficha nunca lo había mirado.
   const { hidden: oculto } = usePrivacy()
   const monto = (txt) => (oculto ? OCULTO : txt)
 
-  const [positions, setPositions] = useState([])
-  const [brokers, setBrokers] = useState([])
-  const [prices, setPrices] = useState({})
-  const [dolar, setDolar] = useState(null)
-  const [operations, setOperations] = useState([])
+  // Tus lotes y operaciones de este activo y sus cuentas: las mismas que usa
+  // la pestaña «Gráfico» de Análisis técnico (hooks/useFichaDelActivo.js).
+  const {
+    loading, otroNombre, positions, brokers, prices, operations,
+    cotizacion, setCotizacion, tcValuacion, tcCedear, tcCripto, agg, tenes, libre, accionLocal, grafico,
+  } = useFichaDelActivo(asset)
+  // Llegaste por GGAL.BA y lo tenés como GGAL: a TU ficha, con su nombre.
+  // Sólo cuando llega el aviso: `navigate` cambia con la dirección y volvía a
+  // saltar una vez de más (auditoría 30/10).
+  useEffect(() => {
+    if (otroNombre) navigate(urlDeActivo(otroNombre), { replace: true })
+  }, [otroNombre]) // eslint-disable-line react-hooks/exhaustive-deps
   // Tu tesis de este activo (la misma de Movimientos). Arriba de los return.
   const tesis = useTesis()
-  // Qué parte de tu plata es este papel, para «Cuánto se mueve»: la cuenta del
-  // servidor (senales_semana.peso), la misma de Tu lista y de Señales.
-  const [pesoEnCartera, setPesoEnCartera] = useState(null)
-  const [loading, setLoading] = useState(true)
-  // Sólo si no lo tenés: el último precio, el cierre anterior y si está en tu watchlist.
-  const [cotizacion, setCotizacion] = useState(null)
-  // Sólo la última carga escribe: si cambiás de activo (⌘K) mientras ésta
-  // carga, una respuesta vieja te mandaba a OTRA ficha o mostraba el precio y
-  // la estrella del activo anterior (auditoría 22/10).
-  const nuevoPedido = useUltimoPedido()
   const [orden, setOrden] = useState(ordenGuardado)
   // Si la empresa trajo fundamentales ({ ticker, hay }, lo avisa AnalyzeView al
   // cargar): el «Ordenar por» sólo aparece si hay un fundamental que poner arriba.
@@ -216,142 +92,14 @@ export default function AssetDetail() {
     guardarOrden(o)
   }
 
-  useEffect(() => { loadAll() /* eslint-disable-next-line */ }, [asset])
-
-  async function loadAll() {
-    const vigente = nuevoPedido()
-    setLoading(true)
-    setCotizacion(null)
-    let redirige = false
-    try {
-      const [pos, bkrs, dol, ops, enCartera] = await Promise.all([
-        api.get('/positions').catch(() => []),
-        api.get('/brokers').catch(() => []),
-        api.get('/dolar').catch(() => null),
-        api.get('/operations').catch(() => []),
-        // Qué parte de tu plata es este papel: la cuenta del servidor, la misma
-        // de Tu lista y de Señales (senales_semana.peso).
-        api.get(`/tecnico/${encodeURIComponent(asset)}/peso`).catch(() => null),
-      ])
-      if (!vigente()) return
-      // Sin el registry, isArUsdBroker cae al fallback por NOMBRE y esta ficha
-      // rutea el precio al ADR US en vez del .BA local (~10× en GGAL/BMA). Va
-      // antes de buscar tu lote con otro nombre: esElMismo mira el mercado.
-      setBrokersRegistry(bkrs || [])
-      const todas = pos || []
-      const misOps = operacionesEnUsd(ops)
-      const myLots = todas.filter(p => (p.asset || '').toUpperCase() === asset)
-      if (!myLots.length && !misOps.some(o => (o.asset || '').toUpperCase() === asset)) {
-        // Llegaste por GGAL.BA y lo tenés como GGAL: a TU ficha, con su nombre.
-        const mismo = [...todas, ...misOps].find(x => esElMismo(asset, x))
-        if (mismo && (mismo.asset || '').toUpperCase() !== asset) {
-          redirige = true
-          navigate(urlDeActivo(mismo.asset), { replace: true })
-          return
-        }
-      }
-      setPesoEnCartera(enCartera?.peso ?? null)
-      setPositions(myLots)
-      setBrokers(bkrs || [])
-      setDolar(dol)
-      // En dólares desde el borde (un cupón en pesos guarda pesos en `pnl_usd`).
-      const opsDelActivo = misOps.filter(o => (o.asset || '').toUpperCase() === asset)
-      setOperations(opsDelActivo)
-      // Fetchar todos los símbolos de precio que necesitan los lotes
-      const syms = [...new Set(myLots.map(p => symbolFor(p, bkrs || [])).filter(Boolean))]
-      if (syms.length) {
-        try {
-          const p = await api.get(`/prices?symbols=${syms.join(',')}`)
-          if (vigente()) setPrices(p)
-        } catch { /* silent */ }
-      }
-      if (!myLots.length && !opsDelActivo.length) {
-        const { simboloPrecio } = miradaSinTenencia(asset)
-        const q = encodeURIComponent(simboloPrecio)
-        const [precio, previo, wl] = await Promise.all([
-          api.get(`/prices?symbols=${q}`).catch(() => ({})),
-          api.get(`/prices/prev-close?symbols=${q}`).catch(() => ({})),
-          api.get('/watchlist').catch(() => ({ items: [] })),
-        ])
-        if (!vigente()) return
-        setCotizacion({
-          simbolo: simboloPrecio,
-          precio: precio?.[simboloPrecio] ?? null,
-          previo: previo?.[simboloPrecio] ?? null,
-          // El que está en la lista con el MISMO instrumento que cotiza la
-          // ficha (GGAL.BA, no el ADR GGAL; BTC o BTC-USD), para quitar ése.
-          enWatchlist: (wl?.items || []).map(i => (i.symbol || '').toUpperCase())
-            .find(s => s === simboloPrecio || s.replace(/-(USD|USDT|USDC)$/, '') === simboloPrecio) || null,
-        })
-      }
-    } finally {
-      if (!redirige && vigente()) setLoading(false)
-    }
-  }
-
-  const tcValuacion = pickFinancialRate(dolar, valuationDollar) || 1415
-  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion
-  const tcCripto = dolar?.cripto?.venta
-
-  // ── Agregados ──────────────────────────────────────────────────────────
-  const agg = useMemo(() => {
-    const openLots = positions.filter(p => !p.is_cash)
-    let valueUsd = 0, investedUsd = 0, qty = 0
-    const lots = openLots.map(p => {
-      const v = valueLot(p, { brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis })
-      valueUsd += v.valueUsd; investedUsd += v.investedUsd; qty += (p.quantity || 0)
-      return { ...p, ...v }
-    }).sort((a, b) => (a.entry_date || '').localeCompare(b.entry_date || '')) // FIFO: viejo primero
-    const pnlUsd = valueUsd - investedUsd
-    const pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : null
-    const avgCostUsd = qty > 0 ? investedUsd / qty : null
-
-    // Para la LÍNEA de tu precio en el gráfico técnico: siempre al dólar del
-    // día de cada compra, sea cual sea la preferencia de arriba. Con "dólar de
-    // hoy" el costo en pesos se divide por el dólar actual y el resultado es, en
-    // el fondo, la ganancia en PESOS: dibujada en dólares, la línea quedaba ~30 %
-    // abajo de donde compraste (auditoría 22/10). Si a algún lote le falta el
-    // dólar de compra, no se dibuja (`lineaSinTc`) en vez de dibujarla corrida.
-    let investedCompra = 0
-    let lineaSinTc = false
-    for (const p of openLots) {
-      investedCompra += valueLot(p, { brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis: 'purchase' }).investedUsd
-      const enArs = brokers.find(b => b.name === p.broker)?.currency === 'ARS'
-      if (lotMissingPurchaseRate(p, 'purchase', enArs)) lineaSinTc = true
-    }
-    const pnlPctCompra = investedCompra > 0 && !lineaSinTc ? valueUsd / investedCompra - 1 : null
-
-    // Operaciones cerradas (tienen pnl_usd) → stats de operatoria
-    const closed = operations.filter(o => o.pnl_usd != null)
-    const realizedTotal = closed.reduce((s, o) => s + (o.pnl_usd || 0), 0)
-    const wins = closed.filter(o => o.pnl_usd > 0).length
-    const losses = closed.filter(o => o.pnl_usd < 0).length
-    const winRate = (wins + losses) > 0 ? Math.round((wins / (wins + losses)) * 100) : null
-    const best = closed.reduce((m, o) => (m == null || o.pnl_usd > m.pnl_usd ? o : m), null)
-    const worst = closed.reduce((m, o) => (m == null || o.pnl_usd < m.pnl_usd ? o : m), null)
-
-    return {
-      lots, valueUsd, investedUsd, qty, pnlUsd, pnlPct, avgCostUsd, pnlPctCompra, lineaSinTc,
-      realizedTotal, wins, losses, winRate, best, worst,
-      tradesCount: closed.length,
-      brokerCount: new Set(openLots.map(p => p.broker)).size,
-    }
-  }, [positions, operations, brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis])
 
   // La empresa de este activo en "Análisis fundamental", con la misma regla que
   // el buscador (empresaDeTenencias): mira en qué mercado está cada lote, no
   // sólo el ticker. Sin lotes abiertos, deciden las operaciones (tienen broker).
-  const tenes = positions.length > 0 || operations.length > 0
   const empresa = tenes
     ? empresaDeTenencias(positions.length ? positions : operations, brokers)
     : empresaDeTicker(asset)
   const name = fciLabel(asset)
-  // Lo que no tenés no tiene lotes que digan su mercado: decide el ticker. Si
-  // lo vendiste todo, deciden tus operaciones (tienen broker): sin esto, tu
-  // GGAL de IOL vendido se graficaba con el ADR de Nueva York (10 acciones).
-  const libre = miradaSinTenencia(asset)
-  const accionLocal = !tenes ? libre.accionLocal
-    : esAccionLocal(asset, agg.lots.length ? agg.lots : operations)
   // El papel en BYMA, para la liquidez: un CEDEAR o una acción argentina. Si lo
   // tenés, lo dicen tus lotes (o tus operaciones, si lo vendiste); si no, el
   // ticker (X.BA, o una acción argentina conocida). AAPL en Schwab no: no se
@@ -430,29 +178,11 @@ export default function AssetDetail() {
           `key`: React las MUEVE sin desarmarlas, así cambiar el orden no vuelve
           a pedir el gráfico ni el fundamental. */}
       {enOrden(fundamentalArriba, [
-      !esFci(asset) && !(agg.lots.length > 0 && esFci(symbolFor(agg.lots[0], brokers))) && (
+      grafico && (
         <SeccionFicha key="tecnico" titulo="Análisis técnico">
-        <LecturaTecnica
-          titulo={null}
-          key={`${asset}|${accionLocal}`}
-          asset={asset}
-          symbolMiniChart={agg.lots.length > 0 ? symbolFor(agg.lots[0], brokers) : tenes ? null : libre.simboloPrecio}
-          lotes={positions}
-          operaciones={operations}
-          pnlPctUsd={agg.lots.length > 0 ? agg.pnlPct : null}
-          pnlPctLinea={agg.lots.length > 0 ? agg.pnlPctCompra : null}
-          lineaSinTc={agg.lineaSinTc}
-          referencia={agg.lots.length > 0 ? {
-            simbolo: symbolFor(agg.lots[0], brokers),
-            precio: agg.lots[0].price_override ?? prices[symbolFor(agg.lots[0], brokers)] ?? null,
-          } : null}
-          costoPesos={costoEnPesos(agg.lots)}
-          accionLocal={accionLocal}
-          // «En tu cartera» de «Cuánto se mueve»: lo que vale hoy lo tuyo (y el
-          // dólar de la pantalla, para decirlo en pesos) y qué parte de tu plata es.
-          tenencia={agg.lots.length > 0 && agg.valueUsd > 0 ? { valorUsd: agg.valueUsd, tc: tcValuacion } : null}
-          pesoEnCartera={pesoEnCartera}
-        />
+        {/* Lo que recibe el gráfico lo arma useFichaDelActivo: la misma cuenta
+            que la pestaña «Gráfico» de Análisis técnico. */}
+        <LecturaTecnica titulo={null} key={`${asset}|${accionLocal}`} {...grafico} />
 
         {/* Cuánto se opera en BYMA y cuánto cuesta entrar y salir (CEDEARs y
             acciones argentinas): el gráfico de un CEDEAR mira Nueva York. */}
