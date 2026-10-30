@@ -77,8 +77,12 @@ export function tarjetas(datos, hidden) {
     valor: plural(tuyas.length, 'cambio', 'cambios'),
     texto: activos === 0
       ? 'Todavía ninguno de tus activos tiene precios guardados para leer.'
-      : tuyas.length === 0 ? `Nada cambió en tus ${plural(activos, 'activo', 'activos')} con lectura.`
-        : `en ${conCambios} de tus ${plural(activos, 'activo', 'activos')} con lectura`,
+      // «Con precios al día», no «con lectura»: en el Panorama y la Cartera «sin
+      // lectura» es «sin tendencia de fondo» (sin promedio de 200), y un papel de
+      // 120 días se contaba acá y salía allá «sin lectura» (re-test A2, 29/10).
+      // Lo que se cuenta es `_se_lee` del servidor: precios al día.
+      : tuyas.length === 0 ? `Nada cambió en tus ${plural(activos, 'activo', 'activos')} con precios al día.`
+        : `en ${conCambios} de tus ${plural(activos, 'activo', 'activos')} con precios al día`,
   }
   const nombres = [...new Set(deWatch.map(s => s.asset))]
   const watch = {

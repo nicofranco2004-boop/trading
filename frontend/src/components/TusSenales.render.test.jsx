@@ -57,10 +57,27 @@ describe('tusSenales: cuentas', () => {
 
   it('las tres tarjetas', () => {
     const t = tarjetas(DATOS, false)
-    expect([t.tenes.valor, t.tenes.texto]).toEqual(['3 cambios', 'en 3 de tus 7 activos con lectura'])
+    expect([t.tenes.valor, t.tenes.texto]).toEqual(['3 cambios', 'en 3 de tus 7 activos con precios al día'])
     expect([t.watch.valor, t.watch.texto]).toEqual(['1 cambio', 'PAMP'])
     expect([t.plata.valor, t.plata.antes, t.plata.tono]).toEqual(['54%', 'la semana pasada 61%', 'neg'])
     expect(t.plata.texto).toBe('AAPL pasó a bajista esta semana')
+  })
+
+  it('«con lectura» quiere decir una sola cosa (re-test A2, 29/10)', () => {
+    // La misma respuesta del servidor (la de la prueba A2): NVDA con 3 años y
+    // NUEVA con 120 días, que cambiaron las dos. NUEVA no tiene promedio de 200:
+    // el Panorama y la Cartera la ponen en «sin lectura» (de tendencia de fondo).
+    // Señales no puede decir que tiene lectura: dice lo que cuenta, precios al día.
+    const resp = {
+      senales: [{ asset: 'NVDA', tipo: 'media200', tenes: true, sentido: 'arriba' },
+        { asset: 'NUEVA', tipo: 'media50', tenes: true, sentido: 'arriba' }],
+      tenes: { activos: 2, con_cambios: 2 }, watchlist: 0,
+      alcista: { pct: 50, semana_pasada: null, grupos: { alcista: { nombres: ['NVDA'] }, bajista: { nombres: [] }, sin: { nombres: ['NUEVA'] } } },
+    }
+    const t = tarjetas(resp, false)
+    expect(t.tenes.texto).toBe('en 2 de tus 2 activos con precios al día')
+    expect(t.tenes.texto).not.toContain('lectura')
+    expect(tarjetas({ ...resp, senales: [] }, false).tenes.texto).toBe('Nada cambió en tus 2 activos con precios al día.')
   })
 
   it('sin dato de la semana pasada, esa parte no aparece; uno que no es de hace 7 días lleva su fecha', () => {
