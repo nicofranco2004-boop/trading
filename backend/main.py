@@ -11705,7 +11705,9 @@ def get_tecnico_horas(asset: str, cada: str = "1h", moneda: str = "usd", local: 
     y si va convertida con el MEP: tecnico.serie). No se guarda en la base: en
     memoria y compartido entre usuarios (velas_horarias.py). `desde`: sólo
     las velas que empiezan en ese momento o después (segundos UTC), para el
-    refresco de cada minuto."""
+    refresco de cada minuto. La primera descarga de un ticker que no está en
+    memoria cuenta para un cupo por persona (velas_horarias.NUEVOS_*):
+    pasado, `motivo: 'tope'`."""
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
@@ -11714,7 +11716,7 @@ def get_tecnico_horas(asset: str, cada: str = "1h", moneda: str = "usd", local: 
     if desde is not None and not 0 <= desde <= 4102444800:
         raise HTTPException(400, "`desde` es un momento en segundos UTC.")
     import velas_horarias
-    return velas_horarias.para_la_ficha(db_abierta, sym, cada, moneda, bool(local), desde)
+    return velas_horarias.para_la_ficha(db_abierta, sym, cada, moneda, bool(local), desde, uid)
 
 
 @app.get("/api/liquidez/{papel}")

@@ -46,6 +46,7 @@ import logging
 import math
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
@@ -58,16 +59,21 @@ PERIODO_HISTORIA = "730d"
 PERIODO_RECIENTE = "2d"
 TTL_HISTORIA_SEG = 10 * 60
 TTL_RECIENTE_SEG = 60
-# Si Yahoo no contestó, no se le vuelve a pedir ese ticker hasta pasado esto:
-# cada pedido sin respuesta espera el tope entero (8 s).
+# Si Yahoo no contestó la primera descarga de un ticker, no se le vuelve a
+# pedir hasta pasado esto: cada pedido sin respuesta espera el tope entero (8 s).
 ESPERA_TRAS_FALLA_SEG = 60
 # Las velas de 1 hora que se guardan por ticker (las más nuevas): una cripto
 # cotiza 24 por día y 2 años serían 17.500. Con 6.000 alcanza para lo que se
-# manda a la pantalla más las 200 de antes que pide la media de 200.
+# manda a la pantalla más las 600 de antes con que se hacen las cuentas.
 VELAS_GUARDADAS = 6000
-# Cuántos tickers en memoria a la vez (cada uno ~1 MB): el que hace más que
-# nadie mira se va primero.
-TICKERS_MAXIMOS = 40
+# Cuántos tickers en memoria a la vez (cada uno ~2 MB de velas, medido, más
+# ~1 MB por cada serie ya armada): el que hace más que nadie mira se va primero.
+TICKERS_MAXIMOS = 20
+# Frenos para la primera descarga de un ticker que no está en memoria (la
+# historia entera, ~1 s de Yahoo): como las fichas a pedido de las diarias
+# (velas_diarias.A_PEDIDO_*). Lo que ya está en memoria no cuenta.
+NUEVOS_POR_PERSONA_HORA = 30
+NUEVOS_TODOS_HORA = 300
 # Lo que va a la pantalla: las 1.000 velas más nuevas (1 hora en Nueva York:
 # ~7 meses; 4 horas: los 2 años). Es lo que pesa la serie diaria (~750 días).
 VELAS_A_LA_PANTALLA = 1000
@@ -115,7 +121,26 @@ _CACHE: dict = {}
 _ARMADAS: dict = {}
 _LOCK = threading.Lock()
 _LOCKS_TICKER: dict = {}
-_FALLAS: dict = {}   # ticker → cuándo falló la última descarga
+_FALLAS: dict = {}   # ticker → cuándo falló su primera descarga
+_NUEVOS: deque = deque()   # (momento, uid) de cada primera descarga
+
+
+class SinCupo(Exception):
+    """Se llegó al tope de primeras descargas (NUEVOS_*): se dice, no se baja."""
+
+
+def _hay_cupo(uid) -> bool:
+    """¿Entra una primera descarga más en la última hora, para esta persona y
+    para todos? Si entra, queda anotada."""
+    with _LOCK:
+        ahora = _ahora()
+        while _NUEVOS and ahora - _NUEVOS[0][0] > 3600:
+            _NUEVOS.popleft()
+        if (len(_NUEVOS) >= NUEVOS_TODOS_HORA
+                or sum(1 for _, u in _NUEVOS if u == uid) >= NUEVOS_POR_PERSONA_HORA):
+            return False
+        _NUEVOS.append((ahora, uid))
+        return True
 
 
 def _numero(v):
@@ -140,7 +165,10 @@ def _velas_de(df, mercado: str) -> list:
     if getattr(idx, "tz", None) is None:
         idx = idx.tz_localize("UTC")
     locales = idx.tz_convert(ZONAS.get(mercado, "UTC"))
-    segundos = idx.asi8 // 10**9
+    # Segundos UTC sin depender de la unidad interna del índice: pandas 3
+    # guarda microsegundos y `asi8 // 10**9` daba momentos mil veces más chicos.
+    import pandas as pd
+    segundos = ((idx.tz_convert("UTC") - pd.Timestamp(0, tz="UTC")) // pd.Timedelta(seconds=1)).tolist()
     fechas = [f.isoformat() for f in locales.date]
     minutos = locales.hour * 60 + locales.minute
     col = lambda k: df[k].tolist() if k in df.columns else [None] * len(df)   # noqa: E731
@@ -165,22 +193,38 @@ def _tabla(ticker: str, periodo: str, intervalo: str, mercado: str) -> list:
     return _velas_de(tabla[ticker].dropna(how="all"), mercado)
 
 
-def _bajar(ticker: str, periodo: str, mercado: str) -> list:
-    """Las velas de 1 hora de `ticker`, cortadas como TradingView. En BYMA, lo
-    que Yahoo tiene de a 30 minutos (60 días) se junta en horas desde las 10:30;
-    lo de antes, las de 1 hora a la hora en punto."""
+def _en_su_hora(velas: list, abre: int) -> list:
+    """Cada vela al casillero de su hora (desde `abre`). Yahoo puede mandar la
+    hora en curso con el momento del último precio (14:31:07): sin esto era una
+    vela aparte, y el refresco (`desde`) ya no traía la de las 14:30."""
+    return [_como_tupla(v) for v in _juntar([_como_vela(x) for x in velas], 60, abre)]
+
+
+def _bajar(ticker: str, periodo: str, mercado: str):
+    """(velas de 1 hora de `ticker` cortadas como TradingView, completa). En
+    BYMA, lo que Yahoo tiene de a 30 minutos (60 días) se junta en horas desde
+    las 10:30 y lo de antes son las de 1 hora a la hora en punto: `completa` es
+    False si una de las dos partes no llegó (Yahoo no contestó a tiempo), para
+    no cambiar una historia buena por una a medias."""
+    abre, _ = _sesion(mercado)
     if mercado != "byma":
-        return _tabla(ticker, periodo, "1h", mercado)
+        velas = _en_su_hora(_tabla(ticker, periodo, "1h", mercado), abre)
+        return velas, bool(velas)
     largo = periodo == PERIODO_HISTORIA
-    medias = [_como_tupla(v) for v in _juntar([_como_vela(x) for x in _tabla(
-        ticker, PERIODO_30_MIN if largo else periodo, "30m", mercado)], 60, APERTURA_BYMA_GRAFICO)]
+    medias = _en_su_hora(_tabla(ticker, PERIODO_30_MIN if largo else periodo, "30m", mercado), abre)
     if not largo:
-        return medias
+        return medias, bool(medias)
+    if medias:
+        # La ventana de 60 días de Yahoo puede arrancar a mitad de una rueda:
+        # ese primer día iría sin su mañana. Se toma desde el segundo.
+        dias = sorted({x[1] for x in medias})
+        if len(dias) > 1:
+            medias = [x for x in medias if x[1] >= dias[1]]
     horas = _tabla(ticker, periodo, "1h", mercado)
-    if not medias:
-        return horas
+    if not medias or not horas:
+        return (medias or horas), False
     # Las de 1 hora, sólo de los días que no están de a 30 minutos.
-    return [x for x in horas if x[1] < medias[0][1]] + medias
+    return [x for x in horas if x[1] < medias[0][1]] + medias, True
 
 
 def _lock_de(ticker: str) -> threading.Lock:
@@ -198,46 +242,64 @@ def _podar():
             _ARMADAS.pop(clave, None)
 
 
-def velas_1h(ticker: str, mercado: str):
-    """(velas de 1 hora, cuándo se bajaron por última vez en segundos UTC) de
-    `ticker`, de la memoria compartida o de Yahoo. ([], None) si Yahoo no las
-    tiene o no contestó y no hay nada guardado."""
+def _descargar(ticker: str, periodo: str, mercado: str):
+    try:
+        return _bajar(ticker, periodo, mercado)
+    except Exception as ex:
+        log.warning("velas de 1 hora de %s (%s): Yahoo falló: %r", ticker, periodo, ex)
+        return [], False
+
+
+def velas_1h(ticker: str, mercado: str, uid=None):
+    """(velas de 1 hora, cuándo contestó Yahoo por última vez en segundos UTC,
+    versión) de `ticker`, de la memoria compartida o de Yahoo. La versión cambia
+    sólo cuando cambian las velas: lo ya armado se reusa mientras tanto.
+    ([], None, None) si Yahoo no las tiene o no contestó y no hay nada guardado.
+    La primera descarga cuenta para el cupo de `uid` (SinCupo si no entra).
+
+    Si la historia (cada 10 min) no llega o llega a medias, se queda la que
+    había y lo reciente (cada 60 s) se sigue pidiendo: antes una historia que
+    no contestaba dejaba quieta la vela en curso hasta que volviera a contestar."""
     with _lock_de(ticker):
         ahora = _ahora()
         e = _CACHE.get(ticker)
-        fallo = ahora - _FALLAS.get(ticker, -1e12) < ESPERA_TRAS_FALLA_SEG
-        if not fallo and (not e or ahora - e["t_hist"] >= TTL_HISTORIA_SEG):
-            try:
-                velas = _bajar(ticker, PERIODO_HISTORIA, mercado)
-            except Exception as ex:
-                log.warning("velas de 1 hora de %s: Yahoo falló: %r", ticker, ex)
-                velas = []
-            if velas:
-                e = {"velas": velas[-VELAS_GUARDADAS:], "t_hist": ahora, "t_rec": ahora, "actualizada": ahora}
-                _FALLAS.pop(ticker, None)
-            else:
-                _FALLAS[ticker] = ahora
-        elif not fallo and ahora - e["t_rec"] >= TTL_RECIENTE_SEG:
-            try:
-                nuevas = _bajar(ticker, PERIODO_RECIENTE, mercado)
-            except Exception as ex:
-                log.warning("velas de 1 hora recientes de %s: Yahoo falló: %r", ticker, ex)
-                nuevas = []
-            if nuevas:
-                # Lo reciente reemplaza desde su primera vela: la hora en curso
-                # cambia en cada descarga y puede haber empezado otra.
-                corte = nuevas[0][0]
-                velas = [v for v in e["velas"] if v[0] < corte] + nuevas
-                e = {**e, "velas": velas[-VELAS_GUARDADAS:], "t_rec": ahora, "actualizada": ahora}
-                _FALLAS.pop(ticker, None)
-            else:
-                _FALLAS[ticker] = ahora
         if not e:
-            return [], None
+            if ahora - _FALLAS.get(ticker, -1e12) < ESPERA_TRAS_FALLA_SEG:
+                return [], None, None
+            if not _hay_cupo(uid):
+                raise SinCupo(ticker)
+            velas, _ = _descargar(ticker, PERIODO_HISTORIA, mercado)
+            if not velas:
+                _FALLAS[ticker] = ahora
+                return [], None, None
+            # La primera vez, aunque falte una parte de BYMA: algo es mejor que
+            # nada, y a los 10 minutos se vuelve a pedir entera.
+            _FALLAS.pop(ticker, None)
+            e = {"velas": velas[-VELAS_GUARDADAS:], "t_hist": ahora, "t_rec": ahora,
+                 "actualizada": ahora, "version": 1}
+        else:
+            if ahora - e["t_hist"] >= TTL_HISTORIA_SEG:
+                velas, completa = _descargar(ticker, PERIODO_HISTORIA, mercado)
+                if velas and completa:
+                    e = {**e, "velas": velas[-VELAS_GUARDADAS:], "t_hist": ahora, "t_rec": ahora,
+                         "actualizada": ahora, "version": e["version"] + 1}
+                else:
+                    e = {**e, "t_hist": ahora}   # se queda la que había; otra vez en 10 min
+            if ahora - e["t_rec"] >= TTL_RECIENTE_SEG:
+                nuevas, _ = _descargar(ticker, PERIODO_RECIENTE, mercado)
+                e = {**e, "t_rec": ahora}
+                if nuevas:
+                    # Lo reciente reemplaza desde su primera vela: la hora en curso
+                    # cambia en cada descarga y puede haber empezado otra.
+                    corte = nuevas[0][0]
+                    velas = ([v for v in e["velas"] if v[0] < corte] + nuevas)[-VELAS_GUARDADAS:]
+                    e = {**e, "velas": velas, "actualizada": ahora,
+                         "version": e["version"] + (velas != e["velas"])}
         e["usada"] = ahora
-        _CACHE[ticker] = e
+        with _LOCK:
+            _CACHE[ticker] = e
     _podar()
-    return e["velas"], e["actualizada"]
+    return e["velas"], e["actualizada"], e["version"]
 
 
 # ─── De la hora a la serie del gráfico ───────────────────────────────────────
@@ -264,9 +326,11 @@ def _juntar(velas: list, largo: int, abre: int) -> list:
     desde el minuto `abre` de cada día, como TradingView: apertura de la
     primera, máximo y mínimo del bloque, cierre de la última, volumen sumado.
     Una vela con el máximo roto aporta su apertura y su cierre (como la
-    completa `velaCompleta` de la pantalla). Lo usan las 4 horas y, en BYMA,
-    las horas hechas con las de 30 minutos."""
-    out, clave = [], None
+    completa `velaCompleta` de la pantalla); si NINGUNA de las del bloque los
+    tiene sanos, queda sólo con el cierre, la regla de las diarias. Lo usan
+    las 4 horas, las horas de BYMA hechas con las de 30 minutos y las de 1 hora
+    acomodadas a su casillero."""
+    out, clave, sanas = [], None, []
     for v in velas:
         b = (v["minuto"] - abre) // largo
         if (v["date"], b) != clave:
@@ -274,6 +338,7 @@ def _juntar(velas: list, largo: int, abre: int) -> list:
             inicio = abre + b * largo
             out.append({"t": v["t"] - (v["minuto"] - inicio) * 60, "date": v["date"], "minuto": inicio,
                         "open": v["open"], "high": None, "low": None, "close": v["close"], "volume": None})
+            sanas.append(False)
         x = out[-1]
         altos = [y for y in (v["high"], v["open"], v["close"]) if y]
         bajos = [y for y in (v["low"], v["open"], v["close"]) if y]
@@ -282,6 +347,11 @@ def _juntar(velas: list, largo: int, abre: int) -> list:
         x["close"] = v["close"]
         if v["volume"] is not None:
             x["volume"] = (x["volume"] or 0) + v["volume"]
+        if v["high"] is not None and v["low"] is not None:
+            sanas[-1] = True
+    for x, sana in zip(out, sanas):
+        if not sana:
+            x["high"] = x["low"] = None
     return out
 
 
@@ -327,7 +397,7 @@ def _armar(abrir, ticker: str, crudas: list, cada: str, mercado: str, por):
 
 
 def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", local: bool = False,
-                  desde: int = None) -> dict:
+                  desde: int = None, uid=None) -> dict:
     """Lo que dibuja el gráfico en 1H o 4H. `abrir()` abre la base (la de
     main.db_abierta): se usa dos veces y se cierra mientras se espera a Yahoo,
     para no dejar una transacción abierta esos segundos (Postgres). `desde`:
@@ -335,9 +405,16 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
     60 s pide desde su última vela, no la serie entera).
 
     {disponible, ticker, convertida, mercado, cada, sesion, en_horario,
-     actualizada, puntos: [{d, t, o, h, l, c, s50, s200, …, enCurso?}]}.
-    `disponible: False` con `motivo`: 'sin_serie' (no hay gráfico diario) o
-    'sin_datos' (Yahoo no tiene velas de 1 hora o no contestó)."""
+     demora_min, actualizada, puntos: [{d, t, o, h, l, c, s50, s200, …, enCurso?}]}.
+    `disponible: False` con `motivo`: 'sin_serie' (no hay gráfico diario),
+    'sin_datos' (Yahoo no tiene velas de 1 hora o no contestó) o 'tope' (se
+    llegó al cupo de primeras descargas de la hora: NUEVOS_*).
+
+    La DEMORA de la bolsa (BYMA llega ~20 min tarde) cuenta para las dos cosas
+    que dependen del reloj: la vela sigue «en curso» y la rueda sigue «en
+    horario» (la pantalla pide cada minuto) hasta que llega su último dato, no
+    hasta la hora del cierre. Si no, a las 17:00 la pantalla dejaba de pedir con
+    los últimos 20 minutos todavía en camino."""
     from alerts_engine import rueda_en_horario
     from home.market import mercado_de
 
@@ -350,28 +427,34 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
         return {**base, "disponible": False, "motivo": "sin_serie"}
     ticker = eleccion["ticker"]
     mercado = mercado_de(ticker)
-    crudas, actualizada = velas_1h(ticker, mercado)     # Yahoo, sin la base abierta
+    try:
+        crudas, actualizada, version = velas_1h(ticker, mercado, uid)     # Yahoo, sin la base abierta
+    except SinCupo:
+        return {**base, "disponible": False, "motivo": "tope", "ticker": ticker}
     if not crudas:
         return {**base, "disponible": False, "motivo": "sin_datos", "ticker": ticker}
     por = ("dividir" if moneda == "usd" else "multiplicar") if eleccion["convertida"] else None
     clave = (ticker, cada, por)
     hecha = _ARMADAS.get(clave)
-    if not hecha or hecha["actualizada"] != actualizada:
+    if not hecha or hecha["version"] != version:
         hecha = _armar(abrir, ticker, crudas, cada, mercado, por)
         if not hecha:
             return {**base, "disponible": False, "motivo": "sin_datos", "ticker": ticker}
-        hecha["actualizada"] = actualizada
+        hecha["version"] = version
         with _LOCK:
             _ARMADAS[clave] = hecha
     puntos, ultima = hecha["puntos"], hecha["ultima"]
     if desde is not None:
         puntos = puntos[next((i for i, p in enumerate(puntos) if p["t"] >= desde), len(puntos)):]
-    # La vela en curso se marca al servir (lo armado se comparte y la hora pasa).
-    if puntos and puntos[-1]["t"] == ultima["t"] and _ahora() < _fin_de(ultima, cada, mercado):
+    # La vela en curso se marca al servir (lo armado se comparte y la hora
+    # pasa), con el reloj corrido lo que tarda en llegar el dato.
+    demora = DEMORA_MIN.get(mercado, 0)
+    reloj_del_dato = _ahora() - demora * 60
+    if puntos and puntos[-1]["t"] == ultima["t"] and reloj_del_dato < _fin_de(ultima, cada, mercado):
         puntos = puntos[:-1] + [{**puntos[-1], "enCurso": True}]
     abre, cierra = _sesion(mercado)
-    # Cuántas horas está corrida la hora local de la rueda respecto de UTC, en
-    # la última vela (Nueva York cambia de hora): la pantalla la usa para
+    # Cuántos minutos está corrida la hora local de la rueda respecto de UTC,
+    # en la última vela (Nueva York cambia de hora): la pantalla la usa para
     # ubicar un dibujo hacia adelante, en las velas que todavía no existen.
     desfase = ((ultima["minuto"] - (ultima["t"] // 60) % 1440 + 720) % 1440) - 720
     return {
@@ -380,12 +463,13 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
         "ticker": ticker,
         "convertida": eleccion["convertida"],
         "mercado": mercado,
-        "sesion": {"abre": abre, "cierra": cierra, "desfase": desfase, "todos_los_dias": mercado == "cripto",
+        "sesion": {"abre": abre, "cierra": cierra, "desfase": desfase, "zona": ZONAS.get(mercado, "UTC"),
+                   "todos_los_dias": mercado == "cripto",
                    "velas_por_dia": -(-(cierra - abre) // CADAS[cada])},
         # Para el ritmo del refresco de la pantalla (60 s con la rueda en
         # horario; con todo cerrado, espaciado: utils/relojVisible.refrescoSegunRueda).
-        "en_horario": rueda_en_horario(mercado, datetime.now(timezone.utc)),
-        "demora_min": DEMORA_MIN.get(mercado, 0),
+        "en_horario": rueda_en_horario(mercado, datetime.fromtimestamp(reloj_del_dato, timezone.utc)),
+        "demora_min": demora,
         "actualizada": datetime.fromtimestamp(actualizada, timezone.utc).isoformat().replace("+00:00", "Z"),
         "puntos": puntos,
     }

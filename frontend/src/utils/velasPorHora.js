@@ -27,7 +27,7 @@
 //     ese dibujo no se dibuja en 1H/4H (se ve en diarias). Nunca una posición
 //     inventada.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import { relojVisible, refrescoSegunRueda } from './relojVisible'
 import { indiceDeFecha } from './tecnico'
@@ -68,6 +68,8 @@ export function useVelasPorHora({ asset, moneda, local = false, cada }) {
   const [series, setSeries] = useState({})
   const ultimas = useRef({})
   ultimas.current = series
+  // Cuándo se pidió por última vez cada serie (Date.now()).
+  const pedidas = useRef({})
   const clave = cada ? `${moneda}|${cada}` : null
   const datos = clave ? series[clave] : undefined
   const falta = clave != null && datos === undefined
@@ -75,17 +77,22 @@ export function useVelasPorHora({ asset, moneda, local = false, cada }) {
     if (!falta) return
     let vivo = true
     api.get(ruta(asset, cada, moneda, local))
-      .then(r => { if (vivo) setSeries(s => ({ ...s, [clave]: r || { disponible: false } })) })
+      .then(r => { if (vivo) { pedidas.current[clave] = Date.now(); setSeries(s => ({ ...s, [clave]: r || { disponible: false } })) } })
       .catch(() => { if (vivo) setSeries(s => ({ ...s, [clave]: { error: true } })) })
     return () => { vivo = false }
   }, [asset, cada, moneda, local, clave, falta])
   const disponible = !!datos?.disponible
-  const enHorario = !!datos?.en_horario
+  // El ritmo se calcula una vez por respuesta, como MoversRail: con la rueda
+  // cerrada, «hasta la próxima media hora» depende de la hora en que llegó.
+  // Calculado una sola vez, el sábado se repetía ese mismo plazo (p. ej. cada
+  // 170 s) todo el fin de semana.
+  const plazo = useMemo(() => (datos?.disponible ? cadaCuantoRefrescar(!!datos.en_horario) : null), [datos])
   useEffect(() => {
-    if (!disponible) return
+    if (!disponible || !plazo) return
     let vivo = true
     const traer = () => {
       const ult = ultimas.current[clave]?.puntos?.at?.(-1)
+      pedidas.current[clave] = Date.now()
       api.get(ruta(asset, cada, moneda, local, ult?.t))
         .then(r => {
           // Un refresco que no trajo nada (Yahoo no contestó) deja lo que había:
@@ -99,9 +106,13 @@ export function useVelasPorHora({ asset, moneda, local = false, cada }) {
         })
         .catch(() => { /* el próximo tic vuelve a probar */ })
     }
-    const apagar = relojVisible(traer, cadaCuantoRefrescar(enHorario))
+    // Al volver a 1H/4H con lo de hace más de un minuto (se pasó a diarias y
+    // se volvió), se pide ya: el reloj recién tocaría dentro de un plazo
+    // entero, que con la rueda cerrada al pedirlo podía ser media hora.
+    if (document.visibilityState !== 'hidden' && Date.now() - (pedidas.current[clave] || 0) >= REFRESCO_HORAS_MS) traer()
+    const apagar = relojVisible(traer, plazo)
     return () => { vivo = false; apagar() }
-  }, [asset, cada, moneda, local, clave, disponible, enHorario])
+  }, [asset, cada, moneda, local, clave, disponible, plazo])
   const reintentar = () => { if (clave) setSeries(s => { const n = { ...s }; delete n[clave]; return n }) }
   return { datos, reintentar }
 }
@@ -211,6 +222,24 @@ export function primeraVelaDelDia(puntos, fecha) {
   return lo
 }
 
+// Cuántos minutos está corrida la hora de `zona` respecto de UTC en el
+// momento `t`: para las velas que todavía no existen (Nueva York cambia de
+// hora a fin de octubre y a mediados de marzo). Sin zona, `porDefecto`.
+const formatos = {}
+export function desfaseEn(t, zona, porDefecto = 0) {
+  if (!zona) return porDefecto
+  try {
+    const f = formatos[zona] || (formatos[zona] = new Intl.DateTimeFormat('en-US', {
+      timeZone: zona, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric',
+    }))
+    const p = Object.fromEntries(f.formatToParts(new Date(t * 1000)).map(x => [x.type, x.value]))
+    const local = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute) / 60000
+    return Math.round(local - Math.floor(t / 60))
+  } catch {
+    return porDefecto
+  }
+}
+
 const diaNumero = (iso) => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 86400000)
 const isoDeNumero = (n) => new Date(n * 86400000).toISOString().slice(0, 10)
 const habil = (n) => { const w = new Date(n * 86400000).getUTCDay(); return w !== 0 && w !== 6 }
@@ -218,22 +247,25 @@ const habil = (n) => { const w = new Date(n * 86400000).getUTCDay(); return w !=
 /**
  * Dónde caen, en la serie de horas que se ve, los puntos guardados de tus
  * dibujos, y al revés: qué guardar de un toque. `serie`: los puntos de horas;
- * `sesion` (del servidor): { abre, cierra, desfase, todos_los_dias,
- * velas_por_dia } — minutos del día local, horas de corrimiento con UTC en
- * minutos; `cada`: '1h' | '4h'; `diarios`: los puntos DIARIOS de la ficha
- * (para guardar el día de modo que también se vea bien en diarias).
+ * `sesion` (del servidor): { abre, cierra, desfase, zona, todos_los_dias,
+ * velas_por_dia } — apertura y cierre en minutos del día local, corrimiento
+ * con UTC en minutos (el de la última vela) y la zona horaria, con la que se
+ * calcula el corrimiento de los días que vienen; `cada`: '1h' | '4h';
+ * `diarios`: los puntos DIARIOS de la ficha (para guardar el día de modo que
+ * también se vea bien en diarias).
  */
 export function ubicadorPorHora(serie, { sesion, cada, diarios = [] }) {
   const dur = (INTERVALOS_POR_HORA[cada]?.minutos || 60) * 60
   const vpd = Math.max(1, sesion?.velas_por_dia || 1)
   const abre = sesion?.abre || 0
-  const desfase = sesion?.desfase || 0
+  const desfaseFijo = sesion?.desfase || 0
+  const desfase = (t) => desfaseEn(t, sesion?.zona, desfaseFijo)
   const todos = !!sesion?.todos_los_dias
   const ultima = serie.length - 1
   const dias = []
   serie.forEach((p, i) => { if (!i || serie[i - 1].d !== p.d) dias.push({ d: p.d, i }) })
   const ultimoDia = dias.length - 1
-  const diaLocal = (t) => Math.floor((t / 60 + desfase) / 1440)
+  const diaLocal = (t) => Math.floor((t / 60 + desfase(t)) / 1440)
   // Días de rueda después de `desde` hasta `hasta` (números de día), inclusive.
   const ruedasEntre = (desde, hasta) => {
     let n = 0
@@ -252,10 +284,14 @@ export function ubicadorPorHora(serie, { sesion, cada, diarios = [] }) {
     if (t < serie[ultima].t + dur) {
       let lo = 0, hi = ultima
       while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (serie[mid].t <= t) lo = mid; else hi = mid - 1 }
+      // Un momento en un hueco (de noche, el fin de semana, o las 10:30 de un
+      // día de BYMA de los que Yahoo da desde las 11) va a la vela siguiente,
+      // no a la última del día anterior.
+      if (t >= serie[lo].t + dur && lo < ultima) return lo + 1
       return lo + Math.min(0.99, (t - serie[lo].t) / dur)
     }
     // Hacia adelante: las velas que faltan según el horario de la rueda.
-    const minuto = (t / 60 + desfase) - diaLocal(t) * 1440
+    const minuto = (t / 60 + desfase(t)) - diaLocal(t) * 1440
     const slot = Math.min(vpd - 0.01, Math.max(0, (minuto - abre) / (dur / 60)))
     const n = ruedasEntre(diaLocal(serie[ultima].t), diaLocal(t))
     return dias[ultimoDia].i + n * vpd + slot
@@ -270,7 +306,10 @@ export function ubicadorPorHora(serie, { sesion, cada, diarios = [] }) {
     const masDias = Math.floor(n / vpd)
     const slot = n - masDias * vpd
     const dia = ruedaDespues(diaLocal(serie[ultima].t), masDias)
-    return Math.round(((dia * 1440 + abre + slot * (dur / 60)) - desfase) * 60)
+    // La hora local de ese día a UTC, con el corrimiento de ESE día.
+    const local = dia * 1440 + abre + slot * (dur / 60)
+    const aprox = (local - desfase(serie[ultima].t)) * 60
+    return Math.round((local - desfase(aprox)) * 60)
   }
   /** El lugar de un punto guardado sólo por día ({ d, mas, f }), o null. */
   function lugarDelDia(p) {

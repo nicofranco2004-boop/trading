@@ -70,9 +70,15 @@ class YahooFalso:
 
     def __init__(self, hoy):
         self.hoy, self.horas, self.medias, self.pedidos = hoy, {}, {}, []
+        # (ticker, period, interval) que «no contestan» (como un tope vencido).
+        self.no_contesta = set()
+        # La unidad del índice que manda (pandas 3 guarda microsegundos).
+        self.unidad = None
 
     def __call__(self, ticker, period, interval, auto_adjust, timeout):
         self.pedidos.append((ticker, period, interval))
+        if (ticker, period, interval) in self.no_contesta:
+            raise TimeoutError("Yahoo no contestó")
         if interval == "1d":
             dias = _ruedas(self.hoy, 760 if period == "3y" else 22)
             c = 5000.0 if ticker.endswith(".BA") else 100.0
@@ -87,6 +93,8 @@ class YahooFalso:
         if not filas:
             return pd.DataFrame()
         idx = pd.DatetimeIndex([f[0] for f in filas])
+        if self.unidad:
+            idx = idx.as_unit(self.unidad)
         o, h, l, c, v = zip(*[f[1:] for f in filas])
         return pd.DataFrame({"Open": o, "High": h, "Low": l, "Close": c, "Volume": v}, index=idx)
 
@@ -134,6 +142,7 @@ class HorasTest(unittest.TestCase):
         velas_horarias._CACHE.clear()
         velas_horarias._ARMADAS.clear()
         velas_horarias._FALLAS.clear()
+        velas_horarias._NUEVOS.clear()
 
     def tearDown(self):
         for p in self._p:
@@ -228,11 +237,14 @@ class HorasTest(unittest.TestCase):
         # Medido el 30/10 contra BCBA:GGAL: TradingView corta BYMA desde la
         # pre-apertura de las 10:30. Yahoo da 1 hora a la hora en punto, así que
         # lo que hay de a 30 minutos (60 días) se junta desde las 10:30. Los
-        # días de antes (el 26) quedan con las de 1 hora.
-        self.yahoo.horas["GGAL.BA"] = [(_hora(date(2026, 10, 26), hh, 0, BA), 4000.0 + hh, 4010.0 + hh, 3990.0 + hh, 4005.0 + hh, 10.0)
-                                       for hh in range(11, 17)]
-        # De a 30 minutos, el 28 entero y el 29 hasta la de 15:00 (son las 15:10).
-        medias, k = [], 0
+        # días de antes (el 26 y el 27) quedan con las de 1 hora.
+        self.yahoo.horas["GGAL.BA"] = [(_hora(d, hh, 0, BA), 4000.0 + hh, 4010.0 + hh, 3990.0 + hh, 4005.0 + hh, 10.0)
+                                       for d in (date(2026, 10, 26), date(2026, 10, 27)) for hh in range(11, 17)]
+        # De a 30 minutos, Yahoo arranca su ventana a mitad del 27 (desde las
+        # 14:00): ese día iría sin su mañana, así que se usa desde el 28.
+        medias = [(_hora(date(2026, 10, 27), m // 60, m % 60, BA), 1.0, 1.0, 1.0, 1.0, 1.0) for m in range(14 * 60, 17 * 60, 30)]
+        # El 28 entero y el 29 hasta la de 15:00 (son las 15:10).
+        k = 0
         for dia, hasta in ((date(2026, 10, 28), 17 * 60), (date(2026, 10, 29), 15 * 60 + 1)):
             for m in range(11 * 60, hasta, 30):
                 o = 5000.0 + k
@@ -248,7 +260,7 @@ class HorasTest(unittest.TestCase):
         h1 = self._horas("GGAL", "1h", local=True, moneda="ars")
         self.assertEqual((h1["ticker"], h1["mercado"], h1["convertida"]), ("GGAL.BA", "byma", None))
         self.assertEqual([hora_ar(p) for p in h1["puntos"]],
-                         [("2026-10-26", f"{hh}:00") for hh in range(11, 17)]
+                         [(d, f"{hh}:00") for d in ("2026-10-26", "2026-10-27") for hh in range(11, 17)]
                          + [("2026-10-28", x) for x in ("10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30")]
                          + [("2026-10-29", x) for x in ("10:30", "11:30", "12:30", "13:30", "14:30")])
         p = {hora_ar(x): x for x in h1["puntos"]}
@@ -270,9 +282,10 @@ class HorasTest(unittest.TestCase):
         h4 = self._horas("GGAL", "4h", local=True, moneda="ars")
         self.assertEqual([hora_ar(p) for p in h4["puntos"]],
                          [("2026-10-26", "10:30"), ("2026-10-26", "14:30"),
+                          ("2026-10-27", "10:30"), ("2026-10-27", "14:30"),
                           ("2026-10-28", "10:30"), ("2026-10-28", "14:30"),
                           ("2026-10-29", "10:30"), ("2026-10-29", "14:30")])
-        b = h4["puntos"][3]   # 28/10 de 14:30 a 17:00: de a 30 min, de las 14:30 a las 16:30
+        b = h4["puntos"][5]   # 28/10 de 14:30 a 17:00: de a 30 min, de las 14:30 a las 16:30
         self.assertEqual((b["o"], b["h"], b["l"], b["c"], b["v"]), (5007.0, 5016.0, 5002.0, 5012.0, 500.0))
         self.assertTrue(h4["puntos"][-1].get("enCurso"), "el bloque de 14:30 a 17:00 está en curso")
         self.assertEqual(h4["sesion"]["velas_por_dia"], 2)
@@ -314,7 +327,7 @@ class HorasTest(unittest.TestCase):
         self.assertAlmostEqual(h1["puntos"][-1]["s50"], sum(range(n - 49, n + 1)) / 50, places=4)
         self.assertIsNotNone(h1["puntos"][-1]["rsi"])
         self.assertIsNotNone(h1["puntos"][-1]["bb_arriba"])
-        self.assertEqual(h1["sesion"], {"abre": 0, "cierra": 1440, "desfase": 0, "todos_los_dias": True,
+        self.assertEqual(h1["sesion"], {"abre": 0, "cierra": 1440, "desfase": 0, "zona": "UTC", "todos_los_dias": True,
                                         "velas_por_dia": 24})
 
         h4 = self._horas("BTC", "4h")
@@ -411,6 +424,116 @@ class HorasTest(unittest.TestCase):
             mal = {**linea, "b": {**linea["b"], "t": malo}}
             r = self.client.put("/api/tecnico/AAPL/dibujos?moneda=usd", json={"dibujos": [mal]}, headers=self.h)
             self.assertEqual(r.status_code, 422, malo)
+
+    # ── Lo que encontró la auditoría (30/10) ──────────────────────────────────
+
+    def test_si_la_historia_no_contesta_la_vela_en_curso_se_sigue_moviendo(self):
+        # A los 10 min se vuelve a pedir la historia entera; si no contesta,
+        # se queda la que había y lo reciente se sigue pidiendo. Antes, mientras
+        # la historia no contestara, la vela en curso quedaba quieta.
+        dias = [date(2026, 10, 27), date(2026, 10, 28), date(2026, 10, 29)]
+        self.yahoo.horas["AAPL"] = _horas_ny(dias, hasta_ultimo=13)
+        self._ficha("AAPL")
+        antes = self._horas("AAPL", "1h")
+        self.yahoo.no_contesta.add(("AAPL", "730d", "1h"))
+        ult = self.yahoo.horas["AAPL"][-1]
+        for minuto in range(1, 16):
+            self.ahora = AHORA + minuto * 61
+            self.yahoo.horas["AAPL"][-1] = (ult[0], ult[1], ult[2] + minuto, ult[3], ult[4] + minuto, 10.0)
+            r = self._horas("AAPL", "1h")
+            self.assertEqual(r["puntos"][-1]["c"], ult[4] + minuto, f"minuto {minuto}: la vela en curso se mueve")
+            self.assertEqual(len(r["puntos"]), len(antes["puntos"]), "la historia que había sigue entera")
+        pedidos = [p[1] for p in self.yahoo.pedidos if p[2] == "1h"]
+        self.assertEqual(pedidos.count("730d"), 2, "la historia se reintenta cada 10 min, no a cada minuto")
+
+    def test_byma_no_cambia_una_historia_buena_por_una_a_medias(self):
+        # Si a los 10 min una de las dos partes de BYMA no contesta, se queda
+        # la historia entera que había (no 60 días sueltos ni cortada a la hora).
+        viejas = [(_hora(d, hh, 0, BA), 4000.0, 4010.0, 3990.0, 4005.0, 10.0)
+                  for d in (date(2026, 10, 26), date(2026, 10, 27)) for hh in range(11, 17)]
+        self.yahoo.horas["GGAL.BA"] = viejas
+        self.yahoo.medias["GGAL.BA"] = [(_hora(d, m // 60, m % 60, BA), 5000.0, 5005.0, 4995.0, 5001.0, 100.0)
+                                        for d in (date(2026, 10, 27), date(2026, 10, 28), date(2026, 10, 29))
+                                        for m in range(11 * 60, 15 * 60, 30)]
+        self._ficha("GGAL", local=True, moneda="ars")
+        antes = [p["t"] for p in self._horas("GGAL", "1h", local=True, moneda="ars")["puntos"]]
+        self.assertIn("2026-10-26", {datetime.fromtimestamp(t, timezone.utc).date().isoformat() for t in antes})
+        self.yahoo.no_contesta.add(("GGAL.BA", "730d", "1h"))
+        self.ahora += velas_horarias.TTL_HISTORIA_SEG + 1
+        despues = [p["t"] for p in self._horas("GGAL", "1h", local=True, moneda="ars")["puntos"]]
+        self.assertEqual(despues, antes, "sin la parte de 1 hora, la historia no se recorta a 60 días")
+
+    def test_la_hora_en_curso_con_minutos_va_a_su_vela(self):
+        # Yahoo puede mandar la hora en curso con el momento del último precio
+        # (14:31:07): va a la vela de las 13:30–14:30… de su hora, no a una aparte.
+        dia = date(2026, 10, 29)
+        self.yahoo.horas["AAPL"] = _horas_ny([dia], hasta_ultimo=13) + [
+            (pd.Timestamp(datetime(2026, 10, 29, 13, 31, 7)).tz_localize(NY), 112.0, 113.0, 111.0, 112.5, 3.0)]
+        self.ahora = datetime(2026, 10, 29, 17, 40, tzinfo=timezone.utc).timestamp()   # 13:40 en Nueva York
+        self._ficha("AAPL")
+        h1 = self._horas("AAPL", "1h")
+        horas = [datetime.fromtimestamp(p["t"], timezone.utc).strftime("%H:%M") for p in h1["puntos"]]
+        self.assertEqual(horas, ["13:30", "14:30", "15:30", "16:30", "17:30"], "sin una vela suelta a las 13:31")
+        b = h1["puntos"][-1]
+        self.assertEqual((b["o"], b["h"], b["c"], b["v"]), (104.0, 113.0, 112.5, 13.0))
+        self.assertTrue(b.get("enCurso"))
+
+    def test_los_momentos_no_dependen_de_como_guarda_pandas_el_indice(self):
+        # pandas 3 guarda los índices en microsegundos: los momentos tienen
+        # que salir iguales (antes salían mil veces más chicos).
+        self.yahoo.unidad = "us"
+        dias = [date(2026, 10, 28)]
+        self.yahoo.horas["AAPL"] = _horas_ny(dias)
+        self._ficha("AAPL")
+        p0 = self._horas("AAPL", "1h")["puntos"][0]
+        self.assertEqual(p0["t"], int(_hora(dias[0], 9, 30, NY).timestamp()))
+
+    def test_byma_sigue_en_curso_y_pidiendo_mientras_llegan_sus_ultimos_20_minutos(self):
+        # BYMA llega ~20 min tarde: a las 17:10 la rueda ya cerró pero lo de
+        # 16:40 a 17:00 todavía no llegó. La pantalla tiene que seguir pidiendo
+        # cada minuto y la vela de las 16:30 sigue en curso; a las 17:25, no.
+        dia = date(2026, 10, 29)
+        self.yahoo.medias["GGAL.BA"] = [(_hora(d, m // 60, m % 60, BA), 5000.0, 5005.0, 4995.0, 5001.0, 100.0)
+                                        for d in (date(2026, 10, 28), dia) for m in range(11 * 60, 17 * 60, 30)]
+        self._ficha("GGAL", local=True, moneda="ars")
+        self.ahora = _hora(dia, 17, 10, BA).timestamp()
+        r = self._horas("GGAL", "1h", local=True, moneda="ars")
+        self.assertTrue(r["en_horario"], "17:10: todavía llegan precios de la rueda")
+        self.assertTrue(r["puntos"][-1].get("enCurso"))
+        self.assertEqual(datetime.fromtimestamp(r["puntos"][-1]["t"] - 3 * 3600, timezone.utc).strftime("%H:%M"), "16:30")
+        self.ahora = _hora(dia, 17, 25, BA).timestamp()
+        r = self._horas("GGAL", "1h", local=True, moneda="ars")
+        self.assertFalse(r["en_horario"])
+        self.assertFalse(r["puntos"][-1].get("enCurso"))
+
+    def test_tope_de_primeras_descargas_por_persona(self):
+        # Cada ticker nuevo (que no está en memoria) baja la historia entera:
+        # hay un cupo por persona por hora, como en las fichas a pedido.
+        self._ficha("AAPL")
+        self.yahoo.horas["AAPL"] = _horas_ny([date(2026, 10, 28)])
+        with mock.patch("velas_horarias.NUEVOS_POR_PERSONA_HORA", 1):
+            self.assertTrue(self._horas("AAPL", "1h")["disponible"])
+            # Lo que ya está en memoria no cuenta.
+            self.assertTrue(self._horas("AAPL", "4h")["disponible"])
+            self._ficha("BTC")
+            r = self._horas("BTC", "1h")
+            self.assertEqual((r["disponible"], r["motivo"]), (False, "tope"))
+            # A la hora, entra de nuevo.
+            self.ahora += 3601
+            self.assertNotEqual(self._horas("BTC", "1h").get("motivo"), "tope")
+
+    def test_si_yahoo_trae_lo_mismo_no_se_rehacen_las_cuentas(self):
+        import tecnico
+        dias = [date(2026, 10, 27), date(2026, 10, 28)]
+        self.yahoo.horas["AAPL"] = _horas_ny(dias)
+        self._ficha("AAPL")
+        with mock.patch("tecnico.indicadores", wraps=tecnico.indicadores) as cuentas:
+            self._horas("AAPL", "1h")
+            self.ahora += 61                       # lo reciente se vuelve a pedir: viene igual
+            r = self._horas("AAPL", "1h")
+        self.assertEqual(cuentas.call_count, 1)
+        self.assertEqual(r["actualizada"], datetime.fromtimestamp(self.ahora, timezone.utc).isoformat().replace("+00:00", "Z"),
+                         "«hace X s» sigue diciendo cuándo se le preguntó a Yahoo")
 
     def test_lo_que_no_hay_no_se_inventa(self):
         # Sin gráfico diario (un activo que no existe): nada.

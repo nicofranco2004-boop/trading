@@ -459,6 +459,13 @@ export default function LecturaTecnica({
     if (!cadaHoras || antes.clave !== clave || !antes.n || velasHoras <= antes.n) return
     setVentana(v => (v && v.fin >= antes.n ? { ...v, fin: v.fin + (velasHoras - antes.n) } : v))
   }, [velasHoras, cadaHoras, moneda])
+  // En 1H/4H, dólares y pesos pueden ser otro ticker con otras velas (la
+  // acción de Nueva York o el CEDEAR de BYMA): el zoom, que cuenta velas, era
+  // de las otras. En diarias queda como siempre.
+  useEffect(() => {
+    if (cadaHoras) setVentana(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [moneda])
   // Pantalla completa (Nico, 28/10: «para un análisis profundo, que toda la
   // pantalla sea el gráfico, como entrar a TradingView»): la misma sección, fija
   // sobre toda la página y con el gráfico más alto; «Achicar» o Esc vuelven a la
@@ -665,11 +672,16 @@ export default function LecturaTecnica({
   // Y al revés: dónde cae en lo que se ve un día medido (fuera de la vista,
   // un lugar afuera del ancho; el gráfico lo dibuja contra el borde).
   const lugarDelDia = (i) => {
+    // Una vela por lugar (diarias, 1H y 4H): siempre a su distancia del primer
+    // lugar que se ve, también hacia adelante o antes de la historia. La
+    // cuenta de abajo, «desde la última vela que se ve», sólo valía mirando
+    // hasta hoy: con el gráfico corrido hacia atrás, una línea que llegaba a
+    // la vela en curso (con decimales, en 1H) se dibujaba corrida.
+    if (!semanales) return i - inicioVista
     if (i > total - 1) return puntos.length - 1 + (i - (total - 1)) / porVela
     // Antes de la historia guardada (un punto anclado en un día que ya se
     // borró): afuera a la izquierda, a su distancia (utils/dibujos diaDelPunto).
     if (i < 0) return lugarDelDia(0) + i / porVela
-    if (!semanales) return i - inicioVista
     const d = actual.puntos[i]?.d
     const k = d ? indiceDeFecha(puntos, d) : null
     return k != null ? k : (d < (puntos[0]?.d || '') ? -1 : puntos.length)
@@ -698,7 +710,11 @@ export default function LecturaTecnica({
         { apaga: dibujar.tipo === 'fibonacci' ? 'fib' : null })
       // Tu Fibonacci reemplaza al automático (si no, se mezclan las rayas);
       // el automático se vuelve a prender desde su botón.
-      if (dibujar.tipo === 'fibonacci') setVer(x => ({ ...x, fib: false }))
+      if (dibujar.tipo === 'fibonacci') {
+        setVer(x => ({ ...x, fib: false }))
+        // En 1H/4H el automático no se ve: se dice, si no, al volver a 1D no estaba.
+        if (horas && ver.fib) setAviso('Se apagó el Fibonacci automático de las velas diarias, para que no se mezcle con el tuyo. Se vuelve a prender desde el botón Fibonacci, en 1D.')
+      }
       setDibujarEstado({ tipo: null, puntos: [] })
     } else if (dibujar.tipo === 'canal') {
       // El canal paralelo (Nico, 29/10): dos toques para la línea de abajo y
@@ -735,6 +751,7 @@ export default function LecturaTecnica({
     if (puntos.length >= 2 && forma) {
       cambiarDibujos([...misDibujos, { id: idNuevo(), tipo: 'elliott', forma, puntos: puntos.map(q => puntoGuardado(q.i, q.precio)) }], { apaga: 'ell' })
       setVer(x => ({ ...x, ell: false }))
+      if (horas && ver.ell) setAviso('Se apagó el conteo automático de Elliott de las velas diarias, para que no se mezcle con el tuyo. Se vuelve a prender desde el botón Ondas de Elliott, en 1D.')
     }
     setDibujarEstado({ tipo: null, puntos: [] })
   }
@@ -760,7 +777,9 @@ export default function LecturaTecnica({
   const moverDibujo = (id, que, dk, dp) => {
     const correr = (q) => {
       const i = lugarGuardado(q)
-      // En 1H/4H se corre por velas y se guarda el momento nuevo.
+      // En 1H/4H se corre por velas y se guarda el momento nuevo; corrida sólo
+      // de precio, el punto queda donde estaba (día, hora y todo), como en diarias.
+      if (porHora && !dk) return { ...q, precio: precioRedondo(precioCorrido(q.precio, dp)) }
       if (porHora) return porHora.puntoDelLugar(Math.max(0, i + dk), precioCorrido(q.precio, dp), { fraccion: q.f != null })
       const k = lugarDelDia(i) + dk
       // Corrida sólo de precio, el día queda (en semanales, si no, iría al
@@ -815,6 +834,23 @@ export default function LecturaTecnica({
   }
   // «Ver tu tesis»: desde pantalla completa, primero vuelve a la ficha.
   const verTesis = onVerTesis ? () => { setElegido(null); if (grande) setGrande(false); setTimeout(onVerTesis, 0) } : null
+  // Los avisos de líneas miran cada noche la línea por DÍA (backend
+  // tecnico.valor_de_linea): una inclinada dibujada en 1H/4H con las dos
+  // puntas el mismo día no la pueden seguir (nunca avisaban), y una que
+  // cruza días la seguirían con la inclinación que tiene en diarias, no la
+  // que se ve en horas. Por eso el aviso de una inclinada se pone en diarias,
+  // y nunca para una que empieza y termina el mismo día. Con un aviso ya
+  // puesto, el botón queda: es por donde se apaga.
+  const sinAvisoDeLinea = (() => {
+    const d = misDibujos.find(x => x.id === elegido)
+    if (!d || (d.tipo !== 'tendencia' && d.tipo !== 'canal')) return null
+    if (alertaDeLinea(avisos.items, { asset, moneda, dibujo: d.id })) return null
+    if (horas) return 'Los avisos de líneas miran el cierre de cada día: para ponerle uno a esta, elegila en velas diarias (1D).'
+    if (diaDelPunto(actual.puntos, d.a) === diaDelPunto(actual.puntos, d.b)) {
+      return 'Esta línea empieza y termina el mismo día: el aviso, que mira el cierre de cada día, no la puede seguir.'
+    }
+    return null
+  })()
   const herramienta = medir.activo ? 'medir' : dibujar.tipo
   const medida = medir.activo ? medirEntre(serie, medir.a, medir.b) : null
   // Lo que dice un punto medido: su día, o cuántos días de mercado después de
@@ -980,8 +1016,10 @@ export default function LecturaTecnica({
                     }} />
                   )}
                   {(queEsElegido === 'horizontal' || queEsElegido === 'tendencia' || queEsElegido === 'canal') && (
-                    <BotonAvisameLinea avisos={avisos} asset={asset} accionLocal={accionLocal} moneda={moneda}
-                      dibujo={elegido} tipoLinea={queEsElegido} />
+                    sinAvisoDeLinea
+                      ? <span data-sin-aviso="" className="text-[12px] text-ink-2 leading-snug">{sinAvisoDeLinea}</span>
+                      : <BotonAvisameLinea avisos={avisos} asset={asset} accionLocal={accionLocal} moneda={moneda}
+                          dibujo={elegido} tipoLinea={queEsElegido} />
                   )}
                   <button type="button" onClick={() => setElegido(null)}
                     className="min-h-10 sm:min-h-8 px-3 rounded-lg border border-line-2 text-ink-1 hover:text-ink-0">Listo</button>
@@ -1008,9 +1046,13 @@ export default function LecturaTecnica({
               <div role="status" className="h-[22rem] flex flex-col items-center justify-center gap-3 text-center text-sm text-ink-1 px-4">
                 {porHoras.datos?.error
                   ? `No se pudieron traer las velas de ${INTERVALOS_POR_HORA[cadaHoras].nombre}.`
-                  : `No encontramos velas de ${INTERVALOS_POR_HORA[cadaHoras].nombre} de este activo.`}
+                  : porHoras.datos?.motivo === 'tope'
+                    // El servidor llegó a su cupo de primeras descargas de la hora
+                    // (velas_horarias.NUEVOS_*): no es que no existan.
+                    ? `Ahora no pudimos traer las velas de ${INTERVALOS_POR_HORA[cadaHoras].nombre} de este activo. Probá de nuevo en un rato.`
+                    : `No encontramos velas de ${INTERVALOS_POR_HORA[cadaHoras].nombre} de este activo.`}
                 <span className="flex flex-wrap justify-center gap-2">
-                  {porHoras.datos?.error && (
+                  {(porHoras.datos?.error || porHoras.datos?.motivo === 'tope') && (
                     <button type="button" onClick={porHoras.reintentar}
                       className="min-h-10 px-3 rounded-lg border border-line-2 text-ink-0 hover:bg-bg-2">Reintentar</button>
                   )}

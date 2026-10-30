@@ -4,7 +4,7 @@
 // se mueve, la pestaña oculta) está en components/asset/LecturaTecnicaHoras.test.js.
 import { describe, it, expect } from 'vitest'
 import {
-  cadaCuantoRefrescar, esIntradia, fechaHoraCorta, fechaHoraDeLaMira, horaArt, marcasDeHoras, mezclar,
+  cadaCuantoRefrescar, desfaseEn, esIntradia, fechaHoraCorta, fechaHoraDeLaMira, horaArt, marcasDeHoras, mezclar,
   primeraVelaDelDia, REFRESCO_HORAS_MS, textoEnCurso, textoMedicionPorHora, ubicadorPorHora, velasRecientes,
 } from './velasPorHora'
 import { indiceDeFecha } from './tecnico'
@@ -185,3 +185,42 @@ describe('medir en 1H/4H', () => {
     expect(textoMedicionPorHora({ pct: -1, dias: 1, diferencia: -1 }, '4h')).toBe('−1,0% en 1 vela de 4 horas')
   })
 })
+
+// ─── Lo que encontró la auditoría (30/10) ─────────────────────────────────────
+
+describe('un momento en un hueco va a la vela siguiente', () => {
+  // BYMA: el 26 y el 27, velas de 1 hora de Yahoo (desde las 11 de acá); el 28,
+  // armadas con las de 30 min (desde las 10:30, como TradingView).
+  const SESION_BYMA = { abre: 630, cierra: 1020, desfase: -180, todos_los_dias: false, velas_por_dia: 7 }
+  const serie = [
+    ...[26, 27].flatMap(d => [0, 1, 2, 3, 4, 5].map(k => ({ d: `2026-10-${d}`, t: utc(2026, 10, d, 14 + k), c: 1 }))),
+    ...[0, 1, 2, 3, 4, 5, 6].map(k => ({ d: '2026-10-28', t: utc(2026, 10, 28, 13 + k, 30), c: 1 })),
+  ]
+  const u = ubicadorPorHora(serie, { sesion: SESION_BYMA, cada: '1h' })
+  it('las 10:30 de un día de los que Yahoo da desde las 11: la vela de las 11 (antes: la última del día anterior)', () => {
+    expect(u.lugarDelMomento(utc(2026, 10, 27, 13, 30))).toBe(6)
+  })
+  it('de noche: la primera vela del día siguiente', () => {
+    expect(u.lugarDelMomento(utc(2026, 10, 26, 23))).toBe(6)
+  })
+  it('adentro de una vela, sigue siendo su parte', () => {
+    expect(u.lugarDelMomento(utc(2026, 10, 27, 14, 30))).toBeCloseTo(6.5)
+  })
+})
+
+describe('el cambio de horario de Nueva York (hacia adelante)', () => {
+  it('el corrimiento de cada momento: −4 h en octubre, −5 h desde el 1/11', () => {
+    expect(desfaseEn(utc(2026, 10, 29, 12), 'America/New_York')).toBe(-240)
+    expect(desfaseEn(utc(2026, 11, 2, 12), 'America/New_York')).toBe(-300)
+    expect(desfaseEn(utc(2026, 11, 2, 12), undefined, -240)).toBe(-240)          // sin zona: el fijo
+    expect(desfaseEn(utc(2026, 11, 2, 12), 'Zona/Inexistente', -180)).toBe(-180)  // zona rara: el fijo
+  })
+  it('con la zona, el lunes 2/11 a las 9:30 de allá (14:30 UTC) es la PRIMERA vela de esa rueda, ida y vuelta', () => {
+    const u = ubicadorPorHora(SERIE, { sesion: { ...SESION_NY, zona: 'America/New_York' }, cada: '1h', diarios: DIARIOS })
+    expect(u.lugarDelPunto({ d: '2026-10-28', mas: 3, t: utc(2026, 11, 2, 14, 30), precio: 1 })).toBe(70)
+    const p = u.puntoDelLugar(71, 1)
+    expect(p.t).toBe(utc(2026, 11, 2, 15, 30))   // 10:30 de allá, ya en invierno
+    expect(u.lugarDelPunto(p)).toBe(71)
+  })
+})
+
