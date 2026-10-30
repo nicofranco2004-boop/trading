@@ -16,6 +16,7 @@
 // Ninguna palabra habla del futuro ni dice qué hacer: describe cómo se movió.
 
 import { inferType } from './tickers'
+import { esLocalSinTenencia } from './accionLocal'
 import { isCrypto } from './crypto'
 import { hoyISO } from './fecha'
 import { tarjetas, fmtAdx, ADX_CLAVE } from './tecnico'
@@ -35,15 +36,11 @@ import { clave, tendencia, fuerza, lecturaVieja, MOTIVOS_SIN_LECTURA } from './r
  */
 export function lecturaDeSeguido(simbolo, tipo = null) {
   const s = String(simbolo || '').trim().toUpperCase()
-  const t = String(tipo || '').trim().toUpperCase()
-  const local = inferType(s) === 'stock_ar' && (!t || TIPOS_ACCION_AR.has(t))
+  const local = esLocalSinTenencia(s, tipo)
   let asset = s.endsWith('.BA') ? s.slice(0, -3) : s
   if (asset.endsWith('-USD') && isCrypto(asset.slice(0, -4))) asset = asset.slice(0, -4)
   return { asset, local, simbolo: s }
 }
-
-/** Los `asset_type` que dicen «acción argentina» (los demás dicen otra cosa). */
-export const TIPOS_ACCION_AR = new Set(['ACCION', 'STOCK_AR'])
 
 // Lo que el servidor deja leer por pedido (tecnico.MAX_ACTIVOS_CARTERA). La
 // watchlist tiene tope de 100 (main.WATCHLIST_TOPE): entra en uno.

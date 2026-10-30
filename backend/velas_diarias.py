@@ -100,7 +100,12 @@ def _yahoo_de(asset: str, asset_type: str, en_pesos: bool, es_cripto,
     if a.endswith('.BA'):
         a, en_pesos = a[:-3], True
     pesos = simbolo_byma(a)
-    es_cedear = tipo == 'CEDEAR' or (en_pesos and pesos[:-3] in cedears_byma)
+    # CEDEAR por su tipo, por la lista de BYMA o por la lista fija de la app
+    # (`accion_local.es_cedear`, la de la pantalla): si data912 no contesta, la
+    # lista de BYMA llega vacía y «AAPL.BA» se guardaba sólo en pesos, sin la
+    # acción de afuera ni su par (re-test de la auditoría A, 29/10: resto de P2).
+    from accion_local import es_cedear as _en_la_lista
+    es_cedear = tipo == 'CEDEAR' or (en_pesos and (pesos[:-3] in cedears_byma or _en_la_lista(a)))
     if es_cedear:
         if a in CEDEAR_USD_RATIOS:
             # Su '.BA' en Yahoo cotiza en dólares y roto (BAC ≈ 9): la serie en

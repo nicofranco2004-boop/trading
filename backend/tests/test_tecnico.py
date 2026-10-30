@@ -643,6 +643,19 @@ class FichaTest(unittest.TestCase):
         self.assertLess(l["rsi"], 30, "la prueba necesita el RSI abajo de 30 hoy")
         self.assertIsNone(l["rsi_cruce"])
 
+    def test_accion_local_sin_su_serie_no_cambia_de_papel(self):
+        # Re-test A1d (29/10): otra persona tiene el ADR de GGAL (se guarda
+        # «GGAL»), y la serie de BYMA (GGAL.BA) todavía no está. Pedida como
+        # acción argentina (local), la ficha leía el ADR sin avisar: otro papel.
+        # Sin su serie, no hay lectura; nunca la de otro papel.
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "GGAL", "STOCK")
+        self.yahoo.precios["GGAL"] = lambda i, d: 30 + i * 0.01
+        main._run_velas_diarias_job()
+        self.assertFalse(self._ficha("GGAL", local=True)["disponible"])
+        self.assertFalse(self._ficha("GGAL", moneda="ars", local=True)["disponible"])
+        self.assertTrue(self._ficha("GGAL")["disponible"], "el ADR, pedido como ADR, sí")
+
     def test_bono_y_lo_que_no_tiene_velas(self):
         self._broker("IOL", "ARS")
         self._posicion("IOL", "AL30", "BONO")
@@ -947,11 +960,18 @@ class FichaTest(unittest.TestCase):
         self.assertEqual((f["ticker"], f["convertida"]), ("GGAL.BA", "mep"))
         self.assertAlmostEqual(f["puntos"][-1]["c"], 5.0, places=6)
         self.assertEqual(self._pedidos("GGAL"), [], "el ADR no se baja para la acción local")
-        # Un '.BA' sin saber si es CEDEAR (data912 caído en esta prueba) no se
-        # baja, salvo que sea una acción argentina conocida.
+        # Un '.BA' con data912 caído (en esta prueba): un CEDEAR de la lista fija
+        # de la app (XLE) se reconoce igual y se lee por su acción de afuera; su
+        # serie en pesos cruda no se baja (re-test A1c, 29/10: antes no se sabía
+        # que era un CEDEAR y no había lectura).
+        self.yahoo.precios["XLE"] = lambda i, d: 90.0
         g = self._ficha("XLE.BA")
-        self.assertEqual((g["disponible"], g["motivo"]), (False, "sin_serie"))
+        self.assertEqual((g["disponible"], g["ticker"]), (True, "XLE"))
         self.assertEqual(self._pedidos("XLE.BA"), [])
+        # Un '.BA' que no está en ninguna lista ni es del panel argentino: no se baja.
+        z = self._ficha("ZZZZ.BA")
+        self.assertEqual((z["disponible"], z["motivo"]), (False, "sin_serie"))
+        self.assertEqual(self._pedidos("ZZZZ.BA"), [])
         self.yahoo.precios["YPFD.BA"] = lambda i, d: 40000.0
         self.assertTrue(self._ficha("YPFD.BA")["disponible"])
 
@@ -1123,7 +1143,7 @@ class FichaTest(unittest.TestCase):
         # (sin sus cambios de ratio) quedaría guardada para todos.
         self.yahoo.precios["XLE.BA"] = lambda i, d: 30000.0
         f = self._ficha("XLE", local=True)
-        self.assertEqual((f["disponible"], f["motivo"]), (False, "sin_serie"))
+        self.assertFalse(f["disponible"])
         self.assertEqual(self._pedidos("XLE.BA"), [])
         # Una acción argentina conocida sí, aunque data912 no conteste.
         self._mep(lambda i: 1000.0)

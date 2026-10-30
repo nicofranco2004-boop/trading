@@ -14,6 +14,7 @@
 // plan no tiene chat libre, ir a ver las preguntas que sí le podés hacer.
 
 import { CEDEAR_EN_EEUU, ADR_DE_ACCION_AR, ETFS, CEDEARS_DE_ETF, cedearEspecieBase, inferType } from './tickers'
+import { esLocalSinTenencia } from './accionLocal'
 import { classifyAsset } from './assetClass'
 import { quienEs } from './quienEs'
 
@@ -204,9 +205,10 @@ export function empresaDeTicker(simbolo) {
 // dólares, ese precio ÷ el MEP), no por su ADR de Nueva York.
 //   GGAL / GGAL.BA → { accionLocal: true, simboloPrecio: 'GGAL.BA' }
 //   NVDA → { accionLocal: false, simboloPrecio: 'NVDA' } · BTC igual.
-export function miradaSinTenencia(simbolo) {
+export function miradaSinTenencia(simbolo, tipo = null) {
   const s = (simbolo || '').toUpperCase()
-  const accionLocal = inferType(s) === 'stock_ar'
+  // LA regla de lo que no tenés (utils/accionLocal.js), con el tipo si lo hay.
+  const accionLocal = esLocalSinTenencia(s, tipo)
   return { accionLocal, simboloPrecio: accionLocal && !s.endsWith('.BA') ? `${s}.BA` : s }
 }
 

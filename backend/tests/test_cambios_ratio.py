@@ -282,6 +282,25 @@ class ParNoPorElNombreTest(unittest.TestCase):
         self.assertEqual(pares.get("XLE.BA"), "XLE")
         self.assertNotIn("AGRO.BA", pares)
 
+    def test_con_data912_caido_un_cedear_seguido_igual_se_reconoce(self):
+        # Re-test A1c (29/10): con la lista de BYMA vacía (data912 no contesta),
+        # «AAPL.BA» de la watchlist se guardaba sólo en pesos, sin la acción de
+        # afuera ni su par. La lista fija de CEDEARs de la app (accion_local)
+        # alcanza para saber que es un CEDEAR.
+        from unittest import mock
+        conn = main.get_db()
+        try:
+            uid = conn.execute("INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+                               (f"par-{uuid.uuid4().hex[:8]}@rendi.test", "x")).lastrowid
+            conn.execute("INSERT INTO watchlist (user_id, symbol) VALUES (?,?)", (uid, "AAPL.BA"))
+            conn.commit()
+            with mock.patch("velas_diarias._cedears_de_byma", lambda: frozenset()):
+                tickers, pares = velas_diarias._seguimiento(conn)
+        finally:
+            conn.close()
+        self.assertIn("AAPL", tickers)
+        self.assertEqual(pares.get("AAPL.BA"), "AAPL")
+
 
 def _interruptor(encendido: bool):
     """El aviso nuevo está detrás de un interruptor de /admin (apagado de entrada)."""
