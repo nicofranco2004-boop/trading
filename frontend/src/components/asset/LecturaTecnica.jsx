@@ -39,8 +39,10 @@
 // de 23 y las barras del Squeeze (el combo «DMI/ADX/KEYLEVEL» + «SQZMOM_LB» de
 // TradingView), con su tarjeta «Fuerza de la tendencia».
 //
-// Debajo de la leyenda, el resumen de Mervall-E (ResumenMervalle.jsx): un
-// párrafo a pedido, uno por activo y por día, que ven todos.
+// «✦ Analizar con Mervall-E» (ResumenMervalle.jsx): en la ficha, dentro de «La
+// lectura de hoy» (el párrafo a pedido, uno por activo y por día, que ven todos,
+// y las preguntas para seguir en el chat); en la pestaña «Gráfico», que no tiene
+// esa tarjeta, debajo de la leyenda.
 
 import { cloneElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Bell, Brush, ChevronDown, LineChart, Maximize2, Minimize2, Redo2, RotateCcw, Ruler, StickyNote, Trash2, Undo2 } from 'lucide-react'
@@ -54,7 +56,7 @@ import CompartirGrafico from './CompartirGrafico'
 import LecturaDeHoy from './LecturaDeHoy'
 import TarjetasPorTema from './TarjetasPorTema'
 import Banderitas, { CartelDeNotas, banderitaEn, banderitasEnVista, esClaveDeGrupo, esClaveDeTesis } from './NotasGrafico'
-import ResumenMervalle from './ResumenMervalle'
+import { BotonMervalle, PanelMervalle, useResumenMervalle } from './ResumenMervalle'
 import { BotonAvisame, BotonAvisameLinea, alertaDeLinea, useAvisosTecnicos, senalDeTarjeta } from '../alerts/AvisameTecnico'
 import { api, getClientContext } from '../../utils/api'
 import { factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecio, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
@@ -536,6 +538,12 @@ export default function LecturaTecnica({
 
   const actual = datos[moneda]
   const conGrafico = !!actual?.disponible
+  // «✦ Analizar con Mervall-E»: el estado acá (antes de los `return` tempranos),
+  // el botón y el panel donde toque (ResumenMervalle.jsx).
+  const mervalle = useResumenMervalle({
+    asset, moneda, local: accionLocal, resumen: actual?.resumen,
+    alTenerlo: (r) => setDatos(d => ({ ...d, [moneda]: { ...d[moneda], resumen: r } })),
+  })
   // La vela de hoy (y algún día cerrado que la noche todavía no guardó): se
   // dibuja (sumarVelaDeHoy) y cuenta para medir, tu tesis y tus compras de hoy;
   // la lectura, el Fibonacci y los dibujos siguen con las velas guardadas.
@@ -1155,10 +1163,13 @@ export default function LecturaTecnica({
         </div>
       </div>
 
-      {/* El resumen de Mervall-E de esta serie y este día de velas: uno para
-          todos. `key` por moneda: en pesos es otro resumen, con su propio botón. */}
-      <ResumenMervalle key={moneda} asset={asset} moneda={moneda} local={accionLocal} resumen={actual.resumen}
-        alTenerlo={(r) => setDatos(d => ({ ...d, [moneda]: { ...d[moneda], resumen: r } }))} />
+      {/* En la pestaña «Gráfico» no hay «La lectura de hoy»: Mervall-E va acá. */}
+      {soloGrafico && mervalle.ofrecido && (
+        <div className="mt-3 overflow-hidden rounded-xl border border-line/60">
+          <div className="px-4 py-3"><BotonMervalle r={mervalle} /></div>
+          <PanelMervalle r={mervalle} direccion={actual.fibonacci?.en_curso?.dir} />
+        </div>
+      )}
 
       <TarjetasPorTema enPestanas={!soloGrafico} Tarjeta={Tarjeta} lista={lista} lectura={actual.lectura} puntos={actual.puntos}
         ver={ver} fibonacci={actual.fibonacci} elliott={actual.elliott} moneda={moneda}
@@ -1178,7 +1189,9 @@ export default function LecturaTecnica({
     </>,
     // En 1H/4H «Lo reciente» se cuenta en velas, no en días de mercado.
     { visto: ventana ? null : rangoVisto, recientes, textoReciente: horas && recientes ? `${recientes} velas` : null, compartir, antesDeCompartir,
-      arriba: soloGrafico ? null : <LecturaDeHoy lectura={actual.lectura} lista={lista} puntos={actual.puntos} adxTope={ADX_TOPE} /> },
+      arriba: soloGrafico ? null : <LecturaDeHoy lectura={actual.lectura} lista={lista} puntos={actual.puntos} adxTope={ADX_TOPE}
+        boton={<BotonMervalle r={mervalle} ancho />}
+        panel={<PanelMervalle r={mervalle} direccion={actual.fibonacci?.en_curso?.dir} />} /> },
   )
 }
 

@@ -42171,7 +42171,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # El botón de Mervall-E de la ficha («¿Cómo viene GGAL?») ya trae la lectura
     # técnica en el paquete: la respuesta se revisa igual que si la hubiera
     # pedido con get_technical_reading (_corregir_lectura_tecnica).
-    if (data.analisis and str(data.analisis.screen or "").strip().lower() == "tecnico"
+    if (data.analisis and str(data.analisis.screen or "").strip().lower().split(".")[0] == "tecnico"
             and ((snapshot_clean or {}).get("analisis_del_boton") or {}).get("available")):
         _turn_flags.add("lectura_tecnica")
     # Book-mode usa SU draft (registro grupal); el resto, el draft personal.

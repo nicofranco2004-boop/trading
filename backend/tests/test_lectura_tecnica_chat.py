@@ -342,6 +342,22 @@ class LecturaTecnicaChatTest(unittest.TestCase):
         self.assertEqual(len(claude.pedidos), 2)
 
 
+    def test_las_preguntas_para_seguir_traen_la_lectura_y_se_revisan(self):
+        """Los botoncitos de la ficha («¿Está en tendencia?»…): otra pregunta,
+        escrita por el servidor, el mismo paquete y la misma revisión."""
+        for screen, pregunta in (("tecnico.tendencia", "¿Microsoft está en tendencia?"),
+                                 ("tecnico.fuerza", "¿Tiene fuerza el movimiento de ahora de Microsoft?"),
+                                 ("tecnico.que_se_mira", "¿Qué se mira de acá en adelante en Microsoft?")):
+            with self.subTest(screen=screen):
+                claude = ClaudeDelChat([CON_CERTEZA, BUENO], herramienta=None)
+                texto, _ = self._chat(claude, analisis={"screen": screen,
+                                                        "params": {"asset": "MSFT", "moneda": "usd"}})
+                self.assertEqual(texto, BUENO)
+                primer = json.dumps(claude.pedidos[0]["messages"], ensure_ascii=False)
+                self.assertIn(pregunta, primer)
+                self.assertIn("para_el_titular", primer)
+
+
 class ResolverTest(unittest.TestCase):
     """Qué serie mira el chat: la misma de la ficha de entrada."""
 
