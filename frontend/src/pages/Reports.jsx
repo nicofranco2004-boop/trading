@@ -30,7 +30,7 @@ import { useCurrency } from '../contexts/CurrencyContext'
 import { PesosDelPeriodoProvider, usePesosDelPeriodo } from '../hooks/usePesosDelPeriodo'
 import { hoyISO, fechaISO } from '../utils/fecha'
 import { claveSemanaISO } from '../utils/semanas'
-import { pctVar, pctColor, pctVarSign, ppVarFino, montoColor } from '../utils/format'
+import { pctVar, pctColor, pctVarSign, ppVarFino, montoColor, montoEsCero } from '../utils/format'
 
 // ─── Helpers de fecha / keys ─────────────────────────────────────────────────
 
@@ -484,7 +484,7 @@ export function PeriodRow({ period, expanded, onToggle }) {
   const tono = pct == null ? 'text-ink-3' : pctColor(pct, decs)
   // El monto lleva el color de SU signo: en Pesos puede ser otro que el del % (un día o una semana
   // tiene el % en dólares), y un monto positivo en rojo contradice al resto de la fila.
-  const tonoMonto = montoColor(usdVista, pesos.moneda)
+  const tonoMonto = montoColor(usdVista)
   const pctUsd = pct != null && pesos.pctEnDolares(period)
 
   return (
@@ -592,11 +592,12 @@ export function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   // contradice a «P&L realizado» en verde de la misma franja.
   const isPos = pct != null ? pct >= 0 : ((usd == null ? null : v.resultado) ?? 0) >= 0
   // Sin base no hay signo que pintar: un "—" en verde sugiere un período bueno.
-  const colorClass = noBasis ? 'text-ink-3' : (isPos ? 'text-rendi-pos' : 'text-rendi-neg')
+  // El % lleva el color del número QUE SE VE (lo que se escribe «0,00%» va neutro, como en la fila y la tarjeta).
+  const colorClass = noBasis ? 'text-ink-3' : (pct != null ? pctColor(pct, 2) : (isPos ? 'text-rendi-pos' : 'text-rendi-neg'))
   // El monto lleva el color de SU signo y el % el del suyo: en Pesos el % de un día o una semana sigue en
   // dólares y puede tener otro signo que el monto (la cartera cae 0,2 % en dólares, el dólar sube: en
   // pesos ganó). Con el mismo color los dos se leían como una sola cuenta. El % se rotula.
-  const colorMonto = noBasis || usd == null ? 'text-ink-3' : montoColor(v.resultado, mon)
+  const colorMonto = noBasis || usd == null ? 'text-ink-3' : montoColor(v.resultado)
   const pctUsdHeader = pct != null && pesos.pctEnDolares(period)
 
   // Detección de "período flat" — sin movimientos, sin trades.
@@ -644,7 +645,7 @@ export function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
       // El color es el del monto que se ve; el % puede estar en otra moneda (día y semana en Pesos).
       // (Un resultado que se escribe «0» va neutro, como en las filas: ver `montoColor`.)
       tone: noBasis ? undefined : (usd == null || v.resultado == null ? (isPos ? 'pos' : 'neg')
-        : (Math.abs(v.resultado) < (mon === 'ARS' ? 0.5 : 0.005) ? undefined : (v.resultado >= 0 ? 'pos' : 'neg'))),
+        : (montoEsCero(v.resultado) ? undefined : (v.resultado >= 0 ? 'pos' : 'neg'))),
     })
   }
 
@@ -657,7 +658,7 @@ export function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
       // se dice en pantalla: el resto del número es el de las ventas en pesos, igual al broker.
       nota: v.realizadoNota || null,
       // El color sigue el número que se ve: en Pesos el realizado puede tener otro signo que en dólares.
-      tone: (v.realizado ?? m.realized_pnl) >= 0 ? 'pos' : 'neg',
+      tone: montoEsCero(v.realizado ?? m.realized_pnl) ? undefined : ((v.realizado ?? m.realized_pnl) >= 0 ? 'pos' : 'neg'),
     })
   }
 

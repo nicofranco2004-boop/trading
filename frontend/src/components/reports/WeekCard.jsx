@@ -33,7 +33,7 @@ export default function WeekCard({ week, defaultOpen = false }) {
   // del monto que se muestra (en Pesos puede ser otro que el de los dólares del servidor).
   const tono = deltaPct != null
     ? pctColor(deltaPct, 2)
-    : montoColor(deltaUsd == null ? null : enVista.resultado, enVista.moneda)
+    : montoColor(deltaUsd == null ? null : enVista.resultado)
 
   // Sin actividad: chip minimal, no expandible
   if (!week.is_relevant) {
@@ -63,7 +63,7 @@ export default function WeekCard({ week, defaultOpen = false }) {
         <span className="text-xs text-ink-2 flex-1 truncate" title={week.headline}>
           {week.headline}
         </span>
-        <span className="text-[10px] text-ink-3 font-mono tabular">
+        <span className="text-[10px] text-ink-3 font-mono tabular whitespace-nowrap flex-shrink-0">
           {noBasis ? null : fmtPlata(enVista.resultado)}
         </span>
         {open

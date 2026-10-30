@@ -204,13 +204,14 @@ export const ppVarFino = (n, decimals = 1) => (esPct(n) ? pctVarFino(n, decimals
 export const pctColor = (n, decimals = 2) => colorClass(pctVarSign(n, decimals))
 
 // El color de un MONTO es el de SU signo, y un monto que se escribe «0» va neutro (como el %): una
-// fila «+US$ 0,00» en verde dice «ganaste» donde el texto dice «no se movió». En pesos no hay
-// decimales, así que lo que redondea a cero es menos de medio peso.
-export const montoColor = (n, moneda = 'USD') => {
+// fila «+US$ 0» en verde dice «ganaste» donde el texto dice «no se movió». Reportes escribe los montos
+// SIN decimales en las dos monedas, así que lo que se escribe «0» es lo que redondea a cero: menos de medio
+// peso o de medio dólar (la quinta auditoría midió +US$ 0,30 escrito «+US$ 0» y pintado de verde).
+export const montoEsCero = (n) => Math.abs(+n) < 0.5
+export const montoColor = (n) => {
   if (n == null || !Number.isFinite(+n)) return 'text-ink-3'
-  const v = +n
-  if (Math.abs(v) < (moneda === 'ARS' ? 0.5 : 0.005)) return 'text-ink-3'
-  return v > 0 ? 'text-rendi-pos' : 'text-rendi-neg'
+  if (montoEsCero(n)) return 'text-ink-3'
+  return +n > 0 ? 'text-rendi-pos' : 'text-rendi-neg'
 }
 
 // Precio de un índice o activo de referencia (la cinta de arriba y las

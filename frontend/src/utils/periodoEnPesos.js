@@ -104,8 +104,10 @@ export function crearPesosDelPeriodo({
     // A mercado, cada punta va al dólar de la FOTO que usó el servidor (`puntas_desde/hasta`): la
     // semana arranca con la foto de hasta cinco días antes y el mes acepta bordes corridos un día,
     // así que adivinar por la fecha del período toma el dólar de otro día.
-    // Sin `puntas_desde` el arranque no tiene foto (la cuenta nació adentro del período: arranque 0):
-    // se pone al dólar del día anterior, que multiplica a ese 0.
+    // Sin `puntas_desde` el arranque no tiene foto: la cuenta nació adentro del período (arranque 0) o su
+    // capital previo es chico y está al costo (el guard del servidor lo deja pasar). Se pone al dólar del día
+    // anterior: multiplica a un 0 o a un capital chico, cuyo error (capital × lo que subió el dólar desde que
+    // entró) el servidor acota con su tolerancia en dólares, no en pesos.
     const puntasMercado = medicion === 'mercado' && !!m.puntas_hasta
     const fxInicio = puntasMercado && m.puntas_desde
       ? tc(m.puntas_desde)

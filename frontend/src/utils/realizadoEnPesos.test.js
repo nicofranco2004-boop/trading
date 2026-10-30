@@ -610,12 +610,21 @@ describe('el Dashboard y el Resumen mensual leen el realizado de la fila de /api
       expect(v.cierre).toBe(900000)
       expect(v.inicio).toBe(0)
       expect(v.resultado).toBe(300000)
-      expect(v.inicio + v.depositos - v.retiros + v.resultado).toBe(v.cierre)
+      expect(v.cierre - v.inicio - v.depositos).toBe(300000)   // a mano, no con la fórmula del código
     })
     it('con una ganancia en dólares se suma la del dólar sobre lo que pusiste', () => {
       const v = pesos.enVista(anio({ medicion: 'mercado', puntas_desde: null, puntas_hasta: '2024-06-20',
         end_value: 660, delta_usd: 60, unrealized_pnl: 60 }))
       expect(v.resultado).toBe(660 * 1500 - 600000)
+    })
+    it('con un capital previo chico (al costo, sin foto) el inicio va al dólar del día anterior al período', () => {
+      // [auditoría 5] Todos los casos de arriba tienen inicio 0, donde cualquier dólar da lo mismo. Con US$ 100 de
+      // arranque el dólar de inicio se nota: el del 31/5 es 1.000, no el de hoy ni el del cierre (1.500).
+      const v = pesos.enVista(anio({ medicion: 'mercado', puntas_desde: null, puntas_hasta: '2024-06-20',
+        start_value: 100, end_value: 700, deposits: 600, delta_usd: 0 }))
+      expect(v.inicio).toBe(100 * 1000)
+      expect(v.cierre).toBe(700 * 1500)
+      expect(v.resultado).toBe(700 * 1500 - 100 * 1000 - 600000)
     })
     it('una semana CERRADA de cuenta nueva pone el cierre al dólar de SU foto, no al del último día', () => {
       // La foto del cron es del viernes 14 (dólar 1.200); la semana termina el domingo 16 (dólar 1.300).

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { labelVentanaMeses, parseNum, numToInput, pctTxt, pctVar, pctVarSign, pctColor, fmtIndexPrice } from './format'
+import { labelVentanaMeses, parseNum, numToInput, pctTxt, pctVar, pctVarSign, pctColor, fmtIndexPrice, montoColor, montoEsCero } from './format'
 describe('labelVentanaMeses — la card "Acumulado" tiene que decir su período', () => {
   it('12 meses (el default) se lee "1A"', () => {
     expect(labelVentanaMeses(12)).toBe('1A')
@@ -233,5 +233,23 @@ describe('decimalesFinos / ppVarFino — hasta dos decimales más, con signo', (
     expect(ppVarFino(1.24, 1)).toBe('+1,2 pp')
     expect(ppVarFino(-0.04, 1)).toBe('−0,04 pp')
     expect(ppVarFino(null, 1)).toBe('—')
+  })
+})
+
+
+describe('montoColor — un monto que se escribe «0» va neutro (la app los escribe sin decimales)', () => {
+  it('el signo manda cuando el monto se ve', () => {
+    expect(montoColor(0.7)).toBe('text-rendi-pos')
+    expect(montoColor(-0.7)).toBe('text-rendi-neg')
+    expect(montoColor(1500000)).toBe('text-rendi-pos')
+    expect(montoColor(-1250)).toBe('text-rendi-neg')
+  })
+  it('lo que redondea a cero va neutro en las dos monedas (US$ 0,30 se escribe «+US$ 0»)', () => {
+    for (const v of [0, 0.3, -0.3, 0.004, 0.499, -0.499]) expect(montoColor(v)).toBe('text-ink-3')
+    expect(montoEsCero(0.499)).toBe(true)
+    expect(montoEsCero(0.5)).toBe(false)
+  })
+  it('sin número, neutro', () => {
+    for (const v of [null, undefined, NaN, 'x']) expect(montoColor(v)).toBe('text-ink-3')
   })
 })

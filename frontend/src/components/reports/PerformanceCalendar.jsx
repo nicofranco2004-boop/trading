@@ -25,7 +25,7 @@ import { useCurrency } from '../../contexts/CurrencyContext'
 import { usePesosDelPeriodo } from '../../hooks/usePesosDelPeriodo'
 import { fechaEnPalabras } from '../YearReturnLine'
 import { useAlVerse } from '../../hooks/useAlVerse'
-import { pctVar, pctTxt, pctVarSign, ppVarFino, decimalesFinos } from '../../utils/format'
+import { pctVar, pctTxt, pctVarSign, ppVarFino, decimalesFinos, montoColor, montoEsCero } from '../../utils/format'
 import AnimatedNumber from '../AnimatedNumber'
 import { notaDelRealizado } from '../../utils/realizadoEnPesos'
 
@@ -115,8 +115,7 @@ export function BarrasDelAnio({ cells, pesos, enPesos, tipAbajo, encimaInicial =
               {activo.pct >= 0 ? '+' : '−'}{Math.abs(activo.pct).toFixed(2).replace('.', ',')}%
             </b>
             <span className="text-ink-3 text-[11px]">·</span>
-            <b className={`text-[13px] font-semibold tabular ${
-              activo.usd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+            <b className={`text-[13px] font-semibold tabular ${montoColor(activo.usd)}`}>
               {pesos.fmt(activo.usd, { signed: true })}
             </b>
           </div>
@@ -391,7 +390,8 @@ export function MetricasDelAno({ resumen, months, pesos, ranking }) {
     // El color es el del número que se ve: en Pesos, con el dólar subiendo, el realizado puede
     // tener otro signo que en dólares.
     datos.push({ label: 'P&L realizado', valor: pesos.fmt(realizadoVista, { signed: true }),
-                 tono: (realizadoVista ?? resumen.realized_pnl) >= 0 ? 'pos' : 'neg',
+                 tono: montoEsCero(realizadoVista ?? resumen.realized_pnl) ? undefined
+                   : ((realizadoVista ?? resumen.realized_pnl) >= 0 ? 'pos' : 'neg'),
                  nota: pesos.moneda === 'ARS' ? notaRealizado : null })
   }
   if (resumen.trades_count > 0) {

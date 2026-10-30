@@ -48,6 +48,15 @@ describe('WeekCard — el resultado de la semana contiene al realizado', () => {
 // de un mes o un año): una cartera que cae 0,2 % en dólares con el dólar +0,5 % ganó en pesos, y los dos
 // números en la misma fila se leen mal si no se dice en qué moneda está cada uno.
 describe('WeekCard — el porcentaje de la semana dice en qué moneda está', () => {
+  it('el monto de la fila no se parte ni se encoge en el celular (cede el titular, que ya se trunca)', () => {
+    // [auditoría 5] a 375 px un monto negativo dejaba el «−» solo en un renglón y el número en otro.
+    const html = render('ARS', { ...semana, metrics: { ...semana.metrics, delta_usd: -130, delta_pct: -0.4,
+      realized_pnl: 10, realized_ars: 240000, realized_ars_cubre_usd: 10, unrealized_pnl: -140,
+      start_value: 1000, end_value: 870, medicion: 'mercado', puntas_desde: '2024-06-09', puntas_hasta: '2024-06-16' } })
+    const caja = html.slice(html.lastIndexOf('<span', html.indexOf('font-mono tabular')), html.indexOf('font-mono tabular') + 120)
+    expect(caja).toContain('whitespace-nowrap')
+    expect(caja).toContain('flex-shrink-0')
+  })
   it('en Pesos lo rotula «en US$»', () => {
     expect(render('ARS')).toContain('en US$')
   })

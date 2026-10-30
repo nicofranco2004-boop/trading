@@ -438,10 +438,11 @@ class CuentaNacidaEnElPeriodoTest(_Base):
 
     def test_la_primera_semana_cerrada_usa_la_fecha_de_su_foto_del_cron_como_cierre(self):
         self._mes(2024, 6, 0, 1000, dep=1000)
-        self._foto("2024-06-16", 1050, 1000)
+        self._fx({"2024-06-14": 1250.0})
+        self._foto("2024-06-14", 1050, 1000)      # el viernes; el domingo 16 no hay foto
         m = self._metricas("week", "2024-06-10", "2024-06-16")
         self.assertEqual(m.medicion, "mercado")
-        self.assertEqual((m.puntas_desde, m.puntas_hasta), (None, "2024-06-16"))
+        self.assertEqual((m.puntas_desde, m.puntas_hasta), (None, "2024-06-14"))
         self.assertAlmostEqual(m.delta_usd, 50.0, places=2)
 
     def test_una_semana_pasada_sin_ninguna_foto_sigue_al_costo(self):
@@ -450,6 +451,32 @@ class CuentaNacidaEnElPeriodoTest(_Base):
         m = self._metricas("week", "2024-06-10", "2024-06-16")
         self.assertEqual(m.medicion, "costo")
         self.assertEqual((m.puntas_desde, m.puntas_hasta), (None, None))
+
+
+    def test_el_pct_en_pesos_de_una_cuenta_nueva_sale_realmente_en_pesos(self):
+        """[auditoría 5] Nada probaba que el % de una cuenta nacida en el período saliera en pesos y no
+        en dólares. Mes en curso: arranque 0, depósito de US$ 1.000 (dólar medio de 1.000 → 1.400 =
+        1.183,2), hoy vale US$ 1.100 con el dólar a 1.400. Dietz en pesos: (ev − flujo) / (0,5 × flujo)."""
+        self._mes(2024, 6, 0, 1000, dep=1000)
+        m = self._metricas("month", "2024-06-01", "2024-06-30", live=1100,
+                           today=date(2024, 6, 20))
+        gm = math.sqrt(1000 * 1400)
+        ev, flujo = 1100 * 1400, 1000 * gm
+        esperado = (ev - flujo) / (0.5 * flujo) * 100
+        self.assertAlmostEqual(m.delta_pct, esperado, delta=0.1)
+        # y no el de dólares, que es otro número: (1.100 − 1.000) / (0,5 × 1.000) = 20 %
+        self.assertGreater(m.delta_pct, 50.0)
+
+    def test_un_capital_previo_chico_sin_foto_tambien_es_de_mercado_sin_fecha_de_inicio(self):
+        """[auditoría 5] El otro caso de `_tramo_sin_foto_de_arranque`: arranque al costo que pesa
+        menos del 10 % de la base (100 contra 4.900 de aportes) y pasa el guard."""
+        self._mes(2024, 6, 100, 100, dep=4900)
+        m = self._metricas("month", "2024-06-01", "2024-06-30", live=5200,
+                           today=date(2024, 6, 12))
+        self.assertFalse(m.basis_incomparable)
+        self.assertEqual(m.medicion, "mercado")
+        self.assertEqual((m.puntas_desde, m.puntas_hasta), (None, "2024-06-12"))
+        self.assertAlmostEqual(m.start_value, 100.0, places=2)
 
 
 if __name__ == "__main__":

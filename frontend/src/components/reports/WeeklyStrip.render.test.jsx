@@ -67,6 +67,17 @@ describe('WeeklyStrip — en Pesos, lo cerrado es lo mismo que dice la tarjeta d
   })
   // «Pesos quietos cuando cambia el dólar» es el caso de la vista en DÓLARES (los pesos valen menos
   // dólares). En Pesos es al revés: lo que se mueve es lo que tenés en dólares.
+  // [auditoría 5] La nota del modo «Sólo abiertas» en Pesos no tenía prueba: ahí el número también trae lo que
+  // el dólar movió sobre lo que tenés en dólares, no «sólo el precio».
+  it('«Sólo abiertas»: en Pesos la nota dice que incluye al dólar; en Dólares, sólo el precio', () => {
+    vista.currency = 'ARS'
+    const enPesos = renderToStaticMarkup(<WeeklyStrip yearGroups={ggal} modo="abiertas" />)
+    expect(enPesos).toContain('el precio y, en pesos, también el dólar')
+    vista.currency = 'USD'
+    const enDolares = renderToStaticMarkup(<WeeklyStrip yearGroups={ggal} modo="abiertas" />)
+    expect(enDolares).toContain('Sólo lo que se movió el precio de lo que seguís teniendo.')
+    expect(enDolares).not.toContain('también el dólar')
+  })
   it('la nota de las posiciones abiertas explica el caso de la moneda en que se mira', () => {
     expect(render('ARS')).toContain('lo que el dólar mueve de lo que tenés en dólares')
     expect(render('ARS')).not.toContain('pesos quietos cuando cambia el dólar')

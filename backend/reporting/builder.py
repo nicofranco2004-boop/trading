@@ -574,8 +574,13 @@ def _tramo_sin_foto_de_arranque(basis_incomparable: bool, start_value: float,
     `fin − inicio − flujos` a mercado.
 
     `puntas_desde` va None: la pantalla pone el arranque al dólar del día anterior
-    al período, que multiplica a un 0 (o a un capital dentro de la tolerancia del
-    guard, que acota el error). Con la cadena rota o la base incomparable no se
+    al período, que multiplica a un 0 (cuenta nacida adentro: exacto) o a un capital
+    previo chico al costo que pasa el guard. En ESE caso el inicio en pesos queda
+    corrido por capital × (lo que subió el dólar desde que entró esa plata): la
+    tolerancia del guard está medida en dólares y no acota el error en pesos (medido:
+    $150.000 que se leen $292.183). Es una aproximación declarada, mejor que 'costo'
+    (que sumaba el dólar sobre todo el capital); lo exacto pediría los pesos realmente
+    aportados antes del período. Con la cadena rota o la base incomparable no se
     afirma nada: ahí ya no se publica monto.
     """
     if basis_incomparable or _capital_roto(start_value):

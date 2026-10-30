@@ -76,6 +76,12 @@ describe('Reports — la fila de una semana en Pesos', () => {
         .toContain('en US$')
     }
   })
+  it('en Dólares un monto de US$ 0,30 se escribe «0» y va neutro (no verde)', () => {
+    vista.currency = 'USD'
+    const h = fila(0, 0.3)
+    expect(h).toContain('+US$')   // la fila lo escribe sin decimales
+    expect(h).not.toContain('text-rendi-pos')
+  })
   it('un monto en cero va neutro, no en verde', () => {
     vista.currency = 'USD'
     const h = fila(0, 0)
@@ -190,6 +196,15 @@ describe('Reports — el color del P&L del período sin porcentaje', () => {
       const enDolares = renderToStaticMarkup(
         <MemoryRouter><CurrentPeriodView period={dia} loading={false} tab="day" broker="global" /></MemoryRouter>)
       expect(enDolares).not.toContain('en dólares')
+    })
+    it('el encabezado: un % que se escribe «0,00%» va neutro, como en la fila', () => {
+      vista.currency = 'ARS'
+      const cero = { ...cayoEnDolares, metrics: { ...cayoEnDolares.metrics, delta_pct: 0.004, delta_usd: 1 } }
+      const h = renderToStaticMarkup(
+        <MemoryRouter><CurrentPeriodView period={cero} loading={false} tab="week" broker="global" /></MemoryRouter>)
+      const enc = h.slice(h.indexOf('0,00%') - 200, h.indexOf('0,00%') + 20)
+      expect(enc).toMatch(/text-ink-2[^>]*>[^<]*0,00%/)
+      expect(enc).not.toMatch(/text-rendi-(pos|neg)[^>]*>[^<]*0,00%/)
     })
     it('el subtítulo aclara que el porcentaje es en dólares', () => {
       expect(celda()).toContain('−0,20% en dólares')
