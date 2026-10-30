@@ -37244,6 +37244,10 @@ _AI_TOOLS_FREE_NAMES = frozenset({
     # get_current_prices vuelve a Free SOLO por el default de precio-de-hoy
     # del flujo de registro (el prompt FREE lo limita a ese uso).
     "get_current_prices",
+    # La lectura técnica de un activo, para todos los planes (Nico, 30/10),
+    # cada uno con el límite de su plan: Free y Plus llegan por las preguntas
+    # del botón de la ficha, que descuentan su cupo de análisis.
+    "get_technical_reading",
 })
 _AI_TOOLS_FREE = [t for t in _AI_TOOLS if t["name"] in _AI_TOOLS_FREE_NAMES]
 

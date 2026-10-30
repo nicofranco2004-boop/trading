@@ -353,6 +353,31 @@ class LecturaTecnicaChatTest(unittest.TestCase):
                 self.assertIn("para_el_titular", primer)
 
 
+    def test_todos_los_planes_con_el_limite_de_su_plan(self):
+        """Nico (30/10): «todos los planes», y Plus «con el límite que tiene el
+        plan». Las preguntas de la ficha descuentan el cupo de análisis: Plus
+        tiene 2 por semana; la tercera recibe el aviso de cupo y no llega a la IA."""
+        from ai import quota
+        self.assertIn("get_technical_reading", main._AI_TOOLS_FREE_NAMES)
+        with main.db_abierta() as conn:
+            uid = conn.execute("INSERT INTO users (email, password_hash, approved, email_verified, tier) "
+                               "VALUES (?, 'x', 1, 1, 'plus')", (f"lect-plus-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+            conn.commit()
+        h = {"Authorization": f"Bearer {main.create_token(uid)}"}
+        cupo = quota.LIMITS["plus"]["analyses_per_week"]
+        self.assertEqual(cupo, 2)
+        analisis = {"screen": "tecnico.tendencia", "params": {"asset": "MSFT", "moneda": "usd"}}
+        for _ in range(cupo):
+            self.assertEqual(self._chat(ClaudeDelChat([BUENO], herramienta=None), h=h, analisis=analisis)[0], BUENO)
+        claude = ClaudeDelChat([BUENO], herramienta=None)
+        with mock.patch.object(main, "_get_anthropic_client", return_value=claude):
+            r = self.client.post("/api/ai/chat", headers=h, json={
+                "messages": [{"role": "user", "content": "lo que sea"}], "analisis": analisis,
+                "snapshot": {"summary": {}, "positions": [], "operations": [], "monthly": [], "brokers": []}})
+        self.assertEqual(r.status_code, 429, r.text)
+        self.assertEqual(claude.pedidos, [], "sin cupo no se le pregunta a la IA")
+
+
 class ResolverTest(unittest.TestCase):
     """Qué serie mira el chat: la misma de la ficha de entrada."""
 
