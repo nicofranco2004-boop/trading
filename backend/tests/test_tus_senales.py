@@ -614,29 +614,37 @@ class CriptoDelSabadoTest(unittest.TestCase):
     setUp, tearDown = TusSenalesTest.setUp, TusSenalesTest.tearDown
     _post, _canal, _cron = TusSenalesTest._post, TusSenalesTest._canal, TusSenalesTest._cron
 
-    def _dos_sabados(self, dia_del_cruce, viernes_tarde=False):
-        s2 = _sabado_de(hoy_art_date())
-        s1 = s2 - timedelta(days=7)
+    def _dos_sabados(self, dia_del_cruce, viernes_tarde=False, otro_al_dia=False, sin_cron_en=None, sabados=2):
+        """`sabados` sábados seguidos (el último, el de esta semana), cada uno con
+        las velas que había ESE sábado a las 10:00. `viernes_tarde`: la noche
+        del viernes falló y las velas del viernes (de BTC) se guardaron el
+        primer sábado DESPUÉS del resumen. `otro_al_dia`: MSFT en la watchlist,
+        con sus velas al día (el viernes llegó). `sin_cron_en`: el índice del
+        sábado en que el cron no corrió. El cruce es contando desde el primero."""
+        ult = _sabado_de(hoy_art_date())
+        sabs = [ult - timedelta(days=7 * (sabados - 1 - i)) for i in range(sabados)]
+        s1 = sabs[0]
         cruce = s1 + timedelta(days=dia_del_cruce)
         self.yahoo = _YahooConCripto(s1)
         p = mock.patch("pricing.yahoo._historia", self.yahoo)
         p.start()
         self._p.append(p)
         self._post("/api/watchlist", {"symbol": "BTC"})
+        if otro_al_dia:
+            self.yahoo.precios["MSFT"] = lambda i, d: 300 - i * 0.01
+            self._post("/api/watchlist", {"symbol": "MSFT"})
         # Bajando hasta el cruce (abajo de su promedio), 150 desde ese día.
         self.yahoo.btc = lambda d: 150.0 if d >= cruce else 100.0 + (cruce - d).days * 0.001
         self._canal("mail")
-        # `viernes_tarde`: la noche del viernes falló y las velas del viernes
-        # se guardaron el sábado DESPUÉS del resumen (el botón de /admin).
-        self.yahoo.hasta_btc = s1 - timedelta(days=1) if viernes_tarde else s1
-        main._run_velas_diarias_job()
-        self._cron(_utc(s1, 10, 5))
-        if viernes_tarde:
-            self.yahoo.hasta_btc = s1
+        for j, s in enumerate(sabs):
+            tarde = viernes_tarde and j == 0
+            self.yahoo.hasta_btc = s - timedelta(days=1) if tarde else s
             main._run_velas_diarias_job()
-        self.yahoo.hasta_btc = s2
-        main._run_velas_diarias_job()
-        self._cron(_utc(s2, 10, 5))
+            if j != sin_cron_en:
+                self._cron(_utc(s, 10, 5))
+            if tarde:
+                self.yahoo.hasta_btc = s
+                main._run_velas_diarias_job()
         return [m for m in self.mails if "BTC" in m["texto"] and "promedio de 200" in m["texto"]]
 
     def test_control_cruce_en_domingo_llega(self):
@@ -648,6 +656,24 @@ class CriptoDelSabadoTest(unittest.TestCase):
 
     def test_viernes_cuyas_velas_llegaron_despues_del_resumen_sale_el_sabado_siguiente(self):
         self.assertEqual(len(self._dos_sabados(dia_del_cruce=-1, viernes_tarde=True)), 1)
+
+    def test_un_activo_atrasado_no_pierde_su_cruce_por_otro_que_llego(self):
+        """Re-test de la auditoría B (29/10): la marca de «hasta dónde ya
+        conté» era UNA por persona (la vela más nueva de TODOS sus activos).
+        BTC se atrasa una noche (su viernes llega después del resumen) y MSFT
+        llegó: la marca quedaba en el viernes y el cruce del viernes de BTC no
+        salía en ningún mail. Ahora es una por activo, como las alertas
+        técnicas ('<activo>#velas')."""
+        self.assertEqual(len(self._dos_sabados(dia_del_cruce=-1, viernes_tarde=True, otro_al_dia=True)), 1)
+
+    def test_si_un_sabado_no_corre_el_cron_esa_semana_sale_el_siguiente(self):
+        """Re-test de la auditoría B: el resumen anterior se buscaba sólo hasta
+        13 días atrás. Si un sábado no corría, el siguiente no lo encontraba,
+        contaba sólo sus 7 días y la semana del medio se perdía entera."""
+        self.assertEqual(len(self._dos_sabados(dia_del_cruce=3, sabados=3, sin_cron_en=1)), 1)
+
+    def test_con_el_cron_de_todos_los_sabados_no_se_repite(self):
+        self.assertEqual(len(self._dos_sabados(dia_del_cruce=3, sabados=3)), 1)
 
     def test_cruce_en_viernes_sale_una_sola_vez(self):
         """La otra punta: lo que ya salió el sábado 1 no se repite el sábado 2."""

@@ -148,9 +148,11 @@ class BaseVieja31c00ff6Test(unittest.TestCase):
             hoy = date(2026, 10, 31)
             senales_semana.desde_del_mail(conn, 1, hoy)
             conn.execute("INSERT INTO tendencia_semanal (user_id, semana, pct_alcista, cambios, canal, hasta_vela) "
-                         "VALUES (1, ?, NULL, 0, NULL, '2026-10-30')", (hoy.isoformat(),))
+                         "VALUES (1, ?, NULL, 0, NULL, ?)",
+                         (hoy.isoformat(), senales_semana.marcas_json({"BTC|0": "2026-10-29"})))
             conn.commit()
-            self.assertEqual(senales_semana.desde_del_mail(conn, 1, date(2026, 11, 7)), "2026-10-30")
+            self.assertEqual(senales_semana.desde_del_mail(conn, 1, date(2026, 11, 7)),
+                             ("2026-10-30", {("BTC", False): "2026-10-29"}))
 
 
 if __name__ == "__main__":

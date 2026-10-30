@@ -2454,7 +2454,7 @@ def init_db():
                 push_ok INTEGER,
                 mail_ok INTEGER,
                 created_at TEXT DEFAULT (datetime('now')),
-                hasta_vela TEXT,                     -- la última vela que vio (senales_semana.correr)
+                hasta_vela TEXT,                     -- JSON: la última vela de cada activo que contó (senales_semana)
                 PRIMARY KEY (user_id, semana)
             );
             CREATE INDEX IF NOT EXISTS idx_tendencia_semanal_semana ON tendencia_semanal(semana);

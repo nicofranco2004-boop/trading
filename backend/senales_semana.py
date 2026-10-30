@@ -366,7 +366,7 @@ def semana_pasada(conn, uid: int, hoy: date):
 
 
 def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None, dolar=None,
-                 desde: str = None) -> dict:
+                 desde: str = None, desde_de: dict = None) -> dict:
     """Lo que ve la pestaña y lo que dice el mail del sábado.
 
     {
@@ -380,8 +380,10 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
     `series` es un caché {(asset, local): lectura} para la corrida del sábado,
     que arma la de cada activo una sola vez para todas las personas.
     `desde` (exclusive): desde cuándo se cuentan los cambios. La pestaña usa los
-    últimos 7 días corridos; el mail, desde lo que ya contó el resumen anterior
-    (`desde_del_mail`). Agrega 'hasta_vela': la última vela que se miró."""
+    últimos 7 días corridos. El mail cuenta CADA ACTIVO desde lo que ya contó el
+    resumen anterior: `desde_de` {(asset, local): fecha} (`desde_del_mail`); el
+    activo que no está ahí, desde `desde`. Agrega 'hasta_vela': {"NVDA|0":
+    la última vela que se miró de ese activo} (lo que guarda el sábado)."""
     import tecnico
     series = {} if series is None else series
     cedears = _cedears() if cedears is None else cedears
@@ -393,17 +395,18 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
     def _leer(k):
         # La lectura no depende de `desde`, los cambios sí: el caché va por
         # (activo, desde), y `reparto` (que sólo lee la lectura) reusa la misma.
-        if (k, desde) not in series:
-            series[(k, desde)] = tecnico.para_la_cartera(conn, [k], hoy=hoy, desde=desde)[0]
-            series.setdefault(k, series[(k, desde)])
-        return series[(k, desde)]
+        d = (desde_de or {}).get(k) or desde
+        if (k, d) not in series:
+            series[(k, d)] = tecnico.para_la_cartera(conn, [k], hoy=hoy, desde=d)[0]
+            series.setdefault(k, series[(k, d)])
+        return series[(k, d)]
 
-    senales, con_lectura, con_cambios, hasta_vela = [], 0, set(), None
+    senales, con_lectura, con_cambios, hasta_vela = [], 0, set(), {}
     for k in sorted(set(car["tenencias"]) | set(wl)):
         x = _leer(k)
         f = (x.get("lectura") or {}).get("fecha") if x.get("disponible") else None
-        if f and (hasta_vela is None or f > hasta_vela):
-            hasta_vela = f
+        if f:
+            hasta_vela[_clave_marca(k)] = f
         tiene = k in car["tenencias"]
         if tiene:
             con_lectura += _alcista(x, hoy) is not None
@@ -578,29 +581,72 @@ def _entregar(conn, via: str, envio: dict) -> tuple:
     return push_ok, mail_ok
 
 
-def desde_del_mail(conn, uid: int, hoy: date) -> str:
-    """Desde cuándo (exclusive) cuenta los cambios el mail de ESTE sábado: desde
-    la última vela que vio el resumen anterior (`hasta_vela` de su fila), o el
-    viernes anterior al sábado anterior si la fila es vieja; nunca después de
-    los 7 días corridos de la pestaña. Sin resumen anterior (el primero, o hace
-    más de 13 días): los 7 días.
+# Lo más atrás que mira el mail de los sábados, aunque el resumen anterior
+# sea más viejo (el cron se cayó varios sábados, o la persona recién vuelve):
+# más que esto ya no es «tu semana».
+DIAS_MAX_MAIL = 28
 
-    🔴 POR QUÉ NO ALCANZAN LOS 7 DÍAS CORRIDOS (auditoría B3, 29/10). El sábado
-    a las 10:00 la vela del sábado todavía no existe (la de hoy no entra hasta
-    la noche), y el sábado siguiente «los últimos 7 días» empiezan justo
-    DESPUÉS de ese sábado: una cripto que cruzaba un sábado no salía en ningún
-    mail. Lo mismo un viernes cuyas velas llegaron tarde (la noche falló y se
-    corrieron el sábado después de las 10). El mail tiene que contar desde lo
-    que ya contó, como las alertas técnicas (su marca '#velas')."""
+
+def _clave_marca(k) -> str:
+    return f"{k[0]}|{int(bool(k[1]))}"
+
+
+def marcas_json(hasta_vela: dict) -> str:
+    """Cómo se guardan las marcas en `tendencia_semanal.hasta_vela`:
+    {"NVDA|0": "2026-10-23", "GGAL|1": "2026-10-23"} (activo|acción local)."""
+    import json
+    return json.dumps(dict(sorted(hasta_vela.items())))
+
+
+def desde_del_mail(conn, uid: int, hoy: date) -> tuple:
+    """(desde, {(asset, local): desde}): desde cuándo (exclusive) cuenta los
+    cambios el mail de ESTE sábado, por activo. Cada activo, desde la última
+    vela SUYA que ya contó un resumen anterior (la marca de `hasta_vela`); el
+    que no tiene marca, desde el viernes anterior al último resumen (o los 7
+    días de la pestaña si no hubo ninguno). Nunca después de los 7 días y nunca
+    antes de `DIAS_MAX_MAIL`.
+
+    🔴 POR QUÉ, en tres vueltas (auditoría B3 y su re-test, 29/10):
+      · Los 7 días corridos desde HOY dejaban afuera una vela de SÁBADO: el
+        sábado a las 10 todavía no existe, y el sábado siguiente «los 7 días»
+        empiezan después. Una cripto que cruzaba un sábado no salía nunca.
+      · La primera marca era UNA por persona (la vela más nueva de todos sus
+        activos): si BTC se atrasaba una noche y MSFT llegaba, la marca quedaba
+        en el viernes y el viernes de BTC no salía nunca. Cada activo tiene su
+        última vela, como en las alertas técnicas ('<activo>#velas').
+      · El resumen anterior se buscaba hasta 13 días atrás: si un sábado no
+        corría el cron, el siguiente no lo encontraba y la semana del medio se
+        perdía entera. Ahora se busca hasta `DIAS_MAX_MAIL`, y la marca de cada
+        activo sale del resumen más nuevo que la tenga."""
+    import json
     base = (hoy - timedelta(days=DIAS_SEMANA)).isoformat()
-    row = conn.execute(
+    piso = (hoy - timedelta(days=DIAS_MAX_MAIL)).isoformat()
+    filas = conn.execute(
         "SELECT semana, hasta_vela FROM tendencia_semanal WHERE user_id=? AND semana < ? AND semana >= ? "
-        "ORDER BY semana DESC LIMIT 1",
-        (uid, hoy.isoformat(), (hoy - timedelta(days=DIAS_SEMANA_PASADA)).isoformat())).fetchone()
-    if not row:
-        return base
-    marca = row["hasta_vela"] or (date.fromisoformat(row["semana"]) - timedelta(days=1)).isoformat()
-    return min(base, marca)
+        "ORDER BY semana DESC",
+        (uid, hoy.isoformat(), piso)).fetchall()
+    if not filas:
+        return base, {}
+    por_defecto = min(base, (date.fromisoformat(filas[0]["semana"]) - timedelta(days=1)).isoformat())
+    marcas: dict = {}
+    for f in filas:
+        try:
+            m = json.loads(f["hasta_vela"] or "{}")
+        except (TypeError, ValueError):
+            m = None
+        if not isinstance(m, dict):
+            # Una fila de antes de las marcas por activo (una fecha suelta, de
+            # 61c7be12): vale para todos los que todavía no tienen una.
+            if f["hasta_vela"]:
+                por_defecto = min(por_defecto, max(piso, str(f["hasta_vela"])))
+            continue
+        for clave, fecha in m.items():
+            marcas.setdefault(clave, fecha)
+    desde_de = {}
+    for clave, fecha in marcas.items():
+        asset, _, local = clave.rpartition("|")
+        desde_de[(asset, local == "1")] = max(piso, min(base, fecha))
+    return por_defecto, desde_de
 
 
 def correr(conn, hoy: date, *, solo: int = None) -> dict:
@@ -625,8 +671,9 @@ def correr(conn, hoy: date, *, solo: int = None) -> dict:
         from pgsesion import si_falla_se_deshace_solo_esto
         try:
             with si_falla_se_deshace_solo_esto(conn, "semana_de_una_persona"):
+                desde, desde_de = desde_del_mail(conn, uid, hoy)
                 sem = armar_semana(conn, uid, hoy, series=series, cedears=cedears,
-                                   desde=desde_del_mail(conn, uid, hoy))
+                                   desde=desde, desde_de=desde_de)
                 via = canal(conn, uid)
                 mandar = via != "no" and bool(sem["senales"])
                 envio = _armar_envio(conn, uid, sem) if mandar else None
@@ -639,7 +686,7 @@ def correr(conn, hoy: date, *, solo: int = None) -> dict:
             "INSERT INTO tendencia_semanal (user_id, semana, pct_alcista, cambios, canal, hasta_vela) "
             "VALUES (?,?,?,?,?,?)",
             (uid, semana_iso, sem["alcista"]["pct"] if sem["alcista"] else None,
-             len(sem["senales"]), via if mandar else None, sem["hasta_vela"]))
+             len(sem["senales"]), via if mandar else None, marcas_json(sem["hasta_vela"])))
         conn.commit()
         res["guardadas"] += 1
         if not mandar:
