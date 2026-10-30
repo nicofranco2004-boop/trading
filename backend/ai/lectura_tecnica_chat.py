@@ -55,6 +55,18 @@ _CERTEZAS = [
     r"se (termin|cort|confirm)(a|an|ar[áa]n?|ar[íi]an?)", r"(termin|confirm)ar[íi]an?",
     r"sin duda", r"seguro que", r"seguramente", r"con seguridad", r"es inminente",
     r"est[áa] por (subir|bajar|explotar|caer)",
+    # Las formas suaves de predecir (Nico, 30/10: «asegurate, no tiene que predecir
+    # el futuro»). La única forma de hablar de lo que viene es «lo que se mira…
+    # podría ser una señal de que…»: un movimiento que pierde o gana fuerza, nunca
+    # un precio ni una dirección.
+    r"probablemente", r"(es|lo m[áa]s) probable", r"(es|ser[íi]a) esperable", r"se espera",
+    r"(podr[íi]a|puede|pueda|podr[íi]an|pueden) (subir|bajar|caer|seguir|llegar|recuperar\w*|volver|rebotar|"
+    r"repuntar|dispararse|desplomarse|ir|tocar|alcanzar|irse)",
+    r"deber[íi]a(n)? (subir|bajar|caer|seguir|llegar|recuperar\w*|volver|rebotar|repuntar|ir|tocar|alcanzar)",
+    r"(seguir|subir|bajar|caer|recuperar)[íi]a(n)?", r"tiene (margen|espacio|lugar|recorrido) para",
+    r"(pr[óo]ximo|siguiente) (objetivo|destino|nivel|precio)", r"objetivos? de precio",
+    r"(camino|rumbo) a (los )?\d[\d.,]*", r"tiende a (subir|bajar|seguir)", r"anticipa", r"pron[óo]stic\w*",
+    r"en los pr[óo]ximos (d[íi]as|meses|semanas)", r"la semana que viene", r"el mes que viene",
 ]
 # Consejos de compra o venta (CNV: Rendi no asesora).
 _CONSEJOS = [
@@ -121,6 +133,22 @@ def _lo_que_se_lee(texto: str) -> str:
     return re.sub(r'"\w+"\s*:\s*-?\d+(?:\.\d+)?', "", t)
 
 
+# «Nadie sabe si va a subir» no predice: lo niega. Medido con la IA real (30/10):
+# a «¿GGAL va a subir?» y «¿Bitcoin va a seguir bajando la semana que viene?» el
+# modelo contestaba eso, y sin esta excepción las dos terminaban en el texto de
+# respaldo. Tampoco cuenta repetir la pregunta («la semana que viene»).
+_NEGADO = re.compile(r"(\bnadie\b|\bno se (puede )?sabe\b|\bno (lo )?s[ée]\b|\bno (te )?(puedo|podemos) (decir|saber)\b|"
+                     r"\bimposible (de )?saber\b|\bsi\s*$)", re.IGNORECASE)
+
+
+def _no_es_prediccion(texto, m, pregunta) -> bool:
+    if m.group(0).lower() in (pregunta or "").lower():
+        return True
+    antes = texto[max(0, m.start() - 45):m.start()]
+    antes = re.split(r"[.!?:;]", antes)[-1]   # sólo la misma oración
+    return bool(_NEGADO.search(antes))
+
+
 def problemas(texto: str, pregunta: str = "", contexto: str = None) -> list:
     """Lo que está mal en una respuesta del chat sobre cómo viene un activo, en
     palabras para el modelo (va en el pedido de corrección). Vacío si está bien.
@@ -136,7 +164,8 @@ def problemas(texto: str, pregunta: str = "", contexto: str = None) -> list:
         out.append("usaste palabras técnicas que la persona no tiene por qué saber ("
                    + ", ".join(jerga) + "): decilo con palabras de todos los días "
                    "(«la fuerza del precio», «la tendencia de fondo», «el precio más alto del año»)")
-    cert = sorted({m.group(0).lower() for m in _RE_CERTEZAS.finditer(t)})
+    cert = sorted({m.group(0).lower() for m in _RE_CERTEZAS.finditer(t)
+                   if not _no_es_prediccion(t, m, pregunta)})
     if cert:
         out.append("dijiste como seguro lo que viene (" + ", ".join(cert) + "): nadie lo sabe, "
                    "decilo como posibilidad («podría ser una señal de que…»)")

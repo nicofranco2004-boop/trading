@@ -367,8 +367,16 @@ class ProblemasTest(unittest.TestCase):
         buenos = ["La fuerza del precio está en 72", "tu compra fue a 40", "se terminó el 6 de octubre",
                   "podría ser una señal de que la bajada pierde fuerza", "si bajara de 40",
                   "cerró en su precio más alto del año", "el tema del sistema", "le di una mirada"]
+        malos += ["probablemente suba", "podría llegar a 250 dólares", "debería recuperarse",
+                  "seguiría bajando", "tiene margen para subir", "el próximo objetivo es 260",
+                  "va camino a 300", "en los próximos días sube", "Galicia va a subir. Nadie lo sabe"]
+        buenos += ["Nadie sabe si va a subir", "no te puedo decir si va a seguir bajando",
+                   "la bajada podría estar perdiendo fuerza"]
         for t in malos:
             self.assertTrue(ltc.problemas(t), t)
+        # Repetir la pregunta no es predecir.
+        self.assertEqual(ltc.problemas("Lo de la semana que viene no lo sabe nadie.",
+                                       "¿Bitcoin va a seguir bajando la semana que viene?"), [])
         for t in buenos:
             self.assertEqual(ltc.problemas(t), [], t)
 
