@@ -555,6 +555,25 @@ class TusSenalesTest(unittest.TestCase):
         pestana = self.client.get("/api/tus-senales", headers=self.h).json()
         self.assertEqual({x["tesis"] for x in pestana["senales"] if x["asset"] == "NVDA"}, {"v2"})
 
+    def test_la_tesis_se_busca_con_la_misma_regla_que_la_ficha_y_movimientos(self):
+        """Re-test de la auditoría C (29/10): «la última tesis» vivía en 4 lugares
+        y éste comparaba el nombre en mayúsculas: una tesis guardada como «nvda»
+        salía en Señales y no en la ficha ni en Movimientos (que comparan el
+        nombre tal cual, `tesisVigente`). Una sola regla: el nombre tal cual, el
+        de la posición (lo que manda la pantalla)."""
+        self._velas(hoy_art_date())
+        self.client.put("/api/tesis", json={"asset": "nvda", "texto": "minúscula"}, headers=self.h)
+        pestana = self.client.get("/api/tus-senales", headers=self.h).json()
+        self.assertEqual({x["tesis"] for x in pestana["senales"] if x["asset"] == "NVDA"}, {None})
+        # La que manda la pantalla (el nombre de la posición) sí.
+        self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "la de la ficha"}, headers=self.h)
+        pestana = self.client.get("/api/tus-senales", headers=self.h).json()
+        self.assertEqual({x["tesis"] for x in pestana["senales"] if x["asset"] == "NVDA"}, {"la de la ficha"})
+        # Y es la misma que elige GET /api/tesis (de donde la ficha y Movimientos
+        # sacan «la vigente»): la última de ese nombre.
+        items = [t for t in self.client.get("/api/tesis", headers=self.h).json()["items"] if t["asset"] == "NVDA"]
+        self.assertEqual(max(items, key=lambda t: (t["escrita_el"], t["id"]))["texto"], "la de la ficha")
+
     def test_una_tesis_larga_va_cortada_en_el_mail_como_en_el_recordatorio(self):
         sabado = _sabado_de(hoy_art_date())
         self._velas(sabado)

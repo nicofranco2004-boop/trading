@@ -70,15 +70,21 @@ def _ultima(conn, uid: int, asset: str):
 
 
 def ultimas(conn, uid: int) -> dict:
-    """{ACTIVO: texto} de la ÚLTIMA tesis de cada activo (la que vale hoy): la
-    misma regla que `_ultima` (por fecha y, el mismo día, la de id más alto). La
-    lee «Tus señales» (senales_semana), que nombra los activos en mayúsculas.
-    Una por activo, no por lote ni por mercado: GGAL de BYMA y el ADR son la
-    misma idea (ver arriba)."""
+    """{activo: texto} de la ÚLTIMA tesis de cada activo (la que vale hoy). LA
+    MISMA regla que todos los que eligen «la última»: `_ultima` y `listar` acá,
+    `tesisVigente` / `tesisDeLaOperacion` en la pantalla (ficha y Movimientos):
+    el activo con el nombre TAL CUAL se guardó (el de la posición, ver PUT
+    /api/tesis), y entre versiones, la de fecha más nueva y, el mismo día, la de
+    id más alto. Una por activo, no por lote ni por mercado: GGAL de BYMA y el
+    ADR son la misma idea (ver arriba).
+
+    Hasta el 29/10 esta función pasaba el nombre a mayúsculas y las otras no:
+    una tesis guardada como «nvda» salía en «Tus señales» y no en la ficha ni en
+    Movimientos (re-test de la auditoría C)."""
     out = {}
     for r in conn.execute("SELECT asset, texto FROM tesis WHERE user_id=? ORDER BY escrita_el, id",
                           (uid,)).fetchall():
-        out[(r["asset"] or "").strip().upper()] = r["texto"]
+        out[r["asset"]] = r["texto"]
     return out
 
 
