@@ -571,14 +571,19 @@ def _trae_pesos(filas) -> bool:
 def brokers_que_no_aceptan_pesos(user_brokers, fmt_base) -> frozenset:
     """Los brokers a los que una fila en PESOS no puede ir (`validate` la rechaza).
 
-    Sólo sin moneda base —la plantilla de Rendi, donde la persona elige el broker y
-    escribe la moneda de cada fila—: los formatos de broker anclan la moneda
-    (`FORMAT_BASE_CURRENCY`). Y fuera de los exchanges cripto: Binance manda pares
-    en pesos a un broker en USDT a propósito, y "Editar y rehacer" re-importa
-    cualquier lote con el formato de la plantilla; cambiar eso sin medir cuántos
-    son está pendiente (AUDIT_plantilla_rendi_2026-10-27.md, PL1).
+    Vale para la plantilla de Rendi (la persona elige el broker y escribe la moneda
+    de cada fila) y para los formatos de broker (Cocos, Balanz…). Hasta el 28/10
+    los formatos quedaban afuera porque "anclan la moneda" (`FORMAT_BASE_CURRENCY`),
+    pero el ancla sólo cura un broker VACÍO (`broker_tiene_datos`): un export de
+    Cocos subido a un broker en dólares con datos guardaba sus pesos en la caja en
+    dólares sin un error ($1.000.000 → US$ 1.000.000). Se llama después de la
+    curación, así que lo que sigue en dólares acá es lo que no se pudo curar.
+    Fuera quedan los exchanges cripto (por nombre, y los formatos en USDT):
+    Binance manda pares en pesos a un broker en USDT a propósito, y "Editar y
+    rehacer" re-importa cualquier lote con el formato de la plantilla; cambiar eso
+    sin medir cuántos son está pendiente (AUDIT_plantilla_rendi_2026-10-27.md, PL1).
     """
-    if fmt_base:
+    if fmt_base == "USDT":
         return frozenset()
     return frozenset(n for n, b in user_brokers.items()
                      if (b.get("currency") or "") != "ARS"

@@ -13211,6 +13211,17 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
         # Sólo si CAMBIA: editar el precio de un lote no depende de esto.
         if _actual and p.broker != _actual["broker"]:
             _exigir_broker_existente(conn, uid, p.broker)
+        # Un lote en pesos no se lleva (ni se pasa) a una cuenta sin caja en pesos:
+        # después la venta manda su moneda y no hay dónde cobrar (auditoría 29/10).
+        # Sólo si CAMBIA el broker o la moneda: un lote viejo así se puede seguir
+        # editando, y pasarlo a dólares es justamente cómo se corrige.
+        _sel = conn.execute("SELECT currency FROM positions WHERE id=? AND user_id=?",
+                            (pid, uid)).fetchone() if _actual else None
+        _moneda = p.currency or (_sel["currency"] if _sel else None)
+        if (_actual and (_moneda or "").upper() == "ARS"
+                and (p.broker != _actual["broker"]
+                     or (p.currency or "").upper() != (_sel["currency"] or "").upper())):
+            _pata_de_la_moneda(conn, uid, p.broker, "ARS")   # 400 si no tiene caja en pesos
         if (p.tc_compra is None and not p.is_cash
                 and (p.currency or "").upper() == "ARS" and p.entry_date):
             # Mismo relleno que el alta: si el lote es en pesos y quedó sin TC, se
@@ -15523,14 +15534,9 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                     broker_row = conn.execute(
                         "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker_name)
                     ).fetchone()
-                # Una moneda que la cuenta no tiene (pesos en IBKR) no se acepta: antes
-                # pasaba y un depósito de $100.000 quedaba anotado como US$ 100.000.
-                if data.currency:
-                    _pedida = "ARS" if data.currency.upper() == "ARS" else "USD"
-                    _caja = "ARS" if broker_row["currency"] == "ARS" else "USD"
-                    if _pedida != _caja:
-                        raise HTTPException(400, f"{data.broker_name} no tiene caja en "
-                                                 f"{'pesos' if _pedida == 'ARS' else 'dólares'}.")
+                # Una moneda que la cuenta no tiene (pesos en IBKR) la rechaza
+                # `_pata_de_la_moneda`, para esta puerta y para la compra y la venta.
+                # Antes pasaba y un depósito de $100.000 quedaba anotado como US$ 100.000.
 
                 currency = broker_row['currency']   # 'USDT' or 'ARS'
                 sign = 1 if data.direction == 'deposit' else -1
@@ -15920,6 +15926,20 @@ def _registrar_cobro_bono(conn, uid: int, data: "BondCashflowIn") -> dict:
         cash_broker = data.cash_broker
         cash_row = conn.execute(
             "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, cash_broker)).fetchone()
+    elif data.currency and not data.cash_broker:
+        # Sin cuenta elegida, la moneda decide la pata, como en la compra y la venta:
+        # dólares "en IOL" entran a 'IOL · USD'; pesos en IBKR, 400.
+        cash_broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
+        if cash_broker != data.broker:
+            cash_row = conn.execute(
+                "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, cash_broker)).fetchone()
+    # La moneda, si viene, tiene que ser la de la caja donde entra: el monto se
+    # acredita tal cual. Antes sólo rotulaba la fila: un cupón de $50.000 en IBKR
+    # entraba como US$ 50.000 de ganancia, y uno de US$ 44 en IOL sumaba $44 a la
+    # caja de pesos (auditoría 28/10). La pantalla no la manda (acredita en la
+    # moneda de la cuenta que elige); sí la API y la bandeja.
+    if data.currency:
+        _exigir_caja_en(cash_broker, cash_row["currency"], data.currency)
 
     op_type = 'Cupón' if data.flow_type == 'coupon' else 'Amortización'
     commissions = data.commissions or 0
@@ -16666,8 +16686,10 @@ def _pata_de_la_moneda(conn, uid: int, broker: str, currency: Optional[str],
 
       • broker ARS  + moneda USD → el sub-broker '· USD' (se crea si no existe).
       • sub-broker '· USD' de un padre ARS + moneda ARS → el padre.
-      • cualquier otro caso (sin moneda, misma moneda, broker del exterior,
-        broker desconocido) → el mismo `broker`, sin tocar nada.
+      • broker en dólares sin padre en pesos (IBKR) + moneda ARS → 400 "no tiene
+        caja en pesos" (sólo al escribir; con `crear=False` devuelve el broker).
+      • cualquier otro caso (sin moneda, misma moneda, broker desconocido) → el
+        mismo `broker`, sin tocar nada.
 
     Sin esto, una compra en dólares anotada a "Cocos" descontaba los dólares de
     la caja de PESOS, y el autodepósito del faltante quedaba asentado como pesos
@@ -16703,7 +16725,27 @@ def _pata_de_la_moneda(conn, uid: int, broker: str, currency: Optional[str],
         ).fetchone()
         if padre and padre["currency"] == "ARS":
             return padre["name"]
+    # Pesos en una cuenta que sólo tiene caja en dólares (IBKR, o un '· USD' sin
+    # padre en pesos): no hay pata a donde mandarlos. Para escribir se rechaza;
+    # devolver el mismo broker hacía que la caja en DÓLARES sumara o restara los
+    # pesos tal cual y que el faltante se anotara como aporte en dólares (medido
+    # 28/10: una compra de $50.000 en IBKR dejó un aporte de US$ 49.700). La
+    # lectura (`_pata_existente`) no rechaza: deshacer algo viejo no se bloquea.
+    if crear:
+        _exigir_caja_en(broker, row["currency"], currency)
     return broker
+
+
+def _exigir_caja_en(broker: str, moneda_de_la_caja: Optional[str], currency: str) -> None:
+    """400 si la caja de `broker` no es de la moneda `currency`. Cada caja tiene UNA
+    moneda y la plata se suma tal cual, sin convertir: pesos en una caja en dólares
+    se cuentan como dólares. Lo usan `_pata_de_la_moneda` (compra, venta,
+    depósito/retiro) y el cobro de un bono, que elige la cuenta por su lado."""
+    pedida = "ARS" if (currency or "").strip().upper() == "ARS" else "USD"
+    caja = "ARS" if (moneda_de_la_caja or "").upper() == "ARS" else "USD"
+    if pedida != caja:
+        raise HTTPException(400, f"{broker} no tiene caja en "
+                                 f"{'pesos' if pedida == 'ARS' else 'dólares'}.")
 
 
 def _pata_existente(conn, uid: int, broker: str, currency: Optional[str]) -> str:
@@ -17030,7 +17072,22 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 # @reintentar_si_trabada vuelve a llamar con el MISMO pedido, y si la
                 # primera vuelta se deshizo después de crear la pata, el reintento
                 # arrancaba con un broker que ya no existía.
-                broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
+                try:
+                    broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
+                except HTTPException as _e:
+                    # Un lote anotado en pesos en una cuenta en dólares (entró antes
+                    # del 29/10): la pantalla vende en su moneda y no hay caja donde
+                    # cobrar. Que diga cómo destrabarlo.
+                    if _e.status_code == 400 and conn.execute(
+                            "SELECT 1 FROM positions WHERE user_id=? AND broker=? AND asset=? "
+                            "AND is_cash=0 AND UPPER(COALESCE(currency,''))='ARS' LIMIT 1",
+                            (uid, data.broker, data.asset)).fetchone():
+                        raise HTTPException(400, (
+                            f"Este {data.asset} está anotado en pesos, pero {data.broker} "
+                            f"sólo tiene caja en dólares. Editá el lote: poné su moneda y "
+                            f"su precio en dólares (o movelo a tu broker en pesos) y "
+                            f"después vendé."))
+                    raise
                 # Obtener moneda del broker
                 br = conn.execute(
                     "SELECT currency FROM brokers WHERE name=? AND user_id=?", (broker, uid)
