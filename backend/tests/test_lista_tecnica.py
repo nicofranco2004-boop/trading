@@ -176,6 +176,14 @@ class ListaTecnicaTest(unittest.TestCase):
         self.assertGreater((ultimo - primero).days, tecnico.DIAS_LINEA - 7, "son 3 meses, no menos")
         self.assertEqual([p["d"] for p in linea], sorted(p["d"] for p in linea))
 
+    def test_linea_trae_el_promedio_de_200_dias_de_la_lectura(self):
+        # La línea punteada del mini-gráfico es el MISMO promedio que decide la
+        # tendencia de largo plazo: su último punto es la `media200` de la lectura.
+        self._armar()
+        x = self._lista([{"asset": "TSLA"}])[("TSLA", False)]
+        self.assertAlmostEqual(x["linea"][-1]["m"], x["lectura"]["media200"], places=4)
+        self.assertTrue(all(p["m"] is not None for p in x["linea"]))
+
     def test_ultimo_cambio_sale_de_la_cuenta_unica(self):
         # La cuenta de cambios es `tecnico.cambios_desde` (la de «Tus señales»):
         # la lista se queda con el primero (el más nuevo) del último año contado

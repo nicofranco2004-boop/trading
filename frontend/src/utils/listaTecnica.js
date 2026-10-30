@@ -234,17 +234,25 @@ export function motivosSinLectura(filas) {
     .map(k => ({ porque: k, nombres: por[k], texto: MOTIVOS_SIN_LECTURA[k] }))
 }
 
-/** El trazo de la línea chica (ancho × alto en px). null si no hay línea. */
-export function trazoDeLinea(linea, ancho = 64, alto = 22) {
+/**
+ * El trazo de la línea chica (ancho × alto en px). null si no hay línea.
+ * `area`: lo de abajo de la línea, para el relleno del mini-gráfico. Con
+ * `promedio`, también `ma`: el promedio de 200 días de cada punto (`m`, del
+ * servidor) en la MISMA escala, así se ve si el precio está arriba o abajo;
+ * los días sin promedio cortan la línea. null si no viene ninguno.
+ */
+export function trazoDeLinea(linea, ancho = 64, alto = 22, { promedio = false } = {}) {
   if (!linea || linea.length < 2) return null
   const cs = linea.map(p => p.c)
-  const lo = Math.min(...cs), hi = Math.max(...cs)
+  const ms = promedio ? linea.map(p => (Number.isFinite(p.m) ? p.m : null)) : []
+  const todos = [...cs, ...ms.filter(m => m != null)]
+  const lo = Math.min(...todos), hi = Math.max(...todos)
   const rango = hi - lo || 1
   const x = (i) => (i / (linea.length - 1)) * ancho
   const y = (c) => alto - 1 - ((c - lo) / rango) * (alto - 2)
   const d = linea.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.c).toFixed(1)}`).join('')
-  // `area`: lo de abajo de la línea, para el relleno del mini-gráfico.
-  return { d, area: `${d}L${ancho},${alto}L0,${alto}Z`, sube: cs[cs.length - 1] >= cs[0] }
+  const ma = ms.map((m, i) => (m == null ? '' : `${i && ms[i - 1] != null ? 'L' : 'M'}${x(i).toFixed(1)},${y(m).toFixed(1)}`)).join('')
+  return { d, area: `${d}L${ancho},${alto}L0,${alto}Z`, ma: ma || null, sube: cs[cs.length - 1] >= cs[0] }
 }
 
 /**

@@ -301,13 +301,17 @@ export function FranjaDeLaLista({ filas }) {
 // ─── Las tarjetas ───────────────────────────────────────────────────────────
 
 /** El mini-gráfico de 3 meses: la línea con su relleno (verde si subió, rojo si
- *  bajó). El promedio de 200 días todavía no viene en el pedido de la lista. */
+ *  bajó) y, punteado en violeta, su promedio de 200 días (el que decide la
+ *  tendencia de largo plazo). */
 function MiniGrafico({ linea }) {
   const id = `lista-${useId().replace(/[^a-zA-Z0-9]/g, '')}`
-  const t = trazoDeLinea(linea, 300, 70)
-  if (!t) return <div className="h-[74px]" aria-hidden="true" />
+  const t = trazoDeLinea(linea, 300, 70, { promedio: true })
+  if (!t) return <div className="h-[94px]" aria-hidden="true" />
   return (
-    <div className="relative pt-2">
+    <div className="pt-1.5">
+      <span className="mb-1 block px-3.5 text-right text-[10.5px] text-ink-2">
+        3 meses{t.ma && <> · <span className="text-data-violet">┄ promedio de 200 días</span></>}
+      </span>
       <svg viewBox="0 0 300 70" width="100%" height="70" preserveAspectRatio="none" aria-hidden="true"
         className={`block ${t.sube ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
         <defs>
@@ -317,9 +321,9 @@ function MiniGrafico({ linea }) {
           </linearGradient>
         </defs>
         <path d={t.area} fill={`url(#${id})`} />
+        {t.ma && <path d={t.ma} fill="none" strokeWidth="1.3" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" className="stroke-data-violet opacity-80" />}
         <path d={t.d} fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
       </svg>
-      <span className="absolute right-3.5 top-2.5 text-[10.5px] text-ink-2">3 meses</span>
     </div>
   )
 }

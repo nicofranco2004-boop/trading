@@ -96,7 +96,8 @@ const filasTarjetas = filasDeLaLista({
   tenencias: [...TENENCIAS, { asset: 'NVDA', local: false, peso: 0, tipo: 'STOCK' }],
   seguidos: [{ symbol: 'TSLA' }, { symbol: 'KO' }],
   indice: indexarLecturas([
-    conLinea('MELI', true, { rsi: 61, adx: 31 }, cambio(haceDias(2))),
+    conLinea('MELI', true, { rsi: 61, adx: 31 }, { ...cambio(haceDias(2)),
+      linea: [{ d: '2026-08-01', c: 100, m: 95 }, { d: '2026-09-15', c: 110, m: 98 }, { d: hoy, c: 120, m: 101 }] }),
     conLinea('NVDA', true, { rsi: 74, adx: 40, dist_maximo_12m: 0 }),
     conLinea('TSLA', false, { rsi: 28, adx: 12, dist_media200: -5, tendencia: 'bajista' }, cambio(haceDias(20))),
     conLinea('KO', false, { rsi: 50, adx: 20 }),
@@ -129,6 +130,12 @@ describe('Tu lista: las tarjetas', () => {
     expect(t).toContain('$120,00 USD')
     expect(t).toContain('+20,0% en 3 meses')
     expect(t).toContain('−16,7% en 3 meses')
+  })
+
+  it('el mini-gráfico lleva el promedio de 200 días punteado cuando el servidor lo manda', () => {
+    const html = tarjetas()
+    expect((html.match(/stroke-dasharray="4 4"/g) || []).length).toBe(1)   // sólo MELI trae `m`
+    expect((html.match(/promedio de 200 días<\/span>/g) || []).length).toBe(1)
   })
 
   it('los tres medidores, con las palabras de la ficha', () => {

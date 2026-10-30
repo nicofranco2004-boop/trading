@@ -250,6 +250,16 @@ describe('las tarjetas de Tu lista', () => {
     expect(r).toEqual({ alcistas: 2, conLectura: 3, puntos: ['alcista', 'alcista', 'bajista'], ganando: 1, enMaximo: ['NVDA'], cambiaron: 1 })
   })
 
+  it('el promedio de 200 días va en la MISMA escala que el precio, y corta donde no hay', () => {
+    // Precio de 10 a 20, promedio en 30: la escala se estira hasta 30 para que el
+    // promedio quede arriba de la línea (el precio está abajo de su promedio).
+    const t = trazoDeLinea([{ c: 10, m: null }, { c: 20, m: 30 }, { c: 15, m: 30 }], 100, 22, { promedio: true })
+    expect(t.ma).toBe('M50.0,1.0L100.0,1.0')
+    expect(t.d).toBe('M0.0,21.0L50.0,11.0L100.0,16.0')
+    expect(trazoDeLinea([{ c: 1 }, { c: 2 }], 100, 22, { promedio: true }).ma).toBeNull()
+    expect(trazoDeLinea([{ c: 1, m: 5 }, { c: 2, m: 5 }]).ma).toBeNull()   // la de la tabla no lo dibuja
+  })
+
   it('el mini-gráfico trae el relleno de abajo de la línea', () => {
     const t = trazoDeLinea([{ c: 1 }, { c: 2 }], 300, 70)
     expect(t.area.startsWith(t.d)).toBe(true)
