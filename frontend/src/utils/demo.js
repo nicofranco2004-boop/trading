@@ -109,17 +109,26 @@ export function vencerDemoSiCorresponde() {
     if (!demoVencido(leerDelAlmacen(CATALOGO.modoDemo))) return false
     borrarDelAlmacen(CATALOGO.modoDemo)
     clearDemoOverlay()
+    avisarModoDemo()
     return true
   } catch {
     return false
   }
 }
 
+// Entrar o salir del demo EN ESTA PESTAÑA se avisa: la marca se guarda una vez
+// para todo el navegador, y utils/api compara la de cada pestaña con la
+// guardada para saber si la cambió OTRA (re-test a ciegas 4). Sin el aviso,
+// el cambio propio parecería ajeno.
+export const EVENTO_MODO_DEMO = 'rendi:modo-demo'
+const avisarModoDemo = () => { try { window.dispatchEvent?.(new Event(EVENTO_MODO_DEMO)) } catch { /* sin ventana */ } }
+
 export function enableDemoMode() {
   if (typeof window === 'undefined') return
   guardarEnAlmacen(CATALOGO.modoDemo, String(Date.now()))
   // Limpiamos cualquier overlay residual al activar — siempre arranca limpio.
   clearDemoOverlay()
+  avisarModoDemo()
 }
 
 export function disableDemoMode() {
@@ -128,6 +137,7 @@ export function disableDemoMode() {
   borrarDelAlmacen(CATALOGO.tokenViejo)
   borrarDelAlmacen(CATALOGO.usuario)
   clearDemoOverlay()
+  avisarModoDemo()
 }
 
 // ─── Error helper para acciones bloqueadas ───────────────────────────────────

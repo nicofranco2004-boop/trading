@@ -1,40 +1,39 @@
-// CuentaCambiadaEnOtraPestana — el cartel de la pestaña que quedó mostrando
-// una cuenta mientras en otra se abrió otra (otro cliente, u otra persona).
+// CuentaCambiadaEnOtraPestana — el cartel de la pestaña cuya SESIÓN cambió en
+// otra: entró otra persona, o se entró o se salió del modo demo.
 // ═══════════════════════════════════════════════════════════════════════════
+// La sesión (una cookie) y la marca del demo son una para todo el navegador.
 // Desde ese instante utils/api no deja salir ningún pedido de esta pestaña
-// (`pestanaDesfasada`): lo que se tocara acá se guardaba en una cuenta que no
-// se estaba viendo (re-test a ciegas 3, 30/10). El cartel lo dice y deja
-// elegir:
-//   · «Seguir con <la que se ve> en esta pestaña»: vuelve a abrir esa cuenta.
-//     Lo que estaba a medio cargar sigue ahí y se guarda donde se ve. Las
-//     OTRAS pestañas pasan a preguntar lo mismo.
-//   · «Ir a <la nueva>»: recarga la página. Recargar (y no volver a dibujar las
-//     pantallas) porque hay datos de la cuenta anterior guardados en memoria
-//     fuera de las pantallas; la recarga los tira todos. Lo que estaba a medio
-//     cargar se pierde: era de la otra cuenta.
-// Si cambió la PERSONA no hay a qué volver (la sesión ya es de la otra):
-// AuthContext recarga solo en un instante, y el cartel sólo lo avisa.
-import { useEffect, useRef, useState } from 'react'
+// (`pestanaDesfasada`): lo que se tocara acá se guardaba en la cuenta de otro,
+// o lo tocado en el demo en la cuenta real (re-test a ciegas 3 y 4, 30/10).
+// AuthContext la recarga sola en un instante; el cartel lo avisa, sin botones:
+// no hay a qué volver, la sesión ya es la otra. Lo que estaba a medio cargar
+// se pierde con la recarga.
+// El CLIENTE del asesor no pasa por acá: cada pestaña tiene el suyo
+// (utils/api), así que dos pestañas con dos clientes trabajan a la vez.
+// Se redibuja con cada aviso: si el motivo cambia, dice el de ahora.
+import { useEffect, useState } from 'react'
 import { ArrowLeftRight } from 'lucide-react'
-import { EVENTO_PESTANA_DESFASADA, pestanaDesfasada, seguirConLaCuentaMostrada } from '../utils/api'
+import { EVENTO_PESTANA_DESFASADA, pestanaDesfasada } from '../utils/api'
 
-const nombreDe = (ctx) => (ctx ? (ctx.label || `el cliente ${ctx.id}`) : 'tu cuenta')
+function queCambio(desfase) {
+  if (desfase.motivo === 'demo') {
+    return desfase.estabaEnDemo
+      ? 'En otra pestaña saliste del modo demo. Esta se recarga sola, y lo que tocaste acá en el demo no pasa a tu cuenta.'
+      : 'En otra pestaña entraste al modo demo. Esta se recarga sola, y no mezcla la cartera de ejemplo con la tuya.'
+  }
+  return 'En otra pestaña entró otra persona. Esta se recarga sola con esa sesión, y no guardó nada de lo que había acá.'
+}
 
 export default function CuentaCambiadaEnOtraPestana() {
   const [desfase, setDesfase] = useState(() => pestanaDesfasada())
-  const primero = useRef(null)
   useEffect(() => {
     const mirar = () => setDesfase(pestanaDesfasada())
     window.addEventListener(EVENTO_PESTANA_DESFASADA, mirar)
     mirar()
     return () => window.removeEventListener(EVENTO_PESTANA_DESFASADA, mirar)
   }, [])
-  useEffect(() => { if (desfase) primero.current?.focus?.() }, [desfase])
 
   if (!desfase) return null
-  const persona = desfase.motivo === 'persona'
-  const visto = nombreDe(desfase.mostrado)
-  const abierto = nombreDe(desfase.abierto)
 
   // Arriba de TODO (300): el recorrido de Novedades va en 100, las
   // confirmaciones en 150 y los menús en 200. Con el cartel en 100, el
@@ -49,39 +48,9 @@ export default function CuentaCambiadaEnOtraPestana() {
             <h2 id="cuenta-cambiada-titulo" className="text-base font-semibold text-ink-0">
               Cambiaste de cuenta en otra pestaña
             </h2>
-            {persona ? (
-              <p className="text-sm text-ink-2">
-                En otra pestaña entró otra persona. Esta se recarga sola con esa sesión, y no
-                guardó nada de lo que había acá.
-              </p>
-            ) : (
-              <>
-                <p className="text-sm text-ink-2">
-                  Esta pestaña muestra <span className="font-medium text-ink-0">{visto}</span>,
-                  pero en otra abriste <span className="font-medium text-ink-0">{abierto}</span>.
-                  Para que nada se guarde en la cuenta equivocada, esta pestaña no manda nada
-                  hasta que elijas.
-                </p>
-                <p className="text-xs text-ink-3">
-                  Si seguís con {visto}, lo que estabas cargando acá sigue como estaba y las otras
-                  pestañas te van a preguntar lo mismo. Si vas a {abierto}, la página se recarga.
-                </p>
-              </>
-            )}
+            <p className="text-sm text-ink-2">{queCambio(desfase)}</p>
           </div>
         </div>
-        {!persona && (
-          <div className="flex flex-col sm:flex-row sm:justify-end gap-2 mt-4">
-            <button ref={primero} onClick={() => seguirConLaCuentaMostrada()}
-              className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded font-semibold transition">
-              Seguir con {visto} en esta pestaña
-            </button>
-            <button onClick={() => window.location.reload()}
-              className="px-4 py-2 text-sm bg-bg-2 hover:bg-bg-3 border border-line text-ink-1 rounded transition">
-              Ir a {abierto}
-            </button>
-          </div>
-        )}
       </div>
     </div>
   )

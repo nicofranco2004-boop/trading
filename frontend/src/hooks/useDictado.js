@@ -21,6 +21,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isDemoMode } from '../utils/demo'
+import { frenoDeLaPestana } from '../utils/api'
 
 // El mismo tope que el servidor (ai/oido.py MAX_SEGUNDOS). Acá corta antes de
 // mandar; allá es la red por si el navegador miente.
@@ -282,6 +283,11 @@ export async function mandarAlServidor(blob, contentType) {
   // rearma con su mime: sin eso el servidor no sabe cómo decodificarlo y
   // rechaza un audio perfectamente válido.
   fd.append('audio', new Blob([blob], { type: contentType }), 'dictado')
+  // No pasa por utils/api (el audio va como formulario), pero sí por su freno:
+  // si en otra pestaña entró otra persona, el audio de ésta saldría con SU
+  // sesión —con sus activos como pista y descontándole sus minutos— (re-test
+  // a ciegas 4).
+  await frenoDeLaPestana()
   const res = await fetch('/api/ai/dictado', {
     method: 'POST',
     credentials: 'include',

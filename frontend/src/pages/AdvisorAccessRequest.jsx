@@ -27,6 +27,7 @@ import PageMeta from '../components/PageMeta'
 import { useAuth } from '../contexts/AuthContext'
 import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
+import { frenoDeLaPestana } from '../utils/api'
 
 const TOKEN_KEY = 'rendi_link_request_token'
 
@@ -82,6 +83,9 @@ export default function AdvisorAccessRequest() {
     setError('')
     setSaving(accept ? 'accept' : 'reject')
     try {
+      // Acepta o rechaza CON LA SESIÓN de esta pestaña: si en otra entró otra
+      // persona, no sale (utils/api).
+      await frenoDeLaPestana()
       const res = await fetch('/api/auth/link-request/respond', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

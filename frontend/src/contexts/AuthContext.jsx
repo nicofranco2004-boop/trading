@@ -173,20 +173,26 @@ export function AuthProvider({ children }) {
   // salir nada mientras tanto (marcarPersonaCambiada). Sin eso, un «Guardar»
   // tocado en esos 300 ms guardaba lo de una persona en la cuenta de otra
   // (re-test a ciegas 3, 30/10).
+  //
+  // El modo demo cuenta como otra persona (re-test a ciegas 4): una pestaña en
+  // el demo y, en otra, la persona entra a su cuenta real —o al revés—. Antes
+  // ésta no se enteraba si había arrancado en el demo, y lo que se tocaba ahí
+  // se guardaba en la cuenta real.
   useEffect(() => {
-    if (isDemoMode()) return
     let espera = null
+    const yo = user?.demo ? 'demo' : quienEs(user)
     const otraPersona = () => {
+      if (isDemoMode()) return yo !== 'demo'
       let ahora = null
       try { ahora = JSON.parse(leerDelAlmacen(CATALOGO.usuario)) } catch { /* basura → nadie */ }
-      return quienEs(ahora) !== quienEs(user)
+      return quienEs(ahora) !== yo
     }
     const mirar = () => {
       if (otraPersona()) window.location.reload()
       else marcarPersonaCambiada(false)
     }
     const alCambiarEnOtraPestana = (e) => {
-      if (e.key !== null && e.key !== 'rendi_user') return
+      if (e.key !== null && e.key !== 'rendi_user' && e.key !== CATALOGO.modoDemo.clave) return
       marcarPersonaCambiada(otraPersona())
       clearTimeout(espera)
       espera = setTimeout(mirar, 300)
@@ -196,7 +202,7 @@ export function AuthProvider({ children }) {
       clearTimeout(espera)
       window.removeEventListener('storage', alCambiarEnOtraPestana)
     }
-  }, [user?.email])
+  }, [user?.email, user?.demo])
 
   // El 402 "elegí un plan" despierta el muro sin recargar.
   // ──────────────────────────────────────────────────────────────────────────

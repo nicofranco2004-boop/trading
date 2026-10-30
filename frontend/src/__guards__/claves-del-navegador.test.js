@@ -130,6 +130,7 @@ describe('una sola puerta al almacenamiento del navegador', () => {
     'utils/duenoDeLaPestana.js': 'es la regla',
     'utils/valoresVistos.js': 'sube la versión de la cartera de la pestaña tras una escritura que hizo esta misma pestaña, en el mismo instante',
     'utils/dibujos.js': 'el gráfico SIGUE a la pestaña (useDuenoDeLaCopia): si cambia la cuenta, se vacía y carga los de la nueva; lo que guarda y sube lo hace con el dueño de los dibujos en pantalla',
+    'hooks/usePlanFeatures.js': 'el plan guardado lleva la cuenta de la pestaña: se usa al cargarla sólo si sigue siendo la misma (el plan es de la cuenta: visión Pro dentro de un cliente)',
   }
   it('pedir el dueño de la pestaña (no el de los datos) es una lista cerrada', () => {
     const piden = new Set()
@@ -142,6 +143,20 @@ describe('una sola puerta al almacenamiento del navegador', () => {
     }
     expect([...piden].sort(), 'Para guardar o mandar algo de una cuenta, usá useDuenoDeLosDatos (el dueño '
       + 'de cuando la pantalla pidió los datos), no el de la pestaña.').toEqual(Object.keys(PIDEN_EL_DE_LA_PESTANA).sort())
+  })
+
+  // La marca del demo es una para todo el navegador, y utils/api sabe si la
+  // cambió ESTA pestaña porque demo.js lo avisa (EVENTO_MODO_DEMO). Escrita en
+  // otro lado, la pestaña creería que la cambió otra y no mandaría nada.
+  it('la marca del demo sólo la escribe utils/demo.js (que avisa el cambio)', () => {
+    const escriben = []
+    for (const p of archivos()) {
+      const rel = relative(SRC, p).split('\\').join('/')
+      if (rel === 'utils/demo.js') continue
+      const t = sinComentarios(readFileSync(p, 'utf8'))
+      if (/\b(guardar|borrar)\w*\(\s*CATALOGO\.modoDemo\b|\bmodoDemo\.clave\b[^\n]*(setItem|removeItem)/.test(t)) escriben.push(rel)
+    }
+    expect(escriben).toEqual([])
   })
 
   it('«dueño propio» es una lista cerrada', () => {
