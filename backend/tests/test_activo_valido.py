@@ -7,10 +7,12 @@ tesis con recordatorio → 302 mails al día siguiente desde una cuenta gratis;
 400 gráficos dibujados → 14 MB; 89 alertas con símbolos inventados → 89
 pedidos a Yahoo esa noche, adelante de los de verdad.
 
-La regla es UNA (`velas_diarias.se_puede_pedir`, la misma que decide qué se
-baja a pedido para la ficha): un activo que la app conoce (sus listas, BYMA)
-o que la persona tiene, operó o sigue. Y topes por persona: tesis nuevas por
-día, recordatorios activos, gráficos con dibujos.
+La regla es UNA (`velas_diarias.es_activo_real`): un activo que la app conoce
+(sus listas, BYMA), uno con velas guardadas (lo que la ficha muestra con
+gráfico: YPF, SMCI, aunque no estén en las listas — re-test E3), o uno que la
+persona tiene u operó. Lo que sólo «sigue» NO alcanza: la lista de seguimiento
+acepta cualquier texto (re-test E4). Y topes por persona: tesis nuevas por día,
+recordatorios activos, gráficos con dibujos.
 
 Todo por HTTP, con dos personas en plan Free (Ana y Beto); el recordatorio
 llega por el cron de siempre (`main._evaluar_alertas_job`).
@@ -101,12 +103,8 @@ class TesisTest(Base):
         self._fondo_en_cartera()
         self._tesis(FONDO)                           # un fondo de SU cartera (no tiene forma de ticker)
         self._tesis(FONDO, self.beto, esperado=400)  # …que no es de Beto
-        r = self.client.post("/api/watchlist", json={"symbol": "RAROX"}, headers=self.ana)
-        self.assertEqual(r.status_code, 200, r.text)
-        self._tesis("RAROX")                         # lo que sigue
-        self._tesis("RAROX", self.beto, esperado=400)
         with main.db_abierta() as conn:
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM tesis").fetchone()[0], 3)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM tesis").fetchone()[0], 2)
 
     def test_tope_de_tesis_nuevas_por_dia(self):
         tope = tesis.TESIS_NUEVAS_POR_DIA
@@ -218,6 +216,42 @@ class DibujosTest(Base):
             self.assertEqual(self._dibujar(CONOCIDOS[3], self.beto).status_code, 200)  # Beto, normal
             self.assertEqual(self._dibujar(CONOCIDOS[1], dibujos=[]).status_code, 200)  # borrar libera
             self.assertEqual(self._dibujar(CONOCIDOS[3]).status_code, 200)
+
+
+class LoQueLaFichaMuestraTest(Base):
+    """Re-test E3/E4: lo que tiene velas guardadas se puede dibujar, comentar y
+    avisar aunque no esté en las listas de la app; lo que sólo está en la lista
+    de seguimiento (que acepta cualquier texto) y no tiene velas, no."""
+
+    def _velas(self, simbolo):
+        with main.db_abierta() as conn:
+            conn.execute("INSERT INTO velas_diarias (symbol, date, open, high, low, close, volume) "
+                         "VALUES (?, ?, 10, 11, 9, 10, 1000)", (simbolo, self.hoy.isoformat()))
+            conn.commit()
+
+    def _tres(self, a, h):
+        return [self.client.put(f"/api/tecnico/{a}/dibujos", json={"dibujos": DibujosTest.DIBUJO},
+                                headers=h).status_code,
+                self.client.put("/api/tesis", json={"asset": a, "texto": "x"}, headers=h).status_code,
+                self.client.post("/api/alerts", json={"kind": "tecnica", "symbol": a, "senal": "media200",
+                                                      "direction": "either"}, headers=h).status_code]
+
+    def test_una_accion_real_que_no_esta_en_las_listas_pero_tiene_grafico(self):
+        self.assertNotIn("SMCI", trade_tickers.US_TICKERS)
+        self.assertEqual(self._tres("SMCI", self.beto), [400, 400, 400])   # sin velas: no la conocemos
+        self._velas("SMCI")                                                # la bajó la ficha de Ana
+        self.assertEqual(self._tres("SMCI", self.beto), [200, 200, 200])
+
+    def test_lo_que_solo_esta_en_la_lista_de_seguimiento_no_alcanza(self):
+        r = self.client.post("/api/watchlist", json={"symbol": "QX9999"}, headers=self.ana)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._tres("QX9999", self.ana), [400, 400, 400])
+        self.yahoo.assert_not_called()
+
+    def test_el_rechazo_dice_el_motivo(self):
+        r = self.client.put("/api/tecnico/QX9999/dibujos", json={"dibujos": DibujosTest.DIBUJO},
+                            headers=self.ana)
+        self.assertIn("Todavía no tenemos el gráfico de «QX9999»", r.json()["detail"])
 
 
 class AlertaTecnicaTest(Base):

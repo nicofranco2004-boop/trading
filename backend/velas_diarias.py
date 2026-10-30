@@ -213,13 +213,13 @@ def _seguimiento(conn):
     # ficha: sin esto, una alerta sobre un activo que nadie tiene no avisaba
     # nunca. El activo viene pelado ('AAPL', 'GGAL'): en pesos hace falta el
     # '.BA' — el de una acción argentina, o el de un CEDEAR que BYMA lista.
-    # Sólo las de un activo VÁLIDO (`se_puede_pedir`, la regla del alta): una
+    # Sólo las de un activo REAL (`es_activo_real`, la regla del alta): una
     # alerta vieja con un símbolo inventado no le pide nada a Yahoo.
     for r in conn.execute(
             "SELECT user_id, symbol, currency, accion_local FROM alerts "
             "WHERE kind = 'tecnica' AND active = 1").fetchall():
         sym = (r['symbol'] or '').upper()
-        if not se_puede_pedir(conn, sym, r['user_id']):
+        if not es_activo_real(conn, sym, r['user_id']):
             continue
         en_pesos = bool(r['accion_local']) or (
             (r['currency'] or '').upper() == 'ARS' and simbolo_byma(sym)[:-3] in cedears)
@@ -235,11 +235,15 @@ def _seguimiento(conn):
     # bono, que no tiene serie técnica (`_yahoo_de` devuelve []).
     from fechas import hoy_art_date
     piso = (hoy_art_date() - timedelta(days=DIAS_GUARDADOS)).isoformat()
+    # GROUP BY + MAX y no DISTINCT + ORDER BY entry_date: Postgres no deja
+    # ordenar un DISTINCT por una columna que no está en el SELECT, y la
+    # consulta entera (y con ella la noche) se caía (re-test E4, 29/10).
     for r in conn.execute(
-            """SELECT DISTINCT user_id, broker, asset, currency FROM operations
+            """SELECT user_id, broker, asset, currency, MAX(entry_date) AS ultima FROM operations
                WHERE entry_date IS NOT NULL AND entry_date >= ?
                  AND COALESCE(op_type, '') NOT IN ('Compra', 'Dividendo', 'Interés')
-               ORDER BY user_id, entry_date DESC""",
+               GROUP BY user_id, broker, asset, currency
+               ORDER BY user_id, ultima DESC""",
             (piso,)).fetchall():
         p = dict(r)
         ars, ar_usd = sets.get(p['user_id'], (set(), set()))
@@ -538,16 +542,12 @@ def _variantes(asset: str) -> set:
     return {a, base, base.replace('.', '-'), base.replace('-', '.')}
 
 
-def se_puede_pedir(conn, asset: str, uid) -> bool:
-    """¿La app conoce este activo? Lo que ofrecen los buscadores y lo que se
-    puede tocar en Mercado (la lista de tickers de la app, `ai.trade_tickers`,
-    y el mapa de calor/movers, `home.market`), lo que cotiza en BYMA (data912)
-    y lo que la persona tiene, operó o sigue. Lo demás no se baja a pedido:
-    sin esto, cualquier cuenta podía llenar la base pidiendo, de a 30 por hora,
-    las decenas de miles de tickers reales que existen (auditoría 22/10)."""
+def _lo_conoce_la_app(v: set) -> bool:
+    """Las listas de la app: lo que ofrecen los buscadores y lo que se puede
+    tocar en Mercado (`ai.trade_tickers`, `home.market`) y lo que cotiza en BYMA
+    (data912). `v`: las variantes del activo (`_variantes`)."""
     from ai import trade_tickers as tt
     from home import market as mk
-    v = _variantes(asset)
     conocidos = (tt.CRYPTO_TICKERS | tt.US_TICKERS | tt.CEDEAR_TICKERS | tt.AR_STOCK_TICKERS)
     if v & conocidos:
         return True
@@ -561,12 +561,60 @@ def se_puede_pedir(conn, asset: str, uid) -> bool:
             return True
     except Exception:
         pass
+    return False
+
+
+def _lo_tiene(conn, v: set, uid, tablas) -> bool:
     marcas = ",".join("?" * len(v))
-    for tabla, col in (("positions", "asset"), ("operations", "asset"), ("watchlist", "symbol")):
+    for tabla, col in tablas:
         if conn.execute(f"SELECT 1 FROM {tabla} WHERE user_id=? AND UPPER({col}) IN ({marcas}) LIMIT 1",
                         (uid, *v)).fetchone():
             return True
     return False
+
+
+def se_puede_pedir(conn, asset: str, uid) -> bool:
+    """¿Se BAJA a pedido? Lo que la app conoce (`_lo_conoce_la_app`) y lo que la
+    persona tiene, operó o sigue. Lo demás no se baja a pedido: sin esto,
+    cualquier cuenta podía llenar la base pidiendo, de a 30 por hora, las
+    decenas de miles de tickers reales que existen (auditoría 22/10).
+
+    NO es la regla de qué se puede GUARDAR (una tesis, un dibujo, una alerta):
+    ésa es `es_activo_real`. La lista de seguimiento acepta cualquier texto con
+    forma de ticker, y si «lo sigo» bastara para guardar, cualquier símbolo
+    inventado pasaba por esa puerta (re-test E4, 29/10)."""
+    v = _variantes(asset)
+    return _lo_conoce_la_app(v) or _lo_tiene(
+        conn, v, uid, (("positions", "asset"), ("operations", "asset"), ("watchlist", "symbol")))
+
+
+def es_activo_real(conn, asset: str, *uids) -> bool:
+    """¿Existe este activo, para guardarle algo encima (una tesis, un dibujo,
+    una alerta técnica)? LA regla, una sola:
+      · lo conoce la app (`_lo_conoce_la_app`), o
+      · tiene velas guardadas: lo bajó la noche o la ficha de alguien, o sea
+        que Yahoo lo conoce y la ficha lo muestra con su gráfico. «Lo que la
+        ficha muestra se puede dibujar, avisar y comentar»: YPF, SMCI o ARM no
+        están en las listas de la app, y sin esto no se podían dibujar aunque
+        el gráfico estuviera a la vista (re-test E3, 29/10), o
+      · alguna de estas personas lo tiene o lo operó (un fondo no tiene
+        velas, y su tesis igual vale).
+    La lista de seguimiento NO alcanza: acepta cualquier texto, y un símbolo
+    real que alguien sigue ya tiene velas (lo baja la noche, o su ficha).
+    `uids`: de quién puede ser (los dibujos son del asesor que los hace, sobre
+    el activo del cliente que mira)."""
+    v = {x for x in _variantes(asset) if x}
+    if not v:
+        return False
+    if _lo_conoce_la_app(v):
+        return True
+    yahoo = v | {x + '.BA' for x in v} | {x + '-USD' for x in v}
+    marcas = ",".join("?" * len(yahoo))
+    if conn.execute(f"SELECT 1 FROM velas_diarias WHERE symbol IN ({marcas}) LIMIT 1",
+                    tuple(yahoo)).fetchone():
+        return True
+    return any(u and _lo_tiene(conn, v, u, (("positions", "asset"), ("operations", "asset")))
+               for u in uids)
 
 
 def tickers_a_pedido(asset: str, local: bool = False, cedears=None) -> list:

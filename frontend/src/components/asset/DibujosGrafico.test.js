@@ -44,7 +44,7 @@ const EVENTOS = {
 
 // La cuenta, del otro lado de la frontera: GET y PUT de /tecnico/ZZEV/dibujos
 // guardan acá, por moneda. `cuenta.caida` = el guardado falla (sin conexión).
-const cuenta = { usd: [], ars: [], caida: false, puts: 0, alertas: [], pedidos: [] }
+const cuenta = { usd: [], ars: [], caida: false, rechazo: null, puts: 0, alertas: [], pedidos: [] }
 const monedaDe = (ruta) => (ruta.includes('moneda=ars') ? 'ars' : 'usd')
 vi.mock('../../utils/api', () => ({
   api: {
@@ -57,6 +57,7 @@ vi.mock('../../utils/api', () => ({
     put: vi.fn((ruta, body) => {
       cuenta.puts++
       if (cuenta.caida) return Promise.reject(new Error('sin conexión'))
+      if (cuenta.rechazo) return Promise.reject(Object.assign(new Error('HTTP 400'), cuenta.rechazo))
       cuenta[monedaDe(ruta)] = body.dibujos
       return Promise.resolve({ ok: true })
     }),
@@ -76,7 +77,7 @@ afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
   localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
-  Object.assign(cuenta, { usd: [], ars: [], caida: false, puts: 0, alertas: [], pedidos: [] })
+  Object.assign(cuenta, { usd: [], ars: [], caida: false, rechazo: null, puts: 0, alertas: [], pedidos: [] })
 })
 // Con el router: el «Te avisamos» de tu línea es un link a Mis alertas.
 const el = () => h(MemoryRouter, null, h(LecturaTecnica, { asset: 'ZZEV', ...props }))
@@ -515,6 +516,16 @@ describe('en todos tus dispositivos', () => {
     expect(linea()).toHaveLength(1)
     expect(guardados()).toEqual([H])
     expect(copia().pendiente).toBe(false)
+  })
+
+  it('si la cuenta RECHAZA el guardado, dice el motivo que mandó el servidor (re-test E3)', async () => {
+    cuenta.rechazo = { status: 400, payload: { detail: 'Ya dibujaste en 200 gráficos.' } }
+    await dibujar()
+    await usar('horizontal'); await clickEn(500, 100)
+    expect(linea()).toHaveLength(1)
+    expect(texto(montado.contenedor)).toContain('Tus dibujos quedaron sólo en este navegador. Ya dibujaste en 200 gráficos.')
+    expect(texto(montado.contenedor)).not.toContain('No se pudieron guardar')
+    expect(copia().pendiente).toBe(true)
   })
 
   it('si el guardado falla, lo dice, queda pendiente y se sube al volver', async () => {

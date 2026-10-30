@@ -184,7 +184,8 @@ export default function LecturaTecnica({
     setDibujos(x => ({ ...x, [moneda]: lista }))
     const m = moneda
     subirDibujos(asset, m, lista).then(ok => {
-      if (ok) marcarSubidos(asset, m, lista)
+      if (ok === true) marcarSubidos(asset, m, lista)
+      else if (ok) setAviso(`Tus dibujos quedaron sólo en este navegador. ${ok}`)
       else setAviso('No se pudieron guardar tus dibujos en tu cuenta: por ahora quedaron en este navegador. Se vuelve a intentar la próxima vez que abras este gráfico.')
     })
   }
@@ -197,7 +198,7 @@ export default function LecturaTecnica({
       if (local.pendiente) {
         // Un cambio hecho acá que no llegó a la cuenta (el guardado falló, o
         // se dibujó antes de que existiera el guardado en la cuenta): se sube.
-        subirDibujos(asset, m, local.dibujos).then(ok => { if (ok) marcarSubidos(asset, m, local.dibujos) })
+        subirDibujos(asset, m, local.dibujos).then(ok => { if (ok === true) marcarSubidos(asset, m, local.dibujos) })
         return
       }
       guardarDibujos(asset, m, deLaCuenta, false)

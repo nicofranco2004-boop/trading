@@ -10069,23 +10069,27 @@ _SYMBOL_RE = re.compile(r'^[A-Z0-9]{1,12}([\.\-][A-Z0-9]{1,4})?$')
 
 
 def _exigir_activo_valido(conn, asset: str, *uids) -> None:
-    """400 si `asset` no es un activo VÁLIDO para alguna de estas personas. LA
-    definición es una sola, `velas_diarias.se_puede_pedir` (la que ya decide qué
-    se baja a pedido para la ficha): un activo de las listas de la app o de
-    BYMA, o uno que la persona tiene, operó o sigue. La usan la tesis, los
-    dibujos y las alertas técnicas.
+    """400 si `asset` no es un activo REAL para alguna de estas personas. LA
+    definición es una sola, `velas_diarias.es_activo_real`: un activo de las
+    listas de la app o de BYMA, uno con velas guardadas (lo que la ficha
+    muestra con gráfico), o uno que la persona tiene u operó. La usan la tesis,
+    los dibujos y las alertas técnicas, y la noche para las alertas técnicas.
 
     `_SYMBOL_RE` dice si algo TIENE FORMA de ticker, no si existe: con sólo eso
     (o con texto libre, la tesis), cada símbolo inventado era una fila nueva sin
     tope —300 recordatorios = 302 mails en un día, 400 gráficos = 14 MB— y una
     pregunta a Yahoo esa noche (auditoría E2/E3/E4, 29/10). `uids`: de quién
     puede ser (los dibujos son del asesor que los hace, sobre el activo del
-    cliente que mira)."""
+    cliente que mira).
+
+    El texto lo muestra la pantalla tal cual: tiene que decir el motivo, no
+    «no se pudo guardar» (re-test E3)."""
     import velas_diarias
     a = (asset or "").strip()
-    if a and any(u and velas_diarias.se_puede_pedir(conn, a, u) for u in uids):
+    if a and velas_diarias.es_activo_real(conn, a, *uids):
         return
-    raise HTTPException(400, "No conocemos ese activo. Buscalo con su ticker en el buscador.")
+    raise HTTPException(400, f"Todavía no tenemos el gráfico de «{a[:20]}». Si es un activo real, "
+                             "sumalo a tu lista de seguimiento, abrí su ficha y probá de nuevo.")
 
 
 MAX_SYMBOLS = 60  # hard cap on number of symbols per request

@@ -106,6 +106,22 @@ class NocheTopeTest(unittest.TestCase):
         self.assertNotIn("QX0001", noche)
         self.assertIn("KO", noche)
 
+    def test_lo_que_vendio_entra_y_la_consulta_corre_en_postgres(self):
+        """La consulta de las operaciones tenía `DISTINCT … ORDER BY entry_date`,
+        que Postgres rechaza: la noche entera se caía (re-test E4). Esta prueba
+        corre igual en los dos motores (con DATABASE_URL, en Postgres) y pasa
+        por esa consulta con filas de verdad: dos ventas del mismo activo."""
+        from fechas import hoy_art_date
+        hoy = hoy_art_date().isoformat()
+        with main.db_abierta() as conn:
+            for dia in (hoy, "2026-01-02"):
+                conn.execute("INSERT INTO operations (user_id, date, broker, asset, currency, entry_date, "
+                             "op_type, quantity, entry_price, exit_price) "
+                             "VALUES (?, ?, 'Schwab', 'NFLX', 'USD', ?, 'Venta', 1, 10, 12)",
+                             (self.uids[1], hoy, dia))
+            conn.commit()
+        self.assertIn("NFLX", self._noche())
+
 
 if __name__ == "__main__":
     unittest.main()
