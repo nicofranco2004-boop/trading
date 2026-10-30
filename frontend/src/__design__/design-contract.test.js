@@ -216,6 +216,10 @@ describe('contrato de diseño — R6, no se bifurca por viewport', () => {
                                         // los bordes para que no se vaya de la
                                         // pantalla. No decide NADA por tamaño.
       'src/hooks/useIsMobile.js',       // el dueño legítimo del breakpoint
+      'src/testing/pantallaConOjito.js', // sólo pruebas (no entra al build): SIMULA
+                                        // el ancho de la compu y del celular para
+                                        // montar cada pantalla en los dos. No
+                                        // decide nada de la app.
     ]
     const conAncho = listarFuentes().filter((f) => {
       const t = leer(f)

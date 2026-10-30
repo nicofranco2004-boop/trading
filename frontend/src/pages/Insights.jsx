@@ -35,7 +35,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
 import UpgradeModal from '../components/plan/UpgradeModal'
 import { track } from '../utils/track'
-import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, tienePrecio, seCotiza, coberturaDePrecios, COBERTURA_MINIMA, valorAlMep } from '../utils/valuation'
+import { sumarBrokers, noRealizadoEnVista, computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, tienePrecio, seCotiza, coberturaDePrecios, COBERTURA_MINIMA, valorAlMep } from '../utils/valuation'
 import { cedearEspecieBase } from '../utils/tickers'
 import { auditPositions, positionPct } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
@@ -43,6 +43,10 @@ import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDon
 import { computeClassBreakdown } from '../utils/assetClass'
 import { assetSlicesFromPositions } from '../utils/bookComposition'
 import DistribucionPorActivo from '../components/DistribucionPorActivo'
+import BotonCompartir from '../components/BotonCompartir'
+import { specDeRendimiento, nombreDeArchivo } from '../utils/shareCard'
+import BotonReporte from '../components/reporte/BotonReporte'
+import { armarReporte } from '../utils/reporteCartera'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { pctCreible, operacionesEnUsd } from '../utils/assetPnl'
 import { denominadorAportado } from '../utils/evolution'
@@ -79,6 +83,7 @@ import {
   applyMtmToMonthly,
   atribucionDelCrecimiento,
   acumuladoDeVentana,
+  benchDelAcumuladoEstimado,
   perfEsDeLaVista,
   etiquetasFinales,
   marcaPeorCaida,
@@ -104,6 +109,7 @@ import {
   patrimonioEnPesos,
   blueAlCierre,
   lookupMonthly,
+  mesInicialDeLasSimulaciones,
 } from '../utils/benchmarkSim'
 import { selectDiagnostics } from '../utils/diagnostics'
 import { resolveTierShown, computeDismiss } from '../utils/diagnosticsRotation'
@@ -112,6 +118,8 @@ import { esConversion } from '../utils/tradeStats'
 import AssetLogo from '../components/AssetLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
+import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 import {
   computeAllocationMatch,
   computeObjectiveCoherence,
@@ -357,6 +365,11 @@ function InsightsDesktop({ _embeddedTab }) {
   const isMobile = useIsMobile()
   const { user } = useAuth()
   const { valuationDollar, currency, costBasis } = useCurrency()
+  // «Ocultar saldos» (el ojito del inicio y la Cartera): Análisis no lo miraba en
+  // ningún lado y mostraba la atribución, las tortas y los textos del
+  // diagnóstico con tu plata (30/10). Lo deciden `amt`/`amtEnVista` (todos los
+  // montos de esta pantalla pasan por ahí) y `selectDiagnostics` (`oculto`).
+  const { hidden: oculto } = usePrivacy()
   // El dólar de cada mes, para lo aportado en pesos (capitalAportado.js).
   const { dolarMes, tcEnFecha } = useDolarMensual()
   const plan = usePlanFeatures()
@@ -505,7 +518,9 @@ function InsightsDesktop({ _embeddedTab }) {
   // CERTERO (default) vs ESTIMADO. La línea divisoria no es "foto del cron vs
   // reconstrucción" —reconstruir un CEDEAR o una acción es EXACTO— sino
   // "valuado a precio real vs valuado al costo".
-  const [modoPerf, setModoPerf] = useState('certero')
+  // La elección es de TODA la app y queda guardada hasta que el usuario la
+  // cambie: Dashboard, Metas y Reportes leen la misma (ModoRendimientoContext).
+  const [modoPerf, setModoPerf] = useModoRendimiento()
   const _monedaVista = currency === 'ARS' ? 'ars' : 'usd'
   const _perfEsDeLaVista = perfEsDeLaVista(perfRaw, { moneda: _monedaVista, bench: benchDelPedido, modo: modoPerf })
   const perf = _perfEsDeLaVista ? perfRaw : null
@@ -866,9 +881,15 @@ function InsightsDesktop({ _embeddedTab }) {
   const liquidityCard = computeLiquidityRisk(investorProfile, positionsWithValue, brokers)
 
   // Cost basis y P&L no realizado (live, sobre posiciones abiertas).
-  const totalCostBasis = brokers.reduce((s, b) => {
-    return s + computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis).invested
-  }, 0)
+  // Mismo motor y misma suma que Cartera y el Dashboard (sumarBrokers).
+  const totalesCartera = sumarBrokers({ brokers, positions, prices, tcValuacion, tcCedear, tcCripto, costBasis })
+  const totalCostBasis = totalesCartera.invested
+  // Los plazos fijos en dólares (valor + capital) y el valor de la cartera CON
+  // ellos: es el "Valor actual" del Dashboard (`totalValue`). `totalPortfolio`
+  // (arriba) no los incluye y descarta los brokers en cero o negativos; sigue
+  // alimentando el diagnóstico tal cual estaba.
+  const pfRollup = pfUsd(pfTotals, tcValuacion)
+  const valorCarteraUsd = totalesCartera.value + pfRollup.valueUsd
   const unrealizedPnl = totalPortfolio - totalCostBasis
 
   // ── Cumulative performance series (monthly + today) ──
@@ -2153,9 +2174,14 @@ function InsightsDesktop({ _embeddedTab }) {
   // pusieron y el valor de hoy en pesos (`resultadoTotal`, la misma cuenta que el
   // "Capital aportado" y la "Ganancia total" del Dashboard). Los montos de
   // `discipline` quedan en esa moneda: la tarjeta los escribe con `amtEnVista`.
+  // ⚠️ CON LOS MISMOS INSUMOS QUE EL DASHBOARD: el valor de hoy con los plazos
+  // fijos y su capital sumado a lo aportado (`extraUsd`). Antes acá iba
+  // `totalPortfolio` sin plazos fijos: con un plazo fijo, "Atribución del
+  // crecimiento" decía otro valor y otro aportado que el Dashboard, y el
+  // reporte en PDF mostraba dos "valor de hoy" distintos en la misma hoja.
   const resultado = resultadoTotal({
     monthly, brokers, dolarMes, tcEnFecha, tcHoy: tcValuacion,
-    valorHoyUsd: totalPortfolio, moneda: currency,
+    valorHoyUsd: valorCarteraUsd, moneda: currency, extraUsd: pfRollup.investedUsd,
   })
   const discipline = atribucionDelCrecimiento({
     globalMonthly,
@@ -2472,7 +2498,6 @@ function InsightsDesktop({ _embeddedTab }) {
   // Los dos ejes de la torta de distribución. MISMOS agregadores que el
   // Dashboard — el objetivo es que las dos pantallas no puedan dar números
   // distintos. El plazo fijo entra como porción sintética, igual que allá.
-  const pfRollup = pfUsd(pfTotals, tcValuacion)
   const pfSliceUsd = pfRollup.valueUsd
   const pfPnl = { total: pfRollup.pnlUsd, cost: pfRollup.investedUsd }
   const classBreakdown = computeClassBreakdown(
@@ -2613,6 +2638,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // muestran los más relevantes (severidad alta primero) con una rotación
   // estable dentro del día para dar variedad sin perder lo importante.
   const diagnosisPool = selectDiagnostics({
+    oculto,
     // Diagnósticos de concentración por activo (concentration_extreme/high/few_assets)
     // necesitan datos por instrumento, no por broker. brokerPieData se usa solo para
     // diagnósticos que filtran por moneda del broker (high_ars_exposure).
@@ -2839,6 +2865,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // multiplicar por el dólar de hoy.
   function amtEnVista(value, opts = {}) {
     if (value == null || isNaN(value)) return '—'
+    if (oculto) return OCULTO
     // El signo menos de verdad, como pctVar/pctTxt y el texto del diagnóstico
     // ("−USD 240"): la lista de atribución decía "-USD 240,00" con guion.
     const sign = opts.signed ? (value >= 0 ? '+' : '−') : ''
@@ -2907,9 +2934,35 @@ function InsightsDesktop({ _embeddedTab }) {
   // activos al costo: en ese caso no se publica ninguna (mismo criterio que
   // "desde tu última visita", más abajo).
   const _hoyMedido = preciosCompletos
-  const _mesIndec = vsInflacion?.hastaMes
-    ? `${MONTHS[+vsInflacion.hastaMes.slice(5, 7) - 1].toLowerCase()} ${vsInflacion.hastaMes.slice(0, 4)}`
-    : null
+  // 'YYYY-MM' → "septiembre de 2026".
+  const _mesEnPalabras = (k) => (k ? `${MONTHS[+k.slice(5, 7) - 1].toLowerCase()} de ${k.slice(0, 4)}` : null)
+  const _mesIndec = _mesEnPalabras(vsInflacion?.hastaMes)
+  // ⚠️ EL PERÍODO SE ESCRIBE. Las tres celdas miden TODA la historia (desde el
+  // primer mes, el mismo para las tres simulaciones), no el año. Sin decirlo, su
+  // "Inflación: le perdés" se comparaba con el "Este año · vs el S&P" del inicio
+  // —otro período— y se leía como una contradicción (reportado).
+  // El mes desde el que arrancan las tres simulaciones (uno solo: lo usan el
+  // encabezado de la tarjeta y lo que se le pasa a la IA).
+  const _mesInicialAlternativas = mesInicialDeLasSimulaciones(globalMonthly)
+  const _desdeAlternativas = _mesEnPalabras(_mesInicialAlternativas)
+  // Por qué algo en dólares puede perderle a la inflación: cuánto subieron los
+  // precios y cuánto el dólar en los MISMOS meses (de `desdeMes` al último con IPC
+  // publicado, `hastaMes`), y cuánto hacía falta en dólares para empatar
+  // (`veredictoInflacion`). El período va escrito: los precios llegan hasta lo
+  // último que publicó el INDEC, no hasta hoy.
+  const _contextoInflacion = (() => {
+    const v = vsInflacion
+    if (!v || v.dolarPct == null || v.dolarParaEmpatarPct == null || !v.hastaMes) return null
+    const periodo = `Entre ${_mesEnPalabras(v.desdeMes)} y ${_mesEnPalabras(v.hastaMes)}`
+    const precios = pctTxt(v.inflacionPct, 0)
+    // El verbo sigue al signo: un dólar que bajó no "subió −8 %".
+    const dolar = v.dolarPct >= 0
+      ? `el dólar blue subió ${pctTxt(v.dolarPct, 0)}`
+      : `el dólar blue bajó ${pctTxt(-v.dolarPct, 0)}`
+    return Math.round(v.dolarParaEmpatarPct) > 0
+      ? `${periodo} los precios subieron ${precios} y ${dolar}: algo en dólares —el S&P incluido— tenía que rendir ${pctTxt(v.dolarParaEmpatarPct, 0)} en dólares sólo para empatar.`
+      : `${periodo} ${dolar} y los precios ${precios}: tener dólares alcanzaba para no perderle a la inflación.`
+  })()
   const verdictItems = [
     // La UNIDAD va escrita: el UVA se simula EN PESOS (capitaliza con el
     // coeficiente) y se compara EN PESOS contra lo que vale hoy tu cartera
@@ -2930,6 +2983,7 @@ function InsightsDesktop({ _embeddedTab }) {
       // Hasta qué mes llega la inflación contada: el INDEC publica con atraso,
       // y el valor de tu cartera es el de hoy.
       nota: `tu patrimonio de hoy vs la misma plata ajustada por inflación${_mesIndec ? ` · INDEC hasta ${_mesIndec}` : ''}`,
+      contexto: _contextoInflacion,
     },
   ]
 
@@ -2984,7 +3038,7 @@ function InsightsDesktop({ _embeddedTab }) {
   const verdictVisible = diagLayout.slots.includes('verdict') && hasVerdicts
   const verdictFirst = verdictVisible &&
     diagLayout.slots.indexOf('verdict') < diagLayout.slots.indexOf('kpi')
-  const verdictNode = verdictVisible ? <ArAlternativesVerdict items={verdictItems} /> : null
+  const verdictNode = verdictVisible ? <ArAlternativesVerdict items={verdictItems} desde={_desdeAlternativas} /> : null
   // El motor también decide si la curva de drawdown se muestra (se suprime sin
   // ≥2 meses de serie, en vez de un placeholder "necesitás 2 meses").
   // ⚠️ FASE 2 · EN MODO ESTIMADO NO HAY CARD DE DRAWDOWN.
@@ -3008,7 +3062,13 @@ function InsightsDesktop({ _embeddedTab }) {
   const diagAiParams = {
     archetype: diagLayout.archetype,
     findings: diagnosisTop.slice(0, 3).map(d => ({ category: d.category, severity: d.severity, text: d.text })),
-    verdicts: verdictItems.filter(v => v.pct != null).map(v => ({ label: v.label, pct: Math.round(v.pct * 10) / 10 })),
+    // Con el mes desde el que miden (toda la historia): el paquete trae al lado
+    // `vs_benchmarks`, de otra ventana, y sin el período la IA podía narrar "le
+    // ganás al S&P pero le perdés a la inflación" como si fuera el mismo tramo.
+    verdicts: verdictItems.filter(v => v.pct != null).map(v => ({
+      label: v.label, pct: Math.round(v.pct * 10) / 10,
+      desde: _mesInicialAlternativas,
+    })),
     months_tracked: globalMonthly.length,
     missing_prices: [...new Set(missingPriceTickers)].slice(0, 12),
     // La caída del paquete, medida como la de la tira de KPIs: moneda, modo y el
@@ -3050,10 +3110,12 @@ function InsightsDesktop({ _embeddedTab }) {
     // homogénea, con "parcial").
     const _pubEst = _modoEstimado
       ? acumuladoPublicado(chartData, benchmarkKey, { contable: true }) : null
+    const _acumVentana = (_modoEstimado && !_pubEst)
+      ? acumuladoDeVentana(chartData, _kTotal, _kEstimado) : null
     const _acum = _modoEstimado
       ? (_pubEst
           ? { pct: _pubEst.pct, parcial: false, desde: _pubEst.desde }
-          : acumuladoDeVentana(chartData, _kTotal, _kEstimado))
+          : _acumVentana)
       : null
     // ⚠️ EN CERTERO EL KPI LEE EL ÍNDICE PUBLICADO, NO EL DIBUJADO. `lastRow[_kTotal]`
     // es `(index − 1)·100` rebaseado, y `index` es la FORMA: encadena las fotos
@@ -3085,7 +3147,13 @@ function InsightsDesktop({ _embeddedTab }) {
       : (_usaPub ? (_pub ? _pub.pct : null) : (_arsSinMedir ? null : (lastRow[_kTotal] ?? null)))
     // El benchmark del KPI, entre LAS MISMAS DOS FECHAS que el acumulado — es
     // lo que "mismo período" tiene que significar.
-    const benchmarkReturnPct = _arsSinMedir ? null : (_pub && _pub.benchPct != null)
+    // ⚠️ EN ESTIMADO TAMBIÉN. Leía `lastRow[benchmarkKey]` —la inflación desde el
+    // BORDE del gráfico— mientras la cartera se medía desde la primera punta de la
+    // cadena publicada: "+82 % vs Inflación +71 %" con dos ventanas distintas.
+    // Ahora sale de las mismas dos filas que el acumulado; sin ellas no hay "vs".
+    const benchmarkReturnPct = _modoEstimado
+      ? benchDelAcumuladoEstimado(chartData, benchmarkKey, _pubEst, _acumVentana)
+      : _arsSinMedir ? null : (_pub && _pub.benchPct != null)
       ? _pub.benchPct
       : (_pub ? null : (lastRow[benchmarkKey] ?? null))
     // Label dinámico = el mismo nombre del benchmark seleccionado (chart legend).
@@ -3093,6 +3161,104 @@ function InsightsDesktop({ _embeddedTab }) {
     const benchmarkLabel = benchmarkKey
     return { cumulativeReturnPct, benchmarkReturnPct, benchmarkLabel, modoEstimado: _modoEstimado, acum: _acum }
   })()
+
+  // ── La imagen para compartir "Cartera vs benchmark" ──────────────────────
+  // Los números son los del KPI "Acumulado" (kpiRendimiento), no la punta de
+  // la curva: son los que la pantalla publica. La curva (chartData) es sólo la
+  // forma. Sin acumulado publicado no hay botón: la imagen no puede mostrar un
+  // número que la pantalla esconde (serie partida, pesos sin medir, etc.).
+  const puedeCompartirRendimiento = Number.isFinite(kpiRendimiento.cumulativeReturnPct) && chartData.length > 1
+  // Lo que comparten la imagen y el reporte en PDF: un solo armado, así los dos
+  // dicen el mismo período y dibujan la misma curva.
+  const datosRendimiento = () => {
+    const num = (v) => (Number.isFinite(v) ? v : null)
+    const PERIODOS = { 1: 'Último mes', 3: 'Últimos 3 meses', 12: 'Último año', 24: 'Últimos 2 años', 60: 'Últimos 5 años' }
+    const serie = chartData.map(r => ({
+      ts: r.ts,
+      // En certero lo no medido va en la clave "estimado" (la parte
+      // punteada): juntas son la curva entera que se ve en pantalla.
+      cartera: num(r[claveCartera]) ?? num(r[`${userName} estimado`]),
+      bench: num(r[benchmarkKey]),
+    }))
+    // El período que el número REALMENTE cubre, como lo avisa la pantalla
+    // ("1A ya muestra todo tu historial · desde X"): con menos historia que la
+    // ventana, "Último año" mentía sobre un número de 4 meses.
+    let periodo = effectiveRange ? (PERIODOS[effectiveRange] || `Últimos ${effectiveRange} meses`) : 'Desde el inicio'
+    const primero = serie.find(p => Number.isFinite(p.ts) && p.cartera != null)
+    if (effectiveRange && primero) {
+      const corte = new Date()
+      corte.setMonth(corte.getMonth() - effectiveRange)
+      if (primero.ts > corte.getTime() + 15 * 864e5) {
+        periodo = `Desde el ${fmtFecha(new Date(primero.ts).toISOString().slice(0, 10))}`
+      }
+    }
+    // Y si el número es el RECREADO de la contabilidad (modo estimado), lo
+    // dice, como el KPI de la pantalla.
+    const acum = kpiRendimiento.acum
+    // `desde` es la clave de una fila del gráfico: día ("2026-03-14") o mes ("2026-03").
+    const fechaDeClave = (k) => (/^\d{4}-\d{2}-\d{2}$/.test(k || '') ? fmtFecha(k)
+      : /^\d{4}-\d{2}$/.test(k || '') ? `${k.slice(5)}/${k.slice(0, 4)}` : '')
+    const desdeAcum = acum?.parcial ? fechaDeClave(acum.desde) : ''
+    const nota = kpiRendimiento.modoEstimado
+      ? (desdeAcum ? `recreado de tu contabilidad, desde ${desdeAcum}` : 'recreado de tu contabilidad')
+      : null
+    return {
+      carteraPct: kpiRendimiento.cumulativeReturnPct,
+      benchPct: kpiRendimiento.benchmarkReturnPct,
+      benchLabel: benchmarkKey,
+      serie,
+      periodo,
+      nota,
+    }
+  }
+  const specRendimiento = ({ mostrarMontos }) => specDeRendimiento({
+    ...datosRendimiento(),
+    moneda: currency,
+    patrimonio: preciosCompletos && resultado.valor > 0 ? amtEnVista(resultado.valor) : null,
+    mostrarMontos,
+  })
+
+  // ── El reporte en PDF ─────────────────────────────────────────────────────
+  // Todo sale de lo que esta pantalla ya calculó: el KPI "Acumulado", las tres
+  // tortas (mismos items y mismo corte que CompositionDonut), el drawdown del
+  // KPI strip y "Qué explica tu resultado". No entran las métricas Pro
+  // (Sharpe, beta…): están bloqueadas para Free y el reporte es para todos.
+  const armarDatosReporte = ({ mostrarMontos }) => {
+    const rend = puedeCompartirRendimiento ? datosRendimiento() : null
+    return armarReporte({
+      fmt: amt,
+      mostrarMontos,
+      moneda: currency,
+      periodo: rend?.periodo || '',
+      // El "Valor actual" del Dashboard, en la moneda de la vista (fmtEnVista):
+      // el mismo "Lo que vale hoy" de la sección de aportes.
+      patrimonio: preciosCompletos && resultado.valor > 0 ? resultado.valor : null,
+      rendimiento: rend,
+      drawdown: drawdownTwrr,
+      distribuciones: [
+        // La de activos ya viene cortada en top-N + "Resto": no se re-agrupa
+        // (igual que DistribucionPorActivo).
+        { titulo: 'Distribución de activos', items: assetBreakdown.items, maxSlices: assetBreakdown.items.length, minSlicePct: 0 },
+        { titulo: 'Distribución por tipo de activo', items: classBreakdown.items },
+        { titulo: 'Distribución por sector', items: sectorBreakdown.items },
+      ],
+      ganadores: topContribPos,
+      perdedores: topContribNeg,
+      // En la moneda de la vista (por eso fmtEnVista): lo aportado y lo que
+      // puso el mercado son los de "Atribución del crecimiento" (`discipline`,
+      // null sin precios completos); el no realizado, el del encabezado de
+      // Cartera (pnlNoRealizado), no el `unrealizedPnl` de acá arriba.
+      fmtEnVista: amtEnVista,
+      capital: discipline ? { aportado: discipline.deposits, mercado: discipline.pnl, valorHoy: discipline.total } : null,
+      noRealizado: preciosCompletos ? (() => {
+        const nr = noRealizadoEnVista({
+          positions, prices, brokers, tcValuacion, tcCedear, tcCripto, costBasis, moneda: currency,
+          extraValorUsd: pfRollup.valueUsd, extraCostoUsd: pfRollup.investedUsd,
+        })
+        return { pnl: nr.monto, pct: nr.pct }
+      })() : null,
+    })
+  }
 
   // La escala común de "Atribución por activo": el |P&L| más grande de las dos listas.
   const escalaAtribucion = Math.max(0, ...[...topContribPos, ...topContribNeg].map(it => Math.abs(it.pnl || 0)))
@@ -3132,6 +3298,12 @@ function InsightsDesktop({ _embeddedTab }) {
         subtitle="Análisis profundo de tu performance, riesgo y comportamiento como inversor."
         action={
           <div className="flex items-center gap-2 flex-wrap">
+            {/* Sólo con precios completos: antes, las tenencias valen al costo
+                y el PDF saldría con ese patrimonio sin avisar (el mismo criterio
+                que la IA: nada se manda al costo). */}
+            {preciosCompletos && (assetBreakdown.items.length > 0 || puedeCompartirRendimiento) && (
+              <BotonReporte armarDatos={armarDatosReporte} source="analisis" />
+            )}
             <AnalyzeButton
               screen="insights"
               params={{ window_days: 365, ...paramsCaidaIA }}
@@ -3265,6 +3437,9 @@ function InsightsDesktop({ _embeddedTab }) {
           <CompositionDonut
             className="h-full"
             title="Distribución por tipo de activo"
+            // Sin precios completos las tortas valen al costo: no se exportan.
+            compartir={preciosCompletos ? 'analisis' : null}
+            compartirConDetalle
             items={classBreakdown.items}
             fmt={amt}
             height={230}
@@ -3294,6 +3469,8 @@ function InsightsDesktop({ _embeddedTab }) {
           <CompositionDonut
             className="h-full"
             title="Distribución por sector"
+            // Sin precios completos las tortas valen al costo: no se exportan.
+            compartir={preciosCompletos ? 'analisis' : null}
             items={sectorBreakdown.items}
             fmt={amt}
             height={230}
@@ -3587,6 +3764,15 @@ function InsightsDesktop({ _embeddedTab }) {
               {opt.label}
             </button>
           ))}
+          {puedeCompartirRendimiento && (
+            <BotonCompartir
+              className="ml-auto"
+              source="analisis"
+              etiqueta={`Compartir mi cartera vs ${benchmarkKey}`}
+              filename={`rendi-cartera-vs-${nombreDeArchivo(benchmarkKey)}.png`}
+              buildSpec={specRendimiento}
+            />
+          )}
         </div>
 
         {/* ⚠️ EL HUECO TIENE QUE VERSE, NO SÓLO EXISTIR. Con la serie partida el
@@ -3772,11 +3958,11 @@ function InsightsDesktop({ _embeddedTab }) {
               <CartesianGrid {...chartGrid} strokeDasharray={undefined} />
               <XAxis dataKey="label" tick={chartTick} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
               <YAxis tick={chartTick} axisLine={false} tickLine={false} width={56}
-                     tickFormatter={v => `US$${Math.round(v / 1000)}k`} />
+                     tickFormatter={v => (oculto ? '' : `US$${Math.round(v / 1000)}k`)} />
               <Tooltip
                 contentStyle={{ ...chartTooltip.contentStyle, padding: '10px 14px' }}
                 labelStyle={chartTooltip.labelStyle}
-                formatter={(v) => [`US$${Number(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`, 'Reconstrucción contable']}
+                formatter={(v) => [oculto ? OCULTO : `US$${Number(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`, 'Reconstrucción contable']}
               />
               <Line isAnimationActive={animarGraficos} animationDuration={900} type="monotone" dataKey="usd" name="Reconstrucción contable"
                     stroke="rgb(var(--ink-2))" strokeWidth={1.75} strokeDasharray="4 4" dot={false} />

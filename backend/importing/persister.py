@@ -324,7 +324,12 @@ def persist_batch(
     if route_currency:
         # Identificar todos los brokers ARS que tienen filas USD para ellos.
         unique_brokers = {tx.broker for tx in sorted_txs}
-        for broker_name in unique_brokers:
+        # EN ORDEN: "Cocos" antes que "Cocos · USD". Si este lote le manda dólares
+        # a "Cocos" y "Cocos · USD" existe en pesos, primero se la adopta (pasa a
+        # USDT) y cuando le toca el turno ya no es un padre en pesos. Recorrer el
+        # set en el orden de cada proceso —distinto en cada uno— a veces le creaba
+        # "Cocos · USD · USD" y le mandaba ahí el "Estado inicial" de la propia.
+        for broker_name in sorted(unique_brokers):
             parent = conn.execute(
                 "SELECT * FROM brokers WHERE name=? AND user_id=?",
                 (broker_name, uid),
@@ -400,6 +405,46 @@ def persist_batch(
                         "UPDATE import_normalized_tx SET broker=? WHERE batch_id=? AND raw_row_id=?",
                         (new_broker, batch_id, raw_id),
                     )
+
+    # ⚠️ PESOS A UNA SUB-CUENTA EN DÓLARES: SE FRENA EL LOTE, NO SE GUARDA MAL.
+    # La vista previa ya rechaza esas filas, pero lo que se decidió en la vista
+    # previa puede no valer al confirmar: la sub-cuenta "Cocos · USD" estaba en
+    # pesos (creada a mano) y la adoptó un dólar que entró entre medio, o la adopta
+    # el ruteo de arriba en este mismo lote; y el "Estado inicial" (`seed_state`)
+    # no pasa por la validación. Esos pesos se sumaban a la caja en dólares
+    # (medido con una foto: $250.000 + US$500 = "250.500" dólares). Éste es el
+    # último punto antes de escribir, con la sub-cuenta como quedó de verdad.
+    _patas_usd = {r["name"]: r["padre"] for r in conn.execute(
+        """SELECT h.name, p.name padre FROM brokers h
+             JOIN brokers p ON p.id=h.parent_broker_id AND p.user_id=h.user_id
+            WHERE h.user_id=? AND p.currency='ARS' AND h.currency IN ('USD','USDT')""",
+        (uid,)).fetchall()}
+    # Lo mismo para cualquier cuenta que no acepta pesos (un broker en dólares
+    # suelto), con la MISMA regla que la vista previa
+    # (`pipeline.brokers_que_no_aceptan_pesos`): el confirm sin "Estado inicial" no
+    # re-valida, y si el broker pasó a dólares en otra pestaña entre la vista
+    # previa y el confirm, $1.000.000 entraban como US$ 1.000.000 (auditoría 29/10).
+    from importing import pipeline as _pipeline      # local: pipeline importa este módulo
+    _fmt = conn.execute("SELECT parser_format FROM import_batches WHERE id=? AND user_id=?",
+                        (batch_id, uid)).fetchone()
+    _sin_pesos = _pipeline.brokers_que_no_aceptan_pesos(
+        {r["name"]: {"currency": r["currency"]} for r in conn.execute(
+            "SELECT name, currency FROM brokers WHERE user_id=?", (uid,)).fetchall()},
+        _pipeline.FORMAT_BASE_CURRENCY.get((_fmt["parser_format"] if _fmt else None) or ""))
+    for tx in sorted_txs:
+        if ((tx.currency or "").upper() != "ARS"
+                or tx.operation_type in ("FX_ARS_TO_USD", "FX_USD_TO_ARS")):
+            continue
+        if tx.broker in _patas_usd:
+            raise PersistError(None, (
+                f"«{tx.broker}» es la cuenta en dólares de «{_patas_usd[tx.broker]}» y este "
+                f"import le trae pesos. Si la vista previa se armó antes de que lo fuera, "
+                f"volvé a subir el archivo; los pesos van a «{_patas_usd[tx.broker]}»."))
+        if tx.broker in _sin_pesos:
+            raise PersistError(None, (
+                f"«{tx.broker}» está en dólares y este import le trae pesos: Rendi no "
+                f"puede guardar pesos en una cuenta en dólares. Si cambiaste la moneda "
+                f"del broker después de la vista previa, volvé a subir el archivo."))
 
     brokers_touched: set = set()
     counts = {"positions": 0, "operations": 0, "cash_movements": 0, "conversions": 0}

@@ -56,6 +56,7 @@ import {
   pasosEventosParaTi, pasosEventosPopulares, empresasDeLaCartera, chipsDeEmpresas,
 } from '../utils/cargaPorPasos'
 import { hayPrecios } from '../utils/preciosEnVivo'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 
 const WINDOW_OPTIONS = [
   { value: 30,  label: '30D' },
@@ -919,6 +920,8 @@ function EventAgenda({ events, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx 
 }
 
 function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx }) {
+  // «Ocultar saldos»: ni lo que cobrarías ni qué parte de tu cartera es (A3/D4).
+  const { hidden: oculto } = usePrivacy()
   const { ticker, eventType, eventDate, confirmed, inPortfolio, details } = event
   const isMacro = isMacroEvent(event)
   const cobro = tab === 'portfolio' ? eventCobro(event, cobroCtx) : null
@@ -941,7 +944,7 @@ function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx })
     : ticker
 
   // Sub-línea: detalle + lo personal (cuánto te toca) en cyan.
-  const detail = renderDetail(event, cobro)
+  const detail = renderDetail(event, cobro, oculto)
   const shares = cobroCtx?.tickerShares?.get?.(ticker) || null
   // Los nominales que se muestran son los de TU tenencia (130 CEDEARs), pero el
   // cobro sale de las acciones equivalentes (3,33). Mezclarlos era el bug.
@@ -958,9 +961,9 @@ function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx })
       ? `${formatCompact(nominales)} nominales (= ${formatCompact(cobro.shares)} acciones)`
       : `${formatCompact(nominales)} nominales`
   const personal = cobro?.amount != null
-    ? `tenés ${cuantos} → ~+${cobro.currency === 'USD' ? 'US$ ' : `${cobro.currency} `}${formatCompact(cobro.amount)}`
+    ? `tenés ${cuantos} → ~+${oculto ? OCULTO : `${cobro.currency === 'USD' ? 'US$ ' : `${cobro.currency} `}${formatCompact(cobro.amount)}`}`
     : (tab === 'portfolio' && shares && impactPct != null && impactPct > 0.0001)
-      ? `tenés ${formatCompact(shares)} nominales (${pct(impactPct)} de tu cartera)`
+      ? `tenés ${formatCompact(shares)} nominales${oculto ? '' : ` (${pct(impactPct)} de tu cartera)`}`
       : (tab === 'popular' && inPortfolio) ? 'está en tu cartera' : null
 
   return (
@@ -1103,7 +1106,7 @@ function EarningsExpectations({ symbol }) {
   )
 }
 
-function renderDetail(event, payout) {
+function renderDetail(event, payout, oculto = false) {
   const { eventType, details } = event
   if (eventType === 'macro') {
     return `${details?.country || ''} · ${macroCategoryLabel(details?.category)}`
@@ -1136,6 +1139,14 @@ function renderDetail(event, payout) {
   }
   if (eventType?.startsWith('bond_')) {
     const cur = details?.currency || 'USD'
+    // Lo del bono es lo que cobrás VOS (cupón y amortización de tu tenencia,
+    // utils/upcomingEvents.js): con «Ocultar saldos» se dice qué es, sin el monto.
+    if (oculto) {
+      if (details?.coupon > 0 && details?.amort > 0) return 'Cupón + amortización'
+      if (details?.coupon > 0) return 'Cupón'
+      if (details?.amort > 0) return eventType === 'bond_maturity' ? 'Vencimiento' : 'Amortización'
+      return ''
+    }
     if (details?.coupon > 0 && details?.amort > 0) {
       return `Cupón ${cur} ${details.coupon.toFixed(2).replace('.', ',')} + amort ${cur} ${details.amort.toFixed(2).replace('.', ',')}`
     }
@@ -1149,9 +1160,10 @@ function renderDetail(event, payout) {
 // El próximo evento que más te toca, arriba de todo, con tu cobro/impacto ya
 // calculado. Solo se muestra en "Para ti".
 function SpotlightHero({ event, impactPct, cobro, onView }) {
+  const { hidden: oculto } = usePrivacy()
   const days = daysUntil(event.eventDate)
   const countdown = days == null ? '—' : days === 0 ? 'HOY' : days === 1 ? 'MAÑANA' : days
-  const detail = renderDetail(event, cobro)
+  const detail = renderDetail(event, cobro, oculto)
   const contextParts = []
   if (detail) contextParts.push(detail)
   // Lo que tenés se dice en LA UNIDAD QUE TENÉS (130 CEDEARs), no en acciones:

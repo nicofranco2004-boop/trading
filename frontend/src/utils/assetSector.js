@@ -50,7 +50,7 @@ export const SECTOR_META = {
   cripto:        { label: 'Cripto',              color: 'rgb(var(--cat-orange))' },
   renta_fija:    { label: 'Renta fija',          color: 'rgb(var(--cat-slate-2))' },
   fci:           { label: 'FCI',                 color: 'rgb(var(--cat-slate))' },
-  efectivo:      { label: 'Efectivo',            color: 'rgb(var(--ink-3))' },
+  efectivo:      { label: 'Efectivo',            color: 'rgb(var(--ink-1))' },
   sin_dato:      { label: 'Sin dato',            color: 'rgb(var(--cat-gray-2))' },
 }
 

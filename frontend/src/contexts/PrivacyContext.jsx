@@ -3,6 +3,8 @@ import { track } from '../utils/track'
 
 const PrivacyContext = createContext({ hidden: false, toggle: () => {} })
 
+export { OCULTO, AVISO_OCULTO } from '../utils/ocultarSaldos'
+
 const STORAGE_KEY = 'rendi_privacy'
 
 export function PrivacyProvider({ children }) {

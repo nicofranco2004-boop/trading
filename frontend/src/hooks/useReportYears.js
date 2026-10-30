@@ -8,21 +8,26 @@
 // números del mismo año, en la misma pantalla, con 26 puntos de diferencia.
 //
 // Este hook trae el número del motor canónico para TODOS los años, con la ventana
-// que cada número cubre y el veredicto contra el S&P (y contra la inflación cuando
-// se mide en pesos).
+// que cada número cubre y el veredicto contra el S&P y contra la inflación (ésta
+// siempre medida en pesos). Qué número y qué veredicto se muestran de cada año lo
+// decide `utils/anioPublicado.js`, una sola vez para el inicio y para Reportes.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../utils/api'
+import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 
 /**
  * @param {string} broker  'global' | nombre del broker
- * @param {string} modo    'certero' | 'estimado'
+ * @param {string} [modo] 'certero' | 'estimado'. Sin él, la elección guardada del
+ *   usuario (ModoRendimientoContext): quien se olvide de pasarlo no mide en otra regla.
  * @param {string} moneda  'usd' | 'ars'
  * @returns {{ years, current, loading, refreshing, error }} — `loading` es sólo
  *   la PRIMERA carga; los cambios de modo/moneda levantan `refreshing` y dejan
  *   los datos anteriores en pantalla.
  */
-export default function useReportYears(broker = 'global', modo = 'certero', moneda = 'usd') {
+export default function useReportYears(broker = 'global', modoPedido, moneda = 'usd') {
+  const [modoApp] = useModoRendimiento()
+  const modo = modoPedido || modoApp
   const [years, setYears] = useState([])
   // ¿El plan incluye los años anteriores? Lo dice el backend, que es quien corta.
   const [historicos, setHistoricos] = useState(true)

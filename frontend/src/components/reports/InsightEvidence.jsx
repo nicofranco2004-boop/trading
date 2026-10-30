@@ -13,6 +13,7 @@
 
 import { useContext } from 'react'
 import { useMoneyFormat, fmtConvertedRaw } from '../../contexts/CurrencyContext'
+import { OCULTO } from '../../contexts/PrivacyContext'
 import { PeriodoEnVista } from '../../hooks/usePesosDelPeriodo'
 import { pctTxt, pctVar, pctColor } from '../../utils/format'
 
@@ -325,8 +326,9 @@ export default function InsightEvidence({ insight }) {
   const money = useMoneyFormat()
   const periodo = useContext(PeriodoEnVista)
   // Dentro de una tarjeta de período: al dólar de ESE período. Suelta: el de hoy.
+  // `money.oculto`: «Ocultar saldos», el mismo que tapa `money.fmtMoney`.
   const conFx = (fx) => (v) => (v == null || !Number.isFinite(v) ? '—'
-    : fmtConvertedRaw(money.isArs ? v * fx : v, money.currency))
+    : money.oculto ? OCULTO : fmtConvertedRaw(money.isArs ? v * fx : v, money.currency))
   const fmtUsd = periodo ? conFx(periodo.fxCierre) : (v) => money.fmtMoney(v, { signed: false })
   // Los depósitos, con el dólar de los depósitos del período: así "Aportaste"
   // dice lo mismo que "Depósitos" de la misma tarjeta.

@@ -46,7 +46,8 @@ import StalePricesNotice from '../components/StalePricesNotice'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass, pctTxt, parseNum, parseNumOrNull, numToInput, numACampo } from '../utils/format'
 import { leerVenta, cuerpoDeVenta, leerConversion, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { api, errorMessage } from '../utils/api'
-import { computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, avgCostArsPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
+import { pfUsd } from '../hooks/usePfRollup'
+import { sumarBrokers, noRealizadoEnVista, computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, valuePositionLot, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, avgCostArsPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
 import { linkDeAlerta } from '../components/alerts/alertaDePosicion'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { EtiquetaMoneda, EtiquetaEfectivo, EtiquetaBono, EtiquetaFaltaTc } from '../components/EtiquetaFila'
@@ -1693,6 +1694,17 @@ function PositionsDesktop() {
     const local = !isARS && !isCrypto(p.asset) && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker) || costInPesos(p))
     const symKey = local ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, isARS)
     const curPrice = p.price_override ?? prices[symKey]
+    // Si la valuación NO confía en este precio (trustMktValue: un bono con el
+    // costo en otra escala que el precio), la fila lo muestra al costo y su
+    // movimiento del día no existe. Se le pregunta a la MISMA valuación que suma
+    // el total del broker (valuePositionLot), no a una copia. Antes la columna
+    // publicaba el movimiento del precio descartado (AL30: «vale» USD 89 al costo
+    // y «se movía» −USD 217; sesión del mapa de calor, 30/10). El celular ya lo
+    // cortaba así (`priceTrusted` en PositionsMobile).
+    if (curPrice != null && !p.price_override && !p.is_cash &&
+        valuePositionLot(p, { broker: _brokerDe(p.broker), prices, tcValuacion, tcCedear, tcCripto, costBasis }).priceTrusted === false) {
+      return null
+    }
     const dv = dayVarOf(p, symKey, curPrice)
     if (!dv) return dv
     if (local) return { amount: dv.amount / tcCedear, pct: dv.pct }
@@ -1735,14 +1747,7 @@ function PositionsDesktop() {
   // IMPORTANTE: useMemo va ANTES del early return — los hooks deben llamarse
   // en el mismo orden en cada render (rules of hooks).
   const totals = useMemo(() => {
-    let value = 0, invested = 0
-    const byBroker = {}
-    for (const b of brokers) {
-      const r = computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis)
-      byBroker[b.name] = r
-      value += r.value || 0
-      invested += r.invested || 0
-    }
+    const { value, invested, byBroker } = sumarBrokers({ brokers, positions, prices, tcValuacion, tcCedear, tcCripto, costBasis })
     const pnl = value - invested
     const pct = invested > 0 ? pnl / invested : 0
     return { value, invested, pnl, pct, byBroker }
@@ -1756,12 +1761,7 @@ function PositionsDesktop() {
   // computeBrokerValue solo los acumula para brokers ARS (0 para USD) → dropearía las
   // tenencias en dólares. El hero en display USD usa `totals` (que sí refleja el modo).
   const totalsToday = useMemo(() => {
-    let value = 0, invested = 0
-    for (const b of brokers) {
-      const r = computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, 'today')
-      value += r.value || 0
-      invested += r.invested || 0
-    }
+    const { value, invested } = sumarBrokers({ brokers, positions, prices, tcValuacion, tcCedear, tcCripto, costBasis: 'today' })
     return { value, invested }
   }, [brokers, positions, prices, tcValuacion, tcCedear, tcCripto])
 
@@ -1807,19 +1807,24 @@ function PositionsDesktop() {
   // Plazos fijos → USD, coherente: valor (capital + devengado), capital
   // (invertido) y P&L (devengado). Suma al titular del patrimonio. No entra en
   // la variación diaria (los snapshots históricos no tienen PF).
-  const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcValuacion
-  const pfInvestedUsd = (pfTotals.USD?.capital || 0) + (pfTotals.ARS?.capital || 0) / tcValuacion
-  const heroValue = totals.value + pfValueUsd
-  const heroInvested = totals.invested + pfInvestedUsd
-  const heroPnl = heroValue - heroInvested
-  const heroPct = heroInvested > 0 ? heroPnl / heroInvested : 0
+  // La cuenta es `noRealizadoEnVista` (valuation.js), la misma del Dashboard y
+  // del reporte en PDF: acá se le pasan las sumas ya memoizadas.
+  const pfRoll = pfUsd(pfTotals, tcValuacion)
+  const pfValueUsd = pfRoll.valueUsd
+  const extraPf = { extraValorUsd: pfRoll.valueUsd, extraCostoUsd: pfRoll.investedUsd }
+  const heroUsd = noRealizadoEnVista({ ...extraPf, tcValuacion, moneda: 'USD', totales: totals })
+  const heroValue = heroUsd.valor
+  const heroInvested = heroUsd.costo
+  const heroPnl = heroUsd.monto
+  const heroPct = heroUsd.pct
   // Hero en display ARS: cifras mode-INDEPENDENT (pesos nativos + tenencias USD al
   // dólar de hoy), a partir del total 'today' ×tcValuacion. Incluye PF. Así ARS-nativo
   // queda nativo y USD queda USD×hoy, sin filtrar el modo ni dropear brokers USD.
-  const heroValueArs = (totalsToday.value + pfValueUsd) * tcValuacion
-  const heroInvestedArs = (totalsToday.invested + pfInvestedUsd) * tcValuacion
-  const heroPnlArs = heroValueArs - heroInvestedArs
-  const heroPctArs = heroInvestedArs > 0 ? heroPnlArs / heroInvestedArs : 0
+  const heroArs = noRealizadoEnVista({ ...extraPf, tcValuacion, moneda: 'ARS', totales: totalsToday })
+  const heroValueArs = heroArs.valor
+  const heroInvestedArs = heroArs.costo
+  const heroPnlArs = heroArs.monto
+  const heroPctArs = heroArs.pct
   // Cifras del hero según el display: ARS → nativas (mode-independent); USD → reflejan
   // el modo (en 'purchase' el invertido/P&L en USD absorben la devaluación).
   const isArsDisp = displayCurrency === 'ARS'
@@ -2675,7 +2680,7 @@ function PositionsDesktop() {
                               <LazySparkline symbol={(p.asset || '').toUpperCase()} variant="row" />
                             )}
                           </td>
-                          <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
+                          <td className={`${tdClass} text-ink-2 tabular`}>{hidden && p.is_cash ? '••••••' : (p.quantity ?? '—')}</td>
                           <td className={`${tdClass} text-ink-2 tabular`}>{isArsDisp
                             ? (avgPriceArs != null ? `ARS ${ars(avgPriceArs)}` : '—')
                             : (avgPriceUsdDisp != null ? `USD ${usd(avgPriceUsdDisp)}` : '—')}</td>
@@ -2710,7 +2715,7 @@ function PositionsDesktop() {
                           <td className={`${tdClass} tabular`}>
                             {dvArs ? (
                               <div className="leading-tight">
-                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{dvArs.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvArs.amount))}` : `USD ${usd(Math.abs(dvArs.amount / tcValuacion))}`}</div>
+                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{hidden ? '••••••' : <>{dvArs.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvArs.amount))}` : `USD ${usd(Math.abs(dvArs.amount / tcValuacion))}`}</>}</div>
                                 <div className={`text-[10px] font-mono ${colorClass(dvArs.amount)}`}>{pctSigned(dvArs.pct)}</div>
                               </div>
                             ) : (
@@ -2934,7 +2939,7 @@ function PositionsDesktop() {
                             <LazySparkline symbol={(p.asset || '').toUpperCase()} variant="row" />
                           )}
                         </td>
-                        <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
+                        <td className={`${tdClass} text-ink-2 tabular`}>{hidden && p.is_cash ? '••••••' : (p.quantity ?? '—')}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{avgPrice != null ? (isArsDisp ? fmtArs(avgPrice * tcValuacion) : fmtUsd(avgPrice)) : '—'}</td>
                         <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? <FlashValue value={c.price}>{isArsDisp ? fmtArs(c.price * tcValuacion) : fmtUsd(c.price)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                         {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : (isArsDisp ? fmtArs((c.investedUsd ?? p.invested) * tcValuacion) : fmtUsd(c.investedUsd ?? p.invested))}</td>}
@@ -2957,7 +2962,7 @@ function PositionsDesktop() {
                         <td className={`${tdClass} tabular`}>
                           {dvUsd ? (
                             <div className="leading-tight">
-                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{dvUsd.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvUsd.amount * tcValuacion))}` : `USD ${usd(Math.abs(dvUsd.amount))}`}</div>
+                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{hidden ? '••••••' : <>{dvUsd.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvUsd.amount * tcValuacion))}` : `USD ${usd(Math.abs(dvUsd.amount))}`}</>}</div>
                               <div className={`text-[10px] font-mono ${colorClass(dvUsd.amount)}`}>{pctSigned(dvUsd.pct)}</div>
                             </div>
                           ) : (

@@ -17,6 +17,7 @@ import {
   fmtConvertedCompactRaw,
 } from '../contexts/CurrencyContext'
 import { useFxHistory } from './useFxHistory'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 
 /**
  * resolveHistoricalFx — chain de prioridad para conseguir el FX a aplicar a
@@ -172,11 +173,27 @@ export function dineroHistorico({ currency, tcValuacion, getRateForDate }) {
   }
 }
 
+/**
+ * «Ocultar saldos» vive ACÁ, en el formateador, y no pantalla por pantalla
+ * (auditorías A3/D4, 29/10: Movimientos mostraba cada P&L y cada depósito con
+ * el ojito prendido, porque cada pantalla tenía que acordarse de pedirlo). Con
+ * el ojito prendido, todo lo que se formatea con este hook sale `OCULTO`; las
+ * cuentas (`convertedValue`, `sumConvertedAt`) siguen igual. `fmtMonto` es para
+ * un total que YA está en la moneda en que se mira (lo que antes se escribía
+ * `fmtConvertedRaw(total, histMoney.currency, …)`). Los precios del mercado no
+ * pasan por acá: se ven siempre, como en la Cartera.
+ */
 export function useHistoricalMoney() {
   const { currency, tcValuacion } = useCurrency()
   const { getRateOrFallback, fxKey } = useFxHistory(tcValuacion)
+  const { hidden } = usePrivacy()
+  const base = dineroHistorico({ currency, tcValuacion, getRateForDate: getRateOrFallback })
   return {
-    ...dineroHistorico({ currency, tcValuacion, getRateForDate: getRateOrFallback }),
+    ...base,
+    ...(hidden ? { fmtMoneyAt: () => OCULTO, fmtMoneyCompactAt: () => OCULTO } : {}),
+    fmtMonto: (v, opts) => (hidden ? OCULTO : fmtConvertedRaw(v, currency, opts)),
+    fmtMontoCorto: (v, opts) => (hidden ? OCULTO : fmtConvertedCompactRaw(v, currency, opts)),
+    oculto: hidden,
     // Para memoizar agregados: cambia cuando cambia la serie FX (no por render).
     fxKey,
   }

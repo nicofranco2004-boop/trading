@@ -96,7 +96,7 @@ def check_broker_inexistente(conn, uid: Optional[int] = None) -> List[Violacion]
     filtro, params = _scope(uid)
     out = []
     for r in _rows(conn, f"""
-        SELECT p.id, p.user_id, p.broker, COUNT(*) n
+        SELECT p.user_id, p.broker, COUNT(*) n
           FROM positions p
           LEFT JOIN brokers b ON b.user_id=p.user_id AND b.name=p.broker
          WHERE b.id IS NULL AND COALESCE(p.quantity,0)>0{filtro}
@@ -171,29 +171,84 @@ def check_subbroker_usd_bien_formado(conn, uid: Optional[int] = None) -> List[Vi
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. Cash con moneda que no es la de su broker
 # ─────────────────────────────────────────────────────────────────────────────
+def _lado(moneda: Optional[str]) -> Optional[str]:
+    """'ARS' o 'USD' ('USDT' es el mismo dólar); None si no es ninguna de las dos."""
+    m = (moneda or "").strip().upper()
+    return "ARS" if m == "ARS" else "USD" if m in _DOLAR else None
+
+
+# Qué dice cada marca de moneda de la caja, y quién la lee.
+_QUIEN_LEE = {
+    "asset": "su rótulo (lo que muestra la pantalla)",
+    "currency": "su `currency` (la que leen primero metas, reportes e insights de la IA, "
+                "vía `behavioral._native_ccy`)",
+}
+
+
 def check_cash_moneda(conn, uid: Optional[int] = None) -> List[Violacion]:
     """El efectivo de un broker dólar no puede ser pesos, ni al revés.
 
     A diferencia de los activos —donde un broker ARS puede tener tenencias en
-    dólares— la caja SÍ vive separada por pata: por eso existe el sibling. Un
-    cash cruzado es plata contada en la moneda equivocada.
+    dólares— la caja SÍ vive separada por pata: por eso existe el sibling. Lo que
+    entra a la caja se suma en la moneda del broker (`efectivo.mover`), y con esa
+    moneda la valúa la cartera. Si una marca de la caja dice la otra, la misma
+    plata se cuenta en pesos o en dólares según quién la lea. Cuál de las dos
+    está bien no se sabe desde acá: un broker al que le cambiaron la moneda deja
+    bien la marca y mal el broker. Por eso el aviso dice que no coinciden, no
+    cuál manda.
+
+    La caja tiene DOS marcas de moneda, y se miran las dos:
+      · `asset` (el rótulo): lo que muestra la pantalla.
+      · `currency`: la lee PRIMERO `behavioral._native_ccy`, y con ella
+        `_position_value_usd` (metas, tableros e insights de la IA, reportes)
+        decide si pasa la caja de pesos a dólares. Vacía no cuenta: así nace toda
+        caja hasta que el arranque de SQLite (init_db) la completa desde el
+        rótulo, y mientras tanto `_native_ccy` lee el rótulo, que ya se mira.
+
+    EL SALDO ES `invested`, NO `quantity` (efectivo.py). Hasta 2026-10-27 esto
+    filtraba por `quantity`, que en las cajas queda vacía o en 0: no podía marcar
+    ninguna. Ahora el saldo sólo cambia el mensaje. Una caja cruzada VACÍA también
+    se marca: es la que deja un import revertido en un broker que después cambió
+    de moneda, y lo próximo que entre se cuenta mal (pipeline.py,
+    `escrituras_para_cambiar_moneda`). Vacía es la misma definición que usa el
+    resto (`efectivo.CAJA_VACIA`).
+
+    LO QUE NO VE: plata de la otra moneda guardada con las marcas de acuerdo (un
+    depósito en pesos sumado a la caja "USD" de un broker en dólares). Eso no es
+    una contradicción entre columnas y desde acá no se distingue de plata sana.
+    Tampoco mira monedas que no sean ARS/USD/USDT (`_lado` devuelve None): ningún
+    escritor de hoy las pone en una caja, y adivinar daría falsos positivos.
     """
     filtro, params = _scope(uid)
     out = []
     for r in _rows(conn, f"""
-        SELECT p.id, p.user_id, p.broker, p.asset, b.currency bc
+        SELECT p.id, p.user_id, p.broker, p.asset, p.currency pc, p.invested, b.currency bc
           FROM positions p JOIN brokers b ON b.user_id=p.user_id AND b.name=p.broker
-         WHERE p.is_cash=1 AND UPPER(COALESCE(p.asset,'')) IN ('ARS','USD','USDT')
-           AND ((UPPER(p.asset)='ARS' AND UPPER(COALESCE(b.currency,'')) IN ('USD','USDT'))
-             OR (UPPER(p.asset) IN ('USD','USDT') AND UPPER(COALESCE(b.currency,''))='ARS'))
-           AND ABS(COALESCE(p.quantity,0))>0.005{filtro}""", params):
+         WHERE p.is_cash=1{filtro}""", params):
+        lado_broker = _lado(r["bc"])
+        if lado_broker is None:
+            continue
+        marcas = [m for m, valor in (("asset", r["asset"]), ("currency", r["pc"]))
+                  if _lado(valor) not in (None, lado_broker)]
+        if not marcas:
+            continue
+        otra = "pesos" if lado_broker == "USD" else "dólares"
+        saldo = float(r["invested"] or 0)
+        vacia = abs(saldo) < efectivo.CAJA_VACIA
+        dicen = " y ".join(_QUIEN_LEE[m] for m in marcas)
+        que_pasa = (f"Las marcas de moneda de la caja de '{r['broker']}' no coinciden: el "
+                    f"broker está en {r['bc']}, pero {dicen} "
+                    f"{'dicen' if len(marcas) > 1 else 'dice'} {otra}. ")
+        que_pasa += ("Está vacía, pero lo próximo que entre se va a contar en pesos o en "
+                     "dólares según quién lo lea." if vacia else
+                     f"Sus {fmt_num(saldo, 2)} se cuentan en pesos o en dólares según "
+                     f"quién los lea.")
         out.append(Violacion(
             chequeo="cash_moneda", severidad="aviso", user_id=r["user_id"],
-            que_pasa=(f"El broker '{r['broker']}' está en {r['bc']} pero tiene caja en "
-                      f"{r['asset']}. Si no hay un sub-broker para esa pata, esa plata "
-                      f"se está sumando en la moneda equivocada."),
+            que_pasa=que_pasa,
             detalle={"position_id": r["id"], "broker": r["broker"],
-                     "cash": r["asset"], "moneda_broker": r["bc"]}))
+                     "cash": r["asset"], "currency": r["pc"], "moneda_broker": r["bc"],
+                     "saldo": saldo, "vacia": vacia, "marcas": marcas}))
     return out
 
 

@@ -7,6 +7,8 @@
 import { useState } from 'react'
 import { AlertTriangle, TrendingUp, Info, X } from 'lucide-react'
 import InsightEvidence from './InsightEvidence'
+import { usePrivacy } from '../../contexts/PrivacyContext'
+import { taparMontos } from '../../utils/ocultarSaldos'
 
 const SEVERITY_STYLE = {
   warning:  { border: 'border-rendi-warn/30', bg: 'bg-rendi-warn/[0.06]', text: 'text-rendi-warn', icon: AlertTriangle },
@@ -16,6 +18,8 @@ const SEVERITY_STYLE = {
 
 export default function InsightChip({ insight }) {
   const [open, setOpen] = useState(false)
+  // «Ocultar saldos»: el texto del hallazgo lo arma el servidor con montos adentro.
+  const { hidden: oculto } = usePrivacy()
   const style = SEVERITY_STYLE[insight.severity] || SEVERITY_STYLE.info
   const Icon = style.icon
 
@@ -27,13 +31,13 @@ export default function InsightChip({ insight }) {
       >
         <Icon size={13} strokeWidth={1.75} className={`flex-shrink-0 mt-0.5 ${style.text}`} aria-hidden="true" />
         <span className="text-xs text-ink-1 leading-snug flex-1">
-          {insight.title}
+          {oculto ? taparMontos(insight.title) : insight.title}
         </span>
       </button>
 
       {open && (
         <div className="px-3 pb-3 pt-1 text-xs leading-relaxed text-ink-2 border-t border-line/50 space-y-2">
-          <p>{insight.body}</p>
+          <p>{oculto ? taparMontos(insight.body) : insight.body}</p>
           <div className="pt-1">
             <InsightEvidence insight={insight} />
           </div>

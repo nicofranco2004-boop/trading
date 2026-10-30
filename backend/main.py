@@ -3169,6 +3169,11 @@ def init_db():
         # poda a los 13 meses y sólo se manda si la persona tocó la pantalla.
         if user_cols_after and 'app_instalada_at' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN app_instalada_at TEXT")
+        # La elección Certero/Estimado del usuario ('certero'|'estimado'|NULL).
+        # La escribe PUT /api/preferencias/modo-rendimiento; la lee `twr.modo_de`,
+        # que es el default de todo cálculo de rendimiento (pantallas, IA, informes).
+        if user_cols_after and 'modo_rendimiento' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN modo_rendimiento TEXT")
         if user_cols_after and 'aviso_vencimiento_de' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN aviso_vencimiento_de TEXT")
             conn.commit()
@@ -5884,7 +5889,9 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         # Feature gate: el tope de brokers de cada plan (PLAN_LIMITS). Grandfather:
         # usuarios preexistentes con más conservan sus brokers pero no agregan
-        # más hasta upgrade. Admin/Pro: sin tope.
+        # más hasta upgrade. Admin/Pro: sin tope. El turno antes de contar: sin
+        # él, diez altas juntas contaban todas «0» (auditoría E5, 29/10).
+        _tomar_turno(conn, uid)
         allowed, quota_info = plan.check_broker_quota(conn, uid)
         if not allowed:
             tier = quota_info["tier"]
@@ -5913,6 +5920,10 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
             ).fetchone()
             if not parent:
                 raise HTTPException(400, "Broker padre inválido")
+            # Una sub-cuenta es la pata en DÓLARES de su padre (el mismo motivo
+            # que el PUT, que no deja pasarla a pesos).
+            if data.currency == "ARS":
+                raise HTTPException(400, "Una sub-cuenta va en dólares (USD o USDT).")
         try:
             cur = conn.execute(
                 "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES (?,?,?,?)",
@@ -6200,6 +6211,19 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
                     "message": "El sub-broker USD se renombra automáticamente con su broker padre.",
                 },
             )
+        # 2.1) Ni se pasa a pesos: es la caja en dólares de su padre. Pasarla
+        #      remarcaba sus dólares como pesos (US$500 → $500) y después ningún
+        #      dólar podía volver a entrar a la cuenta (`por_que_no_hay_pata_usd`),
+        #      con la única salida —volver a ponerla en dólares— remarcando como
+        #      dólares los pesos que hubieran entrado mientras tanto.
+        if is_sibling and new_currency == "ARS" and row["currency"] != "ARS":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "sibling_currency_forbidden",
+                    "message": "Es la cuenta en dólares de su broker: siempre está en dólares.",
+                },
+            )
 
         # 2.5) Nombre reservado: 'global' es la CLAVE del agregado cross-broker en
         #      monthly_entries (no es un broker real — ver _update_monthly_flow(...,'global',...)).
@@ -6241,10 +6265,10 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
         if not name_changed:
             if new_currency != row["currency"]:
                 with conn:
-                    conn.execute(
-                        "UPDATE brokers SET currency=? WHERE id=? AND user_id=?",
-                        (new_currency, bid, uid),
-                    )
+                    # La moneda y el rótulo de la caja, juntos (ver la función).
+                    for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(
+                            uid, old_name, new_currency):
+                        conn.execute(_sql, _params)
                 _ai_cache_invalidate(uid)
             updated = conn.execute(
                 "SELECT * FROM brokers WHERE id=? AND user_id=?", (bid, uid)
@@ -6382,6 +6406,12 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
                 if sibling is not None:
                     _renombre_broker.anotar_nombre_anterior(
                         conn, uid, sibling["id"], old_sibling, new_sibling)
+                # Si además cambió la moneda, el rótulo de la caja la acompaña (con
+                # el nombre nuevo: las posiciones ya se renombraron arriba).
+                if new_currency != row["currency"]:
+                    for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(
+                            uid, new_name, new_currency):
+                        conn.execute(_sql, _params)
         except ERR_INTEGRIDAD as ex:
             raise HTTPException(
                 status_code=409,
@@ -12182,6 +12212,17 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
         # Sólo si CAMBIA: editar el precio de un lote no depende de esto.
         if _actual and p.broker != _actual["broker"]:
             _exigir_broker_existente(conn, uid, p.broker)
+        # Un lote en pesos no se lleva (ni se pasa) a una cuenta sin caja en pesos:
+        # después la venta manda su moneda y no hay dónde cobrar (auditoría 29/10).
+        # Sólo si CAMBIA el broker o la moneda: un lote viejo así se puede seguir
+        # editando, y pasarlo a dólares es justamente cómo se corrige.
+        _sel = conn.execute("SELECT currency FROM positions WHERE id=? AND user_id=?",
+                            (pid, uid)).fetchone() if _actual else None
+        _moneda = p.currency or (_sel["currency"] if _sel else None)
+        if (_actual and (_moneda or "").upper() == "ARS"
+                and (p.broker != _actual["broker"]
+                     or (p.currency or "").upper() != (_sel["currency"] or "").upper())):
+            _pata_de_la_moneda(conn, uid, p.broker, "ARS")   # 400 si no tiene caja en pesos
         if (p.tc_compra is None and not p.is_cash
                 and (p.currency or "").upper() == "ARS" and p.entry_date):
             # Mismo relleno que el alta: si el lote es en pesos y quedó sin TC, se
@@ -14494,14 +14535,9 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                     broker_row = conn.execute(
                         "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker_name)
                     ).fetchone()
-                # Una moneda que la cuenta no tiene (pesos en IBKR) no se acepta: antes
-                # pasaba y un depósito de $100.000 quedaba anotado como US$ 100.000.
-                if data.currency:
-                    _pedida = "ARS" if data.currency.upper() == "ARS" else "USD"
-                    _caja = "ARS" if broker_row["currency"] == "ARS" else "USD"
-                    if _pedida != _caja:
-                        raise HTTPException(400, f"{data.broker_name} no tiene caja en "
-                                                 f"{'pesos' if _pedida == 'ARS' else 'dólares'}.")
+                # Una moneda que la cuenta no tiene (pesos en IBKR) la rechaza
+                # `_pata_de_la_moneda`, para esta puerta y para la compra y la venta.
+                # Antes pasaba y un depósito de $100.000 quedaba anotado como US$ 100.000.
 
                 currency = broker_row['currency']   # 'USDT' or 'ARS'
                 sign = 1 if data.direction == 'deposit' else -1
@@ -14891,6 +14927,20 @@ def _registrar_cobro_bono(conn, uid: int, data: "BondCashflowIn") -> dict:
         cash_broker = data.cash_broker
         cash_row = conn.execute(
             "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, cash_broker)).fetchone()
+    elif data.currency and not data.cash_broker:
+        # Sin cuenta elegida, la moneda decide la pata, como en la compra y la venta:
+        # dólares "en IOL" entran a 'IOL · USD'; pesos en IBKR, 400.
+        cash_broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
+        if cash_broker != data.broker:
+            cash_row = conn.execute(
+                "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, cash_broker)).fetchone()
+    # La moneda, si viene, tiene que ser la de la caja donde entra: el monto se
+    # acredita tal cual. Antes sólo rotulaba la fila: un cupón de $50.000 en IBKR
+    # entraba como US$ 50.000 de ganancia, y uno de US$ 44 en IOL sumaba $44 a la
+    # caja de pesos (auditoría 28/10). La pantalla no la manda (acredita en la
+    # moneda de la cuenta que elige); sí la API y la bandeja.
+    if data.currency:
+        _exigir_caja_en(cash_broker, cash_row["currency"], data.currency)
 
     op_type = 'Cupón' if data.flow_type == 'coupon' else 'Amortización'
     commissions = data.commissions or 0
@@ -15583,16 +15633,33 @@ def _ensure_usd_sibling(conn, uid: int, parent_broker_row) -> dict:
     if sibling:
         return dict(sibling)
     sibling_name = f"{parent_name} · USD"
-    # Si por algún motivo ya existe un broker con ese nombre (sin parent), lo
-    # reutilizamos asignándole parent.
+    # Si ya existe un broker con ese nombre (lo creó la persona a mano, o un
+    # import), se lo adopta: padre y moneda USDT, con la caja cambiando de moneda
+    # junto con él (`escrituras_para_cambiar_moneda`). Hasta 2026-10-28 cambiaba
+    # sólo `brokers.currency`: un "Cocos · USD" creado en pesos, con $100.000,
+    # quedaba en dólares con su caja marcada 'ARS', y los US$500 que entraban se
+    # sumaban ahí ("100.500"). Si no se puede adoptar sin cambiarle el sentido a
+    # lo que tiene, 409 con el motivo (`por_que_no_hay_pata_usd`). Todo lo que
+    # crea la pata pasa por acá (import, foto, conversiones, cargas a mano, chat,
+    # compra grupal): el rechazo vale para todas las puertas, y cada una lo
+    # deshace en su transacción. La única que no es la conversión importada
+    # (`persister._persist_fx`), que corre en el SAVEPOINT de su fila; no se
+    # llega, porque el ruteo del mismo import (`persister.persist_batch`) crea la
+    # pata antes y, si no puede, rechaza el lote.
+    motivo = _import_pipeline.por_que_no_hay_pata_usd(conn, uid, parent_broker_row)
+    if motivo:
+        raise HTTPException(409, motivo)
     existing = conn.execute(
         "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, sibling_name)
     ).fetchone()
     if existing:
         conn.execute(
-            "UPDATE brokers SET parent_broker_id=?, currency='USDT' WHERE id=? AND user_id=?",
+            "UPDATE brokers SET parent_broker_id=? WHERE id=? AND user_id=?",
             (parent_id, existing['id'], uid),
         )
+        for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(
+                uid, sibling_name, 'USDT'):
+            conn.execute(_sql, _params)
         return dict(conn.execute(
             "SELECT * FROM brokers WHERE id=? AND user_id=?", (existing['id'], uid)
         ).fetchone())
@@ -15620,8 +15687,10 @@ def _pata_de_la_moneda(conn, uid: int, broker: str, currency: Optional[str],
 
       • broker ARS  + moneda USD → el sub-broker '· USD' (se crea si no existe).
       • sub-broker '· USD' de un padre ARS + moneda ARS → el padre.
-      • cualquier otro caso (sin moneda, misma moneda, broker del exterior,
-        broker desconocido) → el mismo `broker`, sin tocar nada.
+      • broker en dólares sin padre en pesos (IBKR) + moneda ARS → 400 "no tiene
+        caja en pesos" (sólo al escribir; con `crear=False` devuelve el broker).
+      • cualquier otro caso (sin moneda, misma moneda, broker desconocido) → el
+        mismo `broker`, sin tocar nada.
 
     Sin esto, una compra en dólares anotada a "Cocos" descontaba los dólares de
     la caja de PESOS, y el autodepósito del faltante quedaba asentado como pesos
@@ -15657,7 +15726,27 @@ def _pata_de_la_moneda(conn, uid: int, broker: str, currency: Optional[str],
         ).fetchone()
         if padre and padre["currency"] == "ARS":
             return padre["name"]
+    # Pesos en una cuenta que sólo tiene caja en dólares (IBKR, o un '· USD' sin
+    # padre en pesos): no hay pata a donde mandarlos. Para escribir se rechaza;
+    # devolver el mismo broker hacía que la caja en DÓLARES sumara o restara los
+    # pesos tal cual y que el faltante se anotara como aporte en dólares (medido
+    # 28/10: una compra de $50.000 en IBKR dejó un aporte de US$ 49.700). La
+    # lectura (`_pata_existente`) no rechaza: deshacer algo viejo no se bloquea.
+    if crear:
+        _exigir_caja_en(broker, row["currency"], currency)
     return broker
+
+
+def _exigir_caja_en(broker: str, moneda_de_la_caja: Optional[str], currency: str) -> None:
+    """400 si la caja de `broker` no es de la moneda `currency`. Cada caja tiene UNA
+    moneda y la plata se suma tal cual, sin convertir: pesos en una caja en dólares
+    se cuentan como dólares. Lo usan `_pata_de_la_moneda` (compra, venta,
+    depósito/retiro) y el cobro de un bono, que elige la cuenta por su lado."""
+    pedida = "ARS" if (currency or "").strip().upper() == "ARS" else "USD"
+    caja = "ARS" if (moneda_de_la_caja or "").upper() == "ARS" else "USD"
+    if pedida != caja:
+        raise HTTPException(400, f"{broker} no tiene caja en "
+                                 f"{'pesos' if pedida == 'ARS' else 'dólares'}.")
 
 
 def _pata_existente(conn, uid: int, broker: str, currency: Optional[str]) -> str:
@@ -16001,7 +16090,22 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 # @reintentar_si_trabada vuelve a llamar con el MISMO pedido, y si la
                 # primera vuelta se deshizo después de crear la pata, el reintento
                 # arrancaba con un broker que ya no existía.
-                broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
+                try:
+                    broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
+                except HTTPException as _e:
+                    # Un lote anotado en pesos en una cuenta en dólares (entró antes
+                    # del 29/10): la pantalla vende en su moneda y no hay caja donde
+                    # cobrar. Que diga cómo destrabarlo.
+                    if _e.status_code == 400 and conn.execute(
+                            "SELECT 1 FROM positions WHERE user_id=? AND broker=? AND asset=? "
+                            "AND is_cash=0 AND UPPER(COALESCE(currency,''))='ARS' LIMIT 1",
+                            (uid, data.broker, data.asset)).fetchone():
+                        raise HTTPException(400, (
+                            f"Este {data.asset} está anotado en pesos, pero {data.broker} "
+                            f"sólo tiene caja en dólares. Editá el lote: poné su moneda y "
+                            f"su precio en dólares (o movelo a tu broker en pesos) y "
+                            f"después vendé."))
+                    raise
                 # Obtener moneda del broker
                 br = conn.execute(
                     "SELECT currency FROM brokers WHERE name=? AND user_id=?", (broker, uid)
@@ -16773,7 +16877,7 @@ def insights_performance(
     hasta: str = None,
     valor_live: float = None,
     incluir_indeterminado: bool = False,
-    modo: str = "certero",
+    modo: str = None,
     moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
@@ -16802,7 +16906,8 @@ def insights_performance(
             except Exception:
                 data = {}
         import twr as _twr
-        _modo = _twr.MODO_ESTIMADO if modo == "estimado" else _twr.MODO_CERTERO
+        # Sin `modo` (o con uno inválido), el que eligió el usuario.
+        _modo = _twr.modo_de(conn, uid, modo)
         # `moneda=ars` mide la MISMA cartera en pesos: cada punta al TC de su
         # fecha, el flujo al TC medio del tramo. Antes la sección en pesos la
         # armaba el frontend sobre la cadena contable de los brokers ARS
@@ -20792,8 +20897,11 @@ def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
             meses = None
     finally:
         conn.close()
+    # `inflacion_mensual`: build_wrapped mide la inflación sobre el MISMO tramo
+    # que el retorno (el que el motor declara), no sobre el año calendario.
     return build_wrapped(year, monthly, ops, behavioral_cards, benchmarks,
-                         inflation_ytd, fx_de, rendimiento=rendimiento, meses=meses)
+                         inflation_ytd, fx_de, rendimiento=rendimiento, meses=meses,
+                         inflacion_mensual=inflation_monthly or None)
 
 
 @app.get("/api/behavioral/insights")
@@ -23172,7 +23280,9 @@ def _historical_cagr_global(conn, uid: int, modo: str = None, moneda: str = None
     "+54 % desde el 3 de julio" en vez de un anualizado inventado.
     """
     import twr as _twr
-    _modo = _twr.MODO_ESTIMADO if modo == "estimado" else _twr.MODO_CERTERO
+    # Sin `modo`: el que eligió el usuario (Metas, el diagnóstico y la IA llaman
+    # sin modo y tienen que decir el mismo número que la pantalla).
+    _modo = _twr.modo_de(conn, uid, modo)
     _moneda = _twr.MONEDA_ARS if str(moneda or "").lower() == "ars" else _twr.MONEDA_USD
     try:
         c = _twr.curva_indexada(conn, uid, modo=_modo, moneda=_moneda)
@@ -23221,7 +23331,7 @@ def _historical_cagr_global(conn, uid: int, modo: str = None, moneda: str = None
 
 
 @app.get("/api/goals/cagr")
-def historical_cagr(modo: str = "certero", moneda: str = "usd",
+def historical_cagr(modo: str = None, moneda: str = "usd",
                     uid: int = Depends(get_effective_user)):
     """El rendimiento histórico, del MISMO motor que la sección Performance
     (`twr.curva_indexada`): mismos cortes, misma cota de plausibilidad, mismo piso
@@ -42025,6 +42135,9 @@ def _atomic_insert_fact(conn, uid: int, content: str, source: str):
     default es BEGIN DEFERRED y el SELECT no toma write lock → TOCTOU.
     """
     try:
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         cur = conn.execute(
             """INSERT INTO ai_user_facts(user_id, content, source)
                SELECT ?, ?, ?
@@ -42756,6 +42869,45 @@ def import_tenencia_preview(
                 raise HTTPException(400, "La tanda no existe o no es tuya.")
         if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone():
             raise HTTPException(400, f"No encontramos el broker '{broker}'. {broker_hint}")
+        # ⚠️ LA FOTO TAMBIÉN PUEDE METER PESOS EN UN BROKER EN DÓLARES.
+        # Todo lo de abajo da por hecho que el broker es en pesos y que sus dólares
+        # van a "<broker> · USD". Si quedó en dólares (una plantilla de Rendi sólo
+        # con filas en dólares, o un import viejo con la regla de mayoría), los
+        # pesos de la foto se guardaban como dólares: medido, una caja de
+        # $1.500.000 quedaba "US$1.500.000" y el CEDEAR en pesos adentro del broker
+        # en dólares (AUDIT_plantilla_rendi_2026-10-27.md, PL1). La regla es la
+        # misma que la del import de movimientos (`que_hacer_con_pesos`): vacío →
+        # pasa a pesos; con datos, o si es la sub-cuenta en dólares → se rechaza.
+        # El cambio de moneda queda en la transacción del lote: si la vista previa
+        # no llega a guardarse, no queda escrito.
+        if (any((h.currency or "").upper() == "ARS" for h in snap.holdings)
+                or abs(snap.cash_ars or 0) > 0.005):
+            _ub = _import_pipeline.fetch_user_brokers(conn, uid)
+            _accion = _import_pipeline.que_hacer_con_pesos(conn, uid, _ub, broker)
+            if _accion == "rechazar" and _ub[broker].get("parent_broker_id"):
+                _padre = next((n for n, b in _ub.items()
+                               if b["id"] == _ub[broker]["parent_broker_id"]), "el broker principal")
+                raise HTTPException(400, f"«{broker}» es la cuenta en dólares de «{_padre}». "
+                                         f"Esta foto trae pesos: subila al broker «{_padre}» "
+                                         f"(sus dólares van solos a «{broker}»).")
+            _padre_de_nombre = broker[:-len(" · USD")] if broker.endswith(" · USD") else None
+            if (_accion == "rechazar" and _padre_de_nombre
+                    and (_ub.get(_padre_de_nombre) or {}).get("currency") == "ARS"):
+                # "Cocos · USD" sin padre todavía: el primer dólar de "Cocos" la
+                # adopta (`por_que_no_hay_pata_usd`), así que no se cura a pesos.
+                raise HTTPException(400, f"«{broker}» es el nombre de la cuenta en dólares de "
+                                         f"«{_padre_de_nombre}». Esta foto trae pesos: subila "
+                                         f"al broker «{_padre_de_nombre}».")
+            if _accion == "rechazar":
+                raise HTTPException(400, (
+                    f"Tu broker «{broker}» está en dólares y esta foto trae pesos: Rendi no "
+                    f"puede guardar pesos en una cuenta en dólares. Los brokers argentinos van "
+                    f"en pesos (sus dólares van solos a «{broker} · USD»). Para arreglarlo, "
+                    f"revertí los imports de «{broker}», cambiale la moneda a pesos y volvé a "
+                    f"subir los movimientos y la foto."))
+            if _accion == "curar":
+                for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(uid, broker, "ARS"):
+                    conn.execute(_sql, _params)
         # 🔴 CUANDO NO SE PUDO LEER LA FECHA, DECIRLO. Antes esto caía al reloj
         # del servidor en silencio y la respuesta devolvía `date: null`, que el
         # frontend ni renderiza. Medido en prod: 93 de 152 fotos confirmadas
@@ -47154,7 +47306,7 @@ def _tiene_reportes_historicos(conn, uid: int) -> bool:
 def reports_timeline(
     broker: str = "global",
     months: int = 12,
-    modo: str = "certero",
+    modo: str = None,
     moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
@@ -47174,6 +47326,8 @@ def reports_timeline(
         raise HTTPException(400, "months debe estar entre 1 y 36")
     conn = get_db()
     try:
+        import twr as _twr_rt
+        modo = _twr_rt.modo_de(conn, uid, modo)
         # Los meses pasados son de plan pago (igual que /reports/years): a quien no
         # lo tiene se le da sólo el mes en curso. Antes se mandaban los 36 y el
         # front los escondía — datos pagos viajando igual. El teaser lo pinta el
@@ -47230,7 +47384,7 @@ _REPORTES_MAX_ANOS = 12
 @app.get("/api/reports/years")
 def reports_years(
     broker: str = "global",
-    modo: str = "certero",
+    modo: str = None,
     moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
@@ -47244,11 +47398,14 @@ def reports_years(
     es como se fabricaron las divergencias que este repo viene cerrando.
 
     Cada año trae su rendimiento, la ventana que ese número cubre, y el veredicto
-    contra el S&P (y contra la inflación cuando se mide en pesos; en dólares la
-    inflación argentina no es un comparable, ver `compute_metrics_for_period`).
+    contra el S&P y contra la inflación — ésta SIEMPRE en pesos, también con el
+    selector en dólares (`builder.veredicto_inflacion`). Si el año entero no se
+    puede medir, el tramo que sí, con los mismos dos veredictos (`parcial_*`).
     """
     conn = get_db()
     try:
+        import twr as _twr_ry
+        modo = _twr_ry.modo_de(conn, uid, modo)
         hoy = _hoy_art_date()
         # El rango de años con historia: lo más viejo entre la contabilidad y las
         # fotos. Sin filtro de broker a propósito — el rango es del usuario; el
@@ -47293,6 +47450,7 @@ def reports_years(
             except Exception:
                 pass
 
+        from reporting import builder as _rb
         from reporting.builder import pair_cache
         out = []
         with pair_cache():
@@ -47314,67 +47472,12 @@ def reports_years(
                     continue
                 m = rep.metrics
                 # ⚠️ SI EL AÑO ENTERO NO SE PUEDE MEDIR, EL TRAMO QUE SÍ VALE MÁS
-                # QUE NADA. El año exige que la medición CUBRA el período: con las
-                # fotos arrancando a mitad de año, el número no se publica — y la
-                # pantalla decía "sin dos fotos a precio de mercado" con sesenta
-                # fotos en la base. Reportado desde producción: al lado, el propio
-                # Dashboard mostraba "Desde que medimos · +5,9 % · 74 días".
-                # El motor sí sabe medir ese tramo. Se publica APARTE, nunca como
-                # `pct`, y siempre con la fecha desde la que corre: "+2,15 % desde
-                # el 30 de junio" es verdadero y accionable; llamarlo "2026" sería
-                # exactamente la mentira que este trabajo viene cerrando.
-                parcial = {"parcial_pct": None, "parcial_desde": None, "parcial_hasta": None,
-                           "parcial_vs_sp500_pct": None}
-                # ⚠️ SIN EL GUARD DE `basis_incomparable`. Esa bandera dice que las dos
-                # puntas DEL AÑO están en bases distintas (el arranque de la contabilidad,
-                # el cierre a mercado) — y es exactamente el caso en que el tramo del motor
-                # más sirve, porque él sólo encadena puntos MEDIDOS y por definición no
-                # mezcla bases. Con el guard puesto, el caso reportado desde producción
-                # —fotos desde el 30/06, año incomparable— se quedaba sin nada que mostrar.
-                if m.delta_pct is None:
-                    try:
-                        import twr as _twr_p
-                        _c = _twr_p.curva_indexada(
-                            conn, uid, f"{y}-01-01", f"{y}-12-31",
-                            modo=(_twr_p.MODO_ESTIMADO if modo == "estimado" else _twr_p.MODO_CERTERO),
-                            moneda=(_twr_p.MONEDA_ARS if str(moneda).lower() == "ars"
-                                    else _twr_p.MONEDA_USD))
-                        if _c.get("twr") is not None and _c.get("ventana_desde"):
-                            parcial["parcial_pct"] = round(_c["twr"] * 100, 2)
-                            parcial["parcial_desde"] = _c["ventana_desde"]
-                            parcial["parcial_hasta"] = _c["ventana_hasta"]
-                            # El veredicto del tramo se mide en el MISMO tramo.
-                            # ⚠️ Y EN LA MISMA MONEDA (F6). `parcial_pct` sale de
-                            # `curva_indexada`, que recibe `moneda` cuatro líneas
-                            # arriba y devuelve pesos cuando el selector está en
-                            # Pesos. El S&P de esta resta salía SIEMPRE en dólares,
-                            # así que con el selector en Pesos le regalaba la
-                            # devaluación entera al veredicto — el mismo defecto
-                            # que el `vs_sp500_pct` del año completo, en el tramo
-                            # parcial, que es justamente el que se publica cuando
-                            # el año completo no se puede medir.
-                            #
-                            # TERCER call site del mismo patrón en la misma
-                            # pantalla; los otros dos viven en `reporting/builder`
-                            # y ya lo tienen. La conversión NO se copia acá: se le
-                            # pide a `benchmark_entre_fechas` declarando `moneda`,
-                            # y el primitivo decide. Sin TC devuelve None y no se
-                            # publica, que es mejor que publicarlo cruzado.
-                            from reporting.builder import benchmark_entre_fechas as _bef
-                            _fx_parcial = None
-                            if str(moneda).lower() == "ars":
-                                try:
-                                    _fx_parcial = _twr_p.serie_fx(
-                                        conn, None, _c["ventana_hasta"])[0]
-                                except Exception:
-                                    log.exception("serie_fx tramo parcial uid=%s", uid)
-                            _sp = _bef(bench_data, _c["ventana_desde"], _c["ventana_hasta"],
-                                       "sp500", fx=_fx_parcial, moneda=moneda)
-                            if _sp is not None:
-                                parcial["parcial_vs_sp500_pct"] = round(
-                                    parcial["parcial_pct"] - _sp, 2)
-                    except Exception:
-                        log.exception("tramo parcial uid=%s year=%s", uid, y)
+                # QUE NADA — con su "vs S&P" y su "vs inflación", medidos en ese
+                # tramo y en el modo pedido. Lo mide `compute_metrics_for_period`
+                # con la MISMA curva que el año (valor vivo, sólo cartera entera);
+                # acá sólo se copia. Antes se pedía acá una segunda curva, que traía
+                # el S&P y no la inflación.
+                parcial = _rb.tramo_parcial(m)
                 # Un año sin una sola operación, sin flujos y sin movimiento no se
                 # lista: ocupa una fila y no dice nada. El año en curso siempre va
                 # —es el que el inicio muestra— aunque todavía esté vacío.
@@ -47422,6 +47525,8 @@ def reports_years(
                     # la pantalla pueda mostrar los dos números de la misma resta: si
                     # muestra un retorno y el veredicto salió de otro, se contradice sola.
                     "retorno_ars_pct": m.retorno_ars_pct,
+                    # Por qué no hay veredicto contra la inflación, si hay número.
+                    "vs_inflation_motivo": m.vs_inflation_motivo,
                     "deposits": m.deposits,
                     "withdrawals": m.withdrawals,
                     "realized_pnl": m.realized_pnl,
@@ -47444,7 +47549,7 @@ def reports_years(
 def reports_period_detail(
     period_type: str, period_key: str,
     broker: str = "global",
-    modo: str = "certero",
+    modo: str = None,
     moneda: str = "usd",
     uid: int = Depends(get_effective_user),
 ):
@@ -47454,6 +47559,8 @@ def reports_period_detail(
         raise HTTPException(400, "period_type inválido")
     conn = get_db()
     try:
+        import twr as _twr_pd
+        modo = _twr_pd.modo_de(conn, uid, modo)
         # Los períodos CERRADOS son de plan pago; el EN CURSO es gratis (lo muestra
         # el inicio). Un deep-link directo a un período pasado desde una cuenta sin
         # plan se corta acá, no sólo en la pantalla.
@@ -47824,6 +47931,24 @@ def _moneda_del_aviso(symbol: str, currency) -> str:
     return "USD"
 
 
+def _exigir_cupo_de_alertas(conn, uid: int, *, con_turno: bool = True) -> None:
+    """403 si la persona llegó al tope de alertas de su plan (check_alert_quota).
+
+    `con_turno`: toma antes el turno de escritura de la cuenta (`_tomar_turno`),
+    así contar y guardar son un solo paso. Sin él, diez altas que llegaban juntas
+    contaban todas «1 de 3» y guardaban las diez (auditoría E5, 29/10). Se llama
+    sin turno al principio (para contestar rápido, antes de ir a Yahoo) y CON
+    turno justo antes del INSERT, que es el conteo que decide."""
+    from ai import plan as _plan
+    if con_turno:
+        _tomar_turno(conn, uid)
+    allowed, info = _plan.check_alert_quota(conn, uid)
+    if not allowed:
+        raise HTTPException(403, {
+            "error": "Llegaste al límite de alertas de tu plan.",
+            "quota": info, "upgrade": True})
+
+
 @app.post("/api/alerts")
 def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
     """Crea una alerta. Gatea por cantidad (check_alert_quota) y por capacidad
@@ -47832,11 +47957,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
     from ai import plan as _plan
     conn = get_db()
     try:
-        allowed, info = _plan.check_alert_quota(conn, uid)
-        if not allowed:
-            raise HTTPException(403, {
-                "error": "Llegaste al límite de alertas de tu plan.",
-                "quota": info, "upgrade": True})
+        _exigir_cupo_de_alertas(conn, uid, con_turno=False)
         if data.kind == "pct_move" and not _plan.can_access(conn, uid, "alerts.pct_move"):
             raise HTTPException(403, {
                 "error": "Las alertas de variación (%) son de Rendi Plus.",
@@ -47893,6 +48014,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
             elif baseline == "set_price":
                 anchor_price = current_price   # "Desde ahora": ancla = precio actual
 
+        _exigir_cupo_de_alertas(conn, uid)
         cur = conn.execute(
             """INSERT INTO alerts
                (user_id, kind, symbol, scope, direction, threshold, up_pct, down_pct,
@@ -48008,7 +48130,7 @@ def _evaluar_alertas_job() -> dict:
         try:
             result = _ae.evaluate_alerts(conn)
         except Exception as _ex:
-            log.error("alertas de precio en el cron: %s", _ex)
+            log.error("alertas de precio en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
             result = {"error_precio": str(_ex)}
             # Lo que quedó a medias no puede confirmarse con el primer commit
             # de las alertas del libro, que usan esta misma conexión: alertas
@@ -48025,7 +48147,7 @@ def _evaluar_alertas_job() -> dict:
             result["advisor"] = advisor_alerts.evaluate(
                 conn, market_open=_ae._market_open_now(_dtmod.utcnow()))
         except Exception as _ex:
-            log.error("advisor alerts en el cron: %s", _ex)
+            log.error("advisor alerts en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
         log.info("alertas: %s", result)
         return result
     finally:
@@ -48313,6 +48435,9 @@ def advisor_groups_create(data: AdvisorGroupIn, uid: int = Depends(get_current_u
         rules = ag.normalize_rules(data.rules)
         if not rules:
             raise HTTPException(400, "Elegí al menos una condición para el grupo.")
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         n = conn.execute("SELECT COUNT(*) c FROM advisor_groups WHERE advisor_uid=?",
                          (uid,)).fetchone()["c"]
         if n >= ag.MAX_GROUPS:
@@ -48769,6 +48894,43 @@ def push_status(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+class ModoRendimientoIn(BaseModel):
+    modo: str
+
+
+@app.get("/api/preferencias/modo-rendimiento")
+def leer_modo_rendimiento(uid: int = Depends(get_current_user)):
+    """La elección guardada de la PERSONA autenticada (un asesor mirando a un
+    cliente ve su propio toggle). `modo: null` = nunca eligió."""
+    import twr as _twr_pm
+    with db_abierta() as conn:
+        try:
+            r = conn.execute("SELECT modo_rendimiento FROM users WHERE id = ?", (uid,)).fetchone()
+        except Exception:
+            r = None
+    v = (r["modo_rendimiento"] if r else None)
+    return {"modo": v if v in _twr_pm.MODOS else None}
+
+
+@app.put("/api/preferencias/modo-rendimiento")
+def guardar_modo_rendimiento(body: ModoRendimientoIn, request: Request,
+                             uid: int = Depends(get_current_user)):
+    """Guarda la elección Certero/Estimado del usuario. Dura hasta que la cambie.
+
+    La lee `twr.modo_de`, que es el default de TODO cálculo de rendimiento: las
+    pantallas que no mandan `modo`, la IA, los informes. Antes la elección vivía
+    en cuatro `useState` de cuatro pantallas y en ningún lado más."""
+    import twr as _twr_pm
+    modo = str(body.modo or "").strip().lower()
+    if modo not in _twr_pm.MODOS:
+        raise HTTPException(400, "modo debe ser 'certero' o 'estimado'")
+    _check_rate_limit(request, max_calls=120, window_seconds=3600, suffix=f"modo_rend:{uid}")
+    with db_abierta() as conn:
+        conn.execute("UPDATE users SET modo_rendimiento = ? WHERE id = ?", (modo, uid))
+        conn.commit()
+    return {"modo": modo}
+
+
 @app.get("/api/primeros-pasos")
 def primeros_pasos(uid: int = Depends(get_current_user)):
     """Lo que la lista de primeros pasos de Inicio no puede saber desde el
@@ -49118,15 +49280,19 @@ def advisor_create_client(
         # Cap duro de clientes activos: sin esto, una cuenta advisor comprometida
         # podría inflar `users` sin límite (los shadows no los recolecta nadie), y
         # los IN(...) del roster/book reventarían el tope de variables de SQLite.
+        synthetic_email = f"cliente.{_secrets.token_hex(6)}@{_SHADOW_EMAIL_DOMAIN}"
+        # Password random hasheado: nadie puede loguear con esta cuenta hasta
+        # que el flujo de invitación/claim (F4) setee una contraseña real. ANTES
+        # del turno: el hash tarda ~0,3 s y con el turno tomado nadie escribe.
+        random_hash = pwd_ctx.hash(_secrets.token_urlsafe(24))
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         n_active = conn.execute(
             "SELECT COUNT(*) c FROM advisor_clients WHERE advisor_uid=? AND status='active'",
             (uid,)).fetchone()["c"]
         if n_active >= ADVISOR_MAX_CLIENTS:
             raise HTTPException(400, f"Llegaste al máximo de {ADVISOR_MAX_CLIENTS} clientes activos.")
-        synthetic_email = f"cliente.{_secrets.token_hex(6)}@{_SHADOW_EMAIL_DOMAIN}"
-        # Password random hasheado: nadie puede loguear con esta cuenta hasta
-        # que el flujo de invitación/claim (F4) setee una contraseña real.
-        random_hash = pwd_ctx.hash(_secrets.token_urlsafe(24))
         with conn:
             cur = conn.execute(
                 """INSERT INTO users (email, name, password_hash, is_admin,
@@ -49465,6 +49631,9 @@ def advisor_invite_client(
         # a alguien usando el mismo shadow para probar/spammear muchos emails
         # de terceros — esto es además del rate-limit general de arriba
         # (10/300s por asesor).
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         sent_today = conn.execute(
             """SELECT COUNT(*) AS n FROM advisor_claim_tokens
                WHERE user_id=? AND created_at > datetime('now', '-1 day')""",
@@ -49577,6 +49746,9 @@ def _advisor_link_request(conn, uid: int, shadow_uid: int, target, data: Advisor
 
     # Tope diario por (asesor, cuenta): del otro lado hay una persona real que
     # todavía no contestó.
+    # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+    # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+    _tomar_turno(conn, uid)
     recientes = conn.execute(
         """SELECT COUNT(*) c FROM advisor_link_requests
            WHERE advisor_uid=? AND client_uid=? AND created_at > datetime('now', '-1 day')""",
@@ -49662,6 +49834,9 @@ def _apply_link_request(conn, req, accept: bool) -> dict:
         # El cap del plan se chequea al ACEPTAR, no al pedir: entre el pedido y
         # el sí pueden haber pasado dos semanas y un libro entero. Solo descuenta
         # la ficha si de verdad va a salir del libro.
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, advisor_uid)
         n_active = conn.execute(
             "SELECT COUNT(*) c FROM advisor_clients WHERE advisor_uid=? AND status='active'",
             (advisor_uid,)).fetchone()["c"]
@@ -51123,7 +51298,16 @@ def _advisor_group_op_apply(uid: int, asset: str, asset_type, currency, entry_da
             # (_pata_de_la_moneda, adentro de _insert_manual_position), igual que
             # una compra del propio cliente. Pesos en un broker en dólares, no.
             if batch_ccy and _ccy_family(batch_ccy) == "USD" and bc == "ARS":
-                pass
+                # Salvo que ese cliente no pueda tener la pata (un "· USD" suyo en
+                # pesos con movimientos): `_ensure_usd_sibling` rechazaría con 409
+                # y, como todo se aplica en UNA transacción, se caía el lote de
+                # todos los clientes por uno solo.
+                _padre = conn.execute("SELECT id, name FROM brokers WHERE user_id=? AND name=?",
+                                      (cid, row["broker"])).fetchone()
+                _motivo = _import_pipeline.por_que_no_hay_pata_usd(conn, cid, _padre)
+                if _motivo:
+                    skipped.append({"client_uid": cid, "reason": _motivo})
+                    continue
             elif batch_ccy and _ccy_family(batch_ccy) != _ccy_family(bc):
                 hint = ""
                 skipped.append({"client_uid": cid,

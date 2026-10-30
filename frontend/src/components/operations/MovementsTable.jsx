@@ -14,7 +14,6 @@ import {
   ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Repeat,
 } from 'lucide-react'
 import { colorClass } from '../../utils/format'
-import { fmtConvertedRaw } from '../../contexts/CurrencyContext'
 import EmptyState from '../EmptyState'
 import { TYPE_META, puedeBorrarMovimiento, amountClassFor } from './shared'
 
@@ -241,7 +240,7 @@ function MovementGroupRow({ conNueva = false, group, groupBy, isOpen, onToggle, 
       <td className={`px-3 py-2.5 text-right font-mono font-semibold tabular ${colorClass(hasPnl ? pnl : null)}`}>
         <span className="inline-flex items-center gap-1 justify-end">
           {Arrow && <Arrow size={13} strokeWidth={2.25} aria-hidden="true" />}
-          {hasPnl ? fmtConvertedRaw(pnlDisp, histMoney.currency, { signed: true, decimals: 2 }) : '—'}
+          {hasPnl ? histMoney.fmtMonto(pnlDisp, { signed: true, decimals: 2 }) : '—'}
         </span>
       </td>
       {/* Notas — hint del P&L + tacho del activo entero */}

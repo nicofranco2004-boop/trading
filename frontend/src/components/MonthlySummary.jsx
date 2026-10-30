@@ -17,6 +17,7 @@ import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { realizadoDeLaFilaMensual, sumarRealizadoMeses, notaDelRealizado } from '../utils/realizadoEnPesos'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import { confirmar } from '../utils/confirmar'
 
 const RECENT_MONTHS_DEFAULT = 6
@@ -63,6 +64,9 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   const initialTab = searchParams.get('broker') || 'global'
 
   const { valuationDollar } = useCurrency()
+  // «Ocultar saldos»: la tabla del mes y la conciliación son tu plata; quedan
+  // los % (30/10: el resumen mensual no miraba el ojito).
+  const { hidden: oculto } = usePrivacy()
 
   const [entries, setEntries] = useState([])
   const [brokers, setBrokers] = useState([])
@@ -220,6 +224,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   // historical FX rate of (year, month) for ARS tabs.
   function fmtMoney(v, year, month) {
     if (v == null) return '—'
+    if (oculto) return OCULTO
     if (!tabIsARS) return `$${usd(v)}`
     return ars(valueAt(v, year, month))
   }
@@ -228,6 +233,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   // Used for totals: each row pre-converted with valueAt(), then summed.
   function fmtMoneyDirect(v) {
     if (v == null) return '—'
+    if (oculto) return OCULTO
     return tabIsARS ? ars(v) : `$${usd(v)}`
   }
 
@@ -895,6 +901,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
 // Si live ≠ mes en curso por un margen significativo, surfacea el delta y la
 // causa probable: "no se sincronizó aún" o "drift por FX cash ARS / commissions".
 function ConciliationBanner({ live, entries }) {
+  const { hidden: oculto } = usePrivacy()
+  const plata = (v) => (oculto ? OCULTO : `$${usd(v)}`)
   if (!entries || entries.length === 0) return null
   const sorted = [...entries].sort((a, b) =>
     a.year !== b.year ? a.year - b.year : a.month - b.month
@@ -931,7 +939,7 @@ function ConciliationBanner({ live, entries }) {
             Valor actual (live)
           </div>
           <p className="text-lg font-medium text-ink-0 mt-1 num">
-            ${usd(live)}
+            {plata(live)}
           </p>
           <p className="text-[10px] text-ink-3 mt-0.5 leading-tight">
             Coincide con el Dashboard. Calculado con precios actuales de mercado.
@@ -943,7 +951,7 @@ function ConciliationBanner({ live, entries }) {
             Mes en curso · cap. final
           </div>
           <p className={`text-lg font-bold mt-1 tabular ${significantDrift ? 'text-amber-600 dark:text-amber-400' : 'text-ink-0 dark:text-white'}`}>
-            {currentCapFinal != null ? `$${usd(currentCapFinal)}` : '—'}
+            {currentCapFinal != null ? plata(currentCapFinal) : '—'}
           </p>
           <p className="text-[10px] text-ink-3 mt-0.5 leading-tight">
             {current ? `${MONTHS[current.month - 1]} ${current.year} · ver fila marcada "EN CURSO".` : '—'}
@@ -955,7 +963,7 @@ function ConciliationBanner({ live, entries }) {
             Último mes cerrado
           </div>
           <p className="text-lg font-bold text-ink-0 dark:text-white mt-1 tabular">
-            {lastClosed ? `$${usd(lastClosed.capital_final || 0)}` : '—'}
+            {lastClosed ? plata(lastClosed.capital_final || 0) : '—'}
           </p>
           <p className="text-[10px] text-ink-3 mt-0.5 leading-tight">
             {lastClosed
@@ -969,7 +977,7 @@ function ConciliationBanner({ live, entries }) {
         <div className="mt-3 flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-500/[0.06] border border-amber-500/20 rounded-md px-3 py-2">
           <span className="mt-0.5">⚠</span>
           <div className="leading-snug">
-            Diferencia de <span className="font-semibold tabular">${usd(Math.abs(drift))}</span>
+            Diferencia de <span className="font-semibold tabular">{plata(Math.abs(drift))}</span>
             {' '}entre el valor actual y el capital final del mes en curso. Causas habituales:
             <ul className="mt-1 ml-3 list-disc list-inside text-ink-2">
               <li>Variación del dólar blue con cash ARS en cartera: el equivalente en USD cambia sin operaciones.</li>

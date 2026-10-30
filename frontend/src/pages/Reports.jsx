@@ -27,10 +27,13 @@ import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { api } from '../utils/api'
 import ModoRendimiento from '../components/ModoRendimiento'
 import { useCurrency } from '../contexts/CurrencyContext'
+import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 import { PesosDelPeriodoProvider, usePesosDelPeriodo } from '../hooks/usePesosDelPeriodo'
 import { hoyISO, fechaISO } from '../utils/fecha'
 import { claveSemanaISO } from '../utils/semanas'
 import { pctVar, pctColor, pctVarSign, ppVarFino, montoColor, montoEsCero } from '../utils/format'
+import { OCULTO } from '../contexts/PrivacyContext'
+import { taparMontosEnTodo } from '../utils/ocultarSaldos'
 
 // ─── Helpers de fecha / keys ─────────────────────────────────────────────────
 
@@ -153,10 +156,10 @@ export default function Reports() {
   const [broker, setBroker] = useState('global')
   // El MISMO par de controles que Métricas y Dashboard, con el mismo motor
   // detrás: la moneda la manda el selector global (vive en el shell) y el modo
-  // es local a la pantalla, igual que en Dashboard.
+  // es el guardado de toda la app (ModoRendimientoContext), igual que en Dashboard.
   const { currency } = useCurrency()
   const moneda = currency === 'ARS' ? 'ars' : 'usd'
-  const [modoRend, setModoRend] = useState('certero')
+  const [modoRend, setModoRend] = useModoRendimiento()
   // 36 meses, no 12: el calendario dibuja una banda por AÑO, y con 12 meses los
   // años anteriores salían con la mitad de las celdas vacías — que además era lo
   // que el total paralelo del calendario tomaba como "+0%".
@@ -478,6 +481,11 @@ export function PeriodRow({ period, expanded, onToggle }) {
   const usd = noBasis ? null : period?.metrics?.delta_usd
   // El monto, al dólar del cierre del período (utils/periodoEnPesos.js).
   const pesos = usePesosDelPeriodo()
+  // «Ocultar saldos»: los montos de esta tarjeta, tapados (los % no).
+  const plata = (v, m, o) => (pesos.oculto ? OCULTO : plataRaw(v, m, o))
+  // Y los textos que arma el servidor con montos adentro (la narración del
+  // período: «perdiste US$ 528 sobre un capital de US$ 123.081»).
+  if (pesos.oculto) period = taparMontosEnTodo(period)
   const usdVista = usd == null ? null : pesos.enVista(period).resultado
   // Uno o dos decimales según el tamaño, y el color del número que se ve.
   const decs = pct != null && Math.abs(pct) >= 10 ? 1 : 2
@@ -558,6 +566,11 @@ export function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   const [showTech, setShowTech] = useState(false)
   // Los montos en la moneda en que se mira, cada uno al dólar de su fecha.
   const pesos = usePesosDelPeriodo()
+  // «Ocultar saldos»: los montos de esta tarjeta, tapados (los % no).
+  const plata = (v, m, o) => (pesos.oculto ? OCULTO : plataRaw(v, m, o))
+  // Y los textos que arma el servidor con montos adentro (la narración del
+  // período: «perdiste US$ 528 sobre un capital de US$ 123.081»).
+  if (pesos.oculto) period = taparMontosEnTodo(period)
   if (loading) {
     return (
       <div className="p-10 text-center text-ink-3">
@@ -1020,7 +1033,7 @@ function KVRow({ label, value, sub, tone }) {
 
 // Un monto YA en `moneda` ('USD' | 'ARS'), con el formato de esta pantalla
 // ("+US$ 1.234" / "+$ 1.234.567"): el número no se convierte acá.
-function plata(v, moneda, { signed = false } = {}) {
+function plataRaw(v, moneda, { signed = false } = {}) {
   if (v == null || !Number.isFinite(v)) return '—'
   const signo = signed ? (v >= 0 ? '+' : '−') : (v < 0 ? '−' : '')
   return `${signo}${moneda === 'ARS' ? '$' : 'US$'} ${fmtNum(Math.abs(v))}`

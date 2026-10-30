@@ -49,7 +49,23 @@ export default defineConfig(({ mode, isSsrBuild }) => {
         // poder levantar DOS worktrees a la vez: con el 8000 tomado por otra copia
         // del proyecto, un literal acá manda las llamadas de esta app al backend
         // de la otra — y la pantalla miente sin un solo error visible.
-        '/api': process.env.VITE_BACKEND_URL || 'http://localhost:8000',
+        //
+        // Apuntado a un backend con https (VITE_BACKEND_URL=https://…railway.app,
+        // para mirar el frontend local con una cuenta real), la cookie de sesión
+        // vuelve con `Secure` y la página corre en http://localhost: Safari la
+        // descarta, /api/auth/me da 401 y la app te devuelve a la portada justo
+        // después de entrar. Acá se le saca `Secure` SÓLO a la respuesta que
+        // llega por este proxy de desarrollo; producción no pasa por acá.
+        '/api': {
+          target: process.env.VITE_BACKEND_URL || 'http://localhost:8000',
+          changeOrigin: true,
+          configure: (proxy) => {
+            proxy.on('proxyRes', (res) => {
+              const sc = res.headers['set-cookie']
+              if (sc) res.headers['set-cookie'] = sc.map(c => c.replace(/;\s*secure/gi, ''))
+            })
+          },
+        },
       },
     },
     build: {

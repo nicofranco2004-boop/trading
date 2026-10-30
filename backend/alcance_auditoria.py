@@ -201,6 +201,17 @@ LECTURA = [
      "mirarlas ANTES de publicar el arreglo. Al lado: cuántas tenencias entran a la lista de "
      "cripto, cuántas eran cripto valuada como acción (Fetch.ai 394 veces de más), cuántas "
      "estaban en pesos sin precio y cuántas criptos quedan afuera (DASH, ROSE, AGIX)."),
+    # ── Seagate = STX: el tipo guardado manda (medir ANTES de publicar, 2026-10-30) ──
+    ("Q15", "tenencias_que_cambian_de_valor",
+     "¿A cuántas tenencias les cambiaría el precio el arreglo de Seagate?",
+     _mayor_a(0),
+     "Hoy un código de la lista de cripto se valúa como la cripto aunque la persona lo "
+     "haya cargado como acción: Seagate (STX) vale lo que Stacks, mil veces menos. El "
+     "arreglo hace que mande el tipo guardado. Éstas son las tenencias abiertas con código "
+     "de cripto y tipo de acción o fondo: el día que se publique pasan a valer la acción. "
+     "Al lado: las que están en un exchange (ahí lo más probable es que sean la cripto con "
+     "el tipo mal puesto), las que están en una cuenta en pesos (la acción de EE.UU. no "
+     "tiene precio en pesos) y los códigos en uso."),
 ]
 
 

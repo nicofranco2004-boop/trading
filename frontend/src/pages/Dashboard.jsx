@@ -1,4 +1,5 @@
 import ModoRendimiento from '../components/ModoRendimiento'
+import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
@@ -30,7 +31,7 @@ import { useNumeroQueCambia } from '../hooks/useNumeroQueCambia'
 import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
-import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
+import { usePrivacy, PrivacyMask, OCULTO } from '../contexts/PrivacyContext'
 import { useFxHistory, useDolarMensual } from '../hooks/useFxHistory'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
@@ -42,6 +43,8 @@ import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDonut'
+import BotonCompartir from '../components/BotonCompartir'
+import { specDeAportes } from '../utils/shareCard'
 import { computeClassBreakdown } from '../utils/assetClass'
 import { assetSlicesFromPositions } from '../utils/bookComposition'
 import DistribucionPorActivo from '../components/DistribucionPorActivo'
@@ -100,8 +103,9 @@ function PersonalDashboard() {
   const plan = usePlanFeatures()
   // El rendimiento histórico sale del MOTOR CANÓNICO (`/goals/cagr`, que es
   // `twr.curva_indexada`), no de un cálculo propio del Dashboard. Y con los mismos
-  // dos modos que la tarjeta de Performance de Métricas.
-  const [modoRend, setModoRend] = useState('certero')
+  // dos modos que la tarjeta de Performance de Métricas — y la MISMA elección,
+  // guardada hasta que el usuario la cambie (ModoRendimientoContext).
+  const [modoRend, setModoRend] = useModoRendimiento()
   const [rendHist, setRendHist] = useState(null)
   // Fase A (2026-05-31): toggle currency global compartido entre Dashboard,
   // HomeMobile, PositionsMobile via CurrencyContext. Antes era local state
@@ -877,8 +881,15 @@ function PersonalDashboard() {
   // Helper: convierte USD → moneda activa para mostrar.
   // Para ARS multiplica por tcValuacion actual (snapshot). No es histórico — los
   // valores de snapshot se ven al FX de hoy. Lo aclaramos en el hero.
+  //
+  // «Ocultar saldos» vive en estos formateadores y no tarjeta por tarjeta: todo
+  // lo que formatean es plata tuya. Antes cada tarjeta tenía que acordarse
+  // (`oculto={hidden}`, <PrivacyMask>) y las que no se acordaron —Rendimiento
+  // «Hoy/Este mes», las tres tortas, Principales posiciones— mostraban los
+  // montos con el ojito prendido (30/10). Los % no pasan por acá.
   const fmt = (usdValue) => {
     if (usdValue == null) return '—'
+    if (hidden) return OCULTO
     return currency === 'ARS'
       ? fmtArs(usdValue * tcValuacion)
       : fmtUsd(usdValue)
@@ -886,6 +897,7 @@ function PersonalDashboard() {
   const sign = (v) => v == null ? '' : (v >= 0 ? '+' : '−')
   const fmtSigned = (usdValue) => {
     if (usdValue == null) return '—'
+    if (hidden) return OCULTO
     return currency === 'ARS'
       ? `${sign(usdValue)}ARS ${ars(Math.abs(usdValue * tcValuacion))}`
       : `${sign(usdValue)}USD ${usd(Math.abs(usdValue))}`
@@ -894,12 +906,14 @@ function PersonalDashboard() {
   // el dólar de su fecha, o son pesos guardados) — no vuelven a multiplicar.
   const fmtDirect = (v) => {
     if (v == null) return '—'
+    if (hidden) return OCULTO
     return currency === 'ARS' ? fmtArs(v) : fmtUsd(v)
   }
   // Igual que fmtSigned pero para valores que YA vienen en la moneda de display
   // (los que convertimos nosotros con FX histórico) — no vuelve a multiplicar.
   const fmtSignedDirect = (v) => {
     if (v == null) return '—'
+    if (hidden) return OCULTO
     return currency === 'ARS'
       ? `${sign(v)}ARS ${ars(Math.abs(v))}`
       : `${sign(v)}USD ${usd(Math.abs(v))}`
@@ -1406,7 +1420,32 @@ function PersonalDashboard() {
               el destino es un candado, y un enlace que promete y no cumple es
               peor que no estar. */}
           <div className="flex flex-col items-end gap-2">
-            <RangeTabs value={range} onChange={setRange} />
+            <div className="flex items-center gap-2">
+              {/* Bajar el gráfico como imagen: aportes vs mercado. Espera a los
+                  precios (`lastUpdated`): antes el valor vivo es el COSTO y la
+                  imagen diría que el mercado no puso nada. */}
+              {lastUpdated && evoSeries.length >= 2 && resultado.valor > 0 && (
+                <BotonCompartir
+                  source="dashboard"
+                  etiqueta="Compartir aportes vs mercado"
+                  filename="rendi-aportes-vs-mercado.png"
+                  buildSpec={({ mostrarMontos, nombre }) => specDeAportes({
+                    aportado: resultado.aportado,
+                    valor: resultado.valor,
+                    ganancia: resultado.ganancia,
+                    pct: resultado.pct,
+                    // La misma serie que dibuja el gráfico, en la moneda de la vista.
+                    serie: evoSeriesDisplay.map(p => ({ ts: Date.parse(p.date), valor: p.valueUsd, aportado: p.netDeposited })),
+                    periodo: PERIODO_IMAGEN[range] || rangeLabel(range),
+                    fmt: fmtDirect,
+                    fmtConSigno: fmtSignedDirect,
+                    mostrarMontos,
+                    nombre,
+                  })}
+                />
+              )}
+              <RangeTabs value={range} onChange={setRange} />
+            </div>
             {range === '1W' && plan.can('reportes.historicos') && (
               <Link
                 to="/analisis?tab=reportes&periodo=week"
@@ -1460,6 +1499,9 @@ function PersonalDashboard() {
                     axisLine={false}
                     tickLine={false}
                     tickFormatter={v => {
+                      // «Ocultar saldos»: el eje dice cuánto vale tu cartera
+                      // («US$42k»); con el ojito, sin números (la forma queda).
+                      if (hidden) return ''
                       // Audit fix C1: evoSeriesDisplay YA está convertido a la
                       // currency del toggle. Acá solo formateamos con símbolo.
                       const abs = Math.abs(v)
@@ -1481,7 +1523,7 @@ function PersonalDashboard() {
                       // Audit fix C1: data ya está en la currency target.
                       // Solo formateamos. Mismo valor que el axis.
                       const label = name === 'valueUsd' ? 'Valor' : 'Aportado'
-                      return [currency === 'ARS' ? fmtArs(v) : fmtUsd(v), label]
+                      return [hidden ? OCULTO : currency === 'ARS' ? fmtArs(v) : fmtUsd(v), label]
                     }}
                     labelFormatter={(label, payload) => {
                       // Mostramos la fecha + el FX que se usó para ese punto
@@ -1565,6 +1607,7 @@ function PersonalDashboard() {
           >
             <TopHoldingsPanel
               positions={positionsForInsight}
+              oculto={hidden}
               currency={currency}
               tcValuacion={tcValuacion}
             />
@@ -1592,6 +1635,9 @@ function PersonalDashboard() {
           >
           <CompositionDonut
             title="Distribución por tipo de activo"
+            // Sin precios (`lastUpdated`) las tortas valen al costo: no se exportan.
+            compartir={lastUpdated ? 'dashboard' : null}
+            compartirConDetalle
             items={classBreakdown.items}
             fmt={compFmt}
             info={
@@ -1619,6 +1665,8 @@ function PersonalDashboard() {
           >
           <CompositionDonut
             title="Distribución por sector"
+            // Sin precios (`lastUpdated`) las tortas valen al costo: no se exportan.
+            compartir={lastUpdated ? 'dashboard' : null}
             items={sectorBreakdown.items}
             fmt={compFmt}
             info={
@@ -1692,6 +1740,13 @@ function PersonalDashboard() {
       <MonthlyTeaser mesEnCurso={monthlyVar} />
     </div>
   )
+}
+
+// El período como lo dice la imagen para compartir ("Último año"); el de
+// rangeLabel va en medio de una frase ("en 1 año").
+const PERIODO_IMAGEN = {
+  '1D': 'Último día', '1W': 'Última semana', '1M': 'Último mes',
+  '6M': 'Últimos 6 meses', '1Y': 'Último año', MAX: 'Desde el inicio',
 }
 
 function rangeLabel(id) {
@@ -1792,10 +1847,12 @@ function KpiCell({ label, value, sub, tone, info, infoAlign = 'right',
 // ─── Top holdings panel ──────────────────────────────────────────────────────
 // Tabla compacta: top 5 holdings por value_usd, con sparkline 30d lazy.
 
-function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
-  const fmt = (v) => currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v)
+function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1, oculto = false }) {
+  // Con «Ocultar saldos» quedan el activo y su %, como en la Cartera.
+  const fmt = (v) => oculto ? OCULTO : currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v)
   const fmtSigned = (v) => {
     if (v == null) return ''
+    if (oculto) return OCULTO
     const s = v >= 0 ? '+' : '−'
     return currency === 'ARS'
       ? `${s}${ars(Math.abs(v * tcValuacion))}`

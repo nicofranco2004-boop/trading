@@ -32,6 +32,8 @@ import WeekCard from './WeekCard'
 import Pill from '../Pill'
 import AskAIAbout from '../ai/AskAIAbout'
 import { usePesosDelPeriodo, PeriodoEnVista } from '../../hooks/usePesosDelPeriodo'
+import { usePrivacy } from '../../contexts/PrivacyContext'
+import { taparMontosEnTodo } from '../../utils/ocultarSaldos'
 import { pctVar, pctColor } from '../../utils/format'
 
 function daysUntilPeriodEnd(period_end_iso) {
@@ -52,7 +54,10 @@ function daysUntilPeriodEnd(period_end_iso) {
 // Acepta `period` (recibe day/week/month/year). `month` se mantiene como
 // alias por back-compat con callers existentes.
 export default function MonthCard({ period, month, defaultExpanded = false }) {
-  const p = period || month
+  // «Ocultar saldos»: la narración del mes viene del servidor con montos
+  // adentro («Aportaste US$ 2.000…»): se tapan; los números pasan por `pesos.fmt`.
+  const { hidden: oculto } = usePrivacy()
+  const p = oculto ? taparMontosEnTodo(period || month) : (period || month)
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [weeksOpen, setWeeksOpen] = useState(false)
   const [metricsOpen, setMetricsOpen] = useState(false)

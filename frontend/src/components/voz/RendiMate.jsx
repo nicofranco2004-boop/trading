@@ -16,7 +16,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Volume2, VolumeX, X, Play, Pause, Send, Loader2, ArrowUpRight } from 'lucide-react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useMicrofono } from './BotonMicrofono'
 import { useVoz, RATES, esRecienLlegada, escribiendoEn } from '../../contexts/VozContext'
 import CursorEscribiendo from '../ai/CursorEscribiendo'
@@ -46,6 +46,7 @@ export default function RendiMate() {
     open, setOpen,
     thread, sending, loading, paso, askError, sinCupo, ask, motivoSinVoz, modoLibro,
     cartera, leerCartera, persona,
+    islaVisible,
   } = useVoz()
   const [texto, setTexto] = useState('')
   // La respuesta que se está escribiendo ahora lleva un cursor al final.
@@ -113,15 +114,30 @@ export default function RendiMate() {
   })
 
   const loc = useLocation()
+  const navigate = useNavigate()
   const enElChatGrande = loc.pathname === '/ai'
   const rutaPrevia = useRef(loc.pathname)
   useEffect(() => {
     if (enElChatGrande) { setOpen(false); rutaPrevia.current = loc.pathname; return }
-    if (loc.pathname !== rutaPrevia.current && (status === 'playing' || status === 'preparing')) {
+    if (islaVisible && loc.pathname !== rutaPrevia.current && (status === 'playing' || status === 'preparing')) {
       setOpen(true)
     }
     rutaPrevia.current = loc.pathname
-  }, [loc.pathname, enElChatGrande, status, setOpen])
+  }, [loc.pathname, enElChatGrande, status, setOpen, islaVisible])
+
+  // LA ISLA APAGADA (el interruptor de la cabecera de /ai). No se dibuja en
+  // ningún lado, pero lo que la abría sigue existiendo: el ✦ Analizar de cada
+  // pantalla pregunta y abre la isla para mostrar la respuesta (VozContext →
+  // analizar). Con la isla apagada esa respuesta caería en una tarjeta que
+  // nadie ve. Se resuelve acá, en el único lugar que la dibuja, y no en cada
+  // botón: "abrir la isla" con la isla apagada pasa a ser "ir al chat", donde
+  // está la misma conversación.
+  useEffect(() => {
+    if (open && !islaVisible && !enElChatGrande) {
+      setOpen(false)
+      navigate('/ai')
+    }
+  }, [open, islaVisible, enElChatGrande, setOpen, navigate])
 
   // EL GRABADOR NO PUEDE SEGUIR SI SU PANEL NO ESTÁ A LA VISTA.
   //
@@ -131,7 +147,7 @@ export default function RendiMate() {
   // 30 segundos, sin nada en pantalla que lo pare, y encima al terminar se
   // gasta una transcripción que nadie va a ver. Visto leyendo el código, no en
   // el navegador: acá el micrófono no se puede probar.
-  const panelALaVista = open && !enElChatGrande
+  const panelALaVista = open && !enElChatGrande && islaVisible
   const { grabando: micGrabando, cancelar: micCancelar } = mic
   useEffect(() => {
     if (!panelALaVista && micGrabando) micCancelar()
@@ -187,13 +203,14 @@ export default function RendiMate() {
   //   · cambió la persona o el cliente (`persona`), o se pasó del libro a un
   //     cliente (`modoLibro`).
   useEffect(() => {
-    if (open && !enElChatGrande) leerCartera()
-  }, [open, enElChatGrande, persona, modoLibro, leerCartera])
+    if (open && !enElChatGrande && islaVisible) leerCartera()
+  }, [open, enElChatGrande, islaVisible, persona, modoLibro, leerCartera])
   useEffect(() => {
-    if (open && !enElChatGrande && (cartera == null || cartera.estado === 'vieja')) leerCartera()
-  }, [cartera, open, enElChatGrande, leerCartera])
+    if (open && !enElChatGrande && islaVisible && (cartera == null || cartera.estado === 'vieja')) leerCartera()
+  }, [cartera, open, enElChatGrande, islaVisible, leerCartera])
 
   if (enElChatGrande) return null
+  if (!islaVisible) return null
 
   if (!open) {
     // LA BURBUJA CERRADA. Antes decía sólo "Rendi" y no se entendía: ni que se

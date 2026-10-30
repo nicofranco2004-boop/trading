@@ -57,7 +57,7 @@ function DayGroup({ group, histMoney, onDelete, borrando, nuevas }) {
           </span>
         </div>
         <span className={`text-[11px] tabular ${colorClass(subtotalDisp)}`}>
-          {fmtConvertedCompactRaw(subtotalDisp, histMoney.currency, { signed: true })}
+          {histMoney.fmtMontoCorto(subtotalDisp, { signed: true })}
         </span>
       </div>
       <ul>

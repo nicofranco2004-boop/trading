@@ -18,6 +18,16 @@
 //     costo, y contradecía a la celda del UVA.
 //   pct ≥ 0 = "le ganás".
 //
+// El PERÍODO va escrito arriba (`desde`): las tres comparan lo que pusiste desde
+// el primer mes de tu historia contra lo que vale hoy, no el año. Y la celda de
+// Inflación trae su `contexto` —cuánto subieron los precios y cuánto el dólar en
+// los mismos meses, hasta el último que publicó el INDEC—, que es lo que explica
+// cómo algo en dólares (el S&P incluido) puede perderle a la inflación argentina. Sin las dos cosas,
+// "le gano al S&P y le pierdo a la inflación" se leía como un error (reportado).
+//
+// No depende de Certero/Estimado: no usa un rendimiento encadenado sino los
+// aportes y retiros y lo que vale la cartera hoy, que son los mismos en los dos.
+//
 // Al verse (useAlVerse): en cada celda se pone "Le ganás"/"Le perdés", el
 // porcentaje cuenta y una barra crece desde el centro hacia la derecha (ganás)
 // o la izquierda (perdés), en la misma escala para las tres (la más grande
@@ -28,7 +38,7 @@ import AnimatedNumber from './AnimatedNumber'
 import { useAlVerse } from '../hooks/useAlVerse'
 import { pctVar, decimalesFinos } from '../utils/format'
 
-export default function ArAlternativesVerdict({ items }) {
+export default function ArAlternativesVerdict({ items, desde = null }) {
   const [ref, visto] = useAlVerse()
   const rows = (items || []).filter(it => it.pct != null && isFinite(it.pct))
   if (rows.length === 0) return null
@@ -36,8 +46,13 @@ export default function ArAlternativesVerdict({ items }) {
 
   return (
     <div ref={ref} className="border border-line rounded-2xl bg-bg-1 p-5">
-      <p className="text-[14.5px] font-semibold text-ink-0 mb-4">
+      <p className="text-[14.5px] font-semibold text-ink-0">
         ¿Le ganás a las alternativas?
+      </p>
+      <p className="text-[12px] text-ink-3 mt-1 mb-4">
+        {desde
+          ? `Toda tu historia: lo que pusiste desde ${desde}, contra lo que vale hoy`
+          : 'Toda tu historia: lo que pusiste, contra lo que vale hoy'}
       </p>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -76,6 +91,9 @@ export default function ArAlternativesVerdict({ items }) {
               {it.nota && (
                 <span className="block text-[11px] text-ink-3 leading-snug mt-2">{it.nota}</span>
               )}
+              {it.contexto && (
+                <span className="block text-[11px] text-ink-2 leading-snug mt-2">{it.contexto}</span>
+              )}
             </div>
           )
         })}
@@ -88,7 +106,8 @@ export default function ArAlternativesVerdict({ items }) {
         el IPC del INDEC); el dólar, <b>en dólares</b>. Así cada lado se mide en la misma
         moneda que su alternativa, y el resultado no cambia según qué dólar elijas para
         valuar. <b>Los tres porcentajes no se restan entre sí</b> — cada uno mide contra
-        una alternativa distinta.
+        una alternativa distinta. Es igual en Certero y en Estimado: no usa tu
+        rendimiento, sino lo que pusiste y lo que vale tu cartera hoy.
       </p>
     </div>
   )

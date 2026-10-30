@@ -2054,6 +2054,7 @@ CREATE TABLE IF NOT EXISTS users (
   origen text,
   origen_visto_at text,
   app_instalada_at text,
+  modo_rendimiento text,
   aviso_vencimiento_de text,
   UNIQUE (email)
 );
@@ -2127,6 +2128,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS origen text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS origen_visto_at text;
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS app_instalada_at text;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS modo_rendimiento text;
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS aviso_vencimiento_de text;
 

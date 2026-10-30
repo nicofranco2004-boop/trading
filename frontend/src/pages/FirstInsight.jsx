@@ -17,7 +17,8 @@ import { Sparkles, TrendingUp, TrendingDown, ArrowRight, Wallet } from 'lucide-r
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
-import { fmtUsd, usd, pctSigned } from '../utils/format'
+import { fmtUsd as fmtUsdRaw, usd as usdRaw, pctSigned } from '../utils/format'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import AssetLogo from '../components/AssetLogo'
 import { track } from '../utils/track'
 import Panel from '../components/Panel'
@@ -28,6 +29,11 @@ import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import MervallE from '../components/ai/MervallE'
 
 export default function FirstInsight() {
+  // «Ocultar saldos»: el valor, lo invertido y lo ganado salen tapados; quedan
+  // los % y los activos (30/10: la bienvenida no miraba el ojito).
+  const { hidden: oculto } = usePrivacy()
+  const fmtUsd = (v) => (oculto ? OCULTO : fmtUsdRaw(v))
+  const usd = (v) => (oculto ? OCULTO : usdRaw(v))
   const navigate = useNavigate()
   const coachDrawer = useCoachDrawer()
   const { valuationDollar, costBasis } = useCurrency()

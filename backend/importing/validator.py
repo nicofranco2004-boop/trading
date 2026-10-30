@@ -41,6 +41,8 @@ def validate(
     existing_positions: Dict[Tuple[str, str], float],  # (broker, asset) → qty actual
     route_by_currency: bool = False,        # si True, omitimos chequeos de broker-currency
                                               # para FX (el persister rerutea al broker correcto)
+    brokers_sin_pesos: frozenset = frozenset(),  # la plantilla de Rendi (ver abajo)
+    padres_sin_pata_usd: Optional[Dict[str, str]] = None,  # broker → motivo (ver abajo)
 ) -> Tuple[List[NormalizedTx], List[RowError]]:
     """Devuelve (válidas, errores). Las inválidas se descartan del output."""
     errors: List[RowError] = []
@@ -81,6 +83,43 @@ def validate(
         broker_currency = (user_brokers.get(tx.broker) or {}).get("currency")
 
         op = tx.operation_type
+
+        # ⚠️ PESOS A UN BROKER EN DÓLARES: SE RECHAZA LA FILA, NO SE GUARDA MAL.
+        # Un broker en dólares no tiene dónde poner pesos: el importador sumaba el
+        # monto a su caja tal cual, sin convertir ($1.000.000 entraban como
+        # US$1.000.000) y el rendimiento de la cuenta quedaba en ~0 %. Qué brokers
+        # rechazan pesos lo decide `pipeline.brokers_que_no_aceptan_pesos`. Las
+        # conversiones ya tienen su chequeo.
+        if (tx.broker in brokers_sin_pesos
+                and (tx.currency or "").upper() == "ARS"
+                and op not in (OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS)):
+            _padre = tx.broker[:-len(" · USD")] if tx.broker.endswith(" · USD") else None
+            if _padre and (user_brokers.get(_padre) or {}).get("currency") == "ARS":
+                # La sub-cuenta en dólares de un broker en pesos (aunque hoy diga
+                # pesos: ver `pipeline.brokers_que_no_aceptan_pesos`).
+                _texto = (f"«{tx.broker}» es la cuenta en dólares de «{_padre}» y esta "
+                          f"fila está en pesos. Los pesos van a «{_padre}»: cambiá el "
+                          f"broker de la fila, o corregí la columna «moneda» si era en "
+                          f"dólares.")
+            else:
+                # Con el mismo arreglo que el mensaje de la foto de tenencia: cambiarle
+                # la moneda a un broker con datos remarca su caja sin convertir.
+                _texto = (f"El broker «{tx.broker}» está en dólares y esta fila está en "
+                          f"pesos: Rendi no puede guardar pesos en una cuenta en dólares. "
+                          f"Si es un broker argentino, tiene que estar en pesos (sus "
+                          f"dólares van solos a «{tx.broker} · USD»): revertí los imports "
+                          f"de «{tx.broker}», cambiale la moneda a pesos y volvé a subir el "
+                          f"archivo. Si la fila era en dólares, corregí la columna «moneda».")
+            row_errs.append(RowError(ridx, "moneda", "PESOS_EN_BROKER_EN_DOLARES", _texto))
+        # ⚠️ DÓLARES A UN BROKER EN PESOS QUE NO PUEDE TENER SU SUB-CUENTA EN
+        # DÓLARES (`pipeline.por_que_no_hay_pata_usd`). El confirm la crea o la
+        # adopta antes de guardar las filas y, si no puede, rechaza el lote entero
+        # con un 409. Acá se ve antes, fila por fila.
+        if (padres_sin_pata_usd and tx.broker in padres_sin_pata_usd
+                and ((tx.currency or "").upper() in ("USD", "USDT")
+                     or op in (OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS))):
+            row_errs.append(RowError(ridx, "broker", "SIN_CUENTA_EN_DOLARES",
+                                     padres_sin_pata_usd[tx.broker]))
         if op == OP_BUY:
             if not tx.asset_symbol:
                 row_errs.append(RowError(ridx, "activo", "MISSING_ASSET",

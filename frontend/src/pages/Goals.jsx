@@ -11,10 +11,26 @@ import EmptyState from '../components/EmptyState'
 import { PageSkeleton } from '../components/Skeleton'
 import InfoTooltip from '../components/InfoTooltip'
 import { useToast } from '../components/Toast'
-import { usd, fmtUsd, pctTxt, parseNum, numACampo } from '../utils/format'
+import { usd as usdRaw, fmtUsd as fmtUsdRaw, pctTxt, parseNum, numACampo } from '../utils/format'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
+import { taparMontosEnTodo } from '../utils/ocultarSaldos'
+
+// «Ocultar saldos» (el ojito de la Cartera): todo monto de esta pantalla es tuyo
+// —el capital, la meta, el aporte, la proyección— y sale tapado; quedan el %
+// de avance y los plazos. Cada componente de abajo los pide acá en vez de usar
+// los de utils/format (30/10: Objetivos no miraba el ojito).
+function usePlata() {
+  const { hidden } = usePrivacy()
+  return {
+    usd: (v) => (hidden ? OCULTO : usdRaw(v)),
+    fmtUsd: (v) => (hidden ? OCULTO : fmtUsdRaw(v)),
+    oculto: hidden,
+  }
+}
 import { priceSymbol, computeBrokerValue, isArUsdBroker, buildPriceSymbols } from '../utils/valuation'
 import { api } from '../utils/api'
 import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
+import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { hoyISO } from '../utils/fecha'
 import { confirmar } from '../utils/confirmar'
@@ -33,11 +49,13 @@ const addYears = (years) => {
 }
 
 export default function Goals() {
+  const { usd, fmtUsd } = usePlata()
   const [goals, setGoals] = useState([])
   const [cagr, setCagr] = useState(null)
   // El mismo control que la tarjeta de Performance de Métricas: el rendimiento
-  // que se muestra acá sale del MISMO motor, así que tiene los mismos dos modos.
-  const [modoRend, setModoRend] = useState('certero')
+  // que se muestra acá sale del MISMO motor, así que tiene los mismos dos modos
+  // y la misma elección guardada (ModoRendimientoContext).
+  const [modoRend, setModoRend] = useModoRendimiento()
   const [currentValue, setCurrentValue] = useState(0)
   const [loading, setLoading] = useState(true)
   const [modal, setModal] = useState(null) // 'add' | 'edit' | null
@@ -254,6 +272,7 @@ export default function Goals() {
 }
 
 function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
+  const { usd, fmtUsd, oculto } = usePlata()
   const target = goal.target_usd
   const r = goal.expected_return_pct / 100  // anual
   const targetDate = new Date(goal.target_date)
@@ -370,7 +389,7 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
               {/* Usaba #334155 (slate-700): el chrome del sistema anterior. */}
               <CartesianGrid {...chartGrid} />
               <XAxis dataKey="mes" tick={chartTickSm} axisLine={false} tickLine={false} tickFormatter={v => `${v}m`} />
-              <YAxis tick={chartTickSm} axisLine={false} tickLine={false} tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} />
+              <YAxis tick={chartTickSm} axisLine={false} tickLine={false} tickFormatter={v => (oculto ? '' : `$${(v / 1000).toFixed(0)}k`)} />
               <Tooltip
                 contentStyle={chartTooltip.contentStyle}
                 labelStyle={chartTooltip.labelStyle}
@@ -438,7 +457,11 @@ function GoalCard({ goal, currentValue, userCagr, onEdit, onDelete }) {
 }
 
 function GoalDiagnostic({ goalId, reached }) {
-  const [diag, setDiag] = useState(null)
+  const { hidden } = usePrivacy()
+  const [diagCrudo, setDiag] = useState(null)
+  // El diagnóstico viene del servidor con montos escritos («aportaste US$ 396
+  // por mes»): con el ojito, tapados como el resto de la pantalla.
+  const diag = hidden ? taparMontosEnTodo(diagCrudo) : diagCrudo
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -664,6 +687,7 @@ function buildAltScenarios({ currentValue, target, monthsLeft, userCagr }) {
 }
 
 function AltScenarioCard({ scenario }) {
+  const { usd, fmtUsd } = usePlata()
   // Single alt-scenario card — assumes annual return + how-to-get-there.
   const { label, rate, hint, monthly, projected } = scenario
   return (

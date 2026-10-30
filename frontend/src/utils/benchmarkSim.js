@@ -29,6 +29,23 @@ function monthKey(year, month) {
 }
 
 /**
+ * El mes desde el que arrancan TODAS las simulaciones de este archivo ('YYYY-MM'):
+ * el primero de `globalMonthly`, con su `capital_inicio`. Es el período que mide
+ * "¿Le ganás a las alternativas?" —toda la historia, no el año—, y la tarjeta lo
+ * escribe: sin decirlo, su "Inflación: le perdés" se comparaba con el "Este año ·
+ * vs el S&P" del inicio, que mide otro período.
+ */
+export function mesInicialDeLasSimulaciones(globalMonthly) {
+  return _mesInicial(sortGlobalMonthly(globalMonthly))
+}
+
+// La misma regla sobre filas YA ordenadas (los simuladores ordenan una vez y no
+// vuelven a ordenar para saber de dónde arrancan).
+function _mesInicial(sorted) {
+  return sorted.length ? monthKey(sorted[0].year, sorted[0].month) : null
+}
+
+/**
  * lookupMonthly
  *
  * Busca el valor para una clave 'YYYY-MM' con fallback al último mes anterior
@@ -77,7 +94,7 @@ export function simulateBenchmark(globalMonthly, priceLookup) {
   const sorted = sortGlobalMonthly(globalMonthly)
   if (sorted.length === 0) return null
 
-  const firstKey = monthKey(sorted[0].year, sorted[0].month)
+  const firstKey = _mesInicial(sorted)
   const firstPrice = priceLookup(firstKey)
   if (firstPrice == null || firstPrice <= 0) return null
 
@@ -149,7 +166,7 @@ export function simulateArsCash(globalMonthly, blueMap) {
   const sorted = sortGlobalMonthly(globalMonthly)
   if (sorted.length === 0) return null
 
-  const firstKey = monthKey(sorted[0].year, sorted[0].month)
+  const firstKey = _mesInicial(sorted)
   const firstBlue = lookupMonthly(blueMap, firstKey)
   if (firstBlue == null || firstBlue <= 0) return null
 
@@ -195,7 +212,7 @@ export function computeInflationCumulative(globalMonthly, inflationMap) {
   const sorted = sortGlobalMonthly(globalMonthly)
   if (sorted.length === 0) return null
 
-  const fromKey = monthKey(sorted[0].year, sorted[0].month)
+  const fromKey = _mesInicial(sorted)
   const toKey = monthKey(sorted[sorted.length - 1].year, sorted[sorted.length - 1].month)
 
   // Tomamos los IPCs entre fromKey y toKey inclusive.
@@ -241,7 +258,7 @@ export function computeInflationCumulative(globalMonthly, inflationMap) {
  * capitalizan: `hastaMes` dice hasta dónde llega la inflación contada, para que
  * la pantalla lo escriba en vez de callarlo.
  *
- * @returns {{ finalValue, finalArs, blueFinal, inflacionPct, meses, hastaMes } | null}
+ * @returns {{ finalValue, finalArs, blueFinal, inflacionPct, meses, hastaMes, desdeMes, dolarPct } | null}
  */
 export function simulateInflacionAr(globalMonthly, inflationMap, blueMap) {
   if (!inflationMap || Object.keys(inflationMap).length === 0) return null
@@ -249,7 +266,7 @@ export function simulateInflacionAr(globalMonthly, inflationMap, blueMap) {
   const sorted = sortGlobalMonthly(globalMonthly)
   if (sorted.length === 0) return null
 
-  const firstKey = monthKey(sorted[0].year, sorted[0].month)
+  const firstKey = _mesInicial(sorted)
   const firstBlue = lookupMonthly(blueMap, firstKey)
   if (!firstBlue || firstBlue <= 0) return null
 
@@ -261,7 +278,7 @@ export function simulateInflacionAr(globalMonthly, inflationMap, blueMap) {
   const lastKey = monthKey(sorted[sorted.length - 1].year, sorted[sorted.length - 1].month)
 
   let valueArs = (sorted[0].capital_inicio || 0) * firstBlue
-  let cum = 1, meses = 0, hastaMes = null, blue = firstBlue
+  let cum = 1, meses = 0, hastaMes = null, blue = firstBlue, blueHastaMes = firstBlue
   let y = sorted[0].year, mo = sorted[0].month
   for (let k = firstKey; k <= lastKey; k = monthKey(y, mo)) {
     blue = lookupMonthly(blueMap, k) ?? firstBlue
@@ -271,6 +288,7 @@ export function simulateInflacionAr(globalMonthly, inflationMap, blueMap) {
       cum *= 1 + ipc / 100
       meses += 1
       hastaMes = k
+      blueHastaMes = blue
     }
     valueArs += (netoPorMes.get(k) || 0) * blue
     mo += 1
@@ -284,6 +302,13 @@ export function simulateInflacionAr(globalMonthly, inflationMap, blueMap) {
     inflacionPct: (cum - 1) * 100,
     meses,
     hastaMes,
+    desdeMes: firstKey,
+    // Cuánto subió el dólar en los MISMOS meses en que se contó la inflación: del
+    // blue del primer mes al del último mes con IPC publicado (`hastaMes`). Hasta
+    // el último mes de la historia mezclaba períodos —los precios hasta
+    // septiembre, el dólar hasta octubre— y el "tenía que rendir X % para
+    // empatar" salía de dos ventanas distintas.
+    dolarPct: (blueHastaMes / firstBlue - 1) * 100,
   }
 }
 
@@ -315,8 +340,9 @@ export function simulateInflacionAr(globalMonthly, inflationMap, blueMap) {
  * La comparación se hace EN PESOS (`compararEnPesos`), con `valorHoyArs` armado
  * por `patrimonioEnPesos`: así el veredicto no depende de si mirás en MEP o en CCL.
  *
- * @returns {{ pct, inflacionPct, meses, hastaMes, valorHoyArs, mismaPlataArs } | null}
- *          pct ≥ 0 = le ganás. Montos en pesos.
+ * @returns {{ pct, inflacionPct, meses, hastaMes, valorHoyArs, mismaPlataArs,
+ *             desdeMes, dolarPct, dolarParaEmpatarPct } | null}
+ *          pct ≥ 0 = le ganás. Montos en pesos; los `*Pct`, en puntos.
  */
 export function veredictoInflacion({ globalMonthly, inflationMap, blueMap, valorHoyUsd, valorHoyArs, valorHoyMedido }) {
   if (!valorHoyMedido || !(valorHoyUsd > 0)) return null
@@ -333,6 +359,16 @@ export function veredictoInflacion({ globalMonthly, inflationMap, blueMap, valor
     hastaMes: sim.hastaMes,
     valorHoyArs,
     mismaPlataArs: sim.finalArs,
+    desdeMes: sim.desdeMes,
+    dolarPct: sim.dolarPct,
+    // ⚠️ POR QUÉ UN ACTIVO EN DÓLARES —EL S&P INCLUIDO— PUEDE PERDERLE A LA
+    // INFLACIÓN. La inflación del INDEC mide precios EN PESOS: algo en dólares le
+    // empata sólo si el dólar sube tanto como los precios. Esto es cuánto tenía
+    // que rendir EN DÓLARES para empatar, de `desdeMes` a `hastaMes`. Medido sobre la historia
+    // real de 2024-2026: con los precios +71 % y el blue +31 %, hacía falta +31 %
+    // en dólares. Sin decirlo, "le ganás al S&P y le perdés a la inflación" se
+    // leía como un error de la app (reportado).
+    dolarParaEmpatarPct: ((1 + sim.inflacionPct / 100) / (1 + sim.dolarPct / 100) - 1) * 100,
   }
 }
 
@@ -441,7 +477,7 @@ export function simulateMerval(globalMonthly, mervalArsMap, blueMap) {
   const sorted = sortGlobalMonthly(globalMonthly)
   if (sorted.length === 0) return null
 
-  const firstKey = monthKey(sorted[0].year, sorted[0].month)
+  const firstKey = _mesInicial(sorted)
   const firstMerv = lookupMonthly(mervalArsMap, firstKey)
   const firstBlue = lookupMonthly(blueMap, firstKey)
   if (!firstMerv || !firstBlue || firstMerv <= 0 || firstBlue <= 0) return null
@@ -508,7 +544,7 @@ export function simulatePlazoFijoUva(globalMonthly, uvaMap, blueMap) {
   const sorted = sortGlobalMonthly(globalMonthly)
   if (sorted.length === 0) return null
 
-  const firstKey = monthKey(sorted[0].year, sorted[0].month)
+  const firstKey = _mesInicial(sorted)
   const firstBlue = lookupMonthly(blueMap, firstKey)
   const firstUva = lookupMonthly(uvaMap, firstKey)
   if (!firstBlue || firstBlue <= 0) return null
