@@ -42687,6 +42687,9 @@ def _atomic_insert_fact(conn, uid: int, content: str, source: str):
     default es BEGIN DEFERRED y el SELECT no toma write lock → TOCTOU.
     """
     try:
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         cur = conn.execute(
             """INSERT INTO ai_user_facts(user_id, content, source)
                SELECT ?, ?, ?
@@ -49313,6 +49316,9 @@ def advisor_groups_create(data: AdvisorGroupIn, uid: int = Depends(get_current_u
         rules = ag.normalize_rules(data.rules)
         if not rules:
             raise HTTPException(400, "Elegí al menos una condición para el grupo.")
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         n = conn.execute("SELECT COUNT(*) c FROM advisor_groups WHERE advisor_uid=?",
                          (uid,)).fetchone()["c"]
         if n >= ag.MAX_GROUPS:
@@ -50156,15 +50162,19 @@ def advisor_create_client(
         # Cap duro de clientes activos: sin esto, una cuenta advisor comprometida
         # podría inflar `users` sin límite (los shadows no los recolecta nadie), y
         # los IN(...) del roster/book reventarían el tope de variables de SQLite.
+        synthetic_email = f"cliente.{_secrets.token_hex(6)}@{_SHADOW_EMAIL_DOMAIN}"
+        # Password random hasheado: nadie puede loguear con esta cuenta hasta
+        # que el flujo de invitación/claim (F4) setee una contraseña real. ANTES
+        # del turno: el hash tarda ~0,3 s y con el turno tomado nadie escribe.
+        random_hash = pwd_ctx.hash(_secrets.token_urlsafe(24))
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         n_active = conn.execute(
             "SELECT COUNT(*) c FROM advisor_clients WHERE advisor_uid=? AND status='active'",
             (uid,)).fetchone()["c"]
         if n_active >= ADVISOR_MAX_CLIENTS:
             raise HTTPException(400, f"Llegaste al máximo de {ADVISOR_MAX_CLIENTS} clientes activos.")
-        synthetic_email = f"cliente.{_secrets.token_hex(6)}@{_SHADOW_EMAIL_DOMAIN}"
-        # Password random hasheado: nadie puede loguear con esta cuenta hasta
-        # que el flujo de invitación/claim (F4) setee una contraseña real.
-        random_hash = pwd_ctx.hash(_secrets.token_urlsafe(24))
         with conn:
             cur = conn.execute(
                 """INSERT INTO users (email, name, password_hash, is_admin,
@@ -50503,6 +50513,9 @@ def advisor_invite_client(
         # a alguien usando el mismo shadow para probar/spammear muchos emails
         # de terceros — esto es además del rate-limit general de arriba
         # (10/300s por asesor).
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         sent_today = conn.execute(
             """SELECT COUNT(*) AS n FROM advisor_claim_tokens
                WHERE user_id=? AND created_at > datetime('now', '-1 day')""",
@@ -50615,6 +50628,9 @@ def _advisor_link_request(conn, uid: int, shadow_uid: int, target, data: Advisor
 
     # Tope diario por (asesor, cuenta): del otro lado hay una persona real que
     # todavía no contestó.
+    # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+    # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+    _tomar_turno(conn, uid)
     recientes = conn.execute(
         """SELECT COUNT(*) c FROM advisor_link_requests
            WHERE advisor_uid=? AND client_uid=? AND created_at > datetime('now', '-1 day')""",
@@ -50700,6 +50716,9 @@ def _apply_link_request(conn, req, accept: bool) -> dict:
         # El cap del plan se chequea al ACEPTAR, no al pedir: entre el pedido y
         # el sí pueden haber pasado dos semanas y un libro entero. Solo descuenta
         # la ficha si de verdad va a salir del libro.
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, advisor_uid)
         n_active = conn.execute(
             "SELECT COUNT(*) c FROM advisor_clients WHERE advisor_uid=? AND status='active'",
             (advisor_uid,)).fetchone()["c"]

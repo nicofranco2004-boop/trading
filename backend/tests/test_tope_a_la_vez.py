@@ -70,15 +70,16 @@ class TopeALaVezTest(unittest.TestCase):
         for p in self._p:
             p.stop()
 
-    def _a_la_vez(self, fragmento, pedidos):
+    def _a_la_vez(self, fragmento, pedidos, h=None):
         """Manda los `pedidos` (ruta, cuerpo) juntos; las lecturas con
         `fragmento` se esperan entre sí. Devuelve los códigos ordenados."""
         cruce = _Cruce(fragmento, partes=len(pedidos), espera=3.0)
         real = main.get_db
         codigos = []
+        h = h or self.beto
         with mock.patch.object(main, "get_db", lambda: _Conexion(real(), cruce)):
             hilos = [threading.Thread(target=lambda r=r, b=b: codigos.append(
-                self.client.post(r, json=b, headers=self.beto).status_code)) for r, b in pedidos]
+                self.client.post(r, json=b, headers=h).status_code)) for r, b in pedidos]
             for t in hilos:
                 t.start()
             for t in hilos:
@@ -130,6 +131,26 @@ class TopeALaVezTest(unittest.TestCase):
                 "columns": {"date": "Fecha", "asset": "Ticker"}, "defaults": {"broker": "Cocos"}}})
             for i in range(N)])
         self.assertEqual(self._contar("SELECT COUNT(*) FROM import_mappings WHERE user_id=?"), tope, codigos)
+
+    def test_grupos_del_asesor(self):
+        """Re-test E5: el patrón no se había propagado; el tope de 30 grupos
+        llegó a 32. Mismo turno en clientes, pedidos de vínculo, invitaciones y
+        los hechos de la IA (éstos sólo se pasaban en Postgres)."""
+        import advisor_groups as ag
+        with main.db_abierta() as conn:
+            ase = conn.execute(
+                "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
+                "VALUES (?, 'x', 1, 1, 'advisor')", (f"alavez-ase-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+            for i in range(ag.MAX_GROUPS - 2):
+                conn.execute("INSERT INTO advisor_groups (advisor_uid, name, rules, excluded) "
+                             "VALUES (?, ?, '{\"has_asset\": \"AMZN\"}', '[]')", (ase, f"viejo {i}"))
+            conn.commit()
+        h = {"Authorization": f"Bearer {main.create_token(ase)}"}
+        codigos = self._a_la_vez("COUNT(*) c FROM advisor_groups", [
+            ("/api/advisor/groups", {"name": f"nuevo {i}", "rules": {"has_asset": "AMZN"}}) for i in range(N)], h)
+        with main.db_abierta() as conn:
+            n = conn.execute("SELECT COUNT(*) FROM advisor_groups WHERE advisor_uid=?", (ase,)).fetchone()[0]
+        self.assertEqual(n, ag.MAX_GROUPS, codigos)
 
 
 if __name__ == "__main__":
