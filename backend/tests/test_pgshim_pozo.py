@@ -94,6 +94,19 @@ class PozoDeConexiones(unittest.TestCase):
         finally:
             b.close()
 
+    def test_un_candado_de_sesion_no_lo_hereda_el_siguiente(self):
+        self._con_pozo(1)
+        a = main.get_db()
+        a.execute("SELECT pg_advisory_lock(424242)").fetchone()
+        a.close()
+        b = main.get_db()
+        try:
+            n = b.execute("SELECT count(*) FROM pg_locks WHERE locktype='advisory' "
+                          "AND objid=424242 AND pid=pg_backend_pid()").fetchone()[0]
+            self.assertEqual(n, 0)
+        finally:
+            b.close()
+
     def test_lo_que_no_se_confirmo_no_pasa_al_siguiente(self):
         self._con_pozo(1)
         email = f"pozo-{uuid.uuid4().hex[:10]}@rendi.test"

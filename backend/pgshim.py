@@ -927,7 +927,10 @@ class Cursor:
 _RE_ENSUCIA = re.compile(
     r"^\s*(SET(?!\s+(LOCAL|TRANSACTION|CONSTRAINTS)\b)|RESET|LISTEN|PREPARE|DISCARD)\b"
     r"|\bCREATE\s+(GLOBAL\s+|LOCAL\s+)?TEMP(ORARY)?\b"
-    r"|\bset_config\s*\([^)]*,\s*false\s*\)", re.I)
+    r"|\bset_config\s*\([^)]*,\s*false\s*\)"
+    # El candado de SESIÓN (no el `_xact_`) sobrevive al commit: prestada de nuevo,
+    # la conexión seguiría teniéndolo. `init_db` lo pide por una conexión propia.
+    r"|\bpg_(try_)?advisory_lock(_shared)?\b", re.I)
 _PING_SI_QUIETA = 30.0
 _QUIETA_MAXIMO = 300.0
 
