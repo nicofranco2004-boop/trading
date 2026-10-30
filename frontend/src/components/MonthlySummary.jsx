@@ -16,7 +16,7 @@ import { useDolarMensual } from '../hooks/useFxHistory'
 import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
-import { realizadoEnPesos, notaDelRealizado } from '../utils/realizadoEnPesos'
+import { realizadoDeLaFilaMensual, notaDelRealizado } from '../utils/realizadoEnPesos'
 import { confirmar } from '../utils/confirmar'
 
 const RECENT_MONTHS_DEFAULT = 6
@@ -212,10 +212,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   // utils/realizadoEnPesos.js. En dólares, el de siempre.
   function realizadoAt(m) {
     if (!tabIsARS) return { monto: m.pnl_realized || 0, restoUsd: 0 }
-    const r = realizadoEnPesos({
-      usd: m.pnl_realized, ars: m.realized_ars, cubreUsd: m.realized_ars_cubre_usd,
-      fx: lookupHistoricalDolar(dolarMes, m.year, m.month, tcValuacion),
-    })
+    const r = realizadoDeLaFilaMensual(m, lookupHistoricalDolar(dolarMes, m.year, m.month, tcValuacion))
     return { monto: r.monto || 0, restoUsd: r.restoUsd }
   }
 
@@ -445,7 +442,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       // pesos, el realizado exacto y no un solo número × el dólar, para que las columnas sumen.
       ret: acc.ret + real.monto + noReal,
       retCompound: acc.retCompound * (1 + retPct),
-      restoUsd: acc.restoUsd + real.restoUsd,
+      // En valor absoluto: un mes de +US$ 500 convertidos y otro de −US$ 500 no se cancelan.
+      restoUsd: acc.restoUsd + Math.abs(real.restoUsd),
       valuado: acc.valuado || !!m.realized_ars_valuado,
     }
   }, { deposits: 0, withdrawals: 0, pnl_realized: 0, pnl_unrealized: 0, ret: 0, retCompound: 1, restoUsd: 0, valuado: false })
@@ -745,6 +743,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
           <p className="px-4 py-2 text-[11.5px] text-ink-3 border-t border-line/40">
             El P&L realizado en pesos de las ventas en pesos es lo cobrado menos lo que costó, como lo muestra tu broker.
             {notaRealizado ? ` ${notaRealizado.charAt(0).toUpperCase()}${notaRealizado.slice(1)}.` : ''}
+            {' '}El Retorno % es el rendimiento medido en dólares: puede no coincidir con el monto en pesos de al lado.
           </p>
         )}
       </Card>

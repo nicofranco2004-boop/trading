@@ -106,8 +106,15 @@ export function ultimasSemanas(semanas, n = MAX_SEMANAS) {
  * `cerradas` sobrevive incluso sin medición, porque las ventas de esa semana SÍ
  * se conocen; es lo único publicable de una semana que no se pudo medir.
  */
-export function medirSemana(semana, { porBroker = false } = {}) {
+export function medirSemana(semana, { porBroker = false, vista = null } = {}) {
   const m = (semana && semana.metrics) || {}
+  // Los montos en la moneda en que se mira. `vista` es `pesos.enVista(semana)`
+  // (utils/periodoEnPesos.js): en pesos, lo cerrado es el realizado exacto y el total lo
+  // contiene, así las dos piezas siguen sumando el total; en dólares son los del servidor.
+  // Sin `vista`, los dólares del servidor (como antes).
+  const montos = vista
+    ? { total: vista.resultado, abiertas: vista.noRealizado, cerradas: vista.realizado }
+    : { total: m.delta_usd, abiertas: m.unrealized_pnl, cerradas: m.realized_pnl }
   const sinBase = m.basis_incomparable === true
   const quieta = semana && semana.is_relevant === false
 
@@ -138,11 +145,11 @@ export function medirSemana(semana, { porBroker = false } = {}) {
     fin: (semana && semana.period_end) || '',
     enCurso: !!(semana && semana.is_current),
     estado: noMedible ? 'sin-medicion' : quieta ? 'quieta' : 'medida',
-    total: noMedible ? null : numero(m.delta_usd),
-    abiertas: noMedible ? null : numero(m.unrealized_pnl),
+    total: noMedible ? null : numero(montos.total),
+    abiertas: noMedible ? null : numero(montos.abiertas),
     // Lo realizado sobrevive a las dos formas de "no medible": las ventas de esa
     // semana se conocen igual. Es lo único publicable de una semana sin medir.
-    cerradas: numero(m.realized_pnl),
+    cerradas: numero(montos.cerradas),
     pct: noMedible || typeof m.delta_pct !== 'number' ? null : m.delta_pct,
     // Por qué no se pudo medir, para que el panel de detalle no diga siempre lo
     // mismo: el motor a veces manda su propio motivo en texto.

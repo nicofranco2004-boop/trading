@@ -45,7 +45,19 @@ function ConcentrationRiskEvidence({ ev }) {
   )
 }
 
-function DriverEvidence({ ev, fmtUsd }) {
+// En Pesos estos mini-cuadros son los dólares del servidor pasados al dólar del cierre del período:
+// no tienen los pesos de cada venta. El «Realizado» de la grilla de la tarjeta, en cambio, suma las
+// ventas en pesos a su monto exacto (utils/realizadoEnPesos.js), así que los dos pueden diferir.
+function NotaEnPesos({ enPesos }) {
+  if (!enPesos) return null
+  return (
+    <p className="text-[10px] text-ink-3 mt-1">
+      En dólares pasados al dólar del cierre; el «Realizado» de la tarjeta usa los pesos exactos de las ventas en pesos.
+    </p>
+  )
+}
+
+function DriverEvidence({ ev, fmtUsd, enPesos }) {
   return (
     <div className="rounded-sm bg-bg-3/40 px-2.5 py-2 text-[11px]">
       <div className="flex items-baseline justify-between mb-0.5">
@@ -55,6 +67,7 @@ function DriverEvidence({ ev, fmtUsd }) {
         </span>
       </div>
       <p className="text-[10px] text-ink-3">P&L realizado de este activo en el período.</p>
+      <NotaEnPesos enPesos={enPesos} />
     </div>
   )
 }
@@ -171,8 +184,9 @@ function StreakEvidence({ ev }) {
   )
 }
 
-function RealizedVsUnrealizedEvidence({ ev, fmtUsd }) {
+function RealizedVsUnrealizedEvidence({ ev, fmtUsd, enPesos }) {
   return (
+    <div>
     <div className="grid grid-cols-2 gap-2 text-[11px]">
       <div className="rounded-sm bg-rendi-pos/[0.08] px-2 py-1.5 border border-rendi-pos/20">
         <div className="text-ink-3 text-[12.5px] font-medium">Realizado</div>
@@ -182,6 +196,8 @@ function RealizedVsUnrealizedEvidence({ ev, fmtUsd }) {
         <div className="text-ink-3 text-[12.5px] font-medium">No realizado</div>
         <div className="font-mono tabular text-rendi-neg">{fmtUsd(ev.unrealized)}</div>
       </div>
+    </div>
+    <NotaEnPesos enPesos={enPesos} />
     </div>
   )
 }
@@ -206,7 +222,7 @@ function ReversalEvidence({ ev }) {
   )
 }
 
-function DividendHeavyEvidence({ ev, fmtUsd }) {
+function DividendHeavyEvidence({ ev, fmtUsd, enPesos }) {
   const totalPos = (ev.total_realized || 0) > 0 ? ev.total_realized : 1
   const divPct = ((ev.dividends_interest || 0) / totalPos) * 100
   const tradingPct = 100 - divPct
@@ -228,6 +244,7 @@ function DividendHeavyEvidence({ ev, fmtUsd }) {
           </div>
         </div>
       </div>
+      <NotaEnPesos enPesos={enPesos} />
     </div>
   )
 }
@@ -311,5 +328,6 @@ export default function InsightEvidence({ insight }) {
       </pre>
     )
   }
-  return <Renderer ev={insight.evidence} fmtUsd={fmtUsd} fmtFlujo={fmtFlujo} fmtHoy={fmtHoy} />
+  return <Renderer ev={insight.evidence} fmtUsd={fmtUsd} fmtFlujo={fmtFlujo} fmtHoy={fmtHoy}
+                   enPesos={!!periodo && periodo.moneda === 'ARS'} />
 }

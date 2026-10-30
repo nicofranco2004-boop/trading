@@ -44,16 +44,52 @@ export function realizadoEnPesos({ usd, ars, cubreUsd, fx } = {}) {
 }
 
 /**
+ * El realizado en pesos de UNA FILA de /api/monthly (un mes de un broker), con el dólar `fx` de
+ * ese mes. Una sola traducción de los nombres del servidor: el Dashboard y el Resumen mensual
+ * no la escriben cada uno.
+ */
+export function realizadoDeLaFilaMensual(m, fx) {
+  return realizadoEnPesos({
+    usd: m?.pnl_realized, ars: m?.realized_ars, cubreUsd: m?.realized_ars_cubre_usd, fx,
+  })
+}
+
+/**
+ * Junta el realizado en pesos de varios meses, cada uno con SU dólar (convertir y después sumar).
+ * `restoUsd` es la suma de los valores ABSOLUTOS de los restos (lo que se convirtió, para el
+ * cartel): con signo, +US$ 500 y −US$ 500 en meses distintos se cancelan y el cartel desaparece.
+ * @param {Array} filas  filas de /api/monthly
+ * @param {(fila:object)=>number} fxDelMes  el dólar con que se convierte el resto de esa fila
+ * @returns {{ monto:number, restoUsd:number, valuado:boolean }}
+ */
+export function sumarRealizadoMeses(filas, fxDelMes) {
+  let monto = 0, restoUsd = 0, valuado = false
+  for (const m of filas || []) {
+    const r = realizadoDeLaFilaMensual(m, fxDelMes(m))
+    monto += r.monto || 0
+    restoUsd += Math.abs(r.restoUsd)
+    valuado = valuado || !!m.realized_ars_valuado
+  }
+  return { monto, restoUsd, valuado }
+}
+
+/**
  * La aclaración para la pantalla, o null si todo es exacto.
  * @param {object} a
- * @param {number} a.restoUsd  lo que devolvió `realizadoEnPesos`
- * @param {boolean} [a.valuado] el servidor avisó que hubo ventas en dólares (sus pesos son
- *                              los dólares a cada dólar de su fecha, no pesos de verdad)
+ * @param {number} a.restoUsd  lo que devolvió `realizadoEnPesos`. Si se junta de varios meses,
+ *                             sumar los VALORES ABSOLUTOS (`Math.abs(r.restoUsd)`): con signo,
+ *                             un mes de +US$ 500 y otro de −US$ 500 se cancelan y el cartel
+ *                             desaparece aunque todo el monto sea convertido.
+ * @param {boolean} [a.valuado] el servidor avisó que hubo ventas en dólares o lotes pagados en
+ *                              dólares (sus pesos son los dólares a cada dólar de su fecha, no
+ *                              pesos de verdad)
  * @param {string} [a.dolar]    cuál dólar se usó para el resto ('del cierre', 'del mes'…)
  */
 export function notaDelRealizado({ restoUsd, valuado = false, dolar = 'del cierre' } = {}) {
   const partes = []
-  if (valuado) partes.push('ventas en dólares valuadas al dólar de cada fecha')
+  // Misma frase que el tooltip de Movimientos (TradesTable): vale para una venta en dólares y para
+  // una compra en dólares vendida en pesos.
+  if (valuado) partes.push('ventas o compras en dólares valuadas al dólar de cada fecha')
   const r = num(restoUsd)
   if (r != null && Math.abs(r) >= UMBRAL_RESTO_USD) {
     partes.push(`incluye US$ ${Math.round(Math.abs(r)).toLocaleString('es-AR')} convertidos al dólar ${dolar}`)

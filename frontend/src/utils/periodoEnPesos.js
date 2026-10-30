@@ -23,6 +23,9 @@
 //     pesos de verdad: la cuenta única de backend/resultado_dual.py, la misma de
 //     Movimientos); sólo lo que no tiene pesos (dividendos en dólares, lo cargado
 //     a mano) va al dólar del cierre, y se avisa (`realizadoNota`).
+//   • El RESULTADO del período contiene a ese realizado: es el resultado en dólares al
+//     dólar del cierre, con el pedazo realizado cambiado por el realizado en pesos. Así
+//     resultado = realizado + no realizado + otros, también en pesos.
 //
 // En dólares devuelve los mismos números del servidor, sin tocar.
 
@@ -83,7 +86,7 @@ export function crearPesosDelPeriodo({
         inicio: num(m.start_value), cierre: num(m.end_value),
         depositos: dep, retiros: ret,
         resultado: num(m.delta_usd), realizado: num(m.realized_pnl), noRealizado: num(m.unrealized_pnl),
-        realizadoNota: null,
+        realizadoNota: null, realizadoRestoUsd: 0, realizadoValuado: false,
       }
     }
     const fxCierre = (p?.is_current || !p?.period_end) ? tcHoy : tc(p.period_end)
@@ -116,15 +119,28 @@ export function crearPesosDelPeriodo({
     const real = num(m.realized_pnl) == null ? null : realizadoEnPesos({
       usd: m.realized_pnl, ars: m.realized_ars, cubreUsd: m.realized_ars_cubre_usd, fx: fxCierre,
     })
+    // El resultado TIENE que contener al realizado, o la tarjeta dice "resultado +$15.000" y debajo
+    // "realizado +$240.000" sin posiciones abiertas que lo expliquen. El servidor lo mide en
+    // dólares (`delta_usd`), que ya trae adentro el realizado en dólares (`realized_pnl`): se le
+    // saca ese pedazo × el dólar del cierre y se le pone el realizado en pesos. Lo demás (lo que
+    // no se vendió, el efecto del dólar sobre lo que sigue abierto) queda como estaba.
+    const delta = x(m.delta_usd, fxCierre)
+    const resultado = delta == null || !real || real.monto == null || num(m.realized_pnl) == null
+      ? delta
+      : delta + (real.monto - num(m.realized_pnl) * fxCierre)
     return {
       moneda: 'ARS', fxInicio, fxCierre, fxDepositos,
       inicio: x(m.start_value, fxInicio), cierre: x(m.end_value, fxCierre),
       depositos, retiros,
-      resultado: x(m.delta_usd, fxCierre),
+      resultado,
       realizado: real ? real.monto : null,
       realizadoNota: real ? notaDelRealizado({
-        restoUsd: real.restoUsd, valuado: !!m.realized_ars_valuado,
+        restoUsd: Math.abs(real.restoUsd), valuado: !!m.realized_ars_valuado,
       }) : null,
+      // Para quien junta varios períodos (el calendario del año): sumar `Math.abs` de estos y
+      // armar UNA nota con `notaDelRealizado`, en vez de repetir la de cada mes.
+      realizadoRestoUsd: real ? Math.abs(real.restoUsd) : 0,
+      realizadoValuado: !!m.realized_ars_valuado,
       noRealizado: x(m.unrealized_pnl, fxCierre),
     }
   }

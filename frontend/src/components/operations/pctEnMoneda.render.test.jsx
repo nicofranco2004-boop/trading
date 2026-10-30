@@ -78,6 +78,25 @@ describe('el monto del resultado en la moneda de la app', () => {
     expect(tabla([ggal], 'ARS')).not.toContain('15.000')
     expect(feed([ggal], 'ARS')).toMatch(/240/)
   })
+
+  // La pantalla LEE el resultado en pesos que manda el servidor; no lo rehace con cobrado − costo.
+  it('usa el resultado_ars del servidor aunque cobrado_ars − costo_ars diga otra cosa', () => {
+    const delServidor = { ...ggal, resultado_ars: 99999 }          // cobrado − costo = 240.000
+    expect(hm('ARS').pnlAt(delServidor)).toBe(99999)
+    expect(hm('USD').pnlAt(delServidor)).toBe(10)
+  })
+  it('una venta vieja como la manda el servidor: su ganancia en pesos, no los dólares × otro dólar', () => {
+    const viejaDelServidor = { ...vieja, resultado_ars: 2000, resultado_ars_tipo: 'exacto' }
+    expect(hm('ARS').pnlAt(viejaDelServidor)).toBe(2000)
+    // Sin la cuenta (el servidor no pudo saberlo: resultado_ars null) cae al dólar estampado de la fila.
+    expect(hm('ARS').pnlAt({ ...vieja, resultado_ars: null })).toBeCloseTo(2000, 0)
+  })
+  it('una venta valuada lo dice al pasar el mouse, sólo mirando en pesos', () => {
+    const valuada = { ...ggal, resultado_ars_tipo: 'valuado' }
+    expect(tabla([valuada], 'ARS')).toContain('valuado al dólar de cada fecha')
+    expect(tabla([valuada], 'USD')).not.toContain('valuado al dólar de cada fecha')
+    expect(tabla([ggal], 'ARS')).not.toContain('valuado al dólar de cada fecha')
+  })
 })
 
 describe('la columna P&L % sigue al selector de moneda', () => {

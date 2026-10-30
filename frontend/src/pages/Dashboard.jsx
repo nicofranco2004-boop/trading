@@ -54,7 +54,7 @@ import { ChipFueraDeHorario, SiAbrieraAsi, EstadoSesion, LineaBroker } from '../
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { resultadoTotal, aportadoEnPesosAl, restoEnPesos } from '../utils/capitalAportado'
-import { realizadoEnPesos, notaDelRealizado } from '../utils/realizadoEnPesos'
+import { realizadoDeLaFilaMensual, sumarRealizadoMeses, notaDelRealizado } from '../utils/realizadoEnPesos'
 import { applyMtmToMonthly, netCapitalContributed } from '../utils/insightsModel'
 import { hoyISO } from '../utils/fecha'
 import { useAlVerse } from '../hooks/useAlVerse'
@@ -312,22 +312,17 @@ function PersonalDashboard() {
   // /mensual) va al dólar del mes. Ver utils/realizadoEnPesos.js.
   const { realizedPnlDisp, realizedNota } = useMemo(() => {
     if (currency !== 'ARS') return { realizedPnlDisp: realizedPnl, realizedNota: null }
-    let total = 0, restoUsd = 0, valuado = false
-    for (const m of monthly) {
-      if (m.broker !== 'global') continue
-      // Último día del mes del asiento (Date.UTC con day=0 del mes siguiente)
-      // → FX de ese momento. getHistoricalFx ya cae al dólar de hoy si no hay serie.
-      const lastDay = new Date(Date.UTC(m.year, m.month, 0)).toISOString().slice(0, 10)
-      const r = realizadoEnPesos({
-        usd: m.pnl_realized, ars: m.realized_ars, cubreUsd: m.realized_ars_cubre_usd,
-        fx: getHistoricalFx(lastDay) || tcValuacion,
-      })
-      total += r.monto || 0
-      restoUsd += r.restoUsd
-      valuado = valuado || !!m.realized_ars_valuado
-    }
+    const { monto, restoUsd, valuado } = sumarRealizadoMeses(
+      monthly.filter(m => m.broker === 'global'),
+      (m) => {
+        // Último día del mes del asiento (Date.UTC con day=0 del mes siguiente)
+        // → FX de ese momento. getHistoricalFx ya cae al dólar de hoy si no hay serie.
+        const lastDay = new Date(Date.UTC(m.year, m.month, 0)).toISOString().slice(0, 10)
+        return getHistoricalFx(lastDay) || tcValuacion
+      },
+    )
     return {
-      realizedPnlDisp: total,
+      realizedPnlDisp: monto,
       realizedNota: notaDelRealizado({ restoUsd, valuado, dolar: 'de cada mes' }),
     }
   }, [monthly, currency, tcValuacion, getHistoricalFx, realizedPnl])
@@ -823,12 +818,17 @@ function PersonalDashboard() {
   )
   // Realizado del MES en curso (flujo limpio: ventas cerradas + dividendos del mes).
   // Subdato del cuadro mensual — el único split realizado/no-realizado que aporta.
+  // En pesos es el MISMO que el KPI «P&L realizado» (las ventas en pesos con sus pesos de verdad
+  // y sólo el resto al dólar de hoy): con `pnl_realized × dólar`, la tarjeta del mes decía
+  // «realizado +$15.000» al lado de un KPI que decía +$240.000. Ya está en la moneda que se mira.
   const realizedThisMonth = useMemo(() => {
     const d = new Date()
     const y = d.getFullYear(), m = d.getMonth() + 1
     const e = monthly.find(x => x.broker === 'global' && x.year === y && x.month === m)
-    return e ? (e.pnl_realized || 0) : 0
-  }, [monthly])
+    if (!e) return 0
+    if (currency !== 'ARS') return e.pnl_realized || 0
+    return realizadoDeLaFilaMensual(e, tcValuacion).monto || 0
+  }, [monthly, currency, tcValuacion])
 
   // Rendimiento acumulado (desde el inicio). Mismo número que el hero "Ganancia
   // total" y el KPI "Resultado total"; acá lo mostramos también por horizonte.
@@ -1083,7 +1083,7 @@ function PersonalDashboard() {
             <>
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-medium text-ink-1">¿Por qué no es igual a realizado + no realizado?</p>
-              <p className="text-ink-3">En pesos, parte de la ganancia viene del dólar y de cómo se cuentan las ventas (ver "Efecto del dólar y otros").</p>
+              <p className="text-ink-3">En pesos, parte de la ganancia viene del dólar sobre lo que tenés o pusiste en dólares (ver "Efecto del dólar y otros").</p>
             </>
           )}
           {showGapUsd && (
@@ -1175,7 +1175,7 @@ function PersonalDashboard() {
                 <div className="border-t border-line/60 my-1.5" />
                 <p className="font-medium text-ink-0">Qué suele haber adentro</p>
                 <p className="text-ink-3">La suba (o baja) del dólar sobre la plata que tenés o pusiste en dólares: lo aportado cuenta el dólar del día en que entró y el no realizado, el de hoy.</p>
-                <p className="text-ink-3">Tus ventas: el P&L realizado cuenta cada venta en dólares de su fecha, y en pesos de hoy esa ganancia es otra.</p>
+                <p className="text-ink-3">Tus ventas en dólares (o de lo que compraste en dólares): el P&L realizado las cuenta al dólar de cada fecha, y en pesos de hoy esa ganancia es otra. Las ventas en pesos cuentan sus pesos exactos y no dejan resto.</p>
                 <p className="text-ink-3">Dividendos o intereses que no cargaste, o un costo mal cargado.</p>
               </>
             }
@@ -1272,7 +1272,7 @@ function PersonalDashboard() {
                     key: 'm',
                     label: 'Este mes',
                     data: monthlyVar,
-                    note: Math.abs(realizedThisMonth) >= 1 ? `realizado ${fmtSigned(realizedThisMonth)}` : null,
+                    note: Math.abs(realizedThisMonth) >= 1 ? `realizado ${fmtSignedDirect(realizedThisMonth)}` : null,
                   }
                 : { key: 'm', label: 'Este mes', vacio: 'todavía no hay una foto de este mes' },
               // ⚠️ EL ORDEN ES EL DEL RELOJ: hoy → este mes → este año → toda la
@@ -1789,7 +1789,7 @@ function KpiCell({ label, value, sub, tone, info, infoAlign = 'right',
         ? <div className={`entra text-[11.5px] mt-1.5 leading-none truncate tabular font-medium ${cambio.delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
             {textoDeDiferencia(cambio.delta, format)} respecto de antes
           </div>
-        : <div className="text-[11.5px] text-ink-3 mt-1.5 leading-none truncate">{sub}</div>}
+        : <div className="text-[11.5px] text-ink-3 mt-1.5 leading-tight line-clamp-2" title={typeof sub === 'string' ? sub : undefined}>{sub}</div>}
     </div>
   )
 }

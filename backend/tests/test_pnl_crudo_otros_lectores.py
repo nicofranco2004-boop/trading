@@ -167,7 +167,7 @@ class TestReportingFetchOps(unittest.TestCase):
                 exit_price REAL, pnl_usd REAL, pnl_pct REAL,
                 currency TEXT, fx_to_usd REAL,
                 -- el resultado en pesos (resultado_dual.py): el embudo del reporte los lee
-                cobrado_ars REAL, costo_ars REAL, costo_moneda TEXT
+                cobrado_ars REAL, costo_ars REAL, costo_moneda TEXT, pnl_sin_dato TEXT
             )""")
         self.conn.executemany(
             "INSERT INTO operations (user_id, date, broker, asset, op_type, "

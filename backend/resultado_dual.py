@@ -236,6 +236,9 @@ def pcts_de_la_venta(op: Dict[str, Any], moneda_venta: Optional[str]):
 
 # ─── El resultado en PESOS de una operación cerrada: UNA sola cuenta para todas las pantallas ──
 
+# El «dólar» que estampaba el TC vacío (29/7 al 8/9): no es un dólar, es el 1,0 del `or 1`.
+_DOLAR_CENTINELA = 1.0
+
 EXACTO = "exacto"        # el monto está en pesos de verdad (una venta en pesos, un cupón en pesos)
 VALUADO = "valuado"      # una venta en DÓLARES: los dólares a cada dólar de su fecha (no hay pesos reales)
 
@@ -261,9 +264,21 @@ def resultado_en_pesos(op: Dict[str, Any]):
       lote se pagó en dólares y se vendió en pesos: no hay pesos reales en una de las dos
       puntas, sólo los dólares llevados al dólar de cada fecha (el costo al de la compra, lo
       cobrado al de la venta), que es como lo mira Cartera.
-    · Venta en pesos SIN ellas (cuentas v1, ventas viejas sin corregir, editadas a mano): la
-      ganancia en pesos es `pnl_usd × fx_to_usd`. Es exacto porque la regla vieja la dividió
-      por ese mismo dólar.
+    · Venta en pesos SIN ellas (cuentas v1, ventas viejas sin corregir): la ganancia en pesos
+      es `pnl_usd × fx_to_usd`. Es exacto porque la regla vieja la dividió por ese mismo
+      dólar (a los centavos de dólar que redondeó `pnl_usd`: ±$8 en $240.000). Sólo vale si
+      `pnl_usd` salió de esa regla, y la fila no siempre lo dice; por eso NO se confía en:
+        - una venta cargada o editada a mano (`MANUAL`): su `pnl_usd` es el que dejó el
+          formulario, que no recalcula al editar y puede ser el de la regla nueva (US$10 ×
+          1.500 = $15.000 donde el broker dice $239.500);
+        - un dólar estampado de 1,0: el TC vacío entre el 29/7 y el 8/9 dividía por el dólar
+          de la fecha y estampaba 1,0, y `pnl_usd × 1,0` daría los dólares como pesos.
+      Ahí no hay forma honesta de saberlo: None, y la pantalla convierte ese resto y lo dice.
+      Si el lote se pagó en dólares (`costo_moneda`) es `VALUADO`: el costo queda llevado al
+      dólar de la venta, como en la rama anterior pero sin el dólar de compra.
+      Límite conocido: una venta vieja SIN `costo_moneda` (v1, o anterior a la corrección) de
+      un lote en dólares vendido en pesos sale `EXACTO`: la fila no dice en qué moneda se
+      pagó el lote, y el número es el de siempre (costo al dólar de la venta).
     · Cupón, amortización o interés de plazo fijo en pesos con su dólar sellado: el monto
       guardado YA está en pesos (`realized_pnl` lo pasa a dólares dividiendo), `EXACTO`.
     · Cualquier otra (venta en dólares sin las columnas, sin dólar estampado, dividendos,
@@ -286,8 +301,10 @@ def resultado_en_pesos(op: Dict[str, Any]):
         # (`costo_moneda` vacío = no se sabe en qué moneda se pagó: se toma la de la venta.)
         en_dolares = _moneda(op.get("currency")) == "USD" or _moneda(op.get("costo_moneda")) == "USD"
         return round(float(c) - float(k), 2), (VALUADO if en_dolares else EXACTO)
-    if _moneda(op.get("currency")) == "ARS" and fx and pnl is not None:
-        return round(float(pnl) * fx, 2), EXACTO
+    if (_moneda(op.get("currency")) == "ARS" and fx and fx > _DOLAR_CENTINELA and pnl is not None
+            and (op.get("pnl_sin_dato") or "") != MANUAL):
+        en_dolares = _moneda(op.get("costo_moneda")) == "USD"
+        return round(float(pnl) * fx, 2), (VALUADO if en_dolares else EXACTO)
     return None, None
 
 

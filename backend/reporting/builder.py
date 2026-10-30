@@ -248,7 +248,8 @@ def fetch_operations_in_range(conn, uid: int, start: str, end: str,
     rows = conn.execute(
         f"""SELECT id, date, broker, asset, op_type, quantity, entry_price,
                    exit_price, {realized_usd_sql()} AS pnl_usd, pnl_pct,
-                   pnl_usd AS pnl_crudo, currency, fx_to_usd, cobrado_ars, costo_ars, costo_moneda
+                   pnl_usd AS pnl_crudo, currency, fx_to_usd, cobrado_ars, costo_ars, costo_moneda,
+                   pnl_sin_dato
               FROM operations
              WHERE user_id = ? AND date >= ? AND date <= ?{br_sql}
              ORDER BY date ASC, id ASC""",

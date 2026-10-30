@@ -16938,6 +16938,20 @@ def insights_mtm_audit(uid: int = Depends(get_effective_user)):
     }
 
 
+def _realizado_en_pesos_por_mes_de(conn, uid: int):
+    """`{(broker, 'AAAA-MM'): (pesos, usd_cubierto, hay_valuado)}` de todas las operaciones del
+    usuario con resultado (ventas y cobros), con la cuenta única de `resultado_dual`. Lo leen
+    /api/monthly y el CSV mensual: el mes tiene UNA suma en pesos, no una por pantalla."""
+    ops = [dict(o) for o in conn.execute(
+        """SELECT broker, date, op_type, currency, fx_to_usd, pnl_usd, cobrado_ars, costo_ars,
+                  costo_moneda, pnl_sin_dato
+             FROM operations
+            WHERE user_id=? AND pnl_usd IS NOT NULL
+              AND op_type IN ('Venta','Cupón','Amortización','Interés PF')""", (uid,)
+    ).fetchall()]
+    return _resultado_dual.realizado_en_pesos_por_mes(ops)
+
+
 @app.get("/api/monthly")
 def get_monthly(uid: int = Depends(get_effective_user)):
     conn = get_db()
@@ -16967,14 +16981,7 @@ def get_monthly(uid: int = Depends(get_effective_user)):
         # de Operaciones y de Reportes). Se pide en operaciones, no en monthly_entries: lo que
         # no tiene pesos (dividendos en dólares, lo cargado a mano en /mensual) lo resuelve la
         # pantalla con `pnl_realized − realized_ars_cubre_usd` al dólar del mes.
-        _ops_pesos = [dict(o) for o in conn.execute(
-            """SELECT broker, date, op_type, currency, fx_to_usd, pnl_usd, cobrado_ars, costo_ars,
-                      costo_moneda
-                 FROM operations
-                WHERE user_id=? AND pnl_usd IS NOT NULL
-                  AND op_type IN ('Venta','Cupón','Amortización','Interés PF')""", (uid,)
-        ).fetchall()]
-        _pesos_mes = _resultado_dual.realizado_en_pesos_por_mes(_ops_pesos)
+        _pesos_mes = _realizado_en_pesos_por_mes_de(conn, uid)
         out = []
         for r in rows:
             d = dict(r)
@@ -20628,12 +20635,18 @@ def export_monthly_csv(request: Request, uid: int = Depends(get_effective_user))
                ORDER BY year, month, broker""",
             (uid,),
         ).fetchall()]
+        pesos_mes = _realizado_en_pesos_por_mes_de(conn, uid)
     finally:
         conn.close()
 
     # Formato 'período' YYYY-MM combinado para que el contador lo lea fácil
     for r in rows:
         r["periodo"] = f"{r['year']}-{r['month']:02d}"
+        # El realizado en pesos de las operaciones que tienen pesos (la cuenta de Operaciones,
+        # Reportes y el Resumen mensual). Vacío si el mes no tiene ninguna: lo que sólo está en
+        # dólares (dividendos en dólares, lo cargado a mano en /mensual) no se convierte acá.
+        p = pesos_mes.get((r["broker"], r["periodo"]))
+        r["pnl_realized_ars"] = p[0] if p else None
 
     headers = [
         ("periodo",          "Período"),
@@ -20643,6 +20656,9 @@ def export_monthly_csv(request: Request, uid: int = Depends(get_effective_user))
         ("deposits",         "Depósitos"),
         ("withdrawals",      "Retiros"),
         ("pnl_realized",     "P&L realizado"),
+        # Va AL FINAL y con la moneda en el nombre: las columnas de arriba son dólares y no se
+        # tocan (hojas de cálculo ya armadas leen por posición).
+        ("pnl_realized_ars", "P&L realizado en pesos (operaciones en pesos)"),
     ]
     today = date.today().isoformat()
     return _csv_response(rows, headers, f"rendi_mensual_{today}.csv")
@@ -46645,7 +46661,8 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     last_op_row = conn.execute(
         f"""SELECT date, broker, asset, op_type,
                    {realized_pnl.realized_usd_sql()} AS pnl_usd,
-                   pnl_usd AS pnl_crudo, currency, fx_to_usd, cobrado_ars, costo_ars, costo_moneda
+                   pnl_usd AS pnl_crudo, currency, fx_to_usd, cobrado_ars, costo_ars, costo_moneda,
+                   pnl_sin_dato
               FROM operations
              WHERE user_id = ? AND pnl_usd IS NOT NULL
                AND {realized_pnl.no_es_conversion_sql()}{br_clause}

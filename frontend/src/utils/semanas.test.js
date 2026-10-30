@@ -413,3 +413,34 @@ describe('rangoSemana / diaCorto — el rótulo, sin el corrimiento de huso', ()
     expect(diaCorto('2026-13-45')).toBe('')
   })
 })
+
+describe('medirSemana — en pesos, los pedazos de la barra son los de la tarjeta de la semana', () => {
+  // GGAL: una venta de +$240.000 (+US$ 10) con el dólar de cierre a 1.500 y nada abierto.
+  const cruda = semana('2026-W36', '2026-08-31', '2026-09-06', {
+    delta_usd: 10, realized_pnl: 10, unrealized_pnl: 0, delta_pct: 0.5,
+    realized_ars: 240000, realized_ars_cubre_usd: 10,
+  })
+  const vista = { resultado: 240000, realizado: 240000, noRealizado: 0 }
+
+  it('sin vista: los dólares del servidor, como siempre', () => {
+    const m = medirSemana(cruda)
+    expect([m.total, m.abiertas, m.cerradas]).toEqual([10, 0, 10])
+  })
+  it('con vista: lo cerrado es el realizado en pesos (no dólares × dólar)', () => {
+    const m = medirSemana(cruda, { vista })
+    expect(m.cerradas).toBe(240000)
+    expect(m.total).toBe(240000)
+  })
+  it('con vista: las dos piezas siguen sumando el total', () => {
+    const v = { resultado: 75000, realizado: 30000, noRealizado: 45000 }
+    const m = medirSemana(cruda, { vista: v })
+    expect(m.abiertas + m.cerradas).toBe(m.total)
+  })
+  it('con vista, una semana sin medir sigue sin total pero conserva lo cerrado', () => {
+    const sin = semana('2026-W35', '2026-08-24', '2026-08-30', { basis_incomparable: true, realized_pnl: 10 })
+    const m = medirSemana(sin, { vista })
+    expect(m.estado).toBe('sin-medicion')
+    expect(m.total).toBeNull()
+    expect(m.cerradas).toBe(240000)
+  })
+})
