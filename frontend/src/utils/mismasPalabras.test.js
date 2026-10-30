@@ -3,7 +3,7 @@
 //   · con «Ocultar saldos», tres frases («Mirá cómo está repartida tu plata…»,
 //     «Así está repartida tu plata…», «•• Oculto porque…»);
 //   · «la semana pasada» con coma en dos y sin coma en la otra («el sábado 24/10 86%»);
-//   · títulos: «Tu plata en tendencia de fondo alcista» / «Tu plata en tendencia
+//   · títulos: «Tu cartera en tendencia alcista de largo plazo» / «Tu plata en tendencia
 //     alcista»; «Lo que cambió esta semana en lo tuyo» con cosas de la watchlist;
 //     «Esta semana» en un lado y «Los últimos 7 días, contados desde hoy» en otro.
 // Ahora cada cosa sale de una constante o función de utils/tusSenales.js, y esta
@@ -18,7 +18,7 @@ import fuenteSenales from '../components/TusSenales.jsx?raw'
 
 describe('D12 · lo mismo, dicho igual en Cartera, Panorama y Señales', () => {
   it('las palabras', () => {
-    expect(TITULO_PLATA_ALCISTA).toBe('Tu plata en tendencia de fondo alcista')
+    expect(TITULO_PLATA_ALCISTA).toBe('Tu cartera en tendencia alcista de largo plazo')
     expect(PLATA_ALCISTA_OCULTA).toContain('Ocultar saldos')
     expect(TITULO_CAMBIOS).toMatch(/lo que tenés y en tu watchlist/)
     expect(antesConPct({ semana: '2026-10-24', pct: 86.2 }, '2026-10-29')).toBe('el sábado 24/10, 86%')

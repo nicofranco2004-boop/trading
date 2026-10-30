@@ -123,7 +123,7 @@ export function filasDeLaLista({ tenencias = [], seguidos = [], indice, hoy = ho
       fondo,
       corto: corto ? { palabra: corto.veredicto, motivo: corto.texto } : null,
       rsi: vigente ? fuerza(x, hoy) : null,
-      adx: l?.adx != null ? { valor: l.adx, texto: fmtAdx(l.adx), palabra: l.adx >= ADX_CLAVE ? 'marcada' : 'de costado' } : null,
+      adx: l?.adx != null ? { valor: l.adx, texto: fmtAdx(l.adx), palabra: l.adx >= ADX_CLAVE ? 'marcada' : 'lateral' } : null,
       desdeMax: l?.dist_maximo_12m != null ? { pct: l.dist_maximo_12m, enMaximo: l.dist_maximo_12m >= -0.1, anioCompleto: !!l.anio_completo } : null,
       linea,
       cambio: c?.fecha ? { ...textoDelCambio(c), fecha: c.fecha, hace: haceCuanto(c.fecha, hoy) } : null,
@@ -179,7 +179,7 @@ export function filtrarFilas(filas, filtro) {
 // `desc`: de mayor a menor.
 export const ORDENES = [
   { id: 'cambio', label: 'Lo último que cambió', valor: f => f.cambio?.fecha ?? null, desc: true },
-  { id: 'fuerza', label: 'Fuerza (RSI)', valor: f => f.rsi?.rsi ?? null, desc: true },
+  { id: 'fuerza', label: 'Impulso (RSI)', valor: f => f.rsi?.rsi ?? null, desc: true },
   { id: 'maximo', label: 'Desde el máximo', valor: f => f.desdeMax?.pct ?? null, desc: true },
   { id: 'peso', label: 'Lo que más pesa', valor: f => (f.tenes ? f.peso : null), desc: true },
 ]

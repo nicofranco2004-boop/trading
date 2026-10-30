@@ -374,7 +374,7 @@ describe('lo que encontró la auditoría (22/10)', () => {
       let veces = 0
       respuestas = { ...SIN_CARTERA, '/prices?symbols=NVDA': { NVDA: 182.4 }, '/prices/history': { points: [] },
         // Sólo la serie cuenta: la ficha también pide tus dibujos, los eventos
-        // y qué parte de tu plata es (el peso).
+        // y qué parte de tu cartera es (el peso).
         '/tecnico/': (ruta) => (/\/peso$/.test(ruta) ? { peso: null }
           : /\/(dibujos|eventos)/.test(ruta) ? { dibujos: [] }
             : ++veces === 1 ? { disponible: false, motivo: 'bajando' } : TECNICO) }

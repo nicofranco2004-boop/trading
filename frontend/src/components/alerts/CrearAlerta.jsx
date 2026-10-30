@@ -137,7 +137,7 @@ export default function CrearAlerta({ resumen, onCrearAviso, onCrearTecnica, alT
           <div className="flex-1 space-y-1.5">
             <h2 className="text-lg font-semibold text-ink-0">Señal técnica</h2>
             <p className="text-sm text-ink-2 leading-relaxed">
-              Te avisamos cuando un activo cruza su promedio de 200 o de 50 días, cuando su fuerza (RSI) pasa 30 o 70, o cuando cierra en su máximo del año. Se mira cada día con el precio de cierre.
+              Te avisamos cuando un activo cruza su promedio de 200 o de 50 días, cuando su impulso (RSI) cruza 30 o 70, o cuando cierra en su máximo del año. Se mira cada día con el precio de cierre.
             </p>
           </div>
           {alTope ? (

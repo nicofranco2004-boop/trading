@@ -62,12 +62,12 @@ NO_ES_RECOMENDACION = ("Muestra cómo se movieron los precios: no es una "
 # 30, el precio rebotó 5,7 de cada 10 veces contra 5,0 al azar. Es lo único con
 # algo de ventaja; todo lo demás describe, no anticipa.
 POSIBILIDAD_REBOTE = ("En la medición de Rendi (70 activos, 2 años), después de caídas así "
-                      "el precio rebotó algo más seguido que lo que siguió cayendo. "
+                      "el precio rebotó un poco más seguido de lo que siguió cayendo. "
                       "Es una posibilidad, no una certeza.")
 
 ETIQUETA = {
-    "media200": "Tendencia de fondo",
-    "media50": "Corto plazo",
+    "media200": "Tendencia de largo plazo",
+    "media50": "Tendencia de mediano plazo",
     "rsi_bajo_30": "Cayó muy rápido",
     "rsi_sobre_70": "Subió muy rápido",
     "maximo_12m": "Máximo del año",
@@ -107,22 +107,22 @@ def texto_del_cambio(c: dict) -> dict:
     t, arriba = c["tipo"], c.get("sentido") == "arriba"
     extra = None
     if t == "media200":
-        corta = ("pasó arriba de su promedio de 200 días" if arriba
-                 else "quedó abajo de su promedio de 200 días")
-        texto = (f"{corta}: la tendencia de fondo se volvió {'alcista' if arriba else 'bajista'}.")
+        corta = ("superó su promedio de 200 días" if arriba
+                 else "cayó por debajo de su promedio de 200 días")
+        texto = (f"{corta}: la tendencia de largo plazo pasó a ser {'alcista' if arriba else 'bajista'}.")
         tono = "pos" if arriba else "neg"
     elif t == "media50":
-        corta = ("pasó arriba de su promedio de 50 días" if arriba
-                 else "quedó abajo de su promedio de 50 días")
-        texto = f"{corta}: el corto plazo se volvió {'alcista' if arriba else 'bajista'}."
+        corta = ("superó su promedio de 50 días" if arriba
+                 else "cayó por debajo de su promedio de 50 días")
+        texto = f"{corta}: la tendencia de mediano plazo pasó a ser {'alcista' if arriba else 'bajista'}."
         tono = "pos" if arriba else "neg"
     elif t in ("rsi_bajo_30", "rsi_sobre_70"):
         nivel = 30 if t == "rsi_bajo_30" else 70
         corta = "cayó muy rápido" if t == "rsi_bajo_30" else "subió muy rápido"
-        texto = (f"{corta}: la fuerza (RSI) {'bajó de' if nivel == 30 else 'pasó'} {nivel} "
+        texto = (f"{corta}: su impulso (RSI) {'bajó de' if nivel == 30 else 'superó'} {nivel} "
                  f"y quedó en {_rsi_txt(c.get('rsi'), nivel)}")
         if c.get("rsi_antes") is not None:
-            texto += f"; una semana de mercado antes estaba en {round(c['rsi_antes'])}."
+            texto += f"; una semana antes estaba en {round(c['rsi_antes'])}."
         else:
             texto += "."
         # Sólo la caída tiene la frase: subir muy rápido no anticipó nada
@@ -141,9 +141,9 @@ def texto_del_cambio(c: dict) -> dict:
                  "12 meses), después de un mes sin hacerlo.")
         tono = "pos"
     else:   # adx23
-        lado = {1: " (para arriba)", -1: " (para abajo)"}.get(c.get("squeeze"), "")
-        corta = f"dejó de ir de costado y marca dirección{lado}"
-        texto = (f"{corta}: la fuerza de la tendencia (ADX) pasó 23 y quedó en "
+        lado = {1: " (al alza)", -1: " (a la baja)"}.get(c.get("squeeze"), "")
+        corta = f"dejó de moverse de forma lateral y tomó una dirección{lado}"
+        texto = (f"{corta}: la fuerza de la tendencia (ADX) superó 23 y quedó en "
                  f"{_adx_txt(c.get('adx') or 0)}.")
         tono = "adx"
     return {"etiqueta": ETIQUETA[t], "tono": tono, "texto": texto, "corta": corta, "extra": extra}
@@ -551,9 +551,9 @@ def contenido_del_mail(semana: dict, cuenta: str = None) -> dict:
     nombre del cliente cuando el mail es de una cuenta que administra un asesor
     (lo pasa `alerts_engine.entrega`): entonces no es «tu plata» ni «tu
     watchlist», es la de Juan."""
-    tu = {"plata": "tu plata", "lo": "lo tuyo", "watchlist": "tu watchlist", "tesis": "Tu tesis"}
+    tu = {"plata": "tu cartera", "lo": "tus activos", "watchlist": "tu watchlist", "tesis": "Tu tesis"}
     if cuenta:
-        tu = {"plata": "la plata", "lo": "sus activos", "watchlist": f"la watchlist de {cuenta}",
+        tu = {"plata": "su cartera", "lo": "sus activos", "watchlist": f"la watchlist de {cuenta}",
               "tesis": f"La tesis de {cuenta}"}
     lista = _por_importancia(semana["senales"])
     primeros, nombrados = [], []
@@ -577,16 +577,16 @@ def contenido_del_mail(semana: dict, cuenta: str = None) -> dict:
     a = semana.get("alcista")
     watch = "su watchlist" if cuenta else tu["watchlist"]
     if a:
-        detail = f"el {a['pct']}% de {tu['plata']} está en activos con tendencia de fondo alcista"
+        detail = f"el {a['pct']}% de {tu['plata']} está en activos con tendencia alcista de largo plazo"
         if a.get("semana_pasada"):
             detail += f" (la semana pasada, {round(a['semana_pasada']['pct'])}%)"
-        detail += f". Esto se movió en {tu['lo']} y en {watch}:"
+        detail += f". Esto es lo que cambió en {tu['lo']} y en {watch}:"
     else:
-        detail = f"esto se movió esta semana en {tu['lo']} y en {watch}:"
+        detail = f"esto es lo que cambió esta semana en {tu['lo']} y en {watch}:"
     return {
         "heading": _titular(semana["senales"]), "detail": detail, "lines": lineas,
         "cta_path": URL_SENALES, "cta_label": "Ver los cambios",
-        "pie": ("Te llega los sábados porque lo pediste.", "Cambiar o apagar",
+        "pie": ("Te llega los sábados porque lo activaste.", "Cambiar o desactivar",
                 URL_SENALES),
         "aclaracion": NO_ES_RECOMENDACION,
     }

@@ -81,7 +81,7 @@ describe('las filas, con lo que manda el servidor', () => {
     expect(ko.fondo.palabra).toBe(tarjetas(indice.get('KO|0').lectura).find(t => t.id === 'fondo').veredicto)
     expect(ko.corto.palabra).toBe('Bajista')
     expect(ko.rsi).toEqual({ rsi: 24, palabra: veredictoRsi(24) })
-    expect(ko.adx).toEqual({ valor: 18.2, texto: '18', palabra: 'de costado' })
+    expect(ko.adx).toEqual({ valor: 18.2, texto: '18', palabra: 'lateral' })
     expect(de('NVDA').adx.palabra).toBe('marcada')
     expect(de('TSLA').desdeMax.enMaximo).toBe(true)
     expect(ko.desdeMax).toMatchObject({ pct: -24.3, enMaximo: false })
@@ -91,7 +91,7 @@ describe('las filas, con lo que manda el servidor', () => {
     const f = filasDeLaLista({ seguidos: [{ symbol: 'X' }], indice: indexarLecturas([lec('X', false, { adx: 23 })]), hoy: HOY })
     expect(f[0].adx.palabra).toBe('marcada')
     const g = filasDeLaLista({ seguidos: [{ symbol: 'X' }], indice: indexarLecturas([lec('X', false, { adx: 22.96 })]), hoy: HOY })
-    expect(g[0].adx).toMatchObject({ texto: '22,9', palabra: 'de costado' })
+    expect(g[0].adx).toMatchObject({ texto: '22,9', palabra: 'lateral' })
   })
 
   it('bono, fondo o sin velas: «Sin lectura» con su motivo, sin números', () => {
@@ -102,13 +102,13 @@ describe('las filas, con lo que manda el servidor', () => {
     expect(motivosSinLectura(filas)).toEqual([{ porque: 'no_se_mide', nombres: ['AL30', 'AL29'], texto: MOTIVOS_SIN_LECTURA.no_se_mide }])
   })
 
-  it('una acción de la watchlist todavía sin velas: aparece en un día', () => {
+  it('una acción de la watchlist todavía sin velas: va a aparecer mañana', () => {
     const f = filasDeLaLista({ seguidos: [{ symbol: 'IREN' }], indice: new Map(), hoy: HOY })
     expect(f[0]).toMatchObject({ vigente: false, porque: 'sin_historia' })
   })
 
   it('velas de hace más de 10 días: sin lectura, con su fecha, y sin último cambio', () => {
-    const vieja = lec('MSFT', false, { fecha: '2026-10-10' }, { ultimo_cambio: { fecha: '2026-10-08', texto: 'pasó arriba de su promedio de 50 días: el corto plazo se volvió alcista.' } })
+    const vieja = lec('MSFT', false, { fecha: '2026-10-10' }, { ultimo_cambio: { fecha: '2026-10-08', texto: 'superó su promedio de 50 días: la tendencia de mediano plazo pasó a ser alcista.' } })
     const f = filasDeLaLista({ seguidos: [{ symbol: 'MSFT' }], indice: indexarLecturas([vieja]), hoy: HOY })
     expect(f[0]).toMatchObject({ vigente: false, porque: 'vieja', rsi: null, adx: null, cambio: null })
     expect(f[0].motivo).toContain('10/10/2026')
@@ -120,28 +120,28 @@ describe('las filas, con lo que manda el servidor', () => {
   it('el último cambio: el de la cuenta única, con hace cuánto', () => {
     // Como lo manda el servidor: cambios_desde + senales_semana.texto_del_cambio.
     const x = lec('TSLA', false, {}, { ultimo_cambio: {
-      tipo: 'media50', sentido: 'abajo', fecha: '2026-10-21', etiqueta: 'Corto plazo', tono: 'neg',
-      texto: 'quedó abajo de su promedio de 50 días: el corto plazo se volvió bajista.', extra: null } })
+      tipo: 'media50', sentido: 'abajo', fecha: '2026-10-21', etiqueta: 'Mediano plazo', tono: 'neg',
+      texto: 'cayó por debajo de su promedio de 50 días: la tendencia de mediano plazo pasó a ser bajista.', extra: null } })
     const f = filasDeLaLista({ seguidos: [{ symbol: 'TSLA' }], indice: indexarLecturas([x]), hoy: HOY })
     expect(f[0].cambio).toEqual({
-      corta: 'Quedó abajo de su promedio de 50 días',
-      completa: 'Quedó abajo de su promedio de 50 días: el corto plazo se volvió bajista.',
+      corta: 'Cayó por debajo de su promedio de 50 días',
+      completa: 'Cayó por debajo de su promedio de 50 días: la tendencia de mediano plazo pasó a ser bajista.',
       tono: 'neg', fecha: '2026-10-21', hace: 'hace 3 días',
     })
     // La aclaración de «cayó muy rápido» (la posibilidad de rebote) va al globo.
     const rsi = lec('KO', false, {}, { ultimo_cambio: {
       tipo: 'rsi_bajo_30', fecha: '2026-10-23', tono: 'rsi', corta: 'cayó muy rápido',
-      texto: 'cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 25.', extra: 'Es una posibilidad, no una certeza.' } })
+      texto: 'cayó muy rápido: el impulso (RSI) bajó de 30 y quedó en 25.', extra: 'Es una posibilidad, no una certeza.' } })
     const g = filasDeLaLista({ seguidos: [{ symbol: 'KO' }], indice: indexarLecturas([rsi]), hoy: HOY })
-    expect(g[0].cambio).toMatchObject({ corta: 'Cayó muy rápido', completa: 'Cayó muy rápido: la fuerza (RSI) bajó de 30 y quedó en 25. Es una posibilidad, no una certeza.', hace: 'ayer' })
+    expect(g[0].cambio).toMatchObject({ corta: 'Cayó muy rápido', completa: 'Cayó muy rápido: el impulso (RSI) bajó de 30 y quedó en 25. Es una posibilidad, no una certeza.', hace: 'ayer' })
   })
 
   it('D6: la celda usa la frase corta del servidor, sin jerga (antes «Tiene el ADX en 23,3»)', () => {
     const adx = lec('KO', false, {}, { ultimo_cambio: {
-      tipo: 'adx23', fecha: '2026-10-23', tono: 'adx', corta: 'dejó de ir de costado y marca dirección (para arriba)',
-      texto: 'dejó de ir de costado y marca dirección (para arriba): la fuerza de la tendencia (ADX) pasó 23 y quedó en 23,3.' } })
+      tipo: 'adx23', fecha: '2026-10-23', tono: 'adx', corta: 'dejó de moverse de forma lateral y tomó una dirección (al alza)',
+      texto: 'dejó de moverse de forma lateral y tomó una dirección (al alza): la fuerza de la tendencia (ADX) superó 23 y quedó en 23,3.' } })
     const g = filasDeLaLista({ seguidos: [{ symbol: 'KO' }], indice: indexarLecturas([adx]), hoy: HOY })
-    expect(g[0].cambio.corta).toBe('Dejó de ir de costado y marca dirección (para arriba)')
+    expect(g[0].cambio.corta).toBe('Dejó de moverse de forma lateral y tomó una dirección (al alza)')
     expect(g[0].cambio.corta).not.toMatch(/ADX|\d/)
   })
 
