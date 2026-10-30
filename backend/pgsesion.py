@@ -130,6 +130,19 @@ def conectar(dsn: str, **kw):
 from contextlib import contextmanager
 
 
+def tomar_turno(conn, uid: int) -> None:
+    """El turno de escritura de la cuenta, EN LOS DOS MOTORES (`main._tomar_turno`
+    es esto). Vive acá porque `importing/` también lo necesita y no puede importar
+    `main`: la vista previa del import lo toma justo antes de escribir para que un
+    renombre de broker no se meta entre lo que leyó y lo que escribe.
+
+    `tier` y no `id`: reescribir la clave primaria hacía 14 chequeos de claves
+    foráneas por borrado. En SQLite toma la base entera; en Postgres, la fila de
+    `users` (espera quien también la escriba).
+    """
+    conn.execute("UPDATE users SET tier=tier WHERE id=?", (uid,))
+
+
 @contextmanager
 def si_falla_se_deshace_solo_esto(conn, nombre: str):
     """Un punto de guardado: si lo de adentro revienta, se deshace SÓLO eso y la
