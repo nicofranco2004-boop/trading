@@ -109,7 +109,7 @@ beforeEach(() => {
 afterEach(async () => { await montado?.desmontar?.(); montado = null; vi.unstubAllGlobals() })
 
 describe('Análisis técnico → Gráfico', () => {
-  it('«Gráfico» es la primera pestaña de la fila (Nico, 30/10); la de entrada sigue siendo Panorama', async () => {
+  it('«Gráfico» es la primera pestaña de la fila y la que se abre al entrar (Nico, 30/10)', async () => {
     montado = await abrir('/analisis-tecnico')
     const pestanas = []
     const pila = [montado.contenedor]
@@ -119,7 +119,7 @@ describe('Análisis técnico → Gráfico', () => {
       pila.push(...(n.childNodes || []))
     }
     expect(texto(pestanas[0])).toBe('Gráfico')
-    expect(pestanas.find(t => t.atributos['aria-selected'] === 'true') && texto(pestanas.find(t => t.atributos['aria-selected'] === 'true'))).toBe('Panorama')
+    expect(pestanas.find(t => t.atributos['aria-selected'] === 'true') && texto(pestanas.find(t => t.atributos['aria-selected'] === 'true'))).toBe('Gráfico')
   })
 
   it('la primera vez abre lo tuyo, lo pone en la dirección y le pasa al gráfico la cuenta de la ficha', async () => {
