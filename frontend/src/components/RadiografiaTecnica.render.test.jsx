@@ -7,7 +7,7 @@
 //   · La tarjeta grande del Panorama: barra, grupos y POR QUÉ cada uno va sin
 //     lectura (antes decía siempre «Bonos, fondos y efectivo…», falso para una
 //     acción recién agregada que todavía no tiene velas).
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
 import RadiografiaTecnica, { TarjetaPlata } from './RadiografiaTecnica'
@@ -52,10 +52,24 @@ describe('la Cartera, corta (recuadro 21c)', () => {
     expect(t).not.toContain('Lo que cambió esta semana')
   })
   it('«la semana pasada» sólo a los 7 días justos; si no, el sábado con su fecha (la regla de Señales)', () => {
-    const cinco = diasAtras(5)
-    const [, m, d] = cinco.split('-')
-    const t = sinEtiquetas(conRouter(<RadiografiaTecnica lotes={LOTES} reparto={{ ...REPARTO, semana_pasada: { semana: cinco, pct: 61 } }} cargando={false} />))
-    expect(t).toContain(`(el sábado ${d}/${m}, 61%)`)
+    // El servidor guarda el % SÓLO los sábados (senales_semana.correr_si_toca) y
+    // manda el último de antes de hoy: «semana» es siempre el sábado anterior, a
+    // 1–7 días. Antes la prueba usaba «hoy − 5», que es sábado sólo los jueves.
+    // Se recorre una semana entera con el reloj fijo: el sábado (a 7 días justos)
+    // dice «la semana pasada»; los otros seis días, «el sábado DD/MM».
+    vi.useFakeTimers()
+    try {
+      for (let dia = 24; dia <= 30; dia++) {               // sáb 24/10 … vie 30/10/2026
+        vi.setSystemTime(new Date(2026, 9, dia, 12))
+        const atras = (new Date().getDay() + 1) % 7 || 7   // días hasta el sábado anterior
+        const sabado = diasAtras(atras)
+        const [, m, d] = sabado.split('-')
+        const t = sinEtiquetas(conRouter(<RadiografiaTecnica lotes={LOTES} reparto={{ ...REPARTO, semana_pasada: { semana: sabado, pct: 61 } }} cargando={false} />))
+        expect(t).toContain(atras === 7 ? '(la semana pasada, 61%)' : `(el sábado ${d}/${m}, 61%)`)
+      }
+    } finally {
+      vi.useRealTimers()
+    }
   })
   it('sin la semana pasada guardada, esa parte no aparece', () => {
     const t = sinEtiquetas(conRouter(<RadiografiaTecnica lotes={LOTES} reparto={{ ...REPARTO, semana_pasada: null }} cargando={false} />))

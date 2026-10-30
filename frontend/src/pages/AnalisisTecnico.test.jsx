@@ -12,6 +12,7 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic, enActo } from '../testing/navegadorMinimo'
+import { hoyISO } from '../utils/fecha'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn(), patch: vi.fn() }))
 vi.mock('../utils/api', () => ({ api }))
@@ -57,7 +58,9 @@ function servidor() {
       alcista: {
         pct: 74,
         grupos: { alcista: { pct: 74, fraccion: 0.74, nombres: ['NVDA'] }, bajista: { pct: 26, fraccion: 0.26, nombres: ['KO'] }, sin: { pct: 0, fraccion: 0, nombres: [] } },
-        motivos: [], semana_pasada: { semana: new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10), pct: 70 },
+        // Hace 7 días contados desde el «hoy» de la pantalla (hoyISO, el día de
+        // acá): con toISOString (el de Londres) de 21 a 24 h daba 6 días.
+        motivos: [], semana_pasada: { semana: new Date(Date.parse(hoyISO() + 'T00:00:00Z') - 7 * 86400000).toISOString().slice(0, 10), pct: 70 },
       },
       tenes: { activos: 2, con_cambios: 2 }, watchlist: 1,
       senales: [
