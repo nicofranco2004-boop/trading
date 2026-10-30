@@ -11830,7 +11830,9 @@ def _freno_reiniciar() -> None:
 @contextmanager
 def _freno_tecnico(request: Request, uid: int, tipo: str = "muchos"):
     from collections import deque
-    quien = (getattr(request.state, "rendi_auth_uid", None) or uid, tipo)
+    # `request` falta cuando la ruta se llama a mano (un test, otra función):
+    # el freno cuenta igual, a nombre de `uid`.
+    quien = (getattr(getattr(request, "state", None), "rendi_auth_uid", None) or uid, tipo)
     por_minuto, a_la_vez = FRENO_TECNICO[tipo]
     if tipo == "muchos":   # las pruebas cambian estos dos
         por_minuto, a_la_vez = FRENO_TECNICO_POR_MINUTO, FRENO_TECNICO_A_LA_VEZ
@@ -48670,7 +48672,7 @@ def _exigir_cupo_de_alertas(conn, uid: int, *, con_turno: bool = True) -> None:
 
 
 @app.post("/api/alerts")
-def alerts_create(data: AlertCreateIn, request: Request, uid: int = Depends(get_effective_user)):
+def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user), request: Request = None):
     """Crea una alerta. Gatea por cantidad (check_alert_quota) y por capacidad
     (pct_move = Plus+). Arma el edge-trigger según el precio actual."""
     import alerts_engine as _ae
@@ -48759,7 +48761,8 @@ def alerts_create(data: AlertCreateIn, request: Request, uid: int = Depends(get_
 
 
 @app.patch("/api/alerts/{alert_id}")
-def alerts_update(alert_id: int, data: AlertUpdateIn, request: Request, uid: int = Depends(get_effective_user)):
+def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_effective_user),
+                  request: Request = None):
     """Edita/activa/pausa una alerta. Si se reactiva o cambia el umbral,
     re-arma el edge-trigger (y re-ancla si es 'Desde ahora')."""
     import alerts_engine as _ae
@@ -48896,7 +48899,7 @@ def tesis_list(request: Request, uid: int = Depends(get_effective_user)):
 
 
 @app.put("/api/tesis")
-def tesis_guardar(data: TesisIn, request: Request, uid: int = Depends(get_effective_user)):
+def tesis_guardar(data: TesisIn, uid: int = Depends(get_effective_user), request: Request = None):
     """Escribe o corrige la tesis de un activo (el mismo día se corrige; otro
     día se guarda una nueva y la vieja queda: ver tesis.py)."""
     import tesis as _tesis

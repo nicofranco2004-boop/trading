@@ -91,6 +91,14 @@ class TopeALaVezTest(unittest.TestCase):
             return conn.execute(sql, (self.uids[1],)).fetchone()[0]
 
     def test_alertas_tecnicas(self):
+        # El alta de una técnica pasa por el freno de lecturas pesadas (3 a la vez
+        # por persona): acá se lo abre, porque lo que se prueba es el TOPE del
+        # plan con diez altas cruzándose, no el freno (test_tecnico_freno).
+        with mock.patch.dict(main.FRENO_TECNICO, {"uno": (90, 20)}), \
+                mock.patch("main.PESADOS_A_LA_VEZ", 40):
+            self._alertas_tecnicas()
+
+    def _alertas_tecnicas(self):
         codigos = self._a_la_vez("COUNT(*) AS c FROM alerts", [
             ("/api/alerts", {"kind": "tecnica", "symbol": s, "senal": "media200", "direction": "either"})
             for s in CONOCIDOS[:N]])
