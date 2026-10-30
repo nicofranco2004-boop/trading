@@ -122,6 +122,31 @@ class NocheTopeTest(unittest.TestCase):
             conn.commit()
         self.assertIn("NFLX", self._noche())
 
+    def test_la_noche_va_por_turnos_y_lo_real_no_queda_al_final(self):
+        """Re-test E4: 1.300 inventados nunca intentados iban primero y los 7
+        reales en la última tanda; si la noche se cortaba por tiempo, lo de
+        verdad no se actualizaba. Por turnos, cada persona avanza al mismo ritmo."""
+        with main.db_abierta() as conn:
+            for i in range(120):        # Ana sigue 120 inventados que nadie intentó nunca
+                conn.execute("INSERT INTO watchlist (user_id, symbol) VALUES (?, ?)",
+                             (self.uids[0], f"QX{i:04d}"))
+            for s in ("KO", "PEP"):     # Beto sigue dos de verdad, que ya tienen historia
+                conn.execute("INSERT INTO watchlist (user_id, symbol) VALUES (?, ?)", (self.uids[1], s))
+                conn.execute("INSERT INTO velas_estado (symbol, ultima_corrida, ultima_completa, ok, filas) "
+                             "VALUES (?, datetime('now'), datetime('now'), 1, 700)", (s,))
+            conn.commit()
+        pedidos = []
+
+        def bajar(t, periodo):
+            pedidos.append(t)
+            return None
+        # La corrida de la noche entera, de a un ticker por tanda para ver el orden.
+        with main.db_abierta() as conn, mock.patch("velas_diarias._bajar", bajar), \
+                mock.patch("velas_diarias.TANDA", 1):
+            velas_diarias.correr(conn)
+        self.assertLess(max(pedidos.index("KO"), pedidos.index("PEP")), 6, pedidos[:8])
+        self.assertEqual(len(set(pedidos)), 123)   # todo se pide igual: sólo cambia el orden
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -162,7 +162,14 @@ def simbolos_a_seguir(conn) -> list:
 
 
 def _seguimiento(conn):
-    """(tickers, pares): los tickers de Yahoo a seguir y, de cada CEDEAR, su
+    """(tickers, pares): lo de `_seguimiento_por_persona` sin el detalle de
+    quién aporta qué."""
+    tickers, pares, _ = _seguimiento_por_persona(conn)
+    return tickers, pares
+
+
+def _seguimiento_por_persona(conn):
+    """(tickers, pares, de_cada_una): los tickers de Yahoo a seguir y, de cada CEDEAR, su
     par {'XLE.BA': 'XLE'} (el CEDEAR en pesos y la acción de afuera), que es
     contra lo que la lista de cambios de ratio (`cambios_ratio`) compara la
     serie en pesos.
@@ -177,7 +184,8 @@ def _seguimiento(conn):
 
     Cada persona suma hasta `TICKERS_POR_PERSONA`, en este orden: lo que
     tiene, lo que sigue, sus alertas técnicas, lo que operó. Lo que pasa de ahí
-    queda afuera (y se anota en el log)."""
+    queda afuera (y se anota en el log). `de_cada_una`: {uid: [sus tickers, en
+    ese orden]}, para repartir la noche por turnos (`_por_turnos`)."""
     from cripto import yahoo_de_cripto
     from snapshots_job import _broker_name_sets, position_price_key, simbolo_byma
 
@@ -251,18 +259,20 @@ def _seguimiento(conn):
         en_pesos = str(clave).upper().endswith('.BA')
         _anotar_de(p['user_id'], _yahoo_de(p['asset'], None, en_pesos, yahoo_de_cripto, cedears))
 
-    tickers, pares, topados = set(), {}, {}
+    tickers, pares, topados, de_cada_una = set(), {}, {}, {}
     for uid, listas in por_persona.items():
-        suyos = set()
+        suyos, orden = set(), []
         for ys in listas:
             nuevos = [y for y in ys if y and y not in suyos]
             if len(suyos) + len(nuevos) > TICKERS_POR_PERSONA:
                 topados[uid] = topados.get(uid, 0) + 1
                 continue
             suyos.update(nuevos)
+            orden += nuevos
             if len(ys) == 2:   # la forma de un CEDEAR: [afuera, pesos]
                 pares[ys[1]] = ys[0]
         tickers |= suyos
+        de_cada_una[uid] = orden
     if topados:
         log.warning("velas: %d persona(s) pasaron el tope de %d tickers por persona; quedaron "
                     "afuera %d activos (uid: %s)", len(topados), TICKERS_POR_PERSONA,
@@ -271,7 +281,53 @@ def _seguimiento(conn):
     tickers.add(SP500)
     tickers.discard('')
     tickers.discard(None)
-    return tickers, pares
+    return tickers, pares, de_cada_una
+
+
+def _turno(estado: dict, t: str, hoy: str) -> int:
+    """Primero lo que nunca se intentó (0), después lo que necesita la historia
+    entera (1), después la puesta al día (2), y AL FINAL lo que falló la última
+    vez (3). Antes "lo que nunca se bajó" iba primero siempre, y un símbolo que
+    nunca trae datos (inventado en una watchlist) nunca deja de ser "nunca
+    bajado": con miles, se comían el tope de la noche y los activos de verdad no
+    se actualizaban (auditoría de seguridad 22/10)."""
+    e = estado.get(t)
+    if e is None:
+        return 0
+    if not e.get('ok'):
+        return 3
+    return 1 if _toca_completa(e, hoy) else 2
+
+
+def _por_turnos(conn, de_cada_una: dict, hoy: str) -> list:
+    """El orden de la noche: por TURNOS entre personas, no todo lo de una
+    adelante de todo lo de otra. Ronda 1: lo primero de cada persona; ronda 2:
+    lo segundo; etc. Cada persona ordena lo suyo por `_turno`. Lo que falló la
+    última vez va en una segunda vuelta, después de todo lo demás de todos.
+
+    Por qué: lo «nunca intentado» va primero (para que lo que alguien acaba de
+    sumar tenga su historia), y una cuenta que mete 300 inventados por día los
+    tiene siempre nunca intentados. Con 3 clientes de un asesor más una cuenta
+    Pro, la noche tuvo 1.300 inventados primero y los 7 reales en la última
+    tanda (re-test E4, 29/10): si la noche se cortaba por tiempo, lo de verdad
+    no se actualizaba. Por turnos, cada persona avanza al mismo ritmo: los que
+    meten mucho sólo se atrasan a sí mismos."""
+    estado = {r['symbol']: dict(r) for r in conn.execute(
+        "SELECT symbol, ultima_completa, ok FROM velas_estado").fetchall()}
+    vueltas = ([], [])
+    for uid in sorted(de_cada_una, key=str):
+        suyos = sorted(de_cada_una[uid], key=lambda t: _turno(estado, t, hoy))   # estable: el orden de las puertas
+        for v, lista in enumerate(([t for t in suyos if _turno(estado, t, hoy) < 3],
+                                   [t for t in suyos if _turno(estado, t, hoy) == 3])):
+            vueltas[v].append(lista)
+    orden, puestos = [SP500], {SP500}
+    for listas in vueltas:
+        for k in range(max((len(x) for x in listas), default=0)):
+            for lista in listas:
+                if k < len(lista) and lista[k] not in puestos:
+                    puestos.add(lista[k])
+                    orden.append(lista[k])
+    return orden
 
 
 # ─── Bajar y guardar ─────────────────────────────────────────────────────────
@@ -379,7 +435,7 @@ def _toca_completa(est: dict, hoy: str) -> bool:
 
 def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
                tope_seg: float = TOPE_CORRIDA_SEG, tope_tanda: float = TOPE_TANDA_SEG,
-               podar: bool = True) -> dict:
+               podar: bool = True, en_orden: bool = False) -> dict:
     """Pone al día las velas de estos tickers. Idempotente: correrlo dos veces
     seguidas no cambia nada.
 
@@ -394,7 +450,9 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
 
     `tope_tanda`: cuánto se espera a Yahoo por tanda (la ficha a pedido espera
     poco). `podar`: borrar lo que quedó más viejo que 3 años; la ficha a pedido
-    no lo hace (es un borrado de toda la tabla y lo hace la corrida de la noche)."""
+    no lo hace (es un borrado de toda la tabla y lo hace la corrida de la noche).
+    `en_orden`: respetar el orden de `tickers` (la noche lo trae repartido por
+    personas, `_por_turnos`) en vez de ordenar por `_turno`."""
     from fechas import hoy_art
     from pricing import yahoo as _yahoo
     bajar = bajar or _bajar
@@ -406,20 +464,11 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
 
     estado = {r['symbol']: dict(r) for r in conn.execute(
         "SELECT symbol, ultima_completa, ok FROM velas_estado").fetchall()}
-    def _turno(t):
-        # Primero lo que nunca se intentó, después lo que necesita la historia
-        # entera, después la puesta al día, y AL FINAL lo que falló la última
-        # vez. Antes "lo que nunca se bajó" iba primero siempre, y un símbolo
-        # que nunca trae datos (inventado en una watchlist) nunca deja de ser
-        # "nunca bajado": con miles, se comían el tope de la noche y los activos
-        # de verdad no se actualizaban (auditoría de seguridad 22/10).
-        e = estado.get(t)
-        if e is None:
-            return 0
-        if not e.get('ok'):
-            return 3
-        return 1 if _toca_completa(e, hoy) else 2
-    pendientes = sorted(set(t for t in (tickers or []) if t), key=lambda t: (_turno(t), t))
+    if en_orden:
+        # El orden ya viene decidido (la noche: `_por_turnos`).
+        pendientes = list(dict.fromkeys(t for t in (tickers or []) if t))
+    else:
+        pendientes = sorted(set(t for t in (tickers or []) if t), key=lambda t: (_turno(estado, t, hoy), t))
 
     res = {"pedidos": len(pendientes), "completas": 0, "incrementales": 0,
            "reescritas": [], "sin_datos": [], "sin_tiempo": 0, "filas": 0}
@@ -482,8 +531,9 @@ def correr(conn) -> dict:
     ya guardadas, la lista única de cambios de ratio (`cambios_ratio`), a la que
     se le pasa de cada CEDEAR cuál es su acción de afuera. Un error de la lista
     no toca las velas."""
-    tickers, pares = _seguimiento(conn)
-    res = actualizar(conn, sorted(tickers))
+    from fechas import hoy_art
+    tickers, pares, de_cada_una = _seguimiento_por_persona(conn)
+    res = actualizar(conn, _por_turnos(conn, de_cada_una, hoy_art()), en_orden=True)
     res["podados_a_pedido"] = _podar_a_pedido(conn, tickers)
     # Cuándo corrió la NOCHE, aparte de cada activo: las fichas abiertas a pedido
     # también anotan su `ultima_corrida`, y /admin no tiene que confundirlas.
