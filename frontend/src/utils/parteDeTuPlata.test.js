@@ -31,7 +31,8 @@ describe('qué parte de tu cartera es: una sola manera de decirlo', () => {
   })
 
   it('Tu lista y el Panorama usan la misma función', () => {
-    expect(fuenteLista).toContain('parteDeTuPlata(')
+    // Tu lista va por pesoVisible / deTuCartera (parteDeTuPlata + el ojito).
+    expect(fuenteLista).toMatch(/\b(parteDeTuPlata|pesoVisible|deTuCartera)\(/)
     expect(fuenteRadiografia).toContain('parteDeTuPlata(')
     expect(fuenteLista).not.toContain("'menos de 1%'")
     expect(fuenteRadiografia).not.toContain("'menos de 1%'")

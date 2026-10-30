@@ -15,11 +15,11 @@
 //     única de «qué cambió esta semana».
 // Ninguna palabra habla del futuro ni dice qué hacer: describe cómo se movió.
 
-import { inferType } from './tickers'
+import { inferType, CRYPTO, STOCKS_US, ETFS, INDICES, CEDEARS_LIST, ARG_LIDER, ARG_GENERAL } from './tickers'
 import { esLocalSinTenencia } from './accionLocal'
 import { isCrypto } from './crypto'
 import { hoyISO } from './fecha'
-import { tarjetas, fmtAdx, ADX_CLAVE } from './tecnico'
+import { tarjetas, fmtAdx, ADX_CLAVE, RSI_GANA } from './tecnico'
 import { fciLabel } from './valuation'
 import { clave, tendencia, fuerza, lecturaVieja, MOTIVOS_SIN_LECTURA } from './radiografia'
 
@@ -64,6 +64,20 @@ function loteDeSeguido(it, asset) {
   const inferido = inferType(asset)
   return { asset, asset_type: tipo || (inferido === 'bond' ? 'BONO' : inferido === 'fci' ? 'FCI' : null) }
 }
+
+// El nombre de la empresa o del fondo, de las listas del buscador. Una acción
+// argentina (GGAL en BYMA) va con su nombre de BYMA, no con el de su ADR.
+const NOMBRES = new Map()
+for (const x of [...CRYPTO, ...INDICES, ...ETFS, ...STOCKS_US, ...CEDEARS_LIST]) if (!NOMBRES.has(x.s)) NOMBRES.set(x.s, x.n)
+const NOMBRES_BYMA = new Map([...ARG_LIDER, ...ARG_GENERAL].map(x => [x.s, x.n]))
+export function nombreDeActivo(asset, local = false) {
+  const a = String(asset || '').toUpperCase()
+  return (local ? NOMBRES_BYMA.get(a) : null) || NOMBRES.get(a) || NOMBRES_BYMA.get(a) || null
+}
+
+// «Esta semana»: los últimos 7 días contados desde hoy, la misma semana de la
+// pestaña Señales (tecnico.DIAS_CAMBIOS del servidor, QUE_ES_ESTA_SEMANA).
+export const DIAS_SEMANA = 7
 
 const DIA = 86400000
 const dias = (desde, hasta) => Math.round((Date.parse(hasta + 'T00:00:00Z') - Date.parse(desde + 'T00:00:00Z')) / DIA)
@@ -116,8 +130,15 @@ export function filasDeLaLista({ tenencias = [], seguidos = [], indice, hoy = ho
     const corto = l ? tarjetas(l).find(t => t.id === 'corto') : null
     const linea = vigente && x.linea?.length > 1 ? x.linea : null
     const c = vigente ? x.ultimo_cambio : null
+    const [asset, local] = [k.slice(0, -2), k.endsWith('|1')]
     filas.set(k, {
-      ...base, clave: k, vigente,
+      ...base, clave: k, vigente, asset, local,
+      empresa: nombreDeActivo(asset, local),
+      lectura: l,
+      precio: l?.precio ?? null,
+      // Cuánto cambió el precio en los 3 meses de la línea chica.
+      var3m: linea && linea[0].c ? (linea[linea.length - 1].c / linea[0].c - 1) * 100 : null,
+      nuevo: !!(c?.fecha && dias(c.fecha, hoy) < DIAS_SEMANA),
       motivo: vigente ? null : fondo.motivo,
       porque: vigente ? null : fondo.porque,
       fondo,
@@ -213,15 +234,69 @@ export function motivosSinLectura(filas) {
     .map(k => ({ porque: k, nombres: por[k], texto: MOTIVOS_SIN_LECTURA[k] }))
 }
 
-/** El trazo de la línea chica (ancho × alto en px). null si no hay línea. */
-export function trazoDeLinea(linea, ancho = 64, alto = 22) {
+/**
+ * El trazo de la línea chica (ancho × alto en px). null si no hay línea.
+ * `area`: lo de abajo de la línea, para el relleno del mini-gráfico. Con
+ * `promedio`, también `ma`: el promedio de 200 días de cada punto (`m`, del
+ * servidor) en la MISMA escala, así se ve si el precio está arriba o abajo;
+ * los días sin promedio cortan la línea. null si no viene ninguno.
+ */
+export function trazoDeLinea(linea, ancho = 64, alto = 22, { promedio = false } = {}) {
   if (!linea || linea.length < 2) return null
   const cs = linea.map(p => p.c)
-  const lo = Math.min(...cs), hi = Math.max(...cs)
+  const ms = promedio ? linea.map(p => (Number.isFinite(p.m) ? p.m : null)) : []
+  const todos = [...cs, ...ms.filter(m => m != null)]
+  const lo = Math.min(...todos), hi = Math.max(...todos)
   const rango = hi - lo || 1
   const x = (i) => (i / (linea.length - 1)) * ancho
   const y = (c) => alto - 1 - ((c - lo) / rango) * (alto - 2)
   const d = linea.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.c).toFixed(1)}`).join('')
-  return { d, sube: cs[cs.length - 1] >= cs[0] }
+  const ma = ms.map((m, i) => (m == null ? '' : `${i && ms[i - 1] != null ? 'L' : 'M'}${x(i).toFixed(1)},${y(m).toFixed(1)}`)).join('')
+  return { d, area: `${d}L${ancho},${alto}L0,${alto}Z`, ma: ma || null, sube: cs[cs.length - 1] >= cs[0] }
+}
+
+/**
+ * Las barritas de «Fuerza» de la tarjeta (de 1 a 5): cada una vale media línea
+ * del ADX (23), así que hasta la segunda es «sin dirección clara» y desde la
+ * tercera, dirección marcada. → { prendidas, clara } o null sin ADX.
+ */
+export function barrasDeFuerza(adx) {
+  if (adx == null) return null
+  return { prendidas: Math.min(5, Math.floor(adx / (ADX_CLAVE / 2)) + 1), clara: adx >= ADX_CLAVE }
+}
+
+/**
+ * La franja de arriba de Tu lista: cuántos tienen tendencia alcista de largo
+ * plazo (y de cuántos con lectura, con un puntito por cada uno), cuántos ganan
+ * impulso, cuáles están en su máximo del año y cuántos cambiaron esta semana.
+ */
+export function resumenDeLaLista(filas = []) {
+  const leidas = filas.filter(f => f.fondo?.id === 'alcista' || f.fondo?.id === 'bajista')
+  const alcistas = leidas.filter(f => f.fondo.id === 'alcista').length
+  return {
+    alcistas,
+    conLectura: leidas.length,
+    puntos: [...Array(alcistas).fill('alcista'), ...Array(leidas.length - alcistas).fill('bajista')],
+    ganando: filas.filter(f => f.rsi && f.rsi.rsi > RSI_GANA).length,
+    enMaximo: filas.filter(f => f.vigente && f.desdeMax?.enMaximo).map(f => f.nombre),
+    cambiaron: filas.filter(f => f.nuevo).length,
+  }
+}
+
+// Cómo se ve la lista: de entrada en tarjetas (Nico, 30/10). Lo que elige cada
+// persona queda en ESTE navegador; sin almacenamiento, siempre en tarjetas.
+export const VISTAS = [{ id: 'tarjetas', label: 'Tarjetas' }, { id: 'tabla', label: 'Tabla' }]
+const claveVista = (persona) => (persona ? `rendi_lista_vista:${persona}` : null)
+
+export function vistaGuardada(persona) {
+  const k = claveVista(persona)
+  if (!k) return 'tarjetas'
+  try { return localStorage.getItem(k) === 'tabla' ? 'tabla' : 'tarjetas' } catch { return 'tarjetas' }
+}
+
+export function guardarVista(persona, vista) {
+  const k = claveVista(persona)
+  if (!k) return
+  try { localStorage.setItem(k, vista === 'tabla' ? 'tabla' : 'tarjetas') } catch { /* sin almacenamiento */ }
 }
 

@@ -1068,7 +1068,7 @@ def para_la_lista(conn, activos: list) -> list:
     Cada uno trae la MISMA `lectura` que su ficha y que la radiografía (de ahí
     salen las palabras de las dos tendencias, la fuerza, el ADX y la distancia
     al máximo del año), `linea`: los cierres de los últimos 3 meses para la
-    línea chica de la fila, y `ultimo_cambio` (ver `_ultimo_cambio`). Sin
+    línea chica de la fila, cada uno con su promedio de 200 días (`m`), y `ultimo_cambio` (ver `_ultimo_cambio`). Sin
     velas: `disponible` False, nunca se inventa. Cuánto pesa cada uno lo pone
     la pantalla, con la valuación de la Cartera. Lo ya leído no se vuelve a
     calcular (`_leer_varios`)."""
@@ -1079,10 +1079,16 @@ def para_la_lista(conn, activos: list) -> list:
         if not velas:
             return {"asset": a, "local": local, "disponible": False}
         cierres = [v["close"] for v in velas]
-        linea = [{"d": v["date"], "c": estructura.precio_redondo(v["close"])}
-                 for v in velas[_desde_dias(velas, DIAS_LINEA):]]
+        m200 = media(cierres, 200)
+        # Cada punto con su promedio de 200 días (`m`, la línea punteada del
+        # mini-gráfico de la tarjeta): el MISMO que decide la tendencia de
+        # largo plazo. None mientras no haya 200 días de mercado.
+        i0 = _desde_dias(velas, DIAS_LINEA)
+        linea = [{"d": v["date"], "c": estructura.precio_redondo(v["close"]),
+                  "m": estructura.precio_redondo(m200[i0 + j]) if m200[i0 + j] is not None else None}
+                 for j, v in enumerate(velas[i0:])]
         return {"asset": a, "local": local, "disponible": True,
-                "lectura": lectura(velas, media(cierres, 50), media(cierres, 200)),
+                "lectura": lectura(velas, media(cierres, 50), m200),
                 "linea": linea, "ultimo_cambio": _ultimo_cambio(velas, desde)}
     return _leer_varios(conn, "lista", activos, desde, _armar)
 

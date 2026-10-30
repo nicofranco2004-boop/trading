@@ -150,7 +150,8 @@ describe('Mapa de calor de tu cartera (Dashboard)', () => {
     // Tu lista, como la ve el usuario: Análisis técnico → pestaña «Tu lista».
     montado = await abrir('../pages/AnalisisTecnico', '/analisis-tecnico?tab=lista', '/analisis-tecnico')
     const t = montado.t()
-    for (const p of Object.values(mapa)) expect(t).toContain(`Sí · ${p}`)
+    // Tu lista abre en tarjetas (lista-tarjetas, 30/10): el peso dice «55% de tu cartera».
+    for (const p of Object.values(mapa)) expect(t).toContain(`${p} de tu cartera`)
   })
 
   it('«Hoy»: la Var. día de la Cartera en dólares; lo que más sumó y lo que más restó', async () => {
