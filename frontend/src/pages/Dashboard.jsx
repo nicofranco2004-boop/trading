@@ -40,6 +40,7 @@ import { api } from '../utils/api'
 import { computeBrokerValue, noRealizadoEnVista, valorAlMep, priceSymbol, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, setBrokersRegistry } from '../utils/valuation'
 import { sePuedeGuardar, guardarPnlNoRealizado, yaSeGuardoLaFotoDeHoy, marcarFotoDeHoy } from '../utils/guardarValuacion'
 import { useDuenoDeLosDatos, sigueSiendoDe } from '../utils/duenoDeLaPestana'
+import { ENVIOS, enviarDe } from '../utils/enviosConDueno'
 import { leer as leerDelAlmacen, borrar as borrarDelAlmacen } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
 import { auditPositions } from '../utils/valuationGuards'
@@ -605,7 +606,8 @@ function PersonalDashboard() {
     if (!sigueSiendoDe(duenoDatos) || yaSeGuardoLaFotoDeHoy(duenoDatos, today)) return
     // Snapshots positions-only (sin PF) → la historia/gráfico/daily se mantienen
     // consistentes; el PF solo entra en las métricas estáticas del titular.
-    api.post('/snapshots', { total_value: totalValuePositions, total_invested: totalCostBasisPositions, net_deposited: netDepositedPositions })
+    // Sale por utils/enviosConDueno, que vuelve a mirar el dueño justo antes.
+    enviarDe(ENVIOS.fotoDelDia, duenoDatos, { total_value: totalValuePositions, total_invested: totalCostBasisPositions, net_deposited: netDepositedPositions })
       .then(() => marcarFotoDeHoy(duenoDatos, today))
       .catch((e) => {
         // Un 5xx marca el día IGUAL. Antes el catch se tragaba el error sin
@@ -732,7 +734,8 @@ function PersonalDashboard() {
       filas.push({ broker: b.name, pnl: pnlForBroker })
     })
     filas.push({ broker: 'global', pnl: globalPnlUsd })
-    guardarPnlNoRealizado(api.post, filas, { cobertura: priceCoverage, valuationDollar })
+    // Con el dueño de los datos: si otra pestaña cambió de cuenta, no sale.
+    guardarPnlNoRealizado(duenoDatos, filas, { cobertura: priceCoverage, valuationDollar })
   }, [loading, lastUpdated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Portfolio evolution series (depends on range) ───────────────────────────

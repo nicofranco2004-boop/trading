@@ -31,7 +31,7 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { useFichaDelActivo } from '../hooks/useFichaDelActivo'
 import { api } from '../utils/api'
 import { urlDeActivo } from '../utils/buscadorRapido'
-import { useDuenoDeLaPestana } from '../utils/duenoDeLaPestana'
+import { useDuenoDeLosDatos } from '../utils/duenoDeLaPestana'
 import { nombreDelCliente } from '../utils/navegacion'
 import {
   FILTROS, activoDeEntrada, activoValido, guardado, opcionesDelBuscador, recordar,
@@ -42,9 +42,10 @@ const CHIPS = 3
 
 export default function GraficoTecnico() {
   const { clientCtx } = useAdvisorContext()
-  // De quién es lo que se recuerda (la persona y la cuenta abierta): la misma
-  // regla que los dibujos (utils/duenoDeLaPestana).
-  const persona = useDuenoDeLaPestana()
+  // De quién es lo que se recuerda: la persona y la cuenta de cuando se abrió
+  // la pantalla (utils/duenoDeLaPestana). Si otra pestaña cambia de cuenta, la
+  // puerta ya no lo guarda a nombre de la nueva.
+  const persona = useDuenoDeLosDatos()
   const cliente = nombreDelCliente(clientCtx)
   const [searchParams, setSearchParams] = useSearchParams()
   const deLaDireccion = activoValido(searchParams.get('activo'))

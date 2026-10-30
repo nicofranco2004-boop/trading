@@ -62,7 +62,16 @@ function entradaValida(pedida, conDueno) {
   return entrada
 }
 
-const claveDe = (entrada, resto = '') => (entrada.clave != null ? entrada.clave : entrada.prefijo + resto)
+// Una familia que no es de una cuenta (la conversación con la IA) dice qué
+// puede seguir al prefijo (`restos`): sin eso, cualquier sufijo era una clave
+// nueva que nadie clasificó.
+function claveDe(entrada, resto = '') {
+  if (entrada.clave != null) return entrada.clave
+  if (!entrada.restos || !entrada.restos.test(String(resto))) {
+    throw new Error(`almacen: «${entrada.prefijo}${resto}» no es de las que declara utils/catalogoDelAlmacen.js`)
+  }
+  return entrada.prefijo + resto
+}
 const claveConDueno = (entrada, dueno, resto = '') => `${entrada.prefijo}${dueno}${resto}`
 
 /** ¿Hay almacenamiento? (iOS privado, un navegador que lo bloquea) */
@@ -74,18 +83,18 @@ export function hay(donde = LOCAL) {
 
 /** Lo guardado en `entrada` (con `resto` si es una familia), o null. */
 export function leer(entrada, resto = '') {
-  entradaValida(entrada, false)
-  return tienda(entrada.donde).getItem(claveDe(entrada, resto))
+  const e = entradaValida(entrada, false)
+  return tienda(e.donde).getItem(claveDe(e, resto))
 }
 
 export function guardar(entrada, valor, resto = '') {
-  entradaValida(entrada, false)
-  tienda(entrada.donde).setItem(claveDe(entrada, resto), String(valor))
+  const e = entradaValida(entrada, false)
+  tienda(e.donde).setItem(claveDe(e, resto), String(valor))
 }
 
 export function borrar(entrada, resto = '') {
-  entradaValida(entrada, false)
-  tienda(entrada.donde).removeItem(claveDe(entrada, resto))
+  const e = entradaValida(entrada, false)
+  tienda(e.donde).removeItem(claveDe(e, resto))
 }
 
 /**

@@ -25,14 +25,11 @@ export function AdvisorProvider({ children }) {
   // sobrevive reloads: si el asesor refresca mirando un cliente, sigue ahí.
   const [clientCtx, setCtx] = useState(() => getClientContext())
 
-  // Sync multi-pestaña: si el asesor sale del cliente (o cierra sesión) en
-  // otra pestaña, api.js ya deja de mandar el header — sin esto el estado
-  // React de ESTA pestaña seguía mostrando la banda del cliente sobre datos
-  // del asesor (audit).
-  // Se sigue el AVISO de api.js y no el 'storage' por separado: acá se
-  // ignoraba el borrado total (otra pestaña que vacía todo, `key` null) que
-  // api.js sí atiende, y la banda decía "cliente Ana" mientras los pedidos —y
-  // la IA— ya iban sin cliente. Una sola fuente: la que decide los pedidos.
+  // Se sigue el AVISO de api.js —la cuenta de ESTA pestaña, la que decide los
+  // pedidos— y no el 'storage': la banda tiene que decir el cliente al que van
+  // los pedidos. Lo que haga otra pestaña ya no cambia esa cuenta (la deja
+  // desfasada, con el cartel de components/CuentaCambiadaEnOtraPestana): antes
+  // la banda pasaba al cliente nuevo y la pantalla seguía con el anterior.
   useEffect(() => {
     const alCambiar = () => setCtx(getClientContext())
     window.addEventListener(EVENTO_CUENTA_CAMBIADA, alCambiar)

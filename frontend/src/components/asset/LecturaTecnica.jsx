@@ -298,7 +298,7 @@ export default function LecturaTecnica({
   // Mirando la cuenta de un cliente (asesor), tus notas no van: son tuyas y no
   // dicen de qué cliente son (el servidor tampoco las manda ni las toca ahí).
   const conNotas = !getClientContext()
-  const misDibujos = (dibujos[moneda] ?? dibujosGuardados(asset, moneda)).filter(d => conNotas || d.tipo !== 'nota')
+  const misDibujos = (dibujos[moneda] ?? dibujosGuardados(asset, moneda, dueno)).filter(d => conNotas || d.tipo !== 'nota')
   // Las monedas en las que ya dibujaste algo en esta visita: si los de la
   // cuenta llegan después, no pisan lo recién dibujado.
   const tocados = useRef(new Set())
@@ -358,11 +358,15 @@ export default function LecturaTecnica({
     // Otro cambio: el cartel del aviso (y su «Deshacer») era del anterior.
     setNotaAviso(null)
     tocados.current.add(moneda)
-    guardarDibujos(asset, moneda, lista)
-    setDibujos(x => ({ ...x, [moneda]: lista }))
+    // `dueno` es el de los dibujos que se ven (el de este dibujo): si otra
+    // pestaña ya cambió la cuenta y esto todavía no se redibujó, ni la copia
+    // ni la subida van a la cuenta nueva.
     const m = moneda, d = dueno
-    subirDibujos(asset, m, lista).then(ok => {
+    guardarDibujos(asset, m, lista, true, d)
+    setDibujos(x => ({ ...x, [m]: lista }))
+    subirDibujos(asset, m, lista, d).then(ok => {
       if (ok === true) marcarSubidos(asset, m, lista, d)
+      else if (ok?.cuentaCambiada) setAviso('No se guardó: en otra pestaña se cambió de cuenta y este gráfico muestra la anterior. Recargá la página.')
       else if (ok) setAviso(`Tus dibujos quedaron sólo en este navegador. ${ok}`)
       else setAviso('No se pudieron guardar tus dibujos en tu cuenta: por ahora quedaron en este navegador. Se vuelve a intentar la próxima vez que abras este gráfico.')
     })
@@ -379,7 +383,7 @@ export default function LecturaTecnica({
         // la cuenta (el guardado falló): se sube. `=== true`: si el servidor lo
         // rechaza, `subirDibujos` devuelve el motivo (un texto, E3) y eso no es
         // «subido».
-        subirDibujos(asset, m, local.dibujos).then(ok => { if (ok === true) marcarSubidos(asset, m, local.dibujos, d) })
+        subirDibujos(asset, m, local.dibujos, d).then(ok => { if (ok === true) marcarSubidos(asset, m, local.dibujos, d) })
         return
       }
       guardarDibujos(asset, m, deLaCuenta, false, d)

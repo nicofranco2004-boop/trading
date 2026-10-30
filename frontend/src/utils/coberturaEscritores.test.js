@@ -3,6 +3,8 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { sePuedeGuardar, guardarPnlNoRealizado } from './guardarValuacion'
+import { ENVIOS } from './enviosConDueno'
+import { instalarNavegadorMinimo } from '../testing/navegadorMinimo'
 
 // Todo lo que GUARDA un valor calculado con precios (la foto diaria, el P&L no
 // realizado del mes) pasa por la misma regla de cobertura de precios
@@ -28,13 +30,21 @@ describe('la regla de lo que se guarda con precios', () => {
     expect(sePuedeGuardar({ cobertura: NaN })).toBe(false)
   })
   it('guardarPnlNoRealizado escribe cada fila sólo si se puede, y nunca un número roto', async () => {
-    const post = vi.fn(() => Promise.resolve({}))
+    instalarNavegadorMinimo()
+    localStorage.setItem('rendi_user', JSON.stringify({ email: 'ana@prueba.test' }))
+    const dueno = 'ana@prueba.test|propia'                 // el de la pestaña
+    const enviar = vi.fn(() => Promise.resolve({}))
     const filas = [{ broker: 'Cocos', pnl: 12.345678 }, { broker: 'Roto', pnl: NaN }, { broker: 'global', pnl: 12.345678 }]
-    expect(await guardarPnlNoRealizado(post, filas, { cobertura: 0.5 })).toBe(false)
-    expect(post).not.toHaveBeenCalled()
-    expect(await guardarPnlNoRealizado(post, filas, { cobertura: 1 })).toBe(true)
-    expect(post).toHaveBeenCalledWith('/monthly/sync-unrealized', { broker: 'global', pnl_unrealized_usd: 12.3457 })
-    expect(post).toHaveBeenCalledTimes(2)   // la fila NaN no se guarda (antes: un 0)
+    expect(await guardarPnlNoRealizado(dueno, filas, { cobertura: 0.5 }, enviar)).toBe(false)
+    expect(enviar).not.toHaveBeenCalled()
+    expect(await guardarPnlNoRealizado(dueno, filas, { cobertura: 1 }, enviar)).toBe(true)
+    expect(enviar).toHaveBeenCalledWith(ENVIOS.pnlNoRealizado, dueno, { broker: 'global', pnl_unrealized_usd: 12.3457 })
+    expect(enviar).toHaveBeenCalledTimes(2)   // la fila NaN no se guarda (antes: un 0)
+    // Y con los datos de OTRA cuenta (la pestaña cambió), no sale nada.
+    enviar.mockClear()
+    expect(await guardarPnlNoRealizado('ana@prueba.test|cliente-2', filas, { cobertura: 1 }, enviar)).toBe(false)
+    expect(enviar).not.toHaveBeenCalled()
+    localStorage.clear()
   })
 })
 
@@ -49,18 +59,22 @@ describe('nadie guarda por fuera de la regla', () => {
     const lista = api.slice(api.indexOf('const NO_TOCAN_LA_CARTERA = ['), api.indexOf(']', api.indexOf('const NO_TOCAN_LA_CARTERA = [')))
     expect((api.match(/['"`]\/monthly\/sync-unrealized['"`]/g) || []).length).toBe(1)
     expect(lista).toMatch(/['"`]\/monthly\/sync-unrealized['"`]/)
-    expect(escriben.filter((f) => f !== 'utils/api.js')).toEqual(['utils/guardarValuacion.js'])
+    // La ruta vive en la lista de envíos con dueño (utils/enviosConDueno), que
+    // es la única salida; la manda sólo guardarPnlNoRealizado (abajo).
+    expect(escriben.filter((f) => f !== 'utils/api.js')).toEqual(['utils/enviosConDueno.js'])
+    const valuacion = readFileSync(join(SRC, 'utils/guardarValuacion.js'), 'utf8')
+    expect(valuacion).toMatch(/enviar\(ENVIOS\.pnlNoRealizado, dueno,/)
   })
   it('y sus llamadores son los dos de siempre (si aparece otro, que use la función)', () => {
     const llaman = todos.filter((f) => /guardarPnlNoRealizado\(/.test(readFileSync(f, 'utf8'))).map(corto).filter((f) => f !== 'utils/guardarValuacion.js').sort()
     expect(llaman).toEqual(['components/MonthlySummary.jsx', 'pages/Dashboard.jsx'])
   })
   it('la foto diaria (POST /snapshots) sale sólo al MEP y con sePuedeGuardar', () => {
-    const fotos = todos.filter((f) => /api\.post\(\s*['"`]\/snapshots['"`]/.test(readFileSync(f, 'utf8')))
+    const fotos = todos.filter((f) => /enviarDe\(ENVIOS\.fotoDelDia/.test(readFileSync(f, 'utf8')))
     expect(fotos.map(corto)).toEqual(['pages/Dashboard.jsx'])
     for (const f of fotos) {
       const t = readFileSync(f, 'utf8')
-      const post = t.search(/api\.post\(\s*['"`]\/snapshots['"`]/)
+      const post = t.search(/enviarDe\(ENVIOS\.fotoDelDia/)
       // La regla, en el mismo efecto y antes del POST (a menos de 30 líneas).
       const antes = t.slice(0, post).split('\n').slice(-30).join('\n')
       expect(antes).toMatch(/sePuedeGuardar\(/)

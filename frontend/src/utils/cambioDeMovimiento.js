@@ -28,7 +28,6 @@
 // Vive en sessionStorage: es de esta pestaña y de esta visita. Si el navegador
 // no deja guardar (ventana privada), no hay aviso y nada se rompe.
 
-import { duenoDeLaPestana } from './duenoDeLaPestana'
 import { leerDe, guardarDe, borrarDe } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
 
@@ -37,8 +36,8 @@ const VENCE_MS = 30 * 60 * 1000   // un aviso de hace más de media hora ya no d
 // De la persona Y de la cuenta DE LOS DATOS (utils/duenoDeLaPestana). Antes
 // sólo de la cuenta: «Cerrar sesión» lo borra, pero una sesión que vence no, y
 // el siguiente en la pestaña veía «antes: US$ …» con el total de la anterior.
-// La pantalla pasa el dueño de lo que muestra (useDuenoDeLosDatos); sin él, el
-// de la pestaña. La puerta (utils/almacen.guardarDe) no guarda para un dueño que
+// La pantalla pasa SIEMPRE el dueño de lo que muestra (useDuenoDeLosDatos): sin
+// dueño no se lee ni se guarda nada (re-test 3). La puerta (utils/almacen.guardarDe) no guarda para un dueño que
 // ya no es el de la pestaña, ni sin nadie logueado.
 function leer(entrada, dueno, resto) {
   try { return JSON.parse(leerDe(entrada, dueno, resto) || 'null') } catch { return null }
@@ -60,7 +59,7 @@ const TOTAL = CATALOGO.ultimoTotal
  *   monto    'US$ 1.000,00' (sin signo) o null
  *   deshecho true = se borró; false = volvió (el "Deshacer" de un borrado)
  */
-export function anotarCambioDeMovimiento({ texto, articulo = 'el', monto = null, deshecho = true }, dueno = duenoDeLaPestana()) {
+export function anotarCambioDeMovimiento({ texto, articulo = 'el', monto = null, deshecho = true }, dueno) {
   const ahora = Date.now()
   const lista = (leer(CAMBIOS, dueno) || []).filter(c => ahora - (c.cuando || 0) <= VENCE_MS)
   // Borrar y deshacer lo mismo (o al revés) se cancela: el total volvió a donde estaba.
@@ -75,7 +74,7 @@ export function anotarCambioDeMovimiento({ texto, articulo = 'el', monto = null,
  * antes. Con un solo cambio, ése; con varios, un resumen ("3 cambios en
  * Movimientos", sin monto: no hay UN monto que explique la diferencia).
  */
-export function tomarCambioPendiente(moneda, pantalla, dueno = duenoDeLaPestana()) {
+export function tomarCambioPendiente(moneda, pantalla, dueno) {
   const lista = (leer(CAMBIOS, dueno) || []).filter(c => c && c.texto && Date.now() - (c.cuando || 0) <= VENCE_MS)
   escribir(CAMBIOS, dueno, null)
   if (!lista.length) return null
@@ -90,6 +89,6 @@ export function tomarCambioPendiente(moneda, pantalla, dueno = duenoDeLaPestana(
 }
 
 /** La pantalla: el total que se le está mostrando al usuario (ya con precios). */
-export function recordarTotalVisto(total, moneda, pantalla, dueno = duenoDeLaPestana()) {
+export function recordarTotalVisto(total, moneda, pantalla, dueno) {
   if (Number.isFinite(total)) escribir(TOTAL, dueno, { total, moneda }, `:${pantalla}`)
 }
