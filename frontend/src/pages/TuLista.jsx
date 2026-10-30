@@ -45,7 +45,7 @@ import {
  * Lo que necesita la tabla: tu watchlist y, del servidor, la lectura técnica de
  * todo más lo que tenés y cuánto pesa (`tenencias`: la valuación del servidor,
  * la misma del % alcista y de la pestaña Señales). → { cargando, error,
- * tenencias, seguidos, indice }
+ * tenencias, sinMedir, seguidos, indice }
  */
 export function useListaTecnica() {
   const [estado, setEstado] = useState(null)   // { seguidos, tenencias, indice }
@@ -58,7 +58,7 @@ export function useListaTecnica() {
       .then(wl => {
         const seguidos = wl?.items || []
         return api.post('/tecnico/lista', { activos: activosDeLaLista(seguidos).slice(0, MAX_POR_PEDIDO) })
-          .then(r => { if (vivo) setEstado({ seguidos, tenencias: r?.tenencias || [], indice: indexarLecturas(r?.lecturas || []) }) })
+          .then(r => { if (vivo) setEstado({ seguidos, tenencias: r?.tenencias || [], sinMedir: r?.sin_medir || null, indice: indexarLecturas(r?.lecturas || []) }) })
           .catch(() => { if (vivo) setError('lectura') })
       })
     return () => { vivo = false }
@@ -68,6 +68,10 @@ export function useListaTecnica() {
     cargando: !error && !estado,
     error,
     tenencias: estado?.tenencias || [],
+    // Qué parte de tu plata es efectivo y plazos fijos (senales_semana.
+    // pesos_sin_medir): el mapa de tu cartera lo usa para nombrar el cuadrito
+    // de lo que no es tenencia.
+    sinMedir: estado?.sinMedir || null,
     seguidos: estado?.seguidos || [],
     indice: estado?.indice || null,
   }

@@ -221,8 +221,9 @@ def peso(car: dict, asset: str, local=None):
 def pesos_sin_medir(car: dict) -> dict:
     """Qué parte de toda tu plata es efectivo y qué parte plazos fijos, con la
     misma división que `peso` (sobre `car['total']`). Suman al total pero no son
-    tenencias con lectura: el mapa de calor del Dashboard los dibuja como dos
-    cuadros más. {'efectivo': fracción | None, 'plazos_fijos': fracción | None}."""
+    tenencias con lectura: el «Mapa de tu cartera» (Panorama y Dashboard, el
+    mismo componente) lo usa para nombrar el cuadrito de lo que falta para 100 %.
+    {'efectivo': fracción | None, 'plazos_fijos': fracción | None}."""
     t = car.get("total") or 0
     return {k: (car[k] / t if car.get(k, 0) > 0 and t > 0 else None) for k in ("efectivo", "plazos_fijos")}
 

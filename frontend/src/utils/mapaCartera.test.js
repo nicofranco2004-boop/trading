@@ -1,78 +1,113 @@
-// Las cuentas del mapa de calor (utils/mapaCartera.js) y su acomodo
-// (components/MapaCartera.jsx → acomodar). Lo montado, con el Dashboard y el
-// servidor simulado, está en components/MapaCartera.render.test.jsx.
-import { describe, it, expect, beforeEach } from 'vitest'
-import { sumarLotes, cuadrosDelMapa, colorDelCuadro, losExtremosDeHoy, sumaDeHoy } from './mapaCartera'
-import { acomodar } from '../components/MapaCartera'
-import { setBrokersRegistry } from './valuation'
+// La cuenta del «Mapa de tu cartera» (Panorama de Análisis técnico, 30/10):
+//   · cada cuadrito con el peso y la tendencia de su fila de Tu lista (la misma
+//     cuenta del % alcista), sin inventar otra;
+//   · el efectivo y los plazos fijos son lo que falta para llegar a 100 %;
+//   · el área de cada cuadrito es proporcional a lo que pesa;
+//   · con «Ocultar saldos» ni el tamaño, ni el orden, ni el % dicen cuánto pesa.
+import { describe, it, expect } from 'vitest'
+import { cuadritosDelMapa, ubicarCuadritos, sinLecturaDe, MAX_CUADRITOS, PROPORCION } from './mapaCartera'
 
-beforeEach(() => setBrokersRegistry([
-  { id: 1, name: 'IOL', currency: 'ARS' }, { id: 2, name: 'Schwab', currency: 'USD' },
-]))
+const fila = (nombre, peso, tendencia, extra = {}) => ({
+  clave: `${nombre}|0`, nombre, ruta: nombre, tenes: true, peso, fondo: { id: tendencia }, ...extra,
+})
+const FILAS = [
+  fila('AAPL', 15, 'alcista'),
+  fila('GGAL', 18, 'alcista', { clave: 'GGAL|1' }),
+  fila('MELI', 12, 'bajista'),
+  fila('AL30', 8, 'sin'),
+  // Lo que seguís y no tenés no va en el mapa de tu cartera.
+  { clave: 'TSLA|0', nombre: 'TSLA', ruta: 'TSLA', tenes: false, peso: 0, fondo: { id: 'alcista' } },
+]
 
-const GGAL_IOL = { broker: 'IOL', asset: 'GGAL', asset_type: 'ACCION', quantity: 100, currency: 'ARS' }
-const GGAL_ADR = { broker: 'Schwab', asset: 'GGAL', asset_type: 'STOCK', quantity: 10 }
-
-describe('mapaCartera', () => {
-  it('junta los lotes por papel: GGAL de BYMA aparte del ADR, como el servidor', () => {
-    const m = sumarLotes([
-      { p: GGAL_IOL, dia: { amount: 20, base: 580 }, valueUsd: 600, pnlUsd: 100 },
-      { p: { ...GGAL_IOL, id: 9 }, dia: { amount: 2, base: 58 }, valueUsd: 60, pnlUsd: 10 },
-      { p: GGAL_ADR, dia: null, valueUsd: 300, pnlUsd: -20 },
-    ])
-    expect(m.get('GGAL|1')).toMatchObject({ diaUsd: 22, diaBase: 638, conDia: true, valor: 660, resultado: 110 })
-    expect(m.get('GGAL|0')).toMatchObject({ conDia: false, valor: 300, resultado: -20 })
+describe('cuadritosDelMapa', () => {
+  it('uno por activo que tenés, de más a menos peso, con su tendencia; el resto es efectivo', () => {
+    const c = cuadritosDelMapa(FILAS, { sinLectura: ['AL30', 'efectivo'] })
+    expect(c.map(x => x.nombre)).toEqual(['Efectivo', 'GGAL', 'AAPL', 'MELI', 'AL30'])
+    expect(c.map(x => x.tendencia)).toEqual(['sin', 'alcista', 'alcista', 'bajista', 'sin'])
+    // 100 − (18 + 15 + 12 + 8) = 47: el efectivo, sin ficha.
+    expect(c[0].peso).toBeCloseTo(47)
+    expect(c[0].ruta).toBeNull()
+    expect(c.find(x => x.nombre === 'GGAL').ruta).toBe('GGAL')
   })
 
-  it('el % de hoy es el de la fila de la Cartera, sin re-redondear (YPFD: −3,8 %, no −3,9 %)', () => {
-    const pct = (7870 - 8185.127405096204) / 8185.127405096204   // −0,038499…
-    const dia = { amount: (7870 - 8185.127405096204) * 15 / 1563, base: 8185.127405096204 * 15 / 1563, pct }
-    expect(dia.amount / dia.base).not.toBe(pct)   // dividir montos da otro último decimal
-    const [c] = cuadrosDelMapa({
-      tenencias: [{ asset: 'YPFD', local: true, peso: 1, tipo: 'ACCION' }],
-      lotes: [{ p: { broker: 'IOL', asset: 'YPFD', asset_type: 'ACCION', quantity: 15, currency: 'ARS' }, dia, valueUsd: 75, pnlUsd: -327 }],
-    })
-    expect(c.hoy.pct).toBe(pct)
+  it('el nombre del resto sigue lo que dice el servidor: efectivo, plazos fijos o los dos', () => {
+    expect(cuadritosDelMapa(FILAS, { sinLectura: ['plazos fijos'] }).some(x => x.nombre === 'Plazos fijos')).toBe(true)
+    expect(cuadritosDelMapa(FILAS, { sinLectura: ['efectivo', 'plazos fijos'] }).some(x => x.nombre === 'Efectivo y plazos fijos')).toBe(true)
+    // Sin resto (todo invertido) no hay cuadrito de efectivo.
+    const llenas = [fila('AAPL', 60, 'alcista'), fila('MELI', 40, 'bajista')]
+    expect(cuadritosDelMapa(llenas).map(x => x.nombre)).toEqual(['AAPL', 'MELI'])
   })
 
-  it('los cuadros: el peso del servidor, % del día y contra tu promedio, efectivo y plazos fijos', () => {
-    const cuadros = cuadrosDelMapa({
-      tenencias: [{ asset: 'GGAL', local: true, peso: 0.5, tipo: 'ACCION' }, { asset: 'GGAL', local: false, peso: 0.3, tipo: 'STOCK' }],
-      sinMedir: { efectivo: 0.15, plazos_fijos: 0.05 },
-      lotes: [
-        { p: GGAL_IOL, dia: { amount: 20, base: 580 }, valueUsd: 600, pnlUsd: 100 },
-        { p: GGAL_ADR, dia: null, valueUsd: 300, pnlUsd: -20 },
-      ],
-    })
-    expect(cuadros.map(c => [c.clave, c.peso])).toEqual([['GGAL|1', 0.5], ['GGAL|0', 0.3], ['efectivo', 0.15], ['plazos_fijos', 0.05]])
-    expect(cuadros[0].detalle).toBe('en BYMA')
-    expect(cuadros[1].detalle).toBe('en Nueva York')
-    expect(cuadros[0].hoy.pct).toBeCloseTo(20 / 580, 12)
-    expect(cuadros[0].promedio.pct).toBeCloseTo(100 / 500, 12)
-    expect(cuadros[1].hoy).toBeNull()
-    expect(cuadros[1].promedio.pct).toBeCloseTo(-20 / 320, 12)
-    expect(cuadros[2]).toMatchObject({ nombre: 'Efectivo', ruta: null, hoy: null, promedio: null })
-    expect(cuadros[2].fondo.id).toBe('sin')
-    expect(colorDelCuadro(cuadros[1], 'hoy')).toEqual(colorDelCuadro(cuadros[2], 'tendencia'))   // los dos grises
+  it('sin nada en la cartera (sólo watchlist), ningún cuadrito', () => {
+    expect(cuadritosDelMapa([FILAS[4]])).toEqual([])
   })
 
-  it('lo que más sumó, lo que más restó y la suma de los cuadros', () => {
-    const c = (clave, usd, base) => ({ clave, hoy: { usd, base, pct: usd / base } })
-    const cuadros = [c('A', 30, 1000), c('B', -50, 1000), c('C', 10, 500), { clave: 'D', hoy: null }]
-    const { sumo, resto } = losExtremosDeHoy(cuadros)
-    expect([sumo.clave, resto.clave]).toEqual(['A', 'B'])
-    expect(sumaDeHoy(cuadros)).toEqual({ usd: -10, pct: -10 / 2500 })
-    expect(losExtremosDeHoy([c('A', 5, 100)]).resto).toBeNull()
+  it(`más de ${MAX_CUADRITOS}: los que no entran van juntos en «y N más», con su peso sumado`, () => {
+    const muchas = Array.from({ length: 14 }, (_, i) => fila(`A${String(i).padStart(2, '0')}`, 7 - i * 0.1, 'alcista'))
+    const c = cuadritosDelMapa(muchas)
+    expect(c).toHaveLength(MAX_CUADRITOS)
+    const otros = c[c.length - 1]
+    expect(otros.tendencia).toBe('otros')
+    // 14 activos + el efectivo = 15; se ven 9 y van juntos 6.
+    expect(otros.nombre).toBe('y 6 más')
+    const suma = c.reduce((s, x) => s + x.peso, 0)
+    expect(suma).toBeCloseTo(100)
   })
 
-  it('acomodar: nada más chico que el mínimo; lo que no entra baja a la lista, de menor peso', () => {
-    const cuadros = [0.5, 0.3, 0.15, 0.03, 0.015, 0.005].map((peso, i) => ({ clave: `c${i}`, peso }))
-    const { laid, abajo } = acomodar(cuadros, 360, 414, 52)
-    for (const b of laid) expect(Math.min(b.w, b.h)).toBeGreaterThanOrEqual(52)
-    expect(abajo.length).toBeGreaterThan(0)
-    expect(abajo).toEqual(cuadros.slice(laid.length))   // los más chicos, en orden
-    // El área de los que quedan sigue siendo proporcional a su peso.
-    const area = (k) => { const b = laid.find(x => x.clave === k); return b.w * b.h }
-    expect(area('c0') / area('c1')).toBeCloseTo(0.5 / 0.3, 6)
+  it('con «Ocultar saldos»: sin peso y en orden alfabético (el orden por peso también lo delataría)', () => {
+    const c = cuadritosDelMapa(FILAS, { hidden: true, sinLectura: ['efectivo'] })
+    expect(c.map(x => x.nombre)).toEqual(['AAPL', 'AL30', 'Efectivo', 'GGAL', 'MELI'])
+    expect(c.every(x => x.peso === null)).toBe(true)
+    // Y el «y N más» tampoco lleva su suma.
+    const muchas = Array.from({ length: 14 }, (_, i) => fila(`A${i}`, 5, 'alcista'))
+    expect(cuadritosDelMapa(muchas, { hidden: true }).at(-1).peso).toBeNull()
+  })
+})
+
+describe('ubicarCuadritos', () => {
+  const area = (r) => (r.w / 100) * (r.h / 100)
+
+  it('el área de cada uno es proporcional a lo que pesa, sin salirse de la caja ni pisarse', () => {
+    const pesos = [47, 18, 15, 12, 8]
+    const r = ubicarCuadritos(pesos)
+    pesos.forEach((p, i) => expect(area(r[i])).toBeCloseTo(p / 100, 6))
+    for (const x of r) {
+      expect(x.x).toBeGreaterThanOrEqual(-1e-9)
+      expect(x.y).toBeGreaterThanOrEqual(-1e-9)
+      expect(x.x + x.w).toBeLessThanOrEqual(100 + 1e-9)
+      expect(x.y + x.h).toBeLessThanOrEqual(100 + 1e-9)
+    }
+    for (let i = 0; i < r.length; i++) {
+      for (let j = i + 1; j < r.length; j++) {
+        const a = r[i], b = r[j]
+        const pisa = a.x + 1e-9 < b.x + b.w && b.x + 1e-9 < a.x + a.w && a.y + 1e-9 < b.y + b.h && b.y + 1e-9 < a.y + a.h
+        expect(pisa).toBe(false)
+      }
+    }
+  })
+
+  it('con «Ocultar saldos» (pesos null) todos ocupan lo mismo', () => {
+    const r = ubicarCuadritos([null, null, null, null, null])
+    for (const x of r) expect(area(x)).toBeCloseTo(1 / 5, 6)
+  })
+
+  it('cuadritos razonables: ninguno más de 4 veces más largo que ancho con 5 pesos parejos', () => {
+    const r = ubicarCuadritos([22, 21, 20, 19, 18])
+    for (const x of r) {
+      const ancho = x.w * PROPORCION, alto = x.h
+      expect(Math.max(ancho / alto, alto / ancho)).toBeLessThan(4)
+    }
+  })
+})
+
+describe('sinLecturaDe: qué hay en lo que falta para 100 %, del mismo pedido que las filas', () => {
+  it('efectivo, plazos fijos, los dos o nada (sin_medir de POST /api/tecnico/lista)', () => {
+    expect(sinLecturaDe({ efectivo: 0.15, plazos_fijos: null })).toEqual(['efectivo'])
+    expect(sinLecturaDe({ efectivo: null, plazos_fijos: 0.1 })).toEqual(['plazos fijos'])
+    expect(sinLecturaDe({ efectivo: 0.1, plazos_fijos: 0.1 })).toEqual(['efectivo', 'plazos fijos'])
+    expect(sinLecturaDe(null)).toEqual([])
+    // Y el nombre del cuadrito sale de ahí.
+    const filas = [fila('GGAL', 80, 'alcista')]
+    expect(cuadritosDelMapa(filas, { sinLectura: sinLecturaDe({ efectivo: 0.2 }) }).map(c => c.nombre)).toEqual(['GGAL', 'Efectivo'])
   })
 })
