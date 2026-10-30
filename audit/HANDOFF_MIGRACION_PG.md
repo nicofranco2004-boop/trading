@@ -333,6 +333,53 @@ sobrevive `search_path`; ver `tests/conftest.py`, `_forzar_ajustes_por_set`). La
 conexión a Supabase la tiene Nico; **no le pidas la clave**: pedile que la ponga él
 como variable de entorno, o que corra el comando.
 
+#### 30/10 — corrida contra el Supabase real (sesión «suite contra el Supabase real», rama `supabase-real`)
+
+**Resultado: 70 % corrido, ninguna falla nueva atribuible a la APP; dos hallazgos de INFRAESTRUCTURA que
+sí importan para el pasaje.** Commit medido: `2b4098e7`. Lista completa por falla, con categoría:
+`audit/supabase_real_fallas_2026-10-30.tsv`.
+
+- **Base:** proyecto `fmxiqksahpzygvegteap`, región **sa-east-1 (São Paulo)**, session pooler :5432. `public`
+  vacío antes de correr (lo miró Nico en Table Editor). La conexión vive en `~/.rendi-supabase-url`
+  (permisos 600, fuera del repo); la puso Nico con un script que pide la clave oculta.
+- **Duración:** 22:17 → 12:15, **50.316 s (14 h)**, y **se cortó al 70 %**: 5.596 de 7.325 (288 de 412
+  módulos). Desde `test_plan_b_con_transaccion_abortada` en adelante NO corrió. Causa del corte: el reloj de
+  90 s de pytest-timeout saltó MIENTRAS pytest armaba el traceback (parsea `main.py` entero, 46k líneas) →
+  `INTERNALERROR` y fin de sesión. Instrumento, no app.
+- **Latencia medida desde la Mac:** conectar 0,37 s; ida y vuelta 50 ms (local: ~0,03 ms). `schema_pg.sql` son
+  797 sentencias mandadas de a una → ~40 s por módulo sólo en armar el esquema. ~2 % de CPU: la corrida es
+  de red, así que la trampa «duración ≥1,5× = máquina cargada» NO aplica acá.
+- **Números:** 5.084 pasaron · 300 fallaron · 80 errores · 118 salteadas · 12 xfail. Las 381 F/E:
+
+  | categoría | n | veredicto |
+  |---|---|---|
+  | `Failed: Timeout (>90s)` | 301 | **instrumento (latencia)**. 198 son de `test_borrar_conserva_el_dia` (264 tests, 12.816 s, los que pasaron tardaron hasta 62 s); el resto, tests de borrar/deshacer en `operaciones_con_receta`, `cambios_ratio`, `flujos_a_mano`, etc. Mismo archivo solo contra Supabase (`test_borrar_broker_sueltos`): 30/30 verdes en 611 s. |
+  | `connection is closed` en el teardown | 42 | **instrumento**: consecuencia del timeout (pytest corta el test y la limpieza encuentra la conexión cerrada). Todas en módulos con timeouts. |
+  | `DeadlockDetected` en el setup (17: `test_pata_de_la_moneda` ×14, `test_ia_insights_sin_historia` ×3) | 17 | **instrumento, propio de Supabase (probable)**: el `DROP SCHEMA` del módulo anterior choca con una conexión de un hilo que sigue vivo del módulo anterior (`test_password_reset`, `test_ia_caida_medida`). En local `application_name` llega en el paquete de arranque y `pg_terminate_backend` la mata; en Supabase llega recién con el `SET`, así que una conexión recién abierta se llama `Supavisor` unos ms y se escapa del filtro. El backend bloqueante tiene el pid inmediatamente anterior al de la conexión del DROP (3217689/3217690), o sea que se abrió justo en el cambio de módulo. No es código de la app (la app no dropea esquemas). |
+  | tiempos (`test_events_al_dia` ×5: «tardó 1,26 s esperando a Yahoo», tope 0,5-3 s) | 5 | **instrumento (latencia)**: miden cuánto tarda el endpoint y cada consulta cuesta 50 ms. |
+  | `EMAXCONNSESSION max clients reached in session mode` (`test_envio_masivo`) | 1 | **🔴 real, de infraestructura** — ver abajo. |
+  | conocidas de la lista local | 9 | `test_alerts` ×2, `test_audit_bloqueantes` ×2, `test_cupon_importado_bandeja`, `test_cupones_contrato`, `test_no_mail_tras_borrar` ×2; `test_cupones_bandeja`/`_azar` cayeron por timeout. `test_rendimientos_mensuales` no llegó a correr. |
+  | interna de pytest | 1 | el corte de arriba. |
+
+- 🔴 **Hallazgo 1 — región.** Supabase está en **São Paulo** y Railway en **US West** (memoria
+  `project_deployment`). No lo medí desde Railway, pero esa ruta suele andar en ~170-200 ms de ida y vuelta,
+  3-4× lo medido desde la Mac. Los tests de borrar una operación hacen del orden de mil viajes (60 s / 50 ms):
+  en producción eso sería una pantalla de borrar que tarda minutos. El proyecto está VACÍO, así que crearlo de
+  nuevo en la región de Railway es barato hoy y caro después del pasaje. **Decisión de Nico** (o mover Railway).
+  Medir la latencia Railway→Supabase antes de decidir.
+- 🔴 **Hallazgo 2 — cupo de conexiones del session pooler.** `get_db()` abre una conexión nueva por llamada
+  (no hay pool, ver 5.C/memoria) y el session pooler tiene un cupo de clientes por tamaño de instancia; un
+  envío masivo con hilos lo agotó en la suite. En prod el mismo patrón con varios usuarios a la vez puede dar
+  errores. Opciones a decidir (sesión central): pool en la app, pooler transaccional :6543 con
+  `prepare_threshold=None` (ver pgsesion/memoria: :6543 rompe las sentencias preparadas), o subir la instancia.
+- **Riesgo anotado del instrumento:** `import main` corre `init_db()` + `reparaciones_de_arranque` +
+  `_migrar_credenciales_a_credentials_key` contra el DSN CRUDO (esquema `public`) ANTES de que el conftest mude
+  todo a `t<pid>_…`. Con `public` vacío no pasa nada (sólo quedan tablas vacías); **contra una base con datos
+  reales la suite los modificaría**. El conftest en sí sólo dropea `t<pid>_…`. Nunca correr la suite contra la
+  base del pasaje una vez cargada.
+- **Para la próxima corrida:** `--timeout=600` (o más) y empezar en `test_plan_b_con_transaccion_abortada`
+  para cubrir el 30 % que falta (~1.730 tests). Con esta latencia, ~6-8 h.
+
 ### G · Auditoría final, publicar, reposo, pasaje
 
 **Con una sesión de auditoría nueva.** La conclusión de toda esta tanda:
