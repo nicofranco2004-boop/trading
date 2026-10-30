@@ -14,12 +14,12 @@ import { AVISO_OCULTO } from './ocultarSaldos'
 export const TITULO_PLATA_ALCISTA = 'Tu cartera en tendencia alcista de largo plazo'
 export const PLATA_ALCISTA_OCULTA = `Qué parte de tu cartera está en tendencia alcista de largo plazo: ${AVISO_OCULTO.charAt(0).toLowerCase()}${AVISO_OCULTO.slice(1)}`
 // Los cambios incluyen la watchlist: «en lo tuyo» a secas hacía pensar que no.
-export const TITULO_CAMBIOS = 'Qué cambió esta semana en lo que tenés y en tu watchlist'
+export const TITULO_CAMBIOS = 'Qué cambió esta semana en tu cartera y en tu watchlist'
 export const QUE_ES_ESTA_SEMANA = 'Los últimos 7 días, contados desde hoy.'
 
 export const FILTROS = [
   { id: 'todo', label: 'Todo' },
-  { id: 'tenes', label: 'Lo que tenés' },
+  { id: 'tenes', label: 'Tu cartera' },
   { id: 'watchlist', label: 'Watchlist' },
 ]
 
@@ -72,7 +72,7 @@ export function pesoTxt(peso, hidden) {
 export function deQuien(s, hidden) {
   if (!s.tenes) return 'En tu watchlist'
   const p = pesoTxt(s.peso, hidden)
-  return p ? `Lo tenés · ${p}` : 'Lo tenés'
+  return p ? `En tu cartera · ${p}` : 'En tu cartera'
 }
 
 /** Las tres tarjetas de arriba. `datos` = la respuesta del servidor. */
@@ -84,7 +84,7 @@ export function tarjetas(datos, hidden) {
   const conCambios = datos?.tenes?.con_cambios || 0
 
   const tenes = {
-    titulo: 'En lo que tenés',
+    titulo: 'En tu cartera',
     valor: plural(tuyas.length, 'cambio', 'cambios'),
     texto: activos === 0
       ? 'Todavía no hay precios guardados de ninguno de tus activos.'
@@ -99,8 +99,8 @@ export function tarjetas(datos, hidden) {
   const watch = {
     titulo: 'En tu watchlist',
     valor: plural(deWatch.length, 'cambio', 'cambios'),
-    texto: !datos?.watchlist ? 'No seguís ningún activo todavía.'
-      : nombres.length ? nombres.join(', ') : 'Nada cambió en lo que seguís.',
+    texto: !datos?.watchlist ? 'Tu watchlist está vacía.'
+      : nombres.length ? nombres.join(', ') : 'Nada cambió en tu watchlist.',
   }
 
   const a = datos?.alcista

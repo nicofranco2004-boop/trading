@@ -178,7 +178,7 @@ describe('el orden', () => {
     expect(nombres(ordenarFilas(filas, 'fuerza'))).toEqual(['B', 'A', 'C', 'Z'])
     expect(nombres(ordenarFilas(filas, 'maximo'))).toEqual(['B', 'C', 'A', 'Z'])
     expect(nombres(ordenarFilas(filas, 'maximo', false))).toEqual(['A', 'C', 'B', 'Z'])
-    // Lo que más pesa: un bono sin lectura pesa igual; lo que sólo seguís, al final.
+    // Mayor peso en tu cartera: un bono sin lectura pesa igual; lo que sólo seguís, al final.
     expect(nombres(ordenarFilas(filas, 'peso'))).toEqual(['Z', 'B', 'A', 'C'])
   })
 })

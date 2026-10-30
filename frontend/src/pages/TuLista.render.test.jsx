@@ -39,9 +39,9 @@ describe('Tu lista: la tabla', () => {
   it('los filtros con su cantidad y el «Ordenar por»', () => {
     const t = texto(dibujar())
     expect(t).toContain('Todo · 3')
-    expect(t).toContain('Lo que tenés · 2')
+    expect(t).toContain('Tu cartera · 2')
     expect(t).toContain('Watchlist · 1')
-    for (const o of ['Lo último que cambió', 'Impulso (RSI)', 'Desde el máximo', 'Lo que más pesa']) expect(t).toContain(o)
+    for (const o of ['Cambio más reciente', 'Impulso (RSI)', 'Desde el máximo', 'Mayor peso en tu cartera']) expect(t).toContain(o)
   })
 
   it('cada columna con las palabras de la ficha', () => {

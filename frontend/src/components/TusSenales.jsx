@@ -211,8 +211,8 @@ export function TusSenalesVista({ datos, error, hidden, filtro, onFiltro, onVer,
           {dias.length === 0 ? (
             <p className="py-5 text-[14px] text-ink-1">
               {filtro === 'watchlist' ? 'Esta semana no cambió nada en tu watchlist.'
-                : filtro === 'tenes' ? 'Esta semana no cambió nada en lo que tenés.'
-                  : 'Esta semana no cambió nada en lo que tenés ni en tu watchlist.'}
+                : filtro === 'tenes' ? 'Esta semana no cambió nada en tu cartera.'
+                  : 'Esta semana no cambió nada en tu cartera ni en tu watchlist.'}
             </p>
           ) : dias.map(d => (
             <div key={d.fecha}>

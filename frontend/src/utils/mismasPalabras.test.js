@@ -20,7 +20,7 @@ describe('D12 · lo mismo, dicho igual en Cartera, Panorama y Señales', () => {
   it('las palabras', () => {
     expect(TITULO_PLATA_ALCISTA).toBe('Tu cartera en tendencia alcista de largo plazo')
     expect(PLATA_ALCISTA_OCULTA).toContain('Ocultar saldos')
-    expect(TITULO_CAMBIOS).toMatch(/lo que tenés y en tu watchlist/)
+    expect(TITULO_CAMBIOS).toMatch(/tu cartera y en tu watchlist/)
     expect(antesConPct({ semana: '2026-10-24', pct: 86.2 }, '2026-10-29')).toBe('el sábado 24/10, 86%')
   })
 

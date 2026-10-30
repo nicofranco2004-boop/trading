@@ -158,8 +158,8 @@ export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio, marcado
             strokeWidth={marcado ? 4.5 : 3} strokeLinecap="round" vectorEffect="non-scaling-stroke" opacity="0.85" />
         </svg>
       )}
-      {p0.donde === 'adentro' && <Punto x={x0} y={pctY(fib.desde.precio)} titulo="Arranque del tramo" />}
-      {x1 != null && <Punto x={x1} y={pctY(fib.hasta.precio)} titulo="Final del tramo" />}
+      {p0.donde === 'adentro' && <Punto x={x0} y={pctY(fib.desde.precio)} titulo="Inicio del tramo" />}
+      {x1 != null && <Punto x={x1} y={pctY(fib.hasta.precio)} titulo="Fin del tramo" />}
       {pr.donde === 'adentro' && (
         <span className="absolute -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 border-2 bg-bg-1"
           style={{ left: `${pctX(pr.i)}%`, top: `${pctY(rup.cierre)}%`, borderColor: COLOR_FIB }}

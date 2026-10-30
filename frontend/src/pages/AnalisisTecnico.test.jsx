@@ -151,7 +151,7 @@ describe('Análisis técnico: las pestañas', () => {
     expect(montado.t()).toContain('Ordenar por')
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Señales de la semana')))
     expect(montado.donde.actual.search).toBe('?tab=senales')
-    expect(montado.t()).toContain('Qué cambió esta semana en lo que tenés y en tu watchlist')
+    expect(montado.t()).toContain('Qué cambió esta semana en tu cartera y en tu watchlist')
     expect(montado.t()).toContain('Crear una alerta técnica en Alertas')
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Panorama')))
     expect(montado.donde.actual.search).toBe('')
@@ -178,7 +178,7 @@ describe('Análisis técnico: el Panorama', () => {
     expect(t).toContain('74% de tu cartera está en activos con tendencia alcista de largo plazo')
     expect(t).toContain('(la semana pasada, 70%)')
     expect(t).toContain('26% bajista')
-    expect(t).toContain('3 cambiosen lo que tenés')        // NVDA, KO del día y KO del RSI
+    expect(t).toContain('3 cambiosen tu cartera')        // NVDA, KO del día y KO del RSI
     expect(t).toContain('1 cambioen tu watchlist')         // TSLA
     expect(t).toContain('los 3 más nuevos')
     expect(t).toContain('NVDA superó su promedio de 200 días')
@@ -186,7 +186,7 @@ describe('Análisis técnico: el Panorama', () => {
     // P5 (auditoría A 29/10): el título decía «en lo tuyo» y la lista trae
     // también lo que seguís (TSLA): el título dice las dos cosas. Al juntar con
     // Arreglos D (D12) el título es UNO, `TITULO_CAMBIOS` de utils/tusSenales.js.
-    expect(t).toContain('Qué cambió esta semana en lo que tenés y en tu watchlist')
+    expect(t).toContain('Qué cambió esta semana en tu cartera y en tu watchlist')
     expect(t).toContain('En tu watchlist')
     expect(t).not.toContain('el impulso (RSI) bajó de 30 y quedó en 25')  // el 4.º, más viejo, no va en el Panorama
     expect(t).toContain('Ver las 4 señales de la semana')

@@ -91,17 +91,17 @@ export function textoInvalida(c, precio) {
 export function textoPauta(p) {
   const v = p.valor
   const con = p.desde != null && p.hasta != null
-  const entre = (f) => (con ? ` (lo habitual, con margen: entre ${f(p.desde)} y ${f(p.hasta)})` : '')
+  const entre = (f) => (con ? ` (lo habitual es entre ${f(p.desde)} y ${f(p.hasta)})` : '')
   switch (p.id) {
-    case 'onda2': return `La onda 2 devolvió el ${pct(v)} de la 1${entre(pct)}.`
-    case 'onda3': return `La onda 3 midió ${veces(v)} veces la 1${rangoVeces(p)}.`
-    case 'onda4': return `La onda 4 devolvió el ${pct(v)} de la 3${entre(pct)}.`
+    case 'onda2': return `La onda 2 retrocedió el ${pct(v)} de lo que avanzó la onda 1${entre(pct)}.`
+    case 'onda3': return `La onda 3 fue ${veces(v)} veces el tamaño de la onda 1${rangoVeces(p)}.`
+    case 'onda4': return `La onda 4 retrocedió el ${pct(v)} de lo que avanzó la onda 3${entre(pct)}.`
     case 'alternancia': return p.cumple
       ? 'Las ondas 2 y 4 fueron distintas (una retrocedió la mitad o más y la otra poco, o una duró el triple que la otra), como suele pasar.'
       : 'Las ondas 2 y 4 se parecieron; lo habitual es que sean distintas.'
-    case 'onda5': return `La onda 5 midió ${veces(v)} veces la 1${rangoVeces(p)}.`
+    case 'onda5': return `La onda 5 fue ${veces(v)} veces el tamaño de la onda 1${rangoVeces(p)}.`
     case 'ondaB': return `La onda B retrocedió el ${pct(v)} de lo que bajó o subió la A${entre(pct)}.`
-    case 'ondaC': return `La onda C midió ${veces(v)} veces la A${rangoVeces(p)}.`
+    case 'ondaC': return `La onda C fue ${veces(v)} veces el tamaño de la onda A${rangoVeces(p)}.`
     default: return ''
   }
 }
@@ -109,7 +109,7 @@ export function textoPauta(p) {
 // «(lo habitual, con margen: entre 1,38 y 1,9 veces)»
 function rangoVeces(p) {
   if (p.desde == null || p.hasta == null) return ''
-  return ` (lo habitual, con margen: entre ${veces(p.desde)} y ${veces(p.hasta)} veces)`
+  return ` (lo habitual es entre ${veces(p.desde)} y ${veces(p.hasta)} veces)`
 }
 
 export function textoConfianza(c) {

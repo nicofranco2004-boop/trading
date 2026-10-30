@@ -150,7 +150,7 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
           ) : (
             <>
               <div className="grid grid-cols-2 gap-3">
-                <div><div className="text-[24px] font-semibold tabular text-ink-0">{t.tenes.valor}</div><div className="text-[13px] text-ink-1">en lo que tenés</div></div>
+                <div><div className="text-[24px] font-semibold tabular text-ink-0">{t.tenes.valor}</div><div className="text-[13px] text-ink-1">en tu cartera</div></div>
                 <div><div className="text-[24px] font-semibold tabular text-ink-0">{t.watch.valor}</div><div className="text-[13px] text-ink-1">en tu watchlist</div></div>
               </div>
               <p className="text-[13px] text-ink-1 leading-snug border-t border-line pt-3">
@@ -172,7 +172,7 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
         {!datos ? (
           semana.error ? null : <div className="h-28 my-2 rounded-lg bg-bg-2/40 esqueleto" />
         ) : ultimos.length === 0 ? (
-          <p className="py-4 text-[14px] text-ink-1">Esta semana no cambió nada en lo que tenés ni en tu watchlist.</p>
+          <p className="py-4 text-[14px] text-ink-1">Esta semana no cambió nada en tu cartera ni en tu watchlist.</p>
         ) : (
           <ul>{ultimos.map((s, i) => <Cambio key={`${s.asset}-${s.tipo}-${i}`} s={s} hidden={hidden} onVer={onVer} />)}</ul>
         )}
@@ -190,7 +190,7 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
             : `${c.todo} ${c.todo === 1 ? 'activo' : 'activos'}: ${c.tenes} en tu cartera y ${c.watchlist} en tu watchlist, con su tendencia, su impulso y su último cambio.`} />
         <Tarjeta titulo="Señales de la semana" ir={urlDePestana('senales')} accion="Ver las señales →"
           texto={`${datos ? `${total === 1 ? 'El cambio' : `Los ${total} cambios`}` : 'Los cambios'} de los últimos 7 días, día por día, y cómo recibir el resumen de los sábados.`} />
-        <Tarjeta titulo="Comparar" pronto accion="Todavía no está"
+        <Tarjeta titulo="Comparar" pronto accion="Próximamente"
           texto="¿Qué rindió más desde que compraste? Compará tus activos con haber guardado dólares, con la inflación y con el S&P 500." />
       </div>
       <p className="text-[12px] text-ink-2 leading-relaxed">{NO_ES_RECOMENDACION}</p>

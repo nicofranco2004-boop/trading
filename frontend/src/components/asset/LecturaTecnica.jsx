@@ -1805,7 +1805,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
         {/* Columna de precios: la grilla, tu precio y el último precio. Se
             arrastra para estirar el gráfico en vertical (ver ejesGrafico.js). */}
         <div className="absolute inset-y-0 right-0 w-[68px] cursor-ns-resize touch-none select-none"
-          title="Arrastrá hacia arriba o hacia abajo para estirar o achicar. Doble click: automático."
+          title="Arrastrá hacia arriba o hacia abajo para estirar o achicar el gráfico. Doble click: vuelve a la escala automática."
           onPointerDown={e => { e.currentTarget.setPointerCapture?.(e.pointerId); ejeY.current = { y: e.clientY, lo: min, hi: max } }}
           onPointerMove={e => { const t = ejeY.current; if (t) setPrecioMano(rangoEstirado(t.lo, t.hi, e.clientY - t.y)) }}
           onPointerUp={() => { ejeY.current = null }} onPointerCancel={() => { ejeY.current = null }}
@@ -1898,7 +1898,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
       {/* Meses. Se arrastran para acercar o alejar en el tiempo, con el último
           día quieto (ver ejesGrafico.js). */}
       <div className="relative mr-[72px] h-6 mt-1 pt-0.5 text-[11px] text-ink-2 cursor-ew-resize touch-none select-none"
-        title="Arrastrá hacia los costados para acercar o alejar. Doble click: automático."
+        title="Arrastrá hacia los costados para acercar o alejar el gráfico. Doble click: vuelve a la escala automática."
         onPointerDown={e => { e.currentTarget.setPointerCapture?.(e.pointerId); ejeX.current = { x: e.clientX } }}
         onPointerMove={e => {
           if (!ejeX.current || !onZoom) return

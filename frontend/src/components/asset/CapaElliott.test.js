@@ -95,7 +95,7 @@ describe('Ondas de Elliott en la ficha', () => {
     expect(t).toContain('Según un conteo posible, el precio podría estar en la onda 5, que en la teoría es la última de la suba.')
     expect(t).toContain('Si el precio baja de US$ 120,00 (donde terminó la onda 1), este conteo dejaría de tener sentido')
     expect(t).toContain('Confianza alta: cumple 3 de 4 proporciones que suelen darse.')
-    expect(t).toContain('La onda 2 devolvió el 60 % de la 1')
+    expect(t).toContain('La onda 2 retrocedió el 60 % de lo que avanzó la onda 1')
     expect(t).toContain('Otra lectura posible: el precio podría estar en la onda 4')
     expect(t).toContain('Es una de varias lecturas posibles')
     expect(t).toContain('no es una recomendación')
