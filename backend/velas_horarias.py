@@ -96,6 +96,15 @@ PERIODO_30_MIN = "60d"
 # 11:00 a 11:05) apareció a las 11:20. La pantalla lo dice junto a la vela en
 # curso: «hace 20 s» es cuándo se le preguntó a Yahoo, no de cuándo es el precio.
 DEMORA_MIN = {"byma": 20}
+# Algunos días Nueva York cierra a las 13:00 (el viernes después de Acción de
+# Gracias, el 24/12, a veces el 3/7) y el horario de Rendi
+# (alerts_engine.rueda_en_horario) no lo sabe: la vela de las 12:30 seguía «en
+# curso» hasta las 13:30 y la pantalla pedía cada minuto hasta las 16:00. Desde
+# esta hora (de Nueva York) se le pregunta a Yahoo si la rueda sigue abierta.
+CIERRE_TEMPRANO_NY = 13 * 60
+# Los estados de Yahoo (`marketState`) de DESPUÉS del cierre. Un PRE no
+# cuenta: no es «ya cerró».
+_YA_CERRO = ("POST", "POSTPOST", "CLOSED")
 
 
 def _sesion(mercado: str):
@@ -109,6 +118,26 @@ def _sesion(mercado: str):
 
 def _ahora() -> float:
     return time.time()
+
+
+def _ny_cerro_antes(reloj: float) -> bool:
+    """¿Nueva York ya cerró aunque por el reloj la rueda siga (un día de cierre
+    temprano)? Antes de las 13:00 de allá no puede haber cerrado y no se
+    pregunta. Después lo dice el `marketState` de SPY que ya pide
+    fuera_de_horario para el pre y el post (lo que Yahoo sabe, con sus feriados
+    y cierres tempranos; guardado 60 s para toda la app), no un calendario
+    nuestro. Sin respuesta, False: queda como sin esto (a lo sumo media hora de
+    más «en curso»)."""
+    try:
+        from zoneinfo import ZoneInfo
+        ny = datetime.fromtimestamp(reloj, ZoneInfo(ZONAS["us"]))
+        if ny.hour * 60 + ny.minute < CIERRE_TEMPRANO_NY:
+            return False
+        import fuera_de_horario
+        spy = fuera_de_horario._cotizaciones(["SPY"]).get("SPY") or {}
+    except Exception:
+        return False
+    return (spy.get("marketState") or "").upper() in _YA_CERRO
 
 
 # ─── Yahoo, en memoria ───────────────────────────────────────────────────────
@@ -414,7 +443,8 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
     que dependen del reloj: la vela sigue «en curso» y la rueda sigue «en
     horario» (la pantalla pide cada minuto) hasta que llega su último dato, no
     hasta la hora del cierre. Si no, a las 17:00 la pantalla dejaba de pedir con
-    los últimos 20 minutos todavía en camino."""
+    los últimos 20 minutos todavía en camino. Y al revés, un día de cierre
+    temprano de Nueva York las dos terminan cuando cerró (_ny_cerro_antes)."""
     from alerts_engine import rueda_en_horario
     from home.market import mercado_de
 
@@ -450,7 +480,13 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
     # pasa), con el reloj corrido lo que tarda en llegar el dato.
     demora = DEMORA_MIN.get(mercado, 0)
     reloj_del_dato = _ahora() - demora * 60
-    if puntos and puntos[-1]["t"] == ultima["t"] and reloj_del_dato < _fin_de(ultima, cada, mercado):
+    en_horario = rueda_en_horario(mercado, datetime.fromtimestamp(reloj_del_dato, timezone.utc))
+    # Día de cierre temprano: lo que el reloj todavía llama rueda ya terminó.
+    cerro_antes = en_horario and mercado == "us" and _ny_cerro_antes(reloj_del_dato)
+    if cerro_antes:
+        en_horario = False
+    if (puntos and puntos[-1]["t"] == ultima["t"] and not cerro_antes
+            and reloj_del_dato < _fin_de(ultima, cada, mercado)):
         puntos = puntos[:-1] + [{**puntos[-1], "enCurso": True}]
     abre, cierra = _sesion(mercado)
     # Cuántos minutos está corrida la hora local de la rueda respecto de UTC,
@@ -468,7 +504,7 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
                    "velas_por_dia": -(-(cierra - abre) // CADAS[cada])},
         # Para el ritmo del refresco de la pantalla (60 s con la rueda en
         # horario; con todo cerrado, espaciado: utils/relojVisible.refrescoSegunRueda).
-        "en_horario": rueda_en_horario(mercado, datetime.fromtimestamp(reloj_del_dato, timezone.utc)),
+        "en_horario": en_horario,
         "demora_min": demora,
         "actualizada": datetime.fromtimestamp(actualizada, timezone.utc).isoformat().replace("+00:00", "Z"),
         "puntos": puntos,

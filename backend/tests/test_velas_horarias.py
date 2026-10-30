@@ -134,7 +134,13 @@ class HorasTest(unittest.TestCase):
                    mock.patch("velas_horarias._ahora", lambda: self.ahora),
                    mock.patch("cambios_ratio._splits_de_yahoo", lambda t: []),
                    mock.patch("cambios_ratio._historia_byma", lambda c: {}),
-                   mock.patch("main._fetch_data912_equities", lambda: {})]
+                   mock.patch("main._fetch_data912_equities", lambda: {}),
+                   # El estado de la rueda de Nueva York que dice Yahoo (SPY), en
+                   # su punto más bajo: pasa por fuera_de_horario._cotizaciones.
+                   mock.patch("fuera_de_horario._pedir_yahoo", self._estado_ny)]
+        self.estado_ny, self.pedidos_estado = "REGULAR", 0
+        import fuera_de_horario
+        fuera_de_horario._vaciar_cache()
         for p in self._p:
             p.start()
         import velas_diarias
@@ -147,6 +153,10 @@ class HorasTest(unittest.TestCase):
     def tearDown(self):
         for p in self._p:
             p.stop()
+
+    def _estado_ny(self, simbolos):
+        self.pedidos_estado += 1
+        return [{"symbol": s, "marketState": self.estado_ny} for s in simbolos]
 
     def _ficha(self, asset, local=False, moneda="usd"):
         """Lo que hace la pantalla al abrir la ficha: el gráfico diario primero."""
@@ -230,6 +240,47 @@ class HorasTest(unittest.TestCase):
         self.assertEqual(utc, ["30 13:30", "30 17:30", "02 14:30", "02 18:30"])
         self.assertFalse(any(p.get("enCurso") for p in h4["puntos"]), "con la rueda cerrada no hay vela en curso")
         self.assertEqual(h4["sesion"]["desfase"], -300)
+
+    def test_nueva_york_cierra_temprano_y_la_vela_deja_de_estar_en_curso(self):
+        # Viernes 27/11/2026, el día después de Acción de Gracias: Nueva York
+        # cierra a las 13:00 y la última vela de 1 hora es la de las 12:30.
+        # El reloj de Rendi dice que la rueda sigue hasta las 16:00; Yahoo
+        # (SPY) dice que ya cerró. A las 13:10 la vela no está «en curso» y la
+        # pantalla deja de pedir cada minuto.
+        import fuera_de_horario
+        dias = [date(2026, 11, 24), date(2026, 11, 25), date(2026, 11, 27)]
+        self.yahoo.horas["AAPL"] = _horas_ny(dias, hasta_ultimo=12)
+        self.ahora = _hora(dias[2], 12, 45, NY).timestamp()
+        self._ficha("AAPL")
+        r = self._horas("AAPL", "1h")
+        self.assertTrue(r["en_horario"])
+        self.assertTrue(r["puntos"][-1].get("enCurso"), "12:45: la de las 12:30 está en curso")
+        self.assertEqual(self.pedidos_estado, 0, "antes de las 13:00 de allá no se le pregunta a Yahoo")
+
+        self.ahora = _hora(dias[2], 13, 10, NY).timestamp()
+        self.estado_ny = "POST"
+        fuera_de_horario._vaciar_cache()
+        for cada in ("1h", "4h"):
+            r = self._horas("AAPL", cada)
+            self.assertFalse(r["en_horario"], cada)
+            self.assertFalse(any(p.get("enCurso") for p in r["puntos"]), cada)
+        self.assertEqual(r["puntos"][-1]["t"], int(_hora(dias[2], 9, 30, NY).timestamp()), "4H: 9:30–13:00")
+        self.assertEqual(self.pedidos_estado, 1, "lo de Yahoo se guarda 60 s para toda la app")
+
+        # Un día normal (Yahoo dice que sigue abierta), a la misma hora: en curso.
+        self.estado_ny = "REGULAR"
+        fuera_de_horario._vaciar_cache()
+        r = self._horas("AAPL", "1h")
+        self.assertTrue(r["en_horario"])
+        self.assertTrue(r["puntos"][-1].get("enCurso"))
+
+        # Si Yahoo no contesta, queda como sin esto (no se inventa un cierre).
+        self.estado_ny = None
+        fuera_de_horario._vaciar_cache()
+        with mock.patch("fuera_de_horario._pedir_yahoo", side_effect=TimeoutError("Yahoo no contestó")):
+            r = self._horas("AAPL", "1h")
+        self.assertTrue(r["en_horario"])
+        self.assertTrue(r["puntos"][-1].get("enCurso"))
 
     # ── BYMA ─────────────────────────────────────────────────────────────────
 
