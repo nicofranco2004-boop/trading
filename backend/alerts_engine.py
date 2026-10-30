@@ -626,6 +626,83 @@ def _delivery_target(conn, uid: int):
     return uid, None
 
 
+def entrega(conn, uid: int, armar, *, push_titulo: str = None, push_url: str = None) -> dict:
+    """LA forma de armar un aviso para la cuenta `uid`: a quién le llega, qué
+    dice y adónde lleva. La usan todos los avisos (precio, %, técnica,
+    recordatorio de tesis, el resumen de los sábados).
+
+    `armar(cuenta)` devuelve los argumentos de `emails.send_alert_email` (sin el
+    destinatario), escritos para quien los va a leer: `cuenta` es None si es la
+    cuenta propia y el nombre del cliente («Juan») si la administra un asesor,
+    para quien quiera cambiar «tu plata» por «la plata de Juan».
+    `push_titulo` / `push_url`: el texto y el destino del push; sin ellos, el
+    asunto y el botón del mail.
+
+    Devuelve {'destino': uid a quien se le entrega, 'cliente': nombre | None,
+              'mail': {…}, 'push': {'titulo', 'url'}}.
+
+    🔴 POR QUÉ ES UNA SOLA FUNCIÓN (auditoría B, 29/10). La regla «un aviso de un
+    cliente le llega al asesor» eran dos funciones sueltas: `_delivery_target`
+    (A QUIÉN) y `_para_el_asesor` (QUÉ DICE y ADÓNDE LLEVA), y cada aviso nuevo
+    tenía que acordarse de las dos. El resumen de los sábados usó sólo la
+    primera: a Laura le llegaba «el 94% de tu plata» de Juan, con los links a SUS
+    señales (B1). Y el destino del push se calculaba aparte del botón del mail:
+    el push de la técnica de Juan abría «Mis alertas» de Laura (B2)."""
+    destino, cliente = _delivery_target(conn, uid)
+    mail = dict(armar(cliente))
+    push = {"titulo": push_titulo or mail["heading"], "url": push_url or mail["cta_path"]}
+    if cliente:
+        _para_el_asesor(mail, push, cliente)
+    return {"destino": destino, "cliente": cliente, "mail": mail, "push": push}
+
+
+def enviar(conn, destino: int, que: str, *, push: dict = None, mail: dict = None) -> tuple:
+    """LA puerta de envío de los avisos: manda el push (`push`, el payload de
+    `_send_push_to_user`) y/o el mail (`mail`, los argumentos de
+    `emails.send_alert_email` sin el destinatario) a `destino`, y devuelve
+    (push_ok, mail_ok). `que`: de qué aviso es, para el registro.
+
+    Lo que NO sale no se reintenta (quien llama ya anotó el aviso antes de
+    mandarlo: nunca sale dos veces), pero deja SIEMPRE un renglón en el registro
+    con la persona y el motivo (decisión de Nico, 29/10):
+      · mail rechazado sin excepción → el motivo del proveedor
+        (`emails.resultado_del_ultimo_envio()`: no_salio, incierto, no_intentado);
+      · push que no llegó a ningún dispositivo (0, sin error) → eso;
+      · cualquiera que revienta → el nombre del error y su traza;
+      · la persona sin mail → eso.
+
+    🔴 POR QUÉ UNA SOLA PUERTA (re-test de la auditoría B, 29/10). Cada lugar
+    que mandaba decidía qué anotar: el resumen del sábado anotaba el rechazo del
+    proveedor, las alertas y el libro del asesor no, y ninguno anotaba el push
+    que no llegaba. Lo vigila `test_avisos_mandan_por_una_puerta.py`."""
+    import main
+    from billing import emails
+    push_ok = mail_ok = False
+    if push is not None:
+        try:
+            n = main._send_push_to_user(destino, push)
+            push_ok = bool(n and n > 0)
+            if not push_ok:
+                log.warning("aviso %s a uid=%s: el push no salió: ningún dispositivo lo recibió", que, destino)
+        except Exception as ex:
+            log.error("aviso %s a uid=%s: el push no salió: %s: %s", que, destino,
+                      type(ex).__name__, ex, exc_info=True)
+    if mail is not None:
+        try:
+            row = conn.execute("SELECT email, name FROM users WHERE id=?", (destino,)).fetchone()
+            if not row or not row["email"]:
+                log.warning("aviso %s a uid=%s: el mail no salió: la cuenta no tiene mail", que, destino)
+            else:
+                mail_ok = bool(emails.send_alert_email(to=row["email"], user_name=(row["name"] or ""), **mail))
+                if not mail_ok:
+                    log.error("aviso %s a uid=%s: el mail no salió: %s (no se reintenta)", que, destino,
+                              emails.resultado_del_ultimo_envio())
+        except Exception as ex:
+            log.error("aviso %s a uid=%s: el mail no salió: %s: %s (no se reintenta)", que, destino,
+                      type(ex).__name__, ex, exc_info=True)
+    return push_ok, mail_ok
+
+
 def _deliver(conn, alert, items) -> tuple:
     """Manda UN push + UN email por alerta y por ciclo, con todo lo que disparó.
     Devuelve (push_ok, email_ok).
@@ -639,7 +716,6 @@ def _deliver(conn, alert, items) -> tuple:
 
     Los avisos de la app siguen siendo uno por activo (`alert_events`): se
     movieron cuatro cosas, no una. Lo que se agrupa es la ENTREGA."""
-    uid, client_label = _delivery_target(conn, alert["user_id"])
     # Más grande primero: si hay que nombrar dos en el asunto, que sean los dos
     # que más se movieron.
     items = sorted(items, key=lambda it: abs(it.get("change_pct") or 0), reverse=True)
@@ -648,61 +724,34 @@ def _deliver(conn, alert, items) -> tuple:
     fuera = None if mixto else items[0].get("fuera")
     heading = (items[0]["message"] if len(items) == 1
                else _compose_group_message(items, fuera, mixto=mixto))
-    if client_label:
-        # El asesor recibe alertas de N clientes: el prefijo dice de quién es.
-        heading = f"[{client_label}] {heading}"
-    channel = alert["channel"] or "both"
-    push_ok = email_ok = False
-    # Un aviso que trae su mail ya armado (el recordatorio de una tesis,
-    # `evaluar_recordatorios`) no pasa por el de precio y %. Para el asesor se
-    # le pone lo mismo que a los otros: de qué cliente es y a dónde entrar.
-    armado = items[0].get("contenido")
-    if armado:
-        armado = {**armado, "heading": heading}
-        if client_label:
-            _para_el_asesor(armado, client_label)
-
     tecnica = alert["kind"] == "tecnica"
-    if channel in ("push", "both"):
-        try:
-            import main
-            sent = main._send_push_to_user(uid, {
-                "title": "Rendi · Alerta",
-                # La señal técnica lleva la aclaración también en el push: es lo
-                # único que lee quien no abre el mail.
-                "body": f"{heading}. {_NO_ES_RECOMENDACION}" if tecnica else heading,
-                # Iba a /config?tab=notificaciones: ruta MUERTA desde que las
-                # alertas se mudaron a /alertas (en Config ya no existe esa
-                # pestana), asi que tocar el push caia en Config > Cuenta.
-                # Despues fue /dashboard, que no dice nada del aviso. Ahora abre
-                # «Mis alertas»: la alerta que salto, con su estado y para
-                # pausarla.
-                # La técnica abre la ficha del activo: ahí está el gráfico con
-                # el promedio que cruzó. El aviso que trae su mail armado (el
-                # recordatorio de una tesis) va a donde dice su botón.
-                "url": ((armado or {}).get("cta_path")
-                        or (f"/activo/{quote(_display_symbol(items[0]['symbol']), safe='')}"
-                            if tecnica and not client_label else "/alertas?tab=mis")),
-                "tag": (f"alert-{alert['id']}-{items[0]['symbol'] or ''}"
-                        if len(items) == 1 else f"alert-{alert['id']}-grupo"),
-            })
-            push_ok = sent > 0
-        except Exception as ex:
-            log.warning("alerts push uid=%s falló: %s", uid, ex)
-
-    if channel in ("email", "both"):
-        try:
-            row = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
-            if row and row["email"]:
-                from billing import emails
-                contenido = armado or _contenido_del_mail(
-                    alert, items, fuera, mixto, client_label, heading)
-                email_ok = emails.send_alert_email(
-                    to=row["email"], user_name=(row["name"] or ""), **contenido)
-        except Exception as ex:
-            log.warning("alerts email uid=%s falló: %s", uid, ex)
-
-    return push_ok, email_ok
+    # Un aviso que trae su mail ya armado (el recordatorio de una tesis,
+    # `evaluar_recordatorios`) no pasa por el de precio y %.
+    armado = items[0].get("contenido")
+    e = entrega(
+        conn, alert["user_id"],
+        lambda _cuenta: ({**armado, "heading": heading} if armado
+                         else _contenido_del_mail(alert, items, fuera, mixto, heading)),
+        # El push de precio y % abre «Mis alertas»: la alerta que saltó, con su
+        # estado y para pausarla. (Iba a /config?tab=notificaciones, ruta MUERTA
+        # desde que las alertas se mudaron a /alertas; después a /dashboard, que
+        # no dice nada del aviso.) La técnica y el recordatorio van adonde va el
+        # botón del mail: la ficha del activo, con el gráfico.
+        push_titulo=heading, push_url=None if (tecnica or armado) else _MIS_ALERTAS)
+    channel = alert["channel"] or "both"
+    titulo = e["push"]["titulo"]
+    return enviar(
+        conn, e["destino"], f"alerta {alert['id']}",
+        push=({
+            "title": "Rendi · Alerta",
+            # La señal técnica lleva la aclaración también en el push: es lo
+            # único que lee quien no abre el mail.
+            "body": f"{titulo}. {_NO_ES_RECOMENDACION}" if tecnica else titulo,
+            "url": e["push"]["url"],
+            "tag": (f"alert-{alert['id']}-{items[0]['symbol'] or ''}"
+                    if len(items) == 1 else f"alert-{alert['id']}-grupo"),
+        } if channel in ("push", "both") else None),
+        mail=e["mail"] if channel in ("email", "both") else None)
 
 
 # ─── El mail ──────────────────────────────────────────────────────────────────
@@ -768,7 +817,7 @@ def _fila(it, mixto: bool) -> dict:
             "pct_txt": _pct_con_signo(it.get("change_pct")), "nota": " · ".join(notas)}
 
 
-def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading) -> dict:
+def _contenido_del_mail(alert, items, fuera, mixto: bool, heading) -> dict:
     """Todo lo que lleva el mail: asunto, titular, oración, lista, botón y pie.
     Devuelve los argumentos de `emails.send_alert_email` (menos el destinatario).
 
@@ -810,7 +859,7 @@ def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading)
         elif alert["kind"] == "price_target":
             titulo = _titulo_precio(alert, it["symbol"], it["price"])
             detail = _email_detail(alert, it["symbol"], it["price"])
-            heading = f"[{client_label}] {titulo}" if client_label else titulo
+            heading = titulo
         else:
             titulo = it["message"]
             detail = _email_detail(alert, it["symbol"], it["price"], it["change_pct"],
@@ -839,20 +888,25 @@ def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading)
     contenido["heading"] = heading
     if alert["kind"] == "tecnica":
         contenido["aclaracion"] = _NO_ES_RECOMENDACION
-    if client_label:
-        _para_el_asesor(contenido, client_label)
     return contenido
 
 
-def _para_el_asesor(contenido: dict, client_label: str) -> None:
+def _para_el_asesor(mail: dict, push: dict, cliente: str) -> None:
     """Plan Asesor: el aviso es de una cuenta que administra. Su cartera, su
-    ficha y su «Mis alertas» no son las de esa cuenta: se entra desde Clientes.
-    El asunto ya lleva «[Cliente]» adelante (`_deliver`). Lo usan el mail de
-    precio y % y el que llega ya armado (el recordatorio de una tesis)."""
-    contenido["detail"] = contenido["detail"].rstrip(".") + f", en la cuenta de {client_label}."
-    contenido["cta_label"], contenido["cta_path"] = "Ver mis clientes", "/clientes"
-    contenido["pie"] = (f"Para cambiarla, entrá a la cuenta de {client_label}.",
-                        "Ir a mis clientes", "/clientes")
+    ficha, su «Mis alertas» y sus señales no son las de esa cuenta: se entra
+    desde Clientes. Sólo la llama `entrega`.
+
+    «en la cuenta de Juan» va ADELANTE de la oración («Hola Laura, en la cuenta
+    de Juan, pasó el límite…»): pegado al final quedaba colgando de la última
+    frase de la lectura («…la tendencia de fondo es alcista, en la cuenta de
+    Juan.», auditoría B2)."""
+    mail["heading"] = f"[{cliente}] {mail['heading']}"
+    push["titulo"] = f"[{cliente}] {push['titulo']}"
+    mail["detail"] = f"en la cuenta de {cliente}, {mail['detail']}"
+    mail["cta_label"], mail["cta_path"] = "Ver mis clientes", "/clientes"
+    mail["pie"] = (f"Para cambiar este aviso, entrá a la cuenta de {cliente}.",
+                   "Ir a mis clientes", "/clientes")
+    push["url"] = "/clientes"
 
 
 def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: list,
@@ -906,6 +960,61 @@ def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: lis
              alert["id"], alert["user_id"], symbol, message)
 
 
+def _pgsesion():
+    import pgsesion
+    return pgsesion
+
+
+def _guarda_por_alerta(conn, que: str, alerta, simbolo, pendientes: list, hacer) -> tuple:
+    """Corre `hacer(propios)` para UNA alerta y devuelve (salió_bien, lo que
+    devolvió). LA guarda por alerta de todos los motores: precio y % (en la
+    rueda y fuera), técnicas y recordatorios de tesis.
+
+    Tres cosas, y las tres hacen falta:
+      · Un PUNTO DE GUARDADO (`pgsesion.si_falla_se_deshace_solo_esto`): si
+        revienta, se deshace SÓLO lo de esta alerta. En Postgres un error de base
+        aborta la transacción entera y el commit de después es un ROLLBACK
+        callado que se lleva los avisos de las alertas sanas (auditoría C1).
+      · Sus avisos se encolan en una lista PROPIA y pasan a `pendientes` sólo si
+        salió bien: un aviso encolado antes del error (dispara y después falla
+        al correr su marca) se mandaba aunque su evento se deshiciera, y el cron
+        lo repetía cada 10 minutos.
+      · El error A LA VISTA: nombre, traza y quién (lo que 2cc64ca8 le puso a las
+        técnicas y no se había propagado: auditoría B-P1/B-P2). Quien llama lo
+        cuenta en el resultado del cron."""
+    propios: list = []
+    try:
+        with _pgsesion().si_falla_se_deshace_solo_esto(conn, "una_alerta"):
+            r = hacer(propios)
+    except Exception as ex:
+        log.error("%s %s (%s) falló: %s: %s", que, alerta["id"], simbolo,
+                  type(ex).__name__, ex, exc_info=True)
+        return False, None
+    pendientes.extend(propios)
+    return True, r
+
+
+def _solo_lo_guardado(conn, pendientes: list) -> list:
+    """Los pendientes cuyo aviso está de verdad en la base. Un commit puede
+    «salir bien» sin guardar (en Postgres, el de una transacción abortada es un
+    ROLLBACK callado): un aviso que no quedó anotado se mandaría ahora y otra
+    vez en la pasada siguiente (auditoría C1). Se pregunta a la base, no al
+    commit."""
+    ids = [it["event_id"] for it in pendientes if it.get("event_id")]
+    if not ids:
+        return pendientes
+    guardados = set()
+    for i in range(0, len(ids), 500):
+        lote = ids[i:i + 500]
+        guardados |= {r[0] for r in conn.execute(
+            f"SELECT id FROM alert_events WHERE id IN ({','.join('?' * len(lote))})", lote).fetchall()}
+    faltan = [it for it in pendientes if it.get("event_id") not in guardados]
+    for it in faltan:
+        log.error("alert %s (%s): el aviso no quedó guardado, no se manda",
+                  it["alert"]["id"], it["symbol"])
+    return [it for it in pendientes if it.get("event_id") in guardados]
+
+
 def _entregar_pendientes(conn, pendientes: list) -> None:
     """Entrega todo lo que disparó en el ciclo, con un envío por alerta.
 
@@ -916,6 +1025,7 @@ def _entregar_pendientes(conn, pendientes: list) -> None:
     # coinciden la rueda de BYMA y el pre de Nueva York, y dos mails seguidos de
     # la misma alerta son justo el spam que el agrupado vino a evitar. Cada
     # renglón dice dónde fue (ver `_deliver`).
+    pendientes = _solo_lo_guardado(conn, pendientes)
     por_alerta: dict = {}
     for it in pendientes:
         por_alerta.setdefault(it["alert"]["id"], []).append(it)
@@ -924,7 +1034,14 @@ def _entregar_pendientes(conn, pendientes: list) -> None:
         try:
             push_ok, email_ok = _deliver(conn, alert, items)
         except Exception as ex:
-            log.warning("alerts entrega de la alerta %s falló: %s", alert["id"], ex)
+            log.error("alerts entrega de la alerta %s falló: %s: %s", alert["id"],
+                      type(ex).__name__, ex, exc_info=True)
+            # Si lo que falló fue una lectura de la base (a quién se le entrega),
+            # en Postgres la transacción quedó abortada y la entrega SIGUIENTE
+            # no podría ni leer (auditoría C1). El rollback es seguro: todo lo
+            # anterior ya está confirmado (lo disparado se confirma antes de
+            # entregar, y cada entrega confirma lo suyo).
+            conn.rollback()
             continue
         # Anotar la entrega va en su propio try: si la base está trabada (un
         # import largo la tiene tomada más que el busy_timeout), el UPDATE
@@ -1116,14 +1233,18 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) 
             log.info("alert %s %s: %+.2f%% en el %s con %s velas: poca operación, no aviso",
                      a["id"], sym, pct, sesion, velas.get(ref, 0))
             continue
-        _fire(conn, a, sym, precio, pct, now, pendientes,
-              fuera={"sesion": sesion, "ref": ref, "via": via}, doble=doble)
-        _anotar_aviso(conn, a, sym, clave[0], clave[1], pct, doble)
-        mismo_ref.add(igual)
-        fired += 1
-        # «Una sola vez» es una sola vez, también si el aviso fue fuera de la
-        # rueda (auditoría 2026-10-15: seguía avisando día tras día).
-        _cumplio_una_vez(conn, a)
+
+        def _avisar(propios, a=a, sym=sym, ref=ref, via=via, pct=pct, precio=precio, clave=clave,
+                    doble=doble):
+            _fire(conn, a, sym, precio, pct, now, propios,
+                  fuera={"sesion": sesion, "ref": ref, "via": via}, doble=doble)
+            _anotar_aviso(conn, a, sym, clave[0], clave[1], pct, doble)
+            # «Una sola vez» es una sola vez, también si el aviso fue fuera de la
+            # rueda (auditoría 2026-10-15: seguía avisando día tras día).
+            _cumplio_una_vez(conn, a)
+        if _guarda_por_alerta(conn, "alert fuera de la rueda", a, sym, pendientes, _avisar)[0]:
+            mismo_ref.add(igual)
+            fired += 1
     return fired
 
 
@@ -1202,7 +1323,9 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     # Una «una sola vez» que avisa en el ciclo se apaga ahí mismo, pero sus
     # otros activos se siguen mirando: van todos en el mismo aviso (ver
     # `_cumplio_una_vez`).
-    for a, sym in units:
+    def _una(a, sym, pendientes) -> int:
+        """Una (alerta, activo). Devuelve cuántos avisos disparó (0 o 1)."""
+        fired = 0
         # Acciones/CEDEARs/bonos: solo disparan en horario de mercado (evita saltos
         # de madrugada sobre precios congelados). Cripto: 24/7.
         tradeable = (sym in _crypto_symbols()) or market_open
@@ -1211,7 +1334,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
             price = (precios_usd if _es_cedear_usd(a, sym) else prices).get(sym)
             met = condition_met("price_target", a["direction"], a["threshold"], price, None)
             if met is None:
-                continue  # sin precio → no adivinar
+                return fired  # sin precio → no adivinar
             if a["armed"] and met and tradeable:
                 _fire(conn, a, sym, price, None, now, pendientes)
                 fired += 1
@@ -1226,7 +1349,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                 price = prices.get(sym)
                 anchor = a["anchor_price"]
                 if price is None or not anchor:
-                    continue
+                    return fired
                 change = (price - anchor) / anchor * 100.0
                 fire_price = price
             else:
@@ -1252,7 +1375,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
             if base == "set_price":
                 # "Desde ahora": la dedup la da el re-ancla (no edge-trigger por símbolo).
                 if not side or not tradeable:
-                    continue
+                    return fired
                 _fire(conn, a, sym, fire_price, change, now, pendientes)
                 fired += 1
                 if a["repeat"] != "once" and fire_price:
@@ -1274,7 +1397,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                 if not side:
                     if change is not None and not armed and not fired_today:
                         _set_sym_armed(conn, a["id"], sym, 1)   # día nuevo, dentro de banda → re-arma
-                    continue
+                    return fired
                 # Cripto no tiene pre ni post y su día es el día UTC (opera los
                 # sábados): la regla de «mismo cierre» no aplica. Con ella, el
                 # sábado, el domingo y el lunes compartían clave y se callaban
@@ -1290,9 +1413,9 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     _set_sym_fired(conn, a["id"], sym, today)
                     _anotar_aviso(conn, a, sym, base, side, change, doble=True)
                     _cumplio_una_vez(conn, a)
-                    continue
+                    return fired
                 if not armed or not tradeable or fired_today:
-                    continue
+                    return fired
                 if _ya_avisado(conn, a["id"], sym, base, side):
                     # Es el MISMO movimiento que ya se avisó fuera de la rueda (el
                     # post de anoche o el pre de hoy, contra el mismo cierre): no se
@@ -1301,12 +1424,24 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     # alerta «una sola vez» ya cumplió: se apaga — sin callar a
                     # los otros activos de la cartera que se movieron ahora.
                     _cumplio_una_vez(conn, a)
-                    continue
+                    return fired
                 _fire(conn, a, sym, fire_price, change, now, pendientes)
                 fired += 1
                 _set_sym_fired(conn, a["id"], sym, today)
                 _anotar_aviso(conn, a, sym, base, side, change, doble=False)
                 _cumplio_una_vez(conn, a)
+        return fired
+
+    errores = 0
+    for a, sym in units:
+        # Cada (alerta, activo) en su punto de guardado: si revienta, se deshace
+        # SÓLO lo suyo, se cuenta y se nombra, y las demás siguen (auditoría
+        # B-P1 + C1, ver `_guarda_por_alerta`).
+        ok, n = _guarda_por_alerta(conn, "alert", a, sym, pendientes, lambda propios: _una(a, sym, propios))
+        if ok:
+            fired += n
+        else:
+            errores += 1
 
     # Pre y post mercado de Wall Street (anticipo, con su propio estado).
     # ⚠️ ANTES se confirma lo escrito en el loop: esto pregunta a Yahoo (hasta
@@ -1314,10 +1449,28 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     # comía «database is locked» (auditoría 2026-10-15, medido con una segunda
     # conexión). Adentro, la red va antes que cualquier escritura.
     conn.commit()
+    # Cada aviso de adentro va con su guarda (`_guarda_por_alerta`). Si revienta
+    # lo demás (una lectura), se hace rollback: es seguro porque todo lo anterior
+    # se acaba de confirmar, y hace falta porque en Postgres la transacción quedó
+    # abortada y la entrega de abajo no podría ni leer. NO va un punto de
+    # guardado alrededor: abriría la transacción antes de ir a Yahoo
+    # (test_los_dias_de_byma_se_piden_sin_la_base_tomada).
+    # Los avisos del tramo pasan a la entrega IGUAL, salió bien o no: en SQLite
+    # soltar la guarda de cada uno ya lo confirmó, y el rollback no lo deshace.
+    # Descartarlos dejaba un aviso anotado que no se mandaba nunca (re-test de la
+    # auditoría B). Qué se manda lo decide la base (`_solo_lo_guardado`).
+    # Lo que avisó el tramo se cuenta por sus avisos (uno por guarda que salió
+    # bien), no por lo que devuelve: si revienta a mitad, los que ya avisaron
+    # se mandan y también se cuentan (antes el cron decía «fired: 0»).
+    propios: list = []
     try:
-        fired += _evaluar_fuera_de_rueda(conn, units, pendientes, now)
+        _evaluar_fuera_de_rueda(conn, units, propios, now)
     except Exception as ex:
-        log.warning("alerts fuera de la rueda falló: %s", ex)
+        errores += 1
+        log.error("alerts fuera de la rueda falló: %s: %s", type(ex).__name__, ex, exc_info=True)
+        conn.rollback()
+    fired += len(propios)
+    pendientes.extend(propios)
 
     # La entrega va DESPUÉS del loop: recién cuando terminó de evaluarse toda la
     # cartera se sabe cuántos activos se movieron y puede salir un mail solo.
@@ -1342,7 +1495,10 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     # transacción de escritura y la dejaba tomada durante los pedidos de precios.
     _podar_movimientos(conn, now)
     conn.commit()
-    return {"alerts": len(alerts), "evaluated": len(units), "fired": fired}
+    out = {"alerts": len(alerts), "evaluated": len(units), "fired": fired}
+    if errores:
+        out["errores"] = errores
+    return out
 
 
 # ─── Alertas técnicas: una vez por día, con las velas de la noche ─────────────
@@ -1579,12 +1735,15 @@ def evaluar_tecnicas(conn, now: datetime = None, only_user: int = None) -> dict:
         # con estas alertas, un número mudado de archivo (SALTO_SIN_EXPLICAR) hacía
         # fallar TODAS, cada 10 minutos, con un aviso que nadie miraba: ninguna
         # alerta técnica avisaba nunca (pieza 15, 11f57c03).
-        try:
-            resultado = _evaluar_una_tecnica(conn, a, series, ultima_global, piso, now, pendientes)
-        except Exception as ex:
+        # Y lo de ESA alerta va en su punto de guardado (auditoría C1, 29/10):
+        # en Postgres un error de base de una alerta abortaba la transacción de
+        # todas, y el commit de abajo deshacía los avisos de las sanas, que se
+        # mandaban igual y se repetían cada 10 minutos.
+        ok, resultado = _guarda_por_alerta(
+            conn, "alert técnica", a, a["symbol"], pendientes,
+            lambda propios: _evaluar_una_tecnica(conn, a, series, ultima_global, piso, now, propios))
+        if not ok:
             errores += 1
-            log.error("alert técnica %s (%s) falló: %s: %s", a["id"], a["symbol"],
-                      type(ex).__name__, ex, exc_info=True)
             continue
         mirados += resultado in ("mirada", "avisó")
         fired += resultado == "avisó"
@@ -1709,28 +1868,34 @@ def evaluar_recordatorios(conn, now: datetime = None) -> dict:
              FROM alerts a JOIN tesis t ON t.alert_id = a.id AND t.user_id = a.user_id
             WHERE a.kind = 'recordatorio' AND a.active = 1 AND t.recordar_el <= ?""",
         (hoy.isoformat(),)).fetchall()
-    pendientes = []
+    pendientes, errores = [], 0
     for a in filas:
         t = {k[2:]: a[k] for k in a.keys() if k.startswith("t_")}
-        try:
+
+        def _uno(propios, a=a, t=t):
             contenido = _tesis.para_el_aviso(conn, t)
-        except Exception as ex:
-            log.warning("recordatorio %s: no se pudo armar: %s", a["id"], ex)
-            continue
-        contenido["heading"] = contenido["titulo"]
-        contenido["pie"] = ("Te lo recordamos una sola vez.", "Ver tu tesis",
-                            contenido["cta_path"])
-        cur = conn.execute(
-            """INSERT INTO alert_events (alert_id, user_id, symbol, fired_at, price, message,
-                                         delivered_push, delivered_email)
-               VALUES (?,?,?,?,NULL,?,0,0)""",
-            (a["id"], a["user_id"], t["asset"], now.isoformat(), contenido["titulo"]))
-        conn.execute("UPDATE alerts SET active=0, last_fired_at=? WHERE id=?",
-                     (now.isoformat(), a["id"]))
-        pendientes.append({"alert": a, "symbol": t["asset"], "price": None, "change_pct": None,
-                           "message": contenido["titulo"], "label": contenido["titulo"],
-                           "event_id": cur.lastrowid, "fuera": None, "doble": False,
-                           "contenido": contenido})
+            contenido["heading"] = contenido["titulo"]
+            contenido["pie"] = ("Te lo recordamos una sola vez.", "Ver tu tesis",
+                                contenido["cta_path"])
+            cur = conn.execute(
+                """INSERT INTO alert_events (alert_id, user_id, symbol, fired_at, price, message,
+                                             delivered_push, delivered_email)
+                   VALUES (?,?,?,?,NULL,?,0,0)""",
+                (a["id"], a["user_id"], t["asset"], now.isoformat(), contenido["titulo"]))
+            conn.execute("UPDATE alerts SET active=0, last_fired_at=? WHERE id=?",
+                         (now.isoformat(), a["id"]))
+            propios.append({"alert": a, "symbol": t["asset"], "price": None, "change_pct": None,
+                            "message": contenido["titulo"], "label": contenido["titulo"],
+                            "event_id": cur.lastrowid, "fuera": None, "doble": False,
+                            "contenido": contenido})
+        # La misma guarda que las técnicas (auditoría B-P2): antes un recordatorio
+        # que no se podía armar quedaba en un warning sin traza, sin contar, y se
+        # reintentaba cada 10 minutos para siempre sin que nadie lo viera.
+        if not _guarda_por_alerta(conn, "recordatorio", a, t["asset"], pendientes, _uno)[0]:
+            errores += 1
     conn.commit()
     _entregar_pendientes(conn, pendientes)
-    return {"recordatorios": len(pendientes)}
+    out = {"recordatorios": len(pendientes)}
+    if errores:
+        out["errores_recordatorios"] = errores
+    return out

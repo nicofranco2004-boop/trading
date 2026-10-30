@@ -432,9 +432,69 @@ class TesisTest(Base):
         self.assertEqual([u for u, _ in pushes], [asesor])
         self.assertTrue(mails[0]["to"].startswith("asesor-"))
         self.assertEqual(mails[0]["heading"], "[Laura] Quedaste en revisar tu tesis de NVDA")
-        self.assertIn("en la cuenta de Laura.", mails[0]["detail"])
+        # Adelante de la oración, no pegado a la última frase (auditoría B2, 29/10).
+        self.assertTrue(mails[0]["detail"].startswith("en la cuenta de Laura, escribiste esta tesis"),
+                        mails[0]["detail"])
         self.assertEqual((mails[0]["cta_path"], pushes[0][1]["url"]), ("/clientes", "/clientes"),
                          "la ficha del asesor no es la de su cliente")
+
+    def test_un_recordatorio_que_no_se_puede_armar_queda_a_la_vista_y_no_frena_a_los_otros(self):
+        """Auditoría B-P2 (29/10): si `para_el_aviso` reventaba, quedaba en un
+        warning sin traza, no se contaba y se reintentaba cada 10 minutos para
+        siempre sin que nadie lo viera. La misma guarda que las técnicas: nombre
+        del error, traza, contado en el cron; los otros salen."""
+        for asset in ("NVDA", "AAPL"):
+            tid = self._guardar(f"tesis de {asset}", asset=asset)
+            self.client.put(f"/api/tesis/{tid}/recordatorio", json={"tipo": "3m"}, headers=self.h)
+        with main.db_abierta() as conn:
+            conn.execute("UPDATE tesis SET recordar_el=? WHERE user_id=?", (self.hoy.isoformat(), self.uid))
+            conn.commit()
+        import tesis as _t
+        real = _t.para_el_aviso
+
+        def aviso(conn, t):
+            if t["asset"] == "AAPL":
+                raise KeyError("tendencia_json")
+            return real(conn, t)
+        mails = []
+        with mock.patch("billing.emails.send_alert_email", lambda **kw: mails.append(kw) or True), \
+             mock.patch("main._send_push_to_user", lambda uid, p: 1), \
+             mock.patch("tesis.para_el_aviso", aviso), \
+             mock.patch("alerts_engine.HORA_RECORDATORIO", 0), \
+             self.assertLogs("alerts", level="ERROR") as logs:
+            r = main._evaluar_alertas_job()
+        self.assertEqual((r["recordatorios"], r.get("errores_recordatorios")), (1, 1))
+        self.assertTrue(any("KeyError" in x and "AAPL" in x for x in logs.output), logs.output)
+        self.assertEqual([m["heading"] for m in mails], ["Quedaste en revisar tu tesis de NVDA"])
+
+    def test_mis_alertas_no_reactiva_ni_borra_un_recordatorio(self):
+        """Auditoría B-P4 (29/10): PATCH /api/alerts/{id} con `active: true`
+        reactivaba un recordatorio ya mandado y, con la fecha vencida, salía de
+        nuevo en la pasada siguiente. Y el DELETE lo borraba dejando la tesis
+        apuntando a una alerta que no existe. Se manejan desde la tesis."""
+        tid = self._guardar("Data centers")
+        self.client.put(f"/api/tesis/{tid}/recordatorio", json={"tipo": "3m"}, headers=self.h)
+        with main.db_abierta() as conn:
+            conn.execute("UPDATE tesis SET recordar_el=? WHERE id=?", (self.hoy.isoformat(), tid))
+            conn.commit()
+            aid = conn.execute("SELECT alert_id FROM tesis WHERE id=?", (tid,)).fetchone()[0]
+        mails = []
+        with mock.patch("billing.emails.send_alert_email", lambda **kw: mails.append(kw) or True), \
+             mock.patch("main._send_push_to_user", lambda uid, p: 1), \
+             mock.patch("alerts_engine.HORA_RECORDATORIO", 0):
+            main._evaluar_alertas_job()
+            r = self.client.patch(f"/api/alerts/{aid}", json={"active": True}, headers=self.h)
+            self.assertEqual(r.status_code, 400, r.text)
+            main._evaluar_alertas_job()
+        self.assertEqual(len(mails), 1, "una sola vez")
+        r = self.client.delete(f"/api/alerts/{aid}", headers=self.h)
+        self.assertEqual(r.status_code, 400, r.text)
+        with main.db_abierta() as conn:
+            self.assertIsNotNone(conn.execute("SELECT 1 FROM alerts WHERE id=?", (aid,)).fetchone())
+        self.assertNotIn(aid, [a["id"] for a in self.client.get("/api/alerts", headers=self.h).json()["items"]])
+        # Una alerta del formulario se sigue editando y borrando.
+        r = self.client.delete("/api/alerts/999999", headers=self.h)
+        self.assertEqual(r.status_code, 200)
 
     def test_reescribirla_otro_dia_muda_el_recordatorio(self):
         tid = self._guardar("v1")

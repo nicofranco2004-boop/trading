@@ -228,27 +228,51 @@ def peso(car: dict, asset: str, local=None):
     return v / car["total"] if v > 0 and car["total"] > 0 else None
 
 
+def _clave_de_la_watchlist(simbolo: str, cedears) -> tuple:
+    """(asset, local) de un símbolo de la watchlist: LA regla, la usan
+    `watchlist` y `agregado_a_la_watchlist`. «GGAL.BA» es la acción argentina
+    (local); «AAPL.BA» es el CEDEAR, que se lee por AAPL."""
+    s = (simbolo or "").strip().upper()
+    base = s[:-3] if s.endswith(".BA") else s
+    return (base, s.endswith(".BA") and base not in cedears)
+
+
 def watchlist(conn, uid: int, cedears=None) -> dict:
-    """{(asset, local): símbolo tal como está en la watchlist}. «GGAL.BA» es la
-    acción argentina (local); «AAPL.BA» es el CEDEAR, que se lee por AAPL."""
+    """{(asset, local): símbolo tal como está en la watchlist} (la clave:
+    `_clave_de_la_watchlist`)."""
     cedears = _cedears() if cedears is None else cedears
     out = {}
     for r in conn.execute("SELECT symbol FROM watchlist WHERE user_id=?", (uid,)).fetchall():
         s = (r["symbol"] or "").strip().upper()
-        if not s:
-            continue
-        base = s[:-3] if s.endswith(".BA") else s
-        out[(base, s.endswith(".BA") and base not in cedears)] = s
+        if s:
+            out[_clave_de_la_watchlist(s, cedears)] = s
+    return out
+
+
+def agregado_a_la_watchlist(conn, uid: int, cedears=None) -> dict:
+    """{(asset, local): día ARGENTINO en que se agregó a la watchlist}, con la
+    misma clave que `watchlist`. Sacar un activo borra su fila y volver a
+    ponerlo crea otra con la fecha de ese día (`added_at`, en UTC)."""
+    from fechas import dia_art
+    cedears = _cedears() if cedears is None else cedears
+    out = {}
+    for r in conn.execute("SELECT symbol, added_at FROM watchlist WHERE user_id=?", (uid,)).fetchall():
+        try:
+            dia = dia_art(datetime.fromisoformat(str(r["added_at"])[:19]))
+        except (TypeError, ValueError):
+            continue          # sin fecha (una fila muy vieja): no se recorta
+        if (r["symbol"] or "").strip():
+            out[_clave_de_la_watchlist(r["symbol"], cedears)] = dia.isoformat()
     return out
 
 
 def _tesis(conn, uid: int) -> dict:
-    """{asset: texto} de la última tesis de cada activo (pieza 11, «Tu tesis»).
-    La tabla `tesis` vive en la rama de la pieza 11, todavía sin juntar con esta:
-    hasta entonces no hay tesis y la pantalla y el mail no muestran esa línea.
-    Al juntar: SELECT asset, texto FROM tesis WHERE user_id=? ORDER BY
-    escrita_el, quedándose con la última de cada activo."""
-    return {}
+    """{ACTIVO: texto} de la última tesis de cada activo (pieza 11, «Tu
+    tesis», `tesis.ultimas`). Hasta el 29/10 devolvía {} con un «al juntar:
+    SELECT…» en un comentario: se juntó la pieza 11 y nadie lo llenó (auditoría
+    B4 = A8 = C2). Ahora lo vigila test_tus_senales."""
+    import tesis as _t
+    return _t.ultimas(conn, uid)
 
 
 # ─── La cuenta ───────────────────────────────────────────────────────────────
@@ -365,7 +389,8 @@ def semana_pasada(conn, uid: int, hoy: date):
     return {"semana": row["semana"], "pct": row["pct_alcista"]} if row else None
 
 
-def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None, dolar=None) -> dict:
+def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None, dolar=None,
+                 desde: str = None, desde_de: dict = None) -> dict:
     """Lo que ve la pestaña y lo que dice el mail del sábado.
 
     {
@@ -377,23 +402,43 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
                    tipo, fecha, sentido, …números…, etiqueta, tono, texto, extra}],
     }
     `series` es un caché {(asset, local): lectura} para la corrida del sábado,
-    que arma la de cada activo una sola vez para todas las personas."""
+    que arma la de cada activo una sola vez para todas las personas.
+    `desde` (exclusive): desde cuándo se cuentan los cambios. La pestaña usa los
+    últimos 7 días corridos. El mail cuenta CADA ACTIVO desde lo que ya contó el
+    resumen anterior: `desde_de` {(asset, local): fecha} (`desde_del_mail`); el
+    activo que no está ahí, desde `desde`. Agrega 'hasta_vela': {"NVDA|0":
+    la última vela que se miró de ese activo} (lo que guarda el sábado)."""
     import tecnico
     series = {} if series is None else series
     cedears = _cedears() if cedears is None else cedears
-    desde = (hoy - timedelta(days=DIAS_SEMANA)).isoformat()
+    desde = desde or (hoy - timedelta(days=DIAS_SEMANA)).isoformat()
     car = cartera(conn, uid, cedears, dolar)
     wl = watchlist(conn, uid, cedears)
     tesis = _tesis(conn, uid)
+    # Lo que seguís en la watchlist (y no tenés) cuenta desde el día en que lo
+    # agregaste: si lo sacaste y lo volviste a poner, lo que cruzó mientras no
+    # lo seguías no es «tu semana» (decisión de Nico, 29/10). Lo que TENÉS
+    # cuenta siempre, aunque además esté en la watchlist.
+    agregado = agregado_a_la_watchlist(conn, uid, cedears)
+    recorte = {k: (date.fromisoformat(agregado[k]) - timedelta(days=1)).isoformat()
+               for k in wl if k in agregado and k not in car["tenencias"]}
 
     def _leer(k):
-        if k not in series:
-            series[k] = tecnico.para_la_cartera(conn, [k], hoy=hoy)[0]
-        return series[k]
+        # La lectura no depende de `desde`, los cambios sí: el caché va por
+        # (activo, desde), y `reparto` (que sólo lee la lectura) reusa la misma.
+        d = (desde_de or {}).get(k) or desde
+        d = max(d, recorte.get(k, d))
+        if (k, d) not in series:
+            series[(k, d)] = tecnico.para_la_cartera(conn, [k], hoy=hoy, desde=d)[0]
+            series.setdefault(k, series[(k, d)])
+        return series[(k, d)]
 
-    senales, con_lectura, con_cambios = [], 0, set()
+    senales, con_lectura, con_cambios, hasta_vela = [], 0, set(), {}
     for k in sorted(set(car["tenencias"]) | set(wl)):
         x = _leer(k)
+        f = (x.get("lectura") or {}).get("fecha") if x.get("disponible") else None
+        if f:
+            hasta_vela[_clave_marca(k)] = f
         tiene = k in car["tenencias"]
         if tiene:
             con_lectura += _alcista(x, hoy) is not None
@@ -425,6 +470,7 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, cedears=None
         "tenes": {"activos": con_lectura, "con_cambios": len(con_cambios)},
         "watchlist": len(wl),
         "senales": senales,
+        "hasta_vela": hasta_vela,
     }
 
 
@@ -482,8 +528,15 @@ def _y(nombres: list) -> str:
 RENGLONES_MAIL = 3
 
 
-def contenido_del_mail(semana: dict) -> dict:
-    """Los argumentos de `emails.send_alert_email` para el resumen."""
+def contenido_del_mail(semana: dict, cuenta: str = None) -> dict:
+    """Los argumentos de `emails.send_alert_email` para el resumen. `cuenta`: el
+    nombre del cliente cuando el mail es de una cuenta que administra un asesor
+    (lo pasa `alerts_engine.entrega`): entonces no es «tu plata» ni «tu
+    watchlist», es la de Juan."""
+    tu = {"plata": "tu plata", "lo": "lo tuyo", "watchlist": "tu watchlist", "tesis": "Tu tesis"}
+    if cuenta:
+        tu = {"plata": "la plata", "lo": "sus activos", "watchlist": f"la watchlist de {cuenta}",
+              "tesis": f"La tesis de {cuenta}"}
     lista = _por_importancia(semana["senales"])
     primeros, nombrados = [], []
     for x in lista:
@@ -493,23 +546,25 @@ def contenido_del_mail(semana: dict) -> dict:
     lineas = []
     for x in primeros:
         # Lo que no tenés lo dice: «MSFT pasó arriba…» se leía como algo tuyo.
-        quien = x["asset"] if x["tenes"] else f"{x['asset']} (en tu watchlist)"
+        quien = x["asset"] if x["tenes"] else f"{x['asset']} (en {tu['watchlist']})"
         linea = f"{quien} {x['texto']}"
         if x.get("tesis"):
-            linea += f" Tu tesis: «{x['tesis']}»."
+            import tesis as _tesis
+            linea += f" {tu['tesis']}: «{_tesis.para_una_linea(x['tesis'])}»."
         lineas.append(linea)
     resto = [x for x in lista if x not in primeros]
     if resto:
         quienes = list(dict.fromkeys(x["asset"] for x in resto))
         lineas.append(f"{len(resto)} {'cambio' if len(resto) == 1 else 'cambios'} más, en {_y(quienes)}.")
     a = semana.get("alcista")
+    watch = "su watchlist" if cuenta else tu["watchlist"]
     if a:
-        detail = f"el {a['pct']}% de tu plata está en activos con tendencia de fondo alcista"
+        detail = f"el {a['pct']}% de {tu['plata']} está en activos con tendencia de fondo alcista"
         if a.get("semana_pasada"):
             detail += f" (la semana pasada, {round(a['semana_pasada']['pct'])}%)"
-        detail += ". Esto se movió en lo tuyo y en tu watchlist:"
+        detail += f". Esto se movió en {tu['lo']} y en {watch}:"
     else:
-        detail = "esto se movió esta semana en lo tuyo y en tu watchlist:"
+        detail = f"esto se movió esta semana en {tu['lo']} y en {watch}:"
     return {
         "heading": _titular(semana["senales"]), "detail": detail, "lines": lineas,
         "cta_path": URL_SENALES, "cta_label": "Ver los cambios",
@@ -519,46 +574,99 @@ def contenido_del_mail(semana: dict) -> dict:
     }
 
 
-def _armar_envio(conn, uid: int, semana: dict) -> tuple:
-    """(destino, cliente, contenido). Todo lo que se puede romper al armar el
-    mail pasa ACÁ, antes de marcar la semana como hecha: un error al armarlo no
-    puede comerse el resumen de esa persona sin mandarlo."""
-    from alerts_engine import _delivery_target
-    destino, cliente = _delivery_target(conn, uid)
-    contenido = contenido_del_mail(semana)
-    if cliente:
-        contenido["heading"] = f"[{cliente}] {contenido['heading']}"
-    return destino, cliente, contenido
+def _armar_envio(conn, uid: int, semana: dict) -> dict:
+    """La entrega de `alerts_engine.entrega` (destino, cliente, mail y push),
+    la MISMA que la de las alertas: una cuenta administrada le llega al asesor,
+    con el nombre del cliente, sus links a /clientes y sin «tu plata». Todo lo
+    que se puede romper al armar el mail pasa ACÁ, antes de marcar la semana
+    como hecha: un error al armarlo no puede comerse el resumen de esa persona
+    sin mandarlo."""
+    from alerts_engine import entrega
+    return entrega(conn, uid, lambda cuenta: contenido_del_mail(semana, cuenta))
 
 
-def _entregar(conn, via: str, envio: tuple) -> tuple:
-    """(push_ok, mail_ok). Por el camino de las alertas: `_delivery_target` (una
-    cuenta administrada le llega al asesor, con el nombre del cliente),
-    `send_alert_email` y `_send_push_to_user`."""
-    import main
-    from billing import emails
-    destino, cliente, contenido = envio
-    uid = destino
-    push_ok = mail_ok = False
-    if via in ("push", "ambos"):
+def _entregar(conn, via: str, envio: dict) -> tuple:
+    """(push_ok, mail_ok), por `alerts_engine.enviar` con lo que armó `entrega`
+    — la misma puerta que todos los avisos. Un mail que no sale NO se reintenta
+    (la semana ya quedó marcada antes de mandar: nunca puede salir dos veces),
+    pero deja un renglón en el registro con la persona y el motivo (decisión de
+    Nico, 29/10): eso lo hace `enviar` para todos."""
+    from alerts_engine import enviar
+    return enviar(
+        conn, envio["destino"], "resumen del sábado",
+        push=({"title": "Rendi · Tu semana",
+               "body": f"{envio['push']['titulo']}. {NO_ES_RECOMENDACION}",
+               "url": envio["push"]["url"], "tag": "resumen-semanal"}
+              if via in ("push", "ambos") else None),
+        mail=envio["mail"] if via in ("mail", "ambos") else None)
+
+
+# Lo más atrás que mira el mail de los sábados, aunque el resumen anterior
+# sea más viejo (el cron se cayó varios sábados, o la persona recién vuelve):
+# más que esto ya no es «tu semana».
+DIAS_MAX_MAIL = 28
+
+
+def _clave_marca(k) -> str:
+    return f"{k[0]}|{int(bool(k[1]))}"
+
+
+def marcas_json(hasta_vela: dict) -> str:
+    """Cómo se guardan las marcas en `tendencia_semanal.hasta_vela`:
+    {"NVDA|0": "2026-10-23", "GGAL|1": "2026-10-23"} (activo|acción local)."""
+    import json
+    return json.dumps(dict(sorted(hasta_vela.items())))
+
+
+def desde_del_mail(conn, uid: int, hoy: date) -> tuple:
+    """(desde, {(asset, local): desde}): desde cuándo (exclusive) cuenta los
+    cambios el mail de ESTE sábado, por activo. Cada activo, desde la última
+    vela SUYA que ya contó un resumen anterior (la marca de `hasta_vela`); el
+    que no tiene marca, desde el viernes anterior al último resumen (o los 7
+    días de la pestaña si no hubo ninguno). Nunca después de los 7 días y nunca
+    antes de `DIAS_MAX_MAIL`.
+
+    🔴 POR QUÉ, en tres vueltas (auditoría B3 y su re-test, 29/10):
+      · Los 7 días corridos desde HOY dejaban afuera una vela de SÁBADO: el
+        sábado a las 10 todavía no existe, y el sábado siguiente «los 7 días»
+        empiezan después. Una cripto que cruzaba un sábado no salía nunca.
+      · La primera marca era UNA por persona (la vela más nueva de todos sus
+        activos): si BTC se atrasaba una noche y MSFT llegaba, la marca quedaba
+        en el viernes y el viernes de BTC no salía nunca. Cada activo tiene su
+        última vela, como en las alertas técnicas ('<activo>#velas').
+      · El resumen anterior se buscaba hasta 13 días atrás: si un sábado no
+        corría el cron, el siguiente no lo encontraba y la semana del medio se
+        perdía entera. Ahora se busca hasta `DIAS_MAX_MAIL`, y la marca de cada
+        activo sale del resumen más nuevo que la tenga."""
+    import json
+    base = (hoy - timedelta(days=DIAS_SEMANA)).isoformat()
+    piso = (hoy - timedelta(days=DIAS_MAX_MAIL)).isoformat()
+    filas = conn.execute(
+        "SELECT semana, hasta_vela FROM tendencia_semanal WHERE user_id=? AND semana < ? AND semana >= ? "
+        "ORDER BY semana DESC",
+        (uid, hoy.isoformat(), piso)).fetchall()
+    if not filas:
+        return base, {}
+    por_defecto = min(base, (date.fromisoformat(filas[0]["semana"]) - timedelta(days=1)).isoformat())
+    marcas: dict = {}
+    for f in filas:
         try:
-            push_ok = main._send_push_to_user(destino, {
-                "title": "Rendi · Tu semana",
-                "body": f"{contenido['heading']}. {NO_ES_RECOMENDACION}",
-                "url": URL_SENALES if not cliente else "/clientes",
-                "tag": "resumen-semanal",
-            }) > 0
-        except Exception as ex:
-            log.warning("semana: push uid=%s falló: %s", uid, ex)
-    if via in ("mail", "ambos"):
-        try:
-            row = conn.execute("SELECT email, name FROM users WHERE id=?", (destino,)).fetchone()
-            if row and row["email"]:
-                mail_ok = bool(emails.send_alert_email(to=row["email"], user_name=row["name"] or "",
-                                                       **contenido))
-        except Exception as ex:
-            log.warning("semana: mail uid=%s falló: %s", uid, ex)
-    return push_ok, mail_ok
+            m = json.loads(f["hasta_vela"] or "{}")
+        except (TypeError, ValueError):
+            m = None
+        if not isinstance(m, dict):
+            # Una fila de antes de las marcas por activo (una fecha suelta, de
+            # 61c7be12): vale para todos los que todavía no tienen una.
+            if f["hasta_vela"]:
+                por_defecto = min(por_defecto, max(piso, str(f["hasta_vela"])))
+            continue
+        for clave, fecha in m.items():
+            marcas.setdefault(clave, fecha)
+    desde_de = {}
+    for clave, fecha in marcas.items():
+        asset, _, local = clave.rpartition("|")
+        desde_de[(asset, local == "1")] = max(piso, min(base, fecha))
+    return por_defecto, desde_de
 
 
 def correr(conn, hoy: date, *, solo: int = None) -> dict:
@@ -576,26 +684,29 @@ def correr(conn, hoy: date, *, solo: int = None) -> dict:
         if conn.execute("SELECT 1 FROM tendencia_semanal WHERE user_id=? AND semana=?",
                         (uid, semana_iso)).fetchone():
             continue
+        # Armar lo de cada persona va en su punto de guardado (auditoría C1,
+        # 29/10): en Postgres, una consulta que falla aborta la transacción y la
+        # persona SIGUIENTE reventaba en su primer SELECT: nadie después de ella
+        # recibía el resumen ese sábado. Con esto se deshace sólo lo suyo.
+        from pgsesion import si_falla_se_deshace_solo_esto
         try:
-            sem = armar_semana(conn, uid, hoy, series=series, cedears=cedears)
-        except Exception as ex:
-            log.warning("semana: uid=%s falló: %s", uid, ex, exc_info=True)
-            res["errores"] += 1
-            continue
-        via = canal(conn, uid)
-        mandar = via != "no" and bool(sem["senales"])
-        try:
-            envio = _armar_envio(conn, uid, sem) if mandar else None
+            with si_falla_se_deshace_solo_esto(conn, "semana_de_una_persona"):
+                desde, desde_de = desde_del_mail(conn, uid, hoy)
+                sem = armar_semana(conn, uid, hoy, series=series, cedears=cedears,
+                                   desde=desde, desde_de=desde_de)
+                via = canal(conn, uid)
+                mandar = via != "no" and bool(sem["senales"])
+                envio = _armar_envio(conn, uid, sem) if mandar else None
         except Exception as ex:
             log.error("semana: no pude armar el resumen de uid=%s: %s: %s", uid,
                       type(ex).__name__, ex, exc_info=True)
             res["errores"] += 1
             continue
         conn.execute(
-            "INSERT INTO tendencia_semanal (user_id, semana, pct_alcista, cambios, canal) "
-            "VALUES (?,?,?,?,?)",
+            "INSERT INTO tendencia_semanal (user_id, semana, pct_alcista, cambios, canal, hasta_vela) "
+            "VALUES (?,?,?,?,?,?)",
             (uid, semana_iso, sem["alcista"]["pct"] if sem["alcista"] else None,
-             len(sem["senales"]), via if mandar else None))
+             len(sem["senales"]), via if mandar else None, marcas_json(sem["hasta_vela"])))
         conn.commit()
         res["guardadas"] += 1
         if not mandar:

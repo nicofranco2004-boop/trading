@@ -120,6 +120,7 @@ class TusSenalesTest(unittest.TestCase):
             self._post("/api/positions", {"broker": broker, "asset": asset, "quantity": 10,
                                           "buy_price": compra, "asset_type": tipo})
         self._post("/api/watchlist", {"symbol": "MSFT"})
+        self._seguida_desde("MSFT", dias[0])
         with main.db_abierta() as conn:
             for i, d in enumerate(dias):
                 conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
@@ -140,6 +141,16 @@ class TusSenalesTest(unittest.TestCase):
     def _post(self, url, body):
         r = self.client.post(url, json=body, headers=self.h)
         self.assertIn(r.status_code, (200, 201), r.text)
+
+    def _seguida_desde(self, symbol, dia, uid=None):
+        """La watchlist la sigue desde `dia` (la pestaña y el mail cuentan lo
+        de la watchlist desde que se agregó: ver `agregado_a_la_watchlist`). El
+        alta por HTTP la fecha hoy; esto es la historia de alguien que la sigue
+        desde antes."""
+        with main.db_abierta() as conn:
+            conn.execute("UPDATE watchlist SET added_at=? WHERE user_id=? AND symbol=?",
+                         (f"{dia.isoformat()} 12:00:00", uid or self.uid, symbol))
+            conn.commit()
 
     def _canal(self, canal):
         r = self.client.put("/api/tus-senales/canal", json={"canal": canal}, headers=self.h)
@@ -309,6 +320,107 @@ class TusSenalesTest(unittest.TestCase):
         self._cron(_utc(sabado, 10, 15))
         self.assertEqual(len(self.mails), 1)
 
+    def test_una_persona_que_falla_en_la_base_no_deja_sin_resumen_a_las_siguientes(self):
+        """Auditoría C1 (29/10), el resumen del sábado: en Postgres una consulta
+        que falla aborta la transacción, y la persona SIGUIENTE reventaba en su
+        primer SELECT: nadie después de ella recibía el resumen. En SQLite no se
+        ve (una sentencia que falla no deja secuela): la corrida que importa es
+        la de Postgres (DATABASE_URL)."""
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("mail")
+        with main.db_abierta() as conn:
+            otro = conn.execute(
+                "INSERT INTO users (email, name, password_hash, approved, email_verified, tier) "
+                "VALUES (?, 'Ana', 'x', 1, 1, 'pro')", (f"otra-{self.uid}@rendi.test",)).lastrowid
+            conn.execute("INSERT INTO watchlist (user_id, symbol, added_at) VALUES (?, 'MSFT', '2020-01-01 12:00:00')",
+                         (otro,))
+            conn.execute("INSERT INTO resumen_semanal_prefs (user_id, canal) VALUES (?, 'mail')", (otro,))
+            conn.commit()
+        real = senales_semana.armar_semana
+
+        def armar(conn, uid, hoy, **kw):
+            if uid == self.uid:
+                conn.execute("SELECT * FROM tabla_que_no_existe")
+            return real(conn, uid, hoy, **kw)
+        with mock.patch("senales_semana.armar_semana", armar):
+            r = self._cron(_utc(sabado, 10, 5))
+        self.assertEqual((r["errores"], r["mandadas"]), (1, 1), r)
+        self.assertEqual([m["to"] for m in self.mails], [f"otra-{self.uid}@rendi.test"])
+
+    def test_el_mail_que_no_sale_no_se_reintenta_y_queda_anotado(self):
+        """Decisión de Nico (29/10, re-test B): el mail del sábado que falla NO
+        se reintenta (así nunca sale dos veces), pero cada falla queda en el
+        registro del servidor con el usuario y el nombre del error. Antes, si el
+        proveedor lo rechazaba (devolvía «no salió» sin excepción), no quedaba
+        nada anotado: sólo un 0 en `mail_ok`."""
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("mail")
+        from billing import emails
+        intentos = []
+
+        def rechaza(to, subject, html, text, **kw):
+            intentos.append(to)
+            emails._anotar(emails.NO_SALIO)
+            return False
+        with mock.patch("billing.emails._send", rechaza), self.assertLogs("alerts", level="ERROR") as logs:
+            self._cron(_utc(sabado, 10, 5))
+            self._cron(_utc(sabado, 10, 15))
+            self._cron(_utc(sabado, 10, 25))
+        self.assertEqual(len(intentos), 1, "no se reintenta: nunca puede salir dos veces")
+        self.assertTrue(any(f"uid={self.uid}" in x and emails.NO_SALIO in x for x in logs.output), logs.output)
+        self.assertEqual(self._filas()[0]["mail_ok"], 0)
+
+    def test_el_mail_que_revienta_tambien_queda_anotado_con_el_error(self):
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("mail")
+        with mock.patch("billing.emails._send", side_effect=ConnectionError("Resend no contesta")), \
+             self.assertLogs("alerts", level="ERROR") as logs:
+            self._cron(_utc(sabado, 10, 5))
+            self._cron(_utc(sabado, 10, 15))
+        self.assertEqual(sum(f"uid={self.uid}" in x and "ConnectionError" in x for x in logs.output), 1)
+
+    # — sacar un activo de la watchlist y volver a ponerlo (decisión de Nico) —
+
+    def _volver_a_poner(self, symbol):
+        r = self.client.delete(f"/api/watchlist/{symbol}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._post("/api/watchlist", {"symbol": symbol})
+
+    def _msft(self, senales):
+        return [x for x in senales if x["asset"] == "MSFT"]
+
+    def test_lo_que_volviste_a_poner_en_la_watchlist_cuenta_desde_que_lo_pusiste_en_la_pestana(self):
+        """Decisión de Nico (29/10, re-test B): si sacás un activo de la
+        watchlist y lo volvés a poner, los cambios cuentan sólo desde el día en
+        que lo volviste a agregar. MSFT cruzó hace 2 ruedas; se vuelve a poner
+        hoy: la pestaña no lo cuenta."""
+        self._velas(hoy_art_date())
+        self.assertTrue(self._msft(self.client.get("/api/tus-senales", headers=self.h).json()["senales"]),
+                        "control: sin sacarlo, el cruce de MSFT está")
+        self._volver_a_poner("MSFT")
+        self.assertEqual(self._msft(self.client.get("/api/tus-senales", headers=self.h).json()["senales"]), [])
+
+    def test_lo_que_volviste_a_poner_en_la_watchlist_no_sale_en_el_mail(self):
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("mail")
+        self._volver_a_poner("MSFT")          # hoy, después del cruce
+        self._cron(_utc(sabado, 10, 5))
+        self.assertTrue(self.mails, "NVDA sigue cambiando: el mail sale")
+        self.assertNotIn("MSFT", self.mails[0]["texto"])
+
+    def test_si_esta_en_la_cartera_y_en_la_watchlist_manda_la_cartera(self):
+        """NVDA está en la cartera (cruzó hace 3 ruedas). Agregarla hoy a la
+        watchlist no la recorta: lo que tenés cuenta siempre."""
+        self._velas(hoy_art_date())
+        self._post("/api/watchlist", {"symbol": "NVDA"})
+        pestana = self.client.get("/api/tus-senales", headers=self.h).json()
+        nvda = [x for x in pestana["senales"] if x["asset"] == "NVDA" and x["tipo"] == "media200"]
+        self.assertTrue(nvda and nvda[0]["tenes"], pestana["senales"])
+
     def test_no_quiero_no_manda(self):
         sabado = _sabado_de(hoy_art_date())
         self._velas(sabado)
@@ -439,6 +551,221 @@ class TusSenalesTest(unittest.TestCase):
         self._cron(_utc(sabado, 10, 5))
         self.assertEqual(self.mails[0]["to"], f"asesor-{self.uid}@rendi.test")
         self.assertTrue(self.mails[0]["asunto"].startswith("[Juan] Tu semana:"))
+
+    def _asesor(self, label="Juan"):
+        with main.db_abierta() as conn:
+            adv = conn.execute(
+                "INSERT INTO users (email, name, password_hash, approved, email_verified, tier) "
+                "VALUES (?, 'Laura Asesora', 'x', 1, 1, 'pro')", (f"asesor-{self.uid}@rendi.test",)).lastrowid
+            conn.execute("UPDATE users SET managed_by=? WHERE id=?", (adv, self.uid))
+            conn.execute("INSERT INTO advisor_clients (advisor_uid, client_uid, label) VALUES (?,?,?)",
+                         (adv, self.uid, label))
+            conn.commit()
+        return adv
+
+    def test_el_mail_del_asesor_dice_de_quien_es_y_lleva_a_sus_clientes(self):
+        """Auditoría B, hallazgo B1 (29/10): el mail del sábado de Juan le decía
+        a Laura «el 94% de TU plata» y sus dos links («Ver los cambios»,
+        «Cambiar o apagar») abrían las señales de LAURA. Un aviso de una cuenta
+        administrada se arma en UN lugar (`alerts_engine.entrega`), el mismo que
+        usan las alertas: oración, botón, pie y push."""
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("ambos")          # el asesor lo elige ENTRANDO a la cuenta de Juan
+        self._asesor("Juan")
+        r = self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "Data centers"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._cron(_utc(sabado, 10, 5))
+        self.assertEqual(len(self.mails), 1)
+        m = self.mails[0]
+        self.assertTrue(m["asunto"].startswith("[Juan] Tu semana:"))
+        self.assertIn("Hola Laura, en la cuenta de Juan, el ", m["texto"])
+        for tuyo in ("tu plata", "lo tuyo", "tu watchlist", "Tu tesis"):
+            self.assertNotIn(tuyo, m["texto"], f"«{tuyo}» le habla a Laura de la plata de Juan")
+        self.assertIn("La tesis de Juan: «Data centers»", m["texto"])
+        self.assertIn("(en la watchlist de Juan)", m["texto"])
+        self.assertNotIn("/analisis-tecnico?tab=senales", m["html"],
+                         "el botón y el pie abrían las señales DEL ASESOR, no las de Juan")
+        self.assertIn("/clientes", m["html"])
+        self.assertEqual([p["url"] for p in self.pushes], ["/clientes"])
+        self.assertTrue(self.pushes[0]["body"].startswith("[Juan] Tu semana:"))
+
+    def test_el_mail_de_la_cuenta_propia_sigue_hablando_de_vos(self):
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("ambos")
+        self._cron(_utc(sabado, 10, 5))
+        m = self.mails[0]
+        self.assertIn("Hola Nico, el ", m["texto"])
+        self.assertIn("% de tu plata", m["texto"])
+        self.assertIn("(en tu watchlist)", m["texto"])
+        self.assertNotIn("en la cuenta de", m["texto"])
+        self.assertIn(senales_semana.URL_SENALES, m["html"])
+        self.assertEqual([p["url"] for p in self.pushes], [senales_semana.URL_SENALES])
+
+    # — la tesis (pieza 11) en la pestaña y en el mail —
+
+    def test_la_tesis_escrita_sale_en_el_mail_del_sabado(self):
+        """Auditoría B4 = A8 = C2 (29/10): `_tesis()` devolvía {} con un
+        «al juntar: SELECT…» en un comentario; se juntó y nadie lo llenó."""
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("mail")
+        r = self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "Data centers e IA"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._cron(_utc(sabado, 10, 5))
+        self.assertIn("NVDA pasó arriba", self.mails[0]["texto"])
+        self.assertIn("Tu tesis: «Data centers e IA».", self.mails[0]["texto"])
+
+    def test_la_tesis_escrita_sale_en_la_pestana(self):
+        self._velas(hoy_art_date())
+        r = self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "Data centers e IA"}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        pestana = self.client.get("/api/tus-senales", headers=self.h).json()
+        nvda = [x for x in pestana["senales"] if x["asset"] == "NVDA"]
+        self.assertTrue(nvda)
+        self.assertEqual({x["tesis"] for x in nvda}, {"Data centers e IA"})
+        # La de un activo que no cambió no aparece (no hay renglón donde ponerla),
+        # y la de otro activo no se mete en NVDA.
+        self.assertTrue(all(x["tesis"] is None for x in pestana["senales"] if x["asset"] != "NVDA"))
+
+    def test_vale_la_ultima_version_de_la_tesis(self):
+        """La tesis se reescribe (una versión por día, `tesis.guardar`): vale la
+        última, como en la pantalla del diario."""
+        self._velas(hoy_art_date())
+        hoy = hoy_art_date()
+        with mock.patch("tesis.hoy_art_date", lambda: hoy - timedelta(days=5)):
+            self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "v1"}, headers=self.h)
+        self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "v2"}, headers=self.h)
+        pestana = self.client.get("/api/tus-senales", headers=self.h).json()
+        self.assertEqual({x["tesis"] for x in pestana["senales"] if x["asset"] == "NVDA"}, {"v2"})
+
+    def test_la_tesis_se_busca_con_la_misma_regla_que_la_ficha_y_movimientos(self):
+        """Re-test de la auditoría C (29/10): «la última tesis» vivía en 4 lugares
+        y éste comparaba el nombre en mayúsculas: una tesis guardada como «nvda»
+        salía en Señales y no en la ficha ni en Movimientos (que comparan el
+        nombre tal cual, `tesisVigente`). Una sola regla: el nombre tal cual, el
+        de la posición (lo que manda la pantalla)."""
+        self._velas(hoy_art_date())
+        self.client.put("/api/tesis", json={"asset": "nvda", "texto": "minúscula"}, headers=self.h)
+        pestana = self.client.get("/api/tus-senales", headers=self.h).json()
+        self.assertEqual({x["tesis"] for x in pestana["senales"] if x["asset"] == "NVDA"}, {None})
+        # La que manda la pantalla (el nombre de la posición) sí.
+        self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "la de la ficha"}, headers=self.h)
+        pestana = self.client.get("/api/tus-senales", headers=self.h).json()
+        self.assertEqual({x["tesis"] for x in pestana["senales"] if x["asset"] == "NVDA"}, {"la de la ficha"})
+        # Y es la misma que elige GET /api/tesis (de donde la ficha y Movimientos
+        # sacan «la vigente»): la última de ese nombre.
+        items = [t for t in self.client.get("/api/tesis", headers=self.h).json()["items"] if t["asset"] == "NVDA"]
+        self.assertEqual(max(items, key=lambda t: (t["escrita_el"], t["id"]))["texto"], "la de la ficha")
+
+    def test_una_tesis_larga_va_cortada_en_el_mail_como_en_el_recordatorio(self):
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("mail")
+        self.client.put("/api/tesis", json={"asset": "NVDA", "texto": "x" * 900}, headers=self.h)
+        self._cron(_utc(sabado, 10, 5))
+        self.assertIn("Tu tesis: «" + "x" * 277 + "…».", self.mails[0]["texto"])
+
+
+class _YahooConCripto(YahooFalso):
+    """El Yahoo de mentira de siempre, más BTC-USD con velas los 7 días (la
+    cripto cotiza sábados y domingos). `hasta_btc`: el primer día que Yahoo
+    todavía NO publicó (la vela de ese día no existe)."""
+
+    def __init__(self, hoy):
+        super().__init__(hoy)
+        self.btc = None
+        self.hasta_btc = hoy
+
+    def __call__(self, ticker, period, interval, auto_adjust, timeout):
+        if ticker != "BTC-USD" or self.btc is None:
+            return super().__call__(ticker, period, interval, auto_adjust, timeout)
+        import pandas as pd
+        n = 1100 if period == "3y" else 30
+        dias = [self.hasta_btc - timedelta(days=k) for k in range(n, 0, -1)]
+        cs = [self.btc(d) for d in dias]
+        return pd.DataFrame({"Open": cs, "High": [c * 1.01 for c in cs], "Low": [c * 0.99 for c in cs],
+                             "Close": cs, "Volume": [1000.0] * len(cs)},
+                            index=pd.DatetimeIndex([pd.Timestamp(d) for d in dias]))
+
+
+class CriptoDelSabadoTest(unittest.TestCase):
+    """Auditoría B, hallazgo B3 (29/10): una cripto que cruza en una vela de
+    SÁBADO no salía en ningún mail. El sábado S a las 10:00 su vela no existe
+    (la de hoy no entra hasta la noche) y el del sábado siguiente miraba sólo
+    «después de S». Dos sábados seguidos, cada uno con las velas que había ESE
+    sábado a las 10:00."""
+    setUp, tearDown = TusSenalesTest.setUp, TusSenalesTest.tearDown
+    _post, _canal, _cron = TusSenalesTest._post, TusSenalesTest._canal, TusSenalesTest._cron
+    _seguida_desde = TusSenalesTest._seguida_desde
+
+    def _dos_sabados(self, dia_del_cruce, viernes_tarde=False, otro_al_dia=False, sin_cron_en=None, sabados=2):
+        """`sabados` sábados seguidos (el último, el de esta semana), cada uno con
+        las velas que había ESE sábado a las 10:00. `viernes_tarde`: la noche
+        del viernes falló y las velas del viernes (de BTC) se guardaron el
+        primer sábado DESPUÉS del resumen. `otro_al_dia`: MSFT en la watchlist,
+        con sus velas al día (el viernes llegó). `sin_cron_en`: el índice del
+        sábado en que el cron no corrió. El cruce es contando desde el primero."""
+        ult = _sabado_de(hoy_art_date())
+        sabs = [ult - timedelta(days=7 * (sabados - 1 - i)) for i in range(sabados)]
+        s1 = sabs[0]
+        cruce = s1 + timedelta(days=dia_del_cruce)
+        self.yahoo = _YahooConCripto(s1)
+        p = mock.patch("pricing.yahoo._historia", self.yahoo)
+        p.start()
+        self._p.append(p)
+        self._post("/api/watchlist", {"symbol": "BTC"})
+        self._seguida_desde("BTC", s1 - timedelta(days=30))
+        if otro_al_dia:
+            self.yahoo.precios["MSFT"] = lambda i, d: 300 - i * 0.01
+            self._post("/api/watchlist", {"symbol": "MSFT"})
+            self._seguida_desde("MSFT", s1 - timedelta(days=30))
+        # Bajando hasta el cruce (abajo de su promedio), 150 desde ese día.
+        self.yahoo.btc = lambda d: 150.0 if d >= cruce else 100.0 + (cruce - d).days * 0.001
+        self._canal("mail")
+        for j, s in enumerate(sabs):
+            tarde = viernes_tarde and j == 0
+            self.yahoo.hasta_btc = s - timedelta(days=1) if tarde else s
+            main._run_velas_diarias_job()
+            if j != sin_cron_en:
+                self._cron(_utc(s, 10, 5))
+            if tarde:
+                self.yahoo.hasta_btc = s
+                main._run_velas_diarias_job()
+        return [m for m in self.mails if "BTC" in m["texto"] and "promedio de 200" in m["texto"]]
+
+    def test_control_cruce_en_domingo_llega(self):
+        self.assertEqual(len(self._dos_sabados(dia_del_cruce=1)), 1)
+
+    def test_cruce_en_sabado_llega_el_sabado_siguiente(self):
+        self.assertEqual(len(self._dos_sabados(dia_del_cruce=0)), 1,
+                         "el cruce de una vela de SÁBADO no salía en ningún resumen")
+
+    def test_viernes_cuyas_velas_llegaron_despues_del_resumen_sale_el_sabado_siguiente(self):
+        self.assertEqual(len(self._dos_sabados(dia_del_cruce=-1, viernes_tarde=True)), 1)
+
+    def test_un_activo_atrasado_no_pierde_su_cruce_por_otro_que_llego(self):
+        """Re-test de la auditoría B (29/10): la marca de «hasta dónde ya
+        conté» era UNA por persona (la vela más nueva de TODOS sus activos).
+        BTC se atrasa una noche (su viernes llega después del resumen) y MSFT
+        llegó: la marca quedaba en el viernes y el cruce del viernes de BTC no
+        salía en ningún mail. Ahora es una por activo, como las alertas
+        técnicas ('<activo>#velas')."""
+        self.assertEqual(len(self._dos_sabados(dia_del_cruce=-1, viernes_tarde=True, otro_al_dia=True)), 1)
+
+    def test_si_un_sabado_no_corre_el_cron_esa_semana_sale_el_siguiente(self):
+        """Re-test de la auditoría B: el resumen anterior se buscaba sólo hasta
+        13 días atrás. Si un sábado no corría, el siguiente no lo encontraba,
+        contaba sólo sus 7 días y la semana del medio se perdía entera."""
+        self.assertEqual(len(self._dos_sabados(dia_del_cruce=3, sabados=3, sin_cron_en=1)), 1)
+
+    def test_con_el_cron_de_todos_los_sabados_no_se_repite(self):
+        self.assertEqual(len(self._dos_sabados(dia_del_cruce=3, sabados=3)), 1)
+
+    def test_cruce_en_viernes_sale_una_sola_vez(self):
+        """La otra punta: lo que ya salió el sábado 1 no se repite el sábado 2."""
+        self.assertEqual(len(self._dos_sabados(dia_del_cruce=-1)), 1)
 
 
 if __name__ == "__main__":

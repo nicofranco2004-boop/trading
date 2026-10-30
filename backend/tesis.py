@@ -69,6 +69,35 @@ def _ultima(conn, uid: int, asset: str):
            ORDER BY escrita_el DESC, id DESC LIMIT 1""", (uid, asset)).fetchone()
 
 
+def ultimas(conn, uid: int) -> dict:
+    """{activo: texto} de la ÚLTIMA tesis de cada activo (la que vale hoy). LA
+    MISMA regla que todos los que eligen «la última»: `_ultima` y `listar` acá,
+    `tesisVigente` / `tesisDeLaOperacion` en la pantalla (ficha y Movimientos):
+    el activo con el nombre TAL CUAL se guardó (el de la posición, ver PUT
+    /api/tesis), y entre versiones, la de fecha más nueva y, el mismo día, la de
+    id más alto. Una por activo, no por lote ni por mercado: GGAL de BYMA y el
+    ADR son la misma idea (ver arriba).
+
+    Hasta el 29/10 esta función pasaba el nombre a mayúsculas y las otras no:
+    una tesis guardada como «nvda» salía en «Tus señales» y no en la ficha ni en
+    Movimientos (re-test de la auditoría C)."""
+    out = {}
+    for r in conn.execute("SELECT asset, texto FROM tesis WHERE user_id=? ORDER BY escrita_el, id",
+                          (uid,)).fetchall():
+        out[r["asset"]] = r["texto"]
+    return out
+
+
+# Lo que entra de una tesis en un renglón de un mail (el recordatorio, el
+# resumen de los sábados): se puede escribir hasta TEXTO_MAX.
+LARGO_EN_UN_MAIL = 280
+
+
+def para_una_linea(texto: str) -> str:
+    texto = texto or ""
+    return texto if len(texto) <= LARGO_EN_UN_MAIL else texto[:LARGO_EN_UN_MAIL - 3].rstrip() + "…"
+
+
 def _tendencia(conn, asset: str, local: bool, fecha: str) -> dict:
     pedido = [{"id": 0, "asset": asset, "local": local, "fecha": fecha}]
     return tecnico.tendencias_en_fechas(conn, pedido)[0]
@@ -270,7 +299,7 @@ def para_el_aviso(conn, t) -> dict:
     except (TypeError, ValueError):
         antes = {}
     ahora = _tendencia(conn, asset, bool(t["accion_local"]), hoy_art_date().isoformat())
-    texto = t["texto"] if len(t["texto"]) <= 280 else t["texto"][:277].rstrip() + "…"
+    texto = para_una_linea(t["texto"])
     # El mail le antepone «Hola Nico, »: la oración arranca en minúscula.
     partes = [f"escribiste esta tesis el {fecha_legible(escrita)} de {escrita.year}: «{texto}»."]
     a, h = antes.get("tendencia"), ahora.get("tendencia")

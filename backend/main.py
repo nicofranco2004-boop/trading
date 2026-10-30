@@ -2523,10 +2523,17 @@ def init_db():
                 push_ok INTEGER,
                 mail_ok INTEGER,
                 created_at TEXT DEFAULT (datetime('now')),
+                hasta_vela TEXT,                     -- JSON: la última vela de cada activo que contó (senales_semana)
                 PRIMARY KEY (user_id, semana)
             );
             CREATE INDEX IF NOT EXISTS idx_tendencia_semanal_semana ON tendencia_semanal(semana);
         """)
+        # Migración: la marca del mail del sábado (auditoría B3). Una base donde la
+        # tabla ya existía (creada con 31c00ff6) no la recibe del CREATE:
+        # test_columna_nueva_llega_a_la_base_vieja.
+        _ts_cols = [r[1] for r in conn.execute("PRAGMA table_info(tendencia_semanal)").fetchall()]
+        if _ts_cols and 'hasta_vela' not in _ts_cols:
+            conn.executescript("ALTER TABLE tendencia_semanal ADD COLUMN hasta_vela TEXT;")
 
         # Grupos de clientes del asesor: filtros GUARDADOS y dinámicos (se
         # recalculan solos). `rules` es JSON con las condiciones; `excluded` la
@@ -48376,7 +48383,9 @@ def alerts_list(uid: int = Depends(get_effective_user)):
             # Los recordatorios de una tesis (`kind='recordatorio'`, tesis.py) son
             # alertas del mismo motor, pero se ven y se manejan desde la tesis:
             # «Mis alertas» no sabe dibujarlos. Sus avisos sí salen abajo.
-            "SELECT * FROM alerts WHERE user_id=? AND kind != 'recordatorio' "
+            # Por lista de las que SÍ maneja (`_DE_MIS_ALERTAS`), no por las que
+            # no: un tipo nuevo no aparece solo en un formulario que no lo conoce.
+            f"SELECT * FROM alerts WHERE user_id=? AND kind IN ({_DE_MIS_ALERTAS}) "
             "ORDER BY created_at DESC", (uid,)
         ).fetchall()
         events = conn.execute(
@@ -48622,6 +48631,29 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+# Los tipos que maneja «Mis alertas» (listar, editar, pausar, borrar): los del
+# formulario, `alerts_engine.VALID_KINDS`. Un recordatorio de tesis
+# (`kind='recordatorio'`) es del mismo motor pero se maneja desde su tesis: su
+# fecha vive en `tesis.recordar_el`. Auditoría B-P4 (29/10): el PATCH lo
+# aceptaba y `active: true` reactivaba uno ya mandado, que con la fecha vencida
+# salía de nuevo en la pasada siguiente; y el DELETE lo borraba dejando la tesis
+# apuntando a una alerta que ya no existe (la pantalla lo seguía mostrando
+# pendiente y no llegaba nunca).
+import alerts_engine as _alerts_engine  # noqa: E402  (no importa main al cargar)
+_DE_MIS_ALERTAS = ",".join(f"'{k}'" for k in _alerts_engine.VALID_KINDS)
+
+
+def _alerta_de_mis_alertas(conn, alert_id: int, uid: int):
+    """La alerta `alert_id` de `uid` si es de las que maneja «Mis alertas»; 404
+    si no existe, 400 si es un recordatorio de tesis (u otro tipo)."""
+    row = conn.execute("SELECT * FROM alerts WHERE id=? AND user_id=?", (alert_id, uid)).fetchone()
+    if not row:
+        raise HTTPException(404, "Alerta no encontrada.")
+    if row["kind"] not in _alerts_engine.VALID_KINDS:
+        raise HTTPException(400, "Este recordatorio se cambia desde tu tesis.")
+    return row
+
+
 @app.patch("/api/alerts/{alert_id}")
 def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_effective_user)):
     """Edita/activa/pausa una alerta. Si se reactiva o cambia el umbral,
@@ -48629,11 +48661,7 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
     import alerts_engine as _ae
     conn = get_db()
     try:
-        row = conn.execute(
-            "SELECT * FROM alerts WHERE id=? AND user_id=?", (alert_id, uid)
-        ).fetchone()
-        if not row:
-            raise HTTPException(404, "Alerta no encontrada.")
+        row = _alerta_de_mis_alertas(conn, alert_id, uid)
         sets, params = [], []
         tecnica = row["kind"] == "tecnica"
         if tecnica and data.direction is not None:
@@ -48690,6 +48718,12 @@ def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
     """Borra una alerta (y sus eventos)."""
     conn = get_db()
     try:
+        try:
+            _alerta_de_mis_alertas(conn, alert_id, uid)
+        except HTTPException as e:
+            if e.status_code != 404:
+                raise
+            return {"ok": True}      # ya no está (o es de otro): como antes, sin decir cuál
         colgadas = _colgadas_de_alerts(_esquema_por_tabla(conn))
         with conn:
             # Las tablas que cuelgan de la alerta sin `user_id` (`alert_symbol_state`)
@@ -48835,7 +48869,7 @@ def _resumen_semanal_job(conn, now=None) -> dict:
         finally:
             _soltar_corrida("resumen_semanal")
     except Exception as _ex:
-        log.error("resumen semanal en el cron: %s", _ex, exc_info=True)
+        log.error("resumen semanal en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
         try:
             conn.rollback()
         except Exception:
@@ -48855,7 +48889,7 @@ def _evaluar_alertas_job() -> dict:
         try:
             result = _ae.evaluate_alerts(conn)
         except Exception as _ex:
-            log.error("alertas de precio en el cron: %s", _ex)
+            log.error("alertas de precio en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
             result = {"error_precio": str(_ex)}
             # Lo que quedó a medias no puede confirmarse con el primer commit
             # de las alertas del libro, que usan esta misma conexión: alertas
@@ -48877,7 +48911,7 @@ def _evaluar_alertas_job() -> dict:
             else:
                 result["tecnicas"] = _ae.evaluar_tecnicas(conn)
         except Exception as _ex:
-            log.error("alertas técnicas en el cron: %s", _ex)
+            log.error("alertas técnicas en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
             try:
                 conn.rollback()
             except Exception:
@@ -48895,7 +48929,7 @@ def _evaluar_alertas_job() -> dict:
         try:
             result.update(_ae.evaluar_recordatorios(conn))
         except Exception as _ex:
-            log.error("recordatorios de tesis en el cron: %s", _ex)
+            log.error("recordatorios de tesis en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
             try:
                 conn.rollback()
             except Exception:
@@ -48905,7 +48939,7 @@ def _evaluar_alertas_job() -> dict:
             result["advisor"] = advisor_alerts.evaluate(
                 conn, market_open=_ae._market_open_now(_dtmod.utcnow()))
         except Exception as _ex:
-            log.error("advisor alerts en el cron: %s", _ex)
+            log.error("advisor alerts en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
         log.info("alertas: %s", result)
         return result
     finally:
