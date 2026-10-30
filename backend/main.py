@@ -811,7 +811,7 @@ def _table_cols(conn, table: str) -> set:
                'import_batches', 'import_raw_rows', 'import_normalized_tx', 'import_op_links',
                'import_mappings', 'news', 'subscriptions', 'ai_usage_daily', 'ai_user_facts',
                'ai_tool_usage', 'yfinance_cache', 'credit_ledger', 'plazos_fijos',
-               'user_broker_credentials'}
+               'user_broker_credentials', 'velas_estado'}
     if table not in allowed:
         return set()
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -2659,9 +2659,28 @@ def init_db():
                 ultima_completa TEXT,            -- NULL = nunca se bajó la historia entera
                 ok INTEGER NOT NULL DEFAULT 0,
                 filas INTEGER DEFAULT 0,
-                error TEXT
+                error TEXT,
+                fallas_seguidas INTEGER NOT NULL DEFAULT 0  -- veces seguidas sin datos (≥3: la noche lo pide 1 vez por semana)
+            );
+            -- Una fila por corrida de la noche: lo que muestra /admin (cuántos se
+            -- bajaron, cuántos cortó Yahoo, cuántos no eran tickers).
+            CREATE TABLE IF NOT EXISTS velas_corridas (
+                cuando TEXT PRIMARY KEY,         -- datetime('now'), UTC
+                resumen TEXT NOT NULL            -- JSON: velas_diarias.resumen
+            );
+            -- Lo que Yahoo anota como split de cada ticker (cambios_ratio.py). Se
+            -- le pregunta una vez por semana por ticker, no cada noche.
+            CREATE TABLE IF NOT EXISTS splits_yahoo (
+                ticker TEXT PRIMARY KEY,         -- 'XLE.BA', 'XLED.BA', 'XLE'
+                splits TEXT NOT NULL,            -- JSON [[fecha, factor]]
+                consultado TEXT NOT NULL         -- datetime('now'), UTC
             );
         """)
+        # velas_estado.fallas_seguidas (30/10/2026) en una base que ya tenía la
+        # tabla: el CREATE de arriba no la agrega. Sin índice sobre ella.
+        if 'fallas_seguidas' not in _table_cols(conn, 'velas_estado'):
+            conn.execute("ALTER TABLE velas_estado ADD COLUMN fallas_seguidas INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
 
         # El termómetro del mercado (termometro.py): un número por día de
         # mercado, guardado desde que se lanzó (para atrás no se reconstruye).
@@ -12774,6 +12793,7 @@ def admin_velas(uid: int = Depends(get_admin_user)):
         # Los resúmenes de Mervall-E de la ficha: cuántos por día y lo que costaron.
         from ai import resumen_tecnico
         resumenes = resumen_tecnico.para_admin(conn)
+        ultima_noche = velas_diarias.ultima_noche(conn)
     def _de(*tipos):
         return [c for c in correcciones if c["tipo"] in tipos][:50]
     return {
@@ -12788,6 +12808,10 @@ def admin_velas(uid: int = Depends(get_admin_user)):
         "precios_rotos": _de("roto"),
         "pendientes": _de("pendiente"),
         "sin_explicar": _de("sin_explicar"),
+        # La última corrida de la noche: cuántos bajaron, cuántos cortó Yahoo y
+        # cuántos no se pidieron (no son tickers, o fallan siempre y van 1 vez
+        # por semana). Lo que hay que mirar las mañanas de la bajada de 5 años.
+        "ultima_noche": ultima_noche,
         "corriendo": "velas_diarias" in _corridas_en_curso,
         "resumenes": resumenes,
     }
@@ -47084,7 +47108,9 @@ def _run_velas_diarias_job():
         # y cuál es su acción de afuera. Un error de la lista no toca las velas.
         import velas_diarias
         with db_abierta() as conn:
-            _velas_log.info("Velas diarias: %s", velas_diarias.correr(conn))
+            # El resumen (números, no las listas de mil nombres): el mismo que
+            # guarda la corrida para /admin.
+            _velas_log.info("Velas diarias: %s", velas_diarias.resumen(velas_diarias.correr(conn)))
     except Exception as e:
         _velas_log.error(f"Velas diarias falló: {e}", exc_info=True)
     finally:

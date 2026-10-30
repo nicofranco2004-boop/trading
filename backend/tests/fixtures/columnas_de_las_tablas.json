@@ -657,6 +657,11 @@
   "total_value",
   "user_id"
  ],
+ "splits_yahoo": [
+  "consultado",
+  "splits",
+  "ticker"
+ ],
  "subscriptions": [
   "amount_ars",
   "cancellation_email_sent_at",
@@ -765,6 +770,10 @@
   "dia",
   "evento",
   "user_id"
+ ],
+ "velas_corridas": [
+  "cuando",
+  "resumen"
  ],
  "velas_diarias": [
   "close",

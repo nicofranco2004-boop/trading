@@ -79,7 +79,8 @@ class GraficoTest(unittest.TestCase):
         self.client = TestClient(main.app)
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
-            for t in ("velas_diarias", "velas_estado", "cambios_ratio", "watchlist", "positions", "brokers"):
+            for t in ("velas_diarias", "velas_estado", "cambios_ratio", "splits_yahoo", "watchlist",
+                      "positions", "brokers"):
                 conn.execute(f"DELETE FROM {t}")
             cur = conn.execute(
                 "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
@@ -208,6 +209,73 @@ class GraficoTest(unittest.TestCase):
             self.assertEqual({v["close"] for v in velas_diarias.serie(conn, "BRKB.BA")}, {20000.0})
         finally:
             conn.close()
+
+    def test_a_yahoo_se_le_piden_los_splits_una_vez_por_semana(self):
+        # Eran 3 pedidos por CEDEAR cada noche (~860 el 30/10) y Yahoo corta a los
+        # ~700-950 (auditoría de capacidad). Ahora cada ticker se pregunta el día
+        # de la semana que le toca; las otras noches se usa lo último que
+        # contestó, y la lista da lo mismo.
+        dias = [d.isoformat() for d in _ruedas(hoy_art_date(), 120)]
+        self.series["NVDA.BA"] = {d: 1000.0 for d in dias}
+        self.series["NVDA"] = {d: 100.0 for d in dias}
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "NVDA", "CEDEAR")
+        pedidos = []
+        # Un split que Yahoo ya corrigió en las dos series (NVDA 2024): el cociente
+        # no ve nada y la fila sale SÓLO de lo que Yahoo anota.
+        respuesta = {"NVDA.BA": [(dias[60], 4.0)], "NVDA": [(dias[60], 4.0)]}
+
+        def splits(t):
+            pedidos.append(t)
+            return respuesta.get(t, [])
+
+        def lista():
+            with main.db_abierta() as conn:
+                return [{k: v for k, v in r.items() if k != "actualizado"}
+                        for r in cambios_ratio.todos(conn, "NVDA")]
+        with mock.patch("cambios_ratio._splits_de_yahoo", splits):
+            main._run_velas_diarias_job()
+            self.assertEqual(sorted(pedidos), ["NVDA", "NVDA.BA", "NVDAD.BA"], "la primera vez, todo")
+            primera = lista()
+
+            pedidos.clear()
+            main._run_velas_diarias_job()                       # la noche siguiente (mismo día)
+            self.assertEqual(pedidos, [], "no se vuelve a preguntar")
+            self.assertEqual(lista(), primera, "con lo guardado la lista da lo mismo")
+
+            # Pasó más de una semana: se pregunta de nuevo. Y si Yahoo justo cortó
+            # (devuelve vacío sin error), lo que había anotado no se pierde.
+            with main.db_abierta() as conn:
+                conn.execute("UPDATE splits_yahoo SET consultado='2020-01-01 00:00:00'")
+                conn.commit()
+            respuesta.clear()
+            main._run_velas_diarias_job()
+            self.assertEqual(sorted(pedidos), ["NVDA", "NVDA.BA", "NVDAD.BA"])
+            self.assertEqual(lista(), primera)
+        self.assertTrue(any(r["fecha"] == dias[60] for r in primera), primera)
+
+    def test_si_yahoo_corta_la_primera_vez_no_se_guardan_listas_vacias(self):
+        # La primera noche no hay nada guardado. Si Yahoo corta justo esa noche
+        # (al publicar, la de la bajada de 5 años), contesta «sin splits» a todos
+        # sin dar error: guardado, quedaba una semana. Si TODOS los de afuera
+        # vuelven vacíos, es un corte: no se guarda, y la noche siguiente se
+        # pregunta de nuevo.
+        def vacio(t):
+            return []
+        papeles = [f"ZC{i}" for i in range(cambios_ratio.CORTE_SPLITS_MIN)]
+        pares = {c: c for c in papeles}
+        with main.db_abierta() as conn:
+            for c in papeles:
+                for t in (f"{c}.BA", c):
+                    conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES (?, ?, 10)",
+                                 (t, hoy_art_date().isoformat()))
+            conn.commit()
+            with mock.patch("cambios_ratio._splits_de_yahoo", vacio):
+                res = cambios_ratio.recalcular(conn, papeles, pares=pares)
+            guardadas = cambios_ratio._splits_guardados(conn)
+        self.assertEqual([t for t in guardadas if not t.endswith(".BA")], [], "lo de afuera no se guardó")
+        self.assertEqual(len([t for t in res["sin_yahoo"] if not t.endswith(".BA")]), len(papeles),
+                         "cuentan como «Yahoo no contestó»")
 
     def test_admin_lo_ve_y_el_usuario_no(self):
         r = self.client.get("/api/admin/velas", headers=self.h)

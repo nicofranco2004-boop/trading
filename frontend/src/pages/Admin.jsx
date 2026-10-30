@@ -2358,6 +2358,27 @@ const saltoTxt = (f) => {
 }
 const ESTADO_RATIO = { confirmado: '', sin_confirmar: ' · se pregunta', dudoso: ' · dudoso, no se ofrece' }
 
+// La última corrida de la noche (velas_diarias.resumen): cuántos activos
+// bajaron, cuántos cortó Yahoo (no contestó: quedan para mañana, no son «no
+// existe») y cuántos no se le pidieron (no son tickers, o fallan siempre y se
+// piden 1 vez por semana). La hora es la de «Última corrida», arriba.
+function UltimaNoche({ n }) {
+  const num = (x) => (x || 0).toLocaleString('es-AR')
+  const cortes = (n.cortados_por_yahoo || 0) > 0
+  return (
+    <div className="text-xs space-y-1">
+      <div className="text-ink-2 font-medium">Última corrida{n.seg != null && <span className="text-ink-3 font-normal tabular"> · {Math.round(n.seg)} s</span>}</div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <Row label="Bajados"><span className="tabular">{num(n.bajados)} de {num(n.pedidos)} pedidos</span></Row>
+        <Row label="Cortados por Yahoo"><span className={`tabular ${cortes ? 'text-rendi-warn' : ''}`}>{num(n.cortados_por_yahoo)}{n.pausas ? ` (${n.pausas} pausa${n.pausas === 1 ? '' : 's'})` : ''}</span></Row>
+        <Row label="No son tickers"><span className="tabular">{num(n.no_son_tickers)}</span></Row>
+        <Row label="Fallan siempre (1 vez por semana)"><span className="tabular">{num(n.en_espera_semanal)}</span></Row>
+      </div>
+      {cortes && <p className="text-rendi-warn">Yahoo dejó de contestar a mitad de la corrida: esos activos no se actualizaron hoy y van primeros mañana.</p>}
+    </div>
+  )
+}
+
 // Lee GET /api/admin/velas: cuántos activos tienen precios guardados, desde y
 // hasta cuándo, cuándo corrió por última vez y cuáles fallaron. El botón corre
 // el guardado ahora (la primera vez baja 5 años de cada activo: unos minutos).
@@ -2410,6 +2431,7 @@ function VelasPanel({ toast }) {
             <Row label="Desde / hasta"><span className="tabular">{e.desde || '—'} → {e.hasta || '—'}</span></Row>
             <Row label="Última corrida (UTC)"><span className="tabular">{e.ultima_corrida || '—'}</span></Row>
           </div>
+          {e.ultima_noche && <UltimaNoche n={e.ultima_noche} />}
           {e.sin_historia > 0 && (
             <p className="text-xs text-ink-2">{e.sin_historia} todavía sin su historia completa (se bajan primero en la próxima corrida).</p>
           )}

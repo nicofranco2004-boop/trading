@@ -410,6 +410,72 @@ class AlertasTecnicasTest(unittest.TestCase):
         self._cron()
         self.assertEqual(self._eventos(), [])
 
+    def test_muchas_alertas_del_mismo_activo_una_lectura_y_un_aviso_cada_una(self):
+        """12 personas con la misma alerta de MSFT (y una con BTC): la serie se lee
+        UNA vez por pasada, cada una avisa una sola vez, y sin velas nuevas —o con
+        sólo una cripto con la vela del sábado— no se lee ninguna serie y la
+        pasada cuesta las mismas consultas con 1 alerta o con 1.000 (auditoría de
+        capacidad: eran una consulta por alerta cada 10 minutos)."""
+        self.yahoo.precios["MSFT"] = self._sube_ayer
+        self.yahoo.precios["BTC-USD"] = lambda d: 60000.0
+        self.client.post("/api/watchlist", json={"symbol": "MSFT"}, headers=self.h)
+        self._noche(self.anteayer)
+        otros = []
+        for i in range(12):
+            with main.db_abierta() as conn:
+                cur = conn.execute(
+                    "INSERT INTO users (email, name, password_hash, approved, email_verified, tier) "
+                    "VALUES (?, 'Otra', 'x', 1, 1, 'pro')", (f"tec-{i}-{uuid.uuid4().hex[:6]}@rendi.test",))
+                conn.commit()
+                otros.append(cur.lastrowid)
+            h = {"Authorization": f"Bearer {main.create_token(otros[-1])}"}
+            with self._el_dia(self._siguiente(self.anteayer)):
+                r = self.client.post("/api/alerts", json={"kind": "tecnica", "symbol": "MSFT",
+                                                          "senal": "media200", "direction": "either",
+                                                          "channel": "both", "repeat": "always"}, headers=h)
+            self.assertEqual(r.status_code, 200, r.text)
+        self._crear(symbol="BTC", senal="media50", creada_el=self._siguiente(self.anteayer))
+        self._noche(self.ayer)
+
+        lecturas = []
+        real = tecnico.serie
+
+        def contar(conn, asset, *a, **k):
+            lecturas.append(asset)
+            return real(conn, asset, *a, **k)
+        with mock.patch("tecnico.serie", contar):
+            self._cron()
+            self.assertEqual(sorted(lecturas), ["BTC", "MSFT"], "una lectura por activo, no por alerta")
+            with main.db_abierta() as conn:
+                avisos = [r["user_id"] for r in conn.execute(
+                    "SELECT user_id FROM alert_events WHERE message LIKE 'MSFT superó%'").fetchall()]
+            self.assertEqual(sorted(avisos), sorted(otros), "cada una avisa, una vez")
+
+            # La pasada siguiente: nada nuevo, ninguna serie leída, nadie avisa de nuevo.
+            lecturas.clear()
+            self._cron()
+            self.assertEqual(lecturas, [])
+            # Un sábado con la cripto ya con su vela: MSFT no se vuelve a leer.
+            sabado = self.ayer + timedelta(days=(5 - self.ayer.weekday()) % 7 or 7)
+            with main.db_abierta() as conn:
+                conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES ('BTC-USD', ?, 60000)",
+                             (sabado.isoformat(),))
+                conn.commit()
+                q = []
+                if hasattr(conn, "set_trace_callback"):      # SQLite: contar las consultas
+                    conn.set_trace_callback(q.append)
+                ae.evaluar_tecnicas(conn, now=datetime.utcnow().replace(hour=15))
+                if hasattr(conn, "set_trace_callback"):
+                    conn.set_trace_callback(None)
+            self.assertEqual(lecturas, ["BTC"])
+            if hasattr(conn, "set_trace_callback"):
+                # Las 13 alertas: no crece con la cantidad (antes, una por alerta).
+                self.assertLessEqual(len([x for x in q if x.lstrip().upper().startswith("SELECT")]), 10,
+                                     "las consultas no crecen con la cantidad de alertas")
+        with main.db_abierta() as conn:
+            n = conn.execute("SELECT COUNT(*) AS n FROM alert_events WHERE message LIKE 'MSFT superó%'").fetchone()["n"]
+        self.assertEqual(n, 12)
+
     def test_dos_dias_juntos_que_cruzan_y_vuelven_no_avisan(self):
         """Una noche no corrió: llegan dos días juntos. Cruzó para arriba y al día
         siguiente volvió abajo: la ficha dice «Bajista» y la alerta «para arriba»

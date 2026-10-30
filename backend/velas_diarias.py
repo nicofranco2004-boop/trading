@@ -40,10 +40,12 @@ Buenos Aires. No hace falta otro cron. Y A PEDIDO, cuando alguien abre la ficha
 de un activo que nadie sigue (desde el mapa de calor o el buscador): ver
 `tickers_a_pedido` y `asegurar`, con sus frenos.
 """
+import json
 import logging
 import math
 import threading
 import time
+import zlib
 from collections import deque
 from datetime import date, datetime, timedelta, timezone
 
@@ -79,9 +81,31 @@ DIAS_ENTRE_COMPLETAS = 30
 # Cuántos tickers se le piden a Yahoo por tanda, y el tope de cada tanda.
 TANDA = 25
 TOPE_TANDA_SEG = 120.0
-# Tope de la corrida entera: lo que no entró queda para la noche siguiente (los
-# que nunca se bajaron van primero).
+# Tope de la corrida entera, pausas incluidas: lo que no entró queda para la
+# noche siguiente, y va primero (ver `_orden`).
 TOPE_CORRIDA_SEG = 15 * 60
+
+# ─── Lo que Yahoo nunca va a tener, y cuando Yahoo deja de contestar ────────
+# Medido el 24/10/2026 con la lista de la copia de producción (auditoría de
+# capacidad) y otra vez el 30/10 sobre este motor (turnos por persona, 5 años):
+# Yahoo, después de ~700-950 pedidos seguidos, deja de devolver datos SIN dar
+# error. Dos corridas seguidas: la primera bajó 717 de 2.468, la segunda 75, y
+# los demás se anotaban como «Yahoo no devolvió velas» aunque una hora antes
+# habían andado. Y lo que de verdad no existe en Yahoo (opciones, bonos y ONs
+# que no se reconocieron, fondos con el nombre entero) se pedía todas las
+# noches, para siempre.
+#
+# Lo que falló estas noches seguidas pasa a pedirse una vez por semana (no
+# todas las noches): una noche mala de Yahoo no alcanza, tres seguidas sí.
+FALLAS_PARA_SEMANAL = 3
+# Una tanda que vuelve ENTERA vacía con activos que la última vez andaban no es
+# «no existen»: Yahoo cortó. Se espera esto y se vuelve a pedir la misma tanda,
+# hasta `PAUSAS_MAX` veces por noche (y nunca pasando el tope de la corrida).
+# Con al menos `CORTE_MIN_ANDABAN` que andaban: uno o dos que dejaron de cotizar
+# (y caen en una tanda de los que fallan siempre) no son un corte.
+PAUSA_CORTE_SEG = 120.0
+PAUSAS_MAX = 3
+CORTE_MIN_ANDABAN = 3
 # El S&P 500 se guarda siempre, lo tenga alguien o no: es contra lo que la ficha
 # compara cuánto se mueve un papel en un día normal (movimiento.py).
 SP500 = "^GSPC"
@@ -341,7 +365,7 @@ def _es_de_la_app():
 
 def _estado_de_cada_ticker(conn) -> dict:
     return {r['symbol']: dict(r) for r in conn.execute(
-        "SELECT symbol, ultima_corrida, ultima_completa, ok FROM velas_estado").fetchall()}
+        "SELECT symbol, ultima_corrida, ultima_completa, ok, fallas_seguidas FROM velas_estado").fetchall()}
 
 
 def _raros_que_entran(listas: list, es_de_la_app, estado: dict) -> set:
@@ -396,6 +420,16 @@ def _turno(estado: dict, t: str, hoy: str) -> int:
     return 1 if _toca_completa(e, hoy) else 2
 
 
+def _orden(estado: dict, t: str, hoy: str) -> tuple:
+    """El lugar en la fila: el `_turno` y, dentro del turno, lo que hace más
+    DÍAS que no se pidió primero. Así lo que anoche quedó sin pedir (Yahoo cortó
+    o se acabó el tiempo) hoy va adelante, y no se caen siempre los mismos: antes,
+    con la fila siempre en el mismo orden, si Yahoo cortaba se perdían todas las
+    noches los últimos (medido el 24/10: siempre de la S a la Z)."""
+    e = estado.get(t)
+    return (_turno(estado, t, hoy), str((e or {}).get('ultima_corrida') or '')[:10])
+
+
 def _por_turnos(conn, de_cada_una: dict, hoy: str) -> list:
     """El orden de la noche, en tres vueltas, y en cada una por TURNOS entre
     personas (ronda 1: lo primero de cada una; ronda 2: lo segundo; …):
@@ -425,7 +459,7 @@ def _por_turnos(conn, de_cada_una: dict, hoy: str) -> list:
 
     vueltas = ([], [], [])
     for uid in sorted(de_cada_una, key=str):
-        suyos = sorted(de_cada_una[uid], key=lambda t: _turno(estado, t, hoy))   # estable: el orden de las puertas
+        suyos = sorted(de_cada_una[uid], key=lambda t: _orden(estado, t, hoy))   # estable: el orden de las puertas
         por_vuelta = ([], [], [])
         for t in suyos:
             por_vuelta[vuelta(t)].append(t)
@@ -482,20 +516,60 @@ def _bajar(ticker: str, periodo: str):
     return _yahoo._historia(ticker, periodo, '1d', False, 10.0)
 
 
+def _dormir(seg: float) -> None:
+    # Aparte para que las pruebas no esperen de verdad los minutos de la pausa.
+    time.sleep(seg)
+
+
+def es_ticker(t: str) -> bool:
+    """¿Tiene forma de ticker? El MISMO filtro que la ficha le aplica al símbolo
+    que le piden (`main._SYMBOL_RE`, el de GET /api/tecnico): lo que la ficha no
+    aceptaría nunca va a tener velas. Un fondo con el nombre entero
+    («LIQUIDACIÓN-DE-SUSCRIPCIÓN-/-…») o un nombre con espacios no se le pide a
+    Yahoo. Los índices de Yahoo empiezan con «^» (el S&P 500, `SP500`, que se
+    guarda todas las noches): la ficha no los abre, pero son tickers."""
+    from main import _SYMBOL_RE
+    return bool(t) and bool(_SYMBOL_RE.match(t[1:] if t.startswith("^") else t))
+
+
+def dia_de_la_semana(ticker: str) -> int:
+    """El día (0 = lunes) en que toca lo semanal de este ticker. Sale del nombre,
+    no de cuándo se pidió por primera vez: así lo semanal se reparte entre los 7
+    días y no cae todo la misma noche."""
+    return zlib.crc32(ticker.encode()) % 7
+
+
+def _toca_semanal(ticker: str, ultima: str, hoy: str) -> bool:
+    """Lo que se pide una vez por semana: ¿toca hoy? Toca el día del ticker
+    (`dia_de_la_semana`) si no se pidió ya hoy, o si pasó más de una semana
+    (una noche que no corrió no lo deja dos semanas sin pedir)."""
+    if not ultima:
+        return True
+    d = date.fromisoformat(hoy)
+    dias = (d - date.fromisoformat(str(ultima)[:10])).days
+    return dias > 7 or (dias >= 1 and d.weekday() == dia_de_la_semana(ticker))
+
+
 def _guardar(conn, ticker: str, velas: dict, *, completa: bool) -> int:
     """Una bajada COMPLETA reemplaza todo lo del ticker (si Yahoo reescribió la
-    historia, no puede quedar ningún día viejo); una incremental pisa sus días."""
+    historia, no puede quedar ningún día viejo); una incremental pisa sus días.
+
+    Todas las velas en UNA operación (`executemany`), no una consulta por vela:
+    en Postgres cada consulta es un viaje por la red, y un activo bajado entero
+    (5 años, ~1.260 velas) eran ~1.260 viajes; así son 3 (borrar, guardar,
+    anotar). Medido en la auditoría de capacidad (24/10/2026): la primera noche
+    de 100 activos pasó de 12,4 s a 1,7 s en Postgres local."""
     if completa:
         conn.execute("DELETE FROM velas_diarias WHERE symbol=?", (ticker,))
-    for f, (o, h, l, c, v) in velas.items():
-        conn.execute(
+    if velas:
+        conn.executemany(
             """INSERT INTO velas_diarias (symbol, date, open, high, low, close, volume)
                VALUES (?,?,?,?,?,?,?)
                ON CONFLICT(symbol, date) DO UPDATE SET
                  open=excluded.open, high=excluded.high, low=excluded.low,
                  close=excluded.close, volume=excluded.volume,
                  fetched_at=datetime('now')""",
-            (ticker, f, o, h, l, c, v))
+            [(ticker, f, o, h, l, c, v) for f, (o, h, l, c, v) in velas.items()])
     return len(velas)
 
 
@@ -523,16 +597,21 @@ def _historia_reescrita(conn, ticker: str, velas: dict) -> bool:
 
 
 def _anotar(conn, ticker: str, *, completa: bool, ok: bool, filas: int = 0, error: str = None):
+    """`fallas_seguidas`: cuántas veces seguidas falló (0 al andar). Con
+    `FALLAS_PARA_SEMANAL` la noche lo pide una vez por semana."""
     # `CASE WHEN ?=1`, no `CASE WHEN ?`: SQLite acepta un entero como condición,
     # Postgres exige un booleano.
     conn.execute(
-        """INSERT INTO velas_estado (symbol, ultima_corrida, ultima_completa, ok, filas, error)
-           VALUES (?, datetime('now'), CASE WHEN ?=1 THEN datetime('now') END, ?, ?, ?)
+        """INSERT INTO velas_estado (symbol, ultima_corrida, ultima_completa, ok, filas, error,
+                                     fallas_seguidas)
+           VALUES (?, datetime('now'), CASE WHEN ?=1 THEN datetime('now') END, ?, ?, ?, ?)
            ON CONFLICT(symbol) DO UPDATE SET
              ultima_corrida=datetime('now'),
              ultima_completa=CASE WHEN ?=1 THEN datetime('now') ELSE velas_estado.ultima_completa END,
-             ok=excluded.ok, filas=excluded.filas, error=excluded.error""",
-        (ticker, 1 if completa else 0, 1 if ok else 0, filas, error, 1 if completa else 0))
+             ok=excluded.ok, filas=excluded.filas, error=excluded.error,
+             fallas_seguidas=CASE WHEN ?=1 THEN 0 ELSE COALESCE(velas_estado.fallas_seguidas, 0) + 1 END""",
+        (ticker, 1 if completa else 0, 1 if ok else 0, filas, error, 0 if ok else 1,
+         1 if completa else 0, 1 if ok else 0))
 
 
 def _toca_completa(est: dict, hoy: str) -> bool:
@@ -546,13 +625,23 @@ def _toca_completa(est: dict, hoy: str) -> bool:
 
 def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
                tope_seg: float = TOPE_CORRIDA_SEG, tope_tanda: float = TOPE_TANDA_SEG,
-               podar: bool = True, en_orden: bool = False) -> dict:
+               podar: bool = True, en_orden: bool = False, semanal: bool = False) -> dict:
     """Pone al día las velas de estos tickers. Idempotente: correrlo dos veces
     seguidas no cambia nada.
 
     Los que nunca se bajaron (o se bajaron mal) van primero: con el tope de
     tiempo, una noche lenta deja sin actualizar a los que ya tenían su historia, no
-    a los que no tienen nada.
+    a los que no tienen nada. Dentro de eso, lo que hace más días que no se pidió
+    (`_orden`).
+
+    No se le pide a Yahoo lo que no tiene forma de ticker (`es_ticker`). Con
+    `semanal` (la noche), lo que falló `FALLAS_PARA_SEMANAL` veces seguidas se
+    pide sólo el día de la semana que le toca (`_toca_semanal`); la ficha a
+    pedido no espera (tiene sus propios frenos).
+
+    Si Yahoo corta (una tanda vuelve ENTERA vacía con activos que andaban), se
+    espera `PAUSA_CORTE_SEG` y se pide la misma tanda de nuevo. Lo que quedó
+    sin pedir por el corte NO se anota como falla: no es que no exista.
 
     Nunca se espera a Yahoo con una escritura abierta: cada tanda baja todo,
     escribe y confirma; los que hay que rebajar enteros (split) se piden DESPUÉS
@@ -563,7 +652,7 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
     poco). `podar`: borrar lo que quedó más viejo que `DIAS_GUARDADOS`; la ficha a
     pedido no lo hace (es un borrado de toda la tabla y lo hace la corrida de la noche).
     `en_orden`: respetar el orden de `tickers` (la noche lo trae repartido por
-    personas, `_por_turnos`) en vez de ordenar por `_turno`."""
+    personas, `_por_turnos`) en vez de ordenar por `_orden`."""
     from fechas import hoy_art
     from pricing import yahoo as _yahoo
     bajar = bajar or _bajar
@@ -573,18 +662,26 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
     hoy = hoy or hoy_art()
     fin = time.monotonic() + tope_seg
 
-    estado = {r['symbol']: dict(r) for r in conn.execute(
-        "SELECT symbol, ultima_completa, ok FROM velas_estado").fetchall()}
+    estado = _estado_de_cada_ticker(conn)
+    pedidos_hoy = list(dict.fromkeys(t for t in (tickers or []) if t))
+    no_tickers = [t for t in pedidos_hoy if not es_ticker(t)]
+    en_espera = [t for t in pedidos_hoy if semanal and es_ticker(t) and t in estado
+                 and (estado[t].get('fallas_seguidas') or 0) >= FALLAS_PARA_SEMANAL
+                 and not _toca_semanal(t, estado[t].get('ultima_corrida'), hoy)]
+    afuera = set(no_tickers) | set(en_espera)
     if en_orden:
         # El orden ya viene decidido (la noche: `_por_turnos`).
-        pendientes = list(dict.fromkeys(t for t in (tickers or []) if t))
+        pendientes = [t for t in pedidos_hoy if t not in afuera]
     else:
-        pendientes = sorted(set(t for t in (tickers or []) if t), key=lambda t: (_turno(estado, t, hoy), t))
+        pendientes = sorted((t for t in pedidos_hoy if t not in afuera), key=lambda t: (*_orden(estado, t, hoy), t))
 
-    res = {"pedidos": len(pendientes), "completas": 0, "incrementales": 0,
-           "reescritas": [], "sin_datos": [], "sin_tiempo": 0, "filas": 0}
+    res = {"pedidos": len(pendientes), "bajados": 0, "completas": 0, "incrementales": 0,
+           "reescritas": [], "sin_datos": [], "cortados_por_yahoo": 0, "pausas": 0,
+           "no_son_tickers": len(no_tickers), "en_espera_semanal": len(en_espera),
+           "sin_tiempo": 0, "filas": 0}
 
-    for i in range(0, len(pendientes), TANDA):
+    i = 0
+    while i < len(pendientes):
         if time.monotonic() >= fin:
             res["sin_tiempo"] = len(pendientes) - i
             break
@@ -593,9 +690,27 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
                        else PERIODO_INCREMENTAL) for t in tanda}
         bajadas, _ = _yahoo.varios(lambda t: bajar(t, pedidos[t]), tanda,
                                    tope=tope_tanda, que="velas diarias")
+        velas_de = {t: _velas_de(bajadas.get(t), hoy) for t in tanda}
+        andaban = [t for t in tanda if (estado.get(t) or {}).get('ok')]
+        if len(andaban) >= CORTE_MIN_ANDABAN and not any(velas_de.values()):
+            # Yahoo cortó. Se espera y se pide la MISMA tanda (no se avanza).
+            if res["pausas"] < PAUSAS_MAX and fin - time.monotonic() > PAUSA_CORTE_SEG:
+                res["pausas"] += 1
+                log.warning("velas: Yahoo devolvió vacía una tanda entera con %d que andaban "
+                            "(%s…): pausa %d de %d, %.0f s", len(andaban), ", ".join(andaban[:5]),
+                            res["pausas"], PAUSAS_MAX, PAUSA_CORTE_SEG)
+                _dormir(PAUSA_CORTE_SEG)
+                continue
+            # Sin más pausas ni tiempo: lo que falta queda para mañana, sin
+            # anotarlo como falla (y adelante en la fila, por no haberse pedido).
+            res["cortados_por_yahoo"] = len(pendientes) - i
+            log.warning("velas: Yahoo sigue sin contestar; %d quedan para mañana",
+                        res["cortados_por_yahoo"])
+            break
+        i += len(tanda)
         a_rebajar = []
         for t in tanda:
-            velas = _velas_de(bajadas.get(t), hoy)
+            velas = velas_de[t]
             completa = pedidos[t] == PERIODO_COMPLETO
             if not velas:
                 _anotar(conn, t, completa=False, ok=False, error="Yahoo no devolvió velas")
@@ -630,6 +745,7 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
                 res["reescritas"].append(t)
             conn.commit()
 
+    res["bajados"] = res["completas"] + res["incrementales"]
     if podar:
         piso = (date.fromisoformat(hoy) - timedelta(days=DIAS_GUARDADOS)).isoformat()
         conn.execute("DELETE FROM velas_diarias WHERE date < ?", (piso,))
@@ -643,8 +759,9 @@ def correr(conn) -> dict:
     se le pasa de cada CEDEAR cuál es su acción de afuera. Un error de la lista
     no toca las velas."""
     from fechas import hoy_art
+    t0 = time.monotonic()
     tickers, pares, de_cada_una = _seguimiento_por_persona(conn)
-    res = actualizar(conn, _por_turnos(conn, de_cada_una, hoy_art()), en_orden=True)
+    res = actualizar(conn, _por_turnos(conn, de_cada_una, hoy_art()), en_orden=True, semanal=True)
     # El universo del termómetro (termometro.py) lo baja su propio trabajo, no
     # esta corrida; igual no es «basura a pedido»: no se poda.
     import termometro
@@ -660,7 +777,60 @@ def correr(conn) -> dict:
     except Exception as ex:
         log.error("velas: la lista de cambios de ratio falló: %r", ex, exc_info=True)
         res["cambios_ratio"] = {"error": repr(ex)}
+    res["seg"] = round(time.monotonic() - t0, 1)
+    _guardar_corrida(conn, resumen(res))
     return res
+
+
+# Cuántas corridas guardadas se conservan (una por noche, más las de /admin).
+CORRIDAS_GUARDADAS = 60
+
+
+def resumen(res: dict) -> dict:
+    """Lo que dicen el renglón «Velas diarias:» del registro y /admin: números,
+    no listas de mil nombres. De cada lista, cuántos y los primeros 10."""
+    out = {}
+    for k, v in res.items():
+        if isinstance(v, list):
+            out[k] = len(v)
+            if v:
+                out[f"{k}_ej"] = v[:10]
+        elif isinstance(v, dict):
+            out[k] = {kk: (len(vv) if isinstance(vv, list) else vv) for kk, vv in v.items()}
+        else:
+            out[k] = v
+    return out
+
+
+def _guardar_corrida(conn, res_corto: dict) -> None:
+    """Anota la corrida en `velas_corridas` (lo lee /admin: cuántos se bajaron,
+    cuántos cortó Yahoo, cuántos no eran tickers). Un error acá no tira la
+    corrida: las velas ya están guardadas."""
+    try:
+        conn.execute("INSERT INTO velas_corridas (cuando, resumen) VALUES (datetime('now'), ?) "
+                     "ON CONFLICT(cuando) DO UPDATE SET resumen=excluded.resumen",
+                     (json.dumps(res_corto, ensure_ascii=False),))
+        conn.execute("DELETE FROM velas_corridas WHERE cuando NOT IN "
+                     "(SELECT cuando FROM velas_corridas ORDER BY cuando DESC LIMIT ?)",
+                     (CORRIDAS_GUARDADAS,))
+        conn.commit()
+    except Exception as ex:
+        log.error("velas: no se pudo anotar la corrida: %r", ex, exc_info=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
+def ultima_noche(conn):
+    """El resumen de la última corrida de la noche (`resumen`) con su hora (UTC), o None."""
+    r = conn.execute("SELECT cuando, resumen FROM velas_corridas ORDER BY cuando DESC LIMIT 1").fetchone()
+    if not r:
+        return None
+    try:
+        return {"cuando": r["cuando"], **json.loads(r["resumen"])}
+    except (TypeError, ValueError):
+        return None
 
 
 # ─── A pedido: la ficha de un activo que nadie sigue ─────────────────────────

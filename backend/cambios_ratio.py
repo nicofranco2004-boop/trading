@@ -75,6 +75,7 @@ que se compró antes.
 FILAS A MANO. `origen='manual'` no la pisa nunca la corrida: sirve para
 confirmar o descartar un caso que la regla no puede decidir sola.
 """
+import json
 import logging
 import statistics
 import time
@@ -100,6 +101,20 @@ VENTANA_DIAS = 7
 DIAS_ROTOS_MAX = 2
 # Tope de la corrida nocturna para preguntarle a Yahoo sus listas de splits.
 TOPE_YAHOO_SEG = 180.0
+# Si de los papeles DE AFUERA preguntados (AAPL, NVDA…; los '.BA' casi nunca traen
+# splits) vuelven todos sin ninguno, y son al menos estos, no es que ninguno
+# tuvo: Yahoo cortó y devuelve vacío sin error. Esas listas vacías no se guardan
+# (si no, quedaban una semana): esos papeles cuentan como «Yahoo no contestó».
+CORTE_SPLITS_MIN = 10
+# Las listas de splits de Yahoo se le piden UNA VEZ POR SEMANA por ticker (el día
+# que le toca a cada uno, `velas_diarias.dia_de_la_semana`), no cada noche: eran
+# 3 pedidos por CEDEAR por noche (~860 el 30/10) y los cambios de ratio de BYMA
+# son pocos por año. Las otras noches se usa la última lista guardada
+# (`splits_yahoo`), así la clasificación da lo mismo que si se hubiera
+# preguntado. Lo que el cociente ve en las velas (lo que de verdad detecta los
+# cambios) sigue siendo de cada noche. Medido el 24/10 y el 30/10/2026: Yahoo
+# corta a los ~700-950 pedidos seguidos, y la segunda corrida seguida dejaba
+# sin respuesta a 844 de 860 (y la lista cambiaba sola: 7 «sin confirmar»).
 
 CONFIRMADO, SIN_CONFIRMAR, DUDOSO, DESCARTADO = "confirmado", "sin_confirmar", "dudoso", "descartado"
 RATIO, ESCISION, PRECIO_QUIETO, PRECIO_ROTO, ROTO, PENDIENTE, SIN_EXPLICAR = (
@@ -446,21 +461,43 @@ def recalcular(conn, papeles: list, *, pares: dict = None, splits=None, byma=Non
     def _tickers(c):
         return (f"{c}.BA", f"{c}D.BA", afuera[c]) if series[c][1] else (f"{c}.BA",)
     pedir = [t for c in papeles for t in _tickers(c)]
+    pedidos_a_yahoo = 0
     if splits is None:
-        hechos, sin = _yahoo.varios(_splits_de_yahoo, pedir, tope=tope_seg,
-                                    que="splits para los cambios de ratio")
-        # Sin respuesta de Yahoo ≠ «no tuvo splits»: el papel se recalcula igual
-        # (el cociente no depende de Yahoo), pero lo que Yahoo anotó antes sólo se
-        # pierde si Yahoo contestó.
-        sin = set(sin) | {t for t in pedir if t not in hechos}
+        from fechas import hoy_art
+        guardadas = _splits_guardados(conn)
+        hoy = hoy_art()
+        toca = [t for t in pedir if _toca_preguntar(t, guardadas.get(t), hoy)]
+        pedidos_a_yahoo = len(toca)
+        # Se cierra la lectura antes de esperar a Yahoo (en Postgres leer abre una
+        # transacción que quedaba abierta mientras tanto).
+        conn.commit()
+        hechos, _ = _yahoo.varios(_splits_de_yahoo, toca, tope=tope_seg,
+                                  que="splits para los cambios de ratio")
+        de_afuera = [t for t in toca if not t.endswith(".BA") and t in hechos]
+        if len(de_afuera) >= CORTE_SPLITS_MIN and not any(hechos[t] for t in de_afuera):
+            log.warning("cambios de ratio: Yahoo devolvió sin splits a los %d de afuera: corte, "
+                        "no se guardan las listas vacías", len(de_afuera))
+            hechos = {t: v for t, v in hechos.items() if v}
+        # Una lista vacía no borra una que tenía algo: Yahoo no des-anota un
+        # split, pero cuando corta devuelve vacío sin error, y eso guardado una
+        # semana perdía lo que Yahoo anotó (AAPL 2014 y 2020).
+        hechos = {t: (v if v or not (guardadas.get(t) or ((),))[0] else list(guardadas[t][0]))
+                  for t, v in hechos.items()}
+        _guardar_splits(conn, hechos)
+        conocidas = {t: v[0] for t, v in guardadas.items()}
+        conocidas.update(hechos)
+        # Sin respuesta de Yahoo (y sin una lista guardada) ≠ «no tuvo splits»:
+        # el papel se recalcula igual (el cociente no depende de Yahoo), pero lo
+        # que Yahoo anotó antes sólo se pierde si Yahoo contestó.
+        sin = {t for t in pedir if t not in conocidas}
 
         def consulta(t):
-            return hechos.get(t, [])
+            return conocidas.get(t, [])
     else:
         sin = set()
         consulta = splits
     res = {"papeles": len(papeles), CONFIRMADO: 0, SIN_CONFIRMAR: 0, DUDOSO: 0, DESCARTADO: 0,
-           "sin_yahoo": sorted(sin)}
+           "sin_yahoo": sorted(sin), "pedidos_a_yahoo": pedidos_a_yahoo}
     for c in papeles:
         ba, ny = series[c]
         if not ba:
@@ -487,6 +524,35 @@ def recalcular(conn, papeles: list, *, pares: dict = None, splits=None, byma=Non
             res[e["estado"]] = res.get(e["estado"], 0) + 1
     conn.commit()
     return res
+
+
+def _splits_guardados(conn) -> dict:
+    """{ticker: (splits, consultado)} de lo que Yahoo contestó la última vez."""
+    out = {}
+    for r in conn.execute("SELECT ticker, splits, consultado FROM splits_yahoo").fetchall():
+        try:
+            out[r["ticker"]] = ([tuple(x) for x in json.loads(r["splits"])], r["consultado"])
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _toca_preguntar(ticker: str, guardada, hoy: str) -> bool:
+    """Nunca se preguntó, o es su día de la semana (la misma regla que las velas
+    que fallan siempre: `velas_diarias._toca_semanal`)."""
+    from velas_diarias import _toca_semanal
+    return guardada is None or _toca_semanal(ticker, guardada[1], hoy)
+
+
+def _guardar_splits(conn, hechos: dict) -> None:
+    """Lo que Yahoo contestó ({ticker: [(fecha, factor)]}), en una operación."""
+    if not hechos:
+        return
+    conn.executemany(
+        """INSERT INTO splits_yahoo (ticker, splits, consultado) VALUES (?, ?, datetime('now'))
+           ON CONFLICT(ticker) DO UPDATE SET splits=excluded.splits, consultado=excluded.consultado""",
+        [(t, json.dumps([list(x) for x in v])) for t, v in hechos.items()])
+    conn.commit()
 
 
 def correr(conn, pares: dict = None) -> dict:

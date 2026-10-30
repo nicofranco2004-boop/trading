@@ -1756,7 +1756,17 @@ def _fmt_rsi(r, nivel) -> str:
 def evaluar_tecnicas(conn, now: datetime = None, only_user: int = None) -> dict:
     """Las alertas técnicas activas contra las velas guardadas. Idempotente: lo
     pega el cron de alertas cada pocos minutos y sólo trabaja la primera pasada
-    después de que llegan velas nuevas (ver el bloque de arriba)."""
+    después de que llegan velas nuevas (ver el bloque de arriba).
+
+    Lo que NO tiene nada nuevo se descarta antes de tocar nada, con dos
+    consultas para todas: hasta dónde miró cada alerta (`_vistos_tecnicos`) y la
+    última vela de cada serie (`_ultimas_velas`). Antes era una consulta por
+    alerta cada 10 minutos aunque no hubiera nada nuevo (6.000 alertas: 6.008
+    consultas por pasada), y la comparación era contra la última vela de TODA la
+    tabla: una cripto con vela del sábado hacía releer todo el fin de semana
+    (auditoría de capacidad, 24/10/2026). En Supabase cada consulta es un viaje
+    por la red. Lo que sí tiene algo nuevo va de a una, en su punto de guardado."""
+    import tecnico
     from fechas import dia_art, en_art
     now = now or datetime.utcnow()
     if en_art(now).hour < HORA_AVISO_TECNICO:
@@ -1771,14 +1781,19 @@ def evaluar_tecnicas(conn, now: datetime = None, only_user: int = None) -> dict:
         return {"tecnicas": 0, "fired": 0}
     hoy = dia_art(now)
     piso = (hoy - timedelta(days=DIAS_AVISO_TECNICO)).isoformat()
-    # La última vela que hay en toda la tabla: una alerta que ya miró hasta ahí
-    # no tiene nada nuevo y no se lee su serie (el cron pega cada 10 minutos).
-    row = conn.execute("SELECT MAX(date) AS d FROM velas_diarias").fetchone()
-    ultima_global = row["d"] if row else None
+    vistos = _vistos_tecnicos(conn, alerts)
+    tickers = {a["id"]: tecnico._tickers_de(str(a["symbol"] or "").strip().upper()) for a in alerts if a["symbol"]}
+    ultimas = _ultimas_velas(conn, {t for ts in tickers.values() for t in ts if t})
     series: dict = {}
     pendientes: list = []
     fired = mirados = errores = 0
     for a in alerts:
+        # Ya miró hasta la última vela de su serie (la de cualquiera de los
+        # tickers que la serie puede leer): nada nuevo, ni se abre su guardado.
+        visto = vistos.get(a["id"])
+        hasta = max((ultimas[t] for t in tickers.get(a["id"], ()) if t and ultimas.get(t)), default=None)
+        if visto and hasta and visto >= hasta:
+            continue
         # Una alerta que revienta (un activo raro, una serie rota) no puede dejar
         # sin mirar a las demás: el cron pega cada 10 minutos y fallaría siempre
         # en la misma. Las cuentas van antes de cualquier escritura.
@@ -1793,7 +1808,7 @@ def evaluar_tecnicas(conn, now: datetime = None, only_user: int = None) -> dict:
         # mandaban igual y se repetían cada 10 minutos.
         ok, resultado = _guarda_por_alerta(
             conn, "alert técnica", a, a["symbol"], pendientes,
-            lambda propios: _evaluar_una_tecnica(conn, a, series, ultima_global, piso, now, propios))
+            lambda propios: _evaluar_una_tecnica(conn, a, series, visto, piso, now, propios))
         if not ok:
             errores += 1
             continue
@@ -1809,15 +1824,38 @@ def evaluar_tecnicas(conn, now: datetime = None, only_user: int = None) -> dict:
     return out
 
 
-def _evaluar_una_tecnica(conn, a, series: dict, ultima_global, piso: str, now, pendientes: list) -> str:
+def _vistos_tecnicos(conn, alerts) -> dict:
+    """{alert_id: la fecha de la última vela que ya miró} de estas alertas, en
+    UNA consulta (`_visto_hasta` es la misma marca, de a una)."""
+    clave = {a["id"]: _clave_velas(a["symbol"]) for a in alerts}
+    out = {}
+    for r in conn.execute(
+            "SELECT s.alert_id, s.symbol, s.last_fired_date FROM alert_symbol_state s "
+            "JOIN alerts a ON a.id = s.alert_id WHERE a.active=1 AND a.kind='tecnica'").fetchall():
+        if clave.get(r["alert_id"]) == r["symbol"]:
+            out[r["alert_id"]] = r["last_fired_date"]
+    return out
+
+
+def _ultimas_velas(conn, tickers: set) -> dict:
+    """{ticker: la fecha de su última vela guardada}, de a 400 por consulta."""
+    out, lista = {}, sorted(tickers)
+    for i in range(0, len(lista), 400):
+        parte = lista[i:i + 400]
+        for r in conn.execute(
+                f"SELECT symbol, MAX(date) AS d FROM velas_diarias WHERE symbol IN ({','.join('?' * len(parte))}) "
+                "GROUP BY symbol", parte).fetchall():
+            out[r["symbol"]] = r["d"]
+    return out
+
+
+def _evaluar_una_tecnica(conn, a, series: dict, visto, piso: str, now, pendientes: list) -> str:
     """Una alerta técnica contra sus velas nuevas. Devuelve qué pasó: 'nada'
-    (nada nuevo que mirar), 'mirada' o 'avisó'."""
+    (nada nuevo que mirar), 'mirada' o 'avisó'. `visto`: hasta dónde miró
+    (`_vistos_tecnicos`, leído para todas de una vez)."""
     import tecnico
     sym = a["symbol"]
     if not sym or (a["senal"] not in _senales() and a["senal"] != tecnico.SENAL_LINEA):
-        return "nada"
-    visto = _visto_hasta(conn, a["id"], sym)
-    if visto and ultima_global and visto >= ultima_global:
         return "nada"
     linea = None
     if a["senal"] == tecnico.SENAL_LINEA:
