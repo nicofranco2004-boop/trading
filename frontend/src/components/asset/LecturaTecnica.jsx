@@ -197,8 +197,7 @@ export default function LecturaTecnica({
       if (!vivo || deLaCuenta == null || tocados.current.has(m)) return
       const local = copiaLocal(asset, m)
       if (local.pendiente) {
-        // Un cambio hecho acá que no llegó a la cuenta (el guardado falló, o
-        // se dibujó antes de que existiera el guardado en la cuenta): se sube.
+        // Un cambio hecho acá que no llegó a la cuenta (el guardado falló): se sube.
         subirDibujos(asset, m, local.dibujos).then(ok => { if (ok) marcarSubidos(asset, m, local.dibujos) })
         return
       }

@@ -509,12 +509,15 @@ describe('en todos tus dispositivos', () => {
     expect(copia()).toBeNull()
   })
 
-  it('lo dibujado en este navegador antes del guardado en la cuenta se sube solo', async () => {
-    localStorage.setItem('rendi_dibujos:ZZEV:usd', JSON.stringify([H]))      // la copia vieja: la lista sola
+  it('una copia de formato viejo (la lista sola) no revive dibujos: la cuenta manda (auditoría C, 29/10)', async () => {
+    // Como después de un reset: la cuenta vacía y, en este navegador, una copia
+    // de antes del guardado en la cuenta. Esa versión nunca se publicó: ningún
+    // usuario tiene una copia así que haga falta subir.
+    localStorage.setItem('rendi_dibujos:ZZEV:usd', JSON.stringify([H]))
+    cuenta.usd = []
     await dibujar()
-    expect(linea()).toHaveLength(1)
-    expect(guardados()).toEqual([H])
-    expect(copia().pendiente).toBe(false)
+    expect(linea()).toHaveLength(0)
+    expect(cuenta.puts).toBe(0)
   })
 
   it('si el guardado falla, lo dice, queda pendiente y se sube al volver', async () => {

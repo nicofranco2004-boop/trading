@@ -53,17 +53,20 @@ export function dibujoValido(x) {
 
 /**
  * La copia de este navegador: { dibujos, pendiente }. `pendiente`: hay un
- * cambio hecho acá que todavía no llegó a tu cuenta (el guardado falló, o se
- * dibujó antes de que existiera el guardado en la cuenta: la copia vieja era la
- * lista sola). Sin pendiente, lo de la cuenta manda: si borraste todo desde el
- * celular, la copia de la compu no lo vuelve a subir.
+ * cambio hecho acá que todavía no llegó a tu cuenta (el guardado falló). Sin
+ * pendiente, lo de la cuenta manda: si borraste todo desde el celular, la copia
+ * de la compu no lo vuelve a subir.
+ * La copia de formato viejo (la lista sola, de antes del guardado en la cuenta)
+ * NO es pendiente: contarla así revivía dibujos borrados después de un reset
+ * (auditoría C, 29/10), y esa versión nunca se publicó, así que no hay usuarios
+ * con una copia así que haga falta subir.
  * Sin almacenamiento o con un valor roto: ninguno.
  */
 export function copiaLocal(asset, moneda) {
   try {
     const g = JSON.parse(localStorage.getItem(clave(asset, moneda)) || 'null')
     const lista = Array.isArray(g) ? g : Array.isArray(g?.dibujos) ? g.dibujos : []
-    return { dibujos: lista.filter(dibujoValido).slice(0, DIBUJOS_MAXIMOS), pendiente: Array.isArray(g) || !!g?.pendiente }
+    return { dibujos: lista.filter(dibujoValido).slice(0, DIBUJOS_MAXIMOS), pendiente: !Array.isArray(g) && !!g?.pendiente }
   } catch {
     return { dibujos: [], pendiente: false }
   }
