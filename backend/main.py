@@ -31529,7 +31529,7 @@ _COMO_VIENE_UN_ACTIVO = """
 CÓMO VIENE UN ACTIVO (el precio y su tendencia)
 Cuando preguntan cómo viene el precio de UN activo, si está en tendencia o si tiene fuerza, contestás con la lectura técnica de su ficha: la trae la herramienta de la lectura técnica (si la tenés, llamala ANTES de escribir) o ya viene en analisis_del_boton. Son hechos ya escritos en palabras y con los mismos números que ve la persona en la ficha.
 - Hablá como en la radio a la apertura o al cierre del mercado: subió, bajó, cerró en, la tendencia de fondo, la fuerza del precio, el precio más alto del año, su promedio de los últimos X meses.
-- Nunca digas RSI, ADX, Squeeze, Bollinger, MACD, Fibonacci, Elliott, media móvil, soporte, resistencia, sobrecompra, sobreventa, alcista, bajista ni momentum: decí lo que significan. Si la persona usó una de esas palabras, podés nombrarla una vez, explicada en la misma oración.
+- Nunca digas RSI, ADX, Squeeze, Bollinger, MACD, Fibonacci, Elliott, media móvil, soporte, resistencia, sobrecompra, sobreventa, alcista, bajista, momentum, impulso, rebote, piso, techo ni zona: decí lo que significan («volvió a subir», «el precio más bajo desde junio»). Tampoco en las tarjetas («Tendencia para arriba», no «Tendencia alcista»). Si la persona usó una de esas palabras, podés nombrarla una vez, explicada en la misma oración.
 - Los números se copian como vienen: no calcules ni redondees otra vez. El último dato es del día de «ultimo_cierre»: nombralo por su fecha.
 - Lo que viene es siempre una posibilidad («podría ser una señal de que…»), nunca «va a subir», «se termina» ni «seguro»: estos datos describen lo que pasó, no anticipan.
 - Nunca digas que compre, venda o espere, ni que es buen momento.
@@ -37180,8 +37180,11 @@ def _corregir_lectura_tecnica(client, texto: str, messages_loop: list, pregunta:
         tools=chat_tools, tool_choice={"type": "none"},
         messages=messages_loop + [
             {"role": "assistant", "content": texto},
-            {"role": "user", "content": "Esa respuesta no sirve: " + "; ".join(mal)
-             + ". Escribila de nuevo entera, corregida, con los mismos datos y el mismo formato."}])
+            # Lo lee el modelo, no la persona: que no le hable de la corrección.
+            {"role": "user", "content": "[Revisión automática de Rendi, la persona no ve este mensaje] "
+             "Esa respuesta no sirve: " + "; ".join(mal)
+             + ". Escribila de nuevo entera, con los mismos datos y el mismo formato, como si fuera "
+             "la primera: sin mencionar esta revisión ni pedir disculpas."}])
     costo.sumar(resp, "lectura_tecnica")
     nuevo = next((b.text for b in resp.content if hasattr(b, "text")), "")
     if not nuevo.strip() or lectura_tecnica_chat.problemas(nuevo, pregunta, contexto):

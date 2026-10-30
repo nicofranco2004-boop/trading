@@ -42,6 +42,10 @@ _JERGA = [
 ]
 # Los hechos traen fechas, nunca días de la semana: uno escrito por el modelo es
 # inventado (MercadoLibre, 30/10: «cerró el miércoles» por el jueves 29).
+# La corrección no se le cuenta a la persona: ella no pidió nada (SHIB, 30/10:
+# «Tenés razón: puse un año que los datos no traen. Acá va corregida…»).
+_META = [r"ten[ée]s raz[óo]n", r"corregid[ao]s?", r"corrijo", r"me equivoqu[ée]", r"perd[óo]n",
+         r"disculp\w*", r"ac[áa] va (la )?(respuesta )?(de nuevo|otra vez)"]
 _DIAS = [r"lunes", r"martes", r"mi[ée]rcoles", r"jueves", r"viernes", r"s[áa]bado", r"domingo"]
 # Lo que viene dicho como seguro. El pasado («se terminó el 6 de octubre») es un
 # hecho y no se toca; «podría ser una señal de…» es la forma.
@@ -67,6 +71,7 @@ def _re(lista):
 
 
 _RE_JERGA, _RE_CERTEZAS, _RE_CONSEJOS, _RE_DIAS = _re(_JERGA), _re(_CERTEZAS), _re(_CONSEJOS), _re(_DIAS)
+_RE_META = _re(_META)
 _RE_NUMERO = re.compile(r"\d+(?:[.,]\d+)*")
 # Números que el pedido usa para explicar los indicadores (la línea de 50, los
 # extremos de 70 y 30, el 23 de la fuerza de la tendencia, los 200 días).
@@ -99,8 +104,21 @@ def inventados(texto: str, contexto: str) -> list:
     hay = set(_NUMEROS_LIBRES)
     for x in _RE_NUMERO.findall(contexto or ""):
         hay |= _valores(x, True)
-    return sorted({x.rstrip(".,") for x in _RE_NUMERO.findall(texto or "")
+    # «el 30 de octubre del año pasado» dicho «30 oct 2025»: el año anterior al
+    # de los datos no es un número inventado (SHIB, 30/10).
+    hay |= {float(int(y) - 1) for y in re.findall(r"\b(20\d\d)-\d\d-\d\d", contexto or "")}
+    return sorted({x.rstrip(".,") for x in _RE_NUMERO.findall(_lo_que_se_lee(texto))
                    if not (_valores(x, False) & hay)})
+
+
+def _lo_que_se_lee(texto: str) -> str:
+    """Sin lo que la persona no lee: el largo de una barrita del dibujo
+    (`"pct": 83`, un número suelto del bloque) y los links de los botones
+    (`"to": "/alertas?new=NVDA&up=13"`). En la segunda prueba real (30/10)
+    eran todos los «inventados» y dos respuestas buenas terminaron en el texto
+    de respaldo."""
+    t = re.sub(r'"to"\s*:\s*"[^"]*"', "", texto or "")
+    return re.sub(r'"\w+"\s*:\s*-?\d+(?:\.\d+)?', "", t)
 
 
 def problemas(texto: str, pregunta: str = "", contexto: str = None) -> list:
@@ -131,6 +149,10 @@ def problemas(texto: str, pregunta: str = "", contexto: str = None) -> list:
     if dias:
         out.append("nombraste un día de la semana (" + ", ".join(dias) + ") que los datos no traen: "
                    "decí la fecha («el 29 de octubre»), también en la voz")
+    meta = sorted({m.group(0).lower() for m in _RE_META.finditer(t)})
+    if meta:
+        out.append("le hablaste de la corrección (" + ", ".join(meta) + "): la persona no pidió nada, "
+                   "escribí la respuesta como si fuera la primera")
     if contexto is not None:
         malos = inventados(t, contexto + " " + (pregunta or ""))
         if malos:
@@ -146,11 +168,17 @@ TEXTO_SIN_LECTURA = ("Esta vez no me salió contarlo bien con palabras simples. 
 
 # Para el modelo, al lado de los hechos. Corto: las reglas largas están en el
 # pedido del chat, que se cobra una vez y se reusa (caché).
+# La lista de palabras va ACÁ además del pedido: medido con la IA real (30/10),
+# con la lista sólo en el pedido 6 de 10 primeros borradores traían «bajista»,
+# «alcista», «piso» o «rebotó», y cada corrección es una llamada más.
 _COMO_CONTARLO = (
-    "Contá cómo viene con estos hechos y nada más: copiá los números como vienen, sin calcular. "
-    "Palabras de todos los días (fuerza, tendencia, el promedio de los últimos meses, el precio más "
-    "alto del año), nunca siglas ni jerga. Lo que viene, sólo como posibilidad. Cerrá con «lo_que_se_mira» "
-    "si viene. Nunca le digas que compre, venda o espere."
+    "Contá cómo viene con estos hechos y nada más: copiá los números como vienen, sin calcular "
+    "(tampoco en las tarjetas ni en la voz). Palabras de todos los días: subió, bajó, cerró en, la "
+    "tendencia de fondo, la fuerza, su promedio de los últimos meses, el precio más alto o más bajo "
+    "del año, volvió a subir. NUNCA: alcista, bajista, piso, techo, zona, rebote, rebotó, impulso, "
+    "soporte, resistencia, sobrecompra, ni siglas (RSI, ADX, Squeeze). Nunca nombres el día de la "
+    "semana: la fecha. Lo que viene, sólo como posibilidad. Cerrá con «lo_que_se_mira» si viene. "
+    "Nunca le digas que compre, venda o espere."
 )
 
 

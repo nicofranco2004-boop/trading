@@ -227,7 +227,8 @@ class LecturaTecnicaChatTest(unittest.TestCase):
     def test_al_chat_no_le_llegan_siglas(self):
         claude = ClaudeDelChat([BUENO])
         self._chat(claude)
-        crudo = json.dumps(claude.lectura_enviada(), ensure_ascii=False)
+        # Los DATOS no traen siglas (la instrucción de al lado sí las nombra, para prohibirlas).
+        crudo = json.dumps(claude.lectura_enviada()["hechos"], ensure_ascii=False)
         for sigla in ("RSI", "ADX", "Squeeze"):
             self.assertNotIn(sigla, crudo)
         self.assertIn("fuerza_del_precio", json.dumps(claude.lectura_enviada()["hechos"]["todos_los_indicadores"]))
@@ -272,6 +273,18 @@ class LecturaTecnicaChatTest(unittest.TestCase):
         claude = ClaudeDelChat([bien])
         self.assertEqual(self._chat(claude)[0], bien)
         self.assertEqual(len(claude.pedidos), 2, "el número de los hechos no dispara la corrección")
+
+    def test_el_largo_de_una_barrita_y_un_link_no_son_numeros_dichos(self):
+        """Medido con la IA real (30/10): el bloque de tarjetas trae el largo de
+        cada barrita (`pct`) y el link del botón de alerta (`up=13`). No se leen:
+        no pueden disparar la corrección."""
+        bloque = ('\n---RENDI---{"voz":"Microsoft viene bajando.","blocks":[{"type":"bars","items":'
+                  '[{"l":"Último cierre","v":"US$ 150","pct":83}]},{"type":"actions","items":'
+                  '[{"label":"Crear alerta","to":"/alertas?new=MSFT&up=13"}]}]}')
+        claude = ClaudeDelChat([BUENO + bloque])
+        texto, _ = self._chat(claude)
+        self.assertEqual(len(claude.pedidos), 2, "sin corrección")
+        self.assertIn("pct", texto)
 
     def test_un_dia_de_la_semana_inventado_se_pide_de_nuevo(self):
         claude = ClaudeDelChat(["Microsoft cerró el miércoles un poco más abajo. " + BUENO, BUENO])
@@ -324,7 +337,8 @@ class LecturaTecnicaChatTest(unittest.TestCase):
         primer = json.dumps(claude.pedidos[0]["messages"], ensure_ascii=False)
         self.assertIn("¿Cómo viene Microsoft?", primer)
         self.assertIn("para_el_titular", primer)
-        self.assertNotIn("RSI", primer.split("analisis_del_boton", 1)[1])
+        for clave in ("_RSI", "_ADX", "_Squeeze", "(ADX", "(Squeeze"):
+            self.assertNotIn(clave, primer.split("analisis_del_boton", 1)[1])
         self.assertEqual(len(claude.pedidos), 2)
 
 
@@ -348,7 +362,8 @@ class ProblemasTest(unittest.TestCase):
                  "va a subir", "subirá", "se termina la bajada", "seguramente pase", "comprá ahora",
                  "te conviene esperar", "es un buen momento", "es una oportunidad", "el ADX en 30",
                  "el Squeeze cambió", "las bandas de Bollinger", "es alcista", "viene perdiendo impulso",
-                 "rebotó desde el mínimo", "el piso de junio", "cerró el miércoles"]
+                 "rebotó desde el mínimo", "el piso de junio", "cerró el miércoles",
+                 "Tenés razón: acá va corregida", "perdón por el error"]
         buenos = ["La fuerza del precio está en 72", "tu compra fue a 40", "se terminó el 6 de octubre",
                   "podría ser una señal de que la bajada pierde fuerza", "si bajara de 40",
                   "cerró en su precio más alto del año", "el tema del sistema", "le di una mirada"]
