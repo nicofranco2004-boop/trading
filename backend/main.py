@@ -9,7 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, field_validator, model_validator, Field
 from typing import Any, Literal, Optional, List
 import sqlite3, os, secrets, time, hashlib, hmac, json, threading, asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import dberrors
 from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 # Las filas importadas que CUENTAN (confirmadas y sin lápida). Va arriba de todo:
@@ -512,6 +512,11 @@ class _ReconstruirAlTerminar:
 
 
 app.add_middleware(_ReconstruirAlTerminar)
+
+# Marca cada pedido HTTP para el guardián de las lecturas pesadas (pesado.py):
+# una función `@pesado` que corre en un pedido sin `_freno_tecnico` se anota.
+import pesado as _pesado  # noqa: E402
+app.add_middleware(_pesado.MarcarPedido)
 
 
 # ─── Modo mantenimiento ───────────────────────────────────────────────────────
@@ -11853,9 +11858,11 @@ def _freno_tecnico(request: Request, uid: int, tipo: str = "muchos"):
         if len(_freno_hechos) > 10_000:
             for k in [k for k, v in _freno_hechos.items() if not v and k not in _freno_corriendo]:
                 del _freno_hechos[k]
+    marca = _pesado._con_freno.set(True)
     try:
         yield
     finally:
+        _pesado._con_freno.reset(marca)
         with _freno_candado:
             _freno_total[0] = max(0, _freno_total[0] - 1)
             m = _freno_de_cada_uno.get(quien[0], 1) - 1
@@ -48663,7 +48670,7 @@ def _exigir_cupo_de_alertas(conn, uid: int, *, con_turno: bool = True) -> None:
 
 
 @app.post("/api/alerts")
-def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
+def alerts_create(data: AlertCreateIn, request: Request, uid: int = Depends(get_effective_user)):
     """Crea una alerta. Gatea por cantidad (check_alert_quota) y por capacidad
     (pct_move = Plus+). Arma el edge-trigger según el precio actual."""
     import alerts_engine as _ae
@@ -48691,7 +48698,10 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
                 raise HTTPException(400, "Ingresá el precio objetivo.")
             currency = _moneda_del_aviso(symbol, currency)
         elif data.kind == "tecnica":
-            return _crear_alerta_tecnica(conn, uid, data)
+            # Lee la serie del activo para arrancar desde la última vela: una
+            # lectura pesada, con el freno de la ficha (pesado.py).
+            with _freno_tecnico(request, uid, "uno"):
+                return _crear_alerta_tecnica(conn, uid, data)
         else:  # pct_move — umbral asimétrico (sube ≥ up_pct% y/o cae ≥ down_pct%)
             if data.scope == "ticker" and not symbol:
                 raise HTTPException(400, "Elegí un ticker o la opción 'toda mi cartera'.")
@@ -48749,7 +48759,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
 
 
 @app.patch("/api/alerts/{alert_id}")
-def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_effective_user)):
+def alerts_update(alert_id: int, data: AlertUpdateIn, request: Request, uid: int = Depends(get_effective_user)):
     """Edita/activa/pausa una alerta. Si se reactiva o cambia el umbral,
     re-arma el edge-trigger (y re-ancla si es 'Desde ahora')."""
     import alerts_engine as _ae
@@ -48805,7 +48815,9 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
         if not sets:
             return {"ok": True, "unchanged": True}
         params.append(alert_id)
-        with conn:
+        # Reactivar una técnica lee su serie (arrancar desde la última vela): el
+        # freno de la ficha, como el alta (pesado.py).
+        with (_freno_tecnico(request, uid, "uno") if tecnica and data.active else nullcontext()), conn:
             conn.execute(f"UPDATE alerts SET {', '.join(sets)} WHERE id=?", params)
             if tecnica and data.active:
                 # Reactivar una técnica = mirar desde ahora: lo que cruzó mientras
@@ -48884,7 +48896,7 @@ def tesis_list(request: Request, uid: int = Depends(get_effective_user)):
 
 
 @app.put("/api/tesis")
-def tesis_guardar(data: TesisIn, uid: int = Depends(get_effective_user)):
+def tesis_guardar(data: TesisIn, request: Request, uid: int = Depends(get_effective_user)):
     """Escribe o corrige la tesis de un activo (el mismo día se corrige; otro
     día se guarda una nueva y la vieja queda: ver tesis.py)."""
     import tesis as _tesis
@@ -48893,7 +48905,8 @@ def tesis_guardar(data: TesisIn, uid: int = Depends(get_effective_user)):
     sym = (data.asset or "").strip()
     if not sym or any(ord(c) < 32 or c in "<>" for c in sym):
         raise HTTPException(400, "Ese activo no es válido.")
-    with db_abierta() as conn:
+    # Guarda la tendencia del día de compra (lee la serie): el freno de la ficha.
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         # Un activo que existe, no texto libre: cada texto era una tesis nueva
         # con su recordatorio, y su nombre iba al link del mail y a Yahoo
         # (auditoría E2/E7/E8).

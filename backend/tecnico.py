@@ -39,6 +39,7 @@ from datetime import date, timedelta
 import elliott
 import estructura
 import movimiento
+from pesado import pesado
 from velas_diarias import DIAS_GUARDADOS, SP500
 
 # Todo lo que es "un año" o "un mes" se corta por FECHA (días corridos), no por
@@ -566,6 +567,7 @@ def _atrasada(una: list, otra: list) -> bool:
     return (date.fromisoformat(otra[-1]["date"]) - date.fromisoformat(una[-1]["date"])).days > DIAS_ATRASO
 
 
+@pesado
 def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     """La serie de `asset` en `moneda` ('usd' | 'ars') con lo que hay guardado.
     {velas, ticker, convertida} o {velas: []} si no hay.
@@ -641,6 +643,7 @@ def cierre_de(conn, simbolo: str):
     return {"fecha": v["date"], "cierre": v["close"]} if v else None
 
 
+@pesado
 def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, ref: str = None) -> dict:
     """Lo que necesita la ficha: la serie del gráfico (2 años de calendario) con
     sus medias y su RSI ya calculados sobre TODA la historia guardada (la media
@@ -711,6 +714,7 @@ DIAS_CAMBIOS = 7
 MAX_ACTIVOS_CARTERA = 200
 
 
+@pesado
 def para_la_cartera(conn, activos: list, hoy: date = None) -> list:
     """La lectura en DÓLARES de varios activos, para la radiografía de la Cartera.
 
@@ -870,6 +874,7 @@ def _ultimo_cambio(velas: list, desde: str):
     return {**cambios[0], **texto_del_cambio(cambios[0])} if cambios else None
 
 
+@pesado
 def para_la_lista(conn, activos: list) -> list:
     """La lectura en DÓLARES de lo que tenés y lo que seguís, para «Tu lista,
     con su lectura técnica». `activos`: [(asset, local)] como en la Cartera.
@@ -1173,6 +1178,7 @@ def tendencia_del_dia(velas: list, m200: list, fecha: str) -> dict:
     }
 
 
+@pesado
 def tendencias_en_fechas(conn, pedidos: list) -> dict:
     """Muchas fechas de una vez: pedidos = [{id, asset, local, fecha}] →
     {id: tendencia_del_dia(...)}. La serie y su media de 200 se calculan UNA vez

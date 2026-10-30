@@ -424,6 +424,28 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 @pytest.fixture(autouse=True)
+def _ninguna_lectura_pesada_sin_freno():
+    """El guardián de pesado.py: si durante el test una función `@pesado` (las
+    lecturas técnicas de muchos activos o de 3 años de velas, la valuación de
+    toda la cartera) corrió dentro de un pedido HTTP que no pasó por
+    `main._freno_tecnico`, el test se pone en rojo con la ruta y la función.
+    Así una ruta nueva no puede llegar a una lectura pesada sin el freno, se
+    acuerde o no quien la escribió (re-test E1, ronda 2)."""
+    try:
+        import pesado
+    except Exception:
+        yield
+        return
+    pesado.SIN_FRENO.clear()
+    yield
+    vistos = sorted(set(pesado.SIN_FRENO))
+    pesado.SIN_FRENO.clear()
+    if vistos:
+        pytest.fail("Lectura pesada sin freno (pasala por main._freno_tecnico): "
+                    + "; ".join(f"{p} → {f}" for p, f in vistos), pytrace=False)
+
+
+@pytest.fixture(autouse=True)
 def _freno_tecnico_de_cero():
     """El freno de las lecturas técnicas (`main._freno_tecnico`) cuenta por
     minuto en la memoria del proceso, y la suite es UN proceso: sin esto, un

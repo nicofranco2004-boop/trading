@@ -36,6 +36,7 @@ log = logging.getLogger("senales_semana")
 
 # Los 7 días corridos del período: los de la radiografía (`tecnico.DIAS_CAMBIOS`).
 from tecnico import DIAS_CAMBIOS as DIAS_SEMANA  # noqa: E402
+from pesado import pesado  # noqa: E402
 # La regla de las filas de la Cartera (DIAS_LECTURA_VIEJA de
 # frontend/src/utils/radiografia.js): una lectura cuya última vela es más vieja
 # que esto no describe el precio de hoy.
@@ -161,6 +162,7 @@ def _dolar(conn, uid: int):
     return tc, _user_tc_cedear(conn, uid, tc)
 
 
+@pesado
 def cartera(conn, uid: int, cedears=None, dolar=None) -> dict:
     """{'tenencias': {(asset, local): valor_usd}, 'tipos': {(asset, local):
     asset_type}, 'sin_medir': valor_usd, 'efectivo': valor_usd, 'plazos_fijos':
