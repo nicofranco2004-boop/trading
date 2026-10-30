@@ -62,9 +62,25 @@ describe('Reports — la fila de una semana en Pesos', () => {
     expect(h).toMatch(/text-rendi-neg[^>]*>[^<]*−0,20%/)          // el % en dólares, rojo
     expect(h).toMatch(/text-rendi-pos[^>]*>\+\$/)                // el monto en pesos, verde
   })
-  it('un mes en Pesos no rotula nada: su % ya está en pesos', () => {
+  it('un mes en Pesos del servidor no rotula nada: su % ya está en pesos (`moneda: ars`)', () => {
     vista.currency = 'ARS'
-    expect(fila(3.25, 100, { period_type: 'month' })).not.toContain('en US$')
+    expect(fila(3.25, 100, { period_type: 'month',
+      metrics: { delta_pct: 3.25, delta_usd: 100, basis_incomparable: false, moneda: 'ars' } }))
+      .not.toContain('en US$')
+  })
+  it('un mes que llega con el % en dólares (la demo o un servidor anterior) sí lo rotula', () => {
+    vista.currency = 'ARS'
+    for (const moneda of ['usd', undefined]) {
+      expect(fila(3.25, 100, { period_type: 'month',
+        metrics: { delta_pct: 3.25, delta_usd: 100, basis_incomparable: false, moneda } }))
+        .toContain('en US$')
+    }
+  })
+  it('un monto en cero va neutro, no en verde', () => {
+    vista.currency = 'USD'
+    const h = fila(0, 0)
+    expect(h).not.toContain('text-rendi-pos')
+    expect(h).not.toContain('text-rendi-neg')
   })
   it('en Dólares tampoco: un solo idioma', () => {
     vista.currency = 'USD'
@@ -135,6 +151,45 @@ describe('Reports — el color del P&L del período sin porcentaje', () => {
       const c = celda()
       expect(c).toContain('text-rendi-pos')
       expect(c).not.toContain('text-rendi-neg')
+    })
+    it('el encabezado: el % en dólares (rojo, rotulado) y el monto en pesos (verde) no comparten color', () => {
+      vista.currency = 'ARS'
+      const h = renderToStaticMarkup(
+        <MemoryRouter><CurrentPeriodView period={cayoEnDolares} loading={false} tab="week" broker="global" /></MemoryRouter>)
+      const enc = h.slice(h.indexOf('−0,20%') - 220, h.indexOf('−0,20%') + 420)
+      expect(enc).toMatch(/text-rendi-neg[^>]*>[^<]*−0,20%/)
+      expect(enc).toContain('en US$')
+      expect(enc).toMatch(/text-rendi-pos[^>]*>\+\$/)
+    })
+    // [auditoría 4] El piso del renglón «P&L no realizado»: menos de medio peso (o de medio centavo) no se escribe.
+    const conNoRealizado = (currency, noReal) => {
+      vista.currency = currency
+      const p = { ...cayoEnDolares, metrics: { ...cayoEnDolares.metrics, medicion: 'costo', start_value: 100,
+        end_value: 100, delta_usd: noReal, delta_pct: 0, realized_pnl: 0, realized_ars: 0, realized_ars_cubre_usd: 0,
+        unrealized_pnl: noReal, puntas_desde: null, puntas_hasta: null } }
+      return renderToStaticMarkup(
+        <MemoryRouter><CurrentPeriodView period={p} loading={false} tab="week" broker="global" /></MemoryRouter>)
+    }
+    it('en Dólares el no realizado de US$ 0,004 no se escribe y el de US$ 0,01 sí', () => {
+      expect(conNoRealizado('USD', 0.004)).not.toContain('P&amp;L no realizado')
+      expect(conNoRealizado('USD', 0.01)).toContain('P&amp;L no realizado')
+    })
+    it('en Pesos el no realizado de menos de medio peso no se escribe y el de dos pesos sí', () => {
+      // 0,0002 × 1.500 = $0,30; 0,0014 × 1.500 = $2,10
+      expect(conNoRealizado('ARS', 0.0002)).not.toContain('P&amp;L no realizado')
+      expect(conNoRealizado('ARS', 0.0014)).toContain('P&amp;L no realizado')
+    })
+    it('el KPI de un DÍA en Pesos también aclara que el % es en dólares; en Dólares no', () => {
+      const dia = { ...cayoEnDolares, period_type: 'day', period_label: 'Hoy', period_start: '2024-06-16',
+        period_end: '2024-06-16' }
+      vista.currency = 'ARS'
+      const enPesos = renderToStaticMarkup(
+        <MemoryRouter><CurrentPeriodView period={dia} loading={false} tab="day" broker="global" /></MemoryRouter>)
+      expect(enPesos).toContain('−0,20% en dólares')
+      vista.currency = 'USD'
+      const enDolares = renderToStaticMarkup(
+        <MemoryRouter><CurrentPeriodView period={dia} loading={false} tab="day" broker="global" /></MemoryRouter>)
+      expect(enDolares).not.toContain('en dólares')
     })
     it('el subtítulo aclara que el porcentaje es en dólares', () => {
       expect(celda()).toContain('−0,20% en dólares')

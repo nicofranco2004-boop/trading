@@ -9,7 +9,7 @@ import { useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import InsightChip from './InsightChip'
 import { usePesosDelPeriodo, PeriodoEnVista } from '../../hooks/usePesosDelPeriodo'
-import { pctVar, pctColor } from '../../utils/format'
+import { pctVar, pctColor, montoColor } from '../../utils/format'
 
 // `defaultOpen`: para dibujarla abierta en un render estático (las pruebas); en la app arranca cerrada.
 export default function WeekCard({ week, defaultOpen = false }) {
@@ -33,7 +33,7 @@ export default function WeekCard({ week, defaultOpen = false }) {
   // del monto que se muestra (en Pesos puede ser otro que el de los dólares del servidor).
   const tono = deltaPct != null
     ? pctColor(deltaPct, 2)
-    : (((deltaUsd == null ? null : enVista.resultado) ?? 0) >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
+    : montoColor(deltaUsd == null ? null : enVista.resultado, enVista.moneda)
 
   // Sin actividad: chip minimal, no expandible
   if (!week.is_relevant) {
@@ -54,7 +54,7 @@ export default function WeekCard({ week, defaultOpen = false }) {
         aria-expanded={open}
       >
         <span className="text-xs font-mono text-ink-2 min-w-[80px]">{week.period_label}</span>
-        <span className={`text-xs font-semibold tabular min-w-[64px] ${
+        <span className={`text-xs font-semibold tabular min-w-[64px] whitespace-nowrap ${
           noBasis ? 'text-ink-3' : tono
         }`} title={pctUsd ? 'Porcentaje en dólares' : undefined}>
           {pctVar(deltaPct, 2)}

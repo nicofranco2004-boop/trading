@@ -127,7 +127,7 @@ export function BarrasDelAnio({ cells, pesos, enPesos, tipAbajo, encimaInicial =
               con los pesos de verdad de las ventas. */}
           {enPesos && (
             <div className="text-[10px] text-ink-3 mt-1 leading-none">
-              {activo.aMercado ? 'en pesos, cada punta a su dólar' : 'en pesos: lo vendido, exacto'}
+              {activo.aMercado ? 'en pesos, cada punta a su dólar' : (activo.realizadoNota ? 'en pesos: lo vendido' : 'en pesos: lo vendido, exacto')}
             </div>
           )}
           {/* El renglón de abajo sólo cuando hubo ventas: en un mes sin operaciones

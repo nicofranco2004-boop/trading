@@ -30,7 +30,7 @@ import { useCurrency } from '../contexts/CurrencyContext'
 import { PesosDelPeriodoProvider, usePesosDelPeriodo } from '../hooks/usePesosDelPeriodo'
 import { hoyISO, fechaISO } from '../utils/fecha'
 import { claveSemanaISO } from '../utils/semanas'
-import { pctVar, pctColor, pctVarSign, ppVarFino } from '../utils/format'
+import { pctVar, pctColor, pctVarSign, ppVarFino, montoColor } from '../utils/format'
 
 // ─── Helpers de fecha / keys ─────────────────────────────────────────────────
 
@@ -484,7 +484,7 @@ export function PeriodRow({ period, expanded, onToggle }) {
   const tono = pct == null ? 'text-ink-3' : pctColor(pct, decs)
   // El monto lleva el color de SU signo: en Pesos puede ser otro que el del % (un día o una semana
   // tiene el % en dólares), y un monto positivo en rojo contradice al resto de la fila.
-  const tonoMonto = usdVista == null ? 'text-ink-3' : (usdVista >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
+  const tonoMonto = montoColor(usdVista, pesos.moneda)
   const pctUsd = pct != null && pesos.pctEnDolares(period)
 
   return (
@@ -518,7 +518,7 @@ export function PeriodRow({ period, expanded, onToggle }) {
 
         <div className="flex items-center gap-4 flex-shrink-0">
           {pct != null && (
-            <span className={`text-sm font-mono font-semibold tabular ${tono}`}
+            <span className={`text-sm font-mono font-semibold tabular whitespace-nowrap ${tono}`}
               title={pctUsd ? 'Porcentaje en dólares' : undefined}>
               {pctVar(pct, decs)}
               {pctUsd && <span className="ml-1 text-[11px] font-normal text-ink-3">en US$</span>}
@@ -593,6 +593,11 @@ export function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   const isPos = pct != null ? pct >= 0 : ((usd == null ? null : v.resultado) ?? 0) >= 0
   // Sin base no hay signo que pintar: un "—" en verde sugiere un período bueno.
   const colorClass = noBasis ? 'text-ink-3' : (isPos ? 'text-rendi-pos' : 'text-rendi-neg')
+  // El monto lleva el color de SU signo y el % el del suyo: en Pesos el % de un día o una semana sigue en
+  // dólares y puede tener otro signo que el monto (la cartera cae 0,2 % en dólares, el dólar sube: en
+  // pesos ganó). Con el mismo color los dos se leían como una sola cuenta. El % se rotula.
+  const colorMonto = noBasis || usd == null ? 'text-ink-3' : montoColor(v.resultado, mon)
+  const pctUsdHeader = pct != null && pesos.pctEnDolares(period)
 
   // Detección de "período flat" — sin movimientos, sin trades.
   // En ese caso no mostramos P&L del período (sería engañoso "+US$ 0"),
@@ -637,8 +642,9 @@ export function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
       sub: pct != null ? `${pctVar(pct, 2)}${pesos.pctEnDolares(period) ? ' en dólares' : ''}`
         : noBasis ? 'falta el cierre del arranque' : null,
       // El color es el del monto que se ve; el % puede estar en otra moneda (día y semana en Pesos).
+      // (Un resultado que se escribe «0» va neutro, como en las filas: ver `montoColor`.)
       tone: noBasis ? undefined : (usd == null || v.resultado == null ? (isPos ? 'pos' : 'neg')
-        : (v.resultado >= 0 ? 'pos' : 'neg')),
+        : (Math.abs(v.resultado) < (mon === 'ARS' ? 0.5 : 0.005) ? undefined : (v.resultado >= 0 ? 'pos' : 'neg'))),
     })
   }
 
@@ -869,10 +875,12 @@ export function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
         </div>
         {!isFlat && (
           <div className="flex items-baseline gap-2">
-            <span className={`text-2xl font-mono font-semibold tabular ${colorClass}`}>
+            <span className={`text-2xl font-mono font-semibold tabular whitespace-nowrap ${colorClass}`}
+              title={pctUsdHeader ? 'Porcentaje en dólares' : undefined}>
               {pct != null ? `${pctVar(pct, 2)}` : '—'}
+              {pctUsdHeader && <span className="ml-1 text-xs font-normal text-ink-3">en US$</span>}
             </span>
-            <span className={`text-sm font-mono tabular ${colorClass}`}>
+            <span className={`text-sm font-mono tabular ${colorMonto}`}>
               {usd != null ? plata(v.resultado, mon, { signed: true }) : ''}
             </span>
           </div>

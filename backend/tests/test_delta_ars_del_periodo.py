@@ -224,10 +224,27 @@ class MesDelMotorTest(_Base):
         esperado = 1300 * 1450 - 1000 * 1050 - 200 * math.sqrt(1050 * 1450)
         self.assertAlmostEqual(m.delta_ars, esperado, places=1)
 
-    def test_el_monto_y_el_porcentaje_en_pesos_salen_de_las_mismas_patas(self):
+    def test_el_monto_y_el_porcentaje_en_pesos_son_coherentes_dentro_de_medio_punto(self):
+        """Sin flujos las patas son las mismas y el % es el monto sobre el arranque; el cuadro
+        exacto con flujos lo fija `test_con_un_retiro_...` / `..._deposito_...` contra la cuenta a mano."""
         self._ventana()
         m = self._metricas("month", "2024-06-01", "2024-06-30")
         self.assertAlmostEqual(m.delta_ars / (1000 * 1050) * 100, m.delta_pct, places=0)
+
+    def test_con_un_retiro_el_flujo_negativo_va_al_dolar_medio_y_cierra_con_el_porcentaje(self):
+        """[auditoría 4] Ninguna prueba ponía un retiro: se podía romper la resta de retiros con la
+        suite en verde. 1.000 → 700 con un retiro de 300; el flujo (−300) va al dólar medio."""
+        self._foto("2024-06-03", 1000, 1000)
+        self._foto("2024-06-28", 700, 700)
+        self._mes(2024, 6, 1000, 700, ret=300)
+        m = self._metricas("month", "2024-06-01", "2024-06-30")
+        self.assertEqual(m.medicion, "motor")
+        gm = math.sqrt(1050 * 1450)
+        esperado = 700 * 1450 - 1000 * 1050 + 300 * gm
+        self.assertAlmostEqual(m.delta_ars, esperado, places=1)
+        # el % sale de las mismas patas (Dietz con el flujo neto en pesos)
+        sv, ev, flujo = 1000 * 1050, 700 * 1450, -300 * gm
+        self.assertAlmostEqual(m.delta_pct, (ev - sv - flujo) / (sv + 0.5 * flujo) * 100, delta=0.6)
 
     def test_sin_dolar_de_esas_fechas_no_se_afirma_un_monto(self):
         """Sin dólar usable no hay pesos: queda None y la pantalla lo dice."""
@@ -276,6 +293,14 @@ class SemanaTest(_Base):
         self.assertEqual((m.puntas_desde, m.puntas_hasta), (None, None))
         self.assertIsNone(m.delta_ars)
 
+    def test_un_dia_con_un_broker_filtrado_tambien_es_el_realizado(self):
+        self._foto("2024-06-09", 1000, 1000)
+        self._foto("2024-06-10", 1050, 1000)
+        m = self._metricas("day", "2024-06-10", "2024-06-10", broker="IBKR")
+        self.assertEqual(m.medicion, "realizado")
+        self.assertEqual((m.puntas_desde, m.puntas_hasta), (None, None))
+        self.assertIsNone(m.delta_ars)
+
     def test_sin_ninguna_foto_medida_no_hay_tramo_a_mercado(self):
         m = self._metricas("week", "2024-06-10", "2024-06-16")
         self.assertEqual(m.medicion, "costo")
@@ -299,6 +324,132 @@ class MesEnCursoTest(_Base):
                            today=date(2024, 6, 20))
         self.assertEqual(m.medicion, "mercado")
         self.assertEqual((m.puntas_desde, m.puntas_hasta), ("2023-12-29", "2024-06-20"))
+
+
+    def test_el_pct_en_pesos_del_mes_en_curso_usa_las_fechas_de_las_fotos(self):
+        """El % y el monto salen de las mismas patas: la foto de apertura es del 30/5 (dólar 800),
+        no del 31/5 (dólar 1.000, el día anterior al período), y el cierre es hoy (20/6, dólar 1.400).
+        US$ 1.000 → 1.100 sin aportes: en pesos 800.000 → 1.540.000 = +92,5 %."""
+        self._fx({"2024-05-30": 800.0})
+        self._foto("2024-05-30", 1000, 1000)
+        self._mes(2024, 6, 1000, 1000)
+        m = self._metricas("month", "2024-06-01", "2024-06-30", live=1100,
+                           today=date(2024, 6, 20))
+        self.assertEqual((m.puntas_desde, m.puntas_hasta), ("2024-05-30", "2024-06-20"))
+        self.assertAlmostEqual(m.delta_pct, 92.5, places=1)
+        self.assertNotAlmostEqual(m.delta_pct, 54.0, places=0)   # con el dólar del 31/5
+
+
+class AnoCerradoTest(_Base):
+    """[auditoría 4] El año cerrado medido a mercado no tenía ninguna prueba del tipo ni de las
+    fechas de sus puntas. 2023: arranque con la foto del 31/12/2022 y cierre con la del 31/12/2023."""
+
+    def _bordes(self):
+        self._fx({"2022-12-31": 300.0, "2023-12-31": 900.0})
+        self._foto("2022-12-31", 1000, 1000)
+        self._foto("2023-12-31", 1200, 1000)
+        self._mes(2023, 12, 1000, 1000)
+
+    def test_dice_que_es_mercado_y_de_que_fechas_son_las_dos_fotos(self):
+        self._bordes()
+        m = self._metricas("year", "2023-01-01", "2023-12-31", moneda="usd", today=date(2024, 8, 1))
+        self.assertEqual(m.medicion, "mercado")
+        self.assertEqual((m.puntas_desde, m.puntas_hasta), ("2022-12-31", "2023-12-31"))
+        self.assertAlmostEqual(m.start_value, 1000.0, places=2)
+        self.assertAlmostEqual(m.end_value, 1200.0, places=2)
+
+
+class CuentaNacidaEnElPeriodoTest(_Base):
+    """CUARTA AUDITORÍA (30/10). Una cuenta que nació adentro del período no tiene foto
+    de apertura que fechar, y `medicion` quedaba en 'costo' aunque el cierre fuera el
+    valor vivo: la pantalla en Pesos le sumaba el movimiento del dólar sobre TODO el
+    capital (lo cargado a $6.000.000 que hoy vale $7.343.610 salía −$371.578). El
+    arranque en cero es una punta conocida: el tramo es de mercado, sin fecha de inicio.
+    """
+
+    def _nace_en_marzo(self):
+        self._mes(2024, 3, 0, 1000, dep=1000)
+        self._mes(2024, 6, 1000, 1000)
+
+    def test_el_ano_en_curso_sin_foto_de_diciembre_es_de_mercado_con_arranque_en_cero(self):
+        self._nace_en_marzo()
+        m = self._metricas("year", "2024-01-01", "2024-12-31", live=1200,
+                           today=date(2024, 6, 20))
+        self.assertEqual(m.medicion, "mercado")
+        self.assertEqual(m.start_value, 0.0)
+        # El inicio no tiene fecha (no hay nada que fechar); el cierre es hoy.
+        self.assertEqual((m.puntas_desde, m.puntas_hasta), (None, "2024-06-20"))
+        self.assertAlmostEqual(m.delta_usd, 200.0, places=2)   # 1.200 − 0 − 1.000
+
+    def test_el_mes_en_curso_de_una_cuenta_nacida_ese_mes_es_de_mercado(self):
+        self._mes(2024, 6, 0, 1000, dep=1000)
+        m = self._metricas("month", "2024-06-01", "2024-06-30", live=1100,
+                           today=date(2024, 6, 20))
+        self.assertEqual(m.medicion, "mercado")
+        self.assertEqual((m.puntas_desde, m.puntas_hasta), (None, "2024-06-20"))
+        self.assertAlmostEqual(m.delta_usd, 100.0, places=2)
+
+    def test_con_el_selector_en_dolares_tambien_se_dice_el_tipo(self):
+        self._nace_en_marzo()
+        m = self._metricas("year", "2024-01-01", "2024-12-31", live=1200,
+                           today=date(2024, 6, 20), moneda="usd")
+        self.assertEqual(m.medicion, "mercado")
+
+    def test_sin_aportes_el_arranque_se_reemplaza_y_ya_no_es_el_tramo_anotado(self):
+        """Mes en curso sin foto, sin cadena y sin aportes: el arranque pasa a ser el valor
+        de hoy (delta 0). Las puntas anotadas (0 → 1.100) ya no son las que quedaron, así
+        que no se afirma 'mercado': el chequeo del final que antes era inalcanzable."""
+        m = self._metricas("month", "2024-06-01", "2024-06-30", live=1100,
+                           today=date(2024, 6, 20))
+        self.assertEqual(m.medicion, "costo")
+        self.assertEqual((m.puntas_desde, m.puntas_hasta), (None, None))
+        self.assertAlmostEqual(m.delta_usd, 0.0, places=2)
+
+    def test_una_cadena_rota_no_afirma_mercado(self):
+        self._mes(2024, 6, -5000, 0, dep=1000)
+        m = self._metricas("month", "2024-06-01", "2024-06-30", live=1100,
+                           today=date(2024, 6, 20))
+        self.assertTrue(m.basis_incomparable)
+        self.assertEqual(m.medicion, "costo")
+        self.assertEqual((m.puntas_desde, m.puntas_hasta), (None, None))
+
+    def test_un_capital_previo_grande_sin_medir_sigue_siendo_incomparable(self):
+        """El otro lado de la frontera: si lo previo pesa, no se mezcla (no hay monto)."""
+        self._mes(2024, 6, 5000, 5000, dep=100)
+        m = self._metricas("month", "2024-06-01", "2024-06-30", live=5200,
+                           today=date(2024, 6, 20))
+        self.assertTrue(m.basis_incomparable)
+        self.assertEqual(m.medicion, "costo")
+
+    def test_la_semana_en_curso_de_una_cuenta_nueva_es_de_mercado(self):
+        self._mes(2024, 6, 0, 1000, dep=1000)
+        m = self._metricas("week", "2024-06-17", "2024-06-23", live=1100,
+                           today=date(2024, 6, 20))
+        self.assertEqual(m.medicion, "mercado")
+        self.assertEqual((m.puntas_desde, m.puntas_hasta), (None, "2024-06-20"))
+        self.assertAlmostEqual(m.delta_usd, 100.0, places=2)
+
+    def test_el_dia_en_curso_de_una_cuenta_nueva_es_de_mercado(self):
+        self._mes(2024, 6, 0, 1000, dep=1000)
+        m = self._metricas("day", "2024-06-20", "2024-06-20", live=1100,
+                           today=date(2024, 6, 20))
+        self.assertEqual(m.medicion, "mercado")
+        self.assertEqual((m.puntas_desde, m.puntas_hasta), (None, "2024-06-20"))
+
+    def test_la_primera_semana_cerrada_usa_la_fecha_de_su_foto_del_cron_como_cierre(self):
+        self._mes(2024, 6, 0, 1000, dep=1000)
+        self._foto("2024-06-16", 1050, 1000)
+        m = self._metricas("week", "2024-06-10", "2024-06-16")
+        self.assertEqual(m.medicion, "mercado")
+        self.assertEqual((m.puntas_desde, m.puntas_hasta), (None, "2024-06-16"))
+        self.assertAlmostEqual(m.delta_usd, 50.0, places=2)
+
+    def test_una_semana_pasada_sin_ninguna_foto_sigue_al_costo(self):
+        """Sin cierre medido no hay mercado que afirmar (el `end_value` es el arranque)."""
+        self._mes(2024, 6, 0, 1000, dep=1000)
+        m = self._metricas("week", "2024-06-10", "2024-06-16")
+        self.assertEqual(m.medicion, "costo")
+        self.assertEqual((m.puntas_desde, m.puntas_hasta), (None, None))
 
 
 if __name__ == "__main__":

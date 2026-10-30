@@ -586,6 +586,93 @@ describe('el Dashboard y el Resumen mensual leen el realizado de la fila de /api
     })
   })
 
+  // LA AUDITORÍA 4 (cuenta nacida en el período). Sin foto de apertura el servidor marcaba 'costo' aunque el
+  // cierre fuera el valor vivo, y la pantalla le sumaba el movimiento del dólar sobre TODO el capital.
+  describe('una cuenta que nació adentro del período (arranque en cero, cierre a mercado)', () => {
+    // Depositó $600.000 en marzo con el dólar a 1.000 (US$ 600). La cartera quedó plana en dólares
+    // (US$ 600) y hoy el dólar vale 1.500: en pesos vale $900.000, o sea ganó $300.000.
+    const tcEnFecha = (iso) => (String(iso) < '2024-05' ? 1000 : 1500)
+    const brokers = [{ id: 1, name: 'Balanz', currency: 'ARS', parent_broker_id: null }]
+    const monthly = [
+      { broker: 'global', year: 2024, month: 3, capital_inicio: 0, deposits: 600, withdrawals: 0 },
+      { broker: 'Balanz', year: 2024, month: 3, capital_inicio: 0, deposits: 600, withdrawals: 0,
+        manual_deposits: 600, manual_deposits_native: 600000 },
+    ]
+    const pesos = crearPesosDelPeriodo({ moneda: 'ARS', tcHoy: 1500, tcEnFecha, dolarMes: {}, monthly, brokers })
+    const anio = (metrics) => ({ period_type: 'year', period_start: '2024-01-01', period_end: '2024-12-31',
+      is_current: true, metrics: { start_value: 0, end_value: 600, deposits: 600, withdrawals: 0,
+        delta_usd: 0, realized_pnl: 0, realized_ars: 0, realized_ars_cubre_usd: 0, unrealized_pnl: 0,
+        realized_ars_valuado: false, ...metrics } })
+
+    it('de mercado y sin fecha de inicio: el resultado es lo que vale hoy menos los pesos que pusiste', () => {
+      const v = pesos.enVista(anio({ medicion: 'mercado', puntas_desde: null, puntas_hasta: '2024-06-20' }))
+      expect(v.depositos).toBe(600000)
+      expect(v.cierre).toBe(900000)
+      expect(v.inicio).toBe(0)
+      expect(v.resultado).toBe(300000)
+      expect(v.inicio + v.depositos - v.retiros + v.resultado).toBe(v.cierre)
+    })
+    it('con una ganancia en dólares se suma la del dólar sobre lo que pusiste', () => {
+      const v = pesos.enVista(anio({ medicion: 'mercado', puntas_desde: null, puntas_hasta: '2024-06-20',
+        end_value: 660, delta_usd: 60, unrealized_pnl: 60 }))
+      expect(v.resultado).toBe(660 * 1500 - 600000)
+    })
+    it('una semana CERRADA de cuenta nueva pone el cierre al dólar de SU foto, no al del último día', () => {
+      // La foto del cron es del viernes 14 (dólar 1.200); la semana termina el domingo 16 (dólar 1.300).
+      const tc = (iso) => ({ '2024-06-14': 1200, '2024-06-16': 1300 }[String(iso).slice(0, 10)] ?? 1000)
+      const p = crearPesosDelPeriodo({ moneda: 'ARS', tcHoy: 1500, tcEnFecha: tc, dolarMes: {}, monthly: [], brokers: [] })
+      const v = p.enVista({ period_type: 'week', period_start: '2024-06-10', period_end: '2024-06-16',
+        is_current: false, metrics: { start_value: 0, end_value: 1050, deposits: 1000, withdrawals: 0,
+          delta_usd: 50, realized_pnl: 0, realized_ars: 0, realized_ars_cubre_usd: 0, unrealized_pnl: 50,
+          realized_ars_valuado: false, medicion: 'mercado', puntas_desde: null, puntas_hasta: '2024-06-14' } })
+      expect(v.cierre).toBe(1050 * 1200)
+      expect(v.cierre).not.toBe(1050 * 1300)
+    })
+    it('al costo el mismo período NO suma el dólar sobre el capital (sólo lo que se vendió)', () => {
+      // El contraste: si el tipo fuera 'costo' la cuenta es otra; por eso el servidor tiene que decirlo bien.
+      const v = pesos.enVista(anio({ medicion: 'costo' }))
+      expect(v.resultado).toBe(0)
+    })
+  })
+
+
+  // LA AUDITORÍA 4 (semana sin ninguna foto). Las dos puntas valen 0 y el delta queda en 0: el servidor no midió
+  // nada. El «no realizado» que arma restando delta − realizado no existe, y en pesos se multiplicaba por el dólar.
+  describe('un período sin ninguna foto (las dos puntas en cero)', () => {
+    const pesos = crearPesosDelPeriodo({ moneda: 'ARS', tcHoy: 1500, tcEnFecha: () => 1500, dolarMes: {}, monthly: [], brokers: [] })
+    const semana = { period_type: 'week', period_start: '2024-06-10', period_end: '2024-06-16', is_current: false,
+      metrics: { start_value: 0, end_value: 0, deposits: 0, withdrawals: 0, delta_usd: 0, medicion: 'costo',
+        realized_pnl: -69.51, realized_ars: 65982, realized_ars_cubre_usd: -69.51, unrealized_pnl: 69.51,
+        realized_ars_valuado: false, basis_incomparable: false } }
+    it('el resultado es lo vendido, exacto, y no hay un no realizado inventado', () => {
+      const v = pesos.enVista(semana)
+      expect(v.resultado).toBe(65982)
+      expect(v.realizado).toBe(65982)
+      expect(v.noRealizado).toBe(0)
+    })
+    it('con saldo en una de las puntas sigue valiendo la cuenta de siempre (el resto va al dólar del cierre)', () => {
+      const v = pesos.enVista({ ...semana, metrics: { ...semana.metrics, end_value: 100, delta_usd: 130,
+        realized_pnl: 10, realized_ars: 15000, realized_ars_cubre_usd: 10, unrealized_pnl: 120 } })
+      expect(v.resultado).toBe(15000 + (130 - 10) * 1500)
+    })
+  })
+
+
+  // LA AUDITORÍA 4 (defensa en profundidad). El servidor no manda 'mercado' junto con base incomparable, pero si
+  // algún día lo hiciera la pantalla no tiene que armar una resta que el servidor se negó a publicar.
+  describe('base incomparable', () => {
+    const pesos = crearPesosDelPeriodo({ moneda: 'ARS', tcHoy: 1500, tcEnFecha: () => 1500, dolarMes: {}, monthly: [], brokers: [] })
+    it("aunque llegue marcado 'mercado', no arma la resta de las puntas", () => {
+      const v = pesos.enVista({ period_type: 'year', period_start: '2024-01-01', period_end: '2024-12-31', is_current: false,
+        metrics: { start_value: 100, end_value: 160, deposits: 0, withdrawals: 0, delta_usd: 0, medicion: 'mercado',
+          puntas_desde: '2023-12-31', puntas_hasta: '2024-12-31', basis_incomparable: true, realized_pnl: 0,
+          realized_ars: 0, realized_ars_cubre_usd: 0, unrealized_pnl: 0, realized_ars_valuado: false } })
+      expect(v.resultado).not.toBe(60 * 1500)
+      expect(v.resultado).toBe(0)
+    })
+  })
+
+
   // Guardia de texto: SÓLO ve que el nombre aparece en el archivo, no que se lo llame bien (D3: llamar a
   // la función y descartar el resultado la pasa en verde). Lo que prueba la cuenta son los tests de arriba.
   describe('las pantallas usan la cuenta', () => {

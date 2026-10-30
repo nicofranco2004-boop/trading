@@ -104,8 +104,10 @@ export function crearPesosDelPeriodo({
     // A mercado, cada punta va al dólar de la FOTO que usó el servidor (`puntas_desde/hasta`): la
     // semana arranca con la foto de hasta cinco días antes y el mes acepta bordes corridos un día,
     // así que adivinar por la fecha del período toma el dólar de otro día.
-    const puntasMercado = medicion === 'mercado' && !!m.puntas_desde && !!m.puntas_hasta
-    const fxInicio = puntasMercado
+    // Sin `puntas_desde` el arranque no tiene foto (la cuenta nació adentro del período: arranque 0):
+    // se pone al dólar del día anterior, que multiplica a ese 0.
+    const puntasMercado = medicion === 'mercado' && !!m.puntas_hasta
+    const fxInicio = puntasMercado && m.puntas_desde
       ? tc(m.puntas_desde)
       : (p?.period_start ? tc(diaAnterior(p.period_start)) : fxCierre)
     const fxPuntaCierre = puntasMercado && !p?.is_current ? tc(m.puntas_hasta) : fxCierre
@@ -170,10 +172,11 @@ export function crearPesosDelPeriodo({
     // no inventa pesos. Con base incomparable el servidor ya no publica monto: no se mezcla nada.
     // (Sin saldo en ninguna de las dos puntas no hay resta que repetir: daría 0 − 0 − 0 aunque se haya
     // vendido. Y un delta del motor sin su monto en pesos queda en delta × dólar, sin mezclar nada.)
-    const sumaMercado = medicion === 'mercado' && inicio != null && cierre != null
+    const sumaMercado = medicion === 'mercado' && !m.basis_incomparable && inicio != null && cierre != null
       && (num(m.start_value) !== 0 || num(m.end_value) !== 0)
     const delMotor = medicion === 'motor' && num(m.delta_ars) != null
     const alCosto = !m.basis_incomparable && !sumaMercado && !delMotor && medicion !== 'motor'
+    const sinSaldo = num(m.start_value) === 0 && num(m.end_value) === 0
 
     let resultado, noRealizado
     if (sumaMercado) {
@@ -182,6 +185,13 @@ export function crearPesosDelPeriodo({
     } else if (delMotor) {
       resultado = num(m.delta_ars)
       noRealizado = conRealizado ? resultado - real.monto : x(m.unrealized_pnl, fxCierre)
+    } else if (alCosto && conRealizado && sinSaldo) {
+      // Un período sin ninguna foto (cuenta cuyo cron nunca corrió): el servidor no midió nada —las dos
+      // puntas valen 0 y el delta queda en 0— y arma el «no realizado» restando delta − realizado. En
+      // pesos eso se multiplicaba por el dólar y salía una ganancia que nadie midió (+$125.027 al lado de
+      // una venta de +$65.982). Lo único que se sabe es lo vendido, y es exacto.
+      resultado = real.monto
+      noRealizado = 0
     } else if (alCosto && conRealizado && delta != null) {
       resultado = real.monto + (num(m.delta_usd) - realUsd) * fxCierre
       noRealizado = x(m.unrealized_pnl, fxCierre)
@@ -223,11 +233,13 @@ export function crearPesosDelPeriodo({
 
   /**
    * ¿El % de este período sigue en DÓLARES aunque el monto se vea en pesos? El servidor sólo pasa a
-   * pesos el % de un mes o un año; el de un día o una semana sale de las fotos en dólares. Mirándolos
+   * pesos el % de un mes o un año (y lo dice en `metrics.moneda`: la demo y un servidor anterior
+   * lo mandan en dólares); el de un día o una semana sale de las fotos en dólares. Mirándolos
    * juntos pueden tener signos opuestos (la cartera cae 0,2 % en dólares, el dólar sube 0,5 %: en
    * pesos ganó), así que la pantalla lo rotula en vez de dejarlos como si fueran la misma cuenta.
    */
-  const pctEnDolares = (p) => enPesos && (p?.period_type === 'day' || p?.period_type === 'week')
+  const pctEnDolares = (p) => enPesos && (p?.period_type === 'day' || p?.period_type === 'week'
+    || String(p?.metrics?.moneda ?? 'usd').toLowerCase() !== 'ars')
 
   /** Un resultado en dólares de un período, al dólar de su cierre (hoy si sigue). */
   const alCierre = (usd, periodEnd, enCurso) => (num(usd) == null ? null

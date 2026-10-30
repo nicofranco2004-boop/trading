@@ -203,6 +203,16 @@ export const ppVarFino = (n, decimals = 1) => (esPct(n) ? pctVarFino(n, decimals
 // va neutro, como en colorClass y en la cinta. Mismos `decimals` que el texto.
 export const pctColor = (n, decimals = 2) => colorClass(pctVarSign(n, decimals))
 
+// El color de un MONTO es el de SU signo, y un monto que se escribe «0» va neutro (como el %): una
+// fila «+US$ 0,00» en verde dice «ganaste» donde el texto dice «no se movió». En pesos no hay
+// decimales, así que lo que redondea a cero es menos de medio peso.
+export const montoColor = (n, moneda = 'USD') => {
+  if (n == null || !Number.isFinite(+n)) return 'text-ink-3'
+  const v = +n
+  if (Math.abs(v) < (moneda === 'ARS' ? 0.5 : 0.005)) return 'text-ink-3'
+  return v > 0 ? 'text-rendi-pos' : 'text-rendi-neg'
+}
+
 // Precio de un índice o activo de referencia (la cinta de arriba y las
 // tarjetas del inicio). Cripto y los números de seis cifras van sin decimales
 // —el Merval en pesos y el bitcoin no ganan nada con ",37" y en el celular no

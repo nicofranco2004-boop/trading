@@ -443,7 +443,9 @@ function Detalle({ medida, modo, porBroker, enPesos, fmtPlata }) {
             una resta que el motor no hace en ese estado — y contradecía al
             cartel que está tres centímetros más arriba. */}
         {modo === 'abiertas'
-          ? 'Sólo lo que se movió el precio de lo que seguís teniendo.'
+          ? (enPesos
+            ? 'Sólo lo que se movió de lo que seguís teniendo: el precio y, en pesos, también el dólar sobre lo que tenés en dólares.'
+            : 'Sólo lo que se movió el precio de lo que seguís teniendo.')
           : porBroker
           ? 'De un broker solo se puede medir lo que cerraste: el valor de lo que tenés se mide sobre la cartera completa.'
           : 'Lo de las posiciones abiertas sale de restarle al total lo que dejaron las ventas, así que también recoge cualquier otro movimiento de la cuenta — por ejemplo, ' + (enPesos ? 'lo que el dólar mueve de lo que tenés en dólares.' : 'pesos quietos cuando cambia el dólar.')}

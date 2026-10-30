@@ -174,7 +174,9 @@ class PeriodMetrics:
     # Las fechas de las dos fotos cuando `medicion` es 'mercado' (start_value es de
     # `puntas_desde`, end_value de `puntas_hasta`): la pantalla no tiene por qué
     # adivinarlas por la fecha del período (la semana arranca con la foto de hasta 5
-    # días antes, el mes acepta bordes corridos un día).
+    # días antes, el mes acepta bordes corridos un día). `puntas_desde` None = el
+    # arranque no tiene foto (la cuenta nació adentro del período: arranque 0, o un
+    # capital previo dentro de la tolerancia del guard); `_tramo_sin_foto_de_arranque`.
     puntas_desde: Optional[str] = None
     puntas_hasta: Optional[str] = None
 

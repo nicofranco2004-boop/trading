@@ -557,6 +557,32 @@ def _basis_is_incomparable(start_is_mtm: bool, start_value: float,
     return (start_value / base_total) > _UNMEASURED_BASE_TOL
 
 
+def _tramo_sin_foto_de_arranque(basis_incomparable: bool, start_value: float,
+                                end_value: float, hasta: str):
+    """El tramo de un período cuyo CIERRE es de mercado y cuyo arranque NO tiene
+    foto: la cuenta nació adentro del período (arranque 0) o su capital previo es
+    chico y `_basis_is_incomparable` lo deja pasar. None si no hay nada que afirmar.
+
+    ⚠️ POR QUÉ EXISTE (cuarta auditoría del 30/10). `medicion` sólo se marcaba
+    'mercado' cuando había una foto de apertura que fechar, y una cuenta nacida en
+    el año (o el mes) no la tiene: quedaba 'costo' aunque el cierre fuera el valor
+    vivo. La pantalla en Pesos le aplicaba la cuenta del costo y le sumaba el
+    movimiento del dólar sobre TODO el capital: lo cargado a $6.000.000 que hoy vale
+    $7.343.610 salía "−$371.578" donde la verdad es +$1.343.610 (21 de 21 cuentas
+    nacidas ese año). Un arranque en cero es una punta perfectamente conocida —no
+    hay fecha porque no hay nada que fechar—, y con el cierre a mercado el delta ES
+    `fin − inicio − flujos` a mercado.
+
+    `puntas_desde` va None: la pantalla pone el arranque al dólar del día anterior
+    al período, que multiplica a un 0 (o a un capital dentro de la tolerancia del
+    guard, que acota el error). Con la cadena rota o la base incomparable no se
+    afirma nada: ahí ya no se publica monto.
+    """
+    if basis_incomparable or _capital_roto(start_value):
+        return None
+    return (None, hasta, start_value, end_value)
+
+
 def _capital_al_arrancar_el_mes(conn, uid: int, year: int, month: int) -> float:
     """El capital de la cadena 'global' al ARRANCAR (year, month): al costo y CON
     lo realizado que quedó adentro. Es el mismo `start` que usa el mes cuando no
@@ -1668,6 +1694,9 @@ def compute_metrics_for_period(
                     # La causa real, no la genérica: acá no falta un cierre a
                     # mercado, sobra un capital que no puede existir.
                     _motor_nego_texto = _MOTIVO_ARRANQUE_NEGATIVO
+            if _tramo_mercado is None:
+                _tramo_mercado = _tramo_sin_foto_de_arranque(
+                    basis_incomparable, start_value, end_value, _hoy_p)
             # Sin NINGUNA base medible NI flows (usuario sin historia ni aportes
             # registrados): período incompleto (patrón B4/B10) — delta 0 honesto
             # en vez de "+toda la cartera (+0.0% sobre capital inicial US$ 0)".
@@ -1879,6 +1908,9 @@ def compute_metrics_for_period(
                 basis_incomparable = True
                 if _capital_roto(start_value):
                     _motor_nego_texto = _MOTIVO_ARRANQUE_NEGATIVO
+            if _tramo_mercado is None:
+                _tramo_mercado = _tramo_sin_foto_de_arranque(
+                    basis_incomparable, start_value, end_value, _hoy_p)
         else:
             # Año CERRADO: mismas dos puntas medidas que pide el mes.
             _b = bordes_mercado_periodo(conn, uid, period_start, period_end,
@@ -2434,6 +2466,20 @@ def compute_metrics_for_period(
                     dw_incomplete = True
             except (ValueError, TypeError, KeyError):
                 pass
+        # Sin foto de arranque (la cuenta nació en el período, o el capital previo
+        # entra en la tolerancia del guard) el tramo igual es de mercado: el cierre
+        # es el valor vivo o una foto MEDIDA del cron. Ver `_tramo_sin_foto_de_arranque`.
+        if _tramo_mercado is None and not basis_incomparable:
+            if _dw_current:
+                _tramo_mercado = _tramo_sin_foto_de_arranque(
+                    basis_incomparable, start_value, end_value, _hoy_p)
+            elif snap_end is not None:
+                _se_m2 = fetch_snapshot_at_or_before(
+                    conn, uid, period_end, mtm_only=True, require_positive=False)
+                if _se_m2 and str(_se_m2["date"])[:10] == str(snap_end["date"])[:10]:
+                    _tramo_mercado = _tramo_sin_foto_de_arranque(
+                        basis_incomparable, start_value, end_value,
+                        str(snap_end["date"])[:10])
 
     flows = deposits - withdrawals
     delta_usd = end_value - start_value - flows
@@ -2460,9 +2506,18 @@ def compute_metrics_for_period(
             and period_type in ("month", "year")
             and (start_value > 0 or end_value > 0)):
         _d0c = _dia_anterior(period_start)
+        _d1c = period_end
+        # Las MISMAS fechas que el monto en pesos de la pantalla (`puntas_desde/hasta`) cuando el tramo
+        # es de mercado: el % y el monto salen de las mismas patas, no de dos ventanas distintas (el
+        # mes en curso arranca en la foto de hasta unos días antes y cierra hoy, no el último día).
+        if (_tramo_mercado is not None
+                and abs(_tramo_mercado[2] - start_value) < 1e-9
+                and abs(_tramo_mercado[3] - end_value) < 1e-9):
+            _d0c = _tramo_mercado[0] or _d0c
+            _d1c = _tramo_mercado[1] or _d1c
         if _d0c:
             _pct_puntas_ars = _pct_en_pesos(
-                conn, _d0c, period_end, start_value, end_value,
+                conn, _d0c, _d1c, start_value, end_value,
                 deposits, withdrawals)
     # El punta-a-punta en pesos. Va ACÁ y no más abajo a propósito: si el motor o
     # la composición tienen un número mejor, ésos pisan igual — ya vienen en la

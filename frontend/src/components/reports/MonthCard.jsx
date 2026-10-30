@@ -113,6 +113,9 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
               noBasis ? 'text-ink-3' : pctColor(deltaPct, 2)
             }`}>
               {pctVar(deltaPct, 2)}
+              {deltaPct != null && pesos.pctEnDolares(p) && (
+                <span className="ml-1 text-[11px] font-normal text-ink-3">en US$</span>
+              )}
             </span>
             <span className="text-xs tabular text-ink-3">
               {noBasis ? null : pesos.fmt(enVista.resultado, { signed: true })}
