@@ -133,14 +133,14 @@ beforeEach(() => {
 afterEach(async () => { await montado?.desmontar?.(); montado = null; vi.unstubAllGlobals() })
 
 describe('Análisis técnico: las pestañas', () => {
-  it('sin ?tab abre Panorama; Mercado se ve «Próximamente» y no se toca', async () => {
+  it('sin ?tab abre Gráfico (la de entrada desde el 30/10, Nico); Mercado se ve «Próximamente» y no se toca', async () => {
     montado = await abrir('/analisis-tecnico')
-    expect(pestanaActiva(montado.contenedor)).toBe('Panorama')
+    expect(pestanaActiva(montado.contenedor)).toBe('Gráfico')
     expect(montado.t()).toContain('Próximamente')
     const mercado = buscarBoton(montado.contenedor, 'Mercado')
     expect(mercado.atributos.disabled).not.toBeUndefined()
     await enActo(async () => clic(montado.contenedor, mercado))
-    expect(pestanaActiva(montado.contenedor)).toBe('Panorama')
+    expect(pestanaActiva(montado.contenedor)).toBe('Gráfico')
   })
 
   it('Comparar lleva a LA pantalla de comparar precios, con lo tuyo que más pesa ya cargado', async () => {
@@ -162,12 +162,12 @@ describe('Análisis técnico: las pestañas', () => {
     expect(montado.t()).toContain('Qué cambió esta semana en lo que tenés y en tu watchlist')
     expect(montado.t()).toContain('Crear una alerta técnica en Alertas')
     await enActo(async () => clic(montado.contenedor, buscarBoton(montado.contenedor, 'Panorama')))
-    expect(montado.donde.actual.search).toBe('')
+    expect(montado.donde.actual.search).toBe('?tab=panorama')
   })
 
-  it('una pestaña que no existe o que todavía no está cae en Panorama', async () => {
+  it('una pestaña que no existe o que todavía no está cae en la de entrada (Gráfico)', async () => {
     montado = await abrir('/analisis-tecnico?tab=comparar')
-    expect(pestanaActiva(montado.contenedor)).toBe('Panorama')
+    expect(pestanaActiva(montado.contenedor)).toBe('Gráfico')
   })
 
   it('la página pide una vez lo de la semana y una vez tu lista, aunque los usen varias pestañas', async () => {
@@ -181,7 +181,7 @@ describe('Análisis técnico: las pestañas', () => {
 
 describe('Análisis técnico: el Panorama', () => {
   it('el % del servidor (no el de la pantalla), los 3 cambios más nuevos y cuántas señales hay', async () => {
-    montado = await abrir('/analisis-tecnico')
+    montado = await abrir('/analisis-tecnico?tab=panorama')
     const t = montado.t()
     expect(t).toContain('74% de tu plata está en tendencia de fondo alcista')
     expect(t).toContain('(la semana pasada, 70%)')

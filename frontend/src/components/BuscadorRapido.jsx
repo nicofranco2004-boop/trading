@@ -58,7 +58,7 @@ const CLAVES = {
   '/analisis':         ['rendimiento', 'performance', 'análisis'],
   // Se llamaba «Calidad de cartera»: quien la busque así la sigue encontrando.
   '/fundamentals':     ['fundamentals', 'empresas', 'calidad', 'calidad de cartera', 'balances'],
-  '/analisis-tecnico': ['técnico', 'tendencia', 'rsi', 'adx', 'señales', 'tu lista', 'watchlist'],
+  '/analisis-tecnico': ['técnico', 'gráfico', 'tendencia', 'rsi', 'adx', 'señales', 'tu lista', 'watchlist'],
   '/perfil-inversor':  ['perfil', 'riesgo'],
   '/alertas':          ['avisos', 'notificaciones'],
   '/imports':          ['importar', 'csv', 'excel', 'archivo'],

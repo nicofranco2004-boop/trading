@@ -46,7 +46,8 @@ describe('la Cartera, corta (recuadro 21c)', () => {
     const html = conRouter(<RadiografiaTecnica lotes={LOTES} reparto={REPARTO} cargando={false} />)
     const t = sinEtiquetas(html)
     expect(t).toContain('54% de tu plata está en tendencia de fondo alcista (la semana pasada, 61%)')
-    expect(html).toContain('href="/analisis-tecnico"')
+    // A Panorama (la barra y los grupos de este número), no a la entrada (el gráfico).
+    expect(html).toContain('href="/analisis-tecnico?tab=panorama"')
     expect(t).toContain('Ver análisis técnico')
     expect(html).not.toContain('role="img"')                 // la barra vive en el Panorama
     expect(t).not.toContain('Lo que cambió esta semana')

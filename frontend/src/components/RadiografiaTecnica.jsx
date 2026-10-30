@@ -150,7 +150,10 @@ function antesTxt(sp) {
 export default function RadiografiaTecnica({ lotes, reparto, cargando, error, className = '' }) {
   const { hidden } = usePrivacy()
   if (!lotes?.some(p => !p.is_cash)) return null
-  const enlace = <Link to="/analisis-tecnico" className="text-[13px] font-medium text-data-violet hover:underline whitespace-nowrap">Ver análisis técnico →</Link>
+  // A Panorama, no a la entrada (desde el 30/10, el gráfico): ahí está la barra
+  // y los grupos de este mismo número. Es urlDePestana('panorama') de
+  // pages/AnalisisTecnico.jsx, escrita acá porque esa página importa esta.
+  const enlace = <Link to="/analisis-tecnico?tab=panorama" className="text-[13px] font-medium text-data-violet hover:underline whitespace-nowrap">Ver análisis técnico →</Link>
   if (cargando) return <div className={`h-14 rounded-xl bg-bg-2/40 border border-line esqueleto ${className}`} aria-label="Cargando la radiografía técnica" />
   const antes = !hidden ? antesTxt(reparto?.semana_pasada) : null
   return (

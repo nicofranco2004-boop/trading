@@ -1,11 +1,15 @@
 // AnalisisTecnico — «Análisis técnico» (menú → Análisis de mercado): cómo se
 // mueven los precios de lo que tenés y de lo que seguís, en pestañas
 // (recuadro 21 del tablero, aprobado por Nico el 28/10):
-//   · Panorama (de entrada): el % de tu plata en tendencia de fondo alcista,
-//     los 3 cambios más nuevos de la semana y por dónde seguir;
+//   · Panorama (?tab=panorama): el % de tu plata en tendencia de fondo
+//     alcista, los 3 cambios más nuevos de la semana y por dónde seguir (fue
+//     la de entrada hasta el 30/10);
 //   · Tu lista (?tab=lista): la tabla de pages/TuLista.jsx;
 //   · Señales de la semana (?tab=senales): «Tus señales» de la pieza 15
 //     (components/TusSenales.jsx), que vivía en Novedades;
+//   · Gráfico (de entrada, sin ?tab; ?activo=GGAL), la primera de la fila
+//     (Nico, 30/10): sólo el gráfico, con el activo arriba a la izquierda como
+//     en TradingView (pages/GraficoTecnico.jsx);
 //   · Comparar: lleva a LA pantalla de comparar (Análisis fundamental →
 //     Comparar → Precio, pieza 16) con tus 4 activos que más pesan ya cargados.
 //     No hay un segundo «Comparar» acá adentro (decisión de Nico);
@@ -27,6 +31,7 @@ import { ArrowRight } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import TuLista, { useListaTecnica } from './TuLista'
+import GraficoTecnico from './GraficoTecnico'
 import { TusSenalesVista, useTusSenales, Cambio } from '../components/TusSenales'
 import { TarjetaPlata } from '../components/RadiografiaTecnica'
 import { usePrivacy } from '../contexts/PrivacyContext'
@@ -38,6 +43,8 @@ import { urlDeComparar } from '../utils/comparadorPrecio'
 // Las pestañas, en orden. `corto`: el nombre en el celular. `pronto`: todavía
 // no está (se ve, no se toca). `afuera`: lleva a otra pantalla (no se queda acá).
 export const PESTANAS = [
+  // Gráfico, la primera de la fila y la de entrada (Nico, 30/10).
+  { id: 'grafico', label: 'Gráfico' },
   { id: 'panorama', label: 'Panorama' },
   { id: 'lista', label: 'Tu lista' },
   { id: 'senales', label: 'Señales de la semana', corto: 'Señales' },
@@ -45,12 +52,16 @@ export const PESTANAS = [
   { id: 'mercado', label: 'Mercado', pronto: true },
 ]
 
+/** La que se abre al entrar (sin ?tab): Gráfico (Nico, 30/10). Un lugar solo
+ *  para la regla: la dirección, los links y el cambio de pestaña la leen acá. */
+export const DE_ENTRADA = 'grafico'
+
 /** La pestaña de la dirección (?tab=…). Sin tab, una que no existe, una que
- *  todavía no está o una que lleva afuera: Panorama. */
+ *  todavía no está o una que lleva afuera: la de entrada. */
 export function pestanaDe(searchParams) {
   const t = searchParams.get('tab')
   const p = PESTANAS.find(x => x.id === t && !x.pronto && !x.afuera)
-  return p ? p.id : 'panorama'
+  return p ? p.id : DE_ENTRADA
 }
 
 /** Comparar → Precio con tus 4 activos que más pesan (los de «Tu lista» que
@@ -59,8 +70,8 @@ export function urlDeCompararTuyos(filas = []) {
   return urlDeComparar(filas.filter(f => f.tenes).sort((a, b) => (b.peso || 0) - (a.peso || 0)).map(f => f.ruta))
 }
 
-/** La dirección de una pestaña (Panorama va sin ?tab, es la de entrada). */
-export const urlDePestana = (id) => (id === 'panorama' ? '/analisis-tecnico' : `/analisis-tecnico?tab=${id}`)
+/** La dirección de una pestaña (la de entrada va sin ?tab). */
+export const urlDePestana = (id) => (id === DE_ENTRADA ? '/analisis-tecnico' : `/analisis-tecnico?tab=${id}`)
 
 function Pestanas({ activa, cuentas, onElegir }) {
   return (
@@ -223,7 +234,7 @@ export default function AnalisisTecnico() {
   const elegir = (id) => {
     if (id === 'comparar') { navigate(urlDeCompararTuyos(filas)); return }
     const next = new URLSearchParams(searchParams)
-    if (id === 'panorama') next.delete('tab'); else next.set('tab', id)
+    if (id === DE_ENTRADA) next.delete('tab'); else next.set('tab', id)
     setSearchParams(next)
     window.scrollTo?.({ top: 0 })
   }
@@ -241,6 +252,7 @@ export default function AnalisisTecnico() {
       <div role="tabpanel" id="analisis-tecnico-panel" aria-labelledby={`analisis-tecnico-tab-${activa}`}>
         {activa === 'panorama' && <Panorama lista={lista} filas={filas} semana={semana} hidden={hidden} onVer={ver} onPestana={elegir} />}
         {activa === 'lista' && <TuLista datos={lista} filas={filas} />}
+        {activa === 'grafico' && <GraficoTecnico />}
         {activa === 'senales' && (
           <div className="flex flex-col gap-3">
             <TusSenalesVista datos={semana.datos} error={semana.error} hidden={hidden} filtro={filtro} onFiltro={setFiltro}
