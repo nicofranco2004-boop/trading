@@ -209,6 +209,9 @@ class FrenoTecnicoTest(unittest.TestCase):
                 self._lista(activos=["AAPL"])
             self.assertEqual(self.client.get("/api/tus-senales", headers=self.ana).status_code, 429)
             self.assertEqual(self.client.get("/api/tus-senales", headers=self.beto).status_code, 200)
+            # Tus tesis: la misma lectura de muchos activos (re-test E1, ronda 2).
+            self.assertEqual(self.client.get("/api/tesis", headers=self.ana).status_code, 429)
+            self.assertEqual(self.client.get("/api/tesis", headers=self.beto).status_code, 200)
             por_minuto = main.FRENO_TECNICO["uno"][0]
             for i in range(por_minuto):
                 r = self.client.get(f"/api/tecnico/{ACTIVOS[i % len(ACTIVOS)]}?moneda=usd", headers=self.ana)
@@ -216,6 +219,7 @@ class FrenoTecnicoTest(unittest.TestCase):
             self.assertEqual(self.client.get("/api/tecnico/AAPL?moneda=usd", headers=self.ana).status_code, 429)
             self.assertEqual(self.client.get("/api/tecnico/AAPL/eventos?moneda=usd",
                                              headers=self.ana).status_code, 429)
+            self.assertEqual(self.client.get("/api/tecnico/AAPL/peso", headers=self.ana).status_code, 429)
             self.assertEqual(self.client.get("/api/tecnico/AAPL?moneda=usd", headers=self.beto).status_code, 200)
             reloj[0] += 61
             self.assertEqual(self.client.get("/api/tecnico/AAPL?moneda=usd", headers=self.ana).status_code, 200)
@@ -256,6 +260,36 @@ class FrenoTecnicoTest(unittest.TestCase):
                 t.join(10)
             self.assertEqual(sorted(codigos), [200, 200])
             self.assertEqual(self.client.get("/api/tecnico/AAPL?moneda=usd", headers=carla).status_code, 200)
+
+    def test_con_el_servidor_cargado_una_por_persona(self):
+        """Re-test E1, ronda 2: pasada la mitad del tope entre todos, cada
+        persona tiene una sola lectura corriendo; el lugar que queda es para
+        otro, no para la tercera de la misma cuenta."""
+        adentro, soltar = threading.Semaphore(0), threading.Event()
+        original = tecnico.para_la_lista
+
+        def lento(conn, activos):
+            adentro.release()
+            soltar.wait(10)
+            return original(conn, activos)
+
+        codigos = []
+        with mock.patch("tecnico.para_la_lista", lento), mock.patch("main.PESADOS_A_LA_VEZ", 4):
+            hilos = [threading.Thread(target=lambda: codigos.append(self.client.post(
+                "/api/tecnico/lista", json={"activos": [{"asset": "AAPL"}]}, headers=self.ana).status_code))
+                for _ in range(2)]
+            for t in hilos:
+                t.start()
+            for _ in hilos:
+                self.assertTrue(adentro.acquire(timeout=10))
+            # Ana ya tiene 2 y va la mitad: su tercera no entra aunque su tope sea 3…
+            self.assertEqual(self.client.get("/api/tecnico/AAPL?moneda=usd", headers=self.ana).status_code, 503)
+            # …y Beto, que no tiene ninguna, sí.
+            self.assertEqual(self.client.get("/api/tecnico/AAPL?moneda=usd", headers=self.beto).status_code, 200)
+            soltar.set()
+            for t in hilos:
+                t.join(10)
+        self.assertEqual(codigos, [200, 200])
 
     # ─── El tope de 200, real ───────────────────────────────────────────────
 

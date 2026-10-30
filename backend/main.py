@@ -11781,6 +11781,8 @@ class CarteraTecnicaIn(BaseModel):
 # Dos frenos, los dos en el momento (esperar en una fila ocuparía otro de los
 # 40 lugares, que es justo lo que traba al servidor):
 #   · POR PERSONA (la que pide: el asesor mirando un cliente gasta el suyo),
+#     en «Tu lista», la radiografía, el diario, «Tus señales» y tus tesis
+#     («muchos»), y en la ficha (la serie, sus fechas y su peso: «uno»),
 #     por tipo de lectura: `FRENO_TECNICO` = {tipo: (por minuto, a la vez)}.
 #     Pasado eso, 429. Una pantalla normal pide una lectura de muchos activos
 #     por vez, y la ficha una lectura por activo y moneda.
@@ -11789,19 +11791,25 @@ class CarteraTecnicaIn(BaseModel):
 #     pantalla lo reintenta sola (utils/gatewayRetry.js). Sin éste, el freno
 #     por persona se esquivaba con más cuentas: 14 cuentas gratis × 3 a la vez
 #     dejaron el «¿estás vivo?» en 48,8 s (re-test E1, 29/10). Así quedan
-#     siempre 40 − 8 lugares para el resto de la app.
+#     siempre 40 − 8 lugares para el resto de la app. Y cuando ya va la mitad
+#     ocupada, cada persona tiene UNA corriendo como mucho: los lugares que
+#     quedan se reparten entre más gente, en vez de que tres cuentas con 3
+#     cada una los tomen todos (re-test E1, ronda 2).
 # En la memoria del proceso como `_rate_store`, y con candado: contar y anotar
 # son un solo paso (sin él, 45 pedidos juntos contaban todos «0»).
 FRENO_TECNICO_POR_MINUTO = 30
 FRENO_TECNICO_A_LA_VEZ = 3
 FRENO_TECNICO = {
     "muchos": (FRENO_TECNICO_POR_MINUTO, FRENO_TECNICO_A_LA_VEZ),   # lista, radiografía, diario, señales
-    "uno": (60, 3),                                                 # la ficha y sus fechas importantes
+    # La ficha pide tres cosas al abrirse (la serie, sus fechas importantes y
+    # cuánto pesa en tu cartera): 90 por minuto son 30 fichas por minuto.
+    "uno": (90, 3),
 }
 PESADOS_A_LA_VEZ = 8
 _freno_hechos: dict = {}       # (quién, tipo) → deque de instantes (los del último minuto)
 _freno_corriendo: dict = {}    # (quién, tipo) → cuántos están corriendo
 _freno_total = [0]             # cuántas lecturas corren en todo el servidor
+_freno_de_cada_uno: dict = {}  # quién → cuántas tiene corriendo (de cualquier tipo)
 _freno_candado = threading.Lock()
 _freno_reloj = time.monotonic
 
@@ -11811,6 +11819,7 @@ def _freno_reiniciar() -> None:
         _freno_hechos.clear()
         _freno_corriendo.clear()
         _freno_total[0] = 0
+        _freno_de_cada_uno.clear()
 
 
 @contextmanager
@@ -11832,13 +11841,15 @@ def _freno_tecnico(request: Request, uid: int, tipo: str = "muchos"):
         if _freno_corriendo.get(quien, 0) >= a_la_vez:
             raise HTTPException(429, "Ya estamos preparando tus lecturas. Esperá unos segundos y probá de nuevo.",
                                 headers={"Retry-After": "5"})
-        if _freno_total[0] >= PESADOS_A_LA_VEZ:
+        if _freno_total[0] >= PESADOS_A_LA_VEZ or (
+                _freno_total[0] >= PESADOS_A_LA_VEZ // 2 and _freno_de_cada_uno.get(quien[0], 0) >= 1):
             raise HTTPException(503, "Hay mucha gente mirando gráficos en este momento. "
                                      "Probá de nuevo en unos segundos.",
                                 headers={"Retry-After": "3"})
         hechos.append(ahora)
         _freno_corriendo[quien] = _freno_corriendo.get(quien, 0) + 1
         _freno_total[0] += 1
+        _freno_de_cada_uno[quien[0]] = _freno_de_cada_uno.get(quien[0], 0) + 1
         if len(_freno_hechos) > 10_000:
             for k in [k for k, v in _freno_hechos.items() if not v and k not in _freno_corriendo]:
                 del _freno_hechos[k]
@@ -11847,6 +11858,11 @@ def _freno_tecnico(request: Request, uid: int, tipo: str = "muchos"):
     finally:
         with _freno_candado:
             _freno_total[0] = max(0, _freno_total[0] - 1)
+            m = _freno_de_cada_uno.get(quien[0], 1) - 1
+            if m > 0:
+                _freno_de_cada_uno[quien[0]] = m
+            else:
+                _freno_de_cada_uno.pop(quien[0], None)
             n = _freno_corriendo.get(quien, 1) - 1
             if n > 0:
                 _freno_corriendo[quien] = n
@@ -12007,7 +12023,7 @@ def tecnico_en_fechas(data: TendenciasEnFechasIn, request: Request, uid: int = D
 
 
 @app.get("/api/tecnico/{asset}/peso")
-def get_tecnico_peso(asset: str, uid: int = Depends(get_effective_user)):
+def get_tecnico_peso(request: Request, asset: str, uid: int = Depends(get_effective_user)):
     """Qué parte de toda tu plata es este activo, para «En tu cartera» de
     «Cuánto se mueve» en la ficha: `senales_semana.peso`, LA misma cuenta de Tu
     lista y de Señales (antes la ficha dividía lo tuyo de hoy por el total de la
@@ -12017,7 +12033,8 @@ def get_tecnico_peso(asset: str, uid: int = Depends(get_effective_user)):
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
     import senales_semana
-    with db_abierta() as conn:
+    # Valúa toda tu cartera: el freno de la ficha, como sus otras dos lecturas.
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         return {"peso": senales_semana.peso(senales_semana.cartera(conn, uid), sym)}
 
 
@@ -48855,10 +48872,14 @@ def _proximo_balance(conn, asset: str):
 
 
 @app.get("/api/tesis")
-def tesis_list(uid: int = Depends(get_effective_user)):
+def tesis_list(request: Request, uid: int = Depends(get_effective_user)):
     """Tus tesis (con su historia) y la tendencia de hoy de cada activo."""
     import tesis as _tesis
-    with db_abierta() as conn:
+    # Lee la tendencia de cada tesis en su fecha (`tecnico.tendencias_en_fechas`),
+    # la misma lectura de muchos activos que el diario: el mismo freno. Sin él,
+    # 10 cuentas con 20 tesis y 200 pedidos dejaron el «¿estás vivo?» en 64 s
+    # (re-test E1, ronda 2).
+    with _freno_tecnico(request, uid), db_abierta() as conn:
         return _tesis.listar(conn, uid)
 
 

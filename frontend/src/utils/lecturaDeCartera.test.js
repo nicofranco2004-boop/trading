@@ -385,6 +385,34 @@ describe('utils/api avisa cada escritura que sale bien', () => {
     expect(avisos).toBe(0)
   })
 
+  it('las lecturas por POST (Tu lista, radiografía, diario) reintentan el 503 y no avisan (re-test E1)', async () => {
+    // El servidor contesta 503 «probá en unos segundos» cuando hay demasiadas
+    // lecturas pesadas a la vez entre todos; sólo se reintentaban los GET.
+    vi.useFakeTimers()
+    try {
+      for (const ruta of ['/tecnico/lista', '/tecnico/cartera', '/tecnico/en-fechas']) {
+        const ocupado = responde(503, { detail: 'Hay mucha gente mirando gráficos' })
+        const bien = responde(200, { lecturas: [] })
+        let n = 0
+        globalThis.fetch = vi.fn((...a) => (n++ === 0 ? ocupado(...a) : bien(...a)))
+        const p = api.post(ruta, { activos: [] })
+        await vi.runAllTimersAsync()
+        expect(await p).toEqual({ lecturas: [] })
+        expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+      }
+      // Un POST que escribe NO se repite: podría duplicar un alta.
+      globalThis.fetch = responde(503, { detail: 'reiniciando' })
+      const p = api.post('/operations', {})
+      const r = expect(p).rejects.toBeTruthy()
+      await vi.runAllTimersAsync()
+      await r
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(avisos).toBe(0)
+  })
+
   it('una lectura no avisa, y una escritura que falla tampoco', async () => {
     globalThis.fetch = responde(200, [])
     await api.get('/positions')
