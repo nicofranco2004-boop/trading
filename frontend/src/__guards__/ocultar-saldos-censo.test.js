@@ -74,6 +74,7 @@ export const SIN_OJITO = {
   'components/tesis/TesisPosiciones.jsx': 'tus tesis, sin montos',
   'components/home/PersonalLayer.jsx': 'sólo % (como la Cartera)',
   'pages/MobileSearch.jsx': 'buscador',
+  'pages/GraficoTecnico.jsx': 'buscador de la pestaña Gráfico: sólo los tickers de tu cartera, sin montos (los del gráfico los tapa LecturaTecnica)',
   // Piden una ruta «de plata» pero sólo la parte de mercado.
   'components/home/Heatmap.jsx': 'sólo /home/heatmap: el mercado',
   'components/home/MoversRail.jsx': 'sólo /home/movers: el mercado',
@@ -94,6 +95,7 @@ export const SIN_OJITO = {
   'hooks/usePfRollup.js': 'lo suma la Cartera, que mira el ojito',
   'hooks/useReportYears.js': 'años con informe, sin montos',
   'hooks/useReportsTimeline.js': 'lo muestran los informes',
+  'hooks/useFichaDelActivo.js': 'lo muestran la ficha (AssetDetail) y la pestaña Gráfico (LecturaTecnica): las dos miran el ojito',
   // DEUDA: muestran montos con el ojito prendido. Ya era así en main (29/10);
   // fuera de la ronda del análisis técnico, para una ronda propia.
   'components/MonthlySummary.jsx': 'DEUDA: el resumen del mes',
@@ -138,7 +140,10 @@ describe('«Ocultar saldos»: censo de lo que trae tu plata', () => {
 
   it('el censo encuentra las pantallas conocidas (contra el falso verde)', () => {
     const rutas = conPlata.map((a) => a.ruta)
-    for (const r of ['pages/Positions.jsx', 'pages/Operations.jsx', 'pages/AssetDetail.jsx', 'pages/Dashboard.jsx',
+    // La ficha trae lo tuyo por hooks/useFichaDelActivo.js (lo comparte con la
+    // pestaña «Gráfico»): el censo la ve ahí. Que la ficha tape tu plata lo
+    // prueba montada ocultar-saldos.render.test.jsx.
+    for (const r of ['pages/Positions.jsx', 'pages/Operations.jsx', 'hooks/useFichaDelActivo.js', 'pages/Dashboard.jsx',
       'components/FuturosGroup.jsx', 'components/novedades/CalendarioEventos.jsx', 'components/PlazosFijosGroup.jsx']) {
       expect(rutas, r).toContain(r)
     }

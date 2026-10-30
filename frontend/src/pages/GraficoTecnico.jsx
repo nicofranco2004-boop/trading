@@ -199,7 +199,7 @@ function Buscador({ activo, recientes, caja, onCerrar, onElegir }) {
   let n = -1
   return (
     <div role="dialog" aria-label="Buscar un activo"
-      className="fixed inset-x-3 top-16 z-[80] sm:absolute sm:inset-x-auto sm:left-0 sm:top-full sm:mt-1.5 sm:w-[34rem] max-h-[70vh] flex flex-col rounded-xl border border-line-2 bg-bg-raised shadow-lg overflow-hidden">
+      className="fixed inset-x-3 top-[calc(var(--alto-barra-celular,80px)_+_8px)] z-[80] sm:absolute sm:inset-x-auto sm:left-0 sm:top-full sm:mt-1.5 sm:w-[34rem] max-h-[70vh] flex flex-col rounded-xl border border-line-2 bg-bg-raised shadow-lg overflow-hidden">
       <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-line">
         <Search size={17} aria-hidden="true" className="text-ink-1 shrink-0" />
         <label htmlFor="grafico-buscar" className="sr-only">Buscar un activo</label>
