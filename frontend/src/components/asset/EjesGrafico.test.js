@@ -20,7 +20,11 @@ const DATOS = {
   lectura: { ruedas: 700, fecha: puntos[699].d, precio: puntos[699].c, rsi: 50 },
 }
 
-vi.mock('../../utils/api', () => ({ api: { get: vi.fn(() => Promise.resolve(DATOS)) } }))
+vi.mock('../../utils/api', () => ({
+  // La copia de los dibujos es de la persona y la cuenta (utils/duenoDeLaPestana).
+  getClientContext: () => null,
+  EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada',
+  api: { get: vi.fn(() => Promise.resolve(DATOS)) } }))
 
 let LecturaTecnica
 beforeAll(async () => {

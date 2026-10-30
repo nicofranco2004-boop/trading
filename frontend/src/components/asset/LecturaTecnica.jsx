@@ -46,7 +46,7 @@ import { factorDeFechas, rangoCorrido, rangoEstirado } from '../../utils/ejesGra
 import { PRIORIDAD, taparRotulos } from '../../utils/rotulos'
 import {
   DIBUJOS_MAXIMOS, copiaLocal, etiquetasDe, diaDelPunto, dibujoCorrido, dibujoTocado, dibujosDelServidor, dibujosGuardados, guardarDibujos, idNuevo,
-  marcarSubidos, precioCorrido, precioRedondo, puntasDe, puntoDelDia, subirDibujos,
+  marcarSubidos, precioCorrido, precioRedondo, puntasDe, puntoDelDia, subirDibujos, useDuenoDeLaCopia,
 } from '../../utils/dibujos'
 import {
   RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, tarjetaBandas, lineaPromedio, marcas, puntosEnDias, variacionDeHoy,
@@ -174,19 +174,30 @@ export default function LecturaTecnica({
   // Tus dibujos, por moneda (en pesos y en dólares los precios son otros), y el
   // que está elegido para borrarlo. Se muestra al instante la copia de este
   // navegador; los de tu cuenta llegan después y mandan (utils/dibujos.js).
+  // Son de una persona en una cuenta (`dueno`, utils/dibujos.js): si cambia
+  // (el asesor pasa a otro cliente, otra pestaña cambia la sesión) se arranca
+  // de cero con los de la cuenta nueva, en vez de seguir mostrando —y subiendo
+  // a la nueva— los de la anterior.
+  const dueno = useDuenoDeLaCopia()
   const [dibujos, setDibujos] = useState({})
   const [elegido, setElegido] = useState(null)
   const misDibujos = dibujos[moneda] ?? dibujosGuardados(asset, moneda)
   // Las monedas en las que ya dibujaste algo en esta visita: si los de la
   // cuenta llegan después, no pisan lo recién dibujado.
   const tocados = useRef(new Set())
+  const duenoVisto = useRef(dueno)
+  if (duenoVisto.current !== dueno) {
+    duenoVisto.current = dueno
+    tocados.current = new Set()
+    if (Object.keys(dibujos).length) setDibujos({})
+  }
   const cambiarDibujos = (lista) => {
     tocados.current.add(moneda)
     guardarDibujos(asset, moneda, lista)
     setDibujos(x => ({ ...x, [moneda]: lista }))
-    const m = moneda
+    const m = moneda, d = dueno
     subirDibujos(asset, m, lista).then(ok => {
-      if (ok === true) marcarSubidos(asset, m, lista)
+      if (ok === true) marcarSubidos(asset, m, lista, d)
       else if (ok) setAviso(`Tus dibujos quedaron sólo en este navegador. ${ok}`)
       else setAviso('No se pudieron guardar tus dibujos en tu cuenta: por ahora quedaron en este navegador. Se vuelve a intentar la próxima vez que abras este gráfico.')
     })
@@ -194,21 +205,23 @@ export default function LecturaTecnica({
   useEffect(() => {
     let vivo = true
     const m = moneda
+    const d = dueno
     dibujosDelServidor(asset, m).then(deLaCuenta => {
       if (!vivo || deLaCuenta == null || tocados.current.has(m)) return
-      const local = copiaLocal(asset, m)
+      const local = copiaLocal(asset, m, d)
       if (local.pendiente) {
-        // Un cambio hecho acá que no llegó a la cuenta (el guardado falló): se sube.
-        // `=== true`: si el servidor lo rechaza, `subirDibujos` devuelve el motivo
-        // (un texto, E3) y eso no es «subido».
-        subirDibujos(asset, m, local.dibujos).then(ok => { if (ok === true) marcarSubidos(asset, m, local.dibujos) })
+        // Un cambio hecho acá —por ESTA persona en ESTA cuenta— que no llegó a
+        // la cuenta (el guardado falló): se sube. `=== true`: si el servidor lo
+        // rechaza, `subirDibujos` devuelve el motivo (un texto, E3) y eso no es
+        // «subido».
+        subirDibujos(asset, m, local.dibujos).then(ok => { if (ok === true) marcarSubidos(asset, m, local.dibujos, d) })
         return
       }
-      guardarDibujos(asset, m, deLaCuenta, false)
+      guardarDibujos(asset, m, deLaCuenta, false, d)
       setDibujos(x => ({ ...x, [m]: deLaCuenta }))
     })
     return () => { vivo = false }
-  }, [asset, moneda])
+  }, [asset, moneda, dueno])
   // Borrar el Fibonacci o el conteo AUTOMÁTICOS es apagarlos (Nico, 28/10: «si
   // el usuario la borra, es como desactivarla»); se prenden de nuevo desde su
   // botón de la barra. Lo demás son tus dibujos.

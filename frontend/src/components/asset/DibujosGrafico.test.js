@@ -9,7 +9,7 @@
 //   · quedan en su día con el zoom;
 //   · tocar una línea la elige y se borra (botón o tecla); borrar todas pregunta antes.
 // Las cuentas (dónde se guardan, el día de cada punto) están en utils/dibujos.test.js.
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, enActo, medidas, clic, buscarBoton } from '../../testing/navegadorMinimo'
 import { MemoryRouter } from 'react-router-dom'
@@ -44,9 +44,19 @@ const EVENTOS = {
 
 // La cuenta, del otro lado de la frontera: GET y PUT de /tecnico/ZZEV/dibujos
 // guardan acá, por moneda. `cuenta.caida` = el guardado falla (sin conexión).
-const cuenta = { usd: [], ars: [], caida: false, rechazo: null, puts: 0, alertas: [], pedidos: [] }
+const cuenta = { usd: [], ars: [], caida: false, rechazo: null, puts: 0, alertas: [], pedidos: [], subidas: [] }
 const monedaDe = (ruta) => (ruta.includes('moneda=ars') ? 'ars' : 'usd')
+// Quién está del otro lado, como lo ve el servidor de verdad: la persona de la
+// cookie (acá, la sesión que la app guarda en `rendi_user`) y el cliente que el
+// asesor tiene abierto (el encabezado de api.js, acá `sesion.cliente`).
+const sesion = { cliente: null }
+const ANA = { name: 'Ana', email: 'ana@prueba.test' }
+const BRUNO = { name: 'Bruno', email: 'bruno@prueba.test' }
+const entrar = (u) => localStorage.setItem('rendi_user', JSON.stringify(u))
+const logueado = () => { try { return JSON.parse(localStorage.getItem('rendi_user'))?.email ?? null } catch { return null } }
 vi.mock('../../utils/api', () => ({
+  getClientContext: () => (sesion.cliente != null ? { id: sesion.cliente, label: '' } : null),
+  EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada',
   api: {
     get: vi.fn((ruta) => Promise.resolve(ruta.includes('/dibujos') ? { dibujos: cuenta[monedaDe(ruta)] }
       : ruta.startsWith('/alerts') ? { items: cuenta.alertas }
@@ -58,26 +68,30 @@ vi.mock('../../utils/api', () => ({
       cuenta.puts++
       if (cuenta.caida) return Promise.reject(new Error('sin conexión'))
       if (cuenta.rechazo) return Promise.reject(Object.assign(new Error('HTTP 400'), cuenta.rechazo))
+      // Lo que quedó guardado, y en la cuenta de quién (el de la cookie y el cliente).
+      cuenta.subidas.push({ quien: logueado(), cliente: sesion.cliente, dibujos: body.dibujos })
       cuenta[monedaDe(ruta)] = body.dibujos
       return Promise.resolve({ ok: true })
     }),
   },
 }))
 
-let LecturaTecnica
+let LecturaTecnica, copiaLocal, guardarDibujos
 beforeAll(async () => {
   instalarNavegadorMinimo()
   medidas(() => ({ left: 0, top: 0, width: 1000, height: 250, right: 1000, bottom: 250 }))
   ;({ default: LecturaTecnica } = await import('./LecturaTecnica'))
+  ;({ copiaLocal, guardarDibujos } = await import('../../utils/dibujos'))
 })
 afterAll(() => { medidas(null); vi.unstubAllGlobals() })
 
 let montado, props
+beforeEach(() => { entrar(ANA); sesion.cliente = null })   // Ana logueada en su cuenta
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
   localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
-  Object.assign(cuenta, { usd: [], ars: [], caida: false, rechazo: null, puts: 0, alertas: [], pedidos: [] })
+  Object.assign(cuenta, { usd: [], ars: [], caida: false, rechazo: null, puts: 0, alertas: [], pedidos: [], subidas: [] })
 })
 // Con el router: el «Te avisamos» de tu línea es un link a Mis alertas.
 const el = () => h(MemoryRouter, null, h(LecturaTecnica, { asset: 'ZZEV', ...props }))
@@ -141,7 +155,9 @@ const linea = () => todos(montado.contenedor, n => n.nodeName === 'LINE' && n.ge
 const boton = (id) => todos(montado.contenedor, n => n.nodeName === 'BUTTON' && n.getAttribute?.('data-capa') === id)[0]
 // Lo que quedó guardado en la cuenta (el servidor simulado).
 const guardados = (moneda = 'usd') => cuenta[moneda]
-const copia = (moneda = 'usd') => JSON.parse(localStorage.getItem(`rendi_dibujos:ZZEV:${moneda}`) || 'null')
+// La copia de este navegador, leída con la misma función que la pantalla (de
+// quien está logueado ahora), sin depender de cómo se arma la clave.
+const copia = (moneda = 'usd') => copiaLocal('ZZEV', moneda)
 // El precio a una altura del gráfico (250 px de alto), con la escala que muestra:
 // se lee del rótulo que la línea horizontal pone en la columna de precios.
 const num = (t) => Number(t.replace(/\./g, '').replace(',', '.'))
@@ -502,12 +518,12 @@ describe('en todos tus dispositivos', () => {
   })
 
   it('lo borrado en otro dispositivo no revive desde la copia de este navegador', async () => {
-    localStorage.setItem('rendi_dibujos:ZZEV:usd', JSON.stringify({ pendiente: false, dibujos: [H] }))
+    guardarDibujos('ZZEV', 'usd', [H], false)        // la copia de Ana, ya subida
     cuenta.usd = []
     await dibujar()
     expect(linea()).toHaveLength(0)
     expect(cuenta.puts).toBe(0)
-    expect(copia()).toBeNull()
+    expect(copia()).toEqual({ pendiente: false, dibujos: [] })
   })
 
   it('una copia de formato viejo (la lista sola) no revive dibujos: la cuenta manda (auditoría C, 29/10)', async () => {
@@ -547,6 +563,85 @@ describe('en todos tus dispositivos', () => {
     expect(linea()).toHaveLength(1)
   })
 })
+
+describe('la copia de este navegador es de quien la hizo (auditoría de la pestaña Gráfico, 30/10)', () => {
+  // A Ana no se le pudo guardar un dibujo en la cuenta (quedó pendiente en este
+  // navegador). Antes, la copia era del ACTIVO y no de la persona: el siguiente
+  // que abría ese activo en la misma compu la subía a SU cuenta y la veía.
+  async function anaDejaUnoPendiente() {
+    cuenta.caida = true
+    await dibujar()
+    await usar('horizontal'); await clickEn(500, 100)
+    expect(copia().pendiente).toBe(true)
+    await montado.desmontar(); montado = null
+    cuenta.caida = false
+  }
+  const subidasDe = (quien, cliente = null) => cuenta.subidas.filter(x => x.quien === quien && x.cliente === cliente)
+
+  it('a Ana se le vence la sesión y entra Bruno: no recibe ni ve el dibujo de Ana', async () => {
+    await anaDejaUnoPendiente()
+    localStorage.removeItem('rendi_user')            // lo que hace api.js con un 401
+    entrar(BRUNO)                                   // y Bruno inicia sesión
+    await dibujar()
+    expect(subidasDe(BRUNO.email)).toEqual([])
+    expect(linea()).toHaveLength(0)
+  })
+
+  it('y cuando Ana vuelve, su dibujo pendiente sigue ahí y se sube a SU cuenta', async () => {
+    await anaDejaUnoPendiente()
+    entrar(BRUNO); await dibujar(); await montado.desmontar(); montado = null
+    entrar(ANA); await dibujar()
+    expect(subidasDe(ANA.email)).toHaveLength(1)
+    expect(subidasDe(BRUNO.email)).toEqual([])
+    expect(linea()).toHaveLength(1)
+  })
+
+  it('el asesor dibuja en el cliente 2 y abre el cliente 3: al 3 no le llega', async () => {
+    sesion.cliente = 2
+    await anaDejaUnoPendiente()
+    sesion.cliente = 3
+    await dibujar()
+    expect(subidasDe(ANA.email, 3)).toEqual([])
+    expect(linea()).toHaveLength(0)
+    await montado.desmontar(); montado = null
+    sesion.cliente = 2
+    await dibujar()
+    expect(subidasDe(ANA.email, 2)).toHaveLength(1)
+  })
+
+  it('si la cuenta cambia con el gráfico abierto (otra pestaña), no se queda con los dibujos de la anterior', async () => {
+    sesion.cliente = 2
+    cuenta.usd = [H2]
+    await dibujar()
+    expect(linea()).toHaveLength(1)
+    cuenta.usd = []                                  // la cuenta del cliente 3, vacía
+    sesion.cliente = 3
+    await enActo(async () => { window.dispatchEvent(new Event('rendi:cuenta-cambiada')) })
+    await redibujar()
+    expect(linea()).toHaveLength(0)
+    await usar('horizontal'); await clickEn(300, 100)   // lo que se dibuja ahora es del 3
+    const alTres = subidasDe(ANA.email, 3)
+    expect(alTres).toHaveLength(1)
+    expect(alTres[0].dibujos.map(d => d.id)).not.toContain(H2.id)
+  })
+
+  it('una copia sin dueño (de antes de este arreglo) no se sube a nadie ni se muestra', async () => {
+    localStorage.setItem('rendi_dibujos:ZZEV:usd', JSON.stringify({ pendiente: true, dibujos: [H2] }))
+    await dibujar()
+    expect(cuenta.subidas).toEqual([])
+    expect(linea()).toHaveLength(0)
+  })
+
+  it('sin nadie logueado no queda copia', async () => {
+    localStorage.removeItem('rendi_user')
+    cuenta.caida = true
+    await dibujar()
+    await usar('horizontal'); await clickEn(500, 100)
+    entrar(ANA)
+    expect(copia()).toEqual({ pendiente: false, dibujos: [] })
+  })
+})
+const H2 = { id: 'h2', tipo: 'horizontal', precio: 120 }
 
 describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos estiman»)', () => {
   const capas = () => JSON.parse(localStorage.getItem('rendi_grafico_capas') || '{}')

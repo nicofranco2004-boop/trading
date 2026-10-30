@@ -28,21 +28,24 @@
 // Vive en sessionStorage: es de esta pestaña y de esta visita. Si el navegador
 // no deja guardar (ventana privada), no hay aviso y nada se rompe.
 
-import { getClientContext } from './api'
+import { duenoDeLaPestana } from './duenoDeLaPestana'
 
 const VENCE_MS = 30 * 60 * 1000   // un aviso de hace más de media hora ya no dice nada
 
-function cuenta() {
-  const id = getClientContext()?.id
-  return id != null ? `cliente-${id}` : 'propia'
-}
-const claveCambios = () => `rendi_cambios_movimientos:${cuenta()}`
-const claveTotal = (pantalla) => `rendi_ultimo_total:${cuenta()}:${pantalla}`
+// De la persona Y de la cuenta (utils/duenoDeLaPestana). Antes sólo de la
+// cuenta: «Cerrar sesión» lo borra, pero una sesión que vence no, y el
+// siguiente en la pestaña veía «antes: US$ …» con el total de la anterior.
+// Sin nadie logueado, no hay clave: no se anota ni se lee nada.
+const conDueno = (resto) => { const d = duenoDeLaPestana(); return d ? `${resto}:${d}` : null }
+const claveCambios = () => conDueno('rendi_cambios_movimientos')
+const claveTotal = (pantalla) => { const k = conDueno('rendi_ultimo_total'); return k && `${k}:${pantalla}` }
 
 function leer(clave) {
+  if (!clave) return null
   try { return JSON.parse(window.sessionStorage.getItem(clave) || 'null') } catch { return null }
 }
 function escribir(clave, valor) {
+  if (!clave) return
   try {
     if (valor == null) window.sessionStorage.removeItem(clave)
     else window.sessionStorage.setItem(clave, JSON.stringify(valor))

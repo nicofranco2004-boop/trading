@@ -37,6 +37,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import AdvisorDashboard from './AdvisorDashboard'
 import { api } from '../utils/api'
+import { duenoDeLaPestana } from '../utils/duenoDeLaPestana'
 import { computeBrokerValue, noRealizadoEnVista, valorAlMep, priceSymbol, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, setBrokersRegistry } from '../utils/valuation'
 import { sePuedeGuardar, guardarPnlNoRealizado } from '../utils/guardarValuacion'
 import { auditPositions } from '../utils/valuationGuards'
@@ -588,7 +589,12 @@ function PersonalDashboard() {
     // Comparación robusta: NaN/no-finito NO pasa (NaN >= x es false → no escribe).
     if (!sePuedeGuardar({ cobertura: priceCoverage })) return
     const today = hoyISO()
-    const key = 'rendi_snapshot_date'
+    // «Ya guardé la foto de hoy» es de la persona Y de la cuenta
+    // (utils/duenoDeLaPestana): sin dueño, el asesor que abría el inicio del
+    // cliente 2 dejaba al 3 sin su foto ese día.
+    const dueno = duenoDeLaPestana()
+    if (!dueno) return
+    const key = `rendi_snapshot_date:${dueno}`
     if (localStorage.getItem(key) === today) return
     // Snapshots positions-only (sin PF) → la historia/gráfico/daily se mantienen
     // consistentes; el PF solo entra en las métricas estáticas del titular.

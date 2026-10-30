@@ -30,19 +30,22 @@
 // sessionStorage: de esta pestaña y de esta visita; sin almacenamiento no hay
 // animación y nada se rompe.
 
-import { EVENTO_ESCRITURA, getClientContext } from './api'
+import { EVENTO_ESCRITURA } from './api'
+import { duenoDeLaPestana } from './duenoDeLaPestana'
 
-export function cuentaActual() {
-  const id = getClientContext()?.id
-  return id != null ? `cliente-${id}` : 'propia'
-}
-const claveVersion = () => `rendi_version_cartera:${cuentaActual()}`
-const claveValor = (clave) => `rendi_valor_visto:${cuentaActual()}:${clave}`
+// De la persona Y de la cuenta (utils/duenoDeLaPestana). Antes sólo de la
+// cuenta: «Cerrar sesión» lo borra, pero una sesión que vence no, y el
+// siguiente en la pestaña veía su número «cambiar» desde el de la anterior.
+// Sin nadie logueado, no hay clave: no se guarda ni se lee nada.
+const claveVersion = () => { const d = duenoDeLaPestana(); return d && `rendi_version_cartera:${d}` }
+const claveValor = (clave) => { const d = duenoDeLaPestana(); return d && `rendi_valor_visto:${d}:${clave}` }
 
 function leer(k) {
+  if (!k) return null
   try { return JSON.parse(window.sessionStorage.getItem(k) || 'null') } catch { return null }
 }
 function escribir(k, v) {
+  if (!k) return
   try { window.sessionStorage.setItem(k, JSON.stringify(v)) } catch { /* sin almacenamiento */ }
 }
 

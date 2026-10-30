@@ -29,6 +29,9 @@ const TECNICO = {
 
 let respuestas
 vi.mock('../utils/api', () => ({
+  // La copia de los dibujos es de la persona y la cuenta (utils/duenoDeLaPestana).
+  getClientContext: () => null,
+  EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada',
   api: {
     get: vi.fn((ruta) => {
       const clave = Object.keys(respuestas).filter(k => ruta.startsWith(k)).sort((a, b) => b.length - a.length)[0]

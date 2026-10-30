@@ -44,6 +44,9 @@ const RESPUESTAS = {
   '/tecnico/NVDA': () => TECNICO,
 }
 vi.mock('../utils/api', () => ({
+  // La copia de los dibujos es de la persona y la cuenta (utils/duenoDeLaPestana).
+  getClientContext: () => null,
+  EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada',
   api: {
     get: vi.fn((ruta) => {
       const k = Object.keys(RESPUESTAS).find(c => ruta.startsWith(c))

@@ -26,6 +26,9 @@ const DATOS = (fibonacci) => ({
 
 let respuesta
 vi.mock('../../utils/api', () => ({
+  // La copia de los dibujos es de la persona y la cuenta (utils/duenoDeLaPestana).
+  getClientContext: () => null,
+  EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada',
   api: { get: vi.fn(() => Promise.resolve(respuesta)) },
 }))
 

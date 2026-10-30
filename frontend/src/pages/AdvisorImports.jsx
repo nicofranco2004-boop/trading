@@ -25,6 +25,7 @@ import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api, errorMessage } from '../utils/api'
+import { duenoDeLaPestana } from '../utils/duenoDeLaPestana'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { BROKER_GUIDES, pasosPara } from '../components/import/BrokerInstructions'
@@ -49,7 +50,10 @@ export const MAX_FILAS = 50
 // justamente lo que una tanda no puede preguntar. Va al asistente por cliente.
 const SIN_TANDA = new Set(['generic'])
 
-const STORAGE_KEY = 'rendi_tanda_ultima'
+// De la persona (utils/duenoDeLaPestana): la tanda lleva nombres de clientes.
+// «Cerrar sesión» la borra, pero una sesión que vence no, y el siguiente asesor
+// en la pestaña veía la tanda (y los clientes) del anterior. Sin nadie, nada.
+const claveLocal = () => { const d = duenoDeLaPestana(); return d && `rendi_tanda_ultima:${d}` }
 
 const FINALES = new Set([ESTADO.COMPLETO, ESTADO.REVISAR, ESTADO.ERROR, ESTADO.FOTO_PENDIENTE])
 
@@ -63,10 +67,11 @@ function serializar(filas, momento, inicio, fin, tandaId = null) {
     filas: filas.map(f => ({ ...f, archivos: (f.archivos || []).map(a => ({ name: a.name, size: a.size })) })),
   }
 }
-function guardarLocal(x) { try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(x)) } catch {} }
+function guardarLocal(x) { const k = claveLocal(); if (!k) return; try { sessionStorage.setItem(k, JSON.stringify(x)) } catch {} }
 function leerLocal() {
   try {
-    const raw = sessionStorage.getItem(STORAGE_KEY)
+    const k = claveLocal()
+    const raw = k ? sessionStorage.getItem(k) : null
     const x = raw ? JSON.parse(raw) : null
     if (!x || !Array.isArray(x.filas)) return null
     // Las filas que quedaron "cargando"/"pendiente" en una tanda cortada no
