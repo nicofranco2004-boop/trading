@@ -571,13 +571,22 @@ def _entregar(conn, via: str, envio: dict) -> tuple:
         except Exception as ex:
             log.warning("semana: push uid=%s falló: %s: %s", destino, type(ex).__name__, ex, exc_info=True)
     if via in ("mail", "ambos"):
+        # Un mail que no sale NO se reintenta (la semana ya quedó marcada antes
+        # de mandar: nunca puede salir dos veces), pero cada falla queda en el
+        # registro con la persona y el motivo, para enterarse si pasa seguido
+        # (decisión de Nico, 29/10). Antes, si el proveedor lo rechazaba sin
+        # excepción, no quedaba nada: sólo `mail_ok = 0`.
         try:
             row = conn.execute("SELECT email, name FROM users WHERE id=?", (destino,)).fetchone()
             if row and row["email"]:
                 mail_ok = bool(emails.send_alert_email(to=row["email"], user_name=row["name"] or "",
                                                        **envio["mail"]))
+                if not mail_ok:
+                    log.error("semana: el mail de uid=%s no salió: %s (no se reintenta)",
+                              destino, emails.resultado_del_ultimo_envio())
         except Exception as ex:
-            log.warning("semana: mail uid=%s falló: %s: %s", destino, type(ex).__name__, ex, exc_info=True)
+            log.error("semana: el mail de uid=%s no salió: %s: %s (no se reintenta)", destino,
+                      type(ex).__name__, ex, exc_info=True)
     return push_ok, mail_ok
 
 

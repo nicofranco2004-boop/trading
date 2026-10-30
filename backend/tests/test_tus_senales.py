@@ -336,6 +336,40 @@ class TusSenalesTest(unittest.TestCase):
         self.assertEqual((r["errores"], r["mandadas"]), (1, 1), r)
         self.assertEqual([m["to"] for m in self.mails], [f"otra-{self.uid}@rendi.test"])
 
+    def test_el_mail_que_no_sale_no_se_reintenta_y_queda_anotado(self):
+        """Decisión de Nico (29/10, re-test B): el mail del sábado que falla NO
+        se reintenta (así nunca sale dos veces), pero cada falla queda en el
+        registro del servidor con el usuario y el nombre del error. Antes, si el
+        proveedor lo rechazaba (devolvía «no salió» sin excepción), no quedaba
+        nada anotado: sólo un 0 en `mail_ok`."""
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("mail")
+        from billing import emails
+        intentos = []
+
+        def rechaza(to, subject, html, text, **kw):
+            intentos.append(to)
+            emails._anotar(emails.NO_SALIO)
+            return False
+        with mock.patch("billing.emails._send", rechaza), self.assertLogs("senales_semana", level="ERROR") as logs:
+            self._cron(_utc(sabado, 10, 5))
+            self._cron(_utc(sabado, 10, 15))
+            self._cron(_utc(sabado, 10, 25))
+        self.assertEqual(len(intentos), 1, "no se reintenta: nunca puede salir dos veces")
+        self.assertTrue(any(f"uid={self.uid}" in x and emails.NO_SALIO in x for x in logs.output), logs.output)
+        self.assertEqual(self._filas()[0]["mail_ok"], 0)
+
+    def test_el_mail_que_revienta_tambien_queda_anotado_con_el_error(self):
+        sabado = _sabado_de(hoy_art_date())
+        self._velas(sabado)
+        self._canal("mail")
+        with mock.patch("billing.emails._send", side_effect=ConnectionError("Resend no contesta")), \
+             self.assertLogs("senales_semana", level="ERROR") as logs:
+            self._cron(_utc(sabado, 10, 5))
+            self._cron(_utc(sabado, 10, 15))
+        self.assertEqual(sum(f"uid={self.uid}" in x and "ConnectionError" in x for x in logs.output), 1)
+
     def test_no_quiero_no_manda(self):
         sabado = _sabado_de(hoy_art_date())
         self._velas(sabado)
