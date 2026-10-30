@@ -56,6 +56,8 @@ import {
 import {
   medicion as medirEntre, primeraCompra, puntosDesde, tarjetasMovimiento, textoGrupo, textoMedicion,
 } from '../../utils/cuantoSeMueve'
+import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../../utils/almacen'
+import { CATALOGO } from '../../utils/catalogoDelAlmacen'
 
 const v = (t) => `rgb(var(--${t}))`
 const COLOR = {
@@ -102,13 +104,13 @@ const SQUEEZE = {
 // tener el almacenamiento bloqueado (modo privado): entonces, línea.
 const CLAVE_TIPO = 'rendi_grafico_tipo'
 function tipoGuardado() {
-  try { return localStorage.getItem(CLAVE_TIPO) === 'velas' ? 'velas' : 'linea' } catch { return 'linea' }
+  try { return leerDelAlmacen(CATALOGO.graficoTipo) === 'velas' ? 'velas' : 'linea' } catch { return 'linea' }
 }
 function guardarTipo(t) {
-  try { localStorage.setItem(CLAVE_TIPO, t) } catch { /* sin almacenamiento */ }
+  try { guardarEnAlmacen(CATALOGO.graficoTipo, t) } catch { /* sin almacenamiento */ }
 }
 function olvidarTipo() {
-  try { localStorage.removeItem(CLAVE_TIPO) } catch { /* sin almacenamiento */ }
+  try { borrarDelAlmacen(CATALOGO.graficoTipo) } catch { /* sin almacenamiento */ }
 }
 
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']

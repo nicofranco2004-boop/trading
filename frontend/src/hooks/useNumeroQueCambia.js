@@ -28,6 +28,7 @@ import { useAlVerse } from './useAlVerse'
 import { useCountUp } from './useCountUp'
 import { EVENTO_ESCRITURA } from '../utils/api'
 import { recordarValor, valorAntesDelCambio } from '../utils/valoresVistos'
+import { useDuenoDeLosDatos } from '../utils/duenoDeLaPestana'
 
 const DURA_MS = 900
 const CAMBIO_VISIBLE_MS = 6000
@@ -49,7 +50,9 @@ export function useNumeroQueCambia({ clave, value, moneda = 'USD', listo = true,
   const [refVisto, visto] = useAlVerse(AL_VERSE)
   // El valor viejo, leído en el PRIMER dibujo: así el número no arranca en el
   // nuevo para saltar al viejo y recién después contar.
-  const [pendiente, setPendiente] = useState(() => (clave ? valorAntesDelCambio(clave, moneda) : null))
+  // De la cuenta de los datos que muestra esta pantalla (utils/duenoDeLaPestana).
+  const dueno = useDuenoDeLosDatos()
+  const [pendiente, setPendiente] = useState(() => (clave ? valorAntesDelCambio(clave, moneda, dueno) : null))
   const [cambio, setCambio] = useState(null)       // { delta } mientras se muestra
   const [destello, setDestello] = useState(null)   // { dir, n } — n cambia para re-disparar el CSS
   const asentado = useRef(false)                   // ya se mostró el valor de verdad al menos una vez
@@ -101,7 +104,7 @@ export function useNumeroQueCambia({ clave, value, moneda = 'USD', listo = true,
 
   useEffect(() => {
     if (!valido || !listo) return
-    const recordar = () => { if (clave && visto) recordarValor(clave, value, moneda) }
+    const recordar = () => { if (clave && visto) recordarValor(clave, value, moneda, dueno) }
 
     // Pasó a ser OTRO número (otra moneda, otro filtro: la `clave` cambia con
     // lo que se está mirando): el valor es distinto y la cartera no cambió. No

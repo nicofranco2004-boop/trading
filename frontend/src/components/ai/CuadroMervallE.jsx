@@ -25,6 +25,7 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import MervallE from './MervallE'
 import { proporcion } from './mervalle/motor'
 import { useArrastrable } from '../../hooks/useArrastrable'
+import { CATALOGO } from '../../utils/catalogoDelAlmacen'
 import { useAnchoMinimo } from '../../hooks/useIsMobile'
 
 /** Separación entre la columna del chat y el cuadro, y del cuadro al borde. */
@@ -77,7 +78,7 @@ export default function CuadroMervallE({ estado, tono }) {
   }, [])
 
   const pantallaMediana = useAnchoMinimo(640)
-  const { ref, estilo, manija } = useArrastrable('rendi:cuadro:pos')
+  const { ref, estilo, manija } = useArrastrable(CATALOGO.cuadroPosicion)
   const alCostado = ladoCostado != null
   const lado = alCostado ? ladoCostado : (pantallaMediana ? LADO_ESQUINA : LADO_ESQUINA_CELULAR)
 

@@ -17,6 +17,17 @@
 
 import { isDemoMode } from './demo'
 import { getClientContext } from './api'
+import { leer, guardar, borrar, claves, quitarClaves } from './almacen'
+import { CATALOGO, SESION } from './catalogoDelAlmacen'
+
+// Todas las claves de acá son de la familia `conversacionIA` del catálogo
+// (`rendi_chat_…`, en la pestaña): la puerta (utils/almacen) se la pide con lo
+// que sigue al prefijo.
+const CHAT = CATALOGO.conversacionIA
+const resto = (clave) => {
+  if (!String(clave).startsWith(CHAT.prefijo)) throw new Error(`chatSession: ${clave} no es de la conversación`)
+  return String(clave).slice(CHAT.prefijo.length)
+}
 
 const KEY = 'rendi_chat_v1'
 // Demo con clave propia: lo que chatea un visitante demo no debe aparecer
@@ -67,20 +78,15 @@ export function adoptarConversaciones(quien, { sinDuenoEsAjeno = false } = {}) {
   if (isDemoMode()) return true
   let dueno
   try {
-    dueno = sessionStorage.getItem(DUENO_KEY)
+    dueno = leer(CHAT, resto(DUENO_KEY))
     if (dueno === null && sinDuenoEsAjeno) dueno = '(versión anterior)'
     if (dueno !== null && dueno !== quien) {
-      const claves = []
-      for (let i = 0; i < sessionStorage.length; i++) {
-        const k = sessionStorage.key(i)
-        if (k && k.startsWith(PREFIJO)) claves.push(k)
-      }
-      claves.forEach(k => sessionStorage.removeItem(k))
+      quitarClaves(SESION, claves(SESION).filter(k => k.startsWith(PREFIJO)))
     }
   } catch {
     return false
   }
-  try { sessionStorage.setItem(DUENO_KEY, quien) } catch { /* lleno: igual vale lo de arriba */ }
+  try { guardar(CHAT, quien, resto(DUENO_KEY)) } catch { /* lleno: igual vale lo de arriba */ }
   return dueno === null || dueno === quien
 }
 
@@ -105,7 +111,7 @@ const CAMPOS_QUE_SOBREVIVEN = ['voz', 'meta']
 /** Conversación guardada (o [] si no hay / storage roto). */
 export function loadChatSession() {
   try {
-    const raw = sessionStorage.getItem(storageKey())
+    const raw = leer(CHAT, resto(storageKey()))
     if (!raw) return []
     const arr = JSON.parse(raw)
     if (!Array.isArray(arr)) return []
@@ -123,7 +129,7 @@ export function loadChatSession() {
 export function saveChatSession(messages, clave = storageKey()) {
   try {
     if (!Array.isArray(messages) || messages.length === 0) {
-      sessionStorage.removeItem(clave)
+      borrar(CHAT, resto(clave))
       return
     }
     const slim = messages
@@ -134,7 +140,7 @@ export function saveChatSession(messages, clave = storageKey()) {
         for (const k of CAMPOS_QUE_SOBREVIVEN) if (m[k]) out[k] = m[k]
         return out
       })
-    sessionStorage.setItem(clave, JSON.stringify(slim))
+    guardar(CHAT, JSON.stringify(slim), resto(clave))
   } catch {
     // storage lleno / modo privado → el chat sigue funcionando, solo no persiste.
   }
@@ -142,7 +148,7 @@ export function saveChatSession(messages, clave = storageKey()) {
 
 export function clearChatSession() {
   try {
-    sessionStorage.removeItem(storageKey())
+    borrar(CHAT, resto(storageKey()))
   } catch {
     // best-effort
   }

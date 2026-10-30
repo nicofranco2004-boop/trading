@@ -20,6 +20,8 @@ import { Sparkles, CheckCircle2, RefreshCw, ArrowLeft } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import PageMeta from '../components/PageMeta'
+import { leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 export default function VerifyEmail() {
   const [searchParams] = useSearchParams()
@@ -148,8 +150,8 @@ export default function VerifyEmail() {
       })
       const skippedBefore = (() => {
         try {
-          return localStorage.getItem('rendi_onboarding_skipped') === '1' ||
-                 localStorage.getItem('rendi_onboarding_completed') === '1'
+          return leerDelAlmacen(CATALOGO.bienvenidaSalteada) === '1' ||
+                 leerDelAlmacen(CATALOGO.bienvenidaCompleta) === '1'
         } catch {
           return false
         }

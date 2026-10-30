@@ -39,6 +39,7 @@ import { useToast } from '../components/Toast'
 import { computeTradeStats, esConversion, mejorTrade, patronesDeOperaciones } from '../utils/tradeStats'
 import { operacionesEnUsd } from '../utils/assetPnl'
 import { anotarCambioDeMovimiento } from '../utils/cambioDeMovimiento'
+import { useDuenoDeLosDatos } from '../utils/duenoDeLaPestana'
 import NumeroQueCambia, { textoDeDiferencia } from '../components/NumeroQueCambia'
 import { useNumeroQueCambia } from '../hooks/useNumeroQueCambia'
 import TradesTable, { PAGE_SIZE } from '../components/operations/TradesTable'
@@ -56,6 +57,8 @@ import {
 } from '../components/operations/shared'
 import { confirmar } from '../utils/confirmar'
 import { cobradoDe } from '../utils/cobros'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 // pnl_usd arranca como string vacío (no 0) para que el form distinga
 // "no completado" de "0 USD" — sin esto, el user que quiere cargar un trade
@@ -94,6 +97,9 @@ const RESULT_OPTIONS = [
 const FILTROS_INICIALES = { asset: '', broker: 'all', result: 'all', period: 'all' }
 
 export default function Operations() {
+  // Lo que se anota de un cambio es de la cuenta de los datos de esta pantalla
+  // (utils/duenoDeLaPestana): si la pestaña ya es de otra, no se anota.
+  const duenoDatos = useDuenoDeLosDatos()
   const isMobile = useIsMobile()
   // tab: 'trades' = operaciones cerradas con KPIs de P&L
   //      'all'    = historial unificado (trades + depósitos + retiros + …)
@@ -104,8 +110,8 @@ export default function Operations() {
   // propia: el breakpoint tiene un solo dueño (useIsMobile) y el guard lo
   // verifica archivo por archivo. `useIsMobile` resuelve sincrónico en el primer
   // render, así que el inicializador perezoso lee el valor correcto.
-  const [tab, setTab] = useState(() => localStorage.getItem('rendi_operations_tab') || (isMobile ? 'trades' : 'all'))
-  useEffect(() => { localStorage.setItem('rendi_operations_tab', tab) }, [tab])
+  const [tab, setTab] = useState(() => leerDelAlmacen(CATALOGO.pestanaMovimientos) || (isMobile ? 'trades' : 'all'))
+  useEffect(() => { guardarEnAlmacen(CATALOGO.pestanaMovimientos, tab) }, [tab])
   // P&L realizado con el toggle global ARS/USD, SIEMPRE a FX histórico:
   // cada trade se convierte con el suyo (op.fx_to_usd stampeado > lookup por
   // op.date > tcValuacion actual) y los agregados (KPIs, headers de grupo) suman los
@@ -154,8 +160,8 @@ export default function Operations() {
   // reduce ruido) y persiste la elección; el feed no tiene control de agrupado y
   // va siempre por día. Estado PROPIO de este tab — no se comparte con
   // MovementsView (que tiene su 'rendi_movements_group').
-  const [groupBy, setGroupBy] = useState(() => localStorage.getItem('rendi_trades_group') || 'asset')
-  useEffect(() => { localStorage.setItem('rendi_trades_group', groupBy) }, [groupBy])
+  const [groupBy, setGroupBy] = useState(() => leerDelAlmacen(CATALOGO.agruparOperaciones) || 'asset')
+  useEffect(() => { guardarEnAlmacen(CATALOGO.agruparOperaciones, groupBy) }, [groupBy])
   // Grupos expandidos (Set de keys). Click en la fila-resumen togglea su detalle.
   const [expandedGroups, setExpandedGroups] = useState(() => new Set())
   function toggleGroup(key) {
@@ -302,7 +308,7 @@ export default function Operations() {
             await load()
           })
           // Volvió: la próxima pantalla con total lo muestra sumándose.
-          if (cambio) anotarCambioDeMovimiento({ ...cambio, deshecho: false })
+          if (cambio) anotarCambioDeMovimiento({ ...cambio, deshecho: false }, duenoDatos)
           toast.push(msgVuelta, { type: 'success' })
         } catch (ex) {
           toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
@@ -347,7 +353,7 @@ export default function Operations() {
       const cambio = pf
         ? { texto: `cobro del plazo fijo de ${pf.banco}`, articulo: 'el' }
         : { texto: 'operación', articulo: 'la' }
-      anotarCambioDeMovimiento(cambio)
+      anotarCambioDeMovimiento(cambio, duenoDatos)
       offerUndo(res, '/operations/undo', pf ? `El plazo fijo de ${pf.banco} volvió a tu cartera.` : 'Operación borrada.', cambio,
         pf ? 'Listo, volvimos atrás: el plazo fijo está cobrado de nuevo.' : undefined)
     } catch (ex) {
@@ -380,7 +386,7 @@ export default function Operations() {
       })
       const n = res?.count
       const cambio = { texto: `historial de ${asset}`, articulo: 'el' }
-      anotarCambioDeMovimiento(cambio)
+      anotarCambioDeMovimiento(cambio, duenoDatos)
       offerUndo(res, '/assets/undo',
         `${asset} borrado${n ? ` (${n} ${n === 1 ? 'operación' : 'operaciones'})` : ''}.`, cambio)
     } catch (ex) {
@@ -1257,6 +1263,9 @@ export function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
 // sin avisarle, la operación borrada seguía visible ahí (y en sus KPIs) hasta recargar.
 // Desde la Fase 3 el prop llega en LAS DOS anchuras (el feed lo montaba sin él).
 function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } }) {
+  // Lo que se anota de un cambio es de la cuenta de los datos de esta pantalla
+  // (utils/duenoDeLaPestana): si la pestaña ya es de otra, no se anota.
+  const duenoDatos = useDuenoDeLosDatos()
   // Fase B: formatter atado al toggle global ARS/USD. Lo bajamos a
   // computeMovementKpis y a los renderers vía props para evitar shadow.
   // Phase C audit fix H1: el HM (historical money) se usa en cada fila
@@ -1281,8 +1290,8 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
   // Agrupación de la lista. 'asset' por defecto (reduce ruido). Persistido en
   // localStorage para respetar la preferencia del user entre sesiones. El feed
   // no tiene control de agrupado: va siempre por día.
-  const [groupBy, setGroupBy] = useState(() => localStorage.getItem('rendi_movements_group') || 'asset')
-  useEffect(() => { localStorage.setItem('rendi_movements_group', groupBy) }, [groupBy])
+  const [groupBy, setGroupBy] = useState(() => leerDelAlmacen(CATALOGO.agruparMovimientos) || 'asset')
+  useEffect(() => { guardarEnAlmacen(CATALOGO.agruparMovimientos, groupBy) }, [groupBy])
   // Grupos expandidos (Set de keys). Mismo patrón que expandedTickers en
   // Positions: click en la fila-resumen togglea el despliegue de sus filas.
   const [expandedGroups, setExpandedGroups] = useState(() => new Set())
@@ -1461,7 +1470,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
         await load()
         return r
       })
-      anotarCambioDeMovimiento(cambio)
+      anotarCambioDeMovimiento(cambio, duenoDatos)
       onChanged?.()
       // Los trades devuelven token de deshacer (cascada reversible). Los cash-flows
       // todavía no: ahí solo confirmamos, sin prometer nada que no exista. Toda
@@ -1480,7 +1489,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
                   await api.post(`${base}/${token}`)
                   await load()
                 })
-                anotarCambioDeMovimiento({ ...cambio, deshecho: !cambio.deshecho })
+                anotarCambioDeMovimiento({ ...cambio, deshecho: !cambio.deshecho }, duenoDatos)
                 onChanged?.()
                 toast.push(pf ? 'Listo, volvimos atrás: el plazo fijo está cobrado de nuevo.'
                   : m.transfer_out ? 'Listo, volvimos atrás: el cierre está de nuevo.'

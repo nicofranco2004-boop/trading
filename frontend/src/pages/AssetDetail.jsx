@@ -52,6 +52,8 @@ import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import { operacionesEnUsd } from '../utils/assetPnl'
 import { esCobro } from '../utils/tradeStats'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 // ─── Matriz de valuación por lote (reusa la lógica de PositionDetailMobile) ──
 // Costo económico del lote, en SU moneda = lo pagado + las comisiones de compra.
@@ -158,10 +160,10 @@ function symbolFor(p, brokers) {
 // el almacenamiento está bloqueado (modo privado), técnico primero.
 const CLAVE_ORDEN = 'rendi_ficha_orden'
 function ordenGuardado() {
-  try { return localStorage.getItem(CLAVE_ORDEN) === 'fundamental' ? 'fundamental' : 'tecnico' } catch { return 'tecnico' }
+  try { return leerDelAlmacen(CATALOGO.ordenDeLaFicha) === 'fundamental' ? 'fundamental' : 'tecnico' } catch { return 'tecnico' }
 }
 function guardarOrden(o) {
-  try { localStorage.setItem(CLAVE_ORDEN, o) } catch { /* sin almacenamiento */ }
+  try { guardarEnAlmacen(CATALOGO.ordenDeLaFicha, o) } catch { /* sin almacenamiento */ }
 }
 
 // Un FCI no tiene serie de precios: se valúa por el NAV del día. Sirve para no

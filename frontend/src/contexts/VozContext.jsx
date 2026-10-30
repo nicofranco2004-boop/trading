@@ -36,8 +36,10 @@ import { loadChatSession, saveChatSession, clearChatSession, sendWindow, MAX_STO
 import { useAuth } from './AuthContext'
 import { getClientContext, EVENTO_CUENTA_CAMBIADA } from '../utils/api'
 import { traducirErrorDeChat, esCancelacion } from '../utils/errorChat'
+import { leer as leerDelAlmacen, guardar as guardarEnAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
-const LS_ON = 'rendi:voz:on'
+const LS_ON = CATALOGO.vozPrendida
 // Con qué arranca el parlante para quien nunca lo tocó. Prendido: en los planes
 // pagos y en la prueba, Rendi lee sola cada respuesta, y para eso le manda a
 // OpenAI el resumen hablado. Términos (§1, §11) y Privacidad (resumen, §3, §4,
@@ -45,11 +47,11 @@ const LS_ON = 'rendi:voz:on'
 // `pages/Privacidad.test.js` los ata a este valor: si cambia, cambian ellos.
 // Hasta el 2026-09-26 los dos decían que se activaba con el parlante.
 export const VOZ_ARRANCA_PRENDIDA = true
-const LS_RATE = 'rendi:voz:rate'
+const LS_RATE = CATALOGO.vozVelocidad
 // Si la isla flotante (el acompañante, RendiMate) se dibuja o no. Prendida por
 // defecto; se apaga con el interruptor de la cabecera de /ai. Apagada no se
 // pierde nada: la conversación es la misma y vive en /ai.
-const LS_ISLA = 'rendi:isla:on'
+const LS_ISLA = CATALOGO.islaVisible
 
 // 1,25× por defecto: a la velocidad natural el resumen de 3 oraciones dura 24
 // segundos y se hace largo. Las tres marcas son las del mockup; acelerar más
@@ -136,18 +138,18 @@ const VozContext = createContext(null)
 
 function leerBool(k, def) {
   try {
-    const v = localStorage.getItem(k)
+    const v = leerDelAlmacen(k)
     return v == null ? def : v === '1'
   } catch { return def }
 }
 function leerRate() {
   try {
-    const v = parseFloat(localStorage.getItem(LS_RATE))
+    const v = parseFloat(leerDelAlmacen(LS_RATE))
     return RATES.includes(v) ? v : DEFAULT_RATE
   } catch { return DEFAULT_RATE }
 }
 function guardar(k, v) {
-  try { localStorage.setItem(k, v) } catch { /* modo privado: no es crítico */ }
+  try { guardarEnAlmacen(k, v) } catch { /* modo privado: no es crítico */ }
 }
 
 export function VozProvider({ children }) {

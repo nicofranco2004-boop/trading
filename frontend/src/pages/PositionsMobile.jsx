@@ -81,6 +81,8 @@ import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
 import { usePrivacy } from '../contexts/PrivacyContext'
 import { impactoFueraDeHorario, sumarTenencias, nombreCorto } from '../utils/fueraDeHorario'
 import { ChipFueraDeHorario, SiAbrieraAsi, IconoSesion, tonoDeSesion } from '../components/FueraDeHorario'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 const SORT_OPTIONS = [
   { id: 'value',  label: 'Valor' },
@@ -128,7 +130,7 @@ const PISTA_SCROLL_KEY = 'rendi_cartera_scroll_descubierto'
 
 function yaDescubrioElScrollLateral() {
   try {
-    return localStorage.getItem(PISTA_SCROLL_KEY) === '1'
+    return leerDelAlmacen(CATALOGO.pistaDeslizar) === '1'
   } catch {
     return false
   }
@@ -211,14 +213,14 @@ export default function PositionsMobile() {
   // dos pantallas dijeran cosas distintas del mismo par es justo lo que este
   // trabajo vino a cerrar.
   const [cuentasSeparadas, setCuentasSeparadas] = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem('rendi_cuentas_separadas') || '[]')) }
+    try { return new Set(JSON.parse(leerDelAlmacen(CATALOGO.cuentasSeparadas) || '[]')) }
     catch { return new Set() }
   })
   function toggleCuentaSeparada(key) {
     setCuentasSeparadas(prev => {
       const next = new Set(prev)
       next.has(key) ? next.delete(key) : next.add(key)
-      try { localStorage.setItem('rendi_cuentas_separadas', JSON.stringify([...next])) } catch { /* no-op */ }
+      try { guardarEnAlmacen(CATALOGO.cuentasSeparadas, JSON.stringify([...next])) } catch { /* no-op */ }
       return next
     })
   }
@@ -245,7 +247,7 @@ export default function PositionsMobile() {
   const marcarScrollDescubierto = useCallback(() => {
     if (scrollYaDescubierto.current) return
     scrollYaDescubierto.current = true
-    try { localStorage.setItem(PISTA_SCROLL_KEY, '1') } catch { /* navegación privada */ }
+    try { guardarEnAlmacen(CATALOGO.pistaDeslizar, '1') } catch { /* navegación privada */ }
     setPistaScrollVisible(false)
   }, [])
   // Sheet "Ver y ordenar": se lleva el sort, el filtro por broker y "Ver lotes".

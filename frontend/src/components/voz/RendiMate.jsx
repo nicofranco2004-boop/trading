@@ -23,6 +23,7 @@ import CursorEscribiendo from '../ai/CursorEscribiendo'
 import { entrada } from '../../hooks/useAlVerse'
 import { usePegadoAlFondo } from '../../hooks/usePegadoAlFondo'
 import { useArrastrable } from '../../hooks/useArrastrable'
+import { CATALOGO } from '../../utils/catalogoDelAlmacen'
 import { paraLaIsla } from '../ai/preguntasSugeridas'
 import MervallE from '../ai/MervallE'
 import { avisarTipeo, avisarMicrofono } from '../ai/mervalle/motor'
@@ -72,7 +73,7 @@ export default function RendiMate() {
   //
   // La misma posición para cerrada y abierta a propósito: uno la deja en un
   // lugar y la espera ahí, no en dos lugares distintos según el estado.
-  const { ref: islaRef, estilo: islaEstilo, manija } = useArrastrable('rendi:isla:pos')
+  const { ref: islaRef, estilo: islaEstilo, manija } = useArrastrable(CATALOGO.islaPosicion)
   // Pregunta nueva → volvemos a seguirla, esté donde esté el usuario.
   useEffect(() => { if (sending) alFondo() }, [sending, alFondo])
 

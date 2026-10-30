@@ -25,7 +25,9 @@ import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api, errorMessage } from '../utils/api'
-import { duenoDeLaPestana } from '../utils/duenoDeLaPestana'
+import { useDuenoDeLosDatos } from '../utils/duenoDeLaPestana'
+import { leerDe, guardarDe } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { BROKER_GUIDES, pasosPara } from '../components/import/BrokerInstructions'
@@ -50,10 +52,12 @@ export const MAX_FILAS = 50
 // justamente lo que una tanda no puede preguntar. Va al asistente por cliente.
 const SIN_TANDA = new Set(['generic'])
 
-// De la persona (utils/duenoDeLaPestana): la tanda lleva nombres de clientes.
-// «Cerrar sesión» la borra, pero una sesión que vence no, y el siguiente asesor
-// en la pestaña veía la tanda (y los clientes) del anterior. Sin nadie, nada.
-const claveLocal = () => { const d = duenoDeLaPestana(); return d && `rendi_tanda_ultima:${d}` }
+// De la persona, en su cuenta propia (utils/duenoDeLaPestana): la tanda lleva
+// nombres de clientes. «Cerrar sesión» la borra, pero una sesión que vence no, y
+// el siguiente asesor en la pestaña veía la tanda (y los clientes) del anterior.
+// Y es del asesor a SU nivel aunque tenga un cliente abierto: al volver de
+// revisar uno (con el cliente todavía abierto) se busca la suya. Sin nadie, nada.
+const TANDA = CATALOGO.tandaAsesor
 
 const FINALES = new Set([ESTADO.COMPLETO, ESTADO.REVISAR, ESTADO.ERROR, ESTADO.FOTO_PENDIENTE])
 
@@ -67,11 +71,10 @@ function serializar(filas, momento, inicio, fin, tandaId = null) {
     filas: filas.map(f => ({ ...f, archivos: (f.archivos || []).map(a => ({ name: a.name, size: a.size })) })),
   }
 }
-export function guardarLocal(x) { const k = claveLocal(); if (!k) return; try { sessionStorage.setItem(k, JSON.stringify(x)) } catch {} }
-export function leerLocal() {
+export function guardarLocal(x, dueno) { try { guardarDe(TANDA, dueno, JSON.stringify(x)) } catch {} }
+export function leerLocal(dueno) {
   try {
-    const k = claveLocal()
-    const raw = k ? sessionStorage.getItem(k) : null
+    const raw = leerDe(TANDA, dueno)
     const x = raw ? JSON.parse(raw) : null
     if (!x || !Array.isArray(x.filas)) return null
     // Las filas que quedaron "cargando"/"pendiente" en una tanda cortada no
@@ -92,7 +95,8 @@ export default function AdvisorImports() {
   const [roster, setRoster] = useState(null)      // null = cargando
   const [grupos, setGrupos] = useState([])        // parsers agrupados por plataforma
   const [errorCarga, setErrorCarga] = useState(null)
-  const [ultima] = useState(() => leerLocal())    // resultado guardado en la pestaña
+  const duenoTanda = useDuenoDeLosDatos({ propio: true })
+  const [ultima] = useState(() => leerLocal(duenoTanda))    // resultado guardado en la pestaña
   const [filas, setFilas] = useState(() => (ultima && ultima.momento !== 'armar' ? ultima.filas : [nuevaFila()]))
   const [momento, setMomento] = useState(() => (ultima && ultima.momento !== 'armar' ? 'resultado' : 'armar'))
   const [inicio, setInicio] = useState(() => ultima?.inicio || null)
@@ -143,7 +147,7 @@ export default function AdvisorImports() {
   if (user && !isAdvisor) return <Navigate to="/" replace />
   if (clientCtx && !volviendo) return <Navigate to="/imports" replace />
 
-  const persistir = (fs, mom, ini = inicio, f = fin, tid = tandaId) => { guardarLocal(serializar(fs, mom, ini, f, tid)); setHayGuardada(true) }
+  const persistir = (fs, mom, ini = inicio, f = fin, tid = tandaId) => { guardarLocal(serializar(fs, mom, ini, f, tid), duenoTanda); setHayGuardada(true) }
 
   const patch = (id, p) => setFilas(fs => fs.map(f => (f.id === id ? { ...f, ...(typeof p === 'function' ? p(f) : p) } : f)))
   const quitar = (id) => setFilas(fs => fs.filter(f => f.id !== id))
@@ -190,7 +194,7 @@ export default function AdvisorImports() {
       api, signal: ac.signal, tandaId: tid,
       onUpdate: (id, p) => {
         latest = latest.map(f => (f.id === id ? { ...f, ...p } : f))
-        guardarLocal(serializar(latest, 'cargando', t0, null, tid))
+        guardarLocal(serializar(latest, 'cargando', t0, null, tid), duenoTanda)
         setFilas(latest)
         // Al servidor sólo cuando una fila TERMINA (no en cada sub-paso).
         if (p.estado && FINALES.has(p.estado)) sincronizar(false)
@@ -224,7 +228,7 @@ export default function AdvisorImports() {
   }
 
   function verUltima() {
-    const u = leerLocal()
+    const u = leerLocal(duenoTanda)
     if (!u) return
     // Si la tanda existe en el servidor, manda el servidor (ahí está lo que
     // pasó después: un deshacer, un revert desde la cuenta del cliente).
@@ -236,7 +240,7 @@ export default function AdvisorImports() {
   async function verTanda(id) {
     try {
       const d = await api.get(`/advisor/tandas/${id}`)
-      const local = leerLocal()
+      const local = leerLocal(duenoTanda)
       const filasSrv = fusionarFotosLocales((d.rows || []).map(filaDelServidor), local?.tandaId === d.id ? local.filas : [])
       const seCorto = !d.finished_at && (d.resumen?.en_curso || 0) > 0
       setFilas(seCorto ? marcarInterrumpidas(filasSrv) : filasSrv)

@@ -11,6 +11,8 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useVoz } from '../../../contexts/VozContext'
 import { kindDeCuota } from '../UpgradePromoCard'
+import { hay, almacenDe } from '../../../utils/almacen'
+import { CATALOGO } from '../../../utils/catalogoDelAlmacen'
 
 /** El tono que trae el bloque estructurado de la respuesta → la reacción. */
 export const REACCION_POR_TONO = { pos: 'contento', warn: 'atento', neg: 'serio' }
@@ -231,7 +233,7 @@ export function formaDePortada(alto, esCelular) {
 const CLAVE_SALUDO = 'mervalle_saludo_dia'
 
 /** Si todavía no saludó hoy (fecha local del dispositivo). Lo marca como saludado. */
-export function tocaSaludar(hoy = new Date(), storage = (typeof localStorage !== 'undefined' ? localStorage : null)) {
+export function tocaSaludar(hoy = new Date(), storage = (hay() ? almacenDe(CATALOGO.saludoDelDia) : null)) {
   const dia = `${hoy.getFullYear()}-${hoy.getMonth() + 1}-${hoy.getDate()}`
   try {
     if (!storage || storage.getItem(CLAVE_SALUDO) === dia) return false

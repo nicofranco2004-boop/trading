@@ -36,6 +36,7 @@
 // lápiz, en vez de tres juegos de eventos que se pisan entre sí.
 
 import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { leer as leerDelAlmacen, guardar as guardarEnAlmacen } from '../utils/almacen'
 
 // 🔴 CUÁNTO HAY QUE MOVERSE PARA QUE DEJE DE SER UN TOQUE.
 //
@@ -67,7 +68,7 @@ function leerGuardado(clave) {
   try {
     // sessionStorage y no localStorage: se borra al cerrar la pestaña, que es
     // lo que hace que la isla vuelva sola a su lugar de siempre.
-    const raw = sessionStorage.getItem(clave)
+    const raw = leerDelAlmacen(clave)
     if (!raw) return { dx: 0, dy: 0 }
     const v = JSON.parse(raw)
     return (Number.isFinite(v?.dx) && Number.isFinite(v?.dy)) ? { dx: v.dx, dy: v.dy } : { dx: 0, dy: 0 }
@@ -124,7 +125,7 @@ export function useArrastrable(clave) {
   }, [])
 
   const guardar = useCallback((p) => {
-    try { sessionStorage.setItem(clave, JSON.stringify(p)) } catch { /* sin almacenamiento */ }
+    try { guardarEnAlmacen(clave, JSON.stringify(p)) } catch { /* sin almacenamiento */ }
   }, [clave])
 
   const acomodar = useCallback(() => {

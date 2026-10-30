@@ -1,3 +1,5 @@
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
 // Flag "descubrió la pantalla de posiciones" — para el Paso 2 del onboarding.
 // ════════════════════════════════════════════════════════════════════════════
 // El Paso 2 ("Cargá tus posiciones activas") NO se completa cargando una
@@ -14,7 +16,7 @@ export const POSITIONS_DISCOVERED_KEY = 'rendi_positions_discovered'
 
 export function isPositionsDiscovered() {
   try {
-    return localStorage.getItem(POSITIONS_DISCOVERED_KEY) === '1'
+    return leerDelAlmacen(CATALOGO.conocioLaCartera) === '1'
   } catch {
     return false
   }
@@ -22,8 +24,8 @@ export function isPositionsDiscovered() {
 
 export function markPositionsDiscovered() {
   try {
-    if (localStorage.getItem(POSITIONS_DISCOVERED_KEY) === '1') return
-    localStorage.setItem(POSITIONS_DISCOVERED_KEY, '1')
+    if (leerDelAlmacen(CATALOGO.conocioLaCartera) === '1') return
+    guardarEnAlmacen(CATALOGO.conocioLaCartera, '1')
     window.dispatchEvent(new Event('positions-discovered'))
   } catch {
     /* localStorage no disponible — no-op */

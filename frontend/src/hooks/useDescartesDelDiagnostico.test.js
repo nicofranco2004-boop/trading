@@ -59,12 +59,21 @@ describe('las tarjetas descartadas son de la persona y de la cuenta', () => {
     expect(pantalla.descartadas).toEqual(['concentracion'])   // la del 2 sigue en el 2
   })
 
-  it('con la pantalla abierta, el cambio de cliente trae las del cliente nuevo', async () => {
+  it('con la pantalla abierta, si la pestaña pasa a otro cliente, un descarte no se guarda a nombre de nadie (re-test 2)', async () => {
     api.setClientContext({ id: 2, label: 'Dos' })
     await abrir()
     await enActo(async () => pantalla.descartar('concentracion'))
-    await cambiarDeCliente({ id: 3, label: 'Tres' })
+    await cambiarDeCliente({ id: 3, label: 'Tres' })          // otra pestaña entra al 3
+    // Las tarjetas a la vista son del 2: se siguen mostrando sus descartes…
+    expect(pantalla.descartadas).toEqual(['concentracion'])
+    // …y uno nuevo no se guarda: ni en el 3 (no son sus tarjetas) ni en el 2
+    // (la pestaña ya no está ahí).
+    await enActo(async () => pantalla.descartar('liquidez'))
+    await abrir()                                             // el 3, de verdad
     expect(pantalla.descartadas).toEqual([])
+    api.setClientContext({ id: 2, label: 'Dos' })
+    await abrir()
+    expect(pantalla.descartadas).toEqual(['concentracion'])
   })
 
   it('a Ana se le vence la sesión y entra Bruno: no hereda lo que descartó Ana', async () => {

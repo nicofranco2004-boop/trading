@@ -5,25 +5,30 @@
 //   (2) `slots`: las ids VISIBLES por grupo, en orden — así al descartar UNA
 //       tarjeta se reemplaza sólo ESA y en un refresh se ven las mismas.
 //
-// DE QUIÉN ES: de la persona Y de la cuenta (utils/duenoDeLaPestana), y lo pone
-// el hook. Antes la clave era sólo del email: el asesor que descartaba una
-// tarjeta en el cliente 2 dejaba de verla en el 3 (re-test a ciegas, 30/10).
-// Sin nadie logueado vive en memoria y no se guarda.
+// DE QUIÉN ES: de la persona Y de la cuenta DE LOS DATOS (las tarjetas a la
+// vista): useDuenoDeLosDatos, el dueño de cuando se montó la pantalla. Antes la
+// clave era sólo del email: el asesor que descartaba una tarjeta en el cliente 2
+// dejaba de verla en el 3 (re-test a ciegas, 30/10). Si la pestaña cambia de
+// dueño con la pantalla abierta, las tarjetas a la vista siguen siendo del
+// anterior: se siguen mostrando sus descartes y uno nuevo no se guarda (la
+// puerta, utils/almacen.guardarDe, no guarda para un dueño que ya no es el de
+// la pestaña). Sin nadie logueado vive en memoria y no se guarda.
 //
 //   const [state, setState, guardar] = useDescartesDelDiagnostico()
 //   state = { dismissed: Set, slots: { [grupo]: [ids] } }
-//   guardar(dismissed, slots) → lo escribe para el dueño de ahora
+//   guardar(dismissed, slots) → lo escribe para el dueño de los datos
 
 import { useState } from 'react'
-import { useDuenoDeLaPestana } from '../utils/duenoDeLaPestana'
+import { useDuenoDeLosDatos } from '../utils/duenoDeLaPestana'
+import { leerDe, guardarDe } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
-const PREFIJO = 'rendi_diag_dismissed_diag:'
 const VACIO = () => ({ dismissed: new Set(), slots: {} })
 
 function leer(dueno) {
   if (!dueno) return VACIO()
   try {
-    const raw = localStorage.getItem(PREFIJO + dueno)
+    const raw = leerDe(CATALOGO.descartesDiagnostico, dueno)
     if (!raw) return VACIO()
     const parsed = JSON.parse(raw)
     // Formato viejo: array plano de ids descartadas (sin slots).
@@ -33,22 +38,14 @@ function leer(dueno) {
 }
 
 function escribir(dueno, dismissed, slots) {
-  if (!dueno) return
   try {
-    localStorage.setItem(PREFIJO + dueno, JSON.stringify({ dismissed: [...dismissed], slots }))
+    guardarDe(CATALOGO.descartesDiagnostico, dueno, JSON.stringify({ dismissed: [...dismissed], slots }))
   } catch { /* modo privado */ }
 }
 
 export function useDescartesDelDiagnostico() {
-  const dueno = useDuenoDeLaPestana()
-  // Por dueño: si el asesor cambia de cliente con la pantalla abierta, se leen
-  // los del cliente nuevo en vez de seguir con los del anterior.
-  const [porDueno, setPorDueno] = useState({})
-  const state = porDueno[dueno] ?? leer(dueno)
-  const setState = (f) => setPorDueno(x => {
-    const antes = x[dueno] ?? leer(dueno)
-    return { ...x, [dueno]: typeof f === 'function' ? f(antes) : f }
-  })
+  const dueno = useDuenoDeLosDatos()
+  const [state, setState] = useState(() => leer(dueno))
   const guardar = (dismissed, slots) => escribir(dueno, dismissed, slots)
   return [state, setState, guardar]
 }

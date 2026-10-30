@@ -27,6 +27,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { PASOS, ATRIBUTO, yaLoVio, marcarVisto } from './pasos'
+import { hay, almacenDe } from '../../utils/almacen'
+import { CATALOGO } from '../../utils/catalogoDelAlmacen'
 import { useVoz } from '../../contexts/VozContext'
 
 // Cuánto aire se deja alrededor de lo iluminado.
@@ -52,8 +54,8 @@ export default function TourNovedades() {
   // pantalla entera (login, alta de cuenta, la primera lectura).
   useEffect(() => {
     if (cerradoRef.current) return
-    if (typeof localStorage === 'undefined') return
-    if (yaLoVio(localStorage)) return
+    if (!hay()) return
+    if (yaLoVio(almacenDe(CATALOGO.vioNovedades))) return
     if (/^\/(login|registro|onboarding|bienvenida|claim|verify-email|reset-password)/.test(pathname)) return
     // Un respiro para que la pantalla termine de armarse antes de oscurecerla.
     const t = setTimeout(() => setActivo(true), 900)
@@ -63,7 +65,7 @@ export default function TourNovedades() {
   const cerrar = useCallback(() => {
     cerradoRef.current = true
     setActivo(false)
-    if (typeof localStorage !== 'undefined') marcarVisto(localStorage)
+    if (hay()) marcarVisto(almacenDe(CATALOGO.vioNovedades))
   }, [])
 
   // El asesor en su propio nivel ve EL MISMO tutorial; sólo cambia el texto de

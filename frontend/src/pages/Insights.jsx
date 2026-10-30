@@ -21,6 +21,8 @@ import DeltaSinceVisit from '../components/diagnostico/DeltaSinceVisit'
 import { buildDiagnosticoLayout } from '../utils/diagnosticoTemplate'
 import { useLastVisit } from '../hooks/useLastVisit'
 import { useDescartesDelDiagnostico } from '../hooks/useDescartesDelDiagnostico'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
+import { leer as leerDelAlmacen, guardar as guardarEnAlmacen } from '../utils/almacen'
 import InsightsKpiStrip from '../components/InsightsKpiStrip'
 import ArAlternativesVerdict from '../components/ArAlternativesVerdict'
 import Card from '../components/Card'
@@ -377,7 +379,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // "Desde tu última visita" — el hook va ARRIBA (antes del guard de loading);
   // el delta se computa con record(snapshot) más abajo, cuando la data existe.
   // De la persona y la cuenta: lo pone el hook (utils/duenoDeLaPestana).
-  const lastVisit = useLastVisit('diagnostico')
+  const lastVisit = useLastVisit(CATALOGO.ultimaVisitaDiagnostico)
   // Flags de renderizado condicional cuando se embebe dentro de /analisis.
   // Standalone (sin _embeddedTab) → renderiza TODO.
   // En tab 'diagnostico' → todo menos "Perfil del inversor".
@@ -421,21 +423,21 @@ function InsightsDesktop({ _embeddedTab }) {
   const VALID_ARS_BENCH = ['inflation', 'merval', 'plazo_fijo', 'pesos_cash', 'sp500']
   const [benchUsd, setBenchUsd] = useState(() => {
     try {
-      const v = localStorage.getItem('rendi_insights_bench_usd')
+      const v = leerDelAlmacen(CATALOGO.indiceDolares)
       return VALID_USD_BENCH.includes(v) ? v : 'sp500'
     } catch { return 'sp500' }
   })
   const [benchArs, setBenchArs] = useState(() => {
     try {
-      const v = localStorage.getItem('rendi_insights_bench_ars')
+      const v = leerDelAlmacen(CATALOGO.indicePesos)
       return VALID_ARS_BENCH.includes(v) ? v : 'inflation'
     } catch { return 'inflation' }
   })
   useEffect(() => {
-    try { localStorage.setItem('rendi_insights_bench_usd', benchUsd) } catch {}
+    try { guardarEnAlmacen(CATALOGO.indiceDolares, benchUsd) } catch {}
   }, [benchUsd])
   useEffect(() => {
-    try { localStorage.setItem('rendi_insights_bench_ars', benchArs) } catch {}
+    try { guardarEnAlmacen(CATALOGO.indicePesos, benchArs) } catch {}
   }, [benchArs])
   const selectedBench = currency === 'USD' ? benchUsd : benchArs
   // Qué `bench=` se le pide al servidor (BENCH_API_KEY / benchPedido en

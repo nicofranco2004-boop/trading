@@ -32,6 +32,8 @@ import ProgressBar from '../components/onboarding/ProgressBar'
 import WelcomeStep from '../components/onboarding/WelcomeStep'
 import PositionStep from '../components/onboarding/PositionStep'
 import CompleteStep from '../components/onboarding/CompleteStep'
+import { guardar as guardarEnAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 export const ONBOARDING_SKIPPED_KEY = 'rendi_onboarding_skipped'
 export const ONBOARDING_COMPLETED_KEY = 'rendi_onboarding_completed'
@@ -92,7 +94,7 @@ export default function Onboarding() {
     trackEvent('onboarding_skipped', { at_step: STEP_NAMES[step] })
     track('onboarding_skipped', { at_step: STEP_NAMES[step] })
     try {
-      localStorage.setItem(ONBOARDING_SKIPPED_KEY, '1')
+      guardarEnAlmacen(CATALOGO.bienvenidaSalteada, '1')
     } catch {}
     // FR-01: mandar a la CARTERA (su empty-state con CTA de carga), no a la Home
     // de mercado genérica — que no contiene nada del usuario y posterga el aha.
@@ -103,7 +105,7 @@ export default function Onboarding() {
     trackEvent('onboarding_completed', { had_position: !!data.position })
     track('onboarding_completed', { had_position: !!data.position })
     try {
-      localStorage.setItem(ONBOARDING_COMPLETED_KEY, '1')
+      guardarEnAlmacen(CATALOGO.bienvenidaCompleta, '1')
     } catch {}
     // No navegamos automáticamente — el CompleteStep tiene CTAs propios.
   }
@@ -112,7 +114,7 @@ export default function Onboarding() {
   useEffect(() => {
     if (step === STEP_NAMES.length - 1) {
       try {
-        localStorage.setItem(ONBOARDING_COMPLETED_KEY, '1')
+        guardarEnAlmacen(CATALOGO.bienvenidaCompleta, '1')
       } catch {}
     }
   }, [step])

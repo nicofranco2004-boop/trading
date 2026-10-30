@@ -1,4 +1,6 @@
 import { isDemoMode, handleDemoRequest } from './demo'
+import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
 
 // Wrapper de fetch para llamadas al API.
 //
@@ -12,7 +14,7 @@ import { isDemoMode, handleDemoRequest } from './demo'
 
 if (typeof window !== 'undefined') {
   try {
-    localStorage.removeItem('rendi_token')  // legacy: ahora es cookie HttpOnly
+    borrarDelAlmacen(CATALOGO.tokenViejo)  // legacy: ahora es cookie HttpOnly
   } catch {}
 }
 
@@ -27,7 +29,7 @@ const CLIENT_CTX_KEY = 'rendi_client_ctx'
 let _clientCtx = null
 try {
   if (typeof window !== 'undefined') {
-    const raw = localStorage.getItem(CLIENT_CTX_KEY)
+    const raw = leerDelAlmacen(CATALOGO.clienteAbierto)
     if (raw) {
       const parsed = JSON.parse(raw)
       if (parsed && typeof parsed.id === 'number') _clientCtx = parsed
@@ -60,8 +62,8 @@ export function setClientContext(ctx) {
   const antes = _clientCtx
   _clientCtx = ctx && typeof ctx.id === 'number' ? { id: ctx.id, label: ctx.label || '' } : null
   try {
-    if (_clientCtx) localStorage.setItem(CLIENT_CTX_KEY, JSON.stringify(_clientCtx))
-    else localStorage.removeItem(CLIENT_CTX_KEY)
+    if (_clientCtx) guardarEnAlmacen(CATALOGO.clienteAbierto, JSON.stringify(_clientCtx))
+    else borrarDelAlmacen(CATALOGO.clienteAbierto)
   } catch { /* ignore */ }
   avisarSiCambioLaCuenta(antes)
 }
@@ -157,8 +159,8 @@ async function req(method, path, body, opts) {
   if (res.status === 401) {
     // Si hay un usuario "conocido" en localStorage y nos rebotan, expiró la
     // cookie / sesión — limpiar y mandar al login.
-    const hadUser = !!localStorage.getItem('rendi_user')
-    localStorage.removeItem('rendi_user')
+    const hadUser = !!leerDelAlmacen(CATALOGO.usuario)
+    borrarDelAlmacen(CATALOGO.usuario)
     if (hadUser) {
       window.location.href = '/'
     }
@@ -365,7 +367,7 @@ async function upload(path, formData, opts) {
   const res = isPreview ? await withGatewayRetry(doFetch) : await doFetch()
 
   if (res.status === 401) {
-    localStorage.removeItem('rendi_user')
+    borrarDelAlmacen(CATALOGO.usuario)
     window.location.href = '/'
     throw errorDeSesion()
   }
@@ -396,7 +398,7 @@ async function getBlob(path) {
     headers: blobHeaders,
   })
   if (res.status === 401) {
-    localStorage.removeItem('rendi_user')
+    borrarDelAlmacen(CATALOGO.usuario)
     window.location.href = '/'
     throw errorDeSesion()
   }
@@ -439,8 +441,8 @@ async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, onVoz, s
   })
 
   if (res.status === 401) {
-    const hadUser = !!localStorage.getItem('rendi_user')
-    localStorage.removeItem('rendi_user')
+    const hadUser = !!leerDelAlmacen(CATALOGO.usuario)
+    borrarDelAlmacen(CATALOGO.usuario)
     if (hadUser) window.location.href = '/'
     throw errorDeSesion()
   }

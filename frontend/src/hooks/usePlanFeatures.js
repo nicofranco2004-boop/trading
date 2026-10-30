@@ -19,6 +19,8 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '../utils/api'
+import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 // Cache módulo-level: 1 fetch por sesión, compartido entre todos los hooks.
 //
@@ -42,7 +44,7 @@ const _listeners = new Set()
 // fail-open: simplemente arrancamos sin cache (igual que antes).
 try {
   if (typeof window !== 'undefined') {
-    const raw = localStorage.getItem(LS_KEY)
+    const raw = leerDelAlmacen(CATALOGO.planGuardado)
     if (raw) {
       const parsed = JSON.parse(raw)
       // Validación mínima de shape — evita usar cache de un formato viejo
@@ -65,7 +67,7 @@ export function refreshPlanFeatures() {
   _cached = null
   _inflight = null
   _version += 1
-  try { localStorage.removeItem(LS_KEY) } catch { /* ignore */ }
+  try { borrarDelAlmacen(CATALOGO.planGuardado) } catch { /* ignore */ }
   _notify()
   // Devolvemos la promesa del refetch. Sin esto `await refreshPlanFeatures()`
   // resuelve al instante (undefined) y el que llama sigue viendo los datos
@@ -82,7 +84,7 @@ async function _fetch() {
       _cached = data
       _inflight = null
       // Persistir en localStorage para próximo page load (hidratación instant)
-      try { localStorage.setItem(LS_KEY, JSON.stringify(data)) } catch { /* ignore */ }
+      try { guardarEnAlmacen(CATALOGO.planGuardado, JSON.stringify(data)) } catch { /* ignore */ }
       return data
     })
     .catch(err => { _inflight = null; throw err })

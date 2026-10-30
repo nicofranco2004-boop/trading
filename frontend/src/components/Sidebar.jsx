@@ -48,6 +48,8 @@ import RecommendationsModal from './RecommendationsModal'
 import InstalarAppModal, { precargarFotosDeInstalar } from './InstalarAppModal'
 import MervallE from './ai/MervallE'
 import RegistrarMenu from './RegistrarMenu'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 const SIDEBAR_W_EXPANDED = '248px'
 const SIDEBAR_W_COLLAPSED = '56px'
@@ -80,8 +82,8 @@ export default function Sidebar() {
   // Registrar e Importar adentro de su menú. Qué se ve sigue saliendo de la
   // lista compartida (el asesor en su nivel no tiene Importar).
   const alertas = visibleLoose.find(i => i.to === '/alertas')
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
-  const [piePlegado, setPiePlegado] = useState(() => localStorage.getItem(LS_PIE) === 'true')
+  const [collapsed, setCollapsed] = useState(() => leerDelAlmacen(CATALOGO.barraLateral) === 'true')
+  const [piePlegado, setPiePlegado] = useState(() => leerDelAlmacen(CATALOGO.pieDeLaBarra) === 'true')
   const [recomOpen, setRecomOpen] = useState(false)
   const [instalarOpen, setInstalarOpen] = useState(false)
 
@@ -102,12 +104,12 @@ export default function Sidebar() {
   }, [activaEnPie])
 
   useEffect(() => {
-    localStorage.setItem(LS_PIE, String(piePlegado))
+    guardarEnAlmacen(CATALOGO.pieDeLaBarra, String(piePlegado))
   }, [piePlegado])
 
   // Persistir + setear CSS var consumida por <main> (margin dinámico)
   useEffect(() => {
-    localStorage.setItem(LS_KEY, String(collapsed))
+    guardarEnAlmacen(CATALOGO.barraLateral, String(collapsed))
     document.documentElement.style.setProperty(
       '--sidebar-w',
       collapsed ? SIDEBAR_W_COLLAPSED : SIDEBAR_W_EXPANDED,

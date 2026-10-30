@@ -13,11 +13,12 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, enActo } from '../testing/navegadorMinimo'
 
-let api, useLastVisit
+let api, useLastVisit, CATALOGO
 beforeAll(async () => {
   instalarNavegadorMinimo()
   api = await import('../utils/api')
   ;({ useLastVisit } = await import('./useLastVisit'))
+  ;({ CATALOGO } = await import('../utils/catalogoDelAlmacen'))
 })
 
 const entrar = (email) => localStorage.setItem('rendi_user', JSON.stringify({ name: email, email }))
@@ -26,7 +27,7 @@ const visto = {}
 // Una pantalla que usa el hook como Insights: la clave de la sección y record()
 // con el valor de la cartera que está mirando.
 function Pantalla({ valor }) {
-  const lastVisit = useLastVisit('diagnostico')
+  const lastVisit = useLastVisit(CATALOGO.ultimaVisitaDiagnostico)
   visto.delta = lastVisit.record({ valueUsd: valor, findingIds: [] }).delta
   return null
 }
@@ -66,6 +67,32 @@ describe('«desde tu última visita» es de la persona y de la cuenta', () => {
     localStorage.removeItem('rendi_user')                // lo que hace api.js con un 401
     entrar('bruno@prueba.test')
     expect((await visitar(5000)).isFirstVisit).toBe(true)
+  })
+
+  it('pantalla abierta en el cliente 2 y OTRA pestaña entra al 3: el número del 2 no se guarda en el 3 (re-test 2)', async () => {
+    api.setClientContext({ id: 3, label: 'Tres' })
+    await visitar(80877.49)                               // la visita del 3, con su valor
+    api.setClientContext({ id: 2, label: 'Dos' })
+    await visitar(41536.95)                               // pantalla abierta en el 2
+    // Otra pestaña entra al 3; ésta sigue mostrando el 2 y vuelve a dibujar.
+    await enActo(async () => { api.setClientContext({ id: 3, label: 'Tres' }) })
+    await enActo(async () => { await montado.redibujar(h(Pantalla, { valor: 41536.95 * 1.1 })) })
+    api.setClientContext({ id: 3, label: 'Tres' })
+    const delta3 = await visitar(80877.49)                // el 3 se compara contra SÍ mismo
+    expect(delta3.isFirstVisit).toBe(false)
+    expect(delta3.valueDeltaPct).toBe(0)
+    api.setClientContext({ id: 2, label: 'Dos' })
+    expect((await visitar(41536.95)).valueDeltaPct).toBe(0)   // y lo del 2 no cambió tampoco
+  })
+
+  it('pantalla abierta de Ana y OTRA pestaña entra como Bruno: la plata de Ana no queda a nombre de Bruno (re-test 2)', async () => {
+    entrar('ana@prueba.test')
+    await visitar(41536.95)
+    entrar('bruno@prueba.test')                           // otra pestaña: la sesión pasa a Bruno
+    await enActo(async () => { await montado.redibujar(h(Pantalla, { valor: 41536.95 * 1.2 })) })
+    const claves = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i))
+    expect(claves.filter(k => k.includes('bruno'))).toEqual([])
+    expect((await visitar(124610.84)).isFirstVisit).toBe(true)   // Bruno: su primera visita
   })
 
   it('sin nadie logueado no se guarda huella', async () => {

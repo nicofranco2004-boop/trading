@@ -32,37 +32,39 @@
 
 import { EVENTO_ESCRITURA } from './api'
 import { duenoDeLaPestana } from './duenoDeLaPestana'
+import { leerDe, guardarDe } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
 
-// De la persona Y de la cuenta (utils/duenoDeLaPestana). Antes sólo de la
-// cuenta: «Cerrar sesión» lo borra, pero una sesión que vence no, y el
-// siguiente en la pestaña veía su número «cambiar» desde el de la anterior.
-// Sin nadie logueado, no hay clave: no se guarda ni se lee nada.
-const claveVersion = () => { const d = duenoDeLaPestana(); return d && `rendi_version_cartera:${d}` }
-const claveValor = (clave) => { const d = duenoDeLaPestana(); return d && `rendi_valor_visto:${d}:${clave}` }
-
-function leer(k) {
-  if (!k) return null
-  try { return JSON.parse(window.sessionStorage.getItem(k) || 'null') } catch { return null }
+// De la persona Y de la cuenta DE LOS DATOS (utils/duenoDeLaPestana). Antes
+// sólo de la cuenta: «Cerrar sesión» lo borra, pero una sesión que vence no, y
+// el siguiente en la pestaña veía su número «cambiar» desde el de la anterior.
+// La pantalla pasa el dueño de lo que muestra (useDuenoDeLosDatos); sin él, el
+// de la pestaña (lo que vale justo después de una escritura). La puerta
+// (utils/almacen.guardarDe) no guarda para un dueño que ya no es el de la
+// pestaña, ni sin nadie logueado.
+function leer(entrada, dueno, resto) {
+  try { return JSON.parse(leerDe(entrada, dueno, resto) || 'null') } catch { return null }
 }
-function escribir(k, v) {
-  if (!k) return
-  try { window.sessionStorage.setItem(k, JSON.stringify(v)) } catch { /* sin almacenamiento */ }
+function escribir(entrada, dueno, valor, resto) {
+  try { guardarDe(entrada, dueno, JSON.stringify(valor), resto) } catch { /* sin almacenamiento */ }
 }
 
 /** Cuántas veces cambió la cartera de esta cuenta en esta visita. */
-export function versionDeCartera() {
-  const v = leer(claveVersion())
+export function versionDeCartera(dueno = duenoDeLaPestana()) {
+  const v = leer(CATALOGO.versionCartera, dueno)
   return Number.isFinite(v) ? v : 0
 }
 
 /** Algo cambió la cartera (lo llama el aviso central; no hace falta a mano). */
-export function subirVersionDeCartera() {
-  escribir(claveVersion(), versionDeCartera() + 1)
+export function subirVersionDeCartera(dueno = duenoDeLaPestana()) {
+  escribir(CATALOGO.versionCartera, dueno, versionDeCartera(dueno) + 1)
 }
 
-/** La métrica `clave` se está mostrando con este valor. */
-export function recordarValor(clave, valor, moneda) {
-  if (Number.isFinite(valor)) escribir(claveValor(clave), { valor, moneda, version: versionDeCartera(), t: Date.now() })
+/** La métrica `clave` se está mostrando con este valor (de los datos de `dueno`). */
+export function recordarValor(clave, valor, moneda, dueno = duenoDeLaPestana()) {
+  if (Number.isFinite(valor)) {
+    escribir(CATALOGO.valorVisto, dueno, { valor, moneda, version: versionDeCartera(dueno), t: Date.now() }, `:${clave}`)
+  }
 }
 
 // Pasado este rato, lo que se vio ya no sirve de "antes": nadie se acuerda del
@@ -75,11 +77,11 @@ export const CADUCA_MS = 30 * 60 * 1000
  * la cartera cambió (y se estaba mirando en la misma moneda). Si no, null: no
  * hay cambio del usuario que mostrar.
  */
-export function valorAntesDelCambio(clave, moneda) {
-  const g = leer(claveValor(clave))
+export function valorAntesDelCambio(clave, moneda, dueno = duenoDeLaPestana()) {
+  const g = leer(CATALOGO.valorVisto, dueno, `:${clave}`)
   if (!g || !Number.isFinite(g.valor) || g.moneda !== moneda) return null
   if (!Number.isFinite(g.t) || Date.now() - g.t > CADUCA_MS) return null
-  return g.version < versionDeCartera() ? g.valor : null
+  return g.version < versionDeCartera(dueno) ? g.valor : null
 }
 
 // El aviso central. Se engancha una vez, al cargar la app (App.jsx importa este
@@ -88,7 +90,9 @@ let enganchado = false
 export function engancharVersionDeCartera() {
   if (enganchado || typeof window === 'undefined' || typeof window.addEventListener !== 'function') return
   enganchado = true
-  window.addEventListener(EVENTO_ESCRITURA, subirVersionDeCartera)
-  window.addEventListener('rendi:portfolio-changed', subirVersionDeCartera)
+  // Sin pasarle el evento: el dueño es el de la pestaña, la cuenta que escribió.
+  const subir = () => subirVersionDeCartera()
+  window.addEventListener(EVENTO_ESCRITURA, subir)
+  window.addEventListener('rendi:portfolio-changed', subir)
 }
 engancharVersionDeCartera()

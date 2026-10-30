@@ -16,20 +16,26 @@
 // un escritor nuevo no puede olvidársela (lo vigila coberturaEscritores.test.js).
 
 import { COBERTURA_MINIMA } from './valuation'
-import { duenoDeLaPestana } from './duenoDeLaPestana'
+import { leerDe, guardarDe } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
 
 export function sePuedeGuardar({ cobertura }) {
   return cobertura >= COBERTURA_MINIMA
 }
 
-// La marca de «ya guardé la foto de hoy» (localStorage, una por día): de la
-// persona Y de la cuenta (utils/duenoDeLaPestana). Era una sola para todo el
+// La marca de «ya guardé la foto de hoy» (una por día): de la persona Y de la
+// cuenta DE LOS DATOS (utils/duenoDeLaPestana). Era una sola para todo el
 // navegador: el asesor que abría el inicio del cliente 2 dejaba al 3 sin su foto
 // ese día, y tras una sesión que vence, el siguiente se quedaba sin la suya.
-// null = nadie logueado: no se guarda foto.
-export function claveFotoDeHoy() {
-  const dueno = duenoDeLaPestana()
-  return dueno ? `rendi_snapshot_date:${dueno}` : null
+// `dueno` es el de los datos del inicio (useDuenoDeLosDatos); la puerta
+// (utils/almacen.guardarDe) no marca para un dueño que ya no es el de la
+// pestaña, ni sin nadie logueado.
+export function yaSeGuardoLaFotoDeHoy(dueno, hoy) {
+  return !dueno || leerDe(CATALOGO.fotoDelDia, dueno) === hoy
+}
+
+export function marcarFotoDeHoy(dueno, hoy) {
+  return guardarDe(CATALOGO.fotoDelDia, dueno, hoy)
 }
 
 // filas: [{ broker, pnl }] (incluida la fila 'global'), calculadas AL MEP.

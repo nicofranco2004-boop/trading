@@ -10,17 +10,19 @@
 import { useEffect, useState } from 'react'
 import { Sparkles, X } from 'lucide-react'
 import { track } from '../../utils/track'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../../utils/almacen'
+import { CATALOGO } from '../../utils/catalogoDelAlmacen'
 
 export const AI_DISCOVERY_KEY = 'rendi_ai_discovered'
 
 export function isAIDiscovered() {
-  try { return localStorage.getItem(AI_DISCOVERY_KEY) === '1' }
+  try { return leerDelAlmacen(CATALOGO.conocioLaIA) === '1' }
   catch { return true }   // si no hay storage, asumimos descubierto
 }
 
 export function markAIDiscovered() {
   try {
-    localStorage.setItem(AI_DISCOVERY_KEY, '1')
+    guardarEnAlmacen(CATALOGO.conocioLaIA, '1')
     // Dispatch custom event para que OnboardingChecklist (en Home) y otros
     // listeners reactivos detecten el cambio EN EL MISMO tab. localStorage
     // NO dispara 'storage' event para el tab que escribió — solo cross-tab.

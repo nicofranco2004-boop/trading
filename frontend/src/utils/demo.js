@@ -6,6 +6,8 @@ import { hoyISO, fechaISO } from './fecha'
 import { pctTxt } from './format'
 import { computeBrokerValue } from './valuation'
 import { computeSectorBreakdown } from './assetSector'
+import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
 
 // Cuando la URL tiene `?demo=1`, AuthContext setea un user demo y este módulo
 // intercepta las llamadas al backend devolviendo fixtures hardcodeadas.
@@ -38,7 +40,7 @@ const EMPTY_OVERLAY = { watchlist: null, positions: [] }
 export function getDemoOverlay() {
   if (typeof window === 'undefined') return EMPTY_OVERLAY
   try {
-    const raw = localStorage.getItem(DEMO_OVERLAY_KEY)
+    const raw = leerDelAlmacen(CATALOGO.demoCambios)
     if (!raw) return EMPTY_OVERLAY
     const parsed = JSON.parse(raw)
     return {
@@ -53,7 +55,7 @@ export function getDemoOverlay() {
 function saveDemoOverlay(overlay) {
   if (typeof window === 'undefined') return
   try {
-    localStorage.setItem(DEMO_OVERLAY_KEY, JSON.stringify(overlay))
+    guardarEnAlmacen(CATALOGO.demoCambios, JSON.stringify(overlay))
   } catch {
     // Cuota llena o disabled — silencioso
   }
@@ -61,7 +63,7 @@ function saveDemoOverlay(overlay) {
 
 function clearDemoOverlay() {
   if (typeof window === 'undefined') return
-  localStorage.removeItem(DEMO_OVERLAY_KEY)
+  borrarDelAlmacen(CATALOGO.demoCambios)
 }
 
 export function isDemoMode() {
@@ -79,7 +81,7 @@ export function isDemoMode() {
   try {
     // La marca guarda CUÁNDO se activó (ver `demoVencido`); el `'1'` viejo también
     // cuenta hasta que `vencerDemoSiCorresponde` lo limpie al abrir la app.
-    return !!localStorage.getItem(DEMO_FLAG_KEY)
+    return !!leerDelAlmacen(CATALOGO.modoDemo)
   } catch {
     return false
   }
@@ -104,8 +106,8 @@ export function demoVencido(valor, ahora = Date.now()) {
 export function vencerDemoSiCorresponde() {
   if (typeof window === 'undefined') return false
   try {
-    if (!demoVencido(localStorage.getItem(DEMO_FLAG_KEY))) return false
-    localStorage.removeItem(DEMO_FLAG_KEY)
+    if (!demoVencido(leerDelAlmacen(CATALOGO.modoDemo))) return false
+    borrarDelAlmacen(CATALOGO.modoDemo)
     clearDemoOverlay()
     return true
   } catch {
@@ -115,16 +117,16 @@ export function vencerDemoSiCorresponde() {
 
 export function enableDemoMode() {
   if (typeof window === 'undefined') return
-  localStorage.setItem(DEMO_FLAG_KEY, String(Date.now()))
+  guardarEnAlmacen(CATALOGO.modoDemo, String(Date.now()))
   // Limpiamos cualquier overlay residual al activar — siempre arranca limpio.
   clearDemoOverlay()
 }
 
 export function disableDemoMode() {
   if (typeof window === 'undefined') return
-  localStorage.removeItem(DEMO_FLAG_KEY)
-  localStorage.removeItem('rendi_token')
-  localStorage.removeItem('rendi_user')
+  borrarDelAlmacen(CATALOGO.modoDemo)
+  borrarDelAlmacen(CATALOGO.tokenViejo)
+  borrarDelAlmacen(CATALOGO.usuario)
   clearDemoOverlay()
 }
 

@@ -1,5 +1,7 @@
 import { createContext, useContext, useState } from 'react'
 import { track } from '../utils/track'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 const PrivacyContext = createContext({ hidden: false, toggle: () => {} })
 
@@ -9,13 +11,13 @@ const STORAGE_KEY = 'rendi_privacy'
 
 export function PrivacyProvider({ children }) {
   const [hidden, setHidden] = useState(() => {
-    try { return localStorage.getItem(STORAGE_KEY) === '1' } catch { return false }
+    try { return leerDelAlmacen(CATALOGO.ocultarSaldos) === '1' } catch { return false }
   })
   function toggle() {
     track('montos_ocultos_cambiado')
     setHidden(h => {
       const next = !h
-      try { localStorage.setItem(STORAGE_KEY, next ? '1' : '0') } catch {}
+      try { guardarEnAlmacen(CATALOGO.ocultarSaldos, next ? '1' : '0') } catch {}
       return next
     })
   }

@@ -1,9 +1,11 @@
 // De quién es lo que la pestaña guarda sobre una cuenta (utils/duenoDeLaPestana),
 // en los dos lugares ya publicados que no tienen su propia prueba montada:
-//   · la marca «ya guardé la foto de hoy» del inicio (claveFotoDeHoy, la que
-//     usa Dashboard antes de POST /snapshots);
+//   · la marca «ya guardé la foto de hoy» del inicio (yaSeGuardoLaFotoDeHoy /
+//     marcarFotoDeHoy, las que usa Dashboard alrededor de POST /snapshots);
 //   · la última tanda de importación del asesor, con nombres de clientes
 //     (guardarLocal / leerLocal, las que usa AdvisorImports).
+// Cada pantalla trabaja con el dueño de SUS datos: el de la pestaña cuando se
+// abrió (useDuenoDeLosDatos). Acá, «abrir el inicio» es tomar ese dueño.
 // (Los números que cambian y el último total visto: NumeroQueCambia.test.js y
 // RecalculoDeCartera.test.js.)
 //
@@ -13,21 +15,25 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
 import { instalarNavegadorMinimo } from '../testing/navegadorMinimo'
 
-let api, dueno, claveFotoDeHoy, guardarLocal, leerLocal
+let api, dueno, yaSeGuardoLaFotoDeHoy, marcarFotoDeHoy, guardarLocal, leerLocal
 beforeAll(async () => {
   instalarNavegadorMinimo()
   api = await import('./api')
   dueno = await import('./duenoDeLaPestana')
-  ;({ claveFotoDeHoy } = await import('./guardarValuacion'))
+  ;({ yaSeGuardoLaFotoDeHoy, marcarFotoDeHoy } = await import('./guardarValuacion'))
   ;({ guardarLocal, leerLocal } = await import('../pages/AdvisorImports'))
 })
 
 const entrar = (email) => localStorage.setItem('rendi_user', JSON.stringify({ name: email, email }))
 const seVencioLaSesion = () => localStorage.removeItem('rendi_user')   // lo que hace api.js con un 401
 const HOY = '2026-10-30'
-// Lo que hace el inicio después de guardar la foto.
-const guardoLaFoto = () => localStorage.setItem(claveFotoDeHoy(), HOY)
-const fotoPendiente = () => { const k = claveFotoDeHoy(); return !!k && localStorage.getItem(k) !== HOY }
+// Abrir el inicio: sus datos son del dueño de la pestaña en ese momento.
+const abrirInicio = () => dueno.duenoDeLaPestana()
+// Lo que hace el inicio después de guardar la foto, y lo que mira antes.
+const guardoLaFoto = () => marcarFotoDeHoy(abrirInicio(), HOY)
+const fotoPendiente = () => !yaSeGuardoLaFotoDeHoy(abrirInicio(), HOY)
+// La pantalla de importación del asesor: la tanda es de la persona, a su nivel.
+const abrirImportacion = () => dueno.duenoPropioDeLaPestana()
 
 beforeEach(() => entrar('ana@prueba.test'))
 afterEach(() => { localStorage.clear(); sessionStorage.clear(); api.setClientContext(null) })
@@ -57,7 +63,8 @@ describe('«ya guardé la foto de hoy» (inicio)', () => {
   it('a Ana se le vence la sesión y entra Bruno: a Bruno le falta la suya', () => {
     guardoLaFoto()
     seVencioLaSesion()
-    expect(claveFotoDeHoy()).toBeNull()                // sin nadie no se guarda foto
+    expect(fotoPendiente()).toBe(false)                // sin nadie no se manda foto
+    expect(guardoLaFoto()).toBe(false)                 // ni se marca
     entrar('bruno@prueba.test')
     expect(fotoPendiente()).toBe(true)
     entrar('ana@prueba.test')
@@ -69,19 +76,36 @@ describe('la última tanda de importación del asesor (con nombres de clientes)'
   const TANDA = { momento: 'listo', filas: [{ id: 1, nombre: 'Juan Pérez', estado: 'completo' }] }
 
   it('a Ana se le vence la sesión y entra Bruno: no ve la tanda ni los clientes de Ana', () => {
-    guardarLocal(TANDA)
-    expect(leerLocal()?.filas?.[0]?.nombre).toBe('Juan Pérez')
+    guardarLocal(TANDA, abrirImportacion())
+    expect(leerLocal(abrirImportacion())?.filas?.[0]?.nombre).toBe('Juan Pérez')
     seVencioLaSesion()
-    expect(leerLocal()).toBeNull()
+    expect(leerLocal(abrirImportacion())).toBeNull()
     entrar('bruno@prueba.test')
-    expect(leerLocal()).toBeNull()
+    expect(leerLocal(abrirImportacion())).toBeNull()
     entrar('ana@prueba.test')
-    expect(leerLocal()?.filas?.[0]?.nombre).toBe('Juan Pérez')   // la de Ana sigue siendo de Ana
+    expect(leerLocal(abrirImportacion())?.filas?.[0]?.nombre).toBe('Juan Pérez')   // la de Ana sigue siendo de Ana
+  })
+
+  it('al volver de revisar un cliente (con el cliente todavía abierto), la tanda sigue ahí', () => {
+    // La tanda es del asesor a SU nivel: 28c4b60a la buscaba con la clave del
+    // cliente abierto y «volver a la tanda» no la encontraba.
+    guardarLocal(TANDA, abrirImportacion())
+    api.setClientContext({ id: 2, label: 'Dos' })          // fue a revisar al cliente 2
+    expect(leerLocal(abrirImportacion())?.filas?.[0]?.nombre).toBe('Juan Pérez')
+  })
+
+  it('pantalla abierta y otra pestaña entra como otra persona: la tanda no se guarda a nombre de nadie', () => {
+    const deAna = abrirImportacion()
+    entrar('bruno@prueba.test')
+    guardarLocal(TANDA, deAna)
+    expect(leerLocal(abrirImportacion())).toBeNull()       // Bruno no la tiene
+    entrar('ana@prueba.test')
+    expect(leerLocal(abrirImportacion())).toBeNull()       // y no se guardó: la pestaña ya no era de Ana
   })
 
   it('sin nadie logueado no queda nada guardado', () => {
     seVencioLaSesion()
-    guardarLocal(TANDA)
+    guardarLocal(TANDA, abrirImportacion())
     const claves = Array.from({ length: sessionStorage.length }, (_, i) => sessionStorage.key(i))
     expect(claves.filter(k => k.startsWith('rendi_tanda_ultima'))).toEqual([])
   })

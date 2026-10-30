@@ -25,6 +25,8 @@ import { UserRound, CheckCircle2, AlertTriangle, Eye, PencilLine, ShieldCheck } 
 import RendiLogo from '../components/RendiLogo'
 import PageMeta from '../components/PageMeta'
 import { useAuth } from '../contexts/AuthContext'
+import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 const TOKEN_KEY = 'rendi_link_request_token'
 
@@ -35,10 +37,10 @@ export default function AdvisorAccessRequest() {
   const [token] = useState(() => {
     const fromUrl = searchParams.get('token')
     if (fromUrl) {
-      try { sessionStorage.setItem(TOKEN_KEY, fromUrl) } catch { /* modo privado */ }
+      try { guardarEnAlmacen(CATALOGO.pedidoDeVinculo, fromUrl) } catch { /* modo privado */ }
       return fromUrl
     }
-    try { return sessionStorage.getItem(TOKEN_KEY) || '' } catch { return '' }
+    try { return leerDelAlmacen(CATALOGO.pedidoDeVinculo) || '' } catch { return '' }
   })
   useEffect(() => {
     if (window.location.search.includes('token=')) {
@@ -92,7 +94,7 @@ export default function AdvisorAccessRequest() {
           ? data.detail
           : (data.detail?.message || 'No pudimos registrar tu respuesta.'))
       }
-      try { sessionStorage.removeItem(TOKEN_KEY) } catch { /* noop */ }
+      try { borrarDelAlmacen(CATALOGO.pedidoDeVinculo) } catch { /* noop */ }
       setDone(accept ? 'accepted' : 'rejected')
     } catch (ex) {
       setError(ex.message)

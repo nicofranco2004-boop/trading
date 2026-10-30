@@ -13,6 +13,8 @@ import ImportWizard from '../components/import/ImportWizard'
 import WallbitConnect from '../components/import/WallbitConnect'
 import TenenciaUpload from '../components/import/TenenciaUpload'
 import { api } from '../utils/api'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 // Flag de localStorage: si el user nunca completó un import → al confirmar
 // el primero lo redirigimos a /bienvenida para el "primer insight" en lugar
@@ -419,8 +421,8 @@ export default function Imports() {
             // Si es el primer import del user, redirect al primer insight.
             // El flag se setea cuando hicieron click en "Cerrar" del DoneStep
             // (= confirmaron el import). Después ya no se vuelve a mostrar.
-            if (importJustConfirmed && !localStorage.getItem(FIRST_IMPORT_FLAG)) {
-              localStorage.setItem(FIRST_IMPORT_FLAG, '1')
+            if (importJustConfirmed && !leerDelAlmacen(CATALOGO.primeraImportacion)) {
+              guardarEnAlmacen(CATALOGO.primeraImportacion, '1')
               setImportJustConfirmed(false)
               navigate('/bienvenida')
               return

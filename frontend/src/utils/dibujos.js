@@ -28,15 +28,18 @@
 import { indiceDeFecha } from './tecnico'
 import { api } from './api'
 import { duenoDeLaPestana, useDuenoDeLaPestana } from './duenoDeLaPestana'
+import { leerDe, guardarDe, borrarDe } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
 
 /** De quién es lo que se dibuja ahora en esta pestaña (utils/duenoDeLaPestana:
  *  la persona logueada y la cuenta abierta). null = nadie: no se guarda copia. */
 export const duenoDeLaCopia = duenoDeLaPestana
 export const useDuenoDeLaCopia = useDuenoDeLaPestana
 
-const clave = (asset, moneda, dueno = duenoDeLaCopia()) => (dueno
-  ? `rendi_dibujos:${dueno}:${String(asset || '').toUpperCase()}:${moneda === 'ars' ? 'ars' : 'usd'}`
-  : null)
+// La copia va por la única puerta (utils/almacen), a nombre de su dueño:
+// `rendi_dibujos:<dueño>:AAPL:usd`. La puerta no la guarda si el dueño ya no es
+// el de la pestaña.
+const resto = (asset, moneda) => `:${String(asset || '').toUpperCase()}:${moneda === 'ars' ? 'ars' : 'usd'}`
 export const DIBUJOS_MAXIMOS = 60
 
 const numero = (x) => typeof x === 'number' && Number.isFinite(x)
@@ -79,10 +82,9 @@ export function dibujoValido(x) {
  * Sin almacenamiento o con un valor roto: ninguno.
  */
 export function copiaLocal(asset, moneda, dueno = duenoDeLaCopia()) {
-  const k = clave(asset, moneda, dueno)
-  if (!k) return { dibujos: [], pendiente: false }
+  if (!dueno) return { dibujos: [], pendiente: false }
   try {
-    const g = JSON.parse(localStorage.getItem(k) || 'null')
+    const g = JSON.parse(leerDe(CATALOGO.dibujos, dueno, resto(asset, moneda)) || 'null')
     const lista = Array.isArray(g) ? g : Array.isArray(g?.dibujos) ? g.dibujos : []
     return { dibujos: lista.filter(dibujoValido).slice(0, DIBUJOS_MAXIMOS), pendiente: !Array.isArray(g) && !!g?.pendiente }
   } catch {
@@ -94,11 +96,10 @@ export function copiaLocal(asset, moneda, dueno = duenoDeLaCopia()) {
 export const dibujosGuardados = (asset, moneda) => copiaLocal(asset, moneda).dibujos
 
 export function guardarDibujos(asset, moneda, lista, pendiente = true, dueno = duenoDeLaCopia()) {
-  const k = clave(asset, moneda, dueno)
-  if (!k) return            // sin nadie logueado no queda copia
+  if (!dueno) return            // sin nadie logueado no queda copia
   try {
-    if (!pendiente && !lista.length) localStorage.removeItem(k)
-    else localStorage.setItem(k, JSON.stringify({ pendiente, dibujos: lista.slice(0, DIBUJOS_MAXIMOS) }))
+    if (!pendiente && !lista.length) borrarDe(CATALOGO.dibujos, dueno, resto(asset, moneda))
+    else guardarDe(CATALOGO.dibujos, dueno, JSON.stringify({ pendiente, dibujos: lista.slice(0, DIBUJOS_MAXIMOS) }), resto(asset, moneda))
   } catch { /* sin almacenamiento: el dibujo vive mientras la página esté abierta */ }
 }
 
@@ -140,8 +141,8 @@ export function subirDibujos(asset, moneda, lista) {
   // la cuenta ya es otra (el asesor cambió de cliente con el guardado en fila),
   // no sale: api.js la mandaría a la cuenta nueva. Queda en la copia de su dueño.
   const dueno = duenoDeLaCopia()
-  const k = clave(asset, moneda, dueno)
-  if (!k) return Promise.resolve(false)
+  if (!dueno) return Promise.resolve(false)
+  const k = `${dueno}${resto(asset, moneda)}`
   const sigue = (enFila[k] || Promise.resolve(true))
     .then(() => {
       if (duenoDeLaCopia() !== dueno) throw new Error('cambió la cuenta')

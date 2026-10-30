@@ -12,8 +12,10 @@ import { initMetaPixel } from './utils/metaPixel'
 import { isChunkLoadError, urlsAReparar, repararAssets } from './utils/chunkErrors'
 import { escucharInstalador } from './utils/instalarApp'
 import { anotarOrigen } from './utils/origen'
-import { borrarCopiasSinDueno } from './utils/copiasSinDueno'
+import { ordenarCopiasSinDueno } from './utils/copiasSinDueno'
 import './index.css'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from './utils/almacen'
+import { CATALOGO } from './utils/catalogoDelAlmacen'
 
 // De qué post viene la visita (`?d=x-20261019` o `utm_*`). Va PRIMERO, antes
 // de montar la app: el demo borra todo lo que hay después del `?` al arrancar
@@ -21,9 +23,10 @@ import './index.css'
 anotarOrigen()
 
 // Las copias del navegador que dejó la versión anterior a la regla de dueño
-// (utils/duenoDeLaPestana) ya no se leen; se borran para que no quede en la
-// pestaña nada de la persona anterior (ver utils/copiasSinDueno.js).
-borrarCopiasSinDueno()
+// (utils/duenoDeLaPestana): las que dicen de quién son pasan a su dueño, las
+// demás se borran, para que no quede en la pestaña nada de la persona anterior
+// (ver utils/copiasSinDueno.js).
+ordenarCopiasSinDueno()
 
 // Inicializar GA4 y el Meta Pixel (Facebook/Instagram Ads) al arranque.
 // No-op fuera de rendi.finance (servidor local, previews): ver utils/medicion.js.
@@ -85,11 +88,10 @@ async function repararYRecargar(mensaje) {
 
 function maybeReloadOnce(mensaje) {
   try {
-    const KEY = 'rendi_chunk_reload_at'
-    const lastReload = parseInt(sessionStorage.getItem(KEY) || '0', 10)
+    const lastReload = parseInt(leerDelAlmacen(CATALOGO.recargaPorVersion) || '0', 10)
     const now = Date.now()
     if (now - lastReload > 10_000) {
-      sessionStorage.setItem(KEY, String(now))
+      guardarEnAlmacen(CATALOGO.recargaPorVersion, String(now))
       repararYRecargar(mensaje)
     }
   } catch {
