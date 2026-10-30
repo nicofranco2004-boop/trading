@@ -47860,7 +47860,7 @@ def _evaluar_alertas_job() -> dict:
         try:
             result = _ae.evaluate_alerts(conn)
         except Exception as _ex:
-            log.error("alertas de precio en el cron: %s", _ex)
+            log.error("alertas de precio en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
             result = {"error_precio": str(_ex)}
             # Lo que quedó a medias no puede confirmarse con el primer commit
             # de las alertas del libro, que usan esta misma conexión: alertas
@@ -47877,7 +47877,7 @@ def _evaluar_alertas_job() -> dict:
             result["advisor"] = advisor_alerts.evaluate(
                 conn, market_open=_ae._market_open_now(_dtmod.utcnow()))
         except Exception as _ex:
-            log.error("advisor alerts en el cron: %s", _ex)
+            log.error("advisor alerts en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
         log.info("alertas: %s", result)
         return result
     finally:

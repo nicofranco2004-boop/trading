@@ -78,3 +78,58 @@ def conectar(dsn: str, **kw):
     except Exception:
         conn.close()
         raise
+
+
+# Copia TEXTUAL de la rama de la migración (`arranque-planb`, 29/10), que la mudó
+# acá desde main.py: la usan las alertas (auditoría C1). Al juntar las ramas,
+# queda una sola.
+from contextlib import contextmanager
+
+
+@contextmanager
+def si_falla_se_deshace_solo_esto(conn, nombre: str):
+    """Un punto de guardado: si lo de adentro revienta, se deshace SÓLO eso y la
+    excepción sigue su camino; lo escrito antes queda en pie.
+
+    🔴 POR QUÉ HACE FALTA, y por qué sólo se nota en Postgres. Dos formas, el
+    mismo mecanismo:
+
+      · «try: escribir → except: log → commit». Supone que un error deja la
+        transacción como estaba. En SQLite es así. En Postgres un error de SQL
+        deja la transacción ENTERA abortada y el `commit()` de después es un
+        ROLLBACK: se descarta también lo de ANTES del `try`. Medido el 28/10/2026
+        en `create_operation`: contestaba 200 con el id de una operación que ya no
+        existía (`test_pnl_del_mes_dos_pedidos`).
+      · «try: la consulta nueva → except: la consulta vieja» (el PLAN B). En
+        Postgres el plan B no falla por el motivo original: falla con
+        `InFailedSqlTransaction`, un error de otra familia que el `except` de
+        afuera no reconoce. Medido el 29/10/2026 en `register`: un email repetido
+        devolvía 500 en vez del 409 «ese email ya está registrado»
+        (`test_email_verification`). Son 9 sitios, barridos con AST; el guardián
+        `tests/test_plan_b_tiene_punto_de_guardado.py` vigila que no entre el
+        décimo.
+
+    Con esto los dos motores hacen lo mismo: lo que falló no se aplica y lo demás
+    se guarda.
+
+    ⚠️ **Y NO alcanza con `conn.rollback()`**, que es la salida obvia: el rollback
+    descarta TODO lo que haya sin guardar en la transacción, no sólo la sentencia
+    que falló. `ai/quota.py` se llama desde el medio de las reservas de cuota, que
+    ya escribieron: ahí un rollback se llevaría plata ya anotada.
+
+    El `except` lo sigue poniendo quien llama: es el que sabe si el error se puede
+    tragar (un recálculo que se rearma solo después) o tiene que llegar al usuario.
+
+    📌 POR QUÉ VIVE ACÁ Y NO EN `main.py`, donde nació. Porque `ai/quota.py` y
+    `snapshots_job.py` también lo necesitan y no pueden importar `main` (main los
+    importa a ellos: sería un círculo). Éste es el módulo de «lo que toda conexión
+    necesita», el mismo lugar que `turno_exclusivo`. `main.py` lo delega.
+    """
+    conn.execute(f"SAVEPOINT {nombre}")
+    try:
+        yield
+    except BaseException:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {nombre}")
+        conn.execute(f"RELEASE SAVEPOINT {nombre}")
+        raise
+    conn.execute(f"RELEASE SAVEPOINT {nombre}")

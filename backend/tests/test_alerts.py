@@ -1642,3 +1642,89 @@ def test_borrar_alerta_no_toca_el_estado_de_otro_usuario(clean):
     assert conn.execute("SELECT 1 FROM alerts WHERE id=?", (aid_a,)).fetchone() is None
     assert conn.execute(
         "SELECT 1 FROM alert_symbol_state WHERE alert_id=?", (aid_a,)).fetchone() is None
+
+
+# ── Una alerta rota no apaga a las demás (auditoría B-P1, 29/10) ──────────────
+
+def test_una_alerta_de_precio_rota_no_apaga_a_las_otras(clean, monkeypatch, caplog):
+    """Antes `evaluate_alerts` no tenía guarda por alerta: una fila que reventaba
+    cortaba el ciclo ENTERO y el cron lo dejaba en un renglón sin nombre de
+    error ni traza, cada 10 minutos. Es lo que se le arregló a las técnicas en
+    2cc64ca8 y no se había propagado. Ahora: la rota se cuenta y se nombra, y
+    las otras avisan."""
+    conn = clean
+    _mk_alert(conn, symbol="ROTO", threshold=1)
+    _mk_alert(conn, symbol="AAPL", threshold=200)
+    monkeypatch.setattr(ae, "_prices_for", lambda syms: {"ROTO": 5.0, "AAPL": 210.0})
+    real = ae.condition_met
+
+    def condicion(kind, direction, threshold, price, change):
+        if threshold == 1:
+            raise ZeroDivisionError("un dato raro")
+        return real(kind, direction, threshold, price, change)
+    monkeypatch.setattr(ae, "condition_met", condicion)
+    with caplog.at_level("ERROR", logger="alerts"):
+        res = ae.evaluate_alerts(conn, only_user=1)
+    assert res["fired"] == 1 and res.get("errores") == 1
+    assert any("ZeroDivisionError" in r.getMessage() and "ROTO" in r.getMessage() for r in caplog.records)
+    assert any(r.exc_info for r in caplog.records), "con la traza"
+    assert [e["symbol"] for e in _events(conn)] == ["AAPL"]
+
+
+def test_lo_que_falla_despues_de_disparar_se_deshace_entero(clean, monkeypatch):
+    """C1 en precio: dispara (evento + mail encolado) y falla al apagar la
+    «una sola vez». Antes: el mail salía, la alerta quedaba prendida y armada
+    otra vez a la próxima. Ahora: nada de esa alerta queda ni se manda."""
+    conn = clean
+    _mk_alert(conn, symbol="AAPL", threshold=200, repeat="once")
+    monkeypatch.setattr(ae, "_prices_for", lambda syms: {"AAPL": 210.0})
+    entregados = []
+    monkeypatch.setattr(ae, "_deliver", lambda c, a, items: entregados.append(items) or (True, True))
+    monkeypatch.setattr(ae, "_cumplio_una_vez", lambda c, a: (_ for _ in ()).throw(RuntimeError("x")))
+    res = ae.evaluate_alerts(conn, only_user=1)
+    assert (res["fired"], res.get("errores")) == (0, 1)
+    assert entregados == [] and _events(conn) == []
+    assert conn.execute("SELECT armed FROM alerts").fetchone()["armed"] == 1
+
+
+def test_fuera_de_la_rueda_lo_que_quedo_guardado_se_manda_aunque_falle_lo_que_sigue(clean, monkeypatch):
+    """Re-test de la auditoría B (29/10), residuo 1: cada aviso fuera de la rueda
+    va en su punto de guardado, y en SQLite soltarlo YA lo confirma. Si después
+    reventaba algo del mismo tramo (fuera de esas guardas), el except descartaba
+    la lista de avisos del tramo — pero el primero ya estaba anotado: quedaba
+    registrado como avisado y no se mandaba nunca. Ahora lo que quedó guardado se
+    manda (la entrega le pregunta a la base, `_solo_lo_guardado`)."""
+    conn = clean
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3,
+              threshold=None, repeat="always")
+    _invierno_nvda(monkeypatch, ["NVDA", "NVDA.BA"])
+    real = _fdh.con_operaciones
+
+    class VelasQueFallanALaSegunda(dict):
+        n = 0
+
+        def get(self, *a):
+            VelasQueFallanALaSegunda.n += 1
+            if VelasQueFallanALaSegunda.n == 2:
+                raise RuntimeError("se cortó algo a mitad del tramo")
+            return super().get(*a)
+    monkeypatch.setattr(_fdh, "con_operaciones", lambda refs, s: VelasQueFallanALaSegunda(real(refs, s)))
+    entregados = []
+    monkeypatch.setattr(ae, "_deliver", lambda c, a, items: entregados.extend(items) or (True, True))
+    res = ae.evaluate_alerts(conn, only_user=1)
+    guardados = [e["message"] for e in _events(conn)]
+    assert res.get("errores") == 1
+    assert len(guardados) == 1, guardados
+    assert [it["message"] for it in entregados] == guardados, "lo anotado como avisado se manda"
+
+
+def test_el_cron_dice_que_error_fue_y_donde(clean, monkeypatch, caplog):
+    """Re-test de la auditoría B (29/10), residuo 2: el cron de alertas anotaba
+    «alertas de precio en el cron: 'x'» — sin el NOMBRE del error ni la traza,
+    la guarda que 2cc64ca8 le puso a las técnicas. Ahora los cinco motores del
+    cron dicen las dos cosas."""
+    monkeypatch.setattr(ae, "evaluate_alerts", lambda conn: (_ for _ in ()).throw(KeyError("x")))
+    with caplog.at_level("ERROR"):
+        main._evaluar_alertas_job()
+    r = [x for x in caplog.records if "alertas de precio en el cron" in x.getMessage()]
+    assert r and "KeyError" in r[0].getMessage() and r[0].exc_info
