@@ -196,7 +196,8 @@ class LasSuperficiesLoAplicanTest(unittest.TestCase):
                   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, date TEXT,
                   broker TEXT, asset TEXT, op_type TEXT, quantity REAL,
                   entry_price REAL, exit_price REAL, pnl_usd REAL, pnl_pct REAL,
-                  currency TEXT, fx_to_usd REAL);
+                  currency TEXT, fx_to_usd REAL,
+                  cobrado_ars REAL, costo_ars REAL, costo_moneda TEXT);
                 INSERT INTO operations (user_id,date,broker,asset,op_type,quantity,
                                         entry_price,exit_price,pnl_usd,pnl_pct)
                 VALUES (1,'2026-06-10','B','AL30','Venta',1,1,2,200000.0,188566.67),

@@ -17,6 +17,8 @@ const ggal = {
   entry_price: 4500, exit_price: 6900, pnl_usd: 10, pnl_pct: 2.2222, currency: 'ARS',
   fx_to_usd: 1500, pnl_pct_ars: 53.3333, pnl_pct_usd: 2.2222, pnl_sin_dato: null,
   costo_ars: 450000, cobrado_ars: 690000, costo_usd: 450, cobrado_usd: 460,
+  // Lo calcula el servidor (backend/resultado_dual.py, `resultado_en_pesos`): la pantalla lo lee.
+  resultado_ars: 240000, resultado_ars_tipo: 'exacto',
 }
 const sinFecha = { ...ggal, id: 2, asset: 'YPFD', pnl_usd: 160, pnl_pct: 53.3333, pnl_pct_usd: null,
   costo_usd: null, cobrado_usd: 460, pnl_sin_dato: 'sin_fecha_compra' }

@@ -635,7 +635,11 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
       label: 'P&L realizado',
       value: plata(v.realizado, mon, { signed: true }),
       sub: m.trades_count != null ? `${m.trades_count} op${m.trades_count !== 1 ? 's' : ''} cerrada${m.trades_count !== 1 ? 's' : ''}` : 'operaciones cerradas',
-      tone: m.realized_pnl >= 0 ? 'pos' : 'neg',
+      // En Pesos, lo que no tiene pesos de verdad (dividendos en dólares, ventas en dólares)
+      // se dice en pantalla: el resto del número es el de las ventas en pesos, igual al broker.
+      nota: v.realizadoNota || null,
+      // El color sigue el número que se ve: en Pesos el realizado puede tener otro signo que en dólares.
+      tone: (v.realizado ?? m.realized_pnl) >= 0 ? 'pos' : 'neg',
     })
   }
 
@@ -895,6 +899,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
                 k.tone === 'pos' ? 'text-rendi-pos' : k.tone === 'neg' ? 'text-rendi-neg' : 'text-ink-0'
               }`}>{k.value}</div>
               {k.sub && <div className="text-[10px] font-mono text-ink-3 mt-1 truncate" title={k.sub}>{k.sub}</div>}
+              {k.nota && <div className="text-[10.5px] text-ink-3 mt-0.5 leading-snug">{k.nota}</div>}
             </div>
           ))}
         </div>
@@ -962,6 +967,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
                       k.tone === 'pos' ? 'text-rendi-pos' : k.tone === 'neg' ? 'text-rendi-neg' : 'text-ink-0'
                     }`}>{k.value}</div>
                     {k.sub && <div className="text-[10px] font-mono text-ink-3 mt-1 truncate">{k.sub}</div>}
+                    {k.nota && <div className="text-[10.5px] text-ink-3 mt-0.5 leading-snug">{k.nota}</div>}
                   </div>
                 ))}
               </div>

@@ -118,10 +118,11 @@ export function dineroHistorico({ currency, tcValuacion, getRateForDate }) {
   /**
    * pnlAt — el RESULTADO de una operación en la moneda de la app.
    *
-   * En dólares es `pnl_usd`. En pesos, si la venta trae su resultado en pesos
-   * (`cobrado_ars − costo_ars`, cada punta a su dólar: backend/resultado_dual.py),
-   * es ése, exacto. Si no (dividendos, cupones, ventas viejas), `pnl_usd` × el
-   * dólar de la fila, como siempre.
+   * En dólares es `pnl_usd`. En pesos, si el servidor mandó el resultado en pesos de
+   * la fila (`resultado_ars`: cobrado − costo, cada punta a su dólar; o la ganancia de
+   * una venta vieja en pesos; o un cupón en pesos: backend/resultado_dual.py), es ése.
+   * Si no (dividendos en dólares, ventas viejas en dólares), `pnl_usd` × el dólar de
+   * la fila, como siempre.
    *
    * POR QUÉ NO ALCANZA CON `pnl_usd × fx_to_usd`. Desde el 24/10/2026 el resultado
    * en dólares de una venta en pesos es cobrado − costo, cada uno a SU dólar
@@ -131,8 +132,10 @@ export function dineroHistorico({ currency, tcValuacion, getRateForDate }) {
    */
   function pnlAt(row) {
     if (row?.pnl_usd == null || !Number.isFinite(Number(row.pnl_usd))) return null
-    if (currency === 'ARS' && row.cobrado_ars != null && row.costo_ars != null) {
-      return Number(row.cobrado_ars) - Number(row.costo_ars)
+    // El resultado en pesos lo cuenta el servidor (backend/resultado_dual.py `resultado_en_pesos`,
+    // la MISMA cuenta de Reportes y del Resumen mensual): acá no se rehace.
+    if (currency === 'ARS' && row.resultado_ars != null && Number.isFinite(Number(row.resultado_ars))) {
+      return Number(row.resultado_ars)
     }
     return convertedValue(Number(row.pnl_usd), {
       stampedFx: row.fx_to_usd, dateIso: row.date, rowCurrency: row.currency,

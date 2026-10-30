@@ -66,7 +66,7 @@ def _base_db():
             -- El resultado de la venta en pesos y en dólares (resultado_dual.py): el
             -- paquete de un trade lo lee para decir en qué moneda es cada %.
             cobrado_ars REAL, costo_ars REAL, pnl_pct_ars REAL, pnl_pct_usd REAL,
-            pnl_sin_dato TEXT
+            pnl_sin_dato TEXT, costo_moneda TEXT
         );
         CREATE TABLE snapshots (
             user_id INTEGER, date TEXT,

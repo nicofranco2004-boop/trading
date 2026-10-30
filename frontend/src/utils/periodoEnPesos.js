@@ -17,12 +17,17 @@
 //   • Depósitos y retiros de un mes o un año: los pesos que se pusieron o
 //     sacaron (`aportesDelMesEnPesos`, la regla del Dashboard). De una semana o
 //     un día —`monthly_entries` no baja a esa escala—, al dólar del cierre.
-//   • Lo que se ganó o perdió en el período (resultado, realizado, no
-//     realizado), al dólar del cierre: es plata de ese momento.
+//   • Lo que se ganó o perdió en el período (resultado, no realizado), al dólar
+//     del cierre: es plata de ese momento.
+//   • El REALIZADO en pesos es el de las ventas en pesos (cobrado − costo, los
+//     pesos de verdad: la cuenta única de backend/resultado_dual.py, la misma de
+//     Movimientos); sólo lo que no tiene pesos (dividendos en dólares, lo cargado
+//     a mano) va al dólar del cierre, y se avisa (`realizadoNota`).
 //
 // En dólares devuelve los mismos números del servidor, sin tocar.
 
 import { aportesDelMesEnPesos, aportadoAcumuladoAl } from './capitalAportado'
+import { realizadoEnPesos, notaDelRealizado } from './realizadoEnPesos'
 
 function diaAnterior(iso) {
   const d = new Date(`${String(iso).slice(0, 10)}T00:00:00Z`)
@@ -78,6 +83,7 @@ export function crearPesosDelPeriodo({
         inicio: num(m.start_value), cierre: num(m.end_value),
         depositos: dep, retiros: ret,
         resultado: num(m.delta_usd), realizado: num(m.realized_pnl), noRealizado: num(m.unrealized_pnl),
+        realizadoNota: null,
       }
     }
     const fxCierre = (p?.is_current || !p?.period_end) ? tcHoy : tc(p.period_end)
@@ -105,12 +111,20 @@ export function crearPesosDelPeriodo({
     const fxDepositos = dep > 0 ? depositos / dep : fxCierre
 
     const x = (v, fx) => (num(v) == null ? null : num(v) * fx)
+    // El realizado: los pesos EXACTOS que manda el servidor (la cuenta única de Operaciones) y,
+    // sólo de lo que no tiene pesos, los dólares al dólar del cierre. Ver realizadoEnPesos.js.
+    const real = num(m.realized_pnl) == null ? null : realizadoEnPesos({
+      usd: m.realized_pnl, ars: m.realized_ars, cubreUsd: m.realized_ars_cubre_usd, fx: fxCierre,
+    })
     return {
       moneda: 'ARS', fxInicio, fxCierre, fxDepositos,
       inicio: x(m.start_value, fxInicio), cierre: x(m.end_value, fxCierre),
       depositos, retiros,
       resultado: x(m.delta_usd, fxCierre),
-      realizado: x(m.realized_pnl, fxCierre),
+      realizado: real ? real.monto : null,
+      realizadoNota: real ? notaDelRealizado({
+        restoUsd: real.restoUsd, valuado: !!m.realized_ars_valuado,
+      }) : null,
       noRealizado: x(m.unrealized_pnl, fxCierre),
     }
   }

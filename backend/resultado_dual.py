@@ -23,6 +23,8 @@ Al lado se guarda el resultado en las dos monedas, cada punta a SU dólar:
     cobrado_ars / cobrado_usd  lo que entró por la venta, al dólar del DÍA DE VENTA
     pnl_pct_ars / pnl_pct_usd  (cobrado − costo) / costo, en cada moneda
     pnl_sin_dato               por qué falta alguno de los dos (nunca se inventa)
+    costo_moneda               en qué moneda se PAGÓ el lote ('ARS' | 'USD'): sólo si fue en
+                               pesos el costo en pesos es plata de verdad (`resultado_en_pesos`)
 
 La moneda en que se pagó cada punta no necesita dólar: el costo de un lote comprado
 en pesos ES el costo en pesos. El dólar sólo hace falta para la OTRA moneda.
@@ -56,9 +58,11 @@ import json
 from typing import Any, Dict, Optional
 
 import fx as _fx
+import realized_pnl as _realized
+from realized_pnl import _NATIVE_CCY_OPS
 
 COLUMNAS = ("costo_ars", "costo_usd", "cobrado_ars", "cobrado_usd",
-            "pnl_pct_ars", "pnl_pct_usd", "pnl_sin_dato")
+            "pnl_pct_ars", "pnl_pct_usd", "pnl_sin_dato", "costo_moneda")
 
 # Los motivos de `pnl_sin_dato`. Uno solo por fila: el primero que impide un %.
 SIN_FECHA_COMPRA = "sin_fecha_compra"   # el lote no tiene fecha de compra
@@ -157,6 +161,7 @@ def resultado_en_dos_monedas(conn, *, costo, moneda_costo, fecha_compra,
     costo = float(costo) if costo is not None else None
     if costo is not None and costo > 0:
         out["costo_ars"], out["costo_usd"] = _en_las_dos(costo, mc, tc_c)
+        out["costo_moneda"] = mc
     out["cobrado_ars"], out["cobrado_usd"] = _en_las_dos(cobrado, mv, tc_v)
 
     for m in ("ars", "usd"):
@@ -227,6 +232,98 @@ def pcts_de_la_venta(op: Dict[str, Any], moneda_venta: Optional[str]):
     if moneda_venta == "USD":
         return None, pct
     return None, None
+
+
+# ─── El resultado en PESOS de una operación cerrada: UNA sola cuenta para todas las pantallas ──
+
+EXACTO = "exacto"        # el monto está en pesos de verdad (una venta en pesos, un cupón en pesos)
+VALUADO = "valuado"      # una venta en DÓLARES: los dólares a cada dólar de su fecha (no hay pesos reales)
+
+
+def _cruda(op: Dict[str, Any]) -> Dict[str, Any]:
+    """La fila como está en `operations`. Los lectores que ya pasaron `pnl_usd` por
+    `realized_usd_sql` (el realizado de Reportes) traen el valor de la tabla en `pnl_crudo`."""
+    return {**op, "pnl_usd": op["pnl_crudo"]} if "pnl_crudo" in op else op
+
+
+def resultado_en_pesos(op: Dict[str, Any]):
+    """`(pesos, tipo)` del resultado de una operación cerrada, o `(None, None)` si no hay
+    forma honesta de saberlo. `op` es la fila de `operations` (con `pnl_usd` tal como
+    está guardado, o con `pnl_crudo` si ya vino convertido).
+
+    Es LA cuenta del resultado en pesos: la usan Operaciones (`/api/operations`), «Última op
+    cerrada», el realizado de Reportes y el del Resumen mensual. Lo que el broker muestra en
+    pesos es lo cobrado menos lo que costó, comisiones incluidas, y eso es lo que da.
+
+    · Venta con sus dos monedas guardadas (cuentas v2, ventas nuevas o corregidas):
+      cobrado_ars − costo_ars. `EXACTO` si se vendió en pesos un lote pagado en pesos;
+      `VALUADO` si se vendió en dólares (cripto, CEDEAR en dólares, acción de EE.UU.) o si el
+      lote se pagó en dólares y se vendió en pesos: no hay pesos reales en una de las dos
+      puntas, sólo los dólares llevados al dólar de cada fecha (el costo al de la compra, lo
+      cobrado al de la venta), que es como lo mira Cartera.
+    · Venta en pesos SIN ellas (cuentas v1, ventas viejas sin corregir, editadas a mano): la
+      ganancia en pesos es `pnl_usd × fx_to_usd`. Es exacto porque la regla vieja la dividió
+      por ese mismo dólar.
+    · Cupón, amortización o interés de plazo fijo en pesos con su dólar sellado: el monto
+      guardado YA está en pesos (`realized_pnl` lo pasa a dólares dividiendo), `EXACTO`.
+    · Cualquier otra (venta en dólares sin las columnas, sin dólar estampado, dividendos,
+      futuros): None. Quien suma lo resuelve con el resto en dólares al dólar de la fecha y
+      DICE que es una conversión.
+    """
+    op = _cruda(op)
+    tipo_op = (op.get("op_type") or "").strip()
+    fx, pnl = _pos(op.get("fx_to_usd")), op.get("pnl_usd")
+    if tipo_op in _NATIVE_CCY_OPS:
+        if _moneda(op.get("currency")) == "ARS" and fx and pnl is not None:
+            return round(float(pnl), 2), EXACTO
+        return None, None
+    if tipo_op != "Venta":
+        return None, None
+    c, k = op.get("cobrado_ars"), op.get("costo_ars")
+    if c is not None and k is not None:
+        # Pesos de verdad sólo si se cobró EN PESOS y el lote se pagó EN PESOS: una venta en
+        # dólares, o un lote comprado en dólares, tiene la otra punta valuada a un dólar.
+        # (`costo_moneda` vacío = no se sabe en qué moneda se pagó: se toma la de la venta.)
+        en_dolares = _moneda(op.get("currency")) == "USD" or _moneda(op.get("costo_moneda")) == "USD"
+        return round(float(c) - float(k), 2), (VALUADO if en_dolares else EXACTO)
+    if _moneda(op.get("currency")) == "ARS" and fx and pnl is not None:
+        return round(float(pnl) * fx, 2), EXACTO
+    return None, None
+
+
+def realizado_en_pesos(ops):
+    """Suma el resultado en pesos de las operaciones que lo tienen:
+    `(pesos, usd_cubierto, hay_valuado)`. `usd_cubierto` es el realizado en dólares de ESAS
+    MISMAS operaciones (el mismo que suma el realizado de siempre): quien tiene el realizado
+    total en dólares resuelve el resto con `(total_usd − usd_cubierto) × dólar de la fecha`,
+    así el número en pesos mezcla lo exacto con lo convertido sin contar nada dos veces.
+    Con `ops` = filas de `operations` (o con `pnl_crudo`, ver `resultado_en_pesos`)."""
+    pesos = cubierto = 0.0
+    valuado = False
+    for o in ops:
+        p, tipo = resultado_en_pesos(o)
+        if p is None:
+            continue
+        pesos += p
+        cubierto += _realized.realized_usd(_cruda(o))
+        valuado = valuado or tipo == VALUADO
+    return round(pesos, 2), round(cubierto, 2), valuado
+
+
+def realizado_en_pesos_por_mes(ops):
+    """El realizado en pesos de cada mes y broker: `{(broker, 'AAAA-MM'): (pesos, usd_cubierto,
+    hay_valuado)}`, con el broker `'global'` = todos juntos. Los meses y los brokers se
+    agrupan como el recálculo de `monthly_entries` (`operations.broker`, mes de `date`), así
+    cada fila de /api/monthly tiene SU suma. `ops`: filas de `operations`."""
+    por_clave = {}
+    for o in ops:
+        fecha = str(o.get("date") or "")[:7]
+        if len(fecha) != 7:
+            continue
+        for b in (o.get("broker"), "global"):
+            if b:
+                por_clave.setdefault((b, fecha), []).append(o)
+    return {k: realizado_en_pesos(v) for k, v in por_clave.items()}
 
 
 # ─── Desde una fila ya guardada (histórico) ───────────────────────────────────

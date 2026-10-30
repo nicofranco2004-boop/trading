@@ -54,6 +54,7 @@ import { ChipFueraDeHorario, SiAbrieraAsi, EstadoSesion, LineaBroker } from '../
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { resultadoTotal, aportadoEnPesosAl, restoEnPesos } from '../utils/capitalAportado'
+import { realizadoEnPesos, notaDelRealizado } from '../utils/realizadoEnPesos'
 import { applyMtmToMonthly, netCapitalContributed } from '../utils/insightsModel'
 import { hoyISO } from '../utils/fecha'
 import { useAlVerse } from '../hooks/useAlVerse'
@@ -304,18 +305,31 @@ function PersonalDashboard() {
   // ganancias viejas al tipo de cambio actual (las infla con la devaluación
   // posterior) y hacía que este KPI y el "P&L Realizado" de Movimientos —mismo
   // nombre, misma plata— mostraran números distintos. En USD da idéntico.
-  const realizedPnlDisp = useMemo(() => {
-    if (currency !== 'ARS') return realizedPnl
-    return monthly
-      .filter(m => m.broker === 'global')
-      .reduce((s, m) => {
-        const v = m.pnl_realized || 0
-        if (!v) return s
-        // Último día del mes del asiento (Date.UTC con day=0 del mes siguiente)
-        // → FX de ese momento. getHistoricalFx ya cae al dólar de hoy si no hay serie.
-        const lastDay = new Date(Date.UTC(m.year, m.month, 0)).toISOString().slice(0, 10)
-        return s + v * (getHistoricalFx(lastDay) || tcValuacion)
-      }, 0)
+  //
+  // Y NO es "dólares × dólar del mes": las ventas en pesos aportan sus pesos de verdad
+  // (cobrado − costo, la cuenta única de resultado_dual que también usan Movimientos y
+  // Reportes); sólo lo que no tiene pesos (dividendos en dólares, lo cargado a mano en
+  // /mensual) va al dólar del mes. Ver utils/realizadoEnPesos.js.
+  const { realizedPnlDisp, realizedNota } = useMemo(() => {
+    if (currency !== 'ARS') return { realizedPnlDisp: realizedPnl, realizedNota: null }
+    let total = 0, restoUsd = 0, valuado = false
+    for (const m of monthly) {
+      if (m.broker !== 'global') continue
+      // Último día del mes del asiento (Date.UTC con day=0 del mes siguiente)
+      // → FX de ese momento. getHistoricalFx ya cae al dólar de hoy si no hay serie.
+      const lastDay = new Date(Date.UTC(m.year, m.month, 0)).toISOString().slice(0, 10)
+      const r = realizadoEnPesos({
+        usd: m.pnl_realized, ars: m.realized_ars, cubreUsd: m.realized_ars_cubre_usd,
+        fx: getHistoricalFx(lastDay) || tcValuacion,
+      })
+      total += r.monto || 0
+      restoUsd += r.restoUsd
+      valuado = valuado || !!m.realized_ars_valuado
+    }
+    return {
+      realizedPnlDisp: total,
+      realizedNota: notaDelRealizado({ restoUsd, valuado, dolar: 'de cada mes' }),
+    }
   }, [monthly, currency, tcValuacion, getHistoricalFx, realizedPnl])
 
   // Total return = market value vs net deposited (so deposits aren't counted as performance)
@@ -1108,7 +1122,7 @@ function PersonalDashboard() {
           value={fmtSignedDirect(realizedPnlDisp)}
           clave="dashboard:realizado" num={realizedPnlDisp} format={fmtSignedDirect} moneda={currency} listo={metricasListas} oculto={hidden}
           tone={realizedPnlDisp >= 0 ? 'pos' : 'neg'}
-          sub="operaciones cerradas"
+          sub={realizedNota ? 'operaciones cerradas · en parte convertido' : 'operaciones cerradas'}
           info={
             <>
               <p className="font-medium text-ink-0">Qué es</p>
@@ -1117,6 +1131,13 @@ function PersonalDashboard() {
               <p className="font-medium text-ink-0">Cómo se calcula</p>
               <p className="text-ink-3 font-mono text-[11px]">= suma del P&L de cada venta cerrada (+ dividendos + intereses)</p>
               <p className="text-ink-3">Es plata que ya "tocaste". No cambia con los precios actuales: una vez cerrada la operación, queda fijo.</p>
+              {currency === 'ARS' && (
+                <>
+                  <div className="border-t border-line/60 my-1.5" />
+                  <p className="font-medium text-ink-0">En pesos</p>
+                  <p className="text-ink-3">Las ventas en pesos suman los pesos reales (lo cobrado menos lo que costó), como los muestra tu broker.{realizedNota ? ` ${realizedNota.charAt(0).toUpperCase() + realizedNota.slice(1)}.` : ''}</p>
+                </>
+              )}
             </>
           }
         />

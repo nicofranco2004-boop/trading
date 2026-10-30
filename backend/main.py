@@ -1855,7 +1855,7 @@ def init_db():
         for _col, _tipo in (('costo_ars', 'REAL'), ('costo_usd', 'REAL'),
                             ('cobrado_ars', 'REAL'), ('cobrado_usd', 'REAL'),
                             ('pnl_pct_ars', 'REAL'), ('pnl_pct_usd', 'REAL'),
-                            ('pnl_sin_dato', 'TEXT')):
+                            ('pnl_sin_dato', 'TEXT'), ('costo_moneda', 'TEXT')):
             if cols and _col not in cols:
                 conn.execute(f"ALTER TABLE operations ADD COLUMN {_col} {_tipo}")
         conn.commit()
@@ -16963,9 +16963,23 @@ def get_monthly(uid: int = Depends(get_effective_user)):
         # a pesos con el dólar de ese día, como cada fila de Movimientos. Ver
         # `_aportes_en_dolares_con_dia`.
         con_dia = _aportes_en_dolares_con_dia(conn, uid, tc_blue)
+        # El realizado de cada mes EN PESOS, con la cuenta única de resultado_dual (la misma
+        # de Operaciones y de Reportes). Se pide en operaciones, no en monthly_entries: lo que
+        # no tiene pesos (dividendos en dólares, lo cargado a mano en /mensual) lo resuelve la
+        # pantalla con `pnl_realized − realized_ars_cubre_usd` al dólar del mes.
+        _ops_pesos = [dict(o) for o in conn.execute(
+            """SELECT broker, date, op_type, currency, fx_to_usd, pnl_usd, cobrado_ars, costo_ars,
+                      costo_moneda
+                 FROM operations
+                WHERE user_id=? AND pnl_usd IS NOT NULL
+                  AND op_type IN ('Venta','Cupón','Amortización','Interés PF')""", (uid,)
+        ).fetchall()]
+        _pesos_mes = _resultado_dual.realizado_en_pesos_por_mes(_ops_pesos)
         out = []
         for r in rows:
             d = dict(r)
+            _p = _pesos_mes.get((d["broker"], f"{int(d['year']):04d}-{int(d['month']):02d}"))
+            d["realized_ars"], d["realized_ars_cubre_usd"], d["realized_ars_valuado"] = _p or (0.0, 0.0, False)
             if d["broker"] != "global":
                 k = (d["broker"], f"{int(d['year']):04d}", f"{int(d['month']):02d}")
                 v = importados.get(k, (0.0, 0.0, 0.0, 0.0))
@@ -17487,6 +17501,10 @@ def get_operations(uid: int = Depends(get_effective_user)):
         # bono, y la bandeja la tiene que contar como tal (si no, ofrece como
         # pendiente un pago que ya entró). Ver cobros_bonos.ventas_que_son_amortizacion.
         d['amortizacion_importada'] = d['id'] in ventas_amort
+        # El resultado en pesos, de la cuenta única (resultado_dual.resultado_en_pesos): la
+        # misma que usan Reportes y el Resumen mensual. `valuado` = una venta en dólares, cuyos
+        # pesos son los dólares a cada dólar de su fecha. None = no hay forma honesta de saberlo.
+        d['resultado_ars'], d['resultado_ars_tipo'] = _resultado_dual.resultado_en_pesos(d)
         out.append(d)
     return out
 
@@ -17906,6 +17924,7 @@ def _build_movements(uid: int):
                 # su dólar ya no da la ganancia en pesos (useHistoricalMoney.pnlAt).
                 "cobrado_ars": d.get("cobrado_ars"),
                 "costo_ars": d.get("costo_ars"),
+                "resultado_ars": _resultado_dual.resultado_en_pesos(d)[0],
                 "notes": d.get("notes") or "",
                 "source": "manual",
                 "ref_id": d["id"],
@@ -20225,7 +20244,7 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
             f"""SELECT id, date AS fecha_cierre, entry_date, asset, broker,
                       op_type AS tipo, quantity, entry_price, exit_price,
                       {realized_pnl.realized_usd_sql()} AS pnl_usd,
-                      pnl_pct, commissions, currency, cobrado_ars, costo_ars,
+                      pnl_pct, commissions, currency, fx_to_usd, cobrado_ars, costo_ars,
                       pnl_pct_ars, pnl_pct_usd, pnl_sin_dato
                FROM operations
                WHERE user_id = ?
@@ -20244,9 +20263,10 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
             _pa, _pu = _resultado_dual.pcts_de_la_venta(r, _mon) if _mon else (None, None)
             r["moneda"] = _mon
             r["pct_ars"], r["pct_usd"] = _pa, _pu
-            r["resultado_ars"] = (round(float(r["cobrado_ars"]) - float(r["costo_ars"]), 2)
-                                  if r.get("cobrado_ars") is not None and r.get("costo_ars") is not None
-                                  else None)
+            # La cuenta única del resultado en pesos (la de Operaciones, Reportes y el Resumen
+            # mensual); sólo para ventas de un lote: un cobro no lleva esta columna.
+            r["resultado_ars"] = (_resultado_dual.resultado_en_pesos(_op)[0]
+                                  if _resultado_dual.es_venta_de_un_lote(_op) else None)
             if _mon:
                 r["pnl_pct"] = _pa if _mon == "ARS" else _pu
         # Mismo techo que la app: arriba de 1000 % el cociente dejó de ser un
@@ -36118,9 +36138,7 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
                 # su dólar). El % se da en las dos monedas, no uno solo sin decir cuál es.
                 d["sale_currency"] = _mon
                 d["pnl_pct_ars"], d["pnl_pct_usd"] = _resultado_dual.pcts_de_la_venta(d, _mon)
-                d["result_ars"] = (round(float(d["cobrado_ars"]) - float(d["costo_ars"]), 2)
-                                   if d.get("cobrado_ars") is not None and d.get("costo_ars") is not None
-                                   else None)
+                d["result_ars"] = _resultado_dual.resultado_en_pesos(d)[0]
                 d.pop("pnl_pct", None)
             for k in ("id", "broker", "currency", "fx_to_usd", "commissions",
                       "cobrado_ars", "costo_ars", "pnl_sin_dato"):
@@ -46627,7 +46645,7 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     last_op_row = conn.execute(
         f"""SELECT date, broker, asset, op_type,
                    {realized_pnl.realized_usd_sql()} AS pnl_usd,
-                   cobrado_ars, costo_ars
+                   pnl_usd AS pnl_crudo, currency, fx_to_usd, cobrado_ars, costo_ars, costo_moneda
               FROM operations
              WHERE user_id = ? AND pnl_usd IS NOT NULL
                AND {realized_pnl.no_es_conversion_sql()}{br_clause}
@@ -46646,9 +46664,7 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
             # (resultado_dual): la vista en pesos de Reportes lo usa en vez de pnl_usd × dólar,
             # que ya no da la ganancia en pesos (GGAL: +US$10 × 1.500 = $15.000 contra
             # los $240.000 que dice Operaciones). None para cobros y ventas sin los dos datos.
-            "resultado_ars": (round(float(last_op_row["cobrado_ars"]) - float(last_op_row["costo_ars"]), 2)
-                              if last_op_row["cobrado_ars"] is not None and last_op_row["costo_ars"] is not None
-                              else None),
+            "resultado_ars": _resultado_dual.resultado_en_pesos(dict(last_op_row))[0],
         }
 
     # Top 3 holdings por valor invertido — proxy útil de "qué tenés más"
@@ -47380,6 +47396,10 @@ def reports_years(
                     "deposits": m.deposits,
                     "withdrawals": m.withdrawals,
                     "realized_pnl": m.realized_pnl,
+                    # El realizado en pesos de la cuenta única (ver PeriodMetrics.realized_ars).
+                    "realized_ars": m.realized_ars,
+                    "realized_ars_cubre_usd": m.realized_ars_cubre_usd,
+                    "realized_ars_valuado": m.realized_ars_valuado,
                     "trades_count": m.trades_count,
                     "win_rate": m.win_rate,
                 })

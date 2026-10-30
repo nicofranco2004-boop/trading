@@ -54,7 +54,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     row = conn.execute(
         f"""SELECT id, date, asset, broker, op_type, entry_price, exit_price,
                   quantity, {realized_usd_sql()} AS pnl_usd, pnl_pct, entry_date,
-                  currency, cobrado_ars, costo_ars, pnl_pct_ars, pnl_pct_usd, pnl_sin_dato
+                  currency, fx_to_usd, cobrado_ars, costo_ars, costo_moneda,
+                  pnl_pct_ars, pnl_pct_usd, pnl_sin_dato
              FROM operations
             WHERE id = ? AND user_id = ?""",
         (op_id, user_id),
@@ -130,9 +131,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     import resultado_dual as _rd
     moneda = _rd.moneda_de_la_venta(conn, user_id, op) if _rd.es_venta_de_un_lote(op) else None
     pct_ars, pct_usd = _rd.pcts_de_la_venta(op, moneda) if moneda else (None, None)
-    resultado_ars = (round(float(op["cobrado_ars"]) - float(op["costo_ars"]), 2)
-                     if op.get("cobrado_ars") is not None and op.get("costo_ars") is not None
-                     else None)
+    # La cuenta única del resultado en pesos (la de Operaciones, Reportes y el Resumen mensual).
+    resultado_ars = _rd.resultado_en_pesos(op)[0] if _rd.es_venta_de_un_lote(op) else None
     _r2 = lambda v: round(v, 2) if v is not None else None  # noqa: E731
 
     return {

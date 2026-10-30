@@ -159,7 +159,10 @@ function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = fal
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.entry_price != null ? usd(op.entry_price) : '—'}</td>
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{esCobro(op.op_type) ? '—' : (op.quantity ?? '—')}</td>
-      <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(pnlVisto)} ${indent ? 'opacity-75' : ''}`}>
+      <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(pnlVisto)} ${indent ? 'opacity-75' : ''}`}
+        title={histMoney.currency === 'ARS' && op.resultado_ars_tipo === 'valuado'
+          ? 'En pesos valuado al dólar de cada fecha: la venta o la compra fue en dólares, no hay un resultado en pesos del broker.'
+          : undefined}>
         {op.pnl_usd == null
           ? '—'
           : histMoney.fmtPnlAt(op, { signed: true, decimals: 2 })}

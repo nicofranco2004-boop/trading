@@ -21,6 +21,7 @@ from datetime import date as date_cls, datetime, timedelta
 from typing import Optional, List, Tuple, Dict, Any
 
 from realized_pnl import realized_usd_sql, pct_creible, es_conversion
+from resultado_dual import realizado_en_pesos
 
 log = logging.getLogger(__name__)
 
@@ -246,7 +247,8 @@ def fetch_operations_in_range(conn, uid: int, start: str, end: str,
     # la condición en cada uno. Ver backend/realized_pnl.py.
     rows = conn.execute(
         f"""SELECT id, date, broker, asset, op_type, quantity, entry_price,
-                   exit_price, {realized_usd_sql()} AS pnl_usd, pnl_pct
+                   exit_price, {realized_usd_sql()} AS pnl_usd, pnl_pct,
+                   pnl_usd AS pnl_crudo, currency, fx_to_usd, cobrado_ars, costo_ars, costo_moneda
               FROM operations
              WHERE user_id = ? AND date >= ? AND date <= ?{br_sql}
              ORDER BY date ASC, id ASC""",
@@ -1467,6 +1469,8 @@ def compute_metrics_for_period(
     """
     ops = fetch_operations_in_range(conn, uid, period_start, period_end, broker_filter)
     realized = sum(float(o.get("pnl_usd") or 0) for o in ops)
+    # Lo mismo, en pesos: la cuenta única de resultado_dual (ver PeriodMetrics.realized_ars).
+    realized_ars, realized_ars_cubre_usd, realized_ars_valuado = realizado_en_pesos(ops)
 
     # Trades cerrados (Venta + Futuros), excluyendo dividendos/intereses/compras/conversiones
     trade_ops = [o for o in ops if _es_trade(o) and o.get("pnl_usd") is not None]
@@ -2670,6 +2674,9 @@ def compute_metrics_for_period(
         delta_pct=delta_pct,
         delta_pct_over_contrib=round(delta_pct_over_contrib, 2) if delta_pct_over_contrib is not None else None,
         realized_pnl=round(realized, 2),
+        realized_ars=realized_ars,
+        realized_ars_cubre_usd=realized_ars_cubre_usd,
+        realized_ars_valuado=realized_ars_valuado,
         unrealized_pnl=round(unrealized, 2),
         deposits=round(deposits, 2),
         withdrawals=round(withdrawals, 2),

@@ -138,6 +138,19 @@ class PeriodMetrics:
     # Con qué modo y en qué moneda se midió — los mismos dos controles que Métricas.
     modo: str = "certero"
     moneda: str = "usd"
+    # EL REALIZADO EN PESOS, EXACTO. `realized_pnl` está en dólares, y llevarlo a pesos
+    # con un dólar solo (el del cierre) no da la ganancia que dice el broker: GGAL
+    # comprada a $4.500 con el dólar a 1.000 y vendida a $6.900 con el dólar a 1.500 dejó
+    # +$240.000 y +US$10, y US$10 × 1.500 son $15.000. Estos tres campos traen la cuenta
+    # de `resultado_dual.realizado_en_pesos` (la MISMA de Operaciones y de «Última op
+    # cerrada»): los pesos de las operaciones que tienen resultado en pesos, el realizado
+    # en dólares de ESAS mismas operaciones, y si alguna es una venta en dólares (sus pesos
+    # son valuados al dólar de cada fecha, no pesos de verdad). Quien muestre pesos suma
+    # `realized_ars + (realized_pnl − realized_ars_cubre_usd) × dólar` : lo exacto más sólo
+    # lo que no tiene pesos, sin contar nada dos veces. None = el servidor no lo calculó.
+    realized_ars: Optional[float] = None
+    realized_ars_cubre_usd: Optional[float] = None
+    realized_ars_valuado: bool = False
 
 
 @dataclass

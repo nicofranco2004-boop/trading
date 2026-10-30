@@ -81,7 +81,7 @@ export default function WeekCard({ week }) {
           <div className="grid grid-cols-3 gap-2 text-[10px]">
             <Stat label="Trades" value={week.metrics.trades_count} />
             <Stat label="Win rate" value={week.metrics.win_rate != null ? `${week.metrics.win_rate.toFixed(0).replace('.', ',')}%` : '—'} />
-            <Stat label="Realizado" value={fmtPlata(enVista.realizado)} />
+            <Stat label="Realizado" value={fmtPlata(enVista.realizado)} nota={enVista.realizadoNota} />
           </div>
         </div>
       )}
@@ -90,9 +90,9 @@ export default function WeekCard({ week }) {
   )
 }
 
-function Stat({ label, value }) {
+function Stat({ label, value, nota = null }) {
   return (
-    <div className="rounded-sm bg-bg-3/40 px-2 py-1.5">
+    <div className="rounded-sm bg-bg-3/40 px-2 py-1.5" title={nota || undefined}>
       <div className="text-ink-3 text-[12.5px] font-medium">{label}</div>
       <div className="text-ink-1 font-mono tabular text-[11px]">{value}</div>
     </div>

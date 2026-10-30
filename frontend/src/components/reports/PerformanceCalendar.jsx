@@ -324,7 +324,11 @@ function MetricasDelAno({ resumen, months, pesos, ranking }) {
   const anio = pesos.enVista({
     period_type: 'year', is_current: !!resumen.is_current,
     period_start: `${resumen.year}-01-01`, period_end: `${resumen.year}-12-31`,
-    metrics: { deposits: resumen.deposits, withdrawals: resumen.withdrawals, realized_pnl: resumen.realized_pnl },
+    metrics: {
+      deposits: resumen.deposits, withdrawals: resumen.withdrawals, realized_pnl: resumen.realized_pnl,
+      realized_ars: resumen.realized_ars, realized_ars_cubre_usd: resumen.realized_ars_cubre_usd,
+      realized_ars_valuado: resumen.realized_ars_valuado,
+    },
   })
   const realizadoMeses = months.filter(m => m.metrics?.realized_pnl != null)
   const sumaUsd = realizadoMeses.reduce((s, m) => s + m.metrics.realized_pnl, 0)

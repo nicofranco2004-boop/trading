@@ -35,7 +35,7 @@ HDR = ("fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,"
 PESOS = "Cocos"
 DOLARES = "Bull"
 COLS = ("costo_ars", "costo_usd", "cobrado_ars", "cobrado_usd",
-        "pnl_pct_ars", "pnl_pct_usd", "pnl_sin_dato")
+        "pnl_pct_ars", "pnl_pct_usd", "pnl_sin_dato", "costo_moneda")
 
 # El dólar de cada día (MEP y blue iguales: la prueba no es sobre el riel).
 DOLAR = {"2024-01-10": 1000.0, "2024-03-11": 1200.0, "2024-06-10": 1500.0}
@@ -790,6 +790,208 @@ class Auditoria(_Base):
         antes = self._ventas("GGAL", h)
         self.assertEqual(self._corregir(apply=True, user_id=uid)["ventas"], 0)
         self.assertEqual(self._ventas("GGAL", h), antes)
+
+
+# ─── El realizado EN PESOS: una sola cuenta para todas las pantallas ─────────────────────────
+
+class RealizadoEnPesosEnTodasLasPantallas(_Base):
+    """Nico, 29/10: Reportes y el Resumen mensual en Pesos tienen que mostrar el resultado EXACTO
+    en pesos (pesos de venta − pesos de compra), igual que Movimientos, para que coincida con el
+    broker. GGAL comprada a $4.500 con el dólar en 1.000 y vendida a $6.900 con el dólar en 1.500
+    dejó +$240.000 (y +US$10): US$10 × 1.500 daban $15.000 en Reportes.
+
+    La cuenta vive en `resultado_dual.resultado_en_pesos`/`realizado_en_pesos`. Acá se mira que
+    CADA pantalla la lea por su puerta real (operaciones, movimientos, el mes, el reporte del
+    período, «Última op cerrada», el CSV del contador) y dé el MISMO número."""
+
+    def _plantar(self, sql, params=()):
+        conn = main.get_db()
+        conn.execute(sql, params)
+        conn.commit()
+        conn.close()
+
+    def _ggal(self, h=None):
+        self._alta(h, broker=PESOS, asset="GGAL", quantity=100, buy_price=4500,
+                   entry_date="2024-01-10", currency="ARS")
+        self._vender(h, broker=PESOS, asset="GGAL", quantity=100, exit_price=6900,
+                     date="2024-06-10", currency="ARS")
+
+    def _fila_mensual(self, h=None, broker="global"):
+        filas = self.client.get("/api/monthly", headers=h or self.h).json()
+        return [m for m in filas if m["broker"] == broker and (m["year"], m["month"]) == (2024, 6)][0]
+
+    def _reporte(self, h=None, broker="global"):
+        with mock.patch.object(main, "_tiene_reportes_historicos", lambda *a, **k: True), \
+                mock.patch.object(main, "_bench_para_reportes", lambda *a, **k: {}):
+            r = self.client.get("/api/reports/period/month/2024-06", headers=h or self.h,
+                                params={"moneda": "ars", "broker": broker})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()["metrics"]
+
+    def _ultima_op(self, uid):
+        conn = main.get_db()
+        try:
+            return main._portfolio_snapshot_summary(conn, uid, "global")["last_op"]
+        finally:
+            conn.close()
+
+    # ── el caso de siempre ──
+    def test_ggal_da_240_mil_en_las_cinco_pantallas(self):
+        self._ggal()
+        op = self._ventas("GGAL")[0]
+        self.assertEqual(op["resultado_ars"], 240000)                       # Operaciones
+        self.assertEqual(op["resultado_ars_tipo"], "exacto")
+        mov = [m for m in self.client.get("/api/movements", headers=self.h).json()
+               if m.get("type") == "SELL" and m.get("asset") == "GGAL"][0]
+        self.assertEqual(mov["resultado_ars"], 240000)                      # Todos los movimientos
+        for broker in ("global", PESOS):
+            mes = self._fila_mensual(broker=broker)                          # Resumen mensual / Dashboard
+            self.assertAlmostEqual(mes["realized_ars"], 240000, places=2)
+            self.assertAlmostEqual(mes["realized_ars_cubre_usd"], 10, places=2)
+            self.assertAlmostEqual(mes["pnl_realized"], 10, places=2)
+            rep = self._reporte(broker=broker)                               # Reportes
+            self.assertAlmostEqual(rep["realized_ars"], 240000, places=2)
+            self.assertAlmostEqual(rep["realized_ars_cubre_usd"], 10, places=2)
+            self.assertAlmostEqual(rep["realized_pnl"], 10, places=2)
+            self.assertFalse(rep["realized_ars_valuado"])
+        self.assertEqual(self._ultima_op(self.uid)["resultado_ars"], 240000)  # Última op cerrada
+
+    def test_el_csv_del_contador_dice_lo_mismo(self):
+        import csv
+        self._ggal()
+        self._plantar("UPDATE users SET tier='plus' WHERE id=?", (self.uid,))   # el CSV es de planes pagos
+        r = self.client.get("/api/export/operations.csv", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        filas = list(csv.DictReader(io.StringIO(r.text.lstrip("\ufeff"))))
+        venta = [f for f in filas if f.get("Activo") == "GGAL" or f.get("asset") == "GGAL"][0]
+        self.assertAlmostEqual(float(str(venta["Resultado en pesos"]).replace(",", ".")), 240000, places=1)
+
+    # ── los casos raros ──
+    def test_venta_en_dolares_se_dice_valuada_y_suma_lo_que_cartera_en_pesos(self):
+        self._alta(broker=DOLARES, asset="AAPL", quantity=10, buy_price=100, entry_date="2024-01-10")
+        self._vender(broker=DOLARES, asset="AAPL", quantity=10, exit_price=150, date="2024-06-10")
+        op = self._ventas("AAPL")[0]
+        self.assertEqual(op["resultado_ars_tipo"], "valuado")
+        self.assertAlmostEqual(op["resultado_ars"], 2250000 - 1000000, places=2)
+        mes = self._fila_mensual(broker=DOLARES)
+        self.assertTrue(mes["realized_ars_valuado"])
+        self.assertAlmostEqual(mes["realized_ars_cubre_usd"], 500, places=2)
+        self.assertTrue(self._reporte(broker=DOLARES)["realized_ars_valuado"])
+
+    def test_un_dividendo_en_dolares_no_tiene_pesos_y_queda_para_convertir(self):
+        self._ggal()
+        r = self.client.post("/api/operations", headers=self.h, json={
+            "date": "2024-06-12", "broker": DOLARES, "asset": "KO", "op_type": "Dividendo",
+            "quantity": 1, "entry_price": 0, "exit_price": 0, "pnl_usd": 20, "pnl_pct": 0,
+            "commissions": 0, "currency": "USD"})
+        self.assertEqual(r.status_code, 200, r.text)
+        div = [o for o in self.client.get("/api/operations", headers=self.h).json()
+               if o["op_type"] == "Dividendo"][0]
+        self.assertIsNone(div["resultado_ars"])
+        rep = self._reporte()
+        # 240.000 de las ventas en pesos + los US$ 20 del dividendo, que la pantalla convierte.
+        self.assertAlmostEqual(rep["realized_pnl"], 30, places=2)
+        self.assertAlmostEqual(rep["realized_ars"], 240000, places=2)
+        self.assertAlmostEqual(rep["realized_pnl"] - rep["realized_ars_cubre_usd"], 20, places=2)
+        mes = self._fila_mensual()
+        self.assertAlmostEqual(mes["pnl_realized"] - mes["realized_ars_cubre_usd"], 20, places=2)
+
+    def test_un_cupon_en_pesos_es_exacto(self):
+        self._ggal()
+        self._plantar(
+            "INSERT INTO operations (user_id, date, broker, asset, op_type, quantity, entry_price, "
+            "exit_price, pnl_usd, pnl_pct, commissions, currency, fx_to_usd) "
+            "VALUES (?, '2024-06-12', ?, 'AL30', 'Cupón', 1, 0, 0, 125000, 0, 0, 'ARS', 1000)",
+            (self.uid, PESOS))
+        cupon = [o for o in self.client.get("/api/operations", headers=self.h).json()
+                 if o["op_type"] == "Cupón"][0]
+        self.assertEqual(cupon["resultado_ars"], 125000)
+        self.assertEqual(cupon["resultado_ars_tipo"], "exacto")
+        rep = self._reporte()
+        self.assertAlmostEqual(rep["realized_pnl"], 10 + 125, places=2)       # 125.000 ÷ 1.000, como siempre
+        self.assertAlmostEqual(rep["realized_ars"], 240000 + 125000, places=2)
+        self.assertAlmostEqual(rep["realized_pnl"] - rep["realized_ars_cubre_usd"], 0, places=2)
+
+    def test_una_venta_vieja_en_pesos_sin_columnas_usa_su_dolar_estampado(self):
+        uid, h = Auditoria._vieja(self)
+        op = self._ventas("GGAL", h)[0]
+        self.assertIsNone(op["costo_ars"])                                    # regla vieja: sin columnas
+        self.assertAlmostEqual(op["pnl_usd"], 160, places=2)
+        self.assertAlmostEqual(op["resultado_ars"], 240000, delta=1)          # 160 × 1.500, el pesos de entonces
+        rep = self._reporte(h)
+        self.assertAlmostEqual(rep["realized_ars"], 240000, delta=1)
+        self.assertAlmostEqual(rep["realized_ars_cubre_usd"], 160, places=2)
+
+    def test_lo_que_no_se_puede_saber_no_se_inventa(self):
+        """Una venta en dólares vieja (sin las columnas), sin dólar estampado: no hay pesos
+        honestos. La cuenta devuelve None y el resto lo resuelve la pantalla, avisando."""
+        sin_columnas_usd = {"op_type": "Venta", "currency": "USD", "pnl_usd": 500, "fx_to_usd": None}
+        self.assertEqual(resultado_dual.resultado_en_pesos(sin_columnas_usd), (None, None))
+        sin_dolar = {"op_type": "Venta", "currency": "ARS", "pnl_usd": 160, "fx_to_usd": None}
+        self.assertEqual(resultado_dual.resultado_en_pesos(sin_dolar), (None, None))
+        self.assertEqual(resultado_dual.resultado_en_pesos(
+            {"op_type": "Cupón", "currency": "USD", "pnl_usd": 20, "fx_to_usd": None}), (None, None))
+        self.assertEqual(resultado_dual.resultado_en_pesos(
+            {"op_type": "Dividendo", "currency": "ARS", "pnl_usd": 20, "fx_to_usd": 1000}), (None, None))
+        self.assertEqual(resultado_dual.resultado_en_pesos({"op_type": "Compra", "pnl_usd": 1}), (None, None))
+        # …y el resumen suma sólo lo que tiene, devolviendo los dólares que cubre
+        self.assertEqual(resultado_dual.realizado_en_pesos([sin_columnas_usd, sin_dolar]), (0.0, 0.0, False))
+
+    def test_lote_en_dolares_vendido_en_pesos_se_dice_valuado(self):
+        """AL30 comprado en dólares (100 × US$ 0,5 con el dólar en 1.000 = $ 50.000 de entonces) y
+        vendido en pesos por $ 90.000: la venta SÍ entró en pesos, pero el costo en pesos no es plata
+        que se haya pagado: son dólares al dólar de la compra. Se muestra +$ 40.000, y se dice que es
+        valuado, no que es el resultado exacto del broker."""
+        self._alta(broker=PESOS, asset="AL30", quantity=100, buy_price=0.5,
+                   entry_date="2024-01-10", currency="USD")
+        self._vender(broker=PESOS, asset="AL30", quantity=100, exit_price=900,
+                     date="2024-06-10", currency="ARS")
+        op = self._ventas("AL30")[0]
+        self.assertEqual(op["costo_moneda"], "USD")
+        self.assertAlmostEqual(op["resultado_ars"], 40000, places=2)
+        self.assertEqual(op["resultado_ars_tipo"], "valuado")
+        rep = self._reporte()
+        self.assertAlmostEqual(rep["realized_ars"], 40000, places=2)
+        self.assertAlmostEqual(rep["realized_ars_cubre_usd"], op["pnl_usd"], places=2)
+        self.assertTrue(rep["realized_ars_valuado"])
+        self.assertTrue(self._fila_mensual()["realized_ars_valuado"])
+
+    def test_un_lote_en_pesos_vendido_en_pesos_es_exacto(self):
+        self._ggal()
+        op = self._ventas("GGAL")[0]
+        self.assertEqual(op["costo_moneda"], "ARS")
+        self.assertEqual(op["resultado_ars_tipo"], "exacto")
+        self.assertFalse(self._reporte()["realized_ars_valuado"])
+
+    def test_una_venta_en_dolares_de_un_lote_en_pesos_es_valuada(self):
+        self._alta(broker=DOLARES, asset="GGAL", quantity=10, buy_price=4500,
+                   entry_date="2024-01-10", currency="ARS")
+        self._vender(broker=DOLARES, asset="GGAL", quantity=10, exit_price=5, date="2024-06-10",
+                     currency="USD")
+        op = self._ventas("GGAL")[0]
+        self.assertEqual(op["resultado_ars_tipo"], "valuado")
+
+    def test_el_total_cierra_sumando_las_partes(self):
+        """Pesos exactos + (dólares totales − dólares que ya tienen pesos) × dólar = lo que se
+        muestra. Con una venta en pesos, una en dólares y un dividendo, ninguna plata se cuenta
+        dos veces ni se pierde."""
+        self._ggal()
+        self._alta(broker=DOLARES, asset="AAPL", quantity=10, buy_price=100, entry_date="2024-01-10")
+        self._vender(broker=DOLARES, asset="AAPL", quantity=10, exit_price=150, date="2024-06-10")
+        self.client.post("/api/operations", headers=self.h, json={
+            "date": "2024-06-12", "broker": DOLARES, "asset": "KO", "op_type": "Dividendo",
+            "quantity": 1, "entry_price": 0, "exit_price": 0, "pnl_usd": 20, "pnl_pct": 0,
+            "commissions": 0, "currency": "USD"})
+        rep = self._reporte()
+        self.assertAlmostEqual(rep["realized_pnl"], 10 + 500 + 20, places=2)
+        resto = rep["realized_pnl"] - rep["realized_ars_cubre_usd"]
+        self.assertAlmostEqual(resto, 20, places=2)                           # sólo el dividendo
+        total_pesos = rep["realized_ars"] + resto * 1500
+        self.assertAlmostEqual(total_pesos, 240000 + 1250000 + 20 * 1500, places=2)
+        # el mes dice lo mismo que el reporte
+        mes = self._fila_mensual()
+        self.assertAlmostEqual(mes["realized_ars"], rep["realized_ars"], places=2)
+        self.assertAlmostEqual(mes["realized_ars_cubre_usd"], rep["realized_ars_cubre_usd"], places=2)
 
 
 if __name__ == "__main__":

@@ -114,7 +114,7 @@ class SchemaPgAlDia(unittest.TestCase):
             conn.close()
         self.assertGreater(len(reales), 10, "no se pudo leer el esquema real de SQLite")
         for col in ("costo_ars", "costo_usd", "cobrado_ars", "cobrado_usd",
-                    "pnl_pct_ars", "pnl_pct_usd", "pnl_sin_dato"):
+                    "pnl_pct_ars", "pnl_pct_usd", "pnl_sin_dato", "costo_moneda"):
             self.assertIn(col, reales, f"init_db no agregó {col} en SQLite")
         faltan = sorted(reales - _columnas_del_schema_pg("operations"))
         self.assertEqual(faltan, [], f"columnas que SQLite tiene en operations y schema_pg.sql no: {faltan}")
