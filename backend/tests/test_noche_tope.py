@@ -47,7 +47,9 @@ class NocheTopeTest(unittest.TestCase):
         self.client = TestClient(main.app)
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
-            for t in ("alerts", "watchlist", "positions", "brokers", "operations"):
+            # También lo que la noche anotó: cada test arma su propia historia.
+            for t in ("alerts", "watchlist", "positions", "brokers", "operations",
+                      "velas_estado", "velas_diarias"):
                 conn.execute(f"DELETE FROM {t}")
             self.uids = []
             for quien in ("ana", "beto"):
@@ -249,6 +251,55 @@ class NocheTopeTest(unittest.TestCase):
                 mock.patch("velas_diarias.TANDA", 1), mock.patch("velas_diarias.RAROS_POR_PERSONA", 100):
             velas_diarias.correr(conn)
         self.assertLess(pedidos.index("QN0001"), 4, pedidos[:8])
+
+    def test_un_asesor_con_mas_codigos_que_fallan_que_lugares_baja_sus_raros_reales(self):
+        """Re-test E4, ronda 3, el caso del asesor: sus clientes tienen más
+        códigos que Yahoo no reconoce que lugares en el cupo. Antes los mismos
+        códigos ocupaban el cupo todas las noches y los raros reales no se
+        bajaban nunca (0 de 30 en 3 noches). Dos noches de verdad (`correr`,
+        Yahoo de mentira en su punto más bajo): la primera baja los raros reales
+        y prueba UNO de los que fallan; la segunda los mantiene y prueba OTRO."""
+        import pandas as pd
+        with main.db_abierta() as conn:
+            ase = conn.execute("INSERT INTO users (email, password_hash, approved, email_verified, tier) "
+                               "VALUES (?, 'x', 1, 1, 'advisor')",
+                               (f"noche-ase-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+            clientes = [conn.execute("INSERT INTO users (email, password_hash, approved, email_verified, tier, "
+                                     "managed_by) VALUES (?, 'x', 0, 0, 'free', ?)",
+                                     (f"noche-cli-{uuid.uuid4().hex[:8]}@rendi.test", ase)).lastrowid
+                        for _ in range(3)]
+            for i in range(6):          # 6 códigos mal escritos, cargados primero, que ya fallaron
+                conn.execute("INSERT INTO watchlist (user_id, symbol) VALUES (?, ?)",
+                             (clientes[i % 3], f"QF{i:04d}"))
+                conn.execute("INSERT INTO velas_estado (symbol, ultima_corrida, ok, filas) "
+                             "VALUES (?, ?, 0, 0)", (f"QF{i:04d}", f"2026-10-2{i} 03:00:00"))
+            for i, c in enumerate(clientes):   # 3 papeles raros de verdad, nunca intentados
+                conn.execute("INSERT INTO watchlist (user_id, symbol) VALUES (?, ?)", (c, f"QR{i:04d}"))
+            conn.commit()
+        dias = pd.date_range(end=pd.Timestamp.today().normalize() - pd.Timedelta(days=1), periods=5)
+
+        def bajar(t, periodo):
+            if not t.startswith("QR"):
+                return None
+            return pd.DataFrame({"Open": 10.0, "High": 11.0, "Low": 9.0, "Close": 10.0, "Volume": 100.0},
+                                index=dias)
+        noches = []
+        for _ in range(2):
+            pedidos = []
+            with main.db_abierta() as conn, mock.patch("velas_diarias._bajar",
+                                                       lambda t, p: pedidos.append(t) or bajar(t, p)), \
+                    mock.patch("velas_diarias.RAROS_POR_PERSONA", 4):
+                velas_diarias.correr(conn)
+            noches.append(pedidos)
+        for pedidos in noches:
+            self.assertTrue({"QR0000", "QR0001", "QR0002"} <= set(pedidos), pedidos)
+        fallados = [sorted(t for t in p if t.startswith("QF")) for p in noches]
+        self.assertEqual(fallados[0], ["QF0000"], "la primera noche, el que hace más que no se prueba")
+        self.assertEqual(len(fallados[1]), 1)
+        self.assertNotEqual(fallados[1], fallados[0], "la segunda noche se prueba OTRO: rota")
+        with main.db_abierta() as conn:
+            filas = conn.execute("SELECT COUNT(*) FROM velas_diarias WHERE symbol LIKE 'QR%'").fetchone()[0]
+        self.assertGreater(filas, 0, "los raros reales del asesor quedaron guardados")
 
 
 if __name__ == "__main__":
