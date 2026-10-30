@@ -12,12 +12,18 @@ import { initMetaPixel } from './utils/metaPixel'
 import { isChunkLoadError, urlsAReparar, repararAssets } from './utils/chunkErrors'
 import { escucharInstalador } from './utils/instalarApp'
 import { anotarOrigen } from './utils/origen'
+import { borrarCopiasSinDueno } from './utils/copiasSinDueno'
 import './index.css'
 
 // De qué post viene la visita (`?d=x-20261019` o `utm_*`). Va PRIMERO, antes
 // de montar la app: el demo borra todo lo que hay después del `?` al arrancar
 // y se llevaría el código (ver utils/origen.js).
 anotarOrigen()
+
+// Las copias del navegador que dejó la versión anterior a la regla de dueño
+// (utils/duenoDeLaPestana) ya no se leen; se borran para que no quede en la
+// pestaña nada de la persona anterior (ver utils/copiasSinDueno.js).
+borrarCopiasSinDueno()
 
 // Inicializar GA4 y el Meta Pixel (Facebook/Instagram Ads) al arranque.
 // No-op fuera de rendi.finance (servidor local, previews): ver utils/medicion.js.
