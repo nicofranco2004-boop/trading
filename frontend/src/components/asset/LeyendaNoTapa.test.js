@@ -48,7 +48,10 @@ const EVENTOS = {
     reaccion: { desde: puntos[250].d, hasta: puntos[251].d, pct: -4.2, cuando: 'al_otro_dia' } }],
 }
 
-vi.mock('../../utils/api', () => ({
+// Lo real de utils/api (getClientContext: de quién es la copia de los dibujos)
+// con `api` simulado.
+vi.mock('../../utils/api', async (original) => ({
+  ...(await original()),
   api: { get: vi.fn((ruta) => Promise.resolve(ruta.includes('/eventos') ? EVENTOS : DATOS)) },
 }))
 
@@ -76,13 +79,24 @@ async function dibujar() {
   for (let i = 0; i < 4; i++) await montado.redibujar(el())
 }
 // Fibonacci y Elliott automáticos viven en el menú de su botón de la barra.
-const MENU = { fib: 'menu-fibonacci', ell: 'menu-elliott' }
+// Las líneas, desde la barra de la ficha (exciting-payne, 29/10), viven en el
+// menú «Líneas y pincel».
+const MENU = { fib: 'menu-fibonacci', ell: 'menu-elliott', tendencia: 'menu-lineas', horizontal: 'menu-lineas' }
 async function tocar(id) {
   if (MENU[id]) {
     await clic(montado.contenedor, boton(MENU[id]))
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
   }
   await clic(montado.contenedor, boton(id))
+  for (let i = 0; i < 2; i++) await montado.redibujar(el())
+}
+
+// Apagar: medir se apaga tocándola otra vez; una línea del menú, con
+// «Cancelar» del cartel de arriba (o al terminar de dibujarla).
+async function apagar(id) {
+  if (MENU[id] !== 'menu-lineas') return tocar(id)
+  const cancelar = nodos(n => n.nodeName === 'BUTTON' && (n.textContent || '').trim() === 'Cancelar')[0]
+  await clic(montado.contenedor, cancelar)
   for (let i = 0; i < 2; i++) await montado.redibujar(el())
 }
 
@@ -132,7 +146,7 @@ describe('D1 · la lista «Indicadores» no tapa el gráfico', () => {
       await tocar(id)
       expect(abierta()).toBe('false')
       expect(adentro(grupo(), 'UL')).toBeNull()
-      await tocar(id)                           // apagar la herramienta
+      await apagar(id)                          // apagar la herramienta
       expect(abierta()).toBe('true')
       expect(localStorage.getItem('rendi_grafico_leyenda')).toBeNull()
     })

@@ -71,6 +71,15 @@ describe('de la ficha al servidor', () => {
       .toMatchObject({ symbol: 'GGAL', accion_local: false })
   })
 
+  it('sin tenerla, GGAL se mira en BYMA y NVDA no: la regla de la ficha que no tenés (miradaSinTenencia)', () => {
+    // Antes caía siempre al ADR: el aviso de un canal dibujado en la ficha de
+    // GGAL (unos US$ 5) miraba el precio de Nueva York (unos US$ 50). Auditoría 29/10.
+    const f = { ...borradorInicial({ prefill: { kind: 'tecnica' } }), symbol: 'GGAL' }
+    expect(pedidoTecnico(f, false, [])).toMatchObject({ symbol: 'GGAL', accion_local: true })
+    expect(pedidoTecnico({ ...f, symbol: 'NVDA' }, false, [])).toMatchObject({ symbol: 'NVDA', accion_local: false })
+    expect(pedidoTecnico({ ...f, symbol: 'AAPL.BA' }, false, [])).toMatchObject({ symbol: 'AAPL', accion_local: false })
+  })
+
   it('el formulario desde la ficha: sin selector de tipo, con el activo fijo y la frase', () => {
     const h = html({ prefill: prefillTecnico({ asset: 'AAPL', senal: 'media200', direction: 'below' }) })
     expect(h).toContain('Nuevo aviso técnico')

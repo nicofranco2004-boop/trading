@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   duracion, medicion, pctConSigno, plata, primeraCompra, puntosDesde, tarjetasMovimiento,
-  textoEvento, textoGrupo, textoMedicion,
+  textoEvento, textoGananciaPorAccion, textoGrupo, textoMedicion,
 } from './cuantoSeMueve'
 
 const precio = (x) => `US$ ${x.toLocaleString('es-AR', { maximumFractionDigits: 2 })}`
@@ -151,5 +151,31 @@ describe('cuánto se mueve este papel', () => {
   it('sin datos, nada', () => {
     expect(tarjetasMovimiento({ disponible: false })).toEqual([])
     expect(tarjetasMovimiento(undefined)).toEqual([])
+  })
+})
+
+describe('lo declarado contra lo esperado, y el detalle del dividendo (Nico, 29/10)', () => {
+  it('la ganancia por acción en palabras: más, menos, igual, pérdida, o lo que se sepa', () => {
+    const b = (x) => textoGananciaPorAccion({ moneda: 'usd', ...x })
+    expect(b({ eps_esperado: 1.5, eps_declarado: 1.65, sorpresa_pct: 10 }))
+      .toBe('Declaró una ganancia de US$ 1,65 por acción; se esperaba US$ 1,50: 10% más de lo esperado.')
+    expect(b({ eps_esperado: 2, eps_declarado: 1.8, sorpresa_pct: -10 })).toContain('10% menos de lo esperado')
+    expect(b({ eps_esperado: 2, eps_declarado: 2.004, sorpresa_pct: 0.2 })).toContain('lo mismo que se esperaba')
+    expect(b({ eps_esperado: -0.1, eps_declarado: -0.12, sorpresa_pct: -20 }))
+      .toBe('Declaró una pérdida de US$ 0,12 por acción; se esperaba US$ 0,10 de pérdida: 20% menos de lo esperado.')
+    expect(b({ eps_esperado: 1.5 })).toBe('Se esperaba una ganancia de US$ 1,50 por acción.')
+    expect(textoGananciaPorAccion({ moneda: 'ars', eps_declarado: 120 })).toBe('Declaró una ganancia de $ 120,00 por acción.')
+    expect(b({})).toBeNull()
+  })
+
+  it('el dividendo: qué parte del precio fue y cómo se compara con el anterior', () => {
+    const d = (x) => textoEvento({ tipo: 'dividendo', fecha: '2026-05-13', monto: 0.26, moneda: 'usd', ...x }).lineas
+    expect(d({ rendimiento: 0.412, anterior: 0.24 })).toEqual([
+      'Pagó US$ 0,26 por acción: el 0,41% de lo que valía la acción ese día.',
+      'El anterior: US$ 0,24 (este es 8,3% más).',
+      'Desde el día de corte, el que compra ya no cobra ese pago.',
+    ])
+    expect(d({ anterior: 0.26 })[1]).toBe('Igual que el anterior (US$ 0,26).')
+    expect(d({})[0]).toBe('Pagó US$ 0,26 por acción.')            // sin precio en su moneda: no se mezcla
   })
 })

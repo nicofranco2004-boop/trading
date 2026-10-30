@@ -44,6 +44,7 @@ const RESPUESTAS = {
   '/tecnico/NVDA': () => TECNICO,
 }
 vi.mock('../utils/api', () => ({
+  getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
   api: {
     get: vi.fn((ruta) => {
       const k = Object.keys(RESPUESTAS).find(c => ruta.startsWith(c))

@@ -7,7 +7,8 @@
 //   · convive con el Fibonacci: los dos prendidos a la vez;
 //   · sin conteo claro: lo dice, no dibuja nada y el botón queda deshabilitado.
 // Y las palabras de cada estado (utils/elliott.js).
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from 'vitest'
+import { CAPAS_TODAS } from './BarraGrafico'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic } from '../../testing/navegadorMinimo'
 import { tarjetaElliott, dondeHoy, veredictoElliott, textoInvalida } from '../../utils/elliott'
@@ -36,6 +37,7 @@ const DATOS = (elliott) => ({
 
 let respuesta
 vi.mock('../../utils/api', () => ({
+  getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
   api: { get: vi.fn(() => Promise.resolve(respuesta)) },
 }))
 
@@ -47,6 +49,10 @@ beforeAll(async () => {
 afterAll(() => { vi.unstubAllGlobals() })
 
 let montado
+// De fábrica el gráfico viene limpio (precio, promedio de 200 y volumen). Estas
+// pruebas miran las demás capas: arrancan con todas prendidas, como quien las
+// prende desde «Indicadores» (lo que se prende queda guardado así).
+beforeEach(() => { try { localStorage.setItem('rendi_grafico_capas', JSON.stringify(CAPAS_TODAS)) } catch { /* sin almacenamiento */ } })
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null

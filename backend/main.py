@@ -8,7 +8,7 @@ from fastapi.exception_handlers import http_exception_handler
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, field_validator, model_validator, Field
 from typing import Any, Literal, Optional, List
-import sqlite3, os, secrets, time, hashlib, hmac, json, threading, asyncio
+import sqlite3, os, secrets, time, hashlib, hmac, json, threading, asyncio, unicodedata
 from contextlib import contextmanager, nullcontext
 import dberrors
 from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
@@ -2424,7 +2424,7 @@ def init_db():
                 last_fired_price REAL,
                 senal TEXT,                         -- tecnica: qué señal (tecnico.SENALES)
                 accion_local INTEGER NOT NULL DEFAULT 0, -- tecnica: acción argentina (como la ficha)
-                dibujo TEXT,                        -- tecnica 'linea': qué línea dibujada ({asset, moneda, id, tipo})
+                dibujo TEXT,                        -- tecnica 'linea': qué línea dibujada ({asset, moneda, id, tipo}; un canal, + modo)
                 mirando_desde TEXT                  -- tecnica: día argentino en que se creó o reactivó
             );
             CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id);
@@ -8925,9 +8925,13 @@ _CIERRE_MERCADO = {"America/New_York": 16, "America/Argentina/Buenos_Aires": 17}
 
 
 def _fetch_yf_earnings_pasados(ticker: str):
-    """Los balances ya anunciados de `ticker`: [{event_date, momento, hora}] con
-    `momento` 'antes_del_cierre' | 'despues_del_cierre' | None (Yahoo no dio la
-    hora: medianoche justa). None si Yahoo no contestó (≠ [] = no tiene)."""
+    """Los balances ya anunciados de `ticker`: [{event_date, momento, hora,
+    eps_esperado, eps_declarado, sorpresa_pct}] con `momento`
+    'antes_del_cierre' | 'despues_del_cierre' | None (Yahoo no dio la hora:
+    medianoche justa). La ganancia por acción que esperaba el mercado, la que
+    declaró la empresa y cuánto se apartó (%), de la MISMA respuesta de Yahoo
+    (Nico, 29/10: «el detalle de lo declarado vs esperado»); None si no la da.
+    None si Yahoo no contestó (≠ [] = no tiene)."""
     try:
         ed = yf.Ticker(ticker).get_earnings_dates(limit=EARNINGS_PASADOS_CUANTOS)
     except Exception:
@@ -8946,13 +8950,28 @@ def _fetch_yf_earnings_pasados(ticker: str):
         if not _DATE_RE.match(d) or d >= hoy:
             continue
         sin_hora = local.hour == 0 and local.minute == 0
+        fila = ed.loc[ts] if hasattr(ed, "loc") else {}
+        if hasattr(fila, "ndim") and fila.ndim > 1:      # la misma hora dos veces: la primera
+            fila = fila.iloc[0]
         out.append({
             "event_date": d,
             "momento": None if sin_hora else (
                 "antes_del_cierre" if local.hour < _CIERRE_MERCADO[zona] else "despues_del_cierre"),
             "hora": None if sin_hora else local.strftime("%H:%M"),
+            "eps_esperado": _numero_o_none(fila, "EPS Estimate"),
+            "eps_declarado": _numero_o_none(fila, "Reported EPS"),
+            "sorpresa_pct": _numero_o_none(fila, "Surprise(%)"),
         })
     return out
+
+
+def _numero_o_none(fila, col):
+    """El número de esa columna de una fila de Yahoo, o None (falta o NaN)."""
+    try:
+        x = float(fila.get(col)) if hasattr(fila, "get") else None
+    except (TypeError, ValueError):
+        return None
+    return round(x, 4) if x is not None and math.isfinite(x) else None
 
 
 def _buscar_y_guardar_earnings_pasados(ticker: str) -> bool:
@@ -8980,6 +8999,10 @@ def _buscar_y_guardar_earnings_pasados(ticker: str) -> bool:
                             details = {}
                         details = details if isinstance(details, dict) else {}
                         details.update({"momento": e["momento"], "hora": e["hora"]})
+                        # Lo declarado y lo esperado: sólo si Yahoo los dio (no se
+                        # pisa un dato guardado con un vacío).
+                        details.update({k: e[k] for k in ("eps_esperado", "eps_declarado", "sorpresa_pct")
+                                        if e.get(k) is not None})
                         conn.execute(
                             """INSERT INTO financial_events
                                (ticker, event_type, event_date, details, confirmed, source, fetched_at)
@@ -12429,12 +12452,51 @@ class _PuntoDibujo(BaseModel):
     d: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")      # el día
     mas: int = Field(ge=0, le=5000)                     # días de mercado después (hacia adelante)
     precio: float = Field(gt=0, allow_inf_nan=False)
+    # Sólo el pincel: la fracción del lugar (que el trazo no quede en escalones).
+    f: Optional[float] = Field(None, ge=0, lt=1, allow_inf_nan=False)
 
 
 # Un conteo de Elliott a mano: el impulso (0 y las ondas 1 a 5), la corrección
 # (el arranque y A, B, C) o, en los guardados antes de separarlos, las dos
 # juntas (0-1-2-3-4-5-A-B-C). Se puede cortar antes.
 _PUNTOS_ELLIOTT = {"impulso": 6, "correccion": 4, None: 9}
+# El pincel: los puntos de un trazo (frontend/src/utils/dibujos.PINCEL_MAXIMO).
+_PINCEL_MAXIMO = 200
+# Una nota de texto (Nico, 30/10: «compré acá por el balance»): corta, como un
+# tuit. Para la explicación larga está tu tesis (tesis.TEXTO_MAX, 1000). Se
+# cuentan letras (puntos de código), igual que la pantalla
+# (frontend/src/utils/dibujos.NOTA_MAXIMA): un emoji es una.
+_NOTA_MAXIMA = 280
+
+
+def _texto_de_nota(x):
+    """El texto de una nota, limpio: sin caracteres de control (salvo el salto
+    de renglón; el tab pasa a espacio), con los saltos de Windows como uno solo,
+    a lo sumo dos renglones vacíos seguidos y sin espacios en las puntas. None
+    sin texto, o si lo que queda no se ve (sólo espacios o marcas invisibles,
+    como el espacio de ancho cero): sería una banderita vacía. La MISMA regla
+    que frontend/src/utils/dibujos.limpiarNota: si no coinciden, una nota que la
+    pantalla acepta y el servidor no traba el guardado de TODOS los dibujos de
+    ese activo (la lista va entera)."""
+    if x is None:
+        return None
+    if not isinstance(x, str):
+        raise ValueError("el texto de una nota es texto")
+    t = x.replace("\r\n", "\n").replace("\r", "\n").replace("\t", " ")
+    # Tampoco medio emoji (una «mitad» suelta, de un texto cortado): al
+    # devolverlo, la respuesta no se podría escribir y la ficha perdería TODOS
+    # tus dibujos de ese activo.
+    # Afuera también los de control «C1» (U+0080 a U+009F: el U+0085 viene
+    # pegado de algunos textos de Windows o PDF, y strip() lo recortaba pero la
+    # pantalla no) y la marca BOM (U+FEFF: al revés).
+    t = "".join(c for c in t if c == "\n" or (ord(c) >= 32 and not 0x7F <= ord(c) <= 0x9F
+                                              and ord(c) != 0xFEFF and not 0xD800 <= ord(c) <= 0xDFFF))
+    while "\n\n\n" in t:
+        t = t.replace("\n\n\n", "\n\n")
+    t = t.strip()
+    if not any(not c.isspace() and unicodedata.category(c) != "Cf" for c in t):
+        return None
+    return t
 
 
 class _Dibujo(BaseModel):
@@ -12442,16 +12504,38 @@ class _Dibujo(BaseModel):
     # «fibonacci» y «elliott»: los que la persona marca a mano en vez del
     # automático (Nico, 28/10: «poder calcularlo como ellos estiman»).
     # «extension»: la extensión de Fibonacci (tres puntos: a, b y c).
-    tipo: Literal["tendencia", "horizontal", "fibonacci", "extension", "elliott"]
+    # «canal»: el canal paralelo (a → b y la paralela `ancho` más arriba o más
+    # abajo); «pincel»: un trazo a mano alzada (Nico, 29/10).
+    # «nota»: un texto tuyo en un día y un precio (`a`), con su banderita.
+    tipo: Literal["tendencia", "horizontal", "fibonacci", "extension", "elliott", "canal", "pincel", "nota"]
     precio: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
     a: Optional[_PuntoDibujo] = None
     b: Optional[_PuntoDibujo] = None
     c: Optional[_PuntoDibujo] = None
     forma: Optional[Literal["impulso", "correccion"]] = None
-    puntos: Optional[List[_PuntoDibujo]] = Field(None, max_length=_PUNTOS_ELLIOTT[None])
+    puntos: Optional[List[_PuntoDibujo]] = Field(None, max_length=_PINCEL_MAXIMO)
+    ancho: Optional[float] = Field(None, ge=-1e9, le=1e9, allow_inf_nan=False)
+    # El color que eligió la persona (frontend/src/utils/dibujos.COLORES_DIBUJO);
+    # sin color, el de siempre.
+    color: Optional[Literal["cian", "ambar", "rosa", "verde", "rojo", "violeta", "tinta"]] = None
+    # Sólo la nota: lo que escribiste. El tope se mide ya limpio (_texto_limpio).
+    texto: Optional[str] = Field(None, max_length=_NOTA_MAXIMA)
+
+    @field_validator("texto", mode="before")
+    @classmethod
+    def _texto_limpio(cls, v):
+        return _texto_de_nota(v)
 
     @model_validator(mode="after")
     def _completo(self):
+        if self.tipo == "nota":
+            if self.a is None:
+                raise ValueError("una nota necesita su día y su precio")
+            if not self.texto:
+                raise ValueError("una nota sin texto no se guarda")
+        else:
+            # El texto es de las notas: otro dibujo no guarda texto suelto.
+            self.texto = None
         if self.tipo == "horizontal" and self.precio is None:
             raise ValueError("una línea horizontal necesita su precio")
         if self.tipo in ("tendencia", "fibonacci") and (self.a is None or self.b is None):
@@ -12463,16 +12547,50 @@ class _Dibujo(BaseModel):
                 raise ValueError("un conteo de Elliott necesita al menos el arranque y la primera onda")
             if len(self.puntos) > _PUNTOS_ELLIOTT[self.forma]:
                 raise ValueError("un conteo de Elliott con más ondas de las que tiene su forma")
+        if self.tipo == "canal" and (self.a is None or self.b is None or not self.ancho):
+            raise ValueError("un canal necesita su línea (dos puntos) y su ancho")
+        if self.tipo == "pincel" and (not self.puntos or len(self.puntos) < 2):
+            raise ValueError("un trazo del pincel necesita al menos dos puntos")
         return self
 
 
 class DibujosIn(BaseModel):
     dibujos: List[_Dibujo] = Field(max_length=_DIBUJOS_MAXIMOS)
+    # La pantalla conoce las notas (desde el 30/10). Una pestaña abierta desde
+    # antes las descarta al leer (no sabe qué son) y, como la lista va entera,
+    # al guardar una línea las borraría de tu cuenta: sin esta marca, las notas
+    # guardadas se quedan como estaban.
+    notas: bool = False
+
+
+def _notas_guardadas(conn, dueno: int, sym: str, moneda: str) -> list:
+    """Las notas que ya están guardadas en este activo y moneda (validadas)."""
+    fila = conn.execute(
+        "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+        (dueno, sym, moneda)).fetchone()
+    try:
+        crudo = json.loads(fila[0]) if fila else []
+    except (TypeError, ValueError):
+        return []
+    out = []
+    for d in crudo if isinstance(crudo, list) else []:
+        if isinstance(d, dict) and d.get("tipo") == "nota":
+            try:
+                out.append(_Dibujo.model_validate(d).model_dump(exclude_none=True))
+            except Exception:
+                continue
+    return out
 
 
 def _dueno_de_los_dibujos(request: Request, uid: int) -> int:
     # El uid AUTENTICADO (lo dejó get_effective_user), no el del cliente que se mira.
     return getattr(request.state, "rendi_auth_uid", None) or uid
+
+
+# Tus NOTAS no se ven mirando la cuenta de un cliente: son tuyas y no dicen de
+# qué cliente son. Una nota del asesor sobre Juan («compró acá por el balance»)
+# aparecía en el AAPL de María, quizás con la pantalla compartida con ella
+# (auditoría 30/10). Ahí se dibujan líneas, pero tus notas ni llegan ni se tocan.
 
 
 @app.get("/api/tecnico/{asset}/dibujos")
@@ -12501,6 +12619,8 @@ def get_tecnico_dibujos(asset: str, request: Request, moneda: str = "usd",
             dibujos.append(_Dibujo.model_validate(d).model_dump(exclude_none=True))
         except Exception:
             continue
+    if dueno != uid:                                        # mirando a un cliente
+        dibujos = [d for d in dibujos if d["tipo"] != "nota"]
     return {"dibujos": dibujos[:_DIBUJOS_MAXIMOS]}
 
 
@@ -12517,6 +12637,12 @@ def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: s
     dueno = _dueno_de_los_dibujos(request, uid)
     lista = [d.model_dump(exclude_none=True) for d in data.dibujos]
     with db_abierta() as conn:
+        # Una pantalla que no conoce las notas, o mirando a un cliente: las
+        # notas guardadas quedan como estaban (las que lleguen, no).
+        if not data.notas or dueno != uid:
+            lista = [d for d in lista if d["tipo"] != "nota"] + _notas_guardadas(conn, dueno, sym, moneda)
+            if len(lista) > _DIBUJOS_MAXIMOS:
+                raise HTTPException(409, f"Llegaste a {_DIBUJOS_MAXIMOS} dibujos y notas en este activo: borrá alguno.")
         if lista:
             _exigir_activo_valido(conn, sym, dueno, uid)
             # Contar y guardar en un solo turno (sin él, varios pedidos juntos
@@ -48756,6 +48882,16 @@ class AlertCreateIn(BaseModel):
     # tecnica 'linea': el id de tu línea en el gráfico y la moneda en que la
     # dibujaste (`symbol` es el activo como lo pide la ficha).
     dibujo: Optional[str] = Field(None, max_length=40)
+    # Un canal: cuándo cuenta salir ('toque': lo toca o lo pasa en el día;
+    # 'cierre': cierra afuera). Por qué borde va en `direction`.
+    modo: Optional[str] = Field(None, max_length=8)
+
+    @field_validator('modo')
+    @classmethod
+    def _v_modo(cls, v):
+        if v is not None and v not in ('toque', 'cierre'):
+            raise ValueError('modo inválido')
+        return v
 
     @field_validator('kind')
     @classmethod
@@ -48813,6 +48949,14 @@ class AlertUpdateIn(BaseModel):
     repeat: Optional[str] = Field(None, max_length=8)
     cooldown_min: Optional[int] = Field(None, ge=0, le=100000)
     note: Optional[str] = Field(None, max_length=200)
+    modo: Optional[str] = Field(None, max_length=8)      # el de un canal (AlertCreateIn)
+
+    @field_validator('modo')
+    @classmethod
+    def _v_modo(cls, v):
+        if v is not None and v not in ('toque', 'cierre'):
+            raise ValueError('modo inválido')
+        return v
 
     # Los mismos valores válidos que el alta (AlertCreateIn). Antes la edición
     # no validaba: un PATCH con channel='x' quedaba guardado y el motor no
@@ -48871,6 +49015,66 @@ def alerts_list(uid: int = Depends(get_effective_user)):
         }
     finally:
         conn.close()
+
+
+@app.get("/api/alerts/lineas")
+def alerts_lineas(request: Request, uid: int = Depends(get_effective_user)):
+    """«Mis alertas»: dónde está hoy cada línea tuya con aviso y un gráfico
+    chiquito para reconocerla (alerts_engine.resumen_de_lineas_con_aviso). Va
+    aparte de GET /api/alerts, que lo pide cada ficha y no necesita velas. Lee la
+    serie de cada activo con aviso: el freno de las lecturas de muchos (E1)."""
+    import alerts_engine as _ae
+    with _freno_tecnico(request, uid), db_abierta() as conn:
+        return {"lineas": {str(k): v for k, v in _ae.resumen_de_lineas_con_aviso(conn, uid).items()}}
+
+
+@app.get("/api/tecnico/{asset}/lineas")
+def get_tecnico_lineas(asset: str, request: Request, moneda: str = "usd", accion_local: bool = False,
+                       uid: int = Depends(get_effective_user)):
+    """Tus líneas de este activo que pueden tener aviso (horizontales, de
+    tendencia y canales), cada una con dónde está hoy y un gráfico chiquito:
+    las que ofrece «Alertas → Una línea que dibujaste»."""
+    import alerts_engine as _ae
+    import tecnico
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    moneda = "ars" if moneda == "ars" else "usd"
+    # La ficha guarda tus dibujos bajo el activo como se abrió: «GGAL» desde la
+    # cartera, «GGAL.BA» desde el buscador. Se miran los dos y cada línea dice
+    # bajo cuál está (es lo que pide el alta: main._crear_alerta_de_linea).
+    # Los de quien dibuja (`_dueno_de_los_dibujos`: la persona, o la asesora en
+    # la ficha de su cliente), los mismos que lee el alta y el motor. Antes, los
+    # de la cuenta que mira: a la asesora no le aparecían las suyas (al juntar la
+    # barra con la auditoría chica de la junta, 30/10). Lee una serie: el freno
+    # de la ficha (E1).
+    dueno = _dueno_de_los_dibujos(request, uid)
+    pelado = sym[:-3] if sym.endswith(".BA") else sym
+    con_aviso = []
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        for clave in dict.fromkeys((sym, pelado, f"{pelado}.BA")):
+            fila = conn.execute(
+                "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+                (dueno, clave, moneda)).fetchone()
+            try:
+                crudos = json.loads(fila[0]) if fila else []
+            except (TypeError, ValueError):
+                crudos = []
+            for d in crudos if isinstance(crudos, list) else []:
+                try:
+                    d = _Dibujo.model_validate(d).model_dump(exclude_none=True)
+                except Exception:
+                    continue
+                if d.get("tipo") in tecnico.TIPOS_CON_AVISO:
+                    con_aviso.append((clave, d))
+        if not con_aviso:
+            return {"lineas": []}
+        velas = tecnico.serie(conn, pelado, moneda, accion_local)["velas"]
+    lineas = []
+    for clave, d in con_aviso:
+        r = _ae.resumen_de_dibujo(velas, d)
+        lineas.append({**(r or {"id": d["id"], "tipo": d["tipo"], "color": d.get("color")}), "asset": clave})
+    return {"lineas": lineas}
 
 
 def _moneda_del_aviso(symbol: str, currency) -> str:
@@ -48969,8 +49173,10 @@ def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn", dueno: int = No
 
 def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn", dueno: int) -> dict:
     """«Avisame si el precio toca esta línea» (Nico, 28/10): una alerta técnica
-    atada a una línea horizontal o de tendencia que dibujaste en la ficha. No
-    copia el precio: el motor lee la línea de lo dibujado cada vez
+    atada a una línea horizontal o de tendencia que dibujaste en la ficha, o
+    (29/10) «avisame si sale del canal»: por qué borde va en `direction` y
+    cuándo cuenta (`modo`: lo toca en el día o cierra afuera), en la referencia
+    al dibujo. No copia el precio: el motor lee la línea de lo dibujado cada vez
     (alerts_engine.linea_de_la_alerta), así que si la movés el aviso la sigue y
     si la borrás se apaga. Se mira con las velas del día (su mínimo y su
     máximo), como las demás técnicas: avisa a la mañana siguiente.
@@ -48996,9 +49202,13 @@ def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn", dueno: int) ->
     linea = next((d for d in dibujos if isinstance(d, dict) and d.get("id") == data.dibujo), None)
     if not linea:
         raise HTTPException(404, "No encontramos esa línea: puede que todavía no se haya guardado. Probá de nuevo en un momento.")
-    if linea.get("tipo") not in ("horizontal", "tendencia"):
-        raise HTTPException(400, "Por ahora el aviso es para líneas horizontales y de tendencia.")
-    ref = {"asset": asset, "moneda": moneda, "id": data.dibujo, "tipo": linea["tipo"]}
+    if linea.get("tipo") not in tecnico.TIPOS_CON_AVISO:
+        raise HTTPException(400, "El aviso es para líneas horizontales, de tendencia y canales.")
+    canal = linea["tipo"] == "canal"
+    # Una línea avisa la toque de donde venga; un canal, por el borde que elegiste.
+    direction = data.direction if canal else "either"
+    ref = {"asset": asset, "moneda": moneda, "id": data.dibujo, "tipo": linea["tipo"],
+           **({"modo": data.modo or "toque"} if canal else {})}
     if dueno != uid:
         ref["de"] = dueno
     ref = json.dumps(ref, separators=(",", ":"))
@@ -49009,7 +49219,8 @@ def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn", dueno: int) ->
     # esta la salteaba y quedaba cubierta sólo porque guardar un dibujo ya la
     # pide; un dibujo guardado de antes de esa regla entraba igual.
     _exigir_activo_valido(conn, asset, uid, dueno)
-    if linea["tipo"] == "tendencia" and linea.get("a") and linea.get("b"):
+    # Una de tendencia o un canal (que es la misma recta y su paralela).
+    if linea["tipo"] in ("tendencia", "canal") and linea.get("a") and linea.get("b"):
         velas = tecnico.serie(conn, symbol, moneda, bool(data.accion_local))["velas"]
         ultimo = len(velas) - 1
         mismo_dia = (tecnico.valor_de_linea(velas, linea, max(ultimo, 0)) is None if velas
@@ -49024,13 +49235,14 @@ def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn", dueno: int) ->
             (uid, tecnico.SENAL_LINEA)).fetchall():
         otra = _ae.referencia_de_linea(r["dibujo"]) or {}
         if (otra.get("asset"), otra.get("moneda"), otra.get("id")) == (asset, moneda, data.dibujo):
-            raise HTTPException(409, "Ya te avisamos cuando el precio toque esta línea.")
+            raise HTTPException(409, "Ya te avisamos cuando el precio salga de este canal." if linea["tipo"] == "canal"
+                                else "Ya te avisamos cuando el precio toque esta línea.")
     cur = conn.execute(
         """INSERT INTO alerts
            (user_id, kind, symbol, scope, direction, currency, channel, repeat,
             cooldown_min, armed, active, note, senal, accion_local, dibujo)
-           VALUES (?,'tecnica',?,'ticker','either',?,?,?,?,1,1,?,?,?,?)""",
-        (uid, symbol, moneda.upper(), data.channel, data.repeat, data.cooldown_min,
+           VALUES (?,'tecnica',?,'ticker',?,?,?,?,?,1,1,?,?,?,?)""",
+        (uid, symbol, direction, moneda.upper(), data.channel, data.repeat, data.cooldown_min,
          data.note, tecnico.SENAL_LINEA, 1 if data.accion_local else 0, ref))
     aid = cur.lastrowid
     row = conn.execute("SELECT * FROM alerts WHERE id=?", (aid,)).fetchone()
@@ -49182,10 +49394,20 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
         row = _alerta_de_mis_alertas(conn, alert_id, uid)
         sets, params = [], []
         tecnica = row["kind"] == "tecnica"
+        ref_canal = None
+        if tecnica and row["senal"] == "linea":
+            ref_canal = _ae.referencia_de_linea(row["dibujo"])
+            if (ref_canal or {}).get("tipo") != "canal":
+                ref_canal = None
+        if data.modo is not None and ref_canal is None:
+            raise HTTPException(400, "Sólo un canal tiene cuándo cuenta salir.")
         if tecnica and data.direction is not None:
             import tecnico
-            if row["senal"] not in tecnico.SENALES_CON_SENTIDO:
+            if row["senal"] not in tecnico.SENALES_CON_SENTIDO and ref_canal is None:
                 raise HTTPException(400, "Esta señal no tiene para qué lado.")
+        if data.modo is not None:
+            sets.append("dibujo=?")
+            params.append(json.dumps({**ref_canal, "modo": data.modo}, separators=(",", ":")))
         if tecnica and data.threshold is not None:
             raise HTTPException(400, "Una alerta técnica no tiene precio.")
         if data.up_pct is not None or data.down_pct is not None:
@@ -49204,6 +49426,17 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
             val = getattr(data, col)
             if val is not None:
                 sets.append(f"{col}=?"); params.append(val)
+        if data.active and not row["active"] and tecnica and row["senal"] == "linea":
+            # Una línea, un aviso (como el alta): reactivar uno pausado cuando
+            # ya armaste otro para la misma línea serían dos mails por el mismo
+            # toque (auditoría 29/10).
+            ref = _ae.referencia_de_linea(row["dibujo"]) or {}
+            for r in conn.execute(
+                    "SELECT id, dibujo FROM alerts WHERE user_id=? AND kind='tecnica' AND active=1 AND senal='linea' AND id<>?",
+                    (uid, alert_id)).fetchall():
+                otra = _ae.referencia_de_linea(r["dibujo"]) or {}
+                if (otra.get("asset"), otra.get("moneda"), otra.get("id")) == (ref.get("asset"), ref.get("moneda"), ref.get("id")):
+                    raise HTTPException(409, "Ya tenés otro aviso prendido para esta línea.")
         if data.active is not None:
             sets.append("active=?"); params.append(1 if data.active else 0)
             # Reactivar o editar → re-armar para que vuelva a poder disparar.

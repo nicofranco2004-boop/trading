@@ -20,6 +20,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR
       "quantity": 60,
     },
   ],
+  "onVerTesis": [Function],
   "operaciones": [],
   "pesoEnCartera": 0.05,
   "pnlPctLinea": 0.04063139432914342,
@@ -33,6 +34,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR
     "tc": 1555,
     "valorUsd": 686.8167202572347,
   },
+  "tesis": [],
   "titulo": null,
 }
 `;
@@ -63,6 +65,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR
       "tc_compra": 1180,
     },
   ],
+  "onVerTesis": [Function],
   "operaciones": [],
   "pesoEnCartera": 0.2,
   "pnlPctLinea": -0.013504823151125445,
@@ -76,6 +79,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR
     "tc": 1555,
     "valorUsd": 468.16720257234726,
   },
+  "tesis": [],
   "titulo": null,
 }
 `;
@@ -106,6 +110,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR
       "tc_compra": 1210,
     },
   ],
+  "onVerTesis": [Function],
   "operaciones": [],
   "pesoEnCartera": 0.15,
   "pnlPctLinea": -0.09217577706323687,
@@ -119,6 +124,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR
     "tc": 1555,
     "valorUsd": 472.66881028938906,
   },
+  "tesis": [],
   "titulo": null,
 }
 `;
@@ -161,6 +167,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > acció
       "quantity": 50,
     },
   ],
+  "onVerTesis": [Function],
   "operaciones": [],
   "pesoEnCartera": 0.12,
   "pnlPctLinea": null,
@@ -174,6 +181,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > acció
     "tc": 1555,
     "valorUsd": 619.2926045016077,
   },
+  "tesis": [],
   "titulo": null,
 }
 `;
@@ -187,6 +195,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > activo
   "costoPesos": null,
   "lineaSinTc": false,
   "lotes": [],
+  "onVerTesis": [Function],
   "operaciones": [],
   "pesoEnCartera": null,
   "pnlPctLinea": null,
@@ -194,6 +203,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > activo
   "referencia": null,
   "symbolMiniChart": "MELI",
   "tenencia": null,
+  "tesis": [],
   "titulo": null,
 }
 `;
@@ -207,6 +217,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > activo
   "costoPesos": null,
   "lineaSinTc": false,
   "lotes": [],
+  "onVerTesis": [Function],
   "operaciones": [
     {
       "asset": "YPFD",
@@ -237,6 +248,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > activo
   "referencia": null,
   "symbolMiniChart": null,
   "tenencia": null,
+  "tesis": [],
   "titulo": null,
 }
 `;
@@ -262,6 +274,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > cripto
       "quantity": 0.05,
     },
   ],
+  "onVerTesis": [Function],
   "operaciones": [],
   "pesoEnCartera": 0.08,
   "pnlPctLinea": 0.18333333333333335,
@@ -275,6 +288,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > cripto
     "tc": 1555,
     "valorUsd": 3550,
   },
+  "tesis": [],
   "titulo": null,
 }
 `;
@@ -301,6 +315,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > papel 
       "quantity": 25,
     },
   ],
+  "onVerTesis": [Function],
   "operaciones": [
     {
       "asset": "NVDA",
@@ -325,6 +340,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > papel 
     "tc": 1555,
     "valorUsd": 5305.25,
   },
+  "tesis": [],
   "titulo": null,
 }
 `;
@@ -355,6 +371,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > pedido
       "tc_compra": 1200,
     },
   ],
+  "onVerTesis": [Function],
   "operaciones": [],
   "pesoEnCartera": 0.12,
   "pnlPctLinea": -0.04724214692060347,
@@ -368,6 +385,7 @@ exports[`la ficha del activo, antes y después de compartir sus cuentas > pedido
     "tc": 1555,
     "valorUsd": 412.8617363344051,
   },
+  "tesis": [],
   "titulo": null,
 }
 `;

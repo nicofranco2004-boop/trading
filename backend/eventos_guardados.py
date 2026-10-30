@@ -77,7 +77,8 @@ def eventos_guardados(conn, tickers: Iterable[str], dias: int, *,
 
 def balances_entre(conn, ticker: str, desde: str, hasta: str) -> List[dict]:
     """Los balances guardados de `ticker` con fecha entre `desde` y `hasta`
-    (inclusive), del más viejo al más nuevo: [{fecha, momento}] (`momento`:
+    (inclusive), del más viejo al más nuevo: [{fecha, momento, eps_esperado,
+    eps_declarado, sorpresa_pct}] (`momento`:
     'antes_del_cierre' | 'despues_del_cierre' | None si no se sabe la hora).
     Los pasados los trae `main._earnings_pasados_al_dia`; el calendario de
     Novedades deja el próximo, que también cae acá cuando pasa."""
@@ -91,6 +92,10 @@ def balances_entre(conn, ticker: str, desde: str, hasta: str) -> List[dict]:
             det = json.loads(r["details"]) if r["details"] else {}
         except (TypeError, ValueError):
             det = {}
-        out.append({"fecha": str(r["event_date"])[:10],
-                    "momento": det.get("momento") if isinstance(det, dict) else None})
+        det = det if isinstance(det, dict) else {}
+        out.append({"fecha": str(r["event_date"])[:10], "momento": det.get("momento"),
+                    # Lo que declaró la empresa contra lo que esperaba el mercado
+                    # (ganancia por acción), si se sabe.
+                    "eps_esperado": det.get("eps_esperado"), "eps_declarado": det.get("eps_declarado"),
+                    "sorpresa_pct": det.get("sorpresa_pct")})
     return out
