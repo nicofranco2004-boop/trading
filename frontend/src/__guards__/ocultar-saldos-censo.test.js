@@ -71,7 +71,6 @@ export const SIN_OJITO = {
   'components/SplitRatioBanner.jsx': 'cantidades y precio de compra',
   'components/fundamentals/AnalyzeView.jsx': 'cantidad, costo por unidad y %',
   'components/fundamentals/DetailPortfolioBlocks.jsx': 'cantidad, costo por unidad, %; de los plazos fijos usa la tasa',
-  'components/fundamentals/CarteraList.jsx': 'lista de tus papeles, sin montos',
   'components/tesis/TesisPosiciones.jsx': 'tus tesis, sin montos',
   'components/home/PersonalLayer.jsx': 'sólo % (como la Cartera)',
   'pages/MobileSearch.jsx': 'buscador',

@@ -22,10 +22,16 @@ const sinComentarios = (s) => s.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[
 
 // Un número pegado a «de tu cartera / de tu plata», o el peso dibujado con
 // pct()/toFixed. Los nombres con que viaja el peso: impactPct, weight_pct, peso.
+// Segunda versión (re-test D, ronda 2): la primera buscaba nombres fijos
+// (impactPct, weight_pct…) y sólo frases con `${…}`; Análisis fundamental dibuja
+// `weight.toFixed(1)` y `{pctTxt(x)} de tu cartera` (JSX) y se le escaparon.
+// Ahora: cualquier nombre que empiece con weight / peso / impact, y la frase
+// armada tanto en un texto como en JSX con un pct…( ) o toFixed( ).
 const ARMADO_A_MANO = [
   /\$\{[^}]*\}\s*%?\s*de tu (cartera|plata)/,
-  /\bpct\((?:\w+\.)?(impactPct|weight_?[pP]ct|pesoEnCartera)\b/,
-  /\b(impactPct|weight_?[pP]ct|pesoEnCartera)\.toFixed\(/,
+  /\{[^{}]*(pct\w*|toFixed)\([^{}]*\}\s*%?\s*de tu (cartera|plata)/,
+  /\bpct\w*\(\s*(?:\w+\.)?(impact|weight|peso)\w*/i,
+  /\b(impact|weight|peso)\w*\??\.toFixed\(/i,
 ]
 // Renglones que dicen «de tu cartera» y NO son el peso, o que no van con el ojito.
 const EXCEPCIONES = {
@@ -36,6 +42,7 @@ const EXCEPCIONES = {
   'utils/diagnostics.js': 'DEUDA: Métricas (ver ocultar-saldos-censo)',
   'pages/ReportPublic.jsx': 'el informe público: lo ve otra gente, a propósito sin el ojito de quien lo mira',
   'utils/distributionAi.js': 'datos que van a la IA, no a la pantalla',
+  'utils/demo.js': 'datos inventados del modo de prueba: no son la cartera de nadie',
 }
 
 function archivos(dir) {

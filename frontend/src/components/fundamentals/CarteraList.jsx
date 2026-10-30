@@ -24,7 +24,9 @@ import {
   holdingHasReliableFundamentals,
 } from '../../utils/valuation'
 import { businessQuality, priceRead, AXIS_PILL } from './axes'
-import { pctTxt, pctVar, pctColor } from '../../utils/format'
+import { pctVar, pctColor } from '../../utils/format'
+import { usePrivacy } from '../../contexts/PrivacyContext'
+import { pesoVisible, deTuCartera } from '../../utils/parteDeTuPlata'
 
 const baseTicker = (a) => (a || '').replace(/\.BA$/i, '').toUpperCase()
 
@@ -37,6 +39,10 @@ const symHasFund = (s) => { const t = inferType(s); return t === 'stock_us' || t
 
 export default function CarteraList({ onOpenTicker, watchlist }) {
   const { valuationDollar } = useCurrency()
+  // «Ocultar saldos»: el peso de cada papel y qué parte de tu cartera se puede
+  // analizar son proporciones de tu cartera: se tapan, con la regla única del
+  // peso (re-test de la auditoría D, ronda 2, 29/10).
+  const { hidden: oculto } = usePrivacy()
   const [positions, setPositions] = useState([])
   const [brokers, setBrokers] = useState([])
   const [dolar, setDolar] = useState(null)
@@ -179,7 +185,7 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
           </div>
         </div>
 
-        <div className="hidden sm:block text-sm text-ink-1 tabular">{weight != null ? weight.toFixed(1).replace('.', ',') + '%' : '—'}</div>
+        <div className="hidden sm:block text-sm text-ink-1 tabular">{weight != null ? (pesoVisible(weight, oculto) ?? '••') : '—'}</div>
 
         <div>
           {loadingFund ? <Skeleton className="h-4 w-16 rounded" />
@@ -237,7 +243,7 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
             <p className="text-xs text-ink-2">Tus acciones y CEDEARs, ordenadas por peso en la cartera.</p>
             {pctAnalizable != null && (
               <p className="text-[11px] text-ink-3">
-                {pctTxt(pctAnalizable)} de tu cartera analizable
+                {deTuCartera(pctAnalizable, oculto) ? `${deTuCartera(pctAnalizable, oculto)} analizable` : 'Lo que se puede analizar de tu cartera, oculto'}
                 {excludedCount > 0 && ` · ${excludedCount} ${excludedCount === 1 ? 'tenencia' : 'tenencias'} sin fundamentals (cripto, bonos, FCI, acciones locales)`}
               </p>
             )}
