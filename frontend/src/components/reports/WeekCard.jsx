@@ -9,10 +9,11 @@ import { useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import InsightChip from './InsightChip'
 import { usePesosDelPeriodo, PeriodoEnVista } from '../../hooks/usePesosDelPeriodo'
-import { pctVar, pctColor } from '../../utils/format'
+import { pctVar, pctColor, montoColor } from '../../utils/format'
 
-export default function WeekCard({ week }) {
-  const [open, setOpen] = useState(false)
+// `defaultOpen`: para dibujarla abierta en un render estático (las pruebas); en la app arranca cerrada.
+export default function WeekCard({ week, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen)
   // Con % None (semana per-broker) la polaridad sale del SIGNO del USD — antes
   // `undefined >= 0` era false pero `null >= 0` es TRUE en JS → verde en pérdidas.
   // AUDIT D-1: sin base comparable la semana no tiene resultado publicable — ni
@@ -21,15 +22,18 @@ export default function WeekCard({ week }) {
   const noBasis = week.metrics.basis_incomparable === true
   const deltaPct = noBasis ? null : week.metrics.delta_pct
   const deltaUsd = noBasis ? null : week.metrics.delta_usd
-  // Con % el color es el del número que se ve (lo que redondea a cero, neutro).
-  const tono = deltaPct != null
-    ? pctColor(deltaPct, 2)
-    : ((deltaUsd ?? 0) >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
   // delta_usd y realized_pnl respetan el toggle global ARS/USD; en pesos, al
   // dólar del cierre de la semana (utils/periodoEnPesos.js), no al de hoy.
   const pesos = usePesosDelPeriodo()
   const enVista = pesos.enVista(week)
   const fmtPlata = (v) => pesos.fmt(v, { signed: true })
+  // En Pesos el % de una semana sigue en dólares: se rotula (ver periodoEnPesos.pctEnDolares).
+  const pctUsd = deltaPct != null && pesos.pctEnDolares(week)
+  // Con % el color es el del número que se ve (lo que redondea a cero, neutro). Sin %, el signo
+  // del monto que se muestra (en Pesos puede ser otro que el de los dólares del servidor).
+  const tono = deltaPct != null
+    ? pctColor(deltaPct, 2)
+    : montoColor(deltaUsd == null ? null : enVista.resultado)
 
   // Sin actividad: chip minimal, no expandible
   if (!week.is_relevant) {
@@ -50,15 +54,16 @@ export default function WeekCard({ week }) {
         aria-expanded={open}
       >
         <span className="text-xs font-mono text-ink-2 min-w-[80px]">{week.period_label}</span>
-        <span className={`text-xs font-semibold tabular min-w-[64px] ${
+        <span className={`text-xs font-semibold tabular min-w-[64px] whitespace-nowrap ${
           noBasis ? 'text-ink-3' : tono
-        }`}>
+        }`} title={pctUsd ? 'Porcentaje en dólares' : undefined}>
           {pctVar(deltaPct, 2)}
+          {pctUsd && <span className="ml-1 text-[10px] font-normal text-ink-3">en US$</span>}
         </span>
         <span className="text-xs text-ink-2 flex-1 truncate" title={week.headline}>
           {week.headline}
         </span>
-        <span className="text-[10px] text-ink-3 font-mono tabular">
+        <span className="text-[10px] text-ink-3 font-mono tabular whitespace-nowrap flex-shrink-0">
           {noBasis ? null : fmtPlata(enVista.resultado)}
         </span>
         {open
@@ -81,7 +86,7 @@ export default function WeekCard({ week }) {
           <div className="grid grid-cols-3 gap-2 text-[10px]">
             <Stat label="Trades" value={week.metrics.trades_count} />
             <Stat label="Win rate" value={week.metrics.win_rate != null ? `${week.metrics.win_rate.toFixed(0).replace('.', ',')}%` : '—'} />
-            <Stat label="Realizado" value={fmtPlata(enVista.realizado)} />
+            <Stat label="Realizado" value={fmtPlata(enVista.realizado)} nota={enVista.realizadoNota} />
           </div>
         </div>
       )}
@@ -90,9 +95,9 @@ export default function WeekCard({ week }) {
   )
 }
 
-function Stat({ label, value }) {
+function Stat({ label, value, nota = null }) {
   return (
-    <div className="rounded-sm bg-bg-3/40 px-2 py-1.5">
+    <div className="rounded-sm bg-bg-3/40 px-2 py-1.5" title={nota || undefined}>
       <div className="text-ink-3 text-[12.5px] font-medium">{label}</div>
       <div className="text-ink-1 font-mono tabular text-[11px]">{value}</div>
     </div>

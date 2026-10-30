@@ -400,7 +400,7 @@ export default function Operations() {
   // actual — mismo bug que el header de grupo. `totalPnl` (USD crudo) se mantiene
   // solo para el TONO (color), que no debe depender del FX.
   const totalPnlDisp = useMemo(
-    () => histMoney.sumConvertedAt(ops, o => (o.pnl_usd || 0)),
+    () => histMoney.sumPnlAt(ops),
     [ops, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
   )
   // Win rate: UNA definición, la del backend (utils/tradeStats). Acá se contaban
@@ -412,9 +412,7 @@ export default function Operations() {
   // El máximo se elige sobre el valor que se VA A MOSTRAR (cada trade con SU FX
   // histórico): en pesos el ranking puede diferir del de USD.
   const bestTradeOp = useMemo(
-    () => mejorTrade(ops, o => histMoney.convertedValue(o.pnl_usd, {
-      stampedFx: o.fx_to_usd, rowCurrency: o.currency, dateIso: o.date,
-    })),
+    () => mejorTrade(ops, o => histMoney.pnlAt(o)),
     [ops, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
   )
   const patterns = useMemo(() => patronesDeOperaciones(ops), [ops])
@@ -437,12 +435,17 @@ export default function Operations() {
     return ops.filter(o => {
       if (q && !(o.asset || '').toUpperCase().includes(q)) return false
       if (filterBroker !== 'all' && o.broker !== filterBroker) return false
-      if (filterResult === 'wins' && !(o.pnl_usd > 0)) return false
-      if (filterResult === 'losses' && !(o.pnl_usd < 0)) return false
+      // Ganadoras / Perdidas según el número que se VE: en Pesos una venta puede haber
+      // ganado en pesos y perdido en dólares, y el filtro tiene que seguir a la pantalla.
+      if (filterResult !== 'all') {
+        const visto = o.pnl_usd == null ? null : histMoney.pnlAt(o)
+        if (filterResult === 'wins' && !(visto > 0)) return false
+        if (filterResult === 'losses' && !(visto < 0)) return false
+      }
       if (!enPeriodo(o.date, period)) return false
       return true
     })
-  }, [ops, filterAsset, filterBroker, filterResult, period])
+  }, [ops, filterAsset, filterBroker, filterResult, period, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion])
 
   const filtrosActuales = { asset: filterAsset, broker: filterBroker, result: filterResult, period }
   const filtersActiveCount = Object.keys(FILTROS_INICIALES)
@@ -615,12 +618,9 @@ export default function Operations() {
           <KpiCell
             label="Mejor trade"
             value={bestTradeOp
-              ? histMoney.fmtMoneyAt(bestTradeOp.pnl_usd, {
-                  stampedFx: bestTradeOp.fx_to_usd, rowCurrency: bestTradeOp.currency,
-                  dateIso: bestTradeOp.date, decimals: 2,
-                })
+              ? histMoney.fmtPnlAt(bestTradeOp, { decimals: 2 })
               : '—'}
-            tone={bestTradeOp && bestTradeOp.pnl_usd > 0 ? 'pos' : null}
+            tone={bestTradeOp && histMoney.pnlAt(bestTradeOp) > 0 ? 'pos' : null}
             sub="P&L individual"
           />
         </div></FranjaKpis>

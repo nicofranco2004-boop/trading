@@ -118,6 +118,9 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
               noBasis ? 'text-ink-3' : pctColor(deltaPct, 2)
             }`}>
               {pctVar(deltaPct, 2)}
+              {deltaPct != null && pesos.pctEnDolares(p) && (
+                <span className="ml-1 text-[11px] font-normal text-ink-3">en US$</span>
+              )}
             </span>
             <span className="text-xs tabular text-ink-3">
               {noBasis ? null : pesos.fmt(enVista.resultado, { signed: true })}
@@ -223,7 +226,7 @@ function MetricsGrid({ metrics: m, enVista: v, fmt }) {
       <Cell label="Valor cierre" value={v.cierre != null ? fmt(v.cierre) : '—'} />
       <Cell label="Depósitos" value={fmt(v.depositos || 0)} />
       <Cell label="Retiros"   value={fmt(v.retiros || 0)} />
-      <Cell label="Realizado" value={fmt(v.realizado, { signed: true })} accent />
+      <Cell label="Realizado" value={fmt(v.realizado, { signed: true })} accent nota={v.realizadoNota} />
       <Cell label="No realizado" value={fmt(v.noRealizado, { signed: true })} accent />
       <Cell label="Trades" value={m.trades_count} />
       <Cell label="Win rate" value={m.win_rate != null ? `${m.win_rate.toFixed(0).replace('.', ',')}%` : '—'} />
@@ -240,11 +243,12 @@ function MetricsGrid({ metrics: m, enVista: v, fmt }) {
   )
 }
 
-function Cell({ label, value, accent = false }) {
+function Cell({ label, value, accent = false, nota = null }) {
   return (
     <div className="rounded-sm bg-bg-2/40 px-2 py-1.5">
       <div className="text-ink-3 text-[12.5px] font-medium">{label}</div>
       <div className={`font-mono tabular ${accent ? 'text-ink-0' : 'text-ink-1'}`}>{value}</div>
+      {nota && <div className="text-[10px] text-ink-3 leading-snug mt-0.5">{nota}</div>}
     </div>
   )
 }

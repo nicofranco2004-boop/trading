@@ -54,12 +54,15 @@ export default function WeeklyStrip({ yearGroups, broker = 'global', modo: modoE
 
   const medidas = useMemo(
     () => ultimasSemanas(aplanarSemanas(yearGroups, hoyISO()), MAX_SEMANAS)
-      .map(s => medirSemana(s, { porBroker })),
-    [yearGroups, porBroker],
+      .map(s => medirSemana(s, { porBroker, vista: pesos.enVista(s) })),
+    [yearGroups, porBroker, pesos],
   )
   const escala = useMemo(() => escalaDeSerie(medidas, modo), [medidas, modo])
 
-  const fmtPlata = (v, m) => pesos.fmt(pesos.alCierre(v, m?.fin, m?.enCurso), { signed: true })
+  // Los montos de `medidas` YA vienen en la moneda en que se mira (`pesos.enVista`): no se
+  // reconvierten. Hasta acá se pasaban de dólares al dólar del cierre, y "ventas y dividendos"
+  // decía $15.000 donde la tarjeta de la misma semana decía $240.000.
+  const fmtPlata = (v) => pesos.fmt(v, { signed: true })
   const frac = fraccionArriba(escala)
   // ⚠️ Estas tres son medidas de CSS (`top`/`bottom`), no texto: van con PUNTO.
   // Con coma ("42,50%") el navegador descarta la declaración sin avisar y la
@@ -144,7 +147,7 @@ export default function WeeklyStrip({ yearGroups, broker = 'global', modo: modoE
                   activa={i === indice}
                   onElegir={() => setElegida(i)}
                   descripcion={`${rangoSemana(m.inicio, m.fin)}: ${
-                    m.estado === 'sin-medicion' ? 'sin medición' : fmtPlata(valorDe(m, modo), m)
+                    m.estado === 'sin-medicion' ? 'sin medición' : fmtPlata(valorDe(m, modo))
                   }`}
                 />
               ))}
@@ -189,7 +192,7 @@ export default function WeeklyStrip({ yearGroups, broker = 'global', modo: modoE
           modo={modo}
           porBroker={porBroker}
           enPesos={currency === 'ARS'}
-          fmtPlata={(v) => fmtPlata(v, foco)}
+          fmtPlata={fmtPlata}
         />
       </div>
     </Panel>
@@ -440,10 +443,12 @@ function Detalle({ medida, modo, porBroker, enPesos, fmtPlata }) {
             una resta que el motor no hace en ese estado — y contradecía al
             cartel que está tres centímetros más arriba. */}
         {modo === 'abiertas'
-          ? 'Sólo lo que se movió el precio de lo que seguís teniendo.'
+          ? (enPesos
+            ? 'Sólo lo que se movió de lo que seguís teniendo: el precio y, en pesos, también el dólar sobre lo que tenés en dólares.'
+            : 'Sólo lo que se movió el precio de lo que seguís teniendo.')
           : porBroker
           ? 'De un broker solo se puede medir lo que cerraste: el valor de lo que tenés se mide sobre la cartera completa.'
-          : 'Lo de las posiciones abiertas sale de restarle al total lo que dejaron las ventas, así que también recoge cualquier otro movimiento de la cuenta — por ejemplo, pesos quietos cuando cambia el dólar.'}
+          : 'Lo de las posiciones abiertas sale de restarle al total lo que dejaron las ventas, así que también recoge cualquier otro movimiento de la cuenta — por ejemplo, ' + (enPesos ? 'lo que el dólar mueve de lo que tenés en dólares.' : 'pesos quietos cuando cambia el dólar.')}
       </p>
     </div>
   )

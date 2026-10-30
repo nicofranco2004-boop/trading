@@ -78,7 +78,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 
     # ── Unrealized: precio actual * qty - invested por posición abierta ──────
     positions = [dict(r) for r in conn.execute(
-        "SELECT asset, asset_type, broker, currency, quantity, invested, is_cash FROM positions "
+        "SELECT asset, asset_type, broker, currency, quantity, invested, is_cash, tc_compra FROM positions "
         "WHERE user_id=? AND quantity > 0 AND (is_cash = 0 OR is_cash IS NULL)",
         (user_id,),
     ).fetchall()]
@@ -96,8 +96,14 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         asset = (p.get("asset") or "").upper()
         if not asset:
             continue
-        mv_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
-        invested_usd = _position_value_usd(p, {}, tc_blue, tc_cedear, honor_override=False)
+        # Valor y costo al MISMO dólar (el de compra): con el valor al de hoy, un lote sin
+        # cotización caía a su costo / dólar de hoy y la resta daba una pérdida fantasma.
+        mv_usd = _position_value_usd(p, prices, tc_blue, tc_cedear, costo="compra")
+        # El costo al dólar de COMPRA del lote (el de Cartera): lo realizado de la misma
+        # tenencia se anota con ese dólar (resultado_dual), y sumar realizado + no
+        # realizado con dos dólares distintos daba un número que no es de ninguna regla.
+        invested_usd = _position_value_usd(p, {}, tc_blue, tc_cedear, honor_override=False,
+                                           costo="compra")
         unrealized_by_ticker[asset] = unrealized_by_ticker.get(asset, 0) + (mv_usd - invested_usd)
 
     # Tickers presentes EN CARTERA HOY (positions con quantity > 0). Sirve

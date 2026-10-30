@@ -18,6 +18,7 @@ import { useDolarMensual } from '../hooks/useFxHistory'
 import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
+import { realizadoDeLaFilaMensual, sumarRealizadoMeses, notaDelRealizado } from '../utils/realizadoEnPesos'
 import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import { confirmar } from '../utils/confirmar'
 import { useToast } from './Toast'
@@ -222,6 +223,16 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   function retAt(m) {
     const a = aportesMes?.get(claveDe(m))
     return a ? a.retArs : valueAt(m.withdrawals || 0, m.year, m.month)
+  }
+
+  // El realizado de la fila EN LA MONEDA DE LA PESTAÑA. En una pestaña de broker en pesos es
+  // el resultado en pesos de verdad (cobrado − costo, la cuenta única de resultado_dual, la
+  // misma de Movimientos y Reportes) y sólo lo que no tiene pesos va al dólar del mes: ver
+  // utils/realizadoEnPesos.js. En dólares, el de siempre.
+  function realizadoAt(m) {
+    if (!tabIsARS) return { monto: m.pnl_realized || 0, restoUsd: 0 }
+    const r = realizadoDeLaFilaMensual(m, lookupHistoricalDolar(dolarMes, m.year, m.month, tcValuacion))
+    return { monto: r.monto || 0, restoUsd: r.restoUsd }
   }
 
   // Format a stored value (USD-eq for ARS tabs, USD for others), using the
@@ -449,15 +460,26 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     const rawRet = snap((m.pnl_realized || 0) + (isCurrentRow ? (m.pnl_unrealized || 0) : 0))
     const retPct = m.capital_inicio > 0 ? snap(rawRet / m.capital_inicio) : 0
     const conv = (v) => valueAt(v, m.year, m.month) || 0
+    const real = realizadoAt(m)
+    const noReal = conv(isCurrentRow ? (m.pnl_unrealized || 0) : 0)
     return {
       deposits: acc.deposits + (depAt(m) || 0),
       withdrawals: acc.withdrawals + (retAt(m) || 0),
-      pnl_realized: acc.pnl_realized + conv(m.pnl_realized),
-      pnl_unrealized: acc.pnl_unrealized + conv(isCurrentRow ? (m.pnl_unrealized || 0) : 0),
-      ret: acc.ret + conv(rawRet),
+      pnl_realized: acc.pnl_realized + real.monto,
+      pnl_unrealized: acc.pnl_unrealized + noReal,
+      // El retorno de la fila = su realizado + (si es el mes en curso) su no realizado: en
+      // pesos, el realizado exacto y no un solo número × el dólar, para que las columnas sumen.
+      ret: acc.ret + real.monto + noReal,
       retCompound: acc.retCompound * (1 + retPct),
     }
   }, { deposits: 0, withdrawals: 0, pnl_realized: 0, pnl_unrealized: 0, ret: 0, retCompound: 1 })
+  // Qué parte del realizado en pesos NO son pesos de verdad (se avisa bajo la tabla). La suma de los
+  // restos en valor absoluto (+US$ 500 y −US$ 500 en meses distintos no se cancelan) y el «valuado»
+  // los junta `sumarRealizadoMeses`, la misma función que usa el Dashboard: no se repite acá.
+  const notaRealizado = tabIsARS
+    ? (({ restoUsd, valuado }) => notaDelRealizado({ restoUsd, valuado, dolar: 'de cada mes', oculto }))(
+        sumarRealizadoMeses(tabData, (m) => lookupHistoricalDolar(dolarMes, m.year, m.month, tcValuacion)))
+    : null
   const totalRetPct = totals.retCompound - 1
 
   const thClass = 'px-4 py-2 text-left text-[12.5px] text-ink-3 font-semibold'
@@ -625,6 +647,11 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                 const isCurrent = idx === tabData.length - 1
                 const ret = snap((m.pnl_realized || 0) + (isCurrent ? (m.pnl_unrealized || 0) : 0))
                 const retPct = m.capital_inicio > 0 ? snap(ret / m.capital_inicio) : 0
+                // Lo que se MUESTRA en la moneda de la pestaña (en pesos, con el realizado exacto).
+                const realVista = realizadoAt(m).monto
+                const retVista = tabIsARS
+                  ? realVista + (isCurrent ? (valueAt(m.pnl_unrealized || 0, m.year, m.month) || 0) : 0)
+                  : ret
 
                 return (
                   <tr
@@ -647,7 +674,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                     </td>
                     {viewMode === 'simple' ? (
                       <>
-                        <td className={`${tdClass} font-bold tabular ${colorClass(ret)}`}>{fmtMoney(ret, m.year, m.month)}</td>
+                        <td className={`${tdClass} font-bold tabular ${colorClass(retVista)}`}>{fmtMoneyDirect(retVista)}</td>
                         <td className={`${tdClass} font-bold tabular ${colorClass(retPct)}`}>{pctSigned(retPct)}</td>
                         <td className={`${tdClass} tabular ${colorClass(net)}`}>{fmtMoneyDirect(depAt(m) - retAt(m))}</td>
                         <td className={tdClass}>
@@ -667,11 +694,11 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                         <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoneyDirect(depAt(m))}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoneyDirect(retAt(m))}</td>
                         <td className={`${tdClass} tabular ${colorClass(net)}`}>{fmtMoneyDirect(depAt(m) - retAt(m))}</td>
-                        <td className={`${tdClass} tabular ${colorClass(m.pnl_realized)}`}>{fmtMoney(m.pnl_realized, m.year, m.month)}</td>
+                        <td className={`${tdClass} tabular ${colorClass(realVista)}`}>{fmtMoneyDirect(realVista)}</td>
                         <td className={`${tdClass} tabular ${isCurrent ? colorClass(m.pnl_unrealized) : ''}`}>{isCurrent ? fmtMoney(m.pnl_unrealized, m.year, m.month) : fmtMoney(0, m.year, m.month)}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoney(m.capital_inicio, m.year, m.month)}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoney(m.capital_final, m.year, m.month)}</td>
-                        <td className={`${tdClass} font-medium tabular ${colorClass(ret)}`}>{fmtMoney(ret, m.year, m.month)}</td>
+                        <td className={`${tdClass} font-medium tabular ${colorClass(retVista)}`}>{fmtMoneyDirect(retVista)}</td>
                         <td className={`${tdClass} font-medium tabular ${colorClass(retPct)}`}>{pctSigned(retPct)}</td>
                       </>
                     )}
@@ -741,6 +768,13 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
             )}
           </table>
         </div>
+        {tabIsARS && tabData.length > 0 && (
+          <p className="px-4 py-2 text-[11.5px] text-ink-3 border-t border-line/40">
+            El P&L realizado en pesos de las ventas en pesos es lo cobrado menos lo que costó, como lo muestra tu broker.
+            {notaRealizado ? ` ${notaRealizado.charAt(0).toUpperCase()}${notaRealizado.slice(1)}.` : ''}
+            {' '}El Retorno % es el rendimiento medido en dólares: puede no coincidir con el monto en pesos de al lado.
+          </p>
+        )}
       </Card>
 
       {/* Modal agregar / editar / cerrar mes */}

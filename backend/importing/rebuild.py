@@ -61,10 +61,12 @@ from .schema import OP_BUY, OP_SELL, TX_VIVAS
 from .persister import _link, broker_pair, reconciled_unit_price
 try:
     from fx import (fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta,
-                    costo_del_lote)
+                    costo_del_lote, RIEL_MEP)
+    import resultado_dual as _resultado_dual
 except ImportError:  # pragma: no cover
     from ..fx import (fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta,
-                      costo_del_lote)
+                      costo_del_lote, RIEL_MEP)
+    from .. import resultado_dual as _resultado_dual
 from .maturity import is_bond_like_name
 from .normalizer import guess_asset_type
 try:
@@ -417,6 +419,8 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
             # `invested`; se usa igual para que las tres copias digan lo mismo.
             base_invested = ((costo_del_lote(lot["invested"], lot["buy_price"], pos_qty) or 0)
                              + pos_buy_commissions)
+            # En la moneda en que se COMPRÓ: lo usa el resultado en las dos monedas.
+            costo_en_su_moneda = base_invested * ratio
 
             # Cross-currency: valuar el invested del lote en la moneda de la venta.
             # La cuenta vive en `fx.costo_en_moneda_de_venta` — LA misma que usan el
@@ -464,6 +468,28 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                 pnl_usd = (exit_price * take) - cost - chunk_commission
                 invested_usd = cost
 
+            # El resultado en pesos y en dólares, cada punta a su dólar — la MISMA
+            # cuenta que la venta a mano y el importador (resultado_dual). Si el
+            # rebuild no lo escribiera, cada re-import borraría lo que puso el motor.
+            # Dólar de compra: el del lote, que es el que queda en
+            # `positions.tc_compra` (`_lot_tc_compra`: el del evento o, si no, el de
+            # la fecha) y el que usa Cartera.
+            # SÓLO EN CUENTAS v2: en las v1 no se escribe ni la regla ni las columnas (ver
+            # main.sell_position_fifo y el docstring de resultado_dual).
+            resultado = None
+            if use_hist:
+                resultado = _resultado_dual.resultado_en_dos_monedas(
+                    conn, costo=costo_en_su_moneda, moneda_costo=lot_currency,
+                    fecha_compra=lot.get("entry_date"),
+                    cobrado=(0.0 if transfer_out else exit_price * take - chunk_commission),
+                    moneda_venta=currency, fecha_venta=op_date, riel=RIEL_MEP,
+                    tc_compra=lot.get("tc_compra"), retiro=transfer_out)
+            # El resultado en dólares: cobrado en dólares − costo en dólares (ver
+            # resultado_dual.resultado_en_dolares).
+            _en_dolares = _resultado_dual.resultado_en_dolares(resultado)
+            if _en_dolares:
+                pnl_usd, invested_usd = _en_dolares
+
             pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd else None
 
             operations.append({
@@ -484,6 +510,7 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                 # P&L en pesos 1:1 (ver el comentario largo en persister.py).
                 "currency": currency,
                 "fx_to_usd": (tc_venta if currency == "ARS" else None),
+                "resultado": resultado,
                 # origen = la VENTA (para revert / dedup de links)
                 "batch_id": ev["batch_id"],
                 "raw_row_id": ev["raw_row_id"],
@@ -818,6 +845,8 @@ def _write_rebuilt(conn, uid: int, replay: Dict[str, List[Dict[str, Any]]]) -> N
              o.get("currency"), o.get("fx_to_usd")),
         )
         op_id = cur.lastrowid
+        if o.get("resultado") is not None:
+            _resultado_dual.guardar(conn, uid, op_id, o["resultado"])
         if o.get("batch_id") and o.get("raw_row_id"):
             _link(conn, o["batch_id"], o["raw_row_id"], operation_id=op_id)
 

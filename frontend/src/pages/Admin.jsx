@@ -403,6 +403,7 @@ export default function Admin() {
 
       <AlcanceAuditoriaPanel toast={toast} />
       <RepairInteresPfPanel toast={toast} />
+      <ResultadoDosMonedasPanel toast={toast} />
       <RepairCaja1415Panel toast={toast} />
       <VelasPanel toast={toast} />
       <FciRefreshPanel toast={toast} />
@@ -2738,6 +2739,139 @@ function RepairInteresPfPanel({ toast }) {
         </div>
       )}
       {done && <p className="text-xs text-emerald-500">Listo: {done.filas_a_sellar.length} fila(s) selladas y {done.usuarios} usuario(s) recalculado(s).</p>}
+    </div>
+  )
+}
+
+
+// ─── ResultadoDosMonedasPanel — corregir el resultado de las ventas viejas ──
+// Desde el 24/10/2026 una venta guarda su resultado en pesos y en dólares, cada
+// punta a su dólar, y el resultado en dólares es lo cobrado menos el costo al
+// dólar de compra del lote (el que usa Cartera). Las ventas de antes tienen la
+// regla vieja: ganancia en pesos ÷ dólar de la venta. Esto las corrige POR
+// TANDAS, sólo en cuentas que usaron la app en los últimos 60 días, con la misma
+// cuenta que una venta nueva (backend/resultado_dual.py). Dos pasos por tanda.
+//
+// Una cuenta que falla sigue pendiente y sería siempre la primera de la cola: sus
+// user_id se mandan como `saltear` en las tandas siguientes para que avancen.
+const SIN_DATO_TXT = {
+  sin_fecha_compra: 'sin fecha de compra', sin_dolar_compra: 'sin dólar del día de compra',
+  sin_dolar_venta: 'sin dólar del día de venta', sin_costo: 'sin costo cargado',
+  moneda_del_lote: 'no se sabe en qué moneda se compró', retiro: 'retiros a costo',
+  manual: 'cargadas o editadas a mano (no se tocan)',
+  no_cierra: 'sus números no cierran (no se tocan)',
+  implausible: 'resultado de otro orden de magnitud (no se tocan)',
+}
+function ResultadoDosMonedasPanel({ toast }) {
+  const [prev, setPrev] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(null)
+  const [tanda, setTanda] = useState(10)
+  const [salteadas, setSalteadas] = useState([])
+
+  function consulta(apply, tandaDe) {
+    const q = `apply=${apply}&tanda=${tandaDe}&dias=60`
+    return salteadas.length ? `${q}&saltear=${salteadas.join(',')}` : q
+  }
+
+  async function correr(apply) {
+    setBusy(true)
+    try {
+      // Aplicar usa el tamaño con que se MIRÓ, no el que diga el selector ahora.
+      const out = await api.post(`/admin/resultado-dos-monedas?${consulta(apply, apply ? (prev?.tandaPedida || tanda) : tanda)}`)
+      if (apply) {
+        setDone(out); setPrev(null)
+        const fallaron = (out.errores || []).map(e => e.user_id)
+        if (fallaron.length) setSalteadas(a => [...new Set([...a, ...fallaron])])
+        toast.push(
+          fallaron.length
+            ? `Corregidas ${out.corregidas}; ${fallaron.length} con error (se saltean en la próxima)`
+            : `Corregidas ${out.corregidas} cuenta(s); quedan ${out.quedan_despues}`,
+          { type: fallaron.length ? 'warn' : 'success' })
+      } else setPrev({ ...out, tandaPedida: tanda })
+    } catch (e) {
+      toast.push('Error: ' + e.message, { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  const usd = v => `US$ ${Number(v || 0).toLocaleString('es-AR', { maximumFractionDigits: 2 })}`
+  const n = prev?.en_esta_tanda ?? 0
+  return (
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <AlertTriangle size={16} className="text-amber-500" />
+          <h2 className="font-semibold text-ink-0">Resultado en dólares de las ventas viejas</h2>
+        </div>
+        <div className="flex gap-2 items-center">
+          <label className="text-xs text-ink-3">Cuentas por tanda
+            <select value={tanda} disabled={busy} onChange={e => { setTanda(Number(e.target.value)); setPrev(null) }}
+              className="ml-1 text-xs bg-bg-1 border border-line rounded px-1 py-1 disabled:opacity-50">
+              {[1, 5, 10, 25, 50].map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </label>
+          <button onClick={() => correr(false)} disabled={busy}
+            className="text-xs px-3 py-1.5 rounded border border-line text-ink-1 hover:bg-bg-1 disabled:opacity-50">
+            {busy && !prev ? 'Mirando…' : '1 · Ver la próxima tanda'}
+          </button>
+          <button onClick={() => correr(true)} disabled={busy || !prev || n === 0}
+            className="text-xs px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-40">
+            {busy && prev ? 'Aplicando…' : `2 · Corregir esta tanda${n ? ` (${n})` : ''}`}
+          </button>
+        </div>
+      </div>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Las ventas en pesos de algo comprado en pesos anotaban como ganancia en dólares la ganancia
+        en pesos dividida por el dólar del día de la venta (GGAL de US$ 450 a US$ 460 figuraba
+        +US$ 160). Esto las pasa a lo que mostraba Cartera: <b>lo cobrado menos lo que costó, cada
+        uno a su dólar</b> (+US$ 10), y mueve el P&L realizado de los meses por la diferencia. Sólo
+        cuentas que usaron la app en los últimos 60 días, de a una tanda; las cuentas en el dólar
+        viejo esperan su migración y las ventas que no cierran, o las que el usuario cargó o editó,
+        no se tocan. <b>El paso 1 no modifica nada.</b> Cada cuenta se corrige entera o no se toca.
+      </p>
+      {salteadas.length > 0 && (
+        <p className="text-xs text-amber-500">
+          Cuentas salteadas porque fallaron: {salteadas.join(', ')}.{' '}
+          <button className="underline" onClick={() => { setSalteadas([]); setPrev(null) }}>Volver a incluirlas</button>
+        </p>
+      )}
+      {prev && (
+        <div className="text-xs space-y-1">
+          <p className="text-ink-2">
+            Usaron la app en 60 días: <b>{prev.activos}</b>. Con ventas por corregir: <b>{prev.con_ventas_pendientes}</b>
+            {prev.v1_esperan_migracion > 0 && <> (y {prev.v1_esperan_migracion} en el dólar viejo, esperan su migración)</>}.
+            Esta tanda: <b>{n}</b> cuenta(s), <b>{prev.ventas}</b> venta(s). P&L realizado de esas cuentas:{' '}
+            <b>{usd(prev.realizado_antes)}</b> → <b>{usd(prev.realizado_despues)}</b>.
+          </p>
+          {prev.cuentas.map(c => (
+            <div key={c.user_id} className="text-ink-3 tabular">
+              <p>
+                Cuenta {c.user_id}: {c.ventas} venta(s) · {usd(c.realizado_antes)} → {usd(c.realizado_despues)}
+                {c.cambian_de_signo > 0 && <span className="text-amber-500"> · {c.cambian_de_signo} pasan de ganancia a pérdida o al revés</span>}
+                {Object.entries(c.sin_dato || {}).map(([k, v]) => <span key={k} className="text-amber-500"> · {v} {SIN_DATO_TXT[k] || k}</span>)}
+              </p>
+              {c.ejemplos.map(e => (
+                <p key={e.id} className="pl-3">
+                  {e.fecha} · {e.activo} ({e.moneda || '?'}) · {usd(e.pnl_usd_antes)} → {usd(e.pnl_usd_despues)}
+                </p>
+              ))}
+            </div>
+          ))}
+          {prev.errores?.length > 0 && prev.errores.map(e => (
+            <p key={e.user_id} className="text-rose-500">Cuenta {e.user_id}: {e.error}</p>
+          ))}
+        </div>
+      )}
+      {done && (
+        <div className="text-xs space-y-0.5">
+          <p className="text-emerald-500">
+            Listo: {done.corregidas} cuenta(s) corregidas, {done.ventas} venta(s). Quedan {done.quedan_despues} cuenta(s).
+          </p>
+          {done.errores?.length > 0 && done.errores.map(e => (
+            <p key={e.user_id} className="text-rose-500">Cuenta {e.user_id} falló y no se tocó: {e.error}</p>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

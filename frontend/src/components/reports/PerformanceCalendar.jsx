@@ -27,8 +27,9 @@ import { fechaEnPalabras } from '../YearReturnLine'
 import { anioPublicado, detalleVsInflacion } from '../../utils/anioPublicado'
 import { Veredicto } from '../VeredictoChip'
 import { useAlVerse } from '../../hooks/useAlVerse'
-import { pctVar, pctVarSign } from '../../utils/format'
+import { pctVar, pctTxt, pctVarSign, ppVarFino, decimalesFinos, montoColor, montoEsCero } from '../../utils/format'
 import AnimatedNumber from '../AnimatedNumber'
+import { notaDelRealizado } from '../../utils/realizadoEnPesos'
 
 function monthNum(period_key) {
   if (!period_key) return null
@@ -50,8 +51,10 @@ const MES_INICIAL = ['E', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D']
 // que no toque el borde y se lea como cortada.
 const ALTO_MAX_PCT = 92
 
-function BarrasDelAnio({ cells, pesos, enPesos, tipAbajo }) {
-  const [encima, setEncima] = useState(null)
+// Exportada para el test del globo (PerformanceCalendar.render.test.jsx). `encimaInicial` deja
+// dibujarlo en un render estático: el hover real sólo existe en el navegador.
+export function BarrasDelAnio({ cells, pesos, enPesos, tipAbajo, encimaInicial = null }) {
+  const [encima, setEncima] = useState(encimaInicial)
   // Las barras crecen desde la línea del medio, mes por mes, cuando el año
   // entra en pantalla (`.crece-arriba` / `.crece-abajo`, index.css).
   const [refTira, tiraVista] = useAlVerse()
@@ -67,6 +70,11 @@ function BarrasDelAnio({ cells, pesos, enPesos, tipAbajo }) {
       // Sólo lo que se cerró vendiendo. NO es lo mismo que `delta_usd`, que
       // incluye lo que se movieron las posiciones que siguen abiertas.
       realizado: v.realizado,
+      // Qué parte del realizado no son pesos de verdad (dividendos en dólares, lo cargado a mano).
+      realizadoNota: v.realizadoNota,
+      // Si el monto sale de dos puntas a mercado (o de la ventana del motor) o es lo vendido de la
+      // cadena al costo: la leyenda del globo dice cómo se armó, no una sola cosa para todos.
+      aMercado: m.medicion === 'mercado' || m.medicion === 'motor',
       label: month.period_label,
       actual: month.is_current,
     }
@@ -109,21 +117,18 @@ function BarrasDelAnio({ cells, pesos, enPesos, tipAbajo }) {
               {activo.pct >= 0 ? '+' : '−'}{Math.abs(activo.pct).toFixed(2).replace('.', ',')}%
             </b>
             <span className="text-ink-3 text-[11px]">·</span>
-            <b className={`text-[13px] font-semibold tabular ${
-              activo.usd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+            <b className={`text-[13px] font-semibold tabular ${montoColor(activo.usd)}`}>
               {pesos.fmt(activo.usd, { signed: true })}
             </b>
           </div>
-          {/* ⚠️ EN PESOS EL % Y EL MONTO NO MIDEN LO MISMO. El porcentaje lo mide
-              el motor con el dólar de CADA PUNTA, así que incluye la devaluación de
-              ese mes; el monto es la ganancia EN DÓLARES del mes, pasada a pesos con
-              el dólar del cierre de ese mes (hasta el 2026-10-15, con el de HOY:
-              mayo 2025 = +$629.063 eran US$409 al dólar de un año y medio después).
-              Puestos uno al lado del otro invitan a una cuenta que no da, así que el
-              globo dice qué es el monto. */}
+          {/* En Pesos, con las puntas a mercado el monto es la ganancia del mes como resta de los pesos de
+              la tarjeta (valor de cierre − valor de inicio − aportes, cada punta a su dólar:
+              utils/periodoEnPesos.js); en un mes medido al costo no hay puntas a mercado y el monto es lo
+              vendido, exacto. La leyenda dice cuál. Lo realizado va aparte, en el renglón de abajo,
+              con los pesos de verdad de las ventas. */}
           {enPesos && (
             <div className="text-[10px] text-ink-3 mt-1 leading-none">
-              {activo.actual ? 'en dólares, al dólar de hoy' : 'en dólares, al dólar de fin de mes'}
+              {activo.aMercado ? 'en pesos, cada punta a su dólar' : (activo.realizadoNota ? 'en pesos: lo vendido' : 'en pesos: lo vendido, exacto')}
             </div>
           )}
           {/* El renglón de abajo sólo cuando hubo ventas: en un mes sin operaciones
@@ -132,6 +137,9 @@ function BarrasDelAnio({ cells, pesos, enPesos, tipAbajo }) {
             <div className="text-[10.5px] text-ink-3 mt-1 leading-none tabular">
               de operaciones cerradas: {pesos.fmt(activo.realizado, { signed: true })}
             </div>
+          )}
+          {enPesos && !!activo.realizado && activo.realizadoNota && (
+            <div className="text-[10px] text-ink-3 mt-1 leading-snug whitespace-normal max-w-[240px]">{activo.realizadoNota}</div>
           )}
         </div>
       )}
@@ -209,7 +217,7 @@ function computeKpis(yearGroups) {
   return { realizedSum, trades, positiveCount, totalCount: last12.length, last12 }
 }
 
-function KpiCell({ label, value, sub, tone, first }) {
+function KpiCell({ label, value, sub, tone, first, nota }) {
   const valueColor =
     tone === 'pos' ? 'text-rendi-pos' :
     tone === 'neg' ? 'text-rendi-neg' :
@@ -222,9 +230,14 @@ function KpiCell({ label, value, sub, tone, first }) {
       <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${valueColor}`}>
         {value}
       </div>
-      <div className="text-[12.5px] text-ink-2 mt-1.5 leading-none truncate font-medium">
-        {sub}
+      {/* Con aviso la línea puede ocupar dos renglones (en el celular caben dos celdas por fila y
+          «12 meses activos · en parte convertido» no entra en una) y el detalle se ve en el
+          texto, no sólo al pasar el mouse. */}
+      <div className={`text-[12.5px] text-ink-2 mt-1.5 font-medium ${nota ? 'leading-snug' : 'leading-none truncate'}`}
+           title={nota || undefined}>
+        {sub}{nota ? ' · en parte convertido' : ''}
       </div>
+      {nota && <div className="text-[11px] text-ink-3 mt-0.5 leading-snug">{nota}</div>}
     </div>
   )
 }
@@ -289,6 +302,7 @@ export function mejorYPeorMes(ranking, months) {
   return out
 }
 
+// Exportada para el test de la fila (PerformanceCalendar.render.test.jsx).
 export function MetricasDelAno({ resumen, months, pesos, ranking }) {
   if (!resumen) return null
   // Los montos del año, cada uno a los pesos de su momento: lo aportado y
@@ -297,13 +311,26 @@ export function MetricasDelAno({ resumen, months, pesos, ranking }) {
   const anio = pesos.enVista({
     period_type: 'year', is_current: !!resumen.is_current,
     period_start: `${resumen.year}-01-01`, period_end: `${resumen.year}-12-31`,
-    metrics: { deposits: resumen.deposits, withdrawals: resumen.withdrawals, realized_pnl: resumen.realized_pnl },
+    metrics: {
+      deposits: resumen.deposits, withdrawals: resumen.withdrawals, realized_pnl: resumen.realized_pnl,
+      realized_ars: resumen.realized_ars, realized_ars_cubre_usd: resumen.realized_ars_cubre_usd,
+      realized_ars_valuado: resumen.realized_ars_valuado,
+    },
   })
   const realizadoMeses = months.filter(m => m.metrics?.realized_pnl != null)
   const sumaUsd = realizadoMeses.reduce((s, m) => s + m.metrics.realized_pnl, 0)
-  const realizadoVista = Math.abs(sumaUsd - (resumen.realized_pnl || 0)) < 0.5
-    ? realizadoMeses.reduce((s, m) => s + (pesos.enVista(m).realizado || 0), 0)
+  const porMes = Math.abs(sumaUsd - (resumen.realized_pnl || 0)) < 0.5
+  const vistaMeses = porMes ? realizadoMeses.map(m => pesos.enVista(m)) : []
+  const realizadoVista = porMes
+    ? vistaMeses.reduce((s, v) => s + (v.realizado || 0), 0)
     : anio.realizado
+  // Lo convertido se dice también acá: la suma de los meses (cada uno con su nota) o la del año.
+  const notaRealizado = porMes
+    ? notaDelRealizado({
+        restoUsd: vistaMeses.reduce((s, v) => s + (v.realizadoRestoUsd || 0), 0),
+        valuado: vistaMeses.some(v => v.realizadoValuado), dolar: 'de cada mes', oculto: pesos.oculto,
+      })
+    : anio.realizadoNota
   const conDato = months.filter(m => m.is_relevant && m.metrics?.delta_pct != null)
   const pcts = conDato.map(m => m.metrics.delta_pct)
   const verdes = pcts.filter(p => p > 0).length
@@ -337,9 +364,13 @@ export function MetricasDelAno({ resumen, months, pesos, ranking }) {
   if (resumen.withdrawals > 0) {
     datos.push({ label: 'Retiraste', valor: pesos.fmt(anio.retiros) })
   }
-  if (resumen.realized_pnl) {
+  if (resumen.realized_pnl || realizadoVista) {
+    // El color es el del número que se ve: en Pesos, con el dólar subiendo, el realizado puede
+    // tener otro signo que en dólares.
     datos.push({ label: 'P&L realizado', valor: pesos.fmt(realizadoVista, { signed: true }),
-                 tono: resumen.realized_pnl >= 0 ? 'pos' : 'neg' })
+                 tono: montoEsCero(realizadoVista ?? resumen.realized_pnl) ? undefined
+                   : ((realizadoVista ?? resumen.realized_pnl) >= 0 ? 'pos' : 'neg'),
+                 nota: pesos.moneda === 'ARS' ? notaRealizado : null })
   }
   if (resumen.trades_count > 0) {
     datos.push({ label: 'Operaciones', valor: `${resumen.trades_count} cerradas` })
@@ -396,7 +427,14 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
   const [refKpis, kpisVistos] = useAlVerse()
   if (!kpis) return null
   // Convertir y después sumar: cada mes con su dólar, no la suma al de hoy.
-  const realizadoVista = kpis.last12.reduce((s, m) => s + (pesos.enVista(m).realizado || 0), 0)
+  const vistas12 = kpis.last12.map(m => pesos.enVista(m))
+  const realizadoVista = vistas12.reduce((s, v) => s + (v.realizado || 0), 0)
+  const nota12 = enPesos
+    ? notaDelRealizado({
+        restoUsd: vistas12.reduce((s, v) => s + (v.realizadoRestoUsd || 0), 0),
+        valuado: vistas12.some(v => v.realizadoValuado), dolar: 'de cada mes', oculto: pesos.oculto,
+      })
+    : null
 
   return (
     <section className="mb-6 space-y-3">
@@ -408,6 +446,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
           value={<AnimatedNumber value={realizadoVista} visto={kpisVistos} format={n => pesos.fmt(n, { signed: true })} />}
           tone={realizadoVista >= 0 ? 'pos' : 'neg'}
           sub={`${kpis.totalCount} ${kpis.totalCount === 1 ? 'mes activo' : 'meses activos'}`}
+          nota={nota12}
         />
         <KpiCell
           label="Meses positivos"

@@ -28,7 +28,7 @@ function usePesos({ monthly = null, brokers = null, broker = 'global' } = {}) {
   return useMemo(() => {
     const p = crearPesosDelPeriodo({
       moneda: currency, tcHoy: tcValuacion, tcEnFecha: getRateForDate, dolarMes,
-      monthly, brokers, broker,
+      monthly, brokers, broker, oculto,
     })
     // Formatea un monto que YA está en `p.moneda` (no reconvierte). Con
     // «Ocultar saldos» sale tapado: todo lo que formatea Reportes es tu plata

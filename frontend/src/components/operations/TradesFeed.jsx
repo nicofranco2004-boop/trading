@@ -18,7 +18,8 @@
 import { TrendingUp, TrendingDown, Calendar, Trash2 } from 'lucide-react'
 import AssetLogo from '../AssetLogo'
 import { pctSigned, colorClass } from '../../utils/format'
-import { formatQty } from './shared'
+import { fmtConvertedCompactRaw } from '../../contexts/CurrencyContext'
+import { formatQty, pctEnMoneda } from './shared'
 import { esCobro } from '../../utils/tradeStats'
 import { celdasDelDiario, ChipTendencia } from './DiarioCeldas'
 
@@ -45,7 +46,7 @@ function DayGroup({ group, histMoney, onDelete, borrando, nuevas, diario }) {
   // el subtotal: si el día mezclaba una op USD (fx=1) con una ARS, el subtotal
   // quedaba mal. Mismo criterio que los headers de grupo de la tabla.
   const ops = group.rows
-  const subtotalDisp = histMoney.sumConvertedAt(ops, o => (o.pnl_usd || 0))
+  const subtotalDisp = histMoney.sumPnlAt(ops)
   return (
     <li className="border-t border-line/30">
       <div className="flex items-baseline justify-between px-4 py-2 bg-bg-1/50">
@@ -73,8 +74,13 @@ function DayGroup({ group, histMoney, onDelete, borrando, nuevas, diario }) {
 
 function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false, diario = null }) {
   const c = celdasDelDiario(op, diario)
-  const isWin = op.pnl_usd != null && op.pnl_usd > 0
-  const isLoss = op.pnl_usd != null && op.pnl_usd < 0
+  // Color, flecha y signo salen del MISMO número que se imprime (en Pesos puede tener
+  // otro signo que el resultado en dólares: ganó en pesos y perdió en dólares).
+  const pnlVisto = op.pnl_usd == null ? null : histMoney.pnlAt(op)
+  const isWin = pnlVisto != null && pnlVisto > 0
+  // El % en la moneda de la app (pesos o dólares), no en la de la venta.
+  const { pct } = pctEnMoneda(op, histMoney.currency)
+  const isLoss = pnlVisto != null && pnlVisto < 0
   const type = (op.op_type || '').toLowerCase()
   const isBuy = type.includes('compra') || type === 'buy'
 
@@ -123,19 +129,14 @@ function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false
 
       <div className="flex-shrink-0 text-right">
         {op.pnl_usd != null && (
-          <div className={`text-sm font-medium tabular leading-none flex items-center justify-end gap-1 ${colorClass(op.pnl_usd)}`}>
+          <div className={`text-sm font-medium tabular leading-none flex items-center justify-end gap-1 ${colorClass(pnlVisto)}`}>
             {isWin ? <TrendingUp size={11} strokeWidth={1.75} /> : isLoss ? <TrendingDown size={11} strokeWidth={1.75} /> : null}
-            {histMoney.fmtMoneyCompactAt(op.pnl_usd, {
-              stampedFx: op.fx_to_usd,
-              rowCurrency: op.currency,
-              dateIso: op.date,
-              signed: true,
-            })}
+            {histMoney.fmtPnlCompactAt(op, { signed: true })}
           </div>
         )}
-        {op.pnl_pct != null && (
-          <div className={`text-[10px] tabular leading-none mt-1.5 ${colorClass(op.pnl_pct)}`}>
-            {pctSigned(op.pnl_pct / 100)}
+        {pct != null && (
+          <div className={`text-[10px] tabular leading-none mt-1.5 ${colorClass(pct)}`}>
+            {pctSigned(pct / 100)}
           </div>
         )}
       </div>

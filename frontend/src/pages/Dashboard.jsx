@@ -61,6 +61,7 @@ import { ChipFueraDeHorario, SiAbrieraAsi, EstadoSesion, LineaBroker } from '../
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { resultadoTotal, aportadoEnPesosAl, restoEnPesos } from '../utils/capitalAportado'
+import { realizadoGlobalDeLosMeses, realizadoGlobalDelMes } from '../utils/realizadoEnPesos'
 import { applyMtmToMonthly, netCapitalContributed } from '../utils/insightsModel'
 import { hoyISO } from '../utils/fecha'
 import { useAlVerse } from '../hooks/useAlVerse'
@@ -320,19 +321,24 @@ function PersonalDashboard() {
   // ganancias viejas al tipo de cambio actual (las infla con la devaluación
   // posterior) y hacía que este KPI y el "P&L Realizado" de Movimientos —mismo
   // nombre, misma plata— mostraran números distintos. En USD da idéntico.
-  const realizedPnlDisp = useMemo(() => {
-    if (currency !== 'ARS') return realizedPnl
-    return monthly
-      .filter(m => m.broker === 'global')
-      .reduce((s, m) => {
-        const v = m.pnl_realized || 0
-        if (!v) return s
+  //
+  // Y NO es "dólares × dólar del mes": las ventas en pesos aportan sus pesos de verdad
+  // (cobrado − costo, la cuenta única de resultado_dual que también usan Movimientos y
+  // Reportes); sólo lo que no tiene pesos (dividendos en dólares, lo cargado a mano en
+  // /mensual) va al dólar del mes. Ver utils/realizadoEnPesos.js.
+  const { realizedPnlDisp, realizedNota } = useMemo(() => {
+    const r = realizadoGlobalDeLosMeses(monthly, {
+      moneda: currency,
+      oculto: hidden,
+      fxDelMes: (m) => {
         // Último día del mes del asiento (Date.UTC con day=0 del mes siguiente)
         // → FX de ese momento. getHistoricalFx ya cae al dólar de hoy si no hay serie.
         const lastDay = new Date(Date.UTC(m.year, m.month, 0)).toISOString().slice(0, 10)
-        return s + v * (getHistoricalFx(lastDay) || tcValuacion)
-      }, 0)
-  }, [monthly, currency, tcValuacion, getHistoricalFx, realizedPnl])
+        return getHistoricalFx(lastDay) || tcValuacion
+      },
+    })
+    return { realizedPnlDisp: r.monto, realizedNota: r.nota }
+  }, [monthly, currency, tcValuacion, getHistoricalFx, hidden])
 
   // Total return = market value vs net deposited (so deposits aren't counted as performance)
   //
@@ -837,12 +843,13 @@ function PersonalDashboard() {
   )
   // Realizado del MES en curso (flujo limpio: ventas cerradas + dividendos del mes).
   // Subdato del cuadro mensual — el único split realizado/no-realizado que aporta.
+  // En pesos es el MISMO que el KPI «P&L realizado» (las ventas en pesos con sus pesos de verdad
+  // y sólo el resto al dólar de hoy): con `pnl_realized × dólar`, la tarjeta del mes decía
+  // «realizado +$15.000» al lado de un KPI que decía +$240.000. Ya está en la moneda que se mira.
   const realizedThisMonth = useMemo(() => {
     const d = new Date()
-    const y = d.getFullYear(), m = d.getMonth() + 1
-    const e = monthly.find(x => x.broker === 'global' && x.year === y && x.month === m)
-    return e ? (e.pnl_realized || 0) : 0
-  }, [monthly])
+    return realizadoGlobalDelMes(monthly, { year: d.getFullYear(), month: d.getMonth() + 1, moneda: currency, fx: tcValuacion })
+  }, [monthly, currency, tcValuacion])
 
   // Rendimiento acumulado (desde el inicio). Mismo número que el hero "Ganancia
   // total" y el KPI "Resultado total"; acá lo mostramos también por horizonte.
@@ -1107,7 +1114,7 @@ function PersonalDashboard() {
             <>
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-medium text-ink-1">¿Por qué no es igual a realizado + no realizado?</p>
-              <p className="text-ink-3">En pesos, parte de la ganancia viene del dólar y de cómo se cuentan las ventas (ver "Efecto del dólar y otros").</p>
+              <p className="text-ink-3">En pesos, parte de la ganancia viene del dólar sobre lo que tenés o pusiste en dólares (ver "Efecto del dólar y otros").</p>
             </>
           )}
           {showGapUsd && (
@@ -1146,7 +1153,7 @@ function PersonalDashboard() {
           value={fmtSignedDirect(realizedPnlDisp)}
           clave="dashboard:realizado" num={realizedPnlDisp} format={fmtSignedDirect} moneda={currency} listo={metricasListas} oculto={hidden}
           tone={realizedPnlDisp >= 0 ? 'pos' : 'neg'}
-          sub="operaciones cerradas"
+          sub={realizedNota ? 'operaciones cerradas · en parte convertido' : 'operaciones cerradas'}
           info={
             <>
               <p className="font-medium text-ink-0">Qué es</p>
@@ -1155,6 +1162,13 @@ function PersonalDashboard() {
               <p className="font-medium text-ink-0">Cómo se calcula</p>
               <p className="text-ink-3 font-mono text-[11px]">= suma del P&L de cada venta cerrada (+ dividendos + intereses)</p>
               <p className="text-ink-3">Es plata que ya "tocaste". No cambia con los precios actuales: una vez cerrada la operación, queda fijo.</p>
+              {currency === 'ARS' && (
+                <>
+                  <div className="border-t border-line/60 my-1.5" />
+                  <p className="font-medium text-ink-0">En pesos</p>
+                  <p className="text-ink-3">Las ventas en pesos suman los pesos reales (lo cobrado menos lo que costó), como los muestra tu broker.{realizedNota ? ` ${realizedNota.charAt(0).toUpperCase() + realizedNota.slice(1)}.` : ''}</p>
+                </>
+              )}
             </>
           }
         />
@@ -1192,7 +1206,7 @@ function PersonalDashboard() {
                 <div className="border-t border-line/60 my-1.5" />
                 <p className="font-medium text-ink-0">Qué suele haber adentro</p>
                 <p className="text-ink-3">La suba (o baja) del dólar sobre la plata que tenés o pusiste en dólares: lo aportado cuenta el dólar del día en que entró y el no realizado, el de hoy.</p>
-                <p className="text-ink-3">Tus ventas: el P&L realizado cuenta cada venta en dólares de su fecha, y en pesos de hoy esa ganancia es otra.</p>
+                <p className="text-ink-3">Tus ventas en dólares (o de lo que compraste en dólares): el P&L realizado las cuenta al dólar de cada fecha, y en pesos de hoy esa ganancia es otra. Las ventas en pesos cuentan sus pesos exactos y no dejan resto.</p>
                 <p className="text-ink-3">Dividendos o intereses que no cargaste, o un costo mal cargado.</p>
               </>
             }
@@ -1255,6 +1269,9 @@ function PersonalDashboard() {
               <p className="text-ink-2 mt-1"><strong className="text-ink-1">Hoy</strong>: vs cierre 23:59 ART. <strong className="text-ink-1">Este mes</strong>: vs cierre del mes anterior. <strong className="text-ink-1">Promedio anual</strong>: el promedio de toda tu historia (CAGR), no lo que va del año.</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="text-ink-3">⚠ Medido en USD. Si tenés posiciones en ARS (CEDEARs, bonos), los movimientos del dólar blue afectan la variación aunque el precio en pesos no haya cambiado — porque tus pesos valen más o menos dólares.</p>
+              {currency === 'ARS' && (
+                <p className="text-ink-3 mt-1">En pesos, el «realizado» que aparece bajo «Este mes» es el de tus ventas en pesos (lo que cobraste menos lo que pagaste, como lo ve tu broker); si vendiste o compraste en dólares, esas operaciones van al dólar de cada fecha. El monto de la tarjeta, en cambio, está medido en dólares y pasado al dólar de hoy, así que pueden no coincidir.</p>
+              )}
             </InfoTooltip>
           </div>
           {/* Cards compactas con el % como protagonista (Hoy / Este mes / Anual),
@@ -1289,7 +1306,7 @@ function PersonalDashboard() {
                     key: 'm',
                     label: 'Este mes',
                     data: monthlyVar,
-                    note: Math.abs(realizedThisMonth) >= 1 ? `realizado ${fmtSigned(realizedThisMonth)}` : null,
+                    note: Math.abs(realizedThisMonth) >= 1 ? `realizado ${fmtSignedDirect(realizedThisMonth)}` : null,
                   }
                 : { key: 'm', label: 'Este mes', vacio: 'todavía no hay una foto de este mes' },
               // ⚠️ EL ORDEN ES EL DEL RELOJ: hoy → este mes → este año → toda la
@@ -1858,7 +1875,7 @@ function KpiCell({ label, value, sub, tone, info, infoAlign = 'right',
         ? <div className={`entra text-[11.5px] mt-1.5 leading-none truncate tabular font-medium ${cambio.delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
             {textoDeDiferencia(cambio.delta, format)} respecto de antes
           </div>
-        : <div className="text-[11.5px] text-ink-3 mt-1.5 leading-none truncate">{sub}</div>}
+        : <div className="text-[11.5px] text-ink-3 mt-1.5 leading-tight line-clamp-2" title={typeof sub === 'string' ? sub : undefined}>{sub}</div>}
     </div>
   )
 }

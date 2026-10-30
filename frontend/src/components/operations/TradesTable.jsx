@@ -16,7 +16,7 @@ import { usd, pctSigned, colorClass } from '../../utils/format'
 import EmptyState from '../EmptyState'
 import InlineAIButton from '../ai/InlineAIButton'
 import Panel from '../Panel'
-import { prettyOpType, movPnl } from './shared'
+import { prettyOpType, pctEnMoneda } from './shared'
 import { esCobro } from '../../utils/tradeStats'
 import InfoTooltip from '../InfoTooltip'
 import { celdasDelDiario, ChipTendencia, fechaCorta } from './DiarioCeldas'
@@ -172,10 +172,15 @@ export default function TradesTable({
 function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = false, deleting = false, diario = null }) {
   const c = celdasDelDiario(op, diario)
   const atenuada = indent ? 'opacity-75' : ''
-  const isWin = op.pnl_usd != null && op.pnl_usd > 0
-  const isLoss = op.pnl_usd != null && op.pnl_usd < 0
+  // Color, flecha y signo salen del MISMO número que se imprime (en Pesos puede tener
+  // otro signo que el resultado en dólares: ganó en pesos y perdió en dólares).
+  const pnlVisto = op.pnl_usd == null ? null : histMoney.pnlAt(op)
+  const isWin = pnlVisto != null && pnlVisto > 0
+  const isLoss = pnlVisto != null && pnlVisto < 0
   const ArrowIcon = isWin ? ArrowUpRight : isLoss ? ArrowDownRight : null
   const arrowColor = isWin ? 'text-rendi-pos' : isLoss ? 'text-rendi-neg' : 'text-ink-3'
+  // El % en la moneda de la app (pesos o dólares), no en la de la venta.
+  const { pct, motivo } = pctEnMoneda(op, histMoney.currency)
   return (
     <tr className={`border-b border-line/30 hover:bg-bg-2/40 transition-colors ${indent ? 'bg-bg-2/15' : ''} ${nueva ? 'destello-nueva' : ''}`}>
       <td className={`px-4 py-2 text-xs font-mono tabular text-ink-2 ${indent ? 'pl-6 opacity-75' : ''}`}>
@@ -188,19 +193,17 @@ function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = fal
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.entry_price != null ? usd(op.entry_price) : '—'}</td>
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{esCobro(op.op_type) ? '—' : (op.quantity ?? '—')}</td>
-      <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(op.pnl_usd)} ${indent ? 'opacity-75' : ''}`}>
+      <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(pnlVisto)} ${indent ? 'opacity-75' : ''}`}
+        title={histMoney.currency === 'ARS' && op.resultado_ars_tipo === 'valuado'
+          ? 'En pesos valuado al dólar de cada fecha: la venta o la compra fue en dólares, no hay un resultado en pesos del broker.'
+          : undefined}>
         {op.pnl_usd == null
           ? '—'
-          : histMoney.fmtMoneyAt(op.pnl_usd, {
-              stampedFx: op.fx_to_usd,
-              rowCurrency: op.currency,
-              dateIso: op.date,
-              signed: true,
-              decimals: 2,
-            })}
+          : histMoney.fmtPnlAt(op, { signed: true, decimals: 2 })}
       </td>
-      <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(op.pnl_pct)} ${indent ? 'opacity-75' : ''}`}>
-        {op.pnl_pct != null ? pctSigned(op.pnl_pct / 100) : '—'}
+      <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(pct)} ${indent ? 'opacity-75' : ''}`}
+        title={motivo || undefined}>
+        {pct != null ? pctSigned(pct / 100) : '—'}
       </td>
       <td className={`px-2 py-2 text-xs tabular text-right text-ink-2 whitespace-nowrap ${atenuada}`}
         title={c && op.entry_date ? `Compra ${fechaCorta(op.entry_date)} → venta ${fechaCorta(op.date)}` : undefined}>
@@ -263,7 +266,7 @@ function TradeGroupRow({ conNueva = false, group, groupBy, isOpen, onToggle, his
   // USD crudo podía contradecir lo mostrado: un grupo con +100 USD de 2021 (fx 190)
   // y −90 USD de 2026 (fx 1500) suma +10 USD (flecha verde) pero −$116.000 en
   // pesos. En modo USD `pnlDisp === pnl`, así que no cambia nada.
-  const pnl = histMoney.sumConvertedAt(group.rows, r => movPnl(r))
+  const pnl = histMoney.sumPnlAt(group.rows.filter(r => typeof r.pnl_usd === 'number'))
   const pnlDisp = pnl
   const Chevron = isOpen ? ChevronUp : ChevronDown
   const hasPnl = pnl !== 0

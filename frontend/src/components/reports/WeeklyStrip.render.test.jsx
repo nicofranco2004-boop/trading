@@ -1,5 +1,14 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
+
+// La vista (Pesos/Dólares) la decide el selector global: cada test arma la suya.
+const vista = { currency: 'USD' }
+vi.mock('../../contexts/CurrencyContext', async (original) => ({
+  ...(await original()),
+  useCurrency: () => ({ currency: vista.currency, tcValuacion: 1500 }),
+}))
+vi.mock('../../utils/api', () => ({ api: { get: vi.fn(() => new Promise(() => {})), post: vi.fn() } }))
+
 import WeeklyStrip from './WeeklyStrip.jsx'
 
 // La tira semanal ubica la línea del cero y sus marcas con `top`/`bottom` en %.
@@ -29,5 +38,49 @@ describe('WeeklyStrip — las posiciones de la tira son CSS válido', () => {
   })
   it('ninguna lleva coma decimal', () => {
     expect(medidas.filter(m => /\d,\d/.test(m))).toEqual([])
+  })
+})
+
+// GGAL comprada a $4.500 (dólar 1.000) y vendida a $6.900 (dólar 1.500): +$240.000 y +US$ 10.
+// La tarjeta de la semana (WeekCard) dice $240.000; la tira decía $15.000 (US$ 10 × 1.500).
+describe('WeeklyStrip — en Pesos, lo cerrado es lo mismo que dice la tarjeta de la semana', () => {
+  const ggal = [{ year: 2024, months: [{ children: [{
+    period_type: 'week', period_key: '2024-W24', period_label: 'Semana 24',
+    period_start: '2024-06-10', period_end: '2024-06-16', is_current: false, is_relevant: true,
+    metrics: { delta_usd: 10, delta_pct: 0.5, realized_pnl: 10, unrealized_pnl: 0, trades_count: 1,
+               basis_incomparable: false, realized_ars: 240000, realized_ars_cubre_usd: 10 },
+  }] }] }]
+  const render = (currency) => {
+    vista.currency = currency
+    return renderToStaticMarkup(<WeeklyStrip yearGroups={ggal} />)
+  }
+
+  it('en Pesos muestra los $240.000 de las ventas, no los $15.000 de dólares × dólar', () => {
+    const html = render('ARS')
+    expect(html).toContain('240.000')
+    expect(html).not.toContain('15.000')
+  })
+  it('en Dólares no cambia: US$ 10', () => {
+    const html = render('USD')
+    expect(html).toMatch(/US\$\s?10\b/)
+    expect(html).not.toContain('240.000')
+  })
+  // «Pesos quietos cuando cambia el dólar» es el caso de la vista en DÓLARES (los pesos valen menos
+  // dólares). En Pesos es al revés: lo que se mueve es lo que tenés en dólares.
+  // [auditoría 5] La nota del modo «Sólo abiertas» en Pesos no tenía prueba: ahí el número también trae lo que
+  // el dólar movió sobre lo que tenés en dólares, no «sólo el precio».
+  it('«Sólo abiertas»: en Pesos la nota dice que incluye al dólar; en Dólares, sólo el precio', () => {
+    vista.currency = 'ARS'
+    const enPesos = renderToStaticMarkup(<WeeklyStrip yearGroups={ggal} modo="abiertas" />)
+    expect(enPesos).toContain('el precio y, en pesos, también el dólar')
+    vista.currency = 'USD'
+    const enDolares = renderToStaticMarkup(<WeeklyStrip yearGroups={ggal} modo="abiertas" />)
+    expect(enDolares).toContain('Sólo lo que se movió el precio de lo que seguís teniendo.')
+    expect(enDolares).not.toContain('también el dólar')
+  })
+  it('la nota de las posiciones abiertas explica el caso de la moneda en que se mira', () => {
+    expect(render('ARS')).toContain('lo que el dólar mueve de lo que tenés en dólares')
+    expect(render('ARS')).not.toContain('pesos quietos cuando cambia el dólar')
+    expect(render('USD')).toContain('pesos quietos cuando cambia el dólar')
   })
 })
