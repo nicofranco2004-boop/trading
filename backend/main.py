@@ -2459,6 +2459,12 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_tendencia_semanal_semana ON tendencia_semanal(semana);
         """)
+        # Migración: la marca del mail del sábado (auditoría B3). Una base donde la
+        # tabla ya existía (creada con 31c00ff6) no la recibe del CREATE:
+        # test_columna_nueva_llega_a_la_base_vieja.
+        _ts_cols = [r[1] for r in conn.execute("PRAGMA table_info(tendencia_semanal)").fetchall()]
+        if _ts_cols and 'hasta_vela' not in _ts_cols:
+            conn.executescript("ALTER TABLE tendencia_semanal ADD COLUMN hasta_vela TEXT;")
 
         # Grupos de clientes del asesor: filtros GUARDADOS y dinámicos (se
         # recalculan solos). `rules` es JSON con las condiciones; `excluded` la

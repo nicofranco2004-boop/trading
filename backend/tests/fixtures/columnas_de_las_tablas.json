@@ -1,0 +1,770 @@
+{
+ "advisor_alert_events": [
+  "advisor_uid",
+  "client_uid",
+  "delivered_email",
+  "delivered_push",
+  "fired_at",
+  "id",
+  "kind",
+  "message",
+  "pct",
+  "seen"
+ ],
+ "advisor_alert_state": [
+  "advisor_uid",
+  "armed",
+  "client_uid",
+  "last_fired_date"
+ ],
+ "advisor_alerts": [
+  "active",
+  "advisor_uid",
+  "channel",
+  "down_pct",
+  "group_id",
+  "up_pct",
+  "updated_at"
+ ],
+ "advisor_brief_log": [
+  "advisor_uid",
+  "date",
+  "kind",
+  "sent_at"
+ ],
+ "advisor_claim_tokens": [
+  "advisor_uid",
+  "created_at",
+  "email",
+  "expires_at",
+  "id",
+  "token",
+  "used_at",
+  "user_id"
+ ],
+ "advisor_clients": [
+  "advisor_uid",
+  "client_uid",
+  "consent_ref",
+  "created_at",
+  "id",
+  "label",
+  "link_type",
+  "notes",
+  "permission",
+  "revoked_at",
+  "status"
+ ],
+ "advisor_groups": [
+  "advisor_uid",
+  "created_at",
+  "excluded",
+  "id",
+  "name",
+  "rules"
+ ],
+ "advisor_import_tandas": [
+  "advisor_uid",
+  "created_at",
+  "finished_at",
+  "id",
+  "rows_json"
+ ],
+ "advisor_link_requests": [
+  "advisor_uid",
+  "client_uid",
+  "created_at",
+  "email",
+  "expires_at",
+  "id",
+  "permission",
+  "resolved_at",
+  "shadow_uid",
+  "status",
+  "token"
+ ],
+ "advisor_op_batch_items": [
+  "autodep_native",
+  "autodep_usd",
+  "autodep_ym",
+  "batch_id",
+  "client_uid",
+  "cost_debited",
+  "id",
+  "position_id",
+  "status"
+ ],
+ "advisor_op_batches": [
+  "advisor_uid",
+  "asset",
+  "created_at",
+  "id",
+  "op_kind",
+  "undone_at"
+ ],
+ "advisor_profile": [
+  "advisor_uid",
+  "brief_close",
+  "brief_open",
+  "cnv_matricula",
+  "display_name",
+  "logo_data",
+  "updated_at"
+ ],
+ "advisor_reports": [
+  "advisor_uid",
+  "client_uid",
+  "created_at",
+  "id",
+  "payload",
+  "period_end",
+  "period_start",
+  "revoked_at",
+  "token",
+  "wa_text"
+ ],
+ "ai_analyses_cache": [
+  "cache_create_tokens",
+  "cache_key",
+  "cache_read_tokens",
+  "cost_usd_cents",
+  "created_at",
+  "expires_at",
+  "input_tokens",
+  "model",
+  "output_tokens",
+  "packet_hash",
+  "result_json",
+  "screen",
+  "user_id"
+ ],
+ "ai_tool_usage": [
+  "count",
+  "date",
+  "tool_name",
+  "user_id"
+ ],
+ "ai_usage_daily": [
+  "analyses_count",
+  "chat_count",
+  "cost_usd_cents",
+  "date",
+  "diag_dismiss_count",
+  "hub_queries_count",
+  "listen_count",
+  "user_id"
+ ],
+ "ai_user_facts": [
+  "content",
+  "created_at",
+  "id",
+  "is_active",
+  "source",
+  "updated_at",
+  "user_id"
+ ],
+ "alert_events": [
+  "alert_id",
+  "delivered_email",
+  "delivered_push",
+  "fired_at",
+  "id",
+  "message",
+  "price",
+  "seen",
+  "symbol",
+  "user_id"
+ ],
+ "alert_symbol_state": [
+  "alert_id",
+  "armed",
+  "last_fired_date",
+  "symbol",
+  "updated_at"
+ ],
+ "alerts": [
+  "accion_local",
+  "active",
+  "anchor_price",
+  "armed",
+  "baseline",
+  "channel",
+  "cooldown_min",
+  "created_at",
+  "currency",
+  "dibujo",
+  "direction",
+  "down_pct",
+  "id",
+  "kind",
+  "last_evaluated_at",
+  "last_fired_at",
+  "last_fired_price",
+  "note",
+  "repeat",
+  "scope",
+  "senal",
+  "symbol",
+  "threshold",
+  "up_pct",
+  "user_id"
+ ],
+ "archived_positions": [
+  "archived_at",
+  "count",
+  "id",
+  "label",
+  "payload",
+  "section",
+  "user_id"
+ ],
+ "asset_last_price": [
+  "price",
+  "symbol",
+  "updated_at"
+ ],
+ "asset_price_history": [
+  "date",
+  "fetched_at",
+  "price",
+  "source",
+  "symbol"
+ ],
+ "billing_events": [
+  "created_at",
+  "id",
+  "mp_data_id",
+  "mp_event_id",
+  "mp_event_type",
+  "processed",
+  "raw_payload",
+  "signature_valid",
+  "user_id"
+ ],
+ "bond_cashflow_skips": [
+  "asset",
+  "broker",
+  "created_at",
+  "date",
+  "id",
+  "reason",
+  "user_id"
+ ],
+ "bond_indices_daily": [
+  "date",
+  "index_name",
+  "source",
+  "updated_at",
+  "value"
+ ],
+ "broadcast_send_log": [
+  "content_hash",
+  "email",
+  "sent_at"
+ ],
+ "brokers": [
+  "currency",
+  "id",
+  "name",
+  "nombres_anteriores",
+  "parent_broker_id",
+  "user_id"
+ ],
+ "cambios_ratio": [
+  "actualizado",
+  "cedear",
+  "en_la_serie",
+  "estado",
+  "factor",
+  "factor_medido",
+  "fecha",
+  "motivo",
+  "origen",
+  "precio_antes",
+  "precio_despues",
+  "tipo"
+ ],
+ "credit_ledger": [
+  "active_until_after",
+  "active_until_before",
+  "amount_usd",
+  "created_at",
+  "days_delta",
+  "from_period",
+  "from_plan",
+  "id",
+  "kind",
+  "note",
+  "payment_id",
+  "source_subscription_id",
+  "to_period",
+  "to_plan",
+  "user_id"
+ ],
+ "deleted_ops_journal": [
+  "broker",
+  "created_at",
+  "id",
+  "kind",
+  "payload_json",
+  "since_date",
+  "token",
+  "undone_at",
+  "user_id"
+ ],
+ "dibujos_grafico": [
+  "asset",
+  "datos",
+  "moneda",
+  "updated_at",
+  "user_id"
+ ],
+ "dividendos_emisor": [
+  "consultado_at",
+  "pais",
+  "ticker",
+  "tipo"
+ ],
+ "dividendos_pagados": [
+  "ex_date",
+  "por_accion",
+  "ticker"
+ ],
+ "dividendos_reemplazados": [
+  "batch_id",
+  "created_at",
+  "id",
+  "op_json",
+  "user_id"
+ ],
+ "dividendos_salteados": [
+  "asset",
+  "broker",
+  "created_at",
+  "ex_date",
+  "id",
+  "user_id"
+ ],
+ "email_verification_codes": [
+  "code",
+  "created_at",
+  "expires_at",
+  "id",
+  "used_at",
+  "user_id"
+ ],
+ "fci_catalog": [
+  "activo",
+  "ad_name",
+  "categoria",
+  "clase",
+  "created_at",
+  "display_name",
+  "emisor",
+  "moneda",
+  "symbol"
+ ],
+ "fci_prices": [
+  "as_of_date",
+  "fetched_at",
+  "moneda",
+  "price",
+  "symbol"
+ ],
+ "financial_events": [
+  "confirmed",
+  "details",
+  "event_date",
+  "event_type",
+  "fetched_at",
+  "id",
+  "source",
+  "ticker"
+ ],
+ "flujos_a_mano": [
+  "anulado_at",
+  "anulado_motivo",
+  "broker",
+  "cargado_at",
+  "direction",
+  "fecha",
+  "id",
+  "month",
+  "monto_nativo",
+  "monto_usd",
+  "origen",
+  "pausas",
+  "ref",
+  "user_id",
+  "year"
+ ],
+ "futures_positions": [
+  "base_asset",
+  "broker",
+  "closed_at",
+  "created_at",
+  "entry_price",
+  "id",
+  "leverage",
+  "liquidation_price",
+  "margin_usd",
+  "notes",
+  "opened_at",
+  "quantity",
+  "side",
+  "symbol",
+  "user_id"
+ ],
+ "fx_rates_daily": [
+  "blue_venta",
+  "date",
+  "fetched_at",
+  "mep_venta",
+  "source"
+ ],
+ "goals": [
+  "created_at",
+  "expected_return_pct",
+  "id",
+  "label",
+  "target_date",
+  "target_usd",
+  "user_id"
+ ],
+ "import_batches": [
+  "broker",
+  "confirmed_at",
+  "created_at",
+  "file_hash",
+  "file_name",
+  "id",
+  "invalid_rows",
+  "parser_format",
+  "reverted_at",
+  "status",
+  "total_rows",
+  "user_id",
+  "valid_rows"
+ ],
+ "import_mappings": [
+  "created_at",
+  "id",
+  "mapping_json",
+  "name",
+  "user_id"
+ ],
+ "import_normalized_tx": [
+  "asset_name",
+  "asset_symbol",
+  "asset_type",
+  "batch_id",
+  "broker",
+  "created_operation_id",
+  "created_position_id",
+  "currency",
+  "date",
+  "excluded_at",
+  "excluded_by",
+  "fees",
+  "gross_amount",
+  "id",
+  "notes",
+  "operation_type",
+  "quantity",
+  "raw_row_id",
+  "settlement_currency",
+  "taxes",
+  "tc_compra",
+  "transfer_out",
+  "unit_price"
+ ],
+ "import_op_links": [
+  "batch_id",
+  "id",
+  "operation_id",
+  "position_id",
+  "raw_row_id"
+ ],
+ "import_raw_rows": [
+  "batch_id",
+  "errors_json",
+  "id",
+  "raw_json",
+  "row_index",
+  "status"
+ ],
+ "interruptores": [
+  "cambiado_at",
+  "cambiado_por",
+  "encendido",
+  "nombre"
+ ],
+ "iol_lab_runs": [
+  "error",
+  "finished_at",
+  "id",
+  "result_json",
+  "started_at",
+  "status",
+  "summary",
+  "user_id"
+ ],
+ "iol_lab_token_log": [
+  "at",
+  "detail",
+  "id",
+  "ok",
+  "user_id"
+ ],
+ "login_history": [
+  "created_at",
+  "id",
+  "ip",
+  "ua_brief",
+  "ua_hash",
+  "user_id"
+ ],
+ "market_brief_log": [
+  "date",
+  "narrative",
+  "sent_at",
+  "user_id"
+ ],
+ "market_brief_prefs": [
+  "created_at",
+  "enabled",
+  "updated_at",
+  "user_id"
+ ],
+ "medicion_original": [
+  "apto",
+  "base",
+  "date",
+  "escrito_holdings",
+  "escrito_total",
+  "eventos_base",
+  "eventos_escritos",
+  "holdings_json",
+  "mtm_coverage",
+  "snapshot_id",
+  "source",
+  "total_value",
+  "user_id"
+ ],
+ "mtm_huella": [
+  "escrita_at",
+  "huella",
+  "user_id"
+ ],
+ "news": [
+  "category",
+  "external_id",
+  "fetched_at",
+  "id",
+  "image_url",
+  "published_at",
+  "query_source",
+  "sentiment",
+  "source",
+  "summary",
+  "tags",
+  "tickers",
+  "title",
+  "url"
+ ],
+ "password_reset_tokens": [
+  "created_at",
+  "expires_at",
+  "id",
+  "token",
+  "used_at",
+  "user_id"
+ ],
+ "plan_events": [
+  "created_at",
+  "event_name",
+  "feature_id",
+  "id",
+  "props_json",
+  "source",
+  "tier",
+  "user_id"
+ ],
+ "plazos_fijos": [
+  "banco",
+  "capital",
+  "closed_at",
+  "created_at",
+  "fecha_inicio",
+  "fecha_vencimiento",
+  "id",
+  "modalidad",
+  "moneda",
+  "notes",
+  "pago_frecuencia_meses",
+  "plazo_dias",
+  "rate_type",
+  "renovacion_auto",
+  "tasa",
+  "user_id"
+ ],
+ "price_backfill_log": [
+  "desde",
+  "fetched_at",
+  "ok",
+  "symbol"
+ ],
+ "push_subscriptions": [
+  "auth",
+  "created_at",
+  "endpoint",
+  "id",
+  "last_used_at",
+  "p256dh",
+  "user_agent",
+  "user_id"
+ ],
+ "resumen_semanal_prefs": [
+  "canal",
+  "created_at",
+  "updated_at",
+  "user_id"
+ ],
+ "snapshots": [
+  "date",
+  "id",
+  "source",
+  "total_invested",
+  "total_value",
+  "user_id"
+ ],
+ "subscriptions": [
+  "amount_ars",
+  "cancellation_email_sent_at",
+  "cancelled_at",
+  "created_at",
+  "current_period_end",
+  "current_period_start",
+  "expiration_reminder_sent_at",
+  "external_reference",
+  "id",
+  "init_point",
+  "last_payment_id",
+  "mp_subscription_id",
+  "next_charge_date",
+  "period",
+  "status",
+  "updated_at",
+  "user_id",
+  "welcome_email_sent_at"
+ ],
+ "tendencia_semanal": [
+  "cambios",
+  "canal",
+  "created_at",
+  "mail_ok",
+  "pct_alcista",
+  "push_ok",
+  "semana",
+  "user_id"
+ ],
+ "tesis": [
+  "accion_local",
+  "alert_id",
+  "asset",
+  "created_at",
+  "escrita_el",
+  "id",
+  "recordar_el",
+  "recordar_tipo",
+  "tendencia_json",
+  "texto",
+  "updated_at",
+  "user_id"
+ ],
+ "trial_consumed": [
+  "consumed_at",
+  "email_key"
+ ],
+ "trial_email_log": [
+  "kind",
+  "sent_at",
+  "user_id"
+ ],
+ "twr_periods": [
+  "flow_usd",
+  "fx_basis",
+  "id",
+  "month",
+  "period_end",
+  "period_start",
+  "quality",
+  "ret",
+  "revision",
+  "sealed_at",
+  "snap_id_end",
+  "snap_id_start",
+  "user_id",
+  "v0_usd",
+  "v1_usd"
+ ],
+ "user_broker_credentials": [
+  "api_key_enc",
+  "broker",
+  "created_at",
+  "id",
+  "last_sync_at",
+  "last_sync_status",
+  "scope",
+  "user_id"
+ ],
+ "users": [
+  "approved",
+  "created_at",
+  "email",
+  "id",
+  "is_admin",
+  "last_login_at",
+  "name",
+  "password_changed_at",
+  "password_hash",
+  "tier"
+ ],
+ "uso_diario": [
+  "cantidad",
+  "dia",
+  "evento",
+  "user_id"
+ ],
+ "velas_diarias": [
+  "close",
+  "date",
+  "fetched_at",
+  "high",
+  "low",
+  "open",
+  "symbol",
+  "volume"
+ ],
+ "velas_estado": [
+  "error",
+  "filas",
+  "ok",
+  "symbol",
+  "ultima_completa",
+  "ultima_corrida"
+ ],
+ "watchlist": [
+  "added_at",
+  "asset_type",
+  "id",
+  "symbol",
+  "user_id"
+ ],
+ "yfinance_cache": [
+  "fetched_at",
+  "kind",
+  "payload_json",
+  "ticker"
+ ]
+}
