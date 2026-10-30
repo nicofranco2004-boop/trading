@@ -43,7 +43,7 @@ export async function opcionesDeLaVista(c) {
   return lista
 }
 
-/** El período que dice el botón («Todo», «Reciente», «Desde tu compra»), o null si se acercó a mano. */
+/** El período que dice el botón («Todo», «Reciente», «Lo tuyo»), o null si se acercó a mano. */
 export function periodoElegido(c) {
   const t = texto(botonDeLaVista(c)).replace(/^Moneda y período: /, '')
   return t.includes(' · ') ? t.split(' · ')[1] : null

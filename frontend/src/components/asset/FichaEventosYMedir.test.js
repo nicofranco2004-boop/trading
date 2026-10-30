@@ -361,6 +361,21 @@ describe('en el celular (un gráfico angosto, Nico 29/10)', () => {
     }
   })
 
+  it('dos dividendos tan pegados que ni acercando del todo se separan no se esconden: se juntan en una marca', async () => {
+    const antes = { ...EVENTOS }
+    EVENTOS.eventos = [690, 692].map(i => ({ tipo: 'dividendo', fecha: puntos[i].d, monto: 0.2, moneda: 'usd',
+      reaccion: { desde: puntos[i - 1].d, hasta: puntos[i].d, pct: 0, cuando: 'ese_dia' } }))
+    angosto()
+    try {
+      await dibujar()
+      // Lo más acercado (20 días y su aire) son ~13 px por día: 2 días nunca llegan a los 34 de una marca.
+      expect(marcas().map(n => texto(n))).toEqual(['D2'])
+      expect(texto(montado.contenedor)).not.toContain('Acercá el gráfico para ver los dividendos.')
+    } finally {
+      EVENTOS.eventos = antes.eventos
+    }
+  })
+
   it('los controles van en un renglón: la moneda y el período en un menú; botones de 44 px y la barra sólo con íconos', async () => {
     angosto()
     await dibujar({ lotes: [{ entry_date: puntos[620].d, quantity: 1 }] })
@@ -371,6 +386,12 @@ describe('en el celular (un gráfico angosto, Nico 29/10)', () => {
     expect(await opcionesDeLaVista(montado.contenedor)).toEqual(['DólaresUS$', 'Pesos$', 'Lo reciente3 meses', 'Todo', 'Desde que lo tenés'])
     await elegirEnLaVista(montado.contenedor, 'Pesos'); await redibujar()
     expect(texto(botonDeLaVista(montado.contenedor))).toBe('Moneda y período: $ · Reciente')
+    // Ningún período escribe en el botón más que «Reciente»: medido a 375 px con
+    // velas, más largo («Desde tu compra») el botón bajaba a otro renglón.
+    for (const r of ['Desde que lo tenés', 'Todo', 'Lo reciente']) {
+      await elegirEnLaVista(montado.contenedor, r); await redibujar()
+      expect(periodoElegido(montado.contenedor).length).toBeLessThanOrEqual('Reciente'.length)
+    }
     // Cada botón de arriba del gráfico, de 44 px en el celular.
     const arriba = ['pantalla', 'linea', 'velas', 'vista'].map(c => todos(montado.contenedor, n => n.getAttribute?.('data-capa') === c)[0])
     for (const b of arriba) expect(b.getAttribute('class')).toMatch(/(^| )min-h-11( |$)/)
@@ -389,6 +410,42 @@ describe('en el celular (un gráfico angosto, Nico 29/10)', () => {
     }
   })
 
+  it('con un dedo, lo que promete la ayuda: deslizar mueve el gráfico en el tiempo; mantener apretado y deslizar muestra cada día', async () => {
+    angosto()
+    await dibujar()
+    const t = (cx, cy = 100) => ({ touches: [{ clientX: cx, clientY: cy }], changedTouches: [{ clientX: cx, clientY: cy }] })
+    const globo = () => todos(montado.contenedor, n => n.getAttribute?.('data-globo') != null)[0]
+    const n = diasRecientes(300, puntos.length), lugares = n + margenDerecho(n)
+    // Deslizar hacia la derecha: para atrás en el tiempo (como arrastrar con el mouse).
+    await evento('touchstart', grafico(), t(200))
+    for (const x of [400, 600]) await evento('touchmove', grafico(), t(x))
+    expect(globo()).toBeUndefined()                  // mientras se mueve, sin el globo encima
+    await evento('touchend', grafico(), { touches: [], changedTouches: [{ clientX: 600, clientY: 100 }] })
+    await redibujar()
+    const corrido = Math.round(0.2 * lugares) * 2   // 400 px de 1000: dos pasos del 20 %
+    expect(await primerDia()).toContain(`, el ${fecha(puntos[700 - n - corrido].d)}.`)
+    expect(periodoElegido(montado.contenedor)).toBe(null)   // ya no es «Lo reciente»: se movió a mano
+    // Para arriba o abajo (aunque el pulgar se tuerza un poco) es la página la que se mueve: el gráfico queda.
+    await evento('touchstart', grafico(), t(500, 100))
+    for (const [x, y] of [[520, 200], [560, 300]]) await evento('touchmove', grafico(), t(x, y))
+    await evento('touchend', grafico(), { touches: [], changedTouches: [{ clientX: 560, clientY: 300 }] })
+    await redibujar()
+    expect(await primerDia()).toContain(`, el ${fecha(puntos[700 - n - corrido].d)}.`)
+    // Mantener apretado y después deslizar: pasea el globo de cada día, no mueve el gráfico.
+    const ahora = Date.now()
+    const reloj = vi.spyOn(Date, 'now').mockReturnValue(ahora)
+    try {
+      await evento('touchstart', grafico(), t(200))
+      reloj.mockReturnValue(ahora + 500)
+      await evento('touchmove', grafico(), t(600))
+      await redibujar()
+      expect(globo()).toBeDefined()
+      await evento('touchend', grafico(), { touches: [], changedTouches: [{ clientX: 600, clientY: 100 }] })
+      await redibujar()
+    } finally { reloj.mockRestore() }
+    expect(await primerDia()).toContain(`, el ${fecha(puntos[700 - n - corrido].d)}.`)
+  })
+
   it('la ayuda de abajo del gráfico: en el celular, para el dedo; en la compu, corta', async () => {
     angosto()
     localStorage.setItem('rendi_grafico_tipo', 'velas')
@@ -397,7 +454,7 @@ describe('en el celular (un gráfico angosto, Nico 29/10)', () => {
     const ayuda = todos(montado.contenedor, n => n.getAttribute?.('data-ayuda') != null)[0]
     const celular = ayuda.childNodes.find(n => n.getAttribute?.('class') === 'sm:hidden')
     const compu = ayuda.childNodes.find(n => n.getAttribute?.('class') === 'hidden sm:inline')
-    expect(texto(celular)).toBe('Pellizcá para acercar o alejar, deslizá para moverte y tocá un dibujo para elegirlo.')
+    expect(texto(celular)).toBe('Pellizcá para acercar o alejar, deslizá para moverte, mantené apretado para ver cada día y tocá un dibujo para elegirlo.')
     // Lo que se ve en el celular (todo menos lo de la compu) no habla de la ruedita ni del mouse.
     const enCelular = texto(ayuda).replace(texto(compu), '')
     expect(enCelular).toContain('Cada vela es un día')
@@ -418,7 +475,7 @@ describe('desde que lo tenés', () => {
     await montado.desmontar()
     await dibujar({ lotes: [{ entry_date: puntos[620].d, quantity: 2 }, { entry_date: puntos[640].d, quantity: 1 }] })
     await elegirEnLaVista(montado.contenedor, 'Desde que lo tenés'); await redibujar()
-    expect(periodoElegido(montado.contenedor)).toBe('Desde tu compra')
+    expect(periodoElegido(montado.contenedor)).toBe('Lo tuyo')
     // El primer día que se ve es el de tu primera compra: midiendo desde el borde izquierdo.
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Medir entre dos puntos')); await redibujar()
     await clickEn(0)

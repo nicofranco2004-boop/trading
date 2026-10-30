@@ -125,14 +125,23 @@ export function diasRecientes(ancho, total, porVela = 1) {
  * muestran (con la historia entera en el celular, cada marca era «4», mezcla
  * de todo). Quedan los balances, que son de a uno por trimestre; los
  * dividendos aparecen al acercar, cuando entran separados. `pctX(i)`: dónde
- * cae el día `i` (0 a 100); `ancho`: el del gráfico en px.
+ * cae el lugar `i` (0 a 100); `ancho`: el del gráfico en px; `pxMaximo`: los
+ * px por lugar con lo más acercado que se puede (RUEDAS_MINIMAS). Dos
+ * dividendos tan pegados que ni así se separan (uno especial y uno normal en
+ * la misma semana) no cuentan: si no, no se verían nunca y «acercá» sería
+ * mentira; esos se juntan en una marca, como antes.
  */
-export function dividendosAmontonados(eventos, pctX, ancho) {
-  const xs = eventos.filter(e => e.tipo === 'dividendo').map(e => pctX(e.i)).sort((a, b) => a - b)
-  return xs.some((x, k) => k > 0 && ((x - xs[k - 1]) / 100) * ancho < MARCA_PX)
+export function dividendosAmontonados(eventos, pctX, ancho, pxMaximo = Infinity) {
+  const ds = eventos.filter(e => e.tipo === 'dividendo').sort((a, b) => a.i - b.i)
+  return ds.some((e, k) => k > 0
+    && ((pctX(e.i) - pctX(ds[k - 1].i)) / 100) * ancho < MARCA_PX
+    && (e.i - ds[k - 1].i) * pxMaximo >= MARCA_PX)
 }
 const H_RSI = 64
 // Cuánto hay entre los dos primeros dedos (para pellizcar).
+// Cuánto hay que mantener el dedo quieto para que deslizar pasee el globo de
+// los datos en vez de mover el gráfico (como TradingView).
+const MANTENER_MS = 400
 const distanciaDedos = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
 const VOL_ALTO = 0.15  // la franja del volumen: el 15 % de abajo del gráfico de precio (más bajo y tenue: Nico, 29/10)
 const H_ADX = 56
@@ -783,10 +792,11 @@ export default function LecturaTecnica({
               <p data-ayuda="" className="text-[11.5px] text-ink-2 mt-0.5 leading-snug">
                 {semanales && 'Cada vela es una semana. '}
                 {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá o pasá a velas semanales. '}
-                <span className="sm:hidden">Pellizcá para acercar o alejar, deslizá para moverte y tocá un dibujo para elegirlo.</span>
+                <span className="sm:hidden">Pellizcá para acercar o alejar, deslizá para moverte, mantené apretado para ver cada día y tocá un dibujo para elegirlo.</span>
                 <span className="hidden sm:inline">Ruedita: acercar o alejar. Arrastrar: moverte. Doble click en los precios o las fechas: vuelve a automático.</span>
               </p>
             }
+            lugaresMinimos={(RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS)) / (semanales ? 5 : 1)}
             onAncho={setAnchoGrafico} onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rangoVisto}|${tipo}|${intervalo}`}
             eventos={ver.eventos ? losEventos : []}
             medicion={medir.activo ? {
@@ -1038,7 +1048,9 @@ function ElegirIntervalo({ valor, alElegir }) {
 // cuando se acercó o movió a mano (ya no es ninguno de los de la lista).
 const MONEDAS = [['usd', 'Dólares', 'US$'], ['ars', 'Pesos', '$']]
 const RANGOS = { reciente: 'Lo reciente', todo: 'Todo', tuyo: 'Desde que lo tenés' }
-const RANGOS_CORTOS = { reciente: 'Reciente', todo: 'Todo', tuyo: 'Desde tu compra' }
+// Lo corto, para el botón: en el celular, con velas, entra en el renglón hasta
+// «US$ · Reciente» (medido a 375 px; «Desde tu compra» lo mandaba abajo).
+const RANGOS_CORTOS = { reciente: 'Reciente', todo: 'Todo', tuyo: 'Lo tuyo' }
 // «Lo reciente» en palabras: «3 meses», «6 semanas» (días de mercado: 21 por mes, 5 por semana).
 function cuantoEsReciente(dias) {
   const meses = Math.round(dias / 21)
@@ -1433,7 +1445,7 @@ function BarraAdx({ adx }) {
   )
 }
 
-function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null, onAncho = null, pie = null }) {
+function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null, onAncho = null, pie = null, lugaresMinimos = RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS) }) {
   const conVelas = tipo === 'velas'
   // Los lugares del ancho: los días más el aire vacío de la derecha.
   const lugares = puntos.length + huecos
@@ -1830,7 +1842,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   // la pantalla quedarían a menos de MARCA_PX se juntan en UNA, aunque sean un
   // balance y un dividendo; su globo las lista. Si los dividendos se pisarían
   // entre ellos, se ven sólo los balances (dividendosAmontonados).
-  const sinDividendos = dividendosAmontonados(evVisibles, pctX, ancho)
+  const sinDividendos = dividendosAmontonados(evVisibles, pctX, ancho, ancho / Math.max(1, lugaresMinimos - 1))
   const grupos = []
   let actual = null
   for (const e of evVisibles.filter(e => !sinDividendos || e.tipo !== 'dividendo').sort((a, b) => a.i - b.i)) {
@@ -1967,8 +1979,8 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
               empezarPincel(t.clientX, t.clientY)
               return
             }
-            dedo.current = { x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, quieto: true,
-              agarre: elegido ? agarreEn(t.clientX, t.clientY, 16, elegido) : null }
+            dedo.current = { x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, quieto: true, t0: Date.now(),
+              xa: t.clientX, modo: null, agarre: elegido ? agarreEn(t.clientX, t.clientY, 16, elegido) : null }
             mover(t.clientX)
           }}
           onTouchMove={e => {
@@ -1995,7 +2007,25 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             if (d) {
               d.x = t.clientX
               d.y = t.clientY
-              if (Math.abs(t.clientX - d.x0) > 10 || Math.abs(t.clientY - d.y0) > 10) d.quieto = false
+              const dx = t.clientX - d.x0, dy = t.clientY - d.y0
+              if (Math.abs(dx) > 10 || Math.abs(dy) > 10) d.quieto = false
+              // Con un dedo, como TradingView (Nico, 29/10: «deslizá para
+              // moverte»): deslizar de costado lleva el gráfico para atrás o
+              // para adelante en el tiempo; mantener apretado (MANTENER_MS) y
+              // después deslizar pasea el globo con los datos de cada día; para
+              // arriba o abajo se mueve la página (touch-pan-y). Se decide con
+              // el primer movimiento y no cambia hasta levantar el dedo.
+              if (!d.modo && !d.quieto) {
+                d.modo = Date.now() - d.t0 >= MANTENER_MS ? 'mira' : Math.abs(dx) > Math.abs(dy) ? 'arrastre' : 'pagina'
+              }
+              if (d.modo === 'arrastre') {
+                setHover(null)
+                const r = ref.current.getBoundingClientRect()
+                const frac = (t.clientX - d.xa) / r.width
+                if (onMover && Math.abs(frac) * puntos.length >= 1) { onMover(frac); d.xa = t.clientX }
+                return
+              }
+              if (d.modo === 'pagina') { setHover(null); return }
             }
             mover(t.clientX)
           }}
