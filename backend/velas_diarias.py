@@ -761,7 +761,19 @@ def correr(conn) -> dict:
     from fechas import hoy_art
     t0 = time.monotonic()
     tickers, pares, de_cada_una = _seguimiento_por_persona(conn)
+    # Los splits de Yahoo para la lista de cambios de ratio, ANTES de las velas:
+    # después de ~2.000 pedidos de velas Yahoo ya no contesta (30/10: 863 de 868
+    # sin respuesta). Con tope (`cambios_ratio.MAX_SPLITS_ANTES`): lo que más
+    # importa son las velas. Un error acá no frena las velas.
+    import cambios_ratio
+    pares_cedear = {ba[:-3]: afuera for ba, afuera in pares.items()}
+    try:
+        splits_antes = cambios_ratio.adelantar_splits(conn, pares_cedear)
+    except Exception as ex:
+        log.error("velas: los splits de antes de las velas fallaron: %r", ex, exc_info=True)
+        splits_antes = {"error": repr(ex)}
     res = actualizar(conn, _por_turnos(conn, de_cada_una, hoy_art()), en_orden=True, semanal=True)
+    res["splits_antes"] = splits_antes
     # El universo del termómetro (termometro.py) lo baja su propio trabajo, no
     # esta corrida; igual no es «basura a pedido»: no se poda.
     import termometro
@@ -771,9 +783,7 @@ def correr(conn) -> dict:
     _anotar(conn, MARCA_CORRIDA_NOCHE, completa=False, ok=True, filas=res["filas"])
     conn.commit()
     try:
-        import cambios_ratio
-        res["cambios_ratio"] = cambios_ratio.correr(
-            conn, {ba[:-3]: afuera for ba, afuera in pares.items()})
+        res["cambios_ratio"] = cambios_ratio.correr(conn, pares_cedear)
     except Exception as ex:
         log.error("velas: la lista de cambios de ratio falló: %r", ex, exc_info=True)
         res["cambios_ratio"] = {"error": repr(ex)}

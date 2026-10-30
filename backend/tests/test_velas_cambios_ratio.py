@@ -254,6 +254,40 @@ class GraficoTest(unittest.TestCase):
             self.assertEqual(lista(), primera)
         self.assertTrue(any(r["fecha"] == dias[60] for r in primera), primera)
 
+    def test_los_splits_se_preguntan_antes_de_las_velas_con_tope(self):
+        # Después de ~2.000 pedidos de velas Yahoo ya no contesta: la noche del
+        # 30/10 dejó sin respuesta 863 de 868 listas de splits. Ahora la noche
+        # pregunta los que tocan ANTES de bajar las velas, hasta un tope (las
+        # velas importan más); lo que no entra, como antes, después.
+        dias = [d.isoformat() for d in _ruedas(hoy_art_date(), 120)]
+        for papel in ("NVDA", "KO"):
+            self.series[f"{papel}.BA"] = {d: 1000.0 for d in dias}
+            self.series[papel] = {d: 100.0 for d in dias}
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "NVDA", "CEDEAR")
+        self._posicion("IOL", "KO", "CEDEAR")
+        orden = []
+        velas = lambda t, *a, **k: (orden.append(("vela", t)),
+                                    _df(self.series[t]) if t in self.series else pd.DataFrame())[1]
+        with mock.patch("pricing.yahoo._historia", velas), \
+                mock.patch("cambios_ratio._splits_de_yahoo", lambda t: (orden.append(("split", t)), [])[1]):
+            main._run_velas_diarias_job()                   # la primera: sin velas guardadas, todo después
+            primera_vela = next(i for i, x in enumerate(orden) if x[0] == "vela")
+            self.assertFalse(any(x[0] == "split" for x in orden[:primera_vela]))
+
+            with main.db_abierta() as conn:                # una semana después: tocan de nuevo
+                conn.execute("UPDATE splits_yahoo SET consultado='2020-01-01 00:00:00'")
+                conn.commit()
+            orden.clear()
+            with mock.patch("cambios_ratio.MAX_SPLITS_ANTES", 4):
+                main._run_velas_diarias_job()
+        primera_vela = next(i for i, x in enumerate(orden) if x[0] == "vela")
+        antes = [t for k, t in orden[:primera_vela] if k == "split"]
+        despues = [t for k, t in orden[primera_vela:] if k == "split"]
+        self.assertEqual(len(antes), 4, "hasta el tope, antes de las velas")
+        self.assertEqual(sorted(antes + despues), ["KO", "KO.BA", "KOD.BA", "NVDA", "NVDA.BA", "NVDAD.BA"],
+                         "cada uno una sola vez: lo de antes no se repite después")
+
     def test_si_yahoo_corta_la_primera_vez_no_se_guardan_listas_vacias(self):
         # La primera noche no hay nada guardado. Si Yahoo corta justo esa noche
         # (al publicar, la de la bajada de 5 años), contesta «sin splits» a todos
