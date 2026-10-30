@@ -615,7 +615,13 @@ def resultado_de_la_fila(conn, uid: int, op: Dict[str, Any], *, riel: str) -> Op
     entry_date = op.get("entry_date")
     foto = _foto_del_lote(op)
     if not foto and not entry_date and not _es_importada(conn, op):
-        # Sin lote de dónde sacar el costo ni fecha de compra: la cargó el usuario a mano.
+        # Sin lote de dónde sacar el costo ni fecha de compra: casi seguro la cargó el usuario a
+        # mano. LÍMITE CONOCIDO: la fila no permite distinguirla de una venta del botón, hecha
+        # entre el 28/7 (cuando se empezó a sellar el dólar) y el 6/8 (cuando se guardó la foto
+        # del lote), de un lote que nunca tuvo fecha de compra (los anteriores al 7/5). Esa
+        # venta pasa a `MANUAL` y deja de contarse como pesos exactos: en Reportes se convierte
+        # su resto al dólar del cierre y se dice. Se prefirió eso a afirmar pesos que, en una
+        # venta cargada a mano, son el `pnl_usd` que dejó el formulario.
         return _sin_dato(MANUAL)
 
     costo_foto = _costo_de_la_foto(foto, moneda_venta) if foto else None

@@ -17,15 +17,18 @@
 //   • Depósitos y retiros de un mes o un año: los pesos que se pusieron o
 //     sacaron (`aportesDelMesEnPesos`, la regla del Dashboard). De una semana o
 //     un día —`monthly_entries` no baja a esa escala—, al dólar del cierre.
-//   • Lo que se ganó o perdió en el período (resultado, no realizado), al dólar
-//     del cierre: es plata de ese momento.
+//   • Lo que se ganó o perdió en el período (resultado): la resta de los pesos de la propia
+//     tarjeta —valor de cierre − valor de inicio − (depósitos − retiros)—, cada punta a su
+//     dólar, así que la tarjeta cierra. Sólo cuando el servidor midió el delta con otra medida
+//     (motor mensual, broker filtrado) queda el delta en dólares al dólar del cierre.
 //   • El REALIZADO en pesos es el de las ventas en pesos (cobrado − costo, los
 //     pesos de verdad: la cuenta única de backend/resultado_dual.py, la misma de
 //     Movimientos); sólo lo que no tiene pesos (dividendos en dólares, lo cargado
 //     a mano) va al dólar del cierre, y se avisa (`realizadoNota`).
-//   • El RESULTADO del período contiene a ese realizado: es el resultado en dólares al
-//     dólar del cierre, con el pedazo realizado cambiado por el realizado en pesos. Así
-//     resultado = realizado + no realizado + otros, también en pesos.
+//   • El RESULTADO del período contiene a ese realizado, y lo que sobra es el no realizado
+//     (resultado = realizado + no realizado + otros, también en pesos). NO se arma cambiando
+//     el pedazo realizado adentro del delta en dólares: ese delta trae el vaciado de lo latente
+//     que la posición traía de antes, y en pesos no es ganancia (ver el bloque de `enVista`).
 //
 // En dólares devuelve los mismos números del servidor, sin tocar.
 
@@ -114,23 +117,67 @@ export function crearPesosDelPeriodo({
     const fxDepositos = dep > 0 ? depositos / dep : fxCierre
 
     const x = (v, fx) => (num(v) == null ? null : num(v) * fx)
+    const inicio = x(m.start_value, fxInicio)
+    const cierre = x(m.end_value, fxCierre)
     // El realizado: los pesos EXACTOS que manda el servidor (la cuenta única de Operaciones) y,
     // sólo de lo que no tiene pesos, los dólares al dólar del cierre. Ver realizadoEnPesos.js.
     const real = num(m.realized_pnl) == null ? null : realizadoEnPesos({
       usd: m.realized_pnl, ars: m.realized_ars, cubreUsd: m.realized_ars_cubre_usd, fx: fxCierre,
     })
-    // El resultado TIENE que contener al realizado, o la tarjeta dice "resultado +$15.000" y debajo
-    // "realizado +$240.000" sin posiciones abiertas que lo expliquen. El servidor lo mide en
-    // dólares (`delta_usd`), que ya trae adentro el realizado en dólares (`realized_pnl`): se le
-    // saca ese pedazo × el dólar del cierre y se le pone el realizado en pesos. Lo demás (lo que
-    // no se vendió, el efecto del dólar sobre lo que sigue abierto) queda como estaba.
+
+    // EL RESULTADO TIENE QUE CONTENER AL REALIZADO, y la tarjeta tiene que cerrar:
+    // valor inicio + depósitos − retiros + resultado = valor cierre.
+    //
+    // POR QUÉ NO ALCANZA CON `delta_usd × dólar` NI CON CAMBIARLE EL PEDAZO REALIZADO.
+    // `delta_usd` mide la cartera a mercado en DÓLARES: trae el realizado en dólares MÁS el
+    // vaciado de la ganancia o pérdida latente que la posición traía de antes. GGAL comprada a
+    // $4.500 (dólar 1.000), que valía $4.500 al arrancar el mes (dólar 1.450 → US$ 3,10) y se
+    // vende a $6.900 (dólar 1.500): en dólares el costo es US$ 4,5 y la cartera pasó de 3,10 a
+    // 4,6, o sea +1,5 de los cuales sólo 0,1 es "realizado" y 1,4 es el latente que se vació. En
+    // pesos no hay latente que vaciar (costaba $4.500 y valía $4.500): se ganaron $2.400, todos
+    // realizados. Cambiar sólo el pedazo realizado (+$2.400 en vez de 0,1 × 1.500) y dejar el
+    // vaciado en dólares (1,4 × 1.500 = $2.095) sumaba $4.495: casi el doble.
+    //
+    // Por eso, cuando el servidor midió el período como "valor de cierre − valor de inicio −
+    // flujos" (el caso normal: su `delta_usd` es exactamente esa resta), el resultado en pesos
+    // es la MISMA resta con los números en pesos que la propia tarjeta muestra, cada punta a su
+    // dólar. Es lo que ya hace el porcentaje de Pesos del servidor (`_pct_en_pesos`) y el
+    // resultado del Dashboard (valor − capital aportado en pesos). Cierra por construcción, y
+    // lo realizado es una PARTE de él: lo que sobra (`noRealizado`) sale de restar.
+    const dolaresDelServidor = num(m.delta_usd)
+    const noRealizadoUsd = num(m.unrealized_pnl)
+    const iniUsd = num(m.start_value)
+    const finUsd = num(m.end_value)
+    const sumaDelServidor = iniUsd != null && finUsd != null && dolaresDelServidor != null
+      && (iniUsd !== 0 || finUsd !== 0)
+      && Math.abs(dolaresDelServidor - (finUsd - iniUsd - (dep - ret))) <= 0.05
     const delta = x(m.delta_usd, fxCierre)
-    const resultado = delta == null || !real || real.monto == null || num(m.realized_pnl) == null
-      ? delta
-      : delta + (real.monto - num(m.realized_pnl) * fxCierre)
+
+    let resultado, noRealizado
+    if (sumaDelServidor && inicio != null && cierre != null) {
+      resultado = cierre - inicio - (depositos - retiros)
+      // Lo que no es ni vendido ni abierto (dividendos y demás) va al dólar del cierre, como siempre.
+      const otrosUsd = (real && num(m.realized_pnl) != null && noRealizadoUsd != null)
+        ? dolaresDelServidor - num(m.realized_pnl) - noRealizadoUsd : 0
+      noRealizado = real && real.monto != null
+        ? resultado - real.monto - otrosUsd * fxCierre
+        : x(m.unrealized_pnl, fxCierre)
+    } else {
+      // El servidor pisó el delta con otra medida (el motor mensual, un broker filtrado en una
+      // semana, base incomparable): no hay resta que repetir en pesos. Si no hay posiciones
+      // abiertas que se hayan movido (`unrealized_pnl` 0, como las semanas con un broker
+      // filtrado, donde el delta ES lo realizado), el resultado es el realizado en pesos. Si las
+      // hay, queda el delta en dólares × dólar del cierre, sin meterle pesos exactos encima:
+      // mezclar las dos medidas era lo que inflaba el resultado.
+      const sinAbiertas = noRealizadoUsd != null && Math.abs(noRealizadoUsd) < 0.005
+      resultado = delta == null || !real || real.monto == null || num(m.realized_pnl) == null || !sinAbiertas
+        ? delta
+        : delta + (real.monto - num(m.realized_pnl) * fxCierre)
+      noRealizado = x(m.unrealized_pnl, fxCierre)
+    }
     return {
       moneda: 'ARS', fxInicio, fxCierre, fxDepositos,
-      inicio: x(m.start_value, fxInicio), cierre: x(m.end_value, fxCierre),
+      inicio, cierre,
       depositos, retiros,
       resultado,
       realizado: real ? real.monto : null,
@@ -141,7 +188,7 @@ export function crearPesosDelPeriodo({
       // armar UNA nota con `notaDelRealizado`, en vez de repetir la de cada mes.
       realizadoRestoUsd: real ? Math.abs(real.restoUsd) : 0,
       realizadoValuado: !!m.realized_ars_valuado,
-      noRealizado: x(m.unrealized_pnl, fxCierre),
+      noRealizado,
     }
   }
 

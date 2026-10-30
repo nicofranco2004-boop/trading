@@ -54,7 +54,7 @@ import { ChipFueraDeHorario, SiAbrieraAsi, EstadoSesion, LineaBroker } from '../
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { resultadoTotal, aportadoEnPesosAl, restoEnPesos } from '../utils/capitalAportado'
-import { realizadoDeLaFilaMensual, sumarRealizadoMeses, notaDelRealizado } from '../utils/realizadoEnPesos'
+import { realizadoGlobalDeLosMeses, realizadoGlobalDelMes } from '../utils/realizadoEnPesos'
 import { applyMtmToMonthly, netCapitalContributed } from '../utils/insightsModel'
 import { hoyISO } from '../utils/fecha'
 import { useAlVerse } from '../hooks/useAlVerse'
@@ -311,21 +311,17 @@ function PersonalDashboard() {
   // Reportes); sólo lo que no tiene pesos (dividendos en dólares, lo cargado a mano en
   // /mensual) va al dólar del mes. Ver utils/realizadoEnPesos.js.
   const { realizedPnlDisp, realizedNota } = useMemo(() => {
-    if (currency !== 'ARS') return { realizedPnlDisp: realizedPnl, realizedNota: null }
-    const { monto, restoUsd, valuado } = sumarRealizadoMeses(
-      monthly.filter(m => m.broker === 'global'),
-      (m) => {
+    const r = realizadoGlobalDeLosMeses(monthly, {
+      moneda: currency,
+      fxDelMes: (m) => {
         // Último día del mes del asiento (Date.UTC con day=0 del mes siguiente)
         // → FX de ese momento. getHistoricalFx ya cae al dólar de hoy si no hay serie.
         const lastDay = new Date(Date.UTC(m.year, m.month, 0)).toISOString().slice(0, 10)
         return getHistoricalFx(lastDay) || tcValuacion
       },
-    )
-    return {
-      realizedPnlDisp: monto,
-      realizedNota: notaDelRealizado({ restoUsd, valuado, dolar: 'de cada mes' }),
-    }
-  }, [monthly, currency, tcValuacion, getHistoricalFx, realizedPnl])
+    })
+    return { realizedPnlDisp: r.monto, realizedNota: r.nota }
+  }, [monthly, currency, tcValuacion, getHistoricalFx])
 
   // Total return = market value vs net deposited (so deposits aren't counted as performance)
   //
@@ -823,11 +819,7 @@ function PersonalDashboard() {
   // «realizado +$15.000» al lado de un KPI que decía +$240.000. Ya está en la moneda que se mira.
   const realizedThisMonth = useMemo(() => {
     const d = new Date()
-    const y = d.getFullYear(), m = d.getMonth() + 1
-    const e = monthly.find(x => x.broker === 'global' && x.year === y && x.month === m)
-    if (!e) return 0
-    if (currency !== 'ARS') return e.pnl_realized || 0
-    return realizadoDeLaFilaMensual(e, tcValuacion).monto || 0
+    return realizadoGlobalDelMes(monthly, { year: d.getFullYear(), month: d.getMonth() + 1, moneda: currency, fx: tcValuacion })
   }, [monthly, currency, tcValuacion])
 
   // Rendimiento acumulado (desde el inicio). Mismo número que el hero "Ganancia
@@ -1238,6 +1230,9 @@ function PersonalDashboard() {
               <p className="text-ink-2 mt-1"><strong className="text-ink-1">Hoy</strong>: vs cierre 23:59 ART. <strong className="text-ink-1">Este mes</strong>: vs cierre del mes anterior. <strong className="text-ink-1">Promedio anual</strong>: el promedio de toda tu historia (CAGR), no lo que va del año.</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="text-ink-3">⚠ Medido en USD. Si tenés posiciones en ARS (CEDEARs, bonos), los movimientos del dólar blue afectan la variación aunque el precio en pesos no haya cambiado — porque tus pesos valen más o menos dólares.</p>
+              {currency === 'ARS' && (
+                <p className="text-ink-3 mt-1">En pesos, el «realizado» que aparece bajo «Este mes» es el de tus ventas en pesos (lo que cobraste menos lo que pagaste, como lo ve tu broker). El monto de la tarjeta, en cambio, está medido en dólares y pasado al dólar de hoy, así que pueden no coincidir.</p>
+              )}
             </InfoTooltip>
           </div>
           {/* Cards compactas con el % como protagonista (Hoy / Este mes / Anual),

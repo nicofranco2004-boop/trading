@@ -74,6 +74,33 @@ export function sumarRealizadoMeses(filas, fxDelMes) {
 }
 
 /**
+ * El realizado del Dashboard: las filas `broker: 'global'` de /api/monthly (el total de todos los
+ * brokers; sumar también las de cada broker lo contaría dos veces), en la moneda que se mira.
+ * En dólares, el de siempre. En pesos, cada mes con SU dólar (`fxDelMes`) y la nota de lo
+ * convertido ya armada. Pura, para probarla sin montar la pantalla.
+ * @returns {{ monto:number, restoUsd:number, valuado:boolean, nota:string|null }}
+ */
+export function realizadoGlobalDeLosMeses(monthly, { moneda, fxDelMes } = {}) {
+  const globales = (monthly || []).filter(m => m.broker === 'global')
+  if (moneda !== 'ARS') {
+    return { monto: globales.reduce((s, m) => s + (m.pnl_realized || 0), 0), restoUsd: 0, valuado: false, nota: null }
+  }
+  const { monto, restoUsd, valuado } = sumarRealizadoMeses(globales, fxDelMes)
+  return { monto, restoUsd, valuado, nota: notaDelRealizado({ restoUsd, valuado, dolar: 'de cada mes' }) }
+}
+
+/**
+ * El realizado de UN mes del total (la nota «realizado» de la tarjeta «Este mes» del Dashboard),
+ * en la moneda que se mira, con el dólar `fx` de ese mes. 0 si el mes no tiene fila.
+ */
+export function realizadoGlobalDelMes(monthly, { year, month, moneda, fx } = {}) {
+  const e = (monthly || []).find(x => x.broker === 'global' && x.year === year && x.month === month)
+  if (!e) return 0
+  if (moneda !== 'ARS') return e.pnl_realized || 0
+  return realizadoDeLaFilaMensual(e, fx).monto || 0
+}
+
+/**
  * La aclaración para la pantalla, o null si todo es exacto.
  * @param {object} a
  * @param {number} a.restoUsd  lo que devolvió `realizadoEnPesos`. Si se junta de varios meses,

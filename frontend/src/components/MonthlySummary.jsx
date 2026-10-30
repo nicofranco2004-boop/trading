@@ -16,7 +16,7 @@ import { useDolarMensual } from '../hooks/useFxHistory'
 import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
-import { realizadoDeLaFilaMensual, notaDelRealizado } from '../utils/realizadoEnPesos'
+import { realizadoDeLaFilaMensual, sumarRealizadoMeses, notaDelRealizado } from '../utils/realizadoEnPesos'
 import { confirmar } from '../utils/confirmar'
 
 const RECENT_MONTHS_DEFAULT = 6
@@ -442,14 +442,14 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       // pesos, el realizado exacto y no un solo número × el dólar, para que las columnas sumen.
       ret: acc.ret + real.monto + noReal,
       retCompound: acc.retCompound * (1 + retPct),
-      // En valor absoluto: un mes de +US$ 500 convertidos y otro de −US$ 500 no se cancelan.
-      restoUsd: acc.restoUsd + Math.abs(real.restoUsd),
-      valuado: acc.valuado || !!m.realized_ars_valuado,
     }
-  }, { deposits: 0, withdrawals: 0, pnl_realized: 0, pnl_unrealized: 0, ret: 0, retCompound: 1, restoUsd: 0, valuado: false })
-  // Qué parte del realizado en pesos NO son pesos de verdad (se avisa bajo la tabla).
+  }, { deposits: 0, withdrawals: 0, pnl_realized: 0, pnl_unrealized: 0, ret: 0, retCompound: 1 })
+  // Qué parte del realizado en pesos NO son pesos de verdad (se avisa bajo la tabla). La suma de los
+  // restos en valor absoluto (+US$ 500 y −US$ 500 en meses distintos no se cancelan) y el «valuado»
+  // los junta `sumarRealizadoMeses`, la misma función que usa el Dashboard: no se repite acá.
   const notaRealizado = tabIsARS
-    ? notaDelRealizado({ restoUsd: totals.restoUsd, valuado: totals.valuado, dolar: 'de cada mes' })
+    ? (({ restoUsd, valuado }) => notaDelRealizado({ restoUsd, valuado, dolar: 'de cada mes' }))(
+        sumarRealizadoMeses(tabData, (m) => lookupHistoricalDolar(dolarMes, m.year, m.month, tcValuacion)))
     : null
   const totalRetPct = totals.retCompound - 1
 
@@ -739,7 +739,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
             )}
           </table>
         </div>
-        {tabIsARS && (
+        {tabIsARS && tabData.length > 0 && (
           <p className="px-4 py-2 text-[11.5px] text-ink-3 border-t border-line/40">
             El P&L realizado en pesos de las ventas en pesos es lo cobrado menos lo que costó, como lo muestra tu broker.
             {notaRealizado ? ` ${notaRealizado.charAt(0).toUpperCase()}${notaRealizado.slice(1)}.` : ''}

@@ -543,7 +543,8 @@ export function PeriodRow({ period, expanded, onToggle }) {
 // Usado en tabs Día y Mes. Reemplaza la lista clickeable por un solo card
 // expandido con un KPI strip arriba y el MonthCard completo abajo.
 
-function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
+// Exportada para el test del color del P&L del período (Reports.periodRow.render.test.jsx).
+export function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   // ARRIBA de los dos `return` de abajo: este componente se monta con
   // loading=true (Reports.jsx:285 le pasa `loadingItems`), así que un useState
   // después del return temprano renderiza 0 hooks primero y 1 después —
@@ -579,8 +580,11 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   const pct = noBasis ? null : m.delta_pct
   const usd = noBasis ? null : m.delta_usd
   // Con % None (día/semana per-broker, base incompleta) la polaridad sale del
-  // SIGNO del USD — antes (pct ?? 0) >= 0 pintaba VERDE una pérdida realized.
-  const isPos = pct != null ? pct >= 0 : (usd ?? 0) >= 0
+  // SIGNO del número que se ve — antes (pct ?? 0) >= 0 pintaba VERDE una pérdida realized.
+  // «Que se ve» es el de la vista: en Pesos el resultado puede tener otro signo que los dólares
+  // del servidor (una venta con pérdida en dólares y ganancia en pesos), y un +$1.500 en rojo
+  // contradice a «P&L realizado» en verde de la misma franja.
+  const isPos = pct != null ? pct >= 0 : ((usd == null ? null : v.resultado) ?? 0) >= 0
   // Sin base no hay signo que pintar: un "—" en verde sugiere un período bueno.
   const colorClass = noBasis ? 'text-ink-3' : (isPos ? 'text-rendi-pos' : 'text-rendi-neg')
 

@@ -49,8 +49,10 @@ const MES_INICIAL = ['E', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D']
 // que no toque el borde y se lea como cortada.
 const ALTO_MAX_PCT = 92
 
-function BarrasDelAnio({ cells, pesos, enPesos, tipAbajo }) {
-  const [encima, setEncima] = useState(null)
+// Exportada para el test del globo (PerformanceCalendar.render.test.jsx). `encimaInicial` deja
+// dibujarlo en un render estático: el hover real sólo existe en el navegador.
+export function BarrasDelAnio({ cells, pesos, enPesos, tipAbajo, encimaInicial = null }) {
+  const [encima, setEncima] = useState(encimaInicial)
   // Las barras crecen desde la línea del medio, mes por mes, cuando el año
   // entra en pantalla (`.crece-arriba` / `.crece-abajo`, index.css).
   const [refTira, tiraVista] = useAlVerse()
@@ -115,20 +117,13 @@ function BarrasDelAnio({ cells, pesos, enPesos, tipAbajo }) {
               {pesos.fmt(activo.usd, { signed: true })}
             </b>
           </div>
-          {/* ⚠️ EN PESOS EL % Y EL MONTO NO MIDEN LO MISMO. El porcentaje lo mide
-              el motor con el dólar de CADA PUNTA, así que incluye la devaluación de
-              ese mes; el monto es la ganancia del mes en pesos: lo que se vendió, con los
-              pesos de verdad de esas ventas (cobrado − costo, como Movimientos), y lo
-              demás —lo que sigue abierto, lo que no tiene pesos— en dólares pasados al
-              dólar del cierre de ese mes (hasta el 2026-10-15, con el de HOY: mayo 2025 =
-              +$629.063 eran US$409 al dólar de un año y medio después). Puestos uno al
-              lado del otro invitan a una cuenta que no da, así que el globo dice qué
-              es el monto. */}
+          {/* En Pesos el monto es la ganancia del mes como resta de los pesos de la tarjeta (valor de
+              cierre − valor de inicio − aportes, cada punta a su dólar: utils/periodoEnPesos.js), la
+              misma cuenta que mide el % del motor. Vale para todos los meses, hayan vendido o no;
+              lo realizado va aparte, en el renglón de abajo, con los pesos de verdad de las ventas. */}
           {enPesos && (
             <div className="text-[10px] text-ink-3 mt-1 leading-none">
-              {activo.actual
-                ? 'ventas en pesos exactas · lo demás al dólar de hoy'
-                : 'ventas en pesos exactas · lo demás al dólar de fin de mes'}
+              en pesos, cada punta a su dólar
             </div>
           )}
           {/* El renglón de abajo sólo cuando hubo ventas: en un mes sin operaciones
@@ -139,7 +134,7 @@ function BarrasDelAnio({ cells, pesos, enPesos, tipAbajo }) {
             </div>
           )}
           {enPesos && !!activo.realizado && activo.realizadoNota && (
-            <div className="text-[10px] text-ink-3 mt-1 leading-none">{activo.realizadoNota}</div>
+            <div className="text-[10px] text-ink-3 mt-1 leading-snug whitespace-normal max-w-[240px]">{activo.realizadoNota}</div>
           )}
         </div>
       )}
@@ -230,9 +225,14 @@ function KpiCell({ label, value, sub, tone, first, nota }) {
       <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${valueColor}`}>
         {value}
       </div>
-      <div className="text-[12.5px] text-ink-2 mt-1.5 leading-none truncate font-medium" title={nota || undefined}>
+      {/* Con aviso la línea puede ocupar dos renglones (en el celular caben dos celdas por fila y
+          «12 meses activos · en parte convertido» no entra en una) y el detalle se ve en el
+          texto, no sólo al pasar el mouse. */}
+      <div className={`text-[12.5px] text-ink-2 mt-1.5 font-medium ${nota ? 'leading-snug' : 'leading-none truncate'}`}
+           title={nota || undefined}>
         {sub}{nota ? ' · en parte convertido' : ''}
       </div>
+      {nota && <div className="text-[11px] text-ink-3 mt-0.5 leading-snug">{nota}</div>}
     </div>
   )
 }

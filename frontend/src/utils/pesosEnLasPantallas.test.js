@@ -211,7 +211,12 @@ describe('Reportes — cada período a los pesos de su momento', () => {
     const v = pesos.enVista(mes(2026, 3, { start_value: 100, end_value: 110, delta_usd: 10 }))
     expect(v.inicio).toBeCloseTo(100 * mep('2026-02-27'), 6)   // 28/02 fue sábado: el viernes
     expect(v.cierre).toBeCloseTo(110 * mep('2026-03-31'), 6)
-    expect(v.resultado).toBeCloseTo(10 * mep('2026-03-31'), 6)
+    // El resultado es la resta de ESOS dos pesos (sin flujos): cada punta a su dólar, así la tarjeta cierra.
+    // Hasta 2026-10-30 era `delta_usd × dólar del cierre` (10 × el dólar de fin de mes), que dejaba afuera
+    // lo que el dólar movió sobre lo que ya tenías al empezar —y que sí está en el % de Pesos de al lado— y
+    // no podía contener al realizado exacto de una venta (ver utils/periodoEnPesos.js).
+    expect(v.resultado).toBeCloseTo(110 * mep('2026-03-31') - 100 * mep('2026-02-27'), 6)
+    expect(v.inicio + v.depositos - v.retiros + v.resultado).toBeCloseTo(v.cierre, 6)
   })
 
   it('en dólares, los números del servidor tal cual', () => {

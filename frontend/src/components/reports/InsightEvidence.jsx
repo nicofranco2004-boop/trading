@@ -45,14 +45,15 @@ function ConcentrationRiskEvidence({ ev }) {
   )
 }
 
-// En Pesos estos mini-cuadros son los dólares del servidor pasados al dólar del cierre del período:
-// no tienen los pesos de cada venta. El «Realizado» de la grilla de la tarjeta, en cambio, suma las
-// ventas en pesos a su monto exacto (utils/realizadoEnPesos.js), así que los dos pueden diferir.
+// En Pesos estos mini-cuadros son los dólares del servidor multiplicados por el dólar del cierre del
+// período: no tienen los pesos de cada venta. El «Realizado» de la tarjeta (en sus métricas), en
+// cambio, suma las ventas en pesos a su monto exacto (utils/realizadoEnPesos.js), así que los dos
+// pueden diferir.
 function NotaEnPesos({ enPesos }) {
   if (!enPesos) return null
   return (
     <p className="text-[10px] text-ink-3 mt-1">
-      En dólares pasados al dólar del cierre; el «Realizado» de la tarjeta usa los pesos exactos de las ventas en pesos.
+      Estos montos son dólares multiplicados por el dólar del cierre. El «Realizado» de la tarjeta usa los pesos exactos de tus ventas en pesos, por eso pueden no coincidir.
     </p>
   )
 }
@@ -112,11 +113,18 @@ function WinRateEvidence({ ev }) {
   )
 }
 
-function DepositsDriveEvidence({ ev, fmtUsd, fmtFlujo = fmtUsd }) {
+// «Mercado» es el resultado del período: la MISMA cifra que la cabecera de la tarjeta. En Pesos esa
+// cabecera ya no son los dólares del servidor × dólar sino la resta de los pesos de la tarjeta
+// (utils/periodoEnPesos.js), así que acá se lee de ahí (`vistaEnPesos`, con el resultado y los
+// depósitos del período ya en pesos) y no se vuelve a convertir `market_growth`.
+function DepositsDriveEvidence({ ev, fmtUsd, fmtFlujo = fmtUsd, vistaEnPesos = null }) {
   const deps = ev.deposits || 0
-  const market = ev.market_growth || 0
-  const totalAbs = deps + Math.abs(market) || 1
-  const depsPct = (deps / totalAbs) * 100
+  const market = vistaEnPesos ? vistaEnPesos.resultado : (ev.market_growth || 0)
+  const fmtMercado = vistaEnPesos ? vistaEnPesos.fmt : fmtUsd
+  // La barra compara las dos piezas en la MISMA unidad: en Pesos, los pesos de la tarjeta.
+  const depsBarra = vistaEnPesos ? vistaEnPesos.depositos : deps
+  const totalAbs = depsBarra + Math.abs(market) || 1
+  const depsPct = (depsBarra / totalAbs) * 100
   const marketPct = (Math.abs(market) / totalAbs) * 100
   return (
     <div className="space-y-2">
@@ -136,7 +144,7 @@ function DepositsDriveEvidence({ ev, fmtUsd, fmtFlujo = fmtUsd }) {
         <div>
           <div className="text-ink-3 text-[12.5px] font-medium">Mercado</div>
           <div className={`font-mono tabular ${market >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-            {fmtUsd(market)}
+            {fmtMercado(market)}
           </div>
         </div>
       </div>
@@ -328,6 +336,12 @@ export default function InsightEvidence({ insight }) {
       </pre>
     )
   }
+  const enPesos = !!periodo && periodo.moneda === 'ARS'
+  // El resultado y los depósitos del período ya en pesos (no se vuelven a convertir): para la
+  // evidencia que repite la cifra de la cabecera de la tarjeta.
+  const vistaEnPesos = enPesos && periodo.resultado != null
+    ? { resultado: periodo.resultado, depositos: periodo.depositos, fmt: conFx(1) }
+    : null
   return <Renderer ev={insight.evidence} fmtUsd={fmtUsd} fmtFlujo={fmtFlujo} fmtHoy={fmtHoy}
-                   enPesos={!!periodo && periodo.moneda === 'ARS'} />
+                   enPesos={enPesos} vistaEnPesos={vistaEnPesos} />
 }

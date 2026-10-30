@@ -804,11 +804,22 @@ class RealizadoEnPesosEnTodasLasPantallas(_Base):
     CADA pantalla la lea por su puerta real (operaciones, movimientos, el mes, el reporte del
     período, «Última op cerrada», el CSV del contador) y dé el MISMO número."""
 
+    # Las dos columnas que el CSV mensual trae al final (backend/main.py, export_monthly_csv).
+    COL_PESOS = "P&L realizado en pesos (ventas en pesos; las ventas en dólares, al dólar de cada fecha)"
+    COL_VALUADO = "El P&L en pesos incluye ventas en dólares valuadas"
+
     def _plantar(self, sql, params=()):
         conn = main.get_db()
         conn.execute(sql, params)
         conn.commit()
         conn.close()
+
+    def _csv_mensual(self, h=None):
+        import csv
+        self._plantar("UPDATE users SET tier='plus' WHERE id=?", (self.uid,))
+        r = self.client.get("/api/export/monthly.csv", headers=h or self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        return list(csv.DictReader(io.StringIO(r.text.lstrip("\ufeff"))))
 
     def _ggal(self, h=None):
         self._alta(h, broker=PESOS, asset="GGAL", quantity=100, buy_price=4500,
@@ -1162,6 +1173,13 @@ class RealizadoEnPesosEnTodasLasPantallas(_Base):
                          (None, None))                                        # sólo el dólar
         self.assertEqual(resultado_dual.resultado_en_pesos({**venta, "currency": "ARS", "fx_to_usd": 1.0}),
                          (None, None))
+        # sin resultado guardado (venta cargada sin costo): sin dato, no un error (`float(None)`)
+        self.assertEqual(resultado_dual.resultado_en_pesos(
+            {"op_type": "Venta", "currency": "ARS", "fx_to_usd": 1500.0, "pnl_usd": None}), (None, None))
+        self.assertEqual(resultado_dual.resultado_en_pesos(
+            {"op_type": "Cupón", "currency": "ARS", "fx_to_usd": 1000.0, "pnl_usd": None}), (None, None))
+        self.assertEqual(resultado_dual.resultado_en_pesos(
+            {"op_type": "Venta", "currency": "ARS", "fx_to_usd": 1500.0, "pnl_usd": 0}), (0.0, "exacto"))
         cupon = {"op_type": "Cupón", "pnl_usd": 125000.0}
         self.assertEqual(resultado_dual.resultado_en_pesos({**cupon, "currency": "ARS", "fx_to_usd": 1000.0}),
                          (125000.0, "exacto"))
@@ -1212,8 +1230,9 @@ class RealizadoEnPesosEnTodasLasPantallas(_Base):
         filas = list(csv.DictReader(io.StringIO(r.text.lstrip("\ufeff"))))
         junio = [f for f in filas if f["Período"] == "2024-06" and f["Broker"] == "global"][0]
         self.assertAlmostEqual(float(junio["P&L realizado"]), 160, places=1)             # dólares, como siempre
-        self.assertAlmostEqual(float(junio["P&L realizado en pesos (operaciones en pesos)"]), 240000, delta=1)
-        self.assertEqual(list(filas[0].keys())[-1], "P&L realizado en pesos (operaciones en pesos)")
+        self.assertAlmostEqual(float(junio[self.COL_PESOS]), 240000, delta=1)
+        self.assertEqual(junio[self.COL_VALUADO], "no")                                  # ventas en pesos: exacto
+        self.assertEqual(list(filas[0].keys())[-2:], [self.COL_PESOS, self.COL_VALUADO])  # al final: no mueven columnas
 
 
     def test_el_resumen_del_ano_del_calendario_trae_los_pesos(self):
@@ -1230,6 +1249,48 @@ class RealizadoEnPesosEnTodasLasPantallas(_Base):
         self.assertAlmostEqual(anio["realized_ars_cubre_usd"], 10, places=2)
         self.assertAlmostEqual(anio["realized_pnl"], 10, places=2)
         self.assertFalse(anio["realized_ars_valuado"])
+
+    # ── el CSV mensual para el contador ──
+    def test_el_csv_mensual_con_dos_brokers_dice_cada_uno_lo_suyo(self):
+        """Cocos (ventas en pesos, +$240.000) y Bull (venta en dólares, US$ 500 → $1.250.000 valuados) el mismo
+        mes. Cada fila de broker trae SU número, el global la suma, y la marca de «valuado» dice cuál no es
+        de pesos cobrados (un contador que lee 1.250.000 como pesos de un broker en dólares se equivoca)."""
+        self._ggal()
+        self._alta(broker=DOLARES, asset="AAPL", quantity=10, buy_price=100, entry_date="2024-01-10")
+        self._vender(broker=DOLARES, asset="AAPL", quantity=10, exit_price=150, date="2024-06-10")
+        filas = self._csv_mensual()
+        junio = {f["Broker"]: f for f in filas if f["Período"] == "2024-06"}
+        self.assertEqual(float(junio[PESOS][self.COL_PESOS]), 240000)
+        self.assertEqual(junio[PESOS][self.COL_VALUADO], "no")
+        self.assertEqual(float(junio[DOLARES][self.COL_PESOS]), 1250000)
+        self.assertEqual(junio[DOLARES][self.COL_VALUADO], "sí")
+        self.assertEqual(float(junio["global"][self.COL_PESOS]), 240000 + 1250000)
+        self.assertEqual(junio["global"][self.COL_VALUADO], "sí")
+
+    def test_el_csv_mensual_deja_vacio_el_mes_sin_ventas(self):
+        """Un mes sin ninguna operación con pesos: celda VACÍA (no 0, que diría «no ganaste»)."""
+        self._ggal()
+        self._plantar("INSERT INTO monthly_entries (user_id, year, month, broker, capital_inicio, capital_final, "
+                      "deposits, withdrawals, pnl_realized) VALUES (?,?,?,?,?,?,?,?,?)",
+                      (self.uid, 2024, 7, PESOS, 1000, 1000, 0, 0, 0))
+        filas = self._csv_mensual()
+        julio = [f for f in filas if f["Período"] == "2024-07" and f["Broker"] == PESOS][0]
+        self.assertEqual(julio[self.COL_PESOS], "")
+        self.assertEqual(julio[self.COL_VALUADO], "")
+
+    # ── una venta sin resultado guardado no rompe las pantallas ──
+    def test_una_venta_sin_resultado_guardado_no_rompe_operaciones_ni_movimientos(self):
+        """`pnl_usd` NULL (la venta cargada sin costo): la cuenta en pesos devuelve «sin dato» y las pantallas
+        siguen respondiendo. Sin la guarda `pnl is not None`, `float(None)` tumba /api/operations."""
+        self._ggal()
+        self._plantar("UPDATE operations SET pnl_usd=NULL, cobrado_ars=NULL, costo_ars=NULL WHERE user_id=? "
+                      "AND op_type='Venta'", (self.uid,))
+        r = self.client.get("/api/operations", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        venta = [o for o in r.json() if o["op_type"] == "Venta"][0]
+        self.assertIsNone(venta["resultado_ars"])
+        self.assertEqual(self.client.get("/api/movements", headers=self.h).status_code, 200)
+        self.assertEqual(self.client.get("/api/monthly", headers=self.h).status_code, 200)
 
 
 if __name__ == "__main__":

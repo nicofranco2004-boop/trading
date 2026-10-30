@@ -20645,8 +20645,12 @@ def export_monthly_csv(request: Request, uid: int = Depends(get_effective_user))
         # El realizado en pesos de las operaciones que tienen pesos (la cuenta de Operaciones,
         # Reportes y el Resumen mensual). Vacío si el mes no tiene ninguna: lo que sólo está en
         # dólares (dividendos en dólares, lo cargado a mano en /mensual) no se convierte acá.
+        # Una venta en dólares (o una compra en dólares vendida en pesos) también entra, VALUADA al
+        # dólar de cada fecha, no a pesos de un broker: la tercera columna lo dice ("sí") para que
+        # la hoja no tome ese número por pesos cobrados. Es el mismo aviso que muestra la pantalla.
         p = pesos_mes.get((r["broker"], r["periodo"]))
         r["pnl_realized_ars"] = p[0] if p else None
+        r["pnl_realized_ars_valuado"] = ("sí" if p[2] else "no") if p else None
 
     headers = [
         ("periodo",          "Período"),
@@ -20658,7 +20662,8 @@ def export_monthly_csv(request: Request, uid: int = Depends(get_effective_user))
         ("pnl_realized",     "P&L realizado"),
         # Va AL FINAL y con la moneda en el nombre: las columnas de arriba son dólares y no se
         # tocan (hojas de cálculo ya armadas leen por posición).
-        ("pnl_realized_ars", "P&L realizado en pesos (operaciones en pesos)"),
+        ("pnl_realized_ars", "P&L realizado en pesos (ventas en pesos; las ventas en dólares, al dólar de cada fecha)"),
+        ("pnl_realized_ars_valuado", "El P&L en pesos incluye ventas en dólares valuadas"),
     ]
     today = date.today().isoformat()
     return _csv_response(rows, headers, f"rendi_mensual_{today}.csv")

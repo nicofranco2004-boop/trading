@@ -11,8 +11,9 @@ import InsightChip from './InsightChip'
 import { usePesosDelPeriodo, PeriodoEnVista } from '../../hooks/usePesosDelPeriodo'
 import { pctVar, pctColor } from '../../utils/format'
 
-export default function WeekCard({ week }) {
-  const [open, setOpen] = useState(false)
+// `defaultOpen`: para dibujarla abierta en un render estático (las pruebas); en la app arranca cerrada.
+export default function WeekCard({ week, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen)
   // Con % None (semana per-broker) la polaridad sale del SIGNO del USD — antes
   // `undefined >= 0` era false pero `null >= 0` es TRUE en JS → verde en pérdidas.
   // AUDIT D-1: sin base comparable la semana no tiene resultado publicable — ni
@@ -21,15 +22,16 @@ export default function WeekCard({ week }) {
   const noBasis = week.metrics.basis_incomparable === true
   const deltaPct = noBasis ? null : week.metrics.delta_pct
   const deltaUsd = noBasis ? null : week.metrics.delta_usd
-  // Con % el color es el del número que se ve (lo que redondea a cero, neutro).
-  const tono = deltaPct != null
-    ? pctColor(deltaPct, 2)
-    : ((deltaUsd ?? 0) >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
   // delta_usd y realized_pnl respetan el toggle global ARS/USD; en pesos, al
   // dólar del cierre de la semana (utils/periodoEnPesos.js), no al de hoy.
   const pesos = usePesosDelPeriodo()
   const enVista = pesos.enVista(week)
   const fmtPlata = (v) => pesos.fmt(v, { signed: true })
+  // Con % el color es el del número que se ve (lo que redondea a cero, neutro). Sin %, el signo
+  // del monto que se muestra (en Pesos puede ser otro que el de los dólares del servidor).
+  const tono = deltaPct != null
+    ? pctColor(deltaPct, 2)
+    : (((deltaUsd == null ? null : enVista.resultado) ?? 0) >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
 
   // Sin actividad: chip minimal, no expandible
   if (!week.is_relevant) {
