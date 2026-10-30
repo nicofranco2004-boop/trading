@@ -258,7 +258,7 @@ def agregado_a_la_watchlist(conn, uid: int) -> dict:
 
 
 def _tesis(conn, uid: int) -> dict:
-    """{ACTIVO: texto} de la última tesis de cada activo (pieza 11, «Tu
+    """{activo: {texto, local}} de la última tesis de cada activo (pieza 11, «Tu
     tesis», `tesis.ultimas`). Hasta el 29/10 devolvía {} con un «al juntar:
     SELECT…» en un comentario: se juntó la pieza 11 y nadie lo llenó (auditoría
     B4 = A8 = C2). Ahora lo vigila test_tus_senales."""
@@ -410,6 +410,7 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, dolar=None,
     car = cartera(conn, uid, dolar)
     wl = watchlist(conn, uid)
     tesis = _tesis(conn, uid)
+    import tesis as _t
     # Lo que seguís en la watchlist (y no tenés) cuenta desde el día en que lo
     # agregaste: si lo sacaste y lo volviste a poner, lo que cruzó mientras no
     # lo seguías no es «tu semana» (decisión de Nico, 29/10). Lo que TENÉS
@@ -449,7 +450,7 @@ def armar_semana(conn, uid: int, hoy: date, *, series: dict = None, dolar=None,
                 "asset": k[0], "local": k[1], "ficha": k[0] if tiene else wl[k],
                 "tenes": tiene, "watchlist": k in wl,
                 "peso": peso(car, *k) if tiene else None,
-                "tesis": tesis.get(k[0]),
+                "tesis": _t.de_la_senal(tesis, k[0] if tiene else wl[k], k[0], k[1]),
                 **c, **texto_del_cambio(c),
             })
     orden = {t: i for i, t in enumerate(tecnico.TIPOS_CAMBIO)}

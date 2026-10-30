@@ -851,6 +851,63 @@ class TusSenalesTest(unittest.TestCase):
         self.assertIn("Tu tesis: «" + "x" * 277 + "…».", self.mails[0]["texto"])
 
 
+    # — auditoría chica de la junta (30/10): la tesis de un papel con el mismo
+    # código que otro (AGRO: Adecoagro en Nueva York, Agrometal en BYMA) —
+
+    def _agro(self, *, adecoagro=True):
+        """Agrometal (AGRO.BA) en la watchlist, que cruza su promedio de 200 hace
+        2 ruedas; con `adecoagro`, además tenés Adecoagro (AGRO) en Schwab."""
+        hoy = hoy_art_date()
+        self.yahoo = YahooFalso(hoy)
+        p = mock.patch("pricing.yahoo._historia", self.yahoo)
+        p.start()
+        self._p.append(p)
+        dias = _ruedas(hoy, 760)
+        n = len(dias)
+        if adecoagro:
+            self._post("/api/brokers", {"name": "Schwab", "currency": "USD"})
+            self._post("/api/positions", {"broker": "Schwab", "asset": "AGRO", "quantity": 10,
+                                          "buy_price": 10, "asset_type": "STOCK"})
+        self._post("/api/watchlist", {"symbol": "AGRO.BA"})
+        self._seguida_desde("AGRO.BA", dias[0])
+        with main.db_abierta() as conn:
+            for d in dias:
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
+                             (d.isoformat(), MEP * 1.1, MEP))
+            conn.execute("INSERT INTO asset_last_price (symbol, price, updated_at) VALUES ('AGRO', 12, datetime('now'))")
+            conn.commit()
+        self.yahoo.precios["AGRO"] = lambda i, d: 10 + i * 0.001
+        self.yahoo.precios["AGRO.BA"] = lambda i, d: 3000.0 if i >= n - 2 else 1000 - i * 0.01
+        main._run_velas_diarias_job()
+
+    def _tesis_de_agrometal(self):
+        sen = self.client.get("/api/tus-senales", headers=self.h).json()["senales"]
+        agrometal = [x for x in sen if x["asset"] == "AGRO" and x["local"]]
+        self.assertTrue(agrometal, "Agrometal tiene que cambiar esta semana")
+        return {x["tesis"] for x in agrometal}
+
+    def test_agrometal_no_muestra_la_tesis_de_adecoagro(self):
+        """Señales buscaba la tesis por el código pelado («AGRO») y la ficha por
+        el nombre tal cual: debajo de Agrometal salía «Tu tesis: Adecoagro…» y la
+        que escribiste en la ficha de AGRO.BA no salía nunca. Una regla: la de la
+        ficha a la que lleva el botón (`tesis.de_la_senal`)."""
+        self._agro()
+        self.client.put("/api/tesis", json={"asset": "AGRO", "texto": "Adecoagro (NY)"}, headers=self.h)
+        self.assertEqual(self._tesis_de_agrometal(), {None})
+        r = self.client.put("/api/tesis", json={"asset": "AGRO.BA", "texto": "Agrometal, de su ficha", "local": True},
+                            headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._tesis_de_agrometal(), {"Agrometal, de su ficha"})
+
+    def test_la_tesis_del_mismo_papel_con_el_nombre_corto_sigue_saliendo(self):
+        """La que escribiste cuando lo tenías (la ficha de tu lote la guarda sin
+        «.BA», marcada como acción argentina) es la del mismo papel: sigue."""
+        self._agro(adecoagro=False)
+        self.client.put("/api/tesis", json={"asset": "AGRO", "texto": "Agrometal, cuando lo tenía", "local": True},
+                        headers=self.h)
+        self.assertEqual(self._tesis_de_agrometal(), {"Agrometal, cuando lo tenía"})
+
+
 class _YahooConCripto(YahooFalso):
     """El Yahoo de mentira de siempre, más BTC-USD con velas los 7 días (la
     cripto cotiza sábados y domingos). `hasta_btc`: el primer día que Yahoo

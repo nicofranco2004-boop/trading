@@ -93,7 +93,7 @@ def _ultima(conn, uid: int, asset: str):
 
 
 def ultimas(conn, uid: int) -> dict:
-    """{activo: texto} de la ÚLTIMA tesis de cada activo (la que vale hoy). LA
+    """{activo: {texto, local}} de la ÚLTIMA tesis de cada activo (la que vale hoy). LA
     MISMA regla que todos los que eligen «la última»: `_ultima` y `listar` acá,
     `tesisVigente` / `tesisDeLaOperacion` en la pantalla (ficha y Movimientos):
     el activo con el nombre TAL CUAL se guardó (el de la posición, ver PUT
@@ -105,10 +105,30 @@ def ultimas(conn, uid: int) -> dict:
     una tesis guardada como «nvda» salía en «Tus señales» y no en la ficha ni en
     Movimientos (re-test de la auditoría C)."""
     out = {}
-    for r in conn.execute("SELECT asset, texto FROM tesis WHERE user_id=? ORDER BY escrita_el, id",
+    for r in conn.execute("SELECT asset, texto, accion_local FROM tesis WHERE user_id=? ORDER BY escrita_el, id",
                           (uid,)).fetchall():
-        out[r["asset"]] = r["texto"]
+        out[r["asset"]] = {"texto": r["texto"], "local": bool(r["accion_local"])}
     return out
+
+
+def de_la_senal(ultimas_: dict, ficha: str, asset: str, local: bool):
+    """El texto de la tesis que va con un cambio de «Tus señales» y del mail del
+    sábado: LA de la ficha a la que lleva su botón (`ficha`, el nombre tal cual,
+    como `tesisVigente` en la pantalla). Si con ese nombre no hay, la del código
+    sin «.BA» (`asset`) pero sólo si es del MISMO papel (`local`, la marca de
+    acción argentina con que se escribió): es la que escribiste en la ficha de
+    tu lote cuando lo tenías. `ultimas_`: lo que devuelve `ultimas`.
+
+    Antes Señales buscaba sólo por el código pelado: debajo de Agrometal
+    (AGRO.BA, BYMA) salía la tesis de Adecoagro (AGRO, Nueva York), y la de
+    Agrometal escrita en su ficha no salía nunca (auditoría de la junta, 30/10;
+    la ficha ya buscaba por el nombre tal cual desde Arreglos D, 6b0c80aa)."""
+    t = ultimas_.get(ficha)
+    if t is None and asset != ficha:
+        t = ultimas_.get(asset)
+        if t is not None and t["local"] != bool(local):
+            t = None
+    return t["texto"] if t else None
 
 
 # Lo que entra de una tesis en un renglón de un mail (el recordatorio, el
