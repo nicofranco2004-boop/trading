@@ -424,6 +424,19 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 @pytest.fixture(autouse=True)
+def _freno_tecnico_de_cero():
+    """El freno de las lecturas técnicas (`main._freno_tecnico`) cuenta por
+    minuto en la memoria del proceso, y la suite es UN proceso: sin esto, un
+    archivo que abre 61 fichas seguidas daría 429 en la 61 por culpa de los
+    anteriores. Cada test arranca con el freno vacío; el que lo prueba, lo llena."""
+    import sys
+    m = sys.modules.get("main")
+    if m is not None and hasattr(m, "_freno_reiniciar"):
+        m._freno_reiniciar()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _fuentes_sin_marca_de_caida():
     """`main._FUENTE_CAIDA` recuerda un rato que data912 o ArgentinaDatos no
     contestaron, para no repetirles el pedido. Entre tests eso contamina: un

@@ -199,6 +199,64 @@ class FrenoTecnicoTest(unittest.TestCase):
         # Terminados, vuelve a entrar.
         self._lista(activos=["AAPL"])
 
+    def test_tus_senales_y_la_ficha_tambien_frenan(self):
+        """Re-test E1: «Tus señales» hace la misma lectura de muchos activos y la
+        ficha lee 3 años de velas por activo; sin freno, 45 a la vez dejaron el
+        «¿estás vivo?» en 44 s y 33 s."""
+        reloj = [1000.0]
+        with mock.patch("main._freno_reloj", lambda: reloj[0], create=True):
+            for _ in range(main.FRENO_TECNICO_POR_MINUTO):
+                self._lista(activos=["AAPL"])
+            self.assertEqual(self.client.get("/api/tus-senales", headers=self.ana).status_code, 429)
+            self.assertEqual(self.client.get("/api/tus-senales", headers=self.beto).status_code, 200)
+            por_minuto = main.FRENO_TECNICO["uno"][0]
+            for i in range(por_minuto):
+                r = self.client.get(f"/api/tecnico/{ACTIVOS[i % len(ACTIVOS)]}?moneda=usd", headers=self.ana)
+                self.assertEqual(r.status_code, 200, f"ficha {i}: {r.text}")
+            self.assertEqual(self.client.get("/api/tecnico/AAPL?moneda=usd", headers=self.ana).status_code, 429)
+            self.assertEqual(self.client.get("/api/tecnico/AAPL/eventos?moneda=usd",
+                                             headers=self.ana).status_code, 429)
+            self.assertEqual(self.client.get("/api/tecnico/AAPL?moneda=usd", headers=self.beto).status_code, 200)
+            reloj[0] += 61
+            self.assertEqual(self.client.get("/api/tecnico/AAPL?moneda=usd", headers=self.ana).status_code, 200)
+
+    def test_entre_todos_hay_tope_aunque_sean_muchas_cuentas(self):
+        """Re-test E1: el freno por persona se esquivaba con más cuentas (14
+        cuentas × 3 a la vez → «¿estás vivo?» 48,8 s). Entre todos corren hasta
+        `PESADOS_A_LA_VEZ`; la que sigue contesta 503 en el momento, con
+        Retry-After (la pantalla reintenta sola), y no ocupa un lugar."""
+        with main.db_abierta() as conn:
+            carla = conn.execute(
+                "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
+                "VALUES (?, 'x', 1, 1, 'free')", (f"freno-carla-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+            conn.commit()
+        carla = {"Authorization": f"Bearer {main.create_token(carla)}"}
+        adentro, soltar = threading.Semaphore(0), threading.Event()
+        original = tecnico.para_la_lista
+
+        def lento(conn, activos):
+            adentro.release()
+            soltar.wait(10)
+            return original(conn, activos)
+
+        codigos = []
+        with mock.patch("tecnico.para_la_lista", lento), mock.patch("main.PESADOS_A_LA_VEZ", 2):
+            hilos = [threading.Thread(target=lambda h=h: codigos.append(self.client.post(
+                "/api/tecnico/lista", json={"activos": [{"asset": "AAPL"}]}, headers=h).status_code))
+                for h in (self.ana, self.beto)]
+            for t in hilos:
+                t.start()
+            for _ in hilos:
+                self.assertTrue(adentro.acquire(timeout=10))
+            r = self.client.get("/api/tecnico/AAPL?moneda=usd", headers=carla)
+            self.assertEqual(r.status_code, 503, r.text)
+            self.assertIn("Retry-After", r.headers)
+            soltar.set()
+            for t in hilos:
+                t.join(10)
+            self.assertEqual(sorted(codigos), [200, 200])
+            self.assertEqual(self.client.get("/api/tecnico/AAPL?moneda=usd", headers=carla).status_code, 200)
+
     # ─── El tope de 200, real ───────────────────────────────────────────────
 
     def test_tu_lista_no_pasa_de_200_lecturas_con_lo_que_tenes(self):

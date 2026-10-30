@@ -11704,7 +11704,7 @@ def _variacion_del_dia(symbols, uid=None, *, tope=None) -> dict:
 # ─── Lectura técnica de la ficha del activo ─────────────────────────────────
 
 @app.get("/api/tecnico/{asset}")
-def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None,
+def get_tecnico(request: Request, asset: str, moneda: str = "usd", local: int = 0, ref: str = None,
                 uid: int = Depends(get_effective_user)):
     """La serie del gráfico técnico (precio, medias de 50 y 200, RSI) y los
     números de la lectura, en dólares (default) o en pesos. Sale de las velas
@@ -11725,7 +11725,9 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0, ref: str = None
         raise HTTPException(400, f"Símbolo inválido: {ref}")
     import tecnico
     import velas_diarias
-    with db_abierta() as conn:
+    # El freno de la ficha (`_freno_tecnico`, tipo «uno»): 45 fichas distintas a
+    # la vez dejaron el «¿estás vivo?» en 33 s (re-test E1, 29/10).
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         tickers, motivo = [], None
         try:
             tickers = velas_diarias.tickers_a_pedido(sym, bool(local))
@@ -11768,25 +11770,38 @@ class CarteraTecnicaIn(BaseModel):
     activos: List[ActivoTecnicoIn] = Field(default_factory=list, max_length=MAX_ACTIVOS_CARTERA)
 
 
-# ─── Freno por persona para las lecturas técnicas de muchos activos ──────────
-# «Tu lista», la radiografía y el diario de operaciones leen hasta 200 activos
-# por pedido. Lo ya leído se guarda (tecnico._leer_varios), pero el PRIMER
-# pedido de cada activo se calcula, y el servidor es un solo proceso con 40
-# lugares: 45 pedidos a la vez de una cuenta gratis lo dejaron 5 minutos sin
-# contestarle a nadie (auditoría E1, 29/10). El tope de 200 era de TAMAÑO (por
-# pedido); esto es el de FRECUENCIA (por persona): hasta
-# `FRENO_TECNICO_POR_MINUTO` pedidos por minuto entre los tres y hasta
-# `FRENO_TECNICO_A_LA_VEZ` corriendo al mismo tiempo. Lo que pasa de ahí
-# contesta 429 en el momento: esperar en una fila ocuparía otro de los 40
-# lugares, que es justo lo que traba al servidor. Una pantalla normal pide uno
-# por vez (Tu lista, la Cartera y Movimientos piden uno cada una al abrir).
-# Es de la persona que pide (el asesor mirando un cliente gasta el suyo), en
-# la memoria del proceso como `_rate_store`, y con candado: contar y anotar
+# ─── Freno para las lecturas técnicas ────────────────────────────────────────
+# «Tu lista», la radiografía, el diario de operaciones y «Tus señales» leen
+# hasta 200 activos por pedido; la ficha lee uno, con 3 años de velas. Lo ya
+# leído se guarda (tecnico._leer_varios), pero el PRIMER pedido de cada activo
+# se calcula, y el servidor es un solo proceso con 40 lugares: 45 pedidos a la
+# vez de una cuenta gratis lo dejaron 5 minutos sin contestarle a nadie
+# (auditoría E1, 29/10).
+#
+# Dos frenos, los dos en el momento (esperar en una fila ocuparía otro de los
+# 40 lugares, que es justo lo que traba al servidor):
+#   · POR PERSONA (la que pide: el asesor mirando un cliente gasta el suyo),
+#     por tipo de lectura: `FRENO_TECNICO` = {tipo: (por minuto, a la vez)}.
+#     Pasado eso, 429. Una pantalla normal pide una lectura de muchos activos
+#     por vez, y la ficha una lectura por activo y moneda.
+#   · ENTRE TODOS: hasta `PESADOS_A_LA_VEZ` lecturas corriendo en todo el
+#     servidor, sean de quien sean. Pasado eso, 503 con `Retry-After`: la
+#     pantalla lo reintenta sola (utils/gatewayRetry.js). Sin éste, el freno
+#     por persona se esquivaba con más cuentas: 14 cuentas gratis × 3 a la vez
+#     dejaron el «¿estás vivo?» en 48,8 s (re-test E1, 29/10). Así quedan
+#     siempre 40 − 8 lugares para el resto de la app.
+# En la memoria del proceso como `_rate_store`, y con candado: contar y anotar
 # son un solo paso (sin él, 45 pedidos juntos contaban todos «0»).
 FRENO_TECNICO_POR_MINUTO = 30
 FRENO_TECNICO_A_LA_VEZ = 3
-_freno_hechos: dict = {}       # quién → deque de instantes (los del último minuto)
-_freno_corriendo: dict = {}    # quién → cuántos están corriendo
+FRENO_TECNICO = {
+    "muchos": (FRENO_TECNICO_POR_MINUTO, FRENO_TECNICO_A_LA_VEZ),   # lista, radiografía, diario, señales
+    "uno": (60, 3),                                                 # la ficha y sus fechas importantes
+}
+PESADOS_A_LA_VEZ = 8
+_freno_hechos: dict = {}       # (quién, tipo) → deque de instantes (los del último minuto)
+_freno_corriendo: dict = {}    # (quién, tipo) → cuántos están corriendo
+_freno_total = [0]             # cuántas lecturas corren en todo el servidor
 _freno_candado = threading.Lock()
 _freno_reloj = time.monotonic
 
@@ -11795,26 +11810,35 @@ def _freno_reiniciar() -> None:
     with _freno_candado:
         _freno_hechos.clear()
         _freno_corriendo.clear()
+        _freno_total[0] = 0
 
 
 @contextmanager
-def _freno_tecnico(request: Request, uid: int):
+def _freno_tecnico(request: Request, uid: int, tipo: str = "muchos"):
     from collections import deque
-    quien = getattr(request.state, "rendi_auth_uid", None) or uid
+    quien = (getattr(request.state, "rendi_auth_uid", None) or uid, tipo)
+    por_minuto, a_la_vez = FRENO_TECNICO[tipo]
+    if tipo == "muchos":   # las pruebas cambian estos dos
+        por_minuto, a_la_vez = FRENO_TECNICO_POR_MINUTO, FRENO_TECNICO_A_LA_VEZ
     ahora = _freno_reloj()
     with _freno_candado:
         hechos = _freno_hechos.setdefault(quien, deque())
         while hechos and ahora - hechos[0] >= 60:
             hechos.popleft()
-        if len(hechos) >= FRENO_TECNICO_POR_MINUTO:
+        if len(hechos) >= por_minuto:
             espera = max(1, int(60 - (ahora - hechos[0])) + 1)
             raise HTTPException(429, "Pediste muchas lecturas seguidas. Esperá un minuto y probá de nuevo.",
                                 headers={"Retry-After": str(espera)})
-        if _freno_corriendo.get(quien, 0) >= FRENO_TECNICO_A_LA_VEZ:
+        if _freno_corriendo.get(quien, 0) >= a_la_vez:
             raise HTTPException(429, "Ya estamos preparando tus lecturas. Esperá unos segundos y probá de nuevo.",
                                 headers={"Retry-After": "5"})
+        if _freno_total[0] >= PESADOS_A_LA_VEZ:
+            raise HTTPException(503, "Hay mucha gente mirando gráficos en este momento. "
+                                     "Probá de nuevo en unos segundos.",
+                                headers={"Retry-After": "3"})
         hechos.append(ahora)
         _freno_corriendo[quien] = _freno_corriendo.get(quien, 0) + 1
+        _freno_total[0] += 1
         if len(_freno_hechos) > 10_000:
             for k in [k for k, v in _freno_hechos.items() if not v and k not in _freno_corriendo]:
                 del _freno_hechos[k]
@@ -11822,6 +11846,7 @@ def _freno_tecnico(request: Request, uid: int):
         yield
     finally:
         with _freno_candado:
+            _freno_total[0] = max(0, _freno_total[0] - 1)
             n = _freno_corriendo.get(quien, 1) - 1
             if n > 0:
                 _freno_corriendo[quien] = n
@@ -11899,7 +11924,7 @@ def post_tecnico_lista(body: CarteraTecnicaIn, request: Request, uid: int = Depe
 
 
 @app.get("/api/tus-senales")
-def get_tecnico_semana(uid: int = Depends(get_effective_user)):
+def get_tecnico_semana(request: Request, uid: int = Depends(get_effective_user)):
     """«Tus señales» (Mercado → Novedades). Ruta propia y no /api/tecnico/semana:
     ésa la atrapa la ficha (`/api/tecnico/{asset}`, «SEMANA» como ticker).
     Lo que cambió en los últimos 7 días
@@ -11909,7 +11934,10 @@ def get_tecnico_semana(uid: int = Depends(get_effective_user)):
     (senales_semana.armar_semana)."""
     import senales_semana
     from fechas import hoy_art_date
-    with db_abierta() as conn:
+    # La misma lectura de muchos activos que «Tu lista» (hasta 100 de tu
+    # watchlist más lo que tenés): el mismo freno. Sin él, 45 a la vez de una
+    # cuenta dejaron el «¿estás vivo?» en 44 s (re-test E1, 29/10).
+    with _freno_tecnico(request, uid), db_abierta() as conn:
         out = senales_semana.armar_semana(conn, uid, hoy_art_date())
         out["canal"] = senales_semana.canal(conn, uid)
     return out
@@ -11999,7 +12027,7 @@ _TOPE_EVENTOS_FICHA = 5.0
 
 
 @app.get("/api/tecnico/{asset}/eventos")
-def get_tecnico_eventos(asset: str, moneda: str = "usd", local: int = 0,
+def get_tecnico_eventos(request: Request, asset: str, moneda: str = "usd", local: int = 0,
                         uid: int = Depends(get_effective_user)):
     """Los balances («B») y dividendos («D») de la empresa dentro del gráfico de
     la ficha, cada uno con lo que se movió el precio en la serie del gráfico y
@@ -12013,7 +12041,8 @@ def get_tecnico_eventos(asset: str, moneda: str = "usd", local: int = 0,
     moneda = "ars" if moneda == "ars" else "usd"
     import movimiento
     import tecnico
-    with db_abierta() as conn:
+    # Lee la serie entera y puede ir a Yahoo: el mismo freno que la ficha.
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         empresa = tecnico.ticker_de_la_empresa(conn, sym, bool(local))
         velas = tecnico.serie(conn, sym, moneda, bool(local))["velas"]
         if not empresa or not velas:
