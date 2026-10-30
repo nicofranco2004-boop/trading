@@ -10,15 +10,22 @@
 // (nunca escribe durante el render). Así trackeamos valor + hallazgos sin
 // depender de que el snapshot exista antes del guard de loading.
 //
-//   const lastVisit = useLastVisit(`diagnostico:${userId}`)          // arriba
+//   const lastVisit = useLastVisit('diagnostico')                    // arriba
 //   const { delta } = lastVisit.record({ valueUsd, findingIds })     // en el render
+//
+// DE QUIÉN ES: de la persona Y de la cuenta (utils/duenoDeLaPestana), y lo pone
+// el hook, no quien lo llama. Antes la clave la armaba la pantalla con el email:
+// el asesor que miraba el cliente 2 y después el 3 veía el «cambió X % desde tu
+// última visita» del 3 calculado contra la cartera del 2 (re-test a ciegas,
+// 30/10). Sin nadie logueado no se guarda ni se lee nada.
 //
 // delta = { isFirstVisit } en la primera visita; si no:
 //   { isFirstVisit:false, valueDeltaPct, newFindingIds, resolvedCount, sinceLabel }
 //
 // ROBUSTEZ: todo localStorage en try/catch (tira en modo privado). Nunca throw.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
+import { useDuenoDeLaPestana } from '../utils/duenoDeLaPestana'
 
 const LS_PREFIX = 'rendi_lastvisit_'
 
@@ -48,11 +55,15 @@ function elapsedLabel(ts) {
   return months <= 1 ? 'hace 1 mes' : `hace ${months} meses`
 }
 
-export function useLastVisit(key) {
-  // La visita anterior se lee UNA sola vez (al montar). No cambia dentro de la
-  // sesión: queremos comparar contra lo de la última vez, no contra lo que
-  // acabamos de escribir.
-  const [prev] = useState(() => readStored(key))
+export function useLastVisit(seccion) {
+  const dueno = useDuenoDeLaPestana()
+  const key = dueno ? `${seccion}:${dueno}` : null
+  // La visita anterior se lee UNA sola vez por dueño (al montar, o cuando el
+  // asesor cambia de cliente). No cambia dentro de la sesión: queremos comparar
+  // contra lo de la última vez, no contra lo que acabamos de escribir.
+  const previas = useRef({})
+  if (key && !(key in previas.current)) previas.current[key] = readStored(key)
+  const prev = key ? previas.current[key] : null
   const pendingRef = useRef(null)   // snapshot a persistir después del render
   const writtenRef = useRef(null)   // huella ya persistida (evita reescribir por render)
   const keyRef = useRef(key)
@@ -60,7 +71,7 @@ export function useLastVisit(key) {
 
   useEffect(() => {
     const snap = pendingRef.current
-    if (!snap) return
+    if (!snap || !keyRef.current) return
     // Solo persistimos cuando la huella real cambió — el effect corre en cada
     // commit y InsightsDesktop re-renderiza seguido; sin esto escribiríamos
     // localStorage en cada render (idempotente pero desperdiciado).

@@ -375,7 +375,8 @@ function InsightsDesktop({ _embeddedTab }) {
   const pfTotals = usePfRollup()
   // "Desde tu última visita" — el hook va ARRIBA (antes del guard de loading);
   // el delta se computa con record(snapshot) más abajo, cuando la data existe.
-  const lastVisit = useLastVisit(`diagnostico:${user?.email ?? 'anon'}`)
+  // De la persona y la cuenta: lo pone el hook (utils/duenoDeLaPestana).
+  const lastVisit = useLastVisit('diagnostico')
   // Flags de renderizado condicional cuando se embebe dentro de /analisis.
   // Standalone (sin _embeddedTab) → renderiza TODO.
   // En tab 'diagnostico' → todo menos "Perfil del inversor".
