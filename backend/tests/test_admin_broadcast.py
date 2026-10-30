@@ -24,6 +24,33 @@ class SendCustomTest(unittest.TestCase):
         self.assertEqual(h.count("<p "), 2)                       # dos párrafos
         self.assertIn('href="https://rendi.finance"', h)          # URL auto-linkeada
 
+    def test_body_to_html_imagen_propia(self):
+        # Párrafo que es sólo una imagen de rendi.finance → <img>, no link.
+        h = emails._custom_body_to_html("Mirá:\n\nhttps://rendi.finance/mail/adelanto-tecnico-1.png\n\nChau")
+        self.assertIn('<img src="https://rendi.finance/mail/adelanto-tecnico-1.png"', h)
+        self.assertNotIn('href="https://rendi.finance/mail/', h)
+        self.assertEqual(h.count("<p "), 3)
+
+    def test_body_to_html_imagen_ajena_o_en_frase_queda_link(self):
+        # Otro dominio, o la dirección en medio de una frase: link, nunca imagen.
+        for body in ("https://otro.com/x.png",
+                     "https://rendi.finance.otro.com/x.png",
+                     "Mirá https://rendi.finance/mail/a.png ahora",
+                     'https://rendi.finance/a.png" onerror="x'):
+            h = emails._custom_body_to_html(body)
+            self.assertNotIn("<img", h, body)
+
+    def test_send_custom_imagen_llega_al_mail(self):
+        # Por el mismo camino que el envío real: send_custom → _send.
+        cap = {}
+        def fake_send(to, subject, html, text, **kw):
+            cap["html"] = html; cap["text"] = text; return True
+        with patch.object(emails, "_send", side_effect=fake_send):
+            emails.send_custom(to="x@y.com", subject="s",
+                               body="Hola\n\nhttps://rendi.finance/mail/adelanto-tecnico-1.png")
+        self.assertIn('<img src="https://rendi.finance/mail/adelanto-tecnico-1.png"', cap["html"])
+        self.assertIn("https://rendi.finance/mail/adelanto-tecnico-1.png", cap["text"])
+
     def test_body_to_html_escapes(self):
         h = emails._custom_body_to_html("2 < 3 & <script>x")
         self.assertNotIn("<script>", h)                           # escapado

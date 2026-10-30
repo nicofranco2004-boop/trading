@@ -33,6 +33,7 @@ from billing import plan_textos
 import os
 import sys
 import html
+import re
 import logging
 import queue
 import threading
@@ -1369,13 +1370,26 @@ def send_reengagement(*, to: str, user_name: str = "") -> bool:
     return _send(to, subject, body_html, text, from_addr=_from_support())
 
 
+# Un párrafo que es SÓLO la dirección de una imagen de rendi.finance se muestra
+# como imagen. Sólo de nuestro dominio: una imagen de otro sitio le avisa a ese
+# sitio quién abrió el mail, y la pueden cambiar después de mandado.
+_IMAGEN_PROPIA = re.compile(
+    re.escape(APP_URL) + r"/[A-Za-z0-9._/-]+\.(?:png|jpe?g|gif|webp)", re.IGNORECASE)
+
+
 def _custom_body_to_html(body: str) -> str:
     """Texto plano del admin → HTML: escapa, párrafos por doble salto de línea,
     <br> por salto simple, y auto-linkea URLs http(s). El admin escribe texto, no
-    HTML (evita romper el mail con markup accidental)."""
+    HTML (evita romper el mail con markup accidental). Un párrafo que es sólo
+    la dirección de una imagen de rendi.finance va como imagen (_IMAGEN_PROPIA)."""
     import re as _re
     out = []
     for para in body.split("\n\n"):
+        if _IMAGEN_PROPIA.fullmatch(para.strip()):
+            out.append(f'<p style="margin:0 0 14px;"><img src="{html.escape(para.strip())}" alt="" '
+                       'style="display:block;width:100%;max-width:100%;height:auto;border:0;'
+                       'border-radius:8px;"></p>')
+            continue
         esc = html.escape(para.strip())
         esc = _re.sub(r'(https?://[^\s<]+)',
                       r'<a href="\1" style="color:#5b4ddb;">\1</a>', esc)
