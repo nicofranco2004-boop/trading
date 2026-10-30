@@ -1,0 +1,293 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR en un broker en pesos > lo que recibe el gráfico técnico 1`] = `
+{
+  "accionLocal": false,
+  "asset": "AAPL",
+  "costoPesos": {
+    "cantidad": 40,
+    "invertido": 560000,
+  },
+  "lineaSinTc": false,
+  "lotes": [
+    {
+      "asset": "AAPL",
+      "asset_type": "CEDEAR",
+      "broker": "Balanz",
+      "buy_price": 14000,
+      "currency": "ARS",
+      "entry_date": "2025-02-20",
+      "id": 4,
+      "invested": 560000,
+      "is_cash": 0,
+      "quantity": 40,
+      "tc_compra": 1180,
+    },
+  ],
+  "operaciones": [],
+  "pesoEnCartera": 0.2,
+  "pnlPctLinea": -0.013504823151125445,
+  "pnlPctUsd": -0.013504823151125438,
+  "referencia": {
+    "precio": 18200,
+    "simbolo": "AAPL.BA",
+  },
+  "symbolMiniChart": "AAPL.BA",
+  "tenencia": {
+    "tc": 1555,
+    "valorUsd": 468.16720257234726,
+  },
+  "titulo": null,
+}
+`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > CEDEAR en un broker en pesos > todo el texto de la ficha 1`] = `"AAPLAAPLValor actual $468USD−$6·−1,4%no realizadoAnálisis técnico[gráfico AAPL][liquidez AAPL]Tu tesisAAPL¿Por qué lo compraste?Se guarda con la fecha de hoy y cómo está la tendencia hoy.GuardarTu operatoria en AAPLCosto promedio$11,86por unidad (USD)Cantidad401 lote abiertoInvertido$475costo total (USD)Lotes abiertos · orden FIFOel más viejo se vende primeroFechaBrokerCantidadCostoP&L2025-02-20próximoBalanz40$475−$6"`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > acción argentina en un broker en pesos > lo que recibe el gráfico técnico 1`] = `
+{
+  "accionLocal": true,
+  "asset": "GGAL",
+  "costoPesos": {
+    "cantidad": 150,
+    "invertido": 825000,
+  },
+  "lineaSinTc": true,
+  "lotes": [
+    {
+      "asset": "GGAL",
+      "asset_type": "ACCION_AR",
+      "broker": "IOL",
+      "buy_price": 5200,
+      "currency": "ARS",
+      "entry_date": "2025-01-15",
+      "id": 2,
+      "invested": 520000,
+      "is_cash": 0,
+      "quantity": 100,
+      "tc_compra": 1200,
+    },
+    {
+      "asset": "GGAL",
+      "asset_type": "ACCION_AR",
+      "broker": "IOL",
+      "buy_price": 6100,
+      "currency": "ARS",
+      "entry_date": "2025-06-02",
+      "id": 3,
+      "invested": 305000,
+      "is_cash": 0,
+      "quantity": 50,
+    },
+  ],
+  "operaciones": [],
+  "pesoEnCartera": 0.12,
+  "pnlPctLinea": null,
+  "pnlPctUsd": -0.016175719393836142,
+  "referencia": {
+    "precio": 6420,
+    "simbolo": "GGAL.BA",
+  },
+  "symbolMiniChart": "GGAL.BA",
+  "tenencia": {
+    "tc": 1555,
+    "valorUsd": 619.2926045016077,
+  },
+  "titulo": null,
+}
+`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > acción argentina en un broker en pesos > todo el texto de la ficha 1`] = `"GGALGGALValor actual $619USD−$10·−1,6%no realizadoAnálisis técnico[gráfico GGAL][liquidez GGAL]Tu tesisGGAL¿Por qué lo compraste?Se guarda con la fecha de hoy y cómo está la tendencia hoy.GuardarTu operatoria en GGALCosto promedio$4,20por unidad (USD)Cantidad1502 lotes abiertosInvertido$629costo total (USD)Lotes abiertos · orden FIFOel más viejo se vende primeroFechaBrokerCantidadCostoP&L2025-01-15próximoIOL100$433−$202025-06-02IOL50$196+$10"`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > activo que no tenés > lo que recibe el gráfico técnico 1`] = `
+{
+  "accionLocal": false,
+  "asset": "MELI",
+  "costoPesos": null,
+  "lineaSinTc": false,
+  "lotes": [],
+  "operaciones": [],
+  "pesoEnCartera": null,
+  "pnlPctLinea": null,
+  "pnlPctUsd": null,
+  "referencia": null,
+  "symbolMiniChart": "MELI",
+  "tenencia": null,
+  "titulo": null,
+}
+`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > activo que no tenés > todo el texto de la ficha 1`] = `"MELIMELIÚltimo precio$1.990USD+1,5%contra el cierre anterior En la watchlistAnálisis técnico[gráfico MELI]"`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > activo que vendiste entero > lo que recibe el gráfico técnico 1`] = `
+{
+  "accionLocal": true,
+  "asset": "YPFD",
+  "costoPesos": null,
+  "lineaSinTc": false,
+  "lotes": [],
+  "operaciones": [
+    {
+      "asset": "YPFD",
+      "broker": "IOL",
+      "date": "2025-01-03",
+      "id": 10,
+      "pnl_usd": undefined,
+      "pnl_usd_native": undefined,
+      "price": 30000,
+      "quantity": 10,
+      "type": "BUY",
+    },
+    {
+      "asset": "YPFD",
+      "broker": "IOL",
+      "date": "2025-05-03",
+      "id": 11,
+      "pnl_usd": 41,
+      "pnl_usd_native": 41,
+      "price": 36000,
+      "quantity": 10,
+      "type": "SELL",
+    },
+  ],
+  "pesoEnCartera": null,
+  "pnlPctLinea": null,
+  "pnlPctUsd": null,
+  "referencia": null,
+  "symbolMiniChart": null,
+  "tenencia": null,
+  "titulo": null,
+}
+`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > activo que vendiste entero > todo el texto de la ficha 1`] = `"YPFDYPFDValor actual $0USDAnálisis técnico[gráfico YPFD][liquidez YPFD]Tu operatoria en YPFDCosto promedio—por unidad (USD)Cantidad—0 lotes abiertosInvertido$0costo total (USD)P&L realizado+$411 op cerradaWin rate100%1 ganadas · 0 perdidasMejor trade+$412025-05-03Historial · 2 operaciones2025-01-03 · op · IOL10 u.2025-05-03 · op · IOL10 u.ganada+$41"`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > cripto en un exchange > lo que recibe el gráfico técnico 1`] = `
+{
+  "accionLocal": false,
+  "asset": "BTC",
+  "costoPesos": null,
+  "lineaSinTc": false,
+  "lotes": [
+    {
+      "asset": "BTC",
+      "asset_type": "CRYPTO",
+      "broker": "Binance",
+      "buy_price": 60000,
+      "entry_date": "2024-11-01",
+      "id": 5,
+      "invested": 3000,
+      "is_cash": 0,
+      "quantity": 0.05,
+    },
+  ],
+  "operaciones": [],
+  "pesoEnCartera": 0.08,
+  "pnlPctLinea": 0.18333333333333335,
+  "pnlPctUsd": 0.18333333333333332,
+  "referencia": {
+    "precio": 71000,
+    "simbolo": "BTC",
+  },
+  "symbolMiniChart": "BTC",
+  "tenencia": {
+    "tc": 1555,
+    "valorUsd": 3550,
+  },
+  "titulo": null,
+}
+`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > cripto en un exchange > todo el texto de la ficha 1`] = `"BTCBTCValor actual $3.550USD+$550·+18,3%no realizadoAnálisis técnico[gráfico BTC]Tu tesisBTC¿Por qué lo compraste?Se guarda con la fecha de hoy y cómo está la tendencia hoy.GuardarTu operatoria en BTCCosto promedio$60000,00por unidad (USD)Cantidad0,05001 lote abiertoInvertido$3.000costo total (USD)Lotes abiertos · orden FIFOel más viejo se vende primeroFechaBrokerCantidadCostoP&L2024-11-01próximoBinance0,0500$3.000+$550"`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > papel de EE.UU. en un broker en dólares > lo que recibe el gráfico técnico 1`] = `
+{
+  "accionLocal": false,
+  "asset": "NVDA",
+  "costoPesos": null,
+  "lineaSinTc": false,
+  "lotes": [
+    {
+      "asset": "NVDA",
+      "asset_type": "STOCK",
+      "broker": "Schwab",
+      "buy_price": 118,
+      "commissions": 4,
+      "entry_date": "2024-12-10",
+      "id": 1,
+      "invested": 2950,
+      "is_cash": 0,
+      "quantity": 25,
+    },
+  ],
+  "operaciones": [
+    {
+      "asset": "NVDA",
+      "broker": "Schwab",
+      "date": "2025-03-01",
+      "id": 9,
+      "pnl_usd": 120,
+      "pnl_usd_native": 120,
+      "quantity": 5,
+      "type": "SELL",
+    },
+  ],
+  "pesoEnCartera": 0.31,
+  "pnlPctLinea": 0.7959546377792823,
+  "pnlPctUsd": 0.7959546377792823,
+  "referencia": {
+    "precio": 212.21,
+    "simbolo": "NVDA",
+  },
+  "symbolMiniChart": "NVDA",
+  "tenencia": {
+    "tc": 1555,
+    "valorUsd": 5305.25,
+  },
+  "titulo": null,
+}
+`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > papel de EE.UU. en un broker en dólares > todo el texto de la ficha 1`] = `"NVDANVDAValor actual $5.305USD+$2.351·+79,6%no realizadoAnálisis técnico[gráfico NVDA]Tu tesisNVDA¿Por qué lo compraste?Se guarda con la fecha de hoy y cómo está la tendencia hoy.GuardarTu operatoria en NVDACosto promedio$118,16por unidad (USD)Cantidad251 lote abiertoInvertido$2.954costo total (USD)P&L realizado+$1201 op cerradaWin rate100%1 ganadas · 0 perdidasMejor trade+$1202025-03-01Lotes abiertos · orden FIFOel más viejo se vende primeroFechaBrokerCantidadCostoP&L2024-12-10próximoSchwab25$2.954+$2.351Historial · 1 operacion2025-03-01 · op · Schwab5 u.ganada+$120"`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > pedido con otro nombre (GGAL.BA, lo tenés como GGAL) > lo que recibe el gráfico técnico 1`] = `
+{
+  "accionLocal": true,
+  "asset": "GGAL",
+  "costoPesos": {
+    "cantidad": 100,
+    "invertido": 520000,
+  },
+  "lineaSinTc": false,
+  "lotes": [
+    {
+      "asset": "GGAL",
+      "asset_type": "ACCION_AR",
+      "broker": "IOL",
+      "buy_price": 5200,
+      "currency": "ARS",
+      "entry_date": "2025-01-15",
+      "id": 2,
+      "invested": 520000,
+      "is_cash": 0,
+      "quantity": 100,
+      "tc_compra": 1200,
+    },
+  ],
+  "operaciones": [],
+  "pesoEnCartera": 0.12,
+  "pnlPctLinea": -0.04724214692060347,
+  "pnlPctUsd": -0.04724214692060352,
+  "referencia": {
+    "precio": 6420,
+    "simbolo": "GGAL.BA",
+  },
+  "symbolMiniChart": "GGAL.BA",
+  "tenencia": {
+    "tc": 1555,
+    "valorUsd": 412.8617363344051,
+  },
+  "titulo": null,
+}
+`;
+
+exports[`la ficha del activo, antes y después de compartir sus cuentas > pedido con otro nombre (GGAL.BA, lo tenés como GGAL) > todo el texto de la ficha 1`] = `"GGALGGALValor actual $413USD−$20·−4,7%no realizadoAnálisis técnico[gráfico GGAL][liquidez GGAL]Tu tesisGGAL¿Por qué lo compraste?Se guarda con la fecha de hoy y cómo está la tendencia hoy.GuardarTu operatoria en GGALCosto promedio$4,33por unidad (USD)Cantidad1001 lote abiertoInvertido$433costo total (USD)Lotes abiertos · orden FIFOel más viejo se vende primeroFechaBrokerCantidadCostoP&L2025-01-15próximoIOL100$433−$20"`;
