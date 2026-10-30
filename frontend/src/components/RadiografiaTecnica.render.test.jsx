@@ -52,9 +52,13 @@ describe('la Cartera, corta (recuadro 21c)', () => {
     expect(t).not.toContain('Lo que cambió esta semana')
   })
   it('«la semana pasada» sólo a los 7 días justos; si no, el sábado con su fecha (la regla de Señales)', () => {
-    const cinco = diasAtras(5)
-    const [, m, d] = cinco.split('-')
-    const t = sinEtiquetas(conRouter(<RadiografiaTecnica lotes={LOTES} reparto={{ ...REPARTO, semana_pasada: { semana: cinco, pct: 61 } }} cargando={false} />))
+    // Un sábado que NO es de hace 7 días justos (el resumen guardado siempre es de
+    // un sábado). Antes era «hace 5 días», que es sábado sólo los jueves: la
+    // prueba daba rojo los otros seis días (visto al juntar, 30/10; igual en 31c00ff6).
+    const n = [8, 9, 10, 11, 12, 13, 14].find(k => new Date(diasAtras(k) + 'T12:00:00Z').getUTCDay() === 6)
+    const sabado = diasAtras(n)
+    const [, m, d] = sabado.split('-')
+    const t = sinEtiquetas(conRouter(<RadiografiaTecnica lotes={LOTES} reparto={{ ...REPARTO, semana_pasada: { semana: sabado, pct: 61 } }} cargando={false} />))
     expect(t).toContain(`(el sábado ${d}/${m}, 61%)`)
   })
   it('sin la semana pasada guardada, esa parte no aparece', () => {
