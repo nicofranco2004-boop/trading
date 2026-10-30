@@ -268,3 +268,23 @@ describe('pintarGrafico: lo que se ve en la imagen', () => {
     for (const x of textos) expect(Number(x.font.match(/(\d+)px/)[1]), x.t).toBeGreaterThanOrEqual(18)
   })
 })
+
+
+describe('specDelGrafico: la vela de hoy (sumarVelaDeHoy)', () => {
+  const guardadas = velas(60, i => 100 + i)
+  const hoy = { d: dia(60), o: 160, h: 163, l: 158, c: 162, v: 5, vivo: true, hoy: true, enCurso: true }
+  it('el precio grande es el de hoy en curso (no un «cierre»), el pie lo dice y el RSI es el del último cierre', () => {
+    const s = specDelGrafico(base({ puntos: [...guardadas, hoy], huecos: 7, fechaDatos: dia(59), ultimaFecha: dia(59), ver: { rsi: true } }))
+    expect(s.precio).toEqual({ texto: 'US$ 162,00', fecha: 'Hoy, en curso' })
+    expect(s.pie).toContain('Datos al cierre del 01/03/26; la última vela es la de hoy, en curso.')
+    expect(s.rsi.ultimo.texto).toBe('50')      // la vela de hoy no trae RSI: el del último cierre
+  })
+  it('en semanales: la semana que incluye hoy, con la fecha de su último día (no la del lunes)', () => {
+    const semanal = { ...guardadas[56], d: dia(56), hasta: dia(60), semana: true, c: 162, hoy: true, enCurso: false }
+    const s = specDelGrafico(base({ puntos: [...guardadas.slice(0, 56), semanal], huecos: 2, tipo: 'velas', semanales: true,
+      fechaDatos: dia(59), ultimaFecha: dia(59) }))
+    expect(s.precio.fecha).toBe('Hoy')
+    expect(s.pie.join(' ')).toContain('la última vela incluye hoy.')
+    expect(s.subtitulo).toContain(`al ${dia(60).slice(8, 10)}/${dia(60).slice(5, 7)}/26`)
+  })
+})

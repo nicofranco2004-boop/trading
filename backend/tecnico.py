@@ -665,60 +665,136 @@ def ticker_de_la_empresa(conn, asset: str, local: bool = False):
     return serie(conn, a, "usd", local).get("ticker")
 
 
-def vela_de_hoy(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
-    """La vela de HOY, mientras se mueve, de la MISMA serie que dibuja la ficha
-    (`serie`: el mismo ticker y la misma conversión). {vela: {d,o,h,l,c,v} | None,
-    en_rueda, demora_min, actualizada}. `demora_min`: cuánto tardan en llegar
-    los precios de esa rueda (`velas_diarias.DEMORA_MIN`).
+def preparar_vela_de_hoy(conn, asset: str, moneda: str = "usd", local: bool = False):
+    """Lo que la vela de hoy (`vela_de_hoy`) necesita de la base, leído ANTES de
+    salir a la red: en Postgres, leer abre una transacción que queda abierta
+    hasta cerrar la conexión, y la vela espera a Yahoo y al dólar (auditoría
+    30/10: el patrón del hallazgo 15 de la migración). La MISMA serie que dibuja
+    la ficha (`serie`: el mismo ticker y la misma conversión). None si no hay."""
+    import velas_diarias
+    from fx import serie_diaria
+    moneda = "ars" if moneda == "ars" else "usd"
+    s = serie(conn, asset, moneda, local)
+    if not s["velas"]:
+        return None
+    ticker = s["ticker"]
+    # La última vela de la serie TAL COMO LA DIO YAHOO (sin convertir): contra
+    # ella se mide si lo que trae Yahoo hoy sigue a lo guardado.
+    cruda = velas_diarias.ultima_vela(conn, ticker)
+    if not cruda or cruda["date"] != s["velas"][-1]["date"]:
+        return None
+    pendiente = False
+    if ticker.endswith(".BA"):
+        import cambios_ratio
+        pendiente = bool(cambios_ratio.para_el_grafico(conn, ticker).get("pendientes"))
+    return {
+        "ticker": ticker, "convertida": s["convertida"], "por": s.get("por"),
+        "ultima": {"date": cruda["date"], "close": cruda["close"]},
+        "pendiente": pendiente,
+        # El MEP guardado de los días después de la última vela (si alguno quedó
+        # sin guardar, se convierte con el de ESE día, como la historia).
+        "dolares": serie_diaria(conn, cruda["date"]) if s["convertida"] else [],
+    }
 
-    La vela no pasa por las medias, el RSI ni la lectura: la tendencia y los
+
+def _mep_de_hoy(ahora=None):
+    """El MEP de ahora para convertir la vela de hoy: el medio con la misma
+    regla que la historia (`fx.punta_media`, con su filtro de puntas raras) y
+    no más viejo que `MAX_DIAS_SIN_DOLAR` (la caché del dólar conserva el último
+    que llegó aunque la fuente esté caída días: auditoría 30/10)."""
+    import main
+    from datetime import datetime, timezone
+    from fx import punta_media
+    m = (main._get_dolar_data() or {}).get("mep")
+    if not isinstance(m, dict):
+        return None
+    tc = punta_media(m.get("compra"), m.get("venta"))
+    try:
+        cuando = datetime.fromisoformat(str(m.get("updated_at")).replace("Z", "+00:00"))
+        if cuando.tzinfo is None:
+            cuando = cuando.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    if (ahora or datetime.now(timezone.utc)) - cuando > timedelta(days=MAX_DIAS_SIN_DOLAR):
+        return None
+    return tc
+
+
+def _cambio_de_escala(antes: float, despues: float) -> bool:
+    """¿De un cierre al siguiente el precio saltó por un factor redondo (×2, ×3,
+    ÷4…)? En un '.BA' es la forma de un cambio de ratio que Yahoo no corrige y
+    que la lista de la noche (`cambios_ratio`) todavía no vio: dibujado, sería
+    una caída falsa de 50 % toda la rueda. Con la misma vara que esa lista (el
+    salto mínimo y lo que es "redondo"). Una suba de 40 % de una acción
+    argentina (factor 1,4) no es redonda y se dibuja; una caída real de 50 %
+    queda sin vela de hoy hasta la noche (mejor que una equivocada)."""
+    import cambios_ratio
+    if not (antes and despues and antes > 0 and despues > 0):
+        return False
+    return (abs(despues / antes - 1) > cambios_ratio.UMBRAL_SALTO
+            and cambios_ratio.factor_redondo(antes / despues) is not None)
+
+
+def vela_de_hoy(prep) -> dict:
+    """Las ruedas que la noche todavía no guardó, con la de HOY mientras se
+    mueve, de la serie que preparó `preparar_vela_de_hoy`:
+    {velas: [{d, o, h, l, c, v, hoy}], en_rueda, demora_min, actualizada,
+    ultima_guardada}. `hoy`: es la rueda de hoy (la última). `ultima_guardada`:
+    la vela guardada que siguen: si la pantalla tiene otra (quedó abierta de un
+    día para el otro y la noche guardó una más), tiene que pedir la serie de nuevo. `en_rueda`: la rueda todavía manda
+    precios (`velas_diarias.en_rueda`, con la demora): la pantalla sigue pidiendo
+    seguido. `demora_min`: cuánto tardan en llegar (`velas_diarias.DEMORA_MIN`).
+
+    Las velas no pasan por las medias, el RSI ni la lectura: la tendencia y los
     avisos siguen con el cierre de ayer, porque con el precio de las 11 podrían
     cambiar y a las 15 volver.
 
-    Sin vela (None) si:
-      · el activo no tiene serie, o Yahoo no tiene la de hoy (`velas_diarias.vela_en_curso`);
-      · esa fecha ya está guardada (no hay vela doble);
-      · es un '.BA' con un salto de precio sin decidir (`serie` lo esconde desde
-        ese día, y hoy viene después);
-      · va convertida y no hay MEP de hoy: no se inventa con uno viejo."""
+    Sin velas ([]) —nunca una vela que no sigue a lo guardado— si:
+      · Yahoo no tiene nada después de la última guardada;
+      · lo que trae Yahoo no incluye esa última guardada con el MISMO cierre: o
+        falta un día en el medio (una serie atrasada), o Yahoo reescribió la
+        historia (un split de hoy: la vela vendría en otra escala);
+      · es un '.BA' con un salto sin decidir (`serie` lo esconde desde ese día)
+        o con un salto de factor redondo desde el último cierre (`_cambio_de_escala`);
+      · va convertida y no hay dólar de ese día ni MEP de hoy: no se inventa."""
     import velas_diarias
-    from alerts_engine import rueda_en_horario
-    from datetime import datetime, timezone
     from home.market import mercado_de
-    moneda = "ars" if moneda == "ars" else "usd"
-    nada = {"vela": None}
-    s = serie(conn, asset, moneda, local)
-    if not s["velas"]:
-        return nada
-    ticker = s["ticker"]
-    v = velas_diarias.vela_en_curso(ticker)
-    if not v or v["date"] <= s["velas"][-1]["date"]:
-        return nada
-    if ticker.endswith(".BA"):
-        import cambios_ratio
-        if cambios_ratio.para_el_grafico(conn, ticker).get("pendientes"):
-            return nada
-    precios = {k: v[k] for k in ("open", "high", "low", "close")}
-    if s["convertida"]:
-        import main
-        tc = main._val_rate((main._get_dolar_data() or {}).get("mep"))
-        if not tc:
-            return nada
-        precios = {k: (x / tc if s["por"] == "dividir" else x * tc) if x is not None else None
-                   for k, x in precios.items()}
+    if not prep:
+        return {"velas": [], "en_rueda": False, "demora_min": 0, "actualizada": None, "ultima_guardada": None}
+    ticker = prep["ticker"]
+    respuesta = {"velas": [], "en_rueda": velas_diarias.en_rueda(ticker),
+                 "demora_min": velas_diarias.DEMORA_MIN.get(mercado_de(ticker), 0), "actualizada": None,
+                 "ultima_guardada": prep["ultima"]["date"]}
+    tanda = velas_diarias.ruedas_recientes(ticker)
+    if not tanda or prep["pendiente"]:
+        return respuesta
+    respuesta["actualizada"] = tanda["actualizada"]
+    ult = prep["ultima"]
+    previa = next((r for r in tanda["ruedas"] if r["date"] == ult["date"]), None)
+    if previa is None or abs(previa["close"] / ult["close"] - 1) > velas_diarias.TOLERANCIA_REESCRITURA:
+        return respuesta
+    nuevas = [r for r in tanda["ruedas"] if r["date"] > ult["date"]]
     p = estructura.precio_redondo
-    mercado = mercado_de(ticker)
-    demora = velas_diarias.DEMORA_MIN.get(mercado, 0)
-    return {
-        "vela": {"d": v["date"], "o": p(precios["open"]), "h": p(precios["high"]),
-                 "l": p(precios["low"]), "c": p(precios["close"]), "v": v.get("volume")},
-        # «En rueda» con la demora de sus precios: BYMA cierra a las 17 pero lo
-        # de 16:40 a 17 llega hasta las 17:20, y la pantalla deja de pedir
-        # cuando esto da False.
-        "en_rueda": rueda_en_horario(mercado, datetime.now(timezone.utc) - timedelta(minutes=demora)),
-        "demora_min": demora,
-        "actualizada": v.get("actualizada"),
-    }
+    cierre = ult["close"]
+    mep_hoy = None
+    for r in nuevas:
+        if ticker.endswith(".BA") and _cambio_de_escala(cierre, r["close"]):
+            break
+        cierre = r["close"]
+        precios = {k: r[k] for k in ("open", "high", "low", "close")}
+        if prep["convertida"]:
+            guardado = next((tc for f, tc, f_tc in prep["dolares"] if f == r["date"] and f_tc == r["date"]), None)
+            if guardado is None and mep_hoy is None:
+                mep_hoy = _mep_de_hoy()
+            tc = guardado or mep_hoy
+            if not tc:
+                break
+            precios = {k: (x / tc if prep["por"] == "dividir" else x * tc) if x is not None else None
+                       for k, x in precios.items()}
+        respuesta["velas"].append({
+            "d": r["date"], "o": p(precios["open"]), "h": p(precios["high"]), "l": p(precios["low"]),
+            "c": p(precios["close"]), "v": r.get("volume"), "hoy": r["date"] == tanda["hoy"]})
+    return respuesta
 
 
 def cierre_de(conn, simbolo: str):

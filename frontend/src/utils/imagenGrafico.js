@@ -274,6 +274,11 @@ export function specDelGrafico({
   // ── La columna de precios y la fila de fechas ───────────────────────────
   const ultimo = puntos[puntos.length - 1]
   const penultimo = puntos[puntos.length - 2]
+  // El día del último precio: en semanales, el último día de la semana (`hasta`),
+  // no el lunes con que se nombra la vela.
+  const diaUltimo = ultimo.hasta || ultimo.d
+  // RSI y ADX: los del último día guardado (una vela viva no los trae).
+  const ultimoInd = ultimo.vivo ? [...puntos].reverse().find(p => !p.vivo) || ultimo : ultimo
   const colorDelDia = !penultimo || ultimo.c === penultimo.c ? colores.precio : ultimo.c > penultimo.c ? colores.positivo : colores.negativo
   const sinUS = (x) => precio(x).replace(/^US\$ /, '')
   const ticks = marcasDePrecio(lo, hi, PX_ALTO_NOMINAL, PX_POR_PRECIO)
@@ -289,7 +294,7 @@ export function specDelGrafico({
   // ── Balances y dividendos de la empresa (no son tuyos) ──────────────────
   const marcas = []
   if (ver.eventos) {
-    const hasta = ultimo.d
+    const hasta = diaUltimo
     const visibles = eventos
       .filter(e => e.fecha >= puntos[0].d && e.fecha <= hasta)
       .map(e => ({ ...e, i: indiceDeFecha(puntos, e.fecha) }))
@@ -312,7 +317,7 @@ export function specDelGrafico({
   let rsi = null
   if (ver.rsi !== false && puntos.some(p => p.rsi != null)) {
     rsi = { lineas: serie('rsi', r => 100 - r), niveles: [RSI_ESTIRADO, RSI_CASTIGADO].map(n => ({ y: 100 - n, texto: String(n) })),
-      ultimo: ultimo.rsi != null ? { y: 100 - ultimo.rsi, texto: String(Math.round(ultimo.rsi)) } : null, color: colores.precio }
+      ultimo: ultimoInd.rsi != null ? { y: 100 - ultimoInd.rsi, texto: String(Math.round(ultimoInd.rsi)) } : null, color: colores.precio }
   }
   let fuerza = null
   const conAdx = puntos.filter(p => p.adx != null)
@@ -338,7 +343,7 @@ export function specDelGrafico({
   const pie = [
     // La vela de hoy (sumarVelaDeHoy) no está en los datos guardados: se dice.
     fechaDatos ? `Datos al cierre del ${fechaCorta(fechaDatos)}${ultimo.hoy
-      ? (ultimo.enCurso ? '; la última vela es la de hoy, en curso' : '; la última vela es la de hoy') : ''}.` : null,
+      ? `; la última vela ${semanales ? 'incluye hoy' : 'es la de hoy'}${ultimo.enCurso ? ', en curso' : ''}` : ''}.` : null,
     convertida === 'mep' ? (moneda === 'usd'
       ? 'El precio en pesos de cada día está pasado a dólares con el MEP de ese día.'
       : 'El precio en dólares de cada día está pasado a pesos con el MEP de ese día.') : null,
@@ -348,10 +353,11 @@ export function specDelGrafico({
   return {
     kind: 'grafico',
     activo: String(activo || '').toUpperCase(),
-    subtitulo: `${conVelas ? (semanales ? 'Velas semanales' : 'Velas diarias') : 'Línea'} · del ${fechaCorta(desde)} al ${fechaCorta(ultimo.d)} · en ${moneda === 'ars' ? 'pesos' : 'dólares'}`,
+    subtitulo: `${conVelas ? (semanales ? 'Velas semanales' : 'Velas diarias') : 'Línea'} · del ${fechaCorta(desde)} al ${fechaCorta(diaUltimo)} · en ${moneda === 'ars' ? 'pesos' : 'dólares'}`,
     // Mirando el pasado (arrastrado o acercado), el precio grande no es el de
-    // hoy: dice de qué día es.
-    precio: { texto: precio(ultimo.c), ...((ultimaFecha || fechaDatos) > ultimo.d ? { fecha: `Cierre del ${fechaCorta(ultimo.d)}` } : {}) },
+    // hoy: dice de qué día es. El de hoy en curso no es un cierre: lo dice.
+    precio: { texto: precio(ultimo.c), ...(ultimo.hoy ? { fecha: ultimo.enCurso ? 'Hoy, en curso' : 'Hoy' }
+      : (ultimaFecha || fechaDatos) > diaUltimo ? { fecha: `Cierre del ${fechaCorta(diaUltimo)}` } : {}) },
     cambio: cambio == null ? null : { texto: `${pctTexto(cambio)} en el período`, tono: cambio > 0 ? 'green' : cambio < 0 ? 'red' : 'gray' },
     leyenda,
     grafico: {

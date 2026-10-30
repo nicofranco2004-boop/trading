@@ -496,9 +496,22 @@ export default function LecturaTecnica({
 
   const actual = datos[moneda]
   const conGrafico = !!actual?.disponible
-  // La vela de hoy, que la noche todavía no guardó: sólo se dibuja
-  // (sumarVelaDeHoy), las cuentas siguen con las velas guardadas.
-  const velaHoy = useVelaDeHoy(asset, moneda, accionLocal, conGrafico)
+  // La vela de hoy (y algún día cerrado que la noche todavía no guardó): se
+  // dibuja (sumarVelaDeHoy) y cuenta para medir, tu tesis y tus compras de hoy;
+  // la lectura, el Fibonacci y los dibujos siguen con las velas guardadas.
+  const vivas = useVelaDeHoy(asset, moneda, accionLocal, conGrafico)
+  // La ficha quedó abierta de un día para el otro y la noche guardó otra vela:
+  // la serie se vuelve a pedir sola (sin el gris de carga), y así la de hoy
+  // sigue a la última guardada en vez de quedar pegada a la de anteayer.
+  const ultimaDeLaSerie = actual?.puntos?.[actual.puntos.length - 1]?.d
+  useEffect(() => {
+    if (!vivas?.base || !ultimaDeLaSerie || !(vivas.base > ultimaDeLaSerie)) return undefined
+    let vivo = true
+    api.get(`/tecnico/${encodeURIComponent(asset)}?moneda=${moneda}${accionLocal ? '&local=1' : ''}${ref}`)
+      .then(r => { if (vivo && r?.disponible) setDatos(d => ({ ...d, [moneda]: r })) })
+      .catch(() => {})
+    return () => { vivo = false }
+  }, [vivas?.base, ultimaDeLaSerie, asset, moneda, accionLocal, ref])
   useEffect(() => {
     if (!conGrafico || eventos[moneda] !== undefined) return
     let vivo = true
@@ -603,16 +616,22 @@ export default function LecturaTecnica({
   const huecosDias = Math.max(0, finVista - total)
   const puntos = semanales ? velasSemanales(diarios, actual.puntos.slice(Math.max(0, inicioVista - 7), inicioVista)) : diarios
   const huecos = semanales ? Math.round(huecosDias / 5) : huecosDias
-  const dibujo = sumarVelaDeHoy({ puntos, huecos, vela: velaHoy, ultimaGuardada: actual.puntos[total - 1]?.d,
+  const dibujo = sumarVelaDeHoy({ puntos, huecos, vivas, ultimaGuardada: actual.puntos[total - 1]?.d,
     semanales, diarios, previos: actual.puntos.slice(Math.max(0, inicioVista - 7), inicioVista), alBorde: finVista >= total })
   const conHoy = dibujo.puntos[dibujo.puntos.length - 1]?.hoy ? dibujo.puntos[dibujo.puntos.length - 1] : null
+  // Las velas vivas que se ven, como días más de la serie (en diarias ocupan
+  // los lugares siguientes al último guardado, `diaDelLugar` da esos índices):
+  // medir, tu tesis de hoy y tus compras de hoy caen en ellas y no en «lo que
+  // todavía no pasó».
+  const vivasVistas = semanales ? [] : dibujo.puntos.slice(puntos.length)
+  const serieConHoy = vivasVistas.length ? [...actual.puntos, ...vivasVistas] : actual.puntos
   const vista = { n: nVista, fin: finVista, total }
   const zoom = (factor, f) => { const v2 = zoomVentana(vista, factor, f); if (v2) setVentana(v2); return !!v2 }
   const mover = (frac) => { const v2 = moverVentana(vista, frac); if (v2) setVentana(v2) }
   const promedio = lineaPromedio(actual.puntos, pnlPct,
     moneda === 'usd' ? variacionDeHoy(referencia?.precio, actual.cierre_ref) : 0)
   const ultimaFecha = actual.puntos[total - 1]?.d
-  const misMarcas = marcas(lotes, operaciones).filter(m => m.fecha <= ultimaFecha)
+  const misMarcas = marcas(lotes, operaciones).filter(m => m.fecha <= serieConHoy[serieConHoy.length - 1]?.d)
   // Si los precios no se pudieron actualizar en más de una semana, se avisa
   // arriba (antes sólo se veía la fecha en letra chica al pie).
   const diasViejo = ultimaFecha ? Math.floor((Date.now() - Date.parse(ultimaFecha + 'T12:00:00Z')) / 86400000) : 0
@@ -756,9 +775,9 @@ export default function LecturaTecnica({
   // mercado de antes, si fue un fin de semana) y al cierre de ese día. Antes
   // de lo que hay guardado, no va.
   const tesisEnVista = tesis.map(t => {
-    const i = indiceDeFecha(actual.puntos, String(t.escrita_el || '').slice(0, 10))
-    if (i == null || !(actual.puntos[i]?.c > 0)) return null
-    return { id: t.id, texto: t.texto, escrita_el: t.escrita_el, k: lugarDelDia(i), precio: actual.puntos[i].c }
+    const i = indiceDeFecha(serieConHoy, String(t.escrita_el || '').slice(0, 10))
+    if (i == null || !(serieConHoy[i]?.c > 0)) return null
+    return { id: t.id, texto: t.texto, escrita_el: t.escrita_el, k: lugarDelDia(i), precio: serieConHoy[i].c }
   }).filter(Boolean)
   // La nota nueva, ya escrita: se guarda con el resto (deshacer la incluye).
   const guardarNota = () => {
@@ -777,7 +796,7 @@ export default function LecturaTecnica({
   // «Ver tu tesis»: desde pantalla completa, primero vuelve a la ficha.
   const verTesis = onVerTesis ? () => { setElegido(null); if (grande) setGrande(false); setTimeout(onVerTesis, 0) } : null
   const herramienta = medir.activo ? 'medir' : dibujar.tipo
-  const medida = medir.activo ? medirEntre(actual.puntos, medir.a, medir.b) : null
+  const medida = medir.activo ? medirEntre(serieConHoy, medir.a, medir.b) : null
   // Lo que dice un punto medido: su día, o cuántos días de mercado después de hoy.
   const diaDicho = (fecha, adelante) => (fecha ? `el ${fechaCorta(fecha)}` : `dentro de ${adelante} día${adelante === 1 ? '' : 's'} de mercado`)
   const tenenciaEnMoneda = tenencia?.valorUsd > 0
@@ -855,7 +874,7 @@ export default function LecturaTecnica({
               className="mb-2 rounded-lg border border-rendi-accent/30 bg-rendi-accent/10 px-3 py-2 text-[12.5px] text-ink-1 leading-relaxed">
               {!medir.a && 'Tocá cualquier punto del gráfico para empezar a medir: el precio y el día donde tocás. También podés tocar el espacio vacío de la derecha, para medir hacia adelante.'}
               {medir.a && !medir.b && (
-                <span className="tabular">{`Desde ${fmtPrecio(medir.a.precio, moneda)}, ${diaDicho(actual.puntos[medir.a.i]?.d, medir.a.i - (total - 1))}. Ahora tocá el otro punto.`}</span>
+                <span className="tabular">{`Desde ${fmtPrecio(medir.a.precio, moneda)}, ${diaDicho(serieConHoy[medir.a.i]?.d, medir.a.i - (serieConHoy.length - 1))}. Ahora tocá el otro punto.`}</span>
               )}
               {medida && (
                 <>
@@ -983,7 +1002,7 @@ export default function LecturaTecnica({
               a: medir.a && { k: lugarDelDia(medir.a.i), precio: medir.a.precio },
               b: medir.b && { k: lugarDelDia(medir.b.i), precio: medir.b.precio }, m: medida,
               // Con el primer punto puesto, lo que daría la medición hasta el mouse.
-              hasta: medir.a && !medir.b ? (k, precio) => medirEntre(actual.puntos, medir.a, { i: diaDelLugar(k), precio }) : null,
+              hasta: medir.a && !medir.b ? (k, precio) => medirEntre(serieConHoy, medir.a, { i: diaDelLugar(k), precio }) : null,
             } : null}
             onToque={herramienta && herramienta !== 'pincel' ? tocar : null} onTerminar={terminarDesdeElGrafico}
             onPincel={herramienta === 'pincel' ? trazarPincel : null}
@@ -2052,7 +2071,9 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
 
   // Balances y dividendos dentro de lo que se ve, con su lugar (Galicia paga
   // todos los meses: en el celular eran doce «D» pisadas).
-  const hasta = puntos[puntos.length - 1]?.d
+  // En semanales, el último día de la última semana (`hasta`), no su lunes:
+  // un balance del jueves de esta semana también va.
+  const hasta = puntos[puntos.length - 1]?.hasta || puntos[puntos.length - 1]?.d
   // Cada dividendo con el anterior (para comparar) y qué parte del precio de
   // ese día fue, si el precio está en su misma moneda (Nico, 29/10).
   const divs = eventos.filter(e => e.tipo === 'dividendo').sort((a, b) => (a.fecha < b.fecha ? -1 : 1))
@@ -2120,7 +2141,11 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   const promCerca = promVisible && ultimo && Math.abs(pctY(promedio) - pctY(ultimo.c)) < 9
   const cerca = (val) => (ultimo && Math.abs(pctY(val) - pctY(ultimo.c)) < 7)
     || (promVisible && !promCerca && Math.abs(pctY(val) - pctY(promedio)) < 7)
-  const rsiCerca = (nivel) => ultimo?.rsi != null && Math.abs(nivel - ultimo.rsi) < 12
+  // RSI, ADX y Squeeze: los del último día guardado. Una vela viva no los trae
+  // (sumarVelaDeHoy), y sin esto los carteles de la derecha desaparecían
+  // durante toda la rueda (auditoría 30/10).
+  const ultimoInd = ultimo?.vivo ? [...puntos].reverse().find(p => !p.vivo) : ultimo
+  const rsiCerca = (nivel) => ultimoInd?.rsi != null && Math.abs(nivel - ultimoInd.rsi) < 12
   const verRsi = ver.rsi !== false
   const verAdx = !!fuerza && ver.fuerza !== false
 
@@ -2605,9 +2630,9 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
           <div className="absolute inset-y-0 right-0 w-[68px] text-[11px] text-ink-2 tabular pointer-events-none">
             {!rsiCerca(RSI_ESTIRADO) && <span className="absolute left-1.5 -translate-y-1/2" style={{ top: `${100 - RSI_ESTIRADO}%` }}>{RSI_ESTIRADO}</span>}
             {!rsiCerca(RSI_CASTIGADO) && <span className="absolute left-1.5 -translate-y-1/2" style={{ top: `${100 - RSI_CASTIGADO}%` }}>{RSI_CASTIGADO}</span>}
-            {ultimo?.rsi != null && (
+            {ultimoInd?.rsi != null && (
               <span className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 font-semibold"
-                style={{ top: `${100 - ultimo.rsi}%`, background: v('ink-1'), color: v('bg-0') }}>{Math.round(ultimo.rsi)}</span>
+                style={{ top: `${100 - ultimoInd.rsi}%`, background: v('ink-1'), color: v('bg-0') }}>{Math.round(ultimoInd.rsi)}</span>
             )}
           </div>
         </div>
@@ -2626,7 +2651,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
           </div>
           <div className="relative mt-1.5">
             <div className="relative mr-[72px] h-14 sm:h-24" role="img"
-              aria-label={`Fuerza de la tendencia (ADX)${ultimo?.adx != null ? `: ${fmtAdx(ultimo.adx)}` : ''}, con la línea de ${ADX_CLAVE}.`}>
+              aria-label={`Fuerza de la tendencia (ADX)${ultimoInd?.adx != null ? `: ${fmtAdx(ultimoInd.adx)}` : ''}, con la línea de ${ADX_CLAVE}.`}>
               <svg viewBox={`0 0 ${W} ${H_ADX}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
                 <rect x="0" y="0" width={W} height={fuerza.yClave} fill={v('rendi-accent')} fillOpacity="0.07" />
                 <line x1="0" x2={W} y1={fuerza.yClave} y2={fuerza.yClave} stroke={v('rendi-accent')} strokeWidth="1.2"
@@ -2642,9 +2667,9 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
               )}
             </div>
             <div className="absolute inset-y-0 right-0 w-[68px] text-[11px] tabular pointer-events-none">
-              {ultimo?.adx != null && (
+              {ultimoInd?.adx != null && (
                 <span aria-hidden="true" className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 font-semibold"
-                  style={{ top: `${Math.min(85, Math.max(15, fuerza.pctAdx(ultimo.adx)))}%`, background: v('ink-1'), color: v('bg-0') }}>{fmtAdx(ultimo.adx)}</span>
+                  style={{ top: `${Math.min(85, Math.max(15, fuerza.pctAdx(ultimoInd.adx)))}%`, background: v('ink-1'), color: v('bg-0') }}>{fmtAdx(ultimoInd.adx)}</span>
               )}
             </div>
           </div>
@@ -2656,7 +2681,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             </span>
           </div>
           <div className="relative mr-[72px] h-10 sm:h-16 mt-1" role="img"
-            aria-label={`Barras del Squeeze (si el precio empuja al alza o a la baja): verdes al alza, rojas a la baja.${ultimo?.squeeze ? ` La última, ${ultimo.squeeze > 0 ? 'verde' : 'roja'}.` : ''}`}>
+            aria-label={`Barras del Squeeze (si el precio empuja al alza o a la baja): verdes al alza, rojas a la baja.${ultimoInd?.squeeze ? ` ${ultimoInd === ultimo ? 'Hoy' : 'Al último cierre'}, ${ultimoInd.squeeze > 0 ? 'verde' : 'roja'}.` : ''}`}>
             <svg viewBox={`0 0 ${W} ${H_SQUEEZE}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
               <line x1="0" x2={W} y1={H_SQUEEZE / 2} y2={H_SQUEEZE / 2} stroke={v('chart-grid')} strokeWidth="1" vectorEffect="non-scaling-stroke" />
               {fuerza.barras.map(b => (

@@ -58,7 +58,8 @@ export function velaCompleta(p, cierreAnterior) {
  * el máximo y el mínimo de la semana, el cierre del último día, el volumen
  * sumado; las medias, las bandas, el RSI, el ADX y el Squeeze son los del último día (el
  * color del Squeeze se recalcula contra la semana anterior). `d` es el primer
- * día de la semana, así una compra a mitad de semana cae en su vela. `previos`:
+ * día de la semana, así una compra a mitad de semana cae en su vela; `hasta`, el
+ * último (el día de su cierre). `previos`:
  * los días de antes de `puntos` (la ventana del zoom), para que la primera
  * semana compare su Squeeze contra la semana anterior de verdad y no contra 0.
  */
@@ -75,15 +76,17 @@ export function velasSemanales(puntos = [], previos = []) {
     if (lunes !== clave) {
       if (actual) out.push(actual)
       clave = lunes
-      actual = { ...p, d: p.d, o: v.o, h: v.h, l: v.l, c: v.c, v: p.v ?? null, semana: true }
-    } else if (p.hoy) {
-      // La vela de hoy (sumarVelaDeHoy) no trae medias ni RSI: la semana se
-      // queda con los del último día guardado y se marca como la de hoy.
+      actual = { ...p, d: p.d, o: v.o, h: v.h, l: v.l, c: v.c, v: p.v ?? null, semana: true, hasta: p.d }
+    } else if (p.vivo) {
+      // Las velas que la noche todavía no guardó (sumarVelaDeHoy) no traen
+      // medias ni RSI: la semana se queda con los del último día guardado, y
+      // lo de la de hoy (en curso, su hora, la demora de la bolsa) pasa a la semana.
       actual = { ...actual, h: Math.max(actual.h, v.h), l: Math.min(actual.l, v.l), c: v.c,
-        v: p.v == null ? actual.v : (actual.v || 0) + p.v, hoy: true, enCurso: p.enCurso }
+        v: p.v == null ? actual.v : (actual.v || 0) + p.v, hasta: p.d,
+        hoy: p.hoy, enCurso: p.enCurso, actualizada: p.actualizada, demora: p.demora }
     } else {
       actual = { ...actual, h: Math.max(actual.h, v.h), l: Math.min(actual.l, v.l), c: v.c,
-        v: p.v == null ? actual.v : (actual.v || 0) + p.v,
+        v: p.v == null ? actual.v : (actual.v || 0) + p.v, hasta: p.d,
         s50: p.s50, s200: p.s200, bb_arriba: p.bb_arriba, bb_abajo: p.bb_abajo, rsi: p.rsi, adx: p.adx, squeeze: p.squeeze, squeeze_color: p.squeeze_color }
     }
   }
@@ -105,31 +108,38 @@ export function velasSemanales(puntos = [], previos = []) {
 }
 
 /**
- * La vela de HOY (useVelaDeHoy) al final de lo que dibuja el gráfico. Las
- * velas guardadas son de ruedas cerradas; la de hoy no se guarda hasta la
- * noche, así que va aparte y SÓLO al dibujo: las cuentas de la pantalla (los
- * lugares de los dibujos y las notas, el Fibonacci, las ondas, la lectura)
- * siguen con las guardadas, y la de hoy ocupa el primer lugar vacío de la
- * derecha, que es justamente el día siguiente al último guardado.
+ * Las velas que la noche todavía no guardó (useVelaDeHoy: la de HOY y, si hace
+ * falta, algún día cerrado sin guardar) al final de lo que dibuja el gráfico.
+ * Van SÓLO al dibujo: las cuentas de la pantalla (los lugares de los dibujos y
+ * las notas, el Fibonacci, las ondas, la lectura) siguen con las guardadas, y
+ * ocupan los primeros lugares vacíos de la derecha, que son justamente los días
+ * siguientes al último guardado.
  *
- *   · diarias: se agrega si ese lugar se ve (`huecos` ≥ 1) y le saca uno al aire;
- *   · semanales: se suma a la semana en curso (o abre una nueva un lunes) si el
- *     último día guardado se ve (`alBorde`).
- * Sin vela, con una fecha que ya está guardada o fuera de la vista: igual que antes.
+ * Se dibujan sólo si siguen a lo guardado que tiene la pantalla
+ * (`base === ultimaGuardada`): con la ficha abierta de un día para el otro, la
+ * noche guardó otra y la de hoy quedaría pegada a la de anteayer.
+ *   · diarias: si entran todas en el aire de la derecha que se ve; le sacan ese lugar;
+ *   · semanales: se suman a la semana en curso (o abren una nueva un lunes) si
+ *     el último día guardado se ve (`alBorde`) y, si abren una, hay lugar.
+ * Si no: igual que antes. Nunca cambia el ancho de las velas.
  *
  * @returns {{ puntos: Array, huecos: number }} lo que recibe el gráfico.
  */
-export function sumarVelaDeHoy({ puntos = [], huecos = 0, vela = null, ultimaGuardada = null,
+export function sumarVelaDeHoy({ puntos = [], huecos = 0, vivas = null, ultimaGuardada = null,
   semanales = false, diarios = [], previos = [], alBorde = false } = {}) {
   const sin = { puntos, huecos }
-  if (!vela || !(vela.c > 0) || !ultimaGuardada || !(vela.d > ultimaGuardada)) return sin
+  const velas = vivas?.velas || []
+  if (!velas.length || !ultimaGuardada || vivas.base !== ultimaGuardada
+    || !velas.every(x => x.c > 0 && x.d > ultimaGuardada)) return sin
   if (!semanales) {
-    if (huecos < 1) return sin
-    return { puntos: [...puntos, vela], huecos: huecos - 1 }
+    if (huecos < velas.length) return sin
+    return { puntos: [...puntos, ...velas], huecos: huecos - velas.length }
   }
   if (!alBorde) return sin
-  const semanas = velasSemanales([...diarios, vela], previos)
-  return { puntos: semanas, huecos: Math.max(0, huecos - (semanas.length - puntos.length)) }
+  const semanas = velasSemanales([...diarios, ...velas], previos)
+  const nuevas = semanas.length - puntos.length
+  if (nuevas > huecos) return sin
+  return { puntos: semanas, huecos: huecos - nuevas }
 }
 
 /**

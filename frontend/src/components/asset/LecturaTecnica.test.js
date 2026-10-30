@@ -48,6 +48,19 @@ vi.mock('../../utils/api', () => ({
   },
 }))
 
+// Cada dibujo de la vela viva (para ver lo que pasa ENTRE dos pintadas, que
+// desde afuera no se ve): el precio de la última vela si es viva, o null.
+const espia = vi.hoisted(() => ({ dibujadas: [] }))
+vi.mock('../../utils/tecnico', async (original) => {
+  const m = await original()
+  return { ...m, sumarVelaDeHoy: (a) => {
+    const r = m.sumarVelaDeHoy(a)
+    const u = r.puntos[r.puntos.length - 1]
+    espia.dibujadas.push(u?.vivo ? u.c : null)
+    return r
+  } }
+})
+
 let LecturaTecnica, ladoGlobo
 beforeAll(async () => {
   instalarNavegadorMinimo()
@@ -445,68 +458,125 @@ describe('LecturaTecnica', () => {
 describe('LecturaTecnica — la vela de hoy', () => {
   const ultimo = USD.puntos[USD.puntos.length - 1].d
   const manana = new Date(Date.parse(ultimo + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10)
-  const HOY = { vela: { d: manana, o: 234.9, h: 238, l: 234, c: 237.5, v: 900 }, en_rueda: true, actualizada: '2026-10-30T17:32:05Z' }
+  const VELA = { d: manana, o: 234.9, h: 238, l: 234, c: 237.5, v: 900, hoy: true }
+  const HOY = { velas: [VELA], en_rueda: true, demora_min: 0, actualizada: '2026-10-30T17:32:05Z', ultima_guardada: ultimo }
+  const RUTA = '/tecnico/AAPL/hoy?moneda=usd'
   const pedidosDeHoy = async () => {
     const { api } = await import('../../utils/api')
     return api.get.mock.calls.filter(([r]) => r.startsWith('/tecnico/AAPL/hoy')).length
   }
   const enCurso = () => contar(n => n.nodeName === 'G' && n.getAttribute?.('data-en-curso') === '')
   const tramoHoy = () => contar(n => n.getAttribute?.('data-tramo-hoy') === '')
-  const repintar = async () => { for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 })) }
+  const props = { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }
+  const repintar = async (otras = {}) => { for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { ...props, ...otras })) }
+  const nodos = (n) => [n, ...(n.childNodes || []).flatMap(nodos)]
+  const etiqueta = (inicio) => nodos(montado.contenedor).find(n => n.getAttribute?.('aria-label')?.startsWith(inicio))?.getAttribute('aria-label')
 
   it('en línea: el último tramo punteado y el pie dice de qué hora es el precio; la lectura no cambia', async () => {
-    respuestas = { '/tecnico/AAPL/hoy?moneda=usd': HOY, '/tecnico/AAPL?moneda=usd': USD }
+    respuestas = { [RUTA]: HOY, '/tecnico/AAPL?moneda=usd': USD }
     const t = await dibujar({ pnlPctUsd: 0.1 })
     expect(t).toContain('La última vela es la de hoy, en curso (precio de las 14:32): se actualiza sola cada minuto.')
     expect(tramoHoy()).toBe(1)
-    expect(t).toContain('Bajista')                       // la lectura sigue con el cierre de ayer
-    expect(porEtiqueta('Precio con su promedio').getAttribute('aria-label')).toContain('Precio de hoy, en curso')
+    expect(etiqueta('Precio con su promedio')).toContain('Precio de hoy, en curso US$ 237,50')
   })
 
-  it('en velas: una vela de más, transparente, y en semanales se suma a la última semana', async () => {
-    respuestas = { '/tecnico/AAPL/hoy?moneda=usd': HOY, '/tecnico/AAPL?moneda=usd': USD }
+  it('en velas: una vela de más, transparente; en semanales se suma a la última semana y conserva la demora', async () => {
+    respuestas = { [RUTA]: { ...HOY, demora_min: 20 }, '/tecnico/AAPL?moneda=usd': USD }
     await dibujar({ pnlPctUsd: 0.1 })
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Velas'))
     await repintar()
     expect(enCurso()).toBe(1)
-    const diarias = velasDibujadas()
     await clic(montado.contenedor, buscarBoton(montado.contenedor, '1D'))
     await repintar()
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Semanales'))
     await repintar()
-    expect(texto(montado.contenedor)).toContain('La última vela incluye hoy, en curso')
+    expect(texto(montado.contenedor)).toContain('La última vela incluye hoy, en curso: se actualiza sola cada minuto, pero los precios de esta bolsa llegan con unos 20 minutos de demora.')
     expect(enCurso()).toBe(1)
-    expect(velasDibujadas()).toBeLessThan(diarias)
   })
 
-  it('sin vela de hoy (antes de la apertura) el gráfico queda como siempre', async () => {
-    respuestas = { '/tecnico/AAPL/hoy?moneda=usd': { vela: null }, '/tecnico/AAPL?moneda=usd': USD }
-    const t = await dibujar({ pnlPctUsd: 0.1 })
-    expect(t).not.toContain('La última vela')
+  it('con la vela de hoy siguen los números del ADX y del Squeeze (los del último cierre)', async () => {
+    const ultimoF = CON_FUERZA.puntos[CON_FUERZA.puntos.length - 1].d
+    respuestas = { [RUTA]: { ...HOY, ultima_guardada: ultimoF }, '/tecnico/AAPL?moneda=usd': CON_FUERZA }
+    await dibujar({ pnlPctUsd: null })
+    expect(tramoHoy()).toBe(1)
+    expect(etiqueta('Fuerza de la tendencia')).toContain('(ADX): 25, con la línea de 23')
+    expect(etiqueta('Barras del Squeeze')).toMatch(/Al último cierre, (verde|roja)\./)
+  })
+
+  it('si la vela no sigue a la serie que tiene la pantalla, no se dibuja y la serie se vuelve a pedir sola', async () => {
+    const { api } = await import('../../utils/api')
+    api.get.mockClear()
+    // La noche guardó una vela más (`ultima_guardada` es mañana para esta pantalla).
+    respuestas = { [RUTA]: { ...HOY, ultima_guardada: manana, velas: [{ ...VELA, d: '2099-01-01' }] }, '/tecnico/AAPL?moneda=usd': USD }
+    await dibujar({ pnlPctUsd: 0.1 })
     expect(tramoHoy()).toBe(0)
+    const series = api.get.mock.calls.filter(([r]) => r.startsWith('/tecnico/AAPL?moneda=usd')).length
+    expect(series).toBe(2)
   })
 
-  it('la pide cada minuto con la rueda abierta; cerrada, deja de pedirla', async () => {
+  it('sin vela todavía (antes de la apertura) no dibuja nada, pero con la rueda abierta sigue pidiendo', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     try {
       const { api } = await import('../../utils/api')
       api.get.mockClear()
-      respuestas = { '/tecnico/AAPL/hoy?moneda=usd': HOY, '/tecnico/AAPL?moneda=usd': USD }
-      await dibujar({ pnlPctUsd: 0.1 })
-      expect(await pedidosDeHoy()).toBe(1)
+      respuestas = { [RUTA]: { ...HOY, velas: [] }, '/tecnico/AAPL?moneda=usd': USD }
+      const t = await dibujar({ pnlPctUsd: 0.1 })
+      expect(t).not.toContain('La última vela')
+      expect(tramoHoy()).toBe(0)
+      // Llega el primer precio del día: aparece sola, sin volver a abrir la ficha.
+      respuestas[RUTA] = HOY
       vi.advanceTimersByTime(60_000)
       await repintar()
       expect(await pedidosDeHoy()).toBe(2)
-      respuestas['/tecnico/AAPL/hoy?moneda=usd'] = { ...HOY, en_rueda: false }
+      expect(tramoHoy()).toBe(1)
+      // Yahoo no contesta un minuto: la vela que se veía no se borra.
+      respuestas[RUTA] = { ...HOY, velas: [] }
       vi.advanceTimersByTime(60_000)
       await repintar()
-      expect(await pedidosDeHoy()).toBe(3)
-      expect(texto(montado.contenedor)).toContain('la rueda cerró y se guarda esta noche')
-      vi.advanceTimersByTime(5 * 60_000)
-      await repintar()
-      expect(await pedidosDeHoy()).toBe(3)
+      expect(tramoHoy()).toBe(1)
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('cerrada la rueda se espacia a la próxima media hora, y vuelve a pedir sola', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+    try {
+      vi.setSystemTime(new Date('2026-10-30T20:05:00Z'))
+      const { api } = await import('../../utils/api')
+      api.get.mockClear()
+      respuestas = { [RUTA]: { ...HOY, en_rueda: false }, '/tecnico/AAPL?moneda=usd': USD }
+      await dibujar({ pnlPctUsd: 0.1 })
+      expect(await pedidosDeHoy()).toBe(1)
+      expect(texto(montado.contenedor)).toContain('la rueda cerró y se guarda esta noche')
+      // De a un minuto, como pasa de verdad (la respuesta llega entre tic y tic).
+      const minutos = async (n) => { for (let i = 0; i < n; i++) { vi.advanceTimersByTime(60_000); await repintar() } }
+      await minutos(20)                                 // 20:25: todavía no
+      expect(await pedidosDeHoy()).toBe(1)
+      await minutos(10)                                 // 20:35: pasó la media hora (+ margen)
+      expect(await pedidosDeHoy()).toBe(2)
+      await minutos(20)                                 // 20:55: la próxima es a las 21
+      expect(await pedidosDeHoy()).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('al volver a una moneda ya cargada no se dibuja ni un instante la vela de la otra', async () => {
+    const pesos = { ...VELA, o: 345000, h: 346000, l: 344000, c: 345500 }
+    respuestas = { [RUTA]: HOY, '/tecnico/AAPL/hoy?moneda=ars': { ...HOY, velas: [pesos] },
+      '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
+    await dibujar({ pnlPctUsd: 0.1 })
+    expect(etiqueta('Precio con su promedio')).toContain('237,50')
+    await elegirEnLaVista(montado.contenedor, 'Pesos')
+    for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, props))
+    expect(etiqueta('Precio con su promedio')).toContain('345.500')
+    // De vuelta a dólares: la serie ya está cargada y se dibuja enseguida; la
+    // vela de pesos (345.500) no puede aparecer sobre ella ni en un dibujo.
+    espia.dibujadas.length = 0
+    await elegirEnLaVista(montado.contenedor, 'Dólares')
+    for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, props))
+    expect(espia.dibujadas).not.toContain(345500)
+    expect(espia.dibujadas[espia.dibujadas.length - 1]).toBe(237.5)
   })
 })

@@ -42,9 +42,11 @@ const EVENTOS = {
   ],
 }
 
+// La vela de hoy (GET /tecnico/{activo}/hoy): sin velas, salvo que la prueba ponga una.
+const HOY = vi.hoisted(() => ({ resp: { velas: [], en_rueda: false } }))
 vi.mock('../../utils/api', () => ({
   getClientContext: () => null,   // mirando tu propia cuenta (no la de un cliente)
-  api: { get: vi.fn((ruta) => Promise.resolve(ruta.includes('/eventos') ? EVENTOS : DATOS)) },
+  api: { get: vi.fn((ruta) => Promise.resolve(ruta.includes('/hoy?') ? HOY.resp : ruta.includes('/eventos') ? EVENTOS : DATOS)) },
 }))
 
 let LecturaTecnica, diasRecientes, PX_POR_VELA
@@ -61,6 +63,7 @@ let montado, props
 // prende desde «Indicadores» (lo que se prende queda guardado así).
 beforeEach(() => { try { localStorage.setItem('rendi_grafico_capas', JSON.stringify(CAPAS_TODAS)) } catch { /* sin almacenamiento */ } })
 afterEach(async () => {
+  HOY.resp = { velas: [], en_rueda: false }
   if (montado) await montado.desmontar()
   montado = null
   localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
@@ -179,6 +182,23 @@ describe('medir entre dos puntos (como la regla de TradingView)', () => {
     // Y con el dedo, igual.
     await toqueEn(995)
     expect(status()).toContain(`dentro de ${bajo(995) - 699} días de mercado. Ahora tocá el otro punto.`)
+  })
+
+  it('la vela de hoy se mide como un día más, no como «lo que todavía no pasó»', async () => {
+    const manana = new Date(Date.parse(puntos[699].d + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10)
+    HOY.resp = { velas: [{ d: manana, o: 140, h: 142, l: 139, c: 141, v: 1, hoy: true }], en_rueda: true,
+      demora_min: 0, actualizada: '2026-10-30T17:32:05Z', ultima_guardada: puntos[699].d }
+    await dibujar()
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Medir entre dos puntos')); await redibujar()
+    const xHoy = Math.round((700 / (LUGARES - 1)) * 1000)         // el lugar 700: el primero del aire, donde va la de hoy
+    expect(bajo(xHoy)).toBe(700)
+    await clickEn(300)
+    await clickEn(xHoy, 40)
+    const t = status()
+    expect(t).toContain(`en ${700 - bajo(300)} días de mercado`)
+    expect(t).toContain(`(el ${fecha(manana)})`)
+    expect(t).not.toContain('dentro de')
+    expect(t).not.toContain('todavía no hay precios')
   })
 
   it('con un punto puesto, el otro extremo sigue al mouse hasta el segundo click', async () => {

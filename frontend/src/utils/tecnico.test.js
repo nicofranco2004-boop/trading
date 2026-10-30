@@ -483,8 +483,11 @@ describe('sumarVelaDeHoy', () => {
   // Lunes 26/10 a jueves 29/10 guardados; hoy es el viernes 30.
   const dias = ['2026-10-26', '2026-10-27', '2026-10-28', '2026-10-29']
     .map((d, i) => ({ d, o: 100 + i, h: 102 + i, l: 99 + i, c: 101 + i, v: 10, s50: 95, s200: 90, rsi: 55 }))
-  const hoy = { d: '2026-10-30', o: 104, h: 110, l: 103, c: 108, v: 4, hoy: true, enCurso: true }
-  const base = { puntos: dias, huecos: 3, vela: hoy, ultimaGuardada: '2026-10-29', diarios: dias, alBorde: true }
+  // La forma que arma useVelaDeHoy.
+  const hoy = { d: '2026-10-30', o: 104, h: 110, l: 103, c: 108, v: 4, vivo: true, hoy: true, enCurso: true,
+    actualizada: '2026-10-30T17:32:05Z', demora: 20 }
+  const vivas = (...velas) => ({ velas, base: '2026-10-29', enRueda: true })
+  const base = { puntos: dias, huecos: 3, vivas: vivas(hoy), ultimaGuardada: '2026-10-29', diarios: dias, alBorde: true }
 
   it('diarias: la agrega al final y le saca un lugar al aire (el ancho no cambia)', () => {
     const r = sumarVelaDeHoy(base)
@@ -495,17 +498,32 @@ describe('sumarVelaDeHoy', () => {
     expect(dias).toHaveLength(4)                       // lo guardado no se toca
   })
 
-  it('sin ese lugar a la vista (mirando el pasado), no se dibuja', () => {
+  it('un día cerrado sin guardar va antes que el de hoy, cada uno en su lugar', () => {
+    // La cripto entre las 21 y la noche: el 30 (UTC) cerró y todavía no se guardó.
+    const viernes = { ...hoy, d: '2026-10-30', hoy: false, enCurso: false }
+    const sabado = { ...hoy, d: '2026-10-31' }
+    const r = sumarVelaDeHoy({ ...base, vivas: vivas(viernes, sabado) })
+    expect(r.puntos.map(p => p.d).slice(-3)).toEqual(['2026-10-29', '2026-10-30', '2026-10-31'])
+    expect(r.huecos).toBe(1)
+  })
+
+  it('si no siguen a lo guardado que tiene la pantalla (abierta de un día para el otro), no se dibujan', () => {
+    expect(sumarVelaDeHoy({ ...base, vivas: { ...vivas(hoy), base: '2026-10-30' } }).puntos).toBe(dias)
+  })
+
+  it('sin lugar para todas a la vista (mirando el pasado), no se dibujan', () => {
     expect(sumarVelaDeHoy({ ...base, huecos: 0 })).toEqual({ puntos: dias, huecos: 0 })
+    const viernes = { ...hoy, hoy: false }
+    expect(sumarVelaDeHoy({ ...base, huecos: 1, vivas: vivas(viernes, { ...hoy, d: '2026-10-31' }) }).puntos).toBe(dias)
   })
 
-  it('sin vela, sin precio o con una fecha ya guardada: igual que antes', () => {
-    expect(sumarVelaDeHoy({ ...base, vela: null }).puntos).toBe(dias)
-    expect(sumarVelaDeHoy({ ...base, vela: { ...hoy, c: 0 } }).puntos).toBe(dias)
-    expect(sumarVelaDeHoy({ ...base, vela: { ...hoy, d: '2026-10-29' } }).puntos).toBe(dias)
+  it('sin velas, sin precio o con una fecha ya guardada: igual que antes', () => {
+    expect(sumarVelaDeHoy({ ...base, vivas: null }).puntos).toBe(dias)
+    expect(sumarVelaDeHoy({ ...base, vivas: vivas({ ...hoy, c: 0 }) }).puntos).toBe(dias)
+    expect(sumarVelaDeHoy({ ...base, vivas: vivas({ ...hoy, d: '2026-10-29' }) }).puntos).toBe(dias)
   })
 
-  it('semanales: se suma a la semana en curso con sus medias y el RSI del último día guardado', () => {
+  it('semanales: se suma a la semana en curso con las medias del último día guardado y lo de la de hoy', () => {
     const semanas = velasSemanales(dias)
     const r = sumarVelaDeHoy({ ...base, puntos: semanas, huecos: 1, semanales: true })
     expect(r.puntos).toHaveLength(1)
@@ -513,22 +531,30 @@ describe('sumarVelaDeHoy', () => {
     const s = r.puntos[0]
     expect([s.o, s.h, s.l, s.c, s.v]).toEqual([100, 110, 99, 108, 44])
     expect([s.s50, s.s200, s.rsi]).toEqual([95, 90, 55])
-    expect(s.hoy).toBe(true)
-    expect(s.enCurso).toBe(true)
+    // Lo de la vela de hoy pasa a la semana: sin esto, en BYMA el pie perdía la demora.
+    expect(s).toMatchObject({ hoy: true, enCurso: true, demora: 20, actualizada: hoy.actualizada, hasta: '2026-10-30' })
+    expect(s.vivo).toBeUndefined()                     // la semana tiene sus indicadores
+    expect(textoVelaDeHoy(s, true)).toMatch(/20 minutos de demora/)
   })
 
-  it('semanales: un lunes abre una semana nueva y ocupa un lugar del aire', () => {
+  it('semanales: un lunes abre una semana nueva si hay lugar; si no, no se suma', () => {
     const lunes = { ...hoy, d: '2026-11-02' }
     const semanas = velasSemanales(dias)
-    const r = sumarVelaDeHoy({ ...base, vela: lunes, puntos: semanas, huecos: 1, semanales: true })
+    const r = sumarVelaDeHoy({ ...base, vivas: vivas(lunes), puntos: semanas, huecos: 1, semanales: true })
     expect(r.puntos).toHaveLength(2)
-    expect(r.puntos[1]).toMatchObject({ d: '2026-11-02', c: 108, hoy: true, semana: true })
+    expect(r.puntos[1]).toMatchObject({ d: '2026-11-02', c: 108, hoy: true, semana: true, vivo: true })
     expect(r.huecos).toBe(0)
+    // Sin aire a la derecha, abrir una semana angostaría todas las velas.
+    expect(sumarVelaDeHoy({ ...base, vivas: vivas(lunes), puntos: semanas, huecos: 0, semanales: true }).puntos).toBe(semanas)
   })
 
   it('semanales: si el último día guardado no se ve, no se suma', () => {
     const semanas = velasSemanales(dias)
     expect(sumarVelaDeHoy({ ...base, puntos: semanas, semanales: true, alBorde: false }).puntos).toBe(semanas)
+  })
+
+  it('cada semana sabe su último día (`hasta`): el de su cierre, no su lunes', () => {
+    expect(velasSemanales(dias)[0]).toMatchObject({ d: '2026-10-26', hasta: '2026-10-29' })
   })
 })
 

@@ -12369,20 +12369,27 @@ def tecnico_en_fechas(data: TendenciasEnFechasIn, request: Request, uid: int = D
 
 
 @app.get("/api/tecnico/{asset}/hoy")
-def get_tecnico_hoy(asset: str, moneda: str = "usd", local: int = 0,
+def get_tecnico_hoy(asset: str, request: Request, moneda: str = "usd", local: int = 0,
                     uid: int = Depends(get_effective_user)):
-    """La vela de HOY del gráfico de la ficha mientras la rueda se mueve
-    (`tecnico.vela_de_hoy`): {vela: {d,o,h,l,c,v} | None, en_rueda, actualizada}.
-    La pantalla la vuelve a pedir cada minuto con la ficha a la vista; Yahoo
-    recibe un pedido por minuto por activo, no por persona
-    (`velas_diarias.vela_en_curso`). No baja historia: si el activo no tiene
-    velas guardadas, no hay vela de hoy."""
+    """Las ruedas que la noche todavía no guardó, con la de HOY mientras se
+    mueve, del gráfico de la ficha (`tecnico.vela_de_hoy`): {velas: [{d,o,h,l,c,v,hoy}],
+    en_rueda, demora_min, actualizada, ultima_guardada}. La pantalla la vuelve a pedir cada minuto
+    con la ficha a la vista; Yahoo recibe un pedido por minuto por activo, no
+    por persona (`velas_diarias.ruedas_recientes`). No baja historia: si el
+    activo no tiene velas guardadas, no hay vela de hoy, así que sólo puede
+    hacer salir a Yahoo por lo que alguien ya sigue."""
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
+    # Una ficha pide 1 por minuto (2 si mira las dos monedas): 40 por minuto es
+    # mucho más que eso y frena recorrer todos los activos para hacer pegarle a Yahoo.
+    _check_rate_limit(request, max_calls=40, window_seconds=60, suffix=f"tecnico_hoy:{uid}")
     import tecnico
+    # La base se lee y se CIERRA antes de salir a Yahoo y al dólar: en Postgres,
+    # leer deja la transacción abierta hasta cerrar la conexión.
     with db_abierta() as conn:
-        return tecnico.vela_de_hoy(conn, sym, moneda, bool(local))
+        prep = tecnico.preparar_vela_de_hoy(conn, sym, moneda, bool(local))
+    return tecnico.vela_de_hoy(prep)
 
 
 @app.get("/api/tecnico/{asset}/peso")
