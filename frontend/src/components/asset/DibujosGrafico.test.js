@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } 
 import { CAPAS_TODAS } from './BarraGrafico'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, enActo, medidas, clic, buscarBoton } from '../../testing/navegadorMinimo'
+import { elegirEnLaVista, opcionesDeLaVista, periodoElegido } from '../../testing/menuGrafico'
 import { MemoryRouter } from 'react-router-dom'
 import { margenDerecho } from '../../utils/tecnico'
 
@@ -218,7 +219,7 @@ describe('línea de tendencia', () => {
     await montado.desmontar()
     await dibujar()                                            // otra visita
     expect(linea()).toHaveLength(2)
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos')); await redibujar(); await redibujar()
+    await elegirEnLaVista(montado.contenedor, 'Pesos'); await redibujar(); await redibujar()
     expect(linea()).toHaveLength(0)
     expect(boton('borrarDibujos').getAttribute('aria-disabled')).toBe('true')
   })
@@ -228,7 +229,7 @@ describe('línea de tendencia', () => {
     await dibujar({ lotes: [{ entry_date: puntos[609].d, quantity: 1 }] })
     await usar('tendencia'); await clickEn(860, 180); await clickEn(940, 60)   // los dos, días con precio
     const [t] = guardados()
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Desde que lo tenés')); await redibujar()
+    await elegirEnLaVista(montado.contenedor, 'Desde que lo tenés'); await redibujar()
     // Los últimos 91 días más su aire.
     const lug = 91 + margenDerecho(91)
     const enX = (d) => ((puntos.findIndex(p => p.d === d) - (700 - 91)) / (lug - 1)) * 100

@@ -20,7 +20,9 @@
 // Una sola barra para compu y celular (R6): en compu va parada, pegada a la
 // izquierda del gráfico, con el ícono solo y el nombre al pasar el mouse; en el
 // celular es la MISMA fila acostada arriba del gráfico, que se desliza de costado,
-// con botones de 44 px y el nombre a la vista (no hay mouse que pase por encima).
+// con botones de 44 × 44 px y también sólo el ícono (Nico, 29/10: con el nombre
+// al lado era un renglón más antes del gráfico). El nombre queda para el lector
+// de pantalla y, en los que abren un menú, como título del menú.
 // El menú de Fibonacci y Elliott se abre al lado del botón (o debajo, si al lado
 // no entra) y por encima de todo: adentro de la fila que se desliza quedaría cortado.
 //
@@ -114,14 +116,13 @@ function Boton({ b, onAviso, refBoton, abierto }) {
         onAviso?.(null)
         b.onClick()
       }}
-      className={`group relative shrink-0 inline-flex items-center gap-1.5 h-11 min-w-11 px-3 sm:h-9 sm:w-9 sm:min-w-0 sm:px-0 sm:justify-center rounded-lg border text-[12.5px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-rendi-accent ${clase}`}>
+      className={`group relative shrink-0 inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg border text-[12.5px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-rendi-accent ${clase}`}>
       <span aria-hidden="true" className={`relative inline-flex items-center justify-center w-5 h-5 ${b.sinDatos ? 'opacity-45 grayscale' : ''}`}>
         {b.icono}
       </span>
-      <span className="whitespace-nowrap sm:sr-only">{b.nombre}</span>
-      {b.menu && <ChevronDown size={13} aria-hidden="true" className="sm:hidden -ml-0.5 text-ink-2" />}
-      {/* En compu, la marquita de «tiene opciones» en la esquina (como TradingView). */}
-      {b.menu && <span aria-hidden="true" className="hidden sm:block absolute right-0.5 bottom-0.5 w-0 h-0 border-l-4 border-l-transparent border-b-4 border-b-ink-3" />}
+      <span className="sr-only">{b.nombre}</span>
+      {/* La marquita de «tiene opciones» en la esquina (como TradingView). */}
+      {b.menu && <span aria-hidden="true" className="absolute right-0.5 bottom-0.5 w-0 h-0 border-l-4 border-l-transparent border-b-4 border-b-ink-3" />}
       {b.sinDatos && <span className="sr-only">{`: ${b.sinDatos}`}</span>}
       {/* El globo con el nombre, al pasar el mouse o con el foco (sólo compu). */}
       {!abierto && (

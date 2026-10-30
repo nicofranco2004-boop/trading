@@ -27,6 +27,10 @@
 // precios del eje van en su propia columna a la derecha (no tapan la línea) y
 // las tarjetas se acomodan en la grilla. Colores sólo por variables del tema
 // (R8): `rgb(var(--token))` en el SVG, que sigue al modo claro y al oscuro.
+// Lo que cambia en un gráfico angosto (el celular) se decide por el ancho del
+// GRÁFICO, que él mismo mide, nunca por el de la pantalla: abre con lo reciente
+// (diasRecientes) y, si los dividendos se pisarían, muestra sólo los balances
+// (dividendosAmontonados).
 //
 // Debajo del RSI, la fuerza de la tendencia en dos franjas: el ADX con su línea
 // de 23 y las barras del Squeeze (el combo «DMI/ADX/KEYLEVEL» + «SQZMOM_LB» de
@@ -82,6 +86,51 @@ const H = 260
 // Dos marcas de balance o dividendo más cerca que esto (en la pantalla) se
 // juntan: es lo que ocupa una marca con su número al lado («D 2»).
 const MARCA_PX = 34
+
+// Con qué se abre un gráfico ANGOSTO (Nico, 29/10). En el celular el gráfico
+// mide ~250 px: con «Todo» eran 752 velas a 0,33 px cada una, una mancha. La
+// temporalidad (velas diarias o semanales) no cambia sola nunca, como en
+// TradingView: lo que cambia es cuánto se ve al abrir. Las velas más recientes
+// que entran a PX_POR_VELA, terminando hoy y con el aire de la derecha de
+// siempre; «Todo» sigue en el menú y muestra la historia entera.
+//   · 4 px: la vela es el 65 % de su lugar, así que queda un cuerpo de 2,6 px
+//     con su color y 1,4 px de aire con la de al lado: se distingue cada una.
+//     En 250 px entran ~60 velas, unos 3 meses de diarias (o ~14 meses de
+//     semanales): el panorama del viejo rango «3M». Con 6 px serían 2 meses y
+//     ya no se ve hacia dónde venía el precio.
+//   · Se mide el ancho del GRÁFICO (no de la pantalla, R6): angosto es menos de
+//     ANCHO_ANGOSTO. El celular más ancho (430 px) deja un gráfico de ~350; en
+//     la compu, aun con la ficha angosta, pasa de 600. En la compu se abre con
+//     «Todo», como siempre.
+export const PX_POR_VELA = 4
+export const ANCHO_ANGOSTO = 480
+/**
+ * Cuántos días de mercado se ven al abrir un gráfico de `ancho` px, o null si
+ * es «Todo» (gráfico ancho, sin medir todavía, o la historia ya entra
+ * completa). `porVela`: días por vela (5 en semanales).
+ */
+export function diasRecientes(ancho, total, porVela = 1) {
+  if (!(ancho > 0) || ancho >= ANCHO_ANGOSTO) return null
+  const lugares = Math.floor(ancho / PX_POR_VELA)
+  // Las velas más su aire de la derecha (tecnico.margenDerecho, en días) tienen que entrar.
+  let velas = lugares
+  while (velas > RUEDAS_MINIMAS && velas + margenDerecho(velas * porVela) / porVela > lugares) velas--
+  const dias = velas * porVela
+  return dias < total ? dias : null
+}
+
+/**
+ * Balances y dividendos en lo que se ve (Nico, 29/10): si dos dividendos
+ * seguidos quedarían a menos de MARCA_PX en la pantalla, los dividendos no se
+ * muestran (con la historia entera en el celular, cada marca era «4», mezcla
+ * de todo). Quedan los balances, que son de a uno por trimestre; los
+ * dividendos aparecen al acercar, cuando entran separados. `pctX(i)`: dónde
+ * cae el día `i` (0 a 100); `ancho`: el del gráfico en px.
+ */
+export function dividendosAmontonados(eventos, pctX, ancho) {
+  const xs = eventos.filter(e => e.tipo === 'dividendo').map(e => pctX(e.i)).sort((a, b) => a - b)
+  return xs.some((x, k) => k > 0 && ((x - xs[k - 1]) / 100) * ancho < MARCA_PX)
+}
 const H_RSI = 64
 // Cuánto hay entre los dos primeros dedos (para pellizcar).
 const distanciaDedos = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
@@ -139,10 +188,14 @@ export default function LecturaTecnica({
   titulo = 'Análisis técnico',
 }) {
   const [moneda, setMoneda] = useState('usd')
-  // «Todo» (toda la historia que guarda Rendi) o «Desde que lo tenés»: los
-  // rangos cortos (3M, 1A, 2A) se sacaron (Nico, 29/10); para acercar está la
-  // ruedita, pellizcar o arrastrar las fechas.
-  const [rango, setRango] = useState('todo')
+  // «Todo» (toda la historia que guarda Rendi), «Desde que lo tenés» o, en un
+  // gráfico angosto, «Lo reciente» (diasRecientes). null = el de entrada: lo
+  // reciente si el gráfico es angosto, si no «Todo». Los rangos cortos (3M,
+  // 1A, 2A) se sacaron (Nico, 29/10); para acercar está la ruedita, pellizcar o
+  // arrastrar las fechas.
+  const [rango, setRango] = useState(null)
+  // El ancho del gráfico en px, que mide el propio gráfico (null = sin medir).
+  const [anchoGrafico, setAnchoGrafico] = useState(null)
   const [datos, setDatos] = useState({ usd: undefined, ars: undefined })
   // Qué capas se ven: la barra de herramientas prende y apaga cada una. De
   // entrada, todas (Nico, 24/10); lo que cada uno apaga queda guardado.
@@ -319,7 +372,7 @@ export default function LecturaTecnica({
   const [tipo, setTipoEstado] = useState(tipoGuardado)
   const setTipo = (t) => { setTipoEstado(t); guardarTipo(t) }
   // Zoom con la rueda y arrastre: qué ruedas se ven ({ n: cuántas, fin: hasta
-  // cuál, sin incluirla }). null = el del rango elegido («Todo» o «Desde que lo tenés»).
+  // cuál, sin incluirla }). null = el del rango elegido («Todo», «Lo reciente» o «Desde que lo tenés»).
   const [ventana, setVentana] = useState(null)
   // Velas diarias siempre; semanales sólo si se eligen (para mirar el panorama
   // de 2 años). El análisis (Fibonacci, giros) se hace sobre las diarias.
@@ -397,8 +450,10 @@ export default function LecturaTecnica({
       ? (costoPesos.cantidad * ultimo) / costoPesos.invertido - 1 : null
   }, [moneda, pnlPctUsd, pnlPctLinea, actual, costoPesos])
 
-  const marco = (hijos, conPesos = datos.ars?.disponible !== false) => (
-    <Marco moneda={moneda} setMoneda={setMoneda} rango={ventana ? null : rango} setRango={elegirRango}
+  // `visto`: el rango que se está viendo (null si se acercó o movió a mano);
+  // `recientes`: cuántos días es «Lo reciente» (null = no hace falta).
+  const marco = (hijos, { conPesos = datos.ars?.disponible !== false, visto = ventana ? null : rango ?? (anchoGrafico > 0 && anchoGrafico < ANCHO_ANGOSTO ? 'reciente' : 'todo'), recientes = null } = {}) => (
+    <Marco moneda={moneda} setMoneda={setMoneda} rango={visto} setRango={elegirRango} recientes={recientes}
       conPesos={conPesos} conTuyo={!!primera} tipo={tipo} setTipo={setTipo} intervalo={intervalo} setIntervalo={setIntervalo}
       grande={grande} setGrande={setGrande} titulo={titulo}>{hijos}</Marco>
   )
@@ -420,7 +475,7 @@ export default function LecturaTecnica({
   }
   if (!actual?.disponible) {
     if (moneda === 'ars' && datos.usd?.disponible) {
-      return marco(<p className="text-sm text-ink-2">Este activo no tiene precio en pesos.</p>, false)
+      return marco(<p className="text-sm text-ink-2">Este activo no tiene precio en pesos.</p>, { conPesos: false })
     }
     // Sin velas: el gráfico de siempre. Si el servidor no las pudo traer en el
     // momento (un activo que nadie sigue), se dice por qué (`motivo`).
@@ -443,11 +498,15 @@ export default function LecturaTecnica({
   }
 
   const total = actual.puntos.length
+  const semanales = tipo === 'velas' && intervalo === 'semana'
   // Cuántos días muestra el rango elegido; «Desde que lo tenés», desde tu
-  // primera compra.
-  const nRango = rango === 'tuyo' && primera
+  // primera compra; «Lo reciente», las velas que entran a un ancho legible.
+  const recientes = diasRecientes(anchoGrafico, total, semanales ? 5 : 1)
+  const rangoVisto = rango ?? (recientes ? 'reciente' : 'todo')
+  const nRango = rangoVisto === 'tuyo' && primera
     ? Math.max(RUEDAS_MINIMAS, puntosDesde(actual.puntos, primera))
-    : actual.puntos.length
+    : rangoVisto === 'reciente' && recientes ? recientes
+      : actual.puntos.length
   // La ventana en LUGARES (ver tecnico.margenDerecho): los días que se ven más
   // el aire vacío de la derecha, por donde se puede arrastrar hacia el futuro.
   const inicial = ventanaInicial(nRango, total)
@@ -457,7 +516,6 @@ export default function LecturaTecnica({
   const inicioVista = Math.max(0, finVista - nVista)
   const diarios = actual.puntos.slice(inicioVista, Math.min(finVista, total))
   const huecosDias = Math.max(0, finVista - total)
-  const semanales = tipo === 'velas' && intervalo === 'semana'
   const puntos = semanales ? velasSemanales(diarios, actual.puntos.slice(Math.max(0, inicioVista - 7), inicioVista)) : diarios
   const huecos = semanales ? Math.round(huecosDias / 5) : huecosDias
   const vista = { n: nVista, fin: finVista, total }
@@ -717,7 +775,19 @@ export default function LecturaTecnica({
           } grande={grande} puntos={puntos} huecos={huecos} moneda={moneda} promedio={ver.prom ? promedio : null}
             marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo}
             fibonacci={ver.fib ? actual.fibonacci : null} elliott={ver.ell ? actual.elliott : null} onZoom={zoom} onMover={mover}
-            onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rango}|${tipo}|${intervalo}`}
+            pie={
+              // Cómo se usa, corto (Nico, 29/10): en el celular, para el dedo
+              // (antes hablaba de «la ruedita»). Va pegado a las fechas, antes
+              // del RSI y la fuerza: abajo de todo, con esos paneles prendidos,
+              // caía donde flotan WhatsApp y Mervall-E y quedaba tapado.
+              <p data-ayuda="" className="text-[11.5px] text-ink-2 mt-0.5 leading-snug">
+                {semanales && 'Cada vela es una semana. '}
+                {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá o pasá a velas semanales. '}
+                <span className="sm:hidden">Pellizcá para acercar o alejar, deslizá para moverte y tocá un dibujo para elegirlo.</span>
+                <span className="hidden sm:inline">Ruedita: acercar o alejar. Arrastrar: moverte. Doble click en los precios o las fechas: vuelve a automático.</span>
+              </p>
+            }
+            onAncho={setAnchoGrafico} onFechasAuto={() => setVentana(null)} fechasAMano={ventana != null} reinicioPrecio={`${moneda}|${rangoVisto}|${tipo}|${intervalo}`}
             eventos={ver.eventos ? losEventos : []}
             medicion={medir.activo ? {
               a: medir.a && { k: lugarDelDia(medir.a.i), precio: medir.a.precio },
@@ -731,15 +801,9 @@ export default function LecturaTecnica({
             dibujos={dibujosEnVista} elegido={elegido} onElegir={setElegido} onMoverDibujo={moverDibujo}
             conAviso={misDibujos.filter(d => d.tipo === 'tendencia' && alertaDeLinea(avisos.items, { asset, moneda, dibujo: d.id })).map(d => d.id)}
             trazo={dibujar.puntos.length ? { tipo: dibujar.tipo, puntos: dibujar.puntos.map(q => ({ k: lugarDelDia(q.i), precio: q.precio })) } : null} />
-          {rango === 'tuyo' && !ventana && primera && primera < actual.puntos[0].d && (
+          {rangoVisto === 'tuyo' && !ventana && primera && primera < actual.puntos[0].d && (
             <p className="text-[11.5px] text-ink-2 mt-1">Lo tenés desde el {fechaCorta(primera)}; el gráfico empieza el {fechaCorta(actual.puntos[0].d)}, que es lo que hay guardado.</p>
           )}
-          <p className="text-[11.5px] text-ink-2 mt-1">
-            {semanales && 'Cada vela es una semana. '}
-            {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá con la ruedita o pasá a velas semanales. '}
-            <span className="hidden sm:inline">Con la ruedita del mouse acercás o alejás (como arrastrar las fechas). Arrastrá el gráfico para ir más atrás o más adelante, más arriba o más abajo. </span>
-            Arrastrá los precios de la derecha para estirar el gráfico, y las fechas de abajo para acercar o alejar; con doble click (o «Automático») vuelve a como estaba.
-          </p>
         </div>
       </div>
 
@@ -796,13 +860,14 @@ export default function LecturaTecnica({
       )}
 
       <p className="text-[12px] text-ink-2 mt-3 leading-relaxed">
-        {moneda === 'usd' && 'Se mira en dólares aunque uses la app en pesos, porque en pesos el precio también sube con el dólar. Para verlo en pesos, tocá «Pesos» arriba del gráfico. '}
+        {moneda === 'usd' && 'Se mira en dólares aunque uses la app en pesos, porque en pesos el precio también sube con el dólar. Para verlo en pesos, tocá «US$» arriba del gráfico y elegí «Pesos». '}
         {actual.convertida === 'mep' && (moneda === 'usd'
           ? 'El precio en pesos de cada día está pasado a dólares con el MEP de ese día. '
           : 'El precio en dólares de cada día está pasado a pesos con el MEP de ese día. ')}
         Datos al cierre del {fechaCorta(actual.lectura?.fecha)}. Muestra cómo se movió el precio: no es una recomendación para comprar ni vender.
       </p>
-    </>
+    </>,
+    { visto: ventana ? null : rangoVisto, recientes },
   )
 }
 
@@ -863,24 +928,26 @@ function periodoDeMovimiento(m) {
   return dias >= 700 ? 'Últimos 2 años' : `Desde el ${fechaCorta(m.desde)}`
 }
 
-function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, conTuyo = false, tipo, setTipo, intervalo, setIntervalo, grande = false, setGrande, titulo, children }) {
+function Marco({ moneda, setMoneda, rango, setRango, recientes = null, conPesos = true, conTuyo = false, tipo, setTipo, intervalo, setIntervalo, grande = false, setGrande, titulo, children }) {
   // En la ficha, ya ampliado (Nico, 24/10: «que sea automáticamente ampliado»).
   // Con «Pantalla completa», la MISMA sección fija sobre toda la página (no es
-  // otra vista: mismos datos, mismos botones; R6). Arriba a la derecha, con la
-  // moneda y el rango, línea o velas con sus dos íconos (Nico, 28/10: en la barra
-  // del costado eran demasiadas cosas).
+  // otra vista: mismos datos, mismos botones; R6). Arriba a la derecha, en UN
+  // renglón (Nico, 29/10: en el celular eran dos antes del gráfico): pantalla
+  // completa, línea o velas, cada cuánto es una vela y un menú con la moneda y
+  // el período. En el celular, «Pantalla completa» es sólo el ícono y cada
+  // botón mide 44 px de alto (lo que pide un dedo).
   return (
     <section aria-label="Análisis técnico" role={grande ? 'dialog' : undefined} aria-modal={grande || undefined}
       className={grande ? 'fixed inset-0 z-[70] overflow-y-auto bg-bg-0 px-3 py-3 sm:px-6 sm:py-4' : 'mb-5'}>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         {titulo ? <div className="text-[12.5px] text-ink-2 font-medium">{titulo}</div> : <span />}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">
           {setGrande && (
             <button type="button" data-capa="pantalla" onClick={() => setGrande(!grande)} aria-pressed={grande}
               title={grande ? 'Volver a la ficha, con el menú de Rendi (también con Esc)' : 'El gráfico en toda la pantalla, para un análisis a fondo'}
-              className={`inline-flex items-center gap-1.5 min-h-10 sm:min-h-8 px-3 rounded-lg border text-xs font-medium transition-colors ${grande ? 'border-line-2 bg-bg-2 text-ink-0 hover:border-ink-3' : 'border-rendi-accent/55 bg-rendi-accent/15 text-ink-0 hover:border-rendi-accent'}`}>
-              {grande ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}
-              {grande ? 'Achicar' : 'Pantalla completa'}
+              className={`inline-flex items-center justify-center gap-1.5 min-h-11 min-w-11 sm:min-h-8 sm:min-w-0 sm:px-3 rounded-lg border text-xs font-medium transition-colors ${grande ? 'border-line-2 bg-bg-2 text-ink-0 hover:border-ink-3' : 'border-rendi-accent/55 bg-rendi-accent/15 text-ink-0 hover:border-rendi-accent'}`}>
+              {grande ? <Minimize2 size={16} aria-hidden="true" /> : <Maximize2 size={16} aria-hidden="true" />}
+              <span className="sr-only sm:not-sr-only">{grande ? 'Achicar' : 'Pantalla completa'}</span>
             </button>
           )}
           {setTipo && (
@@ -888,7 +955,7 @@ function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, conTuyo = 
               {[['linea', 'Línea', <LineChart key="l" size={16} aria-hidden="true" />], ['velas', 'Velas', <IconoVelas key="v" />]].map(([id, nombre, icono]) => (
                 <button key={id} type="button" data-capa={id} onClick={() => setTipo(id)} aria-pressed={tipo === id}
                   title={`Gráfico de ${nombre.toLowerCase()}`}
-                  className={`inline-flex items-center justify-center min-h-10 min-w-10 sm:min-h-8 sm:min-w-8 rounded transition-colors ${tipo === id ? 'bg-bg-1 text-ink-0 shadow-sm' : 'text-ink-2 hover:text-ink-0 opacity-70 hover:opacity-100'}`}>
+                  className={`inline-flex items-center justify-center min-h-11 min-w-11 sm:min-h-8 sm:min-w-8 rounded transition-colors ${tipo === id ? 'bg-bg-1 text-ink-0 shadow-sm' : 'text-ink-2 hover:text-ink-0 opacity-70 hover:opacity-100'}`}>
                   {icono}<span className="sr-only">{nombre}</span>
                 </button>
               ))}
@@ -897,10 +964,8 @@ function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, conTuyo = 
           {tipo === 'velas' && setIntervalo && (
             <ElegirIntervalo valor={intervalo} alElegir={setIntervalo} />
           )}
-          <Segmento etiqueta="Moneda" valor={moneda} alElegir={setMoneda}
-            opciones={[['usd', 'Dólares'], ...(conPesos ? [['ars', 'Pesos']] : [])]} />
-          <Segmento etiqueta="Rango" valor={rango} alElegir={setRango}
-            opciones={[['todo', 'Todo'], ...(conTuyo ? [['tuyo', 'Desde que lo tenés']] : [])]} />
+          <ElegirVista moneda={moneda} setMoneda={setMoneda} conPesos={conPesos}
+            rango={rango} setRango={setRango} recientes={recientes} conTuyo={conTuyo} />
         </div>
       </div>
       <div className="bg-bg-1 border border-line/60 rounded-xl p-3 sm:p-4">{children}</div>
@@ -908,12 +973,10 @@ function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, conTuyo = 
   )
 }
 
-// Cada cuánto es una vela, como TradingView (Nico, 29/10): un botón con lo
-// elegido («1D») que al tocarlo despliega las opciones. Por ahora diarias y
-// semanales: las de 1 y 4 horas necesitan precios de cada hora, que Rendi
-// todavía no guarda.
-const INTERVALOS = [['dia', '1D', 'Diarias'], ['semana', '1S', 'Semanales']]
-function ElegirIntervalo({ valor, alElegir }) {
+// Un botón que despliega sus opciones debajo (como el «1D» de TradingView):
+// se cierra al elegir, al tocar afuera o con Esc. `contenido(cerrar)` dibuja
+// las opciones.
+function Desplegable({ capa, etiqueta, titulo, boton, ancho = 'w-44', contenido }) {
   const [abierto, setAbierto] = useState(false)
   const caja = useRef(null)
   useEffect(() => {
@@ -924,40 +987,91 @@ function ElegirIntervalo({ valor, alElegir }) {
     document.addEventListener('keydown', esc)
     return () => { document.removeEventListener('pointerdown', fuera); document.removeEventListener('keydown', esc) }
   }, [abierto])
-  const actual = INTERVALOS.find(i => i[0] === valor) || INTERVALOS[0]
   return (
     <div ref={caja} className="relative">
-      <button type="button" data-capa="intervalo" aria-haspopup="menu" aria-expanded={abierto} onClick={() => setAbierto(!abierto)}
-        title={`Cada vela es: ${actual[2].toLowerCase()}`}
-        className="inline-flex items-center gap-1 min-h-10 sm:min-h-8 px-3 rounded-lg border border-line bg-bg-2 text-xs font-medium text-ink-0 hover:border-ink-3">
-        <span className="sr-only">Cada vela es </span>{actual[1]}
+      <button type="button" data-capa={capa} aria-haspopup="menu" aria-expanded={abierto} onClick={() => setAbierto(!abierto)}
+        title={titulo}
+        className="inline-flex items-center gap-1 min-h-11 sm:min-h-8 px-3 rounded-lg border border-line bg-bg-2 text-xs font-medium text-ink-0 hover:border-ink-3 whitespace-nowrap">
+        {boton}
         <ChevronDown size={13} aria-hidden="true" className={`text-ink-2 transition-transform ${abierto ? 'rotate-180' : ''}`} />
       </button>
       {abierto && (
-        <div role="menu" aria-label="Cada vela es" className="absolute left-0 top-full mt-1 z-[60] w-44 rounded-lg border border-line-2 bg-bg-raised p-1 shadow-lg">
-          {INTERVALOS.map(([id, corto, nombre]) => (
-            <button key={id} type="button" role="menuitemradio" aria-checked={valor === id} data-intervalo={id}
-              onClick={() => { alElegir(id); setAbierto(false) }}
-              className={`flex w-full items-center justify-between gap-2 min-h-10 sm:min-h-8 px-2.5 rounded text-left text-[12.5px] ${valor === id ? 'bg-bg-2 text-ink-0 font-medium' : 'text-ink-1 hover:bg-bg-2 hover:text-ink-0'}`}>
-              <span>{nombre}</span><span className="tabular text-ink-2">{corto}</span>
-            </button>
-          ))}
+        // Pegado a la derecha del botón: es el último del renglón y, a la
+        // izquierda, en el celular se saldría de la pantalla.
+        <div role="menu" aria-label={etiqueta} className={`absolute right-0 top-full mt-1 z-[60] ${ancho} rounded-lg border border-line-2 bg-bg-raised p-1 shadow-lg`}>
+          {contenido(() => setAbierto(false))}
         </div>
       )}
     </div>
   )
 }
 
-function Segmento({ etiqueta, valor, alElegir, opciones }) {
+// Una opción de un Desplegable: el nombre y, a la derecha, lo corto.
+function Opcion({ elegida, onClick, nombre, detalle, ...resto }) {
   return (
-    <div className="inline-flex gap-0.5 bg-bg-2 border border-line rounded-lg p-0.5" role="group" aria-label={etiqueta}>
-      {opciones.map(([id, label]) => (
-        <button key={id} type="button" onClick={() => alElegir(id)} aria-pressed={valor === id}
-          className={`min-h-10 sm:min-h-8 px-3 sm:px-2.5 text-xs rounded tabular transition-colors ${valor === id ? 'bg-bg-1 text-ink-0 font-medium shadow-sm' : 'text-ink-2 hover:text-ink-0'}`}>
-          {label}
-        </button>
-      ))}
-    </div>
+    <button type="button" role="menuitemradio" aria-checked={elegida} onClick={onClick} {...resto}
+      className={`flex w-full items-center justify-between gap-2 min-h-11 sm:min-h-8 px-2.5 rounded text-left text-[12.5px] ${elegida ? 'bg-bg-2 text-ink-0 font-medium' : 'text-ink-1 hover:bg-bg-2 hover:text-ink-0'}`}>
+      <span>{nombre}</span>{detalle && <span className="tabular text-ink-2 font-normal">{detalle}</span>}
+    </button>
+  )
+}
+
+// Cada cuánto es una vela, como TradingView (Nico, 29/10): un botón con lo
+// elegido («1D») que al tocarlo despliega las opciones. Por ahora diarias y
+// semanales: las de 1 y 4 horas necesitan precios de cada hora, que Rendi
+// todavía no guarda.
+const INTERVALOS = [['dia', '1D', 'Diarias'], ['semana', '1S', 'Semanales']]
+function ElegirIntervalo({ valor, alElegir }) {
+  const actual = INTERVALOS.find(i => i[0] === valor) || INTERVALOS[0]
+  return (
+    <Desplegable capa="intervalo" etiqueta="Cada vela es" titulo={`Cada vela es: ${actual[2].toLowerCase()}`}
+      boton={<><span className="sr-only">Cada vela es </span>{actual[1]}</>}
+      contenido={(cerrar) => INTERVALOS.map(([id, corto, nombre]) => (
+        <Opcion key={id} data-intervalo={id} elegida={valor === id} nombre={nombre} detalle={corto}
+          onClick={() => { alElegir(id); cerrar() }} />
+      ))} />
+  )
+}
+
+// La moneda y el período, en UN menú (Nico, 29/10: eran dos filas de botones
+// antes del gráfico). El botón dice lo elegido («US$ · Todo»); sin período
+// cuando se acercó o movió a mano (ya no es ninguno de los de la lista).
+const MONEDAS = [['usd', 'Dólares', 'US$'], ['ars', 'Pesos', '$']]
+const RANGOS = { reciente: 'Lo reciente', todo: 'Todo', tuyo: 'Desde que lo tenés' }
+const RANGOS_CORTOS = { reciente: 'Reciente', todo: 'Todo', tuyo: 'Desde tu compra' }
+// «Lo reciente» en palabras: «3 meses», «6 semanas» (días de mercado: 21 por mes, 5 por semana).
+function cuantoEsReciente(dias) {
+  const meses = Math.round(dias / 21)
+  if (meses >= 2) return meses >= 24 ? `${Math.round(dias / 252)} años` : `${meses} meses`
+  return `${Math.max(1, Math.round(dias / 5))} semanas`
+}
+function ElegirVista({ moneda, setMoneda, conPesos, rango, setRango, recientes, conTuyo }) {
+  const m = MONEDAS.find(x => x[0] === moneda) || MONEDAS[0]
+  const rangos = [...(recientes || rango === 'reciente' ? ['reciente'] : []), 'todo', ...(conTuyo ? ['tuyo'] : [])]
+  const titulo = (t) => <div className="px-2.5 pt-1.5 pb-0.5 text-[11px] font-semibold text-ink-2">{t}</div>
+  return (
+    <Desplegable capa="vista" etiqueta="Moneda y período" ancho="w-56"
+      titulo={`En ${m[1].toLowerCase()}${rango ? `; ${RANGOS[rango].toLowerCase()}` : ''}`}
+      boton={<><span className="sr-only">Moneda y período: </span>{m[2]}{rango && <span className="text-ink-1 font-normal">{` · ${RANGOS_CORTOS[rango]}`}</span>}</>}
+      contenido={(cerrar) => (
+        <>
+          <div role="group" aria-label="Moneda">
+            {titulo('Moneda')}
+            {MONEDAS.filter(([id]) => id === 'usd' || conPesos).map(([id, nombre, corto]) => (
+              <Opcion key={id} data-moneda={id} elegida={moneda === id} nombre={nombre} detalle={corto}
+                onClick={() => { setMoneda(id); cerrar() }} />
+            ))}
+          </div>
+          <div role="group" aria-label="Período" className="border-t border-line/60 mt-1 pt-0.5">
+            {titulo('Período')}
+            {rangos.map(id => (
+              <Opcion key={id} data-rango={id} elegida={rango === id} nombre={RANGOS[id]}
+                detalle={id === 'reciente' && recientes ? cuantoEsReciente(recientes) : null}
+                onClick={() => { setRango(id); cerrar() }} />
+            ))}
+          </div>
+        </>
+      )} />
   )
 }
 
@@ -1319,7 +1433,7 @@ function BarraAdx({ adx }) {
   )
 }
 
-function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null }) {
+function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null, onAncho = null, pie = null }) {
   const conVelas = tipo === 'velas'
   // Los lugares del ancho: los días más el aire vacío de la derecha.
   const lugares = puntos.length + huecos
@@ -1332,20 +1446,26 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   // El balance o dividendo que se está mirando (su globo): la clave del grupo.
   const [eventoSel, setEventoSel] = useState(null)
   const conMouse = useRef(false)
-  // El ancho del gráfico en pantalla: con él se sabe qué marcas se pisarían.
+  // El ancho del gráfico en pantalla: con él se sabe qué marcas se pisarían y,
+  // en la ficha (`onAncho`), cuánto se ve al abrir (diasRecientes).
   const [ancho, setAncho] = useState(1000)
   const [alto, setAlto] = useState(300)
-  useEffect(() => {
+  const anchoRef = useRef(onAncho)
+  anchoRef.current = onAncho
+  // Antes de pintar: si no, el celular mostraría un instante la historia
+  // entera antes de pasar a lo reciente.
+  useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
+    const medir = (w) => { setAncho(w); anchoRef.current?.(Math.round(w)) }
     // Se mide ya (con la página en segundo plano el aviso de abajo no llega
     // hasta que vuelve a verse) y después se sigue cada cambio de tamaño.
     const caja = el.getBoundingClientRect?.()
-    if (caja?.width > 0) setAncho(caja.width)
+    if (caja?.width > 0) medir(caja.width)
     if (caja?.height > 0) setAlto(caja.height)
     if (typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(([e]) => {
-      if (e?.contentRect?.width) setAncho(e.contentRect.width)
+      if (e?.contentRect?.width) medir(e.contentRect.width)
       if (e?.contentRect?.height) setAlto(e.contentRect.height)
     })
     ro.observe(el)
@@ -1689,12 +1809,8 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   // primer punto puesto, lo que daría la medición hasta ahí.
   const [cursor, setCursor] = useState(null)
 
-  // Balances y dividendos dentro de lo que se ve, con su lugar. Si hay de los
-  // dos, cada tipo va en su renglón (en el celular un balance y un dividendo
-  // separados por diez días caen uno encima del otro). Y las del mismo tipo que
-  // en la pantalla quedarían a menos de MARCA_PX se juntan en UNA marca con
-  // cuántas son (Galicia paga todos los meses: en el celular eran doce «D»
-  // pisadas); su globo las lista.
+  // Balances y dividendos dentro de lo que se ve, con su lugar (Galicia paga
+  // todos los meses: en el celular eran doce «D» pisadas).
   const hasta = puntos[puntos.length - 1]?.d
   // Cada dividendo con el anterior (para comparar) y qué parte del precio de
   // ese día fue, si el precio está en su misma moneda (Nico, 29/10).
@@ -1712,10 +1828,12 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
     })
   // Una sola fila de marcas sobre las fechas (antes, una por tipo): las que en
   // la pantalla quedarían a menos de MARCA_PX se juntan en UNA, aunque sean un
-  // balance y un dividendo; su globo las lista.
+  // balance y un dividendo; su globo las lista. Si los dividendos se pisarían
+  // entre ellos, se ven sólo los balances (dividendosAmontonados).
+  const sinDividendos = dividendosAmontonados(evVisibles, pctX, ancho)
   const grupos = []
   let actual = null
-  for (const e of [...evVisibles].sort((a, b) => a.i - b.i)) {
+  for (const e of evVisibles.filter(e => !sinDividendos || e.tipo !== 'dividendo').sort((a, b) => a.i - b.i)) {
     const x = pctX(e.i)
     if (actual && ((x - actual.x0) / 100) * ancho < MARCA_PX) {
       actual.items.push(e)
@@ -2182,6 +2300,10 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             style={{ left: `${pctX(cursor.k)}%`, top: 0, background: v('ink-2'), color: v('bg-0') }}>{fechaDeLaMira(puntos[cursor.k].d)}</span>
         )}
       </div>
+      {sinDividendos && (
+        <p data-dividendos-ocultos="" className="mr-[72px] text-[11px] text-ink-2">Acercá el gráfico para ver los dividendos.</p>
+      )}
+      {pie}
 
       {/* RSI. */}
       {ver.rsi !== false && (

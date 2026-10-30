@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, puntero, enActo, medidas, clic, buscarBoton } from '../../testing/navegadorMinimo'
+import { elegirEnLaVista, periodoElegido } from '../../testing/menuGrafico'
 import { margenDerecho } from '../../utils/tecnico'
 
 const puntos = Array.from({ length: 700 }, (_, i) => {
@@ -52,15 +53,6 @@ function porTitulo(nodo, empieza) {
   while (pila.length) {
     const n = pila.shift()
     if (n.getAttribute?.('title')?.startsWith(empieza)) return n
-    pila.push(...(n.childNodes || []))
-  }
-  return null
-}
-function botonPresionado(nodo, rotulo) {
-  const pila = [nodo]
-  while (pila.length) {
-    const n = pila.shift()
-    if (n.nodeName === 'BUTTON' && texto(n) === rotulo) return n.getAttribute('aria-pressed') === 'true'
     pila.push(...(n.childNodes || []))
   }
   return null
@@ -194,10 +186,13 @@ describe('arrastrar los ejes del gráfico', () => {
       const columna = () => porTitulo(montado.contenedor, 'Arrastrá hacia arriba o hacia abajo')
       const grilla = () => columna().childNodes.filter(n => n.getAttribute?.('data-mira') == null).map(n => numeros(texto(n))[0]).filter(x => x != null)
       // Lo que se cambia ANTES de estirar (marcado con '@') no cuenta: es el punto de partida.
+      // La moneda y el rango están en el menú «Moneda y período»; lo demás, a la vista.
+      const tocar = (b) => (['Pesos', 'Desde que lo tenés'].includes(b) ? elegirEnLaVista(montado.contenedor, b)
+        : clic(montado.contenedor, buscarBoton(montado.contenedor, b)))
       const antes = pasos.includes('@') ? pasos.slice(0, pasos.indexOf('@')) : []
       const despues = pasos.includes('@') ? pasos.slice(pasos.indexOf('@') + 1) : pasos
       for (const b of antes) {
-        await clic(montado.contenedor, buscarBoton(montado.contenedor, b))
+        await tocar(b)
         for (let i = 0; i < 3; i++) await montado.redibujar(el())
       }
       const auto = grilla()
@@ -205,7 +200,7 @@ describe('arrastrar los ejes del gráfico', () => {
       expect(grilla()).not.toEqual(auto)
       expect(buscarBoton(montado.contenedor, 'Automático')).not.toBeNull()
       for (const b of despues) {
-        await clic(montado.contenedor, buscarBoton(montado.contenedor, b))
+        await tocar(b)
         for (let i = 0; i < 3; i++) await montado.redibujar(el())
       }
       expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
@@ -218,10 +213,10 @@ describe('arrastrar los ejes del gráfico', () => {
     expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
     await arrastrar(fechas, { dx: -200, pointerType: 'touch' })   // acerca (con «Todo» ya no se puede alejar más)
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
-    expect(botonPresionado(montado.contenedor, 'Todo')).toBe(false)
+    expect(periodoElegido(montado.contenedor)).toBe(null)
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Automático'))
     for (let i = 0; i < 2; i++) await montado.redibujar(el())
-    expect(botonPresionado(montado.contenedor, 'Todo')).toBe(true)
+    expect(periodoElegido(montado.contenedor)).toBe('Todo')
     expect(buscarBoton(montado.contenedor, 'Automático')).toBeNull()
   })
 
@@ -229,7 +224,7 @@ describe('arrastrar los ejes del gráfico', () => {
     await dibujar()
     const fechas = porTitulo(montado.contenedor, 'Arrastrá hacia los costados')
     expect(fechas).not.toBeNull()
-    expect(botonPresionado(montado.contenedor, 'Todo')).toBe(true)
+    expect(periodoElegido(montado.contenedor)).toBe('Todo')
     const meses = () => texto(fechas)
     const antes = meses()
     await arrastrar(fechas, { dx: -280, pointerType: 'touch' })
@@ -239,9 +234,9 @@ describe('arrastrar los ejes del gráfico', () => {
     // período que se ve se achicó: el año del principio ya no entra.
     expect(antes).toContain('2025')
     expect(meses()).not.toContain('2025')
-    expect(botonPresionado(montado.contenedor, 'Todo')).toBe(false)  // ya no es el rango del botón
+    expect(periodoElegido(montado.contenedor)).toBe(null)  // ya no es el rango del botón
     await dobleClick(fechas)
-    expect(botonPresionado(montado.contenedor, 'Todo')).toBe(true)
+    expect(periodoElegido(montado.contenedor)).toBe('Todo')
     expect(meses()).toBe(antes)
   })
 

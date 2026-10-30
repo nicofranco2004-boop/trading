@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } 
 import { CAPAS_TODAS } from './BarraGrafico'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscar, buscarBoton, clic, enActo } from '../../testing/navegadorMinimo'
+import { elegirEnLaVista, opcionesDeLaVista, periodoElegido } from '../../testing/menuGrafico'
 
 function puntos(n, f) {
   return Array.from({ length: n }, (_, i) => ({
@@ -133,7 +134,7 @@ describe('LecturaTecnica', () => {
   it('en pesos avisa que el dólar cambia la lectura', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     await dibujar({ pnlPctUsd: 0.1 })
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos'))
+    await elegirEnLaVista(montado.contenedor, 'Pesos')
     // Pesos se piden recién ahora: que vuelva el pedido.
     for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     const t = texto(montado.contenedor)
@@ -197,7 +198,7 @@ describe('LecturaTecnica', () => {
     const todos = () => api.get.mock.calls.map(c => c[0]).filter(r => r.startsWith('/tecnico'))
     const pedidos = () => todos().filter(r => !r.includes('/eventos') && !r.includes('/dibujos'))
     expect(pedidos()).toEqual(['/tecnico/GGAL?moneda=usd&local=1'])
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos'))
+    await elegirEnLaVista(montado.contenedor, 'Pesos')
     for (let i = 0; i < 4; i++) await montado.redibujar(el())
     expect(pedidos()).toEqual(['/tecnico/GGAL?moneda=usd&local=1', '/tecnico/GGAL?moneda=ars&local=1'])
     // Los balances y dividendos, también por moneda y con la acción local.
@@ -210,7 +211,7 @@ describe('LecturaTecnica', () => {
     // Último cierre en pesos: 250 − 503 × 0,03 = 234,91. 10 unidades valen
     // 2.349,10; pagaste 2.000 + 100 de comisión → +11,9 %.
     await dibujar({ pnlPctUsd: 0.5, costoPesos: { invertido: 2100, cantidad: 10 } })
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Pesos'))
+    await elegirEnLaVista(montado.contenedor, 'Pesos')
     for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.5, costoPesos: { invertido: 2100, cantidad: 10 } }))
     expect(texto(montado.contenedor)).toContain('Ganás 11,9%')
   })

@@ -1,8 +1,7 @@
 // Segmento — botones pegados para elegir UNA opción (Línea | Velas, Técnico
 // primero | Fundamental primero). El elegido queda marcado con aria-pressed.
-// Es el mismo dibujo que el `Segmento` de LecturaTecnica.jsx, que todavía tiene
-// su propia copia: esa rama la está reescribiendo otra sesión (la barra del
-// gráfico) y se pasa a este archivo cuando se junten las dos.
+// LecturaTecnica.jsx tenía su propia copia para la moneda y el rango; desde el
+// 29/10 esos dos van en un menú desplegable (`ElegirVista`) y la copia se borró.
 //
 // `estirar`: en el celular los botones se reparten todo el ancho (en la compu,
 // cada uno mide lo que su texto).

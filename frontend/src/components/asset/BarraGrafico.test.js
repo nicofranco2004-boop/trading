@@ -163,7 +163,7 @@ describe('la barra de herramientas del gráfico', () => {
     })
   }
 
-  it('cada botón tiene su nombre (en el celular a la vista; en compu, en el globo)', async () => {
+  it('cada botón tiene su nombre (para el lector de pantalla y, en compu, en el globo; a la vista no: sólo el ícono)', async () => {
     await dibujar()
     const nombres = {
       linea: 'Línea', velas: 'Velas', vol: 'Volumen', s200: 'Promedio 200 días', s50: 'Promedio 50 días',
