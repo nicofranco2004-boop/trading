@@ -16,6 +16,7 @@
 import { useState } from 'react'
 import { Coins, Layers as LayersIcon, ChevronDown, ChevronUp } from 'lucide-react'
 import { usd, ars, pctSigned } from '../utils/format'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import { getBondMeta, formatBondType, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
 import { hoyISO } from '../utils/fecha'
 import {
@@ -47,7 +48,10 @@ export function BondDetailBody({
   // exacta del summary sobre re-dividir por tcValuacion cuando está disponible.
   const dispArs = isArsDisp == null ? isARS : isArsDisp
   const moneyLabel = dispArs ? 'ARS' : 'USD'
-  const fmt = dispArs ? ars : usd
+  // «Ocultar saldos»: todo lo que esta ficha formatea con `fmt` es plata tuya
+  // (lo cobrado, lo que vas a cobrar, cada pago): se tapa (re-test A3, 29/10).
+  const { hidden: oculto } = usePrivacy()
+  const fmt = oculto ? () => OCULTO : (dispArs ? ars : usd)
   const toDisp = (nativeAmt, usdAmt = null) => {
     // Sin monto nativo pero CON el de dólares: es la fila que junta las dos
     // patas de una cuenta (pesos y dólares). Ahí no existe un total nativo —
@@ -286,7 +290,7 @@ export function BondDetailBody({
                 )}
               </div>
               {isARS && dispArs && totalUsd > 0 && (
-                <p className="text-[10.5px] text-ink-3 mt-1.5">≈ USD {usd(totalUsd)} en cash{hasLegacyOps && <span className="text-rendi-warn"> (aprox)</span>}</p>
+                <p className="text-[10.5px] text-ink-3 mt-1.5">≈ USD {oculto ? OCULTO : usd(totalUsd)} en cash{hasLegacyOps && <span className="text-rendi-warn"> (aprox)</span>}</p>
               )}
             </>
           ) : cobrosImportados === 0 ? (

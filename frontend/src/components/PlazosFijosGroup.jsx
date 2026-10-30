@@ -18,11 +18,16 @@ import { useEnVuelo } from '../hooks/useEnVuelo'
 import { hoyISO } from '../utils/fecha'
 import { pct } from '../utils/format'
 import { confirmar } from '../utils/confirmar'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 
 const todayStr = () => hoyISO()
 const moneyOf = (m) => (n) => (m === 'USD' ? 'US$' : '$') + Math.round(n).toLocaleString('es-AR')
 
 export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers = [], onChange }) {
+  // «Ocultar saldos»: capital, interés, valor de hoy y subtotales se tapan; la
+  // tasa y el plazo quedan (re-test A3, 29/10: como Futuros, nunca le llegaba).
+  const { hidden: oculto } = usePrivacy()
+  const verPlata = (m) => (n) => (oculto ? OCULTO : moneyOf(m)(n))
   const toast = useToast()
   const [pfs, setPfs] = useState([])
   const [loaded, setLoaded] = useState(false)
@@ -142,7 +147,7 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
             <tbody>
               {pfs.map(pf => {
                 const v = computePf(pf, now)
-                const money = moneyOf(pf.moneda)
+                const money = verPlata(pf.moneda)
                 const ocupado = enVuelo.activo(pf.id)
                 return (
                   <Fragment key={pf.id}>
@@ -223,7 +228,7 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
         <div className="px-3 py-2 border-t border-line/50 text-xs text-ink-2 flex flex-wrap gap-x-4 gap-y-1 justify-end">
           {Object.entries(totals).map(([m, v]) => (
             <span key={m}>
-              Subtotal {m}: <span className="text-ink-0 font-semibold tabular">{moneyOf(m)(v)}</span>
+              Subtotal {m}: <span className="text-ink-0 font-semibold tabular">{verPlata(m)(v)}</span>
             </span>
           ))}
         </div>

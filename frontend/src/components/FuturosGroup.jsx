@@ -22,6 +22,7 @@ import { useEnVuelo } from '../hooks/useEnVuelo'
 import { hoyISO } from '../utils/fecha'
 import { parseNum, numACampo } from '../utils/format'
 import { confirmar } from '../utils/confirmar'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 
 const hoy = () => hoyISO()
 const usd = (n) => (n < 0 ? '−' : '') + 'US$' + Math.abs(n).toLocaleString('es-AR',
@@ -51,6 +52,11 @@ export function noRealizado(pos, precio) {
 
 export default function FuturosGroup({ reloadKey, brokers = [], onChange }) {
   const toast = useToast()
+  // «Ocultar saldos»: lo ganado o perdido en plata se tapa; el precio de entrada,
+  // el de hoy y el % quedan, como en el resto de la Cartera (re-test A3, 29/10:
+  // Positions monta este grupo y nunca le había llegado el ojito).
+  const { hidden: oculto } = usePrivacy()
+  const plata = (n) => (oculto ? OCULTO : usd(n))
   const [futuros, setFuturos] = useState([])
   const [precios, setPrecios] = useState({})
   const [cargado, setCargado] = useState(false)
@@ -135,7 +141,7 @@ export default function FuturosGroup({ reloadKey, brokers = [], onChange }) {
         <div className="flex items-center gap-3">
           {hayPrecios && (
             <span className={`text-sm font-semibold ${totalNoRealizado >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-              {totalNoRealizado >= 0 ? '+' : ''}{usd(totalNoRealizado)}
+              {totalNoRealizado >= 0 && !oculto ? '+' : ''}{plata(totalNoRealizado)}
               <span className="text-[11px] text-ink-3 font-medium ml-1">
                 {totalParcial ? `no realizado · ${conPrecio} de ${futuros.length}` : 'no realizado'}
               </span>
@@ -172,7 +178,7 @@ export default function FuturosGroup({ reloadKey, brokers = [], onChange }) {
                 {r ? (
                   <>
                     <div className={`text-sm font-semibold ${r.pnl >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                      {r.pnl >= 0 ? '+' : ''}{usd(r.pnl)}
+                      {r.pnl >= 0 && !oculto ? '+' : ''}{plata(r.pnl)}
                     </div>
                     <div className="text-[11.5px] text-ink-3 font-medium">
                       {usd(r.precio)}{r.pct != null ? ` · ${(r.pct * 100).toFixed(1).replace('.', ',')}%` : ''}

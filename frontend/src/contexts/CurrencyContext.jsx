@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, useMemo } from 'react'
 import { track } from '../utils/track'
 import { api } from '../utils/api'
 import { enfocarCambios } from '../utils/enfocarCambios'
+import { usePrivacy, OCULTO } from './PrivacyContext'
 
 // Fase A — Toggle global ARS/USD (2026-05-31).
 // El user elige en qué moneda ver TODOS los números del Dashboard / Home /
@@ -312,6 +313,10 @@ export function fmtMoneyCompactRaw(usdValue, currency, tcValuacion, opts = {}) {
 export function useMoneyFormat() {
   const { currency, tcValuacion } = useCurrency()
   const isArs = currency === 'ARS'
+  // «Ocultar saldos» vive acá también, como en useHistoricalMoney: lo que se
+  // formatea con este hook es plata de la persona (Movimientos, el informe, el
+  // libro del asesor). Re-test A3, 29/10: sólo tapaba el de las listas.
+  const { hidden } = usePrivacy()
 
   function convert(usdValue) {
     if (usdValue == null || !Number.isFinite(usdValue)) return null
@@ -319,15 +324,15 @@ export function useMoneyFormat() {
   }
 
   function fmtMoney(usdValue, opts) {
-    return fmtMoneyRaw(usdValue, currency, tcValuacion, opts)
+    return hidden ? OCULTO : fmtMoneyRaw(usdValue, currency, tcValuacion, opts)
   }
 
   function fmtMoneyCompact(usdValue, opts) {
-    return fmtMoneyCompactRaw(usdValue, currency, tcValuacion, opts)
+    return hidden ? OCULTO : fmtMoneyCompactRaw(usdValue, currency, tcValuacion, opts)
   }
 
   return {
-    currency, tcValuacion, isArs,
+    currency, tcValuacion, isArs, oculto: hidden,
     convert, fmtMoney, fmtMoneyCompact,
   }
 }
