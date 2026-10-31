@@ -1,7 +1,7 @@
-import { createContext, useContext, useEffect, useState } from 'react'
-import { api, clearClientContext, EVENTO_PLAN_REQUERIDO, recargarPorPersona, fijarPersonaDeLaPestana, arranqueResuelto, avisarDesfase, entrandoALaSesion } from '../utils/api'
+import { createContext, useContext, useEffect, useLayoutEffect, useState } from 'react'
+import { api, clearClientContext, EVENTO_PLAN_REQUERIDO, recargarPorPersona, fijarPersonaDeLaPestana, arranqueResuelto, avisarDesfase, entrandoALaSesion, abrirLaPestana, mostrandoLaCuentaDe, personaDeLaPestana } from '../utils/api'
 import { setBrokersRegistry } from '../utils/valuation'
-import { isDemoMode, enableDemoMode, disableDemoMode, vencerDemoSiCorresponde } from '../utils/demo'
+import { isDemoMode, enableDemoMode, disableDemoMode, vencerDemoSiCorresponde, EMAIL_DEL_DEMO } from '../utils/demo'
 import { track } from '../utils/track'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { setUserId, setUserProperties, trackEvent } from '../utils/analytics'
@@ -9,7 +9,8 @@ import { trackMetaEvent } from '../utils/metaPixel'
 import { quienEs } from '../utils/quienEs'
 import { activarUso, mandar as mandarUso } from '../utils/uso'
 import { avisarSiEstaInstalada } from '../utils/instalarApp'
-import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen, claves, quitarClaves } from '../utils/almacen'
+import { guardar as guardarEnAlmacen, claves, quitarClaves } from '../utils/almacen'
+import { olvidarLaSesionSiEsDe, personaGuardada, sesionGuardadaEsDe } from '../utils/sesionGuardada'
 import { CATALOGO, LOCAL, SESION } from '../utils/catalogoDelAlmacen'
 
 const AuthContext = createContext(null)
@@ -24,7 +25,7 @@ const AuthContext = createContext(null)
 // andaba acá y en ninguna cuenta de verdad.
 export const DEMO_USER = {
   name: 'Inversor Demo',
-  email: 'demo@rendi.finance',
+  email: EMAIL_DEL_DEMO,
   is_admin: false,
   tier: 'pro',  // Demo siempre simula Pro para mostrar todas las features
   // En demo simulamos una sub authorized — Config muestra "Activo" + opción
@@ -117,8 +118,16 @@ export function AuthProvider({ children }) {
     // Hidratación optimista: usamos lo que dejamos en localStorage la última
     // vez (solo metadata: nombre, email, tier — sin token). En paralelo
     // /auth/me valida la cookie y refresca los valores.
-    try { return JSON.parse(leerDelAlmacen(CATALOGO.usuario)) } catch { return null }
+    // La MISMA lectura fija la persona de la pestaña (utils/api): eran dos
+    // lecturas y podían dar distinto (re-test a ciegas 8).
+    return abrirLaPestana()
   })
+  // Qué cuenta muestra la pantalla, con CADA cambio del usuario, venga de donde
+  // venga: si no es la de la pestaña, utils/api frena (re-test a ciegas 8).
+  // Antes de que corran los efectos de las pantallas (que es donde piden).
+  useLayoutEffect(() => {
+    mostrandoLaCuentaDe(user && !user.demo ? quienEs(user) : null)
+  }, [user])
   const [bootstrapped, setBootstrapped] = useState(false)
 
   // Rehidratación: si la cookie HttpOnly es válida, /auth/me devuelve el user.
@@ -142,8 +151,10 @@ export function AuthProvider({ children }) {
   // sesión) y el aviso de esa pestaña recarga ésta.
   useEffect(() => {
     if (isDemoMode()) { setBootstrapped(true); arranqueResuelto(); return }
-    const guardada = quienEs(user)
-    const enComun = () => { try { return quienEs(JSON.parse(leerDelAlmacen(CATALOGO.usuario))) } catch { return null } }
+    // La persona de la PESTAÑA (no otra lectura de lo guardado): con la que se
+    // compara la respuesta, y la del pedido si contesta 401.
+    const guardada = personaDeLaPestana()
+    const enComun = personaGuardada
     api.get('/auth/me', { sinPersona: true })
       .then(me => {
         const fresh = mapMeToUser(me)
@@ -177,8 +188,11 @@ export function AuthProvider({ children }) {
         // usuario guardado; si la sesión de verdad venció, el primer pedido
         // que reciba un 401 la cierra (api.js).
         if (err?.status !== 401) return
+        // Lo guardado se borra SÓLO si sigue siendo de quien preguntó: si en
+        // el medio entró Bruno en otra pestaña, era borrarlo a él, y su
+        // pestaña se recargaba (re-test a ciegas 8: la quinta salida del 401).
+        olvidarLaSesionSiEsDe(guardada)
         fijarPersonaDeLaPestana(null)          // al abrir: todavía no mostraba nada de nadie
-        borrarDelAlmacen(CATALOGO.usuario)
         setUser(null)
         refreshPlanFeatures()
         setUserId(null)
@@ -215,7 +229,7 @@ export function AuthProvider({ children }) {
     const yo = user?.demo ? 'demo' : quienEs(user)
     const ahora = () => {
       if (isDemoMode()) return 'demo'
-      try { return quienEs(JSON.parse(leerDelAlmacen(CATALOGO.usuario))) } catch { return null /* basura → nadie */ }
+      return personaGuardada()                          // basura → nadie
     }
     const mirar = () => {
       if (ahora() !== yo) recargarPorPersona(0, { porAviso: true })   // los 300 ms ya se esperaron
@@ -340,7 +354,10 @@ export function AuthProvider({ children }) {
 
   // Lo único que escribe «quién está logueado» en este navegador (salvo
   // borrarlo): el guardián no deja otro lugar.
+  // El demo no se guarda: su «usuario» no es una sesión, y guardado otras
+  // pestañas lo tomaban por una persona que entró.
   function guardarSesion(u) {
+    if (u?.demo) return
     guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(u))
   }
 
@@ -372,13 +389,22 @@ export function AuthProvider({ children }) {
   }
 
   function logout() {
+    // 🔴 CERRAR SESIÓN DECIDE POR EL DUEÑO (re-test a ciegas 8). La sesión (la
+    // cookie) y lo guardado son UNO para todo el navegador: si en otra pestaña
+    // ya entró Bruno, el «Cerrar sesión» de la pestaña de Ana le cerraba la
+    // sesión a él y borraba todo lo suyo. Ahora:
+    //   · el pedido al servidor dice de quién es (como todos): si la sesión ya
+    //     es de otra persona, el servidor no la cierra (409);
+    //   · lo guardado en común se borra sólo si es de esta pestaña (o no hay
+    //     nadie); si es de otra persona, se deja: es suyo;
+    //   · lo de esta pestaña (su almacén, su memoria) se borra siempre.
+    const persona = personaDeLaPestana()
+    const loComunEsMio = user?.demo ? !personaGuardada() : sesionGuardadaEsDe(persona)
     // Lo que juntó el panel de uso sale ANTES de cortar la sesión: después ya
     // no se le puede atribuir a nadie y se descarta. Sale diciendo de quién es
     // (re-test a ciegas 7: si la pestaña ya no era de nadie salía sin decirlo,
     // y con la cookie de otra persona se le anotaba a ella).
     mandarUso({ alCerrar: true })
-    // ESTA pestaña sale: deja de ser de nadie (no manda la persona que se fue).
-    fijarPersonaDeLaPestana(null)
     trackEvent('logout')
     setUserId(null)
     // Plan Asesor: el loop rendi_* de abajo borra la KEY rendi_client_ctx,
@@ -394,18 +420,23 @@ export function AuthProvider({ children }) {
     if (user?.demo) {
       track('demo_mode_exited')
       disableDemoMode()
-    } else {
+    } else if (persona || loComunEsMio) {
       // Server-side: borra la cookie HttpOnly. Si falla (network), igual
       // limpiamos el estado local; la cookie expira en 7d como fallback.
-      // Sin freno y sin decir quién es: cerrar sesión tiene que salir aunque la
-      // pestaña esté desfasada (es la salida del cartel; re-test a ciegas 5).
-      api.post('/auth/logout', undefined, { sinFreno: true, sinPersona: true }).catch(() => {})
+      // Sin freno: cerrar sesión tiene que salir aunque la pestaña esté
+      // desfasada. Dice de quién es (sale ANTES de que la pestaña deje de ser
+      // de esa persona). Sin persona y con lo guardado de otra, no sale: esa
+      // sesión no es de esta pestaña.
+      api.post('/auth/logout', undefined, { sinFreno: true }).catch(() => {})
     }
+    // ESTA pestaña sale: deja de ser de nadie.
+    fijarPersonaDeLaPestana(null)
     // SECURITY: limpiar TODOS los flags rendi_ del localStorage para evitar
     // cross-user state leak en máquinas compartidas. Antes solo borrábamos
     // rendi_user, quedaban: rendi_first_import_done, rendi_ai_discovered,
     // rendi_dashboard_currency, rendi_sidebar_collapsed, rendi_demo_overlay,
     // rendi_demo_mode, rendi_theme, etc. User B veía preferencias de user A.
+    // Sólo si lo guardado es de esta pestaña: si es de otra persona, es suyo.
     //
     // PRESERVE list — flags que NO se borran al logout:
     //   • rendi_theme: preferencia de máquina, no de cuenta.
@@ -416,17 +447,18 @@ export function AuthProvider({ children }) {
     //     IA sin haberlo usado — minor leak (no es PII, solo discovery state)
     //     vs UX bug recurrente. Si en el futuro tracking server-side, mover
     //     este flag al endpoint /api/plan/features o similar.
-    try {
-      const preserve = new Set([CATALOGO.tema.clave, CATALOGO.conocioLaIA.clave])
-      quitarClaves(LOCAL, claves(LOCAL).filter(k => k.startsWith('rendi_') && !preserve.has(k)))
-    } catch {
-      // localStorage puede no estar disponible (private mode iOS antiguo) — best effort
-      borrarDelAlmacen(CATALOGO.usuario)
+    //   • rendi_user: lo borra sesionGuardada, el único que lo borra.
+    if (loComunEsMio) {
+      try {
+        const preserve = new Set([CATALOGO.tema.clave, CATALOGO.conocioLaIA.clave, CATALOGO.usuario.clave])
+        quitarClaves(LOCAL, claves(LOCAL).filter(k => k.startsWith('rendi_') && !preserve.has(k)))
+      } catch { /* localStorage puede no estar disponible (private mode iOS antiguo) — best effort */ }
+      olvidarLaSesionSiEsDe(persona)
     }
     // sessionStorage TAMBIÉN (audit): la conversación del chat persiste ahí
     // (rendi_chat_v1*) — si otra persona loguea en la misma pestaña veía el
     // chat del anterior (en un asesor: nombres de clientes, AUM, colas).
-    // Mismo criterio rendi_-prefix que arriba.
+    // Mismo criterio rendi_-prefix que arriba. Es de ESTA pestaña: siempre.
     try {
       quitarClaves(SESION, claves(SESION).filter(k => k.startsWith('rendi_')))
     } catch { /* best effort */ }

@@ -9,10 +9,14 @@
 // qué volver —la sesión ya es la otra—, pero el cartel nunca queda sin salida
 // (re-test a ciegas 5 y 6): «Recargar», siempre.
 // El cartel NUNCA cierra una sesión que no es la de esta pestaña (re-test a
-// ciegas 7: con la recarga frenada por un «¿Salir del sitio?», «Cerrar sesión»
-// cerraba la de Bruno, que acababa de entrar, y borraba lo suyo). «Cerrar
-// sesión» aparece sólo cuando la sesión del navegador sigue siendo la de esta
-// pestaña: una pestaña de una cuenta real mientras otra entró al demo.
+// ciegas 7 y 8: con la recarga frenada por un «¿Salir del sitio?», «Cerrar
+// sesión» cerraba la de Bruno, que acababa de entrar, y borraba lo suyo). Lo
+// decide el DUEÑO, no el motivo del cartel: «Cerrar sesión» aparece sólo si la
+// sesión del navegador sigue siendo la de esta pestaña (utils/api,
+// laSesionEsDeEstaPestana) —una pestaña de una cuenta real mientras otra entró
+// al demo—. Con dos motivos a la vez (entró Bruno y después otra pestaña abrió
+// el demo) el del demo tapaba al de la persona y el botón aparecía. Y aunque
+// apareciera, el servidor no cierra la sesión de otra persona.
 // Lo que estaba a medio cargar se pierde con la recarga.
 // «Salió alguien» (motivo 'sinSesion') y «está por recargar» frenan sin cartel.
 // El CLIENTE del asesor no pasa por acá: cada pestaña tiene el suyo
@@ -20,7 +24,7 @@
 // Se redibuja con cada aviso: si el motivo cambia, dice el de ahora.
 import { useEffect, useState } from 'react'
 import { ArrowLeftRight } from 'lucide-react'
-import { EVENTO_PESTANA_DESFASADA, pestanaDesfasada } from '../utils/api'
+import { EVENTO_PESTANA_DESFASADA, pestanaDesfasada, laSesionEsDeEstaPestana } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 
 function queCambio(desfase) {
@@ -50,7 +54,7 @@ export default function CuentaCambiadaEnOtraPestana() {
   if (!desfase || !CON_CARTEL.has(desfase.motivo)) return null
   // Cerrar sesión cierra la sesión de verdad (la cookie): sólo cuando es la de
   // esta pestaña (una pestaña de una cuenta real mientras otra entró al demo).
-  const puedeCerrar = desfase.motivo === 'demo' && !desfase.estabaEnDemo
+  const puedeCerrar = laSesionEsDeEstaPestana()
 
   // Arriba de TODO (300): el recorrido de Novedades va en 100, las
   // confirmaciones en 150 y los menús en 200. Con el cartel en 100, el

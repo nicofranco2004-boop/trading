@@ -83,6 +83,23 @@ describe('la puerta de la sesión', () => {
     expect(fuera).toEqual([])
   })
 
+  // «Quién está logueado» lo BORRA un solo lugar, y sólo si es de quien lo
+  // borra (re-test a ciegas 7 y 8: eran cinco lugares; se arreglaron cuatro y
+  // el quinto —el 401 del «¿quién soy?» al abrir— borraba a Bruno igual).
+  it('«quién está logueado» se borra sólo en utils/sesionGuardada', () => {
+    const fuera = []
+    for (const p of archivos()) {
+      const r = rel(p)
+      const t = sinComentarios(readFileSync(p, 'utf8'))
+      const veces = (t.match(/\bborrar\w*\(\s*CATALOGO\.usuario\b/g) || []).length
+      if (r === 'utils/sesionGuardada.js') { if (veces !== 1) fuera.push(`${r}: ${veces}`) }
+      else if (veces) fuera.push(r)
+      // Borrar por lote (las claves rendi_ al cerrar sesión) deja afuera la sesión.
+      if (/quitarClaves\(\s*LOCAL\b/.test(t) && !/preserve\s*=\s*new Set\(\[[^\]]*CATALOGO\.usuario\.clave/.test(t)) fuera.push(`${r}: quitarClaves(LOCAL) sin dejar afuera la sesión`)
+    }
+    expect(fuera).toEqual([])
+  })
+
   it('fijar la persona de la pestaña es cosa de AuthContext; borrar lo de otras, sólo al entrar', () => {
     const fijan = [], borran = []
     for (const p of archivos()) {

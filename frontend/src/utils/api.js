@@ -2,6 +2,7 @@ import { isDemoMode, handleDemoRequest, EVENTO_MODO_DEMO } from './demo'
 import { quienEs } from './quienEs'
 import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen, borrarLoDeOtrasPersonas } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
+import { personaGuardada, olvidarLaSesionSiEsDe } from './sesionGuardada'
 
 // Wrapper de fetch para llamadas al API.
 //
@@ -43,7 +44,6 @@ const valido = (c) => (c && typeof c.id === 'number' ? { id: c.id, label: c.labe
 const leerJSON = (entrada) => {
   try { return JSON.parse(leerDelAlmacen(entrada) || 'null') } catch { return null }
 }
-const personaGuardada = () => quienEs(leerJSON(CATALOGO.usuario))
 
 /** El cliente con que arranca esta pestaña: el suyo si lo tiene (y es de la
  *  misma persona); si no, el último que se eligió en cualquiera. */
@@ -119,6 +119,16 @@ export function clearClientContext() {
 //     pasó ELLA (demo.js avisa con EVENTO_MODO_DEMO).
 //   · Queda la ventana entre la cookie nueva y lo guardado en común
 //     (milisegundos): ésa la cierra el servidor (X-Rendi-Persona, abajo).
+//   · 🔴 Una pestaña que MUESTRA una cuenta y no sabe de quién es, frena (re-test
+//     a ciegas 8). Antes la falta de persona dejaba pasar todo —en la pestaña y
+//     en el servidor—, así que cuando una pantalla de entrada se olvidó de fijarla
+//     («restablecer la contraseña») no hubo ningún error: los pedidos salían sin
+//     decir de quién eran y se guardaban en la cuenta de quien tuviera la cookie.
+//     Ahora AuthContext dice qué cuenta muestra (`mostrandoLaCuentaDe`, en cada
+//     cambio del usuario, lo haya cambiado quien lo haya cambiado) y, si no es
+//     la de la pestaña, la pestaña frena (motivo 'sinDueno', sin cartel) y se
+//     recarga para volver a preguntar. El servidor tampoco atiende un pedido del
+//     navegador que no dice de quién es (main.py, PERSONA_FALTA).
 let _demoDeLaPestana = typeof window !== 'undefined' ? isDemoMode() : false
 let _rechazadoPorElServidor = false   // un 409 persona_cambiada
 let _recargando = false               // va a recargar: frena sin cartel
@@ -127,10 +137,12 @@ let _rechazoEnElArranque = false
 let _entrando = false                 // AuthContext.entrar: esperando «¿quién soy?» con la sesión nueva
 let _recargaFrenada = false           // pidió recargar y la página siguió (un «¿Salir del sitio?»)
 let _sinMasRecargas = false           // ver recargarPorPersona
+let _mostrando = null                 // la cuenta que muestra la pantalla (AuthContext); null: ninguna o el demo
 export const EVENTO_PESTANA_DESFASADA = 'rendi:pestana-desfasada'
 
 /** null si la pestaña puede hablar con el servidor; si no, por qué.
- *  `motivo`: 'demo' | 'persona' (con cartel) | 'sinSesion' | 'recargando' (sin cartel). */
+ *  `motivo`: 'demo' | 'persona' (con cartel) | 'sinSesion' | 'sinDueno' |
+ *  'entrando' | 'recargando' (sin cartel). */
 export function pestanaDesfasada() {
   const sinSalida = (_sinMasRecargas || _recargaFrenada) || undefined
   if (isDemoMode() !== _demoDeLaPestana) return { motivo: 'demo', estabaEnDemo: _demoDeLaPestana, sinSalida }
@@ -138,6 +150,7 @@ export function pestanaDesfasada() {
   if (_entrando) return { motivo: 'entrando' }
   if (_rechazadoPorElServidor) return { motivo: 'persona', sinSalida }
   if (_recargando) return { motivo: 'recargando' }
+  if (_mostrando && _mostrando !== _personaDeLaPestana) return { motivo: 'sinDueno' }
   if (_personaDeLaPestana) {
     const enComun = personaGuardada()
     if (enComun !== _personaDeLaPestana) return enComun ? { motivo: 'persona', sinSalida } : { motivo: 'sinSesion' }
@@ -183,6 +196,48 @@ export function fijarPersonaDeLaPestana(persona, { borrarOtras = false } = {}) {
 }
 
 export function personaDeLaPestana() { return _personaDeLaPestana }
+
+/** AuthProvider, al montarse: la pestaña ABRE. Vuelve a leer lo guardado y la
+ *  persona de la pestaña pasa a ser ésa; devuelve el usuario guardado, el que
+ *  la pantalla va a mostrar. Una sola lectura para las dos cosas: eran dos
+ *  (al cargar este archivo y al montar AuthContext) y, si en el medio otra
+ *  pestaña salía y entraba Bruno, la pantalla mostraba a Bruno con la pestaña
+ *  «de nadie» (re-test a ciegas 8, hallazgo 4). */
+export function abrirLaPestana() {
+  const usuario = leerJSON(CATALOGO.usuario)
+  const persona = quienEs(usuario)
+  if (persona !== _personaDeLaPestana) {
+    _personaDeLaPestana = persona
+    _clientCtx = clienteAlCargarLaPestana()
+    avisarDesfase()
+  }
+  return usuario
+}
+
+/** AuthContext, con cada cambio del usuario: qué cuenta muestra la pantalla
+ *  (null: ninguna, o el demo). Si no es la de la pestaña, frena; si sigue así
+ *  medio segundo —no es el instante entre «la pestaña sale» y «la pantalla se
+ *  vacía»—, recarga. */
+let _esperaSinDueno = null
+export function mostrandoLaCuentaDe(persona) {
+  _mostrando = persona ? String(persona).trim().toLowerCase() : null
+  avisarDesfase()
+  if (typeof window === 'undefined') return
+  clearTimeout(_esperaSinDueno)
+  if (pestanaDesfasada()?.motivo !== 'sinDueno') return
+  _esperaSinDueno = setTimeout(() => {
+    if (pestanaDesfasada()?.motivo === 'sinDueno') recargarPorPersona(0)
+  }, 500)
+}
+
+/** ¿La sesión del navegador sigue siendo la de esta pestaña? Lo que decide si
+ *  el cartel puede ofrecer «Cerrar sesión»: cerrar sesión cierra la del
+ *  navegador, y si ya es de otra persona sería cerrarle la suya (re-test a
+ *  ciegas 7 y 8). El servidor, igual, no la cierra si es de otra. */
+export function laSesionEsDeEstaPestana() {
+  return !_demoDeLaPestana && !!_personaDeLaPestana && !_rechazadoPorElServidor
+    && personaGuardada() === _personaDeLaPestana
+}
 
 /** AuthContext.entrar: la pestaña está iniciando sesión; hasta que el servidor
  *  diga quién es (fijarPersonaDeLaPestana), no sale nada salvo esa pregunta. */
@@ -767,7 +822,7 @@ async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, onVoz, s
 // de esta pestaña ya no está.
 function sesionVencida(delPedido) {
   const guardada = personaGuardada()
-  if (guardada && guardada === delPedido) borrarDelAlmacen(CATALOGO.usuario)
+  olvidarLaSesionSiEsDe(delPedido)
   if (guardada || delPedido) window.location.href = '/'
   return errorDeSesion()
 }

@@ -10,9 +10,14 @@ pantalla no puede cerrar esa ventana: no puede leer la cookie (HttpOnly).
 Ahora cada pedido de la app manda `X-Rendi-Persona` (el email de quien la
 pestaña cree que está logueado) y `get_current_user` —el único lugar por el
 que pasan todos los pedidos con sesión— lo compara con la persona de la
-sesión. Si es otra: 409 con code `persona_cambiada`, sin tocar nada. Sin el
-encabezado sigue andando (una pestaña con la versión anterior el día que se
-publica, scripts, links del mail).
+sesión. Si es otra: 409 con code `persona_cambiada`, sin tocar nada.
+
+🔴 Re-test a ciegas 8: un pedido con la sesión en la COOKIE (el navegador) que
+no dice de quién es ya no se atiende (401 `persona_falta`): una pestaña «de
+nadie» por un olvido de la pantalla mandaba todo a la cuenta de quien tuviera
+la cookie. Quedan afuera «¿quién soy?» (`GET /api/auth/me`) y la sesión por
+`Authorization: Bearer` (scripts, pruebas). Y «cerrar sesión» no cierra la
+sesión de otra persona.
 
 Corre con: cd backend && python3 -m pytest tests/test_persona_de_la_pestana.py
 """
@@ -103,10 +108,75 @@ class PersonaDeLaPestana(unittest.TestCase):
         self._rechazo(self._pedido("GET", "/api/positions", self.bruno,
                                    persona="ana@rendi.test", por_cookie=True))
 
-    # ── La misma persona, o un pedido que no lo dice ─────────────────────────
-    def test_sin_el_encabezado_sigue_andando(self):
+    # ── Un pedido que no dice de quién es ────────────────────────────────────
+    def test_con_la_cookie_y_sin_el_encabezado_no_se_atiende(self):
+        for persona in (None, ""):
+            for metodo, ruta, kw in (
+                ("GET", "/api/positions", {}),
+                ("POST", "/api/brokers", {"json": {"name": "Balanz", "currency": "ARS"}}),
+            ):
+                with self.subTest(persona=persona, ruta=ruta):
+                    r = self._pedido(metodo, ruta, self.bruno, persona=persona, por_cookie=True, **kw)
+                    self.assertEqual(r.status_code, 401, r.text)
+                    self.assertEqual(r.json()["detail"]["code"], "persona_falta")
+        conn = main.get_db()
+        try:
+            n = conn.execute("SELECT COUNT(*) AS n FROM brokers").fetchone()["n"]
+        finally:
+            conn.close()
+        self.assertEqual(n, 0, "el alta sin persona no se guardó en la cuenta de la cookie")
+
+    def test_quien_soy_con_la_cookie_no_necesita_decirlo(self):
+        r = self._pedido("GET", "/api/auth/me", self.bruno, por_cookie=True)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["email"], "bruno@rendi.test")
+
+    def test_con_bearer_sin_el_encabezado_sigue_andando(self):
         self.assertEqual(self._pedido("GET", "/api/positions", self.bruno).status_code, 200)
         self.assertEqual(self._pedido("GET", "/api/positions", self.bruno, persona="").status_code, 200)
+
+    def test_una_pantalla_publica_con_la_cookie_y_sin_decirlo_es_alguien_sin_sesion(self):
+        self.assertIsNone(self._optional(self.bruno, persona=None))
+        self.assertEqual(self._optional(self.bruno, persona="bruno@rendi.test"), self.bruno)
+
+    def _optional(self, uid, persona):
+        from starlette.requests import Request
+        headers = [(b"cookie", f"{main.COOKIE_NAME}={main.create_token(uid)}".encode())]
+        if persona is not None:
+            headers.append((PERSONA.lower().encode(), persona.encode()))
+        req = Request({"type": "http", "method": "POST", "path": "/api/auth/link-request/respond",
+                       "headers": headers, "query_string": b""})
+        return main._optional_uid(req)
+
+    # ── Cerrar sesión no cierra la de otra persona ───────────────────────────
+    def _logout(self, uid, persona=None, token=None):
+        self.client.cookies.set(main.COOKIE_NAME, token or main.create_token(uid))
+        headers = {PERSONA: persona} if persona is not None else {}
+        try:
+            return self.client.post("/api/auth/logout", headers=headers)
+        finally:
+            self.client.cookies.clear()
+
+    @staticmethod
+    def _borra_la_cookie(r):
+        return any(main.COOKIE_NAME in v for k, v in r.headers.items() if k.lower() == "set-cookie")
+
+    def test_cerrar_sesion_con_la_sesion_de_otra_persona_no_la_toca(self):
+        r = self._logout(self.bruno, persona="ana@rendi.test")
+        self._rechazo(r)
+        self.assertFalse(self._borra_la_cookie(r), "la cookie de Bruno siguió")
+
+    def test_cerrar_la_propia_la_borra(self):
+        for persona in ("bruno@rendi.test", quote(" Bruno@Rendi.test "), None):
+            with self.subTest(persona=persona):
+                r = self._logout(self.bruno, persona=persona)
+                self.assertEqual(r.status_code, 200, r.text)
+                self.assertTrue(self._borra_la_cookie(r))
+
+    def test_una_cookie_vencida_o_invalida_se_borra_igual(self):
+        r = self._logout(None, persona="ana@rendi.test", token="basura")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(self._borra_la_cookie(r))
 
     def test_la_misma_persona_pasa_aunque_cambien_mayusculas_espacios_o_venga_codificado(self):
         for persona in ("ana@rendi.test", " ANA@Rendi.test ", quote("ana@rendi.test")):

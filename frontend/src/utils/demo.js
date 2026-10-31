@@ -8,6 +8,7 @@ import { computeBrokerValue } from './valuation'
 import { computeSectorBreakdown } from './assetSector'
 import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
+import { olvidarLaSesionSiEsDe } from './sesionGuardada'
 
 // Cuando la URL tiene `?demo=1`, AuthContext setea un user demo y este módulo
 // intercepta las llamadas al backend devolviendo fixtures hardcodeadas.
@@ -131,11 +132,18 @@ export function enableDemoMode() {
   avisarModoDemo()
 }
 
+// El email del usuario del demo (AuthContext.DEMO_USER).
+export const EMAIL_DEL_DEMO = 'demo@rendi.finance'
+
 export function disableDemoMode() {
   if (typeof window === 'undefined') return
   borrarDelAlmacen(CATALOGO.modoDemo)
   borrarDelAlmacen(CATALOGO.tokenViejo)
-  borrarDelAlmacen(CATALOGO.usuario)
+  // Lo guardado «quién está logueado» se borra sólo si es el del demo (un resto
+  // de versiones que lo guardaban). Si es una cuenta real abierta en otra
+  // pestaña, es suyo: salir del demo lo borraba, y esa pestaña se recargaba
+  // (re-test a ciegas 8).
+  olvidarLaSesionSiEsDe(EMAIL_DEL_DEMO)
   clearDemoOverlay()
   avisarModoDemo()
 }

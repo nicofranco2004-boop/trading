@@ -4010,13 +4010,32 @@ def _token_posterior_al_cambio(payload: dict, pwd_changed_at: str) -> bool:
 # pestaña cree logueado (codificado para que viaje cualquier letra), y si la
 # sesión es de OTRA persona el pedido se rechaza con 409 `persona_cambiada`
 # sin tocar nada. La pantalla lo trata como un cambio de persona (cartel y
-# recarga). Sin el encabezado sigue andando: una pestaña con la versión
-# anterior el día que se publica, scripts, links del mail.
+# recarga).
 # Va ACÁ porque es el único lugar por el que pasan todos los pedidos con
 # sesión (get_effective_user y get_admin_user lo llaman), y usa la consulta a
 # `users` que ya se hacía.
+#
+# 🔴 Y UN PEDIDO DEL NAVEGADOR QUE NO DICE DE QUIÉN ES NO SE ATIENDE (re-test a
+# ciegas 8, 31/10). Al principio, sin el encabezado se seguía atendiendo con la
+# cookie, y eso dejaba abierta la puerta justo cuando la pestaña quedaba «de
+# nadie» por un olvido de la pantalla (entrar por «restablecer la contraseña»):
+# sus pedidos no decían nada y se guardaban en la cuenta de quien tuviera la
+# cookie. Ahora, con la sesión en la COOKIE (o sea, desde un navegador) y sin
+# encabezado, el pedido se trata como «sin sesión»: 401 con code
+# `persona_falta` (y las pantallas públicas lo ven como alguien sin sesión).
+# Quedan afuera de la regla:
+#   · «¿quién soy?» (`GET /api/auth/me`): es la pregunta con que la pestaña se
+#     entera de quién es, al abrir y al entrar; contesta sólo eso.
+#   · la sesión por `Authorization: Bearer` (scripts, pruebas, clientes que no
+#     son el navegador): ahí no hay pestañas ni una cookie compartida.
+# Una pestaña abierta con la versión ANTERIOR el día que se publica no manda el
+# encabezado: recibe un 401, que esa versión ya sabe manejar (vuelve al
+# inicio), y al volver carga la versión nueva, que sí lo manda. Una vez, sin
+# bucle. Por eso es 401 y no 409: la versión anterior no conoce el 409.
 PERSONA_HEADER = "X-Rendi-Persona"
 PERSONA_CAMBIADA = 409
+PERSONA_FALTA = "persona_falta"
+PREGUNTAS_SIN_PERSONA = {("GET", "/api/auth/me")}
 
 
 def _persona_del_encabezado(request: Request) -> Optional[str]:
@@ -4035,6 +4054,7 @@ def get_current_user(
     # Preferimos la cookie HttpOnly (web), fallback al Authorization header
     # (clientes no-browser / back-compat). El que esté primero gana.
     token = request.cookies.get(COOKIE_NAME)
+    por_cookie = bool(token)
     if not token and creds:
         token = creds.credentials
     if not token:
@@ -4044,6 +4064,13 @@ def get_current_user(
         uid = int(payload["sub"])
     except (JWTError, KeyError, ValueError):
         raise HTTPException(401, "Token inválido")
+    persona = _persona_del_encabezado(request)
+    if (por_cookie and persona is None
+            and (request.method, request.url.path) not in PREGUNTAS_SIN_PERSONA):
+        raise HTTPException(401, detail={
+            "code": PERSONA_FALTA,
+            "message": "El pedido no dice de quién es: no se atiende con la sesión del navegador.",
+        })
     # Verificar que el user existe y que el token no quedó invalidado por cambio de pass.
     #
     # ⚠️ `requires_plan` viaja en ESTA consulta —la que el chequeo ya hacía— para
@@ -4076,7 +4103,6 @@ def get_current_user(
     if row["password_changed_at"] and not _token_posterior_al_cambio(
             payload, row["password_changed_at"]):
         raise HTTPException(401, "Token expirado por cambio de contraseña")
-    persona = _persona_del_encabezado(request)
     if persona is not None and persona != (row["email"] or "").strip().lower():
         raise HTTPException(PERSONA_CAMBIADA, detail={
             "code": "persona_cambiada",
@@ -4989,10 +5015,34 @@ def login(data: LoginIn, request: Request, response: Response):
 
 
 @app.post("/api/auth/logout")
-def logout(response: Response):
+def logout(request: Request, response: Response):
     """Borra la cookie de auth. Para clientes que usan Bearer header, esto es
     no-op server-side (el token sigue vigente hasta exp) — sirven con cambiar
-    la contraseña si querés invalidar todo."""
+    la contraseña si querés invalidar todo.
+
+    🔴 NO CIERRA LA SESIÓN DE OTRA PERSONA (re-test a ciegas 8). La cookie es una
+    para todo el navegador: si en otra pestaña ya entró Bruno, el «Cerrar
+    sesión» de la pestaña de Ana borraba la cookie de Bruno. Ahora el pedido
+    dice de quién es (X-Rendi-Persona, como todos) y, si la sesión es de otra
+    persona, contesta 409 `persona_cambiada` sin tocar la cookie. Una cookie
+    vencida o inválida se borra igual. Sin encabezado (la versión anterior de
+    la app el día que se publica) se borra como antes."""
+    persona = _persona_del_encabezado(request)
+    token = request.cookies.get(COOKIE_NAME)
+    if persona is not None and token:
+        dueno = None
+        try:
+            uid = int(jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])["sub"])
+            with db_abierta() as conn:
+                row = conn.execute("SELECT email FROM users WHERE id=?", (uid,)).fetchone()
+            dueno = (row["email"] or "").strip().lower() if row else None
+        except (JWTError, KeyError, ValueError):
+            dueno = None
+        if dueno is not None and dueno != persona:
+            raise HTTPException(PERSONA_CAMBIADA, detail={
+                "code": "persona_cambiada",
+                "message": "La sesión de este navegador ya es de otra persona: no se cerró.",
+            })
     clear_auth_cookie(response)
     return {"ok": True}
 

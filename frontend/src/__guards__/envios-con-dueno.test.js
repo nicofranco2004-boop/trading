@@ -172,6 +172,22 @@ describe('lo que sale sin pasar por utils/api', () => {
     expect([...new Set(usos)].sort()).toEqual(['contexts/AuthContext.jsx get /auth/me', 'contexts/AuthContext.jsx post /auth/logout'])
   })
 
+  // Y sin decir la persona, sólo «¿quién soy?»: es lo único que el servidor
+  // atiende sin ella (main.py, PREGUNTAS_SIN_PERSONA). «Cerrar sesión» la dice:
+  // el servidor no cierra la sesión de otra persona (re-test a ciegas 8).
+  it('sólo «¿quién soy?» sale sin decir la persona', () => {
+    const usos = []
+    for (const p of archivos()) {
+      const r = rel(p)
+      if (r === 'utils/api.js') continue
+      const t = readFileSync(p, 'utf8').replace(/\/\/.*$/gm, '')
+      for (const m of t.matchAll(/api\.(get|post|put|patch|delete)\(\s*['"`]([^'"`]+)['"`][^\n]*\bsinPersona\b/g)) usos.push(`${r} ${m[1]} ${m[2]}`)
+    }
+    expect([...new Set(usos)].sort()).toEqual(['contexts/AuthContext.jsx get /auth/me'])
+    const main = readFileSync(join(SRC, '..', '..', 'backend', 'main.py'), 'utf8')
+    expect(main, 'el servidor atiende sin persona sólo «¿quién soy?»').toContain('PREGUNTAS_SIN_PERSONA = {("GET", "/api/auth/me")}')
+  })
+
   it('cada salida de utils/api pasa por el freno de la pestaña desfasada antes del fetch', () => {
     const t = readFileSync(join(SRC, 'utils/api.js'), 'utf8').replace(/\/\/.*$/gm, '')
     // Las funciones de arriba del archivo (async function x(…) { … }) que llaman a fetch.

@@ -85,12 +85,15 @@ class OrigenDeLosRegistros(unittest.TestCase):
                ORDER BY created_at DESC LIMIT 1""", (email,))["code"]
         r = self.client.post("/api/auth/verify-email", json={"email": email, "code": code})
         self.assertEqual(r.status_code, 200, r.text)
-        # Queda con la cookie del usuario puesta: lo que sigue lo hace ÉL.
+        # Queda con la cookie del usuario puesta: lo que sigue lo hace ÉL, y
+        # como la app, diciendo de quién es (main.py, PERSONA_HEADER).
+        self._quien = email
 
     def _cargar_cartera(self):
-        r = self.client.post("/api/brokers", json={"name": "Cocos", "currency": "USD"})
+        persona = {main.PERSONA_HEADER: self._quien}
+        r = self.client.post("/api/brokers", json={"name": "Cocos", "currency": "USD"}, headers=persona)
         self.assertEqual(r.status_code, 200, r.text)
-        r = self.client.post("/api/positions", json={
+        r = self.client.post("/api/positions", headers=persona, json={
             "broker": "Cocos", "asset": "KO", "buy_price": 50, "quantity": 2,
             "invested": 100, "entry_date": "2026-02-10"})
         self.assertEqual(r.status_code, 200, r.text)

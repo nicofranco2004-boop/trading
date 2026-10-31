@@ -14,6 +14,9 @@
 //   (ii)  La pestaña queda usable —con la sesión que hay, sin cartel— o con un
 //         cartel cuyo botón «Recargar» la deja usable, en pocas recargas.
 //   (iii) Nunca se borra algo guardado de la persona que tiene la sesión.
+//   (iv)  Ningún pedido con sesión sale sin decir de quién es (salvo «¿quién
+//         soy?»): una pestaña «de nadie» es la puerta abierta del re-test a
+//         ciegas 8, aunque el servidor la rechace.
 //
 // Qué es de verdad y qué no:
 //   · La pestaña A es de verdad: cada recarga vuelve a cargar TODO el código con
@@ -22,12 +25,18 @@
 //     AuthContext, AdvisorContext, el cartel, utils/api, la puerta del almacén,
 //     los envíos con dueño— y una pantalla mínima que muestra datos de una
 //     cuenta y desde ahí compra, agrega un mes y manda un envío automático.
+//     A entra por las PANTALLAS de entrada de verdad, llenando y mandando su
+//     formulario (testing/pantallasDeEntrada): hasta el re-test 8 llamaba a la
+//     puerta directo y no veía una pantalla que no la usara.
 //   · La otra pestaña (B) hace lo que hace en el navegador compartido: cambia la
 //     cookie (el servidor) y, a veces un rato después, lo guardado en común,
 //     y le llega a A el aviso `storage`.
 //   · El servidor simulado aplica la regla del de verdad (get_current_user,
 //     backend/tests/test_persona_de_la_pestana.py): sin sesión 401; si el
-//     pedido dice otra persona que la de la cookie, 409 persona_cambiada.
+//     pedido dice otra persona que la de la cookie, 409 persona_cambiada; si
+//     no dice ninguna, 401 persona_falta (salvo «¿quién soy?»); «cerrar
+//     sesión» no cierra la sesión de otra persona. Las rutas de entrada
+//     contestan lo que contesta main.py.
 //
 // Por defecto corren 24 escenarios de 7 pasos. Para cientos:
 //   RENDI_AZAR=300 npx vitest run src/pages/sesionAlAzar.render.test.jsx
@@ -36,6 +45,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { createElement as h } from 'react'
 import { appendFileSync } from 'node:fs'
+import { contestarEntrada, entrarPorLaPantalla, PUERTAS, pantallasDeEntrada, RUTAS_DE_ENTRADA, rutasComoLaApp } from '../testing/pantallasDeEntrada'
 
 const SEMILLA = Number(process.env.RENDI_AZAR_SEMILLA || 20261031)
 const ESCENARIOS = Number(process.env.RENDI_AZAR || 24)
@@ -65,6 +75,7 @@ const ANA = { name: 'Ana', email: 'ana@azar.test', tier: 'pro' }
 const BRUNO = { name: 'Bruno', email: 'bruno@azar.test', tier: 'pro' }
 const ASESORA = { name: 'Asesora', email: 'asesora@azar.test', tier: 'advisor', clientes: [2, 3] }
 const PERSONAS = [ANA, BRUNO, ASESORA]
+const porEmail = (e) => PERSONAS.find(p => p.email === String(e || '').trim().toLowerCase()) || null
 const guardado = (u) => JSON.stringify({ name: u.name, email: u.email, tier: u.tier })
 
 // ── Relojes por carga: los de una página que ya se fue no corren más ────────
@@ -81,23 +92,32 @@ function relojesDeLaCarga() {
 }
 
 // ── El servidor ───────────────────────────────────────────────────────────
-const srv = { me: null, demoraMe: 0, meFalla: 0, escrituras: [] }
+const srv = { me: null, demoraMe: 0, meFalla: 0, escrituras: [], sinPersona: [] }
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } })
 async function servidor(url, opts = {}) {
   const g = gen
   const method = opts.method || 'GET'
   const path = String(url).replace(/^\/api/, '').split('?')[0]
   const hd = opts.headers || {}
-  const persona = hd['X-Rendi-Persona'] ? decodeURIComponent(hd['X-Rendi-Persona']) : null
+  const persona = hd['X-Rendi-Persona'] ? decodeURIComponent(hd['X-Rendi-Persona']).trim().toLowerCase() || null : null
   const cid = hd['X-Rendi-Client-Id'] != null ? Number(hd['X-Rendi-Client-Id']) : null
   const sesion = srv.me                                   // la cookie: la de quien está logueado AL MANDAR
   let body
   try { body = opts.body && typeof opts.body === 'string' ? JSON.parse(opts.body) : undefined } catch { body = undefined }
-  if (path === '/auth/logout') srv.me = null
+  // «Cerrar sesión» no cierra la de otra persona (main.py, logout).
+  const deOtra = path === '/auth/logout' && persona && sesion && persona !== sesion.email
+  if (path === '/auth/logout' && !deOtra) srv.me = null
   await esperar(path === '/auth/me' ? srv.demoraMe : (srv.demoraResto || 3))
   if (gen !== g) return new Promise(() => {})              // la página se fue: el navegador corta el pedido
-  if (path === '/auth/logout') return json({ ok: true })
+  if (path === '/auth/logout') return deOtra ? json({ detail: { code: 'persona_cambiada' } }, 409) : json({ ok: true })
+  const entrada = contestarEntrada(srv, method, path, body, porEmail)
+  if (entrada) return entrada
+  if (path === '/health' || path === '/stats/public') return json({ ok: true })
   if (!sesion) return json({ detail: 'Token inválido' }, 401)
+  if (!persona && !(method === 'GET' && path === '/auth/me')) {
+    srv.sinPersona.push({ pedido: `${method} ${path}`, paso: pasoActual })
+    return json({ detail: { code: 'persona_falta' } }, 401)
+  }
   if (persona && persona !== sesion.email) return json({ detail: { code: 'persona_cambiada' } }, 409)
   if (path === '/auth/me') {
     if (srv.meFalla > 0) { srv.meFalla -= 1; return json({ detail: 'ocupado' }, 503) }   // se reintenta solo
@@ -121,7 +141,7 @@ let mapas = { local: new Map(), sesion: new Map() }
 let cur = null
 let pasoActual = ''
 
-async function cargar() {
+async function cargar(ruta = '/app') {
   if (cur?.m) { try { await cur.m.desmontar() } catch { /* */ } }
   gen++
   const prevL = new Map(mapas.local), prevS = new Map(mapas.sesion)
@@ -134,8 +154,13 @@ async function cargar() {
   relojesDeLaCarga()
   // La página arranca en /app: así se ve cuando algo la manda a otra dirección
   // (el 401 y el demo la mandan al inicio, «/»).
-  Object.assign(window.location, { href: 'http://localhost/app', pathname: '/app' })
+  const pathname = ruta.split('?')[0]
+  Object.assign(window.location, { href: 'http://localhost' + pathname, pathname, search: '' })
+  window.history = { replaceState() {}, pushState() {}, back() {} }
   const R = await import('react')
+  const RR = await import('react-router-dom')
+  const { HelmetProvider } = await import('react-helmet-async')
+  const pantallas = await pantallasDeEntrada()
   const { AuthProvider, useAuth } = await import('../contexts/AuthContext')
   const { AdvisorProvider, useAdvisorContext } = await import('../contexts/AdvisorContext')
   const { default: Cartel } = await import('../components/CuentaCambiadaEnOtraPestana')
@@ -144,7 +169,7 @@ async function cargar() {
   const { useDuenoDeLosDatos } = await import('../utils/duenoDeLaPestana')
   const almacen = await import('../utils/almacen')
   const demo = await import('../utils/demo')
-  const tab = { pantalla: null }
+  const tab = { pantalla: null, ruta: pathname }
   // Una pantalla que muestra datos de UNA cuenta (la que contestó al montarse)
   // y manda con ellos: lo que hace cualquier pantalla de la app.
   function Pantalla() {
@@ -160,9 +185,6 @@ async function cargar() {
     }, [])
     tab.pantalla = {
       user: auth.user, muestra, cliente: adv.clientCtx?.id ?? null, logout: auth.logout,
-      // La puerta de la sesión. (En una versión anterior a la puerta única, lo
-      // que hacía la pantalla de entrada: `login` con el email que tuviera.)
-      entrar: auth.entrar ?? ((o = {}) => auth.login(null, o.nombre, { email: o.email })),
       exitDemo: auth.exitDemo, enterClient: adv.enterClient, exitClient: adv.exitClient,
       compra: () => api.api.post('/positions', { muestra }),
       mes: () => api.api.post('/monthly', { muestra }),
@@ -175,8 +197,10 @@ async function cargar() {
     const adv = useAdvisorContext()
     return R.createElement(Pantalla, { key: `${auth.user?.email ?? 'nadie'}|${adv.clientCtx?.id ?? 'propia'}` })
   }
-  const el = () => R.createElement(AuthProvider, null, R.createElement(AdvisorProvider, null,
-    R.createElement(Cartel), R.createElement(PantallaDeLaCuenta)))
+  function Ojo() { tab.ruta = RR.useLocation().pathname; return null }
+  const Rutas = rutasComoLaApp(h, RR, useAuth, pantallas, PantallaDeLaCuenta)
+  const el = () => h(HelmetProvider, null, h(RR.MemoryRouter, { initialEntries: [ruta] },
+    h(AuthProvider, null, h(AdvisorProvider, null, h(Cartel), h(Ojo), h(Rutas)))))
   const m = await nav.montar(el())
   cur = { m, nav, el, api, almacen, demo, tab, href: window.location.href, win: window }
   return cur
@@ -274,16 +298,12 @@ function accionesDeA(r) {
   }
   if (!p?.user) {
     const u = r.uno(PERSONAS)
-    // Una acción por cada puerta de entrada (re-test a ciegas 7: «restablecer
-    // la contraseña» tenía su propio camino y se quedó afuera). Todas ponen la
-    // cookie (el pedido de la pantalla) y pasan por AuthContext.entrar.
-    for (const [puerta, evento] of [['el login', 'login'], ['registrarse y verificar el mail', 'sign_up'],
-      ['reclamar una cuenta', 'login'], ['restablecer la contraseña', 'login']]) {
-      lista.push([`A entra como ${u.name} por ${puerta}`, intentar(async () => {
-        srv.me = u                                             // el pedido de la pantalla: el servidor pone la cookie
-        // (email/nombre: sólo para la versión anterior; restablecer no lo tenía)
-        await cur.tab.pantalla.entrar({ evento, nombre: u.name, email: puerta.startsWith('restablecer') ? undefined : u.email })
-      })])
+    // Una acción por cada puerta de entrada, por su PANTALLA: abre la pantalla,
+    // llena el formulario y lo manda (re-test a ciegas 7: «restablecer la
+    // contraseña» tenía su propio camino y se quedó afuera; re-test 8: llamar a
+    // la puerta directo no veía una pantalla que no la usara).
+    for (const puerta of Object.keys(PUERTAS)) {
+      lista.push([`A entra como ${u.name} por «${puerta}»`, intentar(() => entrarPorLaPantalla(puerta, u, ctxDeEntrada))])
     }
     lista.push(['A entra al demo', intentar(async () => { cur.demo.enableDemoMode(); cur.win.location.href = 'http://localhost/' })])
   }
@@ -315,7 +335,8 @@ function accionesDeB(r) {
       for (const k of [...mapas.local.keys()].filter(k => k.startsWith('rendi_') && k !== 'rendi_theme')) otraPestanaEscribe(k, null)
     }, { sale: true }],
     ['B entra al demo', async () => { otraPestanaEscribe('rendi_demo_mode', String(Date.now())) }],
-    ['B sale del demo', async () => { otraPestanaEscribe('rendi_demo_mode', null); otraPestanaEscribe('rendi_user', null) }],
+    // Salir del demo no toca la sesión de la cuenta real (re-test a ciegas 8).
+    ['B sale del demo', async () => { otraPestanaEscribe('rendi_demo_mode', null) }],
     [`B abre el cliente ${r.uno([2, 3])}`, async () => { otraPestanaEscribe('rendi_client_ctx', JSON.stringify({ id: r.uno([2, 3]), label: 'X' })) }],
     ['«¿quién soy?» se pone lento', async () => { srv.demoraMe = r.uno([0, 350, 900]) }],
     ['«¿quién soy?» falla una vez (y se reintenta)', async () => { srv.meFalla = 1 }],
@@ -343,7 +364,7 @@ describe('la sesión de la pestaña, por escenarios al azar', () => {
       // Arranca: navegador limpio, alguien logueado (o nadie), con ayudas
       // guardadas de cada persona (para ver si alguna se borra de más).
       mapas = { local: new Map(), sesion: new Map() }
-      srv.me = null; srv.demoraMe = 0; srv.demoraResto = 0; srv.meFalla = 0; srv.escrituras = []
+      srv.me = null; srv.demoraMe = 0; srv.demoraResto = 0; srv.meFalla = 0; srv.escrituras = []; srv.sinPersona = []
       const inicial = r.uno([ANA, BRUNO, ASESORA, null])
       if (inicial) { srv.me = inicial; mapas.local.set('rendi_user', guardado(inicial)) }
       mapas.local.set('rendi:tour:novedades:v2', '1')
@@ -355,6 +376,7 @@ describe('la sesión de la pestaña, por escenarios al azar', () => {
         const titular = srv.me?.email ?? null
         const deTitular = titular ? clavesDe(titular) : []
         const nEscrituras = srv.escrituras.length
+        const nSinPersona = srv.sinPersona.length
         // El paso: una acción de A, de B, o las dos a la vez (B cambia la
         // cookie y A toca algo antes de que llegue el aviso).
         const tipo = r.uno(['A', 'B', 'AB', 'AB'])
@@ -369,6 +391,8 @@ describe('la sesión de la pestaña, por escenarios al azar', () => {
         // ── las reglas ──
         const malas = srv.escrituras.slice(nEscrituras).filter(x => x.muestra != null && x.cuenta !== x.muestra)
         if (malas.length) rojos.push({ regla: '(i) datos de una pantalla guardados en otra cuenta', semilla, historia: [...historia], malas })
+        const sinDecir = srv.sinPersona.slice(nSinPersona)
+        if (sinDecir.length) rojos.push({ regla: '(iv) pedidos con sesión que no dicen de quién son', semilla, historia: [...historia], sinDecir })
         // Un cierre de sesión borra todo lo guardado (AuthContext.logout): en
         // ese instante nadie tiene la sesión, y no cuenta para (iii).
         const sale = /cierra sesión|vence|sale del demo|sale y entra/.test(pasoActual)
@@ -399,7 +423,7 @@ describe('la sesión de la pestaña, por escenarios al azar', () => {
 // alcanza en una corrida, éstos igual los prueban siempre.
 async function arrancar(u) {
   mapas = { local: new Map(), sesion: new Map() }
-  srv.me = u; srv.demoraMe = 0; srv.demoraResto = 0; srv.meFalla = 0; srv.escrituras = []
+  srv.me = u; srv.demoraMe = 0; srv.demoraResto = 0; srv.meFalla = 0; srv.escrituras = []; srv.sinPersona = []
   if (u) mapas.local.set('rendi_user', guardado(u))
   mapas.local.set('rendi:tour:novedades:v2', '1')
   for (const p of PERSONAS) mapas.local.set(`rendi_snapshot_date:${p.email}|propia`, '2026-10-30')
@@ -480,8 +504,8 @@ describe('los escenarios del re-test a ciegas 6, fijos', () => {
   it('R7-1: Ana entra por «restablecer la contraseña» y enseguida entra Bruno en otra pestaña: nada de Ana va a Bruno', async () => {
     await arrancar(null)
     pasoActual = 'R7-1'
-    srv.me = ANA                                              // el pedido de restablecer pone la cookie de Ana
-    await enActo(() => cur.tab.pantalla.entrar({ nombre: ANA.name }))   // la pantalla no tiene el email
+    // Por la pantalla de verdad: el link del mail, la contraseña nueva dos veces, «Guardar».
+    expect(await entrarPorLaPantalla('restablecer la contraseña', ANA, ctxDeEntrada), 'entró').toBe(true)
     await seguir()
     expect(cur.tab.pantalla.muestra, 'la pantalla de Ana muestra lo de Ana').toBe(ANA.email)
     const n = srv.escrituras.length
@@ -491,6 +515,7 @@ describe('los escenarios del re-test a ciegas 6, fijos', () => {
     ]))
     log('[R7-1] escrituras:', srv.escrituras.slice(n))
     expect(malasDesde(n), 'compras de la pantalla de Ana guardadas en la cuenta de Bruno').toEqual([])
+    expect(srv.sinPersona, 'pedidos que no dicen de quién son').toEqual([])
   }, 120000)
 
   it('R7-2: la recarga queda frenada («¿Salir del sitio?») y entra Bruno: el cartel no cierra la sesión de Bruno', async () => {
@@ -543,6 +568,9 @@ describe('los escenarios del re-test a ciegas 6, fijos', () => {
 })
 
 const enActo = async (fn) => { const { act } = await import('react'); let r; await act(async () => { r = await fn() }); return r }
+// Para entrar por las pantallas (testing/pantallasDeEntrada).
+const quietaUn = async (ms) => { for (let i = 0; i < Math.ceil(ms / 25); i++) { await esperar(25); try { await cur.m.redibujar(cur.el()) } catch { /* */ } } }
+const ctxDeEntrada = { cargar, cur: () => ({ ...cur, ruta: () => cur.tab.ruta }), srv, quieta: quietaUn }
 
 // (ii) ¿La pestaña quedó usable? Con la sesión que hay (o el demo, o nadie) y
 // sin cartel; o, si quedó lo guardado en común distinto de la cookie (B no
