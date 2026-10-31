@@ -48,8 +48,13 @@ COPY backend/requirements.txt backend/requirements.txt
 RUN pip install --upgrade 'pip<26' \
  && pip install --no-cache-dir -r backend/requirements.txt
 
-# Sólo `backend/`: la app no lee nada de fuera de esa carpeta mientras corre.
+# `backend/` y lo único de afuera que la app lee mientras corre: las dos consultas
+# del informe de alcance (`backend/alcance_auditoria.py`, endpoint
+# /api/admin/alcance-auditoria), que las busca en `../audit/01_calculos/`. Van en
+# la misma ruta relativa; sin ellas ese endpoint da 500. Si otro módulo empieza a
+# leer algo fuera de `backend/`, va acá (test_imagen_de_produccion lo vigila).
 COPY backend/ backend/
+COPY audit/01_calculos/1a-alcance-produccion*.sql audit/01_calculos/
 
 WORKDIR /app/backend
 CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

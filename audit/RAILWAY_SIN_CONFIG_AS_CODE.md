@@ -75,7 +75,9 @@ depender de qué detecte Railway ni de qué archivo de configuración lea. Los c
 Railway y corre el apagado ordenado dentro de `drainingSeconds`. Con un shell en el medio
 (probable en Nixpacks, **no verificado**), la señal puede no llegarle.
 
-La imagen copia sólo `backend/`: la app no lee nada de afuera mientras corre. Y
+La imagen copia `backend/` y lo único de afuera que la app lee mientras corre: las dos
+consultas del informe de alcance de la auditoría (`audit/01_calculos/1a-alcance-produccion*.sql`,
+que usa el panel de admin), en la misma ruta. Con Nixpacks estaba el repositorio entero. Y
 `.dockerignore` deja afuera las bases locales y los backups con datos reales.
 
 ## 5. Cada ajuste de `railway.toml` y dónde vive después del 1/12

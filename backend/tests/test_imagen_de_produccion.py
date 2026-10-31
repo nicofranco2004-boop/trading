@@ -93,6 +93,22 @@ class LaImagenConservaLoDeNixpacks(unittest.TestCase):
         self.assertTrue(any(a.split()[0].rstrip("/") == "backend" for a in copias), copias)
         self.assertFalse(any("start.sh" in a for a in copias + [self.run]))
 
+    def test_copia_lo_de_afuera_que_la_app_lee(self):
+        """Con Nixpacks la imagen tenía el repositorio entero; ésta copia `backend/`
+        y nada más que lo nombrado. El informe de alcance (/api/admin/alcance-auditoria)
+        lee sus consultas de `audit/01_calculos/`, fuera de `backend/`: sin COPY,
+        ese endpoint da 500 recién en producción."""
+        import fnmatch
+        import alcance_auditoria as alc
+        copias = [a.split() for i, a in self.df if i == "COPY"]
+        for ruta in (alc.SQL_PATH, alc.SQL_PATH_PG):
+            rel = os.path.relpath(os.path.realpath(ruta), os.path.realpath(RAIZ))
+            self.assertTrue(os.path.isfile(os.path.join(RAIZ, rel)), rel)
+            destino = os.path.dirname(rel) + "/"
+            self.assertTrue(
+                any(len(c) == 2 and fnmatch.fnmatch(rel, c[0]) and c[1] == destino for c in copias),
+                f"{rel} no se copia a la imagen en {destino}: {copias}")
+
 
 class RailwayTomlApuntaAlDockerfileYSusAjustesTienenReemplazo(unittest.TestCase):
 
