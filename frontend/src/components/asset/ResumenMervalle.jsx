@@ -11,8 +11,11 @@
 //   · si ya existe, viene con GET /api/tecnico (`resumen.estado = 'listo'`) y el
 //     panel se muestra abierto, sin pedir nada;
 //   · si no ('no_hay' o 'generando'), el botón hace POST
-//     /api/tecnico/{activo}/resumen: el primero lo genera, el que toca mientras
-//     tanto espera al primero;
+//     /api/tecnico/{activo}/resumen: el primero lo genera; el que toca mientras
+//     tanto recibe 'generando' al instante y vuelve a preguntar solo cada unos
+//     segundos (`REINTENTO`), sin dejar de mostrar «escribiendo…». El servidor
+//     no espera al otro pedido: esa espera corría fuera del freno de la ficha
+//     (auditoría final E2, 31/10);
 //   · null: no se ofrece (sin IA, precios viejos, sin datos): no hay botón.
 //
 // Las preguntas para seguir son análisis del botón ✦ (`useVoz().analizar`, como
@@ -26,7 +29,7 @@
 // tarjeta) y `PanelMervalle` (abajo). Las cuentas y los datos los arma el
 // servidor: de acá no viaja nada tuyo.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { MessageCircle, Sparkles } from 'lucide-react'
 import { api } from '../../utils/api'
 import { useVoz } from '../../contexts/VozContext'
@@ -38,6 +41,12 @@ const AVISOS = {
   no_disponible: 'Para este activo no hay análisis por ahora.',
   error: 'Esta vez no se pudo escribir el análisis.',
 }
+
+// Con 'generando' (otro pedido lo está escribiendo): cada cuánto y cuántas
+// veces se vuelve a preguntar antes de decirlo y ofrecer «Probar de nuevo».
+// El modelo tarda 2-3 s (8 s el peor medido): 10 × 3 s alcanzan de sobra y
+// entran en el freno de la ficha (90 por minuto). Exportado para las pruebas.
+export const REINTENTO = { ms: 3000, veces: 10 }
 
 function fechaCorta(iso) {
   if (!iso) return ''
@@ -58,12 +67,23 @@ export function useResumenMervalle({ asset, moneda, local = false, resumen, alTe
 
   const listo = resumen?.estado === 'listo'
   const visible = !!resumen && !cerrado && (listo || abierto)
+  // Si cambia el activo o la moneda (o se desmonta) a mitad de los reintentos,
+  // la vuelta vieja se corta.
+  const vuelta = useRef(0)
+  useEffect(() => () => { vuelta.current++ }, [asset, moneda])
   const pedir = async () => {
+    const mia = ++vuelta.current
     setEscribiendo(true)
     setAviso(null)
     try {
-      const r = await api.post(
-        `/tecnico/${encodeURIComponent(asset)}/resumen?moneda=${moneda}${local ? '&local=1' : ''}`)
+      const ruta = `/tecnico/${encodeURIComponent(asset)}/resumen?moneda=${moneda}${local ? '&local=1' : ''}`
+      let r = await api.post(ruta)
+      for (let i = 1; r?.estado === 'generando' && i < REINTENTO.veces; i++) {
+        await new Promise(ok => setTimeout(ok, REINTENTO.ms))
+        if (mia !== vuelta.current) return
+        r = await api.post(ruta)
+      }
+      if (mia !== vuelta.current) return
       if (r?.estado === 'listo') alTenerlo?.(r)
       else setAviso(r?.estado in AVISOS ? r.estado : 'error')
     } catch {

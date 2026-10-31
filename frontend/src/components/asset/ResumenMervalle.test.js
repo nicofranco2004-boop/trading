@@ -148,6 +148,37 @@ describe('Analizar con Mervall-E en la ficha', () => {
     expect(t).toContain(TEXTO)
   })
 
+  it('si otro lo está escribiendo («generando»), vuelve a preguntar solo hasta que está', async () => {
+    // Auditoría final E2 (31/10): el servidor ya no espera al otro pedido;
+    // contesta «generando» al instante y la pantalla vuelve a preguntar.
+    const { REINTENTO } = await import('./ResumenMervalle')
+    const antes = { ...REINTENTO }
+    Object.assign(REINTENTO, { ms: 0 })
+    try {
+      await dibujar({ estado: 'generando', fecha: '2026-10-21' })
+      let n = 0
+      alPost = () => Promise.resolve(++n < 3 ? { estado: 'generando', fecha: '2026-10-21' }
+        : { estado: 'listo', texto: TEXTO, fecha: '2026-10-21' })
+      await tocar(BOTON)
+      for (let i = 0; i < 8; i++) await montado.redibujar(el())
+      expect(api.post).toHaveBeenCalledTimes(3)
+      expect(texto(lecturaDeHoy())).toContain(TEXTO)
+      // Si nunca termina, después de unas vueltas lo dice y deja probar de nuevo.
+      await montado.desmontar()
+      api.post.mockClear()
+      Object.assign(REINTENTO, { veces: 3 })
+      await dibujar({ estado: 'no_hay', fecha: '2026-10-21' })
+      alPost = () => Promise.resolve({ estado: 'generando', fecha: '2026-10-21' })
+      await tocar(BOTON)
+      for (let i = 0; i < 8; i++) await montado.redibujar(el())
+      expect(api.post).toHaveBeenCalledTimes(3)
+      expect(texto(montado.contenedor)).toContain('se está terminando de escribir')
+      expect(buscarBoton(montado.contenedor, 'Probar de nuevo')).toBeTruthy()
+    } finally {
+      Object.assign(REINTENTO, antes)
+    }
+  })
+
   it('las preguntas para seguir abren el chat con la pregunta que escribe el servidor', async () => {
     await dibujar({ estado: 'listo', texto: TEXTO, fecha: '2026-10-21' },
       { fibonacci: { disponible: false, en_curso: { dir: 'bajada' } } })
