@@ -202,6 +202,70 @@ def armar(lotes: list, hoy: str, mercados: Optional[dict] = None,
     }
 
 
+def por_activo(lotes: list, hoy: str) -> list:
+    """Lo del «Mapa de tu cartera», activo por activo, de los MISMOS lotes que
+    `armar` (`main._lotes_del_dia`). Un activo es (asset, local) —la clave de
+    `senales_semana.cartera`, la de los cuadritos—: GGAL de BYMA y el ADR no se
+    suman. → [{asset, local, valor, hoy: {pct, usd} | None, dia_txt,
+    promedio_pct | None}]
+
+      · `hoy`: el movimiento del precio en la rueda de HOY (la regla del archivo:
+        lo que no es de hoy no se llama hoy). Si su última rueda es otra, None y
+        `dia_txt` dice cuál («ayer», «el viernes 3/10»); sin medir, `dia_txt` None.
+      · `promedio_pct`: lo que vale contra lo que pagaste (`costo` del lote, con
+        el dólar de compra, como la pantalla), en %. Sin costo, None.
+    El efectivo no va: no es un activo del mapa."""
+    grupos: dict = {}
+    for l in lotes:
+        if l.get("motivo") == "efectivo" or not l.get("asset"):
+            continue
+        k = (str(l["asset"]).upper(), bool(l.get("local")))
+        g = grupos.setdefault(k, {"valor": 0.0, "costo": 0.0, "sin_costo": False,
+                                  "hoy_v": 0.0, "hoy_vp": 0.0, "medido_hoy": False,
+                                  "todos_hoy": True, "otra_rueda": None})
+        v = float(l.get("valor") or 0)
+        g["valor"] += v
+        c = l.get("costo")
+        if c is None or c <= 0:
+            g["sin_costo"] = True
+        else:
+            g["costo"] += float(c)
+        vp = l.get("valor_previo")
+        if vp is not None and vp > 0 and l.get("es_hoy"):
+            g["medido_hoy"] = True
+            g["hoy_v"] += v
+            g["hoy_vp"] += float(vp)
+        else:
+            # Un lote del activo sin el movimiento de hoy: el % de hoy del activo
+            # sería el de una parte. Mejor ninguno que uno a medias.
+            g["todos_hoy"] = False
+            if vp is not None and vp > 0 and l.get("rueda"):
+                g["otra_rueda"] = max(g["otra_rueda"] or "", l["rueda"])
+    out = []
+    for (asset, local), g in sorted(grupos.items()):
+        hoy_d = None
+        if g["medido_hoy"] and g["todos_hoy"] and g["hoy_vp"] > 0:
+            usd = g["hoy_v"] - g["hoy_vp"]
+            hoy_d = {"pct": round(usd / g["hoy_vp"] * 100, 2), "usd": round(usd, 2)}
+        dia = "hoy" if hoy_d else (_no_hoy(dia_txt(g["otra_rueda"], hoy)) if g["otra_rueda"] else None)
+        promedio = (round((g["valor"] - g["costo"]) / g["costo"] * 100, 2)
+                    if g["costo"] > 0 and not g["sin_costo"] else None)
+        out.append({"asset": asset, "local": local, "valor": round(g["valor"], 2),
+                    "hoy": hoy_d, "dia_txt": dia, "promedio_pct": promedio})
+    return out
+
+
+def la_cartera_hoy(resumen: dict) -> Optional[dict]:
+    """El renglón «Hoy tu cartera» del mapa, del resumen de `armar`: lo que se
+    movieron tus activos en la rueda de HOY, sobre la cartera al cierre anterior
+    (`pct_sobre_la_cartera`). None si hoy no se movió nada todavía (la rueda no
+    abrió): no se muestra el de ayer como si fuera de hoy."""
+    for m in resumen.get("movimiento") or []:
+        if m.get("es_hoy") and m.get("pct_sobre_la_cartera") is not None:
+            return {"pct": m["pct_sobre_la_cartera"], "usd": m["usd"], "mercados": m["mercados"]}
+    return None
+
+
 def tickers_para_noticias(resumen: dict, cripto: set, maximo: int = 5) -> list:
     """De qué activos buscar noticias: los que más movieron la cartera y se
     movieron de verdad (≥ 1 %). Cripto queda afuera por el mismo motivo que en

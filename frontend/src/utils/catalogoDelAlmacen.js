@@ -113,6 +113,7 @@ export const CATALOGO = Object.freeze({
   graficoCapas: e({ clave: 'rendi_grafico_capas', donde: LOCAL, tipo: PREFERENCIA, porque: 'qué indicadores del gráfico están prendidos' }),
   graficoLeyenda: e({ clave: 'rendi_grafico_leyenda', donde: LOCAL, tipo: PREFERENCIA, porque: 'la lista de indicadores abierta o plegada' }),
   graficoTipo: e({ clave: 'rendi_grafico_tipo', donde: LOCAL, tipo: PREFERENCIA, porque: 'línea o velas' }),
+  mapaColor: e({ clave: 'rendi_mapa_color', donde: LOCAL, tipo: PREFERENCIA, porque: 'de qué se pintan los cuadritos del mapa de tu cartera' }),
   colorDibujo: e({ clave: 'rendi_dibujo_color', donde: LOCAL, tipo: PREFERENCIA, porque: 'el color de los dibujos nuevos' }),
   temaDeLaFicha: e({ clave: 'rendi_ficha_tema_tecnico', donde: LOCAL, tipo: PREFERENCIA, porque: 'la pestaña elegida de las tarjetas de la ficha' }),
   vistaDeLaLista: e({ prefijo: 'rendi_lista_vista:', donde: LOCAL, tipo: PREFERENCIA,

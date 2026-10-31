@@ -110,6 +110,60 @@ class ArmarTest(unittest.TestCase):
         self.assertEqual(sorted(filas[0]["brokers"]), ["IBKR", "Schwab"])
 
 
+class PorActivoTest(unittest.TestCase):
+    """Lo del «Mapa de tu cartera», activo por activo, de los MISMOS lotes."""
+
+    def _l(self, asset, valor, previo, es_hoy, local=False, costo=None, rueda=HOY, motivo=None):
+        l = _lote(asset, valor, previo, "eeuu", rueda if previo else None, es_hoy, motivo=motivo)
+        l.update(local=local, costo=costo)
+        return l
+
+    def test_por_activo_y_lectura_como_los_cuadritos(self):
+        r = {(a["asset"], a["local"]): a for a in cartera_hoy.por_activo([
+            self._l("GGAL", 1000, 990, True, local=True, costo=800),       # GGAL de BYMA
+            self._l("GGAL", 500, 510, True, local=False, costo=600),       # el ADR: otro cuadrito
+            self._l("MSFT", 600, 590, True, costo=400),
+            self._l("MSFT", 300, 295, True, costo=200),                    # otro broker: se suman
+            self._l("USD", 1000, None, False, motivo="efectivo"),
+        ], HOY)}
+        self.assertEqual(set(r), {("GGAL", True), ("GGAL", False), ("MSFT", False)})
+        self.assertEqual(r[("GGAL", True)]["hoy"], {"pct": round(10 / 990 * 100, 2), "usd": 10.0})
+        self.assertEqual(r[("GGAL", False)]["hoy"]["usd"], -10.0)
+        self.assertEqual(r[("MSFT", False)]["hoy"]["usd"], 15.0)
+        # Contra lo que pagaste: (900 − 600) / 600.
+        self.assertEqual(r[("MSFT", False)]["promedio_pct"], 50.0)
+        self.assertEqual(r[("GGAL", True)]["dia_txt"], "hoy")
+
+    def test_lo_que_no_es_de_hoy_no_se_llama_hoy(self):
+        r = cartera_hoy.por_activo([
+            self._l("AAPL", 2000, 1980, False, rueda=AYER, costo=1500),     # BYMA antes de las 11
+            self._l("XYZ", 100, None, False, costo=90, motivo="sin_cierre"),
+        ], HOY)
+        aapl, xyz = r
+        self.assertIsNone(aapl["hoy"])
+        self.assertEqual(aapl["dia_txt"], "ayer")
+        self.assertIsNone(xyz["hoy"])
+        self.assertIsNone(xyz["dia_txt"])
+        self.assertEqual(xyz["promedio_pct"], round(10 / 90 * 100, 2))
+
+    def test_un_lote_sin_el_movimiento_de_hoy_no_da_un_porcentaje_a_medias(self):
+        r = cartera_hoy.por_activo([
+            self._l("MSFT", 600, 590, True, costo=400),
+            self._l("MSFT", 300, None, False, costo=200, motivo="precio_manual"),
+        ], HOY)
+        self.assertIsNone(r[0]["hoy"])
+
+    def test_la_cartera_hoy_es_el_grupo_de_hoy_del_resumen(self):
+        resumen = cartera_hoy.armar([_lote("MSFT", 6000, 5900, "eeuu", HOY, True),
+                                     _lote("AAPL", 2000, 1980, "byma", AYER, False)], HOY)
+        c = cartera_hoy.la_cartera_hoy(resumen)
+        self.assertEqual(c["usd"], 100.0)
+        self.assertEqual(c["pct"], resumen["movimiento"][0]["pct_sobre_la_cartera"])
+        # Antes de que abra nada: ninguno (no el de ayer como si fuera de hoy).
+        self.assertIsNone(cartera_hoy.la_cartera_hoy(
+            cartera_hoy.armar([_lote("AAPL", 2000, 1980, "byma", AYER, False)], HOY)))
+
+
 class RuedaBymaTest(unittest.TestCase):
     def setUp(self):
         self._hist = dict(main._RUEDA_BYMA_HIST)
@@ -221,7 +275,7 @@ class CaminoDeProduccionTest(unittest.TestCase):
     MEP = 1400.0
 
     def setUp(self):
-        for c in (main._CHAT_VAL_CACHE, main._CHAT_PRECIOS, main._CARTERA_HOY_CACHE,
+        for c in (main._CHAT_VAL_CACHE, main._CHAT_PRECIOS, main._CARTERA_HOY_CACHE, main._MAPA_DEL_DIA_CACHE,
                   main._PREVCLOSE_CACHE, main._PREVCLOSE_RUEDA, main._PREVCLOSE_VENCE,
                   main._PRICE_CACHE):
             c.clear()
@@ -252,7 +306,7 @@ class CaminoDeProduccionTest(unittest.TestCase):
             self.conn.execute(f"DELETE FROM {t}")
         self.conn.commit()
 
-    def _correr(self, live, ahora=A_LAS_932, precios=None, pre_post=None, velas=None):
+    def _correr(self, live, ahora=A_LAS_932, precios=None, pre_post=None, velas=None, mapa=False):
         tabla = _tabla_yahoo({"MSFT": [590.0, 600.0]}, [AYER, HOY])
         precios = precios or {"AAPL.BA": live["AAPL"]["c"], "MSFT": 600.0}
         import fuera_de_horario
@@ -276,6 +330,9 @@ class CaminoDeProduccionTest(unittest.TestCase):
              patch.object(main._yahoo, "descargar", return_value=tabla), \
              patch.object(main._yahoo, "varios", side_effect=_varios), \
              patch.object(main, "_ensure_news_batch_parallel", return_value=None):
+            if mapa:
+                main._MAPA_DEL_DIA_CACHE.clear()
+                return main.get_mapa_del_dia(self.uid)
             return main._execute_ai_tool_inner("get_portfolio_today", {}, self.uid)
 
     # Yahoo a las 8:58 de un día con pre-mercado (forma medida 2026-10-15):
@@ -368,6 +425,23 @@ class CaminoDeProduccionTest(unittest.TestCase):
         self.assertEqual(r["mercados"]["byma"]["ultima_rueda"], AYER)
         self.assertEqual(r["efectivo_porcion_de_la_cartera_pct"] > 0, True)
         self.assertIn("_note", r)
+
+    def test_el_mapa_dice_lo_mismo_que_el_chat(self):
+        """El «Mapa de tu cartera» (GET /api/cartera/mapa-del-dia) sale de la MISMA
+        cuenta que la respuesta del chat: a las 9:32 MSFT ya operó hoy y el CEDEAR
+        es de ayer (no se llama hoy), y «Hoy tu cartera» es el grupo de hoy del chat."""
+        chat = self._correr(LIVE_PREAPERTURA)
+        mapa = self._correr(LIVE_PREAPERTURA, mapa=True)
+        a = {(x["asset"], x["local"]): x for x in mapa["activos"]}
+        self.assertEqual(set(a), {("AAPL", False), ("MSFT", False)}, "el efectivo no es un cuadrito")
+        self.assertAlmostEqual(a[("MSFT", False)]["hoy"]["usd"], 100.0, places=2)
+        self.assertIsNone(a[("AAPL", False)]["hoy"])
+        self.assertEqual(a[("AAPL", False)]["dia_txt"], "ayer")
+        hoy_chat = next(g for g in chat["movimiento"] if g["es_hoy"])
+        self.assertEqual(mapa["cartera"]["pct"], hoy_chat["pct_sobre_la_cartera"])
+        self.assertEqual(mapa["cartera"]["usd"], hoy_chat["usd"])
+        # Contra lo que pagaste: MSFT 10 × 600 contra US$ 5.000.
+        self.assertAlmostEqual(a[("MSFT", False)]["promedio_pct"], 20.0, places=2)
 
     def test_con_la_rueda_abierta_todo_es_hoy(self):
         live = {"AAPL": {"c": 27300.0, "pct": 0.74}, "SPY": {"c": 20950.0, "pct": 0.24}}

@@ -17,6 +17,84 @@
 // Con «Ocultar saldos» el TAMAÑO delataría cuánto pesa cada uno, y el ORDEN
 // (de más a menos) cuál pesa más: todos iguales, en orden alfabético y sin %.
 
+import { clave } from './radiografia'
+import { polarityColor, CORTES_DIA, CORTES_PROMEDIO } from './polarityScale'
+import { leer, guardar } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
+
+// ─── De qué se pinta cada cuadrito («Color por», Nico 30/10: «Sí, sumarlo») ──
+// Tendencia de entrada (lo del lienzo del Panorama). «Hoy» y «Contra tu
+// promedio» salen de GET /api/cartera/mapa-del-dia: el servidor los cuenta con
+// LA cuenta de «qué se movió hoy» (main._lotes_del_dia, la misma del chat), el
+// mismo par precio / cierre anterior que la «Var. día» de la Cartera.
+export const MODOS = [
+  { id: 'hoy', label: 'Hoy' },
+  { id: 'tendencia', label: 'Tendencia' },
+  { id: 'promedio', label: 'Contra tu promedio' },
+]
+export const MODO_DE_ENTRADA = 'tendencia'
+/** El renglón de arriba del mapa, según el modo: cada término explicado. */
+export const QUE_ES_EL_COLOR = {
+  hoy: 'color = cuánto se movió hoy contra el cierre anterior',
+  tendencia: 'color = tendencia de largo plazo',
+  promedio: 'color = cuánto está arriba o abajo de lo que pagaste',
+}
+
+export function modoGuardado() {
+  try {
+    const m = leer(CATALOGO.mapaColor)
+    return MODOS.some(x => x.id === m) ? m : MODO_DE_ENTRADA
+  } catch { return MODO_DE_ENTRADA }
+}
+export function guardarModo(m) {
+  try { guardar(CATALOGO.mapaColor, m) } catch { /* sin almacenamiento: dura la visita */ }
+}
+
+/**
+ * Los cuadritos con lo del día de cada uno: `delDia.activos` del servidor
+ * ([{asset, local, hoy: {pct, usd} | null, dia_txt, promedio_pct}], % en
+ * puntos) por la MISMA clave de Tu lista (`clave(asset, local)`: GGAL de BYMA
+ * y el ADR son dos). → cada cuadrito con `hoy` ({pct (fracción), usd} | null),
+ * `diaTxt` y `promedio` (fracción | null). El efectivo y «y N más» no tienen.
+ */
+export function conElDia(cuadritos = [], delDia = null) {
+  const por = new Map((delDia?.activos || []).map(a => [clave(String(a.asset).toUpperCase(), a.local), a]))
+  return cuadritos.map(c => {
+    const a = c.clave !== 'efectivo' && c.clave !== 'otros' ? por.get(c.clave) : null
+    return {
+      ...c,
+      hoy: a?.hoy ? { pct: a.hoy.pct / 100, usd: a.hoy.usd } : null,
+      diaTxt: a?.dia_txt || null,
+      promedio: a?.promedio_pct != null ? a.promedio_pct / 100 : null,
+    }
+  })
+}
+
+const SIN_DATO = { bg: 'rgb(var(--bg-3))', ink: 'rgb(var(--ink-2))' }
+/** El color de un cuadrito en «Hoy» o «Contra tu promedio» ({bg, ink} para
+ *  `style`; sin dato, gris). En «Tendencia», null: van los tonos del lienzo. */
+export function colorDelModo(c, modo) {
+  if (modo === 'hoy') return c.hoy ? polarityColor(c.hoy.pct * 100, CORTES_DIA) : SIN_DATO
+  if (modo === 'promedio') return c.promedio != null ? polarityColor(c.promedio * 100, CORTES_PROMEDIO) : SIN_DATO
+  return null
+}
+
+/** Lo que más sumó y lo que más restó HOY, en plata (un +8 % de US$ 20 no le
+ *  cambia el día a nadie), de TODOS los activos que tenés (no sólo los que
+ *  entran con nombre en el mapa). `nombres`: clave → el nombre del cuadrito.
+ *  → { sumo, resto }: cada uno { nombre, usd, pct (fracción) } o null. */
+export function losExtremosDeHoy(delDia = null, nombres = new Map()) {
+  let sumo = null, resto = null
+  for (const a of delDia?.activos || []) {
+    if (!a.hoy) continue
+    const x = { nombre: nombres.get(clave(String(a.asset).toUpperCase(), a.local)) || a.asset,
+                usd: a.hoy.usd, pct: a.hoy.pct / 100 }
+    if (x.usd > 0 && (!sumo || x.usd > sumo.usd)) sumo = x
+    if (x.usd < 0 && (!resto || x.usd < resto.usd)) resto = x
+  }
+  return { sumo, resto }
+}
+
 // Cuántos cuadritos con nombre propio; el resto va junto en «y N más».
 export const MAX_CUADRITOS = 10
 // Debajo de esto (en % de tu cartera) el efectivo no lleva cuadrito.

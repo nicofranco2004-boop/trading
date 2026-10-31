@@ -305,13 +305,15 @@ class ElDolarDelCostoTest(unittest.TestCase):
         número — que es exactamente lo que pasaba."""
         import inspect, re
         import main
-        # La valuación del chat y el movimiento del día (get_portfolio_today)
-        # comparten la lectura y la valuación del lote: el guard vigila esas
-        # dos piezas Y que los dos caminos pasen por ellas.
-        for camino in (main._valuate_positions_for_chat, main._cartera_hoy_para_chat):
+        # La valuación del chat y el movimiento del día (get_portfolio_today y
+        # el «Mapa de tu cartera», por `_lotes_del_dia`) comparten la lectura y
+        # la valuación del lote: el guard vigila esas piezas Y que los caminos
+        # pasen por ellas.
+        for camino in (main._valuate_positions_for_chat, main._lotes_del_dia):
             fuente = inspect.getsource(camino)
             self.assertIn("_valuar_lote_chat(", fuente, camino.__name__)
             self.assertIn("_chat_valuation_inputs(", fuente, camino.__name__)
+        self.assertIn("_lotes_del_dia(", inspect.getsource(main._cartera_hoy_para_chat))
         self.assertIn("costo='compra'", inspect.getsource(main._valuar_lote_chat),
                       "el chat volvió a caer al dólar de hoy en silencio")
         # Y que la consulta traiga el dato: sin tc_compra no se puede.

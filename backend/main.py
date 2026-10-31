@@ -34699,6 +34699,9 @@ def _valuate_positions_for_chat(conn, uid: int):
 # chat): en una charla de varios mensajes sólo el primero paga los pedidos.
 _CARTERA_HOY_CACHE: dict = {}
 _CARTERA_HOY_TTL_SEC = 60
+# Lo mismo para el «Mapa de tu cartera» (GET /api/cartera/mapa-del-dia): se
+# borra en los mismos lugares que el de arriba.
+_MAPA_DEL_DIA_CACHE: dict = {}
 
 # Horario de cada rueda en su hora local (mismos que alerts_engine).
 _RUEDA_HORARIO = {
@@ -34749,6 +34752,208 @@ def _estado_mercado(mercado, rueda, hoy, ahora=None) -> str:
     return f"no hay datos de una rueda de hoy (puede ser feriado); lo último es {ultima}"
 
 
+def _lotes_del_dia(uid: int) -> tuple:
+    """Cada lote de la cartera valuado DOS veces —al precio de ahora y al cierre
+    anterior, con la misma cantidad y el mismo dólar— y su costo. → (hoy, lotes,
+    mercados, tc_cedear). LA cuenta de «qué se movió hoy»: la usan la tool del
+    chat (`_cartera_hoy_para_chat`, el texto) y el «Mapa de tu cartera»
+    (`GET /api/cartera/mapa-del-dia`, los números por activo). Cada lote lleva
+    `local` (acción argentina, `accion_local.es_lote_local`: la MISMA clave que
+    `senales_semana.cartera`, así GGAL de BYMA y el ADR no se mezclan) y `costo`
+    (el de `_valuar_lote_chat`, con el dólar de compra como la pantalla).
+
+    La base se lee y se suelta ANTES de salir a buscar precios: en Postgres leer
+    abre una transacción que, si no, quedaba abierta mientras se espera a la red."""
+    import accion_local
+    import cartera_hoy as _ch
+    import fuera_de_horario as _fdh
+    from fechas import hoy_art
+    from snapshots_job import _broker_name_sets, position_price_key
+    hoy = hoy_art()
+    hoy_utc = datetime.utcnow().date().isoformat()
+    conn = get_db()
+    try:
+        brokers, positions, tc_blue, tc_cedear = _chat_valuation_inputs(conn, uid)
+    finally:
+        conn.close()
+    broker_ccy = {b['name']: b['currency'] for b in brokers}
+    ars_names, ar_usd_names = _broker_name_sets(brokers)
+    # Los MISMOS precios que acaba de usar la valuación del snapshot, si
+    # están frescos: así "tu cartera vale X" y "hoy se movió Y" hablan de
+    # la misma foto.
+    _pc = _CHAT_PRECIOS.get(uid)
+    if _pc is not None and time.time() - _pc[0] < _CHAT_VAL_TTL_SEC:
+        prices = dict(_pc[1])
+    else:
+        syms = build_price_symbols(positions, brokers) if (brokers and positions) else []
+        try:
+            prices = fetch_prices_for_symbols(syms, CRYPTO_YF, tope=_yahoo.TOPE_PANTALLA_SEG) if syms else {}
+        except Exception as ex:
+            log.warning("cartera_hoy: fetch_prices falló uid=%s: %s", uid, ex)
+            prices = {}
+
+    claves = {}
+    for i, p in enumerate(positions):
+        if p.get('is_cash') or p.get('asset') in ('USDT', 'USD', 'ARS'):
+            continue
+        claves[i] = position_price_key(p, ars_names, ar_usd_names)
+    pedir = sorted({k for k in claves.values() if k and _SYMBOL_RE.match(k)})
+
+    # Los tres pedidos de afuera van EN PARALELO (corren adentro del chat):
+    # los cierres, los precios de la pantalla y la fecha de la rueda de BYMA.
+    # En frío, uno detrás del otro sumaban 6,4 s (medido 2026-10-08).
+    def _precios_pantalla():
+        out = {}
+        for _i in range(0, len(pedir), MAX_SYMBOLS):
+            _pp = get_prices(",".join(pedir[_i:_i + MAX_SYMBOLS]), uid)
+            out.update({k: v for k, v in (_pp or {}).items() if k != '__meta'})
+        return out
+
+    cierres, ruedas, precios_pantalla, fecha_byma = {}, {}, {}, None
+    if pedir:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=3) as _ex:
+            _f_cierres = _ex.submit(_prev_close_con_rueda, pedir, uid)
+            _f_precios = _ex.submit(_precios_pantalla)
+            _f_byma = _ex.submit(_rueda_byma, hoy)
+            try:
+                cierres, ruedas = _f_cierres.result()
+            except Exception as ex:
+                log.warning("cartera_hoy: cierres anteriores fallaron uid=%s: %s", uid, ex)
+            try:
+                precios_pantalla = _f_precios.result()
+            except Exception as ex:
+                log.warning("cartera_hoy: precios de pantalla fallaron uid=%s: %s", uid, ex)
+            try:
+                fecha_byma = _f_byma.result()
+            except Exception as ex:
+                log.warning("cartera_hoy: rueda de BYMA falló: %s", ex)
+
+    # 🔴 El % del día sale del MISMO par que la columna "Var. día" de
+    # Posiciones: el precio de /api/prices contra el cierre de
+    # /api/prices/prev-close. NO del precio del chat (fetch_prices_for_symbols)
+    # contra ese cierre: las dos fuentes no convierten igual a todos los
+    # activos. Medido 2026-10-08 con el caché del dólar frío (recién
+    # arrancado): BAC.BA valía $18.932 en la pantalla (CCL 1.415) y $21.528
+    # en el chat (CCL 1.609) — mezclarlas daba un "+12,5 % ayer" que nunca
+    # pasó. El % se aplica después al valor del chat, así el monto queda en
+    # la misma valuación que el resto de la respuesta.
+    pct_dia = {}
+    for k in pedir:
+        pa, pc = precios_pantalla.get(k), cierres.get(k)
+        try:
+            if pa and pc and float(pa) > 0 and float(pc) > 0:
+                pct_dia[k] = float(pa) / float(pc) - 1
+        except (TypeError, ValueError):
+            continue
+    precios_previos = dict(prices)
+    for k, pct in pct_dia.items():
+        if prices.get(k):
+            precios_previos[k] = prices[k] / (1 + pct)
+
+    lotes = []
+    for i, p in enumerate(positions):
+        bccy = broker_ccy.get(p['broker'])
+        if bccy is None:
+            continue  # huérfana: la valuación del chat también la descarta
+        try:
+            v, costo = _valuar_lote_chat(p, prices, bccy, tc_blue, tc_cedear)
+        except Exception as ex:
+            log.warning("cartera_hoy: lote %s falló: %s", p.get('asset'), ex)
+            continue
+        if abs(v) < 0.005:
+            continue  # lote vacío: no aporta ni al valor ni al movimiento
+        lote = {"asset": p.get('asset'), "broker": p.get('broker'), "valor": v,
+                "valor_previo": None, "motivo": None,
+                "mercado": None, "rueda": None, "es_hoy": False,
+                "local": accion_local.es_lote_local(p, ars_names, ar_usd_names), "costo": costo}
+        k = claves.get(i)
+        # La acción de EE.UU. que lo anticipa fuera de la rueda (pre y post
+        # mercado), con la MISMA clave de precio con que se lo valúa.
+        lote["ref"] = _fdh.referencia_en_eeuu(k, p.get('asset_type'))
+        if k is None:
+            lote["motivo"] = "efectivo"
+        elif p.get('price_override') not in (None, 0, ''):
+            lote["motivo"] = "precio_manual"
+        elif str(k).startswith('FCI:'):
+            lote["motivo"] = "fci"
+        elif not prices.get(k):
+            lote["motivo"] = "sin_precio"
+        elif k not in pct_dia:
+            lote["motivo"] = "sin_cierre"
+        else:
+            try:
+                vp, _ = _valuar_lote_chat(p, precios_previos, bccy, tc_blue, tc_cedear)
+            except Exception:
+                vp = None
+            mercado, fecha = ruedas.get(k, (None, None))
+            if mercado == "byma" and fecha is None:
+                # Un papel que hoy no operó trae el % de una rueda anterior.
+                fecha = _fecha_rueda_byma(k, fecha_byma, hoy)
+            # Cripto: su vela es un día UTC. Entre las 21:00 y la medianoche
+            # puede seguir siendo la del día argentino, que también es "hoy".
+            es_hoy = bool(fecha) and (fecha in (hoy_utc, hoy) if mercado == "cripto" else fecha == hoy)
+            lote.update(valor_previo=vp, mercado=mercado, rueda=fecha, es_hoy=es_hoy)
+            pct_precio = pct_dia[k]
+            if vp is None or vp <= 0:
+                lote["motivo"] = "sin_cierre"
+            elif abs(pct_precio) > 0.5 or abs((v / vp - 1) - pct_precio) > 0.005:
+                # El valor del lote es LINEAL en el precio en todas las ramas de
+                # la valuación (pesos ÷ MEP, premio cripto, bonos per-1): su % tiene
+                # que ser el del precio. Si no lo es, el control de precios de la
+                # valuación rechazó uno de los dos y lo llevó al costo; y un precio
+                # que "se movió" más de 50 % en un día es una unidad equivocada.
+                # Mejor "no medido" que inventado.
+                lote.update(valor_previo=None, motivo="precio_dudoso")
+            elif str(p.get('entry_date') or '')[:10] == hoy:
+                # 🔴 Comprado HOY: el día de ese lote arranca en el precio de
+                # compra, no en el cierre de ayer. Cerró a 590, lo compraste a
+                # 610 y vale 600 → perdiste 10, no ganaste 10.
+                if es_hoy:
+                    lote["valor_previo"] = costo
+                    lote["comprado_hoy"] = True
+                else:
+                    lote.update(valor_previo=None, motivo="comprado_hoy_sin_rueda")
+        lotes.append(lote)
+
+    # Estado de cada mercado presente (para redactar "todavía no abrió").
+    mercados = {}
+    for l in lotes:
+        m = l.get("mercado")
+        if not m or m in mercados:
+            continue
+        fechas_m = [x["rueda"] for x in lotes if x.get("mercado") == m and x.get("rueda")]
+        ult = max(fechas_m) if fechas_m else None
+        if m == "cripto" and ult == hoy_utc:
+            ult = hoy
+        mercados[m] = {"ultima_rueda": ult,
+                       "ultima_rueda_txt": _ch.dia_txt(ult, hoy),
+                       "estado": _estado_mercado(m, ult, hoy)}
+    return hoy, lotes, mercados, tc_cedear
+
+
+@app.get("/api/cartera/mapa-del-dia")
+def get_mapa_del_dia(uid: int = Depends(get_effective_user)):
+    """Lo del día del «Mapa de tu cartera» (components/MapaCartera.jsx, en el
+    Panorama de Análisis técnico y en el Dashboard: el mismo componente): por
+    activo, cuánto se movió HOY y cuánto contra lo que pagaste, y el renglón «Hoy
+    tu cartera». De `_lotes_del_dia`, LA cuenta de «qué se movió hoy» (la misma
+    que contesta el chat): no hay otra. Los números viajan siempre; «Ocultar
+    saldos» los tapa la pantalla, como en el resto de la app."""
+    import cartera_hoy as _ch
+    cached = _MAPA_DEL_DIA_CACHE.get(uid)
+    if cached is not None and time.time() - cached[0] < _CARTERA_HOY_TTL_SEC:
+        return cached[1]
+    hoy, lotes, mercados, _ = _lotes_del_dia(uid)
+    out = {"hoy": hoy,
+           "cartera": _ch.la_cartera_hoy(_ch.armar(lotes, hoy, mercados)),
+           "activos": _ch.por_activo(lotes, hoy)}
+    if len(_MAPA_DEL_DIA_CACHE) > 500:
+        _MAPA_DEL_DIA_CACHE.clear()
+    _MAPA_DEL_DIA_CACHE[uid] = (time.time(), out)
+    return out
+
+
 def _cartera_hoy_para_chat(uid: int) -> dict:
     """Resultado de la tool get_portfolio_today: cuánto se movió la cartera, en
     qué rueda, qué activos la movieron y los titulares del día.
@@ -34762,170 +34967,13 @@ def _cartera_hoy_para_chat(uid: int) -> dict:
     """
     import cartera_hoy as _ch
     import fuera_de_horario as _fdh
-    from fechas import hoy_art
-    from snapshots_job import _broker_name_sets, position_price_key
     cached = _CARTERA_HOY_CACHE.get(uid)
     if cached is not None and time.time() - cached[0] < _CARTERA_HOY_TTL_SEC:
         return cached[1]
 
-    hoy = hoy_art()
-    hoy_utc = datetime.utcnow().date().isoformat()
+    hoy, lotes, mercados, tc_cedear = _lotes_del_dia(uid)
     conn = get_db()
     try:
-        brokers, positions, tc_blue, tc_cedear = _chat_valuation_inputs(conn, uid)
-        broker_ccy = {b['name']: b['currency'] for b in brokers}
-        ars_names, ar_usd_names = _broker_name_sets(brokers)
-
-        # Los MISMOS precios que acaba de usar la valuación del snapshot, si
-        # están frescos: así "tu cartera vale X" y "hoy se movió Y" hablan de
-        # la misma foto.
-        _pc = _CHAT_PRECIOS.get(uid)
-        if _pc is not None and time.time() - _pc[0] < _CHAT_VAL_TTL_SEC:
-            prices = dict(_pc[1])
-        else:
-            syms = build_price_symbols(positions, brokers) if (brokers and positions) else []
-            try:
-                prices = fetch_prices_for_symbols(syms, CRYPTO_YF, tope=_yahoo.TOPE_PANTALLA_SEG) if syms else {}
-            except Exception as ex:
-                log.warning("cartera_hoy: fetch_prices falló uid=%s: %s", uid, ex)
-                prices = {}
-
-        claves = {}
-        for i, p in enumerate(positions):
-            if p.get('is_cash') or p.get('asset') in ('USDT', 'USD', 'ARS'):
-                continue
-            claves[i] = position_price_key(p, ars_names, ar_usd_names)
-        pedir = sorted({k for k in claves.values() if k and _SYMBOL_RE.match(k)})
-
-        # Los tres pedidos de afuera van EN PARALELO (corren adentro del chat):
-        # los cierres, los precios de la pantalla y la fecha de la rueda de BYMA.
-        # En frío, uno detrás del otro sumaban 6,4 s (medido 2026-10-08).
-        def _precios_pantalla():
-            out = {}
-            for _i in range(0, len(pedir), MAX_SYMBOLS):
-                _pp = get_prices(",".join(pedir[_i:_i + MAX_SYMBOLS]), uid)
-                out.update({k: v for k, v in (_pp or {}).items() if k != '__meta'})
-            return out
-
-        cierres, ruedas, precios_pantalla, fecha_byma = {}, {}, {}, None
-        if pedir:
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=3) as _ex:
-                _f_cierres = _ex.submit(_prev_close_con_rueda, pedir, uid)
-                _f_precios = _ex.submit(_precios_pantalla)
-                _f_byma = _ex.submit(_rueda_byma, hoy)
-                try:
-                    cierres, ruedas = _f_cierres.result()
-                except Exception as ex:
-                    log.warning("cartera_hoy: cierres anteriores fallaron uid=%s: %s", uid, ex)
-                try:
-                    precios_pantalla = _f_precios.result()
-                except Exception as ex:
-                    log.warning("cartera_hoy: precios de pantalla fallaron uid=%s: %s", uid, ex)
-                try:
-                    fecha_byma = _f_byma.result()
-                except Exception as ex:
-                    log.warning("cartera_hoy: rueda de BYMA falló: %s", ex)
-
-        # 🔴 El % del día sale del MISMO par que la columna "Var. día" de
-        # Posiciones: el precio de /api/prices contra el cierre de
-        # /api/prices/prev-close. NO del precio del chat (fetch_prices_for_symbols)
-        # contra ese cierre: las dos fuentes no convierten igual a todos los
-        # activos. Medido 2026-10-08 con el caché del dólar frío (recién
-        # arrancado): BAC.BA valía $18.932 en la pantalla (CCL 1.415) y $21.528
-        # en el chat (CCL 1.609) — mezclarlas daba un "+12,5 % ayer" que nunca
-        # pasó. El % se aplica después al valor del chat, así el monto queda en
-        # la misma valuación que el resto de la respuesta.
-        pct_dia = {}
-        for k in pedir:
-            pa, pc = precios_pantalla.get(k), cierres.get(k)
-            try:
-                if pa and pc and float(pa) > 0 and float(pc) > 0:
-                    pct_dia[k] = float(pa) / float(pc) - 1
-            except (TypeError, ValueError):
-                continue
-        precios_previos = dict(prices)
-        for k, pct in pct_dia.items():
-            if prices.get(k):
-                precios_previos[k] = prices[k] / (1 + pct)
-
-        lotes = []
-        for i, p in enumerate(positions):
-            bccy = broker_ccy.get(p['broker'])
-            if bccy is None:
-                continue  # huérfana: la valuación del chat también la descarta
-            try:
-                v, costo = _valuar_lote_chat(p, prices, bccy, tc_blue, tc_cedear)
-            except Exception as ex:
-                log.warning("cartera_hoy: lote %s falló: %s", p.get('asset'), ex)
-                continue
-            if abs(v) < 0.005:
-                continue  # lote vacío: no aporta ni al valor ni al movimiento
-            lote = {"asset": p.get('asset'), "broker": p.get('broker'), "valor": v,
-                    "valor_previo": None, "motivo": None,
-                    "mercado": None, "rueda": None, "es_hoy": False}
-            k = claves.get(i)
-            # La acción de EE.UU. que lo anticipa fuera de la rueda (pre y post
-            # mercado), con la MISMA clave de precio con que se lo valúa.
-            lote["ref"] = _fdh.referencia_en_eeuu(k, p.get('asset_type'))
-            if k is None:
-                lote["motivo"] = "efectivo"
-            elif p.get('price_override') not in (None, 0, ''):
-                lote["motivo"] = "precio_manual"
-            elif str(k).startswith('FCI:'):
-                lote["motivo"] = "fci"
-            elif not prices.get(k):
-                lote["motivo"] = "sin_precio"
-            elif k not in pct_dia:
-                lote["motivo"] = "sin_cierre"
-            else:
-                try:
-                    vp, _ = _valuar_lote_chat(p, precios_previos, bccy, tc_blue, tc_cedear)
-                except Exception:
-                    vp = None
-                mercado, fecha = ruedas.get(k, (None, None))
-                if mercado == "byma" and fecha is None:
-                    # Un papel que hoy no operó trae el % de una rueda anterior.
-                    fecha = _fecha_rueda_byma(k, fecha_byma, hoy)
-                # Cripto: su vela es un día UTC. Entre las 21:00 y la medianoche
-                # puede seguir siendo la del día argentino, que también es "hoy".
-                es_hoy = bool(fecha) and (fecha in (hoy_utc, hoy) if mercado == "cripto" else fecha == hoy)
-                lote.update(valor_previo=vp, mercado=mercado, rueda=fecha, es_hoy=es_hoy)
-                pct_precio = pct_dia[k]
-                if vp is None or vp <= 0:
-                    lote["motivo"] = "sin_cierre"
-                elif abs(pct_precio) > 0.5 or abs((v / vp - 1) - pct_precio) > 0.005:
-                    # El valor del lote es LINEAL en el precio en todas las ramas de
-                    # la valuación (pesos ÷ MEP, premio cripto, bonos per-1): su % tiene
-                    # que ser el del precio. Si no lo es, el control de precios de la
-                    # valuación rechazó uno de los dos y lo llevó al costo; y un precio
-                    # que "se movió" más de 50 % en un día es una unidad equivocada.
-                    # Mejor "no medido" que inventado.
-                    lote.update(valor_previo=None, motivo="precio_dudoso")
-                elif str(p.get('entry_date') or '')[:10] == hoy:
-                    # 🔴 Comprado HOY: el día de ese lote arranca en el precio de
-                    # compra, no en el cierre de ayer. Cerró a 590, lo compraste a
-                    # 610 y vale 600 → perdiste 10, no ganaste 10.
-                    if es_hoy:
-                        lote["valor_previo"] = costo
-                        lote["comprado_hoy"] = True
-                    else:
-                        lote.update(valor_previo=None, motivo="comprado_hoy_sin_rueda")
-            lotes.append(lote)
-
-        # Estado de cada mercado presente (para redactar "todavía no abrió").
-        mercados = {}
-        for l in lotes:
-            m = l.get("mercado")
-            if not m or m in mercados:
-                continue
-            fechas_m = [x["rueda"] for x in lotes if x.get("mercado") == m and x.get("rueda")]
-            ult = max(fechas_m) if fechas_m else None
-            if m == "cripto" and ult == hoy_utc:
-                ult = hoy
-            mercados[m] = {"ultima_rueda": ult,
-                           "ultima_rueda_txt": _ch.dia_txt(ult, hoy),
-                           "estado": _estado_mercado(m, ult, hoy)}
         resumen = _ch.armar(lotes, hoy, mercados)
 
         # ── Pre y post mercado de Wall Street: un ANTICIPO aparte del día, que
@@ -36653,6 +36701,7 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
 
     _CHAT_VAL_CACHE.pop(uid, None)
     _CARTERA_HOY_CACHE.pop(uid, None)
+    _MAPA_DEL_DIA_CACHE.pop(uid, None)
     undo_ok = p["action"] == "buy" and not _LAST_CHAT_TRADE[uid].get("autodeposit")
     if p["action"] in ("deposit", "withdraw", "transfer", "convert"):
         undo_note = ("No hay undo automático de movimientos de cash: se "
@@ -36993,6 +37042,7 @@ def _undo_last_trade_handler(uid: int) -> dict:
     _LAST_CHAT_TRADE.pop(uid, None)
     _CHAT_VAL_CACHE.pop(uid, None)
     _CARTERA_HOY_CACHE.pop(uid, None)
+    _MAPA_DEL_DIA_CACHE.pop(uid, None)
     _ai_cache_invalidate(uid)
     return {"status": "undone", "summary": f"Deshecho: {info['summary']}",
             "_note": "Confirmale que se revirtió (posición borrada y cash devuelto)."}
@@ -38343,6 +38393,7 @@ def _ai_cache_invalidate(uid: int) -> None:
     # números viejos hasta 60s (review follow-up). pop es no-op si no hay entrada.
     _CHAT_VAL_CACHE.pop(uid, None)
     _CARTERA_HOY_CACHE.pop(uid, None)
+    _MAPA_DEL_DIA_CACHE.pop(uid, None)
     # Y el valor vivo de los rendimientos (60 s, por usuario y dólar). Sin esto,
     # un depósito recién cargado entraba en lo aportado AL INSTANTE pero no en el
     # valor —que seguía siendo el de antes del depósito— y durante un minuto el

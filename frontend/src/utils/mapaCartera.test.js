@@ -5,7 +5,7 @@
 //   · el área de cada cuadrito es proporcional a lo que pesa;
 //   · con «Ocultar saldos» ni el tamaño, ni el orden, ni el % dicen cuánto pesa.
 import { describe, it, expect } from 'vitest'
-import { cuadritosDelMapa, ubicarCuadritos, sinLecturaDe, MAX_CUADRITOS, PROPORCION } from './mapaCartera'
+import { cuadritosDelMapa, ubicarCuadritos, sinLecturaDe, conElDia, colorDelModo, losExtremosDeHoy, MAX_CUADRITOS, PROPORCION } from './mapaCartera'
 
 const fila = (nombre, peso, tendencia, extra = {}) => ({
   clave: `${nombre}|0`, nombre, ruta: nombre, tenes: true, peso, fondo: { id: tendencia }, ...extra,
@@ -109,5 +109,49 @@ describe('sinLecturaDe: qué hay en lo que falta para 100 %, del mismo pedido qu
     // Y el nombre del cuadrito sale de ahí.
     const filas = [fila('GGAL', 80, 'alcista')]
     expect(cuadritosDelMapa(filas, { sinLectura: sinLecturaDe({ efectivo: 0.2 }) }).map(c => c.nombre)).toEqual(['GGAL', 'Efectivo'])
+  })
+})
+
+// Lo del día (GET /api/cartera/mapa-del-dia): el servidor manda % en puntos y
+// por (asset, local), la misma clave de los cuadritos.
+const DEL_DIA = {
+  cartera: { pct: 0.8, usd: 120 },
+  activos: [
+    { asset: 'AAPL', local: false, hoy: { pct: 2, usd: 150 }, dia_txt: 'hoy', promedio_pct: 30 },
+    { asset: 'GGAL', local: true, hoy: null, dia_txt: 'ayer', promedio_pct: -10 },
+    { asset: 'GGAL', local: false, hoy: { pct: 5, usd: 999 }, dia_txt: 'hoy', promedio_pct: 0 },   // el ADR: no es tu GGAL de BYMA
+    { asset: 'MELI', local: false, hoy: { pct: -1, usd: -40 }, dia_txt: 'hoy', promedio_pct: null },
+  ],
+}
+
+describe('conElDia, colorDelModo y losExtremosDeHoy', () => {
+  it('cada cuadrito con lo suyo, por la clave de Tu lista (GGAL de BYMA no toma lo del ADR)', () => {
+    const c = Object.fromEntries(conElDia(cuadritosDelMapa(FILAS), DEL_DIA).map(x => [x.clave, x]))
+    expect(c['AAPL|0'].hoy).toEqual({ pct: 0.02, usd: 150 })
+    expect(c['AAPL|0'].promedio).toBe(0.3)
+    expect(c['GGAL|1'].hoy).toBeNull()
+    expect(c['GGAL|1'].diaTxt).toBe('ayer')
+    expect(c['GGAL|1'].promedio).toBe(-0.1)
+    expect(c['MELI|0'].promedio).toBeNull()
+    expect(c.efectivo.hoy).toBeNull()
+    // Sin lo del día (no llegó): el mapa sigue, sin colores de hoy.
+    expect(conElDia(cuadritosDelMapa(FILAS), null).every(x => x.hoy === null && x.promedio === null)).toBe(true)
+  })
+  it('el color: la rampa verde/roja en Hoy y Contra tu promedio, gris sin dato, los tonos del lienzo en Tendencia', () => {
+    const c = Object.fromEntries(conElDia(cuadritosDelMapa(FILAS), DEL_DIA).map(x => [x.clave, x]))
+    expect(colorDelModo(c['AAPL|0'], 'hoy').bg).toMatch(/--pol-up-/)
+    expect(colorDelModo(c['MELI|0'], 'hoy').bg).toMatch(/--pol-down-/)
+    expect(colorDelModo(c['GGAL|1'], 'hoy').bg).toBe('rgb(var(--bg-3))')
+    expect(colorDelModo(c['GGAL|1'], 'promedio').bg).toMatch(/--pol-down-/)
+    expect(colorDelModo(c['AAPL|0'], 'tendencia')).toBeNull()
+  })
+  it('lo que más sumó y restó hoy, en plata, con el nombre del cuadrito', () => {
+    const nombres = new Map([['AAPL|0', 'Apple'], ['MELI|0', 'MELI']])
+    const { sumo, resto } = losExtremosDeHoy(DEL_DIA, nombres)
+    // El ADR de GGAL sumó más, pero también es tuyo sólo si lo tenés: acá lo es
+    // (viene en activos), así que cuenta con su propio nombre.
+    expect(sumo).toEqual({ nombre: 'GGAL', usd: 999, pct: 0.05 })
+    expect(resto).toEqual({ nombre: 'MELI', usd: -40, pct: -0.01 })
+    expect(losExtremosDeHoy(null)).toEqual({ sumo: null, resto: null })
   })
 })
