@@ -50,7 +50,7 @@ def main():
     vueltas.sort()
 
     with open(os.open(DESTINO, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
-        f.write(dsn + "\n")
+        f.write(dsn)   # sin salto de línea: `pbcopy` lo copiaría y Railway lo guarda tal cual
     os.chmod(DESTINO, 0o600)
 
     print()

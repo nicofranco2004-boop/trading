@@ -26,7 +26,7 @@ import atexit
 def pytest_sessionstart(session):
     if os.environ.get("DATABASE_URL"):
         from tests._candado_base_con_datos import filas_de_personas, mensaje
-        con_filas = filas_de_personas(os.environ["DATABASE_URL"])
+        con_filas = filas_de_personas(os.environ["DATABASE_URL"].strip())
         if con_filas:
             import pytest as _pytest
             _pytest.exit(mensaje(con_filas), returncode=3)

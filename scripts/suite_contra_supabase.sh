@@ -24,6 +24,13 @@
 set -u
 cd "$(dirname "$0")/../backend"
 
+# Sin espacios ni saltos de línea en los bordes, igual que `main.DATABASE_URL`. El
+# 31/10 la conexión llegó con un Enter al final (`pbcopy < ~/.rendi-supabase-url`
+# copia el salto de línea del archivo) y Supabase contestó «database "postgres\n"
+# does not exist». Se limpia acá una vez para todo lo que corre después.
+DATABASE_URL="$(printf '%s' "${DATABASE_URL:-}" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+export DATABASE_URL
+
 if [ -z "${DATABASE_URL:-}" ]; then
   echo "🔴 Falta la variable DATABASE_URL en este servicio (la conexión a Supabase)."
   exit 2
