@@ -31,7 +31,7 @@ const log = (...a) => { if (process.env.RETEST_LOG) appendFileSync(process.env.R
 let App, HelmetProvider, ToastProvider, MemoryRouter, api, handleDemoRequest, AdvisorImportsMod, demo, dictado
 // Cuánta plata tiene cada cuenta (multiplica la cartera del demo).
 const FACTOR = { c2: 1, c3: 4, ana: 1, bruno: 7, asesora: 1, asesorb: 1 }
-const servidor = { me: null, vencida: false, demora: 0, pedidos: [] }
+const servidor = { me: null, vencida: false, demora: 0, pedidos: [], rechazados: [] }
 const cuentaDe = (cid) => (cid != null ? `c${cid}` : servidor.me?.quien)
 const intervalos = []
 
@@ -56,6 +56,15 @@ beforeAll(async () => {
     const cid = opts.headers?.['X-Rendi-Client-Id']
     const cuenta = cuentaDe(cid)          // la cookie es la de quien esté logueado AHORA
     const body = opts.body && typeof opts.body === 'string' ? JSON.parse(opts.body) : undefined
+    // Como el servidor de verdad (get_current_user, backend/tests/
+    // test_persona_de_la_pestana.py): si el pedido dice que es de otra persona
+    // que la de la sesión, 409 y no se toca nada (queda en `rechazados`).
+    const persona = opts.headers?.['X-Rendi-Persona']
+    if (persona && servidor.me?.email && decodeURIComponent(persona) !== servidor.me.email.toLowerCase()) {
+      servidor.rechazados.push({ method, path, persona: decodeURIComponent(persona), sesion: servidor.me.email })
+      return new Response(JSON.stringify({ detail: { code: 'persona_cambiada', message: 'otra persona' } }),
+        { status: 409, headers: { 'content-type': 'application/json' } })
+    }
     servidor.pedidos.push({ method, path, cid: cid ?? null, cuenta, body })
     // `servidor.fallar503`: esa lectura contesta «probá de nuevo» (503) las
     // primeras `veces`, y en cada una corre `alFallar` (otra pestaña que cambia).
@@ -100,6 +109,9 @@ const persona = (quien, tier = 'pro') => {
   const email = `${quien}@retest.test`
   servidor.me = { quien, name: quien, email, tier }
   localStorage.setItem('rendi_user', JSON.stringify({ name: quien, email, tier }))
+  // Entró en ESTA pestaña (como AuthContext.login, que escribe por la puerta y
+  // la puerta avisa): utils/api toma a esta persona como la de la pestaña.
+  window.dispatchEvent(new Event('rendi:sesion-de-la-pestana'))
 }
 const vencer = async () => {
   servidor.vencida = true
@@ -119,8 +131,9 @@ const limpio = () => {
   // Y lo que haría la recarga con el modo demo: la pestaña vuelve a tomar el
   // de ahora como propio.
   if (demo?.EVENTO_MODO_DEMO) window.dispatchEvent(new Event(demo.EVENTO_MODO_DEMO))
+  window.dispatchEvent(new Event('rendi:sesion-de-la-pestana'))        // vacía: nadie, como al recargar
   servidor.fallar503 = null
-  servidor.vencida = false; servidor.demora = 0; servidor.pedidos = []
+  servidor.vencida = false; servidor.demora = 0; servidor.pedidos = []; servidor.rechazados = []
   localStorage.setItem('rendi:tour:novedades:v2', '1'); localStorage.setItem('rendi_display_currency', 'USD')
 }
 const desde = (t) => { const i = t.indexOf('Desde tu última visita'); return i < 0 ? '(no aparece)' : t.slice(i, i + 80) }
@@ -377,6 +390,25 @@ describe('la pestaña vieja: lo que toca la persona después de que otra cambia'
     Promise.resolve().then(fn).then(() => 'volvió ok', (e) => `error: ${String(e?.message || e).slice(0, 60)}`),
     esperar(1500).then(() => 'sigue esperando'),
   ])
+
+  // P2 del re-test a ciegas 4: la cookie YA es de Bruno, pero a esta pestaña
+  // todavía no le llegó el aviso de la otra (milisegundos). Nada de acá lo sabe:
+  // lo frena el servidor, porque el pedido dice que es de Ana.
+  it('P2: la cookie ya es de Bruno y el aviso todavía no llegó: el servidor lo rechaza, cartel y recarga', async () => {
+    log('\n[Vieja: P2] ──────'); limpio(); persona('ana')
+    await abrir('/dashboard')
+    servidor.me = { quien: 'bruno', ...BRUNO }                        // sólo la cookie: sin aviso
+    servidor.pedidos = []
+    window.location.reload.mockClear()
+    const compra = await intento(() => api.api.post('/positions', { asset: 'AAPL', quantity: 1, buy_price: 1 }))
+    log('  compra:', compra, '| guardados:', servidor.pedidos.map(x => `${x.method} ${x.path} ${x.cuenta}`), '| rechazados:', servidor.rechazados)
+    expect(servidor.pedidos.filter(x => x.cuenta === 'bruno' && x.method !== 'GET'), 'la compra de Ana, en la cuenta de Bruno').toEqual([])
+    expect(servidor.rechazados.some(x => x.path === '/positions' && x.persona === 'ana@retest.test')).toBe(true)
+    await m.redibujar(el('/dashboard'))
+    expect(enLaPagina('entró otra persona'), 'el cartel').toBe(true)
+    await esperar(400)
+    expect(window.location.reload, 'y se recarga').toHaveBeenCalled()
+  }, 500000)
 
   it('el dictado por voz no sale con la sesión de otra persona', async () => {
     log('\n[Vieja: dictado] ──────'); limpio(); persona('ana')

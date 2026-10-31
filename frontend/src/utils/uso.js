@@ -23,6 +23,7 @@
 
 import { NO_SE_CUENTAN, EVENTOS, claveDeUso, pantallaDe } from './usoCatalogo'
 import { yaInstalada, esCelular, plataformaDe } from './instalarApp'
+import { encabezadoDePersona } from './api'
 
 const CADA_MS = 30_000
 const SENALES = ['pointerdown', 'keydown', 'wheel', 'touchstart']
@@ -88,7 +89,9 @@ export function mandar({ alCerrar = false } = {}) {
     method: 'POST',
     credentials: 'include',
     keepalive: alCerrar,
-    headers: { 'Content-Type': 'application/json' },
+    // De qué persona es este uso: si en otra pestaña entró otra, el servidor
+    // no se lo anota a ella (ver PERSONA_HEADER en utils/api).
+    headers: { 'Content-Type': 'application/json', ...encabezadoDePersona() },
     body: JSON.stringify({ eventos: lote }),
   }).catch(() => {
     // Telemetría: si no salió, se pierde. No se reintenta para no duplicar

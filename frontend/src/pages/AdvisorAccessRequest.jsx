@@ -27,7 +27,7 @@ import PageMeta from '../components/PageMeta'
 import { useAuth } from '../contexts/AuthContext'
 import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
-import { frenoDeLaPestana } from '../utils/api'
+import { frenoDeLaPestana, encabezadoDePersona, rechazoPorPersona } from '../utils/api'
 
 const TOKEN_KEY = 'rendi_link_request_token'
 
@@ -88,11 +88,12 @@ export default function AdvisorAccessRequest() {
       await frenoDeLaPestana()
       const res = await fetch('/api/auth/link-request/respond', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...encabezadoDePersona() },
         credentials: 'include',
         body: JSON.stringify({ token, accept }),
       })
       const data = await res.json()
+      rechazoPorPersona(res.status, data)
       if (!res.ok) {
         throw new Error(typeof data.detail === 'string'
           ? data.detail

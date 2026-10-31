@@ -108,10 +108,10 @@ const rel = (p) => relative(SRC, p).split('\\').join('/')
 // encabezado del cliente. Lista cerrada: ninguno guarda datos de una cuenta.
 const FETCH_DIRECTO = {
   'contexts/AuthContext.jsx': 'despierta al servidor (/api/health) cada 4 minutos: no manda nada',
-  'utils/uso.js': 'el uso de la app (qué pantallas abre la persona): es de la persona, no de una cuenta',
+  'utils/uso.js': 'el uso de la app (qué pantallas abre la persona): es de la persona, no de una cuenta; manda X-Rendi-Persona',
   'utils/autoUpdate.js': '/version.json, para saber si hay una versión nueva de la app',
   'pages/Admin.jsx': '/version.json, la versión publicada',
-  'components/import/ImportWizard.jsx': 'baja la planilla modelo del importador, vacía: igual para todos',
+  'components/import/ImportWizard.jsx': 'baja la planilla modelo del importador, vacía: igual para todos; manda X-Rendi-Persona',
   'hooks/useDictado.js': 'manda el audio para pasarlo a texto (formulario): pasa por frenoDeLaPestana; descuenta los segundos de dictado de la persona',
   'pages/ResetPassword.jsx': 'cambiar la contraseña con el link del mail: antes de tener sesión',
   'pages/Login.jsx': 'entrar, crear la cuenta, «olvidé mi contraseña»: antes de tener sesión',
@@ -134,6 +134,25 @@ describe('lo que sale sin pasar por utils/api', () => {
     expect([...usan].sort(), 'Esto habla con el servidor sin pasar por utils/api: no lo frena la pestaña '
       + 'desfasada ni lleva el cliente. Usá api.get/post/… (o, si de verdad no toca una cuenta, '
       + 'sumalo a FETCH_DIRECTO con su porqué).').toEqual(Object.keys(FETCH_DIRECTO).sort())
+  })
+
+  // Los que usan la SESIÓN dicen de qué persona son (X-Rendi-Persona): el
+  // servidor rechaza el pedido si la cookie ya es de otra (re-test a ciegas 4,
+  // P2). Los demás son de antes de tener sesión, o no la usan.
+  const CON_SESION = ['utils/uso.js', 'components/import/ImportWizard.jsx', 'hooks/useDictado.js', 'pages/AdvisorAccessRequest.jsx']
+  it('los fetch directos que usan la sesión mandan la persona de la pestaña', () => {
+    const sin = CON_SESION.filter(r => !readFileSync(join(SRC, r), 'utf8').includes('encabezadoDePersona('))
+    expect(sin).toEqual([])
+  })
+
+  it('cada salida de utils/api manda la persona de la pestaña', () => {
+    const t = readFileSync(join(SRC, 'utils/api.js'), 'utf8').replace(/\/\/.*$/gm, '')
+    const sin = []
+    for (const m of t.matchAll(/^(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/gm)) {
+      const cuerpo = t.slice(m.index, cierre(t, t.indexOf('{', m.index + m[0].length), '{', '}'))
+      if (/\bfetch\s*\(/.test(cuerpo) && m[1] !== 'withGatewayRetry' && !cuerpo.includes('encabezadoDePersona()')) sin.push(m[1])
+    }
+    expect(sin).toEqual([])
   })
 
   it('cada salida de utils/api pasa por el freno de la pestaña desfasada antes del fetch', () => {

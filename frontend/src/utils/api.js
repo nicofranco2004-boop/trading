@@ -1,6 +1,6 @@
 import { isDemoMode, handleDemoRequest, EVENTO_MODO_DEMO } from './demo'
 import { quienEs } from './quienEs'
-import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from './almacen'
+import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen, EVENTO_SESION_DE_LA_PESTANA } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
 
 // Wrapper de fetch para llamadas al API.
@@ -134,6 +134,42 @@ export function marcarPersonaCambiada(si) {
   avisarDesfase()
 }
 
+// 🔴 Y EL SERVIDOR CIERRA LA VENTANA. Entre que el navegador recibe la cookie
+// de otra persona y le llega a esta pestaña el aviso de la otra, pasan
+// milisegundos en los que nada de acá sabe que cambió (re-test a ciegas 4,
+// P2). Por eso cada pedido dice de qué persona es esta pestaña
+// (`X-Rendi-Persona`) y el servidor (get_current_user) lo rechaza con 409
+// `persona_cambiada` si la sesión es de otra: no toca nada, y la pantalla lo
+// trata como el cambio de persona (cartel y recarga).
+// La persona de ESTA pestaña es la que estaba guardada al cargarla, o la que
+// guardó ELLA (utils/almacen avisa: EVENTO_SESION_DE_LA_PESTANA). Lo que escribe
+// otra pestaña no la cambia: si se leyera del almacén compartido, después del
+// cambio diría la persona nueva, coincidiría con la cookie nueva y no frenaría.
+export const PERSONA_HEADER = 'X-Rendi-Persona'
+let _personaDeLaPestana = typeof window !== 'undefined' ? personaGuardada() : null
+if (typeof window !== 'undefined') {
+  window.addEventListener(EVENTO_SESION_DE_LA_PESTANA, () => { _personaDeLaPestana = personaGuardada() })
+}
+
+/** El encabezado con la persona de esta pestaña (vacío si no hay nadie).
+ *  Codificada: un encabezado no lleva cualquier letra. */
+export function encabezadoDePersona() {
+  return _personaDeLaPestana ? { [PERSONA_HEADER]: encodeURIComponent(_personaDeLaPestana) } : {}
+}
+
+let _recargaPedida = false
+/** ¿El servidor rechazó el pedido porque la sesión es de otra persona? Si sí,
+ *  la pestaña queda como con el aviso de otra persona y se recarga. */
+export function rechazoPorPersona(status, payload) {
+  if (status !== 409 || payload?.detail?.code !== 'persona_cambiada') return false
+  marcarPersonaCambiada(true)
+  if (!_recargaPedida && typeof window !== 'undefined') {
+    _recargaPedida = true
+    setTimeout(() => { _recargaPedida = false; window.location.reload() }, 300)
+  }
+  return true
+}
+
 if (typeof window !== 'undefined') {
   window.addEventListener(EVENTO_MODO_DEMO, () => { _demoDeLaPestana = isDemoMode(); avisarDesfase() })
   window.addEventListener('storage', (e) => {
@@ -208,6 +244,7 @@ async function req(method, path, body, opts) {
   // varios clientes seguidos sin "entrar" en ninguno.
   const ctxId = clientIdFor(opts)
   if (ctxId) headers['X-Rendi-Client-Id'] = ctxId
+  Object.assign(headers, encabezadoDePersona())
 
   // Cada intento vuelve a pasar por el freno: entre un reintento y otro puede
   // haber entrado otra persona en otra pestaña (re-test a ciegas 4).
@@ -344,6 +381,7 @@ async function buildHttpError(res, ctx = {}) {
   const err = new Error(message)
   err.status = res.status
   err.payload = payload
+  if (rechazoPorPersona(res.status, payload)) err.cuentaCambiada = true
   return err
 }
 
@@ -421,7 +459,7 @@ async function upload(path, formData, opts) {
   // No setear Content-Type — el browser agrega multipart/form-data con su boundary.
   // Contexto de cliente (Plan Asesor): mismo header que req() — sin esto el
   // import caía SILENCIOSAMENTE en la cuenta del asesor con el ctx activo.
-  const upHeaders = {}
+  const upHeaders = encabezadoDePersona()
   const upCtxId = clientIdFor(opts)
   if (upCtxId) upHeaders['X-Rendi-Client-Id'] = upCtxId
   const doFetch = async () => { await frenoDeLaPestana(); return fetch('/api' + path, {
@@ -462,7 +500,7 @@ async function getBlob(path) {
   }
   // Contexto de cliente (Plan Asesor): mismo header que req() — sin esto el
   // export CSV bajaba la cartera del ASESOR presentada como la del cliente.
-  const blobHeaders = {}
+  const blobHeaders = encabezadoDePersona()
   if (_clientCtx?.id) blobHeaders['X-Rendi-Client-Id'] = String(_clientCtx.id)
   const res = await fetch('/api' + path, {
     method: 'GET',
@@ -503,7 +541,7 @@ async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, onVoz, s
 
   // Contexto de cliente (Plan Asesor): la IA SIGUE al contexto — con ctx
   // activo el coach lee/escribe la cuenta del CLIENTE (IA per-cliente).
-  const chatHeaders = { 'Content-Type': 'application/json' }
+  const chatHeaders = { 'Content-Type': 'application/json', ...encabezadoDePersona() }
   if (_clientCtx?.id) chatHeaders['X-Rendi-Client-Id'] = String(_clientCtx.id)
   const res = await fetch('/api/ai/chat', {
     method: 'POST',

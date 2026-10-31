@@ -87,14 +87,28 @@ export function leer(entrada, resto = '') {
   return tienda(e.donde).getItem(claveDe(e, resto))
 }
 
+// 🔴 QUIÉN ESTÁ LOGUEADO EN ESTA PESTAÑA (re-test a ciegas 4, 30/10). La sesión
+// guardada es una para todo el navegador; cuando la cambia ESTA pestaña (entrar,
+// salir, refrescar el usuario, la sesión que vence) la puerta lo avisa con
+// EVENTO_SESION_DE_LA_PESTANA. Lo que escribe OTRA pestaña no pasa por esta
+// puerta, así que no avisa: utils/api sabe así la persona de ESTA pestaña y la
+// manda en cada pedido, para que el servidor no la atienda con la sesión de otra.
+export const EVENTO_SESION_DE_LA_PESTANA = 'rendi:sesion-de-la-pestana'
+function avisarSiTocaLaSesion(clave) {
+  if (clave !== null && clave !== CATALOGO.usuario.clave) return
+  try { globalThis.window?.dispatchEvent?.(new Event(EVENTO_SESION_DE_LA_PESTANA)) } catch { /* sin ventana */ }
+}
+
 export function guardar(entrada, valor, resto = '') {
   const e = entradaValida(entrada, false)
   tienda(e.donde).setItem(claveDe(e, resto), String(valor))
+  avisarSiTocaLaSesion(claveDe(e, resto))
 }
 
 export function borrar(entrada, resto = '') {
   const e = entradaValida(entrada, false)
   tienda(e.donde).removeItem(claveDe(e, resto))
+  avisarSiTocaLaSesion(claveDe(e, resto))
 }
 
 /**
@@ -172,9 +186,11 @@ export function claves(donde = LOCAL) {
 export function quitarClaves(donde, lista) {
   const t = tienda(donde)
   for (const k of lista) t.removeItem(k)
+  if (lista.includes(CATALOGO.usuario.clave)) avisarSiTocaLaSesion(CATALOGO.usuario.clave)
 }
 
 /** Vacía un almacén entero. */
 export function vaciar(donde = LOCAL) {
   tienda(donde).clear()
+  avisarSiTocaLaSesion(null)
 }

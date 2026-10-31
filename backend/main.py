@@ -4000,6 +4000,34 @@ def _token_posterior_al_cambio(payload: dict, pwd_changed_at: str) -> bool:
         return not (pca and pca != pwd_changed_at)
 
 
+# 🔴 EL PEDIDO DICE DE QUÉ PERSONA ES (re-test a ciegas 4, 30/10). La sesión es
+# UNA cookie para todo el navegador: si en otra pestaña entra otra persona, la
+# cookie cambia en el acto y la pestaña vieja se entera recién cuando le llega
+# el aviso del navegador. En esa ventana lo que se tocaba —una compra, un mes—
+# salía con la cookie nueva y se guardaba en la cuenta de la otra persona. La
+# pantalla no puede cerrarla (la cookie es HttpOnly: no la ve), así que la
+# cierra el servidor: la app manda en `X-Rendi-Persona` el email de quien la
+# pestaña cree logueado (codificado para que viaje cualquier letra), y si la
+# sesión es de OTRA persona el pedido se rechaza con 409 `persona_cambiada`
+# sin tocar nada. La pantalla lo trata como un cambio de persona (cartel y
+# recarga). Sin el encabezado sigue andando: una pestaña con la versión
+# anterior el día que se publica, scripts, links del mail.
+# Va ACÁ porque es el único lugar por el que pasan todos los pedidos con
+# sesión (get_effective_user y get_admin_user lo llaman), y usa la consulta a
+# `users` que ya se hacía.
+PERSONA_HEADER = "X-Rendi-Persona"
+PERSONA_CAMBIADA = 409
+
+
+def _persona_del_encabezado(request: Request) -> Optional[str]:
+    raw = request.headers.get(PERSONA_HEADER)
+    if raw is None:
+        return None
+    from urllib.parse import unquote
+    persona = unquote(raw).strip().lower()
+    return persona or None
+
+
 def get_current_user(
     request: Request,
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
@@ -4031,13 +4059,13 @@ def get_current_user(
     with db_abierta() as conn:
         try:
             row = conn.execute(
-                "SELECT id, password_changed_at, requires_plan FROM users WHERE id=?",
+                "SELECT id, email, password_changed_at, requires_plan FROM users WHERE id=?",
                 (uid,)).fetchone()
             marca = None if row is None else bool(row["requires_plan"])
         except Exception:
             # Base sin la columna: se sigue como siempre y el muro pregunta él.
             row = conn.execute(
-                "SELECT id, password_changed_at FROM users WHERE id=?", (uid,)).fetchone()
+                "SELECT id, email, password_changed_at FROM users WHERE id=?", (uid,)).fetchone()
             marca = None
     if not row:
         raise HTTPException(401, "Token inválido")
@@ -4048,6 +4076,12 @@ def get_current_user(
     if row["password_changed_at"] and not _token_posterior_al_cambio(
             payload, row["password_changed_at"]):
         raise HTTPException(401, "Token expirado por cambio de contraseña")
+    persona = _persona_del_encabezado(request)
+    if persona is not None and persona != (row["email"] or "").strip().lower():
+        raise HTTPException(PERSONA_CAMBIADA, detail={
+            "code": "persona_cambiada",
+            "message": "En otra pestaña entró otra persona: este pedido no se hizo.",
+        })
     return uid
 
 
@@ -51057,7 +51091,12 @@ def _optional_uid(request: Request) -> Optional[int]:
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=auth[7:].strip())
     try:
         return get_current_user(request, creds)
-    except HTTPException:
+    except HTTPException as e:
+        # El pedido dice que es de otra persona que la de la sesión: no se lo
+        # trata como «sin sesión» (ver PERSONA_HEADER); se rechaza igual que
+        # en el resto, y la pantalla lo toma como el cambio de persona.
+        if e.status_code == PERSONA_CAMBIADA:
+            raise
         return None
 
 
