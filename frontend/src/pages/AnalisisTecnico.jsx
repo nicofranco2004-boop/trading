@@ -18,8 +18,10 @@
 //   · Comparar: lleva a LA pantalla de comparar (Análisis fundamental →
 //     Comparar → Precio, pieza 16) con tus 4 activos que más pesan ya cargados.
 //     No hay un segundo «Comparar» acá adentro (decisión de Nico);
-//   · Mercado: todavía no está; un «Pronto: Mercado» a la derecha de la fila,
-//     no una pestaña gris que no se puede tocar (lienzo «1 · Panorama»).
+//   · Mercado y Backtesting: todavía no están; un «Pronto: Mercado ·
+//     Backtesting» a la derecha de la fila, no pestañas grises que no se pueden
+//     tocar (lienzo «1 · Panorama»; Backtesting, pedido de Nico el 31/10).
+// El título lleva «Beta» si el menú lo dice (utils/navegacion.js, esBeta).
 // «Panorama» y no «Resumen»: Resumen es la primera pantalla del mismo grupo.
 // ════════════════════════════════════════════════════════════════════════════
 // Una sola pantalla para compu y celular (R6): en el celular las pestañas se
@@ -51,6 +53,8 @@ import {
 } from '../utils/tusSenales'
 import { urlDeComparar } from '../utils/comparadorPrecio'
 import { ordenConElOjito } from '../utils/parteDeTuPlata'
+import { esBeta } from '../utils/navegacion'
+import { EtiquetaBeta } from '../components/EtiquetaMenu'
 
 // Las pestañas, en orden. `corto`: el nombre en el celular. `pronto`: todavía
 // no está (se ve, no se toca). `afuera`: lleva a otra pantalla (no se queda acá).
@@ -62,6 +66,8 @@ export const PESTANAS = [
   { id: 'senales', label: 'Señales de la semana', corto: 'Señales' },
   { id: 'comparar', label: 'Comparar', afuera: true },
   { id: 'mercado', label: 'Mercado', pronto: true },
+  // Pedido de Nico (31/10): se anuncia, todavía no está.
+  { id: 'backtesting', label: 'Backtesting', pronto: true },
 ]
 
 /** La que se abre al entrar (sin ?tab): Gráfico (Nico, 30/10). Un lugar solo
@@ -306,7 +312,10 @@ export default function AnalisisTecnico() {
 
   return (
     <div className="page-shell-wide py-4">
-      <PageHeader eyebrow="Análisis de mercado" title="Análisis técnico"
+      <PageHeader eyebrow="Análisis de mercado"
+        title={esBeta('/analisis-tecnico')
+          ? <span className="inline-flex items-center gap-2.5">Análisis técnico{' '}<EtiquetaBeta className="tracking-normal" /></span>
+          : 'Análisis técnico'}
         subtitle="Cómo se están moviendo los precios de tus activos y de los de tu watchlist. En dólares, con el precio de cierre del último día de mercado." />
       <Pestanas activa={activa} cuentas={cuentas} onElegir={elegir} />
       <div role="tabpanel" id="analisis-tecnico-panel" aria-labelledby={`analisis-tecnico-tab-${activa}`}>
