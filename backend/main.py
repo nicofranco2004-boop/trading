@@ -13154,6 +13154,13 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
     # Auto-fill entry_date a hoy (ARGENTINO) si no viene del cliente. Con UTC,
     # una posición dada de alta a las 22:00 nacía fechada mañana.
     entry_date = p.entry_date or _iso_today()
+    # ⚠️ Sin fecha, `entry_date` dice cuándo se CARGÓ, no cuándo se compró: el
+    # formulario de bienvenida (PositionStep, «la posición que tenés») no manda
+    # fecha. Queda anotado en la receta de la fila (`sin_fecha_de_compra`) para que
+    # «qué se movió hoy» (`_lote_comprado_hoy`) no lo cuente como comprado hoy: con
+    # el promedio de hace años, el mapa decía «Hoy tu cartera +116 %» (auditoría
+    # 31/10, A1).
+    sin_fecha_de_compra = not p.entry_date
     # La pata de la cuenta que corresponde a la moneda: una compra en dólares
     # "en Cocos" vive en 'Cocos · USD', que es donde están sus dólares. De acá
     # para abajo todo (la fila, la caja, el autodepósito, el borrado) usa ESTE
@@ -13230,6 +13237,7 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
                 "UPDATE positions SET undo_meta_json=? WHERE id=? AND user_id=?",
                 (_json_pos.dumps({"src": "manual_position", "cost": cost,
                                   "autodep": _adm or None, "entry_date": entry_date,
+                                  **({"sin_fecha_de_compra": True} if sin_fecha_de_compra else {}),
                                   # El broker de la fila es MUTABLE (se puede cambiar
                                   # desde Cartera); guardamos el de origen para que el
                                   # borrado detecte el cambio en vez de devolver la plata
@@ -34540,8 +34548,10 @@ def _chat_valuation_inputs(conn, uid: int):
         # `tc_compra` es el dólar del día de la compra. Sin él acá, el costo de un
         # lote en pesos sólo se podía pasar a USD al dólar de HOY — que es
         # justamente el número que no coincidía con la pantalla.
+        # `notes` y `undo_meta_json`: de dónde salió el lote (la foto de tenencia, un
+        # alta sin fecha), para que «comprado hoy» sea una compra (`_lote_comprado_hoy`).
         "SELECT broker, asset, asset_type, is_cash, invested, quantity, "
-        "commissions, price_override, currency, tc_compra, entry_date "
+        "commissions, price_override, currency, tc_compra, entry_date, notes, undo_meta_json "
         "FROM positions WHERE user_id=?",
         (uid,),
     ).fetchall()]
@@ -34752,6 +34762,35 @@ def _estado_mercado(mercado, rueda, hoy, ahora=None) -> str:
     return f"no hay datos de una rueda de hoy (puede ser feriado); lo último es {ultima}"
 
 
+def _lote_comprado_hoy(p, hoy: str) -> bool:
+    """¿El lote es una COMPRA de hoy (su día arranca en el precio de compra) o algo
+    que ya tenías y cargaste hoy (su día arranca en el cierre de ayer)? Lo usa
+    `_lotes_del_dia`, LA cuenta de «qué se movió hoy» (chat y mapa).
+
+    `entry_date == hoy` solo no alcanza: es también la fecha en que se CARGÓ.
+      · Alta sin fecha (formulario de bienvenida, cualquier cliente que no la
+        mande): `_insert_manual_position` la completa con hoy y lo anota en la
+        receta (`sin_fecha_de_compra`). Si la fecha sigue siendo esa, no es compra.
+      · Foto de tenencia / «Estado inicial» del importador: es la apertura de la
+        cuenta, no una operación (`_is_synthetic_seed_row`, la misma regla del
+        borrado).
+    Lo que queda —el formulario con fecha, la compra por el chat, un BUY
+    importado— se cree, con un control más: el precio tiene que cuadrar con el del
+    día (`cartera_hoy.compra_cuadra_con_el_dia`, en `_lotes_del_dia`)."""
+    if str(p.get('entry_date') or '')[:10] != hoy:
+        return False
+    if _is_synthetic_seed_row(p):
+        return False
+    try:
+        meta = json.loads(p.get('undo_meta_json') or '{}')
+    except (TypeError, ValueError):
+        meta = {}
+    if (isinstance(meta, dict) and meta.get('sin_fecha_de_compra')
+            and str(meta.get('entry_date') or '')[:10] == hoy):
+        return False
+    return True
+
+
 def _lotes_del_dia(uid: int) -> tuple:
     """Cada lote de la cartera valuado DOS veces —al precio de ahora y al cierre
     anterior, con la misma cantidad y el mismo dólar— y su costo. → (hoy, lotes,
@@ -34905,10 +34944,14 @@ def _lotes_del_dia(uid: int) -> tuple:
                 # que "se movió" más de 50 % en un día es una unidad equivocada.
                 # Mejor "no medido" que inventado.
                 lote.update(valor_previo=None, motivo="precio_dudoso")
-            elif str(p.get('entry_date') or '')[:10] == hoy:
+            elif _lote_comprado_hoy(p, hoy) and _ch.compra_cuadra_con_el_dia(costo, v, vp):
                 # 🔴 Comprado HOY: el día de ese lote arranca en el precio de
                 # compra, no en el cierre de ayer. Cerró a 590, lo compraste a
                 # 610 y vale 600 → perdiste 10, no ganaste 10.
+                # Sólo si es una compra (no lo que ya tenías y cargaste hoy) y su
+                # precio es uno de hoy: con el promedio de hace años (120,5 contra
+                # 600) el mapa decía «Hoy tu cartera +116 %» (auditoría 31/10, A1).
+                # Si no, sigue como cualquier lote: desde el cierre de ayer.
                 if es_hoy:
                     lote["valor_previo"] = costo
                     lote["comprado_hoy"] = True

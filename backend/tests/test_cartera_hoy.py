@@ -153,6 +153,17 @@ class PorActivoTest(unittest.TestCase):
         ], HOY)
         self.assertIsNone(r[0]["hoy"])
 
+    def test_la_compra_del_dia_cuadra_con_el_dia(self):
+        """A1: el costo de una compra de hoy cae entre el cierre anterior y el
+        precio de ahora (con margen); el promedio de hace años, no."""
+        f = cartera_hoy.compra_cuadra_con_el_dia
+        self.assertTrue(f(6100, 6000, 5900))       # 610 contra 590/600
+        self.assertTrue(f(5500, 6000, 5900))       # bajó a la mañana y rebotó
+        self.assertFalse(f(1205, 6000, 5900))      # 120,5 contra 590/600: ya lo tenías
+        self.assertFalse(f(9000, 6000, 5900))
+        self.assertFalse(f(None, 6000, 5900))
+        self.assertFalse(f(6000, 6000, None))
+
     def test_la_cartera_hoy_es_el_grupo_de_hoy_del_resumen(self):
         resumen = cartera_hoy.armar([_lote("MSFT", 6000, 5900, "eeuu", HOY, True),
                                      _lote("AAPL", 2000, 1980, "byma", AYER, False)], HOY)
@@ -483,6 +494,76 @@ class CaminoDeProduccionTest(unittest.TestCase):
         self.assertAlmostEqual(hoy["usd"], -100.0, places=2)
         msft = next(f for f in r["activos_que_mas_movieron"] if f["asset"] == "MSFT")
         self.assertTrue(msft["comprado_hoy"])
+
+    def _hoy_del_mapa_y_del_chat(self):
+        """(MSFT de hoy en el mapa, «Hoy tu cartera» del mapa, el grupo de hoy del
+        chat, la fila de MSFT del chat): los dos lectores de `_lotes_del_dia`."""
+        mapa = self._correr(LIVE_PREAPERTURA, mapa=True)
+        main._CARTERA_HOY_CACHE.clear()
+        chat = self._correr(LIVE_PREAPERTURA)
+        msft = next(a for a in mapa["activos"] if a["asset"] == "MSFT")
+        hoy_chat = next(g for g in chat["movimiento"] if g["es_hoy"])
+        fila = next(f for f in chat["activos_que_mas_movieron"] if f["asset"] == "MSFT")
+        return msft, mapa["cartera"], hoy_chat, fila
+
+    def test_el_promedio_viejo_cargado_hoy_no_es_una_compra_de_hoy(self):
+        """A1, la sonda de la auditoría: cargás hoy MSFT con tu promedio de 120,5
+        (con la fecha de hoy que trae el formulario). El mapa decía «Hoy tu
+        cartera +116 %» y MSFT +398 % hoy; la Var. día de la Cartera, +1,7 %:
+        (600 − 590) × 10 = US$ 100. Ese lote ya lo tenías."""
+        self.conn.execute("DELETE FROM positions WHERE asset='MSFT'")
+        self._comprar_hoy("MSFT", "Schwab", 1205, 10, "USD", "stock")
+        msft, cartera, hoy_chat, fila = self._hoy_del_mapa_y_del_chat()
+        self.assertAlmostEqual(msft["hoy"]["usd"], 100.0, places=2)
+        self.assertAlmostEqual(msft["hoy"]["pct"], round(10 / 590 * 100, 2), places=2)
+        self.assertAlmostEqual(hoy_chat["usd"], 100.0, places=2)
+        self.assertFalse(fila["comprado_hoy"])
+        self.assertEqual(cartera["pct"], hoy_chat["pct_sobre_la_cartera"])
+        self.assertLess(cartera["pct"], 5)
+
+    def test_el_alta_sin_fecha_no_es_una_compra_de_hoy(self):
+        """A1 por la puerta de producción: el formulario de bienvenida no manda
+        fecha y el alta le pone hoy. Con un promedio de 580 (que cuadraría con el
+        día) el día se medía desde 580: +US$ 200 en vez de los +US$ 100 reales."""
+        self.conn.execute("DELETE FROM positions WHERE asset='MSFT'")
+        self.conn.commit()
+        with patch("fechas.hoy_art", return_value=HOY):
+            main.create_position(main.PositionIn(broker="Schwab", asset="MSFT", quantity=10,
+                                                 buy_price=580, invested=5800), self.uid)
+        fecha = self.conn.execute("SELECT entry_date FROM positions WHERE user_id=? AND asset='MSFT'",
+                                  (self.uid,)).fetchone()[0]
+        self.assertEqual(fecha, HOY)
+        msft, _, hoy_chat, fila = self._hoy_del_mapa_y_del_chat()
+        self.assertAlmostEqual(msft["hoy"]["usd"], 100.0, places=2)
+        self.assertAlmostEqual(hoy_chat["usd"], 100.0, places=2)
+        self.assertFalse(fila["comprado_hoy"])
+        # Con fecha (la compra de hoy, por el formulario o el chat) sí se mide
+        # desde la compra: 580 → 600 = +US$ 200.
+        self.conn.execute("DELETE FROM positions WHERE asset='MSFT'")
+        self.conn.commit()
+        with patch("fechas.hoy_art", return_value=HOY):
+            main.create_position(main.PositionIn(broker="Schwab", asset="MSFT", quantity=10,
+                                                 buy_price=580, invested=5800, entry_date=HOY), self.uid)
+        main._MAPA_DEL_DIA_CACHE.clear()
+        main._CARTERA_HOY_CACHE.clear()
+        msft, _, hoy_chat, fila = self._hoy_del_mapa_y_del_chat()
+        self.assertAlmostEqual(msft["hoy"]["usd"], 200.0, places=2)
+        self.assertTrue(fila["comprado_hoy"])
+
+    def test_la_foto_de_tenencia_de_hoy_no_es_una_compra_de_hoy(self):
+        """El «Estado inicial» / la foto de tenencia del importador es la apertura
+        de la cuenta (`_is_synthetic_seed_row`), aunque la foto sea de hoy."""
+        self.conn.execute("DELETE FROM positions WHERE asset='MSFT'")
+        self.conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, asset_type, is_cash, invested, "
+            "quantity, commissions, price_override, currency, entry_date, notes) "
+            "VALUES (?,?,?,?,0,?,?,0,NULL,?,?,?)",
+            (self.uid, "Schwab", "MSFT", "stock", 5800, 10, "USD", HOY,
+             "Estado inicial — compra sintética (Rendi)"))
+        self.conn.commit()
+        msft, _, hoy_chat, fila = self._hoy_del_mapa_y_del_chat()
+        self.assertAlmostEqual(msft["hoy"]["usd"], 100.0, places=2)
+        self.assertFalse(fila["comprado_hoy"])
 
     def test_lo_comprado_hoy_antes_de_que_abra_no_se_mide(self):
         self.conn.execute("DELETE FROM positions WHERE asset='AAPL'")

@@ -36,6 +36,33 @@ MOTIVOS = {
 }
 
 
+# Una compra de HOY se hizo a un precio de hoy: su costo tiene que caer entre el
+# cierre anterior y el precio de ahora, con este margen para lo que el precio
+# anduvo dentro de la rueda, la comisión y el dólar del día de la compra.
+# Es el mismo control que «precio_dudoso» (un precio que en un día se movió más de
+# 50 % es una unidad equivocada), pero contra el rango del día: equivocarse para
+# este lado cuesta poco (el lote se mide desde el cierre de ayer, como la «Var.
+# día» de la Cartera), equivocarse para el otro publicaba +398 %.
+MARGEN_COMPRA_DEL_DIA = 0.15
+
+
+def compra_cuadra_con_el_dia(costo: Optional[float], valor: Optional[float],
+                             valor_previo: Optional[float]) -> bool:
+    """¿El costo de un lote «comprado hoy» es el de una compra de hoy? `costo`,
+    `valor` (ahora) y `valor_previo` (al cierre anterior): misma cantidad, en USD.
+    Con el promedio de hace años (MSFT 120,5 contra 590/600) no: ese lote ya lo
+    tenías, y medido desde la compra decía «Hoy tu cartera +116 %»."""
+    try:
+        c, v, vp = float(costo or 0), float(valor or 0), float(valor_previo or 0)
+    except (TypeError, ValueError):
+        return False
+    if c <= 0 or v <= 0 or vp <= 0:
+        return False
+    piso = min(v, vp) / (1 + MARGEN_COMPRA_DEL_DIA)
+    techo = max(v, vp) * (1 + MARGEN_COMPRA_DEL_DIA)
+    return piso <= c <= techo
+
+
 def dia_txt(rueda: Optional[str], hoy: str) -> str:
     """Cómo nombrar el día de una rueda en una frase: 'hoy', 'ayer' o 'el
     viernes 3/10'. Sin fecha → 'sin fecha confirmada' (nunca 'hoy')."""
