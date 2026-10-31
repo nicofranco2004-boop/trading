@@ -23,7 +23,8 @@ import { usePushNotifications } from '../hooks/usePushNotifications'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { useAlertsContext } from '../contexts/AlertsContext'
-import { menuVisible, pantallasVisibles, ASESOR_PROPIO, GROUPS, nombreDelCliente } from '../utils/navegacion'
+import { menuVisible, pantallasVisibles, ASESOR_PROPIO, GROUPS, nombreDelCliente, sigueVigente } from '../utils/navegacion'
+import { EtiquetaNuevo, EtiquetaBeta, FILA_RESALTADA } from '../components/EtiquetaMenu'
 import Panel from '../components/Panel'
 import MervallE from '../components/ai/MervallE'
 
@@ -102,6 +103,9 @@ const posicion = (presentacion, to) =>
 // Exportada para las pruebas.
 export function seccionesDelMenuMas(pantallas, { atOwnLevel = false, cliente = null } = {}) {
   const secciones = new Map(SECCIONES.map(s => [s, []]))
+  // Hasta cuándo dice «Nuevo» cada sección: el `nuevoHasta` de su grupo del
+  // menú de la compu (utils/navegacion.js), el mismo que lee el Sidebar.
+  const nuevoHasta = new Map()
   for (const p of pantallas) {
     // En la compu, lo del asesor no tiene grupo (va arriba, suelto); lo que
     // tiene grupo es de la cartera, aunque la misma ruta esté en su lista.
@@ -112,8 +116,10 @@ export function seccionesDelMenuMas(pantallas, { atOwnLevel = false, cliente = n
       : p.grupo ? (SECCION_DE_GRUPO[p.grupoId] || p.grupo)
       : TU_PORTFOLIO
     if (!secciones.has(seccion)) secciones.set(seccion, [])
+    if (!delAsesor && p.grupoNuevoHasta) nuevoHasta.set(seccion, p.grupoNuevoHasta)
     secciones.get(seccion).push({
       to: p.to, icon: p.icon, label: extra.label || p.label, sub: extra.sub,
+      beta: !!p.beta, resaltadaHasta: p.resaltadaHasta || null,
       orden: posicion(presentacion, p.to),
     })
   }
@@ -121,6 +127,7 @@ export function seccionesDelMenuMas(pantallas, { atOwnLevel = false, cliente = n
     .filter(([, items]) => items.length > 0)
     .map(([label, items]) => ({
       label: label === TU_PORTFOLIO && cliente ? `Cartera de ${cliente}` : label,
+      nuevoHasta: nuevoHasta.get(label) || null,
       items: items.sort((a, b) => a.orden - b.orden),
     }))
 }
@@ -213,24 +220,32 @@ export default function More() {
 
       {allGroups.map((group) => (
         <section key={group.label}>
-          <h2 className="text-[12.5px] text-ink-2 mb-2 px-1 font-medium">
-            {group.label}
-          </h2>
+          {/* «Nuevo» al lado del título, no adentro: el título dice sólo el
+              nombre de la sección (lo leen el lector de pantalla y las pruebas). */}
+          <div className="flex items-center gap-2 mb-2 px-1">
+            <h2 className="text-[12.5px] text-ink-2 font-medium">
+              {group.label}
+            </h2>
+            {sigueVigente(group.nuevoHasta) && <EtiquetaNuevo />}
+          </div>
           <Panel padding="none" className="overflow-hidden">
             {group.items.map((item, i) => {
               const Icon = item.icon
+              // Mientras dure el «Nuevo», la fila va resaltada como en la compu.
+              const resaltada = sigueVigente(item.resaltadaHasta)
               return (
                 <Link
                   key={item.to}
                   to={item.to}
-                  className={`flex items-center gap-3 px-4 py-3 hover:bg-bg-2/60 active:bg-bg-3 transition-colors ${
-                    i > 0 ? 'border-t border-line/40' : ''
-                  }`}
+                  className={`flex items-center gap-3 px-4 py-3 transition-colors ${
+                    resaltada ? FILA_RESALTADA : 'hover:bg-bg-2/60 active:bg-bg-3'
+                  } ${i > 0 ? 'border-t border-line/40' : ''}`}
                 >
                   <Icon size={16} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium text-ink-0 leading-tight flex items-center gap-2">
                       {item.label}
+                      {item.beta && <EtiquetaBeta />}
                       {/* Lo mismo que el menú de la compu: el puntito sólo si
                           hay alertas SIN VER (al entrar a /alertas se apaga). */}
                       {item.to === '/alertas' && unseenCount > 0 && (
