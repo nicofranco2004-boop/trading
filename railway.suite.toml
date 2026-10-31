@@ -1,0 +1,20 @@
+# ⚠️ NO ES LA APP. Configuración de un servicio TEMPORAL de Railway que corre la
+# suite de pruebas contra el Supabase nuevo («RENDI 1», us-west-1) desde US West
+# (California), a pocos milisegundos de la base. Desde la Mac cada consulta tarda
+# 276 ms y la suite tardaría días.
+#
+# Se usa SÓLO si en ese servicio, Settings → Config-as-code, la ruta apunta a este
+# archivo. El servicio de la app (`trading`) sigue leyendo `railway.toml`: si este
+# servicio leyera aquél, heredaría el chequeo de salud y Railway lo daría por
+# fallido a los 300 s (pytest no contesta /api/health).
+#
+# Paso a paso para crearlo y borrarlo: audit/SUITE_SUPABASE_DESDE_RAILWAY.md.
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "bash scripts/suite_contra_supabase.sh"
+# Corre una vez y termina: si falla, no se repite sola (repetirla son horas
+# y conexiones de más contra el cupo de 15 del pooler).
+restartPolicyType = "NEVER"

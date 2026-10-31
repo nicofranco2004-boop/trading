@@ -26,3 +26,19 @@ healthcheckPath = "/api/health"
 # corre cuando cambia schema_pg.sql) y puede sumar reintentos por tabla ocupada
 # (hasta 20 × ~4 s). Un tope corto marca como fallida una copia sana.
 healthcheckTimeout = 300
+
+# Cuánto le da Railway a la copia VIEJA, después de avisarle que se apague
+# (SIGTERM), antes de matarla (SIGKILL). Por defecto son 0 segundos
+# (docs.railway.com/reference/deployments: «By default, it is given 0 seconds»),
+# o sea que la mata en el acto y el apagado ordenado de la app NUNCA corre:
+#   · `_cerrar_al_apagar` baja a la base los últimos precios que tiene en memoria
+#     (hasta ~1 minuto: sin eso, los activos que hoy no cotizan vuelven a mostrarse
+#     al costo hasta que el mercado abra) y espera hasta 20 s
+#     (`CORRIDAS_ESPERA_AL_APAGAR_SEG`) a las alertas, los avisos y los mails en
+#     fila, que se marcan como enviados ANTES de mandarse: cortados a mitad, el
+#     resto no sale nunca;
+#   · uvicorn, antes de eso, deja terminar los pedidos que estaban en curso (un
+#     import a mitad de confirmar).
+# 30 s cubre los 20 s de las corridas más los pedidos en curso. No es una espera
+# fija: si no hay nada en vuelo, la copia vieja se va enseguida.
+drainingSeconds = 30
