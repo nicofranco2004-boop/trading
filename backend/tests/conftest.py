@@ -19,6 +19,19 @@ import os
 import tempfile
 import atexit
 
+# 🔴 Contra una base con datos de personas, la suite NO arranca: el primer
+# `import main` le correría el arranque (reparaciones incluidas) a esos datos.
+# En `pytest_sessionstart`, que corre ANTES de que pytest junte los archivos
+# (que es cuando se importa `main`). Ver tests/_candado_base_con_datos.py.
+def pytest_sessionstart(session):
+    if os.environ.get("DATABASE_URL"):
+        from tests._candado_base_con_datos import filas_de_personas, mensaje
+        con_filas = filas_de_personas(os.environ["DATABASE_URL"])
+        if con_filas:
+            import pytest as _pytest
+            _pytest.exit(mensaje(con_filas), returncode=3)
+
+
 # Solo si nadie lo seteó ya (respetamos un DB_PATH explícito del entorno).
 if not os.environ.get("DB_PATH"):
     _tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)

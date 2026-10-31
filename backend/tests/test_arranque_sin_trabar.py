@@ -292,6 +292,17 @@ class ElChequeoDeSalud(unittest.TestCase):
         self.assertGreaterEqual(int(tope.group(1)), 120,
                                 "un tope corto marca fallida una copia sana que aplica el esquema")
 
+    def test_railway_le_da_tiempo_al_apagado_ordenado(self):
+        """Por defecto Railway mata a la copia vieja a los 0 s del aviso, y
+        `_cerrar_al_apagar` (precios en memoria, corridas, mails en fila) no corre.
+        `drainingSeconds` tiene que cubrir la espera de las corridas y dejar margen
+        para los pedidos en curso."""
+        toml = open(os.path.join(RAIZ, "railway.toml"), encoding="utf-8").read()
+        m = re.search(r"^drainingSeconds\s*=\s*(\d+)", toml, re.M)
+        self.assertIsNotNone(m, "railway.toml sin drainingSeconds: Railway mata a la copia vieja en el acto")
+        self.assertGreaterEqual(int(m.group(1)), main.CORRIDAS_ESPERA_AL_APAGAR_SEG + 5,
+                                "drainingSeconds no alcanza para que terminen las corridas al apagar")
+
 
 if __name__ == "__main__":
     unittest.main()
