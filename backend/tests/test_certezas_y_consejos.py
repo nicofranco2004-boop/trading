@@ -49,6 +49,9 @@ OTRAS_FORMAS = [
     "Te diría que vendas.", "Convendría desarmar la posición.", "Es momento de entrar.",
     "Lo ideal sería comprarla en las bajas.", "Deberías vender.", "Recomiendo mantener.",
     "Yo que vos espero.", "Es un buen punto de entrada.", "Habría que reducir.",
+    # Revisión final (31/10): entrar y mantener junto a una operación o una opinión.
+    "Conviene entrar.", "Es buen momento para entrar.", "Mantené la posición.",
+    "Entrá a la posición ahora.", "Mantenelo.", "Conviene que entres.",
 ]
 # Textos que describen y tienen que pasar en los dos (falsos positivos).
 DESCRIPTIVOS = [
@@ -63,6 +66,18 @@ DESCRIPTIVOS = [
     "Mucha gente salió a vender en la última semana.",
     "Volvió a subir después de tocar su precio más bajo del año.",
     "Viene subiendo desde hace un tiempo y está arriba de su promedio de los últimos meses.",
+]
+# Revisión final (31/10): con B3 el chat retiene el texto hasta revisarlo, y
+# Mervall-E guía con «entrá a…» y «mantené presionado»: navegación, un gesto o un
+# dato de la persona, no un consejo. Tienen que pasar en los dos.
+NAVEGACION_GESTO_Y_DATOS = [
+    "Entrá a la ficha para ver el gráfico completo.",
+    "Entrá a Cartera y tocá el activo.",
+    "Entrá en la pestaña Gráfico.",
+    "Mantené presionado el gráfico para medir entre dos puntos.",
+    "Mantené apretado para medir.",
+    "Está 12 % arriba de tu precio de entrada.",
+    "Tu punto de entrada fue de 120 dólares.",
 ]
 # Sólo del chat: cosas de la app y la negación de lo que se preguntó.
 DESCRIPTIVOS_DEL_CHAT = [
@@ -108,6 +123,14 @@ class LaMismaListaEnLosDosTest(unittest.TestCase):
         for t in DESCRIPTIVOS_DEL_CHAT:
             with self.subTest(texto=t):
                 self.assertEqual(ltc.problemas(t, "¿Conviene comprar GGAL?"), [], t)
+
+    def test_entrar_mantener_y_entrada_sin_operacion_no_son_consejo(self):
+        for t in NAVEGACION_GESTO_Y_DATOS:
+            with self.subTest(texto=t):
+                self.assertEqual(ltc.problemas(t, "¿cómo viene GGAL?"), [], t)
+                comun = [g for g in _consejo_o_certeza_en_el_resumen(t)
+                         if "le dijiste qué hacer" in g or "como seguro" in g]
+                self.assertEqual(comun, [], t)
 
     def test_repetir_la_pregunta_no_exime_un_consejo(self):
         """Una certeza que repite la pregunta no predice («la semana que viene»);

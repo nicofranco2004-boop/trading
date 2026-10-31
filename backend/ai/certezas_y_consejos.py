@@ -30,6 +30,14 @@ habla a alguien o que opina qué conviene:
 Los verbos que también nombran cosas de la app («podés entrar a la ficha»,
 «podés sumarlo a tu lista», «hay que esperar al cierre para saberlo») sólo
 cuentan detrás de una opinión fuerte, no de «podés» o «hay que».
+
+ENTRAR, MANTENER Y «ENTRADA» (revisión final, 31/10). Mervall-E guía con ellos:
+«Entrá a la ficha», «Mantené presionado», «está 12 % arriba de tu precio de
+entrada». Eso es navegación, un gesto o un dato de la persona, no un consejo.
+Cuentan sólo junto a una operación o una recomendación («entrá a la posición»,
+«conviene entrar», «mantené la posición», «buen punto de entrada»). Con B3 el
+chat retiene el texto hasta revisarlo: un falso positivo acá cuesta una llamada
+de más al modelo y, si la repite, la respuesta entera se reemplaza.
 """
 from __future__ import annotations
 
@@ -65,8 +73,16 @@ CERTEZAS = [
 _CLITICO = r"(l[oae]s?|se|te|me)?"
 _OPERAR = (r"(comprar|vender|acumular|invertir|desarmar|reducir|rotar|desprenderse|deshacerse|posicionarse)"
            + _CLITICO + r"|tomar ganancias|hacer toma de ganancias")
+# Entrar a un lugar de la app y mantener apretado no son operar (ver arriba).
+_NO_ES_OPERAR = (r"(?! (?:a|al|en|de) (?:la |el |tu |su |esta |esa )?(?:ficha|cartera|pesta[ñn]a|secci[óo]n|app|"
+                 r"aplicaci[óo]n|men[úu]|configuraci[óo]n|lista|watchlist|gr[áa]fico|alertas?|novedades|panorama|"
+                 r"p[áa]gina|link|enlace|perfil|cuenta|ver)\b)(?! presionad|apretad)")
 _OPERAR_TODOS = (_OPERAR + r"|(entrar|salir|mantener|sumar|esperar|cerrar|aumentar|cubrirse|apostar)" + _CLITICO
-                 + r"|quedarse afuera|quedarte afuera")
+                 + _NO_ES_OPERAR + r"|quedarse afuera|quedarte afuera")
+# El imperativo de entrar y mantener sólo con algo que se opera: «entrá a la
+# posición», «mantené la posición», «mantenelo».
+_LO_QUE_SE_OPERA = (r"(?:la |tu |esa |una )?(?:posici[óo]n|tenencia|acci[óo]n|papel|activo|compra|cedear|bono)"
+                    r"|(?:el |ese |este )(?:activo|papel|bono|cedear)|largo|comprado")
 # Lo que puede ir entre la opinión y el verbo: «conviene YA vender», «lo mejor es
 # NO comprar», «sería prudente EMPEZAR A reducir».
 _ENTRE = r"(?:(?:ya|ahora|no|directamente|empezar a|ir) )?"
@@ -93,18 +109,21 @@ CONSEJOS = [
     r"(" + "|".join(_OPINION_FUERTE) + r") " + _ENTRE + r"(" + _OPERAR_TODOS + r")",
     r"(" + "|".join(_OPINION_FLOJA) + r") " + _ENTRE + r"(" + _OPERAR + r")",
     # Imperativo (voseo), con o sin pronombre.
-    r"(comprá|vendé|acumulá|invertí|desarmá|reducí|mantené|entrá|aprovechá)(l[oa]s?|le)?",
+    r"(comprá|vendé|acumulá|invertí|desarmá|reducí|aprovechá)(l[oa]s?|le)?",
+    r"entrá(le)? (?:a |al |en )?(?:" + _LO_QUE_SE_OPERA + r")", r"mantené (?:" + _LO_QUE_SE_OPERA + r")",
     r"(compral|vendel|acumulal|mantenel|reducil|desarmal)[oa]s?",
     r"tom[áa] (las )?ganancias",
     # Condicional («yo vendería», «compraría»).
     r"(comprar|vender|esperar|entrar|invertir|acumular|reducir|desarmar)[íi]a(s|n|mos)?",
     r"(saldr|mantendr)[íi]a(s|n|mos)?",
     # «Te diría que compres», «es momento de que vendas».
-    r"que (compres|vendas|entres|salgas|acumules|mantengas|reduzcas|inviertas|esperes|desarmes|tomes ganancias)",
+    r"que (compres|vendas|entres|salgas|acumules|mantengas|reduzcas|inviertas|esperes|desarmes|tomes ganancias)"
+    + _NO_ES_OPERAR,
     r"yo( no)? (compro|vendo|entro|salgo|acumulo|mantengo|reduzco|espero|me quedo)",
     r"yo que vos", r"en tu lugar",
     r"(sumar|comprar|acumular) en (las )?bajas", r"antes de (comprar|vender|invertir|acumular)",
-    r"(punto|precio|nivel|momento) de (entrada|salida)",
+    # «Tu precio de entrada» es un dato de la persona, no un consejo.
+    r"(?<!tu )(?<!su )(?<!tus )(?<!sus )(punto|precio|nivel|momento) de (entrada|salida)",
     r"te (conviene|recomiendo|sugiero|aconsejo)", r"(es|ser[íi]a) (un )?buen momento",
     r"momento (justo )?(de|para) (comprar|vender|entrar|salir)",
     r"(es|ser[íi]a) una (buena |gran )?oportunidad",
