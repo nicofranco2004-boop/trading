@@ -55,10 +55,10 @@ PERMITIDOS = {
         "backend/trading.db. Si algún día hace falta en Postgres, tiene que pasar "
         "por get_db() — los placeholders '?' tampoco sobrevivirían al cambio.",
     ("scripts/backup_db.py", "dump_sqlite_consistent"):
-        "⚠️ PENDIENTE: es el backup nocturno y HOY es sólo-SQLite. Después del "
-        "pasaje seguiría copiando el archivo congelado reportando éxito. Está "
-        "anotado en el PLAN DE PASAJE (punto 0c) como algo a resolver ANTES de "
-        "cortar — no como algo que esté bien.",
+        "El backup nocturno CUANDO LA APP USA SQLITE. Con DATABASE_URL, `run_backup` "
+        "hace el volcado de Postgres (`dump_postgres`) y no llama a esto; si el "
+        "volcado falla, NO cae acá (31/10/2026). Lo prueba por el camino real "
+        "tests/test_backup_postgres.py, recuperación incluida.",
     ("snapshots_job.py", "run_daily_snapshot"):
         "Sólo para los tests que arman su propia base SQLite y pasan `db_path`. "
         "Los TRES disparadores de producción (APScheduler 02:59, el cron externo "
@@ -160,17 +160,22 @@ class EscritoresSoloSqliteTest(unittest.TestCase):
                          f"estos permisos ya no apuntan a nada: {muertos}. "
                          f"Sacalos de PERMITIDOS.")
 
-    def test_el_pendiente_sigue_marcado_como_pendiente(self):
-        """Fija la deuda para que no se olvide.
-
-        El día que `backup_db` pase por `get_db()` (o se reemplace por los backups
-        de Supabase), este permiso hay que sacarlo — y este test lo va a pedir solo
-        (el de arriba falla si quedan permisos muertos). La foto diaria salió de
-        esta lista el 29/10/2026.
-        """
-        for clave in [("scripts/backup_db.py", "dump_sqlite_consistent")]:
-            self.assertIn("PENDIENTE", PERMITIDOS[clave],
-                          f"{clave} dejó de estar marcado como deuda")
+    def test_el_backup_con_postgres_no_pasa_por_el_sqlite(self):
+        """La deuda que fijaba este test (el backup sólo-SQLite) se pagó el
+        31/10/2026: con `dsn`, `run_backup` vuelca Postgres. Lo que queda fijado
+        ahora es que esa rama no toque el SQLite ni de casualidad — ni cuando el
+        volcado falla. (La foto diaria salió de esta lista el 29/10/2026.)"""
+        import unittest.mock as _m
+        import sys
+        sys.path.insert(0, RAIZ)
+        from scripts import backup_db
+        with _m.patch.object(backup_db, "dump_sqlite_consistent",
+                             side_effect=AssertionError("copió el SQLite con Postgres")), \
+                _m.patch.object(backup_db, "dump_postgres",
+                                side_effect=backup_db.BackupFallido("sin pg_dump")):
+            stats = backup_db.run_backup(db_path=__file__, dsn="dbname=x")
+        self.assertEqual(stats["motor"], "postgres")
+        self.assertTrue(any("sin pg_dump" in e for e in stats["errors"]), stats["errors"])
 
     def test_el_barrido_encuentra_uno_plantado(self):
         """El barrido tiene que fallar con código malo, si no no prueba nada."""

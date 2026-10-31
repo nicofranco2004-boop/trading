@@ -27355,7 +27355,7 @@ def admin_backup_trigger(uid: int = Depends(get_admin_user)):
     segundo backup pisa al primero (mismo nombre por día) — no duplica.
     """
     from scripts.backup_db import run_backup
-    stats = run_backup(db_path=DB_PATH)
+    stats = run_backup(db_path=DB_PATH, dsn=DATABASE_URL if USANDO_PG else None)
     return {
         "ok": not bool(stats.get("errors")),
         "stats": stats,
@@ -46237,26 +46237,27 @@ def _run_velas_diarias_job():
 
 
 def _run_backup_db_job():
-    """Cron diario que dumpea la SQLite y la guarda local + remoto (S3).
+    """Cron diario: copia la base de la app (el volcado de Postgres con
+    DATABASE_URL; si no, la SQLite) y la guarda local + remoto (S3).
 
     Sin env vars de S3 → solo backup local en el disco Railway (protege contra
     bugs propios pero NO contra pérdida del disco).
     Con env vars de S3 → además sube a Backblaze/R2/AWS (protege contra todo).
     Ver `backend/scripts/backup_db.py` para detalles y env vars requeridas.
     """
-    from scripts.backup_db import run_backup
+    from scripts.backup_db import run_backup, resumen
     _backup_log = logging.getLogger("backup_db")
     try:
-        stats = run_backup(db_path=DB_PATH)
+        # Con Postgres, el volcado de Postgres: el SQLite está congelado y copiarlo
+        # sería un «OK» falso (ver `run_backup`). La misma decisión que el botón
+        # del admin (`admin_backup_trigger`).
+        stats = run_backup(db_path=DB_PATH, dsn=DATABASE_URL if USANDO_PG else None)
         if stats.get('errors'):
-            _backup_log.error(f"Backup con errores: {stats}")
+            _backup_log.error(f"Backup con errores — {resumen(stats)} — {stats['errors']}")
         else:
-            _backup_log.info(
-                f"Backup OK — size={stats.get('size_bytes', 0)} bytes, "
-                f"local={stats.get('local_path')}, "
-                f"remote={'OK' if stats.get('remote_uploaded') else 'skip'}, "
-                f"pruned local={stats.get('local_pruned')} remote={stats.get('remote_pruned')}"
-            )
+            # Qué motor copió, cuántas tablas y filas, cuánto pesa: un «OK» que se
+            # puede comprobar mirando el registro.
+            _backup_log.info(f"Backup OK — {resumen(stats)}")
     except Exception as e:
         _backup_log.error(f"Backup job falló: {e}", exc_info=True)
 
@@ -46876,7 +46877,7 @@ def _start_scheduler():
         id='subscription_lifecycle_tarde',
         replace_existing=True,
     )
-    # 03:45 UTC — backup diario de la SQLite. Después del snapshot + lifecycle
+    # 03:45 UTC — backup diario de la base (Postgres o SQLite). Después del snapshot + lifecycle
     # para no pisar transacciones. Va a `./backups/` local (Railway disk) +
     # opcionalmente sube a S3-compatible si están las env vars BACKUP_S3_*.
     _scheduler.add_job(
