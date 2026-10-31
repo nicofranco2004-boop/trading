@@ -27,7 +27,6 @@ from ai.voz import VOZ
 # un deploy sin OPENAI_API_KEY arranca igual (el endpoint responde 503).
 from ai import tts
 from ai import preguntas as _preguntas
-from ai import lectura_tecnica_chat as _lectura_tecnica_chat
 from pricing import letras as _letras_mod
 from collections import defaultdict
 
@@ -42678,21 +42677,36 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                                              ensure_ascii=False) + "\n\n")
             tcalls = 0
 
+            def _retener():
+                """¿El texto de esta vuelta se guarda en vez de escribirse? En un
+                turno de lectura técnica, sí: el borrador no se muestra hasta pasar
+                la revisión (auditoría final B3, 31/10: escrito en vivo y borrado
+                después, un consejo se leía varios segundos). Mientras tanto la
+                pantalla sigue en sus pasos («Armando la respuesta…»)."""
+                return "lectura_tecnica" in _turn_flags
+
+            def _mostrar(chunk):
+                """Un pedazo de la respuesta: a la pantalla, o guardado si se retiene."""
+                state["synth_text"] += chunk
+                if _retener():
+                    return None
+                state["synth_deltas"] += 1
+                return "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
+
             def _revisar_en_vivo(resp, mt):
                 """La revisión de la lectura técnica (_corregir_lectura_tecnica)
-                con la respuesta ya escrita en pantalla: si hay que cambiarla, se
-                borra (`reset`) y llega la corregida entera."""
-                if "lectura_tecnica" not in _turn_flags:
+                ANTES de que la respuesta llegue a la pantalla: se manda entera la
+                que pasó (la de la IA o la corregida, o el texto fijo si insistió)."""
+                if not _retener():
                     return
                 _txt = state["synth_text"][voz_adelantada["desde"]:]
                 _ok = _corregir_lectura_tecnica(client, _txt, messages_loop, last_user_msg,
                                                 chat_model=chat_model, max_tokens=mt, system_text=system_text, quiere_voz=_quiere_voz, chat_tools=chat_tools, costo=_costo, tier=tier, uid=uid)
-                if _ok is None:
-                    return
-                yield "data: " + json.dumps({"t": "reset"}) + "\n\n"
-                state["synth_text"] = _ok
-                voz_adelantada["desde"] = 0
-                yield "data: " + json.dumps({"t": "delta", "d": _ok}, ensure_ascii=False) + "\n\n"
+                if _ok is not None:
+                    state["synth_text"] = _txt = _ok
+                    voz_adelantada["desde"] = 0
+                state["synth_deltas"] += 1
+                yield "data: " + json.dumps({"t": "delta", "d": _txt}, ensure_ascii=False) + "\n\n"
 
             # B-9 (review): contabilidad del slot reservado.
             # - settled: done/error emitido → la cuota quedó resuelta (cobrada
@@ -42750,19 +42764,18 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                                     yield _paso_frame(_PASO_PENSANDO)
                                 continue
                             if chunk:
-                                state["synth_deltas"] += 1
-                                state["synth_text"] += chunk
-                                yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
+                                _fr = _mostrar(chunk)
+                                if _fr:
+                                    yield _fr
                                 # Apenas el campo "voz" cierra, se manda
                                 # firmado — sin esperar a que el modelo termine
                                 # de escribir las tarjetas. Son los ~5 segundos
                                 # de silencio que medimos (ver _voz_temprana).
-                                if _puede_adelantar_voz and not voz_adelantada["ya"]:
+                                # En un turno de lectura técnica no se adelanta:
+                                # es la voz del borrador, sin revisar (va en `done`,
+                                # la de la respuesta que pasó).
+                                if _puede_adelantar_voz and not voz_adelantada["ya"] and not _retener():
                                     _vt = _voz_temprana(state["synth_text"][voz_adelantada["desde"]:])
-                                    # En un turno de lectura técnica, una voz con jerga no se
-                                    # adelanta: la respuesta se va a pedir de nuevo.
-                                    if _vt and "lectura_tecnica" in _turn_flags and _lectura_tecnica_chat.problemas(_vt, last_user_msg):
-                                        _vt = None
                                     if _vt:
                                         voz_adelantada["ya"] = True
                                         yield ("data: " + json.dumps(
@@ -42872,9 +42885,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         if chunk is _EMPIEZA_A_PENSAR:
                             continue      # ya se anunció «Pensando…» o «Armando…»
                         if chunk:
-                            state["synth_deltas"] += 1
-                            state["synth_text"] += chunk
-                            yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
+                            _fr = _mostrar(chunk)
+                            if _fr:
+                                yield _fr
                     resp = stream.get_final_message()
                 _costo.sumar(resp, "sintesis")
                 if _es_negativa(resp):

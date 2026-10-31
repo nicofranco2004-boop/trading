@@ -242,7 +242,39 @@ class LecturaTecnicaChatTest(unittest.TestCase):
                 # El modelo ve lo que escribió para corregir ESE texto.
                 self.assertEqual(claude.pedidos[-1]["messages"][-2]["content"], CON_JERGA)
                 if stream:
-                    self.assertIn("reset", [f.get("t") for f in frames], "lo que estaba en pantalla se borra")
+                    # En vivo, el borrador nunca se escribió (ver el test «en_vivo»).
+                    self.assertNotIn(CON_JERGA, "".join(f.get("d", "") for f in frames if f.get("t") == "delta"))
+
+    def test_en_vivo_el_borrador_sin_revisar_nunca_llega_a_la_pantalla(self):
+        """Auditoría final B3 (31/10): con el chat en vivo, el borrador se
+        escribía en pantalla mientras llegaba y recién después de la revisión se
+        borraba (`reset`): un consejo o una certeza se leían varios segundos. En
+        un turno de lectura técnica no se manda texto hasta que pasa la revisión:
+        la pantalla sigue en sus pasos («Armando la respuesta…») y llega la
+        respuesta ya revisada. Vale para la herramienta y para el botón."""
+        casos = [("herramienta", dict(), ClaudeDelChat([CON_CONSEJO, BUENO])),
+                 ("botón", dict(analisis={"screen": "tecnico", "params": {"asset": "MSFT", "moneda": "usd"}}),
+                  ClaudeDelChat([CON_CERTEZA, BUENO], herramienta=None)),
+                 ("insiste", dict(), ClaudeDelChat([CON_JERGA, CON_CERTEZA]))]
+        for nombre, extra, claude in casos:
+            with self.subTest(caso=nombre):
+                texto, frames = self._chat(claude, stream=True, **extra)
+                todo = "".join(f.get("d", "") for f in frames if f.get("t") == "delta")
+                voces = " ".join(f["voz"]["text"] for f in frames if f.get("t") == "voz")
+                for borrador in (CON_CONSEJO, CON_CERTEZA, CON_JERGA):
+                    self.assertNotIn(borrador, todo, "el borrador no se escribe en pantalla")
+                    self.assertNotIn(borrador, voces)
+                self.assertEqual(ltc.problemas(todo), [], todo)
+                self.assertEqual(texto, ltc.TEXTO_SIN_LECTURA if nombre == "insiste" else BUENO)
+                tipos = [f.get("t") for f in frames]
+                self.assertEqual(tipos[-1], "done")
+                # Mientras se revisa, la pantalla no queda muda: ya mostró sus pasos.
+                self.assertIn("paso", tipos[:tipos.index("delta")])
+        # Una respuesta que estaba bien llega igual, entera, sin pedir de nuevo.
+        claude = ClaudeDelChat([BUENO])
+        texto, frames = self._chat(claude, stream=True)
+        self.assertEqual(texto, BUENO)
+        self.assertEqual(len(claude.pedidos), 2)
 
     def test_certeza_y_consejo_se_piden_de_nuevo(self):
         for malo in (CON_CERTEZA, CON_CONSEJO):
