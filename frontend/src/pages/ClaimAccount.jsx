@@ -45,7 +45,7 @@ export default function ClaimAccount() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [retryKey, setRetryKey] = useState(0)
-  const { login } = useAuth()
+  const { entrar } = useAuth()
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -97,8 +97,9 @@ export default function ClaimAccount() {
           : (data.detail?.error || 'No pudimos activar tu cuenta.')
         throw new Error(msg)
       }
-      // await: que el user llegue completo (tier) antes de navegar. Ver login().
-      await login(data.token, data.name, { email: data.email })
+      // La puerta única de la sesión (AuthContext.entrar): quién es lo dice el
+      // servidor. Se espera antes de navegar.
+      await entrar()
       navigate('/')
     } catch (ex) {
       setError(ex.message)

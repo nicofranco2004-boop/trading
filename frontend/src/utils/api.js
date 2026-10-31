@@ -124,15 +124,18 @@ let _rechazadoPorElServidor = false   // un 409 persona_cambiada
 let _recargando = false               // va a recargar: frena sin cartel
 let _arranquePendiente = typeof window !== 'undefined'   // AuthContext todavía no preguntó «¿quién soy?»
 let _rechazoEnElArranque = false
+let _entrando = false                 // AuthContext.entrar: esperando «¿quién soy?» con la sesión nueva
+let _recargaFrenada = false           // pidió recargar y la página siguió (un «¿Salir del sitio?»)
 let _sinMasRecargas = false           // ver recargarPorPersona
 export const EVENTO_PESTANA_DESFASADA = 'rendi:pestana-desfasada'
 
 /** null si la pestaña puede hablar con el servidor; si no, por qué.
  *  `motivo`: 'demo' | 'persona' (con cartel) | 'sinSesion' | 'recargando' (sin cartel). */
 export function pestanaDesfasada() {
-  const sinSalida = _sinMasRecargas || undefined
+  const sinSalida = (_sinMasRecargas || _recargaFrenada) || undefined
   if (isDemoMode() !== _demoDeLaPestana) return { motivo: 'demo', estabaEnDemo: _demoDeLaPestana, sinSalida }
   if (_demoDeLaPestana) return null
+  if (_entrando) return { motivo: 'entrando' }
   if (_rechazadoPorElServidor) return { motivo: 'persona', sinSalida }
   if (_recargando) return { motivo: 'recargando' }
   if (_personaDeLaPestana) {
@@ -169,8 +172,10 @@ let _personaDeLaPestana = typeof window !== 'undefined' ? personaGuardada() : nu
  *  pestaña (re-test 6: se borraban las ayudas de quien tenía la sesión). */
 export function fijarPersonaDeLaPestana(persona, { borrarOtras = false } = {}) {
   _personaDeLaPestana = persona ? String(persona).trim().toLowerCase() : null
+  _entrando = false
   _rechazadoPorElServidor = false
   _sinMasRecargas = false
+  _recargaFrenada = false
   if (borrarOtras && _personaDeLaPestana) {
     try { borrarLoDeOtrasPersonas(_personaDeLaPestana) } catch { /* sin almacenamiento */ }
   }
@@ -178,6 +183,13 @@ export function fijarPersonaDeLaPestana(persona, { borrarOtras = false } = {}) {
 }
 
 export function personaDeLaPestana() { return _personaDeLaPestana }
+
+/** AuthContext.entrar: la pestaña está iniciando sesión; hasta que el servidor
+ *  diga quién es (fijarPersonaDeLaPestana), no sale nada salvo esa pregunta. */
+export function entrandoALaSesion() {
+  _entrando = true
+  avisarDesfase()
+}
 
 /** El encabezado con la persona de esta pestaña (vacío si no hay nadie).
  *  Codificada: un encabezado no lleva cualquier letra. */
@@ -223,8 +235,10 @@ export function recargarPorPersona(demora = 300, { porAviso = false } = {}) {
     window.location.reload()
     // Si la recarga no se hizo (el «¿Salir del sitio?» de una importación en
     // curso), la pestaña sigue frenada por lo que la frenaba —lo guardado no
-    // coincide, o el rechazo del servidor— y con su cartel.
+    // coincide, o el rechazo del servidor— y con su cartel, que ya no dice
+    // «se recarga sola» (re-test a ciegas 7).
     _recargando = false
+    setTimeout(() => { _recargaFrenada = true; avisarDesfase() }, 1500)
     avisarDesfase()
   }, demora)
   return true
@@ -345,6 +359,7 @@ async function req(method, path, body, opts) {
   const ctxId = clientIdFor(opts)
   if (ctxId) headers['X-Rendi-Client-Id'] = ctxId
   if (!opts?.sinPersona) Object.assign(headers, encabezadoDePersona())
+  const delPedido = _personaDeLaPestana
 
   // Cada intento vuelve a pasar por el freno: entre un reintento y otro puede
   // haber entrado otra persona en otra pestaña (re-test a ciegas 4).
@@ -364,14 +379,7 @@ async function req(method, path, body, opts) {
     : await doFetch()
 
   if (res.status === 401) {
-    // Si hay un usuario "conocido" en localStorage y nos rebotan, expiró la
-    // cookie / sesión — limpiar y mandar al login.
-    const hadUser = !!leerDelAlmacen(CATALOGO.usuario)
-    borrarDelAlmacen(CATALOGO.usuario)
-    if (hadUser) {
-      window.location.href = '/'
-    }
-    throw errorDeSesion()
+    throw sesionVencida(delPedido)
   }
 
   if (!res.ok) {
@@ -560,6 +568,7 @@ async function upload(path, formData, opts) {
   // Contexto de cliente (Plan Asesor): mismo header que req() — sin esto el
   // import caía SILENCIOSAMENTE en la cuenta del asesor con el ctx activo.
   const upHeaders = encabezadoDePersona()
+  const delPedido = _personaDeLaPestana
   const upCtxId = clientIdFor(opts)
   if (upCtxId) upHeaders['X-Rendi-Client-Id'] = upCtxId
   const doFetch = async () => { await frenoDeLaPestana(); return fetch('/api' + path, {
@@ -575,11 +584,7 @@ async function upload(path, formData, opts) {
   const isPreview = /\/preview(\?|$)/.test(path)
   const res = isPreview ? await withGatewayRetry(doFetch) : await doFetch()
 
-  if (res.status === 401) {
-    borrarDelAlmacen(CATALOGO.usuario)
-    window.location.href = '/'
-    throw errorDeSesion()
-  }
+  if (res.status === 401) throw sesionVencida(delPedido)
   if (!res.ok) {
     throw await buildHttpError(res, { write: !isPreview })
   }
@@ -601,17 +606,14 @@ async function getBlob(path) {
   // Contexto de cliente (Plan Asesor): mismo header que req() — sin esto el
   // export CSV bajaba la cartera del ASESOR presentada como la del cliente.
   const blobHeaders = encabezadoDePersona()
+  const delPedido = _personaDeLaPestana
   if (_clientCtx?.id) blobHeaders['X-Rendi-Client-Id'] = String(_clientCtx.id)
   const res = await fetch('/api' + path, {
     method: 'GET',
     credentials: 'include',
     headers: blobHeaders,
   })
-  if (res.status === 401) {
-    borrarDelAlmacen(CATALOGO.usuario)
-    window.location.href = '/'
-    throw errorDeSesion()
-  }
+  if (res.status === 401) throw sesionVencida(delPedido)
   if (!res.ok) {
     throw await buildHttpError(res, { write: false })
   }
@@ -642,6 +644,7 @@ async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, onVoz, s
   // Contexto de cliente (Plan Asesor): la IA SIGUE al contexto — con ctx
   // activo el coach lee/escribe la cuenta del CLIENTE (IA per-cliente).
   const chatHeaders = { 'Content-Type': 'application/json', ...encabezadoDePersona() }
+  const delPedido = _personaDeLaPestana
   if (_clientCtx?.id) chatHeaders['X-Rendi-Client-Id'] = String(_clientCtx.id)
   const res = await fetch('/api/ai/chat', {
     method: 'POST',
@@ -651,12 +654,7 @@ async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, onVoz, s
     signal,
   })
 
-  if (res.status === 401) {
-    const hadUser = !!leerDelAlmacen(CATALOGO.usuario)
-    borrarDelAlmacen(CATALOGO.usuario)
-    if (hadUser) window.location.href = '/'
-    throw errorDeSesion()
-  }
+  if (res.status === 401) throw sesionVencida(delPedido)
   if (!res.ok || !res.body) {
     throw await buildHttpError(res, { write: true })   // 429/403/500 → mismo shape que api.post
   }
@@ -761,6 +759,19 @@ async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, onVoz, s
 // La sesión venció (401). Con su código, como los demás errores HTTP: sin él,
 // quien distingue "el servidor contestó" de "se cortó en el camino" (los
 // envíos masivos del panel admin) lo tomaba por un corte de red.
+// 🔴 UN 401: LA SESIÓN DEL PEDIDO VENCIÓ. Una sola manera para las cuatro
+// salidas (eran cuatro copias). Lo guardado («quién está logueado») se borra
+// SÓLO si todavía es de quien mandó el pedido: un 401 que llegaba tarde borraba
+// a la persona que acababa de entrar en otra pestaña, y esa pestaña se
+// recargaba (re-test a ciegas 7). La página igual vuelve al inicio: la sesión
+// de esta pestaña ya no está.
+function sesionVencida(delPedido) {
+  const guardada = personaGuardada()
+  if (guardada && guardada === delPedido) borrarDelAlmacen(CATALOGO.usuario)
+  if (guardada || delPedido) window.location.href = '/'
+  return errorDeSesion()
+}
+
 function errorDeSesion() {
   const err = new Error('Unauthorized')
   err.status = 401

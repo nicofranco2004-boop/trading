@@ -52,7 +52,7 @@ export default function Login() {
   const [forgotMode, setForgotMode] = useState(false)
   const [forgotLoading, setForgotLoading] = useState(false)
   const [forgotSent, setForgotSent] = useState(false)
-  const { login } = useAuth()
+  const { entrar } = useAuth()
   const navigate = useNavigate()
 
   // Warmup: el backend de Railway puede estar en cold start. Apenas el visitante
@@ -227,10 +227,10 @@ export default function Login() {
         navigate(`/verify-email?email=${encodeURIComponent(data.email || cleanEmail)}`)
         return
       }
-      // await: login() ahora hidrata el user completo (tier incluido) desde
-      // /auth/me. Esperarlo antes de navegar evita que un asesor aterrice en
-      // la vista de usuario y recién después salte a su libro.
-      await login(data.token, data.name, { is_admin: !!data.is_admin, email: data.email || cleanEmail })
+      // La puerta única de la sesión (AuthContext.entrar): quién es lo dice el
+      // servidor, no esta pantalla. Esperarla antes de navegar evita que un
+      // asesor aterrice en la vista de usuario y recién después salte a su libro.
+      await entrar()
       navigate(destinoPostLogin())
     } catch (err) {
       setError(err.message)

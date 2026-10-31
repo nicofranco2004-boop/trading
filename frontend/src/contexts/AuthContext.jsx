@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { api, clearClientContext, EVENTO_PLAN_REQUERIDO, recargarPorPersona, fijarPersonaDeLaPestana, arranqueResuelto, avisarDesfase } from '../utils/api'
+import { api, clearClientContext, EVENTO_PLAN_REQUERIDO, recargarPorPersona, fijarPersonaDeLaPestana, arranqueResuelto, avisarDesfase, entrandoALaSesion } from '../utils/api'
 import { setBrokersRegistry } from '../utils/valuation'
 import { isDemoMode, enableDemoMode, disableDemoMode, vencerDemoSiCorresponde } from '../utils/demo'
 import { track } from '../utils/track'
@@ -149,14 +149,14 @@ export function AuthProvider({ children }) {
         const fresh = mapMeToUser(me)
         if (enComun() !== guardada) return
         if (guardada && quienEs(fresh) !== guardada) {
-          guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(fresh))
+          guardarSesion(fresh)
           recargarPorPersona()
           return
         }
         // Sin persona guardada y con sesión: la pestaña pasa a ser de ésa (no
         // mostraba datos de nadie).
         if (!guardada) fijarPersonaDeLaPestana(quienEs(fresh))
-        guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(fresh))
+        guardarSesion(fresh)
         setUser(fresh)
         refreshPlanFeatures()
         // Analytics: identificar al user y setear propiedades para segmentación
@@ -277,10 +277,21 @@ export function AuthProvider({ children }) {
     return () => clearInterval(id)
   }, [user])
 
-  // El primer arg (`_legacyToken`) se ignora — la cookie ya fue seteada por
-  // el backend en la respuesta de login/register/verify/reset. Lo dejamos
-  // en la firma para no tener que tocar todos los call-sites.
-  async function login(_legacyToken, name, extra = {}) {
+  // 🔴 LA ÚNICA PUERTA: «ESTA PESTAÑA INICIA SESIÓN» (re-test a ciegas 7, 31/10).
+  // Todas las entradas pasan por acá —iniciar sesión, registrarse y verificar el
+  // mail, reclamar una cuenta, restablecer la contraseña—, después del pedido
+  // que pone la cookie. Antes cada pantalla le pasaba el email de quien entraba,
+  // y «restablecer la contraseña» no lo tenía (el servidor no lo devuelve): la
+  // pestaña quedaba «de nadie», sin freno ni encabezado, y lo que se tocaba se
+  // guardaba en la cuenta de quien entrara en otra pestaña. Ahora la persona
+  // NUNCA sale de un dato de la pantalla: sale de preguntarle al servidor
+  // «¿quién soy?» con la sesión nueva, y hasta tenerla la pestaña queda frenada
+  // (sin cartel). Si no contesta, la entrada falla y la pantalla lo dice.
+  // El guardián __guards__/claves-del-navegador.test.js da rojo si algo guarda
+  // la sesión, o fija la persona al entrar, fuera de acá.
+  // `evento`: 'sign_up' (verificar el mail) o 'login', para las métricas.
+  async function entrar({ evento = 'login' } = {}) {
+    entrandoALaSesion()
     // Plan Asesor: si quedó un contexto de cliente colgado (logout sin
     // "Volver" en la misma pestaña SPA), el header stale rompería TODOS los
     // requests del user nuevo con 403. Identity change = contexto afuera.
@@ -291,18 +302,29 @@ export function AuthProvider({ children }) {
     // usuario B podía valuar con los brokers del usuario A hasta que alguna
     // pantalla repoblara el registro. Cambio de identidad = registro afuera.
     setBrokersRegistry([])
-    const u = { name, ...extra }
-    // ESTA pestaña entró: pasa a ser de esta persona —antes de guardarla, así
+    let me
+    try {
+      // Sin freno (la pestaña está frenada justamente por esto) y sin decir
+      // quién es (todavía no lo sabe).
+      me = await api.get('/auth/me', { sinFreno: true, sinPersona: true })
+    } catch (e) {
+      fijarPersonaDeLaPestana(null)
+      throw new Error(e?.status === 401
+        ? 'La sesión no quedó abierta. Probá entrar de nuevo.'
+        : 'No pudimos confirmar tu sesión. Probá de nuevo en un momento.')
+    }
+    const fresh = mapMeToUser(me)
+    // La pestaña pasa a ser de quien dice el servidor —antes de guardarla, así
     // no hay un instante en que lo guardado no coincide— y se borra lo que otra
-    // guardó en este navegador (la sesión es de ésta sin duda).
-    fijarPersonaDeLaPestana(quienEs(u), { borrarOtras: true })
-    guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(u))
-    setUser(u)
+    // persona guardó en este navegador (la sesión es de ésta sin duda).
+    fijarPersonaDeLaPestana(quienEs(fresh), { borrarOtras: true })
+    guardarSesion(fresh)
+    setUser(fresh)
     // Identity change → forzar refetch del plan features.
     refreshPlanFeatures()
-    // Analytics: trackear login. Si extra trae `event_type='sign_up'`, mandamos
-    // sign_up también (callsite del flujo verify-email).
-    if (extra?.event_type === 'sign_up') {
+    // Analytics: trackear login. El registro (verificar el mail) manda
+    // sign_up también.
+    if (evento === 'sign_up') {
       trackEvent('sign_up', { method: 'email' })
       // Meta Pixel: evento de conversión de registro. Es el que optimizan las
       // campañas de Meta Ads y con el que medimos el costo por signup.
@@ -310,40 +332,22 @@ export function AuthProvider({ children }) {
     } else {
       trackEvent('login', { method: 'email' })
     }
-    if (extra?.id) setUserId(extra.id)
+    if (me.id) setUserId(me.id)
+    // El user sale completo de /auth/me (tier incluido): un asesor aterriza
+    // directo en su libro, sin pasar por la vista de usuario común.
+    return fresh
+  }
 
-    // El `user` que arma este método es OPTIMISTA: sale del payload del
-    // endpoint de login/registro/claim/reset, que solo trae name + email
-    // (+ is_admin). NO trae `tier` ni ningún otro campo de mapMeToUser.
-    //
-    // Y la rehidratación de /auth/me corre en un useEffect con deps [] — o
-    // sea, SOLO al montar el AuthProvider. Loguearse no lo re-monta (es
-    // navegación SPA), así que el user se quedaba con `tier` undefined hasta
-    // el próximo refresh de la página.
-    //
-    // Para casi todo daba igual (el gating de planes va por usePlanFeatures,
-    // que sí se refetchea acá arriba), pero lo que lee `user.tier` derecho se
-    // rompía: Sidebar, Dashboard, RendiAI y Guia conmutan el modo asesor con
-    // `user?.tier === 'advisor'`. Resultado: un ASESOR entraba y veía la app
-    // de usuario común — su libro, sus clientes y su IA del libro aparecían
-    // recién si recargaba a mano (reportado por Nico).
-    //
-    // refreshUser() es el mismo camino canónico que usa BillingReturn: pide
-    // /auth/me y pisa el user con mapMeToUser. Devolvemos la promesa para que
-    // el call-site pueda esperarla ANTES de navegar y no haya ni un parpadeo
-    // de la vista equivocada. Si falla (sin red), queda el optimista: mismo
-    // comportamiento que antes, nunca peor.
-    try {
-      return await refreshUser()
-    } catch {
-      return u
-    }
+  // Lo único que escribe «quién está logueado» en este navegador (salvo
+  // borrarlo): el guardián no deja otro lugar.
+  function guardarSesion(u) {
+    guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(u))
   }
 
   function updateUser(patch) {
     setUser(prev => {
       const next = { ...(prev || {}), ...patch }
-      guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(next))
+      guardarSesion(next)
       return next
     })
   }
@@ -361,18 +365,20 @@ export function AuthProvider({ children }) {
   async function refreshUser() {
     const me = await api.get('/auth/me')
     const fresh = mapMeToUser(me)
-    guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(fresh))
+    guardarSesion(fresh)
     setUser(fresh)
     refreshPlanFeatures()
     return fresh
   }
 
   function logout() {
+    // Lo que juntó el panel de uso sale ANTES de cortar la sesión: después ya
+    // no se le puede atribuir a nadie y se descarta. Sale diciendo de quién es
+    // (re-test a ciegas 7: si la pestaña ya no era de nadie salía sin decirlo,
+    // y con la cookie de otra persona se le anotaba a ella).
+    mandarUso({ alCerrar: true })
     // ESTA pestaña sale: deja de ser de nadie (no manda la persona que se fue).
     fijarPersonaDeLaPestana(null)
-    // Lo que juntó el panel de uso sale ANTES de cortar la sesión: después ya
-    // no se le puede atribuir a nadie y se descarta.
-    mandarUso({ alCerrar: true })
     trackEvent('logout')
     setUserId(null)
     // Plan Asesor: el loop rendi_* de abajo borra la KEY rendi_client_ctx,
@@ -441,7 +447,7 @@ export function AuthProvider({ children }) {
   const isDemo = !!user?.demo
 
   return (
-    <AuthContext.Provider value={{ user, isDemo, login, logout, exitDemo, updateUser, refreshUser, bootstrapped }}>
+    <AuthContext.Provider value={{ user, isDemo, entrar, logout, exitDemo, updateUser, refreshUser, bootstrapped }}>
       {children}
     </AuthContext.Provider>
   )

@@ -509,7 +509,11 @@ describe('la pestaña vieja: lo que toca la persona después de que otra cambia'
     expect(enLaPagina(CARTEL)).toBe(false)
   }, 500000)
 
-  it('si los rechazos siguen, a la tercera no recarga más y el cartel ofrece «Cerrar sesión», que sí sale', async () => {
+  // El cartel nunca queda sin salida (re-test a ciegas 5) y nunca cierra una
+  // sesión que no es la de esta pestaña (re-test a ciegas 7: con otra persona,
+  // «Cerrar sesión» cerraba la de Bruno y borraba lo suyo). Con otra persona,
+  // la salida es «Recargar».
+  it('si los rechazos siguen, a la tercera no recarga más y el cartel ofrece «Recargar», que recarga', async () => {
     limpio(); persona('ana')
     await abrir('/dashboard')
     window.location.reload.mockClear()
@@ -519,21 +523,23 @@ describe('la pestaña vieja: lo que toca la persona después de que otra cambia'
     }
     expect(window.location.reload.mock.calls.length, 'tope de recargas').toBe(2)
     await m.redibujar(el('/dashboard'))
-    const salir = delCartel('Cerrar sesión')
-    expect(salir, 'el botón del cartel').toBeTruthy()
+    expect(delCartel('Cerrar sesión'), 'no cierra la sesión de otra persona').toBe(null)
+    const recargar = delCartel('Recargar')
+    expect(recargar, 'la salida del cartel').toBeTruthy()
     servidor.pedidos = []
-    await enActo(() => clic(buscarEn(m.contenedor, 'Cerrar sesión') ? m.contenedor : document.body, salir))
-    await esperar(200)
-    expect(servidor.pedidos.map(x => `${x.method} ${x.path}`), 'cerrar sesión sale aunque la pestaña esté frenada').toContain('POST /auth/logout')
+    await enActo(() => clic(buscarEn(m.contenedor, 'Recargar') ? m.contenedor : document.body, recargar))
+    expect(window.location.reload.mock.calls.length, 'recarga').toBe(3)
+    expect(servidor.pedidos.map(x => `${x.method} ${x.path}`), 'y no cierra ninguna sesión').not.toContain('POST /auth/logout')
   }, 500000)
 
-  it('el cartel de otra persona siempre trae «Cerrar sesión»', async () => {
+  it('el cartel de otra persona trae «Recargar» y nunca «Cerrar sesión»', async () => {
     limpio(); persona('ana')
     await abrir('/dashboard')
     await entraEnOtraPestana(BRUNO, 'bruno')
     await m.redibujar(el('/dashboard'))
     expect(enLaPagina('entró otra persona')).toBe(true)
-    expect(delCartel('Cerrar sesión')).toBeTruthy()
+    expect(delCartel('Recargar')).toBeTruthy()
+    expect(delCartel('Cerrar sesión')).toBe(null)
   }, 500000)
 
   it('la misma persona vuelve a entrar en otra pestaña: sin cartel ni recarga', async () => {

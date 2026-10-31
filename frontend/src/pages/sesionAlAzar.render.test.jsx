@@ -94,7 +94,7 @@ async function servidor(url, opts = {}) {
   let body
   try { body = opts.body && typeof opts.body === 'string' ? JSON.parse(opts.body) : undefined } catch { body = undefined }
   if (path === '/auth/logout') srv.me = null
-  await esperar(path === '/auth/me' ? srv.demoraMe : 3)
+  await esperar(path === '/auth/me' ? srv.demoraMe : (srv.demoraResto || 3))
   if (gen !== g) return new Promise(() => {})              // la página se fue: el navegador corta el pedido
   if (path === '/auth/logout') return json({ ok: true })
   if (!sesion) return json({ detail: 'Token inválido' }, 401)
@@ -159,7 +159,10 @@ async function cargar() {
       return () => { vivo = false }
     }, [])
     tab.pantalla = {
-      user: auth.user, muestra, cliente: adv.clientCtx?.id ?? null, login: auth.login, logout: auth.logout,
+      user: auth.user, muestra, cliente: adv.clientCtx?.id ?? null, logout: auth.logout,
+      // La puerta de la sesión. (En una versión anterior a la puerta única, lo
+      // que hacía la pantalla de entrada: `login` con el email que tuviera.)
+      entrar: auth.entrar ?? ((o = {}) => auth.login(null, o.nombre, { email: o.email })),
       exitDemo: auth.exitDemo, enterClient: adv.enterClient, exitClient: adv.exitClient,
       compra: () => api.api.post('/positions', { muestra }),
       mes: () => api.api.post('/monthly', { muestra }),
@@ -271,10 +274,17 @@ function accionesDeA(r) {
   }
   if (!p?.user) {
     const u = r.uno(PERSONAS)
-    lista.push([`A entra como ${u.name}`, intentar(async () => {
-      srv.me = u                                               // POST /auth/login: el servidor pone la cookie
-      await cur.tab.pantalla.login(null, u.name, { email: u.email, tier: u.tier })
-    })])
+    // Una acción por cada puerta de entrada (re-test a ciegas 7: «restablecer
+    // la contraseña» tenía su propio camino y se quedó afuera). Todas ponen la
+    // cookie (el pedido de la pantalla) y pasan por AuthContext.entrar.
+    for (const [puerta, evento] of [['el login', 'login'], ['registrarse y verificar el mail', 'sign_up'],
+      ['reclamar una cuenta', 'login'], ['restablecer la contraseña', 'login']]) {
+      lista.push([`A entra como ${u.name} por ${puerta}`, intentar(async () => {
+        srv.me = u                                             // el pedido de la pantalla: el servidor pone la cookie
+        // (email/nombre: sólo para la versión anterior; restablecer no lo tenía)
+        await cur.tab.pantalla.entrar({ evento, nombre: u.name, email: puerta.startsWith('restablecer') ? undefined : u.email })
+      })])
+    }
     lista.push(['A entra al demo', intentar(async () => { cur.demo.enableDemoMode(); cur.win.location.href = 'http://localhost/' })])
   }
   if (p?.user?.demo) lista.push(['A sale del demo', intentar(() => cur.tab.pantalla.exitDemo())])
@@ -333,7 +343,7 @@ describe('la sesión de la pestaña, por escenarios al azar', () => {
       // Arranca: navegador limpio, alguien logueado (o nadie), con ayudas
       // guardadas de cada persona (para ver si alguna se borra de más).
       mapas = { local: new Map(), sesion: new Map() }
-      srv.me = null; srv.demoraMe = 0; srv.meFalla = 0; srv.escrituras = []
+      srv.me = null; srv.demoraMe = 0; srv.demoraResto = 0; srv.meFalla = 0; srv.escrituras = []
       const inicial = r.uno([ANA, BRUNO, ASESORA, null])
       if (inicial) { srv.me = inicial; mapas.local.set('rendi_user', guardado(inicial)) }
       mapas.local.set('rendi:tour:novedades:v2', '1')
@@ -389,7 +399,7 @@ describe('la sesión de la pestaña, por escenarios al azar', () => {
 // alcanza en una corrida, éstos igual los prueban siempre.
 async function arrancar(u) {
   mapas = { local: new Map(), sesion: new Map() }
-  srv.me = u; srv.demoraMe = 0; srv.meFalla = 0; srv.escrituras = []
+  srv.me = u; srv.demoraMe = 0; srv.demoraResto = 0; srv.meFalla = 0; srv.escrituras = []
   if (u) mapas.local.set('rendi_user', guardado(u))
   mapas.local.set('rendi:tour:novedades:v2', '1')
   for (const p of PERSONAS) mapas.local.set(`rendi_snapshot_date:${p.email}|propia`, '2026-10-30')
@@ -464,6 +474,54 @@ describe('los escenarios del re-test a ciegas 6, fijos', () => {
     await enActo(async () => { try { await cur.tab.pantalla.logout() } catch { /* */ } })
     log('[demo] sesión después de cerrar:', srv.me)
     expect(srv.me, 'la sesión real de Ana').toBe(null)
+  }, 120000)
+
+  // ── re-test a ciegas 7 ──
+  it('R7-1: Ana entra por «restablecer la contraseña» y enseguida entra Bruno en otra pestaña: nada de Ana va a Bruno', async () => {
+    await arrancar(null)
+    pasoActual = 'R7-1'
+    srv.me = ANA                                              // el pedido de restablecer pone la cookie de Ana
+    await enActo(() => cur.tab.pantalla.entrar({ nombre: ANA.name }))   // la pantalla no tiene el email
+    await seguir()
+    expect(cur.tab.pantalla.muestra, 'la pantalla de Ana muestra lo de Ana').toBe(ANA.email)
+    const n = srv.escrituras.length
+    await enActo(() => Promise.all([
+      (async () => { srv.me = BRUNO; await esperar(150); otraPestanaEscribe('rendi_user', guardado(BRUNO)) })(),
+      (async () => { for (let i = 0; i < 6; i++) { try { await cur.tab.pantalla?.compra() } catch { /* */ } await esperar(40) } })(),
+    ]))
+    log('[R7-1] escrituras:', srv.escrituras.slice(n))
+    expect(malasDesde(n), 'compras de la pantalla de Ana guardadas en la cuenta de Bruno').toEqual([])
+  }, 120000)
+
+  it('R7-2: la recarga queda frenada («¿Salir del sitio?») y entra Bruno: el cartel no cierra la sesión de Bruno', async () => {
+    await arrancar(ANA)
+    mapas.local.set(`rendi_lastvisit_diagnostico:${BRUNO.email}|propia`, '{"t":1}')
+    srv.me = BRUNO                                            // en otra pestaña entra Bruno
+    cur.almacen.borrarLoDeOtrasPersonas(BRUNO.email)
+    mapas.local.set(`rendi_lastvisit_diagnostico:${BRUNO.email}|propia`, '{"t":1}')
+    await enActo(async () => otraPestanaEscribe('rendi_user', guardado(BRUNO)))
+    // No se sigue la recarga: el navegador preguntó «¿Salir del sitio?» y Ana dijo que no.
+    for (let i = 0; i < 20; i++) { await esperar(25); try { await cur.m.redibujar(cur.el()) } catch { /* */ } }
+    const cerrar = botonDelCartel('Cerrar sesión')
+    if (cerrar) await enActo(() => cur.nav.clic(cur.m.contenedor, cerrar))
+    await esperar(100)
+    log('[R7-2] botón Cerrar sesión:', !!cerrar, '| sesión:', srv.me?.email ?? null)
+    expect(srv.me?.email, 'la sesión de Bruno sigue abierta').toBe(BRUNO.email)
+    expect(mapas.local.has(`rendi_lastvisit_diagnostico:${BRUNO.email}|propia`), 'lo de Bruno no se borró').toBe(true)
+    expect(botonDelCartel('Recargar'), 'la salida es recargar').toBeTruthy()
+  }, 120000)
+
+  it('R7-3: un 401 de la sesión vencida de Ana llega después de que entró Bruno: no se borra que Bruno está logueado', async () => {
+    await arrancar(ANA)
+    srv.me = null                                             // la sesión de Ana vence sola
+    srv.demoraResto = 200                                     // y el servidor tarda en contestar
+    const pedido = cur.api.api.get('/positions').catch(() => {})
+    await esperar(50)
+    srv.me = BRUNO                                            // mientras tanto entra Bruno en otra pestaña
+    await enActo(async () => otraPestanaEscribe('rendi_user', guardado(BRUNO)))
+    await enActo(() => pedido)                                // llega el 401 (del pedido de Ana)
+    log('[R7-3] guardada después del 401:', enComun())
+    expect(enComun(), 'la sesión guardada de Bruno').toBe(BRUNO.email)
   }, 120000)
 
   it('A9: en otra pestaña Ana sale, entra Bruno, Bruno sale y entra Ana (en 30 s): ésta no queda trabada', async () => {
