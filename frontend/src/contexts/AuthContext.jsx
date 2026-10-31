@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { api, clearClientContext, EVENTO_PLAN_REQUERIDO, marcarPersonaCambiada, recargarPorPersona } from '../utils/api'
+import { api, clearClientContext, EVENTO_PLAN_REQUERIDO, recargarPorPersona, fijarPersonaDeLaPestana, arranqueResuelto, avisarDesfase } from '../utils/api'
 import { setBrokersRegistry } from '../utils/valuation'
 import { isDemoMode, enableDemoMode, disableDemoMode, vencerDemoSiCorresponde } from '../utils/demo'
 import { track } from '../utils/track'
@@ -131,19 +131,32 @@ export function AuthProvider({ children }) {
   // recargaba y volvía a preguntar lo mismo: recarga sin fin, sin poder ni
   // cerrar sesión. Al abrir, la pestaña todavía no tocó nada de nadie, así que
   // se le cree al servidor: sale sin decir quién es (`sinPersona`) y, si la
-  // sesión es de otra persona que la guardada, la pestaña pasa a ser de ésa —lo
-  // de la anterior se borra (utils/api, al guardar la nueva)— y se recarga UNA
-  // vez, para que ninguna pantalla siga con lo que leyó como Ana. En la próxima
-  // apertura la guardada y la del servidor coinciden: no hay bucle.
+  // sesión es de otra persona que la guardada, se guarda la del servidor y se
+  // recarga UNA vez; en la próxima apertura coinciden: no hay bucle.
+  // Hasta la recarga la pestaña sigue siendo de la guardada (muestra lo que leyó
+  // como Ana) y queda frenada, sin cartel: el re-test a ciegas 6 encontró que
+  // adoptar la persona nueva en el acto le abría el paso a un «Guardar» de la
+  // pantalla de Ana hacia la cuenta de Bruno.
+  // Si mientras se preguntaba OTRA pestaña cambió lo guardado, la respuesta ya
+  // es vieja: no se pisa lo guardado (era borrarle las ayudas a quien tiene la
+  // sesión) y el aviso de esa pestaña recarga ésta.
   useEffect(() => {
-    if (isDemoMode()) { setBootstrapped(true); return }
+    if (isDemoMode()) { setBootstrapped(true); arranqueResuelto(); return }
     const guardada = quienEs(user)
+    const enComun = () => { try { return quienEs(JSON.parse(leerDelAlmacen(CATALOGO.usuario))) } catch { return null } }
     api.get('/auth/me', { sinPersona: true })
       .then(me => {
         const fresh = mapMeToUser(me)
+        if (enComun() !== guardada) return
+        if (guardada && quienEs(fresh) !== guardada) {
+          guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(fresh))
+          recargarPorPersona()
+          return
+        }
+        // Sin persona guardada y con sesión: la pestaña pasa a ser de ésa (no
+        // mostraba datos de nadie).
+        if (!guardada) fijarPersonaDeLaPestana(quienEs(fresh))
         guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(fresh))
-        // Con el tope de recargas alcanzado, sigue como la del servidor sin recargar.
-        if (guardada && quienEs(fresh) !== guardada && recargarPorPersona()) return
         setUser(fresh)
         refreshPlanFeatures()
         // Analytics: identificar al user y setear propiedades para segmentación
@@ -164,12 +177,13 @@ export function AuthProvider({ children }) {
         // usuario guardado; si la sesión de verdad venció, el primer pedido
         // que reciba un 401 la cierra (api.js).
         if (err?.status !== 401) return
+        fijarPersonaDeLaPestana(null)          // al abrir: todavía no mostraba nada de nadie
         borrarDelAlmacen(CATALOGO.usuario)
         setUser(null)
         refreshPlanFeatures()
         setUserId(null)
       })
-      .finally(() => setBootstrapped(true))
+      .finally(() => { setBootstrapped(true); arranqueResuelto() })
   }, [])
 
   // 🔴 OTRA PESTAÑA CAMBIÓ QUIÉN ESTÁ LOGUEADO.
@@ -185,9 +199,12 @@ export function AuthProvider({ children }) {
   // que llegan en dos pasos —el "limpiar" del cartel de error vacía todo y
   // vuelve a poner la misma sesión— y en el medio parece que no hay nadie.
   // Pero en ese instante la cookie YA es de la otra persona: api.js no deja
-  // salir nada mientras tanto (marcarPersonaCambiada). Sin eso, un «Guardar»
-  // tocado en esos 300 ms guardaba lo de una persona en la cuenta de otra
-  // (re-test a ciegas 3, 30/10).
+  // salir nada mientras tanto (calcula el desfase en vivo contra lo guardado:
+  // otra persona → cartel; nadie → sin cartel). Sin eso, un «Guardar» tocado
+  // en esos 300 ms guardaba lo de una persona en la cuenta de otra (re-test a
+  // ciegas 3). Estas recargas vienen de un cambio de verdad: no cuentan para el
+  // tope (`porAviso`); contándolas, «salgo y entro con la cuenta correcta» dejaba
+  // la pestaña trabada (re-test a ciegas 6).
   //
   // El modo demo cuenta como otra persona (re-test a ciegas 4): una pestaña en
   // el demo y, en otra, la persona entra a su cuenta real —o al revés—. Antes
@@ -201,20 +218,11 @@ export function AuthProvider({ children }) {
       try { return quienEs(JSON.parse(leerDelAlmacen(CATALOGO.usuario))) } catch { return null /* basura → nadie */ }
     }
     const mirar = () => {
-      if (ahora() !== yo) recargarPorPersona(0)          // los 300 ms ya se esperaron
-      else marcarPersonaCambiada(false)
+      if (ahora() !== yo) recargarPorPersona(0, { porAviso: true })   // los 300 ms ya se esperaron
     }
     const alCambiarEnOtraPestana = (e) => {
       if (e.key !== null && e.key !== 'rendi_user' && e.key !== CATALOGO.modoDemo.clave) return
-      // Se frena en el acto sólo si ya hay OTRA persona. «Nadie» es el paso
-      // del medio de salir y volver a entrar (la misma persona, en otra
-      // pestaña): ahí la sesión ya no existe —el servidor contesta 401, no
-      // atiende a nadie— y frenar mostraba un instante el cartel de «otra
-      // persona» a la misma persona (re-test a ciegas 5). Se mira igual a los
-      // 300 ms.
-      const quien = ahora()
-      if (quien !== null && quien !== yo) marcarPersonaCambiada(true)
-      else if (quien === yo) marcarPersonaCambiada(false)
+      avisarDesfase()                                   // el cartel, si corresponde
       clearTimeout(espera)
       espera = setTimeout(mirar, 300)
     }
@@ -284,6 +292,10 @@ export function AuthProvider({ children }) {
     // pantalla repoblara el registro. Cambio de identidad = registro afuera.
     setBrokersRegistry([])
     const u = { name, ...extra }
+    // ESTA pestaña entró: pasa a ser de esta persona —antes de guardarla, así
+    // no hay un instante en que lo guardado no coincide— y se borra lo que otra
+    // guardó en este navegador (la sesión es de ésta sin duda).
+    fijarPersonaDeLaPestana(quienEs(u), { borrarOtras: true })
     guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(u))
     setUser(u)
     // Identity change → forzar refetch del plan features.
@@ -356,6 +368,8 @@ export function AuthProvider({ children }) {
   }
 
   function logout() {
+    // ESTA pestaña sale: deja de ser de nadie (no manda la persona que se fue).
+    fijarPersonaDeLaPestana(null)
     // Lo que juntó el panel de uso sale ANTES de cortar la sesión: después ya
     // no se le puede atribuir a nadie y se descarta.
     mandarUso({ alCerrar: true })
@@ -415,6 +429,10 @@ export function AuthProvider({ children }) {
   }
 
   function exitDemo() {
+    // ESTA pestaña sale del demo al inicio: no es de nadie (si quedaba con la
+    // persona guardada de antes, quedaba frenada como «salió alguien»; lo
+    // encontró la prueba al azar, pages/sesionAlAzar.render.test.jsx).
+    fijarPersonaDeLaPestana(null)
     track('demo_mode_exited')
     disableDemoMode()
     setUser(null)

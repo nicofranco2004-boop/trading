@@ -83,7 +83,13 @@ export function refreshPlanFeatures() {
   // viejos: el botón "Probar gratis" quedaba habilitado un rato DESPUÉS de
   // activar la prueba. _fetch() ya deduplica por _inflight, así que esto no
   // dispara un request extra sobre el que acaban de lanzar los listeners.
-  return _fetch()
+  // La mayoría la llama sin esperarla (al entrar, al salir, al cambiar de
+  // cliente): si el pedido falla —la pestaña frenada por otra sesión, la sesión
+  // vencida— el rechazo quedaba sin atender. Queda atendida acá; el que la
+  // espera recibe el error igual.
+  const pedido = _fetch()
+  pedido.catch(() => {})
+  return pedido
 }
 
 async function _fetch() {

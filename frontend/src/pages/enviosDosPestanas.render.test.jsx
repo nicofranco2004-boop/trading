@@ -100,18 +100,23 @@ async function quieta(rehacer, { vistas } = {}) {
   }
   return textoConCortes(m.contenedor).replace(/\s+/g, ' ')
 }
+// Cada `abrir` es una carga de la página: acá no se vuelve a cargar el código
+// (para eso está pages/sesionAlAzar.render.test.jsx), así que se hace lo que hace
+// utils/api al cargarse: la pestaña es de la persona guardada.
+const personaGuardadaAhora = () => { try { return JSON.parse(localStorage.getItem('rendi_user') || 'null')?.email ?? null } catch { return null } }
 async function abrir(ruta, opc) {
   if (m) await m.desmontar()
+  api.fijarPersonaDeLaPestana(personaGuardadaAhora())
   m = await montar(el(ruta))
   return quieta(() => el(ruta), opc)
 }
 const persona = (quien, tier = 'pro') => {
   const email = `${quien}@retest.test`
   servidor.me = { quien, name: quien, email, tier }
+  // Entró en ESTA pestaña (como AuthContext.login: primero la pestaña pasa a
+  // ser de esta persona, después se guarda).
+  api.fijarPersonaDeLaPestana(email)
   localStorage.setItem('rendi_user', JSON.stringify({ name: quien, email, tier }))
-  // Entró en ESTA pestaña (como AuthContext.login, que escribe por la puerta y
-  // la puerta avisa): utils/api toma a esta persona como la de la pestaña.
-  window.dispatchEvent(new Event('rendi:sesion-de-la-pestana'))
 }
 const vencer = async () => {
   servidor.vencida = true
@@ -125,13 +130,10 @@ const limpio = () => {
   // avisar, y la pestaña seguiría creyéndose en el demo (utils/api).
   if (demo?.isDemoMode()) demo.disableDemoMode()
   localStorage.clear(); sessionStorage.clear(); api.setClientContext(null)
-  // La recarga de AuthContext acá es de mentira: no limpia la memoria del
-  // «cambió la persona» que la de verdad sí tira.
-  api.marcarPersonaCambiada?.(false)
-  // Y lo que haría la recarga con el modo demo: la pestaña vuelve a tomar el
-  // de ahora como propio.
+  // Lo que haría la recarga (acá es de mentira): la pestaña no es de nadie y
+  // vuelve a tomar como propio el modo demo de ahora.
+  api.fijarPersonaDeLaPestana(null)
   if (demo?.EVENTO_MODO_DEMO) window.dispatchEvent(new Event(demo.EVENTO_MODO_DEMO))
-  window.dispatchEvent(new Event('rendi:sesion-de-la-pestana'))        // vacía: nadie, como al recargar
   servidor.fallar503 = null
   servidor.vencida = false; servidor.demora = 0; servidor.pedidos = []; servidor.rechazados = []
   localStorage.setItem('rendi:tour:novedades:v2', '1'); localStorage.setItem('rendi_display_currency', 'USD')
@@ -554,7 +556,8 @@ describe('la pestaña vieja: lo que toca la persona después de que otra cambia'
     const deAna = 'rendi_snapshot_date:ana@retest.test|propia'
     localStorage.setItem(deAna, '2026-10-30')
     await vencer()                                    // la sesión de Ana vence: 401
-    persona('bruno')                                  // y entra Bruno en esta pestaña
+    persona('bruno')
+    api.fijarPersonaDeLaPestana('bruno@retest.test', { borrarOtras: true })   // y entra Bruno en esta pestaña (AuthContext.login)
     expect(localStorage.getItem(deAna), 'lo de Ana, con su email, quedaba en el navegador').toBeNull()
   }, 500000)
 })

@@ -1,6 +1,6 @@
 import { isDemoMode, handleDemoRequest, EVENTO_MODO_DEMO } from './demo'
 import { quienEs } from './quienEs'
-import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen, EVENTO_SESION_DE_LA_PESTANA, borrarLoDeOtrasPersonas } from './almacen'
+import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen, borrarLoDeOtrasPersonas } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
 
 // Wrapper de fetch para llamadas al API.
@@ -79,7 +79,7 @@ export function setClientContext(ctx) {
   const antes = _clientCtx
   _clientCtx = valido(ctx)
   try {
-    guardarEnAlmacen(CATALOGO.clienteDeLaPestana, JSON.stringify({ persona: personaGuardada(), cliente: _clientCtx }))
+    guardarEnAlmacen(CATALOGO.clienteDeLaPestana, JSON.stringify({ persona: _personaDeLaPestana, cliente: _clientCtx }))
   } catch { /* sin almacenamiento: vale mientras la página esté abierta */ }
   try {
     if (_clientCtx) guardarEnAlmacen(CATALOGO.clienteAbierto, JSON.stringify(_clientCtx))
@@ -95,77 +95,89 @@ export function clearClientContext() {
 // 🔴 LA PERSONA Y EL DEMO SÍ SON UNO PARA TODAS LAS PESTAÑAS. La sesión es una
 // cookie, y la marca del demo se guarda una vez para todo el navegador. Si en
 // otra pestaña entra otra persona —o se entra o se sale del demo—, ésta seguía
-// mostrando lo suyo y mandando con la sesión de la otra: lo que se tocaba en el
-// demo se guardaba en la cuenta real (re-test a ciegas 4). Entonces la pestaña
-// queda DESFASADA: no sale ningún pedido por ninguna salida de este archivo
-// —tampoco los reintentos, ni lo que contesta el demo—, components/
-// CuentaCambiadaEnOtraPestana lo dice y AuthContext la recarga.
-//   · Demo: `_demoDeLaPestana` es el modo con que esta pestaña arrancó o al
-//     que pasó ELLA (demo.js avisa con EVENTO_MODO_DEMO); si la marca guardada
-//     dice otra cosa, la cambió otra pestaña. No depende de que llegue el
-//     aviso del navegador.
-//   · Persona: AuthContext lo marca en el instante del aviso (marcarPersonaCambiada).
-//     Queda la ventana entre que el navegador recibe la cookie nueva y la otra
-//     pestaña escribe quién es (milisegundos): ésa sólo la cierra el servidor.
+// mostrando lo suyo y mandando con la sesión de la otra (re-test a ciegas 4).
+// Entonces la pestaña queda DESFASADA: no sale ningún pedido por ninguna
+// salida de este archivo —tampoco los reintentos, ni lo que contesta el
+// demo—, components/CuentaCambiadaEnOtraPestana lo dice y AuthContext la
+// recarga.
+//
+// LA REGLA (re-test a ciegas 6, después de cinco vueltas en que cada arreglo
+// abría un hueco en una secuencia que nadie probó; la prueba por escenarios al
+// azar la vigila: pages/sesionAlAzar.render.test.jsx):
+//   · La persona de ESTA pestaña (`_personaDeLaPestana`) es la de los datos que
+//     muestra. La fija SÓLO la pestaña, a propósito: al cargar (la guardada),
+//     al entrar ella (AuthContext.login) y al salir ella (logout). Nada más la
+//     cambia: ni lo que escribe otra pestaña, ni una sesión vencida (un 401
+//     deja la pantalla con los datos de antes hasta que se va), ni la respuesta
+//     de «¿quién soy?». Antes se re-leía del almacén compartido en cada
+//     escritura de la sesión, y eso apagaba el freno justo cuando la pestaña
+//     mostraba a Ana y la cookie ya era de Bruno.
+//   · El desfase se calcula EN VIVO contra lo guardado en común, en cada pedido:
+//     otra persona → frena con cartel; «nadie» (salió alguien) → frena sin
+//     cartel. No depende de que llegue a tiempo el aviso del navegador.
+//   · El demo igual: `_demoDeLaPestana` es el modo con que arrancó o al que
+//     pasó ELLA (demo.js avisa con EVENTO_MODO_DEMO).
+//   · Queda la ventana entre la cookie nueva y lo guardado en común
+//     (milisegundos): ésa la cierra el servidor (X-Rendi-Persona, abajo).
 let _demoDeLaPestana = typeof window !== 'undefined' ? isDemoMode() : false
-let _personaCambiada = false
-let _sinMasRecargas = false      // ver recargarPorPersona
+let _rechazadoPorElServidor = false   // un 409 persona_cambiada
+let _recargando = false               // va a recargar: frena sin cartel
+let _arranquePendiente = typeof window !== 'undefined'   // AuthContext todavía no preguntó «¿quién soy?»
+let _rechazoEnElArranque = false
+let _sinMasRecargas = false           // ver recargarPorPersona
 export const EVENTO_PESTANA_DESFASADA = 'rendi:pestana-desfasada'
 
-/** null si la pestaña puede hablar con el servidor; si no, por qué. */
+/** null si la pestaña puede hablar con el servidor; si no, por qué.
+ *  `motivo`: 'demo' | 'persona' (con cartel) | 'sinSesion' | 'recargando' (sin cartel). */
 export function pestanaDesfasada() {
   const sinSalida = _sinMasRecargas || undefined
   if (isDemoMode() !== _demoDeLaPestana) return { motivo: 'demo', estabaEnDemo: _demoDeLaPestana, sinSalida }
-  if (!_demoDeLaPestana && _personaCambiada) return { motivo: 'persona', sinSalida }
+  if (_demoDeLaPestana) return null
+  if (_rechazadoPorElServidor) return { motivo: 'persona', sinSalida }
+  if (_recargando) return { motivo: 'recargando' }
+  if (_personaDeLaPestana) {
+    const enComun = personaGuardada()
+    if (enComun !== _personaDeLaPestana) return enComun ? { motivo: 'persona', sinSalida } : { motivo: 'sinSesion' }
+  }
   return null
 }
 
 // El cartel se redibuja con CADA cambio, no sólo al entrar o salir del desfase:
 // si después cambia el motivo, tiene que decir el de ahora.
 let _desfaseAvisado = 'null'
-function avisarDesfase() {
+export function avisarDesfase() {
   const ahora = JSON.stringify(pestanaDesfasada())
   if (ahora === _desfaseAvisado || typeof window === 'undefined') return
   _desfaseAvisado = ahora
   window.dispatchEvent(new Event(EVENTO_PESTANA_DESFASADA))
 }
 
-/** AuthContext: otra pestaña cambió la persona (true) o volvió a la misma (false). */
-export function marcarPersonaCambiada(si) {
-  _personaCambiada = !!si
-  avisarDesfase()
-}
-
 // 🔴 Y EL SERVIDOR CIERRA LA VENTANA. Entre que el navegador recibe la cookie
-// de otra persona y le llega a esta pestaña el aviso de la otra, pasan
-// milisegundos en los que nada de acá sabe que cambió (re-test a ciegas 4,
-// P2). Por eso cada pedido dice de qué persona es esta pestaña
-// (`X-Rendi-Persona`) y el servidor (get_current_user) lo rechaza con 409
-// `persona_cambiada` si la sesión es de otra: no toca nada, y la pantalla lo
-// trata como el cambio de persona (cartel y recarga).
-// La persona de ESTA pestaña es la que estaba guardada al cargarla, o la que
-// guardó ELLA (utils/almacen avisa: EVENTO_SESION_DE_LA_PESTANA). Lo que escribe
-// otra pestaña no la cambia: si se leyera del almacén compartido, después del
-// cambio diría la persona nueva, coincidiría con la cookie nueva y no frenaría.
+// de otra persona y lo guardado en común dice quién es, pasan milisegundos en
+// los que nada de acá sabe que cambió (re-test a ciegas 4, P2). Por eso cada
+// pedido dice de qué persona es esta pestaña (`X-Rendi-Persona`) y el servidor
+// (get_current_user) lo rechaza con 409 `persona_cambiada` si la sesión es de
+// otra: no toca nada, y la pantalla lo trata como el cambio de persona.
 export const PERSONA_HEADER = 'X-Rendi-Persona'
 let _personaDeLaPestana = typeof window !== 'undefined' ? personaGuardada() : null
-// Cuando la persona de la pestaña la fija ELLA (entrar, salir, o la que
-// confirma el servidor en cada apertura: ver AuthContext), ya no hay otra
-// persona que la esté desfasando. Y lo que guardó otra persona en este
-// navegador se borra: si su sesión venció sola, quedaba con su email en los
-// nombres (re-test 5). Al cargar el módulo NO se borra nada: la persona
-// guardada todavía no está confirmada (puede ser justo la equivocada).
-function fijarPersonaDeLaPestana() {
-  _personaDeLaPestana = personaGuardada()
-  _personaCambiada = false
-  if (_personaDeLaPestana) {
+
+/** La pestaña pasa a ser de `persona` (null: nadie). Sólo AuthContext, cuando
+ *  ESTA pestaña entra o sale. `borrarOtras`: al entrar, lo que otra persona
+ *  guardó en este navegador se borra —si su sesión venció sola, quedaba con su
+ *  email en los nombres (re-test 5)—. Se borra acá y no al abrir: al entrar,
+ *  la sesión es de `persona` sin duda; al abrir puede estar cambiando en otra
+ *  pestaña (re-test 6: se borraban las ayudas de quien tenía la sesión). */
+export function fijarPersonaDeLaPestana(persona, { borrarOtras = false } = {}) {
+  _personaDeLaPestana = persona ? String(persona).trim().toLowerCase() : null
+  _rechazadoPorElServidor = false
+  _sinMasRecargas = false
+  if (borrarOtras && _personaDeLaPestana) {
     try { borrarLoDeOtrasPersonas(_personaDeLaPestana) } catch { /* sin almacenamiento */ }
   }
   avisarDesfase()
 }
-if (typeof window !== 'undefined') {
-  window.addEventListener(EVENTO_SESION_DE_LA_PESTANA, fijarPersonaDeLaPestana)
-}
+
+export function personaDeLaPestana() { return _personaDeLaPestana }
 
 /** El encabezado con la persona de esta pestaña (vacío si no hay nadie).
  *  Codificada: un encabezado no lleva cualquier letra. */
@@ -173,39 +185,79 @@ export function encabezadoDePersona() {
   return _personaDeLaPestana ? { [PERSONA_HEADER]: encodeURIComponent(_personaDeLaPestana) } : {}
 }
 
-// 🔴 LAS RECARGAS POR OTRA PERSONA TIENEN TOPE (re-test a ciegas 5). Si algo
-// deja a la pestaña rechazada en cada apertura, recargar no lo arregla: era una
-// recarga sin fin (37 en 20 s) con un cartel sin salida. La causa de raíz la
-// cierra AuthContext (al abrir, se le cree al servidor); esto es el cinturón:
-// a lo sumo 2 recargas en 30 s por pestaña. Después no recarga más, y el cartel
-// —que siempre tiene «Cerrar sesión»— lo dice.
+// 🔴 LAS RECARGAS QUE DECIDE LA PESTAÑA SOLA TIENEN TOPE (re-test a ciegas 5).
+// Si algo la deja rechazada en cada apertura, recargar no lo arregla: era una
+// recarga sin fin (37 en 20 s). La causa la cierra AuthContext (al abrir se le
+// cree al servidor); esto es el cinturón: a lo sumo 2 en 30 s de las que la
+// pestaña decide SOLA (un rechazo del servidor, adoptar la sesión al abrir).
+// Las que vienen de un cambio de verdad en otra pestaña (`porAviso`) no
+// cuentan: con «salgo y entro con la cuenta correcta» la pestaña quedaba
+// trabada (re-test a ciegas 6). Al pasar el tope, el cartel ofrece «Recargar».
 const VENTANA_DE_RECARGAS_MS = 30_000
 const RECARGAS_MAXIMAS = 2
 let _recargaPedida = false
-/** Recarga la pestaña (a los `demora` ms) si no se pasó el tope. true si va a recargar. */
-export function recargarPorPersona(demora = 300) {
+/** Recarga la pestaña a los `demora` ms. Frena todo hasta entonces (sin
+ *  cartel). true si va a recargar; false si la pestaña pasó el tope. */
+export function recargarPorPersona(demora = 300, { porAviso = false } = {}) {
   if (typeof window === 'undefined') return false
   if (_recargaPedida) return true
-  let antes = []
-  try { antes = JSON.parse(leerDelAlmacen(CATALOGO.recargasPorPersona) || '[]') } catch { antes = [] }
-  const ahora = Date.now()
-  const recientes = (Array.isArray(antes) ? antes : []).filter(t => ahora - t < VENTANA_DE_RECARGAS_MS)
-  if (recientes.length >= RECARGAS_MAXIMAS) {
-    _sinMasRecargas = true
-    avisarDesfase()
-    return false
+  if (!porAviso) {
+    let antes = []
+    try { antes = JSON.parse(leerDelAlmacen(CATALOGO.recargasPorPersona) || '[]') } catch { antes = [] }
+    const ahora = Date.now()
+    const recientes = (Array.isArray(antes) ? antes : []).filter(t => ahora - t < VENTANA_DE_RECARGAS_MS)
+    if (recientes.length >= RECARGAS_MAXIMAS) {
+      _sinMasRecargas = true
+      _recargando = false
+      _rechazadoPorElServidor = true
+      avisarDesfase()
+      return false
+    }
+    try { guardarEnAlmacen(CATALOGO.recargasPorPersona, JSON.stringify([...recientes, ahora])) } catch { /* sin almacenamiento */ }
   }
-  try { guardarEnAlmacen(CATALOGO.recargasPorPersona, JSON.stringify([...recientes, ahora])) } catch { /* sin almacenamiento */ }
   _recargaPedida = true
-  setTimeout(() => { _recargaPedida = false; window.location.reload() }, demora)
+  _recargando = true
+  avisarDesfase()
+  setTimeout(() => {
+    _recargaPedida = false
+    window.location.reload()
+    // Si la recarga no se hizo (el «¿Salir del sitio?» de una importación en
+    // curso), la pestaña sigue frenada por lo que la frenaba —lo guardado no
+    // coincide, o el rechazo del servidor— y con su cartel.
+    _recargando = false
+    avisarDesfase()
+  }, demora)
   return true
+}
+
+/** AuthContext, cuando contestó (o falló) «¿quién soy?» al abrir. Un rechazo
+ *  del servidor mientras tanto no recargó: lo resuelve el arranque (si la
+ *  sesión es de otra, adopta y recarga UNA vez). Si quedó un rechazo sin
+ *  resolver (no contestó), recién ahí se recarga. */
+export function arranqueResuelto() {
+  _arranquePendiente = false
+  if (!_rechazoEnElArranque) return
+  _rechazoEnElArranque = false
+  if (_recargaPedida) return                         // el arranque ya adoptó y recarga
+  _recargando = false
+  _rechazadoPorElServidor = true
+  recargarPorPersona()
 }
 
 /** ¿El servidor rechazó el pedido porque la sesión es de otra persona? Si sí,
  *  la pestaña queda como con el aviso de otra persona y se recarga. */
 export function rechazoPorPersona(status, payload) {
   if (status !== 409 || payload?.detail?.code !== 'persona_cambiada') return false
-  marcarPersonaCambiada(true)
+  // Mientras se pregunta «¿quién soy?» al abrir, no se recarga: el arranque
+  // adopta la sesión del servidor y recarga una vez (antes, con un servidor
+  // lento, eran dos recargas y el cartel dos veces).
+  if (_arranquePendiente) {
+    _recargando = true                               // frena sin cartel hasta que conteste
+    _rechazoEnElArranque = true
+    avisarDesfase()
+    return true
+  }
+  _rechazadoPorElServidor = true
   recargarPorPersona()
   return true
 }
@@ -213,7 +265,7 @@ export function rechazoPorPersona(status, payload) {
 if (typeof window !== 'undefined') {
   window.addEventListener(EVENTO_MODO_DEMO, () => { _demoDeLaPestana = isDemoMode(); avisarDesfase() })
   window.addEventListener('storage', (e) => {
-    if (e.key === null || e.key === CATALOGO.modoDemo.clave) avisarDesfase()
+    if (e.key === null || e.key === CATALOGO.modoDemo.clave || e.key === CATALOGO.usuario.clave) avisarDesfase()
   })
 }
 
@@ -245,7 +297,11 @@ async function req(method, path, body, opts) {
   //     demo (ej. vender una posición). Lanzamos Error con mensaje claro
   //     para que el componente lo muestre como error inline.
   //   - cualquier otro objeto → respuesta normal.
-  if (isDemoMode()) {
+  // El simulador contesta según el modo de ESTA pestaña, no la marca común:
+  // con la marca puesta por otra pestaña, el «cerrar sesión» de una pestaña de
+  // una cuenta real lo contestaba el simulador y la sesión real seguía abierta
+  // (re-test a ciegas 6). Desfasada, el freno de arriba ya no deja pasar nada.
+  if (_demoDeLaPestana) {
     const mock = handleDemoRequest(method, path, body)
     if (mock !== null) {
       // Mini-delay para evitar UI parpadeante "demasiado rápida"
@@ -495,7 +551,7 @@ async function upload(path, formData, opts) {
   await frenoDeLaPestana()
   // En demo mode no soportamos imports (el wizard de CSV requiere parsing
   // server-side). Throw inmediato con mensaje claro.
-  if (isDemoMode()) {
+  if (_demoDeLaPestana) {
     const err = new Error('En modo demo no podés importar archivos. Creá una cuenta gratis para subir tu CSV.')
     err.demoBlocked = true
     throw err
@@ -537,7 +593,7 @@ async function upload(path, formData, opts) {
 // un error explicativo.
 async function getBlob(path) {
   await frenoDeLaPestana()
-  if (isDemoMode()) {
+  if (_demoDeLaPestana) {
     const err = new Error('Las descargas no están disponibles en modo demo.')
     err.demoBlocked = true
     throw err
@@ -571,7 +627,7 @@ async function getBlob(path) {
 // usamos el mock y emitimos todo de una.
 async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, onVoz, signal } = {}) {
   await frenoDeLaPestana()
-  if (isDemoMode()) {
+  if (_demoDeLaPestana) {
     const res = await req('POST', '/ai/chat', { ...body, stream: false })
     // El mock demo resuelve por setTimeout (inabortable): respetar el abort
     // acá — sin esto, reset()/"Nuevo" en demo dejaba una burbuja fantasma.

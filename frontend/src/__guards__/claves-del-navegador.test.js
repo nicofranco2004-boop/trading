@@ -159,6 +159,18 @@ describe('una sola puerta al almacenamiento del navegador', () => {
     expect(escriben).toEqual([])
   })
 
+  // Cuando ESTA pestaña inicia sesión se borra lo que otras personas guardaron
+  // (almacen.borrarLoDeOtrasPersonas, re-test a ciegas 5). Los dibujos del
+  // gráfico guardan algo que todavía no llegó a la cuenta: si se juntan las
+  // ramas y la entrada pierde la marca, los pendientes de otra persona se
+  // borrarían (re-test a ciegas 6). Donde exista, la lleva.
+  it('lo que todavía no llegó a la cuenta se conserva para su dueño', () => {
+    for (const [nombre, e] of Object.entries(CATALOGO)) {
+      if (e.seConservaParaSuDueno) expect(e.tipo, `${nombre}: la marca es para datos de una cuenta`).toBe(CON_DUENO)
+      if (e.prefijo === 'rendi_dibujos:') expect(e.seConservaParaSuDueno, `${nombre}: los dibujos pendientes`).toBe(true)
+    }
+  })
+
   it('«dueño propio» es una lista cerrada', () => {
     const propios = Object.entries(CATALOGO).filter(([, e]) => e.tipo === DUENO_PROPIO).map(([n]) => n).sort()
     expect(propios, 'no se suman datos con un dueño propio: usan la regla (CON_DUENO)')

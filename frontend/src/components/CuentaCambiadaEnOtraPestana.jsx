@@ -6,11 +6,12 @@
 // (`pestanaDesfasada`): lo que se tocara acá se guardaba en la cuenta de otro,
 // o lo tocado en el demo en la cuenta real (re-test a ciegas 3 y 4, 30/10).
 // AuthContext la recarga sola en un instante; el cartel lo avisa. No hay a
-// qué volver —la sesión ya es la otra—, pero SIEMPRE ofrece «Cerrar sesión»:
-// si la recarga no lo arregla (tiene tope: utils/api.recargarPorPersona), es la
-// salida, y sale aunque la pestaña esté frenada (re-test a ciegas 5: una
-// recarga sin fin con un cartel sin botones no dejaba ni cerrar sesión). Lo
-// que estaba a medio cargar se pierde con la recarga.
+// qué volver —la sesión ya es la otra—, pero el cartel nunca queda sin salida
+// (re-test a ciegas 5 y 6): «Recargar», siempre; y «Cerrar sesión» cuando
+// cerraría la sesión de quien está en esta pestaña (en una pestaña del demo
+// cerraría la de otra persona: ahí no va). Los dos salen aunque la pestaña
+// esté frenada. Lo que estaba a medio cargar se pierde con la recarga.
+// «Salió alguien» (motivo 'sinSesion') y «está por recargar» frenan sin cartel.
 // El CLIENTE del asesor no pasa por acá: cada pestaña tiene el suyo
 // (utils/api), así que dos pestañas con dos clientes trabajan a la vez.
 // Se redibuja con cada aviso: si el motivo cambia, dice el de ahora.
@@ -20,13 +21,18 @@ import { EVENTO_PESTANA_DESFASADA, pestanaDesfasada } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 
 function queCambio(desfase) {
+  const despues = desfase.sinSalida
+    ? 'No se pudo recargar sola: recargala para seguir.'
+    : 'Esta se recarga sola.'
   if (desfase.motivo === 'demo') {
     return desfase.estabaEnDemo
-      ? 'En otra pestaña saliste del modo demo. Esta se recarga sola, y lo que tocaste acá en el demo no pasa a tu cuenta.'
-      : 'En otra pestaña entraste al modo demo. Esta se recarga sola, y no mezcla la cartera de ejemplo con la tuya.'
+      ? `En otra pestaña saliste del modo demo. ${despues} Lo que tocaste acá en el demo no pasa a tu cuenta.`
+      : `En otra pestaña entraste al modo demo. ${despues} La cartera de ejemplo no se mezcla con la tuya.`
   }
-  return 'En otra pestaña entró otra persona. Esta se recarga sola con esa sesión, y no guardó nada de lo que había acá.'
+  return `En otra pestaña entró otra persona. ${despues} Esta pestaña no guardó nada de lo que había acá.`
 }
+
+const CON_CARTEL = new Set(['persona', 'demo'])
 
 export default function CuentaCambiadaEnOtraPestana() {
   const { logout } = useAuth() || {}
@@ -38,7 +44,10 @@ export default function CuentaCambiadaEnOtraPestana() {
     return () => window.removeEventListener(EVENTO_PESTANA_DESFASADA, mirar)
   }, [])
 
-  if (!desfase) return null
+  if (!desfase || !CON_CARTEL.has(desfase.motivo)) return null
+  // Cerrar sesión cierra la sesión de verdad (la cookie); en una pestaña que
+  // estaba en el demo, ésa es la de otra persona.
+  const puedeCerrar = !(desfase.motivo === 'demo' && desfase.estabaEnDemo)
 
   // Arriba de TODO (300): el recorrido de Novedades va en 100, las
   // confirmaciones en 150 y los menús en 200. Con el cartel en 100, el
@@ -54,18 +63,20 @@ export default function CuentaCambiadaEnOtraPestana() {
               Cambiaste de cuenta en otra pestaña
             </h2>
             <p className="text-sm text-ink-2">{queCambio(desfase)}</p>
-            {desfase.sinSalida && (
-              <p className="text-sm text-ink-2">
-                No se pudo recargar con la sesión nueva. Cerrá sesión y volvé a entrar.
-              </p>
-            )}
           </div>
         </div>
-        <div className="flex justify-end mt-4">
+        <div className="flex flex-col sm:flex-row sm:justify-end gap-2 mt-4">
+          {puedeCerrar && (
+            <button
+              onClick={() => { try { logout?.() } finally { window.location.href = '/' } }}
+              className="px-4 py-2 text-sm bg-bg-2 hover:bg-bg-3 border border-line text-ink-1 rounded transition">
+              Cerrar sesión
+            </button>
+          )}
           <button
-            onClick={() => { try { logout?.() } finally { window.location.href = '/' } }}
-            className="px-4 py-2 text-sm bg-bg-2 hover:bg-bg-3 border border-line text-ink-1 rounded transition">
-            Cerrar sesión
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded font-semibold transition">
+            Recargar
           </button>
         </div>
       </div>
