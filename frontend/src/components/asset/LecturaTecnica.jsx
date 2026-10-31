@@ -59,7 +59,7 @@ import Banderitas, { CartelDeNotas, banderitaEn, banderitasEnVista, esClaveDeGru
 import { BotonMervalle, PanelMervalle, useResumenMervalle } from './ResumenMervalle'
 import { BotonAvisame, BotonAvisameLinea, alertaDeLinea, useAvisosTecnicos, senalDeTarjeta } from '../alerts/AvisameTecnico'
 import { api, getClientContext } from '../../utils/api'
-import { factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecio, empezarAMano, correrAMano, estirarAMano } from '../../utils/ejesGrafico'
+import { factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecio, empezarAMano, correrAMano, estirarAMano, arrastreDentroDelTope } from '../../utils/ejesGrafico'
 import { PRIORIDAD, taparRotulos } from '../../utils/rotulos'
 import { ANCHO_DEL_GRAFICO, archivoDelGrafico, specDelGrafico } from '../../utils/imagenGrafico'
 import {
@@ -69,7 +69,7 @@ import {
 } from '../../utils/dibujos'
 import {
   RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, tarjetaBandas, lineaPromedio, marcas, variacionDeHoy,
-  indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, moverVentana, RUEDAS_MINIMAS,
+  indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, zoomEnElTope, moverVentana, RUEDAS_MINIMAS,
   ventanaInicial, margenDerecho, futuroMaximo, sumarVelaDeHoy, textoVelaDeHoy,
 } from '../../utils/tecnico'
 import { useVelaDeHoy } from '../../hooks/useVelaDeHoy'
@@ -712,7 +712,9 @@ export default function LecturaTecnica({
   const vivasVistas = semanales ? [] : dibujo.puntos.slice(puntos.length)
   const serieConHoy = horas ? serie : vivasVistas.length ? [...actual.puntos, ...vivasVistas] : actual.puntos
   const vista = { n: nVista, fin: finVista, total }
-  const zoom = (factor, f) => { const v2 = zoomVentana(vista, factor, f); if (v2) setVentana(v2); return !!v2 }
+  // true = el gesto ya usó lo que venía juntando: movió el gráfico o lo empujó
+  // contra el tope (ver tecnico.zoomEnElTope). Los tres gestos empiezan de cero.
+  const zoom = (factor, f) => { const v2 = zoomVentana(vista, factor, f); if (v2) setVentana(v2); return !!v2 || zoomEnElTope(vista, factor) }
   const mover = (frac) => { const v2 = moverVentana(vista, frac); if (v2) setVentana(v2) }
   const promedio = lineaPromedio(actual.puntos, pnlPct,
     moneda === 'usd' ? variacionDeHoy(referencia?.precio, actual.cierre_ref) : 0)
@@ -2656,7 +2658,14 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
         <div className="absolute inset-y-0 right-0 w-[68px] cursor-ns-resize touch-none select-none"
           title="Arrastrá hacia arriba o hacia abajo para estirar o achicar el gráfico. Doble click: vuelve a la escala automática."
           onPointerDown={e => { e.currentTarget.setPointerCapture?.(e.pointerId); ejeY.current = { y: e.clientY, ...(precioMano || empezarAMano([min, max], compartible)) } }}
-          onPointerMove={e => { const t = ejeY.current; if (t) setPrecioMano(estirarAMano(t, e.clientY - t.y)) }}
+          onPointerMove={e => {
+            const t = ejeY.current
+            if (!t) return
+            // Lo arrastrado más allá del tope no se guarda (ver arrastreDentroDelTope).
+            const dy = arrastreDentroDelTope(e.clientY - t.y)
+            t.y = e.clientY - dy
+            setPrecioMano(estirarAMano(t, dy))
+          }}
           onPointerUp={() => { ejeY.current = null }} onPointerCancel={() => { ejeY.current = null }}
           onDoubleClick={() => setPrecioMano(null)}>
           {ticks.map((t, k) => !cerca(t) && (
@@ -2766,7 +2775,9 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
         onPointerMove={e => {
           if (!ejeX.current || !onZoom) return
           const dx = e.clientX - ejeX.current.x
-          if (Math.abs(dx) >= 4) { onZoom(factorDeFechas(dx), 1); ejeX.current.x = e.clientX }
+          // Como la ruedita: lo que no alcanza para mover una rueda se junta
+          // (antes se tiraba, y acercado del todo un arrastre lento no alejaba).
+          if (Math.abs(dx) >= 4 && onZoom(factorDeFechas(dx), 1)) ejeX.current.x = e.clientX
         }}
         onPointerUp={() => { ejeX.current = null }} onPointerCancel={() => { ejeX.current = null }}
         onDoubleClick={() => onFechasAuto?.()}>

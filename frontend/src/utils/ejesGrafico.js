@@ -23,6 +23,17 @@ export function factorDeArrastre(px) {
   return Math.pow(2, px / PIXELES_POR_DOBLE)
 }
 
+/** Lo arrastrado en la columna de precios, sin pasar los topes. El arrastre se
+ *  cuenta desde donde empezó; si lo que pasa del tope se guardara, al darse
+ *  vuelta primero habría que devolverlo antes de que el gráfico se mueva (Nico,
+ *  31/10: «en los extremos cuesta mucho»). Con esto el punto de partida se corre
+ *  con el mouse mientras empuja contra el tope. */
+export function arrastreDentroDelTope(dy) {
+  const max = PIXELES_POR_DOBLE * Math.log2(ESCALA_Y_MAX)
+  const min = PIXELES_POR_DOBLE * Math.log2(ESCALA_Y_MIN)
+  return Math.min(max, Math.max(min, dy))
+}
+
 /** El rango de precios después de arrastrar la columna `dy` píxeles (positivo =
  *  hacia abajo = entra más rango), partiendo de [lo, hi]. Centro quieto, con topes. */
 export function rangoEstirado(lo, hi, dy) {
