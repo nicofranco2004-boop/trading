@@ -38480,8 +38480,9 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
     params = data.params or {}
     followup_question = (data.followup_question or "").strip() or None
 
-    # Dispatch via registry (topic → builder + prompt)
-    topic = get_topic(screen)
+    # Dispatch via registry (topic → builder + prompt). Esta puerta no revisa el
+    # texto: los temas que sólo van por el chat (el técnico) acá no existen.
+    topic = get_topic(screen, puerta="analyze")
     if not topic:
         raise HTTPException(
             400,
@@ -42285,7 +42286,8 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     if data.analisis:
         try:
             from ai.registry import get_topic
-            _topico = get_topic(data.analisis.screen)
+            # El chat revisa el tema técnico (_corregir_lectura_tecnica): es su puerta.
+            _topico = get_topic(data.analisis.screen, puerta="chat")
             if _topico:
                 _pconn = get_db()
                 try:

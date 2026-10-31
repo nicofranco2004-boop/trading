@@ -123,11 +123,34 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
 }
 
 
-def get_topic(screen: str) -> Tuple[Callable, Callable] | None:
-    """Devuelve (builder, prompt) o None si el topic no existe."""
+# Los temas que sólo se contestan en el chat. El técnico («¿cómo viene GGAL?» y
+# sus preguntas para seguir) pasa SIEMPRE por la revisión del chat
+# (main._corregir_lectura_tecnica → ai/lectura_tecnica_chat.problemas: jerga,
+# certezas, consejos de operar, números inventados), que se corrige una vez y,
+# si insiste, no se publica. /api/ai/analyze devuelve el texto del modelo tal
+# cual: por ahí un «comprá ahora» llegaba entero (auditoría final E1, 31/10).
+# Ninguna pantalla lo pedía por ahí (el botón de la ficha abre el chat), así que
+# la puerta se cierra en vez de duplicar la revisión con otra forma de texto.
+SOLO_EN_EL_CHAT = ("tecnico",)
+
+
+def solo_en_el_chat(screen: str) -> bool:
+    """¿Este tema se contesta sólo en el chat (con su revisión)? 'tecnico' y
+    cualquier 'tecnico.*'."""
+    return (screen or "").strip().lower().split(".")[0] in SOLO_EN_EL_CHAT
+
+
+def get_topic(screen: str, puerta: str = "analyze") -> Tuple[Callable, Callable] | None:
+    """Devuelve (builder, prompt) o None si el topic no existe. `puerta`:
+    'analyze' (/api/ai/analyze, que no revisa: ahí no existen los temas de
+    `SOLO_EN_EL_CHAT`) o 'chat' (el ✦ del chat, que revisa). El default es la
+    puerta que NO revisa: una puerta nueva que se olvide de decirlo no recibe
+    el tema técnico."""
+    if puerta != "chat" and solo_en_el_chat(screen):
+        return None
     return REGISTRY.get(screen.strip().lower())
 
 
-def list_topics() -> list[str]:
-    """Lista todos los topics registrados — útil para validación + docs."""
-    return sorted(REGISTRY.keys())
+def list_topics(puerta: str = "analyze") -> list[str]:
+    """Los topics que se pueden pedir por esa puerta — útil para validación + docs."""
+    return sorted(k for k in REGISTRY if puerta == "chat" or not solo_en_el_chat(k))
