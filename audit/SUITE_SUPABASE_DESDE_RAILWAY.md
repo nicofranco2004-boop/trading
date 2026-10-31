@@ -1,5 +1,9 @@
 # Correr la suite contra el Supabase nuevo, desde cerca de él
 
+> ⚠️ **31/10: Railway IGNORÓ `railway.suite.toml`** (armó con Railpack, corrió `start.sh` en bucle).
+> Lo que anda: variable del servicio `RAILWAY_DOCKERFILE_PATH=Dockerfile.suite`, ruta de
+> Config-as-code vacía, y **Restart Policy = Never** puesto a mano en Settings → Deploy.
+
 > 31/10/2026. Preparado, **no ejecutado**: no se creó ningún servicio ni se subió nada.
 
 ## Por qué no desde la Mac
