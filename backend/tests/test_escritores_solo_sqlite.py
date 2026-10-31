@@ -172,8 +172,9 @@ class EscritoresSoloSqliteTest(unittest.TestCase):
         with _m.patch.object(backup_db, "dump_sqlite_consistent",
                              side_effect=AssertionError("copió el SQLite con Postgres")), \
                 _m.patch.object(backup_db, "dump_postgres",
-                                side_effect=backup_db.BackupFallido("sin pg_dump")):
-            stats = backup_db.run_backup(db_path=__file__, dsn="dbname=x")
+                                side_effect=backup_db.BackupFallido("sin pg_dump")), \
+                _m.patch.dict(os.environ, {"DATABASE_URL": "dbname=x"}):
+            stats = backup_db.run_backup(db_path=__file__)
         self.assertEqual(stats["motor"], "postgres")
         self.assertTrue(any("sin pg_dump" in e for e in stats["errors"]), stats["errors"])
 

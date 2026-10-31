@@ -63,7 +63,10 @@ class ElBackupDePostgres(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        env = {"BACKUP_LOCAL_DIR": self.tmp.name, "BACKUP_PG_BIN": BIN}
+        # `run_backup` mira DATABASE_URL, como la app. Acá apunta a la base de este
+        # módulo (el conftest la guarda en `main.DATABASE_URL`, no en el entorno).
+        env = {"BACKUP_LOCAL_DIR": self.tmp.name, "BACKUP_PG_BIN": BIN,
+               "DATABASE_URL": main.DATABASE_URL}
         for k in ("BACKUP_S3_BUCKET", "BACKUP_S3_ACCESS_KEY", "BACKUP_S3_SECRET_KEY"):
             env[k] = ""
         p = mock.patch.dict(os.environ, env)
@@ -108,7 +111,7 @@ class ElBackupDePostgres(unittest.TestCase):
                          "con Postgres copió el SQLite: es una base congelada")
 
     def test_la_recuperacion_trae_las_mismas_filas_en_cada_tabla(self):
-        stats = backup_db.run_backup(dsn=main.DATABASE_URL)
+        stats = backup_db.run_backup()
         self.assertEqual(stats["errors"], [])
         base = f"restaurar_{os.getpid()}_{uuid.uuid4().hex[:6]}"
         adm = pgsesion.conectar(_con_base(main.DATABASE_URL, "postgres"), autocommit=True)
@@ -152,7 +155,7 @@ class ElBackupDePostgres(unittest.TestCase):
                 f.write("#!/bin/sh\necho 'pg_dump (PostgreSQL) 9.6.1'\n")
             os.chmod(ruta, 0o755)
         with mock.patch.dict(os.environ, {"BACKUP_PG_BIN": falsa}):
-            stats = backup_db.run_backup(dsn=main.DATABASE_URL)
+            stats = backup_db.run_backup()
         self.assertTrue(any("hay que subir la versión" in e for e in stats["errors"]),
                         stats["errors"])
 
@@ -163,11 +166,32 @@ class ElBackupDePostgres(unittest.TestCase):
         try:
             dsn = _con_base(main.DATABASE_URL, re.search(r"dbname=(\S+)", main.DATABASE_URL).group(1))
             dsn += f" options='-c search_path={esquema}'"
-            stats = backup_db.run_backup(dsn=dsn)
+            with mock.patch.dict(os.environ, {"DATABASE_URL": dsn}):
+                stats = backup_db.run_backup()
         finally:
             adm.execute(f'DROP SCHEMA "{esquema}" CASCADE')
             adm.close()
         self.assertTrue(any("volcado vacío" in e for e in stats["errors"]), stats["errors"])
+
+
+class ElMotorNoSeApagaPorNoPasarlo(unittest.TestCase):
+    """`run_backup` decide el motor mirando DATABASE_URL, como la app: llamarlo
+    sin nada con Postgres puesto NO copia el SQLite (y si no hay pg_dump, falla
+    en vez de caer al archivo congelado)."""
+
+    def test_con_database_url_y_sin_argumentos_vuelca_postgres(self):
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(os.environ, {"DATABASE_URL": " dbname=no_existe ",
+                                             "BACKUP_LOCAL_DIR": d,
+                                             "BACKUP_PG_BIN": os.path.join(d, "vacio")}), \
+                mock.patch.object(backup_db, "dump_sqlite_consistent",
+                                  side_effect=AssertionError("copió el SQLite con Postgres")):
+            db = os.path.join(d, "trading.db")
+            sqlite3.connect(db).close()
+            stats = backup_db.run_backup(db_path=db)
+        self.assertEqual(stats["motor"], "postgres")
+        self.assertTrue(any("pg_dump/pg_restore no están instalados" in e
+                            for e in stats["errors"]), stats["errors"])
 
 
 class UnSQLiteCongeladoNoEsOK(unittest.TestCase):
@@ -175,7 +199,7 @@ class UnSQLiteCongeladoNoEsOK(unittest.TestCase):
     def test_un_sqlite_que_no_cambia_hace_dias_no_es_ok(self):
         with tempfile.TemporaryDirectory() as d, \
                 mock.patch.dict(os.environ, {"BACKUP_LOCAL_DIR": os.path.join(d, "b"),
-                                             "BACKUP_S3_BUCKET": ""}):
+                                             "BACKUP_S3_BUCKET": "", "DATABASE_URL": ""}):
             db = os.path.join(d, "trading.db")
             c = sqlite3.connect(db)
             c.execute("CREATE TABLE users (id INTEGER)")
