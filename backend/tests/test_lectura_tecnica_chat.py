@@ -242,7 +242,39 @@ class LecturaTecnicaChatTest(unittest.TestCase):
                 # El modelo ve lo que escribió para corregir ESE texto.
                 self.assertEqual(claude.pedidos[-1]["messages"][-2]["content"], CON_JERGA)
                 if stream:
-                    self.assertIn("reset", [f.get("t") for f in frames], "lo que estaba en pantalla se borra")
+                    # En vivo, el borrador nunca se escribió (ver el test «en_vivo»).
+                    self.assertNotIn(CON_JERGA, "".join(f.get("d", "") for f in frames if f.get("t") == "delta"))
+
+    def test_en_vivo_el_borrador_sin_revisar_nunca_llega_a_la_pantalla(self):
+        """Auditoría final B3 (31/10): con el chat en vivo, el borrador se
+        escribía en pantalla mientras llegaba y recién después de la revisión se
+        borraba (`reset`): un consejo o una certeza se leían varios segundos. En
+        un turno de lectura técnica no se manda texto hasta que pasa la revisión:
+        la pantalla sigue en sus pasos («Armando la respuesta…») y llega la
+        respuesta ya revisada. Vale para la herramienta y para el botón."""
+        casos = [("herramienta", dict(), ClaudeDelChat([CON_CONSEJO, BUENO])),
+                 ("botón", dict(analisis={"screen": "tecnico", "params": {"asset": "MSFT", "moneda": "usd"}}),
+                  ClaudeDelChat([CON_CERTEZA, BUENO], herramienta=None)),
+                 ("insiste", dict(), ClaudeDelChat([CON_JERGA, CON_CERTEZA]))]
+        for nombre, extra, claude in casos:
+            with self.subTest(caso=nombre):
+                texto, frames = self._chat(claude, stream=True, **extra)
+                todo = "".join(f.get("d", "") for f in frames if f.get("t") == "delta")
+                voces = " ".join(f["voz"]["text"] for f in frames if f.get("t") == "voz")
+                for borrador in (CON_CONSEJO, CON_CERTEZA, CON_JERGA):
+                    self.assertNotIn(borrador, todo, "el borrador no se escribe en pantalla")
+                    self.assertNotIn(borrador, voces)
+                self.assertEqual(ltc.problemas(todo), [], todo)
+                self.assertEqual(texto, ltc.TEXTO_SIN_LECTURA if nombre == "insiste" else BUENO)
+                tipos = [f.get("t") for f in frames]
+                self.assertEqual(tipos[-1], "done")
+                # Mientras se revisa, la pantalla no queda muda: ya mostró sus pasos.
+                self.assertIn("paso", tipos[:tipos.index("delta")])
+        # Una respuesta que estaba bien llega igual, entera, sin pedir de nuevo.
+        claude = ClaudeDelChat([BUENO])
+        texto, frames = self._chat(claude, stream=True)
+        self.assertEqual(texto, BUENO)
+        self.assertEqual(len(claude.pedidos), 2)
 
     def test_certeza_y_consejo_se_piden_de_nuevo(self):
         for malo in (CON_CERTEZA, CON_CONSEJO):
@@ -352,6 +384,36 @@ class LecturaTecnicaChatTest(unittest.TestCase):
                 self.assertIn(pregunta, primer)
                 self.assertIn("para_el_titular", primer)
 
+
+    def test_el_tema_tecnico_no_sale_por_el_analisis_sin_revisar(self):
+        """Auditoría final E1 (31/10): el tema técnico estaba registrado también
+        para POST /api/ai/analyze, que devuelve lo que escribió el modelo tal
+        cual, sin la revisión del chat (un consejo de compra llegaba entero). La
+        única puerta del tema técnico es el chat, que lo revisa siempre."""
+        consejo = "MSFT va a subir: comprá ahora, es un buen momento para entrar."
+        llamadas = []
+
+        def analyze(**kw):
+            llamadas.append(kw)
+            return SimpleNamespace(
+                output=SimpleNamespace(model_dump=lambda: {"tldr": consejo, "sections": [], "follow_ups": []}),
+                model="claude-haiku", input_tokens=1, output_tokens=1, cache_creation_input_tokens=0,
+                cache_read_input_tokens=0, cost_usd_cents=0)
+
+        with mock.patch("ai.llm.is_configured", lambda: True), mock.patch("ai.llm.analyze", analyze):
+            for screen in ("tecnico", "tecnico.tendencia", "tecnico.fuerza", "tecnico.que_se_mira", " Tecnico "):
+                with self.subTest(screen=screen):
+                    r = self.client.post("/api/ai/analyze", headers=self.h,
+                                         json={"screen": screen, "params": {"asset": "MSFT"}})
+                    self.assertEqual(r.status_code, 400, r.text)
+                    self.assertNotIn(consejo, r.text)
+        self.assertEqual(llamadas, [], "no se le pregunta a la IA por una puerta que no revisa")
+        topicos = self.client.get("/api/ai/topics").json()["topics"]
+        self.assertFalse([t for t in topicos if t.startswith("tecnico")], topicos)
+        # El chat sigue teniendo el tema (el botón de la ficha y sus preguntas).
+        texto, _ = self._chat(ClaudeDelChat([BUENO], herramienta=None),
+                              analisis={"screen": "tecnico.fuerza", "params": {"asset": "MSFT", "moneda": "usd"}})
+        self.assertEqual(texto, BUENO)
 
     def test_todos_los_planes_con_el_limite_de_su_plan(self):
         """Nico (30/10): «todos los planes», y Plus «con el límite que tiene el

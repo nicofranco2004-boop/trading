@@ -27,7 +27,6 @@ from ai.voz import VOZ
 # un deploy sin OPENAI_API_KEY arranca igual (el endpoint responde 503).
 from ai import tts
 from ai import preguntas as _preguntas
-from ai import lectura_tecnica_chat as _lectura_tecnica_chat
 from pricing import letras as _letras_mod
 from collections import defaultdict
 
@@ -11981,6 +11980,7 @@ def get_tecnico(request: Request, asset: str, moneda: str = "usd", local: int = 
 
 
 @app.post("/api/tecnico/{asset}/resumen")
+@no_escribe_en_el_cliente
 def post_tecnico_resumen(request: Request, asset: str, moneda: str = "usd", local: int = 0,
                          uid: int = Depends(get_effective_user)):
     """El botón «✦ Resumen de Mervall-E» de la ficha: genera el resumen de esta
@@ -11988,7 +11988,13 @@ def post_tecnico_resumen(request: Request, asset: str, moneda: str = "usd", loca
     Los datos los arma el servidor con las mismas velas del gráfico; no viaja
     nada del usuario. No descuenta el cupo de IA. Las reglas (candado, topes,
     revisión del texto): ai/resumen_tecnico.py. Lee la serie entera como la
-    ficha: el mismo freno (E1; al juntar el resumen, 30/10)."""
+    ficha: el mismo freno (E1; al juntar el resumen, 30/10).
+
+    El tope por persona es de la que PIDE (`_auth_uid_de`: el asesor mirando a
+    un cliente gasta el suyo, como en el freno), y no escribe nada en la cuenta
+    que se mira (la fila es de todos, a nombre del que pidió): una asesora de
+    sólo lectura también lo puede pedir (`no_escribe_en_el_cliente`; auditoría
+    final E3, 31/10)."""
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
@@ -11998,7 +12004,7 @@ def post_tecnico_resumen(request: Request, asset: str, moneda: str = "usd", loca
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         ficha = tecnico.para_la_ficha(conn, sym, moneda, bool(local))
     base = sym[:-3] if sym.endswith(".BA") else sym
-    return resumen_tecnico.pedir(db_abierta, ficha, asset_name(base) or base, uid)
+    return resumen_tecnico.pedir(db_abierta, ficha, asset_name(base) or base, _auth_uid_de(request, uid))
 
 
 def _velas_a_pedido(conn, pedidos: list, uid) -> dict:
@@ -38538,8 +38544,9 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
     params = data.params or {}
     followup_question = (data.followup_question or "").strip() or None
 
-    # Dispatch via registry (topic → builder + prompt)
-    topic = get_topic(screen)
+    # Dispatch via registry (topic → builder + prompt). Esta puerta no revisa el
+    # texto: los temas que sólo van por el chat (el técnico) acá no existen.
+    topic = get_topic(screen, puerta="analyze")
     if not topic:
         raise HTTPException(
             400,
@@ -42343,7 +42350,8 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     if data.analisis:
         try:
             from ai.registry import get_topic
-            _topico = get_topic(data.analisis.screen)
+            # El chat revisa el tema técnico (_corregir_lectura_tecnica): es su puerta.
+            _topico = get_topic(data.analisis.screen, puerta="chat")
             if _topico:
                 _pconn = get_db()
                 try:
@@ -42734,21 +42742,36 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                                              ensure_ascii=False) + "\n\n")
             tcalls = 0
 
+            def _retener():
+                """¿El texto de esta vuelta se guarda en vez de escribirse? En un
+                turno de lectura técnica, sí: el borrador no se muestra hasta pasar
+                la revisión (auditoría final B3, 31/10: escrito en vivo y borrado
+                después, un consejo se leía varios segundos). Mientras tanto la
+                pantalla sigue en sus pasos («Armando la respuesta…»)."""
+                return "lectura_tecnica" in _turn_flags
+
+            def _mostrar(chunk):
+                """Un pedazo de la respuesta: a la pantalla, o guardado si se retiene."""
+                state["synth_text"] += chunk
+                if _retener():
+                    return None
+                state["synth_deltas"] += 1
+                return "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
+
             def _revisar_en_vivo(resp, mt):
                 """La revisión de la lectura técnica (_corregir_lectura_tecnica)
-                con la respuesta ya escrita en pantalla: si hay que cambiarla, se
-                borra (`reset`) y llega la corregida entera."""
-                if "lectura_tecnica" not in _turn_flags:
+                ANTES de que la respuesta llegue a la pantalla: se manda entera la
+                que pasó (la de la IA o la corregida, o el texto fijo si insistió)."""
+                if not _retener():
                     return
                 _txt = state["synth_text"][voz_adelantada["desde"]:]
                 _ok = _corregir_lectura_tecnica(client, _txt, messages_loop, last_user_msg,
                                                 chat_model=chat_model, max_tokens=mt, system_text=system_text, quiere_voz=_quiere_voz, chat_tools=chat_tools, costo=_costo, tier=tier, uid=uid)
-                if _ok is None:
-                    return
-                yield "data: " + json.dumps({"t": "reset"}) + "\n\n"
-                state["synth_text"] = _ok
-                voz_adelantada["desde"] = 0
-                yield "data: " + json.dumps({"t": "delta", "d": _ok}, ensure_ascii=False) + "\n\n"
+                if _ok is not None:
+                    state["synth_text"] = _txt = _ok
+                    voz_adelantada["desde"] = 0
+                state["synth_deltas"] += 1
+                yield "data: " + json.dumps({"t": "delta", "d": _txt}, ensure_ascii=False) + "\n\n"
 
             # B-9 (review): contabilidad del slot reservado.
             # - settled: done/error emitido → la cuota quedó resuelta (cobrada
@@ -42806,19 +42829,18 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                                     yield _paso_frame(_PASO_PENSANDO)
                                 continue
                             if chunk:
-                                state["synth_deltas"] += 1
-                                state["synth_text"] += chunk
-                                yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
+                                _fr = _mostrar(chunk)
+                                if _fr:
+                                    yield _fr
                                 # Apenas el campo "voz" cierra, se manda
                                 # firmado — sin esperar a que el modelo termine
                                 # de escribir las tarjetas. Son los ~5 segundos
                                 # de silencio que medimos (ver _voz_temprana).
-                                if _puede_adelantar_voz and not voz_adelantada["ya"]:
+                                # En un turno de lectura técnica no se adelanta:
+                                # es la voz del borrador, sin revisar (va en `done`,
+                                # la de la respuesta que pasó).
+                                if _puede_adelantar_voz and not voz_adelantada["ya"] and not _retener():
                                     _vt = _voz_temprana(state["synth_text"][voz_adelantada["desde"]:])
-                                    # En un turno de lectura técnica, una voz con jerga no se
-                                    # adelanta: la respuesta se va a pedir de nuevo.
-                                    if _vt and "lectura_tecnica" in _turn_flags and _lectura_tecnica_chat.problemas(_vt, last_user_msg):
-                                        _vt = None
                                     if _vt:
                                         voz_adelantada["ya"] = True
                                         yield ("data: " + json.dumps(
@@ -42928,9 +42950,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         if chunk is _EMPIEZA_A_PENSAR:
                             continue      # ya se anunció «Pensando…» o «Armando…»
                         if chunk:
-                            state["synth_deltas"] += 1
-                            state["synth_text"] += chunk
-                            yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
+                            _fr = _mostrar(chunk)
+                            if _fr:
+                                yield _fr
                     resp = stream.get_final_message()
                 _costo.sumar(resp, "sintesis")
                 if _es_negativa(resp):

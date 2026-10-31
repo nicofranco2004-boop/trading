@@ -127,6 +127,9 @@ class AsesorSoloLecturaTest(unittest.TestCase):
             ("POST", "/api/tecnico/cartera"),
             ("POST", "/api/tecnico/en-fechas"),
             ("POST", "/api/tecnico/lista"),
+            # El resumen de Mervall-E: la fila es de todos, a nombre del que pide
+            # (auditoría final E3, 31/10; se prueba en test_resumen_tecnico).
+            ("POST", "/api/tecnico/{asset}/resumen"),
             ("PUT", "/api/tecnico/{asset}/dibujos"),
         ])
 

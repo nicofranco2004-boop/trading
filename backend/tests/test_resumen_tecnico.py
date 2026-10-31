@@ -410,8 +410,92 @@ class ResumenTest(unittest.TestCase):
             for t in hilos:
                 t.join(30)
         self.assertEqual(len(self.claude.pedidos), 1, "un solo llamado al modelo")
-        self.assertEqual([r["estado"] for r in resultados], ["listo", "listo"])
-        self.assertEqual({r["texto"] for r in resultados}, {BUENO})
+        # El segundo no se queda esperando (auditoría final E2): «generando» al
+        # instante, y la pantalla vuelve a preguntar.
+        self.assertEqual(sorted(r["estado"] for r in resultados), ["generando", "listo"])
+        self.assertEqual({r.get("texto") for r in resultados}, {BUENO, None})
+        self.assertEqual(self._pedir(h=self.h2)["texto"], BUENO, "al volver a preguntar, está")
+        self.assertEqual(len(self.claude.pedidos), 1)
+
+    def test_mientras_uno_genera_los_demas_no_esperan_fuera_del_freno(self):
+        """Auditoría final E2 (31/10): el segundo pedido esperaba hasta 30 s a que
+        el primero terminara, fuera del freno de la ficha: una sola cuenta tuvo
+        30 pedidos esperando a la vez. Ahora el que encuentra la fila tomada
+        contesta «generando» en el momento."""
+        self.claude.demora = 4.0
+        primero = []
+        t = threading.Thread(target=lambda: primero.append(self._pedir(client=TestClient(main.app))))
+        t.start()
+        self.assertTrue(self.claude.entro.wait(10))
+        for _ in range(8):
+            t0 = time.monotonic()
+            r = self._pedir()
+            self.assertEqual(r["estado"], "generando")
+            self.assertLess(time.monotonic() - t0, 2.0, "contesta al instante, no espera al otro")
+        t.join(30)
+        self.assertEqual(primero[0]["estado"], "listo")
+        self.assertEqual(self._pedir()["texto"], BUENO)
+        self.assertEqual(len(self.claude.pedidos), 1, "un solo llamado al modelo")
+
+    def _dos_activos_mas(self):
+        for asset, base in (("KO", 60), ("PEP", 150)):
+            self._posicion("Schwab", "USD", asset)
+            self.yahoo.precios[asset] = lambda i, d, b=base: b + i * 0.01
+        main._run_velas_diarias_job()
+
+    def test_el_tope_por_persona_toma_el_turno_antes_de_contar(self):
+        """Auditoría final E3 (31/10): con tope 1, tres pedidos juntos de la misma
+        persona (activos distintos) contaban todos «0» y generaban dos o tres. El
+        turno de la cuenta (`main._tomar_turno`, el arreglo E5 de los demás
+        topes) se toma antes de contar: uno genera, los otros ven el tope."""
+        self._dos_activos_mas()
+        barrera = threading.Barrier(3, timeout=10)
+        original = resumen_tecnico._vela_vieja
+
+        def vieja(f):
+            try:
+                barrera.wait()
+            except threading.BrokenBarrierError:
+                pass
+            return original(f)
+
+        res = []
+        with mock.patch.object(resumen_tecnico, "TOPE_POR_PERSONA", 1), \
+                mock.patch.object(resumen_tecnico, "_vela_vieja", vieja):
+            hilos = [threading.Thread(target=lambda a=a: res.append(self._pedir(a, client=TestClient(main.app))["estado"]))
+                     for a in ("MSFT", "KO", "PEP")]
+            for h in hilos:
+                h.start()
+            for h in hilos:
+                h.join(30)
+        self.assertEqual(sorted(res), ["listo", "tope_persona", "tope_persona"])
+        self.assertEqual(len(self.claude.pedidos), 1)
+
+    def test_el_asesor_gasta_su_tope_y_con_solo_lectura_puede_pedirlo(self):
+        """Auditoría final E3: el tope contaba la cuenta que se mira, no a quien
+        pide: el asesor gastaba el cupo de su cliente (y esquivaba el suyo). Y un
+        asesor de sólo lectura recibía 403: el resumen no escribe nada en la
+        cuenta del cliente (se guarda para todos, a nombre del que lo pidió)."""
+        self._dos_activos_mas()
+        with main.db_abierta() as conn:
+            ase = conn.execute("INSERT INTO users (email, password_hash, approved, email_verified, tier) "
+                               "VALUES (?, 'x', 1, 1, 'advisor')", (f"res-ase-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+            conn.execute("INSERT INTO advisor_clients (advisor_uid, client_uid, link_type, permission, status, label) "
+                         "VALUES (?, ?, 'linked', 'read', 'active', 'C')", (ase, self.uid2))
+            conn.commit()
+        h_ase = {"Authorization": f"Bearer {main.create_token(ase)}"}
+        mirando = {**h_ase, "X-Rendi-Client-Id": str(self.uid2)}
+        with mock.patch.object(resumen_tecnico, "TOPE_POR_PERSONA", 1):
+            r = self.client.post("/api/tecnico/MSFT/resumen?moneda=usd", headers=mirando)
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual(r.json()["estado"], "listo")
+            self.assertEqual(self._fila("MSFT")["pedido_por"], ase, "a nombre del asesor, no del cliente")
+            # El asesor ya gastó el suyo, mire lo que mire.
+            self.assertEqual(self._pedir("KO", h=h_ase)["estado"], "tope_persona")
+            self.assertEqual(self._pedir("KO", h=mirando)["estado"], "tope_persona")
+            # El cliente tiene el suyo entero.
+            self.assertEqual(self._pedir("PEP", h=self.h2)["estado"], "listo")
+        self.assertEqual(len(self.claude.pedidos), 2)
 
     def test_el_que_genera_se_colgo_y_otro_lo_toma(self):
         with main.db_abierta() as conn:
