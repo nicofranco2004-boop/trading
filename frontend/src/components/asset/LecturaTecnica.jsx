@@ -59,7 +59,7 @@ import Banderitas, { CartelDeNotas, banderitaEn, banderitasEnVista, esClaveDeGru
 import { BotonMervalle, PanelMervalle, useResumenMervalle } from './ResumenMervalle'
 import { BotonAvisame, BotonAvisameLinea, alertaDeLinea, useAvisosTecnicos, senalDeTarjeta } from '../alerts/AvisameTecnico'
 import { api, getClientContext } from '../../utils/api'
-import { factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecio, rangoCorrido, rangoEstirado } from '../../utils/ejesGrafico'
+import { factorDeFechas, fechaDeLaMira, marcasDeFechas, marcasDePrecio, empezarAMano, correrAMano, estirarAMano } from '../../utils/ejesGrafico'
 import { PRIORIDAD, taparRotulos } from '../../utils/rotulos'
 import { ANCHO_DEL_GRAFICO, archivoDelGrafico, specDelGrafico } from '../../utils/imagenGrafico'
 import {
@@ -525,7 +525,8 @@ export default function LecturaTecnica({
   // Arriba de los return de abajo: un hook después de un return rompe la ficha.
   const avisos = useAvisosTecnicos()
   // La escala de precios del gráfico para la imagen de «Compartir»: la de la
-  // pantalla (también la estirada a mano), salvo que la estire tu precio.
+  // pantalla sin estirarse hasta tu precio, también la estirada a mano (que
+  // arranca de esa, no de la pantalla: ejesGrafico.empezarAMano).
   const escala = useRef(null)
   // Lo que le pasó al aviso de la línea que moviste o borraste (Nico, 29/10):
   // { texto, deshacer, tono } o null. Lo limpia el próximo cambio.
@@ -1863,7 +1864,8 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   }, [])
   // Los ejes se arrastran como en TradingView (utils/ejesGrafico.js): la
   // columna de precios estira el gráfico en vertical y deja el precio "a mano"
-  // (`precioMano` = { lo, hi } fijo; null = automático), y la fila de fechas
+  // (`precioMano` = { lo, hi, comp } fijo, la pantalla y la imagen de «Compartir»
+  // (ejesGrafico.empezarAMano); null = automático), y la fila de fechas
   // acerca o aleja. Con el precio a mano, arrastrar el gráfico también lo mueve
   // para arriba y para abajo. Doble click o «Automático»: vuelve a automático;
   // otro rango, moneda o tipo de gráfico (`reinicioPrecio`) también.
@@ -1975,7 +1977,9 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
     let compartible = conAire(sinTuPrecio)
     if (precioMano) {
       lo = precioMano.lo; hi = precioMano.hi
-      compartible = [lo, hi]
+      // La imagen, con SU rango a mano: arrancó de `compartible`, no de la
+      // pantalla estirada hasta tu precio (auditoría D4).
+      compartible = [precioMano.comp.lo, precioMano.comp.hi]
       fuera = promedio == null ? null : promedio < lo ? 'abajo' : promedio > hi ? 'arriba' : null
     }
     const y = (val) => H - ((val - lo) / (hi - lo)) * H
@@ -2363,7 +2367,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
               const fy = (e.clientY - a.y) / r.height
               if ((precioMano || a.vertical || Math.abs(e.clientY - a.y0) >= 12) && Math.abs(fy) >= 0.005) {
                 a.vertical = true
-                setPrecioMano(rangoCorrido(min, max, fy)); a.y = e.clientY
+                setPrecioMano(correrAMano(precioMano || empezarAMano([min, max], compartible), fy)); a.y = e.clientY
               }
             }
             mover(e.clientX)
@@ -2642,8 +2646,8 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             arrastra para estirar el gráfico en vertical (ver ejesGrafico.js). */}
         <div className="absolute inset-y-0 right-0 w-[68px] cursor-ns-resize touch-none select-none"
           title="Arrastrá hacia arriba o hacia abajo para estirar o achicar el gráfico. Doble click: vuelve a la escala automática."
-          onPointerDown={e => { e.currentTarget.setPointerCapture?.(e.pointerId); ejeY.current = { y: e.clientY, lo: min, hi: max } }}
-          onPointerMove={e => { const t = ejeY.current; if (t) setPrecioMano(rangoEstirado(t.lo, t.hi, e.clientY - t.y)) }}
+          onPointerDown={e => { e.currentTarget.setPointerCapture?.(e.pointerId); ejeY.current = { y: e.clientY, ...(precioMano || empezarAMano([min, max], compartible)) } }}
+          onPointerMove={e => { const t = ejeY.current; if (t) setPrecioMano(estirarAMano(t, e.clientY - t.y)) }}
           onPointerUp={() => { ejeY.current = null }} onPointerCancel={() => { ejeY.current = null }}
           onDoubleClick={() => setPrecioMano(null)}>
           {ticks.map((t, k) => !cerca(t) && (
