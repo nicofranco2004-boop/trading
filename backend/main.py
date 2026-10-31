@@ -44919,6 +44919,31 @@ def _log_config_arranque() -> None:
                 "  ⚠️ OPENAI_API_KEY y VOZ_SIGNING_KEY son LA MISMA — no debería" if _misma else "")
 
 
+def _imagen_del_proceso() -> str:
+    """«Python 3.11.9 · pg_dump 17.2» de la máquina donde corre la app.
+
+    Existe para comprobar MIRANDO el registro que la imagen salió como se
+    esperaba: el pasaje de Nixpacks al `Dockerfile` (Railway deja de leer
+    `railway.toml` el 2026-12-01, ver audit/RAILWAY_SIN_CONFIG_AS_CODE.md) cambia
+    cómo se arma, y lo que no tiene que cambiar es esto. Sin `pg_dump`, el backup
+    nocturno con Postgres falla (`backup_db.dump_postgres`): mejor saberlo al
+    arrancar que a las 03:45."""
+    import platform
+    import shutil as _sh
+    import subprocess as _sp
+    pg = "FALTA"
+    exe = _sh.which("pg_dump")
+    if exe:
+        try:
+            salida = _sp.run([exe, "--version"], capture_output=True, text=True, timeout=5).stdout
+            pg = salida.strip().rsplit(" ", 1)[-1] or "?"
+        except Exception as ex:
+            pg = f"? ({type(ex).__name__})"
+    return f"Python {platform.python_version()} · pg_dump {pg}"
+
+
+# WARNING y no INFO: corre antes del basicConfig (ver `reparaciones_de_arranque`).
+log.warning("imagen: %s", _imagen_del_proceso())
 _log_config_arranque()
 _migrar_credenciales_a_credentials_key()
 
