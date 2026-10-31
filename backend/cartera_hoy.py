@@ -36,6 +36,13 @@ MOTIVOS = {
 }
 
 
+# Por qué un activo no tiene «Contra tu promedio» (lo que dice el mapa en gris).
+MOTIVOS_PROMEDIO = {
+    "sin_precio": "no conseguimos su precio de hoy",
+    "precio_dudoso": "su precio de hoy no cuadra; preferimos no inventar cuánto vale",
+    "sin_costo": "no tiene cargado lo que pagaste",
+}
+
 # Una compra de HOY se hizo a un precio de hoy: su costo tiene que caer entre el
 # cierre anterior y el precio de ahora, con este margen para lo que el precio
 # anduvo dentro de la rueda, la comisión y el dólar del día de la compra.
@@ -234,29 +241,45 @@ def por_activo(lotes: list, hoy: str) -> list:
     `armar` (`main._lotes_del_dia`). Un activo es (asset, local) —la clave de
     `senales_semana.cartera`, la de los cuadritos—: GGAL de BYMA y el ADR no se
     suman. → [{asset, local, valor, hoy: {pct, usd} | None, dia_txt,
-    promedio_pct | None}]
+    promedio_pct_usd, promedio_pct_ars, promedio_sin_dato}]
 
       · `hoy`: el movimiento del precio en la rueda de HOY (la regla del archivo:
         lo que no es de hoy no se llama hoy). Si su última rueda es otra, None y
         `dia_txt` dice cuál («ayer», «el viernes 3/10»); sin medir, `dia_txt` None.
-      · `promedio_pct`: lo que vale contra lo que pagaste (`costo` del lote, con
-        el dólar de compra, como la pantalla), en %. Sin costo, None.
+      · «Contra tu promedio», lo que vale contra lo que pagaste, en %, en las DOS
+        monedas (la pantalla elige con la regla de `noRealizadoEnVista`):
+          `promedio_pct_usd` — en dólares, el costo al dólar de la compra (`costo`);
+          `promedio_pct_ars` — en pesos: el costo de un lote en pesos son los
+            pesos que se pagaron (`costo_hoy`, al dólar de hoy, el mismo dólar
+            del valor); un lote en dólares, a ese dólar también. Es también el %
+            en dólares de quien elige «costo al dólar de hoy».
+        Sin precio (el valor sería el costo: «0 %» que no pasó) o sin costo, los
+        dos None y `promedio_sin_dato` dice por qué. Mejor gris que inventado.
     El efectivo no va: no es un activo del mapa."""
     grupos: dict = {}
     for l in lotes:
         if l.get("motivo") == "efectivo" or not l.get("asset"):
             continue
         k = (str(l["asset"]).upper(), bool(l.get("local")))
-        g = grupos.setdefault(k, {"valor": 0.0, "costo": 0.0, "sin_costo": False,
+        g = grupos.setdefault(k, {"valor": 0.0, "costo": 0.0, "costo_hoy": 0.0, "sin_dato": None,
                                   "hoy_v": 0.0, "hoy_vp": 0.0, "medido_hoy": False,
                                   "todos_hoy": True, "otra_rueda": None})
         v = float(l.get("valor") or 0)
         g["valor"] += v
-        c = l.get("costo")
-        if c is None or c <= 0:
-            g["sin_costo"] = True
+        c, ch = l.get("costo"), l.get("costo_hoy")
+        # El primer motivo que impide el % es el que se dice (sin precio antes que
+        # sin costo: es lo que el usuario puede ver en la Cartera).
+        if l.get("sin_precio") or l.get("motivo") == "sin_precio":
+            g["sin_dato"] = g["sin_dato"] or "sin_precio"
+        elif (l.get("motivo") == "precio_dudoso" and c is not None
+              and abs(v - float(c)) <= 0.01):
+            # El control de precios de la valuación lo llevó al costo.
+            g["sin_dato"] = g["sin_dato"] or "precio_dudoso"
+        if c is None or c <= 0 or ch is None or ch <= 0:
+            g["sin_dato"] = g["sin_dato"] or "sin_costo"
         else:
             g["costo"] += float(c)
+            g["costo_hoy"] += float(ch)
         vp = l.get("valor_previo")
         if vp is not None and vp > 0 and l.get("es_hoy"):
             g["medido_hoy"] = True
@@ -275,10 +298,13 @@ def por_activo(lotes: list, hoy: str) -> list:
             usd = g["hoy_v"] - g["hoy_vp"]
             hoy_d = {"pct": round(usd / g["hoy_vp"] * 100, 2), "usd": round(usd, 2)}
         dia = "hoy" if hoy_d else (_no_hoy(dia_txt(g["otra_rueda"], hoy)) if g["otra_rueda"] else None)
-        promedio = (round((g["valor"] - g["costo"]) / g["costo"] * 100, 2)
-                    if g["costo"] > 0 and not g["sin_costo"] else None)
+        sd = g["sin_dato"]
+        p_usd = None if sd else round((g["valor"] - g["costo"]) / g["costo"] * 100, 2)
+        p_ars = None if sd else round((g["valor"] - g["costo_hoy"]) / g["costo_hoy"] * 100, 2)
         out.append({"asset": asset, "local": local, "valor": round(g["valor"], 2),
-                    "hoy": hoy_d, "dia_txt": dia, "promedio_pct": promedio})
+                    "hoy": hoy_d, "dia_txt": dia,
+                    "promedio_pct_usd": p_usd, "promedio_pct_ars": p_ars,
+                    "promedio_sin_dato": MOTIVOS_PROMEDIO[sd] if sd else None})
     return out
 
 

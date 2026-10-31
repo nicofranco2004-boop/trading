@@ -10,8 +10,8 @@ const DEL_DIA = {
   hoy: '2026-10-30',
   cartera: { pct: 0.8, usd: 120, mercados: ['eeuu'] },
   activos: [
-    { asset: 'NVDA', local: false, hoy: { pct: 2, usd: 150 }, dia_txt: 'hoy', promedio_pct: 30 },
-    { asset: 'KO', local: false, hoy: { pct: -1, usd: -40 }, dia_txt: 'hoy', promedio_pct: -5 },
+    { asset: 'NVDA', local: false, hoy: { pct: 2, usd: 150 }, dia_txt: 'hoy', promedio_pct_usd: 30, promedio_pct_ars: 30 },
+    { asset: 'KO', local: false, hoy: { pct: -1, usd: -40 }, dia_txt: 'hoy', promedio_pct_usd: -5, promedio_pct_ars: -5 },
   ],
 }
 let pedidas

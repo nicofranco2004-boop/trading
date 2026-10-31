@@ -51,21 +51,41 @@ export function guardarModo(m) {
 }
 
 /**
- * Los cuadritos con lo del día de cada uno: `delDia.activos` del servidor
- * ([{asset, local, hoy: {pct, usd} | null, dia_txt, promedio_pct}], % en
- * puntos) por la MISMA clave de Tu lista (`clave(asset, local)`: GGAL de BYMA
- * y el ADR son dos). → cada cuadrito con `hoy` ({pct (fracción), usd} | null),
- * `diaTxt` y `promedio` (fracción | null). El efectivo y «y N más» no tienen.
+ * «Contra tu promedio» de un activo en la moneda en que se mira. El servidor
+ * manda los dos % (cartera_hoy.por_activo): `promedio_pct_ars` (en pesos: el
+ * costo en los pesos que se pagaron, que es también la base «al dólar de hoy»)
+ * y `promedio_pct_usd` (en dólares, al dólar de la compra). Se elige con la
+ * regla de `noRealizadoEnVista` (utils/valuation): en pesos, o en dólares con
+ * «costo al dólar de hoy», el de hoy; si no, el de la compra. Como
+ * `pctEnMoneda`: si falta el de esta moneda NO cae al otro (sería un % en
+ * pesos rotulado en dólares) y dice por qué. → { pct (fracción) | null, sinDato }
  */
-export function conElDia(cuadritos = [], delDia = null) {
+export function promedioEnMoneda(a, { currency = 'USD', costBasis = 'purchase' } = {}) {
+  const pct = currency === 'ARS' || costBasis === 'today' ? a?.promedio_pct_ars : a?.promedio_pct_usd
+  if (pct != null) return { pct: pct / 100, sinDato: null }
+  return { pct: null, sinDato: a?.promedio_sin_dato || null }
+}
+
+/**
+ * Los cuadritos con lo del día de cada uno: `delDia.activos` del servidor
+ * ([{asset, local, hoy: {pct, usd} | null, dia_txt, promedio_pct_ars,
+ * promedio_pct_usd, promedio_sin_dato}], % en puntos) por la MISMA clave de Tu
+ * lista (`clave(asset, local)`: GGAL de BYMA y el ADR son dos). → cada cuadrito
+ * con `hoy` ({pct (fracción), usd} | null), `diaTxt`, `promedio` (fracción |
+ * null, en la moneda de `moneda`: {currency, costBasis}) y `promedioSinDato`
+ * (por qué no hay). El efectivo y «y N más» no tienen.
+ */
+export function conElDia(cuadritos = [], delDia = null, moneda = {}) {
   const por = new Map((delDia?.activos || []).map(a => [clave(String(a.asset).toUpperCase(), a.local), a]))
   return cuadritos.map(c => {
     const a = c.clave !== 'efectivo' && c.clave !== 'otros' ? por.get(c.clave) : null
+    const prom = promedioEnMoneda(a, moneda)
     return {
       ...c,
       hoy: a?.hoy ? { pct: a.hoy.pct / 100, usd: a.hoy.usd } : null,
       diaTxt: a?.dia_txt || null,
-      promedio: a?.promedio_pct != null ? a.promedio_pct / 100 : null,
+      promedio: prom.pct,
+      promedioSinDato: prom.sinDato,
     }
   })
 }

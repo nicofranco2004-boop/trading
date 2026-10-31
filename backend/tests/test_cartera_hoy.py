@@ -113,9 +113,11 @@ class ArmarTest(unittest.TestCase):
 class PorActivoTest(unittest.TestCase):
     """Lo del «Mapa de tu cartera», activo por activo, de los MISMOS lotes."""
 
-    def _l(self, asset, valor, previo, es_hoy, local=False, costo=None, rueda=HOY, motivo=None):
+    def _l(self, asset, valor, previo, es_hoy, local=False, costo=None, rueda=HOY, motivo=None,
+           costo_hoy="igual", sin_precio=False):
         l = _lote(asset, valor, previo, "eeuu", rueda if previo else None, es_hoy, motivo=motivo)
-        l.update(local=local, costo=costo)
+        l.update(local=local, costo=costo, costo_hoy=costo if costo_hoy == "igual" else costo_hoy,
+                 sin_precio=sin_precio)
         return l
 
     def test_por_activo_y_lectura_como_los_cuadritos(self):
@@ -131,7 +133,7 @@ class PorActivoTest(unittest.TestCase):
         self.assertEqual(r[("GGAL", False)]["hoy"]["usd"], -10.0)
         self.assertEqual(r[("MSFT", False)]["hoy"]["usd"], 15.0)
         # Contra lo que pagaste: (900 − 600) / 600.
-        self.assertEqual(r[("MSFT", False)]["promedio_pct"], 50.0)
+        self.assertEqual(r[("MSFT", False)]["promedio_pct_usd"], 50.0)
         self.assertEqual(r[("GGAL", True)]["dia_txt"], "hoy")
 
     def test_lo_que_no_es_de_hoy_no_se_llama_hoy(self):
@@ -144,7 +146,7 @@ class PorActivoTest(unittest.TestCase):
         self.assertEqual(aapl["dia_txt"], "ayer")
         self.assertIsNone(xyz["hoy"])
         self.assertIsNone(xyz["dia_txt"])
-        self.assertEqual(xyz["promedio_pct"], round(10 / 90 * 100, 2))
+        self.assertEqual(xyz["promedio_pct_usd"], round(10 / 90 * 100, 2))
 
     def test_un_lote_sin_el_movimiento_de_hoy_no_da_un_porcentaje_a_medias(self):
         r = cartera_hoy.por_activo([
@@ -152,6 +154,43 @@ class PorActivoTest(unittest.TestCase):
             self._l("MSFT", 300, None, False, costo=200, motivo="precio_manual"),
         ], HOY)
         self.assertIsNone(r[0]["hoy"])
+
+    def test_contra_tu_promedio_va_en_pesos_y_en_dolares(self):
+        """A3: un CEDEAR pagado $1.000.000 con el dólar a 800 (US$ 1.250) que hoy
+        vale $1.400.000 con el dólar a 1.400 (US$ 1.000): en pesos ganó 40 %, en
+        dólares (al dólar de la compra) perdió 20 %. Antes viajaba sólo el −20 %,
+        y la pantalla en pesos lo mostraba igual."""
+        r = cartera_hoy.por_activo([
+            self._l("AAPL", 1000, 990, True, costo=1250, costo_hoy=1_000_000 / 1400),
+            self._l("MSFT", 600, 590, True, costo=500),       # en dólares: lo mismo en las dos
+        ], HOY)
+        aapl, msft = r
+        self.assertEqual(aapl["promedio_pct_usd"], -20.0)
+        self.assertEqual(aapl["promedio_pct_ars"], 40.0)
+        self.assertEqual(msft["promedio_pct_usd"], msft["promedio_pct_ars"])
+        self.assertIsNone(aapl["promedio_sin_dato"])
+
+    def test_sin_precio_contra_tu_promedio_es_sin_dato_y_dice_por_que(self):
+        """A5: sin precio la valuación lo deja al costo y «Contra tu promedio»
+        decía 0,0 % (verde-gris de «quedó igual»), algo que no pasó."""
+        r = {a["asset"]: a for a in cartera_hoy.por_activo([
+            self._l("MSFT", 5000, None, False, costo=5000, motivo="sin_precio", sin_precio=True),
+            self._l("FCI:X", 300, None, False, costo=300, motivo="fci", sin_precio=True),
+            self._l("ZZZ", 100, None, False, costo=None, motivo="sin_cierre"),
+            self._l("AAPL", 2000, 1980, True, costo=1500),
+        ], HOY)}
+        for a in ("MSFT", "FCI:X"):
+            self.assertIsNone(r[a]["promedio_pct_usd"], a)
+            self.assertIsNone(r[a]["promedio_pct_ars"], a)
+            self.assertEqual(r[a]["promedio_sin_dato"], cartera_hoy.MOTIVOS_PROMEDIO["sin_precio"])
+        self.assertEqual(r["ZZZ"]["promedio_sin_dato"], cartera_hoy.MOTIVOS_PROMEDIO["sin_costo"])
+        self.assertIsNone(r["AAPL"]["promedio_sin_dato"])
+        # Un lote sin precio en un activo con otro que sí: sin dato (no uno a medias).
+        mixto = cartera_hoy.por_activo([
+            self._l("MSFT", 6000, 5900, True, costo=5000),
+            self._l("MSFT", 500, None, False, costo=500, motivo="sin_precio", sin_precio=True),
+        ], HOY)[0]
+        self.assertIsNone(mixto["promedio_pct_usd"])
 
     def test_la_compra_del_dia_cuadra_con_el_dia(self):
         """A1: el costo de una compra de hoy cae entre el cierre anterior y el
@@ -452,7 +491,7 @@ class CaminoDeProduccionTest(unittest.TestCase):
         self.assertEqual(mapa["cartera"]["pct"], hoy_chat["pct_sobre_la_cartera"])
         self.assertEqual(mapa["cartera"]["usd"], hoy_chat["usd"])
         # Contra lo que pagaste: MSFT 10 × 600 contra US$ 5.000.
-        self.assertAlmostEqual(a[("MSFT", False)]["promedio_pct"], 20.0, places=2)
+        self.assertAlmostEqual(a[("MSFT", False)]["promedio_pct_usd"], 20.0, places=2)
 
     def test_con_la_rueda_abierta_todo_es_hoy(self):
         live = {"AAPL": {"c": 27300.0, "pct": 0.74}, "SPY": {"c": 20950.0, "pct": 0.24}}

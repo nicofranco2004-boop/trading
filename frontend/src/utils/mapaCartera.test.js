@@ -5,7 +5,7 @@
 //   · el área de cada cuadrito es proporcional a lo que pesa;
 //   · con «Ocultar saldos» ni el tamaño, ni el orden, ni el % dicen cuánto pesa.
 import { describe, it, expect } from 'vitest'
-import { cuadritosDelMapa, ubicarCuadritos, sinLecturaDe, conElDia, colorDelModo, losExtremosDeHoy, MAX_CUADRITOS, PROPORCION } from './mapaCartera'
+import { cuadritosDelMapa, ubicarCuadritos, sinLecturaDe, conElDia, promedioEnMoneda, colorDelModo, losExtremosDeHoy, MAX_CUADRITOS, PROPORCION } from './mapaCartera'
 
 const fila = (nombre, peso, tendencia, extra = {}) => ({
   clave: `${nombre}|0`, nombre, ruta: nombre, tenes: true, peso, fondo: { id: tendencia }, ...extra,
@@ -117,12 +117,35 @@ describe('sinLecturaDe: qué hay en lo que falta para 100 %, del mismo pedido qu
 const DEL_DIA = {
   cartera: { pct: 0.8, usd: 120 },
   activos: [
-    { asset: 'AAPL', local: false, hoy: { pct: 2, usd: 150 }, dia_txt: 'hoy', promedio_pct: 30 },
-    { asset: 'GGAL', local: true, hoy: null, dia_txt: 'ayer', promedio_pct: -10 },
-    { asset: 'GGAL', local: false, hoy: { pct: 5, usd: 999 }, dia_txt: 'hoy', promedio_pct: 0 },   // el ADR: no es tu GGAL de BYMA
-    { asset: 'MELI', local: false, hoy: { pct: -1, usd: -40 }, dia_txt: 'hoy', promedio_pct: null },
+    { asset: 'AAPL', local: false, hoy: { pct: 2, usd: 150 }, dia_txt: 'hoy', promedio_pct_usd: 30, promedio_pct_ars: 30 },
+    { asset: 'GGAL', local: true, hoy: null, dia_txt: 'ayer', promedio_pct_usd: -10, promedio_pct_ars: -10 },
+    { asset: 'GGAL', local: false, hoy: { pct: 5, usd: 999 }, dia_txt: 'hoy', promedio_pct_usd: 0, promedio_pct_ars: 0 },   // el ADR: no es tu GGAL de BYMA
+    { asset: 'MELI', local: false, hoy: { pct: -1, usd: -40 }, dia_txt: 'hoy', promedio_pct_usd: null, promedio_pct_ars: null },
   ],
 }
+
+describe('«Contra tu promedio» en la moneda que se mira (A3) y sin dato con su motivo (A5)', () => {
+  // Un CEDEAR pagado en pesos con el dólar más barato: +40 % en pesos, −20 % en dólares.
+  const a = { asset: 'AAPL', local: false, promedio_pct_usd: -20, promedio_pct_ars: 40, promedio_sin_dato: null }
+  it('en dólares al dólar de la compra; en pesos, o «al dólar de hoy», el de los pesos', () => {
+    expect(promedioEnMoneda(a, { currency: 'USD', costBasis: 'purchase' }).pct).toBeCloseTo(-0.2, 10)
+    expect(promedioEnMoneda(a, { currency: 'ARS', costBasis: 'purchase' }).pct).toBeCloseTo(0.4, 10)
+    expect(promedioEnMoneda(a, { currency: 'USD', costBasis: 'today' }).pct).toBeCloseTo(0.4, 10)
+    const c = Object.fromEntries(conElDia(cuadritosDelMapa([fila('AAPL', 100, 'alcista')]), { activos: [a] },
+      { currency: 'ARS' }).map(x => [x.clave, x]))
+    expect(c['AAPL|0'].promedio).toBeCloseTo(0.4, 10)
+  })
+  it('si falta el de esta moneda no cae al otro, y sin precio va gris con el porqué', () => {
+    expect(promedioEnMoneda({ promedio_pct_usd: null, promedio_pct_ars: 40 }, { currency: 'USD' }).pct).toBeNull()
+    const sin = { asset: 'MSFT', local: false, promedio_pct_usd: null, promedio_pct_ars: null,
+      promedio_sin_dato: 'no conseguimos su precio de hoy' }
+    const c = Object.fromEntries(conElDia(cuadritosDelMapa([fila('MSFT', 100, 'alcista')]), { activos: [sin] })
+      .map(x => [x.clave, x]))
+    expect(c['MSFT|0'].promedio).toBeNull()
+    expect(c['MSFT|0'].promedioSinDato).toBe('no conseguimos su precio de hoy')
+    expect(colorDelModo(c['MSFT|0'], 'promedio').bg).toBe('rgb(var(--bg-3))')
+  })
+})
 
 describe('conElDia, colorDelModo y losExtremosDeHoy', () => {
   it('cada cuadrito con lo suyo, por la clave de Tu lista (GGAL de BYMA no toma lo del ADR)', () => {

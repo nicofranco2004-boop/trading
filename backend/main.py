@@ -34560,8 +34560,10 @@ def _chat_valuation_inputs(conn, uid: int):
     return brokers, positions, tc_blue, tc_cedear
 
 
-def _valuar_lote_chat(p, prices, bccy, tc_blue, tc_cedear):
-    """(valor, costo) en USD de UN lote, con la función canónica."""
+def _valuar_lote_chat(p, prices, bccy, tc_blue, tc_cedear, costo='compra'):
+    """(valor, costo) en USD de UN lote, con la función canónica. `costo='hoy'`
+    sólo para «Contra tu promedio» en pesos (`_lotes_del_dia`): el costo de un lote
+    en pesos al dólar de hoy, que es el % en los pesos que se pagaron."""
     # 🔴 `costo='compra'` = el mismo dólar que usa la PANTALLA.
     #
     # Acá no se pasaba nada, así que caía al default 'hoy' y Rendi
@@ -34575,7 +34577,7 @@ def _valuar_lote_chat(p, prices, bccy, tc_blue, tc_cedear):
     # que ese archivo ya describe, una capa más abajo.
     r = compute_broker_value_usd(
         [p], prices, bccy, tc_blue,
-        broker_name=p['broker'], cedear_rate=tc_cedear, costo='compra')
+        broker_name=p['broker'], cedear_rate=tc_cedear, costo=costo)
     return float(r.get('value', 0) or 0), float(r.get('invested', 0) or 0)
 
 
@@ -34902,14 +34904,27 @@ def _lotes_del_dia(uid: int) -> tuple:
             continue
         if abs(v) < 0.005:
             continue  # lote vacío: no aporta ni al valor ni al movimiento
+        # El costo de un lote en pesos al dólar de HOY: «Contra tu promedio» en
+        # pesos (`cartera_hoy.por_activo`), la base que usa la pantalla en pesos
+        # (`noRealizadoEnVista`). Un lote en dólares da lo mismo que `costo`.
+        try:
+            _, costo_hoy = _valuar_lote_chat(p, prices, bccy, tc_blue, tc_cedear, costo='hoy')
+        except Exception:
+            costo_hoy = None
         lote = {"asset": p.get('asset'), "broker": p.get('broker'), "valor": v,
                 "valor_previo": None, "motivo": None,
                 "mercado": None, "rueda": None, "es_hoy": False,
-                "local": accion_local.es_lote_local(p, ars_names, ar_usd_names), "costo": costo}
+                "local": accion_local.es_lote_local(p, ars_names, ar_usd_names), "costo": costo,
+                "costo_hoy": costo_hoy}
         k = claves.get(i)
         # La acción de EE.UU. que lo anticipa fuera de la rueda (pre y post
         # mercado), con la MISMA clave de precio con que se lo valúa.
         lote["ref"] = _fdh.referencia_en_eeuu(k, p.get('asset_type'))
+        # Sin precio (tampoco uno a mano), la valuación lo pone al costo: su
+        # «Contra tu promedio» sería un 0 % que no pasó (`cartera_hoy.por_activo`).
+        # Va aparte del motivo del día porque un FCI sin cuotaparte también cae acá.
+        lote["sin_precio"] = (k is not None and p.get('price_override') in (None, 0, '')
+                              and not prices.get(k))
         if k is None:
             lote["motivo"] = "efectivo"
         elif p.get('price_override') not in (None, 0, ''):
