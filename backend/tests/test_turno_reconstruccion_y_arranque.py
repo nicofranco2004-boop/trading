@@ -261,6 +261,142 @@ class BorrarLaCuentaMientrasSeReconstruye(_CuentaImportada):
         self.assertEqual(fotos, 0, "quedaron fotos de una cuenta borrada")
 
 
+class _MientrasLaReconstruccionEscribe(_CuentaImportada):
+    """Corre `otra` en un hilo justo cuando la reconstrucción ya tomó el turno y
+    está por escribir las fotos, y dice si `otra` alcanzó a terminar en ese
+    rato (con el turno, no puede: tiene que esperar el commit)."""
+
+    def _durante_la_escritura(self, otra):
+        real = bf._persist_mtm_snapshots
+        errores, listo, ventana = [], threading.Event(), {}
+
+        def correr():
+            try:
+                otra()
+            except Exception as ex:
+                errores.append(repr(ex))
+            finally:
+                listo.set()
+
+        def persistir(conn, uid, por_mes):
+            if "termino_adentro" not in ventana:
+                threading.Thread(target=correr, daemon=True).start()
+                ventana["termino_adentro"] = listo.wait(timeout=1.5)
+            return real(conn, uid, por_mes)
+
+        with mock.patch.object(bf, "_persist_mtm_snapshots", persistir):
+            r = main._reconstruir_mtm(self.uid)
+        self.assertTrue(listo.wait(timeout=60), "lo de al lado no terminó nunca")
+        return r, ventana["termino_adentro"], errores
+
+
+@unittest.skipUnless(PG, "en SQLite la primera escritura toma la base entera: no hay cruce")
+class EmpezarDeCeroMientrasSeReconstruye(_MientrasLaReconstruccionEscribe):
+
+    def test_el_reset_espera_y_no_quedan_fotos(self):
+        r, adentro, errores = self._durante_la_escritura(lambda: main._reset_data_worker(self.uid))
+        conn = main.get_db()
+        try:
+            fotos = conn.execute("SELECT count(*) c FROM snapshots WHERE user_id=?",
+                                 (self.uid,)).fetchone()["c"]
+        finally:
+            conn.close()
+        estado = main._reset_estado(self.uid)
+        print(f"\n>>> empezar de cero durante la reconstrucción: terminó adentro={adentro} "
+              f"r={r} reset={estado.get('estado')} err={errores} fotos={fotos}")
+        self.assertEqual(errores, [])
+        self.assertTrue(r.get("reconstruida"), r)
+        self.assertFalse(adentro, "empezar de cero borró en el medio de la reconstrucción")
+        self.assertEqual(estado.get("estado"), "listo", estado)
+        self.assertEqual(fotos, 0, "quedaron fotos después de empezar de cero")
+
+
+@unittest.skipUnless(PG, "en SQLite la primera escritura toma la base entera: no hay cruce")
+class LaMigracionDeFCIMientrasSeReconstruye(_MientrasLaReconstruccionEscribe):
+
+    def setUp(self):
+        super().setUp()
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO positions (user_id, broker, asset, quantity, is_cash) "
+                         "VALUES (?,?,?,?,0)", (self.uid, "IBKR", "CONIOLA", 10))
+            # Otra cuenta con el mismo fondo crudo y su turno tomado por un pedido.
+            self.otro = conn.execute(
+                "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+                (f"fci-otro-{uuid.uuid4().hex[:8]}@rendi.test", "x")).lastrowid
+            conn.execute("INSERT INTO positions (user_id, broker, asset, quantity, is_cash) "
+                         "VALUES (?,?,?,?,0)", (self.otro, "IOL", "CONIOLA", 3))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _activo(self, uid):
+        conn = main.get_db()
+        try:
+            return conn.execute("SELECT asset FROM positions WHERE user_id=? AND quantity IN (10, 3)",
+                                (uid,)).fetchone()["asset"]
+        finally:
+            conn.close()
+
+    def _remap(self):
+        conn = main.get_db()
+        try:
+            main._remap_fci_broker_tickers(conn)
+        finally:
+            conn.close()
+
+    def test_la_migracion_espera_a_la_cuenta_que_se_reconstruye(self):
+        r, adentro, errores = self._durante_la_escritura(self._remap)
+        print(f"\n>>> FCI durante la reconstrucción: terminó adentro={adentro} r={r} err={errores} "
+              f"activo={self._activo(self.uid)}")
+        self.assertEqual(errores, [])
+        self.assertTrue(r.get("reconstruida"), r)
+        self.assertFalse(adentro, "la migración de FCI escribió en el medio de la reconstrucción")
+        self.assertEqual(self._activo(self.uid), "FCI:ADCAP-ACCIONES-A")
+
+    def test_no_tiene_a_todas_las_cuentas_tomadas_a_la_vez(self):
+        """Una cuenta ocupada no frena a las demás: cada una se confirma sola."""
+        a, b = sorted((self.uid, self.otro))
+        ocupada = main.get_db()
+        main._tomar_turno(ocupada, b)                # la de id mayor, para que la otra vaya antes
+        hilo = threading.Thread(target=self._remap, daemon=True)
+        hilo.start()
+        try:
+            for _ in range(100):
+                if self._activo(a).startswith("FCI:"):
+                    break
+                time.sleep(0.05)
+            libre_ya, ocupada_mientras = self._activo(a), self._activo(b)
+        finally:
+            ocupada.rollback()
+            ocupada.close()
+        hilo.join(timeout=30)
+        print(f"\n>>> FCI con una cuenta ocupada: la libre={libre_ya} la ocupada={ocupada_mientras} "
+              f"→ después {self._activo(b)}")
+        self.assertEqual(libre_ya, "FCI:ADCAP-ACCIONES-A",
+                         "la cuenta libre esperó a la ocupada: todas en una transacción")
+        self.assertEqual(ocupada_mientras, "CONIOLA")
+        self.assertEqual(self._activo(b), "FCI:ADCAP-ACCIONES-A")
+
+
+class UnaReconstruccionTardiaNoDejaHuerfanos(_CuentaImportada):
+
+    def test_reconstruir_una_cuenta_ya_borrada_no_anota_nada(self):
+        conn = main.get_db()
+        try:
+            main._borrar_cuenta(conn, self.uid)
+        finally:
+            conn.close()
+        main._reconstruir_mtm(self.uid)               # la que llegó tarde
+        conn = main.get_db()
+        try:
+            huerfana = conn.execute("SELECT 1 FROM mtm_huella WHERE user_id=?",
+                                    (self.uid,)).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNone(huerfana, "quedó una fila de mtm_huella de una cuenta borrada")
+
+
 class _CajaUSDTEnBrokerDeDolares(unittest.TestCase):
     """La reparación por-boot de `reparaciones_de_arranque`: la caja 'USDT' de un
     broker en dólares pasa a 'USD'."""

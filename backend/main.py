@@ -432,11 +432,17 @@ def _fallida_hace_poco(conn, uid) -> bool:
 
 
 def _guardar_huella_escrita(conn, uid, huella) -> None:
-    """En la MISMA transacción que las fotos: o quedan las dos cosas o ninguna."""
+    """En la MISMA transacción que las fotos: o quedan las dos cosas o ninguna.
+
+    Sólo si la cuenta existe. Una reconstrucción que termina después de que la
+    persona borró su cuenta llegaba acá y dejaba una fila huérfana (el borrado
+    ya había pasado). Quien llama tiene el turno de la cuenta, así que entre esta
+    pregunta y la escritura no la puede borrar nadie."""
     conn.execute(
-        "INSERT INTO mtm_huella (user_id, huella, escrita_at) VALUES (?, ?, datetime('now')) "
+        "INSERT INTO mtm_huella (user_id, huella, escrita_at) "
+        "SELECT ?, ?, datetime('now') WHERE EXISTS (SELECT 1 FROM users WHERE id=?) "
         "ON CONFLICT(user_id) DO UPDATE SET huella=excluded.huella, escrita_at=excluded.escrita_at",
-        (uid, huella))
+        (uid, huella, uid))
 
 
 def _cuentas_que_cambiaron(uids) -> tuple:
@@ -1589,6 +1595,80 @@ def _tomar_turnos_en_orden(conn, uids) -> None:
     SQLite no hace nada."""
     for u in sorted({int(x) for x in uids if x is not None}):
         _tomar_turno_de_la_puerta(conn, u)
+
+
+# Huellas de tokens. Viven acá arriba y no al lado del reseteo de contraseña
+# porque `reparaciones_de_arranque` las usa y corre al IMPORTAR este archivo
+# (`init_db()`): más abajo eran un NameError en cada arranque real, tragado por
+# el `except` de la reparación (que sólo deja un WARNING), y los tokens en
+# claro nunca pasaban a huella. Las pruebas no lo veían: vuelven a llamar a
+# `init_db()` con el archivo ya cargado entero. Guardián:
+# tests/test_arranque_sin_trabar.py::LoQueCorreAlImportarEstaDefinido.
+def _hash_token(token: str) -> str:
+    """Huella SHA-256 (hex, 64 chars) de un token de link, para guardar EN REPOSO.
+
+    El token aleatorio viaja en claro al usuario (mail/URL) pero en la base se
+    guarda sólo esta huella: si se filtra una copia de la base, el valor guardado
+    no sirve para usar el link (no se puede volver atrás a la huella). Al validar,
+    se hashea el token entrante y se compara contra lo guardado. No lleva sal a
+    propósito: son 256 bits aleatorios, no hay nada que adivinar por diccionario.
+
+    Hoy lo usa el token de reseteo de contraseña. Los otros tres tokens de link
+    (claim, link-request de asesor, informe público) comparten el mismo patrón y
+    se migran a este helper con su propia migración de links vivos — RENDI-10."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+_TOKEN_HASH_LEN = 64  # un SHA-256 hex; sirve para distinguir "ya hasheado" de un token crudo
+
+
+def _es_huella(valor: str) -> bool:
+    """¿`valor` ya es una huella SHA-256 (64 hex)? Para migraciones idempotentes."""
+    return (len(valor or "") == _TOKEN_HASH_LEN
+            and all(c in "0123456789abcdef" for c in valor))
+
+
+def _migrar_reset_tokens_a_huella(conn) -> tuple:
+    """Deja `password_reset_tokens` sin ningún token en claro. Idempotente.
+
+    (1) Borra los usados y los vencidos: ya no sirven y hasta 2026-10 no se
+    borraban nunca. (2) Pasa a huella los pocos vivos que quedaran en claro, para
+    que una copia de la base no permita usar el link. Devuelve (vivos, migrados).
+
+    Es una función con nombre —y no SQL suelto en el arranque— para que el test la
+    atraviese por el mismo camino que corre en producción."""
+    conn.execute(
+        "DELETE FROM password_reset_tokens WHERE used_at IS NOT NULL OR expires_at < ?",
+        (datetime.utcnow().isoformat(),))
+    vivos = conn.execute("SELECT id, token FROM password_reset_tokens").fetchall()
+    en_claro = [r for r in vivos if not _es_huella(r["token"])]
+    for r in en_claro:
+        conn.execute("UPDATE password_reset_tokens SET token=? WHERE id=?",
+                     (_hash_token(r["token"]), r["id"]))
+    return len(vivos), len(en_claro)
+
+
+def _migrar_tokens_link_a_huella(conn) -> int:
+    """Pasa a huella los tokens en claro de los links de ASESOR: claim (reclamar
+    cuenta) y link-request (pedido de acceso). RENDI-10 parte B. Idempotente.
+
+    A diferencia de los de reseteo NO se borra ninguna fila: `used_at`, `status` y
+    los conteos por fecha deben quedar intactos. Sólo se reescribe la columna
+    `token` de claro a huella, y eso preserva los links VIVOS (el token del mail
+    se hashea al validar y sigue matcheando). Devuelve cuántos se convirtieron.
+
+    `advisor_reports` queda afuera a propósito: ahí el token crudo también vive en
+    `wa_text` y el asesor re-comparte el link desde su historial, así que hashearlo
+    es una decisión de producto (parte C), no un cambio mecánico."""
+    convertidos = 0
+    for tabla in ("advisor_claim_tokens", "advisor_link_requests"):
+        filas = conn.execute(f"SELECT id, token FROM {tabla}").fetchall()
+        for r in filas:
+            if r["token"] and not _es_huella(r["token"]):
+                conn.execute(f"UPDATE {tabla} SET token=? WHERE id=?",
+                             (_hash_token(r["token"]), r["id"]))
+                convertidos += 1
+    return convertidos
 
 
 def reparaciones_de_arranque(conn):
@@ -4709,73 +4789,6 @@ def _validar_cron_token(request: Request, *nombres_env: str) -> None:
                     "la cabecera X-Cron-Token", request.url.path)
 
 
-def _hash_token(token: str) -> str:
-    """Huella SHA-256 (hex, 64 chars) de un token de link, para guardar EN REPOSO.
-
-    El token aleatorio viaja en claro al usuario (mail/URL) pero en la base se
-    guarda sólo esta huella: si se filtra una copia de la base, el valor guardado
-    no sirve para usar el link (no se puede volver atrás a la huella). Al validar,
-    se hashea el token entrante y se compara contra lo guardado. No lleva sal a
-    propósito: son 256 bits aleatorios, no hay nada que adivinar por diccionario.
-
-    Hoy lo usa el token de reseteo de contraseña. Los otros tres tokens de link
-    (claim, link-request de asesor, informe público) comparten el mismo patrón y
-    se migran a este helper con su propia migración de links vivos — RENDI-10."""
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-_TOKEN_HASH_LEN = 64  # un SHA-256 hex; sirve para distinguir "ya hasheado" de un token crudo
-
-
-def _es_huella(valor: str) -> bool:
-    """¿`valor` ya es una huella SHA-256 (64 hex)? Para migraciones idempotentes."""
-    return (len(valor or "") == _TOKEN_HASH_LEN
-            and all(c in "0123456789abcdef" for c in valor))
-
-
-def _migrar_reset_tokens_a_huella(conn) -> tuple:
-    """Deja `password_reset_tokens` sin ningún token en claro. Idempotente.
-
-    (1) Borra los usados y los vencidos: ya no sirven y hasta 2026-10 no se
-    borraban nunca. (2) Pasa a huella los pocos vivos que quedaran en claro, para
-    que una copia de la base no permita usar el link. Devuelve (vivos, migrados).
-
-    Es una función con nombre —y no SQL suelto en el arranque— para que el test la
-    atraviese por el mismo camino que corre en producción."""
-    conn.execute(
-        "DELETE FROM password_reset_tokens WHERE used_at IS NOT NULL OR expires_at < ?",
-        (datetime.utcnow().isoformat(),))
-    vivos = conn.execute("SELECT id, token FROM password_reset_tokens").fetchall()
-    en_claro = [r for r in vivos if not _es_huella(r["token"])]
-    for r in en_claro:
-        conn.execute("UPDATE password_reset_tokens SET token=? WHERE id=?",
-                     (_hash_token(r["token"]), r["id"]))
-    return len(vivos), len(en_claro)
-
-
-def _migrar_tokens_link_a_huella(conn) -> int:
-    """Pasa a huella los tokens en claro de los links de ASESOR: claim (reclamar
-    cuenta) y link-request (pedido de acceso). RENDI-10 parte B. Idempotente.
-
-    A diferencia de los de reseteo NO se borra ninguna fila: `used_at`, `status` y
-    los conteos por fecha deben quedar intactos. Sólo se reescribe la columna
-    `token` de claro a huella, y eso preserva los links VIVOS (el token del mail
-    se hashea al validar y sigue matcheando). Devuelve cuántos se convirtieron.
-
-    `advisor_reports` queda afuera a propósito: ahí el token crudo también vive en
-    `wa_text` y el asesor re-comparte el link desde su historial, así que hashearlo
-    es una decisión de producto (parte C), no un cambio mecánico."""
-    convertidos = 0
-    for tabla in ("advisor_claim_tokens", "advisor_link_requests"):
-        filas = conn.execute(f"SELECT id, token FROM {tabla}").fetchall()
-        for r in filas:
-            if r["token"] and not _es_huella(r["token"]):
-                conn.execute(f"UPDATE {tabla} SET token=? WHERE id=?",
-                             (_hash_token(r["token"]), r["id"]))
-                convertidos += 1
-    return convertidos
-
-
 # ─── Login history / device tracking ─────────────────────────────────────────
 # El UA fingerprint se hashea — si la DB se filtra, no exponemos el UA en
 # plano. ua_brief es el resumen legible que mostramos al user en el email.
@@ -5019,6 +5032,10 @@ def register(data: RegisterIn, request: Request, response: Response,
             # SOLO el admin hereda los datos legacy con user_id=0 (datos iniciales del owner).
             # Esto cierra el agujero: si la DB tiene datos huérfanos, solo el dueño los puede absorber.
             if is_admin_signup:
+                # Su fila de `users` ya está tomada por el INSERT de arriba, en esta
+                # misma transacción: el turno es suyo. Se pide igual, explícito,
+                # para que el censo (test_turno_en_todas_las_puertas) lo vea.
+                _tomar_turno_de_la_puerta(conn, uid)
                 for table in ['positions', 'monthly_entries', 'operations', 'config']:
                     conn.execute(f"UPDATE {table} SET user_id=? WHERE user_id=0", (uid,))
                 existing_brokers = [
@@ -5696,6 +5713,11 @@ def _borrar_en_chunks(conn, uid: int, tabla: str, where: str, args: tuple,
     total = 0
     while True:
         with conn:
+            # 🔒 El turno primero, en CADA tanda (cada una es su transacción): sin
+            # él, empezar de cero se metía en el medio de una reconstrucción de la
+            # cuenta, que toma el turno y después escribe las fotos que esto borra
+            # — el mismo cruce que tenía borrar la cuenta (`deadlock detected`).
+            _tomar_turno_de_la_puerta(conn, uid)
             n = conn.execute(
                 f"DELETE FROM {tabla} WHERE rowid IN ("
                 f"  SELECT rowid FROM {tabla} WHERE {where} LIMIT {_RESET_CHUNK})",
@@ -46626,10 +46648,53 @@ def _migrate_snapshots_netdep():
     threading.Thread(target=worker, daemon=True).start()
 
 
+def _aplicar_remap_fci(conn, mapa: dict) -> int:
+    """Reescribe `{crudo: símbolo}` en positions, operations e
+    import_normalized_tx. Devuelve las filas tocadas.
+
+    🔒 UNA CUENTA POR TRANSACCIÓN, cada una con su turno primero. Esto corre al
+    arrancar (`_migrate_fci_ticker_remap`), y en Postgres el arranque convive con
+    la copia vieja de la app atendiendo pedidos. Antes era UNA transacción para
+    todas las cuentas y sin turno: se metía en el medio de un borrado o de una
+    reconstrucción de cualquier cuenta. De a una, y de menor a mayor
+    (`_tomar_turnos_en_orden`), ninguna espera más que lo que tarda la suya.
+    Confirma cada cuenta: si el arranque muere a mitad, lo hecho queda y la
+    próxima vez sigue (es idempotente: el crudo ya no está).
+
+    Las cuentas se leen antes, sin transacción, y cada UPDATE se limita a la suya:
+    una fila que aparezca mientras tanto queda para el próximo arranque, en vez
+    de escribirse sin su turno."""
+    if not mapa:
+        return 0
+    crudos = list(mapa)
+    ph = ",".join("?" * len(crudos))
+    uids = sorted({r[0] for r in conn.execute(
+        f"SELECT user_id FROM positions WHERE asset IN ({ph}) "
+        f"UNION SELECT user_id FROM operations WHERE asset IN ({ph}) "
+        f"UNION SELECT b.user_id FROM import_normalized_tx n "
+        f"JOIN import_batches b ON b.id = n.batch_id WHERE n.asset_symbol IN ({ph})",
+        crudos * 3).fetchall() if r[0] is not None})
+    total = 0
+    for uid in uids:
+        with conn:
+            _tomar_turnos_en_orden(conn, [uid])
+            for crudo, sym in mapa.items():
+                total += conn.execute("UPDATE positions SET asset=? WHERE user_id=? AND asset=?",
+                                      (sym, uid, crudo)).rowcount
+                total += conn.execute("UPDATE operations SET asset=? WHERE user_id=? AND asset=?",
+                                      (sym, uid, crudo)).rowcount
+                total += conn.execute(
+                    "UPDATE import_normalized_tx SET asset_symbol=? WHERE asset_symbol=? "
+                    "AND batch_id IN (SELECT id FROM import_batches WHERE user_id=?)",
+                    (sym, crudo, uid)).rowcount
+    return total
+
+
 def _remap_fci_broker_tickers(conn) -> int:
     """Remapea los tickers CRUDOS de FCI de broker (COCOA, CONIOLA, BCAHA…) al símbolo
     de catálogo (FCI:<slug>) en positions/operations/import_normalized_tx. Devuelve las
-    filas tocadas. Idempotente (tras remap el ticker crudo ya no existe). NO commitea."""
+    filas tocadas. Idempotente (tras remap el ticker crudo ya no existe). Confirma
+    cuenta por cuenta (`_aplicar_remap_fci`)."""
     from importing.fci_map import BROKER_FCI_AD_NAME, resolve_fci_symbol
     raws = [t for t in BROKER_FCI_AD_NAME if resolve_fci_symbol(t)]
     if not raws:
@@ -46638,13 +46703,7 @@ def _remap_fci_broker_tickers(conn) -> int:
     # Guard barato: ¿queda alguna posición con ticker crudo por remapear?
     if not conn.execute(f"SELECT 1 FROM positions WHERE asset IN ({ph}) LIMIT 1", raws).fetchone():
         return 0
-    total = 0
-    for raw in raws:
-        sym = resolve_fci_symbol(raw)
-        for tbl, col in (("positions", "asset"), ("operations", "asset"),
-                         ("import_normalized_tx", "asset_symbol")):
-            total += conn.execute(f"UPDATE {tbl} SET {col}=? WHERE {col}=?", (sym, raw)).rowcount
-    return total
+    return _aplicar_remap_fci(conn, {raw: resolve_fci_symbol(raw) for raw in raws})
 
 
 def _remap_fci_by_name(conn) -> int:
@@ -46656,20 +46715,17 @@ def _remap_fci_by_name(conn) -> int:
 
     Recorre los activos DISTINTOS (no las filas) y solo toca los que el catálogo
     resuelve de forma exacta y no ambigua. Idempotente: tras el remap el nombre
-    crudo ya no existe. NO commitea."""
+    crudo ya no existe. Confirma cuenta por cuenta (`_aplicar_remap_fci`)."""
     from importing.fci_map import resolve_fci_by_name
     crudos = [r[0] for r in conn.execute(
         "SELECT DISTINCT asset FROM positions WHERE asset IS NOT NULL AND asset NOT LIKE 'FCI:%'"
     ).fetchall()]
-    total = 0
+    mapa = {}
     for raw in crudos:
         sym = resolve_fci_by_name(conn, raw)
-        if not sym:
-            continue
-        for tbl, col in (("positions", "asset"), ("operations", "asset"),
-                         ("import_normalized_tx", "asset_symbol")):
-            total += conn.execute(f"UPDATE {tbl} SET {col}=? WHERE {col}=?", (sym, raw)).rowcount
-    return total
+        if sym:
+            mapa[raw] = sym
+    return _aplicar_remap_fci(conn, mapa)
 
 
 @app.on_event("startup")

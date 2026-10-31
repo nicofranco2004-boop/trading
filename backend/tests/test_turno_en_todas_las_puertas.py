@@ -55,6 +55,11 @@ PIDEN_ADENTRO = {
     # migraciones históricas), donde la primera escritura toma la base entera y
     # Railway no superpone copias con volumen.
     "reparaciones_de_arranque": "cada reparación de positions, con los turnos de las cuentas que toca",
+    # Los tres que el censo no veía (nombre de tabla en una variable), 30/10/2026:
+    "_borrar_usuario_y_datos": "borrar la cuenta: el turno de la cuenta y sus shadows, en orden, "
+                               "antes de barrer sus tablas (se trababa con la reconstrucción)",
+    "_borrar_en_chunks": "empezar de cero: una tanda por transacción, cada una con su turno",
+    "_aplicar_remap_fci": "migración de FCI al arrancar: una cuenta por transacción, con su turno",
 }
 
 # Lo que falta, con el motivo. Sólo puede achicarse (ver el docstring del módulo).
@@ -63,17 +68,127 @@ PIDEN_ADENTRO = {
 PENDIENTES: dict = {}
 
 
-def _duenos_de_conexion_sin_turno():
+# Una escritura cuyo nombre de tabla está en una variable que el censo no puede
+# resolver (un parámetro, `esquema.items()`…). Cuenta como de la plata: no se
+# puede probar que no lo sea, y el error barato es pedir un turno de más.
+DESCONOCIDA = "¿tabla en una variable?"
+
+_ESCRITURA_SQL = re.compile(r"(INSERT INTO|UPDATE|DELETE FROM)\s+(?:(\w+)|\{(\w*)\})")
+
+
+def _textos_sql(fn):
+    """Cada texto del cuerpo de `fn`; en los f-strings, la parte variable queda
+    como `{nombre}` (o `{}` si no es un nombre suelto)."""
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Constant) and isinstance(n.value, str):
+            yield n.value
+        elif isinstance(n, ast.JoinedStr):
+            partes = []
+            for v in n.values:
+                if isinstance(v, ast.Constant):
+                    partes.append(str(v.value))
+                elif isinstance(v, ast.FormattedValue):
+                    partes.append("{%s}" % (v.value.id if isinstance(v.value, ast.Name) else ""))
+            yield "".join(partes)
+
+
+def _textos_de(nodo, constantes):
+    """{textos} si `nodo` es un texto, una tupla/lista/conjunto de textos (o de
+    tuplas cuyo primer elemento es texto), un nombre de módulo que vale eso, o
+    `modulo.CONSTANTE`; None si no se puede saber."""
+    if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str):
+        return {nodo.value}
+    if isinstance(nodo, (ast.Tuple, ast.List, ast.Set)):
+        out = set()
+        for e in nodo.elts:
+            if isinstance(e, ast.Tuple) and e.elts:
+                e = e.elts[0]
+            v = _textos_de(e, constantes)
+            if v is None:
+                return None
+            out |= v
+        return out
+    if isinstance(nodo, ast.Name) and nodo.id in constantes:
+        return _textos_de(constantes[nodo.id], constantes)
+    if isinstance(nodo, ast.Attribute) and isinstance(nodo.value, ast.Name):
+        try:
+            import importlib
+            v = getattr(importlib.import_module(nodo.value.id), nodo.attr)
+        except Exception:
+            return None
+        if isinstance(v, str):
+            return {v}
+        if isinstance(v, (tuple, list, set, frozenset)) and all(isinstance(x, str) for x in v):
+            return set(v)
+    return None
+
+
+def _valores_de(fn, nombre, constantes):
+    """Los textos que puede valer la variable `nombre` adentro de `fn`: los de
+    los `for nombre in (...)` (también `for nombre, x in ...`) y los de
+    `nombre = ...`. None si alguna fuente no se puede leer o no hay ninguna."""
+    out, vistas = set(), 0
+    for n in ast.walk(fn):
+        if isinstance(n, (ast.For, ast.comprehension)):
+            t = n.target
+            if isinstance(t, ast.Tuple) and t.elts:
+                t = t.elts[0]
+            if not (isinstance(t, ast.Name) and t.id == nombre):
+                continue
+            v = _textos_de(n.iter, constantes)
+        elif isinstance(n, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == nombre for t in n.targets):
+            v = _textos_de(n.value, constantes)
+        else:
+            continue
+        vistas += 1
+        if v is None:
+            return None
+        out |= v
+    return out if vistas else None
+
+
+def _tablas_que_escribe(fn, constantes):
+    """Las tablas que `fn` escribe, también cuando el nombre va en una variable
+    (`for t in (...): conn.execute(f"DELETE FROM {t} ...")`). Las que no se
+    pueden resolver vuelven como `DESCONOCIDA`."""
+    out = set()
+    for texto in _textos_sql(fn):
+        for m in _ESCRITURA_SQL.finditer(texto):
+            if m.group(2):
+                out.add(m.group(2))
+                continue
+            v = _valores_de(fn, m.group(3), constantes) if m.group(3) else None
+            out |= v if v is not None else {DESCONOCIDA}
+    return out
+
+
+def _duenos_de_conexion_sin_turno(src=None, piden_adentro=None, ver_variables=True):
     """Las funciones de main.py que abren una conexión (`get_db()` /
     `db_abierta()`) y escriben con ELLA —en su cuerpo o en lo que llaman sin abrir
-    otra— alguna tabla de la plata, sin pedir el turno en su propio cuerpo."""
-    src = open(os.path.join(BACKEND, "main.py"), encoding="utf-8").read()
+    otra— alguna tabla de la plata, sin pedir el turno en su propio cuerpo.
+
+    Ve también el nombre de la tabla en una variable (`_tablas_que_escribe`).
+    Hasta el 30/10/2026 buscaba sólo nombres escritos tal cual, y por eso no vio
+    a tres que borraban la plata sin turno: borrar la cuenta
+    (`_wipe_user_rows`: `f"DELETE FROM {t}"` sobre todo el esquema), empezar de
+    cero (`_borrar_en_chunks(conn, uid, tabla, …)`) y la migración de tickers
+    de FCI. El primero se trababa en cruz con la reconstrucción
+    (`deadlock detected`)."""
+    if src is None:
+        src = open(os.path.join(BACKEND, "main.py"), encoding="utf-8").read()
+    if piden_adentro is None:
+        piden_adentro = set(PIDEN_ADENTRO)
     lineas = src.splitlines()
     arbol = ast.parse(src)
     top = {n.name: n for n in arbol.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    constantes = {t.id: n.value for n in arbol.body if isinstance(n, ast.Assign)
+                  for t in n.targets if isinstance(t, ast.Name)}
     cuerpo = {k: "\n".join(lineas[v.lineno - 1:v.end_lineno]) for k, v in top.items()}
     escritura = re.compile(r"(INSERT INTO|UPDATE|DELETE FROM)\s+(\w+)")
-    escribe = {k: {m.group(2) for m in escritura.finditer(s)} & set(TABLAS_DE_LA_PLATA)
+    escribe = {k: ({m.group(2) for m in escritura.finditer(s)}
+                   | (_tablas_que_escribe(top[k], constantes) if ver_variables else set()))
+                  & (set(TABLAS_DE_LA_PLATA) | {DESCONOCIDA})
                for k, s in cuerpo.items()}
     abre_conexion = re.compile(r"\bget_db\(\)|\bdb_abierta\(\)")
     duenos = {k for k, s in cuerpo.items()
@@ -88,7 +203,9 @@ def _duenos_de_conexion_sin_turno():
         while cola:
             x = cola.pop()
             for y in llama[x]:
-                if y not in vistos and y not in duenos:   # otro dueño = otra conexión
+                # otro dueño = otra conexión; los que piden el turno adentro ya
+                # cubren lo que escriben (lo verifica test_los_que_piden_adentro_lo_piden)
+                if y not in vistos and y not in duenos and y not in piden_adentro:
                     vistos.add(y)
                     cola.append(y)
         return vistos
@@ -96,7 +213,7 @@ def _duenos_de_conexion_sin_turno():
     faltan = {}
     for k in duenos:
         tablas = set().union(*(escribe[x] for x in con_su_conexion(k)))
-        if tablas and not PIDE_TURNO.search(cuerpo[k]) and not (llama[k] & set(PIDEN_ADENTRO)):
+        if tablas and not PIDE_TURNO.search(cuerpo[k]) and not (llama[k] & piden_adentro):
             faltan[k] = f"{k} (main.py:{top[k].lineno}) escribe {sorted(tablas)}"
     return faltan
 
@@ -145,6 +262,41 @@ class ElCensoDeLasPuertas(unittest.TestCase):
             return real_open(ruta, *a, **kw)
         with _m.patch("builtins.open", abrir):
             self.assertIn("delete_monthly", _duenos_de_conexion_sin_turno())
+
+    def test_el_censo_ve_las_tablas_en_variables(self):
+        """Contra la respuesta conocida del 30/10/2026: borrar la cuenta
+        (`_wipe_user_rows`, `f"DELETE FROM {t}"` sobre el esquema), empezar de cero
+        (`_borrar_en_chunks(conn, uid, tabla, …)`) y la migración de FCI
+        (`for tbl, col in ((…), …)`). Sin los tres de PIDEN_ADENTRO, el censo tiene
+        que marcar a sus dueños; el de antes —sólo nombres escritos tal cual— no
+        los veía."""
+        sin_los_tres = set(PIDEN_ADENTRO) - {"_borrar_usuario_y_datos", "_borrar_en_chunks",
+                                             "_aplicar_remap_fci"}
+        duenos = {"delete_my_account", "admin_delete_user", "_reset_data_worker",
+                  "_migrate_fci_ticker_remap"}
+        ahora = _duenos_de_conexion_sin_turno(piden_adentro=sin_los_tres)
+        antes = _duenos_de_conexion_sin_turno(piden_adentro=sin_los_tres, ver_variables=False)
+        self.assertEqual(duenos - set(ahora), set(), ahora)
+        # FCI ya no va acá: su arreglo escribe los nombres tal cual (el patrón
+        # `for tbl, col in …` que tenía lo cubre la prueba de abajo, caso `c`).
+        dinamicos = duenos - {"_migrate_fci_ticker_remap"}
+        self.assertEqual(dinamicos & set(antes), set(),
+                         "el censo viejo ya los veía: esta prueba no mide la mejora")
+
+    def test_resuelve_el_nombre_desde_el_bucle_o_lo_declara_desconocido(self):
+        arbol = ast.parse(
+            "def a(conn):\n"
+            "    for t in ('positions', 'config'):\n"
+            "        conn.execute(f'DELETE FROM {t} WHERE user_id=?')\n"
+            "def b(conn, tabla):\n"
+            "    conn.execute(f'DELETE FROM {tabla} WHERE x=1')\n"
+            "def c(conn):\n"
+            "    for tbl, col in (('operations', 'asset'), ('brokers', 'name')):\n"
+            "        conn.execute(f'UPDATE {tbl} SET {col}=?')\n")
+        fns = {f.name: f for f in arbol.body}
+        self.assertEqual(_tablas_que_escribe(fns["a"], {}), {"positions", "config"})
+        self.assertEqual(_tablas_que_escribe(fns["b"], {}), {DESCONOCIDA})
+        self.assertEqual(_tablas_que_escribe(fns["c"], {}), {"operations", "brokers"})
 
 
 @unittest.skipUnless(getattr(main, "USANDO_PG", False),

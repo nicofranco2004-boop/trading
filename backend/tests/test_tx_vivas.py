@@ -34,6 +34,10 @@ LEEN_EL_LOG = {
     ("importing/persister.py", "revert_batch"): "deshacer un lote: recorre sus filas (filtra la lápida donde importa)",
     ("importing/rebuild.py", "_affected_assets"): "qué activos tocó un lote, para recalcularlos al deshacerlo",
     ("main.py", "import_confirm"): "borra filas del lote en vista previa que la persona omitió",
+    # Antes escribía con el nombre de la tabla en una variable y nadie la veía.
+    ("main.py", "_aplicar_remap_fci"): "renombra el ticker crudo de FCI en TODO el registro, "
+                                       "filas borradas incluidas: un deshacer las revive con el "
+                                       "símbolo nuevo",
     # La vista previa todavía no está confirmada: filtran la lápida a mano y suman el lote en curso.
     ("ledger_replay.py", "tenencia_en"): "suma el lote en vista previa (b.id = ?); filtra la lápida a mano",
     ("ledger_replay.py", "cash_en"): "suma el lote en vista previa (b.id = ?); filtra la lápida a mano",

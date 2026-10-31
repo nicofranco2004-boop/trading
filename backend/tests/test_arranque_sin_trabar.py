@@ -234,6 +234,36 @@ class LaCopiaALaMudanzaNoLaCompara(unittest.TestCase):
         self.assertNotIn(pgsesion.TABLA_DEL_ARRANQUE, vistas)
 
 
+class LoQueCorreAlImportarEstaDefinido(unittest.TestCase):
+    """`init_db()` corre al IMPORTAR main.py, en la línea donde está escrito: todo
+    lo que llama tiene que estar definido ARRIBA. Si no, es un NameError que el
+    `except` de cada reparación se traga (deja un WARNING) y la reparación no corre
+    nunca en un arranque de verdad. Las demás pruebas no lo ven: vuelven a llamar
+    a `init_db()` con el archivo ya cargado entero. Pasó dos veces el 30/10/2026:
+    el turno (lo agarró la revisión) y los tokens de reseteo y de links de asesor
+    a huella (no corrían desde que salieron a `reparaciones_de_arranque`).
+
+    Por el camino real: un proceso aparte que hace `import main` contra una base
+    SQLite vacía, y se lee lo que dice."""
+
+    def test_el_arranque_de_verdad_no_tira_nameerror(self):
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            env = {k: v for k, v in os.environ.items() if k != "DATABASE_URL"}
+            env.update(DB_PATH=os.path.join(d, "arranque.db"), SECRET_KEY="test-secret")
+            p = subprocess.run([sys.executable, "-c", "import main"], cwd=os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))), env=env, capture_output=True,
+                text=True, timeout=180)
+        salida = p.stdout + p.stderr
+        self.assertEqual(p.returncode, 0, salida[-2000:])
+        self.assertIn("tokens de reseteo:", salida, "la reparación de tokens no dijo nada: "
+                      "¿cambió el mensaje o no corrió?")
+        malos = [l for l in salida.splitlines() if "is not defined" in l]
+        self.assertEqual(malos, [], "algo que corre al importar llama a una función "
+                                    "definida más abajo en main.py")
+
+
 class ElChequeoDeSalud(unittest.TestCase):
 
     def test_contesta_503_hasta_que_termina_el_arranque(self):
