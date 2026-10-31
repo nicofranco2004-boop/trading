@@ -33,6 +33,7 @@ Shape (~1KB):
 """
 from __future__ import annotations
 from typing import Dict, Any, List
+from orden_estable import operaciones_por_fecha
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
@@ -45,7 +46,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 
     # Datos crudos — mismo dataset que /api/behavioral/insights
     ops = [dict(r) for r in conn.execute(
-        "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (user_id,)
+        f"SELECT * FROM operations WHERE user_id=? ORDER BY {operaciones_por_fecha()}", (user_id,)
     ).fetchall()]
     positions = [dict(r) for r in conn.execute(
         "SELECT * FROM positions WHERE user_id=?", (user_id,)

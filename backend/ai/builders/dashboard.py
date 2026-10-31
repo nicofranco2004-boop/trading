@@ -44,6 +44,7 @@ from __future__ import annotations
 from typing import Optional, Dict, Any, List
 
 from . import rendimiento_pantalla
+from orden_estable import operaciones_por_fecha
 
 _RANGOS = ("1D", "1W", "1M", "6M", "1Y", "MAX")
 
@@ -251,7 +252,7 @@ def build(conn, user_id: int, period: str = "30d", **pantalla) -> Dict[str, Any]
     try:
         from behavioral import build_behavioral_insights, stamp_positions_currency
         ops = [dict(r) for r in conn.execute(
-            "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (user_id,)
+            f"SELECT * FROM operations WHERE user_id=? ORDER BY {operaciones_por_fecha()}", (user_id,)
         ).fetchall()]
         # positions ya vienen estampadas por currency_context; estampamos ops
         # con la misma moneda autoritativa por broker (op-detectors la necesitan).

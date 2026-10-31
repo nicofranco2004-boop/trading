@@ -50,7 +50,9 @@ def eventos_guardados(conn, tickers: Iterable[str], dias: int, *,
                  FROM financial_events
                 WHERE ticker IN ({placeholders})
                   AND event_date >= ? AND event_date <= ?
-                ORDER BY event_date ASC""")
+                ORDER BY event_date ASC, ticker, event_type""")
+    # `, ticker, event_type`: el orden en que SQLite dejaba los del mismo día (lee
+    # por la clave única ticker+tipo+fecha); con el LIMIT, decide CUÁLES entran.
     params = [*tickers, hoy.isoformat(), hasta.isoformat()]
     if limite is not None:
         sql += " LIMIT ?"

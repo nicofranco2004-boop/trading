@@ -538,11 +538,13 @@ def para_el_grafico(conn, papel: str) -> dict:
         decidieron: esconder esos días, no reescalar."""
     c = _base(papel)
     filas = conn.execute(
-        "SELECT fecha, tipo, factor, factor_medido FROM cambios_ratio WHERE cedear=? ORDER BY fecha",
+        # `, tipo`: el mismo día puede tener dos tipos; es el orden de la clave única
+        # (cedear, fecha, tipo), que es el que daba SQLite (ver orden_estable.py).
+        "SELECT fecha, tipo, factor, factor_medido FROM cambios_ratio WHERE cedear=? ORDER BY fecha, tipo",
         (c,)).fetchall()
     escalones = [(r["fecha"], float(r["factor"] or r["factor_medido"])) for r in conn.execute(
         "SELECT fecha, factor, factor_medido FROM cambios_ratio WHERE cedear=? AND en_la_serie=1 "
-        "AND tipo IN (?,?,?) AND COALESCE(factor, factor_medido) > 0 ORDER BY fecha",
+        "AND tipo IN (?,?,?) AND COALESCE(factor, factor_medido) > 0 ORDER BY fecha, tipo",
         (c, RATIO, ESCISION, PRECIO_ROTO)).fetchall()]
     return {"escalones": escalones,
             "rotos": [r["fecha"] for r in filas if r["tipo"] == ROTO],

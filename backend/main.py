@@ -97,6 +97,7 @@ _setup_yfinance_cache()
 import fx as _fx
 import efectivo as _efectivo   # la única puerta por la que se mueve el saldo de un broker
 import renombre_broker as _renombre_broker   # el nombre del broker ADENTRO de lo guardado
+from orden_estable import operaciones_por_fecha as _ops_por_fecha, por_fecha as _por_fecha  # el empate del mismo día
 import dividendos as _dividendos   # bandeja de cobros de dividendos (Cartera)
 import realized_pnl          # criterio único de "P&L realizado en USD" (ver módulo)
 # El techo del % realizado y su regla viven en ese mismo módulo. Estaban acá
@@ -15867,7 +15868,7 @@ def list_bond_cashflow_skips(uid: int = Depends(get_effective_user)):
             """SELECT broker, asset, date, reason, created_at
                FROM bond_cashflow_skips
                WHERE user_id=?
-               ORDER BY date ASC""",
+               ORDER BY date ASC, broker, asset""",   # el orden de su índice único
             (uid,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -17958,11 +17959,11 @@ def get_operations(uid: int = Depends(get_effective_user)):
         # `_importada` sale de una subconsulta y no de un JOIN: una operación puede
         # tener más de un link y el JOIN la devolvería duplicada en la lista.
         rows = conn.execute(
-            """SELECT o.*,
+            f"""SELECT o.*,
                       EXISTS(SELECT 1 FROM import_op_links l
                               WHERE l.operation_id = o.id) AS _importada
                  FROM operations o
-                WHERE o.user_id=? ORDER BY o.date DESC""", (uid,)
+                WHERE o.user_id=? ORDER BY {_ops_por_fecha(desc=True, alias="o")}""", (uid,)
         ).fetchall()
         import cobros_bonos as _cobros_bonos
         ventas_amort = _cobros_bonos.ventas_que_son_amortizacion(conn, uid)
@@ -18240,12 +18241,12 @@ def _build_movements(uid: int):
 
         # ── 1) Operations (manual trades) ───────────────────────────────────
         op_rows = conn.execute(
-            """SELECT o.* FROM operations o
+            f"""SELECT o.* FROM operations o
                 WHERE o.user_id = ?
                   AND o.id NOT IN (
                     SELECT operation_id FROM import_op_links
                      WHERE operation_id IS NOT NULL)
-                ORDER BY o.date DESC""",
+                ORDER BY {_ops_por_fecha(desc=True, alias="o")}""",
             (uid,),
         ).fetchall()
         for r in op_rows:
@@ -18419,7 +18420,7 @@ def _build_movements(uid: int):
                       t.asset_type
                 FROM {tx_vivas('t')}
                 WHERE b.user_id = ?
-                ORDER BY t.date DESC""",
+                ORDER BY {_por_fecha(desc=True, alias="t")}""",
             (uid,),
         ).fetchall()
         for r in tx_rows:
@@ -18556,13 +18557,13 @@ def _build_movements(uid: int):
         # Las que vienen de imports YA están en (2). Acá solo las del user
         # que cargó manual (sin import_op_links).
         pos_rows = conn.execute(
-            """SELECT p.* FROM positions p
+            f"""SELECT p.* FROM positions p
                 WHERE p.user_id = ?
                   AND p.is_cash = 0
                   AND p.id NOT IN (
                     SELECT position_id FROM import_op_links
                      WHERE position_id IS NOT NULL)
-                ORDER BY p.entry_date DESC""",
+                ORDER BY {_por_fecha("entry_date", desc=True, alias="p")}""",
             (uid,),
         ).fetchall()
         for r in pos_rows:
@@ -20719,7 +20720,7 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
                       pnl_pct, commissions
                FROM operations
                WHERE user_id = ?
-               ORDER BY date DESC""",
+               ORDER BY {_ops_por_fecha(desc=True)}""",
             (uid,),
         ).fetchall()]
         # Mismo techo que la app: arriba de 1000 % el cociente dejó de ser un
@@ -21119,7 +21120,7 @@ def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
             "SELECT * FROM monthly_entries WHERE user_id=? ORDER BY year, month", (uid,)
         ).fetchall()]
         ops = [dict(r) for r in conn.execute(
-            "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (uid,)
+            f"SELECT * FROM operations WHERE user_id=? ORDER BY {_ops_por_fecha()}", (uid,)
         ).fetchall()]
         # Behavioral: reusamos el mismo builder. No fallar el wrapped si el
         # behavioral falla — los slides del bias son opcionales.
@@ -21241,7 +21242,7 @@ def behavioral_insights(request: Request, uid: int = Depends(get_effective_user)
     conn = get_db()
     try:
         ops = [dict(r) for r in conn.execute(
-            "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (uid,)
+            f"SELECT * FROM operations WHERE user_id=? ORDER BY {_ops_por_fecha()}", (uid,)
         ).fetchall()]
         positions = [dict(r) for r in conn.execute(
             "SELECT * FROM positions WHERE user_id=?", (uid,)
@@ -23439,7 +23440,7 @@ class GoalIn(BaseModel):
 def list_goals(uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         rows = conn.execute(
-            "SELECT * FROM goals WHERE user_id=? ORDER BY target_date ASC", (uid,)
+            f"SELECT * FROM goals WHERE user_id=? ORDER BY {_por_fecha('target_date')}", (uid,)
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -23523,7 +23524,7 @@ def goal_diagnostic(gid: int, uid: int = Depends(get_effective_user)):
             "SELECT * FROM positions WHERE user_id=?", (uid,)
         ).fetchall()]
         ops = [dict(r) for r in conn.execute(
-            "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (uid,)
+            f"SELECT * FROM operations WHERE user_id=? ORDER BY {_ops_por_fecha()}", (uid,)
         ).fetchall()]
 
         # Prep money-critical: estampa moneda, precios .BA-aware, tc_blue + MEP.
@@ -24777,7 +24778,7 @@ def admin_diagnose_sell_fx(limit_ops: int = 500000, uid: int = Depends(get_admin
         rows = conn.execute(
             "SELECT id, user_id, date, broker, asset, pnl_usd, pnl_pct, entry_price, "
             "       exit_price, quantity, commissions, entry_date "
-            "FROM operations WHERE op_type='Venta' ORDER BY date LIMIT ?",
+            f"FROM operations WHERE op_type='Venta' ORDER BY {_por_fecha()} LIMIT ?",
             (max(1, int(limit_ops)),),
         ).fetchall()
 
@@ -25926,7 +25927,7 @@ def admin_ventas_legacy_debug(email: str = "", user_id: int = 0, limite: int = 2
                   AND {realized_pnl.no_es_conversion_sql()}
                   AND (currency IS NULL OR TRIM(COALESCE(currency,''))=''
                        OR fx_to_usd IS NULL OR fx_to_usd<=0)
-                ORDER BY date""", (au,)).fetchall()
+                ORDER BY {_ops_por_fecha()}""", (au,)).fetchall()
 
         _memo = {}
         def _tc(f):
@@ -26908,10 +26909,10 @@ def _repair_interes_pf(conn, apply: bool) -> dict:
     la fila se lista como `sin_tc` y NO se toca — no se inventa un número.
     """
     filas = conn.execute(
-        """SELECT id, user_id, date, pnl_usd, currency FROM operations
+        f"""SELECT id, user_id, date, pnl_usd, currency FROM operations
             WHERE op_type = 'Interés PF' AND fx_to_usd IS NULL
               AND UPPER(COALESCE(currency,'')) NOT IN ('USD','USDT')
-            ORDER BY date""").fetchall()
+            ORDER BY {_por_fecha()}""").fetchall()
     cambios, sin_tc, usuarios = [], [], set()
     for r in filas:
         mep, fuente = _fx.fx_for_date_detail(conn, r["date"])
@@ -36516,9 +36517,9 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
             return {"error": f"asset '{asset}' no tiene formato válido (alphanumeric A-Z0-9, max 10 chars, opcional .BA)"}
         with db_abierta() as conn:
             rows = conn.execute(
-                """SELECT date, op_type, entry_price, exit_price, quantity,
+                f"""SELECT date, op_type, entry_price, exit_price, quantity,
                           pnl_usd, pnl_pct, entry_date, currency, fx_to_usd, commissions
-                   FROM operations WHERE user_id=? AND asset=? ORDER BY date DESC""",
+                   FROM operations WHERE user_id=? AND asset=? ORDER BY {_ops_por_fecha(desc=True)}""",
                 (uid, asset),
             ).fetchall()
         # Los cobros (cupón, amortización, dividendo, interés) con sus números de
@@ -51155,7 +51156,7 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
             f"""SELECT date, asset, op_type, quantity FROM operations
                WHERE user_id=? AND date >= ? AND date <= ?
                  AND (op_type IS NULL OR {realized_pnl.no_es_conversion_sql()})
-               ORDER BY date ASC""",
+               ORDER BY {_ops_por_fecha()}""",
             (client_uid, start, end)).fetchall():
         qty = r["quantity"]
         # Para rentas, operations.quantity guarda el MONTO (no nominales) —
@@ -51170,10 +51171,10 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
     # Las COMPRAS importadas no pasan por operations (audit): las posiciones
     # abiertas con entry_date dentro del período son las compras del período.
     for r in conn.execute(
-            """SELECT entry_date, asset, quantity FROM positions
+            f"""SELECT entry_date, asset, quantity FROM positions
                WHERE user_id=? AND COALESCE(is_cash,0)=0
                  AND entry_date >= ? AND entry_date <= ?
-               ORDER BY entry_date ASC""",
+               ORDER BY {_por_fecha("entry_date")}""",
             (client_uid, start, end)).fetchall():
         movs_all.append({"date": str(r["entry_date"]), "asset": r["asset"],
                          "type": "Compra",
