@@ -290,11 +290,11 @@ export default function Sidebar() {
               // ícono mientras dure (utils/navegacion.js, FIN_DEL_NUEVO).
               const nuevo = sigueVigente(resaltadaHasta)
               return (
-                <NavLink key={to} to={to} end={to === '/'} title={beta ? `${label} (beta)` : label}
+                <NavLink key={to} to={to} end={to === '/'} title={`${label}${beta ? ' (beta)' : ''}${nuevo ? ' · Nuevo' : ''}`}
                   onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
                   className={rowCls}>
                   {({ isActive }) => (<><Icon size={16} strokeWidth={1.75} aria-hidden="true" />{isActive && <ActiveBar />}
-                    {nuevo && <span aria-label="Nuevo" className="absolute top-1.5 right-2 w-2 h-2 rounded-full bg-data-violet ring-2 ring-bg-0" />}</>)}
+                    {nuevo && <><span aria-hidden="true" className="absolute top-1.5 right-2 w-2 h-2 rounded-full bg-data-violet ring-2 ring-bg-0" /><span className="sr-only">Nuevo</span></>}</>)}
                 </NavLink>
               )
             })}
@@ -346,7 +346,7 @@ export default function Sidebar() {
                         // ahí: estando adentro manda el «estás acá» de siempre.
                         const resaltada = sigueVigente(resaltadaHasta)
                         return (
-                          <NavLink key={to} to={to} end={to === '/'} title={label}
+                          <NavLink key={to} to={to} end={to === '/'} title={beta ? `${label} (beta)` : label}
                             onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
                             className={({ isActive }) =>
                               `relative flex items-center gap-3 pl-11 pr-2.5 py-2.5 rounded-md text-[14px] transition-colors ${

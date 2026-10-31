@@ -314,7 +314,7 @@ export default function AnalisisTecnico() {
     <div className="page-shell-wide py-4">
       <PageHeader eyebrow="Análisis de mercado"
         title={esBeta('/analisis-tecnico')
-          ? <span className="inline-flex items-center gap-2.5">Análisis técnico<EtiquetaBeta className="tracking-normal" /></span>
+          ? <span className="inline-flex items-center gap-2.5">Análisis técnico{' '}<EtiquetaBeta className="tracking-normal" /></span>
           : 'Análisis técnico'}
         subtitle="Cómo se están moviendo los precios de tus activos y de los de tu watchlist. En dólares, con el precio de cierre del último día de mercado." />
       <Pestanas activa={activa} cuentas={cuentas} onElegir={elegir} />
