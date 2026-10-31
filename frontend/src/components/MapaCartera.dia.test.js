@@ -1,7 +1,9 @@
 // El «Mapa de tu cartera» montado de verdad (testing/navegadorMinimo.js), con el
 // servidor simulado en la frontera (utils/api): «Color por» (Tendencia de
-// entrada), el renglón «Hoy tu cartera» y lo que más sumó y restó, CON y SIN
-// «Ocultar saldos». Es el MISMO componente en el Panorama y en el Dashboard.
+// entrada) y lo que más sumó y restó, CON y SIN «Ocultar saldos», montado como
+// en el Dashboard: SIN el renglón de la cartera del día (A4, Nico 31/10: ahí el
+// «hoy» lo cuenta sólo la tarjeta «Hoy»). El renglón «Hoy tus activos · fecha»
+// del Panorama lo prueba MapaCartera.dia.render.test.jsx.
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, clic } from '../testing/navegadorMinimo'
@@ -49,12 +51,14 @@ const radios = () => todos(n => n.getAttribute?.('role') === 'radio')
 const etiquetas = () => todos(n => n.getAttribute?.('aria-label') && /NVDA|KO/.test(n.getAttribute('aria-label'))).map(n => n.getAttribute('aria-label'))
 
 describe('el mapa de tu cartera: lo de la pieza 8, en el mismo componente', () => {
-  it('«Color por» con Tendencia de entrada, el renglón de hoy y lo que más sumó y restó', async () => {
+  it('«Color por» con Tendencia de entrada, lo que más sumó y restó, y sin el renglón de la cartera', async () => {
     const t = await dibujar()
     expect(pedidas).toContain('/cartera/mapa-del-dia')
     expect(radios().map(texto)).toEqual(['Hoy', 'Tendencia', 'Contra tu promedio'])
     expect(radios()[1].getAttribute('aria-checked')).toBe('true')
-    expect(t).toContain('Hoy tu cartera: +0,8%')
+    expect(t).not.toContain('Hoy tu cartera')
+    expect(t).not.toContain('Hoy tus activos')
+    expect(t).not.toContain('+0,8')
     expect(t).toContain('Lo que más sumó hoy: NVDA (+2,0%).')
     expect(t).toContain('Lo que más restó: KO (−1,0%).')
   })
@@ -71,10 +75,9 @@ describe('el mapa de tu cartera: lo de la pieza 8, en el mismo componente', () =
     expect(etiquetas().some(e => e.includes('+30,0% contra lo que pagaste'))).toBe(true)
   })
 
-  it('con «Ocultar saldos»: el renglón sin %, de los extremos sólo QUÉ activo, y los cuadritos sin %', async () => {
+  it('con «Ocultar saldos»: de los extremos sólo QUÉ activo, y los cuadritos sin %', async () => {
     localStorage.setItem('rendi_mapa_color', 'hoy')
     const t = await dibujar(true)
-    expect(t).toContain('Hoy tu cartera: ••••')
     expect(t).not.toContain('+0,8')
     expect(t).toContain('Lo que más sumó hoy: NVDA.')
     expect(t).toContain('Lo que más restó: KO.')

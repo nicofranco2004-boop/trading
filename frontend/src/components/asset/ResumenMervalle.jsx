@@ -76,12 +76,13 @@ export function useResumenMervalle({ asset, moneda, local = false, resumen, alTe
     setEscribiendo(true)
     setAviso(null)
     try {
-      const ruta = `/tecnico/${encodeURIComponent(asset)}/resumen?moneda=${moneda}${local ? '&local=1' : ''}`
-      let r = await api.post(ruta)
+      // La ruta escrita dentro de `api.post`: el censo del ojito la lee del texto.
+      const pedirlo = () => api.post(`/tecnico/${encodeURIComponent(asset)}/resumen?moneda=${moneda}${local ? '&local=1' : ''}`)
+      let r = await pedirlo()
       for (let i = 1; r?.estado === 'generando' && i < REINTENTO.veces; i++) {
         await new Promise(ok => setTimeout(ok, REINTENTO.ms))
         if (mia !== vuelta.current) return
-        r = await api.post(ruta)
+        r = await pedirlo()
       }
       if (mia !== vuelta.current) return
       if (r?.estado === 'listo') alTenerlo?.(r)
