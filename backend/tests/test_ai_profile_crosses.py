@@ -36,7 +36,9 @@ def _conn(positions=(), operations=(), profile=_PROFILE, tc_blue="1450"):
     conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, investor_profile TEXT)")
     conn.execute("CREATE TABLE positions (user_id INT, asset TEXT, invested REAL, broker TEXT, asset_type TEXT, is_cash INT, currency TEXT)")
     conn.execute("CREATE TABLE brokers (user_id INT, name TEXT, currency TEXT, parent_broker_id INT, id INTEGER PRIMARY KEY)")
-    conn.execute("CREATE TABLE operations (user_id INT, date TEXT, asset TEXT, op_type TEXT, quantity REAL, entry_price REAL, broker TEXT)")
+    # `id` como en la tabla real: el orden de las operaciones desempata por él
+    # (orden_estable.py).
+    conn.execute("CREATE TABLE operations (id INTEGER PRIMARY KEY, user_id INT, date TEXT, asset TEXT, op_type TEXT, quantity REAL, entry_price REAL, broker TEXT)")
     conn.execute("CREATE TABLE config (user_id INT, key TEXT, value TEXT)")
     conn.execute("INSERT INTO users VALUES (1, ?)", (json.dumps(profile) if profile else "{}",))
     conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (1,'Binance','USD')")

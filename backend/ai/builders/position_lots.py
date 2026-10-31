@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Dict, Any
 
 from realized_pnl import realized_usd_sql, leer_cobro
+from orden_estable import operaciones_por_fecha
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
@@ -38,7 +39,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             f"""SELECT {_cols}
                  FROM operations
                 WHERE user_id=? AND asset=? AND broker IN ({ph})
-                ORDER BY date ASC""",
+                ORDER BY {operaciones_por_fecha()}""",
             (user_id, asset, *par),
         ).fetchall()
     else:
@@ -46,7 +47,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             f"""SELECT {_cols}, broker
                  FROM operations
                 WHERE user_id=? AND asset=?
-                ORDER BY date ASC""",
+                ORDER BY {operaciones_por_fecha()}""",
             (user_id, asset),
         ).fetchall()
 
