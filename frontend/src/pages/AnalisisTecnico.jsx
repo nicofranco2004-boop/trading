@@ -50,6 +50,7 @@ import {
   NO_ES_RECOMENDACION, TITULO_PLATA_ALCISTA, TITULO_CAMBIOS, QUE_ES_ESTA_SEMANA,
 } from '../utils/tusSenales'
 import { urlDeComparar } from '../utils/comparadorPrecio'
+import { ordenConElOjito } from '../utils/parteDeTuPlata'
 
 // Las pestañas, en orden. `corto`: el nombre en el celular. `pronto`: todavía
 // no está (se ve, no se toca). `afuera`: lleva a otra pantalla (no se queda acá).
@@ -76,9 +77,12 @@ export function pestanaDe(searchParams) {
 }
 
 /** Comparar → Precio con tus 4 activos que más pesan (los de «Tu lista» que
- *  tenés, por su peso del servidor). Sin ninguno, abre vacío para elegir. */
-export function urlDeCompararTuyos(filas = []) {
-  return urlDeComparar(filas.filter(f => f.tenes).sort((a, b) => (b.peso || 0) - (a.peso || 0)).map(f => f.ruta))
+ *  tenés, por su peso del servidor). Sin ninguno, abre vacío para elegir. Con
+ *  «Ocultar saldos», cuáles van y en qué orden dirían cuáles pesan más: van
+ *  los 4 primeros de la A a la Z (ordenConElOjito, auditoría D6, 31/10). */
+export function urlDeCompararTuyos(filas = [], oculto = false) {
+  return urlDeComparar(ordenConElOjito(filas.filter(f => f.tenes), oculto,
+    { nombre: f => f.ruta, sinOjito: (a, b) => (b.peso || 0) - (a.peso || 0) }).map(f => f.ruta))
 }
 
 /** La dirección de una pestaña (la de entrada va sin ?tab). */
@@ -161,7 +165,8 @@ const BOTON = 'text-[13px] font-medium text-ink-1 bg-bg-2/60 border border-line 
 
 /** El Panorama. `lista`: lo de useListaTecnica; `filas`: las de tu lista;
  *  `semana`: lo de useTusSenales. */
-export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
+/** `diaDelMapa`: lo del día del mapa, fijo (sólo la prueba; ver MapaCartera). */
+export function Panorama({ lista, filas, semana, hidden, onVer, onPestana, diaDelMapa = null }) {
   const datos = semana.datos
   // Las alertas de la cuenta, para que cada campanita sepa si ya hay una igual:
   // una vez por pantalla, no una por botón, y sólo si se abre el Panorama.
@@ -179,8 +184,8 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] gap-4">
         <PanoramaPlata semana={semana} hidden={hidden} />
-        <MapaCartera filas={filas} cargando={lista.cargando} error={!!lista.error} hidden={hidden}
-          sinLectura={sinLectura} rutaOtros={urlDePestana('lista')} />
+        <MapaCartera conTusActivos filas={filas} cargando={lista.cargando} error={!!lista.error} hidden={hidden}
+          sinLectura={sinLectura} rutaOtros={urlDePestana('lista')} dia={diaDelMapa} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] gap-4 items-start">
@@ -287,7 +292,7 @@ export default function AnalisisTecnico() {
     [lista.cargando, lista.error, lista.tenencias, lista.seguidos, lista.indice])
 
   const elegir = (id) => {
-    if (id === 'comparar') { navigate(urlDeCompararTuyos(filas)); return }
+    if (id === 'comparar') { navigate(urlDeCompararTuyos(filas, hidden)); return }
     const next = new URLSearchParams(searchParams)
     if (id === DE_ENTRADA) next.delete('tab'); else next.set('tab', id)
     setSearchParams(next)

@@ -21,6 +21,7 @@ import { clave } from './radiografia'
 import { polarityColor, CORTES_DIA, CORTES_PROMEDIO } from './polarityScale'
 import { leer, guardar } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
+import { ordenConElOjito } from './parteDeTuPlata'
 
 // ─── De qué se pinta cada cuadrito («Color por», Nico 30/10: «Sí, sumarlo») ──
 // Tendencia de entrada (lo del lienzo del Panorama). «Hoy» y «Contra tu
@@ -90,6 +91,28 @@ export function conElDia(cuadritos = [], delDia = null, moneda = {}) {
   })
 }
 
+// ─── El pedido de lo del día: cargando, listo o falló (auditoría D3, 31/10) ──
+// Antes había un solo estado, «sin datos»: mientras llegaba el pedido cada
+// cuadrito decía «sin dato de hoy», y si fallaba quedaba así para siempre. «No
+// llegó todavía» y «no se pudo traer» no son «no hay dato».
+/** GET /api/cartera/mapa-del-dia → { estado: 'listo', datos } o { estado: 'fallo' }
+ *  (también si la respuesta no tiene la forma esperada). `get`: api.get. */
+export async function pedirElDia(get) {
+  try {
+    const r = await get('/cartera/mapa-del-dia')
+    return r && Array.isArray(r.activos) ? { estado: 'listo', datos: r } : { estado: 'fallo', datos: null }
+  } catch {
+    return { estado: 'fallo', datos: null }
+  }
+}
+/** Lo que dice cada cuadrito («Hoy» o «Contra tu promedio») mientras no hay datos. */
+export const SIN_EL_DIA = { cargando: 'cargando lo de hoy…', fallo: 'no pudimos traer lo de hoy' }
+/** El renglón arriba del mapa en esos dos casos. */
+export const AVISO_DEL_DIA = {
+  cargando: 'Cargando cuánto se movió cada uno…',
+  fallo: 'No pudimos traer cuánto se movió cada uno.',
+}
+
 const SIN_DATO = { bg: 'rgb(var(--bg-3))', ink: 'rgb(var(--ink-2))' }
 /** El color de un cuadrito en «Hoy» o «Contra tu promedio» ({bg, ink} para
  *  `style`; sin dato, gris). En «Tendencia», null: van los tonos del lienzo. */
@@ -142,11 +165,8 @@ export function cuadritosDelMapa(filas = [], { hidden = false, sinLectura = [] }
     const nombre = efectivo && !pf ? 'Efectivo' : pf && !efectivo ? 'Plazos fijos' : 'Efectivo y plazos fijos'
     out.push({ clave: 'efectivo', nombre, ruta: null, peso: resto, tendencia: 'sin' })
   }
-  if (hidden) {
-    out = out.map(c => ({ ...c, peso: null })).sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
-  } else {
-    out.sort((a, b) => b.peso - a.peso || a.nombre.localeCompare(b.nombre, 'es'))
-  }
+  out = ordenConElOjito(hidden ? out.map(c => ({ ...c, peso: null })) : out, hidden,
+    { nombre: c => c.nombre, sinOjito: (a, b) => b.peso - a.peso || a.nombre.localeCompare(b.nombre, 'es') })
   if (out.length <= MAX_CUADRITOS) return out
   // Los que no entran, juntos en uno (sin color: tienen tendencias distintas).
   const vistos = out.slice(0, MAX_CUADRITOS - 1)

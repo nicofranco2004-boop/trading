@@ -6,7 +6,7 @@
 // sólo se filtra, se ordena, se agrupa por día y se arman los textos de la
 // franja de arriba y de cada tarjeta de la agenda.
 
-import { parteDeTuPlata } from './parteDeTuPlata'
+import { parteDeTuPlata, ordenConElOjito } from './parteDeTuPlata'
 import { AVISO_OCULTO } from './ocultarSaldos'
 
 // Lo mismo, dicho igual en la Cartera (RadiografiaTecnica), el Panorama y
@@ -133,9 +133,10 @@ export function quienCorto(s, hidden) {
  *  usan Señales, sus barras y el Panorama (que elige los 3 más nuevos). */
 export function enOrden(senales = [], hidden = false) {
   if (!hidden) return senales
-  return [...senales].sort((a, b) => (a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0)
-    || (Number(!!b.tenes) - Number(!!a.tenes))
-    || String(a.asset).localeCompare(String(b.asset)))
+  return ordenConElOjito(senales, true, {
+    nombre: s => s.asset,
+    antes: (a, b) => (a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0) || (Number(!!b.tenes) - Number(!!a.tenes)),
+  })
 }
 
 /** Los días de las barras, de `desde` (exclusive, como el servidor) a `hasta`:

@@ -12,7 +12,8 @@
 // Abajo, «tu plata por sector»: cuánto de tu plata está en sectores donde la
 // mayoría de las acciones sube o baja de fondo y, al tocar, qué papeles tuyos
 // cayeron en cada uno (y cuáles no tienen sector). Con «Ocultar saldos» no se
-// muestran los %.
+// muestran los % y sectores y papeles van de la A a la Z (de más a menos plata,
+// el orden también decía dónde tenés más: ordenConElOjito, utils/parteDeTuPlata).
 //
 // El número y sus partes vienen armados de GET /api/termometro
 // (backend/termometro.py); las palabras, de utils/termometro.js.
@@ -105,7 +106,7 @@ export function TuPlata({ tp, oculto = false, abierto: fijo = null }) {
       </button>
       {ver && (
         <ul className="flex flex-col divide-y divide-line border border-line rounded-xl">
-          {filasTuPlata(tp, nombreSector).map(f => (
+          {filasTuPlata(tp, nombreSector, oculto).map(f => (
             <li key={f.id} className="px-3 py-2.5 flex flex-col gap-0.5">
               <div className="flex items-baseline justify-between gap-3">
                 <span className="text-[14px] text-ink-0 font-medium">{f.nombre}</span>

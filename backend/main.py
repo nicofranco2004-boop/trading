@@ -35009,8 +35009,20 @@ def get_mapa_del_dia(uid: int = Depends(get_effective_user)):
     if cached is not None and time.time() - cached[0] < _CARTERA_HOY_TTL_SEC:
         return cached[1]
     hoy, lotes, mercados, _ = _lotes_del_dia(uid)
+    resumen = _ch.armar(lotes, hoy, mercados)
+    # «Hoy tus activos · vie 30/10» (Panorama, Nico 31/10, A4): lo que se
+    # movieron en la ÚLTIMA rueda que se midió, con su fecha. Un sábado (o un
+    # feriado) es la del viernes y la pantalla lo dice con la fecha, en vez de
+    # esconder el renglón o llamar «hoy» al viernes. Es el primer grupo de
+    # `armar` con fecha y %: el de hoy si lo hay (el mismo que `la_cartera_hoy`),
+    # si no el más nuevo.
+    ultima = next((m for m in resumen.get("movimiento") or []
+                   if m.get("rueda") and m.get("pct_sobre_la_cartera") is not None), None)
     out = {"hoy": hoy,
-           "cartera": _ch.la_cartera_hoy(_ch.armar(lotes, hoy, mercados)),
+           "cartera": _ch.la_cartera_hoy(resumen),
+           "ultima_rueda": None if ultima is None else {
+               "rueda": ultima["rueda"], "es_hoy": bool(ultima["es_hoy"]),
+               "pct": ultima["pct_sobre_la_cartera"], "usd": ultima["usd"], "mercados": ultima["mercados"]},
            "activos": _ch.por_activo(lotes, hoy)}
     if len(_MAPA_DEL_DIA_CACHE) > 500:
         _MAPA_DEL_DIA_CACHE.clear()

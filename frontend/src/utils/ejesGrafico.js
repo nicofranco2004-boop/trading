@@ -40,6 +40,30 @@ export function rangoCorrido(lo, hi, f) {
   return { lo: lo + d, hi: hi + d }
 }
 
+// ─── El precio «a mano» lleva DOS rangos (auditoría D4, 31/10) ────────────────
+// El de la pantalla (`lo`, `hi`) y el de la imagen de «Compartir» (`comp`). En
+// automático la pantalla se estira hasta tu precio de compra y la imagen no
+// (`compartible`, LecturaTecnica: si se estirara, la franja vacía diría más o
+// menos a cuánto compraste). Antes, al arrastrar, el rango a mano arrancaba del
+// de la PANTALLA y ése era el que se compartía: la imagen llevaba tu precio en
+// la escala. Ahora cada arrastre mueve los dos con el mismo gesto, y el de la
+// imagen arranca de `compartible`: nunca sabe de tu precio.
+
+/** El rango a mano al empezar a arrastrar: [lo, hi] de la pantalla y de la imagen. */
+export function empezarAMano([lo, hi], [cLo, cHi]) {
+  return { lo, hi, comp: { lo: cLo, hi: cHi } }
+}
+
+/** Arrastrar el gráfico una fracción `f` de su alto (ver rangoCorrido), los dos rangos. */
+export function correrAMano(mano, f) {
+  return { ...rangoCorrido(mano.lo, mano.hi, f), comp: rangoCorrido(mano.comp.lo, mano.comp.hi, f) }
+}
+
+/** Arrastrar la columna de precios `dy` píxeles desde `inicio` (ver rangoEstirado), los dos rangos. */
+export function estirarAMano(inicio, dy) {
+  return { ...rangoEstirado(inicio.lo, inicio.hi, dy), comp: rangoEstirado(inicio.comp.lo, inicio.comp.hi, dy) }
+}
+
 /** El zoom de la fila de fechas: arrastrar `dx` píxeles a la izquierda acerca
  *  (factor < 1, menos días a la vista); a la derecha aleja. */
 export function factorDeFechas(dx) {

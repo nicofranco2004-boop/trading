@@ -62,6 +62,10 @@ export function anchoVisible() {
   return document.documentElement?.clientWidth || window.innerWidth
 }
 
+// El área tocable del «?» (ver el botón). El `::before` es parte del botón: un
+// toque ahí abre el globo y no cuenta como «tocar afuera».
+export const AREA_TOCABLE = "relative before:absolute before:-inset-1.5 before:content-[''] [@media(pointer:coarse)]:before:-inset-4"
+
 export default function InfoTooltip({ children, label = 'Cómo se calcula', size = 13, align = 'right', side = 'bottom', ancho = 'w-64' }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
@@ -131,10 +135,14 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
 
   return (
     <span ref={ref} className="relative inline-block">
+      {/* El área que se toca es más grande que el ícono (auditoría D7, 31/10:
+          el «?» medía 13×13 px y en el celular había que acertarle). Un
+          `::before` invisible la agranda sin mover nada: con mouse 6 px de cada
+          lado (25×25) y con el dedo 16 (45×45, lo que piden Apple y Google). */}
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className={`inline-flex items-center justify-center rounded-full transition ${
+        className={`${AREA_TOCABLE} inline-flex items-center justify-center rounded-full transition ${
           open
             ? 'text-ink-1'
             : 'text-ink-3 hover:text-ink-2 dark:hover:text-ink-1'

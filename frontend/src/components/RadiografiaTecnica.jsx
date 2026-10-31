@@ -23,7 +23,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../utils/api'
 import { usePrivacy } from '../contexts/PrivacyContext'
-import { parteDeTuPlata } from '../utils/parteDeTuPlata'
+import { parteDeTuPlata, ordenConElOjito } from '../utils/parteDeTuPlata'
 import {
   activosParaLeer, indexarLecturas, lecturaDeFila, tendencia, fuerza, MOTIVOS_SIN_LECTURA,
 } from '../utils/radiografia'
@@ -200,10 +200,7 @@ export function TarjetaPlata({ reparto, cargando, error, titulo, cambio = null, 
   const etiqueta = `${pct('alcista')} alcista, ${pct('bajista')} bajista, ${pct('sin')} sin lectura`
   // El servidor manda los nombres de más a menos plata: con «Ocultar saldos» ese
   // orden diría cuál pesa más, así que van por orden alfabético.
-  const enOrden = (nombres) => {
-    const n = nombres.map(fciLabel)
-    return hidden ? [...n].sort((a, b) => a.localeCompare(b, 'es')) : n
-  }
+  const enOrden = (nombres) => ordenConElOjito(nombres.map(fciLabel), hidden)
   return (
     <section aria-label="Radiografía técnica" className={`bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-3 ${className}`}>
       {cabecera}
