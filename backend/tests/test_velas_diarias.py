@@ -23,9 +23,10 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -325,19 +326,49 @@ class VelasDiariasTest(unittest.TestCase):
         self.assertEqual([p[1] for p in self.yahoo.pedidos], ["1mo"])
         self.assertIn(420.0, {v["close"] for v in self._velas("MSFT")})
 
-    def test_cada_30_dias_se_baja_la_historia_entera(self):
-        self._broker("Schwab", "USD")
-        self._posicion("Schwab", "MSFT", "STOCK")
-        self.yahoo.precios["MSFT"] = lambda d: 400.0
-        main._run_velas_diarias_job()
-        hace_31 = (self.hoy - timedelta(days=31)).isoformat() + " 03:00:00"
+    def _con_dia_de_completa(self, toca: bool, prefijo: str = "ZC") -> str:
+        """Un ticker cuyo día de la bajada entera del mes (`dia_de_la_completa`)
+        es hoy (`toca`) o no."""
+        hoy = self.hoy.toordinal() % velas_diarias.DIAS_ENTRE_COMPLETAS
+        i = 0
+        while (velas_diarias.dia_de_la_completa(f"{prefijo}{i}") == hoy) != toca:
+            i += 1
+        return f"{prefijo}{i}"
+
+    def _completa_hace(self, dias, *tickers):
+        hace = (self.hoy - timedelta(days=dias)).isoformat() + " 03:00:00"
         with main.db_abierta() as conn:
-            conn.execute("UPDATE velas_estado SET ultima_completa=? WHERE symbol='MSFT'", (hace_31,))
+            for t in tickers:
+                conn.execute("UPDATE velas_estado SET ultima_completa=? WHERE symbol=?", (hace, t))
             conn.commit()
+
+    def test_cada_30_dias_se_baja_la_historia_entera(self):
+        # Una vez por mes, cada uno en SU día (`dia_de_la_completa`): con la
+        # misma `ultima_completa` (la primera noche, o al forzar los 5 años) no
+        # se rebajan todos juntos cada 30 días (auditoría final C4).
+        toca, no_toca = self._con_dia_de_completa(True), self._con_dia_de_completa(False)
+        self._broker("Schwab", "USD")
+        for t in (toca, no_toca):
+            self._posicion("Schwab", t, "STOCK")
+            self.yahoo.precios[t] = lambda d: 400.0
+        main._run_velas_diarias_job()
+        self._completa_hace(31, toca, no_toca)
         self.yahoo.pedidos.clear()
         main._run_velas_diarias_job()
-        self.assertEqual([p[1] for p in self.yahoo.pedidos], [velas_diarias.PERIODO_COMPLETO])
-        self.assertEqual(len(self._velas("MSFT")), self.completa)
+        self.assertEqual(sorted(self.yahoo.pedidos),
+                         sorted([(toca, velas_diarias.PERIODO_COMPLETO, False), (no_toca, "1mo", False)]),
+                         "pasó un mes: el de hoy se baja entero, el otro espera su día")
+        self.assertEqual(len(self._velas(toca)), self.completa)
+        # Antes de la mitad del mes no toca aunque sea su día.
+        self._completa_hace(10, toca)
+        self.yahoo.pedidos.clear()
+        main._run_velas_diarias_job()
+        self.assertEqual({p[1] for p in self.yahoo.pedidos}, {"1mo"})
+        # Pasado mes y medio (su día cayó en una noche que no corrió), toca igual.
+        self._completa_hace(46, toca, no_toca)
+        self.yahoo.pedidos.clear()
+        main._run_velas_diarias_job()
+        self.assertEqual({p[1] for p in self.yahoo.pedidos}, {velas_diarias.PERIODO_COMPLETO})
 
     def test_los_que_tenian_3_anios_completan_5_con_la_bajada_del_mes(self):
         # Así se pasó de 3 a 5 años (29/10/2026) sin una noche especial: lo
@@ -358,10 +389,8 @@ class VelasDiariasTest(unittest.TestCase):
         self.assertEqual([p[1] for p in self.yahoo.pedidos], ["1mo"], "todavía no le toca la del mes")
         self.assertEqual(len(self._velas("MSFT")), tres)
 
-        hace_31 = (self.hoy - timedelta(days=31)).isoformat() + " 03:00:00"
-        with main.db_abierta() as conn:
-            conn.execute("UPDATE velas_estado SET ultima_completa=? WHERE symbol='MSFT'", (hace_31,))
-            conn.commit()
+        # Le toca la bajada entera (pasado mes y medio, sea o no su día).
+        self._completa_hace(46, "MSFT")
         self.yahoo.pedidos.clear()
         main._run_velas_diarias_job()
         self.assertEqual(self.yahoo.pedidos, [("MSFT", "5y", False)])
@@ -598,6 +627,160 @@ class VelasDiariasTest(unittest.TestCase):
         with main.db_abierta() as conn:
             velas_diarias.actualizar(conn, tickers)
         self.assertEqual(self.yahoo.pedidos[0][0], "T07", "en actualizar, primero")
+
+    # — auditoría final C (31/10/2026), por la corrida de la noche —
+
+    def test_c1_una_tanda_de_lo_que_fallo_durante_un_corte_no_suma_fallas(self):
+        # Lo que falló una vez va al final de la fila, justo donde Yahoo ya
+        # cortó. La tanda sola no tiene «los que andaban» para darse cuenta: sin
+        # el canario (el S&P 500) se anotaba una falla por noche y a las tres
+        # quedaba semanal siendo real.
+        buenos = self._cartera_de(7)
+        fallados = ["FA0", "FA1", "FA2", "FA3"]
+        for t in fallados:
+            self._posicion("Schwab", t, "STOCK")          # sin precio: la noche 1 fallan
+        with mock.patch("velas_diarias.TANDA", 4):
+            main._run_velas_diarias_job()
+            self.assertEqual(self._estado("FA0")["fallas_seguidas"], 1)
+            for t in fallados:
+                self.yahoo.precios[t] = lambda d: 7.0     # existen: aquello fue un corte
+            real, n, cortado = self.yahoo, [0], {"si": False}
+
+            def yahoo(ticker, period, interval, auto_adjust, timeout):
+                n[0] += 1
+                if n[0] > 8:                              # S&P 500 + 7: después, Yahoo corta
+                    cortado["si"] = True
+                return pd.DataFrame() if cortado["si"] else real(ticker, period, interval, auto_adjust, timeout)
+
+            def dormir(seg):
+                cortado["si"], n[0] = False, -1000
+            with mock.patch("pricing.yahoo._historia", yahoo), mock.patch("velas_diarias._dormir", dormir):
+                main._run_velas_diarias_job()
+        noche = self._ultima_noche()
+        self.assertEqual((noche["pausas"], noche["sin_datos"]), (1, 0))
+        for t in fallados:
+            self.assertEqual((self._estado(t)["ok"], self._estado(t)["fallas_seguidas"]), (1, 0), t)
+        self.assertTrue(all(self._estado(t)["ok"] for t in buenos))
+
+    def test_c1_si_el_canario_contesta_la_falla_es_de_verdad(self):
+        self._broker("Schwab", "USD")
+        for t in ("NOA", "NOB", "NOC", "NOD"):
+            self._posicion("Schwab", t, "STOCK")          # no existen en Yahoo
+        with mock.patch("velas_diarias.TANDA", 2), mock.patch("velas_diarias._dormir") as dormir:
+            main._run_velas_diarias_job()
+        dormir.assert_not_called()
+        self.assertEqual(self._ultima_noche()["sin_datos"], 4)
+        self.assertEqual(self._estado("NOA")["fallas_seguidas"], 1)
+
+    def test_c2_lo_que_tarda_no_es_una_falla(self):
+        tickers = self._cartera_de(2)
+        main._run_velas_diarias_job()
+        real = self.yahoo
+
+        def lento(ticker, period, interval, auto_adjust, timeout):
+            if ticker == "T01":
+                time.sleep(1.0)
+            return real(ticker, period, interval, auto_adjust, timeout)
+        with mock.patch("pricing.yahoo._historia", lento), mock.patch("velas_diarias.TOPE_TANDA_SEG", 0.3):
+            main._run_velas_diarias_job()
+        time.sleep(1.0)                                   # que termine el pedido lento
+        e = self._estado("T01")
+        self.assertEqual((e["ok"], e["fallas_seguidas"]), (1, 0), "tardar no es «no existe»")
+        n = self._ultima_noche()
+        self.assertEqual((n["demorados"], n["sin_datos"]), (1, 0))
+        self.assertTrue(all(self._estado(t)["ok"] for t in tickers))
+
+    def test_c3_si_la_bajada_entera_vuelve_vacia_se_pide_el_ultimo_mes(self):
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "MSFT", "STOCK")
+        self.yahoo.precios["MSFT"] = lambda d: 400.0
+        main._run_velas_diarias_job()
+        real = self.yahoo
+
+        def sin_cinco_anios(ticker, period, interval, auto_adjust, timeout):
+            if ticker == "MSFT" and period == velas_diarias.PERIODO_COMPLETO:
+                return pd.DataFrame()
+            return real(ticker, period, interval, auto_adjust, timeout)
+        with mock.patch("pricing.yahoo._historia", sin_cinco_anios):
+            for k in range(3):                            # tres noches en que le toca la entera
+                self._completa_hace(46, "MSFT")
+                self._borrar_desde("MSFT", _ruedas(self.hoy, 2)[0])
+                main._run_velas_diarias_job()
+                e = self._estado("MSFT")
+                self.assertEqual((e["ok"], e["fallas_seguidas"]), (1, 0), f"noche {k + 1}")
+                self.assertEqual(self._velas("MSFT")[-1]["date"], _ruedas(self.hoy, 1)[0].isoformat(),
+                                 "la vela no se congela")
+        self.assertEqual(self._ultima_noche()["completas_por_el_mes"], 1)
+        self.assertEqual(len(self._velas("MSFT")), self.completa, "lo guardado sigue entero")
+
+    def _borrar_desde(self, ticker, d):
+        with main.db_abierta() as conn:
+            conn.execute("DELETE FROM velas_diarias WHERE symbol=? AND date>=?", (ticker, d.isoformat()))
+            conn.commit()
+
+    def test_c4_forzar_los_5_anios_de_2500_se_reparte_en_noches_y_despues_cada_uno_en_su_dia(self):
+        # Al publicar se fuerzan los 5 años: `ultima_completa` en NULL para todos.
+        # Sin tope, los 2.500 pedían 5 años la misma noche y quedaban con la misma
+        # fecha: cada 30 días, todos juntos otra vez.
+        hoy = date(2026, 11, 2)
+        ts = [f"F{i:04d}" for i in range(2500)]
+        with main.db_abierta() as conn:
+            conn.executemany("INSERT INTO velas_estado (symbol, ultima_corrida, ultima_completa, ok, filas, "
+                             "fallas_seguidas) VALUES (?, '2026-11-01 03:00:00', NULL, 1, 3, 0)",
+                             [(t,) for t in ts])
+            conn.commit()
+        df = _tabla({d: (10.0, 10.1, 9.9, 10.0, 1.0) for d in _ruedas(hoy, 3)})
+        por_noche, enteras = [], set()
+
+        def noche(k):
+            dia = hoy + timedelta(days=k)
+            cuenta = {}
+
+            def bajar(t, periodo):
+                cuenta[periodo] = cuenta.get(periodo, 0) + 1
+                if periodo == velas_diarias.PERIODO_COMPLETO:
+                    enteras.add(t)
+                return df
+            reloj = datetime(dia.year, dia.month, dia.day, 3, 0)
+            with mock.patch("velas_diarias._ahora_utc", lambda: reloj), main.db_abierta() as conn:
+                velas_diarias.actualizar(conn, ts, bajar=bajar, hoy=dia.isoformat(), semanal=True, podar=False)
+                faltan = conn.execute("SELECT COUNT(*) AS n FROM velas_estado "
+                                      "WHERE ultima_completa IS NULL").fetchone()["n"]
+            return cuenta.get(velas_diarias.PERIODO_COMPLETO, 0), cuenta.get("1mo", 0), faltan
+        for k in range(4):
+            por_noche.append(noche(k))
+        self.assertEqual(por_noche, [(700, 1800, 1800), (700, 1800, 1100), (700, 1800, 400), (400, 2100, 0)],
+                         "4 noches, nunca más de COMPLETAS_POR_DIA enteras por noche")
+        # Después, cada uno en su día: antes de los 15 días no toca a nadie, y
+        # del día 15 al 47 cada uno tiene su bajada entera del mes sin que
+        # ninguna noche junte más que una fracción (antes: 2.500 el día 30).
+        self.assertEqual(noche(10)[0], 0)
+        enteras.clear()
+        siguientes = [noche(k)[0] for k in range(15, 48)]
+        self.assertEqual(len(enteras), 2500, "todos tuvieron su bajada entera del mes")
+        self.assertLessEqual(max(siguientes), 200, siguientes)
+
+    def test_c5_una_bajada_entera_cortada_no_borra_lo_guardado(self):
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "MSFT", "STOCK")
+        self.yahoo.precios["MSFT"] = lambda d: 400.0
+        main._run_velas_diarias_job()
+        ultimas = _ruedas(self.hoy, 10)
+        cortada = lambda ticker, period, interval, auto_adjust, timeout: _tabla(
+            {d: (400.0, 404.0, 396.0, 400.0, 1.0) for d in ultimas})
+        self._completa_hace(46, "MSFT")
+        with mock.patch("pricing.yahoo._historia", cortada):
+            main._run_velas_diarias_job()
+        self.assertEqual(len(self._velas("MSFT")), self.completa, "no quedan sólo las últimas 10")
+        self.assertEqual(self._estado("MSFT")["ultima_completa"][:10],
+                         (self.hoy - timedelta(days=46)).isoformat(), "no cuenta como bajada entera")
+        self.assertEqual(self._ultima_noche()["completas_cortadas"], 1)
+        # Con un split sí se reemplaza aunque venga corta: mezclar escalas es peor.
+        partida = lambda ticker, period, interval, auto_adjust, timeout: _tabla(
+            {d: (100.0, 101.0, 99.0, 100.0, 1.0) for d in ultimas})
+        with mock.patch("pricing.yahoo._historia", partida):
+            main._run_velas_diarias_job()
+        self.assertEqual({v["close"] for v in self._velas("MSFT")}, {100.0})
 
     def test_un_activo_bajado_entero_se_guarda_en_pocas_consultas(self):
         # En Postgres cada consulta es un viaje por la red: guardar vela por vela
