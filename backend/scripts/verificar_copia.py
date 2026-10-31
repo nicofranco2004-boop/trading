@@ -363,6 +363,34 @@ def secuencias_atrasadas(cur) -> List[Dict[str, Any]]:
     return malas
 
 
+def secuencias_que_reusarian(cur_origen, cur_destino) -> List[Dict[str, Any]]:
+    """Tablas cuya secuencia daría el id de una fila que el ORIGEN ya borró.
+
+    SQLite (`AUTOINCREMENT`) sigue desde `sqlite_sequence`: el mayor id que
+    EXISTIÓ, aunque esa fila ya no esté. Mirar sólo el mayor que existe hoy
+    (`secuencias_atrasadas`) deja pasar una secuencia que reusa ids borrados, y
+    hay tablas que guardan ids de otras (`medicion_original.snapshot_id` decide
+    «este original es de esta foto» por el id). Medido el 31/10/2026 en la copia
+    de producción del 16/08: 394 ids reusables en 4 tablas.
+    """
+    try:
+        recuerda = dict(cur_origen.execute("SELECT name, seq FROM sqlite_sequence").fetchall())
+    except Exception:
+        return []                                  # el origen no usa AUTOINCREMENT
+    malas = []
+    for tabla, seq in sorted(recuerda.items()):
+        sec = cur_destino.execute(
+            "SELECT pg_get_serial_sequence(quote_ident(%s), 'id')", (tabla,)).fetchone()
+        if not sec or not sec[0]:
+            continue
+        last_value, is_called = cur_destino.execute(
+            f"SELECT last_value, is_called FROM {sec[0]}").fetchone()
+        proximo = last_value + 1 if is_called else last_value
+        if proximo <= int(seq):
+            malas.append({"tabla": tabla, "proximo_id": proximo, "el_origen_iba_por": int(seq)})
+    return malas
+
+
 # ── Los adaptadores: un cursor uniforme sobre los dos motores ────────────────
 
 class CursorSqlite:
@@ -536,6 +564,12 @@ def comparar(cur_origen, cur_destino, esquema: Dict[str, List[Tuple[str, str]]],
                           "que": "la secuencia daría un id que ya existe "
                                  "(¿falta el setval?)",
                           "proximo_id": s["proximo_id"], "max_id": s["max_id"]})
+    for s in (secuencias_que_reusarian(cur_origen, cur_destino) if revisar_secuencias else []):
+        hallazgos.append({"nivel": 3, "tabla": s["tabla"],
+                          "que": "la secuencia reusaría ids que el origen ya borró "
+                                 "(el setval tiene que llegar a sqlite_sequence)",
+                          "proximo_id": s["proximo_id"],
+                          "el_origen_iba_por": s["el_origen_iba_por"]})
     # `tablas_comparadas` cuenta las que de verdad se digestearon, no las que se
     # pensaba mirar. Misma familia que el fail-open: un número que dice "60" cuando
     # se leyeron 58 es la forma en que un informe verde tapa una tabla sin revisar.
