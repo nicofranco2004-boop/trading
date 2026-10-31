@@ -165,7 +165,8 @@ const BOTON = 'text-[13px] font-medium text-ink-1 bg-bg-2/60 border border-line 
 
 /** El Panorama. `lista`: lo de useListaTecnica; `filas`: las de tu lista;
  *  `semana`: lo de useTusSenales. */
-export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
+/** `diaDelMapa`: lo del día del mapa, fijo (sólo la prueba; ver MapaCartera). */
+export function Panorama({ lista, filas, semana, hidden, onVer, onPestana, diaDelMapa = null }) {
   const datos = semana.datos
   // Las alertas de la cuenta, para que cada campanita sepa si ya hay una igual:
   // una vez por pantalla, no una por botón, y sólo si se abre el Panorama.
@@ -183,8 +184,8 @@ export function Panorama({ lista, filas, semana, hidden, onVer, onPestana }) {
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] gap-4">
         <PanoramaPlata semana={semana} hidden={hidden} />
-        <MapaCartera filas={filas} cargando={lista.cargando} error={!!lista.error} hidden={hidden}
-          sinLectura={sinLectura} rutaOtros={urlDePestana('lista')} />
+        <MapaCartera conTusActivos filas={filas} cargando={lista.cargando} error={!!lista.error} hidden={hidden}
+          sinLectura={sinLectura} rutaOtros={urlDePestana('lista')} dia={diaDelMapa} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] gap-4 items-start">
