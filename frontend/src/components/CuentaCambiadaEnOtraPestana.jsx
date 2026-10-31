@@ -5,15 +5,19 @@
 // Desde ese instante utils/api no deja salir ningún pedido de esta pestaña
 // (`pestanaDesfasada`): lo que se tocara acá se guardaba en la cuenta de otro,
 // o lo tocado en el demo en la cuenta real (re-test a ciegas 3 y 4, 30/10).
-// AuthContext la recarga sola en un instante; el cartel lo avisa, sin botones:
-// no hay a qué volver, la sesión ya es la otra. Lo que estaba a medio cargar
-// se pierde con la recarga.
+// AuthContext la recarga sola en un instante; el cartel lo avisa. No hay a
+// qué volver —la sesión ya es la otra—, pero SIEMPRE ofrece «Cerrar sesión»:
+// si la recarga no lo arregla (tiene tope: utils/api.recargarPorPersona), es la
+// salida, y sale aunque la pestaña esté frenada (re-test a ciegas 5: una
+// recarga sin fin con un cartel sin botones no dejaba ni cerrar sesión). Lo
+// que estaba a medio cargar se pierde con la recarga.
 // El CLIENTE del asesor no pasa por acá: cada pestaña tiene el suyo
 // (utils/api), así que dos pestañas con dos clientes trabajan a la vez.
 // Se redibuja con cada aviso: si el motivo cambia, dice el de ahora.
 import { useEffect, useState } from 'react'
 import { ArrowLeftRight } from 'lucide-react'
 import { EVENTO_PESTANA_DESFASADA, pestanaDesfasada } from '../utils/api'
+import { useAuth } from '../contexts/AuthContext'
 
 function queCambio(desfase) {
   if (desfase.motivo === 'demo') {
@@ -25,6 +29,7 @@ function queCambio(desfase) {
 }
 
 export default function CuentaCambiadaEnOtraPestana() {
+  const { logout } = useAuth() || {}
   const [desfase, setDesfase] = useState(() => pestanaDesfasada())
   useEffect(() => {
     const mirar = () => setDesfase(pestanaDesfasada())
@@ -49,7 +54,19 @@ export default function CuentaCambiadaEnOtraPestana() {
               Cambiaste de cuenta en otra pestaña
             </h2>
             <p className="text-sm text-ink-2">{queCambio(desfase)}</p>
+            {desfase.sinSalida && (
+              <p className="text-sm text-ink-2">
+                No se pudo recargar con la sesión nueva. Cerrá sesión y volvé a entrar.
+              </p>
+            )}
           </div>
+        </div>
+        <div className="flex justify-end mt-4">
+          <button
+            onClick={() => { try { logout?.() } finally { window.location.href = '/' } }}
+            className="px-4 py-2 text-sm bg-bg-2 hover:bg-bg-3 border border-line text-ink-1 rounded transition">
+            Cerrar sesión
+          </button>
         </div>
       </div>
     </div>

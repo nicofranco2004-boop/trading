@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { api, clearClientContext, EVENTO_PLAN_REQUERIDO, marcarPersonaCambiada } from '../utils/api'
+import { api, clearClientContext, EVENTO_PLAN_REQUERIDO, marcarPersonaCambiada, recargarPorPersona } from '../utils/api'
 import { setBrokersRegistry } from '../utils/valuation'
 import { isDemoMode, enableDemoMode, disableDemoMode, vencerDemoSiCorresponde } from '../utils/demo'
 import { track } from '../utils/track'
@@ -123,12 +123,27 @@ export function AuthProvider({ children }) {
 
   // Rehidratación: si la cookie HttpOnly es válida, /auth/me devuelve el user.
   // No hay token visible para JS — confiamos en la cookie. En demo skipeamos.
+  //
+  // 🔴 «¿QUIÉN SOY?» AL ABRIR NO SE RECHAZA POR PERSONA (re-test a ciegas 5). Si
+  // el navegador quedó con la persona guardada de Ana y la sesión de Bruno (un
+  // inicio de sesión de Bruno cortado justo entre la respuesta y el guardado),
+  // esta pregunta decía «soy Ana», el servidor la rechazaba, la página se
+  // recargaba y volvía a preguntar lo mismo: recarga sin fin, sin poder ni
+  // cerrar sesión. Al abrir, la pestaña todavía no tocó nada de nadie, así que
+  // se le cree al servidor: sale sin decir quién es (`sinPersona`) y, si la
+  // sesión es de otra persona que la guardada, la pestaña pasa a ser de ésa —lo
+  // de la anterior se borra (utils/api, al guardar la nueva)— y se recarga UNA
+  // vez, para que ninguna pantalla siga con lo que leyó como Ana. En la próxima
+  // apertura la guardada y la del servidor coinciden: no hay bucle.
   useEffect(() => {
     if (isDemoMode()) { setBootstrapped(true); return }
-    api.get('/auth/me')
+    const guardada = quienEs(user)
+    api.get('/auth/me', { sinPersona: true })
       .then(me => {
         const fresh = mapMeToUser(me)
         guardarEnAlmacen(CATALOGO.usuario, JSON.stringify(fresh))
+        // Con el tope de recargas alcanzado, sigue como la del servidor sin recargar.
+        if (guardada && quienEs(fresh) !== guardada && recargarPorPersona()) return
         setUser(fresh)
         refreshPlanFeatures()
         // Analytics: identificar al user y setear propiedades para segmentación
@@ -181,19 +196,25 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     let espera = null
     const yo = user?.demo ? 'demo' : quienEs(user)
-    const otraPersona = () => {
-      if (isDemoMode()) return yo !== 'demo'
-      let ahora = null
-      try { ahora = JSON.parse(leerDelAlmacen(CATALOGO.usuario)) } catch { /* basura → nadie */ }
-      return quienEs(ahora) !== yo
+    const ahora = () => {
+      if (isDemoMode()) return 'demo'
+      try { return quienEs(JSON.parse(leerDelAlmacen(CATALOGO.usuario))) } catch { return null /* basura → nadie */ }
     }
     const mirar = () => {
-      if (otraPersona()) window.location.reload()
+      if (ahora() !== yo) recargarPorPersona(0)          // los 300 ms ya se esperaron
       else marcarPersonaCambiada(false)
     }
     const alCambiarEnOtraPestana = (e) => {
       if (e.key !== null && e.key !== 'rendi_user' && e.key !== CATALOGO.modoDemo.clave) return
-      marcarPersonaCambiada(otraPersona())
+      // Se frena en el acto sólo si ya hay OTRA persona. «Nadie» es el paso
+      // del medio de salir y volver a entrar (la misma persona, en otra
+      // pestaña): ahí la sesión ya no existe —el servidor contesta 401, no
+      // atiende a nadie— y frenar mostraba un instante el cartel de «otra
+      // persona» a la misma persona (re-test a ciegas 5). Se mira igual a los
+      // 300 ms.
+      const quien = ahora()
+      if (quien !== null && quien !== yo) marcarPersonaCambiada(true)
+      else if (quien === yo) marcarPersonaCambiada(false)
       clearTimeout(espera)
       espera = setTimeout(mirar, 300)
     }
@@ -356,7 +377,9 @@ export function AuthProvider({ children }) {
     } else {
       // Server-side: borra la cookie HttpOnly. Si falla (network), igual
       // limpiamos el estado local; la cookie expira en 7d como fallback.
-      api.post('/auth/logout').catch(() => {})
+      // Sin freno y sin decir quién es: cerrar sesión tiene que salir aunque la
+      // pestaña esté desfasada (es la salida del cartel; re-test a ciegas 5).
+      api.post('/auth/logout', undefined, { sinFreno: true, sinPersona: true }).catch(() => {})
     }
     // SECURITY: limpiar TODOS los flags rendi_ del localStorage para evitar
     // cross-user state leak en máquinas compartidas. Antes solo borrábamos

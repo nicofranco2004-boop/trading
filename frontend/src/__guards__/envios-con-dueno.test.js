@@ -155,6 +155,23 @@ describe('lo que sale sin pasar por utils/api', () => {
     expect(sin).toEqual([])
   })
 
+  // Saltear el freno o no decir la persona es sólo para dos preguntas, las que
+  // tienen que salir aunque la pestaña esté desfasada (re-test a ciegas 5):
+  // «¿quién soy?» al abrir (se le cree al servidor) y «cerrar sesión» (la
+  // salida del cartel). Cualquier otro uso dejaría salir un pedido a nombre de
+  // otra persona.
+  it('sólo «¿quién soy?» y «cerrar sesión» salen sin freno o sin decir la persona', () => {
+    const usos = []
+    for (const p of archivos()) {
+      const r = rel(p)
+      if (r === 'utils/api.js') continue
+      const t = readFileSync(p, 'utf8').replace(/\/\/.*$/gm, '')
+      for (const m of t.matchAll(/api\.(get|post|put|patch|delete)\(\s*['"`]([^'"`]+)['"`][^\n]*\b(sinFreno|sinPersona)\b/g)) usos.push(`${r} ${m[1]} ${m[2]}`)
+      if (/\b(sinFreno|sinPersona)\s*:/.test(t) && !/api\.(get|post)\(\s*['"]\/auth\/(me|logout)['"]/.test(t)) usos.push(`${r} (otro uso)`)
+    }
+    expect([...new Set(usos)].sort()).toEqual(['contexts/AuthContext.jsx get /auth/me', 'contexts/AuthContext.jsx post /auth/logout'])
+  })
+
   it('cada salida de utils/api pasa por el freno de la pestaña desfasada antes del fetch', () => {
     const t = readFileSync(join(SRC, 'utils/api.js'), 'utf8').replace(/\/\/.*$/gm, '')
     // Las funciones de arriba del archivo (async function x(…) { … }) que llaman a fetch.

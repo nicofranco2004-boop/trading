@@ -280,6 +280,16 @@ describe('la pestaña vieja: lo que toca la persona después de que otra cambia'
     return null
   }
   const boton = (parte) => buscarEn(m.contenedor, parte) || buscarEn(document.body, parte)
+  // Un botón DEL CARTEL (la barra lateral también tiene «Cerrar sesión»).
+  function delCartel(parte) {
+    const pila = [m.contenedor, document.body]
+    while (pila.length) {
+      const n = pila.shift()
+      if (n.getAttribute?.('role') === 'alertdialog') return buscarEn(n, parte)
+      pila.push(...(n.childNodes || []))
+    }
+    return null
+  }
   const tocar = async (parte, ruta) => {
     const b = boton(parte)
     expect(b, `botón «${parte}»`).toBeTruthy()
@@ -475,4 +485,77 @@ describe('la pestaña vieja: lo que toca la persona después de que otra cambia'
     await m.redibujar(el('/dashboard'))
     expect(enLaPagina(CARTEL)).toBe(false)
   }, 500000)
+
+  // 🔴 RE-TEST A CIEGAS 5: LA RECARGA SIN FIN. El navegador quedó con la persona
+  // guardada de Ana y la sesión de Bruno (un inicio de sesión de Bruno cortado
+  // justo entre la respuesta del servidor y el guardado). Cada apertura pedía
+  // «¿quién soy?» diciendo «soy Ana» → 409 → recarga → y otra vez: 37 recargas
+  // en 20 s, y el cartel sin botones no dejaba ni cerrar sesión. Cada recarga
+  // de la app se simula acá volviendo a montarla.
+  it('persona guardada Ana y sesión de Bruno: abre la app de Bruno, con una sola recarga', async () => {
+    log('\n[Sin fin] ──────'); limpio(); persona('ana')
+    servidor.me = { quien: 'bruno', ...BRUNO }                       // la sesión es de Bruno
+    window.location.reload.mockClear()
+    for (let i = 0; i < 3; i++) { await abrir('/dashboard'); await esperar(400) }
+    log('  recargas:', window.location.reload.mock.calls.length, '| persona guardada:', localStorage.getItem('rendi_user'),
+      '| rechazados:', servidor.rechazados.length)
+    expect(window.location.reload.mock.calls.length, 'recargas en bucle').toBeLessThanOrEqual(1)
+    expect(JSON.parse(localStorage.getItem('rendi_user') || 'null')?.email, 'se le creyó al servidor').toBe('bruno@retest.test')
+    servidor.rechazados = []
+    await abrir('/dashboard')
+    expect(servidor.rechazados, 'ya abierta como Bruno, nada se rechaza').toEqual([])
+    expect(enLaPagina(CARTEL)).toBe(false)
+  }, 500000)
+
+  it('si los rechazos siguen, a la tercera no recarga más y el cartel ofrece «Cerrar sesión», que sí sale', async () => {
+    limpio(); persona('ana')
+    await abrir('/dashboard')
+    window.location.reload.mockClear()
+    for (let i = 0; i < 3; i++) {
+      api.rechazoPorPersona(409, { detail: { code: 'persona_cambiada' } })
+      await esperar(350)
+    }
+    expect(window.location.reload.mock.calls.length, 'tope de recargas').toBe(2)
+    await m.redibujar(el('/dashboard'))
+    const salir = delCartel('Cerrar sesión')
+    expect(salir, 'el botón del cartel').toBeTruthy()
+    servidor.pedidos = []
+    await enActo(() => clic(buscarEn(m.contenedor, 'Cerrar sesión') ? m.contenedor : document.body, salir))
+    await esperar(200)
+    expect(servidor.pedidos.map(x => `${x.method} ${x.path}`), 'cerrar sesión sale aunque la pestaña esté frenada').toContain('POST /auth/logout')
+  }, 500000)
+
+  it('el cartel de otra persona siempre trae «Cerrar sesión»', async () => {
+    limpio(); persona('ana')
+    await abrir('/dashboard')
+    await entraEnOtraPestana(BRUNO, 'bruno')
+    await m.redibujar(el('/dashboard'))
+    expect(enLaPagina('entró otra persona')).toBe(true)
+    expect(delCartel('Cerrar sesión')).toBeTruthy()
+  }, 500000)
+
+  it('la misma persona vuelve a entrar en otra pestaña: sin cartel ni recarga', async () => {
+    limpio(); persona('ana')
+    await abrir('/dashboard')
+    window.location.reload.mockClear()
+    await enActo(async () => otraPestanaEscribe('rendi_user', null))          // sale…
+    await m.redibujar(el('/dashboard'))
+    const enElMedio = enLaPagina(CARTEL)
+    await entraEnOtraPestana(ANA, 'ana')                                     // …y vuelve a entrar ella
+    await m.redibujar(el('/dashboard'))
+    await esperar(400)
+    expect(enElMedio, 'el cartel de «otra persona» en el medio').toBe(false)
+    expect(enLaPagina(CARTEL)).toBe(false)
+    expect(window.location.reload).not.toHaveBeenCalled()
+  }, 500000)
+
+  it('cuando entra otra persona, lo guardado de la anterior se borra (también si su sesión venció sola)', async () => {
+    limpio(); persona('ana')
+    const deAna = 'rendi_snapshot_date:ana@retest.test|propia'
+    localStorage.setItem(deAna, '2026-10-30')
+    await vencer()                                    // la sesión de Ana vence: 401
+    persona('bruno')                                  // y entra Bruno en esta pestaña
+    expect(localStorage.getItem(deAna), 'lo de Ana, con su email, quedaba en el navegador').toBeNull()
+  }, 500000)
 })
+

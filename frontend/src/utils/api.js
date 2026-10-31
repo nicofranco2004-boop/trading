@@ -1,6 +1,6 @@
 import { isDemoMode, handleDemoRequest, EVENTO_MODO_DEMO } from './demo'
 import { quienEs } from './quienEs'
-import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen, EVENTO_SESION_DE_LA_PESTANA } from './almacen'
+import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen, EVENTO_SESION_DE_LA_PESTANA, borrarLoDeOtrasPersonas } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
 
 // Wrapper de fetch para llamadas al API.
@@ -109,12 +109,14 @@ export function clearClientContext() {
 //     pestaña escribe quién es (milisegundos): ésa sólo la cierra el servidor.
 let _demoDeLaPestana = typeof window !== 'undefined' ? isDemoMode() : false
 let _personaCambiada = false
+let _sinMasRecargas = false      // ver recargarPorPersona
 export const EVENTO_PESTANA_DESFASADA = 'rendi:pestana-desfasada'
 
 /** null si la pestaña puede hablar con el servidor; si no, por qué. */
 export function pestanaDesfasada() {
-  if (isDemoMode() !== _demoDeLaPestana) return { motivo: 'demo', estabaEnDemo: _demoDeLaPestana }
-  if (!_demoDeLaPestana && _personaCambiada) return { motivo: 'persona' }
+  const sinSalida = _sinMasRecargas || undefined
+  if (isDemoMode() !== _demoDeLaPestana) return { motivo: 'demo', estabaEnDemo: _demoDeLaPestana, sinSalida }
+  if (!_demoDeLaPestana && _personaCambiada) return { motivo: 'persona', sinSalida }
   return null
 }
 
@@ -147,8 +149,22 @@ export function marcarPersonaCambiada(si) {
 // cambio diría la persona nueva, coincidiría con la cookie nueva y no frenaría.
 export const PERSONA_HEADER = 'X-Rendi-Persona'
 let _personaDeLaPestana = typeof window !== 'undefined' ? personaGuardada() : null
+// Cuando la persona de la pestaña la fija ELLA (entrar, salir, o la que
+// confirma el servidor en cada apertura: ver AuthContext), ya no hay otra
+// persona que la esté desfasando. Y lo que guardó otra persona en este
+// navegador se borra: si su sesión venció sola, quedaba con su email en los
+// nombres (re-test 5). Al cargar el módulo NO se borra nada: la persona
+// guardada todavía no está confirmada (puede ser justo la equivocada).
+function fijarPersonaDeLaPestana() {
+  _personaDeLaPestana = personaGuardada()
+  _personaCambiada = false
+  if (_personaDeLaPestana) {
+    try { borrarLoDeOtrasPersonas(_personaDeLaPestana) } catch { /* sin almacenamiento */ }
+  }
+  avisarDesfase()
+}
 if (typeof window !== 'undefined') {
-  window.addEventListener(EVENTO_SESION_DE_LA_PESTANA, () => { _personaDeLaPestana = personaGuardada() })
+  window.addEventListener(EVENTO_SESION_DE_LA_PESTANA, fijarPersonaDeLaPestana)
 }
 
 /** El encabezado con la persona de esta pestaña (vacío si no hay nadie).
@@ -157,16 +173,40 @@ export function encabezadoDePersona() {
   return _personaDeLaPestana ? { [PERSONA_HEADER]: encodeURIComponent(_personaDeLaPestana) } : {}
 }
 
+// 🔴 LAS RECARGAS POR OTRA PERSONA TIENEN TOPE (re-test a ciegas 5). Si algo
+// deja a la pestaña rechazada en cada apertura, recargar no lo arregla: era una
+// recarga sin fin (37 en 20 s) con un cartel sin salida. La causa de raíz la
+// cierra AuthContext (al abrir, se le cree al servidor); esto es el cinturón:
+// a lo sumo 2 recargas en 30 s por pestaña. Después no recarga más, y el cartel
+// —que siempre tiene «Cerrar sesión»— lo dice.
+const VENTANA_DE_RECARGAS_MS = 30_000
+const RECARGAS_MAXIMAS = 2
 let _recargaPedida = false
+/** Recarga la pestaña (a los `demora` ms) si no se pasó el tope. true si va a recargar. */
+export function recargarPorPersona(demora = 300) {
+  if (typeof window === 'undefined') return false
+  if (_recargaPedida) return true
+  let antes = []
+  try { antes = JSON.parse(leerDelAlmacen(CATALOGO.recargasPorPersona) || '[]') } catch { antes = [] }
+  const ahora = Date.now()
+  const recientes = (Array.isArray(antes) ? antes : []).filter(t => ahora - t < VENTANA_DE_RECARGAS_MS)
+  if (recientes.length >= RECARGAS_MAXIMAS) {
+    _sinMasRecargas = true
+    avisarDesfase()
+    return false
+  }
+  try { guardarEnAlmacen(CATALOGO.recargasPorPersona, JSON.stringify([...recientes, ahora])) } catch { /* sin almacenamiento */ }
+  _recargaPedida = true
+  setTimeout(() => { _recargaPedida = false; window.location.reload() }, demora)
+  return true
+}
+
 /** ¿El servidor rechazó el pedido porque la sesión es de otra persona? Si sí,
  *  la pestaña queda como con el aviso de otra persona y se recarga. */
 export function rechazoPorPersona(status, payload) {
   if (status !== 409 || payload?.detail?.code !== 'persona_cambiada') return false
   marcarPersonaCambiada(true)
-  if (!_recargaPedida && typeof window !== 'undefined') {
-    _recargaPedida = true
-    setTimeout(() => { _recargaPedida = false; window.location.reload() }, 300)
-  }
+  recargarPorPersona()
   return true
 }
 
@@ -192,7 +232,11 @@ export async function frenoDeLaPestana() {
 async function req(method, path, body, opts) {
   // Primero el freno: si otra pestaña entró al demo, el simulador de abajo le
   // contestaría a esta pantalla —de una cuenta real— con la cartera de ejemplo.
-  await frenoDeLaPestana()
+  // `opts.sinFreno` / `opts.sinPersona`: sólo para las dos preguntas que tienen
+  // que salir aunque la pestaña esté desfasada (AuthContext: «¿quién soy?» al
+  // abrir y «cerrar sesión»; el guardián envios-con-dueno no deja otras).
+  const sinFreno = !!opts?.sinFreno
+  if (!sinFreno) await frenoDeLaPestana()
   // ── Demo mode interceptor ────────────────────────────────────────────────
   // Si el user está en modo demo, devolvemos fixtures hardcodeadas en lugar
   // de pegarle al backend. handleDemoRequest devuelve:
@@ -244,11 +288,11 @@ async function req(method, path, body, opts) {
   // varios clientes seguidos sin "entrar" en ninguno.
   const ctxId = clientIdFor(opts)
   if (ctxId) headers['X-Rendi-Client-Id'] = ctxId
-  Object.assign(headers, encabezadoDePersona())
+  if (!opts?.sinPersona) Object.assign(headers, encabezadoDePersona())
 
   // Cada intento vuelve a pasar por el freno: entre un reintento y otro puede
   // haber entrado otra persona en otra pestaña (re-test a ciegas 4).
-  const doFetch = async () => { await frenoDeLaPestana(); return fetch('/api' + path, {
+  const doFetch = async () => { if (!sinFreno) await frenoDeLaPestana(); return fetch('/api' + path, {
     method,
     headers,
     credentials: 'include',  // adjunta la cookie HttpOnly de auth

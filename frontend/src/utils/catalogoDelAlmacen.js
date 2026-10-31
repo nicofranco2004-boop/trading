@@ -70,6 +70,8 @@ export const CATALOGO = Object.freeze({
     porque: 'con qué cliente ARRANCA una pestaña nueva: el último que eligió el asesor en cualquiera (utils/api)' }),
   clienteDeLaPestana: e({ clave: 'rendi_cliente_de_la_pestana', donde: SESION, tipo: SESION_MECANICA,
     porque: 'qué cliente tiene abierto ESTA pestaña (cada una el suyo), con la persona de la que es: es la cuenta del dueño' }),
+  recargasPorPersona: e({ clave: 'rendi_recargas_por_persona', donde: SESION, tipo: SESION_MECANICA,
+    porque: 'cuándo se recargó esta pestaña por otra persona en la sesión: tope para que no sea una recarga sin fin' }),
   planGuardado: e({ clave: 'rendi_plan_features_v1', donde: SESION, tipo: SESION_MECANICA,
     porque: 'el plan de la cuenta de esta pestaña (con su dueño), para no parpadear al recargarla; se vuelve a pedir en cada login, /auth/me y cambio de cliente' }),
   modoDemo: e({ clave: 'rendi_demo_mode', donde: LOCAL, tipo: SESION_MECANICA, porque: 'el modo demo está prendido' }),
