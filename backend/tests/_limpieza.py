@@ -75,6 +75,19 @@ def orden_de_borrado(conn, tablas):
 
 
 def vaciar(conn, *tablas):
-    """`DELETE FROM` de cada tabla (y de sus hijas sin cascada), sin commit."""
-    for t in orden_de_borrado(conn, tablas):
+    """`DELETE FROM` de cada tabla (y de sus hijas sin cascada), sin commit.
+
+    🔒 Si vacía `users`, en Postgres toma PRIMERO las filas de `users`, de menor a
+    mayor: el turno de todas las cuentas, en el mismo orden que la app
+    (`main._tomar_turnos_en_orden`). La limpieza borra las hijas —fotos,
+    posiciones— y recién al final `users`; una reconstrucción que quedó corriendo
+    en su hilo desde el test anterior hace al revés (turno → fotos), y las dos se
+    esperaban en cruz: `deadlock detected … while deleting tuple … in relation
+    "users"` (medido el 30/10/2026 en el registro del servidor). Con el turno
+    adelante, la limpieza espera a que esa reconstrucción confirme. En SQLite no
+    hace falta: la primera escritura ya toma la base entera."""
+    orden = orden_de_borrado(conn, tablas)
+    if "users" in orden and not isinstance(conn, sqlite3.Connection):
+        conn.execute("SELECT id FROM users ORDER BY id FOR UPDATE").fetchall()
+    for t in orden:
         conn.execute(f"DELETE FROM {t}")
