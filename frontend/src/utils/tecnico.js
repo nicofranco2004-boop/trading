@@ -201,6 +201,18 @@ export function zoomVentana({ n, fin, total }, factor, f) {
   return { n: n2, fin: fin2 }
 }
 
+/**
+ * ¿Ya no se puede ir más para ese lado? Acercar (`factor` < 1) con 20 ruedas a
+ * la vista, o alejar con todo lo que hay. Los gestos (ruedita, pellizco, fila de
+ * fechas) juntan lo que no alcanza para mover una rueda; en el tope lo juntado
+ * se tira: si no, al darse vuelta primero había que devolver todo lo empujado
+ * contra el tope antes de que el gráfico se moviera (Nico, 31/10: «en los
+ * extremos cuesta mucho, tengo que hacerlo muchas veces»).
+ */
+export function zoomEnElTope({ n, total }, factor) {
+  return factor < 1 ? n <= RUEDAS_MINIMAS : factor > 1 && n >= total + margenDerecho(total)
+}
+
 /** Arrastrar: corre la ventana en el tiempo. `frac` es cuánto del ancho se
  *  arrastró (a la derecha = para atrás en el tiempo; a la izquierda, hacia el
  *  futuro, hasta la mitad de lo que se ve). null si ya está en el borde. */
