@@ -630,7 +630,10 @@ export default function LecturaTecnica({
   )
   // Cargando: el marco con sus botones queda quieto y el gris va adentro, con la
   // altura del gráfico ya reservada (antes desaparecía todo y la página saltaba).
-  const cargando = <div role="status" aria-label="Cargando gráfico" className="h-[22rem] rounded-lg bg-bg-2/40 esqueleto" />
+  // La MISMA altura que el gráfico (altoDelGrafico), también en pantalla
+  // completa: era un 22rem fijo y, al pasar a 4H con las velas tardando, el
+  // gráfico ampliado se achicaba y volvía a agrandarse (Nico, 31/10).
+  const cargando = <div role="status" aria-label="Cargando gráfico" className={`${altoDelGrafico(grande)} rounded-lg bg-bg-2/40 esqueleto`} />
   if (actual === undefined) {
     return moneda === 'usd' && datos.ars === undefined && !datos.usd ? (
       <div role="status" aria-label="Cargando gráfico" className="h-72 mb-5 rounded-lg bg-bg-2/40 border border-line esqueleto" />
@@ -1116,7 +1119,7 @@ export default function LecturaTecnica({
             // 1H o 4H todavía sin sus velas: cargando, o lo que pasó (la
             // lectura y las tarjetas de abajo siguen siendo las diarias).
             porHoras.datos === undefined ? cargando : (
-              <div role="status" className="h-[22rem] flex flex-col items-center justify-center gap-3 text-center text-sm text-ink-1 px-4">
+              <div role="status" className={`${altoDelGrafico(grande)} flex flex-col items-center justify-center gap-3 text-center text-sm text-ink-1 px-4`}>
                 {porHoras.datos?.error
                   ? `No se pudieron traer las velas de ${INTERVALOS_POR_HORA[cadaHoras].nombre}.`
                   : porHoras.datos?.motivo === 'tope'
@@ -1824,6 +1827,12 @@ function BarraAdx({ adx }) {
   )
 }
 
+// El alto del gráfico, uno solo: lo usan el gráfico y lo que ocupa su lugar
+// mientras llegan sus velas o si no llegaron (cargando, 1H/4H sin velas). Con
+// dos copias, el gris quedó en 22rem y en pantalla completa el gráfico se
+// achicaba al cambiar de intervalo (Nico, 31/10).
+const altoDelGrafico = (grande) => (grande ? 'h-[68vh] min-h-72 sm:h-[74vh]' : 'h-[42vh] min-h-56 sm:h-[58vh] sm:min-h-64')
+
 function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', cada = null, fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null, onAncho = null, pie = null, lugaresMinimos = RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS), escala: escalaRef = null, tesis = [] }) {
   const conVelas = tipo === 'velas'
   // Los lugares del ancho: los días más el aire vacío de la derecha.
@@ -2323,7 +2332,7 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             precio puede asomar sobre el borde. */}
         {/* Siempre ampliado (Nico, 24/10). En el celular, un alto que deja ver
             la barra y el RSI sin comerse la pantalla; en compu, el de antes con «Agrandar». */}
-        <div ref={ref} className={`relative mr-[72px] ${grande ? 'h-[68vh] min-h-72 sm:h-[74vh]' : 'h-[42vh] min-h-56 sm:h-[58vh] sm:min-h-64'} select-none touch-pan-y ${agarrado ? 'cursor-grabbing' : sobreDibujo ? 'cursor-pointer' : 'cursor-crosshair'} ${precioMano ? 'overflow-hidden' : ''}`}
+        <div ref={ref} className={`relative mr-[72px] ${altoDelGrafico(grande)} select-none touch-pan-y ${agarrado ? 'cursor-grabbing' : sobreDibujo ? 'cursor-pointer' : 'cursor-crosshair'} ${precioMano ? 'overflow-hidden' : ''}`}
           onMouseDown={e => {
             if (e.button != null && e.button !== 0) return
             if (onPincel) { arrastre.current = { pincel: true }; empezarPincel(e.clientX, e.clientY); return }
