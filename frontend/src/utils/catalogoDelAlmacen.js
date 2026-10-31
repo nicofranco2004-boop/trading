@@ -51,8 +51,8 @@ export const CATALOGO = Object.freeze({
   tandaAsesor: e({ prefijo: 'rendi_tanda_ultima:', donde: SESION, tipo: CON_DUENO, deLaPersona: true,
     porque: 'la última tanda de importación del asesor, con nombres de clientes' }),
 
-  dibujos: e({ prefijo: 'rendi_dibujos:', donde: LOCAL, tipo: CON_DUENO,
-    porque: 'los dibujos del gráfico, que se suben a la cuenta si quedaron pendientes' }),
+  dibujos: e({ prefijo: 'rendi_dibujos:', donde: LOCAL, tipo: CON_DUENO, seConservaParaSuDueno: true,
+    porque: 'los dibujos del gráfico, que se suben a la cuenta si quedaron pendientes: no se borran cuando entra otra persona (su dueño los sube al volver)' }),
 
   // ── Dueño propio, anterior a la regla (lista cerrada) ─────────────────────
   conversacionIA: e({ prefijo: 'rendi_chat_', donde: SESION, tipo: DUENO_PROPIO,

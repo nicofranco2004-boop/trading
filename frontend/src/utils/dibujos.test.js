@@ -25,6 +25,19 @@ const horizontal = { id: 'h1', tipo: 'horizontal', precio: 210.5 }
 const tendencia = { id: 't1', tipo: 'tendencia', a: { d: '2026-10-19', mas: 0, precio: 200 }, b: { d: '2026-10-23', mas: 7, precio: 230 } }
 
 describe('de quién es la copia (auditoría de la pestaña Gráfico, 30/10)', () => {
+  // Cuando entra otra persona en la pestaña, lo que guardó la anterior se borra
+  // (utils/api → almacen.borrarLoDeOtrasPersonas, re-test a ciegas 5). Los
+  // dibujos PENDIENTES no: todavía no llegaron a la cuenta, y su dueña los sube
+  // al volver. La entrada lo declara (`seConservaParaSuDueno`).
+  it('si entra otra persona, el dibujo pendiente de Ana sigue ahí para cuando vuelva', async () => {
+    const { borrarLoDeOtrasPersonas } = await import('./almacen')
+    guardarDibujos('AAPL', 'usd', [horizontal], true, D())
+    localStorage.setItem('rendi_snapshot_date:ana@prueba.test|propia', '2026-10-30')
+    borrarLoDeOtrasPersonas('bruno@prueba.test')       // lo que hace utils/api al entrar Bruno
+    expect(localStorage.getItem('rendi_snapshot_date:ana@prueba.test|propia'), 'lo demás de Ana sí se borra').toBeNull()
+    expect(localStorage.getItem(K()), 'su dibujo pendiente, no').not.toBeNull()
+  })
+
   it('cada persona tiene la suya: la de Ana no la ve ni la sube Bruno', () => {
     guardarDibujos('AAPL', 'usd', [horizontal], true, D())
     localStorage.setItem('rendi_user', JSON.stringify({ email: 'bruno@prueba.test' }))
