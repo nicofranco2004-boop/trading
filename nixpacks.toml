@@ -15,6 +15,18 @@ nixPkgs = ["python311", "gcc"]
 # arranca y crashea con "libstdc++.so.6: cannot open shared object file".
 nixLibs = ["stdenv.cc.cc.lib"]
 
+# pg_dump / pg_restore para el backup nocturno con Postgres (backend/scripts/
+# backup_db.py). Versión 17 porque pg_dump se niega a volcar un servidor MÁS
+# NUEVO que él y sí vuelca los más viejos (docs de pg_dump): los proyectos nuevos
+# de Supabase arrancan en Postgres 17, y 17 también sirve si fuera 15 o 16. Si
+# Supabase sube a 18, el backup falla diciendo que hay que subir esto — no
+# copia otra cosa en silencio.
+# Fase propia, con su propio nixpkgs fijo (nixos-24.11, que trae postgresql_17),
+# para no mover el Python ni el gcc de la app.
+[phases.pgdump]
+nixPkgs = ["postgresql_17"]
+nixpkgsArchive = "50ab793786d9de88ee30ec4e4c24fb4236fc2674"
+
 # PIN pip < 26: pip 26.1.1 (publicado 2026-05) tiene un bug en el resolver
 # que devuelve "No matching distribution found for fastapi==0.115.0" aunque
 # el package SÍ existe en PyPI. Hasta que salga un fix upstream, pinneamos
