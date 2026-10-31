@@ -1232,7 +1232,7 @@ function EnCurso({ puntos, actualizada, demora = 0 }) {
   }, [ahora, actualizada, enCurso])
   if (!ultima) return null
   if (!enCurso) return `La última vela es la del ${fechaHoraCorta(ultima.t)}. `
-  // BYMA llega con demora (velas_horarias.DEMORA_MIN): se dice, así el «hace
+  // BYMA llega con demora (velas_diarias.DEMORA_MIN, la única): se dice, así el «hace
   // 20 s» no parece el precio de hace 20 s.
   return <span data-en-curso="">{`La última vela está ${textoEnCurso(actualizada, ahora)}${demora > 0 ? ` (los precios de esta bolsa llegan con unos ${demora} minutos de demora)` : ''}. `}</span>
 }
