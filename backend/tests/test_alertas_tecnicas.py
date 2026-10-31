@@ -114,6 +114,13 @@ class AlertasTecnicasTest(unittest.TestCase):
             mock.patch("main._send_push_to_user",
                        lambda uid, payload: (self.pushes.append(payload), 1)[1]),
             mock.patch("alerts_engine.HORA_AVISO_TECNICO", 0),
+            # El cron de las alertas (`_evaluar_alertas_job`) corre también el
+            # resumen de los sábados desde las 10 (`senales_semana.toca`), que lee
+            # las series: el sábado, «una lectura por activo» contaba dos y la
+            # prueba se ponía roja según el día en que corriera (auditoría final
+            # B5, 31/10). Acá es siempre un día de semana; el resumen tiene sus
+            # propias pruebas (test_tus_senales.py).
+            mock.patch("senales_semana.toca", lambda now: False),
         ]
         for p in self._p:
             p.start()
