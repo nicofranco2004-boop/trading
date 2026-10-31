@@ -18,6 +18,7 @@ import { Lock, CheckCircle2, ArrowLeft, ArrowRight } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import PageMeta from '../components/PageMeta'
+import { pedirAlServidor } from '../utils/api'
 
 export default function ResetPassword() {
   const [searchParams] = useSearchParams()
@@ -31,7 +32,7 @@ export default function ResetPassword() {
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const { login } = useAuth()
+  const { entrar } = useAuth()
   const navigate = useNavigate()
 
   // Sin token en URL → al login (no podemos hacer nada útil acá). Con token, lo
@@ -56,11 +57,11 @@ export default function ResetPassword() {
     }
     setLoading(true)
     try {
-      const res = await fetch('/api/auth/reset-password', {
+      const res = await pedirAlServidor('/auth/reset-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, new_password: password }),
-      })
+      }, { freno: false })
       const data = await res.json()
       if (!res.ok) {
         const msg = typeof data.detail === 'string'
@@ -68,11 +69,11 @@ export default function ResetPassword() {
           : (data.detail?.error || 'No pudimos restablecer la contraseña.')
         throw new Error(msg)
       }
-      // Backend nos devuelve un token nuevo → auto-login. Pasamos email (si el
-      // backend lo incluye) para que user.email esté disponible ya en esta
-      // sesión — sin él, el estado por-usuario de la app cae a la clave 'anon'.
-      // await: que el user llegue completo (tier) antes de navegar. Ver login().
-      await login(data.token, data.name, { email: data.email })
+      // El servidor ya puso la cookie de la sesión nueva → auto-login.
+      // La puerta única de la sesión (AuthContext.entrar): quién es lo dice el
+      // servidor (esta respuesta ni trae el email: con el email de la pantalla
+      // la pestaña quedaba «de nadie», re-test a ciegas 7). Se espera antes de navegar.
+      await entrar()
       navigate('/')
     } catch (ex) {
       setError(ex.message)

@@ -162,6 +162,26 @@ export function mudarCopiaVieja(entrada, claveVieja, dueno) {
 
 // ── Barridos: sólo BORRAN (cerrar sesión, «limpiar y recargar», copias viejas) ─
 
+/**
+ * Borra lo que guardó en este navegador cualquier persona que no sea `persona`
+ * (los datos de una cuenta: `<prefijo><persona>|<cuenta>…`). Lo llama
+ * utils/api cuando ESTA pestaña inicia sesión: si la sesión de la anterior
+ * venció sola, lo suyo quedaba acá, con su email en el nombre (re-test a
+ * ciegas 5). Se salvan las entradas con `seConservaParaSuDueno`: guardan algo
+ * que todavía no llegó a la cuenta (los dibujos pendientes) y su dueño lo
+ * recupera al volver.
+ */
+export function borrarLoDeOtrasPersonas(persona) {
+  if (!persona) return
+  for (const e of Object.values(CATALOGO)) {
+    if (e.tipo !== CON_DUENO || e.seConservaParaSuDueno) continue
+    const t = tienda(e.donde)
+    const ajenas = claves(e.donde).filter(k => k.startsWith(e.prefijo)
+      && k.slice(e.prefijo.length).split('|')[0] !== persona)
+    for (const k of ajenas) t.removeItem(k)
+  }
+}
+
 /** Todas las claves de un almacén. */
 export function claves(donde = LOCAL) {
   const t = tienda(donde)

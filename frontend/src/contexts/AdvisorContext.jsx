@@ -27,9 +27,9 @@ export function AdvisorProvider({ children }) {
 
   // Se sigue el AVISO de api.js —la cuenta de ESTA pestaña, la que decide los
   // pedidos— y no el 'storage': la banda tiene que decir el cliente al que van
-  // los pedidos. Lo que haga otra pestaña ya no cambia esa cuenta (la deja
-  // desfasada, con el cartel de components/CuentaCambiadaEnOtraPestana): antes
-  // la banda pasaba al cliente nuevo y la pantalla seguía con el anterior.
+  // los pedidos. Cada pestaña tiene el suyo (utils/api): lo que haga otra no
+  // lo cambia. Antes la banda pasaba al cliente nuevo y la pantalla seguía con
+  // el anterior.
   useEffect(() => {
     const alCambiar = () => setCtx(getClientContext())
     window.addEventListener(EVENTO_CUENTA_CAMBIADA, alCambiar)

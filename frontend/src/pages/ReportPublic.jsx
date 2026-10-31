@@ -19,6 +19,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import PageMeta from '../components/PageMeta'
+import { pedirAlServidor } from '../utils/api'
 import { pctTxt } from '../utils/format'
 
 // La paleta del PAPEL. Hex fijos a propósito: el informe se ve igual para
@@ -48,7 +49,7 @@ export default function ReportPublic() {
 
   useEffect(() => {
     let cancelled = false
-    fetch(`/api/reports/public/${encodeURIComponent(token || '')}`)
+    pedirAlServidor(`/reports/public/${encodeURIComponent(token || '')}`, {}, { freno: false })
       .then(async (res) => {
         const d = await res.json()
         if (cancelled) return

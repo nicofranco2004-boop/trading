@@ -21,6 +21,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isDemoMode } from '../utils/demo'
+import { pedirAlServidor, rechazoPorPersona } from '../utils/api'
 
 // El mismo tope que el servidor (ai/oido.py MAX_SEGUNDOS). Acá corta antes de
 // mandar; allá es la red por si el navegador miente.
@@ -282,14 +283,20 @@ export async function mandarAlServidor(blob, contentType) {
   // rearma con su mime: sin eso el servidor no sabe cómo decodificarlo y
   // rechaza un audio perfectamente válido.
   fd.append('audio', new Blob([blob], { type: contentType }), 'dictado')
-  const res = await fetch('/api/ai/dictado', {
+  // Por la puerta de utils/api, con su freno: si en otra pestaña entró otra
+  // persona, el audio de ésta saldría con SU sesión —con sus activos como
+  // pista y descontándole sus minutos— (re-test a ciegas 4).
+  const res = await pedirAlServidor('/ai/dictado', {
     method: 'POST',
-    credentials: 'include',
     body: fd,
   })
   if (!res.ok) {
     let mensaje = ''
-    try { mensaje = (await res.json())?.detail?.message || '' } catch { /* sin cuerpo */ }
+    try {
+      const cuerpo = await res.json()
+      rechazoPorPersona(res.status, cuerpo)
+      mensaje = cuerpo?.detail?.message || ''
+    } catch { /* sin cuerpo */ }
     const err = new Error(mensaje || 'dictado_fallo')
     err.mensaje = mensaje
     throw err

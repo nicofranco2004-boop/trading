@@ -23,6 +23,7 @@
 
 import { NO_SE_CUENTAN, EVENTOS, claveDeUso, pantallaDe } from './usoCatalogo'
 import { yaInstalada, esCelular, plataformaDe } from './instalarApp'
+import { pedirAlServidor } from './api'
 
 const CADA_MS = 30_000
 const SENALES = ['pointerdown', 'keydown', 'wheel', 'touchstart']
@@ -84,13 +85,15 @@ export function mandar({ alCerrar = false } = {}) {
   const lote = pendientes
   pendientes = {}
   if (!Object.keys(lote).length) return Promise.resolve()
-  return fetch('/api/uso/eventos', {
+  // Dice de qué persona es este uso (la puerta de utils/api): si en otra
+  // pestaña entró otra, el servidor no se lo anota a ella. No frena, como
+  // antes: el uso de una pestaña que se va a recargar igual es de su persona.
+  return pedirAlServidor('/uso/eventos', {
     method: 'POST',
-    credentials: 'include',
     keepalive: alCerrar,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ eventos: lote }),
-  }).catch(() => {
+  }, { freno: false }).catch(() => {
     // Telemetría: si no salió, se pierde. No se reintenta para no duplicar
     // un envío que el servidor sí haya recibido.
   })

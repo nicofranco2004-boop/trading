@@ -28,10 +28,10 @@ vi.mock('../components/ai/mervalle/motor', async (io) => ({
 // Para mirar qué pasó: RETEST_LOG=/ruta npx vitest run … deja lo que se vio.
 const log = (...a) => { if (process.env.RETEST_LOG) appendFileSync(process.env.RETEST_LOG, a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ') + '\n') }
 
-let App, HelmetProvider, ToastProvider, MemoryRouter, api, handleDemoRequest, AdvisorImportsMod
+let App, HelmetProvider, ToastProvider, MemoryRouter, api, handleDemoRequest, AdvisorImportsMod, demo, dictado
 // Cuánta plata tiene cada cuenta (multiplica la cartera del demo).
 const FACTOR = { c2: 1, c3: 4, ana: 1, bruno: 7, asesora: 1, asesorb: 1 }
-const servidor = { me: null, vencida: false, demora: 0, pedidos: [] }
+const servidor = { me: null, vencida: false, demora: 0, pedidos: [], rechazados: [] }
 const cuentaDe = (cid) => (cid != null ? `c${cid}` : servidor.me?.quien)
 const intervalos = []
 
@@ -46,7 +46,9 @@ beforeAll(async () => {
   ;({ ToastProvider } = await import('../components/Toast'))
   ;({ MemoryRouter } = await import('react-router-dom'))
   api = await import('../utils/api')
-  ;({ handleDemoRequest } = await import('../utils/demo'))
+  demo = await import('../utils/demo')
+  ;({ handleDemoRequest } = demo)
+  dictado = await import('../hooks/useDictado')
   AdvisorImportsMod = await import('../pages/AdvisorImports')
   vi.stubGlobal('fetch', async (url, opts = {}) => {
     const method = opts.method || 'GET'
@@ -54,7 +56,24 @@ beforeAll(async () => {
     const cid = opts.headers?.['X-Rendi-Client-Id']
     const cuenta = cuentaDe(cid)          // la cookie es la de quien esté logueado AHORA
     const body = opts.body && typeof opts.body === 'string' ? JSON.parse(opts.body) : undefined
+    // Como el servidor de verdad (get_current_user, backend/tests/
+    // test_persona_de_la_pestana.py): si el pedido dice que es de otra persona
+    // que la de la sesión, 409 y no se toca nada (queda en `rechazados`).
+    const persona = opts.headers?.['X-Rendi-Persona']
+    if (persona && servidor.me?.email && decodeURIComponent(persona) !== servidor.me.email.toLowerCase()) {
+      servidor.rechazados.push({ method, path, persona: decodeURIComponent(persona), sesion: servidor.me.email })
+      return new Response(JSON.stringify({ detail: { code: 'persona_cambiada', message: 'otra persona' } }),
+        { status: 409, headers: { 'content-type': 'application/json' } })
+    }
     servidor.pedidos.push({ method, path, cid: cid ?? null, cuenta, body })
+    // `servidor.fallar503`: esa lectura contesta «probá de nuevo» (503) las
+    // primeras `veces`, y en cada una corre `alFallar` (otra pestaña que cambia).
+    const f = servidor.fallar503
+    if (f && method === 'GET' && path.startsWith(f.ruta) && f.veces > 0) {
+      f.veces -= 1
+      f.alFallar?.()
+      return new Response('{"detail":"ocupado"}', { status: 503, headers: { 'content-type': 'application/json' } })
+    }
     if (servidor.vencida) return new Response('{"detail":"Not authenticated"}', { status: 401, headers: { 'content-type': 'application/json' } })
     if (path.startsWith('/auth/me')) return new Response(JSON.stringify(servidor.me), { status: 200, headers: { 'content-type': 'application/json' } })
     estado.factor = FACTOR[cuenta] ?? 1
@@ -81,14 +100,22 @@ async function quieta(rehacer, { vistas } = {}) {
   }
   return textoConCortes(m.contenedor).replace(/\s+/g, ' ')
 }
+// Cada `abrir` es una carga de la página: acá no se vuelve a cargar el código
+// (para eso está pages/sesionAlAzar.render.test.jsx), así que se hace lo que hace
+// utils/api al cargarse: la pestaña es de la persona guardada.
+const personaGuardadaAhora = () => { try { return JSON.parse(localStorage.getItem('rendi_user') || 'null')?.email ?? null } catch { return null } }
 async function abrir(ruta, opc) {
   if (m) await m.desmontar()
+  api.fijarPersonaDeLaPestana(personaGuardadaAhora())
   m = await montar(el(ruta))
   return quieta(() => el(ruta), opc)
 }
 const persona = (quien, tier = 'pro') => {
   const email = `${quien}@retest.test`
   servidor.me = { quien, name: quien, email, tier }
+  // Entró en ESTA pestaña (como AuthContext.login: primero la pestaña pasa a
+  // ser de esta persona, después se guarda).
+  api.fijarPersonaDeLaPestana(email)
   localStorage.setItem('rendi_user', JSON.stringify({ name: quien, email, tier }))
 }
 const vencer = async () => {
@@ -99,11 +126,16 @@ const vencer = async () => {
 }
 const limpio = () => {
   if (m) { /* se desmonta en abrir */ }
+  // El demo se apaga por su puerta ANTES de vaciar: vaciar borra la marca sin
+  // avisar, y la pestaña seguiría creyéndose en el demo (utils/api).
+  if (demo?.isDemoMode()) demo.disableDemoMode()
   localStorage.clear(); sessionStorage.clear(); api.setClientContext(null)
-  // La recarga de AuthContext acá es de mentira: no limpia la memoria del
-  // «cambió la persona» que la de verdad sí tira.
-  api.marcarPersonaCambiada?.(false)
-  servidor.vencida = false; servidor.demora = 0; servidor.pedidos = []
+  // Lo que haría la recarga (acá es de mentira): la pestaña no es de nadie y
+  // vuelve a tomar como propio el modo demo de ahora.
+  api.fijarPersonaDeLaPestana(null)
+  if (demo?.EVENTO_MODO_DEMO) window.dispatchEvent(new Event(demo.EVENTO_MODO_DEMO))
+  servidor.fallar503 = null
+  servidor.vencida = false; servidor.demora = 0; servidor.pedidos = []; servidor.rechazados = []
   localStorage.setItem('rendi:tour:novedades:v2', '1'); localStorage.setItem('rendi_display_currency', 'USD')
 }
 const desde = (t) => { const i = t.indexOf('Desde tu última visita'); return i < 0 ? '(no aparece)' : t.slice(i, i + 80) }
@@ -219,19 +251,23 @@ describe('lo que se manda al servidor con dos pestañas', () => {
     const escrituras = servidor.pedidos.filter(x => x.method !== 'GET' && x.path.startsWith('/monthly'))
     log('  escrituras a /monthly tras el clic:', escrituras.map(x => `${x.method} ${x.path} ${x.cuenta} ${x.body?.broker ?? ''} ${x.body?.capital_final ?? ''}`))
     expect(escrituras.filter(x => x.cuenta === 'c3'), 'el cierre del 2 a nombre del 3').toEqual([])
-    // Desde que la pestaña no adopta el cliente de la otra, el cierre ni sale:
-    // espera, y la persona ve el cartel que le deja elegir.
-    expect(texto(m.contenedor), 'la persona se entera de por qué no se guardó').toMatch(/Cambiaste de cuenta en otra pestaña/)
+    // Desde que cada pestaña tiene su cliente, el cierre va al 2 —el que se ve—
+    // y no aparece ningún cartel.
+    expect(escrituras.filter(x => x.cuenta === 'c2').length, 'el cierre, en el 2').toBeGreaterThan(0)
+    expect(texto(m.contenedor)).not.toMatch(/Cambiaste de cuenta en otra pestaña/)
   }, 500000)
 })
 
-// 🔴 LA PESTAÑA VIEJA NO PUEDE MOSTRAR UNA CUENTA Y MANDAR OTRA (re-test 3,
-// pedido de la sesión central, 30/10). El freno de enviarDe cubría lo que la
-// pantalla manda sola; lo que toca la persona —agregar un mes, registrar una
-// compra— salía con el cliente que la pestaña tenía AHORA, mostrando el
-// anterior. Ahora, cuando otra pestaña cambia la cuenta, ésta deja de hablar
-// con el servidor y lo dice con un cartel hasta que la persona elige.
-describe('la pestaña vieja: lo que toca la persona después del cambio', () => {
+// 🔴 CADA PESTAÑA TIENE SU CUENTA (re-test a ciegas 3 y 4, 30/10).
+// Antes, la pestaña ADOPTABA el cliente que elegía otra: lo que la persona
+// tocaba mirando al 2 —agregar un mes, registrar una compra— se guardaba en el
+// 3. Primero se la frenó con un cartel; el re-test 4 mostró que el asesor que
+// trabaja con dos clientes en dos pestañas lo veía a cada rato (y también si en
+// la otra sólo abría la lista de clientes). Ahora cada pestaña tiene SU
+// cliente (utils/api, en el almacén de la pestaña) y manda a ése, sin cartel.
+// El cartel queda para lo que sí es uno para todas: la PERSONA (la cookie) y
+// el modo demo.
+describe('la pestaña vieja: lo que toca la persona después de que otra cambia', () => {
   const escrituras = (cuenta) => servidor.pedidos.filter(x => x.method !== 'GET' && x.cuenta === cuenta)
   const enLaPagina = (parte) => texto(m.contenedor).includes(parte) || texto(document.body).includes(parte)
   // Los menús y los cuadros van a document.body (createPortal). Un botón se
@@ -246,6 +282,16 @@ describe('la pestaña vieja: lo que toca la persona después del cambio', () => 
     return null
   }
   const boton = (parte) => buscarEn(m.contenedor, parte) || buscarEn(document.body, parte)
+  // Un botón DEL CARTEL (la barra lateral también tiene «Cerrar sesión»).
+  function delCartel(parte) {
+    const pila = [m.contenedor, document.body]
+    while (pila.length) {
+      const n = pila.shift()
+      if (n.getAttribute?.('role') === 'alertdialog') return buscarEn(n, parte)
+      pila.push(...(n.childNodes || []))
+    }
+    return null
+  }
   const tocar = async (parte, ruta) => {
     const b = boton(parte)
     expect(b, `botón «${parte}»`).toBeTruthy()
@@ -265,29 +311,31 @@ describe('la pestaña vieja: lo que toca la persona después del cambio', () => 
     }
     return null
   }
-  const pasarAlTres = async () => {
-    await enActo(async () => otraPestanaEscribe('rendi_client_ctx', JSON.stringify({ id: 3, label: 'Tres' })))
+  const otraPestanaEntraAl = async (ctx) => {
+    await enActo(async () => otraPestanaEscribe('rendi_client_ctx', ctx ? JSON.stringify(ctx) : null))
     await esperar(400)
     servidor.pedidos = []
   }
+  const CARTEL = 'Cambiaste de cuenta en otra pestaña'
 
-  it('«Agregar mes» en el Mensual del cliente 2 después de que otra pestaña entró al 3: nada llega al 3', async () => {
+  it('«Agregar mes» en el Mensual del cliente 2 después de que otra pestaña entró al 3: va al 2, sin cartel', async () => {
     log('\n[Vieja: Agregar mes] ──────'); limpio(); persona('asesora', 'advisor')
     api.setClientContext({ id: 2, label: 'Dos' })
     await abrir('/mensual')
-    await pasarAlTres()
+    await otraPestanaEntraAl({ id: 3, label: 'Tres' })
     await tocar('Agregar mes', '/mensual')
     await tocar('Guardar', '/mensual')
     log('  escrituras:', servidor.pedidos.filter(x => x.method !== 'GET').map(x => `${x.method} ${x.path} ${x.cuenta}`))
     expect(escrituras('c3'), 'un mes tipeado sobre el 2, guardado en el 3').toEqual([])
-    expect(enLaPagina('Cambiaste de cuenta en otra pestaña'), 'el cartel').toBe(true)
+    expect(escrituras('c2').filter(x => x.method === 'POST' && x.path === '/monthly'), 'el mes, en el 2').toHaveLength(1)
+    expect(enLaPagina(CARTEL), 'sin cartel: cada pestaña con su cliente').toBe(false)
   }, 500000)
 
-  it('una compra a mano en la Cartera del cliente 2 después de que otra pestaña entró al 3: nada llega al 3', async () => {
+  it('una compra a mano en la Cartera del cliente 2 después de que otra pestaña entró al 3: va al 2, sin cartel', async () => {
     log('\n[Vieja: compra] ──────'); limpio(); persona('asesora', 'advisor')
     api.setClientContext({ id: 2, label: 'Dos' })
     await abrir('/posiciones')
-    await pasarAlTres()
+    await otraPestanaEntraAl({ id: 3, label: 'Tres' })
     await tocar('Más acciones', '/posiciones')
     await tocar('Agregar compra', '/posiciones')
     const cantidad = campo('Cantidad'), precio = campo('Precio de compra')
@@ -297,32 +345,33 @@ describe('la pestaña vieja: lo que toca la persona después del cambio', () => 
     await tocar('Guardar', '/posiciones')
     log('  escrituras:', servidor.pedidos.filter(x => x.method !== 'GET').map(x => `${x.method} ${x.path} ${x.cuenta} ${JSON.stringify(x.body).slice(0, 80)}`))
     expect(escrituras('c3'), 'una compra hecha mirando al 2, registrada en el 3').toEqual([])
-    expect(enLaPagina('Cambiaste de cuenta en otra pestaña'), 'el cartel').toBe(true)
+    expect(escrituras('c2').filter(x => x.path === '/positions'), 'la compra, en el 2').toHaveLength(1)
+    expect(enLaPagina(CARTEL)).toBe(false)
   }, 500000)
 
-  it('«Seguir con Dos en esta pestaña»: lo tipeado se guarda en el 2, que es lo que se ve', async () => {
-    log('\n[Vieja: seguir] ──────'); limpio(); persona('asesora', 'advisor')
-    api.setClientContext({ id: 2, label: 'Dos' })
-    await abrir('/mensual')
-    await pasarAlTres()
-    await tocar('Agregar mes', '/mensual')
-    await tocar('Seguir con Dos', '/mensual')
-    expect(enLaPagina('Cambiaste de cuenta en otra pestaña'), 'el cartel se fue').toBe(false)
-    servidor.pedidos = []
-    await tocar('Guardar', '/mensual')
-    log('  escrituras:', servidor.pedidos.filter(x => x.method !== 'GET').map(x => `${x.method} ${x.path} ${x.cuenta}`))
-    expect(escrituras('c3')).toEqual([])
-    expect(escrituras('c2').filter(x => x.method === 'POST' && x.path === '/monthly'), 'el mes, en el 2').toHaveLength(1)
-  }, 500000)
-
-  it('«Ir a Tres» recarga la página (lo de memoria del 2 no pasa al 3)', async () => {
+  it('otra pestaña abre la lista de clientes (sale del cliente): ésta sigue en el 2, sin cartel', async () => {
     limpio(); persona('asesora', 'advisor')
     api.setClientContext({ id: 2, label: 'Dos' })
     await abrir('/mensual')
-    await pasarAlTres()
-    window.location.reload.mockClear()
-    await tocar('Ir a Tres', '/mensual')
-    expect(window.location.reload).toHaveBeenCalled()
+    await otraPestanaEntraAl(null)
+    expect(api.getClientContext()?.id).toBe(2)
+    expect(enLaPagina(CARTEL)).toBe(false)
+    expect(enLaPagina('Estás viendo la cuenta de Dos'), 'la banda').toBe(true)
+  }, 500000)
+
+  it('una pestaña nueva arranca con el último cliente elegido; una recargada, con el suyo', async () => {
+    limpio(); persona('asesora', 'advisor')
+    api.setClientContext({ id: 2, label: 'Dos' })
+    expect(JSON.parse(localStorage.getItem('rendi_client_ctx')).id, 'lo comparte para las pestañas nuevas').toBe(2)
+    otraPestanaEscribe('rendi_client_ctx', JSON.stringify({ id: 3, label: 'Tres' }))
+    expect(api.clienteAlCargarLaPestana()?.id, 'al recargar esta pestaña: el suyo').toBe(2)
+    sessionStorage.clear()                       // una pestaña nueva no trae el almacén de ésta
+    expect(api.clienteAlCargarLaPestana()?.id, 'una pestaña nueva: el último elegido').toBe(3)
+    // Si en el medio entró otra persona, lo de la pestaña no vale: es de la anterior.
+    api.setClientContext({ id: 2, label: 'Dos' })
+    localStorage.setItem('rendi_user', JSON.stringify({ name: 'otra', email: 'otra@retest.test' }))
+    localStorage.removeItem('rendi_client_ctx')
+    expect(api.clienteAlCargarLaPestana(), 'otra persona: sin el cliente de la anterior').toBe(null)
   }, 500000)
 
   it('otra persona entra en otra pestaña: en los 300 ms antes de recargar, nada sale con la sesión nueva', async () => {
@@ -342,4 +391,180 @@ describe('la pestaña vieja: lo que toca la persona después del cambio', () => 
     await esperar(400)
     expect(window.location.reload, 'y se recarga con la sesión nueva').toHaveBeenCalled()
   }, 500000)
+
+  const ANA = { name: 'ana', email: 'ana@retest.test', tier: 'pro' }
+  const BRUNO = { name: 'bruno', email: 'bruno@retest.test', tier: 'pro' }
+  const entraEnOtraPestana = async (u, quien) => {
+    servidor.me = u ? { quien, ...u } : null                        // la cookie ya es de la otra
+    await enActo(async () => otraPestanaEscribe('rendi_user', u ? JSON.stringify(u) : null))
+  }
+  const intento = (fn) => Promise.race([
+    Promise.resolve().then(fn).then(() => 'volvió ok', (e) => `error: ${String(e?.message || e).slice(0, 60)}`),
+    esperar(1500).then(() => 'sigue esperando'),
+  ])
+
+  // P2 del re-test a ciegas 4: la cookie YA es de Bruno, pero a esta pestaña
+  // todavía no le llegó el aviso de la otra (milisegundos). Nada de acá lo sabe:
+  // lo frena el servidor, porque el pedido dice que es de Ana.
+  it('P2: la cookie ya es de Bruno y el aviso todavía no llegó: el servidor lo rechaza, cartel y recarga', async () => {
+    log('\n[Vieja: P2] ──────'); limpio(); persona('ana')
+    await abrir('/dashboard')
+    servidor.me = { quien: 'bruno', ...BRUNO }                        // sólo la cookie: sin aviso
+    servidor.pedidos = []
+    window.location.reload.mockClear()
+    const compra = await intento(() => api.api.post('/positions', { asset: 'AAPL', quantity: 1, buy_price: 1 }))
+    log('  compra:', compra, '| guardados:', servidor.pedidos.map(x => `${x.method} ${x.path} ${x.cuenta}`), '| rechazados:', servidor.rechazados)
+    expect(servidor.pedidos.filter(x => x.cuenta === 'bruno' && x.method !== 'GET'), 'la compra de Ana, en la cuenta de Bruno').toEqual([])
+    expect(servidor.rechazados.some(x => x.path === '/positions' && x.persona === 'ana@retest.test')).toBe(true)
+    await m.redibujar(el('/dashboard'))
+    expect(enLaPagina('entró otra persona'), 'el cartel').toBe(true)
+    await esperar(400)
+    expect(window.location.reload, 'y se recarga').toHaveBeenCalled()
+  }, 500000)
+
+  it('el dictado por voz no sale con la sesión de otra persona', async () => {
+    log('\n[Vieja: dictado] ──────'); limpio(); persona('ana')
+    await abrir('/dashboard')
+    await entraEnOtraPestana(BRUNO, 'bruno')
+    servidor.pedidos = []
+    const r = await intento(() => dictado.mandarAlServidor(new Blob(['x']), 'audio/webm'))
+    log('  dictado:', r, '| llegaron:', servidor.pedidos.map(x => `${x.method} ${x.path} ${x.cuenta}`))
+    expect(servidor.pedidos.filter(x => x.path.startsWith('/ai/dictado')), 'el audio de Ana, con los activos y los minutos de Bruno').toEqual([])
+  }, 500000)
+
+  it('el reintento automático de una lectura vuelve a pasar por el freno', async () => {
+    log('\n[Vieja: reintento] ──────'); limpio(); persona('ana')
+    await abrir('/dashboard')
+    servidor.pedidos = []
+    // La lectura falla una vez (503) y, mientras espera para reintentar, en otra pestaña entra Bruno.
+    servidor.fallar503 = { ruta: '/positions', veces: 1, alFallar: () => { entraEnOtraPestana(BRUNO, 'bruno') } }
+    const r = await Promise.race([
+      api.api.get('/positions').then(() => 'volvió ok', (e) => `error: ${e.message.slice(0, 50)}`),
+      esperar(4000).then(() => 'sigue esperando'),
+    ])
+    log('  lectura:', r, '| llegaron:', servidor.pedidos.map(x => `${x.method} ${x.path} ${x.cuenta}`))
+    expect(servidor.pedidos.filter(x => x.cuenta === 'bruno' && x.path.startsWith('/positions')), 'el reintento, con la sesión de Bruno').toEqual([])
+  }, 500000)
+
+  it('demo en esta pestaña; en otra la persona sale del demo y entra a su cuenta: nada de acá llega a la cuenta real', async () => {
+    log('\n[Vieja: demo → real] ──────'); limpio()
+    demo.enableDemoMode()
+    servidor.me = null
+    await abrir('/dashboard')
+    window.location.reload.mockClear()
+    await enActo(async () => otraPestanaEscribe('rendi_demo_mode', null))
+    await entraEnOtraPestana(ANA, 'ana')
+    servidor.pedidos = []
+    const compra = await intento(() => api.api.post('/positions', { asset: 'DEMO', quantity: 1, buy_price: 1 }))
+    const lectura = await intento(() => api.api.get('/positions'))
+    log('  compra:', compra, '| lectura:', lectura, '| llegaron:', servidor.pedidos.map(x => `${x.method} ${x.path} ${x.cuenta}`))
+    expect(servidor.pedidos, 'lo tocado en el demo, en la cuenta real de Ana').toEqual([])
+    expect(enLaPagina(CARTEL), 'el cartel').toBe(true)
+    await esperar(400)
+    expect(window.location.reload, 'y se recarga').toHaveBeenCalled()
+  }, 500000)
+
+  it('cuenta real en esta pestaña; en otra entran al demo: ésta no muestra el demo como si fuera suyo', async () => {
+    log('\n[Vieja: real → demo] ──────'); limpio(); persona('ana')
+    await abrir('/dashboard')
+    window.location.reload.mockClear()
+    await enActo(async () => otraPestanaEscribe('rendi_demo_mode', String(Date.now())))
+    const lectura = await intento(() => api.api.get('/positions'))
+    log('  lectura:', lectura)
+    expect(lectura, 'la cartera de ejemplo dibujada en la pantalla de Ana').not.toBe('volvió ok')
+    expect(enLaPagina(CARTEL)).toBe(true)
+    await esperar(400)
+    expect(window.location.reload).toHaveBeenCalled()
+  }, 500000)
+
+  it('el cartel dice lo que pasa AHORA: si la otra pestaña vuelve a la misma persona, se va', async () => {
+    limpio(); persona('ana')
+    await abrir('/dashboard')
+    await entraEnOtraPestana(BRUNO, 'bruno')
+    await m.redibujar(el('/dashboard'))
+    expect(enLaPagina('entró otra persona')).toBe(true)
+    await entraEnOtraPestana(ANA, 'ana')                 // «Limpiar» en la otra: vacía y repone la misma sesión
+    await m.redibujar(el('/dashboard'))
+    expect(enLaPagina(CARTEL)).toBe(false)
+  }, 500000)
+
+  // 🔴 RE-TEST A CIEGAS 5: LA RECARGA SIN FIN. El navegador quedó con la persona
+  // guardada de Ana y la sesión de Bruno (un inicio de sesión de Bruno cortado
+  // justo entre la respuesta del servidor y el guardado). Cada apertura pedía
+  // «¿quién soy?» diciendo «soy Ana» → 409 → recarga → y otra vez: 37 recargas
+  // en 20 s, y el cartel sin botones no dejaba ni cerrar sesión. Cada recarga
+  // de la app se simula acá volviendo a montarla.
+  it('persona guardada Ana y sesión de Bruno: abre la app de Bruno, con una sola recarga', async () => {
+    log('\n[Sin fin] ──────'); limpio(); persona('ana')
+    servidor.me = { quien: 'bruno', ...BRUNO }                       // la sesión es de Bruno
+    window.location.reload.mockClear()
+    for (let i = 0; i < 3; i++) { await abrir('/dashboard'); await esperar(400) }
+    log('  recargas:', window.location.reload.mock.calls.length, '| persona guardada:', localStorage.getItem('rendi_user'),
+      '| rechazados:', servidor.rechazados.length)
+    expect(window.location.reload.mock.calls.length, 'recargas en bucle').toBeLessThanOrEqual(1)
+    expect(JSON.parse(localStorage.getItem('rendi_user') || 'null')?.email, 'se le creyó al servidor').toBe('bruno@retest.test')
+    servidor.rechazados = []
+    await abrir('/dashboard')
+    expect(servidor.rechazados, 'ya abierta como Bruno, nada se rechaza').toEqual([])
+    expect(enLaPagina(CARTEL)).toBe(false)
+  }, 500000)
+
+  // El cartel nunca queda sin salida (re-test a ciegas 5) y nunca cierra una
+  // sesión que no es la de esta pestaña (re-test a ciegas 7: con otra persona,
+  // «Cerrar sesión» cerraba la de Bruno y borraba lo suyo). Con otra persona,
+  // la salida es «Recargar».
+  it('si los rechazos siguen, a la tercera no recarga más y el cartel ofrece «Recargar», que recarga', async () => {
+    limpio(); persona('ana')
+    await abrir('/dashboard')
+    window.location.reload.mockClear()
+    for (let i = 0; i < 3; i++) {
+      api.rechazoPorPersona(409, { detail: { code: 'persona_cambiada' } })
+      await esperar(350)
+    }
+    expect(window.location.reload.mock.calls.length, 'tope de recargas').toBe(2)
+    await m.redibujar(el('/dashboard'))
+    expect(delCartel('Cerrar sesión'), 'no cierra la sesión de otra persona').toBe(null)
+    const recargar = delCartel('Recargar')
+    expect(recargar, 'la salida del cartel').toBeTruthy()
+    servidor.pedidos = []
+    await enActo(() => clic(buscarEn(m.contenedor, 'Recargar') ? m.contenedor : document.body, recargar))
+    expect(window.location.reload.mock.calls.length, 'recarga').toBe(3)
+    expect(servidor.pedidos.map(x => `${x.method} ${x.path}`), 'y no cierra ninguna sesión').not.toContain('POST /auth/logout')
+  }, 500000)
+
+  it('el cartel de otra persona trae «Recargar» y nunca «Cerrar sesión»', async () => {
+    limpio(); persona('ana')
+    await abrir('/dashboard')
+    await entraEnOtraPestana(BRUNO, 'bruno')
+    await m.redibujar(el('/dashboard'))
+    expect(enLaPagina('entró otra persona')).toBe(true)
+    expect(delCartel('Recargar')).toBeTruthy()
+    expect(delCartel('Cerrar sesión')).toBe(null)
+  }, 500000)
+
+  it('la misma persona vuelve a entrar en otra pestaña: sin cartel ni recarga', async () => {
+    limpio(); persona('ana')
+    await abrir('/dashboard')
+    window.location.reload.mockClear()
+    await enActo(async () => otraPestanaEscribe('rendi_user', null))          // sale…
+    await m.redibujar(el('/dashboard'))
+    const enElMedio = enLaPagina(CARTEL)
+    await entraEnOtraPestana(ANA, 'ana')                                     // …y vuelve a entrar ella
+    await m.redibujar(el('/dashboard'))
+    await esperar(400)
+    expect(enElMedio, 'el cartel de «otra persona» en el medio').toBe(false)
+    expect(enLaPagina(CARTEL)).toBe(false)
+    expect(window.location.reload).not.toHaveBeenCalled()
+  }, 500000)
+
+  it('cuando entra otra persona, lo guardado de la anterior se borra (también si su sesión venció sola)', async () => {
+    limpio(); persona('ana')
+    const deAna = 'rendi_snapshot_date:ana@retest.test|propia'
+    localStorage.setItem(deAna, '2026-10-30')
+    await vencer()                                    // la sesión de Ana vence: 401
+    persona('bruno')
+    api.fijarPersonaDeLaPestana('bruno@retest.test', { borrarOtras: true })   // y entra Bruno en esta pestaña (AuthContext.login)
+    expect(localStorage.getItem(deAna), 'lo de Ana, con su email, quedaba en el navegador').toBeNull()
+  }, 500000)
 })
+

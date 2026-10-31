@@ -183,6 +183,10 @@ export function cargando(nodo) {
 export async function dibujar(ruta, { ojito, factor = 1, local = {} }) {
   localStorage.clear()
   localStorage.setItem('rendi_demo_mode', String(Date.now()))
+  // Como enableDemoMode: el cambio es de ESTA pestaña, y se avisa. Sin el
+  // aviso, utils/api lo toma por uno hecho en otra pestaña y no deja salir
+  // nada (re-test a ciegas 4).
+  window.dispatchEvent(new Event((await import('../utils/demo')).EVENTO_MODO_DEMO))
   localStorage.setItem('rendi_privacy', ojito ? '1' : '0')
   // El tutorial de la primera visita tapa la pantalla: ya visto.
   localStorage.setItem('rendi_tour_novedades_visto', '1')

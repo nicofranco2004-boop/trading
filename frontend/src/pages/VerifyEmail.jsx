@@ -20,6 +20,7 @@ import { Sparkles, CheckCircle2, RefreshCw, ArrowLeft } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import PageMeta from '../components/PageMeta'
+import { pedirAlServidor } from '../utils/api'
 import { leer as leerDelAlmacen } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
@@ -38,7 +39,7 @@ export default function VerifyEmail() {
   const [resendCooldown, setResendCooldown] = useState(0)
   const [info, setInfo] = useState('')
   const inputs = useRef([])
-  const { login } = useAuth()
+  const { entrar } = useAuth()
   const navigate = useNavigate()
 
   // Si no hay email en URL, mandar al login (no podemos verificar sin saber quién).
@@ -126,11 +127,11 @@ export default function VerifyEmail() {
     setLoading(true)
     setError('')
     try {
-      const res = await fetch('/api/auth/verify-email', {
+      const res = await pedirAlServidor('/auth/verify-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, code }),
-      })
+      }, { freno: false })
       const data = await res.json()
       if (!res.ok) {
         setDigits(['', '', '', '', '', ''])
@@ -141,13 +142,9 @@ export default function VerifyEmail() {
       // Si el user es fresh signup (recién verificó email por primera vez)
       // y no clickeó "saltar onboarding" en algún intento previo,
       // lo mandamos al wizard de onboarding. Sino al home.
-      // await: que el user llegue completo (tier) antes de navegar. Ver login().
-      await login(data.token, data.name, {
-        is_admin: !!data.is_admin,
-        id: data.user_id || data.id,
-        email: data.email || email,
-        event_type: 'sign_up',
-      })
+      // La puerta única de la sesión (AuthContext.entrar): quién es lo dice el
+      // servidor, no esta pantalla. Se espera antes de navegar.
+      await entrar({ evento: 'sign_up' })
       const skippedBefore = (() => {
         try {
           return leerDelAlmacen(CATALOGO.bienvenidaSalteada) === '1' ||
@@ -169,11 +166,11 @@ export default function VerifyEmail() {
     setResending(true)
     setError('')
     try {
-      const res = await fetch('/api/auth/resend-verification', {
+      const res = await pedirAlServidor('/auth/resend-verification', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
-      })
+      }, { freno: false })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
         throw new Error(data.detail || 'No pudimos reenviar el código. Esperá un minuto e intentá de nuevo.')

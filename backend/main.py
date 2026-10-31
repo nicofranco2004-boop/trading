@@ -4070,6 +4070,84 @@ def _token_posterior_al_cambio(payload: dict, pwd_changed_at: str) -> bool:
         return not (pca and pca != pwd_changed_at)
 
 
+# 🔴 EL PEDIDO DICE DE QUÉ PERSONA ES (re-test a ciegas 4, 30/10). La sesión es
+# UNA cookie para todo el navegador: si en otra pestaña entra otra persona, la
+# cookie cambia en el acto y la pestaña vieja se entera recién cuando le llega
+# el aviso del navegador. En esa ventana lo que se tocaba —una compra, un mes—
+# salía con la cookie nueva y se guardaba en la cuenta de la otra persona. La
+# pantalla no puede cerrarla (la cookie es HttpOnly: no la ve), así que la
+# cierra el servidor: la app manda en `X-Rendi-Persona` el email de quien la
+# pestaña cree logueado (codificado para que viaje cualquier letra), y si la
+# sesión es de OTRA persona el pedido se rechaza con 409 `persona_cambiada`
+# sin tocar nada. La pantalla lo trata como un cambio de persona (cartel y
+# recarga).
+# Va ACÁ porque es el único lugar por el que pasan todos los pedidos con
+# sesión (get_effective_user y get_admin_user lo llaman), y usa la consulta a
+# `users` que ya se hacía.
+#
+# 🔴 UN PEDIDO DEL NAVEGADOR QUE NO DICE DE QUIÉN ES: SE ATIENDE Y SE CUENTA
+# (re-test a ciegas 9, 31/10). En la vuelta anterior se rechazaba con 401, y eso
+# rompió dos cosas que andaban: (1) la vista previa del pedido de acceso del
+# asesor, que la pantalla mandaba con un `fetch` suelto sin el encabezado —el
+# cliente veía «entrá a tu cuenta» estando adentro y nunca podía aceptar—, y (2)
+# el día de publicar: Railway y Vercel terminan sin orden fijo, y con el
+# servidor nuevo y la web de hoy (que nunca dice la persona) cada pedido daba
+# 401, la web volvía al inicio, «¿quién soy?» contestaba bien, y otra vez: 217
+# recargas en 30 s, hasta que terminara Vercel —y para siempre en una pestaña
+# vieja que quedara abierta—. Fallar cerrado convirtió un olvido y un orden de
+# publicación en algo que el usuario ve.
+#
+# Por eso va en DOS PASOS:
+#   1. (ESTE) Se atiende como siempre, pero se CUENTA: método, ruta y si trae la
+#      marca de la web nueva (`X-Rendi-Version`, la pone siempre la puerta única
+#      de la web, utils/api pedirAlServidor). Sin marca = la web de antes (o un
+#      script con cookie); con marca y sin persona = una pestaña de la web nueva
+#      que no sabe de quién es (sin nadie adentro). Se mira en
+#      GET /api/admin/pedidos-sin-persona. Se queda todo lo demás: el 409 si el
+#      pedido dice OTRA persona que la de la sesión, y cerrar sesión no cierra
+#      la de otra persona.
+#   2. (OTRA TANDA, con el número en la mano) Rechazar sólo los que traen la
+#      marca y no dicen persona: ése es justo el olvido de la web nueva. La web
+#      vieja, que no manda la marca, sigue pasando hasta que el contador muestre
+#      que no queda; así no hay bucle posible aunque una pestaña vieja quede
+#      abierta días, publique primero quien publique.
+# Quedan afuera del conteo «¿quién soy?» (`GET /api/auth/me`, la pregunta con
+# que la pestaña se entera de quién es) y la sesión por `Authorization: Bearer`
+# (scripts y pruebas: ahí no hay pestañas ni una cookie compartida).
+# El contador vive en la memoria del proceso (Railway corre uno): arranca de
+# cero en cada publicación, que es justo desde cuándo interesa contar.
+PERSONA_HEADER = "X-Rendi-Persona"
+VERSION_HEADER = "X-Rendi-Version"
+PERSONA_CAMBIADA = 409
+PREGUNTAS_SIN_PERSONA = {("GET", "/api/auth/me")}
+_SIN_PERSONA: dict = {}          # (método, ruta, ¿trae la marca?) → cuántos
+_SIN_PERSONA_DESDE = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+_SIN_PERSONA_TOPE = 300          # rutas distintas; las de más van a «(otras)»
+import threading as _threading_sin_persona
+_SIN_PERSONA_LOCK = _threading_sin_persona.Lock()
+
+
+def _contar_sin_persona(request: Request) -> None:
+    ruta_def = getattr(request.scope.get("route"), "path", None) or request.url.path
+    clave = (request.method, ruta_def, request.headers.get(VERSION_HEADER) is not None)
+    with _SIN_PERSONA_LOCK:
+        nueva = clave not in _SIN_PERSONA
+        if nueva and len(_SIN_PERSONA) >= _SIN_PERSONA_TOPE:
+            clave, nueva = (request.method, "(otras)", clave[2]), False
+        _SIN_PERSONA[clave] = _SIN_PERSONA.get(clave, 0) + 1
+    if nueva:
+        log.info("pedido con la sesión y sin persona: %s %s (marca de la web nueva: %s)", *clave)
+
+
+def _persona_del_encabezado(request: Request) -> Optional[str]:
+    raw = request.headers.get(PERSONA_HEADER)
+    if raw is None:
+        return None
+    from urllib.parse import unquote
+    persona = unquote(raw).strip().lower()
+    return persona or None
+
+
 def get_current_user(
     request: Request,
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
@@ -4077,6 +4155,7 @@ def get_current_user(
     # Preferimos la cookie HttpOnly (web), fallback al Authorization header
     # (clientes no-browser / back-compat). El que esté primero gana.
     token = request.cookies.get(COOKIE_NAME)
+    por_cookie = bool(token)
     if not token and creds:
         token = creds.credentials
     if not token:
@@ -4086,6 +4165,10 @@ def get_current_user(
         uid = int(payload["sub"])
     except (JWTError, KeyError, ValueError):
         raise HTTPException(401, "Token inválido")
+    persona = _persona_del_encabezado(request)
+    if (por_cookie and persona is None
+            and (request.method, request.url.path) not in PREGUNTAS_SIN_PERSONA):
+        _contar_sin_persona(request)     # paso 1: se atiende y se cuenta (ver PERSONA_HEADER)
     # Verificar que el user existe y que el token no quedó invalidado por cambio de pass.
     #
     # ⚠️ `requires_plan` viaja en ESTA consulta —la que el chequeo ya hacía— para
@@ -4101,13 +4184,13 @@ def get_current_user(
     with db_abierta() as conn:
         try:
             row = conn.execute(
-                "SELECT id, password_changed_at, requires_plan FROM users WHERE id=?",
+                "SELECT id, email, password_changed_at, requires_plan FROM users WHERE id=?",
                 (uid,)).fetchone()
             marca = None if row is None else bool(row["requires_plan"])
         except Exception:
             # Base sin la columna: se sigue como siempre y el muro pregunta él.
             row = conn.execute(
-                "SELECT id, password_changed_at FROM users WHERE id=?", (uid,)).fetchone()
+                "SELECT id, email, password_changed_at FROM users WHERE id=?", (uid,)).fetchone()
             marca = None
     if not row:
         raise HTTPException(401, "Token inválido")
@@ -4118,6 +4201,11 @@ def get_current_user(
     if row["password_changed_at"] and not _token_posterior_al_cambio(
             payload, row["password_changed_at"]):
         raise HTTPException(401, "Token expirado por cambio de contraseña")
+    if persona is not None and persona != (row["email"] or "").strip().lower():
+        raise HTTPException(PERSONA_CAMBIADA, detail={
+            "code": "persona_cambiada",
+            "message": "En otra pestaña entró otra persona: este pedido no se hizo.",
+        })
     return uid
 
 
@@ -4127,6 +4215,24 @@ def get_admin_user(uid: int = Depends(get_current_user)) -> int:
     if not row or not row["is_admin"]:
         raise HTTPException(403, "Acceso restringido")
     return uid
+
+
+@app.get("/api/admin/pedidos-sin-persona")
+def admin_pedidos_sin_persona(uid: int = Depends(get_admin_user)):
+    """El paso 1 de PERSONA_HEADER: cuántos pedidos con la sesión del navegador
+    llegaron sin decir de quién son desde que arrancó el servidor, por ruta.
+    `web_nueva`: traían la marca X-Rendi-Version (la web de esta versión o una
+    posterior). Con estos números se decide el paso 2."""
+    with _SIN_PERSONA_LOCK:
+        filas = [{"metodo": m, "ruta": r, "web_nueva": v, "pedidos": n}
+                 for (m, r, v), n in _SIN_PERSONA.items()]
+    filas.sort(key=lambda f: (-f["pedidos"], f["ruta"]))
+    return {
+        "desde": _SIN_PERSONA_DESDE,
+        "web_vieja": sum(f["pedidos"] for f in filas if not f["web_nueva"]),
+        "web_nueva": sum(f["pedidos"] for f in filas if f["web_nueva"]),
+        "rutas": filas,
+    }
 
 
 # ─── Plan Asesor: contexto de cliente (get_effective_user) ───────────────────
@@ -5025,10 +5131,34 @@ def login(data: LoginIn, request: Request, response: Response):
 
 
 @app.post("/api/auth/logout")
-def logout(response: Response):
+def logout(request: Request, response: Response):
     """Borra la cookie de auth. Para clientes que usan Bearer header, esto es
     no-op server-side (el token sigue vigente hasta exp) — sirven con cambiar
-    la contraseña si querés invalidar todo."""
+    la contraseña si querés invalidar todo.
+
+    🔴 NO CIERRA LA SESIÓN DE OTRA PERSONA (re-test a ciegas 8). La cookie es una
+    para todo el navegador: si en otra pestaña ya entró Bruno, el «Cerrar
+    sesión» de la pestaña de Ana borraba la cookie de Bruno. Ahora el pedido
+    dice de quién es (X-Rendi-Persona, como todos) y, si la sesión es de otra
+    persona, contesta 409 `persona_cambiada` sin tocar la cookie. Una cookie
+    vencida o inválida se borra igual. Sin encabezado (la versión anterior de
+    la app el día que se publica) se borra como antes."""
+    persona = _persona_del_encabezado(request)
+    token = request.cookies.get(COOKIE_NAME)
+    if persona is not None and token:
+        dueno = None
+        try:
+            uid = int(jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])["sub"])
+            with db_abierta() as conn:
+                row = conn.execute("SELECT email FROM users WHERE id=?", (uid,)).fetchone()
+            dueno = (row["email"] or "").strip().lower() if row else None
+        except (JWTError, KeyError, ValueError):
+            dueno = None
+        if dueno is not None and dueno != persona:
+            raise HTTPException(PERSONA_CAMBIADA, detail={
+                "code": "persona_cambiada",
+                "message": "La sesión de este navegador ya es de otra persona: no se cerró.",
+            })
     clear_auth_cookie(response)
     return {"ok": True}
 
@@ -52139,7 +52269,12 @@ def _optional_uid(request: Request) -> Optional[int]:
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=auth[7:].strip())
     try:
         return get_current_user(request, creds)
-    except HTTPException:
+    except HTTPException as e:
+        # El pedido dice que es de otra persona que la de la sesión: no se lo
+        # trata como «sin sesión» (ver PERSONA_HEADER); se rechaza igual que
+        # en el resto, y la pantalla lo toma como el cambio de persona.
+        if e.status_code == PERSONA_CAMBIADA:
+            raise
         return None
 
 

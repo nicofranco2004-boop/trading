@@ -211,6 +211,9 @@ class ChangePasswordTest(unittest.TestCase):
         r = self.client.post("/api/auth/login",
                              json={"email": self.email, "password": "Password123$"})
         self.assertEqual(r.status_code, 200)
+        # Con la cookie, como la app: cada pedido dice de quién es (sin eso el
+        # servidor no lo atiende; main.py, PERSONA_HEADER).
+        self.client.headers[main.PERSONA_HEADER] = self.email
 
     def test_contrasena_actual_equivocada_no_parece_sesion_vencida(self):
         """Antes respondía 401, que el frontend lee como "la sesión venció":

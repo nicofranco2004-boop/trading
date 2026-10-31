@@ -135,30 +135,25 @@ describe('api.js avisa cuando cambia la cuenta', () => {
     expect(visto).toBe(3)
   })
 
-  // Re-test a ciegas 3 (30/10): lo que hace OTRA pestaña ya no le cambia la
-  // cuenta a ésta —la adoptaba y seguía mostrando la anterior, y lo que se
-  // tocaba iba a la nueva—. La deja DESFASADA: no avisa un cambio de cuenta
-  // (no lo hubo), no sale ningún pedido y aparece el cartel
-  // (components/CuentaCambiadaEnOtraPestana). Antes este caso pedía lo
-  // contrario: que la pestaña siguiera a la otra.
-  it('cuando el cambio lo hizo otra pestaña, ésta no cambia de cuenta: queda desfasada', () => {
+  // Re-test a ciegas 3 y 4 (30/10): cada pestaña tiene SU cliente. Lo que
+  // hace otra ya no le cambia la cuenta a ésta —la adoptaba y seguía mostrando
+  // la anterior, y lo que se tocaba iba a la nueva—, ni la frena: no avisa un
+  // cambio de cuenta (no lo hubo) y sigue mandando a la suya. Antes este caso
+  // pedía que la pestaña siguiera a la otra.
+  it('cuando el cambio lo hizo otra pestaña, ésta sigue con su cliente', () => {
     api.setClientContext(ANA)
     avisos = 0
     otraPestanaEscribe('rendi_client_ctx', JSON.stringify(BRUNO))
     expect(api.getClientContext()?.id).toBe(2)
     expect(avisos).toBe(0)
-    expect(api.pestanaDesfasada()).toMatchObject({ motivo: 'cliente', mostrado: { id: 2 }, abierto: { id: 3 } })
-    // Otra pestaña vació todo (`key` null): sigue desfasada, ahora contra «sin cliente».
+    expect(api.pestanaDesfasada()).toBe(null)
+    // Otra pestaña vació todo (`key` null): ésta sigue con el suyo.
     otraPestanaEscribe(null, null)
     expect(api.getClientContext()?.id).toBe(2)
-    expect(api.pestanaDesfasada()).toMatchObject({ motivo: 'cliente', abierto: null })
     // Una clave que no tiene nada que ver no cambia nada.
     otraPestanaEscribe('rendi_theme', 'dark')
     expect(avisos).toBe(0)
-    // «Seguir con Ana en esta pestaña»: vuelve a abrirla para todas; ya no hay desfase.
-    api.seguirConLaCuentaMostrada()
     expect(api.pestanaDesfasada()).toBe(null)
-    expect(api.getClientContext()?.id).toBe(2)
   })
 })
 
@@ -528,7 +523,7 @@ describe('AdvisorContext sigue el mismo aviso que el chat', () => {
     await enActo(() => otraPestanaEscribe(null, null))
     expect(api.getClientContext()?.id).toBe(2)
     expect(visto.actual.clientCtx?.id).toBe(2)
-    expect(api.pestanaDesfasada()?.motivo).toBe('cliente')
+    expect(api.pestanaDesfasada()).toBe(null)
   })
 })
 
