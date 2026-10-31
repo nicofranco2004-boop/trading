@@ -134,7 +134,12 @@ class VelaDeHoyTest(unittest.TestCase):
                    mock.patch("cambios_ratio._historia_byma", lambda c: {}),
                    mock.patch("main._fetch_data912_equities", lambda: {}),
                    mock.patch("main._get_dolar_data", lambda: self.dolar),
-                   mock.patch("alerts_engine.rueda_en_horario", self._horario)]
+                   mock.patch("alerts_engine.rueda_en_horario", self._horario),
+                   # Desde las 13 de Nueva York `en_rueda` le pregunta a Yahoo (SPY)
+                   # si la rueda cerró temprano: sin red, lo que diga `estado_ny`.
+                   mock.patch("fuera_de_horario._pedir_yahoo",
+                              lambda simbolos: [{"symbol": "SPY", "marketState": self.estado_ny}])]
+        self.estado_ny = "REGULAR"
         for p in self._p:
             p.start()
         velas_diarias._en_curso.clear()
@@ -210,6 +215,32 @@ class VelaDeHoyTest(unittest.TestCase):
             n = conn.execute("SELECT COUNT(*) AS n FROM velas_diarias WHERE date >= ?",
                              (session_today("AAPL"),)).fetchone()["n"]
         self.assertEqual(n, 0)
+
+    def test_nueva_york_cierra_temprano_y_la_vela_de_hoy_deja_de_estar_en_rueda(self):
+        # Viernes 27/11/2026 (después de Acción de Gracias) Nueva York cierra a
+        # las 13:00. La vela diaria de hoy usaba el reloj sin el cierre temprano
+        # (sólo lo sabían las de 1 y 4 horas): «en curso» y la pantalla pidiendo
+        # cada minuto hasta las 16:00. Ahora es UNA cuenta (`en_rueda_de`).
+        import fuera_de_horario
+        de_verdad = next(p.temp_original for p in self._p if p.attribute == "rueda_en_horario")
+        from zoneinfo import ZoneInfo
+        self._cedear_apple()
+        self.horario = de_verdad
+        ny = ZoneInfo("America/New_York")
+        a_las = lambda h, m: datetime(2026, 11, 27, h, m, tzinfo=ny).astimezone(timezone.utc)
+        fuera_de_horario._vaciar_cache()
+        self.estado_ny = "POST"
+        self.assertFalse(velas_diarias.en_rueda("AAPL", a_las(13, 10)), "Yahoo dice que cerró")
+        self.assertTrue(velas_diarias.en_rueda("AAPL", a_las(12, 45)), "antes de las 13 no se pregunta")
+        with mock.patch("velas_diarias._ahora_utc", lambda: a_las(13, 10).replace(tzinfo=None)):
+            self.assertFalse(self._hoy("AAPL")["en_rueda"])
+            fuera_de_horario._vaciar_cache()
+            self.estado_ny = "REGULAR"                   # un día normal: sigue
+            self.assertTrue(self._hoy("AAPL")["en_rueda"])
+        # Las velas de 1 y 4 horas usan la misma cuenta y la misma demora.
+        import velas_horarias
+        self.assertIs(velas_horarias.DEMORA_MIN, velas_diarias.DEMORA_MIN)
+        self.assertFalse(hasattr(velas_horarias, "_ny_cerro_antes"))
 
     def test_cedear_en_pesos_es_el_cedear(self):
         self._cedear_apple()
