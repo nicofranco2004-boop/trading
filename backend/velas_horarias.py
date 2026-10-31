@@ -92,19 +92,11 @@ ZONAS = {"us": "America/New_York", "byma": "America/Argentina/Buenos_Aires", "cr
 APERTURA_BYMA_GRAFICO = 10 * 60 + 30
 # Lo que Yahoo da de a 30 minutos (más atrás no: «must be within the last 60 days»).
 PERIODO_30_MIN = "60d"
-# BYMA llega por Yahoo con demora: el 30/10 el primer dato de la rueda (las
-# 11:00 a 11:05) apareció a las 11:20. La pantalla lo dice junto a la vela en
-# curso: «hace 20 s» es cuándo se le preguntó a Yahoo, no de cuándo es el precio.
-DEMORA_MIN = {"byma": 20}
-# Algunos días Nueva York cierra a las 13:00 (el viernes después de Acción de
-# Gracias, el 24/12, a veces el 3/7) y el horario de Rendi
-# (alerts_engine.rueda_en_horario) no lo sabe: la vela de las 12:30 seguía «en
-# curso» hasta las 13:30 y la pantalla pedía cada minuto hasta las 16:00. Desde
-# esta hora (de Nueva York) se le pregunta a Yahoo si la rueda sigue abierta.
-CIERRE_TEMPRANO_NY = 13 * 60
-# Los estados de Yahoo (`marketState`) de DESPUÉS del cierre. Un PRE no
-# cuenta: no es «ya cerró».
-_YA_CERRO = ("POST", "POSTPOST", "CLOSED")
+# La demora con que llega cada bolsa (BYMA ~20 min) y si la rueda sigue (con el
+# cierre temprano de Nueva York adentro) son LA cuenta de velas_diarias
+# (`DEMORA_MIN`, `en_rueda_de`): la vela diaria de hoy y las de 1 y 4 horas no
+# pueden tener relojes distintos (auditoría final B4, 31/10).
+from velas_diarias import DEMORA_MIN  # noqa: E402
 
 
 def _sesion(mercado: str):
@@ -118,26 +110,6 @@ def _sesion(mercado: str):
 
 def _ahora() -> float:
     return time.time()
-
-
-def _ny_cerro_antes(reloj: float) -> bool:
-    """¿Nueva York ya cerró aunque por el reloj la rueda siga (un día de cierre
-    temprano)? Antes de las 13:00 de allá no puede haber cerrado y no se
-    pregunta. Después lo dice el `marketState` de SPY que ya pide
-    fuera_de_horario para el pre y el post (lo que Yahoo sabe, con sus feriados
-    y cierres tempranos; guardado 60 s para toda la app), no un calendario
-    nuestro. Sin respuesta, False: queda como sin esto (a lo sumo media hora de
-    más «en curso»)."""
-    try:
-        from zoneinfo import ZoneInfo
-        ny = datetime.fromtimestamp(reloj, ZoneInfo(ZONAS["us"]))
-        if ny.hour * 60 + ny.minute < CIERRE_TEMPRANO_NY:
-            return False
-        import fuera_de_horario
-        spy = fuera_de_horario._cotizaciones(["SPY"]).get("SPY") or {}
-    except Exception:
-        return False
-    return (spy.get("marketState") or "").upper() in _YA_CERRO
 
 
 # ─── Yahoo, en memoria ───────────────────────────────────────────────────────
@@ -444,9 +416,10 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
     horario» (la pantalla pide cada minuto) hasta que llega su último dato, no
     hasta la hora del cierre. Si no, a las 17:00 la pantalla dejaba de pedir con
     los últimos 20 minutos todavía en camino. Y al revés, un día de cierre
-    temprano de Nueva York las dos terminan cuando cerró (_ny_cerro_antes)."""
-    from alerts_engine import rueda_en_horario
+    temprano de Nueva York las dos terminan cuando cerró. Las dos cosas son
+    `velas_diarias.en_rueda_de`, la misma cuenta que la vela diaria de hoy."""
     from home.market import mercado_de
+    from velas_diarias import en_rueda_de
 
     moneda = "ars" if moneda == "ars" else "usd"
     cada = cada if cada in CADAS else "1h"
@@ -479,13 +452,12 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
     # La vela en curso se marca al servir (lo armado se comparte y la hora
     # pasa), con el reloj corrido lo que tarda en llegar el dato.
     demora = DEMORA_MIN.get(mercado, 0)
-    reloj_del_dato = _ahora() - demora * 60
-    en_horario = rueda_en_horario(mercado, datetime.fromtimestamp(reloj_del_dato, timezone.utc))
-    # Día de cierre temprano: lo que el reloj todavía llama rueda ya terminó.
-    cerro_antes = en_horario and mercado == "us" and _ny_cerro_antes(reloj_del_dato)
-    if cerro_antes:
-        en_horario = False
-    if (puntos and puntos[-1]["t"] == ultima["t"] and not cerro_antes
+    ahora = _ahora()
+    reloj_del_dato = ahora - demora * 60
+    # Con la demora y el cierre temprano adentro: un día de media rueda, lo que
+    # el reloj todavía llama rueda ya terminó, y la última vela no está en curso.
+    en_horario = en_rueda_de(mercado, datetime.fromtimestamp(ahora, timezone.utc))
+    if (puntos and puntos[-1]["t"] == ultima["t"] and en_horario
             and reloj_del_dato < _fin_de(ultima, cada, mercado)):
         puntos = puntos[:-1] + [{**puntos[-1], "enCurso": True}]
     abre, cierra = _sesion(mercado)
