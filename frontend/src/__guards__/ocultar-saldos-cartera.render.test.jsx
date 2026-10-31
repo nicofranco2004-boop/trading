@@ -13,6 +13,7 @@ import { createElement as h } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { instalarNavegadorMinimo, montar, texto } from '../testing/navegadorMinimo'
 import { PrivacyProvider } from '../contexts/PrivacyContext'
+import { hoyISO } from '../utils/fecha'
 
 vi.mock('../components/Toast', () => ({ useToast: () => ({ push: () => {}, success: () => {}, error: () => {} }) }))
 vi.mock('../components/AssetLogo', () => ({ default: () => null }))
@@ -21,8 +22,11 @@ vi.mock('../hooks/useCerSeries', () => ({ useCerSeries: () => ({ series: null })
 const FUTURO = [{ id: 1, symbol: 'BTCUSDT', base_asset: 'BTC', quantity: 1, entry_price: 60000, side: 'long', broker: 'Binance' }]
 const PF = [{ id: 7, banco: 'Galicia', moneda: 'ARS', capital: 4321000, tasa: 40, rate_type: 'TNA', modalidad: 'al_vencimiento',
   fecha_inicio: '2026-09-01', plazo_dias: 60, fecha_vencimiento: '2026-10-31' }]
-// En el mes de hoy: el calendario abre en el mes actual.
-const EVENTO = { ticker: 'AL30', event_type: 'bond_coupon', event_date: new Date(Date.now() + 86400000).toISOString().slice(0, 10), confirmed: true,
+// En el mes de hoy: el calendario abre en el mes actual. HOY con el reloj de
+// acá (hoyISO), no «mañana» con el de Londres: el último día de cada mes
+// «mañana» ya era el mes siguiente, y de 21 a 24 el toISOString ya decía
+// mañana (falló el 30 y el 31/10).
+const EVENTO = { ticker: 'AL30', event_type: 'bond_coupon', event_date: hoyISO(), confirmed: true,
   details: { total: 777.77, currency: 'USD' } }
 vi.mock('../utils/api', async (orig) => ({
   ...(await orig()),
