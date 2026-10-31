@@ -11980,6 +11980,7 @@ def get_tecnico(request: Request, asset: str, moneda: str = "usd", local: int = 
 
 
 @app.post("/api/tecnico/{asset}/resumen")
+@no_escribe_en_el_cliente
 def post_tecnico_resumen(request: Request, asset: str, moneda: str = "usd", local: int = 0,
                          uid: int = Depends(get_effective_user)):
     """El botón «✦ Resumen de Mervall-E» de la ficha: genera el resumen de esta
@@ -11987,7 +11988,13 @@ def post_tecnico_resumen(request: Request, asset: str, moneda: str = "usd", loca
     Los datos los arma el servidor con las mismas velas del gráfico; no viaja
     nada del usuario. No descuenta el cupo de IA. Las reglas (candado, topes,
     revisión del texto): ai/resumen_tecnico.py. Lee la serie entera como la
-    ficha: el mismo freno (E1; al juntar el resumen, 30/10)."""
+    ficha: el mismo freno (E1; al juntar el resumen, 30/10).
+
+    El tope por persona es de la que PIDE (`_auth_uid_de`: el asesor mirando a
+    un cliente gasta el suyo, como en el freno), y no escribe nada en la cuenta
+    que se mira (la fila es de todos, a nombre del que pidió): una asesora de
+    sólo lectura también lo puede pedir (`no_escribe_en_el_cliente`; auditoría
+    final E3, 31/10)."""
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
@@ -11997,7 +12004,7 @@ def post_tecnico_resumen(request: Request, asset: str, moneda: str = "usd", loca
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         ficha = tecnico.para_la_ficha(conn, sym, moneda, bool(local))
     base = sym[:-3] if sym.endswith(".BA") else sym
-    return resumen_tecnico.pedir(db_abierta, ficha, asset_name(base) or base, uid)
+    return resumen_tecnico.pedir(db_abierta, ficha, asset_name(base) or base, _auth_uid_de(request, uid))
 
 
 def _velas_a_pedido(conn, pedidos: list, uid) -> dict:

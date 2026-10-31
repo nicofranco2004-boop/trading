@@ -14,9 +14,16 @@ A PEDIDO Y UNO SOLO PARA TODOS (decisión de Nico, 22/10):
     botón y el PRIMERO que lo toca lo genera. Lo ven todos hasta que llega la
     vela siguiente (otra clave → vuelve el botón);
   · dos pedidos a la vez generan UNO: el primero reclama la fila (INSERT que
-    choca con la clave) y el segundo espera a que termine;
+    choca con la clave) y el segundo contesta «generando» en el momento: la
+    pantalla vuelve a preguntar en unos segundos. No se queda esperando (eso
+    corría fuera del freno de la ficha: una sola cuenta llegó a tener 30
+    pedidos esperando a la vez, auditoría final E2, 31/10);
   · tope diario entre todos (`TOPE_DIARIO`) y por persona (`TOPE_POR_PERSONA`):
     un resumen es de todos, pero el que lo pide puede pedir muchos activos.
+    La persona es la que PIDE (el asesor mirando a un cliente gasta el suyo,
+    como en el freno de la ficha), y su turno se toma antes de contar
+    (`main._tomar_turno`): sin él, varios pedidos juntos contaban todos lo
+    mismo y pasaban el tope (auditoría final E3).
   · NO descuenta el cupo Free de IA (ai/quota.py): no es un análisis personal.
     Cada fila guarda su costo y /admin (velas) muestra cuántos y cuánto por día.
 
@@ -37,7 +44,6 @@ import json
 import logging
 import os
 import re
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -56,8 +62,6 @@ MAX_LLAMADAS_POR_CLAVE = 4
 # Si el que estaba generando no terminó en este tiempo (el proceso se cayó), otro
 # puede tomar la fila.
 SEGUNDOS_GENERANDO = 90
-# Cuánto espera el segundo pedido a que el primero termine.
-SEGUNDOS_ESPERA = 30
 # Con velas más viejas que esto (los precios no se pudieron actualizar) no se
 # ofrece el resumen: contaría como actual algo de hace semanas.
 DIAS_VELA_VIEJA = 7
@@ -279,32 +283,20 @@ def _vencida(f: dict) -> bool:
         return True
 
 
-def _esperar(abrir, clave) -> dict:
-    """El segundo pedido: espera a que el primero termine (lee con conexiones
-    nuevas, para ver lo que el otro confirmó)."""
-    fin = time.monotonic() + SEGUNDOS_ESPERA
-    while time.monotonic() < fin:
-        time.sleep(0.5)
-        with abrir() as conn:
-            f = _fila(conn, clave)
-        if not f or f["estado"] == "fallo":
-            return {"estado": "error"}
-        if f["estado"] == "listo":
-            return {"estado": "listo", "texto": f["texto"], "fecha": clave[2]}
-    return {"estado": "generando", "fecha": clave[2]}
-
-
 def pedir(abrir, ficha: dict, nombre: str, uid: int) -> dict:
     """El botón «✦ Resumen de Mervall-E». `abrir` abre una conexión que se
     cierra sola (main.db_abierta): el modelo tarda 2-3 segundos y la base no
-    puede quedar tomada mientras tanto.
+    puede quedar tomada mientras tanto. `uid`: la persona que PIDE (la del
+    token; el asesor, aunque mire la cuenta de un cliente): su tope y su turno.
 
-    Devuelve {estado: 'listo', texto, fecha} · {estado: 'generando'} (el otro
-    pedido sigue) · {estado: 'tope'} · {estado: 'tope_persona'} ·
-    {estado: 'no_disponible'} · {estado: 'error'}."""
+    Devuelve {estado: 'listo', texto, fecha} · {estado: 'generando'} (otro
+    pedido lo está escribiendo: volver a preguntar en unos segundos) ·
+    {estado: 'tope'} · {estado: 'tope_persona'} · {estado: 'no_disponible'} ·
+    {estado: 'error'}."""
     from ai import llm
     from ai.resumen_tecnico_hechos import para_el_resumen
     from fechas import hoy_art
+    from main import _tomar_turno
 
     clave = clave_de(ficha)
     hechos = para_el_resumen(ficha, nombre)
@@ -316,14 +308,19 @@ def pedir(abrir, ficha: dict, nombre: str, uid: int) -> dict:
         if f and f["estado"] == "listo":
             return {"estado": "listo", "texto": f["texto"], "fecha": clave[2]}
         if f and f["estado"] == "generando" and not _vencida(f):
-            esperar = True
+            generando = True
         else:
-            esperar = False
+            generando = False
             if f and f["estado"] == "fallo" and (f["llamadas"] or 0) >= MAX_LLAMADAS_POR_CLAVE:
                 return {"estado": "no_disponible"}
             # Los topes cuentan resúmenes empezados hoy (salgan bien o mal: los
-            # dos cuestan). Dos pedidos justo en el borde pueden pasar los dos:
-            # es un techo de gasto, no una cuenta exacta.
+            # dos cuestan). El turno de la persona antes de contar: contar y
+            # reclamar la fila quedan en una sola transacción, y otro pedido
+            # suyo espera acá a que ésta termine (re-test E5 de los otros topes;
+            # auditoría final E3). El tope entre todos no se serializa: dos
+            # personas justo en el borde pueden pasar las dos (es un techo de
+            # gasto, no una cuenta exacta).
+            _tomar_turno(conn, uid)
             total = conn.execute("SELECT COUNT(*) FROM resumenes_tecnicos WHERE dia = ?", (hoy,)).fetchone()[0]
             if total >= TOPE_DIARIO:
                 return {"estado": "tope"}
@@ -353,9 +350,11 @@ def pedir(abrir, ficha: dict, nombre: str, uid: int) -> dict:
                               AND (estado = 'fallo' OR (estado = 'generando' AND empezado_at < ?))""",
                         (ahora, uid, hoy, json.dumps(hechos, ensure_ascii=False), *clave, vencido))
                     mio = cur.rowcount == 1
-            esperar = not mio
-    if esperar:
-        return _esperar(abrir, clave)
+            generando = not mio
+    if generando:
+        # Otro pedido lo está escribiendo: no se espera acá (fuera del freno de
+        # la ficha); la pantalla vuelve a preguntar (ResumenMervalle.jsx).
+        return {"estado": "generando", "fecha": clave[2]}
 
     try:
         res = generar(hechos)
