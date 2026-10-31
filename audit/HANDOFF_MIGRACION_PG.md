@@ -11,6 +11,9 @@
 
 ## 0 · En dos líneas
 
+> **🆕 30/10/2026 22h — leé primero la sección 11 (estado al día).** Postgres dio
+> 7.246/0 por primera vez; lo de abajo es historia útil pero parte quedó superada.
+
 La migración está **técnicamente casi lista y operativamente no**. Los arreglos de
 concurrencia están hechos y medidos, pero apareció **un mecanismo compartido por 24
 operaciones destructivas** que sólo protege en SQLite, y **la suite contra el
@@ -491,3 +494,58 @@ de guardado por borrado. La guarda queda como estaba (`22d6bb4e`).
 
 Latente, sin tocar (familia «plan B», hallazgo 13): `_reset_data_worker` cuenta cada tabla con
 `except ERR_OPERACIONAL`; en Postgres una tabla ausente aborta la transacción y el resto del reset revienta.
+
+---
+
+## 11 · Estado al 30/10/2026 22h (sesión central + dos ayudantes)
+
+**Medido sobre `425e77f6`** (la punta `771dbb4f` sólo suma pruebas): **Postgres 7.246 pasaron / 0
+fallas en 566 s**, SQLite 7.240 / 0 en 317 s. Es la primera corrida de Postgres en cero. Nada
+publicado.
+
+### Qué entró hoy
+| pieza | commit(s) | qué hace |
+|---|---|---|
+| Pozo de conexiones | `8ef519d0`, `7ee5af6c` | `pgshim._Pozo`: tope `RENDI_PG_POOL_MAX` (10), espera `RENDI_PG_POOL_ESPERA` (30 s) y `PozoAgotado`; vuelve al pozo sólo lo limpio (`_RE_ENSUCIA`: SET de sesión, candados de sesión, temporales). `tope_temporal(n)` para tests que toman la conexión antes de una barrera. |
+| 4 rojos viejos | `6dfdce3e`, `45483cb2` | la limpieza borraba madres antes que hijas (`tests/_limpieza.vaciar` + guardián); el contrato de cupones fijaba ids de SQLite (`tests/_ids_relativos.py`). |
+| Turno: PENDIENTES vacío | `3ebbe8da`, `e418cb59`, `ea0a8899`, `425e77f6` | reconstrucción (Yahoo sin transacción, turno antes de escribir), reparaciones del arranque, borrar cuenta, empezar de cero, migración FCI (una cuenta por transacción), alta del dueño. El censo ahora ve tablas en variables. |
+| Arranque sin trabar | `4b2b1374` | huella del esquema en `esquema_aplicado` (saltea los ~800 DDL si coincide Y el catálogo lo confirma), `lock_timeout` 3 s × 20 reintentos, `/api/health` 503 hasta terminar, `healthcheckPath` en `railway.toml`. |
+| Renombre durante import | `4b0379f9`, `4d3e4dd4` | la vista previa toma el turno y rehace si cambiaron los brokers; confirmar toma el turno real también en SQLite; «estado inicial» traducido al nombre de hoy. **Bug también en producción** → se publica aparte. |
+| Tokens a huella | `425e77f6` | las dos reparaciones de tokens nunca corrían (NameError al cargar `main.py`). **También en producción** → se publica aparte. |
+| Plan B (hallazgo 13) | `1af27ea5` | medidos los que quedaban: ninguno revienta; el censo ve los que pasan por otra función. |
+| 3 cobros vs import | `d57f6e1d` | medido: el turno compartido impide el doble cobro en los dos motores. Guardián. |
+
+### Supabase (5.F actualizado)
+- El proyecto de São Paulo se **borró**. El nuevo: «RENDI 1», `phlsvhbdhkjbdfcjwaho`, **us-west-1
+  (North California)**, Micro, Data API y exposición automática **desactivadas**, `public` vacío.
+- Railway (lo leyó Nico): **US West, 1 réplica, Healthcheck Path vacío, Teardown apagado**, volumen
+  `trading-volume` con un aviso ⚠ que **todavía nadie leyó** (mirar: ¿disco casi lleno?).
+- La conexión vive en `~/.rendi-supabase-url` (session pooler, permisos 600), la guarda
+  `scripts/conectar_supabase.py` sin que la clave pase por el chat. Desde la Mac: abrir 1,69 s,
+  consulta 276 ms. **La suite contra Supabase no se corre desde la Mac** (serían días): hay que
+  correrla desde un lugar cerca de us-west-1.
+- El `EMAXCONNSESSION` de la corrida del 30/10 lo causaba `test_envio_masivo` (retenía ~30
+  conexiones), no la app.
+
+### Publicación aparte (antes de la mudanza)
+Rama `claude/import-renombre-prod` (`77392079`, sale de `origin/main` y está al día): el renombre
+durante import + los tokens. SQLite 7.278 / 0. **Falta:** la auditoría (tarjeta propuesta a Nico) y
+su OK. Al publicarla, `claude/migracion-pg-oct` ya tiene los mismos cambios: el merge posterior no
+duplica nada, pero mirá `_tomar_turno` y `pgsesion.tomar_turno`.
+
+### Lo que falta para el pasaje
+1. Suite completa contra el Supabase nuevo, desde cerca de us-west-1, con `--timeout` largo.
+2. El aviso del volumen de Railway.
+3. Decisiones de Nico (sección 6): backups (el nocturno sigue sólo-SQLite), los 21 de 7 lentes,
+   paywall, `credit_ledger`/`_marcar_bienvenidas_previas`.
+4. `drainingSeconds` en `railway.toml` (0 o 3 s según la página de la documentación; con 0, los
+   pedidos en vuelo se cortan al publicar).
+5. Auditoría final con una sesión nueva sobre `claude/migracion-pg-oct`, y el OK de Nico.
+
+### Cómo se coordinó (para repetirlo)
+- Las ayudantes trabajan en su rama, corren sólo los archivos afectados, nunca la suite completa
+  ni push. La central mezcla y corre la suite completa **después de cada mezcla**: dos veces
+  encontró rojos que las ayudantes no habían visto por elegir mal qué correr.
+- Piezas compartidas (`pgshim`, `pgsesion`, funciones del turno, `conftest`, `_limpieza`) no se
+  mudan ni cambian sin OK de la central: el único conflicto del día salió de dos ayudantes tocando
+  `_tomar_turno` a la vez.
