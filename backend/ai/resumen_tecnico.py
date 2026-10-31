@@ -41,6 +41,8 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ai import certezas_y_consejos
+
 log = logging.getLogger("ai.resumen_tecnico")
 
 # Cuántos resúmenes NUEVOS por día (argentino) entre todos. Medido el 22/10:
@@ -86,8 +88,12 @@ SISTEMA = (Path(__file__).with_name("resumen_tecnico_pedido.txt")).read_text(enc
 
 # Palabras que no pueden salir: la lista prohibida del pedido (jerga que Nico
 # no entiende), fechas relativas (el texto se lee otro día), una corrección a
-# la vista, recomendar o pronosticar, y la primera persona: el cierre es neutro,
-# «Lo que se mira es…» (decisión de Nico, 23/10); «yo miraría» suena a consejo.
+# la vista y, más estricto que el chat, cualquier mención de comprar, vender o
+# esperar y la primera persona: el cierre es neutro, «Lo que se mira es…»
+# (decisión de Nico, 23/10); «yo miraría» suena a consejo.
+# Las certezas sobre lo que viene y los consejos de operar NO van acá: son la
+# lista común con el chat (ai/certezas_y_consejos.py, auditoría final B1+B2,
+# 31/10), que `problemas` revisa además de ésta.
 _PROHIBIDAS = [
     r"devolvi[óo]", r"retroceso", r"recorte", r"correcci[óo]n", r"corrijo", r"lateral", r"de costado",
     r"consolidaci[óo]n", r"impulso", r"momentum", r"tracci[óo]n", r"zonas?", r"soportes?", r"resistencias?",
@@ -97,15 +103,9 @@ _PROHIBIDAS = [
     r"rsi", r"adx", r"squeeze", r"sobrecompra", r"sobreventa",
     r"rebot[eóa]", r"tramos?", r"nivel(es)?", r"fibonacci", r"ruedas?", r"volatilidad", r"recalentad[oa]",
     r"hoy", r"ayer", r"mañana",
-    r"compr[áa](r|lo|la)?", r"vend[ée](r|lo|la)?", r"recomend\w*", r"te conviene", r"oportunidad",
-    r"esper(ar|á)", r"va a (subir|bajar|seguir|caer|romper)", r"subir[áa]", r"bajar[áa]", r"deber[íi]as?",
-    r"yo", r"mirar[íi]as?", r"(compr|vend|esper|entr|invert)[aei]r[íi]as?", r"saldr[íi]as?",
-    r"(te )?conviene", r"sugi?er\w*", r"aconsej\w*", r"te diría",
-    # Certezas sobre lo que viene (Nico, 23/10: «ahí se termina la bajada» sonaba
-    # seguro). Lo que se mira va como posibilidad: «podría ser una señal de…».
-    # El pasado («terminó el 6 de octubre») es un hecho y no se toca.
-    r"se (termin|cort|confirm)(a|an|ar[íi]an?|ar[áa]n?)", r"(termin|confirm)ar[íi]an?",
-    r"d(a|ar[íi]a) por terminad[ao]", r"sin duda", r"seguro que", r"seguramente", r"con seguridad",
+    r"compr[áa](r|lo|la)?", r"vend[ée](r|lo|la)?", r"recomend\w*", r"oportunidad",
+    r"esper(ar|á)", r"deber[íi]as?",
+    r"yo", r"mirar[íi]as?", r"(te )?conviene", r"sugi?er\w*", r"aconsej\w*", r"te diría",
 ]
 _RE_PROHIBIDAS = re.compile(r"\b(" + "|".join(_PROHIBIDAS) + r")\b", re.IGNORECASE)
 _RE_NUMERO = re.compile(r"\d+(?:[.,]\d+)*")
@@ -147,6 +147,8 @@ def problemas(texto: str, hechos: dict, segunda: bool = False) -> tuple[list, li
     malas = sorted({m.group(0).lower() for m in _RE_PROHIBIDAS.finditer(t)})
     if malas:
         graves.append("usaste palabras prohibidas (" + ", ".join(malas) + ")")
+    # Lo que viene como seguro y los consejos: la lista común con el chat.
+    graves += certezas_y_consejos.avisos(t)
     palabras = len(t.split())
     con_fuerza = FRASE_DE_FUERZA in (hechos.get("indicador_que_suma") or {})
     pedido = PALABRAS_MAX_CON_FUERZA if con_fuerza else PALABRAS_MAX

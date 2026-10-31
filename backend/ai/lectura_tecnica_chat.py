@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import re
 
+from ai import certezas_y_consejos
+
 # Jerga del análisis técnico que la persona no tiene por qué saber. La lista
 # del resumen de la ficha (resumen_tecnico._PROHIBIDAS) más las siglas: el
 # resumen las nombra entre paréntesis (decisión del 23/10) y el chat no.
@@ -51,42 +53,16 @@ _JERGA = [
 _META = [r"ten[ée]s raz[óo]n", r"corregid[ao]s?", r"corrijo", r"me equivoqu[ée]", r"perd[óo]n",
          r"disculp\w*", r"ac[áa] va (la )?(respuesta )?(de nuevo|otra vez)"]
 _DIAS = [r"lunes", r"martes", r"mi[ée]rcoles", r"jueves", r"viernes", r"s[áa]bado", r"domingo"]
-# Lo que viene dicho como seguro. El pasado («se terminó el 6 de octubre») es un
-# hecho y no se toca; «podría ser una señal de…» es la forma.
-_CERTEZAS = [
-    r"va(n)? a (subir|bajar|seguir|caer|romper|rebotar|recuperar|explotar)",
-    r"(subir|bajar|caer|seguir|rebotar|recuperar)(á|án)",
-    r"se (termin|cort|confirm)(a|an|ar[áa]n?|ar[íi]an?)", r"(termin|confirm)ar[íi]an?",
-    r"sin duda", r"seguro que", r"seguramente", r"con seguridad", r"es inminente",
-    r"est[áa] por (subir|bajar|explotar|caer)",
-    # Las formas suaves de predecir (Nico, 30/10: «asegurate, no tiene que predecir
-    # el futuro»). La única forma de hablar de lo que viene es «lo que se mira…
-    # podría ser una señal de que…»: un movimiento que pierde o gana fuerza, nunca
-    # un precio ni una dirección.
-    r"probablemente", r"(es|lo m[áa]s) probable", r"(es|ser[íi]a) esperable", r"se espera",
-    r"(podr[íi]a|puede|pueda|podr[íi]an|pueden) (subir|bajar|caer|seguir|llegar|recuperar\w*|volver|rebotar|"
-    r"repuntar|dispararse|desplomarse|ir|tocar|alcanzar|irse)",
-    r"deber[íi]a(n)? (subir|bajar|caer|seguir|llegar|recuperar\w*|volver|rebotar|repuntar|ir|tocar|alcanzar)",
-    r"(seguir|subir|bajar|caer|recuperar)[íi]a(n)?", r"tiene (margen|espacio|lugar|recorrido) para",
-    r"(pr[óo]ximo|siguiente) (objetivo|destino|nivel|precio)", r"objetivos? de precio",
-    r"(camino|rumbo) a (los )?\d[\d.,]*", r"tiende a (subir|bajar|seguir)", r"anticipa", r"pron[óo]stic\w*",
-    r"en los pr[óo]ximos (d[íi]as|meses|semanas)", r"la semana que viene", r"el mes que viene",
-]
-# Consejos de compra o venta (CNV: Rendi no asesora).
-_CONSEJOS = [
-    r"comprá(lo|la|los|las)?", r"compral[oa]s?", r"vendé(lo|la|los|las)?", r"vendel[oa]s?", r"aprovechá",
-    r"te (conviene|recomiendo|sugiero|aconsejo)", r"(es|ser[íi]a) (un )?buen momento",
-    r"momento (justo )?(de|para) (comprar|vender|entrar|salir)",
-    r"(deber[íi]as|tendr[íi]as que) (comprar|vender|entrar|salir|esperar|mantener)",
-    r"(es|ser[íi]a) una (buena |gran )?oportunidad",
-]
+# Lo que viene dicho como seguro y los consejos de compra o venta (CNV: Rendi no
+# asesora) viven en ai/certezas_y_consejos.py: la MISMA lista que revisa el
+# resumen de la ficha (auditoría final B1+B2, 31/10: cada uno tenía la suya y
+# las dos dejaban pasar «Conviene comprar» o «Es hora de salir»).
 
 
-def _re(lista):
-    return re.compile(r"(?<![\w+−-])(" + "|".join(lista) + r")(?!\w)", re.IGNORECASE)
+_re = certezas_y_consejos.compilar
 
 
-_RE_JERGA, _RE_CERTEZAS, _RE_CONSEJOS, _RE_DIAS = _re(_JERGA), _re(_CERTEZAS), _re(_CONSEJOS), _re(_DIAS)
+_RE_JERGA, _RE_DIAS = _re(_JERGA), _re(_DIAS)
 _RE_META = _re(_META)
 _RE_NUMERO = re.compile(r"\d+(?:[.,]\d+)*")
 # Números que el pedido usa para explicar los indicadores (la línea de 50, los
@@ -145,12 +121,16 @@ _NEGADO = re.compile(r"(\bnadie\b|\bno se (puede )?sabe\b|\bno (lo )?s[ée]\b|\b
                      r"\bimposible (de )?saber\b|\bsi\s*$)", re.IGNORECASE)
 
 
-def _no_es_prediccion(texto, m, pregunta) -> bool:
-    if m.group(0).lower() in (pregunta or "").lower():
-        return True
+def _negado(texto, m) -> bool:
     antes = texto[max(0, m.start() - 45):m.start()]
     antes = re.split(r"[.!?:;]", antes)[-1]   # sólo la misma oración
     return bool(_NEGADO.search(antes))
+
+
+def _no_es_prediccion(texto, m, pregunta) -> bool:
+    if m.group(0).lower() in (pregunta or "").lower():
+        return True
+    return _negado(texto, m)
 
 
 def problemas(texto: str, pregunta: str = "", contexto: str = None) -> list:
@@ -168,15 +148,11 @@ def problemas(texto: str, pregunta: str = "", contexto: str = None) -> list:
         out.append("usaste palabras técnicas que la persona no tiene por qué saber ("
                    + ", ".join(jerga) + "): decilo con palabras de todos los días "
                    "(«la fuerza del precio», «la tendencia de fondo», «el precio más alto del año»)")
-    cert = sorted({m.group(0).lower() for m in _RE_CERTEZAS.finditer(t)
-                   if not _no_es_prediccion(t, m, pregunta)})
-    if cert:
-        out.append("dijiste como seguro lo que viene (" + ", ".join(cert) + "): nadie lo sabe, "
-                   "decilo como posibilidad («podría ser una señal de que…»)")
-    cons = sorted({m.group(0).lower() for m in _RE_CONSEJOS.finditer(t)})
-    if cons:
-        out.append("le dijiste qué hacer (" + ", ".join(cons) + "): Rendi no recomienda comprar ni "
-                   "vender; contá cómo viene y qué es lo que se mira")
+    # Repetir la pregunta exime una certeza («la semana que viene»), no un
+    # consejo: «¿Conviene comprar?» → «Conviene comprar» aconseja. Negarlo
+    # («no te puedo decir si conviene comprar») exime a los dos.
+    out += certezas_y_consejos.avisos(t, exenta_certeza=lambda tx, m: _no_es_prediccion(tx, m, pregunta),
+                                      exento_consejo=_negado)
     dias = sorted({m.group(0).lower() for m in _RE_DIAS.finditer(t)}
                   - {m.group(0).lower() for m in _RE_DIAS.finditer(pregunta or "")})
     if dias:
