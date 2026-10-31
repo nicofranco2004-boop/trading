@@ -10,10 +10,11 @@ import {
 
 /** Lo que muestra cada celda nueva de una operación. null si la operación no
  *  entra en el diario (una compra, un cobro, una conversión): ahí va «—». */
-export function celdasDelDiario(op, diario) {
+export function celdasDelDiario(op, diario, currency = 'USD') {
   if (!esDelDiario(op)) return null
   const dias = diasTenida(op)
-  const anual = rendimientoPorAnio(op)
+  // En la moneda de la app: el MISMO % de la columna «P&L %» (pctEnMoneda).
+  const anual = rendimientoPorAnio(op, currency)
   const t = tendenciaDe(op, diario?.tendencias)
   return {
     tiempo: textoTiempo(dias),

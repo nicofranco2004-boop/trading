@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   esDelDiario, diasTenida, rendimientoPorAnio, textoTiempo, pedidosDeTendencia,
-  resumenDiario, fraseDeTusNumeros, tesisDeLaOperacion, tesisVigente, DIAS_MIN_POR_ANIO,
+  resumenDiario, fraseDeTusNumeros, tesisDeLaOperacion, tesisVigente, DIAS_MIN_POR_ANIO, capitalUsd,
 } from './diarioOperaciones'
+import { celdasDelDiario } from '../components/operations/DiarioCeldas'
 import { setBrokersRegistry } from './valuation'
 import { computeTradeStats } from './tradeStats'
 
@@ -175,5 +176,31 @@ describe('D7 · rendimiento por año, ponderado por plata y tiempo', () => {
   it('sin plata o sin fechas no inventa: «—»', () => {
     expect(resumenDiario([{ ...MSFT, entry_date: null }]).porAnio).toBeNull()
     expect(resumenDiario([]).porAnio).toBeNull()
+  })
+})
+
+describe('A2 · «Por año» y la plata puesta en la moneda de la columna «P&L %»', () => {
+  // La sonda de la auditoría: GGAL de $4.500 a $6.900 (+53,33 % en pesos) con el
+  // dólar de 1.000 a 1.500: +2,22 % en dólares; pagada US$ 450 al dólar de la compra.
+  const ggal = venta(1, {
+    asset: 'GGAL', broker: 'IOL', currency: 'ARS', date: '2026-04-30', entry_date: '2025-10-30',
+    entry_price: 4500, exit_price: 6900, quantity: 100, fx_to_usd: 1500, pnl_usd: 10, pnl_pct: 53.33,
+    pnl_pct_ars: 53.33, pnl_pct_usd: 2.22, costo_usd: 450,
+  })
+  const dias = diasTenida(ggal)
+  it('en dólares anualiza el % en dólares, no el de la moneda de la venta', () => {
+    expect(rendimientoPorAnio(ggal, 'USD')).toBeCloseTo(Math.pow(1.0222, 365 / dias) - 1, 10)
+    expect(rendimientoPorAnio(ggal, 'ARS')).toBeCloseTo(Math.pow(1.5333, 365 / dias) - 1, 10)
+    // La celda de la tabla y del celular, con la moneda de la app.
+    expect(celdasDelDiario(ggal, null, 'USD').porAnioValor).toBeCloseTo(Math.pow(1.0222, 365 / dias) - 1, 10)
+  })
+  it('sin el % de esta moneda, «—» (no cae al de la venta)', () => {
+    expect(rendimientoPorAnio({ ...ggal, pnl_pct_usd: null, pnl_sin_dato: 'sin_dolar_compra' }, 'USD')).toBeNull()
+  })
+  it('la plata puesta es el costo al dólar de la compra (costo_usd), no al de la venta', () => {
+    expect(capitalUsd(ggal)).toBe(450)
+    expect(resumenDiario([ggal]).porAnio).toBeCloseTo(10 / (450 * dias / 365), 10)
+    // Sin las dos monedas (cuenta v1): como antes, precio × cantidad al dólar de la venta.
+    expect(capitalUsd({ ...ggal, costo_usd: null })).toBe(300)
   })
 })

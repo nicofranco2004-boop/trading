@@ -170,7 +170,7 @@ export default function TradesTable({
 // mismo recurso visual que MovementRow. Mantiene las acciones por-trade
 // (analizar/editar/eliminar) en todos los modos.
 function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = false, deleting = false, diario = null }) {
-  const c = celdasDelDiario(op, diario)
+  const c = celdasDelDiario(op, diario, histMoney.currency)
   const atenuada = indent ? 'opacity-75' : ''
   // Color, flecha y signo salen del MISMO número que se imprime (en Pesos puede tener
   // otro signo que el resultado en dólares: ganó en pesos y perdió en dólares).

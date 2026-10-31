@@ -20,6 +20,7 @@
 
 import { esTradeCerrado, esCobro } from './tradeStats'
 import { esAccionLocal } from './accionLocal'
+import { pctEnMoneda } from '../components/operations/shared'
 
 // Con menos que esto, «Por año» va «—»: pasar a un año un mes bueno infla el
 // número (+5 % en 30 días daría +81 % por año).
@@ -49,14 +50,17 @@ export function diasTenida(op) {
 }
 
 /**
- * Rendimiento por año (fracción: 0,18 = +18 %): el `pnl_pct` de la operación
- * llevado a 365 días, con interés compuesto. null con menos de
- * DIAS_MIN_POR_ANIO días o sin %.
+ * Rendimiento por año (fracción: 0,18 = +18 %): el % de la columna «P&L %» de al
+ * lado —`pctEnMoneda`, el % en la moneda de la app, no `pnl_pct` (el de la
+ * moneda de la VENTA: GGAL +53 % en pesos era +2 % en dólares y «Por año» decía
+ * +136 % en dólares; auditoría 31/10, A2)— llevado a 365 días, con interés
+ * compuesto. null con menos de DIAS_MIN_POR_ANIO días o sin %.
  */
-export function rendimientoPorAnio(op) {
+export function rendimientoPorAnio(op, currency = 'USD') {
   const dias = diasTenida(op)
-  if (dias == null || dias < DIAS_MIN_POR_ANIO || op?.pnl_pct == null) return null
-  const base = 1 + op.pnl_pct / 100
+  const pct = op ? pctEnMoneda(op, currency).pct : null
+  if (dias == null || dias < DIAS_MIN_POR_ANIO || pct == null) return null
+  const base = 1 + pct / 100
   if (!(base > 0)) return -1
   return Math.pow(base, 365 / dias) - 1
 }
@@ -113,13 +117,19 @@ export function tendenciaDe(op, tendencias) {
 const promedio = (xs) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null)
 
 /**
- * La plata que se puso en la operación, en dólares: el precio de compra por la
- * cantidad. En una venta en pesos, al dólar con que el servidor la pasó a
+ * La plata que se puso en la operación, en dólares. Si el servidor mandó el
+ * resultado en las dos monedas (backend/resultado_dual.py), su `costo_usd`: el
+ * costo del lote al dólar del DÍA DE LA COMPRA, el mismo contra el que se cuenta
+ * `pnl_usd` (lo cobrado − ese costo). Antes salía de precio × cantidad al dólar
+ * de la VENTA: GGAL pagada US$ 450 figuraba US$ 300 (auditoría 31/10, A2).
+ * Sin él (cuentas v1, ventas viejas sin corregir): el precio de compra por la
+ * cantidad; en una venta en pesos, al dólar con que el servidor la pasó a
  * dólares (`fx_to_usd`, pesos por dólar; en una en dólares estampa 1). Sin
  * precio de compra (algunas importadas), en una venta en dólares sale del
  * resultado y su %: 100 ganados al 10 % = 1.000 puestos. null si no se sabe.
  */
 export function capitalUsd(op) {
+  if (Number(op?.costo_usd) > 0) return Number(op.costo_usd)
   const enDolares = !op?.currency || op.currency === 'USD' || op.currency === 'USDT'
   const c = Number(op?.entry_price) * Number(op?.quantity)
   if (!(c > 0)) {

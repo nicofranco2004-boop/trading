@@ -31,6 +31,7 @@ import { pesoVisible, deTuCartera } from '../utils/parteDeTuPlata'
 import { pctSigned } from '../utils/format'
 import { polarityLegend, CORTES_DIA, CORTES_PROMEDIO } from '../utils/polarityScale'
 import { OCULTO } from '../contexts/PrivacyContext'
+import { useCurrency } from '../contexts/CurrencyContext'
 
 const TONO = {
   alcista: 'bg-rendi-pos/15 border border-rendi-pos/40',
@@ -45,7 +46,8 @@ const PALABRA = { alcista: 'tendencia alcista', bajista: 'tendencia bajista', si
 function valorDelModo(c, modo, hidden) {
   if (hidden || modo === 'tendencia' || c.tendencia === 'otros' || c.clave === 'efectivo') return null
   if (modo === 'hoy') return c.hoy ? `${pctSigned(c.hoy.pct)} hoy` : (c.diaTxt ? `sin movimiento de hoy (lo último es de ${c.diaTxt})` : 'sin dato de hoy')
-  return c.promedio != null ? `${pctSigned(c.promedio)} contra lo que pagaste` : 'sin lo que pagaste'
+  if (c.promedio != null) return `${pctSigned(c.promedio)} contra lo que pagaste`
+  return c.promedioSinDato ? `sin dato contra lo que pagaste: ${c.promedioSinDato}` : 'sin lo que pagaste'
 }
 
 function Cuadrito({ c, r, rutaOtros, hidden, modo }) {
@@ -153,9 +155,11 @@ export default function MapaCartera({ filas, cargando, error, hidden, sinLectura
       .catch(() => {})
     return () => { vivo = false }
   }, [])
+  // «Contra tu promedio» en la moneda de la app y con su «costo en dólares».
+  const { currency, costBasis } = useCurrency()
   const cuadritos = useMemo(
-    () => conElDia(cuadritosDelMapa(filas, { hidden, sinLectura }), delDia),
-    [filas, hidden, sinLectura, delDia])
+    () => conElDia(cuadritosDelMapa(filas, { hidden, sinLectura }), delDia, { currency, costBasis }),
+    [filas, hidden, sinLectura, delDia, currency, costBasis])
   const lugares = useMemo(() => ubicarCuadritos(cuadritos.map(c => c.peso)), [cuadritos])
   const nombres = useMemo(() => new Map((filas || []).map(f => [f.clave, f.detalle ? `${f.nombre} ${f.detalle}` : f.nombre])), [filas])
   const extremos = useMemo(() => losExtremosDeHoy(delDia, nombres), [delDia, nombres])
