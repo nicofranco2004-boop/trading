@@ -44351,19 +44351,20 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
             if _rev:
                 raise HTTPException(400, "La foto se comparó contra un historial que después se revirtió: "
                                          "volvé a subirla para compararla de nuevo.")
+        # Las dos primeras líneas del bloque de abajo (afuera para que el bloque
+        # siga corto: test_import_confirm_lock cuenta sus renglones):
+        #  · El turno de la cuenta ANTES de leer. El bloque LEE el lote con el
+        #    nombre de cada broker y después lo escribe en posiciones y
+        #    operaciones; sqlite3 abre la transacción recién en la primera
+        #    escritura, y un renombre que entraba en ese hueco dejaba posiciones a
+        #    nombre del broker viejo (tests/test_renombrar_broker_durante_import.py).
+        #    Entre el turno y esa escritura sólo hay lecturas de la base, sin red:
+        #    el candado de toda la base dura casi lo mismo que antes.
+        #  · El «Estado inicial» lo armó la pantalla con los nombres que tenía al
+        #    cargar: si el broker se renombró después, lo sembrado caía en uno que
+        #    ya no existe. Con el turno tomado, nada lo cambia hasta escribir.
         with conn:
-            # El turno de verdad, también en SQLite (no el «de la puerta», que allá
-            # no hace nada). Lo de abajo LEE el lote con el nombre de cada broker y
-            # después lo escribe en posiciones y operaciones; en SQLite la
-            # transacción se abría recién en la primera escritura, y un renombre
-            # que entraba en ese hueco dejaba posiciones a nombre del broker viejo
-            # (medido: tests/test_renombrar_broker_durante_import.py). Entre acá y
-            # esa escritura sólo hay lecturas de la base, sin red: el candado de
-            # toda la base dura casi lo mismo que antes.
             _tomar_turno(conn, uid)
-            # El «Estado inicial» lo armó la pantalla con los nombres que tenía al
-            # cargar: si el broker se renombró después, lo sembrado caía en uno
-            # que ya no existe. Con el turno tomado, nada lo cambia hasta escribir.
             seed_state = _renombre_broker.seed_con_brokers_de_hoy(conn, uid, data.seed_state)
             try:
                 txs, raw_id_by_index = _import_pipeline.load_session_with_seed_revalidate(
