@@ -27,7 +27,7 @@ import PageMeta from '../components/PageMeta'
 import { useAuth } from '../contexts/AuthContext'
 import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
-import { frenoDeLaPestana, encabezadoDePersona, rechazoPorPersona } from '../utils/api'
+import { pedirAlServidor, rechazoPorPersona } from '../utils/api'
 
 const TOKEN_KEY = 'rendi_link_request_token'
 
@@ -63,8 +63,12 @@ export default function AdvisorAccessRequest() {
     setPreview(null)
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 15000)
-    fetch(`/api/auth/link-request/preview?token=${encodeURIComponent(token)}`,
-          { signal: controller.signal, credentials: 'include' })
+    // Dice de quién es la pestaña, como el «responder» de abajo: el servidor
+    // contesta si el que mira es el dueño de la cuenta, y sin decirlo lo veía
+    // como alguien sin sesión —«entrá a tu cuenta» estando adentro— (re-test
+    // a ciegas 9). Sin freno: es una lectura de una pantalla pública.
+    pedirAlServidor(`/auth/link-request/preview?token=${encodeURIComponent(token)}`,
+          { signal: controller.signal }, { freno: false })
       .then(async (res) => {
         const data = await res.json()
         if (cancelled) return
@@ -85,11 +89,9 @@ export default function AdvisorAccessRequest() {
     try {
       // Acepta o rechaza CON LA SESIÓN de esta pestaña: si en otra entró otra
       // persona, no sale (utils/api).
-      await frenoDeLaPestana()
-      const res = await fetch('/api/auth/link-request/respond', {
+      const res = await pedirAlServidor('/auth/link-request/respond', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...encabezadoDePersona() },
-        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, accept }),
       })
       const data = await res.json()

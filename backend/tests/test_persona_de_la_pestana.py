@@ -12,12 +12,11 @@ pestaña cree que está logueado) y `get_current_user` —el único lugar por el
 que pasan todos los pedidos con sesión— lo compara con la persona de la
 sesión. Si es otra: 409 con code `persona_cambiada`, sin tocar nada.
 
-🔴 Re-test a ciegas 8: un pedido con la sesión en la COOKIE (el navegador) que
-no dice de quién es ya no se atiende (401 `persona_falta`): una pestaña «de
-nadie» por un olvido de la pantalla mandaba todo a la cuenta de quien tuviera
-la cookie. Quedan afuera «¿quién soy?» (`GET /api/auth/me`) y la sesión por
-`Authorization: Bearer` (scripts, pruebas). Y «cerrar sesión» no cierra la
-sesión de otra persona.
+🔴 Re-test a ciegas 8 y 9: un pedido con la sesión en la COOKIE (el navegador)
+que no dice de quién es se atiende y se CUENTA (paso 1; rechazarlo rompía
+/acceso y el día de publicar). Quedan afuera del conteo «¿quién soy?»
+(`GET /api/auth/me`) y la sesión por `Authorization: Bearer`. Y «cerrar sesión»
+no cierra la sesión de otra persona.
 
 Corre con: cd backend && python3 -m pytest tests/test_persona_de_la_pestana.py
 """
@@ -108,45 +107,94 @@ class PersonaDeLaPestana(unittest.TestCase):
         self._rechazo(self._pedido("GET", "/api/positions", self.bruno,
                                    persona="ana@rendi.test", por_cookie=True))
 
-    # ── Un pedido que no dice de quién es ────────────────────────────────────
-    def test_con_la_cookie_y_sin_el_encabezado_no_se_atiende(self):
-        for persona in (None, ""):
-            for metodo, ruta, kw in (
-                ("GET", "/api/positions", {}),
-                ("POST", "/api/brokers", {"json": {"name": "Balanz", "currency": "ARS"}}),
-            ):
-                with self.subTest(persona=persona, ruta=ruta):
-                    r = self._pedido(metodo, ruta, self.bruno, persona=persona, por_cookie=True, **kw)
-                    self.assertEqual(r.status_code, 401, r.text)
-                    self.assertEqual(r.json()["detail"]["code"], "persona_falta")
-        conn = main.get_db()
-        try:
-            n = conn.execute("SELECT COUNT(*) AS n FROM brokers").fetchone()["n"]
-        finally:
-            conn.close()
-        self.assertEqual(n, 0, "el alta sin persona no se guardó en la cuenta de la cookie")
+    # ── Un pedido que no dice de quién es: se atiende y se cuenta (paso 1) ───
+    # Re-test a ciegas 9: rechazarlo rompía /acceso y, el día de publicar, la
+    # web de antes (que nunca lo dice) entraba en recargas sin fin. Se atiende
+    # como siempre y se cuenta, separado por si trae la marca de la web nueva.
+    def _contador(self):
+        return {(m, r, v): n for (m, r, v), n in main._SIN_PERSONA.items()}
 
-    def test_quien_soy_con_la_cookie_no_necesita_decirlo(self):
+    def test_con_la_cookie_y_sin_el_encabezado_se_atiende_y_se_cuenta(self):
+        main._SIN_PERSONA.clear()
+        r = self._pedido("GET", "/api/positions", self.bruno, por_cookie=True)
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self._pedido("POST", "/api/brokers", self.bruno, persona="", por_cookie=True,
+                         json={"name": "Balanz", "currency": "ARS"})
+        self.assertIn(r.status_code, (200, 201), r.text)
+        self.client.cookies.set(main.COOKIE_NAME, main.create_token(self.bruno))
+        try:   # la web nueva: trae la marca, no dice persona
+            r = self.client.get("/api/positions", headers={main.VERSION_HEADER: "abc123"})
+        finally:
+            self.client.cookies.clear()
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._contador(), {
+            ("GET", "/api/positions", False): 1,
+            ("POST", "/api/brokers", False): 1,
+            ("GET", "/api/positions", True): 1,
+        })
+
+    def test_diciendo_la_persona_no_se_cuenta(self):
+        main._SIN_PERSONA.clear()
+        self.assertEqual(self._pedido("GET", "/api/positions", self.bruno, persona="bruno@rendi.test",
+                                      por_cookie=True).status_code, 200)
+        self.assertEqual(self._contador(), {})
+
+    def test_quien_soy_con_la_cookie_no_necesita_decirlo_ni_se_cuenta(self):
+        main._SIN_PERSONA.clear()
         r = self._pedido("GET", "/api/auth/me", self.bruno, por_cookie=True)
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["email"], "bruno@rendi.test")
+        self.assertEqual(self._contador(), {})
 
-    def test_con_bearer_sin_el_encabezado_sigue_andando(self):
+    def test_con_bearer_sin_el_encabezado_sigue_andando_y_no_se_cuenta(self):
+        main._SIN_PERSONA.clear()
         self.assertEqual(self._pedido("GET", "/api/positions", self.bruno).status_code, 200)
         self.assertEqual(self._pedido("GET", "/api/positions", self.bruno, persona="").status_code, 200)
+        self.assertEqual(self._contador(), {})
 
-    def test_una_pantalla_publica_con_la_cookie_y_sin_decirlo_es_alguien_sin_sesion(self):
-        self.assertIsNone(self._optional(self.bruno, persona=None))
-        self.assertEqual(self._optional(self.bruno, persona="bruno@rendi.test"), self.bruno)
+    def test_la_cuenta_la_ve_el_admin(self):
+        main._SIN_PERSONA.clear()
+        self._pedido("GET", "/api/positions", self.bruno, por_cookie=True)
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE users SET is_admin=1 WHERE id=?", (self.asesora,))
+            conn.commit()
+        finally:
+            conn.close()
+        r = self._pedido("GET", "/api/admin/pedidos-sin-persona", self.asesora)
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()
+        self.assertEqual((d["web_vieja"], d["web_nueva"]), (1, 0))
+        self.assertEqual(d["rutas"], [{"metodo": "GET", "ruta": "/api/positions", "web_nueva": False, "pedidos": 1}])
+        self.assertEqual(self._pedido("GET", "/api/admin/pedidos-sin-persona", self.bruno).status_code, 403)
 
-    def _optional(self, uid, persona):
-        from starlette.requests import Request
-        headers = [(b"cookie", f"{main.COOKIE_NAME}={main.create_token(uid)}".encode())]
-        if persona is not None:
-            headers.append((PERSONA.lower().encode(), persona.encode()))
-        req = Request({"type": "http", "method": "POST", "path": "/api/auth/link-request/respond",
-                       "headers": headers, "query_string": b""})
-        return main._optional_uid(req)
+    # La vista previa del pedido de acceso, por la ruta de verdad y como la pide
+    # la pantalla (re-test a ciegas 9): el dueño logueado tiene que verse como
+    # el dueño, diga o no la persona; con la de otra, se rechaza.
+    def _pedido_de_acceso(self):
+        token = "p" * 40
+        conn = main.get_db()
+        try:
+            conn.execute("DELETE FROM advisor_link_requests")
+            conn.execute(
+                "INSERT INTO advisor_link_requests (advisor_uid, client_uid, token, email, expires_at) "
+                "VALUES (?,?,?,?, datetime('now', '+1 day'))",
+                (self.asesora, self.bruno, main._hash_token(token), "bruno@rendi.test"))
+            conn.commit()
+        finally:
+            conn.close()
+        return token
+
+    def test_la_vista_previa_de_acceso_ve_al_dueno_logueado(self):
+        token = self._pedido_de_acceso()
+        ruta = f"/api/auth/link-request/preview?token={token}"
+        for persona in ("bruno@rendi.test", None):
+            with self.subTest(persona=persona):
+                d = self._pedido("GET", ruta, self.bruno, persona=persona, por_cookie=True).json()
+                self.assertEqual((d.get("logged_in"), d.get("is_owner")), (True, True), d)
+        sin_sesion = self.client.get(ruta).json()
+        self.assertEqual((sin_sesion.get("logged_in"), sin_sesion.get("is_owner")), (False, False))
+        self._rechazo(self._pedido("GET", ruta, self.bruno, persona="ana@rendi.test", por_cookie=True))
 
     # ── Cerrar sesión no cierra la de otra persona ───────────────────────────
     def _logout(self, uid, persona=None, token=None):

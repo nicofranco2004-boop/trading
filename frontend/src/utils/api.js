@@ -127,8 +127,9 @@ export function clearClientContext() {
 //     Ahora AuthContext dice qué cuenta muestra (`mostrandoLaCuentaDe`, en cada
 //     cambio del usuario, lo haya cambiado quien lo haya cambiado) y, si no es
 //     la de la pestaña, la pestaña frena (motivo 'sinDueno', sin cartel) y se
-//     recarga para volver a preguntar. El servidor tampoco atiende un pedido del
-//     navegador que no dice de quién es (main.py, PERSONA_FALTA).
+//     recarga para volver a preguntar. El servidor cuenta los pedidos del
+//     navegador que no dicen de quién son (main.py, PERSONA_HEADER: paso 1 de
+//     dos; rechazarlos de una rompía /acceso y el día de publicar).
 let _demoDeLaPestana = typeof window !== 'undefined' ? isDemoMode() : false
 let _rechazadoPorElServidor = false   // un 409 persona_cambiada
 let _recargando = false               // va a recargar: frena sin cartel
@@ -246,10 +247,33 @@ export function entrandoALaSesion() {
   avisarDesfase()
 }
 
-/** El encabezado con la persona de esta pestaña (vacío si no hay nadie).
- *  Codificada: un encabezado no lleva cualquier letra. */
-export function encabezadoDePersona() {
-  return _personaDeLaPestana ? { [PERSONA_HEADER]: encodeURIComponent(_personaDeLaPestana) } : {}
+// 🔴 UNA SOLA PUERTA PARA HABLARLE AL SERVIDOR (re-test a ciegas 9, 31/10).
+// Había 7 `fetch` sueltos con la sesión (descargas, importar, el chat, el
+// dictado, el uso, el pedido de acceso del asesor) y cada uno tenía que
+// acordarse de decir de quién era: la vista previa de /acceso se olvidó, el
+// servidor la vio como «nadie logueado» y el cliente nunca podía aceptar a su
+// asesor. Ahora todo pedido a /api sale de acá, con o sin sesión:
+//   · dice de quién es la pestaña (`persona`; por defecto la de ahora —el que
+//     reintenta pasa la del pedido original—; null: no lo dice, sólo «¿quién
+//     soy?»);
+//   · dice que viene de esta versión de la web (`X-Rendi-Version`): el servidor
+//     cuenta los pedidos con la sesión que llegan sin persona, separados por si
+//     traen la marca. Sin marca = la web vieja; con marca y sin persona = un
+//     olvido de la nueva. Con ese número se decide cuándo rechazar (main.py,
+//     PERSONA_HEADER);
+//   · pasa por el freno de la pestaña (`freno: false`: las pantallas de entrada
+//     y lo que no usa la sesión, que antes tampoco frenaban).
+// Lo vigila el armado de las pruebas (testing/vigilarPedidos.js): cualquier
+// pedido a /api que salga sin la marca —o sea, por fuera de acá— da rojo en
+// la prueba que lo haya hecho, sea cual sea.
+export const VERSION_HEADER = 'X-Rendi-Version'
+/* global __BUILD_ID__ */
+const VERSION_DE_LA_WEB = (typeof __BUILD_ID__ !== 'undefined' && __BUILD_ID__) || 'dev'
+export async function pedirAlServidor(path, init = {}, { freno = true, persona = _personaDeLaPestana } = {}) {
+  if (freno) await frenoDeLaPestana()
+  const headers = { ...(init.headers || {}), [VERSION_HEADER]: VERSION_DE_LA_WEB }
+  if (persona) headers[PERSONA_HEADER] = encodeURIComponent(persona)   // un encabezado no lleva cualquier letra
+  return fetch('/api' + path, { ...init, headers, credentials: 'include' })
 }
 
 // 🔴 LAS RECARGAS QUE DECIDE LA PESTAÑA SOLA TIENEN TOPE (re-test a ciegas 5).
@@ -413,18 +437,17 @@ async function req(method, path, body, opts) {
   // varios clientes seguidos sin "entrar" en ninguno.
   const ctxId = clientIdFor(opts)
   if (ctxId) headers['X-Rendi-Client-Id'] = ctxId
-  if (!opts?.sinPersona) Object.assign(headers, encabezadoDePersona())
   const delPedido = _personaDeLaPestana
 
   // Cada intento vuelve a pasar por el freno: entre un reintento y otro puede
-  // haber entrado otra persona en otra pestaña (re-test a ciegas 4).
-  const doFetch = async () => { if (!sinFreno) await frenoDeLaPestana(); return fetch('/api' + path, {
+  // haber entrado otra persona en otra pestaña (re-test a ciegas 4). Y dice la
+  // persona de cuando se pidió, no la de cuando se reintenta.
+  const doFetch = () => pedirAlServidor(path, {
     method,
     headers,
-    credentials: 'include',  // adjunta la cookie HttpOnly de auth
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: opts?.signal,
-  }) }
+  }, { freno: !sinFreno, persona: opts?.sinPersona ? null : delPedido })
   // GET es idempotente → se reintenta solo. El resto (POST/PATCH/DELETE) no:
   // repetirlo podría duplicar un alta. Salvo las lecturas que van por POST
   // (`esLecturaPorPost`): no escriben nada, y el servidor las frena con un 503
@@ -622,16 +645,15 @@ async function upload(path, formData, opts) {
   // No setear Content-Type — el browser agrega multipart/form-data con su boundary.
   // Contexto de cliente (Plan Asesor): mismo header que req() — sin esto el
   // import caía SILENCIOSAMENTE en la cuenta del asesor con el ctx activo.
-  const upHeaders = encabezadoDePersona()
+  const upHeaders = {}
   const delPedido = _personaDeLaPestana
   const upCtxId = clientIdFor(opts)
   if (upCtxId) upHeaders['X-Rendi-Client-Id'] = upCtxId
-  const doFetch = async () => { await frenoDeLaPestana(); return fetch('/api' + path, {
+  const doFetch = () => pedirAlServidor(path, {
     method: 'POST',
-    credentials: 'include',
     headers: upHeaders,
     body: formData,
-  }) }
+  }, { persona: delPedido })
   // El PREVIEW solo arma un borrador que el usuario todavía tiene que
   // confirmar: repetirlo es inofensivo. El CONFIRM no se reintenta solo
   // (podría duplicar la importación) — ahí el error se explica y decide
@@ -660,14 +682,13 @@ async function getBlob(path) {
   }
   // Contexto de cliente (Plan Asesor): mismo header que req() — sin esto el
   // export CSV bajaba la cartera del ASESOR presentada como la del cliente.
-  const blobHeaders = encabezadoDePersona()
+  const blobHeaders = {}
   const delPedido = _personaDeLaPestana
   if (_clientCtx?.id) blobHeaders['X-Rendi-Client-Id'] = String(_clientCtx.id)
-  const res = await fetch('/api' + path, {
+  const res = await pedirAlServidor(path, {
     method: 'GET',
-    credentials: 'include',
     headers: blobHeaders,
-  })
+  }, { persona: delPedido })
   if (res.status === 401) throw sesionVencida(delPedido)
   if (!res.ok) {
     throw await buildHttpError(res, { write: false })
@@ -698,16 +719,15 @@ async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, onVoz, s
 
   // Contexto de cliente (Plan Asesor): la IA SIGUE al contexto — con ctx
   // activo el coach lee/escribe la cuenta del CLIENTE (IA per-cliente).
-  const chatHeaders = { 'Content-Type': 'application/json', ...encabezadoDePersona() }
+  const chatHeaders = { 'Content-Type': 'application/json' }
   const delPedido = _personaDeLaPestana
   if (_clientCtx?.id) chatHeaders['X-Rendi-Client-Id'] = String(_clientCtx.id)
-  const res = await fetch('/api/ai/chat', {
+  const res = await pedirAlServidor('/ai/chat', {
     method: 'POST',
     headers: chatHeaders,
-    credentials: 'include',
     body: JSON.stringify({ ...body, stream: true }),
     signal,
-  })
+  }, { persona: delPedido })
 
   if (res.status === 401) throw sesionVencida(delPedido)
   if (!res.ok || !res.body) {

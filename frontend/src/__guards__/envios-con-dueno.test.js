@@ -103,56 +103,78 @@ function enviosAutomaticos(texto) {
 
 const rel = (p) => relative(SRC, p).split('\\').join('/')
 
-// Lo que sale con `fetch` directo, sin pasar por utils/api: ahí no llega el
-// freno de la pestaña desfasada (otra pestaña cambió la cuenta) ni el
-// encabezado del cliente. Lista cerrada: ninguno guarda datos de una cuenta.
+// 🔴 TODO PEDIDO A /api SALE POR LA PUERTA ÚNICA (utils/api, pedirAlServidor):
+// dice de quién es la pestaña, de qué versión de la web, y pasa por el freno.
+// Re-test a ciegas 9: había 7 `fetch` sueltos con la sesión, cada uno tenía que
+// acordarse del encabezado, y la vista previa de /acceso se olvidó. El que lo
+// vigila de verdad es testing/vigilarPedidos.js (mira los pedidos que salen en
+// TODAS las pruebas); esto es el censo por texto, que además ve lo que ninguna
+// prueba ejecuta. `fetch` directo queda sólo para lo que no es el servidor.
 const FETCH_DIRECTO = {
+  'utils/autoUpdate.js': '/version.json, para saber si hay una versión nueva de la app (no es el servidor)',
+  'pages/Admin.jsx': '/version.json, la versión publicada (no es el servidor)',
+}
+
+// Los que salen sin el freno de la pestaña (`freno: false`): de antes de tener
+// sesión, públicos o que no la usan, y el uso (que es de la persona del
+// encabezado aunque la pestaña se vaya a recargar). Lista cerrada.
+const SIN_FRENO = {
   'contexts/AuthContext.jsx': 'despierta al servidor (/api/health) cada 4 minutos: no manda nada',
-  'utils/uso.js': 'el uso de la app (qué pantallas abre la persona): es de la persona, no de una cuenta; manda X-Rendi-Persona',
-  'utils/autoUpdate.js': '/version.json, para saber si hay una versión nueva de la app',
-  'pages/Admin.jsx': '/version.json, la versión publicada',
-  'components/import/ImportWizard.jsx': 'baja la planilla modelo del importador, vacía: igual para todos; manda X-Rendi-Persona',
-  'hooks/useDictado.js': 'manda el audio para pasarlo a texto (formulario): pasa por frenoDeLaPestana; descuenta los segundos de dictado de la persona',
+  'utils/uso.js': 'el uso de la app: dice la persona; de una pestaña por recargarse sigue siendo de ella',
+  'pages/Login.jsx': 'despertar al servidor, entrar, crear la cuenta, «olvidé mi contraseña»: antes de tener sesión',
+  'pages/VerifyEmail.jsx': 'verificar el mail y reenviar el código: antes de tener sesión',
   'pages/ResetPassword.jsx': 'cambiar la contraseña con el link del mail: antes de tener sesión',
-  'pages/Login.jsx': 'entrar, crear la cuenta, «olvidé mi contraseña»: antes de tener sesión',
-  'pages/VerifyEmail.jsx': 'verificar el mail: antes de tener sesión',
   'pages/ClaimAccount.jsx': 'reclamar una cuenta creada por un asesor: antes de tener sesión',
-  'pages/AdvisorAccessRequest.jsx': 'responder el pedido de acceso de un asesor, con el link del mail: pasa por frenoDeLaPestana',
+  'pages/AdvisorAccessRequest.jsx': 'la vista previa del pedido de acceso: pantalla pública (responder sí frena)',
   'pages/ReportPublic.jsx': 'el informe público por link: sin sesión',
   'pages/Landing.jsx': 'los números públicos de la portada: sin sesión',
 }
 
 describe('lo que sale sin pasar por utils/api', () => {
-  it('el fetch directo es una lista cerrada, cada uno con su porqué', () => {
+  it('el fetch directo es una lista cerrada, y ninguno es al servidor', () => {
     const usan = new Set()
     for (const p of archivos()) {
       const r = rel(p)
       if (r === 'utils/api.js') continue
       const t = readFileSync(p, 'utf8').replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
       if (/\bfetch\s*\(|navigator\.sendBeacon|new\s+(XMLHttpRequest|EventSource|WebSocket)\b/.test(t)) usan.add(r)
+      expect(t, `${r}: le pide algo al servidor sin la puerta única`).not.toMatch(/\bfetch\s*\(\s*[`'"]\/api/)
     }
-    expect([...usan].sort(), 'Esto habla con el servidor sin pasar por utils/api: no lo frena la pestaña '
-      + 'desfasada ni lleva el cliente. Usá api.get/post/… (o, si de verdad no toca una cuenta, '
-      + 'sumalo a FETCH_DIRECTO con su porqué).').toEqual(Object.keys(FETCH_DIRECTO).sort())
+    expect([...usan].sort(), 'Esto habla con el servidor sin pasar por utils/api: no dice de quién es '
+      + 'la pestaña, no lo frena la pestaña desfasada ni lleva el cliente. Usá api.get/post/… o '
+      + 'pedirAlServidor (o, si no es el servidor, sumalo a FETCH_DIRECTO con su porqué).').toEqual(Object.keys(FETCH_DIRECTO).sort())
   })
 
-  // Los que usan la SESIÓN dicen de qué persona son (X-Rendi-Persona): el
-  // servidor rechaza el pedido si la cookie ya es de otra (re-test a ciegas 4,
-  // P2). Los demás son de antes de tener sesión, o no la usan.
-  const CON_SESION = ['utils/uso.js', 'components/import/ImportWizard.jsx', 'hooks/useDictado.js', 'pages/AdvisorAccessRequest.jsx']
-  it('los fetch directos que usan la sesión mandan la persona de la pestaña', () => {
-    const sin = CON_SESION.filter(r => !readFileSync(join(SRC, r), 'utf8').includes('encabezadoDePersona('))
-    expect(sin).toEqual([])
-  })
-
-  it('cada salida de utils/api manda la persona de la pestaña', () => {
+  it('en utils/api, el único fetch es el de la puerta, y la puerta pone persona, marca y freno', () => {
     const t = readFileSync(join(SRC, 'utils/api.js'), 'utf8').replace(/\/\/.*$/gm, '')
-    const sin = []
+    const conFetch = []
+    // El cuerpo empieza en la primera llave DESPUÉS de los parámetros (que pueden
+    // tener `= {}` por defecto).
+    const cuerpos = {}
     for (const m of t.matchAll(/^(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/gm)) {
-      const cuerpo = t.slice(m.index, cierre(t, t.indexOf('{', m.index + m[0].length), '{', '}'))
-      if (/\bfetch\s*\(/.test(cuerpo) && m[1] !== 'withGatewayRetry' && !cuerpo.includes('encabezadoDePersona()')) sin.push(m[1])
+      const finParams = cierre(t, m.index + m[0].length - 1, '(', ')')
+      cuerpos[m[1]] = t.slice(m.index, cierre(t, t.indexOf('{', finParams), '{', '}'))
+      if (/\bfetch\s*\(/.test(cuerpos[m[1]]) && m[1] !== 'withGatewayRetry') conFetch.push(m[1])
     }
-    expect(sin).toEqual([])
+    expect(conFetch).toEqual(['pedirAlServidor'])
+    const puerta = cuerpos.pedirAlServidor
+    for (const pieza of ['PERSONA_HEADER', 'VERSION_HEADER', 'await frenoDeLaPestana()', "credentials: 'include'"]) {
+      expect(puerta, `la puerta perdió: ${pieza}`).toContain(pieza)
+    }
+    expect(puerta.indexOf('await frenoDeLaPestana()')).toBeLessThan(puerta.search(/\bfetch\s*\(/))
+  })
+
+  it('salir sin freno es una lista cerrada; decir otra persona, sólo utils/api', () => {
+    const sinFreno = new Set(), conPersona = []
+    for (const p of archivos()) {
+      const r = rel(p)
+      if (r === 'utils/api.js') continue
+      const t = readFileSync(p, 'utf8').replace(/\/\/.*$/gm, '')
+      if (/\bfreno\s*:\s*false\b/.test(t)) sinFreno.add(r)
+      if (/pedirAlServidor\([^;]*\bpersona\s*:/.test(t)) conPersona.push(r)
+    }
+    expect([...sinFreno].sort()).toEqual(Object.keys(SIN_FRENO).sort())
+    expect(conPersona).toEqual([])
   })
 
   // Saltear el freno o no decir la persona es sólo para dos preguntas, las que
@@ -188,19 +210,6 @@ describe('lo que sale sin pasar por utils/api', () => {
     expect(main, 'el servidor atiende sin persona sólo «¿quién soy?»').toContain('PREGUNTAS_SIN_PERSONA = {("GET", "/api/auth/me")}')
   })
 
-  it('cada salida de utils/api pasa por el freno de la pestaña desfasada antes del fetch', () => {
-    const t = readFileSync(join(SRC, 'utils/api.js'), 'utf8').replace(/\/\/.*$/gm, '')
-    // Las funciones de arriba del archivo (async function x(…) { … }) que llaman a fetch.
-    const sinFreno = []
-    for (const m of t.matchAll(/^(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/gm)) {
-      const cuerpo = t.slice(m.index, cierre(t, t.indexOf('{', m.index + m[0].length), '{', '}'))
-      const iFetch = cuerpo.search(/\bfetch\s*\(/)
-      if (iFetch < 0 || m[1] === 'withGatewayRetry') continue
-      const iFreno = cuerpo.indexOf('await frenoDeLaPestana()')
-      if (iFreno < 0 || iFreno > iFetch) sinFreno.push(m[1])
-    }
-    expect(sinFreno).toEqual([])
-  })
 })
 
 describe('lo que la pantalla manda sola al servidor', () => {

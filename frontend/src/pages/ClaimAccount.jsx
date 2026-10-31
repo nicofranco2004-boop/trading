@@ -26,6 +26,7 @@ import { Lock, UserRound, CheckCircle2, AlertTriangle, ArrowRight } from 'lucide
 import RendiLogo from '../components/RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import PageMeta from '../components/PageMeta'
+import { pedirAlServidor } from '../utils/api'
 
 export default function ClaimAccount() {
   const [searchParams] = useSearchParams()
@@ -57,7 +58,7 @@ export default function ClaimAccount() {
     // Sin esto el spinner "Validando tu invitación…" cuelga para siempre si
     // el fetch nunca resuelve (red caída a mitad de camino, no un error explícito).
     const timeout = setTimeout(() => controller.abort(), 15000)
-    fetch(`/api/auth/claim/preview?token=${encodeURIComponent(token)}`, { signal: controller.signal })
+    pedirAlServidor(`/auth/claim/preview?token=${encodeURIComponent(token)}`, { signal: controller.signal }, { freno: false })
       .then(async (res) => {
         const data = await res.json()
         if (cancelled) return
@@ -85,11 +86,11 @@ export default function ClaimAccount() {
     }
     setLoading(true)
     try {
-      const res = await fetch('/api/auth/claim', {
+      const res = await pedirAlServidor('/auth/claim', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, new_password: password }),
-      })
+      }, { freno: false })
       const data = await res.json()
       if (!res.ok) {
         const msg = typeof data.detail === 'string'

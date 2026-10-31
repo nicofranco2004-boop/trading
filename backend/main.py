@@ -4015,27 +4015,58 @@ def _token_posterior_al_cambio(payload: dict, pwd_changed_at: str) -> bool:
 # sesión (get_effective_user y get_admin_user lo llaman), y usa la consulta a
 # `users` que ya se hacía.
 #
-# 🔴 Y UN PEDIDO DEL NAVEGADOR QUE NO DICE DE QUIÉN ES NO SE ATIENDE (re-test a
-# ciegas 8, 31/10). Al principio, sin el encabezado se seguía atendiendo con la
-# cookie, y eso dejaba abierta la puerta justo cuando la pestaña quedaba «de
-# nadie» por un olvido de la pantalla (entrar por «restablecer la contraseña»):
-# sus pedidos no decían nada y se guardaban en la cuenta de quien tuviera la
-# cookie. Ahora, con la sesión en la COOKIE (o sea, desde un navegador) y sin
-# encabezado, el pedido se trata como «sin sesión»: 401 con code
-# `persona_falta` (y las pantallas públicas lo ven como alguien sin sesión).
-# Quedan afuera de la regla:
-#   · «¿quién soy?» (`GET /api/auth/me`): es la pregunta con que la pestaña se
-#     entera de quién es, al abrir y al entrar; contesta sólo eso.
-#   · la sesión por `Authorization: Bearer` (scripts, pruebas, clientes que no
-#     son el navegador): ahí no hay pestañas ni una cookie compartida.
-# Una pestaña abierta con la versión ANTERIOR el día que se publica no manda el
-# encabezado: recibe un 401, que esa versión ya sabe manejar (vuelve al
-# inicio), y al volver carga la versión nueva, que sí lo manda. Una vez, sin
-# bucle. Por eso es 401 y no 409: la versión anterior no conoce el 409.
+# 🔴 UN PEDIDO DEL NAVEGADOR QUE NO DICE DE QUIÉN ES: SE ATIENDE Y SE CUENTA
+# (re-test a ciegas 9, 31/10). En la vuelta anterior se rechazaba con 401, y eso
+# rompió dos cosas que andaban: (1) la vista previa del pedido de acceso del
+# asesor, que la pantalla mandaba con un `fetch` suelto sin el encabezado —el
+# cliente veía «entrá a tu cuenta» estando adentro y nunca podía aceptar—, y (2)
+# el día de publicar: Railway y Vercel terminan sin orden fijo, y con el
+# servidor nuevo y la web de hoy (que nunca dice la persona) cada pedido daba
+# 401, la web volvía al inicio, «¿quién soy?» contestaba bien, y otra vez: 217
+# recargas en 30 s, hasta que terminara Vercel —y para siempre en una pestaña
+# vieja que quedara abierta—. Fallar cerrado convirtió un olvido y un orden de
+# publicación en algo que el usuario ve.
+#
+# Por eso va en DOS PASOS:
+#   1. (ESTE) Se atiende como siempre, pero se CUENTA: método, ruta y si trae la
+#      marca de la web nueva (`X-Rendi-Version`, la pone siempre la puerta única
+#      de la web, utils/api pedirAlServidor). Sin marca = la web de antes (o un
+#      script con cookie); con marca y sin persona = una pestaña de la web nueva
+#      que no sabe de quién es (sin nadie adentro). Se mira en
+#      GET /api/admin/pedidos-sin-persona. Se queda todo lo demás: el 409 si el
+#      pedido dice OTRA persona que la de la sesión, y cerrar sesión no cierra
+#      la de otra persona.
+#   2. (OTRA TANDA, con el número en la mano) Rechazar sólo los que traen la
+#      marca y no dicen persona: ése es justo el olvido de la web nueva. La web
+#      vieja, que no manda la marca, sigue pasando hasta que el contador muestre
+#      que no queda; así no hay bucle posible aunque una pestaña vieja quede
+#      abierta días, publique primero quien publique.
+# Quedan afuera del conteo «¿quién soy?» (`GET /api/auth/me`, la pregunta con
+# que la pestaña se entera de quién es) y la sesión por `Authorization: Bearer`
+# (scripts y pruebas: ahí no hay pestañas ni una cookie compartida).
+# El contador vive en la memoria del proceso (Railway corre uno): arranca de
+# cero en cada publicación, que es justo desde cuándo interesa contar.
 PERSONA_HEADER = "X-Rendi-Persona"
+VERSION_HEADER = "X-Rendi-Version"
 PERSONA_CAMBIADA = 409
-PERSONA_FALTA = "persona_falta"
 PREGUNTAS_SIN_PERSONA = {("GET", "/api/auth/me")}
+_SIN_PERSONA: dict = {}          # (método, ruta, ¿trae la marca?) → cuántos
+_SIN_PERSONA_DESDE = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+_SIN_PERSONA_TOPE = 300          # rutas distintas; las de más van a «(otras)»
+import threading as _threading_sin_persona
+_SIN_PERSONA_LOCK = _threading_sin_persona.Lock()
+
+
+def _contar_sin_persona(request: Request) -> None:
+    ruta_def = getattr(request.scope.get("route"), "path", None) or request.url.path
+    clave = (request.method, ruta_def, request.headers.get(VERSION_HEADER) is not None)
+    with _SIN_PERSONA_LOCK:
+        nueva = clave not in _SIN_PERSONA
+        if nueva and len(_SIN_PERSONA) >= _SIN_PERSONA_TOPE:
+            clave, nueva = (request.method, "(otras)", clave[2]), False
+        _SIN_PERSONA[clave] = _SIN_PERSONA.get(clave, 0) + 1
+    if nueva:
+        log.info("pedido con la sesión y sin persona: %s %s (marca de la web nueva: %s)", *clave)
 
 
 def _persona_del_encabezado(request: Request) -> Optional[str]:
@@ -4067,10 +4098,7 @@ def get_current_user(
     persona = _persona_del_encabezado(request)
     if (por_cookie and persona is None
             and (request.method, request.url.path) not in PREGUNTAS_SIN_PERSONA):
-        raise HTTPException(401, detail={
-            "code": PERSONA_FALTA,
-            "message": "El pedido no dice de quién es: no se atiende con la sesión del navegador.",
-        })
+        _contar_sin_persona(request)     # paso 1: se atiende y se cuenta (ver PERSONA_HEADER)
     # Verificar que el user existe y que el token no quedó invalidado por cambio de pass.
     #
     # ⚠️ `requires_plan` viaja en ESTA consulta —la que el chequeo ya hacía— para
@@ -4117,6 +4145,24 @@ def get_admin_user(uid: int = Depends(get_current_user)) -> int:
     if not row or not row["is_admin"]:
         raise HTTPException(403, "Acceso restringido")
     return uid
+
+
+@app.get("/api/admin/pedidos-sin-persona")
+def admin_pedidos_sin_persona(uid: int = Depends(get_admin_user)):
+    """El paso 1 de PERSONA_HEADER: cuántos pedidos con la sesión del navegador
+    llegaron sin decir de quién son desde que arrancó el servidor, por ruta.
+    `web_nueva`: traían la marca X-Rendi-Version (la web de esta versión o una
+    posterior). Con estos números se decide el paso 2."""
+    with _SIN_PERSONA_LOCK:
+        filas = [{"metodo": m, "ruta": r, "web_nueva": v, "pedidos": n}
+                 for (m, r, v), n in _SIN_PERSONA.items()]
+    filas.sort(key=lambda f: (-f["pedidos"], f["ruta"]))
+    return {
+        "desde": _SIN_PERSONA_DESDE,
+        "web_vieja": sum(f["pedidos"] for f in filas if not f["web_nueva"]),
+        "web_nueva": sum(f["pedidos"] for f in filas if f["web_nueva"]),
+        "rutas": filas,
+    }
 
 
 # ─── Plan Asesor: contexto de cliente (get_effective_user) ───────────────────

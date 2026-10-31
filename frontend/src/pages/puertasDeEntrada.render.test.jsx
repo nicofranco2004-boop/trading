@@ -15,7 +15,10 @@
 //     código (vi.resetModules), con lo guardado en el navegador.
 // Simulado: el servidor —con las reglas de main.py, que prueba
 // backend/tests/test_persona_de_la_pestana.py contra el de verdad— y la otra
-// pestaña (cambia la cookie y, un rato después, lo guardado en común).
+// pestaña (cambia la cookie y, un rato después, lo guardado en común). Al
+// pedido con sesión que no dice de quién es lo rechaza (401 persona_falta):
+// es el paso 2 de main.py, el más estricto. Hoy el servidor lo atiende y lo
+// cuenta; así la prueba ve un olvido aunque hoy no se note.
 //
 // Lo que se mira, además de «nada de Ana en la cuenta de Bruno»: que NINGÚN
 // pedido con sesión salga sin decir de quién es (salvo «¿quién soy?»). Así una
@@ -53,7 +56,7 @@ const srv = {}
 function reiniciarServidor() {
   Object.assign(srv, {
     me: null, demora: 3, demoraMe: 0, demoraUna: 0, registroDirecto: false, resetPara: ANA, claimPara: ANA,
-    escrituras: [], usos: [], logouts: [], lecturas: [], sinPersona: [],
+    escrituras: [], usos: [], logouts: [], lecturas: [], sinPersona: [], previews: [], respuestas: [], accesoPara: ANA,
   })
 }
 reiniciarServidor()
@@ -86,6 +89,22 @@ async function servidor(url, opts = {}) {
   if (gen !== g) return new Promise(() => {})              // la página se fue: el navegador corta el pedido
   const entrada = contestarEntrada(srv, method, path, body, porEmail)
   if (entrada) return entrada
+  // El pedido de acceso del asesor: pantalla pública que además quiere saber
+  // quién mira (main.py, _optional_uid). Acá con la regla MÁS estricta —sin
+  // decir de quién es, es «nadie»— para que un pedido que se olvide de decirlo
+  // dé rojo aunque el servidor de hoy lo atienda (re-test a ciegas 9).
+  if (path === '/auth/link-request/preview' || path === '/auth/link-request/respond') {
+    if (persona && sesion && persona !== sesion.email) return json({ detail: { code: 'persona_cambiada' } }, 409)
+    const quien = sesion && persona === sesion.email ? sesion : null
+    if (path.endsWith('preview')) {
+      srv.previews.push({ persona, cookie: sesion?.email ?? null })
+      return json({ state: 'pending', advisor_name: 'La Asesora', permission: 'read_write', email_masked: 'a**@puertas.test',
+        is_owner: quien?.email === srv.accesoPara.email, logged_in: !!quien })
+    }
+    if (body?.accept && quien?.email !== srv.accesoPara.email) return json({ detail: 'Iniciá sesión para aceptar el pedido.' }, 401)
+    srv.respuestas.push({ accept: !!body?.accept, cuenta: quien?.email ?? null, persona })
+    return json({ ok: true, accepted: !!body?.accept })
+  }
   if (path === '/health' || path === '/stats/public') return json({ ok: true })
   // ── get_current_user
   if (!sesion) return json({ detail: 'Token inválido' }, 401)
@@ -131,6 +150,7 @@ async function cargar(ruta = '/dashboard', { antesDeMontar } = {}) {
   const { ENVIOS, enviarDe } = await import('../utils/enviosConDueno')
   const { useDuenoDeLosDatos } = await import('../utils/duenoDeLaPestana')
   const pantallas = await pantallasDeEntrada()
+  const { default: Acceso } = await import('./AdvisorAccessRequest')
   const tab = { pantalla: null, ruta: pathname }
   function Pantalla() {
     const auth = useAuth()
@@ -153,7 +173,7 @@ async function cargar(ruta = '/dashboard', { antesDeMontar } = {}) {
   }
   function PantallaDeLaCuenta() { const auth = useAuth(); return h(Pantalla, { key: auth.user?.email ?? 'nadie' }) }
   function Ojo() { tab.ruta = RR.useLocation().pathname; return null }
-  const Rutas = rutasComoLaApp(h, RR, useAuth, pantallas, PantallaDeLaCuenta)
+  const Rutas = rutasComoLaApp(h, RR, useAuth, pantallas, PantallaDeLaCuenta, { '/acceso': Acceso })
   const interior = h(R.Fragment, null, h(Cartel), h(Ojo), h(Rutas))
   const el = () => h(HelmetProvider, null, h(RR.MemoryRouter, { initialEntries: [ruta] },
     h(AuthProvider, null, h(AdvisorProvider, null, interior))))
@@ -399,4 +419,66 @@ describe('una pestaña que muestra una cuenta sin saber de quién es, frena', ()
     expect(enOtraCuenta(n), 'algo de Ana guardado en la cuenta de Bruno').toEqual([])
     expect(quiereIrse(), 'la pestaña se recarga para volver a preguntar quién es').toBe(true)
   }, 60000)
+})
+
+// 🔴 El pedido de acceso del asesor (/acceso, el link «Ver el pedido» del mail):
+// la vista previa salía sin decir de quién era la pestaña y el servidor veía
+// «nadie logueado»; el cliente adentro leía «entrá a tu cuenta» y nunca podía
+// aceptar (re-test a ciegas 9). Por la pantalla de verdad, con y sin sesión.
+describe('el pedido de acceso del asesor', () => {
+  const texto = () => cur.nav.texto(cur.m.contenedor)
+  const tocar = async (parte) => {
+    const b = cur.nav.buscarBoton(cur.m.contenedor, parte)
+    expect(b, `no hay botón «${parte}»: ${texto().slice(0, 200)}`).toBeTruthy()
+    await enActo(() => cur.nav.clic(cur.m.contenedor, b))
+  }
+  async function abrirElLink(u) {
+    navegadorLimpio()
+    if (u) { srv.me = u; mapas.local.set('rendi_user', guardado(u)) }
+    await cargar('/acceso?token=tok-acceso')
+    expect(await esperarQue(() => /Darle acceso|Para aceptar|Estás con otra cuenta/.test(texto())), texto().slice(0, 200)).toBe(true)
+  }
+
+  it('Ana, ya adentro, ve «Darle acceso», acepta, y la respuesta sale con su persona', async () => {
+    await abrirElLink(ANA)
+    expect(srv.previews.at(-1)).toEqual({ persona: ANA.email, cookie: ANA.email })
+    expect(texto()).toContain('Darle acceso')
+    await tocar('Darle acceso')
+    expect(await esperarQue(() => srv.respuestas.length > 0)).toBe(true)
+    expect(srv.respuestas).toEqual([{ accept: true, cuenta: ANA.email, persona: ANA.email }])
+    expect(await esperarQue(() => /Listo/.test(texto()))).toBe(true)
+    expect(srv.sinPersona).toEqual([])
+  })
+
+  it('Bruno adentro (no es el dueño): «estás con otra cuenta», y no acepta por Ana', async () => {
+    await abrirElLink(BRUNO)
+    expect(srv.previews.at(-1)).toEqual({ persona: BRUNO.email, cookie: BRUNO.email })
+    expect(texto()).toContain('Estás con otra cuenta')
+    expect(texto()).not.toContain('Darle acceso')
+    expect(srv.respuestas).toEqual([])
+  })
+
+  it('sin sesión: «entrá a tu cuenta»; rechazar sin entrar sale y queda rechazado', async () => {
+    await abrirElLink(null)
+    expect(srv.previews.at(-1)).toEqual({ persona: null, cookie: null })
+    expect(texto()).toContain('Para aceptar, entrá a tu cuenta')
+    await tocar('Rechazar sin entrar')
+    expect(await esperarQue(() => srv.respuestas.length > 0)).toBe(true)
+    expect(srv.respuestas).toEqual([{ accept: false, cuenta: null, persona: null }])
+    expect(await esperarQue(() => /Pedido rechazado/.test(texto()))).toBe(true)
+  })
+
+  it('sin sesión: «Iniciar sesión» lleva a entrar, y al volver al link Ana acepta', async () => {
+    await abrirElLink(null)
+    await tocar('Iniciar sesión')
+    expect(await esperarQue(() => cur.tab.ruta === '/login')).toBe(true)
+    expect(await entrarPor('iniciar sesión', ANA)).toBe(true)
+    // El token quedó guardado en la pestaña: el link vuelve a abrir el pedido.
+    await cargar('/acceso')
+    expect(await esperarQue(() => /Darle acceso/.test(texto())), texto().slice(0, 200)).toBe(true)
+    await tocar('Darle acceso')
+    expect(await esperarQue(() => srv.respuestas.length > 0)).toBe(true)
+    expect(srv.respuestas).toEqual([{ accept: true, cuenta: ANA.email, persona: ANA.email }])
+    expect(srv.sinPersona).toEqual([])
+  })
 })

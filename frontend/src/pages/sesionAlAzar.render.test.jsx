@@ -14,9 +14,12 @@
 //   (ii)  La pestaña queda usable —con la sesión que hay, sin cartel— o con un
 //         cartel cuyo botón «Recargar» la deja usable, en pocas recargas.
 //   (iii) Nunca se borra algo guardado de la persona que tiene la sesión.
-//   (iv)  Ningún pedido con sesión sale sin decir de quién es (salvo «¿quién
-//         soy?»): una pestaña «de nadie» es la puerta abierta del re-test a
-//         ciegas 8, aunque el servidor la rechace.
+//   (iv)  Ninguna pestaña que sabe de quién es, o que MUESTRA una cuenta, manda
+//         un pedido con sesión sin decirlo (salvo «¿quién soy?»): una pestaña
+//         «de nadie» mostrando una cuenta es la puerta abierta del re-test a
+//         ciegas 8, aunque el servidor la rechace. Una pestaña sin nadie adentro
+//         (la portada) sí puede: no tiene a quién nombrar, y lo que le contesten
+//         no se muestra como de nadie (re-test a ciegas 9: eran rojos falsos).
 //
 // Qué es de verdad y qué no:
 //   · La pestaña A es de verdad: cada recarga vuelve a cargar TODO el código con
@@ -34,7 +37,9 @@
 //   · El servidor simulado aplica la regla del de verdad (get_current_user,
 //     backend/tests/test_persona_de_la_pestana.py): sin sesión 401; si el
 //     pedido dice otra persona que la de la cookie, 409 persona_cambiada; si
-//     no dice ninguna, 401 persona_falta (salvo «¿quién soy?»); «cerrar
+//     no dice ninguna, 401 persona_falta (salvo «¿quién soy?»: es el paso 2
+//     de main.py, el más estricto; hoy el servidor lo atiende y lo cuenta, y
+//     así la prueba ve un olvido aunque hoy no se note); «cerrar
 //     sesión» no cierra la sesión de otra persona. Las rutas de entrada
 //     contestan lo que contesta main.py.
 //
@@ -92,7 +97,7 @@ function relojesDeLaCarga() {
 }
 
 // ── El servidor ───────────────────────────────────────────────────────────
-const srv = { me: null, demoraMe: 0, meFalla: 0, escrituras: [], sinPersona: [] }
+const srv = { me: null, demoraMe: 0, meFalla: 0, escrituras: [], sinPersona: [], sinPersonaDeNadie: [] }
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } })
 async function servidor(url, opts = {}) {
   const g = gen
@@ -102,6 +107,13 @@ async function servidor(url, opts = {}) {
   const persona = hd['X-Rendi-Persona'] ? decodeURIComponent(hd['X-Rendi-Persona']).trim().toLowerCase() || null : null
   const cid = hd['X-Rendi-Client-Id'] != null ? Number(hd['X-Rendi-Client-Id']) : null
   const sesion = srv.me                                   // la cookie: la de quien está logueado AL MANDAR
+  // ¿De qué pestaña sale, y sabía de quién era o mostraba una cuenta? AL
+  // MANDAR, no al llegar: en el medio otra pestaña puede hacer que ésta
+  // muestre a alguien —y ahí la pestaña frena—, pero el pedido salió de una
+  // pestaña sin nadie (re-test a ciegas 9, semilla 861). Y la de ESA carga de
+  // la página: mientras una carga arranca, `cur` todavía es la anterior.
+  const t = pestanas.get(g)
+  const deAlguien = t?.api?.personaDeLaPestana?.() || (t?.pantalla?.user && !t.pantalla.user.demo ? t.pantalla.user.email : null)
   let body
   try { body = opts.body && typeof opts.body === 'string' ? JSON.parse(opts.body) : undefined } catch { body = undefined }
   // «Cerrar sesión» no cierra la de otra persona (main.py, logout).
@@ -115,7 +127,7 @@ async function servidor(url, opts = {}) {
   if (path === '/health' || path === '/stats/public') return json({ ok: true })
   if (!sesion) return json({ detail: 'Token inválido' }, 401)
   if (!persona && !(method === 'GET' && path === '/auth/me')) {
-    srv.sinPersona.push({ pedido: `${method} ${path}`, paso: pasoActual })
+    ;(deAlguien ? srv.sinPersona : srv.sinPersonaDeNadie).push({ pedido: `${method} ${path}`, paso: pasoActual, deAlguien })
     return json({ detail: { code: 'persona_falta' } }, 401)
   }
   if (persona && persona !== sesion.email) return json({ detail: { code: 'persona_cambiada' } }, 409)
@@ -140,6 +152,7 @@ async function servidor(url, opts = {}) {
 let mapas = { local: new Map(), sesion: new Map() }
 let cur = null
 let pasoActual = ''
+const pestanas = new Map()            // carga (gen) → su pestaña: de dónde salió cada pedido
 
 async function cargar(ruta = '/app') {
   if (cur?.m) { try { await cur.m.desmontar() } catch { /* */ } }
@@ -169,7 +182,9 @@ async function cargar(ruta = '/app') {
   const { useDuenoDeLosDatos } = await import('../utils/duenoDeLaPestana')
   const almacen = await import('../utils/almacen')
   const demo = await import('../utils/demo')
-  const tab = { pantalla: null, ruta: pathname }
+  const tab = { pantalla: null, ruta: pathname, api }
+  pestanas.set(gen, tab)
+  pestanas.delete(gen - 50)           // las de hace mucho ya no mandan nada
   // Una pantalla que muestra datos de UNA cuenta (la que contestó al montarse)
   // y manda con ellos: lo que hace cualquier pantalla de la app.
   function Pantalla() {
@@ -183,13 +198,21 @@ async function cargar(ruta = '/app') {
       api.api.get('/positions').then(r => { if (vivo) setMuestra(r?.cuenta ?? null) }).catch(() => {})
       return () => { vivo = false }
     }, [])
-    tab.pantalla = {
+    // La pantalla de la prueba es la que está MONTADA: al desmontarse (pasó a
+    // una pantalla de entrada) se suelta. Antes la prueba se quedaba con la de
+    // una pantalla que ya no estaba y daba «no quedó usable» mirando un
+    // formulario de «Nueva contraseña» (re-test a ciegas 9).
+    const mia = R.useRef({})
+    R.useEffect(() => () => { if (tab.pantalla === mia.current) tab.pantalla = null }, [])
+    // Sin nadie adentro la app muestra la portada: no hay nada que comprar.
+    const conCuenta = !!auth.user
+    tab.pantalla = Object.assign(mia.current, {
       user: auth.user, muestra, cliente: adv.clientCtx?.id ?? null, logout: auth.logout,
       exitDemo: auth.exitDemo, enterClient: adv.enterClient, exitClient: adv.exitClient,
-      compra: () => api.api.post('/positions', { muestra }),
-      mes: () => api.api.post('/monthly', { muestra }),
-      automatico: () => enviarDe(ENVIOS.pnlNoRealizado, dueno, { muestra }),
-    }
+      compra: conCuenta ? () => api.api.post('/positions', { muestra }) : undefined,
+      mes: conCuenta ? () => api.api.post('/monthly', { muestra }) : undefined,
+      automatico: conCuenta ? () => enviarDe(ENVIOS.pnlNoRealizado, dueno, { muestra }) : undefined,
+    })
     return R.createElement('div', null, `pantalla de ${muestra}`)
   }
   function PantallaDeLaCuenta() {
@@ -268,7 +291,7 @@ const clavesDe = (email) => [...mapas.local.keys()].filter(k => k.includes(`:${e
 const ráfaga = (demoraDeNavegacion, { veces = 5, cada = 300 } = {}) => async () => {
   let pidioIrse = null
   for (let i = 0; i < veces; i++) {
-    try { await cur.tab.pantalla?.compra() } catch { /* el freno o el servidor */ }
+    try { await cur.tab.pantalla?.compra?.() } catch { /* el freno o el servidor */ }
     await esperar(cada)
     if (quiereIrse()) {
       pidioIrse ??= Date.now()
@@ -282,15 +305,15 @@ function accionesDeA(r) {
   const lista = []
   const intentar = (fn) => async () => { try { await fn() } catch { /* el freno o el servidor la cortaron */ } }
   if (p?.user && !p.user.demo) {
-    lista.push(['A compra', intentar(() => cur.tab.pantalla.compra())])
-    lista.push(['A agrega un mes', intentar(() => cur.tab.pantalla.mes())])
-    lista.push(['A manda un envío automático', intentar(() => cur.tab.pantalla.automatico())])
+    lista.push(['A compra', intentar(() => cur.tab.pantalla?.compra?.())])
+    lista.push(['A agrega un mes', intentar(() => cur.tab.pantalla?.mes?.())])
+    lista.push(['A manda un envío automático', intentar(() => cur.tab.pantalla?.automatico?.())])
     // La persona sigue tocando mientras pasa algo: las ventanas de milisegundos
     // (el 401 antes de la cookie nueva, el reintento de «¿quién soy?») sólo se
     // ven con pedidos repartidos en el tiempo, no con uno suelto.
     const nav = r.uno([0, 100, 500])
     lista.push([`A compra varias veces seguidas (la página tarda ${nav} ms en irse)`, ráfaga(nav)])
-    lista.push(['A cierra sesión', intentar(() => cur.tab.pantalla.logout())])
+    lista.push(['A cierra sesión', intentar(() => cur.tab.pantalla?.logout())])
     if (p.user.tier === 'advisor') {
       const c = r.uno([2, 3, null])
       lista.push([`A pasa al cliente ${c ?? 'propia'}`, intentar(() => (c ? cur.tab.pantalla.enterClient({ id: c, label: `C${c}` }) : cur.tab.pantalla.exitClient()))])
@@ -364,7 +387,7 @@ describe('la sesión de la pestaña, por escenarios al azar', () => {
       // Arranca: navegador limpio, alguien logueado (o nadie), con ayudas
       // guardadas de cada persona (para ver si alguna se borra de más).
       mapas = { local: new Map(), sesion: new Map() }
-      srv.me = null; srv.demoraMe = 0; srv.demoraResto = 0; srv.meFalla = 0; srv.escrituras = []; srv.sinPersona = []
+      srv.me = null; srv.demoraMe = 0; srv.demoraResto = 0; srv.meFalla = 0; srv.escrituras = []; srv.sinPersona = []; srv.sinPersonaDeNadie = []
       const inicial = r.uno([ANA, BRUNO, ASESORA, null])
       if (inicial) { srv.me = inicial; mapas.local.set('rendi_user', guardado(inicial)) }
       mapas.local.set('rendi:tour:novedades:v2', '1')
@@ -423,7 +446,7 @@ describe('la sesión de la pestaña, por escenarios al azar', () => {
 // alcanza en una corrida, éstos igual los prueban siempre.
 async function arrancar(u) {
   mapas = { local: new Map(), sesion: new Map() }
-  srv.me = u; srv.demoraMe = 0; srv.demoraResto = 0; srv.meFalla = 0; srv.escrituras = []; srv.sinPersona = []
+  srv.me = u; srv.demoraMe = 0; srv.demoraResto = 0; srv.meFalla = 0; srv.escrituras = []; srv.sinPersona = []; srv.sinPersonaDeNadie = []
   if (u) mapas.local.set('rendi_user', guardado(u))
   mapas.local.set('rendi:tour:novedades:v2', '1')
   for (const p of PERSONAS) mapas.local.set(`rendi_snapshot_date:${p.email}|propia`, '2026-10-30')
@@ -468,7 +491,7 @@ describe('los escenarios del re-test a ciegas 6, fijos', () => {
       (async () => { srv.me = BRUNO; await esperar(2000); otraPestanaEscribe('rendi_user', guardado(BRUNO)) })(),
       (async () => {
         for (let i = 0; i < 120 && enComun() !== BRUNO.email; i++) await esperar(20)
-        for (let i = 0; i < 4; i++) { try { await cur.tab.pantalla?.compra() } catch { /* */ } await esperar(40) }
+        for (let i = 0; i < 4; i++) { try { await cur.tab.pantalla?.compra?.() } catch { /* */ } await esperar(40) }
       })(),
     ]))
     await seguir()
@@ -511,7 +534,7 @@ describe('los escenarios del re-test a ciegas 6, fijos', () => {
     const n = srv.escrituras.length
     await enActo(() => Promise.all([
       (async () => { srv.me = BRUNO; await esperar(150); otraPestanaEscribe('rendi_user', guardado(BRUNO)) })(),
-      (async () => { for (let i = 0; i < 6; i++) { try { await cur.tab.pantalla?.compra() } catch { /* */ } await esperar(40) } })(),
+      (async () => { for (let i = 0; i < 6; i++) { try { await cur.tab.pantalla?.compra?.() } catch { /* */ } await esperar(40) } })(),
     ]))
     log('[R7-1] escrituras:', srv.escrituras.slice(n))
     expect(malasDesde(n), 'compras de la pantalla de Ana guardadas en la cuenta de Bruno').toEqual([])

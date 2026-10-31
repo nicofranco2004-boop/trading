@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useState } from 'react'
-import { api, clearClientContext, EVENTO_PLAN_REQUERIDO, recargarPorPersona, fijarPersonaDeLaPestana, arranqueResuelto, avisarDesfase, entrandoALaSesion, abrirLaPestana, mostrandoLaCuentaDe, personaDeLaPestana } from '../utils/api'
+import { api, clearClientContext, EVENTO_PLAN_REQUERIDO, recargarPorPersona, fijarPersonaDeLaPestana, arranqueResuelto, avisarDesfase, entrandoALaSesion, abrirLaPestana, mostrandoLaCuentaDe, personaDeLaPestana, pedirAlServidor } from '../utils/api'
 import { setBrokersRegistry } from '../utils/valuation'
 import { isDemoMode, enableDemoMode, disableDemoMode, vencerDemoSiCorresponde, EMAIL_DEL_DEMO } from '../utils/demo'
 import { track } from '../utils/track'
@@ -287,7 +287,7 @@ export function AuthProvider({ children }) {
   // Se activa solo cuando hay un usuario logueado (no en demo ni sin sesión).
   useEffect(() => {
     if (!user || isDemoMode()) return
-    const id = setInterval(() => { fetch('/api/health').catch(() => {}) }, 4 * 60 * 1000)
+    const id = setInterval(() => { pedirAlServidor('/health', {}, { freno: false }).catch(() => {}) }, 4 * 60 * 1000)
     return () => clearInterval(id)
   }, [user])
 

@@ -18,6 +18,7 @@ import { Lock, CheckCircle2, ArrowLeft, ArrowRight } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import PageMeta from '../components/PageMeta'
+import { pedirAlServidor } from '../utils/api'
 
 export default function ResetPassword() {
   const [searchParams] = useSearchParams()
@@ -56,11 +57,11 @@ export default function ResetPassword() {
     }
     setLoading(true)
     try {
-      const res = await fetch('/api/auth/reset-password', {
+      const res = await pedirAlServidor('/auth/reset-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, new_password: password }),
-      })
+      }, { freno: false })
       const data = await res.json()
       if (!res.ok) {
         const msg = typeof data.detail === 'string'

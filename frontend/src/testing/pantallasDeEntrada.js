@@ -27,12 +27,14 @@ export async function pantallasDeEntrada() {
 
 /** Las rutas como App.jsx (Layout): las pantallas de entrada existen SÓLO sin
  *  usuario (con alguien adentro, o en el demo, la app no las dibuja). `Cuenta`:
- *  lo que la prueba muestra en el resto de las direcciones. */
-export function rutasComoLaApp(h, RR, useAuth, pantallas, Cuenta) {
+ *  lo que la prueba muestra en el resto de las direcciones. `siempre`: las que
+ *  App.jsx monta con y sin usuario ({ '/acceso': AdvisorAccessRequest }). */
+export function rutasComoLaApp(h, RR, useAuth, pantallas, Cuenta, siempre = {}) {
   return function Rutas() {
     const { user } = useAuth()
     return h(RR.Routes, null,
       ...(user ? [] : RUTAS_DE_ENTRADA.map(r => h(RR.Route, { key: r, path: r, element: h(pantallas[r]) }))),
+      ...Object.entries(siempre).map(([r, C]) => h(RR.Route, { key: r, path: r, element: h(C) })),
       h(RR.Route, { key: '*', path: '*', element: h(Cuenta) }))
   }
 }

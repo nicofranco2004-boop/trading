@@ -20,6 +20,7 @@ import { Sparkles, CheckCircle2, RefreshCw, ArrowLeft } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 import PageMeta from '../components/PageMeta'
+import { pedirAlServidor } from '../utils/api'
 import { leer as leerDelAlmacen } from '../utils/almacen'
 import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
@@ -126,11 +127,11 @@ export default function VerifyEmail() {
     setLoading(true)
     setError('')
     try {
-      const res = await fetch('/api/auth/verify-email', {
+      const res = await pedirAlServidor('/auth/verify-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, code }),
-      })
+      }, { freno: false })
       const data = await res.json()
       if (!res.ok) {
         setDigits(['', '', '', '', '', ''])
@@ -165,11 +166,11 @@ export default function VerifyEmail() {
     setResending(true)
     setError('')
     try {
-      const res = await fetch('/api/auth/resend-verification', {
+      const res = await pedirAlServidor('/auth/resend-verification', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
-      })
+      }, { freno: false })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
         throw new Error(data.detail || 'No pudimos reenviar el código. Esperá un minuto e intentá de nuevo.')

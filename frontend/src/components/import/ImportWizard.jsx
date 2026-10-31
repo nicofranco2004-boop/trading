@@ -3,7 +3,7 @@ import { X, Upload, AlertTriangle, CheckCircle2, Download, FileText, Loader2, Sa
 import InfoTooltip from '../InfoTooltip'
 import BrokerInstructions from './BrokerInstructions'
 import WallbitConnect from './WallbitConnect'
-import { api, encabezadoDePersona } from '../../utils/api'
+import { api, pedirAlServidor } from '../../utils/api'
 import { whatsappUrl } from '../../utils/support'
 import { WhatsAppIcon } from '../SupportWhatsAppFab'
 import { track } from '../../utils/track'
@@ -541,10 +541,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
   async function downloadTemplate() {
     setError(null)
     try {
-      const res = await fetch(`/api/imports/template?format=${format}`, {
-        credentials: 'include',
-        headers: encabezadoDePersona(),
-      })
+      const res = await pedirAlServidor(`/imports/template?format=${format}`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
