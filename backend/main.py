@@ -27356,7 +27356,7 @@ def admin_backup_trigger(uid: int = Depends(get_admin_user)):
     segundo backup pisa al primero (mismo nombre por día) — no duplica.
     """
     from scripts.backup_db import run_backup
-    stats = run_backup(db_path=DB_PATH, dsn=DATABASE_URL if USANDO_PG else None)
+    stats = run_backup(db_path=DB_PATH)   # el motor lo decide run_backup (DATABASE_URL)
     return {
         "ok": not bool(stats.get("errors")),
         "stats": stats,
@@ -46250,9 +46250,9 @@ def _run_backup_db_job():
     _backup_log = logging.getLogger("backup_db")
     try:
         # Con Postgres, el volcado de Postgres: el SQLite está congelado y copiarlo
-        # sería un «OK» falso (ver `run_backup`). La misma decisión que el botón
-        # del admin (`admin_backup_trigger`).
-        stats = run_backup(db_path=DB_PATH, dsn=DATABASE_URL if USANDO_PG else None)
+        # sería un «OK» falso. Lo decide `run_backup` mirando DATABASE_URL, la
+        # misma fuente que USANDO_PG: no depende de que acá se pase nada.
+        stats = run_backup(db_path=DB_PATH)
         if stats.get('errors'):
             _backup_log.error(f"Backup con errores — {resumen(stats)} — {stats['errors']}")
         else:

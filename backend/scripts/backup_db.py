@@ -447,19 +447,28 @@ def prune_remote_backups(prefix: str, keep_days: int) -> int:
 
 # ─── Orchestrator: el job que el scheduler invoca ────────────────────────────
 
-def run_backup(db_path: Optional[str] = None, dsn: Optional[str] = None) -> dict:
+def _dsn_de_la_app() -> str:
+    """La base de la app, de la MISMA fuente y con la misma regla que
+    `main.DATABASE_URL` / `main.USANDO_PG`: `DATABASE_URL` del entorno, sin
+    espacios. Vacía = la app usa SQLite."""
+    return os.environ.get("DATABASE_URL", "").strip()
+
+
+def run_backup(db_path: Optional[str] = None) -> dict:
     """Pipeline completo: copia → guardar local → subir remoto → prune.
     Devuelve un dict con stats del run para logging.
 
-    EL MOTOR LO DICE QUIEN LLAMA, explícito: con `dsn` (la `DATABASE_URL` de la
-    app) es un volcado de Postgres; sin él, la copia del SQLite de `db_path`. No
-    se adivina por el entorno, y si el de Postgres falla NO cae al SQLite: con
-    `DATABASE_URL` puesta ese archivo está congelado y copiarlo sería un «OK»
-    falso. Los dos que llaman en producción (`_run_backup_db_job` y
-    `/api/admin/backup-trigger`) pasan `dsn` cuando la app usa Postgres.
+    EL MOTOR LO DECIDE ACÁ ADENTRO, mirando lo mismo que mira la app
+    (`_dsn_de_la_app`): con `DATABASE_URL`, volcado de Postgres; sin ella, la
+    copia del SQLite de `db_path`. NO es un parámetro: la primera versión
+    (`972e6e4c`) recibía `dsn=None`, y quien llamara sin pasarlo copiaba el SQLite
+    congelado y decía «OK» — una red que se apaga sola
+    (tests/test_verificacion_no_es_opt_in.py). Y si el volcado falla, NO cae al
+    SQLite.
 
     `stats['errors']` no vacío = el backup NO está bien, aunque haya archivo.
     """
+    dsn = _dsn_de_la_app()
     db_path = db_path or os.environ.get('DB_PATH') or 'trading.db'
     today = _today_utc()
     ts = _timestamp_utc()
@@ -583,7 +592,7 @@ def main() -> int:
         format='%(asctime)s %(levelname)s %(name)s: %(message)s',
     )
     log.info("Iniciando backup manual…")
-    stats = run_backup(dsn=os.environ.get("DATABASE_URL") or None)
+    stats = run_backup()
     log.info(f"Backup result: {stats}")
     return 0 if not stats.get('errors') else 1
 
