@@ -73,7 +73,7 @@ function DayGroup({ group, histMoney, onDelete, borrando, nuevas, diario }) {
 }
 
 function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false, diario = null }) {
-  const c = celdasDelDiario(op, diario)
+  const c = celdasDelDiario(op, diario, histMoney.currency)
   // Color, flecha y signo salen del MISMO número que se imprime (en Pesos puede tener
   // otro signo que el resultado en dólares: ganó en pesos y perdió en dólares).
   const pnlVisto = op.pnl_usd == null ? null : histMoney.pnlAt(op)
