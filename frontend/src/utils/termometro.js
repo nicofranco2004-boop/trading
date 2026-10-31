@@ -8,7 +8,7 @@
 // hacer ni cuánto tener invertido: la medición de la ficha encontró que estos
 // indicadores describen bien y no anticipan mejor que el azar.
 
-import { pesoVisible } from './parteDeTuPlata'
+import { pesoVisible, ordenConElOjito } from './parteDeTuPlata'
 
 export const LEYENDA = 'Describe cómo se mueve el mercado. No dice cuánto tener invertido ni es una recomendación.'
 
@@ -145,12 +145,15 @@ export function frasesTuPlata(tp, nombre, oculto = false) {
   // El % con LA manera de decirlo de toda la app («12%», «menos de 1%») y su
   // ojito (`pesoVisible`, utils/parteDeTuPlata; al juntar la pieza 7, 30/10).
   const pct = p => pesoVisible(p, oculto) ?? '—'
+  // El servidor manda los sectores de más a menos plata: con el ojito ese
+  // orden diría dónde tenés más, así que van de la A a la Z.
+  const sectores = g => y(ordenConElOjito(g.sectores.map(s => nombre(s.sector)), oculto))
   const out = []
   if (tp.suben?.pct > 0) {
-    out.push({ id: 'suben', pct: tp.suben.pct, cifra: pct(tp.suben.pct), texto: `de tu plata está en sectores donde la mayoría de las acciones sube de fondo (${y(tp.suben.sectores.map(s => nombre(s.sector)))}).` })
+    out.push({ id: 'suben', pct: tp.suben.pct, cifra: pct(tp.suben.pct), texto: `de tu plata está en sectores donde la mayoría de las acciones sube de fondo (${sectores(tp.suben)}).` })
   }
   if (tp.bajan?.pct > 0) {
-    out.push({ id: 'bajan', pct: tp.bajan.pct, cifra: pct(tp.bajan.pct), texto: `está en sectores donde la mayoría baja (${y(tp.bajan.sectores.map(s => nombre(s.sector)))}).` })
+    out.push({ id: 'bajan', pct: tp.bajan.pct, cifra: pct(tp.bajan.pct), texto: `está en sectores donde la mayoría baja (${sectores(tp.bajan)}).` })
   }
   if (tp.sin_sector?.pct > 0) {
     out.push({ id: 'sin', pct: tp.sin_sector.pct, cifra: pct(tp.sin_sector.pct), texto: `no tiene sector en esta cuenta.` })
@@ -158,17 +161,21 @@ export function frasesTuPlata(tp, nombre, oculto = false) {
   return out
 }
 
-/** Las filas del detalle: cada sector con tus papeles, y al final «sin sector». */
-export function filasTuPlata(tp, nombre) {
+/** Las filas del detalle: cada sector con tus papeles, y al final «sin sector».
+ *  El servidor manda sectores y papeles de más a menos plata; con `oculto`
+ *  («Ocultar saldos») ese orden delataría cuánto tenés en cada uno: van de la
+ *  A a la Z (los que suben antes que los que bajan, como sin el ojito). */
+export function filasTuPlata(tp, nombre, oculto = false) {
   if (!tp) return []
-  const sectores = [...(tp.suben?.sectores || []), ...(tp.bajan?.sectores || [])]
-    .map(s => ({
-      id: s.sector, nombre: nombre(s.sector), pct: s.pct, papeles: s.papeles, sube: s.mercado_pct >= 50,
-      mercado: `${num(s.mercado_pct)} % de sus acciones sube de fondo`,
-    }))
+  const papeles = xs => ordenConElOjito(xs || [], oculto)
+  const grupo = g => ordenConElOjito((g?.sectores || []).map(s => ({
+    id: s.sector, nombre: nombre(s.sector), pct: s.pct, papeles: papeles(s.papeles), sube: s.mercado_pct >= 50,
+    mercado: `${num(s.mercado_pct)} % de sus acciones sube de fondo`,
+  })), oculto, { nombre: f => f.nombre })
+  const sectores = [...grupo(tp.suben), ...grupo(tp.bajan)]
   if (tp.sin_sector?.papeles?.length) {
     sectores.push({
-      id: 'sin_sector', nombre: 'Sin sector', pct: tp.sin_sector.pct, papeles: tp.sin_sector.papeles, sube: null,
+      id: 'sin_sector', nombre: 'Sin sector', pct: tp.sin_sector.pct, papeles: papeles(tp.sin_sector.papeles), sube: null,
       mercado: 'No están en el S&P 500 ni en el panel argentino (ETFs, cripto, bonos, efectivo…)',
     })
   }

@@ -38,7 +38,7 @@ import { indexarLecturas } from '../utils/radiografia'
 import { RSI_CASTIGADO, RSI_ESTIRADO, RSI_GANA, RSI_PIERDE, ADX_CLAVE } from '../utils/tecnico'
 import {
   activosDeLaLista, contarFilas, filtrarFilas, ordenarFilas, trazoDeLinea, barrasDeFuerza,
-  resumenDeLaLista, vistaGuardada, guardarVista, FILTROS, ORDENES, VISTAS, MAX_POR_PEDIDO,
+  resumenDeLaLista, vistaGuardada, guardarVista, FILTROS, ORDENES, VISTAS, MAX_POR_PEDIDO, nombreDelOrden,
 } from '../utils/listaTecnica'
 
 /**
@@ -269,8 +269,8 @@ function Dato({ titulo, children, pie }) {
 
 /** Cuántos con tendencia alcista de largo plazo, ganando impulso, en su máximo
  *  del año y que cambiaron esta semana. Son cuentas de activos: nada de plata. */
-export function FranjaDeLaLista({ filas }) {
-  const r = resumenDeLaLista(filas)
+export function FranjaDeLaLista({ filas, oculto = false }) {
+  const r = resumenDeLaLista(filas, oculto)
   const n = r.enMaximo.length
   const maximos = n > 3 ? `${r.enMaximo.slice(0, 2).join(', ')} y ${n - 2} más`
     : n > 1 ? `${r.enMaximo.slice(0, -1).join(', ')} y ${r.enMaximo[n - 1]}` : r.enMaximo[0]
@@ -498,7 +498,7 @@ export function ListaTecnica({ filas, oculto = false, vista = 'tarjetas', onVist
   const [filtro, setFiltro] = useState('todo')
   const [orden, setOrden] = useState({ por: 'cambio', desc: true })
   const cuantas = contarFilas(filas)
-  const elegidas = useMemo(() => ordenarFilas(filtrarFilas(filas, filtro), orden.por, orden.desc), [filas, filtro, orden])
+  const elegidas = useMemo(() => ordenarFilas(filtrarFilas(filas, filtro), orden.por, orden.desc, oculto), [filas, filtro, orden, oculto])
 
   function ordenar(por) {
     setOrden(o => (o.por === por ? { por, desc: !o.desc } : { por, desc: ORDENES.find(x => x.id === por).desc }))
@@ -506,7 +506,7 @@ export function ListaTecnica({ filas, oculto = false, vista = 'tarjetas', onVist
 
   return (
     <div className="space-y-4">
-      <FranjaDeLaLista filas={filas} />
+      <FranjaDeLaLista filas={filas} oculto={oculto} />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="Qué mostrar">
           {FILTROS.map(f => (
@@ -524,7 +524,7 @@ export function ListaTecnica({ filas, oculto = false, vista = 'tarjetas', onVist
             Ordenar por
             <select value={orden.por} onChange={e => setOrden({ por: e.target.value, desc: ORDENES.find(x => x.id === e.target.value).desc })}
               className="rounded-lg border border-line-2 bg-bg-1 px-2.5 py-1.5 text-[13px] text-ink-0 min-h-[34px]">
-              {ORDENES.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+              {ORDENES.map(o => <option key={o.id} value={o.id}>{nombreDelOrden(o, oculto)}</option>)}
             </select>
           </label>
           <div className="inline-flex gap-0.5 rounded-lg border border-line bg-bg-2 p-0.5" role="group" aria-label="Cómo ver la lista">

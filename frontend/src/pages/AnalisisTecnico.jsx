@@ -50,6 +50,7 @@ import {
   NO_ES_RECOMENDACION, TITULO_PLATA_ALCISTA, TITULO_CAMBIOS, QUE_ES_ESTA_SEMANA,
 } from '../utils/tusSenales'
 import { urlDeComparar } from '../utils/comparadorPrecio'
+import { ordenConElOjito } from '../utils/parteDeTuPlata'
 
 // Las pestañas, en orden. `corto`: el nombre en el celular. `pronto`: todavía
 // no está (se ve, no se toca). `afuera`: lleva a otra pantalla (no se queda acá).
@@ -76,9 +77,12 @@ export function pestanaDe(searchParams) {
 }
 
 /** Comparar → Precio con tus 4 activos que más pesan (los de «Tu lista» que
- *  tenés, por su peso del servidor). Sin ninguno, abre vacío para elegir. */
-export function urlDeCompararTuyos(filas = []) {
-  return urlDeComparar(filas.filter(f => f.tenes).sort((a, b) => (b.peso || 0) - (a.peso || 0)).map(f => f.ruta))
+ *  tenés, por su peso del servidor). Sin ninguno, abre vacío para elegir. Con
+ *  «Ocultar saldos», cuáles van y en qué orden dirían cuáles pesan más: van
+ *  los 4 primeros de la A a la Z (ordenConElOjito, auditoría D6, 31/10). */
+export function urlDeCompararTuyos(filas = [], oculto = false) {
+  return urlDeComparar(ordenConElOjito(filas.filter(f => f.tenes), oculto,
+    { nombre: f => f.ruta, sinOjito: (a, b) => (b.peso || 0) - (a.peso || 0) }).map(f => f.ruta))
 }
 
 /** La dirección de una pestaña (la de entrada va sin ?tab). */
@@ -287,7 +291,7 @@ export default function AnalisisTecnico() {
     [lista.cargando, lista.error, lista.tenencias, lista.seguidos, lista.indice])
 
   const elegir = (id) => {
-    if (id === 'comparar') { navigate(urlDeCompararTuyos(filas)); return }
+    if (id === 'comparar') { navigate(urlDeCompararTuyos(filas, hidden)); return }
     const next = new URLSearchParams(searchParams)
     if (id === DE_ENTRADA) next.delete('tab'); else next.set('tab', id)
     setSearchParams(next)

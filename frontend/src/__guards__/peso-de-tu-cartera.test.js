@@ -71,3 +71,37 @@ describe('el peso en tu cartera sale de una sola función, que sabe del ojito', 
     expect(hallados, 'usá pesoVisible / deTuCartera de utils/parteDeTuPlata.js').toEqual([])
   })
 })
+
+// EL ORDEN TAMBIÉN DICE CUÁNTO (auditoría D1+D5+D6, 31/10)
+// ────────────────────────────────────────────────────────
+// Con el ojito prendido, ordenar «de más a menos peso» delata cuál pesa más sin
+// un solo % a la vista: el termómetro, «Mayor peso en tu cartera» de Tu lista
+// y los activos que abría «Comparar» seguían en ese orden. Todo orden por peso
+// pasa por ordenConElOjito (utils/parteDeTuPlata.js), que con el ojito ordena
+// de la A a la Z: un comparador de peso sólo puede escribirse como su
+// `sinOjito`. Hueco declarado: el orden que ya viene del SERVIDOR (de más a
+// menos plata) no tiene comparador que buscar; lo cubren las pruebas montadas
+// (utils/ordenConElOjito.render.test.jsx).
+const ORDEN_POR_PESO = [
+  /\b[ab]\.(peso|weight)\w*\b[^,;]*-\s*\(?\s*[ab]\.(peso|weight)\w*\b/,
+  /\(\s*[ab]\.(peso|weight)\w*\s*(\|\||\?\?)\s*0\s*\)\s*-/,
+]
+
+describe('el orden por peso sabe del ojito', () => {
+  it('ningún renglón ordena por peso sin pasar por ordenConElOjito', () => {
+    const hallados = archivos(SRC).flatMap((r) => {
+      const rel = path.relative(SRC, r).split(path.sep).join('/')
+      if (rel === 'utils/demo.js') return []
+      return sinComentarios(fs.readFileSync(r, 'utf8')).split('\n')
+        .flatMap((l, i) => (ORDEN_POR_PESO.some((p) => p.test(l)) && !/\bsinOjito\s*:/.test(l)
+          ? [`${rel}:${i + 1}  ${l.trim().slice(0, 110)}`] : []))
+    })
+    expect(hallados, 'ordená con ordenConElOjito(items, oculto, { sinOjito }) de utils/parteDeTuPlata.js').toEqual([])
+  })
+
+  it('el patrón ve el renglón que se escapó (Comparar, 9e6036e8)', () => {
+    const viejo = 'return urlDeComparar(filas.filter(f => f.tenes).sort((a, b) => (b.peso || 0) - (a.peso || 0)).map(f => f.ruta))'
+    expect(ORDEN_POR_PESO.some((p) => p.test(viejo))).toBe(true)
+    expect(ORDEN_POR_PESO.some((p) => p.test('out.sort((a, b) => b.peso - a.peso || a.nombre.localeCompare(b.nombre))'))).toBe(true)
+  })
+})

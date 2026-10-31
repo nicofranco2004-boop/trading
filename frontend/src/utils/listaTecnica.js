@@ -24,6 +24,7 @@ import { fciLabel } from './valuation'
 import { clave, tendencia, fuerza, lecturaVieja, MOTIVOS_SIN_LECTURA } from './radiografia'
 import { leer, guardar } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
+import { ordenConElOjito } from './parteDeTuPlata'
 
 /**
  * Cómo se lee un símbolo de la watchlist, con la regla de la ficha para lo que
@@ -199,21 +200,32 @@ export function filtrarFilas(filas, filtro) {
 }
 
 // Cada orden con su valor y su sentido de entrada (el que se lee primero).
-// `desc`: de mayor a menor.
+// `desc`: de mayor a menor. `conOjito`: el nombre con «Ocultar saldos», cuando
+// el orden es por tu plata (ahí va lo tuyo primero, de la A a la Z).
 export const ORDENES = [
   { id: 'cambio', label: 'Cambio más reciente', valor: f => f.cambio?.fecha ?? null, desc: true },
   { id: 'fuerza', label: 'Impulso (RSI)', valor: f => f.rsi?.rsi ?? null, desc: true },
   { id: 'maximo', label: 'Desde el máximo', valor: f => f.desdeMax?.pct ?? null, desc: true },
-  { id: 'peso', label: 'Mayor peso en tu cartera', valor: f => (f.tenes ? f.peso : null), desc: true },
+  { id: 'peso', label: 'Mayor peso en tu cartera', conOjito: 'Tu cartera primero', valor: f => (f.tenes ? f.peso : null), desc: true },
 ]
+
+/** El nombre de un orden en el «Ordenar por», con o sin el ojito. */
+export const nombreDelOrden = (o, oculto = false) => (oculto && o.conOjito) || o.label
 
 /**
  * Ordena por `por` (un id de ORDENES). `desc` null = el sentido de entrada de
  * ese orden. Lo que no tiene el dato va al final (en cualquier sentido) y las
  * filas «Sin lectura», al final de todo; los empates, por nombre.
+ *
+ * `oculto` («Ocultar saldos»): «por peso» diría cuál pesa más aunque no se vea
+ * un solo %; con el ojito va lo tuyo primero y cada parte de la A a la Z
+ * (ordenConElOjito, utils/parteDeTuPlata; auditoría D5, 31/10).
  */
-export function ordenarFilas(filas, por = 'cambio', desc = null) {
+export function ordenarFilas(filas, por = 'cambio', desc = null, oculto = false) {
   const o = ORDENES.find(x => x.id === por) || ORDENES[0]
+  if (oculto && o.id === 'peso') {
+    return ordenConElOjito(filas, true, { nombre: f => f.nombre, antes: (a, b) => Number(!!b.tenes) - Number(!!a.tenes) })
+  }
   const bajando = desc ?? o.desc
   return [...filas].sort((a, b) => {
     if (a.vigente !== b.vigente && por !== 'peso') return a.vigente ? -1 : 1
@@ -271,8 +283,10 @@ export function barrasDeFuerza(adx) {
  * La franja de arriba de Tu lista: cuántos tienen tendencia alcista de largo
  * plazo (y de cuántos con lectura, con un puntito por cada uno), cuántos ganan
  * impulso, cuáles están en su máximo del año y cuántos cambiaron esta semana.
+ * Las filas llegan con lo tuyo de más a menos peso: con `oculto` («Ocultar
+ * saldos») los nombres de «en su máximo» van de la A a la Z.
  */
-export function resumenDeLaLista(filas = []) {
+export function resumenDeLaLista(filas = [], oculto = false) {
   const leidas = filas.filter(f => f.fondo?.id === 'alcista' || f.fondo?.id === 'bajista')
   const alcistas = leidas.filter(f => f.fondo.id === 'alcista').length
   return {
@@ -280,7 +294,7 @@ export function resumenDeLaLista(filas = []) {
     conLectura: leidas.length,
     puntos: [...Array(alcistas).fill('alcista'), ...Array(leidas.length - alcistas).fill('bajista')],
     ganando: filas.filter(f => f.rsi && f.rsi.rsi > RSI_GANA).length,
-    enMaximo: filas.filter(f => f.vigente && f.desdeMax?.enMaximo).map(f => f.nombre),
+    enMaximo: ordenConElOjito(filas.filter(f => f.vigente && f.desdeMax?.enMaximo).map(f => f.nombre), oculto),
     cambiaron: filas.filter(f => f.nuevo).length,
   }
 }

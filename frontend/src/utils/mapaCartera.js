@@ -21,6 +21,7 @@ import { clave } from './radiografia'
 import { polarityColor, CORTES_DIA, CORTES_PROMEDIO } from './polarityScale'
 import { leer, guardar } from './almacen'
 import { CATALOGO } from './catalogoDelAlmacen'
+import { ordenConElOjito } from './parteDeTuPlata'
 
 // ─── De qué se pinta cada cuadrito («Color por», Nico 30/10: «Sí, sumarlo») ──
 // Tendencia de entrada (lo del lienzo del Panorama). «Hoy» y «Contra tu
@@ -122,11 +123,8 @@ export function cuadritosDelMapa(filas = [], { hidden = false, sinLectura = [] }
     const nombre = efectivo && !pf ? 'Efectivo' : pf && !efectivo ? 'Plazos fijos' : 'Efectivo y plazos fijos'
     out.push({ clave: 'efectivo', nombre, ruta: null, peso: resto, tendencia: 'sin' })
   }
-  if (hidden) {
-    out = out.map(c => ({ ...c, peso: null })).sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
-  } else {
-    out.sort((a, b) => b.peso - a.peso || a.nombre.localeCompare(b.nombre, 'es'))
-  }
+  out = ordenConElOjito(hidden ? out.map(c => ({ ...c, peso: null })) : out, hidden,
+    { nombre: c => c.nombre, sinOjito: (a, b) => b.peso - a.peso || a.nombre.localeCompare(b.nombre, 'es') })
   if (out.length <= MAX_CUADRITOS) return out
   // Los que no entran, juntos en uno (sin color: tienen tendencias distintas).
   const vistos = out.slice(0, MAX_CUADRITOS - 1)
