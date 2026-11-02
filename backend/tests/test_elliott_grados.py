@@ -116,6 +116,13 @@ class MotorConINTCTest(unittest.TestCase):
             self.assertTrue(all(a["tipo"] != b["tipo"] for a, b in zip(g, g[1:])))
         self.assertLess(self.velas[grados[-1][0]["i"]]["date"], "2024-01-01")
 
+    def test_una_vela_con_minimo_en_cero_no_tira_la_ficha(self):
+        # Filas viejas pudieron guardar un mínimo en 0: sin logaritmo, el
+        # grado grande no puede romper el conteo entero (revisión 02/11).
+        v = [dict(x) for x in self.velas]
+        v[300]["low"] = 0.0
+        self.assertIn("disponible", elliott.conteo(v))
+
     def test_fibonacci_del_impulso_entero(self):
         e = elliott.conteo(self.velas)
         f = estructura.fibonacci(self.velas, impulso=elliott.impulso_para_fibonacci(e))

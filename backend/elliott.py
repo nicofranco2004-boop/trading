@@ -147,9 +147,17 @@ def _resumir(zz: list, umbral: float) -> list:
             if (p["precio"] > q["precio"]) if p["tipo"] == "pico" else (p["precio"] < q["precio"]):
                 out[-1] = p
             continue
-        if not out or abs(math.log(p["precio"] / out[-1]["precio"])) >= umbral:
+        if not out or _giro(out[-1]["precio"], p["precio"]) >= umbral:
             out.append(p)
     return out
+
+
+def _giro(a: float, b: float) -> float:
+    """El tamaño de un giro de `a` a `b`, en logaritmo. Una vela rota con el
+    mínimo en 0 (filas guardadas antes del filtro de velas_diarias._velas_de)
+    no tiene logaritmo: cuenta como un giro enorme en vez de tirar la ficha
+    entera (revisión 02/11)."""
+    return abs(math.log(b / a)) if a > 0 and b > 0 else math.inf
 
 
 def _grados(zz: list) -> list:
