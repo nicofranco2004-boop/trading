@@ -12976,6 +12976,51 @@ def admin_velas_correr(uid: int = Depends(get_admin_user)):
     return {"ok": True, "status": "started"}
 
 
+@app.get("/api/admin/yahoo/prueba")
+def admin_yahoo_prueba(uid: int = Depends(get_admin_user)):
+    """Le pide a Yahoo, DESDE EL SERVIDOR, el último mes de tres activos por la
+    misma puerta que el motor de velas (`pricing.yahoo._historia`) y devuelve
+    qué contestó: filas, el error tal cual y lo que anotó yfinance. Existe
+    porque el 02/11/2026 el servidor no bajaba nada mientras desde una Mac, con
+    las mismas versiones, Yahoo contestaba; y `varios` anota las fallas en
+    DEBUG, que en producción no se ve. Sólo lee: no guarda nada."""
+    import pandas as pd
+    import yfinance as yf
+    from pricing import yahoo
+
+    class _Junta(logging.Handler):
+        def __init__(self):
+            super().__init__(logging.WARNING)
+            self.lineas = []
+
+        def emit(self, record):
+            self.lineas.append(f"{record.levelname}: {record.getMessage()}"[:400])
+
+    junta = _Junta()
+    ylog = logging.getLogger("yfinance")
+    ylog.addHandler(junta)
+    pruebas = []
+    try:
+        for t in ("AAPL", "AVAX-USD", "GGAL.BA"):
+            antes, junta.lineas = time.time(), []
+            fila = {"ticker": t}
+            try:
+                df = yahoo._historia(t, "1mo", "1d", False, 10.0)
+                fila["filas"] = 0 if df is None else len(df)
+                if fila["filas"]:
+                    fila["ultima"] = str(df.index[-1])[:10]
+            except Exception as ex:
+                fila["error"] = repr(ex)[:500]
+            fila["seg"] = round(time.time() - antes, 1)
+            fila["yfinance_dijo"] = junta.lineas[:5]
+            pruebas.append(fila)
+    finally:
+        ylog.removeHandler(junta)
+    return {"yfinance": yf.__version__, "pandas": pd.__version__,
+            "cache": os.environ.get("YF_TZ_CACHE_LOCATION") or "/tmp/yf-cache",
+            "pruebas": pruebas}
+
+
 # ─── Historical prices (gráfico de 30 días: AssetMiniChart) ───────────────────────
 # Cache simple in-memory keyed por (symbol, period). yfinance fetchea las
 # series históricas — para periods chicos (1mo) es rápido. TTL 1h porque
