@@ -3,7 +3,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { instalarNavegadorMinimo } from '../testing/navegadorMinimo'
 import {
-  ACTIVO_DE_ENTRADA, RECIENTES_MAXIMOS, activoDeEntrada, activoValido, guardado, opcionesDelBuscador, recordar, tuyos,
+  ACTIVO_DE_ENTRADA, RECIENTES_MAXIMOS, activoDeEntrada, activoValido, avisoDelBuscador, guardado, opcionesDelBuscador, recordar, tuyos,
 } from './graficoTecnico'
 // La regla del dueño (la persona y la cuenta de la pestaña): se registra al cargarse.
 import './duenoDeLaPestana'
@@ -178,5 +178,48 @@ describe('el buscador', () => {
     // Bitcoin, con el nombre de tu lista (BTC-USD): el BTC del catálogo abre lo mismo.
     expect(simbolos(opcionesDelBuscador({ filtro: 'cripto', posiciones, lista }))).toContain('BTC-USD')
     expect(simbolos(opcionesDelBuscador({ filtro: 'cripto', posiciones, lista }))).not.toContain('BTC')
+  })
+})
+
+describe('el aviso del buscador (02/11: «Tu cartera» vacía sin decir por qué)', () => {
+  const listo = { estado: 'listo' }
+  const error = (motivo) => ({ estado: 'error', motivo })
+  const nvda = { broker: 'Schwab', asset: 'NVDA', is_cash: 0, quantity: 1 }
+
+  it('una falla se dice en todo filtro que muestra lo que no llegó (los de tipo, también tu lista)', () => {
+    const base = { secciones: [], posiciones: [], seguidos: [] }
+    expect(avisoDelBuscador({ ...base, filtro: 'cartera', cartera: error('error 500'), lista: listo }))
+      .toEqual({ texto: 'No pudimos traer tu cartera.', reintentar: true, detalle: 'error 500' })
+    // «Tu lista» no muestra tu cartera: su falla no se dice ahí.
+    expect(avisoDelBuscador({ ...base, filtro: 'lista', cartera: error('error 500'), lista: listo }).texto).toBe('Tu lista está vacía.')
+    expect(avisoDelBuscador({ ...base, filtro: 'cripto', cartera: listo, lista: error('error 502') }).texto)
+      .toBe('No pudimos traer tu lista.')
+    expect(avisoDelBuscador({ ...base, filtro: 'todo', cartera: error('error 500'), lista: error('sin respuesta') }))
+      .toEqual({ texto: 'No pudimos traer tu cartera ni tu lista.', reintentar: true, detalle: 'cartera: error 500 · lista: sin respuesta' })
+  })
+
+  it('un asesor adentro de un cliente: «la cartera de …»', () => {
+    expect(avisoDelBuscador({ filtro: 'cartera', cliente: 'Juan', cartera: error('error 500'), lista: listo }).texto)
+      .toBe('No pudimos traer la cartera de Juan.')
+  })
+
+  it('cargando: también con algo escrito', () => {
+    expect(avisoDelBuscador({ filtro: 'cartera', consulta: 'gg', cartera: { estado: 'cargando' }, lista: listo }).texto)
+      .toBe('Trayendo tu cartera…')
+  })
+
+  it('llegó y no hay nada que mostrar: dice por qué, sin inventar el motivo', () => {
+    const aviso = (posiciones, seguidos = [], filtro = 'cartera') =>
+      avisoDelBuscador({ filtro, secciones: opcionesDelBuscador({ filtro, posiciones, lista: seguidos }), cartera: listo, lista: listo, posiciones, seguidos })
+    expect(aviso([nvda])).toBeNull()
+    expect(aviso([{ ...nvda, is_cash: 1, asset: 'USD' }]).texto).toBe('Tu cartera no tiene activos todavía.')
+    expect(aviso([{ ...nvda, asset: 'FCI:Balanz Ahorro' }]).texto).toBe('En tu cartera no hay activos con gráfico: los fondos no tienen.')
+    // Un nombre que no es un ticker: no se le echa la culpa a los fondos, y se
+    // dice cuántos lotes llegaron (si vuelve a pasar, el renglón lo mide).
+    expect(aviso([{ ...nvda, asset: 'BRK B' }, { ...nvda, asset: 'Bono raro 2030' }]))
+      .toEqual({ texto: 'En tu cartera no hay activos con gráfico.', reintentar: false, detalle: 'llegaron 2 lotes sin un ticker que se pueda abrir' })
+    expect(aviso([], [], 'lista').texto).toBe('Tu lista está vacía.')
+    expect(aviso([nvda], [{ symbol: 'NVDA' }], 'lista').texto).toBe('Lo de tu lista ya está en tu cartera.')
+    expect(aviso([], [{ symbol: 'una empresa' }], 'lista').texto).toBe('Tu lista no tiene activos con gráfico.')
   })
 })

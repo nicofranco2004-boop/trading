@@ -34,11 +34,13 @@ import { urlDeActivo } from '../utils/buscadorRapido'
 import { useDuenoDeLosDatos } from '../utils/duenoDeLaPestana'
 import { nombreDelCliente } from '../utils/navegacion'
 import {
-  FILTROS, activoDeEntrada, activoValido, guardado, opcionesDelBuscador, recordar,
+  FILTROS, activoDeEntrada, activoValido, avisoDelBuscador, guardado, motivoDeLaFalla, opcionesDelBuscador, recordar,
 } from '../utils/graficoTecnico'
 
 // Cuántos de los últimos que miraste van al lado del botón (el resto, en el buscador).
 const CHIPS = 3
+// Cuánto espera el buscador a tu cartera y tu lista antes de avisar.
+const ESPERA_MAXIMA_MS = 15000
 
 export default function GraficoTecnico() {
   const { clientCtx } = useAdvisorContext()
@@ -181,18 +183,46 @@ function Buscador({ activo, recientes, cliente, caja, onCerrar, onElegir }) {
   const [filtro, setFiltro] = useState('todo')
   const [marcado, setMarcado] = useState(0)
   const [datos, setDatos] = useState({ posiciones: [], lista: [] })
+  // Cómo vino cada una: 'cargando' | 'listo' | 'error' (con su motivo). Una
+  // falla ya no se toma como «no tenés nada»: el filtro «Tu cartera» quedaba
+  // vacío sin decir por qué (02/11).
+  const [estado, setEstado] = useState({ cartera: { estado: 'cargando' }, lista: { estado: 'cargando' } })
+  const [vuelta, setVuelta] = useState(0)
   const campo = useRef(null)
 
-  // Tu cartera y tu lista: se piden al abrir (no al entrar a la pestaña).
+  // Tu cartera y tu lista: se piden al abrir (no al entrar a la pestaña), cada
+  // una por su lado (si la lista tarda, tu cartera no la espera). «Reintentar»
+  // las vuelve a pedir; mientras tanto queda lo que había. Un pedido no tiene
+  // tope de tiempo (utils/api): a los ESPERA_MAXIMA_MS se avisa y se ofrece
+  // «Reintentar» en vez de «Trayendo…» para siempre; si después llega, se usa.
   useEffect(() => {
     let vivo = true
-    Promise.all([
-      api.get('/positions').catch(() => []),
-      api.get('/watchlist').catch(() => ({ items: [] })),
-    ]).then(([posiciones, wl]) => { if (vivo) setDatos({ posiciones: posiciones || [], lista: wl?.items || [] }) })
-    campo.current?.focus?.()
-    return () => { vivo = false }
-  }, [])
+    const relojes = []
+    const pedir = (que, ruta, leer) => {
+      setEstado(e => ({ ...e, [que]: { estado: 'cargando' } }))
+      let llego = false
+      relojes.push(setTimeout(() => {
+        if (vivo && !llego) setEstado(e => ({ ...e, [que]: { estado: 'error', motivo: `tardó más de ${ESPERA_MAXIMA_MS / 1000} s` } }))
+      }, ESPERA_MAXIMA_MS))
+      api.get(ruta)
+        .then(r => {
+          const filas = leer(r)
+          if (!Array.isArray(filas)) throw new Error('respuesta inesperada')
+          llego = true
+          if (!vivo) return
+          setDatos(d => ({ ...d, [que === 'cartera' ? 'posiciones' : 'lista']: filas }))
+          setEstado(e => ({ ...e, [que]: { estado: 'listo' } }))
+        })
+        .catch(err => {
+          llego = true
+          if (vivo) setEstado(e => ({ ...e, [que]: { estado: 'error', motivo: motivoDeLaFalla(err) } }))
+        })
+    }
+    pedir('cartera', '/positions', r => r)
+    pedir('lista', '/watchlist', r => r?.items)
+    return () => { vivo = false; relojes.forEach(clearTimeout) }
+  }, [vuelta])
+  useEffect(() => { campo.current?.focus?.() }, [])
 
   // Tocar afuera cierra.
   useEffect(() => {
@@ -205,6 +235,9 @@ function Buscador({ activo, recientes, cliente, caja, onCerrar, onElegir }) {
     () => opcionesDelBuscador({ consulta, filtro, recientes, cliente, ...datos }),
     [consulta, filtro, recientes, cliente, datos])
   const filas = secciones.flatMap(s => s.filas)
+  const aviso = avisoDelBuscador({
+    consulta, filtro, secciones, cliente, ...estado, posiciones: datos.posiciones, seguidos: datos.lista,
+  })
   useEffect(() => { setMarcado(0) }, [consulta, filtro])
   // La opción marcada con las flechas, siempre a la vista.
   const lista = useRef(null)
@@ -258,8 +291,24 @@ function Buscador({ activo, recientes, cliente, caja, onCerrar, onElegir }) {
           </button>
         ))}
       </div>
+      {aviso && (
+        <div role="status" className="px-3.5 py-3 border-b border-line text-[13px] text-ink-1">
+          <p>
+            {aviso.texto}
+            {aviso.reintentar && (
+              // El botón desaparece al tocarlo: el foco vuelve al campo (si
+              // no, Esc y las flechas dejaban de andar).
+              <button type="button" onClick={() => { setVuelta(v => v + 1); campo.current?.focus?.() }}
+                className="ml-1.5 inline-flex items-center min-h-10 sm:min-h-0 font-medium text-data-violet hover:underline">
+                Reintentar
+              </button>
+            )}
+          </p>
+          {aviso.detalle && <p className="mt-0.5 text-[12px] text-ink-2">Detalle: {aviso.detalle}</p>}
+        </div>
+      )}
       <div id="grafico-opciones" ref={lista} role="listbox" aria-label="Activos" className="overflow-y-auto py-1">
-        {secciones.length === 0 && (
+        {secciones.length === 0 && !aviso && (
           <p className="px-3.5 py-4 text-[13px] text-ink-2">
             {consulta.trim() ? 'No encontramos ese activo. Probá con el ticker (GGAL, AAPL, BTC).' : 'Escribí el ticker o el nombre de un activo.'}
           </p>

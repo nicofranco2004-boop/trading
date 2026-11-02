@@ -220,3 +220,67 @@ export function opcionesDelBuscador({ consulta = '', filtro = 'todo', recientes 
   const filas = [...encontrados, ...abrir]
   return filas.length ? [{ titulo: 'Resultados', filas }] : []
 }
+
+/** El motivo de una falla, corto, para el renglón «Detalle» del aviso: lo que
+ *  hace falta para saber qué pasó sin abrir nada (02/11: «Tu cartera» quedaba
+ *  vacía y no había cómo saber si el pedido había fallado). */
+export function motivoDeLaFalla(err) {
+  if (err?.status) return `error ${err.status}`
+  const m = String(err?.message || '').trim()
+  return m ? m.slice(0, 80) : 'sin respuesta'
+}
+
+/**
+ * Qué decir arriba de las opciones cuando tu cartera o tu lista no están por
+ * algo que no es lo que escribiste: todavía no llegaron, no se pudieron traer
+ * o no tienen nada con gráfico. Antes un pedido que fallaba se tomaba como
+ * «no tenés nada» y el filtro «Tu cartera» quedaba vacío sin decir por qué.
+ * `cartera` / `lista`: { estado: 'cargando' | 'listo' | 'error', motivo };
+ * `posiciones` y `seguidos`: lo que llegó de cada uno.
+ * → { texto, reintentar, detalle } o null.
+ */
+export function avisoDelBuscador({ filtro = 'todo', consulta = '', secciones = [], cartera, lista, posiciones = [], seguidos = [], cliente = null }) {
+  const de = (que) => (cliente ? `la ${que} de ${cliente}` : `tu ${que}`)
+  // Qué filtros muestran cada una: tu cartera, todos menos «Tu lista»; tu
+  // lista, todos menos «Tu cartera» (los de tipo también muestran lo que seguís).
+  const fallo = []
+  if (cartera?.estado === 'error' && filtro !== 'lista') fallo.push(['cartera', cartera.motivo])
+  if (lista?.estado === 'error' && filtro !== 'cartera') fallo.push(['lista', lista.motivo])
+  if (fallo.length) {
+    return {
+      texto: `No pudimos traer ${fallo.map(([q]) => de(q)).join(' ni ')}.`,
+      reintentar: true,
+      detalle: fallo.map(([q, m]) => (fallo.length > 1 ? `${q}: ${m}` : m)).join(' · '),
+    }
+  }
+  if (filtro !== 'cartera' && filtro !== 'lista') return null
+  const estado = filtro === 'cartera' ? cartera?.estado : lista?.estado
+  // Todavía no llegó: también con algo escrito (si no, «No encontramos ese
+  // activo» cuando lo que pasa es que falta la respuesta).
+  if (estado === 'cargando') return { texto: `Trayendo ${de(filtro)}…`, reintentar: false, detalle: null }
+  if (normalizar(consulta) || secciones.some(s => s.filas.some(x => x.origen === filtro))) return null
+  if (filtro === 'lista') {
+    const validos = (seguidos || []).filter(x => activoValido(x?.symbol))
+    const Lista = cliente ? `La lista de ${cliente}` : 'Tu lista'
+    return {
+      texto: !(seguidos || []).length ? `${Lista} está vacía.`
+        : validos.length ? `Lo de ${de('lista')} ya está en ${de('cartera')}.`
+          : `${Lista} no tiene activos con gráfico.`,
+      reintentar: false, detalle: null,
+    }
+  }
+  // Lo que llegó y no se muestra, dicho con su número: si un día vuelve a
+  // quedar vacío con activos, el renglón dice cuántos lotes llegaron.
+  const activos = (posiciones || []).filter(p => p && !p.is_cash)
+  if (!activos.length) {
+    return { texto: `${cliente ? `La cartera de ${cliente}` : 'Tu cartera'} no tiene activos todavía.`, reintentar: false, detalle: null }
+  }
+  const soloFondos = activos.every(p => isFciSym(p.asset))
+  return {
+    texto: soloFondos
+      ? `En ${de('cartera')} no hay activos con gráfico: los fondos no tienen.`
+      : `En ${de('cartera')} no hay activos con gráfico.`,
+    reintentar: false,
+    detalle: soloFondos ? null : `llegaron ${activos.length} ${activos.length === 1 ? 'lote' : 'lotes'} sin un ticker que se pueda abrir`,
+  }
+}

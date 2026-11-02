@@ -10,7 +10,14 @@
 //     anterior queda entre los últimos que miraste;
 //   · al gráfico le llega la cuenta de la ficha (useFichaDelActivo): tus lotes
 //     y qué parte de tu cartera es, lo mismo que en /activo/:ticker;
-//   · pedido con otro nombre (GGAL.BA) abre el tuyo (GGAL).
+//   · pedido con otro nombre (GGAL.BA) abre el tuyo (GGAL);
+//   · «Tu cartera» del buscador, con la respuesta REAL del servidor (una cartera
+//     grande de varios brokers: backend/tests/test_cartera_del_buscador.py la
+//     arma por HTTP y la guarda), muestra todo lo tuyo; y si el pedido falla o
+//     tarda lo dice, en vez de quedar vacío (02/11).
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic, enActo, escribir, tecla } from '../testing/navegadorMinimo'
@@ -33,10 +40,13 @@ const CLAVE = 'rendi_grafico:ana@x.com|propia'
 let pedidos
 // Lotes de más, por prueba (una cripto cargada como BTC-USD, un nombre raro).
 let extra = []
+// Lo que contesta el servidor a /positions y /brokers, si la prueba lo cambia.
+let delServidor = null
 function servidor() {
   pedidos = []
   api.get.mockImplementation(async (url) => {
     pedidos.push(`GET ${url}`)
+    if (delServidor?.[url]) return delServidor[url]()
     if (url === '/positions') return [
       { id: 1, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK', quantity: 10, invested: 1000, buy_price: 100 },
       { id: 2, broker: 'IOL', asset: 'GGAL', asset_type: 'ACCION', quantity: 100, invested: 500000, buy_price: 5000, currency: 'ARS', tc_compra: 1200 },
@@ -102,6 +112,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   recibido.length = 0
   extra = []
+  delServidor = null
   ;({ local: almacen } = instalarNavegadorMinimo())
   // La sesión que guarda la app: de ahí sale el dueño de lo recordado.
   localStorage.setItem('rendi_user', JSON.stringify({ email: 'Ana@X.com' }))
@@ -240,5 +251,97 @@ describe('Análisis técnico → Gráfico', () => {
     expect(activoDe(montado.donde)).toBe('GGAL')
     // Un solo atajo para el mismo papel (no «GGAL.BA» al lado de GGAL).
     expect(JSON.parse(almacen.get(CLAVE)).recientes).toEqual(['GGAL'])
+  })
+})
+
+// La respuesta de GET /api/positions y /api/brokers de una cartera grande, tal
+// cual la da el servidor (la escribe backend/tests/test_cartera_del_buscador.py).
+const CONTRATO = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)),
+  '../../../backend/tests/fixtures/cartera_del_buscador.json'), 'utf8'))
+const opcionesDe = (c, grupo) => {
+  const pila = [c]
+  while (pila.length) {
+    const n = pila.shift()
+    if (n.atributos?.role === 'group' && n.atributos?.['aria-label'] === grupo) {
+      const out = []
+      const p2 = [n]
+      while (p2.length) {
+        const m = p2.shift()
+        if (m.atributos?.role === 'option') out.push(texto(m.childNodes[0]))
+        else p2.push(...(m.childNodes || []))
+      }
+      return out
+    }
+    pila.push(...(n.childNodes || []))
+  }
+  return []
+}
+async function abrirElFiltroTuCartera() {
+  montado = await abrir('/analisis-tecnico?tab=grafico&activo=TSLA')
+  await clic(montado.contenedor, botonDelActivo(montado.contenedor))
+  await esperar()
+  await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Tu cartera'))
+  await esperar()
+}
+
+describe('el buscador del gráfico → «Tu cartera»', () => {
+  it('con la respuesta real de una cartera grande de varios brokers, están todos tus activos', async () => {
+    delServidor = { '/positions': async () => CONTRATO.positions, '/brokers': async () => CONTRATO.brokers }
+    await abrirElFiltroTuCartera()
+    expect([...opcionesDe(montado.contenedor, 'Tu cartera')].sort()).toEqual(CONTRATO.esperado)
+    expect(montado.t()).not.toContain('No pudimos traer')
+  })
+
+  it('si el pedido falla lo dice, con el motivo, y «Reintentar» la trae', async () => {
+    let falla = true
+    delServidor = {
+      '/positions': async () => {
+        if (falla) throw Object.assign(new Error('HTTP 500'), { status: 500 })
+        return CONTRATO.positions
+      },
+      '/brokers': async () => CONTRATO.brokers,
+    }
+    await abrirElFiltroTuCartera()
+    expect(montado.t()).toContain('No pudimos traer tu cartera.')
+    expect(montado.t()).toContain('Detalle: error 500')
+    expect(montado.t()).not.toContain('Escribí el ticker')
+    falla = false
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Reintentar'))
+    await esperar()
+    expect(montado.t()).not.toContain('No pudimos traer')
+    expect([...opcionesDe(montado.contenedor, 'Tu cartera')].sort()).toEqual(CONTRATO.esperado)
+  })
+
+  it('mientras tarda, dice que la está trayendo; si no llega, avisa y deja reintentar', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true })
+    try {
+      delServidor = { '/positions': () => new Promise(() => {}) }
+      await abrirElFiltroTuCartera()
+      expect(montado.t()).toContain('Trayendo tu cartera…')
+      // Con algo escrito, tampoco «No encontramos ese activo»: todavía no llegó.
+      await escribir(campo(montado.contenedor), 'ggal')
+      expect(montado.t()).toContain('Trayendo tu cartera…')
+      expect(montado.t()).not.toContain('No encontramos')
+      await enActo(async () => { vi.advanceTimersByTime(15000) })
+      await esperar()
+      expect(montado.t()).toContain('No pudimos traer tu cartera.')
+      expect(montado.t()).toContain('Detalle: tardó más de 15 s')
+      expect(buscarBoton(montado.contenedor, 'Reintentar')).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('sin nada con gráfico dice por qué, no «Escribí el ticker»', async () => {
+    const cajas = CONTRATO.positions.filter(p => p.is_cash)
+    delServidor = { '/positions': async () => cajas }
+    await abrirElFiltroTuCartera()
+    expect(montado.t()).toContain('Tu cartera no tiene activos todavía.')
+    expect(montado.t()).not.toContain('Escribí el ticker')
+    await montado.desmontar()
+    // Con un fondo (FCI): lo tenés, pero no tiene gráfico.
+    delServidor = { '/positions': async () => [...cajas, { ...cajas[0], is_cash: 0, asset: 'FCI:Balanz Ahorro', quantity: 100 }] }
+    await abrirElFiltroTuCartera()
+    expect(montado.t()).toContain('En tu cartera no hay activos con gráfico: los fondos no tienen.')
   })
 })
