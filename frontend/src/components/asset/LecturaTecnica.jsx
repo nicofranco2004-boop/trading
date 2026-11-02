@@ -48,7 +48,7 @@ import { cloneElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useSt
 import { Bell, Brush, ChevronDown, LineChart, Maximize2, Minimize2, Redo2, RotateCcw, Ruler, StickyNote, Trash2, Undo2 } from 'lucide-react'
 import { usePrivacy } from '../../contexts/PrivacyContext'
 import AssetMiniChart from '../home/AssetMiniChart'
-import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica } from './BarraGrafico'
+import BarraGrafico, { CAPAS_DE_FABRICA, LeyendaIndicadores, capasGuardadas, guardarCapas, olvidarCapas, sonDeFabrica, TIPO_DE_FABRICA } from './BarraGrafico'
 import CapaFibonacci, { COLOR_FIB, ID_FIB_AUTO, TarjetaFibonacci, preciosDeLaCapa, trazosDelFibonacci, ventanaDelTramo, ventanaDesde } from './CapaFibonacci'
 import CapaElliott, { COLOR_ELLIOTT, ID_ELL_AUTO, TarjetaElliott, fechaDelConteo, preciosDelConteo, trazosDelConteo } from './CapaElliott'
 import CapaDibujos, { anchoDelCanal, colorDe, preciosAlBorde, trazosDeDibujos } from './CapaDibujos'
@@ -179,11 +179,14 @@ const SQUEEZE = {
   verde_fuerte: [v('rendi-pos-fill'), 1], verde_apagado: [v('rendi-pos-fill'), 0.55],
   rojo_fuerte: [v('rendi-neg-fill'), 1], rojo_apagado: [v('rendi-neg-fill'), 0.55],
 }
-// Línea o velas: lo que eligió la persona la última vez. El navegador puede
-// tener el almacenamiento bloqueado (modo privado): entonces, línea.
-const CLAVE_TIPO = 'rendi_grafico_tipo'
+// Línea o velas: lo que eligió la persona la última vez (se guarda sólo al
+// tocar el botón). Si nunca eligió, o el navegador tiene el almacenamiento
+// bloqueado (modo privado), el de fábrica: velas (BarraGrafico.TIPO_DE_FABRICA).
 function tipoGuardado() {
-  try { return leerDelAlmacen(CATALOGO.graficoTipo) === 'velas' ? 'velas' : 'linea' } catch { return 'linea' }
+  try {
+    const t = leerDelAlmacen(CATALOGO.graficoTipo)
+    return t === 'velas' || t === 'linea' ? t : TIPO_DE_FABRICA
+  } catch { return TIPO_DE_FABRICA }
 }
 function guardarTipo(t) {
   try { guardarEnAlmacen(CATALOGO.graficoTipo, t) } catch { /* sin almacenamiento */ }
@@ -732,10 +735,10 @@ export default function LecturaTecnica({
   // Al prender el Fibonacci o las ondas, el gráfico se acerca a lo medido si se
   // ve chico, con el aire de la derecha de siempre.
   const acercar = (v2) => { if (v2) setVentana({ n: v2.n + margenDerecho(v2.n), fin: v2.fin + margenDerecho(v2.n) }) }
-  const deFabrica = sonDeFabrica(ver) && tipo === 'linea'
+  const deFabrica = sonDeFabrica(ver) && tipo === TIPO_DE_FABRICA
   const volverDeFabrica = () => {
     setVerEstado({ ...CAPAS_DE_FABRICA }); olvidarCapas()
-    setTipoEstado('linea'); olvidarTipo()
+    setTipoEstado(TIPO_DE_FABRICA); olvidarTipo()
     setMedirEstado({ activo: false, a: null, b: null })
     setDibujarEstado({ tipo: null, puntos: [] })
   }

@@ -235,8 +235,43 @@ describe('LecturaTecnica', () => {
     expect(texto(montado.contenedor)).toContain('Ganás 11,9%')
   })
 
+  it('quien nunca eligió ve velas diarias de entrada (Nico, 02/11)', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
+    expect(localStorage.getItem('rendi_grafico_tipo')).toBeNull()
+    await dibujar({ pnlPctUsd: 0.1 })
+    expect(botonDe('velas').getAttribute('aria-pressed')).toBe('true')
+    expect(botonDe('linea').getAttribute('aria-pressed')).toBe('false')
+    expect(velasDibujadas()).toBeGreaterThan(200)     // toda la historia, una vela por día
+    expect(texto(montado.contenedor)).not.toContain('Cada vela es una semana')
+    // Ver velas de entrada no es elegirlas: no se guarda nada.
+    expect(localStorage.getItem('rendi_grafico_tipo')).toBeNull()
+  })
+
+  it('quien eligió línea sigue viendo línea; lo que no es «linea» ni «velas» cae en velas', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
+    localStorage.setItem('rendi_grafico_tipo', 'linea')
+    await dibujar({ pnlPctUsd: 0.1 })
+    expect(botonDe('linea').getAttribute('aria-pressed')).toBe('true')
+    expect(velasDibujadas()).toBe(0)
+    await montado.desmontar()
+    localStorage.setItem('rendi_grafico_tipo', 'barras')   // un valor que nunca guardamos
+    await dibujar({ pnlPctUsd: 0.1 })
+    expect(botonDe('velas').getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('con el almacenamiento bloqueado (modo privado) arranca en velas igual', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
+    const leer = vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('SecurityError') })
+    try {
+      await dibujar({ pnlPctUsd: 0.1 })
+      expect(leer).toHaveBeenCalled()                  // de verdad no pudo leer
+      expect(botonDe('velas').getAttribute('aria-pressed')).toBe('true')
+    } finally { leer.mockRestore() }
+  })
+
   it('con el botón Velas dibuja velas diarias, y semanales sólo si se eligen', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
+    localStorage.setItem('rendi_grafico_tipo', 'linea')   // venía de elegir línea
     await dibujar({ pnlPctUsd: 0.1 })
     expect(velasDibujadas()).toBe(0)
     expect(botonDe('linea').getAttribute('aria-pressed')).toBe('true')
@@ -367,7 +402,7 @@ describe('LecturaTecnica', () => {
       lectura: { ...USD.lectura, bb_arriba: 400, bb_abajo: -5.44, bb_posicion: 0.6, bb_ancho_relativo: 3 },
     }
     respuestas = { '/tecnico/AAPL?moneda=usd': salto, '/tecnico/AAPL?moneda=ars': ARS }
-    // La prueba de las velas deja guardado «velas»: ésta mira la línea.
+    // De fábrica son velas: ésta mira la línea (quien la eligió).
     try { localStorage.setItem('rendi_grafico_tipo', 'linea') } catch { /* sin almacenamiento */ }
     await dibujar({ pnlPctUsd: 0.1 })
     // La línea del precio sigue ocupando el alto del gráfico (con el eje hasta
@@ -476,6 +511,7 @@ describe('LecturaTecnica — la vela de hoy', () => {
 
   it('en línea: el último tramo punteado y el pie dice de qué hora es el precio; la lectura no cambia', async () => {
     respuestas = { [RUTA]: HOY, '/tecnico/AAPL?moneda=usd': USD }
+    localStorage.setItem('rendi_grafico_tipo', 'linea')
     const t = await dibujar({ pnlPctUsd: 0.1 })
     expect(t).toContain('La última vela es la de hoy, en curso (precio de las 14:32): se actualiza sola cada minuto.')
     expect(tramoHoy()).toBe(1)
@@ -485,9 +521,7 @@ describe('LecturaTecnica — la vela de hoy', () => {
   it('en velas: una vela de más, transparente; en semanales se suma a la última semana y conserva la demora', async () => {
     respuestas = { [RUTA]: { ...HOY, demora_min: 20 }, '/tecnico/AAPL?moneda=usd': USD }
     await dibujar({ pnlPctUsd: 0.1 })
-    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Velas'))
-    await repintar()
-    expect(enCurso()).toBe(1)
+    expect(enCurso()).toBe(1)                          // de entrada, en velas
     await clic(montado.contenedor, buscarBoton(montado.contenedor, '1D'))
     await repintar()
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Semanales'))
@@ -500,7 +534,7 @@ describe('LecturaTecnica — la vela de hoy', () => {
     const ultimoF = CON_FUERZA.puntos[CON_FUERZA.puntos.length - 1].d
     respuestas = { [RUTA]: { ...HOY, ultima_guardada: ultimoF }, '/tecnico/AAPL?moneda=usd': CON_FUERZA }
     await dibujar({ pnlPctUsd: null })
-    expect(tramoHoy()).toBe(1)
+    expect(enCurso()).toBe(1)                          // de entrada, en velas
     expect(etiqueta('Fuerza de la tendencia')).toContain('(ADX): 25, con la línea de 23')
     expect(etiqueta('Barras del Squeeze')).toMatch(/Al último cierre, (verde|roja)\./)
   })
@@ -524,18 +558,18 @@ describe('LecturaTecnica — la vela de hoy', () => {
       respuestas = { [RUTA]: { ...HOY, velas: [] }, '/tecnico/AAPL?moneda=usd': USD }
       const t = await dibujar({ pnlPctUsd: 0.1 })
       expect(t).not.toContain('La última vela')
-      expect(tramoHoy()).toBe(0)
+      expect(enCurso()).toBe(0)
       // Llega el primer precio del día: aparece sola, sin volver a abrir la ficha.
       respuestas[RUTA] = HOY
       vi.advanceTimersByTime(60_000)
       await repintar()
       expect(await pedidosDeHoy()).toBe(2)
-      expect(tramoHoy()).toBe(1)
+      expect(enCurso()).toBe(1)
       // Yahoo no contesta un minuto: la vela que se veía no se borra.
       respuestas[RUTA] = { ...HOY, velas: [] }
       vi.advanceTimersByTime(60_000)
       await repintar()
-      expect(tramoHoy()).toBe(1)
+      expect(enCurso()).toBe(1)
     } finally {
       vi.useRealTimers()
     }

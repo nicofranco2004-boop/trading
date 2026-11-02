@@ -182,7 +182,7 @@ describe('arrastrar los ejes del gráfico', () => {
   for (const [nombre, pasos] of [
     ['otro rango', ['Desde que lo tenés']],
     ['otra moneda', ['Pesos']],
-    ['otro tipo de gráfico', ['Velas']],
+    ['otro tipo de gráfico', ['Línea']],                              // de fábrica son velas
     ['de diarias a semanales', ['Velas', '@', '1D', 'Semanales']],   // «1D» abre el menú de las velas
   ]) {
     it(`${nombre} vuelve el precio a automático`, async () => {
