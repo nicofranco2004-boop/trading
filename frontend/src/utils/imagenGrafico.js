@@ -26,7 +26,7 @@ import { PRIORIDAD, rotuloCorteFib, rotuloInvalidaElliott } from './rotulos'
 import { fechaDeHoy } from './shareCard'
 import { colorDe, trazosDeDibujos } from '../components/asset/CapaDibujos'
 import { INTERVALOS_POR_HORA, fechaHoraCorta, marcasDeHoras, primeraVelaDelDia } from './velasPorHora'
-import { posicion, trazosDelFibonacci } from '../components/asset/CapaFibonacci'
+import { posicion, rayasQueSeVen, trazosDelFibonacci } from '../components/asset/CapaFibonacci'
 
 // Con cuánto aire se eligen los precios del costado y las fechas de abajo en
 // la imagen: su letra es más grande que la de la pantalla (se mira achicada en
@@ -167,13 +167,17 @@ export function specDelGrafico({
         const x0 = p0.donde === 'adentro' ? pctX(p0.i) : 0
         const lista = rayas(fibonacci)
         const tops = lista.map(r => pctY(r.precio))
-        const conRotulo = rotulosQueEntran(lista, tops, fibonacci.entre)
+        // Como en la pantalla (CapaFibonacci): lo que cae fuera de la escala no se dibuja.
+        const seVen = new Set(rayasQueSeVen(tops))
+        const conRotulo = rotulosQueEntran(lista, tops.map((t, k) => (seVen.has(k) ? t : Infinity)), fibonacci.entre)
         if (fibonacci.entre) {
           const [a, b] = fibonacci.entre
-          const ya = pctY(lista.find(r => r.nivel === a).precio), yb = pctY(lista.find(r => r.nivel === b).precio)
+          const recorte = (y) => Math.min(100, Math.max(0, y))
+          const ya = recorte(pctY(lista.find(r => r.nivel === a).precio)), yb = recorte(pctY(lista.find(r => r.nivel === b).precio))
           poligonos.push({ color: colorFib, alpha: 0.1, puntos: [[x0, ya], [100, ya], [100, yb], [x0, yb]] })
         }
         lista.forEach((r, k) => {
+          if (!seVen.has(k)) return
           trazos.push({ x1: x0, y1: tops[k], x2: 100, y2: tops[k], color: colorFib, ancho: 2, punteada: !r.extremo, alpha: r.extremo ? 0.9 : 0.7 })
           if (conRotulo.has(k)) rotulos.push(rotuloDeRaya(x0, tops[k], `${rotuloNivel(r.nivel, fibonacci.dir)} · ${precio(r.precio)}`, colorFib, PRIORIDAD.nivelFib))
         })

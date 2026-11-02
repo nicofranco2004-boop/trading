@@ -16,6 +16,13 @@ que ser el EXTREMO de las dos ondas que toca: el final de la onda 1 es el
 máximo entre el arranque de la 1 y el final de la 2, y así. El último punto
 contado, además, es el extremo desde ahí hasta hoy.
 
+EN VARIOS GRADOS (02/11/26). Se busca en los últimos MAX_PUNTOS picos y pozos
+(el grado chico: unos meses) y también en zigzags resumidos que se quedan con
+los giros grandes, hasta cubrir toda la historia guardada (`_grados`). Así
+entra un impulso de meses con su corrección (INTC: de US$ 33 a 142 y la A-B de
+después), que con la ventana chica quedaba afuera. Siempre los mismos picos y
+pozos: un grado grande es un subconjunto del zigzag.
+
 REGLAS DURAS (si una no se cumple, ese conteo no existe):
   · la onda 2 no baja más que el arranque de la 1;
   · la onda 3 pasa el final de la 1 y no es la más corta de 1, 3 y 5;
@@ -603,9 +610,13 @@ def impulso_para_fibonacci(e: dict):
     """El impulso de 5 ondas TERMINADO del conteo principal, para que el
     Fibonacci lo mida entero (estructura.fibonacci): {'dir', 'fechas': {onda:
     fecha}} o None (sin conteo, o sin un impulso terminado: en la 3, la 4 o la
-    5, o una corrección suelta)."""
+    5, o una corrección suelta) o con confianza baja: un conteo flojo no
+    reemplaza al último tramo, que es una medida firme (auditoría 02/11: AMZN
+    medía un impulso de confianza baja)."""
     c = (e or {}).get("principal") if (e or {}).get("disponible") else None
     if not c or not (c["tipo"] == "impulso_y_correccion" or (c["tipo"] == "impulso" and c["ahora"] == "correccion")):
+        return None
+    if c.get("confianza") == "baja":
         return None
     return {"dir": c["dir"], "fechas": {o["onda"]: o["fecha"] for o in c["ondas"]}}
 

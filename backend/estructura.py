@@ -27,6 +27,9 @@ computadora la siga sin adivinar:
   4. FIBONACCI del último tramo CONFIRMADO: los niveles 0,236 · 0,382 · 0,5 ·
      0,618 · 0,786 entre su pozo de arranque y su pico, cuánto devolvió el
      precio de ese tramo hoy (con el cierre) y lo más que llegó a devolver.
+     Si el conteo de Elliott tiene un impulso de 5 ondas terminado (con
+     confianza media o alta), se mide ese impulso entero en su lugar, con la
+     misma cuenta (`_medir`; ver `fibonacci`).
 
 QUÉ NO HACE. No recomienda nada: describe dónde está el precio contra el
 último movimiento. Tampoco mira al usuario ni la moneda: recibe velas.

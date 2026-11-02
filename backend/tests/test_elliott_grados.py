@@ -146,6 +146,11 @@ class MotorConINTCTest(unittest.TestCase):
     def test_sin_impulso_terminado_el_fibonacci_es_el_de_siempre(self):
         self.assertEqual(estructura.fibonacci(self.velas), estructura.fibonacci(self.velas, impulso=None))
         self.assertIsNone(elliott.impulso_para_fibonacci({"disponible": False}))
+        # Con confianza baja, tampoco: queda el último tramo.
+        flojo = {"tipo": "impulso_y_correccion", "ahora": "onda_C", "dir": "suba", "confianza": "baja",
+                 "ondas": [{"onda": "0", "fecha": "2025-11-21"}, {"onda": "5", "fecha": "2026-06-30"}]}
+        self.assertIsNone(elliott.impulso_para_fibonacci({"disponible": True, "principal": flojo}))
+        self.assertIsNotNone(elliott.impulso_para_fibonacci({"disponible": True, "principal": {**flojo, "confianza": "media"}}))
         # Un impulso en la onda 5 (sin terminar) no se mide entero.
         c = {"tipo": "impulso", "ahora": "onda_5", "dir": "suba", "ondas": []}
         self.assertIsNone(elliott.impulso_para_fibonacci({"disponible": True, "principal": c}))

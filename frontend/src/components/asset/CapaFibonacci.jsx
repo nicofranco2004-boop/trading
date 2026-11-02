@@ -32,7 +32,18 @@ export const COLOR_FIB = magenta()
 export function preciosDeLaCapa(f, puntos) {
   if (!f) return []
   if (f.disponible) {
-    return posicion(puntos, f.desde.fecha).donde === 'despues' ? [] : [f.desde.precio, f.hasta.precio]
+    const donde = posicion(puntos, f.desde.fecha).donde
+    if (donde === 'despues') return []
+    if (donde === 'adentro') return [f.desde.precio, f.hasta.precio]
+    // Arrancó antes de lo que se ve (el impulso de Elliott de meses, en «Lo
+    // reciente»): estirar la escala hasta su arranque aplastaba las velas que
+    // se ven (INTC en el celular: de 63 a 32,89, auditoría 02/11). Entran las
+    // rayas que caen entre el mínimo y el máximo visibles y la más cercana de
+    // cada lado; las demás quedan afuera y no se dibujan (rayasQueSeVen).
+    const lo = Math.min(...puntos.map(p => p.l ?? p.c)), hi = Math.max(...puntos.map(p => p.h ?? p.c))
+    const precios = rayas(f).map(r => r.precio).sort((a, b) => a - b)
+    const debajo = precios.filter(x => x < lo).pop(), encima = precios.find(x => x > hi)
+    return [...precios.filter(x => x >= lo && x <= hi), debajo, encima].filter(x => x != null)
   }
   const e = f.en_curso
   if (!e || posicion(puntos, e.se_rompe_si_cierra.fecha).donde === 'despues') return []
@@ -77,6 +88,11 @@ export function posicion(puntos, fecha) {
   return { donde: 'adentro', i: indiceDeFecha(puntos, fecha) }
 }
 
+/** Las rayas que caen dentro del gráfico (0 a 100): las de afuera no se
+ *  dibujan, porque el gráfico no recorta (preciosDeLaCapa no estira la escala
+ *  hasta un arranque que quedó antes de lo que se ve). Devuelve los índices. */
+export const rayasQueSeVen = (tops) => tops.map((t, k) => k).filter(k => tops[k] >= 0 && tops[k] <= 100)
+
 /** El id con el que el Fibonacci automático se elige y se «borra» (se apaga)
  *  tocándolo en el gráfico, como un dibujo tuyo (Nico, 28/10). */
 export const ID_FIB_AUTO = 'auto-fib'
@@ -101,7 +117,8 @@ export function trazosDelFibonacci(fib, puntos, pctX, pctY) {
   if (p0.donde === 'despues') return []
   const p1 = posicion(puntos, fib.hasta.fecha)
   const x0 = p0.donde === 'adentro' ? pctX(p0.i) : 0
-  const out = rayas(fib).map(r => raya(x0, r.precio))
+  const lista = rayas(fib)
+  const out = rayasQueSeVen(lista.map(r => pctY(r.precio))).map(k => raya(x0, lista[k].precio))
   if (p0.donde === 'adentro' && p1.donde === 'adentro') {
     out.push({ id: ID_FIB_AUTO, x1: x0, y1: pctY(fib.desde.precio), x2: pctX(p1.i), y2: pctY(fib.hasta.precio) })
   }
@@ -129,9 +146,12 @@ export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio, marcado
   const x1 = p1.donde === 'adentro' ? pctX(p1.i) : null
   const lista = rayas(fib)
   const tops = lista.map(r => pctY(r.precio))
-  const conRotulo = rotulosQueEntran(lista, tops, fib.entre)
+  const seVen = new Set(rayasQueSeVen(tops))
+  // Una raya que no se ve no le quita el lugar al rótulo de una que sí.
+  const conRotulo = rotulosQueEntran(lista, tops.map((t, k) => (seVen.has(k) ? t : Infinity)), fib.entre)
   const [a, b] = fib.entre || []
-  const franja = fib.entre ? [pctY(lista.find(r => r.nivel === a).precio), pctY(lista.find(r => r.nivel === b).precio)] : null
+  const recorte = (y) => Math.min(100, Math.max(0, y))
+  const franja = fib.entre ? [recorte(pctY(lista.find(r => r.nivel === a).precio)), recorte(pctY(lista.find(r => r.nivel === b).precio))] : null
   // Los rótulos van ADENTRO de las rayas si el tramo arranca en la primera
   // mitad del gráfico; si arranca más a la derecha, AFUERA, a la izquierda de
   // donde empieza la raya (ahí no hay velas del tramo que tapar). En un
@@ -144,7 +164,7 @@ export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio, marcado
         <div className="absolute"
           style={{ background: magenta(0.1), left: `${x0}%`, right: 0, top: `${Math.min(...franja)}%`, height: `${Math.abs(franja[0] - franja[1])}%` }} />
       )}
-      {lista.map((r, k) => (
+      {lista.map((r, k) => seVen.has(k) && (
         <div key={r.nivel} className="absolute h-0"
           style={{ left: `${x0}%`, right: 0, top: `${tops[k]}%`, borderTop: `${marcado ? 2 : 1}px ${r.extremo ? 'solid' : 'dashed'} ${COLOR_FIB}`, opacity: marcado ? 1 : r.extremo ? 0.9 : 0.7 }}>
           {conRotulo.has(k) && (
