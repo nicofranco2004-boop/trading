@@ -31,6 +31,7 @@ if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
 
 import main
+import pgshim
 
 
 class TopeDeFactsSimultaneosTest(unittest.TestCase):
@@ -63,7 +64,10 @@ class TopeDeFactsSimultaneosTest(unittest.TestCase):
         self.conn.commit()
 
         n = 8
-        listo = threading.Barrier(n)
+        # Con vencimiento: si un hilo no llega (no consiguió conexión), los demás
+        # cortan con error en vez de esperar para siempre. Sin él, el 31/10 los
+        # hilos colgados dejaron a pytest sin poder cerrarse durante un día y medio.
+        listo = threading.Barrier(n, timeout=30)
         entraron = []
 
         def pedir(i):
@@ -79,8 +83,12 @@ class TopeDeFactsSimultaneosTest(unittest.TestCase):
                 except Exception: pass
 
         hilos = [threading.Thread(target=pedir, args=(i,)) for i in range(n)]
-        [h.start() for h in hilos]
-        [h.join(timeout=30) for h in hilos]
+        # Cada hilo toma su conexión ANTES de la barrera, y self.conn ya tiene una:
+        # son n+1 a la vez. Con el pozo en 8 (la suite contra Supabase) el último
+        # hilo esperaba un lugar que nadie devolvía. Ver pgshim.tope_temporal.
+        with pgshim.tope_temporal(n + 5):
+            [h.start() for h in hilos]
+            [h.join(timeout=60) for h in hilos]
 
         vivos = self.conn.execute(
             "SELECT COUNT(*) c FROM ai_user_facts WHERE user_id=? AND is_active=1",

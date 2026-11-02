@@ -20,10 +20,12 @@ DSN_CRUDO = os.environ.get("DATABASE_URL", "")
 
 
 def _dsn_con_esquema(esquema: str) -> str:
-    if "://" in DSN_CRUDO:
-        sep = "&" if "?" in DSN_CRUDO else "?"
-        return f"{DSN_CRUDO}{sep}options=-csearch_path%3D{esquema}"
-    return f"{DSN_CRUDO} options=-csearch_path={esquema}"
+    # `-c search_path=…` CON espacio, armado por make_conninfo como en conftest.
+    # Postgres acepta también `-csearch_path=…` pegado, pero el pooler de Supabase
+    # no: lo ignora y la conexión cae en `public` (medido 02/11/2026). Así esta
+    # prueba daba rojo contra Supabase con el candado funcionando bien.
+    from psycopg.conninfo import make_conninfo
+    return make_conninfo(DSN_CRUDO, options=f"-c search_path={esquema}")
 
 
 @unittest.skipUnless(DSN_CRUDO, "el candado es para Postgres (DATABASE_URL)")

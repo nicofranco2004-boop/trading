@@ -31,6 +31,13 @@ cd "$(dirname "$0")/../backend"
 DATABASE_URL="$(printf '%s' "${DATABASE_URL:-}" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 export DATABASE_URL
 
+# Railway le pone RAILWAY_ENVIRONMENT=production (y otras RAILWAY_*) a todo lo que
+# corre ahí, también a este servicio de prueba. La app lo lee como «esto es
+# producción» y, por ejemplo, rechaza los avisos de cobro sin clave: el 31/10 eso
+# dio 20 fallas que en la Mac no existen. La suite tiene que ver lo mismo que en
+# la Mac, así que se sacan antes de correrla.
+for v in $(env | sed -n 's/^\(RAILWAY_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
+
 if [ -z "${DATABASE_URL:-}" ]; then
   echo "🔴 Falta la variable DATABASE_URL en este servicio (la conexión a Supabase)."
   exit 2

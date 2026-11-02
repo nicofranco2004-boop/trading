@@ -61,8 +61,6 @@ if not os.environ.get("DB_PATH"):
 #
 # Esto le da a cada MÓDULO su propia base y re-crea el schema. Se re-apunta la
 # constante de main (no solo el env var, que main ya no vuelve a leer).
-import re
-
 import pytest
 
 
@@ -320,13 +318,20 @@ def _aislar_postgres(main, nombre_modulo: str):
         _PG_DSN_BASE = main.DATABASE_URL
         _barrer_esquemas_huerfanos(_PG_DSN_BASE)
 
-    # Los identificadores de Postgres son de 63 bytes. Los nombres de módulo son
-    # cortos, pero cortar acá evita que un archivo nuevo rompa la suite entera.
     # El pid va adelante para que dos corridas simultáneas NUNCA compartan un
     # nombre de esquema: si lo compartieran, una dropearía el esquema que la otra
     # está usando en ese mismo momento.
+    #
+    # 🔴 UN SOLO NOMBRE POR CORRIDA, no uno por módulo. El pooler de Supabase
+    # (Supavisor, modo sesión) arma una fila propia por cada `search_path` distinto
+    # del DSN y la deja abierta: medido el 02/11/2026, cada `search_path` nuevo dejó
+    # 2 conexiones ocupadas en la base, que no se soltaron. Con un esquema por
+    # módulo (~160), la base (60 lugares, 3 reservados) se llenaba hacia el módulo
+    # 24 y la corrida del 31/10 dio 211 errores «remaining connection slots are
+    # reserved». El aislamiento entre módulos no depende del nombre: abajo se matan
+    # las conexiones de esta corrida y el esquema se borra y se vuelve a crear vacío.
     _pre = f"t{os.getpid()}_"
-    esquema = _pre + re.sub(r"\W", "_", nombre_modulo)[-(60 - len(_pre)):]
+    esquema = _pre + "suite"
 
     # Las conexiones que quedaron quietas en el pozo apuntan al esquema anterior.
     pgshim.cerrar_pozos()
