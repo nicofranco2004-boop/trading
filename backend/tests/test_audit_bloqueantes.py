@@ -249,8 +249,13 @@ class B4_AnioParcialTest(_Base):
         self.pos()
         hoy = date.today()
         Y = hoy.year
-        self.me(Y, 1, 1000.0, 51000.0, dep=50000.0)
-        self.me(Y, hoy.month, 51000.0, 44000.0)
+        # En enero el primer mes y el mes en curso son la MISMA fila: armarlas por
+        # separado chocaba con la clave única y la prueba era roja todo enero.
+        if hoy.month == 1:
+            self.me(Y, 1, 1000.0, 44000.0, dep=50000.0)
+        else:
+            self.me(Y, 1, 1000.0, 51000.0, dep=50000.0)
+            self.me(Y, hoy.month, 51000.0, 44000.0)
         import calendar
         for mo in range(7, hoy.month + 1):
             ult = min(calendar.monthrange(Y, mo)[1], hoy.day if mo == hoy.month else 31)
