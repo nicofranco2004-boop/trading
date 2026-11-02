@@ -494,6 +494,11 @@ def _barrer_esquemas_huerfanos(dsn):
 @pytest.fixture(autouse=True, scope="module")
 def _db_por_modulo(request):
     import main
+    # Antes de matar conexiones y rehacer el esquema: que no quede una
+    # reconstrucción de fondo del archivo anterior escribiendo (ver
+    # tests/_trabajo_de_fondo.py).
+    from tests import _trabajo_de_fondo
+    _trabajo_de_fondo.esperar()
     # Correr LA MISMA suite contra los dos motores es todo el punto de la
     # migración: acá cambia CÓMO se aísla la base, no qué se testea.
     if getattr(main, "USANDO_PG", False):
@@ -591,6 +596,16 @@ def pytest_sessionfinish(session, exitstatus):
                f"fallas_conocidas.txt:", green=True)
         for n in arregladas:
             _decir(f"    {n}", green=True)
+
+
+@pytest.fixture(autouse=True)
+def _sin_reconstrucciones_de_la_prueba_anterior():
+    """Cada prueba arranca sin hilos de reconstrucción vivos de la anterior: contra
+    Supabase pisaban la limpieza del `setUp` y el turno de la cuenta (corrida de
+    Railway del 02/11, 3 rojos). Ver tests/_trabajo_de_fondo.py."""
+    from tests import _trabajo_de_fondo
+    _trabajo_de_fondo.esperar()
+    yield
 
 
 @pytest.fixture(autouse=True)
