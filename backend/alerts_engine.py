@@ -2,7 +2,8 @@
 
 Tres tipos de alerta (ver schema en main.init_db). Las dos primeras se evalúan
 en vivo, cada vez que pega el cron; la tercera, una vez por día (ver
-`evaluar_tecnicas`, al final):
+`evaluar_tecnicas`, al final), salvo tu línea y tu canal, que se miran también
+durante la rueda (`_evaluar_en_la_rueda`):
   • price_target — avisar cuando `symbol` cruza `threshold` en `direction`
     (above/below). Usa EDGE-TRIGGER con la columna `armed`: dispara SOLO en la
     transición no-cumplida → cumplida, nunca mientras el precio sigue del lado
@@ -47,6 +48,7 @@ from money_fmt import fmt_num
 
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
@@ -1529,6 +1531,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
 
 
 # ─── Alertas técnicas: una vez por día, con las velas de la noche ─────────────
+# (Tu línea y tu canal, además, durante la rueda: ver `_evaluar_en_la_rueda`.)
 #
 # Qué vigila: una señal de la ficha técnica de UN activo (`tecnico.SENALES`):
 # cruzó su promedio de 200 o de 50 días (para arriba, para abajo o cualquiera),
@@ -1625,6 +1628,11 @@ def arrancar_tecnica(conn, alert) -> None:
     velas = _serie_tecnica(conn, alert)
     hasta = max(velas[-1]["date"], ayer) if velas else ayer
     _marcar_visto(conn, alert["id"], alert["symbol"], hasta)
+    # Lo que avisó la rueda era de antes: desde ahora se mira de nuevo. Hasta
+    # dónde había llegado el precio al avisar (`_clave_ya_visto`) queda: si la
+    # reactivás el mismo día, ni la rueda ni la noche repiten ese toque.
+    conn.execute("DELETE FROM alert_symbol_state WHERE alert_id=? AND symbol=?",
+                 (alert["id"], _clave_rueda(alert["symbol"])))
     # El día en que se pidió: para una línea, esa vela sólo cuenta si el cierre
     # la cruzó (`tecnico.toque_de_linea`, `pedida_el`).
     conn.execute("UPDATE alerts SET mirando_desde=? WHERE id=?", (hoy_art_date().isoformat(), alert["id"]))
@@ -1698,6 +1706,8 @@ def _detalle_tecnico(alert, symbol, ev) -> str:
     senal, arriba = alert["senal"], ev["sentido"] == "arriba"
     if senal == "linea":
         cierre = _fmt_linea(ev["cierre"], ccy)
+    if senal == "linea" and ev.get("en_rueda"):
+        return _detalle_en_la_rueda(alert, sym, ev, ccy)
     if senal == "linea" and _es_canal(alert):
         lado = "arriba" if arriba else "abajo"
         borde = _fmt_linea(ev["referencia"], ccy)
@@ -1738,6 +1748,26 @@ def _detalle_tecnico(alert, symbol, ev) -> str:
         }[senal]
         return f"{fuerza} {lectura}"
     return f"{cuando} {sym} cerró en {cierre}, el cierre más alto de los últimos 12 meses."
+
+
+def _detalle_en_la_rueda(alert, sym, ev, ccy) -> str:
+    """La oración del mail de un toque visto DURANTE la rueda
+    (`_evaluar_en_la_rueda`): todavía no cerró, así que dice cómo viene el día
+    y dónde está ahora, no «cerró en». Si el mercado manda los precios con
+    demora (BYMA, `velas_diarias.DEMORA_MIN`), lo dice."""
+    f = lambda x: _fmt_linea(x, ccy)
+    rango = f"en lo que va de la rueda fue de {f(ev['minimo'])} a {f(ev['maximo'])} y ahora está en {f(ev['cierre'])}"
+    if _es_canal(alert):
+        lado = "arriba" if ev["sentido"] == "arriba" else "abajo"
+        vuelta = ", o sea que volvió a quedar adentro" if ev.get("adentro") else ""
+        txt = (f"hoy {sym} tocó el borde de {lado} de tu canal, que hoy está en {f(ev['referencia'])}: "
+               f"{rango}{vuelta}. Es el canal que dibujaste en su gráfico.")
+    else:
+        txt = (f"hoy {sym} tocó tu {_nombre_de_linea(alert)}, que hoy está en {f(ev['referencia'])}: "
+               f"{rango}. Es la línea que dibujaste en su gráfico.")
+    if ev.get("demora_min"):
+        txt += f" Los precios de este mercado llegan con unos {ev['demora_min']} minutos de demora."
+    return txt
 
 
 def _nombre_de_linea(alert) -> str:
@@ -1786,6 +1816,7 @@ def evaluar_tecnicas(conn, now: datetime = None, only_user: int = None) -> dict:
     ultimas = _ultimas_velas(conn, {t for ts in tickers.values() for t in ts if t})
     series: dict = {}
     pendientes: list = []
+    avisaron: set = set()
     fired = mirados = errores = 0
     for a in alerts:
         # Ya miró hasta la última vela de su serie (la de cualquiera de los
@@ -1814,20 +1845,32 @@ def evaluar_tecnicas(conn, now: datetime = None, only_user: int = None) -> dict:
             continue
         mirados += resultado in ("mirada", "avisó")
         fired += resultado == "avisó"
+        if resultado == "avisó":
+            avisaron.add(a["id"])
+    # Lo de la noche queda confirmado antes de salir a la red por la rueda.
+    conn.commit()
+    rueda = _evaluar_en_la_rueda(conn, [a for a in alerts if a["id"] not in avisaron],
+                                 tickers, ultimas, now, pendientes)
+    errores += rueda.pop("errores", 0)
+    fired += rueda.get("avisos", 0)
     # Lo disparado y las marcas quedan confirmados ANTES de entregar (la entrega
     # es red): igual que `evaluate_alerts`.
     conn.commit()
     _entregar_pendientes(conn, pendientes)
     out = {"tecnicas": len(alerts), "mirados": mirados, "fired": fired}
+    if rueda:
+        out["en_rueda"] = rueda
     if errores:
         out["errores"] = errores
     return out
 
 
-def _vistos_tecnicos(conn, alerts) -> dict:
+def _vistos_tecnicos(conn, alerts, clave_de=None) -> dict:
     """{alert_id: la fecha de la última vela que ya miró} de estas alertas, en
-    UNA consulta (`_visto_hasta` es la misma marca, de a una)."""
-    clave = {a["id"]: _clave_velas(a["symbol"]) for a in alerts}
+    UNA consulta (`_visto_hasta` es la misma marca, de a una). Con `clave_de`,
+    otra marca de las mismas alertas (las de la rueda: `_clave_rueda`)."""
+    clave_de = clave_de or _clave_velas
+    clave = {a["id"]: clave_de(a["symbol"]) for a in alerts}
     out = {}
     for r in conn.execute(
             "SELECT s.alert_id, s.symbol, s.last_fired_date FROM alert_symbol_state s "
@@ -1890,11 +1933,18 @@ def _evaluar_una_tecnica(conn, a, series: dict, visto, piso: str, now, pendiente
         # tapa otra nueva (auditoría 29/10). El día en que se pidió el aviso
         # (`mirando_desde`) cuenta sólo por el cierre: esa vela tiene horas de
         # antes del pedido (auditoría chica de la junta, 30/10).
+        # Lo que ya avisó la rueda (`_evaluar_en_la_rueda`) no se vuelve a
+        # avisar: se busca desde el día siguiente a ese toque. Y el día del
+        # pedido, si la rueda anotó hasta dónde había llegado el precio, cuenta
+        # sólo lo de después (`ya_visto`), igual que en la rueda.
         pedida_el = _campo(a, "mirando_desde")
+        ya_visto = _ya_visto_de_noche(conn, a["id"], sym)
         buscar = ((lambda desde: tecnico.salida_de_canal(mirables, linea, desde, a["direction"] or "either",
-                                                         _modo_del_canal(a), pedida_el))
-                  if linea.get("tipo") == "canal" else (lambda desde: tecnico.toque_de_linea(mirables, linea, desde, pedida_el)))
-        ev = buscar(visto)
+                                                         _modo_del_canal(a), pedida_el, ya_visto))
+                  if linea.get("tipo") == "canal"
+                  else (lambda desde: tecnico.toque_de_linea(mirables, linea, desde, pedida_el, ya_visto)))
+        avisado = _sym_state(conn, a["id"], _clave_rueda(sym))[1]
+        ev = buscar(max(visto, avisado or ""))
         while ev and ev["fecha"] < piso:
             log.info("alert %s %s: %s del %s llegó tarde, se busca otra después", a["id"], sym, a["senal"], ev["fecha"])
             ev = buscar(ev["fecha"])
@@ -1908,6 +1958,276 @@ def _evaluar_una_tecnica(conn, a, series: dict, visto, piso: str, now, pendiente
         _cumplio_una_vez(conn, a)
     _marcar_visto(conn, a["id"], sym, ultima)
     return "avisó" if ev else "mirada"
+
+
+# ─── Tu línea y tu canal, también durante la rueda ───────────────────────────
+# (Nico, 31/10) Lo de arriba mira las velas de la noche: si el precio tocaba tu
+# línea el martes a las 14, el aviso llegaba el miércoles a las 9, y para quien
+# dibuja una línea eso le saca casi todo el valor. Una línea, o un canal en modo
+# «si lo toca en el día», se mira además en cada pasada del cron (~10 min)
+# mientras su mercado manda precios, con la vela de HOY en vivo
+# (`tecnico.vela_de_hoy`: la MISMA serie, conversión y controles que dibuja la
+# ficha, con la misma caché de 60 s de `velas_diarias.ruedas_recientes`).
+#
+# Lo que no cambia:
+#   · «Si cierra afuera» espera al cierre: la vela de la noche, como siempre.
+#   · Las otras técnicas (promedios, impulso, máximo del año) son de cierre.
+#   · La vela de hoy no se guarda: la noche la guarda completa por su puerta.
+#   · La noche sigue siendo la fuente: si la rueda no avisó (Yahoo no contestó,
+#     no le tocó turno), la noche avisa como antes.
+#
+# Una vez por toque: lo que avisó la rueda queda anotado con el día de la vela
+# (clave '<activo>#rueda'). La rueda no vuelve a avisar ese día y la noche, al
+# mirar esa vela ya guardada, busca desde el día siguiente.
+#
+# El día en que se pidió el aviso (`mirando_desde`) la vela tiene horas de antes
+# del pedido. La primera pasada de la rueda anota hasta dónde había llegado el
+# precio ese día (su máximo y su mínimo, clave '<activo>#rueda-base') sin
+# avisar, y desde ahí cuenta sólo lo que vaya más allá (`ya_visto` en
+# `tecnico.toque_de_linea` / `salida_de_canal`; la noche usa la misma marca).
+# Si el mercado manda los precios con demora (BYMA, 20 min), durante esa demora
+# la marca se sigue ensanchando sin avisar: lo que llega en ese rato también
+# puede ser de antes del pedido. Cuando la rueda avisa, la marca queda en lo
+# que había llegado hasta ahí: si reactivás la alerta, ese toque no se repite.
+#
+# Yahoo: sólo la serie de los activos con una línea o un canal así, no todo el
+# universo; un pedido por serie aunque la miren muchas alertas; hasta
+# `TOPE_EN_RUEDA` series y `TIEMPO_EN_RUEDA_S` segundos por pasada (primero las
+# que hace más que no se miran); y la pasada se corta si Yahoo deja de contestar
+# (`CORTE_SIN_RESPUESTA` seguidas). Cada serie son 1 o 2 pedidos (la diaria y,
+# si en la diaria todavía no está la rueda de hoy, la de 1 hora:
+# `velas_diarias._bajar_en_curso`). La base: la serie guardada se lee una vez
+# por día (`_preparadas`), no en cada pasada.
+TOPE_EN_RUEDA = 150
+TIEMPO_EN_RUEDA_S = 180
+CORTE_SIN_RESPUESTA = 5
+# Cuándo se miró por última vez cada serie en la rueda (el turno, en memoria:
+# un reinicio sólo hace que todas arranquen iguales).
+_mirada_en_rueda: dict = {}
+# {serie: (llave, lo que leyó `tecnico.preparar_vela_de_hoy`)}. La llave es el
+# día y la última vela guardada de cada ticker de la serie: si la noche (o un
+# pedido de la ficha) guardó velas, se lee de nuevo. Si la historia se
+# reescribiera en el día con la misma última fecha, la vela de hoy no empalma
+# con lo leído y `vela_de_hoy` no devuelve nada: no avisa, no inventa.
+_preparadas: dict = {}
+
+
+def _clave_rueda(symbol) -> str:
+    return f"{symbol}#rueda"
+
+
+def _clave_ya_visto(symbol) -> str:
+    return f"{symbol}#rueda-base"
+
+
+def _ya_visto_en_la_rueda(conn, alert_id: int, symbol):
+    """Hasta dónde había llegado el precio en la vela de un día cuando la rueda
+    la miró: {'fecha', 'bajo', 'alto', 'hasta', 'tc'} o None. `hasta`: hasta
+    cuándo se sigue ensanchando (la demora del mercado). `tc`: el dólar con que
+    estaba convertida la serie (None si no lo estaba)."""
+    try:
+        b = json.loads(_sym_state(conn, alert_id, _clave_ya_visto(symbol))[1] or "null")
+        if isinstance(b, dict) and isinstance(b.get("fecha"), str):
+            return {"fecha": b["fecha"], "bajo": float(b["bajo"]), "alto": float(b["alto"]),
+                    "hasta": b.get("hasta"), "tc": float(b["tc"]) if b.get("tc") else None}
+    except (TypeError, ValueError, KeyError):
+        pass
+    return None
+
+
+def _anotar_ya_visto(conn, alert_id: int, symbol, fecha: str, bajo: float, alto: float,
+                     hasta: str = None, tc: float = None) -> None:
+    _set_sym_fired(conn, alert_id, _clave_ya_visto(symbol), json.dumps(
+        {"fecha": fecha, "bajo": bajo, "alto": alto, "hasta": hasta, "tc": tc}, separators=(",", ":")))
+
+
+def _ya_visto_de_noche(conn, alert_id: int, symbol):
+    """La marca de la rueda para la noche. Con una serie convertida con el
+    dólar, no: la noche convierte la vela guardada con el dólar de ese día y
+    la rueda con el de ese momento, y un máximo de 9,95 podía pasar a 10,05 y
+    avisar un toque que no hubo. La noche vuelve a su regla del cierre."""
+    b = _ya_visto_en_la_rueda(conn, alert_id, symbol)
+    return None if b is None or b["tc"] else b
+
+
+def _mira_en_la_rueda(alert) -> bool:
+    """¿Esta alerta se mira también durante la rueda? Tu línea, o tu canal en
+    modo «si lo toca en el día»."""
+    import tecnico
+    return (alert["senal"] == tecnico.SENAL_LINEA
+            and not (_es_canal(alert) and _modo_del_canal(alert) == "cierre"))
+
+
+def _evaluar_en_la_rueda(conn, alerts, tickers: dict, ultimas: dict, now, pendientes: list) -> dict:
+    """Tus líneas y canales contra la vela de hoy en vivo (ver el bloque de
+    arriba). Lo llama `evaluar_tecnicas` después de lo de la noche, con lo de la
+    noche ya confirmado. {} si no hay nada que mirar; si no, cuántas series
+    pidió, cuántas quedaron para la pasada siguiente y cuántas avisaron.
+
+    En orden, por Postgres (leer abre una transacción que queda abierta hasta
+    el commit): lo de la base primero, commit, después Yahoo; lo de cada alerta
+    en su punto de guardado (`_guarda_por_alerta`) y un commit por serie, antes
+    de salir a Yahoo por la siguiente."""
+    import tecnico
+    import velas_diarias
+    from fechas import hoy_art
+    from home.market import mercado_de
+    candidatas = [a for a in alerts if a["symbol"] and _mira_en_la_rueda(a)]
+    if not candidatas:
+        return {}
+    # Sin la base: ¿alguno de los mercados donde puede estar su serie manda
+    # precios ahora? Fuera de horario esto corta acá, sin una sola consulta.
+    abiertos = {m: velas_diarias.en_rueda_de(m) for m in ("us", "byma", "cripto")}
+    candidatas = [a for a in candidatas
+                  if any(abiertos[mercado_de(t)] for t in tickers.get(a["id"], ()) if t)]
+    if not candidatas:
+        return {}
+    por_serie: dict = {}
+    for a in candidatas:
+        clave = (a["symbol"], str(a["currency"] or "").upper(), bool(_campo(a, "accion_local")))
+        por_serie.setdefault(clave, []).append(a)
+    turno = sorted(por_serie, key=lambda k: _mirada_en_rueda.get(k, 0.0))
+    esperan = max(0, len(turno) - TOPE_EN_RUEDA)
+    turno = turno[:TOPE_EN_RUEDA]
+    hoy_ar = hoy_art()
+
+    # 1) La base: la serie guardada (una vez por día), la línea como está ahora
+    # y las marcas.
+    vistos = _vistos_tecnicos(conn, candidatas)
+    avisados = _vistos_tecnicos(conn, candidatas, _clave_rueda)
+    trabajo = []
+    for clave in turno:
+        sym, ccy, local = clave
+        primera = por_serie[clave][0]
+        llave = (hoy_ar, tuple(sorted((t, ultimas.get(t)) for t in tickers.get(primera["id"], ()) if t)))
+        guardada = _preparadas.get(clave)
+        if guardada and guardada[0] == llave:
+            prep = guardada[1]
+        else:
+            prep = tecnico.preparar_vela_de_hoy(conn, sym, "ars" if ccy == "ARS" else "usd", local)
+            _preparadas[clave] = (llave, prep)
+        if not prep or not abiertos[mercado_de(prep["ticker"])]:
+            continue
+        alertas = []
+        for a in por_serie[clave]:
+            linea = linea_de_la_alerta(conn, a)
+            if linea is not None:      # borrada: la apaga la noche, que lo dice
+                alertas.append((a, linea, _ya_visto_en_la_rueda(conn, a["id"], sym)))
+        if alertas:
+            trabajo.append((clave, prep, alertas))
+    conn.commit()
+
+    # 2) Yahoo (o la caché de la ficha), una vez por serie.
+    pedidas = sin_respuesta = avisos = errores = 0
+    arranque = time.monotonic()
+    for n, (clave, prep, alertas) in enumerate(trabajo):
+        if time.monotonic() - arranque > TIEMPO_EN_RUEDA_S:
+            # Yahoo lento: el resto en la pasada siguiente. Una pasada que no
+            # termina deja sin correr la siguiente del cron entero (también las
+            # alertas de precio): `_correr_en_fondo` corre una a la vez.
+            esperan += len(trabajo) - n
+            log.warning("alertas en la rueda: pasaron %s s, quedan %s series para la pasada siguiente",
+                        TIEMPO_EN_RUEDA_S, len(trabajo) - n)
+            break
+        _mirada_en_rueda[clave] = time.time()
+        r = tecnico.vela_de_hoy(prep)
+        pedidas += 1
+        if r["actualizada"] is None and not prep["pendiente"]:
+            sin_respuesta += 1
+            if sin_respuesta >= CORTE_SIN_RESPUESTA:
+                log.warning("alertas en la rueda: Yahoo no contesta (%s seguidas), se sigue en la pasada siguiente",
+                            sin_respuesta)
+                break
+            continue
+        sin_respuesta = 0
+        vivas = [{"date": v["d"], "open": v["o"], "high": v["h"], "low": v["l"], "close": v["c"],
+                  "volume": v["v"]} for v in r["velas"]]
+        if not vivas or not r["velas"][-1]["hoy"]:
+            continue        # la rueda de hoy todavía no tiene precio
+        tc = _dolar_de_la_vela(prep, vivas[-1])
+        for a, linea, ya_visto in alertas:
+            ok, resultado = _guarda_por_alerta(
+                conn, "alert en la rueda", a, a["symbol"], pendientes,
+                lambda propios: _toque_en_la_rueda(
+                    conn, a, linea, prep["velas"], vivas, vistos.get(a["id"]), avisados.get(a["id"]),
+                    ya_visto, hoy_ar, r["demora_min"], tc, now, propios))
+            errores += not ok
+            avisos += resultado == "avisó"
+        # Lo de esta serie queda confirmado antes de salir a Yahoo por la que
+        # sigue: un punto de guardado también abre la transacción.
+        conn.commit()
+    out = {"series": pedidas, "avisos": avisos}
+    if esperan:
+        out["esperan"] = esperan
+    if errores:
+        out["errores"] = errores
+    return out
+
+
+def _dolar_de_la_vela(prep, vela: dict):
+    """Con qué dólar quedó convertida la vela de hoy (None si la serie no va
+    convertida): su cierre convertido contra el que dio Yahoo (la misma tanda,
+    ya en la caché de 60 s de `ruedas_recientes`: no es otro pedido)."""
+    if not prep["convertida"]:
+        return None
+    import velas_diarias
+    tanda = velas_diarias.ruedas_recientes(prep["ticker"]) or {}
+    cruda = next((r for r in tanda.get("ruedas", ()) if r["date"] == vela["date"]), None)
+    return vela["close"] / cruda["close"] if cruda and cruda["close"] else None
+
+
+def _toque_en_la_rueda(conn, a, linea, velas: list, vivas: list, visto, avisado, base,
+                       hoy_ar: str, demora_min: int, tc, now, pendientes: list) -> str:
+    """Una alerta de tu línea o tu canal contra la vela de hoy en vivo (la
+    última de `vivas`, después de las guardadas `velas`). 'nada', 'mirada' o
+    'avisó'. `base`: lo que anotó antes la rueda (`_ya_visto_en_la_rueda`)."""
+    import tecnico
+    sym = a["symbol"]
+    hoy = vivas[-1]
+    if not visto or hoy["date"] <= visto or (avisado and hoy["date"] <= avisado):
+        return "nada"       # esa vela ya la miró la noche, o ya avisó hoy
+    todas = velas + vivas
+    if len(_hasta_antes_del_salto(todas, visto)) < len(todas):
+        return "nada"       # un salto sin confirmar: lo decide la noche, con su regla
+    cierre = hoy["close"]
+    alto, bajo = max(hoy.get("high") or cierre, cierre), min(hoy.get("low") or cierre, cierre)
+    pedida_el = _campo(a, "mirando_desde")
+    ya_visto = None
+    if base and base["fecha"] == hoy["date"]:
+        # Anotada con otro dólar (una serie convertida): se pasa al de ahora.
+        escala = tc / base["tc"] if tc and base["tc"] else 1.0
+        ya_visto = {"fecha": base["fecha"], "bajo": base["bajo"] * escala, "alto": base["alto"] * escala}
+        if base["hasta"] and now.isoformat() < base["hasta"]:
+            # Todavía llegan precios de antes del pedido (la demora): se ensancha.
+            _anotar_ya_visto(conn, a["id"], sym, hoy["date"], min(base["bajo"], bajo / escala),
+                             max(base["alto"], alto / escala), base["hasta"], base["tc"])
+            return "mirada"
+    elif pedida_el and pedida_el in (hoy["date"], hoy_ar) and (base is None or base["fecha"] < pedida_el):
+        # El día del pedido (para una cripto, cuyo día es el de Londres, también
+        # la vela que empezó la noche anterior a las 21): lo de hasta ahora
+        # puede ser de antes del pedido. Se anota y se cuenta sólo lo que venga.
+        # Una cripto pedida a la mañana ya tiene la marca de su vela: la que
+        # empieza a las 21 es entera posterior y se mira normal.
+        hasta = (now + timedelta(minutes=demora_min)).isoformat() if demora_min else None
+        _anotar_ya_visto(conn, a["id"], sym, hoy["date"], bajo, alto, hasta, tc)
+        return "mirada"
+    anterior = todas[-2]["date"]
+    if linea.get("tipo") == "canal":
+        ev = tecnico.salida_de_canal(todas, linea, anterior, a["direction"] or "either", "toque",
+                                     ya_visto=ya_visto)
+    else:
+        ev = tecnico.toque_de_linea(todas, linea, anterior, ya_visto=ya_visto)
+    if not ev:
+        return "mirada"
+    ev = {**ev, "en_rueda": True, "demora_min": demora_min}
+    _fire(conn, a, sym, ev["cierre"], None, now, pendientes, tecnica=ev)
+    _cumplio_una_vez(conn, a)
+    _set_sym_fired(conn, a["id"], _clave_rueda(sym), hoy["date"])
+    # Hasta dónde había llegado al avisar: si la reactivás hoy, cuenta desde acá.
+    escala = tc / base["tc"] if (ya_visto and tc and base["tc"]) else 1.0
+    _anotar_ya_visto(conn, a["id"], sym, hoy["date"], bajo / escala, alto / escala, None,
+                     base["tc"] if ya_visto else tc)
+    return "avisó"
 
 
 def referencia_de_linea(texto):

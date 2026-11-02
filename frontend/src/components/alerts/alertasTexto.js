@@ -229,6 +229,10 @@ export function frase(a) {
     : { quien: simbolo(a.symbol), que: `${mov} ${cuando}` }
 }
 
+// Tus líneas (y un canal en modo «si lo toca») se miran también durante la
+// rueda, en cada pasada del cron de alertas (alerts_engine._evaluar_en_la_rueda).
+const EN_LA_RUEDA = 'Lo miramos durante la rueda, cada 10 minutos'
+
 // La confirmación del formulario: la frase de arriba contada en segunda persona.
 export function confirmacion(a) {
   if (a.kind === 'tecnica') {
@@ -241,9 +245,9 @@ export function confirmacion(a) {
         return `Te avisamos cuando ${quien} cierre afuera de tu canal${lado}. ${inclinado} Lo miramos cada día con el precio de cierre: te llega a la mañana siguiente.`
       }
       const bordes = a.direction === 'above' ? 'el borde de arriba' : a.direction === 'below' ? 'el borde de abajo' : 'cualquiera de los dos bordes'
-      return `Te avisamos cuando ${quien} toque o pase ${bordes} de tu canal. ${inclinado} Lo miramos con el precio más alto y el más bajo del día: si lo tocó, te llega a la mañana siguiente.`
+      return `Te avisamos cuando ${quien} toque o pase ${bordes} de tu canal. ${inclinado} ${EN_LA_RUEDA}: si lo toca, te llega ese mismo día.`
     }
-    if (a.senal === 'linea') return `Te avisamos cuando ${quien} toque ${nombreDeLinea(a)}. Lo miramos cada día con el precio más alto y el más bajo del día.`
+    if (a.senal === 'linea') return `Te avisamos cuando ${quien} toque ${nombreDeLinea(a)}. ${EN_LA_RUEDA}: si la toca, te llega ese mismo día.`
     const que = esRsi(a.senal)
       ? `el impulso (RSI) de ${quien} ${queTecnico(a.senal, a.direction, true)}`
       : `${quien} ${queTecnico(a.senal, a.direction, true)}`
@@ -311,10 +315,10 @@ export function estado(a, precio, eventos = [], hoy = '', linea = undefined) {
     if (a.senal === 'linea') {
       const donde = dondeEstaLaLinea(a, linea)
       if (donde) return { texto: donde, tono: 'normal' }
-      // Tus líneas se miran con el más alto y el más bajo del día (salvo un
-      // canal que pide «cierra afuera»): decir «con el cierre» era otra regla.
-      const como = esCanal(a) && modoDeCanal(a) === 'cierre' ? 'el precio de cierre' : 'el precio más alto y el más bajo'
-      return { texto: ultimo ? `Último aviso el ${fechaCorta(ultimo.fired_at)} · se mira cada día con ${como}` : `Se mira cada día con ${como}`, tono: 'normal' }
+      // Tus líneas se miran durante la rueda (salvo un canal que pide «cierra
+      // afuera», que espera el cierre): decir «con el cierre» era otra regla.
+      const como = esCanal(a) && modoDeCanal(a) === 'cierre' ? 'cada día con el precio de cierre' : 'durante la rueda, cada 10 minutos'
+      return { texto: ultimo ? `Último aviso el ${fechaCorta(ultimo.fired_at)} · se mira ${como}` : `Se mira ${como}`, tono: 'normal' }
     }
     return { texto: ultimo ? `Último aviso el ${fechaCorta(ultimo.fired_at)} · se mira cada día con el cierre` : 'Se mira cada día con el precio de cierre', tono: 'normal' }
   }

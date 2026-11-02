@@ -6,7 +6,8 @@
 //   • Se mueve un %      (pct_move): "avisame si algo de mi cartera cae 5 %".
 //     Plus o más; el backend lo gatea igual (403 con {upgrade}).
 //   • Señal técnica      (tecnica): "avisame cuando AAPL cruce su promedio de
-//     200 días". Todos los planes. Se mira una vez por día con el cierre
+//     200 días". Todos los planes. Se mira una vez por día con el cierre (tu
+//     línea y tu canal, también durante la rueda)
 //     (alerts_engine.evaluar_tecnicas). Desde la ficha técnica llega ya armada
 //     (`prefill.fijo`: el activo y la marca de acción argentina los decidió la
 //     ficha), sin el selector de tipo. También «una línea que dibujaste»
@@ -598,8 +599,8 @@ function CamposTecnica({ form, set, setForm, editando, fijo, repeticionElegida, 
             ]} />
           </Campo>
           <Campo rotulo="Cuándo cuenta" ayuda={form.modo === 'cierre'
-            ? 'Sólo si cierra afuera: menos avisos, pero llega más tarde.'
-            : 'Si lo toca o lo pasa en el día: avisa antes, aunque a veces vuelve adentro.'}>
+            ? 'Sólo si cierra afuera: menos avisos, pero llega a la mañana siguiente.'
+            : 'Si lo toca o lo pasa: avisa durante la rueda, aunque a veces vuelve adentro.'}>
             <Segmentos etiqueta="Cuándo cuenta" grande valor={form.modo === 'cierre' ? 'cierre' : 'toque'} onChange={v => set('modo', v)} opciones={[
               { valor: 'toque', texto: 'Si lo toca en el día' },
               { valor: 'cierre', texto: 'Si cierra afuera' },
@@ -669,7 +670,7 @@ function TusLineas({ form, setForm, fija, posiciones }) {
     return (
       <Campo rotulo="Avisame cuando" ayuda={form.tipoLinea === 'canal'
         ? 'Si movés o ensanchás el canal, el aviso lo sigue; si lo borrás, se apaga.'
-        : 'Lo miramos con el precio más alto y el más bajo de cada día: si la tocó, te llega a la mañana siguiente. Si movés la línea, el aviso la sigue; si la borrás, se apaga.'}>
+        : 'Lo miramos durante la rueda, cada 10 minutos: si la toca, te llega ese mismo día. Si movés la línea, el aviso la sigue; si la borrás, se apaga.'}>
         <div className="flex items-center gap-3.5 rounded-lg bg-bg-2 px-3.5 py-2.5">
           {r && <MiniLinea resumen={r} etiqueta={`${NOMBRE_DIBUJO[r.tipo]} de ${simbolo(symbol)}`} />}
           <span className="min-w-0">

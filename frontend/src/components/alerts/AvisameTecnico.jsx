@@ -19,7 +19,8 @@
 // Tocarlo abre el formulario de siempre (AlertaForm) ya armado con esa señal:
 // ahí se ve la confirmación en palabras, por dónde avisa y cuántas veces, y se
 // pide el permiso de notificaciones en el mismo toque. La alerta la evalúa el
-// servidor una vez por día con el cierre (alerts_engine.evaluar_tecnicas).
+// servidor una vez por día con el cierre (alerts_engine.evaluar_tecnicas); la
+// de tu línea o tu canal, también durante la rueda (_evaluar_en_la_rueda).
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Bell, Check } from 'lucide-react'

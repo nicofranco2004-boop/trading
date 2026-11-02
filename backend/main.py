@@ -12976,6 +12976,51 @@ def admin_velas_correr(uid: int = Depends(get_admin_user)):
     return {"ok": True, "status": "started"}
 
 
+@app.get("/api/admin/yahoo/prueba")
+def admin_yahoo_prueba(uid: int = Depends(get_admin_user)):
+    """Le pide a Yahoo, DESDE EL SERVIDOR, el último mes de tres activos por la
+    misma puerta que el motor de velas (`pricing.yahoo._historia`) y devuelve
+    qué contestó: filas, el error tal cual y lo que anotó yfinance. Existe
+    porque el 02/11/2026 el servidor no bajaba nada mientras desde una Mac, con
+    las mismas versiones, Yahoo contestaba; y `varios` anota las fallas en
+    DEBUG, que en producción no se ve. Sólo lee: no guarda nada."""
+    import pandas as pd
+    import yfinance as yf
+    from pricing import yahoo
+
+    class _Junta(logging.Handler):
+        def __init__(self):
+            super().__init__(logging.WARNING)
+            self.lineas = []
+
+        def emit(self, record):
+            self.lineas.append(f"{record.levelname}: {record.getMessage()}"[:400])
+
+    junta = _Junta()
+    ylog = logging.getLogger("yfinance")
+    ylog.addHandler(junta)
+    pruebas = []
+    try:
+        for t in ("AAPL", "AVAX-USD", "GGAL.BA"):
+            antes, junta.lineas = time.time(), []
+            fila = {"ticker": t}
+            try:
+                df = yahoo._historia(t, "1mo", "1d", False, 10.0)
+                fila["filas"] = 0 if df is None else len(df)
+                if fila["filas"]:
+                    fila["ultima"] = str(df.index[-1])[:10]
+            except Exception as ex:
+                fila["error"] = repr(ex)[:500]
+            fila["seg"] = round(time.time() - antes, 1)
+            fila["yfinance_dijo"] = junta.lineas[:5]
+            pruebas.append(fila)
+    finally:
+        ylog.removeHandler(junta)
+    return {"yfinance": yf.__version__, "pandas": pd.__version__,
+            "cache": os.environ.get("YF_TZ_CACHE_LOCATION") or "/tmp/yf-cache",
+            "pruebas": pruebas}
+
+
 # ─── Historical prices (gráfico de 30 días: AssetMiniChart) ───────────────────────
 # Cache simple in-memory keyed por (symbol, period). yfinance fetchea las
 # series históricas — para periods chicos (1mo) es rápido. TTL 1h porque
@@ -49948,7 +49993,9 @@ def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn", dueno: int) ->
     al dibujo. No copia el precio: el motor lee la línea de lo dibujado cada vez
     (alerts_engine.linea_de_la_alerta), así que si la movés el aviso la sigue y
     si la borrás se apaga. Se mira con las velas del día (su mínimo y su
-    máximo), como las demás técnicas: avisa a la mañana siguiente.
+    máximo): durante la rueda con la vela de hoy en vivo, y de noche con la
+    guardada (alerts_engine._evaluar_en_la_rueda). Un canal en modo «si cierra
+    afuera», sólo con la de la noche: avisa a la mañana siguiente.
 
     `dueno`: de quién son los dibujos (`_dueno_de_los_dibujos`): la persona, o
     la asesora que dibuja en la ficha de su cliente. La alerta vive en la cuenta
@@ -50468,7 +50515,8 @@ def _evaluar_alertas_job() -> dict:
             except Exception:
                 pass
         # Las técnicas: una vez por día, con las velas de la noche (adentro se
-        # fija si ya es hora y si hay velas nuevas). Su propia guarda, igual que
+        # fija si ya es hora y si hay velas nuevas); tus líneas y canales,
+        # además, en cada pasada durante la rueda. Su propia guarda, igual que
         # las de arriba y las del libro.
         try:
             if "velas_diarias" in _corridas_en_curso:

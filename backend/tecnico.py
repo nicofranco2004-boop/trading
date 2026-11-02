@@ -689,6 +689,9 @@ def preparar_vela_de_hoy(conn, asset: str, moneda: str = "usd", local: bool = Fa
         pendiente = bool(cambios_ratio.para_el_grafico(conn, ticker).get("pendientes"))
     return {
         "ticker": ticker, "convertida": s["convertida"], "por": s.get("por"),
+        # La serie entera, para quien la necesita además de la vela de hoy (los
+        # avisos de tu línea en la rueda): leerla otra vez son otras consultas.
+        "velas": s["velas"],
         "ultima": {"date": cruda["date"], "close": cruda["close"]},
         "pendiente": pendiente,
         # El MEP guardado de los días después de la última vela (si alguno quedó
@@ -1190,7 +1193,7 @@ def valor_de_linea(velas: list, linea: dict, i: int):
     return a["precio"] + (b["precio"] - a["precio"]) * (i - ia) / (ib - ia)
 
 
-def toque_de_linea(velas: list, linea: dict, desde: str = None, pedida_el: str = None):
+def toque_de_linea(velas: list, linea: dict, desde: str = None, pedida_el: str = None, ya_visto: dict = None):
     """La PRIMERA vela posterior a `desde` que tocó la línea: su mínimo y su
     máximo la encierran, o el cierre quedó del otro lado del de la vela
     anterior (un salto por encima de la línea, sin tocarla en el día).
@@ -1207,6 +1210,12 @@ def toque_de_linea(velas: list, linea: dict, desde: str = None, pedida_el: str =
     donde está el precio avisaba a la mañana siguiente por lo que ya había
     pasado (auditoría de la junta, 30/10; el aviso de precio ya nacía
     desarmado en ese caso).
+
+    `ya_visto`: {'fecha', 'bajo', 'alto'}, hasta dónde había llegado el precio
+    ESE día cuando el motor lo miró por primera vez en la rueda, el día del
+    pedido (`alerts_engine._evaluar_en_la_rueda`). Para esa vela cuenta sólo lo
+    que pasó DESPUÉS: el precio fue más allá de ese máximo o de ese mínimo y
+    llegó a la línea. Sabe más que el cierre, y manda sobre `pedida_el`.
 
     Si la primera es vieja (velas atrasadas), el motor vuelve a buscar desde
     ella (`alerts_engine._evaluar_una_tecnica`), igual que para el canal."""
@@ -1229,13 +1238,21 @@ def toque_de_linea(velas: list, linea: dict, desde: str = None, pedida_el: str =
         lado_antes = (None if antes is None or nivel_antes is None or antes == nivel_antes
                       else antes - nivel_antes)
         salto = lado_antes is not None and lado_antes * (cierre - nivel) < 0
-        if pedida_el and v["date"] == pedida_el:
+        if ya_visto and v["date"] == ya_visto["fecha"]:
+            toco = ya_visto["alto"] < nivel <= alto or bajo <= nivel < ya_visto["bajo"]
+        elif pedida_el and v["date"] == pedida_el:
             toco = lado_antes is not None and lado_antes * (cierre - nivel) <= 0
         else:
             toco = bajo <= nivel <= alto or salto
         if toco:
-            return {"fecha": v["date"],
-                    "sentido": None if lado_antes is None else ("arriba" if lado_antes < 0 else "abajo"),
+            if ya_visto and v["date"] == ya_visto["fecha"]:
+                # De qué lado venía lo dice hasta dónde había llegado ese día,
+                # no el cierre anterior: abrió en 110 con la línea en 107,50 y
+                # el cierre anterior en 100 → bajó hasta la línea.
+                sentido = "arriba" if nivel > ya_visto["alto"] else "abajo"
+            else:
+                sentido = None if lado_antes is None else ("arriba" if lado_antes < 0 else "abajo")
+            return {"fecha": v["date"], "sentido": sentido,
                     "cierre": cierre, "referencia": nivel, "rsi": None,
                     "minimo": bajo, "maximo": alto}
     return None
@@ -1254,7 +1271,7 @@ def bordes_de_canal(velas: list, canal: dict, i: int):
 
 
 def salida_de_canal(velas: list, canal: dict, desde: str = None, borde: str = "either", modo: str = "toque",
-                    pedida_el: str = None):
+                    pedida_el: str = None, ya_visto: dict = None):
     """La PRIMERA vela posterior a `desde` en que el precio salió de tu canal
     (Nico, 29/10). `borde`: 'above' (sólo por arriba), 'below' o 'either'.
     `modo`: 'toque' = su máximo llegó al borde de arriba o su mínimo al de
@@ -1270,7 +1287,11 @@ def salida_de_canal(velas: list, canal: dict, desde: str = None, borde: str = "e
 
     `pedida_el`: el día en que se pidió el aviso. Esa vela tiene horas de antes
     del pedido: ese día cuenta sólo si CERRÓ afuera, aunque el modo sea
-    'toque' (la misma regla que `toque_de_linea`; auditoría chica de la junta, 30/10)."""
+    'toque' (la misma regla que `toque_de_linea`; auditoría chica de la junta, 30/10).
+
+    `ya_visto`: lo mismo que en `toque_de_linea` (en modo 'toque'): esa vela
+    cuenta sólo si el precio llegó al borde yendo más allá de lo que ya había
+    hecho en el día cuando el motor la miró por primera vez."""
     if not velas:
         return None
     desde_i = 0
@@ -1288,7 +1309,12 @@ def salida_de_canal(velas: list, canal: dict, desde: str = None, borde: str = "e
         bordes_antes = bordes_de_canal(velas, canal, i - 1) if i > 0 else None
         adentro_antes_arriba = antes is None or bordes_antes is None or antes <= bordes_antes[1]
         adentro_antes_abajo = antes is None or bordes_antes is None or antes >= bordes_antes[0]
-        if modo == "cierre" or (pedida_el and v["date"] == pedida_el):
+        if modo == "cierre":
+            sube, baja = cierre > arriba, abajo > 0 and cierre < abajo
+        elif ya_visto and v["date"] == ya_visto["fecha"]:
+            sube = ya_visto["alto"] < arriba <= alto
+            baja = abajo > 0 and bajo <= abajo < ya_visto["bajo"]
+        elif pedida_el and v["date"] == pedida_el:
             sube, baja = cierre > arriba, abajo > 0 and cierre < abajo
         else:
             sube, baja = alto >= arriba, abajo > 0 and bajo <= abajo
