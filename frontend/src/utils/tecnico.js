@@ -321,14 +321,15 @@ export function tarjetas(l) {
 }
 
 // ─── Hoy contra el cierre ───────────────────────────────────────────────────
-// Las tarjetas se leen con el ÚLTIMO CIERRE (un cruce se confirma al cierre:
-// Nico, 02/11), pero el gráfico dibuja la vela de hoy en curso. Si el precio de
-// ahora quedó del otro lado, la tarjeta suma un aviso abajo: describe lo que
-// pasa hoy y qué diría la lectura si cerrara así; nunca qué hacer.
-// Qué lectura da vuelta lo decide el servidor (`contra_el_cierre` de la vela de
-// hoy, tecnico.hoy_contra_el_cierre: con el MISMO precio que dibuja el gráfico,
-// sólo con la rueda abierta y con un margen para que el ruido de un minuto no lo
-// prenda y apague). Acá van sólo las palabras.
+// Las tarjetas se leen con el ÚLTIMO CIERRE guardado (un cruce se confirma al
+// cierre: Nico, 02/11), pero el gráfico dibuja la vela de hoy hasta que la noche
+// la guarda. Si quedó del otro lado, la tarjeta suma un aviso abajo: con la rueda
+// abierta, qué diría si cerrara así; ya cerrada, que cerró del otro lado y cuándo
+// cambia. Describe; nunca qué hacer.
+// Qué lectura da vuelta, y si en curso o ya cerrada, lo decide el servidor
+// (`contra_el_cierre` de la vela de hoy, tecnico.hoy_contra_el_cierre: con el
+// MISMO precio que dibuja el gráfico, el reloj de la rueda del motor y un margen
+// para que el ruido de un minuto no lo prenda y apague). Acá van las palabras.
 const TARJETA_DE_SENAL = { media200: 'fondo', media50: 'corto', maximo_12m: 'maximo' }
 
 /**
@@ -336,26 +337,34 @@ const TARJETA_DE_SENAL = { media200: 'fondo', media50: 'corto', maximo_12m: 'max
  * `vivas`: lo de useVelaDeHoy. Sólo si sigue a la lectura que se ve
  * (`base === lectura.fecha`; con la ficha abierta de un día para el otro la
  * noche guardó otra) y si la tarjeta todavía dice lo que el servidor contradice.
- * En la cripto «hoy» es su día, que cierra a las 21 (hora argentina).
+ * En la cripto «hoy» es su día, que cierra a las 21 (hora argentina), y su
+ * cierre se guarda esa misma noche; en la bolsa, la noche guarda la rueda de hoy
+ * y la lectura cambia «mañana».
  */
 export function avisosDeHoy(lista = [], vivas = null, lectura = null) {
   const out = {}
-  if (!vivas?.enRueda || !lectura?.fecha || vivas.base !== lectura.fecha) return out
-  const cuando = vivas.mercado === 'cripto'
-    ? 'Si a las 21 h (hora argentina), cuando cierra su día, sigue así,'
-    : 'Si cierra así, mañana'
+  if (!lectura?.fecha || vivas?.base !== lectura.fecha) return out
+  const cripto = vivas.mercado === 'cripto'
   for (const x of vivas.contra || []) {
     const id = TARJETA_DE_SENAL[x.senal]
     const t = lista.find(c => c.id === id)
     if (!t || x.dist == null) continue
-    if (x.senal === 'maximo_12m') {
-      if (t.veredicto === 'En su máximo') continue
-      out[id] = `Hoy, en curso, el precio está ${pct1(x.dist)} arriba del cierre más alto ${lectura.anio_completo ? 'de los últimos 12 meses' : 'del período'}. `
-        + `${cuando} esta tarjeta pasa a «En su máximo».`
+    const maximo = x.senal === 'maximo_12m'
+    if (maximo ? t.veredicto === 'En su máximo' : t.tono !== (x.cierre === 'alcista' ? 'pos' : 'neg')) continue
+    const donde = maximo
+      ? `${pct1(x.dist)} arriba del cierre más alto ${lectura.anio_completo ? 'de los últimos 12 meses' : 'del período'}`
+      : `${pct1(x.dist)} ${x.dist >= 0 ? 'arriba' : 'abajo'} de su promedio de ${x.senal === 'media200' ? 200 : 50} días`
+    const queda = maximo ? 'esta tarjeta pasa a «En su máximo»' : `esta lectura pasa a ${x.pasa_a}`
+    if (x.estado === 'cerro') {
+      // Con la fecha del día que cerró (regla del repo: lo que dice «hoy» trae
+      // la fecha; guard hoy-con-fecha).
+      const dia = x.fecha ? `${x.fecha.slice(8, 10)}/${x.fecha.slice(5, 7)}` : null
+      out[id] = cripto
+        ? `Su día${dia ? ` del ${dia}` : ''} cerró a las 21 h (hora argentina) ${donde}: ${queda} con el guardado de esta noche.`
+        : `Cerró hoy${dia ? ` (${dia})` : ''} ${donde}: mañana ${queda}.`
     } else {
-      if (t.tono !== (x.cierre === 'alcista' ? 'pos' : 'neg')) continue
-      out[id] = `Hoy, en curso, el precio está ${pct1(x.dist)} ${x.dist >= 0 ? 'arriba' : 'abajo'} de su promedio de ${x.senal === 'media200' ? 200 : 50} días. `
-        + `${cuando} esta lectura pasa a ${x.hoy}.`
+      out[id] = `Hoy, en curso, el precio está ${donde}. `
+        + (cripto ? `Si a las 21 h (hora argentina), cuando cierra su día, sigue así, ${queda}.` : `Si cierra así, mañana ${queda}.`)
     }
   }
   return out

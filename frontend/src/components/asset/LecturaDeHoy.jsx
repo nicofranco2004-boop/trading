@@ -16,8 +16,8 @@
 // La pestaña «Gráfico» de Análisis técnico no la muestra (`soloGrafico` de
 // LecturaTecnica).
 //
-// Abajo de los casilleros, sólo si el precio de hoy en curso da vuelta el largo
-// o el mediano plazo (`t.hoy` de la tarjeta, utils/tecnico.js `avisosDeHoy`),
+// Abajo de los casilleros, sólo si el precio de hoy (en curso, o ya cerrado y
+// sin guardar) da vuelta el largo o el mediano plazo (`t.hoy` de la tarjeta, utils/tecnico.js `avisosDeHoy`),
 // va ese aviso a todo el ancho: la lectura sigue con el cierre (Nico, 02/11).
 //
 // `boton` y `panel`: «✦ Analizar con Mervall-E» (ResumenMervalle.jsx, mockup
@@ -90,8 +90,8 @@ export default function LecturaDeHoy({ lectura, lista, puntos = [], adxTope = 50
   )
 }
 
-/** El aviso de que el precio de hoy, en curso, da vuelta una lectura que se
- *  hizo con el cierre. En ámbar: no es la lectura, es lo que está pasando hoy.
+/** El aviso de que el precio de hoy (en curso, o ya cerrado y sin guardar) da
+ *  vuelta una lectura que se hizo con el último cierre guardado. En ámbar: no es la lectura, es lo que está pasando hoy.
  *  `titulo`: de qué tarjeta es, cuando no va adentro de ella. */
 export function AvisoDeHoy({ texto, titulo = null, className = '' }) {
   return (

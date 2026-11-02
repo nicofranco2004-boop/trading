@@ -728,7 +728,7 @@ export default function LecturaTecnica({
   // Si los precios no se pudieron actualizar en más de una semana, se avisa
   // arriba (antes sólo se veía la fecha en letra chica al pie).
   const diasViejo = ultimaFecha ? Math.floor((Date.now() - Date.parse(ultimaFecha + 'T12:00:00Z')) / 86400000) : 0
-  // Con el aviso de hoy en la tarjeta que el precio en curso da vuelta (la
+  // Con el aviso de hoy en la tarjeta que el precio de hoy da vuelta (la
   // lectura sigue con el cierre: utils/tecnico.js `avisosDeHoy`).
   const lista = conAvisosDeHoy(tarjetas(actual.lectura), vivas, actual.lectura)
   const distintas = tendenciasDistintas(datos.usd?.lectura, datos.ars?.lectura)
@@ -1763,7 +1763,7 @@ function Letra({ tipo, grande: g = false }) {
 // `pie`: el «Avisame» de la señal de esa tarjeta (AvisameTecnico), arriba a la
 // derecha, chico, para no competir con la lectura. `dibujo`: el dibujito de la
 // tarjeta en la ficha (TarjetasPorTema), debajo del veredicto. `t.hoy`: el
-// aviso de que el precio de hoy, en curso, la da vuelta (`conAvisosDeHoy`).
+// aviso de que el precio de hoy (en curso o ya cerrado) la da vuelta (`conAvisosDeHoy`).
 function Tarjeta({ t, pie, dibujo = null }) {
   const tono = t.tono === 'pos' ? 'text-rendi-pos' : t.tono === 'neg' ? 'text-rendi-neg' : 'text-ink-0'
   return (

@@ -19,7 +19,7 @@
 //   · `demora`: minutos que tardan en llegar los precios de esa bolsa (BYMA, 20);
 //   · `base`: la vela guardada que siguen (el gráfico las dibuja sólo si es la suya);
 //   · `mercado`: 'us', 'byma' o 'cripto';
-//   · `contra`: qué lectura de las tarjetas da vuelta el precio de hoy
+//   · `contra`: qué lectura de las tarjetas da vuelta lo que todavía no se guardó, en curso o ya cerrado
 //     (`contra_el_cierre`, tecnico.hoy_contra_el_cierre; utils/tecnico.js
 //     `avisosDeHoy` lo pone en palabras).
 // Un pedido que falla, o que con la rueda abierta vuelve sin velas (Yahoo no

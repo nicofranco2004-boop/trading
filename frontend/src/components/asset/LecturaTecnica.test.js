@@ -602,7 +602,7 @@ describe('LecturaTecnica — la vela de hoy', () => {
   // y el gráfico dibuja hoy el precio arriba del promedio. La lectura no cambia;
   // abajo va el aviso, con lo que el servidor dice que da vuelta (`contra_el_cierre`).
   const CIERRE = { ...USD, lectura: { ...USD.lectura, fecha: ultimo } }
-  const DA_VUELTA = [{ senal: 'media200', cierre: 'bajista', hoy: 'alcista', dist: 2.4 }]
+  const DA_VUELTA = [{ senal: 'media200', estado: 'en_curso', fecha: manana, cierre: 'bajista', pasa_a: 'alcista', dist: 2.4 }]
   const AVISO_200 = 'Hoy, en curso, el precio está 2,4% arriba de su promedio de 200 días. Si cierra así, mañana esta lectura pasa a alcista.'
 
   it('hoy da vuelta el largo plazo: aviso abajo de la lectura y en su tarjeta; la lectura sigue «Bajista»', async () => {
@@ -633,8 +633,8 @@ describe('LecturaTecnica — la vela de hoy', () => {
 
   it('cripto: «hoy» es su día, que cierra a las 21; el mediano plazo y el máximo también', async () => {
     respuestas = { [RUTA]: { ...HOY, mercado: 'cripto', contra_el_cierre: [...DA_VUELTA,
-      { senal: 'media50', cierre: 'bajista', hoy: 'alcista', dist: 1.1 },
-      { senal: 'maximo_12m', cierre: 'abajo', hoy: 'en_maximo', dist: 0.8 }] }, '/tecnico/AAPL?moneda=usd': CIERRE }
+      { senal: 'media50', estado: 'en_curso', fecha: manana, cierre: 'bajista', pasa_a: 'alcista', dist: 1.1 },
+      { senal: 'maximo_12m', estado: 'en_curso', fecha: manana, cierre: 'abajo', pasa_a: 'en_maximo', dist: 0.8 }] }, '/tecnico/AAPL?moneda=usd': CIERRE }
     const t = await dibujar({ pnlPctUsd: 0.1 })
     expect(t).toContain('Largo plazo · Hoy, en curso, el precio está 2,4% arriba de su promedio de 200 días. '
       + 'Si a las 21 h (hora argentina), cuando cierra su día, sigue así, esta lectura pasa a alcista.')
@@ -645,6 +645,29 @@ describe('LecturaTecnica — la vela de hoy', () => {
     const avisos = nodos(montado.contenedor).filter(n => n.getAttribute?.('role') === 'note').map(texto)
     expect(avisos).toHaveLength(5)                     // 2 en la lectura de arriba + 3 tarjetas
     for (const a of avisos) expect(a).not.toMatch(/compr|vend|momento|conviene|oportunidad|deber[ií]as|mejor/i)
+  })
+
+  // Ya cerrada la rueda, la vela de hoy se sigue dibujando hasta el guardado de
+  // la noche: el aviso sigue, en pasado (Nico, 02/11).
+  const CERRO = DA_VUELTA.map(x => ({ ...x, estado: 'cerro' }))
+
+  it('rueda cerrada antes del guardado: «Cerró hoy (dd/mm)…: mañana esta lectura pasa a alcista»', async () => {
+    respuestas = { [RUTA]: { ...HOY, en_rueda: false, mercado: 'us', contra_el_cierre: [...CERRO,
+      { senal: 'maximo_12m', estado: 'cerro', fecha: manana, cierre: 'abajo', pasa_a: 'en_maximo', dist: 0.8 }] },
+    '/tecnico/AAPL?moneda=usd': CIERRE }
+    const t = await dibujar({ pnlPctUsd: 0.1 })
+    const dia = `${manana.slice(8, 10)}/${manana.slice(5, 7)}`
+    expect(t).toContain(`Largo plazo · Cerró hoy (${dia}) 2,4% arriba de su promedio de 200 días: mañana esta lectura pasa a alcista.`)
+    expect(t).toContain(`Cerró hoy (${dia}) 0,8% arriba del cierre más alto de los últimos 12 meses: mañana esta tarjeta pasa a «En su máximo».`)
+    expect(t).not.toContain('Si cierra así')
+  })
+
+  it('cripto después de las 21: su día cerró y la lectura cambia con el guardado de esta noche', async () => {
+    respuestas = { [RUTA]: { ...HOY, mercado: 'cripto', contra_el_cierre: CERRO }, '/tecnico/AAPL?moneda=usd': CIERRE }
+    const t = await dibujar({ pnlPctUsd: 0.1 })
+    expect(t).toContain(`Largo plazo · Su día del ${manana.slice(8, 10)}/${manana.slice(5, 7)} cerró a las 21 h (hora argentina) 2,4% arriba de su promedio de 200 días: `
+      + 'esta lectura pasa a alcista con el guardado de esta noche.')
+    expect(t).not.toContain('sigue así')
   })
 
   it('si la vela de hoy no sigue a la lectura que se ve (la noche guardó otra), no hay aviso', async () => {

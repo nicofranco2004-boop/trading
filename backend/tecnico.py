@@ -750,8 +750,8 @@ def vela_de_hoy(prep) -> dict:
 
     Las velas no pasan por las medias, el RSI ni la lectura: la tendencia y los
     avisos siguen con el cierre de ayer, porque con el precio de las 11 podrían
-    cambiar y a las 15 volver. Lo que sí se dice, con la rueda mandando precios,
-    es qué lectura da vuelta el precio de hoy (`contra_el_cierre`,
+    cambiar y a las 15 volver. Lo que sí se dice es qué lectura da vuelta lo
+    que todavía no se guardó, en curso o ya cerrado (`contra_el_cierre`,
     `hoy_contra_el_cierre`): la pantalla lo pone como aviso abajo de la tarjeta.
     `mercado`: 'us', 'byma' o 'cripto' (en la cripto «hoy» es el día UTC, que
     cierra a las 21 de la Argentina: la pantalla lo dice).
@@ -803,60 +803,86 @@ def vela_de_hoy(prep) -> dict:
         respuesta["velas"].append({
             "d": r["date"], "o": p(precios["open"]), "h": p(precios["high"]), "l": p(precios["low"]),
             "c": p(precios["close"]), "v": r.get("volume"), "hoy": r["date"] == tanda["hoy"]})
-    # Sólo con la rueda mandando precios: con la rueda cerrada (fin de semana,
-    # feriado, después del cierre) no hay «hoy, en curso» que contradiga nada.
-    if respuesta["en_rueda"]:
-        respuesta["contra_el_cierre"] = hoy_contra_el_cierre(prep["velas"], respuesta["velas"])
+    respuesta["contra_el_cierre"] = hoy_contra_el_cierre(prep["velas"], respuesta["velas"],
+                                                         respuesta["en_rueda"], respuesta["mercado"])
     return respuesta
 
 
 # ─── Hoy contra el cierre ────────────────────────────────────────────────────
 # La lectura (las tarjetas) se calcula con el ÚLTIMO CIERRE guardado: un cruce
-# se confirma al cierre (Nico, 02/11). Pero el gráfico dibuja la vela de HOY en
-# curso, y si el precio de ahora quedó del otro lado del promedio, la pantalla
-# parece contradecirse: «Bajista» al lado de un precio arriba de la línea. La
-# lectura no cambia; abajo de la tarjeta va un aviso de lo que pasa hoy.
+# se confirma al cierre (Nico, 02/11). Pero el gráfico dibuja la vela de HOY
+# hasta que la noche la guarda, y si quedó del otro lado del promedio la
+# pantalla parece contradecirse: «Bajista» al lado de un precio arriba de la
+# línea. La lectura no cambia; abajo de la tarjeta va un aviso de lo que pasa
+# hoy: con la rueda abierta, lo que diría si cerrara así; ya cerrada y sin
+# guardar, que cerró del otro lado y la lectura cambia con el guardado.
 #
 # Cuánto del otro lado tiene que estar para avisar, en %: con el precio pegado
 # a la línea, cada minuto cruzaría para un lado y para el otro y el aviso se
-# prendería y apagaría solo. Vale para todos los mercados, y es lo que cuida a
-# la cripto, que cotiza todo el día sin una apertura ni un cierre que frenen
-# el ruido.
+# prendería y apagaría solo. Vale para todos los mercados y para los dos
+# estados, y es lo que cuida a la cripto, que cotiza todo el día sin una
+# apertura ni un cierre que frenen el ruido.
 MARGEN_HOY = 0.5
 
 
-def hoy_contra_el_cierre(velas: list, nuevas: list) -> list:
-    """Las lecturas de la ficha que el precio de HOY da vuelta: lo que diría la
-    tarjeta si la rueda cerrara ahora, contra lo que dice con el último cierre.
+def hoy_contra_el_cierre(velas: list, nuevas: list, en_rueda: bool, mercado: str = None) -> list:
+    """Las lecturas de la ficha que da vuelta lo que la noche todavía no guardó.
 
     `velas`: la serie guardada (la de la lectura, `serie`). `nuevas`: las que la
     noche todavía no guardó, como las arma `vela_de_hoy` (el MISMO precio que
-    dibuja el gráfico); la última tiene que ser la de hoy. Cada promedio de hoy
-    se calcula como el de mañana: con el precio de ahora como si fuera el cierre
-    (y con algún día cerrado sin guardar, si lo hay). Con las mismas cuentas que
-    la lectura (`media`, `tendencia_de`, el máximo de 12 meses corridos y
-    `TOLERANCIA_MAXIMO`).
+    dibuja el gráfico). `en_rueda`: `velas_diarias.en_rueda` (LA cuenta del
+    horario, con la demora y el cierre temprano de Nueva York). Dos estados:
+      · 'en_curso': la última es la de hoy y la rueda sigue mandando precios. El
+        promedio se calcula como el de mañana: con el precio de ahora como si
+        fuera el cierre.
+      · 'cerro': lo ya cerrado y sin guardar. En la bolsa, sólo la rueda de HOY
+        ya cerrada: un día de antes sin guardar es un fin de semana, un feriado
+        o una noche que falló, y no avisa. En la cripto, su día que cerró a las
+        21 (el día UTC), hasta el guardado de la noche; el de después sigue en
+        curso. Si lo cerrado ya dio vuelta una lectura, se dice eso y no lo que
+        haría el día en curso.
+    Cuando la noche guarda, `nuevas` queda vacía (`vela_de_hoy` sólo trae lo de
+    después de lo guardado) y la lectura ya cambió: no hay aviso.
 
-    [{señal, cierre, hoy, dist}] (vacía si nada cambia):
-      · 'media200' / 'media50': `cierre` y `hoy` son 'alcista' | 'bajista';
-        `dist` es cuánto está hoy el precio del promedio de hoy, en %;
-      · 'maximo_12m': sólo si al cierre NO estaba en su máximo y hoy supera el
-        máximo de cierre del último año; `dist`, cuánto lo supera, en %.
-    En todas, `dist` pasa `MARGEN_HOY`."""
-    if not velas or not nuevas or not nuevas[-1].get("hoy"):
+    [{senal, estado, fecha, cierre, pasa_a, dist}] (vacía si nada cambia):
+      · 'media200' / 'media50': `cierre` y `pasa_a` son 'alcista' | 'bajista';
+        `dist`, cuánto está el precio del promedio con ese día adentro, en %;
+      · 'maximo_12m': sólo si al cierre NO estaba en su máximo y el precio supera
+        el máximo de cierre del último año; `dist`, cuánto lo supera, en %.
+    `fecha`: el día de la vela que se compara. En todas, `dist` pasa `MARGEN_HOY`."""
+    if not velas or not nuevas:
         return []
+    en_curso = bool(en_rueda and nuevas[-1].get("hoy"))
+    cerradas = nuevas[:-1] if en_curso else nuevas
+    out = {}
+    if cerradas and (mercado == "cripto" or cerradas[-1].get("hoy")):
+        for x in _da_vuelta(velas, cerradas):
+            out[x["senal"]] = {**x, "estado": "cerro"}
+    if en_curso:
+        for x in _da_vuelta(velas, nuevas):
+            out.setdefault(x["senal"], {**x, "estado": "en_curso"})
+    return list(out.values())
+
+
+def _da_vuelta(velas: list, nuevas: list) -> list:
+    """Lo que dirían las tarjetas con `nuevas` sumadas a lo guardado, contra lo
+    que dicen con lo guardado: [{senal, fecha, cierre, pasa_a, dist}]. Con las
+    mismas cuentas que la lectura (`media`, `tendencia_de`, el máximo de 12
+    meses corridos y `TOLERANCIA_MAXIMO`)."""
     cierres = [v["close"] for v in velas]
     todos = cierres + [n["c"] for n in nuevas]
     ultimo, hoy = cierres[-1], todos[-1]
+    fecha = nuevas[-1]["d"]
     out = []
     for senal, n in (("media200", 200), ("media50", 50)):
         # Mediano plazo usa la misma regla (precio ≥ promedio = alcista) que la
         # tarjeta de la pantalla (`dist_media50 >= 0`).
         antes, ahora = media(cierres, n)[-1], media(todos, n)[-1]
-        al_cierre, de_hoy = tendencia_de(ultimo, antes), tendencia_de(hoy, ahora)
+        al_cierre, despues = tendencia_de(ultimo, antes), tendencia_de(hoy, ahora)
         dist = _pct(hoy, ahora)
-        if al_cierre and de_hoy and al_cierre != de_hoy and abs(dist) >= MARGEN_HOY:
-            out.append({"senal": senal, "cierre": al_cierre, "hoy": de_hoy, "dist": round(dist, 2)})
+        if al_cierre and despues and al_cierre != despues and abs(dist) >= MARGEN_HOY:
+            out.append({"senal": senal, "fecha": fecha, "cierre": al_cierre, "pasa_a": despues,
+                        "dist": round(dist, 2)})
     # El máximo del año, de cierre contra cierre y en días corridos, como la lectura.
     fechas = [v["date"] for v in velas] + [n["d"] for n in nuevas]
     piso_cierre = (date.fromisoformat(fechas[len(cierres) - 1]) - timedelta(days=DIAS_ANIO)).isoformat()
@@ -866,7 +892,8 @@ def hoy_contra_el_cierre(velas: list, nuevas: list) -> list:
     if antes_de_hoy and ultimo < max_cierre * (1 - TOLERANCIA_MAXIMO):
         dist = _pct(hoy, max(antes_de_hoy))
         if dist >= MARGEN_HOY:
-            out.append({"senal": "maximo_12m", "cierre": "abajo", "hoy": "en_maximo", "dist": round(dist, 2)})
+            out.append({"senal": "maximo_12m", "fecha": fecha, "cierre": "abajo", "pasa_a": "en_maximo",
+                        "dist": round(dist, 2)})
     return out
 
 
