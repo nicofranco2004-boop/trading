@@ -165,7 +165,7 @@ class BackupFallido(Exception):
 def _herramientas_pg() -> tuple:
     """(pg_dump, pg_restore) de esta máquina. `BACKUP_PG_BIN` es la carpeta donde
     están (las pruebas usan las del Postgres local); si no, se buscan en el PATH
-    (en Railway las instala nixpacks.toml, fase `pgdump`)."""
+    (en Railway las instala el `Dockerfile` de la raíz)."""
     carpeta = os.environ.get("BACKUP_PG_BIN")
 
     def buscar(nombre):
@@ -177,7 +177,7 @@ def _herramientas_pg() -> tuple:
     if not dump or not restore:
         raise BackupFallido(
             "pg_dump/pg_restore no están instalados en esta máquina: NO se hizo el backup de "
-            "Postgres. Van en nixpacks.toml (fase `pgdump`). No se copia el SQLite en su "
+            "Postgres. Van en el `Dockerfile` (postgresql-client-17). No se copia el SQLite en su "
             "lugar: con DATABASE_URL puesta está congelado.")
     return dump, restore
 
@@ -208,7 +208,7 @@ def dump_postgres(dsn: str, dest_path: str) -> dict:
         if cliente < servidor:
             # pg_dump se niega a volcar un servidor más nuevo que él (docs de pg_dump).
             raise BackupFallido(f"pg_dump es {cliente} y el servidor es {servidor}: hay que "
-                                f"subir la versión en nixpacks.toml (fase `pgdump`).")
+                                f"subir la versión en el `Dockerfile` (postgresql-client-NN).")
         esquema = c.execute("SELECT current_schema()").fetchone()[0]
         c.execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
         foto = c.execute("SELECT pg_export_snapshot()").fetchone()[0]

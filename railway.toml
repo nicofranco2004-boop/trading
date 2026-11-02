@@ -1,10 +1,19 @@
-# Railway deploy config. La configuración de build (Python, deps, etc.) vive
-# en nixpacks.toml — Railway lo lee automáticamente.
-# ⚠️ Lo que está acá PISA lo que diga el panel de Railway
-# (docs.railway.com/reference/config-as-code).
+# Railway deploy config.
+# ⚠️ Lo que está acá PISA lo que diga el panel de Railway… HASTA EL 2026-12-01.
+# Ese día Railway deja de leer este archivo («Existing Config as Code files stop
+# being read on 2026-12-01 (hard cutoff)», docs.railway.com/infrastructure-as-code)
+# y manda el panel. Por eso cada ajuste de abajo tiene que estar TAMBIÉN en el
+# panel o en las variables del servicio antes de esa fecha: la tabla y los clicks
+# están en audit/RAILWAY_SIN_CONFIG_AS_CODE.md, y lo vigila
+# backend/tests/test_imagen_de_produccion.py.
+#
+# La imagen sale del `Dockerfile` de la raíz (antes: Nixpacks + nixpacks.toml,
+# que Railway ya no ofrece). Un Dockerfile en la raíz Railway lo usa siempre, con
+# o sin este archivo: el `builder` de acá sólo lo hace explícito mientras se lea.
 
 [build]
-builder = "nixpacks"
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
 
 [deploy]
 restartPolicyType = "on_failure"
