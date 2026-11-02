@@ -193,8 +193,11 @@ def hechos(nombre, r, todos_los_indicadores=False):
             # bajando, o al revés). Si van juntos no agrega nada y alargaba 4 de 20 textos.
             + ("; ojo: el promedio mismo viene " + ("subiendo" if pend >= 0 else "bajando") + " en el último mes"
                if pend is not None and abs(d) >= 2 and (pend >= 0) != (d >= 0) else ""))
-    # Movimientos recientes (los de la estructura de Fibonacci)
+    # Movimientos recientes (los de la estructura de Fibonacci). Si la ficha
+    # mide el impulso de Elliott entero, el último tramo viene aparte: el
+    # resumen cuenta los movimientos recientes, no el impulso (estructura.py).
     f = r.get("fibonacci") or {}
+    f = f.get("tramo") or f
     cierre_de = {p["d"]: p["c"] for p in pts}
 
     def al_cierre(punto):  # v5 probó el cierre del día del giro: peor (ver tabla de vueltas)

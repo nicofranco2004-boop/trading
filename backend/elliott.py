@@ -16,6 +16,13 @@ que ser el EXTREMO de las dos ondas que toca: el final de la onda 1 es el
 máximo entre el arranque de la 1 y el final de la 2, y así. El último punto
 contado, además, es el extremo desde ahí hasta hoy.
 
+EN VARIOS GRADOS (02/11/26). Se busca en los últimos MAX_PUNTOS picos y pozos
+(el grado chico: unos meses) y también en zigzags resumidos que se quedan con
+los giros grandes, hasta cubrir toda la historia guardada (`_grados`). Así
+entra un impulso de meses con su corrección (INTC: de US$ 33 a 142 y la A-B de
+después), que con la ventana chica quedaba afuera. Siempre los mismos picos y
+pozos: un grado grande es un subconjunto del zigzag.
+
 REGLAS DURAS (si una no se cumple, ese conteo no existe):
   · la onda 2 no baja más que el arranque de la 1;
   · la onda 3 pasa el final de la 1 y no es la más corta de 1, 3 y 5;
@@ -38,7 +45,8 @@ triple de larga que la otra); en A-B-C, B ≈ 50–61,8 % de A y C ≈ A.
 
 EL ALTERNATIVO tiene que decir otra cosa de hoy: estar en otra onda. "Onda 5"
 contra "onda 5" con otro arranque es la misma lectura, y "en la B" contra "en
-la corrección" con los mismos puntos también; no se ofrecen.
+la corrección" con los mismos puntos (o con otro arranque) también; no se
+ofrecen.
 
 QUÉ ES "HOY". Un conteo puede estar terminado o a mitad: 1-2 contadas y la 3
 en curso, 1-2-3 y la 4 en curso, etc. Lo que pasó desde el último punto
@@ -69,8 +77,13 @@ from datetime import date
 
 import estructura
 
-# Cuántos picos y pozos (los últimos) se miran para buscar el conteo.
+# Cuántos picos y pozos (los últimos) se miran para buscar el conteo, en cada
+# grado (ver `_grados`).
 MAX_PUNTOS = 26
+# Los grados más grandes: el mismo zigzag, quedándose sólo con los giros de al
+# menos este tamaño (en logaritmo: 0,13 ≈ un 14 % de ida o de vuelta). Se sube
+# de a un escalón hasta que los MAX_PUNTOS puntos cubren toda la historia.
+UMBRALES_GRADO = (0.045, 0.065, 0.09, 0.13, 0.18, 0.25, 0.35, 0.5)
 # Una onda principal (1, 3, 5, A, C) mide al menos esto en rangos diarios
 # típicos, y todo lo contado al menos `MIN_RANGOS_TOTAL` (como el Fibonacci).
 MIN_RANGOS_ONDA = 1.5
@@ -129,6 +142,51 @@ def _zigzag(velas: list, n: int) -> list:
     return out
 
 
+def _resumir(zz: list, umbral: float) -> list:
+    """El zigzag de un grado más grande: un giro más chico que `umbral` (en
+    logaritmo del precio) no cuenta, y de los picos (o pozos) que quedan
+    seguidos se queda el más extremo. Son los MISMOS picos y pozos del zigzag
+    (un subconjunto): ninguno nuevo, ninguno corrido de fecha o de precio."""
+    out = []
+    for p in zz:
+        if out and out[-1]["tipo"] == p["tipo"]:
+            q = out[-1]
+            if (p["precio"] > q["precio"]) if p["tipo"] == "pico" else (p["precio"] < q["precio"]):
+                out[-1] = p
+            continue
+        if not out or _giro(out[-1]["precio"], p["precio"]) >= umbral:
+            out.append(p)
+    return out
+
+
+def _giro(a: float, b: float) -> float:
+    """El tamaño de un giro de `a` a `b`, en logaritmo. Una vela rota con el
+    mínimo en 0 (filas guardadas antes del filtro de velas_diarias._velas_de)
+    no tiene logaritmo: cuenta como un giro enorme en vez de tirar la ficha
+    entera (revisión 02/11)."""
+    return abs(math.log(b / a)) if a > 0 and b > 0 else math.inf
+
+
+def _grados(zz: list) -> list:
+    """Los zigzags sobre los que se busca el conteo, del grado más chico al más
+    grande. El chico son los últimos MAX_PUNTOS picos y pozos: con N = 3 velas
+    eso cubre unos meses (INTC, 31/10/26: desde febrero) y un impulso que
+    arrancó antes no se podía contar. Los grandes resumen la historia guardada
+    (`_resumir`) hasta que entra entera. No se busca sobre todos los puntos de
+    una vez: con 100 o 200 la búsqueda tarda segundos."""
+    out = [zz[-MAX_PUNTOS:]]
+    for u in UMBRALES_GRADO:
+        s = _resumir(zz, u)
+        if len(s) < 3:
+            break
+        w = s[-MAX_PUNTOS:]
+        if [p["i"] for p in w] != [p["i"] for p in out[-1]]:
+            out.append(w)
+        if len(s) <= MAX_PUNTOS:
+            break
+    return out
+
+
 def _espejo(zz: list) -> list:
     """El zigzag dado vuelta (precios negativos, picos ↔ pozos): una bajada se
     cuenta con la misma cuenta que una suba."""
@@ -144,12 +202,28 @@ class _Vista:
         b = [estructura._bajo(v) for v in velas]
         self.altos, self.bajos = ([-x for x in b], [-x for x in a]) if espejo else (a, b)
         self.hoy = len(velas) - 1
+        # Tablas para contestar «el máximo entre el día i y el j» sin recorrer
+        # los días (la búsqueda lo pregunta decenas de miles de veces: con
+        # max(lista[i:j]) se iba ahí el 60 % del tiempo, 02/11). Fila k: el
+        # máximo de los 2^k días que empiezan en cada día.
+        self._tmax, self._tmin = [self.altos], [self.bajos]
+        k = 1
+        while (1 << k) <= len(velas):
+            m, h = self._tmax[-1], 1 << (k - 1)
+            self._tmax.append([max(m[x], m[x + h]) for x in range(len(m) - h)])
+            m = self._tmin[-1]
+            self._tmin.append([min(m[x], m[x + h]) for x in range(len(m) - h)])
+            k += 1
 
     def max_alto(self, i: int, j: int) -> float:
-        return max(self.altos[i:j + 1])
+        k = (j - i + 1).bit_length() - 1
+        t = self._tmax[k]
+        return max(t[i], t[j - (1 << k) + 1])
 
     def min_bajo(self, i: int, j: int) -> float:
-        return min(self.bajos[i:j + 1])
+        k = (j - i + 1).bit_length() - 1
+        t = self._tmin[k]
+        return min(t[i], t[j - (1 << k) + 1])
 
 
 def _es_extremo(vista: _Vista, pts: list, k: int, hasta_hoy: bool = False) -> bool:
@@ -164,24 +238,31 @@ def _es_extremo(vista: _Vista, pts: list, k: int, hasta_hoy: bool = False) -> bo
     return vista.min_bajo(ini, fin) >= p["precio"]
 
 
-def _secuencias(zz: list, tipos: tuple, vista: _Vista):
+def _secuencias(zz: list, tipos: tuple, vista: _Vista, largos=None) -> dict:
     """Todas las secuencias de puntos del zigzag con esos tipos en orden, cada
-    uno extremo de las ondas que toca (el último, hasta hoy). Búsqueda con
-    poda: un punto que ya no es extremo contra el siguiente no se extiende."""
-    out = []
+    uno extremo de las ondas que toca (el último, hasta hoy), por largo:
+    {largo: [secuencias]} para cada largo de `largos` (sin `largos`, el de
+    `tipos`). Una sola búsqueda para todos los largos: las de 3 puntos son el
+    principio de las de 4, 5 y 6 (antes se buscaba cada largo de nuevo).
+    Búsqueda con poda: un punto que ya no es extremo contra el siguiente no se
+    extiende."""
+    largos = tuple(largos or (len(tipos),))
+    out = {n: [] for n in largos}
+    tope = max(largos)
 
     def seguir(pts, desde):
-        if len(pts) == len(tipos):
-            if _es_extremo(vista, pts, len(pts) - 1, hasta_hoy=True):
-                out.append(list(pts))
+        n = len(pts)
+        if n in out and _es_extremo(vista, pts, n - 1, hasta_hoy=True):
+            out[n].append(list(pts))
+        if n == tope:
             return
         for j in range(desde, len(zz)):
             q = zz[j]
-            if q["tipo"] != tipos[len(pts)]:
+            if q["tipo"] != tipos[n]:
                 continue
             pts.append(q)
             # El anterior ya puede juzgarse: tiene a los dos vecinos.
-            if len(pts) < 2 or _es_extremo(vista, pts, len(pts) - 2):
+            if n < 1 or _es_extremo(vista, pts, n - 1):
                 seguir(pts, j + 1)
             pts.pop()
 
@@ -211,9 +292,10 @@ def _impulsos(zz: list, vista: _Vista) -> list:
     0-1-2 (la 3 en curso) a 0-1-2-3-4-5 (terminado). Sólo los que cumplen las
     reglas duras con lo que ya pasó."""
     out = []
+    tipos = tuple("pozo" if k % 2 == 0 else "pico" for k in range(6))
+    por_largo = _secuencias(zz, tipos, vista, (3, 4, 5, 6))
     for largo in (3, 4, 5, 6):
-        tipos = tuple("pozo" if k % 2 == 0 else "pico" for k in range(largo))
-        for pts in _secuencias(zz, tipos, vista):
+        for pts in por_largo[largo]:
             c = _impulso(pts, vista)
             if c:
                 out.append(c)
@@ -302,10 +384,10 @@ def _correcciones(zz: list, vista: _Vista, impulsos: list) -> list:
     dada vuelta es una bajada de verdad): sueltas, o pegadas a un impulso
     terminado (la A arranca en el final de su onda 5)."""
     sueltas = []
+    # En la vista "a favor", una corrección arranca en un pico y baja.
+    por_largo = _secuencias(zz, ("pico", "pozo", "pico", "pozo"), vista, (3, 4))
     for largo in (3, 4):
-        # En la vista "a favor", una corrección arranca en un pico y baja.
-        tipos = tuple("pico" if k % 2 == 0 else "pozo" for k in range(largo))
-        for pts in _secuencias(zz, tipos, vista):
+        for pts in por_largo[largo]:
             c = _abc(pts, vista)
             if c:
                 sueltas.append(c)
@@ -318,7 +400,7 @@ def _correcciones(zz: list, vista: _Vista, impulsos: list) -> list:
         pegadas += [_pegar(imp, c) for c in sueltas if c["pts"][0]["i"] == p5["i"]]
         # La B en curso: sólo pegada a un impulso terminado (una A suelta no
         # es nada). La A, del final de la 5 al mínimo desde ahí hasta hoy.
-        for pts in _secuencias([p for p in zz if p["i"] >= p5["i"]], ("pico", "pozo"), vista):
+        for pts in _secuencias([p for p in zz if p["i"] >= p5["i"]], ("pico", "pozo"), vista)[2]:
             if pts[0]["i"] == p5["i"]:
                 b = {"tipo": "correccion", "pts": pts, "ondas": ["0", "A"], "ahora": "onda_B",
                      "pautas": [], "invalida": p5["precio"], "invalida_por": "arranque_A",
@@ -467,11 +549,11 @@ def candidatos(velas: list, n: int = estructura.N_PIVOTE) -> list:
     """Todos los conteos que cumplen las reglas y describen el presente,
     ordenados del mejor al peor. Cada uno con 'dir' en la dirección de verdad
     (la del impulso; en una corrección suelta, la de su onda A)."""
-    zz_real = _zigzag(velas, n)[-MAX_PUNTOS:]
-    out = []
-    for espejo in (False, True):
+    out, vistos = [], set()
+    vistas = {e: _Vista(velas, e) for e in (False, True)}
+    for zz_real, espejo in ((g, e) for g in _grados(_zigzag(velas, n)) for e in (False, True)):
         zz = _espejo(zz_real) if espejo else zz_real
-        vista = _Vista(velas, espejo)
+        vista = vistas[espejo]
         imp = _impulsos(zz, vista)
         corr = _correcciones(zz, vista, imp)
         for c in imp:
@@ -485,6 +567,11 @@ def candidatos(velas: list, n: int = estructura.N_PIVOTE) -> list:
                 c["dir"] = "suba" if espejo else "bajada"
         for c in imp + corr:
             c["espejo"] = espejo
+            # El mismo conteo puede salir en dos grados: va una vez.
+            clave = (espejo, c["tipo"], c["ahora"], tuple(p["i"] for p in c["pts"]))
+            if clave in vistos:
+                continue
+            vistos.add(clave)
             if _duracion_ok(c) and _tamanio_ok(c, velas) and _fresco(c, velas):
                 c["confianza"] = confianza(c["pautas"])
                 out.append(c)
@@ -519,6 +606,21 @@ def conteo(velas: list, n: int = estructura.N_PIVOTE) -> dict:
             "alternativo": _para_afuera(distinto, velas) if distinto else None}
 
 
+def impulso_para_fibonacci(e: dict):
+    """El impulso de 5 ondas TERMINADO del conteo principal, para que el
+    Fibonacci lo mida entero (estructura.fibonacci): {'dir', 'fechas': {onda:
+    fecha}} o None (sin conteo, o sin un impulso terminado: en la 3, la 4 o la
+    5, o una corrección suelta) o con confianza baja: un conteo flojo no
+    reemplaza al último tramo, que es una medida firme (auditoría 02/11: AMZN
+    medía un impulso de confianza baja)."""
+    c = (e or {}).get("principal") if (e or {}).get("disponible") else None
+    if not c or not (c["tipo"] == "impulso_y_correccion" or (c["tipo"] == "impulso" and c["ahora"] == "correccion")):
+        return None
+    if c.get("confianza") == "baja":
+        return None
+    return {"dir": c["dir"], "fechas": {o["onda"]: o["fecha"] for o in c["ondas"]}}
+
+
 def _fase(c: dict) -> str:
     return "impulso" if c["ahora"] in ("onda_3", "onda_4", "onda_5") else "correccion"
 
@@ -533,7 +635,11 @@ def _dice_otra_cosa(a: dict, b: dict) -> bool:
         return False
     ia, ib = [(p["i"], p["tipo"]) for p in a["pts"]], [(p["i"], p["tipo"]) for p in b["pts"]]
     corto, largo = (ia, ib) if len(ia) <= len(ib) else (ib, ia)
-    if largo[:len(corto)] == corto and a["espejo"] == b["espejo"]:
+    # Con otro arranque también es el mismo conteo: con los grados grandes
+    # (02/11) INTC ofrecía «en la C» y, como otra lectura, «en la corrección
+    # después de 5 ondas» con las mismas 5 ondas y el arranque en otro pozo.
+    mismo = largo[:len(corto)] == corto or largo[1:len(corto)] == corto[1:]
+    if mismo and a["espejo"] == b["espejo"]:
         return _fase(a) != _fase(b)
     return True
 

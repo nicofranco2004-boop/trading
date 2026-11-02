@@ -99,6 +99,45 @@ describe('Fibonacci en la ficha', () => {
     expect(await tocarFibonacci()).toContain('Fibonacci de la última suba')
   })
 
+  it('el impulso de 5 ondas de Elliott (sin ruptura): rayas, tarjeta del impulso y sin rombo', async () => {
+    // backend/estructura.py `de: 'impulso'` (INTC, 02/11/26): lo terminó el
+    // conteo, no un cierre; antes la capa leía `ruptura.fecha` y se rompía.
+    respuesta = DATOS({ ...FIB, de: 'impulso', ruptura: null, extension: null, tramo: { disponible: false, motivo: 'superado' } })
+    const t = await dibujar()
+    expect(t).toContain('Fibonacci del impulso de suba')
+    expect(t).toContain('Devolvió el 45 % del impulso')
+    expect(t).toContain('Pico · US$ 176,75')
+    expect(t).toContain('Arranque · US$ 108,90')
+    expect(montado.contenedor.querySelector('[title^="Ruptura"]')).toBeNull()
+  })
+
+  it('un impulso que arrancó antes de lo que se ve: no aplasta las velas y no dibuja rayas fuera del gráfico', async () => {
+    // INTC en el celular con «Lo reciente» (auditoría 02/11): el impulso de
+    // 32,89 a 142,35 arranca 8 meses antes de la vista, con el precio entre 63 y
+    // 127. Antes la escala iba hasta 32,89 y las velas quedaban aplastadas.
+    const { default: Capa, preciosDeLaCapa, trazosDelFibonacci } = await import('./CapaFibonacci')
+    const vista = puntos.slice(200).map((p, i) => ({ ...p, c: 127 - i, h: 128 - i, l: 126 - i - 13 }))   // de 127 a 63
+    const imp = {
+      ...FIB, de: 'impulso', ruptura: null, desde: { fecha: puntos[0].d, precio: 32.89 }, hasta: { fecha: puntos[100].d, precio: 142.35 },
+      niveles: [0.236, 0.382, 0.5, 0.618, 0.786].map(n => ({ nivel: n, precio: 142.35 - n * 109.46 })), entre: [0.618, 0.786],
+    }
+    const escala = preciosDeLaCapa(imp, vista)
+    expect(Math.min(...escala)).toBeCloseTo(142.35 - 0.786 * 109.46, 2)   // 56,31: la raya debajo de 63
+    expect(escala).not.toContain(32.89)
+    const lo = Math.min(...escala, ...vista.map(p => p.l)), hi = Math.max(...escala, ...vista.map(p => p.h))
+    const pctY = (v) => ((hi - v) / (hi - lo)) * 100
+    const pctX = (i) => (i / (vista.length - 1)) * 100
+    for (const t of trazosDelFibonacci(imp, vista, pctX, pctY)) expect(t.y1 >= 0 && t.y1 <= 100).toBe(true)
+    montado = await montar(h(Capa, { fib: imp, puntos: vista, pctX, pctY, precio: (x) => `US$ ${x.toFixed(2)}` }))
+    const t = texto(montado.contenedor)
+    expect(t).toContain('61,8 % · US$ 74.70')
+    expect(t).not.toContain('Arranque')                 // 32,89 queda fuera del gráfico: no se dibuja
+    for (const d of montado.contenedor.querySelectorAll('div.absolute.h-0')) {
+      const top = parseFloat(d.style.top)
+      expect(top >= 0 && top <= 100).toBe(true)
+    }
+  })
+
   it('sin tramo claro: lo dice y no dibuja niveles', async () => {
     respuesta = DATOS({ disponible: false, motivo: 'tramos_chicos', n_pivote: 3, ruedas: 252, en_curso: null })
     const t = await dibujar()
@@ -147,7 +186,12 @@ describe('Fibonacci en la ficha', () => {
     // la raya del tramo ni su arranque (quedarían en una fecha que no es la suya).
     const medio = puntos.slice(60)
     expect(posicion(medio, FIB.desde.fecha).donde).toBe('antes')
-    expect(preciosDeLaCapa(FIB, medio)).toEqual([108.9, 176.75])
+    // La escala se estira hasta la raya más cercana debajo de lo que se ve
+    // (78,6 %, 123,42), no hasta el arranque (108,90): auditoría 02/11.
+    const escala = preciosDeLaCapa(FIB, medio)
+    expect(Math.min(...escala)).toBeCloseTo(176.75 - 0.786 * 67.85, 2)
+    expect(escala).not.toContain(108.9)
+    expect(Math.max(...escala)).toBe(176.75)
     montado = await montar(capa(medio))
     expect(texto(montado.contenedor)).toContain('50 % ·')
     expect(buscar(montado.contenedor, 'svg')).toBeNull()

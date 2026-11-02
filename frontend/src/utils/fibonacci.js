@@ -150,6 +150,8 @@ export function tarjetaFibonacci(f, precio, fecha) {
     }
   }
 
+  if (f.de === 'impulso') return tarjetaDelImpulso(f, precio, fecha, pie)
+
   const suba = f.dir === 'suba'
   const [a, b] = f.entre || []
   const hoy = f.retroceso_hoy
@@ -193,3 +195,50 @@ export function tarjetaFibonacci(f, precio, fecha) {
     explicacion: queSon,
   }
 }
+
+// Cuánto devolvió el precio del impulso, en palabras: «está entre el 61,8 % y
+// el 78,6 % del impulso».
+function zonaDelImpulso(f) {
+  const suba = f.dir === 'suba'
+  const [a, b] = f.entre || []
+  return a === 0
+    ? `${suba ? 'devolvió' : 'recuperó'} menos del 23,6 % del impulso`
+    : b === 1
+      ? `${suba ? 'devolvió' : 'recuperó'} casi todo el impulso (más del 78,6 %)`
+      : `está entre el ${nivelPct(a)} y el ${nivelPct(b)} del impulso`
+}
+
+/**
+ * La tarjeta cuando el Fibonacci mide el impulso de 5 ondas del conteo de
+ * Elliott (backend/estructura.py, 'de': 'impulso'): del arranque de la onda 1 al
+ * final de la 5 (Nico, 31/10/26, con INTC). Son MEDIDAS de lo que pasó: cuánto
+ * devolvió la corrección y cuánto lleva recorrido la C contra la A. Nunca «hasta
+ * dónde va a llegar»: una franja de «dónde suele terminar la onda» acertó peor
+ * que el azar y se sacó (23/10).
+ */
+function tarjetaDelImpulso(f, precio, fecha, pie) {
+  const suba = f.dir === 'suba'
+  const hoy = f.retroceso_hoy
+  const veredicto = hoy < 0.05
+    ? `Sigue cerca del ${suba ? 'máximo' : 'mínimo'} de la onda 5`
+    : `${suba ? 'Devolvió' : 'Recuperó'} el ${pct0(hoy)} del impulso`
+  const alCierre = f.fecha_hoy ? `Al cierre del ${fecha(f.fecha_hoy)}` : 'En el último cierre'
+  const rm = f.retroceso_maximo
+  const lejos = rm && rm.precio != null && rm.valor >= 0.05 && rm.valor - hoy >= 0.02
+    ? ` Lo más ${suba ? 'bajo' : 'alto'} que llegó desde ahí fue ${precio(rm.precio)}, el ${fecha(rm.fecha)} (${pct0(rm.valor)} del impulso).`
+    : ''
+  const x = f.extension
+  const ext = x
+    ? `Extensión: la onda C ${x.terminada ? 'recorrió' : 'lleva recorrido'} ${veces(x.veces_a)} veces lo que ${suba ? 'bajó' : 'subió'} la onda A (de ${precio(x.desde_b)}, el final de la B, a ${precio(x.hasta.precio)} el ${fecha(x.hasta.fecha)}).`
+    : null
+  return {
+    titulo: suba ? 'Fibonacci del impulso de suba' : 'Fibonacci del impulso de bajada',
+    veredicto, pie,
+    texto: `Mide el impulso de 5 ondas del conteo de Elliott: ${suba ? 'subió' : 'bajó'} de ${precio(f.desde.precio)} (${fecha(f.desde.fecha)}, donde arranca la onda 1) a ${precio(f.hasta.precio)} (${fecha(f.hasta.fecha)}, el final de la onda 5). `
+      + `${alCierre} estaba en ${precio(f.precio_hoy)}: ${zonaDelImpulso(f)}.${lejos}`,
+    explicacion: `Las rayas parten el impulso en las proporciones de Fibonacci que muchos miran (38,2 %, 50 %, 61,8 %): muestran cuánto ${suba ? 'devolvió' : 'recuperó'} la corrección, no hasta dónde va a llegar.`
+      + (ext ? ` ${ext}` : ''),
+  }
+}
+
+const veces = (x) => x.toLocaleString('es-AR', { maximumFractionDigits: 2, minimumFractionDigits: 1 })
