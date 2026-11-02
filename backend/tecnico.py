@@ -742,7 +742,7 @@ def vela_de_hoy(prep) -> dict:
     """Las ruedas que la noche todavía no guardó, con la de HOY mientras se
     mueve, de la serie que preparó `preparar_vela_de_hoy`:
     {velas: [{d, o, h, l, c, v, hoy}], en_rueda, demora_min, actualizada,
-    ultima_guardada}. `hoy`: es la rueda de hoy (la última). `ultima_guardada`:
+    ultima_guardada, mercado, contra_el_cierre}. `hoy`: es la rueda de hoy (la última). `ultima_guardada`:
     la vela guardada que siguen: si la pantalla tiene otra (quedó abierta de un
     día para el otro y la noche guardó una más), tiene que pedir la serie de nuevo. `en_rueda`: la rueda todavía manda
     precios (`velas_diarias.en_rueda`, con la demora): la pantalla sigue pidiendo
@@ -750,7 +750,11 @@ def vela_de_hoy(prep) -> dict:
 
     Las velas no pasan por las medias, el RSI ni la lectura: la tendencia y los
     avisos siguen con el cierre de ayer, porque con el precio de las 11 podrían
-    cambiar y a las 15 volver.
+    cambiar y a las 15 volver. Lo que sí se dice, con la rueda mandando precios,
+    es qué lectura da vuelta el precio de hoy (`contra_el_cierre`,
+    `hoy_contra_el_cierre`): la pantalla lo pone como aviso abajo de la tarjeta.
+    `mercado`: 'us', 'byma' o 'cripto' (en la cripto «hoy» es el día UTC, que
+    cierra a las 21 de la Argentina: la pantalla lo dice).
 
     Sin velas ([]) —nunca una vela que no sigue a lo guardado— si:
       · Yahoo no tiene nada después de la última guardada;
@@ -763,11 +767,13 @@ def vela_de_hoy(prep) -> dict:
     import velas_diarias
     from home.market import mercado_de
     if not prep:
-        return {"velas": [], "en_rueda": False, "demora_min": 0, "actualizada": None, "ultima_guardada": None}
+        return {"velas": [], "en_rueda": False, "demora_min": 0, "actualizada": None, "ultima_guardada": None,
+                "mercado": None, "contra_el_cierre": []}
     ticker = prep["ticker"]
     respuesta = {"velas": [], "en_rueda": velas_diarias.en_rueda(ticker),
                  "demora_min": velas_diarias.DEMORA_MIN.get(mercado_de(ticker), 0), "actualizada": None,
-                 "ultima_guardada": prep["ultima"]["date"]}
+                 "ultima_guardada": prep["ultima"]["date"], "mercado": mercado_de(ticker),
+                 "contra_el_cierre": []}
     tanda = velas_diarias.ruedas_recientes(ticker)
     if not tanda or prep["pendiente"]:
         return respuesta
@@ -797,7 +803,71 @@ def vela_de_hoy(prep) -> dict:
         respuesta["velas"].append({
             "d": r["date"], "o": p(precios["open"]), "h": p(precios["high"]), "l": p(precios["low"]),
             "c": p(precios["close"]), "v": r.get("volume"), "hoy": r["date"] == tanda["hoy"]})
+    # Sólo con la rueda mandando precios: con la rueda cerrada (fin de semana,
+    # feriado, después del cierre) no hay «hoy, en curso» que contradiga nada.
+    if respuesta["en_rueda"]:
+        respuesta["contra_el_cierre"] = hoy_contra_el_cierre(prep["velas"], respuesta["velas"])
     return respuesta
+
+
+# ─── Hoy contra el cierre ────────────────────────────────────────────────────
+# La lectura (las tarjetas) se calcula con el ÚLTIMO CIERRE guardado: un cruce
+# se confirma al cierre (Nico, 02/11). Pero el gráfico dibuja la vela de HOY en
+# curso, y si el precio de ahora quedó del otro lado del promedio, la pantalla
+# parece contradecirse: «Bajista» al lado de un precio arriba de la línea. La
+# lectura no cambia; abajo de la tarjeta va un aviso de lo que pasa hoy.
+#
+# Cuánto del otro lado tiene que estar para avisar, en %: con el precio pegado
+# a la línea, cada minuto cruzaría para un lado y para el otro y el aviso se
+# prendería y apagaría solo. Vale para todos los mercados, y es lo que cuida a
+# la cripto, que cotiza todo el día sin una apertura ni un cierre que frenen
+# el ruido.
+MARGEN_HOY = 0.5
+
+
+def hoy_contra_el_cierre(velas: list, nuevas: list) -> list:
+    """Las lecturas de la ficha que el precio de HOY da vuelta: lo que diría la
+    tarjeta si la rueda cerrara ahora, contra lo que dice con el último cierre.
+
+    `velas`: la serie guardada (la de la lectura, `serie`). `nuevas`: las que la
+    noche todavía no guardó, como las arma `vela_de_hoy` (el MISMO precio que
+    dibuja el gráfico); la última tiene que ser la de hoy. Cada promedio de hoy
+    se calcula como el de mañana: con el precio de ahora como si fuera el cierre
+    (y con algún día cerrado sin guardar, si lo hay). Con las mismas cuentas que
+    la lectura (`media`, `tendencia_de`, el máximo de 12 meses corridos y
+    `TOLERANCIA_MAXIMO`).
+
+    [{señal, cierre, hoy, dist}] (vacía si nada cambia):
+      · 'media200' / 'media50': `cierre` y `hoy` son 'alcista' | 'bajista';
+        `dist` es cuánto está hoy el precio del promedio de hoy, en %;
+      · 'maximo_12m': sólo si al cierre NO estaba en su máximo y hoy supera el
+        máximo de cierre del último año; `dist`, cuánto lo supera, en %.
+    En todas, `dist` pasa `MARGEN_HOY`."""
+    if not velas or not nuevas or not nuevas[-1].get("hoy"):
+        return []
+    cierres = [v["close"] for v in velas]
+    todos = cierres + [n["c"] for n in nuevas]
+    ultimo, hoy = cierres[-1], todos[-1]
+    out = []
+    for senal, n in (("media200", 200), ("media50", 50)):
+        # Mediano plazo usa la misma regla (precio ≥ promedio = alcista) que la
+        # tarjeta de la pantalla (`dist_media50 >= 0`).
+        antes, ahora = media(cierres, n)[-1], media(todos, n)[-1]
+        al_cierre, de_hoy = tendencia_de(ultimo, antes), tendencia_de(hoy, ahora)
+        dist = _pct(hoy, ahora)
+        if al_cierre and de_hoy and al_cierre != de_hoy and abs(dist) >= MARGEN_HOY:
+            out.append({"senal": senal, "cierre": al_cierre, "hoy": de_hoy, "dist": round(dist, 2)})
+    # El máximo del año, de cierre contra cierre y en días corridos, como la lectura.
+    fechas = [v["date"] for v in velas] + [n["d"] for n in nuevas]
+    piso_cierre = (date.fromisoformat(fechas[len(cierres) - 1]) - timedelta(days=DIAS_ANIO)).isoformat()
+    piso_hoy = (date.fromisoformat(fechas[-1]) - timedelta(days=DIAS_ANIO)).isoformat()
+    max_cierre = max(c for f, c in zip(fechas, cierres) if f > piso_cierre)
+    antes_de_hoy = [c for f, c in zip(fechas[:-1], todos[:-1]) if f > piso_hoy]
+    if antes_de_hoy and ultimo < max_cierre * (1 - TOLERANCIA_MAXIMO):
+        dist = _pct(hoy, max(antes_de_hoy))
+        if dist >= MARGEN_HOY:
+            out.append({"senal": "maximo_12m", "cierre": "abajo", "hoy": "en_maximo", "dist": round(dist, 2)})
+    return out
 
 
 def cierre_de(conn, simbolo: str):

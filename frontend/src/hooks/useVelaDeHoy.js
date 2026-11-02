@@ -12,12 +12,16 @@
 // dejaba de pedir para siempre, y una respuesta sin vela antes de la apertura la
 // apagaba todo el día (auditoría 30/10).
 //
-// Devuelve null o { velas, base, enRueda } donde cada vela es
+// Devuelve null o { velas, base, enRueda, mercado, contra } donde cada vela es
 // { d, o, h, l, c, v, vivo: true, hoy, enCurso, actualizada, demora }:
 //   · `hoy`: es la rueda de hoy; las otras son días cerrados sin guardar todavía;
 //   · `enCurso`: es la de hoy y la rueda sigue mandando precios (con su demora);
 //   · `demora`: minutos que tardan en llegar los precios de esa bolsa (BYMA, 20);
-//   · `base`: la vela guardada que siguen (el gráfico las dibuja sólo si es la suya).
+//   · `base`: la vela guardada que siguen (el gráfico las dibuja sólo si es la suya);
+//   · `mercado`: 'us', 'byma' o 'cripto';
+//   · `contra`: qué lectura de las tarjetas da vuelta el precio de hoy
+//     (`contra_el_cierre`, tecnico.hoy_contra_el_cierre; utils/tecnico.js
+//     `avisosDeHoy` lo pone en palabras).
 // Un pedido que falla, o que con la rueda abierta vuelve sin velas (Yahoo no
 // contestó), deja las últimas que llegaron: no borra lo que se ve.
 
@@ -48,7 +52,8 @@ export function useVelaDeHoy(asset, moneda, local, activo = true) {
           }))
           setEstado(prev => (!velas.length && enRueda && prev?.clave === clave
             ? { ...prev, enRueda }
-            : { clave, velas, base: r.ultima_guardada || null, enRueda }))
+            : { clave, velas, base: r.ultima_guardada || null, enRueda, mercado: r.mercado || null,
+                contra: r.contra_el_cierre || [] }))
         })
         .catch(() => {})
     }

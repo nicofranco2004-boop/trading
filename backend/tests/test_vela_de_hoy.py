@@ -72,12 +72,14 @@ def _ahora_iso(dias=0):
 class YahooFalso:
     """Las ruedas cerradas: `precios[ticker]` fijo. La descarga corta de la vela
     en curso ('5d') trae, como Yahoo, sólo las últimas 5 ruedas, más la de HOY
-    si hay `hoy_diaria[ticker]` (o, h, l, c, v). `hoy_horas[ticker]`:
+    si hay `hoy_diaria[ticker]` (o, h, l, c, v). `cierres[ticker]`: el cierre
+    de cada día (una función de la fecha), para una serie que se mueve; si no,
+    `precios[ticker]` todos los días. `hoy_horas[ticker]`:
     [(hora, (o, h, l, c, v))] para las de 1 hora. `reescrita[ticker]`: un split
     de hoy (Yahoo devuelve lo de antes dividido). `espera`: cuánto tarda."""
 
     def __init__(self, hoy):
-        self.hoy, self.precios, self.hoy_diaria, self.hoy_horas = hoy, {}, {}, {}
+        self.hoy, self.precios, self.hoy_diaria, self.hoy_horas, self.cierres = hoy, {}, {}, {}, {}
         self.reescrita, self.espera, self.pedidos = {}, 0.0, []
         self._lock = threading.Lock()
 
@@ -91,13 +93,18 @@ class YahooFalso:
         if interval == "1h":
             filas = {hoy + pd.Timedelta(hours=hh): f for hh, f in self.hoy_horas.get(ticker, [])}
             return _tabla(filas) if filas else pd.DataFrame()
+        cierre = self.cierres.get(ticker)
         c = self.precios.get(ticker) or (5000.0 if ticker == "^GSPC" else None)
-        if c is None:
+        if c is None and cierre is None:
             return pd.DataFrame()
-        if period == "5d":
-            c = c / self.reescrita.get(ticker, 1.0)
-        dias = _ruedas(self.hoy, {"3y": 760, "5d": 5}.get(period, 22))
-        filas = {pd.Timestamp(d): (c, c * 1.01, c * 0.99, c, 1000.0) for d in dias}
+        escala = self.reescrita.get(ticker, 1.0) if period == "5d" else 1.0
+        # La historia entera (lo que pide la corrida de la noche la primera vez,
+        # `PERIODO_COMPLETO`): 760 ruedas, tres años; alcanza para la media de 200.
+        dias = _ruedas(self.hoy, {velas_diarias.PERIODO_COMPLETO: 760, "5d": 5}.get(period, 22))
+        filas = {}
+        for d in dias:
+            x = (cierre(d) if cierre else c) / escala
+            filas[pd.Timestamp(d)] = (x, x * 1.01, x * 0.99, x, 1000.0)
         if period == "5d" and ticker in self.hoy_diaria:
             filas[hoy] = self.hoy_diaria[ticker]
         return _tabla(filas)
@@ -407,6 +414,86 @@ class VelaDeHoyTest(unittest.TestCase):
     def test_activo_sin_velas_no_sale_a_yahoo(self):
         self.assertEqual(self._hoy("ZZZZ")["velas"], [])
         self.assertEqual([p for p in self.yahoo.pedidos if p[0] == "ZZZZ"], [])
+
+    # ─── Hoy contra el cierre (el aviso abajo de la tarjeta, Nico 02/11) ──────
+    # La lectura sigue con el cierre; el pedido de la vela de hoy dice qué
+    # lectura da vuelta el precio de ahora, con el MISMO precio que dibuja el
+    # gráfico. Todo por HTTP, con las velas guardadas por la corrida de la noche.
+
+    def _caso_nico(self):
+        """El caso del 02/11: un activo en dólares que pasó meses en US$ 250 y
+        los últimos 10 días de mercado cerró en US$ 240, abajo de su promedio de
+        200 días (≈ 249,5): la tarjeta dice «Bajista»."""
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "AAPL", "CEDEAR")
+        desde = _ruedas(self.hoy, 10)[0]
+        self.yahoo.cierres["AAPL"] = lambda d: 240.0 if d >= desde else 250.0
+        self.yahoo.precios["AAPL.BA"] = 15000.0
+        main._run_velas_diarias_job()
+        ficha = self.client.get("/api/tecnico/AAPL", headers=self.h).json()
+        self.assertEqual(ficha["lectura"]["tendencia"], "bajista")
+        self.assertLess(ficha["lectura"]["dist_media50"], 0)
+        return ficha
+
+    def test_hoy_arriba_del_promedio_con_el_cierre_bajista_avisa(self):
+        ficha = self._caso_nico()
+        self.yahoo.hoy_diaria["AAPL"] = (241.0, 257.0, 240.0, 256.0, 5_000_000.0)
+        r = self._hoy("AAPL")
+        self.assertEqual(r["velas"][-1]["c"], 256.0)         # lo que dibuja el gráfico
+        self.assertEqual(r["ultima_guardada"], ficha["lectura"]["fecha"])
+        self.assertEqual(r["mercado"], "us")
+        por = {x["senal"]: x for x in r["contra_el_cierre"]}
+        self.assertEqual(set(por), {"media200", "media50", "maximo_12m"})
+        # El promedio de hoy es el de mañana si cierra así: 189 días a 250, 10 a
+        # 240 y hoy a 256 → 249,53; el precio, 2,6 % arriba.
+        m200_hoy = (189 * 250 + 10 * 240 + 256) / 200
+        self.assertEqual(por["media200"], {"senal": "media200", "cierre": "bajista", "hoy": "alcista",
+                                           "dist": round((256 / m200_hoy - 1) * 100, 2)})
+        self.assertEqual((por["media50"]["cierre"], por["media50"]["hoy"]), ("bajista", "alcista"))
+        # Al cierre estaba 4 % abajo del máximo (250); hoy lo supera 2,4 %.
+        self.assertEqual(por["maximo_12m"]["dist"], 2.4)
+        # La lectura no cambia: sigue con el cierre.
+        self.assertEqual(self.client.get("/api/tecnico/AAPL", headers=self.h).json()["lectura"], ficha["lectura"])
+
+    def test_hoy_del_mismo_lado_no_avisa(self):
+        self._caso_nico()
+        self.yahoo.hoy_diaria["AAPL"] = (240.0, 242.0, 239.0, 241.0, 5_000_000.0)
+        r = self._hoy("AAPL")
+        self.assertEqual(r["velas"][-1]["c"], 241.0)
+        self.assertEqual(r["contra_el_cierre"], [])
+
+    def test_pegado_al_promedio_no_avisa_por_ruido(self):
+        # 250,5: 0,2 % arriba del promedio de 200 de hoy (249,95), dentro del
+        # margen: no avisa (cada minuto cruzaría para un lado y para el otro).
+        # El de 50 (248,01) queda 1 % abajo: ese sí. Del máximo (250), 0,2 %: no.
+        self._caso_nico()
+        self.yahoo.hoy_diaria["AAPL"] = (240.0, 251.0, 239.0, 250.5, 5_000_000.0)
+        r = self._hoy("AAPL")
+        self.assertEqual([x["senal"] for x in r["contra_el_cierre"]], ["media50"])
+
+    def test_con_la_rueda_cerrada_no_avisa(self):
+        # Fin de semana, feriado o después del cierre: la vela de hoy se sigue
+        # dibujando hasta que se guarda, pero ya no está «en curso».
+        self._caso_nico()
+        self.horario = lambda m, now: False
+        self.yahoo.hoy_diaria["AAPL"] = (241.0, 257.0, 240.0, 256.0, 5_000_000.0)
+        r = self._hoy("AAPL")
+        self.assertEqual(r["velas"][-1]["c"], 256.0)
+        self.assertEqual(r["contra_el_cierre"], [])
+
+    def test_sin_vela_de_hoy_no_avisa(self):
+        # Sólo un día cerrado sin guardar (Yahoo todavía no trae nada de hoy).
+        self._caso_nico()
+        self._borrar_ultimas("AAPL", 1)
+        r = self._hoy("AAPL")
+        self.assertEqual([v["hoy"] for v in r["velas"]], [False])
+        self.assertEqual(r["contra_el_cierre"], [])
+
+    def test_ya_en_su_maximo_no_avisa_del_maximo(self):
+        import tecnico
+        velas = [{"date": d.isoformat(), "close": 100.0 + k * 0.1} for k, d in enumerate(_ruedas(self.hoy, 300))]
+        hoy = [{"d": self.hoy.isoformat(), "c": velas[-1]["close"] * 1.05, "hoy": True}]
+        self.assertEqual(tecnico.hoy_contra_el_cierre(velas, hoy), [])
 
     def test_simbolo_invalido(self):
         r = self.client.get("/api/tecnico/<x>/hoy", headers=self.h)

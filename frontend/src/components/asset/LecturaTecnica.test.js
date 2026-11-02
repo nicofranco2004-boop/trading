@@ -598,6 +598,62 @@ describe('LecturaTecnica — la vela de hoy', () => {
     }
   })
 
+  // Hoy contra el cierre (Nico, 02/11): la tarjeta dice «Bajista» con el cierre
+  // y el gráfico dibuja hoy el precio arriba del promedio. La lectura no cambia;
+  // abajo va el aviso, con lo que el servidor dice que da vuelta (`contra_el_cierre`).
+  const CIERRE = { ...USD, lectura: { ...USD.lectura, fecha: ultimo } }
+  const DA_VUELTA = [{ senal: 'media200', cierre: 'bajista', hoy: 'alcista', dist: 2.4 }]
+  const AVISO_200 = 'Hoy, en curso, el precio está 2,4% arriba de su promedio de 200 días. Si cierra así, mañana esta lectura pasa a alcista.'
+
+  it('hoy da vuelta el largo plazo: aviso abajo de la lectura y en su tarjeta; la lectura sigue «Bajista»', async () => {
+    respuestas = { [RUTA]: { ...HOY, mercado: 'us', contra_el_cierre: DA_VUELTA }, '/tecnico/AAPL?moneda=usd': CIERRE }
+    const t = await dibujar({ pnlPctUsd: 0.1 })
+    const lectura = buscarRol('region', 'La lectura de hoy')
+    expect(texto(lectura)).toContain(`Largo plazo · ${AVISO_200}`)
+    expect(texto(lectura)).not.toContain('Mediano plazo · Hoy')
+    expect(texto(buscarRol('group', 'Largo plazo'))).toContain('Bajista')
+    // La tarjeta de la pestaña «Tendencia» lo dice también.
+    expect(texto(buscarRol('tabpanel', 'Largo plazo'))).toContain(AVISO_200)
+    expect(t).toContain('Datos al cierre del')
+  })
+
+  it('en la pestaña «Gráfico» (sin «La lectura de hoy») el aviso va en la tarjeta', async () => {
+    respuestas = { [RUTA]: { ...HOY, mercado: 'us', contra_el_cierre: DA_VUELTA }, '/tecnico/AAPL?moneda=usd': CIERRE }
+    const t = await dibujar({ pnlPctUsd: 0.1, soloGrafico: true })
+    expect(t).not.toContain('La lectura de hoy')
+    expect(t.split(AVISO_200).length - 1).toBe(1)
+  })
+
+  it('hoy del mismo lado que el cierre: no hay aviso', async () => {
+    respuestas = { [RUTA]: { ...HOY, mercado: 'us', contra_el_cierre: [] }, '/tecnico/AAPL?moneda=usd': CIERRE }
+    const t = await dibujar({ pnlPctUsd: 0.1 })
+    expect(t).not.toContain('Hoy, en curso')
+    expect(contar(n => n.getAttribute?.('role') === 'note')).toBe(0)
+  })
+
+  it('cripto: «hoy» es su día, que cierra a las 21; el mediano plazo y el máximo también', async () => {
+    respuestas = { [RUTA]: { ...HOY, mercado: 'cripto', contra_el_cierre: [...DA_VUELTA,
+      { senal: 'media50', cierre: 'bajista', hoy: 'alcista', dist: 1.1 },
+      { senal: 'maximo_12m', cierre: 'abajo', hoy: 'en_maximo', dist: 0.8 }] }, '/tecnico/AAPL?moneda=usd': CIERRE }
+    const t = await dibujar({ pnlPctUsd: 0.1 })
+    expect(t).toContain('Largo plazo · Hoy, en curso, el precio está 2,4% arriba de su promedio de 200 días. '
+      + 'Si a las 21 h (hora argentina), cuando cierra su día, sigue así, esta lectura pasa a alcista.')
+    expect(t).toContain('Mediano plazo · Hoy, en curso, el precio está 1,1% arriba de su promedio de 50 días.')
+    expect(t).toContain('Hoy, en curso, el precio está 0,8% arriba del cierre más alto de los últimos 12 meses. '
+      + 'Si a las 21 h (hora argentina), cuando cierra su día, sigue así, esta tarjeta pasa a «En su máximo».')
+    // Describe, no aconseja (CNV): ni «comprá/vendé» ni «es momento de…».
+    const avisos = nodos(montado.contenedor).filter(n => n.getAttribute?.('role') === 'note').map(texto)
+    expect(avisos).toHaveLength(5)                     // 2 en la lectura de arriba + 3 tarjetas
+    for (const a of avisos) expect(a).not.toMatch(/compr|vend|momento|conviene|oportunidad|deber[ií]as|mejor/i)
+  })
+
+  it('si la vela de hoy no sigue a la lectura que se ve (la noche guardó otra), no hay aviso', async () => {
+    respuestas = { [RUTA]: { ...HOY, mercado: 'us', contra_el_cierre: DA_VUELTA },
+      '/tecnico/AAPL?moneda=usd': { ...USD, lectura: { ...USD.lectura, fecha: '2026-10-21' } } }
+    const t = await dibujar({ pnlPctUsd: 0.1 })
+    expect(t).not.toContain('Hoy, en curso')
+  })
+
   it('al volver a una moneda ya cargada no se dibuja ni un instante la vela de la otra', async () => {
     const pesos = { ...VELA, o: 345000, h: 346000, l: 344000, c: 345500 }
     respuestas = { [RUTA]: HOY, '/tecnico/AAPL/hoy?moneda=ars': { ...HOY, velas: [pesos] },

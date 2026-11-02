@@ -16,6 +16,10 @@
 // La pestaña «Gráfico» de Análisis técnico no la muestra (`soloGrafico` de
 // LecturaTecnica).
 //
+// Abajo de los casilleros, sólo si el precio de hoy en curso da vuelta el largo
+// o el mediano plazo (`t.hoy` de la tarjeta, utils/tecnico.js `avisosDeHoy`),
+// va ese aviso a todo el ancho: la lectura sigue con el cierre (Nico, 02/11).
+//
 // `boton` y `panel`: «✦ Analizar con Mervall-E» (ResumenMervalle.jsx, mockup
 // aprobado por Nico el 30/10). El botón va en la cabecera, al lado del día de
 // cierre; lo que abre, abajo de los casilleros, dentro de la misma tarjeta.
@@ -52,6 +56,7 @@ export default function LecturaDeHoy({ lectura, lista, puntos = [], adxTope = 50
   const dists = [lectura.dist_media200, lectura.dist_media50].filter(x => x != null).map(Math.abs)
   const escala = Math.max(10, Math.ceil(Math.max(0, ...dists) / 5) * 5)
   const tono = frase?.tono || 'neutro'
+  const hoy = [['fondo', 'Largo plazo'], ['corto', 'Mediano plazo']].filter(([id]) => de(id)?.hoy)
   return (
     // Un `div` con rol de región y no un <section>: la ficha busca su sección
     // del gráfico (la de «Pantalla completa») como la primera de la página.
@@ -75,8 +80,25 @@ export default function LecturaDeHoy({ lectura, lista, puntos = [], adxTope = 50
         <CasilleroRsi t={de('rsi')} ruedas={lectura.ruedas} />
         <CasilleroAdx t={de('fuerza')} adxTope={adxTope} />
       </div>
+      {hoy.length > 0 && (
+        <div className="flex flex-col gap-2 border-t border-line/60 px-4 py-3">
+          {hoy.map(([id, titulo]) => <AvisoDeHoy key={id} titulo={titulo} texto={de(id).hoy} />)}
+        </div>
+      )}
       {panel}
     </div>
+  )
+}
+
+/** El aviso de que el precio de hoy, en curso, da vuelta una lectura que se
+ *  hizo con el cierre. En ámbar: no es la lectura, es lo que está pasando hoy.
+ *  `titulo`: de qué tarjeta es, cuando no va adentro de ella. */
+export function AvisoDeHoy({ texto, titulo = null, className = '' }) {
+  return (
+    <p role="note" className={`flex items-start gap-2 rounded-lg border border-rendi-warn/30 bg-rendi-warn/10 px-2.5 py-1.5 text-[12.5px] leading-relaxed text-ink-0 ${className}`}>
+      <span aria-hidden="true" className="mt-[7px] h-1.5 w-1.5 flex-none rounded-full bg-rendi-warn" />
+      <span>{titulo && <b className="font-semibold">{titulo} · </b>}{texto}</span>
+    </p>
   )
 }
 

@@ -53,7 +53,7 @@ import CapaFibonacci, { COLOR_FIB, ID_FIB_AUTO, TarjetaFibonacci, preciosDeLaCap
 import CapaElliott, { COLOR_ELLIOTT, ID_ELL_AUTO, TarjetaElliott, fechaDelConteo, preciosDelConteo, trazosDelConteo } from './CapaElliott'
 import CapaDibujos, { anchoDelCanal, colorDe, preciosAlBorde, trazosDeDibujos } from './CapaDibujos'
 import CompartirGrafico from './CompartirGrafico'
-import LecturaDeHoy from './LecturaDeHoy'
+import LecturaDeHoy, { AvisoDeHoy } from './LecturaDeHoy'
 import TarjetasPorTema from './TarjetasPorTema'
 import Banderitas, { CartelDeNotas, banderitaEn, banderitasEnVista, esClaveDeGrupo, esClaveDeTesis } from './NotasGrafico'
 import { BotonMervalle, PanelMervalle, useResumenMervalle } from './ResumenMervalle'
@@ -68,7 +68,7 @@ import {
   limpiarNota, useDuenoDeLaCopia,
 } from '../../utils/dibujos'
 import {
-  RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, tarjetaBandas, lineaPromedio, marcas, variacionDeHoy,
+  RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, conAvisosDeHoy, tarjetaBandas, lineaPromedio, marcas, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, zoomEnElTope, moverVentana, RUEDAS_MINIMAS,
   ventanaInicial, margenDerecho, futuroMaximo, sumarVelaDeHoy, textoVelaDeHoy,
 } from '../../utils/tecnico'
@@ -728,7 +728,9 @@ export default function LecturaTecnica({
   // Si los precios no se pudieron actualizar en más de una semana, se avisa
   // arriba (antes sólo se veía la fecha en letra chica al pie).
   const diasViejo = ultimaFecha ? Math.floor((Date.now() - Date.parse(ultimaFecha + 'T12:00:00Z')) / 86400000) : 0
-  const lista = tarjetas(actual.lectura)
+  // Con el aviso de hoy en la tarjeta que el precio en curso da vuelta (la
+  // lectura sigue con el cierre: utils/tecnico.js `avisosDeHoy`).
+  const lista = conAvisosDeHoy(tarjetas(actual.lectura), vivas, actual.lectura)
   const distintas = tendenciasDistintas(datos.usd?.lectura, datos.ars?.lectura)
   const alternar = (k) => setVer(x => ({ ...x, [k]: !x[k] }))
   const losEventos = eventos[moneda] || []
@@ -1760,7 +1762,8 @@ function Letra({ tipo, grande: g = false }) {
 
 // `pie`: el «Avisame» de la señal de esa tarjeta (AvisameTecnico), arriba a la
 // derecha, chico, para no competir con la lectura. `dibujo`: el dibujito de la
-// tarjeta en la ficha (TarjetasPorTema), debajo del veredicto.
+// tarjeta en la ficha (TarjetasPorTema), debajo del veredicto. `t.hoy`: el
+// aviso de que el precio de hoy, en curso, la da vuelta (`conAvisosDeHoy`).
 function Tarjeta({ t, pie, dibujo = null }) {
   const tono = t.tono === 'pos' ? 'text-rendi-pos' : t.tono === 'neg' ? 'text-rendi-neg' : 'text-ink-0'
   return (
@@ -1774,6 +1777,7 @@ function Tarjeta({ t, pie, dibujo = null }) {
       {t.rsi != null && <BarraRsi rsi={t.rsi} />}
       {t.adx != null && <BarraAdx adx={t.adx} />}
       <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.texto}</div>
+      {t.hoy && <AvisoDeHoy texto={t.hoy} className="mt-2" />}
       {t.cruce && (
         <div className="text-[12.5px] text-ink-0 leading-relaxed mt-2 rounded border border-rendi-accent/30 bg-rendi-accent/10 px-2.5 py-1.5">
           {t.cruce}

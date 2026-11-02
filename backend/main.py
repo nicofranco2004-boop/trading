@@ -12568,7 +12568,8 @@ def get_tecnico_hoy(asset: str, request: Request, moneda: str = "usd", local: in
                     uid: int = Depends(get_effective_user)):
     """Las ruedas que la noche todavía no guardó, con la de HOY mientras se
     mueve, del gráfico de la ficha (`tecnico.vela_de_hoy`): {velas: [{d,o,h,l,c,v,hoy}],
-    en_rueda, demora_min, actualizada, ultima_guardada}. La pantalla la vuelve a pedir cada minuto
+    en_rueda, demora_min, actualizada, ultima_guardada, mercado, contra_el_cierre}
+    (`contra_el_cierre`: qué lectura de las tarjetas da vuelta el precio de hoy). La pantalla la vuelve a pedir cada minuto
     con la ficha a la vista; Yahoo recibe un pedido por minuto por activo, no
     por persona (`velas_diarias.ruedas_recientes`). No baja historia: si el
     activo no tiene velas guardadas, no hay vela de hoy, así que sólo puede
