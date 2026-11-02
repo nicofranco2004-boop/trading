@@ -547,3 +547,18 @@ describe('cuánto se mueve este activo', () => {
     expect(t).not.toContain('En tu cartera')
   })
 })
+
+describe('el punto del último precio (Nico, 02/11)', () => {
+  const punto = () => todos(montado.contenedor, n => String(n.getAttribute?.('class') || '').startsWith('absolute w-2 h-2 -translate-x-1/2'))
+  it('con velas no hay punto en la vela actual (le tapaba la mecha); en la línea marca dónde termina', async () => {
+    localStorage.setItem('rendi_grafico_tipo', 'velas')
+    await dibujar()
+    expect(punto()).toHaveLength(0)
+    // La raya y la etiqueta del último precio siguen.
+    expect(todos(montado.contenedor, n => n.getAttribute?.('data-ultimo') != null)).toHaveLength(1)
+    await montado.desmontar()
+    localStorage.setItem('rendi_grafico_tipo', 'linea')
+    await dibujar()
+    expect(punto()).toHaveLength(1)
+  })
+})

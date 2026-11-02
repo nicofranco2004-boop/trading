@@ -2607,7 +2607,9 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
               className={`absolute w-3 h-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-bg-1 shadow-sm ${m.tipo === 'compra' ? 'bg-rendi-pos-fill' : 'bg-rendi-neg-fill'}`}
               style={{ left: `${pctX(m.i)}%`, top: `${pctY(puntos[m.i].c)}%` }} />
           ))}
-          {ultimo && (
+          {/* El punto donde termina la línea. Con velas, no (Nico, 02/11): la
+              vela ya muestra el precio y el punto le tapaba la mecha. */}
+          {ultimo && tipo !== 'velas' && (
             <span aria-hidden="true" className="absolute w-2 h-2 -translate-x-1/2 -translate-y-1/2 rounded-full"
               style={{ left: `${pctX(puntos.length - 1)}%`, top: `${pctY(ultimo.c)}%`, background: COLOR.precio }} />
           )}

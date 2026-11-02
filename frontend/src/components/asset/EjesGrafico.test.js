@@ -249,6 +249,8 @@ describe('arrastrar los ejes del gráfico', () => {
   })
 
   it('la ruedita hace lo mismo que la fila de fechas: acerca con el último día quieto, esté donde esté el mouse', async () => {
+    // En línea: el punto donde termina marca el último día (con velas no hay punto).
+    localStorage.setItem('rendi_grafico_tipo', 'linea')
     await dibujar()
     const fechas = porTitulo(montado.contenedor, 'Arrastrá hacia los costados')
     const rotulos = () => fechas.childNodes.filter(n => n.nodeName === 'SPAN').map(n => texto(n))
