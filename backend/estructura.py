@@ -404,6 +404,11 @@ def _fibonacci_del_impulso(velas: list, imp: dict, tramo: dict):
     ondas = {o: idx.get(f) for o, f in imp["fechas"].items()}
     if ondas.get("0") is None or ondas.get("5") is None:
         return None
+    # Si el último tramo mide lo mismo (mismo arranque y mismo final), queda
+    # el tramo: es el mismo Fibonacci y además dice cuándo se rompió.
+    if tramo.get("disponible") and (tramo["desde"]["fecha"], tramo["hasta"]["fecha"]) == (
+            imp["fechas"]["0"], imp["fechas"]["5"]):
+        return None
     suba = imp["dir"] == "suba"
     m = _medir(velas, ondas["0"], ondas["5"], suba)
     if m is None:

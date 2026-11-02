@@ -327,7 +327,14 @@ class FibonacciFichaTest(unittest.TestCase):
             vertices += [vertices[-1] + 8, vertices[-1] + 3]
         cierres, _ = _dibujo(vertices, paso=5)
         self.yahoo.velas["ZZFB"] = _velas_de(cierres)
-        f = self._fib("ZZFB")["fibonacci"]
+        ficha = self._fib("ZZFB")
+        # Desde el 02/11/26, si el conteo de Elliott ve 5 ondas terminadas, la
+        # ficha mide ESE impulso (test_elliott_grados.py) y el tramo viaja en
+        # 'tramo': el que se prueba acá, sin ningún tramo terminado.
+        ell = ficha["elliott"]["principal"]
+        self.assertEqual((ell["tipo"], ell["ahora"]), ("impulso", "correccion"))
+        self.assertEqual(ficha["fibonacci"]["de"], "impulso")
+        f = ficha["fibonacci"]["tramo"]
         self.assertEqual((f["disponible"], f["motivo"]), (False, "sin_tramo_terminado"))
         self.assertEqual(f["en_curso"]["dir"], "suba")
         self.assertIn("debajo_de", f["en_curso"]["se_rompe_si_cierra"])

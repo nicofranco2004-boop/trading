@@ -84,6 +84,24 @@ class MotorConINTCTest(unittest.TestCase):
             c = elliott.conteo(self.velas)["principal"]
         self.assertNotIn(("5", 142.35), _ondas(c))
 
+    def test_la_otra_lectura_no_es_el_mismo_conteo_con_otro_arranque(self):
+        # Con los grados grandes salía «en la C» y, de otra lectura, «en la
+        # corrección después de 5 ondas» con las mismas ondas 1 a 5 y el
+        # arranque en otro pozo (34,95 en vez de 32,89): decía lo mismo.
+        e = elliott.conteo(self.velas)
+        a = e["alternativo"]
+        if a:
+            ondas_p = [o["fecha"] for o in e["principal"]["ondas"][1:6]]
+            ondas_a = [o["fecha"] for o in a["ondas"][1:6]]
+            self.assertNotEqual(ondas_p, ondas_a, a)
+        pts = lambda *ii: [{"i": i, "tipo": "pozo" if k % 2 == 0 else "pico"} for k, i in enumerate(ii)]
+        base = {"dir": "suba", "espejo": False}
+        en_c = {**base, "ahora": "onda_C", "pts": pts(1, 10, 20, 30, 40, 50, 60, 70)}
+        fin_5 = {**base, "ahora": "correccion", "pts": pts(5, 10, 20, 30, 40, 50)}
+        self.assertFalse(elliott._dice_otra_cosa(en_c, fin_5))
+        en_3 = {**base, "ahora": "onda_3", "pts": pts(5, 10, 20)}
+        self.assertTrue(elliott._dice_otra_cosa(en_c, en_3))
+
     def test_los_grados_grandes_son_los_mismos_picos_y_pozos(self):
         # Ningún punto nuevo ni corrido: un grado grande es un subconjunto del
         # zigzag (mismo día, mismo tipo, mismo precio), y el último grado

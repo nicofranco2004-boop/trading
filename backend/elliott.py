@@ -38,7 +38,8 @@ triple de larga que la otra); en A-B-C, B ≈ 50–61,8 % de A y C ≈ A.
 
 EL ALTERNATIVO tiene que decir otra cosa de hoy: estar en otra onda. "Onda 5"
 contra "onda 5" con otro arranque es la misma lectura, y "en la B" contra "en
-la corrección" con los mismos puntos también; no se ofrecen.
+la corrección" con los mismos puntos (o con otro arranque) también; no se
+ofrecen.
 
 QUÉ ES "HOY". Un conteo puede estar terminado o a mitad: 1-2 contadas y la 3
 en curso, 1-2-3 y la 4 en curso, etc. Lo que pasó desde el último punto
@@ -615,7 +616,11 @@ def _dice_otra_cosa(a: dict, b: dict) -> bool:
         return False
     ia, ib = [(p["i"], p["tipo"]) for p in a["pts"]], [(p["i"], p["tipo"]) for p in b["pts"]]
     corto, largo = (ia, ib) if len(ia) <= len(ib) else (ib, ia)
-    if largo[:len(corto)] == corto and a["espejo"] == b["espejo"]:
+    # Con otro arranque también es el mismo conteo: con los grados grandes
+    # (02/11) INTC ofrecía «en la C» y, como otra lectura, «en la corrección
+    # después de 5 ondas» con las mismas 5 ondas y el arranque en otro pozo.
+    mismo = largo[:len(corto)] == corto or largo[1:len(corto)] == corto[1:]
+    if mismo and a["espejo"] == b["espejo"]:
         return _fase(a) != _fase(b)
     return True
 
