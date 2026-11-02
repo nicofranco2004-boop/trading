@@ -28,6 +28,7 @@
 // demoras distintas.
 import { describe, it, expect, vi } from 'vitest'
 import { createElement as h } from 'react'
+import { CLAVES_DE_LOS_TOURS } from '../components/tour/recorrido'
 import { contestarEntrada, entrarPorLaPantalla, PUERTAS, pantallasDeEntrada, RUTAS_DE_ENTRADA, rutasComoLaApp } from '../testing/pantallasDeEntrada'
 
 const VECES = Number(process.env.PUERTAS_VECES || 1)
@@ -212,7 +213,7 @@ const entrarPor = (puerta, u) => entrarPorLaPantalla(puerta, u, { cargar, cur: (
 function navegadorLimpio() {
   mapas = { local: new Map(), sesion: new Map() }
   reiniciarServidor()
-  mapas.local.set('rendi:tour:novedades:v2', '1')
+  for (const k of CLAVES_DE_LOS_TOURS) mapas.local.set(k, '1')
 }
 async function abiertaComo(u) {
   navegadorLimpio()

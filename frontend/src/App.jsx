@@ -4,6 +4,7 @@ import { VozProvider } from './contexts/VozContext'
 import RendiMate from './components/voz/RendiMate'
 import IslaSegura from './components/voz/IslaSegura'
 import TourNovedades from './components/tour/TourNovedades'
+import TourTecnico from './components/tour/TourTecnico'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { CurrencyProvider } from './contexts/CurrencyContext'
@@ -221,6 +222,7 @@ function VozGate() {
           solo en vez de dejar la pantalla oscurecida y sin salida — que sería
           peor que no tenerlo. */}
       <TourNovedades />
+      <TourTecnico />
     </IslaSegura>
   )
 }

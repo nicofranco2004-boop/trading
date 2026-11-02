@@ -90,7 +90,7 @@ export const sonDeFabrica = (capas) => Object.keys(CAPAS_DE_FABRICA).every(k => 
  */
 export default function BarraGrafico({ grupos, onAviso }) {
   return (
-    <div role="toolbar" aria-label="Herramientas del gráfico"
+    <div role="toolbar" aria-label="Herramientas del gráfico" data-tour="grafico-herramientas"
       className="flex sm:flex-col gap-1.5 sm:gap-1 -mx-3 px-3 sm:mx-0 sm:px-0 pb-1.5 sm:pb-0 overflow-x-auto sm:overflow-visible shrink-0 sm:self-start">
       {grupos.filter(g => g.length).map((g, k) => (
         <div key={k} className={`flex sm:flex-col gap-1.5 sm:gap-1 shrink-0 ${k > 0 ? 'border-l sm:border-l-0 sm:border-t border-line/70 pl-1.5 sm:pl-0 sm:pt-1' : ''}`}>

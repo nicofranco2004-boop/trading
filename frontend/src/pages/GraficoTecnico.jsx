@@ -147,7 +147,7 @@ function Encabezado({ activo, recientes, cliente, enfocar, onElegir }) {
   return (
     <div ref={caja} className="relative flex flex-wrap items-center gap-2 text-ink-0">
       <button ref={boton} type="button" onClick={() => setAbierto(a => !a)} aria-haspopup="dialog" aria-expanded={abierto}
-        aria-label={`Cambiar de activo (ahora: ${activo})`} data-capa="activo"
+        aria-label={`Cambiar de activo (ahora: ${activo})`} data-capa="activo" data-tour="grafico-activo"
         className="inline-flex items-center gap-2 min-h-11 sm:min-h-9 pl-2.5 pr-3 rounded-lg border border-line-3 bg-bg-2 hover:border-ink-3 transition-colors">
         <Search size={15} aria-hidden="true" className="text-ink-1" />
         <span className="text-[16px] font-semibold tracking-tight">{activo}</span>

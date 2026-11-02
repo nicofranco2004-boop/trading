@@ -35,7 +35,7 @@
 
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowRight } from 'lucide-react'
+import { ArrowRight, HelpCircle } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import TuLista, { useListaTecnica } from './TuLista'
 import GraficoTecnico from './GraficoTecnico'
@@ -55,6 +55,8 @@ import { urlDeComparar } from '../utils/comparadorPrecio'
 import { ordenConElOjito } from '../utils/parteDeTuPlata'
 import { esBeta } from '../utils/navegacion'
 import { EtiquetaBeta } from '../components/EtiquetaMenu'
+import { pedirTour } from '../components/tour/recorrido'
+import { ID_TOUR_TECNICO } from '../components/tour/TourTecnico'
 
 // Las pestañas, en orden. `corto`: el nombre en el celular. `pronto`: todavía
 // no está (se ve, no se toca). `afuera`: lleva a otra pantalla (no se queda acá).
@@ -106,6 +108,7 @@ function Pestanas({ activa, cuentas, onElegir }) {
           return (
             <button key={p.id} type="button" role="tab" aria-selected={on}
               aria-controls="analisis-tecnico-panel" id={`analisis-tecnico-tab-${p.id}`}
+              data-tour={`tab-${p.id}`}
               onClick={() => onElegir(p.id)}
               className={`flex items-center gap-1.5 px-2.5 sm:px-3.5 py-3 text-[14px] sm:text-[15px] whitespace-nowrap border-b-2 -mb-px transition-colors ${
                 on ? 'border-rendi-accent text-ink-0 font-semibold' : 'border-transparent text-ink-2 hover:text-ink-0 font-medium'}`}>
@@ -117,7 +120,7 @@ function Pestanas({ activa, cuentas, onElegir }) {
       </div>
       {/* Lo que todavía no está: un texto, no pestañas que no se pueden tocar. */}
       {pronto.length > 0 && (
-        <span className="hidden sm:inline ml-auto text-[12px] text-ink-2 whitespace-nowrap px-1">
+        <span data-tour="pronto" className="hidden sm:inline ml-auto text-[12px] text-ink-2 whitespace-nowrap px-1">
           Pronto: <span className="text-rendi-warn font-medium">{pronto.map(p => p.label).join(' · ')}</span>
         </span>
       )}
@@ -285,6 +288,18 @@ function Senales({ semana, hidden, filtro, onFiltro, onVer }) {
   )
 }
 
+/** Vuelve a abrir el recorrido por las pestañas (components/tour/TourTecnico.jsx).
+ *  Solo se muestra una vez; después, sólo con este botón. */
+function ComoSeLee() {
+  return (
+    <button type="button" onClick={() => pedirTour(ID_TOUR_TECNICO)}
+      className="inline-flex items-center gap-1.5 min-h-11 sm:min-h-8 px-3 rounded-full border border-line text-[13px] font-medium text-ink-1 hover:text-ink-0 hover:border-ink-3 transition-colors">
+      <HelpCircle size={15} aria-hidden="true" />
+      ¿Cómo se lee esto?
+    </button>
+  )
+}
+
 export default function AnalisisTecnico() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
@@ -316,7 +331,8 @@ export default function AnalisisTecnico() {
         title={esBeta('/analisis-tecnico')
           ? <span className="inline-flex items-center gap-2.5">Análisis técnico{' '}<EtiquetaBeta className="tracking-normal" /></span>
           : 'Análisis técnico'}
-        subtitle="Cómo se están moviendo los precios de tus activos y de los de tu watchlist. En dólares, con el precio de cierre del último día de mercado." />
+        subtitle="Cómo se están moviendo los precios de tus activos y de los de tu watchlist. En dólares, con el precio de cierre del último día de mercado."
+        action={<ComoSeLee />} />
       <Pestanas activa={activa} cuentas={cuentas} onElegir={elegir} />
       <div role="tabpanel" id="analisis-tecnico-panel" aria-labelledby={`analisis-tecnico-tab-${activa}`}>
         {activa === 'panorama' && <Panorama lista={lista} filas={filas} semana={semana} hidden={hidden} onVer={ver} onPestana={elegir} />}

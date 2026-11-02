@@ -18,6 +18,7 @@
 // de la pestaña.
 import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { createElement as h } from 'react'
+import { CLAVES_DE_LOS_TOURS } from '../components/tour/recorrido'
 import { prepararApp, estado, respuestaEscalada, textoConCortes, cargando } from '../testing/pantallaConOjito'
 import { montar, enActo, buscarBoton, clic, texto, otraPestanaEscribe } from '../testing/navegadorMinimo'
 
@@ -98,7 +99,7 @@ const tarjetas = (m) => {
 const claves = () => Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i))
   .filter(k => /lastvisit|diag_dismissed/.test(k)).map(k => `${k} = ${localStorage.getItem(k).slice(0, 80)}`)
 const limpio = () => { localStorage.clear(); sessionStorage.clear(); api.setClientContext(null); servidor.vencida = false
-  localStorage.setItem('rendi_tour_novedades_visto', '1'); localStorage.setItem('rendi_display_currency', 'USD') }
+  for (const k of CLAVES_DE_LOS_TOURS) localStorage.setItem(k, '1'); localStorage.setItem('rendi_display_currency', 'USD') }
 
 describe('Análisis: de quién es lo que la pestaña recuerda', () => {
   it('síntoma 1 — el asesor mira el cliente 2 y después el 3', async () => {

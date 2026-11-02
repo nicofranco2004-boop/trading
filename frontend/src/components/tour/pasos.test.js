@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { PASOS, ATRIBUTO, yaLoVio, marcarVisto, CLAVE_VISTO } from './pasos'
+import { PASOS } from './pasos'
+import { ATRIBUTO, yaLoVio, marcarVisto } from './recorrido'
+import { CATALOGO } from '../../utils/catalogoDelAlmacen'
+
+const CLAVE_VISTO = CATALOGO.vioNovedades.clave
 
 const leer = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
 
@@ -110,29 +114,32 @@ describe('se muestra una vez y se puede omitir', () => {
     // Mejor no mostrarlo que mostrárselo en loop a alguien que no lo puede
     // apagar — sin almacenamiento, "omitir" no se podría recordar.
     const roto = { getItem() { throw new Error('bloqueado') } }
-    expect(yaLoVio(roto)).toBe(true)
+    expect(yaLoVio(roto, CLAVE_VISTO)).toBe(true)
   })
 
   it('marcarlo visto no revienta sin almacenamiento', () => {
     const roto = { setItem() { throw new Error('bloqueado') } }
-    expect(() => marcarVisto(roto)).not.toThrow()
+    expect(() => marcarVisto(roto, CLAVE_VISTO)).not.toThrow()
   })
 
   it('recuerda que ya lo vio', () => {
     const guardado = {}
     const almacen = { getItem: k => guardado[k] ?? null, setItem: (k, v) => { guardado[k] = v } }
-    expect(yaLoVio(almacen)).toBe(false)
-    marcarVisto(almacen)
-    expect(yaLoVio(almacen)).toBe(true)
+    expect(yaLoVio(almacen, CLAVE_VISTO)).toBe(false)
+    marcarVisto(almacen, CLAVE_VISTO)
+    expect(yaLoVio(almacen, CLAVE_VISTO)).toBe(true)
     expect(guardado[CLAVE_VISTO]).toBe('1')
   })
 })
 
+// El mecanismo es UNO para los dos tutoriales (novedades y Análisis técnico):
+// estas pruebas leen Tour.jsx y valen para los dos.
 describe('el tutorial no puede dejar la pantalla trabada', () => {
-  const tour = leer('./TourNovedades.jsx')
+  const tour = leer('./Tour.jsx')
 
   it('si no encuentra qué resaltar, saltea el paso', () => {
-    expect(tour).toMatch(/if \(esperado >= ESPERA_MAX\) \{ setCaja\(null\); avanzar\(\) \}/)
+    expect(tour).toMatch(/if \(oculto >= ESPERA_OCULTO\) \{ setCaja\(null\); avanzar\(\) \}/)
+    expect(tour).toMatch(/else if \(esperado >= espera\) \{ setCaja\(null\); avanzar\(\{ conSuGrupo: true \}\) \}/)
   })
 
   it('SIGUE al blanco en vez de escuchar eventos sueltos', () => {
@@ -171,6 +178,19 @@ describe('el tutorial no puede dejar la pantalla trabada', () => {
     expect(tour).toMatch(/Math\.min\(Math\.max\(20,[\s\S]{0,80}cartelAncho - 32\)/)
   })
 
+  it('si la persona se va de donde vive el tutorial, no la trae de vuelta', () => {
+    // Revisión del 02/11: con el de Análisis técnico abierto, el «atrás» lo
+    // cerraba y, en el mismo instante, el paso mandaba otra vez a la pantalla,
+    // donde arrancaba de cero: el «atrás» no servía.
+    expect(tour).toMatch(/useEffect\(\(\) => \{\s*if \(!cuando\(pathname\)\) return\s*const d = destino\(/)
+  })
+
+  it('termina de avanzar fuera del cálculo de React', () => {
+    // Cerrar desde adentro de `setI(n => …)` avisaba al otro tutorial en medio
+    // de un cálculo de React.
+    expect(tour).not.toMatch(/setI\(\(n\) =>/)
+  })
+
   it('lo resaltado no se puede tocar', () => {
     // Si el usuario aprieta el botón iluminado se va del paseo a mitad de
     // camino y el tutorial queda hablando de algo que ya no está.
@@ -179,6 +199,6 @@ describe('el tutorial no puede dejar la pantalla trabada', () => {
 
   it('va adentro de la red que impide que se lleve la pantalla', () => {
     const app = leer('../../App.jsx')
-    expect(app).toMatch(/<IslaSegura[\s\S]{0,400}<TourNovedades \/>/)
+    expect(app).toMatch(/<IslaSegura[\s\S]{0,400}<TourNovedades \/>\s*<TourTecnico \/>\s*<\/IslaSegura>/)
   })
 })

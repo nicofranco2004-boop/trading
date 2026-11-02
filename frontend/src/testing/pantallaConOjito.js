@@ -30,6 +30,7 @@
 import { vi } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, medidas } from './navegadorMinimo'
+import { CLAVES_DE_LOS_TOURS } from '../components/tour/recorrido'
 
 export const estado = { factor: 1, pendientes: 0 }
 
@@ -188,8 +189,8 @@ export async function dibujar(ruta, { ojito, factor = 1, local = {} }) {
   // nada (re-test a ciegas 4).
   window.dispatchEvent(new Event((await import('../utils/demo')).EVENTO_MODO_DEMO))
   localStorage.setItem('rendi_privacy', ojito ? '1' : '0')
-  // El tutorial de la primera visita tapa la pantalla: ya visto.
-  localStorage.setItem('rendi_tour_novedades_visto', '1')
+  // Los tutoriales tapan la pantalla: ya vistos (todos, del catálogo).
+  for (const k of CLAVES_DE_LOS_TOURS) localStorage.setItem(k, '1')
   for (const [k, v] of Object.entries(local)) localStorage.setItem(k, v)
   estado.factor = factor
   const el = () => h(HelmetProvider, null, h(ToastProvider, null,

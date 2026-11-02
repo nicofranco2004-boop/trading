@@ -18,6 +18,7 @@
 import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { createElement as h } from 'react'
 import { appendFileSync } from 'node:fs'
+import { CLAVES_DE_LOS_TOURS } from '../components/tour/recorrido'
 import { prepararApp, estado, respuestaEscalada, textoConCortes, cargando } from '../testing/pantallaConOjito'
 import { montar, enActo, buscarBoton, clic, texto, otraPestanaEscribe, escribir } from '../testing/navegadorMinimo'
 
@@ -136,7 +137,7 @@ const limpio = () => {
   if (demo?.EVENTO_MODO_DEMO) window.dispatchEvent(new Event(demo.EVENTO_MODO_DEMO))
   servidor.fallar503 = null
   servidor.vencida = false; servidor.demora = 0; servidor.pedidos = []; servidor.rechazados = []
-  localStorage.setItem('rendi:tour:novedades:v2', '1'); localStorage.setItem('rendi_display_currency', 'USD')
+  for (const k of CLAVES_DE_LOS_TOURS) localStorage.setItem(k, '1'); localStorage.setItem('rendi_display_currency', 'USD')
 }
 const desde = (t) => { const i = t.indexOf('Desde tu última visita'); return i < 0 ? '(no aparece)' : t.slice(i, i + 80) }
 const tarjetas = () => {

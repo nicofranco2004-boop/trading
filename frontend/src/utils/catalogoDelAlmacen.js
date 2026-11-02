@@ -128,6 +128,7 @@ export const CATALOGO = Object.freeze({
   conocioLaIA: e({ clave: 'rendi_ai_discovered', donde: LOCAL, tipo: PREFERENCIA, porque: 'ya conoció la IA' }),
   saludoDelDia: e({ clave: 'mervalle_saludo_dia', donde: LOCAL, tipo: PREFERENCIA, porque: 'el saludo del día de Mervall-E ya se dio' }),
   vioNovedades: e({ clave: 'rendi:tour:novedades:v2', donde: LOCAL, tipo: PREFERENCIA, porque: 'ya vio el recorrido de novedades' }),
+  vioTourTecnico: e({ clave: 'rendi:tour:tecnico:v1', donde: LOCAL, tipo: PREFERENCIA, porque: 'ya vio el recorrido de Análisis técnico' }),
   pasosOmitidos: e({ clave: 'rendi_checklist_omitidos', donde: LOCAL, tipo: PREFERENCIA, porque: 'pasos de la lista de inicio que se omitieron' }),
   listaDeInicioCerrada: e({ clave: 'rendi_checklist_dismissed', donde: LOCAL, tipo: PREFERENCIA, porque: 'la lista de inicio se cerró' }),
   volverABienvenida: e({ clave: 'rendi_onboarding_pending', donde: LOCAL, tipo: PREFERENCIA, porque: 'volver a la bienvenida después de cargar' }),

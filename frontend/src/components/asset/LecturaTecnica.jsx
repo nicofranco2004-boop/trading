@@ -1320,7 +1320,8 @@ function Marco({ moneda, setMoneda, rango, setRango, recientes = null, textoReci
       className={grande ? 'fixed inset-0 z-[70] overflow-y-auto bg-bg-0 px-3 py-3 sm:px-6 sm:py-4' : 'mb-5'}>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         {titulo ? <div className="text-[12.5px] text-ink-2 font-medium">{titulo}</div> : <span />}
-        <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">
+        {/* data-tour: lo ilumina el recorrido de Análisis técnico (tour/pasosTecnico.js). */}
+        <div data-tour="grafico-vista" className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">
           {/* «Compartir»: la imagen del gráfico (CompartirGrafico.jsx); sólo con
               gráfico. En el celular va al lado de la ayuda, abajo de las fechas. */}
           {compartir && <CompartirGrafico armar={compartir} antes={antesDeCompartir} archivo={archivo} className="hidden sm:inline-flex" />}

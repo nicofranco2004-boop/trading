@@ -50,6 +50,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { createElement as h } from 'react'
 import { appendFileSync } from 'node:fs'
+import { CLAVES_DE_LOS_TOURS } from '../components/tour/recorrido'
 import { contestarEntrada, entrarPorLaPantalla, PUERTAS, pantallasDeEntrada, RUTAS_DE_ENTRADA, rutasComoLaApp } from '../testing/pantallasDeEntrada'
 
 const SEMILLA = Number(process.env.RENDI_AZAR_SEMILLA || 20261031)
@@ -390,7 +391,7 @@ describe('la sesión de la pestaña, por escenarios al azar', () => {
       srv.me = null; srv.demoraMe = 0; srv.demoraResto = 0; srv.meFalla = 0; srv.escrituras = []; srv.sinPersona = []; srv.sinPersonaDeNadie = []
       const inicial = r.uno([ANA, BRUNO, ASESORA, null])
       if (inicial) { srv.me = inicial; mapas.local.set('rendi_user', guardado(inicial)) }
-      mapas.local.set('rendi:tour:novedades:v2', '1')
+      for (const k of CLAVES_DE_LOS_TOURS) mapas.local.set(k, '1')
       for (const u of PERSONAS) mapas.local.set(`rendi_snapshot_date:${u.email}|propia`, '2026-10-30')
       await cargar(); await seguir()
       const historia = [`inicio: ${inicial?.name ?? 'nadie'}`]
@@ -448,7 +449,7 @@ async function arrancar(u) {
   mapas = { local: new Map(), sesion: new Map() }
   srv.me = u; srv.demoraMe = 0; srv.demoraResto = 0; srv.meFalla = 0; srv.escrituras = []; srv.sinPersona = []; srv.sinPersonaDeNadie = []
   if (u) mapas.local.set('rendi_user', guardado(u))
-  mapas.local.set('rendi:tour:novedades:v2', '1')
+  for (const k of CLAVES_DE_LOS_TOURS) mapas.local.set(k, '1')
   for (const p of PERSONAS) mapas.local.set(`rendi_snapshot_date:${p.email}|propia`, '2026-10-30')
   await cargar(); await seguir()
 }
