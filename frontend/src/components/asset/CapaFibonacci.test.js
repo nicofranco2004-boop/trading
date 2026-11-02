@@ -99,6 +99,18 @@ describe('Fibonacci en la ficha', () => {
     expect(await tocarFibonacci()).toContain('Fibonacci de la última suba')
   })
 
+  it('el impulso de 5 ondas de Elliott (sin ruptura): rayas, tarjeta del impulso y sin rombo', async () => {
+    // backend/estructura.py `de: 'impulso'` (INTC, 02/11/26): lo terminó el
+    // conteo, no un cierre; antes la capa leía `ruptura.fecha` y se rompía.
+    respuesta = DATOS({ ...FIB, de: 'impulso', ruptura: null, extension: null, tramo: { disponible: false, motivo: 'superado' } })
+    const t = await dibujar()
+    expect(t).toContain('Fibonacci del impulso de suba')
+    expect(t).toContain('Devolvió el 45 % del impulso')
+    expect(t).toContain('Pico · US$ 176,75')
+    expect(t).toContain('Arranque · US$ 108,90')
+    expect(montado.contenedor.querySelector('[title^="Ruptura"]')).toBeNull()
+  })
+
   it('sin tramo claro: lo dice y no dibuja niveles', async () => {
     respuesta = DATOS({ disponible: false, motivo: 'tramos_chicos', n_pivote: 3, ruedas: 252, en_curso: null })
     const t = await dibujar()

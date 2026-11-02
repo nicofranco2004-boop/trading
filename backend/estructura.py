@@ -262,8 +262,16 @@ def _es_claro(velas: list, t: dict) -> bool:
     return rango > 0 and (alto - bajo) >= MIN_RANGOS_TRAMO * rango
 
 
-def fibonacci(velas: list, n: int = N_PIVOTE) -> dict:
+def fibonacci(velas: list, n: int = N_PIVOTE, impulso: dict = None) -> dict:
     """El Fibonacci del último tramo confirmado, listo para la ficha.
+
+    Con `impulso` (un impulso de 5 ondas terminado del conteo de Elliott, ver
+    `elliott.impulso_para_fibonacci`) se mide ESE impulso entero, del arranque
+    de la onda 1 al final de la 5, en vez del último tramo (Nico, 31/10/26,
+    mirando INTC: «sin tramo para medir» con un impulso de US$ 35 a 142 a la
+    vista). Misma forma de respuesta, con 'de': 'impulso', sin 'ruptura' y con
+    la medida de la corrección ('extension'); el tramo de siempre queda en
+    'tramo' (lo usa el resumen de Mervall-E, que cuenta el último movimiento).
 
     {'disponible': False, 'motivo': 'pocos_datos'|'sin_tramo_terminado'|'tramos_chicos'|
      'tramo_viejo'|'superado',
@@ -282,6 +290,12 @@ def fibonacci(velas: list, n: int = N_PIVOTE) -> dict:
     velas = [v for v in velas if v.get("close") is not None and v["close"] > 0]
     if len(velas) < MIN_RUEDAS:
         return {"disponible": False, "motivo": "pocos_datos", "ruedas": len(velas), "n_pivote": n}
+    tramo = _fibonacci_del_tramo(velas, n)
+    medido = _fibonacci_del_impulso(velas, impulso, tramo) if impulso else None
+    return medido or tramo
+
+
+def _fibonacci_del_tramo(velas: list, n: int) -> dict:
     res = tramos(velas, n)
     hoy = len(velas) - 1
     terminados = [t for t in res["confirmados"] if not t["primero"]]
@@ -303,19 +317,51 @@ def fibonacci(velas: list, n: int = N_PIVOTE) -> dict:
 
     t = validos[-1]
     suba = t["dir"] == "suba"
-    ini, fin = velas[t["inicio"]], velas[t["fin"]]
+    m = _medir(velas, t["inicio"], t["fin"], suba)
+    if m is None:
+        # El precio ya salió del tramo: pasó el arranque de la última bajada (o
+        # de la última suba) o hizo un extremo nuevo. Sus niveles quedaron
+        # lejos y no describen nada: lo que importa es el tramo que está vivo.
+        return {**base, "motivo": "superado", "superado": lista[-1], "precio_hoy": _r(velas[hoy]["close"])}
+    rup = velas[t["ruptura"]]
+    return {
+        "disponible": True,
+        "n_pivote": n,
+        "dir": t["dir"],
+        **m,
+        "ruptura": {"fecha": rup["date"], "cierre": _r(rup["close"]),
+                    "cerro_fuera_fecha": velas[t["cerro_fuera"]]["date"],
+                    "cerro_fuera_cierre": _r(velas[t["cerro_fuera"]]["close"]),
+                    "nivel": _r(_bajo(velas[t["protegido"]]) if suba else _alto(velas[t["protegido"]])),
+                    "nivel_fecha": velas[t["protegido"]]["date"]},
+        "en_curso": en_curso,
+        "tramos": lista,
+    }
+
+
+def _medir(velas: list, i0: int, i1: int, suba: bool):
+    """El Fibonacci de un movimiento del día `i0` (su arranque: el mínimo de
+    una suba, el máximo de una bajada) al día `i1` (su final): los niveles,
+    cuánto devolvió el precio al último cierre y lo más que llegó a devolver.
+    None si al último cierre el precio está fuera del movimiento (0 a 1): sus
+    niveles ya no describen dónde está. La MISMA cuenta para el último tramo y
+    para el impulso de Elliott."""
+    hoy = len(velas) - 1
+    ini, fin = velas[i0], velas[i1]
     p0 = _bajo(ini) if suba else _alto(ini)        # el arranque
     p1 = _alto(fin) if suba else _bajo(fin)        # el final
+    if p1 == p0:
+        return None
     alto, bajo = max(p0, p1), min(p0, p1)
     amplitud = alto - bajo
 
     def retroceso(precio):
-        # Cuánto del tramo devolvió: desde el final hacia el arranque.
+        # Cuánto del movimiento devolvió: desde el final hacia el arranque.
         return (p1 - precio) / (p1 - p0)
 
-    # Lo más que devolvió desde el final del tramo hasta hoy: el mínimo (de una
-    # suba) o el máximo (de una bajada) de esas velas.
-    despues = range(t["fin"] + 1, hoy + 1)
+    # Lo más que devolvió desde el final hasta hoy: el mínimo (de una suba) o
+    # el máximo (de una bajada) de esas velas.
+    despues = range(i1 + 1, hoy + 1)
     if despues:
         j = (min(despues, key=lambda x: _bajo(velas[x])) if suba
              else max(despues, key=lambda x: _alto(velas[x])))
@@ -325,28 +371,16 @@ def fibonacci(velas: list, n: int = N_PIVOTE) -> dict:
         r_max = None
     r_hoy = retroceso(velas[hoy]["close"])
     if not 0.0 <= r_hoy <= 1.0:
-        # El precio ya salió del tramo: pasó el arranque de la última bajada (o
-        # de la última suba) o hizo un extremo nuevo. Sus niveles quedaron
-        # lejos y no describen nada: lo que importa es el tramo que está vivo.
-        return {**base, "motivo": "superado", "superado": lista[-1], "precio_hoy": _r(velas[hoy]["close"])}
+        return None
     marcas = (0.0,) + NIVELES + (1.0,)
     entre = None
     for a, b in zip(marcas, marcas[1:]):
         if a <= r_hoy <= b:
             entre = [a, b]
             break
-    rup = velas[t["ruptura"]]
     return {
-        "disponible": True,
-        "n_pivote": n,
-        "dir": t["dir"],
         "desde": {"fecha": ini["date"], "precio": _r(p0)},
         "hasta": {"fecha": fin["date"], "precio": _r(p1)},
-        "ruptura": {"fecha": rup["date"], "cierre": _r(rup["close"]),
-                    "cerro_fuera_fecha": velas[t["cerro_fuera"]]["date"],
-                    "cerro_fuera_cierre": _r(velas[t["cerro_fuera"]]["close"]),
-                    "nivel": _r(_bajo(velas[t["protegido"]]) if suba else _alto(velas[t["protegido"]])),
-                    "nivel_fecha": velas[t["protegido"]]["date"]},
         "niveles": [{"nivel": r, "precio": _r(p1 - r * (p1 - p0))} for r in NIVELES],
         "amplitud_pct": _r((amplitud / bajo) * 100.0, 2) if bajo > 0 else None,
         "retroceso_hoy": _r(r_hoy),
@@ -354,9 +388,64 @@ def fibonacci(velas: list, n: int = N_PIVOTE) -> dict:
         "entre": entre,
         "precio_hoy": _r(velas[hoy]["close"]),
         "fecha_hoy": velas[hoy]["date"],
-        "en_curso": en_curso,
-        "tramos": lista,
     }
+
+
+def _fibonacci_del_impulso(velas: list, imp: dict, tramo: dict):
+    """El Fibonacci del impulso de 5 ondas que contó Elliott (`imp`: 'dir' y
+    las fechas de cada onda contada, '0' a '5' y, si hay, 'A', 'B', 'C'), o
+    None si no se puede medir (una fecha que no está, o el precio fuera del
+    impulso). Los niveles son MEDIDAS de lo que pasó: cuánto devolvió la
+    corrección, no hasta dónde va a llegar (una franja de «dónde suele
+    terminar la onda» acertó peor que el azar y se sacó el 23/10; ver el
+    docstring de elliott.py). Por eso tampoco se trazan extensiones hacia
+    adelante: la extensión es la medida de la corrección que ya pasó."""
+    idx = {v["date"]: k for k, v in enumerate(velas)}
+    ondas = {o: idx.get(f) for o, f in imp["fechas"].items()}
+    if ondas.get("0") is None or ondas.get("5") is None:
+        return None
+    suba = imp["dir"] == "suba"
+    m = _medir(velas, ondas["0"], ondas["5"], suba)
+    if m is None:
+        return None
+    return {
+        "disponible": True,
+        "de": "impulso",
+        "n_pivote": tramo.get("n_pivote"),
+        "dir": imp["dir"],
+        **m,
+        "ruptura": None,
+        "extension": _extension_de_la_correccion(velas, ondas, suba),
+        "en_curso": tramo.get("en_curso"),
+        "tramos": tramo.get("tramos", []),
+        "tramo": tramo,
+    }
+
+
+def _extension_de_la_correccion(velas: list, ondas: dict, suba: bool):
+    """La extensión de Fibonacci de la corrección, MEDIDA: cuántas veces el
+    tamaño de la onda A recorrió la C desde el final de la B (terminada, o
+    hasta hoy si está en curso: lo más lejos que llegó). None sin A y B."""
+    i5, ia, ib, ic = (ondas.get(k) for k in ("5", "A", "B", "C"))
+    if ia is None or ib is None:
+        return None
+    hoy = len(velas) - 1
+    p5 = _alto(velas[i5]) if suba else _bajo(velas[i5])
+    pa = _bajo(velas[ia]) if suba else _alto(velas[ia])
+    pb = _alto(velas[ib]) if suba else _bajo(velas[ib])
+    a = abs(p5 - pa)
+    if ic is not None:
+        j = ic
+    else:
+        rango = range(ib, hoy + 1)
+        j = (min(rango, key=lambda x: _bajo(velas[x])) if suba
+             else max(rango, key=lambda x: _alto(velas[x])))
+    pc = _bajo(velas[j]) if suba else _alto(velas[j])
+    if a <= 0 or j == ib:
+        return None
+    return {"veces_a": _r(abs(pb - pc) / a, 3), "terminada": ic is not None,
+            "a": {"desde": _r(p5), "hasta": _r(pa)}, "desde_b": _r(pb),
+            "hasta": {"fecha": velas[j]["date"], "precio": _r(pc)}}
 
 
 def _tramo_para_afuera(velas: list, t: dict) -> dict:

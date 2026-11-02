@@ -861,6 +861,7 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
     desde = _desde_dias(velas, DIAS_GRAFICO)
     lect = lectura(velas, ind["m50"], ind["m200"], ind["rsi"], ind["dmi"], ind["sqz"], ind["bb"])
     puntos = puntos_del_grafico(velas, ind, desde)
+    ell = elliott.conteo(velas)
     return {
         "asset": (asset or "").upper(),
         "moneda": moneda,
@@ -874,11 +875,13 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         # de tu precio no se corra lo que se movió hoy (auditoría 22/10).
         "cierre_ref": cierre_de(conn, ref) if ref else None,
         # Fibonacci del último tramo (estructura.py), sobre TODA la historia
-        # guardada de esta misma serie: los niveles quedan en la moneda del gráfico.
-        "fibonacci": estructura.fibonacci(velas),
+        # guardada de esta misma serie: los niveles quedan en la moneda del
+        # gráfico. Si el conteo de Elliott tiene un impulso de 5 ondas
+        # terminado, mide ese impulso entero (Nico, 31/10/26).
+        "fibonacci": estructura.fibonacci(velas, impulso=elliott.impulso_para_fibonacci(ell)),
         # Un conteo POSIBLE de ondas de Elliott (elliott.py) sobre los mismos
         # picos y pozos del Fibonacci y la misma serie.
-        "elliott": elliott.conteo(velas),
+        "elliott": ell,
         # «Cuánto se mueve este papel» (movimiento.py), sobre esta misma serie y
         # en su moneda; el S&P 500 en la misma moneda para comparar.
         "movimiento": movimiento.calcular(velas, sp500(conn, moneda), lect),

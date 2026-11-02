@@ -133,3 +133,38 @@ describe('niveles', () => {
     expect(entran.has(3) && entran.has(4)).toBe(false)
   })
 })
+
+// Lo que devuelve /api/tecnico para INTC el 02/11/26 (backend/tests/test_elliott_grados.py):
+// el Fibonacci del impulso de 5 ondas del conteo de Elliott, con la C en curso.
+const IMPULSO = {
+  disponible: true, de: 'impulso', n_pivote: 3, dir: 'suba', ruptura: null,
+  desde: { fecha: '2025-11-21', precio: 32.89 }, hasta: { fecha: '2026-06-30', precio: 142.35 },
+  niveles: [0.236, 0.382, 0.5, 0.618, 0.786].map(n => ({ nivel: n, precio: 142.35 - n * 109.46 })),
+  precio_hoy: 65.76, fecha_hoy: '2026-10-30', retroceso_hoy: 0.6997, entre: [0.618, 0.786],
+  retroceso_maximo: { valor: 0.7231, precio: 63.2, fecha: '2026-10-30' },
+  extension: { veces_a: 1.061, terminada: false, a: { desde: 142.35, hasta: 81.79 }, desde_b: 127.44, hasta: { fecha: '2026-10-30', precio: 63.2 } },
+  tramo: { disponible: false, motivo: 'superado' },
+}
+
+describe('tarjetaFibonacci del impulso de Elliott', () => {
+  it('mide del arranque de la onda 1 al final de la 5, como medida y no como objetivo', () => {
+    const t = tarjetaFibonacci(IMPULSO, precio, fecha)
+    expect(t.titulo).toBe('Fibonacci del impulso de suba')
+    expect(t.veredicto).toBe('Devolvió el 70 % del impulso')
+    expect(t.texto).toContain('subió de US$ 32,89 (21/11/2025, donde arranca la onda 1) a US$ 142,35 (30/06/2026, el final de la onda 5)')
+    expect(t.texto).toContain('Al cierre del 30/10/2026 estaba en US$ 65,76: está entre el 61,8 % y el 78,6 % del impulso.')
+    expect(t.texto).toContain('Lo más bajo que llegó desde ahí fue US$ 63,2, el 30/10/2026 (72 % del impulso).')
+    expect(t.explicacion).toContain('no hasta dónde va a llegar')
+    expect(t.explicacion).toContain('Extensión: la onda C lleva recorrido 1,06 veces lo que bajó la onda A (de US$ 127,44, el final de la B, a US$ 63,2 el 30/10/2026).')
+    // Sin «ruptura» (lo terminó el conteo, no un cierre) y sin consejo.
+    expect(t.texto).not.toContain('cerró debajo')
+    expect(`${t.texto} ${t.explicacion}`).not.toMatch(/compr|vend|objetivo/i)
+  })
+
+  it('una corrección ya terminada: «recorrió»; sin A-B todavía, no hay extensión', () => {
+    const fin = tarjetaFibonacci({ ...IMPULSO, extension: { ...IMPULSO.extension, terminada: true } }, precio, fecha)
+    expect(fin.explicacion).toContain('la onda C recorrió 1,06 veces')
+    const sinAB = tarjetaFibonacci({ ...IMPULSO, extension: null }, precio, fecha)
+    expect(sinAB.explicacion).not.toContain('Extensión')
+  })
+})

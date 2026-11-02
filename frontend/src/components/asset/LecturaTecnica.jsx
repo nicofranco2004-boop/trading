@@ -4,7 +4,7 @@
 // (prendidas de entrada, Nico 28/10: apagadas no las encontraba; su ojito de la
 // leyenda las apaga junto con su tarjeta), tu precio promedio y tus
 // compras y ventas; la fuerza del movimiento (RSI) abajo; y tarjetas en
-// castellano. El Fibonacci muestra la capa del último tramo de suba o bajada
+// castellano. El Fibonacci muestra la capa del último tramo de suba o bajada (o del impulso de 5 ondas de Elliott)
 // (CapaFibonacci.jsx) y las ondas de Elliott un conteo posible (CapaElliott.jsx).
 // Cada capa se prende y se apaga desde la barra de herramientas del costado
 // (BarraGrafico.jsx): todo arranca prendido y se recuerda lo que cada uno apaga. Se mide en
@@ -1529,7 +1529,7 @@ function botonesDeLaBarra({
           estado: dibujar.tipo === 'fibonacci' || dibujar.tipo === 'extension' ? 'Marcando a mano' : !sinFib && ver.fib ? 'Activado: lo calcula Rendi' : 'Lo calcula Rendi o lo marcás a mano',
           menu: [
             { id: 'fib', nombre: 'Automático', interruptor: true, activo: !!ver.fib, sinDatos: sinFib,
-              detalle: 'Rendi busca el último tramo de suba o de bajada y dibuja sus niveles.',
+              detalle: 'Rendi mide el último tramo de suba o de bajada (o el impulso entero de 5 ondas, si el conteo de Elliott lo encuentra) y dibuja sus niveles.',
               onClick: () => {
                 // Al prenderlo, el gráfico se acerca al tramo medido (si se ve chico).
                 if (!ver.fib) acercar(ventanaDelTramo(actual.puntos, fib, nVista))

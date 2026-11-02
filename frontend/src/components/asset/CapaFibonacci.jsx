@@ -3,9 +3,11 @@
 // Se ve de entrada; el botón «Fibonacci» de la barra de herramientas del gráfico
 // (BarraGrafico.jsx) la apaga y la prende. Dibuja
 // el último tramo confirmado (pozo → pico de una suba, o techo → piso de una
-// bajada) resaltado, las rayas de cada nivel con su precio, la franja entre las
-// dos rayas donde está hoy el precio y el día de la ruptura. Si no hay tramo
-// para medir, la raya del cierre que daría por terminado el tramo vivo.
+// bajada) —o, si el conteo de Elliott tiene un impulso de 5 ondas terminado,
+// ese impulso entero— resaltado, las rayas de cada nivel con su precio, la
+// franja entre las dos rayas donde está hoy el precio y el día de la ruptura.
+// Si no hay tramo para medir, la raya del cierre que daría por terminado el
+// tramo vivo.
 //
 // Las cuentas vienen hechas del servidor (backend/estructura.py); las palabras,
 // de utils/fibonacci.js. Va en HTML encima del SVG, como las marcas de tus
@@ -116,10 +118,12 @@ export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio, marcado
   const p1 = posicion(puntos, fib.hasta.fecha)
   // El rombo va en el cierre que pasó del otro lado (puede ser unos días antes
   // de que se supiera: el pico se confirma 3 ruedas después).
-  const rup = fib.ruptura.cerro_fuera_fecha
+  // El del impulso de Elliott (`de: 'impulso'`) no tiene ruptura: lo terminó
+  // el conteo, no un cierre.
+  const rup = !fib.ruptura ? null : fib.ruptura.cerro_fuera_fecha
     ? { fecha: fib.ruptura.cerro_fuera_fecha, cierre: fib.ruptura.cerro_fuera_cierre }
     : fib.ruptura
-  const pr = posicion(puntos, rup.fecha)
+  const pr = rup ? posicion(puntos, rup.fecha) : { donde: 'despues' }
   // Las rayas arrancan en el arranque del tramo, o en el borde si arrancó antes.
   const x0 = p0.donde === 'adentro' ? pctX(p0.i) : 0
   const x1 = p1.donde === 'adentro' ? pctX(p1.i) : null
