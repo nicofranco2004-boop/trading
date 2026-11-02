@@ -138,7 +138,7 @@ describe('el aviso de tu línea del gráfico (Nico, 28/10)', () => {
   })
   it('la confirmación del formulario, con el borrador (aún sin guardar)', () => {
     expect(confirmacion({ kind: 'tecnica', senal: 'linea', symbol: 'AAPL', currency: 'USD', tipoLinea: 'tendencia' }))
-      .toBe('Te avisamos cuando AAPL toque tu línea de tendencia. Lo miramos cada día con el precio más alto y el más bajo del día.')
+      .toBe('Te avisamos cuando AAPL toque tu línea de tendencia. Lo miramos durante la rueda, cada 10 minutos: si la toca, te llega ese mismo día.')
   })
 })
 
@@ -153,8 +153,8 @@ describe('el aviso de tu canal (Nico, 29/10)', () => {
   it('la confirmación, con el borrador del formulario', () => {
     const b = { kind: 'tecnica', senal: 'linea', symbol: 'AAPL', currency: 'USD', tipoLinea: 'canal', direction: 'above', modo: 'toque' }
     expect(confirmacion(b)).toMatch(/^Te avisamos cuando AAPL toque o pase el borde de arriba de tu canal\. /)
-    expect(confirmacion(b)).toContain('si lo tocó, te llega a la mañana siguiente.')
-    expect(confirmacion({ ...b, modo: 'cierre', direction: 'either' })).toMatch(/^Te avisamos cuando AAPL cierre afuera de tu canal\. .*precio de cierre/)
+    expect(confirmacion(b)).toContain('Lo miramos durante la rueda, cada 10 minutos: si lo toca, te llega ese mismo día.')
+    expect(confirmacion({ ...b, modo: 'cierre', direction: 'either' })).toMatch(/^Te avisamos cuando AAPL cierre afuera de tu canal\. .*precio de cierre: te llega a la mañana siguiente\.$/)
   })
   it('el estado: adentro y a cuánto del borde; ya afuera; o que borraste la línea', () => {
     const r = { tipo: 'canal', ultimo: 187.6, hoy: [182.23, 193.75] }
@@ -169,10 +169,12 @@ describe('el aviso de tu canal (Nico, 29/10)', () => {
     expect(borrada).toMatchObject({ texto: 'Se apagó: borraste la línea del gráfico', borrada: true })
     expect(dondeEstaLaLinea(canal(), undefined)).toBeNull()
   })
-  it('una línea: cuánto le falta; sin datos, con qué se mira (el más alto y el más bajo, no el cierre)', () => {
+  it('una línea: cuánto le falta; sin datos, cuándo se mira (en la rueda, no con el cierre)', () => {
     const h = { ...canal(), dibujo: JSON.stringify({ asset: 'MELI', moneda: 'usd', id: 'h1', tipo: 'horizontal' }) }
     expect(estado(h, null, [], '', { tipo: 'horizontal', ultimo: 2140, hoy: [2050] }).texto).toBe('Está en US$ 2.140,00 · le falta 4,2 %')
-    expect(estado(h, null, [], '').texto).toBe('Se mira cada día con el precio más alto y el más bajo')
+    expect(estado(h, null, [], '').texto).toBe('Se mira durante la rueda, cada 10 minutos')
+    expect(estado(h, null, [{ alert_id: 5, fired_at: '2026-10-20T15:00:00', message: 'x' }], '2026-10-22').texto)
+      .toBe('Último aviso el 20/10 · se mira durante la rueda, cada 10 minutos')
     expect(estado(canal({}, 'cierre'), null, [], '').texto).toBe('Se mira cada día con el precio de cierre')
   })
   it('«ya te avisamos» reconoce el canal por su id, activo y moneda', () => {

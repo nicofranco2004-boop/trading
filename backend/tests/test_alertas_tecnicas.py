@@ -63,8 +63,13 @@ class YahooFalso:
     def __init__(self, hasta: date):
         self.hasta = hasta
         self.precios = {}
+        # {ticker: (fecha, apertura, máximo, mínimo, cierre)}: ese día con esos
+        # precios (una rueda que se mueve), en vez de cierre ± 1 %.
+        self.vivas = {}
+        self.pedidos = []       # (ticker, período, intervalo) de cada pedido
 
     def __call__(self, ticker, period, interval, auto_adjust, timeout):
+        self.pedidos.append((ticker, period, interval))
         f = self.precios.get(ticker)
         if f is None:
             return pd.DataFrame()
@@ -75,7 +80,12 @@ class YahooFalso:
         filas = {d: f(d) for d in dias}
         idx = pd.DatetimeIndex([pd.Timestamp(d) for d in sorted(filas)])
         cs = [filas[d] for d in sorted(filas)]
-        return pd.DataFrame({"Open": cs, "High": [c * 1.01 for c in cs], "Low": [c * 0.99 for c in cs],
+        os_, hs, ls = list(cs), [c * 1.01 for c in cs], [c * 0.99 for c in cs]
+        viva = self.vivas.get(ticker)
+        if viva and viva[0] in filas:
+            i = sorted(filas).index(viva[0])
+            os_[i], hs[i], ls[i], cs[i] = viva[1:]
+        return pd.DataFrame({"Open": os_, "High": hs, "Low": ls,
                              "Close": cs, "Volume": [1000.0] * len(cs)}, index=idx)
 
 
@@ -121,6 +131,11 @@ class AlertasTecnicasTest(unittest.TestCase):
             # B5, 31/10). Acá es siempre un día de semana; el resumen tiene sus
             # propias pruebas (test_tus_senales.py).
             mock.patch("senales_semana.toca", lambda now: False),
+            # Tus líneas se miran también DURANTE la rueda, con el reloj de
+            # verdad (`_evaluar_en_la_rueda`). Fuera de las pruebas de la rueda,
+            # todos los mercados cerrados: si no, el resultado dependería de la
+            # hora en que corre la suite.
+            mock.patch("velas_diarias.en_rueda_de", lambda mercado, ahora=None: False),
         ]
         for p in self._p:
             p.start()
@@ -752,10 +767,10 @@ class AlertasTecnicasTest(unittest.TestCase):
     def _horizontal(precio, id="h1"):
         return {"id": id, "tipo": "horizontal", "precio": precio}
 
-    def _crear_linea(self, dibujo="h1", esperado=200, **kw):
+    def _crear_linea(self, dibujo="h1", esperado=200, creada_el=None, **kw):
         body = {"kind": "tecnica", "symbol": "MSFT", "senal": "linea", "dibujo": dibujo,
                 "currency": "USD", "channel": "both", "repeat": "once", **kw}
-        with self._el_dia(self._siguiente(self.anteayer)):
+        with self._el_dia(creada_el or self._siguiente(self.anteayer)):
             r = self.client.post("/api/alerts", json=body, headers=self.h)
         self.assertEqual(r.status_code, esperado, r.text)
         return r.json()
@@ -1223,6 +1238,287 @@ class AlertasTecnicasTest(unittest.TestCase):
         afuera = [quieto[0], {"date": "2026-10-02", "close": 111.0, "high": 112, "low": 104}]
         self.assertIsNotNone(tecnico.salida_de_canal(afuera, canal, "2026-10-01", pedida_el="2026-10-02"))
 
+    # — tu línea y tu canal DURANTE la rueda (Nico, 31/10) —
+    # La rueda de prueba es la de AYER: la noche guardó hasta anteayer, y ayer
+    # (con su mercado abierto) el cron mira la vela que se está moviendo. Lo
+    # que pide la vela en vivo es lo de producción
+    # (`velas_diarias.ruedas_recientes` → `pricing.yahoo._historia`, el Yahoo
+    # falso); sólo se fijan el reloj del mercado y el día de su rueda.
+
+    def _pasada(self, dia):
+        """Una pasada del cron durante la rueda de `dia`. Entre pasadas pasan
+        ~10 minutos: la vela de hoy guardada en memoria (60 s) ya venció."""
+        import velas_diarias
+        velas_diarias._en_curso.clear()
+        self.yahoo.hasta = dia
+        with mock.patch("velas_diarias.en_rueda_de", lambda mercado, ahora=None: True), \
+                mock.patch("home.market.session_today", lambda symbol: dia.isoformat()):
+            return self._cron()
+
+    def _linea_pedida_anteayer(self, *dibujos, repeat="always", **kw):
+        """La noche guardó hasta anteayer y ese día dibujaste y pediste el aviso:
+        ayer es una rueda entera posterior al pedido."""
+        self.client.post("/api/watchlist", json={"symbol": "MSFT"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._dibujar(*dibujos)
+        res = self._crear_linea(creada_el=self.anteayer, repeat=repeat, **kw)
+        self._cron()
+        self.assertEqual(self._eventos(), [])
+        return res
+
+    def test_tu_linea_tocada_en_la_rueda_avisa_en_el_dia_y_la_noche_no_repite(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer       # ayer: de 108,90 a 111,10, va en 110
+        self._linea_pedida_anteayer(self._horizontal(109.5))
+        r = self._pasada(self.ayer)
+        self.assertEqual(r["tecnicas"]["en_rueda"], {"series": 1, "avisos": 1})
+        ev = self._eventos()
+        self.assertEqual([e["message"] for e in ev], ["MSFT subió hasta tu línea horizontal, en US$ 109,50"])
+        texto = self.mails[0]["texto"]
+        self.assertIn("hoy MSFT tocó tu línea horizontal, que hoy está en US$ 109,50: en lo que va de la "
+                      "rueda fue de US$ 108,90 a US$ 111,10 y ahora está en US$ 110,00.", texto)
+        self.assertNotIn("cerró", texto, "todavía no cerró: no lo dice")
+        self.assertNotIn("demora", texto, "Nueva York no tiene demora")
+        self.assertEqual(len(self.pushes), 1)
+        self._pasada(self.ayer)
+        self.assertEqual(len(self._eventos()), 1, "en la misma rueda no repite")
+        # A la noche se guarda esa vela: el motor de siempre la mira y no repite.
+        self._noche(self.ayer)
+        r = self._cron()
+        self.assertEqual(r["tecnicas"]["mirados"], 1, "la noche la miró")
+        self.assertEqual((len(self._eventos()), len(self.mails)), (1, 1), "la noche no repite el toque")
+        with main.db_abierta() as conn:
+            self.assertEqual(ae._visto_hasta(conn, ev[0]["alert_id"], "MSFT"), self.ayer.isoformat())
+
+    def test_si_la_rueda_no_lo_vio_avisa_la_noche_como_siempre(self):
+        # Yahoo no contestó la vela de hoy (o no le tocó turno): la noche es la fuente.
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self._linea_pedida_anteayer(self._horizontal(109.5))
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT subió hasta tu línea horizontal, en US$ 109,50"])
+        self.assertIn("que ese día estaba en US$ 109,50", self.mails[0]["texto"])
+
+    def test_tu_linea_que_no_se_toca_en_la_rueda_no_avisa_ni_guarda_la_vela_de_hoy(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self._linea_pedida_anteayer(self._horizontal(115))
+        r = self._pasada(self.ayer)
+        self.assertEqual(r["tecnicas"]["en_rueda"], {"series": 1, "avisos": 0})
+        self.assertEqual(self._eventos(), [])
+        with main.db_abierta() as conn:
+            ultima = conn.execute("SELECT MAX(date) FROM velas_diarias WHERE symbol='MSFT'").fetchone()[0]
+        self.assertEqual(ultima, self.anteayer.isoformat(), "la vela de hoy no se guarda: la guarda la noche")
+
+    def test_tu_canal_si_lo_toca_avisa_en_la_rueda(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self._linea_pedida_anteayer(self._canal(), dibujo="c1", direction="either")
+        self._pasada(self.ayer)
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT subió hasta el borde de arriba de tu canal, en US$ 105,00"])
+        self.assertIn("hoy MSFT tocó el borde de arriba de tu canal, que hoy está en US$ 105,00: en lo que "
+                      "va de la rueda fue de US$ 108,90 a US$ 111,10 y ahora está en US$ 110,00. Es el canal",
+                      self.mails[0]["texto"])
+        self.assertEqual(self.pushes[0]["url"], "/activo/MSFT?linea=c1&moneda=usd")
+
+    def test_tu_canal_si_cierra_afuera_no_se_mira_en_la_rueda(self):
+        """«Si cierra afuera» necesita el cierre: ni se le pide la vela a Yahoo
+        en la rueda. Avisa con la vela de la noche, como siempre."""
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self._linea_pedida_anteayer(self._canal(ancho=14.5), dibujo="c1", direction="above", modo="cierre")
+        self.yahoo.pedidos.clear()
+        r = self._pasada(self.ayer)
+        self.assertNotIn("en_rueda", r["tecnicas"])
+        self.assertEqual(self._eventos(), [])
+        self.assertFalse([p for p in self.yahoo.pedidos if p[1] == "5d"], "no le pidió nada a Yahoo")
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT cerró arriba de tu canal: US$ 110,00, con el borde en US$ 109,50"])
+
+    def test_el_dia_que_pedis_el_aviso_la_rueda_cuenta_desde_que_lo_mira(self):
+        """La vela del día del pedido tiene horas de antes de pedirlo. La primera
+        pasada anota hasta dónde llegó el precio (108,90 a 111,10) y no avisa;
+        después cuenta sólo lo que vaya más allá. La de 109,50 ya estaba tocada
+        cuando se miró la primera vez: no avisa ni en la rueda ni a la noche
+        (con sólo el cierre, la noche la habría avisado: 100 → 115,50). La de
+        115 la toca después: avisa en la rueda, y la noche no la repite."""
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self.client.post("/api/watchlist", json={"symbol": "MSFT"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._dibujar(self._horizontal(109.5, id="h1"), self._horizontal(115, id="h2"))
+        for d in ("h1", "h2"):
+            self._crear_linea(dibujo=d, creada_el=self.ayer, repeat="always")
+        r = self._pasada(self.ayer)
+        self.assertEqual(r["tecnicas"]["en_rueda"]["avisos"], 0, "la primera mirada anota, no avisa")
+        self._pasada(self.ayer)
+        self.assertEqual(self._eventos(), [], "lo del día no se movió: nada nuevo")
+        self.yahoo.vivas["MSFT"] = (self.ayer, 110.0, 116.0, 108.9, 115.5)
+        self._pasada(self.ayer)
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT subió hasta tu línea horizontal, en US$ 115,00"])
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual(len(self._eventos()), 1, "la noche usa la misma marca: no avisa la de 109,50 ni repite")
+
+    def test_en_la_rueda_se_pide_solo_la_serie_de_las_lineas_y_una_vez(self):
+        """Cuidar a Yahoo: dos líneas de MSFT son un pedido; AAPL, con una alerta
+        de promedio (que es de cierre), no se pide."""
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self.yahoo.precios["AAPL"] = self._sube_ayer
+        self.client.post("/api/watchlist", json={"symbol": "AAPL"}, headers=self.h)
+        self._linea_pedida_anteayer(self._horizontal(130, id="h1"), self._horizontal(140, id="h2"))
+        self._crear_linea(dibujo="h2", creada_el=self.anteayer)
+        self._crear(creada_el=self.anteayer, symbol="AAPL")
+        self.yahoo.pedidos.clear()
+        r = self._pasada(self.ayer)
+        self.assertEqual(r["tecnicas"]["en_rueda"]["series"], 1)
+        self.assertEqual([p[0] for p in self.yahoo.pedidos if p[1] == "5d"], ["MSFT"])
+
+    def test_fuera_de_la_rueda_no_se_mira_ni_se_consulta(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self._linea_pedida_anteayer(self._horizontal(109.5))
+        self.yahoo.hasta = self.ayer
+        self.yahoo.pedidos.clear()
+        r = self._cron()                        # los mercados cerrados (setUp)
+        self.assertNotIn("en_rueda", r["tecnicas"])
+        self.assertEqual((self._eventos(), self.yahoo.pedidos), ([], []))
+
+    def test_en_la_rueda_hay_tope_por_pasada_y_corta_si_yahoo_no_contesta(self):
+        syms = ("MSFT", "AAPL", "KO")
+        for s in syms:
+            self.yahoo.precios[s] = lambda d: 100.0
+            self.client.post("/api/watchlist", json={"symbol": s}, headers=self.h)
+        self._noche(self.anteayer)
+        for s in syms:
+            self._dibujar(self._horizontal(150), asset=s)
+            self._crear_linea(symbol=s, creada_el=self.anteayer)
+        ae._mirada_en_rueda.clear()
+        with mock.patch("alerts_engine.TOPE_EN_RUEDA", 2):
+            r1 = self._pasada(self.ayer)
+            r2 = self._pasada(self.ayer)
+        self.assertEqual((r1["tecnicas"]["en_rueda"]["series"], r1["tecnicas"]["en_rueda"]["esperan"]), (2, 1))
+        pedidas = [p[0] for p in self.yahoo.pedidos if p[1] == "5d"]
+        self.assertEqual(set(pedidas[:2] + pedidas[2:3]), set(syms), "la que esperó va primero en la siguiente")
+        self.assertEqual(r2["tecnicas"]["en_rueda"]["series"], 2)
+        # Yahoo deja de contestar: se corta a las CORTE_SIN_RESPUESTA seguidas.
+        self.yahoo.precios.clear()
+        self.yahoo.pedidos.clear()
+        with mock.patch("alerts_engine.CORTE_SIN_RESPUESTA", 2), self.assertLogs("alerts", level="WARNING"):
+            r3 = self._pasada(self.ayer)
+        self.assertEqual(r3["tecnicas"]["en_rueda"]["series"], 2)
+        self.assertEqual(len({p[0] for p in self.yahoo.pedidos if p[1] == "5d"}), 2)
+
+    def test_reactivar_vuelve_a_mirar_la_rueda_desde_ahora(self):
+        """Avisó en la rueda y se apagó («una vez»); la volvés a prender el mismo
+        día: lo de hoy hasta ahora no avisa de nuevo, lo que venga sí."""
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        res = self._linea_pedida_anteayer(self._horizontal(109.5), repeat="once")
+        self._pasada(self.ayer)
+        self.assertEqual((len(self._eventos()), self._alerta(res["id"])["active"]), (1, 0))
+        with self._el_dia(self.ayer):
+            r = self.client.patch(f"/api/alerts/{res['id']}", json={"active": True}, headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self._pasada(self.ayer)
+        self._pasada(self.ayer)
+        self.assertEqual(len(self._eventos()), 1, "lo tocado antes de reactivarla no vuelve a avisar")
+        # Abrió en 110 (arriba de la línea) y después bajó a 107: la tocó
+        # viniendo de arriba, aunque el cierre de anteayer (100) esté abajo.
+        self.yahoo.vivas["MSFT"] = (self.ayer, 110.0, 111.1, 107.0, 108.0)
+        self._dibujar(self._horizontal(107.5))
+        self._pasada(self.ayer)
+        self.assertEqual([e["message"] for e in self._eventos()][-1], "MSFT bajó hasta tu línea horizontal, en US$ 107,50")
+    # — lo que encontró la revisión de la rueda (02/11) —
+
+    def test_reactivar_despues_del_cierre_no_repite_a_la_noche_lo_que_aviso_la_rueda(self):
+        """La rueda avisó a las 14 y la alerta «una vez» se apagó; a las 19 la
+        reactivás. La noche, con la regla del día del pedido (el cierre de 110
+        cruzó 109,50 desde 100), repetía el mismo toque. Ahora mira desde hasta
+        dónde había llegado el precio cuando avisó la rueda."""
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        res = self._linea_pedida_anteayer(self._horizontal(109.5), repeat="once")
+        self._pasada(self.ayer)
+        self.assertEqual(len(self._eventos()), 1)
+        with self._el_dia(self.ayer):
+            self.assertEqual(self.client.patch(f"/api/alerts/{res['id']}", json={"active": True},
+                                               headers=self.h).status_code, 200)
+        self._noche(self.ayer)
+        self._cron()
+        self.assertEqual(len(self._eventos()), 1, "el toque de las 14 no se repite")
+        self.assertEqual(self._alerta(res["id"])["active"], 1)
+
+    def test_una_cripto_pedida_a_la_manana_mira_entera_la_vela_que_empieza_a_las_21(self):
+        """El día de una cripto es el de Londres: a las 21 de acá empieza la vela
+        del día siguiente, con el día argentino todavía igual al del pedido. Esa
+        vela es entera posterior al pedido y se mira normal; antes se le anotaba
+        otra marca encima de la de la mañana."""
+        self.yahoo.precios["BTC-USD"] = lambda d: 110.0 if d >= self.hoy else 100.0
+        self.client.post("/api/watchlist", json={"symbol": "BTC"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._dibujar(self._horizontal(109.5), asset="BTC")
+        self._crear_linea(symbol="BTC", creada_el=self.ayer)
+        self._pasada(self.ayer)                     # a la mañana: anota la vela de ayer
+        self.assertEqual(self._eventos(), [])
+        with mock.patch("fechas.hoy_art", lambda: self.ayer.isoformat()):
+            self._pasada(self.hoy)                  # 21:10: la vela «de mañana», ya en curso
+        self.assertEqual([e["message"] for e in self._eventos()], ["BTC subió hasta tu línea horizontal, en US$ 109,50"])
+
+    def test_con_demora_lo_que_llega_en_ese_rato_tampoco_avisa_el_dia_del_pedido(self):
+        """BYMA manda los precios 20 minutos tarde: lo que llega en los 20
+        minutos después de la primera mirada puede ser de antes del pedido. En
+        ese rato la marca se ensancha sin avisar; después, avisa lo nuevo."""
+        self.yahoo.precios["MSFT"] = self._salta_ayer       # 108,90 a 111,10
+        self.client.post("/api/watchlist", json={"symbol": "MSFT"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._dibujar(self._horizontal(115, id="h1"), self._horizontal(116.5, id="h2"))
+        for d in ("h1", "h2"):
+            self._crear_linea(dibujo=d, creada_el=self.ayer, repeat="always")
+        with mock.patch.dict("velas_diarias.DEMORA_MIN", {"us": 20}):
+            self._pasada(self.ayer)
+            self.yahoo.vivas["MSFT"] = (self.ayer, 110.0, 116.0, 108.9, 115.5)
+            self._pasada(self.ayer)
+            self.assertEqual(self._eventos(), [], "dentro de la demora: se anota, no se avisa")
+            with main.db_abierta() as conn:         # pasaron los 20 minutos
+                for aid in [r[0] for r in conn.execute("SELECT id FROM alerts WHERE user_id=?", (self.uid,))]:
+                    b = ae._ya_visto_en_la_rueda(conn, aid, "MSFT")
+                    self.assertEqual((b["bajo"], b["alto"]), (108.9, 116.0))
+                    ae._anotar_ya_visto(conn, aid, "MSFT", b["fecha"], b["bajo"], b["alto"], "2000-01-01T00:00:00")
+                conn.commit()
+            self.yahoo.vivas["MSFT"] = (self.ayer, 110.0, 117.0, 108.9, 116.8)
+            self._pasada(self.ayer)
+        self.assertEqual([e["message"] for e in self._eventos()],
+                         ["MSFT subió hasta tu línea horizontal, en US$ 116,50"])
+        self.assertIn("Los precios de este mercado llegan con unos 20 minutos de demora.", self.mails[0]["texto"])
+
+    def test_la_noche_no_usa_la_marca_de_una_serie_convertida_con_el_dolar(self):
+        with main.db_abierta() as conn:
+            ae._anotar_ya_visto(conn, 1, "GGAL", "2026-11-02", 9.0, 9.95, None, 0.001)
+            ae._anotar_ya_visto(conn, 2, "MSFT", "2026-11-02", 100.0, 110.0, None, None)
+            self.assertIsNone(ae._ya_visto_de_noche(conn, 1, "GGAL"))
+            self.assertEqual(ae._ya_visto_de_noche(conn, 2, "MSFT")["alto"], 110.0)
+            conn.rollback()
+
+    def test_la_serie_guardada_se_lee_una_vez_por_dia_no_en_cada_pasada(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self._linea_pedida_anteayer(self._horizontal(130))
+        ae._preparadas.clear()
+        with mock.patch("tecnico.preparar_vela_de_hoy", wraps=tecnico.preparar_vela_de_hoy) as prep:
+            self._pasada(self.ayer)
+            self._pasada(self.ayer)
+            self.assertEqual(prep.call_count, 1)
+            self._noche(self.ayer)                  # la noche guardó una vela: se lee de nuevo
+            self._pasada(self.hoy)
+            self.assertEqual(prep.call_count, 2)
+
+    def test_una_pasada_lenta_deja_el_resto_para_la_siguiente(self):
+        self.yahoo.precios["MSFT"] = self._salta_ayer
+        self._linea_pedida_anteayer(self._horizontal(109.5))
+        self.yahoo.pedidos.clear()
+        with mock.patch("alerts_engine.TIEMPO_EN_RUEDA_S", -1), self.assertLogs("alerts", level="WARNING"):
+            r = self._pasada(self.ayer)
+        self.assertEqual(r["tecnicas"]["en_rueda"], {"series": 0, "avisos": 0, "esperan": 1})
+        self.assertEqual((self._eventos(), self.yahoo.pedidos), ([], []))
+        self._pasada(self.ayer)
+        self.assertEqual(len(self._eventos()), 1, "la pasada siguiente la mira")
 
 class SenalesTest(unittest.TestCase):
     """Las señales sobre velas armadas a mano (`tecnico.senal_desde`)."""

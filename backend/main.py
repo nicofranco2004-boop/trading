@@ -49993,7 +49993,9 @@ def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn", dueno: int) ->
     al dibujo. No copia el precio: el motor lee la línea de lo dibujado cada vez
     (alerts_engine.linea_de_la_alerta), así que si la movés el aviso la sigue y
     si la borrás se apaga. Se mira con las velas del día (su mínimo y su
-    máximo), como las demás técnicas: avisa a la mañana siguiente.
+    máximo): durante la rueda con la vela de hoy en vivo, y de noche con la
+    guardada (alerts_engine._evaluar_en_la_rueda). Un canal en modo «si cierra
+    afuera», sólo con la de la noche: avisa a la mañana siguiente.
 
     `dueno`: de quién son los dibujos (`_dueno_de_los_dibujos`): la persona, o
     la asesora que dibuja en la ficha de su cliente. La alerta vive en la cuenta
@@ -50513,7 +50515,8 @@ def _evaluar_alertas_job() -> dict:
             except Exception:
                 pass
         # Las técnicas: una vez por día, con las velas de la noche (adentro se
-        # fija si ya es hora y si hay velas nuevas). Su propia guarda, igual que
+        # fija si ya es hora y si hay velas nuevas); tus líneas y canales,
+        # además, en cada pasada durante la rueda. Su propia guarda, igual que
         # las de arriba y las del libro.
         try:
             if "velas_diarias" in _corridas_en_curso:
