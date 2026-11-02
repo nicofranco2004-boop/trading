@@ -19,11 +19,15 @@
 // Con «Ocultar saldos» no se muestra cuánto pesa (la proporción también es
 // información de la cartera, como en la radiografía).
 
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { ArrowDown, ArrowUp, Info, LayoutGrid, Rows3, X } from 'lucide-react'
 import { api } from '../utils/api'
+import { subscribeWatchlistChanged } from '../utils/watchlistEvents'
 import Panel from '../components/Panel'
+import TickerSearch from '../components/fundamentals/TickerSearch'
+import useWatchlist from '../components/fundamentals/useWatchlist'
+import { catalogoDelBuscador } from '../utils/tickers'
 import Skeleton from '../components/Skeleton'
 import AssetLogo from '../components/AssetLogo'
 import { PildoraTendencia } from '../components/RadiografiaTecnica'
@@ -37,7 +41,7 @@ import { fmtMoney } from '../utils/format'
 import { indexarLecturas } from '../utils/radiografia'
 import { RSI_CASTIGADO, RSI_ESTIRADO, RSI_GANA, RSI_PIERDE, ADX_CLAVE } from '../utils/tecnico'
 import {
-  activosDeLaLista, contarFilas, filtrarFilas, ordenarFilas, trazoDeLinea, barrasDeFuerza,
+  dondeEstaEnLaLista, activosDeLaLista, contarFilas, filtrarFilas, ordenarFilas, trazoDeLinea, barrasDeFuerza,
   resumenDeLaLista, vistaGuardada, guardarVista, FILTROS, ORDENES, VISTAS, MAX_POR_PEDIDO, nombreDelOrden,
 } from '../utils/listaTecnica'
 
@@ -47,26 +51,55 @@ import {
  * la misma del % alcista y de la pestaña Señales). → { cargando, error,
  * tenencias, sinMedir, seguidos, indice }
  */
-export function useListaTecnica() {
+export function useListaTecnica({ seguirLaWatchlist = false } = {}) {
   const [estado, setEstado] = useState(null)   // { seguidos, tenencias, indice }
   const [error, setError] = useState(null)     // 'base' | 'lectura'
+  // Con `seguirLaWatchlist` (Análisis técnico) se vuelve a pedir cuando cambia
+  // la watchlist: el buscador de «Tu lista», la ficha, el inicio, todos avisan
+  // por utils/watchlistEvents. Mientras llega, queda lo de antes en pantalla:
+  // el activo nuevo aparece y la lista no titila. El mapa del inicio no lo
+  // pide: sólo muestra lo que tenés, y cada estrella pedía la lista entera.
+  const [vuelta, setVuelta] = useState(0)
+  // Si la última vuelta falló habiendo algo en pantalla (el buscador lo dice).
+  const [refrescoFallido, setRefrescoFallido] = useState(false)
+  // Lo que decide qué hacer si un pedido falla: si YA HAY algo en pantalla, no
+  // el número de vuelta. Decidido por la vuelta, una primera carga cortada por
+  // un cambio y seguida de una falla no dejaba ni datos ni error: «cargando»
+  // para siempre (revisión del 02/11).
+  const hayDatos = useRef(false)
+  useEffect(() => (seguirLaWatchlist ? subscribeWatchlistChanged(() => setVuelta(v => v + 1)) : undefined), [seguirLaWatchlist])
 
   useEffect(() => {
     let vivo = true
+    const fallo = (que) => {
+      if (!vivo) return
+      if (hayDatos.current) setRefrescoFallido(true)
+      else setError(que)
+    }
+    // Con algo en pantalla, si la watchlist no llega no se la da por vacía: se
+    // queda lo que había (si no, desaparecería todo lo que seguís).
     api.get('/watchlist')
-      .catch(() => ({ items: [] }))
+      .catch(() => (hayDatos.current ? null : { items: [] }))
       .then(wl => {
+        if (!wl) { fallo('lectura'); return }
         const seguidos = wl?.items || []
         return api.post('/tecnico/lista', { activos: activosDeLaLista(seguidos).slice(0, MAX_POR_PEDIDO) })
-          .then(r => { if (vivo) setEstado({ seguidos, tenencias: r?.tenencias || [], sinMedir: r?.sin_medir || null, indice: indexarLecturas(r?.lecturas || []) }) })
-          .catch(() => { if (vivo) setError('lectura') })
+          .then(r => {
+            if (!vivo) return
+            setEstado({ seguidos, tenencias: r?.tenencias || [], sinMedir: r?.sin_medir || null, indice: indexarLecturas(r?.lecturas || []) })
+            hayDatos.current = true
+            setError(null)
+            setRefrescoFallido(false)
+          })
+          .catch(() => fallo('lectura'))
       })
     return () => { vivo = false }
-  }, [])
+  }, [vuelta])
 
   return {
     cargando: !error && !estado,
     error,
+    refrescoFallido,
     tenencias: estado?.tenencias || [],
     // Qué parte de tu plata es efectivo y plazos fijos (senales_semana.
     // pesos_sin_medir): el mapa de tu cartera lo usa para nombrar el cuadrito
@@ -251,8 +284,72 @@ export function TablaLista({ filas, oculto = false, orden, onOrdenar, filtro = '
 
 function SinFilas({ filtro }) {
   return filtro === 'watchlist'
-    ? 'Tu watchlist no tiene activos que no estén en tu cartera. Para sumar uno, entrá a su ficha y tocá «Agregar a watchlist».'
+    ? `Tu watchlist no tiene activos que no estén en tu cartera. Para sumar uno, buscalo arriba, en «${SUMAR_A_LA_WATCHLIST}».`
     : 'No hay activos para mostrar.'
+}
+
+// ─── Sumar a la watchlist sin salir de acá ──────────────────────────────────
+// Pedido de Nico (02/11): «Tu lista» es para armar una watchlist, y para sumar
+// un activo había que ir al inicio o a su ficha. El buscador es el de siempre
+// (components/fundamentals/TickerSearch: autocompletado + búsqueda por nombre
+// en el servidor) con el catálogo del buscador del inicio
+// (utils/tickers.catalogoDelBuscador: populares, todos los CEDEARs, acciones
+// argentinas y de EE.UU.), y agrega con useWatchlist, que avisa a toda la app
+// (utils/watchlistEvents): useListaTecnica vuelve a pedir y el activo aparece
+// abajo con su lectura, sin recargar.
+//
+// Lo que ya está no se duplica: se avisa. «Ya está» se decide con la MISMA
+// regla con la que la lista junta lo que tenés y lo que seguís
+// (listaTecnica.dondeEstaEnLaLista), más la watchlist misma.
+
+export const SUMAR_A_LA_WATCHLIST = 'Sumá un activo a tu watchlist'
+const YA_ESTA = { cartera: 'En tu cartera', watchlist: 'En tu watchlist' }
+
+function textoDelAviso(a, llego, refrescoFallido) {
+  if (a.estado === 'esta') {
+    return a.donde === 'cartera' ? `${a.simbolo} ya está en tu lista: lo tenés en tu cartera.` : `${a.simbolo} ya está en tu watchlist.`
+  }
+  if (a.estado === 'agregando') return `Sumando ${a.simbolo} a tu watchlist…`
+  if (a.estado === 'agregado') {
+    if (llego) return `Listo: ${a.simbolo} ya aparece en tu lista.`
+    return refrescoFallido
+      ? `Sumamos ${a.simbolo} a tu watchlist, pero no pudimos traer su lectura ahora. Probá recargar la página en unos minutos.`
+      : `Sumamos ${a.simbolo} a tu watchlist. Estamos trayendo su lectura…`
+  }
+  return a.texto || `No pudimos sumar ${a.simbolo}. Probá de nuevo en un rato.`
+}
+
+/** El buscador de arriba de «Tu lista». `filas`: las de la lista (para saber
+ *  qué ya está); `refrescoFallido`: la lista no pudo volver a pedir lo suyo. */
+export function BuscarParaTuLista({ filas, refrescoFallido = false }) {
+  const wl = useWatchlist()
+  const [aviso, setAviso] = useState(null)   // { simbolo, estado: 'esta'|'agregando'|'agregado'|'error', donde?, texto? }
+  const donde = (s) => dondeEstaEnLaLista(filas, s) || (wl.has(s) ? 'watchlist' : null)
+
+  async function agregar(s) {
+    const simbolo = String(s || '').trim().toUpperCase()
+    if (!simbolo) return
+    const ya = donde(simbolo)
+    if (ya) { setAviso({ simbolo, estado: 'esta', donde: ya }); return }
+    setAviso({ simbolo, estado: 'agregando' })
+    const r = await wl.toggle(simbolo)
+    if (r?.ok) setAviso({ simbolo, estado: 'agregado' })
+    else if (r?.error) setAviso({ simbolo, estado: 'error', texto: r.error.message || null })
+  }
+
+  const llego = aviso?.estado === 'agregado' && !!dondeEstaEnLaLista(filas, aviso.simbolo)
+  const tono = aviso?.estado === 'error' || (aviso?.estado === 'agregado' && !llego && refrescoFallido) ? 'text-rendi-neg' : aviso?.estado === 'agregado' && llego ? 'text-rendi-pos' : 'text-ink-1'
+  return (
+    <section aria-label={SUMAR_A_LA_WATCHLIST} className="max-w-xl">
+      <h2 className="mb-1.5 text-[13px] font-medium text-ink-1">{SUMAR_A_LA_WATCHLIST}</h2>
+      <TickerSearch onSelect={agregar} universo={catalogoDelBuscador} textoLibre={false}
+        placeholder="Ticker o nombre: GGAL, Apple, AL30, bitcoin…" etiqueta={SUMAR_A_LA_WATCHLIST} pista="para sumar"
+        marca={(t) => YA_ESTA[donde(t.symbol)] || null} />
+      <p role="status" aria-live="polite" className={`mt-1.5 min-h-[18px] text-[12.5px] ${tono}`}>
+        {aviso ? textoDelAviso(aviso, llego, refrescoFallido) : ''}
+      </p>
+    </section>
+  )
 }
 
 // ─── La franja de arriba ────────────────────────────────────────────────────
@@ -580,13 +677,19 @@ export default function TuLista({ datos, filas }) {
       </div>
     )
   }
-  if (!filas.length) {
-    return (
-      <Panel padding="lg" className="text-center text-[13px] text-ink-2">
-        Todavía no tenés activos ni seguís ninguno. Buscá un ticker en el inicio y agregalo a tu watchlist desde su ficha.
-      </Panel>
-    )
-  }
-  return <ListaTecnica filas={filas} oculto={hidden} vista={vista} onVista={elegir} avisos={avisos}
-    onAbrir={f => navigate(ruta(f))} />
+  // El buscador en el mismo lugar con la lista vacía y con la lista llena: al
+  // sumar el primero, no se vuelve a armar y no pierde su aviso.
+  return (
+    <div className="space-y-4">
+      <BuscarParaTuLista filas={filas} refrescoFallido={datos.refrescoFallido} />
+      {filas.length ? (
+        <ListaTecnica filas={filas} oculto={hidden} vista={vista} onVista={elegir} avisos={avisos}
+          onAbrir={f => navigate(ruta(f))} />
+      ) : (
+        <Panel padding="lg" className="text-center text-[13px] text-ink-2">
+          Todavía no tenés activos ni seguís ninguno. Buscá uno arriba y sumalo a tu watchlist.
+        </Panel>
+      )}
+    </div>
+  )
 }

@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   lecturaDeSeguido, activosDeLaLista, filasDeLaLista, contarFilas, filtrarFilas, ordenarFilas,
   haceCuanto, trazoDeLinea, motivosSinLectura,
-  barrasDeFuerza, resumenDeLaLista, vistaGuardada, guardarVista, nombreDeActivo, DIAS_SEMANA,
+  barrasDeFuerza, resumenDeLaLista, vistaGuardada, guardarVista, nombreDeActivo, DIAS_SEMANA, dondeEstaEnLaLista,
 } from './listaTecnica'
 import { indexarLecturas, MOTIVOS_SIN_LECTURA } from './radiografia'
 import { setBrokersRegistry } from './valuation'
@@ -291,5 +291,48 @@ describe('«Tarjetas / Tabla» se recuerda por persona en el navegador', () => {
     vi.stubGlobal('localStorage', { getItem: () => { throw new Error('bloqueado') }, setItem: () => { throw new Error('bloqueado') } })
     expect(() => guardarVista('7:propia', 'tabla')).not.toThrow()
     expect(vistaGuardada('7:propia')).toBe('tarjetas')
+  })
+})
+
+describe('¿ya está en tu lista? (el buscador de «Tu lista» avisa en vez de duplicar)', () => {
+  // Con la MISMA regla con que la lista junta lo que tenés y lo que seguís.
+  const filas = filasDeLaLista({
+    tenencias: [{ asset: 'GGAL', local: true, peso: 0.5, tipo: 'STOCK' }, { asset: 'MELI', local: false, peso: 0.5, tipo: 'STOCK' }],
+    seguidos: [{ symbol: 'TSLA' }, { symbol: 'BTC-USD' }],
+    indice: indexarLecturas([]),
+  })
+
+  it('lo que tenés, lo que seguís y lo que no está', () => {
+    expect(dondeEstaEnLaLista(filas, 'MELI')).toBe('cartera')
+    expect(dondeEstaEnLaLista(filas, 'tsla')).toBe('watchlist')
+    expect(dondeEstaEnLaLista(filas, 'KO')).toBeNull()
+    expect(dondeEstaEnLaLista(filas, '')).toBeNull()
+  })
+
+  it('con otro nombre del mismo papel: GGAL.BA es tu GGAL de BYMA; BTC es tu BTC-USD', () => {
+    expect(dondeEstaEnLaLista(filas, 'GGAL.BA')).toBe('cartera')
+    expect(dondeEstaEnLaLista(filas, 'BTC')).toBe('watchlist')
+  })
+})
+
+describe('un bono que tenés y seguís es UNA fila (revisión del 02/11)', () => {
+  // El servidor marca tu AL30 de IOL como de BYMA (local); lo que seguís sólo
+  // es de BYMA si es una acción argentina. Eran dos filas del mismo bono.
+  const tenencias = [{ asset: 'AL30', local: true, peso: 1, tipo: 'BONO' }]
+
+  it('el buscador lo reconoce como tuyo, con o sin «.BA»', () => {
+    const filas = filasDeLaLista({ tenencias, seguidos: [], indice: indexarLecturas([]) })
+    expect(dondeEstaEnLaLista(filas, 'AL30')).toBe('cartera')
+    expect(dondeEstaEnLaLista(filas, 'AL30.BA')).toBe('cartera')
+  })
+
+  it('si igual lo seguís, no aparece dos veces', () => {
+    const filas = filasDeLaLista({ tenencias, seguidos: [{ symbol: 'AL30' }], indice: indexarLecturas([]) })
+    expect(filas.map(f => f.clave)).toEqual(['AL30|1'])
+  })
+
+  it('una acción sigue separando mercados: el ADR no es tu GGAL de BYMA', () => {
+    const filas = filasDeLaLista({ tenencias: [{ asset: 'GGAL', local: true, peso: 1, tipo: 'STOCK' }], seguidos: [], indice: indexarLecturas([]) })
+    expect(dondeEstaEnLaLista(filas, 'GGAL.BA')).toBe('cartera')
   })
 })

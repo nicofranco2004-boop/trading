@@ -305,7 +305,8 @@ export default function AnalisisTecnico() {
   const navigate = useNavigate()
   const { hidden } = usePrivacy()
   const activa = pestanaDe(searchParams)
-  const lista = useListaTecnica()
+  // Sigue la watchlist: el buscador de «Tu lista» suma y el activo aparece.
+  const lista = useListaTecnica({ seguirLaWatchlist: true })
   const semana = useTusSenales()
   const [filtro, setFiltro] = useState('todo')
   const filas = useMemo(

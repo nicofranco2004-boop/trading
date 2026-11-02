@@ -45,6 +45,35 @@ export function lecturaDeSeguido(simbolo, tipo = null) {
   return { asset, local, simbolo: s }
 }
 
+/**
+ * ¿`simbolo` ya está en tu lista? 'cartera' | 'watchlist' | null. Con la MISMA
+ * regla con la que filasDeLaLista junta lo que tenés y lo que seguís (la clave
+ * activo + mercado): GGAL.BA y tu GGAL de BYMA son uno; GGAL (el ADR) es otro.
+ * La usa el buscador de «Tu lista» para avisar en vez de duplicar.
+ */
+export function dondeEstaEnLaLista(filas = [], simbolo) {
+  const { asset, local } = lecturaDeSeguido(simbolo)
+  if (!asset) return null
+  const f = filaOcupada(new Map(filas.map(x => [x.clave, x])), asset, local)
+  return f ? (f.tenes ? 'cartera' : 'watchlist') : null
+}
+
+/**
+ * La fila que ya ocupa lo que seguís (`asset`, `local`), si hay. La misma clave
+ * (activo + mercado) o, si es un BONO, el mismo activo en el otro mercado. Por
+ * qué los bonos: el servidor marca como de BYMA todo lo que tenés que cotiza
+ * con «.BA» —bonos incluidos (accion_local.es_lote_local)—, y lo que seguís
+ * sólo es de BYMA si es una acción argentina (esLocalSinTenencia). Tu AL30 de
+ * IOL quedaba «AL30|1» y el AL30 de tu watchlist «AL30|0»: dos filas del mismo
+ * bono (revisión del 02/11). Para un bono el mercado no cambia nada acá: no
+ * tiene lectura técnica. La usan filasDeLaLista y dondeEstaEnLaLista.
+ */
+function filaOcupada(porClave, asset, local) {
+  return porClave.get(clave(asset, local))
+    || (inferType(asset) === 'bond' ? porClave.get(clave(asset, !local)) : null)
+    || null
+}
+
 // Lo que el servidor deja leer por pedido (tecnico.MAX_ACTIVOS_CARTERA). La
 // watchlist tiene tope de 100 (main.WATCHLIST_TOPE): entra en uno.
 export const MAX_POR_PEDIDO = 200
@@ -164,7 +193,7 @@ export function filasDeLaLista({ tenencias = [], seguidos = [], indice, hoy = ho
   for (const it of seguidos) {
     const { asset, local, simbolo } = lecturaDeSeguido(it?.symbol, it?.asset_type)
     const k = clave(asset, local)
-    if (!asset || filas.has(k)) continue
+    if (!asset || filaOcupada(filas, asset, local)) continue
     armar(k, { nombre: isCrypto(asset) ? asset : simbolo, ruta: simbolo, tenes: false, peso: 0, p: loteDeSeguido(it, asset) })
   }
   return conDetalle([...filas.values()])

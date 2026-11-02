@@ -649,6 +649,45 @@ export const POPULAR_TICKERS = [
 //   • Acciones argentinas con ADR. Las que no están acá no tienen: buscar el
 //     ticker tal cual abría OTRA empresa (TEN → una naviera griega, AGRO →
 //     Adecoagro) o un cartel de "no tenemos fundamentales".
+/** ¿El activo `t` ({ symbol, name }) coincide con lo que se escribió?
+ *  Por el principio del ticker o por cualquier parte del nombre. */
+export function coincideConLaBusqueda(t, consulta) {
+  const q = String(consulta || '').trim().toUpperCase()
+  return !q || t.symbol.toUpperCase().startsWith(q) || (t.name || '').toUpperCase().includes(q)
+}
+
+/**
+ * El universo de los buscadores que suman a la watchlist (el del inicio, la
+ * lupa del celular y «Tu lista» en Análisis técnico): sin consulta, los
+ * populares; con consulta, además TODOS los CEDEARs, las acciones argentinas y
+ * las de EE.UU., sin repetir. Vivía copiado en home/SearchBar.jsx y en
+ * pages/MobileSearch.jsx; un tercer buscador lo habría copiado otra vez.
+ */
+export function universoDelBuscador(conConsulta = false) {
+  if (!conConsulta) return POPULAR_TICKERS
+  const populares = new Set(POPULAR_TICKERS.map(p => p.symbol))
+  return [...POPULAR_TICKERS, ...[...CEDEAR_SEARCH, ...AR_STOCK_SEARCH, ...US_SEARCH].filter(c => !populares.has(c.symbol))]
+}
+
+/** El universo filtrado por lo escrito (ticker o nombre). Cada buscador puede
+ *  comparar a su manera (la lupa del celular, palabra por palabra) sobre
+ *  `universoDelBuscador`. */
+export function catalogoDelBuscador(consulta = '') {
+  const q = String(consulta || '').trim().toUpperCase()
+  if (!q) return POPULAR_TICKERS
+  // Primero el ticker exacto, después su CEDEAR («T.BA»), después los que
+  // empiezan así, después por nombre.
+  // Sin este orden, «T» (AT&T) quedaba en el puesto 193 detrás de MSFT y de
+  // todo lo que tiene una T en el nombre, y Enter sumaba otra empresa
+  // (revisión del 02/11). El orden de cada grupo es el de siempre.
+  const grupo = (t) => {
+    const s = t.symbol.toUpperCase()
+    return s === q ? 0 : s === `${q}.BA` ? 1 : s.startsWith(q) ? 2 : 3
+  }
+  return universoDelBuscador(true).filter(t => coincideConLaBusqueda(t, q))
+    .map((t, i) => [grupo(t), i, t]).sort((a, b) => a[0] - b[0] || a[1] - b[1]).map(x => x[2])
+}
+
 export const CEDEAR_EN_EEUU = { DISN: 'DIS', BRKB: 'BRK-B', NOKA: 'NOK' }
 // CEDEARs de ETFs: tampoco tienen ficha de empresa. La convención de
 // CEDEARS_LIST es que llevan "(CEDEAR)" en el nombre (ver "ETFs disponibles como

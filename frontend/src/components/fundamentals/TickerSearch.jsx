@@ -6,6 +6,12 @@
 //
 // Reusa POPULAR_TICKERS de utils/tickers.js + filtrado por symbol/name.
 // Keyboard: ↑↓ navega, ↩ selecciona, ESC cierra.
+//
+// También es el buscador de «Tu lista» en Análisis técnico (pages/TuLista.jsx),
+// que suma a la watchlist: ahí recibe otro catálogo (`universo`: el del
+// buscador del inicio, utils/tickers.catalogoDelBuscador), sus palabras y
+// `marca(t)`, que dice si un activo ya está en tu cartera o en tu watchlist.
+// Un solo cuadro con autocompletado y búsqueda por nombre en el servidor.
 
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { Search, CornerDownLeft } from 'lucide-react'
@@ -34,14 +40,18 @@ function filterTickers(q) {
   return [...starts, ...contains].slice(0, MAX_RESULTS)
 }
 
-export default function TickerSearch({ onSelect, autoFocus = false }) {
+export default function TickerSearch({
+  onSelect, autoFocus = false, universo = filterTickers,
+  placeholder = 'Buscá una acción (ej. NVDA, Apple, MELI…)', etiqueta = 'Buscar ticker', pista = 'para ver',
+  marca = null, textoLibre = true,
+}) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [highlight, setHighlight] = useState(0)
   const inputRef = useRef(null)
   const containerRef = useRef(null)
 
-  const locales = useMemo(() => filterTickers(query), [query])
+  const locales = useMemo(() => universo(query).slice(0, MAX_RESULTS), [universo, query])
   const [remotos, setRemotos] = useState([])
 
   // POPULAR_TICKERS tiene 104 símbolos y apenas 21 acciones US. Un usuario
@@ -102,9 +112,14 @@ export default function TickerSearch({ onSelect, autoFocus = false }) {
     // Enter sin sugerencias: tomar el texto crudo (permite tickers no listados)
     if (e.key === 'Enter') {
       e.preventDefault()
+      // Sumando a la watchlist, Enter con el cuadro vacío no elige nada: antes
+      // sumaba el primero de los populares (AAPL) sin que nadie lo escribiera.
+      if (!textoLibre && !query.trim()) return
       if (open && results[highlight]) {
         choose(results[highlight].symbol)
-      } else {
+      } else if (textoLibre) {
+        // `textoLibre` en false (sumar a la watchlist): un texto que no es
+        // ninguna sugerencia no se guarda como si fuera un ticker («INTEL»).
         const raw = query.trim().toUpperCase()
         if (raw) choose(raw)
       }
@@ -137,14 +152,14 @@ export default function TickerSearch({ onSelect, autoFocus = false }) {
           onChange={e => { setQuery(e.target.value); setOpen(true) }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}
-          placeholder="Buscá una acción (ej. NVDA, Apple, MELI…)"
-          className="flex-1 bg-transparent text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none"
-          aria-label="Buscar ticker"
+          placeholder={placeholder}
+          className="flex-1 min-w-0 bg-transparent text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none"
+          aria-label={etiqueta}
           autoComplete="off"
           spellCheck={false}
         />
         <span className="hidden sm:inline-flex items-center gap-1 text-[10px] font-mono text-ink-3">
-          <CornerDownLeft size={11} /> para ver
+          <CornerDownLeft size={11} /> {pista}
         </span>
       </div>
 
@@ -167,7 +182,10 @@ export default function TickerSearch({ onSelect, autoFocus = false }) {
                   <span className="text-xs text-ink-3 truncate">{t.name}</span>
                 </span>
               </span>
-              <AssetTypeBadge type={t.type} />
+              <span className="flex items-center gap-2 flex-shrink-0">
+                {marca?.(t) && <span className="text-[11.5px] text-ink-2 whitespace-nowrap">{marca(t)}</span>}
+                <AssetTypeBadge type={t.type} />
+              </span>
             </button>
           ))}
         </div>

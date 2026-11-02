@@ -92,9 +92,11 @@ export const PASOS_TECNICO = [
     titulo: 'Tu lista: lo que tenés y lo que seguís',
     // Los tres medidores de cada tarjeta (TuLista.jsx): Tendencia (largo y
     // mediano plazo), Impulso y Fuerza.
+    // El buscador de arriba suma a la watchlist sin salir de acá (Nico, 02/11):
+    // `SUMAR_A_LA_WATCHLIST` en TuLista.jsx.
     texto: 'Cada activo de tu cartera y de tu watchlist con su lectura: la tendencia de largo y '
-      + 'mediano plazo, el impulso y la fuerza. Lo ves en tarjetas o en tabla, y lo podés filtrar '
-      + 'y ordenar.',
+      + 'mediano plazo, el impulso y la fuerza. Con el buscador de arriba sumás activos a tu '
+      + 'watchlist ahí mismo.',
   },
   {
     id: 'senales',

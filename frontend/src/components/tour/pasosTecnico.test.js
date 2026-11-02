@@ -98,6 +98,13 @@ describe('el texto promete lo que la pantalla hace', () => {
     }
   })
 
+  it('Tu lista tiene el buscador que el paso nombra', () => {
+    // Pedido de Nico (02/11): sumar a la watchlist desde «Tu lista».
+    const tl = leer('../../pages/TuLista.jsx')
+    expect(tl).toMatch(/<BuscarParaTuLista filas=\{filas\}/)
+    expect(paso('lista').texto).toContain('Con el buscador de arriba sumás activos a tu watchlist')
+  })
+
   it('Comparar admite los activos que dice', () => {
     expect(paso('comparar').texto).toContain(`hasta ${MAX_ACTIVOS} activos`)
   })

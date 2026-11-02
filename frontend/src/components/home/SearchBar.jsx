@@ -19,7 +19,7 @@ import { usePrivacy, OCULTO } from '../../contexts/PrivacyContext'
 import AssetTypeBadge from '../AssetTypeBadge'
 import { destinoDeTicker } from '../../utils/buscadorRapido'
 import { notifyWatchlistChanged, subscribeWatchlistChanged } from '../../utils/watchlistEvents'
-import { POPULAR_TICKERS, CEDEAR_SEARCH, AR_STOCK_SEARCH, US_SEARCH, inferType } from '../../utils/tickers'
+import { POPULAR_TICKERS, inferType, catalogoDelBuscador, coincideConLaBusqueda } from '../../utils/tickers'
 
 // Normaliza el símbolo para resolver el logo: strip sufijo CEDEAR (.BA) para
 // reutilizar el logo de la US version; deja todo lo demás intacto.
@@ -125,26 +125,15 @@ export default function SearchBar() {
   // Si hay query: filtramos por symbol prefix o name substring.
   const qUpper = q.trim().toUpperCase()
   const { holdingsMatch, suggestedMatch, totalCount } = useMemo(() => {
-    const matches = (t) => {
-      if (!qUpper) return true
-      return (
-        t.symbol.toUpperCase().startsWith(qUpper) ||
-        (t.name || '').toUpperCase().includes(qUpper)
-      )
-    }
     const passFilter = (t) => filter === 'all' || t.type === filter
 
-    const hm = userHoldings.filter(t => matches(t) && passFilter(t))
+    const hm = userHoldings.filter(t => coincideConLaBusqueda(t, qUpper) && passFilter(t))
     // Universo de sugeridos: POPULAR_TICKERS (curado, es lo que se ve SIN query).
-    // Con query sumamos TODOS los CEDEARs del allowlist (CEDEAR_SEARCH) para que
-    // cualquier CEDEAR sea encontrable (antes solo el subset de POPULAR_TICKERS →
-    // CAT/HON/etc. no aparecían). Dedup por símbolo; el cap de 8 evita inundar.
-    const universe = qUpper
-      ? [...POPULAR_TICKERS,
-         ...[...CEDEAR_SEARCH, ...AR_STOCK_SEARCH, ...US_SEARCH].filter(c => !POPULAR_TICKERS.some(p => p.symbol === c.symbol))]
-      : POPULAR_TICKERS
-    const sm = universe
-      .filter(t => matches(t) && passFilter(t))
+    // Con query, además TODOS los CEDEARs, acciones AR y US del allowlist, ya
+    // filtrados (utils/tickers.catalogoDelBuscador, el mismo de «Tu lista» en
+    // Análisis técnico). El cap de 8 evita inundar.
+    const sm = catalogoDelBuscador(qUpper)
+      .filter(passFilter)
       .filter(t => !hm.some(h => h.symbol === t.symbol))
       .slice(0, qUpper ? 8 : 30) // sin query: hasta 30 para que ETFs/Bonos enteros se vean
 
