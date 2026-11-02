@@ -13,7 +13,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } 
 import { CAPAS_TODAS } from './BarraGrafico'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, enActo, medidas, clic, buscarBoton, escribir, tecla } from '../../testing/navegadorMinimo'
-import { elegirEnLaVista } from '../../testing/menuGrafico'
+import { elegirEnLaVista, pasarATodo } from '../../testing/menuGrafico'
 import { margenDerecho } from '../../utils/tecnico'
 import { banderitaEn } from './NotasGrafico'
 
@@ -69,10 +69,14 @@ afterEach(async () => {
   Object.assign(cuenta, { usd: [], ars: [], puts: 0, cliente: null, ultimoPut: null })
 })
 const el = () => h(MemoryRouter, null, h(LecturaTecnica, { asset: 'ZZEV', ...props }))
+// De entrada el gráfico abre en el último año; estas pruebas cuentan lugares
+// sobre la historia entera (los 700 días), así que pasan a «Todo».
+let conTodo = true
 async function dibujar(p = {}) {
   props = p
   montado = await montar(el())
   for (let i = 0; i < 4; i++) await montado.redibujar(el())
+  if (conTodo) { await pasarATodo(montado.contenedor); for (let i = 0; i < 2; i++) await montado.redibujar(el()) }
 }
 async function redibujar() { for (let i = 0; i < 2; i++) await montado.redibujar(el()) }
 

@@ -13,7 +13,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } 
 import { CAPAS_TODAS } from './BarraGrafico'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, enActo, medidas, clic, buscarBoton } from '../../testing/navegadorMinimo'
-import { elegirEnLaVista, opcionesDeLaVista, periodoElegido } from '../../testing/menuGrafico'
+import { elegirEnLaVista, opcionesDeLaVista, pasarATodo, periodoElegido } from '../../testing/menuGrafico'
 import { MemoryRouter } from 'react-router-dom'
 import { margenDerecho } from '../../utils/tecnico'
 
@@ -105,10 +105,14 @@ afterEach(async () => {
 })
 // Con el router: el «Te avisamos» de tu línea es un link a Mis alertas.
 const el = () => h(MemoryRouter, null, h(LecturaTecnica, { asset: 'ZZEV', ...props }))
+// De entrada el gráfico abre en el último año; estas pruebas cuentan lugares
+// sobre la historia entera (los 700 días), así que pasan a «Todo».
+let conTodo = true
 async function dibujar(p = {}) {
   props = p
   montado = await montar(el())
   for (let i = 0; i < 4; i++) await montado.redibujar(el())
+  if (conTodo) { await pasarATodo(montado.contenedor); for (let i = 0; i < 2; i++) await montado.redibujar(el()) }
 }
 async function redibujar() { for (let i = 0; i < 2; i++) await montado.redibujar(el()) }
 

@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, puntero, enActo, medidas, clic, buscarBoton } from '../../testing/navegadorMinimo'
-import { elegirEnLaVista, periodoElegido } from '../../testing/menuGrafico'
+import { elegirEnLaVista, pasarATodo, periodoElegido } from '../../testing/menuGrafico'
 import { margenDerecho } from '../../utils/tecnico'
 
 const puntos = Array.from({ length: 700 }, (_, i) => {
@@ -46,9 +46,13 @@ afterEach(async () => {
 
 // Con una compra hace 200 días: hay «Desde que lo tenés» (el otro rango además de «Todo»).
 const el = () => h(LecturaTecnica, { asset: 'ZZEJ', lotes: [{ entry_date: puntos[500].d, quantity: 1 }] })
+// De entrada el gráfico abre en el último año; estas pruebas arrancan de la
+// historia entera, así que pasan a «Todo».
 async function dibujar() {
   montado = await montar(el())
   for (let i = 0; i < 4; i++) await montado.redibujar(el())
+  await pasarATodo(montado.contenedor)
+  for (let i = 0; i < 2; i++) await montado.redibujar(el())
 }
 
 // El primer nodo cuyo `title` empieza así.

@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } 
 import { CAPAS_TODAS } from './BarraGrafico'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, enActo, medidas, clic, buscarBoton } from '../../testing/navegadorMinimo'
-import { botonDeLaVista, elegirEnLaVista, opcionesDeLaVista, periodoElegido } from '../../testing/menuGrafico'
+import { botonDeLaVista, elegirEnLaVista, opcionesDeLaVista, pasarATodo, periodoElegido } from '../../testing/menuGrafico'
 import { margenDerecho } from '../../utils/tecnico'
 
 const puntos = Array.from({ length: 700 }, (_, i) => {
@@ -71,10 +71,14 @@ afterEach(async () => {
   localStorage.clear()   // lo que apaga una prueba no pasa a la siguiente
 })
 const el = () => h(LecturaTecnica, { asset: 'ZZEV', ...props })
+// De entrada el gráfico abre en el último año; estas pruebas cuentan lugares
+// sobre la historia entera (los 700 días), así que pasan a «Todo».
+let conTodo = true
 async function dibujar(p = {}) {
   props = p
   montado = await montar(el())
   for (let i = 0; i < 4; i++) await montado.redibujar(el())
+  if (conTodo) { await pasarATodo(montado.contenedor); for (let i = 0; i < 2; i++) await montado.redibujar(el()) }
 }
 async function redibujar() { for (let i = 0; i < 2; i++) await montado.redibujar(el()) }
 
@@ -303,7 +307,9 @@ describe('balances y dividendos en el gráfico', () => {
 describe('en el celular (un gráfico angosto, Nico 29/10)', () => {
   // El celular: el gráfico mide 300 px (lo mide el propio gráfico, no la pantalla: R6).
   const angosto = () => { globalThis.ResizeObserver = class { constructor(cb) { this.cb = cb } observe() { this.cb([{ contentRect: { width: 300, height: 250 } }]) } disconnect() {} } }
-  afterEach(() => { delete globalThis.ResizeObserver })
+  // Acá se mira justamente con qué abre: sin pasar a «Todo».
+  beforeEach(() => { conTodo = false })
+  afterEach(() => { delete globalThis.ResizeObserver; conTodo = true })
   const marcas = () => todos(montado.contenedor, n => n.nodeName === 'BUTTON'
     && /^(Balance|Dividendo|\d+ (dividendos|balances))/.test(n.getAttribute?.('aria-label') || ''))
   // El primer día que se ve: midiendo desde el borde izquierdo.
@@ -330,7 +336,9 @@ describe('en el celular (un gráfico angosto, Nico 29/10)', () => {
     expect(texto(montado.contenedor)).not.toContain('Automático')
     // El menú ofrece lo reciente, con cuánto es, y «Todo».
     const ops = await opcionesDeLaVista(montado.contenedor)
-    expect(ops).toContain('Lo reciente3 meses')
+    // Cuánto es, por las fechas que abarca: en esta prueba hay un punto por día de
+    // calendario, así que 71 puntos son ~2 meses (en el mercado, 71 ruedas son ~3).
+    expect(ops).toContain('Lo reciente2 meses')
     expect(ops).toContain('Todo')
 
     await elegirEnLaVista(montado.contenedor, 'Todo'); await redibujar()
@@ -352,11 +360,19 @@ describe('en el celular (un gráfico angosto, Nico 29/10)', () => {
     expect(periodoElegido(montado.contenedor)).toBe('Reciente')
   })
 
-  it('en la compu (un gráfico ancho) abre con «Todo», como siempre, y no ofrece «Lo reciente»', async () => {
+  it('en la compu (un gráfico ancho) abre con el último año, como TradingView (Nico, 02/11); «Todo» muestra la historia entera', async () => {
     await dibujar()   // 1000 px
-    expect(periodoElegido(montado.contenedor)).toBe('Todo')
+    expect(periodoElegido(montado.contenedor)).toBe('Reciente')
+    // El primer día que se ve es el primero desde hace 12 meses de calendario.
+    const ultimo = puntos[puntos.length - 1].d
+    const [y, m, d] = ultimo.split('-').map(Number)
+    const haceUnAnio = new Date(Date.UTC(y - 1, m - 1, d)).toISOString().slice(0, 10)
+    const primero = puntos.findIndex(p => p.d >= haceUnAnio)
+    expect(primero).toBeGreaterThan(0)
+    expect(await primerDia()).toContain(`, el ${fecha(puntos[primero].d)}.`)
+    expect(await opcionesDeLaVista(montado.contenedor)).toContain('Lo reciente1 año')
+    await elegirEnLaVista(montado.contenedor, 'Todo'); await redibujar()
     expect(await primerDia()).toContain(`, el ${fecha(puntos[0].d)}.`)
-    expect((await opcionesDeLaVista(montado.contenedor)).some(o => o.startsWith('Lo reciente'))).toBe(false)
   })
 
   it('con la historia entera sólo se ven los balances; los dividendos aparecen al acercar, cuando entran separados', async () => {
@@ -406,7 +422,7 @@ describe('en el celular (un gráfico angosto, Nico 29/10)', () => {
     expect(porRol(montado.contenedor, 'group', 'Moneda')).toBeNull()
     expect(porRol(montado.contenedor, 'group', 'Rango')).toBeNull()
     expect(buscarBoton(montado.contenedor, 'Dólares')).toBeNull()
-    expect(await opcionesDeLaVista(montado.contenedor)).toEqual(['DólaresUS$', 'Pesos$', 'Lo reciente3 meses', 'Todo', 'Desde que lo tenés'])
+    expect(await opcionesDeLaVista(montado.contenedor)).toEqual(['DólaresUS$', 'Pesos$', 'Lo reciente2 meses', 'Todo', 'Desde que lo tenés'])
     await elegirEnLaVista(montado.contenedor, 'Pesos'); await redibujar()
     expect(texto(botonDeLaVista(montado.contenedor))).toBe('Moneda y período: $ · Reciente')
     // Ningún período escribe en el botón más que «Reciente»: medido a 375 px con

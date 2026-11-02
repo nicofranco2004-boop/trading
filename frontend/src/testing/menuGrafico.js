@@ -43,6 +43,15 @@ export async function opcionesDeLaVista(c) {
   return lista
 }
 
+/**
+ * Pasa a «Todo» si el gráfico abrió en su período de entrada («Reciente»: el
+ * último año en diarias, LecturaTecnica.MESES_DE_ENTRADA). Para las pruebas que
+ * cuentan lugares sobre la historia entera.
+ */
+export async function pasarATodo(c) {
+  if (periodoElegido(c) === 'Reciente') await elegirEnLaVista(c, 'Todo')
+}
+
 /** El período que dice el botón («Todo», «Reciente», «Lo tuyo»), o null si se acercó a mano. */
 export function periodoElegido(c) {
   const t = texto(botonDeLaVista(c)).replace(/^Moneda y período: /, '')

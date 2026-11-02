@@ -124,8 +124,7 @@ const MARCA_PX = 34
 //     ya no se ve hacia dónde venía el precio.
 //   · Se mide el ancho del GRÁFICO (no de la pantalla, R6): angosto es menos de
 //     ANCHO_ANGOSTO. El celular más ancho (430 px) deja un gráfico de ~350; en
-//     la compu, aun con la ficha angosta, pasa de 600. En la compu se abre con
-//     «Todo», como siempre.
+//     la compu, aun con la ficha angosta, pasa de 600.
 export const PX_POR_VELA = 4
 export const ANCHO_ANGOSTO = 480
 /**
@@ -141,6 +140,31 @@ export function diasRecientes(ancho, total, porVela = 1) {
   while (velas > RUEDAS_MINIMAS && velas + margenDerecho(velas * porVela) / porVela > lugares) velas--
   const dias = velas * porVela
   return dias < total ? dias : null
+}
+
+// Cuánto tiempo se ve al abrir, según cada cuánto es una vela (Nico, 02/11:
+// «si te muestra todo de una, parece que es muy poco historial»). Como en
+// TradingView: se abre en un período fijo terminando hoy y la historia entera
+// está alejando o en «Todo». En meses de calendario, así «1 año» es un año
+// aunque el activo opere 5 o 7 días por semana:
+//   · 1H: 1 mes (~140 velas en Nueva York, ~120 en BYMA).
+//   · 4H: 3 meses (~130 velas).
+//   · 1D (y la línea): 1 año (~250 velas).
+//   · 1S: 3 años (~155 velas).
+// En un gráfico angosto manda lo que entra legible (diasRecientes,
+// velasRecientes) si es menos.
+export const MESES_DE_ENTRADA = { '1h': 1, '4h': 3, dia: 12, semana: 36 }
+/**
+ * Cuántos de los últimos puntos de `serie` caen en los últimos `meses`, o null
+ * si la historia entera ya cabe ahí (entonces se abre con «Todo»).
+ */
+export function puntosDelPeriodo(serie, meses) {
+  const ultimo = serie[serie.length - 1]?.d
+  if (!ultimo || !(meses > 0)) return null
+  const [y, m, d] = ultimo.split('-').map(Number)
+  const desde = new Date(Date.UTC(y, m - 1 - meses, d)).toISOString().slice(0, 10)
+  const n = Math.max(RUEDAS_MINIMAS, puntosDesde(serie, desde))
+  return n < serie.length ? n : null
 }
 
 /**
@@ -524,6 +548,10 @@ export default function LecturaTecnica({
     return () => { document.body.style.overflow = antes; window.removeEventListener('keydown', tecla) }
   }, [grande])
   const elegirRango = (r) => { setRango(r); setVentana(null) }
+  // Otra temporalidad abre en SU período de entrada (MESES_DE_ENTRADA): el
+  // zoom a mano era de la anterior. «Todo» o «Desde que lo tenés», si se
+  // eligieron, quedan.
+  const elegirIntervalo = (i) => { setIntervalo(i); setVentana(null) }
   // Las alertas de la cuenta, para que cada «Avisame» sepa si ya hay una igual.
   // Arriba de los return de abajo: un hook después de un return rompe la ficha.
   const avisos = useAvisosTecnicos()
@@ -628,7 +656,7 @@ export default function LecturaTecnica({
   // (null mientras carga): así el marco no se vuelve a armar al llegar los datos.
   const marco = (hijos, { conPesos = datos.ars?.disponible !== false, visto = ventana ? null : rango ?? (anchoGrafico > 0 && anchoGrafico < ANCHO_ANGOSTO ? 'reciente' : 'todo'), recientes = null, textoReciente = null, compartir = null, antesDeCompartir = null, arriba = null } = {}) => (
     <>{arriba}<Marco moneda={moneda} setMoneda={setMoneda} rango={visto} setRango={elegirRango} recientes={recientes} textoReciente={textoReciente} compartir={compartir} antesDeCompartir={antesDeCompartir} archivo={archivoDelGrafico(asset)}
-      conPesos={conPesos} conTuyo={!!primera} tipo={tipo} setTipo={setTipo} intervalo={intervalo} setIntervalo={setIntervalo}
+      conPesos={conPesos} conTuyo={!!primera} tipo={tipo} setTipo={setTipo} intervalo={intervalo} setIntervalo={elegirIntervalo}
       grande={grande} setGrande={setGrande} titulo={titulo}>{hijos}</Marco></>
   )
   // Cargando: el marco con sus botones queda quieto y el gris va adentro, con la
@@ -684,9 +712,11 @@ export default function LecturaTecnica({
   const total = serie.length
   const semanales = tipo === 'velas' && intervalo === 'semana'
   // Cuántos días muestra el rango elegido; «Desde que lo tenés», desde tu
-  // primera compra; «Lo reciente», las velas que entran a un ancho legible
-  // (en 1H y 4H, también en la compu: «Todo» son ~1.000 velas).
-  const recientes = horas ? velasRecientes(anchoGrafico, total) : diasRecientes(anchoGrafico, total, semanales ? 5 : 1)
+  // primera compra; «Lo reciente», el período de entrada de esta temporalidad
+  // (MESES_DE_ENTRADA) o, si es menos, las velas que entran a un ancho legible.
+  const porPeriodo = puntosDelPeriodo(serie, MESES_DE_ENTRADA[horas ? cadaHoras : semanales ? 'semana' : 'dia'])
+  const porAncho = horas ? velasRecientes(anchoGrafico, total) : diasRecientes(anchoGrafico, total, semanales ? 5 : 1)
+  const recientes = porPeriodo && porAncho ? Math.min(porPeriodo, porAncho) : porPeriodo || porAncho
   const rangoVisto = rango ?? (recientes ? 'reciente' : 'todo')
   const nRango = rangoVisto === 'tuyo' && primera
     ? Math.max(RUEDAS_MINIMAS, puntosDesde(serie, primera))
@@ -1220,8 +1250,8 @@ export default function LecturaTecnica({
         Datos al cierre del {fechaCorta(actual.lectura?.fecha)}. Muestra cómo se movió el precio: no es una recomendación para comprar ni vender.
       </p>
     </>,
-    // En 1H/4H «Lo reciente» se cuenta en velas, no en días de mercado.
-    { visto: ventana ? null : rangoVisto, recientes, textoReciente: horas && recientes ? `${recientes} velas` : null, compartir, antesDeCompartir,
+    // «Lo reciente» en palabras, por las fechas que abarca (en 1H/4H no son días de mercado).
+    { visto: ventana ? null : rangoVisto, recientes, textoReciente: recientes ? cuantoEsReciente(serie[total - recientes].d, serie[total - 1].d) : null, compartir, antesDeCompartir,
       arriba: soloGrafico ? null : <LecturaDeHoy lectura={actual.lectura} lista={lista} puntos={actual.puntos} adxTope={ADX_TOPE}
         boton={<BotonMervalle r={mervalle} ancho />}
         panel={<PanelMervalle r={mervalle} direccion={actual.fibonacci?.en_curso?.dir} />} /> },
@@ -1429,11 +1459,17 @@ const RANGOS = { reciente: 'Lo reciente', todo: 'Todo', tuyo: 'Desde que lo ten�
 // Lo corto, para el botón: en el celular, con velas, entra en el renglón hasta
 // «US$ · Reciente» (medido a 375 px; «Desde tu compra» lo mandaba abajo).
 const RANGOS_CORTOS = { reciente: 'Reciente', todo: 'Todo', tuyo: 'Lo tuyo' }
-// «Lo reciente» en palabras: «3 meses», «6 semanas» (días de mercado: 21 por mes, 5 por semana).
-function cuantoEsReciente(dias) {
-  const meses = Math.round(dias / 21)
-  if (meses >= 2) return meses >= 24 ? `${Math.round(dias / 252)} años` : `${meses} meses`
-  return `${Math.max(1, Math.round(dias / 5))} semanas`
+// «Lo reciente» en palabras, por el calendario entre la primera fecha que se ve
+// y la última: «1 año», «3 meses», «1 mes», «6 semanas». Años sólo si son
+// redondos (18 meses dice «18 meses», no «2 años»).
+export function cuantoEsReciente(desde, hasta) {
+  const dias = (Date.parse(hasta) - Date.parse(desde)) / 86400000
+  const meses = Math.round(dias / 30.44)
+  const resto = meses % 12
+  if (meses >= 11 && (resto <= 1 || resto >= 11)) { const a = Math.round(meses / 12); return a === 1 ? '1 año' : `${a} años` }
+  if (meses >= 2) return `${meses} meses`
+  if (meses === 1 && dias >= 26) return '1 mes'
+  return `${Math.max(1, Math.round(dias / 7))} semanas`
 }
 function ElegirVista({ moneda, setMoneda, conPesos, rango, setRango, recientes, textoReciente = null, conTuyo }) {
   const m = MONEDAS.find(x => x[0] === moneda) || MONEDAS[0]
@@ -1456,7 +1492,7 @@ function ElegirVista({ moneda, setMoneda, conPesos, rango, setRango, recientes, 
             {titulo('Período')}
             {rangos.map(id => (
               <Opcion key={id} data-rango={id} elegida={rango === id} nombre={RANGOS[id]}
-                detalle={id === 'reciente' && recientes ? (textoReciente || cuantoEsReciente(recientes)) : null}
+                detalle={id === 'reciente' && recientes ? textoReciente : null}
                 onClick={() => { setRango(id); cerrar() }} />
             ))}
           </div>

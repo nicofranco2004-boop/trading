@@ -271,7 +271,9 @@ describe('velas de 1 hora y de 4 horas', () => {
     expect(tarjetas()).toContain('Largo plazo')
     await clic(montado.contenedor, uno(n => n.nodeName === 'BUTTON' && texto(n) === 'Ver velas diarias'))
     await otraVez()
-    expect(velas().length).toBeGreaterThan(300)
+    // Vuelve en el período de entrada de las diarias: el último año (~250 ruedas), no las 300+ guardadas.
+    expect(velas().length).toBeGreaterThan(240)
+    expect(velas().length).toBeLessThan(270)
   })
 })
 
