@@ -219,7 +219,9 @@ describe('Compartir el gráfico técnico', () => {
     const cerca = await compartir()
     expect(cerca.subtitulo).not.toContain('del 01/01/25')
     expect(cerca.subtitulo).toContain('al 27/10/25')
-    expect(cerca.grafico.area[0].length).toBeLessThan(todo.grafico.area[0].length)
+    // De entrada son velas (Nico, 02/11): la imagen lleva las de lo que se ve.
+    expect(cerca.grafico.velas.length).toBeGreaterThan(0)
+    expect(cerca.grafico.velas.length).toBeLessThan(todo.grafico.velas.length)
   })
 
   it('en el celular: «Compartir» de la ventana abre el compartir del sistema con la imagen de la vista previa y su nombre', async () => {

@@ -145,8 +145,9 @@ describe('la barra de herramientas del gráfico', () => {
       expect(await prendido(id), id).toBe(fabrica(id))
       expect(SE_VE[id](), id).toBe(!!CAPAS_DE_FABRICA[id])
     }
-    expect(await prendido('linea')).toBe('true')
-    expect(await prendido('velas')).toBe('false')
+    // Velas de entrada (Nico, 02/11: TIPO_DE_FABRICA), para quien nunca eligió.
+    expect(await prendido('velas')).toBe('true')
+    expect(await prendido('linea')).toBe('false')
     expect(await prendido('medir')).toBe('false')     // medir es una herramienta: se prende para usarla
     // La leyenda de chips de abajo ya no está: un solo lugar para prender cada cosa.
     expect(nodos(n => attr(n, 'aria-label') === 'Qué líneas mostrar')).toHaveLength(0)
@@ -184,23 +185,25 @@ describe('la barra de herramientas del gráfico', () => {
     await dibujar()
     await tocar('vol')
     await tocar('ell')
-    await tocar('velas')
+    await tocar('linea')                        // eligió línea a propósito (lo de fábrica son velas)
     expect(JSON.parse(localStorage.getItem('rendi_grafico_capas'))).toMatchObject({ vol: false, ell: false, fib: true })
+    expect(localStorage.getItem('rendi_grafico_tipo')).toBe('linea')
     await montado.desmontar()
     await dibujar()                             // otra visita a la ficha
     expect(await prendido('vol')).toBe('false')
     expect(await prendido('ell')).toBe('false')
     expect(await prendido('fib')).toBe('true')
-    expect(await prendido('velas')).toBe('true')
+    expect(await prendido('linea')).toBe('true')
+    expect(await prendido('velas')).toBe('false')
     expect(SE_VE.vol()).toBe(false)
     expect(SE_VE.ell()).toBe(false)
     expect(SE_VE.fib()).toBe(true)
   })
 
-  it('«Volver a lo de fábrica» vuelve a la vista limpia, a la línea y olvida lo guardado', async () => {
+  it('«Volver a lo de fábrica» vuelve a la vista limpia, a las velas y olvida lo guardado', async () => {
     await dibujar()
     for (const id of ['vol', 'fib', 'ell', 'rsi', 'prom']) await tocar(id)
-    await tocar('velas')
+    await tocar('linea')
     await tocar('medir')
     // Con una herramienta prendida la lista se pliega sola (D1): se abre a mano.
     await clic(montado.contenedor, nodos(n => n.nodeName === 'BUTTON' && attr(n, 'aria-expanded') != null && texto(n).startsWith('Indicadores'))[0])
@@ -211,7 +214,8 @@ describe('la barra de herramientas del gráfico', () => {
       expect(await prendido(id), id).toBe(fabrica(id))
       expect(SE_VE[id](), id).toBe(!!CAPAS_DE_FABRICA[id])
     }
-    expect(await prendido('linea')).toBe('true')
+    expect(await prendido('velas')).toBe('true')
+    expect(await prendido('linea')).toBe('false')
     expect(await prendido('medir')).toBe('false')
     expect(localStorage.getItem('rendi_grafico_capas')).toBeNull()
     expect(localStorage.getItem('rendi_grafico_tipo')).toBeNull()
@@ -219,6 +223,7 @@ describe('la barra de herramientas del gráfico', () => {
     await montado.desmontar()
     await dibujar()
     for (const id of CAPAS) expect(await prendido(id), id).toBe(fabrica(id))
+    expect(await prendido('velas')).toBe('true')
   })
 
   it('medir es una herramienta: se prende, se usa y se apaga; no hay botón de agrandar (siempre ampliado)', async () => {

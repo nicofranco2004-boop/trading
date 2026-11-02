@@ -135,6 +135,12 @@ describe('Análisis técnico → Gráfico', () => {
     expect(JSON.parse(almacen.get(CLAVE))).toEqual({ activo: 'NVDA', recientes: ['NVDA'] })
   })
 
+  it('línea o velas no lo decide la pestaña: es el gráfico de la ficha, con su único default (velas, Nico 02/11)', async () => {
+    montado = await abrir('/analisis-tecnico?tab=grafico')
+    expect(recibido.length).toBeGreaterThan(0)
+    for (const g of recibido) expect(g).not.toHaveProperty('tipo')
+  })
+
   it('vuelve al último que miraste; la dirección gana', async () => {
     almacen.set(CLAVE, JSON.stringify({ activo: 'TSLA', recientes: ['TSLA', 'NVDA'] }))
     montado = await abrir('/analisis-tecnico?tab=grafico')

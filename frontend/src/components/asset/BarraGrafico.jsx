@@ -16,6 +16,8 @@
 // desde «Indicadores» y los menús de Fibonacci y Elliott. Lo que cada uno prende
 // o apaga se guarda en el navegador (`rendi_grafico_capas`, como el tipo de
 // gráfico en `rendi_grafico_tipo`); «Volver a lo de fábrica» lo olvida.
+// El tipo de fábrica es VELAS (Nico, 02/11): el que nunca eligió ve velas; el
+// que tocó «Línea» la sigue viendo, porque eso quedó guardado.
 //
 // Una sola barra para compu y celular (R6): en compu va parada, pegada a la
 // izquierda del gráfico, con el ícono solo y el nombre al pasar el mouse; en el
@@ -42,6 +44,10 @@ export const CAPAS_DE_FABRICA = Object.freeze({
   eventos: false, marcas: false, prom: false,
   globo: true,   // el cartel con los datos del día al pasar el mouse: no ensucia, aparece al pasar
 })
+
+/** Línea o velas para quien nunca eligió (y al «Volver a lo de fábrica»). El único lugar que lo decide. */
+export const TIPO_DE_FABRICA = 'velas'
+const NOMBRE_DEL_TIPO = { velas: 'velas', linea: 'línea' }
 
 /** Todo prendido: lo que las pruebas del gráfico dejan guardado para ver todas las capas. */
 export const CAPAS_TODAS = Object.freeze(Object.fromEntries(Object.keys(CAPAS_DE_FABRICA).map(k => [k, true])))
@@ -281,7 +287,7 @@ export function LeyendaIndicadores({ items, onAviso, deFabrica, onFabrica, ancho
           })}
           <li className="border-t border-line/60 mt-0.5 pt-0.5">
             <button type="button" data-capa="fabrica" onClick={onFabrica} disabled={deFabrica}
-              title={deFabrica ? 'El gráfico ya está como al principio: todo visible y en línea' : 'Vuelve a mostrar todo y pasa el gráfico a línea'}
+              title={deFabrica ? `El gráfico ya está como al principio: la vista limpia y en ${NOMBRE_DEL_TIPO[TIPO_DE_FABRICA]}` : `Vuelve a la vista limpia y pasa el gráfico a ${NOMBRE_DEL_TIPO[TIPO_DE_FABRICA]}`}
               className="w-full inline-flex items-center gap-1.5 min-h-9 sm:min-h-7 px-1.5 rounded text-ink-2 enabled:hover:text-ink-0 enabled:hover:bg-bg-2 disabled:opacity-50">
               <RotateCcw size={13} aria-hidden="true" />Volver a lo de fábrica
             </button>
