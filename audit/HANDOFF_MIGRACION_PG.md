@@ -549,3 +549,53 @@ duplica nada, pero mirá `_tomar_turno` y `pgsesion.tomar_turno`.
 - Piezas compartidas (`pgshim`, `pgsesion`, funciones del turno, `conftest`, `_limpieza`) no se
   mudan ni cambian sin OK de la central: el único conflicto del día salió de dos ayudantes tocando
   `_tomar_turno` a la vez.
+
+## 12 · Estado al 03/11/2026 (sesión central)
+
+**Punta: `d3110a39`.** Medido sobre `6925830f` (la punta sólo suma un informe):
+- Mac: **Postgres 7.291 / 0 en 590 s**, SQLite 7.277 / 0 en 350 s;
+- **Railway → Supabase (us-west-1), suite entera: 7.286 / 0 en 1 h 49**, latencia mediana 2,7 ms
+  (deployment `748fac9a`, 02/11 21:30 UTC). Primera corrida contra Supabase en cero (31/10: 239
+  rojos; 02/11 mediodía: 4). Los 5 de diferencia con la Mac son `skip` (necesitan herramientas de
+  la Mac), no fallas.
+
+Nada publicado. Sin push.
+
+### Qué entró desde la sección 11
+| pieza | commit(s) | qué hace |
+|---|---|---|
+| Ensayo general del pasaje | `bbb8798e` | copia de prod del 16/08 (1.093 usuarios, 2,57 M filas) migrada y copiada a un PG local; paso a paso con tiempos en `audit/PASAJE_PASO_A_PASO.md`; secuencias que reusaban ids. |
+| Backup nocturno con Postgres | `972e6e4c`, `2d48c653` | `pg_dump` con prueba de recuperación; «Backup OK» no miente; el motor se decide adentro. Ver `audit/BACKUPS_CON_POSTGRES.md`. |
+| Empate del mismo día | `e801bdf9` | `orden_estable.py` copia el orden que SQLite da hoy (la última cargada primero) + guardián. **Si ese orden es el correcto es decisión de Nico (sección 6).** |
+| Suite desde Railway | `2b7b63dd`, `36f85898` | servicio temporal `suite-supabase` con `Dockerfile.suite` (`RAILWAY_DOCKERFILE_PATH`); la URL con un Enter al final. Guía: `audit/SUITE_SUPABASE_DESDE_RAILWAY.md`. **El servicio se borró el 03/11.** |
+| 239 rojos del 31/10 | `53a32d87` | ninguno de la app: un esquema por corrida (Supavisor deja 2 conexiones por cada `search_path` distinto), `RAILWAY_*` fuera del entorno de la suite, módulos «frozen» de Python 3.11, `-c search_path` con espacio, tests de hilos con tope de 15. |
+| 3 rojos del 02/11 | `af185574` | las reconstrucciones de fondo (`mtm-backfill-*`) de una prueba pisaban la limpieza de la siguiente; `tests/_trabajo_de_fondo.esperar()` antes de cada prueba y de cada archivo. Medido con sondas, cadena de «por qué» en el commit. |
+| Tarjeta del año | `c6ed50a3` | (cherry-pick de `e6ecc28c`) la cuenta esperada sigue al motor, no al almanaque. |
+| Imagen de producción | merge `6925830f` (`1ce8abc5`, `696573cc`) | `Dockerfile` en la raíz (Python 3.11, `pg_dump` 17, venv, `exec uvicorn`); Railway deja de leer `railway.toml` el **2026-12-01**. **Probado en Railway el 03/11 (deployment `9067d027`): armó, arrancó, `imagen: Python 3.11.18 · pg_dump 17.11`.** Pasos de Nico antes de publicar: `audit/RAILWAY_SIN_CONFIG_AS_CODE.md` §7. |
+| Tope de conexiones | merge `d3110a39` (`7bfb0f32`) | `audit/TOPE_CONEXIONES_SUPABASE.md`: con Pool Size 15 una publicación daba 69/80 errores 500. **Nico subió Pool Size a 24 el 03/11; medido: 24 de 24 a la vez.** |
+
+### Supavisor (pooler de Supabase, modo sesión), medido
+- Pool Size = tope de clientes a la vez; el siguiente se rechaza en el acto (`EMAXCONNSESSION`).
+- Una fila por cada `search_path` distinto del DSN, que no suelta sus conexiones.
+- `-csearch_path=x` (pegado) se ignora; `-c search_path=x` llega.
+- La app NO reintenta si la base rechaza abrir una conexión: da 500. Propuesta sin hacer (pgshim
+  es compartido): que `_Pozo.tomar` reintente unos segundos ante ese rechazo.
+
+### Lo que falta para el pasaje
+1. **Auditoría final** con una sesión nueva sobre `claude/migracion-pg-oct`, y el OK de Nico.
+2. **Publicación aparte** `claude/import-renombre-prod` (renombre durante import + tokens): sigue
+   esperando su auditoría y el OK.
+3. **Decisiones de Nico** (sección 6): orden del mismo día, los 21 de 7 lentes, paywall,
+   `credit_ledger` / `_marcar_bienvenidas_previas`, PITR.
+4. **Pasos de Nico en el panel de Railway** antes del 1/12 (`RAILWAY_SIN_CONFIG_AS_CODE.md` §7):
+   Healthcheck Path, `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`, `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`.
+5. El aviso ⚠ del volumen `trading-volume` en Railway: **sigue sin leerse.**
+6. 1/12: `BACKUP_LOCAL_KEEP_DAYS=7`, después de comprobar que R2 tiene un archivo por noche.
+
+### Deuda que se sabe y no se tocó
+- **113 limpiezas `DELETE … except Exception: pass` en 102 archivos de pruebas.** En Postgres
+  el primer error aborta la transacción y las demás fallan en silencio: esconden la causa real
+  (así se ocultó lo de `af185574`). Arreglo propuesto: un helper único (`tests/_limpieza`) con
+  punto de guardado, y un guardián que no deje volver el patrón.
+- `main._imagen_del_proceso` y `backup_db._version_mayor` leen la versión de `pg_dump` cada uno
+  a su manera (el registro muestra `17.11-1.pgdg12+2)`); el respaldo la entiende bien (17). Unificar.
