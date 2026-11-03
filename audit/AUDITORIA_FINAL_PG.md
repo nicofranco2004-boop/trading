@@ -7,18 +7,21 @@
 
 ## Veredicto
 
-**Se puede pasar después de tres cosas, y ninguna es un error de plata en el código.**
-Las tres son del procedimiento del día o de una medición de un minuto en Supabase:
+**Se puede pasar después de dos cosas, y ninguna es un error de plata en el código.**
+Las dos son del procedimiento del día:
 
-1. **Medir en Supabase si su intermediario de conexiones suelta los candados de una conexión
-   que se cortó** (hallazgo P1, abajo). Si no los suelta, un arranque cortado a la mitad deja
-   trabados todos los arranques siguientes: la app no vuelve a levantar hasta que alguien
-   intervenga. Es una prueba de un minuto que sólo puede hacer la sesión central (a mí me está
-   prohibido conectarme a Supabase). Si da mal, el arreglo es de una línea y va antes.
-2. **El paso 3 del día («hacé un respaldo y bajalo fuera de Railway») no se puede hacer tal
+> 🆕 03/11, más tarde: **el código publicado en `main` desde el 30/10 no trae nada roto a la
+> vista en Postgres** (sección «Código publicado que todavía no pasó por Postgres»: 657 pruebas
+> nuevas de `main` en verde contra Postgres; el esquema mezclado se aplica limpio). Falta la mezcla
+> y la suite completa de los dos motores, que hace la central.
+>
+> 🆕 03/11, más tarde: el tercer bloqueante (P1, el candado del arranque) **se midió en
+> Supabase y no existe**: Supavisor limpia los candados al soltar la conexión. Detalle en P1.
+
+1. **El paso 3 del día («hacé un respaldo y bajalo fuera de Railway») no se puede hacer tal
    como está escrito** (hallazgo P2): con la app cerrada, el único botón que hace el respaldo
    está detrás de la puerta cerrada, y el documento no dice cómo bajarlo.
-3. **El paso 8 («comparar las pantallas de 20 cuentas») no se puede repetir el día real como se
+2. **El paso 8 («comparar las pantallas de 20 cuentas») no se puede repetir el día real como se
    hizo en el ensayo** (hallazgo P3): el ensayo comparó dos copias de la app sin internet; el día
    real una de las dos tiene precios en vivo, y la llave para entrar con la app cerrada no puede
    pasar por el chat.
@@ -36,8 +39,7 @@ de abrir funciona de verdad.
   publicado.
 - **El día del pasaje, la plata de los usuarios no corre riesgo por lo que encontré:** ningún
   hallazgo pierde ni cambia un número guardado. Lo peor medido es una espera de 30 segundos
-  (hallazgo D1) y lo peor sin medir es que la app no levante después de un corte (P1), que es
-  visible y no toca datos.
+  (hallazgo D1).
 - **Después de abrir (paso 9) no hay vuelta atrás sin perder lo que la gente cargue.** Eso ya lo
   dice el paso a paso y es una decisión, no un error; está repetido acá porque es lo único
   irreversible de todo el día.
@@ -51,7 +53,7 @@ cambia el veredicto si se hace · **después** = puede esperar al pasaje.
 
 | # | qué pasa, dicho por su efecto | gravedad | prueba | arreglo propuesto |
 |---|---|---|---|---|
-| P1 | Si un arranque de la app se corta a mitad (un reinicio encima de otro, falta de memoria), puede dejar puesto el candado que ordena los arranques; el siguiente lo espera **para siempre** y Railway marca la publicación como fallida a los 300 s. Pasa sólo si el intermediario de Supabase (Supavisor) reusa la conexión cortada sin limpiarla. | **bloquea hasta medirlo** | La parte del código está verificada: `main.py:1478-1480` pide `pg_advisory_lock` sin tope de espera, y la conexión del candado no fija `lock_timeout` (`pgsesion.conectar`, `pgsesion.py:65-80`). Que Supavisor reusa las conexiones del servidor después de que el cliente se va está medido (memoria `reference_supavisor_limites`, punto 4). **Lo que NO está medido** es si al reusarla suelta los candados: no pude probarlo (me está prohibido conectarme a Supabase). | Medirlo (receta abajo, un minuto). Si el candado queda puesto: en `_de_a_un_arranque_por_vez`, `SET lock_timeout = '120s'` en la conexión del candado antes del `pg_advisory_lock`, así un candado huérfano da un error claro en el registro en vez de un arranque colgado. |
+| P1 | Si un arranque de la app se corta a mitad (un reinicio encima de otro, falta de memoria), puede dejar puesto el candado que ordena los arranques; el siguiente lo espera **para siempre** y Railway marca la publicación como fallida a los 300 s. Pasa sólo si el intermediario de Supabase (Supavisor) reusa la conexión cortada sin limpiarla. | ~~bloquea hasta medirlo~~ **descartado: medido, no pasa** | **Medido por la sesión central en Supabase el 03/11:** A tomó el candado en el backend 410410 y se la mató con `kill -9`; B cayó en el MISMO backend (Supavisor reusó la conexión) y, después de un solo `unlock`, `pg_locks` no mostró ningún candado 424242; una tercera conexión en otro backend (410412) lo tomó. O sea: Supavisor limpia los candados de sesión al soltar la conexión del cliente. — Lo que había antes de medir: la parte del código está verificada: `main.py:1478-1480` pide `pg_advisory_lock` sin tope de espera, y la conexión del candado no fija `lock_timeout` (`pgsesion.conectar`, `pgsesion.py:65-80`). Que Supavisor reusa las conexiones del servidor después de que el cliente se va está medido (memoria `reference_supavisor_limites`, punto 4). Si al reusarla suelta los candados lo midió la central (arriba). | Nada que hacer. (Lo que se proponía si daba mal: en `_de_a_un_arranque_por_vez`, `SET lock_timeout = '120s'` en la conexión del candado antes del `pg_advisory_lock`, así un candado huérfano da un error claro en el registro en vez de un arranque colgado.) |
 | P2 | **El paso 3 del día no se puede ejecutar como está escrito.** Con el mantenimiento prendido, el único disparador del respaldo (`POST /api/admin/backup-trigger`) devuelve 503 desde el navegador, porque sólo pasa quien manda la cabecera secreta. Y el paso a paso no dice cómo se baja el archivo fuera del volumen de Railway. | **bloquea** (procedimiento) | `mantenimiento.py:115-122` (`deja_pasar`: sólo `/api/health` o la cabecera); `main.py:27350` (el disparador escribe en el volumen y, si está configurado, sube a R2). `PASAJE_PASO_A_PASO.md` §2 paso 3 no nombra ni el disparador ni la bajada. Además, el aviso ⚠ del volumen de Railway **sigue sin leerse** (`HANDOFF` §12, punto 5): si el disco está lleno, el respaldo falla en el peor momento. | Escribir el paso 3 a nivel de click: hacer el respaldo **antes** de prender el mantenimiento no sirve (queda viejo), así que: (a) la sesión central lo dispara con la cabecera desde una terminal, con la llave leída de un archivo de Nico, nunca del chat; (b) Nico lo baja desde Cloudflare R2 (memoria `project_backup_externo_r2`: el respaldo ya sube ahí) y anota tamaño y `md5`. Y leer el aviso del volumen antes de fijar la fecha. |
 | P3 | **El paso 8 (comparar pantallas) no se puede repetir como en el ensayo.** El ensayo comparó dos copias de la app sin internet. El día real, la de Postgres es producción con precios en vivo: la Cartera va a dar distinto aunque la copia esté perfecta, y alguien puede leer eso como una falla (o peor, acostumbrarse a ignorar diferencias). Levantar una segunda copia local contra Supabase para comparar tampoco sirve: correría el arranque y los programadores (fotos, mails) contra la base nueva. | **bloquea** (procedimiento) | `PASAJE_PASO_A_PASO.md` §0 («sin salida a internet… la comparación mide la base») y §2 paso 8. `HANDOFF` §5.F: «`import main` corre `init_db()` + reparaciones… contra la base». Los programadores internos arrancan con la app (`main.py:46861-46918`). | Decidir antes qué se compara el día: (a) la verificación de 4 niveles del copiador (base contra base, sin precios: ya da el «cero hallazgos» que importa); (b) en pantallas, sólo lo que no depende del precio (movimientos, mensual, fotos guardadas); (c) quién tiene la llave del modo mantenimiento sin pasarla por el chat (Nico la carga en un archivo, como hizo con `~/.rendi-supabase-url`). |
 | A1 | **No hay forma directa de preguntarle a la app «¿estás en Postgres?».** El paso 8 dice «el motor es Postgres, primero de todo», pero `/api/health` no lo dice. La revisión del plan de agosto (`MIGRACION_POSTGRES.md:1468`, «falta un chequeo 0») lo pidió y no se hizo. | antes | `main.py:49504-49535`: devuelve `ok`, `timestamp`, `service`, `commit`; nada del motor. Hoy se puede deducir del registro (`esquema de Postgres: se aplican 797 sentencias`, `main.py:1431`) o de que todo dé 503 (sólo pasa con `DATABASE_URL` puesta y sin `RENDI_PASAJE_COMPLETO`). Funciona, pero es una deducción, y la regla es preferir la prueba directa. | Una línea, en `health_check`: `"motor": "postgres" if USANDO_PG else "sqlite",` (diff abajo). No toca la base; decir el motor no expone nada. |
@@ -69,7 +71,7 @@ A1 — el chequeo del motor (`backend/main.py`, `health_check`):
 +        "motor": "postgres" if USANDO_PG else "sqlite",
 ```
 
-P1 — sólo si la medición da mal (`backend/main.py`, `_de_a_un_arranque_por_vez`):
+P1 — **ya no hace falta** (la medición dio bien); queda como referencia (`backend/main.py`, `_de_a_un_arranque_por_vez`):
 
 ```diff
      with pgsesion.conectar(DATABASE_URL, autocommit=True) as candado:
@@ -81,7 +83,15 @@ P1 — sólo si la medición da mal (`backend/main.py`, `_de_a_un_arranque_por_v
 (120 s y no 3 s: un arranque normal que espera a otro tarda segundos; el tope sólo tiene que
 cortar el caso del candado huérfano antes de los 300 s del chequeo de salud.)
 
-### Receta de la medición P1 (para la sesión central, contra Supabase, un minuto)
+### Receta de la medición P1 — ⚠️ la mía tenía un agujero
+
+**Error mío, corregido por la sesión central:** la receta de abajo no alcanzaba. Si B cae en la
+misma conexión del servidor que A (que es justo lo que hace Supavisor), `pg_try_advisory_lock`
+da `true` aunque el candado haya quedado puesto, porque el mismo dueño puede volver a tomar su
+propio candado. La central lo confirmó de dos maneras que sí distinguen: contando en `pg_locks`
+después de un solo `unlock`, y tomándolo desde una tercera conexión en otro backend. Para la
+próxima receta de este tipo: la prueba tiene que hacerse desde una conexión que **no** pueda
+ser el mismo dueño.
 
 1. Abrir una conexión A por el pooler con la `DATABASE_URL` de producción y correr
    `SELECT pg_advisory_lock(424242)`.
@@ -90,8 +100,39 @@ cortar el caso del candado huérfano antes de los 300 s del chequeo de salud.)
 
 | si B dice | significa | qué hacer |
 |---|---|---|
-| `true` | Supavisor limpia la conexión: P1 no existe | soltar el candado de B y nada más |
+| `true` | **no alcanza para concluir** (ver arriba) | confirmar con `pg_locks` o desde otra conexión simultánea |
 | `false` | el candado quedó huérfano en una conexión reusada | aplicar el diff P1 antes del pasaje; esperar a que Supavisor corte la conexión vieja (o reiniciar el pooler) para limpiar la prueba |
+
+---
+
+## Código publicado que todavía no pasó por Postgres
+
+> Pedido por la sesión central después del primer informe. La rama `claude/migracion-pg-oct`
+> (`453af0f3`) está **433 commits atrás** de `origin/main` (`dd99cb0d`): desde el 30/10 se
+> publicaron el análisis técnico, Elliott, las alertas durante la rueda, la tesis, el
+> termómetro y el resultado en pesos y dólares, entre otras cosas. **No mezclé nada:** la mezcla
+> la hace la central después de esta auditoría.
+
+**En una línea: lo publicado no trae nada que se vea roto en Postgres.** Las tablas nuevas ya
+tienen su versión de Postgres, y las 43 pruebas nuevas de `main` pasan contra Postgres sin
+ninguna falla. Lo que sí va a costar trabajo es **juntar las ramas** (12 choques de texto) y,
+después, la corrida de las dos suites completas con el resultado mezclado, que es lo que
+de verdad certifica.
+
+| qué | resultado | cómo lo comprobé |
+|---|---|---|
+| **¿Las tablas y columnas nuevas de `main` tienen su versión de Postgres?** | **Sí, todas.** `main` agregó 9 tablas (`dibujos_grafico`, `resumen_semanal_prefs`, `resumenes_tecnicos`, `splits_yahoo`, `tendencia_semanal`, `termometro_diario`, `tesis`, `tesis_del_dia`, `velas_corridas`), 13 columnas (`alerts` ×4, `operations` ×8, `velas_estado` ×1) y 3 índices. Ninguna está en el `schema_pg.sql` de la rama; **todas** están en el de `main` (que ya trae su propio generador y su propio `schema_pg.sql`). | Arranqué cada versión de la app sobre una SQLite vacía en el scratchpad y comparé tabla por tabla y columna por columna contra los dos `schema_pg.sql`. |
+| **Al juntar las ramas, ¿el esquema de Postgres sale bien?** | **Sí.** `schema_pg.sql` se combina solo, sin choque. El archivo combinado: 884 sentencias, **0 errores aplicándolo dos veces seguidas** en una base vacía, **no le falta ninguna** tabla ni columna de `main`, y 14 claves foráneas sin duplicar. | `git merge-tree` (calcula la mezcla sin hacerla) + aplicar el resultado en una base `rendi_auditoria_esq` del Postgres local, creada y borrada para esto. |
+| **¿Qué choca al juntar?** | **12 choques de texto en 3 archivos:** `main.py` ×9, `pgsesion.py` ×2 (`main` trae una copia textual de `si_falla_se_deshace_solo_esto`, con una nota que dice «al juntar las ramas, queda una sola»), `tests/conftest.py` ×1. `mkschema.py` se combina solo, pero cambió en los dos lados (`89349425` en `main`): después de la mezcla, regenerar `schema_pg.sql` con el generador mezclado y comprobar que da lo mismo que el archivo combinado. | `git merge-tree --write-tree 453af0f3 origin/main`. |
+| **Las pruebas nuevas de `main`, en Postgres** | **657 pasaron, 0 fallaron, 1 salteada, en 1 min 58 s.** Son los 43 archivos de prueba que `main` agregó (técnico, Elliott, alertas técnicas, avisos por una puerta, tesis, termómetro, velas horarias, resultado en dos monedas, liquidez, dibujos, freno de lecturas pesadas, etc.). | Una copia temporal de `origin/main` (sin rama, borrada al terminar), con `DATABASE_URL` al Postgres local. ⚠️ **Corrió con las piezas de Postgres que trae `main`, que son más viejas que las de la rama** (sin el pozo, sin el turno en todas las puertas). Prueba que el código nuevo habla Postgres; no prueba que conviva con los cambios de la rama: eso lo dice la suite completa después de la mezcla. |
+| **Construcciones de SQL que suelen romper en Postgres, en el código agregado** | **Ninguna rota.** 10 `ON CONFLICT`: cada uno tiene su clave única o primaria en el esquema de Postgres. 7 `GROUP BY`: todos agrupan por todo lo que muestran. 6 `lastrowid`, 17 `datetime('now')`, 1 `sqlite_master` + `PRAGMA`: los traduce la capa de traducción (`pgshim`). 0 `INSERT OR`, 0 `? IS NULL`, 0 `julianday`/`json_extract`/`group_concat`. Los `ALTER TABLE` de `init_db` son de la rama SQLite; Postgres usa `schema_pg.sql`. | Barrido de las líneas agregadas en `backend/` (sin pruebas), y lectura a mano de cada `ON CONFLICT` y `GROUP BY`. |
+| Un detalle menor, no rompe | `ai/resumen_tecnico.py:263` lee la tabla dentro de un `try` que traga el error «por si la tabla no existe en una base vieja». En Postgres un error así deja la conexión inservible para lo que siga en ese pedido. No pasa en la práctica: con `schema_pg.sql` aplicado la tabla siempre existe. | Lectura del código. |
+
+**Lo que NO cubre esta sección:** las ~30 pruebas que `main` **modificó** (no corrí las
+versiones nuevas; cubren módulos viejos); las pruebas viejas que ejercitan código nuevo; y nada
+de esto corrió con el código mezclado. **La suite completa de los dos motores después de la
+mezcla es el paso que certifica**; esta sección sólo dice que no hay nada roto a la vista antes
+de hacerla.
 
 ---
 
