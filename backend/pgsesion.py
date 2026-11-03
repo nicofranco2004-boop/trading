@@ -182,15 +182,6 @@ def si_falla_se_deshace_solo_esto(conn, nombre: str):
     importa a ellos: sería un círculo). Éste es el módulo de «lo que toda conexión
     necesita», el mismo lugar que `turno_exclusivo`. `main.py` lo delega.
     """
-    # En SQLite, un SAVEPOINT sin transacción abierta ABRE una, y el RELEASE de
-    # abajo la CONFIRMA: lo de adentro quedaba guardado aunque quien llama
-    # después la deshiciera. Medido el 03/11/2026 en la venta
-    # (`test_venta_en_dolares_no_alcanza_no_usa_los_de_pesos`): la pata en
-    # dólares quedaba creada aunque la venta rebotara entera. Python abre la
-    # transacción recién en la primera escritura, así que antes de esa el
-    # punto de guardado tiene que abrirla él. En Postgres la abre psycopg.
-    if getattr(conn, "in_transaction", None) is False and not habla_postgres(conn):
-        conn.execute("BEGIN")
     conn.execute(f"SAVEPOINT {nombre}")
     try:
         yield
