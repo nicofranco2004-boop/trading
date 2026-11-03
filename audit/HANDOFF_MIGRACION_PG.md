@@ -599,3 +599,23 @@ Nada publicado. Sin push.
   punto de guardado, y un guardián que no deje volver el patrón.
 - `main._imagen_del_proceso` y `backup_db._version_mayor` leen la versión de `pg_dump` cada uno
   a su manera (el registro muestra `17.11-1.pgdg12+2)`); el respaldo la entiende bien (17). Unificar.
+
+## 13 · Estado al 03/11/2026 15h — lo publicado ya está adentro
+
+**Punta: `fbb9a25c`.** Mac: **Postgres 8.051 / 0** (16 min 42 s), **SQLite 8.040 / 0** (8 min 11 s).
+Nada publicado.
+
+| pieza | commit(s) | qué hace |
+|---|---|---|
+| Auditoría final | `807824cb` (`a11353ee`) | `audit/AUDITORIA_FINAL_PG.md`: «se puede pasar después de 2 cosas» (P2, P3). P1 (candado del arranque) **descartado midiendo en Supabase**: Supavisor limpia los candados al soltar la conexión. Ojo: `pg_try_advisory_lock` es reentrante, así que la receta original daba «bien» aunque estuviera mal. |
+| Merge de `origin/main` | `e94cad70` (`dd99cb0d`, 433 commits) | 12 choques, detalle en el commit. `_init_db_postgres` = tesis antes + `_esquema_pg_al_dia` + `_borrar_marcas_sueltas` después. `mkschema.py` regenerado aparte = `schema_pg.sql` mezclado, sin diferencias. |
+| Guardianes después del merge | `787e536b`, `f866338f` | el censo del turno resuelve `_colgadas_de_alerts` (con prueba contra el esquema real); `sell_position_fifo` en `NO_APLICA` (medido; un punto de guardado ahí rompía SQLite: el RELEASE sin transacción la confirma). |
+| Pasos 3 y 8 del día | `679f3d7e` (`d911dc25`) | `PASAJE_PASO_A_PASO.md` reescrito (P2, P3, A2). El respaldo con la app cerrada **necesita además la sesión de admin de Nico** (contraseña oculta en la terminal). |
+| Script del día + motor en salud | `ccef4128` (`c1abba67`) | `scripts/pasaje_con_mantenimiento.py` con pruebas contra la app real; `/api/health` dice `"motor"`; una sola lectura de la versión de `pg_dump`. |
+| Termómetro en las pruebas | `fbb9a25c` | el cron de alertas largaba el termómetro real (Yahoo, >4 min) y dejaba la corrida tomada: 8 rojos en `test_termometro` según la hora. Venía de main. |
+
+### Lo que falta
+1. Antes del pasaje, volver a mezclar `origin/main` si se publicó algo después de `dd99cb0d`, y correr las dos suites.
+2. Opcional: suite contra Supabase desde Railway con este código (el servicio `suite-supabase` se borró; la guía está en `SUITE_SUPABASE_DESDE_RAILWAY.md`).
+3. Nico: el aviso ⚠ del volumen; la ventana del día (paso 0); los pasos del panel de Railway antes del 1/12; las decisiones de §6; confirmar la URL de producción (paso A0).
+4. Ensayar la bajada desde R2 (paso B del instructivo).
