@@ -18203,7 +18203,11 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 # primera vuelta se deshizo después de crear la pata, el reintento
                 # arrancaba con un broker que ya no existía.
                 try:
-                    broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
+                    # Punto de guardado: si la pata falla a mitad, lo suyo se deshace
+                    # y la consulta del plan B de abajo corre sobre una transacción
+                    # sana (en Postgres, sin esto, revienta con otro error).
+                    with _si_falla_se_deshace_solo_esto(conn, "pata_de_la_moneda"):
+                        broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
                 except HTTPException as _e:
                     # Un lote anotado en pesos en una cuenta en dólares (entró antes
                     # del 29/10): la pantalla vende en su moneda y no hay caja donde

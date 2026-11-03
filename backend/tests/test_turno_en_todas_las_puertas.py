@@ -92,10 +92,22 @@ def _textos_sql(fn):
             yield "".join(partes)
 
 
+# Lo que devuelve `main._colgadas_de_alerts`: las tablas que cuelgan de `alerts`
+# por `alert_id` y NO tienen `user_id`. Ninguna de la plata puede salir de ahí,
+# porque todas las de la plata tienen `user_id`; lo prueba
+# `test_las_colgadas_de_alerts_no_son_de_la_plata` contra el esquema de verdad.
+# Las usan el arranque (`_borrar_marcas_sueltas`) y borrar una alerta
+# (`alerts_delete`), que entraron con lo publicado el 03/11.
+COLGADAS_DE_ALERTS = "(colgadas de alerts, sin user_id)"
+
+
 def _textos_de(nodo, constantes):
     """{textos} si `nodo` es un texto, una tupla/lista/conjunto de textos (o de
     tuplas cuyo primer elemento es texto), un nombre de módulo que vale eso, o
     `modulo.CONSTANTE`; None si no se puede saber."""
+    if (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name)
+            and nodo.func.id == "_colgadas_de_alerts"):
+        return {COLGADAS_DE_ALERTS}
     if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str):
         return {nodo.value}
     if isinstance(nodo, (ast.Tuple, ast.List, ast.Set)):
@@ -136,6 +148,10 @@ def _valores_de(fn, nombre, constantes):
             if not (isinstance(t, ast.Name) and t.id == nombre):
                 continue
             v = _textos_de(n.iter, constantes)
+            if (v is None and isinstance(n.iter, ast.Name) and n.iter.id != nombre
+                    and n.iter.id not in constantes):
+                # `colgadas = _colgadas_de_alerts(...)` y después `for t in colgadas`
+                v = _valores_de(fn, n.iter.id, constantes)
         elif isinstance(n, ast.Assign) and any(
                 isinstance(t, ast.Name) and t.id == nombre for t in n.targets):
             v = _textos_de(n.value, constantes)
@@ -219,6 +235,20 @@ def _duenos_de_conexion_sin_turno(src=None, piden_adentro=None, ver_variables=Tr
 
 
 class ElCensoDeLasPuertas(unittest.TestCase):
+
+    def test_las_colgadas_de_alerts_no_son_de_la_plata(self):
+        """Lo que permite que el censo no cuente como «de la plata» lo que se
+        borra recorriendo `_colgadas_de_alerts`: sobre el esquema de verdad, esa
+        lista no tiene ninguna tabla de la plata, y no está vacía (si lo
+        estuviera, esta prueba no probaría nada)."""
+        import main
+        conn = main.get_db()
+        try:
+            colgadas = set(main._colgadas_de_alerts(main._esquema_por_tabla(conn)))
+        finally:
+            conn.close()
+        self.assertIn("alert_symbol_state", colgadas)
+        self.assertEqual(colgadas & set(TABLAS_DE_LA_PLATA), set())
 
     def test_quien_abre_una_conexion_y_escribe_la_plata_pide_el_turno(self):
         faltan = _duenos_de_conexion_sin_turno()
