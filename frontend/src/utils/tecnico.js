@@ -172,6 +172,21 @@ export function textoVelaDeHoy(vela, semanales = false) {
  *
  * El aire de entrada a la derecha: un 5 % de lo que se ve, nunca menos de 3.
  */
+/**
+ * Hacia dónde va el último precio, para el color de su cartel (verde 1, rojo
+ * −1, gris 0). Con velas, como TradingView (Nico, 02/11): contra la APERTURA de
+ * la vela actual, que es lo que se ve (vela verde, cartel verde). En la línea,
+ * que no muestra aperturas, contra el cierre anterior. Una sola cuenta para la
+ * pantalla (LecturaTecnica) y la imagen de «Compartir» (imagenGrafico).
+ */
+export function haciaDondeVa(puntos = [], conVelas = false) {
+  const u = puntos[puntos.length - 1]
+  if (!u || u.c == null) return 0
+  const contra = conVelas && u.o != null ? u.o : puntos[puntos.length - 2]?.c
+  if (contra == null || u.c === contra) return 0
+  return u.c > contra ? 1 : -1
+}
+
 export function margenDerecho(dias) {
   return Math.max(3, Math.round(dias * 0.05))
 }

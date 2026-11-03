@@ -574,3 +574,20 @@ describe('textoVelaDeHoy', () => {
     expect(textoVelaDeHoy({ d: '2026-10-29', c: 1 })).toBe('')
   })
 })
+
+describe('haciaDondeVa: el color del cartel del último precio (Nico, 02/11)', () => {
+  it('con velas, contra la apertura de la vela actual (vela verde, cartel verde)', async () => {
+    const { haciaDondeVa } = await import('./tecnico')
+    // Abrió en 100 y va en 98, pero el cierre anterior fue 95: la vela es roja → rojo.
+    expect(haciaDondeVa([{ c: 95 }, { o: 100, c: 98 }], true)).toBe(-1)
+    expect(haciaDondeVa([{ c: 105 }, { o: 100, c: 102 }], true)).toBe(1)
+    expect(haciaDondeVa([{ c: 99 }, { o: 100, c: 100 }], true)).toBe(0)
+    // Sin apertura (una vela sin datos sanos), contra el cierre anterior.
+    expect(haciaDondeVa([{ c: 95 }, { c: 98 }], true)).toBe(1)
+  })
+  it('en la línea, contra el cierre anterior', async () => {
+    const { haciaDondeVa } = await import('./tecnico')
+    expect(haciaDondeVa([{ c: 95 }, { o: 100, c: 98 }], false)).toBe(1)
+    expect(haciaDondeVa([], false)).toBe(0)
+  })
+})

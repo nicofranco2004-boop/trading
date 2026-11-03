@@ -17,7 +17,7 @@
 // personales. La tesis ni llega acá; las notas viajan con tus dibujos y se
 // sacan acá abajo (`tuyos`), que es el único lugar por donde pasa la imagen.
 
-import { velaCompleta, ADX_CLAVE, RSI_CASTIGADO, RSI_ESTIRADO } from './tecnico'
+import { velaCompleta, haciaDondeVa, ADX_CLAVE, RSI_CASTIGADO, RSI_ESTIRADO } from './tecnico'
 import { marcasDeFechas, marcasDePrecio } from './ejesGrafico'
 import { extensionFibonacci, fibonacciAMano, nivelPct, rayas, rotuloNivel, rotulosQueEntran } from './fibonacci'
 import { rotuloOnda } from './elliott'
@@ -281,13 +281,13 @@ export function specDelGrafico({
 
   // ── La columna de precios y la fila de fechas ───────────────────────────
   const ultimo = puntos[puntos.length - 1]
-  const penultimo = puntos[puntos.length - 2]
   // El día del último precio: en semanales, el último día de la semana (`hasta`),
   // no el lunes con que se nombra la vela.
   const diaUltimo = ultimo.hasta || ultimo.d
   // RSI y ADX: los del último día guardado (una vela viva no los trae).
   const ultimoInd = ultimo.vivo ? [...puntos].reverse().find(p => !p.vivo) || ultimo : ultimo
-  const colorDelDia = !penultimo || ultimo.c === penultimo.c ? colores.precio : ultimo.c > penultimo.c ? colores.positivo : colores.negativo
+  const va = haciaDondeVa(puntos, conVelas)   // el mismo color que en la pantalla
+  const colorDelDia = va > 0 ? colores.positivo : va < 0 ? colores.negativo : colores.precio
   const sinUS = (x) => precio(x).replace(/^US\$ /, '')
   const ticks = marcasDePrecio(lo, hi, PX_ALTO_NOMINAL, PX_POR_PRECIO)
   const enteros = ticks.every(t => Number.isInteger(t))

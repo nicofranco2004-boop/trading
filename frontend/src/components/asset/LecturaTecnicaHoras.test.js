@@ -205,6 +205,10 @@ describe('velas de 1 hora y de 4 horas', () => {
       await abrir()
       await elegirIntervalo('1h')
       expect(texto(cuenta())).toBe('30:00')
+      // En el mismo cartel que el precio, debajo (Nico, 02/11: «en un solo cartel»).
+      const cartel = uno(n => n.getAttribute?.('data-ultimo') != null)
+      expect(cartel.childNodes.includes(cuenta())).toBe(true)
+      expect(texto(cartel)).toBe('350,0030:00')
       respuestas['/tecnico/AAPL/horas?cada=4h&moneda=usd'] = { ...HORA(), cada: '4h' }
       await elegirIntervalo('4h')
       expect(texto(cuenta())).toBe('3:30:00')

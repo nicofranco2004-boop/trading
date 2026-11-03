@@ -68,6 +68,7 @@ import {
   limpiarNota, useDuenoDeLaCopia,
 } from '../../utils/dibujos'
 import {
+  haciaDondeVa,
   RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, conAvisosDeHoy, tarjetaBandas, lineaPromedio, marcas, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, zoomEnElTope, moverVentana, RUEDAS_MINIMAS,
   ventanaInicial, margenDerecho, futuroMaximo, sumarVelaDeHoy, textoVelaDeHoy,
@@ -1887,11 +1888,13 @@ function BarraAdx({ adx }) {
 // achicaba al cambiar de intervalo (Nico, 31/10).
 const altoDelGrafico = (grande) => (grande ? 'h-[68vh] min-h-72 sm:h-[74vh]' : 'h-[42vh] min-h-56 sm:h-[58vh] sm:min-h-64')
 
-// Debajo de la etiqueta del precio, cuánto falta para que cierre la vela en
-// curso (12:05, 3:12:05, 2d 5h). Se mueve sola cada segundo, sin redibujar el
-// gráfico. Al cerrar una vela sigue con la siguiente (cripto, o la próxima
-// hora de la rueda); al cerrar la rueda, desaparece.
-function CuentaRegresiva({ mercado, cada, top, color }) {
+// En el mismo cartel del precio, debajo (Nico, 02/11: «en un solo cartel»,
+// como TradingView), cuánto falta para que cierre la vela en curso (12:05,
+// 3:12:05, 2d 5h). Es la fila de abajo del cartel, que toma el ancho de la
+// más larga de las dos; el precio queda a la altura de su raya. Se mueve sola cada segundo, sin redibujar el gráfico. Al
+// cerrar una vela sigue con la siguiente (cripto, o la próxima hora de la
+// rueda); al cerrar la rueda, desaparece.
+function CuentaRegresiva({ mercado, cada }) {
   const [ahora, setAhora] = useState(() => Date.now())
   useEffect(() => {
     const id = setInterval(() => setAhora(Date.now()), 1000)
@@ -1901,9 +1904,8 @@ function CuentaRegresiva({ mercado, cada, top, color }) {
   if (fin == null) return null
   return (
     <span data-cuenta="" title="Cuánto falta para que cierre esta vela"
-      className="absolute left-0 mt-3 rounded px-1.5 py-px text-[10.5px] font-medium tabular whitespace-nowrap"
-      style={{ top: `${top}%`, background: color, color: v('bg-0'), opacity: 0.85 }}>
-      {textoCuenta(fin - ahora)}
+      className="-mt-0.5 px-1.5 pb-0.5 text-[10.5px] font-medium">
+      <span className="opacity-80">{textoCuenta(fin - ahora)}</span>
     </span>
   )
 }
@@ -2378,11 +2380,10 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
   // El último precio y el del mouse siguen con todos sus decimales.
   const enteros = ticks.every(t => Number.isInteger(t))
   const rotuloDePrecio = (t) => (enteros ? t.toLocaleString('es-AR') : fmtPrecio(t, moneda).replace(/^US\$ /, ''))
-  // El último precio, como TradingView: verde si el día cerró arriba del
-  // anterior, rojo si abajo (gris si igual), con su raya punteada a lo ancho.
-  const penultimo = puntos[puntos.length - 2]
-  const colorDelDia = !ultimo || !penultimo || ultimo.c === penultimo.c ? COLOR.precio
-    : ultimo.c > penultimo.c ? v('rendi-pos') : v('rendi-neg')
+  // El último precio, con su raya punteada a lo ancho: verde si sube, rojo si
+  // baja, gris si igual (con velas, contra la apertura de la vela: tecnico.haciaDondeVa).
+  const va = haciaDondeVa(puntos, conVelas)
+  const colorDelDia = va > 0 ? v('rendi-pos') : va < 0 ? v('rendi-neg') : COLOR.precio
   const meses = (cada ? marcasDeHoras : marcasDeFechas)(puntos, (ancho * puntos.length) / Math.max(lugares, 1))
   // Los rótulos del eje se esconden si chocan con la etiqueta del último precio
   // o con la de tu precio (que pesan más).
@@ -2758,13 +2759,14 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
             </span>
           )}
           {ultimo && pctY(ultimo.c) >= 0 && pctY(ultimo.c) <= 100 && (
-            <span data-ultimo="" className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular whitespace-nowrap"
+            // Con el contador, el cartel crece hacia abajo: se corre media fila
+            // de precio (10,5 px, lo que mide la fila sola) y no medio cartel,
+            // así el precio sigue a la altura de su raya.
+            <span data-ultimo="" className={`absolute left-0 flex flex-col rounded text-[11px] font-semibold tabular whitespace-nowrap ${cuenta ? '-translate-y-[10.5px]' : '-translate-y-1/2'}`}
               style={{ top: `${pctY(ultimo.c)}%`, background: colorDelDia, color: v('bg-0') }}>
-              {fmtPrecio(ultimo.c, moneda).replace(/^US\$ /, '')}
+              <span className="px-1.5 py-0.5">{fmtPrecio(ultimo.c, moneda).replace(/^US\$ /, '')}</span>
+              {cuenta && <CuentaRegresiva {...cuenta} />}
             </span>
-          )}
-          {cuenta && ultimo && pctY(ultimo.c) >= 0 && pctY(ultimo.c) <= 100 && (
-            <CuentaRegresiva {...cuenta} top={pctY(ultimo.c)} color={colorDelDia} />
           )}
           {trazos.filter(t => t.tipo === 'horizontal' && t.y1 >= 0 && t.y1 <= 100).map(t => (
             <span key={t.id} data-aviso={conAviso.includes(t.id) ? '' : undefined}
