@@ -138,6 +138,47 @@ class PeriodMetrics:
     # Con qué modo y en qué moneda se midió — los mismos dos controles que Métricas.
     modo: str = "certero"
     moneda: str = "usd"
+    # EL REALIZADO EN PESOS, EXACTO. `realized_pnl` está en dólares, y llevarlo a pesos
+    # con un dólar solo (el del cierre) no da la ganancia que dice el broker: GGAL
+    # comprada a $4.500 con el dólar a 1.000 y vendida a $6.900 con el dólar a 1.500 dejó
+    # +$240.000 y +US$10, y US$10 × 1.500 son $15.000. Estos tres campos traen la cuenta
+    # de `resultado_dual.realizado_en_pesos` (la MISMA de Operaciones y de «Última op
+    # cerrada»): los pesos de las operaciones que tienen resultado en pesos, el realizado
+    # en dólares de ESAS mismas operaciones, y si alguna es una venta en dólares (sus pesos
+    # son valuados al dólar de cada fecha, no pesos de verdad). Quien muestre pesos suma
+    # `realized_ars + (realized_pnl − realized_ars_cubre_usd) × dólar` : lo exacto más sólo
+    # lo que no tiene pesos, sin contar nada dos veces. None = el servidor no lo calculó.
+    realized_ars: Optional[float] = None
+    realized_ars_cubre_usd: Optional[float] = None
+    realized_ars_valuado: bool = False
+    # DE QUÉ TIPO ES `delta_usd`, para que la pantalla en Pesos no lo adivine. La
+    # misma columna se arma de cuatro maneras y cada una pide una cuenta distinta:
+    #   'mercado'   = fin − inicio − flujos con las dos puntas a MERCADO (fotos del
+    #                 cron / valor vivo). En pesos la pantalla hace la misma resta con
+    #                 los pesos que puso de verdad, cada punta al dólar de su fecha
+    #                 (`puntas_desde` / `puntas_hasta`).
+    #   'motor'     = el delta del motor mensual (otra ventana que start/end_value,
+    #                 con el valor de mercado de sus puntos). Su monto en pesos viaja
+    #                 en `delta_ars`.
+    #   'costo'     = la cadena contable: fin − inicio − flujos son COSTO en dólares
+    #                 (a cada dólar de depósito), o sea el realizado y nada más.
+    #   'realizado' = día/semana con un broker filtrado: delta = el realizado.
+    # Sin esto la pantalla trataba como mercado lo que era costo (+105 % de más en un
+    # año) y como costo lo que era del motor (signo contrario al %).
+    medicion: str = "costo"
+    # EL RESULTADO DEL TRAMO EN PESOS cuando el delta es del motor mensual: cada
+    # punta al dólar de su fecha y el flujo al dólar medio, las mismas patas que el
+    # `delta_pct` en pesos (`_delta_en_pesos`). Sólo con el selector en Pesos. None =
+    # no aplica o no se pudo afirmar (sin dólar).
+    delta_ars: Optional[float] = None
+    # Las fechas de las dos fotos cuando `medicion` es 'mercado' (start_value es de
+    # `puntas_desde`, end_value de `puntas_hasta`): la pantalla no tiene por qué
+    # adivinarlas por la fecha del período (la semana arranca con la foto de hasta 5
+    # días antes, el mes acepta bordes corridos un día). `puntas_desde` None = el
+    # arranque no tiene foto (la cuenta nació adentro del período: arranque 0, o un
+    # capital previo dentro de la tolerancia del guard); `_tramo_sin_foto_de_arranque`.
+    puntas_desde: Optional[str] = None
+    puntas_hasta: Optional[str] = None
     # Por qué no hay "vs inflación" cuando hay número (el IPC es mensual y la
     # ventana arranca a mitad de mes, el INDEC no publicó, falta el dólar). La
     # pantalla lo dice en vez de mostrar el "vs S&P" solo, que se leía como error.

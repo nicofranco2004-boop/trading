@@ -243,7 +243,7 @@ export function classifyAsset(position, brokers = []) {
   if (isArMarket(position, brokers)) {
     if (AR_STOCK_SYMS.has(ticker)) return 'accion_ar'
     // SI es la especie en pesos del CEDEAR de CSN (SID): sin el alias quedaba
-    // "Sin clasificar" (cedearEspecieBase, la misma regla de Calidad de cartera).
+    // "Sin clasificar" (cedearEspecieBase, la misma regla de Análisis fundamental).
     if (CEDEAR_SYMS.has(ticker) || CEDEAR_SYMS.has(cedearEspecieBase(ticker))) return 'cedear'
     if ((assetType || '').toUpperCase() === 'CEDEAR') return 'cedear'
     // ON con formato reconocible que no está en el allowlist (el universo de

@@ -9,6 +9,7 @@ import { trackMetaEvent } from '../utils/metaPixel'
 import { origenParaElRegistro, olvidarOrigen } from '../utils/origen'
 import RendiLogo from '../components/RendiLogo'
 import PageMeta from '../components/PageMeta'
+import { pedirAlServidor } from '../utils/api'
 
 export default function Login() {
   const [searchParams] = useSearchParams()
@@ -52,14 +53,14 @@ export default function Login() {
   const [forgotMode, setForgotMode] = useState(false)
   const [forgotLoading, setForgotLoading] = useState(false)
   const [forgotSent, setForgotSent] = useState(false)
-  const { login } = useAuth()
+  const { entrar } = useAuth()
   const navigate = useNavigate()
 
   // Warmup: el backend de Railway puede estar en cold start. Apenas el visitante
   // abre login/registro, despertamos el container (fire-and-forget) para que el
   // submit no espere el wake — el momento más frágil del funnel.
   useEffect(() => {
-    fetch('/api/health').catch(() => {})
+    pedirAlServidor('/health', {}, { freno: false }).catch(() => {})
   }, [])
 
   async function handleForgotPassword(e) {
@@ -71,11 +72,11 @@ export default function Login() {
     setError('')
     setForgotLoading(true)
     try {
-      const res = await fetch('/api/auth/forgot-password', {
+      const res = await pedirAlServidor('/auth/forgot-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
-      })
+      }, { freno: false })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
         throw new Error(data.detail || 'No pudimos enviar el link. Intentá de nuevo en unos minutos.')
@@ -124,7 +125,7 @@ export default function Login() {
 
     setLoading(true)
     try {
-      const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register'
+      const endpoint = mode === 'login' ? '/auth/login' : '/auth/register'
       // El registro lleva de qué post vino la persona, si entró por un link con
       // código (ver utils/origen.js). Sin código no se manda nada.
       const body = mode === 'login'
@@ -137,12 +138,12 @@ export default function Login() {
       const ctrl = new AbortController()
       const timeoutId = setTimeout(() => ctrl.abort(), 20000)
       try {
-        res = await fetch(endpoint, {
+        res = await pedirAlServidor(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
           signal: ctrl.signal,
-        })
+        }, { freno: false })
       } catch (netErr) {
         // Falla de red — no llegó al server. Distinguir esto del "credenciales
         // inválidas" es crítico: el user piensa que el password está mal
@@ -227,10 +228,10 @@ export default function Login() {
         navigate(`/verify-email?email=${encodeURIComponent(data.email || cleanEmail)}`)
         return
       }
-      // await: login() ahora hidrata el user completo (tier incluido) desde
-      // /auth/me. Esperarlo antes de navegar evita que un asesor aterrice en
-      // la vista de usuario y recién después salte a su libro.
-      await login(data.token, data.name, { is_admin: !!data.is_admin, email: data.email || cleanEmail })
+      // La puerta única de la sesión (AuthContext.entrar): quién es lo dice el
+      // servidor, no esta pantalla. Esperarla antes de navegar evita que un
+      // asesor aterrice en la vista de usuario y recién después salte a su libro.
+      await entrar()
       navigate(destinoPostLogin())
     } catch (err) {
       setError(err.message)

@@ -11,6 +11,8 @@
 
 import { useSyncExternalStore } from 'react'
 import { api } from './api'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
 
 /** 'iphone' | 'android' | 'otro' (computadora, o algo que no reconocemos). */
 export function plataformaDe({ userAgent = '', maxTouchPoints = 0 } = {}) {
@@ -116,14 +118,14 @@ const CLAVE_AVISADA = 'rendi_instalada_avisada'
 let enVuelo = false
 
 function yaAvisado(quien) {
-  try { return localStorage.getItem(CLAVE_AVISADA) === String(quien) } catch { return false }
+  try { return leerDelAlmacen(CATALOGO.instaladaAvisada) === String(quien) } catch { return false }
 }
 
 function avisarAlServidor(quien) {
   if (enVuelo || (quien != null && yaAvisado(quien))) return false
   enVuelo = true
   api.post('/primeros-pasos/instalada', {})
-    .then(() => { try { if (quien != null) localStorage.setItem(CLAVE_AVISADA, String(quien)) } catch { /* sin almacenamiento: se repite, no pasa nada */ } })
+    .then(() => { try { if (quien != null) guardarEnAlmacen(CATALOGO.instaladaAvisada, String(quien)) } catch { /* sin almacenamiento: se repite, no pasa nada */ } })
     .catch(() => {})
     .finally(() => { enVuelo = false })
   return true

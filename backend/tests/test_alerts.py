@@ -26,7 +26,8 @@ from ai import plan              # noqa: E402
 @pytest.fixture(autouse=True)
 def clean(monkeypatch):
     conn = main.get_db()
-    for t in ("alert_symbol_state", "alert_events", "alerts", "positions", "brokers", "users"):
+    for t in ("alert_symbol_state", "alert_events", "alerts", "positions", "brokers",
+              "advisor_clients", "users"):
         try:
             conn.execute(f"DELETE FROM {t}")
         except Exception:
@@ -381,7 +382,7 @@ def _todo_el_mail(a, symbol, price, change_pct) -> str:
     camino que `_deliver`."""
     it = {"symbol": symbol, "price": price, "change_pct": change_pct,
           "message": ae._compose_message(a, symbol, price, change_pct)}
-    c = ae._contenido_del_mail(a, [it], None, False, None, it["message"])
+    c = ae._contenido_del_mail(a, [it], None, False, it["message"])
     return " | ".join([c["heading"], c["titulo"], c["detail"]])
 
 
@@ -407,7 +408,7 @@ def test_el_cuerpo_del_mail_trae_los_numeros_y_no_manda_a_buscarlos():
     a = _alert()
     it = {"symbol": "MELI", "price": 2145.30, "change_pct": -3.14,
           "message": ae._compose_message(a, "MELI", 2145.30, -3.14)}
-    c = ae._contenido_del_mail(a, [it], None, False, None, it["message"])
+    c = ae._contenido_del_mail(a, [it], None, False, it["message"])
     assert "3,1%" in c["titulo"] and "US$ 2.145,30" in c["detail"]
     assert "Entrá a Rendi" not in c["detail"]
 
@@ -1663,3 +1664,205 @@ def test_borrar_alerta_no_toca_el_estado_de_otro_usuario(clean):
     assert conn.execute("SELECT 1 FROM alerts WHERE id=?", (aid_a,)).fetchone() is None
     assert conn.execute(
         "SELECT 1 FROM alert_symbol_state WHERE alert_id=?", (aid_a,)).fetchone() is None
+
+
+# ── Una cuenta administrada (Plan Asesor): mail Y push llevan a /clientes ─────
+
+def test_alerta_de_precio_de_un_cliente_el_push_lleva_a_mis_clientes(clean, monkeypatch):
+    """Auditoría B, hallazgo B2 (29/10), la parte de precio y %: el push de la
+    alerta de un cliente abría «Mis alertas» del ASESOR (`/alertas?tab=mis`),
+    donde esa alerta no está; el mail del mismo aviso ya iba a /clientes. Por
+    el ciclo real (`evaluate_alerts` → `_entregar_pendientes` → `_deliver`)."""
+    conn = clean
+    conn.execute("INSERT INTO users (id,email,name,password_hash) VALUES (3,'laura@a.co','Laura','x')")
+    conn.execute("UPDATE users SET managed_by=3 WHERE id=1")
+    conn.execute("INSERT INTO advisor_clients (advisor_uid, client_uid, label) VALUES (3, 1, 'Juan')")
+    conn.commit()
+    monkeypatch.setattr(ae, "_deliver", _ENTREGA_REAL)
+    mails, pushes = [], []
+    monkeypatch.setattr("billing.emails.send_alert_email", lambda **kw: mails.append(kw) or True)
+    monkeypatch.setattr("main._send_push_to_user", lambda uid, p: pushes.append((uid, p)) or 1)
+    _mk_alert(conn, kind="pct_move", threshold=None, up_pct=3, down_pct=3,
+              channel="both", repeat="always")
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": _q(210.0, 5.2)})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert [u for u, _ in pushes] == [3]
+    assert pushes[0][1]["url"] == "/clientes"
+    assert pushes[0][1]["body"].startswith("[Juan] ")
+    assert mails[0]["to"] == "laura@a.co"
+    assert (mails[0]["cta_path"], mails[0]["pie"][2]) == ("/clientes", "/clientes")
+    assert mails[0]["detail"].startswith("en la cuenta de Juan, pasó el límite que marcaste.")
+
+
+def test_alerta_de_precio_propia_el_push_sigue_yendo_a_mis_alertas(clean, monkeypatch):
+    conn = clean
+    monkeypatch.setattr(ae, "_deliver", _ENTREGA_REAL)
+    mails, pushes = [], []
+    monkeypatch.setattr("billing.emails.send_alert_email", lambda **kw: mails.append(kw) or True)
+    monkeypatch.setattr("main._send_push_to_user", lambda uid, p: pushes.append((uid, p)) or 1)
+    _mk_alert(conn, kind="pct_move", threshold=None, up_pct=3, down_pct=3,
+              channel="both", repeat="always")
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": _q(210.0, 5.2)})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert pushes[0][1]["url"] == "/alertas?tab=mis"
+    assert mails[0]["cta_path"] == "/activo/AAPL"
+    assert not mails[0]["detail"].startswith("en la cuenta")
+
+
+# ── Una alerta rota no apaga a las demás (auditoría B-P1, 29/10) ──────────────
+
+def test_una_alerta_de_precio_rota_no_apaga_a_las_otras(clean, monkeypatch, caplog):
+    """Antes `evaluate_alerts` no tenía guarda por alerta: una fila que reventaba
+    cortaba el ciclo ENTERO y el cron lo dejaba en un renglón sin nombre de
+    error ni traza, cada 10 minutos. Es lo que se le arregló a las técnicas en
+    2cc64ca8 y no se había propagado. Ahora: la rota se cuenta y se nombra, y
+    las otras avisan."""
+    conn = clean
+    _mk_alert(conn, symbol="ROTO", threshold=1)
+    _mk_alert(conn, symbol="AAPL", threshold=200)
+    monkeypatch.setattr(ae, "_prices_for", lambda syms: {"ROTO": 5.0, "AAPL": 210.0})
+    real = ae.condition_met
+
+    def condicion(kind, direction, threshold, price, change):
+        if threshold == 1:
+            raise ZeroDivisionError("un dato raro")
+        return real(kind, direction, threshold, price, change)
+    monkeypatch.setattr(ae, "condition_met", condicion)
+    with caplog.at_level("ERROR", logger="alerts"):
+        res = ae.evaluate_alerts(conn, only_user=1)
+    assert res["fired"] == 1 and res.get("errores") == 1
+    assert any("ZeroDivisionError" in r.getMessage() and "ROTO" in r.getMessage() for r in caplog.records)
+    assert any(r.exc_info for r in caplog.records), "con la traza"
+    assert [e["symbol"] for e in _events(conn)] == ["AAPL"]
+
+
+def test_lo_que_falla_despues_de_disparar_se_deshace_entero(clean, monkeypatch):
+    """C1 en precio: dispara (evento + mail encolado) y falla al apagar la
+    «una sola vez». Antes: el mail salía, la alerta quedaba prendida y armada
+    otra vez a la próxima. Ahora: nada de esa alerta queda ni se manda."""
+    conn = clean
+    _mk_alert(conn, symbol="AAPL", threshold=200, repeat="once")
+    monkeypatch.setattr(ae, "_prices_for", lambda syms: {"AAPL": 210.0})
+    entregados = []
+    monkeypatch.setattr(ae, "_deliver", lambda c, a, items: entregados.append(items) or (True, True))
+    monkeypatch.setattr(ae, "_cumplio_una_vez", lambda c, a: (_ for _ in ()).throw(RuntimeError("x")))
+    res = ae.evaluate_alerts(conn, only_user=1)
+    assert (res["fired"], res.get("errores")) == (0, 1)
+    assert entregados == [] and _events(conn) == []
+    assert conn.execute("SELECT armed FROM alerts").fetchone()["armed"] == 1
+
+
+def test_fuera_de_la_rueda_lo_que_quedo_guardado_se_manda_aunque_falle_lo_que_sigue(clean, monkeypatch):
+    """Re-test de la auditoría B (29/10), residuo 1: cada aviso fuera de la rueda
+    va en su punto de guardado, y en SQLite soltarlo YA lo confirma. Si después
+    reventaba algo del mismo tramo (fuera de esas guardas), el except descartaba
+    la lista de avisos del tramo — pero el primero ya estaba anotado: quedaba
+    registrado como avisado y no se mandaba nunca. Ahora lo que quedó guardado se
+    manda (la entrega le pregunta a la base, `_solo_lo_guardado`)."""
+    conn = clean
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3,
+              threshold=None, repeat="always")
+    _invierno_nvda(monkeypatch, ["NVDA", "NVDA.BA"])
+    real = _fdh.con_operaciones
+
+    class VelasQueFallanALaSegunda(dict):
+        n = 0
+
+        def get(self, *a):
+            VelasQueFallanALaSegunda.n += 1
+            if VelasQueFallanALaSegunda.n == 2:
+                raise RuntimeError("se cortó algo a mitad del tramo")
+            return super().get(*a)
+    monkeypatch.setattr(_fdh, "con_operaciones", lambda refs, s: VelasQueFallanALaSegunda(real(refs, s)))
+    entregados = []
+    monkeypatch.setattr(ae, "_deliver", lambda c, a, items: entregados.extend(items) or (True, True))
+    res = ae.evaluate_alerts(conn, only_user=1)
+    guardados = [e["message"] for e in _events(conn)]
+    assert res.get("errores") == 1
+    # Lo que importa en los dos motores: lo anotado como avisado es lo que se
+    # manda, ni más ni menos.
+    assert [it["message"] for it in entregados] == guardados, "lo anotado como avisado se manda"
+    # En SQLite soltar el punto de guardado ya confirma: el primero queda
+    # anotado y tiene que salir. En Postgres no confirma: el error del tramo lo
+    # deshace todo, no queda anotado ni se manda, y la pasada siguiente lo
+    # vuelve a mirar (visto al juntar, 30/10: esta prueba daba rojo en Postgres
+    # también en la punta de Arreglos B; pedía lo que sólo hace SQLite).
+    if hasattr(conn, "total_changes"):
+        assert len(guardados) == 1, guardados
+        assert res["fired"] == 1, "el cron cuenta el aviso que sí salió (re-test B: decía 0)"
+    else:
+        assert guardados == [] and res["fired"] == 0, guardados
+
+
+def test_el_cron_dice_que_error_fue_y_donde(clean, monkeypatch, caplog):
+    """Re-test de la auditoría B (29/10), residuo 2: el cron de alertas anotaba
+    «alertas de precio en el cron: 'x'» — sin el NOMBRE del error ni la traza,
+    la guarda que 2cc64ca8 le puso a las técnicas. Ahora los cinco motores del
+    cron dicen las dos cosas."""
+    monkeypatch.setattr(ae, "evaluate_alerts", lambda conn: (_ for _ in ()).throw(KeyError("x")))
+    with caplog.at_level("ERROR"):
+        main._evaluar_alertas_job()
+    r = [x for x in caplog.records if "alertas de precio en el cron" in x.getMessage()]
+    assert r and "KeyError" in r[0].getMessage() and r[0].exc_info
+
+
+# ── Un envío que no sale deja rastro, en TODOS los avisos (re-test B, 29/10) ──
+
+def _envios_que_no_salen(monkeypatch):
+    """El proveedor de mails rechaza (False, «no_salio») y el push no llega a
+    ningún dispositivo (0): las dos fallas que no levantan excepción."""
+    from billing import emails
+
+    def rechaza(**kw):
+        emails._anotar(emails.NO_SALIO)
+        return False
+    monkeypatch.setattr("billing.emails.send_alert_email", rechaza)
+    monkeypatch.setattr("main._send_push_to_user", lambda uid, p: 0)
+
+
+def _rastro(caplog, uid):
+    return [r.getMessage() for r in caplog.records if f"uid={uid}" in r.getMessage()]
+
+
+def test_el_envio_que_no_sale_deja_rastro_en_las_alertas(clean, monkeypatch, caplog):
+    """Decisión de Nico (29/10): cada envío que no sale queda en el registro con
+    la persona y el motivo. Se había aplicado sólo al resumen del sábado; el
+    re-test de la auditoría B encontró el mismo hueco en las alertas (precio,
+    %, técnica, recordatorio) y en el libro del asesor: cada lugar que manda
+    decidía qué anotar. Ahora mandan todos por `alerts_engine.enviar`."""
+    conn = clean
+    monkeypatch.setattr(ae, "_deliver", _ENTREGA_REAL)
+    _envios_que_no_salen(monkeypatch)
+    _mk_alert(conn, kind="pct_move", threshold=None, up_pct=3, down_pct=3, channel="both", repeat="always")
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": _q(210.0, 5.2)})
+    with caplog.at_level("WARNING"):
+        assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    rastro = _rastro(caplog, 1)
+    assert any("mail" in x and "no_salio" in x for x in rastro), rastro
+    assert any("push" in x and "ningún dispositivo" in x for x in rastro), rastro
+
+
+def test_el_envio_que_no_sale_deja_rastro_en_el_libro_del_asesor(clean, monkeypatch, caplog):
+    import advisor_alerts
+    _envios_que_no_salen(monkeypatch)
+    items = [{"msg": "La cartera de Juan subió 5%", "detail": "…", "label": "Juan", "pct": 5.0,
+              "dias": 1, "rotulo": "hoy", "line": "Juan: subió 5%", "event_id": 1}]
+    with caplog.at_level("WARNING"):
+        assert advisor_alerts._deliver(clean, 1, "both", "Rendi · Movimiento en tu libro", items) == (False, False)
+    rastro = _rastro(caplog, 1)
+    assert any("mail" in x and "no_salio" in x for x in rastro), rastro
+    assert any("push" in x and "ningún dispositivo" in x for x in rastro), rastro
+
+
+def test_el_envio_que_revienta_en_el_libro_dice_que_error_fue(clean, monkeypatch, caplog):
+    import advisor_alerts
+    monkeypatch.setattr("billing.emails.send_alert_email", lambda **kw: (_ for _ in ()).throw(ConnectionError("x")))
+    monkeypatch.setattr("main._send_push_to_user", lambda uid, p: (_ for _ in ()).throw(TimeoutError("y")))
+    items = [{"msg": "m", "detail": "d", "label": "Juan", "pct": 5.0, "dias": 1, "rotulo": "hoy",
+              "line": "l", "event_id": 1}]
+    with caplog.at_level("WARNING"):
+        advisor_alerts._deliver(clean, 1, "both", "t", items)
+    rastro = [r for r in caplog.records if "uid=1" in r.getMessage()]
+    assert any("ConnectionError" in r.getMessage() and r.exc_info for r in rastro)
+    assert any("TimeoutError" in r.getMessage() and r.exc_info for r in rastro)
+

@@ -36,6 +36,40 @@ MOTIVOS = {
 }
 
 
+# Por qué un activo no tiene «Contra tu promedio» (lo que dice el mapa en gris).
+MOTIVOS_PROMEDIO = {
+    "sin_precio": "no conseguimos su precio de hoy",
+    "precio_dudoso": "su precio de hoy no cuadra; preferimos no inventar cuánto vale",
+    "sin_costo": "no tiene cargado lo que pagaste",
+}
+
+# Una compra de HOY se hizo a un precio de hoy: su costo tiene que caer entre el
+# cierre anterior y el precio de ahora, con este margen para lo que el precio
+# anduvo dentro de la rueda, la comisión y el dólar del día de la compra.
+# Es el mismo control que «precio_dudoso» (un precio que en un día se movió más de
+# 50 % es una unidad equivocada), pero contra el rango del día: equivocarse para
+# este lado cuesta poco (el lote se mide desde el cierre de ayer, como la «Var.
+# día» de la Cartera), equivocarse para el otro publicaba +398 %.
+MARGEN_COMPRA_DEL_DIA = 0.15
+
+
+def compra_cuadra_con_el_dia(costo: Optional[float], valor: Optional[float],
+                             valor_previo: Optional[float]) -> bool:
+    """¿El costo de un lote «comprado hoy» es el de una compra de hoy? `costo`,
+    `valor` (ahora) y `valor_previo` (al cierre anterior): misma cantidad, en USD.
+    Con el promedio de hace años (MSFT 120,5 contra 590/600) no: ese lote ya lo
+    tenías, y medido desde la compra decía «Hoy tu cartera +116 %»."""
+    try:
+        c, v, vp = float(costo or 0), float(valor or 0), float(valor_previo or 0)
+    except (TypeError, ValueError):
+        return False
+    if c <= 0 or v <= 0 or vp <= 0:
+        return False
+    piso = min(v, vp) / (1 + MARGEN_COMPRA_DEL_DIA)
+    techo = max(v, vp) * (1 + MARGEN_COMPRA_DEL_DIA)
+    return piso <= c <= techo
+
+
 def dia_txt(rueda: Optional[str], hoy: str) -> str:
     """Cómo nombrar el día de una rueda en una frase: 'hoy', 'ayer' o 'el
     viernes 3/10'. Sin fecha → 'sin fecha confirmada' (nunca 'hoy')."""
@@ -200,6 +234,89 @@ def armar(lotes: list, hoy: str, mercados: Optional[dict] = None,
         "efectivo_porcion_de_la_cartera_pct": round(efectivo / total * 100, 1) if total > 0 else None,
         "mercados": mercados or {},
     }
+
+
+def por_activo(lotes: list, hoy: str) -> list:
+    """Lo del «Mapa de tu cartera», activo por activo, de los MISMOS lotes que
+    `armar` (`main._lotes_del_dia`). Un activo es (asset, local) —la clave de
+    `senales_semana.cartera`, la de los cuadritos—: GGAL de BYMA y el ADR no se
+    suman. → [{asset, local, valor, hoy: {pct, usd} | None, dia_txt,
+    promedio_pct_usd, promedio_pct_ars, promedio_sin_dato}]
+
+      · `hoy`: el movimiento del precio en la rueda de HOY (la regla del archivo:
+        lo que no es de hoy no se llama hoy). Si su última rueda es otra, None y
+        `dia_txt` dice cuál («ayer», «el viernes 3/10»); sin medir, `dia_txt` None.
+      · «Contra tu promedio», lo que vale contra lo que pagaste, en %, en las DOS
+        monedas (la pantalla elige con la regla de `noRealizadoEnVista`):
+          `promedio_pct_usd` — en dólares, el costo al dólar de la compra (`costo`);
+          `promedio_pct_ars` — en pesos: el costo de un lote en pesos son los
+            pesos que se pagaron (`costo_hoy`, al dólar de hoy, el mismo dólar
+            del valor); un lote en dólares, a ese dólar también. Es también el %
+            en dólares de quien elige «costo al dólar de hoy».
+        Sin precio (el valor sería el costo: «0 %» que no pasó) o sin costo, los
+        dos None y `promedio_sin_dato` dice por qué. Mejor gris que inventado.
+    El efectivo no va: no es un activo del mapa."""
+    grupos: dict = {}
+    for l in lotes:
+        if l.get("motivo") == "efectivo" or not l.get("asset"):
+            continue
+        k = (str(l["asset"]).upper(), bool(l.get("local")))
+        g = grupos.setdefault(k, {"valor": 0.0, "costo": 0.0, "costo_hoy": 0.0, "sin_dato": None,
+                                  "hoy_v": 0.0, "hoy_vp": 0.0, "medido_hoy": False,
+                                  "todos_hoy": True, "otra_rueda": None})
+        v = float(l.get("valor") or 0)
+        g["valor"] += v
+        c, ch = l.get("costo"), l.get("costo_hoy")
+        # El primer motivo que impide el % es el que se dice (sin precio antes que
+        # sin costo: es lo que el usuario puede ver en la Cartera).
+        if l.get("sin_precio") or l.get("motivo") == "sin_precio":
+            g["sin_dato"] = g["sin_dato"] or "sin_precio"
+        elif (l.get("motivo") == "precio_dudoso" and c is not None
+              and abs(v - float(c)) <= 0.01):
+            # El control de precios de la valuación lo llevó al costo.
+            g["sin_dato"] = g["sin_dato"] or "precio_dudoso"
+        if c is None or c <= 0 or ch is None or ch <= 0:
+            g["sin_dato"] = g["sin_dato"] or "sin_costo"
+        else:
+            g["costo"] += float(c)
+            g["costo_hoy"] += float(ch)
+        vp = l.get("valor_previo")
+        if vp is not None and vp > 0 and l.get("es_hoy"):
+            g["medido_hoy"] = True
+            g["hoy_v"] += v
+            g["hoy_vp"] += float(vp)
+        else:
+            # Un lote del activo sin el movimiento de hoy: el % de hoy del activo
+            # sería el de una parte. Mejor ninguno que uno a medias.
+            g["todos_hoy"] = False
+            if vp is not None and vp > 0 and l.get("rueda"):
+                g["otra_rueda"] = max(g["otra_rueda"] or "", l["rueda"])
+    out = []
+    for (asset, local), g in sorted(grupos.items()):
+        hoy_d = None
+        if g["medido_hoy"] and g["todos_hoy"] and g["hoy_vp"] > 0:
+            usd = g["hoy_v"] - g["hoy_vp"]
+            hoy_d = {"pct": round(usd / g["hoy_vp"] * 100, 2), "usd": round(usd, 2)}
+        dia = "hoy" if hoy_d else (_no_hoy(dia_txt(g["otra_rueda"], hoy)) if g["otra_rueda"] else None)
+        sd = g["sin_dato"]
+        p_usd = None if sd else round((g["valor"] - g["costo"]) / g["costo"] * 100, 2)
+        p_ars = None if sd else round((g["valor"] - g["costo_hoy"]) / g["costo_hoy"] * 100, 2)
+        out.append({"asset": asset, "local": local, "valor": round(g["valor"], 2),
+                    "hoy": hoy_d, "dia_txt": dia,
+                    "promedio_pct_usd": p_usd, "promedio_pct_ars": p_ars,
+                    "promedio_sin_dato": MOTIVOS_PROMEDIO[sd] if sd else None})
+    return out
+
+
+def la_cartera_hoy(resumen: dict) -> Optional[dict]:
+    """El renglón «Hoy tu cartera» del mapa, del resumen de `armar`: lo que se
+    movieron tus activos en la rueda de HOY, sobre la cartera al cierre anterior
+    (`pct_sobre_la_cartera`). None si hoy no se movió nada todavía (la rueda no
+    abrió): no se muestra el de ayer como si fuera de hoy."""
+    for m in resumen.get("movimiento") or []:
+        if m.get("es_hoy") and m.get("pct_sobre_la_cartera") is not None:
+            return {"pct": m["pct_sobre_la_cartera"], "usd": m["usd"], "mercados": m["mercados"]}
+    return None
 
 
 def tickers_para_noticias(resumen: dict, cripto: set, maximo: int = 5) -> list:

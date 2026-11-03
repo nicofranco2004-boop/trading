@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { HelpCircle } from 'lucide-react'
+import { ESPACIO_ABAJO_CELULAR } from './mobile/espacioAbajo'
 
 /**
  * InfoTooltip — small (?) icon that opens a popover with explanation.
@@ -45,6 +46,26 @@ export function estiloDeCorrimiento(align, d) {
   return align === 'right' ? { marginRight: -d } : { marginLeft: d }
 }
 
+/**
+ * Lo ancho que es la pantalla para el globo: el de la PÁGINA
+ * (`documentElement.clientWidth`), no `window.innerWidth`.
+ *
+ * ⚠️ En el celular, apenas el globo se sale por el costado, el navegador
+ * agranda `innerWidth` hasta abarcarlo: medido el 2026-10-28 con el (?) de Beta
+ * de la ficha a 375 px, `innerWidth` pasó a 409 mientras la página seguía en
+ * 375. La corrección se comparaba contra 409, creía que el globo entraba y lo
+ * dejaba cortado: el globo mismo engañaba a la medición que existe para él.
+ * `clientWidth` se queda en lo que se ve. Si no hay página para medir, el de la
+ * ventana, como antes.
+ */
+export function anchoVisible() {
+  return document.documentElement?.clientWidth || window.innerWidth
+}
+
+// El área tocable del «?» (ver el botón). El `::before` es parte del botón: un
+// toque ahí abre el globo y no cuenta como «tocar afuera».
+export const AREA_TOCABLE = "relative before:absolute before:-inset-1.5 before:content-[''] [@media(pointer:coarse)]:before:-inset-4"
+
 export default function InfoTooltip({ children, label = 'Cómo se calcula', size = 13, align = 'right', side = 'bottom', ancho = 'w-64' }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
@@ -55,6 +76,11 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
   // `estiloDeCorrimiento`.
   const [corrimiento, setCorrimiento] = useState(0)
   const corrimientoRef = useRef(0)
+  // Abajo o arriba del «?». Abajo, en el celular, puede caer detrás de la barra
+  // de pestañas y de los botones flotantes (auditoría D8: la ayuda de «Beta» de
+  // la ficha no se leía): si no entra abajo y sí arriba, se da vuelta.
+  const [lado, setLado] = useState(side)
+  useLayoutEffect(() => { if (!open) setLado(side) }, [open, side])
 
   useLayoutEffect(() => {
     if (!open) {
@@ -70,8 +96,15 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
       // La posición SIN el corrimiento ya aplicado, para no acumular.
       const izq = r.left - corrimientoRef.current
       const der = r.right - corrimientoRef.current
+      const ancho = anchoVisible()
+      if (side === 'bottom') {
+        const alto = window.innerHeight || document.documentElement?.clientHeight || 0
+        const libreAbajo = alto - (ancho < 768 ? ESPACIO_ABAJO_CELULAR : 0)
+        const boton = ref.current?.getBoundingClientRect()
+        if (alto && boton && r.bottom > libreAbajo && boton.top - r.height - 4 > 0) setLado('top')
+      }
       let d = 0
-      if (der > window.innerWidth - MARGEN) d = (window.innerWidth - MARGEN) - der
+      if (der > ancho - MARGEN) d = (ancho - MARGEN) - der
       if (izq + d < MARGEN) d = MARGEN - izq
       d = Math.round(d)
       if (d !== corrimientoRef.current) {
@@ -102,10 +135,14 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
 
   return (
     <span ref={ref} className="relative inline-block">
+      {/* El área que se toca es más grande que el ícono (auditoría D7, 31/10:
+          el «?» medía 13×13 px y en el celular había que acertarle). Un
+          `::before` invisible la agranda sin mover nada: con mouse 6 px de cada
+          lado (25×25) y con el dedo 16 (45×45, lo que piden Apple y Google). */}
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className={`inline-flex items-center justify-center rounded-full transition ${
+        className={`${AREA_TOCABLE} inline-flex items-center justify-center rounded-full transition ${
           open
             ? 'text-ink-1'
             : 'text-ink-3 hover:text-ink-2 dark:hover:text-ink-1'
@@ -122,7 +159,7 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
           className={`absolute z-30 ${ancho} max-w-[80vw] px-3 py-2.5 rounded-lg bg-bg-1 border border-line shadow-lg text-xs leading-relaxed text-ink-1 space-y-1.5 ${
             align === 'center' ? 'left-1/2 -translate-x-1/2'
               : align === 'right' ? 'right-0' : 'left-0'
-          } ${side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}
+          } ${lado === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}
           role="tooltip"
         >
           {children}

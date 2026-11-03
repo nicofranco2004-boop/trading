@@ -16,13 +16,14 @@ Rendi está en español (Argentina) y cobra en pesos. Funciona en la web y se in
 - Win rate y P&L por operación, lote por lote, con FIFO automático (el criterio que pide AFIP/ARCA).
 - Perfil de inversor: un test que después se cruza con tu cartera real (horizonte declarado vs composición, drawdown tolerado vs drawdown real).
 - Detectores de comportamiento: overtrading, compras por FOMO, aversión a la pérdida, anchoring, rachas, entre otros.
-- Calidad de cartera: cada acción y CEDEAR en dos ejes, negocio (qué tan sólida es la empresa) y precio (cara o atractiva hoy).
+- Análisis fundamental: cada acción y CEDEAR en dos ejes, negocio (qué tan sólida es la empresa) y precio (cara o atractiva hoy).
+- Análisis técnico: lo que tenés y lo que seguís, con la tendencia de fondo (el precio contra su promedio de largo plazo), la fuerza (RSI y ADX), qué parte de tu plata está en tendencia alcista y qué cambió en la semana, con un resumen opcional los sábados por mail o notificación. En la ficha de cada activo: gráfico con Fibonacci, ondas de Elliott y herramientas para dibujar. Describe cómo se movieron los precios; no es una recomendación para comprar ni vender.
 
 ## Qué más hace
 
 - Importa el historial desde el archivo de cada broker o se carga a mano. Acciones, CEDEARs, bonos argentinos (AL30, GD30, TX26, con sus cupones), FCI, plazos fijos y cripto.
 - Las operaciones en pesos se pasan a dólares al tipo de cambio de su fecha, no al de hoy.
-- Cobros de dividendos y cupones, alertas de precio y de variación, noticias y eventos de tus activos, resumen diario del mercado.
+- Cobros de dividendos y cupones, alertas de precio, de variación y técnicas, Novedades (noticias y eventos de tus activos), resumen diario del mercado.
 - Export CSV con FIFO aplicado para el contador.
 - Mervall-E AI: preguntas guiadas en todos los planes; chat libre con memoria en Pro. Un botón "Analizar" en cada pantalla arma un informe con tus datos.
 - Plan Asesor para asesores financieros que llevan carteras de clientes.

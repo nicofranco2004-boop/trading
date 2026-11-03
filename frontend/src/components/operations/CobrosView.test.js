@@ -90,3 +90,23 @@ describe('la pestaña Cobros', () => {
     }
   })
 })
+
+// «Ocultar saldos» en Cobros: el demo no muestra esta pestaña («no disponible
+// en modo demo»), así que la prueba de las pantallas enteras no la ve
+// (auditoría a ciegas, 30/10). Acá, montada con el ojito prendido.
+describe('la pestaña Cobros con «Ocultar saldos»', () => {
+  it('prendido no muestra lo cobrado; apagado sí', async () => {
+    const { PrivacyProvider } = await import('../../contexts/PrivacyContext')
+    respuestas = base()
+    for (const [ojito, ve] of [['0', true], ['1', false]]) {
+      localStorage.setItem('rendi_privacy', ojito)
+      montado = await montar(h(PrivacyProvider, null, h(CobrosView)))
+      for (let i = 0; i < 5; i++) await montado.redibujar(h(PrivacyProvider, null, h(CobrosView)))
+      const t = texto(montado.contenedor)
+      expect(t.includes('127,12'), `ojito=${ojito}`).toBe(ve)
+      await montado.desmontar()
+      montado = null
+    }
+    localStorage.removeItem('rendi_privacy')
+  })
+})

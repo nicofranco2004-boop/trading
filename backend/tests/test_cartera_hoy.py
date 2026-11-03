@@ -110,6 +110,110 @@ class ArmarTest(unittest.TestCase):
         self.assertEqual(sorted(filas[0]["brokers"]), ["IBKR", "Schwab"])
 
 
+class PorActivoTest(unittest.TestCase):
+    """Lo del «Mapa de tu cartera», activo por activo, de los MISMOS lotes."""
+
+    def _l(self, asset, valor, previo, es_hoy, local=False, costo=None, rueda=HOY, motivo=None,
+           costo_hoy="igual", sin_precio=False):
+        l = _lote(asset, valor, previo, "eeuu", rueda if previo else None, es_hoy, motivo=motivo)
+        l.update(local=local, costo=costo, costo_hoy=costo if costo_hoy == "igual" else costo_hoy,
+                 sin_precio=sin_precio)
+        return l
+
+    def test_por_activo_y_lectura_como_los_cuadritos(self):
+        r = {(a["asset"], a["local"]): a for a in cartera_hoy.por_activo([
+            self._l("GGAL", 1000, 990, True, local=True, costo=800),       # GGAL de BYMA
+            self._l("GGAL", 500, 510, True, local=False, costo=600),       # el ADR: otro cuadrito
+            self._l("MSFT", 600, 590, True, costo=400),
+            self._l("MSFT", 300, 295, True, costo=200),                    # otro broker: se suman
+            self._l("USD", 1000, None, False, motivo="efectivo"),
+        ], HOY)}
+        self.assertEqual(set(r), {("GGAL", True), ("GGAL", False), ("MSFT", False)})
+        self.assertEqual(r[("GGAL", True)]["hoy"], {"pct": round(10 / 990 * 100, 2), "usd": 10.0})
+        self.assertEqual(r[("GGAL", False)]["hoy"]["usd"], -10.0)
+        self.assertEqual(r[("MSFT", False)]["hoy"]["usd"], 15.0)
+        # Contra lo que pagaste: (900 − 600) / 600.
+        self.assertEqual(r[("MSFT", False)]["promedio_pct_usd"], 50.0)
+        self.assertEqual(r[("GGAL", True)]["dia_txt"], "hoy")
+
+    def test_lo_que_no_es_de_hoy_no_se_llama_hoy(self):
+        r = cartera_hoy.por_activo([
+            self._l("AAPL", 2000, 1980, False, rueda=AYER, costo=1500),     # BYMA antes de las 11
+            self._l("XYZ", 100, None, False, costo=90, motivo="sin_cierre"),
+        ], HOY)
+        aapl, xyz = r
+        self.assertIsNone(aapl["hoy"])
+        self.assertEqual(aapl["dia_txt"], "ayer")
+        self.assertIsNone(xyz["hoy"])
+        self.assertIsNone(xyz["dia_txt"])
+        self.assertEqual(xyz["promedio_pct_usd"], round(10 / 90 * 100, 2))
+
+    def test_un_lote_sin_el_movimiento_de_hoy_no_da_un_porcentaje_a_medias(self):
+        r = cartera_hoy.por_activo([
+            self._l("MSFT", 600, 590, True, costo=400),
+            self._l("MSFT", 300, None, False, costo=200, motivo="precio_manual"),
+        ], HOY)
+        self.assertIsNone(r[0]["hoy"])
+
+    def test_contra_tu_promedio_va_en_pesos_y_en_dolares(self):
+        """A3: un CEDEAR pagado $1.000.000 con el dólar a 800 (US$ 1.250) que hoy
+        vale $1.400.000 con el dólar a 1.400 (US$ 1.000): en pesos ganó 40 %, en
+        dólares (al dólar de la compra) perdió 20 %. Antes viajaba sólo el −20 %,
+        y la pantalla en pesos lo mostraba igual."""
+        r = cartera_hoy.por_activo([
+            self._l("AAPL", 1000, 990, True, costo=1250, costo_hoy=1_000_000 / 1400),
+            self._l("MSFT", 600, 590, True, costo=500),       # en dólares: lo mismo en las dos
+        ], HOY)
+        aapl, msft = r
+        self.assertEqual(aapl["promedio_pct_usd"], -20.0)
+        self.assertEqual(aapl["promedio_pct_ars"], 40.0)
+        self.assertEqual(msft["promedio_pct_usd"], msft["promedio_pct_ars"])
+        self.assertIsNone(aapl["promedio_sin_dato"])
+
+    def test_sin_precio_contra_tu_promedio_es_sin_dato_y_dice_por_que(self):
+        """A5: sin precio la valuación lo deja al costo y «Contra tu promedio»
+        decía 0,0 % (verde-gris de «quedó igual»), algo que no pasó."""
+        r = {a["asset"]: a for a in cartera_hoy.por_activo([
+            self._l("MSFT", 5000, None, False, costo=5000, motivo="sin_precio", sin_precio=True),
+            self._l("FCI:X", 300, None, False, costo=300, motivo="fci", sin_precio=True),
+            self._l("ZZZ", 100, None, False, costo=None, motivo="sin_cierre"),
+            self._l("AAPL", 2000, 1980, True, costo=1500),
+        ], HOY)}
+        for a in ("MSFT", "FCI:X"):
+            self.assertIsNone(r[a]["promedio_pct_usd"], a)
+            self.assertIsNone(r[a]["promedio_pct_ars"], a)
+            self.assertEqual(r[a]["promedio_sin_dato"], cartera_hoy.MOTIVOS_PROMEDIO["sin_precio"])
+        self.assertEqual(r["ZZZ"]["promedio_sin_dato"], cartera_hoy.MOTIVOS_PROMEDIO["sin_costo"])
+        self.assertIsNone(r["AAPL"]["promedio_sin_dato"])
+        # Un lote sin precio en un activo con otro que sí: sin dato (no uno a medias).
+        mixto = cartera_hoy.por_activo([
+            self._l("MSFT", 6000, 5900, True, costo=5000),
+            self._l("MSFT", 500, None, False, costo=500, motivo="sin_precio", sin_precio=True),
+        ], HOY)[0]
+        self.assertIsNone(mixto["promedio_pct_usd"])
+
+    def test_la_compra_del_dia_cuadra_con_el_dia(self):
+        """A1: el costo de una compra de hoy cae entre el cierre anterior y el
+        precio de ahora (con margen); el promedio de hace años, no."""
+        f = cartera_hoy.compra_cuadra_con_el_dia
+        self.assertTrue(f(6100, 6000, 5900))       # 610 contra 590/600
+        self.assertTrue(f(5500, 6000, 5900))       # bajó a la mañana y rebotó
+        self.assertFalse(f(1205, 6000, 5900))      # 120,5 contra 590/600: ya lo tenías
+        self.assertFalse(f(9000, 6000, 5900))
+        self.assertFalse(f(None, 6000, 5900))
+        self.assertFalse(f(6000, 6000, None))
+
+    def test_la_cartera_hoy_es_el_grupo_de_hoy_del_resumen(self):
+        resumen = cartera_hoy.armar([_lote("MSFT", 6000, 5900, "eeuu", HOY, True),
+                                     _lote("AAPL", 2000, 1980, "byma", AYER, False)], HOY)
+        c = cartera_hoy.la_cartera_hoy(resumen)
+        self.assertEqual(c["usd"], 100.0)
+        self.assertEqual(c["pct"], resumen["movimiento"][0]["pct_sobre_la_cartera"])
+        # Antes de que abra nada: ninguno (no el de ayer como si fuera de hoy).
+        self.assertIsNone(cartera_hoy.la_cartera_hoy(
+            cartera_hoy.armar([_lote("AAPL", 2000, 1980, "byma", AYER, False)], HOY)))
+
+
 class RuedaBymaTest(unittest.TestCase):
     def setUp(self):
         self._hist = dict(main._RUEDA_BYMA_HIST)
@@ -221,7 +325,7 @@ class CaminoDeProduccionTest(unittest.TestCase):
     MEP = 1400.0
 
     def setUp(self):
-        for c in (main._CHAT_VAL_CACHE, main._CHAT_PRECIOS, main._CARTERA_HOY_CACHE,
+        for c in (main._CHAT_VAL_CACHE, main._CHAT_PRECIOS, main._CARTERA_HOY_CACHE, main._MAPA_DEL_DIA_CACHE,
                   main._PREVCLOSE_CACHE, main._PREVCLOSE_RUEDA, main._PREVCLOSE_VENCE,
                   main._PRICE_CACHE):
             c.clear()
@@ -252,7 +356,7 @@ class CaminoDeProduccionTest(unittest.TestCase):
             self.conn.execute(f"DELETE FROM {t}")
         self.conn.commit()
 
-    def _correr(self, live, ahora=A_LAS_932, precios=None, pre_post=None, velas=None):
+    def _correr(self, live, ahora=A_LAS_932, precios=None, pre_post=None, velas=None, mapa=False):
         tabla = _tabla_yahoo({"MSFT": [590.0, 600.0]}, [AYER, HOY])
         precios = precios or {"AAPL.BA": live["AAPL"]["c"], "MSFT": 600.0}
         import fuera_de_horario
@@ -276,6 +380,9 @@ class CaminoDeProduccionTest(unittest.TestCase):
              patch.object(main._yahoo, "descargar", return_value=tabla), \
              patch.object(main._yahoo, "varios", side_effect=_varios), \
              patch.object(main, "_ensure_news_batch_parallel", return_value=None):
+            if mapa:
+                main._MAPA_DEL_DIA_CACHE.clear()
+                return main.get_mapa_del_dia(self.uid)
             return main._execute_ai_tool_inner("get_portfolio_today", {}, self.uid)
 
     # Yahoo a las 8:58 de un día con pre-mercado (forma medida 2026-10-15):
@@ -369,6 +476,23 @@ class CaminoDeProduccionTest(unittest.TestCase):
         self.assertEqual(r["efectivo_porcion_de_la_cartera_pct"] > 0, True)
         self.assertIn("_note", r)
 
+    def test_el_mapa_dice_lo_mismo_que_el_chat(self):
+        """El «Mapa de tu cartera» (GET /api/cartera/mapa-del-dia) sale de la MISMA
+        cuenta que la respuesta del chat: a las 9:32 MSFT ya operó hoy y el CEDEAR
+        es de ayer (no se llama hoy), y «Hoy tu cartera» es el grupo de hoy del chat."""
+        chat = self._correr(LIVE_PREAPERTURA)
+        mapa = self._correr(LIVE_PREAPERTURA, mapa=True)
+        a = {(x["asset"], x["local"]): x for x in mapa["activos"]}
+        self.assertEqual(set(a), {("AAPL", False), ("MSFT", False)}, "el efectivo no es un cuadrito")
+        self.assertAlmostEqual(a[("MSFT", False)]["hoy"]["usd"], 100.0, places=2)
+        self.assertIsNone(a[("AAPL", False)]["hoy"])
+        self.assertEqual(a[("AAPL", False)]["dia_txt"], "ayer")
+        hoy_chat = next(g for g in chat["movimiento"] if g["es_hoy"])
+        self.assertEqual(mapa["cartera"]["pct"], hoy_chat["pct_sobre_la_cartera"])
+        self.assertEqual(mapa["cartera"]["usd"], hoy_chat["usd"])
+        # Contra lo que pagaste: MSFT 10 × 600 contra US$ 5.000.
+        self.assertAlmostEqual(a[("MSFT", False)]["promedio_pct_usd"], 20.0, places=2)
+
     def test_con_la_rueda_abierta_todo_es_hoy(self):
         live = {"AAPL": {"c": 27300.0, "pct": 0.74}, "SPY": {"c": 20950.0, "pct": 0.24}}
         r = self._correr(live, ahora=A_LAS_15)
@@ -409,6 +533,76 @@ class CaminoDeProduccionTest(unittest.TestCase):
         self.assertAlmostEqual(hoy["usd"], -100.0, places=2)
         msft = next(f for f in r["activos_que_mas_movieron"] if f["asset"] == "MSFT")
         self.assertTrue(msft["comprado_hoy"])
+
+    def _hoy_del_mapa_y_del_chat(self):
+        """(MSFT de hoy en el mapa, «Hoy tu cartera» del mapa, el grupo de hoy del
+        chat, la fila de MSFT del chat): los dos lectores de `_lotes_del_dia`."""
+        mapa = self._correr(LIVE_PREAPERTURA, mapa=True)
+        main._CARTERA_HOY_CACHE.clear()
+        chat = self._correr(LIVE_PREAPERTURA)
+        msft = next(a for a in mapa["activos"] if a["asset"] == "MSFT")
+        hoy_chat = next(g for g in chat["movimiento"] if g["es_hoy"])
+        fila = next(f for f in chat["activos_que_mas_movieron"] if f["asset"] == "MSFT")
+        return msft, mapa["cartera"], hoy_chat, fila
+
+    def test_el_promedio_viejo_cargado_hoy_no_es_una_compra_de_hoy(self):
+        """A1, la sonda de la auditoría: cargás hoy MSFT con tu promedio de 120,5
+        (con la fecha de hoy que trae el formulario). El mapa decía «Hoy tu
+        cartera +116 %» y MSFT +398 % hoy; la Var. día de la Cartera, +1,7 %:
+        (600 − 590) × 10 = US$ 100. Ese lote ya lo tenías."""
+        self.conn.execute("DELETE FROM positions WHERE asset='MSFT'")
+        self._comprar_hoy("MSFT", "Schwab", 1205, 10, "USD", "stock")
+        msft, cartera, hoy_chat, fila = self._hoy_del_mapa_y_del_chat()
+        self.assertAlmostEqual(msft["hoy"]["usd"], 100.0, places=2)
+        self.assertAlmostEqual(msft["hoy"]["pct"], round(10 / 590 * 100, 2), places=2)
+        self.assertAlmostEqual(hoy_chat["usd"], 100.0, places=2)
+        self.assertFalse(fila["comprado_hoy"])
+        self.assertEqual(cartera["pct"], hoy_chat["pct_sobre_la_cartera"])
+        self.assertLess(cartera["pct"], 5)
+
+    def test_el_alta_sin_fecha_no_es_una_compra_de_hoy(self):
+        """A1 por la puerta de producción: el formulario de bienvenida no manda
+        fecha y el alta le pone hoy. Con un promedio de 580 (que cuadraría con el
+        día) el día se medía desde 580: +US$ 200 en vez de los +US$ 100 reales."""
+        self.conn.execute("DELETE FROM positions WHERE asset='MSFT'")
+        self.conn.commit()
+        with patch("fechas.hoy_art", return_value=HOY):
+            main.create_position(main.PositionIn(broker="Schwab", asset="MSFT", quantity=10,
+                                                 buy_price=580, invested=5800), self.uid)
+        fecha = self.conn.execute("SELECT entry_date FROM positions WHERE user_id=? AND asset='MSFT'",
+                                  (self.uid,)).fetchone()[0]
+        self.assertEqual(fecha, HOY)
+        msft, _, hoy_chat, fila = self._hoy_del_mapa_y_del_chat()
+        self.assertAlmostEqual(msft["hoy"]["usd"], 100.0, places=2)
+        self.assertAlmostEqual(hoy_chat["usd"], 100.0, places=2)
+        self.assertFalse(fila["comprado_hoy"])
+        # Con fecha (la compra de hoy, por el formulario o el chat) sí se mide
+        # desde la compra: 580 → 600 = +US$ 200.
+        self.conn.execute("DELETE FROM positions WHERE asset='MSFT'")
+        self.conn.commit()
+        with patch("fechas.hoy_art", return_value=HOY):
+            main.create_position(main.PositionIn(broker="Schwab", asset="MSFT", quantity=10,
+                                                 buy_price=580, invested=5800, entry_date=HOY), self.uid)
+        main._MAPA_DEL_DIA_CACHE.clear()
+        main._CARTERA_HOY_CACHE.clear()
+        msft, _, hoy_chat, fila = self._hoy_del_mapa_y_del_chat()
+        self.assertAlmostEqual(msft["hoy"]["usd"], 200.0, places=2)
+        self.assertTrue(fila["comprado_hoy"])
+
+    def test_la_foto_de_tenencia_de_hoy_no_es_una_compra_de_hoy(self):
+        """El «Estado inicial» / la foto de tenencia del importador es la apertura
+        de la cuenta (`_is_synthetic_seed_row`), aunque la foto sea de hoy."""
+        self.conn.execute("DELETE FROM positions WHERE asset='MSFT'")
+        self.conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, asset_type, is_cash, invested, "
+            "quantity, commissions, price_override, currency, entry_date, notes) "
+            "VALUES (?,?,?,?,0,?,?,0,NULL,?,?,?)",
+            (self.uid, "Schwab", "MSFT", "stock", 5800, 10, "USD", HOY,
+             "Estado inicial — compra sintética (Rendi)"))
+        self.conn.commit()
+        msft, _, hoy_chat, fila = self._hoy_del_mapa_y_del_chat()
+        self.assertAlmostEqual(msft["hoy"]["usd"], 100.0, places=2)
+        self.assertFalse(fila["comprado_hoy"])
 
     def test_lo_comprado_hoy_antes_de_que_abra_no_se_mide(self):
         self.conn.execute("DELETE FROM positions WHERE asset='AAPL'")

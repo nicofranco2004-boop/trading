@@ -3,7 +3,7 @@
 // Composición v2 (más densa, menos editorial):
 //   1. Header compacto + SearchBar
 //   2. IndicesStrip (6 índices en grid horizontal)
-//   3. Heatmap (S&P / Merval / Cripto)
+//   3. Termómetro del mercado (0 a 100) y, abajo, el Heatmap (S&P / Merval / Cripto)
 //   4. PersonalLayer (si hay holdings)
 //   5. MoversRail (top gainers + losers)
 //   6. Watchlist
@@ -11,6 +11,7 @@
 
 import IndicesStrip from '../components/home/IndicesStrip'
 import Heatmap from '../components/home/Heatmap'
+import Termometro from '../components/home/Termometro'
 import MoversRail from '../components/home/MoversRail'
 import PersonalLayer from '../components/home/PersonalLayer'
 import NewsPreview from '../components/home/NewsPreview'
@@ -59,7 +60,8 @@ export default function Home() {
         {/* 1. Strip de índices */}
         <IndicesStrip />
 
-        {/* 2. Heatmap — visual hero */}
+        {/* 2. Termómetro del mercado (pieza 7) y el Heatmap — visual hero */}
+        <Termometro />
         <section>
           <Heatmap defaultMarket="sp500" />
         </section>

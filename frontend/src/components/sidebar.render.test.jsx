@@ -30,21 +30,21 @@ describe('<Sidebar> se dibuja con la lista compartida', () => {
   // navegador. Se pone y se saca: no puede quedar para las pruebas que siguen.
   beforeAll(() => { vi.stubGlobal('localStorage', { getItem: (k) => guardado[k] ?? null, setItem: () => {}, removeItem: () => {} }) })
   afterAll(() => { vi.unstubAllGlobals() })
-  it('las secciones van con lo tuyo junto y primero: Tu Cartera, Análisis, Mercado', () => {
+  it('las secciones van con lo tuyo junto y primero: Tu Cartera, Salud de cartera, Análisis de mercado', () => {
     // Mercado estaba al medio y cortaba las dos secciones que hablan de la
-    // cartera (pedido de Nico, 2026-10-11).
+    // cartera (pedido de Nico, 2026-10-11). Nombres del recuadro 22 (28/10).
     const html = dibujar({ tier: 'pro' })
-    const lugar = ['>Tu Cartera<', '>Análisis<', '>Mercado<'].map(t => html.indexOf(t))
+    const lugar = ['>Tu Cartera<', '>Salud de cartera<', '>Análisis de mercado<'].map(t => html.indexOf(t))
     for (const l of lugar) expect(l).toBeGreaterThan(0)
     expect(lugar).toEqual([...lugar].sort((a, b) => a - b))
     // Y adentro de cada una, sus pantallas en el orden de siempre.
     const r = rutas(html.slice(html.indexOf('<nav')))
-    const orden = ['/dashboard', '/posiciones', '/operaciones', '/analisis', '/fundamentals', '/perfil-inversor', '/', '/novedades']
+    const orden = ['/dashboard', '/posiciones', '/operaciones', '/analisis', '/perfil-inversor', '/', '/analisis-tecnico', '/fundamentals', '/novedades']
     expect(r.filter(to => orden.includes(to))).toEqual(orden)
   })
-  it('usuario común: Tu Cartera, Análisis, Mercado y Alertas (Importar va adentro de Registrar)', () => {
+  it('usuario común: Tu Cartera, Salud de cartera, Análisis de mercado y Alertas (Importar va adentro de Registrar)', () => {
     const r = rutas(dibujar({ tier: 'pro' }))
-    for (const to of ['/dashboard', '/posiciones', '/operaciones', '/', '/novedades', '/analisis', '/fundamentals', '/perfil-inversor', '/alertas']) {
+    for (const to of ['/dashboard', '/posiciones', '/operaciones', '/', '/analisis-tecnico', '/novedades', '/analisis', '/fundamentals', '/perfil-inversor', '/alertas']) {
       expect(r).toContain(to)
     }
     expect(r).not.toContain('/clientes')

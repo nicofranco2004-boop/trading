@@ -6,12 +6,12 @@
 // Layout:
 //   Top bar con back + ticker
 //   Hero: P/L USD grande + %, value actual debajo
-//   Chart 30d full-width
+//   Chart 30d full-width + "Ver el análisis técnico" (la ficha del activo)
 //   Stats: qty, precio promedio, precio actual, invested, value
 //   Lots: lista de operaciones de ese ticker (compra/venta histórico)
 
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, TrendingUp, TrendingDown, Calendar } from 'lucide-react'
 import AssetLogo from '../components/AssetLogo'
 import AssetMiniChart from '../components/home/AssetMiniChart'
@@ -22,15 +22,20 @@ import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { ChipDelActivo } from '../components/FueraDeHorario'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import Panel from '../components/Panel'
 import { operacionesEnUsd } from '../utils/assetPnl'
 import { esCobro } from '../utils/tradeStats'
 import { patasDeLaCuenta } from '../utils/pendingCashflows'
+import { urlDeActivo } from '../utils/buscadorRapido'
 
 export default function PositionDetailMobile() {
   const { id } = useParams()
   const navigate = useNavigate()
   const { valuationDollar, costBasis } = useCurrency()
+  // «Ocultar saldos», con el criterio de la Cartera de la que se viene (auditorías A3/D4).
+  const { hidden: oculto } = usePrivacy()
+  const monto = (txt) => (oculto ? OCULTO : txt)
   const [position, setPosition] = useState(null)
   const [brokers, setBrokers] = useState([])
   const [prices, setPrices] = useState({})
@@ -256,7 +261,7 @@ export default function PositionDetailMobile() {
             Valor actual
           </div>
           <div className="text-4xl font-medium tabular tracking-tight text-ink-0 leading-none">
-            ${Math.round(valueUsd).toLocaleString('es-AR')}
+            {monto(`$${Math.round(valueUsd).toLocaleString('es-AR')}`)}
             <span className="text-base text-ink-3 ml-1.5 font-normal">USD</span>
           </div>
           {!p.is_cash && pnlUsd != null && (
@@ -265,7 +270,7 @@ export default function PositionDetailMobile() {
                 ? <TrendingUp size={13} strokeWidth={1.75} />
                 : <TrendingDown size={13} strokeWidth={1.75} />}
               <span>
-                {pnlUsd >= 0 ? '+' : '−'}${Math.abs(Math.round(pnlUsd)).toLocaleString('es-AR')}
+                {monto(`${pnlUsd >= 0 ? '+' : '−'}$${Math.abs(Math.round(pnlUsd)).toLocaleString('es-AR')}`)}
               </span>
               <span className="text-ink-3 text-xs">·</span>
               <span>{pctSigned(pnlPct)}</span>
@@ -291,6 +296,13 @@ export default function PositionDetailMobile() {
             <Panel padding="sm">
               <AssetMiniChart symbol={priceSymbol(p.asset, isAR)} />
             </Panel>
+            {/* El análisis completo (velas, promedios, fuerza) vive en UN lugar:
+                la ficha del activo, con todos tus lotes juntos. */}
+            <Link to={urlDeActivo(p.asset)}
+              className="mt-2 flex items-center justify-between min-h-11 px-3 rounded-lg border border-line bg-bg-1 text-[13px] text-ink-1 hover:border-data-violet/40">
+              <span>Ver el análisis técnico de {p.asset}</span>
+              <span className="text-data-violet" aria-hidden="true">→</span>
+            </Link>
           </section>
         </AskAIAbout>
       )}
@@ -320,13 +332,13 @@ export default function PositionDetailMobile() {
               )}
               <DetailRow
                 label="Invertido"
-                value={lotShowsUsd ? `$${Math.round(investedDisp).toLocaleString('es-AR')} USD` : `${formatLocalPrice(investedDisp)} ARS`}
+                value={monto(lotShowsUsd ? `$${Math.round(investedDisp).toLocaleString('es-AR')} USD` : `${formatLocalPrice(investedDisp)} ARS`)}
                 bordered
               />
               <DetailRow
                 label="P/L"
                 value={pnlUsd != null
-                  ? `${pnlUsd >= 0 ? '+' : '−'}$${Math.abs(Math.round(pnlUsd)).toLocaleString('es-AR')} USD`
+                  ? monto(`${pnlUsd >= 0 ? '+' : '−'}$${Math.abs(Math.round(pnlUsd)).toLocaleString('es-AR')} USD`)
                   : '—'}
                 bordered
                 valueTone={pnlPct}
@@ -338,12 +350,12 @@ export default function PositionDetailMobile() {
               <DetailRow label="Tipo" value="Cash" />
               <DetailRow
                 label="Saldo"
-                value={isAR ? `${formatLocalPrice(invested)} ARS` : `$${Math.round(invested).toLocaleString('es-AR')} USD`}
+                value={monto(isAR ? `${formatLocalPrice(invested)} ARS` : `$${Math.round(invested).toLocaleString('es-AR')} USD`)}
                 bordered
               />
               <DetailRow
                 label="Equivalente USD"
-                value={`$${Math.round(valueUsd).toLocaleString('es-AR')}`}
+                value={monto(`$${Math.round(valueUsd).toLocaleString('es-AR')}`)}
                 bordered
               />
             </>
@@ -384,7 +396,7 @@ export default function PositionDetailMobile() {
                 </div>
                 {op.pnl_usd != null && (
                   <div className={`text-sm font-medium tabular leading-none ${colorClass(op.pnl_usd)}`}>
-                    {op.pnl_usd >= 0 ? '+' : '−'}${Math.abs(Math.round(op.pnl_usd)).toLocaleString('es-AR')}
+                    {monto(`${op.pnl_usd >= 0 ? '+' : '−'}$${Math.abs(Math.round(op.pnl_usd)).toLocaleString('es-AR')}`)}
                   </div>
                 )}
               </li>

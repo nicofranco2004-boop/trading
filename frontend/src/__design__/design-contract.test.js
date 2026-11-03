@@ -209,13 +209,24 @@ describe('contrato de diseño — R6, no se bifurca por viewport', () => {
                                         // x=297 y el globo se cortaba entero. Se
                                         // corre lo justo para entrar; no decide
                                         // NADA por tamaño de pantalla.
-      'src/components/tour/TourNovedades.jsx',  // ídem: ubica el cartel del
+      'src/components/asset/BarraGrafico.jsx',  // ídem: el menú de Fibonacci y
+                                        // Elliott se abre al lado de su botón si
+                                        // entra y, si no, debajo (la fila del
+                                        // celular), recortado contra los bordes.
+                                        // No decide NADA por tamaño de pantalla
+                                        // (la lista de indicadores mira el ancho
+                                        // del GRÁFICO, que mide el gráfico).
+      'src/components/tour/Tour.jsx',   // ídem: ubica el cartel del
                                         // tutorial al lado de lo que resalta y
                                         // lo recorta contra los bordes.
       'src/hooks/useArrastrable.js',    // ídem: recorta la isla arrastrada contra
                                         // los bordes para que no se vaya de la
                                         // pantalla. No decide NADA por tamaño.
       'src/hooks/useIsMobile.js',       // el dueño legítimo del breakpoint
+      'src/testing/pantallaConOjito.js', // sólo pruebas (no entra al build): SIMULA
+                                        // el ancho de la compu y del celular para
+                                        // montar cada pantalla en los dos. No
+                                        // decide nada de la app.
     ]
     const conAncho = listarFuentes().filter((f) => {
       const t = leer(f)

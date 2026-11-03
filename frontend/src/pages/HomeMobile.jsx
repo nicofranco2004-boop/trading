@@ -25,6 +25,7 @@ import Panel from '../components/Panel'
 import YearReturnLine from '../components/YearReturnLine'
 import PersonalLayer from '../components/home/PersonalLayer'
 import Heatmap from '../components/home/Heatmap'
+import Termometro from '../components/home/Termometro'
 import MoversRail from '../components/home/MoversRail'
 import Watchlist from '../components/home/Watchlist'
 import NewsPreview from '../components/home/NewsPreview'
@@ -570,7 +571,12 @@ export default function HomeMobile() {
         <PersonalLayer />
       </section>
 
-      {/* ── 4. Heatmap S&P ─────────────────────────────────────────── */}
+      {/* ── 4. Termómetro del mercado (pieza 7, el mismo recuadro que Home) */}
+      <section className="px-4 mb-5">
+        <Termometro />
+      </section>
+
+      {/* ── 4b. Heatmap S&P ────────────────────────────────────────── */}
       <section className="px-4 mb-5">
         <h2 className="text-[12.5px] text-ink-2 mb-2 font-medium">
           S&P 500 hoy

@@ -3,7 +3,7 @@
 // Layout: squarified treemap simplificado (sin lib externa). Cada bloque:
 //   - size proporcional al market_cap
 //   - color por change_pct (escala verde/rojo)
-//   - click → abre AssetQuickView (modal mini-ficha)
+//   - click → la ficha del activo (/activo/X, con el análisis técnico)
 //   - con el mouse encima: borde resaltado + globo con nombre, precio y
 //     variación (en el celular el toque ya abre la ficha, no hay "encima")
 //   - al entrar en pantalla los cuadros aparecen en ola, de arriba a la
@@ -13,11 +13,13 @@
 // V2: real-time prices con polling 60s.
 
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAlVerse } from '../../hooks/useAlVerse'
 import { api } from '../../utils/api'
 import { pctVar, pctVarSign, nfmt } from '../../utils/format'
 import { polarityColor, CORTES_DIA } from '../../utils/polarityScale'
-import AssetQuickView from './AssetQuickView'
+import { urlDeActivo } from '../../utils/buscadorRapido'
+import { squarify } from '../../utils/squarify'
 
 // Los colores salen de la rampa única (utils/polarityScale.js), que conoce los
 // dos temas. Acá vivían dos arrays de 9 hex y una función propia — construidos
@@ -29,9 +31,9 @@ import AssetQuickView from './AssetQuickView'
 //
 // Los cortes son los del DÍA (0,5 % y 1 %) porque esto mide una rueda.
 
-// Tickers crypto del backend vienen como `BTC-USD`, `ETH-USD`. El endpoint
-// /api/prices/history valida con regex `[A-Z0-9]{1,10}(\.BA)?` y rechaza `-`.
-// Limpiamos al abrir AssetQuickView así el modal puede pedir el chart.
+// Tickers crypto del backend vienen como `BTC-USD`, `ETH-USD`. En la app una
+// cripto se llama BTC (así la tenés en la cartera y así la pide el precio):
+// la ficha se abre con ese nombre.
 function cleanSymbol(symbol) {
   if (!symbol) return symbol
   const m = symbol.match(/^([A-Z0-9]+)-(USD|USDT|USDC)$/)
@@ -46,93 +48,13 @@ function shortSymbol(symbol) {
   return clean.length > 6 ? clean.slice(0, 5) : clean
 }
 
-// ─── Squarified-ish layout ───────────────────────────────────────────────────
-// Layout simple: dividimos el área en filas, cada fila proporcional a un grupo
-// de blocks. Para V1 usamos un algoritmo greedy: tomamos los más grandes en una
-// fila hasta que el aspect ratio se vuelve mejor en una nueva.
-//
 // Compresión de pesos: usamos sqrt(market_cap) para que cripto y Merval
 // (donde 1-2 nombres dominan) no aplaste el resto en celdas invisibles.
 // Con market_cap raw, BTC vs AVAX es ratio ~120:1; con sqrt queda ~11:1.
-
+// El armado de los cuadros es `squarify` (utils/squarify.js), el mismo del mapa
+// de calor de tu cartera en el Dashboard.
 function weightOf(b) {
   return Math.sqrt(Math.max(b.market_cap, 1))
-}
-
-function squarify(blocks, width, height) {
-  const total = blocks.reduce((s, b) => s + weightOf(b), 0)
-  if (total === 0) return []
-  const totalArea = width * height
-  const items = blocks.map(b => ({
-    ...b,
-    area: (weightOf(b) / total) * totalArea,
-  }))
-  // Ordenar desc
-  items.sort((a, b) => b.area - a.area)
-
-  const result = []
-  let x = 0, y = 0
-  let availW = width, availH = height
-  let i = 0
-
-  while (i < items.length) {
-    // Tomamos una "fila" en la dirección más corta
-    const isHoriz = availW >= availH
-    const lineLen = isHoriz ? availW : availH
-    const lineThickness = isHoriz ? availH : availW
-
-    // Acumulamos hasta que el aspect ratio empeore
-    let row = []
-    let rowArea = 0
-    let bestAspect = Infinity
-
-    while (i < items.length) {
-      const next = items[i]
-      const tryArea = rowArea + next.area
-      const tryRowDepth = tryArea / lineLen
-      // Aspect ratio peor de la fila
-      let worst = 0
-      for (const it of [...row, next]) {
-        const w = isHoriz ? (it.area / tryRowDepth) : tryRowDepth
-        const h = isHoriz ? tryRowDepth : (it.area / tryRowDepth)
-        const ar = Math.max(w / h, h / w)
-        if (ar > worst) worst = ar
-      }
-      if (worst < bestAspect || row.length === 0) {
-        row.push(next)
-        rowArea = tryArea
-        bestAspect = worst
-        i++
-      } else {
-        break
-      }
-    }
-
-    // Render fila
-    const rowDepth = Math.min(rowArea / lineLen, lineThickness)
-    let cursor = 0
-    for (const it of row) {
-      const sideLen = it.area / rowDepth
-      const block = {
-        ...it,
-        x: isHoriz ? (x + cursor) : x,
-        y: isHoriz ? y : (y + cursor),
-        w: isHoriz ? sideLen : rowDepth,
-        h: isHoriz ? rowDepth : sideLen,
-      }
-      result.push(block)
-      cursor += sideLen
-    }
-
-    if (isHoriz) {
-      y += rowDepth
-      availH -= rowDepth
-    } else {
-      x += rowDepth
-      availW -= rowDepth
-    }
-  }
-  return result
 }
 
 
@@ -190,7 +112,8 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
   const [blocks, setBlocks] = useState([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
-  const [selected, setSelected] = useState(null)
+  const navigate = useNavigate()
+  const abrir = (symbol) => navigate(urlDeActivo(cleanSymbol(symbol)))
   const [encima, setEncima] = useState(null)   // símbolo con el mouse encima
   const [refMapa, mapaVisto] = useAlVerse()
 
@@ -224,7 +147,7 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
     </div>
   )
 
-  const laid = loading || err || blocks.length === 0 ? [] : squarify(blocks, WIDTH, HEIGHT)
+  const laid = loading || err || blocks.length === 0 ? [] : squarify(blocks, WIDTH, HEIGHT, weightOf)
   // El cuadro con el mouse encima: su borde va arriba de todos y lleva el globo.
   const resaltado = encima ? laid.find(x => x.symbol === encima) : null
 
@@ -276,7 +199,7 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
             return (
               <g
                 key={b.symbol}
-                onClick={() => setSelected({ ...b, symbol: cleanSymbol(b.symbol) })}
+                onClick={() => abrir(b.symbol)}
                 // Con teclado también: Tab llega a cada cuadro y Enter abre el
                 // detalle, igual que el click.
                 role="button"
@@ -285,7 +208,7 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
                 onKeyDown={e => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault()
-                    setSelected({ ...b, symbol: cleanSymbol(b.symbol) })
+                    abrir(b.symbol)
                   }
                 }}
                 onPointerEnter={e => { if (e.pointerType === 'mouse') setEncima(b.symbol) }}
@@ -343,12 +266,6 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
         </svg>
         <GloboCelda b={resaltado} market={market} />
       </div>
-      )}
-      {selected && (
-        <AssetQuickView
-          symbol={selected.symbol}
-          onClose={() => setSelected(null)}
-        />
       )}
     </>
   )

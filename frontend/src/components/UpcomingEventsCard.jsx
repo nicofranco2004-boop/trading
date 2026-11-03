@@ -13,6 +13,7 @@ import AssetLogo from './AssetLogo'
 import EventBadge from './EventBadge'
 import { api } from '../utils/api'
 import { nfmt } from '../utils/format'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import {
   upcomingBondEvents,
   normalizeBackendEvents,
@@ -101,12 +102,14 @@ function EventRow({ event, positions }) {
 // Sub-línea de contexto: para cobros (bonos, dividendos) va en cyan — es el
 // "qué significa para vos" (mismo código de color que la agenda de Novedades).
 function RowAmount({ event, positions }) {
+  // «Ocultar saldos»: lo que cobrarías es plata tuya (re-test A3, 29/10).
+  const { hidden: oculto } = usePrivacy()
   const { eventType, details } = event
   if (eventType.startsWith('bond_') && details?.total != null) {
     const currency = details.currency || 'USD'
     return (
       <p className="text-[11.5px] text-data-cyan tabular mt-0.5">
-        cobrás ~+{currency} {details.total.toFixed(2).replace('.', ',')}
+        cobrás ~+{oculto ? OCULTO : `${currency} ${details.total.toFixed(2).replace('.', ',')}`}
       </p>
     )
   }
@@ -120,7 +123,7 @@ function RowAmount({ event, positions }) {
     if (payout?.amount != null) {
       return (
         <p className="text-[11.5px] text-data-cyan tabular mt-0.5">
-          cobrás ~+US$ {nfmt(payout.amount, 2)}
+          cobrás ~+{oculto ? OCULTO : `US$ ${nfmt(payout.amount, 2)}`}
           {payout.partial && <span className="text-ink-3"> (parcial)</span>}
         </p>
       )

@@ -300,6 +300,20 @@ class PriceHistoryEndpointTest(unittest.TestCase):
             self.assertRegex(p["date"], r"^\d{4}-\d{2}-\d{2}$")
             self.assertIsInstance(p["close"], (int, float))
 
+    def test_cripto_de_fracciones_de_centavo_no_llega_en_cero(self):
+        # PEPE o SHIB (US$ 0,00001): con 4 decimales fijos todos los cierres
+        # llegaban en 0 y el mini-gráfico era una línea chata (29/10).
+        import pandas as pd
+        from unittest import mock
+        cierres = [0.0000105, 0.00001123, 0.0000098]
+        hist = pd.DataFrame({"Close": cierres},
+                            index=pd.DatetimeIndex(["2026-10-01", "2026-10-02", "2026-10-05"]))
+        with mock.patch("main.yf.Ticker") as tk:
+            tk.return_value.history.return_value = hist
+            r = self.client.get("/api/prices/history?symbol=ZZCENT&period=1m", headers=self.headers)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual([p["close"] for p in r.json()["points"]], cierres)
+
 
 if __name__ == "__main__":
     unittest.main()

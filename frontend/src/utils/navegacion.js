@@ -5,13 +5,33 @@
 import {
   Briefcase, List, Wallet, LineChart, Activity, Newspaper, Compass, TrendingUp,
   Gauge, Bell, Upload, LayoutDashboard, UserRound, Users, CalendarDays,
-  BookOpen, Settings, Shield,
+  BookOpen, Settings, Shield, CandlestickChart,
 } from 'lucide-react'
+import { hoyISO } from './fecha'
+
+// ── Lanzamiento del análisis técnico (Nico, 31/10/2026) ───────────────────
+// «Análisis de mercado» dice «Nuevo» y la fila de «Análisis técnico» va
+// resaltada durante 10 días desde que se publica (01/11 → 10/11, los dos
+// incluidos): iguales para todos, no contados desde que cada uno lo ve. Se
+// apaga solo, sin volver a publicar. El «Beta» NO vence: se saca a mano
+// (borrando `beta: true`) cuando Nico lo diga. Un lugar solo: lo leen el menú
+// de la compu (Sidebar), «Más» del celular (More) y el título de la página.
+export const FIN_DEL_NUEVO = '2026-11-10'
+
+/** ¿Sigue vigente algo que se ve «hasta» ese día (incluido)? `hoy` se pasa en
+ *  las pruebas; si no, el día calendario de acá. */
+export function sigueVigente(hasta, hoy = hoyISO()) {
+  return !!hasta && !!hoy && hoy <= hasta
+}
 
 // ── 3 secciones acordeón ──────────────────────────────────────────────────
-// • Tu Cartera: lo que tenés y moviste (lo que navegás seguido).
-// • Análisis:   entender e interpretar eso mismo (performance + calidad de tenencias).
-// • Mercado:    qué pasa afuera (el pulso del día + las noticias).
+// «Arriba, cómo está tu plata. Abajo, cómo están los activos» (recuadro 22 del
+// tablero, aprobado por Nico el 28/10):
+// • Tu Cartera:          lo que tenés y moviste (lo que navegás seguido).
+// • Salud de cartera:    cómo le va a tu plata (rendimiento y perfil).
+// • Análisis de mercado: cómo están los activos (el pulso del día, la lectura
+//                        técnica, el análisis fundamental y las noticias).
+// Los `id` de los grupos no cambian (otras pantallas los usan): sólo el nombre.
 // EL ORDEN ES EL DEL MENÚ, y va lo tuyo junto y primero (pedido de Nico,
 // 2026-10-11): antes era Tu Cartera · Mercado · Análisis, y Mercado cortaba al
 // medio las dos secciones que hablan de tu cartera. De acá lo toman el menú
@@ -29,18 +49,23 @@ export const GROUPS = [
     ],
   },
   {
-    id: 'analisis', label: 'Análisis', icon: Compass,
+    id: 'analisis', label: 'Salud de cartera', icon: Compass,
     items: [
       { to: '/analisis',        label: 'Métricas',           icon: TrendingUp },
-      { to: '/fundamentals',    label: 'Calidad de cartera', icon: Gauge },
       { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound },
     ],
   },
   {
-    id: 'mercado', label: 'Mercado', icon: LineChart,
+    id: 'mercado', label: 'Análisis de mercado', icon: LineChart, nuevoHasta: FIN_DEL_NUEVO,
     items: [
-      { to: '/',          label: 'Resumen',   icon: Activity },
-      { to: '/novedades', label: 'Novedades', icon: Newspaper },
+      { to: '/',                label: 'Resumen',              icon: Activity },
+      // Lo que tenés y lo que seguís con su lectura técnica (pages/TuLista.jsx).
+      // `beta`: la etiqueta violeta (hasta que Nico diga); `resaltadaHasta`:
+      // el fondo violeta suave mientras dure el «Nuevo».
+      { to: '/analisis-tecnico', label: 'Análisis técnico',    icon: CandlestickChart, beta: true, resaltadaHasta: FIN_DEL_NUEVO },
+      // Antes «Calidad de cartera»: la dirección no cambia (links guardados).
+      { to: '/fundamentals',    label: 'Análisis fundamental', icon: Gauge },
+      { to: '/novedades',       label: 'Novedades',            icon: Newspaper },
     ],
   },
 ]
@@ -111,6 +136,12 @@ export function menuVisible({ user, clientCtx } = {}) {
 // "Tu Cartera". Antes cada pantalla lo armaba a mano (el menú lateral, "Más",
 // la lupa, la franja) con respaldos distintos, y el ⌘K seguía diciendo
 // "Tu Cartera".
+/** ¿La pantalla `to` está en beta? Lo pregunta el título de la página, para
+ *  decir lo mismo que el menú sin una segunda lista. */
+export function esBeta(to) {
+  return GROUPS.some(g => g.items.some(i => i.to === to && i.beta))
+}
+
 export function nombreDelCliente(clientCtx) {
   if (!clientCtx) return null
   return clientCtx.label || `Cliente ${clientCtx.id}`
@@ -126,7 +157,7 @@ export function pantallasVisibles({ user, clientCtx } = {}) {
   const lista = [
     ...m.asesorPropio,
     ...(m.clientesDesdeCliente ? [ASESOR_PROPIO.find(i => i.to === '/clientes')] : []),
-    ...m.groups.flatMap(g => g.items.map(i => ({ ...i, grupoId: g.id, grupo: etiquetaDeGrupo(g, clientCtx) }))),
+    ...m.groups.flatMap(g => g.items.map(i => ({ ...i, grupoId: g.id, grupo: etiquetaDeGrupo(g, clientCtx), grupoNuevoHasta: g.nuevoHasta }))),
     ...m.loose,
     ...m.utilidades,
   ]

@@ -16,6 +16,7 @@
 // El cartel «Modo demo activo…» aparece siempre: es del demo y se corta a
 // propósito.
 import { chromium } from 'playwright-core'
+import { CLAVES_DE_LOS_TOURS } from '../src/components/tour/recorrido.js'
 
 const BASE = process.env.BASE || 'http://localhost:5191'
 const ANCHOS = (process.argv[2] || '390').split(',').map(Number)
@@ -30,8 +31,8 @@ const b = await chromium.launch({ executablePath: process.env.CHROME || undefine
 let total = 0
 for (const w of ANCHOS) {
   const ctx = await b.newContext({ viewport: { width: w, height: 844 } })
-  // El recorrido de bienvenida de Novedades tapa la lista.
-  await ctx.addInitScript(() => { try { localStorage.setItem('rendi:tour:novedades:v2', '1') } catch { /* sin almacenamiento */ } })
+  // Los tutoriales (novedades, Análisis técnico) tapan la lista: ya vistos.
+  await ctx.addInitScript((claves) => { try { for (const k of claves) localStorage.setItem(k, '1') } catch { /* sin almacenamiento */ } }, CLAVES_DE_LOS_TOURS)
   const p = await ctx.newPage()
   for (const r of RUTAS) {
     try {

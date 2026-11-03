@@ -6,13 +6,18 @@
 // Diseño: PageHeader con live-dot. Tabs outer prominentes con icono. Cada
 // sección hija (Events/News) maneja su propio KPI strip + sub-tabs en URL.
 //
+// «Tus señales» (pieza 15) se mudó a Análisis técnico → «Señales de la
+// semana» (recuadro 21c, 28/10). La pestaña queda como link (así nadie que la
+// buscaba acá se pierde) y /novedades?tab=senales —la dirección de los mails y
+// notificaciones viejos— redirige allá.
+//
 // URL state:
 //   • ?tab=eventos|noticias  → sección activa (este componente)
 //   • ?sub=…                 → sub-tab dentro de la sección (componente hijo)
 
 import { useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { Calendar, Newspaper } from 'lucide-react'
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
+import { Activity, ArrowUpRight, Calendar, Newspaper } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Events from './Events'
 import News from './News'
@@ -23,13 +28,15 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 const SECTIONS = [
   { value: 'eventos',  label: 'Eventos',  icon: Calendar },
   { value: 'noticias', label: 'Noticias', icon: Newspaper },
+  // Se mudó: tocarla lleva a la pestaña de Análisis técnico.
+  { value: 'senales',  label: 'Tus señales', icon: Activity, fuera: '/analisis-tecnico?tab=senales' },
 ]
 
 const DEFAULT_SECTION = 'eventos'
 
 function readSection(searchParams) {
   const t = searchParams.get('tab')
-  return SECTIONS.find(s => s.value === t) ? t : DEFAULT_SECTION
+  return SECTIONS.find(s => s.value === t && !s.fuera) ? t : DEFAULT_SECTION
 }
 
 // El asesor, en su propio nivel (sin haber entrado a un cliente), no tiene
@@ -45,7 +52,9 @@ export default function Novedades() {
 
 function PersonalNovedades() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const section = readSection(searchParams)
+  const mudada = SECTIONS.find(s => s.fuera && s.value === searchParams.get('tab'))
 
   // Normalizamos URL una vez si llegamos sin ?tab=
   useEffect(() => {
@@ -58,17 +67,22 @@ function PersonalNovedades() {
   }, [])
 
   function selectSection(value) {
+    const fuera = SECTIONS.find(s => s.value === value)?.fuera
+    if (fuera) { navigate(fuera); return }
     const next = new URLSearchParams(searchParams)
     next.set('tab', value)
     next.delete('sub')  // reset sub-tab al cambiar de sección
     setSearchParams(next, { replace: true })
   }
 
+  // La dirección vieja de «Tus señales» (mails y notificaciones de antes).
+  if (mudada) return <Navigate to={mudada.fuera} replace />
+
   return (
     <div className="page-shell-wide">
       <PageHeader
         title="Novedades"
-        subtitle="Eventos financieros y noticias del mercado — todo en un solo lugar."
+        subtitle="Eventos y noticias del mercado, todo en un solo lugar."
         meta="Google News + yfinance"
       />
 
@@ -77,9 +91,9 @@ function PersonalNovedades() {
       <div
         role="tablist"
         aria-label="Secciones de Novedades"
-        className="flex items-center gap-1 mb-5 border-b border-line"
+        className="flex items-center gap-0.5 sm:gap-1 mb-5 border-b border-line overflow-x-auto scrollbar-none"
       >
-        {SECTIONS.map(s => {
+        {SECTIONS.filter(s => !s.fuera).map(s => {
           const Icon = s.icon
           const active = section === s.value
           return (
@@ -90,7 +104,7 @@ function PersonalNovedades() {
               aria-controls={`novedades-panel-${s.value}`}
               id={`novedades-tab-${s.value}`}
               onClick={() => selectSection(s.value)}
-              className={`group flex items-center gap-2 px-4 py-3 text-[15px] font-semibold border-b-2 -mb-px transition-colors ${
+              className={`group flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-3 text-[14px] sm:text-[15px] font-semibold whitespace-nowrap border-b-2 -mb-px transition-colors ${
                 active
                   ? 'border-rendi-accent text-ink-0'
                   : 'border-transparent text-ink-2 hover:text-ink-0'
@@ -103,6 +117,20 @@ function PersonalNovedades() {
               />
               {s.label}
             </button>
+          )
+        })}
+        {/* Lo que se mudó a otra página no es una pestaña (una pestaña no te saca
+            de la página): es un link, afuera de las pestañas (auditoría D12). */}
+        {SECTIONS.filter(s => s.fuera).map(s => {
+          const Icon = s.icon
+          return (
+            <Link key={s.value} to={s.fuera}
+              className="group flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-3 text-[14px] sm:text-[15px] font-semibold whitespace-nowrap border-b-2 border-transparent -mb-px text-ink-2 hover:text-ink-0 transition-colors">
+              <Icon size={15} strokeWidth={1.75} className="text-ink-3 group-hover:text-ink-1 transition-colors" />
+              {s.label}
+              <ArrowUpRight size={13} strokeWidth={2} aria-hidden="true" className="text-data-violet" />
+              <span className="sr-only">(en Análisis técnico)</span>
+            </Link>
           )
         })}
       </div>

@@ -7,12 +7,14 @@
 //   pantalla → una pantalla del menú (las mismas que muestra el menú lateral).
 //   accion   → hacer algo: cargar una operación, cambiar de moneda o de tema,
 //              tapar los montos.
-//   empresa  → un ticker que NO tenés: "Calidad de cartera" lo muestra con sus
-//              números. La ficha de activo no sirve ahí (es de tus lotes).
+//   empresa  → un ticker que NO tenés: la MISMA ficha (/activo/X), sin lotes,
+//              con el gráfico y el análisis técnico; desde ahí, "Calidad de
+//              cartera" si la empresa tiene puntaje.
 // Y siempre al final, con algo escrito: preguntárselo a Mervall-E AI — o, si tu
 // plan no tiene chat libre, ir a ver las preguntas que sí le podés hacer.
 
-import { CEDEAR_EN_EEUU, ADR_DE_ACCION_AR, ETFS, CEDEARS_DE_ETF, cedearEspecieBase } from './tickers'
+import { CEDEAR_EN_EEUU, ADR_DE_ACCION_AR, ETFS, CEDEARS_DE_ETF, cedearEspecieBase, inferType } from './tickers'
+import { esLocalSinTenencia } from './accionLocal'
 import { classifyAsset } from './assetClass'
 import { quienEs } from './quienEs'
 
@@ -102,33 +104,54 @@ export function opcionRendiAI(texto, chatLibre = true) {
   return { clase: 'ia', id: 'ia', titulo: `Preguntarle a Mervall-E: «${texto}»`, detalle: 'Mervall-E AI', pregunta: texto }
 }
 
+// El mismo papel escrito de otra forma: con o sin ".BA", una cripto con o sin
+// "-USD" (el mapa de calor y el chat la guardan como BTC-USD), una acción con
+// clase con punto, guión o pegada (BRK.B, BRK-B, BRKB: el CEDEAR) y los CEDEARs
+// con ticker propio (DISN → DIS: CEDEAR_EN_EEUU). OJO: con o sin ".BA" puede
+// ser OTRO instrumento (GGAL.BA es la acción local, GGAL el ADR; AGRO.BA es
+// Agrometal y AGRO Adecoagro): quien compara decide el mercado aparte.
+export function mismoPapel(simbolo) {
+  let s = (simbolo || '').toUpperCase().trim().replace(/\.BA$/, '').replace(/-(USD|USDT|USDC)$/, '')
+  s = CEDEAR_EN_EEUU[s] || s
+  return s.replace(/[.\s]/g, '-')
+}
+
+// La ficha de un activo: UN lugar para todo activo, lo tengas o no. La abren la
+// Cartera, los buscadores, el mapa de calor, los movers, la watchlist y los
+// eventos. Con lotes muestra lo tuyo; sin lotes, el precio y el análisis técnico.
+export const urlDeActivo = (simbolo) => `/activo/${encodeURIComponent((simbolo || '').toUpperCase())}`
+
 // A dónde lleva un ticker en CUALQUIER buscador de la app (este ⌘K y la lupa
 // del celular, pages/MobileSearch). Una sola regla: la lupa tenía la suya y
 // llevaba a /posiciones#X, que nadie lee.
-//   • Si lo tenés: a tu posición (la ficha del activo).
-//   • Si no: a la empresa en "Calidad de cartera", que sólo arma el puntaje de
-//     acciones que cotizan en dólares en EE.UU. Un CEDEAR (AAPL.BA) se abre por
-//     esa acción (AAPL; DISN → DIS: CEDEAR_EN_EEUU): en pesos el servidor no lo
-//     arma y él mismo sugiere ese ticker. Una acción argentina, por su ADR
-//     (YPFD → YPF: ADR_DE_ACCION_AR); si no tiene, no hay ficha. Bonos, cripto,
-//     ETFs y fondos tampoco —el servidor contesta "no aplica" por tipo—.
-//   • null = no hay a dónde llevar. Antes terminaban en un cartel que decía que
-//     ahí no había nada, o en OTRA empresa con el mismo ticker (TEN, AGRO).
-const SIN_FICHA_DE_EMPRESA = new Set(['bond', 'crypto', 'etf', 'fci'])
-// Hay CEDEARs de ETFs (SPY, QQQ, URA…): tampoco tienen ficha de empresa.
-const ES_ETF = new Set([...ETFS.map(e => e.s), ...CEDEARS_DE_ETF])
+//   • A la ficha del activo, lo tengas o no (con tus lotes si lo tenés).
+//     Antes, lo que no tenías iba a "Análisis fundamental" y una cripto o un ETF
+//     a ningún lado: no había forma de ver su gráfico sin agregarlo a la
+//     watchlist. "Análisis fundamental" sigue a un toque, desde la ficha.
+//   • Un bono o un fondo que no tenés: a ningún lado (null). No tienen gráfico
+//     técnico y la ficha quedaría casi vacía.
+const SIN_FICHA_SI_NO_LO_TENES = new Set(['bond', 'fci'])
 export function destinoDeTicker(simbolo, { tuyo = false, tipo = null } = {}) {
   const s = (simbolo || '').toUpperCase()
   if (!s) return null
-  if (tuyo) return `/activo/${encodeURIComponent(s)}`
-  const empresa = tickerDeEmpresa(s, tipo)
-  return empresa ? urlDeEmpresa(empresa) : null
+  if (!tuyo && SIN_FICHA_SI_NO_LO_TENES.has(tipo)) return null
+  return urlDeActivo(s)
 }
 
 export const urlDeEmpresa = (ticker) => `/fundamentals?ticker=${encodeURIComponent(ticker)}`
 
-// El ticker con el que "Calidad de cartera" abre la empresa, o null. Lo usa
-// también su lista con puntaje (CarteraList) para los CEDEARs.
+// La empresa de un ticker en "Análisis fundamental", que sólo arma el puntaje de
+// acciones que cotizan en dólares en EE.UU.:
+//   • Un CEDEAR (AAPL.BA) se abre por esa acción (AAPL; DISN → DIS:
+//     CEDEAR_EN_EEUU): en pesos el servidor no lo arma y él mismo sugiere ese
+//     ticker. Hay CEDEARs de ETFs (SPY, QQQ, URA…): ésos no tienen empresa.
+//   • Una acción argentina, por su ADR (YPFD → YPF: ADR_DE_ACCION_AR); si no
+//     tiene, no hay empresa (TEN, AGRO abrían OTRA empresa con ese ticker).
+//   • Bonos, cripto, ETFs y fondos: no —el servidor contesta "no aplica"—.
+// null = no hay empresa. Lo usan la ficha de un activo que no tenés, la de uno
+// tuyo (empresaDeTenencias) y la lista con puntaje (CarteraList).
+const SIN_FICHA_DE_EMPRESA = new Set(['bond', 'crypto', 'etf', 'fci'])
+const ES_ETF = new Set([...ETFS.map(e => e.s), ...CEDEARS_DE_ETF])
 export function tickerDeEmpresa(simbolo, tipo) {
   const s = (simbolo || '').toUpperCase()
   if (!s || SIN_FICHA_DE_EMPRESA.has(tipo)) return null
@@ -143,7 +166,7 @@ export function tickerDeEmpresa(simbolo, tipo) {
 }
 
 // La empresa de un activo TUYO: la ficha del activo y los botones "Tus
-// posiciones" de Calidad de cartera. Es la regla del buscador, pero el tipo
+// posiciones" de Análisis fundamental. Es la regla del buscador, pero el tipo
 // sale de la clase de la torta (assetClass.classifyAsset), que mira en qué
 // MERCADO está cada tenencia y no sólo el ticker. La ficha preguntaba sólo por
 // el ticker: TECO2 no llevaba a Telecom (TEO), DISN abría "DISN" y no Disney
@@ -166,6 +189,27 @@ export function empresaDeTenencias(tenencias, brokers = []) {
   if (empresas.size !== 1) return null
   const [ticker] = empresas
   return ticker ? { ticker, ir: urlDeEmpresa(ticker) } : null
+}
+
+// La empresa de un ticker que NO tenés (la ficha sin lotes): no hay tenencias
+// que digan en qué mercado está, así que decide el ticker (inferType: GGAL y
+// GGAL.BA son la acción argentina; AAPL.BA, el CEDEAR). { ticker, ir } o null.
+// Lo TUYO decide por tus tenencias (empresaDeTenencias), nunca por acá.
+export function empresaDeTicker(simbolo) {
+  const ticker = tickerDeEmpresa(simbolo, inferType(simbolo))
+  return ticker ? { ticker, ir: urlDeEmpresa(ticker) } : null
+}
+
+// Cómo se mira un activo que NO tenés, con la misma regla del ticker: una
+// acción argentina se mira en BYMA (su precio en pesos y, en el gráfico en
+// dólares, ese precio ÷ el MEP), no por su ADR de Nueva York.
+//   GGAL / GGAL.BA → { accionLocal: true, simboloPrecio: 'GGAL.BA' }
+//   NVDA → { accionLocal: false, simboloPrecio: 'NVDA' } · BTC igual.
+export function miradaSinTenencia(simbolo, tipo = null) {
+  const s = (simbolo || '').toUpperCase()
+  // LA regla de lo que no tenés (utils/accionLocal.js), con el tipo si lo hay.
+  const accionLocal = esLocalSinTenencia(s, tipo)
+  return { accionLocal, simboloPrecio: accionLocal && !s.endsWith('.BA') ? `${s}.BA` : s }
 }
 
 // Tus activos, uno por ticker (los lotes y los brokers se juntan), sin el
@@ -191,12 +235,11 @@ export function opcionesDeActivos(posiciones, nombreDe = () => null, { cliente =
   return out
 }
 
-// Tickers que no tenés: los abre "Calidad de cartera" (/fundamentals?ticker=X).
-// Los que no tienen ficha de empresa (bonos, cripto…) no se ofrecen como
-// "Ver la empresa": llevarían a una pantalla vacía. Y al asesor en su nivel,
-// ninguna: no tiene "Calidad de cartera" en su menú (no tiene cartera propia),
-// y el buscador no lleva a un lugar que el menú no muestra. Adentro de un
-// cliente sí (es la cartera de ese cliente).
+// Tickers que no tenés: los abre su ficha (/activo/X), con el gráfico y el
+// análisis técnico (destinoDeTicker). Los bonos y fondos no se ofrecen: no
+// tienen gráfico técnico. Y al asesor en su nivel, ninguno: no tiene cartera
+// propia y su buscador no ofrecía tickers sueltos; adentro de un cliente sí
+// (es la cartera de ese cliente).
 export function opcionesDeEmpresas(universo, { asesorEnSuNivel = false } = {}) {
   if (asesorEnSuNivel) return []
   const vistos = new Set()
@@ -207,13 +250,12 @@ export function opcionesDeEmpresas(universo, { asesorEnSuNivel = false } = {}) {
     if (!s || vistos.has(s)) continue
     vistos.add(s)
     const ir = destinoDeTicker(s, { tipo: u.type })
-    // Sin ficha, o la misma empresa que otra fila (AAPL y su CEDEAR AAPL.BA).
     if (!ir || destinos.has(ir)) continue
     destinos.add(ir)
     out.push({
       clase: 'empresa', id: `empresa:${s}`, simbolo: s,
       titulo: u.name ? `${s} · ${u.name}` : s,
-      detalle: 'Ver la empresa',
+      detalle: 'Ver el gráfico',
       claves: u.name ? [u.name] : [],
       ir,
     })

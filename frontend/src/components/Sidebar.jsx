@@ -42,12 +42,15 @@ import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAlertsContext } from '../contexts/AlertsContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { prefetchRoute } from '../utils/routePrefetch'
-import { menuVisible, GROUPS, etiquetaDeGrupo } from '../utils/navegacion'
+import { menuVisible, GROUPS, etiquetaDeGrupo, sigueVigente } from '../utils/navegacion'
+import { EtiquetaNuevo, EtiquetaBeta, FILA_RESALTADA } from './EtiquetaMenu'
 import { abrirBuscador, atajoBuscador } from './BuscadorRapido'
 import RecommendationsModal from './RecommendationsModal'
 import InstalarAppModal, { precargarFotosDeInstalar } from './InstalarAppModal'
 import MervallE from './ai/MervallE'
 import RegistrarMenu from './RegistrarMenu'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 const SIDEBAR_W_EXPANDED = '248px'
 const SIDEBAR_W_COLLAPSED = '56px'
@@ -80,8 +83,8 @@ export default function Sidebar() {
   // Registrar e Importar adentro de su menú. Qué se ve sigue saliendo de la
   // lista compartida (el asesor en su nivel no tiene Importar).
   const alertas = visibleLoose.find(i => i.to === '/alertas')
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
-  const [piePlegado, setPiePlegado] = useState(() => localStorage.getItem(LS_PIE) === 'true')
+  const [collapsed, setCollapsed] = useState(() => leerDelAlmacen(CATALOGO.barraLateral) === 'true')
+  const [piePlegado, setPiePlegado] = useState(() => leerDelAlmacen(CATALOGO.pieDeLaBarra) === 'true')
   const [recomOpen, setRecomOpen] = useState(false)
   const [instalarOpen, setInstalarOpen] = useState(false)
 
@@ -102,12 +105,12 @@ export default function Sidebar() {
   }, [activaEnPie])
 
   useEffect(() => {
-    localStorage.setItem(LS_PIE, String(piePlegado))
+    guardarEnAlmacen(CATALOGO.pieDeLaBarra, String(piePlegado))
   }, [piePlegado])
 
   // Persistir + setear CSS var consumida por <main> (margin dinámico)
   useEffect(() => {
-    localStorage.setItem(LS_KEY, String(collapsed))
+    guardarEnAlmacen(CATALOGO.barraLateral, String(collapsed))
     document.documentElement.style.setProperty(
       '--sidebar-w',
       collapsed ? SIDEBAR_W_COLLAPSED : SIDEBAR_W_EXPANDED,
@@ -282,13 +285,19 @@ export default function Sidebar() {
         {collapsed ? (
           /* ── Colapsada: íconos planos de cada destino (sin acordeón) ── */
           <div className="space-y-1">
-            {visibleLeaves.map(({ to, label, icon: Icon }) => (
-              <NavLink key={to} to={to} end={to === '/'} title={label}
-                onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
-                className={rowCls}>
-                {({ isActive }) => (<><Icon size={16} strokeWidth={1.75} aria-hidden="true" />{isActive && <ActiveBar />}</>)}
-              </NavLink>
-            ))}
+            {visibleLeaves.map(({ to, label, icon: Icon, beta, resaltadaHasta }) => {
+              // Achicada no entra la palabra «Nuevo»: un puntito violeta en el
+              // ícono mientras dure (utils/navegacion.js, FIN_DEL_NUEVO).
+              const nuevo = sigueVigente(resaltadaHasta)
+              return (
+                <NavLink key={to} to={to} end={to === '/'} title={`${label}${beta ? ' (beta)' : ''}${nuevo ? ' · Nuevo' : ''}`}
+                  onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
+                  className={rowCls}>
+                  {({ isActive }) => (<><Icon size={16} strokeWidth={1.75} aria-hidden="true" />{isActive && <ActiveBar />}
+                    {nuevo && <><span aria-hidden="true" className="absolute top-1.5 right-2 w-2 h-2 rounded-full bg-data-violet ring-2 ring-bg-0" /><span className="sr-only">Nuevo</span></>}</>)}
+                </NavLink>
+              )
+            })}
           </div>
         ) : (
           /* ── Expandida: 3 secciones acordeón ── */
@@ -302,7 +311,7 @@ export default function Sidebar() {
                     type="button"
                     onClick={() => setOpenGroup(o => (o === group.id ? null : group.id))}
                     aria-expanded={isOpen}
-                    className={`w-full flex items-center gap-3 pl-3 pr-2.5 py-3.5 rounded-md text-[15px] font-semibold transition-colors ${
+                    className={`w-full flex items-center gap-2.5 pl-3 pr-2.5 py-3.5 rounded-md text-[15px] font-semibold transition-colors ${
                       isOpen ? 'text-ink-0' : 'text-ink-1 hover:text-ink-0 hover:bg-bg-1'
                     }`}
                   >
@@ -312,26 +321,44 @@ export default function Sidebar() {
                         dice lo mismo en "Más"). */}
                     {/* Un nombre largo ocupaba 4 renglones (y uno sin espacios, como
                         un mail, empujaba la flecha fuera del menú): se recorta,
-                        y entero al pasar el mouse. */}
+                        y entero al pasar el mouse. Con gap-3, «Análisis de
+                        mercado» quedaba 2 px más ancho que su lugar (28/10). */}
+                    {/* «Nuevo» se ve aunque el grupo esté cerrado: es lo que
+                        invita a abrirlo (10 días, utils/navegacion.js). Va
+                        DEBAJO del nombre: al lado no entra (el menú mide 248
+                        px y «Análisis de mercado» se cortaba en «Análisis d…»). */}
                     {(() => {
                       const titulo = etiquetaDeGrupo(group, clientCtx)
-                      return <span className="flex-1 min-w-0 truncate text-left" title={titulo}>{titulo}</span>
+                      return (
+                        <span className="flex-1 min-w-0 flex flex-col items-start gap-1">
+                          <span className="w-full truncate text-left" title={titulo}>{titulo}</span>
+                          {sigueVigente(group.nuevoHasta) && <EtiquetaNuevo />}
+                        </span>
+                      )
                     })()}
                     <ChevronRight size={16} strokeWidth={2}
                       className={`text-ink-3 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`} aria-hidden="true" />
                   </button>
                   <div className={`overflow-hidden transition-all duration-200 ease-out ${isOpen ? 'max-h-60 opacity-100' : 'max-h-0 opacity-0'}`}>
                     <div className="pt-1 pb-1.5 space-y-1">
-                      {group.items.map(({ to, label, icon: Icon }) => (
-                        <NavLink key={to} to={to} end={to === '/'} title={label}
-                          onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
-                          className={({ isActive }) =>
-                            `relative flex items-center gap-3 pl-11 pr-2.5 py-2.5 rounded-md text-[14px] transition-colors ${
-                              isActive ? 'text-ink-0 bg-bg-2 font-medium' : 'text-ink-2 hover:text-ink-0 hover:bg-bg-1'
-                            }`}>
-                          {({ isActive }) => (<><Icon size={16} strokeWidth={1.75} aria-hidden="true" />{isActive && <ActiveBar />}<span>{label}</span></>)}
-                        </NavLink>
-                      ))}
+                      {group.items.map(({ to, label, icon: Icon, beta, resaltadaHasta }) => {
+                        // Resaltada (fondo violeta suave) sólo si no estás
+                        // ahí: estando adentro manda el «estás acá» de siempre.
+                        const resaltada = sigueVigente(resaltadaHasta)
+                        return (
+                          <NavLink key={to} to={to} end={to === '/'} title={beta ? `${label} (beta)` : label}
+                            onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
+                            className={({ isActive }) =>
+                              `relative flex items-center gap-3 pl-11 pr-2.5 py-2.5 rounded-md text-[14px] transition-colors ${
+                                isActive ? 'text-ink-0 bg-bg-2 font-medium'
+                                  : resaltada ? `text-ink-2 hover:text-ink-0 ${FILA_RESALTADA}`
+                                  : 'text-ink-2 hover:text-ink-0 hover:bg-bg-1'
+                              }`}>
+                            {({ isActive }) => (<><Icon size={16} strokeWidth={1.75} aria-hidden="true" />{isActive && <ActiveBar />}
+                              <span className="flex-1 min-w-0 truncate">{label}</span>{beta && <EtiquetaBeta compacta className="-ml-1.5 -mr-1" />}</>)}
+                          </NavLink>
+                        )
+                      })}
                     </div>
                   </div>
                 </div>

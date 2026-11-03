@@ -198,6 +198,31 @@ class ResetAdminTest(unittest.TestCase):
         self._resetear()
         self.assertEqual(self._n("futures_positions"), 0)
 
+    def test_se_lleva_lo_que_configuro_y_deja_lo_que_rendi_mando(self):
+        """Auditoría C hallazgo 3 (2026-10-29): el reset dejaba los dibujos del
+        gráfico, las prefs del resumen del mercado y la prueba de IOL (cuya clave
+        sí borraba). Lo que se queda, a propósito: el registro de lo que Rendi le
+        mandó y el de qué usó. La decisión de cada tabla la obliga
+        test_reset_censo.py; acá se mira que el reset la cumpla."""
+        c = self.conn
+        c.execute("INSERT INTO dibujos_grafico (user_id,asset,moneda,datos) "
+                  "VALUES (?,'AAPL','usd','[]')", (self.UID,))
+        c.execute("INSERT INTO market_brief_prefs (user_id,enabled) VALUES (?,1)", (self.UID,))
+        c.execute("INSERT INTO iol_lab_runs (user_id,status) VALUES (?,'ok')", (self.UID,))
+        c.execute("INSERT INTO iol_lab_token_log (user_id,ok) VALUES (?,1)", (self.UID,))
+        c.execute("INSERT INTO market_brief_log (user_id,date) VALUES (?,'2026-10-28')", (self.UID,))
+        c.execute("INSERT INTO uso_diario (user_id,dia,evento,cantidad) "
+                  "VALUES (?,'2026-10-28','pantalla:/posiciones',3)", (self.UID,))
+        c.commit()
+        self._resetear()
+        for t in ("dibujos_grafico", "market_brief_prefs", "iol_lab_runs", "iol_lab_token_log"):
+            self.assertEqual(self._n(t), 0, f"{t} es de la persona: el reset se la lleva")
+        for t in ("market_brief_log", "uso_diario"):
+            self.assertEqual(self._n(t), 1, f"{t} se conserva: {main._RESET_ADMIN_CONSERVADAS.get(t)}")
+        for t in ("market_brief_log", "uso_diario"):
+            c.execute(f"DELETE FROM {t} WHERE user_id=?", (self.UID,))
+        c.commit()
+
     def test_idempotente(self):
         self._resetear()
         st2 = self._resetear()

@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest'
 import {
   CRYPTO, STOCKS_US, ETFS, INDICES, CEDEARS_LIST,
   ARG_LIDER, ARG_GENERAL, CEDEAR_SEARCH, CEDEAR_EN_EEUU, cedearEspecieBase,
+  POPULAR_TICKERS, catalogoDelBuscador, universoDelBuscador,
 } from './tickers'
 
 const LISTAS = {
@@ -99,5 +100,57 @@ describe('CEDEAR_SEARCH — lo que alimenta el buscador', () => {
     // propia fuente. Esto verifica que sigan enganchados.
     const symbols = new Set(CEDEAR_SEARCH.map(x => x.symbol))
     for (const sym of ['NOW', 'ASML']) expect(symbols.has(`${sym}.BA`)).toBe(true)
+  })
+})
+
+describe('el catálogo de los buscadores que suman a la watchlist (inicio y «Tu lista»)', () => {
+  const simbolos = (q) => catalogoDelBuscador(q).map(t => t.symbol)
+
+  it('sin consulta, los populares', () => {
+    expect(catalogoDelBuscador('')).toBe(POPULAR_TICKERS)
+  })
+
+  it('con consulta, también lo que no es popular: todo CEDEAR, acción argentina y de EE.UU.', () => {
+    const fuera = (s) => !POPULAR_TICKERS.some(p => p.symbol === s)
+    const cedear = CEDEAR_SEARCH.find(c => fuera(c.symbol))
+    const ar = [...ARG_LIDER, ...ARG_GENERAL].find(x => fuera(x.s))
+    const etf = ETFS.find(x => fuera(x.s))
+    expect(simbolos(cedear.symbol)).toContain(cedear.symbol)
+    expect(simbolos(ar.s)).toContain(ar.s)
+    expect(simbolos(etf.s)).toContain(etf.s)
+  })
+
+  it('nadie más lo arma a mano', async () => {
+    // Estaba copiado en el buscador del inicio y en la lupa del celular; el de
+    // «Tu lista» habría sido la tercera copia.
+    const { readdirSync, readFileSync, statSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const raiz = new URL('../', import.meta.url).pathname
+    const fuera = []
+    const recorrer = (d) => {
+      for (const n of readdirSync(d)) {
+        const p = join(d, n)
+        if (statSync(p).isDirectory()) { recorrer(p); continue }
+        if (!/\.(js|jsx)$/.test(n) || /\.test\./.test(n) || p.endsWith('utils/tickers.js')) continue
+        if (/CEDEAR_SEARCH|AR_STOCK_SEARCH|US_SEARCH/.test(readFileSync(p, 'utf8'))) fuera.push(p.slice(raiz.length))
+      }
+    }
+    recorrer(raiz)
+    expect(fuera).toEqual([])
+  })
+
+  it('el ticker exacto va primero (Enter suma el primero)', () => {
+    // «T» (AT&T) quedaba en el puesto 193 detrás de MSFT (revisión del 02/11).
+    for (const t of ['T', 'V', 'MA', 'F', 'C', 'KO']) {
+      if (!universoDelBuscador(true).some(x => x.symbol === t)) continue
+      expect(simbolos(t)[0], t).toBe(t)
+    }
+    expect(simbolos('T')[0]).toBe('T')
+  })
+
+  it('por el nombre y sin repetir', () => {
+    expect(simbolos('coca')).toContain('KO')
+    const s = simbolos('A')
+    expect(new Set(s).size).toBe(s.length)
   })
 })

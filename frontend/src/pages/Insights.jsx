@@ -20,6 +20,9 @@ import DiagnosticoSummaryBlock from '../components/diagnostico/DiagnosticoSummar
 import DeltaSinceVisit from '../components/diagnostico/DeltaSinceVisit'
 import { buildDiagnosticoLayout } from '../utils/diagnosticoTemplate'
 import { useLastVisit } from '../hooks/useLastVisit'
+import { useDescartesDelDiagnostico } from '../hooks/useDescartesDelDiagnostico'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
+import { leer as leerDelAlmacen, guardar as guardarEnAlmacen } from '../utils/almacen'
 import InsightsKpiStrip from '../components/InsightsKpiStrip'
 import ArAlternativesVerdict from '../components/ArAlternativesVerdict'
 import Card from '../components/Card'
@@ -118,6 +121,7 @@ import { esConversion } from '../utils/tradeStats'
 import AssetLogo from '../components/AssetLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import { useModoRendimiento } from '../contexts/ModoRendimientoContext'
 import {
   computeAllocationMatch,
@@ -364,6 +368,11 @@ function InsightsDesktop({ _embeddedTab }) {
   const isMobile = useIsMobile()
   const { user } = useAuth()
   const { valuationDollar, currency, costBasis } = useCurrency()
+  // «Ocultar saldos» (el ojito del inicio y la Cartera): Análisis no lo miraba en
+  // ningún lado y mostraba la atribución, las tortas y los textos del
+  // diagnóstico con tu plata (30/10). Lo deciden `amt`/`amtEnVista` (todos los
+  // montos de esta pantalla pasan por ahí) y `selectDiagnostics` (`oculto`).
+  const { hidden: oculto } = usePrivacy()
   // El dólar de cada mes, para lo aportado en pesos (capitalAportado.js).
   const { dolarMes, tcEnFecha } = useDolarMensual()
   const plan = usePlanFeatures()
@@ -375,7 +384,8 @@ function InsightsDesktop({ _embeddedTab }) {
   const pfTotals = usePfRollup()
   // "Desde tu última visita" — el hook va ARRIBA (antes del guard de loading);
   // el delta se computa con record(snapshot) más abajo, cuando la data existe.
-  const lastVisit = useLastVisit(`diagnostico:${user?.email ?? 'anon'}`)
+  // De la persona y la cuenta: lo pone el hook (utils/duenoDeLaPestana).
+  const lastVisit = useLastVisit(CATALOGO.ultimaVisitaDiagnostico)
   // Flags de renderizado condicional cuando se embebe dentro de /analisis.
   // Standalone (sin _embeddedTab) → renderiza TODO.
   // En tab 'diagnostico' → todo menos "Perfil del inversor".
@@ -419,21 +429,21 @@ function InsightsDesktop({ _embeddedTab }) {
   const VALID_ARS_BENCH = ['inflation', 'merval', 'plazo_fijo', 'pesos_cash', 'sp500']
   const [benchUsd, setBenchUsd] = useState(() => {
     try {
-      const v = localStorage.getItem('rendi_insights_bench_usd')
+      const v = leerDelAlmacen(CATALOGO.indiceDolares)
       return VALID_USD_BENCH.includes(v) ? v : 'sp500'
     } catch { return 'sp500' }
   })
   const [benchArs, setBenchArs] = useState(() => {
     try {
-      const v = localStorage.getItem('rendi_insights_bench_ars')
+      const v = leerDelAlmacen(CATALOGO.indicePesos)
       return VALID_ARS_BENCH.includes(v) ? v : 'inflation'
     } catch { return 'inflation' }
   })
   useEffect(() => {
-    try { localStorage.setItem('rendi_insights_bench_usd', benchUsd) } catch {}
+    try { guardarEnAlmacen(CATALOGO.indiceDolares, benchUsd) } catch {}
   }, [benchUsd])
   useEffect(() => {
-    try { localStorage.setItem('rendi_insights_bench_ars', benchArs) } catch {}
+    try { guardarEnAlmacen(CATALOGO.indicePesos, benchArs) } catch {}
   }, [benchArs])
   const selectedBench = currency === 'USD' ? benchUsd : benchArs
   // Qué `bench=` se le pide al servidor (BENCH_API_KEY / benchPedido en
@@ -824,7 +834,7 @@ function InsightsDesktop({ _embeddedTab }) {
       if (p.is_cash) continue
       const val = holdingValueUsd(p)   // clamp anti-distorsión incluido (fuente única)
       // Contexto AR/BYMA: colapsamos la especie a su canónico (la pata pesos 'SI' y la
-      // dólar 'SID' del CEDEAR de CSN → UN activo). Espeja Calidad de cartera.
+      // dólar 'SID' del CEDEAR de CSN → UN activo). Espeja Análisis fundamental.
       const onBA = arsBrokerNames.has(p.broker) || isArUsdBroker(p.broker) || costInPesos(p)
       const k = onBA ? cedearEspecieBase(p.asset) : (p.asset || '').toUpperCase()
       valuesByAsset[k] = (valuesByAsset[k] || 0) + val
@@ -2632,6 +2642,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // muestran los más relevantes (severidad alta primero) con una rotación
   // estable dentro del día para dar variedad sin perder lo importante.
   const diagnosisPool = selectDiagnostics({
+    oculto,
     // Diagnósticos de concentración por activo (concentration_extreme/high/few_assets)
     // necesitan datos por instrumento, no por broker. brokerPieData se usa solo para
     // diagnósticos que filtran por moneda del broker (high_ars_exposure).
@@ -2858,6 +2869,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // multiplicar por el dólar de hoy.
   function amtEnVista(value, opts = {}) {
     if (value == null || isNaN(value)) return '—'
+    if (oculto) return OCULTO
     // El signo menos de verdad, como pctVar/pctTxt y el texto del diagnóstico
     // ("−USD 240"): la lista de atribución decía "-USD 240,00" con guion.
     const sign = opts.signed ? (value >= 0 ? '+' : '−') : ''
@@ -3393,7 +3405,7 @@ function InsightsDesktop({ _embeddedTab }) {
           Ver <DiagnosisSection> para la lógica completa.
           ══════════════════════════════════════════════════════════════════════ */}
       {diagnosisPool.length > 0 && (
-        <DiagnosisSection diagnosis={diagnosisPool} plan={plan} userKey={`diag:${(user?.email || 'anon').toLowerCase()}`} aiParams={paramsCaidaIA} />
+        <DiagnosisSection diagnosis={diagnosisPool} plan={plan} aiParams={paramsCaidaIA} />
       )}
 
       {/* ── Los tres ejes de la misma cartera ───────────────────────────────
@@ -3950,11 +3962,11 @@ function InsightsDesktop({ _embeddedTab }) {
               <CartesianGrid {...chartGrid} strokeDasharray={undefined} />
               <XAxis dataKey="label" tick={chartTick} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
               <YAxis tick={chartTick} axisLine={false} tickLine={false} width={56}
-                     tickFormatter={v => `US$${Math.round(v / 1000)}k`} />
+                     tickFormatter={v => (oculto ? '' : `US$${Math.round(v / 1000)}k`)} />
               <Tooltip
                 contentStyle={{ ...chartTooltip.contentStyle, padding: '10px 14px' }}
                 labelStyle={chartTooltip.labelStyle}
-                formatter={(v) => [`US$${Number(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`, 'Reconstrucción contable']}
+                formatter={(v) => [oculto ? OCULTO : `US$${Number(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`, 'Reconstrucción contable']}
               />
               <Line isAnimationActive={animarGraficos} animationDuration={900} type="monotone" dataKey="usd" name="Reconstrucción contable"
                     stroke="rgb(var(--ink-2))" strokeWidth={1.75} strokeDasharray="4 4" dot={false} />
@@ -4284,28 +4296,11 @@ function diagnosisShortTitle(d) {
 // Plus ya no es "cuántos diagnósticos ves" sino "cuántas veces personalizás":
 // el "No me interesa" tiene cuota semanal (Free 2/sem, server-side; plus/pro/
 // admin ilimitado). Al agotarla, el dismiss abre el UpgradeModal a Plus.
-// Persistencia del "no me interesa" — en localStorage guardamos DOS cosas por
-// user: (1) `dismissed`, el Set de ids que el user marcó como "no me interesa"
-// (skip-list para elegir reemplazos); (2) `slots`, las ids VISIBLES por tier en
-// orden — así al descartar UNA tile reemplazamos sólo ESA (identidad de slot
-// estable) y en un refresh se ven las mismas 3. Al agotar un tier, se resetean
-// SOLO sus ids descartadas (cicla y vuelve a la primera).
-const DIAG_DISMISS_PREFIX = 'rendi_diag_dismissed_'
-function readDiagState(key) {
-  try {
-    const raw = localStorage.getItem(DIAG_DISMISS_PREFIX + key)
-    if (!raw) return { dismissed: new Set(), slots: {} }
-    const parsed = JSON.parse(raw)
-    // Formato viejo: array plano de ids descartadas (sin slots).
-    if (Array.isArray(parsed)) return { dismissed: new Set(parsed), slots: {} }
-    return { dismissed: new Set(parsed.dismissed || []), slots: parsed.slots || {} }
-  } catch { return { dismissed: new Set(), slots: {} } }
-}
-function writeDiagState(key, dismissed, slots) {
-  try {
-    localStorage.setItem(DIAG_DISMISS_PREFIX + key, JSON.stringify({ dismissed: [...dismissed], slots }))
-  } catch { /* modo privado */ }
-}
+// Persistencia del "no me interesa": hooks/useDescartesDelDiagnostico (qué ids
+// descartó y qué ids se ven por grupo, para reemplazar sólo la descartada). Es
+// de la persona Y de la cuenta: lo que el asesor descarta en un cliente no se
+// esconde en otro. Al agotar un grupo, se resetean SOLO sus ids descartadas
+// (cicla y vuelve a la primera).
 // resolveTierShown / computeDismiss viven en utils/diagnosticsRotation.js (puros
 // + testeados). Acá sólo los conectamos al estado del componente.
 
@@ -4316,10 +4311,10 @@ const DIAG_TIERS = [
   { key: 'positivo',    match: d => d.severity === 'positive' },
 ]
 
-function DiagnosisSection({ diagnosis, plan, userKey = 'anon', aiParams }) {
+function DiagnosisSection({ diagnosis, plan, aiParams }) {
   // state ({dismissed, slots}) + collapsed ANTES de cualquier early return
   // (Rules of Hooks). `slots` = ids visibles por tier → reemplazo por-slot estable.
-  const [state, setState] = useState(() => readDiagState(userKey))
+  const [state, setState, guardarDescartes] = useDescartesDelDiagnostico()
   const { dismissed, slots } = state
   const [collapsed, setCollapsed] = useState(false)  // abierto por defecto
   // Cuota semanal del "No me interesa" (solo Free). ddUsage = usage del backend
@@ -4378,7 +4373,7 @@ function DiagnosisSection({ diagnosis, plan, userKey = 'anon', aiParams }) {
       const { nextShown, nextDismissed } = computeDismiss(pool, poolIds, current, id, prev.dismissed)
       if (nextShown === current && nextDismissed === prev.dismissed) return prev  // no-op
       const nextSlots = { ...prev.slots, [tierKey]: nextShown }
-      writeDiagState(userKey, nextDismissed, nextSlots)
+      guardarDescartes(nextDismissed, nextSlots)
       return { dismissed: nextDismissed, slots: nextSlots }
     })
   }

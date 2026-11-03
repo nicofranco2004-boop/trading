@@ -6,10 +6,10 @@ from starlette.concurrency import iterate_in_threadpool
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.exception_handlers import http_exception_handler
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from pydantic import BaseModel, field_validator, Field
-from typing import Any, Optional, List
-import sqlite3, os, secrets, time, hashlib, hmac, json, threading, asyncio
-from contextlib import contextmanager
+from pydantic import BaseModel, field_validator, model_validator, Field
+from typing import Any, Literal, Optional, List
+import sqlite3, os, secrets, time, hashlib, hmac, json, threading, asyncio, unicodedata
+from contextlib import contextmanager, nullcontext
 import dberrors
 from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 # Las filas importadas que CUENTAN (confirmadas y sin lápida). Va arriba de todo:
@@ -50,7 +50,7 @@ except ImportError:
     # python-dotenv opcional — si no está, seguimos con env vars del sistema.
     pass
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _esperar_futuros
-from eventos_guardados import eventos_guardados
+from eventos_guardados import balances_entre, eventos_guardados
 from tickers_renombrados import ticker_vigente   # SQ → XYZ: el código que cotiza hoy
 import yfinance as yf
 from pricing import yahoo as _yahoo   # toda llamada a Yahoo con alguien esperando
@@ -95,6 +95,7 @@ def _setup_yfinance_cache():
 
 _setup_yfinance_cache()
 import fx as _fx
+import resultado_dual as _resultado_dual
 import efectivo as _efectivo   # la única puerta por la que se mueve el saldo de un broker
 import renombre_broker as _renombre_broker   # el nombre del broker ADENTRO de lo guardado
 from orden_estable import operaciones_por_fecha as _ops_por_fecha, por_fecha as _por_fecha  # el empate del mismo día
@@ -520,6 +521,11 @@ class _ReconstruirAlTerminar:
 
 app.add_middleware(_ReconstruirAlTerminar)
 
+# Marca cada pedido HTTP para el guardián de las lecturas pesadas (pesado.py):
+# una función `@pesado` que corre en un pedido sin `_freno_tecnico` se anota.
+import pesado as _pesado  # noqa: E402
+app.add_middleware(_pesado.MarcarPedido)
+
 
 # ─── Modo mantenimiento ───────────────────────────────────────────────────────
 # Va ACÁ, después de todos los otros middlewares, **y el orden es el punto**: en
@@ -825,7 +831,7 @@ def _table_cols(conn, table: str) -> set:
                'import_batches', 'import_raw_rows', 'import_normalized_tx', 'import_op_links',
                'import_mappings', 'news', 'subscriptions', 'ai_usage_daily', 'ai_user_facts',
                'ai_tool_usage', 'yfinance_cache', 'credit_ledger', 'plazos_fijos',
-               'user_broker_credentials'}
+               'user_broker_credentials', 'velas_estado'}
     if table not in allowed:
         return set()
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -1259,6 +1265,59 @@ def _derive_manual_flows(conn, uid: int, broker: str, year, month,
             max(0.0, float(withdrawals or 0) - imp_wit))
 
 
+# Estas tres van ANTES de `init_db`: el arranque (`init_db()`, que corre al
+# importar el módulo) llama a `_borrar_marcas_sueltas`, y una función definida
+# más abajo todavía no existe en ese momento.
+def _esquema_por_tabla(conn) -> dict:
+    """{tabla: set(columnas)} de toda la base.
+
+    Se lee UNA vez por borrado y, sobre todo, ANTES de abrir la transacción.
+    Antes se recorría el esquema entero (un PRAGMA por tabla, ~60 tablas) DENTRO
+    de la transacción de borrado, y otra vez por cada cliente shadow: un asesor
+    con 30 clientes hacía ~1.800 round-trips con el lock de escritura AGARRADO.
+    En SQLite el lock de escritura es uno solo para toda la base, así que ese
+    tiempo es tiempo en que cualquier otra escritura de la app se choca contra
+    `database is locked`. Leerlo antes achica la ventana de bloqueo a los DELETE.
+
+    A propósito NO se cachea entre borrados: el barrido dinámico es correcto
+    justamente porque ve TODAS las tablas, incluida cualquiera que se cree
+    después. Un caché de proceso convertiría una tabla nueva en datos que
+    sobreviven al borrado, en silencio. El ahorro serían microsegundos."""
+    return {r["name"]: {c["name"] for c in conn.execute(
+                f"PRAGMA table_info({r['name']})").fetchall()}
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%'").fetchall()}
+
+
+def _colgadas_de_alerts(esquema: dict) -> list:
+    """Las tablas que cuelgan de `alerts` por `alert_id` y NO tienen `user_id`
+    (hoy, `alert_symbol_state`: «ya avisé hoy», «miré las velas hasta acá»).
+
+    Los dos barridos de «todo lo de una persona» —el reset de admin y el borrado
+    de cuenta— van por `user_id`, así que estas tablas se les escapaban y sus filas
+    quedaban huérfanas (auditoría C, hallazgo 6). Se leen del esquema y no de una
+    lista para que una tabla nueva de este tipo quede cubierta sola. Se borran
+    ANTES que las alertas: después, el `alert_id IN (…)` ya no las encuentra."""
+    return sorted(t for t, cols in esquema.items()
+                  if "alert_id" in cols and "user_id" not in cols)
+
+
+_DE_SUS_ALERTAS = "alert_id IN (SELECT id FROM alerts WHERE user_id=?)"
+
+
+def _borrar_marcas_sueltas(conn) -> int:
+    """Borra las filas de las tablas colgadas de `alerts` cuya alerta ya no existe:
+    las que dejaron el reset y el borrado de cuenta antes de que se las llevaran
+    (auditoría C, hallazgo 6). Lo corre el arranque; con la base al día no
+    encuentra nada. No hace commit."""
+    n = 0
+    for t in _colgadas_de_alerts(_esquema_por_tabla(conn)):
+        n += conn.execute(f"DELETE FROM {t} WHERE NOT EXISTS "
+                          f"(SELECT 1 FROM alerts a WHERE a.id = {t}.alert_id)").rowcount or 0
+    return n
+
+
 # Cuánto puede esperar UN cambio de estructura a que la copia vieja de la app
 # suelte su tabla, y cuántas veces lo vuelve a intentar. Ver `_aplicar_esquema_pg`.
 _DDL_ESPERA_MAX = "3s"
@@ -1383,7 +1442,7 @@ def _aplicar_esquema_pg(c, sentencias) -> int:
     return reintentos
 
 
-def _init_db_postgres() -> dict:
+def _esquema_pg_al_dia() -> dict:
     """Deja la base con la estructura de `schema_pg.sql`, corriendo los ~800
     cambios SÓLO si hace falta.
 
@@ -1484,6 +1543,32 @@ def _de_a_un_arranque_por_vez():
             # Explícito y no sólo al cerrar: detrás de un pooler la conexión del
             # servidor puede seguir viva para otro cliente, con el candado puesto.
             candado.execute("SELECT pg_advisory_unlock(%s, hashtext(current_schema()))", clave)
+
+
+def _init_db_postgres() -> dict:
+    """El arranque de Postgres: lo de antes del esquema, el esquema
+    (`_esquema_pg_al_dia`) y lo de después, en ese orden.
+
+    ANTES: el índice único `ux_tesis_un_dia` no se puede crear sobre una base que
+    ya tenga dos tesis del mismo día (de antes de la regla), y el CREATE reventaría
+    el arranque. Primero se juntan, con la misma función que usa SQLite
+    (`tesis.unificar_repetidas`). En una base nueva la tabla todavía no existe y no
+    hay nada que juntar. `idx_tesis_user_asset` tenía las mismas columnas sin ser
+    único: lo reemplaza (igual que en SQLite).
+
+    DESPUÉS (las tablas tienen que existir), igual que en SQLite: las marcas de
+    alertas que ya no existen (`_borrar_marcas_sueltas`)."""
+    with db_abierta() as conn:
+        if conn.execute("SELECT to_regclass('tesis')").fetchone()[0]:
+            import tesis as _tesis
+            _tesis.unificar_repetidas(conn)
+            conn.execute("DROP INDEX IF EXISTS idx_tesis_user_asset")
+        conn.commit()
+    resultado = _esquema_pg_al_dia()
+    with db_abierta() as conn:
+        _borrar_marcas_sueltas(conn)
+        conn.commit()
+    return resultado
 
 
 # Fecha en que el mail de bienvenida empezó a salir por Rebill. Todo lo anterior
@@ -2409,6 +2494,17 @@ def init_db():
         cols = _table_cols(conn, 'operations')
         if cols and 'cost_basis_consumed' not in cols:
             conn.execute("ALTER TABLE operations ADD COLUMN cost_basis_consumed REAL")
+        # El resultado de una venta en las DOS monedas, cada punta a su dólar (ver
+        # resultado_dual.py). `pnl_pct` es el % en la moneda de la venta y queda como
+        # está; éstas van al lado. Las completa el motor de venta al vender y el
+        # botón de Admin para lo ya guardado.
+        cols = _table_cols(conn, 'operations')
+        for _col, _tipo in (('costo_ars', 'REAL'), ('costo_usd', 'REAL'),
+                            ('cobrado_ars', 'REAL'), ('cobrado_usd', 'REAL'),
+                            ('pnl_pct_ars', 'REAL'), ('pnl_pct_usd', 'REAL'),
+                            ('pnl_sin_dato', 'TEXT'), ('costo_moneda', 'TEXT')):
+            if cols and _col not in cols:
+                conn.execute(f"ALTER TABLE operations ADD COLUMN {_col} {_tipo}")
         conn.commit()
 
         # ─── Índices secundarios — positions / operations / monthly_entries ────
@@ -2875,6 +2971,12 @@ def init_db():
         #   • pct_move: avisar cuando un activo se mueve `threshold`% vs `baseline`
         #     (prev_close por ahora). `scope='holdings'` (symbol NULL) evalúa TODAS
         #     las tenencias del user; `scope='ticker'` un símbolo puntual.
+        #   • tecnica: avisar cuando pasa una señal de la ficha técnica
+        #     (`senal`, ver tecnico.SENALES), una vez por día con las velas de la
+        #     noche. `symbol` es el activo como lo pide la ficha ('AAPL', 'GGAL'),
+        #     `currency` en qué moneda se mira ('USD' por defecto, como la ficha)
+        #     y `accion_local` la misma marca que la ficha (acción argentina →
+        #     su precio de BYMA ÷ MEP, no el ADR). Ver alerts_engine.evaluar_tecnicas.
         #
         # `armed` = estado del edge-trigger: la alerta dispara SOLO en el cruce
         # (armed=1 → 0), no mientras el precio sigue del lado disparado. `repeat`
@@ -2885,7 +2987,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
-                kind TEXT NOT NULL,                 -- 'price_target' | 'pct_move'
+                kind TEXT NOT NULL,                 -- 'price_target' | 'pct_move' | 'tecnica'
                 symbol TEXT,                        -- riel-aware; NULL = todas las tenencias
                 scope TEXT NOT NULL DEFAULT 'ticker',-- 'ticker' | 'holdings'
                 direction TEXT NOT NULL DEFAULT 'either', -- price_target: 'above'|'below'
@@ -2904,7 +3006,11 @@ def init_db():
                 created_at TEXT DEFAULT (datetime('now')),
                 last_evaluated_at TEXT,
                 last_fired_at TEXT,
-                last_fired_price REAL
+                last_fired_price REAL,
+                senal TEXT,                         -- tecnica: qué señal (tecnico.SENALES)
+                accion_local INTEGER NOT NULL DEFAULT 0, -- tecnica: acción argentina (como la ficha)
+                dibujo TEXT,                        -- tecnica 'linea': qué línea dibujada ({asset, moneda, id, tipo}; un canal, + modo)
+                mirando_desde TEXT                  -- tecnica: día argentino en que se creó o reactivó
             );
             CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id);
             CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active);
@@ -2984,6 +3090,41 @@ def init_db():
         if _mbl_cols and 'narrative' not in _mbl_cols:
             conn.executescript(
                 "ALTER TABLE market_brief_log ADD COLUMN narrative TEXT;")
+
+        # «Tus señales» (pieza 15, senales_semana.py). La preferencia del
+        # resumen de los sábados: sin fila, 'no' — opt-in, como el resumen del
+        # mercado. Y el % de la plata en tendencia alcista de cada sábado: la
+        # «semana pasada» de la pestaña y del mail. Para atrás no se reconstruye.
+        # La fila se escribe ANTES de mandar: re-correr no manda dos veces.
+        # El índice va DESPUÉS de crear la tabla con sus columnas (el orden que
+        # rompió producción el 2026-08-02).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS resumen_semanal_prefs (
+                user_id INTEGER PRIMARY KEY,
+                canal TEXT NOT NULL DEFAULT 'no',   -- 'mail' | 'push' | 'ambos' | 'no'
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS tendencia_semanal (
+                user_id INTEGER NOT NULL,
+                semana TEXT NOT NULL,                -- el sábado, día ARGENTINO
+                pct_alcista REAL,                    -- NULL: ningún activo con lectura
+                cambios INTEGER NOT NULL DEFAULT 0,
+                canal TEXT,                          -- por dónde se mandó (NULL: no se mandó)
+                push_ok INTEGER,
+                mail_ok INTEGER,
+                created_at TEXT DEFAULT (datetime('now')),
+                hasta_vela TEXT,                     -- JSON: la última vela de cada activo que contó (senales_semana)
+                PRIMARY KEY (user_id, semana)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tendencia_semanal_semana ON tendencia_semanal(semana);
+        """)
+        # Migración: la marca del mail del sábado (auditoría B3). Una base donde la
+        # tabla ya existía (creada con 31c00ff6) no la recibe del CREATE:
+        # test_columna_nueva_llega_a_la_base_vieja.
+        _ts_cols = [r[1] for r in conn.execute("PRAGMA table_info(tendencia_semanal)").fetchall()]
+        if _ts_cols and 'hasta_vela' not in _ts_cols:
+            conn.executescript("ALTER TABLE tendencia_semanal ADD COLUMN hasta_vela TEXT;")
 
         # Grupos de clientes del asesor: filtros GUARDADOS y dinámicos (se
         # recalculan solos). `rules` es JSON con las condiciones; `excluded` la
@@ -3103,8 +3244,66 @@ def init_db():
                 ultima_completa TEXT,            -- NULL = nunca se bajó la historia entera
                 ok INTEGER NOT NULL DEFAULT 0,
                 filas INTEGER DEFAULT 0,
-                error TEXT
+                error TEXT,
+                fallas_seguidas INTEGER NOT NULL DEFAULT 0  -- veces seguidas sin datos (≥3: la noche lo pide 1 vez por semana)
             );
+            -- Una fila por corrida de la noche: lo que muestra /admin (cuántos se
+            -- bajaron, cuántos cortó Yahoo, cuántos no eran tickers).
+            CREATE TABLE IF NOT EXISTS velas_corridas (
+                cuando TEXT PRIMARY KEY,         -- datetime('now'), UTC
+                resumen TEXT NOT NULL            -- JSON: velas_diarias.resumen
+            );
+            -- Lo que Yahoo anota como split de cada ticker (cambios_ratio.py). Se
+            -- le pregunta una vez por semana por ticker, no cada noche.
+            CREATE TABLE IF NOT EXISTS splits_yahoo (
+                ticker TEXT PRIMARY KEY,         -- 'XLE.BA', 'XLED.BA', 'XLE'
+                splits TEXT NOT NULL,            -- JSON [[fecha, factor]]
+                consultado TEXT NOT NULL         -- datetime('now'), UTC
+            );
+        """)
+        # velas_estado.fallas_seguidas (30/10/2026) en una base que ya tenía la
+        # tabla: el CREATE de arriba no la agrega. Sin índice sobre ella.
+        if 'fallas_seguidas' not in _table_cols(conn, 'velas_estado'):
+            conn.execute("ALTER TABLE velas_estado ADD COLUMN fallas_seguidas INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
+
+        # El termómetro del mercado (termometro.py): un número por día de
+        # mercado, guardado desde que se lanzó (para atrás no se reconstruye).
+        # Tabla nueva, sin ALTER ni índice aparte: la clave es la fecha.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS termometro_diario (
+                fecha TEXT PRIMARY KEY,          -- la última vela del S&P: un día de mercado
+                puntaje INTEGER NOT NULL,        -- 0 a 100
+                detalle TEXT NOT NULL,           -- la cuenta entera (JSON): cada parte y los sectores
+                calculado_el TEXT DEFAULT (datetime('now'))
+            );
+        """)
+
+        # El resumen de Mervall-E de la ficha del activo (ai/resumen_tecnico.py):
+        # uno por serie + moneda + día de velas, compartido entre todos, con lo
+        # que costó. Tabla nueva, sin ALTER: segura en una base ya creada.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS resumenes_tecnicos (
+                ticker TEXT NOT NULL,            -- la serie del gráfico: 'NVDA', 'GGAL.BA'
+                moneda TEXT NOT NULL,            -- 'usd' | 'ars'
+                fecha_vela TEXT NOT NULL,        -- la última vela que leyó: 'YYYY-MM-DD'
+                estado TEXT NOT NULL DEFAULT 'generando',   -- 'generando' | 'listo' | 'fallo'
+                texto TEXT,
+                hechos_json TEXT,                -- lo que se le mandó al modelo
+                model TEXT,
+                llamadas INTEGER DEFAULT 0,      -- veces que se llamó al modelo
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cost_usd_cents INTEGER DEFAULT 0, -- unidad de ai/llm: 1 = US$ 0,0001
+                palabras INTEGER,
+                pedido_por INTEGER,              -- quién tocó el botón (para el tope por persona)
+                dia TEXT NOT NULL,               -- día argentino en que se pidió
+                empezado_at TEXT,
+                terminado_at TEXT,
+                error TEXT,
+                PRIMARY KEY (ticker, moneda, fecha_vela)
+            );
+            CREATE INDEX IF NOT EXISTS idx_resumenes_tecnicos_dia ON resumenes_tecnicos(dia);
         """)
 
         # Cambios de ratio de CEDEAR (cambios_ratio.py): la lista única que leen
@@ -3133,6 +3332,67 @@ def init_db():
                 encendido INTEGER NOT NULL DEFAULT 0,
                 cambiado_at TEXT,
                 cambiado_por INTEGER             -- users.id del admin
+            );
+        """)
+
+        # Tu tesis: por qué compraste un activo (tesis.py). Una por (usuario,
+        # activo) y por día: reescribirla otro día guarda otra y la vieja queda
+        # para las ventas que hiciste mientras valía. «Una por día» la hace
+        # cumplir el índice único `ux_tesis_un_dia`, no el código: dos «Guardar»
+        # a la vez escribían dos (auditoría C, hallazgo 4). El índice va DESPUÉS
+        # de la tabla y de juntar las repetidas que ya hubiera (con repetidas no
+        # se puede crear). Reemplaza a `idx_tesis_user_asset`, que tenía las
+        # mismas columnas sin ser único.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tesis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                asset TEXT NOT NULL,             -- el ticker, como lo guarda la cartera
+                texto TEXT NOT NULL,
+                escrita_el TEXT NOT NULL,        -- 'YYYY-MM-DD', día argentino
+                accion_local INTEGER NOT NULL DEFAULT 0,  -- acción argentina: la tendencia sale de BYMA
+                tendencia_json TEXT,             -- tecnico.tendencia_del_dia del día que se escribió
+                recordar_tipo TEXT,              -- '3m' | 'fecha' | 'balance'
+                recordar_el TEXT,                -- día del aviso
+                alert_id INTEGER,                -- alerts.id (kind='recordatorio')
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT
+            );
+        """)
+        import tesis as _tesis
+        _tesis.unificar_repetidas(conn)
+        conn.executescript("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_tesis_un_dia ON tesis(user_id, asset, escrita_el);
+            DROP INDEX IF EXISTS idx_tesis_user_asset;
+        """)
+
+        # Cuántas tesis NUEVAS escribió cada persona cada día (`tesis.guardar`).
+        # Aparte de `tesis` porque borrar una tesis no puede devolver el cupo: el
+        # tope de 20 por día se renovaba borrando (re-test E2, 29/10). Se poda
+        # sola (`tesis.guardar` borra los días viejos).
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tesis_del_dia (
+                user_id INTEGER NOT NULL,
+                dia TEXT NOT NULL,               -- 'YYYY-MM-DD', día argentino
+                nuevas INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (dia, user_id)
+            );
+        """)
+
+        # Los dibujos a mano del gráfico técnico (líneas de tendencia y
+        # horizontales, como TradingView), de cada persona por activo y moneda,
+        # para verlos en todos sus dispositivos. `datos` es la lista entera en
+        # JSON (la pantalla la manda completa: frontend/src/utils/dibujos.js).
+        # `user_id` con ese nombre: el borrado de cuenta la barre solo. Tabla
+        # nueva, sin ALTER: segura en una base ya creada.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS dibujos_grafico (
+                user_id INTEGER NOT NULL,
+                asset TEXT NOT NULL,             -- el símbolo de la ficha: 'AAPL', 'GGAL'
+                moneda TEXT NOT NULL,            -- 'usd' | 'ars': en cada una los precios son otros
+                datos TEXT NOT NULL,             -- JSON: [{id, tipo, precio | a, b}]
+                updated_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (user_id, asset, moneda)
             );
         """)
 
@@ -3186,12 +3446,28 @@ def init_db():
         _alert_cols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
         if _alert_cols and 'anchor_price' not in _alert_cols:
             conn.executescript("ALTER TABLE alerts ADD COLUMN anchor_price REAL;")
+        # Migración: las alertas técnicas (qué señal y la marca de acción argentina).
+        if _alert_cols and 'senal' not in _alert_cols:
+            conn.executescript("ALTER TABLE alerts ADD COLUMN senal TEXT;")
+        if _alert_cols and 'accion_local' not in _alert_cols:
+            conn.executescript("ALTER TABLE alerts ADD COLUMN accion_local INTEGER NOT NULL DEFAULT 0;")
+        # Migración: el aviso de una línea dibujada guarda a qué línea mira.
+        if _alert_cols and 'dibujo' not in _alert_cols:
+            conn.executescript("ALTER TABLE alerts ADD COLUMN dibujo TEXT;")
+        # Migración: desde qué día mira una técnica (el de una línea, ese día,
+        # sólo cuenta si el cierre la cruzó: `tecnico.toque_de_linea`).
+        if _alert_cols and 'mirando_desde' not in _alert_cols:
+            conn.executescript("ALTER TABLE alerts ADD COLUMN mirando_desde TEXT;")
 
         # Migración: last_fired_date en alert_symbol_state (la tabla ya existe en prod
         # sin esta columna, se creó en el deploy anterior).
         _st_cols = [r[1] for r in conn.execute("PRAGMA table_info(alert_symbol_state)").fetchall()]
         if _st_cols and 'last_fired_date' not in _st_cols:
             conn.executescript("ALTER TABLE alert_symbol_state ADD COLUMN last_fired_date TEXT;")
+        # Las marcas que dejaron sueltas el reset y el borrado de cuenta antes del
+        # arreglo del 29/10 (auditoría C, hallazgo 6). Con la base al día, nada.
+        _borrar_marcas_sueltas(conn)
+        conn.commit()
 
         # ─── AI v2 — cache de análisis + usage diario (Sprint AI v2) ───────────
         # ai_analyses_cache: cache_key = sha256(uid+screen+packet_json). TTL 24h.
@@ -4256,6 +4532,84 @@ def _token_posterior_al_cambio(payload: dict, pwd_changed_at: str) -> bool:
         return not (pca and pca != pwd_changed_at)
 
 
+# 🔴 EL PEDIDO DICE DE QUÉ PERSONA ES (re-test a ciegas 4, 30/10). La sesión es
+# UNA cookie para todo el navegador: si en otra pestaña entra otra persona, la
+# cookie cambia en el acto y la pestaña vieja se entera recién cuando le llega
+# el aviso del navegador. En esa ventana lo que se tocaba —una compra, un mes—
+# salía con la cookie nueva y se guardaba en la cuenta de la otra persona. La
+# pantalla no puede cerrarla (la cookie es HttpOnly: no la ve), así que la
+# cierra el servidor: la app manda en `X-Rendi-Persona` el email de quien la
+# pestaña cree logueado (codificado para que viaje cualquier letra), y si la
+# sesión es de OTRA persona el pedido se rechaza con 409 `persona_cambiada`
+# sin tocar nada. La pantalla lo trata como un cambio de persona (cartel y
+# recarga).
+# Va ACÁ porque es el único lugar por el que pasan todos los pedidos con
+# sesión (get_effective_user y get_admin_user lo llaman), y usa la consulta a
+# `users` que ya se hacía.
+#
+# 🔴 UN PEDIDO DEL NAVEGADOR QUE NO DICE DE QUIÉN ES: SE ATIENDE Y SE CUENTA
+# (re-test a ciegas 9, 31/10). En la vuelta anterior se rechazaba con 401, y eso
+# rompió dos cosas que andaban: (1) la vista previa del pedido de acceso del
+# asesor, que la pantalla mandaba con un `fetch` suelto sin el encabezado —el
+# cliente veía «entrá a tu cuenta» estando adentro y nunca podía aceptar—, y (2)
+# el día de publicar: Railway y Vercel terminan sin orden fijo, y con el
+# servidor nuevo y la web de hoy (que nunca dice la persona) cada pedido daba
+# 401, la web volvía al inicio, «¿quién soy?» contestaba bien, y otra vez: 217
+# recargas en 30 s, hasta que terminara Vercel —y para siempre en una pestaña
+# vieja que quedara abierta—. Fallar cerrado convirtió un olvido y un orden de
+# publicación en algo que el usuario ve.
+#
+# Por eso va en DOS PASOS:
+#   1. (ESTE) Se atiende como siempre, pero se CUENTA: método, ruta y si trae la
+#      marca de la web nueva (`X-Rendi-Version`, la pone siempre la puerta única
+#      de la web, utils/api pedirAlServidor). Sin marca = la web de antes (o un
+#      script con cookie); con marca y sin persona = una pestaña de la web nueva
+#      que no sabe de quién es (sin nadie adentro). Se mira en
+#      GET /api/admin/pedidos-sin-persona. Se queda todo lo demás: el 409 si el
+#      pedido dice OTRA persona que la de la sesión, y cerrar sesión no cierra
+#      la de otra persona.
+#   2. (OTRA TANDA, con el número en la mano) Rechazar sólo los que traen la
+#      marca y no dicen persona: ése es justo el olvido de la web nueva. La web
+#      vieja, que no manda la marca, sigue pasando hasta que el contador muestre
+#      que no queda; así no hay bucle posible aunque una pestaña vieja quede
+#      abierta días, publique primero quien publique.
+# Quedan afuera del conteo «¿quién soy?» (`GET /api/auth/me`, la pregunta con
+# que la pestaña se entera de quién es) y la sesión por `Authorization: Bearer`
+# (scripts y pruebas: ahí no hay pestañas ni una cookie compartida).
+# El contador vive en la memoria del proceso (Railway corre uno): arranca de
+# cero en cada publicación, que es justo desde cuándo interesa contar.
+PERSONA_HEADER = "X-Rendi-Persona"
+VERSION_HEADER = "X-Rendi-Version"
+PERSONA_CAMBIADA = 409
+PREGUNTAS_SIN_PERSONA = {("GET", "/api/auth/me")}
+_SIN_PERSONA: dict = {}          # (método, ruta, ¿trae la marca?) → cuántos
+_SIN_PERSONA_DESDE = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+_SIN_PERSONA_TOPE = 300          # rutas distintas; las de más van a «(otras)»
+import threading as _threading_sin_persona
+_SIN_PERSONA_LOCK = _threading_sin_persona.Lock()
+
+
+def _contar_sin_persona(request: Request) -> None:
+    ruta_def = getattr(request.scope.get("route"), "path", None) or request.url.path
+    clave = (request.method, ruta_def, request.headers.get(VERSION_HEADER) is not None)
+    with _SIN_PERSONA_LOCK:
+        nueva = clave not in _SIN_PERSONA
+        if nueva and len(_SIN_PERSONA) >= _SIN_PERSONA_TOPE:
+            clave, nueva = (request.method, "(otras)", clave[2]), False
+        _SIN_PERSONA[clave] = _SIN_PERSONA.get(clave, 0) + 1
+    if nueva:
+        log.info("pedido con la sesión y sin persona: %s %s (marca de la web nueva: %s)", *clave)
+
+
+def _persona_del_encabezado(request: Request) -> Optional[str]:
+    raw = request.headers.get(PERSONA_HEADER)
+    if raw is None:
+        return None
+    from urllib.parse import unquote
+    persona = unquote(raw).strip().lower()
+    return persona or None
+
+
 def get_current_user(
     request: Request,
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
@@ -4263,6 +4617,7 @@ def get_current_user(
     # Preferimos la cookie HttpOnly (web), fallback al Authorization header
     # (clientes no-browser / back-compat). El que esté primero gana.
     token = request.cookies.get(COOKIE_NAME)
+    por_cookie = bool(token)
     if not token and creds:
         token = creds.credentials
     if not token:
@@ -4272,6 +4627,10 @@ def get_current_user(
         uid = int(payload["sub"])
     except (JWTError, KeyError, ValueError):
         raise HTTPException(401, "Token inválido")
+    persona = _persona_del_encabezado(request)
+    if (por_cookie and persona is None
+            and (request.method, request.url.path) not in PREGUNTAS_SIN_PERSONA):
+        _contar_sin_persona(request)     # paso 1: se atiende y se cuenta (ver PERSONA_HEADER)
     # Verificar que el user existe y que el token no quedó invalidado por cambio de pass.
     #
     # ⚠️ `requires_plan` viaja en ESTA consulta —la que el chequeo ya hacía— para
@@ -4293,13 +4652,13 @@ def get_current_user(
             # otro lado del motor. Y esto corre en TODOS los pedidos con sesión.
             with _si_falla_se_deshace_solo_esto(conn, "leer_requires_plan"):
                 row = conn.execute(
-                    "SELECT id, password_changed_at, requires_plan FROM users WHERE id=?",
+                    "SELECT id, email, password_changed_at, requires_plan FROM users WHERE id=?",
                     (uid,)).fetchone()
             marca = None if row is None else bool(row["requires_plan"])
         except Exception:
             # Base sin la columna: se sigue como siempre y el muro pregunta él.
             row = conn.execute(
-                "SELECT id, password_changed_at FROM users WHERE id=?", (uid,)).fetchone()
+                "SELECT id, email, password_changed_at FROM users WHERE id=?", (uid,)).fetchone()
             marca = None
     if not row:
         raise HTTPException(401, "Token inválido")
@@ -4310,6 +4669,11 @@ def get_current_user(
     if row["password_changed_at"] and not _token_posterior_al_cambio(
             payload, row["password_changed_at"]):
         raise HTTPException(401, "Token expirado por cambio de contraseña")
+    if persona is not None and persona != (row["email"] or "").strip().lower():
+        raise HTTPException(PERSONA_CAMBIADA, detail={
+            "code": "persona_cambiada",
+            "message": "En otra pestaña entró otra persona: este pedido no se hizo.",
+        })
     return uid
 
 
@@ -4319,6 +4683,24 @@ def get_admin_user(uid: int = Depends(get_current_user)) -> int:
     if not row or not row["is_admin"]:
         raise HTTPException(403, "Acceso restringido")
     return uid
+
+
+@app.get("/api/admin/pedidos-sin-persona")
+def admin_pedidos_sin_persona(uid: int = Depends(get_admin_user)):
+    """El paso 1 de PERSONA_HEADER: cuántos pedidos con la sesión del navegador
+    llegaron sin decir de quién son desde que arrancó el servidor, por ruta.
+    `web_nueva`: traían la marca X-Rendi-Version (la web de esta versión o una
+    posterior). Con estos números se decide el paso 2."""
+    with _SIN_PERSONA_LOCK:
+        filas = [{"metodo": m, "ruta": r, "web_nueva": v, "pedidos": n}
+                 for (m, r, v), n in _SIN_PERSONA.items()]
+    filas.sort(key=lambda f: (-f["pedidos"], f["ruta"]))
+    return {
+        "desde": _SIN_PERSONA_DESDE,
+        "web_vieja": sum(f["pedidos"] for f in filas if not f["web_nueva"]),
+        "web_nueva": sum(f["pedidos"] for f in filas if f["web_nueva"]),
+        "rutas": filas,
+    }
 
 
 # ─── Plan Asesor: contexto de cliente (get_effective_user) ───────────────────
@@ -4359,6 +4741,28 @@ CLIENT_CTX_EXEMPT_PREFIXES = (
 # de cliente. Si agregás un endpoint de IDENTIDAD/CUENTA/PAGO nuevo, agregalo acá.
 
 
+def no_escribe_en_el_cliente(fn):
+    """Marca un endpoint que NO es GET y no escribe nada en la cuenta del cliente
+    que se mira: una lectura que manda una lista en el cuerpo (POST
+    /api/tecnico/lista) o algo que se guarda en la cuenta del que pide (los
+    dibujos del asesor). La regla de sólo lectura (`_resolve_client_context`)
+    pregunta si el pedido escribe en el cliente, no qué verbo usa: sin esto, la
+    asesora de sólo lectura no veía la radiografía ni «Tu lista» de su cliente
+    (auditoría E6, 29/10). Marcar uno que sí escribe abre la cuenta del cliente:
+    el test de la marca cuenta las filas de toda la base antes y después."""
+    fn._rendi_no_escribe_en_el_cliente = True
+    return fn
+
+
+def _escribe_en_la_cuenta(request: Request) -> bool:
+    """¿Este pedido escribe en la cuenta que se mira? Un GET no; un endpoint
+    marcado con `no_escribe_en_el_cliente` tampoco. La usan la regla de sólo
+    lectura y la marca de «contabilidad tocada» (`get_effective_user`)."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return False
+    return not getattr(request.scope.get("endpoint"), "_rendi_no_escribe_en_el_cliente", False)
+
+
 def _resolve_client_context(request: Request, uid: int) -> Optional[int]:
     """Devuelve el uid del cliente si el contexto aplica, None si no.
 
@@ -4393,7 +4797,7 @@ def _resolve_client_context(request: Request, uid: int) -> Optional[int]:
     if not row:
         # 403 explícito — jamás degradar en silencio al uid propio.
         raise HTTPException(403, "Sin acceso a ese cliente")
-    if request.method not in ("GET", "HEAD", "OPTIONS") and row["permission"] != "read_write":
+    if _escribe_en_la_cuenta(request) and row["permission"] != "read_write":
         raise HTTPException(403, "Acceso de solo lectura a ese cliente")
     return client_id
 
@@ -4580,8 +4984,13 @@ def get_effective_user(
     # esta cuenta con la que describe su historia reconstruida y, si cambió, se
     # rehace (`_ReconstruirAlTerminar`). Se anota ACÁ por la misma razón que el
     # muro: es el paso obligado de todos los endpoints de datos, así que cubre
-    # también al que se agregue mañana sin acordarse de esto.
-    _contabilidad_tocada(uid_efectivo)
+    # también al que se agregue mañana sin acordarse de esto. Un pedido que no
+    # escribe (`_escribe_en_la_cuenta`: «Tu lista», la radiografía) no la toca:
+    # sin esto, la asesora de SÓLO LECTURA que miraba la radiografía de un
+    # cliente le reconstruía la historia (escribía fotos y `mtm_huella` en su
+    # cuenta), y cada «Tu lista» pagaba la comparación (auditoría E6, 29/10).
+    if _escribe_en_la_cuenta(request):
+        _contabilidad_tocada(uid_efectivo)
     return uid_efectivo
 
 
@@ -5141,10 +5550,34 @@ def login(data: LoginIn, request: Request, response: Response):
 
 
 @app.post("/api/auth/logout")
-def logout(response: Response):
+def logout(request: Request, response: Response):
     """Borra la cookie de auth. Para clientes que usan Bearer header, esto es
     no-op server-side (el token sigue vigente hasta exp) — sirven con cambiar
-    la contraseña si querés invalidar todo."""
+    la contraseña si querés invalidar todo.
+
+    🔴 NO CIERRA LA SESIÓN DE OTRA PERSONA (re-test a ciegas 8). La cookie es una
+    para todo el navegador: si en otra pestaña ya entró Bruno, el «Cerrar
+    sesión» de la pestaña de Ana borraba la cookie de Bruno. Ahora el pedido
+    dice de quién es (X-Rendi-Persona, como todos) y, si la sesión es de otra
+    persona, contesta 409 `persona_cambiada` sin tocar la cookie. Una cookie
+    vencida o inválida se borra igual. Sin encabezado (la versión anterior de
+    la app el día que se publica) se borra como antes."""
+    persona = _persona_del_encabezado(request)
+    token = request.cookies.get(COOKIE_NAME)
+    if persona is not None and token:
+        dueno = None
+        try:
+            uid = int(jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])["sub"])
+            with db_abierta() as conn:
+                row = conn.execute("SELECT email FROM users WHERE id=?", (uid,)).fetchone()
+            dueno = (row["email"] or "").strip().lower() if row else None
+        except (JWTError, KeyError, ValueError):
+            dueno = None
+        if dueno is not None and dueno != persona:
+            raise HTTPException(PERSONA_CAMBIADA, detail={
+                "code": "persona_cambiada",
+                "message": "La sesión de este navegador ya es de otra persona: no se cerró.",
+            })
     clear_auth_cookie(response)
     return {"ok": True}
 
@@ -5635,6 +6068,10 @@ _RESET_PORTFOLIO_TABLES = (
     # Es parte de `monthly_entries`: un reset que borra la suma y deja el detalle
     # dejaría renglones que no suman a nada.
     "flujos_a_mano",
+    # Agregada 2026-10-24 (pieza 15): el % semanal en tendencia alcista es de
+    # ESTA cartera. Sin borrarlo, la cuenta vaciada mostraba «la semana pasada
+    # era 61 %» de la cartera de antes.
+    "tendencia_semanal",
 )
 # Keys de config que son de CARTERA (se borran); el resto —onboarding,
 # welcome_email_sent_at, diag_*— son prefs de UX y sobreviven. Borrar fx_version
@@ -5647,22 +6084,80 @@ _RESET_CONFIG_KEYS = ("fx_version", "tc_blue", "tc_mep")
 # login y el plan pago. Acá viven las cosas que el usuario configuró y que un
 # "empezar de cero" de verdad no debería heredar: sus alertas, lo que sigue, las
 # claves read-only con las que conectó un broker y los mapeos de columnas que
-# guardó el importador.
-# ⚠️ Lo que NO está acá y NO es casualidad:
-#   • users / subscriptions / billing_events / credit_ledger / plan_events /
-#     trial_* → identidad y plata. Tocarlas es resetearle el plan a alguien que
-#     pagó: la razón entera de que este allowlist sea explícito.
-#   • ai_usage_daily / ai_tool_usage → son el CONTADOR de la cuota de IA. Si se
-#     borran, "resetear" pasa a ser la forma de regalarse cuota.
-#   • push_subscriptions → es el permiso de notificaciones del DISPOSITIVO.
-#     Borrarlo deja al usuario sin push en silencio hasta que lo vuelva a dar.
-#   • advisor_* → son vínculos con OTRAS personas, no datos propios.
-#   • login_history / password_reset_tokens / email_verification_codes → rastro
-#     de seguridad de la cuenta, que sigue siendo la misma cuenta.
+# guardó el importador. Lo que NO se borra está en `_RESET_ADMIN_CONSERVADAS`,
+# con su motivo: toda tabla con `user_id` tiene que estar en una de las dos (o en
+# `_RESET_ADMIN_OTRO_CAMINO`), y `tests/test_reset_censo.py` se pone en rojo si
+# aparece una sin decidir. Sin ese censo, una tabla nueva quedaba afuera sola:
+# pasó con `futures_positions` y con `dibujos_grafico` (auditoría C, 29/10).
 _RESET_ADMIN_EXTRA_TABLES = (
     "alerts", "alert_events", "watchlist",
     "user_broker_credentials", "import_mappings",
+    # Cómo le llega el resumen de los sábados (pieza 15): lo configuró.
+    "resumen_semanal_prefs",
+    # Las tesis van con sus recordatorios (que son alertas): el reset del
+    # usuario no las toca, como a las alertas.
+    "tesis",
+    # Agregadas 2026-10-29 (auditoría C hallazgo 3), las cuatro quedaban
+    # después de «como la primera vez»:
+    # · las líneas, Fibonacci y Elliott que dibujó en cada gráfico;
+    "dibujos_grafico",
+    # · si quiere el resumen del mercado por mail: la hermana de
+    #   `resumen_semanal_prefs`, que sí se borraba;
+    "market_brief_prefs",
+    # · la prueba de IOL: el reset ya borraba la clave con que la corrió
+    #   (`user_broker_credentials`, broker='iol_lab'); quedaban sus resultados y
+    #   la bitácora de cuánto vivía esa clave, que sin la clave no miden nada.
+    "iol_lab_runs", "iol_lab_token_log",
 )
+
+# Tablas con `user_id` que el reset de admin NO borra, y por qué. No es una
+# lista de olvidos: cada una es una decisión. Una tabla nueva con `user_id` va
+# acá o en la lista de arriba; si no va en ninguna, `test_reset_censo` falla.
+_RESET_ADMIN_CONSERVADAS = {
+    "subscriptions": "plata: el plan pago sigue siendo de la misma cuenta",
+    "billing_events": "plata: el rastro de los cobros",
+    "credit_ledger": "plata: el crédito pago; además cuenta para el tope de pruebas gratis",
+    "plan_events": "plata: la historia del plan",
+    "trial_email_log": "los avisos de la prueba gratis ya mandados: borrarlo los vuelve a mandar",
+    "ai_usage_daily": "contador de la cuota de IA: borrarlo es regalarse cuota",
+    "ai_tool_usage": "contador de la cuota de IA: borrarlo es regalarse cuota",
+    "push_subscriptions": "el permiso de notificaciones del DISPOSITIVO: sin él, no hay push "
+                          "hasta que lo vuelva a dar, sin aviso",
+    "login_history": "rastro de seguridad de la cuenta, que sigue siendo la misma",
+    "password_reset_tokens": "rastro de seguridad de la cuenta, que sigue siendo la misma",
+    "email_verification_codes": "rastro de seguridad de la cuenta, que sigue siendo la misma",
+    "advisor_claim_tokens": "invitación de un ASESOR (otra persona) a reclamar la cuenta",
+    # El plan asesor: sus tablas van por `advisor_uid` (no `user_id`) y son su
+    # trabajo con OTRAS personas, sus clientes. Resetear la cuenta del asesor
+    # borra SU cartera, no su relación ni lo que armó para ellos (el aviso previo
+    # del admin lo dice: `_reset_admin_avisos`). El censo las cuenta desde el
+    # re-test de la auditoría C: antes la decisión vivía sólo en un comentario.
+    "advisor_clients": "asesor: el vínculo con sus clientes (otras personas)",
+    "advisor_link_requests": "asesor: pedidos de vínculo con otras personas",
+    "advisor_profile": "asesor: su perfil profesional, el que ven sus clientes",
+    "advisor_groups": "asesor: cómo agrupó a sus clientes",
+    "advisor_alerts": "asesor: las alertas que configuró sobre sus clientes",
+    "advisor_alert_state": "asesor: el estado de esas alertas, por cliente",
+    "advisor_alert_events": "asesor: lo que esas alertas ya le avisaron",
+    "advisor_brief_log": "asesor: los resúmenes que Rendi le mandó sobre sus clientes",
+    "advisor_reports": "asesor: los informes que armó para sus clientes",
+    "advisor_import_tandas": "asesor: las tandas de importación que hizo para sus clientes",
+    "advisor_op_batches": "asesor: las operaciones que cargó en grupo para sus clientes",
+    "market_brief_log": "lo que Rendi le mandó por mail, para poder releerlo; además es el "
+                        "freno para no mandar dos veces el del día",
+    "uso_diario": "lo que Rendi midió de su uso (panel de uso del admin): borrarlo cambia la "
+                  "historia de cuántos usaron la app cada día",
+    # Decidido al juntar Arreglos C (este censo) con Arreglos E (que creó la
+    # tabla), 30/10: es un contador de cupo, como el de la IA.
+    "tesis_del_dia": "contador del tope de tesis nuevas por día (E2): borrarlo es regalarse "
+                     "cupo; se poda solo al día siguiente",
+}
+
+# Tablas con `user_id` que el reset de admin SÍ borra, pero no por la lista.
+_RESET_ADMIN_OTRO_CAMINO = {
+    "config": "`toda_la_config=True` en `_reset_data_worker`: se van todas sus prefs",
+    "import_batches": "`_reset_data_worker` la borra siempre, después de sus filas de import",
+}
 
 
 # ─── Progreso del reset ──────────────────────────────────────────────────────
@@ -5732,6 +6227,27 @@ def _borrar_en_chunks(conn, uid: int, tabla: str, where: str, args: tuple,
             time.sleep(pausa)
 
 
+def _reset_plan(conn, uid: int, tablas) -> list:
+    """[(tabla, where, args)] de lo que borra un reset, EN ORDEN. Lo usan el
+    borrado (`_reset_data_worker`) y el aviso previo del admin
+    (`_reset_admin_conteo`): el número que se mira para decidir es el que después
+    se borra porque sale del mismo plan."""
+    batch_ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
+    _ph = ",".join("?" * len(batch_ids)) if batch_ids else ""
+    plan = []
+    if batch_ids:
+        for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
+            plan.append((t, f"batch_id IN ({_ph})", tuple(batch_ids)))
+        plan.append(("import_batches", "user_id=?", (uid,)))
+    if "alerts" in tablas:
+        for t in _colgadas_de_alerts(_esquema_por_tabla(conn)):
+            plan.append((t, _DE_SUS_ALERTAS, (uid,)))
+    for t in tablas:
+        plan.append((t, "user_id=?", (uid,)))
+    return plan
+
+
 def _reset_data_worker(uid: int, *, tablas: tuple = None, toda_la_config: bool = False,
                        borrar_perfil: bool = False, pausa: float = 0.0) -> None:
     """Corre el borrado completo. Publica progreso en `_reset_progress`.
@@ -5758,18 +6274,8 @@ def _reset_data_worker(uid: int, *, tablas: tuple = None, toda_la_config: bool =
     """
     conn = get_db()
     try:
-        batch_ids = [r["id"] for r in conn.execute(
-            "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
-        _ph = ",".join("?" * len(batch_ids)) if batch_ids else ""
-
         # Plan de trabajo + total, para que la barra sea real y no una animación.
-        plan = []
-        if batch_ids:
-            for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
-                plan.append((t, f"batch_id IN ({_ph})", tuple(batch_ids)))
-            plan.append(("import_batches", "user_id=?", (uid,)))
-        for t in (tablas or _RESET_PORTFOLIO_TABLES):
-            plan.append((t, "user_id=?", (uid,)))
+        plan = _reset_plan(conn, uid, tablas or _RESET_PORTFOLIO_TABLES)
 
         total = 0
         vivas = []
@@ -5929,6 +6435,10 @@ def _wipe_user_rows(conn, _uid: int, esquema: dict) -> dict:
         _ph = ",".join("?" * len(batch_ids))
         for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
             conn.execute(f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids))
+    for t in _colgadas_de_alerts(esquema):          # antes que las alertas
+        n = conn.execute(f"DELETE FROM {t} WHERE {_DE_SUS_ALERTAS}", (_uid,)).rowcount
+        if n:
+            wiped[t] = n
     for t, cols in esquema.items():
         if t in _NO_BORRAR_ANONIMIZAR:
             continue                     # se anonimizan abajo, no se borran
@@ -5957,28 +6467,6 @@ def _wipe_user_rows(conn, _uid: int, esquema: dict) -> dict:
             log.warning("no pudimos anonimizar %s uid=%s: %s", t, _uid, ex)
     wiped["users"] = conn.execute("DELETE FROM users WHERE id=?", (_uid,)).rowcount
     return wiped
-
-
-def _esquema_por_tabla(conn) -> dict:
-    """{tabla: set(columnas)} de toda la base.
-
-    Se lee UNA vez por borrado y, sobre todo, ANTES de abrir la transacción.
-    Antes se recorría el esquema entero (un PRAGMA por tabla, ~60 tablas) DENTRO
-    de la transacción de borrado, y otra vez por cada cliente shadow: un asesor
-    con 30 clientes hacía ~1.800 round-trips con el lock de escritura AGARRADO.
-    En SQLite el lock de escritura es uno solo para toda la base, así que ese
-    tiempo es tiempo en que cualquier otra escritura de la app se choca contra
-    `database is locked`. Leerlo antes achica la ventana de bloqueo a los DELETE.
-
-    A propósito NO se cachea entre borrados: el barrido dinámico es correcto
-    justamente porque ve TODAS las tablas, incluida cualquiera que se cree
-    después. Un caché de proceso convertiría una tabla nueva en datos que
-    sobreviven al borrado, en silencio. El ahorro serían microsegundos."""
-    return {r["name"]: {c["name"] for c in conn.execute(
-                f"PRAGMA table_info({r['name']})").fetchall()}
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name NOT LIKE 'sqlite_%'").fetchall()}
 
 
 def _borrar_usuario_y_datos(conn, uid: int) -> dict:
@@ -9034,6 +9522,143 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
     return sum(1 for f in terminados if not f.cancelled() and f.result() is True)
 
 
+# ─── Balances PASADOS (los «B» del gráfico de la ficha) ───────────────────────
+# El calendario de arriba sólo trae el PRÓXIMO balance; los que ya pasaron se
+# piden aparte (`get_earnings_dates`, con la hora del anuncio) y se guardan en
+# la MISMA tabla `financial_events`, como 'earnings', sólo con fecha anterior a
+# hoy. Nadie que muestre "lo que se viene" los ve: todos leen de hoy en adelante
+# (eventos_guardados, el mail del día, el radar del asesor). La pide sólo la
+# ficha del activo (/api/tecnico/{asset}/eventos), no la renovación de 6 h de
+# Novedades: es un pedido más a Yahoo por papel y los pasados no cambian.
+_earnings_pasados_at = {}            # { ticker: timestamp del último pedido bueno }
+EARNINGS_PASADOS_TTL = 7 * 24 * 3600
+# Cuántos balances pide: Yahoo cuenta en ese tope también los ~4 que vienen, así
+# que 24 son ~20 trimestres pasados = los 5 años de velas
+# (velas_diarias.ANIOS_GUARDADOS). Con 16 el gráfico de 5 años quedaba sin «B»
+# en sus primeros dos años.
+EARNINGS_PASADOS_CUANTOS = 24
+# Hora de cierre de cada mercado, en su hora local: un balance anunciado antes
+# se nota ese mismo día; después, al día de mercado siguiente.
+_CIERRE_MERCADO = {"America/New_York": 16, "America/Argentina/Buenos_Aires": 17}
+
+
+def _fetch_yf_earnings_pasados(ticker: str):
+    """Los balances ya anunciados de `ticker`: [{event_date, momento, hora,
+    eps_esperado, eps_declarado, sorpresa_pct}] con `momento`
+    'antes_del_cierre' | 'despues_del_cierre' | None (Yahoo no dio la hora:
+    medianoche justa). La ganancia por acción que esperaba el mercado, la que
+    declaró la empresa y cuánto se apartó (%), de la MISMA respuesta de Yahoo
+    (Nico, 29/10: «el detalle de lo declarado vs esperado»); None si no la da.
+    None si Yahoo no contestó (≠ [] = no tiene)."""
+    try:
+        ed = yf.Ticker(ticker).get_earnings_dates(limit=EARNINGS_PASADOS_CUANTOS)
+    except Exception:
+        return None
+    if ed is None or not len(ed):
+        return []
+    zona = "America/Argentina/Buenos_Aires" if ticker.endswith(".BA") else "America/New_York"
+    hoy = _iso_today()
+    out = []
+    for ts in ed.index:
+        try:
+            local = ts.tz_convert(zona) if ts.tzinfo else ts.tz_localize(zona)
+        except Exception:
+            continue
+        d = local.strftime("%Y-%m-%d")
+        if not _DATE_RE.match(d) or d >= hoy:
+            continue
+        sin_hora = local.hour == 0 and local.minute == 0
+        fila = ed.loc[ts] if hasattr(ed, "loc") else {}
+        if hasattr(fila, "ndim") and fila.ndim > 1:      # la misma hora dos veces: la primera
+            fila = fila.iloc[0]
+        out.append({
+            "event_date": d,
+            "momento": None if sin_hora else (
+                "antes_del_cierre" if local.hour < _CIERRE_MERCADO[zona] else "despues_del_cierre"),
+            "hora": None if sin_hora else local.strftime("%H:%M"),
+            "eps_esperado": _numero_o_none(fila, "EPS Estimate"),
+            "eps_declarado": _numero_o_none(fila, "Reported EPS"),
+            "sorpresa_pct": _numero_o_none(fila, "Surprise(%)"),
+        })
+    return out
+
+
+def _numero_o_none(fila, col):
+    """El número de esa columna de una fila de Yahoo, o None (falta o NaN)."""
+    try:
+        x = float(fila.get(col)) if hasattr(fila, "get") else None
+    except (TypeError, ValueError):
+        return None
+    return round(x, 4) if x is not None and math.isfinite(x) else None
+
+
+def _buscar_y_guardar_earnings_pasados(ticker: str) -> bool:
+    """Un trabajador: pide los balances pasados y los guarda (su propia
+    conexión). Lo que ya estaba guardado de esa fecha (el EPS estimado del
+    calendario) se conserva: sólo se le suma la hora."""
+    clave = f"{ticker}|pasados"
+    try:
+        lista = _fetch_yf_earnings_pasados(ticker)
+        if lista is None:
+            _earnings_pasados_at[ticker] = time.time() - EARNINGS_PASADOS_TTL + EVENTOS_REINTENTO_SEG
+            return False
+        if lista:
+            iso_now = datetime.utcnow().isoformat() + "Z"
+            conn = get_db()
+            try:
+                with conn:
+                    for e in lista:
+                        fila = conn.execute(
+                            "SELECT details FROM financial_events WHERE ticker=? AND event_type='earnings' "
+                            "AND event_date=?", (ticker, e["event_date"])).fetchone()
+                        try:
+                            details = json.loads(fila["details"]) if fila and fila["details"] else {}
+                        except (TypeError, ValueError):
+                            details = {}
+                        details = details if isinstance(details, dict) else {}
+                        details.update({"momento": e["momento"], "hora": e["hora"]})
+                        # Lo declarado y lo esperado: sólo si Yahoo los dio (no se
+                        # pisa un dato guardado con un vacío).
+                        details.update({k: e[k] for k in ("eps_esperado", "eps_declarado", "sorpresa_pct")
+                                        if e.get(k) is not None})
+                        conn.execute(
+                            """INSERT INTO financial_events
+                               (ticker, event_type, event_date, details, confirmed, source, fetched_at)
+                               VALUES (?, 'earnings', ?, ?, 1, 'yfinance', ?)
+                               ON CONFLICT(ticker, event_type, event_date) DO UPDATE SET
+                                   details = excluded.details, confirmed = 1,
+                                   fetched_at = excluded.fetched_at""",
+                            (ticker, e["event_date"], json.dumps(details), iso_now))
+            finally:
+                conn.close()
+        _earnings_pasados_at[ticker] = time.time()
+        return True
+    except Exception as ex:
+        logging.getLogger(__name__).warning("earnings pasados %s: %s", ticker, ex)
+        return False
+    finally:
+        with _events_en_vuelo_lock:
+            _events_en_vuelo.pop(clave, None)
+
+
+def _earnings_pasados_al_dia(ticker: str, esperar_segundos=None) -> None:
+    """Pide los balances pasados de `ticker` si nunca se pidieron o hace más de
+    una semana (de a uno a la vez por ticker, en el mismo pool que los eventos).
+    `esperar_segundos`: cuánto espera la pantalla (None = de fondo)."""
+    if not ticker or not _SYMBOL_RE.match(ticker):
+        return
+    clave = f"{ticker}|pasados"
+    with _events_en_vuelo_lock:
+        if time.time() - _earnings_pasados_at.get(ticker, 0) < EARNINGS_PASADOS_TTL:
+            return
+        fut = _events_en_vuelo.get(clave)
+        if fut is None:
+            fut = _events_fetch_executor.submit(_buscar_y_guardar_earnings_pasados, ticker)
+            _events_en_vuelo[clave] = fut
+    if esperar_segundos:
+        _esperar_futuros([fut], timeout=esperar_segundos)
+
+
 def _eventos_al_dia(conn, tickers: list) -> int:
     """La regla ÚNICA para tener los eventos al día antes de leerlos de la DB
     (stale-while-revalidate). La usan /events/portfolio, /events/popular y el
@@ -10283,6 +10908,31 @@ import re
 # pegado ('POPCAT28782-USD', ver `_YAHOO_CRIPTO_DISTINTO`).
 _SYMBOL_RE = re.compile(r'^[A-Z0-9]{1,12}([\.\-][A-Z0-9]{1,4})?$')
 
+
+def _exigir_activo_valido(conn, asset: str, *uids) -> None:
+    """400 si `asset` no es un activo REAL para alguna de estas personas. LA
+    definición es una sola, `velas_diarias.es_activo_real`: un activo de las
+    listas de la app o de BYMA, uno con velas guardadas (lo que la ficha
+    muestra con gráfico), o uno que la persona tiene u operó. La usan la tesis,
+    los dibujos y las alertas técnicas, y la noche para las alertas técnicas.
+
+    `_SYMBOL_RE` dice si algo TIENE FORMA de ticker, no si existe: con sólo eso
+    (o con texto libre, la tesis), cada símbolo inventado era una fila nueva sin
+    tope —300 recordatorios = 302 mails en un día, 400 gráficos = 14 MB— y una
+    pregunta a Yahoo esa noche (auditoría E2/E3/E4, 29/10). `uids`: de quién
+    puede ser (los dibujos son del asesor que los hace, sobre el activo del
+    cliente que mira).
+
+    El texto lo muestra la pantalla tal cual: tiene que decir el motivo, no
+    «no se pudo guardar» (re-test E3)."""
+    import velas_diarias
+    a = (asset or "").strip()
+    if a and velas_diarias.es_activo_real(conn, a, *uids):
+        return
+    raise HTTPException(400, f"Todavía no tenemos el gráfico de «{a[:20]}». Si es un activo real, "
+                             "sumalo a tu lista de seguimiento, abrí su ficha y probá de nuevo.")
+
+
 MAX_SYMBOLS = 60  # hard cap on number of symbols per request
 
 
@@ -10533,8 +11183,11 @@ def _fetch_data912_equities():
                     # `mercado`: de qué lista vino. El buscador de CEDEARs
                     # (cedears_dolar) lee SÓLO los de arg_cedears: con las acciones
                     # argentinas mezcladas, YPFD se leía como "YPF en dólares".
+                    # px_bid/px_ask: las mejores puntas de compra y venta, para
+                    # la liquidez de la ficha (liquidez.py).
                     result[sym] = {'c': float(close), 'pct': item.get('pct_change'),
-                                   'v': item.get('v'), 'mercado': endpoint}
+                                   'v': item.get('v'), 'mercado': endpoint,
+                                   'px_bid': item.get('px_bid'), 'px_ask': item.get('px_ask')}
         if result:  # sólo pisamos el cache si hubo data nueva
             _data912_eq_cache['data'] = result
             _data912_eq_cache['ts'] = now
@@ -11876,7 +12529,957 @@ def _variacion_del_dia(symbols, uid=None, *, tope=None) -> dict:
     return out
 
 
-# ─── Historical prices (mini-chart en AssetQuickView) ───────────────────────
+# ─── Lectura técnica de la ficha del activo ─────────────────────────────────
+
+@app.get("/api/tecnico/{asset}")
+def get_tecnico(request: Request, asset: str, moneda: str = "usd", local: int = 0, ref: str = None,
+                uid: int = Depends(get_effective_user)):
+    """La serie del gráfico técnico (precio, medias de 50 y 200, RSI) y los
+    números de la lectura, en dólares (default) o en pesos. Sale de las velas
+    guardadas (velas_diarias.py). Si el activo no las tiene (nadie lo sigue: se
+    abrió desde el mapa de calor o el buscador) o están viejas, se bajan en el
+    momento con frenos (`velas_diarias.asegurar`), sólo si la app conoce el
+    activo (`velas_diarias.se_puede_pedir`). Si igual no hay, `disponible` es
+    False y `motivo` dice por qué: 'sin_serie' (un bono, un fondo), 'tope' (el
+    cupo), 'bajando' (otra persona lo está bajando: volver a pedir) o
+    'sin_datos' (Yahoo no lo tiene, o la app no lo conoce). `local=1`: es una
+    acción argentina (en dólares va su precio de BYMA ÷ MEP, no el ADR). Las
+    cuentas: tecnico.py."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    ref = (ref or "").strip().upper() or None
+    if ref and not _SYMBOL_RE.match(ref):
+        raise HTTPException(400, f"Símbolo inválido: {ref}")
+    import tecnico
+    # El freno de la ficha (`_freno_tecnico`, tipo «uno»): 45 fichas distintas a
+    # la vez dejaron el «¿estás vivo?» en 33 s (re-test E1, 29/10).
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        tickers, motivo = _velas_a_pedido(conn, [(sym, bool(local))], uid)[sym]
+        res = tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
+        if not res.get("disponible"):
+            res["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
+        # El resumen de Mervall-E de esta serie y este día de velas, si alguien
+        # ya lo pidió (es de todos); si no, si se puede ofrecer el botón.
+        from ai import resumen_tecnico
+        res["resumen"] = resumen_tecnico.estado_para_la_ficha(conn, res)
+        return res
+
+
+@app.post("/api/tecnico/{asset}/resumen")
+@no_escribe_en_el_cliente
+def post_tecnico_resumen(request: Request, asset: str, moneda: str = "usd", local: int = 0,
+                         uid: int = Depends(get_effective_user)):
+    """El botón «✦ Resumen de Mervall-E» de la ficha: genera el resumen de esta
+    serie y este día de velas UNA vez (Claude Sonnet 5.5) y lo guarda para todos.
+    Los datos los arma el servidor con las mismas velas del gráfico; no viaja
+    nada del usuario. No descuenta el cupo de IA. Las reglas (candado, topes,
+    revisión del texto): ai/resumen_tecnico.py. Lee la serie entera como la
+    ficha: el mismo freno (E1; al juntar el resumen, 30/10).
+
+    El tope por persona es de la que PIDE (`_auth_uid_de`: el asesor mirando a
+    un cliente gasta el suyo, como en el freno), y no escribe nada en la cuenta
+    que se mira (la fila es de todos, a nombre del que pidió): una asesora de
+    sólo lectura también lo puede pedir (`no_escribe_en_el_cliente`; auditoría
+    final E3, 31/10)."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    import tecnico
+    from ai import resumen_tecnico
+    from ai.asset_names import asset_name
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        ficha = tecnico.para_la_ficha(conn, sym, moneda, bool(local))
+    base = sym[:-3] if sym.endswith(".BA") else sym
+    return resumen_tecnico.pedir(db_abierta, ficha, asset_name(base) or base, _auth_uid_de(request, uid))
+
+
+def _velas_a_pedido(conn, pedidos: list, uid) -> dict:
+    """Las velas de los activos que nadie sigue (o viejas) se bajan en el momento,
+    con los frenos de `velas_diarias.asegurar` y sólo si la app los conoce
+    (`se_puede_pedir`). La usan la ficha (uno) y el comparador de precios
+    (hasta 4, juntos: UNA espera a Yahoo con un solo tope, no una por activo).
+    `pedidos`: [(símbolo, local)]. {símbolo: (tickers, motivo)}: `tickers` vacío
+    = no tiene serie (un bono, un fondo); `motivo` 'tope' o 'bajando' si no se pudo."""
+    import velas_diarias
+    out, bajar = {}, []
+    for sym, local in pedidos:
+        tickers = []
+        try:
+            tickers = velas_diarias.tickers_a_pedido(sym, local)
+            if tickers and velas_diarias.se_puede_pedir(conn, sym, uid):
+                bajar.extend(tickers)
+        except Exception as ex:
+            log.warning("tecnico: velas a pedido de %s fallaron: %r", sym, ex)
+        out[sym] = tickers
+    motivo = None
+    if bajar:
+        try:
+            motivo = velas_diarias.asegurar(conn, bajar, uid)
+        except Exception as ex:
+            # Sin la descarga, se muestra lo que haya guardado.
+            log.warning("tecnico: velas a pedido de %s fallaron: %r", bajar, ex)
+    return {s: (t, motivo if t else None) for s, t in out.items()}
+
+
+@app.get("/api/comparar/precio")
+def get_comparar_precio(request: Request, activos: str, local: str = "", moneda: str = "usd",
+                        plazo: str = "1a", desde: str = None, uid: int = Depends(get_effective_user)):
+    """El comparador de precios (pieza 16, pestaña «Precio» de Comparar): de 1 a
+    4 activos y las varas (S&P 500, guardar dólares, inflación en pesos), todos
+    en 100 el mismo día y en la misma moneda. Las cuentas: comparar.py.
+
+    `activos`: 'GGAL,AAPL'. `local`: los que son acción argentina ('GGAL'), la
+    misma marca que `/api/tecnico?local=1`. `plazo`: '1a', '3a' o 'compra' (con
+    `desde`='YYYY-MM-DD', tu primera compra). Un activo que nadie sigue se baja
+    en el momento, como en la ficha (`_velas_a_pedido`)."""
+    import comparar
+    from fechas import hoy_art_date
+    lista = list(dict.fromkeys(s.strip().upper() for s in (activos or "").split(",") if s.strip()))
+    locales = {s.strip().upper() for s in (local or "").split(",") if s.strip()}
+    if not lista or len(lista) > comparar.MAX_ACTIVOS:
+        raise HTTPException(400, f"Elegí de 1 a {comparar.MAX_ACTIVOS} activos")
+    for s in lista + sorted(locales):
+        if not _SYMBOL_RE.match(s):
+            raise HTTPException(400, f"Símbolo inválido: {s}")
+    moneda = "ars" if moneda == "ars" else "usd"
+    hoy = hoy_art_date()
+    if plazo == "compra":
+        if not desde or not _DATE_RE.match(desde):
+            raise HTTPException(400, "Falta la fecha de tu primera compra")
+        try:
+            d = date.fromisoformat(desde)
+        except ValueError:
+            raise HTTPException(400, "Fecha inválida")
+        if d >= hoy:
+            raise HTTPException(400, "La fecha tiene que ser anterior a hoy")
+        inicio = d.isoformat()
+    elif plazo in comparar.PLAZOS:
+        inicio = comparar.desde_plazo(plazo, hoy)
+    else:
+        raise HTTPException(400, "Plazo inválido")
+    # Hasta 4 series y la bajada a pedido: el freno de la ficha (`_freno_tecnico`,
+    # tipo «uno»), como toda lectura pesada (E1). Sin él, el guardián de
+    # pesado.py lo marca (visto al juntar la pieza 16 con E, 30/10).
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        motivos = {s: motivo or ("sin_serie" if not tickers else "sin_datos") for s, (tickers, motivo)
+                   in _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid).items()}
+        cer, basis = [], None
+        if moneda == "ars":
+            try:
+                basis = _serie_cer_o_uva(conn, "CER")
+                _ensure_index_cached(conn, basis)
+                cer = [(r["date"], float(r["value"])) for r in conn.execute(
+                    "SELECT date, value FROM bond_indices_daily WHERE index_name=? AND date >= "
+                    "COALESCE((SELECT MAX(date) FROM bond_indices_daily WHERE index_name=? AND date <= ?), ?) "
+                    "ORDER BY date", (basis, basis, inicio, inicio)).fetchall()]
+            except Exception as ex:   # sin la fuente, la vara no aparece y se dice
+                log.warning("comparar: CER no disponible: %r", ex)
+        res = comparar.comparar(conn, [(s, s in locales) for s in lista], moneda, inicio,
+                                cer=cer, cer_basis=basis, hoy=hoy)
+        for f in res["faltan"]:
+            if f["clave"] in motivos and f["motivo"] == "sin_datos":
+                f["motivo"] = motivos[f["clave"]]
+        res["plazo"] = plazo
+        return res
+
+
+@app.get("/api/tecnico/{asset}/horas")
+def get_tecnico_horas(asset: str, request: Request, cada: str = "1h", moneda: str = "usd", local: int = 0,
+                      desde: Optional[int] = None, uid: int = Depends(get_effective_user)):
+    """Las velas de 1 hora o de 4 horas (`cada`) del gráfico técnico, con la
+    vela en curso al final (`enCurso`), sus medias de 50 y 200 VELAS, RSI,
+    Bollinger, ADX y Squeeze. La misma serie que el gráfico diario (qué ticker
+    y si va convertida con el MEP: tecnico.serie). No se guarda en la base: en
+    memoria y compartido entre usuarios (velas_horarias.py). `desde`: sólo
+    las velas que empiezan en ese momento o después (segundos UTC), para el
+    refresco de cada minuto. La primera descarga de un ticker que no está en
+    memoria cuenta para un cupo por persona (velas_horarias.NUEVOS_*):
+    pasado, `motivo: 'tope'`."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    if cada not in ("1h", "4h"):
+        raise HTTPException(400, "Las velas por hora son de 1h o 4h.")
+    if desde is not None and not 0 <= desde <= 4102444800:
+        raise HTTPException(400, "`desde` es un momento en segundos UTC.")
+    import velas_horarias
+    # Lee la serie para saber qué ticker y con qué dólar: el freno único de las
+    # lecturas pesadas (E1, el de la ficha; al juntar, 30/10).
+    with _freno_tecnico(request, uid, "uno"):
+        return velas_horarias.para_la_ficha(db_abierta, sym, cada, moneda, bool(local), desde, uid)
+
+
+@app.get("/api/liquidez/{papel}")
+def get_liquidez(papel: str, uid: int = Depends(get_effective_user)):
+    """Liquidez en BYMA de un CEDEAR o una acción argentina, para la ficha:
+    plata operada por día, días sin operaciones, diferencia entre puntas y un
+    veredicto (mucha / media / poca). Sólo papeles que cotizan en BYMA (los que
+    lista data912); lo demás contesta `disponible: False`. Las cuentas y los
+    cortes: liquidez.py."""
+    sym = (papel or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {papel}")
+    import liquidez
+    return liquidez.para_la_ficha(sym)
+
+
+class ActivoTecnicoIn(BaseModel):
+    asset: str = Field(..., max_length=40)
+    local: bool = False
+
+
+from tecnico import MAX_ACTIVOS_CARTERA  # noqa: E402 (tecnico sólo importa datetime arriba)
+
+
+class CarteraTecnicaIn(BaseModel):
+    # El tope va en el modelo: una lista gigante se corta al leerla, antes de
+    # armar un objeto por elemento.
+    activos: List[ActivoTecnicoIn] = Field(default_factory=list, max_length=MAX_ACTIVOS_CARTERA)
+
+
+# ─── Freno para las lecturas técnicas ────────────────────────────────────────
+# «Tu lista», la radiografía, el diario de operaciones y «Tus señales» leen
+# hasta 200 activos por pedido; la ficha lee uno, con 3 años de velas. Lo ya
+# leído se guarda (tecnico._leer_varios), pero el PRIMER pedido de cada activo
+# se calcula, y el servidor es un solo proceso con 40 lugares: 45 pedidos a la
+# vez de una cuenta gratis lo dejaron 5 minutos sin contestarle a nadie
+# (auditoría E1, 29/10).
+#
+# Dos frenos, los dos en el momento (esperar en una fila ocuparía otro de los
+# 40 lugares, que es justo lo que traba al servidor):
+#   · POR PERSONA (la que pide: el asesor mirando un cliente gasta el suyo),
+#     en «Tu lista», la radiografía, el diario, «Tus señales» y tus tesis
+#     («muchos»), y en la ficha (la serie, sus fechas y su peso: «uno»),
+#     por tipo de lectura: `FRENO_TECNICO` = {tipo: (por minuto, a la vez)}.
+#     Pasado eso, 429. Una pantalla normal pide una lectura de muchos activos
+#     por vez, y la ficha una lectura por activo y moneda.
+#   · ENTRE TODOS: hasta `PESADOS_A_LA_VEZ` lecturas corriendo en todo el
+#     servidor, sean de quien sean. Pasado eso, 503 con `Retry-After`: la
+#     pantalla lo reintenta sola (utils/gatewayRetry.js). Sin éste, el freno
+#     por persona se esquivaba con más cuentas: 14 cuentas gratis × 3 a la vez
+#     dejaron el «¿estás vivo?» en 48,8 s (re-test E1, 29/10). Así quedan
+#     siempre 40 − 8 lugares para el resto de la app. Y cuando ya va la mitad
+#     ocupada, cada persona tiene UNA corriendo como mucho: los lugares que
+#     quedan se reparten entre más gente, en vez de que tres cuentas con 3
+#     cada una los tomen todos (re-test E1, ronda 2).
+# En la memoria del proceso como `_rate_store`, y con candado: contar y anotar
+# son un solo paso (sin él, 45 pedidos juntos contaban todos «0»).
+FRENO_TECNICO_POR_MINUTO = 30
+FRENO_TECNICO_A_LA_VEZ = 3
+FRENO_TECNICO = {
+    "muchos": (FRENO_TECNICO_POR_MINUTO, FRENO_TECNICO_A_LA_VEZ),   # lista, radiografía, diario, señales
+    # La ficha pide tres cosas al abrirse (la serie, sus fechas importantes y
+    # cuánto pesa en tu cartera): 90 por minuto son 30 fichas por minuto.
+    "uno": (90, 3),
+}
+PESADOS_A_LA_VEZ = 8
+_freno_hechos: dict = {}       # (quién, tipo) → deque de instantes (los del último minuto)
+_freno_corriendo: dict = {}    # (quién, tipo) → cuántos están corriendo
+_freno_total = [0]             # cuántas lecturas corren en todo el servidor
+_freno_de_cada_uno: dict = {}  # quién → cuántas tiene corriendo (de cualquier tipo)
+_freno_candado = threading.Lock()
+_freno_reloj = time.monotonic
+
+
+def _freno_reiniciar() -> None:
+    with _freno_candado:
+        _freno_hechos.clear()
+        _freno_corriendo.clear()
+        _freno_total[0] = 0
+        _freno_de_cada_uno.clear()
+
+
+@contextmanager
+def _freno_tecnico(request: Request, uid: int, tipo: str = "muchos"):
+    from collections import deque
+    # `request` falta cuando la ruta se llama a mano (un test, otra función):
+    # el freno cuenta igual, a nombre de `uid`.
+    quien = (getattr(getattr(request, "state", None), "rendi_auth_uid", None) or uid, tipo)
+    por_minuto, a_la_vez = FRENO_TECNICO[tipo]
+    if tipo == "muchos":   # las pruebas cambian estos dos
+        por_minuto, a_la_vez = FRENO_TECNICO_POR_MINUTO, FRENO_TECNICO_A_LA_VEZ
+    ahora = _freno_reloj()
+    with _freno_candado:
+        hechos = _freno_hechos.setdefault(quien, deque())
+        while hechos and ahora - hechos[0] >= 60:
+            hechos.popleft()
+        if len(hechos) >= por_minuto:
+            espera = max(1, int(60 - (ahora - hechos[0])) + 1)
+            raise HTTPException(429, "Pediste muchas lecturas seguidas. Esperá un minuto y probá de nuevo.",
+                                headers={"Retry-After": str(espera)})
+        if _freno_corriendo.get(quien, 0) >= a_la_vez:
+            raise HTTPException(429, "Ya estamos preparando tus lecturas. Esperá unos segundos y probá de nuevo.",
+                                headers={"Retry-After": "5"})
+        if _freno_total[0] >= PESADOS_A_LA_VEZ or (
+                _freno_total[0] >= PESADOS_A_LA_VEZ // 2 and _freno_de_cada_uno.get(quien[0], 0) >= 1):
+            raise HTTPException(503, "Hay mucha gente mirando gráficos en este momento. "
+                                     "Probá de nuevo en unos segundos.",
+                                headers={"Retry-After": "3"})
+        hechos.append(ahora)
+        _freno_corriendo[quien] = _freno_corriendo.get(quien, 0) + 1
+        _freno_total[0] += 1
+        _freno_de_cada_uno[quien[0]] = _freno_de_cada_uno.get(quien[0], 0) + 1
+        if len(_freno_hechos) > 10_000:
+            for k in [k for k, v in _freno_hechos.items() if not v and k not in _freno_corriendo]:
+                del _freno_hechos[k]
+    marca = _pesado._con_freno.set(True)
+    try:
+        yield
+    finally:
+        _pesado._con_freno.reset(marca)
+        with _freno_candado:
+            _freno_total[0] = max(0, _freno_total[0] - 1)
+            m = _freno_de_cada_uno.get(quien[0], 1) - 1
+            if m > 0:
+                _freno_de_cada_uno[quien[0]] = m
+            else:
+                _freno_de_cada_uno.pop(quien[0], None)
+            n = _freno_corriendo.get(quien, 1) - 1
+            if n > 0:
+                _freno_corriendo[quien] = n
+            else:
+                _freno_corriendo.pop(quien, None)
+
+
+def _lecturas_tecnicas(body: CarteraTecnicaIn, leer) -> dict:
+    """Separa lo que es un ticker de lo que no (un fondo con espacios en el
+    nombre) y lee lo válido con `leer(conn, [(asset, local)])`. Lo inválido
+    vuelve como «sin lectura», sin tirar abajo el resto del pedido."""
+    validos, invalidos = [], []
+    for a in body.activos:
+        sym = (a.asset or "").strip().upper()
+        (validos if _SYMBOL_RE.match(sym) else invalidos).append((sym, a.local))
+    with db_abierta() as conn:
+        lecturas = leer(conn, validos)
+    return {"lecturas": lecturas + [{"asset": s, "local": bool(l), "disponible": False}
+                                    for s, l in invalidos]}
+
+
+@app.post("/api/tecnico/cartera")
+@no_escribe_en_el_cliente
+def post_tecnico_cartera(body: CarteraTecnicaIn, request: Request, uid: int = Depends(get_effective_user)):
+    """La lectura técnica en dólares de varios activos de una vez, para la
+    radiografía de la Cartera (tecnico.para_la_cartera). La pantalla manda sus
+    activos con la marca `local` de la ficha. Un símbolo que no es un ticker
+    (un fondo con espacios en el nombre) vuelve como «sin lectura», sin tirar
+    abajo el resto del pedido.
+
+    `reparto`: el % de tu plata en tendencia de fondo alcista con su «semana
+    pasada» (senales_semana.reparto, LA cuenta: la misma del Panorama, de la
+    pestaña Señales y del mail de los sábados). Viene en este pedido, que la
+    Cartera ya hace, para no sumar otro."""
+    import tecnico
+    import senales_semana
+    from fechas import hoy_art_date
+    with _freno_tecnico(request, uid):
+        out = _lecturas_tecnicas(body, tecnico.para_la_cartera)
+        with db_abierta() as conn:
+            out["reparto"] = senales_semana.reparto(conn, uid, hoy_art_date())
+        return out
+
+
+@app.post("/api/tecnico/lista")
+@no_escribe_en_el_cliente
+def post_tecnico_lista(body: CarteraTecnicaIn, request: Request, uid: int = Depends(get_effective_user)):
+    """«Tu lista, con su lectura técnica» (inicio → Watchlist → «Ver como
+    tablero»): lo que tenés y lo que seguís, en dólares (tecnico.para_la_lista).
+    La pantalla manda lo que sigue (su watchlist) con la marca `local` de la
+    ficha; lo que TENÉS lo pone el servidor. Mismo tope y misma regla que
+    /api/tecnico/cartera: un símbolo que no es un ticker vuelve «sin lectura»
+    sin tirar abajo el resto. El tope (`MAX_ACTIVOS_CARTERA`) es de LECTURAS:
+    lo tuyo más lo que seguís; lo tuyo va primero (auditoría E1: con 200
+    seguidos más lo que tenés, se leían más de 200).
+
+    `tenencias`: [{asset, local, peso, tipo}] — lo que tenés y cuánto pesa sobre
+    toda tu plata, con la valuación del servidor (`senales_semana.cartera`, LA
+    misma de `reparto` y de la pestaña Señales: el «Sí · 12%» de cada fila no
+    se calcula en la pantalla). De cada una viene también su lectura.
+    `sin_medir`: {efectivo, plazos_fijos}, la parte de tu plata que es cada uno
+    (`senales_semana.pesos_sin_medir`). Lo usa el mapa de calor del
+    Dashboard (que pide sin watchlist: `activos` vacío)."""
+    import tecnico
+    import senales_semana
+    with _freno_tecnico(request, uid):
+        with db_abierta() as conn:
+            car = senales_semana.cartera(conn, uid)
+        tuyas = [k for k, _ in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
+        out = _lecturas_tecnicas(
+            body, lambda conn, pedidos: tecnico.para_la_lista(
+                conn, (tuyas + [k for k in pedidos if k not in car["tenencias"]])[:MAX_ACTIVOS_CARTERA]))
+        out["lecturas"] = out["lecturas"][:MAX_ACTIVOS_CARTERA]
+        out["tenencias"] = [
+            {"asset": a, "local": l, "peso": senales_semana.peso(car, a, l), "tipo": car["tipos"].get((a, l)) or None}
+            for (a, l), v in sorted(car["tenencias"].items(), key=lambda x: -x[1])]
+        # Efectivo y plazos fijos: cuentan en el total (por eso los pesos de arriba no
+        # suman 1); el «Mapa de tu cartera» (Panorama y Dashboard) nombra con esto el
+        # cuadrito de lo que falta para 100 % (utils/mapaCartera.sinLecturaDe).
+        out["sin_medir"] = senales_semana.pesos_sin_medir(car)
+        return out
+
+
+@app.get("/api/tus-senales")
+def get_tecnico_semana(request: Request, uid: int = Depends(get_effective_user)):
+    """«Tus señales» (Mercado → Novedades). Ruta propia y no /api/tecnico/semana:
+    ésa la atrapa la ficha (`/api/tecnico/{asset}`, «SEMANA» como ticker).
+    Lo que cambió en los últimos 7 días
+    corridos, contados desde HOY, en lo que tenés y en tu watchlist; el % de tu
+    plata en tendencia alcista y el del sábado anterior si está guardado; y cómo
+    te llega el resumen de los sábados. La misma cuenta que el mail
+    (senales_semana.armar_semana)."""
+    import senales_semana
+    from fechas import hoy_art_date
+    # La misma lectura de muchos activos que «Tu lista» (hasta 100 de tu
+    # watchlist más lo que tenés): el mismo freno. Sin él, 45 a la vez de una
+    # cuenta dejaron el «¿estás vivo?» en 44 s (re-test E1, 29/10).
+    with _freno_tecnico(request, uid), db_abierta() as conn:
+        out = senales_semana.armar_semana(conn, uid, hoy_art_date())
+        out["canal"] = senales_semana.canal(conn, uid)
+        # Cuándo sale el próximo resumen: lo dice el que lo manda (A9).
+        out["proximo_resumen"] = senales_semana.proximo_resumen(conn, uid)
+    return out
+
+
+@app.get("/api/termometro")
+def get_termometro(request: Request, uid: int = Depends(get_effective_user)):
+    """El termómetro del mercado (termometro.py), para el Resumen de Análisis de
+    mercado: el último número guardado, cada parte de la cuenta y el de hace
+    una semana (si ya hay). El número es el mismo para todos; lo de cada
+    persona (`tu_plata`) sale de la valuación del servidor."""
+    import termometro
+    from fechas import hoy_art_date
+    # `tu_plata` valúa tu cartera entera (`senales_semana.cartera`): una lectura
+    # pesada, con el freno de las de muchos activos (E1; el guardián de pesado.py
+    # lo marcó al juntar la pieza 7, 30/10).
+    with _freno_tecnico(request, uid), db_abierta() as conn:
+        t = termometro.ultimo(conn, hoy_art_date())
+        t["tu_plata"] = termometro.tu_plata(conn, uid, t)
+        return t
+
+
+class ResumenSemanalIn(BaseModel):
+    canal: str = Field(..., pattern="^(mail|push|ambos|no)$")
+
+
+@app.put("/api/tus-senales/canal")
+def put_tecnico_semana_canal(data: ResumenSemanalIn, uid: int = Depends(get_effective_user)):
+    """Cómo le llega el resumen de los sábados: Mail / Notificación / Las dos /
+    No quiero. Sin fila es 'no' (opt-in)."""
+    with db_abierta() as conn:
+        conn.execute(
+            """INSERT INTO resumen_semanal_prefs (user_id, canal) VALUES (?, ?)
+               ON CONFLICT(user_id) DO UPDATE
+                 SET canal = excluded.canal, updated_at = datetime('now')""",
+            (uid, data.canal))
+        conn.commit()
+    return {"ok": True, "canal": data.canal}
+
+
+class _PedidoTendencia(BaseModel):
+    id: str = Field(..., max_length=40)
+    asset: str = Field(..., max_length=40)
+    local: bool = False
+    fecha: str = Field(..., max_length=10)
+
+
+class TendenciasEnFechasIn(BaseModel):
+    # Tope al leer el pedido (422), no después de armar la lista.
+    items: List[_PedidoTendencia] = Field(..., max_length=2000)
+
+
+@app.post("/api/tecnico/en-fechas")
+@no_escribe_en_el_cliente
+def tecnico_en_fechas(data: TendenciasEnFechasIn, request: Request, uid: int = Depends(get_effective_user)):
+    """¿Cómo estaba la tendencia de fondo de cada activo en cada fecha? Para el
+    diario de operaciones: la del día en que compraste cada operación cerrada.
+    Misma regla y misma serie que la ficha (tecnico.tendencia_del_dia).
+    {resultados: {id: {tendencia, fecha, precio, media200, dist} | {tendencia: None, motivo}}}
+
+    Hasta 2000 operaciones, pero de hasta `MAX_ACTIVOS_CARTERA` activos
+    distintos: lo que cuesta es leer cada serie, no cada fecha (auditoría E1:
+    2000 operaciones de 2000 activos eran 2000 series). Las de más contestan
+    `motivo: 'tope'`."""
+    import tecnico
+    pedidos = []
+    out = {}
+    series = set()
+    for it in data.items:
+        sym = (it.asset or "").strip().upper()
+        if not _SYMBOL_RE.match(sym):
+            out[it.id] = {"tendencia": None, "motivo": "sin_velas"}
+            continue
+        clave = (sym, bool(it.local))
+        if clave not in series and len(series) >= MAX_ACTIVOS_CARTERA:
+            out[it.id] = {"tendencia": None, "motivo": "tope"}
+            continue
+        series.add(clave)
+        pedidos.append({"id": it.id, "asset": sym, "local": it.local, "fecha": it.fecha})
+    with _freno_tecnico(request, uid):
+        with db_abierta() as conn:
+            out.update(tecnico.tendencias_en_fechas(conn, pedidos))
+        return {"resultados": out}
+
+
+@app.get("/api/tecnico/{asset}/hoy")
+def get_tecnico_hoy(asset: str, request: Request, moneda: str = "usd", local: int = 0,
+                    uid: int = Depends(get_effective_user)):
+    """Las ruedas que la noche todavía no guardó, con la de HOY mientras se
+    mueve, del gráfico de la ficha (`tecnico.vela_de_hoy`): {velas: [{d,o,h,l,c,v,hoy}],
+    en_rueda, demora_min, actualizada, ultima_guardada, mercado, contra_el_cierre}
+    (`contra_el_cierre`: qué lectura de las tarjetas da vuelta el precio de hoy). La pantalla la vuelve a pedir cada minuto
+    con la ficha a la vista; Yahoo recibe un pedido por minuto por activo, no
+    por persona (`velas_diarias.ruedas_recientes`). No baja historia: si el
+    activo no tiene velas guardadas, no hay vela de hoy, así que sólo puede
+    hacer salir a Yahoo por lo que alguien ya sigue."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    import tecnico
+    # Lee la serie: el freno único de las lecturas pesadas (E1, el de la ficha:
+    # «uno», 90 por minuto y 3 a la vez). Una ficha pide 1 por minuto (2 si mira
+    # las dos monedas); recorrer todos los activos para hacer pegarle a Yahoo
+    # choca con el tope. Traía un freno propio (40 por minuto): al juntar
+    # (30/10) quedó el único. La base se lee y se CIERRA antes de salir a Yahoo
+    # y al dólar: en Postgres, leer deja la transacción abierta hasta cerrarla.
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        prep = tecnico.preparar_vela_de_hoy(conn, sym, moneda, bool(local))
+    return tecnico.vela_de_hoy(prep)
+
+
+@app.get("/api/tecnico/{asset}/peso")
+def get_tecnico_peso(request: Request, asset: str, uid: int = Depends(get_effective_user)):
+    """Qué parte de toda tu plata es este activo, para «En tu cartera» de
+    «Cuánto se mueve» en la ficha: `senales_semana.peso`, LA misma cuenta de Tu
+    lista y de Señales (antes la ficha dividía lo tuyo de hoy por el total de la
+    última foto, y el mismo papel decía otro % en cada pantalla). Todos tus
+    lotes de ese papel juntos, como los suma la ficha. {peso: 0..1 | None}."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    import senales_semana
+    # Valúa toda tu cartera: el freno de la ficha, como sus otras dos lecturas.
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        return {"peso": senales_semana.peso(senales_semana.cartera(conn, uid), sym)}
+
+
+# Lo que la ficha espera a Yahoo por los balances y dividendos la primera vez
+# (después sale de lo guardado al instante). El gráfico no espera: esto llega aparte.
+_TOPE_EVENTOS_FICHA = 5.0
+
+
+@app.get("/api/tecnico/{asset}/eventos")
+def get_tecnico_eventos(request: Request, asset: str, moneda: str = "usd", local: int = 0,
+                        uid: int = Depends(get_effective_user)):
+    """Los balances («B») y dividendos («D») de la empresa dentro del gráfico de
+    la ficha, cada uno con lo que se movió el precio en la serie del gráfico y
+    en su moneda (movimiento.eventos_del_grafico). Las fuentes son las de
+    siempre: los dividendos, la caché de la bandeja de cobros (dividendos.py);
+    los balances, `financial_events` (la de Novedades) con los pasados que trae
+    `_earnings_pasados_al_dia`."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    moneda = "ars" if moneda == "ars" else "usd"
+    import movimiento
+    import tecnico
+    # Lee la serie entera y puede ir a Yahoo: el mismo freno que la ficha.
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        empresa = tecnico.ticker_de_la_empresa(conn, sym, bool(local))
+        velas = tecnico.serie(conn, sym, moneda, bool(local))["velas"]
+        if not empresa or not velas:
+            return {"empresa": empresa, "eventos": []}
+        desde = velas[0]["date"]
+        hasta = velas[-1]["date"]
+        incompleto = False
+        try:
+            incompleto = bool(_dividendos.actualizar(conn, [empresa], tope=_TOPE_EVENTOS_FICHA))
+        except Exception as ex:   # Yahoo caído: lo guardado
+            log.warning("ficha eventos: dividendos de %s: %s", empresa, ex)
+            incompleto = True
+        dividendos = _dividendos.historial(conn, [empresa], desde)[empresa]["pagos"]
+        # Sin ningún balance pasado guardado, se espera a Yahoo (con tope); si
+        # ya hay, se responde con eso y se renueva de fondo.
+        ya = balances_entre(conn, empresa, desde, hasta)
+        _earnings_pasados_al_dia(empresa, esperar_segundos=None if ya else _TOPE_EVENTOS_FICHA)
+        balances = balances_entre(conn, empresa, desde, hasta)
+        return {
+            "empresa": empresa,
+            "eventos": movimiento.eventos_del_grafico(
+                velas, balances, dividendos, "ars" if empresa.endswith(".BA") else "usd"),
+            "incompleto": incompleto,
+        }
+
+
+# ─── Dibujos a mano en el gráfico de la ficha ────────────────────────────────
+# Líneas de tendencia y horizontales, y Fibonacci y ondas de Elliott marcados a
+# mano, como TradingView (Nico, 24/10: «que se guarden por activo», «en todos
+# los dispositivos»; 28/10: Fibonacci y Elliott también a mano). La pantalla manda la lista
+# ENTERA cada vez que cambia (frontend/src/utils/dibujos.js): no hay que mezclar
+# nada acá. Son de quien los dibuja: un asesor mirando la cuenta de un cliente
+# guarda los suyos, no le escribe al cliente.
+
+_DIBUJOS_MAXIMOS = 60
+# Gráficos con dibujos por persona. Los 60 de arriba son por gráfico (lo de ADENTRO
+# de cada fila); sin un tope de filas, cada activo era un gráfico más con sus 60
+# (auditoría E3, 29/10: 400 gráficos = 14 MB de una cuenta gratis). Una persona
+# que dibuja mucho anda por decenas.
+GRAFICOS_CON_DIBUJOS_MAX = 200
+
+
+class _PuntoDibujo(BaseModel):
+    d: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")      # el día
+    mas: int = Field(ge=0, le=5000)                     # días de mercado después (hacia adelante)
+    precio: float = Field(gt=0, allow_inf_nan=False)
+    # Sólo el pincel: la fracción del lugar (que el trazo no quede en escalones).
+    f: Optional[float] = Field(None, ge=0, lt=1, allow_inf_nan=False)
+    # Un punto dibujado en velas de 1 o 4 horas: el momento exacto, en segundos
+    # UTC (frontend/src/utils/velasPorHora.js). `d` y `mas` siguen siendo el día,
+    # que es lo que leen las diarias y los avisos (tecnico._indice_del_punto).
+    t: Optional[int] = Field(None, ge=0, le=4102444800)
+
+
+# Un conteo de Elliott a mano: el impulso (0 y las ondas 1 a 5), la corrección
+# (el arranque y A, B, C) o, en los guardados antes de separarlos, las dos
+# juntas (0-1-2-3-4-5-A-B-C). Se puede cortar antes.
+_PUNTOS_ELLIOTT = {"impulso": 6, "correccion": 4, None: 9}
+# El pincel: los puntos de un trazo (frontend/src/utils/dibujos.PINCEL_MAXIMO).
+_PINCEL_MAXIMO = 200
+# Una nota de texto (Nico, 30/10: «compré acá por el balance»): corta, como un
+# tuit. Para la explicación larga está tu tesis (tesis.TEXTO_MAX, 1000). Se
+# cuentan letras (puntos de código), igual que la pantalla
+# (frontend/src/utils/dibujos.NOTA_MAXIMA): un emoji es una.
+_NOTA_MAXIMA = 280
+
+
+def _texto_de_nota(x):
+    """El texto de una nota, limpio: sin caracteres de control (salvo el salto
+    de renglón; el tab pasa a espacio), con los saltos de Windows como uno solo,
+    a lo sumo dos renglones vacíos seguidos y sin espacios en las puntas. None
+    sin texto, o si lo que queda no se ve (sólo espacios o marcas invisibles,
+    como el espacio de ancho cero): sería una banderita vacía. La MISMA regla
+    que frontend/src/utils/dibujos.limpiarNota: si no coinciden, una nota que la
+    pantalla acepta y el servidor no traba el guardado de TODOS los dibujos de
+    ese activo (la lista va entera)."""
+    if x is None:
+        return None
+    if not isinstance(x, str):
+        raise ValueError("el texto de una nota es texto")
+    t = x.replace("\r\n", "\n").replace("\r", "\n").replace("\t", " ")
+    # Tampoco medio emoji (una «mitad» suelta, de un texto cortado): al
+    # devolverlo, la respuesta no se podría escribir y la ficha perdería TODOS
+    # tus dibujos de ese activo.
+    # Afuera también los de control «C1» (U+0080 a U+009F: el U+0085 viene
+    # pegado de algunos textos de Windows o PDF, y strip() lo recortaba pero la
+    # pantalla no) y la marca BOM (U+FEFF: al revés).
+    t = "".join(c for c in t if c == "\n" or (ord(c) >= 32 and not 0x7F <= ord(c) <= 0x9F
+                                              and ord(c) != 0xFEFF and not 0xD800 <= ord(c) <= 0xDFFF))
+    while "\n\n\n" in t:
+        t = t.replace("\n\n\n", "\n\n")
+    t = t.strip()
+    if not any(not c.isspace() and unicodedata.category(c) != "Cf" for c in t):
+        return None
+    return t
+
+
+class _Dibujo(BaseModel):
+    id: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    # «fibonacci» y «elliott»: los que la persona marca a mano en vez del
+    # automático (Nico, 28/10: «poder calcularlo como ellos estiman»).
+    # «extension»: la extensión de Fibonacci (tres puntos: a, b y c).
+    # «canal»: el canal paralelo (a → b y la paralela `ancho` más arriba o más
+    # abajo); «pincel»: un trazo a mano alzada (Nico, 29/10).
+    # «nota»: un texto tuyo en un día y un precio (`a`), con su banderita.
+    tipo: Literal["tendencia", "horizontal", "fibonacci", "extension", "elliott", "canal", "pincel", "nota"]
+    precio: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    a: Optional[_PuntoDibujo] = None
+    b: Optional[_PuntoDibujo] = None
+    c: Optional[_PuntoDibujo] = None
+    forma: Optional[Literal["impulso", "correccion"]] = None
+    puntos: Optional[List[_PuntoDibujo]] = Field(None, max_length=_PINCEL_MAXIMO)
+    ancho: Optional[float] = Field(None, ge=-1e9, le=1e9, allow_inf_nan=False)
+    # El color que eligió la persona (frontend/src/utils/dibujos.COLORES_DIBUJO);
+    # sin color, el de siempre.
+    color: Optional[Literal["cian", "ambar", "rosa", "verde", "rojo", "violeta", "tinta"]] = None
+    # Sólo la nota: lo que escribiste. El tope se mide ya limpio (_texto_limpio).
+    texto: Optional[str] = Field(None, max_length=_NOTA_MAXIMA)
+
+    @field_validator("texto", mode="before")
+    @classmethod
+    def _texto_limpio(cls, v):
+        return _texto_de_nota(v)
+
+    @model_validator(mode="after")
+    def _completo(self):
+        if self.tipo == "nota":
+            if self.a is None:
+                raise ValueError("una nota necesita su día y su precio")
+            if not self.texto:
+                raise ValueError("una nota sin texto no se guarda")
+        else:
+            # El texto es de las notas: otro dibujo no guarda texto suelto.
+            self.texto = None
+        if self.tipo == "horizontal" and self.precio is None:
+            raise ValueError("una línea horizontal necesita su precio")
+        if self.tipo in ("tendencia", "fibonacci") and (self.a is None or self.b is None):
+            raise ValueError("una línea de tendencia o un Fibonacci necesitan sus dos puntos")
+        if self.tipo == "extension" and (self.a is None or self.b is None or self.c is None):
+            raise ValueError("una extensión de Fibonacci necesita sus tres puntos")
+        if self.tipo == "elliott":
+            if not self.puntos or len(self.puntos) < 2:
+                raise ValueError("un conteo de Elliott necesita al menos el arranque y la primera onda")
+            if len(self.puntos) > _PUNTOS_ELLIOTT[self.forma]:
+                raise ValueError("un conteo de Elliott con más ondas de las que tiene su forma")
+        if self.tipo == "canal" and (self.a is None or self.b is None or not self.ancho):
+            raise ValueError("un canal necesita su línea (dos puntos) y su ancho")
+        if self.tipo == "pincel" and (not self.puntos or len(self.puntos) < 2):
+            raise ValueError("un trazo del pincel necesita al menos dos puntos")
+        return self
+
+
+class DibujosIn(BaseModel):
+    dibujos: List[_Dibujo] = Field(max_length=_DIBUJOS_MAXIMOS)
+    # La pantalla conoce las notas (desde el 30/10). Una pestaña abierta desde
+    # antes las descarta al leer (no sabe qué son) y, como la lista va entera,
+    # al guardar una línea las borraría de tu cuenta: sin esta marca, las notas
+    # guardadas se quedan como estaban.
+    notas: bool = False
+
+
+def _notas_guardadas(conn, dueno: int, sym: str, moneda: str) -> list:
+    """Las notas que ya están guardadas en este activo y moneda (validadas)."""
+    fila = conn.execute(
+        "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+        (dueno, sym, moneda)).fetchone()
+    try:
+        crudo = json.loads(fila[0]) if fila else []
+    except (TypeError, ValueError):
+        return []
+    out = []
+    for d in crudo if isinstance(crudo, list) else []:
+        if isinstance(d, dict) and d.get("tipo") == "nota":
+            try:
+                out.append(_Dibujo.model_validate(d).model_dump(exclude_none=True))
+            except Exception:
+                continue
+    return out
+
+
+def _dueno_de_los_dibujos(request: Request, uid: int) -> int:
+    # El uid AUTENTICADO (lo dejó get_effective_user), no el del cliente que se mira.
+    return getattr(request.state, "rendi_auth_uid", None) or uid
+
+
+# Tus NOTAS no se ven mirando la cuenta de un cliente: son tuyas y no dicen de
+# qué cliente son. Una nota del asesor sobre Juan («compró acá por el balance»)
+# aparecía en el AAPL de María, quizás con la pantalla compartida con ella
+# (auditoría 30/10). Ahí se dibujan líneas, pero tus notas ni llegan ni se tocan.
+
+
+@app.get("/api/tecnico/{asset}/dibujos")
+def get_tecnico_dibujos(asset: str, request: Request, moneda: str = "usd",
+                        uid: int = Depends(get_effective_user)):
+    """Tus dibujos en el gráfico de este activo, en esta moneda. Sin ninguno: []."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    moneda = "ars" if moneda == "ars" else "usd"
+    dueno = _dueno_de_los_dibujos(request, uid)
+    with db_abierta() as conn:
+        fila = conn.execute(
+            "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+            (dueno, sym, moneda)).fetchone()
+    if not fila:
+        return {"dibujos": []}
+    # Lo guardado se vuelve a validar: una fila rota no rompe la ficha.
+    try:
+        crudo = json.loads(fila[0])
+    except (TypeError, ValueError):
+        return {"dibujos": []}
+    dibujos = []
+    for d in crudo if isinstance(crudo, list) else []:
+        try:
+            dibujos.append(_Dibujo.model_validate(d).model_dump(exclude_none=True))
+        except Exception:
+            continue
+    if dueno != uid:                                        # mirando a un cliente
+        dibujos = [d for d in dibujos if d["tipo"] != "nota"]
+    return {"dibujos": dibujos[:_DIBUJOS_MAXIMOS]}
+
+
+@app.put("/api/tecnico/{asset}/dibujos")
+@no_escribe_en_el_cliente
+def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: str = "usd",
+                        uid: int = Depends(get_effective_user)):
+    """Reemplaza tus dibujos de este activo en esta moneda por la lista que
+    llega (la entera). Una lista vacía los borra."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    moneda = "ars" if moneda == "ars" else "usd"
+    dueno = _dueno_de_los_dibujos(request, uid)
+    lista = [d.model_dump(exclude_none=True) for d in data.dibujos]
+    with db_abierta() as conn:
+        # Una pantalla que no conoce las notas, o mirando a un cliente: las
+        # notas guardadas quedan como estaban (las que lleguen, no).
+        if not data.notas or dueno != uid:
+            lista = [d for d in lista if d["tipo"] != "nota"] + _notas_guardadas(conn, dueno, sym, moneda)
+            if len(lista) > _DIBUJOS_MAXIMOS:
+                raise HTTPException(409, f"Llegaste a {_DIBUJOS_MAXIMOS} dibujos y notas en este activo: borrá alguno.")
+        if lista:
+            _exigir_activo_valido(conn, sym, dueno, uid)
+            # Contar y guardar en un solo turno (sin él, varios pedidos juntos
+            # contaban todos lo mismo y pasaban el tope).
+            _tomar_turno(conn, dueno)
+            nuevo = not conn.execute(
+                "SELECT 1 FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+                (dueno, sym, moneda)).fetchone()
+            if nuevo and conn.execute("SELECT COUNT(*) FROM dibujos_grafico WHERE user_id = ?",
+                                      (dueno,)).fetchone()[0] >= GRAFICOS_CON_DIBUJOS_MAX:
+                raise HTTPException(400, f"Ya dibujaste en {GRAFICOS_CON_DIBUJOS_MAX} gráficos. "
+                                         "Borrá los dibujos de alguno para dibujar en otro.")
+            conn.execute(
+                """INSERT INTO dibujos_grafico (user_id, asset, moneda, datos)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(user_id, asset, moneda) DO UPDATE
+                     SET datos = excluded.datos,
+                         updated_at = datetime('now')""",
+                (dueno, sym, moneda, json.dumps(lista, separators=(",", ":"))))
+        else:
+            conn.execute("DELETE FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+                         (dueno, sym, moneda))
+        conn.commit()
+    return {"ok": True, "dibujos": len(lista)}
+
+
+@app.get("/api/admin/velas")
+def admin_velas(uid: int = Depends(get_admin_user)):
+    """Estado del guardado nocturno de velas: cuántos activos, desde cuándo,
+    cuándo corrió por última vez, cuáles fallaron y qué tiene la lista única de
+    cambios de ratio (cambios_ratio.py) de lo que se sigue. Sólo lee."""
+    from fechas import hoy_art_date
+    import velas_diarias
+    atrasado = (hoy_art_date() - timedelta(days=5)).isoformat()
+    with db_abierta() as conn:
+        # Atrasados y fallados, sólo de lo que se sigue HOY: lo que alguien vendió
+        # o dejó de seguir no se actualiza más (a propósito) y no es un problema.
+        seguidos = set(velas_diarias.simbolos_a_seguir(conn))
+        # El estado, también sólo de lo que se sigue: las fichas abiertas a pedido
+        # (velas_diarias.asegurar) escriben en la misma tabla, y "Última corrida"
+        # mostraba la hora de la última ficha aunque la noche hubiera dejado de
+        # correr; "sin historia" contaba cada símbolo inventado que falló a pedido.
+        estado = [r for r in conn.execute(
+            "SELECT symbol, ok, ultima_completa, ultima_corrida FROM velas_estado").fetchall()
+            if r["symbol"] in seguidos]
+        e = {"activos": len(estado), "ok": sum(1 for r in estado if r["ok"]),
+             "sin_historia": sum(1 for r in estado if not r["ultima_completa"]),
+             "ultima_corrida": None}
+        noche = conn.execute("SELECT ultima_corrida FROM velas_estado WHERE symbol=?",
+                             (velas_diarias.MARCA_CORRIDA_NOCHE,)).fetchone()
+        e["ultima_corrida"] = noche["ultima_corrida"] if noche else None
+        v = conn.execute(
+            """SELECT COUNT(*) AS filas, MIN(date) AS desde, MAX(date) AS hasta
+                 FROM velas_diarias""").fetchone()
+        atrasados = [r for r in conn.execute(
+            """SELECT symbol, MAX(date) AS hasta FROM velas_diarias
+                GROUP BY symbol HAVING MAX(date) < ? ORDER BY symbol""",
+            (atrasado,)).fetchall() if r["symbol"] in seguidos][:50]
+        fallados = [r for r in conn.execute(
+            """SELECT symbol, error, ultima_corrida FROM velas_estado
+                WHERE ok = 0 ORDER BY ultima_corrida DESC""").fetchall() if r["symbol"] in seguidos][:50]
+        # La lista única de cambios de ratio (cambios_ratio.py): lo que el
+        # gráfico en pesos empalma, lo que el aviso «Ajustar» ofrece, y los
+        # saltos que NO se pueden explicar (una acción argentina sin par
+        # afuera), que hay que mirar a mano.
+        import cambios_ratio
+        correcciones = sorted(
+            ({"symbol": f"{r['cedear']}.BA", "date": r["fecha"], "tipo": r["tipo"],
+              "estado": r["estado"], "factor": r["factor"] or r["factor_medido"],
+              "motivo": r["motivo"]}
+             for r in cambios_ratio.todos(conn) if f"{r['cedear']}.BA" in seguidos),
+            key=lambda c: (c["date"], c["symbol"]), reverse=True)
+        # Los resúmenes de Mervall-E de la ficha: cuántos por día y lo que costaron.
+        from ai import resumen_tecnico
+        resumenes = resumen_tecnico.para_admin(conn)
+        ultima_noche = velas_diarias.ultima_noche(conn)
+    def _de(*tipos):
+        return [c for c in correcciones if c["tipo"] in tipos][:50]
+    return {
+        "seguidos": len(seguidos),
+        "activos": e["activos"], "ok": e["ok"], "sin_historia": e["sin_historia"],
+        "ultima_corrida": e["ultima_corrida"],
+        "filas": v["filas"], "desde": v["desde"], "hasta": v["hasta"],
+        "atrasados": [dict(r) for r in atrasados],
+        "fallados": [dict(r) for r in fallados],
+        "cambios_de_ratio": _de("ratio"),
+        "empalmes": _de("escision", "precio_roto"),
+        "precios_rotos": _de("roto"),
+        "pendientes": _de("pendiente"),
+        "sin_explicar": _de("sin_explicar"),
+        # La última corrida de la noche: cuántos bajaron, cuántos cortó Yahoo y
+        # cuántos no se pidieron (no son tickers, o fallan siempre y van 1 vez
+        # por semana). Lo que hay que mirar las mañanas de la bajada de 5 años.
+        "ultima_noche": ultima_noche,
+        "corriendo": "velas_diarias" in _corridas_en_curso,
+        "resumenes": resumenes,
+    }
+
+
+@app.post("/api/admin/velas/correr")
+def admin_velas_correr(uid: int = Depends(get_admin_user)):
+    """Corre ahora el guardado de velas, sin esperar a la noche. En el fondo:
+    la primera vez baja 5 años de cada activo y tarda unos minutos."""
+    if "velas_diarias" in _corridas_en_curso:
+        return {"ok": True, "status": "already_running"}
+    threading.Thread(target=_run_velas_diarias_job, daemon=True, name="corrida-velas").start()
+    return {"ok": True, "status": "started"}
+
+
+@app.get("/api/admin/yahoo/prueba")
+def admin_yahoo_prueba(uid: int = Depends(get_admin_user)):
+    """Le pide a Yahoo, DESDE EL SERVIDOR, el último mes de tres activos por la
+    misma puerta que el motor de velas (`pricing.yahoo._historia`) y devuelve
+    qué contestó: filas, el error tal cual y lo que anotó yfinance. Existe
+    porque el 02/11/2026 el servidor no bajaba nada mientras desde una Mac, con
+    las mismas versiones, Yahoo contestaba; y `varios` anota las fallas en
+    DEBUG, que en producción no se ve. Sólo lee: no guarda nada."""
+    import pandas as pd
+    import yfinance as yf
+    from pricing import yahoo
+
+    class _Junta(logging.Handler):
+        def __init__(self):
+            super().__init__(logging.WARNING)
+            self.lineas = []
+
+        def emit(self, record):
+            self.lineas.append(f"{record.levelname}: {record.getMessage()}"[:400])
+
+    junta = _Junta()
+    ylog = logging.getLogger("yfinance")
+    ylog.addHandler(junta)
+    pruebas = []
+    try:
+        for t in ("AAPL", "AVAX-USD", "GGAL.BA"):
+            antes, junta.lineas = time.time(), []
+            fila = {"ticker": t}
+            try:
+                df = yahoo._historia(t, "1mo", "1d", False, 10.0)
+                fila["filas"] = 0 if df is None else len(df)
+                if fila["filas"]:
+                    fila["ultima"] = str(df.index[-1])[:10]
+            except Exception as ex:
+                fila["error"] = repr(ex)[:500]
+            fila["seg"] = round(time.time() - antes, 1)
+            fila["yfinance_dijo"] = junta.lineas[:5]
+            pruebas.append(fila)
+    finally:
+        ylog.removeHandler(junta)
+    return {"yfinance": yf.__version__, "pandas": pd.__version__,
+            "cache": os.environ.get("YF_TZ_CACHE_LOCATION") or "/tmp/yf-cache",
+            "pruebas": pruebas}
+
+
+# ─── Historical prices (gráfico de 30 días: AssetMiniChart) ───────────────────────
 # Cache simple in-memory keyed por (symbol, period). yfinance fetchea las
 # series históricas — para periods chicos (1mo) es rápido. TTL 1h porque
 # las velas diarias no cambian dentro del día.
@@ -11943,6 +13546,7 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_ef
             hist = yf.Ticker(f"{sym}-USD").history(period=yf_period, interval=interval, auto_adjust=False)
         return hist
 
+    from estructura import precio_redondo as _precio_redondo
     points = []
     yahoo_no_respondio = False
     try:
@@ -11954,7 +13558,9 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_ef
                     continue
                 points.append({
                     "date": idx.strftime("%Y-%m-%d"),
-                    "close": round(float(close), 4),
+                    # Abajo de 1, cifras significativas: con 4 decimales fijos
+                    # PEPE o SHIB (US$ 0,00001) dibujaban una línea chata en 0.
+                    "close": _precio_redondo(float(close)),
                 })
     except _yahoo.YahooNoRespondio:
         yahoo_no_respondio = True
@@ -11974,7 +13580,7 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_ef
         _ratio = CEDEAR_USD_RATIOS.get(cedear_base) or 1
         if _ccl and _ccl > 0:
             for pt in points:
-                pt["close"] = round(pt["close"] * _ccl / _ratio, 4)
+                pt["close"] = _precio_redondo(pt["close"] * _ccl / _ratio)
         else:
             points = []
 
@@ -12187,6 +13793,13 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
     # Auto-fill entry_date a hoy (ARGENTINO) si no viene del cliente. Con UTC,
     # una posición dada de alta a las 22:00 nacía fechada mañana.
     entry_date = p.entry_date or _iso_today()
+    # ⚠️ Sin fecha, `entry_date` dice cuándo se CARGÓ, no cuándo se compró: el
+    # formulario de bienvenida (PositionStep, «la posición que tenés») no manda
+    # fecha. Queda anotado en la receta de la fila (`sin_fecha_de_compra`) para que
+    # «qué se movió hoy» (`_lote_comprado_hoy`) no lo cuente como comprado hoy: con
+    # el promedio de hace años, el mapa decía «Hoy tu cartera +116 %» (auditoría
+    # 31/10, A1).
+    sin_fecha_de_compra = not p.entry_date
     # La pata de la cuenta que corresponde a la moneda: una compra en dólares
     # "en Cocos" vive en 'Cocos · USD', que es donde están sus dólares. De acá
     # para abajo todo (la fila, la caja, el autodepósito, el borrado) usa ESTE
@@ -12263,6 +13876,7 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
                 "UPDATE positions SET undo_meta_json=? WHERE id=? AND user_id=?",
                 (_json_pos.dumps({"src": "manual_position", "cost": cost,
                                   "autodep": _adm or None, "entry_date": entry_date,
+                                  **({"sin_fecha_de_compra": True} if sin_fecha_de_compra else {}),
                                   # El broker de la fila es MUTABLE (se puede cambiar
                                   # desde Cartera); guardamos el de origen para que el
                                   # borrado detecte el cambio en vez de devolver la plata
@@ -12651,6 +14265,17 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
         # Sólo si CAMBIA: editar el precio de un lote no depende de esto.
         if _actual and p.broker != _actual["broker"]:
             _exigir_broker_existente(conn, uid, p.broker)
+        # Un lote en pesos no se lleva (ni se pasa) a una cuenta sin caja en pesos:
+        # después la venta manda su moneda y no hay dónde cobrar (auditoría 29/10).
+        # Sólo si CAMBIA el broker o la moneda: un lote viejo así se puede seguir
+        # editando, y pasarlo a dólares es justamente cómo se corrige.
+        _sel = conn.execute("SELECT currency FROM positions WHERE id=? AND user_id=?",
+                            (pid, uid)).fetchone() if _actual else None
+        _moneda = p.currency or (_sel["currency"] if _sel else None)
+        if (_actual and (_moneda or "").upper() == "ARS"
+                and (p.broker != _actual["broker"]
+                     or (p.currency or "").upper() != (_sel["currency"] or "").upper())):
+            _pata_de_la_moneda(conn, uid, p.broker, "ARS")   # 400 si no tiene caja en pesos
         if (p.tc_compra is None and not p.is_cash
                 and (p.currency or "").upper() == "ARS" and p.entry_date):
             # Mismo relleno que el alta: si el lote es en pesos y quedó sin TC, se
@@ -15018,14 +16643,9 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                     broker_row = conn.execute(
                         "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker_name)
                     ).fetchone()
-                # Una moneda que la cuenta no tiene (pesos en IBKR) no se acepta: antes
-                # pasaba y un depósito de $100.000 quedaba anotado como US$ 100.000.
-                if data.currency:
-                    _pedida = "ARS" if data.currency.upper() == "ARS" else "USD"
-                    _caja = "ARS" if broker_row["currency"] == "ARS" else "USD"
-                    if _pedida != _caja:
-                        raise HTTPException(400, f"{data.broker_name} no tiene caja en "
-                                                 f"{'pesos' if _pedida == 'ARS' else 'dólares'}.")
+                # Una moneda que la cuenta no tiene (pesos en IBKR) la rechaza
+                # `_pata_de_la_moneda`, para esta puerta y para la compra y la venta.
+                # Antes pasaba y un depósito de $100.000 quedaba anotado como US$ 100.000.
 
                 currency = broker_row['currency']   # 'USDT' or 'ARS'
                 sign = 1 if data.direction == 'deposit' else -1
@@ -15416,6 +17036,20 @@ def _registrar_cobro_bono(conn, uid: int, data: "BondCashflowIn") -> dict:
         cash_broker = data.cash_broker
         cash_row = conn.execute(
             "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, cash_broker)).fetchone()
+    elif data.currency and not data.cash_broker:
+        # Sin cuenta elegida, la moneda decide la pata, como en la compra y la venta:
+        # dólares "en IOL" entran a 'IOL · USD'; pesos en IBKR, 400.
+        cash_broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
+        if cash_broker != data.broker:
+            cash_row = conn.execute(
+                "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, cash_broker)).fetchone()
+    # La moneda, si viene, tiene que ser la de la caja donde entra: el monto se
+    # acredita tal cual. Antes sólo rotulaba la fila: un cupón de $50.000 en IBKR
+    # entraba como US$ 50.000 de ganancia, y uno de US$ 44 en IOL sumaba $44 a la
+    # caja de pesos (auditoría 28/10). La pantalla no la manda (acredita en la
+    # moneda de la cuenta que elige); sí la API y la bandeja.
+    if data.currency:
+        _exigir_caja_en(cash_broker, cash_row["currency"], data.currency)
 
     op_type = 'Cupón' if data.flow_type == 'coupon' else 'Amortización'
     commissions = data.commissions or 0
@@ -16162,8 +17796,10 @@ def _pata_de_la_moneda(conn, uid: int, broker: str, currency: Optional[str],
 
       • broker ARS  + moneda USD → el sub-broker '· USD' (se crea si no existe).
       • sub-broker '· USD' de un padre ARS + moneda ARS → el padre.
-      • cualquier otro caso (sin moneda, misma moneda, broker del exterior,
-        broker desconocido) → el mismo `broker`, sin tocar nada.
+      • broker en dólares sin padre en pesos (IBKR) + moneda ARS → 400 "no tiene
+        caja en pesos" (sólo al escribir; con `crear=False` devuelve el broker).
+      • cualquier otro caso (sin moneda, misma moneda, broker desconocido) → el
+        mismo `broker`, sin tocar nada.
 
     Sin esto, una compra en dólares anotada a "Cocos" descontaba los dólares de
     la caja de PESOS, y el autodepósito del faltante quedaba asentado como pesos
@@ -16199,7 +17835,27 @@ def _pata_de_la_moneda(conn, uid: int, broker: str, currency: Optional[str],
         ).fetchone()
         if padre and padre["currency"] == "ARS":
             return padre["name"]
+    # Pesos en una cuenta que sólo tiene caja en dólares (IBKR, o un '· USD' sin
+    # padre en pesos): no hay pata a donde mandarlos. Para escribir se rechaza;
+    # devolver el mismo broker hacía que la caja en DÓLARES sumara o restara los
+    # pesos tal cual y que el faltante se anotara como aporte en dólares (medido
+    # 28/10: una compra de $50.000 en IBKR dejó un aporte de US$ 49.700). La
+    # lectura (`_pata_existente`) no rechaza: deshacer algo viejo no se bloquea.
+    if crear:
+        _exigir_caja_en(broker, row["currency"], currency)
     return broker
+
+
+def _exigir_caja_en(broker: str, moneda_de_la_caja: Optional[str], currency: str) -> None:
+    """400 si la caja de `broker` no es de la moneda `currency`. Cada caja tiene UNA
+    moneda y la plata se suma tal cual, sin convertir: pesos en una caja en dólares
+    se cuentan como dólares. Lo usan `_pata_de_la_moneda` (compra, venta,
+    depósito/retiro) y el cobro de un bono, que elige la cuenta por su lado."""
+    pedida = "ARS" if (currency or "").strip().upper() == "ARS" else "USD"
+    caja = "ARS" if (moneda_de_la_caja or "").upper() == "ARS" else "USD"
+    if pedida != caja:
+        raise HTTPException(400, f"{broker} no tiene caja en "
+                                 f"{'pesos' if pedida == 'ARS' else 'dólares'}.")
 
 
 def _pata_existente(conn, uid: int, broker: str, currency: Optional[str]) -> str:
@@ -16511,6 +18167,23 @@ class SellIn(BaseModel):
         return v
 
 
+@app.get("/api/positions/regla-de-venta")
+def regla_de_venta(uid: int = Depends(get_effective_user)):
+    """Con qué regla anota el motor el resultado en dólares de una venta en pesos
+    de ESTA cuenta, para que la vista previa del formulario «Vender» diga lo
+    mismo que después queda anotado:
+
+    · `cada_punta_a_su_dolar` (cuentas v2): lo cobrado al dólar de la venta menos
+      el costo al dólar de compra del lote (resultado_dual.resultado_en_dolares).
+    · si no (v1): la ganancia en pesos ÷ el dólar de la venta.
+
+    Sólo lee (`fx.fx_version_lectura`): no persiste la versión de una cuenta virgen,
+    que la venta resuelve y guarda cuando ocurre."""
+    with db_abierta() as conn:
+        v2 = _resultado_dual.es_cuenta_v2(conn, uid)
+    return {"cada_punta_a_su_dolar": v2}
+
+
 @app.post("/api/positions/sell")
 @reintentar_si_trabada
 def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
@@ -16529,7 +18202,22 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 # @reintentar_si_trabada vuelve a llamar con el MISMO pedido, y si la
                 # primera vuelta se deshizo después de crear la pata, el reintento
                 # arrancaba con un broker que ya no existía.
-                broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
+                try:
+                    broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
+                except HTTPException as _e:
+                    # Un lote anotado en pesos en una cuenta en dólares (entró antes
+                    # del 29/10): la pantalla vende en su moneda y no hay caja donde
+                    # cobrar. Que diga cómo destrabarlo.
+                    if _e.status_code == 400 and conn.execute(
+                            "SELECT 1 FROM positions WHERE user_id=? AND broker=? AND asset=? "
+                            "AND is_cash=0 AND UPPER(COALESCE(currency,''))='ARS' LIMIT 1",
+                            (uid, data.broker, data.asset)).fetchone():
+                        raise HTTPException(400, (
+                            f"Este {data.asset} está anotado en pesos, pero {data.broker} "
+                            f"sólo tiene caja en dólares. Editá el lote: poné su moneda y "
+                            f"su precio en dólares (o movelo a tu broker en pesos) y "
+                            f"después vendé."))
+                    raise
                 # Obtener moneda del broker
                 br = conn.execute(
                     "SELECT currency FROM brokers WHERE name=? AND user_id=?", (broker, uid)
@@ -16586,7 +18274,6 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 remaining = data.quantity
                 ops_created = []
                 total_pnl_usd = 0.0          # "true USD" P&L → goes to monthly_entries global
-                total_pnl_ars_native = 0.0   # native ARS P&L → used for monthly_entries broker (ARS only)
                 total_proceeds_native = 0.0  # Phase 2 — ingreso en cash (moneda nativa del broker)
                 # TC con el que EFECTIVAMENTE se dividió el P&L de esta venta. No es
                 # `data.tc_venta`: el campo del formulario es opcional y, cuando el
@@ -16658,6 +18345,10 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                     # `invested` guardado.
                     base_invested = ((_fx.costo_del_lote(p["invested"], buy_price, pos_qty) or 0)
                                      + pos_buy_commissions)
+                    # El costo de este pedazo EN LA MONEDA EN QUE SE COMPRÓ, antes de
+                    # llevarlo a la de la venta: es lo que necesita el resultado en las
+                    # dos monedas (resultado_dual), que pone cada punta a su dólar.
+                    costo_en_su_moneda = base_invested * ratio
 
                     # CROSS-CURRENCY: si el lote se compró en otra moneda que la de la
                     # venta, convertimos el cost basis a la moneda de la venta (igual
@@ -16715,13 +18406,39 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                         pnl_ars_chunk = data.exit_price * take - (entry_invested or 0) - chunk_commission_native
                         pnl_usd = pnl_ars_chunk / tc_venta
                         invested_usd = (entry_invested or 0) / tc_venta if entry_invested else 0
-                        total_pnl_ars_native += pnl_ars_chunk
                     else:
                         # Para USD broker: si hay invested registrado, usar el cost basis prorrateado
                         # (incluye buy commissions). Caso contrario fallback a buy_price × qty.
                         cost = entry_invested if entry_invested is not None else ((buy_price or 0) * take)
                         pnl_usd = (data.exit_price * take) - cost - chunk_commission_native
                         invested_usd = cost
+
+                    # El resultado en pesos y en dólares, cada punta a su dólar. La
+                    # cuenta vive en resultado_dual (la misma del importador, el
+                    # rebuild y el histórico). El dólar de compra: el del LOTE (el
+                    # que usa Cartera); el de la venta: el que escribió el usuario,
+                    # si lo escribió; si no, el de la fecha.
+                    #
+                    # SÓLO EN LAS CUENTAS v2 (el dólar por fecha). En las v1 los flujos
+                    # siguen al dólar del import y mover sólo esta pata descuadra el
+                    # rendimiento (fx.py, "Versionado por usuario"); y escribir las
+                    # columnas junto a un `pnl_usd` de la regla vieja dejaba la fila
+                    # con dos reglas y fuera de la cola de la corrección al migrarla.
+                    resultado = None
+                    if _hist_fx:
+                        resultado = _resultado_dual.resultado_en_dos_monedas(
+                            conn, costo=costo_en_su_moneda, moneda_costo=lot_currency,
+                            fecha_compra=(p["entry_date"] if "entry_date" in p.keys() else None),
+                            cobrado=data.exit_price * take - chunk_commission_native,
+                            moneda_venta=sell_ccy, fecha_venta=op_date, riel=_fx.RIEL_MEP,
+                            tc_compra=(p["tc_compra"] if "tc_compra" in p.keys() else None),
+                            tc_venta=(data.tc_venta if sell_ccy == "ARS" else None))
+                    # EL RESULTADO EN DÓLARES: lo cobrado en dólares menos lo que costó
+                    # en dólares (ver `resultado_dual.resultado_en_dolares`). Sin dólar de
+                    # compra, queda la regla de siempre.
+                    _en_dolares = _resultado_dual.resultado_en_dolares(resultado)
+                    if _en_dolares:
+                        pnl_usd, invested_usd = _en_dolares
 
                     total_pnl_usd += pnl_usd
                     # Proceeds en cash = sale_amount − commission (lo que efectivamente entra al cash)
@@ -16758,6 +18475,8 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                          sell_ccy, fx_stamp),
                     )
                     ops_created.append(cur.lastrowid)
+                    if resultado:
+                        _resultado_dual.guardar(conn, uid, cur.lastrowid, resultado)
 
                     # Reversibilidad: la venta CONSUME el lote (lo borra o lo achica), y esa
                     # información no vive en ningún otro lado — sin esta foto, borrar la venta
@@ -16834,19 +18553,13 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 op_year = int(op_date[:4])
                 op_month = int(op_date[5:7])
 
-                if currency == "ARS":
-                    # Broker entry: store in USD-equivalent (same convention as sync_unrealized).
-                    # Display in ARS tab = stored_value * tcBlue (current rate, approx).
-                    # Mismo TC que se usó para dividir el P&L de cada chunk. Acá
-                    # decía `data.tc_venta or 1`: con el campo vacío, un P&L de
-                    # 1.400.000 ARS entraba a monthly_entries como US$1.400.000, y
-                    # de ahí a `capital_final` y al P&L realizado por broker de
-                    # Reportes y del Dashboard, propagado hacia adelante por
-                    # `_repair_monthly_chain`.
-                    tc_v = tc_venta_usado or data.tc_venta or 1
-                    pnl_for_broker = total_pnl_ars_native / tc_v
-                else:
-                    pnl_for_broker = total_pnl_usd
+                # El renglón del broker lleva lo MISMO que el global: la suma de los
+                # `pnl_usd` de las filas, que es lo que deja `_recalc_pnl_realized_from_ops`.
+                # Acá había una rama de pesos que volvía a dividir la ganancia en pesos
+                # por el TC de la venta; con la regla vieja daba el mismo número, con la
+                # de cada punta a su dólar (resultado_dual) ya no, y el broker y el
+                # global habrían quedado distintos hasta el próximo recálculo.
+                pnl_for_broker = total_pnl_usd
 
                 _update_monthly_pnl_realized(conn, uid, broker, op_year, op_month, pnl_for_broker)
                 _update_monthly_pnl_realized(conn, uid, 'global',    op_year, op_month, total_pnl_usd)
@@ -17090,9 +18803,13 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
         sp, sc = _snap(prev_mes), _snap(mes)
         ops = conn.execute(
             "SELECT id, date, broker, asset, op_type, entry_price, exit_price, quantity, "
-            "pnl_usd, pnl_pct, commissions, entry_date FROM operations "
+            "pnl_usd, pnl_pct, commissions, entry_date, currency, pnl_pct_ars, pnl_pct_usd "
+            "FROM operations "
             "WHERE user_id=? AND date LIKE ? ORDER BY ABS(COALESCE(pnl_usd,0)) DESC",
             (uid, mes + "%")).fetchall()
+        # La moneda de cada venta como la resuelve resultado_dual: la de la fila y, si falta
+        # (las ventas anteriores al 28/7), la del broker. Se arma acá, con la conexión abierta.
+        moneda_por_venta = {o["id"]: _resultado_dual.moneda_de_la_venta(conn, uid, dict(o)) for o in ops}
     finally:
         conn.close()
 
@@ -17118,14 +18835,19 @@ def insights_gap_month(mes: str, uid: int = Depends(get_effective_user)):
     detalle = []
     for o in ops:
         ep, xp = o["entry_price"] or 0, o["exit_price"] or 0
-        pct_guardado = o["pnl_pct"]
+        # Los precios dan el % en la MONEDA DE LA VENTA. Desde la regla de cada punta
+        # a su dólar (resultado_dual) `pnl_pct` de una venta en pesos es el % en
+        # dólares, así que se compara contra el de pesos que la fila trae al lado.
+        _pct_moneda = (o["pnl_pct_ars"] if moneda_por_venta.get(o["id"]) == "ARS"
+                       else o["pnl_pct_usd"])
+        pct_guardado = _pct_moneda if _pct_moneda is not None else o["pnl_pct"]
         # El % que implican los precios. Libre de moneda: es una ratio.
         pct_precios = ((xp / ep - 1) * 100) if ep > 0 and xp else None
         desvio = (round(pct_guardado - pct_precios, 2)
                   if (pct_guardado is not None and pct_precios is not None) else None)
         # La identidad exacta: pnl_pct ≡ 100·pnl_usd/invertido ⇒ invertido = 100·pnl/pct
-        invertido = (round(100 * o["pnl_usd"] / pct_guardado, 2)
-                     if (pct_guardado not in (None, 0) and o["pnl_usd"] is not None) else None)
+        invertido = (round(100 * o["pnl_usd"] / o["pnl_pct"], 2)
+                     if (o["pnl_pct"] not in (None, 0) and o["pnl_usd"] is not None) else None)
         detalle.append({
             "id": o["id"], "fecha": o["date"], "broker": o["broker"], "activo": o["asset"],
             "tipo": o["op_type"], "cantidad": o["quantity"],
@@ -17440,6 +19162,20 @@ def insights_mtm_audit(uid: int = Depends(get_effective_user)):
     }
 
 
+def _realizado_en_pesos_por_mes_de(conn, uid: int):
+    """`{(broker, 'AAAA-MM'): (pesos, usd_cubierto, hay_valuado)}` de todas las operaciones del
+    usuario con resultado (ventas y cobros), con la cuenta única de `resultado_dual`. Lo leen
+    /api/monthly y el CSV mensual: el mes tiene UNA suma en pesos, no una por pantalla."""
+    ops = [dict(o) for o in conn.execute(
+        """SELECT broker, date, op_type, currency, fx_to_usd, pnl_usd, cobrado_ars, costo_ars,
+                  costo_moneda, pnl_sin_dato
+             FROM operations
+            WHERE user_id=? AND pnl_usd IS NOT NULL
+              AND op_type IN ('Venta','Cupón','Amortización','Interés PF')""", (uid,)
+    ).fetchall()]
+    return _resultado_dual.realizado_en_pesos_por_mes(ops)
+
+
 @app.get("/api/monthly")
 def get_monthly(uid: int = Depends(get_effective_user)):
     conn = get_db()
@@ -17466,9 +19202,16 @@ def get_monthly(uid: int = Depends(get_effective_user)):
         # a pesos con el dólar de ese día, como cada fila de Movimientos. Ver
         # `_aportes_en_dolares_con_dia`.
         con_dia = _aportes_en_dolares_con_dia(conn, uid, tc_blue)
+        # El realizado de cada mes EN PESOS, con la cuenta única de resultado_dual (la misma
+        # de Operaciones y de Reportes). Se pide en operaciones, no en monthly_entries: lo que
+        # no tiene pesos (dividendos en dólares, lo cargado a mano en /mensual) lo resuelve la
+        # pantalla con `pnl_realized − realized_ars_cubre_usd` al dólar del mes.
+        _pesos_mes = _realizado_en_pesos_por_mes_de(conn, uid)
         out = []
         for r in rows:
             d = dict(r)
+            _p = _pesos_mes.get((d["broker"], f"{int(d['year']):04d}-{int(d['month']):02d}"))
+            d["realized_ars"], d["realized_ars_cubre_usd"], d["realized_ars_valuado"] = _p or (0.0, 0.0, False)
             if d["broker"] != "global":
                 k = (d["broker"], f"{int(d['year']):04d}", f"{int(d['month']):02d}")
                 v = importados.get(k, (0.0, 0.0, 0.0, 0.0))
@@ -17990,6 +19733,10 @@ def get_operations(uid: int = Depends(get_effective_user)):
         # bono, y la bandeja la tiene que contar como tal (si no, ofrece como
         # pendiente un pago que ya entró). Ver cobros_bonos.ventas_que_son_amortizacion.
         d['amortizacion_importada'] = d['id'] in ventas_amort
+        # El resultado en pesos, de la cuenta única (resultado_dual.resultado_en_pesos): la
+        # misma que usan Reportes y el Resumen mensual. `valuado` = una venta en dólares, cuyos
+        # pesos son los dólares a cada dólar de su fecha. None = no hay forma honesta de saberlo.
+        d['resultado_ars'], d['resultado_ars_tipo'] = _resultado_dual.resultado_en_pesos(d)
         out.append(d)
     return out
 
@@ -18404,6 +20151,12 @@ def _build_movements(uid: int):
                 # US$24.718 de comisiones: más fees que plata puesta.
                 "fees_usd": fees / gross_fx,
                 "pnl_usd": pnl,
+                # El resultado en pesos, exacto (resultado_dual): la vista en pesos lo
+                # usa en vez de `pnl_usd` × dólar, que desde la regla de cada punta a
+                # su dólar ya no da la ganancia en pesos (useHistoricalMoney.pnlAt).
+                "cobrado_ars": d.get("cobrado_ars"),
+                "costo_ars": d.get("costo_ars"),
+                "resultado_ars": _resultado_dual.resultado_en_pesos(d)[0],
                 "notes": d.get("notes") or "",
                 "source": "manual",
                 "ref_id": d["id"],
@@ -20714,21 +22467,45 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
         # 125.000+ARS es consistente): este CSV no tiene columna de moneda, así
         # que el único valor correcto bajo ese encabezado es el USD real.
         rows = [dict(r) for r in conn.execute(
-            f"""SELECT date AS fecha_cierre, entry_date, asset, broker,
+            f"""SELECT id, date AS fecha_cierre, entry_date, asset, broker,
                       op_type AS tipo, quantity, entry_price, exit_price,
                       {realized_pnl.realized_usd_sql()} AS pnl_usd,
-                      pnl_pct, commissions
+                      pnl_pct, commissions, currency, fx_to_usd, cobrado_ars, costo_ars,
+                      pnl_pct_ars, pnl_pct_usd, pnl_sin_dato
                FROM operations
                WHERE user_id = ?
                ORDER BY {_ops_por_fecha(desc=True)}""",
             (uid,),
         ).fetchall()]
+        # Los precios del archivo están en la moneda de la VENTA y `P&L USD` en dólares: el
+        # % que va al lado tiene que decir en qué moneda es. Desde que una venta guarda su
+        # resultado en pesos y en dólares (resultado_dual), `pnl_pct` de una venta de cuenta
+        # v2 es el % en dólares, así que se sacan LOS DOS con su columna y "P&L %" queda como
+        # siempre: el % en la moneda de la venta (el que cierra con los precios).
+        for r in rows:
+            _op = {**r, "op_type": r.get("tipo")}
+            _mon = (_resultado_dual.moneda_de_la_venta(conn, uid, _op)
+                    if _resultado_dual.es_venta_de_un_lote(_op) else None)
+            _pa, _pu = _resultado_dual.pcts_de_la_venta(r, _mon) if _mon else (None, None)
+            r["moneda"] = _mon
+            r["pct_ars"], r["pct_usd"] = _pa, _pu
+            # La cuenta única del resultado en pesos (la de Operaciones, Reportes y el Resumen
+            # mensual); sólo para ventas de un lote: un cobro no lleva esta columna.
+            _res_ars = (_resultado_dual.resultado_en_pesos(_op)
+                        if _resultado_dual.es_venta_de_un_lote(_op) else (None, None))
+            r["resultado_ars"] = _res_ars[0]
+            # «exacto» = pesos de un broker en pesos; «valuado» = una punta en dólares llevada al
+            # dólar de su fecha. Sin esto la planilla del contador toma por cobrado lo que no se cobró.
+            r["tipo_resultado_ars"] = _res_ars[1] if _res_ars[0] is not None else None
+            if _mon:
+                r["pnl_pct"] = _pa if _mon == "ARS" else _pu
         # Mismo techo que la app: arriba de 1000 % el cociente dejó de ser un
         # rendimiento y la celda va vacía. `pnl_usd` sale igual — falta el
         # costo, no el dato. Sin esto la planilla que el usuario le manda a su
         # contador llevaba un "+188.566 %". Ver realized_pnl.pct_creible.
         for r in rows:
-            r["pnl_pct"] = realized_pnl.pct_creible(r.get("pnl_pct"))
+            for k in ("pnl_pct", "pct_ars", "pct_usd"):
+                r[k] = realized_pnl.pct_creible(r.get(k))
         # Conversiones de moneda. La COMPRA de USD no cierra nada (P&L 0) y su
         # fila guarda los PESOS en `quantity` con el TC como "precio entrada":
         # bajo "Cantidad" el contador leía 15.400 unidades a $1.539,65. Sale de
@@ -20765,6 +22542,12 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
         ("pnl_usd",       "P&L USD"),
         ("pnl_pct",       "P&L %"),
         ("commissions",   "Comisiones"),
+        ("moneda",        "Moneda de la venta"),
+        ("resultado_ars", "Resultado en pesos"),
+        ("pct_ars",       "% en pesos"),
+        ("pct_usd",       "% en USD"),
+        # Va AL FINAL: las hojas ya armadas leen por posición.
+        ("tipo_resultado_ars", "Tipo de resultado en pesos (exacto o valuado al dólar de cada fecha)"),
     ]
     today = date.today().isoformat()
     return _csv_response(rows, headers, f"rendi_operaciones_{today}.csv")
@@ -21077,12 +22860,23 @@ def export_monthly_csv(request: Request, uid: int = Depends(get_effective_user))
                ORDER BY year, month, broker""",
             (uid,),
         ).fetchall()]
+        pesos_mes = _realizado_en_pesos_por_mes_de(conn, uid)
     finally:
         conn.close()
 
     # Formato 'período' YYYY-MM combinado para que el contador lo lea fácil
     for r in rows:
         r["periodo"] = f"{r['year']}-{r['month']:02d}"
+        # El realizado en pesos de las operaciones que tienen pesos (la cuenta de Operaciones,
+        # Reportes y el Resumen mensual). Vacío si el mes no tiene ninguna: lo que sólo está en
+        # dólares (dividendos en dólares, lo cargado a mano en /mensual) no se convierte acá.
+        # Una venta en dólares (o una compra en dólares vendida en pesos) también entra, VALUADA al
+        # dólar de cada fecha, no a pesos de un broker: la tercera columna lo dice ("sí") para que
+        # la hoja no tome ese número por pesos cobrados. Es el mismo aviso que muestra la pantalla
+        # («ventas o compras en dólares valuadas al dólar de cada fecha»), con su misma frase.
+        p = pesos_mes.get((r["broker"], r["periodo"]))
+        r["pnl_realized_ars"] = p[0] if p else None
+        r["pnl_realized_ars_valuado"] = ("sí" if p[2] else "no") if p else None
 
     headers = [
         ("periodo",          "Período"),
@@ -21092,6 +22886,10 @@ def export_monthly_csv(request: Request, uid: int = Depends(get_effective_user))
         ("deposits",         "Depósitos"),
         ("withdrawals",      "Retiros"),
         ("pnl_realized",     "P&L realizado"),
+        # Va AL FINAL y con la moneda en el nombre: las columnas de arriba son dólares y no se
+        # tocan (hojas de cálculo ya armadas leen por posición).
+        ("pnl_realized_ars", "P&L realizado en pesos (ventas en pesos — lo comprado o vendido en dólares, al dólar de cada fecha)"),
+        ("pnl_realized_ars_valuado", "El P&L en pesos incluye compras o ventas en dólares valuadas"),
     ]
     today = date.today().isoformat()
     return _csv_response(rows, headers, f"rendi_mensual_{today}.csv")
@@ -21512,6 +23310,10 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
             # de efectivo. Un P&L negativo lo DESCUENTA, que es lo correcto.
             _adjust_broker_cash(conn, uid, op.broker, pnl_cash_nativo)
         row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
+        # Una 'Venta' tipeada lleva LOS NÚMEROS QUE ESCRIBIÓ el usuario: no hay lote del que
+        # sacar un costo exacto, así que no se reconstruye y la corrección del histórico no
+        # la toca (resultado_dual.MANUAL).
+        _resultado_dual.al_cargar_a_mano(conn, uid, cur.lastrowid, dict(row))
         # Sync cache de pnl_realized en monthly_entries
         try:
             with _si_falla_se_deshace_solo_esto(conn, "recalc_create_operation"):
@@ -21569,6 +23371,10 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
     conn = get_db()
     try:
         currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
+        # La fila tal como estaba: el resultado en dos monedas se re-deriva de su
+        # costo guardado (escalado si cambió la cantidad). Ver resultado_dual.
+        _fila_antes = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?",
+                                   (oid, uid)).fetchone()
 
         for _intento in range(_INTENTOS_DE_RECLAMO):
             # Adentro del bucle: el `rollback()` de un reclamo perdido suelta el turno.
@@ -21709,6 +23515,10 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
         if not row:
             conn.close()
             raise HTTPException(404, "Not found")
+        # Si la edición movió algo del resultado (precio, cantidad, fecha, P&L…), la fila
+        # pasa a llevar los números del usuario y sale de la cola de la corrección; si no
+        # (un «guardar» sin tocar, o sólo la nota), queda como estaba.
+        _resultado_dual.al_editar(conn, uid, oid, dict(_fila_antes) if _fila_antes else None, dict(row))
         try:
             with _si_falla_se_deshace_solo_esto(conn, "recalc_update_operation"):
                 _recalc_pnl_realized_from_ops(conn, uid)
@@ -24127,17 +25937,7 @@ def _reset_admin_conteo(conn, uid: int) -> dict:
     Es la parte que faltaba en el botón viejo: saber, antes de tocar la base, si
     esta cuenta son 3.000 filas o un millón. De eso depende si conviene correrlo
     ahora o a la madrugada."""
-    batch_ids = [r["id"] for r in conn.execute(
-        "SELECT id FROM import_batches WHERE user_id=?", (uid,)).fetchall()]
-    _ph = ",".join("?" * len(batch_ids)) if batch_ids else ""
-
-    plan = []
-    if batch_ids:
-        for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
-            plan.append((t, f"batch_id IN ({_ph})", tuple(batch_ids)))
-        plan.append(("import_batches", "user_id=?", (uid,)))
-    for t in _reset_admin_tablas():
-        plan.append((t, "user_id=?", (uid,)))
+    plan = _reset_plan(conn, uid, _reset_admin_tablas())
     plan.append(("config", "user_id=?", (uid,)))
 
     filas, total, faltantes = [], 0, []
@@ -24778,7 +26578,13 @@ def admin_diagnose_sell_fx(limit_ops: int = 500000, uid: int = Depends(get_admin
         rows = conn.execute(
             "SELECT id, user_id, date, broker, asset, pnl_usd, pnl_pct, entry_price, "
             "       exit_price, quantity, commissions, entry_date "
-            f"FROM operations WHERE op_type='Venta' ORDER BY {_por_fecha()} LIMIT ?",
+            # Sólo las filas de la REGLA VIEJA: las escritas o corregidas con la de cada
+            # punta a su dólar (resultado_dual: costo y cobrado en dólares llenos) no
+            # cumplen `pnl_usd = pnl_ars / tc_venta`, que es la tesis de acá. NO se usa
+            # "columnas vacías" como marca: una venta corregida con un motivo
+            # (`pnl_sin_dato`) o de una cuenta v1 sigue en la regla vieja y tiene que verse.
+            "FROM operations WHERE op_type='Venta' "
+            f"  AND NOT (costo_usd IS NOT NULL AND cobrado_usd IS NOT NULL) ORDER BY {_por_fecha()} LIMIT ?",
             (max(1, int(limit_ops)),),
         ).fetchall()
 
@@ -27038,6 +28844,65 @@ def admin_repair_caja_1415(apply: bool = False, uid: int = Depends(get_admin_use
         return _repair_caja_1415(conn, bool(apply))
     finally:
         conn.close()
+
+
+def _aplicar_deltas_al_mes(conn, uid: int, deltas: dict) -> None:
+    """Mueve el P&L realizado de cada mes por la DIFERENCIA de las ventas corregidas
+    (`deltas`: {(broker, año, mes): diferencia en dólares}), en el renglón del broker y
+    en el global, y repara la cadena de capital de los brokers tocados.
+
+    NO se llama a `_recalc_pnl_realized_from_ops`: ese recálculo reescribe cada mes
+    entero desde las operaciones y borra el P&L realizado que el usuario cargó a mano
+    en /mensual (medido: 500 → 0 y el capital de los meses siguientes corrido).
+    Moviendo sólo la diferencia, lo que no es de las ventas corregidas queda intacto."""
+    tocados = []
+    for (broker, anio, mes), delta in sorted(deltas.items()):
+        if abs(delta) < 0.005:
+            continue
+        _update_monthly_pnl_realized(conn, uid, broker, anio, mes, delta)
+        _update_monthly_pnl_realized(conn, uid, "global", anio, mes, delta)
+        if broker not in tocados:
+            tocados.append(broker)
+    for b in tocados + (["global"] if tocados else []):
+        _repair_monthly_chain(conn, uid, b)
+
+
+@app.post("/api/admin/resultado-dos-monedas")
+def admin_resultado_dos_monedas(apply: bool = False, tanda: int = 10, dias: int = 60,
+                                user_id: Optional[int] = None, saltear: str = "",
+                                uid: int = Depends(get_admin_user)):
+    """La corrección del resultado de las ventas viejas, POR TANDAS: las próximas
+    `tanda` cuentas que usaron la app en los últimos `dias` días y tienen ventas
+    sin corregir (o sólo `user_id`). `apply=false` = muestra cuánto cambia cada
+    cuenta sin escribir nada. `saltear` = user_id separados por coma que ya fallaron
+    (una cuenta que falla sigue pendiente y sería siempre la primera de la cola).
+
+    Por cada venta: el resultado en pesos y en dólares (columnas nuevas) y, en
+    cuentas v2, `pnl_usd`/`pnl_pct` a la regla de cada punta a su dólar — por la
+    MISMA función que una venta nueva (`resultado_dual`), y sólo si la fila cierra
+    (ver su docstring). Los meses se mueven por la diferencia
+    (`_aplicar_deltas_al_mes`). Con `apply`, la historia reconstruida de las cuentas
+    corregidas se rehace en la fila de reconstrucción (un solo hilo): las fotos
+    guardadas del P&L por fecha traían el realizado viejo. Idempotente."""
+    tanda = max(1, min(int(tanda), 50))
+    try:
+        salteadas = [int(x) for x in saltear.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(400, "saltear: user_id separados por coma")
+    conn = get_db()
+    try:
+        out = _resultado_dual.corregir_tanda(
+            conn, aplicar_a_los_meses=_aplicar_deltas_al_mes, apply=bool(apply),
+            tanda=tanda, dias_activo=max(1, int(dias)), user_id=user_id, saltear=salteadas)
+    finally:
+        conn.close()
+    if apply:
+        corregidas = [c["user_id"] for c in out["cuentas"] if c["ventas"]]
+        for u in corregidas:
+            _ai_cache_invalidate(u)
+        if corregidas:
+            _reconstruir_en_fila(corregidas)
+    return out
 
 
 @app.post("/api/admin/repair-interes-pf")
@@ -30816,6 +32681,25 @@ def _get_anthropic_client():
 
 # ─── Chat conversacional con la IA ───────────────────────────────────────────
 
+# Cómo cuenta Mervall-E cómo viene un activo (Nico, 30/10: «que hable como apertura de
+# mercado, cierre de mercado, fuerza, tendencia, que use palabras normales»). Va en
+# los dos pedidos del chat: Pro lo pide con get_technical_reading; Free y Plus lo
+# reciben con el botón de la ficha (analisis_del_boton). Sin nombrar la
+# herramienta: el pedido de Free no nombra las que su plan no tiene (M20). La revisión que frena la
+# jerga, las certezas y los consejos: ai/lectura_tecnica_chat.problemas.
+_COMO_VIENE_UN_ACTIVO = """
+CÓMO VIENE UN ACTIVO (el precio y su tendencia)
+Cuando preguntan cómo viene el precio de UN activo, si está en tendencia o si tiene fuerza, contestás con la lectura técnica de su ficha: la trae la herramienta de la lectura técnica (si la tenés, llamala ANTES de escribir) o ya viene en analisis_del_boton. Son hechos ya escritos en palabras y con los mismos números que ve la persona en la ficha.
+- Hablá como en la radio a la apertura o al cierre del mercado: subió, bajó, cerró en, «la tendencia de fondo es alcista» o «bajista», «la caída tiene fuerza aún, pero esa fuerza viene bajando», la fuerza del precio, el precio más alto del año, su promedio de los últimos X meses.
+- Nunca digas RSI, ADX, Squeeze, Bollinger, MACD, Fibonacci, Elliott, media móvil, soporte, resistencia, sobrecompra, sobreventa, momentum, impulso, rebote, piso, techo, zona, «firme» ni «se está cansando»: decí lo que significan («volvió a subir», «el precio más bajo desde junio»). Tampoco en las tarjetas. Si la persona usó una de esas palabras, podés nombrarla una vez, explicada en la misma oración.
+- Los números se copian como vienen: no calcules ni redondees otra vez. El último dato es del día de «ultimo_cierre»: nombralo por su fecha.
+- Lo que viene es siempre una posibilidad («podría ser una señal de que…»), nunca «va a subir», «se termina» ni «seguro»: estos datos describen lo que pasó, no anticipan.
+- Nunca digas que compre, venda o espere, ni que es buen momento.
+- Si viene «lo_que_se_mira», cerrá con eso, neutro: «Lo que se mira: si cierra por encima de 51 dólares (el último pico, del 3 de septiembre), podría ser una señal de que la caída está perdiendo fuerza».
+- Si viene available=false, decilo en una oración (un bono no tiene gráfico de precios) y ofrecé otra cosa. Nunca inventes una lectura.
+- En las tarjetas, los rótulos también en palabras comunes («Tendencia de fondo», «Fuerza del precio»).
+"""
+
 _AI_CHAT_SYSTEM = """Sos Mervall-E AI, el asistente de inversiones de Rendi (una app argentina de seguimiento de portfolios personales), con rol de coach. Si te preguntan quién sos o cómo te llamás, sos Mervall-E AI. Tu usuario es un inversor retail argentino que opera cripto, acciones US, CEDEARs, ETFs e índices, en brokers locales (Cocos, IOL, Bull, Balanz, Lemon) y exchanges (Binance).
 
 ROL
@@ -30846,6 +32730,9 @@ Para EQUITIES (acciones US, CEDEARs listados en US — yfinance):
 - get_analyst_ratings: recomendación consenso + price target.
 - get_company_profile: a qué se dedica la empresa.
 
+Para CÓMO VIENE EL PRECIO de cualquier activo (acción, CEDEAR, acción argentina o cripto):
+- get_technical_reading: la lectura técnica de su ficha, en palabras — tendencia de fondo, fuerza, último movimiento, lo que se mira (ver CÓMO VIENE UN ACTIVO).
+
 Para BONOS ARGENTINOS soberanos (AL/GD/AE/AL41 + TX/T2X/TZX/T2X CER):
 - get_ar_bond_metadata: maturity, ley aplicable (local/NY), step-up cupones, indexado CER, descripción contextual. Cubre TODOS los soberanos AR canje 2020 + los CER principales. NO cubre ONs corporativas ni provinciales.
 
@@ -30871,7 +32758,7 @@ ANTI-SPAM DE TOOLS:
 - Antes de llamar una tool, preguntate: "¿esta respuesta sería significativamente peor SIN este dato?". Si no, no la llames.
 - Si una tool devuelve `available: false`, NO inventes la data — decile al user "no tengo acceso a fundamentales de cripto/bonos en esta sesión" y seguí adelante.
 
-""" + VOZ + """
+""" + VOZ + _COMO_VIENE_UN_ACTIVO + """
 EXTENSIÓN Y FORMATO
 CORTO — PERO NUNCA CORTADO. Es la regla que más define cómo se siente Rendi, y tiene dos mitades que NO se contradicen.
 
@@ -31132,7 +33019,7 @@ Además el JSON acepta "blocks" (máx 2): bloques VISUALES pre-armados que el fr
 · {"type":"alloc","items":[{"l":"Nvidia","pct":28},{"l":"Efectivo","pct":45}]} — composición de la cartera (pct reales del snapshot, máx 6 segmentos, que sumen ~100). Labels con el NOMBRE corto que usás al hablar ("Bitcoin", "YPF", "Galicia", "S&P 500"), no el ticker: "YPFD" o "SPY" no le dicen nada a quien no opera.
 · {"type":"scenario","if":"Nvidia cae 15%","then":"Tu cartera cae ~4%","tone":"neg"} — hipotéticos si→entonces (para "¿qué pasa si...?"). El "then" dice cuánto se mueve TODA la cartera, en % o en plata — nunca "pp" (puntos porcentuales): medido, salía "−19 pp en tu cartera total" y nadie fuera de finanzas lo entiende.
 · {"type":"table","cols":["Activo","Peso","Mes"],"rows":[["NVDA","28%","+9,1%"]]} — rankings/listas. Máx 4 columnas × 5 filas; valores numéricos con signo (+/−) para que se coloreen.
-· {"type":"actions","items":[{"label":"Crear alerta Nvidia −10%","to":"/alertas?new=NVDA&down=10"},{"label":"Ver atribución","to":"/analisis"}]} — botones que llevan al usuario a Rendi. SOLO estas rutas: /alertas (acepta ?new=TICKER&down=N o &up=N), /analisis, /posiciones, /operaciones, /fundamentals, /novedades, /activo/TICKER, /imports. Máx 3. Usalo cuando la respuesta invita a una acción concreta en la app. EL LINK CUMPLE LO QUE PROMETE EL LABEL: "Crear alerta X −10%" lleva &down=10 (sin eso el formulario abría "precio ≥ ___", vacío y al revés). Lo que el usuario tiene EN PESOS (acciones argentinas y CEDEARs, brokers en ARS) va con .BA: /alertas?new=GGAL.BA&down=10 — sin el .BA la alerta queda sobre la acción que cotiza en Nueva York, no sobre la que tiene.
+· {"type":"actions","items":[{"label":"Crear alerta Nvidia −10%","to":"/alertas?new=NVDA&down=10"},{"label":"Ver atribución","to":"/analisis"}]} — botones que llevan al usuario a Rendi. SOLO estas rutas: /alertas (acepta ?new=TICKER&down=N o &up=N), /analisis, /analisis-tecnico (Análisis técnico: sin ?tab abre el gráfico, y ?tab=grafico&activo=TICKER el de ese activo; ?tab=panorama la tendencia de lo que tiene y de su watchlist; ?tab=lista la tabla, ?tab=senales lo que cambió esta semana), /posiciones, /operaciones, /fundamentals (Análisis fundamental), /novedades, /activo/TICKER, /imports. Máx 3. Usalo cuando la respuesta invita a una acción concreta en la app. EL LINK CUMPLE LO QUE PROMETE EL LABEL: "Crear alerta X −10%" lleva &down=10 (sin eso el formulario abría "precio ≥ ___", vacío y al revés). Lo que el usuario tiene EN PESOS (acciones argentinas y CEDEARs, brokers en ARS) va con .BA: /alertas?new=GGAL.BA&down=10 — sin el .BA la alerta queda sobre la acción que cotiza en Nueva York, no sobre la que tiene.
 
 RECETA — "¿cómo viene/está mi cartera?" (la pregunta más común, cuidala): prosa de 3-4 oraciones — estado general, qué lo explica, y LO más notable (riesgo, concentración o racha; UNO, no una lista). stats = el retorno del período, el versus benchmark (si summary.benchmarks está) y el dato saliente. blocks ideales: "compare" con los números REALES de summary.benchmarks (tu cartera vs S&P 500 e inflación) + "alloc" con la composición, o "actions" si detectaste algo accionable. Las posiciones NUNCA una por una en la prosa — para eso está la tabla.
 
@@ -31201,7 +33088,7 @@ ROL
 - Respondés con DATOS, no con análisis. Si el snapshot tiene el número, lo decís. Si no, decís "no tengo ese dato" sin elaborar.
 - Sin recomendaciones operativas (comprá/vendé). Si insisten, redirigí: "no doy recomendaciones, podés revisar la sección de Posiciones".
 
-""" + VOZ + """
+""" + VOZ + _COMO_VIENE_UN_ACTIVO + """
 EXTENSIÓN Y FORMATO — REGLAS HARD
 - 1 o 2 ORACIONES MÁXIMO por respuesta. Una sola idea. Sin párrafos múltiples, sin secciones, sin listas, sin bullets.
 - CERO markdown. Sin **bold**, sin guiones de listas, sin headers con #. La UI muestra el texto plano. ÚNICA EXCEPCIÓN: la línea ---RENDI--- del bloque final para la UI — es un marcador técnico, no markdown, y va siempre que la respuesta sea de análisis.
@@ -31276,7 +33163,7 @@ BLOQUE ESTRUCTURADO PARA LA UI (obligatorio en respuestas de análisis)
 Al FINAL de cada respuesta de análisis, agregá una línea EXACTA `---RENDI---` seguida de UNA sola línea de JSON minificado:
 {"voz":"el resumen hablado — ver más abajo; VA PRIMERO","verdict":"2-3 palabras","tone":"pos|warn|neg|neutral","headline":"el dato principal en una frase, máx 90 caracteres","stats":[{"l":"label corto","v":"valor","t":"pos|warn|neg|neutral"}],"sources":["ej: 12 posiciones"]}
 Reglas: stats máx 3 con números REALES del snapshot (nunca inventados), y NUNCA un número que ya dibuja un block (la leyenda del "alloc", una fila de la "table") — si el gráfico ya lo muestra, la tarjeta sobra (medido: 18 de 24 tarjetas repetían el gráfico de abajo); sources máx 2; NO incluyas "followups" (este plan no tiene chat libre); la prosa va antes y no menciona el bloque; omitilo en saludos y en el flujo de registro de operaciones.
-El JSON también acepta "blocks" (máx 2) — bloques visuales: {"type":"compare","items":[{"l":"Tu cartera","v":"+18%","pct":90},...]} (comparaciones, primer item = el usuario, máx 4) · {"type":"alloc","items":[{"l":"Nvidia","pct":28},...]} (composición, máx 6, pct reales, labels con el nombre y no el ticker) · {"type":"scenario","if":"...","then":"...","tone":"neg"} (si→entonces) · {"type":"table","cols":[...],"rows":[[...]]} (máx 4×5, valores con signo) · {"type":"actions","items":[{"label":"Crear alerta Nvidia −10%","to":"/alertas?new=NVDA&down=10"}]} (lo que tiene en pesos va con .BA: GGAL.BA; cada atajo hace algo de ESTA respuesta — nada de links genéricos como "Ver posiciones", que salía en todas; solo rutas internas /alertas /analisis /posiciones /operaciones /fundamentals /novedades /activo/TICKER /imports, máx 3). En respuestas de análisis incluí al menos 1. Guía rápida por pregunta: riesgo/concentración → "alloc" o "scenario" + "actions" (crear alerta del activo pesado); comparaciones vs benchmark → "compare" con summary.benchmarks; earnings/listas → "table" + action a /novedades. Los valores como STRINGS formateados ("+6,7%"), no números crudos. "actions" son atajos DE LA APP — nunca consejo de comprar/vender.""" + tts.SUMMARY_PROMPT
+El JSON también acepta "blocks" (máx 2) — bloques visuales: {"type":"compare","items":[{"l":"Tu cartera","v":"+18%","pct":90},...]} (comparaciones, primer item = el usuario, máx 4) · {"type":"alloc","items":[{"l":"Nvidia","pct":28},...]} (composición, máx 6, pct reales, labels con el nombre y no el ticker) · {"type":"scenario","if":"...","then":"...","tone":"neg"} (si→entonces) · {"type":"table","cols":[...],"rows":[[...]]} (máx 4×5, valores con signo) · {"type":"actions","items":[{"label":"Crear alerta Nvidia −10%","to":"/alertas?new=NVDA&down=10"}]} (lo que tiene en pesos va con .BA: GGAL.BA; cada atajo hace algo de ESTA respuesta — nada de links genéricos como "Ver posiciones", que salía en todas; solo rutas internas /alertas /analisis /analisis-tecnico (?tab=panorama, ?tab=lista, ?tab=senales o ?tab=grafico&activo=TICKER) /posiciones /operaciones /fundamentals /novedades /activo/TICKER /imports, máx 3). En respuestas de análisis incluí al menos 1. Guía rápida por pregunta: riesgo/concentración → "alloc" o "scenario" + "actions" (crear alerta del activo pesado); comparaciones vs benchmark → "compare" con summary.benchmarks; earnings/listas → "table" + action a /novedades. Los valores como STRINGS formateados ("+6,7%"), no números crudos. "actions" son atajos DE LA APP — nunca consejo de comprar/vender.""" + tts.SUMMARY_PROMPT
 
 
 # Strip markdown que el modelo a veces inyecta a pesar del prompt. Aplicamos
@@ -33390,8 +35277,10 @@ def _chat_valuation_inputs(conn, uid: int):
         # `tc_compra` es el dólar del día de la compra. Sin él acá, el costo de un
         # lote en pesos sólo se podía pasar a USD al dólar de HOY — que es
         # justamente el número que no coincidía con la pantalla.
+        # `notes` y `undo_meta_json`: de dónde salió el lote (la foto de tenencia, un
+        # alta sin fecha), para que «comprado hoy» sea una compra (`_lote_comprado_hoy`).
         "SELECT broker, asset, asset_type, is_cash, invested, quantity, "
-        "commissions, price_override, currency, tc_compra, entry_date "
+        "commissions, price_override, currency, tc_compra, entry_date, notes, undo_meta_json "
         "FROM positions WHERE user_id=?",
         (uid,),
     ).fetchall()]
@@ -33400,8 +35289,10 @@ def _chat_valuation_inputs(conn, uid: int):
     return brokers, positions, tc_blue, tc_cedear
 
 
-def _valuar_lote_chat(p, prices, bccy, tc_blue, tc_cedear):
-    """(valor, costo) en USD de UN lote, con la función canónica."""
+def _valuar_lote_chat(p, prices, bccy, tc_blue, tc_cedear, costo='compra'):
+    """(valor, costo) en USD de UN lote, con la función canónica. `costo='hoy'`
+    sólo para «Contra tu promedio» en pesos (`_lotes_del_dia`): el costo de un lote
+    en pesos al dólar de hoy, que es el % en los pesos que se pagaron."""
     # 🔴 `costo='compra'` = el mismo dólar que usa la PANTALLA.
     #
     # Acá no se pasaba nada, así que caía al default 'hoy' y Rendi
@@ -33415,7 +35306,7 @@ def _valuar_lote_chat(p, prices, bccy, tc_blue, tc_cedear):
     # que ese archivo ya describe, una capa más abajo.
     r = compute_broker_value_usd(
         [p], prices, bccy, tc_blue,
-        broker_name=p['broker'], cedear_rate=tc_cedear, costo='compra')
+        broker_name=p['broker'], cedear_rate=tc_cedear, costo=costo)
     return float(r.get('value', 0) or 0), float(r.get('invested', 0) or 0)
 
 
@@ -33549,6 +35440,9 @@ def _valuate_positions_for_chat(conn, uid: int):
 # chat): en una charla de varios mensajes sólo el primero paga los pedidos.
 _CARTERA_HOY_CACHE: dict = {}
 _CARTERA_HOY_TTL_SEC = 60
+# Lo mismo para el «Mapa de tu cartera» (GET /api/cartera/mapa-del-dia): se
+# borra en los mismos lugares que el de arriba.
+_MAPA_DEL_DIA_CACHE: dict = {}
 
 # Horario de cada rueda en su hora local (mismos que alerts_engine).
 _RUEDA_HORARIO = {
@@ -33599,6 +35493,266 @@ def _estado_mercado(mercado, rueda, hoy, ahora=None) -> str:
     return f"no hay datos de una rueda de hoy (puede ser feriado); lo último es {ultima}"
 
 
+def _lote_comprado_hoy(p, hoy: str) -> bool:
+    """¿El lote es una COMPRA de hoy (su día arranca en el precio de compra) o algo
+    que ya tenías y cargaste hoy (su día arranca en el cierre de ayer)? Lo usa
+    `_lotes_del_dia`, LA cuenta de «qué se movió hoy» (chat y mapa).
+
+    `entry_date == hoy` solo no alcanza: es también la fecha en que se CARGÓ.
+      · Alta sin fecha (formulario de bienvenida, cualquier cliente que no la
+        mande): `_insert_manual_position` la completa con hoy y lo anota en la
+        receta (`sin_fecha_de_compra`). Si la fecha sigue siendo esa, no es compra.
+      · Foto de tenencia / «Estado inicial» del importador: es la apertura de la
+        cuenta, no una operación (`_is_synthetic_seed_row`, la misma regla del
+        borrado).
+    Lo que queda —el formulario con fecha, la compra por el chat, un BUY
+    importado— se cree, con un control más: el precio tiene que cuadrar con el del
+    día (`cartera_hoy.compra_cuadra_con_el_dia`, en `_lotes_del_dia`)."""
+    if str(p.get('entry_date') or '')[:10] != hoy:
+        return False
+    if _is_synthetic_seed_row(p):
+        return False
+    try:
+        meta = json.loads(p.get('undo_meta_json') or '{}')
+    except (TypeError, ValueError):
+        meta = {}
+    if (isinstance(meta, dict) and meta.get('sin_fecha_de_compra')
+            and str(meta.get('entry_date') or '')[:10] == hoy):
+        return False
+    return True
+
+
+def _lotes_del_dia(uid: int) -> tuple:
+    """Cada lote de la cartera valuado DOS veces —al precio de ahora y al cierre
+    anterior, con la misma cantidad y el mismo dólar— y su costo. → (hoy, lotes,
+    mercados, tc_cedear). LA cuenta de «qué se movió hoy»: la usan la tool del
+    chat (`_cartera_hoy_para_chat`, el texto) y el «Mapa de tu cartera»
+    (`GET /api/cartera/mapa-del-dia`, los números por activo). Cada lote lleva
+    `local` (acción argentina, `accion_local.es_lote_local`: la MISMA clave que
+    `senales_semana.cartera`, así GGAL de BYMA y el ADR no se mezclan) y `costo`
+    (el de `_valuar_lote_chat`, con el dólar de compra como la pantalla).
+
+    La base se lee y se suelta ANTES de salir a buscar precios: en Postgres leer
+    abre una transacción que, si no, quedaba abierta mientras se espera a la red."""
+    import accion_local
+    import cartera_hoy as _ch
+    import fuera_de_horario as _fdh
+    from fechas import hoy_art
+    from snapshots_job import _broker_name_sets, position_price_key
+    hoy = hoy_art()
+    hoy_utc = datetime.utcnow().date().isoformat()
+    conn = get_db()
+    try:
+        brokers, positions, tc_blue, tc_cedear = _chat_valuation_inputs(conn, uid)
+    finally:
+        conn.close()
+    broker_ccy = {b['name']: b['currency'] for b in brokers}
+    ars_names, ar_usd_names = _broker_name_sets(brokers)
+    # Los MISMOS precios que acaba de usar la valuación del snapshot, si
+    # están frescos: así "tu cartera vale X" y "hoy se movió Y" hablan de
+    # la misma foto.
+    _pc = _CHAT_PRECIOS.get(uid)
+    if _pc is not None and time.time() - _pc[0] < _CHAT_VAL_TTL_SEC:
+        prices = dict(_pc[1])
+    else:
+        syms = build_price_symbols(positions, brokers) if (brokers and positions) else []
+        try:
+            prices = fetch_prices_for_symbols(syms, CRYPTO_YF, tope=_yahoo.TOPE_PANTALLA_SEG) if syms else {}
+        except Exception as ex:
+            log.warning("cartera_hoy: fetch_prices falló uid=%s: %s", uid, ex)
+            prices = {}
+
+    claves = {}
+    for i, p in enumerate(positions):
+        if p.get('is_cash') or p.get('asset') in ('USDT', 'USD', 'ARS'):
+            continue
+        claves[i] = position_price_key(p, ars_names, ar_usd_names)
+    pedir = sorted({k for k in claves.values() if k and _SYMBOL_RE.match(k)})
+
+    # Los tres pedidos de afuera van EN PARALELO (corren adentro del chat):
+    # los cierres, los precios de la pantalla y la fecha de la rueda de BYMA.
+    # En frío, uno detrás del otro sumaban 6,4 s (medido 2026-10-08).
+    def _precios_pantalla():
+        out = {}
+        for _i in range(0, len(pedir), MAX_SYMBOLS):
+            _pp = get_prices(",".join(pedir[_i:_i + MAX_SYMBOLS]), uid)
+            out.update({k: v for k, v in (_pp or {}).items() if k != '__meta'})
+        return out
+
+    cierres, ruedas, precios_pantalla, fecha_byma = {}, {}, {}, None
+    if pedir:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=3) as _ex:
+            _f_cierres = _ex.submit(_prev_close_con_rueda, pedir, uid)
+            _f_precios = _ex.submit(_precios_pantalla)
+            _f_byma = _ex.submit(_rueda_byma, hoy)
+            try:
+                cierres, ruedas = _f_cierres.result()
+            except Exception as ex:
+                log.warning("cartera_hoy: cierres anteriores fallaron uid=%s: %s", uid, ex)
+            try:
+                precios_pantalla = _f_precios.result()
+            except Exception as ex:
+                log.warning("cartera_hoy: precios de pantalla fallaron uid=%s: %s", uid, ex)
+            try:
+                fecha_byma = _f_byma.result()
+            except Exception as ex:
+                log.warning("cartera_hoy: rueda de BYMA falló: %s", ex)
+
+    # 🔴 El % del día sale del MISMO par que la columna "Var. día" de
+    # Posiciones: el precio de /api/prices contra el cierre de
+    # /api/prices/prev-close. NO del precio del chat (fetch_prices_for_symbols)
+    # contra ese cierre: las dos fuentes no convierten igual a todos los
+    # activos. Medido 2026-10-08 con el caché del dólar frío (recién
+    # arrancado): BAC.BA valía $18.932 en la pantalla (CCL 1.415) y $21.528
+    # en el chat (CCL 1.609) — mezclarlas daba un "+12,5 % ayer" que nunca
+    # pasó. El % se aplica después al valor del chat, así el monto queda en
+    # la misma valuación que el resto de la respuesta.
+    pct_dia = {}
+    for k in pedir:
+        pa, pc = precios_pantalla.get(k), cierres.get(k)
+        try:
+            if pa and pc and float(pa) > 0 and float(pc) > 0:
+                pct_dia[k] = float(pa) / float(pc) - 1
+        except (TypeError, ValueError):
+            continue
+    precios_previos = dict(prices)
+    for k, pct in pct_dia.items():
+        if prices.get(k):
+            precios_previos[k] = prices[k] / (1 + pct)
+
+    lotes = []
+    for i, p in enumerate(positions):
+        bccy = broker_ccy.get(p['broker'])
+        if bccy is None:
+            continue  # huérfana: la valuación del chat también la descarta
+        try:
+            v, costo = _valuar_lote_chat(p, prices, bccy, tc_blue, tc_cedear)
+        except Exception as ex:
+            log.warning("cartera_hoy: lote %s falló: %s", p.get('asset'), ex)
+            continue
+        if abs(v) < 0.005:
+            continue  # lote vacío: no aporta ni al valor ni al movimiento
+        # El costo de un lote en pesos al dólar de HOY: «Contra tu promedio» en
+        # pesos (`cartera_hoy.por_activo`), la base que usa la pantalla en pesos
+        # (`noRealizadoEnVista`). Un lote en dólares da lo mismo que `costo`.
+        try:
+            _, costo_hoy = _valuar_lote_chat(p, prices, bccy, tc_blue, tc_cedear, costo='hoy')
+        except Exception:
+            costo_hoy = None
+        lote = {"asset": p.get('asset'), "broker": p.get('broker'), "valor": v,
+                "valor_previo": None, "motivo": None,
+                "mercado": None, "rueda": None, "es_hoy": False,
+                "local": accion_local.es_lote_local(p, ars_names, ar_usd_names), "costo": costo,
+                "costo_hoy": costo_hoy}
+        k = claves.get(i)
+        # La acción de EE.UU. que lo anticipa fuera de la rueda (pre y post
+        # mercado), con la MISMA clave de precio con que se lo valúa.
+        lote["ref"] = _fdh.referencia_en_eeuu(k, p.get('asset_type'))
+        # Sin precio (tampoco uno a mano), la valuación lo pone al costo: su
+        # «Contra tu promedio» sería un 0 % que no pasó (`cartera_hoy.por_activo`).
+        # Va aparte del motivo del día porque un FCI sin cuotaparte también cae acá.
+        lote["sin_precio"] = (k is not None and p.get('price_override') in (None, 0, '')
+                              and not prices.get(k))
+        if k is None:
+            lote["motivo"] = "efectivo"
+        elif p.get('price_override') not in (None, 0, ''):
+            lote["motivo"] = "precio_manual"
+        elif str(k).startswith('FCI:'):
+            lote["motivo"] = "fci"
+        elif not prices.get(k):
+            lote["motivo"] = "sin_precio"
+        elif k not in pct_dia:
+            lote["motivo"] = "sin_cierre"
+        else:
+            try:
+                vp, _ = _valuar_lote_chat(p, precios_previos, bccy, tc_blue, tc_cedear)
+            except Exception:
+                vp = None
+            mercado, fecha = ruedas.get(k, (None, None))
+            if mercado == "byma" and fecha is None:
+                # Un papel que hoy no operó trae el % de una rueda anterior.
+                fecha = _fecha_rueda_byma(k, fecha_byma, hoy)
+            # Cripto: su vela es un día UTC. Entre las 21:00 y la medianoche
+            # puede seguir siendo la del día argentino, que también es "hoy".
+            es_hoy = bool(fecha) and (fecha in (hoy_utc, hoy) if mercado == "cripto" else fecha == hoy)
+            lote.update(valor_previo=vp, mercado=mercado, rueda=fecha, es_hoy=es_hoy)
+            pct_precio = pct_dia[k]
+            if vp is None or vp <= 0:
+                lote["motivo"] = "sin_cierre"
+            elif abs(pct_precio) > 0.5 or abs((v / vp - 1) - pct_precio) > 0.005:
+                # El valor del lote es LINEAL en el precio en todas las ramas de
+                # la valuación (pesos ÷ MEP, premio cripto, bonos per-1): su % tiene
+                # que ser el del precio. Si no lo es, el control de precios de la
+                # valuación rechazó uno de los dos y lo llevó al costo; y un precio
+                # que "se movió" más de 50 % en un día es una unidad equivocada.
+                # Mejor "no medido" que inventado.
+                lote.update(valor_previo=None, motivo="precio_dudoso")
+            elif _lote_comprado_hoy(p, hoy) and _ch.compra_cuadra_con_el_dia(costo, v, vp):
+                # 🔴 Comprado HOY: el día de ese lote arranca en el precio de
+                # compra, no en el cierre de ayer. Cerró a 590, lo compraste a
+                # 610 y vale 600 → perdiste 10, no ganaste 10.
+                # Sólo si es una compra (no lo que ya tenías y cargaste hoy) y su
+                # precio es uno de hoy: con el promedio de hace años (120,5 contra
+                # 600) el mapa decía «Hoy tu cartera +116 %» (auditoría 31/10, A1).
+                # Si no, sigue como cualquier lote: desde el cierre de ayer.
+                if es_hoy:
+                    lote["valor_previo"] = costo
+                    lote["comprado_hoy"] = True
+                else:
+                    lote.update(valor_previo=None, motivo="comprado_hoy_sin_rueda")
+        lotes.append(lote)
+
+    # Estado de cada mercado presente (para redactar "todavía no abrió").
+    mercados = {}
+    for l in lotes:
+        m = l.get("mercado")
+        if not m or m in mercados:
+            continue
+        fechas_m = [x["rueda"] for x in lotes if x.get("mercado") == m and x.get("rueda")]
+        ult = max(fechas_m) if fechas_m else None
+        if m == "cripto" and ult == hoy_utc:
+            ult = hoy
+        mercados[m] = {"ultima_rueda": ult,
+                       "ultima_rueda_txt": _ch.dia_txt(ult, hoy),
+                       "estado": _estado_mercado(m, ult, hoy)}
+    return hoy, lotes, mercados, tc_cedear
+
+
+@app.get("/api/cartera/mapa-del-dia")
+def get_mapa_del_dia(uid: int = Depends(get_effective_user)):
+    """Lo del día del «Mapa de tu cartera» (components/MapaCartera.jsx, en el
+    Panorama de Análisis técnico y en el Dashboard: el mismo componente): por
+    activo, cuánto se movió HOY y cuánto contra lo que pagaste, y el renglón «Hoy
+    tu cartera». De `_lotes_del_dia`, LA cuenta de «qué se movió hoy» (la misma
+    que contesta el chat): no hay otra. Los números viajan siempre; «Ocultar
+    saldos» los tapa la pantalla, como en el resto de la app."""
+    import cartera_hoy as _ch
+    cached = _MAPA_DEL_DIA_CACHE.get(uid)
+    if cached is not None and time.time() - cached[0] < _CARTERA_HOY_TTL_SEC:
+        return cached[1]
+    hoy, lotes, mercados, _ = _lotes_del_dia(uid)
+    resumen = _ch.armar(lotes, hoy, mercados)
+    # «Hoy tus activos · vie 30/10» (Panorama, Nico 31/10, A4): lo que se
+    # movieron en la ÚLTIMA rueda que se midió, con su fecha. Un sábado (o un
+    # feriado) es la del viernes y la pantalla lo dice con la fecha, en vez de
+    # esconder el renglón o llamar «hoy» al viernes. Es el primer grupo de
+    # `armar` con fecha y %: el de hoy si lo hay (el mismo que `la_cartera_hoy`),
+    # si no el más nuevo.
+    ultima = next((m for m in resumen.get("movimiento") or []
+                   if m.get("rueda") and m.get("pct_sobre_la_cartera") is not None), None)
+    out = {"hoy": hoy,
+           "cartera": _ch.la_cartera_hoy(resumen),
+           "ultima_rueda": None if ultima is None else {
+               "rueda": ultima["rueda"], "es_hoy": bool(ultima["es_hoy"]),
+               "pct": ultima["pct_sobre_la_cartera"], "usd": ultima["usd"], "mercados": ultima["mercados"]},
+           "activos": _ch.por_activo(lotes, hoy)}
+    if len(_MAPA_DEL_DIA_CACHE) > 500:
+        _MAPA_DEL_DIA_CACHE.clear()
+    _MAPA_DEL_DIA_CACHE[uid] = (time.time(), out)
+    return out
+
+
 def _cartera_hoy_para_chat(uid: int) -> dict:
     """Resultado de la tool get_portfolio_today: cuánto se movió la cartera, en
     qué rueda, qué activos la movieron y los titulares del día.
@@ -33612,170 +35766,13 @@ def _cartera_hoy_para_chat(uid: int) -> dict:
     """
     import cartera_hoy as _ch
     import fuera_de_horario as _fdh
-    from fechas import hoy_art
-    from snapshots_job import _broker_name_sets, position_price_key
     cached = _CARTERA_HOY_CACHE.get(uid)
     if cached is not None and time.time() - cached[0] < _CARTERA_HOY_TTL_SEC:
         return cached[1]
 
-    hoy = hoy_art()
-    hoy_utc = datetime.utcnow().date().isoformat()
+    hoy, lotes, mercados, tc_cedear = _lotes_del_dia(uid)
     conn = get_db()
     try:
-        brokers, positions, tc_blue, tc_cedear = _chat_valuation_inputs(conn, uid)
-        broker_ccy = {b['name']: b['currency'] for b in brokers}
-        ars_names, ar_usd_names = _broker_name_sets(brokers)
-
-        # Los MISMOS precios que acaba de usar la valuación del snapshot, si
-        # están frescos: así "tu cartera vale X" y "hoy se movió Y" hablan de
-        # la misma foto.
-        _pc = _CHAT_PRECIOS.get(uid)
-        if _pc is not None and time.time() - _pc[0] < _CHAT_VAL_TTL_SEC:
-            prices = dict(_pc[1])
-        else:
-            syms = build_price_symbols(positions, brokers) if (brokers and positions) else []
-            try:
-                prices = fetch_prices_for_symbols(syms, CRYPTO_YF, tope=_yahoo.TOPE_PANTALLA_SEG) if syms else {}
-            except Exception as ex:
-                log.warning("cartera_hoy: fetch_prices falló uid=%s: %s", uid, ex)
-                prices = {}
-
-        claves = {}
-        for i, p in enumerate(positions):
-            if p.get('is_cash') or p.get('asset') in ('USDT', 'USD', 'ARS'):
-                continue
-            claves[i] = position_price_key(p, ars_names, ar_usd_names)
-        pedir = sorted({k for k in claves.values() if k and _SYMBOL_RE.match(k)})
-
-        # Los tres pedidos de afuera van EN PARALELO (corren adentro del chat):
-        # los cierres, los precios de la pantalla y la fecha de la rueda de BYMA.
-        # En frío, uno detrás del otro sumaban 6,4 s (medido 2026-10-08).
-        def _precios_pantalla():
-            out = {}
-            for _i in range(0, len(pedir), MAX_SYMBOLS):
-                _pp = get_prices(",".join(pedir[_i:_i + MAX_SYMBOLS]), uid)
-                out.update({k: v for k, v in (_pp or {}).items() if k != '__meta'})
-            return out
-
-        cierres, ruedas, precios_pantalla, fecha_byma = {}, {}, {}, None
-        if pedir:
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=3) as _ex:
-                _f_cierres = _ex.submit(_prev_close_con_rueda, pedir, uid)
-                _f_precios = _ex.submit(_precios_pantalla)
-                _f_byma = _ex.submit(_rueda_byma, hoy)
-                try:
-                    cierres, ruedas = _f_cierres.result()
-                except Exception as ex:
-                    log.warning("cartera_hoy: cierres anteriores fallaron uid=%s: %s", uid, ex)
-                try:
-                    precios_pantalla = _f_precios.result()
-                except Exception as ex:
-                    log.warning("cartera_hoy: precios de pantalla fallaron uid=%s: %s", uid, ex)
-                try:
-                    fecha_byma = _f_byma.result()
-                except Exception as ex:
-                    log.warning("cartera_hoy: rueda de BYMA falló: %s", ex)
-
-        # 🔴 El % del día sale del MISMO par que la columna "Var. día" de
-        # Posiciones: el precio de /api/prices contra el cierre de
-        # /api/prices/prev-close. NO del precio del chat (fetch_prices_for_symbols)
-        # contra ese cierre: las dos fuentes no convierten igual a todos los
-        # activos. Medido 2026-10-08 con el caché del dólar frío (recién
-        # arrancado): BAC.BA valía $18.932 en la pantalla (CCL 1.415) y $21.528
-        # en el chat (CCL 1.609) — mezclarlas daba un "+12,5 % ayer" que nunca
-        # pasó. El % se aplica después al valor del chat, así el monto queda en
-        # la misma valuación que el resto de la respuesta.
-        pct_dia = {}
-        for k in pedir:
-            pa, pc = precios_pantalla.get(k), cierres.get(k)
-            try:
-                if pa and pc and float(pa) > 0 and float(pc) > 0:
-                    pct_dia[k] = float(pa) / float(pc) - 1
-            except (TypeError, ValueError):
-                continue
-        precios_previos = dict(prices)
-        for k, pct in pct_dia.items():
-            if prices.get(k):
-                precios_previos[k] = prices[k] / (1 + pct)
-
-        lotes = []
-        for i, p in enumerate(positions):
-            bccy = broker_ccy.get(p['broker'])
-            if bccy is None:
-                continue  # huérfana: la valuación del chat también la descarta
-            try:
-                v, costo = _valuar_lote_chat(p, prices, bccy, tc_blue, tc_cedear)
-            except Exception as ex:
-                log.warning("cartera_hoy: lote %s falló: %s", p.get('asset'), ex)
-                continue
-            if abs(v) < 0.005:
-                continue  # lote vacío: no aporta ni al valor ni al movimiento
-            lote = {"asset": p.get('asset'), "broker": p.get('broker'), "valor": v,
-                    "valor_previo": None, "motivo": None,
-                    "mercado": None, "rueda": None, "es_hoy": False}
-            k = claves.get(i)
-            # La acción de EE.UU. que lo anticipa fuera de la rueda (pre y post
-            # mercado), con la MISMA clave de precio con que se lo valúa.
-            lote["ref"] = _fdh.referencia_en_eeuu(k, p.get('asset_type'))
-            if k is None:
-                lote["motivo"] = "efectivo"
-            elif p.get('price_override') not in (None, 0, ''):
-                lote["motivo"] = "precio_manual"
-            elif str(k).startswith('FCI:'):
-                lote["motivo"] = "fci"
-            elif not prices.get(k):
-                lote["motivo"] = "sin_precio"
-            elif k not in pct_dia:
-                lote["motivo"] = "sin_cierre"
-            else:
-                try:
-                    vp, _ = _valuar_lote_chat(p, precios_previos, bccy, tc_blue, tc_cedear)
-                except Exception:
-                    vp = None
-                mercado, fecha = ruedas.get(k, (None, None))
-                if mercado == "byma" and fecha is None:
-                    # Un papel que hoy no operó trae el % de una rueda anterior.
-                    fecha = _fecha_rueda_byma(k, fecha_byma, hoy)
-                # Cripto: su vela es un día UTC. Entre las 21:00 y la medianoche
-                # puede seguir siendo la del día argentino, que también es "hoy".
-                es_hoy = bool(fecha) and (fecha in (hoy_utc, hoy) if mercado == "cripto" else fecha == hoy)
-                lote.update(valor_previo=vp, mercado=mercado, rueda=fecha, es_hoy=es_hoy)
-                pct_precio = pct_dia[k]
-                if vp is None or vp <= 0:
-                    lote["motivo"] = "sin_cierre"
-                elif abs(pct_precio) > 0.5 or abs((v / vp - 1) - pct_precio) > 0.005:
-                    # El valor del lote es LINEAL en el precio en todas las ramas de
-                    # la valuación (pesos ÷ MEP, premio cripto, bonos per-1): su % tiene
-                    # que ser el del precio. Si no lo es, el control de precios de la
-                    # valuación rechazó uno de los dos y lo llevó al costo; y un precio
-                    # que "se movió" más de 50 % en un día es una unidad equivocada.
-                    # Mejor "no medido" que inventado.
-                    lote.update(valor_previo=None, motivo="precio_dudoso")
-                elif str(p.get('entry_date') or '')[:10] == hoy:
-                    # 🔴 Comprado HOY: el día de ese lote arranca en el precio de
-                    # compra, no en el cierre de ayer. Cerró a 590, lo compraste a
-                    # 610 y vale 600 → perdiste 10, no ganaste 10.
-                    if es_hoy:
-                        lote["valor_previo"] = costo
-                        lote["comprado_hoy"] = True
-                    else:
-                        lote.update(valor_previo=None, motivo="comprado_hoy_sin_rueda")
-            lotes.append(lote)
-
-        # Estado de cada mercado presente (para redactar "todavía no abrió").
-        mercados = {}
-        for l in lotes:
-            m = l.get("mercado")
-            if not m or m in mercados:
-                continue
-            fechas_m = [x["rueda"] for x in lotes if x.get("mercado") == m and x.get("rueda")]
-            ult = max(fechas_m) if fechas_m else None
-            if m == "cripto" and ult == hoy_utc:
-                ult = hoy
-            mercados[m] = {"ultima_rueda": ult,
-                           "ultima_rueda_txt": _ch.dia_txt(ult, hoy),
-                           "estado": _estado_mercado(m, ult, hoy)}
         resumen = _ch.armar(lotes, hoy, mercados)
 
         # ── Pre y post mercado de Wall Street: un ANTICIPO aparte del día, que
@@ -35503,6 +37500,7 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
 
     _CHAT_VAL_CACHE.pop(uid, None)
     _CARTERA_HOY_CACHE.pop(uid, None)
+    _MAPA_DEL_DIA_CACHE.pop(uid, None)
     undo_ok = p["action"] == "buy" and not _LAST_CHAT_TRADE[uid].get("autodeposit")
     if p["action"] in ("deposit", "withdraw", "transfer", "convert"):
         undo_note = ("No hay undo automático de movimientos de cash: se "
@@ -35844,6 +37842,7 @@ def _undo_last_trade_handler(uid: int) -> dict:
     _LAST_CHAT_TRADE.pop(uid, None)
     _CHAT_VAL_CACHE.pop(uid, None)
     _CARTERA_HOY_CACHE.pop(uid, None)
+    _MAPA_DEL_DIA_CACHE.pop(uid, None)
     _ai_cache_invalidate(uid)
     return {"status": "undone", "summary": f"Deshecho: {info['summary']}",
             "_note": "Confirmale que se revirtió (posición borrada y cash devuelto)."}
@@ -36112,6 +38111,34 @@ _AI_TOOLS = [
             "required": ["ticker"],
         },
     },
+    # La lectura técnica de la ficha, dicha en palabras (Nico, 30/10: «que
+    # Mervall-E empiece a entender el análisis técnico»). Los hechos salen de
+    # la MISMA función que el resumen de la ficha: ai/lectura_tecnica_chat.py.
+    {
+        "name": "get_technical_reading",
+        "description": (
+            "Cómo viene el PRECIO de un activo, con los mismos datos que muestra su ficha en Rendi "
+            "(gráfico de precios, su promedio de los últimos meses, la fuerza del precio y de la "
+            "tendencia, el precio más alto y más bajo del año, el último movimiento y qué se mira "
+            "de acá en adelante). Sirve para acciones, CEDEARs, acciones argentinas y cripto, lo "
+            "tenga o no el usuario.\n\n"
+            "USALA cuando pregunta por el precio o la tendencia de UN activo: '¿cómo viene GGAL?', "
+            "'¿AAPL está en tendencia?', '¿tiene fuerza la suba de NVDA?', '¿qué pasó con Bitcoin "
+            "este año?'.\n"
+            "NO LA USES para el movimiento del día de la cartera (get_portfolio_today), para el "
+            "precio de ahora (get_current_prices) ni para si está cara o barata (get_value_scorecard)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string",
+                           "description": "Símbolo (GGAL, YPFD, AAPL, BTC). Un CEDEAR en pesos con .BA (AAPL.BA)."},
+                "moneda": {"type": "string", "enum": ["dolares", "pesos"],
+                           "description": "Sólo si la persona pidió una moneda. Sin esto, la de la ficha."},
+            },
+            "required": ["ticker"],
+        },
+    },
     {
         "name": "get_ar_bond_metadata",
         "description": (
@@ -36308,6 +38335,10 @@ _AI_TOOLS_FREE_NAMES = frozenset({
     # get_current_prices vuelve a Free SOLO por el default de precio-de-hoy
     # del flujo de registro (el prompt FREE lo limita a ese uso).
     "get_current_prices",
+    # La lectura técnica de un activo, para todos los planes (Nico, 30/10),
+    # cada uno con el límite de su plan: Free y Plus llegan por las preguntas
+    # del botón de la ficha, que descuentan su cupo de análisis.
+    "get_technical_reading",
 })
 _AI_TOOLS_FREE = [t for t in _AI_TOOLS if t["name"] in _AI_TOOLS_FREE_NAMES]
 
@@ -36378,6 +38409,67 @@ _AI_TOOLS_ADVISOR = [t for t in _AI_TOOLS
                                           "get_asset_operations", "get_monthly_detail",
                                           "get_realized_vs_unrealized",
                                           "get_portfolio_today")] + [_GROUP_OP_TOOL]
+
+
+def _lectura_tecnica_para_el_chat(input_data: dict, uid: int) -> dict:
+    """`get_technical_reading`: la lectura técnica de un activo con la MISMA
+    cuenta que su ficha (tecnico.para_la_ficha → resumen_tecnico_hechos). Un
+    activo que nadie sigue se baja en el momento con los frenos de la ficha
+    (`_velas_a_pedido`). Las reglas: ai/lectura_tecnica_chat.py."""
+    import tecnico
+    from ai import lectura_tecnica_chat
+    r = lectura_tecnica_chat.resolver(input_data.get("ticker"), input_data.get("moneda"))
+    if not r:
+        return {"error": "ticker requerido"}
+    sym, moneda, local, nombre = r
+    # El mismo freno que la ficha (`_freno_tecnico`, tipo «uno»): lee la serie
+    # entera. Si está lleno, se le dice al modelo en vez de romper el turno.
+    try:
+        with _freno_tecnico(None, uid, "uno"), db_abierta() as conn:
+            tickers, motivo = _velas_a_pedido(conn, [(sym, local)], uid)[sym]
+            ficha = tecnico.para_la_ficha(conn, sym, moneda, local)
+    except HTTPException:
+        return {"available": False, "activo": nombre,
+                "reason": "hay mucha gente mirando gráficos en este momento; probá de nuevo en un rato"}
+    if not ficha.get("disponible"):
+        ficha["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
+    return lectura_tecnica_chat.para_el_chat(ficha, nombre)
+
+
+def _corregir_lectura_tecnica(client, texto: str, messages_loop: list, pregunta: str, *,
+                              chat_model, max_tokens, system_text, quiere_voz, chat_tools,
+                              costo, tier, uid) -> Optional[str]:
+    """La respuesta de un turno que contó cómo viene un activo, revisada antes de
+    entregarla: jerga técnica, una certeza sobre lo que viene o un consejo de
+    compra o venta (ai/lectura_tecnica_chat.problemas) → se le muestra al modelo
+    lo que escribió y qué estuvo mal, y se pide de nuevo UNA vez (como el resumen
+    de la ficha). None = estaba bien. Si la segunda tampoco sirve, no se publica:
+    va un texto fijo. La usan los cuatro finales del chat (con y sin streaming,
+    respuesta y síntesis forzada)."""
+    from ai import lectura_tecnica_chat
+    # Lo que el modelo tenía a la vista: un número que no está acá, lo inventó.
+    contexto = json.dumps(messages_loop, ensure_ascii=False, default=str)
+    mal = lectura_tecnica_chat.problemas(texto, pregunta, contexto)
+    if not mal:
+        return None
+    log.info("ai_chat lectura técnica: se pide de nuevo (tier=%s uid=%s): %s", tier, uid, mal)
+    resp = client.messages.create(
+        model=chat_model, max_tokens=max_tokens, output_config=_CHAT_EFFORT,
+        system=_bloques_de_sistema(system_text, quiere_voz),
+        tools=chat_tools, tool_choice={"type": "none"},
+        messages=messages_loop + [
+            {"role": "assistant", "content": texto},
+            # Lo lee el modelo, no la persona: que no le hable de la corrección.
+            {"role": "user", "content": "[Revisión automática de Rendi, la persona no ve este mensaje] "
+             "Esa respuesta no sirve: " + "; ".join(mal)
+             + ". Escribila de nuevo entera, con los mismos datos y el mismo formato, como si fuera "
+             "la primera: sin mencionar esta revisión ni pedir disculpas."}])
+    costo.sumar(resp, "lectura_tecnica")
+    nuevo = next((b.text for b in resp.content if hasattr(b, "text")), "")
+    if not nuevo.strip() or lectura_tecnica_chat.problemas(nuevo, pregunta, contexto):
+        log.warning("ai_chat lectura técnica: la segunda tampoco sirvió (tier=%s uid=%s)", tier, uid)
+        return lectura_tecnica_chat.TEXTO_SIN_LECTURA
+    return nuevo
 
 
 def _execute_ai_tool(name: str, input_data: dict, uid: int, request_id=None,
@@ -36517,11 +38609,17 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
             return {"error": f"asset '{asset}' no tiene formato válido (alphanumeric A-Z0-9, max 10 chars, opcional .BA)"}
         with db_abierta() as conn:
             rows = conn.execute(
-                f"""SELECT date, op_type, entry_price, exit_price, quantity,
-                          pnl_usd, pnl_pct, entry_date, currency, fx_to_usd, commissions
+                f"""SELECT id, broker, date, op_type, entry_price, exit_price, quantity,
+                          pnl_usd, pnl_pct, entry_date, currency, fx_to_usd, commissions,
+                          cobrado_ars, costo_ars, pnl_pct_ars, pnl_pct_usd, pnl_sin_dato
                    FROM operations WHERE user_id=? AND asset=? ORDER BY {_ops_por_fecha(desc=True)}""",
                 (uid, asset),
             ).fetchall()
+            # La moneda de cada venta (la de la fila o, si falta, la del broker), con la
+            # conexión abierta: los precios de una venta están en ELLA.
+            monedas = {r["id"]: (_resultado_dual.moneda_de_la_venta(conn, uid, dict(r))
+                                 if _resultado_dual.es_venta_de_un_lote(dict(r)) else None)
+                       for r in rows}
         # Los cobros (cupón, amortización, dividendo, interés) con sus números de
         # verdad: lo que entró y la ganancia, en dólares, sin "cantidad" (ahí está
         # la plata cobrada, no unidades). Misma lectura que Movimientos.
@@ -36529,7 +38627,16 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
         for r in rows:
             d = dict(r)
             cobro = realized_pnl.leer_cobro(d)
-            for k in ("currency", "fx_to_usd", "commissions"):
+            _mon = monedas.get(d.get("id"))
+            if _mon:
+                # Los precios están en la moneda de la venta; `pnl_usd` en dólares (cada punta a
+                # su dólar). El % se da en las dos monedas, no uno solo sin decir cuál es.
+                d["sale_currency"] = _mon
+                d["pnl_pct_ars"], d["pnl_pct_usd"] = _resultado_dual.pcts_de_la_venta(d, _mon)
+                d["result_ars"] = _resultado_dual.resultado_en_pesos(d)[0]
+                d.pop("pnl_pct", None)
+            for k in ("id", "broker", "currency", "fx_to_usd", "commissions",
+                      "cobrado_ars", "costo_ars", "pnl_sin_dato"):
                 d.pop(k, None)
             if cobro:
                 d = {"date": d.get("date"), "op_type": d.get("op_type"),
@@ -36540,7 +38647,11 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
         return {"asset": asset, "operations": ops_out, "count": len(ops_out),
                 "_note": ("Las filas con kind='income' son cobros (cupón, amortización, "
                           "dividendo, interés): amount_usd es lo que entró y gain_usd la "
-                          "ganancia, en dólares. No son compras ni ventas.")}
+                          "ganancia, en dólares. No son compras ni ventas. En las ventas, "
+                          "entry_price y exit_price están en sale_currency; pnl_usd es el "
+                          "resultado en DÓLARES (lo cobrado menos lo que costó, cada uno a su "
+                          "dólar) y result_ars el resultado en pesos; pnl_pct_ars y pnl_pct_usd "
+                          "son el % en cada moneda (null si falta el dato).")}
 
     elif name == "get_monthly_detail":
         # months debe ser int [1, 24]. El LLM puede mandar string o número
@@ -36632,7 +38743,7 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
             ).fetchall()]
             pos_query = (
                 "SELECT broker, asset, asset_type, is_cash, invested, quantity, "
-                "commissions, price_override, currency FROM positions WHERE user_id=?"
+                "commissions, price_override, currency, tc_compra FROM positions WHERE user_id=?"
             )
             pos_args: tuple = (uid,)
             if asset_filter:
@@ -36663,8 +38774,12 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
                     if not bpos:
                         continue
                     try:
+                        # costo='compra': el dólar de COMPRA del lote, el de Cartera. Lo realizado
+                        # se anota con ese dólar (resultado_dual); con el de hoy, realizado + no
+                        # realizado mezclaba dos dólares.
                         r = compute_broker_value_usd(bpos, prices, b['currency'], tc_blue,
-                                                     broker_name=b['name'], cedear_rate=tc_cedear)
+                                                     broker_name=b['name'], cedear_rate=tc_cedear,
+                                                     costo='compra')
                         market_value_usd += r.get('value', 0) or 0
                         invested_usd += r.get('invested', 0) or 0
                     except Exception as ex:
@@ -36902,6 +39017,9 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
         finally:
             conn.close()
 
+    elif name == "get_technical_reading":
+        return _lectura_tecnica_para_el_chat(input_data, uid)
+
     elif name == "get_ar_bond_metadata":
         # Bonos AR fallback (audit crítico #2): si user pregunta por AL30/GD30,
         # NO usamos yfinance (no los tiene) — leemos del módulo metadata interno.
@@ -37075,6 +39193,7 @@ def _ai_cache_invalidate(uid: int) -> None:
     # números viejos hasta 60s (review follow-up). pop es no-op si no hay entrada.
     _CHAT_VAL_CACHE.pop(uid, None)
     _CARTERA_HOY_CACHE.pop(uid, None)
+    _MAPA_DEL_DIA_CACHE.pop(uid, None)
     # Y el valor vivo de los rendimientos (60 s, por usuario y dólar). Sin esto,
     # un depósito recién cargado entraba en lo aportado AL INSTANTE pero no en el
     # valor —que seguía siendo el de antes del depósito— y durante un minuto el
@@ -37161,8 +39280,9 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
     params = data.params or {}
     followup_question = (data.followup_question or "").strip() or None
 
-    # Dispatch via registry (topic → builder + prompt)
-    topic = get_topic(screen)
+    # Dispatch via registry (topic → builder + prompt). Esta puerta no revisa el
+    # texto: los temas que sólo van por el chat (el técnico) acá no existen.
+    topic = get_topic(screen, puerta="analyze")
     if not topic:
         raise HTTPException(
             400,
@@ -37317,7 +39437,7 @@ _US_EXCHANGES = {"NMS", "NYQ", "NGM", "NCM", "ASE", "PCX", "BTS", "NAS", "NYS"}
 def search_tickers(q: str, uid: int = Depends(get_effective_user)):
     """Resuelve texto libre —incluido el NOMBRE de la empresa— a tickers reales.
 
-    Existe porque el buscador de "Calidad de cartera" filtraba contra
+    Existe porque el buscador de "Análisis fundamental" filtraba contra
     POPULAR_TICKERS, una allowlist de 104 símbolos con apenas 21 acciones US.
     Reportado por un usuario: no podía comparar AMD contra INTEL. La causa no era
     el backend (que acepta cualquier ticker y responde por `quoteType`) sino que
@@ -37365,11 +39485,11 @@ def search_tickers(q: str, uid: int = Depends(get_effective_user)):
 
 @app.get("/api/fundamentals/{ticker}")
 def get_fundamentals(ticker: str, uid: int = Depends(get_effective_user)):
-    """Scorecard de fundamentales de una acción ("Calidad de cartera").
+    """Scorecard de fundamentales de una acción ("Análisis fundamental").
 
     Auth requerida, TODOS los tiers, SIN cupo (data de yfinance cacheada).
     (Estuvo admin-only 2026-06-28→06-29 mientras se rediferenciaba de Vesty;
-    rehabilitado para usuarios al lanzar "Calidad de cartera".)
+    rehabilitado para usuarios al lanzar "Análisis fundamental".)
     Orquesta los fetchers existentes (scorecard + analysts + fundamentals/
     profile) y arma el contrato. Para cripto/ETF/bono/CEDEAR-ARS/inválido
     devuelve {available:false, reason} con HTTP 200 (no es un error).
@@ -39825,6 +41945,7 @@ _PASOS_HUMANOS = {
     "get_analyst_ratings":       "Viendo qué opinan los analistas",
     "get_company_profile":       "Averiguando a qué se dedica la empresa",
     "get_ar_bond_metadata":      "Buscando la letra chica del bono",
+    "get_technical_reading":     "Mirando cómo viene el precio",
     "get_fx_rates":              "Mirando el dólar",
     "remember_user_fact":        "Anotando eso para la próxima",
     "register_trade":            "Registrando la operación",
@@ -39956,6 +42077,10 @@ def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total:
                     turn_flags.add("undo_ok")
                 elif block.name == "register_group_op" and result.get("status") == "undone":
                     turn_flags.add("undo_ok")
+                elif block.name == "get_technical_reading" and result.get("available"):
+                    # La respuesta habla de cómo viene un activo: se revisa
+                    # antes de entregarla (_corregir_lectura_tecnica).
+                    turn_flags.add("lectura_tecnica")
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
@@ -40963,7 +43088,8 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     if data.analisis:
         try:
             from ai.registry import get_topic
-            _topico = get_topic(data.analisis.screen)
+            # El chat revisa el tema técnico (_corregir_lectura_tecnica): es su puerta.
+            _topico = get_topic(data.analisis.screen, puerta="chat")
             if _topico:
                 _pconn = get_db()
                 try:
@@ -41165,6 +43291,12 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     import secrets as _secrets
     _req_id = _secrets.token_hex(8)  # turn-boundary de la confirmación
     _turn_flags: set = set()
+    # El botón de Mervall-E de la ficha («¿Cómo viene GGAL?») ya trae la lectura
+    # técnica en el paquete: la respuesta se revisa igual que si la hubiera
+    # pedido con get_technical_reading (_corregir_lectura_tecnica).
+    if (data.analisis and str(data.analisis.screen or "").strip().lower().split(".")[0] == "tecnico"
+            and ((snapshot_clean or {}).get("analisis_del_boton") or {}).get("available")):
+        _turn_flags.add("lectura_tecnica")
     # Book-mode usa SU draft (registro grupal); el resto, el draft personal.
     _draft0 = (_GROUP_DRAFT if book_mode else _TRADE_DRAFT).get(uid)
     _flow_open = bool(_draft0 and (time.time() - _draft0.get("ts", 0)) <= _TRADE_DRAFT_TTL)
@@ -41347,6 +43479,38 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 yield ("data: " + json.dumps({"t": "pregunta", "d": last_user_msg},
                                              ensure_ascii=False) + "\n\n")
             tcalls = 0
+
+            def _retener():
+                """¿El texto de esta vuelta se guarda en vez de escribirse? En un
+                turno de lectura técnica, sí: el borrador no se muestra hasta pasar
+                la revisión (auditoría final B3, 31/10: escrito en vivo y borrado
+                después, un consejo se leía varios segundos). Mientras tanto la
+                pantalla sigue en sus pasos («Armando la respuesta…»)."""
+                return "lectura_tecnica" in _turn_flags
+
+            def _mostrar(chunk):
+                """Un pedazo de la respuesta: a la pantalla, o guardado si se retiene."""
+                state["synth_text"] += chunk
+                if _retener():
+                    return None
+                state["synth_deltas"] += 1
+                return "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
+
+            def _revisar_en_vivo(resp, mt):
+                """La revisión de la lectura técnica (_corregir_lectura_tecnica)
+                ANTES de que la respuesta llegue a la pantalla: se manda entera la
+                que pasó (la de la IA o la corregida, o el texto fijo si insistió)."""
+                if not _retener():
+                    return
+                _txt = state["synth_text"][voz_adelantada["desde"]:]
+                _ok = _corregir_lectura_tecnica(client, _txt, messages_loop, last_user_msg,
+                                                chat_model=chat_model, max_tokens=mt, system_text=system_text, quiere_voz=_quiere_voz, chat_tools=chat_tools, costo=_costo, tier=tier, uid=uid)
+                if _ok is not None:
+                    state["synth_text"] = _txt = _ok
+                    voz_adelantada["desde"] = 0
+                state["synth_deltas"] += 1
+                yield "data: " + json.dumps({"t": "delta", "d": _txt}, ensure_ascii=False) + "\n\n"
+
             # B-9 (review): contabilidad del slot reservado.
             # - settled: done/error emitido → la cuota quedó resuelta (cobrada
             #   o refundeada). Si el generator muere SIN settled (GeneratorExit
@@ -41403,14 +43567,17 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                                     yield _paso_frame(_PASO_PENSANDO)
                                 continue
                             if chunk:
-                                state["synth_deltas"] += 1
-                                state["synth_text"] += chunk
-                                yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
+                                _fr = _mostrar(chunk)
+                                if _fr:
+                                    yield _fr
                                 # Apenas el campo "voz" cierra, se manda
                                 # firmado — sin esperar a que el modelo termine
                                 # de escribir las tarjetas. Son los ~5 segundos
                                 # de silencio que medimos (ver _voz_temprana).
-                                if _puede_adelantar_voz and not voz_adelantada["ya"]:
+                                # En un turno de lectura técnica no se adelanta:
+                                # es la voz del borrador, sin revisar (va en `done`,
+                                # la de la respuesta que pasó).
+                                if _puede_adelantar_voz and not voz_adelantada["ya"] and not _retener():
                                     _vt = _voz_temprana(state["synth_text"][voz_adelantada["desde"]:])
                                     if _vt:
                                         voz_adelantada["ya"] = True
@@ -41438,6 +43605,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         _repedir_el_registro(messages_loop, resp, _forced_tool)
                         continue
                     if resp.stop_reason != "tool_use":
+                        for _f in _revisar_en_vivo(resp, max_tokens):
+                            yield _f
                         # Garantía de visibilidad: si quedó un pendiente y el
                         # modelo no mostró sus números, anexar el resumen.
                         _ep = _pending_summary_epilogue(uid, state["synth_text"])
@@ -41519,9 +43688,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         if chunk is _EMPIEZA_A_PENSAR:
                             continue      # ya se anunció «Pensando…» o «Armando…»
                         if chunk:
-                            state["synth_deltas"] += 1
-                            state["synth_text"] += chunk
-                            yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
+                            _fr = _mostrar(chunk)
+                            if _fr:
+                                yield _fr
                     resp = stream.get_final_message()
                 _costo.sumar(resp, "sintesis")
                 if _es_negativa(resp):
@@ -41532,6 +43701,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                     for _f in _frames_de_negativa(tier, _turn_flags, bool(state["synth_deltas"])):
                         yield _f
                     return
+                for _f in _revisar_en_vivo(resp, max_tokens_fallback):
+                    yield _f
                 _ep = _pending_summary_epilogue(uid, state["synth_text"])
                 if _ep:
                     yield "data: " + json.dumps({"t": "delta", "d": _ep}, ensure_ascii=False) + "\n\n"
@@ -41623,6 +43794,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 # Sin esto no podemos detectar regresiones del cache (cuando
                 # cache_read cae a 0, el costo se multiplica por ~10× y solo
                 # nos enteramos por la factura mensual de Anthropic).
+                if "lectura_tecnica" in _turn_flags:
+                    text = _corregir_lectura_tecnica(client, text, messages_loop, last_user_msg,
+                                                     chat_model=chat_model, max_tokens=max_tokens, system_text=system_text, quiere_voz=_quiere_voz, chat_tools=chat_tools, costo=_costo, tier=tier, uid=uid) or text
                 usage_obj = getattr(response, "usage", None)
                 _warn_if_truncated(response, tier, uid, "json_final")
                 # Registrar el costo del turno ENTERO (B-9: el slot ya estaba reservado).
@@ -41690,6 +43864,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
             return _respuesta_json(_TEXTO_NEGATIVA, tier, _turn_flags,
                                    pregunta=last_user_msg if data.analisis else None)
         text = next((b.text for b in response.content if hasattr(b, "text")), "")
+        if "lectura_tecnica" in _turn_flags:
+            text = _corregir_lectura_tecnica(client, text, messages_loop, last_user_msg,
+                                             chat_model=chat_model, max_tokens=max_tokens_fallback, system_text=system_text, quiere_voz=_quiere_voz, chat_tools=chat_tools, costo=_costo, tier=tier, uid=uid) or text
         usage_obj = getattr(response, "usage", None)
         _warn_if_truncated(response, tier, uid, "json_fallback")
         _record_chat_quota(uid, _costo.centavos())   # el turno entero (B-9: slot ya reservado)
@@ -46252,14 +48429,27 @@ def _run_daily_snapshot_job():
 
 
 def _run_velas_diarias_job():
-    """Pone al día las velas diarias del análisis técnico (velas_diarias.py)."""
+    """Pone al día las velas diarias del análisis técnico (velas_diarias.py).
+
+    Con su propia bandera: la corre la foto diaria al terminar y también el botón
+    de /admin, y las dos no pueden escribir la misma tabla a la vez."""
     _velas_log = logging.getLogger("velas_diarias")
+    if not _tomar_corrida("velas_diarias"):
+        _velas_log.info("Velas diarias: ya hay una corrida en curso, se saltea")
+        return
     try:
+        # `correr` también arma, con las velas ya al día, la lista única de
+        # cambios de ratio (cambios_ratio.py), pasándole qué papel es un CEDEAR
+        # y cuál es su acción de afuera. Un error de la lista no toca las velas.
         import velas_diarias
         with db_abierta() as conn:
-            _velas_log.info("Velas diarias: %s", velas_diarias.correr(conn))
+            # El resumen (números, no las listas de mil nombres): el mismo que
+            # guarda la corrida para /admin.
+            _velas_log.info("Velas diarias: %s", velas_diarias.resumen(velas_diarias.correr(conn)))
     except Exception as e:
         _velas_log.error(f"Velas diarias falló: {e}", exc_info=True)
+    finally:
+        _soltar_corrida("velas_diarias")
 
 
 def _run_backup_db_job():
@@ -47170,7 +49360,9 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     # tarjeta mostraba "ARS→USDT +US$ 0" como lo último que hizo el usuario.
     last_op_row = conn.execute(
         f"""SELECT date, broker, asset, op_type,
-                   {realized_pnl.realized_usd_sql()} AS pnl_usd
+                   {realized_pnl.realized_usd_sql()} AS pnl_usd,
+                   pnl_usd AS pnl_crudo, currency, fx_to_usd, cobrado_ars, costo_ars, costo_moneda,
+                   pnl_sin_dato
               FROM operations
              WHERE user_id = ? AND pnl_usd IS NOT NULL
                AND {realized_pnl.no_es_conversion_sql()}{br_clause}
@@ -47185,6 +49377,11 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
             "broker": last_op_row["broker"],
             "op_type": last_op_row["op_type"],
             "pnl_usd": float(last_op_row["pnl_usd"]) if last_op_row["pnl_usd"] is not None else None,
+            # El resultado en PESOS, exacto, de una venta con sus dos monedas guardadas
+            # (resultado_dual): la vista en pesos de Reportes lo usa en vez de pnl_usd × dólar,
+            # que ya no da la ganancia en pesos (GGAL: +US$10 × 1.500 = $15.000 contra
+            # los $240.000 que dice Operaciones). None para cobros y ventas sin los dos datos.
+            "resultado_ars": _resultado_dual.resultado_en_pesos(dict(last_op_row))[0],
         }
 
     # Top 3 holdings por valor invertido — proxy útil de "qué tenés más"
@@ -47869,6 +50066,10 @@ def reports_years(
                     "deposits": m.deposits,
                     "withdrawals": m.withdrawals,
                     "realized_pnl": m.realized_pnl,
+                    # El realizado en pesos de la cuenta única (ver PeriodMetrics.realized_ars).
+                    "realized_ars": m.realized_ars,
+                    "realized_ars_cubre_usd": m.realized_ars_cubre_usd,
+                    "realized_ars_valuado": m.realized_ars_valuado,
                     "trades_count": m.trades_count,
                     "win_rate": m.win_rate,
                 })
@@ -48036,7 +50237,12 @@ class WatchlistAddIn(BaseModel):
     @classmethod
     def normalize_symbol(cls, v):
         v = v.strip().upper()
-        if not re.match(r'^[A-Z0-9]{1,10}(\.BA|-USD)?$', v):
+        # Acción con clase (Berkshire, Brown-Forman): se guarda como la cotiza
+        # Yahoo y como la manda el mapa de calor, con guión (BRK.B → BRK-B).
+        # Antes se rechazaba: la estrella de su ficha fallaba siempre.
+        if re.match(r'^[A-Z0-9]{1,10}\.[A-Z]$', v):
+            v = v.replace('.', '-')
+        if not re.match(r'^[A-Z0-9]{1,10}(\.BA|-USD|-[A-Z])?$', v):
             raise ValueError('Símbolo inválido')
         return ticker_vigente(v)   # SQ → XYZ: el que cotiza (tickers_renombrados.py)
 
@@ -48069,6 +50275,13 @@ def watchlist_list(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+# Cuántos activos puede seguir una persona. Sin tope, una sola cuenta podía
+# cargar miles de símbolos inventados: el guardado nocturno de precios
+# (velas_diarias) intenta bajar cada uno y la noche no alcanzaba para los de
+# verdad (auditoría de seguridad 22/10). 100 es mucho más de lo que sigue nadie.
+WATCHLIST_TOPE = 100
+
+
 @app.post("/api/watchlist")
 def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_effective_user)):
     """Agrega un símbolo a la watchlist. Si ya existe, devuelve 200 silenciosamente
@@ -48076,6 +50289,16 @@ def watchlist_add(data: WatchlistAddIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:
+            # El turno antes de contar: sin él, diez altas juntas contaban todas
+            # «98» y pasaban el tope (auditoría E5, 29/10; la nota de capacidad
+            # midió 101 a 105).
+            _tomar_turno(conn, uid)
+            ya = conn.execute("SELECT 1 FROM watchlist WHERE user_id=? AND symbol=?",
+                              (uid, data.symbol)).fetchone()
+            if not ya and conn.execute("SELECT COUNT(*) FROM watchlist WHERE user_id=?",
+                                       (uid,)).fetchone()[0] >= WATCHLIST_TOPE:
+                raise HTTPException(400, f"Tu lista de seguimiento llegó a {WATCHLIST_TOPE} activos. "
+                                         "Sacá alguno para sumar otro.")
             conn.execute(
                 """INSERT OR IGNORE INTO watchlist (user_id, symbol, asset_type)
                    VALUES (?, ?, ?)""",
@@ -48108,7 +50331,7 @@ def watchlist_remove(symbol: str, uid: int = Depends(get_effective_user)):
 
 
 class AlertCreateIn(BaseModel):
-    kind: str = Field(..., max_length=20)              # 'price_target' | 'pct_move'
+    kind: str = Field(..., max_length=20)              # 'price_target' | 'pct_move' | 'tecnica'
     symbol: Optional[str] = Field(None, max_length=24)  # requerido si scope='ticker'
     scope: str = Field('ticker', max_length=12)         # 'ticker' | 'holdings'
     direction: str = Field('above', max_length=8)       # 'above' | 'below' | 'either'
@@ -48121,11 +50344,26 @@ class AlertCreateIn(BaseModel):
     repeat: str = Field('once', max_length=8)           # 'once' | 'daily' | 'always'
     cooldown_min: int = Field(360, ge=0, le=100000)
     note: Optional[str] = Field(None, max_length=200)
+    senal: Optional[str] = Field(None, max_length=20)   # tecnica: tecnico.SENALES
+    accion_local: bool = False                          # tecnica: acción argentina (como la ficha)
+    # tecnica 'linea': el id de tu línea en el gráfico y la moneda en que la
+    # dibujaste (`symbol` es el activo como lo pide la ficha).
+    dibujo: Optional[str] = Field(None, max_length=40)
+    # Un canal: cuándo cuenta salir ('toque': lo toca o lo pasa en el día;
+    # 'cierre': cierra afuera). Por qué borde va en `direction`.
+    modo: Optional[str] = Field(None, max_length=8)
+
+    @field_validator('modo')
+    @classmethod
+    def _v_modo(cls, v):
+        if v is not None and v not in ('toque', 'cierre'):
+            raise ValueError('modo inválido')
+        return v
 
     @field_validator('kind')
     @classmethod
     def _v_kind(cls, v):
-        if v not in ('price_target', 'pct_move'):
+        if v not in ('price_target', 'pct_move', 'tecnica'):
             raise ValueError('kind inválido')
         return v
 
@@ -48178,6 +50416,14 @@ class AlertUpdateIn(BaseModel):
     repeat: Optional[str] = Field(None, max_length=8)
     cooldown_min: Optional[int] = Field(None, ge=0, le=100000)
     note: Optional[str] = Field(None, max_length=200)
+    modo: Optional[str] = Field(None, max_length=8)      # el de un canal (AlertCreateIn)
+
+    @field_validator('modo')
+    @classmethod
+    def _v_modo(cls, v):
+        if v is not None and v not in ('toque', 'cierre'):
+            raise ValueError('modo inválido')
+        return v
 
     # Los mismos valores válidos que el alta (AlertCreateIn). Antes la edición
     # no validaba: un PATCH con channel='x' quedaba guardado y el motor no
@@ -48217,7 +50463,13 @@ def alerts_list(uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         rows = conn.execute(
-            "SELECT * FROM alerts WHERE user_id=? ORDER BY created_at DESC", (uid,)
+            # Los recordatorios de una tesis (`kind='recordatorio'`, tesis.py) son
+            # alertas del mismo motor, pero se ven y se manejan desde la tesis:
+            # «Mis alertas» no sabe dibujarlos. Sus avisos sí salen abajo.
+            # Por lista de las que SÍ maneja (`_DE_MIS_ALERTAS`), no por las que
+            # no: un tipo nuevo no aparece solo en un formulario que no lo conoce.
+            f"SELECT * FROM alerts WHERE user_id=? AND kind IN ({_DE_MIS_ALERTAS}) "
+            "ORDER BY created_at DESC", (uid,)
         ).fetchall()
         events = conn.execute(
             """SELECT id, alert_id, symbol, fired_at, price, message, seen
@@ -48230,6 +50482,66 @@ def alerts_list(uid: int = Depends(get_effective_user)):
         }
     finally:
         conn.close()
+
+
+@app.get("/api/alerts/lineas")
+def alerts_lineas(request: Request, uid: int = Depends(get_effective_user)):
+    """«Mis alertas»: dónde está hoy cada línea tuya con aviso y un gráfico
+    chiquito para reconocerla (alerts_engine.resumen_de_lineas_con_aviso). Va
+    aparte de GET /api/alerts, que lo pide cada ficha y no necesita velas. Lee la
+    serie de cada activo con aviso: el freno de las lecturas de muchos (E1)."""
+    import alerts_engine as _ae
+    with _freno_tecnico(request, uid), db_abierta() as conn:
+        return {"lineas": {str(k): v for k, v in _ae.resumen_de_lineas_con_aviso(conn, uid).items()}}
+
+
+@app.get("/api/tecnico/{asset}/lineas")
+def get_tecnico_lineas(asset: str, request: Request, moneda: str = "usd", accion_local: bool = False,
+                       uid: int = Depends(get_effective_user)):
+    """Tus líneas de este activo que pueden tener aviso (horizontales, de
+    tendencia y canales), cada una con dónde está hoy y un gráfico chiquito:
+    las que ofrece «Alertas → Una línea que dibujaste»."""
+    import alerts_engine as _ae
+    import tecnico
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    moneda = "ars" if moneda == "ars" else "usd"
+    # La ficha guarda tus dibujos bajo el activo como se abrió: «GGAL» desde la
+    # cartera, «GGAL.BA» desde el buscador. Se miran los dos y cada línea dice
+    # bajo cuál está (es lo que pide el alta: main._crear_alerta_de_linea).
+    # Los de quien dibuja (`_dueno_de_los_dibujos`: la persona, o la asesora en
+    # la ficha de su cliente), los mismos que lee el alta y el motor. Antes, los
+    # de la cuenta que mira: a la asesora no le aparecían las suyas (al juntar la
+    # barra con la auditoría chica de la junta, 30/10). Lee una serie: el freno
+    # de la ficha (E1).
+    dueno = _dueno_de_los_dibujos(request, uid)
+    pelado = sym[:-3] if sym.endswith(".BA") else sym
+    con_aviso = []
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        for clave in dict.fromkeys((sym, pelado, f"{pelado}.BA")):
+            fila = conn.execute(
+                "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+                (dueno, clave, moneda)).fetchone()
+            try:
+                crudos = json.loads(fila[0]) if fila else []
+            except (TypeError, ValueError):
+                crudos = []
+            for d in crudos if isinstance(crudos, list) else []:
+                try:
+                    d = _Dibujo.model_validate(d).model_dump(exclude_none=True)
+                except Exception:
+                    continue
+                if d.get("tipo") in tecnico.TIPOS_CON_AVISO:
+                    con_aviso.append((clave, d))
+        if not con_aviso:
+            return {"lineas": []}
+        velas = tecnico.serie(conn, pelado, moneda, accion_local)["velas"]
+    lineas = []
+    for clave, d in con_aviso:
+        r = _ae.resumen_de_dibujo(velas, d)
+        lineas.append({**(r or {"id": d["id"], "tipo": d["tipo"], "color": d.get("color")}), "asset": clave})
+    return {"lineas": lineas}
 
 
 def _moneda_del_aviso(symbol: str, currency) -> str:
@@ -48266,8 +50578,169 @@ def _moneda_del_aviso(symbol: str, currency) -> str:
     return "USD"
 
 
+def _crear_alerta_tecnica(conn, uid: int, data: "AlertCreateIn", dueno: int = None) -> dict:
+    """El alta de una alerta técnica (ver alerts_engine.evaluar_tecnicas).
+
+    El activo se guarda como lo pide la ficha técnica: pelado ('AAPL', 'GGAL',
+    'BTC'), con la moneda en que se mira y la marca de acción argentina. La
+    marca de «ya miré hasta acá» arranca en la última vela que hay: un cruce de
+    antes de crearla no avisa."""
+    import alerts_engine as _ae
+    import tecnico
+    if data.scope != "ticker" or not data.symbol:
+        raise HTTPException(400, "Una alerta técnica necesita un activo.")
+    if data.senal == tecnico.SENAL_LINEA:
+        return _crear_alerta_de_linea(conn, uid, data, dueno or uid)
+    if data.senal not in tecnico.SENALES:
+        raise HTTPException(400, "Elegí qué querés que te avisemos.")
+    symbol = data.symbol
+    if symbol.endswith(".BA"):
+        symbol = symbol[:-3]
+    symbol = _ae._norm_sym(symbol)
+    if not symbol or symbol.startswith("FCI:") or not _SYMBOL_RE.match(symbol):
+        raise HTTPException(400, "Ese activo no tiene análisis técnico.")
+    # Antes de guardarla y de preguntarle el precio a Yahoo: un símbolo inventado
+    # entraba a la descarga de la noche (velas_diarias._seguimiento) adelante de
+    # los de verdad (auditoría E4).
+    _exigir_activo_valido(conn, data.symbol, uid)
+    currency = "ARS" if (data.currency or "").strip().upper() == "ARS" else "USD"
+    # El sentido sólo vale para los cruces de un promedio; el RSI y el máximo
+    # ya lo dicen en el nombre de la señal.
+    direction = data.direction if data.senal in tecnico.SENALES_CON_SENTIDO else "either"
+    local = 1 if data.accion_local else 0
+    _exigir_cupo_de_alertas(conn, uid)
+    # Dos alertas que avisan lo mismo son dos mails por el mismo cruce. Se
+    # pisan si es la misma señal y una de las dos es «los dos lados» o las dos
+    # piden el mismo lado. La ficha ya muestra «Te avisamos» (alertaExistente,
+    # la misma regla); esto cubre el formulario de Alertas.
+    igual = conn.execute(
+        """SELECT id FROM alerts WHERE user_id=? AND kind='tecnica' AND active=1
+             AND symbol=? AND senal=? AND currency=? AND accion_local=?
+             AND (direction=? OR direction='either' OR ?='either')""",
+        (uid, symbol, data.senal, currency, local, direction, direction)).fetchone()
+    if igual:
+        raise HTTPException(409, "Ya tenés una alerta que avisa esto: está en Mis alertas, para cambiarla.")
+    cur = conn.execute(
+        """INSERT INTO alerts
+           (user_id, kind, symbol, scope, direction, currency, channel, repeat,
+            cooldown_min, armed, active, note, senal, accion_local)
+           VALUES (?,'tecnica',?,'ticker',?,?,?,?,?,1,1,?,?,?)""",
+        (uid, symbol, direction, currency, data.channel, data.repeat,
+         data.cooldown_min, data.note, data.senal, local))
+    aid = cur.lastrowid
+    row = conn.execute("SELECT * FROM alerts WHERE id=?", (aid,)).fetchone()
+    _ae.arrancar_tecnica(conn, row)
+    conn.commit()
+    # ¿Se va a poder mirar? Si ya hay velas, seguro. Si no (nadie lo tenía), se
+    # guardan desde esta noche: el precio de ahora dice si el ticker existe.
+    tiene_velas = bool(_ae._serie_tecnica(conn, row))
+    resolved = tiene_velas or _ae.price_for_alert(f"{symbol}.BA" if local else symbol) is not None
+    return {"ok": True, "id": aid, "armed": True, "resolved": resolved, "velas": tiene_velas}
+
+
+def _crear_alerta_de_linea(conn, uid: int, data: "AlertCreateIn", dueno: int) -> dict:
+    """«Avisame si el precio toca esta línea» (Nico, 28/10): una alerta técnica
+    atada a una línea horizontal o de tendencia que dibujaste en la ficha, o
+    (29/10) «avisame si sale del canal»: por qué borde va en `direction` y
+    cuándo cuenta (`modo`: lo toca en el día o cierra afuera), en la referencia
+    al dibujo. No copia el precio: el motor lee la línea de lo dibujado cada vez
+    (alerts_engine.linea_de_la_alerta), así que si la movés el aviso la sigue y
+    si la borrás se apaga. Se mira con las velas del día (su mínimo y su
+    máximo): durante la rueda con la vela de hoy en vivo, y de noche con la
+    guardada (alerts_engine._evaluar_en_la_rueda). Un canal en modo «si cierra
+    afuera», sólo con la de la noche: avisa a la mañana siguiente.
+
+    `dueno`: de quién son los dibujos (`_dueno_de_los_dibujos`): la persona, o
+    la asesora que dibuja en la ficha de su cliente. La alerta vive en la cuenta
+    del cliente (`uid`) y la línea se busca entre los dibujos de quien la hizo,
+    que queda escrito en la referencia («de»). Antes se buscaba en los del
+    cliente y a la asesora le daba 404 siempre (auditoría de la junta, 30/10)."""
+    import alerts_engine as _ae
+    import tecnico
+    asset = (data.symbol or "").strip().upper()
+    moneda = "ars" if (data.currency or "").strip().upper() == "ARS" else "usd"
+    if not asset or not data.dibujo:
+        raise HTTPException(400, "Elegí la línea del gráfico.")
+    fila = conn.execute(
+        "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
+        (dueno, asset, moneda)).fetchone()
+    try:
+        dibujos = json.loads(fila[0]) if fila else []
+    except (TypeError, ValueError):
+        dibujos = []
+    linea = next((d for d in dibujos if isinstance(d, dict) and d.get("id") == data.dibujo), None)
+    if not linea:
+        raise HTTPException(404, "No encontramos esa línea: puede que todavía no se haya guardado. Probá de nuevo en un momento.")
+    if linea.get("tipo") not in tecnico.TIPOS_CON_AVISO:
+        raise HTTPException(400, "El aviso es para líneas horizontales, de tendencia y canales.")
+    canal = linea["tipo"] == "canal"
+    # Una línea avisa la toque de donde venga; un canal, por el borde que elegiste.
+    direction = data.direction if canal else "either"
+    ref = {"asset": asset, "moneda": moneda, "id": data.dibujo, "tipo": linea["tipo"],
+           **({"modo": data.modo or "toque"} if canal else {})}
+    if dueno != uid:
+        ref["de"] = dueno
+    ref = json.dumps(ref, separators=(",", ":"))
+    symbol = _ae._norm_sym(asset[:-3] if asset.endswith(".BA") else asset)
+    if not symbol or not _SYMBOL_RE.match(symbol):
+        raise HTTPException(400, "Ese activo no tiene análisis técnico.")
+    # La misma puerta que las otras técnicas (`_crear_alerta_tecnica`): antes
+    # esta la salteaba y quedaba cubierta sólo porque guardar un dibujo ya la
+    # pide; un dibujo guardado de antes de esa regla entraba igual.
+    _exigir_activo_valido(conn, asset, uid, dueno)
+    # Una de tendencia o un canal (que es la misma recta y su paralela).
+    if linea["tipo"] in ("tendencia", "canal") and linea.get("a") and linea.get("b"):
+        velas = tecnico.serie(conn, symbol, moneda, bool(data.accion_local))["velas"]
+        ultimo = len(velas) - 1
+        mismo_dia = (tecnico.valor_de_linea(velas, linea, max(ultimo, 0)) is None if velas
+                     else (linea["a"].get("d"), linea["a"].get("mas")) == (linea["b"].get("d"), linea["b"].get("mas")))
+        if mismo_dia:
+            raise HTTPException(400, "Las dos puntas de esa línea caen en el mismo día: no tiene "
+                                     "inclinación para seguirla. Corré una de las dos.")
+    _exigir_cupo_de_alertas(conn, uid)
+    # Una línea, un aviso: dos serían dos mails por el mismo toque.
+    for r in conn.execute(
+            "SELECT dibujo FROM alerts WHERE user_id=? AND kind='tecnica' AND active=1 AND senal=?",
+            (uid, tecnico.SENAL_LINEA)).fetchall():
+        otra = _ae.referencia_de_linea(r["dibujo"]) or {}
+        if (otra.get("asset"), otra.get("moneda"), otra.get("id")) == (asset, moneda, data.dibujo):
+            raise HTTPException(409, "Ya te avisamos cuando el precio salga de este canal." if linea["tipo"] == "canal"
+                                else "Ya te avisamos cuando el precio toque esta línea.")
+    cur = conn.execute(
+        """INSERT INTO alerts
+           (user_id, kind, symbol, scope, direction, currency, channel, repeat,
+            cooldown_min, armed, active, note, senal, accion_local, dibujo)
+           VALUES (?,'tecnica',?,'ticker',?,?,?,?,?,1,1,?,?,?,?)""",
+        (uid, symbol, direction, moneda.upper(), data.channel, data.repeat, data.cooldown_min,
+         data.note, tecnico.SENAL_LINEA, 1 if data.accion_local else 0, ref))
+    aid = cur.lastrowid
+    row = conn.execute("SELECT * FROM alerts WHERE id=?", (aid,)).fetchone()
+    _ae.arrancar_tecnica(conn, row)
+    conn.commit()
+    return {"ok": True, "id": aid, "armed": True, "resolved": True,
+            "velas": bool(_ae._serie_tecnica(conn, row))}
+
+
+def _exigir_cupo_de_alertas(conn, uid: int, *, con_turno: bool = True) -> None:
+    """403 si la persona llegó al tope de alertas de su plan (check_alert_quota).
+
+    `con_turno`: toma antes el turno de escritura de la cuenta (`_tomar_turno`),
+    así contar y guardar son un solo paso. Sin él, diez altas que llegaban juntas
+    contaban todas «1 de 3» y guardaban las diez (auditoría E5, 29/10). Se llama
+    sin turno al principio (para contestar rápido, antes de ir a Yahoo) y CON
+    turno justo antes del INSERT, que es el conteo que decide."""
+    from ai import plan as _plan
+    if con_turno:
+        _tomar_turno(conn, uid)
+    allowed, info = _plan.check_alert_quota(conn, uid)
+    if not allowed:
+        raise HTTPException(403, {
+            "error": "Llegaste al límite de alertas de tu plan.",
+            "quota": info, "upgrade": True})
+
+
 @app.post("/api/alerts")
-def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
+def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user), request: Request = None):
     """Crea una alerta. Gatea por cantidad (check_alert_quota) y por capacidad
     (pct_move = Plus+). Arma el edge-trigger según el precio actual."""
     import alerts_engine as _ae
@@ -48303,6 +50776,11 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
             if not (threshold and threshold > 0):
                 raise HTTPException(400, "Ingresá el precio objetivo.")
             currency = _moneda_del_aviso(symbol, currency)
+        elif data.kind == "tecnica":
+            # Lee la serie del activo para arrancar desde la última vela: una
+            # lectura pesada, con el freno de la ficha (pesado.py).
+            with _freno_tecnico(request, uid, "uno"):
+                return _crear_alerta_tecnica(conn, uid, data, _dueno_de_los_dibujos(request, uid))
         else:  # pct_move — umbral asimétrico (sube ≥ up_pct% y/o cae ≥ down_pct%)
             if data.scope == "ticker" and not symbol:
                 raise HTTPException(400, "Elegí un ticker o la opción 'toda mi cartera'.")
@@ -48363,19 +50841,57 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+# Los tipos que maneja «Mis alertas» (listar, editar, pausar, borrar): los del
+# formulario, `alerts_engine.VALID_KINDS`. Un recordatorio de tesis
+# (`kind='recordatorio'`) es del mismo motor pero se maneja desde su tesis: su
+# fecha vive en `tesis.recordar_el`. Auditoría B-P4 (29/10): el PATCH lo
+# aceptaba y `active: true` reactivaba uno ya mandado, que con la fecha vencida
+# salía de nuevo en la pasada siguiente; y el DELETE lo borraba dejando la tesis
+# apuntando a una alerta que ya no existe (la pantalla lo seguía mostrando
+# pendiente y no llegaba nunca).
+import alerts_engine as _alerts_engine  # noqa: E402  (no importa main al cargar)
+_DE_MIS_ALERTAS = ",".join(f"'{k}'" for k in _alerts_engine.VALID_KINDS)
+
+
+def _alerta_de_mis_alertas(conn, alert_id: int, uid: int):
+    """La alerta `alert_id` de `uid` si es de las que maneja «Mis alertas»; 404
+    si no existe, 400 si es un recordatorio de tesis (u otro tipo)."""
+    row = conn.execute("SELECT * FROM alerts WHERE id=? AND user_id=?", (alert_id, uid)).fetchone()
+    if not row:
+        raise HTTPException(404, "Alerta no encontrada.")
+    if row["kind"] not in _alerts_engine.VALID_KINDS:
+        raise HTTPException(400, "Este recordatorio se cambia desde tu tesis.")
+    return row
+
+
 @app.patch("/api/alerts/{alert_id}")
-def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_effective_user)):
+def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_effective_user),
+                  request: Request = None):
     """Edita/activa/pausa una alerta. Si se reactiva o cambia el umbral,
     re-arma el edge-trigger (y re-ancla si es 'Desde ahora')."""
     import alerts_engine as _ae
+    import tecnico
     conn = get_db()
     try:
-        row = conn.execute(
-            "SELECT * FROM alerts WHERE id=? AND user_id=?", (alert_id, uid)
-        ).fetchone()
-        if not row:
-            raise HTTPException(404, "Alerta no encontrada.")
+        row = _alerta_de_mis_alertas(conn, alert_id, uid)
         sets, params = [], []
+        tecnica = row["kind"] == "tecnica"
+        ref_canal = None
+        if tecnica and row["senal"] == "linea":
+            ref_canal = _ae.referencia_de_linea(row["dibujo"])
+            if (ref_canal or {}).get("tipo") != "canal":
+                ref_canal = None
+        if data.modo is not None and ref_canal is None:
+            raise HTTPException(400, "Sólo un canal tiene cuándo cuenta salir.")
+        if tecnica and data.direction is not None:
+            import tecnico
+            if row["senal"] not in tecnico.SENALES_CON_SENTIDO and ref_canal is None:
+                raise HTTPException(400, "Esta señal no tiene para qué lado.")
+        if data.modo is not None:
+            sets.append("dibujo=?")
+            params.append(json.dumps({**ref_canal, "modo": data.modo}, separators=(",", ":")))
+        if tecnica and data.threshold is not None:
+            raise HTTPException(400, "Una alerta técnica no tiene precio.")
         if data.up_pct is not None or data.down_pct is not None:
             if row["kind"] != "pct_move":
                 raise HTTPException(400, "Los % son sólo de los avisos por movimiento.")
@@ -48392,6 +50908,17 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
             val = getattr(data, col)
             if val is not None:
                 sets.append(f"{col}=?"); params.append(val)
+        if data.active and not row["active"] and tecnica and row["senal"] == "linea":
+            # Una línea, un aviso (como el alta): reactivar uno pausado cuando
+            # ya armaste otro para la misma línea serían dos mails por el mismo
+            # toque (auditoría 29/10).
+            ref = _ae.referencia_de_linea(row["dibujo"]) or {}
+            for r in conn.execute(
+                    "SELECT id, dibujo FROM alerts WHERE user_id=? AND kind='tecnica' AND active=1 AND senal='linea' AND id<>?",
+                    (uid, alert_id)).fetchall():
+                otra = _ae.referencia_de_linea(r["dibujo"]) or {}
+                if (otra.get("asset"), otra.get("moneda"), otra.get("id")) == (ref.get("asset"), ref.get("moneda"), ref.get("id")):
+                    raise HTTPException(409, "Ya tenés otro aviso prendido para esta línea.")
         if data.active is not None:
             sets.append("active=?"); params.append(1 if data.active else 0)
             # Reactivar o editar → re-armar para que vuelva a poder disparar.
@@ -48408,8 +50935,19 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
         if not sets:
             return {"ok": True, "unchanged": True}
         params.append(alert_id)
-        with conn:
+        # Reactivar una técnica lee su serie (arrancar desde la última vela): el
+        # freno de la ficha, como el alta (pesado.py).
+        if (tecnica and data.active and row["senal"] == tecnico.SENAL_LINEA
+                and _ae.linea_de_la_alerta(conn, row) is None):
+            # Si no, quedaba activa hasta la vela siguiente y se apagaba sola,
+            # sin decir por qué (auditoría de la junta, 30/10).
+            raise HTTPException(400, "Esa línea ya no está en el gráfico: dibujala de nuevo y pedí el aviso desde ahí.")
+        with (_freno_tecnico(request, uid, "uno") if tecnica and data.active else nullcontext()), conn:
             conn.execute(f"UPDATE alerts SET {', '.join(sets)} WHERE id=?", params)
+            if tecnica and data.active:
+                # Reactivar una técnica = mirar desde ahora: lo que cruzó mientras
+                # estaba pausada no avisa de golpe.
+                _ae.arrancar_tecnica(conn, row)
         return {"ok": True}
     finally:
         conn.close()
@@ -48420,20 +50958,138 @@ def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
     """Borra una alerta (y sus eventos)."""
     conn = get_db()
     try:
+        try:
+            _alerta_de_mis_alertas(conn, alert_id, uid)
+        except HTTPException as e:
+            if e.status_code != 404:
+                raise
+            return {"ok": True}      # ya no está (o es de otro): como antes, sin decir cuál
+        colgadas = _colgadas_de_alerts(_esquema_por_tabla(conn))
         with conn:
-            # `alert_symbol_state` no tiene user_id: se ata por subquery a `alerts`
-            # para no tocar el estado de alertas AJENAS, y se borra ANTES que la
-            # alerta (después el subquery ya no la encontraría). Sin este candado,
-            # pasar el id de una alerta de otro reseteaba su "ya te avisé".
-            conn.execute(
-                "DELETE FROM alert_symbol_state WHERE alert_id IN "
-                "(SELECT id FROM alerts WHERE id=? AND user_id=?)", (alert_id, uid))
+            # Las tablas que cuelgan de la alerta sin `user_id` (`alert_symbol_state`)
+            # se atan por subquery a `alerts` para no tocar el estado de alertas
+            # AJENAS, y se borran ANTES que la alerta (después el subquery ya no la
+            # encontraría). Sin este candado, pasar el id de una alerta de otro
+            # reseteaba su "ya te avisé". Las mismas tablas que los dos barridos.
+            for t in colgadas:
+                conn.execute(f"DELETE FROM {t} WHERE alert_id IN "
+                             "(SELECT id FROM alerts WHERE id=? AND user_id=?)", (alert_id, uid))
             conn.execute("DELETE FROM alerts WHERE id=? AND user_id=?", (alert_id, uid))
             conn.execute("DELETE FROM alert_events WHERE alert_id=? AND user_id=?",
                          (alert_id, uid))
         return {"ok": True}
     finally:
         conn.close()
+
+
+# ─── Tu tesis (tesis.py) ──────────────────────────────────────────────────────
+
+class TesisIn(BaseModel):
+    # El activo como lo guarda la cartera ('GGAL', 'FCI:COCOS-RENDIMIENTO-A'):
+    # viaja en el cuerpo y no en la ruta porque un fondo no tiene forma de
+    # ticker (`_SYMBOL_RE` lo rechazaba y no se podía escribir su tesis).
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
+    texto: str = Field(..., max_length=2000)
+    # Acción argentina: la tendencia sale de su precio en BYMA ÷ el MEP, no del
+    # ADR (lo decide la pantalla, como en la ficha: `esAccionLocal`).
+    local: bool = False
+
+
+class RecordatorioIn(BaseModel):
+    tipo: str = Field(..., max_length=10)          # '3m' | 'fecha' | 'balance'
+    fecha: Optional[str] = Field(None, max_length=10)
+
+
+def _proximo_balance(conn, asset: str):
+    """La fecha del próximo balance (earnings) guardada en `financial_events`,
+    con la misma regla de «tener los eventos al día» que la pantalla de Eventos
+    (`_eventos_al_dia`). None si no hay (acción sin balances, ETF, bono)."""
+    _eventos_al_dia(conn, [asset])
+    for e in eventos_guardados(conn, [asset], 200):
+        if e["event_type"] == "earnings":
+            return e["event_date"]
+    return None
+
+
+@app.get("/api/tesis")
+def tesis_list(request: Request, uid: int = Depends(get_effective_user)):
+    """Tus tesis (con su historia) y la tendencia de hoy de cada activo."""
+    import tesis as _tesis
+    # Lee la tendencia de cada tesis en su fecha (`tecnico.tendencias_en_fechas`),
+    # la misma lectura de muchos activos que el diario: el mismo freno. Sin él,
+    # 10 cuentas con 20 tesis y 200 pedidos dejaron el «¿estás vivo?» en 64 s
+    # (re-test E1, ronda 2).
+    with _freno_tecnico(request, uid), db_abierta() as conn:
+        return _tesis.listar(conn, uid)
+
+
+@app.put("/api/tesis")
+def tesis_guardar(data: TesisIn, uid: int = Depends(get_effective_user), request: Request = None):
+    """Escribe o corrige la tesis de un activo (el mismo día se corrige; otro
+    día se guarda una nueva y la vieja queda: ver tesis.py)."""
+    import tesis as _tesis
+    # Sin pasarlo a mayúsculas: tiene que coincidir con `positions.asset` tal
+    # cual, que es contra lo que la pantalla lo busca.
+    sym = (data.asset or "").strip()
+    if not sym or any(ord(c) < 32 or c in "<>" for c in sym):
+        raise HTTPException(400, "Ese activo no es válido.")
+    # Guarda la tendencia del día de compra (lee la serie): el freno de la ficha.
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        # Un activo que existe, no texto libre: cada texto era una tesis nueva
+        # con su recordatorio, y su nombre iba al link del mail y a Yahoo
+        # (auditoría E2/E7/E8).
+        _exigir_activo_valido(conn, sym, uid)
+        try:
+            tid = _tesis.guardar(conn, uid, sym, data.texto, data.local)
+        except _tesis.TesisTope as e:
+            raise HTTPException(429, str(e))
+        except _tesis.TesisError as e:
+            raise HTTPException(400, str(e))
+        conn.commit()
+        return {"ok": True, "id": tid}
+
+
+@app.delete("/api/tesis/{tesis_id}")
+def tesis_borrar(tesis_id: int, uid: int = Depends(get_effective_user)):
+    import tesis as _tesis
+    with db_abierta() as conn:
+        try:
+            _tesis.borrar(conn, uid, tesis_id)
+        except LookupError as e:
+            raise HTTPException(404, str(e))
+        conn.commit()
+        return {"ok": True}
+
+
+@app.put("/api/tesis/{tesis_id}/recordatorio")
+def tesis_recordatorio(tesis_id: int, data: RecordatorioIn, uid: int = Depends(get_effective_user)):
+    """«Recordarme revisarla»: en 3 meses, una fecha o el día después del
+    próximo balance. Es una alerta del motor de siempre (mail + push)."""
+    import tesis as _tesis
+    with db_abierta() as conn:
+        t = conn.execute("SELECT asset FROM tesis WHERE id=? AND user_id=?",
+                         (tesis_id, uid)).fetchone()
+        if not t:
+            raise HTTPException(404, "No encontramos esa tesis.")
+        balance = _proximo_balance(conn, t["asset"]) if data.tipo == "balance" else None
+        try:
+            dia = _tesis.fijar_recordatorio(conn, uid, tesis_id, data.tipo, data.fecha, balance)
+        except _tesis.TesisError as e:
+            raise HTTPException(400, str(e))
+        conn.commit()
+        return {"ok": True, "fecha": dia, "balance": balance}
+
+
+@app.delete("/api/tesis/{tesis_id}/recordatorio")
+def tesis_sin_recordatorio(tesis_id: int, uid: int = Depends(get_effective_user)):
+    import tesis as _tesis
+    with db_abierta() as conn:
+        try:
+            _tesis.quitar_recordatorio(conn, uid, tesis_id)
+        except LookupError as e:
+            raise HTTPException(404, str(e))
+        conn.commit()
+        return {"ok": True}
 
 
 @app.post("/api/alerts/events/seen")
@@ -48448,6 +51104,61 @@ def alerts_events_seen(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+def _resumen_semanal_job(conn, now=None) -> dict:
+    """Una pasada del resumen de los sábados, con su guarda propia: un error acá
+    no puede dejar sin evaluar las alertas del libro que vienen después."""
+    import senales_semana
+    try:
+        if not senales_semana.toca(now or datetime.utcnow()):
+            return {"esperando": "sábados desde las 10:00"}
+        if "velas_diarias" in _corridas_en_curso:
+            return {"esperando": "las velas se están guardando"}
+        if not _tomar_corrida("resumen_semanal"):
+            return {"esperando": "ya hay una corrida en curso"}
+        try:
+            return senales_semana.correr_si_toca(conn, now)
+        finally:
+            _soltar_corrida("resumen_semanal")
+    except Exception as _ex:
+        log.error("resumen semanal en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {"error": str(_ex)}
+
+
+def _run_termometro_job() -> None:
+    """La corrida del termómetro (termometro.py): baja lo que falte del universo
+    y guarda el número del día. Su conexión, en su hilo."""
+    import termometro
+    with db_abierta() as conn:
+        log.info("termómetro: %s", termometro.correr(conn))
+
+
+def _termometro_job(conn, now=None) -> dict:
+    """Una vez por día, un rato después de las velas de la noche (adentro de
+    `termometro.toca`). Lo pega el cron de las alertas cada 10 minutos y corre
+    en su propio hilo: le pide a Yahoo hasta ~500 tickers y las alertas no
+    pueden esperarlo. Su propia guarda, como el resumen de los sábados."""
+    import termometro
+    try:
+        if "velas_diarias" in _corridas_en_curso:
+            return {"esperando": "las velas se están guardando"}
+        if not termometro.toca(conn, now or datetime.utcnow()):
+            return {"esperando": "ya corrió hoy, o falta la corrida de la noche"}
+        # Se cierra la lectura antes de soltar el hilo (en Postgres quedaba abierta).
+        conn.commit()
+        return _correr_en_fondo("termometro", _run_termometro_job)
+    except Exception as _ex:
+        log.error("termómetro en el cron: %s", _ex, exc_info=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {"error": str(_ex)}
+
+
 def _evaluar_alertas_job() -> dict:
     """Una corrida de las alertas: las de precio y las del libro del asesor."""
     import alerts_engine as _ae
@@ -48460,7 +51171,7 @@ def _evaluar_alertas_job() -> dict:
         try:
             result = _ae.evaluate_alerts(conn)
         except Exception as _ex:
-            log.error("alertas de precio en el cron: %s", _ex)
+            log.error("alertas de precio en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
             result = {"error_precio": str(_ex)}
             # Lo que quedó a medias no puede confirmarse con el primer commit
             # de las alertas del libro, que usan esta misma conexión: alertas
@@ -48469,15 +51180,52 @@ def _evaluar_alertas_job() -> dict:
                 conn.rollback()
             except Exception:
                 pass
+        # Las técnicas: una vez por día, con las velas de la noche (adentro se
+        # fija si ya es hora y si hay velas nuevas); tus líneas y canales,
+        # además, en cada pasada durante la rueda. Su propia guarda, igual que
+        # las de arriba y las del libro.
+        try:
+            if "velas_diarias" in _corridas_en_curso:
+                # Las velas se están guardando (de noche, o el botón de /admin a
+                # media mañana): entre que se bajan y que se corrigen los cambios
+                # de ratio de un CEDEAR, la serie en pesos está a medio arreglar.
+                # Se miran en la pasada siguiente, cuando terminó.
+                result["tecnicas"] = {"esperando": "las velas se están guardando"}
+            else:
+                result["tecnicas"] = _ae.evaluar_tecnicas(conn)
+        except Exception as _ex:
+            log.error("alertas técnicas en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        # El resumen de «Tus señales» (senales_semana.py): sábados desde las
+        # 10:00 de Argentina. Adentro se fija si es la hora; cada persona tiene
+        # su fila de la semana, así que las pasadas siguientes no mandan nada.
+        # No mientras se guardan las velas (la misma razón que las técnicas).
+        result["semana"] = _resumen_semanal_job(conn)
+        # El termómetro del mercado: una vez por día, después de las velas de
+        # la noche, en su propio hilo (adentro se fija si toca).
+        result["termometro"] = _termometro_job(conn)
         # Mismo ciclo: las alertas del LIBRO del asesor (movimiento de la
         # cartera de un cliente) se evalúan acá → el asesor no tiene que dar
         # de alta ningún cron nuevo.
+        # Los recordatorios de las tesis («Recordarme revisarla»): mismo
+        # cron, misma entrega, su propia guarda.
+        try:
+            result.update(_ae.evaluar_recordatorios(conn))
+        except Exception as _ex:
+            log.error("recordatorios de tesis en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         try:
             import advisor_alerts
             result["advisor"] = advisor_alerts.evaluate(
                 conn, market_open=_ae._market_open_now(_dtmod.utcnow()))
         except Exception as _ex:
-            log.error("advisor alerts en el cron: %s", _ex)
+            log.error("advisor alerts en el cron: %s: %s", type(_ex).__name__, _ex, exc_info=True)
         log.info("alertas: %s", result)
         return result
     finally:
@@ -48766,6 +51514,9 @@ def advisor_groups_create(data: AdvisorGroupIn, uid: int = Depends(get_current_u
         rules = ag.normalize_rules(data.rules)
         if not rules:
             raise HTTPException(400, "Elegí al menos una condición para el grupo.")
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         n = conn.execute("SELECT COUNT(*) c FROM advisor_groups WHERE advisor_uid=?",
                          (uid,)).fetchone()["c"]
         if n >= ag.MAX_GROUPS:
@@ -49278,7 +52029,8 @@ def primeros_pasos(uid: int = Depends(get_current_user)):
         import market_brief
         fila = conn.execute("SELECT app_instalada_at FROM users WHERE id = ?", (uid,)).fetchone()
         alertas = conn.execute(
-            "SELECT COUNT(*) FROM alerts WHERE user_id = ?", (uid,)).fetchone()[0]
+            "SELECT COUNT(*) FROM alerts WHERE user_id = ? AND kind != 'recordatorio'",
+            (uid,)).fetchone()[0]
         return {
             "app_instalada": bool(fila and fila["app_instalada_at"]),
             "dispositivos_push": _contar_dispositivos_push(conn, uid),
@@ -49619,15 +52371,19 @@ def advisor_create_client(
         # Cap duro de clientes activos: sin esto, una cuenta advisor comprometida
         # podría inflar `users` sin límite (los shadows no los recolecta nadie), y
         # los IN(...) del roster/book reventarían el tope de variables de SQLite.
+        synthetic_email = f"cliente.{_secrets.token_hex(6)}@{_SHADOW_EMAIL_DOMAIN}"
+        # Password random hasheado: nadie puede loguear con esta cuenta hasta
+        # que el flujo de invitación/claim (F4) setee una contraseña real. ANTES
+        # del turno: el hash tarda ~0,3 s y con el turno tomado nadie escribe.
+        random_hash = pwd_ctx.hash(_secrets.token_urlsafe(24))
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         n_active = conn.execute(
             "SELECT COUNT(*) c FROM advisor_clients WHERE advisor_uid=? AND status='active'",
             (uid,)).fetchone()["c"]
         if n_active >= ADVISOR_MAX_CLIENTS:
             raise HTTPException(400, f"Llegaste al máximo de {ADVISOR_MAX_CLIENTS} clientes activos.")
-        synthetic_email = f"cliente.{_secrets.token_hex(6)}@{_SHADOW_EMAIL_DOMAIN}"
-        # Password random hasheado: nadie puede loguear con esta cuenta hasta
-        # que el flujo de invitación/claim (F4) setee una contraseña real.
-        random_hash = pwd_ctx.hash(_secrets.token_urlsafe(24))
         with conn:
             cur = conn.execute(
                 """INSERT INTO users (email, name, password_hash, is_admin,
@@ -49966,6 +52722,9 @@ def advisor_invite_client(
         # a alguien usando el mismo shadow para probar/spammear muchos emails
         # de terceros — esto es además del rate-limit general de arriba
         # (10/300s por asesor).
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, uid)
         sent_today = conn.execute(
             """SELECT COUNT(*) AS n FROM advisor_claim_tokens
                WHERE user_id=? AND created_at > datetime('now', '-1 day')""",
@@ -50078,6 +52837,9 @@ def _advisor_link_request(conn, uid: int, shadow_uid: int, target, data: Advisor
 
     # Tope diario por (asesor, cuenta): del otro lado hay una persona real que
     # todavía no contestó.
+    # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+    # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+    _tomar_turno(conn, uid)
     recientes = conn.execute(
         """SELECT COUNT(*) c FROM advisor_link_requests
            WHERE advisor_uid=? AND client_uid=? AND created_at > datetime('now', '-1 day')""",
@@ -50163,6 +52925,9 @@ def _apply_link_request(conn, req, accept: bool) -> dict:
         # El cap del plan se chequea al ACEPTAR, no al pedir: entre el pedido y
         # el sí pueden haber pasado dos semanas y un libro entero. Solo descuenta
         # la ficha si de verdad va a salir del libro.
+        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
+        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
+        _tomar_turno(conn, advisor_uid)
         n_active = conn.execute(
             "SELECT COUNT(*) c FROM advisor_clients WHERE advisor_uid=? AND status='active'",
             (advisor_uid,)).fetchone()["c"]
@@ -50230,7 +52995,12 @@ def _optional_uid(request: Request) -> Optional[int]:
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=auth[7:].strip())
     try:
         return get_current_user(request, creds)
-    except HTTPException:
+    except HTTPException as e:
+        # El pedido dice que es de otra persona que la de la sesión: no se lo
+        # trata como «sin sesión» (ver PERSONA_HEADER); se rechaza igual que
+        # en el resto, y la pantalla lo toma como el cambio de persona.
+        if e.status_code == PERSONA_CAMBIADA:
+            raise
         return None
 
 
@@ -53122,7 +55892,7 @@ def _advisor_realized_raw(conn, ids: list) -> dict:
     for r in conn.execute(
         f"""SELECT user_id, broker, asset, op_type,
                    {realized_pnl.realized_usd_sql()} AS pnl_usd,
-                   pnl_pct, cost_basis_consumed, currency, fx_to_usd
+                   pnl_pct, cost_basis_consumed, currency, fx_to_usd, costo_usd, cobrado_usd
             FROM operations WHERE user_id IN ({ph}) AND pnl_usd IS NOT NULL""", ids
     ).fetchall():
         pnl = float(r["pnl_usd"] or 0)
@@ -53148,7 +55918,8 @@ def _advisor_realized_raw(conn, ids: list) -> dict:
         if b is None:
             b = agg[k] = {"asset": asset.upper(), "asset_type": atype,
                           "is_ar_market": bool(is_ar), "realized_usd": 0.0,
-                          "income_usd": 0.0, "cost_usd": 0.0, "cost_incomplete": False}
+                          "income_usd": 0.0, "cost_usd": 0.0, "cost_incomplete": False,
+                          "_reglas": set()}
         elif atype and not b["asset_type"]:
             b["asset_type"] = atype
 
@@ -53174,6 +55945,13 @@ def _advisor_realized_raw(conn, ids: list) -> dict:
             continue
 
         b["realized_usd"] += pnl
+        # ¿Con qué regla se anotó esta venta? Las de pesos tienen dos: la vieja (ganancia en
+        # pesos ÷ dólar de la venta; costo despejado a ESE dólar) y la de cada punta a su
+        # dólar (resultado_dual; costo al dólar de compra). Sumadas en un mismo grupo dan un
+        # % que no es de ninguna: se marca abajo y la tasa deja de publicarse.
+        if (r["currency"] or "").upper() == "ARS":
+            b["_reglas"].add("nueva" if (r["costo_usd"] is not None and r["cobrado_usd"] is not None)
+                             else "vieja")
         pct = r["pnl_pct"]
         cost = (pnl / (float(pct) / 100)) if (pct is not None and float(pct) != 0) else None
         if cost is not None and cost == cost and cost > 0 and cost != float("inf"):
@@ -53181,6 +55959,9 @@ def _advisor_realized_raw(conn, ids: list) -> dict:
         else:
             b["cost_incomplete"] = True
 
+    for b in agg.values():
+        if len(b["_reglas"]) > 1:
+            b["cost_incomplete"] = True
     return agg
 
 
@@ -53196,16 +55977,19 @@ def _advisor_realized_by_asset(conn, ids: list, raw: dict = None):
             f = folded[k] = {"asset": asset, "asset_type": b["asset_type"],
                              "is_ar_market": is_ar, "realized_usd": 0.0,
                              "income_usd": 0.0, "cost_usd": 0.0,
-                             "cost_incomplete": False}
+                             "cost_incomplete": False, "_reglas": set()}
         elif b["asset_type"] and not f["asset_type"]:
             f["asset_type"] = b["asset_type"]
         f["realized_usd"] += b["realized_usd"]
         f["income_usd"] += b["income_usd"]
         f["cost_usd"] += b["cost_usd"]
         f["cost_incomplete"] = f["cost_incomplete"] or b["cost_incomplete"]
+        f["_reglas"] |= b["_reglas"]
 
     out = []
     for b in folded.values():
+        if len(b["_reglas"]) > 1:      # clientes con una y otra regla: el % no es de ninguna
+            b["cost_incomplete"] = True
         # Ojo con el `or`: dos clientes que vendieron +500 y −500 dan un neto de
         # 0, pero el capital que estuvo en juego SÍ va al denominador del
         # rendimiento. Tirar la fila perdía esos US$10.000 de costo y la porción

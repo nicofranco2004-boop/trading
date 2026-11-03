@@ -372,10 +372,15 @@ def check_broker_quota(conn, user_id: int) -> tuple[bool, dict]:
 
 def _count_alerts(conn, user_id: int) -> int:
     """COUNT de alertas del user. Si la tabla `alerts` no existe todavía
-    (DB parcial de un test, o schema viejo pre-migración) → 0 (fail-open)."""
+    (DB parcial de un test, o schema viejo pre-migración) → 0 (fail-open).
+
+    Los recordatorios de una tesis (`kind='recordatorio'`, tesis.py) no cuentan:
+    son una nota tuya con fecha, no un aviso del mercado. Contarlos dejaba a un
+    Free sin alertas de precio por haber pedido que le recuerden revisar algo."""
     try:
         row = conn.execute(
-            "SELECT COUNT(*) AS c FROM alerts WHERE user_id = ?", (user_id,)
+            "SELECT COUNT(*) AS c FROM alerts WHERE user_id = ? AND kind != 'recordatorio'",
+            (user_id,)
         ).fetchone()
         return int(row["c"] or 0) if row else 0
     except Exception:

@@ -13,6 +13,7 @@
 
 import { useContext } from 'react'
 import { useMoneyFormat, fmtConvertedRaw } from '../../contexts/CurrencyContext'
+import { OCULTO } from '../../contexts/PrivacyContext'
 import { PeriodoEnVista } from '../../hooks/usePesosDelPeriodo'
 import { pctTxt, pctVar, pctColor } from '../../utils/format'
 
@@ -45,7 +46,20 @@ function ConcentrationRiskEvidence({ ev }) {
   )
 }
 
-function DriverEvidence({ ev, fmtUsd }) {
+// En Pesos estos mini-cuadros son los dólares del servidor multiplicados por el dólar del cierre del
+// período: no tienen los pesos de cada venta. El «Realizado» de la tarjeta (en sus métricas), en
+// cambio, suma las ventas en pesos a su monto exacto (utils/realizadoEnPesos.js), así que los dos
+// pueden diferir.
+function NotaEnPesos({ enPesos }) {
+  if (!enPesos) return null
+  return (
+    <p className="text-[10px] text-ink-3 mt-1">
+      Estos montos son dólares multiplicados por el dólar del cierre. El «Realizado» de la tarjeta usa los pesos exactos de tus ventas en pesos, por eso pueden no coincidir.
+    </p>
+  )
+}
+
+function DriverEvidence({ ev, fmtUsd, enPesos }) {
   return (
     <div className="rounded-sm bg-bg-3/40 px-2.5 py-2 text-[11px]">
       <div className="flex items-baseline justify-between mb-0.5">
@@ -55,6 +69,7 @@ function DriverEvidence({ ev, fmtUsd }) {
         </span>
       </div>
       <p className="text-[10px] text-ink-3">P&L realizado de este activo en el período.</p>
+      <NotaEnPesos enPesos={enPesos} />
     </div>
   )
 }
@@ -99,11 +114,18 @@ function WinRateEvidence({ ev }) {
   )
 }
 
-function DepositsDriveEvidence({ ev, fmtUsd, fmtFlujo = fmtUsd }) {
+// «Mercado» es el resultado del período: la MISMA cifra que la cabecera de la tarjeta. En Pesos esa
+// cabecera ya no son los dólares del servidor × dólar sino la resta de los pesos de la tarjeta
+// (utils/periodoEnPesos.js), así que acá se lee de ahí (`vistaEnPesos`, con el resultado y los
+// depósitos del período ya en pesos) y no se vuelve a convertir `market_growth`.
+function DepositsDriveEvidence({ ev, fmtUsd, fmtFlujo = fmtUsd, vistaEnPesos = null }) {
   const deps = ev.deposits || 0
-  const market = ev.market_growth || 0
-  const totalAbs = deps + Math.abs(market) || 1
-  const depsPct = (deps / totalAbs) * 100
+  const market = vistaEnPesos ? vistaEnPesos.resultado : (ev.market_growth || 0)
+  const fmtMercado = vistaEnPesos ? vistaEnPesos.fmt : fmtUsd
+  // La barra compara las dos piezas en la MISMA unidad: en Pesos, los pesos de la tarjeta.
+  const depsBarra = vistaEnPesos ? vistaEnPesos.depositos : deps
+  const totalAbs = depsBarra + Math.abs(market) || 1
+  const depsPct = (depsBarra / totalAbs) * 100
   const marketPct = (Math.abs(market) / totalAbs) * 100
   return (
     <div className="space-y-2">
@@ -123,8 +145,13 @@ function DepositsDriveEvidence({ ev, fmtUsd, fmtFlujo = fmtUsd }) {
         <div>
           <div className="text-ink-3 text-[12.5px] font-medium">Mercado</div>
           <div className={`font-mono tabular ${market >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-            {fmtUsd(market)}
+            {fmtMercado(market)}
           </div>
+          {/* El hallazgo se calcula en dólares; en Pesos el mercado trae también lo que subió el
+              dólar, y sin decirlo el número parecía contradecir al título («vino de aportes»). */}
+          {vistaEnPesos?.conDolar && (
+            <div className="text-ink-3 text-[11px] leading-snug">incluye lo que movió el dólar</div>
+          )}
         </div>
       </div>
     </div>
@@ -171,8 +198,9 @@ function StreakEvidence({ ev }) {
   )
 }
 
-function RealizedVsUnrealizedEvidence({ ev, fmtUsd }) {
+function RealizedVsUnrealizedEvidence({ ev, fmtUsd, enPesos }) {
   return (
+    <div>
     <div className="grid grid-cols-2 gap-2 text-[11px]">
       <div className="rounded-sm bg-rendi-pos/[0.08] px-2 py-1.5 border border-rendi-pos/20">
         <div className="text-ink-3 text-[12.5px] font-medium">Realizado</div>
@@ -182,6 +210,8 @@ function RealizedVsUnrealizedEvidence({ ev, fmtUsd }) {
         <div className="text-ink-3 text-[12.5px] font-medium">No realizado</div>
         <div className="font-mono tabular text-rendi-neg">{fmtUsd(ev.unrealized)}</div>
       </div>
+    </div>
+    <NotaEnPesos enPesos={enPesos} />
     </div>
   )
 }
@@ -206,7 +236,7 @@ function ReversalEvidence({ ev }) {
   )
 }
 
-function DividendHeavyEvidence({ ev, fmtUsd }) {
+function DividendHeavyEvidence({ ev, fmtUsd, enPesos }) {
   const totalPos = (ev.total_realized || 0) > 0 ? ev.total_realized : 1
   const divPct = ((ev.dividends_interest || 0) / totalPos) * 100
   const tradingPct = 100 - divPct
@@ -228,6 +258,7 @@ function DividendHeavyEvidence({ ev, fmtUsd }) {
           </div>
         </div>
       </div>
+      <NotaEnPesos enPesos={enPesos} />
     </div>
   )
 }
@@ -295,8 +326,9 @@ export default function InsightEvidence({ insight }) {
   const money = useMoneyFormat()
   const periodo = useContext(PeriodoEnVista)
   // Dentro de una tarjeta de período: al dólar de ESE período. Suelta: el de hoy.
+  // `money.oculto`: «Ocultar saldos», el mismo que tapa `money.fmtMoney`.
   const conFx = (fx) => (v) => (v == null || !Number.isFinite(v) ? '—'
-    : fmtConvertedRaw(money.isArs ? v * fx : v, money.currency))
+    : money.oculto ? OCULTO : fmtConvertedRaw(money.isArs ? v * fx : v, money.currency))
   const fmtUsd = periodo ? conFx(periodo.fxCierre) : (v) => money.fmtMoney(v, { signed: false })
   // Los depósitos, con el dólar de los depósitos del período: así "Aportaste"
   // dice lo mismo que "Depósitos" de la misma tarjeta.
@@ -311,5 +343,14 @@ export default function InsightEvidence({ insight }) {
       </pre>
     )
   }
-  return <Renderer ev={insight.evidence} fmtUsd={fmtUsd} fmtFlujo={fmtFlujo} fmtHoy={fmtHoy} />
+  const enPesos = !!periodo && periodo.moneda === 'ARS'
+  // El resultado y los depósitos del período ya en pesos (no se vuelven a convertir): para la
+  // evidencia que repite la cifra de la cabecera de la tarjeta.
+  const vistaEnPesos = enPesos && periodo.resultado != null
+    ? { resultado: periodo.resultado, depositos: periodo.depositos, fmt: conFx(1),
+        // Con puntas a mercado, el resultado incluye lo que el dólar movió sobre lo que ya tenías.
+        conDolar: periodo.medicion === 'mercado' || periodo.medicion === 'motor' }
+    : null
+  return <Renderer ev={insight.evidence} fmtUsd={fmtUsd} fmtFlujo={fmtFlujo} fmtHoy={fmtHoy}
+                   enPesos={enPesos} vistaEnPesos={vistaEnPesos} />
 }

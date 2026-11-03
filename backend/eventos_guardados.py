@@ -17,6 +17,9 @@ Por qué existe (2026-10-01): eran siete copias de la misma consulta.
 Los mails (advisor_brief, market_brief) preguntan otra cosa —los eventos de UN
 día— y ya usan `fechas.hoy_art`; no pasan por acá.
 
+Los balances que YA PASARON (las «B» del gráfico de la ficha) se leen con
+`balances_entre`, también acá: es la misma tabla, otra ventana.
+
 Para leer: este módulo. Para traerlos de Yahoo: `main._eventos_al_dia`.
 """
 
@@ -71,4 +74,30 @@ def eventos_guardados(conn, tickers: Iterable[str], dias: int, *,
             "confirmed": bool(r["confirmed"]),
             "source": r["source"],
         })
+    return out
+
+
+def balances_entre(conn, ticker: str, desde: str, hasta: str) -> List[dict]:
+    """Los balances guardados de `ticker` con fecha entre `desde` y `hasta`
+    (inclusive), del más viejo al más nuevo: [{fecha, momento, eps_esperado,
+    eps_declarado, sorpresa_pct}] (`momento`:
+    'antes_del_cierre' | 'despues_del_cierre' | None si no se sabe la hora).
+    Los pasados los trae `main._earnings_pasados_al_dia`; el calendario de
+    Novedades deja el próximo, que también cae acá cuando pasa."""
+    out = []
+    for r in conn.execute(
+            """SELECT event_date, details FROM financial_events
+                WHERE ticker = ? AND event_type = 'earnings'
+                  AND event_date >= ? AND event_date <= ?
+                ORDER BY event_date""", (ticker, desde, hasta)).fetchall():
+        try:
+            det = json.loads(r["details"]) if r["details"] else {}
+        except (TypeError, ValueError):
+            det = {}
+        det = det if isinstance(det, dict) else {}
+        out.append({"fecha": str(r["event_date"])[:10], "momento": det.get("momento"),
+                    # Lo que declaró la empresa contra lo que esperaba el mercado
+                    # (ganancia por acción), si se sabe.
+                    "eps_esperado": det.get("eps_esperado"), "eps_declarado": det.get("eps_declarado"),
+                    "sorpresa_pct": det.get("sorpresa_pct")})
     return out

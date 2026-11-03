@@ -5,7 +5,7 @@ import { instalarNavegadorMinimo, montar, enActo } from '../testing/navegadorMin
 // 🔴 CERRAR SESIÓN CON EL CHAT ABIERTO, CON LA SESIÓN DE VERDAD (2026-10-05).
 //
 // Las pruebas de fotoDeOtraCuenta.test.js simulan quién está logueado. Ésta
-// monta AuthProvider y VozProvider REALES, juntos, y usa login() y logout()
+// monta AuthProvider y VozProvider REALES, juntos, y usa entrar() y logout()
 // de la app: si alguien cambia el orden de lo que hace el logout (salir del
 // cliente, borrar lo guardado, vaciar la sesión), esto lo ve. El caso es el
 // peor: el asesor cierra sesión adentro de un cliente con Rendi a mitad de una
@@ -64,7 +64,7 @@ describe('cerrar sesión con el chat abierto (sesión y chat reales)', () => {
 
     // Entra el asesor, abre a Ana y le pregunta a Rendi.
     enElServidor = ASESOR
-    await enActo(() => v.auth.login(null, ASESOR.name, { email: ASESOR.email }))
+    await enActo(() => v.auth.entrar())
     await enActo(() => api.setClientContext(ANA))
     await enActo(() => v.voz.ask('sobre Ana'))
     expect(charla()).toEqual(['u: sobre Ana', 'a: Respuesta a: sobre Ana'])
@@ -84,7 +84,7 @@ describe('cerrar sesión con el chat abierto (sesión y chat reales)', () => {
 
     // Entra otra persona en la misma pestaña.
     enElServidor = OTRA
-    await enActo(() => v.auth.login(null, OTRA.name, { email: OTRA.email }))
+    await enActo(() => v.auth.entrar())
     expect(charla()).toEqual([])
     await enActo(() => v.voz.ask('soy otra persona'))
     expect(pedidos.at(-1)).toEqual({ cliente: null, brokers: ['IOL'], mensajes: ['u: soy otra persona'] })
@@ -102,7 +102,9 @@ describe('cerrar sesión con el chat abierto (sesión y chat reales)', () => {
     sesion.set('rendi_chat_v1', JSON.stringify([{ role: 'user', content: 'charla privada del asesor' }]))
     sesion.set('rendi_chat_v1_c2', JSON.stringify([{ role: 'user', content: 'charla privada sobre Ana' }]))
     // El servidor no contesta /auth/me (y el login de "olvidé mi contraseña"
-    // no trae el email): por un rato no se sabe quién es.
+    // no trae el email). Desde la puerta única (AuthContext.entrar, re-test a
+    // ciegas 7) quién es lo dice el servidor: si no contesta, la entrada falla
+    // —la pantalla lo dice— y la pestaña no queda adentro sin saber de quién es.
     vi.spyOn(api.api, 'get').mockImplementation(async (path) => {
       if (path === '/auth/me') throw Object.assign(new Error('HTTP 503'), { status: 503 })
       if (path === '/brokers') return BROKERS[api.getClientContext()?.id ?? null]
@@ -116,7 +118,8 @@ describe('cerrar sesión con el chat abierto (sesión y chat reales)', () => {
     const v = { auth: null, voz: null }
     const Mirar = () => { v.auth = auth.useAuth(); v.voz = voz.useVoz(); return null }
     const m = await montar(h(auth.AuthProvider, null, h(voz.VozProvider, null, h(Mirar))))
-    await enActo(() => v.auth.login(null, 'Q', {}))
+    await enActo(() => v.auth.entrar().catch(() => {}))
+    expect(v.auth.user, 'no entró sin saber quién es').toBe(null)
     expect(v.voz.thread).toEqual([])
     await enActo(() => v.voz.ask('hola, soy otra persona'))
     expect(pedidos).toEqual([['u: hola, soy otra persona']])

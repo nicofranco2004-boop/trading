@@ -1,5 +1,12 @@
 // AssetDetail — ficha completa de un activo (/activo/:ticker).
 // ═══════════════════════════════════════════════════════════════════════════
+// LA ficha de un activo, lo tengas o no: la abren la Cartera, los buscadores,
+// el mapa de calor, los movers, la watchlist y los eventos (urlDeActivo).
+// Si NO lo tenés: el último precio y la variación del día, el análisis técnico
+// (LecturaTecnica, sin tu precio ni tus compras), agregarlo a la watchlist y
+// el análisis fundamental de la empresa. Antes eso era un modal aparte con un
+// gráfico chico de 30 días (AssetQuickView): ahora es una sola pantalla.
+//
 // Drill-down pedido en el design audit (#1): al clickear un activo en la cartera
 // se abre TODO sobre ese ticker, agregando lotes de todos los brokers:
 //   • Hero: valor actual + P&L total (USD + %)
@@ -7,200 +14,111 @@
 //   • Stats: P&L realizado de toda la vida, win rate, veces operado, costo prom
 //   • Lotes abiertos (orden FIFO: más viejo primero = el que se vende primero)
 //   • Historial de operaciones (cada trade con su P&L realizado, win/loss)
-//   • Link a Fundamentals (si es acción/CEDEAR)
+//   • Análisis fundamental de la empresa (si es acción/CEDEAR), al final
 //
 // Responsive: una sola página sirve desktop y mobile (max-w centrado en desktop,
 // full-width en mobile). Reusa la matriz de valuación de PositionDetailMobile.
 
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, TrendingUp, TrendingDown, Calendar, BarChart3, Layers,
+  ArrowLeft, TrendingUp, TrendingDown, Calendar, Star, Check,
 } from 'lucide-react'
 import AssetLogo from '../components/AssetLogo'
-import AssetMiniChart from '../components/home/AssetMiniChart'
+import LecturaTecnica from '../components/asset/LecturaTecnica'
+import AnalyzeView from '../components/fundamentals/AnalyzeView'
+import LiquidezByma from '../components/asset/LiquidezByma'
+import SeccionFicha from '../components/asset/SeccionFicha'
+import Panel from '../components/Panel'
+import TesisDelActivo from '../components/tesis/TesisDelActivo'
+import { useTesis } from '../hooks/useDiario'
+import { tesisVigente } from '../utils/diarioOperaciones'
+import Segmento from '../components/asset/Segmento'
 import Skeleton from '../components/Skeleton'
-import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
-import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
-import { empresaDeTenencias } from '../utils/buscadorRapido'
+import { isBymaHolding, fciLabel } from '../utils/valuation'
+import { empresaDeTenencias, empresaDeTicker, urlDeActivo } from '../utils/buscadorRapido'
+import { useFichaDelActivo, esFci } from '../hooks/useFichaDelActivo'
+import { monedaDe } from '../components/home/Watchlist'
+import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { ChipDelActivo } from '../components/FueraDeHorario'
-import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
-import { operacionesEnUsd } from '../utils/assetPnl'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import { esCobro } from '../utils/tradeStats'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
-// ─── Matriz de valuación por lote (reusa la lógica de PositionDetailMobile) ──
-// Devuelve { valueUsd, investedUsd, pnlUsd, priceLocal } para UN lote.
-function valueLot(p, { brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis = 'today' }) {
-  const broker = brokers.find(b => b.name === p.broker)
-  const isAR = broker?.currency === 'ARS'
-  const qty = p.quantity || 0
-  const cashInvested = p.invested || 0
-  if (p.is_cash) {
-    const v = isAR ? cashInvested / tcValuacion : cashInvested
-    return { valueUsd: v, investedUsd: v, pnlUsd: 0, priceLocal: null }
-  }
-  // Costo económico del lote = lo pagado + las comisiones de compra. Es la
-  // definición de la casa: la usan computeBrokerValue (valuation.js:486), las
-  // filas del desktop, usdLotValue, pesoLotUsd y el backend
-  // (persister.py:747). El CASH no lleva comisión y por eso sigue con `invested`.
-  const invested = cashInvested + (p.commissions || 0)
-  // Lote en PESOS (currency='ARS') en una cuenta USD → estilo-ARS por el MEP
-  // (tcCedear): costo Y valor a USD por el mismo rate, no el costo en pesos como dólares.
-  if (costInPesos(p) && !isAR) {
-    const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true, p.asset_type)]
-    // Costo DISPLAY (modo 'purchase' → tc_compra); guardCost = costo a hoy, denominador
-    // del guard (mode-independent, así 'purchase' no afloja el filtro anti-distorsión).
-    const investedUsd = invested / costBasisRate(p, tcCedear, costBasis)
-    const guardCost = invested / tcCedear
-    const priceLocal = priceArs != null ? priceArs / tcCedear : null
-    const mkt = priceLocal != null ? priceLocal * qty : investedUsd
-    const valueUsd = trustMktValue(mkt, guardCost, p.asset_type, p.price_override != null) ? mkt : investedUsd
-    return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
-  }
-  // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
-  // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz).
-  // El costo YA está en USD (sin ÷MEP); el valor va por el tipo de instrumento
-  // (usdLotValue). Sin esto, la rama isAR de abajo dividía el costo USD por el
-  // blue → la ficha del activo colapsaba (~1/MEP).
-  if (costInUsd(p) && isAR) {
-    const { investedUsd, valueUsd, priceUsd } = usdLotValue(p, prices, tcCedear)
-    return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal: priceUsd }
-  }
-  // Lo mismo para la CRIPTO comprada en dólares (costInUsd la excluye): sin esto
-  // caía en la rama isAR de abajo y la ficha mostraba el costo ÷ dólar (~0).
-  if (cryptoCostInUsd(p) && isAR) {
-    const { investedUsd, valueUsd, priceUsd } = cryptoUsdLotValue(p, prices, { cedearRate: tcCedear, tcCripto, isExchange: !!broker?.is_exchange })
-    return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal: priceUsd }
-  }
-  if (isAR) {
-    const priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
-    const investedUsd = invested / costBasisRate(p, tcValuacion, costBasis)   // display (modo)
-    const guardCost = invested / tcValuacion                                  // hoy (guard)
-    const mkt = priceLocal != null ? (priceLocal * qty) / tcValuacion : investedUsd
-    const valueUsd = trustMktValue(mkt, guardCost, p.asset_type, p.price_override != null) ? mkt : investedUsd
-    return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
-  }
-  if ((p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)) && !isFciSym(p.asset) && p.price_override == null && !isCrypto(p.asset)) {
-    const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
-    const priceLocal = priceArs != null ? priceArs / tcCedear : null
-    const mkt = priceLocal != null ? priceLocal * qty : invested
-    const valueUsd = trustMktValue(mkt, invested, p.asset_type, p.price_override != null) ? mkt : invested
-    return { valueUsd, investedUsd: invested, pnlUsd: valueUsd - invested, priceLocal }
-  }
-  // Cripto en broker AR (no exchange) se valúa al dólar MEP; en exchange queda a spot.
-  // El factor multiplica valor Y costo por igual → el P&L% no cambia.
-  const f = cryptoBrokerFactor(p.asset, !!broker?.is_exchange, p.price_override != null, tcCripto, tcCedear, broker?.currency)
-  // Misma key que pide symbolFor. Antes leía prices[p.asset] CRUDO: un
-  // class-share (BRK.B se pide como 'BRK-B') nunca matcheaba y el lote quedaba
-  // congelado al costo con P&L 0. El fallback a la cruda cubre el last-known
-  // del cron y los payloads legacy, igual que el motor canónico.
-  const priceLocal = p.price_override ?? prices[valuationPriceKey(p, isAR)] ?? prices[p.asset]
-  const investedUsd = invested * f
-  const mkt = (priceLocal != null ? priceLocal * qty : invested) * f
-  const valueUsd = trustMktValue(mkt, investedUsd, p.asset_type, p.price_override != null) ? mkt : investedUsd
-  return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal }
+// «Ordenar por» (Nico, 28/10): técnico primero (el de entrada) o fundamental
+// primero. Se recuerda para la próxima ficha que abras, en este navegador; si
+// el almacenamiento está bloqueado (modo privado), técnico primero.
+const CLAVE_ORDEN = 'rendi_ficha_orden'
+function ordenGuardado() {
+  try { return leerDelAlmacen(CATALOGO.ordenDeLaFicha) === 'fundamental' ? 'fundamental' : 'tecnico' } catch { return 'tecnico' }
 }
-
-// Símbolo de precio que necesita un lote (para fetchear el set correcto).
-// Delega en `valuationPriceKey`, que es LA key con la que la valuación lee — su
-// docstring existe justamente para este bug. La versión anterior le faltaba la
-// excepción de la cripto: en un sub-broker "· USD" pedía BTC.BA mientras la
-// valuación lee el spot (prices[BTC]) → el lote caía a costo.
-function symbolFor(p, brokers) {
-  const isAR = brokers.find(b => b.name === p.broker)?.currency === 'ARS'
-  return valuationPriceKey(p, isAR)
+function guardarOrden(o) {
+  try { guardarEnAlmacen(CATALOGO.ordenDeLaFicha, o) } catch { /* sin almacenamiento */ }
 }
-
-// Un FCI no tiene serie de precios: se valúa por el NAV del día. Sirve para no
-// pedir un gráfico que la API no puede devolver.
-const esFci = (sym) => String(sym || '').toUpperCase().startsWith('FCI:')
 
 export default function AssetDetail() {
   const { ticker } = useParams()
   const navigate = useNavigate()
   const asset = (ticker || '').toUpperCase()
-  const { valuationDollar, costBasis } = useCurrency()
+  // «Ocultar saldos»: como en la Cartera, se esconden los montos (lo que vale,
+  // lo invertido, lo ganado en plata); quedan el precio, la cantidad y los %.
+  // Auditorías A3/D4, 29/10: la ficha nunca lo había mirado.
+  const { hidden: oculto } = usePrivacy()
+  const monto = (txt) => (oculto ? OCULTO : txt)
 
-  const [positions, setPositions] = useState([])
-  const [brokers, setBrokers] = useState([])
-  const [prices, setPrices] = useState({})
-  const [dolar, setDolar] = useState(null)
-  const [operations, setOperations] = useState([])
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => { loadAll() /* eslint-disable-next-line */ }, [asset])
-
-  async function loadAll() {
-    setLoading(true)
-    try {
-      const [pos, bkrs, dol, ops] = await Promise.all([
-        api.get('/positions').catch(() => []),
-        api.get('/brokers').catch(() => []),
-        api.get('/dolar').catch(() => null),
-        api.get('/operations').catch(() => []),
-      ])
-      const myLots = (pos || []).filter(p => (p.asset || '').toUpperCase() === asset)
-      setPositions(myLots)
-      setBrokers(bkrs || [])
-      // Sin el registry, isArUsdBroker cae al fallback por NOMBRE y esta ficha
-      // rutea el precio al ADR US en vez del .BA local (~10× en GGAL/BMA).
-      setBrokersRegistry(bkrs || [])
-      setDolar(dol)
-      // En dólares desde el borde (un cupón en pesos guarda pesos en `pnl_usd`).
-      setOperations(operacionesEnUsd(ops).filter(o => (o.asset || '').toUpperCase() === asset))
-      // Fetchar todos los símbolos de precio que necesitan los lotes
-      const syms = [...new Set(myLots.map(p => symbolFor(p, bkrs || [])).filter(Boolean))]
-      if (syms.length) {
-        try { setPrices(await api.get(`/prices?symbols=${syms.join(',')}`)) } catch { /* silent */ }
-      }
-    } finally {
-      setLoading(false)
-    }
+  // Tus lotes y operaciones de este activo y sus cuentas: las mismas que usa
+  // la pestaña «Gráfico» de Análisis técnico (hooks/useFichaDelActivo.js).
+  const {
+    loading, otroNombre, positions, brokers, prices, operations,
+    cotizacion, setCotizacion, tcValuacion, tcCedear, tcCripto, agg, tenes, libre, accionLocal, grafico,
+  } = useFichaDelActivo(asset)
+  // Llegaste por GGAL.BA y lo tenés como GGAL: a TU ficha, con su nombre.
+  // Sólo cuando llega el aviso: `navigate` cambia con la dirección y volvía a
+  // saltar una vez de más (auditoría 30/10).
+  useEffect(() => {
+    if (otroNombre) navigate(urlDeActivo(otroNombre), { replace: true })
+  }, [otroNombre]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Tu tesis de este activo (la misma de Movimientos). Arriba de los return.
+  const tesis = useTesis()
+  // «Ver o editar tu tesis» desde su banderita en el gráfico: lleva acá.
+  const seccionTesis = useRef(null)
+  const [orden, setOrden] = useState(ordenGuardado)
+  // Si la empresa trajo fundamentales ({ ticker, hay }, lo avisa AnalyzeView al
+  // cargar): el «Ordenar por» sólo aparece si hay un fundamental que poner arriba.
+  const [fundamental, setFundamental] = useState(null)
+  const alSaberSiHay = useCallback((ticker, hay) => setFundamental({ ticker, hay }), [])
+  function elegirOrden(o) {
+    setOrden(o)
+    guardarOrden(o)
   }
 
-  const tcValuacion = pickFinancialRate(dolar, valuationDollar) || 1415
-  const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion
-  const tcCripto = dolar?.cripto?.venta
 
-  // ── Agregados ──────────────────────────────────────────────────────────
-  const agg = useMemo(() => {
-    const openLots = positions.filter(p => !p.is_cash)
-    let valueUsd = 0, investedUsd = 0, qty = 0
-    const lots = openLots.map(p => {
-      const v = valueLot(p, { brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis })
-      valueUsd += v.valueUsd; investedUsd += v.investedUsd; qty += (p.quantity || 0)
-      return { ...p, ...v }
-    }).sort((a, b) => (a.entry_date || '').localeCompare(b.entry_date || '')) // FIFO: viejo primero
-    const pnlUsd = valueUsd - investedUsd
-    const pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : null
-    const avgCostUsd = qty > 0 ? investedUsd / qty : null
-
-    // Operaciones cerradas (tienen pnl_usd) → stats de operatoria
-    const closed = operations.filter(o => o.pnl_usd != null)
-    const realizedTotal = closed.reduce((s, o) => s + (o.pnl_usd || 0), 0)
-    const wins = closed.filter(o => o.pnl_usd > 0).length
-    const losses = closed.filter(o => o.pnl_usd < 0).length
-    const winRate = (wins + losses) > 0 ? Math.round((wins / (wins + losses)) * 100) : null
-    const best = closed.reduce((m, o) => (m == null || o.pnl_usd > m.pnl_usd ? o : m), null)
-    const worst = closed.reduce((m, o) => (m == null || o.pnl_usd < m.pnl_usd ? o : m), null)
-
-    return {
-      lots, valueUsd, investedUsd, qty, pnlUsd, pnlPct, avgCostUsd,
-      realizedTotal, wins, losses, winRate, best, worst,
-      tradesCount: closed.length,
-      brokerCount: new Set(openLots.map(p => p.broker)).size,
-    }
-  }, [positions, operations, brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis])
-
-  // La empresa de este activo en "Calidad de cartera", con la misma regla que
+  // La empresa de este activo en "Análisis fundamental", con la misma regla que
   // el buscador (empresaDeTenencias): mira en qué mercado está cada lote, no
   // sólo el ticker. Sin lotes abiertos, deciden las operaciones (tienen broker).
-  const empresa = empresaDeTenencias(positions.length ? positions : operations, brokers)
+  const empresa = tenes
+    ? empresaDeTenencias(positions.length ? positions : operations, brokers)
+    : empresaDeTicker(asset)
   const name = fciLabel(asset)
+  // El papel en BYMA, para la liquidez: un CEDEAR o una acción argentina. Si lo
+  // tenés, lo dicen tus lotes (o tus operaciones, si lo vendiste); si no, el
+  // ticker (X.BA, o una acción argentina conocida). AAPL en Schwab no: no se
+  // opera en BYMA. Bonos y fondos tampoco (el servidor no los lista).
+  const papelByma = esFci(asset) ? null
+    : !tenes ? ((asset.endsWith('.BA') || libre.accionLocal) ? asset.replace(/\.BA$/, '') : null)
+      : (agg.lots.length ? agg.lots : operations).some(p => isBymaHolding(p)) ? asset.replace(/\.BA$/, '') : null
+
+  const sabido = empresa && fundamental?.ticker === empresa.ticker ? fundamental.hay : null
+  const ordenar = sabido ? { valor: orden, alElegir: elegirOrden } : null
+  // Fundamental arriba sólo si hay una empresa que puede tenerlo. Mientras carga
+  // se da por hecho que sí (si no, el técnico saltaría abajo al llegar); si
+  // resulta que no (un ETF), vuelve al orden de siempre. Sin empresa (una
+  // cripto) nunca se da vuelta: quedaría tu operatoria arriba del técnico.
+  const fundamentalArriba = orden === 'fundamental' && !!empresa && sabido !== false
 
   if (loading) {
     return (
@@ -212,48 +130,32 @@ export default function AssetDetail() {
     )
   }
 
-  const hasAnything = positions.length > 0 || operations.length > 0
-  if (!hasAnything) {
-    return (
-      <div className="page-shell-wide py-4">
-        <BackBar onBack={() => navigate(-1)} asset={asset} name={name} brokerCount={0} />
-        <EmptyState
-          icon={<Layers size={20} />}
-          eyebrow={asset}
-          title="No tenés movimientos en este activo"
-          description="Cuando cargues una posición o una operación de este ticker, vas a ver acá todo su detalle: lotes, historial y P&L."
-          action={
-            <button
-              type="button"
-              onClick={() => navigate('/posiciones')}
-              className="text-sm bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 px-4 py-2 rounded-sm transition-colors"
-            >
-              Ir a mi cartera
-            </button>
-          }
-        />
-      </div>
-    )
-  }
-
   return (
-    <div className="page-shell-wide py-2 sm:py-4 max-w-3xl">
-      <BackBar onBack={() => navigate(-1)} asset={asset} name={name} brokerCount={agg.brokerCount} />
+    // Todo el ancho de la página (Nico, 24/10: con `max-w-3xl` el gráfico quedaba
+    // chico y con mucho negro alrededor). En el celular, el mismo ancho que antes.
+    <div className="page-shell-wide py-2 sm:py-4">
+      <BackBar onBack={() => navigate(-1)} asset={asset} name={name} brokerCount={agg.brokerCount} ordenar={ordenar} />
+
+      {/* Lo que no tenés: el precio de hoy y la watchlist, en vez de tu resultado. */}
+      {!tenes && (
+        <HeroSinTenencia cotizacion={cotizacion}
+          alCambiarWatchlist={(enWatchlist) => setCotizacion(c => ({ ...c, enWatchlist }))} />
+      )}
 
       {/* Hero: valor + P&L total */}
-      <AskAIAbout topic="position" params={{ asset }} subtitle={`${name} · todos los lotes`}>
+      {tenes && <AskAIAbout topic="position" params={{ asset }} subtitle={`${name} · todos los lotes`}>
         <section className="mb-5">
           <div className="text-[12.5px] text-ink-2 mb-1.5 font-medium">
             Valor actual {agg.brokerCount > 1 && `· ${agg.brokerCount} brokers`}
           </div>
           <div className="text-4xl font-medium tabular tracking-tight text-ink-0 leading-none">
-            ${Math.round(agg.valueUsd).toLocaleString('es-AR')}
+            {monto(`$${Math.round(agg.valueUsd).toLocaleString('es-AR')}`)}
             <span className="text-base text-ink-3 ml-1.5 font-normal">USD</span>
           </div>
           {agg.pnlPct != null && (
             <div className={`flex items-center gap-2 mt-3 text-sm font-medium tabular ${colorClass(agg.pnlPct)}`}>
               {agg.pnlPct >= 0 ? <TrendingUp size={13} strokeWidth={1.75} /> : <TrendingDown size={13} strokeWidth={1.75} />}
-              <span>{agg.pnlUsd >= 0 ? '+' : '−'}${Math.abs(Math.round(agg.pnlUsd)).toLocaleString('es-AR')}</span>
+              <span>{monto(`${agg.pnlUsd >= 0 ? '+' : '−'}$${Math.abs(Math.round(agg.pnlUsd)).toLocaleString('es-AR')}`)}</span>
               <span className="text-ink-3 font-mono text-xs">·</span>
               <span>{pctSigned(agg.pnlPct)}</span>
               <span className="text-ink-3 text-xs ml-1">no realizado</span>
@@ -263,7 +165,7 @@ export default function AssetDetail() {
           <ChipDelActivo lotes={positions} brokers={brokers} prices={prices}
             tcValuacion={tcValuacion} tcCedear={tcCedear} tcCripto={tcCripto} className="mt-3 text-[12.5px]" />
         </section>
-      </AskAIAbout>
+      </AskAIAbout>}
 
       {/* Chart 30d — solo para símbolos que la serie histórica sabe servir.
           Los FCI se valúan por su NAV diario (tabla fci_prices, un valor por
@@ -272,27 +174,64 @@ export default function AssetDetail() {
           Antes igual se pedía y la tarjeta mostraba el error crudo del backend
           en rojo ("Símbolo inválido: …"), que además filtraba el símbolo interno
           y le hacía creer al usuario que su fondo estaba mal cargado. */}
-      {agg.lots.length > 0 && !esFci(symbolFor(agg.lots[0], brokers)) && (
-        <section className="mb-5">
-          <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Precio · últimos 30 días</div>
-          <div className="bg-bg-1 border border-line/60 rounded-lg p-3">
-            <AssetMiniChart symbol={symbolFor(agg.lots[0], brokers)} />
-          </div>
-        </section>
-      )}
+      {/* Lectura técnica (medias, RSI, tus compras y tu precio). Si el activo
+          todavía no tiene velas guardadas, adentro cae al gráfico de 30 días. */}
+      {/* Tres secciones separadas, cada una con su título (Nico, 24/10):
+          técnico → tu operatoria → fundamental. Con «Fundamental primero» la
+          lista se da vuelta y tu operatoria queda siempre en el medio. Van con
+          `key`: React las MUEVE sin desarmarlas, así cambiar el orden no vuelve
+          a pedir el gráfico ni el fundamental. */}
+      {enOrden(fundamentalArriba, [
+      grafico && (
+        <SeccionFicha key="tecnico" titulo="Análisis técnico"
+          accion={<button type="button" onClick={() => navigate(`/fundamentals?cmp=${encodeURIComponent(asset)}&vista=precio`)}
+            className="text-[12.5px] text-data-violet hover:underline">Comparar con…</button>}>
+        {/* Lo que recibe el gráfico lo arma useFichaDelActivo: la misma cuenta
+            que la pestaña «Gráfico» de Análisis técnico. */}
+        <LecturaTecnica titulo={null} key={`${asset}|${accionLocal}`} {...grafico}
+          // Cada versión de tu tesis, como banderita en el día que la
+          // escribiste (no se copia: es la misma de la sección «Tu tesis»).
+          tesis={tesis.estado === 'listo' ? (tesis.items || []).filter(t => t.asset === asset) : []}
+          onVerTesis={() => seccionTesis.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' })} />
 
-      {/* Stats de operatoria */}
-      <section className="mb-5">
-        <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu operatoria en {asset}</div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        {/* Cuánto se opera en BYMA y cuánto cuesta entrar y salir (CEDEARs y
+            acciones argentinas): el gráfico de un CEDEAR mira Nueva York. */}
+        {papelByma && <LiquidezByma papel={papelByma} />}
+        </SeccionFicha>
+      ),
+
+      // Lo tuyo: tu tesis y tu operatoria (tus lotes y tu historial), juntas en
+      // UN lugar del orden: con «Fundamental primero» siguen las dos en el medio.
+      <Fragment key="tuya">
+        {/* Tu tesis: por qué lo compraste, la tendencia de ese día y la de hoy, y
+            «Recordarme revisarla». Va si lo tenés o si escribiste una (la ficha
+            de un activo que vendiste todo la sigue mostrando). */}
+        {(agg.lots.length > 0 || tesisVigente(tesis.items, asset)) && tesis.estado !== 'error' && (
+          <section ref={seccionTesis} className="mb-5 scroll-mt-20" aria-label={`Tu tesis de ${asset}`}>
+            <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Tu tesis</div>
+            <Panel padding="md">
+              {/* `key`: pasar de la ficha de AAPL a la de NVDA no deja a la vista
+                  lo que estabas escribiendo para AAPL. */}
+              {/* «¿Acción argentina?» con la regla de la ficha (la misma del
+                  gráfico): de lo que no tenés, o vendiste, no hay lotes que lo digan. */}
+              <TesisDelActivo key={asset} asset={asset} local={accionLocal} tesis={tesis} />
+            </Panel>
+          </section>
+        )}
+
+        {tenes && <SeccionFicha titulo={`Tu operatoria en ${asset}`}>
+      <section className="mb-5" aria-label="Resumen de tu operatoria">
+        {/* Con ancho, las cajitas se reparten todo el renglón (3 o 6, según si
+            vendiste algo): con 6 columnas fijas, 3 cajitas dejaban medio vacío. */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-[repeat(auto-fit,minmax(10rem,1fr))] gap-2">
           <StatCell label="Costo promedio" value={agg.avgCostUsd != null ? `$${agg.avgCostUsd.toFixed(2).replace('.', ',')}` : '—'} sub="por unidad (USD)" />
           <StatCell label="Cantidad" value={agg.qty ? formatQty(agg.qty) : '—'} sub={`${agg.lots.length} lote${agg.lots.length !== 1 ? 's' : ''} abierto${agg.lots.length !== 1 ? 's' : ''}`} />
-          <StatCell label="Invertido" value={`$${Math.round(agg.investedUsd).toLocaleString('es-AR')}`} sub="costo total (USD)" />
+          <StatCell label="Invertido" value={monto(`$${Math.round(agg.investedUsd).toLocaleString('es-AR')}`)} sub="costo total (USD)" />
           {agg.tradesCount > 0 && (
             <>
               <StatCell
                 label="P&L realizado"
-                value={`${agg.realizedTotal >= 0 ? '+' : '−'}$${Math.abs(Math.round(agg.realizedTotal)).toLocaleString('es-AR')}`}
+                value={monto(`${agg.realizedTotal >= 0 ? '+' : '−'}$${Math.abs(Math.round(agg.realizedTotal)).toLocaleString('es-AR')}`)}
                 sub={`${agg.tradesCount} op${agg.tradesCount !== 1 ? 's' : ''} cerrada${agg.tradesCount !== 1 ? 's' : ''}`}
                 tone={agg.realizedTotal}
               />
@@ -300,13 +239,16 @@ export default function AssetDetail() {
                 <StatCell label="Win rate" value={`${pctTxt(agg.winRate)}`} sub={`${agg.wins} ganadas · ${agg.losses} perdidas`} tone={agg.winRate >= 50 ? 1 : -1} />
               )}
               {agg.best && (
-                <StatCell label="Mejor trade" value={`${agg.best.pnl_usd >= 0 ? '+' : '−'}$${Math.abs(Math.round(agg.best.pnl_usd)).toLocaleString('es-AR')}`} sub={agg.best.date || ''} tone={agg.best.pnl_usd} />
+                <StatCell label="Mejor trade" value={monto(`${agg.best.pnl_usd >= 0 ? '+' : '−'}$${Math.abs(Math.round(agg.best.pnl_usd)).toLocaleString('es-AR')}`)} sub={agg.best.date || ''} tone={agg.best.pnl_usd} />
               )}
             </>
           )}
         </div>
       </section>
 
+      {/* Lotes e historial, uno al lado del otro cuando hay ancho y están los
+          dos (uno solo ocupa todo el renglón). */}
+      <div className={agg.lots.length > 0 && operations.length > 0 ? 'xl:grid xl:grid-cols-2 xl:gap-4 xl:items-start' : ''}>
       {/* Lotes abiertos (FIFO) */}
       {agg.lots.length > 0 && (
         <section className="mb-5">
@@ -333,9 +275,9 @@ export default function AssetDetail() {
                       <td className="px-3 py-2.5 text-ink-1">{lot.entry_date || '—'}{i === 0 && <span className="ml-1.5 text-[12.5px] text-rendi-warn font-medium">próximo</span>}</td>
                       <td className="px-3 py-2.5 text-ink-3 text-xs hidden sm:table-cell">{lot.broker}</td>
                       <td className="px-3 py-2.5 text-right tabular text-ink-1">{formatQty(lot.quantity)}</td>
-                      <td className="px-3 py-2.5 text-right tabular text-ink-3">${Math.round(lot.investedUsd).toLocaleString('es-AR')}</td>
+                      <td className="px-3 py-2.5 text-right tabular text-ink-3">{monto(`$${Math.round(lot.investedUsd).toLocaleString('es-AR')}`)}</td>
                       <td className={`px-3 py-2.5 text-right tabular font-medium ${colorClass(lotPct)}`}>
-                        {lot.pnlUsd >= 0 ? '+' : '−'}${Math.abs(Math.round(lot.pnlUsd)).toLocaleString('es-AR')}
+                        {monto(`${lot.pnlUsd >= 0 ? '+' : '−'}$${Math.abs(Math.round(lot.pnlUsd)).toLocaleString('es-AR')}`)}
                       </td>
                     </tr>
                   )
@@ -374,7 +316,7 @@ export default function AssetDetail() {
                     )}
                     {isClosed && (
                       <div className={`text-sm font-medium tabular leading-none w-20 text-right ${colorClass(op.pnl_usd)}`}>
-                        {op.pnl_usd >= 0 ? '+' : '−'}${Math.abs(Math.round(op.pnl_usd)).toLocaleString('es-AR')}
+                        {monto(`${op.pnl_usd >= 0 ? '+' : '−'}$${Math.abs(Math.round(op.pnl_usd)).toLocaleString('es-AR')}`)}
                       </div>
                     )}
                   </li>
@@ -384,34 +326,109 @@ export default function AssetDetail() {
           </section>
         </AskAIAbout>
       )}
+      </div>
+      </SeccionFicha>}
+      </Fragment>,
 
-      {/* Link a Calidad de cartera (fundamentals de la empresa). */}
-      {empresa && (
-        <button
-          onClick={() => navigate(empresa.ir)}
-          className="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-bg-1 border border-line hover:border-data-violet/40 hover:bg-data-violet/[0.04] transition-colors group"
-        >
-          <span className="flex items-center gap-2.5 text-sm text-ink-1 text-left">
-            <BarChart3 size={15} strokeWidth={1.75} className="text-data-violet shrink-0" />
-            <span>
-              Ver fundamentals de {empresa.ticker}
-              {empresa.ticker !== asset.replace(/\.BA$/, '') && (
-                <span className="block text-xs text-ink-3">{asset} cotiza en EE.UU. como {empresa.ticker}</span>
-              )}
-            </span>
-          </span>
-          <span className="text-data-violet group-hover:translate-x-0.5 transition-transform">→</span>
-        </button>
-      )}
+      // Análisis fundamental de la empresa, de entrada al final: técnico → lo
+      // tuyo (operatoria, lotes, historial) → fundamental, para no tener que
+      // pasar todo el fundamental para llegar a tus lotes (Nico, 23/10). Es la
+      // MISMA vista de "Análisis fundamental" (AnalyzeView), sin buscador ni
+      // resumen con IA; para compararla con otras, el link lleva ahí. Sin
+      // empresa (cripto, ETF, bono, fondo) no aparece.
+      empresa && <AnalyzeView key="fundamental" ticker={empresa.ticker} enFicha irACalidad={empresa.ir} alSaberSiHay={alSaberSiHay} />,
+      ])}
     </div>
   )
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
-function BackBar({ onBack, asset, name, brokerCount }) {
+// Las secciones de la ficha en el orden elegido: al revés pone el fundamental
+// arriba y el técnico abajo, con lo tuyo siempre en el medio.
+function enOrden(alReves, secciones) {
+  return alReves ? [...secciones].reverse() : secciones
+}
+
+// El arriba de la ficha de un activo que no tenés: su último precio (en pesos
+// si cotiza en BYMA, en dólares si no), cuánto se movió hoy y la estrella de
+// la watchlist (lo que hacía el modal AssetQuickView, que ya no existe).
+function HeroSinTenencia({ cotizacion, alCambiarWatchlist }) {
+  const [guardando, setGuardando] = useState(false)
+  const [error, setError] = useState(null)
+  const precio = cotizacion?.precio
+  const variacion = precio != null && cotizacion?.previo > 0 ? precio / cotizacion.previo - 1 : null
+  // La estrella guarda el MISMO símbolo que cotiza la ficha (GGAL.BA, AGRO.BA):
+  // guardaba el de la dirección, y "AGRO" en la watchlist es Adecoagro, otra
+  // empresa en dólares (auditoría 22/10).
+  const simbolo = cotizacion?.simbolo
+  const enWatchlist = cotizacion?.enWatchlist || null
+  const enPesos = monedaDe(simbolo) === '$'
+  async function alternar() {
+    if (guardando || !simbolo) return
+    setGuardando(true)
+    setError(null)
+    try {
+      if (enWatchlist) {
+        await api.delete(`/watchlist/${encodeURIComponent(enWatchlist)}`)
+        notifyWatchlistChanged({ symbol: enWatchlist, removed: true })
+        alCambiarWatchlist(null)
+      } else {
+        await api.post('/watchlist', { symbol: simbolo })
+        notifyWatchlistChanged({ symbol: simbolo, added: true })
+        alCambiarWatchlist(simbolo)
+      }
+    } catch (ex) {
+      // Se dice en la pantalla (antes sólo en la consola): la lista llena, o un
+      // símbolo que la watchlist no acepta (BRK-B).
+      setError(ex?.status === 400 && ex?.message ? ex.message : 'No se pudo cambiar la watchlist. Probá de nuevo.')
+    } finally {
+      setGuardando(false)
+    }
+  }
   return (
-    <div className="flex items-center gap-3 mb-5">
+    <section className="mb-5">
+      <div className="text-[12.5px] text-ink-2 mb-1.5 font-medium">Último precio</div>
+      <div className="text-4xl font-medium tabular tracking-tight text-ink-0 leading-none">
+        {precio != null ? `$${precio.toLocaleString(LOCALE, precio >= 1000
+          ? { maximumFractionDigits: 0 }
+          : precio >= 1 ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : { maximumSignificantDigits: 4 })}` : '—'}
+        <span className="text-base text-ink-3 ml-1.5 font-normal">{enPesos ? 'pesos' : 'USD'}</span>
+      </div>
+      {variacion != null && (
+        <div className={`flex items-center gap-1.5 mt-3 text-sm font-medium tabular ${colorClass(variacion)}`}>
+          {variacion >= 0 ? <TrendingUp size={13} strokeWidth={1.75} /> : <TrendingDown size={13} strokeWidth={1.75} />}
+          <span>{pctSigned(variacion)}</span>
+          <span className="text-ink-3 text-xs ml-1 font-normal">contra el cierre anterior</span>
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={alternar}
+        disabled={guardando || !cotizacion}
+        aria-pressed={!!enWatchlist}
+        className={`mt-4 inline-flex items-center gap-1.5 min-h-10 px-3 rounded-lg border text-[13px] transition-colors disabled:opacity-50 ${
+          enWatchlist
+            ? 'border-rendi-warn/30 bg-rendi-warn/10 text-rendi-warn hover:bg-rendi-warn/15'
+            : 'border-line bg-bg-2 text-ink-1 hover:bg-bg-3'
+        }`}
+      >
+        {enWatchlist
+          ? <><Check size={13} strokeWidth={2} /> En la watchlist</>
+          : <><Star size={13} strokeWidth={1.75} /> Agregar a la watchlist</>}
+      </button>
+      {error && <p role="alert" className="text-[12.5px] text-rendi-neg mt-2">{error}</p>}
+    </section>
+  )
+}
+
+// `ordenar`: { valor, alElegir } para el «Ordenar por», o null si el activo no
+// tiene fundamental (cripto, ETF, bono): ahí no hay nada que ordenar. En la
+// compu va al lado del nombre (no contra el borde derecho: ahí flota la burbuja
+// de Mervall-E y lo tapaba); en el celular, en su propio renglón abajo.
+function BackBar({ onBack, asset, name, brokerCount, ordenar }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mb-5">
       <button type="button" onClick={onBack} aria-label="Volver" className="text-ink-2 hover:text-ink-0 -ml-2 rounded-sm hover:bg-bg-2 transition-colors flex items-center justify-center min-w-[44px] min-h-[44px]">
         <ArrowLeft size={18} strokeWidth={1.75} />
       </button>
@@ -422,6 +439,13 @@ function BackBar({ onBack, asset, name, brokerCount }) {
           {asset}{brokerCount > 1 ? ` · ${brokerCount} brokers` : ''}
         </div>
       </div>
+      {ordenar && (
+        <div className="w-full sm:w-auto sm:ml-4 flex items-center gap-2">
+          <span className="text-[12.5px] text-ink-3 font-medium whitespace-nowrap">Ordenar por</span>
+          <Segmento etiqueta="Ordenar la ficha" valor={ordenar.valor} alElegir={ordenar.alElegir} estirar
+            opciones={[['tecnico', 'Técnico primero'], ['fundamental', 'Fundamental primero']]} />
+        </div>
+      )}
     </div>
   )
 }

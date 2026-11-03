@@ -135,17 +135,25 @@ describe('api.js avisa cuando cambia la cuenta', () => {
     expect(visto).toBe(3)
   })
 
-  it('también cuando el cambio lo hizo otra pestaña', () => {
+  // Re-test a ciegas 3 y 4 (30/10): cada pestaña tiene SU cliente. Lo que
+  // hace otra ya no le cambia la cuenta a ésta —la adoptaba y seguía mostrando
+  // la anterior, y lo que se tocaba iba a la nueva—, ni la frena: no avisa un
+  // cambio de cuenta (no lo hubo) y sigue mandando a la suya. Antes este caso
+  // pedía que la pestaña siguiera a la otra.
+  it('cuando el cambio lo hizo otra pestaña, ésta sigue con su cliente', () => {
+    api.setClientContext(ANA)
+    avisos = 0
     otraPestanaEscribe('rendi_client_ctx', JSON.stringify(BRUNO))
-    expect(api.getClientContext()?.id).toBe(3)
-    expect(avisos).toBe(1)
-    // Otra pestaña vació todo (`key` null): sin cliente.
+    expect(api.getClientContext()?.id).toBe(2)
+    expect(avisos).toBe(0)
+    expect(api.pestanaDesfasada()).toBe(null)
+    // Otra pestaña vació todo (`key` null): ésta sigue con el suyo.
     otraPestanaEscribe(null, null)
-    expect(api.getClientContext()).toBe(null)
-    expect(avisos).toBe(2)
-    // Una clave que no tiene nada que ver no avisa.
+    expect(api.getClientContext()?.id).toBe(2)
+    // Una clave que no tiene nada que ver no cambia nada.
     otraPestanaEscribe('rendi_theme', 'dark')
-    expect(avisos).toBe(2)
+    expect(avisos).toBe(0)
+    expect(api.pestanaDesfasada()).toBe(null)
   })
 })
 
@@ -502,7 +510,10 @@ describe('el chat de verdad (VozContext montado): cambiar de PERSONA', () => {
 })
 
 describe('AdvisorContext sigue el mismo aviso que el chat', () => {
-  it('otra pestaña vació todo: la banda deja de mostrar el cliente, igual que los pedidos', async () => {
+  // La banda dice el cliente al que van los pedidos de ESTA pestaña. Lo que
+  // haga otra pestaña no lo cambia (queda desfasada, con el cartel): antes la
+  // banda saltaba al cliente nuevo y la pantalla seguía con el anterior.
+  it('otra pestaña vació todo: la banda sigue en el cliente de esta pestaña, igual que los pedidos', async () => {
     vi.spyOn(api.api, 'get').mockImplementation(async () => ({}))
     const visto = { actual: null }
     const Mirar = () => { visto.actual = advisor.useAdvisorContext(); return null }
@@ -510,8 +521,9 @@ describe('AdvisorContext sigue el mismo aviso que el chat', () => {
     await enActo(() => visto.actual.enterClient(ANA))
     expect(visto.actual.clientCtx?.id).toBe(2)
     await enActo(() => otraPestanaEscribe(null, null))
-    expect(api.getClientContext()).toBe(null)
-    expect(visto.actual.clientCtx).toBe(null)
+    expect(api.getClientContext()?.id).toBe(2)
+    expect(visto.actual.clientCtx?.id).toBe(2)
+    expect(api.pestanaDesfasada()).toBe(null)
   })
 })
 

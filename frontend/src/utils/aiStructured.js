@@ -86,8 +86,10 @@ function trimPartialDelim(text) {
 // /clientes y /dashboard: modo asesor (book-mode) — para el resto de los
 // tiers el modelo no las emite, y si las emitiera el gate de la página
 // rebota a "/" (defensa en profundidad, no dependemos de esta lista).
+// /analisis-tecnico (con ?tab=lista | ?tab=senales) va explícita aunque empiece
+// como /analisis: si un día /analisis se vuelve exacta, no se pierde.
 const ACTION_ROUTE_PREFIXES = [
-  '/alertas', '/analisis', '/posiciones', '/operaciones', '/fundamentals',
+  '/alertas', '/analisis-tecnico', '/analisis', '/posiciones', '/operaciones', '/fundamentals',
   '/novedades', '/activo/', '/imports', '/ai', '/planes',
   '/clientes', '/dashboard',
 ]

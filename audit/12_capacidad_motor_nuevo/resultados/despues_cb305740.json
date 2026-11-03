@@ -1,0 +1,58 @@
+{
+ "primera": {
+  "seg_reloj": 160.8,
+  "pedidos": 2003,
+  "bajados": 721,
+  "completas": 721,
+  "incrementales": 0,
+  "reescritas": 0,
+  "sin_datos": 1282,
+  "cortados_por_yahoo": 0,
+  "pausas": 0,
+  "no_son_tickers": 465,
+  "en_espera_semanal": 0,
+  "sin_tiempo": 0,
+  "filas": 788603,
+  "podados_a_pedido": 0,
+  "cambios_ratio": {
+   "papeles": 347,
+   "confirmado": 32,
+   "sin_confirmar": 0,
+   "dudoso": 32,
+   "descartado": 34,
+   "sin_yahoo": 865,
+   "pedidos_a_yahoo": 869,
+   "seg": 14.8
+  },
+  "seg": 160.8
+ },
+ "segunda": {
+  "seg_reloj": 470.1,
+  "pedidos": 2003,
+  "bajados": 719,
+  "completas": 3,
+  "incrementales": 716,
+  "reescritas": 0,
+  "sin_datos": 1284,
+  "cortados_por_yahoo": 0,
+  "pausas": 3,
+  "no_son_tickers": 465,
+  "en_espera_semanal": 0,
+  "sin_tiempo": 0,
+  "filas": 19184,
+  "podados_a_pedido": 0,
+  "cambios_ratio": {
+   "papeles": 347,
+   "confirmado": 32,
+   "sin_confirmar": 0,
+   "dudoso": 32,
+   "descartado": 34,
+   "sin_yahoo": 863,
+   "pedidos_a_yahoo": 868,
+   "seg": 17.0
+  },
+  "seg": 470.1
+ },
+ "con_velas": 724,
+ "ok": 720
+}

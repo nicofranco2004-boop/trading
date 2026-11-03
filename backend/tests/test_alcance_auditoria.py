@@ -32,8 +32,9 @@ class TestNoPuedeEscribir(unittest.TestCase):
         secs = alc.secciones()
         # El número exacto no importa por sí mismo; el candado es que agregar una
         # consulta obligue a mirar este archivo. 14 originales + 4 de cripto + 1
-        # de nombres de Yahoo (Q13) + 1 de las criptos del buscador (Q14).
-        self.assertEqual(len(secs), 20, "cambió la cantidad de consultas")
+        # de nombres de Yahoo (Q13) + 1 de las criptos del buscador (Q14) + 1 de
+        # las tenencias a las que el arreglo de Seagate les cambia el precio (Q15).
+        self.assertEqual(len(secs), 21, "cambió la cantidad de consultas")
         alc._verificar_solo_lectura(secs)   # no tira
 
     def test_un_update_infiltrado_aborta_TODO(self):
@@ -257,10 +258,10 @@ class TestLasListasDeCriptoNoDriftean(unittest.TestCase):
                          "Q11 y main.CRYPTO_BROKER_NAMES divergieron")
 
     def test_las_tres_consultas_que_filtran_exchanges_usan_LA_MISMA_lista(self):
-        """Q9, Q11, Q12 y Q14 filtran por exchange cada una por su lado. Si una queda
-        corta, mide de más o de menos sin avisar."""
+        """Q9, Q11, Q12, Q14 y Q15 filtran por exchange cada una por su lado. Si una
+        queda corta, mide de más o de menos sin avisar."""
         esperado = {b.lower() for b in main.CRYPTO_BROKER_NAMES}
-        for sid in ("Q9", "Q11", "Q12", "Q14"):
+        for sid in ("Q9", "Q11", "Q12", "Q14", "Q15"):
             self.assertEqual(self._listas_del_sql(sid)["brokers"], esperado, sid)
 
     def test_los_simbolos_ambiguos_de_Q12_son_cripto_de_verdad(self):
@@ -305,3 +306,78 @@ class TestLasListasDeCriptoNoDriftean(unittest.TestCase):
         resultado negativo — incluido un cierre corporativo legítimo."""
         self.assertEqual(self._listas_del_sql("Q9")["simbolos"],
                          {s.upper() for s in main.CRYPTO_SYMBOLS})
+
+    def test_Q15_cuenta_con_TODA_la_lista_de_cripto_y_los_tipos_de_accion(self):
+        """Q15 mide a quién le cambia el precio el arreglo de Seagate: código en
+        CRYPTO_SYMBOLS y tipo de acción o fondo. Si la lista de cripto crece y Q15
+        no, mide de menos y publica un número tranquilizador. Los tipos tienen que
+        ser los mismos que decide el arreglo (cripto.TIPOS_NO_CRIPTO, cuando esté)."""
+        tipos = {"STOCK", "AR_STOCK", "CEDEAR", "ETF", "BOND", "LETRA", "FUND", "FIAT"}
+        import cripto
+        tipos = set(getattr(cripto, "TIPOS_NO_CRIPTO", tipos))
+        self.assertEqual(self._listas_del_sql("Q15")["simbolos"],
+                         {s.upper() for s in main.CRYPTO_SYMBOLS} | tipos,
+                         "Q15 y main.CRYPTO_SYMBOLS (o los tipos) divergieron")
+
+
+class TestQ15CuentaLasQueCambiaElArregloDeSeagate(unittest.TestCase):
+    """Q15 por el camino del panel (`informe`, sobre la base de verdad), con casos
+    plantados en dos personas nuevas: se mide lo que SUMAN, no el total."""
+
+    def setUp(self):
+        self.conn = main.get_db()
+        self.addCleanup(self.conn.close)
+        tag = str(id(self))
+        self.uids = []
+        for n in ("a", "b"):
+            cur = self.conn.execute(
+                "INSERT INTO users (email, password_hash, approved) VALUES (?,'x',1)",
+                (f"alcance-q15-{n}-{tag}@rendi.test",))
+            self.uids.append(cur.lastrowid)
+        self.conn.commit()
+        self.addCleanup(self._limpiar)
+
+    def _limpiar(self):
+        q = ",".join("?" * len(self.uids))
+        for t in ("positions", "brokers", "users"):
+            col = "id" if t == "users" else "user_id"
+            self.conn.execute(f"DELETE FROM {t} WHERE {col} IN ({q})", self.uids)
+        self.conn.commit()
+
+    def _q15(self):
+        return next(h for h in alc.informe(self.conn)["hallazgos"] if h["id"] == "Q15")
+
+    def test_cuenta_sólo_las_abiertas_con_código_cripto_y_tipo_de_acción(self):
+        antes = self._q15()
+        a, b = self.uids
+        for uid, name, ccy in ((a, "Schwab", "USD"), (a, "IOL", "ARS"), (b, "Binance", "USDT")):
+            self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                              (uid, name, ccy))
+        filas = [
+            # cuentan: Seagate como acción, un BTC cargado como fondo en una cuenta
+            # en pesos, y una cripto con tipo de acción en un exchange
+            (a, "Schwab", "STX", "STOCK", 10, 0, None),
+            (a, "IOL", "btc ", "etf", 1, 0, None),
+            (b, "Binance", "SOL", "STOCK", 3, 0, None),
+            # no cuentan: sin tipo, tipo cripto, cerrada, precio manual, caja, y una
+            # acción cuyo código no es cripto
+            (a, "Schwab", "STX", None, 5, 0, None),
+            (b, "Binance", "ETH", "CRYPTO", 2, 0, None),
+            (a, "Schwab", "STX", "STOCK", 0, 0, None),
+            (a, "Schwab", "STX", "STOCK", 4, 0, 700),
+            (a, "Schwab", "BTC", "STOCK", 4, 1, None),
+            (a, "Schwab", "AAPL", "STOCK", 4, 0, None),
+        ]
+        for f in filas:
+            self.conn.execute(
+                "INSERT INTO positions (user_id, broker, asset, asset_type, quantity, is_cash, "
+                "price_override, invested, commissions, currency) VALUES (?,?,?,?,?,?,?,100,0,'USD')", f)
+        self.conn.commit()
+        despues = self._q15()
+        self.assertEqual(despues["numero"] - (antes["numero"] or 0), 3)
+        self.assertEqual(despues["veredicto"], "mirar")
+        d, d0 = despues["detalle"], antes["detalle"]
+        for col, suma in (("usuarios_afectados", 2), ("en_un_exchange", 1),
+                          ("en_cuenta_en_pesos", 1)):
+            self.assertEqual((d[col] or 0) - (d0[col] or 0), suma, col)
+        self.assertTrue({"STX", "BTC", "SOL"} <= set(d["simbolos_en_uso"].split(",")))

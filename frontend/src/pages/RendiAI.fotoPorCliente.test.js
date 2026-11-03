@@ -55,7 +55,11 @@ const BROKERS = { null: [{ name: 'IOL' }], 2: [{ name: 'Balanz' }], 3: [{ name: 
 const esperar = () => enActo(() => new Promise(r => setTimeout(r, 0)))
 
 describe('/ai con un cliente abierto', () => {
-  it('si el cliente cambia (otra pestaña), la página pide la foto del nuevo y nunca le pasa al chat la del anterior', async () => {
+  // Re-test a ciegas 3 (30/10): un cambio en OTRA pestaña ya no le cambia el
+  // cliente a ésta (la deja desfasada, con el cartel y sin pedidos); el que la
+  // cambia es el de ESTA pestaña, o la recarga con «Ir a…». Este caso se probaba
+  // con otra pestaña; ahora el cambio es acá, y lo de otra pestaña va abajo.
+  it('si el cliente cambia, la página pide la foto del nuevo y nunca le pasa al chat la del anterior', async () => {
     vi.spyOn(api.api, 'get').mockImplementation(async (path) =>
       (path === '/brokers' ? BROKERS[api.getClientContext()?.id ?? null] : []))
     api.setClientContext({ id: 2, label: 'Ana' })
@@ -66,7 +70,7 @@ describe('/ai con un cliente abierto', () => {
     const montajesConAna = recibido.montajes
 
     const desde = recibido.fotos.length
-    await enActo(() => otraPestanaEscribe('rendi_client_ctx', JSON.stringify({ id: 3, label: 'Bruno' })))
+    await enActo(() => api.setClientContext({ id: 3, label: 'Bruno' }))
     await esperar()
     const despues = recibido.fotos.slice(desde)
     expect(despues.at(-1)).toEqual({ clienteAbierto: 3, brokers: ['IBKR'] })
@@ -74,6 +78,21 @@ describe('/ai con un cliente abierto', () => {
     expect(despues.filter(f => f.clienteAbierto === 3 && f.brokers.includes('Balanz'))).toEqual([])
     // Y el chat se volvió a montar: pide el cupo de la cuenta nueva.
     expect(recibido.montajes).toBeGreaterThan(montajesConAna)
+    await m.desmontar()
+  })
+
+  it('si otra pestaña entra a otro cliente, ésta se queda con el suyo: el chat no recibe nada del otro', async () => {
+    vi.spyOn(api.api, 'get').mockImplementation(async (path) =>
+      (path === '/brokers' ? BROKERS[api.getClientContext()?.id ?? null] : []))
+    api.setClientContext({ id: 2, label: 'Ana' })
+    const m = await montar(h(voz.VozProvider, null, h(advisor.AdvisorProvider, null, h(RendiAI))))
+    await esperar()
+    const desde = recibido.fotos.length
+    await enActo(() => otraPestanaEscribe('rendi_client_ctx', JSON.stringify({ id: 3, label: 'Bruno' })))
+    await esperar()
+    expect(api.getClientContext()?.id).toBe(2)
+    expect(api.pestanaDesfasada()).toBe(null)
+    expect(recibido.fotos.slice(desde).filter(f => f.clienteAbierto === 3 || f.brokers.includes('IBKR'))).toEqual([])
     await m.desmontar()
   })
 })

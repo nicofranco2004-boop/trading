@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { CATALOGO, SESION } from '../utils/catalogoDelAlmacen'
 
 const fuente = readFileSync(new URL('./useArrastrable.js', import.meta.url), 'utf8')
 const isla = readFileSync(new URL('../components/voz/RendiMate.jsx', import.meta.url), 'utf8')
@@ -132,13 +133,16 @@ describe('mover la isla con el dedo', () => {
   it('la posición dura lo que dura la PESTAÑA', () => {
     // Pedido de Nico: al volver a entrar, la isla en su lugar de siempre. Uno
     // la corre porque le tapa la pantalla que está mirando AHORA.
-    expect(fuente).toMatch(/sessionStorage\.getItem/)
-    expect(fuente).toMatch(/sessionStorage\.setItem/)
-    expect(fuente).not.toMatch(/localStorage\./)
+    // Por la única puerta (utils/almacen), con una entrada del catálogo que
+    // vive en la pestaña (SESION), no en el navegador para siempre.
+    expect(fuente).toMatch(/leerDelAlmacen\(clave\)/)
+    expect(fuente).toMatch(/guardarEnAlmacen\(clave, /)
+    expect(CATALOGO.islaPosicion.donde).toBe(SESION)
+    expect(CATALOGO.cuadroPosicion.donde).toBe(SESION)
   })
 
   it('la isla la usa cerrada Y abierta', () => {
-    expect(isla).toMatch(/useArrastrable\('rendi:isla:pos'\)/)
+    expect(isla).toMatch(/useArrastrable\(CATALOGO\.islaPosicion\)/)
     // Cerrada: toda la burbuja es la manija. Abierta: sólo la cabecera — el
     // hilo y el cuadro de escribir quedan afuera porque ahí se scrollea y se
     // selecciona texto.

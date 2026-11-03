@@ -1,7 +1,7 @@
 // Alertas — lo que Rendi te avisa, en dos pestañas.
 // ═══════════════════════════════════════════════════════════════════════════
-//   • Crear alerta (CrearAlerta): las dos cosas que se pueden pedir, para
-//     elegir — el resumen diario del mercado y el aviso de precio.
+//   • Crear alerta (CrearAlerta): lo que se puede pedir, para elegir — el
+//     resumen diario del mercado, el aviso de precio y la señal técnica.
 //   • Mis alertas (MisAlertas): lo que ya armaste, con su estado y su
 //     interruptor. Tocar una abre el formulario (AlertaForm) para cambiarla.
 //
@@ -113,8 +113,9 @@ function AlertasPropias({ plan }) {
   }, [setSearchParams])
 
   // Los precios de ahora de los activos con aviso, en un solo pedido.
+  // (Las técnicas no muestran precio: se miran con el cierre.)
   const simbolos = useMemo(
-    () => [...new Set(items.filter(a => a.symbol).map(a => a.symbol.toUpperCase()))].sort().join(','),
+    () => [...new Set(items.filter(a => a.symbol && a.kind !== 'tecnica').map(a => a.symbol.toUpperCase()))].sort().join(','),
     [items])
   // Los CEDEARs vigilados en dólares traen su precio de la lista de la Bolsa
   // (el mismo que mira el servidor), bajo la clave 'AAPL.BA|USD'.
@@ -137,11 +138,31 @@ function AlertasPropias({ plan }) {
     return () => { cancelado = true }
   }, [simbolos, hayCedearEnDolares])
 
+  // Tus líneas con aviso (Nico, 29/10): dónde está hoy cada una y su gráfico
+  // chiquito, para reconocerla en la lista (GET /api/alerts/lineas). Aparte de
+  // las alertas: lee velas, y sólo hace falta si hay alguna línea.
+  const idsDeLineas = useMemo(
+    () => items.filter(a => a.kind === 'tecnica' && a.senal === 'linea').map(a => `${a.id}:${a.active ? 1 : 0}`).join(','),
+    [items])
+  const [lineas, setLineas] = useState({})
+  useEffect(() => {
+    if (!idsDeLineas) { setLineas({}); return }
+    let vivo = true
+    api.get('/alerts/lineas').then(r => { if (vivo) setLineas(r?.lineas || {}) }).catch(() => {})
+    return () => { vivo = false }
+  }, [idsDeLineas])
+
   const cuantas = items.length + (resumen.prendido ? 1 : 0)
 
   async function pausar(a) {
     try { await update(a.id, { active: !a.active }) }
     catch { toast.push('No se pudo guardar', { type: 'error' }) }
+  }
+
+  // El aviso de una línea que borraste: ya no tiene qué mirar, se quita.
+  async function quitar(a) {
+    try { await remove(a.id) }
+    catch { toast.push('No se pudo quitar', { type: 'error' }) }
   }
 
   function creada(res, payload, pedidoPush) {
@@ -177,7 +198,8 @@ function AlertasPropias({ plan }) {
 
       {tab === 'crear' && (
         <CrearAlerta resumen={resumen} alTope={alTope} alertsMax={alertsMax} puedeMovimiento={puedeMovimiento}
-          onCrearAviso={() => setFormulario({})} />
+          onCrearAviso={() => setFormulario({})}
+          onCrearTecnica={() => setFormulario({ prefill: { kind: 'tecnica' } })} />
       )}
       {tab === 'mis' && notaPush && (
         <div role="status" className="flex items-start gap-3 rounded-xl border border-rendi-warn/30 bg-rendi-warn/5 px-4 py-3">
@@ -191,8 +213,8 @@ function AlertasPropias({ plan }) {
         <AvisoNotificaciones motivo={push.motivo} plataforma={push.plataforma} origen="alertas" />
       )}
       {tab === 'mis' && (
-        <MisAlertas items={items} events={events} precios={precios} resumen={resumen} hoy={hoy}
-          cargando={loading} onEditar={a => setFormulario({ alerta: a })} onPausar={pausar}
+        <MisAlertas items={items} events={events} precios={precios} resumen={resumen} hoy={hoy} lineas={lineas}
+          cargando={loading} onEditar={a => setFormulario({ alerta: a })} onPausar={pausar} onQuitar={quitar}
           onIrACrear={() => irA('crear')} />
       )}
       {tab == null && <p className="py-10 text-center text-sm text-ink-2">Cargando…</p>}

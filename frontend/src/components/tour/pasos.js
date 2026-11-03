@@ -118,30 +118,3 @@ export const PASOS = [
       + 'ganar el claro.',
   },
 ]
-
-/** La marca que se le pone al elemento que hay que resaltar. */
-export const ATRIBUTO = 'data-tour'
-
-// ⚠️ SUBIR ESTO ES LA ÚNICA FORMA DE QUE UNA NOVEDAD LLEGUE A QUIEN YA VIO EL
-// TUTORIAL. El almacenamiento guarda un sí/no, no qué pasos vio, así que con la
-// clave vieja un paso nuevo sólo lo verían los usuarios nuevos — o sea,
-// exactamente los que no lo necesitan. El costo es que todos vuelven a ver el
-// tutorial entero una vez. Se sube SÓLO cuando se agrega algo que vale ese
-// costo; v2 = el modo claro.
-export const CLAVE_VISTO = 'rendi:tour:novedades:v2'
-
-/** ¿Ya lo vio? Si el almacenamiento no se puede leer, se asume que SÍ: mejor
- *  no mostrarlo que mostrarlo en loop a alguien que no lo puede apagar. */
-export function yaLoVio(almacen) {
-  try {
-    return almacen.getItem(CLAVE_VISTO) === '1'
-  } catch {
-    return true
-  }
-}
-
-export function marcarVisto(almacen) {
-  try {
-    almacen.setItem(CLAVE_VISTO, '1')
-  } catch { /* sin almacenamiento: se va a volver a ver, y es lo menos malo */ }
-}

@@ -30,36 +30,42 @@
 // sessionStorage: de esta pestaña y de esta visita; sin almacenamiento no hay
 // animación y nada se rompe.
 
-import { EVENTO_ESCRITURA, getClientContext } from './api'
+import { EVENTO_ESCRITURA } from './api'
+import { duenoDeLaPestana } from './duenoDeLaPestana'
+import { leerDe, guardarDe } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
 
-export function cuentaActual() {
-  const id = getClientContext()?.id
-  return id != null ? `cliente-${id}` : 'propia'
+// De la persona Y de la cuenta DE LOS DATOS (utils/duenoDeLaPestana). Antes
+// sólo de la cuenta: «Cerrar sesión» lo borra, pero una sesión que vence no, y
+// el siguiente en la pestaña veía su número «cambiar» desde el de la anterior.
+// La pantalla pasa SIEMPRE el dueño de lo que muestra (useDuenoDeLosDatos): sin
+// dueño no se lee ni se guarda nada (antes caía al de la pestaña, la forma del
+// error del re-test 2; re-test 3). La puerta
+// (utils/almacen.guardarDe) no guarda para un dueño que ya no es el de la
+// pestaña, ni sin nadie logueado.
+function leer(entrada, dueno, resto) {
+  try { return JSON.parse(leerDe(entrada, dueno, resto) || 'null') } catch { return null }
 }
-const claveVersion = () => `rendi_version_cartera:${cuentaActual()}`
-const claveValor = (clave) => `rendi_valor_visto:${cuentaActual()}:${clave}`
-
-function leer(k) {
-  try { return JSON.parse(window.sessionStorage.getItem(k) || 'null') } catch { return null }
-}
-function escribir(k, v) {
-  try { window.sessionStorage.setItem(k, JSON.stringify(v)) } catch { /* sin almacenamiento */ }
+function escribir(entrada, dueno, valor, resto) {
+  try { guardarDe(entrada, dueno, JSON.stringify(valor), resto) } catch { /* sin almacenamiento */ }
 }
 
 /** Cuántas veces cambió la cartera de esta cuenta en esta visita. */
-export function versionDeCartera() {
-  const v = leer(claveVersion())
+export function versionDeCartera(dueno) {
+  const v = leer(CATALOGO.versionCartera, dueno)
   return Number.isFinite(v) ? v : 0
 }
 
 /** Algo cambió la cartera (lo llama el aviso central; no hace falta a mano). */
-export function subirVersionDeCartera() {
-  escribir(claveVersion(), versionDeCartera() + 1)
+export function subirVersionDeCartera(dueno) {
+  escribir(CATALOGO.versionCartera, dueno, versionDeCartera(dueno) + 1)
 }
 
-/** La métrica `clave` se está mostrando con este valor. */
-export function recordarValor(clave, valor, moneda) {
-  if (Number.isFinite(valor)) escribir(claveValor(clave), { valor, moneda, version: versionDeCartera(), t: Date.now() })
+/** La métrica `clave` se está mostrando con este valor (de los datos de `dueno`). */
+export function recordarValor(clave, valor, moneda, dueno) {
+  if (Number.isFinite(valor)) {
+    escribir(CATALOGO.valorVisto, dueno, { valor, moneda, version: versionDeCartera(dueno), t: Date.now() }, `:${clave}`)
+  }
 }
 
 // Pasado este rato, lo que se vio ya no sirve de "antes": nadie se acuerda del
@@ -72,11 +78,11 @@ export const CADUCA_MS = 30 * 60 * 1000
  * la cartera cambió (y se estaba mirando en la misma moneda). Si no, null: no
  * hay cambio del usuario que mostrar.
  */
-export function valorAntesDelCambio(clave, moneda) {
-  const g = leer(claveValor(clave))
+export function valorAntesDelCambio(clave, moneda, dueno) {
+  const g = leer(CATALOGO.valorVisto, dueno, `:${clave}`)
   if (!g || !Number.isFinite(g.valor) || g.moneda !== moneda) return null
   if (!Number.isFinite(g.t) || Date.now() - g.t > CADUCA_MS) return null
-  return g.version < versionDeCartera() ? g.valor : null
+  return g.version < versionDeCartera(dueno) ? g.valor : null
 }
 
 // El aviso central. Se engancha una vez, al cargar la app (App.jsx importa este
@@ -85,7 +91,11 @@ let enganchado = false
 export function engancharVersionDeCartera() {
   if (enganchado || typeof window === 'undefined' || typeof window.addEventListener !== 'function') return
   enganchado = true
-  window.addEventListener(EVENTO_ESCRITURA, subirVersionDeCartera)
-  window.addEventListener('rendi:portfolio-changed', subirVersionDeCartera)
+  // El dueño de la PESTAÑA a propósito, y es el único lugar: el aviso llega
+  // apenas termina una escritura, y la escritura fue de la cuenta de la pestaña
+  // (api.js le puso ese cliente al pedido). No es un número de una pantalla.
+  const subir = () => subirVersionDeCartera(duenoDeLaPestana())
+  window.addEventListener(EVENTO_ESCRITURA, subir)
+  window.addEventListener('rendi:portfolio-changed', subir)
 }
 engancharVersionDeCartera()

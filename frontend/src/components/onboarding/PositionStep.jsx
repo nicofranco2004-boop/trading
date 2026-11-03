@@ -19,6 +19,8 @@ import { api } from '../../utils/api'
 import { track } from '../../utils/track'
 import { useEnVuelo } from '../../hooks/useEnVuelo'
 import { parseNum } from '../../utils/format'
+import { guardar as guardarEnAlmacen } from '../../utils/almacen'
+import { CATALOGO } from '../../utils/catalogoDelAlmacen'
 
 // Brokers comunes en AR + moneda default sugerida (mismo set que el viejo
 // BrokerStep). El chip pre-llena nombre + moneda; el user puede tipear otro.
@@ -54,7 +56,7 @@ function ModeSelector({ setMode, onBack, navigate, onSkip }) {
     // flag rendi_onboarding_pending hace que /bienvenida después nos lleve
     // a /onboarding?step=complete en lugar de a /.
     try {
-      localStorage.setItem('rendi_onboarding_pending', '1')
+      guardarEnAlmacen(CATALOGO.volverABienvenida, '1')
     } catch {}
     navigate('/imports?from=onboarding')
   }

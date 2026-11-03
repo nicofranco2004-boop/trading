@@ -42,6 +42,9 @@ export async function withGatewayRetry(doFetch, { signal } = {}) {
     } catch (netErr) {
       // Falla de red (servidor no alcanzable): mismo tratamiento.
       if (fueCancelado(netErr, signal)) throw netErr
+      // El freno de la pestaña (utils/api: otra pestaña cambió la sesión) no
+      // es una falla de red: reintentarlo sólo demora el error.
+      if (netErr?.cuentaCambiada) throw netErr
       if (i >= RETRY_DELAYS_MS.length) throw netErr
       await sleep(conJitter(RETRY_DELAYS_MS[i]))
       continue

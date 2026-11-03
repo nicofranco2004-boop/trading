@@ -10,13 +10,18 @@ import { api } from '../utils/api'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, COBERTURA_MINIMA } from '../utils/valuation'
 import { guardarPnlNoRealizado } from '../utils/guardarValuacion'
+import { useDuenoDeLosDatos } from '../utils/duenoDeLaPestana'
+import { ENVIOS, enviarDe } from '../utils/enviosConDueno'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { aportesDelMesEnPesos } from '../utils/capitalAportado'
 import { useDolarMensual } from '../hooks/useFxHistory'
 import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
+import { realizadoDeLaFilaMensual, sumarRealizadoMeses, notaDelRealizado } from '../utils/realizadoEnPesos'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
 import { confirmar } from '../utils/confirmar'
+import { useToast } from './Toast'
 
 const RECENT_MONTHS_DEFAULT = 6
 
@@ -56,12 +61,19 @@ function nextMonthOf(entry) {
 }
 
 export default function MonthlySummary({ refreshKey = 0 } = {}) {
+  // De qué cuenta son los datos de esta pantalla (utils/duenoDeLaPestana): el
+  // cierre automático del mes y la ganancia no realizada salen SÓLO si la
+  // pestaña sigue en esa cuenta (utils/enviosConDueno).
+  const duenoDatos = useDuenoDeLosDatos()
   // Deeplink desde /reportes?broker=Cocos → abrir el tab de Cocos por default.
   // Si el param no matchea con los brokers cargados, queda en 'global'.
   const [searchParams] = useSearchParams()
   const initialTab = searchParams.get('broker') || 'global'
 
   const { valuationDollar } = useCurrency()
+  // «Ocultar saldos»: la tabla del mes y la conciliación son tu plata; quedan
+  // los % (30/10: el resumen mensual no miraba el ojito).
+  const { hidden: oculto } = usePrivacy()
 
   const [entries, setEntries] = useState([])
   const [brokers, setBrokers] = useState([])
@@ -74,6 +86,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   // de verdad es la referencia, que corta el segundo click del mismo turno.
   // El borrado de un mes usa el mismo, con el id del mes como clave.
   const enVuelo = useEnVuelo()
+  const toast = useToast()
   const saving = enVuelo.activo()
   const [tcValuacion, setTcValuacion] = useState(1415)
   // El dólar elegido (MEP) al cierre de cada mes — ver utils/tcHistorico.js.
@@ -120,7 +133,14 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     setTcValuacion(tc)
     setEntries(ents)
 
-    await autoRolloverIfNeeded(ents, bkrs)
+    try {
+      await autoRolloverIfNeeded(ents, bkrs)
+    } catch (e) {
+      // La pestaña pasó a otra cuenta mientras cargaba: lo que sigue (cerrar el
+      // mes, la ganancia no realizada) es de los datos de la anterior. No se manda.
+      if (e?.cuentaCambiada) return
+      throw e
+    }
 
     // Nota: la reparación de cadena (capital_inicio[N+1] = capital_final[N],
     // pnl_unrealized=0 en cerrados, fórmula canónica de capital_final) la hace
@@ -157,10 +177,10 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
           + (last.pnl_realized || 0)
         const closedLast = { ...last, pnl_unrealized: 0, capital_final: cleanCapFinal }
         if (last.pnl_unrealized !== 0 || Math.abs((last.capital_final || 0) - cleanCapFinal) > 1e-4) {
-          await api.put(`/monthly/${last.id}`, closedLast)
+          await enviarDe(ENVIOS.cierreDelMes, duenoDatos, closedLast, String(last.id))
         }
         const { year: ny, month: nm } = nextMonthOf(last)
-        const created = await api.post('/monthly', {
+        const created = await enviarDe(ENVIOS.mesNuevo, duenoDatos, {
           ...EMPTY,
           broker: brokerName,
           year: ny,
@@ -205,10 +225,21 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     return a ? a.retArs : valueAt(m.withdrawals || 0, m.year, m.month)
   }
 
+  // El realizado de la fila EN LA MONEDA DE LA PESTAÑA. En una pestaña de broker en pesos es
+  // el resultado en pesos de verdad (cobrado − costo, la cuenta única de resultado_dual, la
+  // misma de Movimientos y Reportes) y sólo lo que no tiene pesos va al dólar del mes: ver
+  // utils/realizadoEnPesos.js. En dólares, el de siempre.
+  function realizadoAt(m) {
+    if (!tabIsARS) return { monto: m.pnl_realized || 0, restoUsd: 0 }
+    const r = realizadoDeLaFilaMensual(m, lookupHistoricalDolar(dolarMes, m.year, m.month, tcValuacion))
+    return { monto: r.monto || 0, restoUsd: r.restoUsd }
+  }
+
   // Format a stored value (USD-eq for ARS tabs, USD for others), using the
   // historical FX rate of (year, month) for ARS tabs.
   function fmtMoney(v, year, month) {
     if (v == null) return '—'
+    if (oculto) return OCULTO
     if (!tabIsARS) return `$${usd(v)}`
     return ars(valueAt(v, year, month))
   }
@@ -217,6 +248,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   // Used for totals: each row pre-converted with valueAt(), then summed.
   function fmtMoneyDirect(v) {
     if (v == null) return '—'
+    if (oculto) return OCULTO
     return tabIsARS ? ars(v) : `$${usd(v)}`
   }
 
@@ -350,7 +382,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         filas.push({ broker: b.name, pnl: pnlForBroker })
       }
       filas.push({ broker: 'global', pnl: globalPnlUsd })
-      await guardarPnlNoRealizado(api.post, filas, { cobertura, valuationDollar })
+      await guardarPnlNoRealizado(duenoDatos, filas, { cobertura, valuationDollar })
       // El "Valor actual (live)" de la conciliación dice "con precios actuales de
       // mercado": sin precios sería el costo, y al lado del mes guardado (que ya
       // no se pisa) marcaba una "Diferencia" que culpaba al dólar. Sin precios,
@@ -361,12 +393,20 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     }
   }
 
-  const save = () => enVuelo.correr(guardar)
+  // El cierre del mes no salió porque otra pestaña ya cambió de cuenta: se avisa
+  // en vez de dejar el botón sin respuesta (no se guardó nada).
+  const save = () => enVuelo.correr(guardar).catch((e) => {
+    if (!e?.cuentaCambiada) throw e
+    toast.push('No se guardó: en otra pestaña se cambió de cuenta y esta muestra la anterior. Recargá la página.', { type: 'warn', duration: 8000 })
+  })
   async function guardar() {
     if (modal === 'edit') {
       await api.put(`/monthly/${form.id}`, { ...form, ...numsDe(form) })
 
     } else if (modal === 'next') {
+      // El mismo cierre y la misma apertura que autoRolloverIfNeeded, con el
+      // capital calculado de las filas que esta pantalla cargó: si otra pestaña
+      // ya cambió de cuenta, enviarDe no los manda (CuentaCambiada).
       const allBrokerNames = ['global', ...brokers.map(b => b.name)]
       for (const brokerName of allBrokerNames) {
         const brokerEntries = entries
@@ -384,14 +424,14 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
           + (lastEnt.deposits || 0) - (lastEnt.withdrawals || 0)
           + (lastEnt.pnl_realized || 0)
         if (lastEnt.pnl_unrealized !== 0 || Math.abs((lastEnt.capital_final || 0) - cleanCapFinal) > 1e-4) {
-          await api.put(`/monthly/${lastEnt.id}`, { ...lastEnt, pnl_unrealized: 0, capital_final: cleanCapFinal })
+          await enviarDe(ENVIOS.cierreDelMes, duenoDatos, { ...lastEnt, pnl_unrealized: 0, capital_final: cleanCapFinal }, String(lastEnt.id))
         }
 
         if (!nextExists) {
           const newEntry = brokerName === tab
             ? { ...form, capital_inicio: cleanCapFinal, capital_final: cleanCapFinal }
             : { ...EMPTY, broker: brokerName, year: nextYear, month: nextMonth, capital_inicio: cleanCapFinal, capital_final: cleanCapFinal }
-          await api.post('/monthly', newEntry)
+          await enviarDe(ENVIOS.mesNuevo, duenoDatos, newEntry)
         }
       }
 
@@ -420,15 +460,26 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     const rawRet = snap((m.pnl_realized || 0) + (isCurrentRow ? (m.pnl_unrealized || 0) : 0))
     const retPct = m.capital_inicio > 0 ? snap(rawRet / m.capital_inicio) : 0
     const conv = (v) => valueAt(v, m.year, m.month) || 0
+    const real = realizadoAt(m)
+    const noReal = conv(isCurrentRow ? (m.pnl_unrealized || 0) : 0)
     return {
       deposits: acc.deposits + (depAt(m) || 0),
       withdrawals: acc.withdrawals + (retAt(m) || 0),
-      pnl_realized: acc.pnl_realized + conv(m.pnl_realized),
-      pnl_unrealized: acc.pnl_unrealized + conv(isCurrentRow ? (m.pnl_unrealized || 0) : 0),
-      ret: acc.ret + conv(rawRet),
+      pnl_realized: acc.pnl_realized + real.monto,
+      pnl_unrealized: acc.pnl_unrealized + noReal,
+      // El retorno de la fila = su realizado + (si es el mes en curso) su no realizado: en
+      // pesos, el realizado exacto y no un solo número × el dólar, para que las columnas sumen.
+      ret: acc.ret + real.monto + noReal,
       retCompound: acc.retCompound * (1 + retPct),
     }
   }, { deposits: 0, withdrawals: 0, pnl_realized: 0, pnl_unrealized: 0, ret: 0, retCompound: 1 })
+  // Qué parte del realizado en pesos NO son pesos de verdad (se avisa bajo la tabla). La suma de los
+  // restos en valor absoluto (+US$ 500 y −US$ 500 en meses distintos no se cancelan) y el «valuado»
+  // los junta `sumarRealizadoMeses`, la misma función que usa el Dashboard: no se repite acá.
+  const notaRealizado = tabIsARS
+    ? (({ restoUsd, valuado }) => notaDelRealizado({ restoUsd, valuado, dolar: 'de cada mes', oculto }))(
+        sumarRealizadoMeses(tabData, (m) => lookupHistoricalDolar(dolarMes, m.year, m.month, tcValuacion)))
+    : null
   const totalRetPct = totals.retCompound - 1
 
   const thClass = 'px-4 py-2 text-left text-[12.5px] text-ink-3 font-semibold'
@@ -596,6 +647,11 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                 const isCurrent = idx === tabData.length - 1
                 const ret = snap((m.pnl_realized || 0) + (isCurrent ? (m.pnl_unrealized || 0) : 0))
                 const retPct = m.capital_inicio > 0 ? snap(ret / m.capital_inicio) : 0
+                // Lo que se MUESTRA en la moneda de la pestaña (en pesos, con el realizado exacto).
+                const realVista = realizadoAt(m).monto
+                const retVista = tabIsARS
+                  ? realVista + (isCurrent ? (valueAt(m.pnl_unrealized || 0, m.year, m.month) || 0) : 0)
+                  : ret
 
                 return (
                   <tr
@@ -618,7 +674,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                     </td>
                     {viewMode === 'simple' ? (
                       <>
-                        <td className={`${tdClass} font-bold tabular ${colorClass(ret)}`}>{fmtMoney(ret, m.year, m.month)}</td>
+                        <td className={`${tdClass} font-bold tabular ${colorClass(retVista)}`}>{fmtMoneyDirect(retVista)}</td>
                         <td className={`${tdClass} font-bold tabular ${colorClass(retPct)}`}>{pctSigned(retPct)}</td>
                         <td className={`${tdClass} tabular ${colorClass(net)}`}>{fmtMoneyDirect(depAt(m) - retAt(m))}</td>
                         <td className={tdClass}>
@@ -638,11 +694,11 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                         <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoneyDirect(depAt(m))}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoneyDirect(retAt(m))}</td>
                         <td className={`${tdClass} tabular ${colorClass(net)}`}>{fmtMoneyDirect(depAt(m) - retAt(m))}</td>
-                        <td className={`${tdClass} tabular ${colorClass(m.pnl_realized)}`}>{fmtMoney(m.pnl_realized, m.year, m.month)}</td>
+                        <td className={`${tdClass} tabular ${colorClass(realVista)}`}>{fmtMoneyDirect(realVista)}</td>
                         <td className={`${tdClass} tabular ${isCurrent ? colorClass(m.pnl_unrealized) : ''}`}>{isCurrent ? fmtMoney(m.pnl_unrealized, m.year, m.month) : fmtMoney(0, m.year, m.month)}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoney(m.capital_inicio, m.year, m.month)}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoney(m.capital_final, m.year, m.month)}</td>
-                        <td className={`${tdClass} font-medium tabular ${colorClass(ret)}`}>{fmtMoney(ret, m.year, m.month)}</td>
+                        <td className={`${tdClass} font-medium tabular ${colorClass(retVista)}`}>{fmtMoneyDirect(retVista)}</td>
                         <td className={`${tdClass} font-medium tabular ${colorClass(retPct)}`}>{pctSigned(retPct)}</td>
                       </>
                     )}
@@ -712,6 +768,13 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
             )}
           </table>
         </div>
+        {tabIsARS && tabData.length > 0 && (
+          <p className="px-4 py-2 text-[11.5px] text-ink-3 border-t border-line/40">
+            El P&L realizado en pesos de las ventas en pesos es lo cobrado menos lo que costó, como lo muestra tu broker.
+            {notaRealizado ? ` ${notaRealizado.charAt(0).toUpperCase()}${notaRealizado.slice(1)}.` : ''}
+            {' '}El Retorno % es el rendimiento medido en dólares: puede no coincidir con el monto en pesos de al lado.
+          </p>
+        )}
       </Card>
 
       {/* Modal agregar / editar / cerrar mes */}
@@ -861,6 +924,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
 // Si live ≠ mes en curso por un margen significativo, surfacea el delta y la
 // causa probable: "no se sincronizó aún" o "drift por FX cash ARS / commissions".
 function ConciliationBanner({ live, entries }) {
+  const { hidden: oculto } = usePrivacy()
+  const plata = (v) => (oculto ? OCULTO : `$${usd(v)}`)
   if (!entries || entries.length === 0) return null
   const sorted = [...entries].sort((a, b) =>
     a.year !== b.year ? a.year - b.year : a.month - b.month
@@ -897,7 +962,7 @@ function ConciliationBanner({ live, entries }) {
             Valor actual (live)
           </div>
           <p className="text-lg font-medium text-ink-0 mt-1 num">
-            ${usd(live)}
+            {plata(live)}
           </p>
           <p className="text-[10px] text-ink-3 mt-0.5 leading-tight">
             Coincide con el Dashboard. Calculado con precios actuales de mercado.
@@ -909,7 +974,7 @@ function ConciliationBanner({ live, entries }) {
             Mes en curso · cap. final
           </div>
           <p className={`text-lg font-bold mt-1 tabular ${significantDrift ? 'text-amber-600 dark:text-amber-400' : 'text-ink-0 dark:text-white'}`}>
-            {currentCapFinal != null ? `$${usd(currentCapFinal)}` : '—'}
+            {currentCapFinal != null ? plata(currentCapFinal) : '—'}
           </p>
           <p className="text-[10px] text-ink-3 mt-0.5 leading-tight">
             {current ? `${MONTHS[current.month - 1]} ${current.year} · ver fila marcada "EN CURSO".` : '—'}
@@ -921,7 +986,7 @@ function ConciliationBanner({ live, entries }) {
             Último mes cerrado
           </div>
           <p className="text-lg font-bold text-ink-0 dark:text-white mt-1 tabular">
-            {lastClosed ? `$${usd(lastClosed.capital_final || 0)}` : '—'}
+            {lastClosed ? plata(lastClosed.capital_final || 0) : '—'}
           </p>
           <p className="text-[10px] text-ink-3 mt-0.5 leading-tight">
             {lastClosed
@@ -935,7 +1000,7 @@ function ConciliationBanner({ live, entries }) {
         <div className="mt-3 flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-500/[0.06] border border-amber-500/20 rounded-md px-3 py-2">
           <span className="mt-0.5">⚠</span>
           <div className="leading-snug">
-            Diferencia de <span className="font-semibold tabular">${usd(Math.abs(drift))}</span>
+            Diferencia de <span className="font-semibold tabular">{plata(Math.abs(drift))}</span>
             {' '}entre el valor actual y el capital final del mes en curso. Causas habituales:
             <ul className="mt-1 ml-3 list-disc list-inside text-ink-2">
               <li>Variación del dólar blue con cash ARS en cartera: el equivalente en USD cambia sin operaciones.</li>

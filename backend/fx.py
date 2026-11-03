@@ -191,6 +191,33 @@ def fx_for_date_detail(conn, date_str, fallback=None, riel: str = RIEL_MEP):
     return (fallback, "fallback" if fallback else None)
 
 
+def serie_diaria(conn, desde: str):
+    """`fx_for_date` para una serie entera, en UNA lectura: [(fecha, tc, fecha_del_tc)]
+    por cada fila de `fx_rates_daily` desde `desde` (y la última anterior, para
+    arrastrar). La regla es la misma que `fx_for_date`: el ÚLTIMO MEP conocido
+    (aunque sea de días antes); el blue sólo si todavía no hubo ningún MEP.
+    `fecha_del_tc` es la fecha del dato que se usó: quien la consume decide si es
+    demasiado vieja para ser "el dólar de ese día".
+
+    (Existe porque la ficha técnica convierte ~750 velas y pedir `fx_for_date`
+    de a una son 750 consultas; y porque la versión que tenía aparte usaba el
+    blue DEL DÍA cuando faltaba el MEP, distinto del resto de la app: un día así
+    fabricaba un pozo de ~10 % en el gráfico.)"""
+    rows = conn.execute(
+        f"SELECT date, {SQL_MEDIO_MEP} AS mep, {SQL_MEDIO_BLUE} AS blue FROM fx_rates_daily "
+        "WHERE date >= COALESCE((SELECT MAX(date) FROM fx_rates_daily WHERE date < ?), ?) "
+        "ORDER BY date", (desde, desde)).fetchall()
+    out, mep, f_mep = [], None, None
+    for r in rows:
+        if r["mep"] is not None and r["mep"] > 0:
+            mep, f_mep = float(r["mep"]), r["date"]
+        if mep is not None:
+            out.append((r["date"], mep, f_mep))
+        elif r["blue"] is not None and r["blue"] > 0:
+            out.append((r["date"], float(r["blue"]), r["date"]))
+    return out
+
+
 def fx_for_date(conn, date_str, fallback=None, riel: str = RIEL_MEP) -> Optional[float]:
     """El TC ARS/USD de `date_str`. Ver el docstring del módulo.
 
@@ -367,6 +394,29 @@ def fx_version(conn, uid: int) -> str:
     except Exception:
         # Ante cualquier duda, el comportamiento viejo: v1 no corrompe nada, solo
         # posterga la mejora para esa cuenta.
+        return FX_V1
+
+
+def fx_version_lectura(conn, uid: int) -> str:
+    """La misma respuesta que `fx_version`, pero SOLO LEE: no persiste la versión de
+    una cuenta virgen. Es para lo que no puede escribir: un GET, o el ensayo de una
+    corrección (que además tomaría el candado de escritura de SQLite sin necesidad).
+
+    La respuesta coincide con la que `fx_version` daría y guardaría en ese momento:
+    la fila de config si existe; si no, v1 para una cuenta con historia y v2 para una
+    virgen. Ante cualquier duda, v1 (no corrompe nada)."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM config WHERE user_id=? AND key=?",
+            (uid, _FX_VERSION_KEY)).fetchone()
+        if row and row[0] in (FX_V1, FX_V2):
+            return row[0]
+        tiene_historia = conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM import_batches WHERE user_id=? AND status='confirmed') "
+            "OR EXISTS(SELECT 1 FROM operations WHERE user_id=?)",
+            (uid, uid)).fetchone()[0]
+        return FX_V1 if tiene_historia else FX_V2
+    except Exception:
         return FX_V1
 
 

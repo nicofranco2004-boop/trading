@@ -1,4 +1,4 @@
-// Dos ejes de "Calidad de cartera": el NEGOCIO (calidad de la empresa) y el PRECIO
+// Dos ejes de "Análisis fundamental": el NEGOCIO (calidad de la empresa) y el PRECIO
 // (qué pagás hoy). Derivados de las category scores del contrato
 // /api/fundamentals/{ticker}. Deliberadamente NO los colapsamos en un único score
 // 0-100 — eso esconde que una empresa puede ser sólida y estar cara. Compartido

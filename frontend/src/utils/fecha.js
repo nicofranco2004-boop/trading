@@ -64,3 +64,11 @@ export function diaMes(iso) {
   if (!iso || iso.length < 10) return ''
   return `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
 }
+
+/** `'YYYY-MM-DD'` → `'vie 30/10'`: el día de la semana y la fecha, para que una
+ *  rueda vieja (la del viernes, mirada un sábado) no se lea como de hoy. */
+export function diaYFecha(iso) {
+  if (!iso || iso.length < 10) return ''
+  const [y, m, d] = iso.slice(0, 10).split('-').map(Number)
+  return `${['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'][new Date(Date.UTC(y, m - 1, d)).getUTCDay()]} ${diaMes(iso)}`
+}

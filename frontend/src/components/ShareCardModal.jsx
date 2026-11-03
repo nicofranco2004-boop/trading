@@ -29,6 +29,7 @@ import {
   shareCardToDataURL,
   downloadShareCard,
   tryNativeShare,
+  dataURLToBlob,
 } from '../utils/shareCard'
 import { track } from '../utils/track'
 import PreguntaMontos from './PreguntaMontos'
@@ -123,7 +124,10 @@ export default function ShareCardModal({ spec: specFijo, buildSpec = null, filen
       const spec = specRef.current
       // El texto que acompaña al archivo es genérico: el título de la tarjeta
       // puede ser el nombre del usuario, y ahí ya no lo controla la imagen.
-      const ok = await tryNativeShare(spec, { title: 'Rendi', text: 'Hecho con Rendi · rendi.finance' })
+      // La misma imagen de la vista previa, ya dibujada: así el compartir del
+      // sistema se pide en el acto (ver tryNativeShare).
+      const ok = await tryNativeShare(spec, { title: 'Rendi', text: 'Hecho con Rendi · rendi.finance',
+        filename: filename || 'rendi-card.png', blob: dataUrl ? dataURLToBlob(dataUrl) : null })
       if (ok) {
         track('share_card_shared', { source, kind: spec.kind, channel: 'native', montos: montosProp })
       } else {

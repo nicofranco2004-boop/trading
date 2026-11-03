@@ -1,4 +1,6 @@
 import { createContext, useContext, useState, useEffect } from 'react'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 const ThemeContext = createContext()
 
@@ -28,13 +30,13 @@ const LIGHT_MODE_LOCKED = false
 export function ThemeProvider({ children }) {
   const [dark, setDark] = useState(() => {
     if (LIGHT_MODE_LOCKED) return true
-    return localStorage.getItem('rendi_theme') !== 'light'
+    return leerDelAlmacen(CATALOGO.tema) !== 'light'
   })
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
     if (!LIGHT_MODE_LOCKED) {
-      localStorage.setItem('rendi_theme', dark ? 'dark' : 'light')
+      guardarEnAlmacen(CATALOGO.tema, dark ? 'dark' : 'light')
     }
   }, [dark])
 

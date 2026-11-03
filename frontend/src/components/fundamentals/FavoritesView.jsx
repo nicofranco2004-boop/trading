@@ -1,9 +1,9 @@
-// FavoritesView — vista "Favoritos" de Calidad de cartera.
+// FavoritesView — vista "Favoritos" de Análisis fundamental.
 // ═══════════════════════════════════════════════════════════════════════════
 // Reusa la watchlist EXISTENTE del app (GET/POST/DELETE /watchlist + el bus de
 // eventos window-level), vía el hook useWatchlist. Filtra a EQUITIES y CEDEARs
 // (los únicos con fundamentales). Sin gauge: cada card muestra los dos ejes
-// Negocio / Precio, igual que el resto de Calidad de cartera.
+// Negocio / Precio, igual que el resto de Análisis fundamental.
 
 import { useState, useEffect } from 'react'
 import { Star } from 'lucide-react'

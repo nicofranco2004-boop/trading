@@ -706,7 +706,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, onAutoAskUsado, 
             pegados sin un espacio en el medio — 52px de alto para algo que no
             se leía. Apilados entran en un renglón cada uno y ocupan menos. */}
         <div className="flex flex-col items-start gap-0.5 sm:flex-row sm:items-center sm:justify-between
-                        mt-2 px-1 text-[11.5px] text-ink-3">
+                        mt-2 px-1 text-[11.5px] text-ink-2">
           <span>Mervall-E AI puede equivocarse — no es asesoramiento financiero.</span>
           {usage && usage.chat_limit > 0 && (
             <span className="tabular num" title={costoDeEscuchar(usage)}>

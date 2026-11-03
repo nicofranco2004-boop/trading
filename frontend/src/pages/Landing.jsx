@@ -22,7 +22,7 @@ import {
 import {
   PLUS_FEATURES, PRO_FEATURES,
   TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS, CUPO_CHAT } from '../data/planCatalog'
-import { api } from '../utils/api'
+import { api, pedirAlServidor } from '../utils/api'
 import { whatsappUrl } from '../utils/support'
 import SupportWhatsAppFab, { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import FAQ from '../components/landing/FAQ'
@@ -1236,7 +1236,7 @@ function FounderBlock() {
 
   useEffect(() => {
     let alive = true
-    fetch('/api/stats/public')
+    pedirAlServidor('/stats/public', {}, { freno: false })
       .then(r => (r.ok ? r.json() : null))
       .then(d => { if (alive && d && typeof d.users === 'number') setUsers(d.users) })
       .catch(() => {})

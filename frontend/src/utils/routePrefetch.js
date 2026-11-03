@@ -29,6 +29,7 @@ const importMap = {
   '/mensual':         () => import('../pages/Monthly'),
   '/reportes':        () => import('../pages/Reports'),
   '/novedades':       () => import('../pages/Novedades'),
+  '/analisis-tecnico': () => import('../pages/AnalisisTecnico'),
   '/clientes':        () => import('../pages/AdvisorClients'),
   '/importar-historiales': () => import('../pages/AdvisorImports'),
   '/cobros':          () => import('../pages/AdvisorCobros'),

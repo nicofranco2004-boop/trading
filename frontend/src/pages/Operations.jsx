@@ -23,7 +23,7 @@ import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
 import { fmtUsd as fmtUsdRaw, fmtMoney, colorClass, parseNum, parseNumOrNull, numACampo } from '../utils/format'
 import { track } from '../utils/track'
-import { useMoneyFormat, fmtConvertedRaw } from '../contexts/CurrencyContext'
+import { useMoneyFormat } from '../contexts/CurrencyContext'
 import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
@@ -39,10 +39,15 @@ import { useToast } from '../components/Toast'
 import { computeTradeStats, esConversion, mejorTrade, patronesDeOperaciones } from '../utils/tradeStats'
 import { operacionesEnUsd } from '../utils/assetPnl'
 import { anotarCambioDeMovimiento } from '../utils/cambioDeMovimiento'
+import { useDuenoDeLosDatos } from '../utils/duenoDeLaPestana'
 import NumeroQueCambia, { textoDeDiferencia } from '../components/NumeroQueCambia'
 import { useNumeroQueCambia } from '../hooks/useNumeroQueCambia'
 import TradesTable, { PAGE_SIZE } from '../components/operations/TradesTable'
 import TradesFeed from '../components/operations/TradesFeed'
+import DiarioResumen from '../components/operations/DiarioResumen'
+import TesisPosiciones from '../components/tesis/TesisPosiciones'
+import { useDiario } from '../hooks/useDiario'
+import { resumenDiario } from '../utils/diarioOperaciones'
 import MovementsTable, { MOV_PAGE_SIZE } from '../components/operations/MovementsTable'
 import MovementsFeed from '../components/operations/MovementsFeed'
 import CobrosView from '../components/operations/CobrosView'
@@ -52,6 +57,8 @@ import {
 } from '../components/operations/shared'
 import { confirmar } from '../utils/confirmar'
 import { cobradoDe } from '../utils/cobros'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 // pnl_usd arranca como string vacío (no 0) para que el form distinga
 // "no completado" de "0 USD" — sin esto, el user que quiere cargar un trade
@@ -76,6 +83,7 @@ function confirmarDeshacerCobroPf(pf) {
   )
 }
 
+const SIN_OPS = []
 const EMPTY = { date: hoyISO(), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: '', pnl_pct: '', commissions: '', mueve_efectivo: false }
 
 const RESULT_OPTIONS = [
@@ -89,6 +97,9 @@ const RESULT_OPTIONS = [
 const FILTROS_INICIALES = { asset: '', broker: 'all', result: 'all', period: 'all' }
 
 export default function Operations() {
+  // Lo que se anota de un cambio es de la cuenta de los datos de esta pantalla
+  // (utils/duenoDeLaPestana): si la pestaña ya es de otra, no se anota.
+  const duenoDatos = useDuenoDeLosDatos()
   const isMobile = useIsMobile()
   // tab: 'trades' = operaciones cerradas con KPIs de P&L
   //      'all'    = historial unificado (trades + depósitos + retiros + …)
@@ -99,8 +110,8 @@ export default function Operations() {
   // propia: el breakpoint tiene un solo dueño (useIsMobile) y el guard lo
   // verifica archivo por archivo. `useIsMobile` resuelve sincrónico en el primer
   // render, así que el inicializador perezoso lee el valor correcto.
-  const [tab, setTab] = useState(() => localStorage.getItem('rendi_operations_tab') || (isMobile ? 'trades' : 'all'))
-  useEffect(() => { localStorage.setItem('rendi_operations_tab', tab) }, [tab])
+  const [tab, setTab] = useState(() => leerDelAlmacen(CATALOGO.pestanaMovimientos) || (isMobile ? 'trades' : 'all'))
+  useEffect(() => { guardarEnAlmacen(CATALOGO.pestanaMovimientos, tab) }, [tab])
   // P&L realizado con el toggle global ARS/USD, SIEMPRE a FX histórico:
   // cada trade se convierte con el suyo (op.fx_to_usd stampeado > lookup por
   // op.date > tcValuacion actual) y los agregados (KPIs, headers de grupo) suman los
@@ -149,8 +160,8 @@ export default function Operations() {
   // reduce ruido) y persiste la elección; el feed no tiene control de agrupado y
   // va siempre por día. Estado PROPIO de este tab — no se comparte con
   // MovementsView (que tiene su 'rendi_movements_group').
-  const [groupBy, setGroupBy] = useState(() => localStorage.getItem('rendi_trades_group') || 'asset')
-  useEffect(() => { localStorage.setItem('rendi_trades_group', groupBy) }, [groupBy])
+  const [groupBy, setGroupBy] = useState(() => leerDelAlmacen(CATALOGO.agruparOperaciones) || 'asset')
+  useEffect(() => { guardarEnAlmacen(CATALOGO.agruparOperaciones, groupBy) }, [groupBy])
   // Grupos expandidos (Set de keys). Click en la fila-resumen togglea su detalle.
   const [expandedGroups, setExpandedGroups] = useState(() => new Set())
   function toggleGroup(key) {
@@ -297,7 +308,7 @@ export default function Operations() {
             await load()
           })
           // Volvió: la próxima pantalla con total lo muestra sumándose.
-          if (cambio) anotarCambioDeMovimiento({ ...cambio, deshecho: false })
+          if (cambio) anotarCambioDeMovimiento({ ...cambio, deshecho: false }, duenoDatos)
           toast.push(msgVuelta, { type: 'success' })
         } catch (ex) {
           toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
@@ -342,7 +353,7 @@ export default function Operations() {
       const cambio = pf
         ? { texto: `cobro del plazo fijo de ${pf.banco}`, articulo: 'el' }
         : { texto: 'operación', articulo: 'la' }
-      anotarCambioDeMovimiento(cambio)
+      anotarCambioDeMovimiento(cambio, duenoDatos)
       offerUndo(res, '/operations/undo', pf ? `El plazo fijo de ${pf.banco} volvió a tu cartera.` : 'Operación borrada.', cambio,
         pf ? 'Listo, volvimos atrás: el plazo fijo está cobrado de nuevo.' : undefined)
     } catch (ex) {
@@ -375,7 +386,7 @@ export default function Operations() {
       })
       const n = res?.count
       const cambio = { texto: `historial de ${asset}`, articulo: 'el' }
-      anotarCambioDeMovimiento(cambio)
+      anotarCambioDeMovimiento(cambio, duenoDatos)
       offerUndo(res, '/assets/undo',
         `${asset} borrado${n ? ` (${n} ${n === 1 ? 'operación' : 'operaciones'})` : ''}.`, cambio)
     } catch (ex) {
@@ -389,7 +400,7 @@ export default function Operations() {
   // actual — mismo bug que el header de grupo. `totalPnl` (USD crudo) se mantiene
   // solo para el TONO (color), que no debe depender del FX.
   const totalPnlDisp = useMemo(
-    () => histMoney.sumConvertedAt(ops, o => (o.pnl_usd || 0)),
+    () => histMoney.sumPnlAt(ops),
     [ops, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
   )
   // Win rate: UNA definición, la del backend (utils/tradeStats). Acá se contaban
@@ -401,12 +412,22 @@ export default function Operations() {
   // El máximo se elige sobre el valor que se VA A MOSTRAR (cada trade con SU FX
   // histórico): en pesos el ranking puede diferir del de USD.
   const bestTradeOp = useMemo(
-    () => mejorTrade(ops, o => histMoney.convertedValue(o.pnl_usd, {
-      stampedFx: o.fx_to_usd, rowCurrency: o.currency, dateIso: o.date,
-    })),
+    () => mejorTrade(ops, o => histMoney.pnlAt(o)),
     [ops, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
   )
   const patterns = useMemo(() => patronesDeOperaciones(ops), [ops])
+  // El diario (pieza 11): la tendencia del día de cada compra y tus tesis, pedidos
+  // UNA vez acá y pasados por prop a la tabla, al feed y a las tarjetas.
+  // Sólo con la pestaña abierta: en «Todos los movimientos» no se muestra y el
+  // pedido de tendencias lee una serie por activo.
+  const opsDelDiario = tab === 'trades' ? ops : SIN_OPS
+  const diarioDatos = useDiario(opsDelDiario)
+  const diario = useMemo(() => ({
+    tendencias: diarioDatos.tendencias,
+    estadoTendencias: diarioDatos.estadoTendencias,
+    tesis: diarioDatos.tesis.items,
+  }), [diarioDatos.tendencias, diarioDatos.estadoTendencias, diarioDatos.tesis.items])
+  const resumen = useMemo(() => resumenDiario(ops, diarioDatos.tendencias), [ops, diarioDatos.tendencias])
   const periodOptions = useMemo(() => buildPeriodOptions(ops), [ops])
 
   const filteredOps = useMemo(() => {
@@ -414,12 +435,17 @@ export default function Operations() {
     return ops.filter(o => {
       if (q && !(o.asset || '').toUpperCase().includes(q)) return false
       if (filterBroker !== 'all' && o.broker !== filterBroker) return false
-      if (filterResult === 'wins' && !(o.pnl_usd > 0)) return false
-      if (filterResult === 'losses' && !(o.pnl_usd < 0)) return false
+      // Ganadoras / Perdidas según el número que se VE: en Pesos una venta puede haber
+      // ganado en pesos y perdido en dólares, y el filtro tiene que seguir a la pantalla.
+      if (filterResult !== 'all') {
+        const visto = o.pnl_usd == null ? null : histMoney.pnlAt(o)
+        if (filterResult === 'wins' && !(visto > 0)) return false
+        if (filterResult === 'losses' && !(visto < 0)) return false
+      }
       if (!enPeriodo(o.date, period)) return false
       return true
     })
-  }, [ops, filterAsset, filterBroker, filterResult, period])
+  }, [ops, filterAsset, filterBroker, filterResult, period, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion])
 
   const filtrosActuales = { asset: filterAsset, broker: filterBroker, result: filterResult, period }
   const filtersActiveCount = Object.keys(FILTROS_INICIALES)
@@ -567,7 +593,7 @@ export default function Operations() {
             label="P&L Realizado"
             clave="movimientos:pnl-realizado" moneda={histMoney.currency}
             num={totalPnlDisp}
-            format={(n) => fmtConvertedRaw(n, histMoney.currency, { decimals: 2 })}
+            format={(n) => histMoney.fmtMonto(n, { decimals: 2 })}
             tone={totalPnlDisp >= 0 ? 'pos' : 'neg'}
             sub="acumulado histórico"
           />
@@ -592,12 +618,9 @@ export default function Operations() {
           <KpiCell
             label="Mejor trade"
             value={bestTradeOp
-              ? histMoney.fmtMoneyAt(bestTradeOp.pnl_usd, {
-                  stampedFx: bestTradeOp.fx_to_usd, rowCurrency: bestTradeOp.currency,
-                  dateIso: bestTradeOp.date, decimals: 2,
-                })
+              ? histMoney.fmtPnlAt(bestTradeOp, { decimals: 2 })
               : '—'}
-            tone={bestTradeOp && bestTradeOp.pnl_usd > 0 ? 'pos' : null}
+            tone={bestTradeOp && histMoney.pnlAt(bestTradeOp) > 0 ? 'pos' : null}
             sub="P&L individual"
           />
         </div></FranjaKpis>
@@ -615,7 +638,7 @@ export default function Operations() {
               </div>
               <div className={`text-xl font-medium tabular leading-none transition-opacity ${recalculando ? 'opacity-50' : ''} ${colorClass(totalPnlDisp)}`}>
                 <NumeroQueCambia clave="movimientos:pnl-realizado" value={totalPnlDisp} moneda={histMoney.currency}
-                  format={(n) => fmtConvertedRaw(n, histMoney.currency, { signed: true, decimals: 2 })}
+                  format={(n) => histMoney.fmtMonto(n, { signed: true, decimals: 2 })}
                   conDiferencia={false} desdeCero />
               </div>
             </div>
@@ -663,6 +686,18 @@ export default function Operations() {
             </div>
           )}
         </header>
+      )}
+
+      {/* El diario: tiempo, rendimiento por año y tendencia al comprar, «Lo que
+          dicen tus números» y la tesis de una posición abierta. El mismo bloque
+          en las dos anchuras (R6): la grilla se acomoda sola. */}
+      {!loadingOps && (
+        <DiarioResumen
+          className={isMobile ? 'px-4 pt-3' : 'mb-4'}
+          resumen={resumen}
+          estadoTendencias={diarioDatos.estadoTendencias}
+          aparte={<TesisPosiciones tesis={diarioDatos.tesis} />}
+        />
       )}
 
       {/* Strip de patrones — observaciones derivadas de las operaciones. */}
@@ -765,6 +800,7 @@ export default function Operations() {
           page={currentPage}
           totalPages={totalPages}
           onPage={setPage}
+          diario={diario}
         />
       )}
 
@@ -792,7 +828,7 @@ export default function Operations() {
         </div>
       )}
       {isMobile && !loadingOps && groups.length > 0 && (
-        <TradesFeed groups={groups} histMoney={histMoney} onDelete={del} borrando={borrando.activo} nuevas={nuevas} />
+        <TradesFeed groups={groups} histMoney={histMoney} onDelete={del} borrando={borrando.activo} nuevas={nuevas} diario={diario} />
       )}
 
       {/* Sheet de filtros — sólo la rama angosta. */}
@@ -1227,6 +1263,9 @@ export function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
 // sin avisarle, la operación borrada seguía visible ahí (y en sus KPIs) hasta recargar.
 // Desde la Fase 3 el prop llega en LAS DOS anchuras (el feed lo montaba sin él).
 function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } }) {
+  // Lo que se anota de un cambio es de la cuenta de los datos de esta pantalla
+  // (utils/duenoDeLaPestana): si la pestaña ya es de otra, no se anota.
+  const duenoDatos = useDuenoDeLosDatos()
   // Fase B: formatter atado al toggle global ARS/USD. Lo bajamos a
   // computeMovementKpis y a los renderers vía props para evitar shadow.
   // Phase C audit fix H1: el HM (historical money) se usa en cada fila
@@ -1239,7 +1278,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
   const money = useMoneyFormat()
   const histMoney = useHistoricalMoney()
   // Formatea un monto YA convertido a la moneda en que se mira (no reconvierte).
-  const fmtVista = (v) => fmtConvertedRaw(v, histMoney.currency)
+  const fmtVista = (v) => histMoney.fmtMonto(v)
   const sumarEnVista = (rows, getUsd) => histMoney.sumConvertedAt(rows, getUsd)
   const [movements, setMovements] = useState([])
   const [loading, setLoading] = useState(true)
@@ -1251,8 +1290,8 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
   // Agrupación de la lista. 'asset' por defecto (reduce ruido). Persistido en
   // localStorage para respetar la preferencia del user entre sesiones. El feed
   // no tiene control de agrupado: va siempre por día.
-  const [groupBy, setGroupBy] = useState(() => localStorage.getItem('rendi_movements_group') || 'asset')
-  useEffect(() => { localStorage.setItem('rendi_movements_group', groupBy) }, [groupBy])
+  const [groupBy, setGroupBy] = useState(() => leerDelAlmacen(CATALOGO.agruparMovimientos) || 'asset')
+  useEffect(() => { guardarEnAlmacen(CATALOGO.agruparMovimientos, groupBy) }, [groupBy])
   // Grupos expandidos (Set de keys). Mismo patrón que expandedTickers en
   // Positions: click en la fila-resumen togglea el despliegue de sus filas.
   const [expandedGroups, setExpandedGroups] = useState(() => new Set())
@@ -1431,7 +1470,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
         await load()
         return r
       })
-      anotarCambioDeMovimiento(cambio)
+      anotarCambioDeMovimiento(cambio, duenoDatos)
       onChanged?.()
       // Los trades devuelven token de deshacer (cascada reversible). Los cash-flows
       // todavía no: ahí solo confirmamos, sin prometer nada que no exista. Toda
@@ -1450,7 +1489,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
                   await api.post(`${base}/${token}`)
                   await load()
                 })
-                anotarCambioDeMovimiento({ ...cambio, deshecho: !cambio.deshecho })
+                anotarCambioDeMovimiento({ ...cambio, deshecho: !cambio.deshecho }, duenoDatos)
                 onChanged?.()
                 toast.push(pf ? 'Listo, volvimos atrás: el plazo fijo está cobrado de nuevo.'
                   : m.transfer_out ? 'Listo, volvimos atrás: el cierre está de nuevo.'

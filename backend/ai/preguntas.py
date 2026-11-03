@@ -93,6 +93,13 @@ PREGUNTAS: Dict[str, Union[str, Tuple[str, str]]] = {
     "fundamentals.category": ("¿Cómo está {activo} en {categoria}?",
                               "¿Cómo está esta empresa en esa parte?"),
 
+    # ── Cómo viene el precio (la ficha del activo) ───────────────────────
+    "tecnico": ("¿Cómo viene {activo}?", "¿Cómo viene este activo?"),
+    "tecnico.tendencia": ("¿{activo} está en tendencia?", "¿Este activo está en tendencia?"),
+    "tecnico.fuerza": ("¿Tiene fuerza el movimiento de ahora de {activo}?",
+                       "¿Tiene fuerza el movimiento de ahora?"),
+    "tecnico.que_se_mira": ("¿Qué se mira de acá en adelante en {activo}?",
+                            "¿Qué se mira de acá en adelante?"),
     # ── Operaciones ──────────────────────────────────────────────────────
     "operations": "¿Cómo vengo operando?",
     "operations.trade": "¿Qué tal me salió esta operación?",
@@ -128,7 +135,7 @@ PREGUNTAS: Dict[str, Union[str, Tuple[str, str]]] = {
 
 # ─── Los tres filtros ────────────────────────────────────────────────────────
 
-# Las cinco dimensiones de Calidad de cartera, dichas como se leen en pantalla.
+# Las cinco dimensiones de Análisis fundamental, dichas como se leen en pantalla.
 # Tabla cerrada: si mañana aparece una sexta y no está acá, la pregunta cae a
 # la versión genérica en vez de meter en el prompt lo que haya mandado el
 # navegador.

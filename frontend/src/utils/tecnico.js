@@ -1,0 +1,744 @@
+// tecnico.js — lo que la ficha del activo dibuja encima de la lectura técnica.
+// ════════════════════════════════════════════════════════════════════════════
+// Los NÚMEROS (medias, Bandas de Bollinger, RSI, ADX, Squeeze, máximo del año) vienen hechos de GET /api/tecnico
+// (backend/tecnico.py), en UN lugar. Acá viven las palabras de cada tarjeta y lo
+// que sólo sabe la ficha: tus compras, tus ventas y tu precio promedio.
+//
+// Tu precio promedio se dibuja con el resultado que ya muestra la ficha arriba
+// (`pnlPct`), no recalculado: la línea va en `último precio ÷ (1 + resultado)`.
+// Así la distancia entre el precio y la línea es EXACTAMENTE el % de tu
+// resultado, en la escala del gráfico — aunque el gráfico sea la acción de Nueva
+// York y vos tengas CEDEARs (otra escala), o una acción argentina pasada a
+// dólares día por día.
+
+import { esCobro, esTradeCerrado } from './tradeStats'
+
+// Cuánto tiempo muestra cada rango del gráfico, en días CORRIDOS: una cripto
+// cotiza los 7 días y la bolsa 5, así que contar velas daba 8 meses en "1A"
+// para Bitcoin (auditoría 22/10).
+export const RANGOS = [
+  { id: '3m', label: '3M', dias: 91 },
+  { id: '1a', label: '1A', dias: 365 },
+  { id: '2a', label: '2A', dias: 730 },
+]
+
+/** Cuántos de los últimos puntos caen en los últimos `dias` días corridos. */
+export function puntosEnDias(puntos = [], dias) {
+  if (!puntos.length) return 0
+  const fin = Date.parse(puntos[puntos.length - 1].d + 'T00:00:00Z')
+  const piso = new Date(fin - dias * 86400000).toISOString().slice(0, 10)
+  let n = 0
+  for (let i = puntos.length - 1; i >= 0 && puntos[i].d > piso; i--) n++
+  return n
+}
+
+// Los cortes del RSI que usa todo el mundo (TradingView incluido).
+export const RSI_CASTIGADO = 30
+export const RSI_ESTIRADO = 70
+
+const pct1 = (v) => `${Math.abs(v).toLocaleString('es-AR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })}%`
+
+/**
+ * La vela de un punto, completa: apertura, máximo, mínimo y cierre. Si a la vela
+ * guardada le falta algo (Yahoo a veces manda el máximo roto y se guarda sólo el
+ * cierre), se completa con lo que hay: la apertura con el cierre anterior y el
+ * máximo/mínimo con la apertura y el cierre. Nunca se inventa una mecha.
+ */
+export function velaCompleta(p, cierreAnterior) {
+  const c = p.c
+  const o = p.o ?? cierreAnterior ?? c
+  const h = p.h != null ? Math.max(p.h, o, c) : Math.max(o, c)
+  const l = p.l != null ? Math.min(p.l, o, c) : Math.min(o, c)
+  return { o, h, l, c }
+}
+
+/**
+ * Velas SEMANALES a partir de las diarias (para el rango de 2 años: 500 velas
+ * diarias en un celular son rayitas). Cada semana: la apertura del primer día,
+ * el máximo y el mínimo de la semana, el cierre del último día, el volumen
+ * sumado; las medias, las bandas, el RSI, el ADX y el Squeeze son los del último día (el
+ * color del Squeeze se recalcula contra la semana anterior). `d` es el primer
+ * día de la semana, así una compra a mitad de semana cae en su vela; `hasta`, el
+ * último (el día de su cierre). `previos`:
+ * los días de antes de `puntos` (la ventana del zoom), para que la primera
+ * semana compare su Squeeze contra la semana anterior de verdad y no contra 0.
+ */
+export function velasSemanales(puntos = [], previos = []) {
+  const out = []
+  let actual = null
+  let clave = null
+  let prevC = null
+  for (const p of puntos) {
+    const f = new Date(p.d + 'T00:00:00Z')
+    const lunes = new Date(f.getTime() - ((f.getUTCDay() + 6) % 7) * 86400000).toISOString().slice(0, 10)
+    const v = velaCompleta(p, prevC)
+    prevC = p.c
+    if (lunes !== clave) {
+      if (actual) out.push(actual)
+      clave = lunes
+      actual = { ...p, d: p.d, o: v.o, h: v.h, l: v.l, c: v.c, v: p.v ?? null, semana: true, hasta: p.d }
+    } else if (p.vivo) {
+      // Las velas que la noche todavía no guardó (sumarVelaDeHoy) no traen
+      // medias ni RSI: la semana se queda con los del último día guardado, y
+      // lo de la de hoy (en curso, su hora, la demora de la bolsa) pasa a la semana.
+      actual = { ...actual, h: Math.max(actual.h, v.h), l: Math.min(actual.l, v.l), c: v.c,
+        v: p.v == null ? actual.v : (actual.v || 0) + p.v, hasta: p.d,
+        hoy: p.hoy, enCurso: p.enCurso, actualizada: p.actualizada, demora: p.demora }
+    } else {
+      actual = { ...actual, h: Math.max(actual.h, v.h), l: Math.min(actual.l, v.l), c: v.c,
+        v: p.v == null ? actual.v : (actual.v || 0) + p.v, hasta: p.d,
+        s50: p.s50, s200: p.s200, bb_arriba: p.bb_arriba, bb_abajo: p.bb_abajo, rsi: p.rsi, adx: p.adx, squeeze: p.squeeze, squeeze_color: p.squeeze_color }
+    }
+  }
+  if (actual) out.push(actual)
+  // El color del Squeeze de cada semana, contra la semana anterior (el de cada
+  // día viene comparado contra el día anterior).
+  let antes = null
+  if (out.length) {
+    const f = new Date(out[0].d + 'T00:00:00Z')
+    const lunes = new Date(f.getTime() - ((f.getUTCDay() + 6) % 7) * 86400000).toISOString().slice(0, 10)
+    for (let i = previos.length - 1; i >= 0; i--) {
+      if (previos[i].d < lunes) { antes = previos[i].squeeze ?? null; break }
+    }
+  }
+  out.forEach((s, k) => {
+    if (s.squeeze != null) s.squeeze_color = colorSqueeze(s.squeeze, k > 0 ? out[k - 1].squeeze : antes)
+  })
+  return out
+}
+
+/**
+ * Las velas que la noche todavía no guardó (useVelaDeHoy: la de HOY y, si hace
+ * falta, algún día cerrado sin guardar) al final de lo que dibuja el gráfico.
+ * Van SÓLO al dibujo: las cuentas de la pantalla (los lugares de los dibujos y
+ * las notas, el Fibonacci, las ondas, la lectura) siguen con las guardadas, y
+ * ocupan los primeros lugares vacíos de la derecha, que son justamente los días
+ * siguientes al último guardado.
+ *
+ * Se dibujan sólo si siguen a lo guardado que tiene la pantalla
+ * (`base === ultimaGuardada`): con la ficha abierta de un día para el otro, la
+ * noche guardó otra y la de hoy quedaría pegada a la de anteayer.
+ *   · diarias: si entran todas en el aire de la derecha que se ve; le sacan ese lugar;
+ *   · semanales: se suman a la semana en curso (o abren una nueva un lunes) si
+ *     el último día guardado se ve (`alBorde`) y, si abren una, hay lugar.
+ * Si no: igual que antes. Nunca cambia el ancho de las velas.
+ *
+ * @returns {{ puntos: Array, huecos: number }} lo que recibe el gráfico.
+ */
+export function sumarVelaDeHoy({ puntos = [], huecos = 0, vivas = null, ultimaGuardada = null,
+  semanales = false, diarios = [], previos = [], alBorde = false } = {}) {
+  const sin = { puntos, huecos }
+  const velas = vivas?.velas || []
+  if (!velas.length || !ultimaGuardada || vivas.base !== ultimaGuardada
+    || !velas.every(x => x.c > 0 && x.d > ultimaGuardada)) return sin
+  if (!semanales) {
+    if (huecos < velas.length) return sin
+    return { puntos: [...puntos, ...velas], huecos: huecos - velas.length }
+  }
+  if (!alBorde) return sin
+  const semanas = velasSemanales([...diarios, ...velas], previos)
+  const nuevas = semanas.length - puntos.length
+  if (nuevas > huecos) return sin
+  return { puntos: semanas, huecos: huecos - nuevas }
+}
+
+/**
+ * Lo que dice el pie del gráfico de la vela de hoy (`vela`: la última que se
+ * dibuja, con `hoy`). Con la rueda abierta, a qué hora es el precio: se vuelve
+ * a pedir cada minuto, y un "hace 0 s" quieto mentiría. En una bolsa cuyos
+ * precios llegan con demora (`demora`, BYMA: 20 min) la hora del pedido NO es
+ * la del precio: se dice la demora en vez de una hora que no es.
+ */
+export function textoVelaDeHoy(vela, semanales = false) {
+  if (!vela?.hoy) return ''
+  const cual = semanales ? 'La última vela incluye hoy' : 'La última vela es la de hoy'
+  if (!vela.enCurso) return `${cual}: la rueda cerró y se guarda esta noche.`
+  if (vela.demora > 0) {
+    return `${cual}, en curso: se actualiza sola cada minuto, pero los precios de esta bolsa llegan con unos ${vela.demora} minutos de demora.`
+  }
+  const t = vela.actualizada ? new Date(vela.actualizada) : null
+  const hora = t && Number.isFinite(t.getTime())
+    ? t.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'America/Argentina/Buenos_Aires' })
+    : null
+  return `${cual}, en curso${hora ? ` (precio de las ${hora})` : ''}: se actualiza sola cada minuto.`
+}
+
+/**
+ * La ventana del gráfico se mide en LUGARES, no en velas: además de los días
+ * que hay, puede tener lugares vacíos a la derecha (el futuro), como en
+ * TradingView. Así la última vela no queda pegada al borde y se puede
+ * arrastrar el gráfico hacia adelante (Nico, 23/10: «tosco»). `fin` puede
+ * pasar de `total` (los días que hay) hasta la mitad de lo que se ve.
+ *
+ * El aire de entrada a la derecha: un 5 % de lo que se ve, nunca menos de 3.
+ */
+/**
+ * Hacia dónde va el último precio, para el color de su cartel (verde 1, rojo
+ * −1, gris 0). Con velas, como TradingView (Nico, 02/11): contra la APERTURA de
+ * la vela actual, que es lo que se ve (vela verde, cartel verde). En la línea,
+ * que no muestra aperturas, contra el cierre anterior. Una sola cuenta para la
+ * pantalla (LecturaTecnica) y la imagen de «Compartir» (imagenGrafico).
+ */
+export function haciaDondeVa(puntos = [], conVelas = false) {
+  const u = puntos[puntos.length - 1]
+  if (!u || u.c == null) return 0
+  const contra = conVelas && u.o != null ? u.o : puntos[puntos.length - 2]?.c
+  if (contra == null || u.c === contra) return 0
+  return u.c > contra ? 1 : -1
+}
+
+export function margenDerecho(dias) {
+  return Math.max(3, Math.round(dias * 0.05))
+}
+/** Lo más lejos que se puede ir hacia el futuro con `n` lugares a la vista. */
+export function futuroMaximo(n) {
+  return Math.floor(n * 0.5)
+}
+/** La ventana de entrada para ver `dias` días: esos días más el aire de la derecha. */
+export function ventanaInicial(dias, total) {
+  const d = Math.min(dias, total)
+  const m = margenDerecho(d)
+  return { n: d + m, fin: total + m }
+}
+
+/**
+ * El zoom de la ruedita: cuántos lugares se ven y hasta cuál. `vista` = { n,
+ * fin, total } (fin sin incluir; puede pasar de `total`), `factor` > 1 aleja y
+ * < 1 acerca, `f` (0 a 1) es qué punto del ancho queda quieto. Nunca menos de
+ * 20 ruedas ni más de las que hay (más su aire). null si no cambia nada.
+ */
+export const RUEDAS_MINIMAS = 20
+export function zoomVentana({ n, fin, total }, factor, f) {
+  const n2 = Math.round(Math.min(total + margenDerecho(total), Math.max(RUEDAS_MINIMAS, n * factor)))
+  if (n2 === n) return null
+  const bajoMouse = fin - n + f * n
+  const fin2 = Math.round(Math.min(total + futuroMaximo(n2), Math.max(n2, bajoMouse - f * n2 + n2)))
+  return { n: n2, fin: fin2 }
+}
+
+/**
+ * ¿Ya no se puede ir más para ese lado? Acercar (`factor` < 1) con 20 ruedas a
+ * la vista, o alejar con todo lo que hay. Los gestos (ruedita, pellizco, fila de
+ * fechas) juntan lo que no alcanza para mover una rueda; en el tope lo juntado
+ * se tira: si no, al darse vuelta primero había que devolver todo lo empujado
+ * contra el tope antes de que el gráfico se moviera (Nico, 31/10: «en los
+ * extremos cuesta mucho, tengo que hacerlo muchas veces»).
+ */
+export function zoomEnElTope({ n, total }, factor) {
+  return factor < 1 ? n <= RUEDAS_MINIMAS : factor > 1 && n >= total + margenDerecho(total)
+}
+
+/** Arrastrar: corre la ventana en el tiempo. `frac` es cuánto del ancho se
+ *  arrastró (a la derecha = para atrás en el tiempo; a la izquierda, hacia el
+ *  futuro, hasta la mitad de lo que se ve). null si ya está en el borde. */
+export function moverVentana({ n, fin, total }, frac) {
+  const fin2 = Math.round(Math.min(total + futuroMaximo(n), Math.max(n, fin - frac * n)))
+  return fin2 === fin ? null : { n, fin: fin2 }
+}
+
+/** Los últimos `ruedas` puntos. */
+export function recortar(puntos = [], ruedas) {
+  return ruedas >= puntos.length ? puntos : puntos.slice(puntos.length - ruedas)
+}
+
+/**
+ * Las tarjetas del análisis técnico, en castellano del día a día: «promedio de
+ * 200 días» y no «media móvil», «días de mercado» y no «ruedas», y el RSI dicho
+ * como fuerza que se gana o se pierde (Nico, 22/10: «claro, conciso, sin
+ * tecnicismos que no sirven»). Cada una: { id, titulo,
+ * veredicto, tono: 'pos'|'neg'|'neutro', texto }. Con pocos datos la tarjeta lo
+ * dice en vez de inventar.
+ */
+/**
+ * La tendencia de fondo de una lectura ('alcista' | 'bajista' | null): la que
+ * decide el servidor (`tendencia`, tecnico.tendencia_de: precio ≥ promedio de
+ * 200). LA única lectura de la regla en la pantalla (P6, 29/10): la usan la
+ * tarjeta «Largo plazo» (y con ella la radiografía y Tu lista), el aviso de
+ * pesos/dólares y el «Avisame».
+ * Plan B, sólo mientras se publica: la web (Vercel) sale antes que el servidor
+ * (Railway) con el mismo push, y un servidor de antes no manda `tendencia`.
+ * Sin el campo, la distancia al promedio (la misma regla, la que mandaba el
+ * servidor viejo). Con el servidor nuevo manda siempre el campo, aunque sea null.
+ */
+export function tendenciaDe(l) {
+  if (!l) return null
+  if (l.tendencia !== undefined) return l.tendencia
+  return l.dist_media200 == null ? null : l.dist_media200 >= 0 ? 'alcista' : 'bajista'
+}
+
+export function tarjetas(l) {
+  if (!l || !l.ruedas) return []
+  const out = []
+
+  // Alcista o bajista lo decide el servidor (`tendencia` de la lectura,
+  // tecnico.tendencia_de: precio ≥ promedio de 200): acá no se vuelve a
+  // escribir la regla (auditoría A 29/10, P6).
+  const tendencia = tendenciaDe(l)
+  if (tendencia && l.dist_media200 != null) {
+    const arriba = tendencia === 'alcista'
+    // Sin el dato de hace un mes (un activo con 200 a 220 ruedas) no se sabe
+    // hacia dónde va la media: se corta la frase, no se supone "subiendo".
+    const hacia = l.pendiente_media200 == null ? ''
+      : ` Ese promedio viene ${l.pendiente_media200 >= 0 ? 'subiendo' : 'bajando'}.`
+    out.push({
+      id: 'fondo', titulo: 'Largo plazo',
+      veredicto: arriba ? 'Alcista' : 'Bajista', tono: arriba ? 'pos' : 'neg',
+      texto: `El precio está ${pct1(l.dist_media200)} ${arriba ? 'arriba' : 'abajo'} de su promedio de los últimos 200 días.${hacia} `
+        + `Estar ${arriba ? 'arriba' : 'abajo'} de ese promedio es la referencia más usada para decir que la tendencia de largo plazo es ${arriba ? 'alcista' : 'bajista'}.`,
+    })
+  } else {
+    out.push({
+      id: 'fondo', titulo: 'Largo plazo', veredicto: 'Faltan datos', tono: 'neutro',
+      texto: `Para calcularlo hacen falta 200 días de mercado y este activo tiene ${l.ruedas}.`,
+    })
+  }
+
+  if (l.media50 != null && l.dist_media50 != null) {
+    const arriba = l.dist_media50 >= 0
+    out.push({
+      id: 'corto', titulo: 'Mediano plazo',
+      veredicto: arriba ? 'Alcista' : 'Bajista', tono: arriba ? 'pos' : 'neg',
+      texto: `El precio está ${pct1(l.dist_media50)} ${arriba ? 'arriba' : 'abajo'} de su promedio de los últimos 50 días (unos dos meses y medio): `
+        + `en los últimos meses, el precio ${arriba ? 'viene subiendo' : 'viene bajando'}.`,
+    })
+  }
+
+  if (l.rsi != null) {
+    out.push({
+      id: 'rsi', titulo: 'Impulso (RSI)',
+      veredicto: veredictoRsi(l.rsi), tono: 'neutro', rsi: l.rsi,
+      texto: `${Math.round(l.rsi)} de 100. Compara el tamaño de las subas con el de las bajas de las últimas 3 semanas. `
+        + `Arriba de 50 el precio gana impulso; abajo de 50, lo pierde. `
+        // Describe, no anticipa: «suele frenar» y «suele rebotar» no se cumplieron
+        // en la medición (después de pasar 70 el precio siguió subiendo en promedio).
+        + `Arriba de ${RSI_ESTIRADO}, el precio subió muy rápido; abajo de ${RSI_CASTIGADO}, cayó muy rápido. Describe lo que ya pasó; no es un pronóstico.`,
+      cruce: textoCruceRsi(l.rsi_cruce),
+    })
+  }
+
+  const fuerza = tarjetaFuerza(l)
+  if (fuerza) out.push(fuerza)
+
+  if (l.dist_maximo_12m != null) {
+    // El máximo es de CIERRE (el servidor): cerrar en récord da exactamente 0.
+    const enMaximo = l.dist_maximo_12m >= -0.1
+    out.push({
+      id: 'maximo', titulo: l.anio_completo ? 'Máximo del año' : 'Máximo del período',
+      veredicto: enMaximo ? 'En su máximo' : `${pct1(l.dist_maximo_12m)} por debajo`, tono: 'neutro',
+      texto: enMaximo
+        ? `Cerró en el precio más alto ${l.anio_completo ? 'de los últimos 12 meses' : `de los ${l.ruedas} días de mercado que hay`}.`
+        : `Cuánto tiene que subir para volver al precio más alto ${l.anio_completo ? 'de los últimos 12 meses' : `de los ${l.ruedas} días de mercado que hay`}.`,
+    })
+  }
+  const mov = tarjetaMovimiento(l)
+  if (mov) out.push(mov)
+  return out
+}
+
+// ─── Hoy contra el cierre ───────────────────────────────────────────────────
+// Las tarjetas se leen con el ÚLTIMO CIERRE guardado (un cruce se confirma al
+// cierre: Nico, 02/11), pero el gráfico dibuja la vela de hoy hasta que la noche
+// la guarda. Si quedó del otro lado, la tarjeta suma un aviso abajo: con la rueda
+// abierta, qué diría si cerrara así; ya cerrada, que cerró del otro lado y cuándo
+// cambia. Describe; nunca qué hacer.
+// Qué lectura da vuelta, y si en curso o ya cerrada, lo decide el servidor
+// (`contra_el_cierre` de la vela de hoy, tecnico.hoy_contra_el_cierre: con el
+// MISMO precio que dibuja el gráfico, el reloj de la rueda del motor y un margen
+// para que el ruido de un minuto no lo prenda y apague). Acá van las palabras.
+const TARJETA_DE_SENAL = { media200: 'fondo', media50: 'corto', maximo_12m: 'maximo' }
+
+/**
+ * El aviso de hoy de cada tarjeta, en palabras: { fondo: '…', corto: '…' }.
+ * `vivas`: lo de useVelaDeHoy. Sólo si sigue a la lectura que se ve
+ * (`base === lectura.fecha`; con la ficha abierta de un día para el otro la
+ * noche guardó otra) y si la tarjeta todavía dice lo que el servidor contradice.
+ * En la cripto «hoy» es su día, que cierra a las 21 (hora argentina), y su
+ * cierre se guarda esa misma noche; en la bolsa, la noche guarda la rueda de hoy
+ * y la lectura cambia «mañana».
+ */
+export function avisosDeHoy(lista = [], vivas = null, lectura = null) {
+  const out = {}
+  if (!lectura?.fecha || vivas?.base !== lectura.fecha) return out
+  const cripto = vivas.mercado === 'cripto'
+  for (const x of vivas.contra || []) {
+    const id = TARJETA_DE_SENAL[x.senal]
+    const t = lista.find(c => c.id === id)
+    if (!t || x.dist == null) continue
+    const maximo = x.senal === 'maximo_12m'
+    if (maximo ? t.veredicto === 'En su máximo' : t.tono !== (x.cierre === 'alcista' ? 'pos' : 'neg')) continue
+    const donde = maximo
+      ? `${pct1(x.dist)} arriba del cierre más alto ${lectura.anio_completo ? 'de los últimos 12 meses' : 'del período'}`
+      : `${pct1(x.dist)} ${x.dist >= 0 ? 'arriba' : 'abajo'} de su promedio de ${x.senal === 'media200' ? 200 : 50} días`
+    const queda = maximo ? 'esta tarjeta pasa a «En su máximo»' : `esta lectura pasa a ${x.pasa_a}`
+    if (x.estado === 'cerro') {
+      // Con la fecha del día que cerró (regla del repo: lo que dice «hoy» trae
+      // la fecha; guard hoy-con-fecha).
+      const dia = x.fecha ? `${x.fecha.slice(8, 10)}/${x.fecha.slice(5, 7)}` : null
+      out[id] = cripto
+        ? `Su día${dia ? ` del ${dia}` : ''} cerró a las 21 h (hora argentina) ${donde}: ${queda} con el guardado de esta noche.`
+        : `Cerró hoy${dia ? ` (${dia})` : ''} ${donde}: mañana ${queda}.`
+    } else {
+      out[id] = `Hoy, en curso, el precio está ${donde}. `
+        + (cripto ? `Si a las 21 h (hora argentina), cuando cierra su día, sigue así, ${queda}.` : `Si cierra así, mañana ${queda}.`)
+    }
+  }
+  return out
+}
+
+/** Las tarjetas con su aviso de hoy (`hoy`), si lo tienen (`avisosDeHoy`). */
+export function conAvisosDeHoy(lista = [], vivas = null, lectura = null) {
+  const avisos = avisosDeHoy(lista, vivas, lectura)
+  return Object.keys(avisos).length ? lista.map(t => (avisos[t.id] ? { ...t, hoy: avisos[t.id] } : t)) : lista
+}
+
+// ─── Cuánto se mueve ────────────────────────────────────────────────────────
+// El tamaño del movimiento de un día normal (`mov_dia` del servidor), no su
+// dirección. Es lo único técnico que se repite: medido el 28/10 en 15 acciones,
+// el orden de más tranquila a más movida casi no cambió de un año al otro.
+// Los cortes, con esas 15: Coca-Cola, Apple o Walmart quedan abajo de 1,5 %;
+// SMCI, Micron o CoreWeave arriba de 3 %.
+const MOV_BAJO = 1.5
+const MOV_ALTO = 3
+// Contra su último año: más de 1,3 veces es «más», menos de 0,75 «menos».
+const MOV_MAS = 1.3
+const MOV_MENOS = 0.75
+
+/**
+ * Ganancia por cada punto de movimiento, en PASADO (`rend_por_movimiento` del
+ * servidor): lo que cambió el precio en 12 meses ÷ cuánto se movió en el año.
+ * Medido el 28/10 en 15 acciones, NO anticipó qué acción rindió más después:
+ * por eso se dice en pasado y lo aclara. null sin año completo.
+ */
+export function textoRendPorMovimiento(l) {
+  const r = l?.rend_por_movimiento
+  if (r == null || l.rend_12m == null || !(l.mov_anual > 0)) return null
+  // «Se movió 24 %» se leía como un movimiento total al lado de «subió 32 %»: es
+  // el día normal llevado a un año, y se dice así (auditoría 28/10). Lo que
+  // redondea a 0,0 se dice con palabras, no «0,0 de ganancia».
+  const casiIgual = Math.abs(l.rend_12m) < 0.05
+  const que = casiIgual ? 'quedó casi en el mismo precio' : `${l.rend_12m >= 0 ? 'subió' : 'bajó'} ${pct1(l.rend_12m)}`
+  const relacion = casiIgual || Math.abs(r) < 0.05
+    ? `casi nada de ${l.rend_12m >= 0 ? 'ganancia' : 'pérdida'} para toda esa volatilidad`
+    : `${Math.abs(r).toLocaleString('es-AR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })} puntos de ${l.rend_12m >= 0 ? 'ganancia' : 'pérdida'} por cada punto de volatilidad`
+  return `En los últimos 12 meses ${que}. Su volatilidad anual (cuánto oscila el precio en un año, para arriba o para abajo) es de unos ${Math.round(l.mov_anual)}%: ${relacion}. `
+    + 'Es un dato del pasado: medido en 15 acciones, no anticipó cuál iba a rendir más después.'
+}
+
+/** La tarjeta «Cuánto se mueve». null sin lectura. */
+export function tarjetaMovimiento(l) {
+  // Sin la clave (un servidor de antes, mientras se despliega) no hay tarjeta:
+  // «faltan datos» sería falso (auditoría 28/10).
+  if (!l || !l.ruedas || l.mov_dia === undefined) return null
+  const base = { id: 'movimiento', titulo: 'Cuánto se mueve', tono: 'neutro' }
+  if (l.mov_dia == null) {
+    return { ...base, veredicto: 'Faltan datos',
+      texto: `Para calcularlo hacen falta 21 días de mercado y este activo tiene ${l.ruedas}.` }
+  }
+  // Menos de 0,05 % se mostraba «alrededor de 0,0 %… unos 0 %».
+  if (l.mov_dia < 0.05) {
+    return { ...base, veredicto: 'Sin movimiento', texto: 'El precio no se movió en los últimos 20 días de mercado.' }
+  }
+  const veredicto = l.mov_dia < MOV_BAJO ? 'Volatilidad baja' : l.mov_dia > MOV_ALTO ? 'Volatilidad alta' : 'Volatilidad media'
+  const mes = l.mov_mes == null ? ''
+    : ` En un mes, eso equivale a unos ${l.mov_mes < 10 ? pct1(l.mov_mes) : `${Math.round(l.mov_mes)}%`}, para arriba o para abajo.`
+  const r = l.mov_dia_anio ? l.mov_dia / l.mov_dia_anio : null
+  const anio = r == null ? ''
+    : r > MOV_MAS ? ` Es más que en un día típico de su último año (${pct1(l.mov_dia_anio)}).`
+      : r < MOV_MENOS ? ` Es menos que en un día típico de su último año (${pct1(l.mov_dia_anio)}).`
+        : ` Es parecido a un día típico de su último año (${pct1(l.mov_dia_anio)}).`
+  return {
+    ...base, veredicto,
+    texto: `En los últimos 20 días de mercado, en un día típico subió o bajó alrededor de ${pct1(l.mov_dia)}.${mes}${anio} `
+      + 'Mide cuánto se mueve el precio, no hacia dónde.',
+    cruce: textoRendPorMovimiento(l),
+  }
+}
+
+// El RSI dicho como fuerza que el precio gana o pierde. «Castigado/estirado»
+// no se entendía, y «pesan más las subas» tampoco decía cuándo toma fuerza y
+// cuándo no (Nico, 2026-10-22).
+// Entre estas dos el impulso no es claro; arriba de RSI_GANA «gana impulso»
+// (lo que cuenta «Ganando impulso» de Tu lista), abajo de RSI_PIERDE lo pierde.
+export const RSI_PIERDE = 45
+export const RSI_GANA = 55
+export function veredictoRsi(rsi) {
+  if (rsi < RSI_CASTIGADO) return 'Cayó muy rápido'
+  if (rsi < RSI_PIERDE) return 'Pierde impulso'
+  if (rsi <= RSI_GANA) return 'Sin impulso claro'
+  if (rsi <= RSI_ESTIRADO) return 'Gana impulso'
+  return 'Subió muy rápido'
+}
+
+/** El último cruce de 30 o 70 (de `lectura.rsi_cruce`), en palabras. null si no hubo. */
+export function textoCruceRsi(c) {
+  if (!c) return null
+  const cuando = c.hace === 0 ? 'En el último día de mercado' : c.hace === 1 ? 'Hace 1 día de mercado' : `Hace ${c.hace} días de mercado`
+  if (c.tipo === 'salio_de_abajo') return `${cuando} volvió a superar ${RSI_CASTIGADO}: dejó de caer tan rápido.`
+  if (c.tipo === 'salio_de_arriba') return `${cuando} volvió a quedar debajo de ${RSI_ESTIRADO}: dejó de subir tan rápido.`
+  return null
+}
+
+// ─── Fuerza de la tendencia: ADX + Squeeze ──────────────────────────────────
+// El combo de TradingView «DMI/ADX/KEYLEVEL 14 14 23» + «SQZMOM_LB»: el ADX
+// dice CUÁNTA fuerza tiene la tendencia (no para dónde va) y arriba de 23 se lee
+// como "hay tendencia"; el Squeeze dice para DÓNDE empuja.
+
+// La línea clave del ADX (la misma que `tecnico.ADX_CLAVE` del servidor).
+export const ADX_CLAVE = 23
+// Cuántos días de mercado necesita cada uno (el servidor manda null antes).
+const DIAS_ADX = 28
+const DIAS_SQUEEZE = 39
+// Lo que tiene que subir o bajar el ADX en 3 días de mercado para decir que la
+// fuerza crece o se afloja (menos es ruido).
+const ADX_QUIETO = 0.5
+
+/** El color de una barra del Squeeze, con la regla de LazyBear (la misma que
+ *  `tecnico.squeeze` del servidor): contra la barra anterior. Sólo se usa para
+ *  las velas semanales, que comparan contra la SEMANA anterior. */
+export function colorSqueeze(x, antes) {
+  if (x == null) return null
+  const a = antes ?? 0
+  return x > 0 ? (x > a ? 'verde_fuerte' : 'verde_apagado') : (x < a ? 'rojo_fuerte' : 'rojo_apagado')
+}
+
+/** El ADX para mostrar. Redondeado, salvo que el redondeo lo suba a 23 sin
+ *  haber llegado: «está en 23, abajo de la línea de 23» se contradecía. */
+export function fmtAdx(adx) {
+  if (adx == null) return '—'
+  // Cerca de la línea (22,5 a 23,5) va con un decimal, cortado para abajo:
+  // «está en 23, abajo de 23» o «está en 23, arriba de 23» se contradecían.
+  if (Math.round(adx) === ADX_CLAVE) {
+    return (Math.floor(adx * 10) / 10).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+  }
+  return String(Math.round(adx))
+}
+
+/** Dónde está el ADX contra la línea, en palabras que coinciden con `fmtAdx`. */
+function ladoDeLaLinea(adx) {
+  if (adx < ADX_CLAVE) return `abajo de la línea de ${ADX_CLAVE}`
+  return Math.floor(adx * 10) / 10 === ADX_CLAVE ? `justo en la línea de ${ADX_CLAVE}` : `arriba de la línea de ${ADX_CLAVE}`
+}
+
+/** «Squeeze» en inglés y sin explicar no se entiende (auditoría D9, 29/10):
+ *  cada oración que lo nombra dice qué es, con estas palabras. */
+const mayus = (t) => t.charAt(0).toUpperCase() + t.slice(1)
+export const SQUEEZE_QUE_ES = 'el Squeeze (indica si el precio empuja al alza o a la baja)'
+
+/** El color del Squeeze dicho en palabras: hacia dónde empuja y si con más o
+ *  menos empuje que el día anterior. */
+export function textoSqueeze(color) {
+  switch (color) {
+    case 'verde_fuerte': return 'está en verde: empuja al alza'
+    case 'verde_apagado': return 'está en verde: empuja al alza, pero menos que el día anterior'
+    case 'rojo_fuerte': return 'está en rojo: empuja a la baja'
+    case 'rojo_apagado': return 'está en rojo: empuja a la baja, pero menos que el día anterior'
+    default: return null
+  }
+}
+
+/**
+ * La tarjeta «Fuerza de la tendencia». Veredicto por el ADX (si hay tendencia
+ * con fuerza o no); el color, por el Squeeze (verde, a favor de la suba; rojo,
+ * de la baja). Con pocos datos lo dice en vez de inventar. null sin lectura.
+ */
+export function tarjetaFuerza(l) {
+  if (!l || !l.ruedas) return null
+  const base = { id: 'fuerza', titulo: 'Fuerza de la tendencia' }
+  if (l.adx == null) {
+    // Con historia suficiente y sin ADX es que el precio no se movió (el
+    // servidor no puede dividir por un rango de 0): no faltan datos.
+    return l.ruedas < DIAS_ADX
+      ? { ...base, veredicto: 'Faltan datos', tono: 'neutro',
+        texto: `Para calcularla hacen falta unos ${DIAS_ADX} días de mercado y este activo tiene ${l.ruedas}.` }
+      : { ...base, veredicto: 'Sin tendencia clara', tono: 'neutro',
+        texto: 'El precio casi no se movió en las últimas semanas: no hay una tendencia para medir.' }
+  }
+  const conFuerza = l.adx >= ADX_CLAVE
+  // Para dónde empuja: 1 suba, -1 baja, 0 ninguno (en cero o sin Squeeze todavía).
+  const lado = l.squeeze > 0 ? 1 : l.squeeze < 0 ? -1 : 0
+  const cruce = l.adx_cruce
+  // «Bajando» mira los últimos 3 días de mercado. Si cruzó 23 para arriba hace
+  // menos de 3, esos días incluyen los de antes del cruce: ahí el ADX subió y
+  // «afloja» sería falso (auditoría 22/10).
+  const cruceReciente = cruce?.tipo === 'paso_arriba' && cruce.hace < 3
+  const bajando = !cruceReciente && (l.adx_pendiente ?? 0) < -ADX_QUIETO
+  // Los veredictos no dicen «fuerza»: la tarjeta del RSI la usa para otra cosa
+  // («Pierde fuerza» al lado de «Tendencia con fuerza» confundía; auditoría 22/10).
+  const veredicto = !conFuerza ? 'Sin tendencia clara'
+    : bajando ? 'La tendencia se debilita'
+      : cruce?.tipo === 'paso_arriba' ? 'La tendencia se fortalece'
+        : 'Tendencia firme'
+  // Lo mismo para «subiendo/bajando» al lado del número: con un cruce (para
+  // cualquier lado) de hace menos de 3 días, esos 3 días cuentan otra historia.
+  const hacia = l.adx_pendiente == null || (cruce && cruce.hace < 3) ? ''
+    : l.adx_pendiente > ADX_QUIETO ? ', y subiendo'
+      : bajando ? ', y bajando' : ''
+  const empuje = lado > 0 ? 'al alza' : 'a la baja'
+  const direccion = l.squeeze == null
+    ? `Para ver si el precio empuja al alza o a la baja (lo que mide el Squeeze) hacen falta unos ${DIAS_SQUEEZE} días de mercado y este activo tiene ${l.ruedas}.`
+    : lado === 0 ? `${mayus(SQUEEZE_QUE_ES)} está en cero: no empuja ni al alza ni a la baja.`
+      : conFuerza ? `La dirección la muestra ${SQUEEZE_QUE_ES}, que ${textoSqueeze(l.squeeze_color)}.`
+        // Sin tendencia, «la dirección la marca…» chocaba con «Sin tendencia clara».
+        : `Por ahora ${SQUEEZE_QUE_ES} está en ${lado > 0 ? 'verde' : 'rojo'}: empuja ${empuje}, pero sin fuerza suficiente para hablar de una tendencia.`
+  return {
+    ...base, veredicto, adx: l.adx,
+    // El color es la dirección de una tendencia firme; «afloja» no se pinta
+    // (en verde se leía como buena noticia).
+    tono: conFuerza && !bajando && lado ? (lado > 0 ? 'pos' : 'neg') : 'neutro',
+    texto: `El ADX está en ${fmtAdx(l.adx)}, ${ladoDeLaLinea(l.adx)}${hacia}. `
+      + `El ADX mide cuánta fuerza tiene la tendencia, no para dónde va: arriba de ${ADX_CLAVE} hay una tendencia con fuerza; abajo, se mueve sin una dirección clara (de forma lateral). `
+      + direccion
+      // «Apretado» sólo sin tendencia: el script de LazyBear lo marca casi la
+      // mitad de los días (por su 1,5 en las Bollinger) y al lado de una
+      // tendencia firme era ruido (auditoría 22/10).
+      + (l.squeeze_activo && l.squeeze != null && !conFuerza
+        ? ' Además, en estas semanas se mueve en un rango más chico que de costumbre.' : ''),
+    cruce: textoCruceAdx(cruce, l.squeeze, bajando),
+  }
+}
+
+/**
+ * El último cruce del ADX por 23 (de `lectura.adx_cruce`), en palabras. Si pasó
+ * para arriba con el Squeeze del mismo lado ese día y hoy, la frase dice para
+ * dónde. Si desde entonces el ADX viene bajando (`bajando`), sólo cuenta el
+ * cruce: «el arranque de una suba con fuerza» debajo de «La tendencia afloja»
+ * se contradecía (auditoría 22/10). null si no hubo.
+ */
+export function textoCruceAdx(c, squeezeHoy, bajando = false) {
+  if (!c) return null
+  const cuando = c.hace === 0 ? 'En el último día de mercado' : c.hace === 1 ? 'Hace 1 día de mercado' : `Hace ${c.hace} días de mercado`
+  if (c.tipo === 'paso_abajo') {
+    return `${cuando} la fuerza de la tendencia (ADX) bajó de ${ADX_CLAVE}: la tendencia se quedó sin fuerza.`
+  }
+  if (c.tipo !== 'paso_arriba') return null
+  // `bajando` sólo llega con un cruce de hace 3 días o más: los 3 días que
+  // mira son todos posteriores al cruce.
+  if (bajando) return `${cuando} la fuerza de la tendencia (ADX) superó ${ADX_CLAVE}; en los últimos 3 días de mercado viene bajando.`
+  const hoy = squeezeHoy > 0 ? 1 : squeezeHoy < 0 ? -1 : 0
+  if (hoy !== 0 && c.squeeze === hoy) {
+    return `${cuando} la fuerza de la tendencia (ADX) superó ${ADX_CLAVE} con ${SQUEEZE_QUE_ES} en ${hoy > 0 ? 'verde' : 'rojo'}: `
+      + `el precio viene ${hoy > 0 ? 'subiendo' : 'bajando'} con fuerza.`
+  }
+  return `${cuando} la fuerza de la tendencia (ADX) superó ${ADX_CLAVE}: la tendencia ganó fuerza.`
+}
+
+// ─── Bandas de Bollinger ────────────────────────────────────────────────────
+// El promedio de los últimos 20 días ± 2 desvíos (`tecnico.bollinger` del
+// servidor, la misma cuenta que usa el Squeeze). Sólo DESCRIBEN: «tocar la banda
+// de arriba suele anticipar una baja» no se cumplió en la medición (backtest
+// 28/10), así que la tarjeta cuenta dónde está el precio y cuánto se movió.
+
+// Cortes de la posición entre las bandas (0 = la de abajo, 1 = la de arriba).
+const BB_PEGADO = 0.2
+// El ancho contra el de los últimos 6 meses: menos de 0,7 es «más angostas»,
+// más de 1,4 «más anchas»; en el medio no se dice nada.
+const BB_ANGOSTAS = 0.7
+const BB_ANCHAS = 1.4
+const DIAS_BB = 20
+
+/**
+ * La tarjeta «Bandas de Bollinger» (sólo con la capa prendida). Veredicto por
+ * dónde está el precio entre las bandas; el texto suma cuánto se movió contra
+ * los últimos 6 meses. Con pocos datos lo dice. null sin lectura.
+ */
+export function tarjetaBandas(l) {
+  if (!l || !l.ruedas || l.bb_arriba === undefined) return null
+  const base = { id: 'bandas', titulo: 'Bandas de Bollinger', tono: 'neutro' }
+  if (l.bb_arriba == null) {
+    return { ...base, veredicto: 'Faltan datos',
+      texto: `Para calcularlas hacen falta ${DIAS_BB} días de mercado y este activo tiene ${l.ruedas}.` }
+  }
+  const que = 'Las bandas se dibujan arriba y abajo del promedio de los últimos 20 días de mercado, a una distancia que depende de cuánto se movió el precio: entre las dos queda casi todo su recorrido. '
+  const p = l.bb_posicion
+  if (p == null) {
+    return { ...base, veredicto: 'Sin movimiento',
+      texto: `${que}El precio casi no se movió en esos 20 días: las bandas quedan pegadas.` }
+  }
+  const [veredicto, donde] = p > 1
+    // «Subió más rápido de lo normal» no siempre era cierto: un salto el último
+    // día deja el cierre afuera aunque el precio esté más bajo que 20 días antes.
+    ? ['Por encima de las bandas', 'Cerró por encima de la banda superior: más alto que casi todos los precios de esos 20 días.']
+    : p < 0
+      ? ['Por debajo de las bandas', 'Cerró por debajo de la banda inferior: más bajo que casi todos los precios de esos 20 días.']
+      : p >= 1 - BB_PEGADO
+        ? ['Cerca de la banda superior', 'El precio está muy cerca de la banda superior: en la parte alta de su recorrido de esos 20 días.']
+        : p <= BB_PEGADO
+          ? ['Cerca de la banda inferior', 'El precio está muy cerca de la banda inferior: en la parte baja de su recorrido de esos 20 días.']
+          : ['Entre las bandas', 'El precio está en la zona media de su recorrido de esos 20 días.']
+  const r = l.bb_ancho_relativo
+  const ancho = r == null ? ''
+    : r < BB_ANGOSTAS ? ' Las bandas están más angostas que lo habitual en los últimos 6 meses: el precio se está moviendo menos.'
+      : r > BB_ANCHAS ? ' Las bandas están más anchas que lo habitual en los últimos 6 meses: el precio se está moviendo más.'
+        : ''
+  return { ...base, veredicto, texto: `${que}${donde}${ancho} Describe lo que ya pasó; no es un pronóstico.` }
+}
+
+/**
+ * Dónde va tu precio promedio en el gráfico: `último ÷ (1 + resultado) × (1 +
+ * variación de hoy)`. El último punto del gráfico es el cierre de AYER (las
+ * velas se guardan de noche) y el resultado es con el precio de AHORA: sin la
+ * variación de hoy, un día que el papel se mueve 10 % la línea se corría 10 %
+ * (auditoría 22/10). null si no hay resultado o no tiene sentido.
+ */
+export function lineaPromedio(puntos = [], pnlPct, variacionHoy = 0) {
+  const ultimo = puntos.length ? puntos[puntos.length - 1].c : null
+  if (!(ultimo > 0) || pnlPct == null || !(1 + pnlPct > 0)) return null
+  return (ultimo / (1 + pnlPct)) * (1 + (variacionHoy || 0))
+}
+
+/** Cuánto se movió hoy el precio en vivo contra el último cierre guardado del
+ *  MISMO instrumento. 0 si falta alguno de los dos. */
+export function variacionDeHoy(precioVivo, cierreRef) {
+  return precioVivo > 0 && cierreRef?.cierre > 0 ? precioVivo / cierreRef.cierre - 1 : 0
+}
+
+/**
+ * Tus compras y ventas como marcas del gráfico: [{ fecha, tipo: 'compra'|'venta' }].
+ *   · compras: la fecha de entrada de cada lote abierto y de cada operación cerrada;
+ *   · ventas: la fecha de cada operación cerrada.
+ * Los cobros (dividendos, cupones) no son compras ni ventas.
+ */
+export function marcas(lotes = [], operaciones = []) {
+  const out = []
+  for (const l of lotes) {
+    if (l.is_cash || !l.entry_date) continue
+    out.push({ fecha: String(l.entry_date).slice(0, 10), tipo: 'compra' })
+  }
+  for (const o of operaciones) {
+    // La regla de "esto fue una compra y una venta" es la de las estadísticas de
+    // la ficha (`esTradeCerrado`): deja afuera conversiones de moneda. Los cobros
+    // (dividendo, cupón, renta, amortización) con `esCobro`, que los tiene a
+    // todos: `esTradeCerrado` sólo excluye algunos.
+    if (esCobro(o.op_type) || !esTradeCerrado(o)) continue
+    if (o.entry_date) out.push({ fecha: String(o.entry_date).slice(0, 10), tipo: 'compra' })
+    if (o.date) out.push({ fecha: String(o.date).slice(0, 10), tipo: 'venta' })
+  }
+  const vistas = new Set()
+  return out.filter(m => {
+    const k = `${m.fecha}|${m.tipo}`
+    if (vistas.has(k)) return false
+    vistas.add(k)
+    return true
+  }).sort((a, b) => a.fecha.localeCompare(b.fecha))
+}
+
+/** El índice del punto de esa fecha, o del último anterior (un fin de semana
+ *  cae en el viernes). null si la fecha es anterior al gráfico. */
+export function indiceDeFecha(puntos, fecha) {
+  let lo = 0, hi = puntos.length - 1, mejor = null
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (puntos[mid].d <= fecha) { mejor = mid; lo = mid + 1 } else hi = mid - 1
+  }
+  return mejor
+}
+
+/**
+ * ¿En pesos parece otra cosa que en dólares? Es el aviso de la ficha: un CEDEAR
+ * en pesos sube con el dólar aunque la empresa no se mueva.
+ */
+export function tendenciasDistintas(lUsd, lArs) {
+  const a = tendenciaDe(lUsd), b = tendenciaDe(lArs)
+  if (!a || !b) return false
+  return a !== b
+}

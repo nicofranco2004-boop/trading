@@ -19,31 +19,34 @@ import { TrendingUp, TrendingDown, Calendar, Trash2 } from 'lucide-react'
 import AssetLogo from '../AssetLogo'
 import { pctSigned, colorClass } from '../../utils/format'
 import { fmtConvertedCompactRaw } from '../../contexts/CurrencyContext'
-import { formatQty } from './shared'
+import { formatQty, pctEnMoneda } from './shared'
 import { esCobro } from '../../utils/tradeStats'
+import { celdasDelDiario, ChipTendencia } from './DiarioCeldas'
 
 // `nuevas`: ids de las operaciones recién cargadas (Operations): esa tarjeta
 // destella al aparecer. Acá los grupos son por día y están siempre abiertos,
 // así que la nueva siempre queda a la vista.
 // `borrando(clave)`: ¿ese borrado está viajando? Apaga el tacho (Operations).
-export default function TradesFeed({ groups, histMoney, onDelete, borrando = () => false, nuevas = new Set() }) {
+// `diario`: lo mismo que recibe la tabla (useDiario): cada venta suma un
+// renglón con el tiempo, el % por año, la tendencia al comprar y la tesis.
+export default function TradesFeed({ groups, histMoney, onDelete, borrando = () => false, nuevas = new Set(), diario = null }) {
   return (
     <ul>
       {groups.map(g => (
-        <DayGroup key={g.key} group={g} histMoney={histMoney} onDelete={onDelete} borrando={borrando} nuevas={nuevas} />
+        <DayGroup key={g.key} group={g} histMoney={histMoney} onDelete={onDelete} borrando={borrando} nuevas={nuevas} diario={diario} />
       ))}
     </ul>
   )
 }
 
-function DayGroup({ group, histMoney, onDelete, borrando, nuevas }) {
+function DayGroup({ group, histMoney, onDelete, borrando, nuevas, diario }) {
   // El subtotal del DÍA se arma convirtiendo CADA op con SU FX y sumando eso
   // (convert-then-sum) — así coincide con las filas que despliega.
   // Antes tomaba el `fx_to_usd` de la PRIMERA op con fx>0 y lo aplicaba a todo
   // el subtotal: si el día mezclaba una op USD (fx=1) con una ARS, el subtotal
   // quedaba mal. Mismo criterio que los headers de grupo de la tabla.
   const ops = group.rows
-  const subtotalDisp = histMoney.sumConvertedAt(ops, o => (o.pnl_usd || 0))
+  const subtotalDisp = histMoney.sumPnlAt(ops)
   return (
     <li className="border-t border-line/30">
       <div className="flex items-baseline justify-between px-4 py-2 bg-bg-1/50">
@@ -57,21 +60,27 @@ function DayGroup({ group, histMoney, onDelete, borrando, nuevas }) {
           </span>
         </div>
         <span className={`text-[11px] tabular ${colorClass(subtotalDisp)}`}>
-          {fmtConvertedCompactRaw(subtotalDisp, histMoney.currency, { signed: true })}
+          {histMoney.fmtMontoCorto(subtotalDisp, { signed: true })}
         </span>
       </div>
       <ul>
         {ops.map(op => (
-          <OperationRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onDelete={onDelete} deleting={borrando(`op-${op.id}`)} />
+          <OperationRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onDelete={onDelete} deleting={borrando(`op-${op.id}`)} diario={diario} />
         ))}
       </ul>
     </li>
   )
 }
 
-function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false }) {
-  const isWin = op.pnl_usd != null && op.pnl_usd > 0
-  const isLoss = op.pnl_usd != null && op.pnl_usd < 0
+function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false, diario = null }) {
+  const c = celdasDelDiario(op, diario, histMoney.currency)
+  // Color, flecha y signo salen del MISMO número que se imprime (en Pesos puede tener
+  // otro signo que el resultado en dólares: ganó en pesos y perdió en dólares).
+  const pnlVisto = op.pnl_usd == null ? null : histMoney.pnlAt(op)
+  const isWin = pnlVisto != null && pnlVisto > 0
+  // El % en la moneda de la app (pesos o dólares), no en la de la venta.
+  const { pct } = pctEnMoneda(op, histMoney.currency)
+  const isLoss = pnlVisto != null && pnlVisto < 0
   const type = (op.op_type || '').toLowerCase()
   const isBuy = type.includes('compra') || type === 'buy'
 
@@ -102,23 +111,32 @@ function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false
             </span>
           )}
         </div>
+        {c && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 text-[11px] tabular text-ink-2">
+            <span>{c.tiempo}</span>
+            <span className={c.porAnioValor != null ? colorClass(c.porAnioValor) : 'text-ink-3'} title={c.porAnioPorQue || undefined}>
+              {c.porAnioValor != null ? `${c.porAnio} por año` : '— por año'}
+            </span>
+            <span className="inline-flex items-center gap-1">al comprar <ChipTendencia celdas={c} chico /></span>
+          </div>
+        )}
+        {c?.tesis && (
+          <div className="mt-1 text-[11px] text-ink-3 truncate" title={c.tesis.texto}>
+            Tu tesis: «{c.tesis.texto}»
+          </div>
+        )}
       </div>
 
       <div className="flex-shrink-0 text-right">
         {op.pnl_usd != null && (
-          <div className={`text-sm font-medium tabular leading-none flex items-center justify-end gap-1 ${colorClass(op.pnl_usd)}`}>
+          <div className={`text-sm font-medium tabular leading-none flex items-center justify-end gap-1 ${colorClass(pnlVisto)}`}>
             {isWin ? <TrendingUp size={11} strokeWidth={1.75} /> : isLoss ? <TrendingDown size={11} strokeWidth={1.75} /> : null}
-            {histMoney.fmtMoneyCompactAt(op.pnl_usd, {
-              stampedFx: op.fx_to_usd,
-              rowCurrency: op.currency,
-              dateIso: op.date,
-              signed: true,
-            })}
+            {histMoney.fmtPnlCompactAt(op, { signed: true })}
           </div>
         )}
-        {op.pnl_pct != null && (
-          <div className={`text-[10px] tabular leading-none mt-1.5 ${colorClass(op.pnl_pct)}`}>
-            {pctSigned(op.pnl_pct / 100)}
+        {pct != null && (
+          <div className={`text-[10px] tabular leading-none mt-1.5 ${colorClass(pct)}`}>
+            {pctSigned(pct / 100)}
           </div>
         )}
       </div>

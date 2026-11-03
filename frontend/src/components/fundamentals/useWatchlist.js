@@ -2,11 +2,12 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // No inventa store: lee GET /watchlist, escribe POST/DELETE /watchlist, y se
 // sincroniza vía el bus de eventos window-level de utils/watchlistEvents
-// (mismo que usan SearchBar / AssetQuickView / Watchlist).
+// (mismo que usan SearchBar / la ficha del activo / Watchlist).
 //
 // Devuelve:
 //   { symbols: string[] (upper), has(sym), toggle(sym), loading }
-// `toggle` hace optimistic update + emite track('fundamentals_favorite_toggled').
+// `toggle` hace optimistic update + emite track('fundamentals_favorite_toggled'),
+// y devuelve { ok, error } para quien tenga que decir si salió (Tu lista).
 
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { api } from '../../utils/api'
@@ -41,7 +42,7 @@ export default function useWatchlist() {
 
   const toggle = useCallback(async (rawSym) => {
     const sym = (rawSym || '').toUpperCase()
-    if (!sym || busyRef.current.has(sym)) return
+    if (!sym || busyRef.current.has(sym)) return { ok: false, error: null }
     busyRef.current.add(sym)
     const wasIn = symbols.includes(sym)
     // Optimistic
@@ -57,9 +58,11 @@ export default function useWatchlist() {
         notifyWatchlistChanged({ symbol: sym, added: true })
       }
       track('fundamentals_favorite_toggled', { ticker: sym, on: !wasIn })
-    } catch {
+      return { ok: true, error: null }
+    } catch (e) {
       // Revertir ante error
       load({ silent: true })
+      return { ok: false, error: e }
     } finally {
       busyRef.current.delete(sym)
     }

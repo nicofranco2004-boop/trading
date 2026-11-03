@@ -6,6 +6,9 @@ import { hoyISO, fechaISO } from './fecha'
 import { pctTxt } from './format'
 import { computeBrokerValue } from './valuation'
 import { computeSectorBreakdown } from './assetSector'
+import { borrar as borrarDelAlmacen, guardar as guardarEnAlmacen, leer as leerDelAlmacen } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
+import { olvidarLaSesionSiEsDe } from './sesionGuardada'
 
 // Cuando la URL tiene `?demo=1`, AuthContext setea un user demo y este módulo
 // intercepta las llamadas al backend devolviendo fixtures hardcodeadas.
@@ -38,7 +41,7 @@ const EMPTY_OVERLAY = { watchlist: null, positions: [] }
 export function getDemoOverlay() {
   if (typeof window === 'undefined') return EMPTY_OVERLAY
   try {
-    const raw = localStorage.getItem(DEMO_OVERLAY_KEY)
+    const raw = leerDelAlmacen(CATALOGO.demoCambios)
     if (!raw) return EMPTY_OVERLAY
     const parsed = JSON.parse(raw)
     return {
@@ -53,7 +56,7 @@ export function getDemoOverlay() {
 function saveDemoOverlay(overlay) {
   if (typeof window === 'undefined') return
   try {
-    localStorage.setItem(DEMO_OVERLAY_KEY, JSON.stringify(overlay))
+    guardarEnAlmacen(CATALOGO.demoCambios, JSON.stringify(overlay))
   } catch {
     // Cuota llena o disabled — silencioso
   }
@@ -61,7 +64,7 @@ function saveDemoOverlay(overlay) {
 
 function clearDemoOverlay() {
   if (typeof window === 'undefined') return
-  localStorage.removeItem(DEMO_OVERLAY_KEY)
+  borrarDelAlmacen(CATALOGO.demoCambios)
 }
 
 export function isDemoMode() {
@@ -79,7 +82,7 @@ export function isDemoMode() {
   try {
     // La marca guarda CUÁNDO se activó (ver `demoVencido`); el `'1'` viejo también
     // cuenta hasta que `vencerDemoSiCorresponde` lo limpie al abrir la app.
-    return !!localStorage.getItem(DEMO_FLAG_KEY)
+    return !!leerDelAlmacen(CATALOGO.modoDemo)
   } catch {
     return false
   }
@@ -104,28 +107,45 @@ export function demoVencido(valor, ahora = Date.now()) {
 export function vencerDemoSiCorresponde() {
   if (typeof window === 'undefined') return false
   try {
-    if (!demoVencido(localStorage.getItem(DEMO_FLAG_KEY))) return false
-    localStorage.removeItem(DEMO_FLAG_KEY)
+    if (!demoVencido(leerDelAlmacen(CATALOGO.modoDemo))) return false
+    borrarDelAlmacen(CATALOGO.modoDemo)
     clearDemoOverlay()
+    avisarModoDemo()
     return true
   } catch {
     return false
   }
 }
 
+// Entrar o salir del demo EN ESTA PESTAÑA se avisa: la marca se guarda una vez
+// para todo el navegador, y utils/api compara la de cada pestaña con la
+// guardada para saber si la cambió OTRA (re-test a ciegas 4). Sin el aviso,
+// el cambio propio parecería ajeno.
+export const EVENTO_MODO_DEMO = 'rendi:modo-demo'
+const avisarModoDemo = () => { try { window.dispatchEvent?.(new Event(EVENTO_MODO_DEMO)) } catch { /* sin ventana */ } }
+
 export function enableDemoMode() {
   if (typeof window === 'undefined') return
-  localStorage.setItem(DEMO_FLAG_KEY, String(Date.now()))
+  guardarEnAlmacen(CATALOGO.modoDemo, String(Date.now()))
   // Limpiamos cualquier overlay residual al activar — siempre arranca limpio.
   clearDemoOverlay()
+  avisarModoDemo()
 }
+
+// El email del usuario del demo (AuthContext.DEMO_USER).
+export const EMAIL_DEL_DEMO = 'demo@rendi.finance'
 
 export function disableDemoMode() {
   if (typeof window === 'undefined') return
-  localStorage.removeItem(DEMO_FLAG_KEY)
-  localStorage.removeItem('rendi_token')
-  localStorage.removeItem('rendi_user')
+  borrarDelAlmacen(CATALOGO.modoDemo)
+  borrarDelAlmacen(CATALOGO.tokenViejo)
+  // Lo guardado «quién está logueado» se borra sólo si es el del demo (un resto
+  // de versiones que lo guardaban). Si es una cuenta real abierta en otra
+  // pestaña, es suyo: salir del demo lo borraba, y esa pestaña se recargaba
+  // (re-test a ciegas 8).
+  olvidarLaSesionSiEsDe(EMAIL_DEL_DEMO)
   clearDemoOverlay()
+  avisarModoDemo()
 }
 
 // ─── Error helper para acciones bloqueadas ───────────────────────────────────
@@ -528,7 +548,12 @@ const SNAPSHOTS = (() => {
     const resultado = m.capital_final - m.capital_inicio - flujo
     const diasDelMes = new Date(m.year, m.month, 0).getDate()
     // El mes en curso llega a su capital_final HOY (el valor vivo), no a fin de mes.
-    const tramo = (m.year === hoyY && m.month === hoyM) ? hoyD : diasDelMes
+    // ⚠️ Se pregunta por el MES, no por `tramo === hoyD`: un mes cerrado de 28,
+    // 30 o 31 días tiene `tramo = diasDelMes`, que el 28, 30 o 31 de cada mes es
+    // igual a `hoyD`, y esos meses se dibujaban subiendo hasta la cartera de ayer
+    // (el 28/10/2026, febrero de 2025 cerraba en 41.307 en vez de 32.145).
+    const enCurso = m.year === hoyY && m.month === hoyM
+    const tramo = enCurso ? hoyD : diasDelMes
     for (let dia = 1; dia <= diasDelMes; dia++) {
       const fecha = fechaISO(new Date(m.year, m.month - 1, dia))
       if (fecha >= hoy) break
@@ -537,7 +562,7 @@ const SNAPSHOTS = (() => {
       let valor = m.capital_inicio + flujo + resultado * (dia / tramo) + ruido
       // El mes en curso llega AYER a la cartera valuada con los precios de ayer
       // (PREV_CLOSE): "Hoy" = la variación del día de cada posición, sumada.
-      if (tramo === hoyD && hoyD > 1) {
+      if (enCurso && hoyD > 1) {
         const hastaAyer = (_VALOR_CIERRE_AYER - m.capital_inicio - flujo) * (dia / (hoyD - 1))
         valor = m.capital_inicio + flujo + hastaAyer + (dia === hoyD - 1 ? 0 : ruido)
       }
@@ -617,6 +642,10 @@ function _medirPeriodoDemo(inicio, fin) {
     vs_sp500_pct: null,
     vs_inflation_pct: null,
     basis_incomparable: false,
+    // Las dos puntas son fotos del demo (a mercado): en Pesos, cada una al dólar de su fecha, como el servidor.
+    medicion: 'mercado',
+    puntas_desde: base.date,
+    puntas_hasta: cierre.date,
     _ops: ops,
   }
 }
@@ -3095,6 +3124,15 @@ export function handleDemoRequest(method, path, body) {
     }
     if (basePath === '/prices/history') {
       return buildPriceHistory(query)
+    }
+    // La lectura técnica: el demo no tiene velas guardadas. "Sin serie" hace
+    // que la ficha muestre el gráfico de 30 días (que sí se simula), en vez de
+    // "No se pudo cargar el gráfico" (el null de una ruta que el demo no conoce).
+    // Qué parte de tu plata es (la ficha): el demo no tiene velas, así que la
+    // tarjeta «Cuánto se mueve» no aparece y el % tampoco.
+    if (basePath.startsWith('/tecnico/') && basePath.endsWith('/peso')) return { peso: null }
+    if (basePath.startsWith('/tecnico/')) {
+      return { asset: decodeURIComponent(basePath.slice('/tecnico/'.length)).toUpperCase(), disponible: false, motivo: 'sin_serie' }
     }
     // Reports timeline (Reportes page)
     if (basePath === '/reports/timeline') {

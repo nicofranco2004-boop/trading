@@ -8,10 +8,11 @@
 // seguido que en los movers: cada cotización vive 1 min en el servidor.
 
 import { useEffect, useMemo, useState } from 'react'
-import { Star, X, TrendingUp, TrendingDown, Eye } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Star, X, TrendingUp, TrendingDown, Eye, Table2 } from 'lucide-react'
 import { api } from '../../utils/api'
 import { pctVar, pctVarSign } from '../../utils/format'
-import AssetQuickView from './AssetQuickView'
+import { urlDeActivo } from '../../utils/buscadorRapido'
 import Panel from '../Panel'
 import Eyebrow from '../Eyebrow'
 import DataRow from '../DataRow'
@@ -39,7 +40,7 @@ export function monedaDe(symbol) {
 export default function Watchlist() {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
-  const [selected, setSelected] = useState(null)
+  const navigate = useNavigate()
   const [removingSym, setRemovingSym] = useState(null)
   const [estado, setEstado] = useState(null)
   const [ref, visto] = useAlVerse()
@@ -71,8 +72,8 @@ export default function Watchlist() {
 
   useEffect(() => {
     load()
-    // Escuchar cambios disparados desde MobileSearch / SearchBar /
-    // AssetQuickView para refrescar la lista sin requerir reload.
+    // Escuchar cambios disparados desde MobileSearch / SearchBar / la ficha
+    // del activo para refrescar la lista sin requerir reload.
     const unsubscribe = subscribeWatchlistChanged(({ detail }) => {
       // Si llega { symbol, added: true } podemos hacer optimistic update
       // — agregamos el row con price/change_pct null mientras el fetch
@@ -107,14 +108,26 @@ export default function Watchlist() {
 
   return (
     <section ref={ref}>
-      <div className="flex items-center justify-between gap-3 mb-2">
+      {/* En el celular no entra todo en un renglón: lo de la derecha baja
+          entero (el botón no se parte en tres). */}
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 mb-2">
         <h2><Eyebrow>Watchlist</Eyebrow></h2>
-        {!loading && items.length > 0 && (
-          <span className="flex items-center gap-3">
-            {estado && <EnVivo estado={estado} />}
-            <span className="text-[12px] text-ink-3">{items.length} tickers</span>
-          </span>
-        )}
+        <span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
+          {!loading && items.length > 0 && (
+            <>
+              {estado && <EnVivo estado={estado} />}
+              <span className="text-[12px] text-ink-3 whitespace-nowrap">{items.length} tickers</span>
+            </>
+          )}
+          {/* Lo que tenés y lo que seguís en una tabla, con su lectura técnica
+              (pages/TuLista.jsx, «Análisis técnico» en el menú). Va aunque la watchlist esté vacía: también
+              muestra tu cartera. */}
+          <Link to="/analisis-tecnico?tab=lista"
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-line-2 px-2.5 py-1 text-[12.5px] text-ink-1 hover:text-ink-0 hover:border-data-violet/50 transition-colors">
+            <Table2 size={13} strokeWidth={1.75} aria-hidden="true" />
+            Ver como tablero
+          </Link>
+        </span>
       </div>
 
       {loading ? (
@@ -145,7 +158,7 @@ export default function Watchlist() {
                   <DataRow
                     density="default"
                     hoverable
-                    onClick={() => setSelected(it.symbol)}
+                    onClick={() => navigate(urlDeActivo(it.symbol))}
                     className="flex-1 relative isolate"
                   >
                     {!pending && <BarraIntensidad pct={it.change_pct} visto={visto} />}
@@ -184,13 +197,6 @@ export default function Watchlist() {
             })}
           </div>
         </Panel>
-      )}
-
-      {selected && (
-        // Silencioso: con load() a secas la lista pasaba por el esqueleto, las
-        // filas se volvían a montar y la entrada animada se repetía entera cada
-        // vez que alguien cerraba una ficha.
-        <AssetQuickView symbol={selected} onClose={() => { setSelected(null); load({ silent: true }) }} />
       )}
     </section>
   )

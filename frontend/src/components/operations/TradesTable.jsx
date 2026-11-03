@@ -13,15 +13,19 @@ import {
   ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
 } from 'lucide-react'
 import { usd, pctSigned, colorClass } from '../../utils/format'
-import { fmtConvertedRaw } from '../../contexts/CurrencyContext'
 import EmptyState from '../EmptyState'
 import InlineAIButton from '../ai/InlineAIButton'
 import Panel from '../Panel'
-import { prettyOpType, movPnl } from './shared'
+import { prettyOpType, pctEnMoneda } from './shared'
 import { esCobro } from '../../utils/tradeStats'
+import InfoTooltip from '../InfoTooltip'
+import { celdasDelDiario, ChipTendencia, fechaCorta } from './DiarioCeldas'
 
 export const PAGE_SIZE = 50
 
+// `diario`: {tendencias, estadoTendencias, tesis} de useDiario (Operations lo
+// pide UNA vez). Alimenta las columnas Tiempo, Por año, Tendencia al comprar y
+// Tu tesis (DiarioCeldas, las mismas del celular).
 // `nuevas`: ids de las operaciones recién cargadas por el usuario (Operations
 // las calcula). Su fila destella al aparecer; si el grupo que la contiene está
 // cerrado, destella la fila del grupo — así se ve dónde quedó sin abrir nada.
@@ -30,7 +34,7 @@ export default function TradesTable({
   ops, filteredOps, pagedOps, groups, grouped, groupBy,
   histMoney, expandedGroups, onToggleGroup,
   onEdit, onDelete, onDeleteGroup, borrando = () => false,
-  onAdd, page, totalPages, onPage,
+  onAdd, page, totalPages, onPage, diario = null,
 }) {
   return (
     <Panel padding="none">
@@ -47,13 +51,41 @@ export default function TradesTable({
               <th className="text-right px-3 py-2.5 font-medium">Cant.</th>
               <th className="text-right px-3 py-2.5 font-medium">P&L USD</th>
               <th className="text-right px-3 py-2.5 font-medium">P&L %</th>
+              <th className="text-right px-2 py-2.5 font-medium">Tiempo</th>
+              <th className="text-right px-2 py-2.5 font-medium whitespace-nowrap">
+                <span className="inline-flex items-center gap-1">Por año
+                  {/* El encabezado es `whitespace-nowrap`: sin `whitespace-normal`
+                      el globo hereda eso y su texto sale en un solo renglón,
+                      cortado por el borde (medido en la copia de prueba). */}
+                  <InfoTooltip label="Qué es Por año" align="center">
+                    <div className="whitespace-normal text-left font-normal">
+                      <p>Lo que rindió la operación llevado a un año, para comparar una que tuviste dos meses con otra que tuviste dos años. Es el mismo % de la columna P&L %: en una venta en pesos, el % en pesos.</p>
+                      <p className="mt-1 text-ink-3">Con menos de 3 meses va «—»: pasar a un año un mes bueno infla el número (un +5 % en un mes daría +80 % por año).</p>
+                    </div>
+                  </InfoTooltip>
+                </span>
+              </th>
+              {/* En dos renglones: en una sola línea el título medía 164 px para
+                  una pastilla de 70, y la tabla quedaba más ancha que su caja en
+                  la compu (los botones Editar/Eliminar, tapados; auditoría D12). */}
+              <th className="text-left px-2 py-2.5 font-medium">
+                <span className="inline-flex items-center gap-1 leading-tight max-w-[96px]">Tendencia al comprar
+                  <InfoTooltip label="Qué es la tendencia al comprar" align="center">
+                    <div className="whitespace-normal text-left font-normal">
+                      <p>Cómo estaba el papel el día que lo compraste: Alcista si el precio estaba arriba de su promedio de los últimos 200 días de mercado, Bajista si estaba abajo. Es la misma lectura de la ficha del activo, en dólares.</p>
+                      <p className="mt-1 text-ink-3">Describe cómo estaba, no anticipa qué iba a pasar. «sin dato»: no hay precios de ese día (guardamos 5 años) o es un bono o un fondo.</p>
+                    </div>
+                  </InfoTooltip>
+                </span>
+              </th>
+              <th className="text-left px-2 py-2.5 font-medium">Tu tesis</th>
               <th className="px-3 py-2.5 w-[60px]"></th>
               <th className="px-3 py-2.5 w-[28px] text-center font-medium"></th>
             </tr>
           </thead>
           <tbody>
             {ops.length === 0 && (
-              <tr><td colSpan={11}>
+              <tr><td colSpan={15}>
                 <EmptyState
                   icon={<ArrowUpRight size={20} />}
                   title="Aún no hay operaciones registradas"
@@ -67,13 +99,13 @@ export default function TradesTable({
               </td></tr>
             )}
             {ops.length > 0 && filteredOps.length === 0 && (
-              <tr><td colSpan={11}>
+              <tr><td colSpan={15}>
                 <EmptyState title="Sin resultados para los filtros aplicados" description="Ajustá los filtros para ampliar la búsqueda." dense />
               </td></tr>
             )}
             {/* Modo lista plana ('none') — la tabla de siempre, paginada. */}
             {!grouped && pagedOps.map(op => (
-              <TradeRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onEdit={onEdit} onDelete={onDelete} deleting={borrando(`op-${op.id}`)} />
+              <TradeRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onEdit={onEdit} onDelete={onDelete} deleting={borrando(`op-${op.id}`)} diario={diario} />
             ))}
             {/* Modo agrupado (por activo / mes) — fila-resumen expandible. */}
             {grouped && groups.map(g => {
@@ -91,7 +123,7 @@ export default function TradesTable({
                     deleting={borrando(`grp-${g.key}`)}
                   />
                   {isOpen && g.rows.map(op => (
-                    <TradeRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onEdit={onEdit} onDelete={onDelete} indent deleting={borrando(`op-${op.id}`)} />
+                    <TradeRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onEdit={onEdit} onDelete={onDelete} indent deleting={borrando(`op-${op.id}`)} diario={diario} />
                   ))}
                 </Fragment>
               )
@@ -137,11 +169,18 @@ export default function TradesTable({
 // el detalle de un grupo (modo agrupado), donde va atenuada/indentada con "└" —
 // mismo recurso visual que MovementRow. Mantiene las acciones por-trade
 // (analizar/editar/eliminar) en todos los modos.
-function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = false, deleting = false }) {
-  const isWin = op.pnl_usd != null && op.pnl_usd > 0
-  const isLoss = op.pnl_usd != null && op.pnl_usd < 0
+function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = false, deleting = false, diario = null }) {
+  const c = celdasDelDiario(op, diario, histMoney.currency)
+  const atenuada = indent ? 'opacity-75' : ''
+  // Color, flecha y signo salen del MISMO número que se imprime (en Pesos puede tener
+  // otro signo que el resultado en dólares: ganó en pesos y perdió en dólares).
+  const pnlVisto = op.pnl_usd == null ? null : histMoney.pnlAt(op)
+  const isWin = pnlVisto != null && pnlVisto > 0
+  const isLoss = pnlVisto != null && pnlVisto < 0
   const ArrowIcon = isWin ? ArrowUpRight : isLoss ? ArrowDownRight : null
   const arrowColor = isWin ? 'text-rendi-pos' : isLoss ? 'text-rendi-neg' : 'text-ink-3'
+  // El % en la moneda de la app (pesos o dólares), no en la de la venta.
+  const { pct, motivo } = pctEnMoneda(op, histMoney.currency)
   return (
     <tr className={`border-b border-line/30 hover:bg-bg-2/40 transition-colors ${indent ? 'bg-bg-2/15' : ''} ${nueva ? 'destello-nueva' : ''}`}>
       <td className={`px-4 py-2 text-xs font-mono tabular text-ink-2 ${indent ? 'pl-6 opacity-75' : ''}`}>
@@ -154,19 +193,33 @@ function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = fal
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.entry_price != null ? usd(op.entry_price) : '—'}</td>
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{op.exit_price != null ? usd(op.exit_price) : '—'}</td>
       <td className={`px-3 py-2 text-xs font-mono tabular text-right text-ink-2 ${indent ? 'opacity-75' : ''}`}>{esCobro(op.op_type) ? '—' : (op.quantity ?? '—')}</td>
-      <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(op.pnl_usd)} ${indent ? 'opacity-75' : ''}`}>
+      <td className={`px-3 py-2 text-sm font-mono tabular text-right font-medium ${colorClass(pnlVisto)} ${indent ? 'opacity-75' : ''}`}
+        title={histMoney.currency === 'ARS' && op.resultado_ars_tipo === 'valuado'
+          ? 'En pesos valuado al dólar de cada fecha: la venta o la compra fue en dólares, no hay un resultado en pesos del broker.'
+          : undefined}>
         {op.pnl_usd == null
           ? '—'
-          : histMoney.fmtMoneyAt(op.pnl_usd, {
-              stampedFx: op.fx_to_usd,
-              rowCurrency: op.currency,
-              dateIso: op.date,
-              signed: true,
-              decimals: 2,
-            })}
+          : histMoney.fmtPnlAt(op, { signed: true, decimals: 2 })}
       </td>
-      <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(op.pnl_pct)} ${indent ? 'opacity-75' : ''}`}>
-        {op.pnl_pct != null ? pctSigned(op.pnl_pct / 100) : '—'}
+      <td className={`px-3 py-2 text-xs font-mono tabular text-right ${colorClass(pct)} ${indent ? 'opacity-75' : ''}`}
+        title={motivo || undefined}>
+        {pct != null ? pctSigned(pct / 100) : '—'}
+      </td>
+      <td className={`px-2 py-2 text-xs tabular text-right text-ink-2 whitespace-nowrap ${atenuada}`}
+        title={c && op.entry_date ? `Compra ${fechaCorta(op.entry_date)} → venta ${fechaCorta(op.date)}` : undefined}>
+        {c ? c.tiempo : '—'}
+      </td>
+      <td className={`px-2 py-2 text-xs tabular text-right whitespace-nowrap ${c?.porAnioValor != null ? colorClass(c.porAnioValor) : 'text-ink-3'} ${atenuada}`}
+        title={c?.porAnioPorQue || undefined}>
+        {c ? c.porAnio : '—'}
+      </td>
+      <td className={`px-2 py-2 ${atenuada}`}>
+        {c ? <ChipTendencia celdas={c} /> : <span className="text-ink-3 text-xs">—</span>}
+      </td>
+      <td className={`px-2 py-2 text-xs text-ink-2 ${atenuada}`}>
+        {c?.tesis
+          ? <span className="block max-w-[180px] truncate" title={`«${c.tesis.texto}» · escrita el ${fechaCorta(c.tesis.escrita_el)}`}>{c.tesis.texto}</span>
+          : <span className="text-ink-3">—</span>}
       </td>
       <td className="px-3 py-2">
         <div className="flex gap-1 justify-end items-center">
@@ -213,7 +266,7 @@ function TradeGroupRow({ conNueva = false, group, groupBy, isOpen, onToggle, his
   // USD crudo podía contradecir lo mostrado: un grupo con +100 USD de 2021 (fx 190)
   // y −90 USD de 2026 (fx 1500) suma +10 USD (flecha verde) pero −$116.000 en
   // pesos. En modo USD `pnlDisp === pnl`, así que no cambia nada.
-  const pnl = histMoney.sumConvertedAt(group.rows, r => movPnl(r))
+  const pnl = histMoney.sumPnlAt(group.rows.filter(r => typeof r.pnl_usd === 'number'))
   const pnlDisp = pnl
   const Chevron = isOpen ? ChevronUp : ChevronDown
   const hasPnl = pnl !== 0
@@ -254,11 +307,12 @@ function TradeGroupRow({ conNueva = false, group, groupBy, isOpen, onToggle, his
       <td className={`px-3 py-2.5 text-right font-mono font-semibold tabular ${colorClass(hasPnl ? pnl : null)}`}>
         <span className="inline-flex items-center gap-1 justify-end">
           {Arrow && <Arrow size={13} strokeWidth={2.25} aria-hidden="true" />}
-          {hasPnl ? fmtConvertedRaw(pnlDisp, histMoney.currency, { signed: true, decimals: 2 }) : '—'}
+          {hasPnl ? histMoney.fmtMonto(pnlDisp, { signed: true, decimals: 2 }) : '—'}
         </span>
       </td>
-      {/* Resto (P&L % · acciones) — hint del P&L + tacho para borrar el activo entero */}
-      <td className="px-3 py-2.5 text-right" colSpan={3}>
+      {/* Resto (P&L % · Tiempo · Por año · Tendencia · Tesis · acciones) — hint
+          del P&L + tacho para borrar el activo entero */}
+      <td className="px-3 py-2.5 text-right" colSpan={7}>
         <div className="inline-flex items-center gap-2 justify-end">
           {hasPnl && <span className="text-ink-3 text-[12px] font-medium">P&L total</span>}
           {onDeleteGroup && (

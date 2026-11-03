@@ -31,14 +31,18 @@ import { useNumeroQueCambia } from '../hooks/useNumeroQueCambia'
 import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
-import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
+import { usePrivacy, PrivacyMask, OCULTO } from '../contexts/PrivacyContext'
 import { useFxHistory, useDolarMensual } from '../hooks/useFxHistory'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import AdvisorDashboard from './AdvisorDashboard'
 import { api } from '../utils/api'
 import { computeBrokerValue, noRealizadoEnVista, valorAlMep, priceSymbol, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, setBrokersRegistry } from '../utils/valuation'
-import { sePuedeGuardar, guardarPnlNoRealizado } from '../utils/guardarValuacion'
+import { sePuedeGuardar, guardarPnlNoRealizado, yaSeGuardoLaFotoDeHoy, marcarFotoDeHoy } from '../utils/guardarValuacion'
+import { useDuenoDeLosDatos, sigueSiendoDe } from '../utils/duenoDeLaPestana'
+import { ENVIOS, enviarDe } from '../utils/enviosConDueno'
+import { leer as leerDelAlmacen, borrar as borrarDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
@@ -57,11 +61,17 @@ import { ChipFueraDeHorario, SiAbrieraAsi, EstadoSesion, LineaBroker } from '../
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { resultadoTotal, aportadoEnPesosAl, restoEnPesos } from '../utils/capitalAportado'
+import { realizadoGlobalDeLosMeses, realizadoGlobalDelMes } from '../utils/realizadoEnPesos'
 import { applyMtmToMonthly, netCapitalContributed } from '../utils/insightsModel'
 import { hoyISO } from '../utils/fecha'
 import { useAlVerse } from '../hooks/useAlVerse'
 import PuntaViva, { puntaEsDeAhora } from '../components/PuntaViva'
 import { fechaCorta } from '../utils/lineaDelBono'
+import { urlDeActivo } from '../utils/buscadorRapido'
+import MapaCartera from '../components/MapaCartera'
+import { sinLecturaDe } from '../utils/mapaCartera'
+import { filasDeLaLista } from '../utils/listaTecnica'
+import { useListaTecnica } from './TuLista'
 
 const REFRESH_MS = 90_000
 
@@ -79,6 +89,9 @@ export default function Dashboard() {
 }
 
 function PersonalDashboard() {
+  // De qué cuenta son los datos de esta pantalla (utils/duenoDeLaPestana): la
+  // foto del día se manda y se marca SÓLO si la pestaña sigue en esa cuenta.
+  const duenoDatos = useDuenoDeLosDatos()
   const [positions, setPositions] = useState([])
   const [operations, setOperations] = useState([])
   const [monthly, setMonthly] = useState([])
@@ -115,10 +128,10 @@ function PersonalDashboard() {
   const { hidden, toggle: togglePrivacy } = usePrivacy()
   useEffect(() => {
     try {
-      const legacy = localStorage.getItem('rendi_dashboard_currency')
+      const legacy = leerDelAlmacen(CATALOGO.monedaDelInicioVieja)
       if (legacy && (legacy === 'ARS' || legacy === 'USD')) {
         if (legacy !== currency) setCurrency(legacy)
-        localStorage.removeItem('rendi_dashboard_currency')
+        borrarDelAlmacen(CATALOGO.monedaDelInicioVieja)
       }
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -308,19 +321,24 @@ function PersonalDashboard() {
   // ganancias viejas al tipo de cambio actual (las infla con la devaluación
   // posterior) y hacía que este KPI y el "P&L Realizado" de Movimientos —mismo
   // nombre, misma plata— mostraran números distintos. En USD da idéntico.
-  const realizedPnlDisp = useMemo(() => {
-    if (currency !== 'ARS') return realizedPnl
-    return monthly
-      .filter(m => m.broker === 'global')
-      .reduce((s, m) => {
-        const v = m.pnl_realized || 0
-        if (!v) return s
+  //
+  // Y NO es "dólares × dólar del mes": las ventas en pesos aportan sus pesos de verdad
+  // (cobrado − costo, la cuenta única de resultado_dual que también usan Movimientos y
+  // Reportes); sólo lo que no tiene pesos (dividendos en dólares, lo cargado a mano en
+  // /mensual) va al dólar del mes. Ver utils/realizadoEnPesos.js.
+  const { realizedPnlDisp, realizedNota } = useMemo(() => {
+    const r = realizadoGlobalDeLosMeses(monthly, {
+      moneda: currency,
+      oculto: hidden,
+      fxDelMes: (m) => {
         // Último día del mes del asiento (Date.UTC con day=0 del mes siguiente)
         // → FX de ese momento. getHistoricalFx ya cae al dólar de hoy si no hay serie.
         const lastDay = new Date(Date.UTC(m.year, m.month, 0)).toISOString().slice(0, 10)
-        return s + v * (getHistoricalFx(lastDay) || tcValuacion)
-      }, 0)
-  }, [monthly, currency, tcValuacion, getHistoricalFx, realizedPnl])
+        return getHistoricalFx(lastDay) || tcValuacion
+      },
+    })
+    return { realizedPnlDisp: r.monto, realizedNota: r.nota }
+  }, [monthly, currency, tcValuacion, getHistoricalFx, hidden])
 
   // Total return = market value vs net deposited (so deposits aren't counted as performance)
   //
@@ -587,12 +605,16 @@ function PersonalDashboard() {
     // Comparación robusta: NaN/no-finito NO pasa (NaN >= x es false → no escribe).
     if (!sePuedeGuardar({ cobertura: priceCoverage })) return
     const today = hoyISO()
-    const key = 'rendi_snapshot_date'
-    if (localStorage.getItem(key) === today) return
+    // Los datos son de `duenoDatos`: si la pestaña ya está en otra cuenta, la
+    // foto NO se manda (el pedido saldría a nombre de la cuenta nueva con los
+    // números de la anterior) ni se marca. «Ya guardé la de hoy» es de la
+    // persona Y de la cuenta (utils/guardarValuacion).
+    if (!sigueSiendoDe(duenoDatos) || yaSeGuardoLaFotoDeHoy(duenoDatos, today)) return
     // Snapshots positions-only (sin PF) → la historia/gráfico/daily se mantienen
     // consistentes; el PF solo entra en las métricas estáticas del titular.
-    api.post('/snapshots', { total_value: totalValuePositions, total_invested: totalCostBasisPositions, net_deposited: netDepositedPositions })
-      .then(() => localStorage.setItem(key, today))
+    // Sale por utils/enviosConDueno, que vuelve a mirar el dueño justo antes.
+    enviarDe(ENVIOS.fotoDelDia, duenoDatos, { total_value: totalValuePositions, total_invested: totalCostBasisPositions, net_deposited: netDepositedPositions })
+      .then(() => marcarFotoDeHoy(duenoDatos, today))
       .catch((e) => {
         // Un 5xx marca el día IGUAL. Antes el catch se tragaba el error sin
         // marcar, así que mientras el backend fallara esto se reintentaba en
@@ -605,7 +627,7 @@ function PersonalDashboard() {
         // El snapshot es oportunista: si hoy no salió, mañana sale, y el cron
         // del backend snapshotea igual. Reintentar sin techo nunca valió lo que
         // costaba. Un 4xx tampoco se reintenta: no se va a arreglar solo.
-        if (e?.status >= 400) localStorage.setItem(key, today)
+        if (e?.status >= 400) marcarFotoDeHoy(duenoDatos, today)
       })
   }, [loading, lastUpdated, totalValuePositions, totalCostBasisPositions, netDepositedPositions, priceCoverage, valuationDollar])
 
@@ -718,7 +740,8 @@ function PersonalDashboard() {
       filas.push({ broker: b.name, pnl: pnlForBroker })
     })
     filas.push({ broker: 'global', pnl: globalPnlUsd })
-    guardarPnlNoRealizado(api.post, filas, { cobertura: priceCoverage, valuationDollar })
+    // Con el dueño de los datos: si otra pestaña cambió de cuenta, no sale.
+    guardarPnlNoRealizado(duenoDatos, filas, { cobertura: priceCoverage, valuationDollar })
   }, [loading, lastUpdated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Portfolio evolution series (depends on range) ───────────────────────────
@@ -799,6 +822,13 @@ function PersonalDashboard() {
     () => (valorFotos > 0 ? computeDailyPnl(snapshots, { liveValue: valorFotos, liveNetDeposited: netDepositedPositions }) : null),
     [snapshots, valorFotos, netDepositedPositions],
   )
+  // El mapa de tu cartera: EL mismo del Panorama de Análisis técnico (uno solo,
+  // 30/10), con las mismas filas de Tu lista (peso y tendencia del servidor).
+  const listaTecnica = useListaTecnica()
+  const filasDelMapa = useMemo(
+    () => (listaTecnica.cargando || listaTecnica.error ? [] : filasDeLaLista(listaTecnica)),
+    [listaTecnica.cargando, listaTecnica.error, listaTecnica.tenencias, listaTecnica.seguidos, listaTecnica.indice])
+  const sinLecturaDelMapa = useMemo(() => sinLecturaDe(listaTecnica.sinMedir), [listaTecnica.sinMedir])
   const monthlyVar = useMemo(() => {
     if (!(valorFotos > 0)) return null
     const d = new Date()
@@ -813,12 +843,13 @@ function PersonalDashboard() {
   )
   // Realizado del MES en curso (flujo limpio: ventas cerradas + dividendos del mes).
   // Subdato del cuadro mensual — el único split realizado/no-realizado que aporta.
+  // En pesos es el MISMO que el KPI «P&L realizado» (las ventas en pesos con sus pesos de verdad
+  // y sólo el resto al dólar de hoy): con `pnl_realized × dólar`, la tarjeta del mes decía
+  // «realizado +$15.000» al lado de un KPI que decía +$240.000. Ya está en la moneda que se mira.
   const realizedThisMonth = useMemo(() => {
     const d = new Date()
-    const y = d.getFullYear(), m = d.getMonth() + 1
-    const e = monthly.find(x => x.broker === 'global' && x.year === y && x.month === m)
-    return e ? (e.pnl_realized || 0) : 0
-  }, [monthly])
+    return realizadoGlobalDelMes(monthly, { year: d.getFullYear(), month: d.getMonth() + 1, moneda: currency, fx: tcValuacion })
+  }, [monthly, currency, tcValuacion])
 
   // Rendimiento acumulado (desde el inicio). Mismo número que el hero "Ganancia
   // total" y el KPI "Resultado total"; acá lo mostramos también por horizonte.
@@ -875,8 +906,15 @@ function PersonalDashboard() {
   // Helper: convierte USD → moneda activa para mostrar.
   // Para ARS multiplica por tcValuacion actual (snapshot). No es histórico — los
   // valores de snapshot se ven al FX de hoy. Lo aclaramos en el hero.
+  //
+  // «Ocultar saldos» vive en estos formateadores y no tarjeta por tarjeta: todo
+  // lo que formatean es plata tuya. Antes cada tarjeta tenía que acordarse
+  // (`oculto={hidden}`, <PrivacyMask>) y las que no se acordaron —Rendimiento
+  // «Hoy/Este mes», las tres tortas, Principales posiciones— mostraban los
+  // montos con el ojito prendido (30/10). Los % no pasan por acá.
   const fmt = (usdValue) => {
     if (usdValue == null) return '—'
+    if (hidden) return OCULTO
     return currency === 'ARS'
       ? fmtArs(usdValue * tcValuacion)
       : fmtUsd(usdValue)
@@ -884,6 +922,7 @@ function PersonalDashboard() {
   const sign = (v) => v == null ? '' : (v >= 0 ? '+' : '−')
   const fmtSigned = (usdValue) => {
     if (usdValue == null) return '—'
+    if (hidden) return OCULTO
     return currency === 'ARS'
       ? `${sign(usdValue)}ARS ${ars(Math.abs(usdValue * tcValuacion))}`
       : `${sign(usdValue)}USD ${usd(Math.abs(usdValue))}`
@@ -892,12 +931,14 @@ function PersonalDashboard() {
   // el dólar de su fecha, o son pesos guardados) — no vuelven a multiplicar.
   const fmtDirect = (v) => {
     if (v == null) return '—'
+    if (hidden) return OCULTO
     return currency === 'ARS' ? fmtArs(v) : fmtUsd(v)
   }
   // Igual que fmtSigned pero para valores que YA vienen en la moneda de display
   // (los que convertimos nosotros con FX histórico) — no vuelve a multiplicar.
   const fmtSignedDirect = (v) => {
     if (v == null) return '—'
+    if (hidden) return OCULTO
     return currency === 'ARS'
       ? `${sign(v)}ARS ${ars(Math.abs(v))}`
       : `${sign(v)}USD ${usd(Math.abs(v))}`
@@ -1073,7 +1114,7 @@ function PersonalDashboard() {
             <>
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-medium text-ink-1">¿Por qué no es igual a realizado + no realizado?</p>
-              <p className="text-ink-3">En pesos, parte de la ganancia viene del dólar y de cómo se cuentan las ventas (ver "Efecto del dólar y otros").</p>
+              <p className="text-ink-3">En pesos, parte de la ganancia viene del dólar sobre lo que tenés o pusiste en dólares (ver "Efecto del dólar y otros").</p>
             </>
           )}
           {showGapUsd && (
@@ -1112,7 +1153,7 @@ function PersonalDashboard() {
           value={fmtSignedDirect(realizedPnlDisp)}
           clave="dashboard:realizado" num={realizedPnlDisp} format={fmtSignedDirect} moneda={currency} listo={metricasListas} oculto={hidden}
           tone={realizedPnlDisp >= 0 ? 'pos' : 'neg'}
-          sub="operaciones cerradas"
+          sub={realizedNota ? 'operaciones cerradas · en parte convertido' : 'operaciones cerradas'}
           info={
             <>
               <p className="font-medium text-ink-0">Qué es</p>
@@ -1121,6 +1162,13 @@ function PersonalDashboard() {
               <p className="font-medium text-ink-0">Cómo se calcula</p>
               <p className="text-ink-3 font-mono text-[11px]">= suma del P&L de cada venta cerrada (+ dividendos + intereses)</p>
               <p className="text-ink-3">Es plata que ya "tocaste". No cambia con los precios actuales: una vez cerrada la operación, queda fijo.</p>
+              {currency === 'ARS' && (
+                <>
+                  <div className="border-t border-line/60 my-1.5" />
+                  <p className="font-medium text-ink-0">En pesos</p>
+                  <p className="text-ink-3">Las ventas en pesos suman los pesos reales (lo cobrado menos lo que costó), como los muestra tu broker.{realizedNota ? ` ${realizedNota.charAt(0).toUpperCase() + realizedNota.slice(1)}.` : ''}</p>
+                </>
+              )}
             </>
           }
         />
@@ -1158,7 +1206,7 @@ function PersonalDashboard() {
                 <div className="border-t border-line/60 my-1.5" />
                 <p className="font-medium text-ink-0">Qué suele haber adentro</p>
                 <p className="text-ink-3">La suba (o baja) del dólar sobre la plata que tenés o pusiste en dólares: lo aportado cuenta el dólar del día en que entró y el no realizado, el de hoy.</p>
-                <p className="text-ink-3">Tus ventas: el P&L realizado cuenta cada venta en dólares de su fecha, y en pesos de hoy esa ganancia es otra.</p>
+                <p className="text-ink-3">Tus ventas en dólares (o de lo que compraste en dólares): el P&L realizado las cuenta al dólar de cada fecha, y en pesos de hoy esa ganancia es otra. Las ventas en pesos cuentan sus pesos exactos y no dejan resto.</p>
                 <p className="text-ink-3">Dividendos o intereses que no cargaste, o un costo mal cargado.</p>
               </>
             }
@@ -1221,6 +1269,9 @@ function PersonalDashboard() {
               <p className="text-ink-2 mt-1"><strong className="text-ink-1">Hoy</strong>: vs cierre 23:59 ART. <strong className="text-ink-1">Este mes</strong>: vs cierre del mes anterior. <strong className="text-ink-1">Promedio anual</strong>: el promedio de toda tu historia (CAGR), no lo que va del año.</p>
               <div className="border-t border-line/60 my-1.5" />
               <p className="text-ink-3">⚠ Medido en USD. Si tenés posiciones en ARS (CEDEARs, bonos), los movimientos del dólar blue afectan la variación aunque el precio en pesos no haya cambiado — porque tus pesos valen más o menos dólares.</p>
+              {currency === 'ARS' && (
+                <p className="text-ink-3 mt-1">En pesos, el «realizado» que aparece bajo «Este mes» es el de tus ventas en pesos (lo que cobraste menos lo que pagaste, como lo ve tu broker); si vendiste o compraste en dólares, esas operaciones van al dólar de cada fecha. El monto de la tarjeta, en cambio, está medido en dólares y pasado al dólar de hoy, así que pueden no coincidir.</p>
+              )}
             </InfoTooltip>
           </div>
           {/* Cards compactas con el % como protagonista (Hoy / Este mes / Anual),
@@ -1255,7 +1306,7 @@ function PersonalDashboard() {
                     key: 'm',
                     label: 'Este mes',
                     data: monthlyVar,
-                    note: Math.abs(realizedThisMonth) >= 1 ? `realizado ${fmtSigned(realizedThisMonth)}` : null,
+                    note: Math.abs(realizedThisMonth) >= 1 ? `realizado ${fmtSignedDirect(realizedThisMonth)}` : null,
                   }
                 : { key: 'm', label: 'Este mes', vacio: 'todavía no hay una foto de este mes' },
               // ⚠️ EL ORDEN ES EL DEL RELOJ: hoy → este mes → este año → toda la
@@ -1324,6 +1375,17 @@ function PersonalDashboard() {
           de cinco años no se puede accionar. Lo reemplazó el año en curso, que
           ahora es una card más de la fila "Rendimiento" de arriba. */}
       <div className="mb-8" />
+
+      {/* ── Mapa de tu cartera ──────────────────────────────────────────────
+          El MISMO componente del Panorama de Análisis técnico: un cuadrito
+          por activo del tamaño de lo que pesa y del color de su tendencia.
+          Sin nada tuyo (cartera vacía), no aparece. */}
+      {(listaTecnica.cargando || listaTecnica.error || filasDelMapa.some(f => f.tenes)) && (
+        <div className="mb-8">
+          <MapaCartera filas={filasDelMapa} cargando={listaTecnica.cargando} error={!!listaTecnica.error}
+            hidden={hidden} sinLectura={sinLecturaDelMapa} rutaOtros="/analisis-tecnico?tab=lista" />
+        </div>
+      )}
 
       {/* ── Portfolio Evolution chart ────────────────────────────────────────── */}
       <AskAIAbout
@@ -1473,6 +1535,9 @@ function PersonalDashboard() {
                     axisLine={false}
                     tickLine={false}
                     tickFormatter={v => {
+                      // «Ocultar saldos»: el eje dice cuánto vale tu cartera
+                      // («US$42k»); con el ojito, sin números (la forma queda).
+                      if (hidden) return ''
                       // Audit fix C1: evoSeriesDisplay YA está convertido a la
                       // currency del toggle. Acá solo formateamos con símbolo.
                       const abs = Math.abs(v)
@@ -1494,7 +1559,7 @@ function PersonalDashboard() {
                       // Audit fix C1: data ya está en la currency target.
                       // Solo formateamos. Mismo valor que el axis.
                       const label = name === 'valueUsd' ? 'Valor' : 'Aportado'
-                      return [currency === 'ARS' ? fmtArs(v) : fmtUsd(v), label]
+                      return [hidden ? OCULTO : currency === 'ARS' ? fmtArs(v) : fmtUsd(v), label]
                     }}
                     labelFormatter={(label, payload) => {
                       // Mostramos la fecha + el FX que se usó para ese punto
@@ -1578,6 +1643,7 @@ function PersonalDashboard() {
           >
             <TopHoldingsPanel
               positions={positionsForInsight}
+              oculto={hidden}
               currency={currency}
               tcValuacion={tcValuacion}
             />
@@ -1809,18 +1875,21 @@ function KpiCell({ label, value, sub, tone, info, infoAlign = 'right',
         ? <div className={`entra text-[11.5px] mt-1.5 leading-none truncate tabular font-medium ${cambio.delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
             {textoDeDiferencia(cambio.delta, format)} respecto de antes
           </div>
-        : <div className="text-[11.5px] text-ink-3 mt-1.5 leading-none truncate">{sub}</div>}
+        : <div className="text-[11.5px] text-ink-3 mt-1.5 leading-tight line-clamp-2" title={typeof sub === 'string' ? sub : undefined}>{sub}</div>}
     </div>
   )
 }
 
 // ─── Top holdings panel ──────────────────────────────────────────────────────
-// Tabla compacta: top 5 holdings por value_usd, con sparkline 30d lazy.
+// Tabla compacta: top 5 holdings por value_usd, con sparkline 30d lazy. Cada
+// fila abre la ficha del activo con su análisis técnico (el efectivo no tiene).
 
-function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
-  const fmt = (v) => currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v)
+function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1, oculto = false }) {
+  // Con «Ocultar saldos» quedan el activo y su %, como en la Cartera.
+  const fmt = (v) => oculto ? OCULTO : currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v)
   const fmtSigned = (v) => {
     if (v == null) return ''
+    if (oculto) return OCULTO
     const s = v >= 0 ? '+' : '−'
     return currency === 'ARS'
       ? `${s}${ars(Math.abs(v * tcValuacion))}`
@@ -1831,7 +1900,7 @@ function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
     const byAsset = new Map()
     for (const p of positions) {
       if (!p.value_usd || p.value_usd <= 0) continue
-      const cur = byAsset.get(p.asset) || { asset: p.asset, value_usd: 0, pnl_usd: 0 }
+      const cur = byAsset.get(p.asset) || { asset: p.asset, value_usd: 0, pnl_usd: 0, is_cash: !!p.is_cash }
       cur.value_usd += p.value_usd
       cur.pnl_usd += (p.pnl_usd || 0)
       byAsset.set(p.asset, cur)
@@ -1861,8 +1930,10 @@ function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
       <div className="px-5 pb-4">
         {top.map((h, i) => {
           const positive = (h.pnl_pct ?? 0) >= 0
+          const Fila = h.is_cash ? 'div' : Link
           return (
-            <div key={h.asset} className={`flex items-center gap-3 py-2.5 ${i > 0 ? 'border-t border-line/40' : ''}`}>
+            <Fila key={h.asset} {...(h.is_cash ? {} : { to: urlDeActivo(h.asset), 'aria-label': `${h.asset}: ver la ficha` })}
+              className={`flex items-center gap-3 py-2.5 -mx-2 px-2 rounded-lg ${h.is_cash ? '' : 'hover:bg-bg-2/50 transition-colors'} ${i > 0 ? 'border-t border-line/40' : ''}`}>
               <AssetLogo asset={h.asset} size={30} className="flex-shrink-0" />
               <div className="min-w-0 flex-1">
                 <div className="text-[13.5px] font-semibold text-ink-0 truncate leading-tight">{h.asset}</div>
@@ -1879,7 +1950,7 @@ function TopHoldingsPanel({ positions, currency = 'USD', tcValuacion = 1 }) {
                   </span>
                 )}
               </div>
-            </div>
+            </Fila>
           )
         })}
       </div>

@@ -1,4 +1,4 @@
-// Calidad de cartera — cartera-first, SIN pestañas (a propósito, para no replicar
+// Análisis fundamental (antes «Calidad de cartera») — cartera-first, SIN pestañas (a propósito, para no replicar
 // la navegación de Vesty: Analizar/Comparar/Favoritos + buscador-héroe).
 // ═══════════════════════════════════════════════════════════════════════════
 // La página ABRE en tu cartera (CarteraList) + una sección "Que seguís". El
@@ -7,6 +7,8 @@
 //   • sin params  → home (tu cartera + seguidas)
 //   • ?ticker=X   → ficha de un activo (AnalyzeView, sin su buscador embebido)
 //   • ?cmp=A,B    → comparación (CompareView), entrada por selección desde la lista
+//   • ?vista=precio (con o sin cmp) → la pestaña «Precio» de la comparación; la
+//     abren la ficha («Comparar con…») y Análisis técnico (su pestaña Comparar)
 
 import { lazy, Suspense, useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -39,7 +41,8 @@ export default function Fundamentals() {
 
   const ticker = (searchParams.get('ticker') || '').toUpperCase()
   const cmpTickers = parseCmp(searchParams.get('cmp'))
-  const mode = ticker ? 'detail' : (cmpTickers.length ? 'compare' : 'home')
+  const enPrecio = searchParams.get('vista') === 'precio'
+  const mode = ticker ? 'detail' : (cmpTickers.length || enPrecio ? 'compare' : 'home')
 
   const watchlist = useWatchlist()
 
@@ -69,6 +72,7 @@ export default function Fundamentals() {
       const sp = new URLSearchParams(prev)
       sp.set('ticker', sym)
       sp.delete('cmp')
+      sp.delete('vista')
       return sp
     })
   }, [setSearchParams])
@@ -81,6 +85,8 @@ export default function Fundamentals() {
       const sp = new URLSearchParams(prev)
       sp.set('cmp', arr.join(','))
       sp.delete('ticker')
+      // Desde tu cartera se comparan balances: «vista=precio» no queda pegado.
+      sp.delete('vista')
       return sp
     })
   }, [setSearchParams])
@@ -100,6 +106,7 @@ export default function Fundamentals() {
       const sp = new URLSearchParams(prev)
       sp.delete('ticker')
       sp.delete('cmp')
+      sp.delete('vista')
       return sp
     })
   }, [setSearchParams])
@@ -107,8 +114,8 @@ export default function Fundamentals() {
   return (
     <div className="page-shell">
       <PageHeader
-        eyebrow="ANALYTICS"
-        title="Calidad de cartera"
+        eyebrow="Análisis de mercado"
+        title="Análisis fundamental"
         subtitle="Qué tan sólidas son las empresas detrás de tus acciones y CEDEARs, y si el precio de hoy las acompaña."
       />
 

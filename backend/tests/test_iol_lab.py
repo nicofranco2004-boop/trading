@@ -119,6 +119,14 @@ def _mk_user(email, admin=0):
 def _client(uid):
     c = TestClient(main.app)
     c.cookies.set(main.COOKIE_NAME, main.create_token(uid))
+    # Con la cookie (como el navegador), el pedido dice de quién es: sin eso el
+    # servidor no lo atiende (ver PERSONA_HEADER en main.py).
+    conn = main.get_db()
+    try:
+        email = conn.execute("SELECT email FROM users WHERE id=?", (uid,)).fetchone()["email"]
+    finally:
+        conn.close()
+    c.headers[main.PERSONA_HEADER] = email
     return c
 
 

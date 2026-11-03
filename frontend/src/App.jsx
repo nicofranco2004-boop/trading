@@ -4,6 +4,7 @@ import { VozProvider } from './contexts/VozContext'
 import RendiMate from './components/voz/RendiMate'
 import IslaSegura from './components/voz/IslaSegura'
 import TourNovedades from './components/tour/TourNovedades'
+import TourTecnico from './components/tour/TourTecnico'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { CurrencyProvider } from './contexts/CurrencyContext'
@@ -13,6 +14,7 @@ import { CoachDrawerProvider } from './contexts/CoachDrawerContext'
 import { AlertsProvider } from './contexts/AlertsContext'
 import { AdvisorProvider, useAdvisorContext } from './contexts/AdvisorContext'
 import ClientContextBar from './components/advisor/ClientContextBar'
+import CuentaCambiadaEnOtraPestana from './components/CuentaCambiadaEnOtraPestana'
 import Sidebar from './components/Sidebar'
 import TransicionDePantalla from './components/TransicionDePantalla'
 import BuscadorRapido from './components/BuscadorRapido'
@@ -86,6 +88,7 @@ const Wrapped = lazy(() => import('./pages/Wrapped'))
 const Analisis = lazy(() => import('./pages/Analisis'))
 const Fundamentals = lazy(() => import('./pages/Fundamentals'))
 const AssetDetail = lazy(() => import('./pages/AssetDetail'))
+const AnalisisTecnico = lazy(() => import('./pages/AnalisisTecnico'))
 const Cartera = lazy(() => import('./pages/Cartera'))
 const PerfilInversor = lazy(() => import('./pages/PerfilInversor'))
 // Plan Asesor: roster de clientes + drill-down + operación grupal (tier advisor)
@@ -219,6 +222,7 @@ function VozGate() {
           solo en vez de dejar la pantalla oscurecida y sin salida — que sería
           peor que no tenerlo. */}
       <TourNovedades />
+      <TourTecnico />
     </IslaSegura>
   )
 }
@@ -256,6 +260,12 @@ function AppRoutes() {
       <Route path="/analisis" element={<Analisis />} />
       <Route path="/fundamentals" element={<Fundamentals />} />
       <Route path="/activo/:ticker" element={<AssetDetail />} />
+      {/* «Análisis técnico» (menú → Análisis de mercado), en pestañas: Panorama,
+          Tu lista (?tab=lista, también desde «Ver como tablero» del inicio) y
+          Señales de la semana (?tab=senales). /tu-lista era la dirección de la
+          lista antes de tener lugar en el menú. */}
+      <Route path="/analisis-tecnico" element={<AnalisisTecnico />} />
+      <Route path="/tu-lista" element={<Navigate to="/analisis-tecnico?tab=lista" replace />} />
       {/* Dashboard vuelve a ser página propia (ítem "Dashboard" del sidebar,
           principal dentro de "Tu Cartera"). Antes era un tab de Cartera. */}
       {/* Informe del período: el link público TAMBIÉN debe resolver con
@@ -438,6 +448,7 @@ function Layout() {
       <AlertsProvider>
       <AdvisorProvider>
         <AdvisorLandingRedirect />
+        <CuentaCambiadaEnOtraPestana />
         {/* Los avisos de arriba de todo van ADENTRO de la barra: así su alto
             entra en lo que la barra mide y nada de lo que se pega debajo
             queda tapado (ver components/mobile/avisos.js). */}
@@ -474,6 +485,7 @@ function Layout() {
     <AlertsProvider>
     <AdvisorProvider>
       <AdvisorLandingRedirect />
+      <CuentaCambiadaEnOtraPestana />
       <Sidebar />
       {/* main content shifteado dinámicamente por --sidebar-w
           (la sidebar setea esta CSS var según expandida/colapsada) */}

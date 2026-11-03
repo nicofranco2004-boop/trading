@@ -19,7 +19,7 @@ import { filaSinUnaPata } from '../utils/filaFusionada'
 import { groupBrokersIntoAccounts, flattenAccounts, brokerLegLabel } from '../utils/brokerAccounts'
 import { admiteDosMonedas, brokersParaElegir, formularioDeCaja, cuentaDe } from '../utils/pataDeLaMoneda'
 import { precioCedearEnDolares } from '../utils/opcionesCedear'
-import { opcionesDeVenta, lotesDeLaVenta, etiquetaDeVenta } from '../utils/opcionesDeVenta'
+import { opcionesDeVenta, lotesDeLaVenta, etiquetaDeVenta, vistaPreviaDeLaVenta } from '../utils/opcionesDeVenta'
 import PfFormModal from '../components/PfFormModal'
 import BondCashflowModal from '../components/BondCashflowModal'
 import CuponesPorCobrar from '../components/CuponesPorCobrar'
@@ -47,11 +47,12 @@ import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass, pctTxt, parseNum,
 import { leerVenta, cuerpoDeVenta, leerConversion, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { api, errorMessage } from '../utils/api'
 import { pfUsd } from '../hooks/usePfRollup'
-import { sumarBrokers, noRealizadoEnVista, computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, avgCostArsPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
+import { sumarBrokers, noRealizadoEnVista, computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, valuePositionLot, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, avgCostArsPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
 import { linkDeAlerta } from '../components/alerts/alertaDePosicion'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { EtiquetaMoneda, EtiquetaEfectivo, EtiquetaBono, EtiquetaFaltaTc } from '../components/EtiquetaFila'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
+import { variacionDelDia, variacionDelDiaUsd } from '../utils/variacionDelDia'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
 import PageHeader from '../components/PageHeader'
@@ -65,6 +66,7 @@ import { preciosQueCambiaron, hayPrecios } from '../utils/preciosEnVivo'
 import { useUltimoPedido } from '../hooks/useUltimoPedido'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import PesoEnCartera from '../components/PesoEnCartera'
+import RadiografiaTecnica, { useLecturasCartera, lecturaDeLaFila, TendenciaChip, FuerzaRsi } from '../components/RadiografiaTecnica'
 import { relojVisible, PRECIOS_CARTERA_MS } from '../utils/relojVisible'
 import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
 import { impactoFueraDeHorario, sumarTenencias } from '../utils/fueraDeHorario'
@@ -74,6 +76,8 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { useCerSeries } from '../hooks/useCerSeries'
 import { hoyISO } from '../utils/fecha'
 import { confirmar } from '../utils/confirmar'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 
 export const today = () => hoyISO()
@@ -253,12 +257,12 @@ function PositionsDesktop() {
   // Densidad de la tabla (cómodo/compacto), persistida. Feedback de un usuario
   // Pro: con muchas columnas la tabla scrollea de costado y se hace tediosa.
   const [compact, setCompact] = useState(() => {
-    try { return localStorage.getItem('rendi_pos_density') === 'compact' } catch { return false }
+    try { return leerDelAlmacen(CATALOGO.densidadCartera) === 'compact' } catch { return false }
   })
   function toggleCompact() {
     setCompact(v => {
       const next = !v
-      try { localStorage.setItem('rendi_pos_density', next ? 'compact' : 'comfortable') } catch { /* no-op */ }
+      try { guardarEnAlmacen(CATALOGO.densidadCartera, next ? 'compact' : 'comfortable') } catch { /* no-op */ }
       return next
     })
   }
@@ -275,14 +279,14 @@ function PositionsDesktop() {
   // otra abierta. El control vive en el header de cada tarjeta — en la toolbar
   // quedaba como el sexto botón de una fila y no lo encontraba nadie.
   const [cuentasSeparadas, setCuentasSeparadas] = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem('rendi_cuentas_separadas') || '[]')) }
+    try { return new Set(JSON.parse(leerDelAlmacen(CATALOGO.cuentasSeparadas) || '[]')) }
     catch { return new Set() }
   })
   function toggleCuentaSeparada(key) {
     setCuentasSeparadas(prev => {
       const next = new Set(prev)
       next.has(key) ? next.delete(key) : next.add(key)
-      try { localStorage.setItem('rendi_cuentas_separadas', JSON.stringify([...next])) } catch { /* no-op */ }
+      try { guardarEnAlmacen(CATALOGO.cuentasSeparadas, JSON.stringify([...next])) } catch { /* no-op */ }
       return next
     })
   }
@@ -1666,46 +1670,14 @@ function PositionsDesktop() {
     return { valueUsd, investedUsd: invUsd, pnlUsd, pnlPct: invUsd > 0 ? pnlUsd / invUsd : 0 }
   }
 
-  // Variación del día por posición (market-based): (precio actual − cierre
-  // anterior) × cantidad, más el % de movimiento. Usa el MISMO precio que
-  // muestra la fila para que los números reconcilien. Devuelve null cuando es
-  // cash, falta el cierre anterior (símbolo sin cobertura yfinance, ej. bonos
-  // AR) o todavía no llegó el precio actual.
-  function dayVarOf(p, symbolKey, currentPrice) {
-    // Cash y precios manuales no tienen variación de mercado comparable: el
-    // precio override no proviene de la misma fuente que el cierre anterior.
-    if (p.is_cash || p.price_override) return null
-    const prev = prevClose[symbolKey]
-    if (prev == null || !(prev > 0) || currentPrice == null) return null
-    const perUnit = currentPrice - prev
-    return { amount: perUnit * (p.quantity || 0), pct: perUnit / prev }
-  }
-
-  // Var-día CEDEAR-aware. Para un CEDEAR en broker USD, la variación se computa
-  // sobre el precio LOCAL (.BA, ARS) — mismo símbolo para precio actual y cierre
-  // previo — y el monto se pasa a USD via blue. El % es invariante a la moneda.
-  // Para el resto, usa el símbolo nativo del contexto (ARS → .BA, USD → ticker US).
+  // Variación del día por posición: la cuenta vive en utils/variacionDelDia.js.
+  // En un broker en pesos
+  // el monto va en pesos; en uno en dólares, en dólares. El % es invariante.
+  // Lo que pide la cuenta del día; la valuación (`brokerDe`, `tcValuacion`,
+  // `costBasis`) decide si confía en el precio, como en el total del broker.
+  const ctxDelDia = { prices, prevClose, tcValuacion, tcCedear, tcCripto, costBasis, exchangeBrokers, brokerDe: _brokerDe }
   function dvFor(p, isARS) {
-    // costInPesos: lote en ARS en broker USD (IOL sin sibling) — se valúa por su
-    // .BA (calcUSDT/pesoLotUsd), así que la Var. día usa el MISMO símbolo local.
-    // Sin esto caía a priceSymbol(asset, false) → 'GGAL' (el ADR): si el ADR no
-    // estaba priceado daba '—' garantizado; si SÍ estaba (otra posición lo trae),
-    // computaba perUnit del ADR × nominales locales → monto ×ratio inflado.
-    const local = !isARS && !isCrypto(p.asset) && (p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker) || costInPesos(p))
-    const symKey = local ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, isARS)
-    const curPrice = p.price_override ?? prices[symKey]
-    const dv = dayVarOf(p, symKey, curPrice)
-    if (!dv) return dv
-    if (local) return { amount: dv.amount / tcCedear, pct: dv.pct }
-    // Factor cripto: SÓLO en el riel en dólares, donde el precio es el spot. En el
-    // riel en PESOS el '<c>.BA' ya trae el premium adentro (spot × dólar-cripto), y
-    // multiplicarlo de nuevo lo duplicaba: el monto salía ~4% más grande que el de
-    // mobile, que ya usaba `isAR ? 1 : …`. Hoy, en dólares, el factor vale 1 (la
-    // cuenta en dólares no lleva premium); queda por si cambia la regla. El % es
-    // invariante.
-    const f = isARS ? 1 : cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear, 'USD')
-    if (f !== 1) return { amount: dv.amount * f, pct: dv.pct }
-    return dv
+    return variacionDelDia(p, isARS, ctxDelDia)
   }
 
   // sticky top-0 + bg matched al thead row para que al scrollear la tabla
@@ -1806,6 +1778,26 @@ function PositionsDesktop() {
   const heroInvested = heroUsd.costo
   const heroPnl = heroUsd.monto
   const heroPct = heroUsd.pct
+
+  // Radiografía técnica: la lectura de cada fila y, en el mismo pedido, el % de
+  // tu plata en tendencia alcista (lo arma el servidor: senales_semana.reparto,
+  // la misma cuenta que Análisis técnico). Una sola vez para toda la página.
+  const lecturas = useLecturasCartera(positions)
+  // Las dos columnas técnicas de una fila (las dos tablas). El lote de una fila
+  // abierta no las repite; el efectivo no tiene.
+  const celdasTecnicas = (p, isLot) => {
+    const { estado, x } = lecturaDeLaFila(lecturas, p)
+    const gris = (t, title) => <span className="text-ink-3" title={title}>{t}</span>
+    const celda = (lleno) => (
+      <td className={tdClass}>
+        {(p.is_cash || isLot) ? gris(isLot ? '' : '—')
+          : estado === 'cargando' ? gris('…')
+            : estado === 'error' ? gris('—', 'No pudimos traer el análisis técnico')
+              : lleno}
+      </td>
+    )
+    return <>{celda(<TendenciaChip x={x} p={p} />)}{celda(<FuerzaRsi x={x} />)}</>
+  }
   // Hero en display ARS: cifras mode-INDEPENDENT (pesos nativos + tenencias USD al
   // dólar de hoy), a partir del total 'today' ×tcValuacion. Incluye PF. Así ARS-nativo
   // queda nativo y USD queda USD×hoy, sin filtrar el modo ni dropear brokers USD.
@@ -2116,6 +2108,11 @@ function PositionsDesktop() {
         )}
       </div>
 
+      {/* Radiografía técnica: cuánto de tu plata está en tendencia alcista. La
+          MISMA pieza que en el celular (R6). */}
+      <RadiografiaTecnica lotes={positions} reparto={lecturas.reparto}
+        cargando={lecturas.cargando} error={lecturas.error} className="mb-5" />
+
       {/* Banner de variación diaria deshabilitado — requiere snapshots
           confiables (cron server-side) que aún no están implementados. */}
 
@@ -2311,9 +2308,9 @@ function PositionsDesktop() {
           let dayUsd = 0
           for (const p of bposRaw) {
             const pEsArs = patasArs.has(p.broker)
-            const dv = dvFor(p, pEsArs)
+            const dv = variacionDelDiaUsd(p, pEsArs, ctxDelDia)
             if (dv) {
-              dayUsd += pEsArs ? dv.amount / tcCedear : dv.amount
+              dayUsd += dv.amount
               brokerHasDay = true
             }
           }
@@ -2484,6 +2481,8 @@ function PositionsDesktop() {
                       {showDetail && isArsDisp && <th className={thClass}>P&L USD</th>}
                       <th className={thClass}>Var. día</th>
                       {fdhAca && <th className={thClass}><EncabezadoColumna sesion={sesionFdh} /></th>}
+                      <th className={thClass} title="Tendencia de fondo, en dólares: el precio contra su promedio de los últimos 200 días">Tendencia</th>
+                      <th className={thClass} title="Impulso (RSI): de 0 a 100, qué tan rápido subió o bajó el precio en las últimas 3 semanas (como la ficha y Tu lista)">Impulso (RSI)</th>
                       <th className={thClassStickyRight}></th>
                     </tr>
                   </thead>
@@ -2555,7 +2554,7 @@ function PositionsDesktop() {
                       // + Invertido si showDetail (+1) + TC Compra/Inv.USD/P&L USD si
                       // showDetail && vista ARS (+3). USD: los 3 helpers cross-moneda
                       // se ocultan (redundantes con las columnas ya-en-USD).
-                      const arsColSpan = (showDetail ? (isArsDisp ? 13 : 10) : 9) + (fdhAca ? 1 : 0)
+                      const arsColSpan = (showDetail ? (isArsDisp ? 13 : 10) : 9) + (fdhAca ? 1 : 0) + 2   // +2: Tendencia e Impulso (RSI)
                       const cobradoDisp = isArsDisp ? cobradoUsd * tcValuacion : cobradoUsd
                       return (
                         <Fragment key={rowKey}>
@@ -2669,7 +2668,7 @@ function PositionsDesktop() {
                               <LazySparkline symbol={(p.asset || '').toUpperCase()} variant="row" />
                             )}
                           </td>
-                          <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
+                          <td className={`${tdClass} text-ink-2 tabular`}>{hidden && p.is_cash ? '••••••' : (p.quantity ?? '—')}</td>
                           <td className={`${tdClass} text-ink-2 tabular`}>{isArsDisp
                             ? (avgPriceArs != null ? `ARS ${ars(avgPriceArs)}` : '—')
                             : (avgPriceUsdDisp != null ? `USD ${usd(avgPriceUsdDisp)}` : '—')}</td>
@@ -2704,7 +2703,7 @@ function PositionsDesktop() {
                           <td className={`${tdClass} tabular`}>
                             {dvArs ? (
                               <div className="leading-tight">
-                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{dvArs.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvArs.amount))}` : `USD ${usd(Math.abs(dvArs.amount / tcValuacion))}`}</div>
+                                <div className={`font-medium ${colorClass(dvArs.amount)}`}>{hidden ? '••••••' : <>{dvArs.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvArs.amount))}` : `USD ${usd(Math.abs(dvArs.amount / tcValuacion))}`}</>}</div>
                                 <div className={`text-[10px] font-mono ${colorClass(dvArs.amount)}`}>{pctSigned(dvArs.pct)}</div>
                               </div>
                             ) : (
@@ -2717,6 +2716,7 @@ function PositionsDesktop() {
                                 moneda={displayCurrency} oculto={hidden} />
                             </td>
                           )}
+                          {celdasTecnicas(p, isLot)}
                           <td className={tdClassStickyRight}>
                             <div className="flex items-center gap-1 justify-end">
                               {!p.is_cash && (
@@ -2787,6 +2787,7 @@ function PositionsDesktop() {
                             moneda={displayCurrency} oculto={hidden} />
                         </td>
                       )}
+                      <td colSpan={2} />
                       <td />
                     </tr>
                   </tfoot>
@@ -2814,6 +2815,8 @@ function PositionsDesktop() {
                     <th className={thClass}>P&L</th>
                     <th className={thClass}>Var. día</th>
                     {fdhAca && <th className={thClass}><EncabezadoColumna sesion={sesionFdh} /></th>}
+                    <th className={thClass} title="Tendencia de fondo, en dólares: el precio contra su promedio de los últimos 200 días">Tendencia</th>
+                    <th className={thClass} title="Impulso (RSI): de 0 a 100, qué tan rápido subió o bajó el precio en las últimas 3 semanas (como la ficha y Tu lista)">Impulso (RSI)</th>
                     <th className={thClassStickyRight}></th>
                   </tr>
                 </thead>
@@ -2928,7 +2931,7 @@ function PositionsDesktop() {
                             <LazySparkline symbol={(p.asset || '').toUpperCase()} variant="row" />
                           )}
                         </td>
-                        <td className={`${tdClass} text-ink-2 tabular`}>{p.quantity ?? '—'}</td>
+                        <td className={`${tdClass} text-ink-2 tabular`}>{hidden && p.is_cash ? '••••••' : (p.quantity ?? '—')}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{avgPrice != null ? (isArsDisp ? fmtArs(avgPrice * tcValuacion) : fmtUsd(avgPrice)) : '—'}</td>
                         <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? <FlashValue value={c.price}>{isArsDisp ? fmtArs(c.price * tcValuacion) : fmtUsd(c.price)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                         {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : (isArsDisp ? fmtArs((c.investedUsd ?? p.invested) * tcValuacion) : fmtUsd(c.investedUsd ?? p.invested))}</td>}
@@ -2951,7 +2954,7 @@ function PositionsDesktop() {
                         <td className={`${tdClass} tabular`}>
                           {dvUsd ? (
                             <div className="leading-tight">
-                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{dvUsd.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvUsd.amount * tcValuacion))}` : `USD ${usd(Math.abs(dvUsd.amount))}`}</div>
+                              <div className={`font-medium ${colorClass(dvUsd.amount)}`}>{hidden ? '••••••' : <>{dvUsd.amount >= 0 ? '+' : '-'}{isArsDisp ? `ARS ${ars(Math.abs(dvUsd.amount * tcValuacion))}` : `USD ${usd(Math.abs(dvUsd.amount))}`}</>}</div>
                               <div className={`text-[10px] font-mono ${colorClass(dvUsd.amount)}`}>{pctSigned(dvUsd.pct)}</div>
                             </div>
                           ) : (
@@ -2964,6 +2967,7 @@ function PositionsDesktop() {
                               moneda={displayCurrency} oculto={hidden} />
                           </td>
                         )}
+                        {celdasTecnicas(p, isLot)}
                         <td className={tdClassStickyRight}>
                           <div className="flex items-center gap-1 justify-end">
                             {!p.is_cash && (
@@ -2981,7 +2985,7 @@ function PositionsDesktop() {
                         <BondDetailRow
                           p={p}
                           filaFusionada={filaSinUnaPata(p)}
-                          colSpan={(showDetail ? 10 : 9) + (fdhAca ? 1 : 0)}
+                          colSpan={(showDetail ? 10 : 9) + (fdhAca ? 1 : 0) + 2}
                           summary={bondSummary}
                           pendingDates={pendientesDeLaFila(p)}
                           cobros={cobrosRenta}
@@ -3026,6 +3030,7 @@ function PositionsDesktop() {
                           moneda={displayCurrency} oculto={hidden} />
                       </td>
                     )}
+                    <td colSpan={2} />
                     <td />
                   </tr>
                 </tfoot>
@@ -3838,6 +3843,18 @@ export function SellModal({ form, setForm, positions, brokers, tcValuacion, fxHi
   // segunda venta legítima si quedan nominales. Vive en el modal para que
   // escritorio y celular lo tengan sin pasarlo (ver hooks/useEnVuelo).
   const enVuelo = useEnVuelo()
+  // Con qué regla anota el servidor el resultado en dólares de ESTA cuenta (v2: cada
+  // punta a su dólar; v1: la de siempre). Mientras no responde —o si falla— el
+  // «Profit estimado» NO se muestra: asumir una regla mostraba un número que después
+  // no era el que quedaba anotado.
+  const [reglaDeVenta, setReglaDeVenta] = useState(null)
+  useEffect(() => {
+    let vivo = true
+    api.get('/positions/regla-de-venta')
+      .then(r => { if (vivo) setReglaDeVenta(r?.cada_punta_a_su_dolar === true ? true : (r?.cada_punta_a_su_dolar === false ? false : null)) })
+      .catch(() => {})
+    return () => { vivo = false }
+  }, [])
   // Los lotes que va a cerrar la venta, con la MISMA regla que el servidor: toda
   // la cuenta (Cocos y Cocos · USD), sólo los de la moneda de la venta, del más
   // viejo al más nuevo (ver utils/opcionesDeVenta). Antes era sólo el broker
@@ -3857,8 +3874,6 @@ export function SellModal({ form, setForm, positions, brokers, tcValuacion, fxHi
   const qtyNum = leido.quantity || 0
   const priceNum = leido.exit_price || 0
   const comisionNum = leido.commissions || 0
-  const tcVenta = leido.tc_venta || tcValuacion || 1
-
   // TC de la venta = el que existía en la FECHA de la venta, no el de hoy.
   // Mismo criterio que el aporte con fecha (MEP del día, blue de fallback; y
   // para hoy/futuro el blue actual porque el MEP de hoy puede no estar aún).
@@ -3881,37 +3896,17 @@ export function SellModal({ form, setForm, positions, brokers, tcValuacion, fxHi
     })
   }
 
-  // Preview FIFO — cost basis incluye buy commissions prorrateadas (mismo
-  // criterio que el backend en /positions/sell).
-  let remaining = qtyNum
-  const fifoPreview = []
-  for (const p of lots) {
-    if (remaining <= 1e-9) break
-    const take = Math.min(remaining, p.quantity || 0)
-    const ratio = (p.quantity || 0) > 0 ? take / p.quantity : 0
-    const baseInvested = (p.invested || 0) + (p.commissions || 0)
-    const investedPart = baseInvested * ratio
-    let pnlUsd = 0
-    if (isARS) {
-      // FX-phantom fix: P&L USD = P&L ARS / TC venta (cost basis alineado al
-      // mismo TC que la venta, así no aparece "FX gain" fantasma).
-      const pnlArs = (priceNum * take) - investedPart
-      pnlUsd = pnlArs / tcVenta
-    } else {
-      pnlUsd = (priceNum * take) - investedPart
-    }
-    fifoPreview.push({
-      lot_id: p.id,
-      entry_date: p.entry_date,
-      take,
-      pos_qty: p.quantity,
-      buy_price: p.buy_price,
-      pnl_usd: pnlUsd,
-      partial: take < p.quantity,
-    })
-    remaining -= take
-  }
-  const totalPnl = fifoPreview.reduce((s, x) => s + x.pnl_usd, 0)
+  // Preview FIFO — las mismas cuentas que el servidor (utils/opcionesDeVenta,
+  // vistaPreviaDeLaVenta): comisión de venta, costo del lote, dólar de compra y de venta.
+  // El dólar de la venta: el que escribió el usuario o, con el campo vacío, el de la FECHA
+  // de la venta (el que usa el servidor), no el de hoy.
+  const tcVenta = leido.tc_venta || (form.date ? tcForDate(form.date) : tcValuacion) || 1
+  const preview = vistaPreviaDeLaVenta({
+    lots, quantity: qtyNum, price: priceNum, commission: comisionNum, enPesos: isARS, tcVenta,
+    tcCompraDe: f => fxHist?.getMepOrFallback?.(f), cadaPuntaASuDolar: reglaDeVenta === true,
+  })
+  const fifoPreview = preview.filas
+  const totalPnl = preview.total
   const exceeds = qtyNum > totalQty + 1e-9
 
   const inputCls = 'w-full bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
@@ -3975,7 +3970,7 @@ export function SellModal({ form, setForm, positions, brokers, tcValuacion, fxHi
           onChange={q => setForm(f => ({ ...f, quantity: q }))}
           asset={form.asset}
           priceUsd={isARS ? (priceNum && tcVenta ? priceNum / tcVenta : 0) : priceNum}
-          pnlUsd={qtyNum > 0 && priceNum > 0 ? totalPnl : null}
+          pnlUsd={qtyNum > 0 && priceNum > 0 && reglaDeVenta !== null ? totalPnl : null}
         />
 
         {/* Precio de venta */}

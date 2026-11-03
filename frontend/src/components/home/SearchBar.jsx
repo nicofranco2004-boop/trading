@@ -8,16 +8,18 @@
 //   └─ footer con atajos
 //
 // Sin command palette global (no Cmd+K). Es un buscador inline en el header.
-// Keyboard: ↑↓ navega, ↩ abre la ficha, ESC cierra.
+// Keyboard: ↑↓ navega, ↩ abre la ficha del activo (/activo/X), ESC cierra.
 
 import { useState, useEffect, useRef, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Search, X, CornerDownLeft, ArrowUp, ArrowDown, Plus, Check } from 'lucide-react'
 import { api } from '../../utils/api'
 import AssetLogo from '../AssetLogo'
+import { usePrivacy, OCULTO } from '../../contexts/PrivacyContext'
 import AssetTypeBadge from '../AssetTypeBadge'
-import AssetQuickView from './AssetQuickView'
+import { destinoDeTicker } from '../../utils/buscadorRapido'
 import { notifyWatchlistChanged, subscribeWatchlistChanged } from '../../utils/watchlistEvents'
-import { POPULAR_TICKERS, CEDEAR_SEARCH, AR_STOCK_SEARCH, US_SEARCH, inferType } from '../../utils/tickers'
+import { POPULAR_TICKERS, inferType, catalogoDelBuscador, coincideConLaBusqueda } from '../../utils/tickers'
 
 // Normaliza el símbolo para resolver el logo: strip sufijo CEDEAR (.BA) para
 // reutilizar el logo de la US version; deja todo lo demás intacto.
@@ -54,7 +56,7 @@ export default function SearchBar() {
   const [filter, setFilter] = useState('all')
   const [userHoldings, setUserHoldings] = useState([])
   const [watchlist, setWatchlist] = useState([])
-  const [selected, setSelected] = useState(null)
+  const navigate = useNavigate()
   const [cursor, setCursor] = useState(0)
   const [addingSymbol, setAddingSymbol] = useState(null)
   const inputRef = useRef(null)
@@ -104,7 +106,7 @@ export default function SearchBar() {
         .catch(() => setWatchlist([]))
     }
     load()
-    // Cuando otro componente cambia la watchlist (MobileSearch, AssetQuickView)
+    // Cuando otro componente cambia la watchlist (MobileSearch, la ficha del activo)
     // refrescamos para que el botón "+ WATCHLIST" refleje el estado actual.
     return subscribeWatchlistChanged(load)
   }, [])
@@ -123,26 +125,15 @@ export default function SearchBar() {
   // Si hay query: filtramos por symbol prefix o name substring.
   const qUpper = q.trim().toUpperCase()
   const { holdingsMatch, suggestedMatch, totalCount } = useMemo(() => {
-    const matches = (t) => {
-      if (!qUpper) return true
-      return (
-        t.symbol.toUpperCase().startsWith(qUpper) ||
-        (t.name || '').toUpperCase().includes(qUpper)
-      )
-    }
     const passFilter = (t) => filter === 'all' || t.type === filter
 
-    const hm = userHoldings.filter(t => matches(t) && passFilter(t))
+    const hm = userHoldings.filter(t => coincideConLaBusqueda(t, qUpper) && passFilter(t))
     // Universo de sugeridos: POPULAR_TICKERS (curado, es lo que se ve SIN query).
-    // Con query sumamos TODOS los CEDEARs del allowlist (CEDEAR_SEARCH) para que
-    // cualquier CEDEAR sea encontrable (antes solo el subset de POPULAR_TICKERS →
-    // CAT/HON/etc. no aparecían). Dedup por símbolo; el cap de 8 evita inundar.
-    const universe = qUpper
-      ? [...POPULAR_TICKERS,
-         ...[...CEDEAR_SEARCH, ...AR_STOCK_SEARCH, ...US_SEARCH].filter(c => !POPULAR_TICKERS.some(p => p.symbol === c.symbol))]
-      : POPULAR_TICKERS
-    const sm = universe
-      .filter(t => matches(t) && passFilter(t))
+    // Con query, además TODOS los CEDEARs, acciones AR y US del allowlist, ya
+    // filtrados (utils/tickers.catalogoDelBuscador, el mismo de «Tu lista» en
+    // Análisis técnico). El cap de 8 evita inundar.
+    const sm = catalogoDelBuscador(qUpper)
+      .filter(passFilter)
       .filter(t => !hm.some(h => h.symbol === t.symbol))
       .slice(0, qUpper ? 8 : 30) // sin query: hasta 30 para que ETFs/Bonos enteros se vean
 
@@ -161,8 +152,14 @@ export default function SearchBar() {
   const elapsedMs = Math.max(1, Math.round(performance.now() - startedAt.current))
 
   // ── Actions ────────────────────────────────────────────────────────────────
-  function pick(symbol) {
-    setSelected(symbol)
+  // A dónde lleva cada fila: la MISMA regla que el ⌘K y la lupa del celular
+  // (destinoDeTicker). null = un bono o un fondo que no tenés: la fila no lleva
+  // a ningún lado y queda sólo el botón de la watchlist.
+  const destinoDe = (t) => destinoDeTicker(t.symbol, { tuyo: !!t.fromUser, tipo: t.type })
+  function pick(t) {
+    const ir = destinoDe(t)
+    if (!ir) return
+    navigate(ir)
     setOpen(false)
     setQ('')
   }
@@ -203,9 +200,9 @@ export default function SearchBar() {
     } else if (e.key === 'Enter') {
       const target = flatResults[cursor]
       if (!target) return
-      // En holdings → abre ficha. En suggested → agrega a watchlist.
-      if (target.fromUser) pick(target.symbol)
-      else toggleWatchlist(target.symbol)
+      // Enter hace lo mismo que el click: abre la ficha. Agregaba a la watchlist
+      // los sugeridos, algo que nadie pidió con Enter (auditoría 22/10).
+      pick(target)
     }
   }
 
@@ -290,7 +287,7 @@ export default function SearchBar() {
                           ticker={t}
                           active={cursor === i}
                           highlight
-                          onPick={pick}
+                          onPick={destinoDe(t) ? pick : null}
                           onHover={() => setCursor(i)}
                         />
                       ))}
@@ -315,7 +312,7 @@ export default function SearchBar() {
                             key={t.symbol}
                             ticker={t}
                             active={cursor === idx}
-                            onPick={pick}
+                            onPick={destinoDe(t) ? pick : null}
                             onHover={() => setCursor(idx)}
                             inWatchlist={inWatchlist}
                             actionDisabled={addingSymbol === t.symbol}
@@ -332,7 +329,7 @@ export default function SearchBar() {
             {/* FOOTER: atajos */}
             <div className="px-3 py-2 border-t border-line/60 flex items-center gap-4 text-[12.5px] text-ink-2 bg-bg-2/40 font-medium">
               <Shortcut icon={<><ArrowUp size={9} strokeWidth={2} /><ArrowDown size={9} strokeWidth={2} /></>} label="navegar" />
-              <Shortcut icon={<CornerDownLeft size={9} strokeWidth={2} />} label="abrir / agregar" />
+              <Shortcut icon={<CornerDownLeft size={9} strokeWidth={2} />} label="abrir" />
               <Shortcut text="ESC" label="cerrar" />
               <span className="ml-auto flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos" aria-hidden="true" />
@@ -343,7 +340,6 @@ export default function SearchBar() {
         )}
       </div>
 
-      {selected && <AssetQuickView symbol={selected} onClose={() => setSelected(null)} />}
     </>
   )
 }
@@ -376,13 +372,14 @@ function Shortcut({ icon, text, label }) {
 }
 
 function ResultRow({ ticker, active, highlight, onPick, onHover, inWatchlist = false, actionDisabled = false, onAction }) {
+  const { hidden: oculto } = usePrivacy()
   return (
     <div
       onMouseEnter={onHover}
-      className={`relative flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors group ${
-        active ? 'bg-bg-2' : 'hover:bg-bg-2/60'
+      className={`relative flex items-center gap-3 px-3 py-2.5 transition-colors group ${onPick ? 'cursor-pointer' : ''} ${
+        active ? 'bg-bg-2' : onPick ? 'hover:bg-bg-2/60' : ''
       } ${highlight ? 'border-l-2 border-rendi-pos' : 'border-l-2 border-transparent'}`}
-      onClick={() => onPick(ticker.symbol)}
+      onClick={onPick ? () => onPick(ticker) : undefined}
     >
       {/* Logo del activo (cae a iniciales con color hash si no hay archivo) */}
       <AssetLogo asset={logoSymbolFor(ticker.symbol)} size={28} className="flex-shrink-0" />
@@ -403,7 +400,7 @@ function ResultRow({ ticker, active, highlight, onPick, onHover, inWatchlist = f
           <div className="text-[12.5px] text-ink-2 mt-0.5 font-medium">
             En posición
             {ticker.quantity > 0 && <> · {ticker.quantity.toLocaleString('es-AR', { maximumFractionDigits: 4 })} {ticker.type === 'crypto' ? 'unid.' : 'acc.'}</>}
-            {ticker.invested > 0 && <> · invertido {fmtUsd(ticker.invested)}</>}
+            {ticker.invested > 0 && <> · invertido {oculto ? OCULTO : fmtUsd(ticker.invested)}</>}
           </div>
         )}
       </div>
@@ -411,7 +408,7 @@ function ResultRow({ ticker, active, highlight, onPick, onHover, inWatchlist = f
       {/* Acción */}
       {ticker.fromUser ? (
         <button
-          onClick={(e) => { e.stopPropagation(); onPick(ticker.symbol) }}
+          onClick={(e) => { e.stopPropagation(); onPick?.(ticker) }}
           className="flex-shrink-0 text-[12px] text-ink-2 hover:text-ink-0 border border-line bg-bg-2 hover:bg-bg-3 px-2 py-1 rounded-sm transition-colors font-medium"
         >
           Ver posición

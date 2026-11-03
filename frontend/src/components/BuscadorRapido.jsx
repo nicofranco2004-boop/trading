@@ -8,7 +8,7 @@
 // /buscar. También se abre con el botón "Buscar" del menú (evento
 // `rendi:abrir-buscador`).
 //
-// Una pantalla que tiene SU propio ⌘K (Calidad de cartera busca empresas) lo
+// Una pantalla que tiene SU propio ⌘K (Análisis fundamental busca empresas) lo
 // atiende en la fase de captura y marca `preventDefault`: este lo respeta.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { track } from '../utils/track'
@@ -43,7 +43,7 @@ export function atajoBuscador() {
   return esMac() ? '⌘K' : 'Ctrl K'
 }
 
-// ¿Está abierto? Una pantalla con su propio ⌘K (Calidad de cartera) lo atiende
+// ¿Está abierto? Una pantalla con su propio ⌘K (Análisis fundamental) lo atiende
 // sólo con el buscador CERRADO: abierto, ⌘K lo cierra, no abre otra ventana.
 let _abierto = false
 export function buscadorAbierto() { return _abierto }
@@ -56,7 +56,9 @@ const CLAVES = {
   '/posiciones':       ['posiciones', 'tenencias', 'activos'],
   '/operaciones':      ['operaciones', 'compras', 'ventas', 'historial'],
   '/analisis':         ['rendimiento', 'performance', 'análisis'],
-  '/fundamentals':     ['fundamentals', 'empresas', 'calidad'],
+  // Se llamaba «Calidad de cartera»: quien la busque así la sigue encontrando.
+  '/fundamentals':     ['fundamentals', 'empresas', 'calidad', 'calidad de cartera', 'balances'],
+  '/analisis-tecnico': ['técnico', 'gráfico', 'tendencia', 'rsi', 'adx', 'señales', 'tu lista', 'watchlist'],
   '/perfil-inversor':  ['perfil', 'riesgo'],
   '/alertas':          ['avisos', 'notificaciones'],
   '/imports':          ['importar', 'csv', 'excel', 'archivo'],
@@ -184,7 +186,7 @@ export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicia
   }, [abierto, claveActivos])
 
   // Las empresas que no tenés: la MISMA lista que ofrece el buscador propio de
-  // Calidad de cartera (components/fundamentals/TickerSearch), que es la
+  // Análisis fundamental (components/fundamentals/TickerSearch), que es la
   // pantalla que las abre. Otra lista ofrecería tickers que esa pantalla no.
   const universo = useMemo(() => opcionesDeEmpresas(POPULAR_TICKERS, { asesorEnSuNivel: atOwnLevel }), [atOwnLevel])
 

@@ -11,6 +11,7 @@ import { instalarNavegadorMinimo, montar, texto } from '../testing/navegadorMini
 
 let NumeroQueCambia, textoDeDiferencia, vistos, api, sesion
 beforeAll(async () => {
+  dueno = await import('../utils/duenoDeLaPestana')
   ;({ sesion } = instalarNavegadorMinimo())
   api = await import('../utils/api')
   vistos = await import('../utils/valoresVistos')
@@ -25,12 +26,18 @@ const pasa = (ms) => act(async () => { vi.advanceTimersByTime(ms) })
 const numero = (props) => h(NumeroQueCambia, { clave: 'prueba:aportado', format, moneda: 'USD', ...props })
 
 let montado
-beforeEach(() => { vi.useFakeTimers() })
+// El dueño de los datos: el de la pestaña en este momento, como una pantalla
+// recién abierta (utils/duenoDeLaPestana.useDuenoDeLosDatos).
+const D = () => dueno.duenoDeLaPestana()
+let dueno
+// Ana logueada: lo visto es de la persona y de la cuenta (utils/duenoDeLaPestana).
+beforeEach(() => { vi.useFakeTimers(); localStorage.setItem('rendi_user', JSON.stringify({ email: 'ana@prueba.test' })) })
 afterEach(async () => {
   if (montado) await montado.desmontar()
   montado = null
   vi.useRealTimers()
   sesion.clear()
+  localStorage.clear()
   delete globalThis.IntersectionObserver
 })
 
@@ -43,49 +50,59 @@ async function verlo(value, props = {}) {
 
 describe('lo recordado (utils/valoresVistos)', () => {
   it('sin ningún cambio del usuario no hay "antes" que mostrar', () => {
-    vistos.recordarValor('a', 100, 'USD')
-    expect(vistos.valorAntesDelCambio('a', 'USD')).toBeNull()
+    vistos.recordarValor('a', 100, 'USD', D())
+    expect(vistos.valorAntesDelCambio('a', 'USD', D())).toBeNull()
   })
 
   it('después de una escritura, devuelve lo que valía', async () => {
-    vistos.recordarValor('a', 100, 'USD')
+    vistos.recordarValor('a', 100, 'USD', D())
     await elUsuarioCambioAlgo()
-    expect(vistos.valorAntesDelCambio('a', 'USD')).toBe(100)
+    expect(vistos.valorAntesDelCambio('a', 'USD', D())).toBe(100)
   })
 
   it('el aviso del importador y del chat también cuenta', async () => {
-    vistos.recordarValor('a', 100, 'USD')
+    vistos.recordarValor('a', 100, 'USD', D())
     await act(async () => { window.dispatchEvent(new Event('rendi:portfolio-changed')) })
-    expect(vistos.valorAntesDelCambio('a', 'USD')).toBe(100)
+    expect(vistos.valorAntesDelCambio('a', 'USD', D())).toBe(100)
   })
 
   it('no compara un valor en pesos con el que se vio en dólares', async () => {
-    vistos.recordarValor('a', 100, 'USD')
+    vistos.recordarValor('a', 100, 'USD', D())
     await elUsuarioCambioAlgo()
-    expect(vistos.valorAntesDelCambio('a', 'ARS')).toBeNull()
+    expect(vistos.valorAntesDelCambio('a', 'ARS', D())).toBeNull()
   })
 
   it('lo visto hace más de media hora ya no sirve de "antes"', async () => {
-    vistos.recordarValor('a', 100, 'USD')
+    vistos.recordarValor('a', 100, 'USD', D())
     await elUsuarioCambioAlgo()
     vi.setSystemTime(Date.now() + vistos.CADUCA_MS + 1000)
-    expect(vistos.valorAntesDelCambio('a', 'USD')).toBeNull()
+    expect(vistos.valorAntesDelCambio('a', 'USD', D())).toBeNull()
   })
 
   it('es de UNA cuenta: lo de un cliente del asesor no aparece en otro', async () => {
     api.setClientContext({ id: 11, label: 'A' })
-    vistos.recordarValor('a', 500000, 'USD')
+    vistos.recordarValor('a', 500000, 'USD', D())
     api.setClientContext({ id: 22, label: 'B' })
-    vistos.recordarValor('a', 21000, 'USD')
+    vistos.recordarValor('a', 21000, 'USD', D())
     await elUsuarioCambioAlgo()                                  // el cambio fue en B
-    expect(vistos.valorAntesDelCambio('a', 'USD')).toBe(21000)
+    expect(vistos.valorAntesDelCambio('a', 'USD', D())).toBe(21000)
     api.setClientContext({ id: 11, label: 'A' })
-    expect(vistos.valorAntesDelCambio('a', 'USD')).toBeNull()    // en A no cambió nada
+    expect(vistos.valorAntesDelCambio('a', 'USD', D())).toBeNull()    // en A no cambió nada
     api.clearClientContext()
   })
 
+  it('es de UNA persona: si a Ana se le vence la sesión y entra Bruno, no ve el número de Ana (30/10)', async () => {
+    vistos.recordarValor('a', 500000, 'USD', D())
+    await elUsuarioCambioAlgo()                                 // Ana cambió algo
+    expect(vistos.valorAntesDelCambio('a', 'USD', D())).toBe(500000)
+    localStorage.removeItem('rendi_user')                       // lo que hace api.js con un 401
+    expect(vistos.valorAntesDelCambio('a', 'USD', D())).toBeNull()   // sin nadie, nada
+    localStorage.setItem('rendi_user', JSON.stringify({ email: 'bruno@prueba.test' }))
+    expect(vistos.valorAntesDelCambio('a', 'USD', D())).toBeNull()   // Bruno no ve los 500.000 de Ana
+  })
+
   it('las claves empiezan con rendi_ (las borra el cierre de sesión)', async () => {
-    vistos.recordarValor('a', 1, 'USD')
+    vistos.recordarValor('a', 1, 'USD', D())
     await elUsuarioCambioAlgo()
     expect([...sesion.keys()].length).toBeGreaterThan(0)
     expect([...sesion.keys()].every(k => k.startsWith('rendi_'))).toBe(true)
@@ -154,13 +171,13 @@ describe('volver a una pantalla después de un cambio', () => {
     montado = await montar(numero({ value: 0, listo: false }))   // todavía no llegaron los precios
     await pasa(1500)
     expect(texto(montado.contenedor)).toBe('US$ 5000.00')
-    expect(JSON.parse(sesion.get('rendi_valor_visto:propia:prueba:aportado')).valor).toBe(5000)
+    expect(JSON.parse(sesion.get('rendi_valor_visto:ana@prueba.test|propia:prueba:aportado')).valor).toBe(5000)
     await montado.redibujar(numero({ value: 5010.33, listo: true }))
     await pasa(1500)
     const t = texto(montado.contenedor)
     expect(t).toContain('US$ 5010.33')
     expect(t).toContain('+US$ 10.33')
-    expect(JSON.parse(sesion.get('rendi_valor_visto:propia:prueba:aportado')).valor).toBeCloseTo(5010.33, 2)
+    expect(JSON.parse(sesion.get('rendi_valor_visto:ana@prueba.test|propia:prueba:aportado')).valor).toBeCloseTo(5010.33, 2)
   })
 
   it('si los datos no llegan nunca, no se queda mostrando lo de antes', async () => {

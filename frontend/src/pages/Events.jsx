@@ -56,6 +56,9 @@ import {
   pasosEventosParaTi, pasosEventosPopulares, empresasDeLaCartera, chipsDeEmpresas,
 } from '../utils/cargaPorPasos'
 import { hayPrecios } from '../utils/preciosEnVivo'
+import { urlDeActivo } from '../utils/buscadorRapido'
+import { usePrivacy, OCULTO } from '../contexts/PrivacyContext'
+import { pesoVisible, deTuCartera } from '../utils/parteDeTuPlata'
 
 const WINDOW_OPTIONS = [
   { value: 30,  label: '30D' },
@@ -381,7 +384,7 @@ export default function Events({ embedded = false }) {
           cobroCtx={cobroCtx}
           eventosDelAnio={windowDays >= 365 && llego.cartera && !fallo.cartera ? portfolioEvents : null}
           onClose={() => setVerCalendario(false)}
-          onVerActivo={(t) => navigate(`/activo/${encodeURIComponent(t)}`)}
+          onVerActivo={(t) => navigate(urlDeActivo(t))}
         />
       )}
 
@@ -411,7 +414,7 @@ export default function Events({ embedded = false }) {
             ? (tickerValueUsd.get(nextEvent.ticker) || 0) / portfolioTotalUsd
             : null}
           cobro={eventCobro(nextEvent, cobroCtx)}
-          onView={() => navigate(`/activo/${encodeURIComponent(nextEvent.ticker)}`)}
+          onView={() => navigate(urlDeActivo(nextEvent.ticker))}
         /></div>
       )}
 
@@ -671,6 +674,7 @@ const PRECIOS_TEXTO = {
 }
 
 function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotalUsd, precios = null }) {
+  const { hidden: oculto } = usePrivacy()
   const buckets = useMemo(
     () => buildDayBuckets(events, windowDays, tickerValueUsd, portfolioTotalUsd),
     [events, windowDays, tickerValueUsd, portfolioTotalUsd]
@@ -725,8 +729,8 @@ function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotal
                           <span className={`w-1.5 h-1.5 rounded-sm ${it.tone} shrink-0`} />
                           <span className="font-mono font-semibold text-ink-0">{it.ticker}</span>
                           <span className="text-ink-3">{it.typeLabel}</span>
-                          {it.impactPct != null && it.impactPct > 0.0001 && (
-                            <span className="text-rendi-accent ml-2">{pct(it.impactPct)}</span>
+                          {it.impactPct != null && it.impactPct > 0.0001 && pesoVisible(it.impactPct * 100, oculto) && (
+                            <span className="text-rendi-accent ml-2">{pesoVisible(it.impactPct * 100, oculto)}</span>
                           )}
                         </div>
                       ))}
@@ -919,6 +923,8 @@ function EventAgenda({ events, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx 
 }
 
 function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx }) {
+  // «Ocultar saldos»: ni lo que cobrarías ni qué parte de tu cartera es (A3/D4).
+  const { hidden: oculto } = usePrivacy()
   const { ticker, eventType, eventDate, confirmed, inPortfolio, details } = event
   const isMacro = isMacroEvent(event)
   const cobro = tab === 'portfolio' ? eventCobro(event, cobroCtx) : null
@@ -941,7 +947,7 @@ function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx })
     : ticker
 
   // Sub-línea: detalle + lo personal (cuánto te toca) en cyan.
-  const detail = renderDetail(event, cobro)
+  const detail = renderDetail(event, cobro, oculto)
   const shares = cobroCtx?.tickerShares?.get?.(ticker) || null
   // Los nominales que se muestran son los de TU tenencia (130 CEDEARs), pero el
   // cobro sale de las acciones equivalentes (3,33). Mezclarlos era el bug.
@@ -958,9 +964,9 @@ function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx })
       ? `${formatCompact(nominales)} nominales (= ${formatCompact(cobro.shares)} acciones)`
       : `${formatCompact(nominales)} nominales`
   const personal = cobro?.amount != null
-    ? `tenés ${cuantos} → ~+${cobro.currency === 'USD' ? 'US$ ' : `${cobro.currency} `}${formatCompact(cobro.amount)}`
+    ? `tenés ${cuantos} → ~+${oculto ? OCULTO : `${cobro.currency === 'USD' ? 'US$ ' : `${cobro.currency} `}${formatCompact(cobro.amount)}`}`
     : (tab === 'portfolio' && shares && impactPct != null && impactPct > 0.0001)
-      ? `tenés ${formatCompact(shares)} nominales (${pct(impactPct)} de tu cartera)`
+      ? `tenés ${formatCompact(shares)} nominales${oculto ? '' : ` (${deTuCartera(impactPct * 100, oculto)})`}`
       : (tab === 'popular' && inPortfolio) ? 'está en tu cartera' : null
 
   return (
@@ -1103,7 +1109,7 @@ function EarningsExpectations({ symbol }) {
   )
 }
 
-function renderDetail(event, payout) {
+function renderDetail(event, payout, oculto = false) {
   const { eventType, details } = event
   if (eventType === 'macro') {
     return `${details?.country || ''} · ${macroCategoryLabel(details?.category)}`
@@ -1136,6 +1142,14 @@ function renderDetail(event, payout) {
   }
   if (eventType?.startsWith('bond_')) {
     const cur = details?.currency || 'USD'
+    // Lo del bono es lo que cobrás VOS (cupón y amortización de tu tenencia,
+    // utils/upcomingEvents.js): con «Ocultar saldos» se dice qué es, sin el monto.
+    if (oculto) {
+      if (details?.coupon > 0 && details?.amort > 0) return 'Cupón + amortización'
+      if (details?.coupon > 0) return 'Cupón'
+      if (details?.amort > 0) return eventType === 'bond_maturity' ? 'Vencimiento' : 'Amortización'
+      return ''
+    }
     if (details?.coupon > 0 && details?.amort > 0) {
       return `Cupón ${cur} ${details.coupon.toFixed(2).replace('.', ',')} + amort ${cur} ${details.amort.toFixed(2).replace('.', ',')}`
     }
@@ -1149,9 +1163,10 @@ function renderDetail(event, payout) {
 // El próximo evento que más te toca, arriba de todo, con tu cobro/impacto ya
 // calculado. Solo se muestra en "Para ti".
 function SpotlightHero({ event, impactPct, cobro, onView }) {
+  const { hidden: oculto } = usePrivacy()
   const days = daysUntil(event.eventDate)
   const countdown = days == null ? '—' : days === 0 ? 'HOY' : days === 1 ? 'MAÑANA' : days
-  const detail = renderDetail(event, cobro)
+  const detail = renderDetail(event, cobro, oculto)
   const contextParts = []
   if (detail) contextParts.push(detail)
   // Lo que tenés se dice en LA UNIDAD QUE TENÉS (130 CEDEARs), no en acciones:
@@ -1169,7 +1184,9 @@ function SpotlightHero({ event, impactPct, cobro, onView }) {
   } else if (cobro?.shares) {
     contextParts.push(`tenés ${formatCompact(cobro.shares)} acc`)
   }
-  if (impactPct != null && impactPct > 0.0001) contextParts.push(`${pct(impactPct)} de tu cartera`)
+  // El peso, con la regla única (sin el ojito prendido; re-test D, 29/10).
+  const peso = impactPct != null && impactPct > 0.0001 ? deTuCartera(impactPct * 100, oculto) : null
+  if (peso) contextParts.push(peso)
 
   return (
     <div className="bg-bg-1 border border-data-violet/40 rounded-lg p-4 mb-4 flex flex-wrap items-center gap-4">

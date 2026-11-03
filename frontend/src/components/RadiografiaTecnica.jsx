@@ -1,0 +1,265 @@
+// RadiografiaTecnica — arriba de la Cartera, corta (recuadro 21c, 28/10): «54 %
+// de tu plata está en tendencia de fondo alcista (la semana pasada, 61 %)» y un
+// link a Análisis técnico, adonde se mudaron la barra y «Lo que cambió esta
+// semana». Más las dos celdas que la tabla de posiciones suma por fila: la
+// tendencia y la fuerza del movimiento (RSI), que son la lectura de cada activo.
+// `TarjetaPlata` es la tarjeta grande del Panorama de Análisis técnico.
+// ════════════════════════════════════════════════════════════════════════════
+// Una sola pieza para compu y celular (R6): la montan Positions.jsx y
+// PositionsMobile.jsx. El % NO se calcula acá: lo manda el servidor
+// (senales_semana.reparto, LA cuenta, la misma del Panorama, de la pestaña
+// Señales y del mail de los sábados) en el mismo POST /api/tecnico/cartera que
+// trae la lectura de cada fila.
+//
+// «Alcista» = el precio está arriba de su promedio de 200 días, medido en DÓLARES
+// (un CEDEAR en pesos sube con el dólar aunque la empresa no se mueva). Sin
+// velas guardadas, «Sin lectura»: nunca se inventa, y la tarjeta grande dice POR
+// QUÉ cada uno (MOTIVOS_SIN_LECTURA en utils/radiografia.js pone las palabras).
+//
+// Con "Ocultar saldos" no se muestran los porcentajes ni la barra: la
+// proporción también es información de la cartera (como PesoEnCartera).
+
+import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { api } from '../utils/api'
+import { usePrivacy } from '../contexts/PrivacyContext'
+import { parteDeTuPlata, ordenConElOjito } from '../utils/parteDeTuPlata'
+import {
+  activosParaLeer, indexarLecturas, lecturaDeFila, tendencia, fuerza, MOTIVOS_SIN_LECTURA,
+} from '../utils/radiografia'
+import { fciLabel } from '../utils/valuation'
+import { hoyISO } from '../utils/fecha'
+import { antesConPct, PLATA_ALCISTA_OCULTA } from '../utils/tusSenales'
+import { RSI_CASTIGADO, RSI_ESTIRADO } from '../utils/tecnico'
+
+/**
+ * Pide la lectura de todos los activos de la cartera de una vez (y, en el
+ * mismo pedido, el % de tu plata en tendencia alcista). Vuelve a pedir
+ * sólo si cambia QUÉ activos hay (no con cada refresco de precios: las velas son
+ * de cierre y se guardan de noche). → { indice, cargando, error }
+ *
+ * Si el pedido falla, `error` y `indice` null: NO un índice vacío, que la
+ * pantalla leería como «ningún activo tiene lectura» (y no es eso lo que pasó).
+ */
+export function useLecturasCartera(lotes) {
+  const pedido = useMemo(() => activosParaLeer(lotes), [lotes])
+  const firma = JSON.stringify(pedido)
+  const [estado, setEstado] = useState({ firma: null, indice: null, reparto: null, error: false })
+  useEffect(() => {
+    if (!pedido.length) return undefined
+    let vivo = true
+    api.post('/tecnico/cartera', { activos: pedido })
+      .then(r => { if (vivo) setEstado({ firma, indice: indexarLecturas(r?.lecturas), reparto: r?.reparto || null, error: false }) })
+      .catch(() => { if (vivo) setEstado({ firma, indice: null, reparto: null, error: true }) })
+    return () => { vivo = false }
+    // `firma` resume `pedido`: depender del array haría un pedido por render.
+  }, [firma])
+  const listo = estado.firma === firma
+  return {
+    indice: listo ? estado.indice : null,
+    // El % de tu plata en tendencia alcista: lo manda el servidor en el mismo
+    // pedido (senales_semana.reparto, LA cuenta).
+    reparto: listo ? estado.reparto : null,
+    cargando: pedido.length > 0 && !listo,
+    error: listo && estado.error,
+  }
+}
+
+/** Lo que muestra una fila de la tabla: 'cargando' | 'error' | 'listo' (con su
+ *  lectura `x`, que puede ser null = sin lectura). Lo usan las dos tablas. */
+export function lecturaDeLaFila(lecturas, p) {
+  if (lecturas?.cargando) return { estado: 'cargando', x: null }
+  if (lecturas?.error || !lecturas?.indice) return { estado: 'error', x: null }
+  return { estado: 'listo', x: lecturaDeFila(lecturas.indice, p) }
+}
+
+// Para las filas del celular (componentes memo, adentro de otros): las lecturas
+// viajan por contexto en vez de por cinco niveles de props.
+const LecturasCtx = createContext(null)
+export const LecturasTecnicasProvider = LecturasCtx.Provider
+export function useLecturaDeFila(p) {
+  return lecturaDeLaFila(useContext(LecturasCtx), p)
+}
+
+const TONO = {
+  alcista: { texto: 'text-rendi-pos', fondo: 'bg-rendi-pos/10', barra: 'bg-rendi-pos' },
+  bajista: { texto: 'text-rendi-neg', fondo: 'bg-rendi-neg/10', barra: 'bg-rendi-neg' },
+  sin: { texto: 'text-ink-3', fondo: 'bg-bg-2', barra: 'bg-ink-3/40' },
+}
+
+/** La tendencia de una fila: «Alcista» / «Bajista» / «Sin lectura», con la
+ *  explicación de la ficha en el globo. `p` (la fila) dice si es un bono o un
+ *  fondo, para explicar bien por qué no tiene lectura. */
+export function TendenciaChip({ x, p = null, className = '' }) {
+  return <PildoraTendencia {...tendencia(x, undefined, p)} className={className} />
+}
+
+/** La píldora de una tendencia ya leída: `id` 'alcista' | 'bajista' | 'sin',
+ *  su palabra y, en el globo, la explicación. La usan también «Tu lista» y su
+ *  columna de corto plazo. */
+export function PildoraTendencia({ id, palabra, motivo, className = '' }) {
+  const tono = TONO[id] || TONO.sin
+  return (
+    <span title={motivo}
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[12px] font-medium whitespace-nowrap ${tono.texto} ${tono.fondo} ${className}`}>
+      {palabra}
+    </span>
+  )
+}
+
+/** La fuerza del movimiento: la barrita 0–100 con 30 y 70 marcados (la misma
+ *  regla que la ficha) y el número. «—» si no hay. */
+export function FuerzaRsi({ x, className = '', sinGuion = false }) {
+  const f = fuerza(x)
+  if (!f) return sinGuion ? null : <span className={`text-ink-3 ${className}`}>—</span>
+  const pos = Math.min(100, Math.max(0, f.rsi))
+  return (
+    <span className={`inline-flex items-center gap-2 ${className}`} title={`Impulso (RSI): ${Math.round(f.rsi)} de 100 · ${f.palabra}`}>
+      <span aria-hidden="true" className="relative w-14 h-1.5 rounded-full bg-bg-3 flex-none">
+        <span className="absolute inset-y-0 left-0 rounded-l-full bg-rendi-neg-fill/35" style={{ width: `${RSI_CASTIGADO}%` }} />
+        <span className="absolute inset-y-0 right-0 rounded-r-full bg-rendi-pos-fill/35" style={{ width: `${100 - RSI_ESTIRADO}%` }} />
+        <span className="absolute -top-[3px] w-[3px] h-3 rounded-full bg-ink-0" style={{ left: `calc(${pos}% - 1.5px)` }} />
+      </span>
+      <span className="text-[12px] text-ink-1 tabular">{Math.round(f.rsi)}</span>
+      <span className="sr-only">{f.palabra}</span>
+    </span>
+  )
+}
+
+
+function Lista({ nombres, max = 6 }) {
+  if (!nombres.length) return null
+  const vista = nombres.slice(0, max)
+  const resto = nombres.length - vista.length
+  return <span className="text-ink-2"> · {vista.join(', ')}{resto > 0 ? ` y ${resto} más` : ''}</span>
+}
+
+/** «la semana pasada, 61%» o «el sábado 17/10, 61%»: la frase de «Tus
+ *  señales» (`semanaPasadaTxt`, una sola regla para las tres pantallas). */
+function antesTxt(sp) {
+  return antesConPct(sp, hoyISO())
+}
+
+/**
+ * La tarjeta de la Cartera, corta como el recuadro 21c (28/10): «54 % de tu
+ * plata está en tendencia de fondo alcista (la semana pasada, 61 %)» y «Ver
+ * análisis técnico →». La barra y los grupos viven en el Panorama; «Lo que
+ * cambió esta semana», también. El número es `reparto` de useLecturasCartera
+ * (senales_semana.reparto: el mismo del Panorama, de Señales y del mail).
+ */
+export default function RadiografiaTecnica({ lotes, reparto, cargando, error, className = '' }) {
+  const { hidden } = usePrivacy()
+  if (!lotes?.some(p => !p.is_cash)) return null
+  // A Panorama, no a la entrada (desde el 30/10, el gráfico): ahí está la barra
+  // y los grupos de este mismo número. Es urlDePestana('panorama') de
+  // pages/AnalisisTecnico.jsx, escrita acá porque esa página importa esta.
+  const enlace = <Link to="/analisis-tecnico?tab=panorama" className="text-[13px] font-medium text-data-violet hover:underline whitespace-nowrap">Ver análisis técnico →</Link>
+  if (cargando) return <div className={`h-14 rounded-xl bg-bg-2/40 border border-line esqueleto ${className}`} aria-label="Cargando la radiografía técnica" />
+  const antes = !hidden ? antesTxt(reparto?.semana_pasada) : null
+  return (
+    <section aria-label="Radiografía técnica"
+      className={`bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 ${className}`}>
+      <p className="text-[14px] sm:text-[15px] text-ink-0 leading-snug min-w-0">
+        {error ? 'En este momento no pudimos cargar el análisis técnico de tus activos.'
+          : reparto?.pct == null ? 'Ninguno de tus activos tiene todavía suficiente historia de precios para calcular su tendencia de largo plazo.'
+            : hidden ? PLATA_ALCISTA_OCULTA
+              : <><b className="font-semibold text-rendi-pos tabular">{reparto.pct}%</b> de tu cartera está en activos con tendencia alcista de largo plazo{antes && <span className="text-ink-2"> ({antes})</span>}</>}
+      </p>
+      {enlace}
+    </section>
+  )
+}
+
+/**
+ * El % de tu cartera en tendencia alcista de largo plazo, con la barra, los
+ * grupos y por qué algunos van sin lectura: la tarjeta grande del Panorama de
+ * Análisis técnico (lienzo «1 · Panorama», 30/10). Sólo dibuja: `reparto` lo
+ * arma el servidor (senales_semana.reparto, LA cuenta de la Cartera, el
+ * Panorama, Señales y el mail). `cambio`: el chip contra la semana pasada
+ * (`cambioContraAntes` de utils/tusSenales.js); `queLoMovio`: lo que se dio
+ * vuelta esta semana (`queLoMovio`, ídem). El «no es una recomendación» va una
+ * sola vez, al pie de la página.
+ */
+export function TarjetaPlata({ reparto, cargando, error, titulo, cambio = null, queLoMovio = null, className = '' }) {
+  const { hidden } = usePrivacy()
+  const cabecera = <div className="text-[12px] text-ink-2 font-medium">{titulo}</div>
+  if (error) {
+    return (
+      <section aria-label="Radiografía técnica" className={`bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 ${className}`}>
+        {cabecera}
+        <p className="text-[13.5px] text-ink-1 mt-1.5">En este momento no pudimos cargar el análisis técnico de tus activos. Probá recargar la página en unos minutos.</p>
+      </section>
+    )
+  }
+  if (cargando || !reparto) {
+    return <div className={`h-36 rounded-xl bg-bg-2/40 border border-line esqueleto ${className}`} aria-label="Cargando la radiografía técnica" />
+  }
+  const g = reparto.grupos || {}
+  // Con el redondeo del servidor (pct entero), «0» con algo adentro es «menos de 1%».
+  const pct = (id) => parteDeTuPlata(g[id]?.pct === 0 && g[id]?.fraccion > 0 ? g[id].fraccion * 100 : (g[id]?.pct ?? 0))
+  const etiqueta = `${pct('alcista')} alcista, ${pct('bajista')} bajista, ${pct('sin')} sin lectura`
+  // El servidor manda los nombres de más a menos plata: con «Ocultar saldos» ese
+  // orden diría cuál pesa más, así que van por orden alfabético.
+  const enOrden = (nombres) => ordenConElOjito(nombres.map(fciLabel), hidden)
+  return (
+    <section aria-label="Radiografía técnica" className={`bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-3 ${className}`}>
+      {cabecera}
+      {reparto.pct == null ? (
+        <p className="text-[15px] text-ink-1 leading-snug">
+          Ninguno de tus activos tiene todavía una tendencia de largo plazo para mostrar: Rendi no
+          guarda la historia de precios de bonos, fondos ni efectivo, y una acción o un CEDEAR
+          necesita 200 días de mercado con precios guardados.
+        </p>
+      ) : hidden ? (
+        <p className="text-[17px] sm:text-[19px] font-semibold leading-snug text-ink-0">{PLATA_ALCISTA_OCULTA}</p>
+      ) : (
+        <p className="flex flex-wrap items-baseline gap-x-3.5 gap-y-1.5">
+          <span className="text-[44px] sm:text-[56px] font-semibold leading-none text-rendi-pos tabular">{reparto.pct}%</span>
+          <span className="text-[15px] sm:text-[18px] font-medium leading-snug text-ink-0 max-w-[22rem]">de tu cartera está en activos con tendencia alcista de largo plazo</span>
+        </p>
+      )}
+      {cambio && (
+        <div>
+          <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[12px] font-medium tabular ${
+            cambio.tono === 'pos' ? 'text-rendi-pos bg-rendi-pos/10' : cambio.tono === 'neg' ? 'text-rendi-neg bg-rendi-neg/10' : 'text-ink-1 bg-bg-2'}`}>
+            {cambio.texto}
+          </span>
+        </div>
+      )}
+      {!hidden && (
+        <div className="flex h-3 rounded-full overflow-hidden gap-0.5" role="img" aria-label={etiqueta}>
+          {['alcista', 'bajista', 'sin'].map(id => g[id]?.fraccion > 0 && (
+            <div key={id} className={`barra-intensidad ${TONO[id].barra}`} style={{ width: `${g[id].fraccion * 100}%` }} />
+          ))}
+        </div>
+      )}
+      <div className="flex flex-col sm:flex-row sm:flex-wrap gap-x-5 gap-y-1.5 text-[13px] text-ink-1">
+        {['alcista', 'bajista', 'sin'].map(id => {
+          if (!g[id]?.nombres?.length) return null
+          const palabra = id === 'alcista' ? 'alcista' : id === 'bajista' ? 'bajista' : 'sin lectura'
+          return (
+            <span key={id}>
+              <b className={`font-semibold ${TONO[id].texto}`}>{hidden ? '' : `${pct(id)} `}{palabra}</b>
+              <Lista nombres={enOrden(g[id].nombres)} />
+            </span>
+          )
+        })}
+      </div>
+      {reparto.motivos?.length > 0 && (
+        <ul className="flex flex-col gap-1 text-[12px] text-ink-2 leading-relaxed" aria-label="Por qué algunos van sin lectura">
+          {reparto.motivos.filter(m => MOTIVOS_SIN_LECTURA[m.porque]).map(m => (
+            <li key={m.porque}><b className="font-semibold text-ink-1">{enOrden(m.nombres).join(', ')}</b>: {MOTIVOS_SIN_LECTURA[m.porque]}</li>
+          ))}
+        </ul>
+      )}
+      {queLoMovio && (
+        <p className="text-[13.5px] text-ink-1 leading-relaxed border-t border-line pt-3">
+          <b className="font-semibold text-ink-0">Qué lo movió:</b> {queLoMovio}
+        </p>
+      )}
+      <p className="text-[12px] text-ink-2 leading-relaxed">
+        «Alcista» significa que el precio está por encima de su promedio de los últimos 200 días.
+      </p>
+    </section>
+  )
+}

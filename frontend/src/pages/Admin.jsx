@@ -403,7 +403,9 @@ export default function Admin() {
 
       <AlcanceAuditoriaPanel toast={toast} />
       <RepairInteresPfPanel toast={toast} />
+      <ResultadoDosMonedasPanel toast={toast} />
       <RepairCaja1415Panel toast={toast} />
+      <VelasPanel toast={toast} />
       <FciRefreshPanel toast={toast} />
       <AvisoRatioPanel toast={toast} />
       <MtmAuditPanel toast={toast} />
@@ -836,7 +838,7 @@ function BroadcastPanel({ toast }) {
           placeholder="Escribí el cuerpo del mail…&#10;&#10;Un párrafo por línea en blanco. Podés poner links (https://rendi.finance)."
           rows={7} className={inputCls + ' resize-y font-normal leading-relaxed'} maxLength={20000} />
         <p className="text-[11px] text-ink-3">
-          <code className="px-1 rounded bg-bg-1/60">{'{nombre}'}</code> se reemplaza por el nombre de cada usuario (vacío si no tiene). El texto va como párrafos; los links se activan solos.
+          <code className="px-1 rounded bg-bg-1/60">{'{nombre}'}</code> se reemplaza por el nombre de cada usuario (vacío si no tiene). El texto va como párrafos; los links se activan solos. Para una imagen, pegá su dirección de rendi.finance sola en un renglón (las de otros sitios quedan como link).
         </p>
       </div>
 
@@ -2342,6 +2344,149 @@ function MtmBackfillPanel({ toast }) {
 // usuario reporta "falta el mío"— hay que esperar al cron o dispararlo a mano.
 // El endpoint existía pero es POST-only: sin botón, en la práctica había que
 // esperar 24h para que el usuario que reportó pudiera cargar su fondo.
+// ─── VelasPanel — el guardado nocturno de precios (análisis técnico) ─────────
+// La lista única de cambios de ratio (backend/cambios_ratio.py). `factor` = por
+// cuánto se multiplicó la cantidad = precio de antes ÷ precio de después: 2 =
+// cada CEDEAR viejo son 2 nuevos ("se partió en 2"); 1/3 = tres viejos son uno.
+function ratioTxt(f) {
+  if (!f) return '?'
+  const n = (x) => x.toLocaleString('es-AR', { maximumFractionDigits: 2 })
+  return f >= 1 ? `se partió en ${n(f)}` : `se juntaron ${n(1 / f)} en 1`
+}
+const saltoTxt = (f) => {
+  const p = 1 / f - 1
+  return `${p >= 0 ? '+' : '−'}${Math.round(Math.abs(p) * 100)} % en un día`
+}
+const ESTADO_RATIO = { confirmado: '', sin_confirmar: ' · se pregunta', dudoso: ' · dudoso, no se ofrece' }
+
+// La última corrida de la noche (velas_diarias.resumen): cuántos activos
+// bajaron, cuántos cortó Yahoo (no contestó: quedan para mañana, no son «no
+// existe») y cuántos no se le pidieron (no son tickers, o fallan siempre y se
+// piden 1 vez por semana). La hora es la de «Última corrida», arriba.
+function UltimaNoche({ n }) {
+  const num = (x) => (x || 0).toLocaleString('es-AR')
+  const cortes = (n.cortados_por_yahoo || 0) > 0
+  return (
+    <div className="text-xs space-y-1">
+      <div className="text-ink-2 font-medium">Última corrida{n.seg != null && <span className="text-ink-3 font-normal tabular"> · {Math.round(n.seg)} s</span>}</div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <Row label="Bajados"><span className="tabular">{num(n.bajados)} de {num(n.pedidos)} pedidos</span></Row>
+        <Row label="Cortados por Yahoo"><span className={`tabular ${cortes ? 'text-rendi-warn' : ''}`}>{num(n.cortados_por_yahoo)}{n.pausas ? ` (${n.pausas} pausa${n.pausas === 1 ? '' : 's'})` : ''}</span></Row>
+        <Row label="No son tickers"><span className="tabular">{num(n.no_son_tickers)}</span></Row>
+        <Row label="Fallan siempre (1 vez por semana)"><span className="tabular">{num(n.en_espera_semanal)}</span></Row>
+      </div>
+      {cortes && <p className="text-rendi-warn">Yahoo dejó de contestar a mitad de la corrida: esos activos no se actualizaron hoy y van primeros mañana.</p>}
+    </div>
+  )
+}
+
+// Lee GET /api/admin/velas: cuántos activos tienen precios guardados, desde y
+// hasta cuándo, cuándo corrió por última vez y cuáles fallaron. El botón corre
+// el guardado ahora (la primera vez baja 5 años de cada activo: unos minutos).
+function VelasPanel({ toast }) {
+  const [e, setE] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  async function cargar() {
+    try { setE(await api.get('/admin/velas')) } catch (ex) { toast.push('Error: ' + ex.message, { type: 'error' }) }
+  }
+  useEffect(() => { cargar() /* eslint-disable-next-line */ }, [])
+
+  async function correr() {
+    setBusy(true)
+    try {
+      const r = await api.post('/admin/velas/correr')
+      toast.push(r.status === 'already_running' ? 'Ya estaba corriendo' : 'Arrancó: tarda unos minutos', { type: 'success' })
+      setTimeout(cargar, 3000)
+    } catch (ex) {
+      toast.push('Error: ' + ex.message, { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  const sano = e && e.activos > 0 && e.fallados.length === 0 && e.atrasados.length === 0 && !e.sin_explicar?.length
+  return (
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <RefreshCw size={16} className="text-violet-500" />
+          <h2 className="font-semibold text-ink-0">Precios guardados (análisis técnico)</h2>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={cargar} className="text-xs px-3 py-1.5 rounded border border-line text-ink-1 hover:bg-bg-3">Actualizar</button>
+          <button onClick={correr} disabled={busy || e?.corriendo}
+            className="text-xs px-3 py-1.5 rounded bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50">
+            {e?.corriendo ? 'Corriendo…' : busy ? 'Arrancando…' : 'Correr ahora'}
+          </button>
+        </div>
+      </div>
+      {!e ? <p className="text-xs text-ink-3">Cargando…</p> : (
+        <>
+          <p className={`text-sm font-medium ${e.activos === 0 ? 'text-rendi-warn' : sano ? 'text-rendi-pos' : 'text-rendi-warn'}`}>
+            {e.activos === 0
+              ? 'Todavía no se guardó nada: corre esta noche al final de la foto diaria, o tocá «Correr ahora».'
+              : sano ? 'Todo al día.' : 'Hay activos con problemas (abajo).'}
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            <Row label="Activos seguidos"><span className="tabular">{e.activos} ({e.ok} bien)</span></Row>
+            <Row label="Velas guardadas"><span className="tabular">{e.filas.toLocaleString('es-AR')}</span></Row>
+            <Row label="Desde / hasta"><span className="tabular">{e.desde || '—'} → {e.hasta || '—'}</span></Row>
+            <Row label="Última corrida (UTC)"><span className="tabular">{e.ultima_corrida || '—'}</span></Row>
+          </div>
+          {e.ultima_noche && <UltimaNoche n={e.ultima_noche} />}
+          {e.sin_historia > 0 && (
+            <p className="text-xs text-ink-2">{e.sin_historia} todavía sin su historia completa (se bajan primero en la próxima corrida).</p>
+          )}
+          {e.fallados.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Yahoo no devolvió datos ({e.fallados.length})</div>
+              <div className="text-ink-3 leading-relaxed">{e.fallados.map(f => f.symbol).join(' · ')}</div>
+            </div>
+          )}
+          {e.atrasados.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Sin velas nuevas hace más de 5 días ({e.atrasados.length})</div>
+              <div className="text-ink-3 leading-relaxed">{e.atrasados.map(a => `${a.symbol} (${a.hasta})`).join(' · ')}</div>
+            </div>
+          )}
+          {e.sin_explicar?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-rendi-warn font-medium mb-1">Saltos sin explicar: mirar a mano ({e.sin_explicar.length})</div>
+              <p className="text-ink-3 mb-1">Acciones sin par en Nueva York con un salto de más de 40 % en un día. Puede ser real o un cambio de escala que Yahoo no corrigió: no se corrige solo.</p>
+              <div className="text-ink-3 leading-relaxed">{e.sin_explicar.map(c => `${c.symbol} ${c.date} (${saltoTxt(c.factor)})`).join(' · ')}</div>
+            </div>
+          )}
+          {e.cambios_de_ratio?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Cambios de ratio ({e.cambios_de_ratio.length})</div>
+              <p className="text-ink-3 mb-1">Cambió cuántos CEDEARs son una acción. Si Yahoo no ajustó la historia, el gráfico en pesos la lleva a la escala nueva; los confirmados se le ofrecen a quien tiene un lote de antes («Ajustar»).</p>
+              <div className="text-ink-3 leading-relaxed">{e.cambios_de_ratio.map(c => `${c.symbol} ${c.date} (${ratioTxt(c.factor)}${ESTADO_RATIO[c.estado] ?? ''})`).join(' · ')}</div>
+            </div>
+          )}
+          {e.empalmes?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Saltos empalmados sólo en el gráfico ({e.empalmes.length})</div>
+              <p className="text-ink-3 mb-1">Escisiones (la empresa separó una parte) y precios fuera de escala: el gráfico en pesos los empalma, pero no cambian la cantidad de nadie.</p>
+              <div className="text-ink-3 leading-relaxed">{e.empalmes.map(c => `${c.symbol} ${c.date} (${c.tipo === 'escision' ? 'escisión' : 'precio fuera de escala'})`).join(' · ')}</div>
+            </div>
+          )}
+          {e.pendientes?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Saltos de los últimos días, todavía sin decidir ({e.pendientes.length})</div>
+              <div className="text-ink-3 leading-relaxed">{e.pendientes.map(c => `${c.symbol} ${c.date}`).join(' · ')}</div>
+            </div>
+          )}
+          {e.precios_rotos?.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Días con precio roto, sacados del gráfico ({e.precios_rotos.length})</div>
+              <div className="text-ink-3 leading-relaxed">{e.precios_rotos.map(c => `${c.symbol} ${c.date}`).join(' · ')}</div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 function FciRefreshPanel({ toast }) {
   const [r, setR] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -2594,6 +2739,139 @@ function RepairInteresPfPanel({ toast }) {
         </div>
       )}
       {done && <p className="text-xs text-emerald-500">Listo: {done.filas_a_sellar.length} fila(s) selladas y {done.usuarios} usuario(s) recalculado(s).</p>}
+    </div>
+  )
+}
+
+
+// ─── ResultadoDosMonedasPanel — corregir el resultado de las ventas viejas ──
+// Desde el 24/10/2026 una venta guarda su resultado en pesos y en dólares, cada
+// punta a su dólar, y el resultado en dólares es lo cobrado menos el costo al
+// dólar de compra del lote (el que usa Cartera). Las ventas de antes tienen la
+// regla vieja: ganancia en pesos ÷ dólar de la venta. Esto las corrige POR
+// TANDAS, sólo en cuentas que usaron la app en los últimos 60 días, con la misma
+// cuenta que una venta nueva (backend/resultado_dual.py). Dos pasos por tanda.
+//
+// Una cuenta que falla sigue pendiente y sería siempre la primera de la cola: sus
+// user_id se mandan como `saltear` en las tandas siguientes para que avancen.
+const SIN_DATO_TXT = {
+  sin_fecha_compra: 'sin fecha de compra', sin_dolar_compra: 'sin dólar del día de compra',
+  sin_dolar_venta: 'sin dólar del día de venta', sin_costo: 'sin costo cargado',
+  moneda_del_lote: 'no se sabe en qué moneda se compró', retiro: 'retiros a costo',
+  manual: 'cargadas o editadas a mano (no se tocan)',
+  no_cierra: 'sus números no cierran (no se tocan)',
+  implausible: 'resultado de otro orden de magnitud (no se tocan)',
+}
+function ResultadoDosMonedasPanel({ toast }) {
+  const [prev, setPrev] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(null)
+  const [tanda, setTanda] = useState(10)
+  const [salteadas, setSalteadas] = useState([])
+
+  function consulta(apply, tandaDe) {
+    const q = `apply=${apply}&tanda=${tandaDe}&dias=60`
+    return salteadas.length ? `${q}&saltear=${salteadas.join(',')}` : q
+  }
+
+  async function correr(apply) {
+    setBusy(true)
+    try {
+      // Aplicar usa el tamaño con que se MIRÓ, no el que diga el selector ahora.
+      const out = await api.post(`/admin/resultado-dos-monedas?${consulta(apply, apply ? (prev?.tandaPedida || tanda) : tanda)}`)
+      if (apply) {
+        setDone(out); setPrev(null)
+        const fallaron = (out.errores || []).map(e => e.user_id)
+        if (fallaron.length) setSalteadas(a => [...new Set([...a, ...fallaron])])
+        toast.push(
+          fallaron.length
+            ? `Corregidas ${out.corregidas}; ${fallaron.length} con error (se saltean en la próxima)`
+            : `Corregidas ${out.corregidas} cuenta(s); quedan ${out.quedan_despues}`,
+          { type: fallaron.length ? 'warn' : 'success' })
+      } else setPrev({ ...out, tandaPedida: tanda })
+    } catch (e) {
+      toast.push('Error: ' + e.message, { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  const usd = v => `US$ ${Number(v || 0).toLocaleString('es-AR', { maximumFractionDigits: 2 })}`
+  const n = prev?.en_esta_tanda ?? 0
+  return (
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <AlertTriangle size={16} className="text-amber-500" />
+          <h2 className="font-semibold text-ink-0">Resultado en dólares de las ventas viejas</h2>
+        </div>
+        <div className="flex gap-2 items-center">
+          <label className="text-xs text-ink-3">Cuentas por tanda
+            <select value={tanda} disabled={busy} onChange={e => { setTanda(Number(e.target.value)); setPrev(null) }}
+              className="ml-1 text-xs bg-bg-1 border border-line rounded px-1 py-1 disabled:opacity-50">
+              {[1, 5, 10, 25, 50].map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </label>
+          <button onClick={() => correr(false)} disabled={busy}
+            className="text-xs px-3 py-1.5 rounded border border-line text-ink-1 hover:bg-bg-1 disabled:opacity-50">
+            {busy && !prev ? 'Mirando…' : '1 · Ver la próxima tanda'}
+          </button>
+          <button onClick={() => correr(true)} disabled={busy || !prev || n === 0}
+            className="text-xs px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-40">
+            {busy && prev ? 'Aplicando…' : `2 · Corregir esta tanda${n ? ` (${n})` : ''}`}
+          </button>
+        </div>
+      </div>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Las ventas en pesos de algo comprado en pesos anotaban como ganancia en dólares la ganancia
+        en pesos dividida por el dólar del día de la venta (GGAL de US$ 450 a US$ 460 figuraba
+        +US$ 160). Esto las pasa a lo que mostraba Cartera: <b>lo cobrado menos lo que costó, cada
+        uno a su dólar</b> (+US$ 10), y mueve el P&L realizado de los meses por la diferencia. Sólo
+        cuentas que usaron la app en los últimos 60 días, de a una tanda; las cuentas en el dólar
+        viejo esperan su migración y las ventas que no cierran, o las que el usuario cargó o editó,
+        no se tocan. <b>El paso 1 no modifica nada.</b> Cada cuenta se corrige entera o no se toca.
+      </p>
+      {salteadas.length > 0 && (
+        <p className="text-xs text-amber-500">
+          Cuentas salteadas porque fallaron: {salteadas.join(', ')}.{' '}
+          <button className="underline" onClick={() => { setSalteadas([]); setPrev(null) }}>Volver a incluirlas</button>
+        </p>
+      )}
+      {prev && (
+        <div className="text-xs space-y-1">
+          <p className="text-ink-2">
+            Usaron la app en 60 días: <b>{prev.activos}</b>. Con ventas por corregir: <b>{prev.con_ventas_pendientes}</b>
+            {prev.v1_esperan_migracion > 0 && <> (y {prev.v1_esperan_migracion} en el dólar viejo, esperan su migración)</>}.
+            Esta tanda: <b>{n}</b> cuenta(s), <b>{prev.ventas}</b> venta(s). P&L realizado de esas cuentas:{' '}
+            <b>{usd(prev.realizado_antes)}</b> → <b>{usd(prev.realizado_despues)}</b>.
+          </p>
+          {prev.cuentas.map(c => (
+            <div key={c.user_id} className="text-ink-3 tabular">
+              <p>
+                Cuenta {c.user_id}: {c.ventas} venta(s) · {usd(c.realizado_antes)} → {usd(c.realizado_despues)}
+                {c.cambian_de_signo > 0 && <span className="text-amber-500"> · {c.cambian_de_signo} pasan de ganancia a pérdida o al revés</span>}
+                {Object.entries(c.sin_dato || {}).map(([k, v]) => <span key={k} className="text-amber-500"> · {v} {SIN_DATO_TXT[k] || k}</span>)}
+              </p>
+              {c.ejemplos.map(e => (
+                <p key={e.id} className="pl-3">
+                  {e.fecha} · {e.activo} ({e.moneda || '?'}) · {usd(e.pnl_usd_antes)} → {usd(e.pnl_usd_despues)}
+                </p>
+              ))}
+            </div>
+          ))}
+          {prev.errores?.length > 0 && prev.errores.map(e => (
+            <p key={e.user_id} className="text-rose-500">Cuenta {e.user_id}: {e.error}</p>
+          ))}
+        </div>
+      )}
+      {done && (
+        <div className="text-xs space-y-0.5">
+          <p className="text-emerald-500">
+            Listo: {done.corregidas} cuenta(s) corregidas, {done.ventas} venta(s). Quedan {done.quedan_despues} cuenta(s).
+          </p>
+          {done.errores?.length > 0 && done.errores.map(e => (
+            <p key={e.user_id} className="text-rose-500">Cuenta {e.user_id} falló y no se tocó: {e.error}</p>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

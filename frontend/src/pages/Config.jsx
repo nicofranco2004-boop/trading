@@ -47,6 +47,8 @@ import { alTerminar, vecesMas } from '../data/prueba'
 import { TRIAL_TOTAL_DAYS, TRIAL_PLUS_DAYS, FREE_FEATURES, PRO_FEATURES } from '../data/planCatalog'
 import { confirmar } from '../utils/confirmar'
 import { brokersParaElegir } from '../utils/pataDeLaMoneda'
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from '../utils/almacen'
+import { CATALOGO } from '../utils/catalogoDelAlmacen'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
@@ -939,8 +941,8 @@ export default function Config() {
         <ImportWizard
           onClose={() => {
             setShowImport(false)
-            if (importJustConfirmed && !localStorage.getItem(FIRST_IMPORT_FLAG)) {
-              localStorage.setItem(FIRST_IMPORT_FLAG, '1')
+            if (importJustConfirmed && !leerDelAlmacen(CATALOGO.primeraImportacion)) {
+              guardarEnAlmacen(CATALOGO.primeraImportacion, '1')
               setImportJustConfirmed(false)
               navigate('/bienvenida')
               return

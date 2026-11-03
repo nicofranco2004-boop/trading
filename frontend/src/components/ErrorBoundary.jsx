@@ -1,5 +1,7 @@
 import { Component } from 'react'
 import { AlertTriangle, RefreshCw, Eraser } from 'lucide-react'
+import { hay, leer, guardar, vaciar } from '../utils/almacen'
+import { CATALOGO, LOCAL, SESION } from '../utils/catalogoDelAlmacen'
 
 // Sin esto, cualquier excepción en el render desmonta el árbol entero y deja la
 // PANTALLA EN NEGRO: sin mensaje, sin pista, y sin forma de que el usuario se
@@ -15,12 +17,12 @@ import { AlertTriangle, RefreshCw, Eraser } from 'lucide-react'
 // que este botón deslogue al usuario. `rendi_user` es la sesión y tiene que
 // sobrevivir; todo lo demás (preferencias, contexto de cliente del asesor,
 // flags de onboarding) se va.
-export function limpiarEstadoLocal(ls, ss) {
+export function limpiarEstadoLocal() {
   try {
-    const user = ls ? ls.getItem('rendi_user') : null
-    if (ls) ls.clear()
-    if (ss) ss.clear()
-    if (ls && user) ls.setItem('rendi_user', user)
+    const user = hay(LOCAL) ? leer(CATALOGO.usuario) : null
+    if (hay(LOCAL)) vaciar(LOCAL)
+    if (hay(SESION)) vaciar(SESION)
+    if (user) guardar(CATALOGO.usuario, user)
   } catch { /* storage bloqueado: recargamos igual */ }
 }
 
@@ -42,10 +44,7 @@ export default class ErrorBoundary extends Component {
   }
 
   limpiarYRecargar = () => {
-    limpiarEstadoLocal(
-      typeof localStorage !== 'undefined' ? localStorage : null,
-      typeof sessionStorage !== 'undefined' ? sessionStorage : null,
-    )
+    limpiarEstadoLocal()
     window.location.href = '/'
   }
 

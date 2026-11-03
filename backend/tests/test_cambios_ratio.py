@@ -213,7 +213,7 @@ class ListaDeCambiosTest(unittest.TestCase):
         _armar_lista()
 
     def test_lo_que_yahoo_anota_antes_de_las_velas_se_conserva(self):
-        # Splits de Yahoo anteriores a los 3 años de velas: no hay con qué
+        # Splits de Yahoo anteriores a las velas guardadas: no hay con qué
         # juzgarlos, pero el aviso viejo los ofrecía. Entran sin confirmar (o
         # confirmados si Nueva York anotó lo mismo).
         conn = main.get_db()
@@ -281,6 +281,25 @@ class ParNoPorElNombreTest(unittest.TestCase):
         self.assertIn("AGRO.BA", tickers)
         self.assertEqual(pares.get("XLE.BA"), "XLE")
         self.assertNotIn("AGRO.BA", pares)
+
+    def test_con_data912_caido_un_cedear_seguido_igual_se_reconoce(self):
+        # Re-test A1c (29/10): con la lista de BYMA vacía (data912 no contesta),
+        # «AAPL.BA» de la watchlist se guardaba sólo en pesos, sin la acción de
+        # afuera ni su par. La lista fija de CEDEARs de la app (accion_local)
+        # alcanza para saber que es un CEDEAR.
+        from unittest import mock
+        conn = main.get_db()
+        try:
+            uid = conn.execute("INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+                               (f"par-{uuid.uuid4().hex[:8]}@rendi.test", "x")).lastrowid
+            conn.execute("INSERT INTO watchlist (user_id, symbol) VALUES (?,?)", (uid, "AAPL.BA"))
+            conn.commit()
+            with mock.patch("velas_diarias._cedears_de_byma", lambda: frozenset()):
+                tickers, pares = velas_diarias._seguimiento(conn)
+        finally:
+            conn.close()
+        self.assertIn("AAPL", tickers)
+        self.assertEqual(pares.get("AAPL.BA"), "AAPL")
 
 
 def _interruptor(encendido: bool):

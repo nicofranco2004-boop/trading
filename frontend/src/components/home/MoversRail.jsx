@@ -13,6 +13,7 @@
 // distintos en Home y HomeMobile) porque el indicador en vivo va a su lado.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { TrendingUp, TrendingDown } from 'lucide-react'
 import { api } from '../../utils/api'
 import { pctVar, pctVarSign } from '../../utils/format'
@@ -20,7 +21,7 @@ import { refrescoSegunRueda } from '../../utils/relojVisible'
 import { useUltimoPedido } from '../../hooks/useUltimoPedido'
 import { useRelojVisible } from '../../hooks/useRelojVisible'
 import { useAlVerse, entrada } from '../../hooks/useAlVerse'
-import AssetQuickView from './AssetQuickView'
+import { urlDeActivo } from '../../utils/buscadorRapido'
 import Panel from '../Panel'
 import Eyebrow from '../Eyebrow'
 import DataRow from '../DataRow'
@@ -73,7 +74,8 @@ export function MoverList({ items, tone, icon: Icon, label, onSelect, visto }) {
 export default function MoversRail({ market = "sp500" }) {
   const [data, setData] = useState(null)
   const [err, setErr] = useState(null)
-  const [selected, setSelected] = useState(null)
+  const navigate = useNavigate()
+  const abrir = (it) => navigate(urlDeActivo(it.symbol))
   const [ref, visto] = useAlVerse()
   const nuevoPedido = useUltimoPedido()
 
@@ -116,7 +118,7 @@ export default function MoversRail({ market = "sp500" }) {
             tone="pos"
             icon={TrendingUp}
             label="Más suben"
-            onSelect={setSelected}
+            onSelect={abrir}
             visto={visto}
           />
           <MoverList
@@ -124,13 +126,10 @@ export default function MoversRail({ market = "sp500" }) {
             tone="neg"
             icon={TrendingDown}
             label="Más bajan"
-            onSelect={setSelected}
+            onSelect={abrir}
             visto={visto}
           />
         </div>
-      )}
-      {selected && (
-        <AssetQuickView symbol={selected.symbol} onClose={() => setSelected(null)} />
       )}
     </section>
   )
