@@ -644,6 +644,27 @@ def _freno_tecnico_de_cero():
 
 
 @pytest.fixture(autouse=True)
+def _el_cron_de_alertas_no_larga_el_termometro(request, monkeypatch):
+    """El cron de las alertas (`_evaluar_alertas_job`) larga el termómetro de
+    fondo cuando `termometro.toca`: en una base de pruebas, todos los días desde
+    las 06:00 de Argentina. Ese termómetro le pide a Yahoo DE VERDAD ~500
+    activos y tarda más de 4 minutos (medido 03/11/2026), así que cualquier
+    prueba de alertas dejaba la corrida «termometro» tomada y las 8 de
+    `test_termometro` daban «already_running». Rojo según la hora del día.
+    Salvo en `test_termometro`, que es la que lo prueba con su Yahoo falso,
+    el cron de alertas no lo larga."""
+    if request.module.__name__.rsplit(".", 1)[-1] == "test_termometro":
+        yield
+        return
+    import sys
+    m = sys.modules.get("main")
+    if m is not None and hasattr(m, "_termometro_job"):
+        monkeypatch.setattr(m, "_termometro_job",
+                            lambda conn, now=None: {"esperando": "pruebas: no se larga"})
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _fuentes_sin_marca_de_caida():
     """`main._FUENTE_CAIDA` recuerda un rato que data912 o ArgentinaDatos no
     contestaron, para no repetirles el pedido. Entre tests eso contamina: un
