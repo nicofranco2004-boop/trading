@@ -61,6 +61,15 @@ NO_APLICA = {
     ("main.py", "wallbit_sync_endpoint"): (
         "mismo caso que wallbit_connect.",
         "tests/test_plan_b_medido.py::WallbitPlanBTest"),
+    ("main.py", "sell_position_fifo"): (
+        "el `except` atrapa la HTTPException que `_pata_de_la_moneda` levanta en "
+        "Python (no hay caja en esa moneda) después de lecturas sanas; un error de "
+        "SQL ahí adentro sale como error de psycopg, que ese `except` no atrapa. "
+        "Medido 03/11/2026: con un punto de guardado alrededor, en SQLite el "
+        "RELEASE confirmaba la pata creada y la venta que rebotaba la dejaba "
+        "(test_venta_en_dolares_no_alcanza_no_usa_los_de_pesos en rojo); sin él, "
+        "el plan B da su mensaje en los dos motores.",
+        "tests/test_pata_de_la_moneda.py::PataDeLaMonedaTest"),
     ("main.py", "_rebill_activate"): (
         "lo que puede fallar en grant_payment_credit es una lectura SUELTA (lo "
         "anterior ya se confirmó, y pgshim no abre transacción para una lectura) o "
