@@ -59,10 +59,11 @@ class DibujosGraficoTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()["dibujos"]
 
-    def _guardar(self, lista, asset="AAPL", moneda="usd", notas=True, **kw):
-        # `notas`: la marca de la pantalla que conoce las notas (la de hoy).
+    def _guardar(self, lista, asset="AAPL", moneda="usd", notas=True, posiciones=True, **kw):
+        # `notas` y `posiciones`: las marcas de la pantalla que las conoce (la de hoy).
         return self.http.put(f"/api/tecnico/{asset}/dibujos?moneda={moneda}",
-                             json={"dibujos": lista, **({"notas": True} if notas else {})}, headers=self._h(**kw))
+                             json={"dibujos": lista, **({"notas": True} if notas else {}),
+                                   **({"posiciones": True} if posiciones else {})}, headers=self._h(**kw))
 
     def _asesor_de_yo(self):
         conn = main.get_db()
@@ -235,6 +236,35 @@ class DibujosGraficoTest(unittest.TestCase):
         # Ni borrar todo desde ahí se lleva las notas; desde la de hoy, sí.
         self._guardar([], notas=False)
         self.assertEqual(self._leer(), [nota])
+        self._guardar([])
+        self.assertEqual(self._leer(), [])
+
+    def test_la_posicion_con_su_objetivo_y_su_stop(self):
+        # Como la de TradingView (Nico, 03/11): entrada, borde, objetivo y stop.
+        compra = {"id": "p1", "tipo": "posicion", "lado": "compra", "a": T["a"],
+                  "b": {"d": "2026-04-01", "mas": 0, "precio": 180.25}, "objetivo": 200.0, "stop": 170.5}
+        venta = {**compra, "id": "p2", "lado": "venta", "objetivo": 170.5, "stop": 200.0}
+        r = self._guardar([compra, venta])
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._leer(), [compra, venta])
+        # Al revés (el stop del lado del objetivo) o sin stop, no.
+        for mala in ({**compra, "stop": 190.0}, {**venta, "objetivo": 210.0},
+                     {k: v for k, v in compra.items() if k != "stop"}, {**compra, "lado": "larga"}):
+            self.assertEqual(self._guardar([mala]).status_code, 422, mala)
+        # El objetivo y el stop son de la posición: en otro dibujo no se guardan.
+        self._guardar([{**H, "objetivo": 300.0, "lado": "compra"}])
+        self.assertEqual(self._leer(), [H])
+
+    def test_una_pantalla_vieja_no_borra_tus_posiciones(self):
+        # Una pestaña abierta antes de que existieran las posiciones las
+        # descarta al leer y manda la lista entera sin ellas: se quedan.
+        pos = {"id": "p1", "tipo": "posicion", "lado": "compra", "a": T["a"],
+               "b": {"d": "2026-04-01", "mas": 0, "precio": 180.25}, "objetivo": 200.0, "stop": 170.5}
+        self._guardar([H, pos])
+        self.assertEqual(self._guardar([T], posiciones=False).status_code, 200)
+        self.assertEqual(self._leer(), [T, pos])
+        self._guardar([], posiciones=False)
+        self.assertEqual(self._leer(), [pos])
         self._guardar([])
         self.assertEqual(self._leer(), [])
 
