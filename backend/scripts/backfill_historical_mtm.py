@@ -15,15 +15,20 @@ global) y re-derivando los snapshots que lee el chart.
                 +  Σ (valor_mercado − costo)  de las tenencias              [unrealized]
 
 El primer término se RECOMPUTA de columnas estables cada corrida (idempotente — no
-lee el capital_final que esta misma corrida pudo dejar en MTM). El cash ya está en
-ese primer término (vía los flujos) → no se reconstruye.
+lee el capital_final que esta misma corrida pudo dejar en MTM). En ese primer
+término la caja queda DEDUCIDA (lo que los flujos no explican con lo invertido).
+Para cada broker cuya caja de hoy explican los movimientos importados, la caja de
+fin de mes se MIDE en su lugar (ver "LA CAJA SE MIDE, NO SE DEDUCE").
 
 Valuación = port fiel de snapshots_job.compute_broker_value_usd (live):
   - holding USD (broker USD/USDT)            → close USD histórico × qty
   - holding .BA (broker ARS / '· USD' / CEDEAR) → close .BA (ARS) ÷ MEP
   - cripto                                    → close <SYM>-USD histórico × qty
-FX histórico: BLUE de fx_rates_daily (último ≤ fin de mes, sin fuga al futuro). MEP:
-blue-proxy (Fase 1, sin schema nuevo; para cuentas en USD el FX ni se usa). Regla
+FX histórico: el dólar-MEP de fx_rates_daily (último ≤ fin de mes, sin fuga al
+futuro; el blue antes de que haya serie de MEP), el mismo que usa el cron para la
+medición de hoy; para cuentas en USD el FX ni se usa. La CAJA de cada broker sale
+de los movimientos importados, en su moneda, al dólar de ese fin de mes (ver "LA
+CAJA SE MIDE, NO SE DEDUCE DE LA CONTABILIDAD"). Regla
 cardinal: si falta precio/FX/historia o hay split → AL COSTO (jamás infla).
 
 NO toca: positions, operations, cash, import_normalized_tx NI monthly_entries. La
@@ -193,6 +198,16 @@ def _hist_blue(conn, month_end_iso: str, fallback: float) -> float:
         return fallback
 
 
+def _hist_mep(conn, month_end_iso: str, fallback: float) -> float:
+    """El dólar-MEP (punto medio) del último día ≤ fin de mes; el blue si no hay."""
+    try:
+        import fx as _fxmod
+    except ImportError:  # pragma: no cover — según cómo se cargue el paquete
+        from .. import fx as _fxmod
+    v = _fxmod.fx_for_date(conn, month_end_iso, fallback=fallback)
+    return v if (v and v > 0) else fallback
+
+
 # ─── Lo que el reconstructor NO ve ───────────────────────────────────────────
 def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
     """(costo_usd, afirmable) de la tenencia NO-CASH a `date_iso` que
@@ -303,6 +318,113 @@ def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
     return costo, afirmable
 
 
+# ─── La caja de cada broker, medida y al dólar de su fecha ───────────────────
+# ⚠️ LA CAJA SE MIDE, NO SE DEDUCE DE LA CONTABILIDAD.
+# La foto era "costo + no realizado": la caja quedaba implícita, como lo que la
+# contabilidad (aportes − retiros + realizado, en dólares) no explica con lo
+# invertido. Eso falla de dos maneras, y las dos se midieron en la misma cuenta
+# (4 brokers, 44 operaciones desde 03/2024, Cocos e IOL en pesos):
+#   · EN PESOS, LA DEVALUACIÓN NO ENTRABA NUNCA EN EL PASADO. Cada aporte en pesos
+#     está en la contabilidad al dólar de SU fecha (`f76c7bdb`), pero lo que hay en
+#     la cuenta a fin de mes son PESOS, y valen lo que dice el dólar de ESE fin de
+#     mes. La pérdida por devaluación del efectivo y del costo en pesos aparecía
+#     de golpe en la primera medición del cron: foto del 31/10/2026 US$ 72.606
+#     contra US$ 67.199 de tenencia más caja a su fecha → «Últimos 3 días −9,3 %»
+#     y «Noviembre −US$ 6.766» en el Dashboard de una cartera que se había movido
+#     −US$ 347. El error crecía con el tiempo (US$ 1.523 en 12/2024, 5.407 en
+#     10/2026): era la devaluación acumulada.
+#   · EN DÓLARES, LA VENTA PARCIAL. El realizado de la contabilidad sale del lote
+#     vendido (FIFO) y la tenencia de acá, del costo promedio: con una venta
+#     parcial de NVDA a dos precios de compra, la caja deducida quedaba US$ 81
+#     arriba de la real.
+#
+# El arreglo: la caja de fin de mes de cada broker sale de los movimientos
+# importados (`ledger_replay.cash_en`, en la moneda del broker) y se valúa con el
+# MISMO motor y el MISMO dólar que la tenencia de ese mes, igual que hace el cron
+# con la caja anotada. Sólo si los movimientos explican la caja de HOY (la prueba
+# de `verificar_contra_hoy`): si hubo plata cargada a mano o algo que el archivo
+# no trae, la caja del pasado no se puede afirmar y ese broker queda como antes,
+# deducido, anotado en `cajas_sin_medir`.
+_MONEDAS_DE_CAJA = {"ARS": ("ARS",)}
+_MONEDAS_DOLAR = ("USD", "USDT")
+
+
+def _monedas_de_caja(moneda_broker) -> tuple:
+    return _MONEDAS_DE_CAJA.get((moneda_broker or "USDT").upper(), _MONEDAS_DOLAR)
+
+
+def _caja_del_replay(saldos: dict, broker: str, moneda_broker) -> float:
+    return sum(saldos.get((broker, mon), 0.0) for mon in _monedas_de_caja(moneda_broker))
+
+
+def _cajas_explicadas(conn, uid: int, bcur: dict, tc_hoy: float, today: _date) -> set:
+    """Brokers cuya caja de HOY la reproducen los movimientos importados."""
+    import ledger_replay as _lr
+    if not bcur:
+        return set()
+    replay = _lr.cash_en(conn, uid, today.isoformat())
+    real: dict = {}
+    for r in conn.execute(
+            "SELECT broker, asset, invested FROM positions "
+            "WHERE user_id=? AND COALESCE(is_cash,0)=1", (uid,)).fetchall():
+        b = r["broker"]
+        if b in bcur and (r["asset"] or "").upper() in _monedas_de_caja(bcur[b]):
+            real[b] = real.get(b, 0.0) + float(r["invested"] or 0)
+    # ⚠️ QUE LA CAJA DE HOY COINCIDA NO ALCANZA: LA CONTABILIDAD TAMBIÉN TIENE QUE
+    # SALIR DEL ARCHIVO. Una operación cerrada cargada a mano sin mover el efectivo
+    # (sólo el resultado) deja la caja igual, pero suma su ganancia a la
+    # contabilidad desde su fecha. Medir la caja la borraba del pasado:
+    # tests/test_reconstruccion_sigue_a_la_contabilidad.py (US$ 300 de junio).
+    # Con algo cargado a mano —una operación sin lote importado o un aporte a
+    # mano— el broker queda con la caja deducida, como antes.
+    a_mano = {r["broker"] for r in conn.execute(
+        "SELECT DISTINCT o.broker FROM operations o WHERE o.user_id=? AND NOT EXISTS "
+        "(SELECT 1 FROM import_op_links l WHERE l.operation_id = o.id)", (uid,)).fetchall()}
+    try:
+        a_mano |= {r["broker"] for r in conn.execute(
+            "SELECT DISTINCT broker FROM monthly_entries WHERE user_id=? AND broker<>'global' "
+            "AND (ABS(COALESCE(manual_deposits,0)) > 0.005 "
+            "OR ABS(COALESCE(manual_withdrawals,0)) > 0.005)", (uid,)).fetchall()}
+    except Exception:           # base vieja sin las columnas manual_*
+        if getattr(main, "USANDO_PG", False):
+            conn.rollback()
+        return set()
+    explicados = set()
+    for b, mon in bcur.items():
+        if b in a_mano:
+            continue
+        a, z = _caja_del_replay(replay, b, mon), real.get(b, 0.0)
+        # Un dólar de diferencia, o el 1 % de la caja: redondeos de comisiones.
+        un_dolar = (tc_hoy or 1.0) if (mon or "").upper() == "ARS" else 1.0
+        if abs(a - z) <= max(abs(z) * 0.01, un_dolar):
+            explicados.add(b)
+    return explicados
+
+
+def _costo_por_broker(conn, uid: int) -> dict:
+    """{broker: [(year, month, costo)]} de la contabilidad POR BROKER, en orden."""
+    out: dict = {}
+    for r in conn.execute(
+            "SELECT broker, year, month, capital_inicio, deposits, withdrawals, pnl_realized "
+            "FROM monthly_entries WHERE user_id=? AND broker <> 'global' "
+            "ORDER BY broker, year, month", (uid,)).fetchall():
+        costo = ((r["capital_inicio"] or 0) + (r["deposits"] or 0)
+                 - (r["withdrawals"] or 0) + (r["pnl_realized"] or 0))
+        out.setdefault(r["broker"], []).append((r["year"], r["month"], costo))
+    return out
+
+
+def _costo_del_broker_en(filas: list, y: int, m: int) -> float:
+    """El costo del broker en el mes: su fila, o la del último mes que tuvo (en el
+    mes sin fila la contabilidad no se movió, igual que en `_meses_a_reconstruir`)."""
+    costo = 0.0
+    for (yy, mm, c) in filas or ():
+        if (yy, mm) > (y, m):
+            break
+        costo = c
+    return costo
+
+
 # ─── Tenencias a fin de mes (net BUY−SELL + costo promedio) ───────────────────
 def _holdings_asof(conn, uid: int, date_iso: str) -> list:
     """[{broker, asset, asset_type, quantity, invested(costo)}] tenidas a date_iso.
@@ -369,6 +491,9 @@ def _month_end(year: int, month: int) -> str:
 # propio `source` — y `monthly_entries` queda intacto (sigue siendo la
 # contabilidad, que es lo que tiene que ser).
 MTM_SOURCE = "mtm_backfill"
+# Entra en `huella_de_entrada`. Subirlo cuando cambia lo que la foto vale para la
+# MISMA contabilidad. 2 = la caja medida y al dólar-MEP de su fecha.
+MOTOR_VERSION = 2
 
 # ⚠️ YA NO HAY PISO DE COBERTURA. La cobertura se estampa y SE MUESTRA; no filtra
 # nada. Un piso —fuera 0,70 o 0,995— esconde la curva entera al que no llega, que
@@ -575,6 +700,27 @@ def huella_de_entrada(conn, uid: int, today: _date) -> str:
     _agregado(("id", "broker", "asset", "quantity", "entry_price", "fx_to_usd", "currency",
                "entry_date", "date"), "operations WHERE user_id=?", "id", uid)
     _agregado(("name", "currency"), "brokers WHERE user_id=?", "name", uid)
+    # La caja de cada broker (`_cajas_explicadas`): los
+    # movimientos que la mueven —de cualquier fecha: la prueba se hace contra la
+    # caja de HOY—, la caja anotada y la contabilidad por broker que se descuenta.
+    _agregado(("n.id", "n.date", "n.broker", "n.operation_type", "n.gross_amount",
+               "n.quantity", "n.fees", "n.taxes", "n.currency", "n.settlement_currency",
+               "CASE WHEN n.excluded_at IS NULL THEN 1 ELSE 0 END"),
+              "import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id "
+              "WHERE b.user_id=? AND b.status='confirmed' "
+              "AND n.operation_type NOT IN ('BUY','SELL')", "n.id", uid)
+    _agregado(("broker", "asset", "invested"),
+              "positions WHERE user_id=? AND COALESCE(is_cash,0)=1", "broker, asset", uid)
+    _agregado(("operation_id",),
+              "import_op_links WHERE operation_id IS NOT NULL AND batch_id IN "
+              "(SELECT id FROM import_batches WHERE user_id=?)", "operation_id", uid)
+    _agregado(("broker", "year", "month", "capital_inicio", "deposits", "withdrawals",
+               "pnl_realized"),
+              "monthly_entries WHERE user_id=? AND broker<>'global' AND year*100+month < ?",
+              "broker, year, month", uid, ym_hoy)
+    # Cambiar CÓMO se valúa también deja vieja la historia escrita: con esto, al
+    # publicar un cambio del motor cada cuenta se reconstruye una vez.
+    partes.append(f"motor:{MOTOR_VERSION}")
     return hashlib.sha256("\n".join(partes).encode()).hexdigest()
 
 
@@ -677,6 +823,17 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     por_mes: dict = {}                         # {ym: foto reconstruida}
     start_iso = f"{huella[0][0]:04d}-{huella[0][1]:02d}-01"
 
+    # La caja de cada broker, medida y al dólar de cada fin de mes (ver "LA CAJA
+    # SE MIDE, NO SE DEDUCE DE LA CONTABILIDAD").
+    import ledger_replay as _lr
+    try:
+        _tc_hoy = main._user_tc_blue(conn, uid)
+    except Exception:
+        _tc_hoy = 1415.0
+    cajas_ok = _cajas_explicadas(conn, uid, bcur, _tc_hoy, today)
+    res["cajas_sin_medir"] = sorted(set(bcur) - cajas_ok)
+    costo_broker = _costo_por_broker(conn, uid) if cajas_ok else {}
+
     # El mes en curso (y cualquier fila futura) no se toca: lo maneja el flujo live.
     for y, m, fila, propia in _meses_a_reconstruir(huella, today):
         d = _month_end(y, m)
@@ -687,13 +844,22 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
         except Exception:
             live_blue = 1415.0
         blue = _hist_blue(conn, d, live_blue)
-        mep = blue                              # Fase 1: MEP = blue-proxy
+        # ⚠️ AL MEP, COMO EL CRON. La medición de hoy valúa todo lo que está en
+        # pesos al dólar-MEP (`take_snapshot_for_user`, "CONVENCIÓN DE
+        # VALUACIÓN"); acá se usaba el blue como si fuera el MEP. La foto del
+        # último fin de mes y la de hoy quedaban con dos dólares distintos, y la
+        # resta fabricaba la brecha como movimiento: 31/10/2026 blue 1.555 contra
+        # MEP 1.575, −1,3 % de toda la parte en pesos. Mismo dólar que el resto de
+        # la app (`fx.fx_for_date`: el MEP de la fecha y, antes de que haya serie
+        # de MEP, el blue).
+        mep = _hist_mep(conn, d, blue)
 
         # Unrealized por broker (valor_mercado − costo), con guardas → costo.
         # `val_mkt`/`val_costo` miden la COBERTURA del mes: cuanto del valor
         # no-cash salio de un precio real y cuanto cayo al costo. Sin ese numero
         # un mes casi enteramente al costo se publicaria como medido.
         unreal_by_broker: dict = {}
+        efectivo_by_broker: dict = {}
         val_mkt = val_costo = 0.0
         by_asset: dict = {}
         assets_al_costo: set = set()
@@ -749,6 +915,7 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
             # pudo usar, al costo si degrado (ahi u quedo en 0).
             efectivo = inv + u
             by_asset[h["asset"]] = by_asset.get(h["asset"], 0.0) + efectivo
+            efectivo_by_broker[b] = efectivo_by_broker.get(b, 0.0) + efectivo
             if price is None or not trusted:
                 res["cost_fallbacks"] += 1
                 val_costo += efectivo
@@ -799,7 +966,28 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
         # contabilidad (ver la huella al final de esta función). En el mes sin
         # fila el canónico ARRASTRA el último aportado; nunca da 0.
         net_dep = _canon(d) if _canon is not None else 0.0
-        new_cf = cost + total_unreal
+        # Broker con la caja medida: su parte de la foto pasa de "costo + no
+        # realizado" (la caja deducida) a tenencia + caja de ESTE fin de mes. Sólo
+        # si la contabilidad por broker suma la global: si no, sacar la parte de
+        # un broker de la global podría llevarse plata de otro.
+        ajuste_caja = 0.0
+        if cajas_ok:
+            _por_b = {b: _costo_del_broker_en(f, y, m) for b, f in costo_broker.items()}
+            if abs(sum(_por_b.values()) - cost) <= max(1.0, abs(cost) * 0.005):
+                _saldos = _lr.cash_en(conn, uid, d)
+                for b in sorted(cajas_ok):
+                    _mon = _monedas_de_caja(bcur.get(b))[0]
+                    caja = sj.compute_broker_value_usd(
+                        [{"asset": _mon, "broker": b, "asset_type": None, "is_cash": 1,
+                          "quantity": 0.0, "invested": _caja_del_replay(_saldos, b, bcur.get(b)),
+                          "commissions": 0.0, "price_override": None, "currency": _mon}],
+                        {}, bcur.get(b, "USDT"), blue, broker_name=b, cedear_rate=mep)
+                    ajuste_caja += ((float(caja.get("value", 0) or 0)
+                                     + efectivo_by_broker.get(b, 0.0))
+                                    - (_por_b.get(b, 0.0) + unreal_by_broker.get(b, 0.0)))
+            else:
+                res["meses_con_caja_deducida"] = res.get("meses_con_caja_deducida", 0) + 1
+        new_cf = cost + total_unreal + ajuste_caja
         # Clamp definitivo: el MTM NUNCA debe DEJAR un capital_final negativo por
         # culpa de la valuación, ni EMPEORAR uno que ya venía negativo.
         #   • costo sano (≥0) que el unrealized flipearía a negativo → al costo
