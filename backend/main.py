@@ -10880,16 +10880,36 @@ def _resolve_ar_bond_price(symbol):
     # Se usa la fuente que DECLARA para la unidad y, cuando está, el precio VIVO
     # de data912 para el valor: lo mejor de las dos. Si data912 no lo tiene
     # (7 de 13 letras), se sirve el de ArgentinaDatos, que ya viene per-1.
-    if is_ars:
+    if is_ars and not (raw and raw > 0):
         _letras = _fetch_argentinadatos_letras()
         if base in _letras:
-            return (raw / 100.0) if (raw and raw > 0) else _letras[base]
+            return _letras[base]
+    return _escala_bono(base, raw, is_ars, lambda: _data912_peso_per_usd(prices))
 
+
+def _escala_bono(base, raw, is_ars, peso_por_usd):
+    """Precio de data912 (`raw`, en pesos si `is_ars`, si no en dólares) → precio
+    por 1 nominal. None si no hay precio.
+
+    UNA sola regla para el precio en vivo (`_resolve_ar_bond_price`) y para el
+    cierre histórico con que la reconstrucción valúa los meses pasados
+    (`backfill_historical_mtm._fetch_monthly_close`): si cada uno escalara a su
+    manera, la foto de fin de mes y la de hoy medirían el mismo bono en dos
+    unidades y la resta inventaría una ganancia o una pérdida de 100 veces.
+
+    `peso_por_usd` es una función (se llama sólo si hace falta: un precio en
+    dólares no la necesita) que da los pesos por dólar de ESE precio — en vivo,
+    el MEP implícito del feed; en la historia, el de la misma rueda.
+    """
     if raw is None or raw <= 0:
         return None
+    # Letras: la unidad declarada le gana a la adivinada (ver arriba, en
+    # `_resolve_ar_bond_price`): siempre por cada 100 nominales.
+    if is_ars and base in _fetch_argentinadatos_letras():
+        return raw / 100.0
     # Clasificación per-100 vs per-1 por USD-equivalente: per-1 ≈ parity/100 (<~2 USD),
     # per-100 ≈ parity (5-150 USD). Umbral 3 USD (entre ambos, robusto a devaluación).
-    usd_equiv = raw if not is_ars else (raw / _data912_peso_per_usd(prices))
+    usd_equiv = raw if not is_ars else (raw / peso_por_usd())
     return raw / 100.0 if usd_equiv >= 3.0 else raw
 
 
@@ -11594,11 +11614,9 @@ _RUEDA_BYMA_HIST_TTL = 1800  # la vela histórica cambia una vez por día
 
 def _data912_ultima_vela(tipo: str, ticker: str):
     """Última vela diaria de data912 para `ticker`: {'date','c','dr'} o None."""
-    r = requests.get(f"https://data912.com/historical/{tipo}/{ticker}", timeout=5)
-    if r.status_code != 200:
-        return None
-    filas = r.json()
-    return filas[-1] if isinstance(filas, list) and filas else None
+    from pricing import data912
+    filas = data912.filas(tipo, ticker, timeout=5)
+    return filas[-1] if filas else None
 
 
 def _rueda_byma(_hoy=None):

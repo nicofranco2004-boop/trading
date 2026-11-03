@@ -278,7 +278,6 @@ PENDIENTES = {
     "iol_api.py": 1,
     "scripts/iol_spike.py": 1,
     "scripts/seed_f1.py": 1,
-    "scripts/backfill_historical_mtm.py": 1,   # clave de la caché mensual de precios
 }
 
 

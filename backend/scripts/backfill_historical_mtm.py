@@ -23,6 +23,8 @@ fin de mes se MIDE en su lugar (ver "LA CAJA SE MIDE, NO SE DEDUCE").
 Valuación = port fiel de snapshots_job.compute_broker_value_usd (live):
   - holding USD (broker USD/USDT)            → close USD histórico × qty
   - holding .BA (broker ARS / '· USD' / CEDEAR) → close .BA (ARS) ÷ MEP
+  - bono (soberano / CER / BOPREAL)           → cierre de data912 por 1 nominal,
+                                                con la escala del precio en vivo
   - cripto                                    → close <SYM>-USD histórico × qty
 FX histórico: el dólar-MEP de fx_rates_daily (último ≤ fin de mes, sin fuga al
 futuro; el blue antes de que haya serie de MEP), el mismo que usa el cron para la
@@ -85,6 +87,12 @@ import threading as _threading           # noqa: E402
 _CORRIDA = _threading.local()
 
 
+def _mes_en_curso() -> str:
+    """AAAA-MM de hoy en Argentina: la vigencia de las series de `_HIST_CACHE`."""
+    from fechas import hoy_art_date
+    return hoy_art_date().strftime("%Y-%m")
+
+
 def _fallas_yahoo() -> list:
     if not hasattr(_CORRIDA, "fallas"):
         _CORRIDA.fallas = []
@@ -92,14 +100,15 @@ def _fallas_yahoo() -> list:
 
 def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     """{YYYY-MM: close} para un price_key ('AAPL', 'GGAL.BA', 'BTC'), desde start a
-    hoy. {} (→ costo) sólo para lo que NO tiene historia confiable en yfinance: los
-    FCI y los bonos/ONs de data912, que es live-only.
+    hoy. {} (→ costo) para lo que no tiene historia: los FCI, y los bonos que
+    data912 no guarda (ONs y letras). Los bonos que sí guarda salen de ahí, por 1
+    nominal — ver `_cierres_bono_data912`.
 
     Los CEDEARs y las acciones AR (.BA) SÍ tienen serie: medido, 24 de 24 meses
     para AAPL.BA, KO.BA, MELI.BA, GGAL.BA e YPFD.BA. El que cotiza en dólares se
     valúa por su subyacente — ver `_precio_por_subyacente`."""
     ck = (price_key, start_iso)
-    _mes = _date.today().strftime("%Y-%m")
+    _mes = _mes_en_curso()
     if ck in _HIST_CACHE and _HIST_CACHE_MES.get(ck, _mes) == _mes:
         return _HIST_CACHE[ck]
     if price_key in _fallas_yahoo():
@@ -110,18 +119,30 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     base = price_key[:-3] if price_key.endswith(".BA") else price_key
     out: dict = {}
     # ⚠️ EL CEDEAR COTIZADO EN USD YA NO SE SALTEA.
-    # Se saltea lo que NO tiene serie histórica confiable: FCI y los bonos/ONs de
-    # data912 (que es live-only). El CEDEAR en dólares estaba acá por otra razón —
+    # Se saltea lo que NO tiene serie histórica: los FCI. El CEDEAR en dólares
+    # estaba acá por otra razón —
     # el código intentaba el camino largo (precio local ÷ CCL histórico)— y no hace
     # falta: con el ratio, 100 CEDEARs de ratio 4 son 25 acciones equivalentes, y
     # la acción SÍ tiene precio en dólares. Lo resuelve `_precio_por_subyacente`.
     # (Y `CEDEAR_USD_RATIOS` tiene exactamente un ticker: BAC.)
-    skip = (
-        price_key.startswith("FCI:")
-        or base in getattr(main, "AR_BONDS_DATA912", set())
-        or main._is_data912_bond(base)   # data912 es live-only → costo histórico
-    )
-    if not skip:
+    skip = price_key.startswith("FCI:")
+    es_bono = not skip and (
+        base in getattr(main, "AR_BONDS_DATA912", set())
+        or main._is_data912_bond(base))
+    if es_bono:
+        # ⚠️ EL BONO YA NO QUEDA AL COSTO. Se lo salteaba porque "data912 es
+        # live-only", y no lo es: guarda una vela por rueda desde 2021. Al costo,
+        # un AL35 comprado a 1.220 pesos que a fin de octubre valía 1.059 dejaba
+        # la foto US$ 706 arriba de la cartera real, y la caída aparecía de golpe
+        # entre la última foto y hoy. Yahoo no sirve para esto: da el '.BA' por
+        # cada 100 nominales y para la mitad de los bonos ni lo tiene.
+        try:
+            out = _cierres_bono_data912(price_key)
+        except Exception:
+            # Misma regla que Yahoo (abajo): una falla no se guarda.
+            _fallas_yahoo().append(price_key)
+            return {}
+    elif not skip:
         yf_sym = main.CRYPTO_YF.get(base, price_key) if base in main.CRYPTO_SYMBOLS else price_key
         try:
             import yfinance as yf
@@ -143,6 +164,69 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
             return {}
     _HIST_CACHE[ck] = out
     _HIST_CACHE_MES[ck] = _mes
+    return out
+
+
+# Bonos con los que se mide cuántos pesos vale un dólar en una rueda, igual que
+# en vivo (`main._data912_peso_per_usd`): el mismo bono en pesos y en dólares.
+_REFS_PESO_POR_USD = ("AL30", "GD30")
+
+
+def _serie_data912(papel: str) -> list:
+    """[(fecha, cierre)] ordenado, de la historia de bonos de data912. Cacheada
+    por proceso con la misma vigencia que el resto (`_HIST_CACHE_MES`). Una falla
+    de red sube como excepción y no se guarda."""
+    from pricing import data912
+    ck = ("data912:" + papel, "diario")
+    _mes = _mes_en_curso()
+    if ck in _HIST_CACHE and _HIST_CACHE_MES.get(ck, _mes) == _mes:
+        return _HIST_CACHE[ck]
+    serie = sorted(data912.cierres("bonds", papel).items())
+    _HIST_CACHE[ck] = serie
+    _HIST_CACHE_MES[ck] = _mes
+    return serie
+
+
+def _cierre_al(serie: list, fecha: str):
+    """El último cierre de `serie` con fecha ≤ `fecha` (sin mirar el futuro)."""
+    import bisect
+    i = bisect.bisect_right(serie, (fecha, float("inf")))
+    return serie[i - 1][1] if i else None
+
+
+def _cierres_bono_data912(price_key: str) -> dict:
+    """{YYYY-MM: precio por 1 nominal} de un bono, con el último cierre de cada
+    mes en data912. {} si data912 no guarda ese bono (ONs, letras).
+
+    El papel que se pide es el MISMO que en vivo (`main._resolve_ar_bond_price`):
+    'AL35.BA' (cuenta en pesos) → AL35, en pesos; 'AL35' (cuenta en dólares) →
+    AL35D, en dólar-MEP. Y la escala también: `main._escala_bono`, con los pesos
+    por dólar de esa misma rueda en vez de los de hoy."""
+    is_ars = price_key.endswith(".BA")
+    base = price_key[:-3] if is_ars else price_key
+    serie = _serie_data912(base if is_ars else base + "D")
+    ultimo_del_mes: dict = {}
+    for fecha, c in serie:
+        ultimo_del_mes[fecha[:7]] = (fecha, c)
+
+    def _peso_por_usd(fecha):
+        def _f():
+            precios = {}
+            for ref in _REFS_PESO_POR_USD:
+                for papel in (ref, ref + "D"):
+                    px = _cierre_al(_serie_data912(papel), fecha)
+                    if px is not None:
+                        precios[papel] = px
+                if ref in precios and ref + "D" in precios:
+                    break               # con un par alcanza, como en vivo
+            return main._data912_peso_per_usd(precios)
+        return _f
+
+    out = {}
+    for ym, (fecha, c) in ultimo_del_mes.items():
+        px = main._escala_bono(base, c, is_ars, _peso_por_usd(fecha))
+        if px is not None:
+            out[ym] = px
     return out
 
 
@@ -492,8 +576,9 @@ def _month_end(year: int, month: int) -> str:
 # contabilidad, que es lo que tiene que ser).
 MTM_SOURCE = "mtm_backfill"
 # Entra en `huella_de_entrada`. Subirlo cuando cambia lo que la foto vale para la
-# MISMA contabilidad. 2 = la caja medida y al dólar-MEP de su fecha.
-MOTOR_VERSION = 2
+# MISMA contabilidad. 2 = la caja medida y al dólar-MEP de su fecha. 3 = los
+# bonos al cierre de su mes en data912 (antes, al costo).
+MOTOR_VERSION = 3
 
 # ⚠️ YA NO HAY PISO DE COBERTURA. La cobertura se estampa y SE MUESTRA; no filtra
 # nada. Un piso —fuera 0,70 o 0,995— esconde la curva entera al que no llega, que

@@ -360,20 +360,9 @@ def _historia_byma(papel: str) -> dict:
     cambios recientes guarda el cierre como fue ese día: el escalón queda a la
     vista (SPY 56.000 → 18.760 el 29/05/2026; YPFD 83.000 → 8.105 el 03/08/2026).
     Los viejos los corrige (AAPL en 2024). {} si no hay datos (DDD no tiene)."""
-    import requests
+    from pricing import data912
     for tipo in ("cedears", "stocks"):
-        r = requests.get(f"https://data912.com/historical/{tipo}/{papel}", timeout=10)
-        if r.status_code != 200:
-            continue
-        filas = r.json()
-        out = {}
-        for f in (filas if isinstance(filas, list) else []):
-            try:
-                c = float(f.get("c") or 0)
-            except (TypeError, ValueError):
-                continue
-            if c > 0 and f.get("date"):
-                out[str(f["date"])[:10]] = c
+        out = data912.cierres(tipo, papel, timeout=10)
         if out:
             return out
     return {}
