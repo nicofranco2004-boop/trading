@@ -47111,13 +47111,14 @@ def _imagen_del_proceso() -> str:
     arrancar que a las 03:45."""
     import platform
     import shutil as _sh
-    import subprocess as _sp
     pg = "FALTA"
     exe = _sh.which("pg_dump")
     if exe:
         try:
-            salida = _sp.run([exe, "--version"], capture_output=True, text=True, timeout=5).stdout
-            pg = salida.strip().rsplit(" ", 1)[-1] or "?"
+            # Adentro del try: esto corre al IMPORTAR main, y un registro de arranque no
+            # puede ser lo que impida arrancar.
+            from scripts.backup_db import version_de_pg_dump
+            pg = version_de_pg_dump(exe)
         except Exception as ex:
             pg = f"? ({type(ex).__name__})"
     return f"Python {platform.python_version()} · pg_dump {pg}"
@@ -52281,6 +52282,7 @@ def health_check():
         "ok": True,
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "service": "rendi-api",
+        "motor": "postgres" if USANDO_PG else "sqlite",
         # El commit que está corriendo. Sin esto, "health 200" no distingue
         # "deployó mi cambio" de "sigue el de antes" — y verificar un deploy de
         # backend contra el /version.json del FRONTEND es engañoso: Vercel tarda
