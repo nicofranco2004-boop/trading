@@ -73,6 +73,7 @@ import {
   ventanaInicial, margenDerecho, futuroMaximo, sumarVelaDeHoy, textoVelaDeHoy,
 } from '../../utils/tecnico'
 import { useVelaDeHoy } from '../../hooks/useVelaDeHoy'
+import { cierreDeVela, textoCuenta } from '../../utils/cierreDeVela'
 import {
   medicion as medirEntre, primeraCompra, puntosDesde, tarjetasMovimiento, textoGrupo, textoMedicion,
 } from '../../utils/cuantoSeMueve'
@@ -738,6 +739,13 @@ export default function LecturaTecnica({
   const dibujo = sumarVelaDeHoy({ puntos, huecos, vivas: horas ? null : vivas, ultimaGuardada: actual.puntos[actual.puntos.length - 1]?.d,
     semanales, diarios, previos: actual.puntos.slice(Math.max(0, inicioVista - 7), inicioVista), alBorde: finVista >= total })
   const conHoy = dibujo.puntos[dibujo.puntos.length - 1]?.hoy ? dibujo.puntos[dibujo.puntos.length - 1] : null
+  // El contador de cuánto falta para que cierre la vela en curso, debajo del
+  // precio (Nico, 02/11, como TradingView): sólo si la última vela que se ve
+  // está en curso (el servidor lo sabe: rueda abierta, feriados, cierre
+  // temprano). Cuenta hasta el cierre de ESTA temporalidad (utils/cierreDeVela).
+  const ultimaVista = dibujo.puntos[dibujo.puntos.length - 1]
+  const cuenta = horas ? (ultimaVista?.enCurso ? { mercado: horas.mercado, cada: cadaHoras } : null)
+    : conHoy?.enCurso && vivas?.mercado ? { mercado: vivas.mercado, cada: semanales ? 'semana' : 'dia' } : null
   // Las velas vivas que se ven, como días más de la serie (en diarias ocupan
   // los lugares siguientes al último guardado, `diaDelLugar` da esos índices):
   // medir, tu tesis de hoy y tus compras de hoy caen en ellas y no en «lo que
@@ -1178,7 +1186,7 @@ export default function LecturaTecnica({
           <Grafico leyenda={
             <LeyendaIndicadores items={botones.indicadores} onAviso={setAviso} deFabrica={deFabrica} onFabrica={volverDeFabrica} />
           } grande={grande} puntos={dibujo.puntos} huecos={dibujo.huecos} moneda={moneda} promedio={ver.prom ? promedio : null}
-            marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo} cada={horas ? cadaHoras : null}
+            marcas={ver.marcas ? misMarcas : []} ver={ver} tipo={tipo} cada={horas ? cadaHoras : null} cuenta={cuenta}
             fibonacci={ver.fib && !horas ? actual.fibonacci : null} elliott={ver.ell && !horas ? actual.elliott : null} onZoom={zoom} onMover={mover}
             pie={
               // Cómo se usa, corto (Nico, 29/10): en el celular, para el dedo
@@ -1879,7 +1887,28 @@ function BarraAdx({ adx }) {
 // achicaba al cambiar de intervalo (Nico, 31/10).
 const altoDelGrafico = (grande) => (grande ? 'h-[68vh] min-h-72 sm:h-[74vh]' : 'h-[42vh] min-h-56 sm:h-[58vh] sm:min-h-64')
 
-function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', cada = null, fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null, onAncho = null, pie = null, lugaresMinimos = RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS), escala: escalaRef = null, tesis = [] }) {
+// Debajo de la etiqueta del precio, cuánto falta para que cierre la vela en
+// curso (12:05, 3:12:05, 2d 5h). Se mueve sola cada segundo, sin redibujar el
+// gráfico. Al cerrar una vela sigue con la siguiente (cripto, o la próxima
+// hora de la rueda); al cerrar la rueda, desaparece.
+function CuentaRegresiva({ mercado, cada, top, color }) {
+  const [ahora, setAhora] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setAhora(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  const fin = cierreDeVela(mercado, cada, ahora)
+  if (fin == null) return null
+  return (
+    <span data-cuenta="" title="Cuánto falta para que cierre esta vela"
+      className="absolute left-0 mt-3 rounded px-1.5 py-px text-[10.5px] font-medium tabular whitespace-nowrap"
+      style={{ top: `${top}%`, background: color, color: v('bg-0'), opacity: 0.85 }}>
+      {textoCuenta(fin - ahora)}
+    </span>
+  )
+}
+
+function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, promedio, marcas: lista, ver, tipo = 'linea', cada = null, cuenta = null, fibonacci = null, elliott = null, onZoom, onMover, onFechasAuto, fechasAMano = false, reinicioPrecio, eventos = [], medicion = null, onToque = null, dibujos = [], elegido = null, onElegir = null, trazo = null, onTerminar = null, onMoverDibujo = null, conAviso = [], onPincel = null, colorNuevo = null, onAncho = null, pie = null, lugaresMinimos = RUEDAS_MINIMAS + margenDerecho(RUEDAS_MINIMAS), escala: escalaRef = null, tesis = [] }) {
   const conVelas = tipo === 'velas'
   // Los lugares del ancho: los días más el aire vacío de la derecha.
   const lugares = puntos.length + huecos
@@ -2733,6 +2762,9 @@ function Grafico({ leyenda = null, grande = false, puntos, huecos = 0, moneda, p
               style={{ top: `${pctY(ultimo.c)}%`, background: colorDelDia, color: v('bg-0') }}>
               {fmtPrecio(ultimo.c, moneda).replace(/^US\$ /, '')}
             </span>
+          )}
+          {cuenta && ultimo && pctY(ultimo.c) >= 0 && pctY(ultimo.c) <= 100 && (
+            <CuentaRegresiva {...cuenta} top={pctY(ultimo.c)} color={colorDelDia} />
           )}
           {trazos.filter(t => t.tipo === 'horizontal' && t.y1 >= 0 && t.y1 <= 100).map(t => (
             <span key={t.id} data-aviso={conAviso.includes(t.id) ? '' : undefined}

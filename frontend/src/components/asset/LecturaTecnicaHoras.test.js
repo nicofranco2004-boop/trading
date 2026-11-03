@@ -196,6 +196,31 @@ describe('velas de 1 hora y de 4 horas', () => {
     expect(texto(montado.contenedor)).toMatch(/La última vela está en curso · hace \d+ s \(los precios de esta bolsa llegan con unos 20 minutos de demora\)\./)
   })
 
+  it('debajo del precio, cuánto falta para que cierre la vela en curso; con la rueda cerrada, nada (Nico, 02/11)', async () => {
+    const cuenta = () => uno(n => n.getAttribute?.('data-cuenta') != null)
+    // Lunes 02/11/26 10:00 en Nueva York: la vela de 1 hora (9:30–10:30) cierra en 30 minutos;
+    // la de 4 horas (9:30–13:30), en 3 horas y media.
+    const reloj = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-02T15:00:00Z'))
+    try {
+      await abrir()
+      await elegirIntervalo('1h')
+      expect(texto(cuenta())).toBe('30:00')
+      respuestas['/tecnico/AAPL/horas?cada=4h&moneda=usd'] = { ...HORA(), cada: '4h' }
+      await elegirIntervalo('4h')
+      expect(texto(cuenta())).toBe('3:30:00')
+    } finally { reloj.mockRestore() }
+  })
+
+  it('sin vela en curso (rueda cerrada, feriado) no hay contador', async () => {
+    respuestas['/tecnico/AAPL/horas?cada=1h&moneda=usd'] = { ...HORA(horas().map(p => ({ ...p, enCurso: undefined }))), en_horario: false }
+    const reloj = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-02T15:00:00Z'))
+    try {
+      await abrir()
+      await elegirIntervalo('1h')
+      expect(uno(n => n.getAttribute?.('data-cuenta') != null)).toBeNull()
+    } finally { reloj.mockRestore() }
+  })
+
   it('con la rueda cerrada no pide cada minuto', async () => {
     respuestas['/tecnico/AAPL/horas?cada=1h&moneda=usd'] = { ...HORA(horas().map(p => ({ ...p, enCurso: undefined }))), en_horario: false }
     await abrir()
