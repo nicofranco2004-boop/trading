@@ -52,10 +52,12 @@ un esquema APARTE de Supabase, desde la máquina que lo va a correr ese día, da
 > 🆕 **03/11/2026 — se reescribieron los pasos 0, 2b, 3 y 8** (y se sumó el aviso antes del 9) para
 > resolver los hallazgos **P2, P3 y A2** de `AUDITORIA_FINAL_PG.md`. Los pasos 1, 2, 4-7 y 9-10
 > quedan como estaban.
-> ⚠️ **Lo nuevo NO se probó en vivo.** El script del Anexo A se corrió sólo contra un servidor
-> falso en la Mac (entra, dispara el respaldo, guarda y compara pantallas, y se frena con cada
-> mal resultado). Lo que **no** se pudo probar: contra la app real, y bajar el archivo con los
-> clics de Cloudflare R2. Por eso el paso «ensayo» de la lista de abajo.
+> **Estado del script:** `scripts/pasaje_con_mantenimiento.py` **ya está en el repo**, con sus
+> pruebas (`backend/tests/test_pasaje_con_mantenimiento.py`): corren contra la app de verdad
+> (uvicorn local, el mismo middleware de mantenimiento, el login y el disparador del respaldo
+> reales), en SQLite y en Postgres. ⚠️ **Lo que no se pudo probar:** contra la app de
+> producción, y bajar el archivo con los clics de Cloudflare R2. Por eso el paso B.
+> **La dirección de la app no está escrita en el código:** se pasa con `--url` (paso A0).
 
 **Quién hace qué.** En cada paso dice **🧑 Nico** (lo hacés vos, con clics) o **🤖 central** (la
 sesión central, desde una terminal). Nunca hay un paso que no tenga dueño.
@@ -70,7 +72,7 @@ vuelve a guardar con el paso A de abajo.
 
 - [ ] Medir los dos tramos [A MEDIR] de arriba.
 - [ ] Confirmar en Railway que `SECRET_KEY` está puesta (si no, el reinicio desloguea a todos).
-- [ ] **La llave del mantenimiento guardada en tu Mac** (paso A, abajo).
+- [ ] **La dirección de la app confirmada** (paso A0, abajo) y **la llave del mantenimiento guardada en tu Mac** (paso A).
 - [ ] **Leer el aviso ⚠ del volumen `trading-volume`** (Railway → `trading` → pestaña Volumes /
       el volumen). Si el disco está casi lleno, el respaldo del paso 3 falla justo en el peor
       momento (`HANDOFF` §12, punto 5: sigue sin leerse). Si dice que está por llenarse: avisá
@@ -79,6 +81,23 @@ vuelve a guardar con el paso A de abajo.
       probó es justo cómo bajar el archivo. Mejor enterarse un martes que el domingo del pasaje.
 - [ ] **Elegir la fecha y la hora** (paso 0, abajo).
 - [ ] Las decisiones de Nico pendientes del traspaso §11.
+
+#### Paso A0 — 🧑 Nico: confirmar la dirección de la app (2 minutos, días antes)
+
+El script habla con la app por su dirección de Railway (no por `rendi.finance`: el respaldo
+tarda minutos y la pasarela de Vercel que está delante corta los pedidos largos). **No es
+secreta**, y no está escrita en el código a propósito: la confirmás vos.
+
+1. Railway → proyecto `resplendent-stillness` → servicio `trading` → **Settings** → **Domains**.
+
+   | si ves | qué hacer |
+   |---|---|
+   | una dirección que termina en `.up.railway.app` | copiala y pasásela a la central en el chat (no es secreta). La central la usa como `--url` |
+   | varias | la que termina en `.up.railway.app` |
+   | ninguna | pará y avisá a la central |
+
+2. La central comprueba que contesta (`<dirección>/api/health` tiene que dar `ok: true` y
+   `motor: sqlite`). Si no contesta, la dirección está mal: repetí el 1.
 
 #### Paso A — 🧑 Nico: guardar la llave del mantenimiento en tu Mac (5 minutos, días antes)
 
@@ -208,7 +227,7 @@ lo que se copia.
    con mucha historia: la tuya y alguna de prueba):
 
    ```bash
-   cd ~/Documents/trading && python3 scripts/pasaje_con_mantenimiento.py pantallas antes
+   cd ~/Documents/trading && python3 scripts/pasaje_con_mantenimiento.py pantallas antes --url https://LA-DIRECCION-DEL-PASO-A0
    ```
 
 2. 🧑 Nico: en esa pestaña te pide **«Mail de la cuenta»** (tipealo) y **«Contraseña»** (tipeala:
@@ -228,7 +247,7 @@ lo que se copia.
 (`POST /api/admin/backup-trigger`, el «Backup ahora» del panel admin) da `503` desde el
 navegador. Y **además** exige estar entrado con una cuenta de administrador. O sea que hacen
 falta **dos** cosas: la llave (cabecera) y la contraseña de admin. Por eso se hace con el
-script del Anexo A, que trae las dos sin mostrarlas.
+script (`scripts/pasaje_con_mantenimiento.py`, ver el Anexo A), que trae las dos sin mostrarlas.
 
 **Qué hace el respaldo:** copia la base entera (con la copia «en caliente» de SQLite, que
 sale sin el archivo auxiliar `-wal` que frena al copiador), la comprime, la deja en el disco de
@@ -240,7 +259,7 @@ justo lo que querés (el nuevo es más reciente).
 **3a. 🤖 central dispara el respaldo, 🧑 Nico tipea la contraseña de admin.**
 
 ```bash
-cd ~/Documents/trading && python3 scripts/pasaje_con_mantenimiento.py respaldo
+cd ~/Documents/trading && python3 scripts/pasaje_con_mantenimiento.py respaldo --url https://LA-DIRECCION-DEL-PASO-A0
 ```
 
 Nico: en la Terminal, **«Mail de la cuenta»** = el de tu cuenta de **administrador** (la que
@@ -363,7 +382,7 @@ de antes (paso 2b, SQLite) contra la misma pedida ahora (Postgres), **para las m
    cerrada y entrando con la llave**: el script ya la manda.
 
    ```bash
-   cd ~/Documents/trading && python3 scripts/pasaje_con_mantenimiento.py pantallas despues
+   cd ~/Documents/trading && python3 scripts/pasaje_con_mantenimiento.py pantallas despues --url https://LA-DIRECCION-DEL-PASO-A0
    ```
 
 2. 🤖 Y compara:
@@ -409,8 +428,11 @@ de antes (paso 2b, SQLite) contra la misma pedida ahora (Postgres), **para las m
 
 #### Lo que sigue valiendo de la lista de chequeos con la app cerrada
 
-- el motor es Postgres (primero de todo: `/api/health` no toca la base; hoy no lo dice, ver
-  hallazgo A1 de la auditoría: si ya se aplicó, dice `"motor": "postgres"`);
+- el motor es Postgres (primero de todo): 🧑 abrí `<dirección del paso A0>/api/health` en el
+  navegador (no toca la base y contesta aunque la app esté cerrada). Tiene que decir
+  **`"motor":"postgres"`**. Si dice `"sqlite"`, la app todavía no tomó `DATABASE_URL`: **pará**.
+  (Hallazgo A1 de la auditoría, ya en el código; en el paso 2 el mismo enlace tiene que decir
+  `"sqlite"`.);
 - los logs del arranque: las reparaciones tienen que decir **0** en todo (en el ensayo,
   las cuatro líneas — cajas USDT, cajas vacías, tokens de reseteo, tokens de asesor —
   dieron 0, igual que un segundo arranque en SQLite);
@@ -527,248 +549,34 @@ bienvenidas previas marcadas (sin mandar nada), 7 notas de compras por chat reno
 35 cajas «USDT» → «USD», 9 cajas vacías limpiadas, 0 tokens. El segundo arranque en
 SQLite y el primero en Postgres: **0 en todo**. Hacen lo mismo en los dos motores.
 
-## Anexo A · El script del día (PROPUESTA: todavía no está en el código)
+## Anexo A · El script del día
 
-> **Estado:** `scripts/pasaje_con_mantenimiento.py` **no existe en el repo**. Se propone con este
-> contenido exacto; la central lo agrega (no lo agregó la sesión que escribió este documento,
-> que sólo toca documentación) **antes** del paso A. Está escrito con el mismo patrón de
-> `scripts/conectar_supabase.py`: guarda lo secreto en un archivo de la Mac con permiso `600`,
-> pide las contraseñas sin mostrarlas, y no imprime nunca llaves, contraseñas ni montos.
->
-> **Probado:** sólo contra un servidor falso local (la llave buena y la mala, contraseña mala,
-> respaldo de `sqlite` y de `postgres`, comparación igual y con una diferencia). **No probado**
-> contra la app real ni contra Railway.
->
-> **Por qué usa la dirección de Railway y no `rendi.finance`:** el respaldo tarda minutos, y la
-> pasarela de Vercel que está delante de `rendi.finance` corta los pedidos largos. Si la
-> dirección `trading-production-143b.up.railway.app` cambió, se corrige con
-> `RENDI_URL=https://… python3 scripts/…`.
->
-> **Cómo se prueba antes del día (sin riesgo):** `python3 scripts/pasaje_con_mantenimiento.py`
-> sin nada más muestra la ayuda y no hace nada. El script no se puede probar «de verdad» con la
-> app abierta (sin mantenimiento la llave no se usa), salvo `llave` y `respaldo` — y `respaldo`
-> contra la app abierta **sí funciona y es inofensivo**: hace lo mismo que el botón «Backup
-> ahora» del panel admin (si lo dispara una cuenta de administrador; sube el de hoy a R2). Es
-> una forma válida de ensayar el paso 3a un día cualquiera.
+`scripts/pasaje_con_mantenimiento.py` (ya está en el repo). Mismo patrón que
+`scripts/conectar_supabase.py`: lo secreto vive en un archivo de la Mac con permiso `600` y
+las contraseñas se piden sin mostrarlas. Sólo usa la biblioteca estándar de Python.
 
-```python
-"""Herramienta del día del pasaje: habla con la app CERRADA (modo mantenimiento).
+| comando | qué hace |
+|---|---|
+| `llave` | guarda la llave que ya está en Railway (la pide oculta) en `~/.rendi-mantenimiento-llave` |
+| `llave --nueva` | inventa una llave, la guarda y la copia al portapapeles sin mostrarla |
+| `respaldo --url …` | entra con tu cuenta de administrador y dispara el respaldo; imprime motor, tablas, usuarios, operaciones, tamaño y si subió a R2 |
+| `pantallas antes --url …` / `pantallas despues --url …` | guarda Movimientos, Mensual y fotos de una cuenta en `~/rendi-pasaje/` |
+| `comparar` | compara «antes» con «despues», cuenta por cuenta, sin imprimir montos |
 
-Con el mantenimiento prendido, la app contesta 503 a todo el que no traiga la llave
-en la cabecera `x-rendi-bypass`. Este script trae la llave desde un archivo de esta
-Mac (nunca por el chat) y pide la contraseña de la cuenta SIN mostrarla.
+**Lo que garantiza** (cada punto tiene su prueba en `backend/tests/test_pasaje_con_mantenimiento.py`):
 
-Uso (lo corre Nico en su Terminal, o la central en la pestaña Terminal con Nico
-tipeando la contraseña):
+- la llave, la contraseña y el token de sesión **no se imprimen nunca**, ni se pasan como
+  argumento (no quedan en el historial de la Terminal);
+- el archivo de la llave se rechaza si otra gente de la Mac lo puede leer;
+- la dirección **no está en el código**: `--url` o la variable `RENDI_URL`; sin ella no hace nada;
+  y tiene que ser `https` (la llave viaja en cada pedido), salvo `localhost` para las pruebas;
+- el respaldo **no dice «hecho»** si el motor no es `sqlite`, si hubo errores o si no subió a R2.
 
-  python3 scripts/pasaje_con_mantenimiento.py llave           guarda la llave que ya está en Railway
-  python3 scripts/pasaje_con_mantenimiento.py llave --nueva   inventa una llave y la copia al portapapeles
-  python3 scripts/pasaje_con_mantenimiento.py respaldo        dispara el respaldo (cuenta de ADMINISTRADOR)
-  python3 scripts/pasaje_con_mantenimiento.py pantallas antes     guarda lo que muestra la app hoy (una cuenta por corrida)
-  python3 scripts/pasaje_con_mantenimiento.py pantallas despues   lo mismo, ya sobre Postgres
-  python3 scripts/pasaje_con_mantenimiento.py comparar        compara «antes» con «despues», cuenta por cuenta
+**Cómo se probó:** contra la app de verdad levantada en un puerto local, con SQLite y con el
+Postgres local de pruebas (el teclado y la subida a R2 son lo único reemplazado). Plantando a
+propósito tres defectos (imprimir la contraseña, aceptar `http` remoto, no mirar el motor) las
+pruebas fallan: muerden. **No probado:** contra producción.
 
-Sólo usa la biblioteca estándar de Python. No imprime nunca la llave, la contraseña,
-ni montos de nadie: sólo estados y DÓNDE difieren las cosas.
-"""
-import getpass
-import json
-import os
-import secrets
-import subprocess
-import sys
-import urllib.error
-import urllib.request
-
-LLAVE = os.path.expanduser("~/.rendi-mantenimiento-llave")
-CARPETA = os.path.expanduser("~/rendi-pasaje")          # fuera del repo; datos de personas
-URL = os.environ.get("RENDI_URL", "https://trading-production-143b.up.railway.app").rstrip("/")
-PANTALLAS = ["/api/operations", "/api/monthly", "/api/snapshots?days=3650"]
-
-
-def escribir_privado(ruta, texto):
-    os.makedirs(os.path.dirname(ruta), mode=0o700, exist_ok=True)
-    fd = os.open(ruta, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(texto)      # sin salto de línea: la llave se compara tal cual
-    os.chmod(ruta, 0o600)
-
-
-def leer_llave():
-    try:
-        return open(LLAVE).read().strip()
-    except OSError:
-        sys.exit(f"✋ No encuentro la llave en {LLAVE}. Corré primero:  python3 {sys.argv[0]} llave")
-
-
-def pedir(metodo, ruta, llave, cuerpo=None, token=None, timeout=60):
-    """(estado, json|texto). No tira por un 4xx/5xx: devuelve el estado."""
-    datos = None if cuerpo is None else json.dumps(cuerpo).encode()
-    req = urllib.request.Request(URL + ruta, data=datos, method=metodo)
-    req.add_header("x-rendi-bypass", llave)
-    req.add_header("User-Agent", "rendi-pasaje/1")   # sin esto Cloudflare suele rechazar a urllib
-    if datos is not None:
-        req.add_header("Content-Type", "application/json")
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            estado, crudo = r.status, r.read()
-    except urllib.error.HTTPError as e:
-        estado, crudo = e.code, e.read()
-    except (urllib.error.URLError, TimeoutError) as e:
-        sys.exit(f"❌ No pude hablar con {URL}: {type(e).__name__}. No se hizo nada.")
-    try:
-        return estado, json.loads(crudo)
-    except ValueError:
-        return estado, crudo[:200].decode("utf-8", "replace")
-
-
-def entrar(llave):
-    email = input("Mail de la cuenta: ").strip()
-    clave = getpass.getpass("Contraseña (no se ve mientras escribís): ")
-    estado, cuerpo = pedir("POST", "/api/auth/login", llave, {"email": email, "password": clave})
-    if estado == 503:
-        sys.exit("✋ 503: la app no te dejó pasar. O la llave de este archivo no es la de Railway, "
-                 "o en Railway falta RENDI_MANTENIMIENTO_TOKEN. No se hizo nada.")
-    if estado != 200 or not isinstance(cuerpo, dict) or not cuerpo.get("token"):
-        sys.exit(f"✋ La app contestó {estado} al entrar (credenciales o mail sin confirmar). No se hizo nada.")
-    return cuerpo["token"], bool(cuerpo.get("is_admin")), email
-
-
-def cmd_llave(nueva):
-    if nueva:
-        llave = secrets.token_urlsafe(32)
-        escribir_privado(LLAVE, llave)
-        subprocess.run(["pbcopy"], input=llave.encode(), check=True)
-        print("✅ Llave nueva inventada, guardada y COPIADA al portapapeles (no se muestra).")
-        print("   Pegala en Railway → trading → Variables → RENDI_MANTENIMIENTO_TOKEN.")
-        return
-    llave = getpass.getpass("Pegá la llave que está en Railway (no se ve): ").strip()
-    if not llave:
-        sys.exit("✋ Vacía. No se guardó nada.")
-    escribir_privado(LLAVE, llave)
-    print(f"✅ Guardada en {LLAVE} (sólo este usuario de la Mac puede leerla).")
-
-
-def cmd_respaldo():
-    llave = leer_llave()
-    token, es_admin, _ = entrar(llave)
-    if not es_admin:
-        sys.exit("✋ Esa cuenta no es de administrador: el respaldo no se puede disparar. No se hizo nada.")
-    print("Disparando el respaldo… (puede tardar un par de minutos; no cierres esto)")
-    estado, r = pedir("POST", "/api/admin/backup-trigger", llave, token=token, timeout=900)
-    if estado != 200 or not isinstance(r, dict):
-        sys.exit(f"❌ La app contestó {estado} al respaldo: {str(r)[:200]}")
-    s = r.get("stats") or {}
-    filas = s.get("filas") or {}
-    print()
-    print(f"  motor:           {s.get('motor')}      (tiene que decir sqlite: la app todavía no pasó a Postgres)")
-    print(f"  tablas:          {s.get('tablas')}")
-    print(f"  usuarios:        {filas.get('users')}")
-    print(f"  operaciones:     {filas.get('operations')}")
-    print(f"  tamaño (bytes):  {s.get('size_bytes')}")
-    print(f"  subido afuera:   {'SÍ' if s.get('remote_uploaded') else 'NO'}   {s.get('remote_key') or s.get('remote_skip_reason') or ''}")
-    print(f"  errores:         {s.get('errors') or 'ninguno'}")
-    print()
-    if s.get("motor") != "sqlite":
-        sys.exit("🛑 El respaldo dice que es de Postgres: la app ya tiene DATABASE_URL. PARÁ y avisá.")
-    if r.get("ok") and s.get("remote_uploaded"):
-        print("✅ Respaldo hecho y subido a Cloudflare R2. Anotá el tamaño y la clave de arriba.")
-    else:
-        sys.exit("🛑 El respaldo NO está bien (errores o no subió a R2). PARÁ y avisá; no sigas con el paso 4.")
-
-
-def cmd_pantallas(cuando):
-    llave = leer_llave()
-    token, _, email = entrar(llave)
-    salida = {"cuenta": email, "pantallas": {}}
-    for ruta in PANTALLAS:
-        estado, cuerpo = pedir("GET", ruta, llave, token=token, timeout=120)
-        salida["pantallas"][ruta] = {"estado": estado, "json": cuerpo}
-        print(f"  {ruta}: estado {estado}")
-    chico = "".join(c for c in email.split("@")[0].lower() if c.isalnum())
-    destino = os.path.join(CARPETA, f"pantallas-{cuando}-{chico}.json")
-    escribir_privado(destino, json.dumps(salida, ensure_ascii=False))
-    print(f"✅ Guardado en {destino} (con datos de la cuenta: no lo subas a ningún lado).")
-
-
-def _igual(a, b):
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool):
-        return a == b or abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))
-    return a == b
-
-
-def _dif_campos(fa, fb):
-    return sorted(k for k in set(fa) | set(fb) if not _igual(fa.get(k), fb.get(k)))
-
-
-def _comparar_cuenta(a, b):
-    """Imprime el resultado de una cuenta y devuelve cuántas pantallas difieren."""
-    hallazgos = 0
-    for ruta in PANTALLAS:
-        pa, pb = a["pantallas"][ruta], b["pantallas"][ruta]
-        if pa["estado"] != 200 or pb["estado"] != 200:
-            print(f"  ❌ {ruta}: estados {pa['estado']} vs {pb['estado']}")
-            hallazgos += 1
-            continue
-        ja, jb = pa["json"], pb["json"]
-        if ruta.startswith("/api/operations"):
-            # Mismas filas, en cualquier orden (los empates de fecha salen en otro orden en Postgres).
-            ca = sorted(json.dumps(f, sort_keys=True) for f in ja)
-            cb = sorted(json.dumps(f, sort_keys=True) for f in jb)
-            mal = ca != cb
-            print(f"  {'❌' if mal else '✅'} {ruta}: {len(ja)} vs {len(jb)} filas"
-                  + (f", {len(set(ca) ^ set(cb))} filas distintas" if mal else ", todas iguales"))
-            hallazgos += mal
-            continue
-        clave = (lambda f: (f.get("year"), f.get("month"), f.get("broker"))) if "monthly" in ruta \
-            else (lambda f: f.get("date"))
-        da, db = {clave(f): f for f in ja}, {clave(f): f for f in jb}
-        faltan = len(set(da) ^ set(db))
-        campos = {}
-        for k in set(da) & set(db):
-            fa, fb = dict(da[k]), dict(db[k])
-            fa.pop("id", None), fb.pop("id", None)     # la pantalla mensual CREA filas nuevas: su id no cuenta
-            for c in _dif_campos(fa, fb):
-                campos[c] = campos.get(c, 0) + 1
-        bien = not faltan and not campos
-        print(f"  {'✅' if bien else '❌'} {ruta}: {len(da)} vs {len(db)} filas; "
-              f"filas que sólo están de un lado: {faltan}; campos distintos: {campos or 'ninguno'}")
-        hallazgos += not bien
-    return hallazgos
-
-
-def cmd_comparar():
-    import glob
-    antes = sorted(glob.glob(os.path.join(CARPETA, "pantallas-antes-*.json")))
-    if not antes:
-        sys.exit(f"✋ No hay nada guardado en {CARPETA}: falta correr «pantallas antes».")
-    hallazgos = 0
-    for fa in antes:
-        fb = fa.replace("pantallas-antes-", "pantallas-despues-")
-        print(os.path.basename(fa).replace("pantallas-antes-", "cuenta ").replace(".json", ""))
-        if not os.path.isfile(fb):
-            print("  ❌ falta el «despues» de esta cuenta")
-            hallazgos += 1
-            continue
-        hallazgos += _comparar_cuenta(json.load(open(fa)), json.load(open(fb)))
-    print()
-    print("✅ SIN DIFERENCIAS: seguí." if not hallazgos else
-          f"🛑 {hallazgos} pantalla(s) con diferencias. NO abras: pasale a la central esta salida (no tiene montos).")
-    sys.exit(1 if hallazgos else 0)
-
-
-if __name__ == "__main__":
-    a = sys.argv[1:]
-    if a[:1] == ["llave"]:
-        cmd_llave("--nueva" in a)
-    elif a[:1] == ["respaldo"]:
-        cmd_respaldo()
-    elif a[:1] == ["pantallas"] and a[1:2] in (["antes"], ["despues"]):
-        cmd_pantallas(a[1])
-    elif a[:1] == ["comparar"]:
-        cmd_comparar()
-    else:
-        sys.exit(__doc__)
-```
+**Para ensayar el paso 3a un día cualquiera:** `respaldo` contra la app abierta **funciona y es
+inofensivo** (hace lo mismo que el botón «Backup ahora» del panel admin; sube el de hoy a R2). La
+llave simplemente no se usa si no hay mantenimiento.

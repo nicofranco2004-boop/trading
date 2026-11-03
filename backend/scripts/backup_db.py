@@ -182,13 +182,23 @@ def _herramientas_pg() -> tuple:
     return dump, restore
 
 
-def _version_mayor(exe: str) -> int:
-    """`pg_dump (PostgreSQL) 17.2` → 17."""
-    salida = subprocess.run([exe, "--version"], capture_output=True, text=True, check=True).stdout
-    m = re.search(r"\)\s*(\d+)", salida)
+def version_de_pg_dump(exe: str) -> str:
+    """LA lectura de la versión de `pg_dump`: `pg_dump (PostgreSQL) 17.11 (Debian
+    17.11-1.pgdg12+2)` → `17.11`. La usan el backup (para comparar contra el servidor) y
+    el registro del arranque (`main._imagen_del_proceso`): una sola función, para que no
+    puedan leer cosas distintas de la misma salida. Levanta `BackupFallido` si no la
+    entiende."""
+    salida = subprocess.run([exe, "--version"], capture_output=True, text=True, check=True,
+                            timeout=10).stdout
+    m = re.search(r"\)\s*(\d+(?:\.\d+)*)", salida)
     if not m:
         raise BackupFallido(f"no entiendo la versión de {exe}: {salida.strip()!r}")
-    return int(m.group(1))
+    return m.group(1)
+
+
+def _version_mayor(exe: str) -> int:
+    """`pg_dump (PostgreSQL) 17.2` → 17."""
+    return int(version_de_pg_dump(exe).split(".")[0])
 
 
 def dump_postgres(dsn: str, dest_path: str) -> dict:
