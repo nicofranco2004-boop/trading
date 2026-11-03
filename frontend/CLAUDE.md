@@ -273,12 +273,12 @@ archivo nuevo con 40 `font-mono` falla aunque nadie lo haya agregado al JSON.
 | `color_a_mano` | R8 | 94 | hex en JSX/JS. Los 94 son deliberados — ver R8 |
 | `superficie_fija` | R8 | 5 | blanco/negro sin par. Los 5 son blanco de verdad |
 
-**`Landing.jsx` no se migra.** Es la única superficie que ve un visitante sin sesión, el look
-terminal ahí es deliberado (chrome de ventana simulada, marquee de brokers, tabla demo con
-`grid-cols` fijas donde cambiar de familia trunca fechas y tickers), y al menos 5 de sus 58
-usos ni siquiera son violación bajo R3. Entra al baseline como deuda congelada, **no como
-allowlist por archivo**: si se allowlisteara, se podrían agregar violaciones nuevas justo donde
-más deuda hay.
+**`Landing.jsx` se migró con el rediseño de la portada (2026-11).** Hasta entonces era la
+excepción declarada (look terminal deliberado, 58 `font-mono` y 45 pares mono+mayúscula). La
+portada nueva es generación nueva entera: 0 pares prohibidos, y el mono quedó sólo en tickers y
+monedas (R3 punto 6), en `components/landing/`. Sus animaciones viven en `index.css` con
+prefijo `lp-` y son de entrada: sin ellas cada pieza queda completa, que es lo que sale en el
+HTML ya escrito para Google.
 
 ## Antes de un barrido de migración
 
