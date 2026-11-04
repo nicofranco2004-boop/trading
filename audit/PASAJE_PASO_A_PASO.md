@@ -38,14 +38,15 @@ Railway; copiar y verificar contra Supabase en us-west-1). Esos dos tramos son
 | `aplicar-esquema` | 0,2 s | 797 sentencias, 79 tablas |
 | `preflight` | 7,7 s | limpio; pide **~2,5 GB libres** en el destino (pico) |
 | `copiar` (copia + setval + verificación de 4 niveles) | **58,5 s y 72,3 s** (dos corridas) | la copia en sí 25,2 s y 37,6 s; el resto es la verificación |
-| `copiar` contra Supabase | **[A MEDIR]** | lee y escribe 2,5 M filas por la red, y la verificación vuelve a leer TODO el destino |
+| `copiar` contra Supabase | **625 s** (medido 04/11/2026 desde la Mac, respaldo de esa noche: 1,2 GB, 4.856.199 filas) | la copia en sí 295,5 s; el resto es la verificación. **0 hallazgos.** `aplicar-esquema` 217 s, `preflight` 24 s. Se hizo en un esquema aparte (`ensayo_copia`) y se borró al terminar |
 | primer arranque de la app en Postgres | 1,3 s | aplica las 797 sentencias de esquema (ver §4.3) |
 | arranques siguientes | 1,1 s | «esquema al día, 0 cambios» |
 | 13 pantallas × 20 cuentas | ~80 s por motor | 264 pedidos, sin red |
 
 **Ventana total en la Mac, de «mantenimiento prendido» a «verificado»: ~2 minutos** sin
-contar las dos idas por la red. Con la red, **[A MEDIR]**: correr `copiar` una vez contra
-un esquema APARTE de Supabase, desde la máquina que lo va a correr ese día, da el número.
+contar las dos idas por la red. **Con la red, medido el 04/11/2026: ~15 minutos** (esquema 3,6 min
++ preflight 0,4 + copia y verificación 10,4) para los pasos 4 y 5. Con bajar el respaldo, las
+comparaciones y los pasos de Railway, el día entero cabe en **1 a 2 horas**.
 
 ## 2 · El día, en orden
 
@@ -162,7 +163,9 @@ archivo baje entero.
 
 1. 🧑 Entrá a dash.cloudflare.com → menú de la izquierda → **R2 Object Storage** → el depósito
    **`rendi-backups`** → pestaña **Objects** → carpeta **`rendi/`**.
-2. 🧑 Vas a ver archivos con nombre `trading-AAAA-MM-DD.db.gz`, uno por noche. Hacé clic en el
+2. 🧑 Vas a ver archivos con nombre `trading-AAAA-MM-DD.db.gz`, uno por noche (al bajarlo, Cloudflare
+   le agrega la carpeta adelante: queda `rendi_trading-AAAA-MM-DD.db.gz`; ensayado el 04/11/2026,
+   237 MB, entero). Hacé clic en el
    más nuevo: se abre un panel con sus datos. Buscá el botón **Download** y apretalo.
 
    | si ves | qué hacer |
