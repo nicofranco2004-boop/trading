@@ -70,8 +70,10 @@ def _velas(papel):
 
 
 class _Resp:
-    def __init__(self, datos):
-        self.status_code = 200 if isinstance(datos, list) else 404
+    # data912 contesta 200 también cuando no tiene el papel (con un objeto de
+    # error en vez de la lista): medido 2026-11-03.
+    def __init__(self, datos, status=200):
+        self.status_code = status
         self._datos = datos
 
     def json(self):
@@ -164,23 +166,54 @@ class LosBonosSeValuanAlCierreDeSuMes(_Bonos):
 
 class SiData912NoContesta(_Bonos):
 
-    def test_queda_al_costo_y_pide_otra_corrida(self):
-        self._imp("Cocos",
-                  f"{_dia(0, 5)},DEPOSITO,Cocos,,,,10000000,,,0,ARS,Aporte",
-                  f"{_dia(0, 6)},COMPRA,Cocos,AL35,4000,800,3200000,,,0,ARS,")
+    def _corrida(self, falla):
+        """Una reconstrucción con data912 fallando así; → (resumen, pedidos)."""
         bf._HIST_CACHE.clear()
+        pedidos = []
+
+        def _get(url, timeout=None, **kw):
+            pedidos.append(url)
+            if isinstance(falla, Exception):
+                raise falla
+            return _Resp({"detail": "error"}, status=falla)
+
         conn = main.get_db()
         try:
-            with mock.patch("pricing.data912.requests.get",
-                            side_effect=requests.ConnectionError("caído")):
-                r = bf.backfill_user(conn, self.uid, hoy_art_date())
-            self.assertTrue(r.get("reintentar"))
-            self.assertIn("AL35.BA", r.get("yahoo_fallo") or [])
-            # La falla no quedó guardada: la próxima corrida vuelve a preguntar.
-            self.assertFalse(any(k[0] == "AL35.BA" for k in bf._HIST_CACHE))
+            with mock.patch("pricing.data912.requests.get", side_effect=_get):
+                return bf.backfill_user(conn, self.uid, hoy_art_date()), pedidos
         finally:
             conn.rollback()
             conn.close()
+
+    def _dos_bonos(self):
+        self._imp("Cocos",
+                  f"{_dia(0, 5)},DEPOSITO,Cocos,,,,10000000,,,0,ARS,Aporte",
+                  f"{_dia(0, 6)},COMPRA,Cocos,AL35,4000,800,3200000,,,0,ARS,",
+                  f"{_dia(0, 6)},COMPRA,Cocos,TX26,2000,500,1000000,,,0,ARS,")
+
+    def test_queda_al_costo_y_pide_otra_corrida(self):
+        self._dos_bonos()
+        r, _ = self._corrida(requests.ConnectionError("caído"))
+        self.assertTrue(r.get("reintentar"))
+        self.assertIn("AL35.BA", r.get("yahoo_fallo") or [])
+        # La falla no quedó guardada: la próxima corrida vuelve a preguntar.
+        self.assertFalse(any(k[0] in ("AL35.BA", "TX26.BA") for k in bf._HIST_CACHE))
+
+    def test_un_error_del_servidor_no_es_no_hay_historia(self):
+        # Antes: un 503 se leía como "no tiene ese papel", se guardaba, y el
+        # bono quedaba al costo hasta fin de mes sin pedir reintento.
+        self._dos_bonos()
+        r, _ = self._corrida(503)
+        self.assertTrue(r.get("reintentar"))
+        self.assertFalse(any(k[0] in ("AL35.BA", "TX26.BA") for k in bf._HIST_CACHE))
+
+    def test_caido_no_se_espera_una_vez_por_bono(self):
+        # Cada pedido puede esperar su tope de tiempo: con data912 caído, el
+        # segundo bono no vuelve a preguntar en la misma corrida.
+        self._dos_bonos()
+        r, pedidos = self._corrida(requests.Timeout("10 s"))
+        self.assertEqual(len(pedidos), 1, pedidos)
+        self.assertTrue({"AL35.BA", "TX26.BA"} <= set(r.get("yahoo_fallo") or []))
 
 
 if __name__ == "__main__":

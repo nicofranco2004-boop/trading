@@ -129,6 +129,11 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     es_bono = not skip and (
         base in getattr(main, "AR_BONDS_DATA912", set())
         or main._is_data912_bond(base))
+    if es_bono and _DATA912_CAIDO in _fallas_yahoo():
+        # data912 ya no contestó en ESTA corrida: no se espera su tope de tiempo
+        # una vez por bono. Queda anotado igual, así la corrida pide reintento.
+        _fallas_yahoo().append(price_key)
+        return {}
     if es_bono:
         # ⚠️ EL BONO YA NO QUEDA AL COSTO. Se lo salteaba porque "data912 es
         # live-only", y no lo es: guarda una vela por rueda desde 2021. Al costo,
@@ -140,7 +145,7 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
             out = _cierres_bono_data912(price_key)
         except Exception:
             # Misma regla que Yahoo (abajo): una falla no se guarda.
-            _fallas_yahoo().append(price_key)
+            _fallas_yahoo().extend((price_key, _DATA912_CAIDO))
             return {}
     elif not skip:
         yf_sym = main.CRYPTO_YF.get(base, price_key) if base in main.CRYPTO_SYMBOLS else price_key
@@ -166,6 +171,11 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     _HIST_CACHE_MES[ck] = _mes
     return out
 
+
+# Marca en `_fallas_yahoo` de que la historia de data912 no contestó en esta
+# corrida (ver `_fetch_monthly_close`). No es un activo: `yahoo_fallo` la lista
+# sólo como señal de reintento.
+_DATA912_CAIDO = "data912:historia"
 
 # Bonos con los que se mide cuántos pesos vale un dólar en una rueda, igual que
 # en vivo (`main._data912_peso_per_usd`): el mismo bono en pesos y en dólares.
