@@ -28,7 +28,7 @@ CÓMO SE SIMULA. Igual que el estudio del 28/10 (scripts/backtest.py, `simular`)
 que se verificó contra TradingView:
   · la señal se mira al CIERRE de un día y se opera a la APERTURA del siguiente;
   · todo adentro o todo afuera: sin ventas en corto ni apalancamiento;
-  · `COMISION` al comprar y al vender;
+  · `COMISION` al comprar y al vender (0,5 %; el estudio usó 0,1 %);
   · afuera, la plata no gana nada (ni un fondo en dólares);
   · si al final sigue comprada, se cuenta con el último cierre (con su comisión);
   · comprar y mantener compra a la apertura del primer día y vende al último
@@ -53,8 +53,11 @@ MAX_REGLAS = 3
 # y la media de 200 necesita 200 ruedas antes para existir (unos 10 meses): con
 # 4 años como máximo, las cuatro reglas tienen el período entero.
 ANIOS = (1, 2, 3, 4)
-# Lo que cobra el broker, de cada lado: al comprar y al vender (el estudio del 28/10).
-COMISION = 0.001
+# Lo que cobra el broker, de cada lado: al comprar y al vender. 0,5 %, lo de un
+# broker argentino (Nico, 04/11); el estudio del 28/10 usó 0,1 % y las pruebas
+# que lo comparan con él (tests/test_backtest.py) le pasan ese 0,1 %. Una regla
+# que opera mucho paga esto en cada compra y en cada venta.
+COMISION = 0.005
 # Con menos ruedas que esto no se prueba: no da para ver nada.
 MIN_RUEDAS = 60
 # Un papel con precios desde unos días después del principio del período pedido

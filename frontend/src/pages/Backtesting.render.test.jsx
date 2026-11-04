@@ -170,11 +170,11 @@ describe('Análisis técnico → Backtesting', () => {
   it('la regla al lado de comprar y mantener, qué quiere decir y cada operación', async () => {
     montado = await abrir('/analisis-tecnico?tab=backtesting&activo=GGAL&reglas=rsi')
     const t = montado.t()
-    for (const parte of ['Probá una regla con el pasado', 'Siguiendo la regla', 'Comprar y mantener', '+25,5%',
-      '−35,4%', '−59%', '−63%', '3 · 2 ganaron', '223 de 501', 'Le fue mejor que comprar y mantener',
-      'La compra del 05/05/26 (+33,6%) explica casi todo', 'Cada operación',
+    for (const parte of ['Probá una regla con el pasado', 'Siguiendo la regla', 'Comprar y mantener', '+22,5%',
+      '−35,9%', '−59%', '−63%', '3 · 2 ganaron', '223 de 501', 'Le fue mejor que comprar y mantener',
+      'La compra del 05/05/26 (+32,6%) explica casi todo', 'Cada operación',
       '10/04/25 → 10/11/25', '24/08/26 → seguía comprada', 'US$ 41,12 → US$ 35,14 (último cierre)',
-      'Esta compra explica casi todo el resultado.', 'Cómo habrían ido US$ 100', 'US$ 126', 'US$ 65',
+      'Esta compra explica casi todo el resultado.', 'Cómo habrían ido US$ 100', 'US$ 123', 'US$ 64',
       'no es una recomendación']) {
       expect(t, parte).toContain(parte)
     }

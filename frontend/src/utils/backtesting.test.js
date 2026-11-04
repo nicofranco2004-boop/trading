@@ -81,8 +81,8 @@ describe('una regla: lo que dicen los números', () => {
     expect(lectura(RSI)).toEqual({
       titulo: 'Le fue mejor que comprar y mantener',
       frases: [
-        'GGAL bajó 35% en los últimos 2 años y la regla estuvo afuera el 55% de los días: cuando el precio cae, estar afuera ayuda.',
-        'La compra del 05/05/26 (+33,6%) explica casi todo: sin ella, la regla habría dado −6,1%.',
+        'GGAL bajó 36% en los últimos 2 años y la regla estuvo afuera el 55% de los días: cuando el precio cae, estar afuera ayuda.',
+        'La compra del 05/05/26 (+32,6%) explica casi todo: sin ella, la regla habría dado −7,6%.',
         'En el camino llegó a caer 59% desde su mejor momento.',
         'Fueron 3 compras en los últimos 2 años: con tan pocas, no alcanza para saber si el resultado es de la regla o de la suerte.',
       ],
@@ -92,7 +92,7 @@ describe('una regla: lo que dicen los números', () => {
   it('media de 200 en GGAL: perdió menos, desde el día en que la media existe', () => {
     const l = lectura(GGAL.media200)
     expect(l.titulo).toBe('Perdió menos que comprar y mantener')
-    expect(l.frases[0]).toBe('GGAL bajó 42% desde el 17/04/25 y la regla estuvo afuera el 66% de los días: '
+    expect(l.frases[0]).toBe('GGAL bajó 43% desde el 17/04/25 y la regla estuvo afuera el 66% de los días: '
       + 'cuando el precio cae, estar afuera ayuda.')
     expect(l.frases.join(' ')).not.toMatch(/explica casi todo/)
     expect(GGAL.media200.resultados[0].compras).toBeGreaterThanOrEqual(POCAS_COMPRAS)
@@ -102,7 +102,7 @@ describe('una regla: lo que dicen los números', () => {
   it('el ADX + Squeeze en GGAL: la mejor compra explica casi todo', () => {
     expect(compraClave(GGAL.adx_squeeze.resultados[0])).toBe('2026-03-03')
     expect(lectura(GGAL.adx_squeeze).frases).toContain(
-      'La compra del 03/03/26 (+14,2%) explica casi todo: sin ella, la regla habría dado +3,0%.')
+      'La compra del 03/03/26 (+13,3%) explica casi todo: sin ella, la regla habría dado −1,9%.')
   })
 
   it('comprar y mantener le ganó: no se dice que estar afuera ayudó', () => {
@@ -147,9 +147,9 @@ describe('varias reglas: lo que dicen los números, sin elegir «la mejor»', ()
     expect(lectura(GGAL['rsi,adx_squeeze'])).toEqual({
       titulo: 'Las dos le ganaron a comprar y mantener',
       frases: [
-        'GGAL bajó 35% en los últimos 2 años y las reglas estuvieron afuera entre el 55% y el 78% de los días: cuando el precio cae, estar afuera ayuda.',
-        'RSI 30 / 70: la compra del 05/05/26 (+33,6%) explica casi todo; sin ella habría dado −6,1%.',
-        'ADX + Squeeze: la compra del 03/03/26 (+14,2%) explica casi todo; sin ella habría dado +3,0%.',
+        'GGAL bajó 36% en los últimos 2 años y las reglas estuvieron afuera entre el 55% y el 78% de los días: cuando el precio cae, estar afuera ayuda.',
+        'RSI 30 / 70: la compra del 05/05/26 (+32,6%) explica casi todo; sin ella habría dado −7,6%.',
+        'ADX + Squeeze: la compra del 03/03/26 (+13,3%) explica casi todo; sin ella habría dado −1,9%.',
         'Con 3 y 7 compras en los últimos 2 años, no alcanza para saber si una regla es mejor que otra o si tuvo suerte.',
         'Probá las mismas reglas en otro activo: la que sale mejor en uno muchas veces no es la que sale mejor en otro.',
       ],
@@ -208,7 +208,7 @@ describe('los números', () => {
   })
 
   it('la aclaración dice la comisión que usó el servidor', () => {
-    expect(comoSeSimula(RSI)).toContain('con 0,1% de comisión al comprar y al vender')
+    expect(comoSeSimula(RSI)).toContain('con 0,5% de comisión al comprar y al vender')
     expect(comoSeSimula(RSI)).toContain('Cuando la regla está afuera')
     expect(comoSeSimula(GGAL['rsi,adx_squeeze'])).toContain('Cuando una regla está afuera')
     expect(comoSeSimula(RSI)).toContain('No incluye dividendos')

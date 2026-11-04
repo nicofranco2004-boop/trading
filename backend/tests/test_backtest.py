@@ -67,31 +67,51 @@ def _sin_senales(n):
     return {"compra": [False] * n, "venta": [False] * n, "desde": 0}
 
 
-def _una(velas, regla, anios):
+def _una(velas, regla, anios, comision=backtest.COMISION):
     """La prueba de UNA regla: el resultado de esa regla y la respuesta entera."""
-    r = backtest.probar(velas, [regla], anios)
+    r = backtest.probar(velas, [regla], anios, comision)
     return r["resultados"][0], r
 
 
+# La comisión del estudio del 28/10 (de cada lado). La app usa la de un broker
+# argentino (backtest.COMISION, 0,5 %): contra el estudio se compara con la suya.
+ESTUDIO = 0.001
+
+
 class ContraElEstudio(unittest.TestCase):
-    """Diferencial contra el canónico: el estudio del 28/10 con los mismos precios."""
+    """Diferencial contra el canónico: el estudio del 28/10 con los mismos precios
+    y su misma comisión."""
 
     @classmethod
     def setUpClass(cls):
         cls.velas = _ggal()
+
+    def test_la_app_cobra_la_comision_de_un_broker_argentino(self):
+        """0,5 % de cada lado (Nico, 04/11), no el 0,1 % del estudio: la misma
+        regla da menos, y más menos cuanto más opera."""
+        self.assertEqual(backtest.COMISION, 0.005)
+        for regla in backtest.REGLAS:
+            with self.subTest(regla=regla):
+                app, r = _una(self.velas, regla, 2)
+                estudio, _ = _una(self.velas, regla, 2, ESTUDIO)
+                self.assertEqual(app["compras"], estudio["compras"], "la comisión no cambia cuándo compra")
+                self.assertAlmostEqual(1 + app["resultado"] / 100,
+                                       (1 + estudio["resultado"] / 100) * (0.995 / 0.999) ** (2 * app["compras"]),
+                                       places=9)
+                self.assertEqual(r["comision"], 0.5)
 
     def _ops(self, x):
         return [(o["compra"], round(o["precio_compra"], 2), o["venta"], round(o["precio_venta"], 2),
                  round(o["resultado"], 2), o["abierta"]) for o in x["operaciones"]]
 
     def test_el_periodo_es_el_del_estudio(self):
-        _, r = _una(self.velas, "rsi", 2)
+        _, r = _una(self.velas, "rsi", 2, ESTUDIO)
         self.assertEqual((r["desde"], r["hasta"], r["ruedas"]), ("2024-10-28", "2026-10-27", 501))
         self.assertFalse(r["recortado"])
         self.assertIsNone(r["recorte_por"])
 
     def test_rsi_da_lo_mismo_que_el_estudio(self):
-        x, _ = _una(self.velas, "rsi", 2)
+        x, _ = _una(self.velas, "rsi", 2, ESTUDIO)
         self.assertAlmostEqual(x["resultado"], 25.50, places=2)
         self.assertAlmostEqual(x["peor_caida"], -58.92, places=2)
         self.assertEqual((x["compras"], x["ganadoras"], x["ruedas_comprada"]), (3, 2, 223))
@@ -102,7 +122,7 @@ class ContraElEstudio(unittest.TestCase):
         ])
 
     def test_adx_squeeze_da_lo_mismo_que_el_estudio(self):
-        x, _ = _una(self.velas, "adx_squeeze", 2)
+        x, _ = _una(self.velas, "adx_squeeze", 2, ESTUDIO)
         self.assertAlmostEqual(x["resultado"], 17.61, places=2)
         self.assertAlmostEqual(x["peor_caida"], -14.40, places=2)
         self.assertEqual((x["compras"], x["ganadoras"], x["ruedas_comprada"]), (7, 4, 110))
@@ -110,12 +130,12 @@ class ContraElEstudio(unittest.TestCase):
             "2025-03-05", "2025-04-23", "2025-07-22", "2026-03-03", "2026-05-12", "2026-08-31", "2026-10-08"])
 
     def test_mantener_da_lo_mismo_que_el_estudio(self):
-        _, r = _una(self.velas, "rsi", 2)
+        _, r = _una(self.velas, "rsi", 2, ESTUDIO)
         self.assertAlmostEqual(r["mantener"]["resultado"], -35.39, places=2)
         self.assertAlmostEqual(r["mantener"]["peor_caida"], -63.38, places=2)
 
     def test_la_compra_que_explica_todo(self):
-        x, _ = _una(self.velas, "rsi", 2)
+        x, _ = _una(self.velas, "rsi", 2, ESTUDIO)
         s = x["sin_la_mejor"]
         self.assertEqual(s["compra"], "2026-05-05")
         self.assertAlmostEqual(s["resultado"], 33.62, places=2)
@@ -368,7 +388,7 @@ class Ruta(unittest.TestCase):
         self.assertEqual((local["ticker"], local["convertida"]), ("GGAL.BA", "mep"))
         adr = self.client.get("/api/tecnico/GGAL/backtest?reglas=rsi&anios=1", headers=self.h).json()
         self.assertEqual(adr["ticker"], "GGAL", "sin la marca, el ADR")
-        self.assertAlmostEqual(adr["mantener"]["resultado"], (0.999 * 0.999 - 1) * 100, places=6,
+        self.assertAlmostEqual(adr["mantener"]["resultado"], ((1 - backtest.COMISION) ** 2 - 1) * 100, places=6,
                                msg="el ADR de prueba no se mueve: mantener sólo paga la comisión")
 
     def test_prueba_sobre_la_serie_de_la_ficha(self):
