@@ -186,6 +186,26 @@ class RendimientoDeCadaMes(unittest.TestCase):
         intro = {s["label"]: s["value"] for s in slides["intro"]["stats"]}
         self.assertEqual(intro.get("Mejor mes"), "Febrero")
 
+    def test_el_wrapped_no_pierde_el_mes_si_la_inflacion_tarda(self):
+        """El Wrapped lee la cuenta y DESPUÉS va a buscar la inflación a internet.
+        En Postgres, el primer SELECT abría la transacción (sqlite3 no: la abre al
+        escribir) y quedaba ociosa durante la espera; con la red lenta, el reloj
+        de la suite la mataba y el mejor mes salía «+0,00%» (medido 29/10/2026,
+        intermitente según lo que tardara argentinadatos). Acá la red tarda más
+        que ese reloj, a propósito. Ver `pgshim.es_lectura_pura`."""
+        reloj = float(os.environ.get("RENDI_TEST_IDLE_TX_S", "6").rstrip("s"))
+
+        def inflacion_lenta():
+            time.sleep(reloj + 1.5)
+            return {}
+        with mock.patch.dict(main._bench_cache, {"data": {}}), \
+                mock.patch.object(main, "_fetch_inflation_ar", inflacion_lenta):
+            r = self.http.get("/api/wrapped/2025", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        slides = {s["code"]: s for s in r.json()["slides"]}
+        self.assertEqual(slides["best_month"]["metric"]["value"], "+20,00%")
+        self.assertEqual(slides["worst_month"]["metric"]["value"], "−25,00%")
+
 
 class SinMercadoSeDiceContable(unittest.TestCase):
     """Sin fotos a mercado, el ranking sale de la contabilidad y lo DICE."""

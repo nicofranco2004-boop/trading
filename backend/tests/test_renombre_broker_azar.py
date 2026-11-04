@@ -70,6 +70,19 @@ class _CuentaAzar(base._Cuenta):
     """Tres brokers: el padre en pesos, su "· USD" y otro aparte (USDT)."""
 
     def __init__(self):
+        # Los lotes de importación EN EL ORDEN EN QUE SE CREARON.
+        #
+        # Hace falta porque este test es DIFERENCIAL: corre la misma secuencia
+        # dos veces (con y sin renombrar brokers) y exige que den lo mismo paso a
+        # paso. Para eso las dos corridas tienen que elegir el MISMO lote cuando
+        # les toca rehacer uno. Antes se pedía `ORDER BY rowid` —el número de
+        # fila físico de SQLite—, que coincidía entre corridas. En Postgres no
+        # existe, y `created_at` tiene resolución de segundos, así que el
+        # desempate caía sobre el id… que es un hash AL AZAR, distinto en cada
+        # corrida: las dos elegían lotes distintos y la comparación perdía
+        # sentido (daba «0 repetidas» contra «2 repetidas» sin que hubiera
+        # ningún bug).
+        self.lotes_en_orden = []
         super().__init__(moneda="ARS", sub_usd=True)
         conn = main.get_db()
         try:                      # el plan gratis permite un solo broker
@@ -276,6 +289,16 @@ def _confirmar_vista_previa(c, r):
         return "sin nada para confirmar"
     repetidas = len(cuerpo.get("duplicate_row_indices") or [])
     conf = c.pedir("post", "/api/imports/confirm", json={"session_id": cuerpo["session_id"]})
+    # El id del lote ES el session_id (el endpoint devuelve `batch_id=session_id`,
+    # main.py:42793), así que anotarlo no cuesta NINGUNA consulta.
+    #
+    # ⚠️ La primera versión preguntaba a la base antes y después para sacar el
+    # lote nuevo por diferencia. Son dos conexiones extra por import, y este test
+    # hace cientos: la suite completa empezó a dar `database is locked` en OTRO
+    # archivo (test_import_tc_compra), seis tests, por el escritor único de
+    # SQLite. Medido: con esas dos consultas 6 errores, sin ellas 0.
+    if conf.status_code == 200:
+        c.lotes_en_orden.append(cuerpo["session_id"])
     return f"{conf.status_code}, {repetidas} repetidas"
 
 
@@ -329,9 +352,12 @@ def _importar_con_plantilla(c, rng):
 
 
 def _rehacer_import(c, rng):
-    # Por orden de creación (rowid): el id del lote es un texto al azar.
-    lotes = c.filas("SELECT id FROM import_batches WHERE user_id=? AND status='confirmed' "
-                    "AND parser_format='rendi_generic' ORDER BY rowid")
+    # Del orden que anotamos al crearlos (ver `lotes_en_orden`), filtrado a los
+    # que siguen confirmados y son del formato que este paso rehace.
+    vivos = {x["id"] for x in c.filas(
+        "SELECT id FROM import_batches WHERE user_id=? AND status='confirmed' "
+        "AND parser_format='rendi_generic'")}
+    lotes = [{"id": b} for b in c.lotes_en_orden if b in vivos]
     if not lotes:
         return "sin imports"
     return _confirmar_vista_previa(c, c.pedir("post", f"/api/imports/{rng.choice(lotes)['id']}/redo"))

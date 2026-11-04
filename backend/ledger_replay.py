@@ -91,6 +91,7 @@ def tenencia_en(conn, uid: int, fecha: str, *, session_id: str = None) -> dict:
 # en pesos veria una caida del 30% que nunca existio.
 _CASH_MAS = ("DEPOSIT", "SELL", "DIVIDEND", "INTEREST", "FUTURES_PNL")
 _CASH_MENOS = ("WITHDRAW", "BUY", "FEE", "IMPUESTO")
+_FX = ("FX_ARS_TO_USD", "FX_USD_TO_ARS")
 
 
 def cash_en(conn, uid: int, fecha: str, *, session_id: str = None) -> dict:
@@ -106,7 +107,7 @@ def cash_en(conn, uid: int, fecha: str, *, session_id: str = None) -> dict:
     entraban enteros al saldo).
     """
     filas = conn.execute(
-        """SELECT n.broker, n.operation_type, n.gross_amount, n.fees, n.taxes,
+        """SELECT n.broker, n.operation_type, n.gross_amount, n.quantity, n.fees, n.taxes,
                   COALESCE(n.settlement_currency, n.currency) ccy
            FROM import_normalized_tx n
            JOIN import_batches b ON b.id = n.batch_id
@@ -116,11 +117,38 @@ def cash_en(conn, uid: int, fecha: str, *, session_id: str = None) -> dict:
            ORDER BY n.date ASC, n.id ASC""",
         (uid, session_id or "", str(fecha)[:10])).fetchall()
 
+    # ⚠️ LA CONVERSIÓN MUEVE EFECTIVO EN LAS DOS PUNTAS. Comprar dólares MEP saca
+    # pesos del broker y pone dólares en su sub-cuenta '· USD' (`_persist_fx`:
+    # gross_amount = pesos, quantity = dólares). Este replay la salteaba, así que
+    # en toda cuenta que dolarizó los pesos quedaban de más y los dólares de menos.
+    hijo_de, padre_de = {}, {}
+    if any(r["operation_type"] in _FX for r in filas):
+        bs = [dict(x) for x in conn.execute(
+            "SELECT id, name, currency, parent_broker_id FROM brokers WHERE user_id=?",
+            (uid,)).fetchall()]
+        por_id = {x["id"]: x for x in bs}
+        for x in bs:
+            p = por_id.get(x["parent_broker_id"])
+            if p is not None:
+                padre_de[x["name"]] = p["name"]
+                hijo_de.setdefault(p["name"], x["name"])
+
     saldos = {}
     for r in filas:
         op = r["operation_type"]
         monto = float(r["gross_amount"] or 0)
         if monto <= 0:
+            continue
+        if op in _FX:
+            dolares = float(r["quantity"] or 0)
+            if op == "FX_ARS_TO_USD":
+                pesos_en, dolares_en, signo = r["broker"], hijo_de.get(r["broker"]), -1
+            else:
+                pesos_en, dolares_en, signo = padre_de.get(r["broker"]), r["broker"], 1
+            if pesos_en:
+                saldos[(pesos_en, "ARS")] = saldos.get((pesos_en, "ARS"), 0.0) + signo * monto
+            if dolares_en and dolares > 0:
+                saldos[(dolares_en, "USD")] = saldos.get((dolares_en, "USD"), 0.0) - signo * dolares
             continue
         k = (r["broker"] or "", (r["ccy"] or "USD").upper())
         if op in _CASH_MAS:

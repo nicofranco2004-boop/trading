@@ -15,15 +15,22 @@ global) y re-derivando los snapshots que lee el chart.
                 +  Σ (valor_mercado − costo)  de las tenencias              [unrealized]
 
 El primer término se RECOMPUTA de columnas estables cada corrida (idempotente — no
-lee el capital_final que esta misma corrida pudo dejar en MTM). El cash ya está en
-ese primer término (vía los flujos) → no se reconstruye.
+lee el capital_final que esta misma corrida pudo dejar en MTM). En ese primer
+término la caja queda DEDUCIDA (lo que los flujos no explican con lo invertido).
+Para cada broker cuya caja de hoy explican los movimientos importados, la caja de
+fin de mes se MIDE en su lugar (ver "LA CAJA SE MIDE, NO SE DEDUCE").
 
 Valuación = port fiel de snapshots_job.compute_broker_value_usd (live):
   - holding USD (broker USD/USDT)            → close USD histórico × qty
   - holding .BA (broker ARS / '· USD' / CEDEAR) → close .BA (ARS) ÷ MEP
+  - bono (soberano / CER / BOPREAL)           → cierre de data912 por 1 nominal,
+                                                con la escala del precio en vivo
   - cripto                                    → close <SYM>-USD histórico × qty
-FX histórico: BLUE de fx_rates_daily (último ≤ fin de mes, sin fuga al futuro). MEP:
-blue-proxy (Fase 1, sin schema nuevo; para cuentas en USD el FX ni se usa). Regla
+FX histórico: el dólar-MEP de fx_rates_daily (último ≤ fin de mes, sin fuga al
+futuro; el blue antes de que haya serie de MEP), el mismo que usa el cron para la
+medición de hoy; para cuentas en USD el FX ni se usa. La CAJA de cada broker sale
+de los movimientos importados, en su moneda, al dólar de ese fin de mes (ver "LA
+CAJA SE MIDE, NO SE DEDUCE DE LA CONTABILIDAD"). Regla
 cardinal: si falta precio/FX/historia o hay split → AL COSTO (jamás infla).
 
 NO toca: positions, operations, cash, import_normalized_tx NI monthly_entries. La
@@ -47,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import contextlib
 import math
 import os
 import sqlite3
@@ -80,6 +88,12 @@ import threading as _threading           # noqa: E402
 _CORRIDA = _threading.local()
 
 
+def _mes_en_curso() -> str:
+    """AAAA-MM de hoy en Argentina: la vigencia de las series de `_HIST_CACHE`."""
+    from fechas import hoy_art_date
+    return hoy_art_date().strftime("%Y-%m")
+
+
 def _fallas_yahoo() -> list:
     if not hasattr(_CORRIDA, "fallas"):
         _CORRIDA.fallas = []
@@ -87,14 +101,15 @@ def _fallas_yahoo() -> list:
 
 def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     """{YYYY-MM: close} para un price_key ('AAPL', 'GGAL.BA', 'BTC'), desde start a
-    hoy. {} (→ costo) sólo para lo que NO tiene historia confiable en yfinance: los
-    FCI y los bonos/ONs de data912, que es live-only.
+    hoy. {} (→ costo) para lo que no tiene historia: los FCI, y los bonos que
+    data912 no guarda (ONs y letras). Los bonos que sí guarda salen de ahí, por 1
+    nominal — ver `_cierres_bono_data912`.
 
     Los CEDEARs y las acciones AR (.BA) SÍ tienen serie: medido, 24 de 24 meses
     para AAPL.BA, KO.BA, MELI.BA, GGAL.BA e YPFD.BA. El que cotiza en dólares se
     valúa por su subyacente — ver `_precio_por_subyacente`."""
     ck = (price_key, start_iso)
-    _mes = _date.today().strftime("%Y-%m")
+    _mes = _mes_en_curso()
     if ck in _HIST_CACHE and _HIST_CACHE_MES.get(ck, _mes) == _mes:
         return _HIST_CACHE[ck]
     if price_key in _fallas_yahoo():
@@ -105,18 +120,35 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     base = price_key[:-3] if price_key.endswith(".BA") else price_key
     out: dict = {}
     # ⚠️ EL CEDEAR COTIZADO EN USD YA NO SE SALTEA.
-    # Se saltea lo que NO tiene serie histórica confiable: FCI y los bonos/ONs de
-    # data912 (que es live-only). El CEDEAR en dólares estaba acá por otra razón —
+    # Se saltea lo que NO tiene serie histórica: los FCI. El CEDEAR en dólares
+    # estaba acá por otra razón —
     # el código intentaba el camino largo (precio local ÷ CCL histórico)— y no hace
     # falta: con el ratio, 100 CEDEARs de ratio 4 son 25 acciones equivalentes, y
     # la acción SÍ tiene precio en dólares. Lo resuelve `_precio_por_subyacente`.
     # (Y `CEDEAR_USD_RATIOS` tiene exactamente un ticker: BAC.)
-    skip = (
-        price_key.startswith("FCI:")
-        or base in getattr(main, "AR_BONDS_DATA912", set())
-        or main._is_data912_bond(base)   # data912 es live-only → costo histórico
-    )
-    if not skip:
+    skip = price_key.startswith("FCI:")
+    es_bono = not skip and (
+        base in getattr(main, "AR_BONDS_DATA912", set())
+        or main._is_data912_bond(base))
+    if es_bono and _DATA912_CAIDO in _fallas_yahoo():
+        # data912 ya no contestó en ESTA corrida: no se espera su tope de tiempo
+        # una vez por bono. Queda anotado igual, así la corrida pide reintento.
+        _fallas_yahoo().append(price_key)
+        return {}
+    if es_bono:
+        # ⚠️ EL BONO YA NO QUEDA AL COSTO. Se lo salteaba porque "data912 es
+        # live-only", y no lo es: guarda una vela por rueda desde 2021. Al costo,
+        # un AL35 comprado a 1.220 pesos que a fin de octubre valía 1.059 dejaba
+        # la foto US$ 706 arriba de la cartera real, y la caída aparecía de golpe
+        # entre la última foto y hoy. Yahoo no sirve para esto: da el '.BA' por
+        # cada 100 nominales y para la mitad de los bonos ni lo tiene.
+        try:
+            out = _cierres_bono_data912(price_key)
+        except Exception:
+            # Misma regla que Yahoo (abajo): una falla no se guarda.
+            _fallas_yahoo().extend((price_key, _DATA912_CAIDO))
+            return {}
+    elif not skip:
         yf_sym = main.CRYPTO_YF.get(base, price_key) if base in main.CRYPTO_SYMBOLS else price_key
         try:
             import yfinance as yf
@@ -138,6 +170,74 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
             return {}
     _HIST_CACHE[ck] = out
     _HIST_CACHE_MES[ck] = _mes
+    return out
+
+
+# Marca en `_fallas_yahoo` de que la historia de data912 no contestó en esta
+# corrida (ver `_fetch_monthly_close`). No es un activo: `yahoo_fallo` la lista
+# sólo como señal de reintento.
+_DATA912_CAIDO = "data912:historia"
+
+# Bonos con los que se mide cuántos pesos vale un dólar en una rueda, igual que
+# en vivo (`main._data912_peso_per_usd`): el mismo bono en pesos y en dólares.
+_REFS_PESO_POR_USD = ("AL30", "GD30")
+
+
+def _serie_data912(papel: str) -> list:
+    """[(fecha, cierre)] ordenado, de la historia de bonos de data912. Cacheada
+    por proceso con la misma vigencia que el resto (`_HIST_CACHE_MES`). Una falla
+    de red sube como excepción y no se guarda."""
+    from pricing import data912
+    ck = ("data912:" + papel, "diario")
+    _mes = _mes_en_curso()
+    if ck in _HIST_CACHE and _HIST_CACHE_MES.get(ck, _mes) == _mes:
+        return _HIST_CACHE[ck]
+    serie = sorted(data912.cierres("bonds", papel).items())
+    _HIST_CACHE[ck] = serie
+    _HIST_CACHE_MES[ck] = _mes
+    return serie
+
+
+def _cierre_al(serie: list, fecha: str):
+    """El último cierre de `serie` con fecha ≤ `fecha` (sin mirar el futuro)."""
+    import bisect
+    i = bisect.bisect_right(serie, (fecha, float("inf")))
+    return serie[i - 1][1] if i else None
+
+
+def _cierres_bono_data912(price_key: str) -> dict:
+    """{YYYY-MM: precio por 1 nominal} de un bono, con el último cierre de cada
+    mes en data912. {} si data912 no guarda ese bono (ONs, letras).
+
+    El papel que se pide es el MISMO que en vivo (`main._resolve_ar_bond_price`):
+    'AL35.BA' (cuenta en pesos) → AL35, en pesos; 'AL35' (cuenta en dólares) →
+    AL35D, en dólar-MEP. Y la escala también: `main._escala_bono`, con los pesos
+    por dólar de esa misma rueda en vez de los de hoy."""
+    is_ars = price_key.endswith(".BA")
+    base = price_key[:-3] if is_ars else price_key
+    serie = _serie_data912(base if is_ars else base + "D")
+    ultimo_del_mes: dict = {}
+    for fecha, c in serie:
+        ultimo_del_mes[fecha[:7]] = (fecha, c)
+
+    def _peso_por_usd(fecha):
+        def _f():
+            precios = {}
+            for ref in _REFS_PESO_POR_USD:
+                for papel in (ref, ref + "D"):
+                    px = _cierre_al(_serie_data912(papel), fecha)
+                    if px is not None:
+                        precios[papel] = px
+                if ref in precios and ref + "D" in precios:
+                    break               # con un par alcanza, como en vivo
+            return main._data912_peso_per_usd(precios)
+        return _f
+
+    out = {}
+    for ym, (fecha, c) in ultimo_del_mes.items():
+        px = main._escala_bono(base, c, is_ars, _peso_por_usd(fecha))
+        if px is not None:
+            out[ym] = px
     return out
 
 
@@ -191,6 +291,16 @@ def _hist_blue(conn, month_end_iso: str, fallback: float) -> float:
         return v if (v and v > 0) else fallback
     except (TypeError, ValueError):
         return fallback
+
+
+def _hist_mep(conn, month_end_iso: str, fallback: float) -> float:
+    """El dólar-MEP (punto medio) del último día ≤ fin de mes; el blue si no hay."""
+    try:
+        import fx as _fxmod
+    except ImportError:  # pragma: no cover — según cómo se cargue el paquete
+        from .. import fx as _fxmod
+    v = _fxmod.fx_for_date(conn, month_end_iso, fallback=fallback)
+    return v if (v and v > 0) else fallback
 
 
 # ─── Lo que el reconstructor NO ve ───────────────────────────────────────────
@@ -303,6 +413,113 @@ def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
     return costo, afirmable
 
 
+# ─── La caja de cada broker, medida y al dólar de su fecha ───────────────────
+# ⚠️ LA CAJA SE MIDE, NO SE DEDUCE DE LA CONTABILIDAD.
+# La foto era "costo + no realizado": la caja quedaba implícita, como lo que la
+# contabilidad (aportes − retiros + realizado, en dólares) no explica con lo
+# invertido. Eso falla de dos maneras, y las dos se midieron en la misma cuenta
+# (4 brokers, 44 operaciones desde 03/2024, Cocos e IOL en pesos):
+#   · EN PESOS, LA DEVALUACIÓN NO ENTRABA NUNCA EN EL PASADO. Cada aporte en pesos
+#     está en la contabilidad al dólar de SU fecha (`f76c7bdb`), pero lo que hay en
+#     la cuenta a fin de mes son PESOS, y valen lo que dice el dólar de ESE fin de
+#     mes. La pérdida por devaluación del efectivo y del costo en pesos aparecía
+#     de golpe en la primera medición del cron: foto del 31/10/2026 US$ 72.606
+#     contra US$ 67.199 de tenencia más caja a su fecha → «Últimos 3 días −9,3 %»
+#     y «Noviembre −US$ 6.766» en el Dashboard de una cartera que se había movido
+#     −US$ 347. El error crecía con el tiempo (US$ 1.523 en 12/2024, 5.407 en
+#     10/2026): era la devaluación acumulada.
+#   · EN DÓLARES, LA VENTA PARCIAL. El realizado de la contabilidad sale del lote
+#     vendido (FIFO) y la tenencia de acá, del costo promedio: con una venta
+#     parcial de NVDA a dos precios de compra, la caja deducida quedaba US$ 81
+#     arriba de la real.
+#
+# El arreglo: la caja de fin de mes de cada broker sale de los movimientos
+# importados (`ledger_replay.cash_en`, en la moneda del broker) y se valúa con el
+# MISMO motor y el MISMO dólar que la tenencia de ese mes, igual que hace el cron
+# con la caja anotada. Sólo si los movimientos explican la caja de HOY (la prueba
+# de `verificar_contra_hoy`): si hubo plata cargada a mano o algo que el archivo
+# no trae, la caja del pasado no se puede afirmar y ese broker queda como antes,
+# deducido, anotado en `cajas_sin_medir`.
+_MONEDAS_DE_CAJA = {"ARS": ("ARS",)}
+_MONEDAS_DOLAR = ("USD", "USDT")
+
+
+def _monedas_de_caja(moneda_broker) -> tuple:
+    return _MONEDAS_DE_CAJA.get((moneda_broker or "USDT").upper(), _MONEDAS_DOLAR)
+
+
+def _caja_del_replay(saldos: dict, broker: str, moneda_broker) -> float:
+    return sum(saldos.get((broker, mon), 0.0) for mon in _monedas_de_caja(moneda_broker))
+
+
+def _cajas_explicadas(conn, uid: int, bcur: dict, tc_hoy: float, today: _date) -> set:
+    """Brokers cuya caja de HOY la reproducen los movimientos importados."""
+    import ledger_replay as _lr
+    if not bcur:
+        return set()
+    replay = _lr.cash_en(conn, uid, today.isoformat())
+    real: dict = {}
+    for r in conn.execute(
+            "SELECT broker, asset, invested FROM positions "
+            "WHERE user_id=? AND COALESCE(is_cash,0)=1", (uid,)).fetchall():
+        b = r["broker"]
+        if b in bcur and (r["asset"] or "").upper() in _monedas_de_caja(bcur[b]):
+            real[b] = real.get(b, 0.0) + float(r["invested"] or 0)
+    # ⚠️ QUE LA CAJA DE HOY COINCIDA NO ALCANZA: LA CONTABILIDAD TAMBIÉN TIENE QUE
+    # SALIR DEL ARCHIVO. Una operación cerrada cargada a mano sin mover el efectivo
+    # (sólo el resultado) deja la caja igual, pero suma su ganancia a la
+    # contabilidad desde su fecha. Medir la caja la borraba del pasado:
+    # tests/test_reconstruccion_sigue_a_la_contabilidad.py (US$ 300 de junio).
+    # Con algo cargado a mano —una operación sin lote importado o un aporte a
+    # mano— el broker queda con la caja deducida, como antes.
+    a_mano = {r["broker"] for r in conn.execute(
+        "SELECT DISTINCT o.broker FROM operations o WHERE o.user_id=? AND NOT EXISTS "
+        "(SELECT 1 FROM import_op_links l WHERE l.operation_id = o.id)", (uid,)).fetchall()}
+    try:
+        a_mano |= {r["broker"] for r in conn.execute(
+            "SELECT DISTINCT broker FROM monthly_entries WHERE user_id=? AND broker<>'global' "
+            "AND (ABS(COALESCE(manual_deposits,0)) > 0.005 "
+            "OR ABS(COALESCE(manual_withdrawals,0)) > 0.005)", (uid,)).fetchall()}
+    except Exception:           # base vieja sin las columnas manual_*
+        if getattr(main, "USANDO_PG", False):
+            conn.rollback()
+        return set()
+    explicados = set()
+    for b, mon in bcur.items():
+        if b in a_mano:
+            continue
+        a, z = _caja_del_replay(replay, b, mon), real.get(b, 0.0)
+        # Un dólar de diferencia, o el 1 % de la caja: redondeos de comisiones.
+        un_dolar = (tc_hoy or 1.0) if (mon or "").upper() == "ARS" else 1.0
+        if abs(a - z) <= max(abs(z) * 0.01, un_dolar):
+            explicados.add(b)
+    return explicados
+
+
+def _costo_por_broker(conn, uid: int) -> dict:
+    """{broker: [(year, month, costo)]} de la contabilidad POR BROKER, en orden."""
+    out: dict = {}
+    for r in conn.execute(
+            "SELECT broker, year, month, capital_inicio, deposits, withdrawals, pnl_realized "
+            "FROM monthly_entries WHERE user_id=? AND broker <> 'global' "
+            "ORDER BY broker, year, month", (uid,)).fetchall():
+        costo = ((r["capital_inicio"] or 0) + (r["deposits"] or 0)
+                 - (r["withdrawals"] or 0) + (r["pnl_realized"] or 0))
+        out.setdefault(r["broker"], []).append((r["year"], r["month"], costo))
+    return out
+
+
+def _costo_del_broker_en(filas: list, y: int, m: int) -> float:
+    """El costo del broker en el mes: su fila, o la del último mes que tuvo (en el
+    mes sin fila la contabilidad no se movió, igual que en `_meses_a_reconstruir`)."""
+    costo = 0.0
+    for (yy, mm, c) in filas or ():
+        if (yy, mm) > (y, m):
+            break
+        costo = c
+    return costo
+
+
 # ─── Tenencias a fin de mes (net BUY−SELL + costo promedio) ───────────────────
 def _holdings_asof(conn, uid: int, date_iso: str) -> list:
     """[{broker, asset, asset_type, quantity, invested(costo)}] tenidas a date_iso.
@@ -369,6 +586,10 @@ def _month_end(year: int, month: int) -> str:
 # propio `source` — y `monthly_entries` queda intacto (sigue siendo la
 # contabilidad, que es lo que tiene que ser).
 MTM_SOURCE = "mtm_backfill"
+# Entra en `huella_de_entrada`. Subirlo cuando cambia lo que la foto vale para la
+# MISMA contabilidad. 2 = la caja medida y al dólar-MEP de su fecha. 3 = los
+# bonos al cierre de su mes en data912 (antes, al costo).
+MOTOR_VERSION = 3
 
 # ⚠️ YA NO HAY PISO DE COBERTURA. La cobertura se estampa y SE MUESTRA; no filtra
 # nada. Un piso —fuera 0,70 o 0,995— esconde la curva entera al que no llega, que
@@ -525,6 +746,14 @@ def huella_de_entrada(conn, uid: int, today: _date) -> str:
     pg = bool(getattr(main, "USANDO_PG", False))
     partes = []
 
+    # La segunda lectura (la que confirma antes de escribir) corre CON EL TURNO
+    # tomado, adentro de la transacción. Ahí un error de SQL no puede resolverse con
+    # `rollback()`: soltaría el turno sin avisar y lo de abajo escribiría sin él.
+    # Un punto de guardado deshace sólo la consulta. Sin transacción abierta (la
+    # primera lectura, antes de Yahoo) no se abre ninguna: el SAVEPOINT la abriría
+    # y quedaría abierta durante toda la consulta a la red.
+    en_transaccion = pg and bool(getattr(conn, "in_transaction", False))
+
     # ⚠️ EL TEXTO LO ARMA LA BASE, NO PYTHON. Convertir miles de filas en tuplas de
     # Python retiene el turno del intérprete (GIL) fila por fila: medido por la
     # auditoría con las 10 cuentas más grandes pidiendo a la vez, la mediana de un
@@ -540,11 +769,13 @@ def huella_de_entrada(conn, uid: int, today: _date) -> str:
             sql = (f"SELECT count(*), group_concat(t, '|') FROM "
                    f"(SELECT {texto} AS t FROM {desde} ORDER BY {orden})")
         try:
-            r = conn.execute(sql, args).fetchone()
+            with (main._si_falla_se_deshace_solo_esto(conn, "huella_agregado")
+                  if en_transaccion else contextlib.nullcontext()):
+                r = conn.execute(sql, args).fetchone()
             partes.append(f"{r[0]}:{r[1] or ''}")
         except Exception as ex:          # columna que no existe en una base vieja
             partes.append(repr(type(ex)))
-            if pg:                       # en Postgres el error aborta la transacción
+            if pg and not en_transaccion:   # en Postgres el error aborta la transacción
                 try:
                     conn.rollback()
                 except Exception:
@@ -575,6 +806,27 @@ def huella_de_entrada(conn, uid: int, today: _date) -> str:
     _agregado(("id", "broker", "asset", "quantity", "entry_price", "fx_to_usd", "currency",
                "entry_date", "date"), "operations WHERE user_id=?", "id", uid)
     _agregado(("name", "currency"), "brokers WHERE user_id=?", "name", uid)
+    # La caja de cada broker (`_cajas_explicadas`): los
+    # movimientos que la mueven —de cualquier fecha: la prueba se hace contra la
+    # caja de HOY—, la caja anotada y la contabilidad por broker que se descuenta.
+    _agregado(("n.id", "n.date", "n.broker", "n.operation_type", "n.gross_amount",
+               "n.quantity", "n.fees", "n.taxes", "n.currency", "n.settlement_currency",
+               "CASE WHEN n.excluded_at IS NULL THEN 1 ELSE 0 END"),
+              "import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id "
+              "WHERE b.user_id=? AND b.status='confirmed' "
+              "AND n.operation_type NOT IN ('BUY','SELL')", "n.id", uid)
+    _agregado(("broker", "asset", "invested"),
+              "positions WHERE user_id=? AND COALESCE(is_cash,0)=1", "broker, asset", uid)
+    _agregado(("operation_id",),
+              "import_op_links WHERE operation_id IS NOT NULL AND batch_id IN "
+              "(SELECT id FROM import_batches WHERE user_id=?)", "operation_id", uid)
+    _agregado(("broker", "year", "month", "capital_inicio", "deposits", "withdrawals",
+               "pnl_realized"),
+              "monthly_entries WHERE user_id=? AND broker<>'global' AND year*100+month < ?",
+              "broker, year, month", uid, ym_hoy)
+    # Cambiar CÓMO se valúa también deja vieja la historia escrita: con esto, al
+    # publicar un cambio del motor cada cuenta se reconstruye una vez.
+    partes.append(f"motor:{MOTOR_VERSION}")
     return hashlib.sha256("\n".join(partes).encode()).hexdigest()
 
 
@@ -619,9 +871,32 @@ def _meses_a_reconstruir(huella: list, today: _date) -> list:
     return out
 
 
+def _borrar_reconstruidas_con_el_turno(conn, uid: int, motivo_ya_no_vale: str) -> int:
+    """Borra las fotos reconstruidas de una cuenta que ya no tiene qué reconstruir.
+
+    Con el turno de la cuenta, como toda escritura de la plata. Y el motivo
+    (`motivo_ya_no_vale`: la consulta que, si encuentra algo, dice que SÍ hay qué
+    reconstruir) se vuelve a mirar adentro del DELETE, ya con el turno: si un
+    import se confirmó entre la lectura de arriba y acá, no se borra nada.
+    Si no hay fotos que borrar no se pide el turno, para no abrir una transacción
+    que nadie va a confirmar."""
+    if not conn.execute("SELECT 1 FROM snapshots WHERE user_id=? AND source=? LIMIT 1",
+                        (uid, MTM_SOURCE)).fetchone():
+        return 0
+    main._tomar_turno_de_la_puerta(conn, uid)
+    return conn.execute(
+        f"DELETE FROM snapshots WHERE user_id=? AND source=? AND NOT EXISTS ({motivo_ya_no_vale})",
+        (uid, MTM_SOURCE, uid)).rowcount
+
+
 def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     """Devuelve {uid, skipped, reason, months:[{ym, before, after}], cost_fallbacks,
-    cash_warning}. NO commitea (lo hace el caller). Idempotente."""
+    cash_warning}. NO commitea (lo hace el caller). Idempotente.
+
+    Vuelve con el turno de la cuenta tomado si escribió algo: quien llama confirma
+    o deshace y eso lo suelta. Si la contabilidad cambió durante la corrida hace
+    `rollback()` antes de volver a Yahoo, así que se la llama sin escrituras
+    pendientes en `conn` (una conexión propia, o recién confirmada)."""
     import twr as _twr
     res = {"uid": uid, "skipped": False, "reason": None, "months": [],
            "cost_fallbacks": 0, "cash_warning": False, "snapshots_escritos": 0}
@@ -638,8 +913,8 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
         # Si ya no hay import (se revirtió el único), las fotos reconstruidas que
         # quedaron —p. ej. de meses con movimientos cargados a mano antes del
         # import, que el revert no borra— describen una cuenta que ya no existe.
-        res["snapshots_borrados"] = conn.execute(
-            "DELETE FROM snapshots WHERE user_id=? AND source=?", (uid, MTM_SOURCE)).rowcount
+        res["snapshots_borrados"] = _borrar_reconstruidas_con_el_turno(
+            conn, uid, "SELECT 1 FROM import_batches WHERE user_id=? AND status='confirmed'")
         res.update(skipped=True, reason="sin import confirmado (cuenta manual)")
         return res
 
@@ -649,8 +924,8 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     huella = _huella_contable(conn, uid)
     if not huella:
         # Sin contabilidad no hay nada que las fotos reconstruidas puedan describir.
-        res["snapshots_borrados"] = conn.execute(
-            "DELETE FROM snapshots WHERE user_id=? AND source=?", (uid, MTM_SOURCE)).rowcount
+        res["snapshots_borrados"] = _borrar_reconstruidas_con_el_turno(
+            conn, uid, "SELECT 1 FROM monthly_entries WHERE user_id=? AND broker='global'")
         res.update(skipped=True, reason="sin monthly_entries")
         return res
     _canon = _twr.netdep_canonico(conn, uid)
@@ -677,6 +952,17 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     por_mes: dict = {}                         # {ym: foto reconstruida}
     start_iso = f"{huella[0][0]:04d}-{huella[0][1]:02d}-01"
 
+    # La caja de cada broker, medida y al dólar de cada fin de mes (ver "LA CAJA
+    # SE MIDE, NO SE DEDUCE DE LA CONTABILIDAD").
+    import ledger_replay as _lr
+    try:
+        _tc_hoy = main._user_tc_blue(conn, uid)
+    except Exception:
+        _tc_hoy = 1415.0
+    cajas_ok = _cajas_explicadas(conn, uid, bcur, _tc_hoy, today)
+    res["cajas_sin_medir"] = sorted(set(bcur) - cajas_ok)
+    costo_broker = _costo_por_broker(conn, uid) if cajas_ok else {}
+
     # El mes en curso (y cualquier fila futura) no se toca: lo maneja el flujo live.
     for y, m, fila, propia in _meses_a_reconstruir(huella, today):
         d = _month_end(y, m)
@@ -687,13 +973,22 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
         except Exception:
             live_blue = 1415.0
         blue = _hist_blue(conn, d, live_blue)
-        mep = blue                              # Fase 1: MEP = blue-proxy
+        # ⚠️ AL MEP, COMO EL CRON. La medición de hoy valúa todo lo que está en
+        # pesos al dólar-MEP (`take_snapshot_for_user`, "CONVENCIÓN DE
+        # VALUACIÓN"); acá se usaba el blue como si fuera el MEP. La foto del
+        # último fin de mes y la de hoy quedaban con dos dólares distintos, y la
+        # resta fabricaba la brecha como movimiento: 31/10/2026 blue 1.555 contra
+        # MEP 1.575, −1,3 % de toda la parte en pesos. Mismo dólar que el resto de
+        # la app (`fx.fx_for_date`: el MEP de la fecha y, antes de que haya serie
+        # de MEP, el blue).
+        mep = _hist_mep(conn, d, blue)
 
         # Unrealized por broker (valor_mercado − costo), con guardas → costo.
         # `val_mkt`/`val_costo` miden la COBERTURA del mes: cuanto del valor
         # no-cash salio de un precio real y cuanto cayo al costo. Sin ese numero
         # un mes casi enteramente al costo se publicaria como medido.
         unreal_by_broker: dict = {}
+        efectivo_by_broker: dict = {}
         val_mkt = val_costo = 0.0
         by_asset: dict = {}
         assets_al_costo: set = set()
@@ -749,6 +1044,7 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
             # pudo usar, al costo si degrado (ahi u quedo en 0).
             efectivo = inv + u
             by_asset[h["asset"]] = by_asset.get(h["asset"], 0.0) + efectivo
+            efectivo_by_broker[b] = efectivo_by_broker.get(b, 0.0) + efectivo
             if price is None or not trusted:
                 res["cost_fallbacks"] += 1
                 val_costo += efectivo
@@ -799,7 +1095,28 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
         # contabilidad (ver la huella al final de esta función). En el mes sin
         # fila el canónico ARRASTRA el último aportado; nunca da 0.
         net_dep = _canon(d) if _canon is not None else 0.0
-        new_cf = cost + total_unreal
+        # Broker con la caja medida: su parte de la foto pasa de "costo + no
+        # realizado" (la caja deducida) a tenencia + caja de ESTE fin de mes. Sólo
+        # si la contabilidad por broker suma la global: si no, sacar la parte de
+        # un broker de la global podría llevarse plata de otro.
+        ajuste_caja = 0.0
+        if cajas_ok:
+            _por_b = {b: _costo_del_broker_en(f, y, m) for b, f in costo_broker.items()}
+            if abs(sum(_por_b.values()) - cost) <= max(1.0, abs(cost) * 0.005):
+                _saldos = _lr.cash_en(conn, uid, d)
+                for b in sorted(cajas_ok):
+                    _mon = _monedas_de_caja(bcur.get(b))[0]
+                    caja = sj.compute_broker_value_usd(
+                        [{"asset": _mon, "broker": b, "asset_type": None, "is_cash": 1,
+                          "quantity": 0.0, "invested": _caja_del_replay(_saldos, b, bcur.get(b)),
+                          "commissions": 0.0, "price_override": None, "currency": _mon}],
+                        {}, bcur.get(b, "USDT"), blue, broker_name=b, cedear_rate=mep)
+                    ajuste_caja += ((float(caja.get("value", 0) or 0)
+                                     + efectivo_by_broker.get(b, 0.0))
+                                    - (_por_b.get(b, 0.0) + unreal_by_broker.get(b, 0.0)))
+            else:
+                res["meses_con_caja_deducida"] = res.get("meses_con_caja_deducida", 0) + 1
+        new_cf = cost + total_unreal + ajuste_caja
         # Clamp definitivo: el MTM NUNCA debe DEJAR un capital_final negativo por
         # culpa de la valuación, ni EMPEORAR uno que ya venía negativo.
         #   • costo sano (≥0) que el unrealized flipearía a negativo → al costo
@@ -854,8 +1171,23 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     # compras y ventas con su lápida), no sólo las filas 'global': una compra
     # borrada o un promedio editado en Cartera a mitad de corrida no tocan esas
     # filas (medido por la auditoría: marzo escrito en 10.000 cuando ya era 11.000).
+    #
+    # 🔒 EL TURNO DE LA CUENTA SE PIDE ACÁ, Y NO ANTES. Hasta acá todo fue lectura
+    # (en Postgres, sin transacción abierta) y la consulta a Yahoo, que dura
+    # minutos: con el turno tomado ahí, cada depósito o borrado de la persona
+    # esperaría a Yahoo. Recién ahora, antes de la comparación, se toma: así la
+    # contabilidad que se compara es la que sigue valiendo hasta el commit de
+    # quien llama, porque toda puerta que la cambia pide el mismo turno
+    # (tests/test_turno_en_todas_las_puertas.py). Sin él, un depósito podía
+    # confirmarse entre esta comparación y la escritura, y las fotos quedaban
+    # describiendo la contabilidad de antes con la huella diciendo que no.
+    # En SQLite no hace nada: la primera escritura ya toma la base entera.
+    main._tomar_turno_de_la_puerta(conn, uid)
     if (_huella_contable(conn, uid) != huella
             or huella_de_entrada(conn, uid, today) != entrada):
+        # Antes de volver a Yahoo se SUELTA el turno: en esta pasada todavía no se
+        # escribió nada (sólo el turno), así que el rollback no se lleva nada más.
+        conn.rollback()
         if _pasada < _PASADAS:
             return backfill_user(conn, uid, today, _pasada + 1)
         res.update(skipped=True, reintentar=True,
@@ -934,7 +1266,9 @@ def backfill_summary(real_conn, users, today, apply: bool) -> dict:
             out["fotos_borradas"] += s.get("snapshots_borrados", 0)
             if s["skipped"]:
                 out["skipped"] += 1
-                if apply and s.get("snapshots_borrados"):
+                # Siempre, aunque no haya borrado nada: si pidió el turno para
+                # borrar, el commit lo suelta antes de la cuenta siguiente.
+                if apply:
                     conn.commit()
                 continue
             changed = [m for m in s["months"] if abs(m["after"] - m["before"]) > 0.01]
@@ -964,7 +1298,9 @@ def _run_on(conn, users, today, apply):
         try:
             s = backfill_user(conn, uid, today)
             summaries.append(s)
-            if apply and not s["skipped"]:
+            # También la salteada: sus fotos borradas quedaban sin confirmar (y
+            # con el turno de la cuenta tomado) hasta el commit de la siguiente.
+            if apply:
                 conn.commit()
         except Exception as ex:
             conn.rollback()

@@ -72,6 +72,7 @@ Lo que NO traduce, a propósito:
 """
 import logging
 import re
+from contextlib import contextmanager
 
 import psycopg
 
@@ -404,6 +405,9 @@ _HOY_TXT = "to_char(now() at time zone 'utc', 'YYYY-MM-DD')"
 #
 # El único que sí lee el tipo es scripts/pg_type_audit.py, que corre contra la
 # SQLite de producción a propósito: ese no pasa por acá.
+_RE_PRAGMA_FK = re.compile(
+    r"^\s*PRAGMA\s+foreign_keys\s*=\s*(ON|OFF|1|0|TRUE|FALSE)\s*;?\s*$", re.I)
+
 _RE_PRAGMA_TABLE_INFO = re.compile(
     r"^\s*PRAGMA\s+table_info\s*\(\s*[\"']?([A-Za-z_]\w*)[\"']?\s*\)\s*;?\s*$", re.I)
 _RE_FROM_SQLITE_MASTER = re.compile(r"\bFROM\s+sqlite_master\b", re.I)
@@ -501,6 +505,37 @@ _SIN_PK: set = set()
 # que no se entera del ALTER haría que la migración se saltee una columna.
 _COLS_CACHE: dict = {}
 _RE_DDL = re.compile(r"\b(ALTER|CREATE|DROP)\s+(TABLE|VIEW)\b", re.I)
+
+# ── ¿Esta sentencia abre la transacción? ────────────────────────────────────
+# sqlite3 (con isolation_level='', el de siempre) abre la transacción recién
+# ANTES DE LA PRIMERA ESCRITURA: los SELECT de antes corren sueltos y no dejan
+# nada tomado. psycopg con autocommit=False la abre en el PRIMER SELECT. Esa
+# diferencia hacía que todo pedido que lee y después sale a la red (Yahoo, la
+# inflación de argentinadatos) dejara la transacción abierta y ociosa mientras
+# espera: en la suite la mata el reloj de 6 s y el Wrapped publicaba «+0,00 %»
+# como mejor mes (medido el 29/10/2026); en producción retiene una conexión del
+# pooler de Supabase durante toda la espera.
+#
+# Por eso la conexión vive en autocommit y `Connection._abrir_si_escribe` manda
+# el BEGIN antes de la primera sentencia que NO sea una lectura pura. Falla
+# hacia lo de antes: lo que no se reconoce como lectura abre la transacción, que
+# es exactamente el comportamiento viejo. Una lectura pura que corre suelta ve lo
+# mismo que dentro de una transacción (READ COMMITTED toma una foto nueva por
+# sentencia); lo único que cambia es que no retiene nada.
+#
+# NO es lectura pura, aunque empiece con SELECT, lo que sólo vale DENTRO de una
+# transacción: `pg_advisory_xact_lock` (el turno exclusivo se soltaría al
+# instante), `FOR UPDATE/SHARE` (el candado de fila), `set_config` (el `SET
+# LOCAL`), y `SELECT ... INTO` (crea una tabla).
+_RE_LECTURA = re.compile(r"^\s*(SELECT|WITH|SHOW|EXPLAIN|VALUES)\b", re.I)
+_RE_NO_ES_LECTURA = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|MERGE|INTO|LOCK|pg_advisory_xact_\w+|set_config|"
+    r"FOR\s+(UPDATE|SHARE|NO\s+KEY\s+UPDATE|KEY\s+SHARE))\b", re.I)
+
+
+def es_lectura_pura(sql: str) -> bool:
+    """¿Esta sentencia (ya traducida) puede correr fuera de una transacción?"""
+    return bool(_RE_LECTURA.match(sql)) and not _RE_NO_ES_LECTURA.search(sql)
 
 
 def _invalidar_por_ddl():
@@ -610,6 +645,27 @@ def traducir(sql: str) -> str:
     m = _RE_PRAGMA_TABLE_INFO.match(sql)
     if m:
         return _TABLE_INFO_SQL.format(tabla=m.group(1))
+
+    # `PRAGMA foreign_keys` — lo usan los fixtures para sembrar filas en cualquier
+    # orden sin que la base les reclame el padre.
+    #
+    # En SQLite las claves foráneas están APAGADAS por default y `get_db()` las
+    # prende (main.py:662). En Postgres están siempre activas y no hay interruptor
+    # equivalente... salvo `session_replication_role`, que suspende los triggers
+    # internos con los que Postgres implementa las FK.
+    #
+    # ⚠️ SUSPENDE MÁS QUE LAS FK: `replica` también apaga los triggers y reglas de
+    # usuario. Acá es EXACTO porque el esquema no tiene ninguno — medido sobre
+    # `schema_pg.sql`: 0 `CREATE TRIGGER`, 0 `CREATE RULE`, 14 `REFERENCES`. Si
+    # algún día se agrega un trigger, esta equivalencia deja de ser exacta y hay
+    # que volver acá. `tests/test_pgshim.py` lo tiene congelado con ese conteo.
+    #
+    # Verificado que el rol lo permite en el Postgres local Y en Supabase (que da
+    # menos permisos): si no lo permitiera, fallaría al ejecutar, no en silencio.
+    m = _RE_PRAGMA_FK.match(sql)
+    if m:
+        prendido = m.group(1).upper() in ("ON", "1", "TRUE")
+        return "SET session_replication_role = '%s'" % ("origin" if prendido else "replica")
 
     # `sub` con lambda y no con string: el texto de reemplazo tiene barras y
     # `re.sub` las interpretaría como grupos.
@@ -844,19 +900,177 @@ class Cursor:
         self._cur.close()
 
 
+# ── El pozo de conexiones ────────────────────────────────────────────────────
+# Hasta el 30/10/2026 cada `get_db()` abría una conexión nueva y `close()` la
+# cerraba. Contra el Supabase real eso falló de dos maneras (HANDOFF 5.F):
+#
+#   1. El session pooler admite un CUPO de clientes a la vez. Un envío masivo con
+#      hilos lo llenó: `EMAXCONNSESSION max clients reached`. En producción el
+#      mismo patrón, con varios usuarios a la vez, es un pedido que revienta.
+#   2. Abrir cuesta caro con red de por medio: 0,37 s desde la Mac (TLS + los
+#      ajustes de pgsesion), contra 1 ms local. Hay ~270 `get_db()` en el código.
+#
+# El pozo atiende las dos: guarda las conexiones que se devuelven para el próximo
+# que pida, y nunca deja que haya más de `RENDI_PG_POOL_MAX` prestadas a la vez.
+# Si están todas prestadas, el que pide ESPERA (hasta `RENDI_PG_POOL_ESPERA`
+# segundos) en vez de reventar contra el cupo del pooler. Si se vence la espera,
+# levanta un error que dice qué pasó.
+#
+# Una conexión vuelve al pozo SÓLO si está limpia:
+#   · sin transacción abierta: lo que quedó abierto se deshace (es lo mismo que
+#     pasaba al cerrarla, que también descarta lo no confirmado);
+#   · sin ajustes de sesión cambiados: un `SET lock_timeout` de un pedido no puede
+#     heredarlo el siguiente. Esas se cierran (ver `_RE_ENSUCIA`). La app no hace
+#     ninguno hoy; los tests sí.
+#   · viva: si estuvo quieta más de `_PING_SI_QUIETA` s, se le pregunta antes de
+#     prestarla, porque el pooler o el servidor pueden haberla cortado.
+_RE_ENSUCIA = re.compile(
+    r"^\s*(SET(?!\s+(LOCAL|TRANSACTION|CONSTRAINTS)\b)|RESET|LISTEN|PREPARE|DISCARD)\b"
+    r"|\bCREATE\s+(GLOBAL\s+|LOCAL\s+)?TEMP(ORARY)?\b"
+    r"|\bset_config\s*\([^)]*,\s*false\s*\)"
+    # El candado de SESIÓN (no el `_xact_`) sobrevive al commit: prestada de nuevo,
+    # la conexión seguiría teniéndolo. `init_db` lo pide por una conexión propia.
+    r"|\bpg_(try_)?advisory_lock(_shared)?\b", re.I)
+_PING_SI_QUIETA = 30.0
+_QUIETA_MAXIMO = 300.0
+
+
+class PozoAgotado(psycopg.OperationalError):
+    pass
+
+
+class _Pozo:
+    def __init__(self, dsn: str, maximo: int, espera: float):
+        import threading
+        self._dsn = dsn
+        self._maximo = maximo
+        self._espera = espera
+        self._cupo = threading.BoundedSemaphore(maximo)
+        self._lock = threading.Lock()
+        self._libres = []            # (conexión psycopg, momento en que volvió)
+        self._cerrado = False
+
+    def tomar(self):
+        import time
+        import pgsesion
+        if not self._cupo.acquire(timeout=self._espera):
+            raise PozoAgotado(
+                f"Las {self._maximo} conexiones a la base están prestadas y ninguna "
+                f"volvió en {self._espera:.0f} s (RENDI_PG_POOL_MAX). Ver pgshim._Pozo.")
+        try:
+            while True:
+                with self._lock:
+                    c, desde = self._libres.pop() if self._libres else (None, 0.0)
+                if c is None:
+                    return pgsesion.conectar(self._dsn, autocommit=True)
+                quieta = time.monotonic() - desde
+                if c.closed or quieta > _QUIETA_MAXIMO:
+                    _cerrar_sin_ruido(c)
+                    continue
+                if quieta > _PING_SI_QUIETA:
+                    try:
+                        c.execute("SELECT 1")
+                    except Exception:
+                        _cerrar_sin_ruido(c)
+                        continue
+                return c
+        except BaseException:
+            self._cupo.release()
+            raise
+
+    def devolver(self, c, sucia: bool = False):
+        import time
+        try:
+            if not (c.closed or sucia or self._cerrado):
+                if c.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+                    c.rollback()
+                if c.info.transaction_status == psycopg.pq.TransactionStatus.IDLE:
+                    with self._lock:
+                        self._libres.append((c, time.monotonic()))
+                    c = None
+        except Exception:
+            pass
+        finally:
+            if c is not None:
+                _cerrar_sin_ruido(c)
+            self._cupo.release()
+
+    def cerrar(self):
+        """Cierra las que están quietas; las prestadas se cierran al volver."""
+        with self._lock:
+            self._cerrado = True
+            libres, self._libres = self._libres, []
+        for c, _ in libres:
+            _cerrar_sin_ruido(c)
+
+
+def _cerrar_sin_ruido(c):
+    try:
+        c.close()
+    except Exception:
+        pass
+
+
+_POZOS: dict = {}
+
+
+def _pozo_de(dsn: str) -> "_Pozo":
+    import os
+    p = _POZOS.get(dsn)
+    if p is None:
+        p = _POZOS.setdefault(dsn, _Pozo(
+            dsn,
+            maximo=int(os.environ.get("RENDI_PG_POOL_MAX", "10")),
+            espera=float(os.environ.get("RENDI_PG_POOL_ESPERA", "30"))))
+    return p
+
+
+def cerrar_pozos():
+    """Los tests cambian de esquema (y de DSN) en cada módulo: las conexiones
+    quietas del módulo anterior apuntan a un esquema que se va a borrar."""
+    for dsn in list(_POZOS):
+        _POZOS.pop(dsn).cerrar()
+
+
+@contextmanager
+def tope_temporal(maximo: int):
+    """Para los tests de carreras: arrancan N hilos con la conexión YA tomada y
+    los sueltan juntos con una barrera. Con N por encima del tope, el hilo N+1
+    espera una conexión que nadie devuelve hasta pasar la barrera, y la barrera
+    espera al hilo N+1. En la app no pasa: ningún pedido espera a otro con la
+    conexión en la mano para arrancar."""
+    import os
+    previo = os.environ.get("RENDI_PG_POOL_MAX")
+    os.environ["RENDI_PG_POOL_MAX"] = str(maximo)
+    cerrar_pozos()
+    try:
+        yield
+    finally:
+        if previo is None:
+            os.environ.pop("RENDI_PG_POOL_MAX", None)
+        else:
+            os.environ["RENDI_PG_POOL_MAX"] = previo
+        cerrar_pozos()
+
+
 class Connection:
     """Emula la conexión de sqlite3 sobre psycopg."""
 
     def __init__(self, dsn: str):
-        # autocommit=False + commit/rollback explícitos = lo mismo que hace
-        # sqlite3 con isolation_level=''.
+        # autocommit=True + un BEGIN antes de la primera escritura
+        # (`_abrir_si_escribe`) = lo mismo que hace sqlite3 con isolation_level=''.
+        # ⚠️ Hasta el 29/10/2026 decía «autocommit=False = lo mismo que sqlite3», y
+        # no lo era: así el primer SELECT ya abría la transacción. Ver
+        # `es_lectura_pura`.
         # Sin row_factory: el default de psycopg ya devuelve tuplas, y las
         # envolvemos nosotros en `Row` para poder leer por nombre Y por posición.
         # Por `pgsesion.conectar` y no por `psycopg.connect`: sin
         # `extra_float_digits=3` esta conexión lee los floats redondeados a 15
         # dígitos, y el rebuild los REESCRIBE así. Ver pgsesion.py.
-        import pgsesion
-        self._c = pgsesion.conectar(dsn, autocommit=False)
+        # La conexión sale del pozo y vuelve en `close()`. Ver `_Pozo`.
+        self._pozo = _pozo_de(dsn)
+        self._c = self._pozo.tomar()
+        self._sucia = False
         self._dsn = dsn              # para leer el catálogo aparte (ver _pk_de)
         self.row_factory = None      # el código lo setea; acá siempre devolvemos Row
 
@@ -996,6 +1210,7 @@ class Connection:
 
         q = traducir(sql)
         p = _normalizar_params(params)
+        self._abrir_si_escribe(q)
         cur = self._c.cursor()
 
         m = _RE_INSERT_TABLA.match(q.lstrip())
@@ -1011,6 +1226,7 @@ class Connection:
 
     def executemany(self, sql, seq):
         q = traducir(sql)
+        self._abrir_si_escribe(q)
         cur = self._c.cursor()
         cur.executemany(q, [_normalizar_params(p) for p in seq])
         return Cursor(cur)
@@ -1022,21 +1238,97 @@ class Connection:
             _invalidar_por_ddl()     # casi todo executescript es DDL de migración
         cur = self._c.cursor()
         for s in [x.strip() for x in sql.split(";") if x.strip()]:
-            cur.execute(traducir(s))
+            q = traducir(s)
+            self._abrir_si_escribe(q)
+            cur.execute(q)
         return Cursor(cur)
+
+    def _abrir_si_escribe(self, q: str):
+        """El BEGIN que sqlite3 manda solo antes de la primera escritura. Ver
+        `es_lectura_pura`. Si ya hay una transacción abierta (o arruinada), la
+        sentencia va adentro de ésa, como siempre."""
+        if _RE_ENSUCIA.search(q):
+            self._sucia = True       # no vuelve al pozo: ver _Pozo.devolver
+        if es_lectura_pura(q):
+            return
+        if self._c.info.transaction_status == psycopg.pq.TransactionStatus.IDLE:
+            self._c.execute("BEGIN")
 
     def cursor(self):
         return Cursor(self._c.cursor())
 
+    @property
+    def in_transaction(self) -> bool:
+        """¿Esta conexión dejó una transacción abierta? (igual que sqlite3)
+
+        Existe porque hay tests que lo vigilan, y vigilan algo importante: una
+        conexión que vuelve al llamador con una escritura abierta retiene los
+        locks de todo lo que tocó. En SQLite eso deja a cualquier otro escritor
+        esperando o con «database is locked» — el incidente del 12 y 13/08 y el
+        motivo de toda esta migración. En Postgres queda `idle in transaction`,
+        que es lo mismo pero peor: no se corta solo.
+
+        `sqlite3` lo expone como propiedad; psycopg lo dice en
+        `info.transaction_status`. Se traduce a bool con el MISMO significado:
+          IDLE                  -> False (no hay nada abierto)
+          INTRANS / INERROR     -> True  (hay una transacción abierta; la
+                                          segunda, además, ya está arruinada)
+          ACTIVE                -> True  (hay un comando corriendo)
+        """
+        try:
+            import psycopg
+            st = self._c.info.transaction_status
+            return st != psycopg.pq.TransactionStatus.IDLE
+        except Exception:
+            # Si no se puede saber, se contesta "no" y NO se inventa: un True
+            # falso haría fallar tests por algo que no pasó.
+            return False
+
+    def _no_confirmar_lo_descartado(self):
+        """🔴 Si la transacción quedó arruinada, NO se dice «confirmado».
+
+        En Postgres, después de un error de SQL la transacción queda abortada
+        (INERROR) y `commit()` de psycopg manda un COMMIT que el servidor contesta
+        con ROLLBACK, **sin levantar nada** (medido el 28/10/2026 con psycopg
+        3.2.13: un INSERT, un error, commit() callado y 0 filas). En SQLite un
+        error no arruina la transacción, así que el código se escribió suponiendo
+        que commitear después de un `except` guarda lo de antes.
+
+        Esa forma —«try: escribir → except: log → commit → contestar éxito»— está
+        en 28 funciones del backend (hallazgo 11). En `create_operation` contestaba
+        200 con una operación que se había descartado entera. Arreglarlas de a una
+        es el 1-de-N de siempre; acá se corta para todas: lo descartado se deshace
+        explícito y se levanta un error, así el pedido falla A LA VISTA (un 500 y
+        un registro) en vez de perder datos en silencio. Quien necesite guardar lo
+        de antes aunque falle una parte usa un punto de guardado
+        (`main._si_falla_se_deshace_solo_esto`)."""
+        try:
+            st = self._c.info.transaction_status
+        except Exception:
+            return
+        if st == psycopg.pq.TransactionStatus.INERROR:
+            self._c.rollback()
+            raise psycopg.errors.InFailedSqlTransaction(
+                "La transacción quedó abortada por un error anterior y se descartó: "
+                "no se guardó nada de este pedido (ver pgshim._no_confirmar_lo_descartado).")
+
     def commit(self):
+        self._no_confirmar_lo_descartado()
         self._c.commit()
 
     def rollback(self):
         self._c.rollback()
 
     def close(self):
+        c, self._c = self._c, None
+        if c is not None:
+            self._pozo.devolver(c, sucia=self._sucia)
+
+    def __del__(self):
+        # Quien se olvida de cerrar no se lleva un lugar del pozo para siempre.
+        # En CPython esto corre apenas se suelta la última referencia.
         try:
-            self._c.close()
+            self.close()
         except Exception:
             pass
 
@@ -1047,6 +1339,8 @@ class Connection:
 
     def __exit__(self, exc_type, exc, tb):
         if exc_type is None:
+            # `with conn:` también confirma al salir: el mismo silencio, la misma guarda.
+            self._no_confirmar_lo_descartado()
             self._c.commit()
         else:
             self._c.rollback()

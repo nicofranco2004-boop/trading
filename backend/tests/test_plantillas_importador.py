@@ -201,6 +201,11 @@ class AlGuardarElBrokerFijoQuedaConElNombreDelBroker(unittest.TestCase):
         el instante en que el guardado toma el turno."""
         cta = self._cuenta("Zorzal Ñandú")
         bid = cta.ok("get", "/api/brokers")[0]["id"]
+        # Crear el broker lanzó la reconstrucción de fondo, que también toma el
+        # turno: si sigue viva cuando entra el mock, lo cuenta (contra Supabase dio
+        # 2 en vez de 1). Ver tests/_trabajo_de_fondo.py.
+        from tests import _trabajo_de_fondo
+        _trabajo_de_fondo.esperar()
         de_verdad = main._tomar_turno
 
         def el_renombre_llego_antes(conn, uid):

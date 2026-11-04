@@ -350,6 +350,23 @@ class ContraPostgresTest(unittest.TestCase):
             ).fetchone()[0]
         self.assertGreater(nuevo, 2)
 
+    def test_el_proximo_alta_NO_reusa_el_id_de_una_fila_que_el_origen_borro(self):
+        """SQLite (`AUTOINCREMENT`) no reusa el id del último borrado: sigue desde
+        `sqlite_sequence`. Postgres tiene que seguir desde ahí mismo, no desde el
+        mayor id que quedó. Medido en la copia del 16/08: 394 ids reusables."""
+        o = sqlite3.connect(self.ruta)
+        o.execute("INSERT INTO users VALUES (3, 'se-va@x.test')")
+        o.execute("DELETE FROM users WHERE id=3")
+        o.commit()
+        o.close()
+        self.assertEqual(self._copiar(), 0, "la verificación tiene que quedar en cero")
+        with self.psycopg.connect(self.dsn, autocommit=True) as c:
+            c.execute("SET search_path = cop")
+            nuevo = c.execute(
+                "INSERT INTO users (email) VALUES ('nuevo@x.test') RETURNING id"
+            ).fetchone()[0]
+        self.assertGreater(nuevo, 3, "reusó el id de una fila que el origen ya había borrado")
+
     # ── la virginidad del destino ────────────────────────────────────────────
     def test_copiar_DOS_veces_aborta_en_vez_de_duplicar(self):
         self.assertEqual(self._copiar(), 0)

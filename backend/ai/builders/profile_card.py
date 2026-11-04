@@ -41,6 +41,7 @@ import json
 from behavioral import _native_ccy, es_bono_o_letra
 from cripto import es_cripto, es_tenencia_cripto
 from realized_pnl import es_conversion
+from orden_estable import operaciones_por_fecha
 
 
 def _invested_usd(p: Dict[str, Any], tc_blue: float, tc_cedear: float | None = None) -> float:
@@ -163,7 +164,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     )
     stamp_byma(positions, brokers)   # flag .BA parent-aware (broker + su padre)
     operations = [dict(r) for r in conn.execute(
-        "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (user_id,)
+        f"SELECT * FROM operations WHERE user_id=? ORDER BY {operaciones_por_fecha()}", (user_id,)
     ).fetchall()]
 
     # tc_blue para convertir invested ARS→USD antes de sumar (mismo patrón que

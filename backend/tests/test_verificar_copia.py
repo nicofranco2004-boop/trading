@@ -682,7 +682,10 @@ class ContraPostgresDeVerdadTest(unittest.TestCase):
             tipos = collections.Counter(t for cols in esq.values() for _, t in cols)
             c.execute("DROP SCHEMA IF EXISTS vreal CASCADE")
 
-        self.assertEqual(len(esq), 60, f"cambió la cantidad de tablas: {len(esq)}")
+        # 78 al 31/10/2026 (18 tablas nuevas desde las 60). Estuvo meses diciendo 60
+        # sin que nadie lo viera: este archivo necesita PG_DSN_VERIF, la suite no
+        # la pone, y entonces se saltea. Lo destapó el ensayo del pasaje.
+        self.assertEqual(len(esq), 78, f"cambió la cantidad de tablas: {len(esq)}")
         self.assertEqual(set(tipos), {"text", "bigint", "double precision"},
                          f"apareció un tipo nuevo en el esquema: {dict(tipos)}. "
                          f"Revisá que `canon` lo normalice bien ANTES de copiar.")

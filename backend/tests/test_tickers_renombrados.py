@@ -92,15 +92,26 @@ class _Base(unittest.TestCase):
         self.conn = main.get_db()
         for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
                   "import_batches", "operations", "positions", "monthly_entries",
-                  "snapshots", "watchlist", "price_alerts", "brokers", "users"):
+                  "snapshots", "watchlist", "alerts", "brokers", "users"):
+            # Cada borrado con su punto de guardado: en Postgres el primero que
+            # falla (`users`, por las tablas que la apuntan; antes también
+            # `price_alerts`, que no existe en ningún motor) abortaba la
+            # transacción y el commit de abajo descartaba TODO el barrido, callado.
             try:
-                self.conn.execute(f"DELETE FROM {t}")
+                with main._si_falla_se_deshace_solo_esto(self.conn, "limpieza"):
+                    self.conn.execute(f"DELETE FROM {t}")
             except Exception:
                 pass
         self.conn.commit()
         self.uid = self.conn.execute(
             "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
-            ("renombrados@rendi.test", "x")).lastrowid
+            # Email ÚNICO por instancia y no fijo. El barrido de arriba borra con
+            # `except: pass`, así que cuando falla —en Postgres falla: hay tablas
+            # que apuntan a `users` y no están en esa lista— el email del test
+            # anterior sobrevive y el alta de éste choca contra la unicidad. Con
+            # un email distinto cada vez, la prueba deja de depender de que la
+            # limpieza haya funcionado.
+            (f"renombrados-{id(self)}@rendi.test", "x")).lastrowid
         self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                           (self.uid, self.BROKER, "USD"))
         self.conn.commit()

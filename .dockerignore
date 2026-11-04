@@ -1,0 +1,17 @@
+# Lo que NO se manda a armar ninguna imagen de este repositorio: bases locales,
+# backups con datos reales de usuarios, dependencias y copias de trabajo.
+# Vale para TODOS los Dockerfile del repo: la imagen de producción (`Dockerfile`)
+# copia sólo `backend/`, pero la de la suite (`Dockerfile.suite`) copia todo, y hay
+# pruebas que leen `frontend/` (por eso `frontend` NO está acá).
+.git
+.claude
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.db.gz
+backend/backups
+backend/.env
+.env

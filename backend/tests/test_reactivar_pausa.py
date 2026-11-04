@@ -91,7 +91,8 @@ class MailCuentasEnPausa(unittest.TestCase):
             fin = datetime.fromisoformat(self.conn.execute(
                 "SELECT trial_ends_at t FROM users WHERE id=?", (uid,)).fetchone()["t"])
             self.conn.execute(
-                "INSERT OR REPLACE INTO trial_email_log (user_id, kind, sent_at) VALUES (?,?,?)",
+                "INSERT INTO trial_email_log (user_id, kind, sent_at) VALUES (?,?,?) "
+                "ON CONFLICT (user_id, kind) DO UPDATE SET sent_at=EXCLUDED.sent_at",
                 (uid, tr.MAIL_ENDED, (fin + timedelta(hours=6)).isoformat()))
             self.conn.commit()
         self.assertTrue(main.cuenta_en_pausa(self.conn, uid), "el armado no la dejó en pausa")

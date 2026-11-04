@@ -840,6 +840,31 @@ class OperacionGrupalDelAsesor(FlujosAManoBase):
             "AND year=2026 AND month=3", (self.cliente,)).fetchone()
         self.assertAlmostEqual(float(row["manual_deposits"] or 0), 0.0)
 
+    @unittest.skipUnless(getattr(main, "USANDO_PG", False),
+                         "en SQLite la escritura toma la base entera y el turno no se pide")
+    def test_aplicar_y_deshacer_piden_el_turno_del_cliente(self):
+        """La operación grupal escribe en la cuenta del CLIENTE: en Postgres tiene
+        que pedir su turno, o se mete en el medio de un borrado o un import suyo
+        (tests/test_turno_en_todas_las_puertas.py)."""
+        pedidos = []
+        real = main._tomar_turno
+
+        def anotar(conn, uid):
+            pedidos.append(uid)
+            return real(conn, uid)
+        with mock.patch.object(main, "_tomar_turno", anotar):
+            r = self.http.post("/api/advisor/group-op", headers=self.hdr, json={
+                "asset": "GD30", "currency": "USD", "entry_date": "2026-03-06",
+                "rows": [{"client_uid": self.cliente, "broker": "Cocos",
+                          "quantity": 10, "buy_price": 100}]})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertIn(self.cliente, pedidos, "aplicar no pidió el turno del cliente")
+            pedidos.clear()
+            r = self.http.post(f"/api/advisor/group-op/{r.json()['batch_id']}/undo",
+                               headers=self.hdr)
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertIn(self.cliente, pedidos, "deshacer no pidió el turno del cliente")
+
     def test_deshacer_cuando_el_autodeposito_ya_se_fue_no_se_come_otra_carga(self):
         """El cliente borró el renglón de marzo en /mensual (se llevó el autodepósito
         del lote) y después cargó otro depósito igual. El deshacer del asesor restaba

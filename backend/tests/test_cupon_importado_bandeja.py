@@ -32,6 +32,8 @@ import unittest
 from fastapi.testclient import TestClient
 
 import main
+from tests._ids_relativos import brokers_con_ids_relativos  # noqa: E402
+from tests._limpieza import vaciar  # noqa: E402
 
 FIXTURE = pathlib.Path(__file__).resolve().parent / "fixtures" / "cupon_importado_bandeja.json"
 
@@ -81,11 +83,9 @@ def _lo_que_ve_la_pantalla(client):
             {"date": o["date"], "broker": o["broker"], "asset": o["asset"], "op_type": o["op_type"]}
             for o in sorted(ops, key=lambda o: (o["date"], o["broker"], o["asset"]))
         ],
-        "brokers": [
-            {"id": b["id"], "name": b["name"], "currency": b["currency"],
-             "parent_broker_id": b.get("parent_broker_id")}
-            for b in sorted(brokers, key=lambda b: b["id"])
-        ],
+        # Ids 1, 2, … en orden de alta: el contrato fija la relación con la
+        # madre, no el número del contador (ver tests/_ids_relativos.py).
+        "brokers": brokers_con_ids_relativos(brokers),
         "skips": skips,
     }
 
@@ -93,20 +93,13 @@ def _lo_que_ve_la_pantalla(client):
 class CuponImportadoBandejaTest(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
-        for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
-                  "import_batches", "operations", "positions", "monthly_entries",
-                  "snapshots", "bond_cashflow_skips", "config", "brokers", "users"):
-            try:
-                self.conn.execute(f"DELETE FROM {t}")
-            except Exception:
-                pass
+        # Hijas antes que madres y sin tragar errores: ver tests/_limpieza.py.
+        # El contador de ids de brokers ya no se reinicia: los ids que van al
+        # fixture se renumeran (tests/_ids_relativos.py).
+        vaciar(self.conn, "import_op_links", "import_normalized_tx", "import_raw_rows",
+               "import_batches", "operations", "positions", "monthly_entries",
+               "snapshots", "bond_cashflow_skips", "config", "brokers", "users")
         self.conn.commit()
-        # Los ids de broker van al fixture (parent_broker_id): que arranquen igual.
-        try:
-            self.conn.execute("DELETE FROM sqlite_sequence WHERE name='brokers'")
-            self.conn.commit()
-        except Exception:
-            pass
 
     def tearDown(self):
         main.app.dependency_overrides.pop(main.get_effective_user, None)

@@ -57,8 +57,8 @@ serie = [
     (str(hoy), 1500.0),                            # el dólar de HOY
 ]
 for fecha, tc in serie:
-    c.execute("INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
-              "VALUES (?,?,?,'seed-f1')", (fecha, tc * 0.95, tc))
+    c.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+              "VALUES (?,?,?,'seed-f1') ON CONFLICT (date) DO UPDATE SET blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, source=EXCLUDED.source", (fecha, tc * 0.95, tc))
 
 # ── Brokers ──────────────────────────────────────────────────────────────────
 padre = c.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,'Cocos','ARS')",

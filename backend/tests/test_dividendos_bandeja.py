@@ -36,6 +36,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 import dividendos  # noqa: E402
 import fechas  # noqa: E402
 import main  # noqa: E402
+from tests._limpieza import vaciar  # noqa: E402
 
 HDR = "fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas\n"
 TC = 1450.0
@@ -61,14 +62,7 @@ class _Base(unittest.TestCase):
             self.conn.execute("DELETE FROM fx_rates_daily")
         except Exception:
             pass
-        for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
-                  "import_batches", "operations", "positions", "monthly_entries",
-                  "snapshots", "deleted_ops_journal", "dividendos_salteados",
-                  "dividendos_pagados", "dividendos_emisor", "brokers", "users"):
-            try:
-                self.conn.execute(f"DELETE FROM {t}")
-            except Exception:
-                pass
+        vaciar(self.conn, "import_op_links", "import_normalized_tx", "import_raw_rows", "import_batches", "operations", "positions", "monthly_entries", "snapshots", "deleted_ops_journal", "dividendos_salteados", "dividendos_pagados", "dividendos_emisor", "brokers", "users")   # ver tests/_limpieza.py
         for d in ("2026-09-15", "2026-10-01", "2026-10-06", "2026-10-07"):
             self.conn.execute(
                 "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source, fetched_at) "

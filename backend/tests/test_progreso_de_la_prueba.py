@@ -739,10 +739,22 @@ class ElPanelNoPuedeColGARLaPagina(Base):
     resultado es CORRECTO: sólo tarda. Por eso el test le pide el PLAN a
     SQLite."""
 
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "Sólo SQLite: EXPLAIN QUERY PLAN no existe en Postgres")
     def test_contar_lo_cargado_a_mano_usa_el_indice_y_no_escanea(self):
         """⚠️ El plan nombra el ALIAS («SCAN l»), no la tabla. La primera
         versión de este test buscaba "SCAN import_op_links" y por eso no se
-        habría puesto en rojo NUNCA: comprobado a mano borrando el índice."""
+        habría puesto en rojo NUNCA: comprobado a mano borrando el índice.
+
+        ⚠️ MARCADO SÓLO-SQLITE, y NO porque la propiedad deje de importar allá.
+        `EXPLAIN QUERY PLAN` es sintaxis de SQLite; en Postgres el comando es
+        `EXPLAIN` y el plan sale con otro formato ("Index Scan using …" en vez
+        de "SCAN l"), así que los dos assert de abajo no aplican tal cual.
+
+        El índice SÍ existe del otro lado (`idx_import_op_links_pos` está en
+        `schema_pg.sql`), o sea que la versión para Postgres es posible: queda
+        PENDIENTE. Mientras tanto ésta cubre el motor que hoy corre en
+        producción."""
         import re
         sql = tr.sql_posiciones_a_mano("?")
         plan = " ".join(str(f[-1]) for f in

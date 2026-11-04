@@ -108,6 +108,7 @@ import realized_pnl as _realized_pnl
 import twr as _twr
 
 from . import caida_medida
+from orden_estable import operaciones_por_fecha
 
 
 # Acciones argentinas: la MISMA regla que el diagnóstico de sesgo local
@@ -204,7 +205,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     ops = [dict(r) for r in conn.execute(
         "SELECT date, asset, op_type, entry_price, exit_price, quantity, pnl_usd, pnl_pct, "
         "broker, currency, fx_to_usd "
-        "FROM operations WHERE user_id=? ORDER BY date ASC",
+        f"FROM operations WHERE user_id=? ORDER BY {operaciones_por_fecha()}",
         (user_id,),
     ).fetchall()]
 

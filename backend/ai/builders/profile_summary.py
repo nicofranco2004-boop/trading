@@ -30,6 +30,7 @@ import json
 
 from behavioral import stamp_positions_currency, stamp_byma
 from .profile_card import _build_card_data, _CARD_TITLES, _invested_usd
+from orden_estable import operaciones_por_fecha
 
 
 def _tc(conn, user_id: int, key: str, default: float) -> float:
@@ -78,7 +79,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     )
     stamp_byma(positions, brokers)
     operations = [dict(r) for r in conn.execute(
-        "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (user_id,)
+        f"SELECT * FROM operations WHERE user_id=? ORDER BY {operaciones_por_fecha()}", (user_id,)
     ).fetchall()]
 
     tc_blue = _tc(conn, user_id, "tc_blue", 1415.0)

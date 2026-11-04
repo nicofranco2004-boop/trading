@@ -124,8 +124,8 @@ class AportesEnPesos(unittest.TestCase):
             # El dólar del día del import (la serie sólo tiene hoy: los movimientos
             # de 2024 no lo usan).
             hoy = conn.execute("SELECT date('now')").fetchone()[0]
-            conn.execute("INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta) "
-                         "VALUES (?, 1450, 1500)", (hoy,))
+            conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) "
+                         "VALUES (?, 1450, 1500) ON CONFLICT (date) DO UPDATE SET blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta", (hoy,))
             conn.commit()
         finally:
             conn.close()

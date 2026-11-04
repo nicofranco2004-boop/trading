@@ -28,6 +28,7 @@ Shape (~700 bytes):
 from __future__ import annotations
 from typing import Dict, Any
 from datetime import datetime, date
+from orden_estable import operaciones_por_fecha
 
 
 _AR_BROKERS = {"cocos", "iol", "bull", "balanz", "naranja", "pppi", "invertironline", "lemon"}
@@ -106,9 +107,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # Días en posición (primer Compra del ticker)
     days_held = None
     first_op = conn.execute(
-        """SELECT date FROM operations
+        f"""SELECT date FROM operations
             WHERE user_id=? AND asset=? AND op_type IN ('Compra')
-            ORDER BY date ASC LIMIT 1""",
+            ORDER BY {operaciones_por_fecha()} LIMIT 1""",
         (user_id, asset),
     ).fetchone()
     if first_op and first_op["date"]:

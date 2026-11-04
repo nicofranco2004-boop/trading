@@ -57,7 +57,8 @@ class Cobros(unittest.TestCase):
                      (self.uid, self.BROKER))
         # El dólar del usuario HOY: si algo dividiera por éste en vez del del día,
         # los montos darían otra cosa.
-        conn.execute("INSERT OR REPLACE INTO config (user_id, key, value) VALUES (?, 'tc_blue', '2000')",
+        conn.execute("INSERT INTO config (user_id, key, value) VALUES (?, 'tc_blue', '2000') "
+                     "ON CONFLICT (key, user_id) DO UPDATE SET value=EXCLUDED.value",
                      (self.uid,))
         conn.commit()
         conn.close()
@@ -67,8 +68,10 @@ class Cobros(unittest.TestCase):
     def _dolar_del_dia(self, fecha, tc):
         conn = main.get_db()
         conn.execute(
-            "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
-            "VALUES (?, ?, ?, 'test')", (fecha, tc, tc))
+            "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+            "VALUES (?, ?, ?, 'test') ON CONFLICT (date) DO UPDATE SET "
+            "blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, "
+            "source=EXCLUDED.source", (fecha, tc, tc))
         conn.commit()
         conn.close()
 

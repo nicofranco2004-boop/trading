@@ -1016,7 +1016,9 @@ class TestPrecioViejoNoEntraALaHistoria(unittest.TestCase):
 
     def _sembrar_precio(self, symbol, price, updated_at):
         conn = sqlite3.connect(self.db_path)
-        conn.execute("INSERT OR REPLACE INTO asset_last_price VALUES (?,?,?)",
+        conn.execute("INSERT INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,?) "
+                     "ON CONFLICT (symbol) DO UPDATE SET price=EXCLUDED.price, "
+                     "updated_at=EXCLUDED.updated_at",
                      (symbol, price, updated_at))
         conn.commit(); conn.close()
 
@@ -1069,7 +1071,9 @@ class TestPrecioViejoNoEntraALaHistoria(unittest.TestCase):
             conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
             conn.execute("DELETE FROM snapshots WHERE user_id=1")
             for sym, px in (('AAPL', 200.0), ('XYZ', 50.0)):
-                conn.execute("INSERT OR REPLACE INTO asset_last_price VALUES (?,?,?)",
+                conn.execute("INSERT INTO asset_last_price (symbol, price, updated_at) VALUES (?,?,?) "
+                     "ON CONFLICT (symbol) DO UPDATE SET price=EXCLUDED.price, "
+                     "updated_at=EXCLUDED.updated_at",
                              (sym, px, estampa))
             conn.commit()
             with patch('snapshots_job.fetch_prices_for_symbols',

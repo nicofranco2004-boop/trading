@@ -325,18 +325,51 @@ def plantilla_con_broker_de_hoy(conn, uid: int, mapping: dict) -> dict:
     escrito = defaults.get("broker") if isinstance(defaults, dict) else None
     if not isinstance(escrito, str):
         return mapping
-    de_hoy = [r["name"] for r in conn.execute(
-        "SELECT name FROM brokers WHERE user_id=?", (uid,)).fetchall()]
-    if escrito in de_hoy:
+    nombre = traductor_de_hoy(conn, uid)(escrito)
+    if nombre == escrito:
         return mapping
-    por_clave = {_clave(n): n for n in de_hoy}
-    nombre = (por_clave.get(_clave(escrito))
-              or broker_de_hoy_por_nombre_anterior(conn, uid).get(_clave(escrito))
-              or escrito.strip())
     nuevos = {k: v for k, v in defaults.items() if k != "broker"}
     if nombre:
         nuevos["broker"] = nombre
     return {**mapping, "defaults": nuevos}
+
+
+def traductor_de_hoy(conn, uid: int):
+    """Una función `escrito → nombre de HOY del broker`, con la regla de
+    `plantilla_con_broker_de_hoy`: el nombre exacto de un broker de la cuenta queda
+    igual; con otras mayúsculas o espacios, su nombre; un nombre que un broker tuvo
+    ANTES, cómo se llama hoy; si no es ninguno, lo escrito sin los espacios del borde.
+
+    Para todo nombre que se capturó en un momento y se usa más tarde: el broker
+    fijo de una plantilla, el «Estado inicial» que manda la pantalla, las filas del
+    archivo que la confirmación vuelve a leer (ver
+    tests/test_renombrar_broker_durante_import.py). Lee la base UNA vez."""
+    de_hoy = [r["name"] for r in conn.execute(
+        "SELECT name FROM brokers WHERE user_id=?", (uid,)).fetchall()]
+    exactos = set(de_hoy)
+    por_clave = {_clave(n): n for n in de_hoy}
+    por_anterior = broker_de_hoy_por_nombre_anterior(conn, uid)
+
+    def traducir(escrito):
+        if not isinstance(escrito, str) or escrito in exactos:
+            return escrito
+        return (por_clave.get(_clave(escrito)) or por_anterior.get(_clave(escrito))
+                or escrito.strip())
+    return traducir
+
+
+def seed_con_brokers_de_hoy(conn, uid: int, seed_state):
+    """El «Estado inicial» que manda la pantalla al confirmar un import, con cada
+    broker escrito como se llama HOY. La pantalla lo arma con los nombres que
+    tenía al cargar: si mientras tanto se renombró el broker, lo sembrado iba a
+    parar a un broker que ya no existe (medido el 30/10/2026: YPFD en «Cocos»,
+    con la cuenta llamándose «Cocos Capital»). No modifica lo recibido."""
+    if not isinstance(seed_state, dict) or not isinstance(seed_state.get("brokers"), list):
+        return seed_state
+    traducir = traductor_de_hoy(conn, uid)
+    return {**seed_state, "brokers": [
+        {**b, "broker": traducir(b.get("broker"))} if isinstance(b, dict) else b
+        for b in seed_state["brokers"]]}
 
 
 # ─── Los nombres anteriores de cada broker ───────────────────────────────────

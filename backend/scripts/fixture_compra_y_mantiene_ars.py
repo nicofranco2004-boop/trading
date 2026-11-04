@@ -82,8 +82,13 @@ def copiar_historia_del_dolar(origen):
     usar = [c for c in cols if c in destino]
     idx = [cols.index(c) for c in usar]
     conn.executemany(
-        f"INSERT OR REPLACE INTO fx_rates_daily ({', '.join(usar)}) "
-        f"VALUES ({', '.join('?' for _ in usar)})",
+        # ON CONFLICT en vez de INSERT OR REPLACE: mismo efecto en SQLite y, a
+        # diferencia del viejo, no borra la fila (así `fetched_at` y cualquier
+        # columna que `usar` no nombre SOBREVIVEN). El shim rechaza OR REPLACE.
+        f"INSERT INTO fx_rates_daily ({', '.join(usar)}) "
+        f"VALUES ({', '.join('?' for _ in usar)}) "
+        f"ON CONFLICT (date) DO UPDATE SET "
+        + ", ".join(f"{c}=EXCLUDED.{c}" for c in usar if c != "date"),
         [tuple(f[i] for i in idx) for f in filas])
     conn.commit()
     conn.close()

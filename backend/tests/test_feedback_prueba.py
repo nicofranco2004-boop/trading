@@ -520,8 +520,8 @@ class FeedbackDeLaPrueba(unittest.TestCase):
     def test_otro_mail_hace_poco_espera_a_mañana_aunque_venga_en_la_lista(self):
         hoy_aviso = self._con_prueba(self._persona())
         tranquilo = self._con_prueba(self._persona())
-        self.conn.execute("INSERT OR REPLACE INTO trial_email_log (user_id, kind, sent_at) "
-                          "VALUES (?,?,?)", (hoy_aviso, tr.MAIL_PRO_ENDING,
+        self.conn.execute("INSERT INTO trial_email_log (user_id, kind, sent_at) "
+                          "VALUES (?,?,?) ON CONFLICT (user_id, kind) DO UPDATE SET sent_at=EXCLUDED.sent_at", (hoy_aviso, tr.MAIL_PRO_ENDING,
                                              (datetime.utcnow() - timedelta(hours=2)).isoformat()))
         self.conn.commit()
         v = self._vista()
@@ -656,7 +656,7 @@ class FeedbackDeLaPrueba(unittest.TestCase):
     def test_fechas_con_zona_horaria_tambien_cuentan(self):
         uid = self._con_prueba(self._persona())
         self.conn.execute(
-            "INSERT OR REPLACE INTO trial_email_log (user_id, kind, sent_at) VALUES (?,?,?)",
+            "INSERT INTO trial_email_log (user_id, kind, sent_at) VALUES (?,?,?) ON CONFLICT (user_id, kind) DO UPDATE SET sent_at=EXCLUDED.sent_at",
             (uid, tr.MAIL_PRO_ENDING,
              (datetime.utcnow() - timedelta(hours=2)).isoformat() + "+00:00"))
         self.conn.commit()

@@ -68,10 +68,12 @@ class _Base(unittest.TestCase):
             "INSERT INTO users (email, password_hash, approved, tier) VALUES (?,?,1,'pro')",
             (f"infl-anio-{id(self)}@t", "x")).lastrowid
         self._bench_antes = main._bench_cache.get("data")
-
-    def tearDown(self):
-        main._bench_cache["data"] = self._bench_antes
-        self.conn.close()
+        # Limpieza registrada y no `tearDown`: de enero a marzo `anio_en_curso` se
+        # saltea ADENTRO del setUp, y ahí unittest no llama a tearDown. La conexión
+        # quedaba abierta con el DELETE/INSERT sin confirmar, y la prueba siguiente
+        # esperaba el candado 15 s por intento hasta "database is locked".
+        self.addCleanup(self.conn.close)
+        self.addCleanup(main._bench_cache.__setitem__, "data", self._bench_antes)
 
     def dolar_por_dia(self, desde, hasta, fx=_fx):
         dia = desde
@@ -231,13 +233,27 @@ class ElTramoParcialTraeLosDosVeredictosTest(_Base):
 
     def test_cada_modo_compara_SU_rendimiento(self):
         """Certero y estimado miden tramos distintos con números distintos, y cada
-        veredicto sale del número de su modo — no del otro."""
+        veredicto sale del número de su modo — no del otro.
+
+        El certero es sólo el cron (0,05 % por día). El estimado es la contabilidad
+        (2 % por mes) desde la foto del 31/1 hasta que arranca el cron, y desde ahí
+        el cron: en el estimado la contabilidad se apaga en la primera medición real
+        (`twr.serie_medible`). En abril el cron arranca el 1/2, el día después de
+        esa foto: la contabilidad no le suma ningún mes y los dos números son el
+        mismo —bien—. Antes la prueba los exigía distintos siempre y era roja todo
+        abril."""
         cert, est = self.anio("certero", "usd"), self.anio("estimado", "usd")
         self.assertEqual(est["parcial_desde"], f"{self.hoy.year}-01-31")
         self.assertEqual(cert["parcial_desde"], self.inicio_cron.isoformat())
-        self.assertNotAlmostEqual(cert["parcial_pct"], est["parcial_pct"], places=1)
-        self.assertNotAlmostEqual(cert["parcial_vs_inflation_pct"],
-                                  est["parcial_vs_inflation_pct"], places=1)
+        medido = 1.0005 ** (self.hoy - self.inicio_cron).days
+        meses_contables = self.inicio_cron.month - 2
+        self.assertAlmostEqual(cert["parcial_pct"], (medido - 1) * 100, delta=0.05)
+        self.assertAlmostEqual(est["parcial_pct"],
+                               (1.02 ** meses_contables * medido - 1) * 100, delta=0.05)
+        if meses_contables:
+            self.assertNotAlmostEqual(cert["parcial_pct"], est["parcial_pct"], places=1)
+            self.assertNotAlmostEqual(cert["parcial_vs_inflation_pct"],
+                                      est["parcial_vs_inflation_pct"], places=1)
 
     def test_el_tramo_es_el_de_la_curva_del_anio_y_termina_hoy(self):
         """Una sola curva para el año y su tramo: termina HOY (con el valor vivo),
@@ -346,11 +362,21 @@ class ElEstimadoConLaHistoriaCompletaPublicaElAnioTest(_Base):
                 self.assertIsNotNone(f["vs_inflation_pct"])
 
     def test_enero_esta_adentro_del_numero(self):
-        """Doce meses de contabilidad al 2 %: sin enero, el número es un mes más
-        chico."""
+        """La contabilidad al 2 % por mes desde enero, y desde la primera foto a
+        mercado manda la medición (0,05 % por día): en el estimado la contabilidad
+        se apaga en la primera medición real (`twr.serie_medible`). Sin enero, el
+        número es un 2 % más chico.
+
+        Antes la cuenta esperada ponía TODOS los meses cerrados al 2 %, incluidos
+        los dos que ya tapaba el cron: pasaba sólo cuando el cron llevaba más de
+        ~70 días, y era roja del 1 al ~10 de cada mes."""
         f = self.anio("estimado", "usd")
-        con_enero = (1.02 ** (self.hoy.month - 1) - 1) * 100
-        self.assertGreater(f["pct"], con_enero - 0.5)
+        meses_contables = self.inicio_cron.month - 1
+        medido = 1.0005 ** (self.hoy - self.inicio_cron).days
+        con_enero = (1.02 ** meses_contables * medido - 1) * 100
+        sin_enero = (1.02 ** (meses_contables - 1) * medido - 1) * 100
+        self.assertAlmostEqual(f["pct"], con_enero, delta=0.05)
+        self.assertGreater(con_enero - sin_enero, 1.0, "el caso distingue con y sin enero")
 
 
 class ElAnioEnteroConvierteConElDolarDeSuVentanaTest(_Base):

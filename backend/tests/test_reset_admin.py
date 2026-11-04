@@ -91,15 +91,22 @@ class ResetAdminTest(unittest.TestCase):
         self.conn.commit()
 
     def tearDown(self):
-        for t in ("users", "subscriptions", "credit_ledger", "push_subscriptions",
+        # `users` al final: `brokers` y `user_broker_credentials` lo apuntan sin
+        # cascada, y borrarlo primero fallaba siempre (ver tests/_limpieza.py).
+        for t in ("subscriptions", "credit_ledger", "push_subscriptions",
                   "ai_usage_daily", "login_history", "config",
-                  *main._reset_admin_tablas()):
+                  *main._reset_admin_tablas(), "users"):
             for u in (self.UID, self.ADMIN):
+                # Cada intento con su punto de guardado: en Postgres el primero
+                # que falla (`users` no tiene `user_id`) abortaba la transacción
+                # y el commit de abajo descartaba TODA la limpieza, callado.
                 try:
-                    self.conn.execute(f"DELETE FROM {t} WHERE user_id=?", (u,))
+                    with main._si_falla_se_deshace_solo_esto(self.conn, "limpieza"):
+                        self.conn.execute(f"DELETE FROM {t} WHERE user_id=?", (u,))
                 except Exception:
                     try:
-                        self.conn.execute(f"DELETE FROM {t} WHERE id=?", (u,))
+                        with main._si_falla_se_deshace_solo_esto(self.conn, "limpieza"):
+                            self.conn.execute(f"DELETE FROM {t} WHERE id=?", (u,))
                     except Exception:
                         pass
         self.conn.commit()

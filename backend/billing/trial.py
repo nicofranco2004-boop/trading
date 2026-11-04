@@ -396,6 +396,7 @@ def start(conn, user_id: int, del_beta: bool = False) -> dict:
 
 def _start_tx(conn, user_id: int, until: str, now_iso: str, cap: int,
               del_beta: bool = False) -> dict:
+    from ai import quota as _q   # el día de la cuota, en UN solo lugar
     with conn:
         # trial_ends_at fija CUÁL crédito es el del trial. Sin esto, "usó el
         # trial alguna vez" quedaba pegado para siempre y el cron le bajaba el
@@ -414,19 +415,27 @@ def _start_tx(conn, user_id: int, until: str, now_iso: str, cap: int,
                       -- gastó su análisis de Free, el primer día de Pro no puede
                       -- salirle 1/60 (el día 1 es el que decide si la prueba se
                       -- usa o se quema).
-                      quota_window_from=date('now','localtime'),
+                      quota_window_from=?,
                       trial_started_at=?, trial_used_at=?, trial_ends_at=?,
                       credit_anchor_plan=NULL, credit_anchor_period=NULL,
                       credit_anchor_amount_usd=NULL, credit_anchor_at=NULL
                 WHERE id=? AND trial_used_at IS NULL
                   AND (credit_active_until IS NULL OR credit_active_until <= ?)""",
-            (until, now_iso, now_iso, until, user_id, now_iso),
+            (until, _q.dia_de_la_cuota(), now_iso, now_iso, until,
+               user_id, now_iso),
         )
         if cur.rowcount == 0:
             return {"ok": False, "can_start": False, "reason": "already_used"}
         _mark_email_consumed(conn, _email_of(conn, user_id))
         _nota = f"Free trial: {TRIAL_PRO_DAYS}d Pro + {TRIAL_PLUS_DAYS}d Plus"
         if cap:
+            # EL TURNO, antes de contar. Sin esto el tope NO aguanta en Postgres:
+            # cada transacción lee su propia foto y veinte altas simultáneas
+            # cuentan cero las veinte. Medido con tope 1 y dos conexiones:
+            # entraron las dos. En SQLite no hace nada (ya serializa).
+            # Ver `pgsesion.turno_exclusivo`.
+            import pgsesion as _ps
+            _ps.turno_exclusivo(conn, _ps.TURNO_TOPE_TRIALS_DEL_MES)
             # CON TOPE, el ledger deja de ser solo auditoría: es el que lo hace
             # cumplir. El chequeo de eligibility() es check-then-act —lee el
             # conteo, después escribe— y entre las dos cosas entran todas las
@@ -562,6 +571,7 @@ def step_down_due_trials(conn) -> int:
 
     Idempotente: solo matchea tier='pro', así que correrlo dos veces no hace
     nada la segunda. Devuelve cuántos bajó."""
+    from ai import quota as _q   # el día de la cuota, en UN solo lugar
     # El corte va por DÍA, no por instante — mismo umbral, otra unidad.
     #
     # Con el instante, el corte caía un día tarde: el trial arranca a la hora que
@@ -619,11 +629,18 @@ def step_down_due_trials(conn) -> int:
             conn.execute(
                 "UPDATE users SET tier='plus', quota_window_from=? WHERE id=? AND tier='pro'",
                 # Fecha LOCAL, el mismo reloj con el que ai_usage_daily guarda
-                # el consumo (date.today()). Con utcnow() el piso quedaba un día
-                # adelante en cualquier servidor que no corra en UTC, la ventana
-                # daba vacía y el usuario tenía cuota infinita hasta que el reloj
-                # lo alcanzaba.
-                (datetime.now().date().isoformat(), r["id"]))
+                # el consumo. Con utcnow() el piso quedaba un día adelante en
+                # cualquier servidor que no corra en UTC, la ventana daba vacía
+                # y el usuario tenía cuota infinita hasta que el reloj lo
+                # alcanzaba.
+                #
+                # Sale de `dia_de_la_cuota()` y no de un `datetime.now()` propio
+                # —era el SÉPTIMO sitio que lo calculaba por su cuenta— para que
+                # el día que se decida mover la cuota al día argentino alcance
+                # cambiar esa función. Con la copia suelta, el síntoma iba a ser
+                # que a la prueba gratis se le corre el corte un día respecto de
+                # todo lo demás, que es de los que no se encuentran mirando.
+                (_q.dia_de_la_cuota(), r["id"]))
             try:
                 conn.execute(
                     """INSERT INTO credit_ledger

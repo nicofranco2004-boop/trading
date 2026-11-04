@@ -125,7 +125,7 @@ def deja_pasar(ruta: str, cabecera_bypass: Optional[str]) -> bool:
 # objeto toma `.error`. Cualquier otra forma cae en el mensaje genérico de gateway.
 CUERPO_503 = {
     "detail": {
-        "error": "Estamos mudando la base de datos. Volvemos en unos minutos.",
+        "error": "La app está en mantenimiento. Probá de nuevo en un rato.",
         "mantenimiento": True,
     }
 }

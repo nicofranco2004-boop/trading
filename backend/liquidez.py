@@ -71,10 +71,9 @@ def _cacheado(clave, fn):
 def _historia_data912(tipo: str, papel: str) -> dict:
     """{fecha: nominales operados} de data912. {} si no tiene ese papel (los
     CEDEARs chicos: contesta un error en vez de la lista)."""
-    import requests
-    r = requests.get(f"https://data912.com/historical/{tipo}/{papel}", timeout=TOPE_SEG)
-    filas = r.json() if r.status_code == 200 else None
-    if not isinstance(filas, list) or len(filas) < 2:
+    from pricing import data912
+    filas = data912.filas(tipo, papel, timeout=TOPE_SEG)
+    if len(filas) < 2:
         return {}
     out = {}
     for f in filas:
