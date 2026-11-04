@@ -49,6 +49,13 @@ design/video/
 *.wav
 *.mp3
 
+# ÚNICA excepción: el video de la portada (frontend/public/video/), que Vercel
+# sólo sirve si está en el repo. Decisión de Nico, 2026-11-03. Sin esta línea
+# `git add` lo salteó sin avisar y rendi.finance devolvía la página de la app
+# en su lugar (el play no hacía nada). Es UN video web comprimido (~8 MB):
+# reemplazarlo suma otra copia entera a la historia, así que se cambia poco.
+!frontend/public/video/*.mp4
+
 # Formatos de diseño que llegan con el material y pesan decenas de MB.
 *.psd
 *.ai

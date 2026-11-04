@@ -21,7 +21,8 @@ import { velaCompleta, haciaDondeVa, ADX_CLAVE, RSI_CASTIGADO, RSI_ESTIRADO } fr
 import { marcasDeFechas, marcasDePrecio } from './ejesGrafico'
 import { extensionFibonacci, fibonacciAMano, nivelPct, rayas, rotuloNivel, rotulosQueEntran } from './fibonacci'
 import { rotuloOnda } from './elliott'
-import { etiquetasDe } from './dibujos'
+import { cuentasDePosicion, etiquetasDe } from './dibujos'
+import { pctConSigno } from './cuantoSeMueve'
 import { PRIORIDAD, rotuloCorteFib, rotuloInvalidaElliott } from './rotulos'
 import { fechaDeHoy } from './shareCard'
 import { colorDe, trazosDeDibujos } from '../components/asset/CapaDibujos'
@@ -244,7 +245,15 @@ export function specDelGrafico({
     poligonos.push({ color: colorDe(d), alpha: 0.08,
       puntos: [[d.a.k, d.a.precio], [d.b.k, d.b.precio], [d.b.k, d.b.precio + d.ancho], [d.a.k, d.a.precio + d.ancho]].map(([k, p]) => [pctX(k), pctY(p)]) })
   }
-  for (const t of trazosDeDibujos(tuyos, pctX, pctY, [])) {
+  // La posición: la franja del objetivo en verde y la del stop en rojo.
+  for (const d of tuyos.filter(d => d.tipo === 'posicion')) {
+    for (const [p, color] of [[d.objetivo, colores.positivo], [d.stop, colores.negativo]]) {
+      poligonos.push({ color, alpha: 0.16,
+        puntos: [[d.a.k, d.a.precio], [d.b.k, d.a.precio], [d.b.k, p], [d.a.k, p]].map(([k, q]) => [pctX(k), pctY(q)]) })
+    }
+  }
+  // Los bordes invisibles (los de la caja de la posición: sirven para tocarla) no van.
+  for (const t of trazosDeDibujos(tuyos, pctX, pctY, []).filter(t => !t.oculto)) {
     trazos.push({ x1: t.x1, y1: t.y1, x2: t.x2, y2: t.y2, color: t.color, ancho: t.nivel || t.medio ? 2 : 4,
       punteada: !!(t.correccion || (t.nivel && !t.nivel.extremo)), alpha: t.nivel ? 0.85 : 1 })
   }
@@ -263,6 +272,11 @@ export function specDelGrafico({
       const conRotulo = rotulosQueEntran(lista, tops, null)
       const x0 = pctX(d.c.k)
       lista.forEach((n, k) => { if (conRotulo.has(k)) rotulos.push(rotuloDeRaya(x0, tops[k], `${nivelPct(n.nivel)} · ${precio(n.precio)}`, color, PRIORIDAD.nivelFib)) })
+    } else if (d.tipo === 'posicion') {
+      const { gana, pierde } = cuentasDePosicion(d)
+      const x0 = Math.min(pctX(d.a.k), pctX(d.b.k))
+      rotulos.push(rotuloDeRaya(x0, pctY(d.objetivo), `Objetivo · ${precio(d.objetivo)} (${pctConSigno(gana)})`, colores.positivo, PRIORIDAD.nivelFib))
+      rotulos.push(rotuloDeRaya(x0, pctY(d.stop), `Stop · ${precio(d.stop)} (${pctConSigno(-pierde)})`, colores.negativo, PRIORIDAD.nivelFib))
     } else if (d.tipo === 'elliott') {
       const etiquetas = etiquetasDe(d.forma)
       d.puntos.forEach((p, k) => {

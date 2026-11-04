@@ -989,7 +989,7 @@ describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos
     await dibujar()
     const barra = todos(montado.contenedor, n => n.getAttribute?.('role') === 'toolbar')[0]
     const enLaBarra = todos(barra, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa'))
-    expect(enLaBarra).toEqual(['menu-lineas', 'nota', 'menu-fibonacci', 'menu-elliott', 'medir', 'deshacer', 'rehacer', 'borrarDibujos'])
+    expect(enLaBarra).toEqual(['menu-lineas', 'nota', 'menu-fibonacci', 'menu-elliott', 'menu-posicion', 'medir', 'deshacer', 'rehacer', 'borrarDibujos'])
     const lista = todos(montado.contenedor, n => n.getAttribute?.('role') === 'group' && n.getAttribute('aria-label') === 'Indicadores')[0]
     const enLaLista = todos(lista, n => n.nodeName === 'BUTTON').map(n => n.getAttribute('data-capa')).filter(Boolean)
     expect(enLaLista).toEqual(['vol', 's200', 's50', 'bb', 'rsi', 'fuerza', 'eventos', 'globo', 'fabrica'])
@@ -1169,5 +1169,63 @@ describe('Fibonacci y Elliott a mano (Nico, 28/10: «poder calcularlo como ellos
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Borrar este Fibonacci')); await redibujar()
     expect(guardados()).toEqual([])
     expect(rotulos().some(t => t.startsWith('61,8 %'))).toBe(false)
+  })
+})
+
+describe('la posición: tu entrada, tu objetivo y tu stop (Nico, 03/11, como TradingView)', () => {
+  const MENU_POS = async (id) => { await clic(montado.contenedor, boton('menu-posicion')); await redibujar(); await clic(montado.contenedor, boton(id)); await redibujar() }
+  async function arrastrar(x0, y0, x1, y1) {
+    await evento('mousedown', grafico(), { clientX: x0, clientY: y0 })
+    await evento('mousemove', grafico(), { clientX: (x0 + x1) / 2, clientY: (y0 + y1) / 2 })
+    await evento('mousemove', grafico(), { clientX: x1, clientY: y1 })
+    await evento('mouseup', grafico(), { clientX: x1, clientY: y1 })
+    await redibujar()
+  }
+  const carteles = () => todos(montado.contenedor, n => n.nodeName === 'SPAN').map(n => texto(n))
+
+  it('un toque en la entrada: la caja con el objetivo al doble del stop, guardada, con lo que pasó desde ahí', async () => {
+    await dibujar()
+    await MENU_POS('posicion-compra')
+    expect(marcado('menu-posicion')).toBe(true)
+    expect(status()).toContain('Tocá dónde entraste')
+    await clickEn(400, 100)
+    const [p] = guardados()
+    expect(p).toMatchObject({ tipo: 'posicion', lado: 'compra', a: { d: puntos[bajo(400)].d, mas: 0 } })
+    expect(p.objetivo).toBeGreaterThan(p.a.precio)
+    expect(p.stop).toBeLessThan(p.a.precio)
+    expect((p.objetivo - p.a.precio) / (p.a.precio - p.stop)).toBeCloseTo(2, 2)
+    expect(p.b.d > p.a.d).toBe(true)
+    // Los carteles: el objetivo, el stop y, en la entrada, el ratio y lo que pasó.
+    expect(carteles().some(t => t.startsWith('Objetivo: ') && t.includes('(+'))).toBe(true)
+    expect(carteles().some(t => t.startsWith('Stop: ') && t.includes('(−'))).toBe(true)
+    const entrada = carteles().find(t => t.startsWith('Compra en '))
+    expect(entrada).toContain('ratio 2')
+    expect(entrada).toMatch(/Llegó al objetivo|Tocó el stop|Al cierre de la caja|Abierta/)
+    expect(marcado('menu-posicion')).toBe(false)                    // una por vez, como las líneas
+  })
+
+  it('se elige tocando adentro de la caja, el objetivo se arrastra y se borra con su botón', async () => {
+    await dibujar()
+    await MENU_POS('posicion-compra'); await clickEn(400, 100)
+    const [antes] = guardados()
+    await clickEn(410, 112)                                       // adentro de la franja roja
+    expect(buscarBoton(montado.contenedor, 'Borrar esta posición')).toBeTruthy()
+    const xa = (bajo(400) / (LUGARES - 1)) * 1000
+    await arrastrar(xa, 60, xa, 30)                               // el objetivo, más arriba
+    const [p] = guardados()
+    expect(p.objetivo).toBeGreaterThan(antes.objetivo)
+    expect([p.stop, p.a]).toEqual([antes.stop, antes.a])
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Borrar esta posición')); await redibujar()
+    expect(guardados()).toEqual([])
+  })
+
+  it('la de venta: el objetivo abajo y el stop arriba', async () => {
+    await dibujar()
+    await MENU_POS('posicion-venta'); await clickEn(400, 100)
+    const [p] = guardados()
+    expect(p.lado).toBe('venta')
+    expect(p.objetivo).toBeLessThan(p.a.precio)
+    expect(p.stop).toBeGreaterThan(p.a.precio)
+    expect(carteles().some(t => t.startsWith('Venta en '))).toBe(true)
   })
 })
