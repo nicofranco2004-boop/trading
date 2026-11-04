@@ -12,6 +12,7 @@ from datetime import date, timedelta
 os.environ.setdefault("DB_PATH", tempfile.NamedTemporaryFile(suffix=".db", delete=False).name)
 
 import main
+from tests._limpieza import vaciar  # noqa: E402
 import twr
 from reporting import builder
 
@@ -29,14 +30,12 @@ def _todos(s):
 class _Base(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
-        for t in ("snapshots", "positions", "operations", "monthly_entries", "users",
-                  "brokers", "import_normalized_tx", "import_raw_rows", "import_batches"):
-            try:
-                self.conn.execute(f"DELETE FROM {t}")
-            except Exception:
-                pass
-        # Email único por test: `DELETE FROM users` puede no correr si la tabla
-        # tiene dependencias, y ahí el INSERT choca contra el UNIQUE.
+        # Hijas antes que madres y sin tragar errores: ver tests/_limpieza.py.
+        vaciar(self.conn, "snapshots", "positions", "operations", "monthly_entries",
+               "users", "brokers", "import_normalized_tx", "import_raw_rows",
+               "import_batches")
+        # El email único por test era el parche de cuando `DELETE FROM users`
+        # fallaba callado (un broker lo apuntaba). Ya no hace falta; no molesta.
         self.uid = self.conn.execute(
             "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
             (f"aud-{id(self)}@t", "x")).lastrowid
@@ -250,8 +249,13 @@ class B4_AnioParcialTest(_Base):
         self.pos()
         hoy = date.today()
         Y = hoy.year
-        self.me(Y, 1, 1000.0, 51000.0, dep=50000.0)
-        self.me(Y, hoy.month, 51000.0, 44000.0)
+        # En enero el primer mes y el mes en curso son la MISMA fila: armarlas por
+        # separado chocaba con la clave única y la prueba era roja todo enero.
+        if hoy.month == 1:
+            self.me(Y, 1, 1000.0, 44000.0, dep=50000.0)
+        else:
+            self.me(Y, 1, 1000.0, 51000.0, dep=50000.0)
+            self.me(Y, hoy.month, 51000.0, 44000.0)
         import calendar
         for mo in range(7, hoy.month + 1):
             ult = min(calendar.monthrange(Y, mo)[1], hoy.day if mo == hoy.month else 31)

@@ -34,6 +34,7 @@ from typing import Dict, Any
 from collections import Counter
 
 from realized_pnl import is_closed_op, realized_usd_sql, pct_creible
+from orden_estable import operaciones_por_fecha
 
 
 def _is_trade(op: Dict[str, Any]) -> bool:
@@ -53,7 +54,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
                   quantity, {realized_usd_sql()} AS pnl_usd, pnl_pct
              FROM operations
             WHERE user_id = ? AND pnl_usd IS NOT NULL
-            ORDER BY date DESC""",
+            ORDER BY {operaciones_por_fecha(desc=True)}""",
         (user_id,),
     ).fetchall()
     ops = [dict(r) for r in rows]

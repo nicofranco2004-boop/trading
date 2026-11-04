@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import contextlib
 import math
 import os
 import sqlite3
@@ -745,6 +746,14 @@ def huella_de_entrada(conn, uid: int, today: _date) -> str:
     pg = bool(getattr(main, "USANDO_PG", False))
     partes = []
 
+    # La segunda lectura (la que confirma antes de escribir) corre CON EL TURNO
+    # tomado, adentro de la transacción. Ahí un error de SQL no puede resolverse con
+    # `rollback()`: soltaría el turno sin avisar y lo de abajo escribiría sin él.
+    # Un punto de guardado deshace sólo la consulta. Sin transacción abierta (la
+    # primera lectura, antes de Yahoo) no se abre ninguna: el SAVEPOINT la abriría
+    # y quedaría abierta durante toda la consulta a la red.
+    en_transaccion = pg and bool(getattr(conn, "in_transaction", False))
+
     # ⚠️ EL TEXTO LO ARMA LA BASE, NO PYTHON. Convertir miles de filas en tuplas de
     # Python retiene el turno del intérprete (GIL) fila por fila: medido por la
     # auditoría con las 10 cuentas más grandes pidiendo a la vez, la mediana de un
@@ -760,11 +769,13 @@ def huella_de_entrada(conn, uid: int, today: _date) -> str:
             sql = (f"SELECT count(*), group_concat(t, '|') FROM "
                    f"(SELECT {texto} AS t FROM {desde} ORDER BY {orden})")
         try:
-            r = conn.execute(sql, args).fetchone()
+            with (main._si_falla_se_deshace_solo_esto(conn, "huella_agregado")
+                  if en_transaccion else contextlib.nullcontext()):
+                r = conn.execute(sql, args).fetchone()
             partes.append(f"{r[0]}:{r[1] or ''}")
         except Exception as ex:          # columna que no existe en una base vieja
             partes.append(repr(type(ex)))
-            if pg:                       # en Postgres el error aborta la transacción
+            if pg and not en_transaccion:   # en Postgres el error aborta la transacción
                 try:
                     conn.rollback()
                 except Exception:
@@ -860,9 +871,32 @@ def _meses_a_reconstruir(huella: list, today: _date) -> list:
     return out
 
 
+def _borrar_reconstruidas_con_el_turno(conn, uid: int, motivo_ya_no_vale: str) -> int:
+    """Borra las fotos reconstruidas de una cuenta que ya no tiene qué reconstruir.
+
+    Con el turno de la cuenta, como toda escritura de la plata. Y el motivo
+    (`motivo_ya_no_vale`: la consulta que, si encuentra algo, dice que SÍ hay qué
+    reconstruir) se vuelve a mirar adentro del DELETE, ya con el turno: si un
+    import se confirmó entre la lectura de arriba y acá, no se borra nada.
+    Si no hay fotos que borrar no se pide el turno, para no abrir una transacción
+    que nadie va a confirmar."""
+    if not conn.execute("SELECT 1 FROM snapshots WHERE user_id=? AND source=? LIMIT 1",
+                        (uid, MTM_SOURCE)).fetchone():
+        return 0
+    main._tomar_turno_de_la_puerta(conn, uid)
+    return conn.execute(
+        f"DELETE FROM snapshots WHERE user_id=? AND source=? AND NOT EXISTS ({motivo_ya_no_vale})",
+        (uid, MTM_SOURCE, uid)).rowcount
+
+
 def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     """Devuelve {uid, skipped, reason, months:[{ym, before, after}], cost_fallbacks,
-    cash_warning}. NO commitea (lo hace el caller). Idempotente."""
+    cash_warning}. NO commitea (lo hace el caller). Idempotente.
+
+    Vuelve con el turno de la cuenta tomado si escribió algo: quien llama confirma
+    o deshace y eso lo suelta. Si la contabilidad cambió durante la corrida hace
+    `rollback()` antes de volver a Yahoo, así que se la llama sin escrituras
+    pendientes en `conn` (una conexión propia, o recién confirmada)."""
     import twr as _twr
     res = {"uid": uid, "skipped": False, "reason": None, "months": [],
            "cost_fallbacks": 0, "cash_warning": False, "snapshots_escritos": 0}
@@ -879,8 +913,8 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
         # Si ya no hay import (se revirtió el único), las fotos reconstruidas que
         # quedaron —p. ej. de meses con movimientos cargados a mano antes del
         # import, que el revert no borra— describen una cuenta que ya no existe.
-        res["snapshots_borrados"] = conn.execute(
-            "DELETE FROM snapshots WHERE user_id=? AND source=?", (uid, MTM_SOURCE)).rowcount
+        res["snapshots_borrados"] = _borrar_reconstruidas_con_el_turno(
+            conn, uid, "SELECT 1 FROM import_batches WHERE user_id=? AND status='confirmed'")
         res.update(skipped=True, reason="sin import confirmado (cuenta manual)")
         return res
 
@@ -890,8 +924,8 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     huella = _huella_contable(conn, uid)
     if not huella:
         # Sin contabilidad no hay nada que las fotos reconstruidas puedan describir.
-        res["snapshots_borrados"] = conn.execute(
-            "DELETE FROM snapshots WHERE user_id=? AND source=?", (uid, MTM_SOURCE)).rowcount
+        res["snapshots_borrados"] = _borrar_reconstruidas_con_el_turno(
+            conn, uid, "SELECT 1 FROM monthly_entries WHERE user_id=? AND broker='global'")
         res.update(skipped=True, reason="sin monthly_entries")
         return res
     _canon = _twr.netdep_canonico(conn, uid)
@@ -1137,8 +1171,23 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     # compras y ventas con su lápida), no sólo las filas 'global': una compra
     # borrada o un promedio editado en Cartera a mitad de corrida no tocan esas
     # filas (medido por la auditoría: marzo escrito en 10.000 cuando ya era 11.000).
+    #
+    # 🔒 EL TURNO DE LA CUENTA SE PIDE ACÁ, Y NO ANTES. Hasta acá todo fue lectura
+    # (en Postgres, sin transacción abierta) y la consulta a Yahoo, que dura
+    # minutos: con el turno tomado ahí, cada depósito o borrado de la persona
+    # esperaría a Yahoo. Recién ahora, antes de la comparación, se toma: así la
+    # contabilidad que se compara es la que sigue valiendo hasta el commit de
+    # quien llama, porque toda puerta que la cambia pide el mismo turno
+    # (tests/test_turno_en_todas_las_puertas.py). Sin él, un depósito podía
+    # confirmarse entre esta comparación y la escritura, y las fotos quedaban
+    # describiendo la contabilidad de antes con la huella diciendo que no.
+    # En SQLite no hace nada: la primera escritura ya toma la base entera.
+    main._tomar_turno_de_la_puerta(conn, uid)
     if (_huella_contable(conn, uid) != huella
             or huella_de_entrada(conn, uid, today) != entrada):
+        # Antes de volver a Yahoo se SUELTA el turno: en esta pasada todavía no se
+        # escribió nada (sólo el turno), así que el rollback no se lleva nada más.
+        conn.rollback()
         if _pasada < _PASADAS:
             return backfill_user(conn, uid, today, _pasada + 1)
         res.update(skipped=True, reintentar=True,
@@ -1217,7 +1266,9 @@ def backfill_summary(real_conn, users, today, apply: bool) -> dict:
             out["fotos_borradas"] += s.get("snapshots_borrados", 0)
             if s["skipped"]:
                 out["skipped"] += 1
-                if apply and s.get("snapshots_borrados"):
+                # Siempre, aunque no haya borrado nada: si pidió el turno para
+                # borrar, el commit lo suelta antes de la cuenta siguiente.
+                if apply:
                     conn.commit()
                 continue
             changed = [m for m in s["months"] if abs(m["after"] - m["before"]) > 0.01]
@@ -1247,7 +1298,9 @@ def _run_on(conn, users, today, apply):
         try:
             s = backfill_user(conn, uid, today)
             summaries.append(s)
-            if apply and not s["skipped"]:
+            # También la salteada: sus fotos borradas quedaban sin confirmar (y
+            # con el turno de la cuenta tomado) hasta el commit de la siguiente.
+            if apply:
                 conn.commit()
         except Exception as ex:
             conn.rollback()

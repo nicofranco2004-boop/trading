@@ -19,6 +19,19 @@ import os
 import tempfile
 import atexit
 
+# 🔴 Contra una base con datos de personas, la suite NO arranca: el primer
+# `import main` le correría el arranque (reparaciones incluidas) a esos datos.
+# En `pytest_sessionstart`, que corre ANTES de que pytest junte los archivos
+# (que es cuando se importa `main`). Ver tests/_candado_base_con_datos.py.
+def pytest_sessionstart(session):
+    if os.environ.get("DATABASE_URL"):
+        from tests._candado_base_con_datos import filas_de_personas, mensaje
+        con_filas = filas_de_personas(os.environ["DATABASE_URL"].strip())
+        if con_filas:
+            import pytest as _pytest
+            _pytest.exit(mensaje(con_filas), returncode=3)
+
+
 # Solo si nadie lo seteó ya (respetamos un DB_PATH explícito del entorno).
 if not os.environ.get("DB_PATH"):
     _tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -48,8 +61,6 @@ if not os.environ.get("DB_PATH"):
 #
 # Esto le da a cada MÓDULO su propia base y re-crea el schema. Se re-apunta la
 # constante de main (no solo el env var, que main ya no vuelve a leer).
-import re
-
 import pytest
 
 
@@ -73,7 +84,9 @@ import pytest
 # En SQLite esto no pasaba por dos motivos: cada módulo tenía su archivo, y una
 # conexión de sqlite3 sólo abre transacción al ESCRIBIR. psycopg con
 # autocommit=False abre transacción hasta para un SELECT, y esa transacción se
-# queda con los locks de todo lo que tocó.
+# queda con los locks de todo lo que tocó. (Desde el 29/10/2026 el shim abre la
+# transacción al escribir, como sqlite3 — `pgshim.es_lectura_pura` —; lo de
+# abajo sigue haciendo falta para las conexiones que sí escribieron.)
 #
 # El arreglo tiene tres partes, y las tres hacen falta:
 #
@@ -173,6 +186,53 @@ _IDLE_TX_TIMEOUT = f"{_IDLE_TX_S}s"
 _LOCK_TIMEOUT = f"{_LOCK_S}s"
 
 
+def _timeout_de_pytest_real() -> int:
+    """El `--timeout=` que ESTÁ CORRIENDO, no el sugerido.
+
+    🔴 POR QUÉ EXISTE. `test_relojes_del_conftest` se llama
+    `test_los_valores_QUE_ESTAN_CORRIENDO_cumplen_el_orden` y dice en su docstring
+    "no los defaults: los de esta corrida". Pero de los tres relojes leía dos del
+    entorno y **el tercero de una constante de 20 escrita a mano**. O sea:
+    prometía medir lo que corre y medía otra cosa — el error exacto que este
+    proyecto ya pagó varias veces.
+
+    Se descubrió corriendo la suite contra Supabase (19/08/2026). Ahí todo tarda
+    ~35× más, así que hubo que escalar los relojes a 45 < 90 < 240; el test falló
+    diciendo "lock (90s) tiene que ser MENOR que el --timeout de pytest (20s)"
+    cuando el `--timeout` real era 240. El test tenía razón sobre la constante y
+    estaba equivocado sobre la realidad.
+
+    Se lee de la config de pytest, que es donde vive el valor de verdad. Si no se
+    puede (pytest-timeout ausente, o import fuera de una corrida), se cae al
+    sugerido: es el mismo comportamiento que había, no uno nuevo.
+    """
+    try:
+        import _pytest.config
+        cfg = _pytest.config.get_config()
+        v = cfg.getoption("timeout", None) if cfg else None
+        if v:
+            return int(float(v))
+    except Exception:
+        pass
+    # Plan B: leerlo de la línea de comandos. pytest-timeout acepta las dos formas.
+    import sys
+    for i, a in enumerate(sys.argv):
+        if a.startswith("--timeout="):
+            try:
+                return int(float(a.split("=", 1)[1]))
+            except ValueError:
+                pass
+        if a == "--timeout" and i + 1 < len(sys.argv):
+            try:
+                return int(float(sys.argv[i + 1]))
+            except ValueError:
+                pass
+    return _PYTEST_TIMEOUT_SUGERIDO
+
+
+_PYTEST_TIMEOUT_REAL = _timeout_de_pytest_real()
+
+
 def revisar_orden_de_relojes(idle_s, lock_s, pytest_timeout_s=None):
     """El orden, como función: `idle < lock < --timeout`. Devuelve el motivo o None.
 
@@ -258,14 +318,23 @@ def _aislar_postgres(main, nombre_modulo: str):
         _PG_DSN_BASE = main.DATABASE_URL
         _barrer_esquemas_huerfanos(_PG_DSN_BASE)
 
-    # Los identificadores de Postgres son de 63 bytes. Los nombres de módulo son
-    # cortos, pero cortar acá evita que un archivo nuevo rompa la suite entera.
     # El pid va adelante para que dos corridas simultáneas NUNCA compartan un
     # nombre de esquema: si lo compartieran, una dropearía el esquema que la otra
     # está usando en ese mismo momento.
+    #
+    # 🔴 UN SOLO NOMBRE POR CORRIDA, no uno por módulo. El pooler de Supabase
+    # (Supavisor, modo sesión) arma una fila propia por cada `search_path` distinto
+    # del DSN y la deja abierta: medido el 02/11/2026, cada `search_path` nuevo dejó
+    # 2 conexiones ocupadas en la base, que no se soltaron. Con un esquema por
+    # módulo (~160), la base (60 lugares, 3 reservados) se llenaba hacia el módulo
+    # 24 y la corrida del 31/10 dio 211 errores «remaining connection slots are
+    # reserved». El aislamiento entre módulos no depende del nombre: abajo se matan
+    # las conexiones de esta corrida y el esquema se borra y se vuelve a crear vacío.
     _pre = f"t{os.getpid()}_"
-    esquema = _pre + re.sub(r"\W", "_", nombre_modulo)[-(60 - len(_pre)):]
+    esquema = _pre + "suite"
 
+    # Las conexiones que quedaron quietas en el pozo apuntan al esquema anterior.
+    pgshim.cerrar_pozos()
     with psycopg.connect(_PG_DSN_BASE, autocommit=True) as c:
         # SÓLO nuestras conexiones. Antes esto mataba todas las de la base y se
         # llevaba puesta cualquier otra corrida de la suite — ver _APP_NAME.
@@ -286,8 +355,109 @@ def _aislar_postgres(main, nombre_modulo: str):
 
     _PG_ESQUEMA_PREVIO = esquema
     main.DATABASE_URL = _pg_dsn(esquema)
+    _forzar_ajustes_por_set(esquema)
     pgshim.limpiar_caches()
     main.init_db()
+    _exigir_que_los_ajustes_hayan_entrado(esquema)
+
+
+# Los ajustes originales de pgsesion, antes de que les agreguemos los de la suite.
+# Se guarda una sola vez: si se releyera en cada módulo, el segundo módulo tomaría
+# como "base" la tupla ya extendida del primero y los SET se irían apilando.
+_AJUSTES_BASE = None
+
+
+def _forzar_ajustes_por_set(esquema: str):
+    """Repite por `SET` los ajustes que el DSN manda en `options=`.
+
+    🔴 POR QUÉ, y no es teórico — medido contra el Supabase real el 19/08/2026.
+    Los poolers de Supabase (Supavisor) **se comen casi todo el `options=`**:
+
+        opción del DSN                        Postgres normal   Supabase (los 2 poolers)
+        ------------------------------------  ---------------   ------------------------
+        search_path                           ✅                ✅  llega
+        lock_timeout                          ✅                🔴  queda en 0
+        idle_in_transaction_session_timeout   ✅                🔴  queda en 0
+        application_name                      ✅                🔴  queda 'Supavisor'
+
+    Las tres que se pierden son **exactamente** las tres que sostienen el
+    aislamiento, y las tres fallan hacia el lado peligroso:
+      · `lock_timeout=0` → una consulta trabada espera PARA SIEMPRE en vez de
+        cortar. Es la cuelgue que el arreglo del aislamiento vino a matar.
+      · `idle_in_transaction_session_timeout=0` → una conexión filtrada retiene
+        sus locks para siempre.
+      · `application_name='Supavisor'` → el `pg_terminate_backend` de arriba
+        filtra por ese nombre y **no matchea nada**: las huérfanas no se matan.
+        (Y aflojar ese filtro NO es opción: en esa base viven las conexiones de
+        Supabase mismo —PostgREST, su exportador de métricas, el pooler—, así que
+        un terminate sin filtro se lleva puesto el proyecto entero.)
+
+    Un módulo suelto pasa igual porque no hay contención; la suite completa se
+    cuelga. O sea: el modo de falla es silencioso hasta que es caro.
+
+    `SET` sí atraviesa los dos poolers (verificado), y en un Postgres normal es
+    redundante e inofensivo. Se hace por `pgsesion.AJUSTES_DE_SESION`, que es la
+    única puerta por donde pasan TODAS las conexiones de Rendi.
+    """
+    global _AJUSTES_BASE
+    import pgsesion
+    if _AJUSTES_BASE is None:
+        _AJUSTES_BASE = tuple(pgsesion.AJUSTES_DE_SESION)
+    # ⚠️ `search_path` NO va acá, y la primera versión lo puso "por las dudas".
+    # Es el ÚNICO que sí atraviesa los dos poolers, así que no hay nada que
+    # arreglar — y forzarlo rompe: `test_pgshim_pk_cache` abre a propósito una
+    # conexión con `options=-c search_path=zz_vacio` para probar que un esquema
+    # vacío levanta, y el SET se la pisaba mandándola al esquema del módulo. Los
+    # dos tests de ese archivo fallaban, y de yapa la tabla sin PK del primero
+    # quedaba contaminando el esquema y hacía fallar al segundo.
+    # Regla: repetir por SET SÓLO lo que se pierde de verdad.
+    pgsesion.AJUSTES_DE_SESION = _AJUSTES_BASE + (
+        f"SET lock_timeout = '{_LOCK_TIMEOUT}'",
+        f"SET idle_in_transaction_session_timeout = '{_IDLE_TX_TIMEOUT}'",
+        f"SET application_name = '{_APP_NAME}'",
+    )
+
+
+def _exigir_que_los_ajustes_hayan_entrado(esquema: str):
+    """Aborta la corrida si los ajustes NO quedaron puestos.
+
+    Sin esto el arreglo de arriba sería una red opt-in: si mañana un pooler nuevo
+    también se comiera los `SET`, o alguien cambiara la puerta por la que se
+    conecta, la suite volvería a colgarse y el motivo estaría a diez capas de
+    distancia. Preguntarle a la base **qué quedó puesto de verdad** cuesta cuatro
+    consultas por módulo y convierte un cuelgue mudo en un error que se lee.
+
+    Se pregunta por una conexión abierta como las que usan los tests —no una
+    aparte—, porque lo que hay que verificar es justamente ESA.
+    """
+    import main as _main
+    conn = _main.get_db()
+    try:
+        real = {k: conn.execute(f"SHOW {k}").fetchone()[0] for k in
+                ("search_path", "lock_timeout",
+                 "idle_in_transaction_session_timeout", "application_name")}
+    finally:
+        conn.close()
+    mal = []
+    if esquema not in real["search_path"]:
+        mal.append(f"search_path={real['search_path']!r} (esperaba {esquema!r})")
+    if real["lock_timeout"] in ("0", "0ms"):
+        mal.append("lock_timeout=0 (sin límite: una consulta trabada espera para siempre)")
+    if real["idle_in_transaction_session_timeout"] in ("0", "0ms"):
+        mal.append("idle_in_transaction_session_timeout=0 (una conexión filtrada "
+                   "retiene locks para siempre)")
+    if real["application_name"] != _APP_NAME:
+        mal.append(f"application_name={real['application_name']!r} (esperaba "
+                   f"{_APP_NAME!r}: sin esto el limpiador de huérfanas no matchea "
+                   f"NADA, y aflojar su filtro mataría las conexiones de Supabase)")
+    if mal:
+        raise RuntimeError(
+            "Los ajustes de sesión de la suite NO quedaron puestos, así que el "
+            "aislamiento entre módulos no está garantizado y la corrida se va a "
+            "colgar más adelante sin decir por qué:\n  · "
+            + "\n  · ".join(mal)
+            + "\nVer `_forzar_ajustes_por_set` en este archivo."
+        )
 
 
 def _barrer_esquemas_huerfanos(dsn):
@@ -324,6 +494,11 @@ def _barrer_esquemas_huerfanos(dsn):
 @pytest.fixture(autouse=True, scope="module")
 def _db_por_modulo(request):
     import main
+    # Antes de matar conexiones y rehacer el esquema: que no quede una
+    # reconstrucción de fondo del archivo anterior escribiendo (ver
+    # tests/_trabajo_de_fondo.py).
+    from tests import _trabajo_de_fondo
+    _trabajo_de_fondo.esperar()
     # Correr LA MISMA suite contra los dos motores es todo el punto de la
     # migración: acá cambia CÓMO se aísla la base, no qué se testea.
     if getattr(main, "USANDO_PG", False):
@@ -424,6 +599,16 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 @pytest.fixture(autouse=True)
+def _sin_reconstrucciones_de_la_prueba_anterior():
+    """Cada prueba arranca sin hilos de reconstrucción vivos de la anterior: contra
+    Supabase pisaban la limpieza del `setUp` y el turno de la cuenta (corrida de
+    Railway del 02/11, 3 rojos). Ver tests/_trabajo_de_fondo.py."""
+    from tests import _trabajo_de_fondo
+    _trabajo_de_fondo.esperar()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _ninguna_lectura_pesada_sin_freno():
     """El guardián de pesado.py: si durante el test una función `@pesado` (las
     lecturas técnicas de muchos activos o de 3 años de velas, la valuación de
@@ -455,6 +640,27 @@ def _freno_tecnico_de_cero():
     m = sys.modules.get("main")
     if m is not None and hasattr(m, "_freno_reiniciar"):
         m._freno_reiniciar()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _el_cron_de_alertas_no_larga_el_termometro(request, monkeypatch):
+    """El cron de las alertas (`_evaluar_alertas_job`) larga el termómetro de
+    fondo cuando `termometro.toca`: en una base de pruebas, todos los días desde
+    las 06:00 de Argentina. Ese termómetro le pide a Yahoo DE VERDAD ~500
+    activos y tarda más de 4 minutos (medido 03/11/2026), así que cualquier
+    prueba de alertas dejaba la corrida «termometro» tomada y las 8 de
+    `test_termometro` daban «already_running». Rojo según la hora del día.
+    Salvo en `test_termometro`, que es la que lo prueba con su Yahoo falso,
+    el cron de alertas no lo larga."""
+    if request.module.__name__.rsplit(".", 1)[-1] == "test_termometro":
+        yield
+        return
+    import sys
+    m = sys.modules.get("main")
+    if m is not None and hasattr(m, "_termometro_job"):
+        monkeypatch.setattr(m, "_termometro_job",
+                            lambda conn, now=None: {"esperando": "pruebas: no se larga"})
     yield
 
 

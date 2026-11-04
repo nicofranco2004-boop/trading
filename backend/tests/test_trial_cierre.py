@@ -20,6 +20,7 @@ _TMP.close()
 os.environ["DB_PATH"] = _TMP.name
 
 import main                          # noqa: E402
+import pgshim                        # noqa: E402
 from billing import trial as tr      # noqa: E402
 from billing import credits as cr    # noqa: E402
 
@@ -168,10 +169,15 @@ class TopeMensualTest(Base):
 
     def test_el_tope_aguanta_pedidos_simultaneos(self):
         """El chequeo estaba fuera de la transacción: 20 activaciones a la vez
-        con tope 5 entraban las 20."""
+        con tope 5 entraban las 20.
+
+        12 y no 20: el pooler de Supabase en modo sesión atiende 15 conexiones a
+        la vez y rechaza la 16ª en el acto (medido 02/11/2026). Con 20, 6 hilos no
+        conseguían conexión, la barrera nunca se llenaba y la prueba se colgaba
+        hasta el corte de 600 s. 12 contra un tope de 5 sigue probando la carrera."""
         os.environ["TRIALS_MONTHLY_CAP"] = "5"
-        uids = [self._user(f"race{i}@rendi.test") for i in range(20)]
-        listo = threading.Barrier(len(uids))
+        uids = [self._user(f"race{i}@rendi.test") for i in range(12)]
+        listo = threading.Barrier(len(uids), timeout=30)
         entraron = []
 
         def correr(uid):
@@ -186,8 +192,10 @@ class TopeMensualTest(Base):
                 c.close()
 
         hilos = [threading.Thread(target=correr, args=(u,)) for u in uids]
-        [h.start() for h in hilos]
-        [h.join() for h in hilos]
+        # Cada hilo toma su conexión ANTES de la barrera: ver pgshim.tope_temporal.
+        with pgshim.tope_temporal(len(uids) + 5):
+            [h.start() for h in hilos]
+            [h.join(timeout=90) for h in hilos]
         self.assertEqual(len(entraron), 5)
         self.assertEqual(tr._activations_this_month(self.conn), 5)
 

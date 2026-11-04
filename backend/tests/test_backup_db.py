@@ -216,7 +216,10 @@ class TestRunBackupPipeline(unittest.TestCase):
         _create_sample_db(self.db_path)
         # Asegurarnos de que NO hay env vars de S3 colgadas
         self._saved_env = {}
-        for k in ('BACKUP_S3_BUCKET', 'BACKUP_S3_ACCESS_KEY', 'BACKUP_S3_SECRET_KEY'):
+        # Sin DATABASE_URL: esto prueba el backup de SQLite, y con ella puesta
+        # (la suite de Postgres) `run_backup` vuelca Postgres, como la app.
+        for k in ('BACKUP_S3_BUCKET', 'BACKUP_S3_ACCESS_KEY', 'BACKUP_S3_SECRET_KEY',
+                  'DATABASE_URL'):
             if k in os.environ:
                 self._saved_env[k] = os.environ.pop(k)
         os.environ['BACKUP_LOCAL_DIR'] = self.backup_dir

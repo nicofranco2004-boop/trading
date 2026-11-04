@@ -106,8 +106,8 @@ class MovimientosEnPesos(unittest.TestCase):
         # La historia del dólar de ese día, como en producción (la tabla viene llena
         # desde 2011): sin ella el control no tiene contra qué comparar.
         conn = main.get_db()
-        conn.execute("INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
-                     "VALUES ('2024-03-15', 1020, 1010, 'test')")
+        conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+                     "VALUES ('2024-03-15', 1020, 1010, 'test') ON CONFLICT (date) DO UPDATE SET blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, source=EXCLUDED.source")
         conn.commit()
         conn.close()
         r = self.client.post("/api/brokers", headers=self.h, json={"name": "Cocos"})

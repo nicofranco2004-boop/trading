@@ -1110,6 +1110,12 @@ cuelgan la variación diaria, los resúmenes mensuales, el TWR y los informes de
 asesor. **Nadie ve un error: ven números que no cierran.** Estado real de los dos:
 **detectados y anotados en el plan**, prerrequisitos del pasaje. Sin escribir.
 
+✅ **Actualización 29/10/2026: la foto diaria ya está arreglada.** Los tres
+disparadores pasan `abrir=get_db` a `run_daily_snapshot` y la foto se guarda en la
+base que lee la app. Lo prueba `tests/test_foto_diaria_en_la_base_de_la_app.py` por
+la puerta real (`_run_daily_snapshot_job`), en los dos motores; con el
+comportamiento viejo da rojo en Postgres. **El backup nocturno sigue pendiente.**
+
 ---
 
 ### 1. Cómo es el día

@@ -43,7 +43,9 @@ def _conn(with_data=True):
     # currency/fx_to_usd: existen en el schema real (init_db las migra) y el
     # builder las necesita para convertir Cupón/Amortización, que guardan el
     # monto en moneda del broker y no en USD. Ver backend/realized_pnl.py.
-    conn.execute("CREATE TABLE operations (user_id INT, date TEXT, asset TEXT, op_type TEXT, entry_price REAL, exit_price REAL, quantity REAL, pnl_usd REAL, pnl_pct REAL, broker TEXT, currency TEXT, fx_to_usd REAL)")
+    # `id` como en la tabla real: el orden de las operaciones desempata por él
+    # (orden_estable.py).
+    conn.execute("CREATE TABLE operations (id INTEGER PRIMARY KEY, user_id INT, date TEXT, asset TEXT, op_type TEXT, entry_price REAL, exit_price REAL, quantity REAL, pnl_usd REAL, pnl_pct REAL, broker TEXT, currency TEXT, fx_to_usd REAL)")
     conn.execute("CREATE TABLE positions (user_id INT, asset TEXT, broker TEXT, quantity REAL, invested REAL, is_cash INT, currency TEXT, asset_type TEXT, price_override REAL)")
     conn.execute("CREATE TABLE brokers (user_id INT, id INTEGER PRIMARY KEY, name TEXT, currency TEXT, parent_broker_id INT, is_exchange INT)")
     conn.execute("CREATE TABLE config (user_id INT, key TEXT, value TEXT)")

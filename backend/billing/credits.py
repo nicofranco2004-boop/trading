@@ -334,6 +334,7 @@ def convert_plan(
     Si el user no tenía crédito previo: error. Esto solo se llama desde
     /api/billing/change-plan, que valida que haya crédito.
     """
+    from ai import quota as _q   # el día de la cuota, en UN solo lugar
     state = get_credit_state(conn, user_id)
     if not state["is_active"]:
         raise ValueError("El user no tiene crédito activo para convertir.")
@@ -394,13 +395,14 @@ def convert_plan(
         conn.execute(
             """UPDATE users
                SET tier = ?,
-                   quota_window_from = date('now','localtime'),
+                   quota_window_from = ?,
                    credit_active_until = ?,
                    credit_anchor_plan = ?,
                    credit_anchor_period = ?,
                    credit_anchor_at = ?
                WHERE id = ?""",
-            (new_plan, after_iso, new_plan, new_period, now.isoformat(), user_id),
+            (new_plan, _q.dia_de_la_cuota(), after_iso, new_plan,
+               new_period, now.isoformat(), user_id),
         )
         conn.execute(
             """INSERT INTO credit_ledger

@@ -255,8 +255,16 @@ DIA_DEL_RELOJ_CRUDO = re.compile(
 
 PENDIENTES = {
     # (b) UTC a propósito — la cuota se mueve entera o no se mueve (main.py:~29990)
-    "ai/quota.py": 11,
-    "billing/trial.py": 2,          # paso a Plus (día UTC del alta) + piso de cuota
+    #
+    # Bajó de 11 a 8 el 23/10/2026: las CUATRO copias de la reserva de cuota
+    # (chat, análisis, escuchas, descartes) se unificaron en `_reservar_un_slot`,
+    # así que tres `date.today()` desaparecieron con ellas. No se movió ningún
+    # reloj: hay menos lugares donde se lee el mismo.
+    "ai/quota.py": 8,
+    # Bajó de 2 a 1 el 23/10/2026: el paso a Plus era el SÉPTIMO sitio que
+    # calculaba el día de la cuota por su cuenta y ahora lo pide a
+    # `quota.dia_de_la_cuota()`. El que queda es el piso de cuota.
+    "billing/trial.py": 1,
     "home/market.py": 1,            # cripto: velas diarias en días UTC
     # main.py: 1 cripto (`hoy_utc` de la cartera de hoy) + 4 nombres de CSV
     # + diagnóstico admin de Reportes + benchmarks y detalle mensual del chat

@@ -192,8 +192,23 @@ def actualizar(conn, advisor_uid: int, tanda_id: str, rows: Any = None,
 def _lotes_de_tanda(conn, tanda_id: str) -> Dict[str, Dict[str, Any]]:
     """{batch_id: {user_id, status}} de TODOS los lotes estampados con esta
     tanda — no depende de lo que el front haya llegado a guardar."""
-    return {r["id"]: {"user_id": r["user_id"], "status": r["status"], "rowid": r["rowid"]} for r in conn.execute(
-        "SELECT rowid, id, user_id, status FROM import_batches WHERE tanda_id=?", (tanda_id,)).fetchall()}
+    # El orden de creación sale de `created_at` y NO de `rowid`.
+    #
+    # `rowid` es el número de fila físico de SQLite: no existe en Postgres, y aun
+    # en SQLite se puede reusar después de un VACUUM. `import_batches.id` tampoco
+    # sirve para ordenar: es un texto al azar, no un contador.
+    #
+    # ⚠️ `created_at` tiene resolución de SEGUNDOS y los lotes de una misma tanda
+    # se crean casi juntos, así que el empate es probable — no teórico. Por eso va
+    # el `id` como desempate: no es el orden real de inserción, pero es ESTABLE,
+    # que es lo que hace falta para que la lista no cambie entre dos lecturas.
+    # (Un empate sin desempate es como ordenar por apellido y que los Pérez salgan
+    # cada vez en otro orden: no está mal el dato, está mal que no sea el mismo.)
+    return {r["id"]: {"user_id": r["user_id"], "status": r["status"],
+                      "orden": ((r["created_at"] or ""), (r["id"] or ""))}
+            for r in conn.execute(
+        "SELECT id, user_id, status, created_at FROM import_batches WHERE tanda_id=?",
+        (tanda_id,)).fetchall()}
 
 
 def _reconciliar(filas: List[Dict[str, Any]], lotes: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -318,8 +333,8 @@ def revertir(conn, advisor_uid: int, tanda_id: str, *, puede_escribir, revertir_
         return next((f for f in filas if f.get("batch_id") == bid or f.get("foto_batch_id") == bid), None)
 
     resultado = []
-    # Del más nuevo al más viejo (rowid crece con la creación).
-    for bid in sorted(lotes, key=lambda b: lotes[b]["rowid"], reverse=True):
+    # Del más nuevo al más viejo (por `created_at`, con el id de desempate).
+    for bid in sorted(lotes, key=lambda b: lotes[b]["orden"], reverse=True):
         info = lotes[bid]
         f = _fila_de(bid) or {}
         es_foto = f.get("foto_batch_id") == bid

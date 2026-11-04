@@ -13,6 +13,7 @@ os.environ.setdefault("DB_PATH", tempfile.NamedTemporaryFile(suffix=".db", delet
 from fastapi.testclient import TestClient
 
 import main
+from tests._limpieza import vaciar  # noqa: E402
 import twr
 from importing import pipeline as pl
 from importing import persister as ps
@@ -33,11 +34,9 @@ def _todos(s):
 class _Base(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
-        for t in ("snapshots", "positions", "operations", "monthly_entries", "users"):
-            try:
-                self.conn.execute(f"DELETE FROM {t}")
-            except Exception:
-                pass
+        # Hijas antes que madres y sin tragar errores: ver tests/_limpieza.py.
+        vaciar(self.conn, "snapshots", "positions", "operations", "monthly_entries",
+               "users")
         self.uid = self.conn.execute(
             "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
             (f"r5-{id(self)}@t", "x")).lastrowid
@@ -168,13 +167,10 @@ class ReEstampadoPorMesEsInocuoTest(unittest.TestCase):
         """Cuenta importada: 100.000 el 2/1, una compra y un dividendo en enero, y
         10.000 el 20/2. Las fotos del cron anotan lo aportado de cada día y el
         mercado está quieto (la cartera vale eso), así que la curva da 0."""
-        for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
-                  "import_batches", "operations", "positions", "monthly_entries",
-                  "snapshots", "deleted_ops_journal", "config", "brokers", "users"):
-            try:
-                self.conn.execute(f"DELETE FROM {t}")
-            except Exception:
-                pass
+        # Hijas antes que madres y sin tragar errores: ver tests/_limpieza.py.
+        vaciar(self.conn, "import_op_links", "import_normalized_tx", "import_raw_rows",
+               "import_batches", "operations", "positions", "monthly_entries",
+               "snapshots", "deleted_ops_journal", "config", "brokers", "users")
         self.uid = self.conn.execute(
             "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
             (f"r5-cascada-{id(self)}@t", "x")).lastrowid

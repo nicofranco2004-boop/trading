@@ -1427,6 +1427,8 @@ class NadieCreaOperacionesSinReceta(unittest.TestCase):
     DINAMICO = {
         "_reinsert": "el Deshacer re-inserta la fila ENTERA que guardó el borrado "
                      "(`op_row`: todas las columnas menos el id), receta incluida",
+        "_esquema_pg_al_dia": "inserta la huella del esquema en `pgsesion.TABLA_DEL_ARRANQUE` "
+                             "(`esquema_aplicado`), nunca en `operations`",
     }
 
     def _archivos(self):

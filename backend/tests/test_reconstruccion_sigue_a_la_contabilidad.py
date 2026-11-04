@@ -208,14 +208,29 @@ class LaHistoriaSigueALaContabilidad(_Despues):
         conn.commit()
         conn.close()
         self._importar(*IBKR)
+        # Qué lotes HAY antes del segundo import, para saber después cuál es el
+        # segundo. Los dos lotes de este test son indistinguibles en la tabla
+        # —mismo broker, mismo nombre de archivo, mismo segundo en `created_at`—
+        # así que no hay forma de preguntarlo a posteriori. Antes se usaba
+        # `ORDER BY rowid DESC` (el número de fila físico de SQLite), que no
+        # existe en Postgres.
+        _conn = main.get_db()
+        try:
+            _antes = {r["id"] for r in _conn.execute(
+                "SELECT id FROM import_batches WHERE user_id=?", (self.uid,))}
+        finally:
+            _conn.close()
         self._importar("2025-05-05,DEPOSITO,Schwab,,,,3000,,,0,USD,",
                        "2025-05-06,COMPRA,Schwab,AAPL,10,220,2200,,,0,USD,")
         self.assertIn("2025-05-31", [f[0] for f in self._filas()])
         conn = main.get_db()
         try:
             lote = conn.execute(
-                "SELECT id FROM import_batches WHERE user_id=? AND status='confirmed' "
-                "ORDER BY rowid DESC LIMIT 1", (self.uid,)).fetchone()["id"]
+                # El que NO estaba antes: ése es el segundo import. Ver el
+                # comentario de `_antes`, arriba.
+                "SELECT id FROM import_batches WHERE user_id=? AND status='confirmed'",
+                (self.uid,)).fetchall()
+            lote = next(r["id"] for r in lote if r["id"] not in _antes)
         finally:
             conn.close()
         self._pedir("post", f"/api/imports/{lote}/revert")
@@ -447,6 +462,10 @@ class LasHerramientasDelAdmin(_Despues):
         finally:
             conn.close()
 
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "Sólo SQLite por diseño: el ensayo clona la base entera con "
+                     "Connection.backup, que en Postgres no existe (dberrors."
+                     "exigir_clon_soportado corta con 501 a propósito).")
     def test_el_ensayo_no_escribe_en_la_base_real(self):
         """Los "Simular" del admin corren el motor sobre un CLON. La primera versión
         anotaba igual las cuentas y al terminar las reconstruía en la base REAL
@@ -473,6 +492,9 @@ class LasHerramientasDelAdmin(_Despues):
         self.assertEqual(disparos, [])
         self.assertIsNone(self._foto("2025-07-31"))
 
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "Sólo SQLite por diseño: el ensayo clona la base entera con "
+                     "Connection.backup, que en Postgres no existe.")
     def test_el_ensayo_de_reconstruccion_cuenta_las_fotos_que_borraria(self):
         self._importar(*IBKR)
         conn = main.get_db()

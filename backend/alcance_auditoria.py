@@ -21,8 +21,31 @@ import os
 import re
 
 _AQUI = os.path.dirname(os.path.abspath(__file__))
-SQL_PATH = os.path.join(
-    os.path.dirname(_AQUI), "audit", "01_calculos", "1a-alcance-produccion-sqlite.sql")
+# Hay DOS versiones del mismo informe, una por motor, y la diferencia no es
+# cosmética: `parent_es_ars` es un booleano. SQLite no tiene booleanos —guarda
+# 1/0— así que su versión pregunta `= 1`. Postgres SÍ los tiene y se niega a
+# comparar un booleano contra un número (`operator does not exist: boolean =
+# integer`), por eso tiene su propia versión sin el `= 1`.
+#
+# ⚠️ Hasta el 19/10/2026 esto apuntaba SIEMPRE al archivo de SQLite, así que el
+# informe reventaba entero contra Postgres y el de al lado no lo usaba nadie.
+_DIR_SQL = os.path.join(os.path.dirname(_AQUI), "audit", "01_calculos")
+SQL_PATH = os.path.join(_DIR_SQL, "1a-alcance-produccion-sqlite.sql")
+SQL_PATH_PG = os.path.join(_DIR_SQL, "1a-alcance-produccion.sql")
+
+
+def ruta_sql() -> str:
+    """El archivo que corresponde al motor que está corriendo AHORA.
+
+    Se decide al llamar y no al importar: la suite cambia de motor entre
+    corridas, y una constante resuelta al importar se quedaría con el primero.
+    El `import main` va adentro a propósito — `main` importa este módulo.
+    """
+    try:
+        import main as _m
+        return SQL_PATH_PG if getattr(_m, "USANDO_PG", False) else SQL_PATH
+    except Exception:
+        return SQL_PATH
 
 # Palabras que NO pueden aparecer en una consulta de este archivo. El guard corre
 # antes de ejecutar: si alguien agrega un UPDATE al .sql, esto se niega a correr
@@ -33,7 +56,7 @@ _PROHIBIDO = re.compile(
 
 
 def _sql_crudo() -> str:
-    with open(SQL_PATH, encoding="utf-8") as f:
+    with open(ruta_sql(), encoding="utf-8") as f:
         return f.read()
 
 

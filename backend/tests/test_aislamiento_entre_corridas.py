@@ -97,6 +97,17 @@ class LasFirmasLLEGANaLaBaseTest(unittest.TestCase):
         self.assertTrue(str(r[0]).startswith(f"t{os.getpid()}_"),
                         f"el esquema activo es {r[0]!r} y no lleva el pid")
 
+    def test_el_esquema_es_el_mismo_en_todos_los_modulos(self):
+        """Un nombre por módulo llena la base detrás del pooler de Supabase: arma
+        una fila por cada `search_path` distinto y no la suelta (ver
+        `_aislar_postgres` en conftest). El nombre sale del pid y de nada más."""
+        conn = main.get_db()
+        try:
+            r = conn.execute("SELECT current_schema()").fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(r[0], f"t{os.getpid()}_suite")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -44,7 +44,20 @@ class TandaFotoTest(unittest.TestCase):
 
     def _batches(self, uid):
         conn = main.get_db()
-        try: return conn.execute("SELECT id, status FROM import_batches WHERE user_id=? ORDER BY rowid", (uid,)).fetchall()
+        # Trae el ARCHIVO además del estado, y el test pregunta por archivo en
+        # vez de por posición.
+        #
+        # Antes esto era `ORDER BY rowid` —el número de fila físico de SQLite— y
+        # el test comparaba una LISTA, o sea que dependía del orden de inserción.
+        # En Postgres ese número no existe, y la alternativa (`created_at`) tiene
+        # resolución de SEGUNDOS: los dos lotes de este flujo nacen en el mismo
+        # segundo, así que el orden quedaba librado al azar.
+        #
+        # Preguntar «qué archivo quedó en qué estado» es además lo que el test de
+        # verdad quiere saber: que la FOTO quede en preview y los MOVIMIENTOS en
+        # confirmed. Con la lista ordenada, eso se verificaba de rebote.
+        try: return conn.execute("SELECT id, status, file_name FROM import_batches "
+                                 "WHERE user_id=? ORDER BY created_at, id", (uid,)).fetchall()
         finally: conn.close()
 
     def test_foto_en_la_fila_de_punta_a_punta(self):
@@ -67,7 +80,9 @@ class TandaFotoTest(unittest.TestCase):
         self.assertTrue(j.get("session_id"), j)                       # hay algo que decidir/aplicar (GGAL falta)
         self.assertIn("GGAL", [x.get("ticker") for x in (j.get("to_seed") or [])] + [x.get("ticker") for x in (j.get("no_reconciliable") or [])])
         self.assertEqual(self._batches(self.advisor), [])              # nada en la cuenta del asesor
-        self.assertEqual([b["status"] for b in self._batches(self.c1)], ["confirmed", "preview"])
+        self.assertEqual({(b["file_name"], b["status"]) for b in self._batches(self.c1)},
+                         {("mov.csv", "confirmed"),
+                          ("portfolio_report_20240120.csv", "preview")})
         # 4) aplicar: sin aprobar nada, lo marcado "requiere aprobación" no entra
         conn = main.get_db()
         try:
@@ -76,7 +91,9 @@ class TandaFotoTest(unittest.TestCase):
             conn.close()
         c2 = self.http.post("/api/imports/confirm", json={"session_id": j["session_id"], "skip_row_indices": [], "aprobar_tickers": []}, headers=self._h(self.c1))
         self.assertEqual(c2.status_code, 200, c2.text)
-        self.assertEqual([b["status"] for b in self._batches(self.c1)], ["confirmed", "confirmed"])
+        self.assertEqual({(b["file_name"], b["status"]) for b in self._batches(self.c1)},
+                         {("mov.csv", "confirmed"),
+                          ("portfolio_report_20240120.csv", "confirmed")})
         conn = main.get_db()
         try:
             tickers = {r["asset"] for r in conn.execute("SELECT asset FROM positions WHERE user_id=? AND is_cash=0", (self.c1,)).fetchall()}

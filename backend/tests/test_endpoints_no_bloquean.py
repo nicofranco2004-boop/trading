@@ -87,13 +87,21 @@ class ElLockNoSeTomaAntesDeParsear(unittest.TestCase):
         vuelve al principio de run_preview, el lock queda tomado durante todo el
         parseo del archivo."""
         from importing import pipeline
-        src = inspect.getsource(pipeline.run_preview)
+        # `run_preview` envuelve a `_run_preview_una_vez` (lo rehace si un broker
+        # se renombró en el medio): el cuerpo que parsea y escribe es éste.
+        src = inspect.getsource(pipeline._run_preview_una_vez)
         pos_cleanup = src.index("cleanup_stale_previews(conn)")
         pos_parse = src.index("parse_result = parser.parse(")
         self.assertGreater(
             pos_cleanup, pos_parse,
             "cleanup_stale_previews volvió a estar ANTES del parseo: eso toma el "
             "lock de escritura y lo retiene mientras se parsea el archivo.",
+        )
+        # El turno de la cuenta es un UPDATE: misma regla.
+        self.assertGreater(
+            src.index("_ps.tomar_turno(conn, uid)"), pos_parse,
+            "el turno de la cuenta volvió a estar ANTES del parseo: en SQLite toma "
+            "el lock de toda la base y lo retiene mientras se parsea el archivo.",
         )
 
 

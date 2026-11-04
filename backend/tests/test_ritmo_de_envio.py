@@ -758,11 +758,25 @@ def test_entre_una_entrega_de_alertas_y_la_siguiente_la_base_queda_libre(conn, m
     assert pudo == [True, True]
 
 
+@pytest.mark.skipif(getattr(main, "USANDO_PG", False),
+                    reason="Sólo SQLite: simula «database is locked», que no existe así "
+                           "en Postgres. Ver el aviso del docstring.")
 def test_si_no_se_puede_anotar_una_entrega_las_demas_alertas_salen_igual(conn, monkeypatch):
     """Otro escritor de la app (un import largo) tiene la base tomada más que
     el busy_timeout justo cuando se anota la primera entrega. Antes el error
     cortaba la entrega de las que faltaban — ya registradas como disparadas,
-    no se reintentan nunca."""
+    no se reintentan nunca.
+
+    ⚠️ SÓLO-SQLITE, y la razón es de fondo: este test FABRICA la condición
+    abriendo una conexión cruda al archivo y tomándolo con `BEGIN IMMEDIATE`.
+    Eso reproduce el escritor único de SQLite — exactamente lo que la migración
+    a Postgres viene a eliminar. Allá no hay una base entera que trabar.
+
+    **Lo que el test protege SÍ importa del otro lado**: si una entrega no se
+    puede anotar, las demás tienen que salir igual. La versión para Postgres
+    tendría que fabricar otra cosa (un lock de FILA con `lock_timeout` corto) y
+    queda PENDIENTE: no es que no aplique, es que falta escribirla.
+    """
     uids = [_usuario(conn, n, tier="plus") for n in ("ana", "beto")]
     for u, sym in zip(uids, ("AAPL", "MSFT")):
         _alerta(conn, u, sym)
@@ -1644,9 +1658,43 @@ def test_una_rafaga_de_mails_sueltos_no_congela_la_app_ni_se_saltea_la_fila():
             h.join(10)
         _esperar_al_cartero()
     assert len(tardanzas) == 20
-    assert max(tardanzas) < tope + 0.2, sorted(tardanzas)[-3:]
+    # ⏱️ NO se compara contra el reloj de pared más un margen fijo: eso mide la
+    # MÁQUINA, no el código. Con `tope + 0.2` este test aparecía y desaparecía de
+    # la suite de Postgres según qué más estuviera corriendo (medido: el mismo
+    # commit dio 14 y 16 fallas, y éste era una de las dos que se movían).
+    #
+    # Lo que el test tiene que probar es que el pedido **no espera la FILA**.
+    # Esperar la fila cuesta `pausa × 20` = 2 s; el tope configurado es 0,25 s.
+    # Comparar contra la MITAD del costo de la fila discrimina 8× y le deja
+    # margen de sobra a un hilo que el sistema operativo despachó tarde.
+    espera_la_fila = pausa * len(hilos)
+    assert max(tardanzas) < espera_la_fila / 2, (
+        f"el pedido parece estar esperando la fila: la peor tardanza fue "
+        f"{max(tardanzas):.2f}s y esperar la fila entera cuesta "
+        f"{espera_la_fila:.2f}s — {sorted(tardanzas)[-3:]}")
     assert len(resend.pedidos) == 20                          # salieron todos
-    assert min(_separaciones(resend.horas())) >= pausa * 0.9  # y ninguno se coló
+    # ⏱️ Y ninguno se coló — en DOS afirmaciones, no en un mínimo ajustado, por el
+    # mismo motivo que arriba. La pausa se cuenta desde que ARRANCA el envío
+    # anterior, y la hora que queda registrada acá es la del pedido a la red: si
+    # la máquina está cargada, al anterior le cuesta llegar a la red y el hueco
+    # entre horas registradas sale MÁS CORTO que la pausa sin que el código haya
+    # hecho nada mal. Medido el 2026-10-29 con tres suites más corriendo: 82,8 ms
+    # con la pausa en 100 ms, o sea 17 % por debajo del 0,9 que se exigía.
+    #   · el ritmo DEL CONJUNTO: 20 mails no pueden salir en menos de 19 pausas.
+    #     Ese número sólo puede CRECER si la máquina está lenta, nunca encogerse,
+    #     así que no se vuelve a mover; y si alguien le baja la pausa a la mitad,
+    #     se rompe.
+    #   · y ninguno PEGADO al anterior: un envío que se saltea la fila sale con un
+    #     hueco cerca de cero, no de 83 ms.
+    horas = resend.horas()
+    minimo_del_conjunto = pausa * (len(hilos) - 1) * 0.9
+    assert horas[-1] - horas[0] >= minimo_del_conjunto, (
+        f"los 20 mails salieron en {horas[-1] - horas[0]:.2f}s y la fila entera "
+        f"no puede costar menos de {minimo_del_conjunto:.2f}s: alguno se salteó "
+        f"la pausa")
+    assert min(_separaciones(horas)) >= pausa * 0.5, (
+        f"hay un mail pegado al anterior ({min(_separaciones(horas)) * 1000:.0f} ms "
+        f"con la pausa en {pausa * 1000:.0f} ms): se salteó la fila")
 
 
 def test_los_envios_masivos_hacen_la_fila_completa():

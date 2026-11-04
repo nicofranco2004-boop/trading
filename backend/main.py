@@ -98,6 +98,7 @@ import fx as _fx
 import resultado_dual as _resultado_dual
 import efectivo as _efectivo   # la única puerta por la que se mueve el saldo de un broker
 import renombre_broker as _renombre_broker   # el nombre del broker ADENTRO de lo guardado
+from orden_estable import operaciones_por_fecha as _ops_por_fecha, por_fecha as _por_fecha  # el empate del mismo día
 import dividendos as _dividendos   # bandeja de cobros de dividendos (Cartera)
 import realized_pnl          # criterio único de "P&L realizado en USD" (ver módulo)
 # El techo del % realizado y su regla viven en ese mismo módulo. Estaban acá
@@ -433,11 +434,17 @@ def _fallida_hace_poco(conn, uid) -> bool:
 
 
 def _guardar_huella_escrita(conn, uid, huella) -> None:
-    """En la MISMA transacción que las fotos: o quedan las dos cosas o ninguna."""
+    """En la MISMA transacción que las fotos: o quedan las dos cosas o ninguna.
+
+    Sólo si la cuenta existe. Una reconstrucción que termina después de que la
+    persona borró su cuenta llegaba acá y dejaba una fila huérfana (el borrado
+    ya había pasado). Quien llama tiene el turno de la cuenta, así que entre esta
+    pregunta y la escritura no la puede borrar nadie."""
     conn.execute(
-        "INSERT INTO mtm_huella (user_id, huella, escrita_at) VALUES (?, ?, datetime('now')) "
+        "INSERT INTO mtm_huella (user_id, huella, escrita_at) "
+        "SELECT ?, ?, datetime('now') WHERE EXISTS (SELECT 1 FROM users WHERE id=?) "
         "ON CONFLICT(user_id) DO UPDATE SET huella=excluded.huella, escrita_at=excluded.escrita_at",
-        (uid, huella))
+        (uid, huella, uid))
 
 
 def _cuentas_que_cambiaron(uids) -> tuple:
@@ -737,6 +744,18 @@ def db_abierta():
         yield conn
     finally:
         conn.close()
+
+
+@contextmanager
+def _si_falla_se_deshace_solo_esto(conn, nombre: str):
+    """Un punto de guardado. La implementación y el por qué viven en
+    `pgsesion.si_falla_se_deshace_solo_esto`: `ai/quota.py` y `snapshots_job.py`
+    lo necesitan igual y no pueden importar `main` (sería un círculo). Acá queda
+    sólo el nombre, para no tocar los seis lugares que ya lo usan.
+    """
+    import pgsesion as _ps
+    with _ps.si_falla_se_deshace_solo_esto(conn, nombre):
+        yield
 
 
 def _run_with_lock_retry(fn, *, attempts: int = 4, base_delay: float = 0.3):
@@ -1299,34 +1318,257 @@ def _borrar_marcas_sueltas(conn) -> int:
     return n
 
 
-def _init_db_postgres():
-    """Aplica el schema de Postgres (idempotente: todo va con IF NOT EXISTS)."""
-    import psycopg
+# Cuánto puede esperar UN cambio de estructura a que la copia vieja de la app
+# suelte su tabla, y cuántas veces lo vuelve a intentar. Ver `_aplicar_esquema_pg`.
+_DDL_ESPERA_MAX = "3s"
+_DDL_REINTENTOS = 20
+_DDL_PAUSA_S = 1.0
+
+
+def _sentencias_esquema_pg() -> list:
     ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema_pg.sql")
-    ddl = open(ruta).read()
-    # ANTES del esquema: el índice único `ux_tesis_un_dia` no se puede crear
-    # sobre una base que ya tenga dos tesis del mismo día (de antes de la regla),
-    # y el CREATE de abajo reventaría el arranque. Primero se juntan, con la misma
-    # función que usa SQLite (tesis.unificar_repetidas). En una base nueva la
-    # tabla todavía no existe y no hay nada que juntar. `idx_tesis_user_asset`
-    # tenía las mismas columnas sin ser único: lo reemplaza (igual que en SQLite).
+    with open(ruta) as f:
+        return [x.strip() for x in f.read().split(";\n") if x.strip()]
+
+
+def _huella_esquema_pg(sentencias) -> str:
+    """Todo lo que decide qué estructura deja el arranque: las sentencias de
+    `schema_pg.sql` y CÓMO se aplican (el código de `_aplicar_esquema_pg`). Un
+    cambio en cualquiera de las dos —aunque sea un comentario de la función—
+    vuelve a correr todo una vez, que es el lado seguro."""
+    import inspect
+    texto = "\n;\n".join(sentencias) + "\n#receta\n" + inspect.getsource(_aplicar_esquema_pg)
+    return hashlib.sha256(texto.encode("utf-8")).hexdigest()
+
+
+def _lo_que_falta_del_esquema(c, sentencias) -> list:
+    """Lo que `schema_pg.sql` crea y la base NO tiene, preguntado al catálogo:
+    tablas, columnas, índices, claves foráneas (todas con nombre) y vistas.
+    Leer el catálogo no traba ninguna tabla, así que no espera a nadie.
+
+    Existe para que la huella no sea un acto de fe: «huella al día» dice que el
+    archivo no cambió desde la última vez que se aplicó entero, no que nadie
+    tocó la base a mano después. Con esto, si falta algo, se vuelve a aplicar."""
+    import re as _re
+    tablas, columnas, indices, fks, vistas = set(), set(), set(), set(), set()
+    for s in sentencias:
+        m = _re.match(r"CREATE TABLE IF NOT EXISTS (\w+) \((.*)\)$", s, _re.S)
+        if m:
+            tablas.add(m.group(1))
+            for linea in m.group(2).split("\n"):
+                p = linea.strip().rstrip(",").split()
+                if p and p[0].upper() not in ("PRIMARY", "UNIQUE", "FOREIGN", "CHECK", "CONSTRAINT"):
+                    columnas.add((m.group(1), p[0].strip('"')))
+            continue
+        m = _re.match(r"ALTER TABLE (\w+) ADD COLUMN IF NOT EXISTS (\w+)", s)
+        if m:
+            columnas.add((m.group(1), m.group(2)))
+            continue
+        m = _re.match(r"ALTER TABLE \w+ ADD CONSTRAINT (\w+) FOREIGN KEY", s)
+        if m:
+            fks.add(m.group(1))
+            continue
+        m = _re.match(r"CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+)", s)
+        if m:
+            indices.add(m.group(1))
+            continue
+        m = _re.match(r"CREATE OR REPLACE VIEW (\w+)", s)
+        if m:
+            vistas.add(m.group(1))
+
+    def _hay(sql):
+        return {tuple(r) if len(r) > 1 else r[0] for r in c.execute(sql).fetchall()}
+    hay_tablas = _hay("SELECT table_name FROM information_schema.tables "
+                      "WHERE table_schema = current_schema()")
+    hay_columnas = _hay("SELECT table_name, column_name FROM information_schema.columns "
+                        "WHERE table_schema = current_schema()")
+    hay_indices = _hay("SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()")
+    hay_fks = _hay("SELECT conname FROM pg_constraint WHERE contype = 'f' "
+                   "AND connamespace = current_schema()::regnamespace")
+    falta = ([f"tabla {t}" for t in sorted(tablas - hay_tablas)]
+             + [f"columna {t}.{k}" for t, k in sorted(columnas - hay_columnas)]
+             + [f"índice {i}" for i in sorted(indices - hay_indices)]
+             + [f"clave foránea {f}" for f in sorted(fks - hay_fks)]
+             + [f"vista {v}" for v in sorted(vistas - hay_tablas)])
+    return falta
+
+
+def _aplicar_esquema_pg(c, sentencias) -> int:
+    """Corre las sentencias de `schema_pg.sql`. Devuelve cuántas veces tuvo que
+    reintentar una porque la tabla estaba ocupada.
+
+    🔴 EL TOPE DE ESPERA. Un `ALTER TABLE … ADD COLUMN IF NOT EXISTS` toma la
+    tabla ENTERA en exclusiva aunque la columna ya exista, y la toma ANTES de
+    mirar si existe. Si la copia vieja de la app (que en Postgres sigue
+    atendiendo durante el arranque de la nueva) tiene una transacción abierta en
+    esa tabla, el ALTER espera; y mientras espera, todo pedido NUEVO que quiera
+    leer esa tabla queda en fila detrás de él. Medido el 30/10/2026 en el
+    Postgres local: un pedido abierto, el ALTER esperando y un lector nuevo
+    trabado. En producción `lock_timeout` vale 0: esperaría para siempre.
+
+    Con el tope, cada intento traba la tabla como mucho `_DDL_ESPERA_MAX`;
+    después se rinde, la fila se vacía y la copia vieja sigue atendiendo.
+
+    POR QUÉ REINTENTA Y NO FALLA ENSEGUIDA. Las transacciones de la app son
+    cortas (el turno se pide justo antes de escribir y nunca durante la red),
+    así que en el segundo intento la tabla casi siempre está libre. Fallar el
+    arranque en el primero dejaría sin publicar por un pedido de 200 ms.
+    POR QUÉ, AL FINAL, FALLA Y NO SALTEA LA SENTENCIA: saltear dejaría a la
+    copia nueva atendiendo sin una columna que su código usa (errores en pedidos
+    de verdad). Fallar deja a la vieja atendiendo —con el chequeo de salud,
+    Railway no le pasa tráfico a la nueva— y lo dice en el registro.
+
+    El tope vive en ESTA conexión (una propia del arranque, que se cierra al
+    terminar) y se devuelve a su valor al salir: detrás de un pooler la conexión
+    del servidor puede seguir viva para otro cliente."""
+    import psycopg
+    reintentos = 0
+    c.execute(f"SET lock_timeout = '{_DDL_ESPERA_MAX}'")
+    try:
+        for s in sentencias:
+            for intento in range(_DDL_REINTENTOS + 1):
+                try:
+                    c.execute(s)
+                    break
+                except psycopg.errors.DuplicateObject:
+                    break     # la FK ya existía (ADD FOREIGN KEY no tiene IF NOT EXISTS)
+                except psycopg.errors.LockNotAvailable:
+                    if intento == _DDL_REINTENTOS:
+                        raise
+                    reintentos += 1
+                    time.sleep(_DDL_PAUSA_S)
+    finally:
+        c.execute("RESET lock_timeout")
+    return reintentos
+
+
+def _esquema_pg_al_dia() -> dict:
+    """Deja la base con la estructura de `schema_pg.sql`, corriendo los ~800
+    cambios SÓLO si hace falta.
+
+    🔴 POR QUÉ NO CORRE TODO EN CADA ARRANQUE, como hasta el 30/10/2026. Cada
+    `ALTER TABLE` traba su tabla entera aunque no cambie nada (ver
+    `_aplicar_esquema_pg`), y en Postgres el arranque de la copia nueva corre
+    mientras la vieja atiende: 646 trabas por publicación, cada una capaz de
+    dejar en fila a todos los pedidos de su tabla.
+
+    Se saltea cuando se cumplen LAS DOS: la huella guardada es la de este
+    archivo (`_huella_esquema_pg`) y el catálogo tiene todo lo que el archivo
+    crea (`_lo_que_falta_del_esquema`). Ante la duda, corre — que es lo que
+    hacía siempre.
+
+    La huella se guarda recién cuando TODO salió bien y el catálogo lo
+    confirma. Si el arranque muere a mitad, no queda huella nueva y el próximo
+    vuelve a correr todo (cada sentencia aguanta repetirse:
+    tests/test_esquema_pg_reaplicable.py).
+
+    Devuelve {"corridas", "reintentos", "salteado", "motivo"} para las pruebas
+    y el registro."""
+    import pgsesion
+    sentencias = _sentencias_esquema_pg()
+    huella = _huella_esquema_pg(sentencias)
+    with pgsesion.conectar(DATABASE_URL, autocommit=True) as c:
+        # Fuera de schema_pg.sql a propósito: ese archivo lo regenera
+        # scripts/mkschema.py desde el esquema de SQLite, y esta tabla es del
+        # arranque de Postgres, no de los datos (ver `pgsesion.TABLA_DEL_ARRANQUE`).
+        tabla = pgsesion.TABLA_DEL_ARRANQUE
+        c.execute(f"CREATE TABLE IF NOT EXISTS {tabla} ("
+                  "clave text PRIMARY KEY, huella text NOT NULL, aplicado_en text)")
+        fila = c.execute(f"SELECT huella FROM {tabla} WHERE clave = 'schema_pg'").fetchone()
+        guardada = fila[0] if fila else None
+        falta = _lo_que_falta_del_esquema(c, sentencias)
+        if guardada == huella and not falta:
+            # WARNING y no INFO: init_db corre antes del basicConfig (ver
+            # `reparaciones_de_arranque`) y un INFO acá se pierde.
+            log.warning("esquema de Postgres al día (huella %s): 0 cambios de estructura",
+                        huella[:12])
+            return {"corridas": 0, "reintentos": 0, "salteado": True, "motivo": None}
+        motivo = ("la base no tiene huella" if guardada is None
+                  else "cambió schema_pg.sql o cómo se aplica" if guardada != huella
+                  else f"falta en la base: {', '.join(falta[:5])}"
+                       + (f" (y {len(falta) - 5} más)" if len(falta) > 5 else ""))
+        log.warning("esquema de Postgres: se aplican %d sentencias (%s)", len(sentencias), motivo)
+        reintentos = _aplicar_esquema_pg(c, sentencias)
+        falta = _lo_que_falta_del_esquema(c, sentencias)
+        if falta:
+            raise RuntimeError("schema_pg.sql se aplicó y el catálogo sigue sin: "
+                               + ", ".join(falta[:10]))
+        c.execute(f"INSERT INTO {tabla} (clave, huella, aplicado_en) "
+                  "VALUES ('schema_pg', %s, %s) ON CONFLICT (clave) DO UPDATE "
+                  "SET huella = excluded.huella, aplicado_en = excluded.aplicado_en",
+                  (huella, datetime.utcnow().isoformat()))
+        log.warning("esquema de Postgres aplicado: %d sentencias, %d reintentos por tabla ocupada",
+                    len(sentencias), reintentos)
+        return {"corridas": len(sentencias), "reintentos": reintentos, "salteado": False,
+                "motivo": motivo}
+
+
+@contextmanager
+def _de_a_un_arranque_por_vez():
+    """Esquema + reparaciones de arranque, DE A UNA COPIA DE LA APP POR VEZ.
+
+    🔴 POR QUÉ. En Railway, sin volumen, al publicar conviven la copia vieja y la
+    nueva: la nueva arranca (y corre esto) mientras la vieja todavía atiende, y la
+    vieja recién se apaga cuando la nueva quedó activa más el tiempo de
+    superposición (docs.railway.com/reference/deployments, «Deployment
+    Teardown»). Hoy hay volumen (`/data`, la base SQLite) y Railway no superpone
+    copias con volumen; con Postgres el volumen deja de ser necesario. Y no hace
+    falta Railway: cualquier script que haga `import main` con DATABASE_URL de
+    producción corre esto mismo.
+
+    Dos arranques a la vez se pisaban de dos formas: los `CREATE ... IF NOT EXISTS`
+    simultáneos sobre una base vacía chocan en el catálogo (uno de los dos
+    revienta y esa copia no levanta), y las reparaciones corrían dos veces
+    sobre las mismas filas. El candado las pone en fila.
+
+    POR QUÉ ESPERA Y NO SE SALTEA. Lo que se pierde si falla cada opción: la que
+    se saltea levantaría a atender pedidos con el esquema todavía a medio aplicar
+    por la otra (columnas que no existen = errores en pedidos de verdad); la que
+    espera tarda unos segundos más en levantar. Si la copia que lo tiene muere,
+    Postgres lo suelta solo al cerrarse su conexión.
+
+    La segunda clave es el esquema: en producción es uno (`public`); en las
+    pruebas cada módulo tiene el suyo y no tienen por qué esperarse entre sí.
+
+    El turno de cada cuenta lo piden las reparaciones mismas: este candado ordena
+    los arranques entre sí, no a un arranque contra los pedidos de la copia vieja.
+    """
+    import pgsesion
+    with pgsesion.conectar(DATABASE_URL, autocommit=True) as candado:
+        clave = (pgsesion.TURNO_ARRANQUE,)
+        candado.execute("SELECT pg_advisory_lock(%s, hashtext(current_schema()))", clave)
+        try:
+            yield
+        finally:
+            # Explícito y no sólo al cerrar: detrás de un pooler la conexión del
+            # servidor puede seguir viva para otro cliente, con el candado puesto.
+            candado.execute("SELECT pg_advisory_unlock(%s, hashtext(current_schema()))", clave)
+
+
+def _init_db_postgres() -> dict:
+    """El arranque de Postgres: lo de antes del esquema, el esquema
+    (`_esquema_pg_al_dia`) y lo de después, en ese orden.
+
+    ANTES: el índice único `ux_tesis_un_dia` no se puede crear sobre una base que
+    ya tenga dos tesis del mismo día (de antes de la regla), y el CREATE reventaría
+    el arranque. Primero se juntan, con la misma función que usa SQLite
+    (`tesis.unificar_repetidas`). En una base nueva la tabla todavía no existe y no
+    hay nada que juntar. `idx_tesis_user_asset` tenía las mismas columnas sin ser
+    único: lo reemplaza (igual que en SQLite).
+
+    DESPUÉS (las tablas tienen que existir), igual que en SQLite: las marcas de
+    alertas que ya no existen (`_borrar_marcas_sueltas`)."""
     with db_abierta() as conn:
         if conn.execute("SELECT to_regclass('tesis')").fetchone()[0]:
             import tesis as _tesis
             _tesis.unificar_repetidas(conn)
             conn.execute("DROP INDEX IF EXISTS idx_tesis_user_asset")
         conn.commit()
-    import pgsesion
-    with pgsesion.conectar(DATABASE_URL, autocommit=True) as c:
-        for s in [x.strip() for x in ddl.split(";\n") if x.strip()]:
-            try:
-                c.execute(s)
-            except psycopg.errors.DuplicateObject:
-                pass          # la FK ya existía (ADD FOREIGN KEY no tiene IF NOT EXISTS)
-    # DESPUÉS del esquema (las tablas tienen que existir), igual que en SQLite.
+    resultado = _esquema_pg_al_dia()
     with db_abierta() as conn:
         _borrar_marcas_sueltas(conn)
         conn.commit()
+    return resultado
 
 
 # Fecha en que el mail de bienvenida empezó a salir por Rebill. Todo lo anterior
@@ -1385,7 +1627,337 @@ _NOTA_COMPRA_POR_CHAT = "Registrado por Mervall-E AI"
 _NOTAS_COMPRA_POR_CHAT_VIEJAS = ("Registrado por Coach IA", "Registrado por Rendi AI")
 
 
+# El turno de escritura de una cuenta. Vive acá arriba y no al lado de
+# `_foto_contable`, donde nació, porque `reparaciones_de_arranque` lo pide y
+# corre al importar este archivo (`init_db()`), antes de llegar allá: más abajo
+# era un NameError que sólo saltaba el día que hubiera algo para reparar.
+def _tomar_turno(conn, uid: int) -> None:
+    """Toma el turno de escritura (ver `_foto_contable`). `tier` y no `id`:
+    reescribir la clave primaria hacía 14 chequeos de claves foráneas por borrado.
+    Aparte para que un test pueda sacarlo sin copiar lo demás. La sentencia vive
+    en `pgsesion.tomar_turno` (la vista previa del import la usa sin `main`)."""
+    import pgsesion as _ps
+    _ps.tomar_turno(conn, uid)
+
+
+def _tomar_turno_de_la_puerta(conn, uid: int) -> None:
+    """El turno de `_tomar_turno` para las puertas que escriben la plata y no lo
+    pedían: depósitos y retiros, operaciones a mano, confirmar un import, vender,
+    editar lotes, plazos fijos, conversiones… (censo:
+    tests/test_turno_en_todas_las_puertas.py).
+
+    🔴 POR QUÉ HACE FALTA. En Postgres `_tomar_turno` traba sólo la fila de
+    `users`, así que espera únicamente quien también la escriba. Estas puertas no
+    la escribían y se metían en el medio de los borrados y los «deshacer» que sí
+    la piden. La auditoría de los 14 (audit/turno_14/): en los 9 cruces reales el
+    intruso era una de estas puertas. Medido: borrar un mes mientras entra un
+    depósito dejaba al mes siguiente con el capital del mes borrado (100.000 de
+    capital inicial donde iba 0), 3 de 3.
+
+    POR QUÉ EN SQLITE NO HACE NADA, a propósito. Allá la primera escritura de
+    cualquiera ya toma la base ENTERA, así que estas puertas ya esperaban a los
+    borrados. Pedir el turno antes de leer sólo agrandaría ese candado de toda la
+    base sobre lecturas y, en varias de estas puertas, sobre pedidos a la red
+    (cotizaciones, precios): cada usuario esperaría al Yahoo de otro. En Postgres
+    el candado es por usuario y esa espera es sólo suya.
+
+    Va PRIMERO en cada transacción —antes del candado de la caja
+    (`efectivo.tomar_saldo`)— para que el orden de candados sea uno solo: el
+    cruzado ya se pagó dos veces con un `deadlock detected`. Y en cada
+    transacción, no una vez por pedido: un `commit()` o un `rollback()` lo suelta.
+    """
+    import pgsesion as _ps
+    if _ps.habla_postgres(conn):
+        _tomar_turno(conn, uid)
+
+
+def _tomar_turnos_en_orden(conn, uids) -> None:
+    """El turno de VARIOS usuarios en la misma transacción (reparaciones del admin,
+    el asesor sobre varios clientes): de menor a mayor, siempre. Dos procesos que
+    piden los mismos turnos en el mismo orden no pueden quedar esperándose el uno
+    al otro; en distinto orden, sí (A tiene el 3 y espera el 7, B tiene el 7 y
+    espera el 3). Un pedido de un usuario pide sólo el suyo y no entra en ese
+    cruce. Como `_tomar_turno_de_la_puerta`: va PRIMERO en la transacción, y en
+    SQLite no hace nada."""
+    for u in sorted({int(x) for x in uids if x is not None}):
+        _tomar_turno_de_la_puerta(conn, u)
+
+
+# Huellas de tokens. Viven acá arriba y no al lado del reseteo de contraseña
+# porque `reparaciones_de_arranque` las usa y corre al IMPORTAR este archivo
+# (`init_db()`): más abajo eran un NameError en cada arranque real, tragado por
+# el `except` de la reparación (que sólo deja un WARNING), y los tokens en
+# claro nunca pasaban a huella. Las pruebas no lo veían: vuelven a llamar a
+# `init_db()` con el archivo ya cargado entero. Guardián:
+# tests/test_arranque_sin_trabar.py::LoQueCorreAlImportarEstaDefinido.
+def _hash_token(token: str) -> str:
+    """Huella SHA-256 (hex, 64 chars) de un token de link, para guardar EN REPOSO.
+
+    El token aleatorio viaja en claro al usuario (mail/URL) pero en la base se
+    guarda sólo esta huella: si se filtra una copia de la base, el valor guardado
+    no sirve para usar el link (no se puede volver atrás a la huella). Al validar,
+    se hashea el token entrante y se compara contra lo guardado. No lleva sal a
+    propósito: son 256 bits aleatorios, no hay nada que adivinar por diccionario.
+
+    Hoy lo usa el token de reseteo de contraseña. Los otros tres tokens de link
+    (claim, link-request de asesor, informe público) comparten el mismo patrón y
+    se migran a este helper con su propia migración de links vivos — RENDI-10."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+_TOKEN_HASH_LEN = 64  # un SHA-256 hex; sirve para distinguir "ya hasheado" de un token crudo
+
+
+def _es_huella(valor: str) -> bool:
+    """¿`valor` ya es una huella SHA-256 (64 hex)? Para migraciones idempotentes."""
+    return (len(valor or "") == _TOKEN_HASH_LEN
+            and all(c in "0123456789abcdef" for c in valor))
+
+
+def _migrar_reset_tokens_a_huella(conn) -> tuple:
+    """Deja `password_reset_tokens` sin ningún token en claro. Idempotente.
+
+    (1) Borra los usados y los vencidos: ya no sirven y hasta 2026-10 no se
+    borraban nunca. (2) Pasa a huella los pocos vivos que quedaran en claro, para
+    que una copia de la base no permita usar el link. Devuelve (vivos, migrados).
+
+    Es una función con nombre —y no SQL suelto en el arranque— para que el test la
+    atraviese por el mismo camino que corre en producción."""
+    conn.execute(
+        "DELETE FROM password_reset_tokens WHERE used_at IS NOT NULL OR expires_at < ?",
+        (datetime.utcnow().isoformat(),))
+    vivos = conn.execute("SELECT id, token FROM password_reset_tokens").fetchall()
+    en_claro = [r for r in vivos if not _es_huella(r["token"])]
+    for r in en_claro:
+        conn.execute("UPDATE password_reset_tokens SET token=? WHERE id=?",
+                     (_hash_token(r["token"]), r["id"]))
+    return len(vivos), len(en_claro)
+
+
+def _migrar_tokens_link_a_huella(conn) -> int:
+    """Pasa a huella los tokens en claro de los links de ASESOR: claim (reclamar
+    cuenta) y link-request (pedido de acceso). RENDI-10 parte B. Idempotente.
+
+    A diferencia de los de reseteo NO se borra ninguna fila: `used_at`, `status` y
+    los conteos por fecha deben quedar intactos. Sólo se reescribe la columna
+    `token` de claro a huella, y eso preserva los links VIVOS (el token del mail
+    se hashea al validar y sigue matcheando). Devuelve cuántos se convirtieron.
+
+    `advisor_reports` queda afuera a propósito: ahí el token crudo también vive en
+    `wa_text` y el asesor re-comparte el link desde su historial, así que hashearlo
+    es una decisión de producto (parte C), no un cambio mecánico."""
+    convertidos = 0
+    for tabla in ("advisor_claim_tokens", "advisor_link_requests"):
+        filas = conn.execute(f"SELECT id, token FROM {tabla}").fetchall()
+        for r in filas:
+            if r["token"] and not _es_huella(r["token"]):
+                conn.execute(f"UPDATE {tabla} SET token=? WHERE id=?",
+                             (_hash_token(r["token"]), r["id"]))
+                convertidos += 1
+    return convertidos
+
+
+def reparaciones_de_arranque(conn):
+    """Lo que Rendi se arregla sola CADA VEZ que arranca. Corre en LOS DOS MOTORES.
+
+    🔴 POR QUÉ ES UNA FUNCIÓN APARTE, y no un trozo más de `init_db`. Hasta el
+    2026-10-29 esto vivía adentro de `init_db`, 2.400 líneas abajo de su primera
+    línea — que es `if USANDO_PG: _init_db_postgres(); return`. O sea que **en
+    Postgres no corría ninguna**, y sin dejar rastro: ni un error, ni la línea de
+    WARNING que varias de éstas dejan a propósito. Lo agarraron cuatro tests cuyo
+    nombre dice «al arrancar» (`test_efectivo_una_puerta` ×2,
+    `test_admin_ingresos`, `test_admin_uso`), y la causa era una sola.
+
+    Y el `return` de `init_db` **está bien** para lo que quedó allá: las 46
+    migraciones incrementales son la HISTORIA del esquema de SQLite (crear la
+    tabla, después la columna, después el índice) y Postgres arranca del
+    RESULTADO (`schema_pg.sql`). Lo que estaba mal era compartir la función con
+    esto, que no es esquema: son DATOS, y hay que repararlos en los dos motores.
+
+    QUÉ ENTRÓ ACÁ: lo que corre en cada boot y es idempotente — sus propios
+    comentarios lo dicen («en cada boot», «quedan 0» como confirmación). Entre
+    ellas DOS DE SEGURIDAD: los tokens de recuperación de contraseña y los de los
+    links de asesor pasan de texto en claro a huella. En Postgres no pasaban.
+    Medido: el SQL funciona igual en los dos motores, no hubo que traducir nada
+    (`tests/test_reparaciones_del_arranque.py`).
+
+    QUÉ NO ENTRÓ, a propósito: los arreglos HISTÓRICOS, que reparan datos viejos
+    de SQLite y ya están aplicados en los datos que se copian a Postgres —
+    `_marcar_bienvenidas_previas` (tiene fecha de corte), el relleno de
+    `credit_ledger` para quien pagó antes de la proration, y los `if not cols:`
+    que rearman tablas que nunca existieron. Si alguno hiciera falta del lado de
+    Postgres, hay que traerlo acá a mano.
+
+    🔒 CADA REPARACIÓN ES SU PROPIA TRANSACCIÓN, y las que tocan `positions` piden
+    el turno de cada cuenta que tocan. En Postgres el arranque puede correr
+    mientras la copia anterior de la app todavía atiende pedidos (ver
+    `_de_a_un_arranque_por_vez`): sin el turno, una reparación se metía en el medio de un
+    depósito o de un borrado de esa cuenta. Y de a una porque en Postgres un error
+    arruina la transacción entera: con un solo commit al final, la primera que
+    fallaba se llevaba a todas las de abajo (el «plan B» del hallazgo 13). Ahora
+    la que falla se deshace sola y las demás corren.
+    """
+    def _en_positions_con_los_turnos(set_sql, donde, set_args=(), donde_args=()):
+        """UPDATE de `positions` con el turno de cada cuenta que toca, de menor a
+        mayor (`_tomar_turnos_en_orden`). Las cuentas se leen antes y el UPDATE se
+        limita a ellas: una que empiece a cumplir la condición mientras tanto queda
+        para el próximo arranque, en vez de escribirse sin su turno."""
+        uids = [r["user_id"] for r in conn.execute(
+            f"SELECT DISTINCT user_id FROM positions WHERE {donde}", donde_args).fetchall()]
+        if not uids:
+            return 0
+        _tomar_turnos_en_orden(conn, uids)
+        huecos = ", ".join("?" * len(uids))
+        return conn.execute(
+            f"UPDATE positions SET {set_sql} WHERE ({donde}) AND user_id IN ({huecos})",
+            (*set_args, *donde_args, *uids)).rowcount or 0
+
+    # Sincronizar is_admin + approved para usuarios con email admin. Por id: escribir
+    # la fila de `users` es tomar el turno de esa cuenta, y en orden no se cruza.
+    rows = conn.execute("SELECT id, email FROM users ORDER BY id").fetchall()
+    for r in rows:
+        if _is_admin_email(r["email"]):
+            conn.execute("UPDATE users SET is_admin=1, approved=1 WHERE id=?", (r["id"],))
+    conn.commit()
+
+    # "Último login" atrasado: hasta que existió `_registrar_ingreso`, verificar
+    # el mail anotaba el ingreso en login_history pero NO en users.last_login_at,
+    # así que quien entró así figuraba "—" en /admin aunque hubiera entrado.
+    # Se completa desde el historial. Idempotente: sólo toca filas donde el
+    # historial tiene un ingreso MÁS NUEVO que la columna; corrida dos veces
+    # no cambia nada. DESPUÉS del CREATE de login_history, a propósito.
+    try:
+        conn.execute("""
+            UPDATE users SET last_login_at = (
+                SELECT MAX(h.created_at) FROM login_history h WHERE h.user_id = users.id)
+             WHERE (SELECT MAX(h.created_at) FROM login_history h WHERE h.user_id = users.id)
+                   > COALESCE(last_login_at, '')
+        """)
+        conn.commit()
+    except Exception as _ex:
+        conn.rollback()
+        logging.getLogger(__name__).warning("completar last_login_at desde login_history falló (no fatal): %s", _ex)
+
+    _podar_uso(conn, siempre=True)
+    conn.rollback()   # si falló adentro (lo registra y sigue), que no arruine lo de abajo
+
+    # B-7 (audit IA #2): purga del cache yfinance envenenado — fundamentals/
+    # analysts de tickers .BA cacheados ANTES del guard traen ARS bajo campos
+    # *_usd y se servirían hasta 12-24h (7 días vía stale-fallback). Post-guard,
+    # esos kinds para .BA devuelven available:false (payload mínimo) → borrar
+    # en cada boot es idempotente y de costo trivial.
+    try:
+        conn.execute(
+            "DELETE FROM yfinance_cache WHERE ticker LIKE '%.BA' "
+            "AND kind IN ('fundamentals', 'analysts')")
+        conn.commit()
+    except Exception:
+        conn.rollback()  # tabla puede no existir en DBs muy viejas pre-migración
+
+    # Las compras registradas por chat guardaron la nota con el nombre que el
+    # asistente tenía ese día ("Coach IA", después "Rendi AI"), y se ve en
+    # "Editar posición → Notas".
+    # Sólo la nota EXACTA que escribía el sistema: si alguien la editó a mano,
+    # queda como la dejó. En cada boot, como la purga de arriba: después de la
+    # primera vez no encuentra nada. Es cosmético, así que no puede voltear el
+    # arranque.
+    try:
+        # Tantos `?` como nombres viejos: con dos escritos a mano, sumar un
+        # tercero a la lista hacía fallar la consulta — y como el error se
+        # descarta (es cosmético), no se renombraba ninguna nota.
+        huecos = ", ".join("?" * len(_NOTAS_COMPRA_POR_CHAT_VIEJAS))
+        n = _en_positions_con_los_turnos(
+            "notes = ?", f"notes IN ({huecos})",
+            (_NOTA_COMPRA_POR_CHAT,), _NOTAS_COMPRA_POR_CHAT_VIEJAS)
+        conn.commit()
+        if n:
+            log.info("notas de compras por chat renombradas: %d", n)
+    except Exception as ex:
+        conn.rollback()
+        log.warning("no se pudieron renombrar las notas de compras por chat: %s", ex)
+
+    # Cajas de brokers en DÓLARES que se llaman 'USDT'. Hasta 2026-10-07 el
+    # importador tenía su propia copia de "sumar al saldo" y creaba 'USDT' para
+    # todo lo que no fuera pesos: el efectivo de un Schwab importado se veía como
+    # Tether (en la base de prod del 2026-08-16: 35 cajas, ninguna de un exchange).
+    # Desde la puerta única (efectivo.py) ya no se crean; acá se renombran las que
+    # quedaron, con la misma regla (`asset_de_caja`). Sólo cambia el rótulo: la
+    # valuación mira la moneda del broker. En cada boot, como el de arriba:
+    # después de la primera vez no encuentra nada.
+    # El renglón va en WARNING y en CADA boot, a propósito: init_db corre antes
+    # del `logging.basicConfig(level=INFO)` de este archivo, así que un INFO acá
+    # se descarta en silencio (le pasó a la primera versión de esto, 2026-10-07:
+    # el renombre corrió y no quedó dicho cuántas). "quedan 0" es la confirmación.
+    _usdt_en_usd = ("is_cash=1 AND asset='USDT' AND EXISTS (SELECT 1 FROM brokers b "
+                    "WHERE b.user_id=positions.user_id AND b.name=positions.broker "
+                    "AND b.currency='USD')")
+    try:
+        n = _en_positions_con_los_turnos("asset=?", _usdt_en_usd,
+                                         (_efectivo.asset_de_caja('USD'),))
+        conn.commit()
+        quedan = conn.execute(
+            f"SELECT COUNT(*) c FROM positions WHERE {_usdt_en_usd}").fetchone()["c"]
+        log.warning("cajas USDT de brokers en dólares: %d renombradas a USD ahora, "
+                    "quedan %d", n, quedan)
+    except Exception as ex:
+        conn.rollback()
+        log.warning("no se pudieron renombrar las cajas USDT de brokers en dólares: %s", ex)
+
+    # Cajas VACÍAS (o en rojo) que quedaron con el precio de compra de dólares
+    # que ya no tienen. Hasta 2026-10-11 la caja lo conservaba al vaciarse y los
+    # dólares que entraban después sin precio lo heredaban (ver efectivo.py; en
+    # la base de prod del 2026-08-16: 9 cajas, todas en cero).
+    # Desde entonces `efectivo.mover` ya no lo deja y tampoco lo lee, así que
+    # esto no cambia ningún saldo ni ningún resultado: deja la base diciendo lo
+    # mismo que la regla, que es lo que vigila el chequeo de invariantes
+    # (`caja_vacia_con_precio`). En cada boot y en WARNING, como el de arriba:
+    # "quedan 0" es la confirmación.
+    try:
+        n = _en_positions_con_los_turnos("tc_compra=NULL", _efectivo.SQL_CAJA_VACIA_CON_PRECIO)
+        conn.commit()
+        quedan = conn.execute(
+            "SELECT COUNT(*) c FROM positions "
+            f"WHERE {_efectivo.SQL_CAJA_VACIA_CON_PRECIO}").fetchone()["c"]
+        log.warning("cajas vacías con precio de compra: %d limpiadas ahora, quedan %d",
+                    n, quedan)
+    except Exception as ex:
+        conn.rollback()
+        log.warning("no se pudo limpiar el precio de las cajas vacías: %s", ex)
+
+    # Tokens de reseteo: hasta 2026-10 se guardaban en claro y no se borraban
+    # los vencidos (RENDI-10). La migración (borrar usados/vencidos + pasar a
+    # huella los vivos) vive en una función para que el test la atraviese. En
+    # WARNING como las de arriba (init_db corre antes del basicConfig).
+    try:
+        _vivos, _migrados = _migrar_reset_tokens_a_huella(conn)
+        conn.commit()
+        log.warning("tokens de reseteo: %d vivos, %d pasados a huella ahora",
+                    _vivos, _migrados)
+    except Exception as ex:
+        conn.rollback()
+        log.warning("no se pudieron migrar los tokens de reseteo a huella: %s", ex)
+
+    # Links de asesor (claim + pedido de acceso): misma huella, sin borrar filas.
+    try:
+        _n = _migrar_tokens_link_a_huella(conn)
+        conn.commit()
+        log.warning("tokens de links de asesor: %d pasados a huella ahora", _n)
+    except Exception as ex:
+        conn.rollback()
+        log.warning("no se pudieron migrar los tokens de links de asesor a huella: %s", ex)
+
+
+# ¿Terminó `init_db`? Lo lee `/api/health`, que Railway usa para decidir cuándo
+# pasarle tráfico a una copia nueva. Hoy uvicorn no abre el puerto hasta que
+# `import main` (que corre `init_db()`) termina, así que «contesta» ya implica
+# «terminó»; esto lo hace explícito, para que siga siendo cierto si un día el
+# arranque se muda a un hilo o a un evento de inicio.
+_ARRANQUE_LISTO = False
+
+
 def init_db():
+    global _ARRANQUE_LISTO
+    _ARRANQUE_LISTO = False
     if USANDO_PG:
         # En Postgres NO se replican las 46 migraciones incrementales: son la
         # HISTORIA del schema de SQLite (crear, después ALTER, después el índice).
@@ -1393,7 +1965,14 @@ def init_db():
         # schema_pg.sql, generado a partir del schema final real. Traducir 46
         # migraciones sería 46 oportunidades de equivocarse para llegar al mismo
         # lugar.
-        _init_db_postgres()
+        # El esquema de Postgres sale de schema_pg.sql, pero las REPARACIONES de
+        # datos hay que correrlas igual: antes de 2026-10-29 este `return` se las
+        # llevaba todas, en silencio. Ver `reparaciones_de_arranque`.
+        with _de_a_un_arranque_por_vez():
+            _init_db_postgres()
+            with db_abierta() as conn:
+                reparaciones_de_arranque(conn)
+        _ARRANQUE_LISTO = True
         return
     with db_abierta() as conn:
 
@@ -1629,12 +2208,6 @@ def init_db():
                     conn.execute(f"ALTER TABLE advisor_op_batch_items ADD COLUMN {_c} {_t}")
             conn.commit()
 
-        # Sincronizar is_admin + approved para usuarios con email admin
-        rows = conn.execute("SELECT id, email FROM users").fetchall()
-        for r in rows:
-            if _is_admin_email(r["email"]):
-                conn.execute("UPDATE users SET is_admin=1, approved=1 WHERE id=?", (r["id"],))
-        conn.commit()
 
         # positions
         cols = _table_cols(conn, 'positions')
@@ -3247,22 +3820,6 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_login_history_ua ON login_history(user_id, ua_hash);
         """)
 
-        # "Último login" atrasado: hasta que existió `_registrar_ingreso`, verificar
-        # el mail anotaba el ingreso en login_history pero NO en users.last_login_at,
-        # así que quien entró así figuraba "—" en /admin aunque hubiera entrado.
-        # Se completa desde el historial. Idempotente: sólo toca filas donde el
-        # historial tiene un ingreso MÁS NUEVO que la columna; corrida dos veces
-        # no cambia nada. DESPUÉS del CREATE de login_history, a propósito.
-        try:
-            conn.execute("""
-                UPDATE users SET last_login_at = (
-                    SELECT MAX(h.created_at) FROM login_history h WHERE h.user_id = users.id)
-                 WHERE (SELECT MAX(h.created_at) FROM login_history h WHERE h.user_id = users.id)
-                       > COALESCE(last_login_at, '')
-            """)
-            conn.commit()
-        except Exception as _ex:
-            logging.getLogger(__name__).warning("completar last_login_at desde login_history falló (no fatal): %s", _ex)
 
         # ─── uso_diario: qué toca cada usuario, contado por día ────────────────────
         # Un CONTADOR por (usuario, día argentino, evento), no una fila por clic:
@@ -3283,7 +3840,6 @@ def init_db():
                 PRIMARY KEY (dia, user_id, evento)
             );
         """)
-        _podar_uso(conn, siempre=True)
 
         # Migración de las prefs del brief — DESPUÉS del CREATE de advisor_profile
         # (una migración antes de su tabla es no-op en DB nueva y rompe en la vieja).
@@ -3923,104 +4479,10 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_import_mappings_user ON import_mappings(user_id);
         """)
 
-        # B-7 (audit IA #2): purga del cache yfinance envenenado — fundamentals/
-        # analysts de tickers .BA cacheados ANTES del guard traen ARS bajo campos
-        # *_usd y se servirían hasta 12-24h (7 días vía stale-fallback). Post-guard,
-        # esos kinds para .BA devuelven available:false (payload mínimo) → borrar
-        # en cada boot es idempotente y de costo trivial.
-        try:
-            conn.execute(
-                "DELETE FROM yfinance_cache WHERE ticker LIKE '%.BA' "
-                "AND kind IN ('fundamentals', 'analysts')")
-        except Exception:
-            pass  # tabla puede no existir en DBs muy viejas pre-migración
 
-        # Las compras registradas por chat guardaron la nota con el nombre que el
-        # asistente tenía ese día ("Coach IA", después "Rendi AI"), y se ve en
-        # "Editar posición → Notas".
-        # Sólo la nota EXACTA que escribía el sistema: si alguien la editó a mano,
-        # queda como la dejó. En cada boot, como la purga de arriba: después de la
-        # primera vez no encuentra nada. Es cosmético, así que no puede voltear el
-        # arranque.
-        try:
-            # Tantos `?` como nombres viejos: con dos escritos a mano, sumar un
-            # tercero a la lista hacía fallar la consulta — y como el error se
-            # descarta (es cosmético), no se renombraba ninguna nota.
-            huecos = ", ".join("?" * len(_NOTAS_COMPRA_POR_CHAT_VIEJAS))
-            n = conn.execute(
-                f"UPDATE positions SET notes = ? WHERE notes IN ({huecos})",
-                (_NOTA_COMPRA_POR_CHAT, *_NOTAS_COMPRA_POR_CHAT_VIEJAS)).rowcount or 0
-            if n:
-                log.info("notas de compras por chat renombradas: %d", n)
-        except Exception as ex:
-            log.warning("no se pudieron renombrar las notas de compras por chat: %s", ex)
-
-        # Cajas de brokers en DÓLARES que se llaman 'USDT'. Hasta 2026-10-07 el
-        # importador tenía su propia copia de "sumar al saldo" y creaba 'USDT' para
-        # todo lo que no fuera pesos: el efectivo de un Schwab importado se veía como
-        # Tether (en la base de prod del 2026-08-16: 35 cajas, ninguna de un exchange).
-        # Desde la puerta única (efectivo.py) ya no se crean; acá se renombran las que
-        # quedaron, con la misma regla (`asset_de_caja`). Sólo cambia el rótulo: la
-        # valuación mira la moneda del broker. En cada boot, como el de arriba:
-        # después de la primera vez no encuentra nada.
-        # El renglón va en WARNING y en CADA boot, a propósito: init_db corre antes
-        # del `logging.basicConfig(level=INFO)` de este archivo, así que un INFO acá
-        # se descarta en silencio (le pasó a la primera versión de esto, 2026-10-07:
-        # el renombre corrió y no quedó dicho cuántas). "quedan 0" es la confirmación.
-        _usdt_en_usd = ("is_cash=1 AND asset='USDT' AND EXISTS (SELECT 1 FROM brokers b "
-                        "WHERE b.user_id=positions.user_id AND b.name=positions.broker "
-                        "AND b.currency='USD')")
-        try:
-            n = conn.execute(
-                f"UPDATE positions SET asset=? WHERE {_usdt_en_usd}",
-                (_efectivo.asset_de_caja('USD'),)).rowcount or 0
-            quedan = conn.execute(
-                f"SELECT COUNT(*) c FROM positions WHERE {_usdt_en_usd}").fetchone()["c"]
-            log.warning("cajas USDT de brokers en dólares: %d renombradas a USD ahora, "
-                        "quedan %d", n, quedan)
-        except Exception as ex:
-            log.warning("no se pudieron renombrar las cajas USDT de brokers en dólares: %s", ex)
-
-        # Cajas VACÍAS (o en rojo) que quedaron con el precio de compra de dólares
-        # que ya no tienen. Hasta 2026-10-11 la caja lo conservaba al vaciarse y los
-        # dólares que entraban después sin precio lo heredaban (ver efectivo.py; en
-        # la base de prod del 2026-08-16: 9 cajas, todas en cero).
-        # Desde entonces `efectivo.mover` ya no lo deja y tampoco lo lee, así que
-        # esto no cambia ningún saldo ni ningún resultado: deja la base diciendo lo
-        # mismo que la regla, que es lo que vigila el chequeo de invariantes
-        # (`caja_vacia_con_precio`). En cada boot y en WARNING, como el de arriba:
-        # "quedan 0" es la confirmación.
-        try:
-            n = conn.execute(
-                "UPDATE positions SET tc_compra=NULL "
-                f"WHERE {_efectivo.SQL_CAJA_VACIA_CON_PRECIO}").rowcount or 0
-            quedan = conn.execute(
-                "SELECT COUNT(*) c FROM positions "
-                f"WHERE {_efectivo.SQL_CAJA_VACIA_CON_PRECIO}").fetchone()["c"]
-            log.warning("cajas vacías con precio de compra: %d limpiadas ahora, quedan %d",
-                        n, quedan)
-        except Exception as ex:
-            log.warning("no se pudo limpiar el precio de las cajas vacías: %s", ex)
-
-        # Tokens de reseteo: hasta 2026-10 se guardaban en claro y no se borraban
-        # los vencidos (RENDI-10). La migración (borrar usados/vencidos + pasar a
-        # huella los vivos) vive en una función para que el test la atraviese. En
-        # WARNING como las de arriba (init_db corre antes del basicConfig).
-        try:
-            _vivos, _migrados = _migrar_reset_tokens_a_huella(conn)
-            log.warning("tokens de reseteo: %d vivos, %d pasados a huella ahora",
-                        _vivos, _migrados)
-        except Exception as ex:
-            log.warning("no se pudieron migrar los tokens de reseteo a huella: %s", ex)
-
-        # Links de asesor (claim + pedido de acceso): misma huella, sin borrar filas.
-        try:
-            _n = _migrar_tokens_link_a_huella(conn)
-            log.warning("tokens de links de asesor: %d pasados a huella ahora", _n)
-        except Exception as ex:
-            log.warning("no se pudieron migrar los tokens de links de asesor a huella: %s", ex)
-
+        reparaciones_de_arranque(conn)
         conn.commit()
+    _ARRANQUE_LISTO = True
 
 
 init_db()
@@ -4183,9 +4645,15 @@ def get_current_user(
     # misma forma que la caída del 2026-08-02 (el índice antes que su columna).
     with db_abierta() as conn:
         try:
-            row = conn.execute(
-                "SELECT id, email, password_changed_at, requires_plan FROM users WHERE id=?",
-                (uid,)).fetchone()
+            # Punto de guardado: en Postgres, la consulta que falla deja la
+            # transacción abortada y el plan B de abajo reventaba con otro error
+            # — o sea que la red escrita justamente para que una columna que
+            # falta no tumbe la app (la caída del 2026-08-02) no funcionaba del
+            # otro lado del motor. Y esto corre en TODOS los pedidos con sesión.
+            with _si_falla_se_deshace_solo_esto(conn, "leer_requires_plan"):
+                row = conn.execute(
+                    "SELECT id, email, password_changed_at, requires_plan FROM users WHERE id=?",
+                    (uid,)).fetchone()
             marca = None if row is None else bool(row["requires_plan"])
         except Exception:
             # Base sin la columna: se sigue como siempre y el muro pregunta él.
@@ -4731,73 +5199,6 @@ def _validar_cron_token(request: Request, *nombres_env: str) -> None:
                     "la cabecera X-Cron-Token", request.url.path)
 
 
-def _hash_token(token: str) -> str:
-    """Huella SHA-256 (hex, 64 chars) de un token de link, para guardar EN REPOSO.
-
-    El token aleatorio viaja en claro al usuario (mail/URL) pero en la base se
-    guarda sólo esta huella: si se filtra una copia de la base, el valor guardado
-    no sirve para usar el link (no se puede volver atrás a la huella). Al validar,
-    se hashea el token entrante y se compara contra lo guardado. No lleva sal a
-    propósito: son 256 bits aleatorios, no hay nada que adivinar por diccionario.
-
-    Hoy lo usa el token de reseteo de contraseña. Los otros tres tokens de link
-    (claim, link-request de asesor, informe público) comparten el mismo patrón y
-    se migran a este helper con su propia migración de links vivos — RENDI-10."""
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-_TOKEN_HASH_LEN = 64  # un SHA-256 hex; sirve para distinguir "ya hasheado" de un token crudo
-
-
-def _es_huella(valor: str) -> bool:
-    """¿`valor` ya es una huella SHA-256 (64 hex)? Para migraciones idempotentes."""
-    return (len(valor or "") == _TOKEN_HASH_LEN
-            and all(c in "0123456789abcdef" for c in valor))
-
-
-def _migrar_reset_tokens_a_huella(conn) -> tuple:
-    """Deja `password_reset_tokens` sin ningún token en claro. Idempotente.
-
-    (1) Borra los usados y los vencidos: ya no sirven y hasta 2026-10 no se
-    borraban nunca. (2) Pasa a huella los pocos vivos que quedaran en claro, para
-    que una copia de la base no permita usar el link. Devuelve (vivos, migrados).
-
-    Es una función con nombre —y no SQL suelto en el arranque— para que el test la
-    atraviese por el mismo camino que corre en producción."""
-    conn.execute(
-        "DELETE FROM password_reset_tokens WHERE used_at IS NOT NULL OR expires_at < ?",
-        (datetime.utcnow().isoformat(),))
-    vivos = conn.execute("SELECT id, token FROM password_reset_tokens").fetchall()
-    en_claro = [r for r in vivos if not _es_huella(r["token"])]
-    for r in en_claro:
-        conn.execute("UPDATE password_reset_tokens SET token=? WHERE id=?",
-                     (_hash_token(r["token"]), r["id"]))
-    return len(vivos), len(en_claro)
-
-
-def _migrar_tokens_link_a_huella(conn) -> int:
-    """Pasa a huella los tokens en claro de los links de ASESOR: claim (reclamar
-    cuenta) y link-request (pedido de acceso). RENDI-10 parte B. Idempotente.
-
-    A diferencia de los de reseteo NO se borra ninguna fila: `used_at`, `status` y
-    los conteos por fecha deben quedar intactos. Sólo se reescribe la columna
-    `token` de claro a huella, y eso preserva los links VIVOS (el token del mail
-    se hashea al validar y sigue matcheando). Devuelve cuántos se convirtieron.
-
-    `advisor_reports` queda afuera a propósito: ahí el token crudo también vive en
-    `wa_text` y el asesor re-comparte el link desde su historial, así que hashearlo
-    es una decisión de producto (parte C), no un cambio mecánico."""
-    convertidos = 0
-    for tabla in ("advisor_claim_tokens", "advisor_link_requests"):
-        filas = conn.execute(f"SELECT id, token FROM {tabla}").fetchall()
-        for r in filas:
-            if r["token"] and not _es_huella(r["token"]):
-                conn.execute(f"UPDATE {tabla} SET token=? WHERE id=?",
-                             (_hash_token(r["token"]), r["id"]))
-                convertidos += 1
-    return convertidos
-
-
 # ─── Login history / device tracking ─────────────────────────────────────────
 # El UA fingerprint se hashea — si la DB se filtra, no exponemos el UA en
 # plano. ua_brief es el resumen legible que mostramos al user en el email.
@@ -4995,13 +5396,21 @@ def register(data: RegisterIn, request: Request, response: Response,
             # lo último que se puede permitir romper en un cambio cuyo objetivo
             # es cobrar. Sin la columna, el alta entra como los de antes.
             try:
-                cur = conn.execute(
-                    """INSERT INTO users (email, name, password_hash, is_admin, approved,
-                                         email_verified, requires_plan)
-                       VALUES (?,?,?,?,?,?,?)""",
-                    (data.email, data.name, h, 1 if is_admin_signup else 0, approved,
-                     email_verified, requires_plan),
-                )
+                # El punto de guardado es LO QUE HACE QUE LA RED FUNCIONE. En
+                # Postgres el INSERT que falla deja la transacción abortada, así
+                # que el plan B de abajo reventaba con `InFailedSqlTransaction` —
+                # otro error, que el `except ERR_INTEGRIDAD` del final no
+                # reconoce. Medido 2026-10-29: un email repetido devolvía 500 en
+                # vez del 409 "ese email ya está registrado"
+                # (test_email_verification::…_returns_409_with_code).
+                with _si_falla_se_deshace_solo_esto(conn, "alta_con_requires_plan"):
+                    cur = conn.execute(
+                        """INSERT INTO users (email, name, password_hash, is_admin, approved,
+                                             email_verified, requires_plan)
+                           VALUES (?,?,?,?,?,?,?)""",
+                        (data.email, data.name, h, 1 if is_admin_signup else 0, approved,
+                         email_verified, requires_plan),
+                    )
             except Exception as ex:
                 log.error("INSERT con requires_plan falló (%s); alta sin la marca", ex)
                 cur = conn.execute(
@@ -5017,16 +5426,26 @@ def register(data: RegisterIn, request: Request, response: Response,
             # que `requires_plan`: anotar el origen no puede tumbar un registro.
             if data.origen:
                 try:
-                    conn.execute(
-                        "UPDATE users SET origen=?, origen_visto_at=? WHERE id=?",
-                        (data.origen, data.origen_visto, uid),
-                    )
+                    # Con punto de guardado: sin él, en Postgres un fallo acá
+                    # abortaba la transacción y el `conn.commit()` del final se
+                    # volvía un ROLLBACK — el alta entera se perdía y register
+                    # contestaba 200 igual. Anotar de dónde vino no puede costar
+                    # la cuenta.
+                    with _si_falla_se_deshace_solo_esto(conn, "anotar_origen"):
+                        conn.execute(
+                            "UPDATE users SET origen=?, origen_visto_at=? WHERE id=?",
+                            (data.origen, data.origen_visto, uid),
+                        )
                 except Exception as ex:
                     log.error("No se pudo anotar el origen del registro uid=%s: %s", uid, ex)
 
             # SOLO el admin hereda los datos legacy con user_id=0 (datos iniciales del owner).
             # Esto cierra el agujero: si la DB tiene datos huérfanos, solo el dueño los puede absorber.
             if is_admin_signup:
+                # Su fila de `users` ya está tomada por el INSERT de arriba, en esta
+                # misma transacción: el turno es suyo. Se pide igual, explícito,
+                # para que el censo (test_turno_en_todas_las_puertas) lo vea.
+                _tomar_turno_de_la_puerta(conn, uid)
                 for table in ['positions', 'monthly_entries', 'operations', 'config']:
                     conn.execute(f"UPDATE {table} SET user_id=? WHERE user_id=0", (uid,))
                 existing_brokers = [
@@ -5790,6 +6209,11 @@ def _borrar_en_chunks(conn, uid: int, tabla: str, where: str, args: tuple,
     total = 0
     while True:
         with conn:
+            # 🔒 El turno primero, en CADA tanda (cada una es su transacción): sin
+            # él, empezar de cero se metía en el medio de una reconstrucción de la
+            # cuenta, que toma el turno y después escribe las fotos que esto borra
+            # — el mismo cruce que tenía borrar la cuenta (`deadlock detected`).
+            _tomar_turno_de_la_puerta(conn, uid)
             n = conn.execute(
                 f"DELETE FROM {tabla} WHERE rowid IN ("
                 f"  SELECT rowid FROM {tabla} WHERE {where} LIMIT {_RESET_CHUNK})",
@@ -6056,10 +6480,24 @@ def _borrar_usuario_y_datos(conn, uid: int) -> dict:
     aplicó nada y re-correrla no duplica. Eso es lo que la hace apta para
     `_run_with_lock_retry`."""
     esquema = _esquema_por_tabla(conn)   # ANTES de abrir la transacción (ver docstring)
+    _shadows = lambda: [r["id"] for r in conn.execute(  # noqa: E731
+        "SELECT id FROM users WHERE managed_by=?", (uid,)).fetchall()]
     with conn:
         deleted = {}
-        shadow_ids = [r["id"] for r in conn.execute(
-            "SELECT id FROM users WHERE managed_by=?", (uid,)).fetchall()]
+        # 🔒 EL TURNO PRIMERO, de la cuenta y de sus clientes shadow, de menor a
+        # mayor. Este borrado toca las fotos, posiciones, etc. de la cuenta y
+        # recién AL FINAL la fila de `users`. Una reconstrucción de esa cuenta en
+        # su hilo (`_reconstruir_mtm`) hace al revés: toma el turno —la fila de
+        # `users`— y después escribe las fotos. En Postgres eso se esperaba en
+        # cruz: el borrado con las fotos tomadas esperando `users`, la
+        # reconstrucción con `users` tomado esperando las fotos (`deadlock
+        # detected`, medido en el registro del servidor el 30/10/2026 con la
+        # limpieza de las pruebas, que borra en el mismo orden). Con el turno
+        # adelante, el que llega segundo espera entero al primero.
+        _tomar_turnos_en_orden(conn, [uid] + _shadows())
+        shadow_ids = _shadows()
+        # Un shadow creado entre la lectura de arriba y el turno: también el suyo.
+        _tomar_turnos_en_orden(conn, shadow_ids)
         # Los vínculos van PRIMERO: advisor_clients tiene FK a users(id) y
         # bloquearía el DELETE del shadow (FOREIGN KEY constraint).
         n_links_pre = conn.execute(
@@ -6353,18 +6791,18 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
             },
         )
     with db_abierta() as conn:
+        _tomar_turno_de_la_puerta(conn, uid)
         # Feature gate: el tope de brokers de cada plan (PLAN_LIMITS). Grandfather:
         # usuarios preexistentes con más conservan sus brokers pero no agregan
-        # más hasta upgrade. Admin/Pro: sin tope. El turno antes de contar: sin
-        # él, diez altas juntas contaban todas «0» (auditoría E5, 29/10).
-        _tomar_turno(conn, uid)
-        allowed, quota_info = plan.check_broker_quota(conn, uid)
-        if not allowed:
+        # más hasta upgrade. Admin/Pro: sin tope.
+        def _403_del_tope(quota_info):
+            """El 403 del tope, armado UNA vez: lo levanta el chequeo amable de
+            abajo y también el INSERT, que es el que hace cumplir la regla."""
             tier = quota_info["tier"]
             # El texto y la lista salen de los límites (billing/plan_textos).
             # Decía "El plan Free permite 1 broker" también al Plus que llegaba
             # a 3 — y el frontend lo muestra en el modal.
-            raise HTTPException(403, {
+            return HTTPException(403, {
                 "error": plan_textos.aviso_brokers(tier, "pro"),
                 "quota": quota_info,
                 "upgrade": {
@@ -6378,6 +6816,10 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
                         "brokers", tier, "pro", usage=plan.quota.get_current_usage(conn, uid)),
                 },
             })
+
+        allowed, quota_info = plan.check_broker_quota(conn, uid)
+        if not allowed:
+            raise _403_del_tope(quota_info)
         # Validar parent_broker_id (si se pasa, debe pertenecer al user)
         if data.parent_broker_id is not None:
             parent = conn.execute(
@@ -6391,10 +6833,19 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
             if data.currency == "ARS":
                 raise HTTPException(400, "Una sub-cuenta va en dólares (USD o USDT).")
         try:
+            # El tope se hace cumplir ACÁ, no en el chequeo de arriba: entre
+            # contar y escribir entraban cinco pedidos. Ver
+            # `plan.condicion_de_tope`, que tiene el número medido.
+            _cond, _cond_p = plan.condicion_de_tope("brokers", uid, quota_info["limit"])
             cur = conn.execute(
-                "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES (?,?,?,?)",
-                (uid, data.name, data.currency, data.parent_broker_id),
+                "INSERT INTO brokers (user_id, name, currency, parent_broker_id) "
+                f"SELECT ?,?,?,? WHERE {_cond}",
+                (uid, data.name, data.currency, data.parent_broker_id) + _cond_p,
             )
+            if not getattr(cur, "rowcount", 0):
+                # Perdió la carrera: el tope ya está lleno. Se vuelve a contar
+                # para que el cartel diga el número de AHORA y no el de antes.
+                raise _403_del_tope(plan.check_broker_quota(conn, uid)[1])
             # Auto-crear posición cash con saldo 0. Esto evita el gap donde el
             # usuario crea un broker nuevo y no tiene cómo hacer su primer
             # depósito (el botón 'Depositar' vive dentro del menú de cada
@@ -6731,6 +7182,7 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
         if not name_changed:
             if new_currency != row["currency"]:
                 with conn:
+                    _tomar_turno_de_la_puerta(conn, uid)
                     # La moneda y el rótulo de la caja, juntos (ver la función).
                     for _sql, _params in _import_pipeline.escrituras_para_cambiar_moneda(
                             uid, old_name, new_currency):
@@ -6932,6 +7384,7 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
     """
     conn = get_db()
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         broker_row = conn.execute(
             "SELECT name FROM brokers WHERE id=? AND user_id=?", (bid, uid),
         ).fetchone()
@@ -7003,6 +7456,7 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
 
         # ── Force delete (o broker vacío) — incluye sibling para evitar orphans
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             _borrar_datos_de_brokers(conn, uid, broker_names, "broker_borrado")
             # DELETE explícito de los hijos ANTES del padre. NO alcanza con
             # confiar en el FK CASCADE: el schema de `brokers` existe en DOS
@@ -7025,6 +7479,7 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
         # Recalc global aggregates (el broker 'global' sumaba el broker borrado)
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 _recalc_pnl_realized_from_ops(conn, uid)
         except Exception as ex:
             log.error("Recalc tras delete_broker falló: %s", ex)
@@ -7040,6 +7495,7 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
         # recreado). Si _recalc dejó al user 100% vacío ya borró todo (ver :6631).
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 if snap_affected_start:
                     conn.execute(
                         "DELETE FROM snapshots WHERE user_id=? AND date >= ?",
@@ -7700,6 +8156,7 @@ def post_snapshot(data: SnapshotIn, request: Request,
 
     conn = get_db()
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         # ⚠️ UN CIERRE DEL CRON NO SE PISA — NI LA MARCA NI EL VALOR.
         # Antes se conservaba `source='cron'` pero se sobreescribía `total_value`
         # con el número de media rueda del browser: la fila quedaba diciendo
@@ -13509,6 +13966,7 @@ def create_position(p: PositionIn, uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         try:
             with conn:  # transacción atómica: insert + cash debit
+                _tomar_turno_de_la_puerta(conn, uid)
                 _exigir_broker_existente(conn, uid, p.broker)
                 row = _insert_manual_position(conn, uid, p)
             _ai_cache_invalidate(uid)
@@ -13734,6 +14192,7 @@ def edit_position_group(p: PositionGroupEditIn, uid: int = Depends(get_effective
     with db_abierta() as conn:      # cierra pase lo que pase (ver db_abierta)
         try:
             with conn:  # tx atómica: o quedan todos los lotes editados, o ninguno
+                _tomar_turno_de_la_puerta(conn, uid)
                 out = _edit_position_group(conn, uid, p)
         except HTTPException:
             raise
@@ -13793,6 +14252,7 @@ def undo_edit_position_group(token: str, uid: int = Depends(get_effective_user))
     with db_abierta() as conn:      # cierra pase lo que pase (ver db_abierta)
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 out = _undo_edit_position_group(conn, uid, token)
         except HTTPException:
             raise
@@ -13835,6 +14295,7 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
     try:
         # Ni editar una fila de efectivo, ni convertir un lote en efectivo (ver
         # _EFECTIVO_NO_SE_EDITA).
+        _tomar_turno_de_la_puerta(conn, uid)
         _actual = conn.execute(
             "SELECT is_cash, broker, asset_type FROM positions WHERE id=? AND user_id=?",
             (pid, uid)).fetchone()
@@ -13919,6 +14380,7 @@ def delete_position(pid: int, uid: int = Depends(get_effective_user)):
     re-derivar. Su cash tampoco se reversa — comportamiento previo, no lo cambiamos acá.
     """
     with db_abierta() as conn:
+        _tomar_turno_de_la_puerta(conn, uid)
         try:
             # La fila de efectivo no es una tenencia: borrarla tiraba la plata sin
             # anotar un retiro. Antes caía en los caminos de abajo y respondía un
@@ -14415,6 +14877,7 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
     """
     conn = get_db()
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         row = conn.execute(
             "SELECT * FROM positions WHERE id=? AND user_id=?", (pid, uid),
         ).fetchone()
@@ -14678,6 +15141,7 @@ def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_effective_user)):
     # (si no, sería doble conteo: el cash queda + el PF se suma). Si no se indica
     # source_broker, se asume plata nueva de afuera de Rendi.
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         if p.source_broker:
             br = conn.execute(
                 "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
@@ -14872,6 +15336,7 @@ def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_effective
     — el PF cerrado retiene sus datos para las métricas."""
     conn = get_db()
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         row = conn.execute(
             "SELECT * FROM plazos_fijos WHERE id=? AND user_id=? AND closed_at IS NULL",
             (pid, uid),
@@ -15654,30 +16119,38 @@ def _update_monthly_pnl_realized(conn, uid: int, broker: str, year: int, month: 
                                   pnl_amount: float) -> None:
     """Suma pnl_amount a pnl_realized del mes (año/mes exacto) y recalcula capital_final.
     Si la fila no existe la crea con `_capital_inicio_de_fila_nueva` (el
-    capital_final del mes ANTERIOR), salvo que no haya nada que anotar."""
-    row = conn.execute(
-        "SELECT * FROM monthly_entries WHERE user_id=? AND broker=? AND year=? AND month=?",
-        (uid, broker, year, month),
-    ).fetchone()
+    capital_final del mes ANTERIOR), salvo que no haya nada que anotar.
 
-    if row:
-        new_pnl_realized = round((row['pnl_realized'] or 0) + pnl_amount, 4)
-        new_cap_final = round(
-            (row['capital_inicio'] or 0)
-            + (row['deposits'] or 0)
-            - (row['withdrawals'] or 0)
-            + new_pnl_realized
-            + (row['pnl_unrealized'] or 0),
-            4,
-        )
-        conn.execute(
-            """UPDATE monthly_entries
-               SET pnl_realized = ?, capital_final = ?
-               WHERE user_id=? AND broker=? AND year=? AND month=?""",
-            (new_pnl_realized, new_cap_final, uid, broker, year, month),
-        )
-    else:
-        pnl = round(pnl_amount, 4)
+    🔴 LA SUMA LA HACE LA BASE, Y ESCRIBE ANTES DE MIRAR. Hasta 2026-10-28 leía la
+    fila, sumaba en Python y escribía el resultado: leer-y-después-escribir, el lado
+    que ningún motor hace cumplir. La hermana `_update_monthly_flow` ya se había
+    arreglado (`d4742484`) y ésta no — 47 líneas de distancia. Tres consecuencias,
+    todas de Postgres (SQLite deja escribir a uno por vez y las tapaba):
+      · Dos primeras operaciones del mes a la vez: las dos veían que la fila no
+        existía, las dos la insertaban, la segunda chocaba con el UNIQUE, la
+        transacción quedaba abortada y `create_operation` contestaba 200 con una
+        operación que se había descartado entera (test_pnl_del_mes_dos_pedidos).
+      · Dos ganancias a la vez sobre una fila existente: la segunda pisaba a la
+        primera. Lo tapa el recálculo de `create_operation`, pero la venta FIFO no
+        recalcula — y de 15 llamadores, alcanza con uno sin recálculo.
+      · `capital_final` se armaba con el `deposits` LEÍDO: un depósito que la
+        hermana sumaba en la base en el medio quedaba fuera del capital.
+    Ahora el UPDATE va primero y arma `capital_final` con las columnas que hay EN
+    ESE MOMENTO (del lado derecho del SET, en los dos motores, son las de antes del
+    UPDATE); si no tocó ninguna fila, el INSERT lleva ON CONFLICT, como la hermana.
+    Sin ROUND en el SQL: en Postgres las columnas son double precision y `round(x, 4)`
+    sólo existe para numeric."""
+    pnl = round(pnl_amount, 4)
+    actualizada = conn.execute(
+        """UPDATE monthly_entries
+           SET pnl_realized = COALESCE(pnl_realized, 0) + ?,
+               capital_final = COALESCE(capital_inicio, 0) + COALESCE(deposits, 0)
+                               - COALESCE(withdrawals, 0) + COALESCE(pnl_realized, 0) + ?
+                               + COALESCE(pnl_unrealized, 0)
+           WHERE user_id=? AND broker=? AND year=? AND month=?""",
+        (pnl, pnl, uid, broker, year, month),
+    )
+    if actualizada.rowcount == 0:
         if pnl == 0:
             # Nada que anotar (una venta al mismo precio, un cupón en cero). Crear la
             # fila igual dejaba un mes vacío que la limpieza borra en el mismo pedido,
@@ -15688,11 +16161,22 @@ def _update_monthly_pnl_realized(conn, uid: int, broker: str, year: int, month: 
             return
         cap_inicio = _capital_inicio_de_fila_nueva(conn, uid, broker, year, month)
         cap_final = round(cap_inicio + pnl, 4)
+        # ON CONFLICT: otro pedido creó la fila entre el UPDATE de arriba y este
+        # INSERT. Se suma igual que en el UPDATE, sobre la fila que dejó el otro.
         conn.execute(
             """INSERT INTO monthly_entries
                (user_id, year, month, broker, deposits, withdrawals,
                 pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-               VALUES (?,?,?,?,0,0,?,0,?,?)""",
+               VALUES (?,?,?,?,0,0,?,0,?,?)
+               ON CONFLICT (user_id, year, month, broker) DO UPDATE SET
+                   pnl_realized = COALESCE(monthly_entries.pnl_realized, 0)
+                                  + EXCLUDED.pnl_realized,
+                   capital_final = COALESCE(monthly_entries.capital_inicio, 0)
+                                   + COALESCE(monthly_entries.deposits, 0)
+                                   - COALESCE(monthly_entries.withdrawals, 0)
+                                   + COALESCE(monthly_entries.pnl_realized, 0)
+                                   + EXCLUDED.pnl_realized
+                                   + COALESCE(monthly_entries.pnl_unrealized, 0)""",
             (uid, year, month, broker, pnl, cap_inicio, cap_final),
         )
 
@@ -15770,13 +16254,43 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
     # retiro se tragaba, el depósito sumaba entero → capital_final fantasma
     # del mes abierto — review cash-chat). Un capital_final negativo de mes
     # abierto es honesto (flujo neto negativo); el repair recalcula al cierre.
+    # ON CONFLICT: si OTRO pedido creó la fila entre el SELECT de arriba y este
+    # INSERT, se SUMA en vez de reventar — exactamente lo que hace la rama de
+    # arriba cuando la fila ya existía.
+    #
+    # Esto es leer-y-después-escribir, y en el medio entra cualquiera. En SQLite
+    # no se notaba porque el motor deja escribir a UNO POR VEZ: el segundo
+    # esperaba y ya veía la fila. En Postgres pasan los dos y el segundo choca
+    # con `monthly_entries_user_id_year_month_broker_key` → 500 al usuario.
+    # Medido: dos depósitos simultáneos daban [200, 500].
+    #
+    # Sólo se tocan las columnas de FLUJO. `capital_inicio` queda el de la fila
+    # que ya estaba (el nuestro se calculó para una fila que no existía) y los
+    # `pnl_*` no se pisan: esos los mueve otro camino. `capital_final` suma el
+    # neto, que es +monto para un depósito y −monto para un retiro: idéntico al
+    # `cap_sign` de la rama de arriba.
     conn.execute(
         """INSERT INTO monthly_entries
            (user_id, year, month, broker, deposits, withdrawals,
             manual_deposits, manual_withdrawals,
             manual_deposits_native, manual_withdrawals_native,
             pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-           VALUES (?,?,?,?,?,?,?,?,?,?,0,0,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,0,0,?,?)
+           ON CONFLICT (user_id, year, month, broker) DO UPDATE SET
+               deposits    = monthly_entries.deposits    + EXCLUDED.deposits,
+               withdrawals = monthly_entries.withdrawals + EXCLUDED.withdrawals,
+               manual_deposits =
+                   COALESCE(monthly_entries.manual_deposits,0) + EXCLUDED.manual_deposits,
+               manual_withdrawals =
+                   COALESCE(monthly_entries.manual_withdrawals,0) + EXCLUDED.manual_withdrawals,
+               manual_deposits_native =
+                   COALESCE(monthly_entries.manual_deposits_native,0)
+                   + EXCLUDED.manual_deposits_native,
+               manual_withdrawals_native =
+                   COALESCE(monthly_entries.manual_withdrawals_native,0)
+                   + EXCLUDED.manual_withdrawals_native,
+               capital_final = monthly_entries.capital_final
+                               + EXCLUDED.deposits - EXCLUDED.withdrawals""",
         (uid, year, month, broker, deposits, withdrawals,
          man_dep, man_wit, man_dep_nat, man_wit_nat, cap_inicio, cap_final),
     )
@@ -16040,6 +16554,7 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_ef
     conn = get_db()
     try:
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             broker_row = conn.execute(
                 "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, data.broker_name),
             ).fetchone()
@@ -16153,6 +16668,7 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 # 1. Validar broker
                 broker_row = conn.execute(
                     "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, data.broker_name)
@@ -16248,6 +16764,7 @@ def _revert_cash_flow(uid: int, broker_name: str, direction: str,
     conn = get_db()
     try:
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             br = conn.execute("SELECT currency FROM brokers WHERE user_id=? AND name=?",
                               (uid, broker_name)).fetchone()
             currency = br["currency"] if br else "USD"
@@ -17026,7 +17543,7 @@ def list_bond_cashflow_skips(uid: int = Depends(get_effective_user)):
             """SELECT broker, asset, date, reason, created_at
                FROM bond_cashflow_skips
                WHERE user_id=?
-               ORDER BY date ASC""",
+               ORDER BY date ASC, broker, asset""",   # el orden de su índice único
             (uid,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -17415,6 +17932,7 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
     with db_abierta() as conn:
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 pnl_usd_realized = 0.0  # solo aplica a usd_to_ars
 
                 # 1. Resolver broker(s) según dirección
@@ -17603,6 +18121,7 @@ def sync_unrealized(data: SyncUnrealizedIn, uid: int = Depends(get_effective_use
     meses futuros si el usuario los abría manualmente.
     """
     with db_abierta() as conn:
+        _tomar_turno_de_la_puerta(conn, uid)
         try:
             # ⏰ EL MES ARGENTINO (fechas.py), el mismo que `is_period_current`. Con
             # `utcnow()` el último día de cada mes, de 21 a 24 h, ya era el mes siguiente:
@@ -17715,6 +18234,7 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         try:
             with conn:  # transacción
+                _tomar_turno_de_la_puerta(conn, uid)
                 # Lo cobrado entra a la caja de SU moneda: una venta en dólares "en
                 # Cocos" acredita en 'Cocos · USD'. Los lotes se buscan igual en
                 # todo el par (ver broker_pair abajo), así que esto sólo decide a qué
@@ -18205,14 +18725,21 @@ def _rollover_to_current_month(conn, uid: int, broker: str) -> int:
             break  # Pasamos el current → fin del loop
 
         try:
-            conn.execute(
-                """INSERT INTO monthly_entries
-                   (user_id, year, month, broker, deposits, withdrawals,
-                    pnl_realized, pnl_unrealized, capital_inicio, capital_final)
-                   VALUES (?, ?, ?, ?, 0, 0, 0, 0, ?, ?)""",
-                (uid, cur_year, cur_month, broker,
-                 round(cur_cap_final, 4), round(cur_cap_final, 4)),
-            )
+            # Punto de guardado: el `except` de abajo existe PARA la carrera (dos
+            # pedidos creando la fila del mes a la vez), y sin esto en Postgres el
+            # INSERT perdedor abortaba la transacción, así que el SELECT de
+            # recuperación reventaba con `InFailedSqlTransaction` — un error que
+            # este `except` no atrapa: 500 en vez de seguir desde el capital que
+            # dejó el otro.
+            with _si_falla_se_deshace_solo_esto(conn, "crear_fila_del_mes"):
+                conn.execute(
+                    """INSERT INTO monthly_entries
+                       (user_id, year, month, broker, deposits, withdrawals,
+                        pnl_realized, pnl_unrealized, capital_inicio, capital_final)
+                       VALUES (?, ?, ?, ?, 0, 0, 0, 0, ?, ?)""",
+                    (uid, cur_year, cur_month, broker,
+                     round(cur_cap_final, 4), round(cur_cap_final, 4)),
+                )
             created += 1
         except ERR_INTEGRIDAD:
             # Race: otra request creó la row. Leerla y seguir desde su cap_final.
@@ -18700,6 +19227,7 @@ def get_monthly(uid: int = Depends(get_effective_user)):
         # mes nuevo no se creaba — rompía sync-unrealized y métricas del
         # current month. Idempotente y safe contra races.
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             _rollover_all_brokers(conn, uid)
         rows = conn.execute(
             "SELECT * FROM monthly_entries WHERE user_id=? ORDER BY year, month, broker", (uid,)
@@ -19215,11 +19743,11 @@ def get_operations(uid: int = Depends(get_effective_user)):
         # `_importada` sale de una subconsulta y no de un JOIN: una operación puede
         # tener más de un link y el JOIN la devolvería duplicada en la lista.
         rows = conn.execute(
-            """SELECT o.*,
+            f"""SELECT o.*,
                       EXISTS(SELECT 1 FROM import_op_links l
                               WHERE l.operation_id = o.id) AS _importada
                  FROM operations o
-                WHERE o.user_id=? ORDER BY o.date DESC""", (uid,)
+                WHERE o.user_id=? ORDER BY {_ops_por_fecha(desc=True, alias="o")}""", (uid,)
         ).fetchall()
         import cobros_bonos as _cobros_bonos
         ventas_amort = _cobros_bonos.ventas_que_son_amortizacion(conn, uid)
@@ -19501,12 +20029,12 @@ def _build_movements(uid: int):
 
         # ── 1) Operations (manual trades) ───────────────────────────────────
         op_rows = conn.execute(
-            """SELECT o.* FROM operations o
+            f"""SELECT o.* FROM operations o
                 WHERE o.user_id = ?
                   AND o.id NOT IN (
                     SELECT operation_id FROM import_op_links
                      WHERE operation_id IS NOT NULL)
-                ORDER BY o.date DESC""",
+                ORDER BY {_ops_por_fecha(desc=True, alias="o")}""",
             (uid,),
         ).fetchall()
         for r in op_rows:
@@ -19686,7 +20214,7 @@ def _build_movements(uid: int):
                       t.asset_type
                 FROM {tx_vivas('t')}
                 WHERE b.user_id = ?
-                ORDER BY t.date DESC""",
+                ORDER BY {_por_fecha(desc=True, alias="t")}""",
             (uid,),
         ).fetchall()
         for r in tx_rows:
@@ -19823,13 +20351,13 @@ def _build_movements(uid: int):
         # Las que vienen de imports YA están en (2). Acá solo las del user
         # que cargó manual (sin import_op_links).
         pos_rows = conn.execute(
-            """SELECT p.* FROM positions p
+            f"""SELECT p.* FROM positions p
                 WHERE p.user_id = ?
                   AND p.is_cash = 0
                   AND p.id NOT IN (
                     SELECT position_id FROM import_op_links
                      WHERE position_id IS NOT NULL)
-                ORDER BY p.entry_date DESC""",
+                ORDER BY {_por_fecha("entry_date", desc=True, alias="p")}""",
             (uid,),
         ).fetchall()
         for r in pos_rows:
@@ -20466,13 +20994,6 @@ def _foto_contable(conn, uid: int) -> dict:
         conn.execute("ROLLBACK TO SAVEPOINT foto_contable")
         conn.execute("RELEASE SAVEPOINT foto_contable")
     return {"canon": canon, "tal_cual": tal_cual}
-
-
-def _tomar_turno(conn, uid: int) -> None:
-    """Toma el turno de escritura (ver `_foto_contable`). `tier` y no `id`:
-    reescribir la clave primaria hacía 14 chequeos de claves foráneas por borrado.
-    Aparte para que un test pueda sacarlo sin copiar lo demás."""
-    conn.execute("UPDATE users SET tier=tier WHERE id=?", (uid,))
 
 
 def _primer_dia_en_las_fotos(fecha_mov, confirmado: Optional[str]) -> Optional[str]:
@@ -21756,6 +22277,7 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
         conn = get_db()
         try:
             with conn:  # tx atómica: reverso + cascada
+                _tomar_turno_de_la_puerta(conn, uid)
                 if mid.startswith("op-"):
                     # op-{n}-buy / op-{n}-sell → borrar la operación (trade cerrado)
                     # con el motor de Fase 1, que hace su propia cascada.
@@ -21993,7 +22515,7 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
                       pnl_pct_ars, pnl_pct_usd, pnl_sin_dato
                FROM operations
                WHERE user_id = ?
-               ORDER BY date DESC""",
+               ORDER BY {_ops_por_fecha(desc=True)}""",
             (uid,),
         ).fetchall()]
         # Los precios del archivo están en la moneda de la VENTA y `P&L USD` en dólares: el
@@ -22437,7 +22959,7 @@ def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
             "SELECT * FROM monthly_entries WHERE user_id=? ORDER BY year, month", (uid,)
         ).fetchall()]
         ops = [dict(r) for r in conn.execute(
-            "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (uid,)
+            f"SELECT * FROM operations WHERE user_id=? ORDER BY {_ops_por_fecha()}", (uid,)
         ).fetchall()]
         # Behavioral: reusamos el mismo builder. No fallar el wrapped si el
         # behavioral falla — los slides del bias son opcionales.
@@ -22559,7 +23081,7 @@ def behavioral_insights(request: Request, uid: int = Depends(get_effective_user)
     conn = get_db()
     try:
         ops = [dict(r) for r in conn.execute(
-            "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (uid,)
+            f"SELECT * FROM operations WHERE user_id=? ORDER BY {_ops_por_fecha()}", (uid,)
         ).fetchall()]
         positions = [dict(r) for r in conn.execute(
             "SELECT * FROM positions WHERE user_id=?", (uid,)
@@ -22785,6 +23307,7 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
     """
     conn = get_db()
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
 
         # ¿MUEVE EL EFECTIVO? Si el resultado de la operación ya está (o ya no está)
@@ -22834,18 +23357,20 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
         _resultado_dual.al_cargar_a_mano(conn, uid, cur.lastrowid, dict(row))
         # Sync cache de pnl_realized en monthly_entries
         try:
-            # Asegurar que exista la fila del mes ANTES del recalc: `_recalc` solo recompone
-            # meses YA presentes en monthly_entries, así que un trade tipeado en un mes sin
-            # actividad previa no aterrizaba en el P&L mensual (quedaba solo en operations →
-            # el total del mes no lo contaba). El recalc de abajo pisa el valor con
-            # SUM(operations), así que esto no puede doblar el conteo.
-            if op.pnl_usd:
-                _y, _m = int(op.date[:4]), int(op.date[5:7])
-                _update_monthly_pnl_realized(conn, uid, op.broker, _y, _m, float(op.pnl_usd))
-                _update_monthly_pnl_realized(conn, uid, 'global', _y, _m, float(op.pnl_usd))
-            _recalc_pnl_realized_from_ops(conn, uid)
+            with _si_falla_se_deshace_solo_esto(conn, "recalc_create_operation"):
+                # Asegurar que exista la fila del mes ANTES del recalc: `_recalc` solo recompone
+                # meses YA presentes en monthly_entries, así que un trade tipeado en un mes sin
+                # actividad previa no aterrizaba en el P&L mensual (quedaba solo en operations →
+                # el total del mes no lo contaba). El recalc de abajo pisa el valor con
+                # SUM(operations), así que esto no puede doblar el conteo.
+                if op.pnl_usd:
+                    _y, _m = int(op.date[:4]), int(op.date[5:7])
+                    _update_monthly_pnl_realized(conn, uid, op.broker, _y, _m, float(op.pnl_usd))
+                    _update_monthly_pnl_realized(conn, uid, 'global', _y, _m, float(op.pnl_usd))
+                _recalc_pnl_realized_from_ops(conn, uid)
         except Exception as ex:
-            log.error("Recalc tras create_operation falló: %s", ex)
+            log.error("create_operation: la operación SE GUARDÓ, pero falló el recálculo "
+                      "del mes (se rearma en el próximo): %s", ex)
         conn.commit()
         conn.close()
         _ai_cache_invalidate(uid)
@@ -22893,6 +23418,8 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
                                    (oid, uid)).fetchone()
 
         for _intento in range(_INTENTOS_DE_RECLAMO):
+            # Adentro del bucle: el `rollback()` de un reclamo perdido suelta el turno.
+            _tomar_turno_de_la_puerta(conn, uid)
             prev = conn.execute(
                 "SELECT broker, date, op_type, undo_meta_json FROM operations "
                 "WHERE id=? AND user_id=?", (oid, uid)).fetchone()
@@ -23034,9 +23561,11 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
         # (un «guardar» sin tocar, o sólo la nota), queda como estaba.
         _resultado_dual.al_editar(conn, uid, oid, dict(_fila_antes) if _fila_antes else None, dict(row))
         try:
-            _recalc_pnl_realized_from_ops(conn, uid)
+            with _si_falla_se_deshace_solo_esto(conn, "recalc_update_operation"):
+                _recalc_pnl_realized_from_ops(conn, uid)
         except Exception as ex:
-            log.error("Recalc tras update_operation falló: %s", ex)
+            log.error("update_operation: la edición SE GUARDÓ, pero falló el recálculo "
+                      "del mes (se rearma en el próximo): %s", ex)
         conn.commit()
         conn.close()
         _ai_cache_invalidate(uid)
@@ -24294,6 +24823,7 @@ def delete_operation(oid: int, uid: int = Depends(get_effective_user)):
     se bloquea con mensaje claro."""
     with db_abierta() as conn:
         try:
+            _tomar_turno_de_la_puerta(conn, uid)
             result = _delete_operation_cascade(conn, uid, oid)
             conn.commit()
         except HTTPException:
@@ -24604,6 +25134,7 @@ def delete_asset_history(asset: str, uid: int = Depends(get_effective_user)):
     y data manual de trades mezclada."""
     with db_abierta() as conn:
         try:
+            _tomar_turno_de_la_puerta(conn, uid)
             result = _delete_asset_history_cascade(conn, uid, asset)
             conn.commit()
         except HTTPException:
@@ -24760,7 +25291,7 @@ class GoalIn(BaseModel):
 def list_goals(uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         rows = conn.execute(
-            "SELECT * FROM goals WHERE user_id=? ORDER BY target_date ASC", (uid,)
+            f"SELECT * FROM goals WHERE user_id=? ORDER BY {_por_fecha('target_date')}", (uid,)
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -24844,7 +25375,7 @@ def goal_diagnostic(gid: int, uid: int = Depends(get_effective_user)):
             "SELECT * FROM positions WHERE user_id=?", (uid,)
         ).fetchall()]
         ops = [dict(r) for r in conn.execute(
-            "SELECT * FROM operations WHERE user_id=? ORDER BY date ASC", (uid,)
+            f"SELECT * FROM operations WHERE user_id=? ORDER BY {_ops_por_fecha()}", (uid,)
         ).fetchall()]
 
         # Prep money-critical: estampa moneda, precios .BA-aware, tc_blue + MEP.
@@ -25205,6 +25736,7 @@ def admin_recompute_snapshots_netdep(uid: int = Depends(get_admin_user)):
     """
     conn = get_db()
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         result = _recompute_snapshots_netdep_for_user(conn, uid, with_details=True)
         corrupt_removed = _detect_and_remove_corrupt_snapshots(conn, uid)
         conn.commit()
@@ -25319,6 +25851,7 @@ def _repair_snapshots_summary(real_conn, users, apply: bool) -> dict:
         out = {"users_changed": 0, "snapshots_removed": 0, "changes": [], "errors": []}
         for u in users:
             try:
+                _tomar_turno_de_la_puerta(conn, u)    # un usuario por transacción
                 r = _repair_user_snapshots(conn, u)
             except Exception as ex:
                 conn.rollback()
@@ -25377,6 +25910,7 @@ def admin_repair_user_history(data: RepairUserIn, uid: int = Depends(get_admin_u
             raise HTTPException(404, f"No hay usuario con email '{data.email}'.")
         tu = row["id"]
         with conn:
+            _tomar_turno_de_la_puerta(conn, tu)
             res = _repair_user_snapshots(conn, tu)
         log.info("admin_repair_user_history email=%s uid=%s snaps %s→%s corrupt=%s",
                  row["email"], tu, res["snapshots_before"], res["snapshots_after"], res["corrupt_removed"])
@@ -26091,7 +26625,7 @@ def admin_diagnose_sell_fx(limit_ops: int = 500000, uid: int = Depends(get_admin
             # "columnas vacías" como marca: una venta corregida con un motivo
             # (`pnl_sin_dato`) o de una cuenta v1 sigue en la regla vieja y tiene que verse.
             "FROM operations WHERE op_type='Venta' "
-            "  AND NOT (costo_usd IS NOT NULL AND cobrado_usd IS NOT NULL) ORDER BY date LIMIT ?",
+            f"  AND NOT (costo_usd IS NOT NULL AND cobrado_usd IS NOT NULL) ORDER BY {_por_fecha()} LIMIT ?",
             (max(1, int(limit_ops)),),
         ).fetchall()
 
@@ -27171,6 +27705,7 @@ def admin_cleanup_future_snapshots(apply: bool = False,
         total = sum(f["n"] for f in futuros)
         if apply and total:
             with conn:
+                _tomar_turnos_en_orden(conn, [f["user_id"] for f in futuros])
                 conn.execute("DELETE FROM snapshots WHERE date > ?", (hoy,))
             log.info("cleanup-future-snapshots: borrados %s de %s cuentas",
                      total, len(futuros))
@@ -27239,7 +27774,7 @@ def admin_ventas_legacy_debug(email: str = "", user_id: int = 0, limite: int = 2
                   AND {realized_pnl.no_es_conversion_sql()}
                   AND (currency IS NULL OR TRIM(COALESCE(currency,''))=''
                        OR fx_to_usd IS NULL OR fx_to_usd<=0)
-                ORDER BY date""", (au,)).fetchall()
+                ORDER BY {_ops_por_fecha()}""", (au,)).fetchall()
 
         _memo = {}
         def _tc(f):
@@ -27549,6 +28084,7 @@ def admin_repair_comisiones(apply: bool = False, limite: int = 5000,
             hechas = 0
             for i in range(0, len(objetivo), 200):
                 with conn:
+                    _tomar_turnos_en_orden(conn, [o["user_id"] for o in objetivo[i:i + 200]])
                     for o in objetivo[i:i + 200]:
                         try:
                             meta = json.loads(o["_undo"]) if o["_undo"] else {}
@@ -28220,10 +28756,10 @@ def _repair_interes_pf(conn, apply: bool) -> dict:
     la fila se lista como `sin_tc` y NO se toca — no se inventa un número.
     """
     filas = conn.execute(
-        """SELECT id, user_id, date, pnl_usd, currency FROM operations
+        f"""SELECT id, user_id, date, pnl_usd, currency FROM operations
             WHERE op_type = 'Interés PF' AND fx_to_usd IS NULL
               AND UPPER(COALESCE(currency,'')) NOT IN ('USD','USDT')
-            ORDER BY date""").fetchall()
+            ORDER BY {_por_fecha()}""").fetchall()
     cambios, sin_tc, usuarios = [], [], set()
     for r in filas:
         mep, fuente = _fx.fx_for_date_detail(conn, r["date"])
@@ -28236,6 +28772,7 @@ def _repair_interes_pf(conn, apply: bool) -> dict:
         cambios.append(item); usuarios.add(r["user_id"])
     if apply and cambios:
         with conn:
+            _tomar_turnos_en_orden(conn, usuarios)
             for c in cambios:
                 conn.execute("UPDATE operations SET fx_to_usd=? WHERE id=? AND fx_to_usd IS NULL",
                              (c["tc"], c["id"]))
@@ -28324,6 +28861,7 @@ def _repair_caja_1415(conn, apply: bool) -> dict:
         cambios.append(item); usuarios.add(r["user_id"])
     if apply and cambios:
         with conn:
+            _tomar_turnos_en_orden(conn, usuarios)
             for c in cambios:
                 sets, args = c["_sql"]
                 conn.execute(f"UPDATE monthly_entries SET {', '.join(sets)} WHERE id=?",
@@ -28700,6 +29238,7 @@ def admin_delete_snapshot(date: str, uid: int = Depends(get_admin_user)):
             return {"ok": False, "deleted_count": 0, "reason": f"No hay snapshot del {date} para este user"}
         snap_dict = dict(existing)
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             cur = conn.execute(
                 "DELETE FROM snapshots WHERE user_id=? AND date=?",
                 (uid, date),
@@ -28723,7 +29262,7 @@ def admin_backup_trigger(uid: int = Depends(get_admin_user)):
     segundo backup pisa al primero (mismo nombre por día) — no duplica.
     """
     from scripts.backup_db import run_backup
-    stats = run_backup(db_path=DB_PATH)
+    stats = run_backup(db_path=DB_PATH)   # el motor lo decide run_backup (DATABASE_URL)
     return {
         "ok": not bool(stats.get("errors")),
         "stats": stats,
@@ -31593,10 +32132,11 @@ def admin_billing_restore_tier(email: str, uid: int = Depends(get_admin_user)):
                    f"(credito activo hasta {cau})")
         if fuente == "trial":
             detalle += " [prueba gratis: etapa por calendario, sin anchor]"
+        from ai import quota as _q   # el día de la cuota, en UN solo lugar
         with conn:
             conn.execute(
-                "UPDATE users SET tier = ?, quota_window_from = date('now','localtime') WHERE id = ?",
-                (target_plan, target_uid),
+                "UPDATE users SET tier = ?, quota_window_from = ? WHERE id = ?",
+                (target_plan, _q.dia_de_la_cuota(), target_uid),
             )
             conn.execute(
                 """INSERT INTO credit_ledger
@@ -31742,17 +32282,19 @@ def admin_billing_grant_comp(
         before_iso = state["active_until"]
 
         with conn:
+            from ai import quota as _q
             conn.execute(
                 """UPDATE users
                    SET tier = ?,
-                       quota_window_from = date('now','localtime'),
+                       quota_window_from = ?,
                        credit_active_until = ?,
                        credit_anchor_plan = ?,
                        credit_anchor_period = 'monthly',
                        credit_anchor_amount_usd = 0,
                        credit_anchor_at = ?
                    WHERE id = ?""",
-                (plan, after_iso, plan, now.isoformat(), target_uid),
+                (plan, _q.dia_de_la_cuota(), after_iso, plan,
+                 now.isoformat(), target_uid),
             )
             conn.execute(
                 """INSERT INTO credit_ledger
@@ -32038,7 +32580,10 @@ def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
     ph = ",".join("?" * len(broker_names))
 
     counts: dict = {}
+    # El turno va adentro de CADA transacción: el commit de la primera lo suelta,
+    # y pedirlo una vez en la puerta dejaba la segunda y la tercera sin él.
     with conn:
+        _tomar_turno_de_la_puerta(conn, uid)
         # La MISMA función que usa delete_broker: una sola lista de qué se lleva
         # el borrado de un broker (BROKER_POR_NOMBRE), futuros y secciones
         # archivadas incluidos.
@@ -32063,6 +32608,7 @@ def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
     # Recalcular aggregates globales (el 'global' sumaba el broker borrado).
     try:
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             _recalc_pnl_realized_from_ops(conn, uid)
     except Exception as ex:
         log.error("Recalc tras wipe falló (uid=%s broker=%s): %s", uid, broker, ex)
@@ -32074,6 +32620,7 @@ def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
     try:
         today = _iso_today()          # la fila a borrar la escriben cron/browser en ART
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             conn.execute(
                 "DELETE FROM snapshots WHERE user_id=? AND date=?", (uid, today),
             )
@@ -32096,7 +32643,7 @@ def admin_wipe_broker_data(broker: str, uid: int = Depends(get_admin_user)):
         ).fetchone()
         if not b:
             raise HTTPException(404, f"Broker '{broker}' no existe para este usuario")
-        counts = _wipe_broker_data(conn, uid, broker)
+        counts = _wipe_broker_data(conn, uid, broker)   # pide el turno en cada transacción
         return {"ok": True, "broker": broker, **counts}
     finally:
         conn.close()
@@ -37301,6 +37848,7 @@ def _undo_last_trade_handler(uid: int) -> dict:
             _LAST_CHAT_TRADE.pop(uid, None)
             return {"error": "El broker de esa operación ya no existe. Revisá desde la app."}
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             row = conn.execute("SELECT quantity, broker, undo_meta_json FROM positions WHERE id=? AND user_id=?",
                                (info["position_id"], uid)).fetchone()
             if not row:
@@ -38102,10 +38650,10 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
             return {"error": f"asset '{asset}' no tiene formato válido (alphanumeric A-Z0-9, max 10 chars, opcional .BA)"}
         with db_abierta() as conn:
             rows = conn.execute(
-                """SELECT id, broker, date, op_type, entry_price, exit_price, quantity,
+                f"""SELECT id, broker, date, op_type, entry_price, exit_price, quantity,
                           pnl_usd, pnl_pct, entry_date, currency, fx_to_usd, commissions,
                           cobrado_ars, costo_ars, pnl_pct_ars, pnl_pct_usd, pnl_sin_dato
-                   FROM operations WHERE user_id=? AND asset=? ORDER BY date DESC""",
+                   FROM operations WHERE user_id=? AND asset=? ORDER BY {_ops_por_fecha(desc=True)}""",
                 (uid, asset),
             ).fetchall()
             # La moneda de cada venta (la de la fila o, si falta, la del broker), con la
@@ -39920,8 +40468,9 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict,
     before_tier = before_row["tier"] if before_row else None
 
     with conn:
-        conn.execute("UPDATE users SET tier = ?, quota_window_from = date('now','localtime') "
-                     "WHERE id = ?", (target_tier, uid))
+        from ai import quota as _q
+        conn.execute("UPDATE users SET tier = ?, quota_window_from = ? "
+                     "WHERE id = ?", (target_tier, _q.dia_de_la_cuota(), uid))
 
         # ⭐ PRIMERO por el id de Rebill, que es la IDENTIDAD de la suscripción.
         #
@@ -40631,8 +41180,9 @@ def _process_preapproval_event(conn, preapproval_id: str):
             before_row = conn.execute("SELECT tier FROM users WHERE id = ?", (user_id,)).fetchone()
             before_tier = before_row["tier"] if before_row else None
             with conn:
-                conn.execute("UPDATE users SET tier = ?, quota_window_from = date('now','localtime') "
-                             "WHERE id = ?", (target_tier, user_id))
+                from ai import quota as _q
+                conn.execute("UPDATE users SET tier = ?, quota_window_from = ? "
+                             "WHERE id = ?", (target_tier, _q.dia_de_la_cuota(), user_id))
                 conn.execute(
                     "UPDATE billing_events SET user_id = ? WHERE mp_data_id = ?",
                     (user_id, preapproval_id),
@@ -44047,9 +44597,13 @@ def _atomic_insert_fact(conn, uid: int, content: str, source: str):
     default es BEGIN DEFERRED y el SELECT no toma write lock → TOCTOU.
     """
     try:
-        # El turno antes de contar (ver `_tomar_turno`): sin él, varios pedidos juntos
-        # cuentan todos lo mismo y pasan el tope (re-test E5, 29/10).
-        _tomar_turno(conn, uid)
+        # El turno, por usuario: el mismo patrón de contar-y-escribir que el
+        # tope de trials, que en Postgres NO aguanta solo. El uid va como
+        # SEGUNDA clave y no sumado a la primera —dos usuarios distintos no
+        # tienen por qué esperarse, pero sumando el usuario 1 caía justo en la
+        # clave de la caja—. Ver `pgsesion.turno_exclusivo`.
+        import pgsesion as _ps
+        _ps.turno_exclusivo(conn, _ps.TURNO_TOPE_FACTS_POR_USUARIO, int(uid))
         cur = conn.execute(
             """INSERT INTO ai_user_facts(user_id, content, source)
                SELECT ?, ?, ?
@@ -45597,12 +46151,9 @@ def import_preview(
                 raise HTTPException(400, "La tanda no existe o no es tuya.")
         def _previsualizar():
             with conn:
-                # El broker fijo del mapeo lo eligió la persona en el asistente: es
-                # una referencia a uno de SUS brokers. Si la pantalla quedó abierta
-                # mientras lo renombraban en otra, manda el nombre de antes — y el
-                # importador creaba de nuevo un broker con ese nombre y metía el
-                # archivo ahí (auditoría 2026-10-11). Misma regla que al guardar una
-                # plantilla. Lo que dice el ARCHIVO (su columna de broker) no se toca.
+                # El broker fijo del mapeo se lleva al nombre de HOY adentro de
+                # `run_preview` (`plantilla_con_broker_de_hoy`), después de la foto
+                # de los brokers con la que compara antes de escribir.
                 return _import_pipeline.run_preview(
                     conn,
                     uid=uid,
@@ -45610,7 +46161,7 @@ def import_preview(
                     file_name=combined_name,
                     broker_hint=broker,
                     parser_format=format,
-                    mapping=_renombre_broker.plantilla_con_broker_de_hoy(conn, uid, parsed_mapping),
+                    mapping=parsed_mapping,
                     route_by_currency=flag_route,
                 )
         # Si otro usuario tiene el candado de la base (un confirm largo, la tanda
@@ -45826,8 +46377,13 @@ def _reconstruir_mtm(uid: int) -> dict:
         # transacción que las fotos. "Reintentar" (Yahoo falló, la contabilidad no
         # paró de cambiar) guarda la marca de fallida: el próximo pedido la rehace.
         _marca = _MTM_FALLIDA if res.get("reintentar") else res.get("huella")
+        # 🔒 EL TURNO. `backfill_user` lo pide recién después de Yahoo, antes de
+        # comparar y escribir, y vuelve con él tomado si escribió (ver el
+        # comentario allá). Si no escribió nada, acá se deshace y se vuelve a
+        # pedir para lo que escribe esta función: la huella y las fotos medidas.
         if res.get("skipped") and not res.get("snapshots_borrados"):
             conn.rollback()
+            _tomar_turno_de_la_puerta(conn, uid)
             if _marca:
                 _guardar_huella_escrita(conn, uid, _marca)
             # Sin historia que reconstruir (todo FCI, sin import…) igual puede haber
@@ -45863,6 +46419,7 @@ def _reconstruir_mtm(uid: int) -> dict:
         # (p. ej. la base ocupada más que el busy_timeout): que el próximo pedido
         # de esta persona la vuelva a pedir.
         try:
+            _tomar_turno_de_la_puerta(conn, uid)
             _guardar_huella_escrita(conn, uid, _MTM_FALLIDA)
             conn.commit()
         except Exception:
@@ -46035,10 +46592,24 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
             if _rev:
                 raise HTTPException(400, "La foto se comparó contra un historial que después se revirtió: "
                                          "volvé a subirla para compararla de nuevo.")
+        # Las dos primeras líneas del bloque de abajo (afuera para que el bloque
+        # siga corto: test_import_confirm_lock cuenta sus renglones):
+        #  · El turno de la cuenta ANTES de leer. El bloque LEE el lote con el
+        #    nombre de cada broker y después lo escribe en posiciones y
+        #    operaciones; sqlite3 abre la transacción recién en la primera
+        #    escritura, y un renombre que entraba en ese hueco dejaba posiciones a
+        #    nombre del broker viejo (tests/test_renombrar_broker_durante_import.py).
+        #    Entre el turno y esa escritura sólo hay lecturas de la base, sin red:
+        #    el candado de toda la base dura casi lo mismo que antes.
+        #  · El «Estado inicial» lo armó la pantalla con los nombres que tenía al
+        #    cargar: si el broker se renombró después, lo sembrado caía en uno que
+        #    ya no existe. Con el turno tomado, nada lo cambia hasta escribir.
         with conn:
+            _tomar_turno(conn, uid)
+            seed_state = _renombre_broker.seed_con_brokers_de_hoy(conn, uid, data.seed_state)
             try:
                 txs, raw_id_by_index = _import_pipeline.load_session_with_seed_revalidate(
-                    conn, uid=uid, session_id=data.session_id, seed_state=data.seed_state,
+                    conn, uid=uid, session_id=data.session_id, seed_state=seed_state,
                 )
             except ValueError as ex:
                 raise HTTPException(400, str(ex))
@@ -46100,7 +46671,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
                     txs=txs,
                     raw_row_ids_by_index=raw_id_by_index,
                     helpers=_import_helpers,
-                    seed_state=data.seed_state,
+                    seed_state=seed_state,
                 )
             except _import_persister.PersistError as ex:
                 if ex.row_index is None:   # no es de una fila: el lote ya estaba confirmado
@@ -46140,6 +46711,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # persistido — loggeamos y seguimos (el recalc de abajo corre igual).
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _tc_blue_rb = _import_persister._read_tc_blue(conn, uid)
                 _import_rebuild.rebuild_fifo_after_import(
                     conn, uid, data.session_id, tc_blue=_tc_blue_rb,
@@ -46157,6 +46729,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # cash (ya entró) ni posiciones manuales. Best-effort.
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _import_maturity.sweep_matured_letras(conn, uid)
         except Exception:
             import traceback
@@ -46172,6 +46745,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # no toca cash ni posiciones manuales. Best-effort.
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _import_maturity.sweep_bond_amortizations(conn, uid)
         except Exception:
             import traceback
@@ -46185,6 +46759,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         try:
             import cobros_bonos as _cobros_bonos
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _cobros_bonos.reaplicar_pendientes(
                     conn, uid, _import_maturity.lotes_que_baja_el_barrido)
         except Exception:
@@ -46208,6 +46783,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
             # memoria, así el lock dura lo que tarda el UPDATE y nada más.
             _fetch_data912_bonds()
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _import_recompute.tag_bonds_from_data912(conn, uid, is_bond_ticker=_is_data912_bond)
         except Exception:
             import traceback
@@ -46221,6 +46797,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # ya per-1). Idempotente, no toca cash. Best-effort.
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _import_recompute.normalize_bond_units(conn, uid, bond_price_per1=_bond_price_per1)
         except Exception:
             import traceback
@@ -46232,6 +46809,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # fantasma, ej. YM39O -84%). Las pasa a USD. Best-effort.
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _import_recompute.normalize_usd_commissions(conn, uid, tc_blue=_tc_blue_rb)
         except Exception:
             import traceback
@@ -46248,6 +46826,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # operations ya corregidas.
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _recalc_pnl_realized_from_ops(conn, uid)
         except Exception:
             # No queremos hacer fallar el confirm si el recalc rompe — el
@@ -46262,6 +46841,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # (UPSERT idempotente) para que el chart de evolución use el P&L bueno.
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _import_persister._backfill_snapshots_from_monthly(conn, uid)
         except Exception:
             import traceback
@@ -46276,6 +46856,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # puebla el path de Balanz (fund_price_overrides NULL en el resto → no-op).
         try:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)  # en CADA transacción
                 _brow = conn.execute(
                     "SELECT broker, fund_price_overrides FROM import_batches WHERE id=?",
                     (data.session_id,)).fetchone()
@@ -46556,6 +47137,32 @@ def _log_config_arranque() -> None:
                 "  ⚠️ OPENAI_API_KEY y VOZ_SIGNING_KEY son LA MISMA — no debería" if _misma else "")
 
 
+def _imagen_del_proceso() -> str:
+    """«Python 3.11.9 · pg_dump 17.2» de la máquina donde corre la app.
+
+    Existe para comprobar MIRANDO el registro que la imagen salió como se
+    esperaba: el pasaje de Nixpacks al `Dockerfile` (Railway deja de leer
+    `railway.toml` el 2026-12-01, ver audit/RAILWAY_SIN_CONFIG_AS_CODE.md) cambia
+    cómo se arma, y lo que no tiene que cambiar es esto. Sin `pg_dump`, el backup
+    nocturno con Postgres falla (`backup_db.dump_postgres`): mejor saberlo al
+    arrancar que a las 03:45."""
+    import platform
+    import shutil as _sh
+    pg = "FALTA"
+    exe = _sh.which("pg_dump")
+    if exe:
+        try:
+            # Adentro del try: esto corre al IMPORTAR main, y un registro de arranque no
+            # puede ser lo que impida arrancar.
+            from scripts.backup_db import version_de_pg_dump
+            pg = version_de_pg_dump(exe)
+        except Exception as ex:
+            pg = f"? ({type(ex).__name__})"
+    return f"Python {platform.python_version()} · pg_dump {pg}"
+
+
+# WARNING y no INFO: corre antes del basicConfig (ver `reparaciones_de_arranque`).
+log.warning("imagen: %s", _imagen_del_proceso())
 _log_config_arranque()
 _migrar_credenciales_a_credentials_key()
 
@@ -46785,6 +47392,7 @@ def wallbit_connect(data: WallbitConnectIn, request: Request, uid: int = Depends
     try:
         # 2) Guardar la credencial cifrada (transacción propia → sobrevive si el sync falla)
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             conn.execute(
                 """INSERT INTO user_broker_credentials (user_id, broker, api_key_enc, scope)
                    VALUES (?, 'wallbit', ?, 'read')
@@ -46795,11 +47403,13 @@ def wallbit_connect(data: WallbitConnectIn, request: Request, uid: int = Depends
         try:
             res = _wallbit_do_sync(conn, uid, api_key, full=True)
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 conn.execute(
                     "UPDATE user_broker_credentials SET last_sync_at=datetime('now'), last_sync_status='ok' "
                     "WHERE user_id=? AND broker='wallbit'", (uid,))
         except _wallbit.WallbitError as e:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 conn.execute(
                     "UPDATE user_broker_credentials SET last_sync_status=? WHERE user_id=? AND broker='wallbit'",
                     (f"error: {e.message}", uid))
@@ -46827,11 +47437,13 @@ def wallbit_sync_endpoint(request: Request, uid: int = Depends(get_effective_use
         try:
             res = _wallbit_do_sync(conn, uid, api_key, full=False)
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 conn.execute(
                     "UPDATE user_broker_credentials SET last_sync_at=datetime('now'), last_sync_status='ok' "
                     "WHERE user_id=? AND broker='wallbit'", (uid,))
         except _wallbit.WallbitError as e:
             with conn:
+                _tomar_turno_de_la_puerta(conn, uid)
                 conn.execute(
                     "UPDATE user_broker_credentials SET last_sync_status=? WHERE user_id=? AND broker='wallbit'",
                     (f"error: {e.message}", uid))
@@ -47328,6 +47940,7 @@ def import_recalc_pnl(uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             updates = _recalc_pnl_realized_from_ops(conn, uid)
         return {"recalculated": True, "rows_updated": updates}
     except Exception as ex:
@@ -47350,6 +47963,7 @@ def import_wipe_broker(broker: str, uid: int = Depends(get_effective_user)):
     """
     conn = get_db()
     try:
+        _tomar_turno_de_la_puerta(conn, uid)
         b = conn.execute(
             "SELECT id FROM brokers WHERE user_id=? AND name=?", (uid, broker),
         ).fetchone()
@@ -47566,6 +48180,7 @@ def import_revert(batch_id: str, nuclear: int = 0, uid: int = Depends(get_effect
     conn = get_db()
     try:
         with conn:
+            _tomar_turno_de_la_puerta(conn, uid)
             try:
                 result = _revert_batch_de(conn, uid, batch_id, nuclear=bool(nuclear))
             except _import_persister.PersistError as ex:
@@ -47844,6 +48459,8 @@ def _run_daily_snapshot_job():
             fetch_tc_blue=_get_blue_for_scheduler,
             crypto_yf=CRYPTO_YF,
             fetch_tc_mep=_get_mep_for_scheduler,
+            abrir=get_db,
+            tomar_turno=_tomar_turno_de_la_puerta,
         )
         _snapshot_log.info(f"Daily snapshot result: {result}")
     except Exception as e:
@@ -47878,26 +48495,27 @@ def _run_velas_diarias_job():
 
 
 def _run_backup_db_job():
-    """Cron diario que dumpea la SQLite y la guarda local + remoto (S3).
+    """Cron diario: copia la base de la app (el volcado de Postgres con
+    DATABASE_URL; si no, la SQLite) y la guarda local + remoto (S3).
 
     Sin env vars de S3 → solo backup local en el disco Railway (protege contra
     bugs propios pero NO contra pérdida del disco).
     Con env vars de S3 → además sube a Backblaze/R2/AWS (protege contra todo).
     Ver `backend/scripts/backup_db.py` para detalles y env vars requeridas.
     """
-    from scripts.backup_db import run_backup
+    from scripts.backup_db import run_backup, resumen
     _backup_log = logging.getLogger("backup_db")
     try:
+        # Con Postgres, el volcado de Postgres: el SQLite está congelado y copiarlo
+        # sería un «OK» falso. Lo decide `run_backup` mirando DATABASE_URL, la
+        # misma fuente que USANDO_PG: no depende de que acá se pase nada.
         stats = run_backup(db_path=DB_PATH)
         if stats.get('errors'):
-            _backup_log.error(f"Backup con errores: {stats}")
+            _backup_log.error(f"Backup con errores — {resumen(stats)} — {stats['errors']}")
         else:
-            _backup_log.info(
-                f"Backup OK — size={stats.get('size_bytes', 0)} bytes, "
-                f"local={stats.get('local_path')}, "
-                f"remote={'OK' if stats.get('remote_uploaded') else 'skip'}, "
-                f"pruned local={stats.get('local_pruned')} remote={stats.get('remote_pruned')}"
-            )
+            # Qué motor copió, cuántas tablas y filas, cuánto pesa: un «OK» que se
+            # puede comprobar mirando el registro.
+            _backup_log.info(f"Backup OK — {resumen(stats)}")
     except Exception as e:
         _backup_log.error(f"Backup job falló: {e}", exc_info=True)
 
@@ -48196,6 +48814,7 @@ def _migrate_snapshots_netdep():
                 for u in users:
                     uid = u["user_id"]
                     try:
+                        _tomar_turno_de_la_puerta(conn, uid)   # un usuario por transacción
                         result = _recompute_snapshots_netdep_for_user(conn, uid)
                         if result["snapshots_updated"] > 0:
                             total_snapshots_fixed += result["snapshots_updated"]
@@ -48288,10 +48907,53 @@ def _migrate_snapshots_netdep():
     threading.Thread(target=worker, daemon=True).start()
 
 
+def _aplicar_remap_fci(conn, mapa: dict) -> int:
+    """Reescribe `{crudo: símbolo}` en positions, operations e
+    import_normalized_tx. Devuelve las filas tocadas.
+
+    🔒 UNA CUENTA POR TRANSACCIÓN, cada una con su turno primero. Esto corre al
+    arrancar (`_migrate_fci_ticker_remap`), y en Postgres el arranque convive con
+    la copia vieja de la app atendiendo pedidos. Antes era UNA transacción para
+    todas las cuentas y sin turno: se metía en el medio de un borrado o de una
+    reconstrucción de cualquier cuenta. De a una, y de menor a mayor
+    (`_tomar_turnos_en_orden`), ninguna espera más que lo que tarda la suya.
+    Confirma cada cuenta: si el arranque muere a mitad, lo hecho queda y la
+    próxima vez sigue (es idempotente: el crudo ya no está).
+
+    Las cuentas se leen antes, sin transacción, y cada UPDATE se limita a la suya:
+    una fila que aparezca mientras tanto queda para el próximo arranque, en vez
+    de escribirse sin su turno."""
+    if not mapa:
+        return 0
+    crudos = list(mapa)
+    ph = ",".join("?" * len(crudos))
+    uids = sorted({r[0] for r in conn.execute(
+        f"SELECT user_id FROM positions WHERE asset IN ({ph}) "
+        f"UNION SELECT user_id FROM operations WHERE asset IN ({ph}) "
+        f"UNION SELECT b.user_id FROM import_normalized_tx n "
+        f"JOIN import_batches b ON b.id = n.batch_id WHERE n.asset_symbol IN ({ph})",
+        crudos * 3).fetchall() if r[0] is not None})
+    total = 0
+    for uid in uids:
+        with conn:
+            _tomar_turnos_en_orden(conn, [uid])
+            for crudo, sym in mapa.items():
+                total += conn.execute("UPDATE positions SET asset=? WHERE user_id=? AND asset=?",
+                                      (sym, uid, crudo)).rowcount
+                total += conn.execute("UPDATE operations SET asset=? WHERE user_id=? AND asset=?",
+                                      (sym, uid, crudo)).rowcount
+                total += conn.execute(
+                    "UPDATE import_normalized_tx SET asset_symbol=? WHERE asset_symbol=? "
+                    "AND batch_id IN (SELECT id FROM import_batches WHERE user_id=?)",
+                    (sym, crudo, uid)).rowcount
+    return total
+
+
 def _remap_fci_broker_tickers(conn) -> int:
     """Remapea los tickers CRUDOS de FCI de broker (COCOA, CONIOLA, BCAHA…) al símbolo
     de catálogo (FCI:<slug>) en positions/operations/import_normalized_tx. Devuelve las
-    filas tocadas. Idempotente (tras remap el ticker crudo ya no existe). NO commitea."""
+    filas tocadas. Idempotente (tras remap el ticker crudo ya no existe). Confirma
+    cuenta por cuenta (`_aplicar_remap_fci`)."""
     from importing.fci_map import BROKER_FCI_AD_NAME, resolve_fci_symbol
     raws = [t for t in BROKER_FCI_AD_NAME if resolve_fci_symbol(t)]
     if not raws:
@@ -48300,13 +48962,7 @@ def _remap_fci_broker_tickers(conn) -> int:
     # Guard barato: ¿queda alguna posición con ticker crudo por remapear?
     if not conn.execute(f"SELECT 1 FROM positions WHERE asset IN ({ph}) LIMIT 1", raws).fetchone():
         return 0
-    total = 0
-    for raw in raws:
-        sym = resolve_fci_symbol(raw)
-        for tbl, col in (("positions", "asset"), ("operations", "asset"),
-                         ("import_normalized_tx", "asset_symbol")):
-            total += conn.execute(f"UPDATE {tbl} SET {col}=? WHERE {col}=?", (sym, raw)).rowcount
-    return total
+    return _aplicar_remap_fci(conn, {raw: resolve_fci_symbol(raw) for raw in raws})
 
 
 def _remap_fci_by_name(conn) -> int:
@@ -48318,20 +48974,17 @@ def _remap_fci_by_name(conn) -> int:
 
     Recorre los activos DISTINTOS (no las filas) y solo toca los que el catálogo
     resuelve de forma exacta y no ambigua. Idempotente: tras el remap el nombre
-    crudo ya no existe. NO commitea."""
+    crudo ya no existe. Confirma cuenta por cuenta (`_aplicar_remap_fci`)."""
     from importing.fci_map import resolve_fci_by_name
     crudos = [r[0] for r in conn.execute(
         "SELECT DISTINCT asset FROM positions WHERE asset IS NOT NULL AND asset NOT LIKE 'FCI:%'"
     ).fetchall()]
-    total = 0
+    mapa = {}
     for raw in crudos:
         sym = resolve_fci_by_name(conn, raw)
-        if not sym:
-            continue
-        for tbl, col in (("positions", "asset"), ("operations", "asset"),
-                         ("import_normalized_tx", "asset_symbol")):
-            total += conn.execute(f"UPDATE {tbl} SET {col}=? WHERE {col}=?", (sym, raw)).rowcount
-    return total
+        if sym:
+            mapa[raw] = sym
+    return _aplicar_remap_fci(conn, mapa)
 
 
 @app.on_event("startup")
@@ -48482,7 +49135,7 @@ def _start_scheduler():
         id='subscription_lifecycle_tarde',
         replace_existing=True,
     )
-    # 03:45 UTC — backup diario de la SQLite. Después del snapshot + lifecycle
+    # 03:45 UTC — backup diario de la base (Postgres o SQLite). Después del snapshot + lifecycle
     # para no pisar transacciones. Va a `./backups/` local (Railway disk) +
     # opcionalmente sube a S3-compatible si están las env vars BACKUP_S3_*.
     _scheduler.add_job(
@@ -50136,7 +50789,16 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user), r
     from ai import plan as _plan
     conn = get_db()
     try:
-        _exigir_cupo_de_alertas(conn, uid, con_turno=False)
+        def _403_del_tope(info):
+            """El 403 del tope, armado UNA vez: lo levanta el chequeo amable de
+            acá y también el INSERT, que es el que hace cumplir la regla."""
+            return HTTPException(403, {
+                "error": "Llegaste al límite de alertas de tu plan.",
+                "quota": info, "upgrade": True})
+
+        allowed, info = _plan.check_alert_quota(conn, uid)
+        if not allowed:
+            raise _403_del_tope(info)
         if data.kind == "pct_move" and not _plan.can_access(conn, uid, "alerts.pct_move"):
             raise HTTPException(403, {
                 "error": "Las alertas de variación (%) son de Rendi Plus.",
@@ -50198,16 +50860,20 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user), r
             elif baseline == "set_price":
                 anchor_price = current_price   # "Desde ahora": ancla = precio actual
 
-        _exigir_cupo_de_alertas(conn, uid)
+        # Igual que los brokers: el tope se hace cumplir en el INSERT, porque
+        # entre contar y escribir entra cualquiera. Ver `plan.condicion_de_tope`.
+        _cond, _cond_p = _plan.condicion_de_tope("alerts", uid, info["limit"])
         cur = conn.execute(
             """INSERT INTO alerts
                (user_id, kind, symbol, scope, direction, threshold, up_pct, down_pct,
                 currency, baseline, anchor_price, channel, repeat, cooldown_min, armed, active, note)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+               SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,? WHERE """ + _cond,
             (uid, data.kind, symbol, data.scope, data.direction, threshold, up_pct, down_pct,
              currency, baseline, anchor_price, data.channel, data.repeat, data.cooldown_min,
-             armed, data.note),
+             armed, data.note) + _cond_p,
         )
+        if not getattr(cur, "rowcount", 0):
+            raise _403_del_tope(_plan.check_alert_quota(conn, uid)[1])
         aid = cur.lastrowid
         conn.commit()
         return {"ok": True, "id": aid, "armed": bool(armed),
@@ -50844,6 +51510,7 @@ def advisor_tanda_revert(tanda_id: str, uid: int = Depends(get_current_user)):
             # Cada lote en su propia transacción: si uno falla, los anteriores
             # quedan revertidos y el estado de la tanda refleja fila por fila.
             with conn:
+                _tomar_turno_de_la_puerta(conn, int(client_uid))
                 try:
                     _revert_batch_de(conn, int(client_uid), batch_id, nuclear=False)
                 except _import_persister.PersistError as ex:
@@ -51616,6 +52283,8 @@ def admin_run_snapshot(uid: int = Depends(get_admin_user)):
             fetch_tc_blue=_get_blue_for_scheduler,
             crypto_yf=CRYPTO_YF,
             fetch_tc_mep=_get_mep_for_scheduler,
+            abrir=get_db,
+            tomar_turno=_tomar_turno_de_la_puerta,
         )
     finally:
         _soltar_corrida("snapshot_diario")
@@ -51634,13 +52303,23 @@ def health_check():
        del daily snapshot (01:00 UTC) y la app se levanta antes.
     2. Monitoreo / uptime checks (UptimeRobot, etc.)
 
-    Devuelve siempre 200 con timestamp para que el caller verifique que
-    la app está respondiendo.
+    3. El chequeo de salud de Railway (`healthcheckPath` en railway.toml): una
+       copia nueva recibe tráfico recién cuando esto da 200. Por eso contesta
+       503 hasta que terminó el arranque (`_ARRANQUE_LISTO`): esquema +
+       reparaciones. Liviano a propósito: sin base y sin red, porque Railway
+       lo consulta en el arranque y un chequeo lento es un arranque fallido.
+
+    Devuelve 200 con timestamp para que el caller verifique que la app está
+    respondiendo.
     """
+    if not _ARRANQUE_LISTO:
+        return JSONResponse(status_code=503,
+                            content={"ok": False, "detail": "arrancando"})
     return {
         "ok": True,
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "service": "rendi-api",
+        "motor": "postgres" if USANDO_PG else "sqlite",
         # El commit que está corriendo. Sin esto, "health 200" no distingue
         # "deployó mi cambio" de "sigue el de antes" — y verificar un deploy de
         # backend contra el /version.json del FRONTEND es engañoso: Vercel tarda
@@ -53315,7 +53994,7 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
             f"""SELECT date, asset, op_type, quantity FROM operations
                WHERE user_id=? AND date >= ? AND date <= ?
                  AND (op_type IS NULL OR {realized_pnl.no_es_conversion_sql()})
-               ORDER BY date ASC""",
+               ORDER BY {_ops_por_fecha()}""",
             (client_uid, start, end)).fetchall():
         qty = r["quantity"]
         # Para rentas, operations.quantity guarda el MONTO (no nominales) —
@@ -53330,10 +54009,10 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
     # Las COMPRAS importadas no pasan por operations (audit): las posiciones
     # abiertas con entry_date dentro del período son las compras del período.
     for r in conn.execute(
-            """SELECT entry_date, asset, quantity FROM positions
+            f"""SELECT entry_date, asset, quantity FROM positions
                WHERE user_id=? AND COALESCE(is_cash,0)=0
                  AND entry_date >= ? AND entry_date <= ?
-               ORDER BY entry_date ASC""",
+               ORDER BY {_por_fecha("entry_date")}""",
             (client_uid, start, end)).fetchall():
         movs_all.append({"date": str(r["entry_date"]), "asset": r["asset"],
                          "type": "Compra",
@@ -53444,9 +54123,14 @@ def advisor_set_profile(data: AdvisorProfileIn, uid: int = Depends(get_current_u
             # Logo aparte: None = no tocar · "" = borrar · data-URI = guardar
             if data.logo_data is not None:
                 try:
-                    conn.execute(
-                        "UPDATE advisor_profile SET logo_data=?, updated_at=datetime('now') WHERE advisor_uid=?",
-                        (data.logo_data or None, uid))
+                    # Punto de guardado: en Postgres el UPDATE que falla por la
+                    # columna ausente abortaba la transacción, y el ALTER de
+                    # abajo —la auto-reparación que existe PARA ese caso— moría
+                    # con otro error. La red no reparaba nada: 500 igual.
+                    with _si_falla_se_deshace_solo_esto(conn, "guardar_logo_del_asesor"):
+                        conn.execute(
+                            "UPDATE advisor_profile SET logo_data=?, updated_at=datetime('now') WHERE advisor_uid=?",
+                            (data.logo_data or None, uid))
                 except ERR_OPERACIONAL:
                     # Columna ausente (deploy a mitad de camino / migración no
                     # corrida): auto-reparar y reintentar en vez de un 500.
@@ -53779,6 +54463,9 @@ def _advisor_group_op_apply(uid: int, asset: str, asset_type, currency, entry_da
 
         applied = []
         with conn:
+            # Los turnos de TODOS los clientes de la tanda, en orden, antes de
+            # escribir en ninguno (y antes del candado de la caja).
+            _tomar_turnos_en_orden(conn, [r["client_uid"] for r in valid])
             cur = conn.execute(
                 "INSERT INTO advisor_op_batches (advisor_uid, asset, op_kind) VALUES (?,?, 'buy')",
                 (uid, asset.strip()),
@@ -54146,6 +54833,7 @@ def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
         undone, skipped = [], []
         left_ok = 0  # items que NO pudimos deshacer y siguen 'ok' (reintentar)
         with conn:
+            _tomar_turnos_en_orden(conn, [it["client_uid"] for it in items])
             for it in items:
                 cid = it["client_uid"]
                 _contabilidad_tocada(cid)   # su historia reconstruida se revisa al terminar

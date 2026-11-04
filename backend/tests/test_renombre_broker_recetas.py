@@ -130,6 +130,20 @@ def _apariciones(uid: int, nombre: str) -> list:
             cols = [r[1] for r in conn.execute(f"PRAGMA table_info({t})")]
             if "user_id" in cols:
                 filas = conn.execute(f"SELECT * FROM {t} WHERE user_id=?", (uid,)).fetchall()
+            elif "client_uid" in cols:
+                # ⚠️ VA ANTES que la rama de `batch_id`, y acá está el punto.
+                # `advisor_op_batch_items` tiene las DOS columnas, pero su
+                # `batch_id` NO apunta a `import_batches`: apunta a
+                # `advisor_op_batches`. Son dos universos de ids distintos —
+                # `import_batches.id` es TEXTO (un hash tipo 'h-1') y
+                # `advisor_op_batch_items.batch_id` es un NÚMERO.
+                #
+                # SQLite compara texto con número sin quejarse y no encuentra
+                # nada, así que este barrido NUNCA revisó esa tabla: pasaba en
+                # verde por vacío. Postgres sí se niega
+                # (`operator does not exist: bigint = text`) y lo delató.
+                filas = conn.execute(
+                    f"SELECT * FROM {t} WHERE client_uid=?", (uid,)).fetchall()
             elif "batch_id" in cols:
                 filas = conn.execute(
                     f"SELECT * FROM {t} WHERE batch_id IN "

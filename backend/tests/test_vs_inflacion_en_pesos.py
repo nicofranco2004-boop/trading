@@ -250,8 +250,8 @@ class CuandoElMotorPisaElNumeroTest(unittest.TestCase):
                 "VALUES (?,?,?,?,0,'cron',1200.0,'[]')", (self.uid, d, v, v))
         for d, tc in (("2026-02-28", self.FX0), ("2026-03-31", self.FX1)):
             self.conn.execute(
-                "INSERT OR REPLACE INTO fx_rates_daily (date,blue_venta,mep_venta) "
-                "VALUES (?,?,?)", (d, tc, tc))
+                "INSERT INTO fx_rates_daily (date,blue_venta,mep_venta) "
+                "VALUES (?,?,?) ON CONFLICT (date) DO UPDATE SET blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta", (d, tc, tc))
         self.conn.commit()
 
     def tearDown(self):

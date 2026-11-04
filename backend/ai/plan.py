@@ -184,6 +184,17 @@ def detectores_visibles(conn, user_id: int, tier_override: str | None = None):
         return 1
 
 
+# El conjunto de filas de `brokers` que CUENTA como una cuenta del usuario, en
+# SQL y en UN solo lugar: lo usa el conteo de abajo y lo usa el INSERT que hace
+# cumplir el tope. Si se separaran, el tope contaría una cosa y el aviso otra.
+# Lleva UN parámetro: el user_id.
+SQL_BROKERS_QUE_CUENTAN = """b.user_id = ?
+              AND (b.parent_broker_id IS NULL
+                   OR NOT EXISTS (SELECT 1 FROM brokers p
+                                   WHERE p.id = b.parent_broker_id
+                                     AND p.user_id = b.user_id))"""
+
+
 def count_broker_accounts(conn, user_id: int) -> int:
     """Cuántas CUENTAS tiene el user — no cuántas filas hay en `brokers`.
 
@@ -204,15 +215,120 @@ def count_broker_accounts(conn, user_id: int) -> int:
     de acá y el mail de resumen de la prueba) tienen que dar el MISMO número.
     """
     row = conn.execute(
-        """SELECT COUNT(*) AS c FROM brokers b
-            WHERE b.user_id = ?
-              AND (b.parent_broker_id IS NULL
-                   OR NOT EXISTS (SELECT 1 FROM brokers p
-                                   WHERE p.id = b.parent_broker_id
-                                     AND p.user_id = b.user_id))""",
+        f"SELECT COUNT(*) AS c FROM brokers b WHERE {SQL_BROKERS_QUE_CUENTAN}",
         (user_id,),
     ).fetchone()
     return int(row["c"] or 0) if row else 0
+
+
+# ─── Los topes del plan: contar acá, insertar en el endpoint ─────────────────
+# 🔴 EL TURNO VA ADENTRO DEL CHEQUEO, no en los endpoints. Por qué, y con qué
+# número, porque esto dejaba escapar el paywall.
+#
+# Estos dos topes NO se hacen cumplir dentro de una sentencia: cuentan acá y el
+# endpoint inserta unas líneas después. En SQLite eso alcanzaba porque el motor
+# deja escribir a UNO POR VEZ en toda la base, así que el que contaba segundo ya
+# veía la fila del primero. En Postgres cada transacción cuenta con la foto del
+# momento en que arrancó: cinco pedidos simultáneos cuentan lo mismo y entran
+# todos.
+#
+# MEDIDO el 23/10/2026 corriendo el endpoint de verdad, plan Free (tope 1
+# broker) y cinco pedidos a la vez:
+#
+#     Postgres → quedaron 2 brokers en una corrida y 4 en otra
+#     SQLite   → quedó 1 y 1
+#
+# O sea: el que paga por un broker más lo tenía gratis abriendo dos pestañas.
+#
+# POR QUÉ ACÁ Y NO EN EL ENDPOINT: el candado se suelta solo al cerrar la
+# transacción, y el endpoint inserta y hace commit DENTRO de esa misma
+# transacción, así que pedirlo acá cubre hasta el INSERT. Y cubre a cualquiera
+# que llame al chequeo mañana, que es el modo en que este repo genera deuda:
+# el arreglo correcto puesto en 1 de N lugares.
+#
+# NOTA DE ORDEN, para que esto no agregue un bloqueo mutuo como pasó con la
+# caja: este turno se pide SIEMPRE al principio del endpoint (es lo primero que
+# hace), y ningún camino pide otro turno antes. Si alguien agrega un endpoint
+# que mueve plata y después crea un broker, tiene que pedir este turno primero.
+
+
+def condicion_de_tope(cap: str, user_id: int, limit) -> tuple[str, tuple]:
+    """El `WHERE` que hace cumplir un tope del plan, para colgar de un
+    `INSERT … SELECT … WHERE <esto>`. Devuelve (sql, params).
+
+    🔴 POR QUÉ LA REGLA VIVE EN EL INSERT Y NO EN EL CHEQUEO DE ARRIBA, y es un
+    bug de producción que estaba abierto HOY, con SQLite, antes de cualquier
+    migración.
+
+    El chequeo cuenta con un SELECT y el endpoint inserta unas líneas después.
+    Se creía que SQLite tapaba esa ventana porque deja escribir a uno por vez.
+    NO LA TAPA: el SELECT del conteo es una LECTURA, y una lectura en SQLite no
+    toma el candado de escritura. Cinco pedidos simultáneos leen los cinco el
+    mismo cero y después insertan los cinco.
+
+    MEDIDO el 23/10/2026, plan Free (tope 1 broker) y cinco pedidos a la vez,
+    corriendo el endpoint de verdad:
+
+        SQLite (lo que corre en producción hoy) → quedaron 3, 3 y 2 brokers
+        Postgres                                → quedaron 2 y 4
+
+    O sea: la pared del plan se esquiva abriendo dos pestañas, y se esquivaba
+    desde antes de que Postgres entrara en escena. (La auditoría del 23/10 midió
+    SQLite en 1 y 1 y concluyó que allá aguantaba; repetido tres veces da 3, 3 y
+    2. Ese número era el que estaba mal.)
+
+    CON LA REGLA EN EL INSERT se arregla en los dos motores por motivos
+    distintos, y los dos hacen falta:
+      · En SQLite el conteo pasa a estar DENTRO de la sentencia que escribe, que
+        es la que sí toma el candado. Es el mismo patrón que ya usaban los otros
+        topes del repo.
+      · En Postgres eso no alcanza —la subconsulta se evalúa con la foto del
+        arranque de la sentencia, ver `pgsesion.turno_exclusivo`— y por eso
+        además se pide el turno en el chequeo de más arriba, que se suelta al
+        cerrar la transacción y por lo tanto cubre hasta este INSERT.
+
+    `limit` None significa SIN TOPE (Plus, Pro, asesor y admin en alertas; Pro,
+    asesor y admin en brokers), y entonces la condición no filtra nada.
+
+    🔴 EL «SIN TOPE» SE DECIDE EN PYTHON Y NO EN SQL, y esto costó un bug que
+    habría volteado a TODOS los que pagan. La primera versión preguntaba en SQL
+    `(? IS NULL OR …)` pasándole `limit`. En SQLite andaba perfecto. En Postgres
+    revienta:
+
+        IndeterminateDatatype: could not determine data type of parameter $1
+
+    porque psycopg manda `None` sin decir de qué tipo es, y en `$1 IS NULL`
+    Postgres no tiene de dónde inferirlo: no hay comparación ni columna que se lo
+    diga. Con un entero manda un tipo concreto, y por eso el plan Free —el único
+    con tope numérico en los dos casos— era el único que seguía funcionando.
+    Medido: `limit=1` da TRUE, `limit=0` da FALSE, `limit=None` revienta y el
+    endpoint tira la excepción.
+
+    Un `::bigint` lo arreglaría en Postgres y rompería SQLite. La forma correcta
+    es no preguntarle a la base algo que Python ya sabe.
+
+    ⚠️ Y es la clase de bug que la suite de SQLite NO puede encontrar: allá
+    `NULL IS NULL` no necesita que nadie infiera nada y pasa en verde. El test
+    que lo vigila (`tests/test_tope_sin_tope.py`) está escrito para dar verde en
+    SQLite y rojo en Postgres, que es la única forma que sirve acá.
+    """
+    if limit is None:
+        return ("1=1", ())          # sin tope: no filtra nada, y sin parámetros
+    if cap == "brokers":
+        return (f"(SELECT COUNT(*) FROM brokers b "
+                f"WHERE {SQL_BROKERS_QUE_CUENTAN}) < ?",
+                (user_id, limit))
+    if cap == "alerts":
+        return ("(SELECT COUNT(*) FROM alerts WHERE user_id = ?) < ?",
+                (user_id, limit))
+    raise ValueError(f"tope del plan desconocido: {cap!r}")
+
+
+def _turno_del_tope(conn, user_id: int) -> None:
+    """Pide el turno del usuario para un tope del plan que se cuenta acá y se
+    inserta afuera. En SQLite no hace nada. Ver el comentario de arriba."""
+    import pgsesion as _ps
+    _ps.turno_exclusivo(conn, _ps.TURNO_TOPE_DEL_PLAN_POR_USUARIO, int(user_id))
 
 
 def check_broker_quota(conn, user_id: int) -> tuple[bool, dict]:
@@ -227,6 +343,7 @@ def check_broker_quota(conn, user_id: int) -> tuple[bool, dict]:
 
     Devuelve (allowed, info) donde info incluye tier, current_count, limit,
     can_create — útil para el 403 payload."""
+    _turno_del_tope(conn, user_id)
     tier = quota.get_tier(conn, user_id)
     limits = PLAN_LIMITS.get(tier, PLAN_LIMITS["free"])
     limit = limits["brokers_max"]
@@ -276,7 +393,14 @@ def check_alert_quota(conn, user_id: int) -> tuple[bool, dict]:
     Free = 3 alertas (solo precio objetivo). Plus/Pro/Admin = sin tope
     (el Plus dejó de tener tope el 2026-10-15, cuando pasó a tener las métricas
     completas; antes eran 25). El número sale de PLAN_LIMITS, no de acá. Grandfather-aware (si ya tiene más que el tope por
-    un downgrade, no puede crear más pero conserva las existentes)."""
+    un downgrade, no puede crear más pero conserva las existentes).
+
+    ⚠️ El turno de arriba también va acá, y por el mismo motivo: es la MISMA
+    forma (contar acá, insertar en el endpoint). No se midió con el endpoint de
+    alertas porque ése sondea un precio por red antes de insertar y forzarlo
+    podía tapar justo lo que falla; se trata como roto porque es la misma
+    forma, no porque alguien lo haya visto fallar."""
+    _turno_del_tope(conn, user_id)
     tier = quota.get_tier(conn, user_id)
     limits = PLAN_LIMITS.get(tier, PLAN_LIMITS["free"])
     limit = limits.get("alerts_max")

@@ -68,6 +68,12 @@ def _es_stdlib(modulo: str) -> bool:
         return False
     if not spec.origin:                       # namespace packages
         return False
+    # Python 3.11 (el de producción) trae `io`, `stat`, `os`… congelados adentro
+    # del intérprete: el origen dice "frozen" y no la carpeta de la stdlib. En la
+    # Mac (3.9) no pasa; en la suite corrida en Railway el 31/10 marcó `io` y
+    # `stat` como dependencias sin declarar.
+    if spec.origin == "frozen":
+        return True
     return spec.origin.startswith(_STDLIB) and "site-packages" not in spec.origin
 
 

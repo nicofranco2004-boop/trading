@@ -31,7 +31,14 @@ def clean(monkeypatch):
         try:
             conn.execute(f"DELETE FROM {t}")
         except Exception:
-            pass
+            # Deshacer, no sólo ignorar: en Postgres una instrucción que falla
+            # DEJA LA TRANSACCIÓN INUTILIZABLE, y todo lo que venga después
+            # revienta con «current transaction is aborted» sin relación
+            # aparente. SQLite no hace eso, por eso nunca se notó.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     conn.execute("INSERT INTO users (id,email,name,password_hash) VALUES (1,'a@a.co','A','x')")          # free
     conn.execute("INSERT INTO users (id,email,name,password_hash,tier) VALUES (2,'b@b.co','B','x','plus')")  # plus
     conn.commit()
@@ -1125,9 +1132,16 @@ def test_si_da_vuelta_despues_de_la_apertura_avisa(clean, monkeypatch):
 def _otra_conexion_puede_escribir():
     """¿Puede OTRA conexión escribir ahora? Es lo que le pasa al resto de la app
     (guardar una operación, un import) mientras corre el ciclo de alertas."""
+    import pgsesion
     otra = main.get_db()
     try:
-        otra.execute("PRAGMA busy_timeout=200")
+        # La espera corta, en el idioma de cada motor: en Postgres el PRAGMA es un
+        # error de sintaxis, el `except` de abajo lo leía como «la base está
+        # tomada» y el test daba rojo sin medir nada (29/10/2026).
+        if pgsesion.habla_postgres(otra):
+            otra.execute("SET lock_timeout = '200ms'")
+        else:
+            otra.execute("PRAGMA busy_timeout=200")
         otra.execute("UPDATE users SET name=name WHERE id=1")
         otra.commit()
         return True
@@ -1147,12 +1161,19 @@ def test_el_ciclo_no_tiene_tomada_la_base_mientras_espera_a_yahoo(clean, monkeyp
                  "SELECT id, 'NVDA', 0, datetime('now') FROM alerts"); conn.commit()
     vistos = {}
 
+    # Las dos preguntas: ¿otra conexión puede escribir? (lo que siente el resto de
+    # la app en SQLite, donde una escritura toma la base entera) y ¿el ciclo tiene
+    # una transacción abierta? (lo que importa en Postgres, donde otra conexión
+    # escribe igual pero la del ciclo queda ociosa reteniendo lo que tocó).
+    def libre():
+        return _otra_conexion_puede_escribir() and not conn.in_transaction
+
     def quotes(syms):
-        vistos["precios"] = _otra_conexion_puede_escribir()
+        vistos["precios"] = libre()
         return {"NVDA": _q(100.5, 0.5, sym="NVDA")}       # dentro de la banda: re-arma (escribe)
 
     def yahoo(simbolos):
-        vistos["pre_post"] = _otra_conexion_puede_escribir()
+        vistos["pre_post"] = libre()
         return _como_yahoo([_cot("SPY", 0.1), _cot("NVDA", 0.5)])(simbolos)
 
     _fdh._vaciar_cache()

@@ -28,6 +28,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 import main
+from tests._limpieza import vaciar  # noqa: E402
 
 HDR = "fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas\n"
 
@@ -39,14 +40,7 @@ def _csv(*rows):
 class _Base(unittest.TestCase):
     def setUp(self):
         self.conn = main.get_db()
-        for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
-                  "import_batches", "operations", "positions", "monthly_entries",
-                  "snapshots", "bond_cashflow_skips", "deleted_ops_journal",
-                  "config", "brokers", "users"):
-            try:
-                self.conn.execute(f"DELETE FROM {t}")
-            except Exception:
-                pass
+        vaciar(self.conn, "import_op_links", "import_normalized_tx", "import_raw_rows", "import_batches", "operations", "positions", "monthly_entries", "snapshots", "bond_cashflow_skips", "deleted_ops_journal", "config", "brokers", "users")   # ver tests/_limpieza.py
         self.conn.commit()
         self.uid = self.conn.execute(
             "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",

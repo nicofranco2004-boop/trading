@@ -138,8 +138,8 @@ class PataCompraDeUnaVenta(unittest.TestCase):
         )
         for fecha, tc in (("2021-06-03", TC_COMPRA_2021), ("2022-09-12", TC_VENTA_2022)):
             conn.execute(
-                "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta) "
-                "VALUES (?,?,?)", (fecha, tc, tc))
+                "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) "
+                "VALUES (?,?,?) ON CONFLICT (date) DO UPDATE SET blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta", (fecha, tc, tc))
         conn.execute(
             """INSERT INTO operations
                  (user_id, date, broker, asset, op_type, entry_date, entry_price,

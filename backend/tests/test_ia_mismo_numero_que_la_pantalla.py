@@ -382,11 +382,30 @@ class ValorVivoTest(_Base):
         self.assertEqual(pt["hoy"]["hasta"], _hace(1))
         self.assertEqual(pt["hoy"]["resultado_usd"], 250.0)
 
+    @unittest.skipIf(getattr(main, "USANDO_PG", False),
+                     "Sólo SQLite: `in_transaction` no significa lo mismo en los "
+                     "dos motores. Ver el aviso del docstring.")
     def test_calcularlo_no_deja_la_base_tomada(self):
         """Calcular el valor vivo ESCRIBE (guarda los últimos precios conocidos).
         Sobre la conexión del llamador esa escritura quedaba abierta: la base
         tomada para escribir hasta que el llamador cerrara, y cualquier otro que
-        escribiera esperaba o fallaba con "database is locked"."""
+        escribiera esperaba o fallaba con "database is locked".
+
+        ⚠️ SÓLO-SQLITE, y NO porque el riesgo desaparezca del otro lado: porque
+        LA PREGUNTA no se puede hacer igual.
+
+        En SQLite la transacción se abre recién en la PRIMERA ESCRITURA, así que
+        `in_transaction == False` significa «no quedó ninguna escritura abierta»,
+        que es justo lo que este test quiere saber. En Postgres se abre con
+        CUALQUIER consulta —incluso una lectura—, así que ahí daría True siempre
+        y el test no distinguiría una escritura colgada de un simple SELECT.
+
+        El mismo riesgo del lado de Postgres lo cubre
+        `tests/test_conexiones_cerradas.py`, que barre el backend buscando
+        conexiones que no se cierren (ya cazó dos endpoints así). Un test
+        equivalente acá tendría que preguntar otra cosa —mirar `pg_stat_activity`
+        por backends en `idle in transaction`— y queda PENDIENTE.
+        """
         self.escenario()
         self.assertIsNotNone(main._valor_vivo_mercado(self.conn, self.uid))
         self.assertFalse(self.conn.in_transaction,

@@ -42,8 +42,8 @@ class InformeVentasLegacy(unittest.TestCase):
                      (self.uid,))
         for f, tc in (("2021-06-03", TC_2021), ("2022-09-12", TC_2022)):
             conn.execute(
-                "INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta) "
-                "VALUES (?,?,?)", (f, tc, tc))
+                "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) "
+                "VALUES (?,?,?) ON CONFLICT (date) DO UPDATE SET blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta", (f, tc, tc))
         # Venta vieja en un broker ARS: 485 × 283,43 = 137.463 pesos.
         conn.execute(
             """INSERT INTO operations

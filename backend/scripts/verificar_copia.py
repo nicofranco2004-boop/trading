@@ -45,9 +45,14 @@ cuando encuentra algo que no sabe normalizar en vez de adivinar.
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
+import sys
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pgsesion import TABLA_DEL_ARRANQUE  # noqa: E402
 
 NULO = "\x00NULO"          # sentinela: distingue el NULL del texto "None"
 _MOD = 1 << 128            # los hashes se suman módulo esto
@@ -176,6 +181,11 @@ def esquema_pg(cur) -> Dict[str, List[Tuple[str, str]]]:
     sin el filtro `esquema_pg()` devuelve 61 y `tablas_sqlite()` 60; con el filtro,
     60 y 60. Una vista no se copia —se recrea desde el esquema— así que no tiene
     nada que hacer en una comparación origen-vs-destino de DATOS.
+
+    Por el mismo motivo queda afuera `TABLA_DEL_ARRANQUE` (`esquema_aplicado`):
+    la crea el arranque de la app en Postgres para anotar qué estructura ya
+    aplicó, no existe en SQLite y no tiene datos de nadie. Sin esto, la primera
+    copia después de un arranque contra el destino abortaba igual que con la vista.
     """
     filas = cur.execute("""
         SELECT c.table_name, c.column_name, c.data_type
@@ -189,6 +199,8 @@ def esquema_pg(cur) -> Dict[str, List[Tuple[str, str]]]:
     """).fetchall()
     out: Dict[str, List[Tuple[str, str]]] = {}
     for t, c, d in filas:
+        if t == TABLA_DEL_ARRANQUE:
+            continue
         out.setdefault(t, []).append((c, d))
     return out
 
@@ -348,6 +360,34 @@ def secuencias_atrasadas(cur) -> List[Dict[str, Any]]:
         if proximo <= maximo:
             malas.append({"tabla": tabla, "columna": col, "secuencia": sec,
                           "proximo_id": proximo, "max_id": maximo})
+    return malas
+
+
+def secuencias_que_reusarian(cur_origen, cur_destino) -> List[Dict[str, Any]]:
+    """Tablas cuya secuencia daría el id de una fila que el ORIGEN ya borró.
+
+    SQLite (`AUTOINCREMENT`) sigue desde `sqlite_sequence`: el mayor id que
+    EXISTIÓ, aunque esa fila ya no esté. Mirar sólo el mayor que existe hoy
+    (`secuencias_atrasadas`) deja pasar una secuencia que reusa ids borrados, y
+    hay tablas que guardan ids de otras (`medicion_original.snapshot_id` decide
+    «este original es de esta foto» por el id). Medido el 31/10/2026 en la copia
+    de producción del 16/08: 394 ids reusables en 4 tablas.
+    """
+    try:
+        recuerda = dict(cur_origen.execute("SELECT name, seq FROM sqlite_sequence").fetchall())
+    except Exception:
+        return []                                  # el origen no usa AUTOINCREMENT
+    malas = []
+    for tabla, seq in sorted(recuerda.items()):
+        sec = cur_destino.execute(
+            "SELECT pg_get_serial_sequence(quote_ident(%s), 'id')", (tabla,)).fetchone()
+        if not sec or not sec[0]:
+            continue
+        last_value, is_called = cur_destino.execute(
+            f"SELECT last_value, is_called FROM {sec[0]}").fetchone()
+        proximo = last_value + 1 if is_called else last_value
+        if proximo <= int(seq):
+            malas.append({"tabla": tabla, "proximo_id": proximo, "el_origen_iba_por": int(seq)})
     return malas
 
 
@@ -524,6 +564,12 @@ def comparar(cur_origen, cur_destino, esquema: Dict[str, List[Tuple[str, str]]],
                           "que": "la secuencia daría un id que ya existe "
                                  "(¿falta el setval?)",
                           "proximo_id": s["proximo_id"], "max_id": s["max_id"]})
+    for s in (secuencias_que_reusarian(cur_origen, cur_destino) if revisar_secuencias else []):
+        hallazgos.append({"nivel": 3, "tabla": s["tabla"],
+                          "que": "la secuencia reusaría ids que el origen ya borró "
+                                 "(el setval tiene que llegar a sqlite_sequence)",
+                          "proximo_id": s["proximo_id"],
+                          "el_origen_iba_por": s["el_origen_iba_por"]})
     # `tablas_comparadas` cuenta las que de verdad se digestearon, no las que se
     # pensaba mirar. Misma familia que el fail-open: un número que dice "60" cuando
     # se leyeron 58 es la forma en que un informe verde tapa una tabla sin revisar.
