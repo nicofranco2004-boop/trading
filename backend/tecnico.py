@@ -117,20 +117,43 @@ def ultimo_cruce(valores: list, referencia, desde_i: int = 1):
     30 del RSI). «Arriba» es valor ≥ referencia: la MISMA regla que la tarjeta de
     la ficha (precio ≥ media es «Alcista»). Devuelve el último en CUALQUIER
     sentido, a propósito: el que lo quiere en uno solo mira si el último fue
-    para ese lado (buscar sólo en un sentido saltea la vuelta: A4, 29/10). Es LA
-    cuenta de "cruzó": la usan el aviso de la ficha
-    (`cruce_rsi`) y las alertas técnicas (`senal_desde`). Con una media o un
-    valor que todavía no existe (None) ese día no cruza nada."""
+    para ese lado (buscar sólo en un sentido saltea la vuelta: A4, 29/10). La
+    usan el aviso de la ficha (`cruce_rsi`) y las alertas técnicas
+    (`senal_desde`); el día a día, `_cruce_en`."""
     for i in range(len(valores) - 1, max(desde_i, 1) - 1, -1):
-        a, b = valores[i - 1], valores[i]
-        ra, rb = _ref(referencia, i - 1), _ref(referencia, i)
-        if a is None or b is None or ra is None or rb is None:
-            continue
-        # «Arriba» con LA regla de la tendencia (`tendencia_de`, P6).
-        antes, ahora = tendencia_de(a, ra) == "alcista", tendencia_de(b, rb) == "alcista"
-        if antes != ahora:
-            return i, "arriba" if ahora else "abajo"
+        sentido = _cruce_en(valores, referencia, i)
+        if sentido:
+            return i, sentido
     return None
+
+
+def cruces(valores: list, referencia, desde_i: int = 1) -> list:
+    """TODOS los cruces de `valores` con `referencia` desde el índice `desde_i`,
+    en orden: [(índice, 'arriba'|'abajo')]. Con la regla de `ultimo_cruce` (el
+    último de esta lista es el suyo): el backtesting (backtest.py) compra y
+    vende en cada uno, y tiene que ver los mismos que avisaría una alerta."""
+    out = []
+    for i in range(max(desde_i, 1), len(valores)):
+        sentido = _cruce_en(valores, referencia, i)
+        if sentido:
+            out.append((i, sentido))
+    return out
+
+
+def _cruce_en(valores: list, referencia, i: int):
+    """¿Cruzó el día `i` (contra el `i − 1`)? 'arriba' | 'abajo' | None. Es LA
+    cuenta de "cruzó": la usan `ultimo_cruce` (la ficha, las alertas) y
+    `cruces` (el backtesting). Con una media o un valor que todavía no existe
+    (None) ese día no cruza nada."""
+    a, b = valores[i - 1], valores[i]
+    ra, rb = _ref(referencia, i - 1), _ref(referencia, i)
+    if a is None or b is None or ra is None or rb is None:
+        return None
+    # «Arriba» con LA regla de la tendencia (`tendencia_de`, P6).
+    antes, ahora = tendencia_de(a, ra) == "alcista", tendencia_de(b, rb) == "alcista"
+    if antes == ahora:
+        return None
+    return "arriba" if ahora else "abajo"
 
 
 def cruce_rsi(r: list, abajo: float = 30.0, arriba: float = 70.0):
@@ -199,22 +222,33 @@ RUEDAS_MOVIMIENTO = 20
 MIN_RUEDAS_MOVIMIENTO_ANIO = 120
 
 
+def aperturas(velas: list) -> list:
+    """La apertura de cada vela. Si falta (Yahoo a veces manda el máximo roto y
+    se guarda sólo el cierre), la completa como la dibuja la pantalla
+    (`velaCompleta` de utils/tecnico.js): el cierre anterior, y en la primera
+    vela su propio cierre. La usan `_velas_completas` y el backtesting
+    (backtest.py), que compra y vende a la apertura."""
+    out, prev = [], None
+    for v in velas:
+        c = v["close"]
+        out.append(v["open"] if v.get("open") is not None else (prev if prev is not None else c))
+        prev = c
+    return out
+
+
 def _velas_completas(velas: list):
     """Máximos, mínimos y cierres de cada vela. Si a una vela le falta algo
     (Yahoo a veces manda el máximo roto y se guarda sólo el cierre), se completa
     como la dibuja la pantalla (`velaCompleta` de utils/tecnico.js): la apertura
-    con el cierre anterior y el máximo/mínimo con la apertura y el cierre."""
+    con `aperturas` y el máximo/mínimo con la apertura y el cierre."""
     hs, ls, cs = [], [], []
-    prev = None
-    for v in velas:
+    for v, o in zip(velas, aperturas(velas)):
         c = v["close"]
-        o = v.get("open") if v.get("open") is not None else (prev if prev is not None else c)
         h = max(v["high"], o, c) if v.get("high") is not None else max(o, c)
         lo = min(v["low"], o, c) if v.get("low") is not None else min(o, c)
         hs.append(h)
         ls.append(lo)
         cs.append(c)
-        prev = c
     return hs, ls, cs
 
 

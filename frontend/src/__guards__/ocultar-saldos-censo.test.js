@@ -79,6 +79,8 @@ export const SIN_OJITO = {
   'components/home/PersonalLayer.jsx': 'sólo % (como la Cartera)',
   'pages/MobileSearch.jsx': 'buscador',
   'pages/GraficoTecnico.jsx': 'buscador de la pestaña Gráfico: sólo los tickers de tu cartera, sin montos (los del gráfico los tapa LecturaTecnica)',
+  'hooks/useActivoDelGrafico.js': 'qué activo abrir de entrada en Gráfico y Backtesting: el primero de tu cartera con gráfico, sin montos',
+  'pages/Backtesting.jsx': 'Backtesting: precios del mercado y US$ 100 de ejemplo; de tu cartera sólo usa qué activo tenés para elegir la serie (la de BYMA o el ADR), sin montos',
   // Piden una ruta «de plata» pero sólo la parte de mercado.
   'components/home/Heatmap.jsx': 'sólo /home/heatmap: el mercado',
   'components/home/MoversRail.jsx': 'sólo /home/movers: el mercado',
@@ -136,7 +138,11 @@ const TODOS = archivos(SRC).map((r) => {
 // que la pide): así la ficha, la pestaña «Gráfico» y cualquier pantalla nueva
 // que lo use entran al censo, no sólo el gancho.
 const USA_LA_FICHA = /\buseFichaDelActivo\(/
-const conPlata = TODOS.filter((a) => a.rutas.some((r) => PLATA.has(r)) || USA_LA_FICHA.test(a.src))
+// UNA definición de «trae tu plata», para entrar al censo y para salir de la
+// lista: con dos, la pestaña «Gráfico» (que sólo usa el gancho de la ficha)
+// tenía que estar en SIN_OJITO y a la vez «sobraba» (04/11).
+const traePlata = (a) => a.rutas.some((r) => PLATA.has(r)) || USA_LA_FICHA.test(a.src)
+const conPlata = TODOS.filter(traePlata)
 
 describe('«Ocultar saldos»: censo de lo que trae tu plata', () => {
   it('cada ruta que pide la pantalla está clasificada (una nueva obliga a decidir)', () => {
@@ -160,7 +166,7 @@ describe('«Ocultar saldos»: censo de lo que trae tu plata', () => {
   it('la lista se achica: lo que ya mira el ojito o ya no trae plata sale de la lista', () => {
     const sobran = Object.keys(SIN_OJITO).filter((r) => {
       const a = TODOS.find((x) => x.ruta === r)
-      return !a || !a.rutas.some((x) => PLATA.has(x)) || MIRA_EL_OJITO.test(a.src)
+      return !a || !traePlata(a) || MIRA_EL_OJITO.test(a.src)
     })
     expect(sobran).toEqual([])
   })

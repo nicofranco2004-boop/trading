@@ -15,12 +15,15 @@
 //   · Gráfico (de entrada, sin ?tab; ?activo=GGAL), la primera de la fila
 //     (Nico, 30/10): sólo el gráfico, con el activo arriba a la izquierda como
 //     en TradingView (pages/GraficoTecnico.jsx);
+//   · Backtesting (?tab=backtesting; ?activo=GGAL&regla=rsi&anios=2): qué
+//     habría pasado con US$ 100 siguiendo una regla técnica, al lado de comprar
+//     y mantener (pages/Backtesting.jsx; Nico, 04/11). Va antes de Comparar
+//     porque Comparar lleva a otra pantalla, y el tutorial termina en ella;
 //   · Comparar: lleva a LA pantalla de comparar (Análisis fundamental →
 //     Comparar → Precio, pieza 16) con tus 4 activos que más pesan ya cargados.
 //     No hay un segundo «Comparar» acá adentro (decisión de Nico);
-//   · Mercado y Backtesting: todavía no están; un «Pronto: Mercado ·
-//     Backtesting» a la derecha de la fila, no pestañas grises que no se pueden
-//     tocar (lienzo «1 · Panorama»; Backtesting, pedido de Nico el 31/10).
+//   · Mercado: todavía no está; un «Pronto: Mercado» a la derecha de la fila,
+//     no una pestaña gris que no se puede tocar (lienzo «1 · Panorama»).
 // El título lleva «Beta» si el menú lo dice (utils/navegacion.js, esBeta).
 // «Panorama» y no «Resumen»: Resumen es la primera pantalla del mismo grupo.
 // ════════════════════════════════════════════════════════════════════════════
@@ -33,12 +36,13 @@
 // cambios_desde + texto_del_cambio, la misma cuenta que el mail de los
 // sábados), y cada pestaña dibuja su parte.
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowRight, HelpCircle } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import TuLista, { useListaTecnica } from './TuLista'
 import GraficoTecnico from './GraficoTecnico'
+import Backtesting from './Backtesting'
 import { TusSenalesVista, useTusSenales, Cambio } from '../components/TusSenales'
 import { TarjetaPlata } from '../components/RadiografiaTecnica'
 import MapaCartera from '../components/MapaCartera'
@@ -66,10 +70,10 @@ export const PESTANAS = [
   { id: 'panorama', label: 'Panorama' },
   { id: 'lista', label: 'Tu lista' },
   { id: 'senales', label: 'Señales de la semana', corto: 'Señales' },
+  // Anunciado como «Pronto» el 31/10; abierto el 04/11 (Nico).
+  { id: 'backtesting', label: 'Backtesting' },
   { id: 'comparar', label: 'Comparar', afuera: true },
   { id: 'mercado', label: 'Mercado', pronto: true },
-  // Pedido de Nico (31/10): se anuncia, todavía no está.
-  { id: 'backtesting', label: 'Backtesting', pronto: true },
 ]
 
 /** La que se abre al entrar (sin ?tab): Gráfico (Nico, 30/10). Un lugar solo
@@ -98,6 +102,13 @@ export const urlDePestana = (id) => (id === DE_ENTRADA ? '/analisis-tecnico' : `
 
 function Pestanas({ activa, cuentas, onElegir }) {
   const pronto = PESTANAS.filter(p => p.pronto)
+  // En el celular la fila se desliza de costado y las últimas no entran: la
+  // abierta se trae a la vista (con ?tab=backtesting quedaba afuera, 04/11).
+  // Otra vez cuando llegan los números de Tu lista y Señales: ensanchan las de
+  // antes y la empujaban de nuevo afuera.
+  const abierta = useRef(null)
+  useEffect(() => { abierta.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }) },
+    [activa, cuentas.lista, cuentas.senales])
   return (
     <div className="flex items-center gap-3 mb-5 border-b border-line -mx-4 px-4 sm:mx-0 sm:px-0">
       <div role="tablist" aria-label="Partes del análisis técnico"
@@ -106,7 +117,7 @@ function Pestanas({ activa, cuentas, onElegir }) {
           const on = activa === p.id
           const n = cuentas[p.id]
           return (
-            <button key={p.id} type="button" role="tab" aria-selected={on}
+            <button key={p.id} ref={on ? abierta : undefined} type="button" role="tab" aria-selected={on}
               aria-controls="analisis-tecnico-panel" id={`analisis-tecnico-tab-${p.id}`}
               data-tour={`tab-${p.id}`}
               onClick={() => onElegir(p.id)}
@@ -339,6 +350,7 @@ export default function AnalisisTecnico() {
         {activa === 'panorama' && <Panorama lista={lista} filas={filas} semana={semana} hidden={hidden} onVer={ver} onPestana={elegir} />}
         {activa === 'lista' && <TuLista datos={lista} filas={filas} />}
         {activa === 'grafico' && <GraficoTecnico />}
+        {activa === 'backtesting' && <Backtesting />}
         {activa === 'senales' && (
           <Senales semana={semana} hidden={hidden} filtro={filtro} onFiltro={setFiltro} onVer={ver} />
         )}

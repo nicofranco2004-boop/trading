@@ -4,7 +4,8 @@ import { MemoryRouter } from 'react-router-dom'
 
 // Lanzamiento del análisis técnico (Nico, 31/10/2026): «Nuevo» en Análisis de
 // mercado y la fila de Análisis técnico resaltada durante 10 días; «Beta» hasta
-// que Nico diga; «Backtesting» como Pronto. Se DIBUJA el menú de la compu, el
+// que Nico diga; «Backtesting» como Pronto (abierto el 04/11: ahora es una
+// pestaña y el Pronto queda para Mercado). Se DIBUJA el menú de la compu, el
 // «Más» del celular y la fila de pestañas, el día del vencimiento y el
 // siguiente. Las fechas salen de FIN_DEL_NUEVO (no se escriben acá): la prueba
 // no vence el día que pasa la fecha.
@@ -99,8 +100,9 @@ describe('«Nuevo» 10 días, «Beta» hasta que Nico diga', () => {
     expect(mercado.items.filter(i => i.beta).map(i => i.to)).toEqual(['/analisis-tecnico'])
   })
 
-  it('Backtesting se anuncia como Pronto (al lado de Mercado) y no se puede abrir', () => {
-    expect(PESTANAS.filter(p => p.pronto).map(p => p.label)).toEqual(['Mercado', 'Backtesting'])
-    expect(pestanaDe(new URLSearchParams('tab=backtesting'))).toBe('grafico')
+  it('Backtesting ya se abre (04/11); el Pronto queda sólo para Mercado', () => {
+    expect(PESTANAS.filter(p => p.pronto).map(p => p.label)).toEqual(['Mercado'])
+    expect(pestanaDe(new URLSearchParams('tab=backtesting'))).toBe('backtesting')
+    expect(pestanaDe(new URLSearchParams('tab=mercado'))).toBe('grafico')
   })
 })
