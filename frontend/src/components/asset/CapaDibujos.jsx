@@ -6,7 +6,10 @@
 // adelante) y conteos propios de Elliott: el impulso 0-1-2-3-4-5 y la corrección
 // A-B-C, por separado, uno por toque. Y (Nico, 29/10) el canal paralelo (la
 // línea de abajo, su paralela y la del medio, con la franja sombreada) y el
-// pincel (un trazo a mano alzada). Todo en
+// pincel (un trazo a mano alzada). Y (Nico, 03/11) la posición, como la de
+// TradingView: dónde entraste, tu objetivo (la franja verde) y tu stop (la
+// roja), con cuánto ganás o perdés en cada uno y qué pasó desde que entraste.
+// Todo lo demás en
 // el color de lo tuyo (celeste, o el que elijas para cada dibujo: utils/dibujos
 // COLORES_DIBUJO), para no confundirlo con lo calculado: el Fibonacci
 // automático es magenta y las ondas automáticas, índigo.
@@ -16,7 +19,8 @@
 // como las capas automáticas; los textos van en HTML encima (adentro del SVG
 // estirado se deformarían). Guardado y formato: utils/dibujos.js.
 
-import { COLORES_DIBUJO, etiquetasDe, puntasDe } from '../../utils/dibujos'
+import { COLORES_DIBUJO, cuentasDePosicion, etiquetasDe, puntasDe } from '../../utils/dibujos'
+import { pctConSigno } from '../../utils/cuantoSeMueve'
 import { extensionFibonacci, fibonacciAMano, nivelPct, rayas, rotuloNivel, rotulosQueEntran } from '../../utils/fibonacci'
 import { PRIORIDAD } from '../../utils/rotulos'
 
@@ -84,6 +88,14 @@ export function trazosDeDibujos(dibujos, pctX, pctY, extendidos = []) {
           out.push({ id: d.id, tipo: d.tipo, x1: pctX(d.c.k), y1: pctY(n.precio), x2: 100, y2: pctY(n.precio), nivel: { ...n, extremo: n.nivel === 0 || n.nivel === 1 } })
         }
       }
+    } else if (d.tipo === 'posicion') {
+      // La entrada, a la vista; los bordes de la caja, invisibles: sirven para
+      // tocarla (adentro de la caja también se toca: posicionBajo).
+      const x1 = pctX(d.a.k), x2 = pctX(d.b.k)
+      out.push({ id: d.id, tipo: d.tipo, x1, y1: pctY(d.a.precio), x2, y2: pctY(d.a.precio), entrada: true, color: COLOR_ENTRADA })
+      for (const p of [d.objetivo, d.stop]) out.push({ id: d.id, tipo: d.tipo, x1, y1: pctY(p), x2, y2: pctY(p), oculto: true })
+      for (const x of [x1, x2]) out.push({ id: d.id, tipo: d.tipo, x1: x, y1: pctY(d.objetivo), x2: x, y2: pctY(d.stop), oculto: true })
+      continue
     } else if (d.tipo === 'elliott') {
       for (let k = 1; k < d.puntos.length; k++) {
         const a = d.puntos[k - 1], b = d.puntos[k]
@@ -96,6 +108,18 @@ export function trazosDeDibujos(dibujos, pctX, pctY, extendidos = []) {
     for (let k = desde; k < out.length; k++) out[k].color = color
   }
   return out
+}
+
+/** La posición que tiene a (x, y) adentro de su caja (en % de lo que se ve), o
+ *  null: como en TradingView, se agarra de cualquier lado, no sólo del borde. */
+export function posicionBajo(dibujos, x, y, pctX, pctY) {
+  for (const d of [...dibujos].reverse()) {
+    if (d.tipo !== 'posicion' || !d.a || !d.b) continue
+    const [x1, x2] = [pctX(d.a.k), pctX(d.b.k)].sort((p, q) => p - q)
+    const [y1, y2] = [pctY(d.objetivo), pctY(d.stop)].sort((p, q) => p - q)
+    if (x >= x1 && x <= x2 && y >= y1 && y <= y2) return d.id
+  }
+  return null
 }
 
 /**
@@ -116,7 +140,7 @@ export function preciosAlBorde(d, k) {
  * `cursor` dónde está el mouse: la línea, el Fibonacci o el conteo siguen al
  * mouse hasta el próximo toque.
  */
-export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo, cursor, pctX, pctY, precio, extendidos = [], colorNuevo = null }) {
+export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo, cursor, pctX, pctY, precio, extendidos = [], colorNuevo = null, resultados = {} }) {
   // Lo que se está dibujando, como si ya estuviera: hasta el mouse (en el
   // color que va a tener).
   const enCursoSolo = trazo && cursor?.precio != null ? enCursoHasta(trazo, cursor) : null
@@ -135,12 +159,15 @@ export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo,
             points={[[d.a.k, d.a.precio], [d.b.k, d.b.precio], [d.b.k, d.b.precio + d.ancho], [d.a.k, d.a.precio + d.ancho]]
               .map(([k, p]) => `${pctX(k)},${pctY(p)}`).join(' ')} />
         ))}
-        {trazos.map((t, k) => {
+        {todos.filter(d => d.tipo === 'posicion').map(d => (
+          <CajaPosicion key={`p-${d.id}`} d={d} pctX={pctX} pctY={pctY} fuerte={d.id === elegido || d.id === resaltado} resultado={resultados[d.id]} />
+        ))}
+        {trazos.filter(t => !t.oculto).map((t, k) => {
           const provisorio = t.id === '__en_curso__'
           const punteado = provisorio || t.correccion || (t.nivel && !t.nivel.extremo)
           return (
             <line key={`${t.id}-${k}`} data-dibujo={provisorio ? undefined : t.id} data-tipo={t.tipo}
-              x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2} stroke={t.color || COLOR_DIBUJO}
+              x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2} stroke={t.entrada ? COLOR_ENTRADA : t.color || COLOR_DIBUJO}
               strokeWidth={t.nivel || t.medio ? (t.id === elegido || t.id === resaltado ? 1.8 : 1) : grueso(t.id)} strokeLinecap="round"
               strokeDasharray={punteado ? '5 4' : undefined} opacity={t.nivel ? 0.85 : 1} vectorEffect="non-scaling-stroke" />
           )
@@ -152,6 +179,9 @@ export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo,
       {todos.filter(d => d.tipo === 'extension' && d.c).map(d => (
         <RotulosExtension key={d.id} d={d} pctX={pctX} pctY={pctY} precio={precio} />
       ))}
+      {todos.filter(d => d.tipo === 'posicion').map(d => (
+        <RotulosPosicion key={d.id} d={d} pctX={pctX} pctY={pctY} precio={precio} resultado={resultados[d.id]} />
+      ))}
       {todos.filter(d => d.tipo === 'elliott').map(d => (
         <RotulosElliott key={d.id} d={d} pctX={pctX} pctY={pctY} precio={precio} />
       ))}
@@ -159,13 +189,76 @@ export default function CapaDibujos({ dibujos, elegido, resaltado = null, trazo,
           de la línea o el Fibonacci elegidos. */}
       {[
         ...(trazo && !ELLIOTT[trazo.tipo] ? trazo.puntos.map((p, k) => ({ k: `t${k}`, x: pctX(p.k), y: pctY(p.precio) })) : []),
-        ...dibujos.filter(d => d.id === elegido && (d.tipo === 'tendencia' || d.tipo === 'fibonacci' || d.tipo === 'extension' || d.tipo === 'canal'))
+        ...dibujos.filter(d => d.id === elegido && (d.tipo === 'tendencia' || d.tipo === 'fibonacci' || d.tipo === 'extension' || d.tipo === 'canal' || d.tipo === 'posicion'))
           .flatMap(d => puntasDe(d).map(([, p], k) => ({ k: `e${k}`, x: pctX(p.k), y: pctY(p.precio), color: colorDe(d) }))),
       ].filter(p => p.x >= 0 && p.x <= 100 && p.y >= 0 && p.y <= 100).map(p => (
         <span key={p.k} className="absolute w-2.5 h-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-bg-1"
           style={{ left: `${p.x}%`, top: `${p.y}%`, background: p.color || COLOR_DIBUJO }} />
       ))}
     </div>
+  )
+}
+
+// La posición: la franja de tu objetivo en verde y la de tu stop en rojo,
+// desde la entrada hasta su borde derecho. Lo que ya pasó, más fuerte: desde
+// la entrada hasta la vela en que tocó el objetivo o el stop (o hasta la
+// última, si sigue abierta), entre la entrada y ese precio.
+const COLOR_ENTRADA = 'rgb(var(--ink-2))'
+function CajaPosicion({ d, pctX, pctY, fuerte, resultado }) {
+  const x1 = pctX(d.a.k), x2 = pctX(d.b.k), ye = pctY(d.a.precio)
+  const franja = (p, color) => {
+    const y = pctY(p)
+    return <rect x={Math.min(x1, x2)} y={Math.min(y, ye)} width={Math.abs(x2 - x1)} height={Math.abs(y - ye)} fill={color} fillOpacity={fuerte ? 0.24 : 0.16} />
+  }
+  const hecho = resultado?.k != null && resultado.precio > 0 ? resultado : null
+  const xh = hecho ? Math.min(Math.max(pctX(hecho.k), x1), x2) : null
+  const yh = hecho ? pctY(hecho.precio) : null
+  const gano = hecho && (d.lado === 'venta' ? hecho.precio < d.a.precio : hecho.precio > d.a.precio)
+  return (
+    <g data-posicion={d.id}>
+      {franja(d.objetivo, 'rgb(var(--rendi-pos))')}
+      {franja(d.stop, 'rgb(var(--rendi-neg))')}
+      {hecho && xh > x1 && (
+        <rect x={x1} y={Math.min(yh, ye)} width={xh - x1} height={Math.abs(yh - ye)}
+          fill={gano ? 'rgb(var(--rendi-pos))' : 'rgb(var(--rendi-neg))'} fillOpacity={0.22} />
+      )}
+    </g>
+  )
+}
+
+// Los carteles de la posición, como en TradingView: arriba y abajo de la caja
+// el objetivo y el stop (su precio y cuánto es, en % de la entrada); en la
+// entrada, el ratio y lo que pasó desde que entraste.
+function RotulosPosicion({ d, pctX, pctY, precio, resultado }) {
+  const { gana, pierde, ratio } = cuentasDePosicion(d)
+  const xm = (Math.max(0, Math.min(pctX(d.a.k), 100)) + Math.max(0, Math.min(pctX(d.b.k), 100))) / 2
+  if (Math.max(pctX(d.a.k), pctX(d.b.k)) < 0 || Math.min(pctX(d.a.k), pctX(d.b.k)) > 100) return null
+  const yo = pctY(d.objetivo), ys = pctY(d.stop), ye = pctY(d.a.precio)
+  const arriba = (y) => Math.max(0, Math.min(100, y))
+  const cartel = (y, clase, texto, encima) => (
+    <span className={`absolute -translate-x-1/2 ${encima ? '-translate-y-[calc(100%+3px)]' : 'translate-y-[3px]'} rounded px-1.5 py-0.5 text-[10.5px] leading-tight tabular whitespace-nowrap ${clase}`}
+      style={{ left: `${xm}%`, top: `${arriba(y)}%` }}>{texto}</span>
+  )
+  const objetivoArriba = yo < ys
+  const r = resultado
+  const estado = !r || r.estado === 'adelante' ? null
+    : r.estado === 'objetivo' ? `Llegó al objetivo: ${pctConSigno(gana)}`
+      : r.estado === 'stop' ? `Tocó el stop: ${pctConSigno(-pierde)}`
+        : r.pct != null ? `${r.termino ? 'Al cierre de la caja' : 'Abierta'}: ${pctConSigno(r.pct)}` : null
+  return (
+    <>
+      {cartel(yo, 'bg-rendi-pos text-bg-1', `Objetivo: ${precio(d.objetivo)} (${pctConSigno(gana)})`, objetivoArriba)}
+      {cartel(ys, 'bg-rendi-neg text-bg-1', `Stop: ${precio(d.stop)} (${pctConSigno(-pierde)})`, !objetivoArriba)}
+      {ye >= 0 && ye <= 100 && (
+        <span data-rotulo={PRIORIDAD.nivelFib}
+          className="absolute -translate-x-1/2 -translate-y-1/2 rounded border border-line bg-bg-1/90 px-1.5 py-0.5 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-0 text-center"
+          style={{ left: `${xm}%`, top: `${ye}%` }}>
+          {d.lado === 'venta' ? 'Venta' : 'Compra'} en {precio(d.a.precio)}
+          {ratio != null && <> · ratio {ratio.toLocaleString('es-AR', { maximumFractionDigits: 2 })}</>}
+          {estado && <><br />{estado}</>}
+        </span>
+      )}
+    </>
   )
 }
 

@@ -138,6 +138,72 @@ export const ETIQUETAS_CORRECCION = ['', 'A', 'B', 'C']   // el arranque, sin no
 export const etiquetasDe = (forma) => (forma === 'impulso' ? ETIQUETAS_IMPULSO
   : forma === 'correccion' ? ETIQUETAS_CORRECCION : ETIQUETAS_ELLIOTT)
 
+// La posición (Nico, 03/11), como la «posición larga» y «corta» de TradingView:
+// dónde entraste (`a`: el día y el precio de entrada), hasta dónde la mirás
+// (`b`: sólo su día; su precio es el de entrada), tu objetivo (take profit) y
+// tu stop (stop loss). `lado`: 'compra' (ganás si sube: el objetivo arriba de
+// la entrada y el stop abajo) o 'venta' (al revés).
+export const LADOS_POSICION = ['compra', 'venta']
+/** ¿El objetivo y el stop están del lado que corresponde a la entrada? */
+export function posicionEnOrden(x) {
+  if (!LADOS_POSICION.includes(x?.lado) || !numero(x.objetivo) || !numero(x.stop) || !(x.objetivo > 0) || !(x.stop > 0)) return false
+  const e = x.a?.precio
+  return x.lado === 'compra' ? x.objetivo > e && x.stop < e : x.objetivo < e && x.stop > e
+}
+/** Una posición nueva en la entrada `a` hasta `b`, con el objetivo a dos
+ *  veces la distancia del stop (`riesgo`, en precio): ratio 2, como sale en
+ *  TradingView. El stop nunca llega a 0. */
+export function posicionNueva(lado, a, b, riesgo) {
+  const r = Math.min(Math.abs(riesgo) || a.precio * 0.03, a.precio * 0.45)
+  const s = lado === 'venta' ? -1 : 1
+  return { tipo: 'posicion', lado, a, b: { ...b, precio: a.precio },
+    objetivo: precioRedondo(a.precio + s * 2 * r), stop: precioRedondo(a.precio - s * r) }
+}
+/**
+ * Las cuentas de una posición: cuánto se gana en el objetivo y se pierde en
+ * el stop (en % de la entrada) y cuánto se gana por cada peso arriesgado
+ * (`ratio`, el «riesgo/beneficio» de TradingView: 2 = el objetivo está al
+ * doble de distancia que el stop).
+ */
+export function cuentasDePosicion(x) {
+  const e = x.a.precio, s = x.lado === 'venta' ? -1 : 1
+  const gana = (s * (x.objetivo - e) / e) * 100
+  const pierde = (s * (e - x.stop) / e) * 100
+  return { gana, pierde, ratio: pierde > 0 ? gana / pierde : null }
+}
+/**
+ * Qué pasó con la posición con las velas que hay (`velas`: [{ h, l, c }], la
+ * serie entera; `desde` y `hasta`: los índices de la vela de entrada y de la
+ * última que mira). Se recorre vela por vela desde la de DESPUÉS de la entrada
+ * (en la de la entrada no se sabe si el máximo o el mínimo fue antes o después
+ * de entrar) hasta `hasta` o la última que hay:
+ *   · { estado: 'objetivo', i } — llegó a tu objetivo en la vela `i`;
+ *   · { estado: 'stop', i } — tocó tu stop. Si una misma vela tocó los dos, no
+ *     se sabe cuál fue primero: se cuenta el stop, lo que te habría pasado en
+ *     el peor caso (TradingView hace lo mismo);
+ *   · { estado: 'abierta', i, precio, pct, termino } — no tocó ninguno: con el
+ *     último cierre que mira, cuánto vas ganando (o perdiendo) en %;
+ *   · { estado: 'adelante' } — la entrada es hacia adelante (todavía no pasó).
+ */
+export function resultadoDePosicion(x, velas, desde, hasta) {
+  if (desde == null || desde > velas.length - 1) return { estado: 'adelante' }
+  const fin = Math.min(hasta ?? velas.length - 1, velas.length - 1)
+  const compra = x.lado !== 'venta'
+  for (let i = Math.max(0, desde + 1); i <= fin; i++) {
+    const v = velas[i]
+    const alto = v.h ?? v.c, bajo = v.l ?? v.c
+    const toco = compra ? bajo <= x.stop : alto >= x.stop
+    if (toco) return { estado: 'stop', i }
+    if (compra ? alto >= x.objetivo : bajo <= x.objetivo) return { estado: 'objetivo', i }
+  }
+  // `termino`: la caja termina antes de la última vela (el resultado es el del
+  // cierre de su borde derecho, no el de hoy).
+  const c = velas[Math.max(desde, fin)]?.c
+  const termino = fin < velas.length - 1
+  if (!(c > 0)) return { estado: 'abierta', precio: null, pct: null, termino }
+  return { estado: 'abierta', i: Math.max(desde, fin), precio: c, pct: ((compra ? c - x.a.precio : x.a.precio - c) / x.a.precio) * 100, termino }
+}
+
 /** ¿Es un dibujo que se puede dibujar? (lo guardado puede venir roto o de otra versión)
  *  horizontal: un precio · tendencia y fibonacci (retroceso): dos puntos (a, b) ·
  *  extension: tres (a, b, c) · elliott: de 2 puntos al máximo de su forma ·
@@ -153,6 +219,7 @@ export function dibujoValido(x) {
   if (x.tipo === 'pincel') return Array.isArray(x.puntos) && x.puntos.length >= 2 && x.puntos.length <= PINCEL_MAXIMO && x.puntos.every(punto)
   if (x.tipo === 'extension') return punto(x.a) && punto(x.b) && punto(x.c)
   if (x.tipo === 'nota') return punto(x.a) && typeof x.texto === 'string' && !!limpiarNota(x.texto) && largoDeNota(limpiarNota(x.texto)) <= NOTA_MAXIMA
+  if (x.tipo === 'posicion') return punto(x.a) && punto(x.b) && posicionEnOrden(x)
   if (x.tipo === 'elliott') {
     if (x.forma != null && x.forma !== 'impulso' && x.forma !== 'correccion') return false
     return Array.isArray(x.puntos) && x.puntos.length >= 2 && x.puntos.length <= etiquetasDe(x.forma).length && x.puntos.every(punto)
@@ -236,8 +303,8 @@ export function subirDibujos(asset, moneda, lista, dueno) {
   if (!dueno) return Promise.resolve(false)
   const k = `${dueno}${resto(asset, moneda)}`
   const sigue = (enFila[k] || Promise.resolve(true))
-    // `notas`: esta pantalla conoce las notas (si no, el servidor no las toca).
-    .then(() => enviarDe(ENVIOS.dibujos, dueno, { dibujos: lista.slice(0, DIBUJOS_MAXIMOS), notas: true }, rutaDesdeTecnico(asset, moneda)))
+    // `notas` y `posiciones`: esta pantalla las conoce (si no, el servidor no las toca).
+    .then(() => enviarDe(ENVIOS.dibujos, dueno, { dibujos: lista.slice(0, DIBUJOS_MAXIMOS), notas: true, posiciones: true }, rutaDesdeTecnico(asset, moneda)))
     // Si el servidor lo rechaza con un motivo (los topes y el activo válido de
     // E3), se devuelve ese texto para decirlo; si no, false.
     .then(() => true, (e) => {
@@ -296,6 +363,12 @@ export function diasHabilesEntre(desde, hasta) {
 export function puntasDe(d) {
   if (d.tipo === 'horizontal' || d.tipo === 'pincel' || d.tipo === 'nota') return []
   if (d.tipo === 'elliott') return d.puntos.map((p, n) => [n, p])
+  // La posición, como en TradingView: la entrada (a la izquierda), el borde
+  // derecho (cuánto tiempo la mirás) y el objetivo y el stop (arriba y abajo).
+  if (d.tipo === 'posicion') {
+    return [['a', d.a], ['b', { ...d.b, precio: d.a.precio }],
+      ['objetivo', { ...d.a, precio: d.objetivo }], ['stop', { ...d.a, precio: d.stop }]]
+  }
   // El canal se ensancha agarrando la paralela de su mitad (como TradingView).
   if (d.tipo === 'canal') {
     return [['a', d.a], ['b', d.b], ['ancho', { k: (d.a.k + d.b.k) / 2, precio: (d.a.precio + d.b.precio) / 2 + d.ancho }]]
@@ -314,11 +387,35 @@ export function puntasDe(d) {
 export function dibujoCorrido(d, que, correr, correrPrecio, dp = 0) {
   if (d.tipo === 'horizontal') return { ...d, precio: correrPrecio(d.precio) }
   if (d.tipo === 'canal' && que === 'ancho') return { ...d, ancho: d.ancho + dp || d.ancho }
+  if (d.tipo === 'posicion') return posicionCorrida(d, que, correr, correrPrecio)
   const mueve = (nombre) => que === 'todo' || que === nombre
   if (d.tipo === 'elliott' || d.tipo === 'pincel') return { ...d, puntos: d.puntos.map((p, n) => (mueve(n) ? correr(p) : p)) }
   const out = { ...d }
   for (const c of ['a', 'b', 'c']) if (d[c] && mueve(c)) out[c] = correr(d[c])
   return out
+}
+
+// La posición arrastrada: entera, su entrada (el día y el precio; el objetivo
+// y el stop se quedan en su precio), su borde derecho (sólo el día) o el
+// objetivo o el stop (sólo su precio). Si así quedaría al revés (el stop del
+// lado del objetivo, o el borde antes de la entrada), no se mueve: queda como
+// estaba, como una punta que llegó a su tope.
+function posicionCorrida(d, que, correr, correrPrecio) {
+  const out = { ...d }
+  if (que === 'todo' || que === 'a') out.a = correr(d.a)
+  if (que === 'todo' || que === 'b') out.b = correr(d.b)
+  if (que === 'todo' || que === 'objetivo') out.objetivo = correrPrecio(d.objetivo)
+  if (que === 'todo' || que === 'stop') out.stop = correrPrecio(d.stop)
+  out.b = { ...out.b, precio: out.a.precio }
+  return posicionEnOrden(out) && antesQue(out.a, out.b) ? out : d
+}
+// ¿El punto p va antes que q? En lo que se ve, por su lugar (`k`); guardados,
+// por día, días hacia adelante y momento (en 1H/4H).
+function antesQue(p, q) {
+  if (numero(p.k) && numero(q.k)) return p.k < q.k
+  if (p.d !== q.d) return p.d < q.d
+  if (p.mas !== q.mas) return p.mas < q.mas
+  return (p.t ?? 0) < (q.t ?? 0)
 }
 
 /** Un precio corrido `dp`, que nunca llega a 0 (arrastrar una línea muy abajo la deja en el piso). */

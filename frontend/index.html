@@ -21,8 +21,8 @@
     <meta name="google-site-verification" content="GQPK2QQ8kL47BYsl4APvicqkG-fFWJGb8TRDu6ZYI9A" />
 
     <!-- Primary SEO -->
-    <title>Rendi — Tu portfolio, con IA | Tracker multi-broker para Argentina</title>
-    <meta name="description" content="Seguí acciones, CEDEARs, bonos y cripto de todos tus brokers en un lugar: P&L real en USD, FIFO, Sharpe, alfa vs S&P 500, drawdown y Mervall-E AI." />
+    <title>Rendi — Todas tus inversiones en un solo lugar | Multi-broker para Argentina</title>
+    <meta name="description" content="Juntá Cocos, IOL, Schwab y Binance en un solo lugar: ganancia real en dólares, salud de cartera, análisis técnico y fundamental, y Mervall-E AI." />
     <meta name="keywords" content="tracker inversiones, portafolio argentina, ia inversiones, Mervall-E AI, FIFO automatico, P&L USD real, multi-broker, Cocos, IOL, Schwab, Binance, Balanz, CEDEARs, bonos AR, AL30, inflacion, dolar blue, MEP" />
     <meta name="author" content="Rendi" />
     <meta name="robots" content="index, follow, max-image-preview:large" />
@@ -67,8 +67,8 @@
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Rendi" />
-    <meta property="og:title" content="Rendi — Tu portfolio, con IA" />
-    <meta property="og:description" content="Seguí tu cartera multi-broker (Cocos, Schwab, Binance, Balanz). P&L real en USD, FIFO automático, Mervall-E AI con memoria. Para inversores argentinos." />
+    <meta property="og:title" content="Rendi — Todas tus inversiones en un solo lugar" />
+    <meta property="og:description" content="Tu cartera de todos tus brokers, tu ganancia real en dólares, la salud de tu cartera y el análisis de cada activo, en una sola app. Para inversores argentinos." />
     <meta property="og:url" content="https://rendi.finance/" />
     <meta property="og:image" content="https://rendi.finance/og-image-v3.png" />
     <meta property="og:image:width" content="1200" />
@@ -77,8 +77,8 @@
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Rendi — Tu portfolio, con IA" />
-    <meta name="twitter:description" content="Tracker multi-broker para Argentina. P&L USD real, FIFO automático, Mervall-E AI con memoria." />
+    <meta name="twitter:title" content="Rendi — Todas tus inversiones en un solo lugar" />
+    <meta name="twitter:description" content="Cartera multi-broker, ganancia real en dólares, salud de cartera, análisis técnico y fundamental, y Mervall-E AI." />
     <meta name="twitter:image" content="https://rendi.finance/og-image-v3.png" />
 
     <!-- Fonts — Geist (UI body + headings) + JetBrains Mono (labels mono).
@@ -135,49 +135,35 @@
 
     <!-- Structured data: HowTo (cómo se usa Rendi — feeds rich results en
          Google + ayuda al SEO de la sección /#como-funciona).
-         Sincronizado con HowItWorks en Landing.jsx (5 pasos). -->
+         Sincronizado con ComoFunciona en Landing.jsx (3 pasos). -->
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
       "@type": "HowTo",
-      "name": "Cómo funciona Rendi — Tracker de inversiones con IA",
-      "description": "Llevá el control de tu cartera multi-broker en 5 pasos: cargás, registrás operaciones, mirás insights, analizás con IA y le preguntás a Mervall-E AI.",
+      "name": "Cómo funciona Rendi — Todas tus inversiones en un solo lugar",
+      "description": "Juntá tu cartera de todos tus brokers en 3 pasos: importás lo de tu broker, Rendi ordena todo y mirás y decidís.",
       "totalTime": "PT5M",
       "estimatedCost": { "@type": "MonetaryAmount", "currency": "USD", "value": "0" },
       "step": [
         {
           "@type": "HowToStep",
           "position": 1,
-          "name": "Cargá tu cartera",
-          "text": "Importás el CSV de Cocos, Schwab, Binance o Balanz, o agregás posiciones manualmente. Cada activo queda agrupado por broker con su moneda original, valor live en USD y P&L. Los depósitos y retiros se registran desde la caja de cada broker.",
+          "name": "Importás lo de tu broker",
+          "text": "Bajás el archivo de movimientos de Cocos, IOL, Balanz, Schwab o Binance y lo soltás en Rendi. Si preferís, cargás a mano: acciones, CEDEARs, bonos, cripto, fondos y plazos fijos.",
           "url": "https://rendi.finance/#como-funciona"
         },
         {
           "@type": "HowToStep",
           "position": 2,
-          "name": "Registrás compras y ventas",
-          "text": "Cada operación queda con su P&L en USD y % por broker. Las ventas aplican FIFO automático (criterio fiscal AR), descontando del lote más viejo primero, y se transfieren al historial de Operaciones.",
+          "name": "Rendi ordena todo",
+          "text": "Separa compras, ventas, dividendos y depósitos, pasa cada operación a dólares y arma tu cartera por broker y por tipo de activo. Las ventas se descuentan del lote más viejo (FIFO).",
           "url": "https://rendi.finance/#como-funciona"
         },
         {
           "@type": "HowToStep",
           "position": 3,
-          "name": "Mirás tus Métricas",
-          "text": "Allocation por geografía, win rate, drawdown máximo, concentración top 3 y perfil de inversor declarado vs cartera real. En Plus y Pro: Sharpe, Sortino, alfa y beta contra el S&P 500, Information Ratio, Calmar, CAGR y volatilidad.",
-          "url": "https://rendi.finance/#como-funciona"
-        },
-        {
-          "@type": "HowToStep",
-          "position": 4,
-          "name": "Analizás con IA cada pantalla",
-          "text": "En Dashboard, Métricas, Operaciones y Reportes, un botón Analizar genera un informe estructurado: qué funcionó, qué cambió, dónde hay riesgo, qué decisión podrías tomar. Usa el snapshot real de tu cartera.",
-          "url": "https://rendi.finance/#como-funciona"
-        },
-        {
-          "@type": "HowToStep",
-          "position": 5,
-          "name": "Le preguntás a Mervall-E AI",
-          "text": "En todos los planes accedés a Mervall-E AI con 12 preguntas guiadas (9 consultas por semana en Plus). En Pro desbloqueás chat libre (40 consultas por semana) con memoria persistente: los hechos que le aclarás los respeta entre sesiones.",
+          "name": "Mirás y decidís",
+          "text": "Desde ahí se actualiza solo cada día. Mirás la salud de tu cartera, analizás cada activo, le preguntás a Mervall-E AI y comparás antes de tu próxima compra. Mervall-E AI responde 12 preguntas guiadas (9 consultas por semana en Plus); en Pro, chat libre (40 consultas por semana).",
           "url": "https://rendi.finance/#como-funciona"
         }
       ]

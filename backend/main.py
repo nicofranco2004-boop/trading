@@ -13189,7 +13189,10 @@ class _Dibujo(BaseModel):
     # «canal»: el canal paralelo (a → b y la paralela `ancho` más arriba o más
     # abajo); «pincel»: un trazo a mano alzada (Nico, 29/10).
     # «nota»: un texto tuyo en un día y un precio (`a`), con su banderita.
-    tipo: Literal["tendencia", "horizontal", "fibonacci", "extension", "elliott", "canal", "pincel", "nota"]
+    # «posicion» (Nico, 03/11), como la de TradingView: la entrada (`a`), hasta
+    # dónde se mira (`b`, su día), el `objetivo` y el `stop`, y su `lado`:
+    # 'compra' (el objetivo arriba de la entrada, el stop abajo) o 'venta'.
+    tipo: Literal["tendencia", "horizontal", "fibonacci", "extension", "elliott", "canal", "pincel", "nota", "posicion"]
     precio: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
     a: Optional[_PuntoDibujo] = None
     b: Optional[_PuntoDibujo] = None
@@ -13202,6 +13205,10 @@ class _Dibujo(BaseModel):
     color: Optional[Literal["cian", "ambar", "rosa", "verde", "rojo", "violeta", "tinta"]] = None
     # Sólo la nota: lo que escribiste. El tope se mide ya limpio (_texto_limpio).
     texto: Optional[str] = Field(None, max_length=_NOTA_MAXIMA)
+    # Sólo la posición (frontend/src/utils/dibujos.posicionEnOrden).
+    lado: Optional[Literal["compra", "venta"]] = None
+    objetivo: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    stop: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
 
     @field_validator("texto", mode="before")
     @classmethod
@@ -13233,6 +13240,16 @@ class _Dibujo(BaseModel):
             raise ValueError("un canal necesita su línea (dos puntos) y su ancho")
         if self.tipo == "pincel" and (not self.puntos or len(self.puntos) < 2):
             raise ValueError("un trazo del pincel necesita al menos dos puntos")
+        if self.tipo == "posicion":
+            if self.a is None or self.b is None or self.lado is None or self.objetivo is None or self.stop is None:
+                raise ValueError("una posición necesita su entrada, su borde, su lado, su objetivo y su stop")
+            e = self.a.precio
+            en_orden = (self.objetivo > e > self.stop) if self.lado == "compra" else (self.objetivo < e < self.stop)
+            if not en_orden:
+                raise ValueError("en una posición de compra el objetivo va arriba de la entrada y el stop abajo; en una de venta, al revés")
+        else:
+            # El lado, el objetivo y el stop son de la posición.
+            self.lado = self.objetivo = self.stop = None
         return self
 
 
@@ -13243,10 +13260,13 @@ class DibujosIn(BaseModel):
     # al guardar una línea las borraría de tu cuenta: sin esta marca, las notas
     # guardadas se quedan como estaban.
     notas: bool = False
+    # Lo mismo con las posiciones (desde el 03/11): una pantalla de antes las
+    # descarta al leer y, al guardar una línea, las borraría.
+    posiciones: bool = False
 
 
-def _notas_guardadas(conn, dueno: int, sym: str, moneda: str) -> list:
-    """Las notas que ya están guardadas en este activo y moneda (validadas)."""
+def _guardados_de_tipo(conn, dueno: int, sym: str, moneda: str, tipo: str) -> list:
+    """Los dibujos de este tipo que ya están guardados en este activo y moneda (validados)."""
     fila = conn.execute(
         "SELECT datos FROM dibujos_grafico WHERE user_id = ? AND asset = ? AND moneda = ?",
         (dueno, sym, moneda)).fetchone()
@@ -13256,7 +13276,7 @@ def _notas_guardadas(conn, dueno: int, sym: str, moneda: str) -> list:
         return []
     out = []
     for d in crudo if isinstance(crudo, list) else []:
-        if isinstance(d, dict) and d.get("tipo") == "nota":
+        if isinstance(d, dict) and d.get("tipo") == tipo:
             try:
                 out.append(_Dibujo.model_validate(d).model_dump(exclude_none=True))
             except Exception:
@@ -13322,9 +13342,12 @@ def put_tecnico_dibujos(asset: str, data: DibujosIn, request: Request, moneda: s
         # Una pantalla que no conoce las notas, o mirando a un cliente: las
         # notas guardadas quedan como estaban (las que lleguen, no).
         if not data.notas or dueno != uid:
-            lista = [d for d in lista if d["tipo"] != "nota"] + _notas_guardadas(conn, dueno, sym, moneda)
-            if len(lista) > _DIBUJOS_MAXIMOS:
-                raise HTTPException(409, f"Llegaste a {_DIBUJOS_MAXIMOS} dibujos y notas en este activo: borrá alguno.")
+            lista = [d for d in lista if d["tipo"] != "nota"] + _guardados_de_tipo(conn, dueno, sym, moneda, "nota")
+        # Una pantalla que no conoce las posiciones: las guardadas quedan como estaban.
+        if not data.posiciones:
+            lista = [d for d in lista if d["tipo"] != "posicion"] + _guardados_de_tipo(conn, dueno, sym, moneda, "posicion")
+        if len(lista) > _DIBUJOS_MAXIMOS:
+            raise HTTPException(409, f"Llegaste a {_DIBUJOS_MAXIMOS} dibujos y notas en este activo: borrá alguno.")
         if lista:
             _exigir_activo_valido(conn, sym, dueno, uid)
             # Contar y guardar en un solo turno (sin él, varios pedidos juntos
