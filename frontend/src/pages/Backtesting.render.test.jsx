@@ -77,16 +77,15 @@ function servidor() {
     throw new Error(`POST inesperado ${url}`)
   })
 }
-// La respuesta del servidor para esas reglas (GGAL). Una combinación que el
-// archivo no tiene se arma con las de cada regla sola.
+// La respuesta del servidor para esas reglas (GGAL), tal cual: cada combinación
+// que piden estas pruebas está en el archivo (backend/tests/test_backtest.py,
+// PRUEBAS_DE_LA_PANTALLA). Una que no está es un error de la prueba, no se arma
+// pegando reglas probadas sobre días distintos (auditoría 04/11, B5).
 const delServidor = (url) => {
   const q = new URLSearchParams(url.split('?')[1])
-  const reglas = q.get('reglas').split(',')
-  const juntas = GGAL[reglas.join(',')]
-  return {
-    ...(juntas || GGAL[reglas[0]]), reglas, anios: Number(q.get('anios')), curva: [],
-    resultados: juntas ? juntas.resultados : reglas.map(r => GGAL[r].resultados[0]),
-  }
+  const r = GGAL[q.get('reglas')]
+  if (!r) throw new Error(`el archivo no tiene la prueba ${q.get('reglas')}: sumala a PRUEBAS_DE_LA_PANTALLA`)
+  return { ...r, anios: Number(q.get('anios')), curva: [] }
 }
 const pedidosDeLaPrueba = () => pedidos.filter(p => p.includes('/backtest?'))
 
@@ -172,9 +171,9 @@ describe('Análisis técnico → Backtesting', () => {
     const t = montado.t()
     for (const parte of ['Probá una regla con el pasado', 'Siguiendo la regla', 'Comprar y mantener', '+22,5%',
       '−35,9%', '−59%', '−63%', '3 · 2 ganaron', '223 de 501', 'Le fue mejor que comprar y mantener',
-      'La compra del 05/05/26 (+32,6%) explica casi todo', 'Cada operación',
-      '10/04/25 → 10/11/25', '24/08/26 → seguía comprada', 'US$ 41,12 → US$ 35,14 (último cierre)',
-      'Esta compra explica casi todo el resultado.', 'Cómo habrían ido US$ 100', 'US$ 123', 'US$ 64',
+      'GGAL bajó 35% en los últimos 2 años', 'Sin la compra del 05/05/26 (+32,6%), la regla no habría ganado',
+      'Cada operación', '10/04/25 → 10/11/25', '24/08/26 → seguía comprada', 'US$ 41,12 → US$ 35,14 (último cierre)',
+      'Sin esta compra, la regla no habría ganado.', 'Cómo habrían ido US$ 100', 'US$ 123', 'US$ 64',
       'no es una recomendación']) {
       expect(t, parte).toContain(parte)
     }
@@ -208,15 +207,22 @@ describe('Análisis técnico → Backtesting', () => {
     expect(montado.t()).toContain('la media de 200 días necesita 200 días de precios antes: la prueba arranca el 17/04/25.')
   })
 
+  it('mientras otra persona baja los precios, lo dice en vez de quedar en gris', async () => {
+    respuesta = () => ({ asset: 'NVDA', disponible: false, motivo: 'bajando' })
+    montado = await abrir('/analisis-tecnico?tab=backtesting&activo=NVDA')
+    expect(montado.t()).toContain('Estamos trayendo los precios de NVDA: un momento…')
+  })
+
   it('sin precios lo dice, y si el pedido falla ofrece reintentar', async () => {
     respuesta = () => ({ asset: 'XYZ', disponible: false, motivo: 'sin_datos' })
     montado = await abrir('/analisis-tecnico?tab=backtesting&activo=NVDA')
-    expect(montado.t()).toContain('NVDA no encontramos sus precios.')
+    expect(montado.t()).toContain('No encontramos los precios de NVDA.')
     await montado.desmontar()
 
     respuesta = () => { throw new Error('Error 503') }
     montado = await abrir('/analisis-tecnico?tab=backtesting&activo=NVDA')
-    expect(montado.t()).toContain('No se pudo armar la prueba.')
+    expect(montado.t()).toContain('No pudimos armar la prueba. Probá de nuevo en unos segundos.')
+    expect(montado.t()).toContain('Detalle: Error 503')
     respuesta = delServidor
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Reintentar'))
     await esperar()
@@ -254,7 +260,7 @@ describe('Análisis técnico → Backtesting → comparar reglas', () => {
     expect('disabled' in boton.atributos).toBe(true)
     expect(montado.t()).toContain('Ya sumaste 3, el máximo.')
     expect(montado.t()).toContain('Las tres le ganaron a comprar y mantener')
-    expect(montado.t()).toContain('Con 10, 3 y 7 compras en los últimos 2 años')
+    expect(montado.t()).toContain('Con tan pocas compras (10, 3 y 7) en los últimos 2 años')
   })
 
   it('sacar una regla vuelve a pedir sin ella', async () => {

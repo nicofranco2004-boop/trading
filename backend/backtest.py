@@ -40,8 +40,10 @@ va a pasar: acá van los números y las palabras las pone la pantalla
 """
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 
+import estructura
 import tecnico
 from pesado import pesado
 
@@ -60,9 +62,6 @@ ANIOS = (1, 2, 3, 4)
 COMISION = 0.005
 # Con menos ruedas que esto no se prueba: no da para ver nada.
 MIN_RUEDAS = 60
-# Un papel con precios desde unos días después del principio del período pedido
-# no es «historia corta»: el período arranca un fin de semana o un feriado.
-DIAS_TOLERANCIA = 7
 # ADX + Squeeze (versión A del estudio): «viene de un valle» es que el Squeeze
 # estuvo negativo algún día de los últimos 5 (hoy incluido); «el ADX venía
 # bajando», que bajó algún día de los 5 anteriores a hoy.
@@ -207,22 +206,49 @@ def ventana(velas: list, anios: int, desde_regla: int) -> dict:
     """De qué vela a qué vela se prueba: los últimos `anios` años contados por
     CALENDARIO desde la última vela (como el resto de tecnico.py), y nunca antes
     de que la regla exista (`desde_regla`). {'desde_i', 'hasta_i', 'pedido_i',
-    'pedido_desde', 'recortado'}: `recortado` si arranca después de lo pedido (el
-    papel tiene menos historia o la regla necesita días antes)."""
+    'pedido_desde', 'recortado'}: `recortado` si arranca después de lo pedido
+    porque la regla necesita días antes que el papel no tiene (toda regla necesita
+    al menos uno: un papel con menos historia que el período también cae acá)."""
     hasta_i = len(velas) - 1
     corte = date.fromisoformat(velas[-1]["date"]) - timedelta(days=anios * tecnico.DIAS_ANIO)
     pedido_i = next((i for i, v in enumerate(velas) if v["date"] > corte.isoformat()), hasta_i)
     desde_i = max(pedido_i, desde_regla)
-    historia_corta = (pedido_i == 0 and
-                      date.fromisoformat(velas[0]["date"]) - corte > timedelta(days=DIAS_TOLERANCIA))
     return {"desde_i": desde_i, "hasta_i": hasta_i, "pedido_i": pedido_i,
             "pedido_desde": (corte + timedelta(days=1)).isoformat(),
-            "recortado": desde_i > pedido_i or historia_corta}
+            "recortado": desde_i > pedido_i}
 
 
 def _resumen(curva: list) -> dict:
-    """Resultado y peor caída en %, y en qué terminaron US$ 100."""
-    return {"resultado": (curva[-1] - 1) * 100, "peor_caida": peor_caida(curva) * 100, "final": curva[-1] * 100}
+    """Resultado y peor caída en %, y en qué terminaron US$ 100. La peor caída se
+    cuenta desde los US$ 100 del principio (el 1 de antes del primer día): el
+    estudio la contaba desde el primer cierre, y a comprar y mantener le
+    escondía lo que perdía el primer día (auditoría 04/11, H3)."""
+    return {"resultado": (curva[-1] - 1) * 100, "peor_caida": peor_caida([1.0] + list(curva)) * 100,
+            "final": curva[-1] * 100}
+
+
+def _numero(x):
+    """El número si es un precio que sirve (finito y mayor a 0); si no, None."""
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) and x > 0 else None
+
+
+def velas_que_sirven(velas: list) -> list:
+    """Las velas con un cierre que sirve; a la apertura, el máximo o el mínimo que
+    no sirve (0, vacío, infinito) se lo saca, y las cuentas lo completan como
+    siempre (`tecnico.aperturas`, `tecnico._velas_completas`). Las que se guardan
+    ya vienen así (`velas_diarias._velas_de`): esto es para que una vela rota
+    nunca tire la ruta abajo con una división por cero (auditoría 04/11)."""
+    out = []
+    for v in velas:
+        c = _numero(v.get("close"))
+        if c is None:
+            continue
+        out.append({**v, "close": c, **{k: _numero(v.get(k)) for k in ("open", "high", "low")}})
+    return out
 
 
 def probar(velas: list, reglas: list, anios: int, comision: float = COMISION) -> dict:
@@ -232,8 +258,13 @@ def probar(velas: list, reglas: list, anios: int, comision: float = COMISION) ->
     eso corrió el principio), así se comparan entre ellas y con comprar y
     mantener en el mismo período. Una regla da lo mismo sola que comparada si el
     período no se corre. {'disponible': False, 'motivo': 'poca_historia', ...} si
-    no da para probar."""
+    no da para probar. `variacion_precio`: cuánto se movió el precio en el
+    período (de la apertura del primer día al último cierre), sin comisiones: lo
+    que la pantalla dice que «subió» o «bajó» el papel."""
     reglas = list(reglas)
+    velas = velas_que_sirven(velas)
+    if not velas:
+        return {"reglas": reglas, "anios": anios, "disponible": False, "motivo": "poca_historia"}
     s = {r: senales(velas, r) for r in reglas}
     limita = max(reglas, key=lambda r: s[r]["desde"])
     v = ventana(velas, anios, s[limita]["desde"])
@@ -252,6 +283,7 @@ def probar(velas: list, reglas: list, anios: int, comision: float = COMISION) ->
         "hasta": fechas[-1],
         "ruedas": len(fechas),
         "comision": comision * 100,
+        "variacion_precio": (velas[v["hasta_i"]]["close"] / tecnico.aperturas(velas)[v["desde_i"]] - 1) * 100,
         "resultados": [_resultado(r, sims[r]) for r in reglas],
         "mantener": _resumen(m),
         "curva": [{"d": d, "mantener": round(m[k] * 100, 2),
@@ -269,9 +301,12 @@ def _resultado(regla: str, sim: dict) -> dict:
         "ganadoras": sum(1 for o in ops if o["resultado"] > 0),
         "ruedas_comprada": sim["ruedas_comprada"],
         "sin_la_mejor": sin_la_mejor(ops),
+        # Los precios con LA regla de la pantalla (`estructura.precio_redondo`):
+        # con 4 decimales fijos, una cripto de fracciones de centavo (SHIB, PEPE)
+        # llegaba «US$ 0 → US$ 0» (auditoría 04/11; la misma de la ficha, 22/10).
         "operaciones": [{**o, "resultado": o["resultado"] * 100,
-                         "precio_compra": round(o["precio_compra"], 4),
-                         "precio_venta": round(o["precio_venta"], 4)} for o in ops],
+                         "precio_compra": estructura.precio_redondo(o["precio_compra"]),
+                         "precio_venta": estructura.precio_redondo(o["precio_venta"])} for o in ops],
     }
 
 

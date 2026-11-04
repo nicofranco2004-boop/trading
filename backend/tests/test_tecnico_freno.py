@@ -220,6 +220,9 @@ class FrenoTecnicoTest(unittest.TestCase):
             self.assertEqual(self.client.get("/api/tecnico/AAPL/eventos?moneda=usd",
                                              headers=self.ana).status_code, 429)
             self.assertEqual(self.client.get("/api/tecnico/AAPL/peso", headers=self.ana).status_code, 429)
+            # El backtesting comparte el cupo de la ficha (auditoría 04/11).
+            self.assertEqual(self.client.get("/api/tecnico/AAPL/backtest?reglas=rsi&anios=1",
+                                             headers=self.ana).status_code, 429)
             self.assertEqual(self.client.get("/api/tecnico/AAPL?moneda=usd", headers=self.beto).status_code, 200)
             reloj[0] += 61
             self.assertEqual(self.client.get("/api/tecnico/AAPL?moneda=usd", headers=self.ana).status_code, 200)

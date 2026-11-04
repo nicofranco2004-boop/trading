@@ -15,7 +15,7 @@
 //   · Gráfico (de entrada, sin ?tab; ?activo=GGAL), la primera de la fila
 //     (Nico, 30/10): sólo el gráfico, con el activo arriba a la izquierda como
 //     en TradingView (pages/GraficoTecnico.jsx);
-//   · Backtesting (?tab=backtesting; ?activo=GGAL&regla=rsi&anios=2): qué
+//   · Backtesting (?tab=backtesting; ?activo=GGAL&reglas=rsi,adx_squeeze&anios=2): qué
 //     habría pasado con US$ 100 siguiendo una regla técnica, al lado de comprar
 //     y mantener (pages/Backtesting.jsx; Nico, 04/11). Va antes de Comparar
 //     porque Comparar lleva a otra pantalla, y el tutorial termina en ella;
@@ -105,13 +105,23 @@ function Pestanas({ activa, cuentas, onElegir }) {
   // En el celular la fila se desliza de costado y las últimas no entran: la
   // abierta se trae a la vista (con ?tab=backtesting quedaba afuera, 04/11).
   // Otra vez cuando llegan los números de Tu lista y Señales: ensanchan las de
-  // antes y la empujaban de nuevo afuera.
+  // antes y la empujaban de nuevo afuera. Se corre SÓLO la fila, de costado, y
+  // sólo si la abierta no se ve: `scrollIntoView` movía además la página entera
+  // y, con la persona más abajo, la llevaba de vuelta arriba (auditoría 04/11, M6).
+  const fila = useRef(null)
   const abierta = useRef(null)
-  useEffect(() => { abierta.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }) },
-    [activa, cuentas.lista, cuentas.senales])
+  useEffect(() => {
+    const f = fila.current
+    const b = abierta.current
+    if (!f?.getBoundingClientRect || !b?.getBoundingClientRect) return
+    const cf = f.getBoundingClientRect()
+    const cb = b.getBoundingClientRect()
+    if (cb.left < cf.left) f.scrollLeft -= cf.left - cb.left
+    else if (cb.right > cf.right) f.scrollLeft += cb.right - cf.right
+  }, [activa, cuentas.lista, cuentas.senales])
   return (
     <div className="flex items-center gap-3 mb-5 border-b border-line -mx-4 px-4 sm:mx-0 sm:px-0">
-      <div role="tablist" aria-label="Partes del análisis técnico"
+      <div ref={fila} role="tablist" aria-label="Partes del análisis técnico"
         className="flex items-center gap-0.5 sm:gap-1 min-w-0 overflow-x-auto overscroll-x-contain scrollbar-none">
         {PESTANAS.filter(p => !p.pronto).map(p => {
           const on = activa === p.id

@@ -64,6 +64,17 @@ const REINTENTO = 120
 const ANCHO_CARTEL = 360
 // Lo que se supone que mide de alto hasta poder medirlo (ver `altoCartel`).
 const ALTO_CARTEL = 210
+// Cuántas veces por paso se vuelve a traer a la vista lo iluminado si algo lo
+// sacó de la pantalla (además de la primera).
+const MAX_REACOMODOS = 3
+
+/** ¿Lo iluminado quedó entero afuera de la pantalla? Un elemento sin medidas
+ *  (todavía no dibujado) no cuenta como afuera. */
+function afuera(el) {
+  const r = el.getBoundingClientRect?.()
+  if (!r || (!r.width && !r.height)) return false
+  return r.right <= 0 || r.bottom <= 0 || r.left >= window.innerWidth || r.top >= window.innerHeight
+}
 
 /** El primer elemento con la marca que SE VE; 'oculto' si los hay pero
  *  ninguno se ve (display:none, como el «Pronto» en el celular); null si no hay.
@@ -202,6 +213,7 @@ export default function Tour({ id, pasos, entrada, etiqueta, cuando, despuesDe =
     let pedido = 0
     let ultima = null
     let acomodado = false
+    let reacomodos = 0
 
     const iguales = (a, b) => a && b
       && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5
@@ -212,8 +224,12 @@ export default function Tour({ id, pasos, entrada, etiqueta, cuando, despuesDe =
       const hallado = buscar(paso.marca)
       if (hallado && hallado !== 'oculto') {
         // La primera vez, que se vea: en el celular las pestañas se deslizan de
-        // costado y «Comparar» puede estar afuera de la pantalla.
-        if (!acomodado) {
+        // costado y «Comparar» puede estar afuera de la pantalla. Y otra vez si
+        // después algo lo sacó de la pantalla: la fila de pestañas se acomoda
+        // sola a la pestaña abierta (AnalisisTecnico.jsx) y dejaba «Comparar»
+        // afuera (auditoría 04/11, M7). Con tope, para no pelear con nadie.
+        if (!acomodado || (afuera(hallado.el) && reacomodos < MAX_REACOMODOS)) {
+          if (acomodado) reacomodos += 1
           acomodado = true
           hallado.el.scrollIntoView?.({ block: 'nearest', inline: 'center' })
         }

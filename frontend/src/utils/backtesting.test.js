@@ -4,32 +4,45 @@
 //     (backend/backtest.py): uno que no existe allá daría un 400;
 //   · lo que se dice sale de la respuesta REAL del servidor para GGAL
 //     (backend/tests/fixtures/backtest_ggal.json, que test_backtest.py compara
-//     contra backtest.probar): no de un caso armado a mano;
-//   · dice lo que pasó, en pasado, al lado de comprar y mantener; con pocas
-//     compras, que no alcanzan para separar la regla de la suerte; si una sola
-//     compra explica el resultado, cuál; comparando, cuántas le ganaron a
-//     mantener, nunca cuál es «la mejor»;
+//     contra backtest.probar): no de un caso armado a mano. Los casos que GGAL
+//     no tiene se arman cambiando lo justo de una respuesta real, con la forma
+//     que el servidor manda;
+//   · dice lo que pasó, en pasado y sobre ESTA prueba, al lado de comprar y
+//     mantener: lo que se movió el precio (sin comisiones), cuántos días estuvo
+//     afuera sin redondeos que se contradigan, la compra sin la que no habría
+//     ganado, y que con pocas compras no se separa la regla de la suerte;
+//     comparando, cuántas le ganaron (una que no compró no le ganó a nadie),
+//     nunca cuál es «la mejor»;
+//   · los avisos de «no se pudo probar» son oraciones enteras con el activo
+//     adentro, también en el modo demo;
 //   · nunca promete.
+//   Los casos de la auditoría del 04/11 (A2, A3, M1–M4, M8, B1, B2, B5, B9)
+//   llevan su nombre.
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
 import {
-  DE_ENTRADA, MAX_REGLAS, MOTIVOS, PERIODOS, POCAS_COMPRAS, REGLAS, aniosDe, comoSeSimula, compraClave, ganaron,
-  lectura, otraRegla, periodoEnPalabras, porcentaje, precio, reglaDe, reglasDe, textoDelRecorte, tramosComprada,
+  DE_ENTRADA, MAX_REGLAS, PERIODOS, POCAS_COMPRAS, REGLAS, aniosDe, colorDe, comoSeSimula, compraClave,
+  contraMantener, ganaron, lectura, motivoEnPalabras, otraRegla, parteAfuera, periodoEnPalabras, porcentaje,
+  precio, reglaDe, reglasDe, textoDelRecorte, tramosComprada,
 } from './backtesting'
+import { handleDemoRequest } from './demo'
 
 const AQUI = dirname(fileURLToPath(import.meta.url))
 const GGAL = JSON.parse(readFileSync(resolve(AQUI, '../../../backend/tests/fixtures/backtest_ggal.json'), 'utf8'))
 const PY = readFileSync(resolve(AQUI, '../../../backend/backtest.py'), 'utf8')
 const RSI = GGAL.rsi
 
-// Un resultado armado sobre uno real, para los casos que GGAL no tiene.
+// Un resultado real con lo justo cambiado, para los casos que GGAL no tiene.
 const con = (cambios = {}, regla = {}, mantener = {}) => ({
   ...RSI, ...cambios,
   resultados: [{ ...RSI.resultados[0], ...regla }],
   mantener: { ...RSI.mantener, ...mantener },
 })
+// Una regla que no compró nunca, con la forma que manda el servidor.
+const sinCompras = (x) => ({ ...x, compras: 0, ganadoras: 0, ruedas_comprada: 0, resultado: 0, peor_caida: 0,
+  final: 100, sin_la_mejor: null, operaciones: [] })
 
 describe('lo que se ofrece es lo del servidor', () => {
   it('las mismas reglas, en el mismo orden, y el mismo máximo para comparar', () => {
@@ -77,44 +90,57 @@ describe('lo que se ofrece es lo del servidor', () => {
 })
 
 describe('una regla: lo que dicen los números', () => {
-  it('RSI en GGAL: le fue mejor porque el papel cayó, una compra explica casi todo y fueron muy pocas', () => {
+  it('RSI en GGAL: le fue mejor, sin una compra no habría ganado y fueron muy pocas', () => {
     expect(lectura(RSI)).toEqual({
       titulo: 'Le fue mejor que comprar y mantener',
       frases: [
-        'GGAL bajó 36% en los últimos 2 años y la regla estuvo afuera el 55% de los días: cuando el precio cae, estar afuera ayuda.',
-        'La compra del 05/05/26 (+32,6%) explica casi todo: sin ella, la regla habría dado −7,6%.',
+        'GGAL bajó 35% en los últimos 2 años y la regla estuvo afuera el 55% de los días.',
+        'Sin la compra del 05/05/26 (+32,6%), la regla no habría ganado: habría dado −7,6%.',
         'En el camino llegó a caer 59% desde su mejor momento.',
         'Fueron 3 compras en los últimos 2 años: con tan pocas, no alcanza para saber si el resultado es de la regla o de la suerte.',
       ],
     })
   })
 
+  it('«bajó X %» es lo que se movió el precio, sin comisiones (H2), y nunca «subió 0 %» (B1)', () => {
+    // El precio bajó 35,3 %; comprar y mantener, con sus dos comisiones, −35,9 %.
+    expect(RSI.variacion_precio).toBeGreaterThan(RSI.mantener.resultado)
+    expect(lectura(RSI).frases[0]).toMatch(/^GGAL bajó 35% /)
+    expect(lectura(con({ variacion_precio: 0.26 })).frases[0]).toMatch(/^GGAL terminó casi igual en los últimos 2 años y /)
+    expect(lectura(con({ variacion_precio: -0.4 })).frases[0]).toMatch(/^GGAL terminó casi igual /)
+    expect(lectura(con({ variacion_precio: 0.6 })).frases[0]).toMatch(/^GGAL subió 1% /)
+  })
+
   it('media de 200 en GGAL: perdió menos, desde el día en que la media existe', () => {
     const l = lectura(GGAL.media200)
     expect(l.titulo).toBe('Perdió menos que comprar y mantener')
-    expect(l.frases[0]).toBe('GGAL bajó 43% desde el 17/04/25 y la regla estuvo afuera el 66% de los días: '
-      + 'cuando el precio cae, estar afuera ayuda.')
-    expect(l.frases.join(' ')).not.toMatch(/explica casi todo/)
+    expect(l.frases[0]).toBe('GGAL bajó 42% desde el 17/04/25 y la regla estuvo afuera el 66% de los días.')
+    expect(l.frases.join(' ')).not.toMatch(/no habría ganado/)
     expect(GGAL.media200.resultados[0].compras).toBeGreaterThanOrEqual(POCAS_COMPRAS)
     expect(l.frases.join(' ')).not.toMatch(/con tan pocas/)
   })
 
-  it('el ADX + Squeeze en GGAL: la mejor compra explica casi todo', () => {
+  it('el ADX + Squeeze en GGAL: sin su mejor compra no habría ganado', () => {
     expect(compraClave(GGAL.adx_squeeze.resultados[0])).toBe('2026-03-03')
     expect(lectura(GGAL.adx_squeeze).frases).toContain(
-      'La compra del 03/03/26 (+13,3%) explica casi todo: sin ella, la regla habría dado −1,9%.')
+      'Sin la compra del 03/03/26 (+13,3%), la regla no habría ganado: habría dado −1,9%.')
   })
 
-  it('comprar y mantener le ganó: no se dice que estar afuera ayudó', () => {
-    const l = lectura(con({ asset: 'KO', anios: 1 }, { resultado: 4, compras: 12, sin_la_mejor: null },
-      { resultado: 20 }))
+  it('comprar y mantener le ganó', () => {
+    const l = lectura(con({ asset: 'KO', anios: 1, variacion_precio: 20 }, { resultado: 4, compras: 12, sin_la_mejor: null },
+      { resultado: 19.6 }))
     expect(l.titulo).toBe('Comprar y mantener le ganó')
-    expect(l.frases[0]).toBe('KO subió 20% en el último año y la regla estuvo afuera el 55% de los días.')
-    expect(l.frases.join(' ')).not.toMatch(/ayuda|en el camino|con tan pocas/)
+    expect(l.frases).toEqual(['KO subió 20% en el último año y la regla estuvo afuera el 55% de los días.'])
+  })
+
+  it('A3: ninguna regla general en presente («estar afuera ayuda»)', () => {
+    for (const r of Object.values(GGAL)) {
+      expect(lectura(r).frases.join(' '), r.reglas.join(',')).not.toMatch(/ayuda|cuando el precio/i)
+    }
   })
 
   it('una regla que no compró nunca', () => {
-    expect(lectura(con({ anios: 1 }, { compras: 0, ganadoras: 0, ruedas_comprada: 0, resultado: 0 }, { resultado: 20 })))
+    expect(lectura(con({ anios: 1 }, sinCompras(RSI.resultados[0]), { resultado: 20 })))
       .toEqual({
         titulo: 'No dio ninguna señal',
         frases: ['En el último año, la regla no marcó ninguna compra: la plata habría quedado quieta. '
@@ -127,18 +153,30 @@ describe('una regla: lo que dicen los números', () => {
     expect(l.frases.at(-1)).toMatch(/^Fue una sola compra en los últimos 2 años: /)
   })
 
-  it('casi lo mismo, y los demás títulos', () => {
-    expect(lectura(con({}, { resultado: 10 }, { resultado: 10.02 })).titulo).toBe('Dio casi lo mismo que comprar y mantener')
+  it('M2: «le ganó» se decide con los números tal como se ven, en un solo lugar', () => {
+    expect(contraMantener({ compras: 3, resultado: -1.41 }, { resultado: -1.38 })).toBe('empate')
+    expect(lectura(con({}, { resultado: -1.41 }, { resultado: -1.38 })).titulo).toBe('Dio casi lo mismo que comprar y mantener')
     expect(lectura(con({}, { resultado: 30, sin_la_mejor: null }, { resultado: 10 })).titulo).toBe('Le ganó a comprar y mantener')
+    expect(contraMantener({ compras: 0, resultado: 0 }, { resultado: -30 })).toBe('sin_compras')
     expect(lectura({ disponible: false, motivo: 'sin_datos' })).toBeNull()
   })
 
-  it('la compra que explica casi todo: sólo si la regla ganó y sin ella da menos de la mitad', () => {
-    const s = (sin_ella, resultado = 10) => ({ resultado, sin_la_mejor: { compra: '2026-01-05', resultado: 8, sin_ella } })
-    expect(compraClave(s(4.9))).toBe('2026-01-05')
-    expect(compraClave(s(5.1))).toBeNull()
+  it('A2: «sin esta compra no habría ganado» sólo si es verdad', () => {
+    const s = (sin_ella, resultado = 10, mejor = 8) => ({ resultado, sin_la_mejor: { compra: '2026-01-05', resultado: mejor, sin_ella } })
+    expect(compraClave(s(-0.1))).toBe('2026-01-05')
+    expect(compraClave(s(0))).toBe('2026-01-05')
+    expect(compraClave(s(0.5))).toBeNull()
+    expect(compraClave(s(75.8, 175.1, 56.5)), 'una de +56 % cuando las demás dieron +76 %').toBeNull()
     expect(compraClave(s(-3, -2))).toBeNull()
     expect(compraClave({ resultado: 10, sin_la_mejor: null })).toBeNull()
+  })
+
+  it('B1: cuántos días estuvo afuera, sin «el 100 %» con una compra ni «el 0 %» si estuvo afuera alguno', () => {
+    const r = { ruedas: 501 }
+    expect(parteAfuera(r, { ruedas_comprada: 223 })).toBe('el 55%')
+    expect(parteAfuera(r, { ruedas_comprada: 1 })).toBe('más del 99%')
+    expect(parteAfuera(r, { ruedas_comprada: 500 })).toBe('menos del 1%')
+    expect(parteAfuera(r, { ruedas_comprada: 501 })).toBe('el 0%')
   })
 })
 
@@ -147,11 +185,11 @@ describe('varias reglas: lo que dicen los números, sin elegir «la mejor»', ()
     expect(lectura(GGAL['rsi,adx_squeeze'])).toEqual({
       titulo: 'Las dos le ganaron a comprar y mantener',
       frases: [
-        'GGAL bajó 36% en los últimos 2 años y las reglas estuvieron afuera entre el 55% y el 78% de los días: cuando el precio cae, estar afuera ayuda.',
-        'RSI 30 / 70: la compra del 05/05/26 (+32,6%) explica casi todo; sin ella habría dado −7,6%.',
-        'ADX + Squeeze: la compra del 03/03/26 (+13,3%) explica casi todo; sin ella habría dado −1,9%.',
-        'Con 3 y 7 compras en los últimos 2 años, no alcanza para saber si una regla es mejor que otra o si tuvo suerte.',
-        'Probá las mismas reglas en otro activo: la que sale mejor en uno muchas veces no es la que sale mejor en otro.',
+        'GGAL bajó 35% en los últimos 2 años y las reglas estuvieron afuera entre el 55% y el 78% de los días.',
+        'RSI 30 / 70: sin la compra del 05/05/26 (+32,6%), la regla no habría ganado: habría dado −7,6%.',
+        'ADX + Squeeze: sin la compra del 03/03/26 (+13,3%), la regla no habría ganado: habría dado −1,9%.',
+        'Con tan pocas compras (3 y 7) en los últimos 2 años, no alcanza para saber si una regla es mejor que otra o si tuvo suerte.',
+        'Probá las mismas reglas en otro activo: cuando lo medimos en 14 papeles, la regla que dio más cambió de un papel a otro.',
       ],
     })
   })
@@ -159,7 +197,7 @@ describe('varias reglas: lo que dicen los números, sin elegir «la mejor»', ()
   it('las tres en GGAL: cuenta cuántas le ganaron y las compras de cada una, en su orden', () => {
     const l = lectura(GGAL['media50,rsi,adx_squeeze'])
     expect(l.titulo).toBe('Las tres le ganaron a comprar y mantener')
-    expect(l.frases).toContain('Con 10, 3 y 7 compras en los últimos 2 años, no alcanza para saber si una regla '
+    expect(l.frases).toContain('Con tan pocas compras (10, 3 y 7) en los últimos 2 años, no alcanza para saber si una regla '
       + 'es mejor que otra o si tuvo suerte.')
   })
 
@@ -174,6 +212,23 @@ describe('varias reglas: lo que dicen los números, sin elegir «la mejor»', ()
     }
   })
 
+  it('M1: una regla que no compró no le ganó a nadie, y se dice aparte', () => {
+    const dos = GGAL['rsi,adx_squeeze']
+    const r = { ...dos, resultados: [dos.resultados[0], sinCompras(dos.resultados[1])] }
+    const l = lectura(r)
+    expect(l.titulo).toBe('Una de las dos le ganó a comprar y mantener')
+    expect(l.frases[0]).toBe('GGAL bajó 35% en los últimos 2 años y RSI 30 / 70 estuvo afuera el 55% de los días.')
+    expect(l.frases).toContain('ADX + Squeeze no marcó ninguna compra en los últimos 2 años.')
+    const ninguna = { ...dos, resultados: dos.resultados.map(sinCompras) }
+    expect(lectura(ninguna).titulo).toBe('Ninguna marcó compras en el período')
+  })
+
+  it('M8: la advertencia final es un dato en pasado, no una regla', () => {
+    const fin = lectura(GGAL['rsi,adx_squeeze']).frases.at(-1)
+    expect(fin).toMatch(/cuando lo medimos en 14 papeles/)
+    expect(fin).not.toMatch(/muchas veces|suele|la mejor/i)
+  })
+
   it('las franjas de cuándo estuvo comprada caen donde están sus compras', () => {
     const r = { ...GGAL.rsi, curva: Array.from({ length: 5 }, (_, k) => ({ d: `2026-01-0${k + 1}` })) }
     const x = { operaciones: [{ compra: '2026-01-02', venta: '2026-01-04' }, { compra: '2026-01-05', venta: '2026-01-05' }] }
@@ -182,17 +237,47 @@ describe('varias reglas: lo que dicen los números, sin elegir «la mejor»', ()
 })
 
 describe('cuando la prueba arranca después de lo pedido', () => {
-  it('la media de 200 necesita sus 200 días antes', () => {
-    expect(textoDelRecorte(GGAL.media200)).toBe('Hay precios de GGAL desde el 01/07/24 y la media de 200 días necesita '
-      + '200 días de precios antes: la prueba arranca el 17/04/25.')
+  it('la media de 200 necesita sus 200 días antes, sola o comparada', () => {
+    const t = 'Hay precios de GGAL desde el 01/07/24 y la media de 200 días necesita 200 días de precios antes: '
+      + 'la prueba arranca el 17/04/25.'
+    expect(textoDelRecorte(GGAL.media200)).toBe(t)
+    expect(textoDelRecorte(GGAL['rsi,media200'])).toBe(t)
     expect(textoDelRecorte(RSI)).toBeNull()
   })
 
-  it('un papel que cotiza hace poco', () => {
-    const joven = con({ recortado: true, recorte_por: null, primera_vela: '2025-03-28', desde: '2025-03-28',
+  it('B5: un papel que cotiza hace poco, con la forma que manda el servidor (recorte_por siempre lleno)', () => {
+    const joven = con({ recortado: true, recorte_por: 'rsi', primera_vela: '2025-03-28', desde: '2025-04-21',
       pedido_desde: '2024-11-05', asset: 'CRWV' })
-    expect(textoDelRecorte(joven)).toBe('Hay precios de CRWV desde el 28/03/25: la prueba arranca ese día.')
-    expect(lectura(joven).frases[0]).toMatch(/ desde el 28\/03\/25 y la regla/)
+    expect(textoDelRecorte(joven)).toBe('Hay precios de CRWV desde el 28/03/25 y el RSI necesita 15 días de precios '
+      + 'antes: la prueba arranca el 21/04/25.')
+    expect(lectura(joven).frases[0]).toMatch(/ desde el 21\/04\/25 y la regla/)
+  })
+})
+
+describe('M3/M4: por qué no se pudo probar, en oraciones enteras', () => {
+  it('cada motivo con el activo adentro', () => {
+    expect(motivoEnPalabras({ motivo: 'sin_datos' }, 'NVDA')).toBe('No encontramos los precios de NVDA.')
+    expect(motivoEnPalabras({ motivo: 'bajando' }, 'NVDA')).toBe('Estamos trayendo los precios de NVDA: probá de nuevo en unos segundos.')
+    expect(motivoEnPalabras({ motivo: 'tope' }, 'NVDA')).toBe('Pediste muchos activos nuevos en poco tiempo: probá de nuevo en un rato.')
+    expect(motivoEnPalabras({ motivo: 'sin_serie' }, 'AL30')).toBe('Para probar una regla hacen falta los precios de cada día '
+      + '(apertura, máximo, mínimo y cierre), y de AL30 no los tenemos.')
+    expect(motivoEnPalabras({ motivo: 'algo_nuevo' }, 'NVDA')).toBe('No encontramos los precios de NVDA.')
+  })
+
+  it('poca historia: dice qué regla necesita más días y, comparando, que se puede sacar', () => {
+    expect(motivoEnPalabras({ motivo: 'poca_historia', recorte_por: 'media200', reglas: ['rsi', 'media200'] }, 'JOVEN'))
+      .toBe('JOVEN tiene muy pocos días de precios para probar «Precio y media de 200 días»: la media de 200 días '
+        + 'necesita 200 días de precios antes. Sacá esa regla para probar las otras.')
+    expect(motivoEnPalabras({ motivo: 'poca_historia', recorte_por: 'rsi', reglas: ['rsi'] }, 'JOVEN'))
+      .toBe('JOVEN tiene muy pocos días de precios para probar «RSI 30 / 70»: el RSI necesita 15 días de precios antes.')
+  })
+
+  it('A1: en el modo demo lo dice, y no que NVDA es un bono o un fondo', () => {
+    const r = handleDemoRequest('GET', '/tecnico/NVDA/backtest?reglas=rsi&anios=2')
+    expect(r).toEqual({ asset: 'NVDA', disponible: false, motivo: 'demo' })
+    expect(motivoEnPalabras(r, 'NVDA')).toBe('En el modo demo no hay precios de todos los días para probar reglas.')
+    // La ficha del demo sigue como estaba: «sin serie» la manda al gráfico de 30 días.
+    expect(handleDemoRequest('GET', '/tecnico/NVDA?moneda=usd')).toMatchObject({ disponible: false, motivo: 'sin_serie' })
   })
 })
 
@@ -207,8 +292,15 @@ describe('los números', () => {
     expect([ganaron(0), ganaron(1), ganaron(4)]).toEqual(['ninguna ganó', '1 ganó', '4 ganaron'])
   })
 
-  it('la aclaración dice la comisión que usó el servidor', () => {
+  it('B9: una operación que ganó poco no se ve en «0,0 %» ni en gris', () => {
+    expect(porcentaje(0.03)).toBe('+0,03%')
+    expect(colorDe(0.03)).toBe(colorDe(5))
+    expect(colorDe(-0.03)).toBe(colorDe(-5))
+  })
+
+  it('la aclaración dice la comisión que usó el servidor (B2: sin decimales de máquina)', () => {
     expect(comoSeSimula(RSI)).toContain('con 0,5% de comisión al comprar y al vender')
+    expect(comoSeSimula({ ...RSI, comision: 0.007 * 100 })).toContain('con 0,7% de comisión')
     expect(comoSeSimula(RSI)).toContain('Cuando la regla está afuera')
     expect(comoSeSimula(GGAL['rsi,adx_squeeze'])).toContain('Cuando una regla está afuera')
     expect(comoSeSimula(RSI)).toContain('No incluye dividendos')
@@ -216,14 +308,16 @@ describe('los números', () => {
 })
 
 describe('nunca promete', () => {
-  it('ni «suele», ni «se viene», ni «comprá», ni «la mejor regla»', () => {
-    // Medido el 04/11 (14 papeles, 2 años): la regla que sale «mejor» cambia de
-    // papel en papel. Lo que habría pasado no dice nada de lo que va a pasar.
+  it('ni «suele», ni «ayuda», ni «muchas veces», ni «comprá», ni «la mejor regla»', () => {
+    // Medido el 04/11 (14 papeles, 2 años): la regla que dio más cambió de papel
+    // en papel. Lo que habría pasado no dice nada de lo que va a pasar.
+    const motivos = ['sin_serie', 'sin_datos', 'tope', 'bajando', 'demo', 'poca_historia']
+      .map(motivo => motivoEnPalabras({ motivo, recorte_por: 'media200', reglas: ['rsi', 'media200'] }, 'GGAL'))
     const textos = [
       ...Object.values(GGAL).flatMap(r => { const l = lectura(r); return [l.titulo, ...l.frases, textoDelRecorte(r) || ''] }),
       ...REGLAS.flatMap(r => [r.nombre, r.corto, r.explica, r.necesita]),
-      ...Object.values(MOTIVOS), comoSeSimula(RSI), comoSeSimula(GGAL['rsi,adx_squeeze']),
+      ...motivos, comoSeSimula(RSI), comoSeSimula(GGAL['rsi,adx_squeeze']),
     ].join(' ')
-    expect(textos).not.toMatch(/suele|se viene|comprá|vendé|va a subir|va a bajar|rebota|frena|antesala|arranque|esperad|potencial|oportunidad|anticipa\b|conviene|deber[íi]as|mejor regla|la mejor\b|te recomend/i)
+    expect(textos).not.toMatch(/suele|se viene|comprá|vendé|va a subir|va a bajar|rebota|frena|antesala|arranque|esperad|potencial|oportunidad|anticipa\b|conviene|deber[íi]as|mejor regla|la mejor\b|te recomend|ayuda|muchas veces/i)
   })
 })

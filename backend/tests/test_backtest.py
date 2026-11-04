@@ -42,7 +42,8 @@ FIXTURE = os.path.join(FIXTURES, "backtest_ggal.csv")
 # Lo que leen las pruebas de la pantalla (frontend/src/utils/backtesting.test.js
 # y pages/Backtesting.render.test.jsx): una prueba por regla y dos comparaciones.
 PRUEBAS_DE_LA_PANTALLA = [["media200"], ["media50"], ["rsi"], ["adx_squeeze"],
-                          ["rsi", "adx_squeeze"], ["media50", "rsi", "adx_squeeze"]]
+                          ["rsi", "adx_squeeze"], ["media50", "rsi", "adx_squeeze"],
+                          ["rsi", "media200"], ["media50", "adx_squeeze"]]
 
 
 def _ggal():
@@ -197,6 +198,62 @@ class Comparar(unittest.TestCase):
         self.assertEqual(set(r["curva"][0]), {"d", "mantener", "rsi", "media200"})
         self.assertEqual(r["curva"][0]["mantener"], round(backtest.mantener(
             self.velas, [v["date"] for v in self.velas].index("2025-04-17"), len(self.velas) - 1)[0] * 100, 2))
+
+
+class LoQueVeLaPantalla(unittest.TestCase):
+    """Lo que encontró la auditoría del 04/11 (H1–H3 y la vela rota)."""
+
+    def test_el_precio_que_se_movio_es_el_del_papel_sin_comisiones(self):
+        """«GGAL bajó 35 %» es lo que se movió el precio (de la apertura del
+        primer día al último cierre), no el resultado de comprar y mantener, que
+        además paga las dos comisiones."""
+        velas = _ggal()
+        _, r = _una(velas, "rsi", 2)
+        i0 = [v["date"] for v in velas].index(r["desde"])
+        esperado = (velas[-1]["close"] / velas[i0]["open"] - 1) * 100
+        self.assertAlmostEqual(r["variacion_precio"], esperado, places=9)
+        self.assertAlmostEqual(r["variacion_precio"], -35.26, places=2)
+        c = backtest.COMISION
+        self.assertAlmostEqual(1 + r["mantener"]["resultado"] / 100,
+                               (1 + r["variacion_precio"] / 100) * (1 - c) ** 2, places=9)
+
+    def test_la_peor_caida_se_cuenta_desde_los_100_del_principio(self):
+        """Cada día abre en 100 y cierra abajo, y el cierre sube día a día: el
+        primer día del período comprar y mantener ya perdió algo, aunque después
+        no baje más. Contada desde el primer cierre, esa caída no aparecía."""
+        velas = _velas([90.0 + k * 0.1 for k in range(120)], [100.0] * 120)
+        _, r = _una(velas, "rsi", 1, comision=0.0)
+        i0 = [v["date"] for v in velas].index(r["desde"])
+        primer_dia = (velas[i0]["close"] / velas[i0]["open"] - 1) * 100
+        self.assertLess(primer_dia, -5)
+        self.assertAlmostEqual(r["mantener"]["peor_caida"], primer_dia, places=6)
+
+    def test_una_cripto_de_fracciones_de_centavo_no_llega_en_cero(self):
+        velas = _velas([0.00001 * (1.3 + math.sin(k / 9)) for k in range(400)])
+        x, _ = _una(velas, "rsi", 1)
+        self.assertGreater(x["compras"], 0, "la serie de prueba tiene que dar compras")
+        for o in x["operaciones"]:
+            self.assertGreater(o["precio_compra"], 0, o)
+            self.assertGreater(o["precio_venta"], 0, o)
+            from estructura import precio_redondo
+            self.assertEqual(o["precio_compra"], precio_redondo(o["precio_compra"]))
+
+    def test_una_vela_rota_no_tira_la_cuenta(self):
+        """Un cierre en 0, vacío o infinito se saltea; una apertura así se
+        completa como siempre (el cierre anterior). Nunca una división por cero."""
+        buenas = _velas([100.0 + 20 * math.sin(k / 12) for k in range(400)])
+        rotas = [dict(v) for v in buenas]
+        rotas[0]["close"] = 0.0
+        rotas[1]["close"] = None
+        rotas[2]["close"] = float("nan")
+        rotas[3]["close"] = float("inf")
+        for k in (10, 150, 300):
+            rotas[k]["open"] = 0.0
+        r = backtest.probar(rotas, ["rsi", "media50"], 1)
+        self.assertTrue(r["disponible"], r)
+        self.assertEqual(r["primera_vela"], buenas[4]["date"])
+        self.assertTrue(all(math.isfinite(p[k]) for p in r["curva"] for k in ("rsi", "media50", "mantener")))
+        self.assertFalse(backtest.probar([{"date": "2026-01-05", "close": 0}], ["rsi"], 1)["disponible"])
 
 
 class LasSenalesSonLasDeLasAlertas(unittest.TestCase):
