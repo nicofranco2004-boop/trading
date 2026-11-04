@@ -440,7 +440,7 @@ de antes (paso 2b, SQLite) contra la misma pedida ahora (Postgres), **para las m
   las cuatro líneas — cajas USDT, cajas vacías, tokens de reseteo, tokens de asesor —
   dieron 0, igual que un segundo arranque en SQLite);
 - **sin la cabecera, cualquier pantalla tiene que dar 503**: 🧑 entrá a `https://rendi.finance`
-  desde el navegador común; tiene que decir «Estamos mudando la base de datos. Volvemos en
+  desde el navegador común; tiene que decir «La app está en mantenimiento. Probá de nuevo en
   unos minutos» (si se abre la app normal, **pará: el mantenimiento no está cerrado**);
 - lo de `MIGRACION_POSTGRES.md` §3 (cuenta de prueba, un import de punta a punta,
   conexiones abiertas).
@@ -457,7 +457,7 @@ de antes (paso 2b, SQLite) contra la misma pedida ahora (Postgres), **para las m
 - [ ] 5: «✅ los cuatro niveles en CERO hallazgos».
 - [ ] 8b: «✅ SIN DIFERENCIAS: seguí.» en **todas** las cuentas guardadas.
 - [ ] 8c: usuarios y operaciones de Postgres = los del respaldo.
-- [ ] 8: sin la cabecera, `rendi.finance` muestra «Estamos mudando la base de datos».
+- [ ] 8: sin la cabecera, `rendi.finance` muestra «La app está en mantenimiento. Probá de nuevo en un rato».
 - [ ] 8: los logs del arranque dicen 0 en las cuatro reparaciones.
 - [ ] La hora de Argentina está **antes de las 11:30** (paso 0).
 - [ ] 🧑 **Nico dice «sí, abrí»** en el chat. Sin ese sí explícito, no se aprieta.

@@ -156,7 +156,7 @@ class ElMiddlewareDeVerdadTest(_ConEntorno):
         cuerpo = r.json()
         self.assertIn("detail", cuerpo, "sin `detail` el frontend no lo muestra")
         self.assertTrue(cuerpo["detail"]["mantenimiento"])
-        self.assertIn("mudando", cuerpo["detail"]["error"])
+        self.assertEqual(cuerpo["detail"]["error"], "La app está en mantenimiento. Probá de nuevo en un rato.")
 
     def test_cerrado_pero_health_contesta_200(self):
         os.environ["RENDI_MANTENIMIENTO"] = "1"
