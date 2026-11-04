@@ -12,9 +12,12 @@ Lo que importa:
   · La simulación: se opera a la apertura del día siguiente, con comisión de los
     dos lados; la que sigue comprada al final se cuenta al último cierre.
   · El período se corta por calendario y nunca antes de que la regla exista.
+  · Comparar (hasta 3): todas sobre los MISMOS días, y cada una da lo mismo
+    comparada que sola si el período no se corre.
   · La ruta pasa por el freno y prueba sobre la MISMA serie que la ficha.
 """
 import csv
+import json
 import math
 import os
 import random
@@ -34,7 +37,12 @@ import tecnico
 from fechas import hoy_art_date
 from tests.test_tecnico import YahooFalso, _ruedas
 
-FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "backtest_ggal.csv")
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+FIXTURE = os.path.join(FIXTURES, "backtest_ggal.csv")
+# Lo que leen las pruebas de la pantalla (frontend/src/utils/backtesting.test.js
+# y pages/Backtesting.render.test.jsx): una prueba por regla y dos comparaciones.
+PRUEBAS_DE_LA_PANTALLA = [["media200"], ["media50"], ["rsi"], ["adx_squeeze"],
+                          ["rsi", "adx_squeeze"], ["media50", "rsi", "adx_squeeze"]]
 
 
 def _ggal():
@@ -59,6 +67,12 @@ def _sin_senales(n):
     return {"compra": [False] * n, "venta": [False] * n, "desde": 0}
 
 
+def _una(velas, regla, anios):
+    """La prueba de UNA regla: el resultado de esa regla y la respuesta entera."""
+    r = backtest.probar(velas, [regla], anios)
+    return r["resultados"][0], r
+
+
 class ContraElEstudio(unittest.TestCase):
     """Diferencial contra el canónico: el estudio del 28/10 con los mismos precios."""
 
@@ -66,42 +80,43 @@ class ContraElEstudio(unittest.TestCase):
     def setUpClass(cls):
         cls.velas = _ggal()
 
-    def _ops(self, r):
+    def _ops(self, x):
         return [(o["compra"], round(o["precio_compra"], 2), o["venta"], round(o["precio_venta"], 2),
-                 round(o["resultado"], 2), o["abierta"]) for o in r["operaciones"]]
+                 round(o["resultado"], 2), o["abierta"]) for o in x["operaciones"]]
 
     def test_el_periodo_es_el_del_estudio(self):
-        r = backtest.probar(self.velas, "rsi", 2)
+        _, r = _una(self.velas, "rsi", 2)
         self.assertEqual((r["desde"], r["hasta"], r["ruedas"]), ("2024-10-28", "2026-10-27", 501))
         self.assertFalse(r["recortado"])
+        self.assertIsNone(r["recorte_por"])
 
     def test_rsi_da_lo_mismo_que_el_estudio(self):
-        r = backtest.probar(self.velas, "rsi", 2)
-        self.assertAlmostEqual(r["con_regla"]["resultado"], 25.50, places=2)
-        self.assertAlmostEqual(r["con_regla"]["peor_caida"], -58.92, places=2)
-        self.assertEqual(r["con_regla"]["ruedas_comprada"], 223)
-        self.assertEqual(self._ops(r), [
+        x, _ = _una(self.velas, "rsi", 2)
+        self.assertAlmostEqual(x["resultado"], 25.50, places=2)
+        self.assertAlmostEqual(x["peor_caida"], -58.92, places=2)
+        self.assertEqual((x["compras"], x["ganadoras"], x["ruedas_comprada"]), (3, 2, 223))
+        self.assertEqual(self._ops(x), [
             ("2025-04-10", 51.70, "2025-11-10", 57.05, 10.13, False),
             ("2026-05-05", 40.66, "2026-06-17", 54.44, 33.62, False),
             ("2026-08-24", 41.12, "2026-10-27", 35.14, -14.71, True),
         ])
 
     def test_adx_squeeze_da_lo_mismo_que_el_estudio(self):
-        r = backtest.probar(self.velas, "adx_squeeze", 2)
-        c = r["con_regla"]
-        self.assertAlmostEqual(c["resultado"], 17.61, places=2)
-        self.assertAlmostEqual(c["peor_caida"], -14.40, places=2)
-        self.assertEqual((c["operaciones"], c["ganadoras"], c["ruedas_comprada"]), (7, 4, 110))
-        self.assertEqual([o[0] for o in self._ops(r)], [
+        x, _ = _una(self.velas, "adx_squeeze", 2)
+        self.assertAlmostEqual(x["resultado"], 17.61, places=2)
+        self.assertAlmostEqual(x["peor_caida"], -14.40, places=2)
+        self.assertEqual((x["compras"], x["ganadoras"], x["ruedas_comprada"]), (7, 4, 110))
+        self.assertEqual([o[0] for o in self._ops(x)], [
             "2025-03-05", "2025-04-23", "2025-07-22", "2026-03-03", "2026-05-12", "2026-08-31", "2026-10-08"])
 
     def test_mantener_da_lo_mismo_que_el_estudio(self):
-        m = backtest.probar(self.velas, "rsi", 2)["mantener"]
-        self.assertAlmostEqual(m["resultado"], -35.39, places=2)
-        self.assertAlmostEqual(m["peor_caida"], -63.38, places=2)
+        _, r = _una(self.velas, "rsi", 2)
+        self.assertAlmostEqual(r["mantener"]["resultado"], -35.39, places=2)
+        self.assertAlmostEqual(r["mantener"]["peor_caida"], -63.38, places=2)
 
     def test_la_compra_que_explica_todo(self):
-        s = backtest.probar(self.velas, "rsi", 2)["con_regla"]["sin_la_mejor"]
+        x, _ = _una(self.velas, "rsi", 2)
+        s = x["sin_la_mejor"]
         self.assertEqual(s["compra"], "2026-05-05")
         self.assertAlmostEqual(s["resultado"], 33.62, places=2)
         self.assertAlmostEqual(s["sin_ella"], -6.08, places=2)
@@ -110,26 +125,58 @@ class ContraElEstudio(unittest.TestCase):
         """frontend/src/utils/backtesting.test.js y pages/Backtesting.render.test.jsx
         ponen en palabras fixtures/backtest_ggal.json: tiene que ser la respuesta
         de ESTE código (sin la curva, que es larga), no una armada a mano."""
-        import json
-        with open(os.path.join(os.path.dirname(FIXTURE), "backtest_ggal.json")) as f:
+        with open(os.path.join(FIXTURES, "backtest_ggal.json")) as f:
             guardado = json.load(f)
-        self.assertEqual(sorted(guardado), sorted(backtest.REGLAS))
-        for regla in backtest.REGLAS:
-            with self.subTest(regla=regla):
-                r = backtest.probar(self.velas, regla, 2)
+        self.assertEqual(sorted(guardado), sorted(",".join(p) for p in PRUEBAS_DE_LA_PANTALLA))
+        for reglas in PRUEBAS_DE_LA_PANTALLA:
+            with self.subTest(reglas=reglas):
+                r = backtest.probar(self.velas, reglas, 2)
                 r.pop("curva")
-                self.assertEqual(json.loads(json.dumps({"asset": "GGAL", **r})), guardado[regla])
+                self.assertEqual(json.loads(json.dumps({"asset": "GGAL", **r})), guardado[",".join(reglas)])
 
     def test_el_resultado_es_el_de_sus_operaciones(self):
         """Todo adentro o todo afuera: el resultado es el producto de las
         operaciones, y los días comprada, la suma de los de cada una."""
         for regla in backtest.REGLAS:
             with self.subTest(regla=regla):
-                r = backtest.probar(self.velas, regla, 2)
-                prod = math.prod(1 + o["resultado"] / 100 for o in r["operaciones"])
-                self.assertAlmostEqual(r["con_regla"]["resultado"], (prod - 1) * 100, places=6)
-                self.assertEqual(r["con_regla"]["ruedas_comprada"], sum(o["ruedas"] for o in r["operaciones"]))
-                self.assertAlmostEqual(r["curva"][-1]["regla"], r["con_regla"]["final"], places=1)
+                x, r = _una(self.velas, regla, 2)
+                prod = math.prod(1 + o["resultado"] / 100 for o in x["operaciones"])
+                self.assertAlmostEqual(x["resultado"], (prod - 1) * 100, places=6)
+                self.assertEqual(x["ruedas_comprada"], sum(o["ruedas"] for o in x["operaciones"]))
+                self.assertEqual(x["compras"], len(x["operaciones"]))
+                self.assertAlmostEqual(r["curva"][-1][regla], x["final"], places=1)
+
+
+class Comparar(unittest.TestCase):
+    """Hasta 3 reglas a la vez: los mismos días para todas."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.velas = _ggal()
+
+    def test_cada_una_da_lo_mismo_comparada_que_sola(self):
+        """El RSI y el ADX + Squeeze existen antes del período pedido: comparadas,
+        cada una da EXACTAMENTE lo que da sola, y comprar y mantener también."""
+        juntas = backtest.probar(self.velas, ["rsi", "adx_squeeze"], 2)
+        self.assertEqual(juntas["reglas"], ["rsi", "adx_squeeze"])
+        self.assertEqual([x["regla"] for x in juntas["resultados"]], ["rsi", "adx_squeeze"], "en el orden pedido")
+        for regla, x in zip(juntas["reglas"], juntas["resultados"]):
+            sola, r = _una(self.velas, regla, 2)
+            self.assertEqual(x, sola, regla)
+            self.assertEqual(juntas["mantener"], r["mantener"])
+            self.assertEqual([p[regla] for p in juntas["curva"]], [p[regla] for p in r["curva"]])
+
+    def test_todas_arrancan_el_mismo_dia_el_de_la_que_mas_historia_necesita(self):
+        """La media de 200 recién existe el 17/04/25 en estos precios: el RSI,
+        comparado con ella, también arranca ese día (y comprar y mantener)."""
+        r = backtest.probar(self.velas, ["rsi", "media200"], 2)
+        self.assertEqual((r["desde"], r["recortado"], r["recorte_por"]), ("2025-04-17", True, "media200"))
+        sola, _ = _una(self.velas, "rsi", 2)
+        self.assertNotEqual(r["resultados"][0]["resultado"], sola["resultado"], "otro período, otro resultado")
+        self.assertTrue(all(o["compra"] >= "2025-04-17" for x in r["resultados"] for o in x["operaciones"]))
+        self.assertEqual(set(r["curva"][0]), {"d", "mantener", "rsi", "media200"})
+        self.assertEqual(r["curva"][0]["mantener"], round(backtest.mantener(
+            self.velas, [v["date"] for v in self.velas].index("2025-04-17"), len(self.velas) - 1)[0] * 100, 2))
 
 
 class LasSenalesSonLasDeLasAlertas(unittest.TestCase):
@@ -139,9 +186,9 @@ class LasSenalesSonLasDeLasAlertas(unittest.TestCase):
         cierres = [v["close"] for v in velas]
         m = tecnico.media(cierres, 50)
         fechas = [v["date"] for v in velas]
-        r = backtest.probar(velas, "media50", 2)
-        self.assertGreater(len(r["operaciones"]), 0)
-        for o in r["operaciones"]:
+        x, _ = _una(velas, "media50", 2)
+        self.assertGreater(len(x["operaciones"]), 0)
+        for o in x["operaciones"]:
             k = fechas.index(o["compra"]) - 1   # la señal es el cierre del día anterior
             self.assertEqual(tecnico.ultimo_cruce(cierres[:k + 1], m[:k + 1], k), (k, "arriba"), o)
             if not o["abierta"]:
@@ -227,7 +274,7 @@ class Periodo(unittest.TestCase):
 
     def test_por_calendario_desde_la_ultima_vela(self):
         velas = _velas([100.0 + (k % 7) for k in range(900)])
-        r = backtest.probar(velas, "rsi", 2)
+        _, r = _una(velas, "rsi", 2)
         corte = (date.fromisoformat(velas[-1]["date"]) - timedelta(days=730)).isoformat()
         self.assertEqual(r["desde"], next(v["date"] for v in velas if v["date"] > corte))
         self.assertEqual(r["hasta"], velas[-1]["date"])
@@ -237,21 +284,23 @@ class Periodo(unittest.TestCase):
         """300 ruedas y 4 años pedidos: la media de 200 recién existe en la
         rueda 200; antes, la regla no puede decir nada."""
         velas = _velas([100.0 + math.sin(k / 9) * 10 for k in range(300)])
-        r = backtest.probar(velas, "media200", 4)
+        _, r = _una(velas, "media200", 4)
         self.assertTrue(r["recortado"])
+        self.assertEqual(r["recorte_por"], "media200")
         self.assertEqual(r["desde"], velas[200]["date"])
         self.assertEqual(r["primera_vela"], velas[0]["date"])
         self.assertEqual(r["ruedas"], 100)
 
     def test_poca_historia_no_se_prueba(self):
         velas = _velas([100.0 + k for k in range(100)])
-        r = backtest.probar(velas, "media50", 1)
+        r = backtest.probar(velas, ["media50"], 1)
         self.assertFalse(r["disponible"])
         self.assertEqual(r["motivo"], "poca_historia")
 
     def test_las_reglas_y_los_periodos_que_se_ofrecen(self):
         self.assertEqual(backtest.REGLAS, ("media200", "media50", "rsi", "adx_squeeze"))
         self.assertEqual(backtest.ANIOS, (1, 2, 3, 4))
+        self.assertEqual(backtest.MAX_REGLAS, 3)
         with self.assertRaises(ValueError):
             backtest.senales(_velas([100.0] * 10), "otra")
 
@@ -314,38 +363,45 @@ class Ruta(unittest.TestCase):
         self.yahoo.precios["GGAL"] = lambda i, d: 50.0
         self.yahoo.precios["GGAL.BA"] = lambda i, d: 5000 + 800 * math.sin(i / 10)
         main._run_velas_diarias_job()
-        local = self.client.get("/api/tecnico/GGAL/backtest?regla=rsi&anios=1&local=1", headers=self.h).json()
+        local = self.client.get("/api/tecnico/GGAL/backtest?reglas=rsi&anios=1&local=1", headers=self.h).json()
         self.assertTrue(local["disponible"], local)
         self.assertEqual((local["ticker"], local["convertida"]), ("GGAL.BA", "mep"))
-        adr = self.client.get("/api/tecnico/GGAL/backtest?regla=rsi&anios=1", headers=self.h).json()
+        adr = self.client.get("/api/tecnico/GGAL/backtest?reglas=rsi&anios=1", headers=self.h).json()
         self.assertEqual(adr["ticker"], "GGAL", "sin la marca, el ADR")
         self.assertAlmostEqual(adr["mantener"]["resultado"], (0.999 * 0.999 - 1) * 100, places=6,
                                msg="el ADR de prueba no se mueve: mantener sólo paga la comisión")
 
     def test_prueba_sobre_la_serie_de_la_ficha(self):
-        r = self.client.get("/api/tecnico/AAPL/backtest?regla=rsi&anios=2", headers=self.h)
+        r = self.client.get("/api/tecnico/AAPL/backtest?reglas=rsi&anios=2", headers=self.h)
         self.assertEqual(r.status_code, 200, r.text)
         res = r.json()
         self.assertTrue(res["disponible"], res)
-        self.assertEqual((res["asset"], res["ticker"], res["regla"], res["anios"], res["moneda"]),
-                         ("AAPL", "AAPL", "rsi", 2, "usd"))
+        self.assertEqual((res["asset"], res["ticker"], res["reglas"], res["anios"], res["moneda"]),
+                         ("AAPL", "AAPL", ["rsi"], 2, "usd"))
         with main.db_abierta() as conn:
             velas = tecnico.serie(conn, "AAPL", "usd")["velas"]
-        esperado = backtest.probar(velas, "rsi", 2)
-        self.assertAlmostEqual(res["con_regla"]["resultado"], esperado["con_regla"]["resultado"], places=6)
-        self.assertEqual(len(res["operaciones"]), len(esperado["operaciones"]))
-        self.assertGreater(len(res["operaciones"]), 0, "la serie de prueba tiene que dar compras")
+        esperado = backtest.probar(velas, ["rsi"], 2)
+        self.assertEqual(res["resultados"], json.loads(json.dumps(esperado["resultados"])))
+        self.assertGreater(res["resultados"][0]["compras"], 0, "la serie de prueba tiene que dar compras")
         self.assertEqual(len(res["curva"]), res["ruedas"])
 
+    def test_compara_hasta_tres_en_el_orden_pedido(self):
+        res = self.client.get("/api/tecnico/AAPL/backtest?reglas=adx_squeeze,media50,rsi&anios=2",
+                              headers=self.h).json()
+        self.assertTrue(res["disponible"], res)
+        self.assertEqual([x["regla"] for x in res["resultados"]], ["adx_squeeze", "media50", "rsi"])
+        self.assertEqual(set(res["curva"][0]), {"d", "mantener", "adx_squeeze", "media50", "rsi"})
+
     def test_lo_que_no_se_ofrece_no_se_prueba(self):
-        for q in ("regla=otra&anios=2", "regla=rsi&anios=5", "regla=rsi&anios=0"):
+        for q in ("reglas=otra&anios=2", "reglas=rsi&anios=5", "reglas=rsi&anios=0", "reglas=&anios=2",
+                  "reglas=rsi,rsi&anios=2", "reglas=rsi,media50,media200,adx_squeeze&anios=2"):
             with self.subTest(q=q):
                 r = self.client.get(f"/api/tecnico/AAPL/backtest?{q}", headers=self.h)
                 self.assertEqual(r.status_code, 400, r.text)
         self.assertEqual(self.client.get("/api/tecnico/<x>/backtest", headers=self.h).status_code, 400)
 
     def test_sin_velas_dice_por_que(self):
-        res = self.client.get("/api/tecnico/ZZZZ/backtest?regla=rsi&anios=1", headers=self.h).json()
+        res = self.client.get("/api/tecnico/ZZZZ/backtest?reglas=rsi&anios=1", headers=self.h).json()
         self.assertFalse(res["disponible"])
         self.assertIn(res["motivo"], ("sin_serie", "sin_datos", "tope", "bajando"))
 

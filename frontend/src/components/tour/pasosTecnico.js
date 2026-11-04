@@ -116,8 +116,8 @@ export const PASOS_TECNICO = [
     titulo: 'Backtesting: una regla contra el pasado',
     // Las cuentas y las palabras: backend/backtest.py y utils/backtesting.js.
     // Lo que muestra es el pasado: el paso lo dice, como la pantalla.
-    texto: 'Elegí un activo y una regla técnica y mirá qué habría pasado si la seguías en los últimos '
-      + 'años, siempre al lado de comprar y no tocar nada. Muestra el pasado: no dice qué va a pasar.',
+    texto: 'Elegí un activo y una regla técnica —o hasta 3, para compararlas— y mirá qué habría pasado si '
+      + 'la seguías, siempre al lado de comprar y no tocar nada. Muestra el pasado: no dice qué va a pasar.',
   },
   {
     id: 'comparar',

@@ -4,7 +4,9 @@ QUÉ ES. La pestaña «Backtesting» de Análisis técnico (Nico, 04/11/2026; bo
 aprobado: https://claude.ai/artifact/46cJx7aUeeH9CkVA7LAqX5). Elegís un papel,
 una regla y un período, y se simula día por día qué habría pasado con US$ 100
 si hacías exactamente lo que dice la regla, SIEMPRE al lado de comprar el primer
-día y no tocar nada («comprar y mantener»).
+día y no tocar nada («comprar y mantener»). Se pueden comparar hasta
+`MAX_REGLAS` reglas a la vez (etapa 2): todas sobre los MISMOS días, los que
+todas pueden probar, y al lado de comprar y mantener esos mismos días.
 
 LAS REGLAS. Las cuatro que ya muestra la ficha (elegidas por Nico el 04/11), con
 LAS cuentas de tecnico.py, no una copia: lo que acá es «cruzó» es lo que avisa
@@ -45,6 +47,8 @@ from pesado import pesado
 
 # Las reglas, en el orden en que se ofrecen.
 REGLAS = ("media200", "media50", "rsi", "adx_squeeze")
+# Cuántas se comparan a la vez como máximo (Nico, 04/11: «hasta 3»).
+MAX_REGLAS = 3
 # Los períodos, en años. Se guardan 5 años de velas (velas_diarias.ANIOS_GUARDADOS)
 # y la media de 200 necesita 200 ruedas antes para existir (unos 10 meses): con
 # 4 años como máximo, las cuatro reglas tienen el período entero.
@@ -199,16 +203,17 @@ def sin_la_mejor(ops: list):
 def ventana(velas: list, anios: int, desde_regla: int) -> dict:
     """De qué vela a qué vela se prueba: los últimos `anios` años contados por
     CALENDARIO desde la última vela (como el resto de tecnico.py), y nunca antes
-    de que la regla exista (`desde_regla`). {'desde_i', 'hasta_i', 'pedido_desde',
-    'recortado'}: `recortado` si arranca después de lo pedido (el papel tiene
-    menos historia o la regla necesita días antes)."""
+    de que la regla exista (`desde_regla`). {'desde_i', 'hasta_i', 'pedido_i',
+    'pedido_desde', 'recortado'}: `recortado` si arranca después de lo pedido (el
+    papel tiene menos historia o la regla necesita días antes)."""
     hasta_i = len(velas) - 1
     corte = date.fromisoformat(velas[-1]["date"]) - timedelta(days=anios * tecnico.DIAS_ANIO)
     pedido_i = next((i for i, v in enumerate(velas) if v["date"] > corte.isoformat()), hasta_i)
     desde_i = max(pedido_i, desde_regla)
     historia_corta = (pedido_i == 0 and
                       date.fromisoformat(velas[0]["date"]) - corte > timedelta(days=DIAS_TOLERANCIA))
-    return {"desde_i": desde_i, "hasta_i": hasta_i, "pedido_desde": (corte + timedelta(days=1)).isoformat(),
+    return {"desde_i": desde_i, "hasta_i": hasta_i, "pedido_i": pedido_i,
+            "pedido_desde": (corte + timedelta(days=1)).isoformat(),
             "recortado": desde_i > pedido_i or historia_corta}
 
 
@@ -217,19 +222,25 @@ def _resumen(curva: list) -> dict:
     return {"resultado": (curva[-1] - 1) * 100, "peor_caida": peor_caida(curva) * 100, "final": curva[-1] * 100}
 
 
-def probar(velas: list, regla: str, anios: int, comision: float = COMISION) -> dict:
+def probar(velas: list, reglas: list, anios: int, comision: float = COMISION) -> dict:
     """La prueba entera sobre `velas` (sin base de datos: la usan la pantalla y
-    las pruebas). {'disponible': False, 'motivo': 'poca_historia', ...} si no da
-    para probar."""
-    s = senales(velas, regla)
-    v = ventana(velas, anios, s["desde"])
-    base = {"regla": regla, "anios": anios, "primera_vela": velas[0]["date"],
-            "pedido_desde": v["pedido_desde"], "recortado": v["recortado"]}
+    las pruebas), de 1 a `MAX_REGLAS` reglas en el orden pedido. Todas sobre los
+    MISMOS días: desde que existe la que más historia necesita (`recorte_por`, si
+    eso corrió el principio), así se comparan entre ellas y con comprar y
+    mantener en el mismo período. Una regla da lo mismo sola que comparada si el
+    período no se corre. {'disponible': False, 'motivo': 'poca_historia', ...} si
+    no da para probar."""
+    reglas = list(reglas)
+    s = {r: senales(velas, r) for r in reglas}
+    limita = max(reglas, key=lambda r: s[r]["desde"])
+    v = ventana(velas, anios, s[limita]["desde"])
+    base = {"reglas": reglas, "anios": anios, "primera_vela": velas[0]["date"],
+            "pedido_desde": v["pedido_desde"], "recortado": v["recortado"],
+            "recorte_por": limita if v["desde_i"] > v["pedido_i"] else None}
     if v["hasta_i"] - v["desde_i"] + 1 < MIN_RUEDAS:
         return {**base, "disponible": False, "motivo": "poca_historia"}
-    sim = simular(velas, s, v["desde_i"], v["hasta_i"], comision)
+    sims = {r: simular(velas, s[r], v["desde_i"], v["hasta_i"], comision) for r in reglas}
     m = mantener(velas, v["desde_i"], v["hasta_i"], comision)
-    ops = sim["operaciones"]
     fechas = [x["date"] for x in velas[v["desde_i"]:v["hasta_i"] + 1]]
     return {
         **base,
@@ -238,12 +249,23 @@ def probar(velas: list, regla: str, anios: int, comision: float = COMISION) -> d
         "hasta": fechas[-1],
         "ruedas": len(fechas),
         "comision": comision * 100,
-        "con_regla": {**_resumen(sim["curva"]), "operaciones": len(ops),
-                      "ganadoras": sum(1 for o in ops if o["resultado"] > 0),
-                      "ruedas_comprada": sim["ruedas_comprada"], "sin_la_mejor": sin_la_mejor(ops)},
+        "resultados": [_resultado(r, sims[r]) for r in reglas],
         "mantener": _resumen(m),
-        "curva": [{"d": d, "regla": round(a * 100, 2), "mantener": round(b * 100, 2)}
-                  for d, a, b in zip(fechas, sim["curva"], m)],
+        "curva": [{"d": d, "mantener": round(m[k] * 100, 2),
+                   **{r: round(sims[r]["curva"][k] * 100, 2) for r in reglas}} for k, d in enumerate(fechas)],
+    }
+
+
+def _resultado(regla: str, sim: dict) -> dict:
+    """Lo de UNA regla: el resumen, sus compras y cada operación (en %)."""
+    ops = sim["operaciones"]
+    return {
+        "regla": regla,
+        **_resumen(sim["curva"]),
+        "compras": len(ops),
+        "ganadoras": sum(1 for o in ops if o["resultado"] > 0),
+        "ruedas_comprada": sim["ruedas_comprada"],
+        "sin_la_mejor": sin_la_mejor(ops),
         "operaciones": [{**o, "resultado": o["resultado"] * 100,
                          "precio_compra": round(o["precio_compra"], 4),
                          "precio_venta": round(o["precio_venta"], 4)} for o in ops],
@@ -251,12 +273,12 @@ def probar(velas: list, regla: str, anios: int, comision: float = COMISION) -> d
 
 
 @pesado
-def para_la_pantalla(conn, asset: str, regla: str, anios: int, local: bool = False) -> dict:
+def para_la_pantalla(conn, asset: str, reglas: list, anios: int, local: bool = False) -> dict:
     """La prueba de `asset` con la serie en dólares de la ficha (`tecnico.serie`:
     la acción de afuera de un CEDEAR; una acción argentina, `local`, con su precio
     de BYMA ÷ el MEP de cada día). {'disponible': False} sin velas."""
     s = tecnico.serie(conn, asset, "usd", local)
-    out = {"asset": (asset or "").upper(), "moneda": "usd", "regla": regla, "anios": anios}
+    out = {"asset": (asset or "").upper(), "moneda": "usd", "reglas": list(reglas), "anios": anios}
     if not s["velas"]:
         return {**out, "disponible": False}
-    return {**out, "ticker": s["ticker"], "convertida": s["convertida"], **probar(s["velas"], regla, anios)}
+    return {**out, "ticker": s["ticker"], "convertida": s["convertida"], **probar(s["velas"], reglas, anios)}

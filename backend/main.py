@@ -12585,26 +12585,29 @@ def get_tecnico(request: Request, asset: str, moneda: str = "usd", local: int = 
 
 
 @app.get("/api/tecnico/{asset}/backtest")
-def get_tecnico_backtest(request: Request, asset: str, regla: str = "media200", anios: int = 2,
+def get_tecnico_backtest(request: Request, asset: str, reglas: str = "media200", anios: int = 2,
                          local: int = 0, uid: int = Depends(get_effective_user)):
     """La pestaña «Backtesting» de Análisis técnico: qué habría pasado con US$ 100
-    siguiendo `regla` en los últimos `anios` años, al lado de comprar y mantener.
-    Con la serie en dólares de la ficha (`local=1`: una acción argentina, su
-    precio de BYMA ÷ MEP) y, si el activo no tiene velas, se bajan en el momento
-    como en la ficha (`_velas_a_pedido`). Si no da, `disponible` es False y
-    `motivo` dice por qué (los de la ficha, o 'poca_historia'). Las cuentas:
-    backtest.py."""
+    siguiendo cada una de `reglas` ('rsi' o 'rsi,adx_squeeze': de 1 a 3, sin
+    repetir, en el orden en que se compararan) en los últimos `anios` años, al
+    lado de comprar y mantener. Con la serie en dólares de la ficha (`local=1`:
+    una acción argentina, su precio de BYMA ÷ MEP) y, si el activo no tiene
+    velas, se bajan en el momento como en la ficha (`_velas_a_pedido`). Si no da,
+    `disponible` es False y `motivo` dice por qué (los de la ficha, o
+    'poca_historia'). Las cuentas: backtest.py."""
     import backtest
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
-    if regla not in backtest.REGLAS:
-        raise HTTPException(400, f"Regla desconocida: {regla}")
+    pedidas = [r.strip() for r in (reglas or "").split(",") if r.strip()]
+    if (not pedidas or len(pedidas) > backtest.MAX_REGLAS or len(set(pedidas)) != len(pedidas)
+            or any(r not in backtest.REGLAS for r in pedidas)):
+        raise HTTPException(400, f"Reglas inválidas: de 1 a {backtest.MAX_REGLAS} de las que se ofrecen, sin repetir")
     if anios not in backtest.ANIOS:
         raise HTTPException(400, f"Período inválido: {anios} años")
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         tickers, motivo = _velas_a_pedido(conn, [(sym, bool(local))], uid)[sym]
-        res = backtest.para_la_pantalla(conn, sym, regla, anios, bool(local))
+        res = backtest.para_la_pantalla(conn, sym, pedidas, anios, bool(local))
         if not res.get("disponible") and not res.get("motivo"):
             res["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
         return res

@@ -11,6 +11,8 @@
 //   · cambiar el período o la regla vuelve a pedir y queda en la dirección;
 //   · muestra la regla y comprar y mantener lado a lado, qué quiere decir y
 //     cada operación;
+//   · comparar: se suman hasta 3 (una tarjeta y una fila de «cuándo estuvo
+//     comprada» por regla), se sacan, y las operaciones se ven regla por regla;
 //   · sin precios, o si el pedido falla, lo dice (y ofrece reintentar).
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -30,14 +32,18 @@ vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: { tier: 'pro
 vi.mock('../contexts/AdvisorContext', () => ({ useAdvisorContext: () => ({ clientCtx: null }) }))
 vi.mock('../components/asset/LecturaTecnica', () => ({ default: () => null }))
 // El gráfico de líneas mide la pantalla para dibujarse: acá no hay pantalla.
-// Se anota lo que recibe (las franjas de los días comprada) y no dibuja nada.
-const franjas = vi.hoisted(() => [])
+// Se anota lo que recibe en el ÚLTIMO dibujo (las líneas y las franjas de los
+// días comprada; cada dibujo del gráfico empieza la lista de nuevo) y no dibuja
+// nada.
+const dibujado = vi.hoisted(() => ({ franjas: [], lineas: [] }))
 vi.mock('recharts', () => {
   const nada = () => null
   return {
-    ResponsiveContainer: ({ children }) => children, LineChart: ({ children }) => children ?? null,
-    Line: nada, XAxis: nada, YAxis: nada, CartesianGrid: nada, Tooltip: nada, ReferenceLine: nada,
-    ReferenceArea: (p) => { franjas.push(p); return null },
+    ResponsiveContainer: ({ children }) => children,
+    LineChart: ({ children }) => { dibujado.franjas.length = 0; dibujado.lineas.length = 0; return children ?? null },
+    XAxis: nada, YAxis: nada, CartesianGrid: nada, Tooltip: nada, ReferenceLine: nada,
+    Line: (p) => { dibujado.lineas.push(p.dataKey); return null },
+    ReferenceArea: (p) => { dibujado.franjas.push(p); return null },
   }
 })
 
@@ -71,11 +77,16 @@ function servidor() {
     throw new Error(`POST inesperado ${url}`)
   })
 }
-// La respuesta del servidor para esa regla (GGAL), con el activo y la regla pedidos.
+// La respuesta del servidor para esas reglas (GGAL). Una combinación que el
+// archivo no tiene se arma con las de cada regla sola.
 const delServidor = (url) => {
   const q = new URLSearchParams(url.split('?')[1])
-  const regla = q.get('regla')
-  return { ...GGAL[regla], anios: Number(q.get('anios')), curva: [] }
+  const reglas = q.get('reglas').split(',')
+  const juntas = GGAL[reglas.join(',')]
+  return {
+    ...(juntas || GGAL[reglas[0]]), reglas, anios: Number(q.get('anios')), curva: [],
+    resultados: juntas ? juntas.resultados : reglas.map(r => GGAL[r].resultados[0]),
+  }
 }
 const pedidosDeLaPrueba = () => pedidos.filter(p => p.includes('/backtest?'))
 
@@ -102,6 +113,9 @@ function todos(c, pred) {
   }
   return out
 }
+const porEtiqueta = (c, etiqueta) => todos(c, n => n.atributos?.['aria-label'] === etiqueta)[0] || null
+const titulosDeTarjetas = (c) => todos(c, n => n.nodeName === 'SECTION' && n.atributos?.['aria-label'])
+  .map(n => n.atributos['aria-label'])
 /** Elegir en un <select> como el navegador: cambia el valor y avisa con `change`. */
 async function elegirEn(contenedor, select, valor) {
   await enActo(async () => {
@@ -122,7 +136,8 @@ let almacen
 beforeEach(() => {
   vi.resetModules()
   vi.clearAllMocks()
-  franjas.length = 0
+  dibujado.franjas.length = 0
+  dibujado.lineas.length = 0
   respuesta = delServidor
   ;({ local: almacen } = instalarNavegadorMinimo())
   localStorage.setItem('rendi_user', JSON.stringify({ email: 'Ana@X.com' }))
@@ -145,18 +160,18 @@ describe('Análisis técnico → Backtesting', () => {
 
   it('pide la prueba con la serie de la ficha: tu GGAL de IOL es la acción de BYMA', async () => {
     montado = await abrir('/analisis-tecnico?tab=backtesting&activo=GGAL')
-    expect(pedidosDeLaPrueba()).toEqual(['GET /tecnico/GGAL/backtest?regla=media200&anios=2&local=1'])
+    expect(pedidosDeLaPrueba()).toEqual(['GET /tecnico/GGAL/backtest?reglas=media200&anios=2&local=1'])
     await montado.desmontar()
     pedidos.length = 0
     montado = await abrir('/analisis-tecnico?tab=backtesting&activo=NVDA')
-    expect(pedidosDeLaPrueba()).toEqual(['GET /tecnico/NVDA/backtest?regla=media200&anios=2'])
+    expect(pedidosDeLaPrueba()).toEqual(['GET /tecnico/NVDA/backtest?reglas=media200&anios=2'])
   })
 
   it('la regla al lado de comprar y mantener, qué quiere decir y cada operación', async () => {
-    montado = await abrir('/analisis-tecnico?tab=backtesting&activo=GGAL&regla=rsi')
+    montado = await abrir('/analisis-tecnico?tab=backtesting&activo=GGAL&reglas=rsi')
     const t = montado.t()
-    for (const parte of ['Siguiendo la regla', 'Comprar y mantener', '+25,5%', '−35,4%', '−59%', '−63%',
-      '3 · 2 ganaron', '223 de 501', 'Le fue mejor que comprar y mantener',
+    for (const parte of ['Probá una regla con el pasado', 'Siguiendo la regla', 'Comprar y mantener', '+25,5%',
+      '−35,4%', '−59%', '−63%', '3 · 2 ganaron', '223 de 501', 'Le fue mejor que comprar y mantener',
       'La compra del 05/05/26 (+33,6%) explica casi todo', 'Cada operación',
       '10/04/25 → 10/11/25', '24/08/26 → seguía comprada', 'US$ 41,12 → US$ 35,14 (último cierre)',
       'Esta compra explica casi todo el resultado.', 'Cómo habrían ido US$ 100', 'US$ 126', 'US$ 65',
@@ -164,14 +179,15 @@ describe('Análisis técnico → Backtesting', () => {
       expect(t, parte).toContain(parte)
     }
     // Las franjas violetas: una por compra, de la compra a la venta.
-    expect(franjas.map(f => [f.x1, f.x2])).toEqual(GGAL.rsi.operaciones.map(o => [o.compra, o.venta]))
+    expect(dibujado.franjas.map(f => [f.x1, f.x2])).toEqual(GGAL.rsi.resultados[0].operaciones.map(o => [o.compra, o.venta]))
+    expect(t).not.toContain('Cuándo estuvo comprada cada una')
   })
 
   it('cambiar el período vuelve a pedir y queda en la dirección', async () => {
     montado = await abrir('/analisis-tecnico?tab=backtesting&activo=NVDA')
     await clic(montado.contenedor, buscarBoton(montado.contenedor, '3 años'))
     await esperar()
-    expect(pedidosDeLaPrueba().at(-1)).toBe('GET /tecnico/NVDA/backtest?regla=media200&anios=3')
+    expect(pedidosDeLaPrueba().at(-1)).toBe('GET /tecnico/NVDA/backtest?reglas=media200&anios=3')
     expect(deLaDireccion(montado.donde, 'anios')).toBe('3')
   })
 
@@ -182,8 +198,8 @@ describe('Análisis técnico → Backtesting', () => {
       ['Precio y media de 200 días', 'Precio y media de 50 días', 'RSI 30 / 70', 'ADX + Squeeze'])
     await elegirEn(montado.contenedor, select, 'adx_squeeze')
     await esperar()
-    expect(pedidosDeLaPrueba().at(-1)).toBe('GET /tecnico/NVDA/backtest?regla=adx_squeeze&anios=2')
-    expect(deLaDireccion(montado.donde, 'regla')).toBe('adx_squeeze')
+    expect(pedidosDeLaPrueba().at(-1)).toBe('GET /tecnico/NVDA/backtest?reglas=adx_squeeze&anios=2')
+    expect(deLaDireccion(montado.donde, 'reglas')).toBe('adx_squeeze')
     expect(montado.t()).toContain('Compra cuando el Squeeze empieza a subir desde abajo')
   })
 
@@ -205,5 +221,57 @@ describe('Análisis técnico → Backtesting', () => {
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Reintentar'))
     await esperar()
     expect(montado.t()).toContain('Siguiendo la regla')
+  })
+})
+
+describe('Análisis técnico → Backtesting → comparar reglas', () => {
+  it('«Comparar con otra regla» suma la primera que no está, pide las dos y muestra una tarjeta por regla', async () => {
+    montado = await abrir('/analisis-tecnico?tab=backtesting&activo=NVDA&reglas=rsi')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Comparar con otra regla'))
+    await esperar()
+    expect(pedidosDeLaPrueba().at(-1)).toBe('GET /tecnico/NVDA/backtest?reglas=rsi,media200&anios=2')
+    expect(deLaDireccion(montado.donde, 'reglas')).toBe('rsi,media200')
+    const t = montado.t()
+    expect(t).toContain('Compará reglas con el pasado')
+    expect(titulosDeTarjetas(montado.contenedor)).toEqual(expect.arrayContaining(['RSI 30 / 70', 'Media de 200', 'Comprar y mantener']))
+    expect(t).toContain('No las ordenamos de la que dio más a la que dio menos')
+    expect(t).toContain('Cuándo estuvo comprada cada una')
+    // Con varias, sin franjas detrás de las líneas: una línea por regla y la de mantener.
+    expect(dibujado.franjas).toEqual([])
+    expect(new Set(dibujado.lineas)).toEqual(new Set(['rsi', 'media200', 'mantener']))
+  })
+
+  it('cada lugar ofrece sólo las reglas que no están en otro', async () => {
+    montado = await abrir('/analisis-tecnico?tab=backtesting&activo=NVDA&reglas=rsi,adx_squeeze')
+    const selects = todos(montado.contenedor, n => n.nodeName === 'SELECT')
+    expect(selects.map(s => s.options.map(o => o.atributos.value))).toEqual([
+      ['media200', 'media50', 'rsi'], ['media200', 'media50', 'adx_squeeze']])
+  })
+
+  it('con tres, el botón se apaga y lo dice; el título cuenta cuántas le ganaron', async () => {
+    montado = await abrir('/analisis-tecnico?tab=backtesting&activo=GGAL&reglas=media50,rsi,adx_squeeze')
+    const boton = buscarBoton(montado.contenedor, 'Comparar con otra regla')
+    expect('disabled' in boton.atributos).toBe(true)
+    expect(montado.t()).toContain('Ya sumaste 3, el máximo.')
+    expect(montado.t()).toContain('Las tres le ganaron a comprar y mantener')
+    expect(montado.t()).toContain('Con 10, 3 y 7 compras en los últimos 2 años')
+  })
+
+  it('sacar una regla vuelve a pedir sin ella', async () => {
+    montado = await abrir('/analisis-tecnico?tab=backtesting&activo=NVDA&reglas=media50,rsi,adx_squeeze')
+    await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Sacar RSI 30 / 70'))
+    await esperar()
+    expect(pedidosDeLaPrueba().at(-1)).toBe('GET /tecnico/NVDA/backtest?reglas=media50,adx_squeeze&anios=2')
+    expect(deLaDireccion(montado.donde, 'reglas')).toBe('media50,adx_squeeze')
+  })
+
+  it('las operaciones se ven regla por regla', async () => {
+    montado = await abrir('/analisis-tecnico?tab=backtesting&activo=GGAL&reglas=rsi,adx_squeeze')
+    expect(montado.t()).toContain('10/04/25 → 10/11/25')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'ADX + Squeeze· 7'))
+    await esperar()
+    const t = montado.t()
+    expect(t).toContain('05/03/25 → 28/03/25')
+    expect(t).not.toContain('10/04/25 → 10/11/25')
   })
 })
