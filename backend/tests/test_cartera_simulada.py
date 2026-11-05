@@ -5,7 +5,8 @@ Lo que importa:
   · La cuenta: cada activo en 100 con LA regla del comparador (`comparar.base_cien`)
     y la cartera, la suma de cada uno por su peso. Un activo solo, al 100 %, da
     exactamente su serie en 100 (diferencial contra el canónico).
-  · Sin tocarla: el que sube pesa cada vez más; los aportes suman el resultado.
+  · Sin tocarla: el que sube más que el resto pesa cada vez más; los aportes
+    suman el resultado (también con pesos que suman 99,99: se llevan a 100).
   · Los días son los de cualquier activo; el que no cotizó vale su último cierre.
   · Arranca cuando existe el último en llegar, y lo dice; un activo sin precios
     de la última semana no se simula; un índice que falta no frena la cartera.
@@ -147,6 +148,25 @@ class Cuentas(unittest.TestCase):
         r = cs.simular([_activo("A", 50, _habiles(800, lambda i: 100.0)),
                         _activo("NUEVITO", 50, _habiles(20, lambda i: 10.0))], _indices(), 1)
         self.assertEqual((r["disponible"], r["motivo"], r["recorte_por"]), (False, "poca_historia", "NUEVITO"))
+        # Con pocas ruedas SIN recorte (una acción poco negociada, una vela por
+        # semana) no hay a quién culpar de «cotiza hace muy poco» (auditoría 05/11, H10).
+        semanal = [v for k, v in enumerate(_habiles(600, lambda i: 10.0)) if k % 5 == 0]
+        r = cs.simular([_activo("SUELTA", 100, semanal)], _indices(), 1)
+        self.assertEqual((r["disponible"], r["motivo"], r["recortado"], r["recorte_por"]),
+                         (False, "poca_historia", False, None))
+
+    def test_los_pesos_que_casi_suman_cien_se_llevan_a_cien(self):
+        # 33,33 × 3 suma 99,99 y la ruta lo acepta: la cartera arranca en US$ 100 y
+        # no en 99,99, y los «aportó» suman su resultado (auditoría 05/11, H5).
+        a = _habiles(300, lambda i: 100 + i * 0.2)
+        b = _habiles(300, lambda i: 50 + i * 0.05)
+        c = _habiles(300, lambda i: 80 - i * 0.03)
+        r = cs.simular([_activo("A", 33.33, a), _activo("B", 33.33, b), _activo("C", 33.33, c)], _indices(), 1)
+        self.assertTrue(r["disponible"], r)
+        self.assertEqual(r["curva"][0]["cartera"], 100.0)
+        self.assertAlmostEqual(sum(x["aporte"] for x in r["activos"]), r["cartera"]["resultado"], places=9)
+        self.assertAlmostEqual(sum(x["peso_final"] for x in r["activos"]), 100.0, places=9)
+        self.assertAlmostEqual(sum(x["peso"] for x in r["activos"]), 100.0, places=9)
 
     def test_los_indices_al_lado_y_el_que_falta_no_frena_la_cartera(self):
         a = _habiles(800, lambda i: 100 + i)
@@ -162,8 +182,10 @@ class Cuentas(unittest.TestCase):
         r = cs.simular([_activo("A", 100, a)], _indices(nq=_habiles(800, lambda i: 1.0, fin=FIN - timedelta(days=20))), 1)
         self.assertEqual([f["motivo"] for f in r["faltan"]], ["vieja"])
 
-    def test_la_peor_caida_se_cuenta_desde_los_100(self):
-        # Cotiza hace ~9 meses: la prueba de 1 año arranca en su primer día.
+    def test_la_peor_caida_y_el_resultado_de_una_que_arranca_tarde(self):
+        # Cotiza hace ~9 meses: la prueba de 1 año arranca en su primer día. (Contar la
+        # caída desde los 100 o desde el primer cierre da lo mismo en una cartera: el
+        # primer día vale 100 por construcción; auditoría de las pruebas 05/11, B11.)
         cierres = [100, 80, 90, 120] + [120] * 196
         a = _habiles(len(cierres), lambda i: float(cierres[i]))
         r = cs.simular([_activo("A", 100, a)], _indices(), 1)
@@ -200,11 +222,40 @@ class DeHoy(unittest.TestCase):
         tercios = cs.de_hoy(self._car([("A", False, 1.0, "STOCK"), ("B", False, 1.0, "STOCK"), ("C", False, 1.0, "STOCK")]))
         self.assertEqual(sorted(a["peso"] for a in tercios["activos"]), [33.3, 33.3, 33.4])
 
-    def test_el_mismo_papel_en_byma_y_en_nueva_york_va_junto(self):
-        r = cs.de_hoy(self._car([("GGAL", True, 300.0, "ACCION"), ("GGAL", False, 100.0, "STOCK"),
-                                 ("AAPL", False, 400.0, "STOCK")]))
-        self.assertEqual([(a["asset"], a["local"], a["peso"]) for a in r["activos"]],
-                         [("AAPL", False, 50.0), ("GGAL", True, 50.0)])
+    def test_el_mismo_papel_en_byma_y_en_nueva_york_va_junto_con_la_marca_de_la_ficha(self):
+        # LA regla de la ficha (`esAccionLocal`): acción argentina sólo si TODOS sus
+        # lotes son de BYMA; con el ADR de Schwab al lado, el ADR. En cualquier orden
+        # en que lleguen los lotes: en Postgres la consulta no los ordena (auditoría
+        # 05/11, H3 y D3b).
+        lotes = [("GGAL", True, 300.0, "ACCION"), ("GGAL", False, 100.0, "STOCK"), ("AAPL", False, 400.0, "STOCK")]
+        for orden in (lotes, lotes[::-1], [lotes[1], lotes[0], lotes[2]]):
+            with self.subTest(primero=orden[0][:2]):
+                r = cs.de_hoy(self._car(orden))
+                self.assertEqual([(a["asset"], a["local"], a["peso"]) for a in r["activos"]],
+                                 [("AAPL", False, 50.0), ("GGAL", False, 50.0)])
+        solo_byma = cs.de_hoy(self._car([("GGAL", True, 300.0, "ACCION"), ("AAPL", False, 100.0, "STOCK")]))
+        self.assertEqual([(a["asset"], a["local"]) for a in solo_byma["activos"]], [("GGAL", True), ("AAPL", False)])
+
+    def test_un_fondo_con_su_codigo_crudo_y_la_renta_fija_quedan_afuera_por_su_tipo(self):
+        # COCOSPPA: el importador no lo encontró en el catálogo y quedó sin «FCI:»
+        # (frenaba la simulación entera); S30N6 (LECAP) e YMCXO (ON) no se reconocen
+        # por el nombre, sólo por el tipo (auditoría 05/11, H2 y D1).
+        r = cs.de_hoy(self._car([("AAPL", False, 900.0, "STOCK"), ("COCOSPPA", True, 50.0, "FUND"),
+                                 ("S30N6", True, 30.0, "LECAP"), ("YMCXO", True, 20.0, "ON")]))
+        self.assertEqual([(a["asset"], a["peso"]) for a in r["activos"]], [("AAPL", 100.0)])
+        self.assertEqual([(x["asset"], x["motivo"]) for x in r["afuera"]],
+                         [("COCOSPPA", "sin_serie"), ("S30N6", "sin_serie"), ("YMCXO", "sin_serie")])
+
+    def test_ninguno_queda_en_cero(self):
+        # US$ 20 de BTC al lado de US$ 100.000 en acciones: con 0 % la fila quedaba
+        # vacía y la ruta lo rechazaba. Lleva un décimo, sacado del que más pesa
+        # (auditoría 05/11, H7).
+        r = cs.de_hoy(self._car([("AAPL", False, 50000.0, "STOCK"), ("MSFT", False, 50000.0, "STOCK"),
+                                 ("BTC", False, 20.0, "CRYPTO")]))
+        pesos = {a["asset"]: a["peso"] for a in r["activos"]}
+        self.assertEqual(pesos["BTC"], 0.1)
+        self.assertAlmostEqual(sum(pesos.values()), 100.0, places=9)
+        self.assertTrue(all(x > 0 for x in pesos.values()), pesos)
 
 
 def _casos_de_la_pantalla():
@@ -223,6 +274,10 @@ def _casos_de_la_pantalla():
                                 {"sp500": sp, "nasdaq": nq}, 2),
         "vieja": cs.simular(activos[:2] + [_activo("PARADA", 20, _habiles(800, lambda i: 5.0, fin=FIN - timedelta(days=30)))],
                             {"sp500": sp, "nasdaq": nq}, 2),
+        # Todos restan: la pantalla nombra al que MÁS restó (auditoría de las pruebas, F9).
+        "todos_restan": cs.simular([_activo("BAJA1", 60, _habiles(800, lambda i: 50 - i * 0.004)),
+                                    _activo("BAJA2", 40, _habiles(800, lambda i: 100 - i * 0.04))],
+                                   {"sp500": sp, "nasdaq": nq}, 1),
     }
     for r in casos.values():
         r.pop("curva", None)
@@ -245,6 +300,13 @@ class LoQueLeeLaPantalla(unittest.TestCase):
         self.assertEqual(casos["sin_nasdaq"]["faltan"], [{"clave": "nasdaq", "motivo": "sin_datos"}])
         self.assertTrue(casos["recortada"]["recortado"])
         self.assertEqual(casos["vieja"]["motivo"], "vieja")
+        self.assertTrue(all(a["aporte"] < 0 for a in casos["todos_restan"]["activos"]))
+
+    def test_los_indices_de_la_cartera_se_bajan_todas_las_noches(self):
+        # Dos listas: contra cuáles se compara y cuáles baja la noche. Uno que se
+        # sumara a la primera y no a la segunda no se bajaría nunca y la pantalla lo
+        # omitiría callada (auditoría de regresiones 05/11, B4).
+        self.assertLessEqual({s for _, _, s in cs.INDICES}, set(velas_diarias.INDICES))
 
 
 class Ruta(unittest.TestCase):
@@ -252,6 +314,7 @@ class Ruta(unittest.TestCase):
     y el freno."""
 
     def setUp(self):
+        main._freno_reiniciar()
         self.client = TestClient(main.app)
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
@@ -300,6 +363,117 @@ class Ruta(unittest.TestCase):
 
     def _get(self, q):
         return self.client.get(f"/api/backtest/cartera?{q}", headers=self.h)
+
+    def _persona(self):
+        """Otra persona, sin nada: cada caso arranca de cero."""
+        with main.db_abierta() as conn:
+            uid = conn.execute(
+                "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
+                "VALUES (?, 'x', 1, 1, 'pro')", (f"cs-{uuid.uuid4().hex[:8]}@rendi.test",)).lastrowid
+            conn.commit()
+        return {"Authorization": f"Bearer {main.create_token(uid)}"}
+
+    def _lote(self, h, broker, moneda, asset, tipo, cantidad, precio):
+        r = self.client.post("/api/brokers", json={"name": broker, "currency": moneda}, headers=h)
+        self.assertIn(r.status_code, (200, 400), r.text)
+        r = self.client.post("/api/positions", json={"broker": broker, "asset": asset, "quantity": cantidad,
+                                                     "buy_price": precio, "asset_type": tipo}, headers=h)
+        self.assertIn(r.status_code, (200, 201), r.text)
+
+    # Las que siguen las propuso la auditoría de las pruebas (05/11): cada una
+    # atrapa un error que ninguna otra veía, por el mismo camino que producción.
+
+    def test_sin_recorte_arranca_el_mismo_dia_que_el_backtesting_de_una_regla(self):
+        # Diferencial contra el canónico: el primer día no es «cuando empieza lo
+        # guardado» (B3: «los últimos 2 años» al lado de un gráfico de 3).
+        for anios in (1, 2):
+            with self.subTest(anios=anios):
+                regla = self.client.get(f"/api/tecnico/AAPL/backtest?reglas=rsi&anios={anios}", headers=self.h).json()
+                res = self._get(f"activos=AAPL&pesos=100&anios={anios}").json()
+                self.assertTrue(res["disponible"], res)
+                self.assertEqual(res["pedido_desde"], regla["pedido_desde"])
+                self.assertEqual((res["recortado"], res["desde"], res["curva"][0]["d"]),
+                                 (False, res["pedido_desde"], res["pedido_desde"]))
+
+    def test_mi_cartera_de_hoy_deja_afuera_lecaps_obligaciones_y_fondos_por_su_tipo(self):
+        h = self._persona()
+        self._lote(h, "Schwab", "USD", "AAPL", "STOCK", 10, 100)
+        self._lote(h, "IOL", "ARS", "S30N6", "LECAP", 100000, 1.2)
+        self._lote(h, "IOL", "ARS", "YMCXO", "ON", 1000, 1050)
+        self._lote(h, "Cocos", "ARS", "COCOSPPA", "FUND", 1000, 1.5)
+        res = self.client.get("/api/backtest/cartera/hoy", headers=h).json()
+        self.assertEqual([a["asset"] for a in res["activos"]], ["AAPL"])
+        self.assertEqual(sorted((x["asset"], x["motivo"]) for x in res["afuera"]),
+                         [("COCOSPPA", "sin_serie"), ("S30N6", "sin_serie"), ("YMCXO", "sin_serie")])
+        # Y la noche ya no le pide a Yahoo el fondo crudo (lo pedía todos los días).
+        with main.db_abierta() as conn:
+            seguidos = velas_diarias.simbolos_a_seguir(conn)
+        self.assertNotIn("COCOSPPA.BA", seguidos)
+        self.assertNotIn("COCOSPPA", seguidos)
+
+    def test_mi_cartera_de_hoy_junta_byma_y_ny_con_la_marca_de_la_ficha_en_cualquier_orden(self):
+        self.yahoo.precios["GGAL"] = lambda i, d: 50.0
+        self.yahoo.precios["GGAL.BA"] = lambda i, d: 5000.0
+        chico_ny = ("Schwab", "USD", "GGAL", "STOCK", 1, 50)
+        grande_ny = ("Schwab", "USD", "GGAL", "STOCK", 1000, 50)
+        chica_byma = ("IOL", "ARS", "GGAL", "ACCION", 1, 5000)
+        grande_byma = ("IOL", "ARS", "GGAL", "ACCION", 1000, 5000)
+        # Con un lote en Nueva York, el ADR (como la ficha), pese cuanto pese el de BYMA.
+        for primero, segundo in ((chico_ny, grande_byma), (chica_byma, grande_ny),
+                                 (grande_byma, chico_ny), (grande_ny, chica_byma)):
+            with self.subTest(primero=primero[0], cuanto=primero[4]):
+                h = self._persona()
+                self._lote(h, *primero)
+                self._lote(h, *segundo)
+                res = self.client.get("/api/backtest/cartera/hoy", headers=h).json()
+                self.assertEqual([(a["asset"], a["local"]) for a in res["activos"]], [("GGAL", False)])
+        h = self._persona()
+        self._lote(h, *grande_byma)
+        res = self.client.get("/api/backtest/cartera/hoy", headers=h).json()
+        self.assertEqual([(a["asset"], a["local"]) for a in res["activos"]], [("GGAL", True)])
+
+    def test_una_accion_argentina_que_nadie_sigue_se_baja_con_su_precio_de_byma(self):
+        # `local` llega también a la bajada a pedido (R4b).
+        self.yahoo.precios["YPFD.BA"] = lambda i, d: 30000 + 400 * math.sin(i / 9)
+        res = self._get("activos=YPFD,AAPL&pesos=50,50&local=YPFD&anios=1").json()
+        self.assertTrue(res["disponible"], res)
+        ypfd = res["activos"][0]
+        self.assertEqual((ypfd["asset"], ypfd["local"], ypfd["ticker"], ypfd["convertida"]),
+                         ("YPFD", True, "YPFD.BA", "mep"))
+
+    def test_si_otra_persona_lo_esta_bajando_o_se_llego_al_tope_lo_dice(self):
+        # La pantalla reintenta sola con 'bajando'; con 'sin_serie' invitaba a sacar
+        # un activo que sí tiene precios (R6).
+        self.yahoo.precios["NVDA"] = lambda i, d: 100 + i * 0.1
+        with mock.patch.object(velas_diarias, "_a_pedido_en_curso", {"NVDA"}):
+            res = self._get("activos=AAPL,NVDA&pesos=50,50&anios=1").json()
+        self.assertEqual((res["disponible"], res["motivo"]), (False, "bajando"))
+        with mock.patch("velas_diarias._hay_cupo", lambda uid, n: False):
+            res = self._get("activos=AAPL,NVDA&pesos=50,50&anios=1").json()
+        self.assertEqual((res["disponible"], res["motivo"]), (False, "tope"))
+
+    def test_un_activo_viejo_que_no_se_pudo_volver_a_bajar_dice_por_que(self):
+        # Su historia llega hasta hace 20 días y otra persona lo está bajando: antes
+        # decía «vieja» (sacalo) en vez de «bajando» (esperá unos segundos), y la
+        # pantalla no reintentaba (auditoría de seguridad 05/11, hallazgo 6).
+        self._posicion("Schwab", "USD", "CVX", "STOCK")
+        with main.db_abierta() as conn:
+            for d in _ruedas(self.hoy - timedelta(days=20), 300):
+                conn.execute("INSERT INTO velas_diarias (symbol, date, open, high, low, close, volume) "
+                             "VALUES ('CVX', ?, 150, 151, 149, 150, 1000)", (d.isoformat(),))
+            conn.commit()
+        with mock.patch.object(velas_diarias, "_a_pedido_en_curso", {"CVX"}):
+            res = self._get("activos=AAPL,CVX&pesos=50,50&anios=1").json()
+        self.assertEqual((res["disponible"], res["motivo"]), (False, "bajando"))
+
+    def test_la_suma_del_100_es_la_que_ve_la_pantalla(self):
+        # La tolerancia que importa es la de la RUTA (F2), y con la suma redondeada a
+        # centavos como la pantalla: 50,03 + 50,02 es 100,05000000000001 (H6).
+        for pesos, codigo in (("50,49.96", 200), ("50,49.94", 400), ("50.03,50.02", 200),
+                              ("49.98,49.97", 200), ("50.04,50.02", 400)):
+            with self.subTest(pesos=pesos):
+                self.assertEqual(self._get(f"activos=AAPL,MSFT&pesos={pesos}&anios=1").status_code, codigo)
+        self.assertEqual(self._get("activos=AAPL&pesos=nan&anios=1").status_code, 400)
 
     def test_simula_sobre_las_series_de_la_ficha_y_los_indices_de_cada_noche(self):
         r = self._get("activos=AAPL,MSFT&pesos=60,40&anios=2")

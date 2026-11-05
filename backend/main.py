@@ -12646,10 +12646,12 @@ def get_tecnico_backtest(request: Request, asset: str, reglas: str = "media200",
     if anios not in backtest.ANIOS:
         raise HTTPException(400, f"Período inválido: {anios} años")
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
-        tickers, motivo = _velas_a_pedido(conn, [(sym, bool(local))], uid)[sym]
+        bajadas = _velas_a_pedido(conn, [(sym, bool(local))], uid)
+        tickers, motivo = bajadas[sym]
         res = backtest.para_la_pantalla(conn, sym, pedidas, anios, bool(local))
-        if not res.get("disponible") and not res.get("motivo"):
-            res["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
+        if not res.get("disponible"):
+            res["motivo"] = (_motivo_de_la_bajada(bajadas, [sym]) or res.get("motivo")
+                             or ("sin_serie" if not tickers else "sin_datos"))
         return res
 
 
@@ -12675,19 +12677,23 @@ def get_backtest_cartera(request: Request, activos: str, pesos: str, local: str 
         ps = [float(p) for p in (pesos or "").split(",") if p.strip()]
     except ValueError:
         raise HTTPException(400, "Porcentajes inválidos")
+    # La suma, redondeada a centavos como la ve la pantalla (`totalDe`): 50,03 + 50,02
+    # es 100,05000000000001 para la computadora, y la pantalla decía «Suma 100%»
+    # mientras esto contestaba 400 (auditoría 05/11, H6).
     if (len(ps) != len(lista) or any(not math.isfinite(p) or p <= 0 or p > 100 for p in ps)
-            or abs(sum(ps) - 100) > cs.TOLERANCIA):
+            or abs(round(sum(ps), 2) - 100) > cs.TOLERANCIA):
         raise HTTPException(400, "Va un porcentaje por activo, mayor a 0, y entre todos suman 100")
     if anios not in cs.ANIOS:
         raise HTTPException(400, f"Período inválido: {anios} años")
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         bajadas = _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid)
         res = cs.para_la_pantalla(conn, [(s, s in locales, p) for s, p in zip(lista, ps)], anios)
-        if res.get("motivo") == "sin_serie":
-            # Sin serie porque otra persona la está bajando, o por el tope de
-            # bajadas: lo dice la bajada a pedido, como en la ficha.
-            motivos = {bajadas.get(f["asset"], ((), None))[1] for f in res.get("faltan", [])}
-            res["motivo"] = next((m for m in ("bajando", "tope") if m in motivos), "sin_serie")
+        if not res.get("disponible"):
+            # Sin serie, o vieja, porque otra persona la está bajando o por el tope
+            # de bajadas: lo dice la bajada a pedido, como en la ficha.
+            motivo = _motivo_de_la_bajada(bajadas, [f["asset"] for f in res.get("faltan", []) if f.get("asset")])
+            if motivo:
+                res["motivo"] = motivo
         return res
 
 
@@ -12731,6 +12737,18 @@ def post_tecnico_resumen(request: Request, asset: str, moneda: str = "usd", loca
         ficha = tecnico.para_la_ficha(conn, sym, moneda, bool(local))
     base = sym[:-3] if sym.endswith(".BA") else sym
     return resumen_tecnico.pedir(db_abierta, ficha, asset_name(base) or base, _auth_uid_de(request, uid))
+
+
+def _motivo_de_la_bajada(bajadas: dict, simbolos) -> str:
+    """Si la bajada a pedido (`_velas_a_pedido`) no pudo con alguno de estos
+    `simbolos`, por qué: 'bajando' (otra persona lo está bajando: se vuelve a
+    pedir en segundos) antes que 'tope' (el cupo de la hora). None si pudo. Vale
+    más que lo que diga la cuenta ('sin_serie', 'vieja', 'sin_datos'): lo que
+    falta o está viejo es justamente lo que no se pudo bajar. Antes cada ruta
+    técnica lo traducía con otra condición y «vieja» tapaba a las dos
+    (auditoría de «Una cartera», 05/11, seguridad 6)."""
+    motivos = {bajadas.get(s, ((), None))[1] for s in simbolos}
+    return next((m for m in ("bajando", "tope") if m in motivos), None)
 
 
 def _velas_a_pedido(conn, pedidos: list, uid) -> dict:
@@ -12819,8 +12837,9 @@ def get_comparar_precio(request: Request, activos: str, local: str = "", moneda:
     # tipo «uno»), como toda lectura pesada (E1). Sin él, el guardián de
     # pesado.py lo marca (visto al juntar la pieza 16 con E, 30/10).
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        bajadas = _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid)
         motivos = {s: motivo or ("sin_serie" if not tickers else "sin_datos") for s, (tickers, motivo)
-                   in _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid).items()}
+                   in bajadas.items()}
         cer, basis = [], None
         if moneda == "ars":
             try:
@@ -12835,7 +12854,8 @@ def get_comparar_precio(request: Request, activos: str, local: str = "", moneda:
         res = comparar.comparar(conn, [(s, s in locales) for s in lista], moneda, inicio,
                                 cer=cer, cer_basis=basis, hoy=hoy)
         for f in res["faltan"]:
-            if f["clave"] in motivos and f["motivo"] == "sin_datos":
+            if f["clave"] in motivos and (f["motivo"] == "sin_datos"
+                                         or _motivo_de_la_bajada(bajadas, [f["clave"]])):
                 f["motivo"] = motivos[f["clave"]]
         res["plazo"] = plazo
         return res

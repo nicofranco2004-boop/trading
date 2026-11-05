@@ -39,6 +39,11 @@ log = logging.getLogger('snapshots_job')
 
 # Tipos de renta fija — cotizan cerca de la par; banda estrecha en el guard.
 _FIXED_INCOME_TYPES = frozenset({'BOND', 'BONO', 'ON', 'LETRA', 'LECAP'})
+# Los fondos comunes por su TIPO: el importador deja con su código crudo los que
+# no encuentra en el catálogo (COCOSPPA, IOLCAMA), sin el prefijo «FCI:». Lo usan
+# la regla de qué tiene precio de todos los días (`velas_diarias._yahoo_de`) y la
+# de qué va «sin lectura» (`senales_semana._porque`).
+_FUND_TYPES = frozenset({'FUND', 'FCI'})
 
 
 def _trust_mkt_value(mkt_value: float, real_cost: float, asset_type, has_override: bool = False) -> bool:

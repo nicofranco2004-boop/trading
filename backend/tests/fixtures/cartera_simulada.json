@@ -218,5 +218,64 @@
     "hasta": "2026-09-30"
    }
   ]
+ },
+ "todos_restan": {
+  "anios": 1,
+  "moneda": "usd",
+  "pedido_desde": "2025-10-31",
+  "recortado": false,
+  "recorte_por": null,
+  "disponible": true,
+  "desde": "2025-10-31",
+  "hasta": "2026-10-30",
+  "dias": 261,
+  "activos": [
+   {
+    "asset": "BAJA1",
+    "local": false,
+    "peso": 60.0,
+    "ticker": "BAJA1",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": -2.1736999999999966,
+    "aporte": -1.304219999999998,
+    "peso_final": 62.848575012222625
+   },
+   {
+    "asset": "BAJA2",
+    "local": false,
+    "peso": 40.0,
+    "ticker": "BAJA2",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": -13.258499999999998,
+    "aporte": -5.303399999999999,
+    "peso_final": 37.151424987777375
+   }
+  ],
+  "cartera": {
+   "resultado": -6.607619999999992,
+   "peor_caida": -6.607619999999992,
+   "final": 93.39238
+  },
+  "indices": [
+   {
+    "clave": "sp500",
+    "nombre": "S&P 500",
+    "ticker": "^GSPC",
+    "resultado": 7.8818000000000055,
+    "peor_caida": -0.660700000000003,
+    "final": 107.8818
+   },
+   {
+    "clave": "nasdaq",
+    "nombre": "Nasdaq",
+    "ticker": "^IXIC",
+    "resultado": 13.741899999999996,
+    "peor_caida": -0.22259999999999502,
+    "final": 113.7419
+   }
+  ],
+  "faltan": []
  }
 }

@@ -8,9 +8,10 @@ La persona arranca con su cartera de hoy o de cero, pone cada activo con su peso
 sobre 100 y elige de 1 a 4 años.
 
 CÓMO SE SIMULA.
-  · Todo se compra el primer día con esos pesos y no se toca más: sin
-    rebalancear, el que sube pesa cada vez más (comprar y mantener, la misma vara
-    que el Backtesting de una regla).
+  · Todo se compra el primer día con esos pesos y no se toca más (comprar y
+    mantener, la misma vara que el Backtesting de una regla). Sin rebalancear, el
+    que sube MÁS QUE EL RESTO pesa cada vez más, y el que sube menos (o baja),
+    cada vez menos: subir solo no alcanza (auditoría 05/11, A4).
   · Cada activo con LA serie de la ficha (`tecnico.serie`: la acción de afuera de
     un CEDEAR; una acción argentina, su precio de BYMA ÷ el MEP de cada día) y LA
     regla de «arrancar en 100» del comparador de precios (`comparar.base_cien`).
@@ -33,7 +34,6 @@ QUÉ NO HACE. No recomienda nada ni mira para adelante: dice qué habría pasado
 from __future__ import annotations
 
 import bisect
-import math
 from datetime import date, timedelta
 
 import backtest
@@ -77,8 +77,10 @@ class _EnCien:
 def simular(activos: list, indices: dict, anios: int) -> dict:
     """La simulación entera, sin base de datos (la usan la ruta y las pruebas).
 
-    `activos`: [{asset, local, peso, velas, ticker, convertida}], con los pesos
-    sumando 100 (lo controla la ruta). `indices`: {clave: velas} de `INDICES`.
+    `activos`: [{asset, local, peso, velas, ticker, convertida}]. Los pesos
+    suman 100 con `TOLERANCIA` (33,33 × 3, lo controla la ruta) y acá se llevan a
+    100 exacto: así la cartera arranca en US$ 100 y los «aportó» suman su
+    resultado (auditoría 05/11, H5). `indices`: {clave: velas} de `INDICES`.
     {'disponible': False, 'motivo', 'faltan'} si no se puede: 'sin_serie' (un
     activo sin precios), 'vieja' (un activo sin precios de la última semana) o
     'poca_historia'. Un índice que falta no frena la cartera: va en `faltan`."""
@@ -104,9 +106,13 @@ def simular(activos: list, indices: dict, anios: int) -> dict:
     out.update({"pedido_desde": pedido, "recortado": recortado,
                 "recorte_por": ultimo_en_llegar if recortado else None})
     if len(fechas) < MIN_DIAS:
-        return {**out, "disponible": False, "motivo": "poca_historia", "recorte_por": ultimo_en_llegar}
+        # `recorte_por` sólo si hubo recorte: con pocas ruedas sin recorte (una
+        # acción poco negociada) no es que «cotiza hace muy poco» (auditoría 05/11, H10).
+        return {**out, "disponible": False, "motivo": "poca_historia"}
 
-    pesos = {a["asset"]: float(a["peso"]) for a in activos}
+    escritos = {a["asset"]: float(a["peso"]) for a in activos}
+    suma = sum(escritos.values())
+    pesos = {s: p * 100 / suma for s, p in escritos.items()}
     lineas = {s: _EnCien(p, base) for s, p in puntos.items()}
     cartera = [sum(pesos[s] / 100 * lineas[s].al(d) for s in pesos) for d in fechas]
 
@@ -156,15 +162,21 @@ def simular(activos: list, indices: dict, anios: int) -> dict:
 
 
 def _sobre_cien(valores: list, decimales: int = 1) -> list:
-    """Los `valores` como porcentajes con `decimales` que suman EXACTAMENTE 100
-    (al que más se le recortó en el redondeo, se le devuelve lo que falta)."""
+    """Los `valores` (todos > 0) como porcentajes con `decimales` que suman
+    EXACTAMENTE 100: LA cuenta del resto mayor de «tu plata»
+    (`senales_semana.repartir_enteros`), en décimos. Ninguno queda en 0: el que
+    pesa menos de un décimo lleva uno, sacado del que más pesa. Con 0 la fila
+    quedaba vacía y «Mi cartera de hoy» no se simulaba (US$ 20 de BTC al lado de
+    US$ 50.000 en acciones; auditoría 05/11, H7)."""
+    import senales_semana
     total = sum(valores)
     paso = 10 ** decimales
-    crudos = [v / total * 100 * paso for v in valores]
-    enteros = [math.floor(c) for c in crudos]
-    faltan = round(100 * paso - sum(enteros))
-    for k in sorted(range(len(crudos)), key=lambda k: (enteros[k] - crudos[k], k))[:faltan]:
-        enteros[k] += 1
+    enteros = senales_semana.repartir_enteros([v / total * 100 * paso for v in valores], 100 * paso)
+    for k, e in enumerate(enteros):
+        if e < 1:
+            mayor = max(range(len(enteros)), key=lambda i: enteros[i])
+            enteros[mayor] -= 1 - e
+            enteros[k] = 1
     return [e / paso for e in enteros]
 
 
@@ -177,7 +189,10 @@ def de_hoy(car: dict) -> dict:
         devuelve vacío), no una lista copiada;
       · si son más de `MAX_ACTIVOS`, los que menos pesan.
     El mismo papel en BYMA y en Nueva York (GGAL de IOL y el ADR de Schwab) va
-    junto, con la marca `local` del que más pesa: la cartera no repite activos."""
+    junto: la cartera no repite activos. Su marca `local` es LA de la ficha
+    (`esAccionLocal` de utils/accionLocal.js): acción argentina sólo si TODOS sus
+    lotes son de BYMA; si no, el ADR. Antes decidía el lote más grande, y la
+    cartera usaba otra serie que la ficha (auditoría 05/11, H3)."""
     from cripto import yahoo_de_cripto
     juntos, afuera = {}, []
     for (asset, local), valor in car["tenencias"].items():
@@ -187,10 +202,11 @@ def de_hoy(car: dict) -> dict:
         if not velas_diarias._yahoo_de(asset, tipo, bool(local), yahoo_de_cripto):
             afuera.append({"asset": asset, "tipo": tipo, "motivo": "sin_serie"})
             continue
-        j = juntos.setdefault(asset, {"asset": asset, "valor": 0.0, "mayor": 0.0, "local": False, "tipo": tipo})
+        j = juntos.setdefault(asset, {"asset": asset, "valor": 0.0, "mayor": 0.0, "local": True, "tipo": tipo})
         j["valor"] += valor
+        j["local"] = j["local"] and bool(local)
         if valor > j["mayor"]:
-            j.update(mayor=valor, local=bool(local), tipo=tipo)
+            j.update(mayor=valor, tipo=tipo)
     orden = sorted(juntos.values(), key=lambda j: (-j["valor"], j["asset"]))
     quedan, sobran = orden[:MAX_ACTIVOS], orden[MAX_ACTIVOS:]
     afuera += [{"asset": j["asset"], "tipo": j["tipo"], "motivo": "tope"} for j in sobran]

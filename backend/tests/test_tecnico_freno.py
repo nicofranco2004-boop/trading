@@ -230,6 +230,24 @@ class FrenoTecnicoTest(unittest.TestCase):
             reloj[0] += 61
             self.assertEqual(self.client.get("/api/tecnico/AAPL?moneda=usd", headers=self.ana).status_code, 200)
 
+    def test_la_cartera_simulada_gasta_el_cupo_de_la_ficha_y_no_el_de_tu_lista(self):
+        """La prueba de arriba agota los dos cupos antes de preguntar por la cartera:
+        daba 429 con cualquiera de los dos (auditoría de las pruebas 05/11, R5b).
+        Acá: con el de Tu lista agotado la cartera sigue; con el de la ficha, frena.
+        Y «Mi cartera de hoy» va con el de Tu lista (es la misma valuación)."""
+        reloj = [1000.0]
+        cartera = "/api/backtest/cartera?activos=AAPL&pesos=100&anios=1"
+        with mock.patch("main._freno_reloj", lambda: reloj[0], create=True):
+            for _ in range(main.FRENO_TECNICO_POR_MINUTO):
+                self._lista(activos=["AAPL"])
+            self._lista(activos=["AAPL"], esperado=429)
+            self.assertEqual(self.client.get("/api/backtest/cartera/hoy", headers=self.ana).status_code, 429)
+            r = self.client.get(cartera, headers=self.ana)
+            self.assertEqual(r.status_code, 200, r.text)
+            for _ in range(main.FRENO_TECNICO["uno"][0] - 1):
+                self.client.get("/api/tecnico/AAPL?moneda=usd", headers=self.ana)
+            self.assertEqual(self.client.get(cartera, headers=self.ana).status_code, 429)
+
     def test_entre_todos_hay_tope_aunque_sean_muchas_cuentas(self):
         """Re-test E1: el freno por persona se esquivaba con más cuentas (14
         cuentas × 3 a la vez → «¿estás vivo?» 48,8 s). Entre todos corren hasta
