@@ -679,6 +679,49 @@ class SoloLosPedidosSueltanTest(_Base):
             pesado._en_pedido.reset(token)
 
 
+@unittest.skipUnless(main.USANDO_PG, "una conexión de SQLite no se puede usar desde otro hilo")
+class LaCompartidaNoSeSueltaTest(unittest.TestCase):
+    """Una conexión que usó más de un hilo no se suelta nunca más (`pgshim`
+    `_compartida`). La puerta de un hilo podía devolverla al pozo mientras el
+    otro la estaba usando, y el pozo dársela a otro pedido en el medio de lo suyo
+    (auditoría del 05/11, reproducido forzando el orden). Hoy ningún camino
+    comparte una conexión entre hilos: esto es para el día que alguno lo haga."""
+
+    def test_usada_por_dos_hilos_no_se_suelta(self):
+        import pesado
+        conn = main.get_db()
+        try:
+            conn.execute("SELECT 1").fetchone()
+            otro = threading.Thread(target=lambda: conn.execute("SELECT 2").fetchone())
+            otro.start()
+            otro.join()
+            conn.execute("SELECT 3").fetchone()
+            token = pesado._en_pedido.set("GET /prueba")
+            try:
+                self.assertEqual(pgsesion.antes_de_esperar_afuera("prueba"), 0)
+            finally:
+                pesado._en_pedido.reset(token)
+            self.assertFalse(pgsesion.soltar(conn))
+            self.assertIsNotNone(conn._c, "sigue con su lugar del pozo")
+        finally:
+            conn.close()
+
+    def test_la_de_un_solo_hilo_si(self):
+        import pesado
+        conn = main.get_db()
+        try:
+            conn.execute("SELECT 1").fetchone()
+            token = pesado._en_pedido.set("GET /prueba")
+            try:
+                self.assertEqual(pgsesion.antes_de_esperar_afuera("prueba"), 1)
+            finally:
+                pesado._en_pedido.reset(token)
+            self.assertIsNone(conn._c)
+            self.assertEqual(conn.execute("SELECT 4 AS n").fetchone()["n"], 4)
+        finally:
+            conn.close()
+
+
 class LosEventosDeLaCarteraTest(_Base):
     """Del mismo barrido: la cartera sin eventos guardados espera la búsqueda."""
 

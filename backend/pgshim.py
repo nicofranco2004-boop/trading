@@ -1082,8 +1082,10 @@ class Connection:
         self._dsn = dsn              # para leer el catálogo aparte (ver _pk_de)
         self.row_factory = None      # el código lo setea; acá siempre devolvemos Row
         # Anotada en el hilo que la usa: la puerta a la red de ese hilo la suelta
-        # mientras espera (`pgsesion.antes_de_esperar_afuera`).
+        # mientras espera (`pgsesion.antes_de_esperar_afuera`). Si la usa otro
+        # hilo, queda compartida y no se suelta más (ver `_viva`).
         self._hilo = threading.get_ident()
+        self._compartida = False
         import pgsesion
         pgsesion.anotar(self)
 
@@ -1100,11 +1102,12 @@ class Connection:
           · tiene una transacción abierta: soltarla la perdería;
           · tiene ajustes de sesión propios (`_sucia`): la próxima sería otra
             conexión, sin ellos;
-          · ya está suelta o cerrada.
+          · ya está suelta o cerrada;
+          · la usó más de un hilo (`_compartida`, ver `_viva`).
         Lo que se leyó antes ya está entero en el cursor (psycopg trae todas las
         filas al ejecutar), así que se puede seguir leyendo suelta."""
         with self._candado:
-            if self._c is None or self._sucia or self.in_transaction:
+            if self._c is None or self._sucia or self._compartida or self.in_transaction:
                 return False
             c, self._c = self._c, None
             self._pozo.devolver(c)
@@ -1119,13 +1122,19 @@ class Connection:
         (`cerrar_pozos`, que sólo usan las pruebas al cambiar de esquema o de
         tope), uno nuevo, con el tope de ahora.
 
-        Si la usa otro hilo, pasa a ser de ése: la puerta del hilo anterior ya no
-        la suelta (podría estar en uso) y la del nuevo sí."""
+        Si la usa otro hilo, queda COMPARTIDA y ya no se suelta (`soltar`): la
+        puerta a la red de un hilo podría devolverla al pozo mientras el otro la
+        está usando, y el pozo dársela a otro pedido en el medio de lo suyo
+        (auditoría del 05/11, reproducido forzando el orden; hoy ningún camino
+        comparte una conexión entre hilos). El cambio de hilo se mira adentro del
+        candado: sin eso quedaba un hueco entre que la puerta mira de quién es y
+        la suelta."""
         yo = threading.get_ident()
         if self._c is not None and self._hilo == yo:
             return self._c          # lo de siempre: el mismo hilo, y ya la tiene
         with self._candado:
             if self._hilo != yo:
+                self._compartida = True
                 self._hilo = yo
                 import pgsesion
                 pgsesion.anotar(self)
