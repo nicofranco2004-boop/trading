@@ -1,12 +1,16 @@
 // Piezas de la pestaña «Backtesting» que usan sus dos modos: «Una regla»
 // (pages/Backtesting.jsx) y «Una cartera» (pages/SimularCartera.jsx). Un solo
-// gráfico de «Cómo habrían ido US$ 100», un solo aviso y los mismos trazos:
-// los dos modos se ven iguales porque son lo mismo, no dos copias.
+// gráfico de «Cómo habrían ido US$ 100», un solo aviso, los mismos trazos y un
+// solo pedido al servidor (`usePedidoDePrueba`): los dos modos se ven y se
+// comportan igual porque son lo mismo, no dos copias.
+import { useEffect, useRef, useState } from 'react'
 import { AlertCircle } from 'lucide-react'
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ReferenceArea,
 } from 'recharts'
 import { chartGrid, chartTickSm, chartTooltip, chartReferenceStroke } from '../../utils/chartTheme'
+import { api } from '../../utils/api'
+import { enQueTermino } from '../../utils/backtesting'
 import { fechaCorta, plata } from '../../utils/cuantoSeMueve'
 import { MONTHS } from '../../utils/format'
 
@@ -16,6 +20,93 @@ export const PUNTEADO = '6 3'
 // «bajando»: otra persona está bajando ese activo; se vuelve a pedir, como en Comparar.
 export const REINTENTOS = 3
 export const ESPERA_MS = 4000
+
+// Lo que el navegador trae en inglés cuando el servidor no contesta bien.
+const DETALLE_EN_CASTELLANO = {
+  'internal server error': 'el servidor tuvo un error',
+  'bad gateway': 'el servidor no respondió',
+  'service unavailable': 'el servidor no está disponible',
+  'gateway timeout': 'el servidor tardó demasiado',
+  'failed to fetch': 'no hay conexión',
+  'load failed': 'no hay conexión',
+}
+const enCastellano = (d) => DETALLE_EN_CASTELLANO[String(d).trim().toLowerCase()] || d
+
+// Las respuestas que se guardan por pantalla: volver a una consulta que ya se vio
+// (50 → 5 → 50 mientras se escribe) no pide de nuevo (auditoría 05/11, B12).
+const GUARDADAS = 20
+
+/**
+ * El pedido de una prueba al servidor, el MISMO en los dos modos (auditoría 05/11,
+ * M8: «Una regla» decía que estaba trayendo los precios y «Una cartera» no).
+ *   · Si otra persona está bajando los precios ('bajando'), se vuelve a pedir
+ *     hasta REINTENTOS veces cada ESPERA_MS, y `trayendo` lo dice.
+ *   · Lo que llega tarde, de otra consulta, no se usa.
+ *   · `pausa`: mientras se escribe se espera quieto antes de pedir; el primero
+ *     y el de «Reintentar» salen en el momento.
+ *   · `url` null: todavía no hay nada que pedir.
+ * {res, error, cargando, trayendo, reintentar}.
+ */
+export function usePedidoDePrueba(url, { pausa = 0 } = {}) {
+  const [estado, setEstado] = useState({ res: null, error: null, cargando: false, trayendo: false })
+  const [vuelta, setVuelta] = useState(0)
+  const guardadas = useRef(new Map())
+  const primera = useRef(true)
+  const yaMismo = useRef(false)
+
+  useEffect(() => {
+    if (!url) {
+      setEstado({ res: null, error: null, cargando: false, trayendo: false })
+      return undefined
+    }
+    const guardada = guardadas.current.get(url)
+    if (guardada) {
+      primera.current = false
+      setEstado({ res: guardada, error: null, cargando: false, trayendo: false })
+      return undefined
+    }
+    let vivo = true
+    let intento = 0
+    let espera = null
+    const pedir = () => {
+      setEstado(e => ({ ...e, cargando: true, error: null }))
+      api.get(url)
+        .then(r => {
+          if (!vivo) return
+          if (r?.motivo === 'bajando' && intento < REINTENTOS) {
+            intento += 1
+            setEstado(e => ({ ...e, trayendo: true }))
+            espera = setTimeout(pedir, ESPERA_MS)
+            return
+          }
+          // Lo que depende de la hora (el cupo, otra persona bajando) no se guarda.
+          if (r && r.motivo !== 'bajando' && r.motivo !== 'tope') {
+            guardadas.current.delete(url)
+            guardadas.current.set(url, r)
+            if (guardadas.current.size > GUARDADAS) guardadas.current.delete(guardadas.current.keys().next().value)
+          }
+          setEstado({ res: r, error: null, cargando: false, trayendo: false })
+        })
+        .catch(e => {
+          if (!vivo) return
+          // Sin respuesta nueva no queda la vieja (de otra consulta) en pantalla.
+          setEstado({ res: null, error: e?.message || 'sin respuesta', cargando: false, trayendo: false })
+        })
+    }
+    if (primera.current || !pausa || yaMismo.current) pedir()
+    else espera = setTimeout(pedir, pausa)
+    primera.current = false
+    yaMismo.current = false
+    return () => { vivo = false; if (espera) clearTimeout(espera) }
+  }, [url, vuelta, pausa])
+
+  const reintentar = () => {
+    guardadas.current.delete(url)
+    yaMismo.current = true
+    setVuelta(x => x + 1)
+  }
+  return { ...estado, reintentar }
+}
 
 export const mesCorto = (iso) => {
   const [y, m] = iso.split('-')
@@ -37,7 +128,7 @@ export function Aviso({ children, error = false, detalle = null, onReintentar = 
             </button>
           )}
         </p>
-        {detalle && <p className="mt-0.5 text-[12px] text-ink-2">Detalle: {detalle}</p>}
+        {detalle && <p className="mt-0.5 text-[12px] text-ink-2">Detalle: {enCastellano(detalle)}</p>}
       </div>
     </div>
   )
@@ -82,13 +173,13 @@ export function GraficoDeCien({ curva, lineas, desde, hasta, nota = '', franjas 
           {lineas.map(l => (
             <li key={l.clave} className="inline-flex items-center gap-1.5">
               <Trazo color={l.color} dash={l.dash} /><span className="text-ink-1">{l.nombre}</span>
-              <span className="font-semibold text-ink-0 tabular">{plata(Math.round(l.final), 'usd')}</span>
+              <span className="font-semibold text-ink-0 tabular">{enQueTermino(l.final)}</span>
             </li>
           ))}
         </ul>
       </div>
       <div className="h-64 sm:h-80 -mx-1" role="img"
-        aria-label={lineas.map(l => `${l.nombre}: US$ 100 terminaron en ${plata(Math.round(l.final), 'usd')}`).join('; ')}>
+        aria-label={lineas.map(l => `${l.nombre}: US$ 100 terminaron en ${enQueTermino(l.final)}`).join('; ')}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={curva} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
             <CartesianGrid {...chartGrid} />

@@ -10,13 +10,17 @@
 //     falta para 100 se dice; sólo con 100 se pide la simulación;
 //   · el resultado: la cartera, el S&P 500 y el Nasdaq, lado a lado;
 //   · con «Ocultar saldos» prendido, tu cartera de hoy no se trae ni se ve;
-//   · la cartera queda en la dirección.
+//   · la armada de cero queda en la dirección; la de hoy NUNCA (ni cambiada):
+//     dice qué tenés, y la dirección se ve con el ojito y viaja en los links;
+//   · lo que se suma con el buscador lleva la marca de la ficha (GGAL y AGRO de
+//     BYMA; lo que tenés, como tus lotes).
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { createElement as h } from 'react'
 import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic, enActo, escribir, tecla } from '../testing/navegadorMinimo'
+import { porcentaje } from '../utils/backtesting'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn(), patch: vi.fn() }))
 vi.mock('../utils/api', () => ({ api, getClientContext: () => null, EVENTO_CUENTA_CAMBIADA: 'rendi:cuenta-cambiada' }))
@@ -26,7 +30,8 @@ vi.mock('../contexts/CurrencyContext', () => ({
 }))
 vi.mock('../hooks/usePushNotifications', () => ({ usePushNotifications: () => null }))
 vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: { tier: 'pro', email: 'Ana@X.com' } }) }))
-vi.mock('../contexts/AdvisorContext', () => ({ useAdvisorContext: () => ({ clientCtx: null }) }))
+const asesor = vi.hoisted(() => ({ clientCtx: null }))
+vi.mock('../contexts/AdvisorContext', () => ({ useAdvisorContext: () => ({ clientCtx: asesor.clientCtx }) }))
 vi.mock('../components/asset/LecturaTecnica', () => ({ default: () => null }))
 const ojito = vi.hoisted(() => ({ hidden: false }))
 vi.mock('../contexts/PrivacyContext', () => ({
@@ -57,16 +62,16 @@ const HOY = {
 
 let pedidos
 let simulacion   // (url) → lo que contesta /backtest/cartera?…
+let hoyDelServidor   // () → lo que contesta /backtest/cartera/hoy
+let lotes        // lo que contesta /positions
 function servidor() {
   pedidos = []
   api.get.mockImplementation(async (url) => {
     pedidos.push(`GET ${url}`)
-    if (url === '/backtest/cartera/hoy') return HOY
+    if (url === '/backtest/cartera/hoy') return hoyDelServidor()
     if (url.startsWith('/backtest/cartera?')) return simulacion(url)
     if (url.startsWith('/tickers/search')) return { results: [] }
-    if (url === '/positions') return [
-      { id: 1, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK', quantity: 10, invested: 1000, buy_price: 100 },
-    ]
+    if (url === '/positions') return lotes
     if (url === '/brokers') return [{ id: 1, name: 'Schwab', currency: 'USD' }]
     if (url === '/dolar') return { mep: { venta: 1500 } }
     if (url === '/operations') return []
@@ -89,6 +94,9 @@ const simulaciones = () => pedidos.filter(p => p.startsWith('GET /backtest/carte
 async function abrir(ruta) {
   const { MemoryRouter, Routes, Route, useLocation } = await import('react-router-dom')
   const { default: AnalisisTecnico } = await import('./AnalisisTecnico')
+  // «Una cartera» se baja recién al elegirla (React.lazy): ya bajada, aparece en el
+  // momento, como en la página después de la primera vez.
+  await import('./SimularCartera')
   const donde = { actual: null }
   function Mirar() { donde.actual = useLocation(); return null }
   const m = await montar(h(MemoryRouter, { initialEntries: [ruta] },
@@ -127,7 +135,10 @@ beforeEach(() => {
   dibujado.lineas.length = 0
   torta.ultima = null
   ojito.hidden = false
+  asesor.clientCtx = null
   simulacion = delServidor
+  hoyDelServidor = () => HOY
+  lotes = [{ id: 1, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK', quantity: 10, invested: 1000, buy_price: 100 }]
   instalarNavegadorMinimo()
   localStorage.setItem('rendi_user', JSON.stringify({ email: 'Ana@X.com' }))
   window.scrollTo = () => {}
@@ -147,7 +158,7 @@ describe('Backtesting → Una cartera', () => {
     expect(t).not.toContain('Probá una regla con el pasado')
     // Tu cartera de hoy, la del servidor, y lo que quedó afuera.
     expect(porcentajes(montado.contenedor)).toEqual([['AAPL', '50'], ['GGAL', '30'], ['BTC', '20']])
-    expect(t).toContain('Quedaron afuera AL30: no tiene precio de todos los días.')
+    expect(t).toContain('Quedó afuera AL30: no tenemos sus precios de cada día.')
     expect(t).toContain('Total 100% · Suma 100%')
     expect(torta.ultima.montos).toBe(false)
     expect(torta.ultima.items.map(i => [i.key, i.value])).toEqual([['AAPL', 50], ['GGAL', 30], ['BTC', 20]])
@@ -160,9 +171,18 @@ describe('Backtesting → Una cartera', () => {
       expect(r, parte).toContain(parte)
     }
     expect(new Set(dibujado.lineas)).toEqual(new Set(['cartera', 'sp500', 'nasdaq']))
-    // Queda en la dirección: recargar abre la misma cartera.
-    expect([deLaDireccion(montado.donde, 'activos'), deLaDireccion(montado.donde, 'pesos'), deLaDireccion(montado.donde, 'local')])
-      .toEqual(['AAPL,GGAL,BTC', '50,30,20', 'GGAL'])
+    // Tu cartera de hoy NO queda en la dirección: dice qué tenés y cuánto pesa cada
+    // cosa, y la dirección se ve con el ojito, queda en el historial y viaja en cada
+    // link (auditorías 05/11, A2 y A3). Tampoco cambiada, ni al volver a «Una regla».
+    const deLaCartera = () => ['activos', 'pesos', 'local'].map(k => deLaDireccion(montado.donde, k))
+    expect(deLaCartera()).toEqual([null, null, null])
+    await escribir(porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera'), '40')
+    await pasaLaPausa()
+    expect(deLaCartera()).toEqual([null, null, null])
+    expect(montado.t()).toContain('Partiste de tu cartera de hoy y la cambiaste.')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Una regla'))
+    await esperar()
+    expect(deLaCartera()).toEqual([null, null, null])
   })
 
   it('cambiar un porcentaje arma la torta y dice cuánto falta; repartir vuelve a 100 y pide de nuevo', async () => {
@@ -218,31 +238,319 @@ describe('Backtesting → Una cartera', () => {
     expect(pedidos).not.toContain('GET /backtest/cartera/hoy')
     expect(montado.t()).toContain('Con «Ocultar saldos» prendido no traemos tu cartera de hoy')
     expect(porcentajes(montado.contenedor)).toEqual([])
-    // Aunque la dirección traiga una cartera «de hoy», con el ojito no se ve.
+    // Un link viejo con origen=hoy y una cartera: con el ojito no se ve, no se pide
+    // nada, y la cartera sale de la dirección.
     await montado.desmontar()
-    montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera&activos=AAPL&pesos=100')
+    montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera&origen=hoy&activos=AAPL&pesos=100')
     expect(porcentajes(montado.contenedor)).toEqual([])
     expect(simulaciones()).toEqual([])
+    expect(deLaDireccion(montado.donde, 'pesos')).toBeNull()
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Armar de cero'))
     await esperar()
     expect(porEtiqueta(montado.contenedor, 'Buscar un activo para sumar a la cartera')).not.toBeNull()
+    // Una cartera ARMADA que llega por un link no es la tuya: se ve con el ojito.
+    await montado.desmontar()
+    montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera&activos=KO&pesos=100')
+    expect(porcentajes(montado.contenedor)).toEqual([['KO', '100']])
+    expect(simulaciones()).toEqual(['GET /backtest/cartera?activos=KO&pesos=100&anios=2'])
   })
 
-  it('la cartera de la dirección no se pisa con la de hoy', async () => {
-    montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera&origen=hoy&activos=KO,MELI&pesos=60,40&anios=3')
+  it('la cartera armada de la dirección se abre tal cual; con origen=hoy, la de hoy de quien abre', async () => {
+    montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero&activos=KO,MELI&pesos=60,40&anios=3')
     expect(pedidos).not.toContain('GET /backtest/cartera/hoy')
     expect(porcentajes(montado.contenedor)).toEqual([['KO', '60'], ['MELI', '40']])
     expect(simulaciones()).toEqual(['GET /backtest/cartera?activos=KO,MELI&pesos=60,40&anios=3'])
+    await montado.desmontar()
+    montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera&origen=hoy&activos=KO,MELI&pesos=60,40')
+    expect(pedidos).toContain('GET /backtest/cartera/hoy')
+    expect(porcentajes(montado.contenedor)).toEqual([['AAPL', '50'], ['GGAL', '30'], ['BTC', '20']])
+    expect(['activos', 'pesos'].map(k => deLaDireccion(montado.donde, k))).toEqual([null, null])
+  })
+
+  it('un link con más de 10 activos dice cuáles no entraron', async () => {
+    const doce = Array.from({ length: 12 }, (_, i) => `T${i}`)
+    montado = await abrir(`/analisis-tecnico?tab=backtesting&modo=cartera&activos=${doce.join(',')}&pesos=${doce.map(() => 8).join(',')}`)
+    expect(porcentajes(montado.contenedor)).toHaveLength(10)
+    expect(montado.t()).toContain('El link traía 12 activos y entran hasta 10: quedaron afuera T10 y T11.')
   })
 
   it('lo que no se puede simular lo dice, y el Nasdaq que falta también', async () => {
     simulacion = () => CASOS.vieja
     montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera')
-    expect(montado.t()).toContain('PARADA no tiene precios desde el 30/09/26: sacalo para simular el resto.')
+    expect(montado.t()).toContain('No tenemos precios de PARADA desde el 30/09/26: sacalo para simular el resto.')
     await montado.desmontar()
     simulacion = () => ({ ...CASOS.sin_nasdaq, curva: [] })
     montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera')
     expect(montado.t()).toContain('Todavía no tenemos la historia del Nasdaq para compararla.')
     expect(new Set(dibujado.lineas)).toEqual(new Set(['cartera', 'sp500']))
+  })
+})
+
+describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
+  const CARTERA = '/analisis-tecnico?tab=backtesting&modo=cartera'
+  const DE_CERO = `${CARTERA}&origen=cero`
+  async function sumarConElBuscador(m, que) {
+    if (!porEtiqueta(m.contenedor, 'Buscar un activo para sumar a la cartera')) {
+      await clic(m.contenedor, buscarBoton(m.contenedor, 'Sumar activo'))
+      await esperar()
+    }
+    const buscador = porEtiqueta(m.contenedor, 'Buscar un activo para sumar a la cartera')
+    await escribir(buscador, que)
+    await tecla(buscador, 'Enter')
+    await esperar()
+  }
+  // Lo que dibuja «Una cartera» (sin el resto de Análisis técnico).
+  const laCartera = (c) => todos(c, n => n.atributos?.['aria-labelledby'] === 'sc-titulo')[0].parentNode
+  // Entrar a un campo como el navegador: React escucha `focusin` en la raíz (como `clic`).
+  async function entrar(contenedor, nodo) {
+    await enActo(async () => {
+      const ev = { type: 'focusin', target: nodo, bubbles: true, cancelable: true, defaultPrevented: false,
+        timeStamp: Date.now(), preventDefault() {}, stopPropagation() {} }
+      for (const fn of contenedor.escuchas.focusin || []) fn(ev)
+    })
+  }
+  // A quién se le pide el foco (el navegador de las pruebas no lo lleva).
+  function mirarElFoco(nodo) {
+    const proto = Object.getPrototypeOf(nodo)
+    const original = proto.focus
+    const visto = { nodo: null, soltar: () => { proto.focus = original } }
+    proto.focus = function () { visto.nodo = this }
+    return visto
+  }
+
+  // H1 · A1: con `local: false` fijo, GGAL se simulaba con el ADR de Nueva York y
+  // AGRO con Adecoagro (otra empresa); ALUA decía «no tenemos los precios».
+  it('una acción argentina sumada con el buscador es la de BYMA, como en su ficha', async () => {
+    montado = await abrir(DE_CERO)
+    await sumarConElBuscador(montado, 'GGAL')
+    await sumarConElBuscador(montado, 'AGRO')
+    expect(porcentajes(montado.contenedor).map(([a]) => a)).toEqual(['GGAL', 'AGRO'])
+    expect(montado.t()).toMatch(/GGALBYMA/)
+    expect(montado.t()).toMatch(/AGROBYMA/)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Repartir en partes iguales'))
+    await pasaLaPausa()
+    expect(simulaciones().at(-1)).toBe('GET /backtest/cartera?activos=GGAL,AGRO&pesos=50,50&local=GGAL,AGRO&anios=2')
+    expect(deLaDireccion(montado.donde, 'local')).toBe('GGAL,AGRO')
+  })
+
+  it('lo que tenés lleva la marca de tus lotes: tu GGAL de Schwab es el ADR', async () => {
+    lotes = [{ id: 1, broker: 'Schwab', asset: 'GGAL', asset_type: 'STOCK', quantity: 10, invested: 300, buy_price: 30 }]
+    montado = await abrir(DE_CERO)
+    await sumarConElBuscador(montado, 'GGAL')
+    await pasaLaPausa()
+    expect(montado.t()).not.toMatch(/GGALBYMA/)
+    expect(simulaciones().at(-1)).toBe('GET /backtest/cartera?activos=GGAL&pesos=100&anios=2')
+  })
+
+  it('«GGAL.BA» es GGAL: no entra dos veces, y se dice', async () => {
+    montado = await abrir(DE_CERO)
+    await sumarConElBuscador(montado, 'GGAL')
+    const foco = mirarElFoco(porEtiqueta(montado.contenedor, 'Porcentaje de GGAL en la cartera'))
+    try {
+      await sumarConElBuscador(montado, 'GGAL.BA')
+      expect(porcentajes(montado.contenedor).map(([a]) => a)).toEqual(['GGAL'])
+      expect(montado.t()).toContain('GGAL ya está en la cartera: cambiá su porcentaje acá arriba.')
+      expect(foco.nodo?.atributos?.['aria-label']).toBe('Porcentaje de GGAL en la cartera')
+    } finally { foco.soltar() }
+  })
+
+  // M4: «Armar de cero» abre el buscador con los populares; un Enter sin escribir
+  // nada sumaba AAPL al 100 % y lo simulaba.
+  it('un Enter con el buscador vacío no suma nada', async () => {
+    montado = await abrir(CARTERA)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Armar de cero'))
+    await esperar()
+    const antes = simulaciones().length   // la de hoy, antes de armar de cero
+    await tecla(porEtiqueta(montado.contenedor, 'Buscar un activo para sumar a la cartera'), 'Enter')
+    await pasaLaPausa()
+    expect(porcentajes(montado.contenedor)).toEqual([])
+    expect(simulaciones()).toHaveLength(antes)
+  })
+
+  // M7: tocar la opción ya elegida borraba lo armado, sin aviso ni vuelta atrás.
+  it('volver a tocar la opción elegida no borra la cartera', async () => {
+    montado = await abrir(`${DE_CERO}&activos=KO,MELI&pesos=60,40`)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Armar de cero'))
+    await esperar()
+    expect(porcentajes(montado.contenedor)).toEqual([['KO', '60'], ['MELI', '40']])
+    await montado.desmontar()
+    montado = await abrir(CARTERA)
+    await escribir(porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera'), '40')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Mi cartera de hoy'))
+    await esperar()
+    expect(porcentajes(montado.contenedor)[0]).toEqual(['AAPL', '40'])
+    expect(pedidos.filter(x => x === 'GET /backtest/cartera/hoy')).toHaveLength(1)
+  })
+
+  // M6: lo sumado mientras se traía la de hoy quedaba debajo de «Trayendo…» para siempre.
+  it('mientras se trae tu cartera de hoy no se puede sumar', async () => {
+    let soltar
+    hoyDelServidor = () => new Promise(r => { soltar = r })
+    montado = await abrir(CARTERA)
+    expect(montado.t()).toContain('Trayendo tu cartera de hoy…')
+    expect(buscarBoton(montado.contenedor, 'Sumar activo').atributos.disabled).toBeDefined()
+    expect(montado.t()).not.toContain('Total 0%')
+    await enActo(async () => { soltar(HOY) })
+    await esperar()
+    expect(buscarBoton(montado.contenedor, 'Sumar activo').atributos.disabled).toBeUndefined()
+    expect(montado.t()).toContain('Total 100% · Suma 100%')
+  })
+
+  // M9: con más de 100, la leyenda decía porcentajes que nadie escribió.
+  it('pasada de 100, la torta dice lo que escribiste', async () => {
+    montado = await abrir(`${DE_CERO}&activos=GGAL,AAPL&pesos=100,33.5`)
+    expect(montado.t()).toContain('Total 133,5% · Sobran 33,5%')
+    expect(torta.ultima.items.map(i => [i.key, i.pct])).toEqual([['GGAL', 100], ['AAPL', 33.5]])
+  })
+
+  // M11: el asesor adentro de un cliente leía «Mi cartera de hoy» y «Con tus activos».
+  it('con el asesor adentro de un cliente, la cartera de hoy es la de él', async () => {
+    asesor.clientCtx = { id: 7, label: 'Ana' }
+    montado = await abrir(CARTERA)
+    const t = texto(laCartera(montado.contenedor))
+    expect(t).toContain('Su cartera de hoy')
+    expect(t).toContain('Con los activos de Ana y lo que pesa cada uno hoy')
+    expect(t).not.toContain('Mi cartera de hoy')
+    expect(t).not.toContain('tus activos')
+  })
+
+  it('si se prende el ojito con la cartera de hoy cargada, se saca de la pantalla', async () => {
+    montado = await abrir(CARTERA)
+    expect(porcentajes(montado.contenedor)).toHaveLength(3)
+    ojito.hidden = true
+    await escribir(porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera'), '45')   // un dibujo nuevo
+    await esperar()
+    expect(porcentajes(montado.contenedor)).toEqual([])
+    expect(montado.t()).toContain('Con «Ocultar saldos» prendido no traemos tu cartera de hoy')
+  })
+
+  // Las que siguen las propuso la auditoría de las pruebas: cada una atrapa un
+  // error que ninguna otra veía.
+
+  // F2: «Suma 100%» y el pedido, con la MISMA tolerancia que acepta el servidor.
+  it('con 99,9 % no dice «Suma 100%» ni pide; con 99,96 % sí', async () => {
+    montado = await abrir(CARTERA)
+    expect(simulaciones()).toHaveLength(1)
+    await escribir(porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera'), '49,9')
+    await pasaLaPausa()
+    expect(montado.t()).toContain('Total 99,9% · Faltan 0,1%')
+    expect(simulaciones()).toHaveLength(1)
+    await escribir(porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera'), '49,96')
+    await pasaLaPausa()
+    expect(simulaciones().at(-1)).toBe('GET /backtest/cartera?activos=AAPL,GGAL,BTC&pesos=49.96,30,20&local=GGAL&anios=2')
+  })
+
+  // F8 y M1: la peor caída y la plata de las frases son las de cada tarjeta, como se ven.
+  it('la peor caída y la plata que dicen las frases son las de las tarjetas', async () => {
+    simulacion = () => ({ ...CASOS.recortada, curva: [] })
+    montado = await abrir(CARTERA)
+    const tarjeta = (nombre) => texto(porEtiqueta(montado.contenedor, nombre))
+    const caidaDe = (nombre) => tarjeta(nombre).match(/Peor caída([−+]?[\d.,]+%)/)[1].replace(/^[−+]/, '')
+    const plataDe = (nombre) => tarjeta(nombre).match(/habrían quedado en(US\$ [\d.,]+)/)[1]
+    const [c, s, n] = ['Esta cartera', 'S&P 500', 'Nasdaq'].map(caidaDe)
+    expect(montado.t()).toContain(`La peor caída de la cartera —lo más que llegó a bajar desde su mejor momento— fue de ${c}, `
+      + `contra ${s} del S&P 500 y ${n} del Nasdaq.`)
+    const [pc, ps, pn] = ['Esta cartera', 'S&P 500', 'Nasdaq'].map(plataDe)
+    expect(montado.t()).toContain(`habrían quedado en ${pc}; en el S&P 500, en ${ps}, y en el Nasdaq, en ${pn}.`)
+    expect(pc).toMatch(/,\d$/)   // con un decimal, como el resultado
+  })
+
+  // F9: si todos restaron, la frase nombra al que más restó (del servidor).
+  it('si todos los activos restaron, dice cuál restó más', async () => {
+    const res = CASOS.todos_restan
+    simulacion = () => ({ ...res, curva: [] })
+    montado = await abrir(`${DE_CERO}&activos=BAJA1,BAJA2&pesos=60,40&anios=1`)
+    const peor = [...res.activos].sort((a, b) => a.aporte - b.aporte)[0]
+    expect(montado.t()).toContain(`El que más restó fue ${peor.asset}: ${porcentaje(peor.aporte).replace('%', '')} de los`)
+  })
+
+  // S4: el teclado no se pierde al sacar un activo.
+  it('al sacar un activo, el teclado queda en el porcentaje del que tomó su lugar', async () => {
+    montado = await abrir(CARTERA)
+    const foco = mirarElFoco(porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera'))
+    try {
+      await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Sacar GGAL'))
+      await esperar()
+      expect(foco.nodo?.atributos?.['aria-label']).toBe('Porcentaje de BTC en la cartera')
+      await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Sacar BTC'))
+      await esperar()
+      expect(foco.nodo?.atributos?.['aria-label']).toBe('Porcentaje de AAPL en la cartera')
+      await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Sacar AAPL'))
+      await esperar()
+      expect(texto(foco.nodo)).toContain('Sumar activo')
+    } finally { foco.soltar() }
+  })
+
+  // M5: «Reintentar» desaparece al tocarlo; el teclado no vuelve al principio.
+  it('al reintentar, el teclado queda en el resultado', async () => {
+    let falla = true
+    simulacion = () => { if (falla) { falla = false; throw new Error('Internal Server Error') } return delServidor() }
+    montado = await abrir(CARTERA)
+    expect(montado.t()).toContain('No se pudo simular la cartera.')
+    expect(montado.t()).toContain('Detalle: el servidor tuvo un error')
+    const boton = buscarBoton(montado.contenedor, 'Reintentar')
+    const foco = mirarElFoco(boton)
+    try {
+      await clic(montado.contenedor, boton)
+      await esperar()
+      expect(String(foco.nodo?.atributos?.tabIndex ?? foco.nodo?.atributos?.tabindex)).toBe('-1')
+      expect(montado.t()).toContain('+21,4%')
+    } finally { foco.soltar() }
+  })
+
+  // S5: la respuesta de una cartera vieja no pisa la de la nueva.
+  it('una respuesta vieja que llega tarde no pisa a la nueva', async () => {
+    let soltarVieja
+    const vieja = new Promise(r => { soltarVieja = r })
+    let n = 0
+    simulacion = () => (n++ === 0 ? vieja : delServidor())
+    montado = await abrir(CARTERA)
+    expect(simulaciones()).toHaveLength(1)
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Repartir en partes iguales'))
+    await pasaLaPausa()
+    expect(simulaciones()).toHaveLength(2)
+    expect(montado.t()).toContain('+21,4%')
+    await enActo(async () => { soltarVieja({ ...CASOS.recortada, curva: [] }) })
+    await esperar()
+    expect(montado.t()).toContain('+21,4%')
+    expect(montado.t()).not.toContain(porcentaje(CASOS.recortada.cartera.resultado))
+  })
+
+  // M8: mientras otra persona baja los precios se dice, y un aviso de otra cartera no queda.
+  it('si otra persona está bajando los precios, lo dice y reintenta sola', async () => {
+    let n = 0
+    simulacion = () => (n++ < 1 ? { disponible: false, motivo: 'bajando', faltan: [] } : delServidor())
+    montado = await abrir(CARTERA)
+    expect(montado.t()).toContain('Estamos trayendo los precios de los activos nuevos: un momento…')
+    await enActo(async () => { await new Promise(r => setTimeout(r, 4100)) })
+    await esperar()
+    expect(montado.t()).toContain('+21,4%')
+    expect(simulaciones()).toHaveLength(2)
+  }, 10000)
+
+  // S7: el arreglo de e13a8ea1: al entrar al porcentaje, el número queda elegido.
+  it('al entrar a un porcentaje, el número queda elegido', async () => {
+    montado = await abrir(CARTERA)
+    const campo = porEtiqueta(montado.contenedor, 'Porcentaje de AAPL en la cartera')
+    let elegido = false
+    campo.select = () => { elegido = true }
+    await entrar(montado.contenedor, campo)
+    expect(elegido).toBe(true)
+  })
+
+  // F7: toda palabra que muestra «Una cartera» es la revisada: un cambio de texto
+  // (una promesa, un consejo) no pasa sin que alguien lo lea y lo acepte
+  // (`vitest -u`). Una lista de palabras prohibidas deja pasar lo que no está en
+  // la lista («vas a ganar»).
+  it('lo que dice la pantalla, caso por caso, es lo revisado', async () => {
+    const textos = {}
+    for (const [caso, res] of Object.entries(CASOS)) {
+      simulacion = () => ({ ...res, curva: [] })
+      montado = await abrir(CARTERA)
+      textos[caso] = texto(laCartera(montado.contenedor))
+      await montado.desmontar()
+      montado = null
+    }
+    expect(textos).toMatchSnapshot()
   })
 })

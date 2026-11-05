@@ -23,7 +23,7 @@
 // con la señal y todo afuera cuando se da vuelta. Eso se dice arriba
 // (`queSePrueba`), y con una regla que perdió contra mantener se dice también
 // lo que consiguió a cambio: caer menos (`fraseDeLaCaida`).
-import { decimalesFinos, pctColor, pctVarFino } from './format'
+import { decimalesFinos, pctColor, pctVarFino, redondearPct } from './format'
 import { fechaCorta } from './cuantoSeMueve'
 
 // Las reglas, en el orden de backend/backtest.py (REGLAS): las cuatro que ya
@@ -91,8 +91,22 @@ const CAIDA_PARA_CONTAR = -25
  *  un decimal sería «0,0%» se escribe con más (+0,03%): una operación que ganó
  *  no se ve en cero (auditoría 04/11, B9). */
 export const porcentaje = (x, decimales = 1) => pctVarFino(x, decimales)
+/** Ese mismo número como se ve: el que se lee en la tarjeta («+33,4 %» → 33,4).
+ *  Para comparar dos resultados con lo que la persona lee, con el redondeo de la
+ *  tarjeta y no con otro (auditoría 05/11, B5: «le ganaron» con las dos en −10,2 %). */
+export const comoSeVe = (x, decimales = 1) => redondearPct(x, decimalesFinos(x, decimales))
 /** El color de ese mismo número, el que se ve (verde, rojo o neutro). */
 export const colorDe = (x, decimales = 1) => pctColor(x, decimalesFinos(x, decimales))
+
+/** En qué terminaron US$ 100, con un decimal: «US$ 133,4». Partiendo de 100, la
+ *  plata y el resultado son el mismo número (US$ 133,4 = +33,4 %), así que va con
+ *  el redondeo de la tarjeta «Resultado». Sin el decimal, el título decía «le fue
+ *  mejor» y la plata, US$ 133 y US$ 133 (auditoría 05/11, M1). Lo usan las
+ *  tarjetas, las frases y el gráfico de los dos modos. */
+export function enQueTermino(final) {
+  const x = 100 + redondearPct(final - 100, 1)
+  return `US$ ${x.toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`
+}
 
 /** Un precio: «59,85»; abajo de 1, con 4 cifras (una cripto de US$ 0,0004). */
 export const precio = (x) => (Math.abs(x) >= 1
@@ -118,8 +132,8 @@ export const queSePrueba = (varias) => (varias
  *  le ganó a nadie (M1). */
 export function contraMantener(x, m) {
   if (!x?.compras) return 'sin_compras'
-  const a = Math.round(x.resultado * 10)
-  const b = Math.round(m.resultado * 10)
+  const a = comoSeVe(x.resultado)
+  const b = comoSeVe(m.resultado)
   return a > b ? 'gano' : a < b ? 'perdio' : 'empate'
 }
 
@@ -212,12 +226,18 @@ export function lectura(res) {
  *  los días». Sólo si el precio subió, mantener le ganó y la regla estuvo afuera
  *  la mitad de los días o más: adentro casi siempre, lo que perdió no fue por
  *  estar afuera. «La mayor parte»: dio menos de la mitad de lo que subió el
- *  precio; nada o negativo, «toda». */
+ *  precio; nada o negativo, «toda». Con los números COMO SE VEN («subió 3 %» y la
+ *  tarjeta en +1,5 % es la mitad justa, no «la mayor parte»), y nada si comprar y
+ *  mantener tampoco se quedó con más de la mitad: lo que se comieron las
+ *  comisiones no es por haber estado afuera (auditoría 05/11, regresiones B1). */
 function laSuba(res, x, contra) {
   const v = res.variacion_precio
   if (contra !== 'perdio' || !(v >= 0.5) || x.ruedas_comprada / res.ruedas > 0.5) return ''
-  if (x.resultado <= 0) return ': se perdió toda la suba'
-  return x.resultado < v / 2 ? ': se perdió la mayor parte de la suba' : ': se perdió parte de la suba'
+  const suba = Math.abs(Math.round(v))   // como en «GGAL subió 35%»
+  if (!(comoSeVe(res.mantener.resultado) > suba / 2)) return ''
+  const regla = comoSeVe(x.resultado)
+  if (regla <= 0) return ': se perdió toda la suba'
+  return regla < suba / 2 ? ': se perdió la mayor parte de la suba' : ': se perdió parte de la suba'
 }
 
 /** La peor caída como se ve en su tarjeta, sin el signo («14%»), y su número. */
@@ -226,14 +246,20 @@ function caidaVista(x) {
   return { texto, valor: Number(texto.replace('%', '').replace(',', '.')) }
 }
 
-/** La peor caída de la regla al lado de la de mantener, sólo si fue más chica:
- *  «A cambio, …» si mantener le ganó (lo que consiguió estando afuera). Una regla
- *  que le ganó y aun así cayó mucho lo dice igual, con la de mantener al lado si
- *  fue más grande. Con los números como se ven en las tarjetas. */
+// «Más chica» de verdad: al menos esto menos, y no más de tres cuartos de la otra.
+// Con 13 % contra 14 %, «A cambio» subrayaba como ganancia lo que es ruido, al lado
+// de una regla que dejó 29 puntos (auditoría 05/11, regresiones M2).
+const CAIDA_MENOR_PUNTOS = 5
+const CAIDA_MENOR_PARTE = 0.75
+
+/** La peor caída de la regla al lado de la de mantener, sólo si fue BASTANTE más
+ *  chica: «A cambio, …» si mantener le ganó (lo que consiguió estando afuera). Una
+ *  regla que le ganó y aun así cayó mucho lo dice igual, con la de mantener al lado
+ *  si fue bastante más grande. Con los números como se ven en las tarjetas. */
 function fraseDeLaCaida(x, m, contra) {
   const a = caidaVista(x.peor_caida)
   const b = caidaVista(m.peor_caida)
-  const menor = a.valor >= 1 && a.valor < b.valor
+  const menor = a.valor >= 1 && a.valor <= b.valor - CAIDA_MENOR_PUNTOS && a.valor <= b.valor * CAIDA_MENOR_PARTE
   if (contra === 'gano' && x.peor_caida <= CAIDA_PARA_CONTAR) {
     return `En el camino llegó a caer ${a.texto} desde su mejor momento${menor ? `; comprar y mantener, ${b.texto}` : ''}.`
   }

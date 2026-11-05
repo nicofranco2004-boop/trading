@@ -28,18 +28,15 @@
 //
 // Una sola pantalla para compu y celular (R6).
 
-import { useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Plus, X } from 'lucide-react'
 import Segmento from '../components/asset/Segmento'
 import Skeleton from '../components/Skeleton'
-import {
-  Aviso, Dato, ESPERA_MS, GraficoDeCien, PUNTEADO, Punto, REINTENTOS, Trazo, v,
-} from '../components/backtest/piezas'
+import { Aviso, Dato, GraficoDeCien, PUNTEADO, Punto, Trazo, usePedidoDePrueba, v } from '../components/backtest/piezas'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { useActivoDelGrafico } from '../hooks/useActivoDelGrafico'
 import { useFichaDelActivo } from '../hooks/useFichaDelActivo'
-import { api } from '../utils/api'
 import { fechaCorta } from '../utils/cuantoSeMueve'
 import { MODOS, modoDe } from '../utils/carteraSimulada'
 import { activoValido } from '../utils/graficoTecnico'
@@ -50,7 +47,10 @@ import {
   otraRegla, porcentaje, precio, queSePrueba, reglaDe, reglasDe, sinEstaCompra, textoDelRecorte, tramosComprada,
 } from '../utils/backtesting'
 import { Encabezado } from './GraficoTecnico'
-import SimularCartera from './SimularCartera'
+
+// «Una cartera» se baja recién al elegirla: si no, todo Análisis técnico (también
+// el Gráfico) bajaba ~10 KB más para todos (auditoría de regresiones 05/11, B3).
+const SimularCartera = lazy(() => import('./SimularCartera'))
 
 // Una por regla, en el orden en que las sumaste: la primera en el violeta de la
 // marca. Ni el verde ni el rojo (se leerían «gana» o «pierde»), ni el ámbar (es
@@ -93,7 +93,9 @@ export default function Backtesting() {
     return (
       <div className="flex flex-col gap-4">
         {selector}
-        <SimularCartera />
+        <Suspense fallback={<Skeleton className="h-72 w-full rounded-xl" />}>
+          <SimularCartera />
+        </Suspense>
       </div>
     )
   }
@@ -206,82 +208,46 @@ function PruebaDe({ activo, reglas, anios, onTuyo, onAbierto }) {
     else if (!ficha.loading) onAbierto(activo)
   }, [ficha.otroNombre, ficha.loading]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [res, setRes] = useState(null)
-  const [error, setError] = useState(null)
-  const [cargando, setCargando] = useState(false)
-  // Otra persona está bajando los precios y se vuelve a pedir: se dice, en vez
-  // de 12 segundos de gris (auditoría 04/11, B3).
-  const [trayendo, setTrayendo] = useState(false)
-  const [vuelta, setVuelta] = useState(0)
-  const pedido = useRef(0)
-  // «Probó reglas» se cuenta una vez por activo, reglas y período, no en cada reintento.
-  const contado = useRef(null)
   // Un fondo común no tiene precio de todos los días (la ficha no le arma gráfico).
   const sinPrecios = !ficha.loading && !ficha.grafico
   const clave = reglas.join(',')
-
+  // El pedido es el mismo de «Una cartera» (`usePedidoDePrueba`): si otra persona
+  // está bajando los precios se vuelve a pedir y se dice, en vez de 12 segundos
+  // de gris (auditoría 04/11, B3); lo que llega de otra prueba no se usa.
+  const { res, error, cargando, trayendo, reintentar } = usePedidoDePrueba(
+    ficha.loading || ficha.otroNombre || sinPrecios ? null
+      : `/tecnico/${encodeURIComponent(activo)}/backtest?reglas=${clave}&anios=${anios}${ficha.accionLocal ? '&local=1' : ''}`)
+  // El teclado no se pierde cuando el «Reintentar» que lo tenía desaparece: va acá (M5).
+  const zona = useRef(null)
+  const otraVez = () => { zona.current?.focus?.(); reintentar() }
+  // «Probó reglas» se cuenta una vez por activo, reglas y período, no en cada reintento.
+  const contado = useRef(null)
   useEffect(() => {
-    if (ficha.loading || ficha.otroNombre || sinPrecios) return undefined
-    const id = ++pedido.current
-    // Lo que llega cuando esta pestaña ya no está (cambiaste de activo) no se
-    // usa ni se cuenta.
-    let vivo = true
-    let intento = 0
-    let espera = null
-    const pedir = () => {
-      setCargando(true)
-      setError(null)
-      api.get(`/tecnico/${encodeURIComponent(activo)}/backtest?reglas=${clave}&anios=${anios}${ficha.accionLocal ? '&local=1' : ''}`)
-        .then(r => {
-          if (!vivo || id !== pedido.current) return
-          if (r?.motivo === 'bajando' && intento < REINTENTOS) {
-            intento += 1
-            setTrayendo(true)
-            espera = setTimeout(pedir, ESPERA_MS)
-            return
-          }
-          setTrayendo(false)
-          setRes(r)
-          setCargando(false)
-          const contar = `${activo}|${clave}|${anios}`
-          if (r?.disponible && contado.current !== contar) {
-            contado.current = contar
-            track('backtesting', { reglas: clave, anios })
-          }
-        })
-        .catch(e => {
-          if (!vivo || id !== pedido.current) return
-          // Sin respuesta nueva no queda la prueba vieja con otras reglas elegidas.
-          setTrayendo(false)
-          setRes(null)
-          setError(e?.message || 'sin respuesta')
-          setCargando(false)
-        })
+    const contar = `${activo}|${clave}|${anios}`
+    if (res?.disponible && contado.current !== contar) {
+      contado.current = contar
+      track('backtesting', { reglas: clave, anios })
     }
-    pedir()
-    return () => { vivo = false; if (espera) clearTimeout(espera) }
-  }, [activo, clave, anios, ficha.loading, ficha.otroNombre, ficha.accionLocal, sinPrecios, vuelta])
+  }, [res]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  let contenido
   if (sinPrecios) {
-    return (
+    contenido = (
       <Aviso>
         Los fondos comunes tienen un solo valor por día, el de la cuotaparte, sin velas de precios: no alcanza para
         probar una regla. Elegí otro activo arriba a la izquierda.
       </Aviso>
     )
-  }
-  if (error) {
-    return (
-      <Aviso error detalle={error} onReintentar={() => setVuelta(x => x + 1)}>
+  } else if (error) {
+    contenido = (
+      <Aviso error detalle={error} onReintentar={otraVez}>
         No pudimos armar la prueba. Probá de nuevo en unos segundos.
       </Aviso>
     )
-  }
-  if (trayendo && !res?.disponible) {
-    return <Aviso>Estamos trayendo los precios de {activo}: un momento…</Aviso>
-  }
-  if (!res || (cargando && !res.disponible)) {
-    return (
+  } else if (trayendo && !res?.disponible) {
+    contenido = <Aviso>Estamos trayendo los precios de {activo}: un momento…</Aviso>
+  } else if (!res || (cargando && !res.disponible)) {
+    contenido = (
       <div className="flex flex-col gap-4" aria-busy="true">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Skeleton className="h-40 w-full rounded-xl" />
@@ -290,15 +256,16 @@ function PruebaDe({ activo, reglas, anios, onTuyo, onAbierto }) {
         <Skeleton className="h-72 w-full rounded-xl" />
       </div>
     )
-  }
-  if (!res.disponible) {
-    return (
-      <Aviso onReintentar={res.motivo === 'bajando' ? () => setVuelta(x => x + 1) : null}>
+  } else if (!res.disponible) {
+    contenido = (
+      <Aviso onReintentar={res.motivo === 'bajando' || res.motivo === 'tope' ? otraVez : null}>
         {motivoEnPalabras(res, activo)}
       </Aviso>
     )
+  } else {
+    contenido = <Resultado res={res} cargando={cargando} />
   }
-  return <Resultado res={res} cargando={cargando} />
+  return <div ref={zona} tabIndex={-1} className="focus:outline-none">{contenido}</div>
 }
 
 function Resultado({ res, cargando }) {

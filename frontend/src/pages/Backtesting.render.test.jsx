@@ -195,10 +195,10 @@ describe('Análisis técnico → Backtesting', () => {
       'Esto prueba una forma de usar el indicador: todo adentro con la señal, todo afuera cuando se da vuelta. '
         + 'El indicador es el mismo de la ficha.',
       '−35,9%', '−59%', '−63%', '3 · 2 ganaron', '223 de 501', 'Le fue mejor que comprar y mantener',
-      'GGAL bajó 35% en los últimos 2 años', 'En el camino llegó a caer 59% desde su mejor momento; comprar y mantener, 63%.',
+      'GGAL bajó 35% en los últimos 2 años', 'En el camino llegó a caer 59% desde su mejor momento.',
       'Sin la compra del 05/05/26 (+32,6%), la regla habría terminado en pérdida: −7,6%.',
       'Cada operación', '10/04/25 → 10/11/25', '24/08/26 → seguía comprada', 'US$ 41,12 → US$ 35,14 (último cierre)',
-      'Sin esta compra, la regla habría terminado en pérdida.', 'Cómo habrían ido US$ 100', 'US$ 123', 'US$ 64',
+      'Sin esta compra, la regla habría terminado en pérdida.', 'Cómo habrían ido US$ 100', 'US$ 122,5', 'US$ 64,1',
       'no es una recomendación']) {
       expect(t, parte).toContain(parte)
     }

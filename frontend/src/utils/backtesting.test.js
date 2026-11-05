@@ -99,7 +99,8 @@ describe('una regla: lo que dicen los números', () => {
       titulo: 'Le fue mejor que comprar y mantener',
       frases: [
         'GGAL bajó 35% en los últimos 2 años y la regla estuvo afuera el 55% de los días.',
-        'En el camino llegó a caer 59% desde su mejor momento; comprar y mantener, 63%.',
+        // 59 % contra 63 %: no es bastante más chica, no se pone al lado (05/11, M2).
+        'En el camino llegó a caer 59% desde su mejor momento.',
         'Sin la compra del 05/05/26 (+32,6%), la regla habría terminado en pérdida: −7,6%.',
         'Fueron 3 compras en los últimos 2 años: con tan pocas, no alcanza para saber si el resultado es de la regla o de la suerte.',
       ],
@@ -135,6 +136,11 @@ describe('una regla: lo que dicen los números', () => {
     expect(primera(64, 20, 60, 300), 'adentro el 60 % de los días').toMatch(/de los días\.$/)
     expect(primera(-30, -40, -35), 'el precio bajó').toMatch(/de los días\.$/)
     expect(primera(64, 70), 'le ganó a mantener').toMatch(/de los días\.$/)
+    // Con los números como se ven: «subió 3 %» y la tarjeta en +1,5 % es la mitad
+    // justa, no «la mayor parte»; y si comprar y mantener también la perdió (las
+    // comisiones), no es por haber estado afuera (auditoría de regresiones 05/11, B1).
+    expect(primera(3.1, 1.5, 2.9, 200)).toMatch(/de los días: se perdió parte de la suba\.$/)
+    expect(primera(1.0, -0.5, -0.1, 110), 'mantener tampoco se quedó con la suba').toMatch(/de los días\.$/)
   })
 
   it('la peor caída al lado de la de mantener, sólo si fue más chica, como se ve en las tarjetas', () => {
@@ -143,6 +149,13 @@ describe('una regla: lo que dicen los números', () => {
       .frases.filter(f => /caída|caer/.test(f))
     expect(caida(-2.1, -41, -22, -63)).toEqual(['Su peor caída fue de 22%, contra 63% de comprar y mantener.'])
     expect(caida(-15, -34.8, -30, -63)).toEqual(['En el camino llegó a caer 30% desde su mejor momento; comprar y mantener, 63%.'])
+    // «Bastante» más chica: 13 % contra 14 % es ruido al lado de una regla que dejó
+    // 29 puntos; no se subraya (auditoría de regresiones 05/11, M2).
+    const ruido = lectura(con({ variacion_precio: 30 },
+      { resultado: -0.2, peor_caida: -13, compras: 12, sin_la_mejor: null }, { resultado: 28.8, peor_caida: -14 }))
+    expect(ruido.frases.filter(f => /caída|caer/.test(f))).toEqual([])
+    expect(caida(-2.1, -41, -58, -63), 'cinco puntos no alcanzan si es casi toda la otra')
+      .toEqual(['En el camino llegó a caer 58% desde su mejor momento.'])
     expect(caida(-15, -34.8, -70, -63)).toEqual(['En el camino llegó a caer 70% desde su mejor momento.'])
     expect(caida(-50, -41, -70, -63), 'cayó más que mantener').toEqual([])
     expect(caida(-41.04, -41, -22, -63), 'empate').toEqual(['Su peor caída fue de 22%, contra 63% de comprar y mantener.'])
