@@ -21,23 +21,27 @@
 // Las reglas y el período van en la dirección (?reglas=rsi,adx_squeeze&anios=2):
 // recargar o mandar el link abre la misma prueba.
 //
+// Arriba, «Una regla | Una cartera» (?modo=cartera, Nico 05/11, etapa 3): una
+// cartera armada a mano o la tuya de hoy, contra el S&P 500 y el Nasdaq, vive en
+// pages/SimularCartera.jsx. Los dos modos comparten el período y las piezas
+// (components/backtest/piezas.jsx: el gráfico, los avisos).
+//
 // Una sola pantalla para compu y celular (R6).
 
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { AlertCircle, Plus, X } from 'lucide-react'
-import {
-  ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ReferenceArea,
-} from 'recharts'
+import { Plus, X } from 'lucide-react'
 import Segmento from '../components/asset/Segmento'
 import Skeleton from '../components/Skeleton'
+import {
+  Aviso, Dato, ESPERA_MS, GraficoDeCien, PUNTEADO, Punto, REINTENTOS, Trazo, v,
+} from '../components/backtest/piezas'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { useActivoDelGrafico } from '../hooks/useActivoDelGrafico'
 import { useFichaDelActivo } from '../hooks/useFichaDelActivo'
 import { api } from '../utils/api'
-import { chartGrid, chartTickSm, chartTooltip, chartReferenceStroke } from '../utils/chartTheme'
-import { fechaCorta, plata } from '../utils/cuantoSeMueve'
-import { MONTHS } from '../utils/format'
+import { fechaCorta } from '../utils/cuantoSeMueve'
+import { MODOS, modoDe } from '../utils/carteraSimulada'
 import { activoValido } from '../utils/graficoTecnico'
 import { nombreDelCliente } from '../utils/navegacion'
 import { track } from '../utils/track'
@@ -46,25 +50,16 @@ import {
   otraRegla, porcentaje, precio, queSePrueba, reglaDe, reglasDe, sinEstaCompra, textoDelRecorte, tramosComprada,
 } from '../utils/backtesting'
 import { Encabezado } from './GraficoTecnico'
+import SimularCartera from './SimularCartera'
 
-const v = (token) => `rgb(var(--${token}))`
 // Una por regla, en el orden en que las sumaste: la primera en el violeta de la
 // marca. Ni el verde ni el rojo (se leerían «gana» o «pierde»), ni el ámbar (es
 // el de los avisos), ni el azul al lado del violeta (demasiado parecidos): las
 // mismas razones que Comparar (components/fundamentals/PrecioComparado.jsx).
 // El color es el del LUGAR (el punto de «Regla 1», «Regla 2»…), no el de la regla.
-// Comprar y mantener es la vara: un tono quieto y punteado.
+// Comprar y mantener es la vara: un tono quieto y punteado (`PUNTEADO`).
 const COLOR_REGLA = [v('data-violet'), v('data-cyan'), v('cat-magenta')]
 const COLOR_MANTENER = v('ink-1')
-const PUNTEADO = '6 3'
-// «bajando»: otra persona está bajando ese activo; se vuelve a pedir, como en Comparar.
-const REINTENTOS = 3
-const ESPERA_MS = 4000
-
-const mesCorto = (iso) => {
-  const [y, m] = iso.split('-')
-  return `${MONTHS[Number(m) - 1]?.slice(0, 3).toLowerCase()} ${y.slice(2)}`
-}
 
 export default function Backtesting() {
   const { clientCtx } = useAdvisorContext()
@@ -79,9 +74,32 @@ export default function Backtesting() {
     next.set(clave, String(valor))
     return next
   }, { replace: true })
+  // «Una regla» o «Una cartera» (pages/SimularCartera.jsx, etapa 3): los dos
+  // prueban con el pasado y comparten el período (?anios=).
+  const modo = modoDe(searchParams.get('modo'))
+  const elegirModo = (m) => setSearchParams(prev => {
+    const next = new URLSearchParams(prev)
+    if (m === 'cartera') next.set('modo', 'cartera')
+    else next.delete('modo')
+    return next
+  }, { replace: true })
+  const selector = (
+    <div className="flex">
+      <Segmento etiqueta="Qué querés probar" valor={modo} alElegir={elegirModo} opciones={MODOS} estirar />
+    </div>
+  )
 
+  if (modo === 'cartera') {
+    return (
+      <div className="flex flex-col gap-4">
+        {selector}
+        <SimularCartera />
+      </div>
+    )
+  }
   return (
     <div className="flex flex-col gap-4">
+      {selector}
       {activo
         // Con `key`, se vuelve a armar al cambiar de activo, como en el Gráfico (que
         // cuelga de `GraficoDe key={activo}`): así el teclado vuelve a su botón.
@@ -283,27 +301,6 @@ function PruebaDe({ activo, reglas, anios, onTuyo, onAbierto }) {
   return <Resultado res={res} cargando={cargando} />
 }
 
-function Aviso({ children, error = false, detalle = null, onReintentar = null }) {
-  return (
-    <div role="status" className={`flex items-start gap-2 rounded-xl border px-4 py-4 text-[14px] ${
-      error ? 'border-rendi-neg/30 bg-rendi-neg/5 text-ink-0' : 'border-line bg-bg-1 text-ink-1'}`}>
-      {error && <AlertCircle size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-rendi-neg" />}
-      <div>
-        <p>
-          {children}
-          {onReintentar && (
-            <button type="button" onClick={onReintentar}
-              className="ml-1.5 inline-flex items-center min-h-11 sm:min-h-0 font-medium text-data-violet hover:underline">
-              Reintentar
-            </button>
-          )}
-        </p>
-        {detalle && <p className="mt-0.5 text-[12px] text-ink-2">Detalle: {detalle}</p>}
-      </div>
-    </div>
-  )
-}
-
 function Resultado({ res, cargando }) {
   const lec = lectura(res)
   const recorte = textoDelRecorte(res)
@@ -373,27 +370,6 @@ function Tarjeta({ titulo, trazo, resumen, operaciones, detalle, comprada, rueda
   )
 }
 
-function Dato({ etiqueta, children }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-[12px] text-ink-2">{etiqueta}</dt>
-      <dd className="mt-0.5">{children}</dd>
-    </div>
-  )
-}
-
-function Trazo({ color, dash }) {
-  return (
-    <svg width="16" height="4" aria-hidden="true" className="shrink-0">
-      <line x1="0" y1="2" x2="16" y2="2" stroke={color} strokeWidth="2.5" strokeDasharray={dash} />
-    </svg>
-  )
-}
-
-function Punto({ color }) {
-  return <span aria-hidden="true" className="inline-block w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-}
-
 function Grafico({ res }) {
   const varias = res.resultados.length > 1
   const lineas = [
@@ -402,50 +378,12 @@ function Grafico({ res }) {
   ]
   // Una regla: sus días comprada son franjas violetas detrás de la línea. Con
   // varias, las franjas se taparían entre sí: van abajo, una fila por regla.
-  const franjas = varias ? [] : res.resultados[0].operaciones
   return (
-    <section aria-label="Cómo habrían ido US$ 100" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-3 min-w-0">
-      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
-        <div className="min-w-0">
-          <h3 className="text-[15px] font-semibold text-ink-0">Cómo habrían ido US$ 100</h3>
-          <p className="text-[12px] text-ink-2 mt-0.5">
-            Del {fechaCorta(res.desde)} al {fechaCorta(res.hasta)}, en dólares.
-            {varias ? '' : ' Las franjas violetas son los días en que la regla estaba comprada.'}
-          </p>
-        </div>
-        <ul className="flex flex-wrap gap-x-4 gap-y-1 text-[12px]">
-          {lineas.map(l => (
-            <li key={l.clave} className="inline-flex items-center gap-1.5">
-              <Trazo color={l.color} dash={l.dash} /><span className="text-ink-1">{l.nombre}</span>
-              <span className="font-semibold text-ink-0 tabular">{plata(Math.round(l.final), 'usd')}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
-      <div className="h-64 sm:h-80 -mx-1" role="img"
-        aria-label={lineas.map(l => `${l.nombre}: US$ 100 terminaron en ${plata(Math.round(l.final), 'usd')}`).join('; ')}>
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={res.curva} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-            <CartesianGrid {...chartGrid} />
-            <XAxis dataKey="d" tick={chartTickSm} axisLine={false} tickLine={false} tickFormatter={mesCorto} minTickGap={40} />
-            <YAxis tick={chartTickSm} axisLine={false} tickLine={false} width={36}
-              domain={['auto', 'auto']} tickFormatter={x => Math.round(x)} />
-            {franjas.map(o => (
-              <ReferenceArea key={o.compra} x1={o.compra} x2={o.venta} fill={COLOR_REGLA[0]} fillOpacity={0.12}
-                stroke="none" ifOverflow="hidden" />
-            ))}
-            <ReferenceLine y={100} stroke={chartReferenceStroke} />
-            <Tooltip {...chartTooltip} labelFormatter={fechaCorta}
-              formatter={(val, key) => [plata(val, 'usd'), lineas.find(l => l.clave === key)?.nombre || key]} />
-            {[...lineas].reverse().map(l => (
-              <Line key={l.clave} dataKey={l.clave} name={l.nombre} type="linear" dot={false} stroke={l.color}
-                strokeWidth={l.dash ? 1.5 : 2} strokeDasharray={l.dash} isAnimationActive={false} />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
+    <GraficoDeCien curva={res.curva} lineas={lineas} desde={res.desde} hasta={res.hasta}
+      nota={varias ? '' : 'Las franjas violetas son los días en que la regla estaba comprada.'}
+      franjas={varias ? [] : res.resultados[0].operaciones} colorFranjas={COLOR_REGLA[0]}>
       {varias && <CuandoComprada res={res} />}
-    </section>
+    </GraficoDeCien>
   )
 }
 

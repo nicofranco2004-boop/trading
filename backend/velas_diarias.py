@@ -146,6 +146,13 @@ CORTE_MIN_ANDABAN = 3
 # El S&P 500 se guarda siempre, lo tenga alguien o no: es contra lo que la ficha
 # compara cuánto se mueve un papel en un día normal (movimiento.py).
 SP500 = "^GSPC"
+# El Nasdaq COMPUESTO (el de la franja de arriba, home/market.py), también
+# siempre: «Simular una cartera» de Backtesting compara contra él (Nico, 05/11).
+# Un ticker que nunca anduvo baja entero (5 años) la primera noche (`periodo`).
+NASDAQ = "^IXIC"
+# Los índices que se guardan todas las noches, lo tenga alguien o no. El S&P 500
+# primero: además es el canario de si Yahoo contesta (`vivo`, en `actualizar`).
+INDICES = (SP500, NASDAQ)
 
 # ─── Qué activos se siguen ───────────────────────────────────────────────────
 
@@ -385,7 +392,7 @@ def _seguimiento_por_persona(conn):
                     "afuera %d activos (uid: %s)", len(topados), RAROS_POR_PERSONA,
                     sum(topados.values()), sorted(topados)[:20])
 
-    tickers.add(SP500)
+    tickers.update(INDICES)
     tickers.discard('')
     tickers.discard(None)
     return tickers, pares, de_cada_una
@@ -502,7 +509,7 @@ def _por_turnos(conn, de_cada_una: dict, hoy: str) -> list:
             por_vuelta[vuelta(t)].append(t)
         for v in range(3):
             vueltas[v].append(por_vuelta[v])
-    orden, puestos = [SP500], {SP500}
+    orden, puestos = list(INDICES), set(INDICES)
     for listas in vueltas:
         for k in range(max((len(x) for x in listas), default=0)):
             for lista in listas:
@@ -563,8 +570,9 @@ def es_ticker(t: str) -> bool:
     que le piden (`main._SYMBOL_RE`, el de GET /api/tecnico): lo que la ficha no
     aceptaría nunca va a tener velas. Un fondo con el nombre entero
     («LIQUIDACIÓN-DE-SUSCRIPCIÓN-/-…») o un nombre con espacios no se le pide a
-    Yahoo. Los índices de Yahoo empiezan con «^» (el S&P 500, `SP500`, que se
-    guarda todas las noches): la ficha no los abre, pero son tickers."""
+    Yahoo. Los índices de Yahoo empiezan con «^» (el S&P 500 y el Nasdaq,
+    `INDICES`, que se guardan todas las noches): la ficha no los abre, pero son
+    tickers."""
     from main import _SYMBOL_RE
     return bool(t) and bool(_SYMBOL_RE.match(t[1:] if t.startswith("^") else t))
 

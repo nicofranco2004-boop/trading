@@ -72,6 +72,7 @@ export const EVENTOS = {
   fundamentals_compared: { label: 'Comparó tickers', donde: 'Análisis fundamental' },
   comparar_precio: { label: 'Comparó precios desde la misma base', donde: 'Análisis fundamental' },
   backtesting: { label: 'Probó una regla técnica con el pasado', donde: 'Análisis técnico' },
+  cartera_simulada: { label: 'Simuló una cartera contra el S&P 500 y el Nasdaq', donde: 'Análisis técnico' },
   fundamentals_ai_summary_loaded: { label: 'Leyó el resumen IA de un ticker', donde: 'Análisis fundamental', tipo: 'vista' },
   fundamentals_favorite_toggled: { label: 'Marcó/desmarcó un favorito', donde: 'Análisis fundamental' },
   watchlist_added: { label: 'Agregó a favoritos', donde: 'Buscar · celular' },

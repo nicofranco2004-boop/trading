@@ -151,7 +151,8 @@ class NocheTopeTest(unittest.TestCase):
                 mock.patch("velas_diarias.TANDA", 1), mock.patch("velas_diarias.RAROS_POR_PERSONA", 200):
             velas_diarias.correr(conn)
         self.assertLess(max(pedidos.index("KO"), pedidos.index("PEP")), 6, pedidos[:8])
-        self.assertEqual(len(set(pedidos)), 123)   # todo se pide igual: sólo cambia el orden
+        # Todo se pide igual (los 120, los 2 y los índices): sólo cambia el orden.
+        self.assertEqual(len(set(pedidos)), 122 + len(velas_diarias.INDICES))
 
     def _asesor_con_clientes(self, n, inventados_por_cliente, reales=()):
         """Un asesor y `n` clientes creados por él (`managed_by`), cada uno con

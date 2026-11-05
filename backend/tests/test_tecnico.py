@@ -39,6 +39,7 @@ import main
 import estructura
 import tecnico
 from fechas import hoy_art_date
+import velas_diarias
 from velas_diarias import PERIODO_COMPLETO
 
 
@@ -63,11 +64,13 @@ class YahooFalso:
         self.hoy, self.precios, self.pedidos = hoy, {}, []
 
     def __call__(self, ticker, period, interval, auto_adjust, timeout):
-        # El S&P 500 se guarda todas las noches (velas_diarias.SP500): precio fijo
-        # salvo que la prueba le dé otro, y fuera de `pedidos`.
-        if ticker != "^GSPC":
+        # Los índices se guardan todas las noches (velas_diarias.INDICES: el S&P
+        # 500 y el Nasdaq): precio fijo salvo que la prueba le dé otro, y fuera de
+        # `pedidos`.
+        import velas_diarias
+        if ticker not in velas_diarias.INDICES:
             self.pedidos.append((ticker, period, auto_adjust))
-        f = self.precios.get(ticker) or ((lambda i, d: 5000.0) if ticker == "^GSPC" else None)
+        f = self.precios.get(ticker) or ((lambda i, d: 5000.0) if ticker in velas_diarias.INDICES else None)
         if f is None:
             return pd.DataFrame()
         # Yahoo tiene 760 ruedas (~3 años) de cada papel de prueba: menos que lo que
@@ -752,10 +755,10 @@ class FichaTest(unittest.TestCase):
         self.assertEqual(antes["activos"], 0)
         main._run_velas_diarias_job()
         e = self.client.get("/api/admin/velas", headers=self.h_admin).json()
-        # 3 activos: MSFT, NOEXISTE y el S&P 500 (que se guarda siempre).
-        self.assertEqual((e["activos"], e["ok"]), (3, 2))
+        # MSFT, NOEXISTE y los índices (que se guardan siempre).
+        self.assertEqual((e["activos"], e["ok"]), (2 + len(velas_diarias.INDICES), 1 + len(velas_diarias.INDICES)))
         self.assertEqual([f["symbol"] for f in e["fallados"]], ["NOEXISTE"])
-        self.assertEqual(e["filas"], 2 * 760)
+        self.assertEqual(e["filas"], (1 + len(velas_diarias.INDICES)) * 760)
         self.assertEqual(e["hasta"], self.dias[-1].isoformat())
         self.assertFalse(e["corriendo"])
 
@@ -915,8 +918,8 @@ class FichaTest(unittest.TestCase):
             conn.execute("INSERT INTO velas_estado (symbol, ok, error) VALUES ('VIEJO', 0, 'x')")
             conn.commit()
         e = self.client.get("/api/admin/velas", headers=self.h_admin).json()
-        self.assertEqual((e["seguidos"], e["atrasados"], e["fallados"]), (2, [], []),
-                         "MSFT y el S&P 500")
+        self.assertEqual((e["seguidos"], e["atrasados"], e["fallados"]), (1 + len(velas_diarias.INDICES), [], []),
+                         "MSFT y los índices")
 
 
     def test_cierre_del_instrumento_de_tu_tenencia(self):
@@ -1082,8 +1085,8 @@ class FichaTest(unittest.TestCase):
             conn.execute("UPDATE velas_estado SET ultima_corrida=? WHERE symbol='MSFT'", (viejo,))
             conn.commit()
             self.assertEqual(velas_diarias._podar_a_pedido(conn, {"MSFT"}), 0)
-        # El S&P 500 se guarda siempre (velas_diarias.SP500).
-        self.assertEqual(hay, {"MSFT", "AMD", "^GSPC"}, "MELI nadie la miró en 50 días; AMD sí")
+        # Los índices se guardan siempre (velas_diarias.INDICES).
+        self.assertEqual(hay, {"MSFT", "AMD", *velas_diarias.INDICES}, "MELI nadie la miró en 50 días; AMD sí")
 
     def test_dos_a_la_vez_bajan_una_sola_vez(self):
         import threading
@@ -1214,9 +1217,11 @@ class FichaTest(unittest.TestCase):
         e = self.client.get("/api/admin/velas", headers=self.h_admin).json()
         self.assertEqual(e["ultima_corrida"], "2026-01-01 03:00:00",
                          "si la noche dejó de correr, la última ficha abierta no lo tapa")
-        # MSFT y el S&P 500, que se guarda siempre (velas_diarias.SP500: contra
-        # él se compara «Cuánto se mueve»); ni NVDA ni ZZZZ, que sólo se abrieron.
-        self.assertEqual((e["activos"], e["sin_historia"]), (2, 0), "sólo lo que se sigue")
+        # MSFT y los índices, que se guardan siempre (velas_diarias.INDICES:
+        # contra el S&P 500 se compara «Cuánto se mueve»; contra los dos,
+        # «Simular una cartera»); ni NVDA ni ZZZZ, que sólo se abrieron.
+        self.assertEqual((e["activos"], e["sin_historia"]), (1 + len(velas_diarias.INDICES), 0),
+                         "sólo lo que se sigue")
 
 
 if __name__ == "__main__":

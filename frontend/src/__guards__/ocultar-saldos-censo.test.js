@@ -45,7 +45,10 @@ export const RUTAS = {
     // El termómetro (pieza 7): el número es del mercado, pero `tu_plata` es tu cartera por sector.
     'termometro',
     // El mapa de tu cartera: cuánto se movió hoy cada activo y contra lo que pagaste.
-    'cartera'],
+    'cartera',
+    // «Una cartera» de Backtesting: «Mi cartera de hoy» son tus pesos (sin plata,
+    // pero dicen qué tenés).
+    'backtest'],
   // Precios, noticias, datos de empresas: lo mismo para todos.
   mercado: ['prices', 'dolar', 'fundamentals', 'market-brief', 'news', 'benchmarks', 'assets', 'tickers', 'fci',
     'fx-rates', 'cedears', 'bond-indices', 'liquidez', 'sections'],

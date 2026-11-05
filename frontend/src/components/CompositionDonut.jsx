@@ -27,6 +27,9 @@
 //     asesor no lo pasa: son datos de clientes, no del usuario.
 //     Con `compartirConDetalle` la imagen es la de composición (la torta y,
 //     abajo, los activos de cada porción): la usa la torta por tipo.
+//   • `montos={false}`: la torta es sólo de porcentajes (una cartera que se
+//     arma, «Simular una cartera» de Backtesting): la leyenda y el globo dicen el
+//     % y no la plata, y no hay plata que tapar con el ojito.
 //
 // Nota de tema: el tooltip NO hardcodea colores (el pie "Por broker" de
 // Insights sí lo hace — `background:'#1e293b'`). Acá todo sale de los tokens
@@ -168,6 +171,7 @@ export default function CompositionDonut({
   // por porción con sus activos) en vez de la de distribución. La usa la
   // torta por TIPO, que así reemplaza a la imagen por activo.
   compartirConDetalle = false,
+  montos = true,
   className = '',
 }) {
   const [active, setActive] = useState(null)
@@ -270,7 +274,7 @@ export default function CompositionDonut({
                 <Tooltip
                   cursor={false}
                   wrapperStyle={{ outline: 'none' }}
-                  content={<DonutTooltip fmt={fmtVer} />}
+                  content={<DonutTooltip fmt={fmtVer} montos={montos} />}
                 />
               </PieChart>
             </ResponsiveContainer>
@@ -291,6 +295,7 @@ export default function CompositionDonut({
                 key={s.key}
                 slice={s}
                 fmt={fmtVer}
+                montos={montos}
                 oculto={oculto}
                 highlighted={active === i}
                 expanded={open.has(s.key)}
@@ -316,7 +321,7 @@ export default function CompositionDonut({
 // Una fila de la leyenda. Desplegable solo si tiene detalle — las porciones
 // sintéticas (plazo fijo, que no viene de `positions`) no tienen qué mostrar,
 // y darles un chevron que no hace nada es peor que no tenerlo.
-function LegendRow({ slice, fmt, oculto = false, highlighted, expanded, onHover, onLeave, onToggle, onAssetClick }) {
+function LegendRow({ slice, fmt, montos = true, oculto = false, highlighted, expanded, onHover, onLeave, onToggle, onAssetClick }) {
   // Se despliega si hay algo que mostrar: activos, o al menos el resultado
   // (el plazo fijo no tiene activos pero sí interés devengado).
   const canExpand = slice.detail?.length > 0 || Boolean(slice.pnl)
@@ -341,7 +346,7 @@ function LegendRow({ slice, fmt, oculto = false, highlighted, expanded, onHover,
         <span className="text-ink-1 truncate">{slice.label}</span>
       </div>
       <div className="flex items-baseline gap-2 flex-shrink-0">
-        <span className="text-ink-3 tabular text-[11px]">{fmt(slice.value)}</span>
+        {montos && <span className="text-ink-3 tabular text-[11px]">{fmt(slice.value)}</span>}
         <span className="text-ink-0 tabular font-medium min-w-[42px] text-right">
           {slice.pct.toFixed(1).replace('.', ',')}%
         </span>
@@ -464,7 +469,7 @@ function LegendRow({ slice, fmt, oculto = false, highlighted, expanded, onHover,
 
 // Tooltip propio: recharts pinta el default con estilos inline claros que en
 // dark mode quedan ilegibles. Este usa los tokens del design system.
-function DonutTooltip({ active, payload, fmt }) {
+function DonutTooltip({ active, payload, fmt, montos = true }) {
   if (!active || !payload?.length) return null
   const d = payload[0]?.payload
   if (!d) return null
@@ -478,7 +483,7 @@ function DonutTooltip({ active, payload, fmt }) {
         <span className="text-xs font-medium text-ink-0">{d.label}</span>
       </div>
       <div className="text-[11px] text-ink-2 tabular mt-1 pl-4">
-        {fmt(d.value)} · <span className="text-ink-0 font-medium">{d.pct.toFixed(1).replace('.', ',')}%</span>
+        {montos && <>{fmt(d.value)} · </>}<span className="text-ink-0 font-medium">{d.pct.toFixed(1).replace('.', ',')}%</span>
       </div>
       {d.detail?.length > 0 && (
         <div className="text-[10px] text-ink-3 mt-1 pl-4">

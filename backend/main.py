@@ -12613,6 +12613,58 @@ def get_tecnico_backtest(request: Request, asset: str, reglas: str = "media200",
         return res
 
 
+@app.get("/api/backtest/cartera")
+def get_backtest_cartera(request: Request, activos: str, pesos: str, local: str = "", anios: int = 2,
+                         uid: int = Depends(get_effective_user)):
+    """«Una cartera» de la pestaña Backtesting: qué habría pasado con US$ 100
+    repartidos en `activos` ('AAPL,GGAL') según `pesos` ('60,40', sobre 100),
+    comprados el primer día y sin tocar, al lado del S&P 500 y del Nasdaq, en los
+    últimos `anios` años. `local`: los que son acción argentina ('GGAL'), la misma
+    marca que en Comparar. No va en /api/tecnico/<palabra>: esa la atrapa
+    /api/tecnico/{asset}. Un activo que nadie sigue se baja en el momento, como en
+    la ficha (`_velas_a_pedido`). Las cuentas: cartera_simulada.py."""
+    import cartera_simulada as cs
+    lista = [s.strip().upper() for s in (activos or "").split(",") if s.strip()]
+    locales = {s.strip().upper() for s in (local or "").split(",") if s.strip()}
+    if not lista or len(lista) > cs.MAX_ACTIVOS or len(set(lista)) != len(lista):
+        raise HTTPException(400, f"Elegí de 1 a {cs.MAX_ACTIVOS} activos, sin repetir")
+    for s in lista + sorted(locales):
+        if not _SYMBOL_RE.match(s):
+            raise HTTPException(400, f"Símbolo inválido: {s}")
+    try:
+        ps = [float(p) for p in (pesos or "").split(",") if p.strip()]
+    except ValueError:
+        raise HTTPException(400, "Porcentajes inválidos")
+    if (len(ps) != len(lista) or any(not math.isfinite(p) or p <= 0 or p > 100 for p in ps)
+            or abs(sum(ps) - 100) > cs.TOLERANCIA):
+        raise HTTPException(400, "Va un porcentaje por activo, mayor a 0, y entre todos suman 100")
+    if anios not in cs.ANIOS:
+        raise HTTPException(400, f"Período inválido: {anios} años")
+    with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
+        bajadas = _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid)
+        res = cs.para_la_pantalla(conn, [(s, s in locales, p) for s, p in zip(lista, ps)], anios)
+        if res.get("motivo") == "sin_serie":
+            # Sin serie porque otra persona la está bajando, o por el tope de
+            # bajadas: lo dice la bajada a pedido, como en la ficha.
+            motivos = {bajadas.get(f["asset"], ((), None))[1] for f in res.get("faltan", [])}
+            res["motivo"] = next((m for m in ("bajando", "tope") if m in motivos), "sin_serie")
+        return res
+
+
+@app.get("/api/backtest/cartera/hoy")
+def get_backtest_cartera_hoy(request: Request, uid: int = Depends(get_effective_user)):
+    """«Mi cartera de hoy» de «Una cartera» (Backtesting): tus activos que tienen
+    precio de todos los días, con su peso sobre 100 entre ellos, y cuáles quedaron
+    afuera y por qué. Sólo porcentajes, nunca plata; igual dicen qué tenés, así
+    que la pantalla no la pide con «Ocultar saldos» prendido. La valuación es LA
+    de «tu plata» (`senales_semana.cartera`); la regla, cartera_simulada.de_hoy."""
+    import cartera_simulada as cs
+    import senales_semana
+    with _freno_tecnico(request, uid), db_abierta() as conn:
+        car = senales_semana.cartera(conn, uid)
+    return cs.de_hoy(car)
+
+
 @app.post("/api/tecnico/{asset}/resumen")
 @no_escribe_en_el_cliente
 def post_tecnico_resumen(request: Request, asset: str, moneda: str = "usd", local: int = 0,

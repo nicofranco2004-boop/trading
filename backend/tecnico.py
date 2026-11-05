@@ -679,12 +679,19 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     return {"velas": []}
 
 
-def sp500(conn, moneda: str = "usd") -> list:
-    """Las velas del S&P 500 en `moneda` (en pesos, × el MEP de cada día, con
-    la misma regla que un papel de afuera visto en pesos)."""
+def indice(conn, simbolo: str, moneda: str = "usd") -> list:
+    """Las velas de un índice de los que se guardan todas las noches
+    (`velas_diarias.INDICES`: el S&P 500 y el Nasdaq) en `moneda` (en pesos,
+    × el MEP de cada día, con la misma regla que un papel de afuera visto en
+    pesos). Precio solo, sin dividendos, como las velas de cada papel."""
     import velas_diarias
-    velas = velas_diarias.serie(conn, SP500)
+    velas = velas_diarias.serie(conn, simbolo)
     return _convertir(conn, velas, "multiplicar") if moneda == "ars" else velas
+
+
+def sp500(conn, moneda: str = "usd") -> list:
+    """Las velas del S&P 500 en `moneda` (`indice`)."""
+    return indice(conn, SP500, moneda)
 
 
 def ticker_de_la_empresa(conn, asset: str, local: bool = False):

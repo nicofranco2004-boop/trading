@@ -113,11 +113,13 @@ export const PASOS_TECNICO = [
     marca: 'tab-backtesting',
     ruta: '/analisis-tecnico',
     busqueda: '?tab=backtesting',
-    titulo: 'Backtesting: una regla contra el pasado',
-    // Las cuentas y las palabras: backend/backtest.py y utils/backtesting.js.
-    // Lo que muestra es el pasado: el paso lo dice, como la pantalla.
-    texto: 'Elegí un activo y una regla técnica —o hasta 3, para compararlas— y mirá qué habría pasado si '
-      + 'la seguías, siempre al lado de comprar y no tocar nada. Muestra el pasado: no dice qué va a pasar.',
+    titulo: 'Backtesting: una regla o una cartera contra el pasado',
+    // Las cuentas y las palabras: backend/backtest.py y utils/backtesting.js; la
+    // cartera, backend/cartera_simulada.py y utils/carteraSimulada.js. Lo que
+    // muestra es el pasado: el paso lo dice, como la pantalla.
+    texto: 'Elegí un activo y una regla técnica —o hasta 3— y mirá qué habría pasado si la seguías, al lado '
+      + 'de comprar y no tocar nada. O armá una cartera y comparala con el S&P 500 y el Nasdaq. Muestra el '
+      + 'pasado: no dice qué va a pasar.',
   },
   {
     id: 'comparar',
