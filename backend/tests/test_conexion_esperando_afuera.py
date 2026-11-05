@@ -512,6 +512,32 @@ class FueraDeHorarioTest(_Base):
                           "pre/post")
 
 
+class CrearUnaAlertaTest(_Base):
+    """Del barrido de la auditoría (05/11): crear una alerta de precio sondea el
+    precio de Yahoo (hasta 120 s, el tope de fondo) para saber de qué lado del
+    objetivo está hoy. Lo hacía con el turno del tope del plan tomado (en
+    Postgres, un candado de la cuenta: una transacción abierta), así que la
+    persona no podía crear un broker ni otra alerta mientras tanto y la conexión
+    no se podía soltar. Lo delató el aviso de la puerta en la suite de Postgres."""
+
+    def test_una_alerta_de_precio(self):
+        # En SQLite el turno no hace nada: se le hace dejar la transacción abierta
+        # que deja en Postgres, así la prueba mira lo mismo en los dos motores.
+        from ai import plan
+        de_verdad = plan._turno_del_tope
+
+        def turno(conn, uid):
+            de_verdad(conn, uid)
+            if not main.USANDO_PG:
+                conn.execute("UPDATE users SET tier=tier WHERE id=?", (uid,))
+        cuerpo = {"kind": "price_target", "symbol": "MSFT", "direction": "above", "threshold": 500,
+                  "currency": "USD"}
+        with mock.patch.object(plan, "_turno_del_tope", turno):
+            r = self._mirando(lambda: self.client.post("/api/alerts", headers=self.h_ana, json=cuerpo),
+                              "yahoo")
+        self.assertTrue(r["ok"] and r["id"], r)
+
+
 class RegistrarDesdeElChatTest(_Base):
     """Del mismo barrido: «comprá AAPL a precio de mercado» en el chat. El precio
     lo baja el servidor en otro hilo (`_trade_market_price`, hasta 8 s) y el chat

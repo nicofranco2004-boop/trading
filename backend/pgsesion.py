@@ -328,9 +328,12 @@ def _avisar_escritura_abierta(que) -> None:
     if donde in _AVISADOS:
         return
     _AVISADOS.add(donde)
+    # «Transacción» y no «escritura»: también puede ser un candado (el turno de una
+    # cuenta) o un punto de guardado sin escrituras; para la espera es lo mismo.
     logging.getLogger(__name__).warning(
-        "se espera a la red (%s) con una escritura abierta: la conexión no se puede soltar "
-        "y lo escrito queda trabado toda la espera. Desde: %s", que or "?", donde)
+        "se espera a la red (%s) con una transacción abierta (una escritura, un candado o un "
+        "punto de guardado): la conexión no se puede soltar y lo tomado queda trabado toda la "
+        "espera. Desde: %s", que or "?", donde)
 
 
 import sqlite3 as _sqlite3

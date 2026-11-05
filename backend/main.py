@@ -50978,6 +50978,17 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user), r
         if symbol:
             symbol = _ae._norm_sym(symbol)
 
+        # El turno del tope (`check_alert_quota`; en Postgres, un candado de la
+        # cuenta = una transacción abierta) se suelta ANTES de sondear el precio y
+        # se vuelve a pedir para contar e insertar. Con él tomado se esperaba a
+        # Yahoo hasta 120 s (`fetch_prices_for_symbols`, el tope de fondo): la
+        # persona no podía crear un broker ni otra alerta mientras tanto, y una de
+        # las 10 conexiones de la copia quedaba tomada (la puerta no suelta con
+        # una transacción abierta). Lo encontró la auditoría del 05/11 por el
+        # aviso de `pgsesion.antes_de_esperar_afuera`. Hasta acá no se escribió
+        # nada: confirmar sólo suelta el turno.
+        conn.commit()
+
         # Edge-trigger inicial + probe de resolución: sondeamos el precio del
         # símbolo (cualquier riel). Si no resuelve (typo / ticker inexistente),
         # devolvemos resolved=False para que la UI avise — no bloqueamos (yfinance
@@ -50997,6 +51008,10 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user), r
             elif baseline == "set_price":
                 anchor_price = current_price   # "Desde ahora": ancla = precio actual
 
+        # El turno otra vez, ya con el precio: cubre de contar a insertar.
+        allowed, info = _plan.check_alert_quota(conn, uid)
+        if not allowed:
+            raise _403_del_tope(info)
         # Igual que los brokers: el tope se hace cumplir en el INSERT, porque
         # entre contar y escribir entra cualquiera. Ver `plan.condicion_de_tope`.
         _cond, _cond_p = _plan.condicion_de_tope("alerts", uid, info["limit"])
