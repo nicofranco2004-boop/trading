@@ -12573,7 +12573,7 @@ def get_tecnico(request: Request, asset: str, moneda: str = "usd", local: int = 
     # El freno de la ficha (`_freno_tecnico`, tipo «uno»): 45 fichas distintas a
     # la vez dejaron el «¿estás vivo?» en 33 s (re-test E1, 29/10).
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
-        tickers, motivo = _velas_a_pedido(conn, [(sym, bool(local))], uid)[sym]
+        tickers, motivo = _velas_a_pedido(conn, [(sym, bool(local))], uid, _auth_uid_de(request, uid))[sym]
         res = tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
         if not res.get("disponible"):
             res["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
@@ -12612,17 +12612,33 @@ def post_tecnico_resumen(request: Request, asset: str, moneda: str = "usd", loca
     return resumen_tecnico.pedir(db_abierta, ficha, asset_name(base) or base, _auth_uid_de(request, uid))
 
 
-def _velas_a_pedido(conn, pedidos: list, uid) -> dict:
+def _velas_a_pedido(conn, pedidos: list, uid, paga=None) -> dict:
     """Las velas de los activos que nadie sigue (o viejas) se bajan en el momento,
     con los frenos de `velas_diarias.asegurar` y sólo si la app los conoce
     (`se_puede_pedir`). La usan la ficha (uno) y el comparador de precios
     (hasta 4, juntos: UNA espera a Yahoo con un solo tope, no una por activo).
     `pedidos`: [(símbolo, local)]. {símbolo: (tickers, motivo)}: `tickers` vacío
-    = no tiene serie (un bono, un fondo); `motivo` 'tope' o 'bajando' si no se pudo."""
+    = no tiene serie (un bono, un fondo); `motivo` 'tope' o 'bajando' si no se pudo.
+
+    Dos personas, cada una para lo suyo:
+      · `uid`, la cuenta que se mira: ¿tiene, operó o sigue el activo?
+        (`se_puede_pedir`);
+      · `paga`, la que PIDE (`_auth_uid_de`: la asesora mirando a un cliente),
+        que es la que gasta el cupo de descargas, como en el freno y en el
+        resumen. Sin `paga`, paga `uid`. Antes pagaba siempre la cuenta que se
+        mira: una asesora que recorría activos nuevos en la cuenta de Ana la
+        dejaba sin descargas esa hora (auditoría del backtesting, 04/11, hallazgo 3).
+
+    A la red (data912 para saber qué es cada activo, Yahoo para bajarlo) se la
+    espera sin la conexión de la ruta en la mano (`pgsesion.soltar`, hallazgo 4):
+    la próxima consulta pide otra."""
+    import pgsesion
     import velas_diarias
     out, bajar = {}, []
     for sym, local in pedidos:
         tickers = []
+        # Qué es cada activo lo dice data912, que puede no estar en memoria (hasta 16 s).
+        pgsesion.soltar(conn)
         try:
             tickers = velas_diarias.tickers_a_pedido(sym, local)
             if tickers and velas_diarias.se_puede_pedir(conn, sym, uid):
@@ -12633,7 +12649,7 @@ def _velas_a_pedido(conn, pedidos: list, uid) -> dict:
     motivo = None
     if bajar:
         try:
-            motivo = velas_diarias.asegurar(conn, bajar, uid)
+            motivo = velas_diarias.asegurar(conn, bajar, uid if paga is None else paga)
         except Exception as ex:
             # Sin la descarga, se muestra lo que haya guardado.
             log.warning("tecnico: velas a pedido de %s fallaron: %r", bajar, ex)
@@ -12681,7 +12697,8 @@ def get_comparar_precio(request: Request, activos: str, local: str = "", moneda:
     # pesado.py lo marca (visto al juntar la pieza 16 con E, 30/10).
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         motivos = {s: motivo or ("sin_serie" if not tickers else "sin_datos") for s, (tickers, motivo)
-                   in _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid).items()}
+                   in _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid,
+                                      _auth_uid_de(request, uid)).items()}
         cer, basis = [], None
         if moneda == "ars":
             try:
@@ -12712,8 +12729,9 @@ def get_tecnico_horas(asset: str, request: Request, cada: str = "1h", moneda: st
     memoria y compartido entre usuarios (velas_horarias.py). `desde`: sólo
     las velas que empiezan en ese momento o después (segundos UTC), para el
     refresco de cada minuto. La primera descarga de un ticker que no está en
-    memoria cuenta para un cupo por persona (velas_horarias.NUEVOS_*):
-    pasado, `motivo: 'tope'`."""
+    memoria cuenta para un cupo por persona (velas_horarias.NUEVOS_*), el de la
+    que PIDE (`_auth_uid_de`: la asesora mirando a un cliente gasta el suyo,
+    como en `_velas_a_pedido`): pasado, `motivo: 'tope'`."""
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
@@ -12725,7 +12743,8 @@ def get_tecnico_horas(asset: str, request: Request, cada: str = "1h", moneda: st
     # Lee la serie para saber qué ticker y con qué dólar: el freno único de las
     # lecturas pesadas (E1, el de la ficha; al juntar, 30/10).
     with _freno_tecnico(request, uid, "uno"):
-        return velas_horarias.para_la_ficha(db_abierta, sym, cada, moneda, bool(local), desde, uid)
+        return velas_horarias.para_la_ficha(db_abierta, sym, cada, moneda, bool(local), desde,
+                                            _auth_uid_de(request, uid))
 
 
 @app.get("/api/liquidez/{papel}")
@@ -38452,13 +38471,17 @@ _AI_TOOLS_ADVISOR = [t for t in _AI_TOOLS
                                           "get_portfolio_today")] + [_GROUP_OP_TOOL]
 
 
-def _lectura_tecnica_para_el_chat(input_data: dict, uid: int) -> dict:
+def _lectura_tecnica_para_el_chat(input_data: dict, uid: int, paga: int = None) -> dict:
     """`get_technical_reading`: la lectura técnica de un activo con la MISMA
     cuenta que su ficha (tecnico.para_la_ficha → resumen_tecnico_hechos). Un
     activo que nadie sigue se baja en el momento con los frenos de la ficha
-    (`_velas_a_pedido`). Las reglas: ai/lectura_tecnica_chat.py."""
+    (`_velas_a_pedido`). Las reglas: ai/lectura_tecnica_chat.py.
+
+    `paga`: la que pregunta (la asesora adentro de la cuenta de un cliente),
+    que gasta el freno y el cupo de descargas como en la ficha; sin decir, `uid`."""
     import tecnico
     from ai import lectura_tecnica_chat
+    paga = uid if paga is None else paga
     r = lectura_tecnica_chat.resolver(input_data.get("ticker"), input_data.get("moneda"))
     if not r:
         return {"error": "ticker requerido"}
@@ -38466,8 +38489,8 @@ def _lectura_tecnica_para_el_chat(input_data: dict, uid: int) -> dict:
     # El mismo freno que la ficha (`_freno_tecnico`, tipo «uno»): lee la serie
     # entera. Si está lleno, se le dice al modelo en vez de romper el turno.
     try:
-        with _freno_tecnico(None, uid, "uno"), db_abierta() as conn:
-            tickers, motivo = _velas_a_pedido(conn, [(sym, local)], uid)[sym]
+        with _freno_tecnico(None, paga, "uno"), db_abierta() as conn:
+            tickers, motivo = _velas_a_pedido(conn, [(sym, local)], uid, paga)[sym]
             ficha = tecnico.para_la_ficha(conn, sym, moneda, local)
     except HTTPException:
         return {"available": False, "activo": nombre,
@@ -38514,18 +38537,21 @@ def _corregir_lectura_tecnica(client, texto: str, messages_loop: list, pregunta:
 
 
 def _execute_ai_tool(name: str, input_data: dict, uid: int, request_id=None,
-                     confirm_signal: str = "") -> dict:
+                     confirm_signal: str = "", paga: int = None) -> dict:
     """Ejecuta una tool del coach IA y devuelve el resultado como dict.
 
     Wrapper que cuenta uso (audit Pack A v2) y loggea. La lógica real va
     en _execute_ai_tool_inner — separadas para que el counter siempre se
     ejecute sin importar el path de retorno.
+
+    `paga`: la persona que pregunta, cuando no es `uid` (la asesora adentro de
+    un cliente): las herramientas con cupo por persona se lo cobran a ella.
     """
     log.info("AI tool call: name=%r input_keys=%s uid=%s",
              name, list(input_data.keys()) if isinstance(input_data, dict) else 'non-dict', uid)
     try:
         result = _execute_ai_tool_inner(name, input_data, uid, request_id=request_id,
-                                        confirm_signal=confirm_signal)
+                                        confirm_signal=confirm_signal, paga=paga)
     except Exception as ex:
         # No deberíamos llegar acá (los handlers manejan sus errores), pero
         # red de seguridad para que un exception NO rompa el chat completo.
@@ -38545,7 +38571,7 @@ def _execute_ai_tool(name: str, input_data: dict, uid: int, request_id=None,
 
 
 def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=None,
-                           confirm_signal: str = "") -> dict:
+                           confirm_signal: str = "", paga: int = None) -> dict:
     """Impl real de _execute_ai_tool. Devuelve dict directamente."""
     if not isinstance(input_data, dict):
         return {"error": "input_data debe ser dict"}
@@ -39059,7 +39085,7 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
             conn.close()
 
     elif name == "get_technical_reading":
-        return _lectura_tecnica_para_el_chat(input_data, uid)
+        return _lectura_tecnica_para_el_chat(input_data, uid, paga)
 
     elif name == "get_ar_bond_metadata":
         # Bonos AR fallback (audit crítico #2): si user pregunta por AL30/GD30,
@@ -42049,7 +42075,7 @@ def _paso_humano(nombres) -> str:
 
 def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total: int, max_calls: int,
                         allowed_names=None, turn_flags=None, request_id=None,
-                        confirm_signal: str = ""):
+                        confirm_signal: str = "", paga: int = None):
     """Ejecuta los tool_use blocks de una respuesta y arma los tool_result.
     Mismo hard-cap por turno que el path JSON (Audit Pack A v2 #5). Devuelve
     (tool_results, tool_calls_total_actualizado). Compartido stream/no-stream.
@@ -42106,7 +42132,7 @@ def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total:
                 continue
             tool_calls_total += 1
             result = _execute_ai_tool(block.name, block.input, uid, request_id=request_id,
-                                      confirm_signal=confirm_signal)
+                                      confirm_signal=confirm_signal, paga=paga)
             if turn_flags is not None and isinstance(result, dict):
                 # Refund de cuota: SOLO si el turno EJECUTÓ el registro
                 # (status 'registered'), no en cualquier llamada a register_trade
@@ -43694,7 +43720,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                     tool_results, tcalls = _ai_chat_exec_tools(
                         resp.content, uid, tier, tcalls, MAX_TOOL_CALLS_PER_TURN,
                         allowed_names=chat_allowed_names, turn_flags=_turn_flags,
-                        request_id=_req_id, confirm_signal=_confirm_signal)
+                        request_id=_req_id, confirm_signal=_confirm_signal, paga=_auth_uid)
                     # El modelo dijo "voy a usar una herramienta" y no mandó ninguna.
                     # MEDIDO el 2026-09-12: pasa en ~1 de cada 3 preguntas que usan tools, y
                     # el contenido que llega es un único bloque de texto VACÍO con
@@ -43858,7 +43884,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 response.content, uid, tier, tool_calls_total,
                 MAX_TOOL_CALLS_PER_TURN, allowed_names=chat_allowed_names,
                 turn_flags=_turn_flags, request_id=_req_id,
-                confirm_signal=_confirm_signal)
+                confirm_signal=_confirm_signal, paga=_auth_uid)
 
             # El modelo dijo "voy a usar una herramienta" y no mandó ninguna.
             # MEDIDO el 2026-09-12: pasa en ~1 de cada 3 preguntas que usan tools, y

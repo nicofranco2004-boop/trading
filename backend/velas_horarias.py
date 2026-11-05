@@ -409,7 +409,9 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
      demora_min, actualizada, puntos: [{d, t, o, h, l, c, s50, s200, …, enCurso?}]}.
     `disponible: False` con `motivo`: 'sin_serie' (no hay gráfico diario),
     'sin_datos' (Yahoo no tiene velas de 1 hora o no contestó) o 'tope' (se
-    llegó al cupo de primeras descargas de la hora: NUEVOS_*).
+    llegó al cupo de primeras descargas de la hora: NUEVOS_*). Ese cupo es el de
+    `uid`, que es la persona que PIDE y no la cuenta que se mira (la asesora
+    mirando a un cliente gasta el suyo: `main._auth_uid_de`).
 
     La DEMORA de la bolsa (BYMA llega ~20 min tarde) cuenta para las dos cosas
     que dependen del reloj: la vela sigue «en curso» y la rueda sigue «en

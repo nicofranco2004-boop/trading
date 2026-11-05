@@ -81,6 +81,8 @@ import statistics
 import time
 from datetime import date
 
+import pgsesion
+
 log = logging.getLogger(__name__)
 
 # Cuánto tiene que saltar el cociente de un día al otro.
@@ -479,6 +481,7 @@ def recalcular(conn, papeles: list, *, pares: dict = None, splits=None, byma=Non
             sp = (consulta(f"{c}.BA"), consulta(f"{c}D.BA") if ny else [], consulta(afuera[c]) if ny else [])
             filas = clasificar(ba, ny, *sp)
             if _le_falta_byma(filas):
+                pgsesion.soltar(conn)      # data912 puede tardar 20 s (`_historia_byma`)
                 try:
                     historia = (byma or _historia_byma)(c)
                 except Exception as ex:      # data912 caído: queda como estaba, mañana se reintenta
@@ -512,8 +515,9 @@ def _splits_de_hoy(conn, pedir: list, tope_seg: float, maximo: int = None) -> tu
     if maximo is not None:
         toca = sorted(toca, key=lambda t: t in guardadas)[:maximo]   # estable: los nunca contestados primero
     # Se cierra la lectura antes de esperar a Yahoo (en Postgres leer abre una
-    # transacción que quedaba abierta mientras tanto).
+    # transacción que quedaba abierta mientras tanto), y se suelta la conexión.
     conn.commit()
+    pgsesion.soltar(conn)
     hechos, _ = _yahoo.varios(_splits_de_yahoo, toca, tope=tope_seg,
                               que="splits para los cambios de ratio")
     de_afuera = [t for t in toca if not t.endswith(".BA") and t in hechos]

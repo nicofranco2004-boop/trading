@@ -49,6 +49,8 @@ import zlib
 from collections import deque
 from datetime import date, datetime, timedelta, timezone
 
+import pgsesion
+
 log = logging.getLogger(__name__)
 
 # Cuántos años se guardan: de acá salen lo que se baja y lo que se poda.
@@ -743,7 +745,9 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
     Nunca se espera a Yahoo con una escritura abierta: cada tanda baja todo,
     escribe y confirma; los que hay que rebajar enteros (split) se piden DESPUÉS
     de confirmar. En SQLite una escritura abierta traba a todos los demás que
-    quieren escribir, y Yahoo puede tardar 30 s en contestar.
+    quieren escribir, y Yahoo puede tardar 30 s en contestar. Y tampoco con la
+    conexión en la mano: antes de cada espera se suelta (`pgsesion.soltar`; en
+    Postgres hay 10 por copia de la app) y la próxima consulta pide otra.
 
     `tope_seg`, `tope_tanda`: el tope de la corrida y cuánto se espera a Yahoo
     por tanda (sin decir: `TOPE_CORRIDA_SEG` y `TOPE_TANDA_SEG`; la ficha a
@@ -815,6 +819,7 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
         if canario in tanda:
             return bool(velas_de.get(canario))
         res["canarios"] += 1
+        pgsesion.soltar(conn)
         r, _ = _yahoo.varios(lambda t: bajar(t, PERIODO_INCREMENTAL), [canario],
                              tope=max(min(tope_tanda, fin - time.monotonic()), 1.0),
                              que="velas diarias (canario)")
@@ -827,6 +832,7 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
             break
         tanda = pendientes[i:i + TANDA]
         pedidos = {t: periodo(t) for t in tanda}
+        pgsesion.soltar(conn)
         bajadas, sin_respuesta = _yahoo.varios(lambda t: bajar(t, pedidos[t]), tanda,
                                                tope=tope_tanda, que="velas diarias")
         demorados = set(sin_respuesta)
@@ -844,6 +850,7 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
                 log.warning("velas: Yahoo devolvió vacía una tanda entera (%d que andaban, %s…): "
                             "pausa %d de %d, %.0f s", len(andaban), ", ".join(tanda[:5]),
                             res["pausas"], PAUSAS_MAX, PAUSA_CORTE_SEG)
+                pgsesion.soltar(conn)
                 _dormir(PAUSA_CORTE_SEG)
                 continue
             # Sin más pausas ni tiempo: lo que falta queda para mañana, sin
@@ -867,6 +874,7 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
                 tuple(enteras_vacias)).fetchall()]
             conn.commit()   # sin la lectura abierta mientras se espera a Yahoo (Postgres)
             if con_velas:
+                pgsesion.soltar(conn)
                 del_mes, sin_mes = _yahoo.varios(lambda t: bajar(t, PERIODO_INCREMENTAL), con_velas,
                                                  tope=tope_tanda, que="velas diarias (el último mes)")
                 demorados |= set(sin_mes)
@@ -903,6 +911,7 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
 
         if a_rebajar:
             # Con la tanda ya confirmada: acá no hay ninguna escritura abierta.
+            pgsesion.soltar(conn)
             rebajadas, sin_rebajar = _yahoo.varios(lambda t: bajar(t, PERIODO_COMPLETO), a_rebajar,
                                                    tope=tope_tanda, que="velas diarias (historia cambiada)")
             for t in a_rebajar:
