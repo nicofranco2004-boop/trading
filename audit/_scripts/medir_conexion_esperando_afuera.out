@@ -1,0 +1,36 @@
+# 05/11/2026 · Postgres 16.2 local (scripts/pg_de_prueba.py) · Yahoo falso de 8 s
+# "antes" = 1b4018e4 (origin/main d6fdb064 + 00938aaf, la ficha ya arreglada);
+# "después" = el commit de las puertas a la red.
+
+=== antes (1b4018e4) · Postgres local · pozo de 10 conexiones ===
+
+1. Sin carga
+  pedido liviano de a uno (5):   mediana     1.6 ms · máx     4.0 ms · códigos [200]
+  pedido liviano, 20 a la vez:   mediana    32.8 ms · máx    35.6 ms · códigos [200]
+  conexiones prestadas en reposo: 0 de 10
+
+2. Con 12 listas de seguimiento esperando a Yahoo
+  pedidos a Yahoo en curso cuando se midió: 36 de 36 (Yahoo falso: 8 s cada uno)
+  conexiones prestadas en medio de la espera: 10 de 10
+  pedido liviano de a uno (5):   mediana     2.4 ms · máx  2519.9 ms · códigos [200]
+  pedido liviano, 20 a la vez:   mediana    28.3 ms · máx    35.5 ms · códigos [200]
+  (las dos mediciones del pedido liviano tardaron 2.6 s en total)
+  las 12 listas: códigos [200], con precio 14 de 36 activos, tardaron 8.1–16.1 s
+
+=== después (este arreglo) · Postgres local · pozo de 10 conexiones ===
+
+1. Sin carga
+  pedido liviano de a uno (5):   mediana     1.6 ms · máx     4.2 ms · códigos [200]
+  pedido liviano, 20 a la vez:   mediana    31.6 ms · máx    36.9 ms · códigos [200]
+  conexiones prestadas en reposo: 0 de 10
+
+2. Con 12 listas de seguimiento esperando a Yahoo
+  pedidos a Yahoo en curso cuando se midió: 36 de 36 (Yahoo falso: 8 s cada uno)
+  conexiones prestadas en medio de la espera: 0 de 10
+  pedido liviano de a uno (5):   mediana     2.9 ms · máx     5.0 ms · códigos [200]
+  pedido liviano, 20 a la vez:   mediana    32.4 ms · máx    37.5 ms · códigos [200]
+  (las dos mediciones del pedido liviano tardaron 0.1 s en total)
+  las 12 listas: códigos [200], con precio 13 de 36 activos, tardaron 8.0–8.1 s
+
+# «con precio 13/14 de 36»: el Yahoo falso tarda lo mismo que el tope (8 s) y
+# el pozo de Yahoo es de 24 hilos para 36 pedidos; igual antes y después.

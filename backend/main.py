@@ -8405,6 +8405,12 @@ def _bench_para_reportes(esperar: bool = True) -> dict:
         return {"inflation_ar": cache.get("inflation_ar") or {},
                 "sp500": {}, "sp500_d": {}}
     bajado = {}
+    if not (cache.get("inflation_ar") and cache.get("sp500") and cache.get("sp500_d")):
+        # Con el caché frío se espera a la red en la misma pantalla: la inflación
+        # (argentinadatos, hasta 8 s) y el S&P 500 (Yahoo). Quien pidió —Reportes,
+        # con la base abierta— suelta antes su conexión. Pasa a cada publicación.
+        import pgsesion
+        pgsesion.antes_de_esperar_afuera("benchmarks para Reportes")
     infl = cache.get("inflation_ar")
     if not infl:
         infl = bajado["inflation_ar"] = _fetch_inflation_ar()
@@ -8457,6 +8463,10 @@ def _benchmarks_fetch_and_cache():
     Paralelización: 7 fetches concurrent en _bench_fetch_executor (max_workers=4
     → algunos quedarán en cola pero el wall time domina al más lento ~15-20s).
     """
+    # Se esperan hasta BENCH_TOPE_SEG (Yahoo, la inflación, el BCRA): quien espera
+    # —Rendimiento con el caché frío— no se queda con su conexión a la base.
+    import pgsesion
+    pgsesion.antes_de_esperar_afuera("benchmarks")
     f_inf = _bench_fetch_executor.submit(_fetch_inflation_ar)
     f_sp = _bench_fetch_executor.submit(_fetch_sp500_monthly)
     f_blue = _bench_fetch_executor.submit(_fetch_dolar_blue_monthly)
@@ -8544,7 +8554,13 @@ def _yf_history(ticker: str, period: str, interval: str):
     En producción el caché vive en `/tmp/yf-cache` (efímero por deploy): el mismo
     modo de falla es posible entre deploys. Reapuntar a un directorio nuevo es el
     remedio exacto y no tiene costo cuando el caché está sano.
+
+    Va a Yahoo sin pasar por `pricing.yahoo`, a veces desde la misma pantalla
+    (Reportes con el caché frío: `_bench_para_reportes`): antes de esperar, quien
+    pidió suelta su conexión a la base (`pgsesion.antes_de_esperar_afuera`).
     """
+    import pgsesion
+    pgsesion.antes_de_esperar_afuera(f"benchmark {ticker}")
     err = None
     try:
         data = yf.Ticker(ticker).history(period=period, interval=interval)
@@ -9502,8 +9518,14 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
     Devuelve cuántas búsquedas TERMINARON BIEN antes de volver (0 si no
     espera): es el `refreshed_tickers` de las respuestas, y una búsqueda que no
     llegó a tiempo, o que falló, no renovó nada de lo que se está por mostrar."""
+    import pgsesion
     ahora = time.time()
     futuros = []
+    # Las búsquedas van a Yahoo en otro hilo y acá se las espera: quien espera
+    # suelta antes su conexión a la base (`pgsesion.antes_de_esperar_afuera`), y
+    # sólo si hay algo que esperar (con todo al día no la suelta para volver a
+    # pedirla). Antes de mandar la primera, no al empezar a esperar: sale enseguida.
+    soltada = False
     with _events_en_vuelo_lock:
         # Sólo lo que tiene forma de ticker (_SYMBOL_RE): un fondo del catálogo
         # ("FCI:COCOS-RENDIMIENTO-A") no tiene earnings, y Yahoo contesta con
@@ -9513,11 +9535,16 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
                 continue
             fut = _events_en_vuelo.get(t)
             if fut is None:
+                if esperar_segundos is not None and not soltada:
+                    pgsesion.antes_de_esperar_afuera("eventos de Yahoo")
+                    soltada = True
                 fut = _events_fetch_executor.submit(_buscar_y_guardar_eventos, t)
                 _events_en_vuelo[t] = fut
             futuros.append(fut)
     if not futuros or esperar_segundos is None:
         return 0
+    if not soltada:          # sólo búsquedas que ya estaban en vuelo
+        pgsesion.antes_de_esperar_afuera("eventos de Yahoo")
     terminados, _ = _esperar_futuros(futuros, timeout=esperar_segundos)
     return sum(1 for f in terminados if not f.cancelled() and f.result() is True)
 
@@ -9648,14 +9675,21 @@ def _earnings_pasados_al_dia(ticker: str, esperar_segundos=None) -> None:
     if not ticker or not _SYMBOL_RE.match(ticker):
         return
     clave = f"{ticker}|pasados"
+    import pgsesion
     with _events_en_vuelo_lock:
         if time.time() - _earnings_pasados_at.get(ticker, 0) < EARNINGS_PASADOS_TTL:
             return
         fut = _events_en_vuelo.get(clave)
         if fut is None:
+            if esperar_segundos:
+                # Como en `_refresh_events_for_tickers`: la pantalla espera a Yahoo
+                # (5 s en la ficha) sin la conexión de la ruta, y la suelta antes
+                # de mandar el pedido; al día, no la suelta.
+                pgsesion.antes_de_esperar_afuera("balances pasados de Yahoo")
             fut = _events_fetch_executor.submit(_buscar_y_guardar_earnings_pasados, ticker)
             _events_en_vuelo[clave] = fut
     if esperar_segundos:
+        pgsesion.antes_de_esperar_afuera("balances pasados de Yahoo")   # si ya estaba en vuelo
         _esperar_futuros([fut], timeout=esperar_segundos)
 
 
@@ -11072,6 +11106,9 @@ def _fetch_data912_bonds():
     caida, respuesta = _fuente_caida("data912_bonos")
     if caida:
         return respuesta
+    # Hasta 2 × 8 s: quien pidió no se queda con su conexión a la base mientras.
+    import pgsesion
+    pgsesion.antes_de_esperar_afuera("data912 en vivo (bonos)")
     try:
         result = {}
         pcts = {}
@@ -11170,6 +11207,9 @@ def _fetch_data912_equities():
     caida, respuesta = _fuente_caida("data912_acciones")
     if caida:
         return respuesta
+    # Hasta 2 × 8 s: quien pidió no se queda con su conexión a la base mientras.
+    import pgsesion
+    pgsesion.antes_de_esperar_afuera("data912 en vivo (acciones y CEDEARs)")
     try:
         result = {}
         for endpoint in ('arg_cedears', 'arg_stocks'):
@@ -12699,11 +12739,29 @@ def _velas_a_pedido(conn, pedidos: list, uid) -> dict:
     (`se_puede_pedir`). La usan la ficha (uno) y el comparador de precios
     (hasta 4, juntos: UNA espera a Yahoo con un solo tope, no una por activo).
     `pedidos`: [(símbolo, local)]. {símbolo: (tickers, motivo)}: `tickers` vacío
-    = no tiene serie (un bono, un fondo); `motivo` 'tope' o 'bajando' si no se pudo."""
+    = no tiene serie (un bono, un fondo); `motivo` 'tope' o 'bajando' si no se pudo.
+
+    Dos personas, cada una para lo suyo:
+      · `uid`, la cuenta que se mira: ¿tiene, operó o sigue el activo?
+        (`se_puede_pedir`);
+      · la que PIDE (la asesora mirando a un cliente) gasta el cupo de
+        descargas, como en el freno y en el resumen. No se pasa: es a quien el
+        freno le está contando esta lectura (`_freno_paga`), y toda lectura
+        pesada pasa por el freno. Antes pagaba siempre la cuenta que se mira:
+        una asesora que recorría activos nuevos en la cuenta de Ana la dejaba sin
+        descargas esa hora (auditoría del backtesting, 04/11, hallazgo 3). Fuera
+        de un freno (una prueba que la llama a mano) paga `uid`.
+
+    A la red (data912 para saber qué es cada activo, Yahoo para bajarlo) se la
+    espera sin la conexión de la ruta en la mano (`pgsesion.soltar`, hallazgo 4):
+    la próxima consulta pide otra."""
+    import pgsesion
     import velas_diarias
     out, bajar = {}, []
     for sym, local in pedidos:
         tickers = []
+        # Qué es cada activo lo dice data912, que puede no estar en memoria (hasta 16 s).
+        pgsesion.soltar(conn)
         try:
             tickers = velas_diarias.tickers_a_pedido(sym, local)
             if tickers and velas_diarias.se_puede_pedir(conn, sym, uid):
@@ -12714,7 +12772,7 @@ def _velas_a_pedido(conn, pedidos: list, uid) -> dict:
     motivo = None
     if bajar:
         try:
-            motivo = velas_diarias.asegurar(conn, bajar, uid)
+            motivo = velas_diarias.asegurar(conn, bajar, _freno_paga.get() or uid)
         except Exception as ex:
             # Sin la descarga, se muestra lo que haya guardado.
             log.warning("tecnico: velas a pedido de %s fallaron: %r", bajar, ex)
@@ -12793,8 +12851,9 @@ def get_tecnico_horas(asset: str, request: Request, cada: str = "1h", moneda: st
     memoria y compartido entre usuarios (velas_horarias.py). `desde`: sólo
     las velas que empiezan en ese momento o después (segundos UTC), para el
     refresco de cada minuto. La primera descarga de un ticker que no está en
-    memoria cuenta para un cupo por persona (velas_horarias.NUEVOS_*):
-    pasado, `motivo: 'tope'`."""
+    memoria cuenta para un cupo por persona (velas_horarias.NUEVOS_*), el de la
+    que PIDE (`_auth_uid_de`: la asesora mirando a un cliente gasta el suyo,
+    como en `_velas_a_pedido`): pasado, `motivo: 'tope'`."""
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
@@ -12806,7 +12865,8 @@ def get_tecnico_horas(asset: str, request: Request, cada: str = "1h", moneda: st
     # Lee la serie para saber qué ticker y con qué dólar: el freno único de las
     # lecturas pesadas (E1, el de la ficha; al juntar, 30/10).
     with _freno_tecnico(request, uid, "uno"):
-        return velas_horarias.para_la_ficha(db_abierta, sym, cada, moneda, bool(local), desde, uid)
+        return velas_horarias.para_la_ficha(db_abierta, sym, cada, moneda, bool(local), desde,
+                                            _auth_uid_de(request, uid))
 
 
 @app.get("/api/liquidez/{papel}")
@@ -12879,6 +12939,12 @@ _freno_total = [0]             # cuántas lecturas corren en todo el servidor
 _freno_de_cada_uno: dict = {}  # quién → cuántas tiene corriendo (de cualquier tipo)
 _freno_candado = threading.Lock()
 _freno_reloj = time.monotonic
+# Quién paga la lectura pesada que está corriendo: la persona a la que el freno
+# se la cuenta (`quien`), o sea la que la PIDE (la asesora mirando a un cliente).
+# La lee `_velas_a_pedido` para el cupo de descargas. Así «la que pide paga» se
+# decide acá, una vez, y ninguna ruta lo tiene que repetir: pasado a mano ruta
+# por ruta, se olvidó en el ✦ de la ficha (auditoría del 05/11).
+_freno_paga = _contextvars.ContextVar("rendi_freno_paga", default=None)
 
 
 def _freno_reiniciar() -> None:
@@ -12923,9 +12989,11 @@ def _freno_tecnico(request: Request, uid: int, tipo: str = "muchos"):
             for k in [k for k, v in _freno_hechos.items() if not v and k not in _freno_corriendo]:
                 del _freno_hechos[k]
     marca = _pesado._con_freno.set(True)
+    paga = _freno_paga.set(quien[0])
     try:
         yield
     finally:
+        _freno_paga.reset(paga)
         _pesado._con_freno.reset(marca)
         with _freno_candado:
             _freno_total[0] = max(0, _freno_total[0] - 1)
@@ -14937,6 +15005,33 @@ def _marcas_de_split(conn, uid: int) -> dict:
             "cero": _corporate_zero_dates(conn, uid)}
 
 
+def _por_que_no_se_ajusta_el_ratio(conn, uid: int, row):
+    """None si el lote puede tener un cambio de ratio; si no, el motivo (el 400 de
+    /adjust-ratio). Lo usa la puerta dos veces: antes del turno, para no pedirle
+    splits a Yahoo de un lote que igual se rechaza, y adentro, sobre la fila
+    recién leída, para decidir.
+
+    Gate alineado con la valuación (priceSymbol en valuation.js): un holding
+    se precia vía .BA —y por ende puede tener cambio de ratio— si su
+    asset_type es CEDEAR, O si vive en un broker ARS (cualquier equity de
+    BYMA: CEDEAR, acción AR, o un ticker ambiguo como SPY/QQQ que quedó
+    mal-taggeado). Antes exigíamos asset_type='CEDEAR' literal y se perdían
+    esos casos: la valuación los muestra en pesos (de ahí la pérdida
+    fantasma) pero el ajuste no aparecía. Excluimos bonos/ONs, FCI, cripto y
+    fiat (no tienen split de equity). Schwab (USD) queda fuera salvo CEDEAR."""
+    if row["is_cash"]:
+        return "No se puede ajustar el ratio de una posición de cash."
+    asset_type = (row["asset_type"] or "").upper()
+    excluded = asset_type in ("BOND", "FIAT", "CRYPTO") or (row["asset"] or "").startswith("FCI:")
+    broker_row = conn.execute(
+        "SELECT currency FROM brokers WHERE user_id=? AND name=?", (uid, row["broker"]),
+    ).fetchone()
+    broker_is_ars = bool(broker_row) and (broker_row["currency"] or "").upper() == "ARS"
+    if excluded or not (asset_type == "CEDEAR" or broker_is_ars):
+        return "El ajuste por cambio de ratio es solo para CEDEARs o equities en brokers ARS."
+    return None
+
+
 @app.post("/api/positions/{pid}/adjust-ratio")
 def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
     """Ajusta un lote de CEDEAR por el/los cambio(s) de ratio (split) que el SERVER
@@ -14955,38 +15050,40 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
       posterior) re-deriva los mismos splits → 0 nuevos → no-op (nunca 9×/100×).
     - NO borra snapshots históricos (eran valor-en-su-fecha válido; el snapshot
       diario se auto-corrige y deja, a lo sumo, un escalón de un día).
+    - Los splits de Yahoo se traen ANTES de tomar el turno de la cuenta, y adentro
+      salen de la caché (`_splits_cache`). Con el turno tomado (en Postgres, una
+      escritura abierta) la conexión no se puede soltar: se esperaba a Yahoo
+      hasta SPLITS_TOPE_SEG con la cuenta trabada para todo lo que escribe y una
+      de las 10 conexiones de la copia tomada (barrido del 05/11/2026).
     """
     conn = get_db()
     try:
+        nuevo = interruptor(AVISO_RATIO_NUEVO, conn)
+        # Los splits, antes del turno, y sólo de un lote que se puede ajustar: el
+        # mismo control de abajo (efectivo, bonos, fondos y cripto no van a Yahoo,
+        # como antes de este orden).
+        antes = conn.execute(
+            "SELECT * FROM positions WHERE id=? AND user_id=?", (pid, uid),
+        ).fetchone()
+        if antes and _por_que_no_se_ajusta_el_ratio(conn, uid, antes) is None:
+            _a = (antes["asset"] or "").upper()
+            _base = _a[:-3] if _a.endswith(".BA") else _a     # la misma de `_cambios_a_ofrecer`
+            if _base:
+                _fetch_ba_splits(f"{_base}.BA", conn, nuevo)
         _tomar_turno_de_la_puerta(conn, uid)
         row = conn.execute(
             "SELECT * FROM positions WHERE id=? AND user_id=?", (pid, uid),
         ).fetchone()
         if not row:
             raise HTTPException(404, "Posición no encontrada.")
-        if row["is_cash"]:
-            raise HTTPException(400, "No se puede ajustar el ratio de una posición de cash.")
-        # Gate alineado con la valuación (priceSymbol en valuation.js): un holding
-        # se precia vía .BA —y por ende puede tener cambio de ratio— si su
-        # asset_type es CEDEAR, O si vive en un broker ARS (cualquier equity de
-        # BYMA: CEDEAR, acción AR, o un ticker ambiguo como SPY/QQQ que quedó
-        # mal-taggeado). Antes exigíamos asset_type='CEDEAR' literal y se perdían
-        # esos casos: la valuación los muestra en pesos (de ahí la pérdida
-        # fantasma) pero el ajuste no aparecía. Excluimos bonos/ONs, FCI, cripto y
-        # fiat (no tienen split de equity). Schwab (USD) queda fuera salvo CEDEAR.
-        asset_type = (row["asset_type"] or "").upper()
-        excluded = asset_type in ("BOND", "FIAT", "CRYPTO") or (row["asset"] or "").startswith("FCI:")
-        broker_row = conn.execute(
-            "SELECT currency FROM brokers WHERE user_id=? AND name=?", (uid, row["broker"]),
-        ).fetchone()
-        broker_is_ars = bool(broker_row) and (broker_row["currency"] or "").upper() == "ARS"
-        if excluded or not (asset_type == "CEDEAR" or broker_is_ars):
-            raise HTTPException(400, "El ajuste por cambio de ratio es solo para CEDEARs o equities en brokers ARS.")
+        motivo = _por_que_no_se_ajusta_el_ratio(conn, uid, row)
+        if motivo:
+            raise HTTPException(400, motivo)
         # Re-derivar los cambios EN EL SERVER (no confiar en el cliente), con la
         # misma decisión que /split-check: si el aviso no lo ofrece, esto no lo
         # aplica aunque lo llamen a mano (Balanz ya lo trajo, la foto lo concilió,
         # o el lote ya está en la escala nueva).
-        applicable, _ = _cambios_a_ofrecer(conn, uid, row, _marcas_de_split(conn, uid), {})
+        applicable, _ = _cambios_a_ofrecer(conn, uid, row, _marcas_de_split(conn, uid), {}, nuevo)
         if not applicable:
             return {**dict(row), "already_applied": True}
         combined = 1.0
@@ -33678,6 +33775,12 @@ def _yf_fetch_cached(ticker: str, kind: str, fetcher_fn) -> dict:
         # esperando shutdown del thread, neutralizando el timeout. Con
         # executor global, el thread hung queda en bg (lo dejamos morir
         # naturalmente cuando yfinance eventualmente responde o se hace GC).
+        # Se espera el semáforo (8 a la vez) y después a Yahoo (hasta
+        # YF_FETCH_TIMEOUT_SECONDS): las dos esperas sin esta conexión ni la de
+        # quien llamó (`pgsesion.antes_de_esperar_afuera`; los fundamentales
+        # hacen 5 seguidas). La de esta función se vuelve a pedir para guardar.
+        import pgsesion
+        pgsesion.antes_de_esperar_afuera(f"{yf_ticker}/{kind} (turno de Yahoo)")
         try:
             with _yf_fetch_semaphore:
                 # El mismo "esperar con tope sin esperar al hilo" que usa toda
@@ -36669,6 +36772,10 @@ def _trade_market_price(asset: str, kind, currency: str, uid: int):
         if _TRADE_PRICE_POOL is None:
             from concurrent.futures import ThreadPoolExecutor
             _TRADE_PRICE_POOL = ThreadPoolExecutor(max_workers=2)
+        # Hasta 8 s de Yahoo o data912 en otro hilo: el chat (que tiene la base
+        # abierta para registrar) no se queda con su conexión mientras.
+        import pgsesion
+        pgsesion.antes_de_esperar_afuera(f"precio de {sym} para registrar")
         fut = _TRADE_PRICE_POOL.submit(get_prices, sym, uid)
         p = (fut.result(timeout=8) or {}).get(sym)
         p = float(p) if p is not None else None
@@ -38565,13 +38672,17 @@ _AI_TOOLS_ADVISOR = [t for t in _AI_TOOLS
                                           "get_portfolio_today")] + [_GROUP_OP_TOOL]
 
 
-def _lectura_tecnica_para_el_chat(input_data: dict, uid: int) -> dict:
+def _lectura_tecnica_para_el_chat(input_data: dict, uid: int, paga: int = None) -> dict:
     """`get_technical_reading`: la lectura técnica de un activo con la MISMA
     cuenta que su ficha (tecnico.para_la_ficha → resumen_tecnico_hechos). Un
     activo que nadie sigue se baja en el momento con los frenos de la ficha
-    (`_velas_a_pedido`). Las reglas: ai/lectura_tecnica_chat.py."""
+    (`_velas_a_pedido`). Las reglas: ai/lectura_tecnica_chat.py.
+
+    `paga`: la que pregunta (la asesora adentro de la cuenta de un cliente),
+    que gasta el freno y el cupo de descargas como en la ficha; sin decir, `uid`."""
     import tecnico
     from ai import lectura_tecnica_chat
+    paga = uid if paga is None else paga
     r = lectura_tecnica_chat.resolver(input_data.get("ticker"), input_data.get("moneda"))
     if not r:
         return {"error": "ticker requerido"}
@@ -38579,7 +38690,7 @@ def _lectura_tecnica_para_el_chat(input_data: dict, uid: int) -> dict:
     # El mismo freno que la ficha (`_freno_tecnico`, tipo «uno»): lee la serie
     # entera. Si está lleno, se le dice al modelo en vez de romper el turno.
     try:
-        with _freno_tecnico(None, uid, "uno"), db_abierta() as conn:
+        with _freno_tecnico(None, paga, "uno"), db_abierta() as conn:
             tickers, motivo = _velas_a_pedido(conn, [(sym, local)], uid)[sym]
             ficha = tecnico.para_la_ficha(conn, sym, moneda, local)
     except HTTPException:
@@ -38627,18 +38738,21 @@ def _corregir_lectura_tecnica(client, texto: str, messages_loop: list, pregunta:
 
 
 def _execute_ai_tool(name: str, input_data: dict, uid: int, request_id=None,
-                     confirm_signal: str = "") -> dict:
+                     confirm_signal: str = "", paga: int = None) -> dict:
     """Ejecuta una tool del coach IA y devuelve el resultado como dict.
 
     Wrapper que cuenta uso (audit Pack A v2) y loggea. La lógica real va
     en _execute_ai_tool_inner — separadas para que el counter siempre se
     ejecute sin importar el path de retorno.
+
+    `paga`: la persona que pregunta, cuando no es `uid` (la asesora adentro de
+    un cliente): las herramientas con cupo por persona se lo cobran a ella.
     """
     log.info("AI tool call: name=%r input_keys=%s uid=%s",
              name, list(input_data.keys()) if isinstance(input_data, dict) else 'non-dict', uid)
     try:
         result = _execute_ai_tool_inner(name, input_data, uid, request_id=request_id,
-                                        confirm_signal=confirm_signal)
+                                        confirm_signal=confirm_signal, paga=paga)
     except Exception as ex:
         # No deberíamos llegar acá (los handlers manejan sus errores), pero
         # red de seguridad para que un exception NO rompa el chat completo.
@@ -38658,7 +38772,7 @@ def _execute_ai_tool(name: str, input_data: dict, uid: int, request_id=None,
 
 
 def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=None,
-                           confirm_signal: str = "") -> dict:
+                           confirm_signal: str = "", paga: int = None) -> dict:
     """Impl real de _execute_ai_tool. Devuelve dict directamente."""
     if not isinstance(input_data, dict):
         return {"error": "input_data debe ser dict"}
@@ -39172,7 +39286,7 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
             conn.close()
 
     elif name == "get_technical_reading":
-        return _lectura_tecnica_para_el_chat(input_data, uid)
+        return _lectura_tecnica_para_el_chat(input_data, uid, paga)
 
     elif name == "get_ar_bond_metadata":
         # Bonos AR fallback (audit crítico #2): si user pregunta por AL30/GD30,
@@ -42162,7 +42276,7 @@ def _paso_humano(nombres) -> str:
 
 def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total: int, max_calls: int,
                         allowed_names=None, turn_flags=None, request_id=None,
-                        confirm_signal: str = ""):
+                        confirm_signal: str = "", paga: int = None):
     """Ejecuta los tool_use blocks de una respuesta y arma los tool_result.
     Mismo hard-cap por turno que el path JSON (Audit Pack A v2 #5). Devuelve
     (tool_results, tool_calls_total_actualizado). Compartido stream/no-stream.
@@ -42219,7 +42333,7 @@ def _ai_chat_exec_tools(response_content, uid: int, tier: str, tool_calls_total:
                 continue
             tool_calls_total += 1
             result = _execute_ai_tool(block.name, block.input, uid, request_id=request_id,
-                                      confirm_signal=confirm_signal)
+                                      confirm_signal=confirm_signal, paga=paga)
             if turn_flags is not None and isinstance(result, dict):
                 # Refund de cuota: SOLO si el turno EJECUTÓ el registro
                 # (status 'registered'), no en cualquier llamada a register_trade
@@ -42390,11 +42504,15 @@ def _params_de_boton(params) -> dict:
     del plan que decide cuántos detectores pagos ve la IA. La pone el servidor
     (ai_analyze / ai_chat, desde _tier_con_lente); si se dejara pasar desde el
     navegador, un Free mandaría `tier_override='pro'` en el ✦ y se autoservería
-    los detectores de un plan que no pagó. No la saques de esta lista."""
+    los detectores de un plan que no pagó. No la saques de esta lista.
+
+    `paga`, también por SEGURIDAD: quién pregunta, a quien el armador técnico le
+    cobra el freno y las descargas (ai_chat lo pone desde el token). Desde el
+    navegador, cualquiera elegiría a quién cobrarle."""
     if not isinstance(params, dict):
         return {}
     return {k: v for k, v in params.items()
-            if isinstance(k, str) and k not in ("conn", "user_id", "tier_override")}
+            if isinstance(k, str) and k not in ("conn", "user_id", "tier_override", "paga")}
 
 
 def _podar_lo_que_ya_esta(nodo):
@@ -43252,7 +43370,10 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
                     # armador recorta los detectores por el plan del ASESOR, no del
                     # cliente. Sin esto, el ✦ del chat cortaba por el plan del cliente
                     # (RENDI-A04, segundo call site — la regla de propagación).
-                    _paquete = _topico[0](_pconn, uid, **_params_de_boton(data.analisis.params), tier_override=_lens_override)
+                    # `paga` = quien pregunta: el armador técnico le cobra el freno
+                    # y las descargas a ella, no al cliente que mira.
+                    _paquete = _topico[0](_pconn, uid, **_params_de_boton(data.analisis.params), tier_override=_lens_override,
+                                          paga=_auth_uid)
                 finally:
                     _pconn.close()
                 _paquete = _podar_lo_que_ya_esta(_paquete)
@@ -43807,7 +43928,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                     tool_results, tcalls = _ai_chat_exec_tools(
                         resp.content, uid, tier, tcalls, MAX_TOOL_CALLS_PER_TURN,
                         allowed_names=chat_allowed_names, turn_flags=_turn_flags,
-                        request_id=_req_id, confirm_signal=_confirm_signal)
+                        request_id=_req_id, confirm_signal=_confirm_signal, paga=_auth_uid)
                     # El modelo dijo "voy a usar una herramienta" y no mandó ninguna.
                     # MEDIDO el 2026-09-12: pasa en ~1 de cada 3 preguntas que usan tools, y
                     # el contenido que llega es un único bloque de texto VACÍO con
@@ -43971,7 +44092,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 response.content, uid, tier, tool_calls_total,
                 MAX_TOOL_CALLS_PER_TURN, allowed_names=chat_allowed_names,
                 turn_flags=_turn_flags, request_id=_req_id,
-                confirm_signal=_confirm_signal)
+                confirm_signal=_confirm_signal, paga=_auth_uid)
 
             # El modelo dijo "voy a usar una herramienta" y no mandó ninguna.
             # MEDIDO el 2026-09-12: pasa en ~1 de cada 3 preguntas que usan tools, y
@@ -50954,6 +51075,17 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user), r
         if symbol:
             symbol = _ae._norm_sym(symbol)
 
+        # El turno del tope (`check_alert_quota`; en Postgres, un candado de la
+        # cuenta = una transacción abierta) se suelta ANTES de sondear el precio y
+        # se vuelve a pedir para contar e insertar. Con él tomado se esperaba a
+        # Yahoo hasta 120 s (`fetch_prices_for_symbols`, el tope de fondo): la
+        # persona no podía crear un broker ni otra alerta mientras tanto, y una de
+        # las 10 conexiones de la copia quedaba tomada (la puerta no suelta con
+        # una transacción abierta). Lo encontró la auditoría del 05/11 por el
+        # aviso de `pgsesion.antes_de_esperar_afuera`. Hasta acá no se escribió
+        # nada: confirmar sólo suelta el turno.
+        conn.commit()
+
         # Edge-trigger inicial + probe de resolución: sondeamos el precio del
         # símbolo (cualquier riel). Si no resuelve (typo / ticker inexistente),
         # devolvemos resolved=False para que la UI avise — no bloqueamos (yfinance
@@ -50973,6 +51105,10 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user), r
             elif baseline == "set_price":
                 anchor_price = current_price   # "Desde ahora": ancla = precio actual
 
+        # El turno otra vez, ya con el precio: cubre de contar a insertar.
+        allowed, info = _plan.check_alert_quota(conn, uid)
+        if not allowed:
+            raise _403_del_tope(info)
         # Igual que los brokers: el tope se hace cumplir en el INSERT, porque
         # entre contar y escribir entra cualquiera. Ver `plan.condicion_de_tope`.
         _cond, _cond_p = _plan.condicion_de_tope("alerts", uid, info["limit"])

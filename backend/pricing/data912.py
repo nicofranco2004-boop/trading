@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import requests
 
+import pgsesion
+
 URL = "https://data912.com/historical/{tipo}/{papel}"
 
 
@@ -37,7 +39,11 @@ def filas(tipo: str, papel: str, timeout: float = 10) -> list:
     ⚠️ Un código que no es 200 es una FALLA, no "no hay historia". data912
     avisa que no tiene un papel con 200; un 500, un 503 o un 429 es el servidor
     caído o limitando. Tomarlo como "no hay" dejaba al bono al costo todo el
-    mes en la reconstrucción, que recuerda el "no hay" hasta que cambia el mes."""
+    mes en la reconstrucción, que recuerda el "no hay" hasta que cambia el mes.
+
+    Mientras se espera, las conexiones a la base de quien pidió vuelven al pozo
+    (`pgsesion.antes_de_esperar_afuera`): data912 puede tardar `timeout` segundos."""
+    pgsesion.antes_de_esperar_afuera(f"data912 {tipo}/{papel}")
     r = requests.get(URL.format(tipo=tipo, papel=papel), timeout=timeout)
     if r.status_code != 200:
         raise requests.HTTPError(f"data912 {tipo}/{papel}: {r.status_code}")

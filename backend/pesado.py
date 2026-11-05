@@ -30,6 +30,13 @@ _YA_AVISADOS = set()  # para el log: una vez por par
 _MAX_ANOTADOS = 200
 
 
+def en_pedido():
+    """El pedido HTTP en curso ("GET /api/…") o None fuera de uno (la noche, los
+    mails, las alertas). Lo pone `MarcarPedido`. Lo lee también la puerta a la red
+    (`pgsesion.antes_de_esperar_afuera`): sólo un pedido suelta su conexión."""
+    return _en_pedido.get()
+
+
 def pesado(fn):
     """Marca una función como lectura pesada: dentro de un pedido HTTP tiene que
     correr adentro del freno."""

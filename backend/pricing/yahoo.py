@@ -45,6 +45,12 @@ Cómo se usa:
 
 El guard `tests/test_yahoo_con_tope.py` falla si alguien vuelve a escribir
 `yf.download` en el servidor.
+
+Y mientras se espera, el que pidió no se queda con una conexión a la base: antes
+de esperar, `con_tope` y `varios` devuelven al pozo las conexiones de su hilo
+(`pgsesion.antes_de_esperar_afuera`, donde está el porqué). En Postgres hay 10
+por copia de la app; medido el 05/11/2026, 8 pantallas esperando a Yahoo tenían
+8 tomadas sin hacer nada.
 """
 from __future__ import annotations
 
@@ -56,6 +62,8 @@ from concurrent.futures import (FIRST_COMPLETED, ThreadPoolExecutor,
 
 import pandas as pd
 import yfinance as yf
+
+import pgsesion
 
 log = logging.getLogger(__name__)
 
@@ -102,6 +110,8 @@ def con_tope(fn, *args, tope: float = TOPE_PANTALLA_SEG, que: str = None,
     está en la cola detrás de ella.
     """
     q = que or _nombre(fn)
+    # Antes de mandar el pedido (sale enseguida en otro hilo), no al empezar a esperar.
+    pgsesion.antes_de_esperar_afuera(q)
     try:
         fut = (pool or _pool).submit(fn, *args, **kwargs)
     except RuntimeError:   # el pool ya se apagó (el proceso se está cerrando)
@@ -129,6 +139,8 @@ def varios(fn, items, tope: float = TOPE_PANTALLA_SEG, que: str = None,
     cola = deque(lista)
     en_curso = {}
     resultados = {}
+    if lista:
+        pgsesion.antes_de_esperar_afuera(que or _nombre(fn))
     while cola or en_curso:
         restante = fin - time.monotonic()
         if restante <= 0:
