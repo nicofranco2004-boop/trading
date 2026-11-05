@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send, Gift, Search, MessageSquare } from 'lucide-react'
+import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send, Gift, Search, MessageSquare, Download } from 'lucide-react'
 import { api } from '../utils/api'
 import { filtrarFilas, contarCaen, contarFrenadas } from '../utils/fxPanel'
 import {
@@ -124,6 +124,28 @@ export default function Admin() {
     if (q) {
       const seq = ++searchSeq.current
       try { const res = await runSearch(q) || []; if (seq === searchSeq.current) setSearchResults(res) } catch { /* noop */ }
+    }
+  }
+
+  // Lista de mails para el "público personalizado" de Meta (anuncios). El
+  // backend arma el CSV con las columnas que Meta reconoce solas.
+  const [bajandoMails, setBajandoMails] = useState(false)
+  async function bajarMailsMeta() {
+    setBajandoMails(true)
+    try {
+      const blob = await api.getBlob('/admin/users/mails-meta.csv')
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `rendi_mails_meta_${new Date().toISOString().slice(0, 10)}.csv`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      toast.push('No se pudo bajar la lista: ' + e.message, { type: 'error' })
+    } finally {
+      setBajandoMails(false)
     }
   }
 
@@ -444,7 +466,17 @@ export default function Admin() {
               <AlertTriangle size={10} /> {affected.length} a restaurar
             </span>
           )}
-          <div className="relative ml-auto">
+          <button
+            type="button"
+            onClick={bajarMailsMeta}
+            disabled={bajandoMails}
+            title="Baja un CSV con mail, nombre y apellido de los usuarios (sin admins ni cuentas de prueba) para cargar como público personalizado en Meta"
+            className="ml-auto inline-flex items-center gap-1.5 text-sm px-2.5 py-1.5 rounded-md border border-line/60 text-ink-1 hover:border-rendi-accent/60 disabled:opacity-60"
+          >
+            {bajandoMails ? <RefreshCw size={13} className="animate-spin" /> : <Download size={13} />}
+            Mails para Meta
+          </button>
+          <div className="relative">
             <input
               type="search"
               value={query}
