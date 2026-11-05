@@ -18,14 +18,23 @@ mismo proceso (TestClient), con un Yahoo falso que tarda ESPERA_YAHOO segundos
      corrida de la noche, que también espera a Yahoo con su conexión en la mano,
      u otro pedido lento): el caso en que el pozo se queda sin lugares.
 
+Qué NO dice: mide la espera principal a Yahoo de la ficha; las otras esperas del
+camino a pedido (data912, los splits, la historia de BYMA…) las vigilan las
+pruebas (backend/tests/test_velas_a_pedido.py). Y los segundos que espera un
+pedido liviano con el pozo lleno los pone el Yahoo falso: son lo que le falta a
+Yahoo para contestar (en producción, lo que tarde Yahoo: hasta 10 s, el tope de
+la ficha), no una estimación de producción.
+
 USO (desde backend/, con el DSN que imprime scripts/pg_de_prueba.py):
 
     DATABASE_URL='<DSN>' python3 ../audit/_scripts/medir_conexion_esperando_yahoo.py [etiqueta]
 
 Se niega a correr contra algo que no sea un Postgres local. Usa un esquema propio
-(`medir_<pid>`) que borra al terminar, y `DB_PATH` a un archivo temporal (regla
-del repo: un script que importa `main` nunca toca `backend/trading.db`).
+(`medir_<pid>`) que borra al salir pase lo que pase (también con Ctrl-C), y
+`DB_PATH` a un archivo temporal (regla del repo: un script que importa `main`
+nunca toca `backend/trading.db`).
 """
+import atexit
 import os
 import statistics
 import sys
@@ -43,9 +52,12 @@ from psycopg.conninfo import conninfo_to_dict, make_conninfo  # noqa: E402
 DSN = os.environ.get("DATABASE_URL", "").strip()
 if not DSN:
     raise SystemExit("Falta DATABASE_URL: el DSN de un Postgres de prueba (scripts/pg_de_prueba.py).")
-_host = conninfo_to_dict(DSN).get("host") or ""
-if not (_host.startswith("/") or _host in ("localhost", "127.0.0.1", "::1")):
-    raise SystemExit(f"Sólo contra un Postgres LOCAL de prueba (host={_host!r}).")
+_partes = conninfo_to_dict(DSN)
+_host, _hostaddr = _partes.get("host") or "", _partes.get("hostaddr") or ""
+# `hostaddr` manda sobre `host` al conectar: `host=localhost hostaddr=<IP de afuera>` es afuera.
+if (not (_host.startswith("/") or _host in ("localhost", "127.0.0.1", "::1"))
+        or _hostaddr not in ("", "127.0.0.1", "::1")):
+    raise SystemExit(f"Sólo contra un Postgres LOCAL de prueba (host={_host!r}, hostaddr={_hostaddr!r}).")
 if os.path.exists(os.path.join(BACKEND, ".env")):
     raise SystemExit("backend/.env existe: main lo lee pisando el entorno y podría cambiar DATABASE_URL.")
 if os.environ.get("RENDI_PG_POOL_MAX"):
@@ -54,12 +66,34 @@ if os.environ.get("RENDI_PG_POOL_MAX"):
 ETIQUETA = sys.argv[1] if len(sys.argv) > 1 else ""
 ESPERA_YAHOO = float(os.environ.get("ESPERA_YAHOO", "8"))
 ESQUEMA = f"medir_{os.getpid()}"
+_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+_tmp.close()
+
+
+def _limpiar():
+    """Al salir, pase lo que pase (también con Ctrl-C): el esquema y el archivo."""
+    try:
+        import pgshim
+        pgshim.cerrar_pozos()
+    except Exception:
+        pass
+    try:
+        with psycopg.connect(DSN, autocommit=True) as c:
+            c.execute(f'DROP SCHEMA IF EXISTS "{ESQUEMA}" CASCADE')
+    except Exception as ex:
+        print(f"⚠️ No se pudo borrar el esquema {ESQUEMA}: {ex!r}")
+    for p in (_tmp.name, _tmp.name + "-wal", _tmp.name + "-shm"):
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+
+
+atexit.register(_limpiar)    # ANTES de crear el esquema
 with psycopg.connect(DSN, autocommit=True) as _c:
     _c.execute(f'CREATE SCHEMA "{ESQUEMA}"')
 os.environ["DATABASE_URL"] = make_conninfo(DSN, options=f"-c search_path={ESQUEMA}")
 os.environ["RENDI_MANTENIMIENTO"] = "0"
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
 os.environ["DB_PATH"] = _tmp.name
 sys.path.insert(0, BACKEND)
 
@@ -86,12 +120,20 @@ while len(RUEDAS) < 300:
         RUEDAS.append(_d)
     _d -= timedelta(days=1)
 RUEDAS.sort()
-LLAMADAS_YAHOO = []
+LLAMADAS_YAHOO = []          # (ticker, cuándo empezó a esperar)
+ESPERANDO = [0]              # cuántas están esperando a Yahoo AHORA
+_candado = threading.Lock()
 
 
 def yahoo_lento(ticker, period, interval, auto_adjust, timeout):
-    LLAMADAS_YAHOO.append(ticker)
-    time.sleep(ESPERA_YAHOO)
+    with _candado:
+        LLAMADAS_YAHOO.append((ticker, time.monotonic()))
+        ESPERANDO[0] += 1
+    try:
+        time.sleep(ESPERA_YAHOO)
+    finally:
+        with _candado:
+            ESPERANDO[0] -= 1
     c = [100.0 + i * 0.1 for i in range(len(RUEDAS))]
     return pd.DataFrame({"Open": c, "High": [x * 1.01 for x in c], "Low": [x * 0.99 for x in c],
                          "Close": c, "Volume": [1000.0] * len(c)},
@@ -122,9 +164,14 @@ def prestadas() -> int:
     return 0 if pozo is None else pozo._maximo - pozo._cupo._value
 
 
+TERMINARON = []              # cuándo terminó cada pedido liviano (para ubicarlo en la espera)
+
+
 def liviano():
     t0 = time.perf_counter()
     r = C.get("/api/brokers", headers=LIVIANO)
+    with _candado:
+        TERMINARON.append(time.monotonic())
     return (time.perf_counter() - t0) * 1000, r.status_code
 
 
@@ -166,6 +213,7 @@ def escenario(titulo, otras_tomadas=0):
     velas_diarias._a_pedido_hechos.clear()
     main._freno_reiniciar()
     del LLAMADAS_YAHOO[:]
+    del TERMINARON[:]
     print(f"\n{titulo}")
     otras = [main.get_db() for _ in range(otras_tomadas)]
     res = [None] * 8
@@ -177,7 +225,12 @@ def escenario(titulo, otras_tomadas=0):
     while len(LLAMADAS_YAHOO) < 8 and time.monotonic() < t_fin:
         time.sleep(0.05)
     time.sleep(0.5)
+    # Las tres cosas en el MISMO momento: cuántas esperan, desde cuándo, y el pozo.
+    with _candado:
+        esperando = ESPERANDO[0]
+        empezo = min((t for _, t in LLAMADAS_YAHOO), default=time.monotonic())
     p = prestadas()
+    a_los = time.monotonic() - empezo
     t0 = time.perf_counter()
     uno = de_a_uno()
     varios = juntos()
@@ -186,34 +239,27 @@ def escenario(titulo, otras_tomadas=0):
         h.join()
     for c in otras:
         c.close()
-    print(f"  fichas esperando a Yahoo cuando se midió: {len(LLAMADAS_YAHOO)} de 8 "
-          f"(Yahoo falso: {ESPERA_YAHOO:.0f} s cada una)")
-    print(f"  conexiones prestadas en medio de la espera: {p} de 10"
+    print(f"  al medir: {esperando} de 8 fichas esperando a Yahoo, a los {a_los:.1f} s de los "
+          f"{ESPERA_YAHOO:.0f} s que tarda el Yahoo falso")
+    print(f"  conexiones prestadas en ese momento: {p} de 10"
           + (f" ({otras_tomadas} de ellas, de «otra cosa»)" if otras_tomadas else ""))
     print(f"  pedido liviano de a uno (5):   {ms(uno)}")
     print(f"  pedido liviano, 20 a la vez:   {ms(varios)}")
-    print(f"  (las dos mediciones del pedido liviano tardaron {medio:.1f} s en total)")
+    fines = sorted(t - empezo for t in TERMINARON)
+    print(f"  los 25 pedidos livianos terminaron entre los {fines[0]:.1f} y los {fines[-1]:.1f} s de "
+          f"empezada la espera ({medio:.1f} s en total)")
     print(f"  las 8 fichas: códigos {sorted({r[0] for r in res})}, disponibles "
           f"{sum(1 for r in res if r[2])} de 8, tardaron {min(r[1] for r in res):.1f}–"
           f"{max(r[1] for r in res):.1f} s")
 
 
-try:
-    print(f"=== {ETIQUETA or 'medición'} · Postgres local · pozo de {pgshim._pozo_de(main.DATABASE_URL)._maximo} "
-          f"conexiones · {main.PESADOS_A_LA_VEZ} lecturas pesadas a la vez ===")
-    main._freno_reiniciar()
-    print("\n1. Sin carga")
-    print(f"  pedido liviano de a uno (5):   {ms(de_a_uno())}")
-    print(f"  pedido liviano, 20 a la vez:   {ms(juntos())}")
-    print(f"  conexiones prestadas en reposo: {prestadas()} de 10")
-    escenario("2. Con 8 fichas esperando a Yahoo")
-    escenario("3. Con 8 fichas esperando a Yahoo y otras 2 conexiones tomadas", otras_tomadas=2)
-finally:
-    pgshim.cerrar_pozos()
-    with psycopg.connect(DSN, autocommit=True) as _c:
-        _c.execute(f'DROP SCHEMA IF EXISTS "{ESQUEMA}" CASCADE')
-    for _p in (_tmp.name, _tmp.name + "-wal", _tmp.name + "-shm"):
-        try:
-            os.unlink(_p)
-        except OSError:
-            pass
+# El esquema y el archivo los borra `_limpiar` al salir, pase lo que pase (atexit).
+print(f"=== {ETIQUETA or 'medición'} · Postgres local · pozo de {pgshim._pozo_de(main.DATABASE_URL)._maximo} "
+      f"conexiones · {main.PESADOS_A_LA_VEZ} lecturas pesadas a la vez ===")
+main._freno_reiniciar()
+print("\n1. Sin carga")
+print(f"  pedido liviano de a uno (5):   {ms(de_a_uno())}")
+print(f"  pedido liviano, 20 a la vez:   {ms(juntos())}")
+print(f"  conexiones prestadas en reposo: {prestadas()} de 10")
+escenario("2. Con 8 fichas esperando a Yahoo")
+escenario("3. Con 8 fichas esperando a Yahoo y otras 2 conexiones tomadas", otras_tomadas=2)

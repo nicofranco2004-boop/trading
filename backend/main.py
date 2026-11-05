@@ -12573,7 +12573,7 @@ def get_tecnico(request: Request, asset: str, moneda: str = "usd", local: int = 
     # El freno de la ficha (`_freno_tecnico`, tipo «uno»): 45 fichas distintas a
     # la vez dejaron el «¿estás vivo?» en 33 s (re-test E1, 29/10).
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
-        tickers, motivo = _velas_a_pedido(conn, [(sym, bool(local))], uid, _auth_uid_de(request, uid))[sym]
+        tickers, motivo = _velas_a_pedido(conn, [(sym, bool(local))], uid)[sym]
         res = tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
         if not res.get("disponible"):
             res["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
@@ -12612,7 +12612,7 @@ def post_tecnico_resumen(request: Request, asset: str, moneda: str = "usd", loca
     return resumen_tecnico.pedir(db_abierta, ficha, asset_name(base) or base, _auth_uid_de(request, uid))
 
 
-def _velas_a_pedido(conn, pedidos: list, uid, paga=None) -> dict:
+def _velas_a_pedido(conn, pedidos: list, uid) -> dict:
     """Las velas de los activos que nadie sigue (o viejas) se bajan en el momento,
     con los frenos de `velas_diarias.asegurar` y sólo si la app los conoce
     (`se_puede_pedir`). La usan la ficha (uno) y el comparador de precios
@@ -12623,11 +12623,13 @@ def _velas_a_pedido(conn, pedidos: list, uid, paga=None) -> dict:
     Dos personas, cada una para lo suyo:
       · `uid`, la cuenta que se mira: ¿tiene, operó o sigue el activo?
         (`se_puede_pedir`);
-      · `paga`, la que PIDE (`_auth_uid_de`: la asesora mirando a un cliente),
-        que es la que gasta el cupo de descargas, como en el freno y en el
-        resumen. Sin `paga`, paga `uid`. Antes pagaba siempre la cuenta que se
-        mira: una asesora que recorría activos nuevos en la cuenta de Ana la
-        dejaba sin descargas esa hora (auditoría del backtesting, 04/11, hallazgo 3).
+      · la que PIDE (la asesora mirando a un cliente) gasta el cupo de
+        descargas, como en el freno y en el resumen. No se pasa: es a quien el
+        freno le está contando esta lectura (`_freno_paga`), y toda lectura
+        pesada pasa por el freno. Antes pagaba siempre la cuenta que se mira:
+        una asesora que recorría activos nuevos en la cuenta de Ana la dejaba sin
+        descargas esa hora (auditoría del backtesting, 04/11, hallazgo 3). Fuera
+        de un freno (una prueba que la llama a mano) paga `uid`.
 
     A la red (data912 para saber qué es cada activo, Yahoo para bajarlo) se la
     espera sin la conexión de la ruta en la mano (`pgsesion.soltar`, hallazgo 4):
@@ -12649,7 +12651,7 @@ def _velas_a_pedido(conn, pedidos: list, uid, paga=None) -> dict:
     motivo = None
     if bajar:
         try:
-            motivo = velas_diarias.asegurar(conn, bajar, uid if paga is None else paga)
+            motivo = velas_diarias.asegurar(conn, bajar, _freno_paga.get() or uid)
         except Exception as ex:
             # Sin la descarga, se muestra lo que haya guardado.
             log.warning("tecnico: velas a pedido de %s fallaron: %r", bajar, ex)
@@ -12697,8 +12699,7 @@ def get_comparar_precio(request: Request, activos: str, local: str = "", moneda:
     # pesado.py lo marca (visto al juntar la pieza 16 con E, 30/10).
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         motivos = {s: motivo or ("sin_serie" if not tickers else "sin_datos") for s, (tickers, motivo)
-                   in _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid,
-                                      _auth_uid_de(request, uid)).items()}
+                   in _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid).items()}
         cer, basis = [], None
         if moneda == "ars":
             try:
@@ -12817,6 +12818,12 @@ _freno_total = [0]             # cuántas lecturas corren en todo el servidor
 _freno_de_cada_uno: dict = {}  # quién → cuántas tiene corriendo (de cualquier tipo)
 _freno_candado = threading.Lock()
 _freno_reloj = time.monotonic
+# Quién paga la lectura pesada que está corriendo: la persona a la que el freno
+# se la cuenta (`quien`), o sea la que la PIDE (la asesora mirando a un cliente).
+# La lee `_velas_a_pedido` para el cupo de descargas. Así «la que pide paga» se
+# decide acá, una vez, y ninguna ruta lo tiene que repetir: pasado a mano ruta
+# por ruta, se olvidó en el ✦ de la ficha (auditoría del 05/11).
+_freno_paga = _contextvars.ContextVar("rendi_freno_paga", default=None)
 
 
 def _freno_reiniciar() -> None:
@@ -12861,9 +12868,11 @@ def _freno_tecnico(request: Request, uid: int, tipo: str = "muchos"):
             for k in [k for k, v in _freno_hechos.items() if not v and k not in _freno_corriendo]:
                 del _freno_hechos[k]
     marca = _pesado._con_freno.set(True)
+    paga = _freno_paga.set(quien[0])
     try:
         yield
     finally:
+        _freno_paga.reset(paga)
         _pesado._con_freno.reset(marca)
         with _freno_candado:
             _freno_total[0] = max(0, _freno_total[0] - 1)
@@ -38522,7 +38531,7 @@ def _lectura_tecnica_para_el_chat(input_data: dict, uid: int, paga: int = None) 
     # entera. Si está lleno, se le dice al modelo en vez de romper el turno.
     try:
         with _freno_tecnico(None, paga, "uno"), db_abierta() as conn:
-            tickers, motivo = _velas_a_pedido(conn, [(sym, local)], uid, paga)[sym]
+            tickers, motivo = _velas_a_pedido(conn, [(sym, local)], uid)[sym]
             ficha = tecnico.para_la_ficha(conn, sym, moneda, local)
     except HTTPException:
         return {"available": False, "activo": nombre,
@@ -42335,11 +42344,15 @@ def _params_de_boton(params) -> dict:
     del plan que decide cuántos detectores pagos ve la IA. La pone el servidor
     (ai_analyze / ai_chat, desde _tier_con_lente); si se dejara pasar desde el
     navegador, un Free mandaría `tier_override='pro'` en el ✦ y se autoservería
-    los detectores de un plan que no pagó. No la saques de esta lista."""
+    los detectores de un plan que no pagó. No la saques de esta lista.
+
+    `paga`, también por SEGURIDAD: quién pregunta, a quien el armador técnico le
+    cobra el freno y las descargas (ai_chat lo pone desde el token). Desde el
+    navegador, cualquiera elegiría a quién cobrarle."""
     if not isinstance(params, dict):
         return {}
     return {k: v for k, v in params.items()
-            if isinstance(k, str) and k not in ("conn", "user_id", "tier_override")}
+            if isinstance(k, str) and k not in ("conn", "user_id", "tier_override", "paga")}
 
 
 def _podar_lo_que_ya_esta(nodo):
@@ -43197,7 +43210,10 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
                     # armador recorta los detectores por el plan del ASESOR, no del
                     # cliente. Sin esto, el ✦ del chat cortaba por el plan del cliente
                     # (RENDI-A04, segundo call site — la regla de propagación).
-                    _paquete = _topico[0](_pconn, uid, **_params_de_boton(data.analisis.params), tier_override=_lens_override)
+                    # `paga` = quien pregunta: el armador técnico le cobra el freno
+                    # y las descargas a ella, no al cliente que mira.
+                    _paquete = _topico[0](_pconn, uid, **_params_de_boton(data.analisis.params), tier_override=_lens_override,
+                                          paga=_auth_uid)
                 finally:
                     _pconn.close()
                 _paquete = _podar_lo_que_ya_esta(_paquete)
