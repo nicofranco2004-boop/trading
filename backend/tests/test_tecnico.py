@@ -122,6 +122,19 @@ class CuentasTest(unittest.TestCase):
             self.assertAlmostEqual(a, r, places=9)
         self.assertTrue(all(v is None for v in nuestro[:14]))
 
+    def test_rsi_igual_al_ejemplo_publicado_de_stockcharts(self):
+        # La cuenta de arriba la escribimos nosotros: si los dos entendiéramos mal
+        # a Wilder, daría verde igual. Ésta no: son los números PUBLICADOS del
+        # ejemplo de manual de StockCharts (ChartSchool, QQQQ dic-2009/ene-2010).
+        # Nico, 05/11: «¿es malo el indicador o está mal cómo lo calcula Rendi?».
+        cierres = [44.3389, 44.0902, 44.1497, 43.6124, 44.3278, 44.8264, 45.0955, 45.4245, 45.8433,
+                   46.0826, 45.8931, 46.0328, 45.6140, 46.2820, 46.2820, 46.0028, 46.0328, 46.4116,
+                   46.2222, 45.6439, 46.2122, 46.2521, 45.7137, 46.4515, 45.7835, 45.3548, 44.0288,
+                   44.1783, 44.2181, 44.5672, 43.4205, 42.6628, 43.1314]
+        publicado = [70.53, 66.32, 66.55, 69.41, 66.36, 57.97, 62.93, 63.26, 56.06, 62.38, 54.71,
+                     50.42, 39.99, 41.46, 41.87, 45.46, 37.30, 33.08, 37.77]
+        self.assertEqual([round(x, 2) for x in tecnico.rsi(cierres, 14)[14:]], publicado)
+
     def test_cruce_del_rsi(self):
         # Vuelve a pasar 30 para arriba hace 2 ruedas.
         r = [None, 40, 35, 28, 25, 27, 31, 33, 34]
