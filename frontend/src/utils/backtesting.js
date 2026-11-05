@@ -13,8 +13,16 @@
 // contradecía). Medido el 04/11 en 14 papeles y 2 años: la regla que dio más
 // cambió de papel en papel, y en 7 de los 14 ninguna le ganó a mantener. Por
 // eso, con pocas compras se dice que no alcanzan para separar la regla de la
-// suerte, si sin su mejor compra no habría ganado se dice cuál, y al comparar
-// se cuenta cuántas le ganaron, nunca cuál es «la mejor».
+// suerte, si sin su mejor compra habría terminado en pérdida se dice cuál, y al
+// comparar se cuenta cuántas le ganaron, nunca cuál es «la mejor».
+//
+// LO QUE SE PRUEBA ES LA FORMA DE USAR EL INDICADOR, no el indicador (Nico,
+// 05/11: «me da miedo que digan "lo que me muestra Rendi no me sirve"»). El
+// indicador es el de la ficha (el RSI da igual al ejemplo publicado de
+// StockCharts: backend/tests/test_tecnico.py); lo que se prueba es todo adentro
+// con la señal y todo afuera cuando se da vuelta. Eso se dice arriba
+// (`queSePrueba`), y con una regla que perdió contra mantener se dice también
+// lo que consiguió a cambio: caer menos (`fraseDeLaCaida`).
 import { decimalesFinos, pctColor, pctVarFino } from './format'
 import { fechaCorta } from './cuantoSeMueve'
 
@@ -93,6 +101,14 @@ export const precio = (x) => (Math.abs(x) >= 1
 
 /** «el último año» · «los últimos 2 años». */
 export const periodoEnPalabras = (anios) => (anios === 1 ? 'el último año' : `los últimos ${anios} años`)
+
+/** Debajo del título: qué se prueba (una forma de usar el indicador) y qué no
+ *  (el indicador, que es el de la ficha). */
+export const queSePrueba = (varias) => (varias
+  ? 'Esto prueba una forma de usar cada indicador: todo adentro con la señal, todo afuera cuando se da '
+    + 'vuelta. Los indicadores son los mismos de la ficha.'
+  : 'Esto prueba una forma de usar el indicador: todo adentro con la señal, todo afuera cuando se da '
+    + 'vuelta. El indicador es el mismo de la ficha.')
 
 /** ¿Le ganó a comprar y mantener? Con los números TAL COMO SE VEN en las
  *  tarjetas (un decimal): 'sin_compras' | 'gano' | 'empate' | 'perdio'. Es LA
@@ -180,11 +196,11 @@ export function lectura(res) {
         + `Comprar y mantener dio ${porcentaje(m.resultado)}.`],
     }
   }
-  const frases = [`${loQueHizoElPrecio(res, periodo)} y la regla estuvo afuera ${parteAfuera(res, r)} de los días.`]
+  const frases = [`${loQueHizoElPrecio(res, periodo)} y la regla estuvo afuera ${parteAfuera(res, r)} de los días`
+    + `${laSuba(res, r, contra)}.`]
+  const caida = fraseDeLaCaida(r, m, contra)
+  if (caida) frases.push(caida)
   if (compraClave(r)) frases.push(fraseClave(r))
-  if (contra === 'gano' && r.peor_caida <= CAIDA_PARA_CONTAR) {
-    frases.push(`En el camino llegó a caer ${Math.abs(Math.round(r.peor_caida))}% desde su mejor momento.`)
-  }
   if (r.compras < POCAS_COMPRAS) {
     frases.push(`${r.compras === 1 ? 'Fue una sola compra' : `Fueron ${r.compras} compras`} ${periodo}: `
       + 'con tan pocas, no alcanza para saber si el resultado es de la regla o de la suerte.')
@@ -192,10 +208,43 @@ export function lectura(res) {
   return { titulo: titulo(contra, r.resultado, m.resultado), frases }
 }
 
+/** «: se perdió la mayor parte de la suba», pegado a «estuvo afuera el 87 % de
+ *  los días». Sólo si el precio subió, mantener le ganó y la regla estuvo afuera
+ *  la mitad de los días o más: adentro casi siempre, lo que perdió no fue por
+ *  estar afuera. «La mayor parte»: dio menos de la mitad de lo que subió el
+ *  precio; nada o negativo, «toda». */
+function laSuba(res, x, contra) {
+  const v = res.variacion_precio
+  if (contra !== 'perdio' || !(v >= 0.5) || x.ruedas_comprada / res.ruedas > 0.5) return ''
+  if (x.resultado <= 0) return ': se perdió toda la suba'
+  return x.resultado < v / 2 ? ': se perdió la mayor parte de la suba' : ': se perdió parte de la suba'
+}
+
+/** La peor caída como se ve en su tarjeta, sin el signo («14%»), y su número. */
+function caidaVista(x) {
+  const texto = porcentaje(x, 0).replace(/^[−+-]/, '')
+  return { texto, valor: Number(texto.replace('%', '').replace(',', '.')) }
+}
+
+/** La peor caída de la regla al lado de la de mantener, sólo si fue más chica:
+ *  «A cambio, …» si mantener le ganó (lo que consiguió estando afuera). Una regla
+ *  que le ganó y aun así cayó mucho lo dice igual, con la de mantener al lado si
+ *  fue más grande. Con los números como se ven en las tarjetas. */
+function fraseDeLaCaida(x, m, contra) {
+  const a = caidaVista(x.peor_caida)
+  const b = caidaVista(m.peor_caida)
+  const menor = a.valor >= 1 && a.valor < b.valor
+  if (contra === 'gano' && x.peor_caida <= CAIDA_PARA_CONTAR) {
+    return `En el camino llegó a caer ${a.texto} desde su mejor momento${menor ? `; comprar y mantener, ${b.texto}` : ''}.`
+  }
+  if (!menor) return null
+  return `${contra === 'perdio' ? 'A cambio, su' : 'Su'} peor caída fue de ${a.texto}, contra ${b.texto} de comprar y mantener.`
+}
+
 /** Varias reglas: cuántas le ganaron a comprar y mantener (nunca cuál es «la
  *  mejor»), cuánto estuvieron afuera las que compraron, cuáles no compraron
- *  nunca, la compra sin la que no habría ganado cada una, y que con pocas
- *  compras no se puede separar una regla de otra. */
+ *  nunca, la compra sin la que cada una habría terminado en pérdida, y que con
+ *  pocas compras no se puede separar una regla de otra. */
 export function lecturaComparada(res) {
   const xs = res.resultados
   const m = res.mantener
@@ -227,23 +276,34 @@ export function lecturaComparada(res) {
   return { titulo: tituloComparado(ganan, xs.length, compraron.length), frases }
 }
 
-/** La compra sin la que la regla NO habría ganado (su fecha), o null. Sólo si
- *  la regla ganó, esa compra ganó y sin ella el resultado habría sido cero o
- *  negativo: entonces sí «explica» el resultado. Con «sin ella da menos de la
- *  mitad» decía «explica casi todo» de una compra de +56 % cuando las demás
- *  juntas habían dado +76 % (auditoría 04/11, A2). Lo usan las frases de
- *  `lectura` y la marca en la lista de operaciones: la misma regla. */
+/** La compra sin la que la regla habría terminado en cero o en pérdida (su
+ *  fecha), o null. Sólo si la regla ganó plata, esa compra ganó y sin ella el
+ *  resultado habría sido cero o negativo: entonces sí «explica» el resultado.
+ *  Con «sin ella da menos de la mitad» decía «explica casi todo» de una compra de
+ *  +56 % cuando las demás juntas habían dado +76 % (auditoría 04/11, A2). Lo
+ *  usan las frases de `lectura` y la marca en la lista de operaciones
+ *  (`sinEstaCompra`): la misma regla. */
 export function compraClave(x) {
   const s = x?.sin_la_mejor
   if (!s || !(x.resultado > 0) || !(s.resultado > 0) || !(s.sin_ella <= 0)) return null
   return s.compra
 }
 
+// Cómo habría terminado sin esa compra. Antes decía «no habría ganado», que se
+// leía también «no le habría ganado a mantener», y eso a veces ya había pasado
+// (Nico, 05/11).
+const comoTerminaba = (sinElla, conCuanto) => (sinElla < 0
+  ? `habría terminado en pérdida${conCuanto ? `: ${porcentaje(sinElla)}` : ''}`
+  : 'habría terminado en 0%')
+
 function fraseClave(x, minuscula = false) {
   const s = x.sin_la_mejor
   const sin = `${minuscula ? 's' : 'S'}in la compra del ${fechaCorta(s.compra)} (${porcentaje(s.resultado)})`
-  return `${sin}, la regla no habría ganado: habría dado ${porcentaje(s.sin_ella)}.`
+  return `${sin}, la regla ${comoTerminaba(s.sin_ella, true)}.`
 }
+
+/** La marca de esa compra en la lista de operaciones. */
+export const sinEstaCompra = (x) => `Sin esta compra, la regla ${comoTerminaba(x.sin_la_mejor.sin_ella, false)}.`
 
 function titulo(contra, regla, mantener) {
   if (contra === 'empate') return 'Dio casi lo mismo que comprar y mantener'

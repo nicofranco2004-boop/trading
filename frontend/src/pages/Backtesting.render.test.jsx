@@ -192,10 +192,13 @@ describe('Análisis técnico → Backtesting', () => {
     montado = await abrir('/analisis-tecnico?tab=backtesting&activo=GGAL&reglas=rsi')
     const t = montado.t()
     for (const parte of ['Probá una regla con el pasado', 'Siguiendo la regla', 'Comprar y mantener', '+22,5%',
+      'Esto prueba una forma de usar el indicador: todo adentro con la señal, todo afuera cuando se da vuelta. '
+        + 'El indicador es el mismo de la ficha.',
       '−35,9%', '−59%', '−63%', '3 · 2 ganaron', '223 de 501', 'Le fue mejor que comprar y mantener',
-      'GGAL bajó 35% en los últimos 2 años', 'Sin la compra del 05/05/26 (+32,6%), la regla no habría ganado',
+      'GGAL bajó 35% en los últimos 2 años', 'En el camino llegó a caer 59% desde su mejor momento; comprar y mantener, 63%.',
+      'Sin la compra del 05/05/26 (+32,6%), la regla habría terminado en pérdida: −7,6%.',
       'Cada operación', '10/04/25 → 10/11/25', '24/08/26 → seguía comprada', 'US$ 41,12 → US$ 35,14 (último cierre)',
-      'Sin esta compra, la regla no habría ganado.', 'Cómo habrían ido US$ 100', 'US$ 123', 'US$ 64',
+      'Sin esta compra, la regla habría terminado en pérdida.', 'Cómo habrían ido US$ 100', 'US$ 123', 'US$ 64',
       'no es una recomendación']) {
       expect(t, parte).toContain(parte)
     }
@@ -261,6 +264,7 @@ describe('Análisis técnico → Backtesting → comparar reglas', () => {
     expect(deLaDireccion(montado.donde, 'reglas')).toBe('rsi,media200')
     const t = montado.t()
     expect(t).toContain('Compará reglas con el pasado')
+    expect(t).toContain('Esto prueba una forma de usar cada indicador')
     expect(titulosDeTarjetas(montado.contenedor)).toEqual(expect.arrayContaining(['RSI 30 / 70', 'Media de 200', 'Comprar y mantener']))
     expect(t).toContain('No las ordenamos de la que dio más a la que dio menos')
     expect(t).toContain('Cuándo estuvo comprada cada una')

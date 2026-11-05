@@ -43,7 +43,7 @@ import { nombreDelCliente } from '../utils/navegacion'
 import { track } from '../utils/track'
 import {
   MAX_REGLAS, PERIODOS, REGLAS, aniosDe, colorDe, comoSeSimula, compraClave, ganaron, lectura, motivoEnPalabras,
-  otraRegla, porcentaje, precio, reglaDe, reglasDe, textoDelRecorte, tramosComprada,
+  otraRegla, porcentaje, precio, queSePrueba, reglaDe, reglasDe, sinEstaCompra, textoDelRecorte, tramosComprada,
 } from '../utils/backtesting'
 import { Encabezado } from './GraficoTecnico'
 
@@ -123,6 +123,7 @@ function Controles({ reglas, anios, onReglas, onAnios }) {
           Qué habría pasado con US$ 100 si seguías {varias ? 'cada regla' : 'la regla'} al pie de la letra, al lado de
           comprar y no tocar nada.
         </p>
+        <p className="text-[13px] text-ink-2 mt-1">{queSePrueba(varias)}</p>
       </div>
       <div className={`grid grid-cols-1 gap-3 ${reglas.length === 2 ? 'md:grid-cols-2' : reglas.length === 3 ? 'md:grid-cols-3' : ''}`}>
         {reglas.map((id, i) => (
@@ -518,7 +519,7 @@ function Operaciones({ res }) {
                 {' · '}{o.ruedas}{' '}{o.ruedas === 1 ? 'día' : 'días'}
               </span>
               {clave === o.compra && (
-                <span className="text-[12px] text-ink-1">Sin esta compra, la regla no habría ganado.</span>
+                <span className="text-[12px] text-ink-1">{sinEstaCompra(x)}</span>
               )}
             </div>
             <span className={`shrink-0 text-[15px] font-semibold tabular ${colorDe(o.resultado)}`}>
