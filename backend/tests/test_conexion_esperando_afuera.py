@@ -602,17 +602,55 @@ class LaHistoriaDeData912Test(_Base):
     """La puerta de `pricing.data912.filas`. Hoy ningún camino llega a ella con una
     conexión en la mano sin pasar antes por otra puerta (los cambios de ratio
     sueltan antes; la vela de BYMA corre adentro de `varios`; la liquidez no abre
-    la base). Por eso se la llama directo, como lo haría el próximo que la use."""
+    la base). Por eso se la llama directo, como lo haría la próxima pantalla que
+    la use (con la marca de pedido que pone `MarcarPedido`)."""
 
     def test_suelta_la_conexion_de_quien_la_llama(self):
+        import pesado
         from pricing import data912
         del self.esperas[:]
-        with main.db_abierta() as conn:
-            conn.execute("SELECT 1").fetchone()
-            data912.filas("bonds", "AL30")
-            self.assertEqual(conn.execute("SELECT 2").fetchone()[0], 2, "se sigue usando después")
+        token = pesado._en_pedido.set("GET /prueba")
+        try:
+            with main.db_abierta() as conn:
+                conn.execute("SELECT 1").fetchone()
+                data912.filas("bonds", "AL30")
+                self.assertEqual(conn.execute("SELECT 2").fetchone()[0], 2, "se sigue usando después")
+        finally:
+            pesado._en_pedido.reset(token)
         self.assertEqual([e[0] for e in self.esperas], ["data912 historia"])
         self.assertEqual([e for e in self.esperas if any(e[-3:])], [], "esperó con la conexión tomada")
+
+
+class SoloLosPedidosSueltanTest(_Base):
+    """La puerta suelta la conexión sólo adentro de un pedido HTTP. Un trabajo de
+    fondo (la corrida de la noche, la foto, las alertas) se queda con la suya: si
+    la soltara y al volver a pedirla el pozo siguiera lleno 30 s, el `PozoAgotado`
+    cortaría la corrida entera (auditoría del 05/11, reproducido con un pozo de 2;
+    la noche suelta en cada tanda)."""
+
+    def _esperar_a_yahoo_con_la_base_abierta(self) -> bool:
+        """True si mientras se esperaba a Yahoo la conexión seguía tomada (en
+        Postgres, además, con su lugar del pozo)."""
+        from pricing import yahoo
+        with main.db_abierta() as conn:
+            conn.execute("SELECT 1").fetchone()
+            yahoo.varios(lambda t: t, ["SPY"], tope=5, que="prueba")
+            tomada = conn in self.tomadas and (not main.USANDO_PG or conn._real._c is not None)
+            self.assertEqual(conn.execute("SELECT 2").fetchone()[0], 2, "se sigue usando después")
+        return tomada
+
+    def test_un_trabajo_de_fondo_se_queda_con_su_conexion(self):
+        self.assertTrue(self._esperar_a_yahoo_con_la_base_abierta(),
+                        "afuera de un pedido la puerta no tiene que soltarla")
+
+    def test_adentro_de_un_pedido_la_suelta(self):
+        import pesado
+        token = pesado._en_pedido.set("GET /prueba")
+        try:
+            self.assertFalse(self._esperar_a_yahoo_con_la_base_abierta(),
+                             "adentro de un pedido la puerta la suelta")
+        finally:
+            pesado._en_pedido.reset(token)
 
 
 class LosEventosDeLaCarteraTest(_Base):

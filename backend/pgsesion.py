@@ -237,6 +237,15 @@ def soltar(conn) -> bool:
 # hilo que se pueden soltar (`soltar`: no las que tienen una escritura abierta ni
 # ajustes propios), y la próxima consulta de cada una pide otra al pozo.
 # En SQLite no hay nada anotado y no hace nada.
+#
+# Sólo adentro de un pedido HTTP (`pesado.en_pedido`, la marca de `MarcarPedido`).
+# Un trabajo de fondo —la corrida de la noche, la foto, las alertas, los mails— se
+# queda con su conexión, como antes. Ahí soltarla cambia una espera por un riesgo
+# peor: si al volver a pedirla el pozo sigue lleno 30 s, el `PozoAgotado` corta la
+# corrida ENTERA (las velas, la poda, los cambios de ratio, el resumen; lo
+# reprodujo la auditoría del 05/11 con un pozo de 2, y la noche suelta en cada
+# tanda). Una pantalla que no consigue lugar falla sola; y como todas sueltan, el
+# pozo casi nunca se llena.
 import threading as _threading
 import weakref as _weakref
 
@@ -266,13 +275,17 @@ def antes_de_esperar_afuera(que: str = None) -> int:
     conexión de este hilo que se pueda soltar. Cuántas soltó.
 
     Sólo las que usó ESTE hilo la última vez (`_hilo`): la de otro pedido puede
-    estar en uso. Una con una escritura abierta no se suelta (`soltar`) y además
-    se avisa en el registro, una vez por lugar: esperar a la red con la escritura
-    abierta retiene la conexión Y los candados de lo escrito, y sólo se arregla
-    en ese lugar (confirmar antes de esperar, o esperar antes de escribir)."""
+    estar en uso. Y sólo adentro de un pedido HTTP: un trabajo de fondo se queda
+    con la suya (ver arriba). Una con una escritura abierta no se suelta
+    (`soltar`) y además se avisa en el registro, una vez por lugar, también en
+    los trabajos de fondo: esperar a la red con la escritura abierta retiene los
+    candados de lo escrito toda la espera, y sólo se arregla en ese lugar
+    (confirmar antes de esperar, o esperar antes de escribir)."""
     s = getattr(_DEL_HILO, "conexiones", None)
     if not s:
         return 0
+    import pesado
+    en_un_pedido = pesado.en_pedido() is not None
     yo = _threading.get_ident()
     sueltas = 0
     for conn in list(s):
@@ -281,7 +294,7 @@ def antes_de_esperar_afuera(que: str = None) -> int:
         try:
             if getattr(conn, "_hilo", yo) != yo:
                 continue
-            if soltar(conn):
+            if en_un_pedido and soltar(conn):
                 sueltas += 1
             elif _escritura_abierta(conn):
                 _avisar_escritura_abierta(que)
@@ -317,7 +330,7 @@ def _avisar_escritura_abierta(que) -> None:
     _AVISADOS.add(donde)
     logging.getLogger(__name__).warning(
         "se espera a la red (%s) con una escritura abierta: la conexión no se puede soltar "
-        "y queda tomada toda la espera. Desde: %s", que or "?", donde)
+        "y lo escrito queda trabado toda la espera. Desde: %s", que or "?", donde)
 
 
 import sqlite3 as _sqlite3
