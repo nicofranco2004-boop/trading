@@ -440,15 +440,9 @@ function FounderBlock() {
               <p className="text-sm font-semibold text-ink-0">Nicolás Pussetto</p>
               <p className="text-[13px] text-ink-3">Fundador de Rendi</p>
             </div>
-            <p className="inline-flex items-center gap-2 text-xs text-ink-2 sm:ml-auto">
+            <p className="text-xs text-ink-2 sm:ml-auto">
               {showCount ? (
-                <>
-                  <span className="relative flex h-2 w-2 shrink-0" aria-hidden="true">
-                    <span className="absolute inline-flex h-full w-full rounded-full bg-rendi-pos/60 animate-ping" />
-                    <span className="relative inline-flex h-2 w-2 rounded-full bg-rendi-pos" />
-                  </span>
-                  <span><span className="text-ink-0 font-semibold tabular">{users}</span> inversores ya consolidan su cartera en Rendi</span>
-                </>
+                <><span className="text-ink-0 font-semibold tabular">{users.toLocaleString('es-AR')}</span> inversores ya consolidan su cartera en Rendi</>
               ) : 'En etapa temprana: sumate a los primeros.'}
             </p>
           </div>
