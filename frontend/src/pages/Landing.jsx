@@ -102,14 +102,8 @@ const MODULOS_CHIPS = ['Cartera unificada', 'Ganancia en dólares', 'Salud de ca
 function Hero() {
   return (
     <section className="relative overflow-hidden">
-      <div className="absolute inset-0 lp-grilla pointer-events-none" aria-hidden="true" />
-      <div className="absolute w-[720px] h-[720px] -right-[300px] top-[200px] lg:-right-40 lg:-top-32 rounded-full lp-resplandor pointer-events-none" aria-hidden="true" />
       <div className="relative max-w-[1180px] mx-auto px-4 sm:px-6 py-10 lg:py-16 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)] gap-10 items-center">
         <div className="min-w-0">
-          <p className="inline-flex items-center gap-2 text-[13px] text-ink-1 border border-line-2 bg-bg-1/70 pl-2 pr-3 py-1 rounded-full mb-6">
-            <span className="w-2 h-2 rounded-full bg-rendi-pos lp-latido" aria-hidden="true" />
-            Para inversores argentinos
-          </p>
           {/* H1 único de la portada. */}
           <h1 className="text-[clamp(38px,5.6vw,68px)] leading-none font-semibold tracking-tighter text-ink-0 mb-6">
             Todas tus inversiones,
@@ -470,7 +464,6 @@ function CtaFinal() {
   return (
     <section className="max-w-[1180px] mx-auto px-4 sm:px-6">
       <div data-cierre="" className="relative overflow-hidden text-center border border-line-2 rounded-xl px-5 py-14 bg-bg-1">
-        <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-[640px] h-[400px] lp-resplandor pointer-events-none" aria-hidden="true" />
         <div className="relative">
           <h2 className="text-[clamp(28px,4vw,44px)] font-semibold tracking-tight text-ink-0 mb-3">Tu cartera entera, en una pantalla.</h2>
           <p className="text-ink-1 mb-6">{TRIAL_TOTAL_DAYS} días gratis, sin tarjeta. En cinco minutos ya la estás mirando.</p>
