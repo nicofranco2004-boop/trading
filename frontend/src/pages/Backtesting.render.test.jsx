@@ -166,6 +166,28 @@ describe('Análisis técnico → Backtesting', () => {
     expect(pedidosDeLaPrueba()).toEqual(['GET /tecnico/NVDA/backtest?reglas=media200&anios=2'])
   })
 
+  // Nico, 05/11: tocando los últimos que miraste se sumaba un renglón del activo
+  // por cada toque, y el buscador abierto de un renglón viejo no cerraba con la
+  // cruz. El renglón y la prueba eran hermanos con el mismo `key` (el activo):
+  // React perdía el rastro del renglón viejo y lo dejaba en la página, muerto.
+  it('cambiar de activo con los de arriba deja UN renglón del activo, y su buscador cierra con la cruz', async () => {
+    almacen.set(CLAVE, JSON.stringify({ activo: 'NVDA', recientes: ['NVDA', 'GGAL', 'AAPL'] }))
+    montado = await abrir('/analisis-tecnico?tab=backtesting&activo=NVDA')
+    const renglones = () => todos(montado.contenedor, n => /^Cambiar de activo/.test(n.atributos?.['aria-label'] || ''))
+      .map(n => n.atributos['aria-label'])
+    for (const s of ['GGAL', 'AAPL', 'NVDA', 'GGAL']) {
+      await clic(montado.contenedor, buscarBoton(montado.contenedor, s))
+      await esperar()
+      expect(deLaDireccion(montado.donde, 'activo')).toBe(s)
+      expect(renglones(), `después de tocar ${s}`).toEqual([`Cambiar de activo (ahora: ${s})`])
+    }
+    await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Cambiar de activo (ahora: GGAL)'))
+    await esperar()
+    expect(porEtiqueta(montado.contenedor, 'Cerrar el buscador')).not.toBeNull()
+    await clic(montado.contenedor, porEtiqueta(montado.contenedor, 'Cerrar el buscador'))
+    expect(porEtiqueta(montado.contenedor, 'Cerrar el buscador')).toBeNull()
+  })
+
   it('la regla al lado de comprar y mantener, qué quiere decir y cada operación', async () => {
     montado = await abrir('/analisis-tecnico?tab=backtesting&activo=GGAL&reglas=rsi')
     const t = montado.t()

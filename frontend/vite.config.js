@@ -91,8 +91,9 @@ export default defineConfig(({ mode, isSsrBuild }) => {
     test: {
       environment: 'node',
       // Todo pedido a /api de cualquier prueba sale por la puerta única de
-      // utils/api, o la prueba da rojo (re-test a ciegas 9).
-      setupFiles: ['./src/testing/vigilarPedidos.js'],
+      // utils/api, o la prueba da rojo (re-test a ciegas 9). Y dos hermanos con
+      // el mismo `key` también (Backtesting, 05/11).
+      setupFiles: ['./src/testing/vigilarPedidos.js', './src/testing/vigilarClaves.js'],
     },
   }
 })

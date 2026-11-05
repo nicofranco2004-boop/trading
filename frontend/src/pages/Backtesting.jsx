@@ -85,13 +85,16 @@ export default function Backtesting() {
       {activo
         // Con `key`, se vuelve a armar al cambiar de activo, como en el Gráfico (que
         // cuelga de `GraficoDe key={activo}`): así el teclado vuelve a su botón.
-        ? <Encabezado key={activo} activo={activo} recientes={recientes} cliente={cliente} enfocar={enfocar}
+        // El renglón y la prueba son hermanos: cada uno con SU key. Con el mismo
+        // (los dos `activo`), React perdía el rastro del renglón viejo y lo dejaba
+        // en la página, muerto: un renglón más por cada cambio de activo (05/11).
+        ? <Encabezado key={`renglon:${activo}`} activo={activo} recientes={recientes} cliente={cliente} enfocar={enfocar}
             onElegir={elegir} pie={null} />
         : <Skeleton className="h-10 w-48" />}
       <Controles reglas={reglas} anios={anios}
         onReglas={(rs) => cambiar('reglas', rs.join(','))} onAnios={(a) => cambiar('anios', a)} />
       {activo
-        ? <PruebaDe key={activo} activo={activo} reglas={reglas} anios={anios}
+        ? <PruebaDe key={`prueba:${activo}`} activo={activo} reglas={reglas} anios={anios}
             onTuyo={(s) => setActivo(s)} onAbierto={abierto} />
         : <Skeleton className="h-72 w-full rounded-xl" />}
     </div>
