@@ -1167,24 +1167,6 @@ body {
    leen Google y las IA) cada pieza queda en su estado final, completa.
    ════════════════════════════════════════════════════════════════════════ */
 
-/* Grilla del fondo del héroe, que se desvanece hacia los bordes. */
-.lp-grilla {
-  background-image:
-    linear-gradient(rgb(var(--line-2) / 0.35) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(var(--line-2) / 0.35) 1px, transparent 1px);
-  background-size: 44px 44px;
-  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 70% 45%, #000 20%, transparent 75%);
-  mask-image: radial-gradient(ellipse 70% 60% at 70% 45%, #000 20%, transparent 75%);
-}
-.lp-resplandor { background: radial-gradient(circle, rgb(var(--data-violet) / 0.16), transparent 65%); }
-
-/* El puntito verde del «Para inversores argentinos». */
-@keyframes lp-latido {
-  70%  { box-shadow: 0 0 0 8px rgb(var(--rendi-pos) / 0); }
-  100% { box-shadow: 0 0 0 0 rgb(var(--rendi-pos) / 0); }
-}
-.lp-latido { box-shadow: 0 0 0 0 rgb(var(--rendi-pos) / 0.6); animation: lp-latido 2s infinite; }
-
 /* Sombras: van acá y no en `shadow-[…]` porque con una variable adentro
    Tailwind la toma como color y no pinta (frontend/CLAUDE.md, R8). */
 .lp-sombra-boton  { box-shadow: 0 10px 30px -12px rgb(var(--data-violet) / 0.7); }
@@ -1255,7 +1237,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .lp-latido, .lp-entra, .lp-crece, .lp-crece-der, .lp-traza, .lp-salta, .lp-llama,
+  .lp-entra, .lp-crece, .lp-crece-der, .lp-traza, .lp-salta, .lp-llama,
   .lp-cae, .lp-carga, .lp-acomoda, .lp-traza-bucle, .lp-listo { animation: none; }
   .lp-llena { animation: none; transform: scaleX(0); }
   .lp-traza-bucle { stroke-dashoffset: 0; }
