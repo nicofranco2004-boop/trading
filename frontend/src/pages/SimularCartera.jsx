@@ -191,8 +191,11 @@ export default function SimularCartera() {
                   {f.local && <span className="text-[12px] text-ink-2">BYMA</span>}
                 </span>
                 <span className="flex items-center gap-1">
+                  {/* Al entrar, el número queda elegido: lo que se escribe lo reemplaza (con
+                      el tope de 100, «100» más un 6 seguía en 100 y parecía trabado). */}
                   <input ref={el => { entradas.current[f.asset] = el }} type="text" inputMode="decimal" value={f.txt}
-                    onChange={e => ponerPeso(i, e.target.value)} placeholder="0" aria-label={`Porcentaje de ${f.asset} en la cartera`}
+                    onChange={e => ponerPeso(i, e.target.value)} onFocus={e => e.target.select?.()}
+                    placeholder="0" aria-label={`Porcentaje de ${f.asset} en la cartera`}
                     className="w-16 min-h-11 sm:min-h-10 rounded-lg border border-line-2 bg-bg-2 px-2.5 text-right tabular text-[15px] font-semibold text-ink-0" />
                   <span className="text-[14px] text-ink-2">%</span>
                 </span>
