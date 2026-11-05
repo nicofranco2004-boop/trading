@@ -30092,6 +30092,38 @@ def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admi
         return _completar_estado_admin(conn, [_shape_admin_user_row(r, now_iso) for r in rows])
 
 
+@app.get("/api/admin/users/mails-meta.csv")
+def admin_users_mails_meta(uid: int = Depends(get_admin_user)):
+    """Los mails de los usuarios en el formato de "público personalizado" de Meta
+    (anuncios de Facebook/Instagram): columnas `email`, `fn` (nombre) y `ln`
+    (apellido), que Meta reconoce solas por el encabezado. Sólo el mail es
+    obligatorio; el nombre ayuda a que encuentre más gente.
+
+    Quiénes: `_SQL_CUENTA_DE_AFUERA` — sin admins ni cuentas de test/internas,
+    MISMO filtro que los conteos del panel. Incluye a los que no confirmaron el
+    mail: se registraron, así que son público para volver a buscar; si el mail
+    tiene un error de tipeo Meta simplemente no lo encuentra.
+
+    El nombre se parte en la primera palabra (nombre) y el resto (apellido);
+    con una sola palabra el apellido queda vacío, que Meta acepta."""
+    with db_abierta() as conn:
+        rows = conn.execute(
+            "SELECT email, name FROM users WHERE " + _SQL_CUENTA_DE_AFUERA +
+            " ORDER BY created_at DESC").fetchall()
+    filas, vistos = [], set()
+    for r in rows:
+        email = (r["email"] or "").strip().lower()
+        if not email or "@" not in email or email in vistos:
+            continue
+        vistos.add(email)
+        partes = (r["name"] or "").split()
+        filas.append({"email": email,
+                      "fn": partes[0] if partes else "",
+                      "ln": " ".join(partes[1:])})
+    return _csv_response(filas, [("email", "email"), ("fn", "fn"), ("ln", "ln")],
+                         f"rendi_mails_meta_{_hoy_art_date().isoformat()}.csv")
+
+
 # ─── Envíos masivos del panel de admin ────────────────────────────────────────
 # Los seis mails que el admin le manda a mucha gente desde el panel
 # (re-engagement, regalo de plan, invitación a la prueba, feedback de la prueba,
