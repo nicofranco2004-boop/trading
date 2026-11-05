@@ -1070,9 +1070,42 @@ class Connection:
         # La conexión sale del pozo y vuelve en `close()`. Ver `_Pozo`.
         self._pozo = _pozo_de(dsn)
         self._c = self._pozo.tomar()
+        self._cerrada = False        # `_c` vacío y esto en False = suelta (`soltar`)
         self._sucia = False
         self._dsn = dsn              # para leer el catálogo aparte (ver _pk_de)
         self.row_factory = None      # el código lo setea; acá siempre devolvemos Row
+
+    # ── Soltarla mientras se espera algo de afuera ───────────────────────────
+    def soltar(self) -> bool:
+        """Devuelve la conexión al pozo hasta que se la vuelva a usar: la próxima
+        consulta pide una (`_viva`). Para esperar algo de afuera —Yahoo, data912—
+        sin quedarse con uno de los lugares del pozo. Se llama por
+        `pgsesion.soltar`, que funciona en los dos motores; el porqué y lo medido
+        están ahí.
+
+        No la suelta, y devuelve False, si:
+          · tiene una transacción abierta: soltarla la perdería;
+          · tiene ajustes de sesión propios (`_sucia`): la próxima sería otra
+            conexión, sin ellos;
+          · ya está suelta o cerrada.
+        Lo que se leyó antes ya está entero en el cursor (psycopg trae todas las
+        filas al ejecutar), así que se puede seguir leyendo suelta."""
+        if self._c is None or self._sucia or self.in_transaction:
+            return False
+        c, self._c = self._c, None
+        self._pozo.devolver(c)
+        return True
+
+    def _viva(self):
+        """La conexión de psycopg: si estaba suelta, se pide al pozo recién acá,
+        al usarla. Cerrada sigue siendo None, como antes de que existiera
+        `soltar` (usar una conexión cerrada revienta)."""
+        if self._c is None and not self._cerrada:
+            self._c = self._pozo.tomar()
+        return self._c
+
+    def _suelta(self) -> bool:
+        return self._c is None and not self._cerrada
 
     # ── API de sqlite3 ────────────────────────────────────────────────────────
     def _pk_de(self, tabla: str):
@@ -1192,7 +1225,7 @@ class Connection:
         """Las columnas de una tabla, del caché. Ver `_COLS_CACHE`."""
         clave = tabla.lower()
         if clave not in _COLS_CACHE:
-            with self._c.cursor() as c:
+            with self._viva().cursor() as c:
                 c.execute(_TABLE_INFO_SQL.format(tabla=clave))
                 cols = [d.name for d in c.description]
                 _COLS_CACHE[clave] = [Row(cols, t) for t in c.fetchall()]
@@ -1210,8 +1243,9 @@ class Connection:
 
         q = traducir(sql)
         p = _normalizar_params(params)
+        c = self._viva()
         self._abrir_si_escribe(q)
-        cur = self._c.cursor()
+        cur = c.cursor()
 
         m = _RE_INSERT_TABLA.match(q.lstrip())
         if m and "RETURNING" not in q.upper():
@@ -1226,8 +1260,9 @@ class Connection:
 
     def executemany(self, sql, seq):
         q = traducir(sql)
+        c = self._viva()
         self._abrir_si_escribe(q)
-        cur = self._c.cursor()
+        cur = c.cursor()
         cur.executemany(q, [_normalizar_params(p) for p in seq])
         return Cursor(cur)
 
@@ -1236,7 +1271,7 @@ class Connection:
         parámetros, y además así un fallo dice CUÁL sentencia falló."""
         if _RE_DDL.search(sql):
             _invalidar_por_ddl()     # casi todo executescript es DDL de migración
-        cur = self._c.cursor()
+        cur = self._viva().cursor()
         for s in [x.strip() for x in sql.split(";") if x.strip()]:
             q = traducir(s)
             self._abrir_si_escribe(q)
@@ -1255,7 +1290,7 @@ class Connection:
             self._c.execute("BEGIN")
 
     def cursor(self):
-        return Cursor(self._c.cursor())
+        return Cursor(self._viva().cursor())
 
     @property
     def in_transaction(self) -> bool:
@@ -1313,14 +1348,19 @@ class Connection:
                 "no se guardó nada de este pedido (ver pgshim._no_confirmar_lo_descartado).")
 
     def commit(self):
+        if self._suelta():
+            return           # se soltó sin nada abierto (`soltar`): no hay qué confirmar
         self._no_confirmar_lo_descartado()
         self._c.commit()
 
     def rollback(self):
+        if self._suelta():
+            return
         self._c.rollback()
 
     def close(self):
         c, self._c = self._c, None
+        self._cerrada = True
         if c is not None:
             self._pozo.devolver(c, sucia=self._sucia)
 
@@ -1338,6 +1378,8 @@ class Connection:
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        if self._suelta():
+            return False
         if exc_type is None:
             # `with conn:` también confirma al salir: el mismo silencio, la misma guarda.
             self._no_confirmar_lo_descartado()

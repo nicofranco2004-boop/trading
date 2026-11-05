@@ -192,6 +192,29 @@ def si_falla_se_deshace_solo_esto(conn, nombre: str):
     conn.execute(f"RELEASE SAVEPOINT {nombre}")
 
 
+def soltar(conn) -> bool:
+    """Justo antes de esperar algo de afuera (Yahoo, data912) con una conexión en
+    la mano. En Postgres la devuelve al pozo hasta la próxima consulta, que pide
+    otra (`pgshim.Connection.soltar`). En SQLite no hace nada: no hay pozo, la
+    conexión es un archivo abierto que no le quita el lugar a nadie.
+
+    POR QUÉ, medido el 05/11/2026 contra un Postgres local
+    (audit/_scripts/medir_conexion_esperando_yahoo.py). Postgres da 10 conexiones
+    por copia de la app (`pgshim._Pozo`) y el freno deja correr 8 lecturas pesadas
+    a la vez (`main.PESADOS_A_LA_VEZ`). La ficha de un activo que nadie sigue lo
+    baja de Yahoo en el momento (hasta 10 s) y la ruta abre la base para el bloque
+    entero: 8 fichas así tenían 8 de las 10 conexiones prestadas sin hacer nada, y
+    con otras 2 ocupadas, un pedido liviano —chequear la sesión de cualquiera—
+    esperó 7,6 s a que Yahoo contestara. Cerrar la lectura antes de esperar (el
+    `conn.commit()` que ya estaba) no alcanzaba: suelta la transacción, no el lugar.
+
+    Con una transacción abierta NO la suelta (se perdería lo escrito): esperar a
+    Yahoo con una escritura abierta es otro error, y éste no lo tapa. True si la
+    soltó."""
+    s = getattr(conn, "soltar", None)
+    return bool(s()) if callable(s) else False
+
+
 import sqlite3 as _sqlite3
 
 _MODULOS_QUE_HABLAN_POSTGRES = ("pgshim", "psycopg")
