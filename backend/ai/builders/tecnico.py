@@ -30,7 +30,12 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     base = asset[:-3] if asset.endswith(".BA") else asset
     # El freno de la ficha (tipo «uno»): lee la serie entera. Si está lleno, el
     # 429/503 corta el paquete y el chat contesta con lo que tiene (main.ai_chat).
-    with _freno_tecnico(None, user_id, "uno"):
+    # Se le cuenta a quien pregunta (`paga`: la asesora adentro de un cliente),
+    # que pone el servidor desde el token y nunca el navegador
+    # (`main._params_de_boton`); a través del freno, también paga las descargas
+    # (`main._freno_paga`). Sin `paga` (llamado a mano), la cuenta que se mira.
+    paga = kwargs.get("paga") or user_id
+    with _freno_tecnico(None, paga, "uno"):
         tickers, motivo = _velas_a_pedido(conn, [(base, local)], user_id)[base]
         ficha = tecnico.para_la_ficha(conn, base, moneda, local)
     if not ficha.get("disponible"):

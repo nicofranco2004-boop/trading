@@ -205,8 +205,13 @@ def soltar(conn) -> bool:
     baja de Yahoo en el momento (hasta 10 s) y la ruta abre la base para el bloque
     entero: 8 fichas así tenían 8 de las 10 conexiones prestadas sin hacer nada, y
     con otras 2 ocupadas, un pedido liviano —chequear la sesión de cualquiera—
-    esperó 7,6 s a que Yahoo contestara. Cerrar la lectura antes de esperar (el
-    `conn.commit()` que ya estaba) no alcanzaba: suelta la transacción, no el lugar.
+    esperó a que Yahoo contestara (7,6 s con un Yahoo de mentira de 8 s). Cerrar la
+    lectura antes de esperar (el `conn.commit()` que ya estaba) no alcanzaba:
+    suelta la transacción, no el lugar.
+
+    Quién la llama decide si conviene: una persona esperando en su pantalla, sí;
+    un trabajo de fondo que espera muchas veces, no (ver `velas_diarias.actualizar`,
+    `soltar_la_base`): si al volver el pozo sigue lleno 30 s, se corta.
 
     Con una transacción abierta NO la suelta (se perdería lo escrito): esperar a
     Yahoo con una escritura abierta es otro error, y éste no lo tapa. True si la

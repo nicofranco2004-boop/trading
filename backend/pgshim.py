@@ -1072,6 +1072,12 @@ class Connection:
         self._pozo = _pozo_de(dsn)
         self._c = self._pozo.tomar()
         self._cerrada = False        # `_c` vacío y esto en False = suelta (`soltar`)
+        # Soltar, volver a pedir y cerrar, de a uno: dos hilos con la misma
+        # conexión suelta pedían una cada uno y la que sobraba no volvía nunca
+        # al pozo (auditoría del 05/11: 4 hilos, 3 lugares perdidos). Hoy ningún
+        # camino comparte una conexión entre hilos; antes de `soltar` tampoco se
+        # perdía nada si alguno lo hacía (psycopg trae su propio candado).
+        self._candado = threading.Lock()
         self._sucia = False
         self._dsn = dsn              # para leer el catálogo aparte (ver _pk_de)
         self.row_factory = None      # el código lo setea; acá siempre devolvemos Row
@@ -1097,27 +1103,37 @@ class Connection:
           · ya está suelta o cerrada.
         Lo que se leyó antes ya está entero en el cursor (psycopg trae todas las
         filas al ejecutar), así que se puede seguir leyendo suelta."""
-        if self._c is None or self._sucia or self.in_transaction:
-            return False
-        c, self._c = self._c, None
-        self._pozo.devolver(c)
-        return True
+        with self._candado:
+            if self._c is None or self._sucia or self.in_transaction:
+                return False
+            c, self._c = self._c, None
+            self._pozo.devolver(c)
+            return True
 
     def _viva(self):
         """La conexión de psycopg: si estaba suelta, se pide al pozo recién acá,
         al usarla. Cerrada sigue siendo None, como antes de que existiera
         `soltar` (usar una conexión cerrada revienta).
 
+        Al pozo VIGENTE: si el de esta conexión se cerró mientras estaba suelta
+        (`cerrar_pozos`, que sólo usan las pruebas al cambiar de esquema o de
+        tope), uno nuevo, con el tope de ahora.
+
         Si la usa otro hilo, pasa a ser de ése: la puerta del hilo anterior ya no
         la suelta (podría estar en uso) y la del nuevo sí."""
         yo = threading.get_ident()
-        if self._hilo != yo:
-            self._hilo = yo
-            import pgsesion
-            pgsesion.anotar(self)
-        if self._c is None and not self._cerrada:
-            self._c = self._pozo.tomar()
-        return self._c
+        if self._c is not None and self._hilo == yo:
+            return self._c          # lo de siempre: el mismo hilo, y ya la tiene
+        with self._candado:
+            if self._hilo != yo:
+                self._hilo = yo
+                import pgsesion
+                pgsesion.anotar(self)
+            if self._c is None and not self._cerrada:
+                if self._pozo._cerrado:
+                    self._pozo = _pozo_de(self._dsn)
+                self._c = self._pozo.tomar()
+            return self._c
 
     def _suelta(self) -> bool:
         return self._c is None and not self._cerrada
@@ -1374,10 +1390,11 @@ class Connection:
         self._c.rollback()
 
     def close(self):
-        c, self._c = self._c, None
-        self._cerrada = True
-        if c is not None:
-            self._pozo.devolver(c, sucia=self._sucia)
+        with self._candado:
+            c, self._c = self._c, None
+            self._cerrada = True
+            if c is not None:
+                self._pozo.devolver(c, sucia=self._sucia)
         import pgsesion
         pgsesion.olvidar(self)
 

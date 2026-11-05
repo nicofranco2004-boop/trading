@@ -1,49 +1,53 @@
 # Salida de medir_conexion_esperando_yahoo.py, 05/11/2026, Mac, Postgres 16.2 local (scripts/pg_de_prueba.py).
-# Yahoo falso de 8 s. Misma máquina y mismo servidor en las dos corridas, una después de la otra.
+# Las dos corridas con el MISMO script, el mismo servidor, una después de la otra, Yahoo falso de 8 s.
+# El 7,6 s de «antes» (escenario 3) lo pone el Yahoo falso: es lo que le faltaba para contestar.
+# En producción sería lo que tarde Yahoo, hasta 10 s (el tope de la ficha). Lo que vale comparar
+# es «conexiones prestadas en ese momento» y cuándo terminaron los pedidos livianos.
+# (Una primera corrida del 05/11 a la mañana dio lo mismo: 8 de 10 y 7,6 s antes; 0 de 10 después.)
 
-=== ANTES del arreglo (origin/main 1043fa4a) · Postgres local · pozo de 10 conexiones · 8 lecturas pesadas a la vez ===
+=== ANTES: main publicado (f49b0548), sin el arreglo · Postgres local · pozo de 10 conexiones · 8 lecturas pesadas a la vez ===
 
 1. Sin carga
-  pedido liviano de a uno (5):   mediana     2.0 ms · máx     4.7 ms · códigos [200]
-  pedido liviano, 20 a la vez:   mediana    29.9 ms · máx    33.3 ms · códigos [200]
+  pedido liviano de a uno (5):   mediana     2.6 ms · máx     8.3 ms · códigos [200]
+  pedido liviano, 20 a la vez:   mediana    41.1 ms · máx    49.2 ms · códigos [200]
   conexiones prestadas en reposo: 0 de 10
 
 2. Con 8 fichas esperando a Yahoo
-  fichas esperando a Yahoo cuando se midió: 8 de 8 (Yahoo falso: 8 s cada una)
-  conexiones prestadas en medio de la espera: 8 de 10
-  pedido liviano de a uno (5):   mediana     7.7 ms · máx    39.7 ms · códigos [200]
-  pedido liviano, 20 a la vez:   mediana    82.9 ms · máx   204.3 ms · códigos [200]
-  (las dos mediciones del pedido liviano tardaron 0.3 s en total)
+  al medir: 8 de 8 fichas esperando a Yahoo, a los 0.5 s de los 8 s que tarda el Yahoo falso
+  conexiones prestadas en ese momento: 8 de 10
+  pedido liviano de a uno (5):   mediana     2.1 ms · máx     3.2 ms · códigos [200]
+  pedido liviano, 20 a la vez:   mediana    28.9 ms · máx    36.1 ms · códigos [200]
+  los 25 pedidos livianos terminaron entre los 0.5 y los 0.6 s de empezada la espera (0.1 s en total)
   las 8 fichas: códigos [200], disponibles 8 de 8, tardaron 8.3–8.6 s
 
 3. Con 8 fichas esperando a Yahoo y otras 2 conexiones tomadas
-  fichas esperando a Yahoo cuando se midió: 8 de 8 (Yahoo falso: 8 s cada una)
-  conexiones prestadas en medio de la espera: 10 de 10 (2 de ellas, de «otra cosa»)
-  pedido liviano de a uno (5):   mediana     7.3 ms · máx  7591.2 ms · códigos [200]
-  pedido liviano, 20 a la vez:   mediana   117.0 ms · máx   137.3 ms · códigos [200]
-  (las dos mediciones del pedido liviano tardaron 7.8 s en total)
-  las 8 fichas: códigos [200], disponibles 8 de 8, tardaron 8.1–8.3 s
+  al medir: 8 de 8 fichas esperando a Yahoo, a los 0.5 s de los 8 s que tarda el Yahoo falso
+  conexiones prestadas en ese momento: 10 de 10 (2 de ellas, de «otra cosa»)
+  pedido liviano de a uno (5):   mediana     3.8 ms · máx  7645.4 ms · códigos [200]
+  pedido liviano, 20 a la vez:   mediana    32.2 ms · máx    81.4 ms · códigos [200]
+  los 25 pedidos livianos terminaron entre los 8.2 y los 8.3 s de empezada la espera (7.8 s en total)
+  las 8 fichas: códigos [200], disponibles 8 de 8, tardaron 8.1–8.2 s
 
 
-=== DESPUÉS del arreglo (pgsesion.soltar) · Postgres local · pozo de 10 conexiones · 8 lecturas pesadas a la vez ===
+=== DESPUÉS: rama claude/wizardly-jones-ffc3c0, con el arreglo auditado · Postgres local · pozo de 10 conexiones · 8 lecturas pesadas a la vez ===
 
 1. Sin carga
-  pedido liviano de a uno (5):   mediana     1.6 ms · máx     4.1 ms · códigos [200]
-  pedido liviano, 20 a la vez:   mediana    33.5 ms · máx    38.8 ms · códigos [200]
+  pedido liviano de a uno (5):   mediana     4.2 ms · máx     6.1 ms · códigos [200]
+  pedido liviano, 20 a la vez:   mediana    46.2 ms · máx    56.7 ms · códigos [200]
   conexiones prestadas en reposo: 0 de 10
 
 2. Con 8 fichas esperando a Yahoo
-  fichas esperando a Yahoo cuando se midió: 8 de 8 (Yahoo falso: 8 s cada una)
-  conexiones prestadas en medio de la espera: 0 de 10
-  pedido liviano de a uno (5):   mediana     5.3 ms · máx    11.9 ms · códigos [200]
-  pedido liviano, 20 a la vez:   mediana    35.1 ms · máx    43.3 ms · códigos [200]
-  (las dos mediciones del pedido liviano tardaron 0.1 s en total)
-  las 8 fichas: códigos [200], disponibles 8 de 8, tardaron 8.3–8.5 s
+  al medir: 8 de 8 fichas esperando a Yahoo, a los 0.5 s de los 8 s que tarda el Yahoo falso
+  conexiones prestadas en ese momento: 0 de 10
+  pedido liviano de a uno (5):   mediana     2.1 ms · máx     3.1 ms · códigos [200]
+  pedido liviano, 20 a la vez:   mediana    29.3 ms · máx    35.4 ms · códigos [200]
+  los 25 pedidos livianos terminaron entre los 0.5 y los 0.6 s de empezada la espera (0.0 s en total)
+  las 8 fichas: códigos [200], disponibles 8 de 8, tardaron 8.4–8.9 s
 
 3. Con 8 fichas esperando a Yahoo y otras 2 conexiones tomadas
-  fichas esperando a Yahoo cuando se midió: 8 de 8 (Yahoo falso: 8 s cada una)
-  conexiones prestadas en medio de la espera: 2 de 10 (2 de ellas, de «otra cosa»)
-  pedido liviano de a uno (5):   mediana     6.0 ms · máx     9.2 ms · códigos [200]
-  pedido liviano, 20 a la vez:   mediana    73.1 ms · máx    78.6 ms · códigos [200]
-  (las dos mediciones del pedido liviano tardaron 0.1 s en total)
-  las 8 fichas: códigos [200], disponibles 8 de 8, tardaron 8.2–8.3 s
+  al medir: 8 de 8 fichas esperando a Yahoo, a los 0.5 s de los 8 s que tarda el Yahoo falso
+  conexiones prestadas en ese momento: 2 de 10 (2 de ellas, de «otra cosa»)
+  pedido liviano de a uno (5):   mediana     2.8 ms · máx     3.5 ms · códigos [200]
+  pedido liviano, 20 a la vez:   mediana    41.8 ms · máx    49.1 ms · códigos [200]
+  los 25 pedidos livianos terminaron entre los 0.5 y los 0.6 s de empezada la espera (0.1 s en total)
+  las 8 fichas: códigos [200], disponibles 8 de 8, tardaron 8.1–8.2 s

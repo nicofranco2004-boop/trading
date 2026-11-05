@@ -3,26 +3,36 @@ qué queda tomado mientras se espera a Yahoo.
 
 Los dos los encontró la auditoría de seguridad del backtesting (04/11/2026,
 hallazgos 3 y 4) en la ficha, y venían de antes:
-  · La que PIDE paga el cupo de descargas, como en el freno y en el resumen: la
-    asesora mirando la cuenta de Ana gasta el suyo. Antes gastaba el de Ana, que
-    se quedaba sin descargas esa hora.
-  · Mientras se espera a Yahoo (o a data912) no queda ninguna conexión a la base
-    tomada. En Postgres hay 10 por copia de la app; medido antes del arreglo
-    (audit/_scripts/medir_conexion_esperando_yahoo.py), 8 fichas esperando a
-    Yahoo tenían 8 tomadas, y con otras 2 ocupadas un pedido liviano esperó 7,6 s.
+  · La que PIDE paga el cupo de descargas y el freno: la asesora mirando la
+    cuenta de Ana gasta los suyos. Antes gastaba los de Ana, que se quedaba sin
+    descargas esa hora. Quién pide lo decide el freno (`main._freno_paga`): así
+    ninguna entrada lo tiene que repetir (la quinta, el ✦ de la ficha, se había
+    olvidado; auditoría del 05/11).
+  · Mientras la ficha espera a Yahoo (o a data912) no queda ninguna conexión a
+    la base tomada. En Postgres hay 10 por copia de la app; medido antes del
+    arreglo (audit/_scripts/medir_conexion_esperando_yahoo.py), 8 fichas
+    esperando a Yahoo tenían 8 tomadas. La corrida de la noche, en cambio, se
+    queda con la suya a propósito (`velas_diarias.actualizar`, `soltar_la_base`).
 
-Entra por HTTP, como la pantalla: la ficha, el comparador, las velas por hora y
-la lectura técnica del chat (con el modelo de mentira en la frontera). Yahoo,
-data912 y los splits se reemplazan en su punto más bajo.
+Entra por HTTP, como la pantalla: la ficha, el comparador, las velas por hora,
+la lectura técnica del chat y el ✦ de la ficha (con el modelo de mentira en la
+frontera, con y sin `stream`, que es como lo pide la app). Yahoo, data912 y los
+splits se reemplazan en su punto más bajo.
+
+⚠️ Lo de `pgshim` (el pozo de verdad) sólo lo vigila la corrida contra Postgres:
+`DATABASE_URL=<un Postgres de prueba> python3 -m pytest tests/test_velas_a_pedido.py`.
 
 Corre con: cd backend && python3 -m pytest tests/test_velas_a_pedido.py
 """
+import ast
 import os
 import sys
 import tempfile
+import threading
 import unittest
 import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -63,7 +73,8 @@ class _Base(unittest.TestCase):
         self.client = TestClient(main.app)
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
-            for t in ("velas_diarias", "velas_estado", "cambios_ratio", "watchlist", "positions",
+            # `splits_yahoo`: lo que ya se le preguntó a Yahoo hoy no se vuelve a preguntar.
+            for t in ("velas_diarias", "velas_estado", "cambios_ratio", "splits_yahoo", "watchlist", "positions",
                       "brokers", "fx_rates_daily", "advisor_clients", "resumenes_tecnicos", "ai_usage_daily"):
                 conn.execute(f"DELETE FROM {t}")
 
@@ -114,6 +125,22 @@ class _Base(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()
 
+    def _chat(self, h, *, stream=False, ticker=None, boton=None):
+        """POST /api/ai/chat como la app. `ticker`: el modelo pide la lectura
+        técnica (`get_technical_reading`). `boton`: los `params` del ✦ de la
+        ficha (screen 'tecnico'), que el servidor arma antes de llamar al modelo."""
+        claude = ClaudeDelChat([BUENO], herramienta=("get_technical_reading", {"ticker": ticker})
+                               if ticker else None)
+        cuerpo = {"messages": [{"role": "user", "content": f"¿Cómo viene {ticker or 'esto'}?"}],
+                  "snapshot": {"summary": {}, "positions": [], "operations": [], "monthly": [], "brokers": []},
+                  "stream": stream}
+        if boton is not None:
+            cuerpo["analisis"] = {"screen": "tecnico", "params": boton}
+        with mock.patch.object(main, "_get_anthropic_client", return_value=claude):
+            r = self.client.post("/api/ai/chat", headers=h, json=cuerpo)
+        self.assertEqual(r.status_code, 200, r.text)
+        return claude
+
 
 class LaQuePidePagaTest(_Base):
     """Hallazgo 3, con un cupo de UNA descarga por persona por hora: la asesora
@@ -149,13 +176,39 @@ class LaQuePidePagaTest(_Base):
         self._gasto_la_asesora()
 
     def test_la_lectura_tecnica_del_chat(self):
-        claude = ClaudeDelChat([BUENO], herramienta=("get_technical_reading", {"ticker": "AMD"}))
-        cuerpo = {"messages": [{"role": "user", "content": "¿Cómo viene AMD?"}],
-                  "snapshot": {"summary": {}, "positions": [], "operations": [], "monthly": [], "brokers": []}}
-        with mock.patch.object(main, "_get_anthropic_client", return_value=claude):
-            r = self.client.post("/api/ai/chat", headers=self.h_asesora_en_ana, json=cuerpo)
-        self.assertEqual(r.status_code, 200, r.text)
+        claude = self._chat(self.h_asesora_en_ana, ticker="AMD")
         self.assertTrue(claude.lectura_enviada().get("available"), claude.lectura_enviada())
+        self._gasto_la_asesora()
+
+    def test_la_lectura_tecnica_del_chat_en_vivo(self):
+        # La app pide el chat con `stream: true` (frontend/src/utils/api.js): otra rama de ai_chat.
+        claude = self._chat(self.h_asesora_en_ana, ticker="AMD", stream=True)
+        self.assertTrue(claude.lectura_enviada().get("available"), claude.lectura_enviada())
+        self._gasto_la_asesora()
+
+    def test_el_boton_de_la_ficha(self):
+        # «✦ ¿Está en tendencia?»: el armador técnico baja el activo antes de llamar al modelo.
+        self._chat(self.h_asesora_en_ana, boton={"asset": "AMD"})
+        self._gasto_la_asesora()
+
+    def test_el_boton_de_la_ficha_en_vivo(self):
+        self._chat(self.h_asesora_en_ana, boton={"asset": "AMD"}, stream=True)
+        self._gasto_la_asesora()
+
+    def test_el_navegador_no_elige_quien_paga(self):
+        # `paga` lo pone el servidor desde el token: si lo manda el navegador, no cuenta.
+        self._chat(self.h_asesora_en_ana, boton={"asset": "AMD", "paga": self.ana})
+        self._gasto_la_asesora()
+
+    def test_si_se_puede_pedir_lo_decide_la_cuenta_que_se_mira(self):
+        # ZZZZ no está en ninguna lista de la app: se baja porque ANA lo tiene, no la asesora.
+        r = self.client.post("/api/brokers", json={"name": "Schwab", "currency": "USD"}, headers=self.h_ana)
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.client.post("/api/positions", json={"broker": "Schwab", "asset": "ZZZZ", "quantity": 10,
+                                                     "buy_price": 5, "asset_type": "STOCK"}, headers=self.h_ana)
+        self.assertIn(r.status_code, (200, 201), r.text)
+        self.yahoo.precios["ZZZZ"] = lambda i, d: 5.0
+        self.assertTrue(self._ficha("ZZZZ", self.h_asesora_en_ana)["disponible"])
         self._gasto_la_asesora()
 
     def test_sola_en_su_cuenta_paga_ella(self):
@@ -163,13 +216,80 @@ class LaQuePidePagaTest(_Base):
         self.assertTrue(self._ficha("AMD", self.h_ana)["disponible"])
         self.assertEqual(self._ficha("INTC", self.h_ana).get("motivo"), "tope")
 
-    def test_la_llamada_sin_quien_paga_sigue_cobrandole_a_la_cuenta(self):
-        # Una ruta que todavía llama con tres argumentos (la del backtesting, en
-        # su rama) no se rompe: paga la cuenta que se mira, como antes.
-        with main.db_abierta() as conn:
+    def test_la_llamada_de_tres_argumentos_la_paga_quien_pide(self):
+        # Así llama la ruta del backtesting (en su rama): `_velas_a_pedido(conn, …, uid)`
+        # adentro de `_freno_tecnico(request, uid, …)`. Paga quien puso el token.
+        pedido = SimpleNamespace(state=SimpleNamespace(rendi_auth_uid=self.asesora))
+        with main._freno_tecnico(pedido, self.ana, "uno"), main.db_abierta() as conn:
             tickers, motivo = main._velas_a_pedido(conn, [("AMD", False)], self.ana)["AMD"]
         self.assertEqual((tickers, motivo), (["AMD"], None))
+        self._gasto_la_asesora()
+
+    def test_fuera_de_un_freno_paga_la_cuenta(self):
+        with main.db_abierta() as conn:
+            main._velas_a_pedido(conn, [("AMD", False)], self.ana)
         self.assertEqual(self._ficha("INTC", self.h_ana).get("motivo"), "tope")
+
+
+class ElFrenoLoPagaQuienPreguntaTest(_Base):
+    """Lo mismo con el freno de las lecturas pesadas, con UNA lectura por minuto
+    por persona: lo que pide la asesora adentro de Ana no frena a Ana."""
+
+    def setUp(self):
+        super().setUp()
+        self.yahoo.precios["AMD"] = lambda i, d: 10.0
+        self._freno = mock.patch.dict(main.FRENO_TECNICO, {"uno": (1, 3)})
+        self._freno.start()
+
+    def tearDown(self):
+        self._freno.stop()
+        super().tearDown()
+
+    def _freno_de_la_asesora(self):
+        self.assertTrue(self._ficha("AMD", self.h_ana)["disponible"], "el freno de Ana está entero")
+        r = self.client.get("/api/tecnico/AMD", headers=self.h_asesora_en_ana)
+        self.assertEqual(r.status_code, 429, "la asesora ya usó SU lectura del minuto")
+
+    def test_la_lectura_tecnica_del_chat(self):
+        self._chat(self.h_asesora_en_ana, ticker="AMD", stream=True)
+        self._freno_de_la_asesora()
+
+    def test_el_boton_de_la_ficha(self):
+        self._chat(self.h_asesora_en_ana, boton={"asset": "AMD"}, stream=True)
+        self._freno_de_la_asesora()
+
+
+class ElFrenoSinPedidoDiceQuienPagaTest(unittest.TestCase):
+    """Sin el pedido web (`request=None`), el freno no puede leer quién pide: hay
+    que decírselo, y a esa persona se le cobran después las descargas
+    (`main._freno_paga`). En el servidor, toda llamada `_freno_tecnico(None, …)`
+    lo nombra `paga`, que pone el servidor desde el token. Se olvidó una vez: el
+    ✦ de la ficha le cobraba al cliente (auditoría del 05/11)."""
+
+    def test_las_llamadas_sin_pedido_dicen_quien_paga(self):
+        vistas, malas = 0, []
+        for raiz, dirs, archivos in os.walk(BACKEND):
+            dirs[:] = [d for d in dirs if d not in ("tests", "scripts", "__pycache__", "venv", ".venv")]
+            for nombre in archivos:
+                if not nombre.endswith(".py"):
+                    continue
+                ruta = os.path.join(raiz, nombre)
+                with open(ruta, encoding="utf-8") as f:
+                    arbol = ast.parse(f.read(), ruta)
+                for nodo in ast.walk(arbol):
+                    if not isinstance(nodo, ast.Call) or not nodo.args:
+                        continue
+                    funcion = getattr(nodo.func, "id", None) or getattr(nodo.func, "attr", None)
+                    primero = nodo.args[0]
+                    if funcion != "_freno_tecnico" or not (isinstance(primero, ast.Constant)
+                                                           and primero.value is None):
+                        continue
+                    vistas += 1
+                    segundo = nodo.args[1] if len(nodo.args) > 1 else None
+                    if not (isinstance(segundo, ast.Name) and segundo.id == "paga"):
+                        malas.append(f"{os.path.relpath(ruta, BACKEND)}:{nodo.lineno}")
+        self.assertGreaterEqual(vistas, 2, "no encontró las del chat y el ✦: la guarda no estaría mirando nada")
+        self.assertEqual(malas, [], "freno sin pedido que no dice quién paga")
 
 
 class LaQuePidePagaLasVelasPorHoraTest(_Base):
@@ -319,14 +439,18 @@ class SinLaConexionTomadaTest(_Base):
         self._anotar("data912")
         return {}
 
-    def _ficha_mirando(self, activo, query=""):
+    def _mirando(self, url):
         del self.esperas[:]
         self._antes = _prestadas_en_postgres()
-        f = self._ficha(activo, self.h_ana, query)
-        self.assertTrue(self.esperas, "la ficha no esperó nada: la prueba no prueba nada")
+        r = self.client.get(url, headers=self.h_ana)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(self.esperas, "no esperó nada: la prueba no prueba nada")
         tomadas = [e for e in self.esperas if e[-2] or e[-1]]
         self.assertEqual(tomadas, [], "esperas con una conexión tomada (…, tomadas, prestadas en Postgres)")
-        return f
+        return r.json()
+
+    def _ficha_mirando(self, activo, query=""):
+        return self._mirando(f"/api/tecnico/{activo}{query}")
 
     def _hace(self, horas):
         return (velas_diarias._ahora_utc() - timedelta(hours=horas)).strftime("%Y-%m-%d %H:%M:%S")
@@ -384,6 +508,33 @@ class SinLaConexionTomadaTest(_Base):
         self.assertIn("splits", lugares)
         self.assertIn("byma", lugares)
 
+    def test_dos_acciones_argentinas_nuevas_en_el_comparador(self):
+        # Para las dos Yahoo anota un 10 a 1 que el precio no muestra: se pide la
+        # historia de BYMA de cada una. Antes, la segunda la esperaba con la
+        # escritura de la primera abierta, y entonces con la conexión tomada.
+        primera = _ruedas(self.hoy, 200)[0].isoformat()
+        for papel in ("GGAL", "YPFD"):
+            self.yahoo.precios[f"{papel}.BA"] = lambda i, d: 5000.0
+            self.splits[f"{papel}.BA"] = [(primera, 10.0)]
+        self._mirando("/api/comparar/precio?activos=GGAL,YPFD&local=GGAL,YPFD&plazo=1a")
+        self.assertEqual(sorted(e[1] for e in self.esperas if e[0] == "byma"), ["GGAL", "YPFD"])
+
+    def test_la_noche_se_queda_con_su_conexion(self):
+        # A propósito (velas_diarias.actualizar, `soltar_la_base`): un trabajo de
+        # fondo que soltara en cada tanda se cortaría entero si al volver el pozo
+        # siguiera lleno 30 s. Es una conexión de 10, y no hay nadie esperando.
+        r = self.client.post("/api/brokers", json={"name": "Schwab", "currency": "USD"}, headers=self.h_ana)
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.client.post("/api/positions", json={"broker": "Schwab", "asset": "MSFT", "quantity": 10,
+                                                     "buy_price": 100, "asset_type": "STOCK"}, headers=self.h_ana)
+        self.assertIn(r.status_code, (200, 201), r.text)
+        self.yahoo.precios["MSFT"] = lambda i, d: 400.0
+        del self.esperas[:]
+        main._run_velas_diarias_job()
+        de_yahoo = [e for e in self.esperas if e[0] == "yahoo"]
+        self.assertIn("MSFT", [e[1] for e in de_yahoo])
+        self.assertTrue(all(e[-2] >= 1 for e in de_yahoo), de_yahoo)
+
 
 @unittest.skipUnless(main.USANDO_PG, "el pozo de conexiones existe sólo en Postgres")
 class SoltarEnPostgresTest(unittest.TestCase):
@@ -421,9 +572,77 @@ class SoltarEnPostgresTest(unittest.TestCase):
         conn = main.get_db()
         try:
             conn.execute("SET statement_timeout = 600000")
+            conn.commit()      # el SET abre una transacción: sin esto se negaría por eso y no por el ajuste
+            self.assertFalse(conn.in_transaction)
             self.assertFalse(pgsesion.soltar(conn), "la próxima sería otra conexión, sin el ajuste")
         finally:
             conn.close()
+
+    def test_suelta_ni_confirmar_ni_deshacer_la_vuelven_a_pedir(self):
+        antes = _prestadas_en_postgres()
+        conn = main.get_db()
+        try:
+            self.assertTrue(pgsesion.soltar(conn))
+            conn.rollback()
+            with conn:
+                pass
+            self.assertFalse(conn.in_transaction)
+            self.assertEqual(_prestadas_en_postgres(), antes, "no había nada abierto: no hace falta otra")
+        finally:
+            conn.close()
+        self.assertEqual(_prestadas_en_postgres(), antes)
+
+    def test_cerrada_no_se_suelta_ni_se_usa(self):
+        antes = _prestadas_en_postgres()
+        conn = main.get_db()
+        conn.close()
+        self.assertFalse(pgsesion.soltar(conn))
+        with self.assertRaises(Exception):
+            conn.execute("SELECT 1")
+        self.assertEqual(_prestadas_en_postgres(), antes, "usar una cerrada no pide un lugar")
+
+    def test_dos_hilos_con_la_misma_suelta_no_pierden_lugares(self):
+        antes = _prestadas_en_postgres()
+        conn = main.get_db()
+        try:
+            self.assertTrue(pgsesion.soltar(conn))
+            # Sin conexiones libres en el pozo, volver a pedir abre una nueva: tarda,
+            # y en ese rato otro hilo puede entrar (con una libre, es tan rápido que
+            # la carrera casi nunca se da y la prueba pasaría sin el candado).
+            pozo = conn._pozo
+            with pozo._lock:
+                libres, pozo._libres = pozo._libres, []
+            for c, _ in libres:
+                c.close()
+            barrera = threading.Barrier(8)
+
+            def usar():
+                barrera.wait()
+                conn.execute("SELECT 1").fetchone()
+            hilos = [threading.Thread(target=usar) for _ in range(8)]
+            for h in hilos:
+                h.start()
+            for h in hilos:
+                h.join()
+            self.assertEqual(_prestadas_en_postgres(), antes + 1, "una sola conexión para los cuatro")
+        finally:
+            conn.close()
+        self.assertEqual(_prestadas_en_postgres(), antes, "ningún lugar perdido")
+
+    def test_vuelve_a_pedir_al_pozo_vigente(self):
+        # Las pruebas cierran los pozos al cambiar de esquema o de tope (`cerrar_pozos`).
+        import pgshim
+        conn = main.get_db()
+        try:
+            self.assertTrue(pgsesion.soltar(conn))
+            viejo = conn._pozo
+            pgshim.cerrar_pozos()
+            conn.execute("SELECT 1").fetchone()
+            self.assertIsNot(conn._pozo, viejo)
+            self.assertIs(conn._pozo, pgshim._POZOS.get(main.DATABASE_URL))
+        finally:
+            conn.close()
+        self.assertEqual(_prestadas_en_postgres(), 0)
 
 
 class SoltarEnSQLiteTest(unittest.TestCase):

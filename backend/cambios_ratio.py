@@ -433,11 +433,17 @@ def papeles_guardados(conn) -> list:
 
 
 def recalcular(conn, papeles: list, *, pares: dict = None, splits=None, byma=None,
-               tope_seg: float = TOPE_YAHOO_SEG) -> dict:
+               tope_seg: float = TOPE_YAHOO_SEG, soltar_la_base: bool = False) -> dict:
     """Recalcula la lista de estos papeles con las velas guardadas y lo que
     Yahoo anota. `splits(ticker) -> [(fecha, factor)]` y `byma(papel) ->
     {fecha: cierre}` se inyectan en las pruebas; por defecto, Yahoo con tope y
     data912 (sólo para los pocos casos que lo necesitan).
+
+    A la red (los splits de Yahoo, la historia de BYMA) se la espera ANTES de
+    escribir nada: se escribe todo junto al final, en una sola confirmación.
+    `soltar_la_base`: además, sin la conexión en la mano (`pgsesion.soltar`):
+    lo pide la descarga a pedido de la ficha (`velas_diarias.asegurar`), no la
+    noche (ver `velas_diarias.actualizar`).
 
     `pares`: {papel: ticker de afuera} de los papeles que SON un CEDEAR ('XLE':
     'XLE', 'BRKB': 'BRK-B'). Lo sabe `velas_diarias` (por la cartera, la lista
@@ -457,7 +463,8 @@ def recalcular(conn, papeles: list, *, pares: dict = None, splits=None, byma=Non
     pedir = [t for c in papeles for t in _tickers(c)]
     pedidos_a_yahoo = 0
     if splits is None:
-        conocidas, sin, pedidos_a_yahoo = _splits_de_hoy(conn, pedir, tope_seg)
+        conocidas, sin, pedidos_a_yahoo = _splits_de_hoy(conn, pedir, tope_seg,
+                                                         soltar_la_base=soltar_la_base)
 
         def consulta(t):
             return conocidas.get(t, [])
@@ -466,6 +473,7 @@ def recalcular(conn, papeles: list, *, pares: dict = None, splits=None, byma=Non
         consulta = splits
     res = {"papeles": len(papeles), CONFIRMADO: 0, SIN_CONFIRMAR: 0, DUDOSO: 0, DESCARTADO: 0,
            "sin_yahoo": sorted(sin), "pedidos_a_yahoo": pedidos_a_yahoo}
+    calculadas = []
     for c in papeles:
         ba, ny = series[c]
         if not ba:
@@ -481,14 +489,8 @@ def recalcular(conn, papeles: list, *, pares: dict = None, splits=None, byma=Non
             sp = (consulta(f"{c}.BA"), consulta(f"{c}D.BA") if ny else [], consulta(afuera[c]) if ny else [])
             filas = clasificar(ba, ny, *sp)
             if _le_falta_byma(filas):
-                # data912 puede tardar 20 s (`_historia_byma`). Lo guardado de los
-                # papeles anteriores se confirma ANTES de esperar: con la escritura
-                # abierta la conexión no se suelta, y los candados de esas filas
-                # quedaban tomados toda la espera (desde el 2º papel; barrido 05/11).
-                # Cada papel se guarda entero (`guardar`): confirmar de a uno no
-                # deja ninguno a medias.
-                conn.commit()
-                pgsesion.soltar(conn)
+                if soltar_la_base:
+                    pgsesion.soltar(conn)      # data912 puede tardar 20 s (`_historia_byma`)
                 try:
                     historia = (byma or _historia_byma)(c)
                 except Exception as ex:      # data912 caído: queda como estaba, mañana se reintenta
@@ -496,7 +498,13 @@ def recalcular(conn, papeles: list, *, pares: dict = None, splits=None, byma=Non
                     historia = {}
                 if historia:
                     filas = clasificar(ba, ny, *sp, byma=historia)
-        for e in guardar(conn, c, filas, desde=min(ba)):
+        calculadas.append((c, filas, min(ba)))
+    # Recién ahora se escribe. Antes cada papel se guardaba al terminar el suyo y
+    # el siguiente esperaba a data912 con esa escritura abierta (y la conexión
+    # tomada), hasta 20 s por papel (auditoría del 05/11). El orden no cambia
+    # nada: cada papel lee y escribe sólo sus propias filas.
+    for c, filas, desde in calculadas:
+        for e in guardar(conn, c, filas, desde=desde):
             res[e["estado"]] = res.get(e["estado"], 0) + 1
     conn.commit()
     return res
@@ -509,7 +517,8 @@ def _tickers_del_papel(c: str, afuera: dict, tiene_afuera: bool) -> tuple:
     return (f"{c}.BA", f"{c}D.BA", afuera[c]) if tiene_afuera else (f"{c}.BA",)
 
 
-def _splits_de_hoy(conn, pedir: list, tope_seg: float, maximo: int = None) -> tuple:
+def _splits_de_hoy(conn, pedir: list, tope_seg: float, maximo: int = None,
+                   soltar_la_base: bool = False) -> tuple:
     """Le pregunta a Yahoo los splits que tocan hoy (`_toca_preguntar`; con
     `maximo`, a lo sumo esos, primero los que nunca contestaron) y guarda lo que
     contestó. → (conocidas {ticker: splits}, sin {tickers sin lista}, cuántos se
@@ -522,9 +531,11 @@ def _splits_de_hoy(conn, pedir: list, tope_seg: float, maximo: int = None) -> tu
     if maximo is not None:
         toca = sorted(toca, key=lambda t: t in guardadas)[:maximo]   # estable: los nunca contestados primero
     # Se cierra la lectura antes de esperar a Yahoo (en Postgres leer abre una
-    # transacción que quedaba abierta mientras tanto), y se suelta la conexión.
+    # transacción que quedaba abierta mientras tanto); a pedido, también se suelta
+    # la conexión (`recalcular`).
     conn.commit()
-    pgsesion.soltar(conn)
+    if soltar_la_base:
+        pgsesion.soltar(conn)
     hechos, _ = _yahoo.varios(_splits_de_yahoo, toca, tope=tope_seg,
                               que="splits para los cambios de ratio")
     de_afuera = [t for t in toca if not t.endswith(".BA") and t in hechos]
