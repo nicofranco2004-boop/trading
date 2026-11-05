@@ -481,7 +481,14 @@ def recalcular(conn, papeles: list, *, pares: dict = None, splits=None, byma=Non
             sp = (consulta(f"{c}.BA"), consulta(f"{c}D.BA") if ny else [], consulta(afuera[c]) if ny else [])
             filas = clasificar(ba, ny, *sp)
             if _le_falta_byma(filas):
-                pgsesion.soltar(conn)      # data912 puede tardar 20 s (`_historia_byma`)
+                # data912 puede tardar 20 s (`_historia_byma`). Lo guardado de los
+                # papeles anteriores se confirma ANTES de esperar: con la escritura
+                # abierta la conexión no se suelta, y los candados de esas filas
+                # quedaban tomados toda la espera (desde el 2º papel; barrido 05/11).
+                # Cada papel se guarda entero (`guardar`): confirmar de a uno no
+                # deja ninguno a medias.
+                conn.commit()
+                pgsesion.soltar(conn)
                 try:
                     historia = (byma or _historia_byma)(c)
                 except Exception as ex:      # data912 caído: queda como estaba, mañana se reintenta

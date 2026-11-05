@@ -223,11 +223,15 @@ class _Contada:
     (`soltar`, el mismo nombre que en pgshim.Connection), y otra vez al volver a
     usarla. En SQLite no hay pozo y sin esto la prueba no tendría dónde mirar; en
     Postgres, además, se mira el pozo de verdad (`_prestadas_en_postgres`). Todo
-    lo demás pasa de largo a la conexión de verdad."""
+    lo demás pasa de largo a la conexión de verdad.
+
+    Queda anotada en su hilo como una de pgshim (`pgsesion.anotar`): las puertas a
+    la red la sueltan antes de esperar (`pgsesion.antes_de_esperar_afuera`)."""
 
     def __init__(self, real, tomadas: set):
         self.__dict__.update(_real=real, _tomadas=tomadas)
         tomadas.add(self)
+        pgsesion.anotar(self)
 
     def __getattr__(self, nombre):
         return getattr(self._real, nombre)
@@ -260,13 +264,18 @@ class _Contada:
 
     def soltar(self):
         de_verdad = getattr(self._real, "soltar", None)
-        suelta = de_verdad() if de_verdad else not self._real.in_transaction
+        if de_verdad is None:            # SQLite: no hay pozo, se lo simula
+            suelta = not self._real.in_transaction
+        else:                            # Postgres: lo dice la de verdad (la puerta
+            de_verdad()                  # pudo haberla soltado recién, antes que a ésta)
+            suelta = self._real._suelta()
         if suelta:
             self._tomadas.discard(self)
         return suelta
 
     def close(self):
         self._tomadas.discard(self)
+        pgsesion.olvidar(self)
         self._real.close()
 
 

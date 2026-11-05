@@ -210,9 +210,114 @@ def soltar(conn) -> bool:
 
     Con una transacción abierta NO la suelta (se perdería lo escrito): esperar a
     Yahoo con una escritura abierta es otro error, y éste no lo tapa. True si la
-    soltó."""
+    soltó.
+
+    Las puertas a la red ya lo hacen solas con todas las conexiones del pedido
+    (`antes_de_esperar_afuera`, abajo): esto queda para las esperas que no pasan
+    por una puerta (una pausa con `sleep`)."""
     s = getattr(conn, "soltar", None)
     return bool(s()) if callable(s) else False
+
+
+# ── La puerta a la red suelta las conexiones de quien espera ─────────────────
+# `soltar(conn)` le sirve a quien tiene la conexión en la mano, y casi nunca es
+# así: la ruta abre la base para el bloque entero y, tres funciones más abajo,
+# algo pide la variación del día, que baja de Yahoo. Ni la ruta sabe que abajo
+# se espera, ni el que espera sabe que arriba hay una conexión tomada. El barrido
+# del 05/11/2026 encontró más de 70 lugares así: la lista de seguimiento, el
+# inicio, los eventos de la ficha, los fundamentales, el chat, la foto de la
+# cartera, las alertas. Una línea en cada uno es justo el arreglo que no se
+# propaga (el primero que se escriba después no la lleva).
+#
+# Por eso lo hace la PUERTA. Cada conexión de pgshim queda anotada en el hilo que
+# la usa (`anotar`; un pedido corre entero en un hilo), y las puertas a la red
+# —`pricing.yahoo` (con_tope, varios), `pricing.data912`, data912 en vivo
+# (`main._fetch_data912_*`), la espera de los eventos (`main._esperar_futuros`)—
+# llaman a `antes_de_esperar_afuera` justo antes de esperar. Suelta TODAS las del
+# hilo que se pueden soltar (`soltar`: no las que tienen una escritura abierta ni
+# ajustes propios), y la próxima consulta de cada una pide otra al pozo.
+# En SQLite no hay nada anotado y no hace nada.
+import threading as _threading
+import weakref as _weakref
+
+_DEL_HILO = _threading.local()
+
+
+def anotar(conn) -> None:
+    """`conn` queda anotada en el hilo que la usa, para que la puerta a la red de
+    ese hilo la suelte mientras espera. Lo llama `pgshim.Connection` sola, al
+    abrirse y si la empieza a usar otro hilo. Sin referencia fuerte: anotar una
+    conexión no la mantiene viva."""
+    s = getattr(_DEL_HILO, "conexiones", None)
+    if s is None:
+        s = _DEL_HILO.conexiones = _weakref.WeakSet()
+    s.add(conn)
+
+
+def olvidar(conn) -> None:
+    """Al cerrarla (`pgshim.Connection.close`)."""
+    s = getattr(_DEL_HILO, "conexiones", None)
+    if s is not None:
+        s.discard(conn)
+
+
+def antes_de_esperar_afuera(que: str = None) -> int:
+    """Lo llama la puerta a la red justo antes de esperar: devuelve al pozo cada
+    conexión de este hilo que se pueda soltar. Cuántas soltó.
+
+    Sólo las que usó ESTE hilo la última vez (`_hilo`): la de otro pedido puede
+    estar en uso. Una con una escritura abierta no se suelta (`soltar`) y además
+    se avisa en el registro, una vez por lugar: esperar a la red con la escritura
+    abierta retiene la conexión Y los candados de lo escrito, y sólo se arregla
+    en ese lugar (confirmar antes de esperar, o esperar antes de escribir)."""
+    s = getattr(_DEL_HILO, "conexiones", None)
+    if not s:
+        return 0
+    yo = _threading.get_ident()
+    sueltas = 0
+    for conn in list(s):
+        # Nunca revienta: una conexión que no se deja soltar (cerrada, rara) se
+        # queda como está, y el pedido a la red sale igual.
+        try:
+            if getattr(conn, "_hilo", yo) != yo:
+                continue
+            if soltar(conn):
+                sueltas += 1
+            elif _escritura_abierta(conn):
+                _avisar_escritura_abierta(que)
+        except Exception:
+            continue
+    return sueltas
+
+
+def _escritura_abierta(conn) -> bool:
+    try:
+        return bool(conn.in_transaction)
+    except Exception:
+        return False
+
+
+# Los lugares ya avisados: el registro dice cada uno una vez, no en cada espera.
+_AVISADOS: set = set()
+
+
+def _avisar_escritura_abierta(que) -> None:
+    import logging
+    import os
+    import sys
+    puertas = ("pgsesion.py", os.path.join("pricing", "yahoo.py"), os.path.join("pricing", "data912.py"))
+    marcos, f = [], sys._getframe(1)
+    while f is not None and len(marcos) < 6:     # hasta la ruta o el trabajo que lo pidió
+        if not f.f_code.co_filename.endswith(puertas):
+            marcos.append(f"{os.path.basename(f.f_code.co_filename)}:{f.f_lineno} {f.f_code.co_name}")
+        f = f.f_back
+    donde = " ← ".join(marcos)
+    if donde in _AVISADOS:
+        return
+    _AVISADOS.add(donde)
+    logging.getLogger(__name__).warning(
+        "se espera a la red (%s) con una escritura abierta: la conexión no se puede soltar "
+        "y queda tomada toda la espera. Desde: %s", que or "?", donde)
 
 
 import sqlite3 as _sqlite3

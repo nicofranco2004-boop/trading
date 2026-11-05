@@ -72,6 +72,7 @@ Lo que NO traduce, a propósito:
 """
 import logging
 import re
+import threading
 from contextlib import contextmanager
 
 import psycopg
@@ -1074,14 +1075,20 @@ class Connection:
         self._sucia = False
         self._dsn = dsn              # para leer el catálogo aparte (ver _pk_de)
         self.row_factory = None      # el código lo setea; acá siempre devolvemos Row
+        # Anotada en el hilo que la usa: la puerta a la red de ese hilo la suelta
+        # mientras espera (`pgsesion.antes_de_esperar_afuera`).
+        self._hilo = threading.get_ident()
+        import pgsesion
+        pgsesion.anotar(self)
 
     # ── Soltarla mientras se espera algo de afuera ───────────────────────────
     def soltar(self) -> bool:
         """Devuelve la conexión al pozo hasta que se la vuelva a usar: la próxima
         consulta pide una (`_viva`). Para esperar algo de afuera —Yahoo, data912—
         sin quedarse con uno de los lugares del pozo. Se llama por
-        `pgsesion.soltar`, que funciona en los dos motores; el porqué y lo medido
-        están ahí.
+        `pgsesion.soltar`, que funciona en los dos motores (el porqué y lo medido
+        están ahí), y sola desde las puertas a la red, con todas las del hilo
+        (`pgsesion.antes_de_esperar_afuera`).
 
         No la suelta, y devuelve False, si:
           · tiene una transacción abierta: soltarla la perdería;
@@ -1099,7 +1106,15 @@ class Connection:
     def _viva(self):
         """La conexión de psycopg: si estaba suelta, se pide al pozo recién acá,
         al usarla. Cerrada sigue siendo None, como antes de que existiera
-        `soltar` (usar una conexión cerrada revienta)."""
+        `soltar` (usar una conexión cerrada revienta).
+
+        Si la usa otro hilo, pasa a ser de ése: la puerta del hilo anterior ya no
+        la suelta (podría estar en uso) y la del nuevo sí."""
+        yo = threading.get_ident()
+        if self._hilo != yo:
+            self._hilo = yo
+            import pgsesion
+            pgsesion.anotar(self)
         if self._c is None and not self._cerrada:
             self._c = self._pozo.tomar()
         return self._c
@@ -1363,6 +1378,8 @@ class Connection:
         self._cerrada = True
         if c is not None:
             self._pozo.devolver(c, sucia=self._sucia)
+        import pgsesion
+        pgsesion.olvidar(self)
 
     def __del__(self):
         # Quien se olvida de cerrar no se lleva un lugar del pozo para siempre.

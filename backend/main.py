@@ -8457,6 +8457,10 @@ def _benchmarks_fetch_and_cache():
     Paralelización: 7 fetches concurrent en _bench_fetch_executor (max_workers=4
     → algunos quedarán en cola pero el wall time domina al más lento ~15-20s).
     """
+    # Se esperan hasta BENCH_TOPE_SEG (Yahoo, la inflación, el BCRA): quien espera
+    # —Rendimiento con el caché frío— no se queda con su conexión a la base.
+    import pgsesion
+    pgsesion.antes_de_esperar_afuera("benchmarks")
     f_inf = _bench_fetch_executor.submit(_fetch_inflation_ar)
     f_sp = _bench_fetch_executor.submit(_fetch_sp500_monthly)
     f_blue = _bench_fetch_executor.submit(_fetch_dolar_blue_monthly)
@@ -8544,7 +8548,13 @@ def _yf_history(ticker: str, period: str, interval: str):
     En producción el caché vive en `/tmp/yf-cache` (efímero por deploy): el mismo
     modo de falla es posible entre deploys. Reapuntar a un directorio nuevo es el
     remedio exacto y no tiene costo cuando el caché está sano.
+
+    Va a Yahoo sin pasar por `pricing.yahoo`, a veces desde la misma pantalla
+    (Reportes con el caché frío: `_bench_para_reportes`): antes de esperar, quien
+    pidió suelta su conexión a la base (`pgsesion.antes_de_esperar_afuera`).
     """
+    import pgsesion
+    pgsesion.antes_de_esperar_afuera(f"benchmark {ticker}")
     err = None
     try:
         data = yf.Ticker(ticker).history(period=period, interval=interval)
@@ -9504,6 +9514,12 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
     llegó a tiempo, o que falló, no renovó nada de lo que se está por mostrar."""
     ahora = time.time()
     futuros = []
+    if esperar_segundos is not None:
+        # Las búsquedas van a Yahoo en otro hilo y acá se las espera: quien espera
+        # suelta antes su conexión a la base (`pgsesion.antes_de_esperar_afuera`).
+        # Antes de mandarlas, no al empezar a esperar: el pedido sale enseguida.
+        import pgsesion
+        pgsesion.antes_de_esperar_afuera("eventos de Yahoo")
     with _events_en_vuelo_lock:
         # Sólo lo que tiene forma de ticker (_SYMBOL_RE): un fondo del catálogo
         # ("FCI:COCOS-RENDIMIENTO-A") no tiene earnings, y Yahoo contesta con
@@ -9648,6 +9664,11 @@ def _earnings_pasados_al_dia(ticker: str, esperar_segundos=None) -> None:
     if not ticker or not _SYMBOL_RE.match(ticker):
         return
     clave = f"{ticker}|pasados"
+    if esperar_segundos:
+        # Como en `_refresh_events_for_tickers`: la pantalla espera a Yahoo (5 s
+        # en la ficha) sin la conexión de la ruta tomada.
+        import pgsesion
+        pgsesion.antes_de_esperar_afuera("balances pasados de Yahoo")
     with _events_en_vuelo_lock:
         if time.time() - _earnings_pasados_at.get(ticker, 0) < EARNINGS_PASADOS_TTL:
             return
@@ -11072,6 +11093,9 @@ def _fetch_data912_bonds():
     caida, respuesta = _fuente_caida("data912_bonos")
     if caida:
         return respuesta
+    # Hasta 2 × 8 s: quien pidió no se queda con su conexión a la base mientras.
+    import pgsesion
+    pgsesion.antes_de_esperar_afuera("data912 en vivo (bonos)")
     try:
         result = {}
         pcts = {}
@@ -11170,6 +11194,9 @@ def _fetch_data912_equities():
     caida, respuesta = _fuente_caida("data912_acciones")
     if caida:
         return respuesta
+    # Hasta 2 × 8 s: quien pidió no se queda con su conexión a la base mientras.
+    import pgsesion
+    pgsesion.antes_de_esperar_afuera("data912 en vivo (acciones y CEDEARs)")
     try:
         result = {}
         for endpoint in ('arg_cedears', 'arg_stocks'):
@@ -14893,9 +14920,22 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
       posterior) re-deriva los mismos splits → 0 nuevos → no-op (nunca 9×/100×).
     - NO borra snapshots históricos (eran valor-en-su-fecha válido; el snapshot
       diario se auto-corrige y deja, a lo sumo, un escalón de un día).
+    - Los splits de Yahoo se traen ANTES de tomar el turno de la cuenta, y adentro
+      salen de la caché (`_splits_cache`). Con el turno tomado (en Postgres, una
+      escritura abierta) la conexión no se puede soltar: se esperaba a Yahoo
+      hasta SPLITS_TOPE_SEG con la cuenta trabada para todo lo que escribe y una
+      de las 10 conexiones de la copia tomada (barrido del 05/11/2026).
     """
     conn = get_db()
     try:
+        nuevo = interruptor(AVISO_RATIO_NUEVO, conn)
+        antes = conn.execute(
+            "SELECT asset FROM positions WHERE id=? AND user_id=?", (pid, uid),
+        ).fetchone()
+        _a = ((antes["asset"] if antes else "") or "").upper()
+        _base = _a[:-3] if _a.endswith(".BA") else _a     # la misma de `_cambios_a_ofrecer`
+        if _base:
+            _fetch_ba_splits(f"{_base}.BA", conn, nuevo)
         _tomar_turno_de_la_puerta(conn, uid)
         row = conn.execute(
             "SELECT * FROM positions WHERE id=? AND user_id=?", (pid, uid),
@@ -14924,7 +14964,7 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
         # misma decisión que /split-check: si el aviso no lo ofrece, esto no lo
         # aplica aunque lo llamen a mano (Balanz ya lo trajo, la foto lo concilió,
         # o el lote ya está en la escala nueva).
-        applicable, _ = _cambios_a_ofrecer(conn, uid, row, _marcas_de_split(conn, uid), {})
+        applicable, _ = _cambios_a_ofrecer(conn, uid, row, _marcas_de_split(conn, uid), {}, nuevo)
         if not applicable:
             return {**dict(row), "already_applied": True}
         combined = 1.0
@@ -33584,6 +33624,12 @@ def _yf_fetch_cached(ticker: str, kind: str, fetcher_fn) -> dict:
         # esperando shutdown del thread, neutralizando el timeout. Con
         # executor global, el thread hung queda en bg (lo dejamos morir
         # naturalmente cuando yfinance eventualmente responde o se hace GC).
+        # Se espera el semáforo (8 a la vez) y después a Yahoo (hasta
+        # YF_FETCH_TIMEOUT_SECONDS): las dos esperas sin esta conexión ni la de
+        # quien llamó (`pgsesion.antes_de_esperar_afuera`; los fundamentales
+        # hacen 5 seguidas). La de esta función se vuelve a pedir para guardar.
+        import pgsesion
+        pgsesion.antes_de_esperar_afuera(f"{yf_ticker}/{kind} (turno de Yahoo)")
         try:
             with _yf_fetch_semaphore:
                 # El mismo "esperar con tope sin esperar al hilo" que usa toda
@@ -36575,6 +36621,10 @@ def _trade_market_price(asset: str, kind, currency: str, uid: int):
         if _TRADE_PRICE_POOL is None:
             from concurrent.futures import ThreadPoolExecutor
             _TRADE_PRICE_POOL = ThreadPoolExecutor(max_workers=2)
+        # Hasta 8 s de Yahoo o data912 en otro hilo: el chat (que tiene la base
+        # abierta para registrar) no se queda con su conexión mientras.
+        import pgsesion
+        pgsesion.antes_de_esperar_afuera(f"precio de {sym} para registrar")
         fut = _TRADE_PRICE_POOL.submit(get_prices, sym, uid)
         p = (fut.result(timeout=8) or {}).get(sym)
         p = float(p) if p is not None else None
