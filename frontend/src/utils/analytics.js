@@ -105,7 +105,7 @@ export function trackPageView(path, title) {
   let loc = window.location.href
   try {
     const u = new URL(loc)
-    for (const k of ['token', 'email', 'code']) u.searchParams.delete(k)
+    for (const k of ['token', 'email', 'code', 'pesos']) u.searchParams.delete(k)
     loc = u.toString()
   } catch { /* URL rara — mandamos origin+path pelado */ loc = window.location.origin + path }
   window.gtag('event', 'page_view', {

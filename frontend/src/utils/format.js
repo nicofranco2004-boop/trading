@@ -165,7 +165,7 @@ export const pctSigned = (n, decimals = 1) => {
 // servidor y "+19,9%" en la evidencia que dibuja la pantalla. Con nfmt la
 // tarjeta de abajo decía "+20,0%". El signo, el texto y el color (pctColor)
 // salen todos de ESTE mismo número redondeado.
-const redondearPct = (n, decimals) => Number(Number(n).toFixed(decimals))
+export const redondearPct = (n, decimals) => Number(Number(n).toFixed(decimals))
 const esPct = (n) => n != null && n !== '' && Number.isFinite(Number(n))
 
 export const pctVarSign = (n, decimals = 2) => {

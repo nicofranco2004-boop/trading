@@ -42,11 +42,13 @@ export function lotesDelActivo(asset, posiciones = [], operaciones = []) {
 
 /** ¿Se mira como acción argentina (su precio de BYMA)? La marca `local` de la
  *  ficha: si lo tenés, deciden tus lotes (o tus operaciones, si lo vendiste);
- *  si no, el ticker (GGAL y GGAL.BA sí; NVDA no). */
-export function marcaLocal(asset, posiciones = [], operaciones = []) {
+ *  si no, el ticker (GGAL y GGAL.BA sí; NVDA no) y, si se sabe, su `tipo` (el que
+ *  dice el buscador: uno que no es de acción argentina manda). La usan Comparar
+ *  y «Una cartera» del Backtesting. */
+export function marcaLocal(asset, posiciones = [], operaciones = [], tipo = null) {
   const { lotes, ops } = lotesDelActivo(asset, posiciones, operaciones)
   const abiertos = lotes.filter(p => !p.is_cash)
-  if (!lotes.length && !ops.length) return miradaSinTenencia(asset).accionLocal
+  if (!lotes.length && !ops.length) return miradaSinTenencia(asset, tipo).accionLocal
   return esAccionLocal(asset, abiertos.length ? abiertos : ops)
 }
 

@@ -28,8 +28,14 @@
 //     Con `compartirConDetalle` la imagen es la de composición (la torta y,
 //     abajo, los activos de cada porción): la usa la torta por tipo.
 //   • `montos={false}`: la torta es sólo de porcentajes (una cartera que se
-//     arma, «Simular una cartera» de Backtesting): la leyenda y el globo dicen el
-//     % y no la plata, y no hay plata que tapar con el ojito.
+//     arma, «Simular una cartera» de Backtesting): la leyenda, el globo, la fila
+//     desplegada, el resultado de una porción y la imagen para compartir dicen el
+//     % y no la plata, y no hay plata que tapar con el ojito. Antes tapaba en 2 de
+//     esos 5 lugares (auditoría de regresiones 05/11, B2).
+//
+// La torta no es una parada del tabulador (`rootTabIndex={-1}`): recharts la hace
+// enfocable y no dice nada; lo que dice cada porción está en la leyenda, que sí
+// se recorre con el teclado (auditoría 05/11, M12).
 //
 // Nota de tema: el tooltip NO hardcodea colores (el pie "Por broker" de
 // Insights sí lo hace — `background:'#1e293b'`). Acá todo sale de los tokens
@@ -222,7 +228,7 @@ export default function CompositionDonut({
                 etiqueta={`Compartir ${title.toLowerCase()}`}
                 filename={`rendi-${nombreDeArchivo(title)}.png`}
                 buildSpec={({ mostrarMontos, nombre }) => (compartirConDetalle ? specDeComposicion : specDeDistribucion)({
-                  titulo: title, porciones: slices, fmt, mostrarMontos, nombre,
+                  titulo: title, porciones: slices, fmt, mostrarMontos: montos && mostrarMontos, nombre,
                 })}
               />
             )}
@@ -252,6 +258,7 @@ export default function CompositionDonut({
                   outerRadius="92%"
                   paddingAngle={2}
                   stroke="none"
+                  rootTabIndex={-1}
                   isAnimationActive={tortaVista && animar}
                   animationBegin={0}
                   animationDuration={900}
@@ -389,9 +396,11 @@ function LegendRow({ slice, fmt, montos = true, oculto = false, highlighted, exp
             <div className="flex items-baseline justify-between gap-3 text-[11px] pb-1.5 mb-1 border-b border-line/40">
               <span className="text-ink-2">Resultado</span>
               <div className="flex items-baseline gap-2 flex-shrink-0">
-                <span className={`tabular font-medium ${toneOf(slice.pnl.total)}`}>
-                  {oculto ? OCULTO : <>{signed(slice.pnl.total)}{fmt(Math.abs(slice.pnl.total))}</>}
-                </span>
+                {montos && (
+                  <span className={`tabular font-medium ${toneOf(slice.pnl.total)}`}>
+                    {oculto ? OCULTO : <>{signed(slice.pnl.total)}{fmt(Math.abs(slice.pnl.total))}</>}
+                  </span>
+                )}
                 {slice.pnl.pct != null && (
                   <span className={`tabular font-medium min-w-[46px] text-right ${toneOf(slice.pnl.total)}`}>
                     {signed(slice.pnl.pct)}{Math.abs(slice.pnl.pct).toFixed(1).replace('.', ',')}%
@@ -419,7 +428,7 @@ function LegendRow({ slice, fmt, montos = true, oculto = false, highlighted, exp
             <div className="flex items-baseline justify-between gap-3 text-[11px]">
               <span className="text-ink-1 font-mono font-medium truncate">{d.label}</span>
               <div className="flex items-baseline gap-2 flex-shrink-0">
-                <span className="text-ink-2 tabular">{fmt(d.value)}</span>
+                {montos && <span className="text-ink-2 tabular">{fmt(d.value)}</span>}
                 <span className="text-ink-0 tabular font-medium min-w-[38px] text-right">
                   {d.pct.toFixed(1).replace('.', ',')}%
                 </span>

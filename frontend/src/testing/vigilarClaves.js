@@ -38,8 +38,12 @@ export function clavesRepetidas() {
 function rojoSiHubo() {
   const lista = [...new Set(clavesRepetidas())]
   if (!lista.length) return
+  // Un dibujo que quedó para después (la respuesta de un pedido) cae en la prueba
+  // SIGUIENTE del archivo: el componente que nombra es el que hay que mirar
+  // (auditoría de regresiones 05/11, B5).
   throw new Error('Dos hermanos con el mismo `key`: React pierde el rastro de uno y lo deja en la '
-    + 'página, muerto (o lo borra), cada vez que cambian. Dale a cada uno su propio key.\n  '
+    + 'página, muerto (o lo borra), cada vez que cambian. Dale a cada uno su propio key. (Si esta '
+    + 'prueba no dibuja ese componente, puede venir de una prueba anterior de este archivo.)\n  '
     + lista.join('\n  '))
 }
 
