@@ -8405,6 +8405,12 @@ def _bench_para_reportes(esperar: bool = True) -> dict:
         return {"inflation_ar": cache.get("inflation_ar") or {},
                 "sp500": {}, "sp500_d": {}}
     bajado = {}
+    if not (cache.get("inflation_ar") and cache.get("sp500") and cache.get("sp500_d")):
+        # Con el caché frío se espera a la red en la misma pantalla: la inflación
+        # (argentinadatos, hasta 8 s) y el S&P 500 (Yahoo). Quien pidió —Reportes,
+        # con la base abierta— suelta antes su conexión. Pasa a cada publicación.
+        import pgsesion
+        pgsesion.antes_de_esperar_afuera("benchmarks para Reportes")
     infl = cache.get("inflation_ar")
     if not infl:
         infl = bajado["inflation_ar"] = _fetch_inflation_ar()
@@ -9512,14 +9518,14 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
     Devuelve cuántas búsquedas TERMINARON BIEN antes de volver (0 si no
     espera): es el `refreshed_tickers` de las respuestas, y una búsqueda que no
     llegó a tiempo, o que falló, no renovó nada de lo que se está por mostrar."""
+    import pgsesion
     ahora = time.time()
     futuros = []
-    if esperar_segundos is not None:
-        # Las búsquedas van a Yahoo en otro hilo y acá se las espera: quien espera
-        # suelta antes su conexión a la base (`pgsesion.antes_de_esperar_afuera`).
-        # Antes de mandarlas, no al empezar a esperar: el pedido sale enseguida.
-        import pgsesion
-        pgsesion.antes_de_esperar_afuera("eventos de Yahoo")
+    # Las búsquedas van a Yahoo en otro hilo y acá se las espera: quien espera
+    # suelta antes su conexión a la base (`pgsesion.antes_de_esperar_afuera`), y
+    # sólo si hay algo que esperar (con todo al día no la suelta para volver a
+    # pedirla). Antes de mandar la primera, no al empezar a esperar: sale enseguida.
+    soltada = False
     with _events_en_vuelo_lock:
         # Sólo lo que tiene forma de ticker (_SYMBOL_RE): un fondo del catálogo
         # ("FCI:COCOS-RENDIMIENTO-A") no tiene earnings, y Yahoo contesta con
@@ -9529,11 +9535,16 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
                 continue
             fut = _events_en_vuelo.get(t)
             if fut is None:
+                if esperar_segundos is not None and not soltada:
+                    pgsesion.antes_de_esperar_afuera("eventos de Yahoo")
+                    soltada = True
                 fut = _events_fetch_executor.submit(_buscar_y_guardar_eventos, t)
                 _events_en_vuelo[t] = fut
             futuros.append(fut)
     if not futuros or esperar_segundos is None:
         return 0
+    if not soltada:          # sólo búsquedas que ya estaban en vuelo
+        pgsesion.antes_de_esperar_afuera("eventos de Yahoo")
     terminados, _ = _esperar_futuros(futuros, timeout=esperar_segundos)
     return sum(1 for f in terminados if not f.cancelled() and f.result() is True)
 
@@ -9664,19 +9675,21 @@ def _earnings_pasados_al_dia(ticker: str, esperar_segundos=None) -> None:
     if not ticker or not _SYMBOL_RE.match(ticker):
         return
     clave = f"{ticker}|pasados"
-    if esperar_segundos:
-        # Como en `_refresh_events_for_tickers`: la pantalla espera a Yahoo (5 s
-        # en la ficha) sin la conexión de la ruta tomada.
-        import pgsesion
-        pgsesion.antes_de_esperar_afuera("balances pasados de Yahoo")
+    import pgsesion
     with _events_en_vuelo_lock:
         if time.time() - _earnings_pasados_at.get(ticker, 0) < EARNINGS_PASADOS_TTL:
             return
         fut = _events_en_vuelo.get(clave)
         if fut is None:
+            if esperar_segundos:
+                # Como en `_refresh_events_for_tickers`: la pantalla espera a Yahoo
+                # (5 s en la ficha) sin la conexión de la ruta, y la suelta antes
+                # de mandar el pedido; al día, no la suelta.
+                pgsesion.antes_de_esperar_afuera("balances pasados de Yahoo")
             fut = _events_fetch_executor.submit(_buscar_y_guardar_earnings_pasados, ticker)
             _events_en_vuelo[clave] = fut
     if esperar_segundos:
+        pgsesion.antes_de_esperar_afuera("balances pasados de Yahoo")   # si ya estaba en vuelo
         _esperar_futuros([fut], timeout=esperar_segundos)
 
 
@@ -14902,6 +14915,33 @@ def _marcas_de_split(conn, uid: int) -> dict:
             "cero": _corporate_zero_dates(conn, uid)}
 
 
+def _por_que_no_se_ajusta_el_ratio(conn, uid: int, row):
+    """None si el lote puede tener un cambio de ratio; si no, el motivo (el 400 de
+    /adjust-ratio). Lo usa la puerta dos veces: antes del turno, para no pedirle
+    splits a Yahoo de un lote que igual se rechaza, y adentro, sobre la fila
+    recién leída, para decidir.
+
+    Gate alineado con la valuación (priceSymbol en valuation.js): un holding
+    se precia vía .BA —y por ende puede tener cambio de ratio— si su
+    asset_type es CEDEAR, O si vive en un broker ARS (cualquier equity de
+    BYMA: CEDEAR, acción AR, o un ticker ambiguo como SPY/QQQ que quedó
+    mal-taggeado). Antes exigíamos asset_type='CEDEAR' literal y se perdían
+    esos casos: la valuación los muestra en pesos (de ahí la pérdida
+    fantasma) pero el ajuste no aparecía. Excluimos bonos/ONs, FCI, cripto y
+    fiat (no tienen split de equity). Schwab (USD) queda fuera salvo CEDEAR."""
+    if row["is_cash"]:
+        return "No se puede ajustar el ratio de una posición de cash."
+    asset_type = (row["asset_type"] or "").upper()
+    excluded = asset_type in ("BOND", "FIAT", "CRYPTO") or (row["asset"] or "").startswith("FCI:")
+    broker_row = conn.execute(
+        "SELECT currency FROM brokers WHERE user_id=? AND name=?", (uid, row["broker"]),
+    ).fetchone()
+    broker_is_ars = bool(broker_row) and (broker_row["currency"] or "").upper() == "ARS"
+    if excluded or not (asset_type == "CEDEAR" or broker_is_ars):
+        return "El ajuste por cambio de ratio es solo para CEDEARs o equities en brokers ARS."
+    return None
+
+
 @app.post("/api/positions/{pid}/adjust-ratio")
 def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
     """Ajusta un lote de CEDEAR por el/los cambio(s) de ratio (split) que el SERVER
@@ -14929,37 +14969,26 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         nuevo = interruptor(AVISO_RATIO_NUEVO, conn)
+        # Los splits, antes del turno, y sólo de un lote que se puede ajustar: el
+        # mismo control de abajo (efectivo, bonos, fondos y cripto no van a Yahoo,
+        # como antes de este orden).
         antes = conn.execute(
-            "SELECT asset FROM positions WHERE id=? AND user_id=?", (pid, uid),
+            "SELECT * FROM positions WHERE id=? AND user_id=?", (pid, uid),
         ).fetchone()
-        _a = ((antes["asset"] if antes else "") or "").upper()
-        _base = _a[:-3] if _a.endswith(".BA") else _a     # la misma de `_cambios_a_ofrecer`
-        if _base:
-            _fetch_ba_splits(f"{_base}.BA", conn, nuevo)
+        if antes and _por_que_no_se_ajusta_el_ratio(conn, uid, antes) is None:
+            _a = (antes["asset"] or "").upper()
+            _base = _a[:-3] if _a.endswith(".BA") else _a     # la misma de `_cambios_a_ofrecer`
+            if _base:
+                _fetch_ba_splits(f"{_base}.BA", conn, nuevo)
         _tomar_turno_de_la_puerta(conn, uid)
         row = conn.execute(
             "SELECT * FROM positions WHERE id=? AND user_id=?", (pid, uid),
         ).fetchone()
         if not row:
             raise HTTPException(404, "Posición no encontrada.")
-        if row["is_cash"]:
-            raise HTTPException(400, "No se puede ajustar el ratio de una posición de cash.")
-        # Gate alineado con la valuación (priceSymbol en valuation.js): un holding
-        # se precia vía .BA —y por ende puede tener cambio de ratio— si su
-        # asset_type es CEDEAR, O si vive en un broker ARS (cualquier equity de
-        # BYMA: CEDEAR, acción AR, o un ticker ambiguo como SPY/QQQ que quedó
-        # mal-taggeado). Antes exigíamos asset_type='CEDEAR' literal y se perdían
-        # esos casos: la valuación los muestra en pesos (de ahí la pérdida
-        # fantasma) pero el ajuste no aparecía. Excluimos bonos/ONs, FCI, cripto y
-        # fiat (no tienen split de equity). Schwab (USD) queda fuera salvo CEDEAR.
-        asset_type = (row["asset_type"] or "").upper()
-        excluded = asset_type in ("BOND", "FIAT", "CRYPTO") or (row["asset"] or "").startswith("FCI:")
-        broker_row = conn.execute(
-            "SELECT currency FROM brokers WHERE user_id=? AND name=?", (uid, row["broker"]),
-        ).fetchone()
-        broker_is_ars = bool(broker_row) and (broker_row["currency"] or "").upper() == "ARS"
-        if excluded or not (asset_type == "CEDEAR" or broker_is_ars):
-            raise HTTPException(400, "El ajuste por cambio de ratio es solo para CEDEARs o equities en brokers ARS.")
+        motivo = _por_que_no_se_ajusta_el_ratio(conn, uid, row)
+        if motivo:
+            raise HTTPException(400, motivo)
         # Re-derivar los cambios EN EL SERVER (no confiar en el cliente), con la
         # misma decisión que /split-check: si el aviso no lo ofrece, esto no lo
         # aplica aunque lo llamen a mano (Balanz ya lo trajo, la foto lo concilió,

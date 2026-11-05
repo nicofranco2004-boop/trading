@@ -52,6 +52,7 @@ import pandas as pd
 from fastapi.testclient import TestClient
 
 import main
+import pgsesion
 import snapshots_job
 import velas_diarias
 from fechas import hoy_art_date
@@ -152,11 +153,14 @@ class _Base(unittest.TestCase):
             self.yahoo.precios[t] = lambda i, d: 100.0
         self.splits_ba, self.splits = {}, {}
         self.tomadas, self.esperas, self.orden = set(), [], []
+        self.abiertas_por_el_pedido = 0
         de_verdad = main.get_db
 
         def abrir():
             c = _Contada(de_verdad(), self.tomadas)
             c.__dict__["_hilo_que_la_abrio"] = threading.current_thread()
+            if self._es_del_pedido(threading.current_thread()):
+                self.abiertas_por_el_pedido += 1
             return c
         self._p = [mock.patch.object(main, "get_db", abrir),
                    mock.patch("main._check_rate_limit"),
@@ -203,15 +207,21 @@ class _Base(unittest.TestCase):
         main._freno_reiniciar()
 
     # ── La red de mentira: cada puerta anota la espera ──────────────────────
+    @staticmethod
+    def _es_del_pedido(hilo) -> bool:
+        """Los hilos que atienden la pantalla: los de FastAPI («AnyIO worker») y el
+        del bucle. Si cambiaran de nombre, `_mirando` lo dice (no pasa en blanco)."""
+        return hilo is not None and hilo.name.startswith(("AnyIO worker", "asyncio"))
+
     def _del_pedido(self) -> list:
         """Las conexiones tomadas del pedido: las que abrieron los hilos que
-        atienden la pantalla (los de FastAPI: «AnyIO worker» y el del bucle) y
-        las del hilo que espera ahora. Ver el docstring del módulo."""
+        atienden la pantalla y las del hilo que espera ahora. Ver el docstring
+        del módulo."""
         yo = threading.current_thread()
         out = []
         for c in list(self.tomadas):
             h = c.__dict__.get("_hilo_que_la_abrio")
-            if h is yo or (h is not None and h.name.startswith(("AnyIO worker", "asyncio"))):
+            if h is yo or self._es_del_pedido(h):
                 out.append(c)
         return out
 
@@ -230,6 +240,10 @@ class _Base(unittest.TestCase):
         if "data912.com/historical/" in url:
             self._anotar("data912 historia", url.split("/historical/", 1)[1])
             return _Resp([])
+        if "argentinadatos.com/v1/finanzas/indices/inflacion" in url:
+            # No es Yahoo ni data912 (no entra en `_mirando`), pero Reportes la
+            # espera junto con el S&P 500: la prueba de los benchmarks la mira.
+            self._anotar("inflación", url)
         return _Resp([], 404)        # el dólar, la inflación y lo demás: no hay
 
     def _historia(self, ticker, period, interval, auto_adjust, timeout):
@@ -272,8 +286,12 @@ class _Base(unittest.TestCase):
         ninguna conexión tomada. `debe_esperar`: qué esperas tienen que haber
         pasado (si no, la prueba no prueba nada)."""
         del self.esperas[:], self.orden[:]
+        self.abiertas_por_el_pedido = 0
         r = pedir()
         self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(self.abiertas_por_el_pedido,
+                        "el pedido no abrió ninguna conexión que la prueba reconozca como suya "
+                        "(¿cambió el nombre de los hilos de FastAPI?): no se midió nada")
         mias = [e for e in self.esperas if e[0].startswith(_DE_YAHOO_O_DATA912)]
         for que in debe_esperar:
             self.assertIn(que, [e[0] for e in mias], f"no esperó «{que}»: la prueba no prueba nada")
@@ -319,6 +337,20 @@ class LaFichaTest(_Base):
                           "dividendos", "balances pasados")
         self.assertEqual(f["empresa"], "AAPL")
 
+    def test_con_los_eventos_al_dia_no_la_suelta(self):
+        # La segunda vez no hay nada que esperar: soltarla igual obligaba a pedir
+        # otra al pozo, y con el pozo lleno, a esperar un lugar que ya tenía.
+        self._velas("AAPL")
+        self._mirando(lambda: self.client.get("/api/tecnico/AAPL/eventos", headers=self.h_ana),
+                      "dividendos", "balances pasados")
+        sueltas = []
+        de_verdad = pgsesion.antes_de_esperar_afuera
+        with mock.patch.object(pgsesion, "antes_de_esperar_afuera",
+                               lambda que=None: sueltas.append(que) or de_verdad(que)):
+            r = self.client.get("/api/tecnico/AAPL/eventos", headers=self.h_ana)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(sueltas, [], "con todo al día no hay espera: no se suelta la conexión")
+
     def test_el_historial_de_dividendos(self):
         r = self._mirando(lambda: self.client.get("/api/dividendos/historial?tickers=KO,PEP",
                                                   headers=self.h_ana), "dividendos")
@@ -338,6 +370,19 @@ class LaVariacionDelDiaTest(_Base):
         r = self._mirando(lambda: self.client.get("/api/watchlist", headers=self.h_ana),
                           "yahoo", "data912 en vivo")
         self.assertEqual(len(r["items"]), 2)
+
+    def test_la_lista_de_seguimiento_con_los_bonos_ya_en_memoria(self):
+        # Con la lista de bonos de data912 fresca en memoria no se la pide (ni se
+        # pasa por su puerta): la única que suelta es la de las acciones.
+        import time as _t
+        main._data912_cache.update({"data": {"AL30": 862.0}, "ts": _t.time()})
+        with main.db_abierta() as conn:
+            conn.execute("INSERT INTO watchlist (user_id, symbol, asset_type) VALUES (?, 'GGAL.BA', 'STOCK')",
+                         (self.ana,))
+            conn.commit()
+        self._mirando(lambda: self.client.get("/api/watchlist", headers=self.h_ana), "data912 en vivo")
+        self.assertEqual({e[1] for e in self.esperas if e[0] == "data912 en vivo"},
+                         {"arg_cedears", "arg_stocks"}, "tenía que pedir sólo las acciones")
 
     def test_lo_que_te_afecta_en_el_inicio(self):
         self._cartera()
@@ -433,6 +478,10 @@ class LaFotoDeLaCarteraTest(_Base):
         self._cartera()
         self._mirando(lambda: self.client.get("/api/reports/timeline", headers=self.h_ana), "yahoo directo")
         self.assertIn("^SP500TR", [e[1] for e in self.esperas if e[0] == "yahoo directo"])
+        # La inflación (argentinadatos, hasta 8 s) se pide ANTES que el S&P 500.
+        inflacion = [e for e in self.esperas if e[0] == "inflación"]
+        self.assertTrue(inflacion, "no esperó la inflación: la prueba no prueba nada")
+        self.assertEqual([e for e in inflacion if any(e[-3:])], [], "esperó la inflación con la conexión tomada")
 
     def test_el_rendimiento_con_el_cache_frio(self):
         # `/api/insights/performance` espera las diez series juntas (hasta 25 s).
@@ -508,6 +557,28 @@ class LosSplitsTest(_Base):
         self.assertNotIn("splits", self.orden[self.orden.index("turno"):],
                          f"esperó a Yahoo con el turno de la cuenta tomado: {self.orden}")
 
+    def test_un_lote_que_no_se_ajusta_no_le_pide_splits_a_yahoo(self):
+        # Efectivo, un bono y un fondo: el mismo 400 de siempre, sin pasar antes
+        # por Yahoo (la auditoría del 05/11 lo encontró al traer los splits antes
+        # del turno: se pedían también para los lotes que después se rechazan).
+        with main.db_abierta() as conn:
+            pids = [conn.execute(
+                "INSERT INTO positions (user_id, broker, asset, asset_type, is_cash, invested, quantity, "
+                "commissions, currency, entry_date) VALUES (?, 'IOL', ?, ?, ?, 1000, 10, 0, 'ARS', '2025-01-10')",
+                (self.ana, asset, tipo, efectivo)).lastrowid
+                for asset, tipo, efectivo in (("ARS", None, 1), ("AL30", "BOND", 0), ("FCI:COCOS-AHORRO-A", "FCI", 0))]
+            # Y una acción de EEUU en la cuenta en dólares: no cotiza en BYMA.
+            pids.append(conn.execute(
+                "INSERT INTO positions (user_id, broker, asset, asset_type, is_cash, invested, quantity, "
+                "commissions, currency, entry_date) VALUES (?, 'Schwab', 'MSFT', 'STOCK', 0, 4000, 10, 0, "
+                "'USD', '2025-01-10')", (self.ana,)).lastrowid)
+            conn.commit()
+        for pid in pids:
+            del self.orden[:]
+            r = self.client.post(f"/api/positions/{pid}/adjust-ratio", headers=self.h_ana)
+            self.assertEqual(r.status_code, 400, r.text)
+            self.assertNotIn("splits", self.orden, f"lote {pid}: le pidió splits a Yahoo para rechazarlo")
+
 
 class LosCambiosDeRatioTest(_Base):
     """Prioridad 7: los cambios de ratio de VARIOS papeles juntos. El comparador
@@ -525,6 +596,23 @@ class LosCambiosDeRatioTest(_Base):
         papeles = [e[1].rsplit("/", 1)[1] for e in self.esperas if e[0] == "data912 historia"]
         self.assertIn("GGAL", papeles)
         self.assertIn("YPFD", papeles)
+
+
+class LaHistoriaDeData912Test(_Base):
+    """La puerta de `pricing.data912.filas`. Hoy ningún camino llega a ella con una
+    conexión en la mano sin pasar antes por otra puerta (los cambios de ratio
+    sueltan antes; la vela de BYMA corre adentro de `varios`; la liquidez no abre
+    la base). Por eso se la llama directo, como lo haría el próximo que la use."""
+
+    def test_suelta_la_conexion_de_quien_la_llama(self):
+        from pricing import data912
+        del self.esperas[:]
+        with main.db_abierta() as conn:
+            conn.execute("SELECT 1").fetchone()
+            data912.filas("bonds", "AL30")
+            self.assertEqual(conn.execute("SELECT 2").fetchone()[0], 2, "se sigue usando después")
+        self.assertEqual([e[0] for e in self.esperas], ["data912 historia"])
+        self.assertEqual([e for e in self.esperas if any(e[-3:])], [], "esperó con la conexión tomada")
 
 
 class LosEventosDeLaCarteraTest(_Base):
