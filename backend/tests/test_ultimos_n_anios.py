@@ -337,14 +337,15 @@ class UnSoloLugar(unittest.TestCase):
     PANTALLAS = ("comparar.py", "backtest.py", "cartera_simulada.py")
 
     def test_ninguna_pantalla_tiene_su_copia_de_la_regla(self):
+        # Una copia de la regla resta días a una fecha (`timedelta`) o compara contra
+        # `DIAS_VIEJA`. `DIAS_ANIO` como LARGO de un año sí vale (llevar a «por año», o
+        # «un año entero son 358 días o más» de «Año por año»): no elige ningún día.
         for nombre in self.PANTALLAS:
             with open(os.path.join(BACKEND, nombre), encoding="utf-8") as f:
                 fuente = f.read()
             self.assertNotIn("timedelta", fuente, f"{nombre}: las fechas, con tecnico.primer_dia")
             self.assertNotIn("DIAS_VIEJA", fuente, f"{nombre}: lo viejo, con tecnico.es_vieja")
-            for linea in fuente.splitlines():
-                if re.search(r"\bDIAS_ANIO\b", linea) and not linea.lstrip().startswith("#"):
-                    self.assertIn("primer_dia(", linea, f"{nombre}: «N años» sólo por primer_dia: {linea.strip()}")
+            self.assertIsNone(re.search(r"def _?primer_dia\b|def _?es_viej", fuente), f"{nombre}: otra copia de la regla")
 
     def test_la_ruta_de_comparar_no_elige_el_dia(self):
         # El día lo elige comparar.comparar, que sabe cuál es el último precio.

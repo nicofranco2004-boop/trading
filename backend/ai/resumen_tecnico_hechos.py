@@ -124,6 +124,13 @@ def hechos(nombre, r, todos_los_indicadores=False):
         "ultimo_cierre": f"{fecha(hoy, hoy)} (es el último dato que hay)",
         "precio_al_ultimo_cierre": plata(precio, mon),
     }
+    if r.get("escala"):
+        # En pesos, un CEDEAR sin su serie en pesos al día: el gráfico es un
+        # ESTIMADO (la acción de Nueva York × el MEP ÷ los CEDEARs que hacen una
+        # acción, `tecnico.serie`) y sus precios quedan unos % lejos de los de la
+        # Bolsa. El pie del gráfico lo dice; el texto que dé un precio, también.
+        h["los_precios_en_pesos_son"] = ("un estimado del CEDEAR hecho con la acción de Nueva York y el MEP: "
+                                         "pueden estar unos pocos % lejos de su precio en la Bolsa")
     # El dato del titular lo elige una regla fija (v7: dejarlo al modelo hizo que contrapusiera
     # plazos en casi todos los textos y, una vez, que se corrigiera en voz alta).
     var = {}

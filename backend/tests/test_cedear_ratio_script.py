@@ -130,5 +130,71 @@ class AplicarCorreccionesTest(unittest.TestCase):
         self.assertEqual(out, self.BLOQUE)
 
 
+class NoSeguirAComafiTest(unittest.TestCase):
+    """AZN: Comafi anota 2 CEDEARs por ADR, pero el 02/02/2026 el ADR se canjeó por
+    media acción y lo que cotiza en Nueva York (y publica Yahoo) es la acción
+    entera: son 4. El chequeo compara contra Comafi, así que sin la excepción
+    `--write` volvería a poner 2 y el dividendo anunciado saldría otra vez el doble.
+
+    Corre `main` entero, como desde la terminal: baja la lista (acá, las filas
+    reales de Comafi, sin red), lee la tabla REAL (en una copia), compara y escribe.
+    """
+
+    # Filas de la lista de Comafi al 30/09/2026, tal como las escribe.
+    COMAFI = {"AZN": ("2:1", "ASTRAZENECA PLC"), "GOOGL": ("58:1", "ALPHABET INC"),
+              "BIOX": ("1:1", "BIOCERES CROP SOLUTIONS CORP")}
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        carpeta = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, carpeta)
+        self.tabla = os.path.join(carpeta, "cedearRatio.js")
+        shutil.copy(chk.TABLA_JS, self.tabla)
+
+    def _correr(self, *flags, comafi=None, **parches):
+        import contextlib
+        import io
+        from unittest import mock
+        oficial = {k: (chk.parse_ratio(r), n) for k, (r, n) in (comafi or self.COMAFI).items()}
+        salida = io.StringIO()
+        with contextlib.ExitStack() as pila:
+            pila.enter_context(mock.patch.object(chk, "bajar_oficial", return_value=oficial))
+            pila.enter_context(mock.patch.object(
+                sys, "argv", ["check_cedear_ratios.py", "--tabla", self.tabla, *flags]))
+            for nombre, valor in parches.items():
+                pila.enter_context(mock.patch.object(chk, nombre, valor, create=True))
+            pila.enter_context(contextlib.redirect_stdout(salida))
+            codigo = chk.main()
+        return codigo, salida.getvalue(), chk.leer_tabla_js(self.tabla)[0]
+
+    def test_la_tabla_del_repo_dice_4(self):
+        self.assertEqual(chk.leer_tabla_js()[0]["AZN"], 4)
+
+    def test_write_no_vuelve_azn_a_2(self):
+        codigo, salida, tabla = self._correr("--write")
+        self.assertEqual(tabla["AZN"], 4)
+        self.assertEqual(codigo, 0)                  # nada que corregir ni que mirar
+        self.assertIn("AZN distinto de Comafi A PROPÓSITO", salida)
+
+    def test_control_sin_la_excepcion_write_copia_el_2_de_comafi(self):
+        # Lo que hacía el chequeo hasta el 06/11/2026: Comafi manda, siempre.
+        _codigo, _salida, tabla = self._correr("--write", NO_SEGUIR_A_COMAFI={})
+        self.assertEqual(tabla["AZN"], 2)
+
+    def test_si_comafi_cambia_su_numero_lo_marca_y_no_lo_escribe(self):
+        comafi = {**self.COMAFI, "AZN": ("8:1", "ASTRAZENECA PLC")}
+        codigo, salida, tabla = self._correr("--write", comafi=comafi)
+        self.assertEqual(codigo, 1)
+        self.assertEqual(tabla["AZN"], 4)
+        self.assertIn("Comafi anotaba 2 y ahora 8", salida)
+
+    def test_si_la_tabla_vuelve_a_2_lo_marca(self):
+        dif, a_proposito, revisar, _ = chk.comparar({"AZN": 2.0}, {"AZN": (2.0, "ASTRAZENECA PLC")})
+        self.assertEqual((dif, a_proposito), ([], []))
+        self.assertEqual([(k, que) for k, _t, _o, que in revisar],
+                         [("AZN", "la excepción dice que la tabla tiene 4")])
+
+
 if __name__ == "__main__":
     unittest.main()

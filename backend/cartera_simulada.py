@@ -34,6 +34,11 @@ Los índices, con la misma semana y LA regla de Comparar (`comparar.dia_del_cien
 con 5 años, lo que se pide es justo lo guardado, y si ese día cae un sábado el
 S&P 500 empieza el lunes. Se arranca el lunes, en vez de dejarlo afuera.
 
+AÑO POR AÑO (Nico, 06/11/2026: el total esconde si fue parejo o si un año lo
+explica casi todo, «algo que probablemente no se vuelva a repetir»). El mismo
+período, abierto en años de LA regla del período (`tecnico.primer_dia`: 365 días
+para atrás desde el último precio), con la misma cartera sin tocar (`_anio_por_anio`).
+
 QUÉ NO HACE. No recomienda nada ni mira para adelante: dice qué habría pasado.
 """
 from __future__ import annotations
@@ -60,6 +65,9 @@ TOLERANCIA = 0.05
 INDICES = (("sp500", "S&P 500", velas_diarias.SP500), ("nasdaq", "Nasdaq", velas_diarias.NASDAQ))
 # Con menos días que esto no alcanza para decir nada (los del Backtesting).
 MIN_DIAS = backtest.MIN_RUEDAS
+# «Año por año»: lo de antes del primer año entero, si dura menos que esto, va con
+# el año que sigue (un renglón de diez días no dice nada).
+TRAMO_MIN_DIAS = 31
 
 
 def _puntos(velas: list) -> list:
@@ -79,6 +87,55 @@ class _EnCien:
     def al(self, fecha: str):
         i = bisect.bisect_right(self.fechas, fecha) - 1
         return self.valores[i] if i >= 0 else None
+
+
+def _anio_por_anio(base: str, hasta: str, al: dict, recortado: bool = False):
+    """El período abierto en años (Nico, 06/11/2026). `al`: {clave: lo que vale ese
+    día} de la cartera ('cartera', en dólares de cada US$ 100) y de cada índice que
+    está, con su último cierre hasta ese día. `recortado`: el de `simular`.
+
+    Un año es el de LA regla del período (`tecnico.primer_dia`), contado para atrás desde
+    el último precio: el último año de un índice da lo mismo que elegir «1 año»
+    (salvo un caso que hoy no pasa: el OTRO índice con menos de un año de historia,
+    que arranca en la semana después del corte; «1 año» corre su primer día por él
+    y acá queda afuera; auditoría de método 06/11, H3).
+    La cartera es la de todo el período, sin tocar: cada año arranca con los pesos
+    que le dejó el anterior («1 año» la compra de nuevo con los tuyos). Lo de antes
+    del primer año entero es un tramo más corto (`completo` False), o va con el año
+    que sigue si dura menos de `TRAMO_MIN_DIAS`. Sin recorte, el primero es un año
+    aunque dure unos días menos: el primer día puede correrse una semana por un
+    activo y otra por un índice, y salía «12 meses» debajo de «Los 5 años» (H2).
+    Un tramo que arranca en 0 (un activo que se fue a cero, con el redondeo de
+    `comparar.base_cien`) queda vacío en vez de dividir por cero (H1). None con un
+    solo tramo: sería el total otra vez.
+
+    {'tramos': [{desde, hasta, dias, completo, aporte, <clave>: %}], 'por_anio':
+    {<clave>: %}}. `aporte`: cuánto de cada US$ 100 habría ganado (o perdido) la
+    cartera en ese tramo; los de todos suman su resultado. `por_anio`: lo que
+    habría que ganar todos los años, igual, para llegar al mismo total (compuesto,
+    a 365 días, como el «Por año» del diario de operaciones)."""
+    cortes = []
+    for k in range(1, len(ANIOS) + 1):
+        d = tecnico.primer_dia(hasta, k * tecnico.DIAS_ANIO)
+        if d <= base:
+            break
+        cortes.append(d)
+    bordes = [base] + sorted(cortes) + [hasta]
+    if len(bordes) > 2 and comparar._dias(bordes[0], bordes[1]) < TRAMO_MIN_DIAS:
+        del bordes[1]
+    if len(bordes) < 3:
+        return None
+    tramos = []
+    for i, (a, b) in enumerate(zip(bordes, bordes[1:])):
+        dias = comparar._dias(a, b)
+        tramos.append({"desde": a, "hasta": b, "dias": dias,
+                       "completo": dias >= tecnico.DIAS_ANIO - comparar.DIAS_MARGEN or (i == 0 and not recortado),
+                       "aporte": al["cartera"](b) - al["cartera"](a),
+                       **{clave: (f(b) / f(a) - 1) * 100 if f(a) else None for clave, f in al.items()}})
+    dias = comparar._dias(base, hasta)
+    return {"tramos": tramos,
+            "por_anio": {clave: ((f(hasta) / f(base)) ** (tecnico.DIAS_ANIO / dias) - 1) * 100
+                         for clave, f in al.items()}}
 
 
 def simular(activos: list, indices: dict, anios: int, hoy: date) -> dict:
@@ -127,9 +184,15 @@ def simular(activos: list, indices: dict, anios: int, hoy: date) -> dict:
     suma = sum(escritos.values())
     pesos = {s: p * 100 / suma for s, p in escritos.items()}
     lineas = {s: _EnCien(p, base) for s, p in puntos.items()}
-    cartera = [sum(pesos[s] / 100 * lineas[s].al(d) for s in pesos) for d in fechas]
 
-    resumen_indices, faltan, curvas = [], [], {}
+    def valor(d):
+        # Lo que vale la cartera ese día, en dólares de cada US$ 100: la del gráfico
+        # y la de «Año por año».
+        return sum(pesos[s] / 100 * lineas[s].al(d) for s in pesos)
+
+    cartera = [valor(d) for d in fechas]
+
+    resumen_indices, faltan, curvas, varas = [], [], {}, {}
     for clave, nombre, simbolo in INDICES:
         p = de_los_indices[clave]
         # Primero si quedó viejo, como Comparar: uno que dejó de llegar y además
@@ -141,7 +204,7 @@ def simular(activos: list, indices: dict, anios: int, hoy: date) -> dict:
         if not p or p[0][0] > base:
             faltan.append({"clave": clave, "motivo": "sin_datos"})
             continue
-        linea = _EnCien(p, base)
+        linea = varas[clave] = _EnCien(p, base)
         curvas[clave] = [linea.al(d) for d in fechas]
         resumen_indices.append({"clave": clave, "nombre": nombre, "ticker": simbolo,
                                 **backtest._resumen([v / 100 for v in curvas[clave]])})
@@ -172,6 +235,8 @@ def simular(activos: list, indices: dict, anios: int, hoy: date) -> dict:
         "cartera": backtest._resumen([v / 100 for v in cartera]),
         "indices": resumen_indices,
         "faltan": faltan,
+        "anio_por_anio": _anio_por_anio(base, hasta, {"cartera": valor, **{c: v.al for c, v in varas.items()}},
+                                        recortado),
         "curva": [{"d": d, "cartera": round(cartera[k], 2), **{c: round(curvas[c][k], 2) for c in curvas}}
                   for k, d in enumerate(fechas)],
     }

@@ -7,9 +7,11 @@ Cleanup: batches en estado 'preview' más viejos que PREVIEW_TTL_HOURS se borran
 al inicio de cada preview nuevo (cleanup oportunista, no necesita cron job).
 """
 from __future__ import annotations
+import csv
 import hashlib
 from collections import Counter
 import logging
+import re
 import json
 import secrets
 from typing import Any, Dict, List, Optional, Tuple
@@ -409,6 +411,62 @@ def _normalize_header_for_match(line: str) -> str:
     return line.lstrip("﻿").strip().lower()
 
 
+# Una fecha dentro del nombre de una hoja: "06-11-26", "05/06/2026", "2026.11.06"
+# o la cortada por el límite de 31 letras de Excel ("06-11-"). Un número suelto
+# ("Comitente 1234", "Hoja1") no es fecha y se queda.
+_FECHA_EN_HOJA = re.compile(r"\d+(?:[-/.]\d*)+")
+
+
+def _clave_entre_archivos(header_line: str):
+    """Cómo se reconoce la MISMA fila en dos archivos de una misma subida.
+
+    Hasta 2026-11-06 era la línea idéntica letra por letra, y en un Excel eso
+    nunca pasa aunque sea la misma operación. Hay dos columnas que dependen de
+    CUÁNDO se bajó el archivo, no de qué operación es:
+      - `_hoja`: el conversor de Excel le pega a cada fila el nombre de la hoja,
+        y Bull Market la nombra con la fecha de descarga ("Cuenta Corriente
+        PESOS 06-11-26"; Excel corta el nombre en 31 letras, así que a veces
+        queda "…DOLARES 06-11-"). De la hoja se saca SÓLO lo que tiene forma de
+        fecha (números unidos por - / .): el resto sigue contando, porque PESOS
+        vs DOLARES, o "Comitente 1234" vs "Comitente 5678", son cuentas
+        distintas.
+      - el saldo acumulado: puede arrancar donde arranca la descarga.
+    Caso real: tres Cuenta Corriente de pesos bajadas en días distintos → 130 de
+    297 filas de más, cada operación compartida entraba dos o tres veces.
+
+    Todo lo demás (fechas, comprobante, número, especie, cantidad, precio,
+    importe) tiene que seguir siendo igual. Sin esas columnas, la regla es la de
+    siempre: la línea idéntica. Ignorar el saldo deja iguales a dos operaciones
+    iguales del mismo día sin número de operación: por eso el que llama CUENTA
+    las repeticiones en vez de preguntar "¿ya vino?"."""
+    delim = max((",", ";", "\t"), key=header_line.count)
+    try:
+        cols = [c.lstrip("﻿").strip().lower() for c in next(csv.reader([header_line], delimiter=delim))]
+    except (csv.Error, StopIteration):
+        cols = []
+    hoja = [i for i, c in enumerate(cols) if c == "_hoja"]
+    saldo = [i for i, c in enumerate(cols) if c.startswith("saldo")]
+    if not hoja and not saldo:
+        return lambda ln: ln.strip()
+
+    def clave(ln: str) -> str:
+        if not ln.strip():
+            return ""
+        try:
+            campos = next(csv.reader([ln], delimiter=delim))
+        except (csv.Error, StopIteration):
+            return ln.strip()
+        for i in saldo:
+            if i < len(campos):
+                campos[i] = ""
+        for i in hoja:
+            if i < len(campos):
+                campos[i] = " ".join(_FECHA_EN_HOJA.sub(" ", campos[i].lower()).split())
+        return "\x1f".join(c.strip() for c in campos)
+
+    return clave
+
+
 def combine_csv_files(files: List[Tuple[bytes, str]]) -> Tuple[bytes, str, Optional[str]]:
     """Combina N CSVs en un único stream, manteniendo el header del primero y
     saltando el de los siguientes. Útil para multi-file upload del wizard.
@@ -481,26 +539,35 @@ def combine_csv_files(files: List[Tuple[bytes, str]]) -> Tuple[bytes, str, Optio
     # filas (caso real: "movimientos (2).csv" y "(3).csv" comparten meses) y
     # concatenarlos duplicaba todo — el dedup por fingerprint es CROSS-batch,
     # así que dentro de una misma carga no lo agarraba nadie.
-    # Criterio conservador: solo se descarta una línea IDÉNTICA (byte a byte,
-    # sin espacios de borde) que YA apareció en un archivo ANTERIOR. Dentro de
-    # un mismo archivo las repeticiones se respetan — ahí sí pueden ser dos
-    # operaciones legítimas iguales (mismo día, mismo monto).
+    # Criterio conservador: solo se descarta una línea que YA apareció en un
+    # archivo ANTERIOR, igual en todo lo que dice qué operación es (ver
+    # `_clave_entre_archivos`). Dentro de un mismo archivo las repeticiones se
+    # respetan — ahí sí pueden ser dos operaciones legítimas iguales (mismo día,
+    # mismo monto).
+    # 🔴 SE CUENTA, no alcanza con "ya vino". Sin número de operación (PPI), dos
+    # compras iguales del mismo día sólo se distinguen por el saldo, que la clave
+    # ignora. Bajado a media mañana, un archivo trae una; bajado a la tarde, el
+    # otro trae las dos. Con un conjunto, la segunda de la tarde se descartaba
+    # porque "ya había venido" una igual: se perdía una compra, y según el orden
+    # de los archivos (medido por /preview + /confirm, revisión del 06/11). Cada
+    # clave entra tantas veces como la trae el archivo que MÁS veces la trae. Es
+    # la misma regla que `confirmed_fingerprint_counts` contra lo ya importado.
+    clave = _clave_entre_archivos(parts[0])
     deduped: List[str] = [parts[0]]  # header
-    seen_prev_files: set = set()
-    idx = 1
+    ya_vinieron: Counter = Counter()   # clave → el máximo que trajo un archivo anterior
     dropped = 0
     for lines, _name in decoded:
-        this_file: List[str] = []
+        en_este: Counter = Counter()
         for ln in lines[1:]:
-            key = ln.strip()
-            if key and key in seen_prev_files:
-                dropped += 1
-                idx += 1
-                continue
-            this_file.append(ln)
+            key = clave(ln)
+            if key:
+                en_este[key] += 1
+                if en_este[key] <= ya_vinieron[key]:
+                    dropped += 1
+                    continue
             deduped.append(ln)
-            idx += 1
-        seen_prev_files.update(l.strip() for l in this_file if l.strip())
+        for k, n in en_este.items():
+            ya_vinieron[k] = max(ya_vinieron[k], n)
     if dropped:
         log.info("combine_csv_files: %d filas repetidas entre archivos descartadas", dropped)
     parts = deduped

@@ -39,6 +39,16 @@ describe('specDelGrafico: qué lleva la imagen', () => {
     expect(specDelGrafico(base({ tipo: 'velas' })).subtitulo).toMatch(/^Velas diarias/)
   })
 
+  it('el pie dice de dónde sale el precio con la MISMA frase que la pantalla (notaDeLaMoneda)', () => {
+    // Un CEDEAR estimado en pesos (la acción de Nueva York × el MEP ÷ `escala`): la
+    // imagen que se comparte también dice que es un estimado.
+    const pie = specDelGrafico(base({ moneda: 'ars', convertida: 'mep', escala: 20 })).pie.join(' ')
+    expect(pie).toContain('Precio estimado del CEDEAR')
+    expect(specDelGrafico(base({ moneda: 'ars', convertida: 'mep' })).pie)
+      .toContain('El precio en dólares de cada día está pasado a pesos con el MEP de ese día.')
+    expect(specDelGrafico(base()).pie.join(' ')).not.toMatch(/MEP|estimado/)
+  })
+
   it('usa la escala de la pantalla (también la estirada a mano) y los lugares vacíos de la derecha', () => {
     const s = specDelGrafico(base({ lo: 50, hi: 250 }))
     const ult = s.grafico.etiquetas.find(e => e.principal)

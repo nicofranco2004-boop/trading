@@ -403,7 +403,7 @@ class BaseCienTest(unittest.TestCase):
         viejas = [{"date": "2024-01-02", "close": 10.0}, {"date": "2024-01-03", "close": 11.0}]
         nuevas = [{"date": f"2025-11-{d:02d}", "close": 50.0 + d} for d in range(3, 29)]
         series = {"VIEJ": viejas, "NUEV": nuevas}
-        with unittest.mock.patch("tecnico.serie", lambda c, a, m, l: {"velas": series[a]}), \
+        with unittest.mock.patch("tecnico.serie", lambda c, a, m, l, **k: {"velas": series[a]}), \
              unittest.mock.patch("tecnico.sp500", lambda c, m: nuevas):
             r = comparar.comparar(None, [("VIEJ", False), ("NUEV", False)], "usd", "2025-11-03",
                                   hoy=__import__("datetime").date(2025, 11, 29))

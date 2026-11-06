@@ -162,7 +162,11 @@ def comparar(conn, activos: list, moneda: str, desde: str = None, *, anios: int 
 
     crudas = []
     for asset, local in activos:
-        s = tecnico.serie(conn, asset, moneda, bool(local))
+        # Todo arranca en 100: la escala de un CEDEAR estimado en pesos no cambia
+        # ninguna línea, y uno sin escala conocida se compara igual (la acción de
+        # afuera × el MEP). Sin esto, NET desaparecía de Comparar en pesos
+        # (auditoría 06/11, H4 de la serie).
+        s = tecnico.serie(conn, asset, moneda, bool(local), escala_obligatoria=False)
         puntos = [p for p in _cierres(s["velas"]) if p[0] <= tope]
         if not puntos:
             out["faltan"].append({"clave": asset, "motivo": "sin_datos"})

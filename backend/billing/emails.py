@@ -1431,6 +1431,52 @@ def send_custom(*, to: str, user_name: str = "", subject: str, body: str,
                  reply_to="soporte@rendi.finance")
 
 
+# El aviso de los cambios en la política de privacidad del 06/11/2026. La
+# política (§14) promete avisar por mail los cambios importantes, y éste lo es:
+# decía que Rendi no usaba el píxel de Meta ni Google Analytics, y los usa. Es un
+# AVISO DE SERVICIO, no un promocional: le llega también a quien se dio de baja
+# de los promocionales (ver main.admin_email_aviso_privacidad). Por eso el texto
+# está fijo acá y no se escribe en el panel: el panel no puede mandar otra cosa
+# por este camino. `{saludo}` y `{baja}` los completa send_aviso_privacidad.
+AVISO_PRIVACIDAD_ASUNTO = "Actualizamos la política de privacidad de Rendi"
+AVISO_PRIVACIDAD_CUERPO = """{saludo}
+
+Te escribo para contarte que actualizamos la Política de Privacidad de Rendi.
+
+Lo primero, que es lo más importante: los datos de tu cartera (lo que tenés, los montos, tus operaciones) no se usan para publicidad. No se usaban antes y no se usan ahora.
+
+Lo que cambió es que la política ahora cuenta bien tres cosas que antes no explicaba como correspondía:
+
+1. Para saber cuánta gente entra a rendi.finance y de dónde llega, usamos Google Analytics.
+
+2. Para medir si nuestros anuncios en Facebook e Instagram traen gente, usamos el píxel de Meta. Con eso, Meta también puede mostrarles anuncios de Rendi a quienes ya visitaron el sitio.
+
+3. Podemos pasarle a Meta una lista con el email y el nombre de quienes tienen cuenta en Rendi, para mostrarles anuncios de Rendi o para no mostrárselos. Meta la recibe cifrada y la usa sólo para eso.
+
+Google Analytics y el píxel de Meta no reciben tu email, tu nombre ni los montos u operaciones de tu cartera.
+
+Si no querés estar en esa lista de Meta (ni recibir nuestros mails promocionales), entrá acá: {baja}
+
+La política completa está en https://rendi.finance/privacidad. Si tenés cualquier duda, respondé este mail.
+
+Nicolás — Rendi
+
+Este mail no es publicidad: es un aviso sobre tus datos, y por eso les llega a todos los que tienen cuenta, también a quienes se dieron de baja de los mails promocionales."""
+
+
+def send_aviso_privacidad(*, to: str, user_name: str = "", baja_url: str) -> bool:
+    """El aviso de los cambios en la política de privacidad (arriba). Plano, como
+    los mails escritos uno a uno, para que caiga en Principal. `baja_url` es el
+    link de baja de ESE destinatario: lo saca de los promocionales y de la lista
+    para los anuncios de Meta. Replies → soporte@."""
+    nombre = (user_name or "").strip()
+    cuerpo = (AVISO_PRIVACIDAD_CUERPO
+              .replace("{baja}", baja_url)
+              .replace("{saludo}", f"Hola {nombre}," if nombre else "Hola,"))
+    return send_custom(to=to, user_name="", subject=AVISO_PRIVACIDAD_ASUNTO,
+                       body=cuerpo, branded=False)
+
+
 def send_gift_plan_history(*, to: str, user_name: str = "", plan_label: str = "Pro") -> bool:
     """Campaña: avisar a usuarios con ≤1 operación que les regalamos un mes de
     Pro/Plus (ya otorgado por separado vía grant-comp) y empujarlos a cargar su
