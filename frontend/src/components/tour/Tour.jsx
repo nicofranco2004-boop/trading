@@ -106,6 +106,11 @@ export default function Tour({ id, pasos, entrada, etiqueta, cuando, despuesDe =
   const navigate = useNavigate()
   const { pathname, search } = useLocation()
   const cerradoRef = useRef(false)
+  // La dirección con la que se entró (un link compartido a una cartera, a una
+  // pestaña): el tutorial lleva a la persona a otras, y al omitirlo o terminarlo
+  // la deja donde estaba. Antes quedaba en el Gráfico, no en lo que le mandaron
+  // (auditoría de producto 05/11, A3).
+  const entradaRef = useRef(null)
   const cartelRef = useRef(null)
   const [altoCartel, setAltoCartel] = useState(ALTO_CARTEL)
 
@@ -126,7 +131,11 @@ export default function Tour({ id, pasos, entrada, etiqueta, cuando, despuesDe =
     if (despuesDe.some(e => !yaLoVio(almacenDe(e), e.clave))) return
     if (!turnoLibre(id)) return
     // Un respiro para que la pantalla termine de armarse antes de oscurecerla.
-    const t = setTimeout(() => { if (tomarTurno(id)) setActivo(true) }, 900)
+    const t = setTimeout(() => {
+      if (!tomarTurno(id)) return
+      entradaRef.current = pathname + search
+      setActivo(true)
+    }, 900)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname, vuelta, activo])
@@ -139,6 +148,7 @@ export default function Tour({ id, pasos, entrada, etiqueta, cuando, despuesDe =
     if (!cuando(pathname)) { tomarPedido(id); return }
     if (!tomarTurno(id)) return
     tomarPedido(id)
+    entradaRef.current = pathname + search
     cerradoRef.current = false
     setCaja(null)
     setI(0)
@@ -152,11 +162,16 @@ export default function Tour({ id, pasos, entrada, etiqueta, cuando, despuesDe =
     setCaja(null)
     if (hay()) marcarVisto(almacenDe(entrada), entrada.clave)
     soltarTurno(id)
-  }, [entrada, id])
+    const volver = entradaRef.current
+    entradaRef.current = null
+    if (volver && volver !== window.location.pathname + window.location.search) navigate(volver, { replace: true })
+  }, [entrada, id, navigate])
 
   // Se fue de donde vive el tutorial: se cierra sin darlo por visto (ver 4).
   useEffect(() => {
     if (!activo || cuando(pathname)) return
+    // Se fue por su cuenta: no se la trae de vuelta.
+    entradaRef.current = null
     setActivo(false)
     setCaja(null)
     setI(0)
