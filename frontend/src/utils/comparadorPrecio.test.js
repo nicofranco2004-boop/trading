@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { setBrokersRegistry } from './valuation'
 import {
   marcaLocal, primeraCompraDe, urlDelPedido, urlDeComparar, filasDelGrafico, fraseComparacion, monto,
+  vaciaPorVieja,
 } from './comparadorPrecio'
 
 const serie = (clave, final, tipo = 'activo') => ({ clave, nombre: clave, tipo, final, puntos: [] })
@@ -119,5 +120,23 @@ describe('lo que dicen los números', () => {
   it('sin varas prendidas o sin activos, nada', () => {
     expect(fraseComparacion(res([serie('GGAL', 130)]))).toBe('')
     expect(fraseComparacion(res([serie('sp500', 110, 'vara')]))).toBe('')
+  })
+})
+
+describe('el panel vacío cuando todo lo pedido está viejo (H1, 06/11)', () => {
+  const vieja = (clave, hasta) => ({ clave, motivo: 'vieja', hasta })
+  it('dice que faltan precios recientes, con el último que hay; no «probá con otro activo»', () => {
+    // La noche caída: los dos activos, cada uno hasta su día; vale el más nuevo.
+    const r = { series: [], faltan: [vieja('MU', '2026-08-14'), vieja('AAPL', '2026-10-05'), { clave: 'cer', motivo: 'solo_en_pesos' }] }
+    expect(vaciaPorVieja(r, ['MU', 'AAPL'])).toEqual({
+      titulo: 'No hay precios recientes para comparar',
+      texto: 'Para comparar hacen falta precios de la última semana, y los últimos que tenemos son del 05/10/26.',
+    })
+  })
+  it('si falta otro por otra cosa (un bono), el panel de siempre', () => {
+    const r = { series: [], faltan: [vieja('MU', '2026-08-14'), { clave: 'AL30', motivo: 'sin_serie' }] }
+    expect(vaciaPorVieja(r, ['MU', 'AL30'])).toBeNull()
+    expect(vaciaPorVieja({ series: [], faltan: [{ clave: 'AL30', motivo: 'sin_serie' }] }, ['AL30'])).toBeNull()
+    expect(vaciaPorVieja({ series: [], faltan: [] }, ['MU'])).toBeNull()
   })
 })

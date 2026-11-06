@@ -853,3 +853,32 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
     expect(buscarBoton(montado.contenedor, 'Reintentar')).not.toBeNull()
   })
 })
+
+// La propuso la auditoría de las pruebas de «1 año» (06/11): el texto de «vieja» lo
+// arma motivoCartera con CUÁNTOS activos hay, y eso se lo pasa la página; montada con
+// un activo solo, no había ninguna prueba (G4).
+describe('«vieja» contra hoy, en la página: lo que dice depende de cuántos activos hay', () => {
+  const parado = (asset) => ({ asset, motivo: 'vieja', hasta: '2026-09-04' })
+  const vieja = (...xs) => ({ anios: 2, moneda: 'usd', disponible: false, motivo: 'vieja', faltan: xs.map(parado) })
+  const DE_CERO = '/analisis-tecnico?tab=backtesting&modo=cartera&origen=cero'
+
+  it('un activo solo y viejo: qué hace falta, no «sacalo para simular el resto»', async () => {
+    simulacion = () => vieja('MU')
+    montado = await abrir(`${DE_CERO}&activos=MU&pesos=100&anios=2`)
+    expect(montado.t()).toContain('No tenemos precios de MU desde el 04/09/26: para simular hacen falta los de la última semana.')
+    expect(montado.t()).not.toContain('para simular el resto')
+  })
+
+  it('todos viejos: no hay «resto» que simular', async () => {
+    simulacion = () => vieja('MU', 'AAPL')
+    montado = await abrir(`${DE_CERO}&activos=MU,AAPL&pesos=50,50&anios=2`)
+    expect(montado.t()).toContain('No tenemos precios de MU y AAPL desde el 04/09/26: para simular hacen falta los de la última semana.')
+    expect(montado.t()).not.toContain('para simular el resto')
+  })
+
+  it('uno viejo entre tres: «sacalo para simular el resto»', async () => {
+    simulacion = () => vieja('MU')
+    montado = await abrir(`${DE_CERO}&activos=MU,AAPL,KO&pesos=40,30,30&anios=2`)
+    expect(montado.t()).toContain('No tenemos precios de MU desde el 04/09/26: sacalo para simular el resto.')
+  })
+})

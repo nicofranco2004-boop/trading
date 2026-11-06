@@ -467,9 +467,17 @@ export function motivoCartera(res, cuantos = 2) {
       return `No tenemos los precios de cada día de ${enLista(nombres)}: `
         + `${uno ? 'sacalo o cambialo por otro' : 'sacalos o cambialos por otros'}.`
     case 'vieja': {
-      const hasta = faltan.map(f => f.hasta).filter(Boolean).sort()[0]
-      return `No tenemos precios de ${enLista(nombres)} desde el ${fechaCorta(hasta)}: `
-        + `${uno ? 'sacalo' : 'sacalos'} para simular el resto.`
+      // Cada uno con su fecha: con la noche caída y uno que ya estaba parado, la más
+      // vieja para todos decía mal la del otro (auditoría 06/11, H5).
+      const porFecha = new Map()
+      for (const f of faltan) porFecha.set(f.hasta || '', [...(porFecha.get(f.hasta || '') || []), f.asset])
+      const frase = 'No tenemos precios de ' + [...porFecha].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([h, xs]) => (h ? `${enLista(xs)} desde el ${fechaCorta(h)}` : enLista(xs))).join(' ni de ')
+      // Viejo se mide contra hoy (auditoría 05/11, H9): puede ser el único activo, o
+      // todos (la noche no trajo nada). Ahí no hay «resto» que simular, y cambiarlo no
+      // sirve si la falla es nuestra (H4, 06/11): se dice qué hace falta.
+      if (nombres.length >= cuantos) return `${frase}: para simular hacen falta los de la última semana.`
+      return `${frase}: ${uno ? 'sacalo' : 'sacalos'} para simular el resto.`
     }
     case 'poca_historia':
       if (!res.recorte_por) {

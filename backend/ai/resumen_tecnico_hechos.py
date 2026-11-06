@@ -147,9 +147,10 @@ def hechos(nombre, r, todos_los_indicadores=False):
     def dicho(etiqueta):
         v = var[etiqueta]
         return f"{etiqueta[0].upper() + etiqueta[1:]} {'subió' if v >= 0 else 'bajó'} {pct(v)}"
-    # Máximo y mínimo del año, de cierre
-    piso = (date.fromisoformat(hoy) - timedelta(days=365)).isoformat()
-    anio = [p for p in pts if p["d"] > piso]
+    # Máximo y mínimo del año, de cierre (el año de la ficha: tecnico.primer_dia)
+    import tecnico
+    desde = tecnico.primer_dia(hoy, tecnico.DIAS_ANIO)
+    anio = [p for p in pts if p["d"] >= desde]
     pmax = max(anio, key=lambda p: p["c"])
     pmin = min(anio, key=lambda p: p["c"])
     dmax = (precio / pmax["c"] - 1) * 100

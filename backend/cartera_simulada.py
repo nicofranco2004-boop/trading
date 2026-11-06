@@ -25,7 +25,9 @@ CÓMO SE SIMULA.
     los índices también.
 
 CUÁNDO ARRANCA. Los últimos `anios` años contados por calendario desde el último
-precio, como el Backtesting de una regla. Si un activo cotiza desde después,
+precio (`tecnico.primer_dia`, LA regla de la ficha, Comparar y el Backtesting de
+una regla). Un activo o un índice sin precios de la última semana, contada desde
+hoy (`tecnico.es_vieja`), no entra y se dice. Si un activo cotiza desde después,
 arranca el día de ese activo y lo dice (`recorte_por`); hasta una semana después
 no es un recorte (`comparar.DIAS_MARGEN`: el borde de lo guardado, un feriado).
 Los índices, con la misma semana y LA regla de Comparar (`comparar.dia_del_cien`):
@@ -34,15 +36,15 @@ S&P 500 empieza el lunes. Se arranca el lunes, en vez de dejarlo afuera.
 
 AÑO POR AÑO (Nico, 06/11/2026: el total esconde si fue parejo o si un año lo
 explica casi todo, «algo que probablemente no se vuelva a repetir»). El mismo
-período, abierto en años de LA regla del período (`_primer_dia`: 365 días para
-atrás desde el último precio), con la misma cartera sin tocar (`_anio_por_anio`).
+período, abierto en años de LA regla del período (`tecnico.primer_dia`: 365 días
+para atrás desde el último precio), con la misma cartera sin tocar (`_anio_por_anio`).
 
 QUÉ NO HACE. No recomienda nada ni mira para adelante: dice qué habría pasado.
 """
 from __future__ import annotations
 
 import bisect
-from datetime import date, timedelta
+from datetime import date
 
 import backtest
 import comparar
@@ -87,19 +89,12 @@ class _EnCien:
         return self.valores[i] if i >= 0 else None
 
 
-def _primer_dia(hasta: str, anios: int) -> str:
-    """El primer día de los últimos `anios` años que terminan en `hasta`, el último
-    precio: LA regla del período, la del pedido y la de cada año de «Año por año»."""
-    corte = date.fromisoformat(hasta) - timedelta(days=anios * tecnico.DIAS_ANIO)
-    return (corte + timedelta(days=1)).isoformat()
-
-
 def _anio_por_anio(base: str, hasta: str, al: dict, recortado: bool = False):
     """El período abierto en años (Nico, 06/11/2026). `al`: {clave: lo que vale ese
     día} de la cartera ('cartera', en dólares de cada US$ 100) y de cada índice que
     está, con su último cierre hasta ese día. `recortado`: el de `simular`.
 
-    Un año es el de LA regla del período (`_primer_dia`), contado para atrás desde
+    Un año es el de LA regla del período (`tecnico.primer_dia`), contado para atrás desde
     el último precio: el último año de un índice da lo mismo que elegir «1 año»
     (salvo un caso que hoy no pasa: el OTRO índice con menos de un año de historia,
     que arranca en la semana después del corte; «1 año» corre su primer día por él
@@ -121,7 +116,7 @@ def _anio_por_anio(base: str, hasta: str, al: dict, recortado: bool = False):
     a 365 días, como el «Por año» del diario de operaciones)."""
     cortes = []
     for k in range(1, len(ANIOS) + 1):
-        d = _primer_dia(hasta, k)
+        d = tecnico.primer_dia(hasta, k * tecnico.DIAS_ANIO)
         if d <= base:
             break
         cortes.append(d)
@@ -143,15 +138,17 @@ def _anio_por_anio(base: str, hasta: str, al: dict, recortado: bool = False):
                          for clave, f in al.items()}}
 
 
-def simular(activos: list, indices: dict, anios: int) -> dict:
+def simular(activos: list, indices: dict, anios: int, hoy: date) -> dict:
     """La simulación entera, sin base de datos (la usan la ruta y las pruebas).
+    `hoy`: el día argentino, contra el que se mide si un precio es viejo.
 
     `activos`: [{asset, local, peso, velas, ticker, convertida}]. Los pesos
     suman 100 con `TOLERANCIA` (33,33 × 3, lo controla la ruta) y acá se llevan a
     100 exacto: así la cartera arranca en US$ 100 y los «aportó» suman su
     resultado (auditoría 05/11, H5). `indices`: {clave: velas} de `INDICES`.
     {'disponible': False, 'motivo', 'faltan'} si no se puede: 'sin_serie' (un
-    activo sin precios), 'vieja' (un activo sin precios de la última semana) o
+    activo sin precios), 'vieja' (un activo sin precios de la última semana,
+    contada desde `hoy`; un activo solo también: auditoría 05/11, H9) o
     'poca_historia'. Un índice que falta no frena la cartera: va en `faltan`."""
     out = {"anios": anios, "moneda": "usd"}
     puntos = {a["asset"]: _puntos(a.get("velas") or []) for a in activos}
@@ -159,13 +156,13 @@ def simular(activos: list, indices: dict, anios: int) -> dict:
     if sin:
         return {**out, "disponible": False, "motivo": "sin_serie",
                 "faltan": [{"asset": s, "motivo": "sin_serie"} for s in sin]}
-    hasta = max(p[-1][0] for p in puntos.values())
-    viejas = [s for s, p in puntos.items() if comparar._dias(p[-1][0], hasta) > comparar.DIAS_VIEJA]
+    viejas = [s for s, p in puntos.items() if tecnico.es_vieja(p[-1][0], hoy)]
     if viejas:
         return {**out, "disponible": False, "motivo": "vieja",
                 "faltan": [{"asset": s, "motivo": "vieja", "hasta": puntos[s][-1][0]} for s in viejas]}
 
-    pedido = _primer_dia(hasta, anios)
+    hasta = max(p[-1][0] for p in puntos.values())
+    pedido = tecnico.primer_dia(hasta, anios * tecnico.DIAS_ANIO)
     primeras = {s: p[0][0] for s, p in puntos.items()}
     ultimo_en_llegar = max(primeras, key=lambda s: (primeras[s], s))
     # El primer día, con LA regla de Comparar (`comparar.dia_del_cien`): el primero
@@ -173,7 +170,7 @@ def simular(activos: list, indices: dict, anios: int) -> dict:
     # años, el lunes después de un sábado), ése. Un índice sin su historia no corre
     # nada: queda afuera, en `faltan`.
     de_los_indices = {clave: _puntos(indices.get(clave) or []) for clave, _, _ in INDICES}
-    base, de_los_activos = comparar.dia_del_cien(pedido, list(puntos.values()), list(de_los_indices.values()), hasta)
+    base, de_los_activos = comparar.dia_del_cien(pedido, list(puntos.values()), list(de_los_indices.values()), hoy)
     recortado = comparar._dias(pedido, de_los_activos) > comparar.DIAS_MARGEN
     fechas = sorted({base} | {d for p in puntos.values() for d, _ in p if base < d <= hasta})
     out.update({"pedido_desde": pedido, "recortado": recortado,
@@ -201,7 +198,7 @@ def simular(activos: list, indices: dict, anios: int) -> dict:
         # Primero si quedó viejo, como Comparar: uno que dejó de llegar y además
         # empieza en el borde decía «todavía no tenemos la historia» en vez de «no
         # tenemos precios desde el…» (auditoría de código 06/11, 6).
-        if p and comparar._dias(p[-1][0], hasta) > comparar.DIAS_VIEJA:
+        if p and tecnico.es_vieja(p[-1][0], hoy):
             faltan.append({"clave": clave, "motivo": "vieja", "hasta": p[-1][0]})
             continue
         if not p or p[0][0] > base:
@@ -308,12 +305,13 @@ def de_hoy(car: dict) -> dict:
 
 
 @pesado
-def para_la_pantalla(conn, activos: list, anios: int) -> dict:
+def para_la_pantalla(conn, activos: list, anios: int, hoy: date) -> dict:
     """La simulación con LAS series de la ficha (`tecnico.serie`) y los índices que
-    se guardan todas las noches (`tecnico.indice`). `activos`: [(asset, local, peso)]."""
+    se guardan todas las noches (`tecnico.indice`). `activos`: [(asset, local, peso)].
+    `hoy`: el día argentino."""
     lista = []
     for asset, local, peso in activos:
         s = tecnico.serie(conn, asset, "usd", local)
         lista.append({"asset": asset, "local": bool(local), "peso": peso, "velas": s["velas"],
                       "ticker": s.get("ticker"), "convertida": s.get("convertida")})
-    return simular(lista, {clave: tecnico.indice(conn, simbolo) for clave, _, simbolo in INDICES}, anios)
+    return simular(lista, {clave: tecnico.indice(conn, simbolo) for clave, _, simbolo in INDICES}, anios, hoy)

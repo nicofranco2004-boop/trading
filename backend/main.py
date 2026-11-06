@@ -12768,8 +12768,10 @@ def get_tecnico_backtest(request: Request, asset: str, reglas: str = "media200",
     una acción argentina, su precio de BYMA ÷ MEP) y, si el activo no tiene
     velas, se bajan en el momento como en la ficha (`_velas_a_pedido`). Si no da,
     `disponible` es False y `motivo` dice por qué (los de la ficha, o
-    'poca_historia'). Las cuentas: backtest.py."""
+    'poca_historia', o 'vieja' sin precios de la última semana). Las cuentas:
+    backtest.py."""
     import backtest
+    from fechas import hoy_art_date
     sym = (asset or "").strip().upper()
     if not _SYMBOL_RE.match(sym):
         raise HTTPException(400, f"Símbolo inválido: {asset}")
@@ -12782,7 +12784,7 @@ def get_tecnico_backtest(request: Request, asset: str, reglas: str = "media200",
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         bajadas = _velas_a_pedido(conn, [(sym, bool(local))], uid)
         tickers, motivo = bajadas[sym]
-        res = backtest.para_la_pantalla(conn, sym, pedidas, anios, bool(local))
+        res = backtest.para_la_pantalla(conn, sym, pedidas, anios, bool(local), hoy=hoy_art_date())
         if not res.get("disponible"):
             res["motivo"] = (_motivo_de_la_bajada(bajadas, [sym]) or res.get("motivo")
                              or ("sin_serie" if not tickers else "sin_datos"))
@@ -12800,6 +12802,7 @@ def get_backtest_cartera(request: Request, activos: str, pesos: str, local: str 
     /api/tecnico/{asset}. Un activo que nadie sigue se baja en el momento, como en
     la ficha (`_velas_a_pedido`). Las cuentas: cartera_simulada.py."""
     import cartera_simulada as cs
+    from fechas import hoy_art_date
     lista = [s.strip().upper() for s in (activos or "").split(",") if s.strip()]
     locales = {s.strip().upper() for s in (local or "").split(",") if s.strip()}
     if not lista or len(lista) > cs.MAX_ACTIVOS or len(set(lista)) != len(lista):
@@ -12821,7 +12824,7 @@ def get_backtest_cartera(request: Request, activos: str, pesos: str, local: str 
         raise HTTPException(400, f"Período inválido: {anios} años")
     with _freno_tecnico(request, uid, "uno"), db_abierta() as conn:
         bajadas = _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid)
-        res = cs.para_la_pantalla(conn, [(s, s in locales, p) for s, p in zip(lista, ps)], anios)
+        res = cs.para_la_pantalla(conn, [(s, s in locales, p) for s, p in zip(lista, ps)], anios, hoy_art_date())
         if not res.get("disponible"):
             # Sin serie, o vieja, porque otra persona la está bajando o por el tope
             # de bajadas: lo dice la bajada a pedido, como en la ficha.
@@ -12953,6 +12956,7 @@ def get_comparar_precio(request: Request, activos: str, local: str = "", moneda:
             raise HTTPException(400, f"Símbolo inválido: {s}")
     moneda = "ars" if moneda == "ars" else "usd"
     hoy = hoy_art_date()
+    inicio, anios = None, None
     if plazo == "compra":
         if not desde or not _DATE_RE.match(desde):
             raise HTTPException(400, "Falta la fecha de tu primera compra")
@@ -12964,7 +12968,9 @@ def get_comparar_precio(request: Request, activos: str, local: str = "", moneda:
             raise HTTPException(400, "La fecha tiene que ser anterior a hoy")
         inicio = d.isoformat()
     elif plazo in comparar.PLAZOS:
-        inicio = comparar.desde_plazo(plazo, hoy)
+        # «1 año» y «3 años» terminan en el último precio de los activos, no hoy:
+        # el día lo elige comparar.comparar, que sabe cuál es (tecnico.primer_dia).
+        anios = comparar.PLAZOS[plazo]
     else:
         raise HTTPException(400, "Plazo inválido")
     # Hasta 4 series y la bajada a pedido: el freno de la ficha (`_freno_tecnico`,
@@ -12974,18 +12980,27 @@ def get_comparar_precio(request: Request, activos: str, local: str = "", moneda:
         bajadas = _velas_a_pedido(conn, [(s, s in locales) for s in lista], uid)
         motivos = {s: motivo or ("sin_serie" if not tickers else "sin_datos") for s, (tickers, motivo)
                    in bajadas.items()}
-        cer, basis = [], None
+        cer, basis = None, None
         if moneda == "ars":
             try:
                 basis = _serie_cer_o_uva(conn, "CER")
                 _ensure_index_cached(conn, basis)
-                cer = [(r["date"], float(r["value"])) for r in conn.execute(
-                    "SELECT date, value FROM bond_indices_daily WHERE index_name=? AND date >= "
-                    "COALESCE((SELECT MAX(date) FROM bond_indices_daily WHERE index_name=? AND date <= ?), ?) "
-                    "ORDER BY date", (basis, basis, inicio, inicio)).fetchall()]
+
+                def cer(dia):
+                    """El índice desde `dia` (y el último anterior, para el día del 100).
+                    Lo llama comparar.comparar cuando ya sabe el día: con «1 año»
+                    depende del último precio de los activos."""
+                    try:
+                        return [(r["date"], float(r["value"])) for r in conn.execute(
+                            "SELECT date, value FROM bond_indices_daily WHERE index_name=? AND date >= "
+                            "COALESCE((SELECT MAX(date) FROM bond_indices_daily WHERE index_name=? AND date <= ?), ?) "
+                            "ORDER BY date", (basis, basis, dia, dia)).fetchall()]
+                    except Exception as ex:   # sin la fuente, la vara no aparece y se dice
+                        log.warning("comparar: CER no disponible: %r", ex)
+                        return []
             except Exception as ex:   # sin la fuente, la vara no aparece y se dice
                 log.warning("comparar: CER no disponible: %r", ex)
-        res = comparar.comparar(conn, [(s, s in locales) for s in lista], moneda, inicio,
+        res = comparar.comparar(conn, [(s, s in locales) for s in lista], moneda, inicio, anios=anios,
                                 cer=cer, cer_basis=basis, hoy=hoy)
         for f in res["faltan"]:
             if f["clave"] in motivos and (f["motivo"] == "sin_datos"

@@ -41,7 +41,7 @@ va a pasar: acá van los números y las palabras las pone la pantalla
 from __future__ import annotations
 
 import math
-from datetime import date, timedelta
+from datetime import date
 
 import estructura
 import tecnico
@@ -204,18 +204,18 @@ def sin_la_mejor(ops: list):
 
 def ventana(velas: list, anios: int, desde_regla: int) -> dict:
     """De qué vela a qué vela se prueba: los últimos `anios` años contados por
-    CALENDARIO desde la última vela (como el resto de tecnico.py), y nunca antes
-    de que la regla exista (`desde_regla`). {'desde_i', 'hasta_i', 'pedido_i',
-    'pedido_desde', 'recortado'}: `recortado` si arranca después de lo pedido
-    porque la regla necesita días antes que el papel no tiene (toda regla necesita
-    al menos uno: un papel con menos historia que el período también cae acá)."""
+    CALENDARIO desde la última vela (`tecnico.primer_dia`, LA regla de la ficha,
+    Comparar y «Una cartera»), y nunca antes de que la regla exista
+    (`desde_regla`). {'desde_i', 'hasta_i', 'pedido_i', 'pedido_desde',
+    'recortado'}: `recortado` si arranca después de lo pedido porque la regla
+    necesita días antes que el papel no tiene (toda regla necesita al menos uno:
+    un papel con menos historia que el período también cae acá)."""
     hasta_i = len(velas) - 1
-    corte = date.fromisoformat(velas[-1]["date"]) - timedelta(days=anios * tecnico.DIAS_ANIO)
-    pedido_i = next((i for i, v in enumerate(velas) if v["date"] > corte.isoformat()), hasta_i)
+    pedido_desde = tecnico.primer_dia(velas[-1]["date"], anios * tecnico.DIAS_ANIO)
+    pedido_i = next((i for i, v in enumerate(velas) if v["date"] >= pedido_desde), hasta_i)
     desde_i = max(pedido_i, desde_regla)
     return {"desde_i": desde_i, "hasta_i": hasta_i, "pedido_i": pedido_i,
-            "pedido_desde": (corte + timedelta(days=1)).isoformat(),
-            "recortado": desde_i > pedido_i}
+            "pedido_desde": pedido_desde, "recortado": desde_i > pedido_i}
 
 
 def _resumen(curva: list) -> dict:
@@ -251,20 +251,26 @@ def velas_que_sirven(velas: list) -> list:
     return out
 
 
-def probar(velas: list, reglas: list, anios: int, comision: float = COMISION) -> dict:
+def probar(velas: list, reglas: list, anios: int, comision: float = COMISION, *, hoy: date) -> dict:
     """La prueba entera sobre `velas` (sin base de datos: la usan la pantalla y
     las pruebas), de 1 a `MAX_REGLAS` reglas en el orden pedido. Todas sobre los
     MISMOS días: desde que existe la que más historia necesita (`recorte_por`, si
     eso corrió el principio), así se comparan entre ellas y con comprar y
     mantener en el mismo período. Una regla da lo mismo sola que comparada si el
     período no se corre. {'disponible': False, 'motivo': 'poca_historia', ...} si
-    no da para probar. `variacion_precio`: cuánto se movió el precio en el
+    no da para probar, y 'vieja' si no tiene precios de la última semana contada
+    desde `hoy` (`tecnico.es_vieja`: un papel que dejó de cotizar se probaba en
+    «los últimos 2 años» terminados hace meses, sin avisar; auditoría de «Una
+    cartera» 05/11, H9). `variacion_precio`: cuánto se movió el precio en el
     período (de la apertura del primer día al último cierre), sin comisiones: lo
     que la pantalla dice que «subió» o «bajó» el papel."""
     reglas = list(reglas)
     velas = velas_que_sirven(velas)
     if not velas:
         return {"reglas": reglas, "anios": anios, "disponible": False, "motivo": "poca_historia"}
+    if tecnico.es_vieja(velas[-1]["date"], hoy):
+        return {"reglas": reglas, "anios": anios, "disponible": False, "motivo": "vieja",
+                "hasta": velas[-1]["date"]}
     s = {r: senales(velas, r) for r in reglas}
     limita = max(reglas, key=lambda r: s[r]["desde"])
     v = ventana(velas, anios, s[limita]["desde"])
@@ -311,12 +317,15 @@ def _resultado(regla: str, sim: dict) -> dict:
 
 
 @pesado
-def para_la_pantalla(conn, asset: str, reglas: list, anios: int, local: bool = False) -> dict:
+def para_la_pantalla(conn, asset: str, reglas: list, anios: int, local: bool = False, *,
+                     hoy: date) -> dict:
     """La prueba de `asset` con la serie en dólares de la ficha (`tecnico.serie`:
     la acción de afuera de un CEDEAR; una acción argentina, `local`, con su precio
-    de BYMA ÷ el MEP de cada día). {'disponible': False} sin velas."""
+    de BYMA ÷ el MEP de cada día). {'disponible': False} sin velas. `hoy`: el día
+    argentino."""
     s = tecnico.serie(conn, asset, "usd", local)
     out = {"asset": (asset or "").upper(), "moneda": "usd", "reglas": list(reglas), "anios": anios}
     if not s["velas"]:
         return {**out, "disponible": False}
-    return {**out, "ticker": s["ticker"], "convertida": s["convertida"], **probar(s["velas"], reglas, anios)}
+    return {**out, "ticker": s["ticker"], "convertida": s["convertida"],
+            **probar(s["velas"], reglas, anios, hoy=hoy)}

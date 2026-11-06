@@ -47,8 +47,18 @@ from pesado import pesado
 from velas_diarias import DIAS_GUARDADOS, SP500
 
 # Todo lo que es "un año" o "un mes" se corta por FECHA (días corridos), no por
-# cantidad de velas: una cripto cotiza los 7 días y la bolsa 5.
+# cantidad de velas: una cripto cotiza los 7 días y la bolsa 5. Desde el último
+# precio, no desde hoy: `primer_dia`.
 DIAS_ANIO = 365
+# Una línea sin precios de la última semana, contada desde HOY, ya no dice «hoy»:
+# un activo que dejó de cotizar, un índice que la fuente dejó de mandar. `es_vieja`.
+# El cierre más largo de BYMA (Semana Santa con el 2 de abril, 2024) fue de 6 días
+# sin rueda: el día que reabre, el último precio tiene 7 días y todavía entra; el
+# siguiente, entre la medianoche y la corrida de la noche (que guarda el cierre
+# después de las 23:59), tiene 8 y una acción argentina sale «vieja» ese rato
+# (auditoría 06/11, H3). Las pantallas de la Cartera, Tu lista, el mail de los
+# sábados y el termómetro tienen su propio margen, de 10 días (no unificado).
+DIAS_VIEJA = 7
 # Lo que se manda a la pantalla: TODO lo que se guarda (5 años de calendario),
 # para poder arrastrar el gráfico hasta el principio (Nico, 22/10: «no deja ir
 # más atrás»). Los botones 3M/1A/2A eligen qué parte se ve de entrada. La media
@@ -477,16 +487,41 @@ def _pct(a, b):
     return (a / b - 1.0) * 100.0 if (a is not None and b) else None
 
 
+def primer_dia(ultimo: str, dias: int) -> str:
+    """LA regla de «los últimos `dias` días»: el primero de los `dias` días
+    CORRIDOS que terminan en `ultimo`, el último precio (no hoy). «1 año» (365)
+    arranca el mismo día de la semana que el último precio, 52 semanas antes.
+
+    Desde el último precio y no desde hoy (Nico, 06/11/2026): contando desde hoy,
+    un domingo, un lunes o el día después de un feriado el año arrancaba otro día
+    que en la ficha, y Comparar daba otro número que el Backtesting para el mismo
+    activo (MU en Pascua de 2026: +465,9 % contra +392,7 %; con «3 años», todos
+    los domingos y lunes; auditoría de «Una cartera» 05/11, H4). La usan la ficha
+    (`_desde_dias`, `_en_maximo`, el resumen ✦), Comparar, el Backtesting de una
+    regla y «Una cartera»."""
+    return (date.fromisoformat(ultimo) - timedelta(days=dias - 1)).isoformat()
+
+
+def es_vieja(ultimo: str, hoy: date) -> bool:
+    """¿Una línea sin precios de la última semana (`DIAS_VIEJA`), contada desde
+    `hoy`, el día argentino? Contada desde el activo más nuevo, un activo solo que
+    dejó de cotizar hace dos meses se mostraba igual, con «el último año»
+    terminando hace dos meses y sin avisar (auditoría de «Una cartera» 05/11, H9).
+    La usan Comparar, el Backtesting de una regla y «Una cartera»."""
+    return (hoy - date.fromisoformat(ultimo)).days > DIAS_VIEJA
+
+
 def _desde_dias(velas: list, dias: int) -> int:
-    """Índice de la primera vela de los últimos `dias` días CORRIDOS. Se corta
-    por fecha, no por cantidad: 252 velas son un año de bolsa pero 8 meses de
-    una cripto, que cotiza los 7 días (auditoría 22/10: Bitcoin "3,8 % abajo
-    del máximo del año" cuando estaba 27,7 % abajo)."""
+    """Índice de la primera vela de los últimos `dias` días CORRIDOS hasta la
+    última vela (`primer_dia`). Se corta por fecha, no por cantidad: 252 velas
+    son un año de bolsa pero 8 meses de una cripto, que cotiza los 7 días
+    (auditoría 22/10: Bitcoin "3,8 % abajo del máximo del año" cuando estaba
+    27,7 % abajo)."""
     if not velas:
         return 0
-    piso = (date.fromisoformat(velas[-1]["date"]) - timedelta(days=dias)).isoformat()
+    desde = primer_dia(velas[-1]["date"], dias)
     for i, v in enumerate(velas):
-        if v["date"] > piso:
+        if v["date"] >= desde:
             return i
     return len(velas)
 
@@ -1150,10 +1185,10 @@ def _da_vuelta(velas: list, nuevas: list) -> list:
                         "dist": round(dist, 2)})
     # El máximo del año, de cierre contra cierre y en días corridos, como la lectura.
     fechas = [v["date"] for v in velas] + [n["d"] for n in nuevas]
-    piso_cierre = (date.fromisoformat(fechas[len(cierres) - 1]) - timedelta(days=DIAS_ANIO)).isoformat()
-    piso_hoy = (date.fromisoformat(fechas[-1]) - timedelta(days=DIAS_ANIO)).isoformat()
-    max_cierre = max(c for f, c in zip(fechas, cierres) if f > piso_cierre)
-    antes_de_hoy = [c for f, c in zip(fechas[:-1], todos[:-1]) if f > piso_hoy]
+    desde_cierre = primer_dia(fechas[len(cierres) - 1], DIAS_ANIO)
+    desde_hoy = primer_dia(fechas[-1], DIAS_ANIO)
+    max_cierre = max(c for f, c in zip(fechas, cierres) if f >= desde_cierre)
+    antes_de_hoy = [c for f, c in zip(fechas[:-1], todos[:-1]) if f >= desde_hoy]
     if antes_de_hoy and ultimo < max_cierre * (1 - TOLERANCIA_MAXIMO):
         dist = _pct(hoy, max(antes_de_hoy))
         if dist >= MARGEN_HOY:
@@ -1503,13 +1538,11 @@ def _en_maximo(velas: list, cierres: list, desde_i: int) -> dict:
     if not velas:
         return out
     j = 0
-    primera = date.fromisoformat(velas[0]["date"])
     for i in range(max(0, desde_i), len(velas)):
-        piso = date.fromisoformat(velas[i]["date"]) - timedelta(days=DIAS_ANIO)
-        if primera > piso:
+        desde = primer_dia(velas[i]["date"], DIAS_ANIO)
+        if velas[0]["date"] >= desde:
             continue
-        piso_iso = piso.isoformat()
-        while velas[j]["date"] <= piso_iso:
+        while velas[j]["date"] < desde:
             j += 1
         out[i] = cierres[i] >= max(cierres[j:i + 1]) * (1 - TOLERANCIA_MAXIMO)
     return out

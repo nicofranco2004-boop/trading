@@ -37,6 +37,9 @@ from tests.test_tecnico import YahooFalso, _ruedas
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 FIN = date(2026, 10, 30)
+# El día siguiente al último precio de `_habiles`: «hoy», contra el que se mide si un
+# precio es viejo (`tecnico.es_vieja`).
+HOY = FIN + timedelta(days=1)
 
 
 def _habiles(n: int, f, fin: date = FIN) -> list:
@@ -103,7 +106,7 @@ class Cuentas(unittest.TestCase):
     def test_dos_activos_cada_uno_por_su_peso_y_sin_tocarla(self):
         a = _habiles(800, lambda i: 100 + i * 0.25)     # sube
         b = _habiles(800, lambda i: 50.0)               # quieto
-        r = cs.simular([_activo("A", 60, a), _activo("B", 40, b)], _indices(), 1)
+        r = cs.simular([_activo("A", 60, a), _activo("B", 40, b)], _indices(), 1, HOY)
         self.assertTrue(r["disponible"], r)
         base = next(v for v in a if v["date"] >= r["desde"])["close"]
         va = a[-1]["close"] / base * 100
@@ -130,7 +133,7 @@ class Cuentas(unittest.TestCase):
             precio *= 1 + rnd.gauss(0, 0.02)
             cierres.append(precio)
         a = _habiles(900, lambda i: cierres[i])
-        r = cs.simular([_activo("A", 100, a)], _indices(), 2)
+        r = cs.simular([_activo("A", 100, a)], _indices(), 2, HOY)
         canonico = comparar.base_cien([(v["date"], v["close"]) for v in a], r["desde"])
         self.assertEqual([p["d"] for p in r["curva"]], [p["d"] for p in canonico])
         for p, c in zip(r["curva"], canonico):
@@ -139,7 +142,7 @@ class Cuentas(unittest.TestCase):
     def test_los_dias_son_los_de_cualquier_activo_y_el_que_no_cotizo_vale_su_ultimo_cierre(self):
         accion = _habiles(800, lambda i: 100 + i)
         cripto = _todos(1100, lambda i: 30000 + 50 * i)
-        r = cs.simular([_activo("ACC", 50, accion), _activo("BTC", 50, cripto)], _indices(), 1)
+        r = cs.simular([_activo("ACC", 50, accion), _activo("BTC", 50, cripto)], _indices(), 1, HOY)
         sabados = [p for p in r["curva"] if date.fromisoformat(p["d"]).weekday() == 5]
         self.assertTrue(sabados, "con una cripto en la cartera, también los fines de semana")
         sab = sabados[-1]
@@ -157,33 +160,33 @@ class Cuentas(unittest.TestCase):
     def test_arranca_cuando_existe_el_ultimo_en_llegar_y_lo_dice(self):
         viejo = _habiles(800, lambda i: 100 + i)
         nuevo = _habiles(150, lambda i: 20 + i * 0.1)        # cotiza hace ~7 meses
-        r = cs.simular([_activo("VIEJO", 50, viejo), _activo("NUEVO", 50, nuevo)], _indices(), 1)
+        r = cs.simular([_activo("VIEJO", 50, viejo), _activo("NUEVO", 50, nuevo)], _indices(), 1, HOY)
         self.assertTrue(r["disponible"], r)
         self.assertEqual((r["recortado"], r["recorte_por"], r["desde"]), (True, "NUEVO", nuevo[0]["date"]))
         # Unos días después del pedido no es un recorte (el borde de lo guardado).
         casi = _habiles(258, lambda i: 20 + i * 0.1)
-        r2 = cs.simular([_activo("VIEJO", 50, viejo), _activo("CASI", 50, casi)], _indices(), 1)
+        r2 = cs.simular([_activo("VIEJO", 50, viejo), _activo("CASI", 50, casi)], _indices(), 1, HOY)
         self.assertLessEqual(comparar._dias(r2["pedido_desde"], r2["desde"]), comparar.DIAS_MARGEN)
         self.assertEqual((r2["recortado"], r2["recorte_por"]), (False, None))
 
     def test_un_activo_sin_precios_de_la_ultima_semana_no_se_simula(self):
         al_dia = _habiles(800, lambda i: 100 + i)
         parado = _habiles(800, lambda i: 100 + i, fin=FIN - timedelta(days=12))
-        r = cs.simular([_activo("AL_DIA", 50, al_dia), _activo("PARADO", 50, parado)], _indices(), 1)
+        r = cs.simular([_activo("AL_DIA", 50, al_dia), _activo("PARADO", 50, parado)], _indices(), 1, HOY)
         self.assertEqual((r["disponible"], r["motivo"]), (False, "vieja"))
         self.assertEqual(r["faltan"], [{"asset": "PARADO", "motivo": "vieja", "hasta": parado[-1]["date"]}])
 
     def test_sin_precios_o_con_poca_historia(self):
-        r = cs.simular([_activo("A", 50, _habiles(800, lambda i: 100.0)), _activo("FCI", 50, [])], _indices(), 1)
+        r = cs.simular([_activo("A", 50, _habiles(800, lambda i: 100.0)), _activo("FCI", 50, [])], _indices(), 1, HOY)
         self.assertEqual((r["disponible"], r["motivo"], r["faltan"]),
                          (False, "sin_serie", [{"asset": "FCI", "motivo": "sin_serie"}]))
         r = cs.simular([_activo("A", 50, _habiles(800, lambda i: 100.0)),
-                        _activo("NUEVITO", 50, _habiles(20, lambda i: 10.0))], _indices(), 1)
+                        _activo("NUEVITO", 50, _habiles(20, lambda i: 10.0))], _indices(), 1, HOY)
         self.assertEqual((r["disponible"], r["motivo"], r["recorte_por"]), (False, "poca_historia", "NUEVITO"))
         # Con pocas ruedas SIN recorte (una acción poco negociada, una vela por
         # semana) no hay a quién culpar de «cotiza hace muy poco» (auditoría 05/11, H10).
         semanal = [v for k, v in enumerate(_habiles(600, lambda i: 10.0)) if k % 5 == 0]
-        r = cs.simular([_activo("SUELTA", 100, semanal)], _indices(), 1)
+        r = cs.simular([_activo("SUELTA", 100, semanal)], _indices(), 1, HOY)
         self.assertEqual((r["disponible"], r["motivo"], r["recortado"], r["recorte_por"]),
                          (False, "poca_historia", False, None))
 
@@ -193,7 +196,7 @@ class Cuentas(unittest.TestCase):
         a = _habiles(300, lambda i: 100 + i * 0.2)
         b = _habiles(300, lambda i: 50 + i * 0.05)
         c = _habiles(300, lambda i: 80 - i * 0.03)
-        r = cs.simular([_activo("A", 33.33, a), _activo("B", 33.33, b), _activo("C", 33.33, c)], _indices(), 1)
+        r = cs.simular([_activo("A", 33.33, a), _activo("B", 33.33, b), _activo("C", 33.33, c)], _indices(), 1, HOY)
         self.assertTrue(r["disponible"], r)
         self.assertEqual(r["curva"][0]["cartera"], 100.0)
         self.assertAlmostEqual(sum(x["aporte"] for x in r["activos"]), r["cartera"]["resultado"], places=9)
@@ -202,7 +205,7 @@ class Cuentas(unittest.TestCase):
 
     def test_los_indices_al_lado_y_el_que_falta_no_frena_la_cartera(self):
         a = _habiles(800, lambda i: 100 + i)
-        r = cs.simular([_activo("A", 100, a)], _indices(nq=[]), 2)
+        r = cs.simular([_activo("A", 100, a)], _indices(nq=[]), 2, HOY)
         self.assertTrue(r["disponible"], r)
         self.assertEqual([x["clave"] for x in r["indices"]], ["sp500"])
         self.assertEqual(r["faltan"], [{"clave": "nasdaq", "motivo": "sin_datos"}])
@@ -211,7 +214,7 @@ class Cuentas(unittest.TestCase):
         base = next(v for v in sp if v["date"] >= r["desde"])["close"]
         self.assertAlmostEqual(r["indices"][0]["resultado"], (sp[-1]["close"] / base - 1) * 100, places=2)
         # Un índice que dejó de actualizarse no se muestra como si fuera hoy.
-        r = cs.simular([_activo("A", 100, a)], _indices(nq=_habiles(800, lambda i: 1.0, fin=FIN - timedelta(days=20))), 1)
+        r = cs.simular([_activo("A", 100, a)], _indices(nq=_habiles(800, lambda i: 1.0, fin=FIN - timedelta(days=20))), 1, HOY)
         self.assertEqual([f["motivo"] for f in r["faltan"]], ["vieja"])
 
     def test_cinco_anios_con_el_primer_dia_en_un_fin_de_semana(self):
@@ -227,7 +230,7 @@ class Cuentas(unittest.TestCase):
         idx = {c: [v for v in _habiles(1400, f, fin=fin) if v["date"] > pedido]
                for c, f in (("sp500", lambda i: 4000 + i), ("nasdaq", lambda i: 12000 + 5 * i))}
         lunes = idx["sp500"][0]["date"]
-        r = cs.simular([_activo("BTC", 100, cripto)], idx, 5)
+        r = cs.simular([_activo("BTC", 100, cripto)], idx, 5, fin + timedelta(days=1))
         self.assertTrue(r["disponible"], r)
         self.assertEqual(r["faltan"], [])
         self.assertEqual([x["clave"] for x in r["indices"]], ["sp500", "nasdaq"])
@@ -236,17 +239,17 @@ class Cuentas(unittest.TestCase):
         # Uno que empieza más de una semana después (no se bajó su historia) sigue
         # afuera y no corre el primer día de la cartera.
         diez = (date.fromisoformat(pedido) + timedelta(days=10)).isoformat()
-        r = cs.simular([_activo("BTC", 100, cripto)], {**idx, "nasdaq": [v for v in idx["nasdaq"] if v["date"] > diez]}, 5)
+        r = cs.simular([_activo("BTC", 100, cripto)], {**idx, "nasdaq": [v for v in idx["nasdaq"] if v["date"] > diez]}, 5, fin + timedelta(days=1))
         self.assertEqual(r["faltan"], [{"clave": "nasdaq", "motivo": "sin_datos"}])
         self.assertEqual((r["desde"], r["recortado"]), (lunes, False))
         # Con el lunes feriado en Nueva York, el martes: la semana de margen no es un día.
         martes = [v for v in idx["sp500"] if v["date"] > lunes]
-        r = cs.simular([_activo("BTC", 100, cripto)], {"sp500": martes, "nasdaq": martes}, 5)
+        r = cs.simular([_activo("BTC", 100, cripto)], {"sp500": martes, "nasdaq": martes}, 5, fin + timedelta(days=1))
         self.assertEqual((r["desde"], r["faltan"]), (martes[0]["date"], []))
         # Uno que dejó de llegar no corre el primer día, aunque empiece después que el
         # otro: queda afuera, «sin precios desde el…» (auditoría de código 06/11, 3 y 6).
         viejo = [v for v in idx["sp500"] if martes[0]["date"] <= v["date"] <= (fin - timedelta(days=20)).isoformat()]
-        r = cs.simular([_activo("BTC", 100, cripto)], {"sp500": viejo, "nasdaq": idx["nasdaq"]}, 5)
+        r = cs.simular([_activo("BTC", 100, cripto)], {"sp500": viejo, "nasdaq": idx["nasdaq"]}, 5, fin + timedelta(days=1))
         self.assertEqual(r["desde"], lunes)
         self.assertEqual(r["faltan"], [{"clave": "sp500", "motivo": "vieja", "hasta": viejo[-1]["date"]}])
 
@@ -256,7 +259,7 @@ class Cuentas(unittest.TestCase):
         # primer día vale 100 por construcción; auditoría de las pruebas 05/11, B11.)
         cierres = [100, 80, 90, 120] + [120] * 196
         a = _habiles(len(cierres), lambda i: float(cierres[i]))
-        r = cs.simular([_activo("A", 100, a)], _indices(), 1)
+        r = cs.simular([_activo("A", 100, a)], _indices(), 1, HOY)
         self.assertEqual((r["desde"], r["recortado"]), (a[0]["date"], True))
         self.assertAlmostEqual(r["cartera"]["peor_caida"], -20.0, places=6)
         self.assertAlmostEqual(r["cartera"]["resultado"], 20.0, places=6)
@@ -270,12 +273,12 @@ class AnioPorAnio(unittest.TestCase):
         sube = _habiles(800, lambda i: 100 + 30 * math.sin(i / 50) + i * 0.1)
         baja = _habiles(800, lambda i: 80 - i * 0.02 + 5 * math.sin(i / 30))
         return cs.simular(activos or [_activo("SUBE", 60, sube), _activo("BAJA", 40, baja)],
-                          indices if indices is not None else _indices(), anios)
+                          indices if indices is not None else _indices(), anios, HOY)
 
     def test_cada_anio_es_el_de_la_regla_del_periodo_y_juntos_dan_el_total(self):
         r = self._cartera()
         apa, hasta = r["anio_por_anio"], r["hasta"]
-        uno, dos = cs._primer_dia(hasta, 1), cs._primer_dia(hasta, 2)
+        uno, dos = tecnico.primer_dia(hasta, tecnico.DIAS_ANIO), tecnico.primer_dia(hasta, 2 * tecnico.DIAS_ANIO)
         self.assertEqual([(t["desde"], t["hasta"]) for t in apa["tramos"]],
                          [(r["desde"], dos), (dos, uno), (uno, hasta)])
         self.assertTrue(all(t["completo"] for t in apa["tramos"]))
@@ -314,7 +317,7 @@ class AnioPorAnio(unittest.TestCase):
 
     def test_lo_de_antes_del_primer_anio_entero(self):
         hasta = FIN.isoformat()
-        uno, dos = cs._primer_dia(hasta, 1), cs._primer_dia(hasta, 2)
+        uno, dos = tecnico.primer_dia(hasta, tecnico.DIAS_ANIO), tecnico.primer_dia(hasta, 2 * tecnico.DIAS_ANIO)
         nueva = lambda desde: [_activo("NUEVA", 100, [v for v in _habiles(800, lambda i: 10 + i * 0.01) if v["date"] >= desde])]
         # Cotiza hace un año y siete meses: un tramo corto, con sus días, y un año entero.
         r = self._cartera(activos=nueva((FIN - timedelta(days=580)).isoformat()))
@@ -332,8 +335,8 @@ class AnioPorAnio(unittest.TestCase):
 
     # Las que siguen las propuso la auditoría de las pruebas de «Año por año» (06/11):
     # cada una da rojo con su copia rota de cartera_simulada.py, y las de arriba
-    # quedaban en verde. Con fechas escritas, no con `_primer_dia`: si LA regla del
-    # período se corre un día, lo esperado no se corre con ella.
+    # quedaban en verde. Con fechas escritas, no con `tecnico.primer_dia`: si LA regla
+    # del período se corre un día, lo esperado no se corre con ella.
 
     def test_un_activo_que_llega_unos_dias_despues_no_achica_el_primer_anio(self):
         # Hasta una semana después de lo pedido no es un recorte (`comparar.DIAS_MARGEN`):
@@ -365,7 +368,8 @@ class AnioPorAnio(unittest.TestCase):
         baja = _habiles(800, lambda i: 80 - i * 0.02 + 5 * math.sin(i / 30), fin=lunes)
         indices = {"sp500": _habiles(800, lambda i: 4000 + i, fin=lunes),
                    "nasdaq": _habiles(800, lambda i: 12000 + 5 * i, fin=lunes)}
-        simular = lambda anios: cs.simular([_activo("SUBE", 60, sube), _activo("BAJA", 40, baja)], indices, anios)
+        simular = lambda anios: cs.simular([_activo("SUBE", 60, sube), _activo("BAJA", 40, baja)], indices, anios,
+                                           lunes + timedelta(days=1))
         r = simular(3)
         tramos = r["anio_por_anio"]["tramos"]
         self.assertEqual([t["desde"] for t in tramos], ["2023-11-04", "2024-11-03", "2025-11-03"])  # sábado, domingo, lunes
@@ -397,12 +401,12 @@ class AnioPorAnio(unittest.TestCase):
         # 7 días después de él (corren el primer día): el primer año dura menos de 358
         # días. Salía «12 meses» debajo de «Los 2 años» (auditoría de método 06/11, H2).
         hasta = FIN.isoformat()
-        pedido = date.fromisoformat(cs._primer_dia(hasta, 2))
+        pedido = date.fromisoformat(tecnico.primer_dia(hasta, 2 * tecnico.DIAS_ANIO))
         desde_idx = next(d for d in (pedido + timedelta(days=12 + k) for k in range(3)) if d.weekday() < 5)
         activo = [v for v in _todos(900, lambda i: 100 + i * 0.1) if v["date"] >= (desde_idx - timedelta(days=7)).isoformat()]
         idx = {c: [v for v in _habiles(800, f) if v["date"] >= desde_idx.isoformat()]
                for c, f in (("sp500", lambda i: 4000 + i), ("nasdaq", lambda i: 12000 + 5 * i))}
-        r = cs.simular([_activo("A", 100, activo)], idx, 2)
+        r = cs.simular([_activo("A", 100, activo)], idx, 2, HOY)
         self.assertEqual((r["recortado"], r["desde"], r["faltan"]), (False, desde_idx.isoformat(), []))
         t = r["anio_por_anio"]["tramos"]
         self.assertLess(t[0]["dias"], tecnico.DIAS_ANIO - comparar.DIAS_MARGEN)
@@ -410,7 +414,7 @@ class AnioPorAnio(unittest.TestCase):
 
     def test_con_recorte_un_anio_entero_es_desde_358_dias(self):
         hasta = FIN.isoformat()
-        dos = date.fromisoformat(cs._primer_dia(hasta, 2))
+        dos = date.fromisoformat(tecnico.primer_dia(hasta, 2 * tecnico.DIAS_ANIO))
         for dias, completo in ((358, True), (357, False)):
             with self.subTest(dias=dias):
                 desde = (dos - timedelta(days=dias)).isoformat()
@@ -424,12 +428,12 @@ class AnioPorAnio(unittest.TestCase):
         # Con el redondeo de `comparar.base_cien` (4 decimales) vale 0 justo en el corte:
         # el año que arranca ahí queda vacío. Dividía por cero y la ruta contestaba un
         # error (auditoría de método 06/11, H1).
-        corte = cs._primer_dia(FIN.isoformat(), 1)
+        corte = tecnico.primer_dia(FIN.isoformat(), tecnico.DIAS_ANIO)
         cerca = (date.fromisoformat(corte) - timedelta(days=6)).isoformat()
         velas = [{**v, **dict.fromkeys(("open", "high", "low", "close"),
                                        1e-5 if cerca <= v["date"] <= corte else 50.0 if v["date"] > corte else 100.0)}
                  for v in _habiles(800, lambda i: 100.0)]
-        r = cs.simular([_activo("A", 100, velas)], _indices(), 2)
+        r = cs.simular([_activo("A", 100, velas)], _indices(), 2, HOY)
         self.assertTrue(r["disponible"], r)
         t = r["anio_por_anio"]["tramos"]
         self.assertEqual([x["hasta"] for x in t], [corte, r["hasta"]])
@@ -521,20 +525,20 @@ def _casos_de_la_pantalla():
     nq = _habiles(800, lambda i: 13000 + i * 6 + 500 * math.sin(i / 55))
     activos = [_activo("AAPL", 50, sube), _activo("GGAL", 30, baja, local=True), _activo("BTC", 20, cripto)]
     casos = {
-        "tres": cs.simular(activos, {"sp500": sp, "nasdaq": nq}, 2),
-        "sin_nasdaq": cs.simular(activos, {"sp500": sp, "nasdaq": []}, 2),
+        "tres": cs.simular(activos, {"sp500": sp, "nasdaq": nq}, 2, HOY),
+        "sin_nasdaq": cs.simular(activos, {"sp500": sp, "nasdaq": []}, 2, HOY),
         "recortada": cs.simular(activos[:2] + [_activo("NUEVA", 20, _habiles(200, lambda i: 10 + i * 0.05))],
-                                {"sp500": sp, "nasdaq": nq}, 2),
+                                {"sp500": sp, "nasdaq": nq}, 2, HOY),
         "vieja": cs.simular(activos[:2] + [_activo("PARADA", 20, _habiles(800, lambda i: 5.0, fin=FIN - timedelta(days=30)))],
-                            {"sp500": sp, "nasdaq": nq}, 2),
+                            {"sp500": sp, "nasdaq": nq}, 2, HOY),
         # Todos restan: la pantalla nombra al que MÁS restó (auditoría de las pruebas, F9).
         "todos_restan": cs.simular([_activo("BAJA1", 60, _habiles(800, lambda i: 50 - i * 0.004)),
                                     _activo("BAJA2", 40, _habiles(800, lambda i: 100 - i * 0.04))],
-                                   {"sp500": sp, "nasdaq": nq}, 1),
+                                   {"sp500": sp, "nasdaq": nq}, 1, HOY),
         # «Año por año»: tres años enteros, y uno que arranca con un tramo corto.
-        "tres_anios": cs.simular(activos, {"sp500": sp, "nasdaq": nq}, 3),
+        "tres_anios": cs.simular(activos, {"sp500": sp, "nasdaq": nq}, 3, HOY),
         "tramo_corto": cs.simular(activos[:2] + [_activo("NUEVA", 20, _habiles(420, lambda i: 10 + i * 0.02))],
-                                  {"sp500": sp, "nasdaq": nq}, 3),
+                                  {"sp500": sp, "nasdaq": nq}, 3, HOY),
     }
     for r in casos.values():
         r.pop("curva", None)
@@ -810,7 +814,7 @@ class Ruta(unittest.TestCase):
             esperado = cs.simular(
                 [{"asset": s, "local": False, "peso": p, "velas": tecnico.serie(conn, s, "usd")["velas"],
                   "ticker": s, "convertida": None} for s, p in (("AAPL", 60.0), ("MSFT", 40.0))],
-                {c: tecnico.indice(conn, t) for c, _, t in cs.INDICES}, 2)
+                {c: tecnico.indice(conn, t) for c, _, t in cs.INDICES}, 2, hoy_art_date())
         self.assertEqual(res, json.loads(json.dumps(esperado)))
         self.assertEqual([x["clave"] for x in res["indices"]], ["sp500", "nasdaq"])
         self.assertEqual(res["faltan"], [])
@@ -839,7 +843,7 @@ class Ruta(unittest.TestCase):
         # corte de un año: con el MEP de otro día (el de antes o el de después), ese
         # año daría ±30 % (auditoría de método 06/11, H5).
         ruedas = _ruedas(self.hoy, 760)
-        borde = max(r for r in ruedas if r <= date.fromisoformat(cs._primer_dia(ruedas[-1].isoformat(), 1)))
+        borde = max(r for r in ruedas if r <= date.fromisoformat(tecnico.primer_dia(ruedas[-1].isoformat(), tecnico.DIAS_ANIO)))
         inflacion = lambda d: 1.04 ** ((d - ruedas[0]).days / 30) * (1.3 if d >= borde else 1.0)
         with main.db_abierta() as conn:
             conn.execute("DELETE FROM fx_rates_daily")
