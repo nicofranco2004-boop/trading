@@ -49,9 +49,13 @@ export const FAQS = [
   {
     q: '¿Qué hacen con mis datos? ¿Puedo borrar mi cuenta?',
     // Decía "no los compartimos con terceros" a secas, y Privacidad §5 lista a
-    // quién sí le llegan (Anthropic, OpenAI, Rebill, Resend, el hosting): la
-    // promesa verdadera es "con fines comerciales", la misma de Privacidad.
-    a: 'Tus datos son tuyos y los usamos solo para prestarte el servicio: no los vendemos ni los compartimos con terceros con fines comerciales. Para que Rendi funcione, algunos proveedores los procesan por cuenta nuestra —el servidor donde se guardan, el proveedor de IA que usa Mervall-E AI—, y están todos listados en la Política de Privacidad. Las posiciones y montos que cargás viajan encriptados (HTTPS). Podés pedir la baja de tu cuenta y el borrado de tus datos cuando quieras escribiéndonos a hola@rendi.finance.',
+    // quién sí le llegan (Anthropic, OpenAI, Rebill, Resend, el hosting). Después
+    // decía "los usamos solo para prestarte el servicio… ni con fines
+    // comerciales", y Rendi mide las visitas con Google Analytics y el píxel de
+    // Meta y puede pasarle a Meta la lista de mails para sus anuncios
+    // (06/11/2026): la promesa verdadera es sobre los datos de la CARTERA, la
+    // misma de Privacidad (resumen, §5 y §12).
+    a: 'Tus datos son tuyos. Los de tu cartera (posiciones, montos, operaciones) los usamos sólo para prestarte el servicio: no los vendemos ni los usamos para publicidad. Para que Rendi funcione, algunos proveedores los procesan por cuenta nuestra —el servidor donde se guardan, el proveedor de IA que usa Mervall-E AI—. Aparte, medimos las visitas y nuestros anuncios con Google Analytics y el píxel de Meta, y podemos mostrarles anuncios de Rendi en Facebook e Instagram a quienes ya tienen cuenta (te podés dar de baja). Todo está detallado en la Política de Privacidad. Las posiciones y montos que cargás viajan encriptados (HTTPS). Podés pedir la baja de tu cuenta y el borrado de tus datos cuando quieras escribiéndonos a hola@rendi.finance.',
   },
   {
     q: '¿Rendi funciona con Cocos Capital, IOL, Balanz, Schwab y Binance?',
