@@ -311,6 +311,30 @@ describe('Backtesting → Una cartera', () => {
     expect(montado.t()).toContain('Todavía no tenemos la historia del Nasdaq para compararla.')
     expect(new Set(dibujado.lineas)).toEqual(new Set(['cartera', 'sp500']))
   })
+
+  it('año por año: el total abierto en años, entre la respuesta y el gráfico, y al final quién ganó más años', async () => {
+    // Nico, 06/11: el total esconde si fue parejo o si un año lo explica casi todo.
+    simulacion = () => ({ ...CASOS.tres_anios, curva: [] })
+    montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera')
+    const t = montado.t()
+    for (const parte of ['Año por año', 'Los 3 años', '01/11/23 → 30/10/26', 'Año 1', '01/11/23 → 31/10/24', 'Año 3',
+      '31/10/25 → 30/10/26', 'Por año, en promedio', porcentaje(CASOS.tres_anios.anio_por_anio.por_anio.cartera),
+      'De cada US$ 100, el año del 31/10/24 al 31/10/25 habría sumado',
+      'El S&P 500 le habría ganado a la cartera en 2 de los 3 años, y la cartera al S&P 500 en 1.',
+      'El Nasdaq le habría ganado a la cartera en 2 de los 3 años, y la cartera al Nasdaq en 1.']) {
+      expect(t, parte).toContain(parte)
+    }
+    // Entre la respuesta y el gráfico, afuera de la tarjeta de arriba.
+    expect(t.indexOf('Año por año')).toBeGreaterThan(t.indexOf('Peor caída'))
+    expect(t.indexOf('Año por año')).toBeLessThan(t.indexOf('Cómo habrían ido US$ 100'))
+    expect(texto(laTarjeta(montado.contenedor))).not.toContain('Año por año')
+    // Con un solo año no está: sería el total otra vez.
+    await montado.desmontar()
+    simulacion = () => ({ ...CASOS.todos_restan, curva: [] })
+    montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera')
+    expect(montado.t()).toContain('Cada activo')
+    expect(montado.t()).not.toContain('Año por año')
+  })
 })
 
 describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
@@ -694,6 +718,8 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
       recortada: `${DE_CERO}&activos=AAPL,GGAL,NUEVA&pesos=50,30,20&local=GGAL&anios=2`,
       vieja: `${DE_CERO}&activos=AAPL,GGAL,PARADA&pesos=50,30,20&local=GGAL&anios=2`,
       todos_restan: `${DE_CERO}&activos=BAJA1,BAJA2&pesos=60,40&anios=1`,
+      tres_anios: `${DE_CERO}&activos=AAPL,GGAL,BTC&pesos=50,30,20&local=GGAL&anios=3`,
+      tramo_corto: `${DE_CERO}&activos=AAPL,GGAL,NUEVA&pesos=50,30,20&local=GGAL&anios=3`,
     }
     expect(Object.keys(DE).sort()).toEqual(Object.keys(CASOS).sort())
     const textos = {}

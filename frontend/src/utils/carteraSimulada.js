@@ -261,6 +261,30 @@ function titulo(c, indices) {
 // y «sumó 17,8 puntos» explicaba «puntos» con «puntos» (diseño 05/11, M7).
 const dolares = (x) => `US$ ${Math.abs(x).toLocaleString('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`
 
+/** «De cada US$ 100, A habría sumado US$ x y B habría restado US$ y: entre todos, la
+ *  cartera habría dado +z%.» LA frase de dónde salió el resultado, la de «Cada activo»
+ *  y la de «Año por año»: el que más sumó y el que más restó (si todos sumaron o todos
+ *  restaron, el que más). `nombre(x, segundo)`: cómo se nombra cada uno; la segunda vez
+ *  puede ser más corto («el del…»). null con menos de dos. */
+function deCadaCien(xs, resultado, nombre) {
+  if (xs.length < 2) return null
+  const orden = [...xs].sort((a, b) => b.aporte - a.aporte)
+  const [mas, menos] = [orden[0], orden.at(-1)]
+  if (mas.aporte > 0 && menos.aporte < 0) {
+    return `De cada US$ 100, ${nombre(mas)} habría sumado ${dolares(mas.aporte)} y ${nombre(menos, true)} habría `
+      + `restado ${dolares(menos.aporte)}: entre todos, la cartera habría dado ${porcentaje(resultado)}.`
+  }
+  if (mas.aporte > 0) {
+    return `De cada US$ 100, el que más habría sumado es ${nombre(mas)}: ${dolares(mas.aporte)} de los `
+      + `${dolares(resultado)} que habría ganado la cartera.`
+  }
+  if (menos.aporte < 0) {
+    return `De cada US$ 100, el que más habría restado es ${nombre(menos)}: ${dolares(menos.aporte)} de los `
+      + `${dolares(resultado)} que habría perdido la cartera.`
+  }
+  return null
+}
+
 /** Lo que dice debajo del título según con qué se arrancó. Con «Mi cartera de hoy»,
  *  que es tu cartera de hoy puesta en el pasado y no lo que ganaste, y para qué lado
  *  se equivoca: con los pesos de hoy desde el primer día sale igual o mejor de lo que
@@ -296,18 +320,8 @@ export function lecturaCartera(res, { origen = 'cero', cliente = null } = {}) {
   const xs = res.activos || []
   const deLosActivos = []
   if (xs.length > 1) {
-    const orden = [...xs].sort((a, b) => b.aporte - a.aporte)
-    const [mas, menos] = [orden[0], orden.at(-1)]
-    if (mas.aporte > 0 && menos.aporte < 0) {
-      deLosActivos.push(`De cada US$ 100, ${mas.asset} habría sumado ${dolares(mas.aporte)} y ${menos.asset} habría `
-        + `restado ${dolares(menos.aporte)}: entre todos, la cartera habría dado ${porcentaje(c.resultado)}.`)
-    } else if (mas.aporte > 0) {
-      deLosActivos.push(`De cada US$ 100, el que más habría sumado es ${mas.asset}: ${dolares(mas.aporte)} de los `
-        + `${dolares(c.resultado)} que habría ganado la cartera.`)
-    } else if (menos.aporte < 0) {
-      deLosActivos.push(`De cada US$ 100, el que más habría restado es ${menos.asset}: ${dolares(menos.aporte)} de los `
-        + `${dolares(c.resultado)} que habría perdido la cartera.`)
-    }
+    const frase = deCadaCien(xs, c.resultado, x => x.asset)
+    if (frase) deLosActivos.push(frase)
     // El que más cambió de peso sin tocar la cartera (el mayor, no un orden: la
     // lista de «Cada activo» va en el orden en que la armaste).
     const corrida = (x) => Math.abs(x.peso_final - x.peso)
@@ -337,6 +351,76 @@ export function lecturaCartera(res, { origen = 'cero', cliente = null } = {}) {
  *  ningún índice, lo de la cartera sola (método 06/11, H7). */
 export const notaDelResumen = (res) => `Del ${fechaCorta(res.desde)} al ${fechaCorta(res.hasta)}, en dólares`
   + (res.indices?.length ? '. Los índices, sin dividendos, como la cartera.' : ' y sin dividendos.')
+
+export const NOTA_ANIO_POR_ANIO = 'Cada año son 365 días, contados para atrás desde el último precio, como «1 año». '
+  + 'Es la misma cartera sin tocar: cada año arranca con los pesos que le dejó el anterior. «Por año, en promedio»: '
+  + 'lo que habría que ganar todos los años, igual, para llegar al mismo total.'
+
+// Cada tramo se nombra por sus fechas (la segunda vez, más corto). Lo de antes del
+// primer año entero es «el tramo»: dura menos.
+const nombreDelTramo = (t, segundo = false) => `${t.completo ? (segundo ? 'el' : 'el año') : 'el tramo'} `
+  + `del ${fechaCorta(t.desde)} al ${fechaCorta(t.hasta)}`
+
+/** Cuántos meses dura el tramo corto del principio, para su renglón: «7 meses». */
+function mesesDe(dias) {
+  const m = Math.max(1, Math.round(dias / 30.44))
+  return m === 1 ? '1 mes' : `${m} meses`
+}
+
+/** Al final de «Año por año», quién habría ganado más años contra cada índice (Nico,
+ *  06/11: «una devolución de quién gana»). Cuenta años enteros, con los números como
+ *  se ven y la regla de «casi lo mismo» del título (`contra`). No dice «en promedio»:
+ *  el promedio de la tabla es otro número, el rendimiento por año. */
+function veredicto(filas, indices) {
+  const anios = filas.filter(f => f.completo)
+  const n = anios.length
+  if (n < 2) return []
+  return indices.flatMap(({ clave, nombre }) => {
+    if (anios.some(f => f[clave] == null)) return []
+    const r = { gano: 0, perdio: 0, empate: 0 }
+    for (const f of anios) r[contra(f.cartera, f[clave])] += 1
+    const el = `el ${nombre}`
+    const casi = r.empate ? `, y en ${r.empate} habrían dado casi lo mismo` : ''
+    if (r.gano === n) return [`La cartera le habría ganado al ${nombre} en los ${n} años.`]
+    if (r.perdio === n) return [`${capital(el)} le habría ganado a la cartera en los ${n} años.`]
+    if (r.empate === n) return [`La cartera y ${el} habrían dado casi lo mismo en los ${n} años.`]
+    if (r.gano > r.perdio) {
+      return [`La cartera le habría ganado al ${nombre} en ${r.gano} de los ${n} años`
+        + `${r.perdio ? `, y ${el} a la cartera en ${r.perdio}` : ''}${casi}.`]
+    }
+    if (r.perdio > r.gano) {
+      return [`${capital(el)} le habría ganado a la cartera en ${r.perdio} de los ${n} años`
+        + `${r.gano ? `, y la cartera al ${nombre} en ${r.gano}` : ''}${casi}.`]
+    }
+    return [`La cartera y ${el} habrían ganado ${r.gano} ${r.gano === 1 ? 'año' : 'años'} cada uno${casi}.`]
+  })
+}
+
+/** «Año por año» (Nico, 06/11/2026), entre la respuesta y el gráfico: el total del
+ *  período, cada año y, al final, quién habría ganado más años. La cuenta es del
+ *  servidor (`cartera_simulada._anio_por_anio`); acá, los rótulos y las palabras.
+ *  null con un solo año (sería el total otra vez).
+ *  {frase, total, filas, promedio, veredicto, nota}: `frase`, el año que más sumó y el
+ *  que más restó, como en «Cada activo»; cada fila, su `rotulo` («Año 2», o «7 meses»
+ *  el tramo corto del principio) y sus `fechas`. */
+export function lecturaAnioPorAnio(res) {
+  const apa = res?.disponible ? res.anio_por_anio : null
+  if (!apa?.tramos?.length) return null
+  let n = 0
+  const filas = apa.tramos.map(t => ({
+    ...t, rotulo: t.completo ? `Año ${++n}` : mesesDe(t.dias), fechas: `${fechaCorta(t.desde)} → ${fechaCorta(t.hasta)}`,
+  }))
+  return {
+    frase: deCadaCien(filas, res.cartera.resultado, nombreDelTramo),
+    total: { rotulo: res.recortado ? 'Todo el período' : `Los ${res.anios} años`,
+      fechas: `${fechaCorta(res.desde)} → ${fechaCorta(res.hasta)}` },
+    filas,
+    promedio: apa.por_anio,
+    veredicto: veredicto(filas, res.indices || []),
+    nota: NOTA_ANIO_POR_ANIO
+      + (filas.some(f => !f.completo) ? ' Lo de antes del primer año entero va aparte, con sus meses.' : ''),
+  }
+}
 
 /** Por qué no se pudo simular, en una oración entera. `cuantos`: los activos de
  *  la cartera (con uno solo no hay «resto» que simular). */

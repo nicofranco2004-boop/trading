@@ -32,6 +32,11 @@ Los índices, con la misma semana y LA regla de Comparar (`comparar.dia_del_cien
 con 5 años, lo que se pide es justo lo guardado, y si ese día cae un sábado el
 S&P 500 empieza el lunes. Se arranca el lunes, en vez de dejarlo afuera.
 
+AÑO POR AÑO (Nico, 06/11/2026: el total esconde si fue parejo o si un año lo
+explica casi todo, «algo que probablemente no se vuelva a repetir»). El mismo
+período, abierto en años de LA regla del período (`_primer_dia`: 365 días para
+atrás desde el último precio), con la misma cartera sin tocar (`_anio_por_anio`).
+
 QUÉ NO HACE. No recomienda nada ni mira para adelante: dice qué habría pasado.
 """
 from __future__ import annotations
@@ -58,6 +63,9 @@ TOLERANCIA = 0.05
 INDICES = (("sp500", "S&P 500", velas_diarias.SP500), ("nasdaq", "Nasdaq", velas_diarias.NASDAQ))
 # Con menos días que esto no alcanza para decir nada (los del Backtesting).
 MIN_DIAS = backtest.MIN_RUEDAS
+# «Año por año»: lo de antes del primer año entero, si dura menos que esto, va con
+# el año que sigue (un renglón de diez días no dice nada).
+TRAMO_MIN_DIAS = 31
 
 
 def _puntos(velas: list) -> list:
@@ -77,6 +85,55 @@ class _EnCien:
     def al(self, fecha: str):
         i = bisect.bisect_right(self.fechas, fecha) - 1
         return self.valores[i] if i >= 0 else None
+
+
+def _primer_dia(hasta: str, anios: int) -> str:
+    """El primer día de los últimos `anios` años que terminan en `hasta`, el último
+    precio: LA regla del período, la del pedido y la de cada año de «Año por año»."""
+    corte = date.fromisoformat(hasta) - timedelta(days=anios * tecnico.DIAS_ANIO)
+    return (corte + timedelta(days=1)).isoformat()
+
+
+def _anio_por_anio(base: str, hasta: str, al: dict):
+    """El período abierto en años (Nico, 06/11/2026). `al`: {clave: lo que vale ese
+    día} de la cartera ('cartera', en dólares de cada US$ 100) y de cada índice que
+    está, con su último cierre hasta ese día.
+
+    Un año es el de LA regla del período (`_primer_dia`), contado para atrás desde
+    el último precio: el último año de un índice da lo mismo que elegir «1 año».
+    La cartera es la de todo el período, sin tocar: cada año arranca con los pesos
+    que le dejó el anterior («1 año» la compra de nuevo con los tuyos). Lo de antes
+    del primer año entero es un tramo más corto (`completo` False), o va con el año
+    que sigue si dura menos de `TRAMO_MIN_DIAS`. None con un solo tramo: sería el
+    total otra vez.
+
+    {'tramos': [{desde, hasta, dias, completo, aporte, <clave>: %}], 'por_anio':
+    {<clave>: %}}. `aporte`: cuánto de cada US$ 100 habría ganado (o perdido) la
+    cartera en ese tramo; los de todos suman su resultado. `por_anio`: lo que
+    habría que ganar todos los años, igual, para llegar al mismo total (compuesto,
+    a 365 días, como el «Por año» del diario de operaciones)."""
+    cortes = []
+    for k in range(1, len(ANIOS) + 1):
+        d = _primer_dia(hasta, k)
+        if d <= base:
+            break
+        cortes.append(d)
+    bordes = [base] + sorted(cortes) + [hasta]
+    if len(bordes) > 2 and comparar._dias(bordes[0], bordes[1]) < TRAMO_MIN_DIAS:
+        del bordes[1]
+    if len(bordes) < 3:
+        return None
+    tramos = []
+    for a, b in zip(bordes, bordes[1:]):
+        dias = comparar._dias(a, b)
+        tramos.append({"desde": a, "hasta": b, "dias": dias,
+                       "completo": dias >= tecnico.DIAS_ANIO - comparar.DIAS_MARGEN,
+                       "aporte": al["cartera"](b) - al["cartera"](a),
+                       **{clave: (f(b) / f(a) - 1) * 100 for clave, f in al.items()}})
+    dias = comparar._dias(base, hasta)
+    return {"tramos": tramos,
+            "por_anio": {clave: ((f(hasta) / f(base)) ** (tecnico.DIAS_ANIO / dias) - 1) * 100
+                         for clave, f in al.items()}}
 
 
 def simular(activos: list, indices: dict, anios: int) -> dict:
@@ -101,9 +158,8 @@ def simular(activos: list, indices: dict, anios: int) -> dict:
         return {**out, "disponible": False, "motivo": "vieja",
                 "faltan": [{"asset": s, "motivo": "vieja", "hasta": puntos[s][-1][0]} for s in viejas]}
 
-    corte = date.fromisoformat(hasta) - timedelta(days=anios * tecnico.DIAS_ANIO)
-    pedido = (corte + timedelta(days=1)).isoformat()
-    primeras = {s: p[0][0] for s, p in puntos.items()}
+    pedido = _primer_dia(hasta, anios)
+    primeras ={s: p[0][0] for s, p in puntos.items()}
     ultimo_en_llegar = max(primeras, key=lambda s: (primeras[s], s))
     # El primer día, con LA regla de Comparar (`comparar.dia_del_cien`): el primero
     # que tienen todos los activos, y si un índice empieza unos días después (con 5
@@ -124,9 +180,15 @@ def simular(activos: list, indices: dict, anios: int) -> dict:
     suma = sum(escritos.values())
     pesos = {s: p * 100 / suma for s, p in escritos.items()}
     lineas = {s: _EnCien(p, base) for s, p in puntos.items()}
-    cartera = [sum(pesos[s] / 100 * lineas[s].al(d) for s in pesos) for d in fechas]
 
-    resumen_indices, faltan, curvas = [], [], {}
+    def valor(d):
+        # Lo que vale la cartera ese día, en dólares de cada US$ 100: la del gráfico
+        # y la de «Año por año».
+        return sum(pesos[s] / 100 * lineas[s].al(d) for s in pesos)
+
+    cartera = [valor(d) for d in fechas]
+
+    resumen_indices, faltan, curvas, varas = [], [], {}, {}
     for clave, nombre, simbolo in INDICES:
         p = de_los_indices[clave]
         # Primero si quedó viejo, como Comparar: uno que dejó de llegar y además
@@ -138,7 +200,7 @@ def simular(activos: list, indices: dict, anios: int) -> dict:
         if not p or p[0][0] > base:
             faltan.append({"clave": clave, "motivo": "sin_datos"})
             continue
-        linea = _EnCien(p, base)
+        linea = varas[clave] = _EnCien(p, base)
         curvas[clave] = [linea.al(d) for d in fechas]
         resumen_indices.append({"clave": clave, "nombre": nombre, "ticker": simbolo,
                                 **backtest._resumen([v / 100 for v in curvas[clave]])})
@@ -169,6 +231,7 @@ def simular(activos: list, indices: dict, anios: int) -> dict:
         "cartera": backtest._resumen([v / 100 for v in cartera]),
         "indices": resumen_indices,
         "faltan": faltan,
+        "anio_por_anio": _anio_por_anio(base, hasta, {"cartera": valor, **{c: v.al for c, v in varas.items()}}),
         "curva": [{"d": d, "cartera": round(cartera[k], 2), **{c: round(curvas[c][k], 2) for c in curvas}}
                   for k, d in enumerate(fechas)],
     }

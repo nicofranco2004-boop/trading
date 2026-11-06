@@ -18,8 +18,9 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
 import {
-  COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, TOLERANCIA,
-  aLaDireccion, aclaracionDeLaCartera, carteraDe, consultaDe, errorDeHoy, estadoDeLaCartera, filasDeHoy, lecturaCartera,
+  COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_ANIO_POR_ANIO, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, TOLERANCIA,
+  aLaDireccion, aclaracionDeLaCartera, carteraDe, consultaDe, errorDeHoy, estadoDeLaCartera, filasDeHoy,
+  lecturaAnioPorAnio, lecturaCartera,
   limpiar, loQueFalta, motivoCartera, notaDeHoy, notaDeLosQueSobran, notaDelResumen, notaHoy, notaOjito, notaSinActivos,
   numeroDe, origenDe, origenes, repartirIgual, rotuloDelAnterior, sobranDe, textoDe, totalDe, tramosDeLaBarra,
   trayendoHoy,
@@ -281,6 +282,65 @@ describe('lo que dicen los números', () => {
   })
 })
 
+describe('año por año (Nico, 06/11)', () => {
+  it('con un solo año no hay: sería el total otra vez', () => {
+    expect(lecturaAnioPorAnio(CASOS.todos_restan)).toBeNull()
+    expect(lecturaAnioPorAnio(CASOS.recortada)).toBeNull()
+    expect(lecturaAnioPorAnio(CASOS.vieja)).toBeNull()
+  })
+
+  it('primero el total, después cada año con sus fechas, y el año que más sumó y el que más restó', () => {
+    const r = CASOS.tres_anios
+    const l = lecturaAnioPorAnio(r)
+    expect(l.total).toEqual({ rotulo: 'Los 3 años', fechas: '01/11/23 → 30/10/26' })
+    expect(l.filas.map(f => [f.rotulo, f.fechas])).toEqual([
+      ['Año 1', '01/11/23 → 31/10/24'], ['Año 2', '31/10/24 → 31/10/25'], ['Año 3', '31/10/25 → 30/10/26']])
+    // La misma frase que «Cada activo», con los años.
+    const [a1, a2] = r.anio_por_anio.tramos
+    expect(a1.aporte).toBeLessThan(0)
+    expect(a2.aporte).toBeGreaterThan(r.anio_por_anio.tramos[2].aporte)
+    expect(l.frase).toBe(`De cada US$ 100, el año del 31/10/24 al 31/10/25 habría sumado ${dolares(a2.aporte)} y el del `
+      + `01/11/23 al 31/10/24 habría restado ${dolares(a1.aporte)}: entre todos, la cartera habría dado `
+      + `${porcentaje(r.cartera.resultado)}.`)
+    expect(l.promedio).toEqual(r.anio_por_anio.por_anio)
+    expect(l.nota).toBe(NOTA_ANIO_POR_ANIO)
+  })
+
+  it('al final, quién habría ganado más años contra cada índice, con los números como se ven', () => {
+    // −0,1 contra +5,0 y +7,1; +18,1 contra +12,0 y +13,1; +5,5 contra +7,9 y +13,7.
+    expect(lecturaAnioPorAnio(CASOS.tres_anios).veredicto).toEqual([
+      'El S&P 500 le habría ganado a la cartera en 2 de los 3 años, y la cartera al S&P 500 en 1.',
+      'El Nasdaq le habría ganado a la cartera en 2 de los 3 años, y la cartera al Nasdaq en 1.',
+    ])
+    // Con dos años, uno cada uno; sin el Nasdaq, sólo contra el S&P 500.
+    expect(lecturaAnioPorAnio(CASOS.tres).veredicto).toEqual([
+      'La cartera y el S&P 500 habrían ganado 1 año cada uno.', 'La cartera y el Nasdaq habrían ganado 1 año cada uno.'])
+    expect(lecturaAnioPorAnio(CASOS.sin_nasdaq).veredicto).toEqual(['La cartera y el S&P 500 habrían ganado 1 año cada uno.'])
+    // Cada caso, con la regla de «casi lo mismo» del título: menos de un punto, como se ve.
+    const r = CASOS.tres_anios
+    const v = (c, s) => lecturaAnioPorAnio({ ...r, indices: [r.indices[0]], anio_por_anio: { ...r.anio_por_anio,
+      tramos: r.anio_por_anio.tramos.map((t, i) => ({ ...t, cartera: c[i], sp500: s[i] })) } }).veredicto
+    expect(v([10, 20, 30], [5, 15, 25])).toEqual(['La cartera le habría ganado al S&P 500 en los 3 años.'])
+    expect(v([1, 2, 3], [5, 6, 7])).toEqual(['El S&P 500 le habría ganado a la cartera en los 3 años.'])
+    expect(v([10, 20, 30], [5, 25, 10]))
+      .toEqual(['La cartera le habría ganado al S&P 500 en 2 de los 3 años, y el S&P 500 a la cartera en 1.'])
+    expect(v([10, 20, 5], [5, 20.4, 1]))
+      .toEqual(['La cartera le habría ganado al S&P 500 en 2 de los 3 años, y en 1 habrían dado casi lo mismo.'])
+    expect(v([10, 20.3, 5], [12, 20, 1]))
+      .toEqual(['La cartera y el S&P 500 habrían ganado 1 año cada uno, y en 1 habrían dado casi lo mismo.'])
+    expect(v([10, 20, 30], [10.2, 19.9, 29.5])).toEqual(['La cartera y el S&P 500 habrían dado casi lo mismo en los 3 años.'])
+  })
+
+  it('el tramo corto del principio dice sus meses y no cuenta como año', () => {
+    const l = lecturaAnioPorAnio(CASOS.tramo_corto)
+    expect(l.total).toEqual({ rotulo: 'Todo el período', fechas: '24/03/25 → 30/10/26' })
+    expect(l.filas.map(f => [f.rotulo, f.fechas])).toEqual([['7 meses', '24/03/25 → 31/10/25'], ['Año 1', '31/10/25 → 30/10/26']])
+    expect(l.veredicto).toEqual([])   // un solo año entero: no hay nada que contar
+    expect(l.nota).toBe(`${NOTA_ANIO_POR_ANIO} Lo de antes del primer año entero va aparte, con sus meses.`)
+    expect(l.frase).toMatch(/^De cada US\$ 100, el que más habría sumado es el tramo del 24\/03\/25 al 31\/10\/25: /)
+  })
+})
+
 describe('por qué no se pudo simular', () => {
   it('cada motivo, en una oración entera', () => {
     // Sobre lo que tenemos: PARADA cotiza; la que está vieja es nuestra copia (M10).
@@ -317,7 +377,9 @@ describe('nunca promete', () => {
     const textos = [
       ...Object.values(CASOS).flatMap(r => {
         const l = lecturaCartera(r)
-        return l ? [l.titulo, l.aclaracion, ...l.avisos, ...l.deLosActivos, notaDelResumen(r)] : [motivoCartera(r)]
+        const a = lecturaAnioPorAnio(r)
+        return [...(l ? [l.titulo, l.aclaracion, ...l.avisos, ...l.deLosActivos, notaDelResumen(r)] : [motivoCartera(r)]),
+          ...(a ? [a.frase, ...a.veredicto, a.nota].filter(Boolean) : [])]
       }),
       QUE_SE_SIMULA, notaHoy(), notaHoy('Ana', true), notaOjito(), notaSinActivos('Ana'), NOTA_CADA_ACTIVO,
       COMO_SE_SIMULA_CARTERA, ...['sin_serie', 'vieja', 'poca_historia', 'tope', 'bajando', 'demo', 'otro']

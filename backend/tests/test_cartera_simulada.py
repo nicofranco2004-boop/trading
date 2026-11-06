@@ -262,6 +262,75 @@ class Cuentas(unittest.TestCase):
         self.assertAlmostEqual(r["cartera"]["resultado"], 20.0, places=6)
 
 
+class AnioPorAnio(unittest.TestCase):
+    """«Año por año» (Nico, 06/11/2026): el período abierto en años de LA regla del
+    período, con la misma cartera sin tocar. Por `simular`, el camino de la ruta."""
+
+    def _cartera(self, anios=3, indices=None, activos=None):
+        sube = _habiles(800, lambda i: 100 + 30 * math.sin(i / 50) + i * 0.1)
+        baja = _habiles(800, lambda i: 80 - i * 0.02 + 5 * math.sin(i / 30))
+        return cs.simular(activos or [_activo("SUBE", 60, sube), _activo("BAJA", 40, baja)],
+                          indices if indices is not None else _indices(), anios)
+
+    def test_cada_anio_es_el_de_la_regla_del_periodo_y_juntos_dan_el_total(self):
+        r = self._cartera()
+        apa, hasta = r["anio_por_anio"], r["hasta"]
+        uno, dos = cs._primer_dia(hasta, 1), cs._primer_dia(hasta, 2)
+        self.assertEqual([(t["desde"], t["hasta"]) for t in apa["tramos"]],
+                         [(r["desde"], dos), (dos, uno), (uno, hasta)])
+        self.assertTrue(all(t["completo"] for t in apa["tramos"]))
+        dias = comparar._dias(r["desde"], hasta)
+        for clave, total in [("cartera", r["cartera"]["resultado"])] + [(i["clave"], i["resultado"]) for i in r["indices"]]:
+            with self.subTest(clave=clave):
+                # Uno detrás del otro dan el total, y el promedio es el compuesto.
+                encadenados = math.prod(1 + t[clave] / 100 for t in apa["tramos"])
+                self.assertAlmostEqual((encadenados - 1) * 100, total, places=6)
+                self.assertAlmostEqual(apa["por_anio"][clave], ((1 + total / 100) ** (365 / dias) - 1) * 100, places=6)
+        self.assertAlmostEqual(sum(t["aporte"] for t in apa["tramos"]), r["cartera"]["resultado"], places=6)
+        # Es la cartera del gráfico, sin tocar: cada año, lo que vale ese día en la curva.
+        curva = {p["d"]: p["cartera"] for p in r["curva"]}
+        al = lambda d: curva[max(x for x in curva if x <= d)]
+        for t in apa["tramos"]:
+            self.assertAlmostEqual(t["cartera"], (al(t["hasta"]) / al(t["desde"]) - 1) * 100, delta=0.05)
+            self.assertAlmostEqual(t["aporte"], al(t["hasta"]) - al(t["desde"]), delta=0.02)
+
+    def test_el_ultimo_anio_de_un_indice_da_lo_mismo_que_elegir_un_anio(self):
+        r = self._cartera()
+        for n in (1, 2):
+            ultimos = r["anio_por_anio"]["tramos"][-n:]
+            for i in self._cartera(anios=n)["indices"]:
+                with self.subTest(anios=n, indice=i["clave"]):
+                    # Hasta el redondeo de `comparar.base_cien` (4 decimales, cada uno
+                    # sobre su día del 100): en la pantalla, que muestra uno, es igual.
+                    encadenados = math.prod(1 + t[i["clave"]] / 100 for t in ultimos)
+                    self.assertAlmostEqual((encadenados - 1) * 100, i["resultado"], places=3)
+        # La cartera no: «1 año» la compra de nuevo con tus pesos; acá es la de los
+        # tres años, sin tocar, que ya cambió de pesos.
+        self.assertGreater(abs(r["anio_por_anio"]["tramos"][-1]["cartera"]
+                               - self._cartera(anios=1)["cartera"]["resultado"]), 0.1)
+
+    def test_con_un_solo_anio_no_hay_anio_por_anio(self):
+        self.assertIsNone(self._cartera(anios=1)["anio_por_anio"])
+
+    def test_lo_de_antes_del_primer_anio_entero(self):
+        hasta = FIN.isoformat()
+        uno, dos = cs._primer_dia(hasta, 1), cs._primer_dia(hasta, 2)
+        nueva = lambda desde: [_activo("NUEVA", 100, [v for v in _habiles(800, lambda i: 10 + i * 0.01) if v["date"] >= desde])]
+        # Cotiza hace un año y siete meses: un tramo corto, con sus días, y un año entero.
+        r = self._cartera(activos=nueva((FIN - timedelta(days=580)).isoformat()))
+        self.assertEqual([(t["desde"], t["hasta"], t["completo"], t["dias"]) for t in r["anio_por_anio"]["tramos"]],
+                         [(r["desde"], uno, False, comparar._dias(r["desde"], uno)), (uno, hasta, True, 364)])
+        # Menos de un mes antes de un año entero va con ese año.
+        r = self._cartera(activos=nueva((date.fromisoformat(dos) - timedelta(days=20)).isoformat()))
+        self.assertEqual([(t["desde"], t["hasta"], t["completo"]) for t in r["anio_por_anio"]["tramos"]],
+                         [(r["desde"], uno, True), (uno, hasta, True)])
+
+    def test_un_indice_que_falta_no_tiene_columna(self):
+        apa = self._cartera(indices=_indices(nq=[]))["anio_por_anio"]
+        self.assertTrue(all("sp500" in t and "nasdaq" not in t for t in apa["tramos"]))
+        self.assertEqual(set(apa["por_anio"]), {"cartera", "sp500"})
+
+
 class DeHoy(unittest.TestCase):
     """«Mi cartera de hoy»: lo que se puede simular, sobre 100 entre ellos."""
 
@@ -355,6 +424,10 @@ def _casos_de_la_pantalla():
         "todos_restan": cs.simular([_activo("BAJA1", 60, _habiles(800, lambda i: 50 - i * 0.004)),
                                     _activo("BAJA2", 40, _habiles(800, lambda i: 100 - i * 0.04))],
                                    {"sp500": sp, "nasdaq": nq}, 1),
+        # «Año por año»: tres años enteros, y uno que arranca con un tramo corto.
+        "tres_anios": cs.simular(activos, {"sp500": sp, "nasdaq": nq}, 3),
+        "tramo_corto": cs.simular(activos[:2] + [_activo("NUEVA", 20, _habiles(420, lambda i: 10 + i * 0.02))],
+                                  {"sp500": sp, "nasdaq": nq}, 3),
     }
     for r in casos.values():
         r.pop("curva", None)
@@ -378,6 +451,9 @@ class LoQueLeeLaPantalla(unittest.TestCase):
         self.assertTrue(casos["recortada"]["recortado"])
         self.assertEqual(casos["vieja"]["motivo"], "vieja")
         self.assertTrue(all(a["aporte"] < 0 for a in casos["todos_restan"]["activos"]))
+        self.assertIsNone(casos["todos_restan"]["anio_por_anio"])
+        self.assertEqual([t["completo"] for t in casos["tres_anios"]["anio_por_anio"]["tramos"]], [True] * 3)
+        self.assertEqual([t["completo"] for t in casos["tramo_corto"]["anio_por_anio"]["tramos"]], [False, True])
 
     def test_los_indices_de_la_cartera_se_bajan_todas_las_noches(self):
         # Dos listas: contra cuáles se compara y cuáles baja la noche. Uno que se
@@ -642,6 +718,37 @@ class Ruta(unittest.TestCase):
         ggal = res["activos"][0]
         self.assertEqual((ggal["asset"], ggal["local"], ggal["ticker"], ggal["convertida"]),
                          ("GGAL", True, "GGAL.BA", "mep"))
+
+    def test_una_accion_argentina_se_mide_en_dolares_tambien_anio_por_anio(self):
+        # Nico, 06/11: una acción argentina sube en pesos con la inflación aunque a la
+        # empresa no le vaya mejor. Se mide en dólares, el precio de BYMA ÷ el MEP de
+        # cada día, también el primero de cada año. Acá los pesos suben ~60 % por año
+        # y el MEP igual: en dólares no se movió.
+        ruedas = _ruedas(self.hoy, 760)
+        inflacion = lambda d: 1.04 ** ((d - ruedas[0]).days / 30)
+        with main.db_abierta() as conn:
+            conn.execute("DELETE FROM fx_rates_daily")
+            for d in ruedas:
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
+                             (d.isoformat(), 1100.0 * inflacion(d), 1000.0 * inflacion(d)))
+            conn.commit()
+        self._posicion("IOL", "ARS", "GGAL", "ACCION")
+        self.yahoo.precios["GGAL"] = lambda i, d: 50.0
+        self.yahoo.precios["GGAL.BA"] = lambda i, d: 5000 * inflacion(d)
+        main._run_velas_diarias_job()
+        res = self._get("activos=GGAL&pesos=100&local=GGAL&anios=2").json()
+        self.assertTrue(res["disponible"], res)
+        with main.db_abierta() as conn:
+            en_pesos = [r[0] for r in conn.execute(
+                "SELECT close FROM velas_diarias WHERE symbol='GGAL.BA' AND date BETWEEN ? AND ? ORDER BY date",
+                (res["desde"], res["hasta"])).fetchall()]
+        self.assertGreater(en_pesos[-1] / en_pesos[0], 2)       # en pesos, más del doble
+        apa = res["anio_por_anio"]
+        self.assertEqual(len(apa["tramos"]), 2)
+        for t in apa["tramos"]:
+            self.assertAlmostEqual(t["cartera"], 0.0, delta=0.5)
+        self.assertAlmostEqual(apa["por_anio"]["cartera"], 0.0, delta=0.5)
+        self.assertAlmostEqual(res["cartera"]["resultado"], 0.0, delta=0.5)
 
     def test_mi_cartera_de_hoy_sale_de_tu_plata_sin_mostrarla(self):
         r = self.client.get("/api/backtest/cartera/hoy", headers=self.h)

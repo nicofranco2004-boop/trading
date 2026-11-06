@@ -66,7 +66,7 @@ import { api } from '../utils/api'
 import { PERIODOS_CARTERA, aniosDe, colorDe, porcentaje } from '../utils/backtesting'
 import {
   COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, aLaDireccion, carteraDe, consultaDe,
-  errorDeHoy, estadoDeLaCartera, filasDeHoy, lecturaCartera, limpiar, loQueFalta, motivoCartera, notaDeHoy,
+  errorDeHoy, estadoDeLaCartera, filasDeHoy, lecturaAnioPorAnio, lecturaCartera, limpiar, loQueFalta, motivoCartera, notaDeHoy,
   notaDeLosQueSobran, notaDelResumen, notaHoy, notaOjito, notaSinActivos, origenDe, origenes, pesoTxt, repartirIgual,
   rotuloDelAnterior, sobranDe, textoDe, tramosDeLaBarra, trayendoHoy,
 } from '../utils/carteraSimulada'
@@ -580,8 +580,8 @@ function Resumen({ res, cargando = false, anterior = null, origen, cliente }) {
   )
 }
 
-/** Debajo de la tarjeta: el gráfico, «Cada activo» y cómo se simula, del MISMO
- *  resultado que se ve al lado de la tabla (tenue si aquél lo está). */
+/** Debajo de la tarjeta: «Año por año», el gráfico, «Cada activo» y cómo se simula,
+ *  del MISMO resultado que se ve al lado de la tabla (tenue si aquél lo está). */
 function Detalle({ sim, vista }) {
   if (!vista) {
     // La primera vez, mientras llega: el lugar del gráfico.
@@ -591,11 +591,71 @@ function Detalle({ sim, vista }) {
   const { res } = vista
   return (
     <div className={`flex flex-col gap-4 ${vista.tenue ? 'opacity-60' : ''} transition-opacity`}>
+      <AnioPorAnio res={res} />
       <GraficoDeCien curva={res.curva} desde={res.desde} hasta={res.hasta}
         lineas={lineasDe(res).map(l => ({ clave: l.clave, nombre: l.nombre, color: l.color, dash: l.dash, final: l.resumen.final }))} />
       <CadaActivo res={res} frases={lecturaCartera(res).deLosActivos} />
       <p className="text-[12px] text-ink-2 leading-relaxed">{COMO_SE_SIMULA_CARTERA}</p>
     </div>
+  )
+}
+
+/** «Año por año» (Nico, 06/11): el total de la respuesta, abierto en años, y al final
+ *  quién habría ganado más años. Va entre la respuesta y el gráfico: si fue parejo o si
+ *  un año lo explica casi todo es la pregunta que deja el total. Con un solo año, nada. */
+function AnioPorAnio({ res }) {
+  const lec = lecturaAnioPorAnio(res)
+  if (!lec) return null
+  const lineas = lineasDe(res)
+  const rotulo = (txt, fechas, fuerte = false) => (
+    <th scope="row" className={`py-2 pr-2 text-left text-[14px] text-ink-0 ${fuerte ? 'font-semibold' : 'font-medium'}`}>
+      {txt}{fechas && <span className="block text-[12px] font-normal text-ink-2">{fechas}</span>}
+    </th>
+  )
+  const celda = (l, x, fuerte = false) => (
+    <td key={l.clave} className={`py-2 pl-2 sm:pl-4 text-right text-[14px] ${fuerte || l.clave === 'cartera' ? 'font-semibold' : ''} ${colorDe(x)}`}>
+      {porcentaje(x)}
+    </td>
+  )
+  return (
+    <section aria-labelledby="sc-anios" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-1.5">
+      <h3 id="sc-anios" className="text-[15px] font-semibold text-ink-0">Año por año</h3>
+      {lec.frase && <p className="text-[13.5px] text-ink-1 leading-relaxed">{lec.frase}</p>}
+      <table aria-labelledby="sc-anios" className="w-full tabular mt-1">
+        <thead>
+          <tr className="border-b border-line text-[12px] text-ink-2">
+            <th scope="col" className="pb-1.5 text-left font-medium">Período</th>
+            {lineas.map(l => (
+              <th key={l.clave} scope="col" className="pb-1.5 pl-2 sm:pl-4 text-right font-medium">
+                {/* En el celular, la marca arriba del nombre: cuatro columnas entran en 375. */}
+                <span className="inline-flex flex-col sm:flex-row items-end sm:items-center gap-1 sm:gap-2">
+                  <Trazo color={l.color} dash={l.dash} />{l.nombre}
+                </span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {/* Primero el total, después cada año (Nico, 06/11). */}
+          <tr className="border-b border-line">
+            {rotulo(lec.total.rotulo, lec.total.fechas, true)}
+            {lineas.map(l => celda(l, l.resumen.resultado, true))}
+          </tr>
+          {lec.filas.map(f => (
+            <tr key={f.desde} className="border-b border-line/60">
+              {rotulo(f.rotulo, f.fechas)}
+              {lineas.map(l => celda(l, f[l.clave]))}
+            </tr>
+          ))}
+          <tr>
+            {rotulo('Por año, en promedio', null, true)}
+            {lineas.map(l => celda(l, lec.promedio[l.clave], true))}
+          </tr>
+        </tbody>
+      </table>
+      {lec.veredicto.map(v => <p key={v} className="pt-1 text-[14px] font-semibold text-ink-0 leading-relaxed">{v}</p>)}
+      <p className="pt-1 text-[12px] text-ink-2 leading-relaxed">{lec.nota}</p>
+    </section>
   )
 }
 
