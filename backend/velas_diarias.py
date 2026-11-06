@@ -26,7 +26,9 @@ Las dos guardan precios por día, pero con reglas opuestas:
 
 QUÉ CIERRE SE GUARDA. El de Yahoo con `auto_adjust=False`: ajustado por splits
 pero NO por dividendos. Es el que muestra TradingView por defecto, así los
-niveles que ve el usuario en Rendi son los mismos que ve allá.
+niveles que ve el usuario en Rendi son los mismos que ve allá. Salvo una racha
+de un '.BA' que Yahoo trae clavada (el mismo cierre, sin volumen, rueda tras
+rueda: DISN.BA 601 ruedas): esos días son los de BYMA (`_corregir_con_byma`).
 
 QUÉ SÍMBOLO. El de Yahoo, tal cual: 'AAPL' (Apple en dólares, en Nueva York),
 'AAPL.BA' (el CEDEAR en pesos), 'GGAL.BA', 'BTC-USD'. De un CEDEAR se guardan
@@ -145,6 +147,21 @@ FALLAS_PARA_SEMANAL = 3
 PAUSA_CORTE_SEG = 120.0
 PAUSAS_MAX = 3
 CORTE_MIN_ANDABAN = 3
+# Yahoo deja a veces la serie DIARIA de un '.BA' clavada: el mismo cierre, sin
+# volumen, rueda tras rueda, aunque el papel se siga operando. DISN.BA quedó en
+# 10.416 desde el 24/05/2024 (601 ruedas) con BYMA en 16.200, y sus velas por hora
+# sí andaban (medido el 05 y el 06/11/2026: audit/_scripts/medir_cedear_afuera.py y
+# medir_ba_congelados.py). Una rueda seguida de `RACHA_CLAVADA` − 1 o más con su
+# mismo cierre y sin volumen es una racha, y sus días se toman de la historia de
+# BYMA (data912): la fuente que ya usa la valuación para los '.BA' por este mismo
+# DISN.BA (`snapshots_job.fetch_prices_for_symbols`). Ver `_corregir_con_byma`.
+RACHA_CLAVADA = 5
+# La primera rueda de la racha es el último precio de verdad: si BYMA no da lo
+# mismo ese día (más que esto), su historia está en otra escala (data912 corrige
+# algunos cambios de ratio viejos: AAPL en 2024) y esa racha no se toca.
+TOLERANCIA_BYMA = 0.05
+# Lo que se espera a data912 por papel.
+TOPE_BYMA_SEG = 10.0
 # El S&P 500 se guarda siempre, lo tenga alguien o no: es contra lo que la ficha
 # compara cuánto se mueve un papel en un día normal (movimiento.py).
 SP500 = "^GSPC"
@@ -551,17 +568,135 @@ def _velas_de(df, hoy: str) -> dict:
         f = idx.date().isoformat()
         if f >= hoy:
             continue
-        c = _numero(row.get('Close'))
-        if c is None or c <= 0:
-            continue
-        o, h, l = (_numero(row.get(k)) for k in ('Open', 'High', 'Low'))
-        vol = _numero(row.get('Volume'))
-        # Una vela con máximo/mínimo roto se guarda igual, pero sólo con cierre:
-        # un máximo de 0 arruinaría el "máximo del año" y los giros de Fibonacci.
-        if not (h and l and h >= c >= l > 0):
-            h = l = None
-        out[f] = (o if o and o > 0 else None, h, l, c, vol if vol and vol >= 0 else None)
+        v = _limpia(*(row.get(k) for k in ('Open', 'High', 'Low', 'Close', 'Volume')))
+        if v:
+            out[f] = v
     return out
+
+
+def _limpia(o, h, l, c, vol):
+    """(o, h, l, c, v) para guardar, o None si no hay cierre válido. Una vela con
+    máximo/mínimo roto se guarda igual, pero sólo con cierre: un máximo de 0
+    arruinaría el "máximo del año" y los giros de Fibonacci."""
+    o, h, l, c, vol = (_numero(x) for x in (o, h, l, c, vol))
+    if c is None or c <= 0:
+        return None
+    if not (h and l and h >= c >= l > 0):
+        h = l = None
+    return (o if o and o > 0 else None, h, l, c, vol if vol and vol >= 0 else None)
+
+
+# ─── Las rachas clavadas de Yahoo, con BYMA ──────────────────────────────────
+
+def _rachas_clavadas(velas: dict) -> list:
+    """[(desde, hasta, cierre)] de las rachas de `velas` ({fecha: (o, h, l, c, v)}):
+    una rueda y, seguidas, `RACHA_CLAVADA` − 1 o más con su mismo cierre y sin
+    volumen. Si la racha empieza adentro de `velas`, `desde` es el último precio de
+    verdad (el 24/05/2024 de DISN.BA da lo mismo en BYMA)."""
+    dias = sorted(velas)
+    out, i = [], 0
+    while i < len(dias):
+        j = i
+        while (j + 1 < len(dias) and velas[dias[j + 1]][3] == velas[dias[i]][3]
+               and not velas[dias[j + 1]][4]):
+            j += 1
+        if j - i + 1 >= RACHA_CLAVADA:
+            out.append((dias[i], dias[j], velas[dias[i]][3]))
+        i = j + 1
+    return out
+
+
+def _historia_de_byma(papel: str, timeout: float = TOPE_BYMA_SEG) -> dict:
+    """{fecha: (o, h, l, c, v)} de BYMA (data912, `pricing.data912.filas`) de un
+    CEDEAR o una acción argentina, con las reglas de `_velas_de`: el volumen va en
+    la misma unidad que el de Yahoo (DISN el 05/11/2026: 24.713 en los dos). {} si
+    data912 no lo tiene; si no contesta, sube: quien llama no corrige y la noche
+    siguiente se vuelve a intentar."""
+    from ai.trade_tickers import AR_STOCK_TICKERS
+    from pricing import data912
+    tipos = ("stocks", "cedears") if papel in AR_STOCK_TICKERS else ("cedears", "stocks")
+    for tipo in tipos:
+        out = {}
+        for f in data912.filas(tipo, papel, timeout):
+            v = _limpia(*(f.get(k) for k in ('o', 'h', 'l', 'c', 'v')))
+            if v and f.get('date'):
+                out[str(f['date'])[:10]] = v
+        if out:
+            return out
+    return {}
+
+
+def _rachas_a_corregir(velas: dict, guardado: dict = None) -> list:
+    """Las rachas clavadas de `velas` (`_rachas_clavadas`) que se corrigen con BYMA:
+    la que sigue clavada (llega a la última rueda que trajo Yahoo) y la que ya se
+    había corregido antes (lo guardado de esos días no es el cierre clavado: si
+    no, la bajada entera de cada mes la volvía a clavar cuando Yahoo se destraba).
+    Una racha VIEJA que nunca se corrigió queda como estaba: la lista de cambios
+    de ratio ya decidió sobre ella, y corregir unos días al lado de un cambio de
+    ratio cambia su factor (AMD el 29/11/2022 pasaba de ×20, el de verdad, a ×19:
+    medido el 06/11/2026, audit/_scripts/medir_ba_congelados.py). `guardado`: lo
+    que ya está en la base ({fecha: (o, h, l, c, v)})."""
+    guardado = guardado or {}
+    ultima = max(velas) if velas else None
+    return [(desde, hasta, cierre) for desde, hasta, cierre in _rachas_clavadas(velas)
+            if hasta == ultima or any(c != cierre for d, (_, _, _, c, _) in guardado.items()
+                                      if desde <= d <= hasta)]
+
+
+def _corregir_con_byma(velas: dict, byma: dict, guardado: dict = None) -> tuple:
+    """(velas, días cambiados): cada racha de `velas` que se corrige
+    (`_rachas_a_corregir`), con lo que dio BYMA (`byma`, de `_historia_de_byma`)
+    cada uno de esos días; el que BYMA no tiene (no se operó), con el último
+    cierre de BYMA y sin volumen, como hace Yahoo. Una racha no se toca si BYMA da
+    el mismo cierre todos los días que tiene de ella: no se operó, y Yahoo tenía
+    razón.
+
+    Ni si BYMA está en otra escala: su cierre del último día de verdad antes de la
+    racha tiene que dar lo mismo que el de Yahoo (`TOLERANCIA_BYMA`). data912
+    corrige algunos cambios de ratio viejos (AAPL en 2024): una historia en otra
+    escala no se mezcla con la de Yahoo. Ese día es el primero de la racha si
+    empieza adentro de `velas`. Si no (la bajada de cada noche trae sólo el último
+    mes), se busca en `guardado`, lo que ya está en la base: el primero de la
+    racha guardada, o el anterior a ella si ya se había corregido."""
+    import bisect
+    out, cambiados = dict(velas), 0
+    fechas = sorted(byma)
+    guardado = guardado or {}
+    previos = sorted((d for d in guardado if velas and d < min(velas)), reverse=True)
+
+    def de_byma(d):
+        """La última rueda de BYMA hasta `d`, si es de esa semana."""
+        k = bisect.bisect_right(fechas, d)
+        if k and (date.fromisoformat(d) - date.fromisoformat(fechas[k - 1])).days <= 7:
+            return byma[fechas[k - 1]]
+        return None
+
+    for desde, hasta, cierre in _rachas_a_corregir(velas, guardado):
+        ancla, valor = desde, cierre
+        if desde == min(velas):
+            for d in previos:
+                ancla, valor = d, guardado[d][3]
+                if guardado[d][3] != cierre or guardado[d][4]:
+                    break
+        ref = de_byma(ancla)
+        if ref is None or abs(ref[3] / valor - 1) > TOLERANCIA_BYMA:
+            continue
+        dias = [d for d in sorted(velas) if desde <= d <= hasta]
+        if all(byma[d][3] == cierre for d in dias if d in byma):
+            continue
+        for d in dias:
+            nueva = byma.get(d)
+            if nueva is None:
+                previa = de_byma(d)
+                if previa is None:
+                    continue
+                nueva = (previa[3], previa[3], previa[3], previa[3], None)
+            if out[d][4] and out[d][3] == nueva[3]:
+                continue        # un día operado que Yahoo ya tenía bien (el primero de la racha)
+            if nueva != out[d]:
+                out[d] = nueva
+                cambiados += 1
+    return out, cambiados
 
 
 def _bajar(ticker: str, periodo: str):
@@ -757,6 +892,14 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
     entera vuelve vacía de algo que tiene velas guardadas, se pide el último mes
     en el mismo paso: la vela no se congela por una bajada larga que Yahoo no da.
 
+    Un '.BA' que Yahoo trae clavado se corrige con la historia de BYMA antes de
+    compararlo con lo guardado y de guardarlo (`_corregir_con_byma`), una vez por
+    corrida y por papel. Lo que quedó guardado clavado de antes se arregla solo:
+    el último mes corregido no coincide con lo guardado (`_historia_reescrita`),
+    se baja la historia entera y se corrige entera. Si data912 no contesta, ese
+    papel no se guarda esa noche (lo nuevo de Yahoo es el mismo cierre clavado y
+    pisaría lo corregido) y la noche siguiente se vuelve a intentar.
+
     Nunca se espera a Yahoo con una escritura abierta: cada tanda baja todo,
     escribe y confirma; los que hay que rebajar enteros (split) se piden DESPUÉS
     de confirmar. En SQLite una escritura abierta traba a todos los demás que
@@ -810,7 +953,8 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
            "reescritas": [], "sin_datos": [], "cortados_por_yahoo": 0, "pausas": 0,
            "no_son_tickers": len(no_tickers), "en_espera_semanal": len(en_espera),
            "sin_tiempo": 0, "filas": 0, "demorados": [], "canarios": 0,
-           "completas_sin_cupo": 0, "completas_por_el_mes": [], "completas_cortadas": []}
+           "completas_sin_cupo": 0, "completas_por_el_mes": [], "completas_cortadas": [],
+           "corregidos_con_byma": [], "dias_corregidos_con_byma": 0, "byma_sin_respuesta": []}
 
     cupo = _cupo_de_completas(conn) if any(_toca_completa(estado.get(t), hoy, t) for t in pendientes) else 0
     periodo_de = {}
@@ -850,6 +994,49 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
                              tope=max(min(tope_tanda, fin - time.monotonic()), 1.0),
                              que="velas diarias (canario)")
         return bool(_velas_de(r.get(canario), hoy))
+
+    byma_de = {}   # {'X.BA': su historia de BYMA, o None si data912 no contestó}: una vez por corrida
+    dias_con_byma = {}   # {'X.BA': días que cambió su última corrección de la corrida}
+    sin_byma = set()     # los que había que corregir y data912 no contestó: hoy no se guardan
+
+    def corregir_con_byma(velas_de):
+        """Las rachas clavadas de los '.BA' (`_corregir_con_byma`), ANTES de comparar
+        con lo guardado y de guardar: si no, la historia ya corregida «cambiaba»
+        cada noche (`_historia_reescrita`) y la bajada entera la volvía a clavar.
+        Se lee lo guardado (de dónde viene una racha, si ya se había corregido) y
+        se cierra la lectura antes de esperar a data912; se llama sin ninguna
+        escritura abierta. A data912 se le pide sólo si hay algo que corregir.
+
+        Si había que corregir y data912 no contestó, ese papel no se guarda esa
+        noche (`sin_byma`): lo nuevo de Yahoo es el mismo cierre clavado, y
+        guardarlo pisaba lo ya corregido (y lo bajaba entero de nuevo). Queda para
+        mañana, sin anotarse, como lo que no contestó a tiempo."""
+        guardado = {}
+        for t in velas_de:
+            if t.endswith('.BA') and _rachas_clavadas(velas_de[t]):
+                guardado[t] = {r["date"]: (r["open"], r["high"], r["low"], r["close"], r["volume"])
+                               for r in conn.execute(
+                                   "SELECT date, open, high, low, close, volume FROM velas_diarias "
+                                   "WHERE symbol=? ORDER BY date", (t,)).fetchall()}
+        clavados = [t for t in guardado if _rachas_a_corregir(velas_de[t], guardado[t])]
+        if guardado:
+            conn.commit()
+        for t in clavados:
+            if t not in byma_de:
+                restante = fin - time.monotonic()
+                if restante >= 1:
+                    antes_de_esperar()
+                    try:
+                        byma_de[t] = _historia_de_byma(t[:-3], min(TOPE_BYMA_SEG, restante))
+                    except Exception as ex:   # data912 caído: mañana se reintenta
+                        log.warning("velas: la historia de BYMA de %s no vino: %r", t, ex)
+                        byma_de[t] = None
+            if byma_de.get(t) is None:
+                sin_byma.add(t)
+                continue
+            velas_de[t], n = _corregir_con_byma(velas_de[t], byma_de[t], guardado[t])
+            if n:
+                dias_con_byma[t] = n
 
     i = 0
     while i < len(pendientes):
@@ -911,10 +1098,14 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
                         por_el_mes.add(t)
                         res["completas_por_el_mes"].append(t)
 
+        corregir_con_byma(velas_de)
+
         a_rebajar = []
         for t in tanda:
             velas = velas_de[t]
             completa = pedidos[t] == PERIODO_COMPLETO and t not in por_el_mes
+            if t in sin_byma:
+                continue        # clavado y sin BYMA: no pisa lo guardado (`corregir_con_byma`)
             if not velas:
                 if t in demorados:
                     # No contestó a tiempo: no es que no exista. Queda para
@@ -940,8 +1131,12 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
             antes_de_esperar()
             rebajadas, sin_rebajar = _yahoo.varios(lambda t: bajar(t, PERIODO_COMPLETO), a_rebajar,
                                                    tope=tope_tanda, que="velas diarias (historia cambiada)")
+            enteras_de = {t: _velas_de(rebajadas.get(t), hoy) for t in a_rebajar}
+            corregir_con_byma(enteras_de)
             for t in a_rebajar:
-                velas = _velas_de(rebajadas.get(t), hoy)
+                velas = enteras_de[t]
+                if t in sin_byma:
+                    continue
                 if not velas:
                     if t in sin_rebajar:
                         # No contestó a tiempo: mañana se vuelve a detectar.
@@ -961,6 +1156,9 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
             conn.commit()
 
     res["bajados"] = res["completas"] + res["incrementales"]
+    res["corregidos_con_byma"] = sorted(dias_con_byma)
+    res["dias_corregidos_con_byma"] = sum(dias_con_byma.values())
+    res["byma_sin_respuesta"] = sorted(sin_byma)
     if podar:
         piso = (date.fromisoformat(hoy) - timedelta(days=DIAS_GUARDADOS)).isoformat()
         conn.execute("DELETE FROM velas_diarias WHERE date < ?", (piso,))
@@ -1399,6 +1597,13 @@ def serie(conn, ticker: str, desde: str = None) -> list:
         return velas
     import cambios_ratio
     return _empalmar(velas, cambios_ratio.para_el_grafico(conn, ticker))
+
+
+def ultima_fecha(conn, ticker: str):
+    """La fecha de la última vela GUARDADA de `ticker` (aunque `serie` la esconda
+    mientras se decide un salto), o None."""
+    row = conn.execute("SELECT MAX(date) AS d FROM velas_diarias WHERE symbol=?", (ticker,)).fetchone()
+    return str(row["d"])[:10] if row and row["d"] else None
 
 
 def ultima_vela(conn, ticker: str):

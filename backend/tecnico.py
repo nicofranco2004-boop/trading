@@ -588,10 +588,11 @@ def _convertir(conn, velas: list, por: str) -> list:
     return out
 
 
-def _atrasada(una: list, otra: list) -> bool:
-    """¿La última vela de `una` tiene más de `DIAS_ATRASO` de diferencia con la
-    de `otra`? (Feriados de acá o de allá separan las dos series 1 o 2 días.)"""
-    return (date.fromisoformat(otra[-1]["date"]) - date.fromisoformat(una[-1]["date"])).days > DIAS_ATRASO
+def _atrasada(ultima: str, otra: list) -> bool:
+    """¿La última vela guardada de una serie (`ultima`, su fecha) tiene más de
+    `DIAS_ATRASO` de diferencia con la de `otra`? (Feriados de acá o de allá separan
+    las dos series 1 o 2 días.)"""
+    return (date.fromisoformat(otra[-1]["date"]) - date.fromisoformat(ultima)).days > DIAS_ATRASO
 
 
 @pesado
@@ -629,7 +630,12 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
         # guardada sin actualizar (a pedido sólo se baja la de afuera): si se
         # quedó atrás de la de afuera, se usa la de afuera × el MEP de cada día,
         # en vez de mostrar una lectura de hace semanas (auditoría 22/10).
-        if byma and afuera and _atrasada(byma, afuera):
+        # «Atrás» por lo GUARDADO, no por lo que se dibuja: mientras la lista de
+        # cambios de ratio decide un salto, esconde sus últimos días (`pendientes`)
+        # y la serie parecía atrasada; a los `DIAS_ATRASO` días el gráfico pasaba a
+        # la acción de afuera × el MEP, que es la acción ENTERA en pesos (el CEDEAR
+        # × su ratio): una noche, diez veces más alto (06/11/2026).
+        if byma and afuera and _atrasada(velas_diarias.ultima_fecha(conn, simbolo_byma(a)), afuera):
             byma = []
         if byma:
             return {"velas": byma, "ticker": simbolo_byma(a), "convertida": None}

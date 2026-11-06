@@ -880,6 +880,27 @@ class FichaTest(unittest.TestCase):
                 ars = self._ficha(byma, "ars")
                 self.assertEqual((ars["ticker"], ars["convertida"]), (f"{byma}.BA", None))
 
+    def test_un_salto_sin_decidir_no_pasa_la_ficha_en_pesos_a_la_accion_entera(self):
+        # El CEDEAR en pesos cae a la mitad hace 4 ruedas y la acción de afuera no se
+        # mueve: la lista de cambios de ratio todavía no lo decide (`pendientes`) y
+        # esconde esos días. La serie GUARDADA está al día: no es «atrasada». Antes, a
+        # los `DIAS_ATRASO` días la ficha en pesos pasaba a la acción de afuera × el
+        # MEP, que es la acción ENTERA en pesos (el CEDEAR × su ratio): ~20 veces más.
+        # Con 4 ruedas escondidas eso pasa cuando hay un fin de semana en el medio
+        # (el DISN simulado del 05/11: 6 días); con 3 de tope pasa cualquier día.
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "XLE", "CEDEAR")
+        self._mep(lambda i: 1000.0)
+        n = len(self.dias)
+        self.yahoo.precios["XLE"] = lambda i, d: 90.0
+        self.yahoo.precios["XLE.BA"] = lambda i, d: 4500.0 if i < n - 4 else 2250.0
+        main._run_velas_diarias_job()
+        with mock.patch("tecnico.DIAS_ATRASO", 3):
+            ars = self._ficha("XLE", "ars")
+        self.assertEqual((ars["ticker"], ars["convertida"]), ("XLE.BA", None))
+        self.assertEqual(ars["puntos"][-1]["d"], self.dias[n - 5].isoformat(), "hasta el día antes del salto")
+        self.assertEqual(ars["puntos"][-1]["c"], 4500.0)
+
     def test_cedear_con_otro_codigo_a_pedido(self):
         # Nadie tiene Nokia: la ficha la baja en el momento, como NOK.
         self.yahoo.precios["NOK"] = lambda i, d: 4 + i * 0.001

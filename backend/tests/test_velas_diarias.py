@@ -87,8 +87,10 @@ def _tabla(filas: dict) -> pd.DataFrame:
 
 
 class YahooFalso:
-    """Reemplaza a Yahoo. `precios[ticker](fecha)` da el cierre de ese día;
-    anota cada pedido para poder ver qué se le pidió. El S&P 500, que se guarda
+    """Reemplaza a Yahoo. `precios[ticker](fecha)` da el cierre de ese día, o
+    (cierre, volumen): con volumen 0 es una rueda «clavada», como las da Yahoo
+    (apertura, máximo y mínimo iguales al cierre). Anota cada pedido para poder
+    ver qué se le pidió. El S&P 500, que se guarda
     todas las noches lo tenga alguien o no (velas_diarias.SP500), va anotado
     aparte (`pedidos_sp500`) y con un precio fijo: así cada prueba cuenta los
     pedidos de lo que la gente tiene, y una prueba propia cuenta el del S&P."""
@@ -112,8 +114,8 @@ class YahooFalso:
         dias = _ruedas_del_periodo(self.hoy, period) + [self.hoy]
         filas = {}
         for d in dias:
-            c = f(d)
-            filas[d] = (c, c * 1.01, c * 0.99, c, 1000.0)
+            c, v = f(d) if isinstance(f(d), tuple) else (f(d), 1000.0)
+            filas[d] = (c, c * 1.01, c * 0.99, c, v) if v else (c, c, c, c, 0.0)
         return _tabla(filas)
 
 
@@ -139,8 +141,18 @@ class VelasDiariasTest(unittest.TestCase):
         # La lista de CEDEARs de BYMA (data912) también es red: vacía salvo en
         # el test que la necesita.
         self.byma = {}
+        # La historia de BYMA (data912), con la que se corrige un '.BA' que Yahoo
+        # trae clavado: {papel: [filas como las da data912]}; `byma_cae`: no contesta.
+        self.historia_byma, self.byma_cae, self.pedidos_byma = {}, False, []
+
+        def _data912(tipo, papel, timeout=10):
+            self.pedidos_byma.append(papel)
+            if self.byma_cae:
+                raise RuntimeError("data912 no contesta")
+            return self.historia_byma.get(papel, [])
         self._p = [mock.patch("main._check_rate_limit"),
                    mock.patch("pricing.yahoo._historia", self.yahoo),
+                   mock.patch("pricing.data912.filas", _data912),
                    # La corrida nocturna también arma la lista de cambios de ratio,
                    # que le pregunta a Yahoo sus splits y a data912 la historia:
                    # sin red, la prueba da lo mismo todos los días.
@@ -819,6 +831,117 @@ class VelasDiariasTest(unittest.TestCase):
             conn.commit()
         main._run_velas_diarias_job()
         self.assertNotIn(viejo, {v["date"] for v in self._velas("MSFT")})
+
+    # — Un '.BA' que Yahoo trae clavado se corrige con BYMA —
+    # DISN.BA quedó en 10.416 sin volumen desde el 24/05/2024 (601 ruedas) con BYMA
+    # en 16.200 (medido el 05 y el 06/11/2026). Los días de la racha salen de la
+    # historia de BYMA (data912) antes de guardar.
+
+    def _disney_clavado(self, ruedas: int = 300, byma=lambda c: c, operado=True):
+        """Disney en IOL (CEDEAR). Yahoo deja DISN.BA clavado desde `ruedas` ruedas
+        antes del final; BYMA tiene el precio de verdad de cada día (`byma(c)`: para
+        darlo en otra escala; sin `operado`, BYMA no tiene los días de la racha).
+        Devuelve ({fecha: cierre de verdad} hasta ayer, el día en que se clavó)."""
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "DISN", "CEDEAR")
+        dias = [d.isoformat() for d in _ruedas_del_periodo(self.hoy, velas_diarias.PERIODO_COMPLETO)]
+        real = {f: 10000.0 + 10 * i for i, f in enumerate(dias + [self.hoy.isoformat()])}
+        corte = dias[-ruedas]
+
+        def yahoo(d):
+            f = d.isoformat()
+            return real[f] if f <= corte else (real[corte], 0.0)
+        self.yahoo.precios["DISN.BA"] = yahoo
+        self.yahoo.precios["DIS"] = lambda d: 100.0
+        self.historia_byma["DISN"] = [
+            {"date": f, "o": byma(c), "h": byma(c) * 1.01, "l": byma(c) * 0.99, "c": byma(c), "v": 500.0}
+            for f, c in sorted(real.items()) if operado or f <= corte]
+        return {f: real[f] for f in dias}, corte
+
+    def _cierres(self, ticker):
+        return {v["date"]: v["close"] for v in self._velas(ticker)}
+
+    def test_un_ba_que_yahoo_trae_clavado_se_guarda_con_los_precios_de_byma(self):
+        real, corte = self._disney_clavado()
+        main._run_velas_diarias_job()
+        self.assertEqual(self._cierres("DISN.BA"), real, "cada día de la racha, el cierre de BYMA")
+        dia = next(v for v in self._velas("DISN.BA") if v["date"] > corte)
+        c = real[dia["date"]]
+        self.assertEqual((dia["open"], dia["high"], dia["low"], dia["volume"]), (c, c * 1.01, c * 0.99, 500.0),
+                         "la vela entera de BYMA, con su volumen")
+        noche = self._ultima_noche()
+        self.assertEqual((noche["corregidos_con_byma"], noche["dias_corregidos_con_byma"]), (1, 299))
+        # La ficha en pesos dibuja el precio de BYMA, no 10.416.
+        with main.db_abierta() as conn:
+            import tecnico
+            self.assertEqual(tecnico.serie(conn, "DISN", "ars")["velas"][-1]["close"], real[max(real)])
+
+    def test_la_noche_siguiente_no_vuelve_a_bajar_la_historia_entera(self):
+        # Lo corregido no es «la historia cambió» (`_historia_reescrita`): si no, se
+        # bajaba entera cada noche y la bajada entera la volvía a clavar.
+        real, _ = self._disney_clavado()
+        main._run_velas_diarias_job()
+        self.yahoo.pedidos.clear()
+        main._run_velas_diarias_job()
+        self.assertEqual([p[1] for p in self.yahoo.pedidos if p[0] == "DISN.BA"], ["1mo"])
+        self.assertEqual(self._cierres("DISN.BA"), real)
+
+    def test_lo_que_quedo_guardado_clavado_se_arregla_la_noche_siguiente(self):
+        # Así está DISN.BA hoy en la base: lo guardó la noche de antes del arreglo (sin
+        # corregir nada). La primera noche con el arreglo, el último mes corregido no
+        # coincide con lo guardado: se baja la historia entera y se corrige entera.
+        real, corte = self._disney_clavado()
+        with mock.patch("velas_diarias._rachas_a_corregir", lambda velas, guardado=None: []):
+            main._run_velas_diarias_job()
+        self.assertEqual(self._cierres("DISN.BA")[max(real)], real[corte], "lo de Yahoo, clavado")
+        self.yahoo.pedidos.clear()
+        main._run_velas_diarias_job()
+        self.assertEqual([p[1] for p in self.yahoo.pedidos if p[0] == "DISN.BA"], ["1mo", "5y"])
+        self.assertEqual(self._cierres("DISN.BA"), real)
+
+    def test_si_data912_no_contesta_no_se_pisa_lo_corregido(self):
+        # Lo nuevo de Yahoo es el mismo cierre clavado: guardarlo pisaba lo corregido
+        # (y lo bajaba entero de nuevo). Queda para mañana, sin anotarse.
+        real, _ = self._disney_clavado()
+        main._run_velas_diarias_job()
+        self.byma_cae = True
+        self.yahoo.pedidos.clear()
+        main._run_velas_diarias_job()
+        self.assertEqual(self._cierres("DISN.BA"), real, "lo corregido sigue")
+        self.assertEqual([p[1] for p in self.yahoo.pedidos if p[0] == "DISN.BA"], ["1mo"], "sin bajarla entera")
+        self.assertEqual(self._ultima_noche()["byma_sin_respuesta"], 1)
+        self.byma_cae = False
+        main._run_velas_diarias_job()
+        self.assertEqual(self._cierres("DISN.BA"), real)
+
+    def test_si_byma_esta_en_otra_escala_no_se_mezcla(self):
+        # data912 corrige algunos cambios de ratio viejos (AAPL en 2024): su historia
+        # en otra escala no se pega a la de Yahoo. Y la noche siguiente tampoco: si
+        # no, cada noche «la historia cambió» y se bajaba entera.
+        real, corte = self._disney_clavado(byma=lambda c: c / 2)
+        main._run_velas_diarias_job()
+        self.assertEqual(self._cierres("DISN.BA")[max(real)], real[corte])
+        self.yahoo.pedidos.clear()
+        main._run_velas_diarias_job()
+        self.assertEqual([p[1] for p in self.yahoo.pedidos if p[0] == "DISN.BA"], ["1mo"])
+        self.assertEqual(self._cierres("DISN.BA")[max(real)], real[corte])
+
+    def test_un_papel_que_no_se_opero_queda_como_lo_dio_yahoo(self):
+        # Sin operaciones en BYMA esos días, el mismo cierre sin volumen es la verdad.
+        real, corte = self._disney_clavado(operado=False)
+        main._run_velas_diarias_job()
+        guardado = self._cierres("DISN.BA")
+        self.assertEqual({guardado[f] for f in guardado if f >= corte}, {real[corte]})
+        self.assertEqual(self._ultima_noche()["corregidos_con_byma"], 0)
+
+    def test_lo_que_se_opera_no_le_pide_nada_a_byma(self):
+        # Una racha necesita el mismo cierre SIN volumen: un precio quieto que se opera
+        # (MSFT a 400 con volumen) no es un dato muerto, y no gasta un pedido a data912.
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "GGAL", "ACCION")
+        self.yahoo.precios["GGAL.BA"] = lambda d: 6000.0
+        main._run_velas_diarias_job()
+        self.assertEqual(self.pedidos_byma, [])
 
     def test_si_la_foto_diaria_falla_las_velas_corren_igual(self):
         self._broker("Schwab", "USD")

@@ -1,0 +1,21 @@
+Medido el 2026-11-06 sobre medir.db (aparte)
+
+BYMA (data912), de referencia: último 16.100 (2026-11-05) · 1 año 15,5 % · 2023-06-30 3.814 · 2024-12-31 10.975 · 2025-11-04 14.090
+
+1.ª noche (sin la corrección, como el código de antes): {'completas': 2, 'incrementales': 0, 'corregidos_con_byma': [], 'byma_sin_respuesta': [], 'reescritas': []}
+## ANTES: lo que da Yahoo (como hoy en producción)
+  DISN.BA guardado: 602 ruedas con el mismo cierre que la anterior y sin volumen
+  ficha en pesos:   serie DISN.BA · último 10.416 (2026-11-05) · 1 año 0,0 % · 2023-06-30 3.814 · 2024-12-31 10.416 · 2025-11-04 10.416 · tendencia alcista · vs media 200 0,0 % · RSI 57
+  ficha en dólares: serie DIS · último 117,22 (2026-11-05) · 1 año 5,3 % · 2023-06-30 89,28 · 2024-12-31 111,35 · 2025-11-04 111,47 · tendencia alcista · vs media 200 13,2 % · RSI 68
+  cambios de ratio: [('2022-11-17', 'ratio', 'dudoso', 2.8274, 1)] (sin respuesta de Yahoo: ninguno)
+  «Ajustar» ofrece: nada · el gráfico empalma [('2022-11-17', 2.8274)]
+
+2.ª noche (con la corrección): {'completas': 2, 'incrementales': 1, 'corregidos_con_byma': ['DISN.BA'], 'dias_corregidos_con_byma': 601, 'byma_sin_respuesta': [], 'reescritas': ['DISN.BA']}
+## DESPUÉS: corregido con BYMA
+  DISN.BA guardado: 2 ruedas con el mismo cierre que la anterior y sin volumen
+  ficha en pesos:   serie DISN.BA · último 16.100 (2026-11-05) · 1 año 15,5 % · 2023-06-30 3.814 · 2024-12-31 10.975 · 2025-11-04 14.090 · tendencia alcista · vs media 200 21,0 % · RSI 74
+  ficha en dólares: serie DIS · último 117,22 (2026-11-05) · 1 año 5,3 % · 2023-06-30 89,28 · 2024-12-31 111,35 · 2025-11-04 111,47 · tendencia alcista · vs media 200 13,2 % · RSI 68
+  cambios de ratio: [('2022-11-17', 'ratio', 'dudoso', 2.8274, 1)] (sin respuesta de Yahoo: ninguno)
+  «Ajustar» ofrece: nada · el gráfico empalma [('2022-11-17', 2.8274)]
+
+3.ª noche: {'completas': 0, 'incrementales': 3, 'corregidos_con_byma': ['DISN.BA'], 'dias_corregidos_con_byma': 23, 'reescritas': []} ← sin bajar otra vez la historia entera
