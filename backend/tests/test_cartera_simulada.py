@@ -330,6 +330,68 @@ class AnioPorAnio(unittest.TestCase):
         self.assertTrue(all("sp500" in t and "nasdaq" not in t for t in apa["tramos"]))
         self.assertEqual(set(apa["por_anio"]), {"cartera", "sp500"})
 
+    # Las que siguen las propuso la auditoría de las pruebas de «Año por año» (06/11):
+    # cada una da rojo con su copia rota de cartera_simulada.py, y las de arriba
+    # quedaban en verde. Con fechas escritas, no con `_primer_dia`: si LA regla del
+    # período se corre un día, lo esperado no se corre con ella.
+
+    def test_un_activo_que_llega_unos_dias_despues_no_achica_el_primer_anio(self):
+        # Hasta una semana después de lo pedido no es un recorte (`comparar.DIAS_MARGEN`):
+        # arriba dice «Los 3 años», y el primero de los tres es un año (360 días), no un
+        # renglón de «12 meses» que el veredicto no cuenta.
+        nueva = [_activo("NUEVA", 100, [v for v in _habiles(800, lambda i: 10 + i * 0.01) if v["date"] >= "2023-11-06"])]
+        r = self._cartera(activos=nueva)
+        self.assertEqual((r["pedido_desde"], r["desde"], r["recortado"]), ("2023-11-01", "2023-11-06", False))
+        self.assertEqual([(t["desde"], t["hasta"], t["dias"], t["completo"]) for t in r["anio_por_anio"]["tramos"]],
+                         [("2023-11-06", "2024-10-31", 360, True), ("2024-10-31", "2025-10-31", 365, True),
+                          ("2025-10-31", "2026-10-30", 364, True)])
+
+    def test_cinco_semanas_antes_del_primer_anio_van_aparte(self):
+        # «Menos de un mes» va con el año que sigue (`TRAMO_MIN_DIAS`: los 20 días de
+        # arriba); cinco semanas ya son su renglón. Las dos puntas de la regla.
+        nueva = [_activo("NUEVA", 100, [v for v in _habiles(800, lambda i: 10 + i * 0.01) if v["date"] >= "2024-09-26"])]
+        r = self._cartera(activos=nueva)
+        self.assertEqual([(t["desde"], t["hasta"], t["dias"], t["completo"]) for t in r["anio_por_anio"]["tramos"]],
+                         [("2024-09-26", "2024-10-31", 35, False), ("2024-10-31", "2025-10-31", 365, True),
+                          ("2025-10-31", "2026-10-30", 364, True)])
+
+    def test_un_anio_que_empieza_un_domingo_vale_el_cierre_del_viernes(self):
+        # Con el último precio un lunes, el año de hace dos arranca un domingo (365 días
+        # son 52 semanas y uno). Ese día vale el último cierre, el del viernes: LA regla
+        # del gráfico y de elegir «2 años» (`comparar.base_cien`), no la rueda del lunes.
+        # Arriba todos los bordes caían en días con rueda, y no se veía.
+        lunes = date(2026, 11, 2)
+        sube = _habiles(800, lambda i: 100 + 30 * math.sin(i / 50) + i * 0.1, fin=lunes)
+        baja = _habiles(800, lambda i: 80 - i * 0.02 + 5 * math.sin(i / 30), fin=lunes)
+        indices = {"sp500": _habiles(800, lambda i: 4000 + i, fin=lunes),
+                   "nasdaq": _habiles(800, lambda i: 12000 + 5 * i, fin=lunes)}
+        simular = lambda anios: cs.simular([_activo("SUBE", 60, sube), _activo("BAJA", 40, baja)], indices, anios)
+        r = simular(3)
+        tramos = r["anio_por_anio"]["tramos"]
+        self.assertEqual([t["desde"] for t in tramos], ["2023-11-04", "2024-11-03", "2025-11-03"])  # sábado, domingo, lunes
+        # Cada índice: los últimos años encadenados dan lo mismo que elegir «1 año» y «2 años».
+        for n in (1, 2):
+            for i in simular(n)["indices"]:
+                with self.subTest(anios=n, indice=i["clave"]):
+                    encadenados = math.prod(1 + t[i["clave"]] / 100 for t in tramos[-n:])
+                    self.assertAlmostEqual((encadenados - 1) * 100, i["resultado"], places=3)
+        # La cartera, contra la cuenta hecha a mano: 60 y 40 comprados el primer día, cada
+        # uno con su último cierre en cada borde.
+        cierre = lambda velas, d: max((v["date"], v["close"]) for v in velas if v["date"] <= d)[1]
+        valor = lambda d: (60 * cierre(sube, d) / cierre(sube, r["desde"]) + 40 * cierre(baja, d) / cierre(baja, r["desde"]))
+        for t in tramos:
+            with self.subTest(tramo=t["desde"]):
+                self.assertAlmostEqual(t["cartera"], (valor(t["hasta"]) / valor(t["desde"]) - 1) * 100, places=3)
+
+    def test_un_anio_y_dos_semanas_es_un_solo_tramo_y_no_hay_anio_por_anio(self):
+        # «2 años» de un activo que cotiza hace un año y dos semanas: lo de antes del año
+        # entero dura menos de un mes y va con él. Queda UN tramo, que sería el total otra
+        # vez: no hay «Año por año» (con 1 año la regla ni llegaba a unir nada).
+        nueva = [_activo("NUEVA", 100, [v for v in _habiles(800, lambda i: 10 + i * 0.01) if v["date"] >= "2025-10-17"])]
+        r = self._cartera(anios=2, activos=nueva)
+        self.assertEqual((r["disponible"], r["recortado"], r["desde"]), (True, True, "2025-10-17"))
+        self.assertIsNone(r["anio_por_anio"])
+
     def test_sin_recorte_el_primero_es_un_anio_aunque_el_primer_dia_se_corra(self):
         # El activo arranca hasta 7 días después del pedido (no es recorte) y los índices,
         # 7 días después de él (corren el primer día): el primer año dura menos de 358
@@ -755,7 +817,12 @@ class Ruta(unittest.TestCase):
 
     def test_accion_argentina_con_su_precio_de_byma(self):
         self._posicion("IOL", "ARS", "GGAL", "ACCION")
+        # El ADR, guardado (otra persona lo tiene en Schwab): sin él, la ficha caía sola en
+        # BYMA ÷ MEP y esta prueba daba verde aunque la cartera perdiera la marca de acción
+        # argentina (lo mismo que encontró la auditoría de las pruebas de «Año por año»,
+        # 06/11, en la de abajo).
         self.yahoo.precios["GGAL"] = lambda i, d: 50.0
+        self._lote(self._persona(), "Schwab", "USD", "GGAL", "STOCK", 10, 100)
         self.yahoo.precios["GGAL.BA"] = lambda i, d: 5000 + 800 * math.sin(i / 10)
         main._run_velas_diarias_job()
         res = self._get("activos=GGAL,AAPL&pesos=50,50&local=GGAL&anios=1").json()
@@ -781,8 +848,13 @@ class Ruta(unittest.TestCase):
                              (d.isoformat(), 1100.0 * inflacion(d), 1000.0 * inflacion(d)))
             conn.commit()
         self._posicion("IOL", "ARS", "GGAL", "ACCION")
-        self.yahoo.precios["GGAL"] = lambda i, d: 50.0
+        # El ADR, guardado (otra persona lo tiene en Schwab) y subiendo (~29 % por año):
+        # si la cartera usara su serie y no la de BYMA ÷ MEP, cada año daría eso y no 0 %.
+        # Sin el ADR guardado, la ficha cae sola en BYMA ÷ MEP y la prueba no lo distinguía
+        # (auditoría de las pruebas de «Año por año», 06/11).
+        self.yahoo.precios["GGAL"] = lambda i, d: 50.0 * 1.001 ** i
         self.yahoo.precios["GGAL.BA"] = lambda i, d: 5000 * inflacion(d)
+        self._lote(self._persona(), "Schwab", "USD", "GGAL", "STOCK", 10, 100)
         main._run_velas_diarias_job()
         res = self._get("activos=GGAL&pesos=100&local=GGAL&anios=2").json()
         self.assertTrue(res["disponible"], res)

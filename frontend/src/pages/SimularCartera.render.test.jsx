@@ -336,6 +336,28 @@ describe('Backtesting → Una cartera', () => {
     expect(montado.t()).toContain('Cada activo')
     expect(montado.t()).not.toContain('Año por año')
   })
+
+  // La propuso la auditoría de las pruebas de «Año por año» (06/11): el orden de los
+  // renglones y lo de cada columna sólo lo veía la foto de la pantalla (`vitest -u`).
+  it('año por año, renglón por renglón: primero el total, cada año y el promedio, cada uno con lo de su columna', async () => {
+    const r = CASOS.tres_anios
+    simulacion = () => ({ ...r, curva: [] })
+    montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera')
+    const tabla = todos(montado.contenedor, n => n.nodeName === 'TABLE' && n.atributos?.['aria-labelledby'] === 'sc-anios')[0]
+    const parejo = (s) => s.replace(/\s+/g, ' ')
+    const renglones = todos(tabla, n => n.nodeName === 'TR').map(tr => tr.childNodes.map(c => parejo(texto(c))))
+    const pct = (x) => ['cartera', 'sp500', 'nasdaq'].map(c => parejo(porcentaje(x[c])))
+    const [sp, nq] = r.indices
+    const [a1, a2, a3] = r.anio_por_anio.tramos
+    expect(renglones).toEqual([
+      ['Período', 'Esta cartera', 'S&P 500', 'Nasdaq'],
+      ['Los 3 años01/11/23 → al 30/10/26', ...pct({ cartera: r.cartera.resultado, sp500: sp.resultado, nasdaq: nq.resultado })],
+      ['Año 101/11/23 → al 31/10/24', ...pct(a1)],
+      ['Año 231/10/24 → al 31/10/25', ...pct(a2)],
+      ['Año 331/10/25 → al 30/10/26', ...pct(a3)],
+      ['Por año, en promedio', ...pct(r.anio_por_anio.por_anio)],
+    ])
+  })
 })
 
 describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {

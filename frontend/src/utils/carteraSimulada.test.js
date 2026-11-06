@@ -372,6 +372,14 @@ describe('año por año (Nico, 06/11)', () => {
       .toEqual(['La cartera y el S&P 500 habrían dado casi lo mismo en cada uno de los 3 años.'])
   })
 
+  // La propuso la auditoría de las pruebas de «Año por año» (06/11): con la regla
+  // copiada sin `comoSeVe` (los números crudos), ningún caso de arriba cambiaba.
+  it('un año se compara como se ve: +11,0% contra +10,0% es un punto, no «casi lo mismo»', () => {
+    expect([porcentaje(10.96), porcentaje(10)]).toEqual(['+11,0%', '+10,0%'])
+    expect(veredicto([10.96, 20, 30], [10, 25, 35]))
+      .toEqual(['El S&P 500 le habría ganado a la cartera en 2 de los 3 años; la cartera al S&P 500, en el otro.'])
+  })
+
   it('con «Mi cartera de hoy» avisa que da de más, también acá (auditoría M2)', () => {
     expect(lecturaAnioPorAnio(CASOS.tres, { origen: 'hoy' }).aviso)
       .toBe('Es tu cartera de hoy puesta en el pasado: año por año, también da de más.')
