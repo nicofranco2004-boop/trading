@@ -66,7 +66,7 @@ import { api } from '../utils/api'
 import { PERIODOS_CARTERA, aniosDe, colorDe, porcentaje } from '../utils/backtesting'
 import {
   COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, aLaDireccion, carteraDe, consultaDe,
-  errorDeHoy, estadoDeLaCartera, filasDeHoy, lecturaCartera, limpiar, loQueFalta, motivoCartera, notaDeHoy,
+  errorDeHoy, estadoDeLaCartera, filasDeHoy, lecturaAnioPorAnio, lecturaCartera, limpiar, loQueFalta, motivoCartera, notaDeHoy,
   notaDeLosQueSobran, notaDelResumen, notaHoy, notaOjito, notaSinActivos, origenDe, origenes, pesoTxt, repartirIgual,
   rotuloDelAnterior, sobranDe, textoDe, tramosDeLaBarra, trayendoHoy,
 } from '../utils/carteraSimulada'
@@ -372,7 +372,7 @@ export default function SimularCartera() {
         </div>}
       </section>
 
-      {!tapada && <Detalle sim={sim} vista={vista} />}
+      {!tapada && <Detalle sim={sim} vista={vista} origen={deDonde} cliente={cliente} />}
     </div>
   )
 }
@@ -580,9 +580,9 @@ function Resumen({ res, cargando = false, anterior = null, origen, cliente }) {
   )
 }
 
-/** Debajo de la tarjeta: el gráfico, «Cada activo» y cómo se simula, del MISMO
- *  resultado que se ve al lado de la tabla (tenue si aquél lo está). */
-function Detalle({ sim, vista }) {
+/** Debajo de la tarjeta: «Año por año», el gráfico, «Cada activo» y cómo se simula,
+ *  del MISMO resultado que se ve al lado de la tabla (tenue si aquél lo está). */
+function Detalle({ sim, vista, origen, cliente }) {
   if (!vista) {
     // La primera vez, mientras llega: el lugar del gráfico.
     const esperando = sim.consulta && !sim.error && !sim.trayendo && (!sim.res || sim.cargando)
@@ -591,11 +591,84 @@ function Detalle({ sim, vista }) {
   const { res } = vista
   return (
     <div className={`flex flex-col gap-4 ${vista.tenue ? 'opacity-60' : ''} transition-opacity`}>
+      <AnioPorAnio res={res} origen={origen} cliente={cliente} />
       <GraficoDeCien curva={res.curva} desde={res.desde} hasta={res.hasta}
         lineas={lineasDe(res).map(l => ({ clave: l.clave, nombre: l.nombre, color: l.color, dash: l.dash, final: l.resumen.final }))} />
       <CadaActivo res={res} frases={lecturaCartera(res).deLosActivos} />
       <p className="text-[12px] text-ink-2 leading-relaxed">{COMO_SE_SIMULA_CARTERA}</p>
     </div>
+  )
+}
+
+/** «Año por año» (Nico, 06/11): el total de la respuesta, abierto en años, y al final
+ *  quién habría ganado más años. Va entre la respuesta y el gráfico: si fue parejo o si
+ *  un año lo explica casi todo es la pregunta que deja el total. Con un solo año, nada. */
+function AnioPorAnio({ res, origen, cliente }) {
+  const lec = lecturaAnioPorAnio(res, { origen, cliente })
+  if (!lec) return null
+  const lineas = lineasDe(res)
+  // «08/11/21 →» no se separa (a 320 quedaba la flecha sola en un renglón), y el lector
+  // de pantalla oye «al» en vez de «flecha derecha», como en «Cada activo» (auditoría
+  // de pantalla 06/11, B3 y B5).
+  const rotulo = (txt, t, fuerte = false) => (
+    <th scope="row" className={`py-2 pr-2 text-left text-[14px] text-ink-0 ${fuerte ? 'font-semibold' : 'font-medium'}`}>
+      {txt}
+      {t && (
+        <span className="block text-[12px] font-normal text-ink-2">
+          <span className="whitespace-nowrap">{fechaCorta(t.desde)}<span aria-hidden="true"> →</span></span>
+          <span className="sr-only"> al</span> <span className="whitespace-nowrap">{fechaCorta(t.hasta)}</span>
+        </span>
+      )}
+    </th>
+  )
+  const celda = (l, x, fuerte = false) => (
+    <td key={l.clave} className={`py-2 pl-1.5 sm:pl-4 text-right text-[14px] ${fuerte || l.clave === 'cartera' ? 'font-semibold' : ''} ${colorDe(x)}`}>
+      {porcentaje(x)}
+    </td>
+  )
+  return (
+    <section aria-labelledby="sc-anios" className="bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 flex flex-col gap-1.5">
+      <h3 id="sc-anios" className="text-[15px] font-semibold text-ink-0">Año por año</h3>
+      {lec.frase && <p className="text-[13.5px] text-ink-1 leading-relaxed">{lec.frase}</p>}
+      {/* Con resultados de cuatro cifras, a 320 no entra: se desliza adentro de la tarjeta (B4). */}
+      <div className="overflow-x-auto mt-1">
+        <table aria-labelledby="sc-anios" className="w-full tabular">
+          <thead>
+            <tr className="border-b border-line text-[12px] text-ink-2">
+              <th scope="col" className="pb-1.5 text-left font-medium">Período</th>
+              {lineas.map(l => (
+                <th key={l.clave} scope="col" className="pb-1.5 pl-1.5 sm:pl-4 text-right font-medium">
+                  {/* En el celular, la marca arriba del nombre: cuatro columnas entran en 375. */}
+                  <span className="inline-flex flex-col sm:flex-row items-end sm:items-center gap-1 sm:gap-2">
+                    <Trazo color={l.color} dash={l.dash} />{l.nombre}
+                  </span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {/* Primero el total, después cada año (Nico, 06/11). */}
+            <tr className="border-b border-line">
+              {rotulo(lec.total.rotulo, lec.total, true)}
+              {lineas.map(l => celda(l, l.resumen.resultado, true))}
+            </tr>
+            {lec.filas.map(f => (
+              <tr key={f.desde} className="border-b border-line/60">
+                {rotulo(f.rotulo, f)}
+                {lineas.map(l => celda(l, f[l.clave]))}
+              </tr>
+            ))}
+            <tr>
+              {rotulo('Por año, en promedio', null, true)}
+              {lineas.map(l => celda(l, lec.promedio[l.clave], true))}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      {lec.aviso && <p className="pt-1 text-[13px] text-ink-1 leading-relaxed">{lec.aviso}</p>}
+      {lec.veredicto.map(v => <p key={v} className="pt-1 text-[14px] font-semibold text-ink-0 leading-relaxed">{v}</p>)}
+      <p className="pt-1 text-[12px] text-ink-2 leading-relaxed">{lec.nota}</p>
+    </section>
   )
 }
 

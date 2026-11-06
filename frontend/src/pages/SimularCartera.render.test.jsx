@@ -311,6 +311,53 @@ describe('Backtesting → Una cartera', () => {
     expect(montado.t()).toContain('Todavía no tenemos la historia del Nasdaq para compararla.')
     expect(new Set(dibujado.lineas)).toEqual(new Set(['cartera', 'sp500']))
   })
+
+  it('año por año: el total abierto en años, entre la respuesta y el gráfico, y al final quién ganó más años', async () => {
+    // Nico, 06/11: el total esconde si fue parejo o si un año lo explica casi todo.
+    simulacion = () => ({ ...CASOS.tres_anios, curva: [] })
+    montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera')
+    const t = montado.t()
+    // El lector de pantalla oye «del … al …»; la flecha es sólo para la vista (auditoría de pantalla 06/11, B5).
+    for (const parte of ['Año por año', 'Los 3\u00a0años', '01/11/23 → al 30/10/26', 'Año 1', '01/11/23 → al 31/10/24',
+      'Año 3', '31/10/25 → al 30/10/26', 'Por año, en promedio', porcentaje(CASOS.tres_anios.anio_por_anio.por_anio.cartera),
+      'El año que más habría subido la cartera es el 2 (del 31/10/24 al 31/10/25)',
+      'El S&P 500 le habría ganado a la cartera en 2 de los 3 años; la cartera al S&P 500, en el otro.',
+      'El Nasdaq le habría ganado a la cartera en 2 de los 3 años; la cartera al Nasdaq, en el otro.']) {
+      expect(t, parte).toContain(parte)
+    }
+    // Entre la respuesta y el gráfico, afuera de la tarjeta de arriba.
+    expect(t.indexOf('Año por año')).toBeGreaterThan(t.indexOf('Peor caída'))
+    expect(t.indexOf('Año por año')).toBeLessThan(t.indexOf('Cómo habrían ido US$ 100'))
+    expect(texto(laTarjeta(montado.contenedor))).not.toContain('Año por año')
+    // Con un solo año no está: sería el total otra vez.
+    await montado.desmontar()
+    simulacion = () => ({ ...CASOS.todos_restan, curva: [] })
+    montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera')
+    expect(montado.t()).toContain('Cada activo')
+    expect(montado.t()).not.toContain('Año por año')
+  })
+
+  // La propuso la auditoría de las pruebas de «Año por año» (06/11): el orden de los
+  // renglones y lo de cada columna sólo lo veía la foto de la pantalla (`vitest -u`).
+  it('año por año, renglón por renglón: primero el total, cada año y el promedio, cada uno con lo de su columna', async () => {
+    const r = CASOS.tres_anios
+    simulacion = () => ({ ...r, curva: [] })
+    montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera')
+    const tabla = todos(montado.contenedor, n => n.nodeName === 'TABLE' && n.atributos?.['aria-labelledby'] === 'sc-anios')[0]
+    const parejo = (s) => s.replace(/\s+/g, ' ')
+    const renglones = todos(tabla, n => n.nodeName === 'TR').map(tr => tr.childNodes.map(c => parejo(texto(c))))
+    const pct = (x) => ['cartera', 'sp500', 'nasdaq'].map(c => parejo(porcentaje(x[c])))
+    const [sp, nq] = r.indices
+    const [a1, a2, a3] = r.anio_por_anio.tramos
+    expect(renglones).toEqual([
+      ['Período', 'Esta cartera', 'S&P 500', 'Nasdaq'],
+      ['Los 3 años01/11/23 → al 30/10/26', ...pct({ cartera: r.cartera.resultado, sp500: sp.resultado, nasdaq: nq.resultado })],
+      ['Año 101/11/23 → al 31/10/24', ...pct(a1)],
+      ['Año 231/10/24 → al 31/10/25', ...pct(a2)],
+      ['Año 331/10/25 → al 30/10/26', ...pct(a3)],
+      ['Por año, en promedio', ...pct(r.anio_por_anio.por_anio)],
+    ])
+  })
 })
 
 describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
@@ -694,6 +741,8 @@ describe('Una cartera — lo que encontraron las auditorías del 05/11', () => {
       recortada: `${DE_CERO}&activos=AAPL,GGAL,NUEVA&pesos=50,30,20&local=GGAL&anios=2`,
       vieja: `${DE_CERO}&activos=AAPL,GGAL,PARADA&pesos=50,30,20&local=GGAL&anios=2`,
       todos_restan: `${DE_CERO}&activos=BAJA1,BAJA2&pesos=60,40&anios=1`,
+      tres_anios: `${DE_CERO}&activos=AAPL,GGAL,BTC&pesos=50,30,20&local=GGAL&anios=3`,
+      tramo_corto: `${DE_CERO}&activos=AAPL,GGAL,NUEVA&pesos=50,30,20&local=GGAL&anios=3`,
     }
     expect(Object.keys(DE).sort()).toEqual(Object.keys(CASOS).sort())
     const textos = {}

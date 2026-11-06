@@ -29,8 +29,9 @@
 // CEDEAR en BYMA ÷ dólar), y están marcados abajo como tales.
 //
 // El método medido se validó contra la lista oficial: de 131 símbolos que se
-// pudieron cruzar, acertó 128 y falló 3 (HOOD 30 vs 29, AZN 4 vs 2, OKLO 29 vs
-// 28) — ~2% de error, por eso la oficial manda donde existe.
+// pudieron cruzar, coincidió en 128 y difirió en 3. En HOOD (30 vs 29) y OKLO (29
+// vs 28) erró por 1, y por eso la oficial manda donde existe. En AZN (4 vs 2) el
+// que tenía razón era el precio: ver "CUANDO COMAFI CUENTA OTRA COSA".
 //
 // Una tercera fuente sirvió de desempate: el nombre que BYMA publica para el
 // símbolo .BA vía yfinance, que lleva el ratio adentro ('ALPHABET INC CEDEAR
@@ -44,6 +45,23 @@
 // Lo que ninguna fuente cubre queda FUERA de la tabla a propósito: sin ratio, el
 // consumidor no publica el monto. Un número ausente es honesto; uno inflado 58×
 // no.
+//
+// CUANDO COMAFI CUENTA OTRA COSA
+// ──────────────────────────────
+// La columna de Comafi cuenta CEDEARs por el papel sobre el que se armó el
+// programa ("Acción ó ADR"). Si ese papel desaparece, la lista puede quedarse con
+// el número viejo. Pasó con AstraZeneca: el programa es de 2 CEDEARs por ADR, y
+// el ADR era media acción. El 02/02/2026 la empresa canjeó cada ADR por media
+// acción y empezó a cotizar la acción ENTERA en Nueva York con el mismo código;
+// Yahoo, de donde sale el dividendo "por acción", lo anotó como un split de 0,5.
+// El CEDEAR no cambió: sigue siendo medio ADR viejo, o sea un cuarto de acción.
+// Contra lo que cotiza hoy son 4, y Comafi (lista al 30/09/2026) sigue anotando
+// 2: con 2, el dividendo anunciado salía el doble. Verificado el 06/11/2026 por
+// tres lados: el precio (4,00 de mediana en 230 ruedas, ninguna a más de 10 %),
+// un cobro real importado (4,7: 4 menos comisiones) y la lista de BYMA que
+// publica Rankia (4:1). Va en su propio bloque, abajo, y también en
+// backend/scripts/check_cedear_ratios.py (`NO_SEGUIR_A_COMAFI`): sin eso, el
+// chequeo contra Comafi la volvería a 2.
 //
 // CUANDO ESTA TABLA ENVEJEZCA
 // ───────────────────────────
@@ -60,7 +78,7 @@ import { cedearEspecieBase, CEDEAR_TICKERS } from './tickers'
 export const CEDEAR_RATIOS = {
   // ── Ratio OFICIAL de Comafi (lista del 17.9.2026) ─────────────────────
   AAL: 2, AAPL: 20, ABBV: 10, ABEV: 1/3, ACWI: 26, ADBE: 44, ALAB: 44, AMD: 10,
-  AMGN: 30, AMZN: 144, ANET: 29, ASML: 146, ASTS: 15, AVGO: 39, AXP: 15, AZN: 2,
+  AMGN: 30, AMZN: 144, ANET: 29, ASML: 146, ASTS: 15, AVGO: 39, AXP: 15,
   BA: 24, BABA: 9, BAC: 4, BAK: 2, BB: 3, BBD: 1, BIDU: 11, BIOX: 1, BMNR: 8, BMY: 3,
   'BRK-B': 22, BRKB: 22, C: 3, CAT: 20, CEG: 45, COIN: 27, COP: 25, COPX: 14, COST: 48,
   CRM: 18, CRWD: 79, CRWV: 27, CSCO: 5, CVX: 16, DE: 40, DISN: 12, DOCU: 22, DOW: 6,
@@ -76,9 +94,13 @@ export const CEDEAR_RATIOS = {
   TSM: 9, TWLO: 36, UNH: 33, V: 18, VALE: 2, VIG: 39, VIST: 3, VST: 26, WFC: 5,
   WMT: 18, XLV: 29, XOM: 10, XYZ: 20, ZM: 47,
 
+  // ── Distinto de Comafi a propósito: su lista cuenta contra un papel que ya no
+  //    existe (ver "CUANDO COMAFI CUENTA OTRA COSA"). Verificado a mano.
+  AZN: 4,
+
   // ── Sin fila en la lista de Comafi (ETFs, y acciones de otros emisores):
   //    ratio MEDIDO del precio. Contra los 131 que sí se pudieron cruzar, el
-  //    método acertó 128 — o sea que acá puede haber alguno corrido en 1.
+  //    método erró 2, por 1 — o sea que acá puede haber alguno corrido en 1.
   ABNB: 15, ARKK: 10, EA: 14, EEM: 5, ETHA: 5, EWY: 50, EWZ: 2, F: 1, GLD: 50, HUT: 5,
   JMIA: 1, KEEL: 1/5, MSTR: 20, MU: 5, PANW: 50, QQQ: 20, SATL: 1, SPY: 60, UBER: 2,
   URA: 5, XLE: 2, XLF: 2,

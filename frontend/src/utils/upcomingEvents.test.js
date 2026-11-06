@@ -13,6 +13,7 @@ import {
   countryFlag,
   isMacroEvent,
   dividendPayout,
+  eventCobro,
 } from './upcomingEvents.js'
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -359,6 +360,33 @@ describe('dividendPayout', () => {
     const r = dividendPayout(ev, [{ asset: 'GOOGL', quantity: 190, broker: 'Balanz', is_cash: 0 }])
     expect(r.amount).toBeCloseTo(0.69, 2)     // el broker depositó 0,70
     expect(r.ratio).toBe(58)
+  })
+
+  // AstraZeneca: Yahoo publica el dividendo por ACCIÓN entera (desde el 02/02/2026
+  // «AZN» en Nueva York es la acción, no el ADR de media acción) y un CEDEAR es un
+  // cuarto de acción. Por eventCobro, la cuenta que usan la agenda de Eventos y la
+  // pestaña Cobros, con lo que les pasa la pantalla (precios y dólar del 05/11).
+  const ctxAzn = (quantity) => ({
+    positions: [{ asset: 'AZN', quantity, broker: 'Balanz', is_cash: 0 }],
+    prices: { AZN: 186.85, 'AZN.BA': 78300 },
+    tc: 1588.6,
+  })
+
+  it('AZN: 100 CEDEARs son 25 acciones y cobran US$26,50, no US$53', () => {
+    const r = eventCobro(norm(backendEvent('AZN', 1.06)), ctxAzn(100))   // US$ por acción
+    expect(r.ratio).toBe(4)
+    expect(r.shares).toBeCloseTo(25, 6)
+    expect(r.amount).toBeCloseTo(26.5, 2)    // con el 2 de Comafi decía US$53
+    expect(r.perUnit).toBeCloseTo(0.265, 4)  // por CEDEAR
+  })
+
+  it('AZN reconcilia con un cobro real: arriba de lo cobrado por las comisiones, no al doble', () => {
+    // Cobro importado de Balanz (septiembre 2020): US$0,1925 por CEDEAR, con un
+    // dividendo de US$0,90 por acción. La cuenta da el bruto; lo cobrado es neto.
+    const r = eventCobro(norm(backendEvent('AZN', 0.90)), ctxAzn(100))
+    const cobrado = 100 * 0.1925
+    expect(r.amount / cobrado).toBeGreaterThan(1)
+    expect(r.amount / cobrado).toBeLessThan(1.25)    // con 2 daba 2,34
   })
 
   it('una acción real en broker USD no se divide', () => {

@@ -28,7 +28,7 @@ from __future__ import annotations
 CEDEAR_RATIOS = {
     # ── Ratio OFICIAL de Comafi (lista del 17.9.2026) ─────────────────────
     "AAL": 2, "AAPL": 20, "ABBV": 10, "ABEV": 1 / 3, "ACWI": 26, "ADBE": 44, "ALAB": 44, "AMD": 10, "AMGN": 30,
-    "AMZN": 144, "ANET": 29, "ASML": 146, "ASTS": 15, "AVGO": 39, "AXP": 15, "AZN": 2, "BA": 24, "BABA": 9,
+    "AMZN": 144, "ANET": 29, "ASML": 146, "ASTS": 15, "AVGO": 39, "AXP": 15, "BA": 24, "BABA": 9,
     "BAC": 4, "BAK": 2, "BB": 3, "BBD": 1, "BIDU": 11, "BIOX": 1, "BMNR": 8, "BMY": 3, "BRK-B": 22, "BRKB": 22,
     "C": 3, "CAT": 20, "CEG": 45, "COIN": 27, "COP": 25, "COPX": 14, "COST": 48, "CRM": 18, "CRWD": 79,
     "CRWV": 27, "CSCO": 5, "CVX": 16, "DE": 40, "DISN": 12, "DOCU": 22, "DOW": 6, "FXI": 5, "GE": 8, "GILD": 4,
@@ -42,6 +42,11 @@ CEDEAR_RATIOS = {
     "SHOP": 107, "SID": 1 / 8, "SNAP": 1, "SNDK": 170, "SNOW": 30, "SPCE": 1 / 2, "SPCX": 50, "SPOT": 28,
     "STNE": 3, "T": 3, "TGT": 24, "TRIP": 2, "TSLA": 15, "TSM": 9, "TWLO": 36, "UNH": 33, "V": 18, "VALE": 2,
     "VIG": 39, "VIST": 3, "VST": 26, "WFC": 5, "WMT": 18, "XLV": 29, "XOM": 10, "XYZ": 20, "ZM": 47,
+
+    # ── Distinto de Comafi a propósito: su lista cuenta contra un papel que ya no
+    #    existe (AstraZeneca canjeó su ADR por la acción el 02/02/2026; ver «CUANDO
+    #    COMAFI CUENTA OTRA COSA» en la tabla de la pantalla). Verificado a mano.
+    "AZN": 4,
 
     # ── Sin fila en la lista de Comafi (ETFs, y acciones de otros emisores):
     #    ratio MEDIDO del precio (puede haber alguno corrido en 1).
