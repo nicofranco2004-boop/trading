@@ -110,16 +110,18 @@ export const PASOS_TECNICO = [
   },
   {
     id: 'backtesting',
-    marca: 'tab-backtesting',
+    // Ilumina «¿Qué querés probar?» (pages/Backtesting.jsx), no la pestaña: en la
+    // compu «Una cartera» casi no se descubría (producto 05/11, A6). La pestaña
+    // queda abierta y marcada igual.
+    marca: 'backtesting-modo',
     ruta: '/analisis-tecnico',
     busqueda: '?tab=backtesting',
     titulo: 'Backtesting: una regla o una cartera contra el pasado',
     // Las cuentas y las palabras: backend/backtest.py y utils/backtesting.js; la
     // cartera, backend/cartera_simulada.py y utils/carteraSimulada.js. Lo que
     // muestra es el pasado: el paso lo dice, como la pantalla.
-    texto: 'Elegí un activo y una regla técnica —o hasta 3— y mirá qué habría pasado si la seguías, al lado '
-      + 'de comprar y no tocar nada. O armá una cartera y comparala con el S&P 500 y el Nasdaq. Muestra el '
-      + 'pasado: no dice qué va a pasar.',
+    texto: 'Acá elegís qué probar: una regla técnica en un activo —o hasta 3—, al lado de comprar y no tocar '
+      + 'nada, o una cartera entera contra el S&P 500 y el Nasdaq. Muestra el pasado: no dice qué va a pasar.',
   },
   {
     id: 'comparar',

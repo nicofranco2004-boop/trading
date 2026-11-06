@@ -27,7 +27,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
 import {
-  DE_ENTRADA, MAX_REGLAS, PERIODOS, POCAS_COMPRAS, REGLAS, aniosDe, colorDe, comoSeSimula, compraClave,
+  DE_ENTRADA, MAX_REGLAS, PERIODOS, PERIODOS_CARTERA, POCAS_COMPRAS, REGLAS, aniosDe, colorDe, comoSeSimula, compraClave,
   contraMantener, ganaron, lectura, motivoEnPalabras, otraRegla, parteAfuera, periodoEnPalabras, porcentaje,
   precio, queSePrueba, reglaDe, reglasDe, sinEstaCompra, textoDelRecorte, tramosComprada,
 } from './backtesting'
@@ -62,10 +62,23 @@ describe('lo que se ofrece es lo del servidor', () => {
     expect(REGLAS[0].id).toBe(DE_ENTRADA.regla)
   })
 
-  it('lo que viene en la dirección y no se ofrece abre lo de entrada', () => {
+  it('«Una cartera» llega a todo lo que se guarda: 5 años', () => {
+    // backend/cartera_simulada.py: ANIOS va de 1 a velas_diarias.ANIOS_GUARDADOS.
+    const CS = readFileSync(resolve(AQUI, '../../../backend/cartera_simulada.py'), 'utf8')
+    const VD = readFileSync(resolve(AQUI, '../../../backend/velas_diarias.py'), 'utf8')
+    expect(CS).toMatch(/^ANIOS = tuple\(range\(1, velas_diarias\.ANIOS_GUARDADOS \+ 1\)\)$/m)
+    const guardados = Number(VD.match(/^ANIOS_GUARDADOS = (\d+)/m)[1])
+    expect(PERIODOS_CARTERA.map(([a]) => a)).toEqual(Array.from({ length: guardados }, (_, i) => i + 1))
+    expect(PERIODOS_CARTERA.at(-1)).toEqual([5, '5 años'])
+  })
+
+  it('lo que viene en la dirección y no se ofrece abre lo de entrada; uno más largo, el más largo', () => {
     expect(aniosDe('3')).toBe(3)
-    expect(aniosDe('5')).toBe(DE_ENTRADA.anios)
-    expect(aniosDe(null)).toBe(DE_ENTRADA.anios)
+    // Los dos modos comparten ?anios=: 5 años de «Una cartera» en «Una regla» son 4.
+    expect(aniosDe('5')).toBe(4)
+    expect(aniosDe('5', PERIODOS_CARTERA)).toBe(5)
+    expect(aniosDe('9', PERIODOS_CARTERA)).toBe(5)
+    for (const raro of [null, '', '0', '-3', '2.5', 'dos']) expect(aniosDe(raro), String(raro)).toBe(DE_ENTRADA.anios)
     expect(reglaDe('rsi').nombre).toBe('RSI 30 / 70')
     expect(reglaDe('otra').id).toBe(DE_ENTRADA.regla)
   })

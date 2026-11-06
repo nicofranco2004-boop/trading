@@ -61,12 +61,20 @@ export const MAX_REGLAS = 3
 // precios y la media de 200 necesita casi uno antes: 4 es lo más largo en que
 // las cuatro reglas tienen el período entero.
 export const PERIODOS = [[1, '1 año'], [2, '2 años'], [3, '3 años'], [4, '4 años']]
+// «Una cartera» llega a 5, todo lo que se guarda (backend/cartera_simulada.py,
+// ANIOS): no necesita precios antes del primer día, y con 4 las cuatro ventanas
+// caían en la suba que siguió a 2022 (producto 05/11, A5).
+export const PERIODOS_CARTERA = [...PERIODOS, [5, '5 años']]
 export const DE_ENTRADA = { regla: 'media200', anios: 2 }
 
-/** El período de la dirección (?anios=3); uno que no se ofrece, el de entrada. */
-export function aniosDe(texto) {
+/** El período de la dirección (?anios=3) entre los que se ofrecen (`periodos`). Uno
+ *  más largo, el más largo: los dos modos comparten el período, y 5 años de «Una
+ *  cartera» en «Una regla» son 4, no los 2 de entrada. Lo demás, el de entrada. */
+export function aniosDe(texto, periodos = PERIODOS) {
   const n = Number(texto)
-  return PERIODOS.some(([a]) => a === n) ? n : DE_ENTRADA.anios
+  if (periodos.some(([a]) => a === n)) return n
+  const mas = periodos.at(-1)[0]
+  return Number.isInteger(n) && n > mas ? mas : DE_ENTRADA.anios
 }
 
 /** Las reglas de la dirección (?reglas=rsi,adx_squeeze), en su orden: sólo las
@@ -115,8 +123,13 @@ export const precio = (x) => (Math.abs(x) >= 1
 
 // Los dos modos de la pestaña: «Una regla» (esta página) y «Una cartera»
 // (pages/SimularCartera.jsx). Viven acá y no con las palabras de la cartera: quien
-// abre el Gráfico no baja las de la cartera (verificación 05/11, V11).
-export const MODOS = [['regla', 'Una regla'], ['cartera', 'Una cartera']]
+// abre el Gráfico no baja las de la cartera (verificación 05/11, V11). Cada uno
+// dice qué es debajo de su nombre: en la compu, «Una cartera» casi no se veía
+// (producto 05/11, A6).
+export const MODOS = [
+  { id: 'regla', nombre: 'Una regla', detalle: 'de compra y venta, en un activo' },
+  { id: 'cartera', nombre: 'Una cartera', detalle: 'varios activos, contra el S&P 500 y el Nasdaq' },
+]
 export const modoDe = (t) => (t === 'cartera' ? 'cartera' : 'regla')
 
 /** «el último año» · «los últimos 2 años». */

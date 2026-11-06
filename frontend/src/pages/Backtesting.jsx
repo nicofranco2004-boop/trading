@@ -85,11 +85,7 @@ export default function Backtesting() {
     else next.delete('modo')
     return next
   }, { replace: true })
-  const selector = (
-    <div className="flex">
-      <Segmento etiqueta="Qué querés probar" valor={modo} alElegir={elegirModo} opciones={MODOS} estirar />
-    </div>
-  )
+  const selector = <ElegirModo valor={modo} alElegir={elegirModo} />
 
   if (modo === 'cartera') {
     return (
@@ -119,6 +115,28 @@ export default function Backtesting() {
         ? <PruebaDe key={`prueba:${activo}`} activo={activo} reglas={reglas} anios={anios}
             onTuyo={(s) => setActivo(s)} onAbierto={abierto} />
         : <Skeleton className="h-72 w-full rounded-xl" />}
+    </div>
+  )
+}
+
+/** «¿Qué querés probar?»: una regla o una cartera, con el rótulo a la vista y lo
+ *  que es cada una debajo de su nombre. Era lo más chico de la zona (12 px, gris y
+ *  sin rótulo) y en la compu «Una cartera» casi no se veía (producto 05/11, A6).
+ *  El tutorial lo ilumina (`backtesting-modo`, components/tour/pasosTecnico.js). */
+function ElegirModo({ valor, alElegir }) {
+  return (
+    <div data-tour="backtesting-modo" className="flex flex-col gap-1.5 sm:self-start">
+      <span id="bt-modo" className="text-[13px] font-medium text-ink-1">¿Qué querés probar?</span>
+      <div role="group" aria-labelledby="bt-modo" className="grid grid-cols-2 gap-1 bg-bg-2 border border-line rounded-xl p-1">
+        {MODOS.map(m => (
+          <button key={m.id} type="button" onClick={() => alElegir(m.id)} aria-pressed={valor === m.id}
+            className={`min-w-0 min-h-11 flex flex-col items-start gap-0.5 rounded-lg px-3 sm:px-4 py-2 text-left transition-colors ${
+              valor === m.id ? 'bg-bg-1 shadow-sm' : 'hover:bg-bg-1/60'}`}>
+            <span className={`text-[14px] font-semibold ${valor === m.id ? 'text-ink-0' : 'text-ink-1'}`}>{m.nombre}</span>
+            <span className="text-[12px] leading-snug text-ink-2">{m.detalle}</span>
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
