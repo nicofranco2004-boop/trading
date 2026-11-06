@@ -103,6 +103,32 @@ def _cierres(velas: list) -> list:
     return [(v["date"], v["close"]) for v in velas if v.get("close") is not None]
 
 
+def dia_del_cien(desde: str, activos: list, varas: list, hasta: str) -> tuple:
+    """LA regla del día en que todo arranca en 100, la de Comparar y la de «Una
+    cartera» de Backtesting (cartera_simulada.simular). `activos` y `varas`:
+    listas de puntos [(fecha, valor)] ordenados; `varas`, las series contra las que
+    se compara que tienen su propia historia guardada (el S&P 500, el Nasdaq).
+    Devuelve (el día del 100, el de los activos solos).
+
+    El de los activos: el más tardío entre `desde` y el primer precio de cada
+    activo. Si queda a más de `DIAS_MARGEN` días de `desde`, un activo cotiza hace
+    menos (o lo guardado empieza ahí) y cada pantalla lo dice.
+
+    El del 100: si una vara empieza hasta `DIAS_MARGEN` días DESPUÉS del de los
+    activos, el de esa vara. En el borde de lo guardado cada serie tiene su
+    calendario (la cripto opera el sábado, BYMA y Nueva York tienen feriados
+    distintos) y su propio día de bajada entera, y el S&P 500 empezaba el lunes y
+    quedaba afuera («sin datos desde esa fecha»): en «Una cartera» con 5 años y en
+    Comparar con «desde tu primera compra» de antes de lo guardado (auditoría de
+    método 06/11, H1). Una vara que empieza mucho después (no tenemos su historia)
+    o que quedó vieja no corre nada: queda afuera y se dice."""
+    de_los_activos = max([desde] + [p[0][0] for p in activos if p])
+    corren = [p[0][0] for p in varas
+              if p and de_los_activos < p[0][0] and _dias(de_los_activos, p[0][0]) <= DIAS_MARGEN
+              and _dias(p[-1][0], hasta) <= DIAS_VIEJA]
+    return max([de_los_activos] + corren), de_los_activos
+
+
 def _mep(conn, desde: str) -> list:
     """El MEP de cada día desde `desde` (y el último anterior, para el día del
     100), con la regla de `fx.fx_for_date`."""
@@ -149,10 +175,12 @@ def comparar(conn, activos: list, moneda: str, desde: str, *, cer: list = None,
         out["faltan"].append({"clave": c["clave"], "motivo": "vieja", "hasta": c["puntos"][-1][0]})
     out["hasta"] = hasta
 
-    # El día del 100: `desde`, o el primero que tienen TODOS si alguno empieza después.
+    # El día del 100: `desde`, o el primero que tienen TODOS si alguno empieza
+    # después; y si el S&P 500 empieza unos días después (el borde de lo guardado),
+    # ése (`dia_del_cien`, LA regla de las dos pantallas).
     sp = [p for p in _cierres(tecnico.sp500(conn, moneda)) if p[0] <= hasta]
-    base = max([desde] + [c["puntos"][0][0] for c in crudas])
-    if _dias(desde, base) > DIAS_MARGEN:
+    base, de_los_activos = dia_del_cien(desde, [c["puntos"] for c in crudas], [sp], hasta)
+    if _dias(desde, de_los_activos) > DIAS_MARGEN:
         out["base_corrida"] = True
         # ¿Cotiza hace menos, o es donde empieza lo guardado para todos? El S&P
         # guarda la historia entera: si arranca bastante antes, es el activo.

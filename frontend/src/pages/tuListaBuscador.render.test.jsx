@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { createElement as h } from 'react'
 import { prepararApp, textoConCortes, cargando } from '../testing/pantallaConOjito'
-import { montar, clic, texto, escribir, tecla } from '../testing/navegadorMinimo'
+import { montar, clic, texto, escribir, tecla, enActo } from '../testing/navegadorMinimo'
 import { CLAVES_DE_LOS_TOURS } from '../components/tour/recorrido'
 
 let App, HelmetProvider, ToastProvider, MemoryRouter, api, SUMAR_A_LA_WATCHLIST
@@ -139,8 +139,17 @@ describe('«Tu lista»: sumar a la watchlist ahí mismo', () => {
 
   it('Enter con el cuadro vacío no suma nada', async () => {
     // Antes sumaba el primero de los populares (AAPL) sin que nadie lo escribiera.
+    // Con la lista ABIERTA, como en el navegador: al entrar al cuadro (`focusin`).
+    // Sin abrirla, esta prueba quedaba verde aunque se borrara el arreglo
+    // (auditoría de verificación 05/11, V12).
     servidor.watchlist = []; servidor.pedidos = []
     const m = await abrir()
+    await enActo(async () => {
+      const ev = { type: 'focusin', target: campo(m), bubbles: true, cancelable: true, defaultPrevented: false,
+        timeStamp: Date.now(), preventDefault() {}, stopPropagation() {} }
+      for (const fn of m.contenedor.escuchas.focusin || []) fn(ev)
+    })
+    expect(sugerencia(m, 'AAPL'), 'la lista de populares está abierta').not.toBeNull()
     await tecla(campo(m), 'Enter')
     await quieta(m)
     expect(servidor.pedidos).not.toContain('POST /watchlist')

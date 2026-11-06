@@ -138,6 +138,8 @@ export default function Admin() {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
+      // El día de Argentina (utils/fecha): con toISOString, después de las 21 h
+      // el archivo salía con la fecha de mañana.
       a.download = `rendi_mails_meta_${hoyISO()}.csv`
       document.body.appendChild(a)
       a.click()

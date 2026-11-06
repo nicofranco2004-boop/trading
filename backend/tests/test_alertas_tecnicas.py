@@ -670,7 +670,7 @@ class AlertasTecnicasTest(unittest.TestCase):
         with main.db_abierta() as conn:
             import velas_diarias
             self.assertEqual(set(velas_diarias.simbolos_a_seguir(conn)),
-                             {"MSFT", "AAPL", "AAPL.BA", "GGAL.BA", velas_diarias.SP500})
+                             {"MSFT", "AAPL", "AAPL.BA", "GGAL.BA", *velas_diarias.INDICES})
 
     def test_el_alta_rechaza_lo_que_no_se_puede_mirar(self):
         for body, motivo in (({"senal": "inventada"}, "señal"),

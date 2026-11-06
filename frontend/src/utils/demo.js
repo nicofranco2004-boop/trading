@@ -3131,6 +3131,26 @@ export function handleDemoRequest(method, path, body) {
     // Qué parte de tu plata es (la ficha): el demo no tiene velas, así que la
     // tarjeta «Cuánto se mueve» no aparece y el % tampoco.
     if (basePath.startsWith('/tecnico/') && basePath.endsWith('/peso')) return { peso: null }
+    // El backtesting necesita las velas de cada día, que el demo no tiene: lo dice
+    // con su propio motivo. Sin esto le tocaba el «sin serie» de abajo (pensado
+    // para la ficha) y decía de NVDA que era un bono o un fondo (auditoría 04/11).
+    if (basePath.startsWith('/tecnico/') && basePath.endsWith('/backtest')) {
+      return {
+        asset: decodeURIComponent(basePath.slice('/tecnico/'.length, -'/backtest'.length)).toUpperCase(),
+        disponible: false, motivo: 'demo',
+      }
+    }
+    // «Una cartera» de Backtesting: la cartera de hoy del demo se arma (sin el
+    // bono AL30 ni el efectivo, que no tienen precio de todos los días, como dice
+    // el servidor), pero simular necesita las velas, que el demo no tiene.
+    if (basePath === '/backtest/cartera/hoy') {
+      return {
+        activos: [['NVDA', 20], ['AAPL', 20], ['BTC', 15], ['GGAL', 10, true], ['MSFT', 10], ['SPY', 10],
+          ['ETH', 5], ['YPFD', 5, true], ['TSLA', 5]].map(([asset, peso, local]) => ({ asset, local: !!local, peso, tipo: null })),
+        afuera: [{ asset: 'AL30', tipo: 'BOND', motivo: 'sin_serie' }],
+      }
+    }
+    if (basePath === '/backtest/cartera') return { disponible: false, motivo: 'demo' }
     if (basePath.startsWith('/tecnico/')) {
       return { asset: decodeURIComponent(basePath.slice('/tecnico/'.length)).toUpperCase(), disponible: false, motivo: 'sin_serie' }
     }

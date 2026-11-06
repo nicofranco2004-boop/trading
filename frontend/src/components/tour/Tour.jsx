@@ -64,6 +64,17 @@ const REINTENTO = 120
 const ANCHO_CARTEL = 360
 // Lo que se supone que mide de alto hasta poder medirlo (ver `altoCartel`).
 const ALTO_CARTEL = 210
+// Cuántas veces por paso se vuelve a traer a la vista lo iluminado si algo lo
+// sacó de la pantalla (además de la primera).
+const MAX_REACOMODOS = 3
+
+/** ¿Lo iluminado quedó entero afuera de la pantalla? Un elemento sin medidas
+ *  (todavía no dibujado) no cuenta como afuera. */
+function afuera(el) {
+  const r = el.getBoundingClientRect?.()
+  if (!r || (!r.width && !r.height)) return false
+  return r.right <= 0 || r.bottom <= 0 || r.left >= window.innerWidth || r.top >= window.innerHeight
+}
 
 /** El primer elemento con la marca que SE VE; 'oculto' si los hay pero
  *  ninguno se ve (display:none, como el «Pronto» en el celular); null si no hay.
@@ -95,6 +106,11 @@ export default function Tour({ id, pasos, entrada, etiqueta, cuando, despuesDe =
   const navigate = useNavigate()
   const { pathname, search } = useLocation()
   const cerradoRef = useRef(false)
+  // La dirección con la que se entró (un link compartido a una cartera, a una
+  // pestaña): el tutorial lleva a la persona a otras, y al omitirlo o terminarlo
+  // la deja donde estaba. Antes quedaba en el Gráfico, no en lo que le mandaron
+  // (auditoría de producto 05/11, A3).
+  const entradaRef = useRef(null)
   const cartelRef = useRef(null)
   const [altoCartel, setAltoCartel] = useState(ALTO_CARTEL)
 
@@ -115,7 +131,11 @@ export default function Tour({ id, pasos, entrada, etiqueta, cuando, despuesDe =
     if (despuesDe.some(e => !yaLoVio(almacenDe(e), e.clave))) return
     if (!turnoLibre(id)) return
     // Un respiro para que la pantalla termine de armarse antes de oscurecerla.
-    const t = setTimeout(() => { if (tomarTurno(id)) setActivo(true) }, 900)
+    const t = setTimeout(() => {
+      if (!tomarTurno(id)) return
+      entradaRef.current = pathname + search
+      setActivo(true)
+    }, 900)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname, vuelta, activo])
@@ -128,6 +148,7 @@ export default function Tour({ id, pasos, entrada, etiqueta, cuando, despuesDe =
     if (!cuando(pathname)) { tomarPedido(id); return }
     if (!tomarTurno(id)) return
     tomarPedido(id)
+    entradaRef.current = pathname + search
     cerradoRef.current = false
     setCaja(null)
     setI(0)
@@ -141,11 +162,16 @@ export default function Tour({ id, pasos, entrada, etiqueta, cuando, despuesDe =
     setCaja(null)
     if (hay()) marcarVisto(almacenDe(entrada), entrada.clave)
     soltarTurno(id)
-  }, [entrada, id])
+    const volver = entradaRef.current
+    entradaRef.current = null
+    if (volver && volver !== window.location.pathname + window.location.search) navigate(volver, { replace: true })
+  }, [entrada, id, navigate])
 
   // Se fue de donde vive el tutorial: se cierra sin darlo por visto (ver 4).
   useEffect(() => {
     if (!activo || cuando(pathname)) return
+    // Se fue por su cuenta: no se la trae de vuelta.
+    entradaRef.current = null
     setActivo(false)
     setCaja(null)
     setI(0)
@@ -202,6 +228,7 @@ export default function Tour({ id, pasos, entrada, etiqueta, cuando, despuesDe =
     let pedido = 0
     let ultima = null
     let acomodado = false
+    let reacomodos = 0
 
     const iguales = (a, b) => a && b
       && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5
@@ -212,8 +239,12 @@ export default function Tour({ id, pasos, entrada, etiqueta, cuando, despuesDe =
       const hallado = buscar(paso.marca)
       if (hallado && hallado !== 'oculto') {
         // La primera vez, que se vea: en el celular las pestañas se deslizan de
-        // costado y «Comparar» puede estar afuera de la pantalla.
-        if (!acomodado) {
+        // costado y «Comparar» puede estar afuera de la pantalla. Y otra vez si
+        // después algo lo sacó de la pantalla: la fila de pestañas se acomoda
+        // sola a la pestaña abierta (AnalisisTecnico.jsx) y dejaba «Comparar»
+        // afuera (auditoría 04/11, M7). Con tope, para no pelear con nadie.
+        if (!acomodado || (afuera(hallado.el) && reacomodos < MAX_REACOMODOS)) {
+          if (acomodado) reacomodos += 1
           acomodado = true
           hallado.el.scrollIntoView?.({ block: 'nearest', inline: 'center' })
         }

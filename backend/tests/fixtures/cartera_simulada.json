@@ -1,0 +1,281 @@
+{
+ "tres": {
+  "anios": 2,
+  "moneda": "usd",
+  "pedido_desde": "2024-10-31",
+  "recortado": false,
+  "recorte_por": null,
+  "disponible": true,
+  "desde": "2024-10-31",
+  "hasta": "2026-10-30",
+  "dias": 730,
+  "activos": [
+   {
+    "asset": "AAPL",
+    "local": false,
+    "peso": 50.0,
+    "ticker": "AAPL",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": 35.5017,
+    "aporte": 17.75085,
+    "peso_final": 55.814633811990326
+   },
+   {
+    "asset": "GGAL",
+    "local": true,
+    "peso": 30.0,
+    "ticker": "GGAL",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": -20.109499999999997,
+    "aporte": -6.032849999999999,
+    "peso_final": 19.74466299340959
+   },
+   {
+    "asset": "BTC",
+    "local": false,
+    "peso": 20.0,
+    "ticker": "BTC",
+    "convertida": null,
+    "primera_vela": "2023-09-07",
+    "resultado": 48.3373,
+    "aporte": 9.66746,
+    "peso_final": 24.440703194600076
+   }
+  ],
+  "cartera": {
+   "resultado": 21.385460000000013,
+   "peor_caida": -19.599248628223208,
+   "final": 121.38546000000001
+  },
+  "indices": [
+   {
+    "clave": "sp500",
+    "nombre": "S&P 500",
+    "ticker": "^GSPC",
+    "resultado": 20.82630000000001,
+    "peor_caida": -0.7536765033834603,
+    "final": 120.8263
+   },
+   {
+    "clave": "nasdaq",
+    "nombre": "Nasdaq",
+    "ticker": "^IXIC",
+    "resultado": 28.59379999999998,
+    "peor_caida": -1.1741093212996434,
+    "final": 128.5938
+   }
+  ],
+  "faltan": []
+ },
+ "sin_nasdaq": {
+  "anios": 2,
+  "moneda": "usd",
+  "pedido_desde": "2024-10-31",
+  "recortado": false,
+  "recorte_por": null,
+  "disponible": true,
+  "desde": "2024-10-31",
+  "hasta": "2026-10-30",
+  "dias": 730,
+  "activos": [
+   {
+    "asset": "AAPL",
+    "local": false,
+    "peso": 50.0,
+    "ticker": "AAPL",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": 35.5017,
+    "aporte": 17.75085,
+    "peso_final": 55.814633811990326
+   },
+   {
+    "asset": "GGAL",
+    "local": true,
+    "peso": 30.0,
+    "ticker": "GGAL",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": -20.109499999999997,
+    "aporte": -6.032849999999999,
+    "peso_final": 19.74466299340959
+   },
+   {
+    "asset": "BTC",
+    "local": false,
+    "peso": 20.0,
+    "ticker": "BTC",
+    "convertida": null,
+    "primera_vela": "2023-09-07",
+    "resultado": 48.3373,
+    "aporte": 9.66746,
+    "peso_final": 24.440703194600076
+   }
+  ],
+  "cartera": {
+   "resultado": 21.385460000000013,
+   "peor_caida": -19.599248628223208,
+   "final": 121.38546000000001
+  },
+  "indices": [
+   {
+    "clave": "sp500",
+    "nombre": "S&P 500",
+    "ticker": "^GSPC",
+    "resultado": 20.82630000000001,
+    "peor_caida": -0.7536765033834603,
+    "final": 120.8263
+   }
+  ],
+  "faltan": [
+   {
+    "clave": "nasdaq",
+    "motivo": "sin_datos"
+   }
+  ]
+ },
+ "recortada": {
+  "anios": 2,
+  "moneda": "usd",
+  "pedido_desde": "2024-10-31",
+  "recortado": true,
+  "recorte_por": "NUEVA",
+  "disponible": true,
+  "desde": "2026-01-26",
+  "hasta": "2026-10-30",
+  "dias": 200,
+  "activos": [
+   {
+    "asset": "AAPL",
+    "local": false,
+    "peso": 50.0,
+    "ticker": "AAPL",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": 13.695700000000002,
+    "aporte": 6.847850000000001,
+    "peso_final": 44.927945021605744
+   },
+   {
+    "asset": "GGAL",
+    "local": true,
+    "peso": 30.0,
+    "ticker": "GGAL",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": -0.7223000000000042,
+    "aporte": -0.21669000000000124,
+    "peso_final": 23.538320521206
+   },
+   {
+    "asset": "NUEVA",
+    "local": false,
+    "peso": 20.0,
+    "ticker": "NUEVA",
+    "convertida": null,
+    "primera_vela": "2026-01-26",
+    "resultado": 99.5,
+    "aporte": 19.9,
+    "peso_final": 31.533734457188253
+   }
+  ],
+  "cartera": {
+   "resultado": 26.53116,
+   "peor_caida": -0.3340174399609319,
+   "final": 126.53116
+  },
+  "indices": [
+   {
+    "clave": "sp500",
+    "nombre": "S&P 500",
+    "ticker": "^GSPC",
+    "resultado": 8.557400000000005,
+    "peor_caida": -0.038599999999999746,
+    "final": 108.5574
+   },
+   {
+    "clave": "nasdaq",
+    "nombre": "Nasdaq",
+    "ticker": "^IXIC",
+    "resultado": 13.380799999999994,
+    "peor_caida": 0.0,
+    "final": 113.3808
+   }
+  ],
+  "faltan": []
+ },
+ "vieja": {
+  "anios": 2,
+  "moneda": "usd",
+  "disponible": false,
+  "motivo": "vieja",
+  "faltan": [
+   {
+    "asset": "PARADA",
+    "motivo": "vieja",
+    "hasta": "2026-09-30"
+   }
+  ]
+ },
+ "todos_restan": {
+  "anios": 1,
+  "moneda": "usd",
+  "pedido_desde": "2025-10-31",
+  "recortado": false,
+  "recorte_por": null,
+  "disponible": true,
+  "desde": "2025-10-31",
+  "hasta": "2026-10-30",
+  "dias": 261,
+  "activos": [
+   {
+    "asset": "BAJA1",
+    "local": false,
+    "peso": 60.0,
+    "ticker": "BAJA1",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": -2.1736999999999966,
+    "aporte": -1.304219999999998,
+    "peso_final": 62.848575012222625
+   },
+   {
+    "asset": "BAJA2",
+    "local": false,
+    "peso": 40.0,
+    "ticker": "BAJA2",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": -13.258499999999998,
+    "aporte": -5.303399999999999,
+    "peso_final": 37.151424987777375
+   }
+  ],
+  "cartera": {
+   "resultado": -6.607619999999992,
+   "peor_caida": -6.607619999999992,
+   "final": 93.39238
+  },
+  "indices": [
+   {
+    "clave": "sp500",
+    "nombre": "S&P 500",
+    "ticker": "^GSPC",
+    "resultado": 7.8818000000000055,
+    "peor_caida": -0.660700000000003,
+    "final": 107.8818
+   },
+   {
+    "clave": "nasdaq",
+    "nombre": "Nasdaq",
+    "ticker": "^IXIC",
+    "resultado": 13.741899999999996,
+    "peor_caida": -0.22259999999999502,
+    "final": 113.7419
+   }
+  ],
+  "faltan": []
+ }
+}

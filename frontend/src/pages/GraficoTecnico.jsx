@@ -5,7 +5,9 @@
 //     últimos que miraste, tu cartera, tu lista y lo demás de la app).
 //   · Se acuerda en qué activo lo dejaste (utils/graficoTecnico.js, en este
 //     navegador) y lo pone en la dirección (?activo=GGAL), así recargar o
-//     mandar el link abre el mismo.
+//     mandar el link abre el mismo. Es el MISMO activo que el de la pestaña
+//     «Backtesting» (hooks/useActivoDelGrafico.js), que usa también este
+//     renglón del activo (`Encabezado`).
 //   · Cambiar de activo no borra nada: tus dibujos se guardan solos en tu
 //     cuenta, por activo y por moneda (utils/dibujos.js).
 // ════════════════════════════════════════════════════════════════════════════
@@ -22,73 +24,33 @@
 // el ancho de la pantalla.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { ChevronDown, Search, X } from 'lucide-react'
 import LecturaTecnica from '../components/asset/LecturaTecnica'
 import AssetTypeBadge from '../components/AssetTypeBadge'
 import Skeleton from '../components/Skeleton'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
+import { useActivoDelGrafico } from '../hooks/useActivoDelGrafico'
 import { useFichaDelActivo } from '../hooks/useFichaDelActivo'
 import { api } from '../utils/api'
 import { urlDeActivo } from '../utils/buscadorRapido'
-import { useDuenoDeLosDatos } from '../utils/duenoDeLaPestana'
 import { nombreDelCliente } from '../utils/navegacion'
 import {
-  FILTROS, activoDeEntrada, activoValido, avisoDelBuscador, guardado, motivoDeLaFalla, opcionesDelBuscador, recordar,
+  FILTROS, activoValido, avisoDelBuscador, motivoDeLaFalla, opcionesDelBuscador,
 } from '../utils/graficoTecnico'
 
 // Cuántos de los últimos que miraste van al lado del botón (el resto, en el buscador).
 const CHIPS = 3
 // Cuánto espera el buscador a tu cartera y tu lista antes de avisar.
 const ESPERA_MAXIMA_MS = 15000
+// Lo que dice el pie del buscador en el Gráfico (en Backtesting no hay dibujos).
+const PIE_DEL_GRAFICO = 'Al cambiar de activo, tus dibujos del que estabas quedan guardados en él.'
 
 export default function GraficoTecnico() {
   const { clientCtx } = useAdvisorContext()
-  // De quién es lo que se recuerda: la persona y la cuenta de cuando se abrió
-  // la pantalla (utils/duenoDeLaPestana). Si otra pestaña cambia de cuenta, la
-  // puerta ya no lo guarda a nombre de la nueva.
-  const persona = useDuenoDeLosDatos()
   const cliente = nombreDelCliente(clientCtx)
-  const [searchParams, setSearchParams] = useSearchParams()
-  const deLaDireccion = activoValido(searchParams.get('activo'))
-  // El activo abierto, con el nombre con que lo pediste (el de tu lista, el
-  // del catálogo, el de tus lotes). null mientras se decide (sin dirección ni
-  // nada guardado, hace falta saber qué tenés).
-  const [activo, setActivo] = useState(() => deLaDireccion || guardado(persona).activo)
-  const [recientes, setRecientes] = useState(() => guardado(persona).recientes)
-  // Elegiste con el buscador o un atajo: el renglón del activo se arma de nuevo
-  // y el teclado tiene que seguir en su botón, no volver al principio.
-  const [enfocar, setEnfocar] = useState(false)
-
-  // Sin nada guardado: el primero de tu cartera con gráfico, o el S&P 500.
-  useEffect(() => {
-    if (activo) return
-    let vivo = true
-    api.get('/positions').catch(() => []).then(pos => {
-      if (vivo) setActivo(a => a || activoDeEntrada({ deLaDireccion: null, persona, posiciones: pos || [] }))
-    })
-    return () => { vivo = false }
-  }, [activo, persona])
-
-  // Un link a otro activo con la pestaña ya abierta (?activo=…): ése.
-  useEffect(() => {
-    if (deLaDireccion && deLaDireccion !== activo) setActivo(deLaDireccion)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deLaDireccion])
-
-  // Se guarda y va a la dirección recién cuando el gráfico ABRIÓ ese activo:
-  // pedido con otro nombre (GGAL.BA y tu lote es GGAL), queda el tuyo y no
-  // los dos. Sin sumar un paso al «atrás» del navegador por cada activo.
-  const abierto = (a) => {
-    setRecientes(recordar(persona, a).recientes)
-    setSearchParams(prev => {
-      if (prev.get('activo') === a) return prev
-      const next = new URLSearchParams(prev)
-      next.set('activo', a)
-      return next
-    }, { replace: true })
-  }
-  const elegir = (s) => { const a = activoValido(s); if (a) { setEnfocar(true); setActivo(a) } }
+  // El activo abierto, el mismo que el de Backtesting (hooks/useActivoDelGrafico).
+  const { activo, setActivo, recientes, enfocar, elegir, abierto } = useActivoDelGrafico()
 
   if (!activo) return <Cargando />
   return <GraficoDe key={activo} activo={activo} recientes={recientes} cliente={cliente} enfocar={enfocar}
@@ -134,8 +96,9 @@ function Cargando() {
 }
 
 // Arriba del gráfico: el activo (abre el buscador), los últimos que miraste y
-// la ficha completa.
-function Encabezado({ activo, recientes, cliente, enfocar, onElegir }) {
+// la ficha completa. Lo usa también la pestaña «Backtesting» (pages/Backtesting.jsx),
+// con su propio `pie` del buscador (null: sin pie).
+export function Encabezado({ activo, recientes, cliente, enfocar, onElegir, pie = PIE_DEL_GRAFICO }) {
   const [abierto, setAbierto] = useState(false)
   const caja = useRef(null)
   const boton = useRef(null)
@@ -167,7 +130,7 @@ function Encabezado({ activo, recientes, cliente, enfocar, onElegir }) {
       )}
       <Link to={urlDeActivo(activo)} className="text-[13px] font-medium text-data-violet hover:underline px-1">Ver ficha →</Link>
       {abierto && (
-        <Buscador activo={activo} recientes={recientes} cliente={cliente} caja={caja}
+        <Buscador activo={activo} recientes={recientes} cliente={cliente} caja={caja} pie={pie}
           onCerrar={cerrar}
           onElegir={(s) => { cerrar(); onElegir(s) }} />
       )}
@@ -178,7 +141,7 @@ function Encabezado({ activo, recientes, cliente, enfocar, onElegir }) {
 // El buscador. No dice cuántos dibujos hay en cada activo: contados de la copia
 // del navegador, en una compu compartida mostraba los de la persona anterior
 // (auditoría 30/10; hoy esa copia va a nombre de su dueño, utils/dibujos.js).
-function Buscador({ activo, recientes, cliente, caja, onCerrar, onElegir }) {
+function Buscador({ activo, recientes, cliente, caja, pie, onCerrar, onElegir }) {
   const [consulta, setConsulta] = useState('')
   const [filtro, setFiltro] = useState('todo')
   const [marcado, setMarcado] = useState(0)
@@ -335,9 +298,7 @@ function Buscador({ activo, recientes, cliente, caja, onCerrar, onElegir }) {
           </div>
         ))}
       </div>
-      <p className="px-3.5 py-2 border-t border-line text-[12px] text-ink-2">
-        Al cambiar de activo, tus dibujos del que estabas quedan guardados en él.
-      </p>
+      {pie && <p className="px-3.5 py-2 border-t border-line text-[12px] text-ink-2">{pie}</p>}
     </div>
   )
 }

@@ -9,6 +9,11 @@ import { MAX_ACTIVOS } from '../../utils/comparadorPrecio'
 const leer = (p) => readFileSync(new URL(p, import.meta.url), 'utf8')
 const paso = (id) => PASOS_TECNICO.find(p => p.id === id)
 const PAGINA = leer('../../pages/AnalisisTecnico.jsx')
+// Las marcas que viven ADENTRO de una pestaña, no en la fila: el paso explica esa
+// pestaña con ella abierta. «¿Qué querés probar?» de Backtesting (producto 05/11, A6).
+const ADENTRO_DE = { 'backtesting-modo': 'backtesting' }
+// La pestaña que explica cada paso: la de su marca, o en la que vive lo que ilumina.
+const pestanaDelPaso = (p) => (ADENTRO_DE[p.marca] ? `tab-${ADENTRO_DE[p.marca]}` : p.marca)
 
 // ─── Que lo que el tutorial promete resaltar EXISTA ─────────────────────────
 // Igual que en el de novedades (pasos.test.js): un paso que apunta a algo que
@@ -16,7 +21,7 @@ const PAGINA = leer('../../pages/AnalisisTecnico.jsx')
 describe('cada paso del técnico resalta algo que está de verdad', () => {
   const FUENTES = [
     '../../pages/AnalisisTecnico.jsx', '../../pages/GraficoTecnico.jsx',
-    '../asset/LecturaTecnica.jsx', '../asset/BarraGrafico.jsx',
+    '../asset/LecturaTecnica.jsx', '../asset/BarraGrafico.jsx', '../../pages/Backtesting.jsx',
   ].map(leer).join('\n')
 
   it('las pestañas llevan su marca, y cada paso de pestaña nombra una que existe', () => {
@@ -35,7 +40,7 @@ describe('cada paso del técnico resalta algo que está de verdad', () => {
   })
 
   it('hay un paso por cada pestaña, más el «Pronto»', () => {
-    const conPaso = PASOS_TECNICO.map(p => p.marca)
+    const conPaso = PASOS_TECNICO.map(pestanaDelPaso)
     for (const p of PESTANAS.filter(x => !x.pronto)) expect(conPaso, p.id).toContain(`tab-${p.id}`)
     expect(conPaso).toContain('pronto')
   })
@@ -49,6 +54,7 @@ describe('cada paso del técnico resalta algo que está de verdad', () => {
       const abierta = pestanaDe(new URLSearchParams(p.busqueda))
       const tab = p.marca.startsWith('tab-') ? PESTANAS.find(x => x.id === p.marca.slice(4)) : null
       if (DEL_GRAFICO.includes(p.marca)) expect(abierta, p.id).toBe('grafico')
+      else if (ADENTRO_DE[p.marca]) expect(abierta, p.id).toBe(ADENTRO_DE[p.marca])
       else if (tab && !tab.afuera) expect(abierta, p.id).toBe(tab.id)
       else expect(abierta, p.id).toBe('grafico')
     }

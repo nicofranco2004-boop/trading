@@ -299,6 +299,24 @@ class CompararTest(unittest.TestCase):
         for k in ("MSFT", "NVDA", "sp500", "mep"):
             self.assertEqual(self._serie(r, k)["puntos"][0], {"d": primero, "v": 100.0}, k)
 
+    def test_desde_antes_de_lo_guardado_el_sp500_que_empieza_unos_dias_despues_no_se_cae(self):
+        # «Desde tu primera compra», de antes de lo guardado: todo arranca donde
+        # empieza lo guardado. Si ahí el S&P 500 empieza 2 ruedas después que el
+        # activo (otro calendario, otro día de bajada entera), quedaba afuera:
+        # «S&P 500: sin datos desde esa fecha» (auditoría de método 06/11, H1). Ahora
+        # arranca con él: es LA regla de «Una cartera» (`comparar.dia_del_cien`).
+        self.yahoo.precios["MSFT"] = lambda i, d: 100 + i
+        self.yahoo.precios["^GSPC"] = lambda i, d: (5000.0 + i) if i >= 2 else None
+        main._run_velas_diarias_job()
+        r = self._comparar("MSFT", "usd", "compra", desde="2019-03-15")
+        dia_del_sp = self.dias[2].isoformat()
+        self.assertEqual(r["base"], dia_del_sp)
+        self.assertNotIn("sp500", [f["clave"] for f in r["faltan"]])
+        for k in ("MSFT", "sp500", "mep"):
+            self.assertEqual(self._serie(r, k)["puntos"][0], {"d": dia_del_sp, "v": 100.0}, k)
+        # Lo guardado empieza ahí para todos: no es que MSFT cotice hace menos.
+        self.assertEqual((r["base_corrida"], r["base_corrida_por"]), (True, None))
+
     def test_una_serie_cortada_no_se_muestra_como_de_hoy(self):
         # KO dejó de actualizarse hace 20 ruedas (deslistada, o nadie la baja):
         # su último valor NO es «hoy». No se dibuja y se dice hasta cuándo llega.
@@ -385,6 +403,24 @@ class BaseCienTest(unittest.TestCase):
                                   hoy=__import__("datetime").date(2025, 11, 29))
         self.assertEqual([s["clave"] for s in r["series"]], ["NUEV", "sp500", "mep"])
         self.assertIn({"clave": "VIEJ", "motivo": "vieja", "hasta": "2024-01-03"}, r["faltan"])
+
+    def test_dia_del_cien(self):
+        # LA regla del día del 100 de Comparar y de «Una cartera» (H1, 06/11).
+        hasta = "2026-11-05"
+        activo = [("2021-11-05", 1.0), (hasta, 2.0)]        # desde un viernes
+        sp = [("2021-11-08", 1.0), (hasta, 2.0)]            # desde el lunes
+        lejos = [("2021-11-20", 1.0), (hasta, 2.0)]         # no tenemos su historia
+        vieja = [("2021-11-08", 1.0), ("2026-10-01", 2.0)]  # dejó de actualizarse
+        cien = lambda desde, varas: comparar.dia_del_cien(desde, [activo], varas, hasta)
+        self.assertEqual(cien("2019-03-15", [sp]), ("2021-11-08", "2021-11-05"))
+        self.assertEqual(cien("2019-03-15", [lejos]), ("2021-11-05", "2021-11-05"), "sin su historia no corre nada")
+        self.assertEqual(cien("2019-03-15", [vieja]), ("2021-11-05", "2021-11-05"), "una vieja no corre nada")
+        self.assertEqual(cien("2023-01-02", [sp]), ("2023-01-02", "2023-01-02"), "lejos del borde, lo pedido")
+        self.assertEqual(cien("2019-03-15", [sp, lejos]), ("2021-11-08", "2021-11-05"))
+        # La semana de margen, exacta: 7 días después corre; 8, no.
+        siete, ocho = [("2021-11-12", 1.0), (hasta, 2.0)], [("2021-11-13", 1.0), (hasta, 2.0)]
+        self.assertEqual(cien("2019-03-15", [siete])[0], "2021-11-12")
+        self.assertEqual(cien("2019-03-15", [ocho])[0], "2021-11-05")
 
     def test_regla(self):
         p = [("2025-01-02", 10.0), ("2025-01-03", 12.0), ("2025-01-06", 9.0)]

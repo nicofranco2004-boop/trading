@@ -157,8 +157,8 @@ class TermometroTest(unittest.TestCase):
     def test_camino_real_noche_cron_y_pantalla(self):
         self._noche()
         noche = set(self.contador.pedidos)
-        self.assertEqual(noche, {"AAPL", "^GSPC"},
-                         "la noche baja sólo lo que alguien tiene (y el S&P 500), no el universo")
+        self.assertEqual(noche, {"AAPL", *velas_diarias.INDICES},
+                         "la noche baja sólo lo que alguien tiene (y los índices), no el universo")
         self.contador.pedidos.clear()
 
         self._cron_del_termometro()

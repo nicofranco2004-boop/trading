@@ -166,6 +166,16 @@ describe('el tutorial no puede dejar la pantalla trabada', () => {
     expect(tour).toMatch(/onClick=\{cerrar\}/)
   })
 
+  it('al omitirlo o terminarlo, deja a la persona en la dirección con la que entró', () => {
+    // Un link a una cartera del Backtesting terminaba en el Gráfico: el tutorial
+    // lleva a otras pestañas y no volvía (auditoría de producto 05/11, A3). Se
+    // guarda al arrancar (solo o pedido) y se devuelve al cerrar; si la persona se
+    // fue por su cuenta, no se la trae de vuelta.
+    expect(tour.match(/entradaRef\.current = pathname \+ search/g)).toHaveLength(2)
+    expect(tour).toMatch(/const volver = entradaRef\.current[\s\S]{0,200}navigate\(volver, \{ replace: true \}\)/)
+    expect(tour).toMatch(/Se fue por su cuenta[\s\S]{0,80}entradaRef\.current = null/)
+  })
+
   it('el cartel tiene una punta que apunta a lo resaltado', () => {
     // El cartel se centra bajo lo resaltado, PERO si eso lo dejaría fuera de
     // la pantalla el recorte lo empuja hacia adentro. Con el interruptor del

@@ -22,7 +22,7 @@ import EmptyState from '../EmptyState'
 import Segmento from '../asset/Segmento'
 import { api } from '../../utils/api'
 import { track } from '../../utils/track'
-import { setBrokersRegistry } from '../../utils/valuation'
+import { useLotesDeLaCuenta } from '../../hooks/useLotesDeLaCuenta'
 import { chartGrid, chartTickSm, chartTooltip, chartReferenceStroke } from '../../utils/chartTheme'
 import { fechaCorta } from '../../utils/cuantoSeMueve'
 import { MONTHS } from '../../utils/format'
@@ -53,8 +53,10 @@ const DIAS_ATRASO = 5
 const REINTENTOS = 3
 const ESPERA_MS = 4000
 
+// Sobre lo que TENEMOS, no sobre el activo: un bono cotiza todos los días; lo que
+// no tenemos es su serie para graficar (auditoría de «Una cartera», 05/11, M10).
 const MOTIVO = {
-  sin_serie: () => 'no tiene un precio de todos los días para graficar (un bono o un fondo)',
+  sin_serie: () => 'no tenemos sus precios de cada día para graficar (un bono o un fondo)',
   sin_datos: () => 'no encontramos sus precios',
   tope: () => 'pediste muchos activos nuevos en poco tiempo; probá de nuevo en un rato',
   bajando: () => 'estamos bajando sus precios; probá de nuevo en unos segundos',
@@ -70,7 +72,7 @@ const dias = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000)
 
 export default function PrecioComparado({ tickers }) {
   const activos = tickers.slice(0, MAX_ACTIVOS)
-  const [lotes, setLotes] = useState(null)        // { posiciones, operaciones } — null mientras carga
+  const lotes = useLotesDeLaCuenta()              // { posiciones, operaciones } — null mientras carga
   const [moneda, setMoneda] = useState('usd')
   const [plazo, setPlazo] = useState(null)        // se elige al saber si tenés alguno
   const [varas, setVaras] = useState({ sp500: true, mep: true, cer: true })
@@ -81,21 +83,6 @@ export default function PrecioComparado({ tickers }) {
   // «Comparó precios» se cuenta una vez por juego de activos, no en cada cambio
   // de moneda o de plazo ni en cada reintento.
   const contado = useRef(null)
-
-  useEffect(() => {
-    let vivo = true
-    Promise.all([
-      api.get('/positions').catch(() => []),
-      api.get('/operations').catch(() => []),
-      api.get('/brokers').catch(() => []),
-    ]).then(([pos, ops, bkrs]) => {
-      if (!vivo) return
-      // isBymaHolding (la marca `local`) mira la moneda de cada broker.
-      setBrokersRegistry(bkrs || [])
-      setLotes({ posiciones: Array.isArray(pos) ? pos : [], operaciones: Array.isArray(ops) ? ops : [] })
-    })
-    return () => { vivo = false }
-  }, [])
 
   const clave = activos.join(',')
   const primera = useMemo(
@@ -248,7 +235,7 @@ export default function PrecioComparado({ tickers }) {
         <Panel padding="lg">
           <EmptyState icon={<IconoLinea size={20} strokeWidth={1.75} />} eyebrow="Precio"
             title="No hay precios para comparar"
-            description="Probá con otro activo: acciones, CEDEARs, ETFs y cripto tienen precio de todos los días." />
+            description="Probá con otro activo: de acciones, CEDEARs, ETFs y cripto tenemos los precios de cada día." />
         </Panel>
       )}
 
@@ -259,7 +246,7 @@ export default function PrecioComparado({ tickers }) {
               <span>
                 Todos arrancan en 100 el {fechaCorta(res.base)}
                 {esTuCompra ? ', el día de tu primera compra' : ''}
-                {res.base_corrida_por ? ` (${res.base_corrida_por} tiene precios desde ese día)`
+                {res.base_corrida_por ? ` (de ${res.base_corrida_por} tenemos precios desde ese día)`
                   : res.base_corrida ? ' (los precios guardados empiezan ese día)' : ''}
               </span>
               <span className="flex-shrink-0">{enPesos ? 'en pesos' : 'en dólares'}</span>

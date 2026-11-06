@@ -166,6 +166,13 @@ TOPE_BYMA_SEG = 10.0
 # El S&P 500 se guarda siempre, lo tenga alguien o no: es contra lo que la ficha
 # compara cuánto se mueve un papel en un día normal (movimiento.py).
 SP500 = "^GSPC"
+# El Nasdaq COMPUESTO (el de la franja de arriba, home/market.py), también
+# siempre: «Simular una cartera» de Backtesting compara contra él (Nico, 05/11).
+# Un ticker que nunca anduvo baja entero (5 años) la primera noche (`periodo`).
+NASDAQ = "^IXIC"
+# Los índices que se guardan todas las noches, lo tenga alguien o no. El S&P 500
+# primero: además es el canario de si Yahoo contesta (`vivo`, en `actualizar`).
+INDICES = (SP500, NASDAQ)
 
 # ─── Qué activos se siguen ───────────────────────────────────────────────────
 
@@ -178,13 +185,16 @@ def _yahoo_de(asset: str, asset_type: str, en_pesos: bool, es_cripto,
     reconocer un CEDEAR que vino sin `asset_type` (SPY importado en IOL): sin
     esto sólo se guardaba su precio en pesos y no la acción de afuera."""
     from cripto import CRIPTO_ESTABLES
-    from snapshots_job import _FIXED_INCOME_TYPES, simbolo_byma
+    from snapshots_job import _FIXED_INCOME_TYPES, _FUND_TYPES, simbolo_byma
     from main import CEDEAR_USD_RATIOS
     a = (asset or '').strip().upper()
     tipo = (asset_type or '').strip().upper()
     if not a or a in ('USD', 'ARS') or a in CRIPTO_ESTABLES or a.startswith('FCI:'):
         return []
-    if tipo in _FIXED_INCOME_TYPES or _es_bono(a):
+    # Un fondo, también por su tipo y no sólo por el prefijo «FCI:»: con su código
+    # crudo (COCOSPPA) entraba a «Mi cartera de hoy» y frenaba la simulación entera,
+    # y la noche se lo pedía a Yahoo todos los días (auditoría de «Una cartera», 05/11).
+    if tipo in _FIXED_INCOME_TYPES or tipo in _FUND_TYPES or _es_bono(a):
         return []
     if es_cripto(a):
         return [es_cripto(a)]
@@ -419,7 +429,7 @@ def _seguimiento_por_persona(conn):
                     "afuera %d activos (uid: %s)", len(topados), RAROS_POR_PERSONA,
                     sum(topados.values()), sorted(topados)[:20])
 
-    tickers.add(SP500)
+    tickers.update(INDICES)
     tickers.discard('')
     tickers.discard(None)
     return tickers, pares, de_cada_una
@@ -536,7 +546,7 @@ def _por_turnos(conn, de_cada_una: dict, hoy: str) -> list:
             por_vuelta[vuelta(t)].append(t)
         for v in range(3):
             vueltas[v].append(por_vuelta[v])
-    orden, puestos = [SP500], {SP500}
+    orden, puestos = list(INDICES), set(INDICES)
     for listas in vueltas:
         for k in range(max((len(x) for x in listas), default=0)):
             for lista in listas:
@@ -823,8 +833,9 @@ def es_ticker(t: str) -> bool:
     que le piden (`main._SYMBOL_RE`, el de GET /api/tecnico): lo que la ficha no
     aceptaría nunca va a tener velas. Un fondo con el nombre entero
     («LIQUIDACIÓN-DE-SUSCRIPCIÓN-/-…») o un nombre con espacios no se le pide a
-    Yahoo. Los índices de Yahoo empiezan con «^» (el S&P 500, `SP500`, que se
-    guarda todas las noches): la ficha no los abre, pero son tickers."""
+    Yahoo. Los índices de Yahoo empiezan con «^» (el S&P 500 y el Nasdaq,
+    `INDICES`, que se guardan todas las noches): la ficha no los abre, pero son
+    tickers."""
     from main import _SYMBOL_RE
     return bool(t) and bool(_SYMBOL_RE.match(t[1:] if t.startswith("^") else t))
 

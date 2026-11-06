@@ -339,13 +339,13 @@ def _alcista(x: dict, hoy: date):
 # así; una acción sin velas todavía, aparece en un día; con menos de 200 días
 # de mercado no hay promedio de 200; una última vela de hace más de 10 días no
 # describe el precio de hoy.
-# Como `noSeMide` de la pantalla: renta fija (`_FIXED_INCOME_TYPES`) y fondos.
-_FONDOS = ("FCI", "FUND")
+# Como `noSeMide` de la pantalla: renta fija (`_FIXED_INCOME_TYPES`) y fondos
+# (`_FUND_TYPES`, los de la regla de qué tiene precio de todos los días).
 
 
 def _porque(x: dict, tipo: str, asset: str, hoy: date) -> str:
-    from snapshots_job import _FIXED_INCOME_TYPES
-    if tipo in _FIXED_INCOME_TYPES or tipo in _FONDOS or asset.startswith("FCI:"):
+    from snapshots_job import _FIXED_INCOME_TYPES, _FUND_TYPES
+    if tipo in _FIXED_INCOME_TYPES or tipo in _FUND_TYPES or asset.startswith("FCI:"):
         return "no_se_mide"
     if not x or not x.get("disponible"):
         return "sin_historia"

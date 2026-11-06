@@ -1,0 +1,1217 @@
+{
+ "adx_squeeze": {
+  "anios": 2,
+  "asset": "GGAL",
+  "comision": 0.5,
+  "desde": "2024-10-28",
+  "disponible": true,
+  "hasta": "2026-10-27",
+  "mantener": {
+   "final": 64.09262836793921,
+   "peor_caida": -63.37579574097667,
+   "resultado": -35.90737163206078
+  },
+  "pedido_desde": "2024-10-28",
+  "primera_vela": "2024-07-01",
+  "recortado": false,
+  "recorte_por": null,
+  "reglas": [
+   "adx_squeeze"
+  ],
+  "resultados": [
+   {
+    "compras": 7,
+    "final": 111.18907693123712,
+    "ganadoras": 3,
+    "operaciones": [
+     {
+      "abierta": false,
+      "compra": "2025-03-05",
+      "precio_compra": 56.62,
+      "precio_venta": 56.23,
+      "resultado": -1.6794306835402728,
+      "ruedas": 17,
+      "venta": "2025-03-28"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-04-23",
+      "precio_compra": 64.75,
+      "precio_venta": 59.85,
+      "resultado": -8.48958341414403,
+      "ruedas": 7,
+      "venta": "2025-05-02"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-07-22",
+      "precio_compra": 47.08,
+      "precio_venta": 49.15,
+      "resultado": 3.355412846567818,
+      "ruedas": 10,
+      "venta": "2025-08-05"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-03-03",
+      "precio_compra": 41.79,
+      "precio_venta": 47.83,
+      "resultado": 13.311549474495553,
+      "ruedas": 34,
+      "venta": "2026-04-21"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-05-12",
+      "precio_compra": 42.88,
+      "precio_venta": 48.22,
+      "resultado": 11.331636006008505,
+      "ruedas": 18,
+      "venta": "2026-06-08"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-08-31",
+      "precio_compra": 42.5,
+      "precio_venta": 42.7,
+      "resultado": -0.531604105107919,
+      "ruedas": 10,
+      "venta": "2026-09-15"
+     },
+     {
+      "abierta": true,
+      "compra": "2026-10-08",
+      "precio_compra": 36.51,
+      "precio_venta": 35.14,
+      "resultado": -4.712463721976567,
+      "ruedas": 14,
+      "venta": "2026-10-27"
+     }
+    ],
+    "peor_caida": -15.080792211445726,
+    "regla": "adx_squeeze",
+    "resultado": 11.189076931237118,
+    "ruedas_comprada": 110,
+    "sin_la_mejor": {
+     "compra": "2026-03-03",
+     "resultado": 13.311549474495553,
+     "sin_ella": -1.8731299263859968
+    }
+   }
+  ],
+  "ruedas": 501,
+  "variacion_precio": -35.26160615344135
+ },
+ "media200": {
+  "anios": 2,
+  "asset": "GGAL",
+  "comision": 0.5,
+  "desde": "2025-04-17",
+  "disponible": true,
+  "hasta": "2026-10-27",
+  "mantener": {
+   "final": 57.29492291886656,
+   "peor_caida": -58.92219131284594,
+   "resultado": -42.70507708113344
+  },
+  "pedido_desde": "2024-10-28",
+  "primera_vela": "2024-07-01",
+  "recortado": true,
+  "recorte_por": "media200",
+  "reglas": [
+   "media200"
+  ],
+  "resultados": [
+   {
+    "compras": 10,
+    "final": 67.44340082831015,
+    "ganadoras": 1,
+    "operaciones": [
+     {
+      "abierta": false,
+      "compra": "2025-06-11",
+      "precio_compra": 55.0,
+      "precio_venta": 55.4,
+      "resultado": -0.2774790715304398,
+      "ruedas": 1,
+      "venta": "2025-06-12"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-10-29",
+      "precio_compra": 52.98,
+      "precio_venta": 50.74,
+      "resultado": -5.183332208832859,
+      "ruedas": 16,
+      "venta": "2025-11-20"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-11-28",
+      "precio_compra": 51.41,
+      "precio_venta": 49.29,
+      "resultado": -5.080075274788443,
+      "ruedas": 8,
+      "venta": "2025-12-10"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-12-11",
+      "precio_compra": 49.31,
+      "precio_venta": 48.64,
+      "resultado": -2.3427011668671893,
+      "ruedas": 1,
+      "venta": "2025-12-12"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-12-16",
+      "precio_compra": 49.48,
+      "precio_venta": 49.44,
+      "resultado": -1.0775361898975988,
+      "ruedas": 35,
+      "venta": "2026-02-06"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-02-09",
+      "precio_compra": 49.6,
+      "precio_venta": 46.75,
+      "resultado": -6.686148843031514,
+      "ruedas": 4,
+      "venta": "2026-02-13"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-02-23",
+      "precio_compra": 49.03,
+      "precio_venta": 45.88,
+      "resultado": -7.358047749655339,
+      "ruedas": 4,
+      "venta": "2026-02-27"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-04-01",
+      "precio_compra": 47.0,
+      "precio_venta": 46.05,
+      "resultado": -2.9986159687853897,
+      "ruedas": 2,
+      "venta": "2026-04-06"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-04-09",
+      "precio_compra": 47.57,
+      "precio_venta": 43.12,
+      "resultado": -10.258824434711899,
+      "ruedas": 11,
+      "venta": "2026-04-24"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-05-27",
+      "precio_compra": 46.05,
+      "precio_venta": 48.08,
+      "resultado": 3.3667852365166118,
+      "ruedas": 49,
+      "venta": "2026-08-06"
+     }
+    ],
+    "peor_caida": -42.69111979297292,
+    "regla": "media200",
+    "resultado": -32.55659917168985,
+    "ruedas_comprada": 131,
+    "sin_la_mejor": {
+     "compra": "2026-05-27",
+     "resultado": 3.3667852365166118,
+     "sin_ella": -34.75331493187981
+    }
+   }
+  ],
+  "ruedas": 384,
+  "variacion_precio": -42.127801905137176
+ },
+ "media50": {
+  "anios": 2,
+  "asset": "GGAL",
+  "comision": 0.5,
+  "desde": "2024-10-28",
+  "disponible": true,
+  "hasta": "2026-10-27",
+  "mantener": {
+   "final": 64.09262836793921,
+   "peor_caida": -63.37579574097667,
+   "resultado": -35.90737163206078
+  },
+  "pedido_desde": "2024-10-28",
+  "primera_vela": "2024-07-01",
+  "recortado": false,
+  "recorte_por": null,
+  "reglas": [
+   "media50"
+  ],
+  "resultados": [
+   {
+    "compras": 10,
+    "final": 92.96966383114875,
+    "ganadoras": 2,
+    "operaciones": [
+     {
+      "abierta": false,
+      "compra": "2025-02-07",
+      "precio_compra": 66.84,
+      "precio_venta": 62.7,
+      "resultado": -7.1296055410763675,
+      "ruedas": 1,
+      "venta": "2025-02-10"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-04-15",
+      "precio_compra": 61.55,
+      "precio_venta": 57.45,
+      "resultado": -7.592302663941652,
+      "ruedas": 31,
+      "venta": "2025-05-30"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-08-07",
+      "precio_compra": 53.52,
+      "precio_venta": 51.91,
+      "resultado": -3.975715322552531,
+      "ruedas": 1,
+      "venta": "2025-08-08"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-08-13",
+      "precio_compra": 52.52,
+      "precio_venta": 49.92,
+      "resultado": -5.898618133190903,
+      "ruedas": 2,
+      "venta": "2025-08-15"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-10-24",
+      "precio_compra": 35.1,
+      "precio_venta": 51.05,
+      "resultado": 43.9908196347476,
+      "ruedas": 56,
+      "venta": "2026-01-15"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-01-22",
+      "precio_compra": 54.25,
+      "precio_venta": 51.0,
+      "resultado": -6.928525345622127,
+      "ruedas": 10,
+      "venta": "2026-02-05"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-04-09",
+      "precio_compra": 47.57,
+      "precio_venta": 43.12,
+      "resultado": -10.258824434711899,
+      "ruedas": 11,
+      "venta": "2026-04-24"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-05-27",
+      "precio_compra": 46.05,
+      "precio_venta": 49.72,
+      "resultado": 6.8926059154234,
+      "ruedas": 41,
+      "venta": "2026-07-27"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-07-28",
+      "precio_compra": 49.33,
+      "precio_venta": 48.59,
+      "resultado": -2.4826411606129084,
+      "ruedas": 1,
+      "venta": "2026-07-29"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-07-31",
+      "precio_compra": 52.0,
+      "precio_venta": 50.23,
+      "resultado": -4.367393659995155,
+      "ruedas": 1,
+      "venta": "2026-08-03"
+     }
+    ],
+    "peor_caida": -30.719343070837446,
+    "regla": "media50",
+    "resultado": -7.030336168851248,
+    "ruedas_comprada": 155,
+    "sin_la_mejor": {
+     "compra": "2025-10-24",
+     "resultado": 43.9908196347476,
+     "sin_ella": -35.433617179915366
+    }
+   }
+  ],
+  "ruedas": 501,
+  "variacion_precio": -35.26160615344135
+ },
+ "media50,adx_squeeze": {
+  "anios": 2,
+  "asset": "GGAL",
+  "comision": 0.5,
+  "desde": "2024-10-28",
+  "disponible": true,
+  "hasta": "2026-10-27",
+  "mantener": {
+   "final": 64.09262836793921,
+   "peor_caida": -63.37579574097667,
+   "resultado": -35.90737163206078
+  },
+  "pedido_desde": "2024-10-28",
+  "primera_vela": "2024-07-01",
+  "recortado": false,
+  "recorte_por": null,
+  "reglas": [
+   "media50",
+   "adx_squeeze"
+  ],
+  "resultados": [
+   {
+    "compras": 10,
+    "final": 92.96966383114875,
+    "ganadoras": 2,
+    "operaciones": [
+     {
+      "abierta": false,
+      "compra": "2025-02-07",
+      "precio_compra": 66.84,
+      "precio_venta": 62.7,
+      "resultado": -7.1296055410763675,
+      "ruedas": 1,
+      "venta": "2025-02-10"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-04-15",
+      "precio_compra": 61.55,
+      "precio_venta": 57.45,
+      "resultado": -7.592302663941652,
+      "ruedas": 31,
+      "venta": "2025-05-30"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-08-07",
+      "precio_compra": 53.52,
+      "precio_venta": 51.91,
+      "resultado": -3.975715322552531,
+      "ruedas": 1,
+      "venta": "2025-08-08"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-08-13",
+      "precio_compra": 52.52,
+      "precio_venta": 49.92,
+      "resultado": -5.898618133190903,
+      "ruedas": 2,
+      "venta": "2025-08-15"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-10-24",
+      "precio_compra": 35.1,
+      "precio_venta": 51.05,
+      "resultado": 43.9908196347476,
+      "ruedas": 56,
+      "venta": "2026-01-15"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-01-22",
+      "precio_compra": 54.25,
+      "precio_venta": 51.0,
+      "resultado": -6.928525345622127,
+      "ruedas": 10,
+      "venta": "2026-02-05"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-04-09",
+      "precio_compra": 47.57,
+      "precio_venta": 43.12,
+      "resultado": -10.258824434711899,
+      "ruedas": 11,
+      "venta": "2026-04-24"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-05-27",
+      "precio_compra": 46.05,
+      "precio_venta": 49.72,
+      "resultado": 6.8926059154234,
+      "ruedas": 41,
+      "venta": "2026-07-27"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-07-28",
+      "precio_compra": 49.33,
+      "precio_venta": 48.59,
+      "resultado": -2.4826411606129084,
+      "ruedas": 1,
+      "venta": "2026-07-29"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-07-31",
+      "precio_compra": 52.0,
+      "precio_venta": 50.23,
+      "resultado": -4.367393659995155,
+      "ruedas": 1,
+      "venta": "2026-08-03"
+     }
+    ],
+    "peor_caida": -30.719343070837446,
+    "regla": "media50",
+    "resultado": -7.030336168851248,
+    "ruedas_comprada": 155,
+    "sin_la_mejor": {
+     "compra": "2025-10-24",
+     "resultado": 43.9908196347476,
+     "sin_ella": -35.433617179915366
+    }
+   },
+   {
+    "compras": 7,
+    "final": 111.18907693123712,
+    "ganadoras": 3,
+    "operaciones": [
+     {
+      "abierta": false,
+      "compra": "2025-03-05",
+      "precio_compra": 56.62,
+      "precio_venta": 56.23,
+      "resultado": -1.6794306835402728,
+      "ruedas": 17,
+      "venta": "2025-03-28"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-04-23",
+      "precio_compra": 64.75,
+      "precio_venta": 59.85,
+      "resultado": -8.48958341414403,
+      "ruedas": 7,
+      "venta": "2025-05-02"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-07-22",
+      "precio_compra": 47.08,
+      "precio_venta": 49.15,
+      "resultado": 3.355412846567818,
+      "ruedas": 10,
+      "venta": "2025-08-05"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-03-03",
+      "precio_compra": 41.79,
+      "precio_venta": 47.83,
+      "resultado": 13.311549474495553,
+      "ruedas": 34,
+      "venta": "2026-04-21"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-05-12",
+      "precio_compra": 42.88,
+      "precio_venta": 48.22,
+      "resultado": 11.331636006008505,
+      "ruedas": 18,
+      "venta": "2026-06-08"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-08-31",
+      "precio_compra": 42.5,
+      "precio_venta": 42.7,
+      "resultado": -0.531604105107919,
+      "ruedas": 10,
+      "venta": "2026-09-15"
+     },
+     {
+      "abierta": true,
+      "compra": "2026-10-08",
+      "precio_compra": 36.51,
+      "precio_venta": 35.14,
+      "resultado": -4.712463721976567,
+      "ruedas": 14,
+      "venta": "2026-10-27"
+     }
+    ],
+    "peor_caida": -15.080792211445726,
+    "regla": "adx_squeeze",
+    "resultado": 11.189076931237118,
+    "ruedas_comprada": 110,
+    "sin_la_mejor": {
+     "compra": "2026-03-03",
+     "resultado": 13.311549474495553,
+     "sin_ella": -1.8731299263859968
+    }
+   }
+  ],
+  "ruedas": 501,
+  "variacion_precio": -35.26160615344135
+ },
+ "media50,rsi,adx_squeeze": {
+  "anios": 2,
+  "asset": "GGAL",
+  "comision": 0.5,
+  "desde": "2024-10-28",
+  "disponible": true,
+  "hasta": "2026-10-27",
+  "mantener": {
+   "final": 64.09262836793921,
+   "peor_caida": -63.37579574097667,
+   "resultado": -35.90737163206078
+  },
+  "pedido_desde": "2024-10-28",
+  "primera_vela": "2024-07-01",
+  "recortado": false,
+  "recorte_por": null,
+  "reglas": [
+   "media50",
+   "rsi",
+   "adx_squeeze"
+  ],
+  "resultados": [
+   {
+    "compras": 10,
+    "final": 92.96966383114875,
+    "ganadoras": 2,
+    "operaciones": [
+     {
+      "abierta": false,
+      "compra": "2025-02-07",
+      "precio_compra": 66.84,
+      "precio_venta": 62.7,
+      "resultado": -7.1296055410763675,
+      "ruedas": 1,
+      "venta": "2025-02-10"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-04-15",
+      "precio_compra": 61.55,
+      "precio_venta": 57.45,
+      "resultado": -7.592302663941652,
+      "ruedas": 31,
+      "venta": "2025-05-30"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-08-07",
+      "precio_compra": 53.52,
+      "precio_venta": 51.91,
+      "resultado": -3.975715322552531,
+      "ruedas": 1,
+      "venta": "2025-08-08"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-08-13",
+      "precio_compra": 52.52,
+      "precio_venta": 49.92,
+      "resultado": -5.898618133190903,
+      "ruedas": 2,
+      "venta": "2025-08-15"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-10-24",
+      "precio_compra": 35.1,
+      "precio_venta": 51.05,
+      "resultado": 43.9908196347476,
+      "ruedas": 56,
+      "venta": "2026-01-15"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-01-22",
+      "precio_compra": 54.25,
+      "precio_venta": 51.0,
+      "resultado": -6.928525345622127,
+      "ruedas": 10,
+      "venta": "2026-02-05"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-04-09",
+      "precio_compra": 47.57,
+      "precio_venta": 43.12,
+      "resultado": -10.258824434711899,
+      "ruedas": 11,
+      "venta": "2026-04-24"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-05-27",
+      "precio_compra": 46.05,
+      "precio_venta": 49.72,
+      "resultado": 6.8926059154234,
+      "ruedas": 41,
+      "venta": "2026-07-27"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-07-28",
+      "precio_compra": 49.33,
+      "precio_venta": 48.59,
+      "resultado": -2.4826411606129084,
+      "ruedas": 1,
+      "venta": "2026-07-29"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-07-31",
+      "precio_compra": 52.0,
+      "precio_venta": 50.23,
+      "resultado": -4.367393659995155,
+      "ruedas": 1,
+      "venta": "2026-08-03"
+     }
+    ],
+    "peor_caida": -30.719343070837446,
+    "regla": "media50",
+    "resultado": -7.030336168851248,
+    "ruedas_comprada": 155,
+    "sin_la_mejor": {
+     "compra": "2025-10-24",
+     "resultado": 43.9908196347476,
+     "sin_ella": -35.433617179915366
+    }
+   },
+   {
+    "compras": 3,
+    "final": 122.51886523411437,
+    "ganadoras": 2,
+    "operaciones": [
+     {
+      "abierta": false,
+      "compra": "2025-04-10",
+      "precio_compra": 51.7,
+      "precio_venta": 57.05,
+      "resultado": 9.247436481971128,
+      "ruedas": 147,
+      "venta": "2025-11-10"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-05-05",
+      "precio_compra": 40.66,
+      "precio_venta": 54.44,
+      "resultado": 32.55523817676045,
+      "ruedas": 30,
+      "venta": "2026-06-17"
+     },
+     {
+      "abierta": true,
+      "compra": "2026-08-24",
+      "precio_compra": 41.12,
+      "precio_venta": 35.14,
+      "resultado": -15.395236382750333,
+      "ruedas": 46,
+      "venta": "2026-10-27"
+     }
+    ],
+    "peor_caida": -58.92219131284595,
+    "regla": "rsi",
+    "resultado": 22.518865234114372,
+    "ruedas_comprada": 223,
+    "sin_la_mejor": {
+     "compra": "2026-05-05",
+     "resultado": 32.55523817676045,
+     "sin_ella": -7.571464606523348
+    }
+   },
+   {
+    "compras": 7,
+    "final": 111.18907693123712,
+    "ganadoras": 3,
+    "operaciones": [
+     {
+      "abierta": false,
+      "compra": "2025-03-05",
+      "precio_compra": 56.62,
+      "precio_venta": 56.23,
+      "resultado": -1.6794306835402728,
+      "ruedas": 17,
+      "venta": "2025-03-28"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-04-23",
+      "precio_compra": 64.75,
+      "precio_venta": 59.85,
+      "resultado": -8.48958341414403,
+      "ruedas": 7,
+      "venta": "2025-05-02"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-07-22",
+      "precio_compra": 47.08,
+      "precio_venta": 49.15,
+      "resultado": 3.355412846567818,
+      "ruedas": 10,
+      "venta": "2025-08-05"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-03-03",
+      "precio_compra": 41.79,
+      "precio_venta": 47.83,
+      "resultado": 13.311549474495553,
+      "ruedas": 34,
+      "venta": "2026-04-21"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-05-12",
+      "precio_compra": 42.88,
+      "precio_venta": 48.22,
+      "resultado": 11.331636006008505,
+      "ruedas": 18,
+      "venta": "2026-06-08"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-08-31",
+      "precio_compra": 42.5,
+      "precio_venta": 42.7,
+      "resultado": -0.531604105107919,
+      "ruedas": 10,
+      "venta": "2026-09-15"
+     },
+     {
+      "abierta": true,
+      "compra": "2026-10-08",
+      "precio_compra": 36.51,
+      "precio_venta": 35.14,
+      "resultado": -4.712463721976567,
+      "ruedas": 14,
+      "venta": "2026-10-27"
+     }
+    ],
+    "peor_caida": -15.080792211445726,
+    "regla": "adx_squeeze",
+    "resultado": 11.189076931237118,
+    "ruedas_comprada": 110,
+    "sin_la_mejor": {
+     "compra": "2026-03-03",
+     "resultado": 13.311549474495553,
+     "sin_ella": -1.8731299263859968
+    }
+   }
+  ],
+  "ruedas": 501,
+  "variacion_precio": -35.26160615344135
+ },
+ "rsi": {
+  "anios": 2,
+  "asset": "GGAL",
+  "comision": 0.5,
+  "desde": "2024-10-28",
+  "disponible": true,
+  "hasta": "2026-10-27",
+  "mantener": {
+   "final": 64.09262836793921,
+   "peor_caida": -63.37579574097667,
+   "resultado": -35.90737163206078
+  },
+  "pedido_desde": "2024-10-28",
+  "primera_vela": "2024-07-01",
+  "recortado": false,
+  "recorte_por": null,
+  "reglas": [
+   "rsi"
+  ],
+  "resultados": [
+   {
+    "compras": 3,
+    "final": 122.51886523411437,
+    "ganadoras": 2,
+    "operaciones": [
+     {
+      "abierta": false,
+      "compra": "2025-04-10",
+      "precio_compra": 51.7,
+      "precio_venta": 57.05,
+      "resultado": 9.247436481971128,
+      "ruedas": 147,
+      "venta": "2025-11-10"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-05-05",
+      "precio_compra": 40.66,
+      "precio_venta": 54.44,
+      "resultado": 32.55523817676045,
+      "ruedas": 30,
+      "venta": "2026-06-17"
+     },
+     {
+      "abierta": true,
+      "compra": "2026-08-24",
+      "precio_compra": 41.12,
+      "precio_venta": 35.14,
+      "resultado": -15.395236382750333,
+      "ruedas": 46,
+      "venta": "2026-10-27"
+     }
+    ],
+    "peor_caida": -58.92219131284595,
+    "regla": "rsi",
+    "resultado": 22.518865234114372,
+    "ruedas_comprada": 223,
+    "sin_la_mejor": {
+     "compra": "2026-05-05",
+     "resultado": 32.55523817676045,
+     "sin_ella": -7.571464606523348
+    }
+   }
+  ],
+  "ruedas": 501,
+  "variacion_precio": -35.26160615344135
+ },
+ "rsi,adx_squeeze": {
+  "anios": 2,
+  "asset": "GGAL",
+  "comision": 0.5,
+  "desde": "2024-10-28",
+  "disponible": true,
+  "hasta": "2026-10-27",
+  "mantener": {
+   "final": 64.09262836793921,
+   "peor_caida": -63.37579574097667,
+   "resultado": -35.90737163206078
+  },
+  "pedido_desde": "2024-10-28",
+  "primera_vela": "2024-07-01",
+  "recortado": false,
+  "recorte_por": null,
+  "reglas": [
+   "rsi",
+   "adx_squeeze"
+  ],
+  "resultados": [
+   {
+    "compras": 3,
+    "final": 122.51886523411437,
+    "ganadoras": 2,
+    "operaciones": [
+     {
+      "abierta": false,
+      "compra": "2025-04-10",
+      "precio_compra": 51.7,
+      "precio_venta": 57.05,
+      "resultado": 9.247436481971128,
+      "ruedas": 147,
+      "venta": "2025-11-10"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-05-05",
+      "precio_compra": 40.66,
+      "precio_venta": 54.44,
+      "resultado": 32.55523817676045,
+      "ruedas": 30,
+      "venta": "2026-06-17"
+     },
+     {
+      "abierta": true,
+      "compra": "2026-08-24",
+      "precio_compra": 41.12,
+      "precio_venta": 35.14,
+      "resultado": -15.395236382750333,
+      "ruedas": 46,
+      "venta": "2026-10-27"
+     }
+    ],
+    "peor_caida": -58.92219131284595,
+    "regla": "rsi",
+    "resultado": 22.518865234114372,
+    "ruedas_comprada": 223,
+    "sin_la_mejor": {
+     "compra": "2026-05-05",
+     "resultado": 32.55523817676045,
+     "sin_ella": -7.571464606523348
+    }
+   },
+   {
+    "compras": 7,
+    "final": 111.18907693123712,
+    "ganadoras": 3,
+    "operaciones": [
+     {
+      "abierta": false,
+      "compra": "2025-03-05",
+      "precio_compra": 56.62,
+      "precio_venta": 56.23,
+      "resultado": -1.6794306835402728,
+      "ruedas": 17,
+      "venta": "2025-03-28"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-04-23",
+      "precio_compra": 64.75,
+      "precio_venta": 59.85,
+      "resultado": -8.48958341414403,
+      "ruedas": 7,
+      "venta": "2025-05-02"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-07-22",
+      "precio_compra": 47.08,
+      "precio_venta": 49.15,
+      "resultado": 3.355412846567818,
+      "ruedas": 10,
+      "venta": "2025-08-05"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-03-03",
+      "precio_compra": 41.79,
+      "precio_venta": 47.83,
+      "resultado": 13.311549474495553,
+      "ruedas": 34,
+      "venta": "2026-04-21"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-05-12",
+      "precio_compra": 42.88,
+      "precio_venta": 48.22,
+      "resultado": 11.331636006008505,
+      "ruedas": 18,
+      "venta": "2026-06-08"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-08-31",
+      "precio_compra": 42.5,
+      "precio_venta": 42.7,
+      "resultado": -0.531604105107919,
+      "ruedas": 10,
+      "venta": "2026-09-15"
+     },
+     {
+      "abierta": true,
+      "compra": "2026-10-08",
+      "precio_compra": 36.51,
+      "precio_venta": 35.14,
+      "resultado": -4.712463721976567,
+      "ruedas": 14,
+      "venta": "2026-10-27"
+     }
+    ],
+    "peor_caida": -15.080792211445726,
+    "regla": "adx_squeeze",
+    "resultado": 11.189076931237118,
+    "ruedas_comprada": 110,
+    "sin_la_mejor": {
+     "compra": "2026-03-03",
+     "resultado": 13.311549474495553,
+     "sin_ella": -1.8731299263859968
+    }
+   }
+  ],
+  "ruedas": 501,
+  "variacion_precio": -35.26160615344135
+ },
+ "rsi,media200": {
+  "anios": 2,
+  "asset": "GGAL",
+  "comision": 0.5,
+  "desde": "2025-04-17",
+  "disponible": true,
+  "hasta": "2026-10-27",
+  "mantener": {
+   "final": 57.29492291886656,
+   "peor_caida": -58.92219131284594,
+   "resultado": -42.70507708113344
+  },
+  "pedido_desde": "2024-10-28",
+  "primera_vela": "2024-07-01",
+  "recortado": true,
+  "recorte_por": "media200",
+  "reglas": [
+   "rsi",
+   "media200"
+  ],
+  "resultados": [
+   {
+    "compras": 3,
+    "final": 120.23966190933852,
+    "ganadoras": 2,
+    "operaciones": [
+     {
+      "abierta": false,
+      "compra": "2025-06-25",
+      "precio_compra": 52.68,
+      "precio_venta": 57.05,
+      "resultado": 7.2151199078897,
+      "ruedas": 96,
+      "venta": "2025-11-10"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-05-05",
+      "precio_compra": 40.66,
+      "precio_venta": 54.44,
+      "resultado": 32.55523817676045,
+      "ruedas": 30,
+      "venta": "2026-06-17"
+     },
+     {
+      "abierta": true,
+      "compra": "2026-08-24",
+      "precio_compra": 41.12,
+      "precio_venta": 35.14,
+      "resultado": -15.395236382750333,
+      "ruedas": 46,
+      "venta": "2026-10-27"
+     }
+    ],
+    "peor_caida": -50.216449781302906,
+    "regla": "rsi",
+    "resultado": 20.239661909338523,
+    "ruedas_comprada": 172,
+    "sin_la_mejor": {
+     "compra": "2026-05-05",
+     "resultado": 32.55523817676045,
+     "sin_ella": -9.290901239979132
+    }
+   },
+   {
+    "compras": 10,
+    "final": 67.44340082831015,
+    "ganadoras": 1,
+    "operaciones": [
+     {
+      "abierta": false,
+      "compra": "2025-06-11",
+      "precio_compra": 55.0,
+      "precio_venta": 55.4,
+      "resultado": -0.2774790715304398,
+      "ruedas": 1,
+      "venta": "2025-06-12"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-10-29",
+      "precio_compra": 52.98,
+      "precio_venta": 50.74,
+      "resultado": -5.183332208832859,
+      "ruedas": 16,
+      "venta": "2025-11-20"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-11-28",
+      "precio_compra": 51.41,
+      "precio_venta": 49.29,
+      "resultado": -5.080075274788443,
+      "ruedas": 8,
+      "venta": "2025-12-10"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-12-11",
+      "precio_compra": 49.31,
+      "precio_venta": 48.64,
+      "resultado": -2.3427011668671893,
+      "ruedas": 1,
+      "venta": "2025-12-12"
+     },
+     {
+      "abierta": false,
+      "compra": "2025-12-16",
+      "precio_compra": 49.48,
+      "precio_venta": 49.44,
+      "resultado": -1.0775361898975988,
+      "ruedas": 35,
+      "venta": "2026-02-06"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-02-09",
+      "precio_compra": 49.6,
+      "precio_venta": 46.75,
+      "resultado": -6.686148843031514,
+      "ruedas": 4,
+      "venta": "2026-02-13"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-02-23",
+      "precio_compra": 49.03,
+      "precio_venta": 45.88,
+      "resultado": -7.358047749655339,
+      "ruedas": 4,
+      "venta": "2026-02-27"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-04-01",
+      "precio_compra": 47.0,
+      "precio_venta": 46.05,
+      "resultado": -2.9986159687853897,
+      "ruedas": 2,
+      "venta": "2026-04-06"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-04-09",
+      "precio_compra": 47.57,
+      "precio_venta": 43.12,
+      "resultado": -10.258824434711899,
+      "ruedas": 11,
+      "venta": "2026-04-24"
+     },
+     {
+      "abierta": false,
+      "compra": "2026-05-27",
+      "precio_compra": 46.05,
+      "precio_venta": 48.08,
+      "resultado": 3.3667852365166118,
+      "ruedas": 49,
+      "venta": "2026-08-06"
+     }
+    ],
+    "peor_caida": -42.69111979297292,
+    "regla": "media200",
+    "resultado": -32.55659917168985,
+    "ruedas_comprada": 131,
+    "sin_la_mejor": {
+     "compra": "2026-05-27",
+     "resultado": 3.3667852365166118,
+     "sin_ella": -34.75331493187981
+    }
+   }
+  ],
+  "ruedas": 384,
+  "variacion_precio": -42.127801905137176
+ }
+}

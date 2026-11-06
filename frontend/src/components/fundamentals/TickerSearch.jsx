@@ -2,10 +2,16 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Distinto de components/home/SearchBar.jsx (que abre un modal/quickview de
 // watchlist): este es un input simple que, al elegir un ticker, dispara
-// onSelect(symbol) y deja que la página cargue la ficha de fundamentals.
+// onSelect(symbol, opcion) y deja que la página cargue la ficha de fundamentals.
+// `opcion` es la sugerencia elegida ({symbol, name, type}: su tipo dice si GGAL
+// es la acción argentina), o undefined si se tomó el texto escrito.
 //
 // Reusa POPULAR_TICKERS de utils/tickers.js + filtrado por symbol/name.
-// Keyboard: ↑↓ navega, ↩ selecciona, ESC cierra.
+// Keyboard: ↑↓ navega, ↩ selecciona, ESC cierra. Con el cuadro vacío, ↩ elige
+// sólo si antes se navegó con las flechas: si no, sumaba el primero de los
+// populares (AAPL) sin que nadie lo eligiera. Era el arreglo de Tu lista, hecho
+// en quien llama y no acá: «Una cartera» sumaba AAPL al 100 % con un Enter
+// (auditoría 05/11, M4). Para un lector de pantalla es un combobox con su lista.
 //
 // También es el buscador de «Tu lista» en Análisis técnico (pages/TuLista.jsx),
 // que suma a la watchlist: ahí recibe otro catálogo (`universo`: el del
@@ -13,7 +19,7 @@
 // `marca(t)`, que dice si un activo ya está en tu cartera o en tu watchlist.
 // Un solo cuadro con autocompletado y búsqueda por nombre en el servidor.
 
-import { useState, useRef, useEffect, useMemo } from 'react'
+import { useState, useRef, useEffect, useMemo, useId } from 'react'
 import { Search, CornerDownLeft } from 'lucide-react'
 import { POPULAR_TICKERS } from '../../utils/tickers'
 import { api } from '../../utils/api'
@@ -47,7 +53,12 @@ export default function TickerSearch({
 }) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
-  const [highlight, setHighlight] = useState(0)
+  // -1: ninguna. Sin escribir ni navegar no se resalta nada: se veía elegida (y el
+  // lector la anunciaba) una opción que Enter no elegía (verificación 05/11, V9).
+  const [highlight, setHighlight] = useState(-1)
+  // ¿Se movió con las flechas desde lo último que se escribió?
+  const [navego, setNavego] = useState(false)
+  const lista = useId()
   const inputRef = useRef(null)
   const containerRef = useRef(null)
 
@@ -99,24 +110,25 @@ export default function TickerSearch({
   }, [])
 
   // Reset highlight cuando cambian resultados
-  useEffect(() => { setHighlight(0) }, [query])
+  useEffect(() => { setHighlight(query.trim() ? 0 : -1); setNavego(false) }, [query])
 
-  function choose(symbol) {
+  function choose(symbol, opcion) {
     setOpen(false)
     setQuery('')
     if (inputRef.current) inputRef.current.blur()
-    onSelect?.(symbol)
+    onSelect?.(symbol, opcion)
   }
 
   function onKeyDown(e) {
     // Enter sin sugerencias: tomar el texto crudo (permite tickers no listados)
     if (e.key === 'Enter') {
       e.preventDefault()
-      // Sumando a la watchlist, Enter con el cuadro vacío no elige nada: antes
-      // sumaba el primero de los populares (AAPL) sin que nadie lo escribiera.
-      if (!textoLibre && !query.trim()) return
+      // Con el cuadro vacío, Enter no elige nada salvo que se haya navegado con
+      // las flechas: antes sumaba el primero de los populares (AAPL) sin que nadie
+      // lo eligiera (Tu lista, 22/10; para todos, 05/11).
+      if (!query.trim() && !navego) return
       if (open && results[highlight]) {
-        choose(results[highlight].symbol)
+        choose(results[highlight].symbol, results[highlight])
       } else if (textoLibre) {
         // `textoLibre` en false (sumar a la watchlist): un texto que no es
         // ninguna sugerencia no se guarda como si fuera un ticker («INTEL»).
@@ -126,14 +138,16 @@ export default function TickerSearch({
       return
     }
     if (!open) {
-      if (e.key === 'ArrowDown') { setOpen(true); return }
+      if (e.key === 'ArrowDown') { setOpen(true); setNavego(true); return }
       return
     }
     if (e.key === 'ArrowDown') {
       e.preventDefault()
+      setNavego(true)
       setHighlight(h => Math.min(h + 1, results.length - 1))
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
+      setNavego(true)
       setHighlight(h => Math.max(h - 1, 0))
     } else if (e.key === 'Escape') {
       e.preventDefault()
@@ -155,6 +169,11 @@ export default function TickerSearch({
           placeholder={placeholder}
           className="flex-1 min-w-0 bg-transparent text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none"
           aria-label={etiqueta}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={open && results.length > 0}
+          aria-controls={lista}
+          aria-activedescendant={open && results[highlight] ? `${lista}-${highlight}` : undefined}
           autoComplete="off"
           spellCheck={false}
         />
@@ -164,12 +183,16 @@ export default function TickerSearch({
       </div>
 
       {open && results.length > 0 && (
-        <div className="absolute z-30 left-0 right-0 mt-1.5 bg-bg-raised border border-line rounded-lg overflow-hidden">
+        <div id={lista} role="listbox" aria-label="Sugerencias"
+          className="absolute z-30 left-0 right-0 mt-1.5 bg-bg-raised border border-line rounded-lg overflow-hidden">
           {results.map((t, i) => (
             <button
               key={t.symbol}
+              id={`${lista}-${i}`}
               type="button"
-              onClick={() => choose(t.symbol)}
+              role="option"
+              aria-selected={i === highlight}
+              onClick={() => choose(t.symbol, t)}
               onMouseEnter={() => setHighlight(i)}
               className={`w-full flex items-center justify-between gap-3 px-3 py-2 text-left transition-colors ${
                 i === highlight ? 'bg-bg-1' : 'hover:bg-bg-1'

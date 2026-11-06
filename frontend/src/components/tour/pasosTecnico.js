@@ -109,6 +109,24 @@ export const PASOS_TECNICO = [
       + 'precios, no qué hacer con ellos.',
   },
   {
+    id: 'backtesting',
+    // Ilumina «¿Qué querés probar?» (pages/Backtesting.jsx), no la pestaña: en la
+    // compu «Una cartera» casi no se descubría (producto 05/11, A6). La pestaña
+    // queda abierta y marcada igual.
+    marca: 'backtesting-modo',
+    ruta: '/analisis-tecnico',
+    busqueda: '?tab=backtesting',
+    titulo: 'Backtesting: una regla o una cartera contra el pasado',
+    // Las cuentas y las palabras: backend/backtest.py y utils/backtesting.js; la
+    // cartera, backend/cartera_simulada.py y utils/carteraSimulada.js. Lo que
+    // muestra es el pasado: el paso lo dice, como la pantalla.
+    // «—o hasta 3—» junto a «regla»: pegado a «un activo» se leía «hasta 3 activos»;
+    // y «una cartera entera» se podía leer «toda tu plata» (auditorías 06/11).
+    texto: 'Acá elegís qué probar: una regla técnica —o hasta 3— en un activo, al lado de comprar y no tocar '
+      + 'nada, o una cartera de varios activos al lado del S&P 500 y del Nasdaq. Muestra el pasado: no dice qué va '
+      + 'a pasar.',
+  },
+  {
     id: 'comparar',
     marca: 'tab-comparar',
     ruta: '/analisis-tecnico',
@@ -130,7 +148,6 @@ export const PASOS_TECNICO = [
     titulo: 'Lo que viene',
     // En el celular el «Pronto» no va (AnalisisTecnico.jsx): el paso se
     // saltea solo y el tutorial termina en Comparar.
-    texto: 'Mercado y Backtesting son las dos partes que estamos armando para esta pantalla. '
-      + 'Todavía no se pueden abrir.',
+    texto: 'Mercado es la parte que estamos armando para esta pantalla. Todavía no se puede abrir.',
   },
 ]

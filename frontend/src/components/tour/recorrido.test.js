@@ -100,7 +100,9 @@ describe('las pruebas apagan TODOS los tutoriales, con la clave de verdad', () =
     const recorrer = (d) => {
       for (const n of readdirSync(d)) {
         const p = join(d, n)
-        if (statSync(p).isDirectory()) { if (!['node_modules', 'dist'].includes(n)) recorrer(p); continue }
+        // Lo que arma `npm run build` (dist, dist-ssr) no es fuente: el prerender trae
+        // el catálogo entero adentro, y después de un build esto daba rojo (05/11).
+        if (statSync(p).isDirectory()) { if (!['node_modules', 'dist', 'dist-ssr'].includes(n)) recorrer(p); continue }
         // El catálogo las declara; recorrido.js las reconoce por su prefijo; esta prueba las busca.
         if (!/\.(js|jsx|mjs)$/.test(n) || /(catalogoDelAlmacen|tour\/recorrido|tour\/recorrido\.test)\.js$/.test(p)) continue
         if (/rendi[:_]tour[:_]/.test(readFileSync(p, 'utf8'))) fuera.push(p.slice(raiz.length))

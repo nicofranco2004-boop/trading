@@ -180,6 +180,20 @@ class LaQuePidePagaTest(_Base):
         self.assertTrue(claude.lectura_enviada().get("available"), claude.lectura_enviada())
         self._gasto_la_asesora()
 
+    def test_el_backtesting_de_una_regla(self):
+        # La pestaña Backtesting entra por la ruta, no por la llamada de tres
+        # argumentos de abajo (auditoría de «Una cartera», 05/11).
+        r = self.client.get("/api/tecnico/AMD/backtest?reglas=rsi&anios=1", headers=self.h_asesora_en_ana)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["disponible"], r.json())
+        self._gasto_la_asesora()
+
+    def test_una_cartera_del_backtesting(self):
+        r = self.client.get("/api/backtest/cartera?activos=AMD&pesos=100&anios=1", headers=self.h_asesora_en_ana)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["disponible"], r.json())
+        self._gasto_la_asesora()
+
     def test_la_lectura_tecnica_del_chat_en_vivo(self):
         # La app pide el chat con `stream: true` (frontend/src/utils/api.js): otra rama de ai_chat.
         claude = self._chat(self.h_asesora_en_ana, ticker="AMD", stream=True)
@@ -256,6 +270,11 @@ class ElFrenoLoPagaQuienPreguntaTest(_Base):
 
     def test_el_boton_de_la_ficha(self):
         self._chat(self.h_asesora_en_ana, boton={"asset": "AMD"}, stream=True)
+        self._freno_de_la_asesora()
+
+    def test_una_cartera_del_backtesting(self):
+        r = self.client.get("/api/backtest/cartera?activos=AMD&pesos=100&anios=1", headers=self.h_asesora_en_ana)
+        self.assertEqual(r.status_code, 200, r.text)
         self._freno_de_la_asesora()
 
 
@@ -506,6 +525,25 @@ class SinLaConexionTomadaTest(_Base):
         self._ficha_mirando("GGAL.BA", "?moneda=ars&local=1")
         lugares = [e[0] for e in self.esperas]
         self.assertIn("splits", lugares)
+        self.assertIn("byma", lugares)
+
+    def test_una_cartera_del_backtesting(self):
+        # «Una cartera» baja hasta 10 activos juntos, con la misma bajada a pedido
+        # (auditoría de «Una cartera», 05/11): un CEDEAR y una acción argentina nuevos.
+        primera = _ruedas(self.hoy, 200)[0].isoformat()
+        self.yahoo.precios["NVDA"] = lambda i, d: 100.0
+        self.yahoo.precios["GGAL.BA"] = lambda i, d: 5000.0
+        self.splits["GGAL.BA"] = [(primera, 10.0)]
+        # En dólares, la acción argentina es su precio de BYMA ÷ el MEP de cada día.
+        with main.db_abierta() as conn:
+            for d in _ruedas(self.hoy, 300):
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?,?,?)",
+                             (d.isoformat(), 1100.0, 1000.0))
+            conn.commit()
+        res = self._mirando("/api/backtest/cartera?activos=NVDA,GGAL&pesos=50,50&local=GGAL&anios=1")
+        self.assertTrue(res["disponible"], res)
+        lugares = [e[0] for e in self.esperas]
+        self.assertIn("yahoo", lugares)
         self.assertIn("byma", lugares)
 
     def test_dos_acciones_argentinas_nuevas_en_el_comparador(self):

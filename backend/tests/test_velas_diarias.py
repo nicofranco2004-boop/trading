@@ -95,24 +95,24 @@ class YahooFalso:
     """Reemplaza a Yahoo. `precios[ticker](fecha)` da el cierre de ese día, o
     (cierre, volumen): con volumen 0 es una rueda «clavada», como las da Yahoo
     (apertura, máximo y mínimo iguales al cierre). Anota cada pedido para poder
-    ver qué se le pidió. El S&P 500, que se guarda
-    todas las noches lo tenga alguien o no (velas_diarias.SP500), va anotado
-    aparte (`pedidos_sp500`) y con un precio fijo: así cada prueba cuenta los
-    pedidos de lo que la gente tiene, y una prueba propia cuenta el del S&P."""
+    ver qué se le pidió. Los índices, que se guardan todas las noches los tenga
+    alguien o no (velas_diarias.INDICES: el S&P 500 y el Nasdaq), van anotados
+    aparte (`pedidos_indices`) y con un precio fijo: así cada prueba cuenta los
+    pedidos de lo que la gente tiene, y una prueba propia cuenta los de los índices."""
 
     def __init__(self, hoy: date):
         self.hoy = hoy
         self.precios = {}
         self.pedidos = []
-        self.pedidos_sp500 = []
+        self.pedidos_indices = []
 
     def __call__(self, ticker, period, interval, auto_adjust, timeout):
-        if ticker == velas_diarias.SP500:
-            self.pedidos_sp500.append((ticker, period, auto_adjust))
+        if ticker in velas_diarias.INDICES:
+            self.pedidos_indices.append((ticker, period, auto_adjust))
         else:
             self.pedidos.append((ticker, period, auto_adjust))
         f = self.precios.get(ticker) or (
-            (lambda d: 5000.0) if ticker == velas_diarias.SP500 else None)
+            (lambda d: 5000.0) if ticker in velas_diarias.INDICES else None)
         if f is None:
             return pd.DataFrame()
         # Incluye la rueda de HOY: Yahoo la devuelve aunque esté a medias.
@@ -213,7 +213,7 @@ class VelasDiariasTest(unittest.TestCase):
         with main.db_abierta() as conn:
             seguidos = set(velas_diarias.simbolos_a_seguir(conn))
         self.assertEqual(seguidos, {"AAPL", "AAPL.BA", "GGAL.BA", "MSFT", "BTC-USD",
-                                    "NVDA", "YPFD.BA", velas_diarias.SP500})
+                                    "NVDA", "YPFD.BA", *velas_diarias.INDICES})
 
     def test_cedear_sin_etiqueta_bac_y_monedas_estables(self):
         # SPY cargado en IOL sin tipo, como llega de muchos imports: BYMA lo lista
@@ -228,7 +228,7 @@ class VelasDiariasTest(unittest.TestCase):
         self._posicion("Binance", "USDC", "CRYPTO")
         with main.db_abierta() as conn:
             seguidos = set(velas_diarias.simbolos_a_seguir(conn))
-        self.assertEqual(seguidos, {"SPY", "SPY.BA", "GGAL.BA", "BAC", velas_diarias.SP500},
+        self.assertEqual(seguidos, {"SPY", "SPY.BA", "GGAL.BA", "BAC", *velas_diarias.INDICES},
                          "GGAL es acción local (sin serie de afuera); BAC sólo en dólares "
                          "(su '.BA' de Yahoo viene roto); USDC no tiene nada que medir")
 
@@ -244,16 +244,20 @@ class VelasDiariasTest(unittest.TestCase):
         # con la lista de BYMA (en dólares y en pesos). Hasta el re-test A1c (29/10)
         # con data912 caído se guardaba sólo en pesos. Un «.BA» que no está en
         # ninguna lista (ZZZZ) sigue sólo en pesos.
-        self.assertEqual(seguidos, {"SPY", "SPY.BA", "AAPL", "AAPL.BA", "ZZZZ.BA", velas_diarias.SP500})
+        self.assertEqual(seguidos, {"SPY", "SPY.BA", "AAPL", "AAPL.BA", "ZZZZ.BA", *velas_diarias.INDICES})
 
-    def test_el_sp500_se_guarda_aunque_nadie_lo_tenga(self):
-        # Es contra lo que la ficha compara «un día normal» (movimiento.py).
+    def test_los_indices_se_guardan_aunque_nadie_los_tenga(self):
+        # El S&P 500 es contra lo que la ficha compara «un día normal»
+        # (movimiento.py); el Nasdaq, contra lo que «Simular una cartera» compara
+        # (cartera_simulada.py). La primera noche bajan su historia entera.
         with main.db_abierta() as conn:
-            self.assertEqual(velas_diarias.simbolos_a_seguir(conn), [velas_diarias.SP500])
+            self.assertEqual(velas_diarias.simbolos_a_seguir(conn), sorted(velas_diarias.INDICES))
         main._run_velas_diarias_job()
-        self.assertEqual(self.yahoo.pedidos_sp500, [(velas_diarias.SP500, velas_diarias.PERIODO_COMPLETO, False)])
+        self.assertEqual(self.yahoo.pedidos_indices,
+                         [(t, velas_diarias.PERIODO_COMPLETO, False) for t in velas_diarias.INDICES])
         with main.db_abierta() as conn:
-            self.assertTrue(velas_diarias.serie(conn, velas_diarias.SP500))
+            for t in velas_diarias.INDICES:
+                self.assertTrue(velas_diarias.serie(conn, t), t)
 
     def test_primera_noche_baja_la_historia_entera_y_la_siguiente_un_mes(self):
         self._broker("Schwab", "USD")
@@ -483,11 +487,12 @@ class VelasDiariasTest(unittest.TestCase):
         main._run_velas_diarias_job()
         self.assertEqual({p[0] for p in self.yahoo.pedidos}, {"GGAL.BA"})
         n = self._ultima_noche()
-        # GGAL y el S&P 500 (que se guarda siempre).
-        self.assertEqual((n["bajados"], n["no_son_tickers"], n["sin_datos"]), (2, 1, 0))
-        # El S&P 500 (`^GSPC`, un índice de Yahoo) sí es un ticker: se pidió.
-        self.assertTrue(velas_diarias.es_ticker(velas_diarias.SP500))
-        self.assertEqual(len(self.yahoo.pedidos_sp500), 1)
+        # GGAL y los índices (que se guardan siempre).
+        self.assertEqual((n["bajados"], n["no_son_tickers"], n["sin_datos"]), (1 + len(velas_diarias.INDICES), 1, 0))
+        # Los índices (`^GSPC`, `^IXIC`: índices de Yahoo) sí son tickers: se pidieron.
+        for t in velas_diarias.INDICES:
+            self.assertTrue(velas_diarias.es_ticker(t), t)
+        self.assertEqual(len(self.yahoo.pedidos_indices), len(velas_diarias.INDICES))
         # /admin lo muestra.
         self._admin()
         e = self.client.get("/api/admin/velas", headers=self.h).json()
@@ -586,9 +591,9 @@ class VelasDiariasTest(unittest.TestCase):
                 main._run_velas_diarias_job()
         self.assertEqual(pausas, [velas_diarias.PAUSA_CORTE_SEG])
         n = self._ultima_noche()
-        # Los 12 y el S&P 500.
+        # Los 12 y los índices.
         self.assertEqual((n["bajados"], n["pausas"], n["cortados_por_yahoo"], n["sin_datos"]),
-                         (13, 1, 0, 0))
+                         (12 + len(velas_diarias.INDICES), 1, 0, 0))
         self.assertTrue(all(self._estado(t)["ok"] == 1 for t in tickers))
 
     def test_corte_que_no_se_levanta_deja_todo_para_manana_sin_fallas(self):
@@ -602,14 +607,14 @@ class VelasDiariasTest(unittest.TestCase):
                 main._run_velas_diarias_job()
         self.assertEqual(len(pausas), velas_diarias.PAUSAS_MAX)
         n = self._ultima_noche()
-        self.assertEqual((n["bajados"], n["cortados_por_yahoo"], n["sin_datos"]), (0, 13, 0))
+        self.assertEqual((n["bajados"], n["cortados_por_yahoo"], n["sin_datos"]), (0, 12 + len(velas_diarias.INDICES), 0))
         # Nadie quedó anotado como «no existe»: mañana se piden todos de nuevo.
         self.assertTrue(all(self._estado(t)["ok"] == 1 and self._estado(t)["fallas_seguidas"] == 0
                             for t in tickers))
         # El renglón «Velas diarias:» del registro dice cuántos cortó Yahoo (números,
         # no la lista de nombres).
         renglon = next(m for m in log.output if "Velas diarias: {" in m)
-        self.assertIn("'cortados_por_yahoo': 13", renglon)
+        self.assertIn(f"'cortados_por_yahoo': {12 + len(velas_diarias.INDICES)}", renglon)
         self.assertIn("'no_son_tickers': 0", renglon)
 
     def test_uno_o_dos_que_dejaron_de_cotizar_no_son_un_corte(self):

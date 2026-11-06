@@ -8,12 +8,14 @@
 // parte en dos renglones en vez de empujar la página de costado: «Ordenar por
 // · Técnico primero · Fundamental primero» medía 348 px y en un celular de
 // 375 quedan 343 (auditoría D2, 31/10). Para eso `min-w-0` (sin él, un hijo de
-// un flex no se achica por debajo de su texto) y el renglón sin `nowrap`.
+// un flex no se achica por debajo de su texto) y el renglón sin `nowrap`. Con
+// 8 px a los costados y no 12: con 12, «2 años» no entraba en un quinto de 375 px
+// y los cinco períodos de «Una cartera» se partían en dos renglones (06/11).
 
 const GRUPO = (estirar) =>
   `${estirar ? 'flex flex-1 min-w-0 sm:flex-none sm:inline-flex' : 'inline-flex'} gap-0.5 bg-bg-2 border border-line rounded-lg p-0.5`
 const BOTON = (estirar) =>
-  `${estirar ? 'flex-1 min-w-0 whitespace-normal leading-tight sm:flex-none sm:whitespace-nowrap' : 'whitespace-nowrap'} min-h-10 sm:min-h-8 px-3 sm:px-2.5 text-xs rounded tabular transition-colors`
+  `${estirar ? 'flex-1 min-w-0 whitespace-normal leading-tight px-2 sm:flex-none sm:whitespace-nowrap' : 'whitespace-nowrap px-3'} min-h-10 sm:min-h-8 sm:px-2.5 text-xs rounded tabular transition-colors`
 
 export default function Segmento({ etiqueta, valor, alElegir, opciones, estirar = false }) {
   return (
