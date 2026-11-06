@@ -109,12 +109,15 @@ def _titulo(texto):
     return [texto] + [None] * (len(INVIU_HDR) - 1)
 
 
-def _inviu(filas):
+def _inviu(filas, preambulo=True):
+    """Con preámbulo (título arriba, como el real) la hoja no llega a las filas;
+    sin preámbulo, el conversor le pega a CADA fila el nombre de la hoja."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Reporte"
-    ws.append(["Reporte de cuenta corriente"])
-    ws.append(["Comitente: 99999"])
+    if preambulo:
+        ws.append(["Reporte de cuenta corriente"])
+        ws.append(["Comitente: 99999"])
     ws.append(INVIU_HDR)
     for f in filas:
         ws.append(f)
@@ -151,6 +154,52 @@ def test_inviu_lo_nuevo_del_segundo_archivo_queda_en_su_moneda():
         assert cuenta.efectivo("ARS") == 250000.0
         assert cuenta.efectivo("USD") == 150.0
 
+
+def test_inviu_titulos_con_saldo_o_con_relleno_siguen_siendo_titulos():
+    """No sabemos si el Excel real deja el título solo en su fila o le pone el
+    saldo de la sección al lado, o guiones de relleno. El filtro ignora el saldo
+    para comparar: un título con saldo distinto en cada archivo (cada uno arranca
+    otro día) quedaba igual al del primero y se borraba. Auditoría del 06/11."""
+    def con_saldo(texto, saldo):
+        return [texto] + [None] * (len(INVIU_HDR) - 2) + [saldo]
+
+    def con_relleno(texto):
+        return [texto] + ["-"] * (len(INVIU_HDR) - 2) + [0]
+
+    ggal = ["2/6/2024", "4/6/2024", "Boleto / 500 / CPRA / 1 / GGAL / $", "CPRA",
+            "GGAL", 10, 5000, -50000, -50000, 250000]
+    cobro_mep_nuevo = ["3/6/2024", "3/6/2024", "Recibo de Cobro / 69600", "Recibo de Cobro",
+                       "-", "-", 0, 50, 50, 150]
+    for titulo in (lambda t, s: con_saldo(t, s), lambda t, s: con_relleno(t)):
+        viejo = _inviu([titulo("PESOS - $", 0), COBRO_PESOS,
+                        titulo("Dólar MEP - U$S", 0), COBRO_MEP])
+        nuevo = _inviu([titulo("PESOS - $", 1000), COBRO_PESOS, ggal,
+                        titulo("Dólar MEP - U$S", 7), COBRO_MEP, cobro_mep_nuevo])
+        for orden in ((viejo, nuevo), (nuevo, viejo)):
+            cuenta = _Cuenta()
+            cuenta.importar([(f"inviu-{i}.xlsx", a) for i, a in enumerate(orden)], "inviu", XLSX)
+            assert cuenta.moneda_de("GGAL", "BUY") == ["ARS"]
+            assert cuenta.efectivo("ARS") == 250000.0
+            assert cuenta.efectivo("USD") == 150.0
+
+
+def test_inviu_sin_preambulo_el_titulo_trae_la_hoja_y_sigue_siendo_titulo():
+    """Sin preámbulo, el conversor de Excel le pega el nombre de la hoja a cada
+    fila, títulos incluidos: el título tiene DOS celdas llenas. La hoja no dice
+    qué operación es, así que no cuenta (revisión independiente del 06/11)."""
+    ggal = ["2/6/2024", "4/6/2024", "Boleto / 500 / CPRA / 1 / GGAL / $", "CPRA",
+            "GGAL", 10, 5000, -50000, -50000, 250000]
+    cobro_mep_nuevo = ["3/6/2024", "3/6/2024", "Recibo de Cobro / 69600", "Recibo de Cobro",
+                       "-", "-", 0, 50, 50, 150]
+    viejo = _inviu([MONETARIA, PESOS, COBRO_PESOS, MEP, COBRO_MEP], preambulo=False)
+    nuevo = _inviu([MONETARIA, PESOS, COBRO_PESOS, ggal, MEP, COBRO_MEP, cobro_mep_nuevo],
+                   preambulo=False)
+    for orden in ((viejo, nuevo), (nuevo, viejo)):
+        cuenta = _Cuenta()
+        cuenta.importar([(f"inviu-{i}.xlsx", a) for i, a in enumerate(orden)], "inviu", XLSX)
+        assert cuenta.moneda_de("GGAL", "BUY") == ["ARS"]
+        assert cuenta.efectivo("ARS") == 250000.0
+        assert cuenta.efectivo("USD") == 150.0
 
 INSTRUMENTOS = _titulo("Disponible - Instrumentos")
 COBRO_GRANDE = ["13/3/2024", "13/3/2024", "Recibo de Cobro / 1", "Recibo de Cobro",
@@ -224,6 +273,20 @@ def test_bull_market_un_periodo_solo_el_saldo_anterior_entra():
     assert cuenta.efectivo("ARS") == 81000.0
 
 
+def test_bull_market_una_fecha_ilegible_no_tira_el_saldo_de_un_archivo_solo():
+    """Una fecha que el lector no entiende queda como texto crudo, y comparar
+    «19/01/2023 10:00» con «2022-12-31» como texto da «es anterior»: el saldo
+    de apertura de un archivo subido SOLO se descartaba. Auditoría del 06/11."""
+    solo = (BM_HDR
+            + "31/12/22;Ant.;;-61000;-61000;;S.ANTERIOR\n"
+            + "19/01/2023 10:00;COBA;59999;-5000;-66000;;CREDITO CTA. CTE.\n"
+            + "10/02/23;COBA;60001;-20000;-86000;;CREDITO CTA. CTE.\n"
+            + BM_PIE + ";Total;;-86000;;;\n").encode()
+    cuenta = _Cuenta()
+    cuenta.importar([("bm-2023.csv", solo)], "bullmarket")
+    # 61.000 de apertura + 20.000; la fila de fecha ilegible no entra (error).
+    assert cuenta.efectivo("ARS") == 81000.0
+
 def test_bull_market_dos_periodos_que_se_pisan():
     """El segundo arranca a mitad del primero: su saldo de apertura es lo que
     el primero ya trae hasta ese día, y las operaciones compartidas van una vez."""
@@ -237,6 +300,55 @@ def test_bull_market_dos_periodos_que_se_pisan():
         cuenta.importar([(f"bm-{i}.csv", a) for i, a in enumerate(orden)], "bullmarket")
         assert cuenta.efectivo("ARS") == 81000.0
         assert cuenta.tenencia("GGAL") == 100
+
+
+
+def test_bull_market_el_periodo_viejo_sin_movimientos():
+    """Revisión independiente del 06/11: si el período viejo no tuvo movimientos,
+    ninguno queda «antes» del saldo del nuevo, y los dos saldos entraban. Son la
+    misma plata (nada se movió en el medio): entra sólo el más viejo."""
+    quieto = (BM_HDR + "31/12/21;Ant.;;-1000;-1000;;S.ANTERIOR\n"
+              + BM_PIE + ";Total;;-1000;;;\n").encode()
+    nuevo = (BM_HDR + "31/12/22;Ant.;;-1000;-1000;;S.ANTERIOR\n"
+             + "10/02/23;COBA;60001;-20000;-21000;;CREDITO CTA. CTE.\n"
+             + BM_PIE + ";Total;;-21000;;;\n").encode()
+    for orden in ((quieto, nuevo), (nuevo, quieto)):
+        cuenta = _Cuenta()
+        cuenta.importar([(f"bm-{i}.csv", a) for i, a in enumerate(orden)], "bullmarket")
+        assert cuenta.efectivo("ARS") == 21000.0
+
+
+def test_bull_market_el_segundo_arranca_antes_del_primer_movimiento_del_primero():
+    """Revisión independiente del 06/11: el segundo archivo arranca el 10/01/22,
+    antes del primer movimiento del primero (19/01/22). Su saldo es la misma
+    apertura del primero, que ya entró."""
+    temprano = (BM_HDR
+                + "10/01/22;Ant.;;-1000;-1000;;S.ANTERIOR\n"
+                + "19/01/22;COBA;53066;-100000;-101000;;CREDITO CTA. CTE.\n"
+                + "24/01/22;CPRA;251989;40000;-61000;GGAL;100                       400.0000\n"
+                + "10/02/23;COBA;60001;-20000;-81000;;CREDITO CTA. CTE.\n"
+                + BM_PIE + ";Total;;-81000;;;\n").encode()
+    for orden in ((BM_2022, temprano), (temprano, BM_2022)):
+        cuenta = _Cuenta()
+        cuenta.importar([(f"bm-{i}.csv", a) for i, a in enumerate(orden)], "bullmarket")
+        assert cuenta.efectivo("ARS") == 81000.0
+        assert cuenta.tenencia("GGAL") == 100
+
+
+def test_bull_market_se_compara_por_liquidacion_no_por_concertacion():
+    """Una compra concertada el 29/12/22 que se liquida el 03/01/23 es del
+    período 2023, aunque su concertación caiga antes del saldo del 31/12/22. Por
+    concertación, el archivo SOLO perdía su saldo de apertura (revisión
+    independiente del 06/11: efectivo −40.000 en vez de 60.000)."""
+    hdr = "Liquida;Operado;Cpbt.;Numero;Importe;Saldo;Especie;Referencia/Cantidad/Precio\n"
+    solo = (hdr
+            + "31/12/22;;Ant.;;-100000;-100000;;S.ANTERIOR\n"
+            + "03/01/23;29/12/22;CPRA;1;40000;-60000;GGAL;100                       400.0000\n"
+            + ";;;;;;CPRA;COMPRA\n").encode()
+    cuenta = _Cuenta()
+    cuenta.importar([("bm-2023.csv", solo)], "bullmarket")
+    assert cuenta.efectivo("ARS") == 60000.0
+    assert cuenta.tenencia("GGAL") == 100
 
 
 # El layout «Histórico compacto» (el que Bull Market manda por mail) ya tenía
@@ -263,19 +375,76 @@ def test_historico_compacto_dos_periodos_juntos():
 def test_el_periodo_anterior_con_movimientos_justo_el_dia_del_saldo():
     """El saldo anterior es el de AL CIERRE de su día: un movimiento de ese mismo
     día del otro archivo ya está adentro. Es el borde de la regla (≤, no <), en
-    los dos layouts: es la que el Histórico compacto tenía antes de compartirla."""
+    los dos layouts, y vale igual subiendo los archivos juntos o de a uno: hasta
+    la revisión independiente del 06/11, de a uno se comparaba con «<» y el
+    saldo entraba dos veces. Los dos cobros de ese día suman el saldo pero no son
+    iguales a él, para que no los tape el filtro de filas ya importadas."""
     # Histórico compacto: el saldo se fecha el día anterior al primer movimiento
     # que tiene abajo (02/01/23 → 01/01/23).
-    hc_dia_antes = (HC_HDR + "01/01/23;COBA;1;-1000;;;CREDITO CTA. CTE.\n").encode()
+    hc_dia_antes = (HC_HDR + "01/01/23;COBA;1;-600;;;CREDITO CTA. CTE.\n"
+                    + "01/01/23;COBA;2;-400;;;CREDITO CTA. CTE.\n").encode()
     # Movimientos: el saldo viene fechado (31/12/22).
-    bm_dia_antes = (BM_HDR + "31/12/22;COBA;1;-61000;-61000;;CREDITO CTA. CTE.\n"
+    bm_dia_antes = (BM_HDR + "31/12/22;COBA;1;-60000;-60000;;CREDITO CTA. CTE.\n"
+                    + "31/12/22;COBA;2;-1000;-61000;;CREDITO CTA. CTE.\n"
                     + BM_PIE + ";Total;;-61000;;;\n").encode()
     for anterior, siguiente, esperado in ((hc_dia_antes, HC_2023, 501000.0),
                                           (bm_dia_antes, BM_2023, 81000.0)):
         for orden in ((anterior, siguiente), (siguiente, anterior)):
             cuenta = _Cuenta()
             cuenta.importar([(f"p-{i}.csv", a) for i, a in enumerate(orden)], "bullmarket")
-            assert cuenta.efectivo("ARS") == esperado
+            assert cuenta.efectivo("ARS") == esperado, "juntos"
+        cuenta = _Cuenta()
+        cuenta.importar([("anterior.csv", anterior)], "bullmarket")
+        cuenta.importar([("siguiente.csv", siguiente)], "bullmarket")
+        assert cuenta.efectivo("ARS") == esperado, "de a uno"
+
+
+# ── Quién lee de a un archivo y quién no ─────────────────────────────────────
+
+COCOS_HDR = ("nroTicket;nroComprobante;fechaEjecucion;fechaLiquidacion;tipoOperacion;"
+             "instrumento;moneda;mercado;cantidad;precio;montoBruto;comision;ddmm;iva;"
+             "otros;total\n")
+
+
+def test_cocos_el_dolar_mep_partido_entre_dos_archivos_sigue_siendo_conversion():
+    """Comprar un bono en pesos y venderlo por dólares (dólar MEP) es UNA
+    conversión, aunque la compra caiga en el archivo de diciembre y la venta en
+    el de enero. Cocos empareja las dos patas, y sólo puede si lee los archivos
+    juntos: leído de a uno, quedaba una compra y una venta del bono."""
+    dic = (COCOS_HDR
+           + "1;;20-12-2025;20-12-2025;Recibo De Cobro;;ARS;;;;1.000.000;0;0;0;0;1.000.000\n"
+           + "2;;30-12-2025;30-12-2025;Compra;BONO REP. ARGENTINA (AL30);ARS;BYMA;"
+             "1000;800;-800.000;0;0;0;0;-800.000\n").encode()
+    ene = (COCOS_HDR
+           + "3;;02-01-2026;02-01-2026;Venta Dolar Mep;BONO REP. ARGENTINA (AL30);USD;BYMA;"
+             "-1000;0,55;550;0;0;0;0;550\n").encode()
+    cuenta = _Cuenta()
+    cuenta.importar([("dic.csv", dic), ("ene.csv", ene)], "cocos")
+    assert cuenta.moneda_de("AL30", "BUY") == []
+    assert cuenta.tenencia("AL30") == 0
+    assert cuenta.efectivo("ARS") == 200000.0
+    assert cuenta.efectivo("USD") == 550.0
+
+
+def test_solo_inviu_lee_cada_archivo_aparte():
+    """Contrato: leer de a un archivo pierde los pares que cruzan de un archivo
+    al otro. Bull Market, Cocos e IOL emparejan las patas de un dólar MEP. Un
+    lector nuevo que quiera leerse de a uno tiene que no emparejar nada, y
+    sumarse acá con su motivo."""
+    from importing.parsers.registry import list_parsers
+    assert {p.format_id for p in list_parsers()
+            if getattr(p, "lee_cada_archivo_aparte", False)} == {"inviu"}
+
+
+def test_los_titulos_quedan_tambien_en_un_csv_sin_hoja_ni_saldo():
+    """La regla del título vale para cualquier formato, no sólo para los que
+    traen hoja o saldo (revisión independiente del 06/11)."""
+    from importing.pipeline import juntar_archivos
+    a = "fecha;monto\nSECCION A;\n01-01-2026;100\nSECCION B;\n02-01-2026;200\n"
+    b = "fecha;monto\nSECCION A;\n01-01-2026;100\nSECCION B;\n02-01-2026;200\n03-01-2026;300\n"
+    _b, _n, err, partes = juntar_archivos([(a.encode(), "a.csv"), (b.encode(), "b.csv")])
+    assert err is None
+    assert partes[1].splitlines() == ["fecha;monto", "SECCION A;", "SECCION B;", "03-01-2026;300"]
 
 # ── Leídos de a uno: cada fila sigue unida a SUS errores ─────────────────────
 
@@ -307,3 +476,30 @@ def test_leidos_de_a_uno_las_filas_y_sus_errores_no_se_pisan():
     assert ("OMITIDA", -1) in errores and ("OMITIDA", -2) in errores
     # El aviso del archivo entero, una sola vez.
     assert [e.code for e in r.parse_errors].count("ARCHIVO") == 1
+
+
+def test_leidos_de_a_uno_un_numero_alto_o_cero_no_choca():
+    """Un error con número más alto que la última fila, o una fila con número 0
+    (el Histórico compacto emite así su saldo), tampoco puede chocar con el
+    archivo siguiente (revisión independiente del 06/11)."""
+    from importing.pipeline import _parsear
+    from importing.schema import ParseResult, RawRow, RowError
+
+    class _Lector:
+        lee_cada_archivo_aparte = True
+
+        def parse(self, content, file_name=None):
+            r = ParseResult()
+            filas = content.splitlines()[1:]
+            if filas[0] == "cero":
+                r.raw_rows.append(RawRow(row_index=0, data={"f": "cero"}))
+                filas = filas[1:]
+            for i, f in enumerate(filas, start=1):
+                r.raw_rows.append(RawRow(row_index=i, data={"f": f}))
+            if "alto" in content:
+                r.parse_errors.append(RowError(len(filas) + 1, None, "ALTO", "alto"))
+            return r
+
+    r = _parsear(_Lector(), "", "x", ["h\na1\nalto", "h\ncero\nb1"])
+    numeros = [x.row_index for x in r.raw_rows] + [e.row_index for e in r.parse_errors]
+    assert len(numeros) == len(set(numeros)), numeros

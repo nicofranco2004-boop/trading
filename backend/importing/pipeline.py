@@ -21,6 +21,7 @@ from .schema import (NormalizedTx, ParseResult, RawRow, RowError,
 from .parsers.registry import get_parser, autodetect, list_parsers
 from . import traspasos as _traspasos
 from . import movimientos_internos as _movimientos_internos
+from . import saldo_anterior as _saldo_anterior
 from .normalizer import normalize_rows
 from .fci_map import resolve_fci_by_name
 from .validator import validate
@@ -251,10 +252,13 @@ def drop_saldo_anterior_ya_contado(conn, uid: int, txs: list) -> list:
     si el primero ya está importado, sumarlo es contar la misma plata dos veces.
 
     El parser resuelve el caso de varios archivos en UN mismo batch (el wizard
-    los combina; `bullmarket._saldo_anterior_ya_contado`, para los dos layouts
-    que traen el saldo). Esto cubre el otro camino, el de subirlos de a uno: acá sí hay
-    conexión, así que preguntamos si el usuario ya tiene movimientos anteriores
-    en ese broker —importados o cargados a mano— y en ese caso la fila se cae.
+    los combina). Esto cubre el otro camino, el de subirlos de a uno: acá sí hay
+    conexión, así que preguntamos si el usuario ya tiene movimientos de ese día
+    o de antes en ese broker —importados o cargados a mano— y en ese caso la
+    fila se cae. Los dos caminos deciden con la MISMA regla
+    (`saldo_anterior.ya_contado`): hasta el 06/11/2026 éste comparaba con «<» y
+    el del parser con «≤», y los mismos archivos daban otro efectivo subidos
+    juntos o de a uno (revisión independiente).
     """
     saldos = [t for t in txs if (t.notes or "").strip() == SALDO_ANTERIOR_NOTE]
     if not saldos:
@@ -267,19 +271,17 @@ def drop_saldo_anterior_ya_contado(conn, uid: int, txs: list) -> list:
         # El broker y su hermano en dólares ("Bull Market · USD"): el efectivo es
         # de la misma cuenta, partido por moneda.
         like = f"{base} · %"
-        previo = conn.execute(
-            f"""SELECT 1 FROM {TX_VIVAS}
-                WHERE b.user_id=? AND b.reverted_at IS NULL AND n.date < ?
-                  AND (n.broker = ? OR n.broker LIKE ?)
-                LIMIT 1""",
-            (uid, t.date, base, like),
-        ).fetchone() or conn.execute(
-            """SELECT 1 FROM operations
-                WHERE user_id=? AND date < ? AND (broker = ? OR broker LIKE ?)
-                LIMIT 1""",
-            (uid, t.date, base, like),
-        ).fetchone()
-        if previo:
+        primeros = [conn.execute(
+            f"""SELECT MIN(n.date) AS d FROM {TX_VIVAS}
+                WHERE b.user_id=? AND b.reverted_at IS NULL
+                  AND (n.broker = ? OR n.broker LIKE ?)""",
+            (uid, base, like),
+        ).fetchone()["d"], conn.execute(
+            """SELECT MIN(date) AS d FROM operations
+                WHERE user_id=? AND (broker = ? OR broker LIKE ?)""",
+            (uid, base, like),
+        ).fetchone()["d"]]
+        if _saldo_anterior.ya_contado(t.date, primeros):
             fuera.add(id(t))
     if not fuera:
         return txs
@@ -416,6 +418,8 @@ def _normalize_header_for_match(line: str) -> str:
 # o la cortada por el límite de 31 letras de Excel ("06-11-"). Un número suelto
 # ("Comitente 1234", "Hoja1") no es fecha y se queda.
 _FECHA_EN_HOJA = re.compile(r"\d+(?:[-/.]\d*)+")
+# Una celda que dice algo: no vacía y no sólo relleno ("-", "0", "0,00").
+_DICE_ALGO = re.compile(r"[^\s\-0.,]")
 
 
 def _clave_entre_archivos(header_line: str):
@@ -442,13 +446,16 @@ def _clave_entre_archivos(header_line: str):
     las repeticiones en vez de preguntar "¿ya vino?".
 
     🔴 UN TÍTULO NO SE FILTRA NUNCA (clave vacía). Una línea con una sola celda
-    llena ("PESOS - $", "Dólar MEP - U$S", "Disponible - Instrumentos") no es
-    una operación: dice a qué sección pertenecen las líneas que vienen abajo EN
-    SU ARCHIVO. Es igual en todos los archivos, así que el filtro la borraba del
-    segundo, y en inviu —que saca la moneda de esos títulos— las compras nuevas
-    en pesos del segundo archivo quedaban bajo el último título del primero:
-    GGAL $50.000 entraba como US$ 50.000 (revisión del 06/11/2026). Una
-    operación tiene siempre más de una celda (fecha e importe, como mínimo)."""
+    que dice algo ("PESOS - $", "Dólar MEP - U$S", "Disponible - Instrumentos")
+    no es una operación: dice a qué sección pertenecen las líneas que vienen
+    abajo EN SU ARCHIVO. Es igual en todos los archivos, así que el filtro la
+    borraba del segundo, y en inviu —que saca la moneda de esos títulos— las
+    compras nuevas en pesos del segundo archivo quedaban bajo el último título
+    del primero: GGAL $50.000 entraba como US$ 50.000 (revisión del 06/11/2026).
+    Para contar las celdas no cuenta lo mismo que la clave ignora (la hoja y el
+    saldo: un título puede traer al lado el saldo de su sección, distinto en
+    cada descarga) ni un relleno ("-", "0"). Una operación dice siempre al
+    menos dos cosas: la fecha y el importe."""
     delim = max((",", ";", "\t"), key=header_line.count)
     try:
         cols = [c.lstrip("﻿").strip().lower() for c in next(csv.reader([header_line], delimiter=delim))]
@@ -464,7 +471,8 @@ def _clave_entre_archivos(header_line: str):
             campos = next(csv.reader([ln], delimiter=delim))
         except (csv.Error, StopIteration):
             return ln.strip()
-        if sum(1 for i, c in enumerate(campos) if c.strip() and i not in hoja) <= 1:
+        if sum(1 for i, c in enumerate(campos)
+               if i not in hoja and i not in saldo and _DICE_ALGO.search(c)) <= 1:
             return ""   # un título: se queda siempre (ver arriba)
         if not hoja and not saldo:
             return ln.strip()
@@ -960,8 +968,12 @@ def _parsear(parser, content: str, file_name: Optional[str],
     vistos = set()     # un error del archivo entero (fila 0) se informa una vez
     for texto in partes:
         r = parser.parse(texto, file_name=file_name)
+        # Las filas de este archivo arrancan después del número más alto ya usado,
+        # también si el lector numera alguna con 0 (el Histórico compacto emite
+        # así su saldo de apertura).
+        corrimiento = hasta + 1 - min([1] + [x.row_index for x in r.raw_rows])
         for raw in r.raw_rows:
-            raw.row_index += hasta
+            raw.row_index += corrimiento
             total.raw_rows.append(raw)
         for e in r.parse_errors:
             if e.row_index == 0:
@@ -969,7 +981,7 @@ def _parsear(parser, content: str, file_name: Optional[str],
                     continue
                 vistos.add((e.code, e.message))
             elif e.row_index > 0:
-                e.row_index += hasta
+                e.row_index += corrimiento
             else:
                 e.row_index += omitidas
             if e.file_row:

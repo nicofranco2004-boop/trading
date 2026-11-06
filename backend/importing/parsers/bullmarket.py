@@ -89,6 +89,7 @@ import re
 from typing import List, Optional
 from .base import Parser
 from ..schema import ParseResult, RawRow, RowError
+from .. import saldo_anterior as _saldo_anterior
 
 
 # Headers mínimos para reconocer un export de Bull Market (cualquiera de los dos
@@ -361,30 +362,6 @@ def _add_days(iso: str, n: int) -> str:
         return (_dt.date(y, m, d) + _dt.timedelta(days=n)).isoformat()
     except Exception:
         return iso
-
-
-def _saldo_anterior_ya_contado(fecha_saldo: str, fechas_movimientos) -> bool:
-    """¿El "Saldo anterior" de un archivo ya está contado en ESTA MISMA subida?
-
-    Bull Market manda la historia partida en archivos por período, y cada uno
-    abre con el saldo que la cuenta traía de antes (`S.ANTERIOR`). El del período
-    más viejo es plata real; el de los siguientes es el cierre del anterior, que
-    ya está contado movimiento por movimiento. Si la subida trae algún
-    movimiento de ese día o de antes, el saldo ya está adentro.
-
-    Se compara contra TODOS los movimientos de la subida sin saber de qué
-    archivo viene cada uno: el período más viejo puede no traer `S.ANTERIOR` y
-    venir pegado abajo del que sí lo trae. Por eso la fecha es la de
-    LIQUIDACIÓN, la misma del saldo: la de concertación de una compra que se
-    liquida en el período puede caer antes del saldo de su propio archivo.
-
-    Una sola regla para los dos layouts en CSV que traen el saldo (Movimientos /
-    Histórico y el Histórico compacto por mail). Hasta el 06/11/2026 la tenía
-    sólo el segundo: el primero sumaba el saldo de cada archivo y el capital
-    aportado quedaba inflado en el cierre del período anterior. Lo importado en
-    OTRA subida lo mira el pipeline (`drop_saldo_anterior_ya_contado`), que
-    tiene la base."""
-    return any(f and f <= fecha_saldo for f in fechas_movimientos)
 
 
 def _mk_row(idx, fecha, tipo, activo, cantidad, precio, monto, moneda, notas) -> RawRow:
@@ -739,14 +716,23 @@ class BullMarketParser(Parser):
             elif c.startswith("CPU"):          # compra paridad → vendió dólares
                 mep_sell_legs[k] = mep_sell_legs.get(k, 0) + 1
 
-        # Fechas de liquidación de los movimientos, para saber si un "S.ANTERIOR"
-        # ya viene contado por otro período de la misma subida.
+        # "S.ANTERIOR" que ya viene contado por otro período de la misma subida
+        # (ver `saldo_anterior.los_que_entran`). Se decide antes de emitir para
+        # que el que sí entra quede en su lugar. Por fecha de LIQUIDACIÓN, la
+        # misma del saldo: una compra concertada el 29/12 y liquidada el 03/01 es
+        # del período que arranca después del saldo del 31/12, y por concertación
+        # parecía anterior: el archivo SOLO perdía su saldo.
         def _liq(row) -> str:
             return _iso_date(gv(row, liq_col) or gv(row, op_col))
 
-        fechas_liq = [_liq(r) for r in rows
-                      if (gv(r, op_col) or gv(r, liq_col)) and gv(r, cpbt_col)
-                      and not gv(r, cpbt_col).upper().startswith("ANT")]
+        def _es_saldo(row) -> bool:
+            return gv(row, cpbt_col).upper().startswith("ANT")
+
+        con_fecha = [(i, r) for i, r in enumerate(rows, start=1)
+                     if (gv(r, op_col) or gv(r, liq_col)) and gv(r, cpbt_col)]
+        saldos_que_entran = _saldo_anterior.los_que_entran(
+            [(i, _liq(r), "ARS") for i, r in con_fecha if _es_saldo(r)],
+            [_liq(r) for _i, r in con_fecha if not _es_saldo(r)])
 
         # Netos que se emiten como UNA fila sintética al final (ver arriba).
         caucion_net = 0.0
@@ -789,7 +775,7 @@ class BullMarketParser(Parser):
             # (sin esto el saldo del broker arranca corrido) — salvo que otro
             # período de la misma subida ya lo cuente.
             if code.upper().startswith("ANT"):
-                if importe and not _saldo_anterior_ya_contado(_liq(row), fechas_liq):
+                if importe and idx in saldos_que_entran:
                     result.raw_rows.append(_mk_row(
                         idx, fecha, "DEPOSITO" if importe < 0 else "RETIRO",
                         "", "", "", abs(importe), "ARS", "Saldo anterior"))
@@ -1023,8 +1009,8 @@ class BullMarketParser(Parser):
         # PRIMERO del lote: cuando el usuario sube los dos períodos juntos (que es
         # lo que Bull Market manda), el saldo inicial del segundo ya está contado
         # como movimientos en el primero → emitirlo sería contarlo dos veces
-        # (`_saldo_anterior_ya_contado`, la misma regla que el layout Movimientos).
-        fechas = [r["fecha"] for r in recs]
+        # (`saldo_anterior.los_que_entran`, la misma regla que el layout
+        # Movimientos), y de cada moneda por separado.
         pos_fecha = {}   # posición en `rows` → fecha del primer movimiento posterior
         ult = ""
         for i in range(len(rows) - 1, -1, -1):
@@ -1032,6 +1018,7 @@ class BullMarketParser(Parser):
             if es_fecha(f):
                 ult = f
             pos_fecha[i] = ult
+        saldos = []      # (posición, fecha del saldo, moneda)
         for i, row in enumerate(rows):
             if es_fecha(_iso_date(gv(row, f_col))):
                 continue
@@ -1041,16 +1028,18 @@ class BullMarketParser(Parser):
             arranca = pos_fecha.get(i, "")
             if not arranca:
                 continue
-            fecha_saldo = _add_days(arranca, -1)
-            if _saldo_anterior_ya_contado(fecha_saldo, fechas):
+            saldos.append((i, _add_days(arranca, -1), "USD" if gv(row, mda_col) else "ARS"))
+        entran = _saldo_anterior.los_que_entran(saldos, [r["fecha"] for r in recs])
+        for i, fecha_saldo, moneda in saldos:
+            if i not in entran:
                 continue    # bloque posterior del lote → ya viene contado
-            mda = gv(row, mda_col)
-            v = _num(gv(row, dol_col)) if mda else _num(gv(row, imp_col))
+            row = rows[i]
+            v = _num(gv(row, dol_col)) if moneda == "USD" else _num(gv(row, imp_col))
             if not v:
                 continue
             result.raw_rows.append(_mk_row(
                 0, fecha_saldo, "DEPOSITO" if v < 0 else "RETIRO",
-                "", "", "", abs(v), "USD" if mda else "ARS", "Saldo anterior"))
+                "", "", "", abs(v), moneda, "Saldo anterior"))
 
         # Pass 6 — emisión.
         caucion_net, indice_net, last_fecha = {}, {}, ""
