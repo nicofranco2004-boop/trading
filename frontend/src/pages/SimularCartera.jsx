@@ -31,7 +31,10 @@
 // el píxel no sigue los cambios de dirección. PERO Google los lee solo si en Google
 // Analytics está prendida «Cambios de página basados en eventos del historial del
 // navegador»: la armada de cero cambia la dirección en cada tecla. Tiene que estar
-// apagada; el 06/11 a las 13:06 estaba prendida (auditoría de código 06/11, 1).
+// apagada, y lo está desde el 06/11. Se comprueba con el programa real de Google, no
+// con una marca suelta: la que manda esas vistas es la etiqueta `__ccd_em_page_view`
+// (con `vtp_historyEvents`) del gtag.js; `vtp_enableHistoryEvents` dice true aunque
+// esté apagada (así lo medí mal el 06/11). El banco: audit/_scripts/fugas_a_terceros.
 // Con origen=hoy, recargar la vuelve a pedir; quien abre el link ve la suya.
 // «Ocultar saldos»: tu cartera de hoy no se trae con el ojito prendido (los
 // porcentajes dicen qué tenés); una armada de cero se ve igual.
