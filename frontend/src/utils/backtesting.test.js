@@ -196,7 +196,7 @@ describe('una regla: lo que dicen los números', () => {
   it('media de 200 en GGAL: perdió menos, desde el día en que la media existe', () => {
     const l = lectura(GGAL.media200)
     expect(l.titulo).toBe('Habría perdido menos que comprar y mantener')
-    expect(l.frases[0]).toBe('GGAL bajó 42% desde el 17/04/25 y la regla estuvo afuera el 66% de los días.')
+    expect(l.frases[0]).toBe('GGAL bajó 41% desde el 17/04/25 y la regla estuvo afuera el 66% de los días.')
     expect(l.frases.join(' ')).not.toMatch(/sin la compra/i)
     expect(GGAL.media200.resultados[0].compras).toBeGreaterThanOrEqual(POCAS_COMPRAS)
     expect(l.frases.join(' ')).not.toMatch(/con tan pocas/)

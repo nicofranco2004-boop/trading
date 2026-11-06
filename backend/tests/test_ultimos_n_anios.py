@@ -53,6 +53,8 @@ from velas_diarias import PERIODO_COMPLETO
 
 LUNES, MIERCOLES, SABADO, DOMINGO = 0, 2, 5, 6
 CINCO_ANIOS = timedelta(days=5 * 365 + 10)
+# La apertura de cada día, contra el cierre de la víspera (ver `Yahoo`).
+SALTO = 0.004
 
 
 def _habiles(desde: date, hasta: date, feriados=()) -> list:
@@ -83,9 +85,9 @@ class Yahoo:
     """Yahoo en su punto más bajo. `series[ticker]`: {fecha: cierre}. La bajada
     entera trae todo lo de antes de hoy y la del mes, el último mes; lo que no
     está en la serie (un feriado, un papel que dejó de cotizar) no lo trae. Cada
-    día abre con el cierre de la víspera, como la bolsa: con la apertura igual al
-    cierre, «Una regla» (que compra a la apertura) daba lo mismo que «Una cartera»
-    (que arranca al cierre) y la prueba tapaba esa diferencia (auditoría 06/11, H2)."""
+    día abre con un salto de `SALTO` contra el cierre de la víspera: con la apertura
+    igual al cierre (o a la víspera), «Una regla» daba lo mismo arrancara de la
+    apertura o del cierre, y la prueba tapaba esa diferencia (auditoría 06/11, H2)."""
 
     def __init__(self, hoy: date):
         self.hoy, self.series = hoy, {}
@@ -99,7 +101,7 @@ class Yahoo:
             return pd.DataFrame()
         c = [serie[d] for d in dias]
         antes = {d: serie[a] for a, d in zip(todos, todos[1:])}
-        o = [antes.get(d, serie[d]) for d in dias]
+        o = [antes.get(d, serie[d]) * (1 + SALTO) for d in dias]
         return pd.DataFrame({"Open": o, "High": [max(a, b) * 1.01 for a, b in zip(o, c)],
                              "Low": [min(a, b) * 0.99 for a, b in zip(o, c)],
                              "Close": c, "Volume": [1000.0] * len(c)},
@@ -171,71 +173,87 @@ class LasTresPantallas(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()
 
-    def _las_tres(self, hoy, yahoo, anios):
-        """Comparar, «Una cartera» y Una regla, con MU solo al 100 %, ese día."""
+    def _las_tres(self, hoy, yahoo, anios, ficha=False):
+        """Comparar, «Una cartera» y Una regla, con MU solo al 100 %, ese día; con
+        `ficha`, además lo que la ficha dice que subió en 12 meses (`rend_12m`)."""
         with self._un_dia(hoy, yahoo):
             main._run_velas_diarias_job()   # los índices (y lo que se sigue) los guarda la noche
-            return (self._get(f"/api/comparar/precio?activos=MU&moneda=usd&plazo={anios}a"),
+            tres = (self._get(f"/api/comparar/precio?activos=MU&moneda=usd&plazo={anios}a"),
                     self._get(f"/api/backtest/cartera?activos=MU&pesos=100&anios={anios}"),
                     self._get(f"/api/tecnico/MU/backtest?reglas=rsi&anios={anios}"))
+            if not ficha:
+                return tres
+            return (*tres, self._get("/api/tecnico/MU?moneda=usd")["lectura"]["rend_12m"])
 
     @staticmethod
     def _serie(res, clave):
         return next((s for s in res["series"] if s["clave"] == clave), None)
 
-    def _arrancan_igual(self, c, k, b, desde, hasta, mu=_precio):
-        """Las tres pantallas, el mismo período (lo que unificó este cambio).
-        Comparar y «Una cartera» arrancan además con el MISMO precio (el cierre del
-        primer día), así que dan el mismo número. «Una regla» compra a la APERTURA
-        del primer día: el precio de arranque es otra regla, y todavía distinta
-        (auditoría 06/11, H2); acá se afirma la suya, no que coincida."""
-        self.assertEqual((c["base"], c["hasta"]), (desde, hasta), "Comparar")
-        self.assertEqual((k["desde"], k["hasta"]), (desde, hasta), "«Una cartera»")
-        self.assertEqual((b["desde"], b["hasta"]), (desde, hasta), "Una regla")
+    def _arrancan_igual(self, c, k, b, yahoo, hasta, anios=1, ficha=None):
+        """Las cuatro pantallas, el mismo «último año» y el mismo número. El 100 es el
+        cierre de N años atrás, de fecha a fecha desde el último precio (o el último
+        cierre anterior, si ese día no hubo rueda): la regla de la ficha (Nico, 06/11:
+        «como la ficha»). Comparar y «Una cartera» arrancan ese día; Una regla prueba
+        sus operaciones desde el siguiente (compra a la apertura), pero lo que dice que
+        hizo el precio arranca de ese mismo cierre. Con el cierre del primer día, un
+        día movido daba otro número (+21 % contra +5 %; auditorías 06/11)."""
+        serie = yahoo.series["MU"]
+        arranque = hasta - timedelta(days=anios * 365)            # de fecha a fecha
+        con_precio = max(d for d in serie if d <= arranque)        # el cierre que tenía ese día
+        primero = min(d for d in serie if d > arranque)            # la primera rueda del período
+        cierre = serie[hasta] / serie[con_precio] * 100
+        self.assertEqual((c["base"], c["hasta"]), (arranque.isoformat(), hasta.isoformat()), "Comparar")
+        self.assertEqual((k["desde"], k["hasta"]), (arranque.isoformat(), hasta.isoformat()), "«Una cartera»")
+        self.assertEqual((b["desde"], b["hasta"]), (primero.isoformat(), hasta.isoformat()), "Una regla")
         self.assertTrue(k["disponible"] and b["disponible"], (k, b))
-        d, h = date.fromisoformat(desde), date.fromisoformat(hasta)
-        cierre = mu(h) / mu(d) * 100
         self.assertAlmostEqual(self._serie(c, "MU")["final"], cierre, places=2)
         self.assertAlmostEqual(k["cartera"]["final"], cierre, places=2)
-        # La apertura del primer día es el cierre de la rueda anterior (Yahoo, arriba).
-        apertura = next(mu(x) for x in (d - timedelta(days=j) for j in range(1, 10)) if x.weekday() < 5)
-        self.assertAlmostEqual(b["variacion_precio"], (mu(h) / apertura - 1) * 100, places=6)
+        self.assertAlmostEqual(b["variacion_precio"], cierre - 100, places=6)
+        if ficha is not None:
+            self.assertAlmostEqual(ficha, cierre - 100, places=6, msg="la ficha: «subió X % en 12 meses»")
+        # Comprar y mantener es una operación: compra a la APERTURA del primer día
+        # (con el salto de la noche) y paga las dos comisiones. No es ese número.
+        apertura = serie[con_precio] * (1 + SALTO)
+        self.assertAlmostEqual(b["mantener"]["final"], serie[hasta] / apertura * (1 - backtest.COMISION) ** 2 * 100,
+                               places=6)
         sp = next(i for i in k["indices"] if i["clave"] == "sp500")
         self.assertEqual(self._serie(c, "sp500")["final"], round(sp["final"], 2))
 
     # ─── H4: el mismo día de arranque ────────────────────────────────────────
 
-    def test_un_domingo_las_tres_arrancan_el_viernes_de_hace_un_anio(self):
-        # Antes Comparar arrancaba el sábado de hace un año (hoy − 365): «Cada US$ 100
-        # del sábado» con el cierre del viernes, y otra fecha que las otras dos.
+    def test_un_domingo_las_cuatro_arrancan_con_el_cierre_de_hace_un_anio(self):
+        # Contando desde hoy, Comparar arrancaba el sábado de hace un año (hoy − 365):
+        # otra fecha que las otras. Ahora: el mismo día de hace un año desde el último
+        # precio (el viernes): el jueves, con su cierre, en las cuatro pantallas.
         hoy = _el_ultimo(DOMINGO)
         viernes = hoy - timedelta(days=2)
-        c, k, b = self._las_tres(hoy, self._mercado(hoy, viernes), 1)
-        desde = viernes - timedelta(days=364)
-        self.assertEqual(desde.weekday(), 4, "52 semanas antes: también un viernes")
-        self._arrancan_igual(c, k, b, desde.isoformat(), viernes.isoformat())
+        yahoo = self._mercado(hoy, viernes)
+        c, k, b, ficha = self._las_tres(hoy, yahoo, 1, ficha=True)
+        self.assertEqual((viernes - timedelta(days=365)).weekday(), 3, "365 días antes de un viernes: un jueves")
+        self._arrancan_igual(c, k, b, yahoo, viernes, ficha=ficha)
 
     def test_un_lunes_con_tres_anios_tambien_el_mismo_dia(self):
         # Con 3 años (1.095 días = 156 semanas y 3 días), desde hoy un lunes caía un
         # viernes con rueda: otro precio de arranque, todos los lunes y domingos.
         hoy = _el_ultimo(LUNES)
         viernes = hoy - timedelta(days=3)
-        c, k, b = self._las_tres(hoy, self._mercado(hoy, viernes), 3)
-        desde = viernes - timedelta(days=3 * 365 - 1)
-        self._arrancan_igual(c, k, b, desde.isoformat(), viernes.isoformat())
+        yahoo = self._mercado(hoy, viernes)
+        c, k, b = self._las_tres(hoy, yahoo, 3)
+        self._arrancan_igual(c, k, b, yahoo, viernes, anios=3)
         self.assertNotEqual(c["base"], (hoy - timedelta(days=3 * 365)).isoformat(), "no desde hoy")
 
-    def test_despues_de_un_feriado_las_tres_arrancan_el_mismo_dia(self):
+    def test_despues_de_un_feriado_las_cuatro_dan_el_mismo_numero(self):
         # El caso de MU en Pascua de 2026: el viernes, feriado en Nueva York; el último
-        # precio es del jueves. Hace un año, el viernes el papel cayó 13 %: contado desde
-        # hoy, Comparar arrancaba después de la caída y daba otro número.
+        # precio es del jueves. Y el primer día del año el papel cayó 13 %: la pantalla
+        # que arrancara del cierre de ese día (Comparar y «Una cartera» antes del 06/11)
+        # daba otro número que la ficha (+21 % contra +5 % con MU de verdad).
         hoy = _el_ultimo(SABADO)
         feriado, jueves = hoy - timedelta(days=1), hoy - timedelta(days=2)
-        desde = jueves - timedelta(days=364)
-        caida = desde + timedelta(days=1)
+        caida = jueves - timedelta(days=365 - 1)                  # el primer día del año
         mu = lambda d: _precio(d) * (0.87 if d >= caida else 1.0)
-        c, k, b = self._las_tres(hoy, self._mercado(hoy, jueves, feriados={feriado}, mu=mu), 1)
-        self._arrancan_igual(c, k, b, desde.isoformat(), jueves.isoformat(), mu=mu)
+        yahoo = self._mercado(hoy, jueves, feriados={feriado}, mu=mu)
+        c, k, b, ficha = self._las_tres(hoy, yahoo, 1, ficha=True)
+        self._arrancan_igual(c, k, b, yahoo, jueves, ficha=ficha)
 
     # ─── H9: los precios viejos se miden contra hoy ─────────────────────────
 
@@ -266,15 +284,16 @@ class LasTresPantallas(unittest.TestCase):
         # El borde: precios de hace 7 días todavía son «de la última semana».
         hoy = _el_ultimo(MIERCOLES)
         ultimo = hoy - timedelta(days=7)
-        c, k, b = self._las_tres(hoy, self._mercado(hoy, ultimo), 1)
-        desde = ultimo - timedelta(days=364)
-        self._arrancan_igual(c, k, b, desde.isoformat(), ultimo.isoformat())
+        yahoo = self._mercado(hoy, ultimo)
+        c, k, b = self._las_tres(hoy, yahoo, 1)
+        self._arrancan_igual(c, k, b, yahoo, ultimo)
 
     # ─── En pesos: la inflación también arranca ese día ──────────────────────
 
     def test_en_pesos_la_inflacion_arranca_el_dia_del_100(self):
         # El CER lo pide la ruta (vive en main) y el día lo sabe la cuenta: con
-        # «1 año» desde el último precio, el día del 100 es el viernes, no el sábado.
+        # «1 año» desde el último precio (el viernes), el 100 es el cierre del mismo día
+        # de hace un año, el jueves; no el sábado de hoy − 365.
         hoy = _el_ultimo(DOMINGO)
         viernes = hoy - timedelta(days=2)
         yahoo = self._mercado(hoy, viernes)
@@ -291,7 +310,7 @@ class LasTresPantallas(unittest.TestCase):
         with self._un_dia(hoy, yahoo):
             main._run_velas_diarias_job()
             r = self._get("/api/comparar/precio?activos=MU&moneda=ars&plazo=1a")
-        desde = (viernes - timedelta(days=364)).isoformat()
+        desde = (viernes - timedelta(days=365)).isoformat()
         self.assertEqual(r["base"], desde)
         cer = self._serie(r, "cer")
         self.assertIsNotNone(cer, r["faltan"])
@@ -341,7 +360,7 @@ class LasTresPantallas(unittest.TestCase):
         # contra hoy Y contra el último precio; no distingue las dos reglas.
         hoy = _el_ultimo(MIERCOLES)
         ayer, indices = hoy - timedelta(days=1), hoy - timedelta(days=8)
-        pedido = ayer - timedelta(days=364)                   # el martes de hace un año
+        pedido = ayer - timedelta(days=365)                   # el mismo día de hace un año
         yahoo = Yahoo(hoy)
         yahoo.series["MU"] = {d: _precio(d) for d in _habiles(pedido, ayer)}
         yahoo.series["^GSPC"] = {d: 4000.0 + d.toordinal() % 997
@@ -376,7 +395,7 @@ class LasTresPantallas(unittest.TestCase):
             main._run_velas_diarias_job()
             c = self._get("/api/comparar/precio?activos=MU,BTC&moneda=usd&plazo=1a")
             k = self._get("/api/backtest/cartera?activos=MU,BTC&pesos=50,50&anios=1")
-        self.assertEqual((c["base"], c["hasta"]), ((sabado - timedelta(days=364)).isoformat(), sabado.isoformat()))
+        self.assertEqual((c["base"], c["hasta"]), ((sabado - timedelta(days=365)).isoformat(), sabado.isoformat()))
         self.assertTrue(k["disponible"], k)
         self.assertEqual((k["desde"], k["hasta"]), (c["base"], c["hasta"]), "«Una cartera» como Comparar")
 

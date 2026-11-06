@@ -25,8 +25,10 @@ CÓMO SE SIMULA.
     los índices también.
 
 CUÁNDO ARRANCA. Los últimos `anios` años contados por calendario desde el último
-precio (`tecnico.primer_dia`, LA regla de la ficha, Comparar y el Backtesting de
-una regla). Un activo o un índice sin precios de la última semana, contada desde
+precio, con la compra al cierre de `anios` años atrás, de fecha a fecha
+(`tecnico.dia_de_arranque`, LA regla de la ficha y de Comparar; Nico, 06/11:
+«como la ficha». Con el cierre del primer día, un día movido daba otro número que
+la ficha). Un activo o un índice sin precios de la última semana, contada desde
 hoy (`tecnico.es_vieja`), no entra y se dice. Si un activo cotiza desde después,
 arranca el día de ese activo y lo dice (`recorte_por`); hasta una semana después
 no es un recorte (`comparar.DIAS_MARGEN`: el borde de lo guardado, un feriado).
@@ -36,8 +38,8 @@ S&P 500 empieza el lunes. Se arranca el lunes, en vez de dejarlo afuera.
 
 AÑO POR AÑO (Nico, 06/11/2026: el total esconde si fue parejo o si un año lo
 explica casi todo, «algo que probablemente no se vuelva a repetir»). El mismo
-período, abierto en años de LA regla del período (`tecnico.primer_dia`: 365 días
-para atrás desde el último precio), con la misma cartera sin tocar (`_anio_por_anio`).
+período, abierto en años de LA regla del período (`tecnico.dia_de_arranque`: el
+cierre de 365 días para atrás desde el último precio), con la misma cartera sin tocar (`_anio_por_anio`).
 
 QUÉ NO HACE. No recomienda nada ni mira para adelante: dice qué habría pasado.
 """
@@ -94,7 +96,7 @@ def _anio_por_anio(base: str, hasta: str, al: dict, recortado: bool = False):
     día} de la cartera ('cartera', en dólares de cada US$ 100) y de cada índice que
     está, con su último cierre hasta ese día. `recortado`: el de `simular`.
 
-    Un año es el de LA regla del período (`tecnico.primer_dia`), contado para atrás desde
+    Un año es el de LA regla del período (`tecnico.dia_de_arranque`), contado para atrás desde
     el último precio: el último año de un índice da lo mismo que elegir «1 año»
     (salvo un caso que hoy no pasa: el OTRO índice con menos de un año de historia,
     que arranca en la semana después del corte; «1 año» corre su primer día por él
@@ -116,7 +118,7 @@ def _anio_por_anio(base: str, hasta: str, al: dict, recortado: bool = False):
     a 365 días, como el «Por año» del diario de operaciones)."""
     cortes = []
     for k in range(1, len(ANIOS) + 1):
-        d = tecnico.primer_dia(hasta, k * tecnico.DIAS_ANIO)
+        d = tecnico.dia_de_arranque(hasta, k * tecnico.DIAS_ANIO)
         if d <= base:
             break
         cortes.append(d)
@@ -162,7 +164,7 @@ def simular(activos: list, indices: dict, anios: int, hoy: date) -> dict:
                 "faltan": [{"asset": s, "motivo": "vieja", "hasta": puntos[s][-1][0]} for s in viejas]}
 
     hasta = max(p[-1][0] for p in puntos.values())
-    pedido = tecnico.primer_dia(hasta, anios * tecnico.DIAS_ANIO)
+    pedido = tecnico.dia_de_arranque(hasta, anios * tecnico.DIAS_ANIO)
     primeras = {s: p[0][0] for s, p in puntos.items()}
     ultimo_en_llegar = max(primeras, key=lambda s: (primeras[s], s))
     # El primer día, con LA regla de Comparar (`comparar.dia_del_cien`): el primero

@@ -262,8 +262,12 @@ def probar(velas: list, reglas: list, anios: int, comision: float = COMISION, *,
     desde `hoy` (`tecnico.es_vieja`: un papel que dejó de cotizar se probaba en
     «los últimos 2 años» terminados hace meses, sin avisar; auditoría de «Una
     cartera» 05/11, H9). `variacion_precio`: cuánto se movió el precio en el
-    período (de la apertura del primer día al último cierre), sin comisiones: lo
-    que la pantalla dice que «subió» o «bajó» el papel."""
+    período, sin comisiones: lo que la pantalla dice que «subió» o «bajó» el papel.
+    Desde el cierre de la víspera del primer día, el precio de arranque de LA regla
+    (`tecnico.dia_de_arranque`, como la ficha, Comparar y «Una cartera»; Nico,
+    06/11), hasta el último cierre; si el papel empieza ese día, desde su apertura.
+    Las operaciones (la regla y comprar y mantener) siguen entrando a la apertura:
+    la señal se ve al cierre y se actúa al día siguiente (CÓMO SE SIMULA)."""
     reglas = list(reglas)
     velas = velas_que_sirven(velas)
     if not velas:
@@ -282,6 +286,8 @@ def probar(velas: list, reglas: list, anios: int, comision: float = COMISION, *,
     sims = {r: simular(velas, s[r], v["desde_i"], v["hasta_i"], comision) for r in reglas}
     m = mantener(velas, v["desde_i"], v["hasta_i"], comision)
     fechas = [x["date"] for x in velas[v["desde_i"]:v["hasta_i"] + 1]]
+    i = v["desde_i"]
+    arranque = velas[i - 1]["close"] if i > 0 else tecnico.aperturas(velas)[i]
     return {
         **base,
         "disponible": True,
@@ -289,7 +295,7 @@ def probar(velas: list, reglas: list, anios: int, comision: float = COMISION, *,
         "hasta": fechas[-1],
         "ruedas": len(fechas),
         "comision": comision * 100,
-        "variacion_precio": (velas[v["hasta_i"]]["close"] / tecnico.aperturas(velas)[v["desde_i"]] - 1) * 100,
+        "variacion_precio": (velas[v["hasta_i"]]["close"] / arranque - 1) * 100,
         "resultados": [_resultado(r, sims[r]) for r in reglas],
         "mantener": _resumen(m),
         "curva": [{"d": d, "mantener": round(m[k] * 100, 2),

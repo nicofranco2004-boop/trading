@@ -468,19 +468,36 @@ def _pct(a, b):
     return (a / b - 1.0) * 100.0 if (a is not None and b) else None
 
 
+def dia_de_arranque(ultimo: str, dias: int) -> str:
+    """LA regla del PRECIO de arranque de «los últimos `dias` días»: el día cuyo
+    cierre vale 100, el mismo día de `dias` atrás desde `ultimo`, el último precio
+    («1 año» del 05/11/2026 arranca con el cierre del 05/11/2025: un año de fecha
+    a fecha). Si ese día no hubo rueda, vale el último cierre anterior (lo que
+    tenía ese día). Es el día anterior al primero de la ventana (`primer_dia`).
+
+    Antes cada pantalla tomaba otro precio del primer día: la ficha y el resumen ✦
+    el cierre de la víspera, Comparar y «Una cartera» el cierre del primer día, Una
+    regla la apertura; con un día movido, el mismo «último año» daba +5 % en la ficha
+    y +21 % en «Una cartera» (auditorías 06/11; Nico: «como la ficha»). La usan la
+    ficha (la ganancia de 12 meses, el resumen ✦), Comparar, «Una cartera» y lo que
+    Una regla dice que hizo el precio."""
+    return (date.fromisoformat(ultimo) - timedelta(days=dias)).isoformat()
+
+
 def primer_dia(ultimo: str, dias: int) -> str:
     """LA regla de «los últimos `dias` días»: el primero de los `dias` días
-    CORRIDOS que terminan en `ultimo`, el último precio (no hoy). «1 año» (365)
-    arranca el mismo día de la semana que el último precio, 52 semanas antes.
+    CORRIDOS que terminan en `ultimo`, el último precio (no hoy): el siguiente al
+    del precio de arranque (`dia_de_arranque`). «1 año» (365) arranca el mismo día
+    de la semana que el último precio, 52 semanas antes.
 
     Desde el último precio y no desde hoy (Nico, 06/11/2026): contando desde hoy,
     un domingo, un lunes o el día después de un feriado el año arrancaba otro día
     que en la ficha, y Comparar daba otro número que el Backtesting para el mismo
     activo (MU en Pascua de 2026: +465,9 % contra +392,7 %; con «3 años», todos
     los domingos y lunes; auditoría de «Una cartera» 05/11, H4). La usan la ficha
-    (`_desde_dias`, `_en_maximo`, el resumen ✦), Comparar, el Backtesting de una
-    regla y «Una cartera»."""
-    return (date.fromisoformat(ultimo) - timedelta(days=dias - 1)).isoformat()
+    (`_desde_dias`, `_en_maximo`, el resumen ✦) y el Backtesting de una regla
+    (los días en que se prueba)."""
+    return (date.fromisoformat(dia_de_arranque(ultimo, dias)) + timedelta(days=1)).isoformat()
 
 
 def es_vieja(ultimo: str, hoy: date) -> bool:
@@ -605,7 +622,7 @@ def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None, bb=Non
     # normal llevado a un año: × √ de los días de mercado del año). Medido el
     # 28/10 en 15 acciones: este número NO anticipó qué acción rindió más
     # después (INFORME_riesgo_beneficio.md). Sólo con el año completo.
-    base_ok = i_anio > 0 and (date.fromisoformat(velas[-1]["date"]) - timedelta(days=DIAS_ANIO)
+    base_ok = i_anio > 0 and (date.fromisoformat(dia_de_arranque(velas[-1]["date"], DIAS_ANIO))
                               - date.fromisoformat(velas[i_anio - 1]["date"])).days <= DIAS_BASE_ANIO
     ret_12m = _pct(ultimo, cierres[i_anio - 1]) if base_ok else None
     vol_anual = mov_anio * (n - i_anio) ** 0.5 if mov_anio is not None else None

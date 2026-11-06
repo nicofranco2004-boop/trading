@@ -149,10 +149,11 @@ class CompararTest(unittest.TestCase):
         return next((s for s in res["series"] if s["clave"] == clave), None)
 
     def _un_anio(self):
-        """El día del 100 de «1 año»: el mismo día de la semana que el último precio
-        (la última rueda), 52 semanas antes. Desde el último precio y no desde hoy
-        (Nico, 06/11: `tecnico.primer_dia`); hasta el 06/11 era hoy − 365."""
-        return (self.dias[-1] - timedelta(days=364)).isoformat()
+        """El día del 100 de «1 año»: el mismo día de hace un año desde el último
+        precio (la última rueda), con el cierre que tenía ese día: de fecha a fecha,
+        como la ficha (Nico, 06/11: `tecnico.dia_de_arranque`). Hasta el 06/11 era
+        hoy − 365; el 06/11 a la tarde (`4165c2f6`), el día siguiente a ése."""
+        return (self.dias[-1] - timedelta(days=365)).isoformat()
 
     def _i(self, fecha):
         """La rueda que vale en `fecha` (la última en ese día o antes)."""

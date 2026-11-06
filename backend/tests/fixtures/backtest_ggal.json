@@ -100,7 +100,7 @@
    }
   ],
   "ruedas": 501,
-  "variacion_precio": -35.26160615344135
+  "variacion_precio": -34.79309744360775
  },
  "media200": {
   "anios": 2,
@@ -230,7 +230,7 @@
    }
   ],
   "ruedas": 384,
-  "variacion_precio": -42.127801905137176
+  "variacion_precio": -41.472353674530595
  },
  "media50": {
   "anios": 2,
@@ -360,7 +360,7 @@
    }
   ],
   "ruedas": 501,
-  "variacion_precio": -35.26160615344135
+  "variacion_precio": -34.79309744360775
  },
  "media50,adx_squeeze": {
   "anios": 2,
@@ -570,7 +570,7 @@
    }
   ],
   "ruedas": 501,
-  "variacion_precio": -35.26160615344135
+  "variacion_precio": -34.79309744360775
  },
  "media50,rsi,adx_squeeze": {
   "anios": 2,
@@ -824,7 +824,7 @@
    }
   ],
   "ruedas": 501,
-  "variacion_precio": -35.26160615344135
+  "variacion_precio": -34.79309744360775
  },
  "rsi": {
   "anios": 2,
@@ -891,7 +891,7 @@
    }
   ],
   "ruedas": 501,
-  "variacion_precio": -35.26160615344135
+  "variacion_precio": -34.79309744360775
  },
  "rsi,adx_squeeze": {
   "anios": 2,
@@ -1038,7 +1038,7 @@
    }
   ],
   "ruedas": 501,
-  "variacion_precio": -35.26160615344135
+  "variacion_precio": -34.79309744360775
  },
  "rsi,media200": {
   "anios": 2,
@@ -1212,6 +1212,6 @@
    }
   ],
   "ruedas": 384,
-  "variacion_precio": -42.127801905137176
+  "variacion_precio": -41.472353674530595
  }
 }

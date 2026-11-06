@@ -210,18 +210,24 @@ class LoQueVeLaPantalla(unittest.TestCase):
     """Lo que encontró la auditoría del 04/11 (H1–H3 y la vela rota)."""
 
     def test_el_precio_que_se_movio_es_el_del_papel_sin_comisiones(self):
-        """«GGAL bajó 35 %» es lo que se movió el precio (de la apertura del
-        primer día al último cierre), no el resultado de comprar y mantener, que
-        además paga las dos comisiones."""
+        """«GGAL bajó 35 %» es lo que se movió el precio, desde el cierre de la
+        víspera del primer día (el precio de arranque de LA regla, como la ficha,
+        Comparar y «Una cartera»: `tecnico.dia_de_arranque`) hasta el último cierre.
+        No es el resultado de comprar y mantener, que compra a la apertura del primer
+        día (la señal se ve al cierre y se actúa al día siguiente) y además paga las
+        dos comisiones."""
         velas = _ggal()
         _, r = _una(velas, "rsi", 2)
         i0 = [v["date"] for v in velas].index(r["desde"])
-        esperado = (velas[-1]["close"] / velas[i0]["open"] - 1) * 100
+        esperado = (velas[-1]["close"] / velas[i0 - 1]["close"] - 1) * 100
         self.assertAlmostEqual(r["variacion_precio"], esperado, places=9)
-        self.assertAlmostEqual(r["variacion_precio"], -35.26, places=2)
+        self.assertLessEqual(velas[i0 - 1]["date"], tecnico.dia_de_arranque(velas[-1]["date"], 2 * tecnico.DIAS_ANIO))
         c = backtest.COMISION
         self.assertAlmostEqual(1 + r["mantener"]["resultado"] / 100,
-                               (1 + r["variacion_precio"] / 100) * (1 - c) ** 2, places=9)
+                               velas[-1]["close"] / velas[i0]["open"] * (1 - c) ** 2, places=9)
+        # Con aperturas distintas de la víspera, los dos números se separan: si no,
+        # esta prueba no podría ver que «subió» toma otro precio que la compra.
+        self.assertNotEqual(velas[i0]["open"], velas[i0 - 1]["close"])
 
     def test_la_peor_caida_se_cuenta_desde_los_100_del_principio(self):
         """Cada día abre en 100 y cierra abajo, y el cierre sube día a día: el
