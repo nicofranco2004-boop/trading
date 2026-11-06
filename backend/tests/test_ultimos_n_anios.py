@@ -78,19 +78,26 @@ def _precio(d: date) -> float:
 class Yahoo:
     """Yahoo en su punto más bajo. `series[ticker]`: {fecha: cierre}. La bajada
     entera trae todo lo de antes de hoy y la del mes, el último mes; lo que no
-    está en la serie (un feriado, un papel que dejó de cotizar) no lo trae."""
+    está en la serie (un feriado, un papel que dejó de cotizar) no lo trae. Cada
+    día abre con el cierre de la víspera, como la bolsa: con la apertura igual al
+    cierre, «Una regla» (que compra a la apertura) daba lo mismo que «Una cartera»
+    (que arranca al cierre) y la prueba tapaba esa diferencia (auditoría 06/11, H2)."""
 
     def __init__(self, hoy: date):
         self.hoy, self.series = hoy, {}
 
     def __call__(self, ticker, period, interval, auto_adjust, timeout):
         serie = self.series.get(ticker) or {}
+        todos = sorted(d for d in serie if d < self.hoy)
         desde = date.min if period == PERIODO_COMPLETO else self.hoy - timedelta(days=31)
-        dias = sorted(d for d in serie if desde <= d < self.hoy)
+        dias = [d for d in todos if d >= desde]
         if not dias:
             return pd.DataFrame()
         c = [serie[d] for d in dias]
-        return pd.DataFrame({"Open": c, "High": [x * 1.01 for x in c], "Low": [x * 0.99 for x in c],
+        antes = {d: serie[a] for a, d in zip(todos, todos[1:])}
+        o = [antes.get(d, serie[d]) for d in dias]
+        return pd.DataFrame({"Open": o, "High": [max(a, b) * 1.01 for a, b in zip(o, c)],
+                             "Low": [min(a, b) * 0.99 for a, b in zip(o, c)],
                              "Close": c, "Volume": [1000.0] * len(c)},
                             index=pd.DatetimeIndex([pd.Timestamp(d) for d in dias]))
 
@@ -172,17 +179,23 @@ class LasTresPantallas(unittest.TestCase):
     def _serie(res, clave):
         return next((s for s in res["series"] if s["clave"] == clave), None)
 
-    def _arrancan_igual(self, c, k, b, desde, hasta):
-        """Las tres pantallas, el mismo período y el mismo número."""
+    def _arrancan_igual(self, c, k, b, desde, hasta, mu=_precio):
+        """Las tres pantallas, el mismo período (lo que unificó este cambio).
+        Comparar y «Una cartera» arrancan además con el MISMO precio (el cierre del
+        primer día), así que dan el mismo número. «Una regla» compra a la APERTURA
+        del primer día: el precio de arranque es otra regla, y todavía distinta
+        (auditoría 06/11, H2); acá se afirma la suya, no que coincida."""
         self.assertEqual((c["base"], c["hasta"]), (desde, hasta), "Comparar")
         self.assertEqual((k["desde"], k["hasta"]), (desde, hasta), "«Una cartera»")
         self.assertEqual((b["desde"], b["hasta"]), (desde, hasta), "Una regla")
         self.assertTrue(k["disponible"] and b["disponible"], (k, b))
-        self.assertEqual(self._serie(c, "MU")["final"], round(k["cartera"]["final"], 2))
-        # Una regla compra a la apertura del primer día (acá, igual al cierre): lo que
-        # dice que «subió» el papel es lo mismo que la cartera (cuya serie en 100 va
-        # con 4 decimales: `comparar.base_cien`).
-        self.assertAlmostEqual(b["variacion_precio"], k["cartera"]["resultado"], delta=0.001)
+        d, h = date.fromisoformat(desde), date.fromisoformat(hasta)
+        cierre = mu(h) / mu(d) * 100
+        self.assertAlmostEqual(self._serie(c, "MU")["final"], cierre, places=2)
+        self.assertAlmostEqual(k["cartera"]["final"], cierre, places=2)
+        # La apertura del primer día es el cierre de la rueda anterior (Yahoo, arriba).
+        apertura = next(mu(x) for x in (d - timedelta(days=j) for j in range(1, 10)) if x.weekday() < 5)
+        self.assertAlmostEqual(b["variacion_precio"], (mu(h) / apertura - 1) * 100, places=6)
         sp = next(i for i in k["indices"] if i["clave"] == "sp500")
         self.assertEqual(self._serie(c, "sp500")["final"], round(sp["final"], 2))
 
@@ -197,7 +210,6 @@ class LasTresPantallas(unittest.TestCase):
         desde = viernes - timedelta(days=364)
         self.assertEqual(desde.weekday(), 4, "52 semanas antes: también un viernes")
         self._arrancan_igual(c, k, b, desde.isoformat(), viernes.isoformat())
-        self.assertAlmostEqual(self._serie(c, "MU")["final"], _precio(viernes) / _precio(desde) * 100, places=2)
 
     def test_un_lunes_con_tres_anios_tambien_el_numero(self):
         # Con 3 años (1.095 días = 156 semanas y 3 días), desde hoy un lunes caía un
@@ -219,8 +231,7 @@ class LasTresPantallas(unittest.TestCase):
         caida = desde + timedelta(days=1)
         mu = lambda d: _precio(d) * (0.87 if d >= caida else 1.0)
         c, k, b = self._las_tres(hoy, self._mercado(hoy, jueves, feriados={feriado}, mu=mu), 1)
-        self._arrancan_igual(c, k, b, desde.isoformat(), jueves.isoformat())
-        self.assertAlmostEqual(self._serie(c, "MU")["final"], mu(jueves) / mu(desde) * 100, places=2)
+        self._arrancan_igual(c, k, b, desde.isoformat(), jueves.isoformat(), mu=mu)
 
     # ─── H9: los precios viejos se miden contra hoy ─────────────────────────
 

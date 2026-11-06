@@ -285,12 +285,19 @@ describe('por qué no se pudo simular', () => {
   it('cada motivo, en una oración entera', () => {
     // Sobre lo que tenemos: PARADA cotiza; la que está vieja es nuestra copia (M10).
     expect(motivoCartera(CASOS.vieja)).toBe('No tenemos precios de PARADA desde el 30/09/26: sacalo para simular el resto.')
-    // Vieja contra hoy (H9): un activo solo, o todos, ya no tienen «resto» que simular.
-    const parado = (asset) => ({ asset, motivo: 'vieja', hasta: '2026-09-04' })
+    // Vieja contra hoy (H9): un activo solo, o todos, ya no tienen «resto» que simular,
+    // y cambiarlo no sirve si la falla es nuestra (H4, 06/11).
+    const parado = (asset, hasta = '2026-09-04') => ({ asset, motivo: 'vieja', hasta })
     expect(motivoCartera({ motivo: 'vieja', faltan: [parado('MU')] }, 1))
-      .toBe('No tenemos precios de MU desde el 04/09/26: cambialo por otro.')
+      .toBe('No tenemos precios de MU desde el 04/09/26: para simular hacen falta los de la última semana.')
     expect(motivoCartera({ motivo: 'vieja', faltan: [parado('MU'), parado('AAPL')] }, 2))
-      .toBe('No tenemos precios de MU y AAPL desde el 04/09/26.')
+      .toBe('No tenemos precios de MU y AAPL desde el 04/09/26: para simular hacen falta los de la última semana.')
+    // Cada uno con su fecha (H5, 06/11): la noche caída y uno que ya estaba parado.
+    expect(motivoCartera({ motivo: 'vieja', faltan: [parado('AAPL', '2026-10-05'), parado('MU', '2026-08-14')] }, 2))
+      .toBe('No tenemos precios de MU desde el 14/08/26 ni de AAPL desde el 05/10/26: '
+        + 'para simular hacen falta los de la última semana.')
+    expect(motivoCartera({ motivo: 'vieja', faltan: [parado('MU', '2026-08-14'), parado('NOK', '2026-08-14')] }, 3))
+      .toBe('No tenemos precios de MU y NOK desde el 14/08/26: sacalos para simular el resto.')
     expect(motivoCartera({ motivo: 'sin_serie', faltan: [{ asset: 'AL30' }, { asset: 'ZZZ' }] }))
       .toBe('No tenemos los precios de cada día de AL30 y ZZZ: sacalos o cambialos por otros.')
     expect(motivoCartera({ motivo: 'poca_historia', recorte_por: 'NUEVITO', faltan: [] }))

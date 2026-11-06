@@ -46,9 +46,14 @@ from velas_diarias import DIAS_GUARDADOS, SP500
 # cantidad de velas: una cripto cotiza los 7 días y la bolsa 5. Desde el último
 # precio, no desde hoy: `primer_dia`.
 DIAS_ANIO = 365
-# Una línea sin precios de la última semana, contada desde HOY, ya no dice «hoy»
-# (un feriado largo son 4 días): un activo que dejó de cotizar, un índice que la
-# fuente dejó de mandar. `es_vieja`.
+# Una línea sin precios de la última semana, contada desde HOY, ya no dice «hoy»:
+# un activo que dejó de cotizar, un índice que la fuente dejó de mandar. `es_vieja`.
+# El cierre más largo de BYMA (Semana Santa con el 2 de abril, 2024) fue de 6 días
+# sin rueda: el día que reabre, el último precio tiene 7 días y todavía entra; el
+# siguiente, entre la medianoche y la corrida de la noche (que guarda el cierre
+# después de las 23:59), tiene 8 y una acción argentina sale «vieja» ese rato
+# (auditoría 06/11, H3). Las pantallas de la Cartera, Tu lista, el mail de los
+# sábados y el termómetro tienen su propio margen, de 10 días (no unificado).
 DIAS_VIEJA = 7
 # Lo que se manda a la pantalla: TODO lo que se guarda (5 años de calendario),
 # para poder arrastrar el gráfico hasta el principio (Nico, 22/10: «no deja ir

@@ -29,7 +29,7 @@ import { MONTHS } from '../../utils/format'
 import { hoyISO } from '../../utils/fecha'
 import {
   MAX_ACTIVOS, PLAZOS, marcaLocal, primeraCompraDe, urlDelPedido, filasDelGrafico,
-  monto, fraseComparacion,
+  monto, fraseComparacion, vaciaPorVieja,
 } from '../../utils/comparadorPrecio'
 
 const v = (token) => `rgb(var(--${token}))`
@@ -115,7 +115,9 @@ export default function PrecioComparado({ tickers }) {
           }
           setRes(r)
           setCargando(false)
-          if (contado.current !== clave) {
+          // Se cuenta lo que se pudo comparar: con todo viejo (la noche caída) no se
+          // dibuja nada, y contarlo inflaba las comparaciones justo esos días (H6, 06/11).
+          if (contado.current !== clave && (r?.series || []).some(s => s.tipo === 'activo')) {
             contado.current = clave
             track('comparar_precio', { n: activos.length, moneda, plazo: plazoVigente })
           }
@@ -160,6 +162,7 @@ export default function PrecioComparado({ tickers }) {
   const monedaRes = res?.moneda || moneda
   const opcionesPlazo = PLAZOS.filter(([id]) => id !== 'compra' || primera)
   const avisos = (res?.faltan || []).filter(f => MOTIVO[f.motivo] && activos.includes(f.clave))
+  const vieja = vaciaPorVieja(res, activos)
   const sinVara = (res?.faltan || []).filter(f => (f.motivo === 'sin_datos' || f.motivo === 'vieja') && VARA[f.clave])
   // «El día de tu primera compra» sólo si el 100 es ESE día.
   const esTuCompra = res?.plazo === 'compra' && res?.base === res?.desde
@@ -234,8 +237,9 @@ export default function PrecioComparado({ tickers }) {
       {res && !visibles.some(s => s.tipo === 'activo') && !cargando && (
         <Panel padding="lg">
           <EmptyState icon={<IconoLinea size={20} strokeWidth={1.75} />} eyebrow="Precio"
-            title="No hay precios para comparar"
-            description="Probá con otro activo: de acciones, CEDEARs, ETFs y cripto tenemos los precios de cada día." />
+            title={vieja ? vieja.titulo : 'No hay precios para comparar'}
+            description={vieja ? vieja.texto
+              : 'Probá con otro activo: de acciones, CEDEARs, ETFs y cripto tenemos los precios de cada día.'} />
         </Panel>
       )}
 

@@ -28,7 +28,7 @@ LAS CUENTAS
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 
 # El período de «Cuánto se mueve»: 2 años de calendario.
 DIAS_VENTANA = 730
@@ -41,11 +41,13 @@ MAX_DIAS_HASTA_LA_REACCION = 7
 
 
 def ventana(velas: list, dias: int = DIAS_VENTANA) -> list:
-    """Las velas de los últimos `dias` días CORRIDOS hasta la última."""
+    """Las velas de los últimos `dias` días CORRIDOS hasta la última (LA regla:
+    `tecnico.primer_dia`; tecnico importa este módulo, por eso adentro)."""
     if not velas:
         return []
-    piso = (date.fromisoformat(velas[-1]["date"]) - timedelta(days=dias)).isoformat()
-    return [v for v in velas if v["date"] > piso]
+    from tecnico import primer_dia
+    desde = primer_dia(velas[-1]["date"], dias)
+    return [v for v in velas if v["date"] >= desde]
 
 
 def peor_caida(velas: list):
