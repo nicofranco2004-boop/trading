@@ -311,11 +311,15 @@ def guardar_ccl(conn, filas: list, fuente: str) -> int:
     la fuente; el valor es el MEDIO (`punta_media`). Escribe las fechas que faltan
     y vuelve a escribir las últimas `DIAS_CCL_REVISAR` (ver arriba). No hace commit.
     Devuelve cuántas escribió."""
-    import re
     from datetime import date, datetime, timedelta
     valores = {}
     for fecha, compra, venta in filas:
-        if not (isinstance(fecha, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha)):
+        # Una fecha que no existe (o con otra forma) no entra: guardada, la cuenta
+        # de «los últimos días» de la noche siguiente reventaría con ella.
+        try:
+            if not (isinstance(fecha, str) and len(fecha) == 10 and date.fromisoformat(fecha)):
+                continue
+        except ValueError:
             continue
         v = punta_media(compra, venta)
         if v:

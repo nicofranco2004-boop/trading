@@ -1247,7 +1247,8 @@ class FichaTest(unittest.TestCase):
                                  (d,)).fetchone()
             return r["value"] if r else None
 
-        with mock.patch("main._bajar_ccl", lambda: fuente + [("mal", 1.0, 2.0), ("2026-01-0x", 1, 2)]):
+        with mock.patch("main._bajar_ccl", lambda: fuente + [("mal", 1.0, 2.0), ("2026-01-0x", 1, 2),
+                                                             ("2026-02-30", 1, 2), (None, 1, 2), ("2026-11-06", 0, 0)]):
             main._run_velas_diarias_job()
         self.assertEqual((guardado(dias[0]), guardado(dias[-1])), (1005.0, 1005.0 + len(dias) - 1))
         with main.db_abierta() as conn:
