@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } 
 import { createElement as h } from 'react'
 import { CAPAS_TODAS } from './BarraGrafico'
 import { instalarNavegadorMinimo, montar, texto, clic, enActo } from '../../testing/navegadorMinimo'
+import { elegirEnLaVista } from '../../testing/menuGrafico'
 
 const dia = (i) => new Date(Date.UTC(2025, 0, 1) + i * 86400000).toISOString().slice(0, 10)
 const PUNTOS = Array.from({ length: 300 }, (_, i) => {
@@ -102,6 +103,20 @@ async function compartir(boton = botonCompartir()) {
 }
 
 describe('Compartir el gráfico técnico', () => {
+  it('un CEDEAR estimado en pesos: la imagen también dice que es un estimado (Nico, 06/11)', async () => {
+    // La ficha le pasa la escala a la imagen: sin ella, la imagen que se sube a
+    // redes diría «pasado a pesos con el MEP» sobre un precio estimado, y ninguna
+    // prueba lo veía (auditoría 06/11, pruebas: hallazgo 4).
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD,
+      '/tecnico/AAPL?moneda=ars': { ...USD, moneda: 'ars', ticker: 'AAPL', convertida: 'mep', escala: 20 } }
+    await dibujar({ asset: 'AAPL', symbolMiniChart: 'AAPL' })
+    await elegirEnLaVista(montado.contenedor, 'Pesos')
+    for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL' }))
+    const spec = await compartir()
+    expect(spec.pie.join(' ')).toContain('Precio estimado del CEDEAR')
+    expect(spec.pie.join(' ')).not.toContain('está pasado a pesos con el MEP de ese día')
+  })
+
   it('el botón: en la compu en el encabezado del gráfico, en el celular el ícono al lado de la ayuda; abre la ventana con la imagen', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD }
     await dibujar()

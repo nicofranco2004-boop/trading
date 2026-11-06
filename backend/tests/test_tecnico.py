@@ -32,12 +32,17 @@ TMP_DB = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 TMP_DB.close()
 os.environ["DB_PATH"] = TMP_DB.name
 
+import time
+
 import pandas as pd
 from fastapi.testclient import TestClient
 
 import main
 import estructura
 import tecnico
+# La de verdad: la suite la reemplaza en cada prueba por una vacía (conftest,
+# `_byma_en_memoria_vacio`); acá se toma antes, para probarla a ella.
+_DATA912_EN_MEMORIA = getattr(main, "_data912_en_memoria", None)
 from fechas import hoy_art_date
 import velas_diarias
 from velas_diarias import PERIODO_COMPLETO
@@ -1018,17 +1023,261 @@ class FichaTest(unittest.TestCase):
     def test_cedear_a_pedido_baja_solo_la_accion_de_afuera(self):
         # La serie en pesos de un CEDEAR necesita la lista de cambios de ratio,
         # que se arma de noche sólo para lo seguido: a pedido va la de afuera y
-        # en pesos se multiplica por el MEP de cada día.
-        self._mep(lambda i: 1000.0)
-        self.yahoo.precios["AAPL"] = lambda i, d: 250.0
-        self.yahoo.precios["AAPL.BA"] = lambda i, d: 25000.0
+        # en pesos es un ESTIMADO del CEDEAR: la acción × el MEP de cada día ÷
+        # los CEDEARs que hacen una acción (20 en Apple: ratios_cedear). Antes,
+        # sin dividir: la acción entera en pesos, $ 250.000 contra un CEDEAR de
+        # ~$ 13.000 (Nico eligió el estimado, 06/11/2026).
+        self._mep(lambda i: 1000.0 + i)
+        self.yahoo.precios["AAPL"] = lambda i, d: 250.0 + i * 0.1
+        self.yahoo.precios["AAPL.BA"] = lambda i, d: 13000.0     # el de verdad: a pedido no se baja
         with mock.patch("main._fetch_data912_equities", lambda: {"AAPL": {"mercado": "arg_cedears"}}):
             usd = self._ficha("AAPL.BA")
             ars = self._ficha("AAPL.BA", "ars")
         self.assertEqual((usd["ticker"], usd["convertida"]), ("AAPL", None))
         self.assertEqual((ars["ticker"], ars["convertida"]), ("AAPL", "mep"))
-        self.assertAlmostEqual(ars["puntos"][-1]["c"], 250_000.0, places=3)
+        # Cada día con SU dólar y la misma escala, del primer punto al último.
+        dias = [d.isoformat() for d in self.dias]
+        for p in (ars["puntos"][0], ars["puntos"][-1]):
+            i = dias.index(p["d"])
+            self.assertAlmostEqual(p["c"], (250.0 + i * 0.1) * (1000.0 + i) / 20, places=3)
+        self.assertEqual(ars["puntos"][-1]["d"], dias[-1])
+        self.assertEqual((usd.get("escala"), ars.get("escala")), (None, 20))
         self.assertEqual(self._pedidos("AAPL.BA"), [])
+
+    def test_bac_en_pesos_es_el_cedear_estimado_tambien_para_quien_lo_tiene(self):
+        # El '.BA' de BAC cotiza en dólares y roto: la noche baja sólo la acción
+        # de afuera aunque alguien lo tenga (velas_diarias._yahoo_de). El gráfico
+        # en pesos era BAC × el MEP: 4 veces el CEDEAR, para todos. Ahora ÷ 4, el
+        # MISMO ratio con que se valúa (main.CEDEAR_USD_RATIOS sale de la tabla).
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "BAC", "CEDEAR")
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["BAC"] = lambda i, d: 50.0
+        self.yahoo.precios["BAC.BA"] = lambda i, d: 9.0           # el roto, en dólares
+        main._run_velas_diarias_job()
+        self.assertEqual(self._pedidos("BAC.BA"), [])
+        # Lo que BYMA dice de BAC es su precio roto en dólares (≈ 7): no sirve para
+        # controlar la escala y no se usa (`tecnico._escalas_de_hoy`).
+        with self._bolsa({"BAC": {"mercado": "arg_cedears", "c": 7.06, "pct": 0.5}}):
+            ars = self._ficha("BAC", "ars")
+        self.assertEqual((ars["ticker"], ars["convertida"]), ("BAC", "mep"))
+        self.assertAlmostEqual(ars["puntos"][-1]["c"], 12_500.0, places=3)
+        self.assertEqual(ars.get("escala"), 4)
+        self.assertEqual(main.CEDEAR_USD_RATIOS["BAC"], ars["escala"])
+
+    def test_sin_saber_la_escala_del_cedear_no_hay_grafico_en_pesos(self):
+        # Mejor sin gráfico en pesos que uno veinte veces más alto.
+        self._mep(lambda i: 1000.0)
+        # Cloudflare es CEDEAR (la lista de la app) y la tabla de ratios no lo tiene.
+        self.yahoo.precios["NET"] = lambda i, d: 200.0
+        with mock.patch("main._fetch_data912_equities", lambda: {"NET": {"mercado": "arg_cedears"}}):
+            self.assertTrue(self._ficha("NET.BA")["disponible"], "en dólares, la acción de afuera")
+            self.assertFalse(self._ficha("NET.BA", "ars")["disponible"])
+        # La serie en pesos que quedó guardada y la tabla no coinciden: MELI.BA en
+        # $ 99 daría 20.202 CEDEARs por acción y la tabla dice 120. La tabla quedó
+        # vieja o el CEDEAR cambió de ratio después: no se sabe cuál.
+        self.yahoo.precios["MELI"] = lambda i, d: 2000.0
+        with main.db_abierta() as conn:
+            for d in self.dias[-300:-14]:
+                conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES ('MELI.BA', ?, 99.0)",
+                             (d.isoformat(),))
+            conn.commit()
+        with mock.patch("main._fetch_data912_equities", lambda: {"MELI": {"mercado": "arg_cedears"}}):
+            self.assertTrue(self._ficha("MELI.BA")["disponible"])
+            self.assertFalse(self._ficha("MELI.BA", "ars")["disponible"])
+
+    def test_en_pesos_lo_que_no_es_cedear_es_el_mismo_por_el_mep(self):
+        # Lo que no tiene papel en BYMA no se lleva a ninguna escala: SCHD (un ETF
+        # que no es CEDEAR) y Bitcoin, en pesos, son ellos mismos × el MEP.
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["SCHD"] = lambda i, d: 30.0
+        self.yahoo.precios["BTC-USD"] = lambda i, d: 90_000.0
+        for asset, ticker, esperado in (("SCHD", "SCHD", 30_000.0), ("BTC", "BTC-USD", 90_000_000.0)):
+            ars = self._ficha(asset, "ars")
+            self.assertEqual((ars["ticker"], ars["convertida"], ars.get("escala")), (ticker, "mep", None))
+            self.assertAlmostEqual(ars["puntos"][-1]["c"], esperado, places=3)
+
+    def _bolsa(self, datos):
+        """Lo que data912 trajo de la Bolsa y el servidor tiene en memoria
+        (`main._data912_en_memoria`): con eso `tecnico.serie` reconoce un CEDEAR
+        de BYMA y controla la escala del estimado. Fuera de esto, vacío (conftest)."""
+        return mock.patch("main._data912_en_memoria", lambda: datos, create=True)
+
+    def test_cedear_de_byma_fuera_de_la_lista_no_es_la_accion_entera(self):
+        # Procter & Gamble (PG) es CEDEAR en BYMA y no está en la lista de la app ni
+        # en la tabla de ratios. La bajada lo reconoce por la lista de BYMA y baja
+        # sólo la acción de afuera; el gráfico en pesos la mostraba ENTERA:
+        # $ 265.455 contra $ 18.590 del CEDEAR (auditoría 06/11, H1 de la serie).
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["PG"] = lambda i, d: 150.0
+        byma = {"PG": {"mercado": "arg_cedears", "c": 18590.0, "pct": 0.0}}
+        with mock.patch("main._fetch_data912_equities", lambda: byma), self._bolsa(byma):
+            self.assertTrue(self._ficha("PG.BA")["disponible"], "en dólares, la acción de afuera")
+            ars = self._ficha("PG.BA", "ars")
+            pelado = self._ficha("PG", "ars")
+        self.assertEqual((ars["disponible"], ars.get("motivo")), (False, "sin_escala"))
+        self.assertEqual((pelado["disponible"], pelado.get("motivo")), (False, "sin_escala"),
+                         "sin el '.BA', lo reconoce la lista de BYMA de data912")
+        # Pedido como el papel de BYMA («PG.BA»), es un CEDEAR aunque la lista de BYMA
+        # no esté en memoria (recién reiniciado el servidor).
+        with mock.patch("main._fetch_data912_equities", lambda: byma):
+            self.assertEqual(self._ficha("PG.BA", "ars").get("motivo"), "sin_escala")
+        # Sin la lista de BYMA y sin '.BA': una acción de EE.UU. vista en pesos.
+        eeuu = self._ficha("PG", "ars")
+        self.assertEqual((eeuu["ticker"], eeuu["convertida"], eeuu.get("escala")), ("PG", "mep", None))
+        self.assertAlmostEqual(eeuu["puntos"][-1]["c"], 150_000.0, places=3)
+        # Con su serie de BYMA vieja guardada (alguien lo tuvo): estimado con su escala.
+        with main.db_abierta() as conn:
+            for d in self.dias[:-14]:
+                conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES ('PG.BA', ?, 18750.0)",
+                             (d.isoformat(),))
+            conn.commit()
+        with mock.patch("main._fetch_data912_equities", lambda: byma), self._bolsa(byma):
+            vieja = self._ficha("PG.BA", "ars")
+        self.assertAlmostEqual(vieja["puntos"][-1]["c"], 18_750.0, places=3)
+        self.assertAlmostEqual(vieja.get("escala"), 8.0, places=6)
+
+    def test_la_escala_del_estimado_se_controla_con_el_precio_de_la_bolsa(self):
+        # La tabla de ratios se creía sin mirar el mercado: Bioceres quedaba 25 %
+        # abajo y AstraZeneca 89 % arriba con la nota «unos pocos %» (auditoría
+        # 06/11, H1 de la pantalla). Con el precio del CEDEAR que el servidor ya
+        # tiene de data912, la escala tiene que cerrar con la Bolsa; si no, en
+        # pesos no hay gráfico.
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["AAPL"] = lambda i, d: 250.0           # 250 × 1000 ÷ 20 = 12.500
+        cedear = {"AAPL": {"mercado": "arg_cedears"}}
+
+        def ficha_con(precio, pct=0.0):
+            with mock.patch("main._fetch_data912_equities", lambda: cedear), \
+                    self._bolsa({"AAPL": {"mercado": "arg_cedears", "c": precio, "pct": pct}}):
+                return self._ficha("AAPL.BA", "ars")
+        bien = ficha_con(13000.0)          # ~4 % arriba del estimado: el dólar de los CEDEARs
+        self.assertAlmostEqual(bien["puntos"][-1]["c"], 12_500.0, places=3)
+        self.assertEqual(bien.get("escala"), 20)
+        otro = ficha_con(26000.0)          # la Bolsa dice 10 por acción: la tabla quedó vieja
+        self.assertEqual((otro["disponible"], otro.get("motivo")), (False, "sin_escala"))
+        # Un día de +30 %: con el cierre anterior (16.900 ÷ 1,30 = 13.000) cierra.
+        self.assertTrue(ficha_con(16900.0, 30.0)["disponible"])
+
+    def _guardada(self, symbol, cociente_de, precio=lambda i: 2000.0 + i):
+        """Una serie en pesos que quedó guardada hasta 14 ruedas atrás (alguien la
+        tuvo y la vendió): el cociente (acción de afuera × MEP ÷ CEDEAR) de la rueda
+        i, de n guardadas, es `cociente_de(i, n)`."""
+        dias = self.dias[:-14]
+        with main.db_abierta() as conn:
+            conn.execute("DELETE FROM velas_diarias WHERE symbol=?", (symbol,))
+            for i, d in enumerate(dias):
+                conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES (?, ?, ?)",
+                             (symbol, d.isoformat(), precio(i) * 1000.0 / cociente_de(i, len(dias))))
+            conn.commit()
+
+    def test_un_ratio_que_cambio_al_doble_o_a_la_mitad_no_se_dibuja(self):
+        # Comafi cambia ratios (SPY 20→60, GM 20→6): la serie guardada queda en la
+        # escala vieja y la tabla en la nueva, o al revés. Para los dos lados.
+        # (Auditoría 06/11, pruebas: una tolerancia de 150 % o de un solo lado pasaba.)
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["MELI"] = lambda i, d: 2000.0 + i
+        for medida in (240.0, 60.0):          # ×2 y ÷2 de la tabla (120)
+            self._guardada("MELI.BA", lambda i, n: medida)
+            with mock.patch("main._fetch_data912_equities", lambda: {"MELI": {"mercado": "arg_cedears"}}):
+                ars = self._ficha("MELI.BA", "ars")
+            self.assertEqual((ars["disponible"], ars.get("motivo")), (False, "sin_escala"), f"{medida} contra 120")
+
+    def test_la_brecha_normal_del_dolar_no_borra_el_grafico(self):
+        # El dólar de los CEDEARs estuvo hasta ~8,6 % arriba del MEP en el último año
+        # (medir_cedear_estimado.out, «A peor año»): eso no es un cambio de ratio.
+        # (Auditoría 06/11, pruebas: una tolerancia de 4,5 % pasaba.)
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["MELI"] = lambda i, d: 2000.0 + i
+        self._guardada("MELI.BA", lambda i, n: 120.0 * 1.08)
+        with mock.patch("main._fetch_data912_equities", lambda: {"MELI": {"mercado": "arg_cedears"}}):
+            ars = self._ficha("MELI.BA", "ars")
+        self.assertTrue(ars["disponible"])
+        self.assertAlmostEqual(ars["escala"], 129.6, places=6)
+
+    def test_la_escala_es_la_mediana_de_las_ultimas_ruedas_guardadas(self):
+        # La brecha cambia con el tiempo: hace años el cociente era 115 y en las
+        # últimas ruedas guardadas 125. De las últimas 5 (por fecha), la del medio es
+        # un cierre suelto (100): la mediana no lo toma; «la del medio», sí. (Auditoría
+        # 06/11, pruebas: las primeras 5, 60 ruedas o sin ordenar pasaban.)
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["MELI"] = lambda i, d: 2000.0 + i
+        ultimas = [125.0, 125.0, 100.0, 125.0, 125.0]
+        self._guardada("MELI.BA", lambda i, n: ultimas[i - (n - 5)] if i >= n - 5 else 115.0)
+        with mock.patch("main._fetch_data912_equities", lambda: {"MELI": {"mercado": "arg_cedears"}}):
+            ars = self._ficha("MELI.BA", "ars")
+        self.assertTrue(ars["disponible"])
+        self.assertAlmostEqual(ars["escala"], 125.0, places=6)
+
+    def test_una_accion_argentina_con_el_mismo_codigo_afuera_no_se_estima(self):
+        # AGRO es Agrometal en BYMA y Adecoagro en Nueva York. Quien tiene Adecoagro
+        # afuera mira su ficha en pesos (sin la marca de acción argentina) y quedó
+        # guardada una serie vieja de Agrometal: «estimar» mezclaba las dos empresas,
+        # $ 31 en vez de $ 14.440 (auditoría 06/11, H2 de la serie). Es Adecoagro × MEP.
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["AGRO"] = lambda i, d: 10.0 + i * 0.01
+        with main.db_abierta() as conn:
+            for d in self.dias[:-14]:
+                conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES ('AGRO.BA', ?, 1500.0)",
+                             (d.isoformat(),))
+            conn.commit()
+        ars = self._ficha("AGRO", "ars")
+        n = len(self.dias) - 1
+        self.assertEqual((ars["ticker"], ars["convertida"], ars.get("escala")), ("AGRO", "mep", None))
+        self.assertAlmostEqual(ars["puntos"][-1]["c"], (10.0 + n * 0.01) * 1000.0, places=3)
+
+    def test_sin_escala_lo_que_mira_variaciones_sigue_mirando(self):
+        # Cloudflare (NET): CEDEAR de la lista de la app, sin ratio en la tabla. La
+        # ficha en pesos no tiene gráfico (y lo dice así), pero Comparar arranca todo
+        # en 100 y una alerta de su promedio no depende de la escala: desaparecía de
+        # Comparar y su alerta en pesos dejaba de mirar sin avisar (auditoría 06/11,
+        # H4 de la serie). El mail de la alerta dice de dónde sale el precio.
+        import alerts_engine as ae
+        self._mep(lambda i: 1000.0 + i)
+        self.yahoo.precios["NET"] = lambda i, d: 100.0 + i * 0.1
+        self.yahoo.precios["AAPL"] = lambda i, d: 250.0 + i * 0.1
+        self.assertTrue(self._ficha("NET")["disponible"])
+        self.assertTrue(self._ficha("AAPL")["disponible"])
+        ficha = self._ficha("NET", "ars")
+        self.assertEqual((ficha["disponible"], ficha.get("motivo")), (False, "sin_escala"))
+        r = self.client.get("/api/comparar/precio?activos=NET,AAPL&moneda=ars&plazo=1a", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(sorted(s["clave"] for s in r.json()["series"] if s["tipo"] == "activo"), ["AAPL", "NET"])
+        self.assertNotIn("NET", [f["clave"] for f in r.json()["faltan"]])
+        n = len(self.dias) - 1
+        with main.db_abierta() as conn:
+            net = ae._serie_tecnica(conn, {"symbol": "NET", "currency": "ARS", "accion_local": 0})
+            aapl = ae._serie_tecnica(conn, {"symbol": "AAPL", "currency": "ARS", "accion_local": 0})
+            usd = ae._serie_tecnica(conn, {"symbol": "AAPL", "currency": "USD", "accion_local": 0})
+        self.assertEqual(net.precio_de, "afuera")
+        self.assertAlmostEqual(net[-1]["close"], (100.0 + n * 0.1) * (1000.0 + n), places=3)
+        self.assertEqual(aapl.precio_de, "estimado")
+        self.assertAlmostEqual(aapl[-1]["close"], (250.0 + n * 0.1) * (1000.0 + n) / 20, places=3)
+        self.assertIsNone(usd.precio_de)
+        ev = {"fecha": self.dias[-1].isoformat(), "sentido": "arriba", "cierre": 100.0, "referencia": 95.0}
+        alerta = {"currency": "ARS", "senal": "media200", "accion_local": 0}
+        self.assertIn(tecnico.NOTA_SIN_ESCALA, ae._detalle_tecnico(alerta, "NET", {**ev, "precio_de": "afuera"}))
+        self.assertIn(tecnico.NOTA_ESTIMADO, ae._detalle_tecnico(alerta, "AAPL", {**ev, "precio_de": "estimado"}))
+        self.assertNotIn("CEDEAR", ae._detalle_tecnico(alerta, "AAPL", ev))
+        # Y el chat de Mervall-E no dice «no hay historia de precios»: dice qué falta.
+        lect = main._lectura_tecnica_para_el_chat({"ticker": "NET.BA", "moneda": "ars"}, self.uid)
+        self.assertFalse(lect["available"])
+        self.assertIn("cuántos CEDEARs hacen una acción", lect["reason"])
+
+    def test_lo_de_byma_en_memoria_vence(self):
+        # `_data912_en_memoria` lee lo último que trajo data912 sin salir a la red,
+        # y no lo usa si es de hace más de `DATA912_EN_MEMORIA_SEG`.
+        guardado = dict(main._data912_eq_cache)
+        try:
+            main._data912_eq_cache.update({"data": {"AAPL": {"c": 1.0}}, "ts": time.time()})
+            self.assertEqual(_DATA912_EN_MEMORIA(), {"AAPL": {"c": 1.0}})
+            main._data912_eq_cache["ts"] = time.time() - main.DATA912_EN_MEMORIA_SEG - 1
+            self.assertEqual(_DATA912_EN_MEMORIA(), {})
+            main._data912_eq_cache.update({"data": None, "ts": time.time()})
+            self.assertEqual(_DATA912_EN_MEMORIA(), {})
+        finally:
+            main._data912_eq_cache.clear()
+            main._data912_eq_cache.update(guardado)
 
     def test_accion_argentina_a_pedido(self):
         self._mep(lambda i: 1000.0)
@@ -1204,19 +1453,39 @@ class FichaTest(unittest.TestCase):
             self.assertEqual(llamados, ["MSFT"])
 
     def test_pesos_de_un_cedear_que_nadie_sigue_no_usa_una_serie_vieja(self):
-        # Alguien tuvo MELI y la vendió: quedó MELI.BA guardada, 20 días atrás.
+        # Alguien tuvo MELI y la vendió: quedó MELI.BA guardada, 14 ruedas atrás.
+        # La ficha en pesos no muestra esa lectura vieja: estima el CEDEAR con la
+        # acción de afuera × el MEP, en la escala que tenía la serie guardada en
+        # sus últimas ruedas (125: los CEDEARs se pagaban con un dólar ~4 % arriba
+        # del MEP; la tabla dice 120). El estimado arranca donde terminó el
+        # precio de verdad. Antes: la acción entera en pesos, 120 veces más.
         self._mep(lambda i: 1000.0)
-        self.yahoo.precios["MELI"] = lambda i, d: 2000.0
+        self.yahoo.precios["MELI"] = lambda i, d: 2000.0 + i
+        guardadas = self.dias[:-14]
         with main.db_abierta() as conn:
-            for d in self.dias[-300:-14]:
-                conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES ('MELI.BA', ?, 99.0)",
-                             (d.isoformat(),))
+            for i, d in enumerate(guardadas):
+                # La última rueda guardada, un cierre suelto 20 % abajo (un CEDEAR
+                # poco operado): la escala es la mediana de las últimas, no ese día.
+                raro = 0.8 if i == len(guardadas) - 1 else 1.0
+                conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES ('MELI.BA', ?, ?)",
+                             (d.isoformat(), (2000.0 + i) * 1000.0 / 125 * raro))
             conn.commit()
         with mock.patch("main._fetch_data912_equities", lambda: {"MELI": {"mercado": "arg_cedears"}}):
             ars = self._ficha("MELI.BA", "ars")
         self.assertEqual((ars["ticker"], ars["convertida"]), ("MELI", "mep"))
+        n = len(self.dias) - 1
         self.assertEqual(ars["puntos"][-1]["d"], self.dias[-1].isoformat())
-        self.assertAlmostEqual(ars["puntos"][-1]["c"], 2_000_000.0, places=3)
+        self.assertAlmostEqual(ars["puntos"][-1]["c"], (2000.0 + n) * 1000.0 / 125, places=3)
+        self.assertAlmostEqual(ars.get("escala"), 125.0, places=6)
+        # Podada la serie vieja (45 días sin uso: velas_diarias._podar_a_pedido),
+        # queda la escala de la tabla.
+        with main.db_abierta() as conn:
+            conn.execute("DELETE FROM velas_diarias WHERE symbol='MELI.BA'")
+            conn.commit()
+        with mock.patch("main._fetch_data912_equities", lambda: {"MELI": {"mercado": "arg_cedears"}}):
+            ars = self._ficha("MELI.BA", "ars")
+        self.assertAlmostEqual(ars["puntos"][-1]["c"], (2000.0 + n) * 1000.0 / 120, places=3)
+        self.assertEqual(ars.get("escala"), 120)
 
     def test_local_a_mano_con_data912_caido_no_baja_un_cedear_en_pesos(self):
         # `local=1` lo manda la pantalla sólo para acciones argentinas, pero se

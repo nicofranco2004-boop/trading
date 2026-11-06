@@ -665,6 +665,22 @@ def _el_cron_de_alertas_no_larga_el_termometro(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _byma_en_memoria_vacio(monkeypatch):
+    """`main._data912_en_memoria` es lo último que trajo data912, en la memoria
+    del proceso: con eso `tecnico.serie` controla el ratio de un CEDEAR estimado
+    en pesos. Toda la suite corre en UN proceso, así que un test que trajo
+    precios de verdad (o los cargó a mano en `_data912_eq_cache`) dejaba al
+    siguiente comparando sus precios inventados con esos: rojo según el orden.
+    Cada test arranca sin nada en memoria; el que quiere precios de la Bolsa los
+    pone (monkeypatch de `_data912_en_memoria`)."""
+    import sys
+    m = sys.modules.get("main")
+    if m is not None and hasattr(m, "_data912_en_memoria"):
+        monkeypatch.setattr(m, "_data912_en_memoria", lambda: {})
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _fuentes_sin_marca_de_caida():
     """`main._FUENTE_CAIDA` recuerda un rato que data912 o ArgentinaDatos no
     contestaron, para no repetirles el pedido. Entre tests eso contamina: un

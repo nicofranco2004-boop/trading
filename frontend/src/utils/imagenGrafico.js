@@ -17,7 +17,7 @@
 // personales. La tesis ni llega acá; las notas viajan con tus dibujos y se
 // sacan acá abajo (`tuyos`), que es el único lugar por donde pasa la imagen.
 
-import { velaCompleta, haciaDondeVa, ADX_CLAVE, RSI_CASTIGADO, RSI_ESTIRADO } from './tecnico'
+import { velaCompleta, haciaDondeVa, notaDeLaMoneda, ADX_CLAVE, RSI_CASTIGADO, RSI_ESTIRADO } from './tecnico'
 import { marcasDeFechas, marcasDePrecio } from './ejesGrafico'
 import { extensionFibonacci, fibonacciAMano, nivelPct, rayas, rotuloNivel, rotulosQueEntran } from './fibonacci'
 import { rotuloOnda } from './elliott'
@@ -63,10 +63,11 @@ const pctTexto = (x) => `${x > 0 ? '+' : x < 0 ? '−' : ''}${Math.abs(x * 100).
  * @param {object} a.colores    los colores del gráfico (`rgb(var(--x))`, los de la pantalla)
  * @param {string} a.ultimaFecha el último día con precio (si lo que se ve termina antes, el precio grande dice de qué día es)
  * @param {Function} a.amontonados (eventos, pctX) → true si los dividendos se pisarían (la regla de la pantalla)
+ * @param {string} a.convertida, a.escala  de dónde sale el precio (los de GET /api/tecnico: `notaDeLaMoneda`)
  */
 export function specDelGrafico({
   activo, moneda = 'usd', puntos = [], huecos = 0, lo, hi, ver = {}, tipo = 'linea', semanales = false, cada = null,
-  dibujos = [], fibonacci = null, elliott = null, eventos = [], convertida = null, fechaDatos = null, ultimaFecha = null,
+  dibujos = [], fibonacci = null, elliott = null, eventos = [], convertida = null, escala = null, fechaDatos = null, ultimaFecha = null,
   precio = (x) => String(x), colores = {}, volAlto = 0.15, adxTope = 50, squeeze = {}, amontonados = null, now = new Date(),
 }) {
   if (!puntos?.length || !(puntos[puntos.length - 1]?.c > 0)) return null
@@ -368,9 +369,7 @@ export function specDelGrafico({
     cada ? `Velas de ${INTERVALOS_POR_HORA[cada].nombre}, en hora de Argentina${ultimo.enCurso ? '; la última estaba en curso' : ''}.`
       : fechaDatos ? `Datos al cierre del ${fechaCorta(fechaDatos)}${ultimo.hoy
         ? `; la última vela ${semanales ? 'incluye hoy' : 'es la de hoy'}${ultimo.enCurso ? ', en curso' : ''}` : ''}.` : null,
-    convertida === 'mep' ? (moneda === 'usd'
-      ? 'El precio en pesos de cada día está pasado a dólares con el MEP de ese día.'
-      : 'El precio en dólares de cada día está pasado a pesos con el MEP de ese día.') : null,
+    notaDeLaMoneda(convertida, moneda, escala) || null,
     'Muestra cómo se movió el precio: no es una recomendación para comprar ni vender.',
   ].filter(Boolean)
 
