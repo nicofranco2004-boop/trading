@@ -311,10 +311,18 @@ class ElCanalDeCadaOrigen(unittest.TestCase):
         # Los posts de Nico con su código, y los utm de Meta de alguien más.
         "ig-20261022": "meta_posts",
         "fb_1020": "meta_posts",
+        "ig-stories/1022": "meta_posts",
         "ig": "meta_sin_saber",
         "ig/campana": "meta_sin_saber",
+        "fb/promo-noviembre": "meta_sin_saber",
         "instagram/bio": "meta_sin_saber",
         "facebook.com": "meta_sin_saber",
+        # …y si el código dice que es un anuncio, es un anuncio.
+        "ig-anuncio-1022": "meta_anuncios",
+        "facebook-ads/noviembre": "meta_anuncios",
+        "fb/anuncios-noviembre": "meta_anuncios",
+        "ig/paid": "meta_anuncios",
+        "x-anuncio": "x",
         # Otras redes en un código.
         "x/post-1019": "x",
         "twitter": "x",
@@ -382,7 +390,9 @@ class ElCanalDeCadaOrigen(unittest.TestCase):
         sume uno (`google.com` entero, por ejemplo), Gemini tiene que seguir
         siendo IA y no Google."""
         import canal_de_origen
-        with patch.dict(canal_de_origen._SITIOS, {"google.com": ("Google", "google")}):
+        # El sitio corto PRIMERO en la tabla: si ganara el primero que coincide, se vería.
+        con_google = {"google.com": ("Google", "google"), **canal_de_origen._SITIOS}
+        with patch.object(canal_de_origen, "_SITIOS", con_google):
             self.assertEqual(canal_del_origen("sitio/gemini.google.com")[0], "ia")
             self.assertEqual(canal_del_origen("sitio/accounts.google.com")[0], "google")
 

@@ -27,8 +27,10 @@ Anuncio u orgánico, en Meta
 un post, y el sitio de donde venía tampoco lo dice. Un anuncio de Meta sólo se
 distingue si su link lleva el código: Administrador de anuncios → Seguimiento →
 Parámetros de URL: `utm_source=meta-anuncios&utm_campaign={{campaign.name}}`.
-Todo lo demás de Meta es «sin saber si fue anuncio», salvo los posts de Nico con
-su código de siempre (`ig-20261022`, `fb-…`: la red, un guion y lo que sea).
+También cuenta como anuncio un código de Meta que lo dice (`ig-anuncio-1022`,
+`facebook-ads/…`). Todo lo demás de Meta es «sin saber si fue anuncio», salvo los
+posts de Nico con su código de siempre (`ig-20261022`, `fb-…`: la red, un guion y
+lo que sea).
 
 Nunca tira: un código raro termina en «Otro link con código» o en «Otro sitio o
 app», y uno vacío es «Sin dato». Lo prueba tests/test_origen_registros.py,
@@ -158,6 +160,7 @@ _REDES_EN_CODIGOS = {
 # `meta-anuncios/<campaña>` (y `meta_anuncios`, `meta-ads`): el código que lleva
 # el link de un anuncio de Meta.
 _ES_ANUNCIO_DE_META = re.compile(r"^meta[-_]?(?:anuncios?|ads)(?:$|[-_./])")
+_PALABRAS_DE_ANUNCIO = frozenset({"anuncio", "anuncios", "ads", "paid"})
 
 _IDS = frozenset(c for c, _, _ in CANALES)
 
@@ -187,9 +190,14 @@ def _canal_del_codigo(codigo):
     red = re.split(r"[-_.]", cabeza, maxsplit=1)[0]
     canal = _REDES_EN_CODIGOS.get(red)
     if canal == "meta":
+        # Un código de Meta que dice que es un anuncio (`ig-anuncio-1022`,
+        # `facebook-ads/noviembre`) se cuenta como anuncio.
+        if _PALABRAS_DE_ANUNCIO & set(re.split(r"[-_./]", codigo)):
+            return "meta_anuncios", None
         # `ig-20261022`: el post de Nico (red, guion, lo que sea). `ig`, `ig/…`
-        # o `facebook/…` son utm de alguien más: no se sabe si fue anuncio.
-        es_post = "/" not in codigo and len(cabeza) > len(red) and cabeza[len(red)] in "-_"
+        # o `fb/…` (los que arma el Administrador de anuncios con
+        # {{site_source_name}}) no dicen nada más: no se sabe si fue anuncio.
+        es_post = len(cabeza) > len(red) and cabeza[len(red)] in "-_"
         return ("meta_posts" if es_post else "meta_sin_saber"), None
     return (canal or "otro_codigo"), None
 

@@ -167,6 +167,15 @@ describe('sin código en el link: la marca del clic y el sitio de donde venía',
     expect(normalizarCodigo(codigo)).toBe(codigo)
   })
 
+  it('del nombre del sitio o de la app queda sólo lo que acepta el servidor', () => {
+    // Un sitio puede traer signos; una app de Android, mayúsculas y `%`.
+    expect(codigoDeLaVisita('', 'https://a!b.com/')).toBe('sitio/ab.com')
+    expect(codigoDeLaVisita('', 'android-app://Com.Example_App%2Fx/')).toBe('app/com.example_app2fx')
+    // Un sitio con ñ llega como se escribe en internet (xn--…).
+    expect(codigoDeLaVisita('?fbclid=x', 'https://ñandú.com/')).toBe('sitio/xn--and-6ma2c.com/fbclid')
+    for (const c of ['sitio/ab.com', 'app/com.example_app2fx']) expect(normalizarCodigo(c)).toBe(c)
+  })
+
   it('una página de donde venía rara se ignora sin romper', () => {
     for (const raro of ['::::', 'javascript:alert(1)', 'file:///etc/passwd', 'android-app://', 'https://', 'about:blank']) {
       expect(() => codigoDeLaVisita('', raro)).not.toThrow()
