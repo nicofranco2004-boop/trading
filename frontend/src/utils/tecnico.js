@@ -164,6 +164,47 @@ export function textoVelaDeHoy(vela, semanales = false) {
 }
 
 /**
+ * Lo que dice el pie del gráfico cuando la serie no es la que cotiza en esa
+ * moneda (`convertida`, `escala`: los de GET /api/tecnico). '' si es la propia.
+ * Una sola frase para la pantalla (LecturaTecnica) y la imagen de «Compartir»
+ * (imagenGrafico).
+ *
+ * `escala`: en pesos, un CEDEAR sin su precio en pesos al día. El servidor
+ * dibuja la acción de Nueva York × el MEP ÷ cuántas veces entra el CEDEAR en
+ * ella (backend/tecnico.py, `_escala_en_bolsa`): es un ESTIMADO del CEDEAR y
+ * queda unos pocos % lejos de su precio en la Bolsa, porque los CEDEARs se pagan
+ * con un dólar algo distinto del MEP (~5 % el 05/11/2026). Sin dividir era la
+ * acción entera en pesos: Apple ×20 (Nico, 06/11/2026).
+ */
+export function notaDeLaMoneda(convertida, moneda, escala = null) {
+  if (convertida !== 'mep') return ''
+  if (moneda === 'usd') return 'El precio en pesos de cada día está pasado a dólares con el MEP de ese día.'
+  if (escala) {
+    // Con escala menor a 1 un CEDEAR vale VARIAS acciones (ABEV: tres): dividir
+    // por un tercio es multiplicar por tres, y así hay que decirlo (auditoría
+    // 06/11, H10 de la pantalla).
+    const cuenta = escala < 1
+      ? 'multiplicada por las acciones que hay en un CEDEAR'
+      : 'dividida por los CEDEARs que hacen una acción'
+    return `Precio estimado del CEDEAR: la acción de Nueva York pasada a pesos con el MEP de cada día y ${cuenta}. `
+      + 'Puede estar unos pocos % lejos de su precio en la Bolsa.'
+  }
+  return 'El precio en dólares de cada día está pasado a pesos con el MEP de ese día.'
+}
+
+/**
+ * Lo que dice la ficha cuando no hay gráfico en pesos: para un CEDEAR sin escala
+ * conocida (`motivo: 'sin_escala'`, backend/tecnico.py) la historia existe; lo
+ * que falta es cuántos CEDEARs hacen una acción. Decía «Este activo no tiene
+ * precio en pesos», que no es cierto (auditoría 06/11, H9 de la pantalla).
+ */
+export function sinPrecioEnPesos(motivo) {
+  return motivo === 'sin_escala'
+    ? 'En pesos no podemos estimar el precio de este CEDEAR: no sabemos con certeza cuántos CEDEARs hacen una acción. Miralo en dólares.'
+    : 'Este activo no tiene precio en pesos.'
+}
+
+/**
  * La ventana del gráfico se mide en LUGARES, no en velas: además de los días
  * que hay, puede tener lugares vacíos a la derecha (el futuro), como en
  * TradingView. Así la última vela no queda pegada al borde y se puede

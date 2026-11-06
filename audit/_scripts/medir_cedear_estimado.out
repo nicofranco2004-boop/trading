@@ -1,0 +1,178 @@
+Tabla de ratios: 162 · CEDEARs que lista BYMA hoy: 958 · de la tabla y de BYMA: 160
+CEDEARs de BYMA SIN ratio en la tabla: 798 (p. ej. AALC, AALD, AAP, AAPD, AAPLC, AAPLD, ABBVC, ABBVD, ABEV3, ABEVC, ABEVD, ABNBC, ABNBD, ABT, ABTD, ACN, ACNC, ACND, ACWIC, ACWID, ADBEC, ADBED, ADGO, ADGOD, ADI)
+MEP de argentinadatos: 2931 días, del 2018-10-29 al 2026-11-06
+Yahoo (acciones de afuera, 5 años): 160 pedidos, ['ABBV'] sin datos, 15 s
+
+## Cada CEDEAR (último día en común; error = estimado ÷ cierre de BYMA − 1)
+  papel  afuera  ratio  medido       BYMA   A hoy A mediana año        A peor año    B 6r   B 20r   B 60r  B 250r
+  AZN    AZN      2,00    3,79     78.300   89,5%         93,3%    87,0% a  98,1%    0,5%   -0,9%   -1,6%      —%  (2026-11-05)
+  BIOX   BIOX     1,00    0,75        450  -24,8%         -4,5%   -24,8% a   2,7%  -22,2%  -20,8%  -24,3%      —%  (2026-11-05)
+  ABEV   ABEV     0,33    0,31     14.150   -6,0%         -3,1%    -6,7% a   1,3%    0,5%   -2,4%   -2,3%      —%  (2026-11-05)
+  PBR    PBR      1,00    0,94     31.740   -5,9%         -3,2%    -6,9% a  -0,2%    0,3%   -1,8%   -2,2%   -4,9%  (2026-11-05)
+  ITUB   ITUB     1,00    0,94     12.300   -5,8%         -3,4%    -7,4% a  -1,0%    0,5%   -2,2%   -2,1%      —%  (2026-11-05)
+  XOM    XOM     10,00    9,43     27.860   -5,7%         -3,2%    -6,4% a  -0,0%    0,1%   -1,4%   -2,4%   -5,0%  (2026-11-05)
+  QQQ    QQQ     20,00   18,87     54.475   -5,7%         -3,3%    -6,9% a  -1,0%    0,2%   -1,5%   -2,0%   -5,0%  (2026-11-05)
+  NVDA   NVDA    24,00   22,64     12.740   -5,6%         -3,4%    -7,0% a  -0,7%    0,2%   -1,5%   -1,9%      —%  (2026-11-05)
+  QCOM   QCOM    11,00   10,38     23.990   -5,6%         -3,3%    -7,1% a  -0,6%    0,1%   -1,6%   -1,9%   -4,8%  (2026-11-05)
+  LLY    LLY     56,00   52,88     41.000   -5,6%         -3,3%    -6,7% a  -0,4%    0,4%   -1,4%   -2,1%      —%  (2026-11-05)
+  HUT    HUT      5,00    4,72     15.460   -5,6%        -96,0%   -96,3% a  -2,1%    0,0%   -1,3%   -1,8%      —%  (2026-11-05)
+  XLF    XLF      2,00    1,89     48.360   -5,6%         -3,2%    -6,9% a  -0,8%    0,4%   -1,2%   -2,1%   -4,6%  (2026-11-05)
+  JPM    JPM     15,00   14,17     37.820   -5,5%         -3,3%    -6,8% a  -0,2%    0,6%   -1,3%   -1,9%      —%  (2026-11-05)
+  MSTR   MSTR    20,00   18,90     10.870   -5,5%         -3,4%    -6,9% a   0,5%   -0,4%   -1,5%   -2,0%      —%  (2026-11-05)
+  SPY    SPY     60,00   56,69     20.540   -5,5%        -67,3%   -68,0% a  -2,2%    0,5%   -1,3%   -1,7%  186,2%  (2026-11-05)
+  TSLA   TSLA    15,00   14,17     38.520   -5,5%         -3,3%    -6,9% a  -0,2%    0,2%   -1,5%   -2,0%   -4,6%  (2026-11-05)
+  GOOGL  GOOGL   58,00   54,81      8.190   -5,5%         -3,3%    -7,1% a  -0,8%    0,7%   -1,2%   -1,9%   -4,5%  (2026-11-05)
+  MA     MA      33,00   31,20     33.400   -5,5%         -3,3%    -6,8% a   0,9%    0,7%   -1,2%   -2,0%      —%  (2026-11-05)
+  AVGO   AVGO    39,00   36,87     12.560   -5,5%         -3,4%    -6,8% a   0,0%    0,3%   -1,3%   -1,9%      —%  (2026-11-05)
+  GS     GS      13,00   12,29    112.300   -5,4%         -3,2%    -6,7% a  -0,8%    0,6%   -1,3%   -2,4%   -4,9%  (2026-11-05)
+  MU     MU       5,00    4,73    220.500   -5,4%         -3,4%    -6,7% a   0,2%    0,7%   -1,4%   -1,7%      —%  (2026-11-05)
+  AMGN   AMGN    30,00   28,39     25.760   -5,4%         -3,2%    -6,6% a  -0,7%    0,3%   -1,3%   -1,9%      —%  (2026-11-05)
+  EEM    EEM      5,00    4,73     19.490   -5,4%         -3,3%    -7,0% a  -0,8%    0,5%   -1,1%   -1,9%   -4,4%  (2026-11-05)
+  GILD   GILD     4,00    3,79     70.325   -5,4%         -3,3%    -7,9% a   3,4%    0,4%   -1,4%   -2,0%      —%  (2026-11-05)
+  XLE    XLE      2,00    1,89     51.725   -5,4%         -3,3%   -51,7% a   0,3%    0,6%   -1,0%   -1,8%   91,4%  (2026-11-05)
+  BRKB   BRK-B   22,00   20,84     43.620   -5,3%         -3,3%    -6,8% a  -1,4%    0,9%   -1,2%   -1,8%      —%  (2026-11-05)
+  KO     KO       5,00    4,74     32.100   -5,2%         -3,3%    -6,7% a  -0,8%    0,7%   -1,1%   -1,9%   -4,8%  (2026-11-05)
+  AMD    AMD     10,00    9,48     67.800   -5,2%         -3,2%    -6,7% a   0,2%    0,6%   -1,1%   -1,6%   -4,8%  (2026-11-05)
+  GPRK   GPRK     1,00    0,95     15.300   -5,2%         -3,1%    -7,0% a  -0,4%    0,4%   -1,3%   -2,1%      —%  (2026-11-05)
+  BBD    BBD      1,00    0,95      4.205   -5,2%         -3,1%    -7,3% a   0,8%    1,8%   -1,6%   -1,8%   -4,8%  (2026-11-05)
+  BMY    BMY      3,00    2,85     35.240   -5,1%         -3,2%    -6,6% a  -1,0%    0,8%   -1,0%   -1,6%      —%  (2026-11-05)
+  GLOB   GLOB    18,00   17,08      4.580   -5,1%         -3,2%    -6,3% a  -0,1%    0,3%   -1,5%   -1,5%      —%  (2026-11-05)
+  VALE   VALE     2,00    1,90      9.585   -5,1%         -3,2%    -6,7% a  -0,2%    0,6%   -0,7%   -1,5%   -4,1%  (2026-11-05)
+  C      C        3,00    2,85     66.100   -5,1%         -3,2%    -6,7% a  -0,7%    1,0%   -1,2%   -1,5%      —%  (2026-11-05)
+  NFLX   NFLX    48,00   45,56      2.286   -5,1%         -3,4%   -90,4% a  -0,8%    0,4%   -0,6%   -1,2%  856,5%  (2026-11-05)
+  MELI   MELI   120,00  113,92     21.340   -5,1%         -3,3%    -6,8% a  -0,3%    0,5%   -1,1%   -1,3%   -4,1%  (2026-11-05)
+  AXP    AXP     15,00   14,25     36.240   -5,0%         -3,3%    -6,6% a   0,6%    1,2%   -1,1%   -1,3%      —%  (2026-11-05)
+  PYPL   PYPL     8,00    7,60     12.320   -5,0%         -3,1%    -6,1% a   3,5%    0,6%   -0,8%   -1,6%   -4,2%  (2026-11-05)
+  NVS    NVS      4,00    3,80     67.625   -4,9%         -3,3%    -6,8% a  -1,3%    1,1%   -1,0%   -1,4%      —%  (2026-11-05)
+  META   META    24,00   22,83     42.100   -4,9%         -3,3%    -6,8% a  -0,8%    1,0%   -0,7%   -1,2%   -4,1%  (2026-11-05)
+  T      T        3,00    2,86     12.140   -4,8%         -3,2%    -7,2% a   2,8%    1,3%   -0,8%   -1,6%   -4,6%  (2026-11-05)
+  BIDU   BIDU    11,00   10,47     12.060   -4,8%         -3,2%    -6,8% a  -0,9%    1,1%   -0,7%   -1,6%      —%  (2026-11-05)
+  BABA   BABA     9,00    8,57     20.040   -4,8%         -3,3%    -6,6% a   2,2%    1,0%   -0,8%   -1,4%   -4,2%  (2026-11-05)
+  EWZ    EWZ      2,00    1,90     26.500   -4,8%         -3,2%    -7,2% a  -0,9%    1,1%   -0,7%   -1,0%   -3,8%  (2026-11-05)
+  LMT    LMT     20,00   19,04     48.060   -4,8%         -3,2%    -6,7% a  -0,4%    1,3%   -0,5%   -1,3%   -3,9%  (2026-11-05)
+  DE     DE      40,00   38,10     27.660   -4,8%         -3,3%    -6,9% a  -0,1%    1,0%   -0,3%   -1,2%      —%  (2026-11-05)
+  DOW    DOW      6,00    5,71      8.890   -4,8%         -3,1%    -6,6% a  -0,6%    0,5%   -0,8%   -1,2%      —%  (2026-11-05)
+  MSFT   MSFT    30,00   28,59     29.780   -4,7%         -3,3%    -6,8% a  -1,0%    1,0%   -0,6%   -1,4%   -3,7%  (2026-11-05)
+  HON    HON      8,00    7,62     44.960   -4,7%          1,3%    -7,1% a   3,9%    1,4%   -0,7%   -1,0%      —%  (2026-11-05)
+  JNJ    JNJ     15,00   14,30     30.260   -4,7%         -3,3%    -7,0% a  -1,0%    1,2%   -0,4%   -1,0%      —%  (2026-11-05)
+  BB     BB       3,00    2,86      4.650   -4,7%         -2,9%    -6,5% a   0,8%    0,5%   -0,7%   -0,8%      —%  (2026-11-05)
+  COIN   COIN    27,00   25,74      8.445   -4,7%         -3,4%    -7,0% a   0,1%    1,2%   -0,9%   -0,9%      —%  (2026-11-05)
+  CSCO   CSCO     5,00    4,77     31.900   -4,7%         -3,2%    -6,7% a  -0,6%    1,1%   -0,6%   -1,2%   -3,6%  (2026-11-05)
+  V      V       18,00   17,16     39.120   -4,7%         -3,2%    -6,7% a  -0,8%    1,3%   -0,4%   -1,2%   -3,7%  (2026-11-05)
+  HMY    HMY      1,00    0,95     28.160   -4,7%         -3,3%    -7,0% a  -0,5%    1,1%   -0,3%   -1,0%      —%  (2026-11-05)
+  NOKA   NOK      1,00    0,95     12.430   -4,7%         -3,2%    -6,7% a   4,1%    1,2%   -0,1%   -1,3%   -4,0%  (2026-11-05)
+  JD     JD       4,00    3,81     11.930   -4,7%         -3,1%    -6,4% a  -0,7%    0,8%   -0,9%   -1,2%      —%  (2026-11-05)
+  MMM    MMM     10,00    9,54     31.280   -4,6%         -3,2%    -6,6% a  -0,7%    1,3%   -0,6%   -1,4%      —%  (2026-11-05)
+  AMZN   AMZN   144,00  137,33      3.010   -4,6%         -3,2%    -7,0% a  -0,6%    1,3%   -0,2%   -1,5%   -3,9%  (2026-11-05)
+  HD     HD      32,00   30,53     18.210   -4,6%         -3,2%    -6,5% a  -1,2%    1,2%   -0,3%   -1,3%      —%  (2026-11-05)
+  INTC   INTC     5,00    4,77     17.400   -4,6%         -3,2%    -7,4% a  -0,1%    1,5%   -0,5%   -1,1%   -4,3%  (2026-11-05)
+  ARKK   ARKK    10,00    9,54     12.180   -4,6%         -3,2%    -6,6% a  -0,6%    1,5%   -0,4%   -1,4%   -3,5%  (2026-11-05)
+  MRK    MRK      5,00    4,77     48.920   -4,6%         -3,2%    -6,4% a   0,2%    1,4%   -0,6%   -1,1%      —%  (2026-11-05)
+  GM     GM       6,00    5,73     24.770   -4,5%         -3,2%    -6,5% a  -0,6%    1,1%   -0,9%   -0,7%      —%  (2026-11-05)
+  AAPL   AAPL    20,00   19,12     28.600   -4,4%         -3,2%    -6,8% a  -0,4%    1,7%   -0,4%   -0,8%   -3,3%  (2026-11-05)
+  GE     GE       8,00    7,65     65.375   -4,4%         -3,3%    -7,0% a  -0,9%    1,7%   -0,3%   -1,2%   -3,9%  (2026-11-05)
+  F      F        1,00    0,96     20.820   -4,4%         -3,2%    -6,7% a  -0,6%    1,8%   -0,4%   -0,7%      —%  (2026-11-05)
+  CVX    CVX     16,00   15,30     22.110   -4,4%         -3,2%    -6,1% a  -0,2%    1,8%   -0,1%   -0,9%      —%  (2026-11-05)
+  ABNB   ABNB    15,00   14,35     18.840   -4,4%         -3,2%    -6,6% a  -1,0%    1,5%   -0,4%   -0,7%      —%  (2026-11-05)
+  WMT    WMT     18,00   17,24     11.770   -4,2%         -3,2%    -6,6% a  -0,8%    1,5%   -0,4%   -0,9%   -3,2%  (2026-11-05)
+  WFC    WFC      5,00    4,79     28.120   -4,2%         -3,2%    -6,7% a   0,3%    2,0%   -0,1%   -0,9%   -3,2%  (2026-11-05)
+  MCD    MCD     24,00   25,00     17.670    4,2%         -3,3%    -6,6% a   4,2%   10,6%    8,9%    7,8%    5,2%  (2026-11-05)
+  JMIA   JMIA     1,00    0,96      8.460   -4,0%         -3,4%    -6,2% a   0,1%    1,7%    0,0%   -0,7%      —%  (2026-11-05)
+  IBM    IBM     15,00   14,40     27.260   -4,0%         -3,3%    -6,6% a  -0,7%    1,7%    0,3%   -0,4%   -3,1%  (2026-11-05)
+  NKE    NKE     12,00   11,52      5.455   -4,0%         -3,2%    -6,8% a  -0,6%    1,7%   -0,0%   -0,3%      —%  (2026-11-05)
+  COST   COST    48,00   46,13     36.700   -3,9%         -3,2%    -7,0% a  -0,9%    2,0%    0,3%   -0,3%      —%  (2026-11-05)
+  TRIP   TRIP     2,00    1,92      6.100   -3,9%         -3,2%    -6,9% a  -0,2%    1,7%    0,7%   -0,6%   -2,8%  (2026-11-05)
+  ADBE   ADBE    44,00   42,30      9.255   -3,9%         -3,3%    -6,2% a  -1,0%    2,0%    0,3%   -0,4%      —%  (2026-11-05)
+  DOCU   DOCU    22,00   21,18      5.920   -3,7%         -3,0%    -6,5% a  -0,9%    1,8%   -0,2%   -0,6%      —%  (2026-11-05)
+  DISN   DIS     12,00   11,57     16.100   -3,6%         -3,3%    -6,8% a   1,1%    2,4%    0,0%    0,1%   -2,5%  (2026-11-05)
+  NIO    NIO      4,00    3,87      1.315   -3,4%         -3,3%    -5,7% a   0,3%    1,4%    1,2%   -0,0%      —%  (2026-11-05)
+  CAT    CAT     20,00   19,33     45.500   -3,4%         -3,2%    -6,6% a  -0,8%    3,3%    0,6%    0,1%   -2,3%  (2026-11-05)
+  PFE    PFE      4,00    3,88     12.240   -3,0%         -3,2%    -6,4% a  -0,8%    2,8%    1,1%    0,4%   -2,0%  (2026-11-05)
+  BA     BA      24,00   23,83     11.500   -0,7%         -3,2%    -6,2% a   0,3%    5,4%    3,2%    2,8%      —%  (2026-11-05)
+  CRM    CRM     18,00   18,12     19.500    0,7%         -3,3%    -6,6% a   0,7%    6,9%    5,2%    4,1%      —%  (2026-11-05)
+  AAL    AAL    sin comparar: 0 días en común
+  ABBV   ABBV   sin comparar: 0 días en común
+  ACWI   ACWI   sin comparar: 0 días en común
+  ALAB   ALAB   sin comparar: 0 días en común
+  ANET   ANET   sin comparar: 0 días en común
+  ASML   ASML   sin comparar: 0 días en común
+  ASTS   ASTS   sin comparar: 0 días en común
+  BAC    BAC    sin comparar: 0 días en común
+  BAK    BAK    sin comparar: 0 días en común
+  BMNR   BMNR   sin comparar: 0 días en común
+  CEG    CEG    sin comparar: 0 días en común
+  COP    COP    sin comparar: 0 días en común
+  COPX   COPX   sin comparar: 0 días en común
+  CRWD   CRWD   sin comparar: 0 días en común
+  CRWV   CRWV   sin comparar: 0 días en común
+  ETHA   ETHA   sin comparar: 0 días en común
+  EWY    EWY    sin comparar: 0 días en común
+  FXI    FXI    sin comparar: 0 días en común
+  GLD    GLD    sin comparar: 0 días en común
+  HIMS   HIMS   sin comparar: 0 días en común
+  HOOD   HOOD   sin comparar: 0 días en común
+  IBIT   IBIT   sin comparar: 0 días en común
+  IREN   IREN   sin comparar: 0 días en común
+  KEEL   KEEL   sin comparar: 0 días en común
+  LAC    LAC    sin comparar: 0 días en común
+  LAR    LAR    sin comparar: 0 días en común
+  MP     MP     sin comparar: 0 días en común
+  MRNA   MRNA   sin comparar: 0 días en común
+  MS     MS     sin comparar: 0 días en común
+  MUX    MUX    sin comparar: 0 días en común
+  NBIS   NBIS   sin comparar: 0 días en común
+  NOW    NOW    sin comparar: 0 días en común
+  NU     NU     sin comparar: 0 días en común
+  NVO    NVO    sin comparar: 0 días en común
+  O      O      sin comparar: 0 días en común
+  OKLO   OKLO   sin comparar: 0 días en común
+  ONDS   ONDS   sin comparar: 0 días en común
+  ORCL   ORCL   sin comparar: 0 días en común
+  PAGS   PAGS   sin comparar: 0 días en común
+  PANW   PANW   sin comparar: 0 días en común
+  PATH   PATH   sin comparar: 0 días en común
+  PDD    PDD    sin comparar: 0 días en común
+  PEP    PEP    sin comparar: 0 días en común
+  PINS   PINS   sin comparar: 0 días en común
+  PLTR   PLTR   sin comparar: 0 días en común
+  RGTI   RGTI   sin comparar: 0 días en común
+  RIO    RIO    sin comparar: 0 días en común
+  RIOT   RIOT   sin comparar: 0 días en común
+  RKLB   RKLB   sin comparar: 0 días en común
+  ROKU   ROKU   sin comparar: 0 días en común
+  RTX    RTX    sin comparar: 0 días en común
+  SATL   SATL   sin comparar: 0 días en común
+  SBUX   SBUX   sin comparar: 0 días en común
+  SE     SE     sin comparar: 0 días en común
+  SHOP   SHOP   sin comparar: 0 días en común
+  SID    SID    sin comparar: 0 días en común
+  SNAP   SNAP   sin comparar: 0 días en común
+  SNDK   SNDK   sin comparar: 0 días en común
+  SNOW   SNOW   sin comparar: 0 días en común
+  SPCE   SPCE   sin comparar: 0 días en común
+  SPCX   SPCX   sin comparar: 0 días en común
+  SPOT   SPOT   sin comparar: 0 días en común
+  STNE   STNE   sin comparar: 0 días en común
+  TGT    TGT    sin comparar: 0 días en común
+  TSM    TSM    sin comparar: 0 días en común
+  TWLO   TWLO   sin comparar: 0 días en común
+  UBER   UBER   sin comparar: 0 días en común
+  UNH    UNH    sin comparar: 0 días en común
+  URA    URA    sin comparar: 0 días en común
+  VIG    VIG    sin comparar: 0 días en común
+  VIST   VIST   sin comparar: 0 días en común
+  VST    VST    sin comparar: 0 días en común
+  XLV    XLV    sin comparar: 0 días en común
+  XYZ    XYZ    sin comparar: 0 días en común
+  ZM     ZM     sin comparar: 0 días en común
+
+## Resumen
+  Papeles comparados: 85
+  A (tabla), el último día: mediana 4,8 % de diferencia; 48 a 5 % o menos, 83 a 10 % o menos, 2 a más de 15 %
+  A con signo, mediana: -4,8 % (positivo = el estimado da más que BYMA: el MEP está arriba del dólar de los CEDEARs)
+    lejos: AZN ratio tabla 2,00, medido hoy 3,79 → 89,5 %
+    lejos: BIOX ratio tabla 1,00, medido hoy 0,75 → -24,8 %
+  B (cociente de hace 6 ruedas), el último día: mediana 1,1 %; 81 de 85 a 5 % o menos; 1 a más de 15 %
+  B (cociente de hace 20 ruedas), el último día: mediana 0,9 %; 82 de 85 a 5 % o menos; 1 a más de 15 %
+  B (cociente de hace 60 ruedas), el último día: mediana 1,4 %; 83 de 85 a 5 % o menos; 1 a más de 15 %
+  B (cociente de hace 250 ruedas), el último día: mediana 4,1 %; 35 de 40 a 5 % o menos; 3 a más de 15 %

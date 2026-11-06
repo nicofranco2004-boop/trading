@@ -119,16 +119,36 @@ def bajar_oficial(url: str = COMAFI_XLSX) -> dict[str, tuple[float, str]]:
     return out
 
 
+# Una entrada de la tabla: la clave (sin comillas o con simples o dobles) y el
+# ratio (entero, con decimales, o una fracción «1/3» con o sin espacios).
+_ENTRADA = re.compile(r"""\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z0-9_$\-.]+))\s*:\s*"""
+                      r"""([0-9]+(?:\.[0-9]+)?)(?:\s*/\s*([0-9]+(?:\.[0-9]+)?))?\s*""")
+
+
 def leer_tabla_js(path: str = TABLA_JS) -> tuple[dict[str, float], str, tuple[int, int]]:
-    """Lee CEDEAR_RATIOS del módulo. Devuelve (tabla, fuente completa, (ini, fin))."""
+    """Lee CEDEAR_RATIOS del módulo. Devuelve (tabla, fuente completa, (ini, fin)).
+
+    Entrada por entrada (lo que hay entre comas): si una no se entiende, o trae
+    una clave en minúscula (la pantalla busca en mayúscula: no la encontraría
+    nunca), FALLA en vez de saltearla. La lee también la prueba de paridad con la
+    copia del servidor (`backend/ratios_cedear.py`): antes, una clave nueva con
+    comillas dobles, un ratio con decimales (2.5 se leía 2) o una clave en
+    minúscula separaban las dos copias sin que la prueba se pusiera roja
+    (auditoría 06/11, pruebas: hallazgo 5)."""
     src = open(path, encoding="utf-8").read()
     ini = src.index("export const CEDEAR_RATIOS = {") + len("export const CEDEAR_RATIOS = {")
     fin = src.index("\n}", ini)
     cuerpo = re.sub(r"//.*", "", src[ini:fin])
     tabla = {}
-    for k, v in re.findall(r"'?([A-Z0-9\-.]+)'?\s*:\s*([0-9]+(?:/[0-9]+)?)", cuerpo):
-        num, _, den = v.partition("/")
-        tabla[k] = float(num) / float(den) if den else float(num)
+    for item in (x for x in cuerpo.split(",") if x.strip()):
+        m = _ENTRADA.fullmatch(item)
+        if not m:
+            raise ValueError(f"no entiendo esta entrada de CEDEAR_RATIOS: {item.strip()!r}")
+        k = next(g for g in m.groups()[:3] if g is not None)
+        if k != k.upper():
+            raise ValueError(f"CEDEAR_RATIOS tiene una clave en minúscula: {k!r}")
+        num, den = float(m.group(4)), float(m.group(5)) if m.group(5) else 1.0
+        tabla[k] = num / den
     return tabla, src, (ini, fin)
 
 
@@ -143,9 +163,12 @@ def aplicar_correcciones(src: str, ini: int, fin: int,
     bloque = src[ini:fin]
     for k, _mio, ofi, _nombre in diferentes:
         clave = k if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", k) else f"'{k}'"
-        val = str(int(ofi)) if abs(ofi - round(ofi)) < 1e-9 else f"1/{round(1 / ofi)}"
+        # Entero; menor a 1, como fracción (1/3); mayor a 1 y no entero, con
+        # decimales (escribía 1,5 como «1/1» y 2,5 como «1/0»).
+        val = (str(int(round(ofi))) if abs(ofi - round(ofi)) < 1e-9
+               else f"1/{round(1 / ofi)}" if ofi < 1 else f"{ofi:g}")
         # El lookbehind evita que al corregir 'BA' se pise el ratio de 'BABA'.
-        patron = rf"(?<![A-Z0-9]){re.escape(clave)}:\s*[0-9]+(?:/[0-9]+)?"
+        patron = rf"(?<![A-Z0-9]){re.escape(clave)}:\s*[0-9]+(?:\.[0-9]+)?(?:\s*/\s*[0-9]+(?:\.[0-9]+)?)?"
         bloque, n = re.subn(patron, f"{clave}: {val}", bloque, count=1)
         if n != 1:
             raise RuntimeError(

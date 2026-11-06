@@ -188,7 +188,8 @@ _COMO_CONTARLO = (
     "NUNCA: firme, se está cansando, piso, techo, zona, rebote, rebotó, impulso, soporte, resistencia, "
     "sobrecompra, ni siglas (RSI, ADX, Squeeze). Nunca nombres el día de la "
     "semana: la fecha. Lo que viene, sólo como posibilidad. Cerrá con «lo_que_se_mira» si viene. "
-    "Nunca le digas que compre, venda o espere."
+    "Si viene «los_precios_en_pesos_son», la primera vez que digas un precio en pesos aclará que es "
+    "un estimado del CEDEAR. Nunca le digas que compre, venda o espere."
 )
 
 
@@ -224,6 +225,12 @@ def para_el_chat(ficha: dict, nombre: str) -> dict:
             "activo": nombre,
             "reason": ("no tiene gráfico de precios (un bono o un fondo se miran de otra forma)"
                        if motivo == "sin_serie" else
+                       # Un CEDEAR en pesos sin escala conocida (`tecnico.serie`):
+                       # la historia está, lo que falta es cuántos CEDEARs hacen
+                       # una acción. No es «no hay historia» (auditoría 06/11, H9).
+                       "en pesos no se puede estimar el precio de este CEDEAR, porque no sabemos con "
+                       "certeza cuántos CEDEARs hacen una acción; en dólares sí se puede contar cómo viene"
+                       if motivo == "sin_escala" else
                        "todavía no hay precios de este activo; probá de nuevo en un rato"
                        if motivo in ("tope", "bajando") else
                        "no hay historia de precios suficiente para contar cómo viene"),
