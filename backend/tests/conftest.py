@@ -681,6 +681,21 @@ def _byma_en_memoria_vacio(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _ccl_sin_red(monkeypatch):
+    """`main._actualizar_ccl` baja el contado con liqui de cada día de
+    argentinadatos al arrancar y en la corrida de las velas de la noche
+    (`_run_velas_diarias_job`), que muchas pruebas corren de verdad: sin esto,
+    cada una le pediría 5.000 días a la red, y el gráfico en pesos de un CEDEAR
+    dependería de lo que contestara. Acá la fuente no tiene nada: el que quiere
+    el contado con liqui lo guarda (`fx.guardar_ccl`) o reemplaza `_bajar_ccl`."""
+    import sys
+    m = sys.modules.get("main")
+    if m is not None and hasattr(m, "_bajar_ccl"):
+        monkeypatch.setattr(m, "_bajar_ccl", lambda: [])
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _fuentes_sin_marca_de_caida():
     """`main._FUENTE_CAIDA` recuerda un rato que data912 o ArgentinaDatos no
     contestaron, para no repetirles el pedido. Entre tests eso contamina: un

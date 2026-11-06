@@ -1608,9 +1608,12 @@ class _VelasDeAlerta(list):
     """Las velas que mira una alerta técnica (una lista como cualquier otra) y de
     dónde sale su precio en pesos, para que el mail lo diga como el pie del
     gráfico: `precio_de` 'estimado' (un CEDEAR estimado, `tecnico.NOTA_ESTIMADO`),
-    'afuera' (un CEDEAR sin escala conocida: la acción de afuera × el MEP,
-    `tecnico.NOTA_SIN_ESCALA`) o None (el precio de la Bolsa, o en dólares)."""
+    'afuera' (un CEDEAR sin escala conocida: la acción de afuera en pesos,
+    `tecnico.NOTA_SIN_ESCALA`) o None (el precio de la Bolsa, o en dólares); y
+    `dolar`, con cuál se pasó a pesos (`convertida` de `tecnico.serie`: el
+    contado con liqui, o el MEP en una base que todavía no lo tiene)."""
     precio_de = None
+    dolar = None
 
 
 def _serie_tecnica(conn, alert) -> list:
@@ -1630,6 +1633,7 @@ def _serie_tecnica(conn, alert) -> list:
                       escala_obligatoria=False)
     velas = _VelasDeAlerta(s["velas"])
     velas.precio_de = "estimado" if s.get("escala") else "afuera" if s.get("sin_escala") else None
+    velas.dolar = s.get("convertida")
     return velas
 
 
@@ -1735,7 +1739,7 @@ def _detalle_tecnico(alert, symbol, ev) -> str:
     texto = _detalle_tecnico_de(alert, symbol, ev)
     nota = {"estimado": tecnico.NOTA_ESTIMADO, "afuera": tecnico.NOTA_SIN_ESCALA}.get(
         (ev or {}).get("precio_de"))
-    return f"{texto} {nota}" if nota else texto
+    return f"{texto} {tecnico.nota_de(nota, (ev or {}).get('dolar'))}" if nota else texto
 
 
 def _detalle_tecnico_de(alert, symbol, ev) -> str:
@@ -1997,7 +2001,7 @@ def _evaluar_una_tecnica(conn, a, series: dict, visto, piso: str, now, pendiente
         ev = None
     if ev:
         if getattr(velas, "precio_de", None):
-            ev = {**ev, "precio_de": velas.precio_de}
+            ev = {**ev, "precio_de": velas.precio_de, "dolar": velas.dolar}
         _fire(conn, a, sym, ev["cierre"], None, now, pendientes, tecnica=ev)
         _cumplio_una_vez(conn, a)
     _marcar_visto(conn, a["id"], sym, ultima)
@@ -2195,7 +2199,7 @@ def _evaluar_en_la_rueda(conn, alerts, tickers: dict, ultimas: dict, now, pendie
                 lambda propios: _toque_en_la_rueda(
                     conn, a, linea, prep["velas"], vivas, vistos.get(a["id"]), avisados.get(a["id"]),
                     ya_visto, hoy_ar, r["demora_min"], tc, now, propios,
-                    precio_de="estimado" if prep.get("escala") else None))
+                    precio_de="estimado" if prep.get("escala") else None, dolar=prep.get("convertida")))
             errores += not ok
             avisos += resultado == "avisó"
         # Lo de esta serie queda confirmado antes de salir a Yahoo por la que
@@ -2222,11 +2226,13 @@ def _dolar_de_la_vela(prep, vela: dict):
 
 
 def _toque_en_la_rueda(conn, a, linea, velas: list, vivas: list, visto, avisado, base,
-                       hoy_ar: str, demora_min: int, tc, now, pendientes: list, precio_de=None) -> str:
+                       hoy_ar: str, demora_min: int, tc, now, pendientes: list, precio_de=None,
+                       dolar=None) -> str:
     """Una alerta de tu línea o tu canal contra la vela de hoy en vivo (la
     última de `vivas`, después de las guardadas `velas`). 'nada', 'mirada' o
     'avisó'. `base`: lo que anotó antes la rueda (`_ya_visto_en_la_rueda`).
-    `precio_de`: 'estimado' si la serie es un CEDEAR estimado (`_VelasDeAlerta`)."""
+    `precio_de`: 'estimado' si la serie es un CEDEAR estimado, y `dolar` con
+    cuál se pasó a pesos (`_VelasDeAlerta`)."""
     import tecnico
     sym = a["symbol"]
     hoy = vivas[-1]
@@ -2265,7 +2271,8 @@ def _toque_en_la_rueda(conn, a, linea, velas: list, vivas: list, visto, avisado,
         ev = tecnico.toque_de_linea(todas, linea, anterior, ya_visto=ya_visto)
     if not ev:
         return "mirada"
-    ev = {**ev, "en_rueda": True, "demora_min": demora_min, **({"precio_de": precio_de} if precio_de else {})}
+    ev = {**ev, "en_rueda": True, "demora_min": demora_min,
+          **({"precio_de": precio_de, "dolar": dolar} if precio_de else {})}
     _fire(conn, a, sym, ev["cierre"], None, now, pendientes, tecnica=ev)
     _cumplio_una_vez(conn, a)
     _set_sym_fired(conn, a["id"], _clave_rueda(sym), hoy["date"])

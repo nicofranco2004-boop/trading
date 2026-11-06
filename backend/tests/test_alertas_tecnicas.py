@@ -97,7 +97,7 @@ class AlertasTecnicasTest(unittest.TestCase):
         with main.db_abierta() as conn:
             for t in ("velas_diarias", "velas_estado", "watchlist",
                       "positions", "brokers", "alerts", "alert_events", "alert_symbol_state",
-                      "dibujos_grafico"):
+                      "dibujos_grafico", "bond_indices_daily"):
                 conn.execute(f"DELETE FROM {t}")
             cur = conn.execute(
                 "INSERT INTO users (email, name, password_hash, approved, email_verified, tier) "
@@ -331,30 +331,51 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.assertEqual(len(self._eventos()), 1, "el mismo cruce no se avisa dos veces")
         self.assertEqual(len(self.mails), 1)
 
-    def test_en_pesos_el_mail_dice_que_el_precio_del_cedear_es_estimado(self):
-        # BAC en pesos es SIEMPRE un estimado (su '.BA' viene roto y no se baja: la
-        # acción de afuera × el MEP ÷ 4). El mail decía «cerró en $ X» con el número
-        # estimado, sin decirlo (auditoría 06/11, H8 de la pantalla).
-        import tecnico
+    def _bac_cruza_en_pesos(self, mep, ccl=None):
+        """BAC en pesos (SIEMPRE un estimado: su '.BA' viene roto y no se baja) cruza
+        su promedio de 200 días: la noche de verdad (que guarda también el contado
+        con liqui de cada día, `ccl`, si la fuente lo da) y el cron de verdad."""
+        dias = _ruedas(self.ayer, 800) + [self.ayer]
         with main.db_abierta() as conn:
-            for d in _ruedas(self.ayer, 800) + [self.ayer]:
-                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?, 1100.0, 1000.0) "
-                             "ON CONFLICT(date) DO NOTHING", (d.isoformat(),))
+            conn.execute("DELETE FROM fx_rates_daily")       # el MEP de esta prueba, no el de la anterior
+            for d in dias:
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?, ?, ?)",
+                             (d.isoformat(), mep * 1.1, mep))
             conn.commit()
+        fuente = [(d.isoformat(), ccl - 1, ccl + 1) for d in dias] if ccl else []
         self.yahoo.precios["BAC"] = self._sube_ayer
         self.byma = {"BAC": {"mercado": "arg_cedears"}}
         self.client.post("/api/watchlist", json={"symbol": "BAC"}, headers=self.h)
-        self._noche(self.anteayer)
-        self._crear(symbol="BAC", currency="ARS", creada_el=self._siguiente(self.anteayer))
-        self._cron()
-        self._noche(self.ayer)                       # el cruce: 90 → 120 dólares
-        self._cron()
+        with mock.patch("main._bajar_ccl", lambda: fuente):
+            self._noche(self.anteayer)
+            self._crear(symbol="BAC", currency="ARS", creada_el=self._siguiente(self.anteayer))
+            self._cron()
+            self._noche(self.ayer)                   # el cruce: 90 → 120 dólares
+            self._cron()
         ev = self._eventos()
         self.assertEqual(len(ev), 1, "el cruce de ayer avisa")
         self.assertEqual(ev[0]["message"],
                          "BAC en pesos superó su promedio de 200 días: la tendencia de largo plazo pasó a ser alcista")
-        self.assertIn("BAC cerró en $30.000", self.mails[0]["texto"], "120 × 1000 ÷ 4")
-        self.assertIn(tecnico.NOTA_ESTIMADO, self.mails[0]["texto"])
+        return self.mails[0]["texto"]
+
+    def test_en_pesos_el_mail_dice_que_el_precio_del_cedear_es_estimado(self):
+        # El mail decía «cerró en $ X» con el número estimado, sin decirlo
+        # (auditoría 06/11, H8 de la pantalla). Y el estimado es con el contado con
+        # liqui de cada día, el dólar de los CEDEARs, no con el MEP (Nico, 06/11).
+        import tecnico
+        texto = self._bac_cruza_en_pesos(mep=950.0, ccl=1000.0)
+        self.assertIn("BAC cerró en $30.000", texto, "120 × 1000 (el contado con liqui) ÷ 4")
+        self.assertIn(tecnico.NOTA_ESTIMADO, texto)
+        self.assertIn("contado con liqui", tecnico.NOTA_ESTIMADO)
+
+    def test_sin_el_contado_con_liqui_el_mail_dice_que_es_con_el_mep(self):
+        # Una base que todavía no bajó el contado con liqui: el estimado sigue con
+        # el MEP, y la nota del mail nombra ESE dólar (no el que no usó).
+        import tecnico
+        texto = self._bac_cruza_en_pesos(mep=1000.0)
+        self.assertIn("BAC cerró en $30.000", texto, "120 × 1000 (el MEP) ÷ 4")
+        self.assertIn(tecnico.nota_de(tecnico.NOTA_ESTIMADO, "mep"), texto)
+        self.assertNotIn("contado con liqui", texto)
 
     def test_de_un_cliente_el_push_y_el_mail_llevan_a_mis_clientes(self):
         """Auditoría B, hallazgo B2 (29/10): el push de la alerta técnica de

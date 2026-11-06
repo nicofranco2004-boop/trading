@@ -24,9 +24,10 @@ CORTADAS COMO TRADINGVIEW, desde la apertura de cada rueda:
 El bloque en curso incluye la hora en curso.
 
 QUÉ SERIE. La misma que el gráfico diario: `tecnico.serie` decide qué ticker
-(la acción de afuera o la de BYMA), si se convierte con el MEP y en qué escala
-(el estimado de un CEDEAR en pesos: la acción de afuera ÷ cuántas veces entra el
-CEDEAR en ella; sin eso, la acción entera). Acá no se copia esa decisión. Las
+(la acción de afuera o la de BYMA), si se convierte y con qué dólar (el MEP, o
+el contado con liqui de un CEDEAR) y en qué escala (el estimado de un CEDEAR en
+pesos: la acción de afuera ÷ cuántas veces entra el CEDEAR en ella; sin eso, la
+acción entera). Acá no se copia esa decisión. Las
 de BYMA ('.BA') pasan por la MISMA lista de cambios de ratio que las diarias
 (`velas_diarias._empalmar`): Yahoo tampoco corrige el ratio de un CEDEAR en las
 de 1 hora. La conversión, con el dólar de CADA día
@@ -375,11 +376,12 @@ def _serie_elegida(conn, asset: str, moneda: str, local: bool):
     return {"ticker": s["ticker"], "convertida": s["convertida"], "escala": s.get("escala")}
 
 
-def _armar(abrir, ticker: str, crudas: list, cada: str, mercado: str, por, escala=None):
+def _armar(abrir, ticker: str, crudas: list, cada: str, mercado: str, por, escala=None, dolar="mep"):
     """Las velas de `cada` y sus puntos para la pantalla (las últimas
     VELAS_A_LA_PANTALLA, con sus cuentas). `por`: None, 'dividir' (pesos →
-    dólares) o 'multiplicar', con el MEP de cada día. `escala`: el estimado de un
-    CEDEAR en pesos (la de la serie diaria, `tecnico.serie`). None si no queda nada."""
+    dólares) o 'multiplicar', con el dólar `dolar` de cada día (el de la serie
+    diaria: `convertida`). `escala`: el estimado de un CEDEAR en pesos (la de la
+    serie diaria, `tecnico.serie`). None si no queda nada."""
     import tecnico
     import velas_diarias
     velas = [_como_vela(x) for x in crudas]
@@ -388,7 +390,7 @@ def _armar(abrir, ticker: str, crudas: list, cada: str, mercado: str, por, escal
             import cambios_ratio
             velas = velas_diarias._empalmar(velas, cambios_ratio.para_el_grafico(conn, ticker))
         if por:
-            velas = tecnico._convertir(conn, velas, por, escala)
+            velas = tecnico._convertir(conn, velas, por, escala, dolar)
     velas = bloques(velas, cada, mercado)
     velas = velas[-(VELAS_A_LA_PANTALLA + VELAS_DE_CALENTAMIENTO):]
     if not velas:
@@ -443,12 +445,14 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
         return {**base, "disponible": False, "motivo": "sin_datos", "ticker": ticker}
     por = ("dividir" if moneda == "usd" else "multiplicar") if eleccion["convertida"] else None
     escala = eleccion.get("escala") if por else None
-    # La escala va en la clave: lo armado de AAPL en pesos para la serie de la
-    # tabla no sirve para la medida con la serie que quedó guardada.
-    clave = (ticker, cada, por, escala)
+    dolar = eleccion["convertida"] if por else None
+    # La escala y el dólar van en la clave: lo armado de AAPL en pesos para la
+    # serie de la tabla no sirve para la medida con la serie que quedó guardada,
+    # ni lo armado con el MEP (una base sin el contado con liqui) para el CCL.
+    clave = (ticker, cada, por, escala, dolar)
     hecha = _ARMADAS.get(clave)
     if not hecha or hecha["version"] != version:
-        hecha = _armar(abrir, ticker, crudas, cada, mercado, por, escala)
+        hecha = _armar(abrir, ticker, crudas, cada, mercado, por, escala, dolar or "mep")
         if not hecha:
             return {**base, "disponible": False, "motivo": "sin_datos", "ticker": ticker}
         hecha["version"] = version

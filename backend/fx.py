@@ -191,7 +191,7 @@ def fx_for_date_detail(conn, date_str, fallback=None, riel: str = RIEL_MEP):
     return (fallback, "fallback" if fallback else None)
 
 
-def serie_diaria(conn, desde: str):
+def serie_diaria(conn, desde: str, dolar: str = "mep"):
     """`fx_for_date` para una serie entera, en UNA lectura: [(fecha, tc, fecha_del_tc)]
     por cada fila de `fx_rates_daily` desde `desde` (y la última anterior, para
     arrastrar). La regla es la misma que `fx_for_date`: el ÚLTIMO MEP conocido
@@ -199,10 +199,15 @@ def serie_diaria(conn, desde: str):
     `fecha_del_tc` es la fecha del dato que se usó: quien la consume decide si es
     demasiado vieja para ser "el dólar de ese día".
 
+    `dolar`='ccl': el contado con liqui de cada día, el dólar de los CEDEARs (ver
+    «El dólar de los CEDEARs», abajo), con la misma forma.
+
     (Existe porque la ficha técnica convierte ~750 velas y pedir `fx_for_date`
     de a una son 750 consultas; y porque la versión que tenía aparte usaba el
     blue DEL DÍA cuando faltaba el MEP, distinto del resto de la app: un día así
     fabricaba un pozo de ~10 % en el gráfico.)"""
+    if dolar == "ccl":
+        return _serie_ccl(conn, desde)
     rows = conn.execute(
         f"SELECT date, {SQL_MEDIO_MEP} AS mep, {SQL_MEDIO_BLUE} AS blue FROM fx_rates_daily "
         "WHERE date >= COALESCE((SELECT MAX(date) FROM fx_rates_daily WHERE date < ?), ?) "
@@ -226,6 +231,109 @@ def fx_for_date(conn, date_str, fallback=None, riel: str = RIEL_MEP) -> Optional
     pasan solo para no romper con una base vacía en tests.
     """
     return fx_for_date_detail(conn, date_str, fallback=fallback, riel=riel)[0]
+
+
+# ─── EL DÓLAR DE LOS CEDEARs: el contado con liqui de cada día ───────────────
+#
+# Un CEDEAR se compra y se vende con el contado con liqui (CCL), no con el MEP:
+# en pesos es la acción de afuera × el CCL ÷ su ratio. Medido el 06/11/2026
+# contra los cierres de BYMA (83 CEDEARs, todas las ruedas de 5 años,
+# audit/_scripts/medir_ccl.out): con el CCL de cada día el estimado queda entre
+# 0,1 y 0,3 % de la Bolsa en la mediana de 2024 a 2026 (99 % de las ruedas de
+# 2025–2026 a menos de 2 %); con el MEP, entre 0 y 12 % abajo según el mes, porque
+# la distancia entre los dos dólares cambia (~6 % en noviembre de 2026, 0 en
+# agosto de 2024) y con ella el error: de ahí los saltos del gráfico que no
+# eran del mercado (auditoría del 06/11, H3 de la serie, H4 y H5 de la pantalla).
+#
+# DÓNDE SE GUARDA. En `bond_indices_daily` con el nombre 'CCL': la tabla de los
+# números públicos de cada día (CER, UVA, A3500, que ya es un dólar), cuyos
+# lectores filtran todos por nombre. NO en `fx_rates_daily`, que no tiene columnas
+# para él: sumarlas cambia el esquema de Postgres en la publicación, y el
+# 02/08/2026 un cambio así dejó la app caída. Un número por día: el MEDIO, con la
+# regla de `punta_media` (la de la valuación). Lo baja `main._actualizar_ccl` de
+# argentinadatos, la misma fuente del MEP, y es el mismo número que da en vivo
+# dolarapi (medido el 06/11: 1.658,4 / 1.664,9 en las dos).
+INDICE_CCL = "CCL"
+# Lo que se vuelve a escribir cada vez aunque ya esté guardado: el de hoy cambia
+# durante la rueda (la fuente lo publica en vivo) y la noche guarda el del cierre.
+DIAS_CCL_REVISAR = 10
+
+# EL escritor de `bond_indices_daily`: el CCL (`guardar_ccl`) y el CER y la UVA
+# (`main._ensure_index_cached`) pasan por la misma sentencia.
+SQL_GUARDAR_INDICE = """INSERT INTO bond_indices_daily (index_name, date, value, source, updated_at)
+   VALUES (?, ?, ?, ?, ?)
+   ON CONFLICT(index_name, date) DO UPDATE SET
+     value = excluded.value,
+     source = excluded.source,
+     updated_at = excluded.updated_at"""
+
+
+def _serie_ccl(conn, desde: str):
+    """`serie_diaria(..., 'ccl')`: el CCL guardado de cada día desde `desde` (y el
+    último anterior, para arrastrar), [(fecha, ccl, fecha)]."""
+    rows = conn.execute(
+        "SELECT date, value FROM bond_indices_daily WHERE index_name = ? AND date >= "
+        "COALESCE((SELECT MAX(date) FROM bond_indices_daily WHERE index_name = ? AND date < ?), ?) "
+        "ORDER BY date", (INDICE_CCL, INDICE_CCL, desde, desde)).fetchall()
+    return [(r["date"], float(r["value"]), r["date"]) for r in rows
+            if r["value"] is not None and float(r["value"]) > 0]
+
+
+def ccl_desde(conn):
+    """El primer día con CCL guardado, o None si todavía no hay ninguno (una base
+    nueva antes de que `main._actualizar_ccl` lo baje)."""
+    r = conn.execute("SELECT MIN(date) AS d FROM bond_indices_daily WHERE index_name = ?",
+                     (INDICE_CCL,)).fetchone()
+    return r["d"] if r else None
+
+
+def ccl_de_las_fechas(conn, fechas, max_dias: int) -> dict:
+    """{fecha: CCL} de cada fecha 'YYYY-MM-DD' con la regla de `serie_diaria`: el
+    último guardado hasta ese día, si no tiene más de `max_dias` (más viejo no es
+    «el de ese día»). La que no tiene queda afuera. En UNA lectura."""
+    from datetime import date
+    pedidas = sorted({str(f)[:10] for f in fechas if f})
+    if not pedidas:
+        return {}
+    serie = _serie_ccl(conn, pedidas[0])
+    out, j, actual = {}, 0, None
+    for f in pedidas:
+        while j < len(serie) and serie[j][0] <= f:
+            actual = serie[j]
+            j += 1
+        if actual and (date.fromisoformat(f) - date.fromisoformat(actual[0])).days <= max_dias:
+            out[f] = actual[1]
+    return out
+
+
+def guardar_ccl(conn, filas: list, fuente: str) -> int:
+    """Guarda el CCL de cada día: `filas` = [(fecha 'YYYY-MM-DD', compra, venta)] de
+    la fuente; el valor es el MEDIO (`punta_media`). Escribe las fechas que faltan
+    y vuelve a escribir las últimas `DIAS_CCL_REVISAR` (ver arriba). No hace commit.
+    Devuelve cuántas escribió."""
+    import re
+    from datetime import date, datetime, timedelta
+    valores = {}
+    for fecha, compra, venta in filas:
+        if not (isinstance(fecha, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha)):
+            continue
+        v = punta_media(compra, venta)
+        if v:
+            valores[fecha] = v
+    if not valores:
+        return 0
+    ya = {r["date"] for r in conn.execute(
+        "SELECT date FROM bond_indices_daily WHERE index_name = ?", (INDICE_CCL,)).fetchall()}
+    revisar = ((date.fromisoformat(max(ya)) - timedelta(days=DIAS_CCL_REVISAR)).isoformat()
+               if ya else "")
+    ahora = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    nuevas = [(INDICE_CCL, f, v, fuente, ahora) for f, v in sorted(valores.items())
+              if f not in ya or f >= revisar]
+    if nuevas:
+        # De a una sentencia por fila (como el respaldo del blue): un INSERT con
+        # varias filas y la misma fecha dos veces lo rechaza Postgres.
+        conn.executemany(SQL_GUARDAR_INDICE, nuevas)
+    return len(nuevas)
 
 
 

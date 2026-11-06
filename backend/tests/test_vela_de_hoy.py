@@ -122,7 +122,7 @@ class VelaDeHoyTest(unittest.TestCase):
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
             for t in ("velas_diarias", "velas_estado", "cambios_ratio", "positions", "brokers",
-                      "fx_rates_daily"):
+                      "fx_rates_daily", "bond_indices_daily"):
                 conn.execute(f"DELETE FROM {t}")
             cur = conn.execute(
                 "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
@@ -275,6 +275,38 @@ class VelaDeHoyTest(unittest.TestCase):
         self.assertTrue(v["hoy"])
         self.assertEqual((v["o"], v["h"], v["l"], v["c"]), (301.0 * 50, 306.0 * 50, 299.0 * 50, 304.5 * 50),
                          "el MEP de hoy (1000) ÷ 20 = × 50")
+
+    def test_cedear_estimado_la_vela_de_hoy_va_con_el_contado_con_liqui_de_ahora(self):
+        # Con el contado con liqui de cada día guardado, el estimado es la acción ×
+        # ESE dólar ÷ 20 (Nico, 06/11): la vela de hoy, con el de AHORA (el caché
+        # de dolarapi, con la misma regla del medio), no con el MEP. Si el de hoy
+        # ya está guardado, con el guardado, como la historia.
+        self._mep(1000.0)
+        dias = _ruedas(self.hoy, 760)
+        with mock.patch("main._bajar_ccl", lambda: [(d.isoformat(), 1059.0, 1061.0) for d in dias]):
+            main._actualizar_ccl()
+        self.dolar = {"mep": {"compra": 990.0, "venta": 1010.0, "medio": 1000.0, "updated_at": _ahora_iso()},
+                      "ccl": {"compra": 1079.0, "venta": 1081.0, "medio": 1080.0, "updated_at": _ahora_iso()}}
+        self.yahoo.precios["AAPL"] = 300.0
+        ficha = self.client.get("/api/tecnico/AAPL?moneda=ars", headers=self.h).json()
+        self.assertAlmostEqual(ficha["puntos"][-1]["c"], 300.0 * 1060.0 / 20, places=3)
+        self.assertEqual((ficha["ticker"], ficha["convertida"], ficha["escala"]), ("AAPL", "ccl", 20))
+        self.yahoo.hoy_diaria["AAPL"] = (301.0, 306.0, 299.0, 304.5, 5_000_000.0)
+        v = self._hoy("AAPL", "ars")["velas"][-1]
+        self.assertTrue(v["hoy"])
+        self.assertEqual((v["o"], v["c"]), (301.0 * 54, 304.5 * 54), "el contado con liqui de ahora (1080) ÷ 20")
+        # El de hoy ya guardado (la noche, o un arranque después del cierre): ése.
+        with mock.patch("main._bajar_ccl", lambda: [(session_today("AAPL"), 1099.0, 1101.0)]):
+            main._actualizar_ccl()
+        v = self._hoy("AAPL", "ars")["velas"][-1]
+        self.assertEqual(v["c"], 304.5 * 55, "el guardado de hoy (1100) ÷ 20")
+        # Sin contado con liqui reciente en el caché, no se inventa: sin vela de hoy.
+        with main.db_abierta() as conn:
+            conn.execute("DELETE FROM bond_indices_daily WHERE date = ?", (session_today("AAPL"),))
+            conn.commit()
+        self.dolar = {"mep": self.dolar["mep"],
+                      "ccl": {"compra": 1079.0, "venta": 1081.0, "medio": 1080.0, "updated_at": _ahora_iso(10)}}
+        self.assertEqual(self._hoy("AAPL", "ars")["velas"], [])
 
     def test_vela_de_hoy_en_la_escala_medida_de_la_serie_guardada(self):
         # MELI.BA quedó guardada (alguien la tuvo): la ficha estima con SU escala

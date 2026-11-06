@@ -688,13 +688,18 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict,
         log.warning(f"descarga de Yahoo falló para el lote: {e}")
 
     # CEDEARs USD-cotizados: el precio fetcheado es el del subyacente US (USD) →
-    # a pesos (× CCL ÷ ratio). Sin CCL los dejamos en None (no persistimos el
-    # valor en USD roto; el chequeo de cobertura del snapshot decide qué hacer).
+    # a pesos (× CCL ÷ ratio, `tecnico.a_la_moneda`: LA cuenta del gráfico en
+    # pesos y de /api/prices). Es el precio de AHORA (la foto de la noche, las
+    # alertas de precio): con el contado con liqui de ahora, como /api/prices. Sin
+    # CCL los dejamos en None (no persistimos el valor en USD roto; el chequeo de
+    # cobertura del snapshot decide qué hacer).
     if cedear_usd:
+        import tecnico as _tec
         for _csym, _base in cedear_usd.items():
             if result.get(_csym) is not None:
                 _r = _CED_RATIOS.get(_base) or 1
-                result[_csym] = round(result[_csym] * _ccl / _r, 4) if (_ccl and _ccl > 0) else None
+                result[_csym] = (round(_tec.a_la_moneda(result[_csym], _ccl, "multiplicar", _r), 4)
+                                 if (_ccl and _ccl > 0) else None)
 
     # Bonos/ONs AR: data912 cotiza per-100 y el sistema usa per-1 (÷100). yfinance da
     # el '.BA' per-100 SIN dividir → el snapshot inflaba los bonos ×100 (chart "Hoy"

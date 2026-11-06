@@ -169,16 +169,21 @@ export function textoVelaDeHoy(vela, semanales = false) {
  * Una sola frase para la pantalla (LecturaTecnica) y la imagen de «Compartir»
  * (imagenGrafico).
  *
+ * `convertida`: con qué dólar de cada día ('mep'; 'ccl', el contado con liqui,
+ * el de un CEDEAR en pesos).
+ *
  * `escala`: en pesos, un CEDEAR sin su precio en pesos al día. El servidor
- * dibuja la acción de Nueva York × el MEP ÷ cuántas veces entra el CEDEAR en
- * ella (backend/tecnico.py, `_escala_en_bolsa`): es un ESTIMADO del CEDEAR y
- * queda unos pocos % lejos de su precio en la Bolsa, porque los CEDEARs se pagan
- * con un dólar algo distinto del MEP (~5 % el 05/11/2026). Sin dividir era la
+ * dibuja la acción de Nueva York × el contado con liqui de cada día ÷ cuántas
+ * veces entra el CEDEAR en ella (backend/tecnico.py, `_escala_en_bolsa`): es un
+ * ESTIMADO del CEDEAR, alrededor de 1 % lejos de su precio en la Bolsa (con el
+ * MEP —una base que todavía no tiene el contado con liqui— quedaba unos 5 %
+ * abajo: los CEDEARs se pagan con el contado con liqui). Sin dividir era la
  * acción entera en pesos: Apple ×20 (Nico, 06/11/2026).
  */
 export function notaDeLaMoneda(convertida, moneda, escala = null) {
-  if (convertida !== 'mep') return ''
-  if (moneda === 'usd') return 'El precio en pesos de cada día está pasado a dólares con el MEP de ese día.'
+  const dolar = { mep: 'el MEP', ccl: 'el contado con liqui' }[convertida]
+  if (!dolar) return ''
+  if (moneda === 'usd') return `El precio en pesos de cada día está pasado a dólares con ${dolar} de ese día.`
   if (escala) {
     // Con escala menor a 1 un CEDEAR vale VARIAS acciones (ABEV: tres): dividir
     // por un tercio es multiplicar por tres, y así hay que decirlo (auditoría
@@ -186,10 +191,12 @@ export function notaDeLaMoneda(convertida, moneda, escala = null) {
     const cuenta = escala < 1
       ? 'multiplicada por las acciones que hay en un CEDEAR'
       : 'dividida por los CEDEARs que hacen una acción'
-    return `Precio estimado del CEDEAR: la acción de Nueva York pasada a pesos con el MEP de cada día y ${cuenta}. `
-      + 'Puede estar unos pocos % lejos de su precio en la Bolsa.'
+    return `Precio estimado del CEDEAR: la acción de Nueva York pasada a pesos con ${dolar} de cada día y ${cuenta}. `
+      + (convertida === 'ccl'
+        ? 'Puede estar alrededor de 1 % lejos de su precio en la Bolsa.'
+        : 'Puede estar unos pocos % lejos de su precio en la Bolsa.')
   }
-  return 'El precio en dólares de cada día está pasado a pesos con el MEP de ese día.'
+  return `El precio en dólares de cada día está pasado a pesos con ${dolar} de ese día.`
 }
 
 /**

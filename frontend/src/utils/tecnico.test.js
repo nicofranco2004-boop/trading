@@ -578,19 +578,27 @@ describe('textoVelaDeHoy', () => {
 describe('notaDeLaMoneda: de dónde sale el precio del gráfico', () => {
   it('un CEDEAR estimado en pesos dice que es un estimado y cómo se hizo (Nico, 06/11)', async () => {
     const { notaDeLaMoneda } = await import('./tecnico')
-    // Sin su serie en pesos, el servidor manda la acción de Nueva York × el MEP
-    // ÷ `escala`. Antes no dividía y la nota decía sólo «pasado a pesos»: Apple ×20.
+    // Sin su serie en pesos, el servidor manda la acción de Nueva York × el
+    // contado con liqui de cada día ÷ `escala`. Antes no dividía y la nota decía
+    // sólo «pasado a pesos»: Apple ×20.
+    const nota = notaDeLaMoneda('ccl', 'ars', 20)
+    expect(nota).toBe('Precio estimado del CEDEAR: la acción de Nueva York pasada a pesos con el contado con liqui '
+      + 'de cada día y dividida por los CEDEARs que hacen una acción. '
+      + 'Puede estar alrededor de 1 % lejos de su precio en la Bolsa.')
+  })
+  it('con el MEP (una base que todavía no tiene el contado con liqui) lo dice y avisa que queda más lejos', async () => {
+    const { notaDeLaMoneda } = await import('./tecnico')
     const nota = notaDeLaMoneda('mep', 'ars', 20)
-    expect(nota).toMatch(/^Precio estimado del CEDEAR:/)
-    expect(nota).toContain('dividida por los CEDEARs que hacen una acción')
+    expect(nota).toContain('pasada a pesos con el MEP de cada día')
     expect(nota).toContain('unos pocos % lejos de su precio en la Bolsa')
+    expect(nota).not.toContain('contado con liqui')
   })
   it('con un CEDEAR que vale varias acciones (ABEV: tres) dice «multiplicada», no «dividida»', async () => {
     const { notaDeLaMoneda } = await import('./tecnico')
-    expect(notaDeLaMoneda('mep', 'ars', 1 / 3)).toContain('multiplicada por las acciones que hay en un CEDEAR')
-    expect(notaDeLaMoneda('mep', 'ars', 1 / 3)).not.toContain('dividida')
+    expect(notaDeLaMoneda('ccl', 'ars', 1 / 3)).toContain('multiplicada por las acciones que hay en un CEDEAR')
+    expect(notaDeLaMoneda('ccl', 'ars', 1 / 3)).not.toContain('dividida')
     // Y con un CEDEAR que vale una acción (PBR, ITUB…) también es un estimado.
-    for (const escala of [1 / 3, 1, 20]) expect(notaDeLaMoneda('mep', 'ars', escala)).toMatch(/^Precio estimado del CEDEAR/)
+    for (const escala of [1 / 3, 1, 20]) expect(notaDeLaMoneda('ccl', 'ars', escala)).toMatch(/^Precio estimado del CEDEAR/)
   })
   it('sin escala conocida, la ficha dice qué falta (no que «no tiene precio en pesos»)', async () => {
     const { sinPrecioEnPesos } = await import('./tecnico')
@@ -601,8 +609,12 @@ describe('notaDeLaMoneda: de dónde sale el precio del gráfico', () => {
     const { notaDeLaMoneda } = await import('./tecnico')
     expect(notaDeLaMoneda('mep', 'ars')).toBe('El precio en dólares de cada día está pasado a pesos con el MEP de ese día.')
     expect(notaDeLaMoneda('mep', 'usd')).toBe('El precio en pesos de cada día está pasado a dólares con el MEP de ese día.')
+    // Un CEDEAR sin escala conocida (Comparar, alertas): la acción de afuera con
+    // el dólar de los CEDEARs, sin decir «estimado».
+    expect(notaDeLaMoneda('ccl', 'ars')).toBe('El precio en dólares de cada día está pasado a pesos con el contado con liqui de ese día.')
     expect(notaDeLaMoneda(null, 'ars', 20)).toBe('')
     expect(notaDeLaMoneda(null, 'usd')).toBe('')
+    expect(notaDeLaMoneda('otro', 'ars', 20)).toBe('')
   })
 })
 

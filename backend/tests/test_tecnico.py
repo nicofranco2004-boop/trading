@@ -494,7 +494,7 @@ class FichaTest(unittest.TestCase):
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
             for t in ("velas_diarias", "velas_estado", "cambios_ratio", "watchlist", "positions",
-                      "brokers", "fx_rates_daily"):
+                      "brokers", "fx_rates_daily", "bond_indices_daily"):
                 conn.execute(f"DELETE FROM {t}")
             cur = conn.execute(
                 "INSERT INTO users (email, password_hash, approved, email_verified, tier) "
@@ -553,6 +553,14 @@ class FichaTest(unittest.TestCase):
                             headers=h or self.h)
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()
+
+    def _ccl(self, f, desde=0):
+        """El contado con liqui de cada día guardado como lo guarda la app
+        (`main._actualizar_ccl`, con la fuente reemplazada): `f(i)` el de la rueda
+        i, desde la rueda `desde`, con compra y venta alrededor (el medio es f(i))."""
+        filas = [(d.isoformat(), f(i) - 5, f(i) + 5) for i, d in enumerate(self.dias) if i >= desde]
+        with mock.patch("main._bajar_ccl", lambda: filas):
+            return main._actualizar_ccl()
 
     def test_cedear_en_dolares_y_en_pesos(self):
         self._broker("IOL", "ARS")
@@ -1064,6 +1072,202 @@ class FichaTest(unittest.TestCase):
         self.assertAlmostEqual(ars["puntos"][-1]["c"], 12_500.0, places=3)
         self.assertEqual(ars.get("escala"), 4)
         self.assertEqual(main.CEDEAR_USD_RATIOS["BAC"], ars["escala"])
+
+    # ─── El dólar de los CEDEARs: el contado con liqui de cada día (Nico, 06/11) ───
+    # Con el MEP el estimado quedaba ~5 % abajo de la Bolsa y saltaba sin que se
+    # moviera el mercado: los CEDEARs se pagan con el contado con liqui, y la
+    # distancia entre los dos dólares cambia (audit/_scripts/medir_ccl.out).
+
+    def test_el_cedear_estimado_va_con_el_contado_con_liqui_de_cada_dia(self):
+        # Apple a pedido, en pesos: la acción × el contado con liqui DE CADA DÍA ÷
+        # 20, no × el MEP. Los dos dólares se separan con el tiempo, como en
+        # 2024–2026: el MEP sube de a 1 y el contado con liqui de a 1,5.
+        self._mep(lambda i: 1000.0 + i)
+        self._ccl(lambda i: 1000.0 + i * 1.5)
+        self.yahoo.precios["AAPL"] = lambda i, d: 250.0 + i * 0.1
+        with mock.patch("main._fetch_data912_equities", lambda: {"AAPL": {"mercado": "arg_cedears"}}):
+            ars = self._ficha("AAPL.BA", "ars")
+        dias = [d.isoformat() for d in self.dias]
+        for p in (ars["puntos"][0], ars["puntos"][len(ars["puntos"]) // 2], ars["puntos"][-1]):
+            i = dias.index(p["d"])
+            self.assertAlmostEqual(p["c"], (250.0 + i * 0.1) * (1000.0 + i * 1.5) / 20, places=3)
+        self.assertEqual((ars["ticker"], ars["convertida"], ars.get("escala")), ("AAPL", "ccl", 20))
+        self.assertEqual(ars["puntos"][-1]["d"], dias[-1])
+        # En dólares no cambia nada: la acción de afuera, sin ningún dólar.
+        usd = self._ficha("AAPL.BA")
+        self.assertEqual((usd["ticker"], usd["convertida"], usd.get("escala")), ("AAPL", None, None))
+
+    def test_lo_que_no_es_cedear_sigue_con_el_mep(self):
+        # Lo que no es un CEDEAR no se paga con el contado con liqui: SCHD (un ETF
+        # que no es CEDEAR), Bitcoin y el S&P 500 en pesos siguen × el MEP de cada
+        # día aunque el contado con liqui esté guardado.
+        self._mep(lambda i: 1000.0)
+        self._ccl(lambda i: 1100.0)
+        self.yahoo.precios["SCHD"] = lambda i, d: 30.0
+        self.yahoo.precios["BTC-USD"] = lambda i, d: 90_000.0
+        for asset, ticker, esperado in (("SCHD", "SCHD", 30_000.0), ("BTC", "BTC-USD", 90_000_000.0)):
+            ars = self._ficha(asset, "ars")
+            self.assertEqual((ars["ticker"], ars["convertida"], ars.get("escala")), (ticker, "mep", None))
+            self.assertAlmostEqual(ars["puntos"][-1]["c"], esperado, places=3)
+        main._run_velas_diarias_job()                          # guarda el S&P 500
+        with main.db_abierta() as conn:
+            self.assertEqual({v["close"] for v in tecnico.sp500(conn, "ars")}, {5_000_000.0})
+
+    def test_sin_el_contado_con_liqui_guardado_sigue_con_el_mep_toda_la_serie(self):
+        # Una base que todavía no lo bajó (recién publicado, argentinadatos caído):
+        # el estimado de antes, con el MEP, y `convertida` lo dice (la nota de la
+        # pantalla, del mail y de Mervall-E nombran ese dólar). Nunca mitad y mitad:
+        # con sólo el último mes guardado, mezclar los dos dólares haría un escalón
+        # de ~10 % en el medio del gráfico.
+        self._mep(lambda i: 1000.0)
+        self.yahoo.precios["AAPL"] = lambda i, d: 250.0
+        for guardado in (None, len(self.dias) - 22):
+            if guardado is not None:
+                self._ccl(lambda i: 1100.0, desde=guardado)
+            ars = self._ficha("AAPL", "ars")
+            self.assertEqual((ars["convertida"], ars.get("escala")), ("mep", 20), guardado)
+            self.assertEqual({p["c"] for p in ars["puntos"]}, {12_500.0}, guardado)
+        # Con la historia entera guardada, el contado con liqui de punta a punta.
+        self._ccl(lambda i: 1100.0)
+        ars = self._ficha("AAPL", "ars")
+        self.assertEqual((ars["convertida"], {p["c"] for p in ars["puntos"]}), ("ccl", {13_750.0}))
+
+    def test_la_serie_vieja_no_corre_el_pasado_ni_salta_al_podarse(self):
+        # Alguien tuvo MELI y la vendió: su serie de BYMA quedó guardada hasta 14
+        # ruedas atrás. El CEDEAR de verdad vale la acción × el contado con liqui ÷
+        # 120, y ese dólar se va separando del MEP (de 0 a 6 % en estos 3 años).
+        # Con el MEP, el día que la serie quedaba vieja el pasado se corría (hace un
+        # año, ~2 % arriba de lo que valió) y el día que la noche la borraba, todo
+        # el gráfico bajaba ~6 % de golpe (auditoría 06/11, H4 de la pantalla).
+        # Con el contado con liqui de cada día, el estimado ES la historia de verdad.
+        n = len(self.dias)
+        ccl = lambda i: 1000.0 * (1 + 0.06 * i / (n - 1))
+        self._mep(lambda i: 1000.0)
+        self._ccl(ccl)
+        self.yahoo.precios["MELI"] = lambda i, d: 2000.0 + i
+        bolsa = lambda i: (2000.0 + i) * ccl(i) / 120
+        with main.db_abierta() as conn:
+            for i, d in enumerate(self.dias[:-14]):
+                conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES ('MELI.BA', ?, ?)",
+                             (d.isoformat(), bolsa(i)))
+            conn.commit()
+        with mock.patch("main._fetch_data912_equities", lambda: {"MELI": {"mercado": "arg_cedears"}}):
+            vieja = self._ficha("MELI.BA", "ars")
+        puntos = {p["d"]: p["c"] for p in vieja["puntos"]}
+        for i in (n - 1 - 250, n - 1 - 125, n - 15):     # hace un año, seis meses, la última guardada
+            self.assertAlmostEqual(puntos[self.dias[i].isoformat()] / bolsa(i), 1.0, places=5,
+                                   msg=f"rueda {i}: el estimado corre el pasado")
+        self.assertEqual((vieja["ticker"], vieja["convertida"]), ("MELI", "ccl"))
+        self.assertAlmostEqual(vieja["escala"], 120.0, places=6)
+        # La noche borra la serie vieja: queda la escala de la tabla y el MISMO gráfico.
+        with main.db_abierta() as conn:
+            conn.execute("DELETE FROM velas_diarias WHERE symbol='MELI.BA'")
+            conn.commit()
+        with mock.patch("main._fetch_data912_equities", lambda: {"MELI": {"mercado": "arg_cedears"}}):
+            podada = self._ficha("MELI.BA", "ars")
+        self.assertEqual(podada["escala"], 120)
+        for a, b in zip(vieja["puntos"], podada["puntos"]):
+            self.assertEqual(a["d"], b["d"])
+            self.assertAlmostEqual(b["c"] / a["c"], 1.0, places=5, msg=f"{a['d']}: salta al podar")
+
+    def _precios_de_bac(self, ccl_ahora):
+        """`/api/prices` y el cierre anterior (`/api/prices/prev-close` y la
+        variación del día) de BAC.BA con `ccl_ahora` como contado con liqui de
+        ahora (el caché de dolarapi), sin lo que guardaron pedidos anteriores."""
+        for cache in (main._PRICE_CACHE, main._PREVCLOSE_CACHE, main._PREVCLOSE_RUEDA,
+                      main._PREVCLOSE_ULTIMO, main._history_cache):
+            cache.clear()
+        vivo = {"compra": ccl_ahora - 1, "venta": ccl_ahora + 1, "medio": ccl_ahora}
+        with mock.patch.dict(main._dolar_cache, {"data": {"ccl": vivo}, "ts": 9e18}):
+            precio = self.client.get("/api/prices?symbols=BAC.BA", headers=self.h).json()["BAC.BA"]
+            anterior = self.client.get("/api/prices/prev-close?symbols=BAC.BA", headers=self.h).json()["BAC.BA"]
+            variacion = main._variacion_del_dia(["BAC.BA"], self.uid)["BAC.BA"]
+        return precio, anterior, variacion
+
+    def test_bac_el_grafico_y_la_cartera_con_el_mismo_contado_con_liqui(self):
+        # BYMA cotiza BAC roto (en dólares): la Cartera lo valúa con la acción de
+        # Nueva York × el contado con liqui ÷ 4, y el gráfico en pesos lo dibujaba
+        # × el MEP ÷ 4: dos «BAC en pesos» en la misma ficha (auditoría 06/11, H3 de
+        # la serie y H5 de la pantalla). Ahora: el gráfico, cada día con su contado
+        # con liqui; el cierre anterior de la Cartera, la vela de ESE día del
+        # gráfico (antes, × el de hoy); el precio de ahora, × el de ahora.
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "BAC", "CEDEAR")
+        n = len(self.dias)
+        ccl = lambda i: 1050.0 + i * 0.5
+        self._mep(lambda i: 1000.0)
+        self._ccl(ccl)
+        self.yahoo.precios["BAC"] = lambda i, d: 50.0 + i * 0.01
+        self.yahoo.precios["BAC.BA"] = lambda i, d: 9.0          # el roto, en dólares
+        main._run_velas_diarias_job()
+        ars = self._ficha("BAC", "ars")
+        vela = {p["d"]: p["c"] for p in ars["puntos"]}
+        dia = lambda i: self.dias[i].isoformat()
+        self.assertAlmostEqual(vela[dia(n - 1)], (50.0 + (n - 1) * 0.01) * ccl(n - 1) / 4, places=3)
+        self.assertEqual((ars["ticker"], ars["convertida"], ars["escala"]), ("BAC", "ccl", 4))
+
+        precio, anterior, variacion = self._precios_de_bac(1200.0)
+        self.assertAlmostEqual(anterior, vela[dia(n - 2)], places=2, msg="el cierre anterior = la vela del gráfico")
+        self.assertAlmostEqual(precio, (50.0 + (n - 1) * 0.01) * 1200.0 / 4, places=2)
+        # La variación de la rueda de ayer (la última con precio de Nueva York): la
+        # vela de ese día contra la anterior, con el dólar que se movió entre las dos.
+        self.assertAlmostEqual(variacion["price"], vela[dia(n - 1)], places=2)
+        self.assertAlmostEqual(variacion["prev_close"], vela[dia(n - 2)], places=2)
+
+        # El mini-gráfico de la Cartera: cada día con SU contado con liqui (antes,
+        # el mes entero con el de hoy, como si el dólar no se hubiera movido).
+        ruedas = self.dias[-22:]
+
+        class _Ticker:
+            def __init__(self, sym):
+                self.sym = sym
+
+            def history(self, period, interval, auto_adjust):
+                return pd.DataFrame({"Close": [50.0 + (n - 22 + k) * 0.01 for k in range(len(ruedas))]},
+                                    index=pd.DatetimeIndex([pd.Timestamp(d) for d in ruedas]))
+        main._history_cache.clear()
+        with mock.patch("main.yf.Ticker", _Ticker), \
+                mock.patch.dict(main._dolar_cache, {"data": {"ccl": {"medio": 1200.0}}, "ts": 9e18}):
+            mini = self.client.get("/api/prices/history?symbol=BAC.BA&period=1m", headers=self.h).json()
+        self.assertEqual(len(mini["points"]), 22)
+        for p in mini["points"]:
+            self.assertAlmostEqual(p["close"] / vela[p["date"]], 1.0, places=4, msg=p["date"])
+
+    def test_la_noche_guarda_el_contado_con_liqui_de_cada_dia(self):
+        # `main._actualizar_ccl` corre antes de las velas de la noche: la primera
+        # vez guarda todo lo que manda la fuente; después, lo que falta y los
+        # últimos días (el de hoy se publica en vivo y la noche guarda el del
+        # cierre). Lo de antes no se reescribe. Un renglón roto no entra.
+        dias = [d.isoformat() for d in self.dias]
+        fuente = [(d, 1000.0 + i, 1010.0 + i) for i, d in enumerate(dias)]
+
+        def guardado(d):
+            with main.db_abierta() as conn:
+                r = conn.execute("SELECT value FROM bond_indices_daily WHERE index_name='CCL' AND date=?",
+                                 (d,)).fetchone()
+            return r["value"] if r else None
+
+        with mock.patch("main._bajar_ccl", lambda: fuente + [("mal", 1.0, 2.0), ("2026-01-0x", 1, 2)]):
+            main._run_velas_diarias_job()
+        self.assertEqual((guardado(dias[0]), guardado(dias[-1])), (1005.0, 1005.0 + len(dias) - 1))
+        with main.db_abierta() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM bond_indices_daily WHERE index_name='CCL'")
+                             .fetchone()[0], len(dias))
+        otra = [(d, 2000.0, 2010.0) for d in dias]          # la fuente «cambió» toda la historia
+        with mock.patch("main._bajar_ccl", lambda: otra):
+            main._run_velas_diarias_job()
+        self.assertEqual(guardado(dias[0]), 1005.0, "lo viejo no se reescribe")
+        self.assertEqual(guardado(dias[-1]), 2005.0, "los últimos días sí")
+        # Sin respuesta de la fuente, queda lo guardado; y un error del contado con
+        # liqui no frena las velas de la noche.
+        self.yahoo.precios["SPY"] = lambda i, d: 500.0
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "SPY", "CEDEAR")
+        with mock.patch("main._actualizar_ccl", side_effect=RuntimeError("se cayó")):
+            main._run_velas_diarias_job()
+        self.assertEqual(guardado(dias[-1]), 2005.0)
+        with main.db_abierta() as conn:
+            self.assertGreater(conn.execute("SELECT COUNT(*) FROM velas_diarias WHERE symbol='SPY'").fetchone()[0], 0)
 
     def test_sin_saber_la_escala_del_cedear_no_hay_grafico_en_pesos(self):
         # Mejor sin gráfico en pesos que uno veinte veces más alto.
