@@ -92,9 +92,11 @@ def comparar(antes_p, ahora_p):
         igual = all(x.get(k) is not None and abs(x[k] - y[k]) < 1e-6 for k in
                     ("dist_media200", "rsi", "rend_12m", "dist_maximo_12m")) and x["tendencia"] == y["tendencia"]
         rel = (y["ultimo"] / byma - 1) * 100 if (byma and y.get("escala")) else None
-        print(f"  {a:8s} {_f(x['ultimo']):>12s} {_f(y['ultimo']):>10s} {_f(y.get('escala'), 2):>7s} "
-              f"{_f(byma):>9s} {(_f(rel, 1) + ' %') if rel is not None else '—':>10s}  "
-              f"{'sí' if igual else 'NO: ' + str({k: (x.get(k), y.get(k)) for k in ('tendencia', 'rsi')})}")
+        # Antes sin gráfico y ahora con (AZN con la tabla en 2: el control contra la Bolsa lo frenaba).
+        print(f"  {a:8s} {_f(x.get('ultimo')) if x['disponible'] else 'sin gráfico':>12s} {_f(y['ultimo']):>10s} "
+              f"{_f(y.get('escala'), 2):>7s} {_f(byma):>9s} {(_f(rel, 1) + ' %') if rel is not None else '—':>10s}  "
+              + ("antes no había" if not x["disponible"] else "sí" if igual else
+                 "NO: " + str({k: (x.get(k), y.get(k)) for k in ("tendencia", "rsi")})))
     print()
     print("## En dólares, ¿algo cambió? (no tendría que cambiar nada)")
     cambios = [a for a in ahora if antes[a]["usd"] != ahora[a]["usd"]]
