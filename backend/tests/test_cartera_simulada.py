@@ -70,10 +70,13 @@ class YahooDeCincoAnios:
     """Como Yahoo de verdad: «5y» es desde el mismo día de hace 5 años (aunque sea
     un sábado) hasta ayer, y «1mo», el último mes. De lunes a viernes; una cripto
     (-USD), todos los días. `precios[ticker](i, fecha)`: i, los días desde el
-    primero de los 5 años (el mismo día da el mismo precio en las dos bajadas)."""
+    primero de los 5 años (el mismo día da el mismo precio en las dos bajadas).
+    `indices_desde`: la bajada entera de los índices arranca ese día y no hace 5
+    años, como el día de su bajada entera del mes, que borra y reescribe toda su
+    historia (velas_diarias: cada serie tiene su día; auditoría de código 06/11, 3)."""
 
-    def __init__(self, hoy, precios):
-        self.hoy, self.precios = hoy, precios
+    def __init__(self, hoy, precios, indices_desde=None):
+        self.hoy, self.precios, self.indices_desde = hoy, precios, indices_desde
         try:
             self.origen = hoy.replace(year=hoy.year - 5)
         except ValueError:      # un 29 de febrero
@@ -85,6 +88,8 @@ class YahooDeCincoAnios:
         if f is None:
             return pd.DataFrame()
         desde = self.origen if period == velas_diarias.PERIODO_COMPLETO else self.hoy - timedelta(days=31)
+        if self.indices_desde and ticker in velas_diarias.INDICES and period == velas_diarias.PERIODO_COMPLETO:
+            desde = self.indices_desde
         dias = [desde + timedelta(days=k) for k in range((self.hoy - desde).days)]
         dias = [d for d in dias if ticker.endswith("-USD") or d.weekday() < 5]
         c = [float(f((d - self.origen).days, d)) for d in dias]
@@ -234,6 +239,16 @@ class Cuentas(unittest.TestCase):
         r = cs.simular([_activo("BTC", 100, cripto)], {**idx, "nasdaq": [v for v in idx["nasdaq"] if v["date"] > diez]}, 5)
         self.assertEqual(r["faltan"], [{"clave": "nasdaq", "motivo": "sin_datos"}])
         self.assertEqual((r["desde"], r["recortado"]), (lunes, False))
+        # Con el lunes feriado en Nueva York, el martes: la semana de margen no es un día.
+        martes = [v for v in idx["sp500"] if v["date"] > lunes]
+        r = cs.simular([_activo("BTC", 100, cripto)], {"sp500": martes, "nasdaq": martes}, 5)
+        self.assertEqual((r["desde"], r["faltan"]), (martes[0]["date"], []))
+        # Uno que dejó de llegar no corre el primer día, aunque empiece después que el
+        # otro: queda afuera, «sin precios desde el…» (auditoría de código 06/11, 3 y 6).
+        viejo = [v for v in idx["sp500"] if martes[0]["date"] <= v["date"] <= (fin - timedelta(days=20)).isoformat()]
+        r = cs.simular([_activo("BTC", 100, cripto)], {"sp500": viejo, "nasdaq": idx["nasdaq"]}, 5)
+        self.assertEqual(r["desde"], lunes)
+        self.assertEqual(r["faltan"], [{"clave": "sp500", "motivo": "vieja", "hasta": viejo[-1]["date"]}])
 
     def test_la_peor_caida_y_el_resultado_de_una_que_arranca_tarde(self):
         # Cotiza hace ~9 meses: la prueba de 1 año arranca en su primer día. (Contar la
@@ -562,27 +577,46 @@ class Ruta(unittest.TestCase):
                 self.assertEqual(self._get(f"activos=AAPL,MSFT&pesos={pesos}&anios=1").status_code, codigo)
         self.assertEqual(self._get("activos=AAPL&pesos=nan&anios=1").status_code, 400)
 
-    def test_cinco_anios_entran_en_lo_que_se_guarda(self):
-        # Por el camino de producción: la noche baja «5y» como Yahoo (desde el mismo
-        # día de hace 5 años) y poda lo de más de `DIAS_GUARDADOS`; BTC se baja en el
-        # momento. Con eso, 5 años se simulan enteros, al lado de los dos índices
-        # (producto 05/11, A5: «probarlo con lo guardado»).
-        self.yahoo.precios["BTC-USD"] = lambda i, d: 30000 + 10 * i
-        cinco = YahooDeCincoAnios(self.hoy, self.yahoo.precios)
+    def _cinco_anios(self, q, indices_desde=None):
+        """La noche baja «5y» como Yahoo y poda lo de más de `DIAS_GUARDADOS`; lo
+        que nadie sigue se baja en el momento; y se simula por la ruta."""
+        cinco = YahooDeCincoAnios(self.hoy, self.yahoo.precios, indices_desde)
         with mock.patch("pricing.yahoo._historia", cinco):
             with main.db_abierta() as conn:
                 conn.execute("DELETE FROM velas_diarias")
                 conn.execute("DELETE FROM velas_estado")
                 conn.commit()
             main._run_velas_diarias_job()
-            r = self._get("activos=AAPL,MSFT,BTC&pesos=40,40,20&anios=5")
+            r = self._get(q)
         self.assertEqual(r.status_code, 200, r.text)
-        res = r.json()
+        return r.json()
+
+    def test_cinco_anios_entran_en_lo_que_se_guarda(self):
+        # Por el camino de producción, 5 años se simulan enteros, al lado de los dos
+        # índices (producto 05/11, A5: «probarlo con lo guardado»).
+        self.yahoo.precios["BTC-USD"] = lambda i, d: 30000 + 10 * i
+        res = self._cinco_anios("activos=AAPL,MSFT,BTC&pesos=40,40,20&anios=5")
         self.assertTrue(res["disponible"], res)
         self.assertEqual((res["recortado"], res["faltan"]), (False, []))
         self.assertEqual([x["clave"] for x in res["indices"]], ["sp500", "nasdaq"])
         self.assertLessEqual(comparar._dias(res["pedido_desde"], res["desde"]), comparar.DIAS_MARGEN)
-        self.assertEqual(r.json()["anios"], 5)
+        self.assertEqual(res["anios"], 5)
+
+    def test_cinco_anios_con_los_indices_bajados_enteros_despues_del_pedido(self):
+        # El caso de producción que la prueba de arriba no armaba (auditoría de código
+        # 06/11, 3): el día de su bajada entera del mes, cada índice borra y reescribe
+        # su historia y arranca justo 5 años atrás; BTC tiene la suya de antes. Si eso
+        # cae después del primer día pedido, los índices quedaban AFUERA. Acá arrancan
+        # el primer día hábil después del pedido: con el código de antes da rojo
+        # cualquier día del año.
+        self.yahoo.precios["BTC-USD"] = lambda i, d: 30000 + 10 * i
+        pedido = self.hoy - timedelta(days=1) - timedelta(days=5 * tecnico.DIAS_ANIO - 1)
+        habil = next(pedido + timedelta(days=k) for k in range(1, 8) if (pedido + timedelta(days=k)).weekday() < 5)
+        res = self._cinco_anios("activos=BTC&pesos=100&anios=5", indices_desde=habil)
+        self.assertTrue(res["disponible"], res)
+        self.assertEqual(res["pedido_desde"], pedido.isoformat())
+        self.assertEqual((res["desde"], res["recortado"], res["faltan"]), (habil.isoformat(), False, []))
+        self.assertEqual([x["clave"] for x in res["indices"]], ["sp500", "nasdaq"])
 
     def test_simula_sobre_las_series_de_la_ficha_y_los_indices_de_cada_noche(self):
         r = self._get("activos=AAPL,MSFT&pesos=60,40&anios=2")

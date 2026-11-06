@@ -28,9 +28,9 @@ CUÁNDO ARRANCA. Los últimos `anios` años contados por calendario desde el úl
 precio, como el Backtesting de una regla. Si un activo cotiza desde después,
 arranca el día de ese activo y lo dice (`recorte_por`); hasta una semana después
 no es un recorte (`comparar.DIAS_MARGEN`: el borde de lo guardado, un feriado).
-Los índices, con la misma semana: con 5 años, lo que se pide es justo lo
-guardado, y si ese día cae un sábado el S&P 500 empieza el lunes. Se arranca el
-lunes, en vez de dejarlo afuera de la comparación.
+Los índices, con la misma semana y LA regla de Comparar (`comparar.dia_del_cien`):
+con 5 años, lo que se pide es justo lo guardado, y si ese día cae un sábado el
+S&P 500 empieza el lunes. Se arranca el lunes, en vez de dejarlo afuera.
 
 QUÉ NO HACE. No recomienda nada ni mira para adelante: dice qué habría pasado.
 """
@@ -45,7 +45,7 @@ import tecnico
 import velas_diarias
 from pesado import pesado
 
-# Cuántos activos entran en una cartera (la torta se lee hasta ahí).
+# Cuántos activos entran en una cartera (la tabla y la barra se leen hasta ahí).
 MAX_ACTIVOS = 10
 # Los períodos: hasta todo lo que se guarda (`velas_diarias.ANIOS_GUARDADOS`). Eran
 # los del Backtesting de una regla, que llega a 4 porque la media de 200 necesita
@@ -105,17 +105,13 @@ def simular(activos: list, indices: dict, anios: int) -> dict:
     pedido = (corte + timedelta(days=1)).isoformat()
     primeras = {s: p[0][0] for s, p in puntos.items()}
     ultimo_en_llegar = max(primeras, key=lambda s: (primeras[s], s))
-    base = max(pedido, primeras[ultimo_en_llegar])
-    recortado = comparar._dias(pedido, base) > comparar.DIAS_MARGEN
-    # Un índice que empieza a menos de una semana del pedido (con 5 años, el lunes
-    # después de un sábado) corre el primer día hasta él: sin esto quedaba afuera
-    # por un fin de semana. Uno que empieza mucho después (sin su historia) no
-    # corre nada: queda afuera, en `faltan`.
+    # El primer día, con LA regla de Comparar (`comparar.dia_del_cien`): el primero
+    # que tienen todos los activos, y si un índice empieza unos días después (con 5
+    # años, el lunes después de un sábado), ése. Un índice sin su historia no corre
+    # nada: queda afuera, en `faltan`.
     de_los_indices = {clave: _puntos(indices.get(clave) or []) for clave, _, _ in INDICES}
-    for p in de_los_indices.values():
-        if (p and comparar._dias(pedido, p[0][0]) <= comparar.DIAS_MARGEN
-                and comparar._dias(p[-1][0], hasta) <= comparar.DIAS_VIEJA):
-            base = max(base, p[0][0])
+    base, de_los_activos = comparar.dia_del_cien(pedido, list(puntos.values()), list(de_los_indices.values()), hasta)
+    recortado = comparar._dias(pedido, de_los_activos) > comparar.DIAS_MARGEN
     fechas = sorted({base} | {d for p in puntos.values() for d, _ in p if base < d <= hasta})
     out.update({"pedido_desde": pedido, "recortado": recortado,
                 "recorte_por": ultimo_en_llegar if recortado else None})
@@ -133,11 +129,14 @@ def simular(activos: list, indices: dict, anios: int) -> dict:
     resumen_indices, faltan, curvas = [], [], {}
     for clave, nombre, simbolo in INDICES:
         p = de_los_indices[clave]
+        # Primero si quedó viejo, como Comparar: uno que dejó de llegar y además
+        # empieza en el borde decía «todavía no tenemos la historia» en vez de «no
+        # tenemos precios desde el…» (auditoría de código 06/11, 6).
+        if p and comparar._dias(p[-1][0], hasta) > comparar.DIAS_VIEJA:
+            faltan.append({"clave": clave, "motivo": "vieja", "hasta": p[-1][0]})
+            continue
         if not p or p[0][0] > base:
             faltan.append({"clave": clave, "motivo": "sin_datos"})
-            continue
-        if comparar._dias(p[-1][0], hasta) > comparar.DIAS_VIEJA:
-            faltan.append({"clave": clave, "motivo": "vieja", "hasta": p[-1][0]})
             continue
         linea = _EnCien(p, base)
         curvas[clave] = [linea.al(d) for d in fechas]
