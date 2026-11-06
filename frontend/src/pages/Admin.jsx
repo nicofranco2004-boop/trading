@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send, Gift, Search, MessageSquare, Download } from 'lucide-react'
+import { Shield, ShieldCheck, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send, Gift, Search, MessageSquare, Download } from 'lucide-react'
 import { api } from '../utils/api'
 import { filtrarFilas, contarCaen, contarFrenadas } from '../utils/fxPanel'
 import {
@@ -393,6 +393,9 @@ export default function Admin() {
       <ConversionPanel data={conversion} />
       <TrialFunnelPanel data={trialFunnel} />
       <PruebasResumen data={trialProgress} />
+
+      {/* ── Aviso de los cambios en la política de privacidad (texto fijo) ── */}
+      <AvisoPrivacidadPanel toast={toast} />
 
       {/* ── Broadcast: mail custom que vos escribís a los usuarios ── */}
       <BroadcastPanel toast={toast} />
@@ -800,6 +803,126 @@ function ResultadoEnvio({ envio, sinLista, descartados = 'ya no se podían manda
           marcado como que sí (la base no dejó corregirlo). {trabadas}
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── AvisoPrivacidadPanel — el aviso de los cambios en la política de privacidad ───
+// El texto es FIJO: lo arma el servidor (billing/emails.py, AVISO_PRIVACIDAD_*) y
+// acá sólo se muestra, así este envío no puede mandar otra cosa. A diferencia del
+// mail libre de abajo, le llega también a quien se dio de baja de los
+// promocionales: es un aviso sobre sus datos, no publicidad (la política, §14,
+// promete avisar por mail los cambios importantes). Cada mail lleva el link de
+// baja de su destinatario. Mismo envío de a tandas y sin repetir que el libre.
+function AvisoPrivacidadPanel({ toast }) {
+  const { user } = useAuth()
+  const [testing, setTesting] = useState(false)
+  const { preview, loading, recargar } = useVistaPrevia(
+    () => api.post('/admin/email/aviso-privacidad', { confirm: false }), toast)
+  const envio = useEnvioEnTandas({ url: '/admin/email/aviso-privacidad', toast, recargar })
+  const ocupado = envio.enviando !== null
+
+  async function sendTest() {
+    const addr = (user?.email || '').trim()
+    if (!addr) { toast.push('No encuentro tu email.', { type: 'warn' }); return }
+    setTesting(true)
+    try {
+      const r = await api.post('/admin/email/aviso-privacidad', { test_to: addr })
+      toast.push(r.note || (r.sent ? `Prueba enviada a ${addr}` : 'No se envió'),
+        { type: r.sent ? 'success' : 'warn' })
+    } catch (e) { toast.push('Error: ' + e.message, { type: 'error' }) }
+    finally { setTesting(false) }
+  }
+
+  const recipients = preview?.recipients || []
+  const pendientes = recipients.filter(r => !r.ya_recibio)
+  // Cómo le llega a cada uno: el saludo con su nombre y SU link de baja.
+  const comoLlega = (preview?.cuerpo || '')
+    .replace('{saludo}', 'Hola Ana,')
+    .replace('{baja}', '‹su link para darse de baja›')
+
+  async function send() {
+    const n = pendientes.length
+    if (n === 0) return
+    await envio.enviar({
+      pregunta: `¿Mandar el aviso de la política de privacidad a ${n} usuario${n > 1 ? 's' : ''}?\n\nLe llega también a quien se dio de baja de los promocionales: es un aviso, no publicidad. A los que ya lo recibieron no se les vuelve a mandar.`,
+      cuerpo: {}, vistos: pendientes.map(r => ({ id: r.id })), lote: preview?.lote,
+    })
+  }
+
+  const botonCls = 'flex items-center gap-1.5 text-xs px-3 py-2 rounded bg-bg-2 dark:bg-bg-2/40 text-ink-1 hover:text-ink-0 border border-line/60 disabled:opacity-40'
+
+  return (
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center gap-2">
+        <ShieldCheck size={16} className="text-data-violet" />
+        <h2 className="font-semibold text-ink-0">Aviso · cambios en la política de privacidad</h2>
+      </div>
+      <p className="text-xs text-ink-3 leading-relaxed">
+        El texto es fijo. Le llega a todos los que tienen el mail confirmado, también a quienes se
+        dieron de baja de los promocionales: es un aviso sobre sus datos, no publicidad. Cada mail
+        lleva el link de su destinatario para salir de la lista de Meta y de los promocionales. Los
+        clientes de asesores no lo reciben, como en todos los envíos.
+      </p>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button onClick={sendTest} disabled={testing} className={botonCls}>
+          <Mail size={13} /> {testing ? 'Enviando…' : 'Enviar prueba a mí'}
+        </button>
+        <button onClick={recargar} disabled={loading || ocupado} className={botonCls}>
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Ver el mail y a quién le llega
+        </button>
+      </div>
+
+      {preview && (
+        <div className="space-y-3 pt-1 border-t border-line/30">
+          <div className="space-y-1.5">
+            <p className="text-sm text-ink-0 font-medium">{preview.asunto}</p>
+            <div className="text-[13px] text-ink-1 leading-relaxed whitespace-pre-line bg-bg-1/40 border border-line/40 rounded px-3 py-2 max-h-72 overflow-y-auto">
+              {comoLlega}
+            </div>
+          </div>
+          <p className="text-sm text-ink-1">
+            Le llega a <b className="text-data-violet">{preview.total_recipients}</b> usuario{preview.total_recipients === 1 ? '' : 's'} con el mail confirmado
+            {preview.dados_de_baja > 0 && <> · {preview.dados_de_baja} se dieron de baja de los promocionales y les llega igual</>}
+            {preview.ya_recibieron > 0 && <> · {preview.ya_recibieron} ya lo recibieron y se saltean</>}.
+          </p>
+          {recipients.length > 0 && (
+            <div className="max-h-56 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
+              <table className="w-full text-xs">
+                <thead><tr className="border-b border-line/40 text-ink-3 sticky top-0 bg-bg-2/80 backdrop-blur">
+                  <th className="text-left px-2 py-1">Email</th><th className="text-left px-2 py-1">Nombre</th><th className="text-left px-2 py-1">Estado</th>
+                </tr></thead>
+                <tbody>{recipients.slice(0, 500).map(r => (
+                  <tr key={r.id} className="border-b border-line/20">
+                    <td className="px-2 py-1 text-ink-1">{r.email}</td>
+                    <td className="px-2 py-1 text-ink-2">{r.name || '—'}</td>
+                    <td className="px-2 py-1">
+                      {r.ya_recibio
+                        ? <span className="text-emerald-600 dark:text-emerald-400">ya lo recibió</span>
+                        : <span className="text-ink-3">pendiente{r.dado_de_baja ? ' · se dio de baja de los promocionales' : ''}</span>}
+                    </td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+          {recipients.length > 500 && <p className="text-[11px] text-ink-3">Mostrando los primeros 500 · se envía a todos.</p>}
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <p className="text-[11px] text-ink-3 max-w-md">
+              Sale de a {preview.lote ?? 20} por vez, con una pausa entre mail y mail.
+            </p>
+            <button onClick={send} disabled={ocupado || loading || pendientes.length === 0}
+              className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded bg-data-violet text-white font-medium hover:bg-data-violet/90 disabled:opacity-40 press">
+              <Send size={14} /> {envio.enviando ? envio.textoEnviando : `Enviar a ${pendientes.length}`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <ResultadoEnvio envio={envio} sinLista={!preview}
+        descartados="ya no están en la lista (se desverificaron o borraron la cuenta)"
+        trabadas="Si mandás el aviso otra vez, a esa persona se la saltea." />
     </div>
   )
 }

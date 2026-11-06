@@ -30634,7 +30634,8 @@ def _pagina_baja(titulo: str, texto: str, *, boton: str = "", accion: str = "",
     return Response(content=cuerpo, status_code=status, media_type="text/html; charset=utf-8")
 
 
-_BAJA_QUE_SIGUE = ("Los mails de tu cuenta te siguen llegando igual: los códigos para entrar, "
+_BAJA_QUE_SIGUE = ("Tampoco vas a estar en la lista que le pasamos a Meta para sus anuncios. "
+                   "Los mails de tu cuenta te siguen llegando igual: los códigos para entrar, "
                    "los recibos de pago y las alertas que armaste vos.")
 
 
@@ -30717,7 +30718,7 @@ def email_alta(request: Request, u: str = "", t: str = ""):
 
 
 def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, campaña,
-                  inicio=None, inciertos_previos=0):
+                  inicio=None, inciertos_previos=0, aviso_de_servicio=False):
     """Manda un mail a cada destinatario, de a uno. Es el motor de los seis
     envíos masivos del panel de admin.
 
@@ -30733,6 +30734,14 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
          y no sólo en la lista de cada campaña: así ninguna campaña —tampoco
          una nueva— se lo puede saltear. Y cada mail que sale lleva su link
          de baja (`_mandar_con_baja`).
+         La ÚNICA excepción es `aviso_de_servicio=True`: un aviso sobre los
+         datos o la cuenta de la persona (un cambio en la política de
+         privacidad), que no es publicidad y le tiene que llegar a todos. Ése
+         no mira la baja ni lleva el pie automático (trae su propio link para
+         darse de baja). Lo pasa SÓLO un endpoint con el texto fijo en el
+         código (`/api/admin/email/aviso-privacidad`); nunca uno donde el admin
+         escribe el texto, porque sería una puerta para mandarle promociones a
+         quien pidió no recibirlas.
       1. `marcar(t)` se queda con la persona ANTES de mandar. Devuelve la marca,
          o None si ya la tiene otro pedido (doble click, otra pestaña) → se
          saltea. Se gana con un UPDATE/INSERT condicional: dos pedidos a la vez
@@ -30778,11 +30787,12 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
     with emails.envio_masivo():       # la fila completa de la pausa
         return _envio_masivo_en_fila(conn, destinatarios, vistos, marcar=marcar,
                                      mandar=mandar, desmarcar=desmarcar, campaña=campaña,
-                                     inicio=inicio, inciertos_previos=inciertos_previos)
+                                     inicio=inicio, inciertos_previos=inciertos_previos,
+                                     aviso_de_servicio=aviso_de_servicio)
 
 
 def _envio_masivo_en_fila(conn, destinatarios, vistos, *, marcar, mandar, desmarcar,
-                          campaña, inicio, inciertos_previos):
+                          campaña, inicio, inciertos_previos, aviso_de_servicio=False):
     from billing import emails
     enviados, fallados, salteados, trabadas, inciertos, pendientes = [], [], [], [], [], []
     ya_no_estan = []
@@ -30795,7 +30805,7 @@ def _envio_masivo_en_fila(conn, destinatarios, vistos, *, marcar, mandar, desmar
             break
         quien = {"id": t["id"], "email": t["email"]}
         try:
-            if _se_dio_de_baja(conn, t["id"]):
+            if not aviso_de_servicio and _se_dio_de_baja(conn, t["id"]):
                 ya_no_estan.append({"id": t["id"]})
                 continue
         except Exception as ex:
@@ -30828,8 +30838,11 @@ def _envio_masivo_en_fila(conn, destinatarios, vistos, *, marcar, mandar, desmar
                 _deshacer_transaccion(conn)
                 raise
 
-        estado = tanda.mandar(marca, lambda t=t: _mandar_con_baja(mandar, t), _devolver,
-                              que=f"{campaña} uid={t['id']}")
+        if aviso_de_servicio:
+            envio = lambda t=t: mandar(t)
+        else:
+            envio = lambda t=t: _mandar_con_baja(mandar, t)
+        estado = tanda.mandar(marca, envio, _devolver, que=f"{campaña} uid={t['id']}")
         if estado == emails.ENVIADO:
             enviados.append(quien)
         elif estado == emails.INCIERTO:
@@ -31765,6 +31778,115 @@ def admin_email_reactivar_pausa(data: ReactivarPausaEmailIn, uid: int = Depends(
             campaña=f"reactivar-pausa ({data.grupo})", inicio=t0,
             inciertos_previos=data.inciertos_seguidos)
         res["grupo"] = data.grupo
+        return res
+    finally:
+        conn.close()
+
+
+class AvisoServicioIn(BaseModel):
+    confirm: bool = False        # False = DRY RUN (el mail y a quién le llega, no envía)
+    test_to: Optional[str] = Field(None, max_length=200)  # UN mail de prueba acá y NO toca users
+    vistos: Optional[List[VistoEnvio]] = Field(None, max_length=ENVIO_MASIVO_LOTE)
+    inciertos_seguidos: int = Field(0, ge=0, le=100)
+
+
+def _aviso_privacidad_destinatarios(conn, ids=None):
+    """A quiénes les llega el aviso de la política: todos los que tienen cuenta
+    con el mail confirmado, TAMBIÉN los que se dieron de baja de los
+    promocionales (no es publicidad). Afuera los admins y los clientes que da de
+    alta un asesor, como en todos los envíos del panel. `ids` = sólo esos."""
+    filtro, params = _filtro_ids("id", ids)
+    rows = conn.execute(
+        "SELECT id, email, name, marketing_baja_at FROM users"
+        " WHERE COALESCE(is_admin,0)=0 AND managed_by IS NULL"
+        " AND COALESCE(email_verified,0)=1 AND TRIM(COALESCE(email,'')) <> ''"
+        + filtro + " ORDER BY created_at ASC", params).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/admin/email/aviso-privacidad")
+def admin_email_aviso_privacidad(data: AvisoServicioIn, uid: int = Depends(get_admin_user)):
+    """El aviso de los cambios en la política de privacidad del 06/11/2026: un
+    AVISO DE SERVICIO, con el texto fijo en billing/emails.py
+    (AVISO_PRIVACIDAD_*). A diferencia del envío libre le llega también a quien
+    se dio de baja de los promocionales —la política (§14) promete avisar por
+    mail los cambios importantes, y una baja de la publicidad no es una baja de
+    los avisos sobre tus datos— y no lleva el pie de baja automático: el texto
+    trae el link de baja de cada uno, que lo saca de los promocionales y de la
+    lista para los anuncios de Meta.
+
+    Mismo flujo que el envío libre: `test_to` manda UNO de prueba; sin `confirm`
+    devuelve el mail y la lista (DRY RUN); con `confirm` + `vistos` manda a los
+    que vio el admin, de a tandas, sin repetirle a nadie (broadcast_send_log,
+    por el hash del texto: el mismo aviso no le llega dos veces)."""
+    t0 = time.monotonic()
+    import re
+    from billing import emails
+
+    asunto, cuerpo = emails.AVISO_PRIVACIDAD_ASUNTO, emails.AVISO_PRIVACIDAD_CUERPO
+    content_hash = _broadcast_hash(asunto, cuerpo, False)
+
+    if data.test_to:
+        addr = data.test_to.strip()
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", addr):
+            raise HTTPException(400, "test_to no parece un email válido.")
+        try:
+            # El link de baja de la prueba es el del admin: los admins no
+            # reciben envíos del panel, así que tocarlo no cambia nada.
+            ok = emails.send_aviso_privacidad(to=addr, user_name="(vos)", baja_url=_url_de_baja(uid))
+        except Exception as ex:
+            log.error("aviso-privacidad: la prueba a %s falló: %s", addr, ex)
+            ok = False
+        return {"test": True, "to": addr, "sent": bool(ok),
+                "note": ("Enviado — revisá tu inbox." if ok else
+                         "No se envió (en dev sin RESEND_API_KEY sólo loguea).")}
+
+    conn = get_db()
+    try:
+        if not data.confirm:
+            filas = _aviso_privacidad_destinatarios(conn)
+            ya = {r["email"] for r in conn.execute(
+                "SELECT email FROM broadcast_send_log WHERE content_hash=?",
+                (content_hash,)).fetchall()}
+            return {
+                "dry_run": True,
+                "asunto": asunto,
+                "cuerpo": cuerpo,
+                "lote": ENVIO_MASIVO_LOTE,
+                "total_recipients": len(filas),
+                "ya_recibieron": sum(1 for f in filas if f["email"] in ya),
+                "dados_de_baja": sum(1 for f in filas if f["marketing_baja_at"]),
+                "recipients": [
+                    {"id": f["id"], "email": f["email"], "name": f.get("name"),
+                     "dado_de_baja": bool(f["marketing_baja_at"]), "ya_recibio": f["email"] in ya}
+                    for f in filas
+                ],
+            }
+
+        visto = _vistos_o_422(data.vistos)
+        grupo = _aviso_privacidad_destinatarios(conn, ids=list(visto))
+
+        def marcar(t):
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO broadcast_send_log (content_hash, email) "
+                "SELECT ?, email FROM users WHERE id=? AND email=?",
+                (content_hash, t["id"], t["email"]))
+            if (cur.rowcount or 0) > 0:
+                return content_hash
+            return None if _sigue_existiendo(conn, t["id"]) else _YA_NO_ESTA
+
+        def desmarcar(t, _marca):
+            conn.execute("DELETE FROM broadcast_send_log WHERE content_hash=? AND email=?",
+                         (content_hash, t["email"]))
+
+        res = _envio_masivo(
+            conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
+            mandar=lambda t: emails.send_aviso_privacidad(
+                to=t["email"], user_name=(t.get("name") or ""), baja_url=_url_de_baja(t["id"])),
+            campaña="aviso-privacidad", inicio=t0,
+            inciertos_previos=data.inciertos_seguidos, aviso_de_servicio=True)
+        log.info("Admin %s aviso-privacidad: %d enviados, %d fallidos, %d ya-enviados",
+                 uid, res["sent_count"], res["failed_count"], res["skipped_count"])
         return res
     finally:
         conn.close()
