@@ -180,10 +180,28 @@ export function notaDeLaMoneda(convertida, moneda, escala = null) {
   if (convertida !== 'mep') return ''
   if (moneda === 'usd') return 'El precio en pesos de cada día está pasado a dólares con el MEP de ese día.'
   if (escala) {
-    return 'Precio estimado del CEDEAR: la acción de Nueva York pasada a pesos con el MEP de cada día y dividida '
-      + 'por los CEDEARs que hacen una acción. Puede estar unos pocos % lejos de su precio en la Bolsa.'
+    // Con escala menor a 1 un CEDEAR vale VARIAS acciones (ABEV: tres): dividir
+    // por un tercio es multiplicar por tres, y así hay que decirlo (auditoría
+    // 06/11, H10 de la pantalla).
+    const cuenta = escala < 1
+      ? 'multiplicada por las acciones que hay en un CEDEAR'
+      : 'dividida por los CEDEARs que hacen una acción'
+    return `Precio estimado del CEDEAR: la acción de Nueva York pasada a pesos con el MEP de cada día y ${cuenta}. `
+      + 'Puede estar unos pocos % lejos de su precio en la Bolsa.'
   }
   return 'El precio en dólares de cada día está pasado a pesos con el MEP de ese día.'
+}
+
+/**
+ * Lo que dice la ficha cuando no hay gráfico en pesos: para un CEDEAR sin escala
+ * conocida (`motivo: 'sin_escala'`, backend/tecnico.py) la historia existe; lo
+ * que falta es cuántos CEDEARs hacen una acción. Decía «Este activo no tiene
+ * precio en pesos», que no es cierto (auditoría 06/11, H9 de la pantalla).
+ */
+export function sinPrecioEnPesos(motivo) {
+  return motivo === 'sin_escala'
+    ? 'En pesos no podemos estimar el precio de este CEDEAR: no sabemos con certeza cuántos CEDEARs hacen una acción. Miralo en dólares.'
+    : 'Este activo no tiene precio en pesos.'
 }
 
 /**

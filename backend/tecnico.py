@@ -66,13 +66,23 @@ DIAS_ATRASO = 5
 # Esa escala, medida con la serie en pesos que quedó guardada: la mediana de las
 # últimas ruedas en común (un cierre suelto de un CEDEAR poco operado no la mueve).
 RUEDAS_ESCALA = 5
-# Cuánto puede separarse esa escala medida del ratio de la tabla y seguir siendo
-# el mismo número de CEDEARs por acción: el dólar al que se pagan los CEDEARs
-# estuvo entre 0 y 7 % arriba del MEP en el último año (85 CEDEARs contra BYMA,
-# audit/_scripts/medir_cedear_estimado.out). Más que esto ya es otro número: la
-# tabla quedó vieja o el CEDEAR cambió de ratio después de la última rueda
-# guardada, y no hay cómo saber cuál.
+# Cuánto puede separarse la escala medida (de la serie guardada o del precio de
+# hoy en la Bolsa) del ratio de la tabla y seguir siendo el mismo número de
+# CEDEARs por acción: el dólar al que se pagan los CEDEARs estuvo entre ~4 % abajo
+# y ~8,6 % arriba del MEP en el último año, día por día (85 CEDEARs contra BYMA,
+# audit/_scripts/medir_cedear_estimado.out, «A peor año»; hoy, ~5,8 % arriba en
+# los 160 de la tabla, auditoría 06/11). Más que esto ya es otro número: la tabla
+# quedó vieja o el CEDEAR cambió de ratio (×2, ÷3…), y no se sabe cuál.
 TOLERANCIA_ESCALA = 0.15
+# Lo que acompaña un precio en pesos que no es el de la Bolsa, fuera del gráfico
+# (el resumen de Mervall-E y los avisos por mail; en el pie del gráfico lo dice
+# `notaDeLaMoneda`, en la pantalla): un CEDEAR estimado (con `escala`) o uno sin
+# escala conocida que se mira sólo por sus variaciones (`escala_obligatoria`).
+NOTA_ESTIMADO = ("Los precios en pesos son un estimado del CEDEAR: la acción de Nueva York pasada a pesos "
+                 "con el MEP de cada día, en la escala del CEDEAR. Pueden estar unos pocos % lejos de su "
+                 "precio en la Bolsa.")
+NOTA_SIN_ESCALA = ("Los precios en pesos son los de la acción de Nueva York pasados con el MEP de cada día, "
+                   "no los del CEDEAR: no sabemos con certeza cuántos CEDEARs hacen una acción.")
 
 
 # ─── Cuentas ─────────────────────────────────────────────────────────────────
@@ -655,6 +665,73 @@ def _atrasada(ultima: str, otra: list) -> bool:
     return (date.fromisoformat(otra[-1]["date"]) - date.fromisoformat(ultima)).days > DIAS_ATRASO
 
 
+def _en_la_bolsa(codigo: str):
+    """Lo que data912 dijo del papel `codigo` de BYMA ({c, pct, mercado, …}), de
+    lo que el servidor ya tiene en memoria (`main._data912_en_memoria`, la misma
+    lista con que se valúan los CEDEARs), o None. Sin salir a la red: `serie`
+    corre adentro de las alertas y de pedidos con la base abierta."""
+    try:
+        import main
+        return (main._data912_en_memoria() or {}).get(codigo)
+    except Exception:
+        return None
+
+
+def _es_cedear_en_pesos(a: str, pidio_ba: bool, guardada: list) -> bool:
+    """¿La vista en pesos de `a` es la de un CEDEAR, o sea que la acción de afuera
+    hay que llevarla a su escala? Con lo que se sabe sin salir a la red:
+      · la lista de CEDEARs de la app o la tabla de ratios: sí;
+      · una acción argentina (`AR_STOCK_TICKERS`): no. Su '.BA' es ella misma y el
+        código de afuera es su ADR (GGAL: 10 acciones) u OTRA empresa (AGRO es
+        Agrometal en BYMA y Adecoagro en Nueva York): con una serie vieja de
+        Agrometal, «estimar» mezclaba las dos (auditoría 06/11, H2 de la serie);
+      · si no, la '.BA' que quedó guardada, la que se pidió («PG.BA»: el papel de
+        BYMA) o la lista de CEDEARs de BYMA de data912, la MISMA que usa la bajada
+        (`velas_diarias._yahoo_de`). Con sólo la lista de la app, 212 CEDEARs de
+        BYMA seguían en pesos con la acción entera (PG ×14, DIA ×19; auditoría
+        06/11, H1 de la serie)."""
+    from accion_local import es_cedear
+    from ai.trade_tickers import AR_STOCK_TICKERS
+    from ratios_cedear import ratio_de
+    from snapshots_job import simbolo_byma
+    if es_cedear(a) or ratio_de(a):
+        return True
+    codigo = simbolo_byma(a)[:-3]
+    if codigo in AR_STOCK_TICKERS or a in AR_STOCK_TICKERS:
+        return False
+    if guardada or pidio_ba:
+        return True
+    return (_en_la_bolsa(codigo) or {}).get("mercado") == "arg_cedears"
+
+
+def _escalas_de_hoy(asset: str, en_pesos: list) -> list:
+    """La escala que da el precio del CEDEAR en la Bolsa (data912, en memoria):
+    la acción de afuera en pesos de su última rueda ÷ el CEDEAR. Con el último
+    precio y con el cierre anterior: el de data912 puede ser de la rueda de hoy o
+    de la de ayer, y la última vela de afuera, de cualquiera de las dos. [] si no
+    se sabe: sin precio en memoria, o un CEDEAR que las fuentes de BYMA cotizan en
+    dólares y roto (`main.CEDEAR_USD_RATIOS`: BAC ≈ 9)."""
+    from main import CEDEAR_USD_RATIOS
+    from snapshots_job import simbolo_byma
+    codigo = simbolo_byma(asset)[:-3]
+    b = _en_la_bolsa(codigo) or {}
+    if not en_pesos or codigo in CEDEAR_USD_RATIOS or b.get("mercado") != "arg_cedears":
+        return []
+    try:
+        c = float(b.get("c") or 0)
+    except (TypeError, ValueError):
+        return []
+    precios = [c]
+    try:
+        pct = float(b.get("pct"))
+        if pct > -100:
+            precios.append(c / (1 + pct / 100))
+    except (TypeError, ValueError):
+        pass
+    ultimo = en_pesos[-1].get("close")
+    return [ultimo / p for p in precios if p > 0] if ultimo else []
+
+
 def _escala_en_bolsa(asset: str, en_pesos: list, guardada: list):
     """Cuántas veces entra el papel de BYMA (el CEDEAR) en la acción de afuera
     pasada a pesos con el MEP (`en_pesos`): por esto se divide para estimar el
@@ -664,33 +741,55 @@ def _escala_en_bolsa(asset: str, en_pesos: list, guardada: list):
         alguien tuvo y nadie sigue): lo que daba en sus últimas `RUEDAS_ESCALA`
         ruedas en común, la mediana. Trae adentro el dólar al que se pagaban los
         CEDEARs esos días: el estimado arranca donde terminó el precio de verdad
-        (a 20 ruedas, ~1 % del cierre de BYMA: medir_cedear_estimado.out);
+        (con esta misma regla, a 20 ruedas, 0,8 % del cierre de BYMA en la
+        mediana de 84 CEDEARs: auditoría 06/11, pruebas, medir_regla_real.out);
       · si no, el ratio de la tabla (`ratios_cedear`): unos % abajo de BYMA, porque
         los CEDEARs se pagan con un dólar arriba del MEP (~5 % el 05/11/2026).
-    Si están las dos y se separan más que `TOLERANCIA_ESCALA`, None: la tabla
-    quedó vieja o el CEDEAR cambió de ratio después de la última rueda guardada."""
+    Y se controla contra lo que se sabe del mercado: si la medida y la tabla se
+    separan más que `TOLERANCIA_ESCALA` (la tabla quedó vieja o el CEDEAR cambió
+    de ratio después de la última rueda guardada), o la escala no cierra con el
+    precio de hoy en la Bolsa (`_escalas_de_hoy`), None. Sin ese control, la tabla
+    se creía sin mirar el mercado: Bioceres quedaba 25 % abajo y AstraZeneca 89 %
+    arriba con una nota que decía «unos pocos %» (auditoría 06/11, H1 de la pantalla)."""
     from ratios_cedear import ratio_de
     tabla = ratio_de(asset)
     pesos = {v["date"]: v["close"] for v in guardada if v.get("close")}
     comunes = [v for v in en_pesos if v.get("close") and pesos.get(v["date"])][-RUEDAS_ESCALA:]
-    if not comunes:
-        return tabla
-    cocientes = sorted(v["close"] / pesos[v["date"]] for v in comunes)
-    k = len(cocientes) // 2
-    medida = cocientes[k] if len(cocientes) % 2 else (cocientes[k - 1] + cocientes[k]) / 2
-    if tabla and abs(medida / tabla - 1) > TOLERANCIA_ESCALA:
+    medida = None
+    if comunes:
+        cocientes = sorted(v["close"] / pesos[v["date"]] for v in comunes)
+        k = len(cocientes) // 2
+        medida = cocientes[k] if len(cocientes) % 2 else (cocientes[k - 1] + cocientes[k]) / 2
+    escala = medida or tabla
+    if not escala:
         return None
-    return medida
+
+    def lejos(x, ref):
+        return abs(x / ref - 1) > TOLERANCIA_ESCALA
+    if medida and tabla and lejos(medida, tabla):
+        return None
+    hoy = _escalas_de_hoy(asset, en_pesos)
+    if hoy and all(lejos(escala, m) for m in hoy):
+        return None
+    return escala
 
 
 @pesado
-def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
+def serie(conn, asset: str, moneda: str = "usd", local: bool = False, escala_obligatoria: bool = True) -> dict:
     """La serie de `asset` en `moneda` ('usd' | 'ars') con lo que hay guardado.
-    {velas, ticker, convertida, por, escala} o {velas: []} si no hay. `por`: cómo
-    se convirtió con el MEP ('multiplicar' | 'dividir'; sólo si `convertida`).
-    `escala`: sólo en el estimado de un CEDEAR en pesos, por cuánto se dividió la
-    acción de afuera en pesos (`_escala_en_bolsa`). Es LA decisión de qué serie se
-    dibuja: la vela de hoy (`vela_de_hoy`) y las de 1 y 4 horas la leen de acá.
+    {velas, ticker, convertida, por, escala} o {velas: [], motivo?} si no hay.
+    `por`: cómo se convirtió con el MEP ('multiplicar' | 'dividir'; sólo si
+    `convertida`). `escala`: sólo en el estimado de un CEDEAR en pesos, por cuánto
+    se dividió la acción de afuera en pesos (`_escala_en_bolsa`). Es LA decisión de
+    qué serie se dibuja: la vela de hoy (`vela_de_hoy`) y las de 1 y 4 horas la
+    leen de acá.
+
+    `escala_obligatoria`: un CEDEAR en pesos sin escala conocida no tiene serie
+    (`motivo: 'sin_escala'`): mejor nada que un PRECIO veinte veces más alto. Quien
+    mira sólo variaciones la pide con False y recibe la acción de afuera × el MEP,
+    como antes del estimado: Comparar arranca todo en 100 y las alertas de
+    promedios y del RSI no dependen de la escala (auditoría 06/11, H4 de la serie).
+    Una alerta de línea también: su línea se dibujó sobre ESA serie.
 
     `local`: es una acción ARGENTINA (lo sabe la ficha por tus lotes). Entonces
     en dólares se usa SU precio de BYMA ÷ el MEP, aunque haya guardado un ticker
@@ -702,7 +801,8 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     import velas_diarias
 
     a = (asset or "").strip().upper()
-    if a.endswith(".BA"):
+    pidio_ba = a.endswith(".BA")
+    if pidio_ba:
         a = a[:-3]
     if not a:
         return {"velas": []}
@@ -732,22 +832,22 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
         if not afuera:
             return {"velas": []}
         en_pesos = _convertir(conn, afuera, "multiplicar")
-        from accion_local import es_cedear
-        from ratios_cedear import ratio_de
-        if not (guardada or es_cedear(a) or ratio_de(a)):
-            # Lo que no tiene papel en BYMA (una acción de EE.UU. que no es
-            # CEDEAR, una cripto): ella misma en pesos.
+        if cripto or not _es_cedear_en_pesos(a, pidio_ba, guardada):
+            # Lo que no es un CEDEAR (una acción de EE.UU., una cripto, el ADR de
+            # una acción argentina): ella misma en pesos.
             return {"velas": en_pesos, "ticker": de_afuera, "convertida": "mep", "por": "multiplicar"}
-        # Un CEDEAR (o un papel de BYMA cuya serie quedó vieja): la acción de
-        # afuera × el MEP es la acción ENTERA en pesos, el CEDEAR × su ratio
-        # (Apple ×20, Mercado Libre ×120, BAC ×4 siempre: su '.BA' no se baja).
-        # Se lleva a la escala del CEDEAR; si no se sabe cuál es, en pesos no hay
-        # gráfico: mejor nada que un precio veinte veces más alto (Nico, 06/11/2026).
+        # Un CEDEAR: la acción de afuera × el MEP es la acción ENTERA en pesos, el
+        # CEDEAR × su ratio (Apple ×20, Mercado Libre ×120, BAC ×4 siempre: su
+        # '.BA' no se baja). Se lleva a la escala del CEDEAR; si no se sabe cuál
+        # es, en pesos no hay gráfico (Nico, 06/11/2026).
         escala = _escala_en_bolsa(a, en_pesos, guardada)
-        if not escala:
-            return {"velas": []}
-        return {"velas": _convertir(conn, afuera, "multiplicar", escala), "ticker": de_afuera,
-                "convertida": "mep", "por": "multiplicar", "escala": escala}
+        if escala:
+            return {"velas": _convertir(conn, afuera, "multiplicar", escala), "ticker": de_afuera,
+                    "convertida": "mep", "por": "multiplicar", "escala": escala}
+        if not escala_obligatoria:
+            return {"velas": en_pesos, "ticker": de_afuera, "convertida": "mep", "por": "multiplicar",
+                    "sin_escala": True}
+        return {"velas": [], "motivo": "sin_escala"}
     if afuera:
         return {"velas": afuera, "ticker": de_afuera, "convertida": None}
     if byma:
@@ -1077,7 +1177,10 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
     s = serie(conn, asset, moneda, local)
     velas = s["velas"]
     if not velas:
-        return {"asset": (asset or "").upper(), "moneda": moneda, "disponible": False}
+        # 'sin_escala': un CEDEAR en pesos sin escala conocida (`serie`). La
+        # pantalla y el chat lo dicen así, no como «no hay precios».
+        return {"asset": (asset or "").upper(), "moneda": moneda, "disponible": False,
+                **({"motivo": s["motivo"]} if s.get("motivo") else {})}
     ind = indicadores(velas)
     desde = _desde_dias(velas, DIAS_GRAFICO)
     lect = lectura(velas, ind["m50"], ind["m200"], ind["rsi"], ind["dmi"], ind["sqz"], ind["bb"])

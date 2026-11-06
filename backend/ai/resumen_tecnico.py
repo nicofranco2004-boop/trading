@@ -210,6 +210,13 @@ def generar(hechos: dict) -> dict:
         crudo = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
         graves, largo = problemas(crudo, hechos, segunda=intento == 2)
         if not graves and not largo:
+            if hechos.get("los_precios_en_pesos_son"):
+                # Un CEDEAR estimado en pesos: lo dice SIEMPRE, con la frase de
+                # `tecnico` (la de los mails), sin depender de que el modelo se
+                # acuerde: el pedido arma oraciones fijas y la revisión no lo
+                # exigía (auditoría 06/11, H3 de la pantalla).
+                import tecnico
+                crudo = f"{crudo} {tecnico.NOTA_ESTIMADO}"
             return {**gasto, "texto": crudo, "palabras": len(crudo.split())}
         log.info("Resumen técnico de %s, intento %d: %s", hechos.get("activo"), intento, graves + largo)
         if intento == 2:
@@ -228,13 +235,21 @@ def _ahora() -> str:
 
 
 def clave_de(ficha: dict) -> tuple | None:
-    """(serie, moneda, fecha de la última vela) de una respuesta de la ficha."""
+    """(serie, moneda, fecha de la última vela) de una respuesta de la ficha.
+
+    La serie de un CEDEAR estimado en pesos lleva su escala («AAPL÷20»): es la
+    acción de afuera llevada a la escala del CEDEAR, no la acción entera. Con sólo
+    el ticker, el resumen escrito con la cuenta de antes («cerró en 546.700
+    pesos») se seguía mostrando al lado del gráfico nuevo ($ 27.337) hasta la vela
+    siguiente; y lo mismo el día que la escala cambia (se borra una serie vieja,
+    se corrige la tabla). Auditoría 06/11, H2 de la pantalla."""
     if not ficha or not ficha.get("disponible"):
         return None
     fecha = (ficha.get("lectura") or {}).get("fecha")
     if not (ficha.get("ticker") and fecha):
         return None
-    return (ficha["ticker"], ficha.get("moneda") or "usd", fecha)
+    serie = ficha["ticker"] + (f"÷{round(ficha['escala'], 6):g}" if ficha.get("escala") else "")
+    return (serie, ficha.get("moneda") or "usd", fecha)
 
 
 def _fila(conn, clave):

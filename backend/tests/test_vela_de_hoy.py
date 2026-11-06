@@ -276,6 +276,25 @@ class VelaDeHoyTest(unittest.TestCase):
         self.assertEqual((v["o"], v["h"], v["l"], v["c"]), (301.0 * 50, 306.0 * 50, 299.0 * 50, 304.5 * 50),
                          "el MEP de hoy (1000) ÷ 20 = × 50")
 
+    def test_vela_de_hoy_en_la_escala_medida_de_la_serie_guardada(self):
+        # MELI.BA quedó guardada (alguien la tuvo): la ficha estima con SU escala
+        # (125), no con la de la tabla (120). La vela de hoy, en la MISMA. (Auditoría
+        # 06/11, pruebas: con sólo AAPL a pedido, la tabla en todos lados pasaba.)
+        self._mep(1000.0)
+        self.yahoo.precios["MELI"] = 100.0
+        with main.db_abierta() as conn:
+            for d in _ruedas(self.hoy, 760)[:-14]:
+                conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES ('MELI.BA', ?, ?)",
+                             (d.isoformat(), 100.0 * 1000.0 / 125))
+            conn.commit()
+        with mock.patch("main._fetch_data912_equities", lambda: {"MELI": {"mercado": "arg_cedears"}}):
+            ficha = self.client.get("/api/tecnico/MELI.BA?moneda=ars", headers=self.h).json()
+            self.assertAlmostEqual(ficha["escala"], 125.0, places=6)
+            self.yahoo.hoy_diaria["MELI"] = (101.0, 102.0, 100.0, 101.5, 1000.0)
+            v = self._hoy("MELI.BA", "ars")["velas"][-1]
+        self.assertTrue(v["hoy"])
+        self.assertAlmostEqual(v["c"], 101.5 * 1000.0 / 125, places=3)
+
     def test_sin_vela_todavia_dice_si_la_rueda_sigue(self):
         # Antes de la apertura (o con BYMA abierta pero sin el primer dato, que
         # llega 20 min tarde): sin velas, pero `en_rueda` viaja igual. Antes la

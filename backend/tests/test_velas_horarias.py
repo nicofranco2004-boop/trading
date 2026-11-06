@@ -379,6 +379,37 @@ class HorasTest(unittest.TestCase):
         # En dólares, la acción de afuera tal cual (lo armado en pesos no se mezcla).
         self.assertEqual(self._horas("AAPL", "1h")["puntos"][-1]["c"], 300.0)
 
+    def test_horas_en_la_escala_de_la_serie_guardada_y_al_podarla_la_de_la_tabla(self):
+        # Con la serie en pesos guardada, el diario va en SU escala (125, no la de la
+        # tabla: 120) y las de 1 hora en la misma. Podada esa serie, el diario pasa a
+        # la tabla y las horas también, aunque Yahoo no haya traído nada nuevo: lo
+        # armado se guarda con su escala (auditoría 06/11, pruebas: la tabla en las
+        # horas, o la clave sin la escala, pasaban).
+        hoy = hoy_art_date()
+        with main.db_abierta() as conn:
+            for d in _ruedas(hoy, 800):
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?, 1100, 1000) "
+                             "ON CONFLICT(date) DO NOTHING", (d.isoformat(),))
+            for d in _ruedas(hoy, 760)[:-14]:
+                conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES ('MELI.BA', ?, ?)",
+                             (d.isoformat(), 100.0 * 1000.0 / 125))
+            conn.commit()
+        dias = [date(2026, 10, 27), date(2026, 10, 28)]
+        self.yahoo.horas["MELI"] = [(_hora(d, hh, 30, NY), 100.0, 101.0, 99.0, 100.0, 1.0)
+                                    for d in dias for hh in range(9, 16)]
+        with mock.patch("main._fetch_data912_equities", lambda: {"MELI": {"mercado": "arg_cedears"}}):
+            r = self.client.get("/api/tecnico/MELI.BA?moneda=ars", headers=self.h).json()
+            self.assertAlmostEqual(r["escala"], 125.0, places=6)
+            h1 = self._horas("MELI.BA", "1h", moneda="ars")
+            self.assertAlmostEqual(h1["escala"], 125.0, places=6)
+            self.assertAlmostEqual(h1["puntos"][-1]["c"], 100.0 * 1000.0 / 125, places=3)
+            with main.db_abierta() as conn:
+                conn.execute("DELETE FROM velas_diarias WHERE symbol='MELI.BA'")
+                conn.commit()
+            h1 = self._horas("MELI.BA", "1h", moneda="ars")
+        self.assertEqual(h1["escala"], 120)
+        self.assertAlmostEqual(h1["puntos"][-1]["c"], 100.0 * 1000.0 / 120, places=3)
+
     # ── Cripto ───────────────────────────────────────────────────────────────
 
     def test_cripto_cada_4_horas_desde_las_0_utc_y_la_media_de_200_horas(self):

@@ -1604,12 +1604,33 @@ def _marcar_visto(conn, alert_id: int, symbol, fecha: str) -> None:
     _set_sym_fired(conn, alert_id, _clave_velas(symbol), fecha)
 
 
+class _VelasDeAlerta(list):
+    """Las velas que mira una alerta técnica (una lista como cualquier otra) y de
+    dónde sale su precio en pesos, para que el mail lo diga como el pie del
+    gráfico: `precio_de` 'estimado' (un CEDEAR estimado, `tecnico.NOTA_ESTIMADO`),
+    'afuera' (un CEDEAR sin escala conocida: la acción de afuera × el MEP,
+    `tecnico.NOTA_SIN_ESCALA`) o None (el precio de la Bolsa, o en dólares)."""
+    precio_de = None
+
+
 def _serie_tecnica(conn, alert) -> list:
     """Las velas que mira la alerta: las de la ficha en la moneda elegida
-    (`tecnico.serie`), con la marca de acción argentina igual que la ficha."""
+    (`tecnico.serie`), con la marca de acción argentina igual que la ficha.
+
+    Sin exigir la escala de un CEDEAR estimado en pesos: un cruce de promedio, el
+    RSI o el máximo del año no dependen de ella, y la línea de una alerta se
+    dibujó sobre esta misma serie. Exigiéndola, la alerta en pesos de un CEDEAR
+    sin escala conocida (NET) dejaba de mirar para siempre sin avisar (auditoría
+    06/11, H4 de la serie). La serie se arma entera cada vez con UNA escala: si
+    cambia (la tabla se corrige, se borra la serie vieja), cambia toda junta y no
+    aparece un salto adentro que parezca un cruce."""
     import tecnico
     moneda = "ars" if str(alert["currency"] or "").upper() == "ARS" else "usd"
-    return tecnico.serie(conn, alert["symbol"], moneda, bool(_campo(alert, "accion_local")))["velas"]
+    s = tecnico.serie(conn, alert["symbol"], moneda, bool(_campo(alert, "accion_local")),
+                      escala_obligatoria=False)
+    velas = _VelasDeAlerta(s["velas"])
+    velas.precio_de = "estimado" if s.get("escala") else "afuera" if s.get("sin_escala") else None
+    return velas
 
 
 def arrancar_tecnica(conn, alert) -> None:
@@ -1657,7 +1678,17 @@ def _quien_tecnico(alert, symbol) -> str:
 def _mensaje_tecnico(alert, symbol, ev) -> str:
     """El titular (asunto, push y «Mis alertas»): qué pasó y qué quiere decir, en
     palabras de la ficha. «AAPL pasó para arriba su promedio de 200 días: la
-    tendencia de fondo se volvió alcista»."""
+    tendencia de fondo se volvió alcista». El de una línea lleva un precio: si
+    no es el de la Bolsa (`precio_de`, `_VelasDeAlerta`), lo dice."""
+    texto = _mensaje_tecnico_de(alert, symbol, ev)
+    if alert["senal"] == "linea" and (ev or {}).get("precio_de") == "estimado":
+        return f"{texto} (precio estimado del CEDEAR)"
+    if alert["senal"] == "linea" and (ev or {}).get("precio_de") == "afuera":
+        return f"{texto} (la acción de Nueva York en pesos)"
+    return texto
+
+
+def _mensaje_tecnico_de(alert, symbol, ev) -> str:
     quien = _quien_tecnico(alert, symbol)
     senal, arriba = alert["senal"], ev["sentido"] == "arriba"
     if senal == "linea":
@@ -1696,7 +1727,18 @@ def _mensaje_tecnico(alert, symbol, ev) -> str:
 def _detalle_tecnico(alert, symbol, ev) -> str:
     """La oración del mail (va después de «Hola Nico, »): el día, los números y
     qué quieren decir, con las palabras de las tarjetas de la ficha. Describe lo
-    que pasó; no anticipa (test_detalle_tecnico_no_promete)."""
+    que pasó; no anticipa (test_detalle_tecnico_no_promete). Si los precios en
+    pesos no son los de la Bolsa (`precio_de`), lo dice al final, con la frase de
+    `tecnico` (la del resumen de Mervall-E): antes decía «cerró en $ 20.112» con
+    el número estimado (auditoría 06/11, H8 de la pantalla)."""
+    import tecnico
+    texto = _detalle_tecnico_de(alert, symbol, ev)
+    nota = {"estimado": tecnico.NOTA_ESTIMADO, "afuera": tecnico.NOTA_SIN_ESCALA}.get(
+        (ev or {}).get("precio_de"))
+    return f"{texto} {nota}" if nota else texto
+
+
+def _detalle_tecnico_de(alert, symbol, ev) -> str:
     from cartera_hoy import dia_txt
     from fechas import hoy_art
     sym = _display_symbol(symbol)
@@ -1954,6 +1996,8 @@ def _evaluar_una_tecnica(conn, a, series: dict, visto, piso: str, now, pendiente
         log.info("alert %s %s: %s del %s llegó tarde, no aviso", a["id"], sym, a["senal"], ev["fecha"])
         ev = None
     if ev:
+        if getattr(velas, "precio_de", None):
+            ev = {**ev, "precio_de": velas.precio_de}
         _fire(conn, a, sym, ev["cierre"], None, now, pendientes, tecnica=ev)
         _cumplio_una_vez(conn, a)
     _marcar_visto(conn, a["id"], sym, ultima)
@@ -2150,7 +2194,8 @@ def _evaluar_en_la_rueda(conn, alerts, tickers: dict, ultimas: dict, now, pendie
                 conn, "alert en la rueda", a, a["symbol"], pendientes,
                 lambda propios: _toque_en_la_rueda(
                     conn, a, linea, prep["velas"], vivas, vistos.get(a["id"]), avisados.get(a["id"]),
-                    ya_visto, hoy_ar, r["demora_min"], tc, now, propios))
+                    ya_visto, hoy_ar, r["demora_min"], tc, now, propios,
+                    precio_de="estimado" if prep.get("escala") else None))
             errores += not ok
             avisos += resultado == "avisó"
         # Lo de esta serie queda confirmado antes de salir a Yahoo por la que
@@ -2177,10 +2222,11 @@ def _dolar_de_la_vela(prep, vela: dict):
 
 
 def _toque_en_la_rueda(conn, a, linea, velas: list, vivas: list, visto, avisado, base,
-                       hoy_ar: str, demora_min: int, tc, now, pendientes: list) -> str:
+                       hoy_ar: str, demora_min: int, tc, now, pendientes: list, precio_de=None) -> str:
     """Una alerta de tu línea o tu canal contra la vela de hoy en vivo (la
     última de `vivas`, después de las guardadas `velas`). 'nada', 'mirada' o
-    'avisó'. `base`: lo que anotó antes la rueda (`_ya_visto_en_la_rueda`)."""
+    'avisó'. `base`: lo que anotó antes la rueda (`_ya_visto_en_la_rueda`).
+    `precio_de`: 'estimado' si la serie es un CEDEAR estimado (`_VelasDeAlerta`)."""
     import tecnico
     sym = a["symbol"]
     hoy = vivas[-1]
@@ -2219,7 +2265,7 @@ def _toque_en_la_rueda(conn, a, linea, velas: list, vivas: list, visto, avisado,
         ev = tecnico.toque_de_linea(todas, linea, anterior, ya_visto=ya_visto)
     if not ev:
         return "mirada"
-    ev = {**ev, "en_rueda": True, "demora_min": demora_min}
+    ev = {**ev, "en_rueda": True, "demora_min": demora_min, **({"precio_de": precio_de} if precio_de else {})}
     _fire(conn, a, sym, ev["cierre"], None, now, pendientes, tecnica=ev)
     _cumplio_una_vez(conn, a)
     _set_sym_fired(conn, a["id"], _clave_rueda(sym), hoy["date"])

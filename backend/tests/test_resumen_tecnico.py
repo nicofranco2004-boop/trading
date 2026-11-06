@@ -282,6 +282,38 @@ class ResumenTest(unittest.TestCase):
 
     # ── El recorrido entero ──────────────────────────────────────────────────
 
+    def test_un_cedear_estimado_en_pesos_no_muestra_el_resumen_de_antes_y_dice_que_es_estimado(self):
+        # Apple a pedido, en pesos: el gráfico es el CEDEAR estimado (× el MEP ÷ 20).
+        # Antes era la acción entera, y un resumen escrito ese día con aquella
+        # cuenta («cerró en 546.700 pesos») se seguía mostrando al lado del gráfico
+        # nuevo hasta la vela siguiente: la clave era la misma (auditoría 06/11, H2
+        # de la pantalla). Y el texto nuevo dice que es un estimado sin depender del
+        # modelo (H3).
+        with main.db_abierta() as conn:
+            for d in _ruedas(self.hoy, 760):
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?, 1100.0, 1000.0) "
+                             "ON CONFLICT(date) DO NOTHING", (d.isoformat(),))
+            conn.commit()
+        self.yahoo.precios["AAPL"] = self._serie
+        f = self._ficha("AAPL", moneda="ars")
+        self.assertEqual((f["ticker"], f["escala"]), ("AAPL", 20))
+        fecha = f["lectura"]["fecha"]
+        with main.db_abierta() as conn:          # lo que dejó el código de antes ese día
+            conn.execute("INSERT INTO resumenes_tecnicos (ticker, moneda, fecha_vela, estado, texto, dia) "
+                         "VALUES ('AAPL', 'ars', ?, 'listo', 'El 5 de noviembre cerró en 546.700 pesos.', ?)",
+                         (fecha, self.hoy.isoformat()))
+            conn.commit()
+        self.assertEqual(self._ficha("AAPL", moneda="ars")["resumen"]["estado"], "no_hay")
+        r = self.client.post("/api/tecnico/AAPL/resumen?moneda=ars", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["estado"], "listo")
+        self.assertEqual(r.json()["texto"], f"{BUENO} {tecnico.NOTA_ESTIMADO}")
+        self.assertIn("los_precios_en_pesos_son", self.claude.pedidos[0]["messages"][0]["content"])
+        self.assertEqual(self._fila("AAPL÷20")["estado"], "listo")
+        self.assertEqual(self._ficha("AAPL", moneda="ars")["resumen"]["texto"], f"{BUENO} {tecnico.NOTA_ESTIMADO}")
+        # En dólares, la clave de siempre y el texto del modelo, sin la frase.
+        self.assertEqual(resumen_tecnico.clave_de(self._ficha("AAPL"))[0], "AAPL")
+
     def test_sin_resumen_boton_el_primero_genera_y_el_segundo_lo_ve_gratis(self):
         f = self._ficha()
         self.assertEqual(f["resumen"]["estado"], "no_hay")

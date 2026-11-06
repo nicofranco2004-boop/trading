@@ -71,7 +71,7 @@ import {
   haciaDondeVa,
   RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, conAvisosDeHoy, tarjetaBandas, lineaPromedio, marcas, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, zoomEnElTope, moverVentana, RUEDAS_MINIMAS,
-  ventanaInicial, margenDerecho, futuroMaximo, sumarVelaDeHoy, textoVelaDeHoy, notaDeLaMoneda,
+  ventanaInicial, margenDerecho, futuroMaximo, sumarVelaDeHoy, textoVelaDeHoy, notaDeLaMoneda, sinPrecioEnPesos,
 } from '../../utils/tecnico'
 import { useVelaDeHoy } from '../../hooks/useVelaDeHoy'
 import { cierreDeVela, textoCuenta } from '../../utils/cierreDeVela'
@@ -681,8 +681,11 @@ export default function LecturaTecnica({
       </div>)
   }
   if (!actual?.disponible) {
-    if (moneda === 'ars' && datos.usd?.disponible) {
-      return marco(<p className="text-sm text-ink-2">Este activo no tiene precio en pesos.</p>, { conPesos: false })
+    // Un CEDEAR sin escala conocida (`motivo: 'sin_escala'`): con el menú para
+    // pasar a dólares aunque los dólares todavía no se hayan pedido (se llega
+    // en pesos desde el link de una alerta en pesos: auditoría 06/11, H9).
+    if (moneda === 'ars' && (datos.usd?.disponible || actual?.motivo === 'sin_escala')) {
+      return marco(<p className="text-sm text-ink-2">{sinPrecioEnPesos(actual?.motivo)}</p>, { conPesos: false })
     }
     // Sin velas: el gráfico de siempre. Si el servidor no las pudo traer en el
     // momento (un activo que nadie sigue), se dice por qué (`motivo`).
@@ -1047,8 +1050,11 @@ export default function LecturaTecnica({
     nVista, acercar, serie, cada: horas ? cadaHoras : null,
   })
   // De dónde sale el precio si no es el que cotiza en esta moneda (el MEP; en
-  // pesos, un CEDEAR estimado): la MISMA frase que la imagen de «Compartir».
+  // pesos, un CEDEAR estimado): la MISMA frase que la imagen de «Compartir». La
+  // del estimado va pegada al gráfico, que es donde está el precio que explica:
+  // al final de la sección quedaba después de todas las tarjetas (auditoría 06/11, H11).
   const notaMoneda = notaDeLaMoneda(actual.convertida, moneda, actual.escala)
+  const notaEstimado = moneda === 'ars' && actual.escala ? notaMoneda : ''
 
   return marco(
     <>
@@ -1221,6 +1227,7 @@ export default function LecturaTecnica({
               // caía donde flotan WhatsApp y Mervall-E y quedaba tapado.
               <div className="flex items-start gap-2">
                 <p data-ayuda="" className="flex-1 min-w-0 text-[11.5px] text-ink-2 mt-0.5 leading-snug">
+                  {notaEstimado && <span data-estimado="" className="text-ink-1">{notaEstimado} </span>}
                   {semanales && 'Cada vela es una semana. '}
                   {horas && (
                     <>
@@ -1278,7 +1285,7 @@ export default function LecturaTecnica({
 
       <p className="text-[12px] text-ink-2 mt-3 leading-relaxed">
         {moneda === 'usd' && 'Se mira en dólares aunque uses la app en pesos, porque en pesos el precio también sube con el dólar. Para verlo en pesos, tocá «US$» arriba del gráfico y elegí «Pesos». '}
-        {notaMoneda && `${notaMoneda} `}
+        {notaMoneda && !notaEstimado && `${notaMoneda} `}
         Datos al cierre del {fechaCorta(actual.lectura?.fecha)}. Muestra cómo se movió el precio: no es una recomendación para comprar ni vender.
       </p>
     </>,

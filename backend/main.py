@@ -11257,6 +11257,24 @@ def _fetch_data912_equities():
         return _marcar_caida("data912_acciones", cached or {})
 
 
+# Cuánto puede tener lo último que trajo data912 para usarlo SIN salir a la red
+# (`_data912_en_memoria`). La valuación lo renueva cada `DATA912_TTL` mientras
+# alguien mira su cartera, y la noche al arrancar (`velas_diarias._cedears_de_byma`).
+DATA912_EN_MEMORIA_SEG = 6 * 3600
+
+
+def _data912_en_memoria() -> dict:
+    """Lo último que trajo data912 de los CEDEARs y las acciones de BYMA
+    (`_fetch_data912_equities`), sin salir a la red: {} si nunca trajo nada o si
+    es de hace más de `DATA912_EN_MEMORIA_SEG`. Para quien no puede esperar a la
+    red con la base abierta: `tecnico.serie`, que corre adentro de las alertas y
+    de los pedidos, compara con esto el ratio de un CEDEAR estimado."""
+    datos = _data912_eq_cache.get('data')
+    if not datos or time.time() - (_data912_eq_cache.get('ts') or 0) > DATA912_EN_MEMORIA_SEG:
+        return {}
+    return datos
+
+
 def _resolve_ar_equity_price(symbol):
     """Precio en pesos de un CEDEAR o acción argentina, del feed live de BYMA.
 
@@ -12635,7 +12653,9 @@ def get_tecnico(request: Request, asset: str, moneda: str = "usd", local: int = 
         tickers, motivo = _velas_a_pedido(conn, [(sym, bool(local))], uid)[sym]
         res = tecnico.para_la_ficha(conn, sym, moneda, bool(local), ref)
         if not res.get("disponible"):
-            res["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
+            # La que dijo la ficha manda ('sin_escala': un CEDEAR en pesos sin escala
+            # conocida, `tecnico.serie`); si no, la de la bajada.
+            res["motivo"] = res.get("motivo") or motivo or ("sin_serie" if not tickers else "sin_datos")
         # El resumen de Mervall-E de esta serie y este día de velas, si alguien
         # ya lo pidió (es de todos); si no, si se puede ofrecer el botón.
         from ai import resumen_tecnico
@@ -38761,7 +38781,7 @@ def _lectura_tecnica_para_el_chat(input_data: dict, uid: int, paga: int = None) 
         return {"available": False, "activo": nombre,
                 "reason": "hay mucha gente mirando gráficos en este momento; probá de nuevo en un rato"}
     if not ficha.get("disponible"):
-        ficha["motivo"] = motivo or ("sin_serie" if not tickers else "sin_datos")
+        ficha["motivo"] = ficha.get("motivo") or motivo or ("sin_serie" if not tickers else "sin_datos")
     return lectura_tecnica_chat.para_el_chat(ficha, nombre)
 
 
