@@ -450,10 +450,10 @@ class DeHoy(unittest.TestCase):
                 "tipos": {(a, l): t for a, l, _, t in tenencias}}
 
     def test_solo_lo_que_tiene_precio_de_todos_los_dias_y_sobre_cien(self):
-        r = cs.de_hoy(self._car([("AAPL", False, 600.0, "STOCK"), ("GGAL", True, 300.0, "ACCION"),
-                                 ("AL30", False, 50.0, "BOND"), ("FCI:AHORRO", False, 30.0, "FCI"),
-                                 ("USDT", False, 20.0, "CRYPTO"), ("BTC", False, 100.0, "CRYPTO"),
-                                 ("USD", False, 500.0, None)]))
+        r = self._de_hoy(self._car([("AAPL", False, 600.0, "STOCK"), ("GGAL", True, 300.0, "ACCION"),
+                                    ("AL30", False, 50.0, "BOND"), ("FCI:AHORRO", False, 30.0, "FCI"),
+                                    ("USDT", False, 20.0, "CRYPTO"), ("BTC", False, 100.0, "CRYPTO"),
+                                    ("USD", False, 500.0, None)]))
         self.assertEqual([(a["asset"], a["local"], a["peso"]) for a in r["activos"]],
                          [("AAPL", False, 60.0), ("GGAL", True, 30.0), ("BTC", False, 10.0)])
         self.assertEqual([(x["asset"], x["motivo"]) for x in r["afuera"]],
@@ -462,12 +462,12 @@ class DeHoy(unittest.TestCase):
         self.assertNotIn("valor", json.dumps(r), "sólo porcentajes: nunca la plata")
 
     def test_suman_exactamente_cien_y_mas_de_diez_quedan_los_que_mas_pesan(self):
-        r = cs.de_hoy(self._car([(f"T{i:02d}", False, float(20 - i), "STOCK") for i in range(12)]))
+        r = self._de_hoy(self._car([(f"T{i:02d}", False, float(20 - i), "STOCK") for i in range(12)]))
         self.assertEqual(len(r["activos"]), cs.MAX_ACTIVOS)
         self.assertAlmostEqual(sum(a["peso"] for a in r["activos"]), 100.0, places=9)
         self.assertEqual([x["asset"] for x in r["afuera"]], ["T10", "T11"])
         self.assertEqual({x["motivo"] for x in r["afuera"]}, {"tope"})
-        tercios = cs.de_hoy(self._car([("A", False, 1.0, "STOCK"), ("B", False, 1.0, "STOCK"), ("C", False, 1.0, "STOCK")]))
+        tercios = self._de_hoy(self._car([("A", False, 1.0, "STOCK"), ("B", False, 1.0, "STOCK"), ("C", False, 1.0, "STOCK")]))
         self.assertEqual(sorted(a["peso"] for a in tercios["activos"]), [33.3, 33.3, 33.4])
 
     def test_el_mismo_papel_en_byma_y_en_nueva_york_va_junto_con_la_marca_de_la_ficha(self):
@@ -478,18 +478,18 @@ class DeHoy(unittest.TestCase):
         lotes = [("GGAL", True, 300.0, "ACCION"), ("GGAL", False, 100.0, "STOCK"), ("AAPL", False, 400.0, "STOCK")]
         for orden in (lotes, lotes[::-1], [lotes[1], lotes[0], lotes[2]]):
             with self.subTest(primero=orden[0][:2]):
-                r = cs.de_hoy(self._car(orden))
+                r = self._de_hoy(self._car(orden))
                 self.assertEqual([(a["asset"], a["local"], a["peso"]) for a in r["activos"]],
                                  [("AAPL", False, 50.0), ("GGAL", False, 50.0)])
-        solo_byma = cs.de_hoy(self._car([("GGAL", True, 300.0, "ACCION"), ("AAPL", False, 100.0, "STOCK")]))
+        solo_byma = self._de_hoy(self._car([("GGAL", True, 300.0, "ACCION"), ("AAPL", False, 100.0, "STOCK")]))
         self.assertEqual([(a["asset"], a["local"]) for a in solo_byma["activos"]], [("GGAL", True), ("AAPL", False)])
 
     def test_un_fondo_con_su_codigo_crudo_y_la_renta_fija_quedan_afuera_por_su_tipo(self):
         # COCOSPPA: el importador no lo encontró en el catálogo y quedó sin «FCI:»
         # (frenaba la simulación entera); S30N6 (LECAP) e YMCXO (ON) no se reconocen
         # por el nombre, sólo por el tipo (auditoría 05/11, H2 y D1).
-        r = cs.de_hoy(self._car([("AAPL", False, 900.0, "STOCK"), ("COCOSPPA", True, 50.0, "FUND"),
-                                 ("S30N6", True, 30.0, "LECAP"), ("YMCXO", True, 20.0, "ON")]))
+        r = self._de_hoy(self._car([("AAPL", False, 900.0, "STOCK"), ("COCOSPPA", True, 50.0, "FUND"),
+                                    ("S30N6", True, 30.0, "LECAP"), ("YMCXO", True, 20.0, "ON")]))
         self.assertEqual([(a["asset"], a["peso"]) for a in r["activos"]], [("AAPL", 100.0)])
         self.assertEqual([(x["asset"], x["motivo"]) for x in r["afuera"]],
                          [("COCOSPPA", "sin_serie"), ("S30N6", "sin_serie"), ("YMCXO", "sin_serie")])
@@ -499,20 +499,88 @@ class DeHoy(unittest.TestCase):
         # plata, y se dice (auditoría de producto 05/11, A4). Un porcentaje, nunca plata.
         car = self._car([("AAPL", False, 600.0, "STOCK"), ("AL30", False, 400.0, "BOND")])
         car["total"] = 1200.0   # + US$ 200 de efectivo, que no es una tenencia
-        r = cs.de_hoy(car)
+        r = self._de_hoy(car)
         self.assertEqual(r["parte"], 50)
-        self.assertEqual(cs.de_hoy(self._car([("AL30", False, 400.0, "BOND")]))["parte"], None)
+        self.assertEqual(self._de_hoy(self._car([("AL30", False, 400.0, "BOND")]))["parte"], None)
 
     def test_ninguno_queda_en_cero(self):
         # US$ 20 de BTC al lado de US$ 100.000 en acciones: con 0 % la fila quedaba
         # vacía y la ruta lo rechazaba. Lleva un décimo, sacado del que más pesa
         # (auditoría 05/11, H7).
-        r = cs.de_hoy(self._car([("AAPL", False, 50000.0, "STOCK"), ("MSFT", False, 50000.0, "STOCK"),
-                                 ("BTC", False, 20.0, "CRYPTO")]))
+        r = self._de_hoy(self._car([("AAPL", False, 50000.0, "STOCK"), ("MSFT", False, 50000.0, "STOCK"),
+                                    ("BTC", False, 20.0, "CRYPTO")]))
         pesos = {a["asset"]: a["peso"] for a in r["activos"]}
         self.assertEqual(pesos["BTC"], 0.1)
         self.assertAlmostEqual(sum(pesos.values()), 100.0, places=9)
         self.assertTrue(all(x > 0 for x in pesos.values()), pesos)
+
+    # ─── Lo que no tiene precios de la última semana (pantalla 06/11, H3) ─────
+    # Por la ruta, con la serie de verdad y «hoy» fijo: tests/test_ultimos_n_anios.py,
+    # `MiCarteraDeHoy`. Acá, la regla sola.
+
+    def test_lo_que_no_tiene_precios_de_la_ultima_semana_queda_afuera_y_el_resto_va_en_su_proporcion(self):
+        # Antes MU quedaba adentro y la simulación rechazaba la cartera entera; sacarlo
+        # dejaba 50 y 30, y «Repartir en partes iguales», 50 y 50.
+        parado = (FIN - timedelta(days=60)).isoformat()
+        r = self._de_hoy(self._car([("AAPL", False, 500.0, "STOCK"), ("NVDA", False, 300.0, "STOCK"),
+                                    ("MU", False, 200.0, "STOCK")]), viejas={"MU": parado})
+        self.assertEqual([(a["asset"], a["peso"]) for a in r["activos"]], [("AAPL", 62.5), ("NVDA", 37.5)])
+        self.assertEqual(r["afuera"], [{"asset": "MU", "tipo": "STOCK", "motivo": "vieja", "hasta": parado}])
+        self.assertEqual(r["parte"], 80, "lo que se simula, sin MU")
+
+    def test_la_semana_justa_todavia_entra(self):
+        # El borde de LA regla (`tecnico.es_vieja`): 7 días antes de hoy, adentro; 8, afuera.
+        siete, ocho = ((HOY - timedelta(days=d)).isoformat() for d in (7, 8))
+        r = self._de_hoy(self._car([("A", False, 3.0, "STOCK"), ("B", False, 2.0, "STOCK"), ("C", False, 1.0, "STOCK")]),
+                         viejas={"B": siete, "C": ocho})
+        self.assertEqual([a["asset"] for a in r["activos"]], ["A", "B"])
+        self.assertEqual([(x["asset"], x["hasta"]) for x in r["afuera"]], [("C", ocho)])
+
+    def test_si_ninguno_esta_al_dia_no_se_saca_ninguno(self):
+        # La noche sin correr más de una semana: sacándolos a todos, la tabla quedaba
+        # vacía y decía «Todavía no tenés acciones…». Así la simulación dice desde
+        # cuándo no tenemos precios.
+        viejo = (FIN - timedelta(days=9)).isoformat()
+        tenencias = [("AAPL", False, 500.0, "STOCK"), ("NVDA", False, 300.0, "STOCK"), ("AL30", False, 100.0, "BOND")]
+        r = self._de_hoy(self._car(tenencias), viejas={"AAPL": viejo, "NVDA": viejo})
+        self.assertEqual(r, self._de_hoy(self._car(tenencias)))
+        self.assertEqual([(a["asset"], a["peso"]) for a in r["activos"]], [("AAPL", 62.5), ("NVDA", 37.5)])
+
+    def test_sin_precios_guardados_todavia_no_es_viejo(self):
+        # Lo que nadie bajó todavía (lo compraste hoy) lo baja la simulación, como a un
+        # activo que nadie sigue: no queda afuera.
+        r = self._de_hoy(self._car([("AAPL", False, 500.0, "STOCK"), ("NUEVA", False, 500.0, "STOCK")]),
+                         viejas={"NUEVA": None})
+        self.assertEqual([(a["asset"], a["peso"]) for a in r["activos"]], [("AAPL", 50.0), ("NUEVA", 50.0)])
+        self.assertEqual(r["afuera"], [])
+
+    def test_uno_viejo_entre_los_diez_que_mas_pesan_deja_entrar_al_siguiente(self):
+        # El tope cuenta los que se pueden simular: T00, el que más pesa, está parado;
+        # entra T10, y T11 queda afuera por el tope.
+        r = self._de_hoy(self._car([(f"T{i:02d}", False, float(20 - i), "STOCK") for i in range(12)]),
+                         viejas={"T00": FIN.replace(month=8).isoformat()})
+        self.assertEqual([a["asset"] for a in r["activos"]], [f"T{i:02d}" for i in range(1, 11)])
+        self.assertEqual([(x["asset"], x["motivo"]) for x in r["afuera"]], [("T11", "tope"), ("T00", "vieja")])
+
+    def test_la_serie_se_lee_solo_hasta_llenar_los_diez(self):
+        # Cada pregunta lee la serie entera (la misma que la simulación): con 12 al día,
+        # se pregunta por los 10 que más pesan, en ese orden; con uno viejo, por uno más.
+        tenencias = [(f"T{i:02d}", False, float(20 - i), "STOCK") for i in range(12)]
+        for viejas, preguntados in (({}, 10), ({"T03": FIN.replace(month=8).isoformat()}, 11)):
+            with self.subTest(viejas=viejas):
+                pedidos = []
+
+                def hasta(asset, local, viejas=viejas):
+                    pedidos.append(asset)
+                    return viejas.get(asset, FIN.isoformat())
+                cs.de_hoy(self._car(tenencias), hasta, HOY)
+                self.assertEqual(pedidos, [f"T{i:02d}" for i in range(preguntados)])
+
+    def _de_hoy(self, car, viejas=None):
+        """`de_hoy` con `viejas`: {activo: día de su último precio, o None si no hay}. Los
+        demás, al día (su último precio, el día anterior a HOY)."""
+        viejas = viejas or {}
+        return cs.de_hoy(car, lambda asset, local: viejas.get(asset, FIN.isoformat()), HOY)
 
 
 def _casos_de_la_pantalla():
@@ -545,6 +613,17 @@ def _casos_de_la_pantalla():
     return json.loads(json.dumps(casos))
 
 
+def _de_hoy_de_la_pantalla():
+    """Las respuestas de «Mi cartera de hoy» que leen las pruebas de la pantalla."""
+    tenencias = {("AAPL", False): 500.0, ("NVDA", False): 300.0, ("MU", False): 200.0}
+    car = {"tenencias": tenencias, "tipos": dict.fromkeys(tenencias, "STOCK")}
+    return json.loads(json.dumps({
+        # MU parado desde el 14/08 (pantalla 06/11, H3): MU afuera, y AAPL y NVDA en su
+        # proporción. Es lo que se le mostró a Nico el 06/11.
+        "vieja": cs.de_hoy(car, lambda asset, local: "2026-08-14" if asset == "MU" else FIN.isoformat(), HOY),
+    }))
+
+
 class LoQueLeeLaPantalla(unittest.TestCase):
 
     def test_las_pruebas_de_la_pantalla_leen_lo_que_da_el_servidor(self):
@@ -565,6 +644,19 @@ class LoQueLeeLaPantalla(unittest.TestCase):
         self.assertIsNone(casos["todos_restan"]["anio_por_anio"])
         self.assertEqual([t["completo"] for t in casos["tres_anios"]["anio_por_anio"]["tramos"]], [True] * 3)
         self.assertEqual([t["completo"] for t in casos["tramo_corto"]["anio_por_anio"]["tramos"]], [False, True])
+
+    def test_las_pruebas_de_la_pantalla_leen_la_cartera_de_hoy_que_da_el_servidor(self):
+        """fixtures/cartera_de_hoy.json, lo mismo para «Mi cartera de hoy»: la salida de
+        `de_hoy`, no una armada a mano. Para rearmarlo: CARTERA_REESCRIBIR=1."""
+        ruta = os.path.join(FIXTURES, "cartera_de_hoy.json")
+        casos = _de_hoy_de_la_pantalla()
+        if os.environ.get("CARTERA_REESCRIBIR"):
+            with open(ruta, "w") as f:
+                json.dump(casos, f, ensure_ascii=False, indent=1)
+        with open(ruta) as f:
+            self.assertEqual(json.load(f), casos)
+        self.assertEqual([(a["asset"], a["peso"]) for a in casos["vieja"]["activos"]], [("AAPL", 62.5), ("NVDA", 37.5)])
+        self.assertEqual(casos["vieja"]["afuera"], [{"asset": "MU", "tipo": "STOCK", "motivo": "vieja", "hasta": "2026-08-14"}])
 
     def test_los_indices_de_la_cartera_se_bajan_todas_las_noches(self):
         # Dos listas: contra cuáles se compara y cuáles baja la noche. Uno que se

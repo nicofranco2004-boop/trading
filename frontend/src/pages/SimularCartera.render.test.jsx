@@ -882,3 +882,23 @@ describe('«vieja» contra hoy, en la página: lo que dice depende de cuántos a
     expect(montado.t()).toContain('No tenemos precios de MU desde el 04/09/26: sacalo para simular el resto.')
   })
 })
+
+// «Mi cartera de hoy» con un activo que dejó de cotizar (auditoría de pantalla 06/11,
+// H3; Nico, 06/11: «Sí, así»): antes abría con MU, no simulaba, y al sacarlo quedaba
+// «Faltan 20%». Con la respuesta de verdad del servidor (fixtures/cartera_de_hoy.json,
+// que backend/tests/test_cartera_simulada.py compara contra cartera_simulada.de_hoy).
+describe('«Mi cartera de hoy» con un activo sin precios de la última semana', () => {
+  const DE_HOY = JSON.parse(readFileSync(resolve(AQUI, '../../../backend/tests/fixtures/cartera_de_hoy.json'), 'utf8'))
+
+  it('abre sin él, con el resto en su proporción, lo simula de entrada y dice por qué quedó afuera', async () => {
+    hoyDelServidor = () => DE_HOY.vieja
+    montado = await abrir('/analisis-tecnico?tab=backtesting&modo=cartera')
+    expect(porcentajes(montado.contenedor)).toEqual([['AAPL', '62,5'], ['NVDA', '37,5']])
+    const t = montado.t()
+    expect(t).toContain('Suma 100%')
+    expect(t).not.toContain('Faltan')
+    expect(t).toContain('Lo que se simula es el 80% de tu plata. Quedó afuera MU: sus precios llegan hasta el 14/08/26. '
+      + 'El resto se repartió sobre 100%.')
+    expect(simulaciones()).toEqual(['GET /backtest/cartera?activos=AAPL,NVDA&pesos=62.5,37.5&anios=2'])
+  })
+})

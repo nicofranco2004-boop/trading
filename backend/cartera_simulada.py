@@ -261,14 +261,28 @@ def _sobre_cien(valores: list, decimales: int = 1) -> list:
     return [e / paso for e in enteros]
 
 
-def de_hoy(car: dict) -> dict:
+def de_hoy(car: dict, hasta, hoy: date) -> dict:
     """«Mi cartera de hoy»: los activos de `car` (`senales_semana.cartera`, LA
     valuación de «tu plata») que se pueden simular, con su peso sobre 100 entre
     ellos (los porcentajes, nunca la plata). Quedan afuera, y se dice cuáles:
       · los que no tienen precio de todos los días (bonos, letras, fondos,
         efectivo, monedas estables): LA regla de la noche (`velas_diarias._yahoo_de`
         devuelve vacío), no una lista copiada;
+      · los que no tienen precios de la última semana, contada desde `hoy`:
+        LA regla con que después los rechaza la simulación (`tecnico.es_vieja`),
+        con la fecha de LA serie con que se simula (`hasta`). Un activo que dejó
+        de cotizar frenaba la cartera entera, y al sacarlo quedaba «Faltan 20%»:
+        la única forma de volver a tus pesos era hacer la cuenta a mano
+        (auditoría de pantalla 06/11, H3; Nico, 06/11: «Sí, así»). Si no queda
+        ninguno al día (la noche sin correr más de una semana), no se saca
+        ninguno: sin ellos la tabla quedaba vacía y decía «Todavía no tenés
+        acciones…»; con ellos, la simulación dice desde cuándo no hay precios;
       · si son más de `MAX_ACTIVOS`, los que menos pesan.
+    `hasta(asset, local)`: el día del último precio con que se simularía
+    (`ultimo_precio`), o None si todavía no hay ninguno (lo baja la simulación,
+    como a un activo que nadie sigue): ése no queda afuera. Se pregunta de mayor
+    a menor peso, sólo hasta llenar los `MAX_ACTIVOS`: cada pregunta lee la
+    serie entera, la misma que lee la simulación.
     El mismo papel en BYMA y en Nueva York (GGAL de IOL y el ADR de Schwab) va
     junto: la cartera no repite activos. Su marca `local` es LA de la ficha
     (`esAccionLocal` de utils/accionLocal.js): acción argentina sólo si TODOS sus
@@ -293,8 +307,18 @@ def de_hoy(car: dict) -> dict:
         if valor > j["mayor"]:
             j.update(mayor=valor, tipo=tipo)
     orden = sorted(juntos.values(), key=lambda j: (-j["valor"], j["asset"]))
-    quedan, sobran = orden[:MAX_ACTIVOS], orden[MAX_ACTIVOS:]
-    afuera += [{"asset": j["asset"], "tipo": j["tipo"], "motivo": "tope"} for j in sobran]
+    quedan, viejas, k = [], [], 0
+    while k < len(orden) and len(quedan) < MAX_ACTIVOS:
+        j, k = orden[k], k + 1
+        h = hasta(j["asset"], j["local"])
+        if h and tecnico.es_vieja(h, hoy):
+            viejas.append({"asset": j["asset"], "tipo": j["tipo"], "motivo": "vieja", "hasta": h})
+        else:
+            quedan.append(j)
+    sobran = orden[k:]
+    if not quedan:
+        quedan, sobran, viejas = orden[:MAX_ACTIVOS], orden[MAX_ACTIVOS:], []
+    afuera += viejas + [{"asset": j["asset"], "tipo": j["tipo"], "motivo": "tope"} for j in sobran]
     pesos = _sobre_cien([j["valor"] for j in quedan]) if quedan else []
     total = car.get("total") or sum(v for v in car["tenencias"].values() if v > 0)
     simulado = sum(j["valor"] for j in quedan)
@@ -304,14 +328,29 @@ def de_hoy(car: dict) -> dict:
             "parte": round(simulado / total * 100) if total > 0 and quedan else None}
 
 
+def _serie(conn, asset: str, local: bool) -> dict:
+    """LA serie con que se simula un activo: la de la ficha, en dólares (`tecnico.serie`)."""
+    return tecnico.serie(conn, asset, "usd", local)
+
+
+def ultimo_precio(conn, asset: str, local: bool):
+    """El día del último precio con que se simularía `asset` (`_serie`, con las
+    velas que sirven: `_puntos`), o None si todavía no hay ninguno. Lo pregunta
+    «Mi cartera de hoy» (`de_hoy`). Con otra serie diría «al día» lo que la
+    simulación rechaza: una acción argentina guardada hasta ayer, sin MEP de las
+    últimas semanas, se simula sólo hasta el último día con dólar."""
+    p = _puntos(_serie(conn, asset, local)["velas"])
+    return p[-1][0] if p else None
+
+
 @pesado
 def para_la_pantalla(conn, activos: list, anios: int, hoy: date) -> dict:
-    """La simulación con LAS series de la ficha (`tecnico.serie`) y los índices que
-    se guardan todas las noches (`tecnico.indice`). `activos`: [(asset, local, peso)].
+    """La simulación con LAS series de la ficha (`_serie`) y los índices que se
+    guardan todas las noches (`tecnico.indice`). `activos`: [(asset, local, peso)].
     `hoy`: el día argentino."""
     lista = []
     for asset, local, peso in activos:
-        s = tecnico.serie(conn, asset, "usd", local)
+        s = _serie(conn, asset, local)
         lista.append({"asset": asset, "local": bool(local), "peso": peso, "velas": s["velas"],
                       "ticker": s.get("ticker"), "convertida": s.get("convertida")})
     return simular(lista, {clave: tecnico.indice(conn, simbolo) for clave, _, simbolo in INDICES}, anios, hoy)
