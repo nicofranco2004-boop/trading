@@ -884,8 +884,12 @@ function AvisoPrivacidadPanel({ toast }) {
           </div>
           <p className="text-sm text-ink-1">
             Le llega a <b className="text-data-violet">{preview.total_recipients}</b> usuario{preview.total_recipients === 1 ? '' : 's'} con el mail confirmado
-            {preview.dados_de_baja > 0 && <> · {preview.dados_de_baja} se dieron de baja de los promocionales y les llega igual</>}
-            {preview.ya_recibieron > 0 && <> · {preview.ya_recibieron} ya lo recibieron y se saltean</>}.
+            {preview.dados_de_baja > 0 && <> · {preview.dados_de_baja === 1
+              ? '1 se dio de baja de los promocionales y le llega igual'
+              : `${preview.dados_de_baja} se dieron de baja de los promocionales y les llega igual`}</>}
+            {preview.ya_recibieron > 0 && <> · {preview.ya_recibieron === 1
+              ? '1 ya lo recibió y se saltea'
+              : `${preview.ya_recibieron} ya lo recibieron y se saltean`}</>}.
           </p>
           {recipients.length > 0 && (
             <div className="max-h-56 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
