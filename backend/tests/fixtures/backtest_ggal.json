@@ -100,6 +100,7 @@
    }
   ],
   "ruedas": 501,
+  "variacion_desde": "2024-10-25",
   "variacion_precio": -34.79309744360775
  },
  "media200": {
@@ -230,6 +231,7 @@
    }
   ],
   "ruedas": 384,
+  "variacion_desde": "2025-04-16",
   "variacion_precio": -41.472353674530595
  },
  "media50": {
@@ -360,6 +362,7 @@
    }
   ],
   "ruedas": 501,
+  "variacion_desde": "2024-10-25",
   "variacion_precio": -34.79309744360775
  },
  "media50,adx_squeeze": {
@@ -570,6 +573,7 @@
    }
   ],
   "ruedas": 501,
+  "variacion_desde": "2024-10-25",
   "variacion_precio": -34.79309744360775
  },
  "media50,rsi,adx_squeeze": {
@@ -824,6 +828,7 @@
    }
   ],
   "ruedas": 501,
+  "variacion_desde": "2024-10-25",
   "variacion_precio": -34.79309744360775
  },
  "rsi": {
@@ -891,6 +896,7 @@
    }
   ],
   "ruedas": 501,
+  "variacion_desde": "2024-10-25",
   "variacion_precio": -34.79309744360775
  },
  "rsi,adx_squeeze": {
@@ -1038,6 +1044,7 @@
    }
   ],
   "ruedas": 501,
+  "variacion_desde": "2024-10-25",
   "variacion_precio": -34.79309744360775
  },
  "rsi,media200": {
@@ -1212,6 +1219,7 @@
    }
   ],
   "ruedas": 384,
+  "variacion_desde": "2025-04-16",
   "variacion_precio": -41.472353674530595
  }
 }

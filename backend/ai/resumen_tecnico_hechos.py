@@ -98,11 +98,15 @@ def proporcion(q):
 
 def _cierre_hace(puntos, dias):
     """El cierre de `dias` atrás (o el último anterior): el precio de arranque de LA
-    regla, `tecnico.dia_de_arranque`, la misma de Comparar y del Backtesting."""
+    regla, `tecnico.dia_de_arranque`, la misma de Comparar y del Backtesting. None
+    si es de más de 10 días antes (`tecnico.base_vieja`, como la ganancia de 12
+    meses de la ficha: después de un hueco de precios no se dice «en un año»)."""
     import tecnico
     piso = tecnico.dia_de_arranque(puntos[-1]["d"], dias)
     previos = [p for p in puntos if p["d"] <= piso]
-    return previos[-1] if previos else None
+    if not previos or tecnico.base_vieja(previos[-1]["d"], puntos[-1]["d"], dias):
+        return None
+    return previos[-1]
 
 
 def _mov(p0, p1, moneda, hoy):

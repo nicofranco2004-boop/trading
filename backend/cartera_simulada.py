@@ -25,7 +25,7 @@ CÓMO SE SIMULA.
     los índices también.
 
 CUÁNDO ARRANCA. Los últimos `anios` años contados por calendario desde el último
-precio, con la compra al cierre de `anios` años atrás, de fecha a fecha
+precio, con la compra al cierre de `anios` × 365 días atrás
 (`tecnico.dia_de_arranque`, LA regla de la ficha y de Comparar; Nico, 06/11:
 «como la ficha». Con el cierre del primer día, un día movido daba otro número que
 la ficha). Un activo o un índice sin precios de la última semana, contada desde

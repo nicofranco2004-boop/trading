@@ -1,5 +1,12 @@
 """«Los últimos N años» y «sin precios de la última semana»: UNA regla en las
-pantallas que comparan precios (`tecnico.primer_dia` y `tecnico.es_vieja`).
+pantallas que comparan precios (`tecnico.dia_de_arranque`, el día del precio de
+arranque, con `tecnico.primer_dia`, el siguiente, y `tecnico.es_vieja`).
+
+EL PRECIO DE ARRANQUE (Nico, 06/11/2026: «como la ficha»). El cierre de N × 365
+días antes del último precio, o el último cierre anterior si ese día no hubo rueda:
+la ficha (su ganancia de 12 meses), Comparar → Precio, «Una cartera» y lo que Una
+regla dice que hizo el precio dan el mismo número (`LasTresPantallas`, con la ficha
+como cuarta).
 
 LA DECISIÓN (Nico, 06/11/2026). «1 año» y «3 años» se cuentan desde el último
 precio, como ya lo hacían la ficha, el Backtesting de una regla y «Una cartera».
@@ -430,6 +437,25 @@ class LaRegla(unittest.TestCase):
         self.assertEqual(tecnico.primer_dia("2028-03-01", 365), "2027-03-03")      # con un 29 de febrero
         self.assertEqual(tecnico.primer_dia("2026-11-04", 1), "2026-11-04")
 
+    def test_el_precio_de_arranque_es_el_del_dia_anterior_al_primero(self):
+        # 365 días corridos para atrás: con un 29 de febrero en el medio, el día
+        # siguiente a la fecha de un año antes (auditoría 06/11 del precio de arranque, H4).
+        self.assertEqual(tecnico.dia_de_arranque("2026-11-04", 365), "2025-11-04")
+        self.assertEqual(tecnico.dia_de_arranque("2026-11-06", 3 * 365), "2023-11-07")
+        self.assertEqual(tecnico.dia_de_arranque("2024-03-08", 365), "2023-03-09")      # con un 29 de febrero
+        self.assertEqual(tecnico.dia_de_arranque("2026-11-04", 1), "2026-11-03")
+        for ultimo in ("2026-11-04", "2026-04-02", "2028-03-01", "2024-03-08"):
+            for dias in (1, 91, 365, 3 * 365, 5 * 365):
+                siguiente = date.fromisoformat(tecnico.dia_de_arranque(ultimo, dias)) + timedelta(days=1)
+                self.assertEqual(tecnico.primer_dia(ultimo, dias), siguiente.isoformat(), (ultimo, dias))
+
+    def test_el_cierre_de_arranque_es_viejo_a_mas_de_diez_dias(self):
+        # El día de arranque de «1 año» del 04/11/2026 es el 04/11/2025. La ficha y su
+        # resumen ✦ no cuentan un año desde un cierre de antes de un hueco de precios.
+        self.assertFalse(tecnico.base_vieja("2025-11-04", "2026-11-04", 365))
+        self.assertFalse(tecnico.base_vieja("2025-10-25", "2026-11-04", 365), "10 días: todavía sirve")
+        self.assertTrue(tecnico.base_vieja("2025-10-24", "2026-11-04", 365))
+
     def test_vieja_es_mas_de_una_semana_contada_desde_hoy(self):
         hoy = date(2026, 11, 5)
         self.assertFalse(tecnico.es_vieja("2026-11-04", hoy))
@@ -565,10 +591,11 @@ class UnaReglaVieja(unittest.TestCase):
 
 class UnSoloLugar(unittest.TestCase):
     """Las pantallas que comparan precios no cortan «N años» ni miden «vieja» por
-    su cuenta: lo hace `tecnico.primer_dia` / `tecnico.es_vieja`. Tres copias de la
-    regla fueron tres respuestas distintas para el mismo activo (H4, 05/11)."""
+    su cuenta: lo hace `tecnico.dia_de_arranque` (y `primer_dia`) / `tecnico.es_vieja`.
+    Tres copias de la regla fueron tres respuestas distintas para el mismo activo
+    (H4, 05/11). El resumen ✦ de la ficha también: tenía su propia resta de días."""
 
-    PANTALLAS = ("comparar.py", "backtest.py", "cartera_simulada.py")
+    PANTALLAS = ("comparar.py", "backtest.py", "cartera_simulada.py", "ai/resumen_tecnico_hechos.py")
 
     def test_ninguna_pantalla_tiene_su_copia_de_la_regla(self):
         # Una copia de la regla resta días a una fecha (`timedelta`) o compara contra
@@ -577,9 +604,11 @@ class UnSoloLugar(unittest.TestCase):
         for nombre in self.PANTALLAS:
             with open(os.path.join(BACKEND, nombre), encoding="utf-8") as f:
                 fuente = f.read()
-            self.assertNotIn("timedelta", fuente, f"{nombre}: las fechas, con tecnico.primer_dia")
+            self.assertNotIn("timedelta", fuente, f"{nombre}: las fechas, con tecnico.dia_de_arranque")
             self.assertNotIn("DIAS_VIEJA", fuente, f"{nombre}: lo viejo, con tecnico.es_vieja")
-            self.assertIsNone(re.search(r"def _?primer_dia\b|def _?es_viej", fuente), f"{nombre}: otra copia de la regla")
+            self.assertNotIn("DIAS_BASE_ANIO", fuente, f"{nombre}: el cierre de arranque viejo, con tecnico.base_vieja")
+            self.assertIsNone(re.search(r"def _?(primer_dia|dia_de_arranque|base_viej\w*|es_viej\w*)\b", fuente),
+                              f"{nombre}: otra copia de la regla")
 
     def test_la_ruta_de_comparar_no_elige_el_dia(self):
         # El día lo elige comparar.comparar, que sabe cuál es el último precio.

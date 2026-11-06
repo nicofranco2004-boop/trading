@@ -26,7 +26,7 @@ CÓMO SE ELIGE EL DÍA DEL 100.
     los últimos N años que terminan en el último precio de los activos, no hoy
     (Nico, 06/11/2026: desde hoy, un domingo, un lunes o después de un feriado
     arrancaba otro día que el Backtesting para el mismo activo), y el 100 es el
-    cierre de N años atrás, de fecha a fecha (`tecnico.dia_de_arranque`, LA regla
+    cierre de N × 365 días atrás (`tecnico.dia_de_arranque`, LA regla
     de la ficha y de «Una cartera»; Nico, 06/11: «como la ficha»). Con el cierre
     del primer día, un día movido daba otro número que la ficha (+21 % contra +5 %).
   · Si `desde` cae un día sin precio (fin de semana, feriado), vale el último

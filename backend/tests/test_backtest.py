@@ -219,9 +219,14 @@ class LoQueVeLaPantalla(unittest.TestCase):
         velas = _ggal()
         _, r = _una(velas, "rsi", 2)
         i0 = [v["date"] for v in velas].index(r["desde"])
+        # Dos años de 365 días antes del último precio (27/10/2026) es el domingo
+        # 27/10/2024: la prueba arranca el lunes 28 y el precio, con el cierre del
+        # viernes 25. Contado a mano en el CSV: 35,14 ÷ 53,89 − 1 = −34,79 %.
+        self.assertEqual((r["desde"], r["variacion_desde"]), ("2024-10-28", "2024-10-25"))
+        self.assertEqual(velas[i0 - 1]["date"], r["variacion_desde"])
         esperado = (velas[-1]["close"] / velas[i0 - 1]["close"] - 1) * 100
         self.assertAlmostEqual(r["variacion_precio"], esperado, places=9)
-        self.assertLessEqual(velas[i0 - 1]["date"], tecnico.dia_de_arranque(velas[-1]["date"], 2 * tecnico.DIAS_ANIO))
+        self.assertAlmostEqual(r["variacion_precio"], -34.79, places=2)
         c = backtest.COMISION
         self.assertAlmostEqual(1 + r["mantener"]["resultado"] / 100,
                                velas[-1]["close"] / velas[i0]["open"] * (1 - c) ** 2, places=9)
