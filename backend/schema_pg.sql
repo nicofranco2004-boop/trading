@@ -2512,6 +2512,12 @@ CREATE INDEX IF NOT EXISTS idx_advisor_linkreq_client
 CREATE INDEX IF NOT EXISTS idx_advisor_linkreq_token
                 ON advisor_link_requests(token);
 
+CREATE INDEX IF NOT EXISTS idx_advisor_op_batch_items_batch
+                ON advisor_op_batch_items(batch_id);
+
+CREATE INDEX IF NOT EXISTS idx_advisor_op_batches_advisor
+                ON advisor_op_batches(advisor_uid);
+
 CREATE INDEX IF NOT EXISTS idx_advisor_reports_client
                 ON advisor_reports(advisor_uid, client_uid, created_at);
 
@@ -2550,6 +2556,8 @@ CREATE INDEX IF NOT EXISTS idx_billing_events_user
 CREATE INDEX IF NOT EXISTS idx_bond_indices_date ON bond_indices_daily(date);
 
 CREATE INDEX IF NOT EXISTS idx_bond_skips_user ON bond_cashflow_skips(user_id, broker, asset);
+
+CREATE INDEX IF NOT EXISTS idx_brokers_parent ON brokers(parent_broker_id);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_payment_dedup
                 ON credit_ledger(source_subscription_id, payment_id, kind)
@@ -2598,13 +2606,22 @@ CREATE INDEX IF NOT EXISTS idx_import_norm_excluded ON import_normalized_tx(batc
 
 CREATE INDEX IF NOT EXISTS idx_import_norm_fingerprint ON import_normalized_tx(fingerprint);
 
+CREATE INDEX IF NOT EXISTS idx_import_norm_raw_row
+                ON import_normalized_tx(raw_row_id);
+
 CREATE INDEX IF NOT EXISTS idx_import_op_links_batch ON import_op_links(batch_id);
 
 CREATE INDEX IF NOT EXISTS idx_import_op_links_op ON import_op_links(operation_id);
 
 CREATE INDEX IF NOT EXISTS idx_import_op_links_pos ON import_op_links(position_id);
 
+CREATE INDEX IF NOT EXISTS idx_import_op_links_raw_row ON import_op_links(raw_row_id);
+
 CREATE INDEX IF NOT EXISTS idx_import_raw_rows_batch ON import_raw_rows(batch_id);
+
+CREATE INDEX IF NOT EXISTS idx_iol_lab_runs_user ON iol_lab_runs(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_iol_lab_token_log_user ON iol_lab_token_log(user_id);
 
 CREATE INDEX IF NOT EXISTS idx_login_history_ua ON login_history(user_id, ua_hash);
 

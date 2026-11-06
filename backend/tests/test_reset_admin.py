@@ -1,10 +1,11 @@
 """Reset de ADMIN por email (POST /api/admin/reset-user): deja una cuenta como el
 día que se registró, SIN tocar el login ni el plan pago.
 
-Por qué existe: "Empezar de cero" (el botón del usuario) está pausado desde el
-13/08 porque un borrado masivo desbordaba el escritor único de SQLite y el
-`database is locked` le salía a TODOS. Este camino lo dispara una sola persona,
-en el momento que elige, midiendo antes cuántas filas son y frenando entre tandas.
+Por qué existe: "Empezar de cero" (el botón del usuario) estuvo pausado del 13/08
+al pasaje a Postgres porque un borrado masivo desbordaba el escritor único de
+SQLite y el `database is locked` le salía a TODOS. Este camino lo dispara una sola
+persona, en el momento que elige, midiendo antes cuántas filas son y frenando entre
+tandas; y borra más que el del usuario («como la primera vez»).
 
 Lo que estos tests fijan, en orden de gravedad:
   1. NO puede tocar plata ni identidad (plan, suscripción, crédito, login).

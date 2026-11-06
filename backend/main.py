@@ -2031,6 +2031,10 @@ def init_db():
                 ok INTEGER NOT NULL,
                 detail TEXT
             );
+            -- Las dos apuntan a users: borrar una cuenta las busca por user_id
+            -- (tests/test_referencias_con_indice.py).
+            CREATE INDEX IF NOT EXISTS idx_iol_lab_runs_user ON iol_lab_runs(user_id);
+            CREATE INDEX IF NOT EXISTS idx_iol_lab_token_log_user ON iol_lab_token_log(user_id);
         """)
         conn.commit()
 
@@ -2043,6 +2047,12 @@ def init_db():
         if broker_cols and 'parent_broker_id' not in broker_cols:
             conn.execute("ALTER TABLE brokers ADD COLUMN parent_broker_id INTEGER REFERENCES brokers(id)")
             conn.commit()
+        # Su índice: borrar un broker busca a sus hijos (· USD) por esta columna
+        # (tests/test_referencias_con_indice.py). Va DESPUÉS del ALTER y fuera del
+        # `if`: una base que ya tenía la columna también lo necesita, y una que no
+        # la tenía reventaría el arranque si fuera antes (project_migration_index_order).
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_brokers_parent ON brokers(parent_broker_id)")
+        conn.commit()
         # brokers.nombres_anteriores (2026-10-10): JSON con los nombres que tuvo el
         # broker antes de cada renombre. La huella con que el importador reconoce una
         # fila ya importada lleva el NOMBRE del broker adentro de un hash: sin saber
@@ -2181,6 +2191,12 @@ def init_db():
                 autodep_usd REAL,       -- ídem en USD (para revertir el flujo mensual)
                 autodep_ym TEXT         -- 'YYYY-MM' del flujo a revertir
             );
+            -- Las dos referencias de arriba, con su índice
+            -- (tests/test_referencias_con_indice.py).
+            CREATE INDEX IF NOT EXISTS idx_advisor_op_batches_advisor
+                ON advisor_op_batches(advisor_uid);
+            CREATE INDEX IF NOT EXISTS idx_advisor_op_batch_items_batch
+                ON advisor_op_batch_items(batch_id);
         """)
 
         # advisor_op_batch_items — columnas de undo exacto (audit: el undo
@@ -4208,6 +4224,17 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_import_norm_batch
                 ON import_normalized_tx(batch_id);
+            -- raw_row_id apunta a import_raw_rows con ON DELETE CASCADE: por cada
+            -- fila cruda que se borra, la base busca acá las que la nombran. Sin
+            -- índice, cada búsqueda recorre la tabla ENTERA (la de todos los
+            -- usuarios). Medido el 06/11/2026 sobre la copia de producción en
+            -- Postgres: borrar 200 filas crudas tardaba 16 s, 10 de ellos acá; con
+            -- el índice, 5.000 filas en 0,03 s. Lo pagaban «Empezar de cero», borrar
+            -- la cuenta y la limpieza de borradores de import que corre en CADA
+            -- vista previa. Toda referencia lleva su índice:
+            -- tests/test_referencias_con_indice.py.
+            CREATE INDEX IF NOT EXISTS idx_import_norm_raw_row
+                ON import_normalized_tx(raw_row_id);
 
             -- Journal para deshacer borrados de operaciones MANUALES (sin
             -- import_op_links, no reproducibles por el rebuild). Guardamos el snapshot
@@ -4329,6 +4356,9 @@ def init_db():
             -- sin el índice, 0,00 s con él. En producción /admin se quedaba colgado en
             -- el esqueleto de carga, sin un solo error.
             CREATE INDEX IF NOT EXISTS idx_import_op_links_pos ON import_op_links(position_id);
+            -- El gemelo de `idx_import_norm_raw_row`, por la misma referencia en
+            -- cascada a import_raw_rows (6 de los 16 s medidos venían de acá).
+            CREATE INDEX IF NOT EXISTS idx_import_op_links_raw_row ON import_op_links(raw_row_id);
         """)
         # flujos_a_mano.pausas (2026-10-09): nació con la tabla; esto es para una base
         # que tenga la tabla de antes de la columna. Sin índice (ver
@@ -6370,6 +6400,44 @@ def reset_my_data_status(uid: int = Depends(get_effective_user)):
     }
 
 
+def _empezar_de_cero_abierto(conn=None) -> bool:
+    """¿Se puede apretar «Empezar de cero»? Se le pregunta a la BASE, no a una bandera.
+
+    ⛔ POR QUÉ ESTUVO CERRADO (2026-08-13 → 2026-11). No por un bug del reset: el
+    borrado ya corría en segundo plano y por tandas. El problema era de FONDO
+    (diagnosticado en get_db): SQLite tiene UN SOLO ESCRITOR para toda la base, y
+    recibe escrituras en cada carga de página. El reset agregaba la presión justa
+    para que la cola desbordara, y el `database is locked` no le aparecía al que
+    reseteaba: le aparecía a TODOS.
+
+    ✅ POR QUÉ EN POSTGRES SE ABRE. Postgres traba la FILA que se escribe, no la base:
+    lo que borra un usuario no le cierra la puerta a otro. Medido el 06/11/2026 con la
+    copia de producción del 04/11 cargada en Postgres, el servidor de verdad y seis
+    usuarios agregando activos y subiendo CSV a la vez: el usuario más grande de
+    Rendi (885.000 filas) quedó en cero en 23 s, tres usuarios reseteando juntos
+    también terminaron, y los demás tuvieron CERO errores. Hizo falta una pieza
+    más, que no era del reset: las referencias a `import_raw_rows` no tenían índice
+    y cada fila borrada recorría dos tablas enteras (16 s cada 200 filas; ver
+    tests/test_referencias_con_indice.py).
+
+    Por eso la regla es por motor y no por fecha: sobre SQLite (la Mac, las pruebas)
+    el escritor único sigue ahí y la puerta sigue cerrada.
+
+    `RENDI_RESET_DATA_ENABLED` manda por encima, sin publicar: "0" lo cierra en
+    cualquier motor (el freno de mano si algo se ve mal) y "1" lo abre en SQLite
+    (lo usan las pruebas para ejercitar la maquinaria)."""
+    palanca = os.environ.get("RENDI_RESET_DATA_ENABLED")
+    if palanca == "0":
+        return False
+    if palanca == "1":
+        return True
+    import pgsesion as _ps
+    if conn is not None:
+        return _ps.habla_postgres(conn)
+    with db_abierta() as c:
+        return _ps.habla_postgres(c)
+
+
 @app.post("/api/me/reset-data")
 def reset_my_data(uid: int = Depends(get_effective_user)):
     """Empezar de cero SIN borrar la cuenta: limpia toda la cartera (posiciones,
@@ -6388,25 +6456,16 @@ def reset_my_data(uid: int = Depends(get_effective_user)):
 
     El progreso se consulta en GET /api/me/reset-data/status.
 
-    ⛔ DESACTIVADO (2026-08-13). No por un bug del reset: el borrado ya corre en
-    segundo plano y por tandas, con índice por batch_id y liberando el lock entre
-    tanda y tanda. El problema es de FONDO y está diagnosticado arriba, en get_db:
-    esta base es SQLite de ~933 MB con UN SOLO ESCRITOR y recibe escrituras en cada
-    carga de página (persist de precios, de news). El reset agrega la presión justa
-    para que la cola desborde, y entonces `database is locked` NO le aparece al que
-    resetea: le aparece a TODOS. Un botón que un usuario aprieta y degrada la app
-    entera no puede quedar disponible.
-
-    Se levanta solo cuando la base deje de ser single-writer (migración en curso).
-    Para reactivarlo: RENDI_RESET_DATA_ENABLED=1. El worker y el endpoint de status
-    quedan intactos a propósito — lo único que cambia es esta puerta."""
-    if os.environ.get("RENDI_RESET_DATA_ENABLED") != "1":
-        # OJO si se te ocurre ofrecer "lo hacemos por vos": sería ESTE MISMO código y
-        # ESTE MISMO lock. Hacerlo a mano con tráfico encima reproduce el incidente.
+    La puerta la decide `_empezar_de_cero_abierto`: abierta en Postgres, cerrada en
+    SQLite (el motivo está ahí)."""
+    if not _empezar_de_cero_abierto():
+        # OJO si se te ocurre ofrecer "lo hacemos por vos" sobre SQLite: sería ESTE
+        # MISMO código y ESTE MISMO lock. Con tráfico encima reproduce el incidente.
         raise HTTPException(503,
-            "«Empezar de cero» está pausado por unos días mientras migramos la base. "
-            "Lo dejamos en pausa a propósito: al borrar tanta información de una, la app "
-            "se ponía lenta para todos los usuarios a la vez. Vuelve muy pronto.")
+            # Sale sobre SQLite y cuando se tira el freno de mano: no nombra la
+            # migración, que en producción ya pasó.
+            "«Empezar de cero» está pausado por un rato. Lo frenamos a propósito para "
+            "que la app siga andando rápido para todos. Probá de nuevo más tarde.")
     st = _reset_estado(uid)
     if st.get("estado") == "corriendo":
         # Idempotente: dos clicks no lanzan dos borrados. Devolvemos el que corre.
@@ -26173,12 +26232,13 @@ def admin_repair_user_history(data: RepairUserIn, uid: int = Depends(get_admin_u
 
 # ─── Reset de admin: dejar una cuenta en cero, por email ─────────────────────
 # POR QUÉ EXISTE. "Empezar de cero" (el botón del usuario, /api/me/reset-data)
-# está PAUSADO desde el 13/08 y no por un bug suyo: esta base es SQLite con UN
-# SOLO ESCRITOR, y un borrado masivo desbordaba la cola de escritura — el
-# `database is locked` no le salía al que reseteaba, le salía a TODOS. Dejarlo
-# apretable por cualquiera con la app llena de gente no se podía.
+# estuvo PAUSADO del 13/08 al pasaje a Postgres, y no por un bug suyo: la base era
+# SQLite con UN SOLO ESCRITOR, y un borrado masivo desbordaba la cola de escritura
+# — el `database is locked` no le salía al que reseteaba, le salía a TODOS. En
+# Postgres se reabrió (`_empezar_de_cero_abierto`). Este camino sigue teniendo su
+# lugar por el ALCANCE: «como la primera vez», con alertas, credenciales y prefs.
 #
-# Esto NO es reabrir aquella puerta. Lo que cambia, y es todo lo que cambia:
+# Cuando nació, esto NO era reabrir aquella puerta. Lo que cambiaba:
 #   1. El disparador es una persona sola (vos) que elige el MOMENTO. Un reset a
 #      las 4 AM no compite con nadie; el botón del usuario se apretaba a las 11.
 #   2. Antes de borrar se MIDE. `/preview` es read-only y dice exactamente

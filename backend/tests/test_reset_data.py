@@ -93,11 +93,10 @@ class ResetDataTest(unittest.TestCase):
 
         Sin este wait los tests serían una carrera contra el thread.
         """
-        # El endpoint está PAUSADO en prod (503) porque el reset desbordaba la cola de
-        # escritura de SQLite y el "database is locked" le salía a TODOS los usuarios,
-        # no al que reseteaba. La MAQUINARIA sigue siendo correcta y se sigue testeando:
-        # abrimos la palanca acá para no perder la cobertura cuando se reactive.
-        # El bloqueo en sí lo cubre ResetDataPausadoTest.
+        # Sobre SQLite la puerta está cerrada (503): el reset desbordaba la cola del
+        # escritor único y el "database is locked" le salía a TODOS. La MAQUINARIA es
+        # la misma en los dos motores y se prueba en los dos: abrimos la palanca acá.
+        # La puerta en sí la cubre ResetDataPuertaTest.
         os.environ["RENDI_RESET_DATA_ENABLED"] = "1"
         try:
             out = main.reset_my_data(uid=self.UID)
@@ -209,13 +208,63 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class ResetDataPausadoTest(unittest.TestCase):
-    """El botón está pausado a propósito: sin la palanca, el endpoint tiene que
-    RECHAZAR. Si alguien lo reactiva sin querer, este test lo caza."""
+class ResetDataPuertaTest(unittest.TestCase):
+    """La puerta del botón se decide por MOTOR (`main._empezar_de_cero_abierto`):
+    cerrada en SQLite —el escritor único que volteaba a todos sigue ahí—, abierta
+    en Postgres, y la palanca manda por encima. Corre igual en las dos suites:
+    cada caso arma la conexión que necesita en vez de depender del motor de la
+    corrida."""
 
-    def test_sin_la_palanca_devuelve_503(self):
+    def setUp(self):
+        self._antes = os.environ.pop("RENDI_RESET_DATA_ENABLED", None)
+
+    def tearDown(self):
         os.environ.pop("RENDI_RESET_DATA_ENABLED", None)
+        if self._antes is not None:
+            os.environ["RENDI_RESET_DATA_ENABLED"] = self._antes
+
+    def test_en_sqlite_sigue_cerrado(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        try:
+            self.assertFalse(main._empezar_de_cero_abierto(conn))
+        finally:
+            conn.close()
+
+    def test_la_puerta_es_la_del_motor_de_la_base(self):
+        """Sin palanca, abierta si y sólo si la base de la app habla Postgres."""
+        import pgsesion
+        conn = main.get_db()
+        try:
+            esperado = pgsesion.habla_postgres(conn)
+            self.assertEqual(main._empezar_de_cero_abierto(conn), esperado)
+        finally:
+            conn.close()
+        self.assertEqual(main._empezar_de_cero_abierto(), esperado)
+
+    def test_en_postgres_se_abre(self):
+        """El caso de producción. Sólo corre en la suite de Postgres."""
+        import pgsesion
+        conn = main.get_db()
+        try:
+            if not pgsesion.habla_postgres(conn):
+                self.skipTest("la suite corre sobre SQLite")
+            self.assertTrue(main._empezar_de_cero_abierto(conn))
+        finally:
+            conn.close()
+
+    def test_el_freno_de_mano_cierra_en_cualquier_motor(self):
+        os.environ["RENDI_RESET_DATA_ENABLED"] = "0"
+        self.assertFalse(main._empezar_de_cero_abierto())
         with self.assertRaises(main.HTTPException) as cm:
             main.reset_my_data(uid=1)
         self.assertEqual(cm.exception.status_code, 503)
         self.assertIn("pausado", cm.exception.detail.lower())
+
+    def test_cerrado_no_arranca_ningun_borrado(self):
+        """El 503 sale ANTES de tocar nada: ni progreso ni hilo."""
+        os.environ["RENDI_RESET_DATA_ENABLED"] = "0"
+        uid = 987654
+        with self.assertRaises(main.HTTPException):
+            main.reset_my_data(uid=uid)
+        self.assertEqual(main._reset_estado(uid), {})

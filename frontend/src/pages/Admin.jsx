@@ -4354,10 +4354,11 @@ function RepairUserPanel({ toast }) {
 }
 
 // ─── ResetUserPanel — dejar la cuenta de UN usuario en cero, por email ───────
-// El botón "Empezar de cero" del propio usuario está pausado desde el 13/08: no
-// por un bug suyo, sino porque esta base tiene UN SOLO ESCRITOR y un borrado
-// masivo apretado en hora pico dejaba a TODOS con "database is locked". Acá el
-// que elige el momento sos vos, y antes de borrar se MIDE cuántas filas son.
+// Nació cuando el botón "Empezar de cero" del propio usuario estaba pausado
+// (13/08 → pasaje a Postgres): la base era SQLite, de UN SOLO ESCRITOR, y un
+// borrado masivo en hora pico dejaba a TODOS con "database is locked". Sigue
+// sirviendo por el alcance —borra también alertas, credenciales y prefs— y porque
+// antes de borrar se MIDE cuántas filas son.
 function ResetUserPanel({ toast }) {
   const [email, setEmail] = useState('')
   const [confirmar, setConfirmar] = useState('')
