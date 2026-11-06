@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { setBrokersRegistry } from './valuation'
 import {
   CEDEAR_RATIOS, CEDEAR_RATIO_DESCONOCIDO, AR_ADR_RATIOS,
-  cedearRatio, arAdrRatio, deriveCedearRatio,
+  cedearRatio, arAdrRatio, deriveCedearRatio, resolveCedearRatio,
   underlyingShares, underlyingSharesForTicker,
 } from './cedearRatio'
 
@@ -36,6 +36,23 @@ describe('la tabla', () => {
     // precio da 10.269. El ratio correcto (4) viene de la lista de Comafi, y el
     // derivado tiene que quedar descartado — ver el test de cotas más abajo.
     expect(CEDEAR_RATIOS.BAC).toBe(4)
+  })
+
+  it('AZN: 4 CEDEARs por acción, no los 2 por ADR que anota Comafi', () => {
+    // El 02/02/2026 AstraZeneca canjeó cada ADR (media acción) por media acción, y
+    // «AZN» en Nueva York pasó a ser la acción entera. El CEDEAR sigue siendo medio
+    // ADR viejo: un cuarto de acción. Con 2, el dividendo anunciado y el «costo
+    // prom» de la ficha (que va por resolveCedearRatio) salían la mitad de escala.
+    expect(cedearRatio('AZN')).toBe(4)
+    // Lo que pasa la ficha: la acción de Nueva York, el CEDEAR en BYMA y el dólar
+    // (cierres reales del 05/11/2026). La tabla manda, y el precio la confirma:
+    // con el dólar de los CEDEARs (CCL 1.680,4) el mercado mide 4,0.
+    const precios = { AZN: 186.85, 'AZN.BA': 78300 }
+    expect(resolveCedearRatio('AZN', precios, 1588.6)).toEqual({ ratio: 4, source: 'table' })
+    expect(deriveCedearRatio('AZN', precios, 1680.4)).toBeCloseTo(4, 1)
+    // BIOX queda en 1: el año entero mide 0,985 con el CCL; el 0,75 del 05/11 fue
+    // un solo día (en Nueva York cayó 16 % y en BYMA subió 7 %).
+    expect(cedearRatio('BIOX')).toBe(1)
   })
 
   it('lo que no se pudo determinar queda listado, no adivinado', () => {

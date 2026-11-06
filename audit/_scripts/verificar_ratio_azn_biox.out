@@ -1,0 +1,49 @@
+## 1. Cuántos CEDEARs hacen una acción de Nueva York, día por día
+  AZN: 230 ruedas en común, 2025-11-12 a 2026-11-05
+    con el CCL: mediana 3.997 (el 80 % de los días entre 3.979 y 4.015)
+    con el MEP: mediana 3.867
+    días a más de 10 % de 4: 0 []
+    mediana por mes (CCL): 25-11 4.00 · 25-12 3.99 · 26-01 4.00 · 26-02 3.99 · 26-03 4.00 · 26-04 4.00 · 26-05 4.00 · 26-06 4.00 · 26-07 4.00 · 26-08 4.00 · 26-09 3.99 · 26-10 3.99 · 26-11 4.00
+  BIOX: 235 ruedas en común, 2025-11-12 a 2026-11-05
+    con el CCL: mediana 0.985 (el 80 % de los días entre 0.962 y 1.017)
+    con el MEP: mediana 0.955
+    días a más de 10 % de 1: 3 [('2026-02-03', 0.87), ('2026-10-26', 0.89), ('2026-11-05', 0.8)]
+    mediana por mes (CCL): 25-11 0.99 · 25-12 0.99 · 26-01 0.98 · 26-02 0.97 · 26-03 0.99 · 26-04 0.99 · 26-05 0.98 · 26-06 0.98 · 26-07 0.98 · 26-08 1.01 · 26-09 1.00 · 26-10 0.97 · 26-11 0.95
+    BIOX, las últimas 6 ruedas (BYMA en pesos, Nueva York en US$, cociente con el CCL):
+      2026-10-29: BYMA   376.8 · NY 0.2300 · 1.017
+      2026-10-30: BYMA   379.2 · NY 0.2080 · 0.905
+      2026-11-02: BYMA   384.5 · NY 0.2220 · 0.958
+      2026-11-03: BYMA   399.5 · NY 0.2260 · 0.945
+      2026-11-04: BYMA   420.0 · NY 0.2530 · 1.005
+      2026-11-05: BYMA   450.0 · NY 0.2130 · 0.795
+
+## 2. AZN alrededor del canje (2026-02-02). Splits que anota Yahoo desde 2024: {'2026-02-02': 0.5}
+   (antes del canje, el precio crudo de Nueva York es el ajustado × 0,5: el ADR)
+   2026-01-20: BYMA    68700 · NY ajustado  179.88 · crudo   89.94 · CEDEARs por acción 3.97 · por lo que cotizaba ese día 1.99
+   2026-01-21: BYMA    68050 · NY ajustado  181.08 · crudo   90.54 · CEDEARs por acción 4.03 · por lo que cotizaba ese día 2.01
+   2026-01-22: BYMA    69175 · NY ajustado  183.38 · crudo   91.69 · CEDEARs por acción 4.00 · por lo que cotizaba ese día 2.00
+   2026-01-23: BYMA    70400 · NY ajustado  185.90 · crudo   92.95 · CEDEARs por acción 4.00 · por lo que cotizaba ese día 2.00
+   2026-01-26: BYMA    70400 · NY ajustado  188.46 · crudo   94.23 · CEDEARs por acción 4.06 · por lo que cotizaba ese día 2.03
+   2026-02-03: BYMA    69725 · NY ajustado  184.32 · crudo  184.32 · CEDEARs por acción 3.96 · por lo que cotizaba ese día 3.96
+   2026-02-04: BYMA    70875 · NY ajustado  187.45 · crudo  187.45 · CEDEARs por acción 3.95 · por lo que cotizaba ese día 3.95
+   2026-02-05: BYMA    70975 · NY ajustado  187.16 · crudo  187.16 · CEDEARs por acción 3.97 · por lo que cotizaba ese día 3.97
+   2026-02-06: BYMA    72250 · NY ajustado  193.03 · crudo  193.03 · CEDEARs por acción 3.98 · por lo que cotizaba ese día 3.98
+   2026-02-09: BYMA    69700 · NY ajustado  188.01 · crudo  188.01 · CEDEARs por acción 3.99 · por lo que cotizaba ese día 3.99
+   2026-02-10: BYMA    71350 · NY ajustado  193.40 · crudo  193.40 · CEDEARs por acción 3.99 · por lo que cotizaba ese día 3.99
+
+## 3. ¿El AZN de Yahoo es la acción entera? Londres en US$ ÷ AZN de Nueva York
+   2025-06-02: 0.990
+   2025-08-27: 1.001
+   2025-11-19: 1.004
+   2026-02-18: 1.010
+   2026-05-15: 1.005
+   2026-08-11: 1.008
+   2026-11-04: 0.997
+   2026-11-06: 1.001
+
+## 4. Lo pagado por CEDEAR de AZN (BYMA) → cuántos CEDEARs por acción implica
+   corte 2026-02-20, pago 2026-03-23: $ 682.80 por CEDEAR = US$ 0.4805 con el MEP del pago; la acción pagó US$ 2.153 → 4.48 CEDEARs por acción (lo cobrado sería 89% del bruto con 4, 45% con 2)
+   corte 2026-02-20, pago 2026-03-23: $ 682.80 por CEDEAR = US$ 0.4643 con el CCL del pago; la acción pagó US$ 2.153 → 4.64 CEDEARs por acción (lo cobrado sería 86% del bruto con 4, 43% con 2)
+   corte 2026-08-07, pago 2026-09-08: $ 358.06 por CEDEAR = US$ 0.2335 con el MEP del pago; la acción pagó US$ 1.071 → 4.59 CEDEARs por acción (lo cobrado sería 87% del bruto con 4, 44% con 2)
+   corte 2026-08-07, pago 2026-09-08: $ 358.06 por CEDEAR = US$ 0.2262 con el CCL del pago; la acción pagó US$ 1.071 → 4.73 CEDEARs por acción (lo cobrado sería 84% del bruto con 4, 42% con 2)
+   (AstraZeneca es del Reino Unido, que no retiene impuesto: lo cobrado es el bruto menos comisiones)

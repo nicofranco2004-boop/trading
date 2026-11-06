@@ -18,7 +18,8 @@ USO
     python3 backend/scripts/check_cedear_ratios.py           # chequea y reporta
     python3 backend/scripts/check_cedear_ratios.py --write   # además corrige la tabla
 
-Sale con código 1 si encuentra diferencias (sirve para CI o para un cron).
+Sale con código 1 si encuentra diferencias o una excepción que ya no cuadra
+(sirve para CI o para un cron).
 
 FUENTE
 ──────
@@ -26,6 +27,17 @@ Banco Comafi, emisor de los programas de CEDEARs — "LISTA TOTAL DE CEDEARS",
 columna "Ratio Cedear/Acción ó ADR". Cubre acciones; NO trae ETFs (SPY, QQQ,
 GLD…) ni los CEDEARs de otros emisores: ésos quedan fuera del chequeo y en la
 tabla están marcados como medidos del precio.
+
+EXCEPCIONES
+───────────
+Esa columna cuenta CEDEARs por el papel sobre el que se armó el programa. Si ese
+papel desaparece, la lista puede quedarse con el número viejo, y copiarlo rompe
+la tabla: AstraZeneca canjeó su ADR (media acción) por la acción el 02/02/2026,
+Comafi sigue anotando 2 CEDEARs por ADR y contra la acción que cotiza hoy son 4.
+Esas decisiones, verificadas a mano, viven en `NO_SEGUIR_A_COMAFI`: el chequeo
+las muestra aparte y `--write` no las toca. Si Comafi cambia el número que
+anotaba, o la tabla deja de decir lo decidido, lo marca para que lo mire una
+persona.
 """
 from __future__ import annotations
 
@@ -43,6 +55,16 @@ TABLA_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # El símbolo con el que Rendi guarda la posición no siempre es el que usa Comafi
 # en su columna "Identificación Mercado".
 ALIAS_A_COMAFI = {"BRK-B": "BRK/B", "BRKB": "BRK/B", "DISN": "DIS", "NOKA": "NOK"}
+
+# Donde la tabla NO copia a Comafi, a propósito (ver EXCEPCIONES arriba):
+# {símbolo: (ratio de la tabla, ratio que anota Comafi, por qué)}. Se guarda lo
+# que anota Comafi porque la decisión se tomó contra ESE número: si lo cambia, ya
+# no vale sola. El mismo motivo, más largo, en la tabla (cedearRatio.js).
+NO_SEGUIR_A_COMAFI = {
+    "AZN": (4, 2, "Comafi cuenta 2 por ADR; el 02/02/2026 cada ADR se canjeó por media "
+                  "acción y AZN en Nueva York (y en Yahoo) es la acción entera. Verificado "
+                  "el 06/11/2026: precio 4,00 en 230 ruedas, un cobro real 4,7."),
+}
 
 
 def parse_ratio(v) -> float | None:
@@ -155,6 +177,39 @@ def aplicar_correcciones(src: str, ini: int, fin: int,
     return src[:ini] + bloque + src[fin:]
 
 
+def comparar(tabla: dict[str, float], oficial: dict[str, tuple[float, str]],
+             excepciones: dict | None = None):
+    """Cruza la tabla con la lista oficial. Sin I/O, para poder testearla.
+
+    Devuelve (diferentes, a_proposito, revisar, sin_oficial):
+      · diferentes: [(k, tabla, oficial, nombre)], lo que `--write` corrige;
+      · a_proposito: [(k, tabla, oficial, por qué)], las excepciones que siguen
+        valiendo (Comafi anota lo mismo que cuando se decidió no copiarlo);
+      · revisar: [(k, tabla, oficial, qué cambió)], excepciones que ya no
+        describen lo que hay. No se corrigen solas: las mira una persona;
+      · sin_oficial: [k], sin fila en Comafi.
+    """
+    excepciones = NO_SEGUIR_A_COMAFI if excepciones is None else excepciones
+    diferentes, a_proposito, revisar, sin_oficial = [], [], [], []
+    for k, mio in sorted(tabla.items()):
+        hit = oficial.get(ALIAS_A_COMAFI.get(k, k))
+        if hit is None:
+            sin_oficial.append(k)
+            continue
+        ofi, nombre = hit
+        if k in excepciones:
+            nuestro, de_comafi, motivo = excepciones[k]
+            if abs(mio - nuestro) > 1e-6:
+                revisar.append((k, mio, ofi, f"la excepción dice que la tabla tiene {nuestro:g}"))
+            elif abs(ofi - de_comafi) > 1e-6:
+                revisar.append((k, mio, ofi, f"Comafi anotaba {de_comafi:g} y ahora {ofi:g}"))
+            else:
+                a_proposito.append((k, mio, ofi, motivo))
+        elif abs(mio - ofi) > 1e-6:
+            diferentes.append((k, mio, ofi, nombre))
+    return diferentes, a_proposito, revisar, sin_oficial
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--write", action="store_true",
@@ -172,13 +227,7 @@ def main() -> int:
     tabla, src, (ini, fin) = leer_tabla_js(args.tabla)
     print(f"oficial (Comafi): {len(oficial)} ratios · tabla de Rendi: {len(tabla)}")
 
-    diferentes, sin_oficial = [], []
-    for k, mio in sorted(tabla.items()):
-        hit = oficial.get(ALIAS_A_COMAFI.get(k, k))
-        if hit is None:
-            sin_oficial.append(k)
-        elif abs(mio - hit[0]) > 1e-6:
-            diferentes.append((k, mio, hit[0], hit[1]))
+    diferentes, a_proposito, revisar, sin_oficial = comparar(tabla, oficial)
 
     # Los que la oficial trae y nosotros ni tenemos: sin ratio no se publica monto,
     # así que no es un bug — pero es cobertura que estamos dejando sobre la mesa.
@@ -189,7 +238,15 @@ def main() -> int:
         for k, mio, ofi, nombre in diferentes:
             print(f"    {k:8s} tabla={mio:<8g} oficial={ofi:<8g}  ({nombre})")
     else:
-        print("\n✓ ningún ratio difiere de la lista oficial")
+        print("\n✓ ningún ratio difiere de la lista oficial"
+              + (" (fuera de las excepciones de abajo)" if a_proposito or revisar else ""))
+    if revisar:
+        print(f"\n✗ {len(revisar)} excepciones de NO_SEGUIR_A_COMAFI ya no cuadran "
+              f"(miralas a mano; --write no las toca):")
+        for k, mio, ofi, que in revisar:
+            print(f"    {k:8s} tabla={mio:<8g} oficial={ofi:<8g}  {que}")
+    for k, mio, ofi, motivo in a_proposito:
+        print(f"· {k} distinto de Comafi A PROPÓSITO (tabla={mio:g}, oficial={ofi:g}): {motivo}")
     print(f"· {len(sin_oficial)} sin fila en Comafi (ETFs / otros emisores, medidos del precio)")
     print(f"· {len(faltantes)} en la lista oficial que la tabla no cubre")
 
@@ -205,11 +262,11 @@ def main() -> int:
         open(args.tabla, "w", encoding="utf-8").write(nuevo)
         print(f"\n→ {len(diferentes)} corregidos en {os.path.basename(args.tabla)}."
               f" Corré los tests del frontend.")
-        return 0
+        return 1 if revisar else 0
 
     if diferentes:
         print("\n(volvé a correr con --write para corregirlos)")
-    return 1 if diferentes else 0
+    return 1 if diferentes or revisar else 0
 
 
 if __name__ == "__main__":
