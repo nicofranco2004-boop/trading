@@ -35,6 +35,14 @@ class Parser(ABC):
     # `balanz_internacional`, cuya foto NO existe. Un aviso manejado por ese
     # dict le pediría al usuario un archivo que ningún parser sabe leer.
     tenencia_format: Optional[str] = None
+    # ¿Hay que leer cada archivo de una subida POR SEPARADO? Una subida de varios
+    # archivos llega pegada en uno solo (`pipeline.juntar_archivos`). Un lector
+    # que decide algo por DÓNDE está una fila dentro de su archivo —"desde acá el
+    # resto no se lee"— se equivoca con el pegado: lo decide en el primer archivo
+    # y le cae a todos los demás. Esos ponen True y reciben un archivo por vez.
+    # False (la regla) para los que emparejan filas que pueden caer en archivos
+    # distintos (las dos patas de un dólar MEP): de a uno, las perderían.
+    lee_cada_archivo_aparte: bool = False
 
     @abstractmethod
     def parse(self, content: str, file_name: Optional[str] = None) -> ParseResult:
