@@ -510,7 +510,12 @@ def _calcular(conn, c, serie, tickers, sin, consulta, afuera, byma, soltar_la_ba
         filas += [v for v in viejas
                   if not any(_dias(v["fecha"], e["fecha"]) <= VENTANA_DIAS for e in filas)]
         return c, filas, min(ba)
-    sp = (consulta(f"{c}.BA"), consulta(f"{c}D.BA") if ny else [], consulta(afuera[c]) if ny else [])
+    def de(t):
+        # Sólo los splits de los tickers del papel (`_tickers_del_papel`): de BAC,
+        # no los del 'BAC.BA' de Yahoo, que es otro papel, aunque alguna vez se
+        # hubieran guardado.
+        return consulta(t) if t in tickers else []
+    sp = (de(f"{c}.BA"), de(f"{c}D.BA") if ny else [], de(afuera[c]) if ny else [])
     filas = clasificar(ba, ny, *sp)
     if _le_falta_byma(filas):
         if soltar_la_base:
@@ -528,7 +533,14 @@ def _calcular(conn, c, serie, tickers, sin, consulta, afuera, byma, soltar_la_ba
 def _tickers_del_papel(c: str, afuera: dict, tiene_afuera: bool) -> tuple:
     """A qué tickers se les preguntan los splits de un papel. La especie en
     dólares ('XD.BA') sólo existe para los CEDEARs: pedirla para una acción
-    argentina es un 404 por papel, todas las noches."""
+    argentina es un 404 por papel, todas las noches. De un papel que Yahoo no
+    tiene en pesos (`snapshots_job.solo_en_byma`: el 'BAC.BA' de Yahoo es OTRO
+    papel, en dólares; el CEDEAR de BAC es 'BA.C') sólo la acción de afuera: los
+    splits de ese otro papel no son los del CEDEAR (medido el 06/11/2026, Yahoo
+    los pedía con error: «BAC.BA: Period 'max' is invalid», «BACD.BA: 404»)."""
+    from snapshots_job import solo_en_byma
+    if solo_en_byma(f"{c}.BA"):
+        return (afuera[c],) if tiene_afuera else ()
     return (f"{c}.BA", f"{c}D.BA", afuera[c]) if tiene_afuera else (f"{c}.BA",)
 
 

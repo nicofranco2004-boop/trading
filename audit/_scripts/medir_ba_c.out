@@ -1,0 +1,79 @@
+Ratio de la tabla para BAC: 4
+BA.C: 1652 ruedas, de 2020-01-28 a 2026-11-06
+
+== 1. Huecos (ruedas de BYMA sin fila de BA.C) y ruedas sin operar (volumen 0)
+Ruedas de BYMA entre 2020-01-28 y 2026-11-06 (SPY/AAPL/KO/MSFT/GOOGL con volumen): 1653
+  2020: 223 ruedas · sin fila 1 · fila con volumen 0: 0
+  2021: 244 ruedas · sin fila 0 · fila con volumen 0: 0
+  2022: 245 ruedas · sin fila 0 · fila con volumen 0: 0
+  2023: 243 ruedas · sin fila 0 · fila con volumen 0: 0
+  2024: 246 ruedas · sin fila 0 · fila con volumen 0: 0
+  2025: 242 ruedas · sin fila 0 · fila con volumen 0: 0
+  2026: 210 ruedas · sin fila 0 · fila con volumen 0: 0
+  Total sin fila: 1 · con volumen 0: 0
+  Últimas sin fila: 2020-12-11
+  Filas de BA.C en días que el calendario no tiene: 0 []
+  La racha más larga sin operar (sin fila o volumen 0): 1 ruedas, terminó 2020-12-11
+
+== 2. Cuánto se opera (v = CEDEARs por rueda; monto = v × cierre, en pesos)
+  2021: mediana 6.216 CEDEARs/rueda · p10 1.675 · monto mediano $ 10.333.938 (≈ US$ 63.979) · ruedas con < 100 CEDEARs: 16 de 244
+  2022: mediana 4.224 CEDEARs/rueda · p10 1.221 · monto mediano $ 9.850.140 (≈ US$ 37.385) · ruedas con < 100 CEDEARs: 0 de 245
+  2023: mediana 10.144 CEDEARs/rueda · p10 2.861 · monto mediano $ 45.046.999 (≈ US$ 75.667) · ruedas con < 100 CEDEARs: 0 de 243
+  2024: mediana 5.572 CEDEARs/rueda · p10 2.690 · monto mediano $ 62.241.536 (≈ US$ 52.940) · ruedas con < 100 CEDEARs: 0 de 246
+  2025: mediana 4.492 CEDEARs/rueda · p10 1.986 · monto mediano $ 68.498.125 (≈ US$ 52.451) · ruedas con < 100 CEDEARs: 0 de 242
+  2026: mediana 4.547 CEDEARs/rueda · p10 2.023 · monto mediano $ 91.989.970 (≈ US$ 61.416) · ruedas con < 100 CEDEARs: 0 de 210
+
+  Últimas 250 ruedas, monto mediano por rueda (pesos), BA.C contra otros CEDEARs de data912:
+    MELI   $   6.667.255.275  · ruedas con volumen 0: 0 de 250
+    SPY    $   5.587.897.112  · ruedas con volumen 0: 0 de 250
+    MSFT   $   5.535.095.970  · ruedas con volumen 0: 0 de 250
+    NVDA   $   5.197.789.630  · ruedas con volumen 0: 0 de 241
+    GOOGL  $   2.607.097.520  · ruedas con volumen 0: 0 de 250
+    AAPL   $   1.433.125.935  · ruedas con volumen 0: 0 de 250
+    KO     $   1.426.795.125  · ruedas con volumen 0: 0 de 250
+    BRKB   $   1.294.750.600  · ruedas con volumen 0: 0 de 241
+    BABA   $     624.566.400  · ruedas con volumen 0: 0 de 250
+    JPM    $     511.566.220  · ruedas con volumen 0: 0 de 241
+    XOM    $     221.858.120  · ruedas con volumen 0: 0 de 250
+    PFE    $     218.272.045  · ruedas con volumen 0: 0 de 250
+    C      $     152.437.000  · ruedas con volumen 0: 0 de 241
+    DISN   $     139.036.580  · ruedas con volumen 0: 0 de 250
+    BA.C   $      88.512.435  · ruedas con volumen 0: 0 de 250
+    GS     $      55.415.400  · ruedas con volumen 0: 0 de 250
+    WFC    $      35.471.560  · ruedas con volumen 0: 0 de 250
+
+== 3. Cierre repetido (el mismo cierre ruedas seguidas)
+  Rachas de 2+ ruedas con el mismo cierre: 19; la más larga: (3, '2026-09-07')
+  En las últimas 250 ruedas: 7
+
+== 4. Ratio implícito día por día (Nueva York × CCL ÷ BA.C): ¿cambió alguna vez?
+  Ruedas con los tres datos (y volumen): 1610
+  Saltos de más de 25 % del ratio implícito de un día al otro: 0 []
+  2020: ratio implícito mediano 3.963 (p5 3.824 · p95 4.079)
+  2021: ratio implícito mediano 3.888 (p5 3.540 · p95 4.028)
+  2022: ratio implícito mediano 3.993 (p5 3.944 · p95 4.036)
+  2023: ratio implícito mediano 3.989 (p5 3.761 · p95 4.081)
+  2024: ratio implícito mediano 3.989 (p5 3.918 · p95 4.026)
+  2025: ratio implícito mediano 3.996 (p5 3.958 · p95 4.023)
+  2026: ratio implícito mediano 3.997 (p5 3.974 · p95 4.020)
+
+== 5. Estimado (NY × CCL del día ÷ 4) contra BA.C, mismo día: estimado/BA.C − 1
+  2020: 218 ruedas · mediana -0.93 % · a menos de 1 %: 41 % · de 2 %: 71 % · p5 -4.41 · p95 +1.98 · el peor -8.6 % (2020-06-22)
+  2021: 239 ruedas · mediana -2.81 % · a menos de 1 %: 28 % · de 2 %: 44 % · p5 -11.50 · p95 +0.70 · el peor -17.4 % (2021-11-02)
+  2022: 237 ruedas · mediana -0.16 % · a menos de 1 %: 86 % · de 2 %: 95 % · p5 -1.41 · p95 +0.89 · el peor +9.8 % (2022-01-31)
+  2023: 237 ruedas · mediana -0.28 % · a menos de 1 %: 54 % · de 2 %: 63 % · p5 -5.98 · p95 +2.04 · el peor -14.5 % (2023-09-28)
+  2024: 239 ruedas · mediana -0.27 % · a menos de 1 %: 81 % · de 2 %: 94 % · p5 -2.05 · p95 +0.65 · el peor -3.9 % (2024-01-18)
+  2025: 234 ruedas · mediana -0.09 % · a menos de 1 %: 92 % · de 2 %: 98 % · p5 -1.06 · p95 +0.57 · el peor -2.8 % (2025-04-09)
+  2026: 206 ruedas · mediana -0.08 % · a menos de 1 %: 98 % · de 2 %: 100 % · p5 -0.66 · p95 +0.50 · el peor +1.8 % (2026-09-01)
+  últimas 250: 250 ruedas · mediana -0.09 % · a menos de 1 %: 97 % · de 2 %: 100 % · p5 -0.68 · p95 +0.48 · el peor +1.8 % (2026-09-01)
+  últimas 250, el 10 % de ruedas con MENOS volumen: 25 ruedas · mediana -0.13 % · a menos de 1 %: 92 % · de 2 %: 100 % · p5 -1.03 · p95 +0.24 · el peor -1.4 % (2025-11-21)
+
+== 6. Variación del día: BA.C (cierre/cierre anterior) contra el estimado (ídem)
+  Últimas 250: |diferencia| mediana 0.28 puntos · p90 0.78 · p99 1.63 · días con signo opuesto (los dos > 0,2 %): 8 de 250
+
+== 7. Hoy (feed en vivo de data912, ~19:30 del 06/11/2026)
+  BA.C: último 20660.0 · var -1.38 % · volumen 1889.0 · operaciones 90.0 · punta compradora 20590.0 / vendedora 20710.0 (separación 0.58 %)
+  'BAC' del feed (lo que hoy NO se usa por roto): último 7.29 · volumen 62.0 · operaciones 1.0
+  Estimado: NY 49.42 × CCL vivo 1661.65 ÷ 4 = 20,530 → -0.63 % de BA.C
+  Monto operado hoy: BA.C puesto 196 de 397 CEDEARs en pesos del feed
+  Puntas (separación compra/venta) de los CEDEARs en pesos con monto hoy, mediana: 0.74 %

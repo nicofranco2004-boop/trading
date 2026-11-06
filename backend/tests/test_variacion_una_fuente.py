@@ -388,6 +388,27 @@ def test_el_cedear_que_hoy_no_opero_no_dice_hoy(conn):
     assert (q["AAPL.BA"]["as_of"], q["AAPL.BA"]["is_today"]) == (HOY, True)   # el control
 
 
+def _con_ba_c(v_ba_c):
+    """La rueda abierta con el CEDEAR de BAC en pesos ('BA.C', `v_ba_c` operados
+    hoy) y el 'BAC' del feed, que es OTRO papel (en dólares) y hoy sí operó."""
+    return {**LIVE_ABIERTA, "arg_cedears": LIVE_ABIERTA["arg_cedears"] + [
+        {"symbol": "BA.C", "c": 20660.0, "pct_change": -1.38, "px_bid": 20590.0, "v": v_ba_c, "q_op": 0.0},
+        {"symbol": "BAC", "c": 7.29, "pct_change": 3.25, "px_bid": 6.82, "v": 62.0, "q_op": 1.0}]}
+
+
+def test_bac_se_mide_con_su_cedear_de_la_bolsa_y_si_hoy_no_opero_no_dice_hoy(conn):
+    """BAC.BA es 'BA.C' en la Bolsa (Nico, 06/11/2026). Antes se medía con Nueva
+    York (+2,5 %). Y «¿operó hoy?» se le pregunta a BA.C, no al 'BAC' del feed:
+    con BA.C sin operar, su −1,38 % es de la última rueda."""
+    with mundo(live=_con_ba_c(0.0)):
+        q = main._variacion_del_dia(["BAC.BA"])["BAC.BA"]
+    assert (q["price"], q["change_pct"], q["mercado"]) == (20660.0, -1.38, "byma")
+    assert q["as_of"] is None
+    with mundo(live=_con_ba_c(1889.0)):
+        q = main._variacion_del_dia(["BAC.BA"])["BAC.BA"]
+    assert q["as_of"] == HOY           # el control
+
+
 def test_la_on_que_hoy_no_opero_tampoco(conn):
     with mundo():
         q = main._variacion_del_dia(["BAM27", "AL30"])
