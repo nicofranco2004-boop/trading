@@ -10943,9 +10943,11 @@ def crypto_broker_factor(asset, broker_name, has_override, cripto_rate, mep_rate
 # US: ARS = precio_US × CCL ÷ ratio_cedear (cantidad de cedears por acción US).
 # Verificado 11/06/2026: BAC 55.16 USD × CCL 1495 ÷ 4 ≈ 20.617 ARS ✓.
 # Mapa: ticker base (sin .BA) → ratio del cedear. Extensible si aparecen otros.
-CEDEAR_USD_RATIOS = {
-    "BAC": 4,
-}
+# El ratio sale de LA tabla (`ratios_cedear`, la copia de la de la pantalla), la
+# misma con que el gráfico en pesos divide la acción de afuera: si Comafi lo
+# cambia, cambian los dos.
+from ratios_cedear import CEDEAR_RATIOS as _RATIOS_CEDEAR  # noqa: E402
+CEDEAR_USD_RATIOS = {b: _RATIOS_CEDEAR[b] for b in ("BAC",)}
 
 # Allowed symbol characters — only alphanumeric + dot (for .BA suffix)
 import re

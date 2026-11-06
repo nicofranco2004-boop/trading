@@ -1519,7 +1519,8 @@ def tickers_a_pedido(asset: str, local: bool = False, cedears=None) -> list:
     en pesos se corrige con la lista de cambios de ratio (`cambios_ratio`), que
     se arma de noche y sólo para lo que alguien sigue; sin ella, el gráfico en
     pesos mostraría caídas que no existieron (XLE.BA −50 % el 05/12/2025). En
-    pesos, la ficha usa la de afuera × el MEP de cada día (`tecnico.serie`).
+    pesos, la ficha estima el CEDEAR con la de afuera × el MEP de cada día ÷ su
+    ratio (`tecnico.serie`; sin ratio conocido, no hay gráfico en pesos).
 
     `local`: la ficha dice que es una acción argentina (su serie es la de BYMA).
     Un '.BA' necesita la lista de CEDEARs de BYMA para saber qué es: si data912

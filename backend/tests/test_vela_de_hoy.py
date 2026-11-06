@@ -260,6 +260,22 @@ class VelaDeHoyTest(unittest.TestCase):
         v = self._hoy("AAPL", "ars")["velas"][-1]
         self.assertEqual((v["o"], v["c"]), (15000.0, 15300.0))
 
+    def test_cedear_estimado_en_pesos_trae_la_vela_de_hoy_en_su_escala(self):
+        # Un CEDEAR que nadie sigue en pesos: la ficha lo estima con la acción de
+        # afuera × el MEP ÷ 20 (tecnico.serie). La vela de hoy va en la MISMA
+        # escala: sin dividir, la rueda se dibujaba 20 veces más alta que la
+        # historia (la acción entera en pesos).
+        self._mep(1000.0)
+        self.yahoo.precios["AAPL"] = 300.0
+        ficha = self.client.get("/api/tecnico/AAPL?moneda=ars", headers=self.h).json()
+        self.assertEqual((ficha["ticker"], ficha["convertida"]), ("AAPL", "mep"))
+        self.assertAlmostEqual(ficha["puntos"][-1]["c"], 300.0 * 1000.0 / 20, places=3)
+        self.yahoo.hoy_diaria["AAPL"] = (301.0, 306.0, 299.0, 304.5, 5_000_000.0)
+        v = self._hoy("AAPL", "ars")["velas"][-1]
+        self.assertTrue(v["hoy"])
+        self.assertEqual((v["o"], v["h"], v["l"], v["c"]), (301.0 * 50, 306.0 * 50, 299.0 * 50, 304.5 * 50),
+                         "el MEP de hoy (1000) ÷ 20 = × 50")
+
     def test_sin_vela_todavia_dice_si_la_rueda_sigue(self):
         # Antes de la apertura (o con BYMA abierta pero sin el primer dato, que
         # llega 20 min tarde): sin velas, pero `en_rueda` viaja igual. Antes la

@@ -24,10 +24,12 @@ CORTADAS COMO TRADINGVIEW, desde la apertura de cada rueda:
 El bloque en curso incluye la hora en curso.
 
 QUÉ SERIE. La misma que el gráfico diario: `tecnico.serie` decide qué ticker
-(la acción de afuera o la de BYMA) y si se convierte con el MEP. Acá no se
-copia esa decisión. Las de BYMA ('.BA') pasan por la MISMA lista de cambios de
-ratio que las diarias (`velas_diarias._empalmar`): Yahoo tampoco corrige el
-ratio de un CEDEAR en las de 1 hora. La conversión, con el dólar de CADA día
+(la acción de afuera o la de BYMA), si se convierte con el MEP y en qué escala
+(el estimado de un CEDEAR en pesos: la acción de afuera ÷ cuántas veces entra el
+CEDEAR en ella; sin eso, la acción entera). Acá no se copia esa decisión. Las
+de BYMA ('.BA') pasan por la MISMA lista de cambios de ratio que las diarias
+(`velas_diarias._empalmar`): Yahoo tampoco corrige el ratio de un CEDEAR en las
+de 1 hora. La conversión, con el dólar de CADA día
 (`tecnico._convertir`, la regla del diario).
 
 LAS CUENTAS. Medias de 50 y 200, RSI, ADX, Squeeze y Bandas de Bollinger con
@@ -364,19 +366,20 @@ def _fin_de(v: dict, cada: str, mercado: str) -> int:
 
 
 def _serie_elegida(conn, asset: str, moneda: str, local: bool):
-    """Qué ticker y si se convierte: lo que decide `tecnico.serie` para el
-    gráfico diario (no se copia esa regla). None si el activo no tiene serie."""
+    """Qué ticker, si se convierte y en qué escala: lo que decide `tecnico.serie`
+    para el gráfico diario (no se copia esa regla). None si el activo no tiene serie."""
     import tecnico
     s = tecnico.serie(conn, asset, moneda, local)
     if not s.get("velas"):
         return None
-    return {"ticker": s["ticker"], "convertida": s["convertida"]}
+    return {"ticker": s["ticker"], "convertida": s["convertida"], "escala": s.get("escala")}
 
 
-def _armar(abrir, ticker: str, crudas: list, cada: str, mercado: str, por):
+def _armar(abrir, ticker: str, crudas: list, cada: str, mercado: str, por, escala=None):
     """Las velas de `cada` y sus puntos para la pantalla (las últimas
     VELAS_A_LA_PANTALLA, con sus cuentas). `por`: None, 'dividir' (pesos →
-    dólares) o 'multiplicar', con el MEP de cada día. None si no queda nada."""
+    dólares) o 'multiplicar', con el MEP de cada día. `escala`: el estimado de un
+    CEDEAR en pesos (la de la serie diaria, `tecnico.serie`). None si no queda nada."""
     import tecnico
     import velas_diarias
     velas = [_como_vela(x) for x in crudas]
@@ -385,7 +388,7 @@ def _armar(abrir, ticker: str, crudas: list, cada: str, mercado: str, por):
             import cambios_ratio
             velas = velas_diarias._empalmar(velas, cambios_ratio.para_el_grafico(conn, ticker))
         if por:
-            velas = tecnico._convertir(conn, velas, por)
+            velas = tecnico._convertir(conn, velas, por, escala)
     velas = bloques(velas, cada, mercado)
     velas = velas[-(VELAS_A_LA_PANTALLA + VELAS_DE_CALENTAMIENTO):]
     if not velas:
@@ -439,10 +442,13 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
     if not crudas:
         return {**base, "disponible": False, "motivo": "sin_datos", "ticker": ticker}
     por = ("dividir" if moneda == "usd" else "multiplicar") if eleccion["convertida"] else None
-    clave = (ticker, cada, por)
+    escala = eleccion.get("escala") if por else None
+    # La escala va en la clave: lo armado de AAPL en pesos para la serie de la
+    # tabla no sirve para la medida con la serie que quedó guardada.
+    clave = (ticker, cada, por, escala)
     hecha = _ARMADAS.get(clave)
     if not hecha or hecha["version"] != version:
-        hecha = _armar(abrir, ticker, crudas, cada, mercado, por)
+        hecha = _armar(abrir, ticker, crudas, cada, mercado, por, escala)
         if not hecha:
             return {**base, "disponible": False, "motivo": "sin_datos", "ticker": ticker}
         hecha["version"] = version
@@ -472,6 +478,7 @@ def para_la_ficha(abrir, asset: str, cada: str = "1h", moneda: str = "usd", loca
         "disponible": True,
         "ticker": ticker,
         "convertida": eleccion["convertida"],
+        "escala": escala,
         "mercado": mercado,
         "sesion": {"abre": abre, "cierra": cierra, "desfase": desfase, "zona": ZONAS.get(mercado, "UTC"),
                    "todos_los_dias": mercado == "cripto",

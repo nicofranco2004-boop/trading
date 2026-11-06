@@ -358,6 +358,27 @@ class HorasTest(unittest.TestCase):
         self.assertAlmostEqual(por_dia["2026-10-28"]["c"], 5.0, places=6)
         self.assertAlmostEqual(por_dia["2026-10-28"]["h"], 5.05, places=6, msg="la vela entera, con el dólar de su día")
 
+    def test_cedear_estimado_en_pesos_va_en_la_escala_del_diario(self):
+        # Un CEDEAR sin su serie en pesos (a pedido sólo se baja la de afuera): el
+        # diario es un ESTIMADO, Apple × el MEP ÷ 20 (tecnico.serie). Las de 1 y 4
+        # horas, en la MISMA escala: sin dividir eran la acción entera en pesos.
+        dias = [date(2026, 10, 27), date(2026, 10, 28)]
+        self.yahoo.horas["AAPL"] = [(_hora(d, hh, 30, NY), 300.0, 303.0, 297.0, 300.0, 1.0)
+                                    for d in dias for hh in range(9, 16)]
+        self._mep({"2026-10-27": 1000.0, "2026-10-28": 1200.0})
+        self._ficha("AAPL", moneda="ars")
+        h1 = self._horas("AAPL", "1h", moneda="ars")
+        self.assertEqual((h1["ticker"], h1["convertida"]), ("AAPL", "mep"))
+        por_dia = {p["d"]: p for p in h1["puntos"]}
+        self.assertAlmostEqual(por_dia["2026-10-27"]["c"], 300.0 * 1000.0 / 20, places=6)
+        self.assertAlmostEqual(por_dia["2026-10-28"]["c"], 300.0 * 1200.0 / 20, places=6)
+        self.assertAlmostEqual(por_dia["2026-10-28"]["h"], 303.0 * 1200.0 / 20, places=6)
+        self.assertEqual(h1.get("escala"), 20)
+        h4 = self._horas("AAPL", "4h", moneda="ars")
+        self.assertAlmostEqual(h4["puntos"][-1]["c"], 300.0 * 1200.0 / 20, places=6)
+        # En dólares, la acción de afuera tal cual (lo armado en pesos no se mezcla).
+        self.assertEqual(self._horas("AAPL", "1h")["puntos"][-1]["c"], 300.0)
+
     # ── Cripto ───────────────────────────────────────────────────────────────
 
     def test_cripto_cada_4_horas_desde_las_0_utc_y_la_media_de_200_horas(self):

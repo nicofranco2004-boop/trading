@@ -119,6 +119,20 @@ class PalabrasTest(unittest.TestCase):
         self.assertIn("hasta el último cierre", h["movimientos_recientes"]["el_movimiento_de_ahora"])
         self.assertNotIn("348", json.dumps(h, ensure_ascii=False))
 
+    def test_un_cedear_estimado_en_pesos_lo_dice(self):
+        # En pesos, un CEDEAR sin su serie en pesos: la ficha manda `escala` y sus
+        # precios son un estimado (tecnico.serie). El resumen y el chat lo saben,
+        # como el pie del gráfico; lo demás no cambia.
+        cierres = [300 + i * 0.1 for i in range(400)]
+        en_curso = {"dir": "suba", "hasta": {"fecha": "2026-10-13", "precio": 340.0}}
+        f = {**self._ficha(cierres, en_curso), "moneda": "ars"}
+        estimada = {**f, "escala": 20.0}
+        for de in (rh.para_el_resumen, rh.para_el_chat):
+            h, he = de(f, "Apple"), de(estimada, "Apple")
+            self.assertNotIn("los_precios_en_pesos_son", h)
+            self.assertIn("estimado del CEDEAR", he["los_precios_en_pesos_son"])
+            self.assertEqual({k: v for k, v in he.items() if k != "los_precios_en_pesos_son"}, h)
+
     def test_con_menos_de_un_anio_de_historia_no_se_rompe(self):
         # Una acción o una cripto nueva: no hay «en un año», el titular sale de
         # los tres meses. Comparar el año (que no existe) con 0 tiraba el pedido.

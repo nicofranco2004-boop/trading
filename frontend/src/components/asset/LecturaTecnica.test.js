@@ -158,6 +158,19 @@ describe('LecturaTecnica', () => {
     expect(t).toContain('Alcista')
   })
 
+  it('un CEDEAR estimado en pesos dice abajo del gráfico que es un estimado (Nico, 06/11)', async () => {
+    // Sin su serie en pesos, el servidor manda la acción de Nueva York × el MEP
+    // ÷ `escala` (backend/tecnico.py). Antes no dividía: Apple ×20, sin aviso.
+    const estimado = { ...ARS, ticker: 'AAPL', convertida: 'mep', escala: 20 }
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': estimado }
+    await dibujar({})
+    await elegirEnLaVista(montado.contenedor, 'Pesos')
+    for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA' }))
+    const t = texto(montado.contenedor)
+    expect(t).toContain('Precio estimado del CEDEAR: la acción de Nueva York pasada a pesos con el MEP de cada día')
+    expect(t).not.toContain('El precio en dólares de cada día está pasado a pesos')
+  })
+
   it('sin velas todavía: el gráfico de 30 días de siempre', async () => {
     respuestas = { '/tecnico/': { disponible: false }, '/prices/history': { points: [] } }
     const t = await dibujar({})

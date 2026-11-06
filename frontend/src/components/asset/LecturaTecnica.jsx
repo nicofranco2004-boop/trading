@@ -71,7 +71,7 @@ import {
   haciaDondeVa,
   RSI_CASTIGADO, RSI_ESTIRADO, ADX_CLAVE, fmtAdx, tarjetas, conAvisosDeHoy, tarjetaBandas, lineaPromedio, marcas, variacionDeHoy,
   indiceDeFecha, tendenciasDistintas, velaCompleta, velasSemanales, zoomVentana, zoomEnElTope, moverVentana, RUEDAS_MINIMAS,
-  ventanaInicial, margenDerecho, futuroMaximo, sumarVelaDeHoy, textoVelaDeHoy,
+  ventanaInicial, margenDerecho, futuroMaximo, sumarVelaDeHoy, textoVelaDeHoy, notaDeLaMoneda,
 } from '../../utils/tecnico'
 import { useVelaDeHoy } from '../../hooks/useVelaDeHoy'
 import { cierreDeVela, textoCuenta } from '../../utils/cierreDeVela'
@@ -1030,7 +1030,7 @@ export default function LecturaTecnica({
     activo: asset, moneda, puntos: dibujo.puntos, huecos: dibujo.huecos, lo: escala.current?.min, hi: escala.current?.max,
     ver, tipo, semanales, cada: horas ? cadaHoras : null, dibujos: dibujosEnVista,
     fibonacci: horas ? null : actual.fibonacci, elliott: horas ? null : actual.elliott,
-    eventos: losEventos, convertida: actual.convertida, fechaDatos: actual.lectura?.fecha,
+    eventos: losEventos, convertida: actual.convertida, escala: actual.escala, fechaDatos: actual.lectura?.fecha,
     precio: (x) => fmtPrecio(x, moneda), volAlto: VOL_ALTO, adxTope: ADX_TOPE, squeeze: SQUEEZE, ultimaFecha,
     // Los dividendos que se pisarían se esconden con la misma regla que en la pantalla, al ancho de la imagen.
     amontonados: (evs, pctX) => dividendosAmontonados(evs, pctX, ANCHO_DEL_GRAFICO, ANCHO_DEL_GRAFICO / Math.max(1, lugaresMinimos - 1)),
@@ -1046,6 +1046,9 @@ export default function LecturaTecnica({
     deshacer, rehacer, puedeDeshacer: historia.current.atras.length > 0, puedeRehacer: historia.current.adelante.length > 0,
     nVista, acercar, serie, cada: horas ? cadaHoras : null,
   })
+  // De dónde sale el precio si no es el que cotiza en esta moneda (el MEP; en
+  // pesos, un CEDEAR estimado): la MISMA frase que la imagen de «Compartir».
+  const notaMoneda = notaDeLaMoneda(actual.convertida, moneda, actual.escala)
 
   return marco(
     <>
@@ -1275,9 +1278,7 @@ export default function LecturaTecnica({
 
       <p className="text-[12px] text-ink-2 mt-3 leading-relaxed">
         {moneda === 'usd' && 'Se mira en dólares aunque uses la app en pesos, porque en pesos el precio también sube con el dólar. Para verlo en pesos, tocá «US$» arriba del gráfico y elegí «Pesos». '}
-        {actual.convertida === 'mep' && (moneda === 'usd'
-          ? 'El precio en pesos de cada día está pasado a dólares con el MEP de ese día. '
-          : 'El precio en dólares de cada día está pasado a pesos con el MEP de ese día. ')}
+        {notaMoneda && `${notaMoneda} `}
         Datos al cierre del {fechaCorta(actual.lectura?.fecha)}. Muestra cómo se movió el precio: no es una recomendación para comprar ni vender.
       </p>
     </>,
