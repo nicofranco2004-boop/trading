@@ -307,6 +307,8 @@ class ElCanalDeCadaOrigen(unittest.TestCase):
         "meta-anuncios": "meta_anuncios",
         "meta_anuncios/x": "meta_anuncios",
         "meta-ads": "meta_anuncios",
+        "metaads": "meta_anuncios",                 # utm_source=MetaAds
+        "metaanuncios/promo": "meta_anuncios",
         "meta-anunciosx": "meta_posts",            # no es el código: es «meta» + guion
         # Los posts de Nico con su código, y los utm de Meta de alguien más.
         "ig-20261022": "meta_posts",
