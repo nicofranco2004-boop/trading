@@ -473,7 +473,7 @@ export default function Admin() {
             type="button"
             onClick={bajarMailsMeta}
             disabled={bajandoMails}
-            title="Baja un CSV con mail, nombre y apellido de los usuarios (sin admins ni cuentas de prueba) para cargar como público personalizado en Meta"
+            title="Baja un CSV con mail, nombre y apellido de los usuarios para cargar como público personalizado en Meta. Sin admins, cuentas de prueba, clientes de asesores ni quienes se dieron de baja de los mails promocionales"
             className="ml-auto inline-flex items-center gap-1.5 text-sm px-2.5 py-1.5 rounded border border-line/60 text-ink-1 hover:border-rendi-accent/60 disabled:opacity-60"
           >
             {bajandoMails ? <RefreshCw size={13} className="animate-spin" /> : <Download size={13} />}

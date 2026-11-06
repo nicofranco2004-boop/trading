@@ -29491,6 +29491,19 @@ def admin_backup_trigger(uid: int = Depends(get_admin_user)):
 # `_SQL_CUENTA_DE_AFUERA` es la misma cuenta SIN exigir el mail confirmado: la
 # usa el conteo de registros por origen, donde "se registró y no confirmó" es
 # justamente uno de los datos que se quieren ver.
+# Quién puede recibir PUBLICIDAD de Rendi: los mails promocionales y la lista de
+# mails para los anuncios de Meta (público personalizado). Afuera los clientes
+# que da de alta un asesor (`managed_by`: no se registraron ellos, son del
+# asesor) y los que pidieron la baja de los promocionales (`marketing_baja_at`,
+# el link «dejar de recibir»): la Ley 25.326 (art. 27) pide respetar esa baja en
+# TODA comunicación comercial, y la política de privacidad promete que tampoco
+# van a la lista de Meta. Una sola definición: hasta el 06/11/2026 la tenían
+# copiada los 5 envíos promocionales y la lista de Meta no la tenía.
+def _sql_acepta_publicidad(alias: str = "") -> str:
+    a = f"{alias}." if alias else ""
+    return f"{a}managed_by IS NULL AND {a}marketing_baja_at IS NULL"
+
+
 _SQL_CUENTA_DE_AFUERA = ("is_admin=0 "
                          "AND email NOT LIKE '%@rendi.test' "
                          "AND email NOT LIKE '%@rendi.finance' "
@@ -30329,8 +30342,10 @@ def admin_users_mails_meta(uid: int = Depends(get_admin_user)):
     (apellido), que Meta reconoce solas por el encabezado. Sólo el mail es
     obligatorio; el nombre ayuda a que encuentre más gente.
 
-    Quiénes: `_SQL_CUENTA_DE_AFUERA` — sin admins ni cuentas de test/internas,
-    MISMO filtro que los conteos del panel. Incluye a los que no confirmaron el
+    Quiénes: `_SQL_CUENTA_DE_AFUERA` (sin admins ni cuentas de test/internas) y
+    `_sql_acepta_publicidad` (sin clientes de asesor ni los que pidieron la baja
+    de los promocionales: la MISMA regla que los mails promocionales, y lo que
+    promete la política de privacidad). Incluye a los que no confirmaron el
     mail: se registraron, así que son público para volver a buscar; si el mail
     tiene un error de tipeo Meta simplemente no lo encuentra.
 
@@ -30339,7 +30354,7 @@ def admin_users_mails_meta(uid: int = Depends(get_admin_user)):
     with db_abierta() as conn:
         rows = conn.execute(
             "SELECT email, name FROM users WHERE " + _SQL_CUENTA_DE_AFUERA +
-            " ORDER BY created_at DESC").fetchall()
+            " AND " + _sql_acepta_publicidad() + " ORDER BY created_at DESC").fetchall()
     filas, vistos = [], set()
     for r in rows:
         email = (r["email"] or "").strip().lower()
@@ -30902,8 +30917,7 @@ def _reengagement_candidatos(conn, data, ids=None):
                   WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
         FROM users u
         WHERE COALESCE(u.is_admin,0) = 0
-          AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
-          AND u.marketing_baja_at IS NULL   -- pidió no recibir promocionales
+          AND {_sql_acepta_publicidad('u')}   -- ni clientes de asesor ni bajas
           {filtro}
         ORDER BY u.created_at ASC
     """, params).fetchall()
@@ -31015,8 +31029,7 @@ def _gift_plan_candidatos(conn, data, ids=None):
                   WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
         FROM users u
         WHERE COALESCE(u.is_admin,0) = 0
-          AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
-          AND u.marketing_baja_at IS NULL   -- pidió no recibir promocionales
+          AND {_sql_acepta_publicidad('u')}   -- ni clientes de asesor ni bajas
           {filtro}
         ORDER BY u.created_at ASC
     """, params).fetchall()
@@ -31179,8 +31192,7 @@ def _trial_invite_elegibles(conn, ids=None):
     rows = conn.execute(
         f"""SELECT id, email, name FROM users
              WHERE COALESCE(is_admin,0) = 0
-               AND managed_by IS NULL
-               AND marketing_baja_at IS NULL
+               AND {_sql_acepta_publicidad()}
                AND COALESCE(email_verified,0) = 1
                AND TRIM(COALESCE(email,'')) <> ''{filtro}""", params).fetchall()
 
@@ -31419,8 +31431,7 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
                       FROM users
                      WHERE id IN ({ph})
                        AND COALESCE(is_admin,0) = 0
-                       AND managed_by IS NULL
-                       AND marketing_baja_at IS NULL
+                       AND {_sql_acepta_publicidad()}
                        AND TRIM(COALESCE(email,'')) <> ''""",
                     tuple(int(v["id"]) for v in vivos)).fetchall():
                 datos[int(r["id"])] = dict(r)
@@ -31597,8 +31608,7 @@ def _reactivar_pausa_filas(conn, ahora: datetime, ids=None) -> list:
               FROM users
              WHERE requires_plan = 1
                AND COALESCE(is_admin,0) = 0
-               AND managed_by IS NULL
-               AND marketing_baja_at IS NULL
+               AND {_sql_acepta_publicidad()}
                AND COALESCE(email_verified,0) = 1
                AND TRIM(COALESCE(email,'')) <> ''
                {filtro}

@@ -1,7 +1,9 @@
 """Tests para GET /api/admin/users/mails-meta.csv — la lista de mails para el
 "público personalizado" de Meta. Verifica que sólo la baje un admin, que el
 encabezado sea el que Meta reconoce solo (email, fn, ln), que deje afuera a
-admins y cuentas de prueba, y cómo parte el nombre."""
+admins, cuentas de prueba, clientes de asesor y a los que pidieron la baja de
+los promocionales (la misma regla que los mails promocionales, y lo que promete
+la política de privacidad), y cómo parte el nombre."""
 import csv
 import io
 import unittest
@@ -11,11 +13,11 @@ import main
 from fastapi.testclient import TestClient
 
 
-def _mk_user(conn, email, name=None, is_admin=0, verified=1):
+def _mk_user(conn, email, name=None, is_admin=0, verified=1, managed_by=None, baja=None):
     cur = conn.execute(
-        "INSERT INTO users (email, password_hash, approved, is_admin, name, email_verified) "
-        "VALUES (?, 'x', 1, ?, ?, ?)",
-        (email, is_admin, name, verified),
+        "INSERT INTO users (email, password_hash, approved, is_admin, name, email_verified, "
+        "managed_by, marketing_baja_at) VALUES (?, 'x', 1, ?, ?, ?, ?, ?)",
+        (email, is_admin, name, verified, managed_by, baja),
     )
     return cur.lastrowid
 
@@ -31,6 +33,10 @@ class AdminMailsMetaTest(unittest.TestCase):
         _mk_user(conn, f"sinnombre-{self.tag}@ejemplo.com")
         _mk_user(conn, f"noconfirmo-{self.tag}@ejemplo.com", verified=0)
         _mk_user(conn, f"prueba-{self.tag}@rendi.test", name="No Va")
+        # Pidió no recibir más promocionales (el link «dejar de recibir»).
+        _mk_user(conn, f"baja-{self.tag}@ejemplo.com", name="No Quiere", baja="2026-11-01 10:00:00")
+        # Cliente que dio de alta un asesor: no se registró él, es del asesor.
+        _mk_user(conn, f"cliente-{self.tag}@ejemplo.com", name="Del Asesor", managed_by=self.admin_uid)
         conn.commit()
         conn.close()
         self.admin_h = {"Authorization": f"Bearer {main.create_token(self.admin_uid)}"}
