@@ -64,13 +64,19 @@ def _velas(cierres, aperturas=None, desde=date(2020, 1, 6)):
     return out
 
 
+def _al_dia(velas):
+    """«Hoy» para unas velas: el día siguiente a la última, como si la noche las
+    hubiera traído (contra ese día se mide si están viejas: `tecnico.es_vieja`)."""
+    return date.fromisoformat(velas[-1]["date"]) + timedelta(days=1)
+
+
 def _sin_senales(n):
     return {"compra": [False] * n, "venta": [False] * n, "desde": 0}
 
 
 def _una(velas, regla, anios, comision=backtest.COMISION):
     """La prueba de UNA regla: el resultado de esa regla y la respuesta entera."""
-    r = backtest.probar(velas, [regla], anios, comision)
+    r = backtest.probar(velas, [regla], anios, comision, hoy=_al_dia(velas))
     return r["resultados"][0], r
 
 
@@ -151,7 +157,7 @@ class ContraElEstudio(unittest.TestCase):
         self.assertEqual(sorted(guardado), sorted(",".join(p) for p in PRUEBAS_DE_LA_PANTALLA))
         for reglas in PRUEBAS_DE_LA_PANTALLA:
             with self.subTest(reglas=reglas):
-                r = backtest.probar(self.velas, reglas, 2)
+                r = backtest.probar(self.velas, reglas, 2, hoy=_al_dia(self.velas))
                 r.pop("curva")
                 self.assertEqual(json.loads(json.dumps({"asset": "GGAL", **r})), guardado[",".join(reglas)])
 
@@ -178,7 +184,7 @@ class Comparar(unittest.TestCase):
     def test_cada_una_da_lo_mismo_comparada_que_sola(self):
         """El RSI y el ADX + Squeeze existen antes del período pedido: comparadas,
         cada una da EXACTAMENTE lo que da sola, y comprar y mantener también."""
-        juntas = backtest.probar(self.velas, ["rsi", "adx_squeeze"], 2)
+        juntas = backtest.probar(self.velas, ["rsi", "adx_squeeze"], 2, hoy=_al_dia(self.velas))
         self.assertEqual(juntas["reglas"], ["rsi", "adx_squeeze"])
         self.assertEqual([x["regla"] for x in juntas["resultados"]], ["rsi", "adx_squeeze"], "en el orden pedido")
         for regla, x in zip(juntas["reglas"], juntas["resultados"]):
@@ -190,7 +196,7 @@ class Comparar(unittest.TestCase):
     def test_todas_arrancan_el_mismo_dia_el_de_la_que_mas_historia_necesita(self):
         """La media de 200 recién existe el 17/04/25 en estos precios: el RSI,
         comparado con ella, también arranca ese día (y comprar y mantener)."""
-        r = backtest.probar(self.velas, ["rsi", "media200"], 2)
+        r = backtest.probar(self.velas, ["rsi", "media200"], 2, hoy=_al_dia(self.velas))
         self.assertEqual((r["desde"], r["recortado"], r["recorte_por"]), ("2025-04-17", True, "media200"))
         sola, _ = _una(self.velas, "rsi", 2)
         self.assertNotEqual(r["resultados"][0]["resultado"], sola["resultado"], "otro período, otro resultado")
@@ -249,11 +255,11 @@ class LoQueVeLaPantalla(unittest.TestCase):
         rotas[3]["close"] = float("inf")
         for k in (10, 150, 300):
             rotas[k]["open"] = 0.0
-        r = backtest.probar(rotas, ["rsi", "media50"], 1)
+        r = backtest.probar(rotas, ["rsi", "media50"], 1, hoy=_al_dia(rotas))
         self.assertTrue(r["disponible"], r)
         self.assertEqual(r["primera_vela"], buenas[4]["date"])
         self.assertTrue(all(math.isfinite(p[k]) for p in r["curva"] for k in ("rsi", "media50", "mantener")))
-        self.assertFalse(backtest.probar([{"date": "2026-01-05", "close": 0}], ["rsi"], 1)["disponible"])
+        self.assertFalse(backtest.probar([{"date": "2026-01-05", "close": 0}], ["rsi"], 1, hoy=date(2026, 1, 6))["disponible"])
 
 
 class LasSenalesSonLasDeLasAlertas(unittest.TestCase):
@@ -370,7 +376,7 @@ class Periodo(unittest.TestCase):
 
     def test_poca_historia_no_se_prueba(self):
         velas = _velas([100.0 + k for k in range(100)])
-        r = backtest.probar(velas, ["media50"], 1)
+        r = backtest.probar(velas, ["media50"], 1, hoy=_al_dia(velas))
         self.assertFalse(r["disponible"])
         self.assertEqual(r["motivo"], "poca_historia")
 
@@ -457,7 +463,7 @@ class Ruta(unittest.TestCase):
                          ("AAPL", "AAPL", ["rsi"], 2, "usd"))
         with main.db_abierta() as conn:
             velas = tecnico.serie(conn, "AAPL", "usd")["velas"]
-        esperado = backtest.probar(velas, ["rsi"], 2)
+        esperado = backtest.probar(velas, ["rsi"], 2, hoy=hoy_art_date())
         self.assertEqual(res["resultados"], json.loads(json.dumps(esperado["resultados"])))
         self.assertGreater(res["resultados"][0]["compras"], 0, "la serie de prueba tiene que dar compras")
         self.assertEqual(len(res["curva"]), res["ruedas"])

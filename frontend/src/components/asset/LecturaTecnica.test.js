@@ -126,6 +126,17 @@ async function otraVez(props) {
   for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', ...props }))
 }
 
+// El primer nodo con ese atributo (`data-estimado`, …) dentro de lo montado.
+function conAtributo(contenedor, atributo) {
+  const pila = [contenedor]
+  while (pila.length) {
+    const n = pila.shift()
+    if (n.getAttribute?.(atributo) != null) return n
+    pila.push(...(n.childNodes || []))
+  }
+  return null
+}
+
 async function dibujar(props) {
   const el = () => h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', ...props })
   montado = await montar(el())
@@ -156,6 +167,41 @@ describe('LecturaTecnica', () => {
     const t = texto(montado.contenedor)
     expect(t).toContain('En pesos, la tendencia es distinta que en dólares')
     expect(t).toContain('Alcista')
+  })
+
+  it('un CEDEAR estimado en pesos dice abajo del gráfico que es un estimado (Nico, 06/11)', async () => {
+    // Sin su serie en pesos, el servidor manda la acción de Nueva York × el MEP
+    // ÷ `escala` (backend/tecnico.py). Antes no dividía: Apple ×20, sin aviso.
+    const estimado = { ...ARS, ticker: 'AAPL', convertida: 'mep', escala: 20 }
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': estimado }
+    await dibujar({})
+    await elegirEnLaVista(montado.contenedor, 'Pesos')
+    for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA' }))
+    const t = texto(montado.contenedor)
+    expect(t).toContain('Precio estimado del CEDEAR: la acción de Nueva York pasada a pesos con el MEP de cada día')
+    expect(t).not.toContain('El precio en dólares de cada día está pasado a pesos')
+    // Pegada al gráfico (en su pie, el de «Pellizcá para acercar…») y una sola
+    // vez: al final de la sección quedaba después de todas las tarjetas, lejos del
+    // precio que explica (auditoría 06/11, H11).
+    const nota = conAtributo(montado.contenedor, 'data-estimado')
+    expect(texto(nota)).toContain('Precio estimado del CEDEAR')
+    expect(nota.parentNode.getAttribute('data-ayuda')).not.toBeNull()
+    expect(t.split('Precio estimado del CEDEAR').length - 1).toBe(1)
+  })
+
+  it('un CEDEAR en pesos sin escala conocida dice qué falta y deja volver a dólares', async () => {
+    // El servidor no lo dibuja en pesos (`motivo: 'sin_escala'`): no sabe cuántos
+    // CEDEARs hacen una acción. Decía «Este activo no tiene precio en pesos», que
+    // no es cierto (auditoría 06/11, H9).
+    respuestas = { '/tecnico/AAPL?moneda=usd': USD,
+      '/tecnico/AAPL?moneda=ars': { asset: 'AAPL', moneda: 'ars', disponible: false, motivo: 'sin_escala' } }
+    await dibujar({})
+    await elegirEnLaVista(montado.contenedor, 'Pesos')
+    for (let i = 0; i < 4; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA' }))
+    const t = texto(montado.contenedor)
+    expect(t).toContain('En pesos no podemos estimar el precio de este CEDEAR: no sabemos con certeza cuántos CEDEARs hacen una acción.')
+    expect(t).not.toContain('Este activo no tiene precio en pesos')
+    expect((await opcionesDeLaVista(montado.contenedor)).some(o => o.startsWith('Dólares'))).toBe(true)
   })
 
   it('sin velas todavía: el gráfico de 30 días de siempre', async () => {

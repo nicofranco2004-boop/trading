@@ -99,6 +99,25 @@ function lista(nombres) {
   return `${nombres.slice(0, -1).join(', ')} y ${nombres[nombres.length - 1]}`
 }
 
+/**
+ * El panel vacío cuando ningún activo se pudo dibujar porque TODOS los pedidos
+ * están sin precios de la última semana (contada desde hoy: comparar.py), o null
+ * si falta por otra cosa (un bono, un fondo). Sin esto decía «Probá con otro
+ * activo», al lado del aviso de que eran sus precios los viejos, y si la falla
+ * era nuestra mandaba a probar otros que iban a decir lo mismo (auditoría 06/11, H1).
+ */
+export function vaciaPorVieja(res, activos = []) {
+  const faltan = (res?.faltan || []).filter(f => activos.includes(f.clave))
+  if (!faltan.length || faltan.some(f => f.motivo !== 'vieja')) return null
+  const ultimo = faltan.map(f => f.hasta).filter(Boolean).sort().pop()
+  return {
+    titulo: 'No hay precios recientes para comparar',
+    texto: ultimo
+      ? `Para comparar hacen falta precios de la última semana, y los últimos que tenemos son del ${fechaCorta(ultimo)}.`
+      : 'Para comparar hacen falta precios de la última semana.',
+  }
+}
+
 // Se compara lo que se VE: los números redondeados de la pantalla. Con 136,7
 // contra 137,3 la pantalla dice «137» y «137»; la frase no puede decir que uno
 // le ganó al otro.

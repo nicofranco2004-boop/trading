@@ -23,7 +23,7 @@ import sys
 import unittest
 import unittest.mock
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -148,6 +148,12 @@ class CompararTest(unittest.TestCase):
     def _serie(self, res, clave):
         return next((s for s in res["series"] if s["clave"] == clave), None)
 
+    def _un_anio(self):
+        """El día del 100 de «1 año»: el mismo día de la semana que el último precio
+        (la última rueda), 52 semanas antes. Desde el último precio y no desde hoy
+        (Nico, 06/11: `tecnico.primer_dia`); hasta el 06/11 era hoy − 365."""
+        return (self.dias[-1] - timedelta(days=364)).isoformat()
+
     def _i(self, fecha):
         """La rueda que vale en `fecha` (la última en ese día o antes)."""
         return max(i for i, d in enumerate(self.dias) if d.isoformat() <= fecha)
@@ -162,7 +168,7 @@ class CompararTest(unittest.TestCase):
         main._run_velas_diarias_job()   # el S&P 500 lo guarda la corrida de cada noche
         r = self._comparar("MSFT,NVDA", "usd", "1a")
 
-        base = (self.hoy - timedelta(days=365)).isoformat()
+        base = self._un_anio()
         self.assertEqual(r["base"], base)
         self.assertIsNone(r["base_corrida_por"])
         ib, ult = self._i(base), len(self.dias) - 1
@@ -195,7 +201,7 @@ class CompararTest(unittest.TestCase):
         self._mep(lambda i: 1000 + i)
         self.yahoo.precios["MSFT"] = lambda i, d: 100 + i
         self.yahoo.precios["^GSPC"] = lambda i, d: 5000.0
-        base = (self.hoy - timedelta(days=365)).isoformat()
+        base = self._un_anio()
         ib, ult = self._i(base), len(self.dias) - 1
         mep_sube = (1000 + ult) / (1000 + ib)
         with main.db_abierta() as conn:   # la inflación: el índice sube 30 %
@@ -231,7 +237,7 @@ class CompararTest(unittest.TestCase):
         main._run_velas_diarias_job()
         cer = self._serie(self._comparar("MSFT", "ars", "1a"), "cer")
         self.assertEqual((cer["ticker"], cer["nombre"]), ("UVA", "Inflación (CER, vía UVA)"))
-        ib, ult = self._i((self.hoy - timedelta(days=365)).isoformat()), len(self.dias) - 1
+        ib, ult = self._i(self._un_anio()), len(self.dias) - 1
         self.assertAlmostEqual(cer["final"], (1000 + ult) / (1000 + ib) * 100, places=2)
 
     def test_cedear_con_cambio_de_ratio(self):
@@ -261,7 +267,7 @@ class CompararTest(unittest.TestCase):
         self._posicion("IOL", "GGAL", "ACCION")
         main._run_velas_diarias_job()
 
-        base = (self.hoy - timedelta(days=365)).isoformat()
+        base = self._un_anio()
         ib, ult = self._i(base), len(self.dias) - 1
         r = self._comparar("GGAL", "usd", "1a", local="GGAL")
         g = self._serie(r, "GGAL")
@@ -397,7 +403,7 @@ class BaseCienTest(unittest.TestCase):
         viejas = [{"date": "2024-01-02", "close": 10.0}, {"date": "2024-01-03", "close": 11.0}]
         nuevas = [{"date": f"2025-11-{d:02d}", "close": 50.0 + d} for d in range(3, 29)]
         series = {"VIEJ": viejas, "NUEV": nuevas}
-        with unittest.mock.patch("tecnico.serie", lambda c, a, m, l: {"velas": series[a]}), \
+        with unittest.mock.patch("tecnico.serie", lambda c, a, m, l, **k: {"velas": series[a]}), \
              unittest.mock.patch("tecnico.sp500", lambda c, m: nuevas):
             r = comparar.comparar(None, [("VIEJ", False), ("NUEV", False)], "usd", "2025-11-03",
                                   hoy=__import__("datetime").date(2025, 11, 29))
@@ -407,11 +413,12 @@ class BaseCienTest(unittest.TestCase):
     def test_dia_del_cien(self):
         # LA regla del día del 100 de Comparar y de «Una cartera» (H1, 06/11).
         hasta = "2026-11-05"
+        hoy = date(2026, 11, 6)                             # lo viejo se mide contra hoy
         activo = [("2021-11-05", 1.0), (hasta, 2.0)]        # desde un viernes
         sp = [("2021-11-08", 1.0), (hasta, 2.0)]            # desde el lunes
         lejos = [("2021-11-20", 1.0), (hasta, 2.0)]         # no tenemos su historia
         vieja = [("2021-11-08", 1.0), ("2026-10-01", 2.0)]  # dejó de actualizarse
-        cien = lambda desde, varas: comparar.dia_del_cien(desde, [activo], varas, hasta)
+        cien = lambda desde, varas: comparar.dia_del_cien(desde, [activo], varas, hoy)
         self.assertEqual(cien("2019-03-15", [sp]), ("2021-11-08", "2021-11-05"))
         self.assertEqual(cien("2019-03-15", [lejos]), ("2021-11-05", "2021-11-05"), "sin su historia no corre nada")
         self.assertEqual(cien("2019-03-15", [vieja]), ("2021-11-05", "2021-11-05"), "una vieja no corre nada")

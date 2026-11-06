@@ -18,8 +18,9 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
 import {
-  COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, TOLERANCIA,
-  aLaDireccion, aclaracionDeLaCartera, carteraDe, consultaDe, errorDeHoy, estadoDeLaCartera, filasDeHoy, lecturaCartera,
+  COMO_SE_SIMULA_CARTERA, MAX_ACTIVOS, NOTA_ANIO_POR_ANIO, NOTA_CADA_ACTIVO, QUE_SE_SIMULA, TOLERANCIA,
+  aLaDireccion, aclaracionDeLaCartera, carteraDe, consultaDe, errorDeHoy, estadoDeLaCartera, filasDeHoy,
+  lecturaAnioPorAnio, lecturaCartera,
   limpiar, loQueFalta, motivoCartera, notaDeHoy, notaDeLosQueSobran, notaDelResumen, notaHoy, notaOjito, notaSinActivos,
   numeroDe, origenDe, origenes, repartirIgual, rotuloDelAnterior, sobranDe, textoDe, totalDe, tramosDeLaBarra,
   trayendoHoy,
@@ -281,10 +282,157 @@ describe('lo que dicen los números', () => {
   })
 })
 
+describe('año por año (Nico, 06/11)', () => {
+  // Una respuesta armada con los años que se pidan (todos enteros) y los totales que
+  // dan esos años encadenados, como los da el servidor.
+  const DESDE = ['2021-11-08', '2022-11-07', '2023-11-07', '2024-11-06', '2025-11-06', '2026-11-05']
+  function armar(c, s, extra = {}) {
+    const total = (xs) => (xs.reduce((m, x) => m * (1 + x / 100), 1) - 1) * 100
+    const tramos = c.map((x, i) => ({ desde: DESDE[i], hasta: DESDE[i + 1], dias: 365, completo: true, aporte: 0,
+      cartera: x, sp500: s[i] }))
+    return { disponible: true, anios: c.length, recortado: false, desde: DESDE[0], hasta: DESDE[c.length],
+      cartera: { resultado: total(c) }, indices: [{ clave: 'sp500', nombre: 'S&P 500', resultado: total(s) }], faltan: [],
+      anio_por_anio: { tramos, por_anio: { cartera: 1, sp500: 1 } }, ...extra }
+  }
+  const veredicto = (c, s) => lecturaAnioPorAnio(armar(c, s)).veredicto
+
+  it('con un solo año no hay: sería el total otra vez', () => {
+    expect(lecturaAnioPorAnio(CASOS.todos_restan)).toBeNull()
+    expect(lecturaAnioPorAnio(CASOS.recortada)).toBeNull()
+    expect(lecturaAnioPorAnio(CASOS.vieja)).toBeNull()
+  })
+
+  it('primero el total, después cada año, y el año que más subió y el que más bajó, en % como la tabla', () => {
+    const r = CASOS.tres_anios
+    const l = lecturaAnioPorAnio(r)
+    expect(l.total).toEqual({ rotulo: 'Los 3 años', desde: '2023-11-01', hasta: '2026-10-30' })
+    expect(l.filas.map(f => [f.rotulo, f.desde, f.hasta])).toEqual([
+      ['Año 1', '2023-11-01', '2024-10-31'], ['Año 2', '2024-10-31', '2025-10-31'], ['Año 3', '2025-10-31', '2026-10-30']])
+    const [a1, a2] = r.anio_por_anio.tramos
+    expect(l.frase).toBe(`El año que más habría subido la cartera es el 2 (del 31/10/24 al 31/10/25): ${porcentaje(a2.cartera)}. `
+      + `El que más habría bajado, el 1 (del 01/11/23 al 31/10/24): ${porcentaje(a1.cartera)}.`)
+    expect(l.promedio).toEqual(r.anio_por_anio.por_anio)
+    expect(l.nota).toBe(NOTA_ANIO_POR_ANIO)
+    expect(l.aviso).toBeNull()
+    // Si subió todos los años, el que menos; si bajó todos, el que más bajó primero.
+    expect(lecturaAnioPorAnio(armar([10, 30, 5], [1, 1, 1])).frase).toBe('El año que más habría subido la cartera es el 2 '
+      + '(del 07/11/22 al 07/11/23): +30,0%. El que menos, el 3 (del 07/11/23 al 06/11/24): +5,0%.')
+    expect(lecturaAnioPorAnio(armar([-10, -30, -5], [1, 1, 1])).frase).toBe('El año que más habría bajado la cartera es '
+      + 'el 2 (del 07/11/22 al 07/11/23): −30,0%. El que menos, el 3 (del 07/11/23 al 06/11/24): −5,0%.')
+    // Un año muy malo después de uno muy bueno: en %, como la tabla (antes «restaba
+    // US$ 329,1 de cada US$ 100»; auditoría de pantalla 06/11, A1).
+    expect(lecturaAnioPorAnio(armar([20, 362.8, -46.1], [1, 1, 1])).frase).toBe('El año que más habría subido la cartera '
+      + 'es el 2 (del 07/11/22 al 07/11/23): +362,8%. El que más habría bajado, el 3 (del 07/11/23 al 06/11/24): −46,1%.')
+    expect(lecturaAnioPorAnio(armar([10, 10], [1, 1])).frase).toBeNull()   // todos iguales: no hay uno que más
+  })
+
+  it('al final, cuántos años habría ganado cada uno contra cada índice, con los números como se ven', () => {
+    // −0,1 contra +5,0 y +7,1; +18,1 contra +12,0 y +13,1; +5,5 contra +7,9 y +13,7.
+    expect(lecturaAnioPorAnio(CASOS.tres_anios).veredicto).toEqual([
+      'El S&P 500 le habría ganado a la cartera en 2 de los 3 años; la cartera al S&P 500, en el otro.',
+      'El Nasdaq le habría ganado a la cartera en 2 de los 3 años; la cartera al Nasdaq, en el otro.',
+    ])
+    // Uno cada uno: el total con el S&P 500 fue casi lo mismo (no se agrega nada); con el
+    // Nasdaq, el total lo ganó el Nasdaq y se dice (título: «…y el Nasdaq le habría ganado»).
+    expect(lecturaAnioPorAnio(CASOS.tres).veredicto).toEqual([
+      'La cartera le habría ganado al S&P 500 en 1 de los 2 años; el S&P 500 a la cartera, en el otro.',
+      'La cartera le habría ganado al Nasdaq en 1 de los 2 años; el Nasdaq a la cartera, en el otro. '
+        + 'En el total, le habría ganado el Nasdaq.',
+    ])
+    expect(lecturaAnioPorAnio(CASOS.sin_nasdaq).veredicto)
+      .toEqual(['La cartera le habría ganado al S&P 500 en 1 de los 2 años; el S&P 500 a la cartera, en el otro.'])
+    expect(veredicto([10, 20, 30], [5, 15, 25])).toEqual(['La cartera le habría ganado al S&P 500 en cada uno de los 3 años.'])
+    expect(veredicto([1, 2, 3], [5, 6, 7])).toEqual(['El S&P 500 le habría ganado a la cartera en cada uno de los 3 años.'])
+    expect(veredicto([10, 20, 30, 40], [5, 25, 10, 20]))
+      .toEqual(['La cartera le habría ganado al S&P 500 en 3 de los 4 años; el S&P 500 a la cartera, en el otro.'])
+    expect(veredicto([10, 20, 5], [5, 20.4, 1]))
+      .toEqual(['La cartera le habría ganado al S&P 500 en 2 de los 3 años, y en el otro habrían dado casi lo mismo.'])
+    // Sin dos «y» seguidas (auditoría de pantalla 06/11, B1).
+    expect(veredicto([1, 2, 3, 12, 5.3], [5, 6, 7, 10, 5])).toEqual(['El S&P 500 le habría ganado a la cartera en 3 de los '
+      + '5 años; la cartera al S&P 500, en 1, y en el otro habrían dado casi lo mismo.'])
+    // Empatados en años: igual se nombra quién ganó cuántos («1 año cada uno» se leía
+    // como «ganó plata un año»; B2).
+    // (Y en el total, +38,9 % contra +35,7 %: lo dice.)
+    expect(veredicto([10, 20.3, 5], [12, 20, 1])).toEqual(['La cartera le habría ganado al S&P 500 en 1 de los 3 años; el '
+      + 'S&P 500 a la cartera, en 1, y en el otro habrían dado casi lo mismo. En el total, a la cartera le habría ido mejor.'])
+  })
+
+  it('si los años y el total dicen otra cosa, dice el total y por qué', () => {
+    // Ganó 2 de 3 años pero perdió en el total: un año malo pesa más (auditoría A2).
+    expect(veredicto([30, 30, -60], [10, 10, 10])).toEqual(['La cartera le habría ganado al S&P 500 en 2 de los 3 años; el '
+      + 'S&P 500 a la cartera, en el otro. Aun así, en el total le habría ganado el S&P 500: los años que perdió, la cartera '
+      + 'habría perdido por más.'])
+    expect(veredicto([-5, -5, 80], [5, 5, 5])).toEqual(['El S&P 500 le habría ganado a la cartera en 2 de los 3 años; la '
+      + 'cartera al S&P 500, en el otro. Aun así, en el total a la cartera le habría ido mejor: los años que ganó, habría '
+      + 'ganado por más.'])
+    // Casi lo mismo cada año, pero no en el total («en los 2 años» se leía como el total; M1).
+    expect(veredicto([10.5, 10.6], [10, 10])).toEqual(['La cartera y el S&P 500 habrían dado casi lo mismo en cada uno de '
+      + 'los 2 años. En el total, a la cartera le habría ido mejor.'])
+    expect(veredicto([10.2, 19.9, 29.5], [10, 20, 30]))
+      .toEqual(['La cartera y el S&P 500 habrían dado casi lo mismo en cada uno de los 3 años.'])
+  })
+
+  // La propuso la auditoría de las pruebas de «Año por año» (06/11): con la regla
+  // copiada sin `comoSeVe` (los números crudos), ningún caso de arriba cambiaba.
+  it('un año se compara como se ve: +11,0% contra +10,0% es un punto, no «casi lo mismo»', () => {
+    expect([porcentaje(10.96), porcentaje(10)]).toEqual(['+11,0%', '+10,0%'])
+    expect(veredicto([10.96, 20, 30], [10, 25, 35]))
+      .toEqual(['El S&P 500 le habría ganado a la cartera en 2 de los 3 años; la cartera al S&P 500, en el otro.'])
+  })
+
+  it('con «Mi cartera de hoy» avisa que da de más, también acá (auditoría M2)', () => {
+    expect(lecturaAnioPorAnio(CASOS.tres, { origen: 'hoy' }).aviso)
+      .toBe('Es tu cartera de hoy puesta en el pasado: año por año, también da de más.')
+    expect(lecturaAnioPorAnio(CASOS.tres, { origen: 'hoy', cliente: 'Ana' }).aviso)
+      .toBe('Es la cartera de hoy de Ana puesta en el pasado: año por año, también da de más.')
+    expect(lecturaAnioPorAnio(CASOS.tres, { origen: 'cero' }).aviso).toBeNull()
+  })
+
+  it('el tramo corto del principio dice sus meses, hasta 11, y no cuenta como año', () => {
+    const l = lecturaAnioPorAnio(CASOS.tramo_corto)
+    expect(l.total).toEqual({ rotulo: 'Todo el período', desde: '2025-03-24', hasta: '2026-10-30' })
+    expect(l.filas.map(f => f.rotulo)).toEqual(['7 meses', 'Año 1'])
+    expect(l.frase).toBeNull()        // un solo año entero: no hay uno que más
+    expect(l.veredicto).toEqual([])   // ni nada que contar
+    expect(l.nota).toBe(`${NOTA_ANIO_POR_ANIO} Lo de antes del primer año entero va aparte, con sus meses.`)
+    // 355 días no es un año entero: «11 meses», no «12» (auditoría B6).
+    const corto = armar([5, 10, 15], [1, 1, 1])
+    corto.anio_por_anio.tramos[0] = { ...corto.anio_por_anio.tramos[0], dias: 355, completo: false }
+    expect(lecturaAnioPorAnio(corto).filas.map(f => f.rotulo)).toEqual(['11 meses', 'Año 1', 'Año 2'])
+    // El año 1 que se juntó con unos días de antes lo dice (la nota dice 365).
+    const largo = armar([5, 10, 15], [1, 1, 1])
+    largo.anio_por_anio.tramos[0] = { ...largo.anio_por_anio.tramos[0], dias: 390 }
+    expect(lecturaAnioPorAnio(largo).nota).toBe(`${NOTA_ANIO_POR_ANIO} El año 1 tiene 390 días: suma los de antes del `
+      + 'primer año entero.')
+  })
+
+  it('un año que no se pudo medir (un activo que se fue a cero) no entra en la frase ni en la cuenta', () => {
+    const r = armar([-100, 50, 10], [1, 1, 1])
+    r.anio_por_anio.tramos[1] = { ...r.anio_por_anio.tramos[1], cartera: null }
+    const l = lecturaAnioPorAnio(r)
+    expect(l.veredicto).toEqual([])
+    expect(l.frase).toBe('El año que más habría subido la cartera es el 3 (del 07/11/23 al 06/11/24): +10,0%. El que más '
+      + 'habría bajado, el 1 (del 08/11/21 al 07/11/22): −100,0%.')
+  })
+})
+
 describe('por qué no se pudo simular', () => {
   it('cada motivo, en una oración entera', () => {
     // Sobre lo que tenemos: PARADA cotiza; la que está vieja es nuestra copia (M10).
     expect(motivoCartera(CASOS.vieja)).toBe('No tenemos precios de PARADA desde el 30/09/26: sacalo para simular el resto.')
+    // Vieja contra hoy (H9): un activo solo, o todos, ya no tienen «resto» que simular,
+    // y cambiarlo no sirve si la falla es nuestra (H4, 06/11).
+    const parado = (asset, hasta = '2026-09-04') => ({ asset, motivo: 'vieja', hasta })
+    expect(motivoCartera({ motivo: 'vieja', faltan: [parado('MU')] }, 1))
+      .toBe('No tenemos precios de MU desde el 04/09/26: para simular hacen falta los de la última semana.')
+    expect(motivoCartera({ motivo: 'vieja', faltan: [parado('MU'), parado('AAPL')] }, 2))
+      .toBe('No tenemos precios de MU y AAPL desde el 04/09/26: para simular hacen falta los de la última semana.')
+    // Cada uno con su fecha (H5, 06/11): la noche caída y uno que ya estaba parado.
+    expect(motivoCartera({ motivo: 'vieja', faltan: [parado('AAPL', '2026-10-05'), parado('MU', '2026-08-14')] }, 2))
+      .toBe('No tenemos precios de MU desde el 14/08/26 ni de AAPL desde el 05/10/26: '
+        + 'para simular hacen falta los de la última semana.')
+    expect(motivoCartera({ motivo: 'vieja', faltan: [parado('MU', '2026-08-14'), parado('NOK', '2026-08-14')] }, 3))
+      .toBe('No tenemos precios de MU y NOK desde el 14/08/26: sacalos para simular el resto.')
     expect(motivoCartera({ motivo: 'sin_serie', faltan: [{ asset: 'AL30' }, { asset: 'ZZZ' }] }))
       .toBe('No tenemos los precios de cada día de AL30 y ZZZ: sacalos o cambialos por otros.')
     expect(motivoCartera({ motivo: 'poca_historia', recorte_por: 'NUEVITO', faltan: [] }))
@@ -317,7 +465,9 @@ describe('nunca promete', () => {
     const textos = [
       ...Object.values(CASOS).flatMap(r => {
         const l = lecturaCartera(r)
-        return l ? [l.titulo, l.aclaracion, ...l.avisos, ...l.deLosActivos, notaDelResumen(r)] : [motivoCartera(r)]
+        const a = lecturaAnioPorAnio(r)
+        return [...(l ? [l.titulo, l.aclaracion, ...l.avisos, ...l.deLosActivos, notaDelResumen(r)] : [motivoCartera(r)]),
+          ...(a ? [a.frase, ...a.veredicto, a.nota].filter(Boolean) : [])]
       }),
       QUE_SE_SIMULA, notaHoy(), notaHoy('Ana', true), notaOjito(), notaSinActivos('Ana'), NOTA_CADA_ACTIVO,
       COMO_SE_SIMULA_CARTERA, ...['sin_serie', 'vieja', 'poca_historia', 'tope', 'bajando', 'demo', 'otro']

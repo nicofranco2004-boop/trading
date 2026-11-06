@@ -358,6 +358,58 @@ class HorasTest(unittest.TestCase):
         self.assertAlmostEqual(por_dia["2026-10-28"]["c"], 5.0, places=6)
         self.assertAlmostEqual(por_dia["2026-10-28"]["h"], 5.05, places=6, msg="la vela entera, con el dólar de su día")
 
+    def test_cedear_estimado_en_pesos_va_en_la_escala_del_diario(self):
+        # Un CEDEAR sin su serie en pesos (a pedido sólo se baja la de afuera): el
+        # diario es un ESTIMADO, Apple × el MEP ÷ 20 (tecnico.serie). Las de 1 y 4
+        # horas, en la MISMA escala: sin dividir eran la acción entera en pesos.
+        dias = [date(2026, 10, 27), date(2026, 10, 28)]
+        self.yahoo.horas["AAPL"] = [(_hora(d, hh, 30, NY), 300.0, 303.0, 297.0, 300.0, 1.0)
+                                    for d in dias for hh in range(9, 16)]
+        self._mep({"2026-10-27": 1000.0, "2026-10-28": 1200.0})
+        self._ficha("AAPL", moneda="ars")
+        h1 = self._horas("AAPL", "1h", moneda="ars")
+        self.assertEqual((h1["ticker"], h1["convertida"]), ("AAPL", "mep"))
+        por_dia = {p["d"]: p for p in h1["puntos"]}
+        self.assertAlmostEqual(por_dia["2026-10-27"]["c"], 300.0 * 1000.0 / 20, places=6)
+        self.assertAlmostEqual(por_dia["2026-10-28"]["c"], 300.0 * 1200.0 / 20, places=6)
+        self.assertAlmostEqual(por_dia["2026-10-28"]["h"], 303.0 * 1200.0 / 20, places=6)
+        self.assertEqual(h1.get("escala"), 20)
+        h4 = self._horas("AAPL", "4h", moneda="ars")
+        self.assertAlmostEqual(h4["puntos"][-1]["c"], 300.0 * 1200.0 / 20, places=6)
+        # En dólares, la acción de afuera tal cual (lo armado en pesos no se mezcla).
+        self.assertEqual(self._horas("AAPL", "1h")["puntos"][-1]["c"], 300.0)
+
+    def test_horas_en_la_escala_de_la_serie_guardada_y_al_podarla_la_de_la_tabla(self):
+        # Con la serie en pesos guardada, el diario va en SU escala (125, no la de la
+        # tabla: 120) y las de 1 hora en la misma. Podada esa serie, el diario pasa a
+        # la tabla y las horas también, aunque Yahoo no haya traído nada nuevo: lo
+        # armado se guarda con su escala (auditoría 06/11, pruebas: la tabla en las
+        # horas, o la clave sin la escala, pasaban).
+        hoy = hoy_art_date()
+        with main.db_abierta() as conn:
+            for d in _ruedas(hoy, 800):
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?, 1100, 1000) "
+                             "ON CONFLICT(date) DO NOTHING", (d.isoformat(),))
+            for d in _ruedas(hoy, 760)[:-14]:
+                conn.execute("INSERT INTO velas_diarias (symbol, date, close) VALUES ('MELI.BA', ?, ?)",
+                             (d.isoformat(), 100.0 * 1000.0 / 125))
+            conn.commit()
+        dias = [date(2026, 10, 27), date(2026, 10, 28)]
+        self.yahoo.horas["MELI"] = [(_hora(d, hh, 30, NY), 100.0, 101.0, 99.0, 100.0, 1.0)
+                                    for d in dias for hh in range(9, 16)]
+        with mock.patch("main._fetch_data912_equities", lambda: {"MELI": {"mercado": "arg_cedears"}}):
+            r = self.client.get("/api/tecnico/MELI.BA?moneda=ars", headers=self.h).json()
+            self.assertAlmostEqual(r["escala"], 125.0, places=6)
+            h1 = self._horas("MELI.BA", "1h", moneda="ars")
+            self.assertAlmostEqual(h1["escala"], 125.0, places=6)
+            self.assertAlmostEqual(h1["puntos"][-1]["c"], 100.0 * 1000.0 / 125, places=3)
+            with main.db_abierta() as conn:
+                conn.execute("DELETE FROM velas_diarias WHERE symbol='MELI.BA'")
+                conn.commit()
+            h1 = self._horas("MELI.BA", "1h", moneda="ars")
+        self.assertEqual(h1["escala"], 120)
+        self.assertAlmostEqual(h1["puntos"][-1]["c"], 100.0 * 1000.0 / 120, places=3)
+
     # ── Cripto ───────────────────────────────────────────────────────────────
 
     def test_cripto_cada_4_horas_desde_las_0_utc_y_la_media_de_200_horas(self):

@@ -13,14 +13,20 @@ una acción argentina a dólares con el MEP de CADA día) y la del S&P 500 la de
 
 HASTA CUÁNDO. Todas las líneas terminan el último día con precio de los
 activos (nunca después de hoy: la UVA se publica por adelantado). Una línea
-cuyo último dato quedó más de `DIAS_VIEJA` días antes (un activo que dejó de
-cotizar, un índice que la fuente dejó de mandar) NO se dibuja: se dice hasta
-cuándo llega (`faltan`, motivo 'vieja'). Dibujarla daba su último valor como si
-fuera de hoy y la frase la comparaba contra el S&P de ayer (auditoría 29/10).
+sin precios de la última semana contada desde HOY (`tecnico.es_vieja`: un activo
+que dejó de cotizar, un índice que la fuente dejó de mandar) NO se dibuja: se
+dice hasta cuándo llega (`faltan`, motivo 'vieja'). Dibujarla daba su último
+valor como si fuera de hoy y la frase la comparaba contra el S&P de ayer
+(auditoría 29/10). Contada desde el activo más nuevo, un activo solo que dejó
+de cotizar se dibujaba igual (auditoría de «Una cartera» 05/11, H9).
 
 CÓMO SE ELIGE EL DÍA DEL 100.
-  · El pedido trae `desde`: tu primera compra (la calcula la pantalla con la
-    misma regla de la ficha, `primeraCompra`) o hoy menos 1 o 3 años.
+  · El pedido trae tu primera compra (`desde`, la calcula la pantalla con la
+    misma regla de la ficha, `primeraCompra`) o «1 año» / «3 años» (`anios`):
+    los últimos N años que terminan en el último precio de los activos, no hoy
+    (`tecnico.primer_dia`, LA regla de la ficha, el Backtesting de una regla y
+    «Una cartera»; Nico, 06/11/2026). Desde hoy, un domingo, un lunes o después
+    de un feriado arrancaba otro día que el Backtesting para el mismo activo.
   · Si `desde` cae un día sin precio (fin de semana, feriado), vale el último
     cierre anterior: es el precio que tenía ese día.
   · Si un activo empieza DESPUÉS de `desde`, el 100 se corre para TODOS al
@@ -46,31 +52,24 @@ QUÉ NO HACE. No recomienda nada ni mira para adelante: dice qué pasó.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 
 import tecnico
 
 MAX_ACTIVOS = 4
-# «1 año» y «3 años» se cortan por FECHA (días corridos), como la ficha.
-PLAZOS = {"1a": tecnico.DIAS_ANIO, "3a": 3 * tecnico.DIAS_ANIO}
+# «1 año» y «3 años», en años: se cortan por FECHA (días corridos) hasta el
+# último precio, como la ficha (`tecnico.primer_dia`).
+PLAZOS = {"1a": 1, "3a": 3}
 VARAS = ("sp500", "mep", "cer")
 # Un activo que empieza hasta una semana después del día pedido no «corre» el
 # 100: es el borde de lo guardado (3 años justos) o un feriado largo, no un
 # activo que cotiza hace menos. El 100 va a su primer día igual, sin aviso.
 DIAS_MARGEN = 7
-# Una línea con su último dato más de una semana antes que el último de los
-# activos ya no dice «hoy» (un feriado largo son 4 días).
-DIAS_VIEJA = 7
 
 
 def _dias(a: str, b: str) -> int:
     return (date.fromisoformat(b) - date.fromisoformat(a)).days
 NOMBRE_VARA = {"sp500": "S&P 500", "mep": "Guardar dólares", "cer": "Inflación (CER)"}
-
-
-def desde_plazo(plazo: str, hoy: date) -> str:
-    """El día de arranque de «1 año» o «3 años» contado desde `hoy`."""
-    return (hoy - timedelta(days=PLAZOS[plazo])).isoformat()
 
 
 def _valor_al(puntos: list, fecha: str):
@@ -103,7 +102,7 @@ def _cierres(velas: list) -> list:
     return [(v["date"], v["close"]) for v in velas if v.get("close") is not None]
 
 
-def dia_del_cien(desde: str, activos: list, varas: list, hasta: str) -> tuple:
+def dia_del_cien(desde: str, activos: list, varas: list, hoy: date) -> tuple:
     """LA regla del día en que todo arranca en 100, la de Comparar y la de «Una
     cartera» de Backtesting (cartera_simulada.simular). `activos` y `varas`:
     listas de puntos [(fecha, valor)] ordenados; `varas`, las series contra las que
@@ -121,11 +120,12 @@ def dia_del_cien(desde: str, activos: list, varas: list, hasta: str) -> tuple:
     quedaba afuera («sin datos desde esa fecha»): en «Una cartera» con 5 años y en
     Comparar con «desde tu primera compra» de antes de lo guardado (auditoría de
     método 06/11, H1). Una vara que empieza mucho después (no tenemos su historia)
-    o que quedó vieja no corre nada: queda afuera y se dice."""
+    o que quedó vieja (`tecnico.es_vieja`, contra `hoy`) no corre nada: queda
+    afuera y se dice."""
     de_los_activos = max([desde] + [p[0][0] for p in activos if p])
     corren = [p[0][0] for p in varas
               if p and de_los_activos < p[0][0] and _dias(de_los_activos, p[0][0]) <= DIAS_MARGEN
-              and _dias(p[-1][0], hasta) <= DIAS_VIEJA]
+              and not tecnico.es_vieja(p[-1][0], hoy)]
     return max([de_los_activos] + corren), de_los_activos
 
 
@@ -136,50 +136,63 @@ def _mep(conn, desde: str) -> list:
     return [(d, tc) for d, tc, _ in serie_diaria(conn, desde)]
 
 
-def comparar(conn, activos: list, moneda: str, desde: str, *, cer: list = None,
-             cer_basis: str = None, hoy: date = None) -> dict:
+def comparar(conn, activos: list, moneda: str, desde: str = None, *, anios: int = None,
+             cer=None, cer_basis: str = None, hoy: date = None) -> dict:
     """La comparación entera.
 
     `activos`: [(asset, local)] con `local` igual que la ficha (acción argentina
-    → su precio de BYMA). `moneda`: 'usd' | 'ars'. `desde`: 'YYYY-MM-DD'. `cer`:
-    [(fecha, valor)] del índice (sólo se usa en pesos) y `cer_basis` con qué se
-    armó ('CER' o 'UVA'). `hoy`: el día argentino (ninguna línea pasa de hoy).
+    → su precio de BYMA). `moneda`: 'usd' | 'ars'. Desde cuándo: `desde`
+    ('YYYY-MM-DD', tu primera compra) o `anios` (los últimos N años hasta el
+    último precio de los activos, `tecnico.primer_dia`). `cer`: la serie del
+    índice desde un día, `cer(dia)` → [(fecha, valor)] (sólo en pesos; vive en
+    `main`, y el día lo sabe esta cuenta), y `cer_basis` con qué se armó ('CER' o
+    'UVA'). `hoy`: el día argentino (ninguna línea pasa de hoy, y la que no tiene
+    precios de la última semana contada desde hoy no se dibuja).
 
     {moneda, desde, base, base_corrida, base_corrida_por, hasta, series:
     [{clave, tipo, nombre, ticker, convertida, puntos, final, fecha_final}],
     faltan: [{clave, motivo, hasta?}]}. `base` es el día del 100 y `hasta` el
-    último día (None si ningún activo tiene precios)."""
+    último día (None si ningún activo tiene precios de la última semana)."""
     from fechas import hoy_art_date
     moneda = "ars" if moneda == "ars" else "usd"
-    tope = (hoy or hoy_art_date()).isoformat()
+    hoy = hoy or hoy_art_date()
+    tope = hoy.isoformat()
     out = {"moneda": moneda, "desde": desde, "base": None, "base_corrida": False,
            "base_corrida_por": None, "hasta": None, "series": [], "faltan": []}
 
     crudas = []
     for asset, local in activos:
-        s = tecnico.serie(conn, asset, moneda, bool(local))
+        # Todo arranca en 100: la escala de un CEDEAR estimado en pesos no cambia
+        # ninguna línea, y uno sin escala conocida se compara igual (la acción de
+        # afuera × el MEP). Sin esto, NET desaparecía de Comparar en pesos
+        # (auditoría 06/11, H4 de la serie).
+        s = tecnico.serie(conn, asset, moneda, bool(local), escala_obligatoria=False)
         puntos = [p for p in _cierres(s["velas"]) if p[0] <= tope]
         if not puntos:
             out["faltan"].append({"clave": asset, "motivo": "sin_datos"})
             continue
         crudas.append({"clave": asset, "tipo": "activo", "nombre": asset, "local": bool(local),
                        "ticker": s.get("ticker"), "convertida": s.get("convertida"), "puntos": puntos})
+    # El que no tiene precios de la última semana, contada desde hoy, no se dibuja.
+    for c in [c for c in crudas if tecnico.es_vieja(c["puntos"][-1][0], hoy)]:
+        crudas.remove(c)
+        out["faltan"].append({"clave": c["clave"], "motivo": "vieja", "hasta": c["puntos"][-1][0]})
     if not crudas:
         return out
 
-    # Hasta cuándo: el último día con precio de los activos. El que quedó viejo
-    # contra ese día no se dibuja.
+    # Hasta cuándo: el último día con precio de los activos. «1 año» y «3 años»
+    # terminan ahí (`tecnico.primer_dia`).
     hasta = max(c["puntos"][-1][0] for c in crudas)
-    for c in [c for c in crudas if _dias(c["puntos"][-1][0], hasta) > DIAS_VIEJA]:
-        crudas.remove(c)
-        out["faltan"].append({"clave": c["clave"], "motivo": "vieja", "hasta": c["puntos"][-1][0]})
     out["hasta"] = hasta
+    if anios:
+        desde = tecnico.primer_dia(hasta, anios * tecnico.DIAS_ANIO)
+        out["desde"] = desde
 
     # El día del 100: `desde`, o el primero que tienen TODOS si alguno empieza
     # después; y si el S&P 500 empieza unos días después (el borde de lo guardado),
     # ése (`dia_del_cien`, LA regla de las dos pantallas).
-    sp = [p for p in _cierres(tecnico.sp500(conn, moneda)) if p[0] <= hasta]
-    base, de_los_activos = dia_del_cien(desde, [c["puntos"] for c in crudas], [sp], hasta)
+    sp = _cierres(tecnico.sp500(conn, moneda))
+    base, de_los_activos = dia_del_cien(desde, [c["puntos"] for c in crudas], [sp], hoy)
     if _dias(desde, de_los_activos) > DIAS_MARGEN:
         out["base_corrida"] = True
         # ¿Cotiza hace menos, o es donde empieza lo guardado para todos? El S&P
@@ -197,15 +210,18 @@ def comparar(conn, activos: list, moneda: str, desde: str, *, cer: list = None,
         out["faltan"].append({"clave": "cer", "motivo": "solo_en_pesos"})
     else:
         varas.append({"clave": "mep", "puntos": _mep(conn, base), "ticker": None})
-        varas.append({"clave": "cer", "puntos": sorted(cer or []), "ticker": cer_basis})
+        varas.append({"clave": "cer", "puntos": sorted(cer(base) if cer else []), "ticker": cer_basis})
 
     for c in crudas:
         c["puntos"] = base_cien(c["puntos"], base)
     for v in varas:
-        puntos = [x for x in v["puntos"] if x[0] <= hasta]
-        if puntos and _dias(puntos[-1][0], hasta) > DIAS_VIEJA:
-            out["faltan"].append({"clave": v["clave"], "motivo": "vieja", "hasta": puntos[-1][0]})
+        # Vieja contra hoy, con lo que llegó hasta hoy (la UVA se publica
+        # adelantada); se dibuja hasta el último día de los activos.
+        hasta_aca = [x for x in v["puntos"] if x[0] <= tope]
+        if hasta_aca and tecnico.es_vieja(hasta_aca[-1][0], hoy):
+            out["faltan"].append({"clave": v["clave"], "motivo": "vieja", "hasta": hasta_aca[-1][0]})
             continue
+        puntos = [x for x in v["puntos"] if x[0] <= hasta]
         p = base_cien(puntos, base)
         if len(p) < 2:
             out["faltan"].append({"clave": v["clave"], "motivo": "sin_datos"})

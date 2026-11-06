@@ -331,6 +331,31 @@ class AlertasTecnicasTest(unittest.TestCase):
         self.assertEqual(len(self._eventos()), 1, "el mismo cruce no se avisa dos veces")
         self.assertEqual(len(self.mails), 1)
 
+    def test_en_pesos_el_mail_dice_que_el_precio_del_cedear_es_estimado(self):
+        # BAC en pesos es SIEMPRE un estimado (su '.BA' viene roto y no se baja: la
+        # acción de afuera × el MEP ÷ 4). El mail decía «cerró en $ X» con el número
+        # estimado, sin decirlo (auditoría 06/11, H8 de la pantalla).
+        import tecnico
+        with main.db_abierta() as conn:
+            for d in _ruedas(self.ayer, 800) + [self.ayer]:
+                conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta) VALUES (?, 1100.0, 1000.0) "
+                             "ON CONFLICT(date) DO NOTHING", (d.isoformat(),))
+            conn.commit()
+        self.yahoo.precios["BAC"] = self._sube_ayer
+        self.byma = {"BAC": {"mercado": "arg_cedears"}}
+        self.client.post("/api/watchlist", json={"symbol": "BAC"}, headers=self.h)
+        self._noche(self.anteayer)
+        self._crear(symbol="BAC", currency="ARS", creada_el=self._siguiente(self.anteayer))
+        self._cron()
+        self._noche(self.ayer)                       # el cruce: 90 → 120 dólares
+        self._cron()
+        ev = self._eventos()
+        self.assertEqual(len(ev), 1, "el cruce de ayer avisa")
+        self.assertEqual(ev[0]["message"],
+                         "BAC en pesos superó su promedio de 200 días: la tendencia de largo plazo pasó a ser alcista")
+        self.assertIn("BAC cerró en $30.000", self.mails[0]["texto"], "120 × 1000 ÷ 4")
+        self.assertIn(tecnico.NOTA_ESTIMADO, self.mails[0]["texto"])
+
     def test_de_un_cliente_el_push_y_el_mail_llevan_a_mis_clientes(self):
         """Auditoría B, hallazgo B2 (29/10): el push de la alerta técnica de
         Juan abría «Mis alertas» de LAURA (donde la de Juan no está) mientras el

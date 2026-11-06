@@ -67,7 +67,36 @@
     "final": 128.5938
    }
   ],
-  "faltan": []
+  "faltan": [],
+  "anio_por_anio": {
+   "tramos": [
+    {
+     "desde": "2024-10-31",
+     "hasta": "2025-10-31",
+     "dias": 365,
+     "completo": true,
+     "aporte": 18.098659999999995,
+     "cartera": 18.09866,
+     "sp500": 11.9988,
+     "nasdaq": 13.057500000000012
+    },
+    {
+     "desde": "2025-10-31",
+     "hasta": "2026-10-30",
+     "dias": 364,
+     "completo": true,
+     "aporte": 3.2868000000000137,
+     "cartera": 2.783096776881311,
+     "sp500": 7.881780876223665,
+     "nasdaq": 13.741945470225314
+    }
+   ],
+   "por_anio": {
+    "cartera": 10.189715487680552,
+    "sp500": 9.935280901071252,
+    "nasdaq": 13.418768106486144
+   }
+  }
  },
  "sin_nasdaq": {
   "anios": 2,
@@ -134,7 +163,33 @@
     "clave": "nasdaq",
     "motivo": "sin_datos"
    }
-  ]
+  ],
+  "anio_por_anio": {
+   "tramos": [
+    {
+     "desde": "2024-10-31",
+     "hasta": "2025-10-31",
+     "dias": 365,
+     "completo": true,
+     "aporte": 18.098659999999995,
+     "cartera": 18.09866,
+     "sp500": 11.9988
+    },
+    {
+     "desde": "2025-10-31",
+     "hasta": "2026-10-30",
+     "dias": 364,
+     "completo": true,
+     "aporte": 3.2868000000000137,
+     "cartera": 2.783096776881311,
+     "sp500": 7.881780876223665
+    }
+   ],
+   "por_anio": {
+    "cartera": 10.189715487680552,
+    "sp500": 9.935280901071252
+   }
+  }
  },
  "recortada": {
   "anios": 2,
@@ -204,7 +259,8 @@
     "final": 113.3808
    }
   ],
-  "faltan": []
+  "faltan": [],
+  "anio_por_anio": null
  },
  "vieja": {
   "anios": 2,
@@ -276,6 +332,215 @@
     "final": 113.7419
    }
   ],
-  "faltan": []
+  "faltan": [],
+  "anio_por_anio": null
+ },
+ "tres_anios": {
+  "anios": 3,
+  "moneda": "usd",
+  "pedido_desde": "2023-11-01",
+  "recortado": false,
+  "recorte_por": null,
+  "disponible": true,
+  "desde": "2023-11-01",
+  "hasta": "2026-10-30",
+  "dias": 1095,
+  "activos": [
+   {
+    "asset": "AAPL",
+    "local": false,
+    "peso": 50.0,
+    "ticker": "AAPL",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": 67.31360000000001,
+    "aporte": 33.656800000000004,
+    "peso_final": 67.22130516369528
+   },
+   {
+    "asset": "GGAL",
+    "local": true,
+    "peso": 30.0,
+    "ticker": "GGAL",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": -38.5527,
+    "aporte": -11.56581,
+    "peso_final": 14.812547353419445
+   },
+   {
+    "asset": "BTC",
+    "local": false,
+    "peso": 20.0,
+    "ticker": "BTC",
+    "convertida": null,
+    "primera_vela": "2023-09-07",
+    "resultado": 11.794200000000004,
+    "aporte": 2.3588400000000007,
+    "peso_final": 17.966147482885273
+   }
+  ],
+  "cartera": {
+   "resultado": 24.449830000000006,
+   "peor_caida": -22.079486223342247,
+   "final": 124.44983
+  },
+  "indices": [
+   {
+    "clave": "sp500",
+    "nombre": "S&P 500",
+    "ticker": "^GSPC",
+    "resultado": 26.849500000000013,
+    "peor_caida": -0.8424893466077554,
+    "final": 126.84950000000002
+   },
+   {
+    "clave": "nasdaq",
+    "nombre": "Nasdaq",
+    "ticker": "^IXIC",
+    "resultado": 37.741800000000005,
+    "peor_caida": -1.3463374556613839,
+    "final": 137.7418
+   }
+  ],
+  "faltan": [],
+  "anio_por_anio": {
+   "tramos": [
+    {
+     "desde": "2023-11-01",
+     "hasta": "2024-10-31",
+     "dias": 365,
+     "completo": true,
+     "aporte": -0.11414999999999509,
+     "cartera": -0.11414999999999065,
+     "sp500": 4.984999999999995,
+     "nasdaq": 7.113900000000006
+    },
+    {
+     "desde": "2024-10-31",
+     "hasta": "2025-10-31",
+     "dias": 365,
+     "completo": true,
+     "aporte": 18.026149999999987,
+     "cartera": 18.046750365542263,
+     "sp500": 11.998761727865892,
+     "nasdaq": 13.057595699531044
+    },
+    {
+     "desde": "2025-10-31",
+     "hasta": "2026-10-30",
+     "dias": 364,
+     "completo": true,
+     "aporte": 6.537830000000014,
+     "cartera": 5.54466890562455,
+     "sp500": 7.881825348969529,
+     "nasdaq": 13.741820836264807
+    }
+   ],
+   "por_anio": {
+    "cartera": 7.570630280482815,
+    "sp500": 8.258263818849777,
+    "nasdaq": 11.275005289147689
+   }
+  }
+ },
+ "tramo_corto": {
+  "anios": 3,
+  "moneda": "usd",
+  "pedido_desde": "2023-11-01",
+  "recortado": true,
+  "recorte_por": "NUEVA",
+  "disponible": true,
+  "desde": "2025-03-24",
+  "hasta": "2026-10-30",
+  "dias": 420,
+  "activos": [
+   {
+    "asset": "AAPL",
+    "local": false,
+    "peso": 50.0,
+    "ticker": "AAPL",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": 46.410799999999995,
+    "aporte": 23.2054,
+    "peso_final": 55.2164578162672
+   },
+   {
+    "asset": "GGAL",
+    "local": true,
+    "peso": 30.0,
+    "ticker": "GGAL",
+    "convertida": null,
+    "primera_vela": "2023-10-09",
+    "resultado": -24.621499999999997,
+    "aporte": -7.38645,
+    "peso_final": 17.0566669897446
+   },
+   {
+    "asset": "NUEVA",
+    "local": false,
+    "peso": 20.0,
+    "ticker": "NUEVA",
+    "convertida": null,
+    "primera_vela": "2025-03-24",
+    "resultado": 83.80000000000001,
+    "aporte": 16.76,
+    "peso_final": 27.72687519398818
+   }
+  ],
+  "cartera": {
+   "resultado": 32.57895000000002,
+   "peor_caida": -10.160910000000001,
+   "final": 132.57895000000002
+  },
+  "indices": [
+   {
+    "clave": "sp500",
+    "nombre": "S&P 500",
+    "ticker": "^GSPC",
+    "resultado": 13.980700000000002,
+    "peor_caida": -0.7537417590522733,
+    "final": 113.9807
+   },
+   {
+    "clave": "nasdaq",
+    "nombre": "Nasdaq",
+    "ticker": "^IXIC",
+    "resultado": 17.232000000000003,
+    "peor_caida": -1.1741212829422865,
+    "final": 117.232
+   }
+  ],
+  "faltan": [],
+  "anio_por_anio": {
+   "tramos": [
+    {
+     "desde": "2025-03-24",
+     "hasta": "2025-10-31",
+     "dias": 221,
+     "completo": false,
+     "aporte": 17.290049999999994,
+     "cartera": 17.29004999999999,
+     "sp500": 5.653299999999994,
+     "nasdaq": 3.0683999999999934
+    },
+    {
+     "desde": "2025-10-31",
+     "hasta": "2026-10-30",
+     "dias": 364,
+     "completo": true,
+     "aporte": 15.288900000000027,
+     "cartera": 13.035121052467824,
+     "sp500": 7.8818172267217435,
+     "nasdaq": 13.741942244179594
+    }
+   ],
+   "por_anio": {
+    "cartera": 19.238295875168188,
+    "sp500": 8.507275177565754,
+    "nasdaq": 10.428225032340288
+   }
+  }
  }
 }

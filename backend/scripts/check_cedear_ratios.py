@@ -18,7 +18,8 @@ USO
     python3 backend/scripts/check_cedear_ratios.py           # chequea y reporta
     python3 backend/scripts/check_cedear_ratios.py --write   # además corrige la tabla
 
-Sale con código 1 si encuentra diferencias (sirve para CI o para un cron).
+Sale con código 1 si encuentra diferencias o una excepción que ya no cuadra
+(sirve para CI o para un cron).
 
 FUENTE
 ──────
@@ -26,6 +27,17 @@ Banco Comafi, emisor de los programas de CEDEARs — "LISTA TOTAL DE CEDEARS",
 columna "Ratio Cedear/Acción ó ADR". Cubre acciones; NO trae ETFs (SPY, QQQ,
 GLD…) ni los CEDEARs de otros emisores: ésos quedan fuera del chequeo y en la
 tabla están marcados como medidos del precio.
+
+EXCEPCIONES
+───────────
+Esa columna cuenta CEDEARs por el papel sobre el que se armó el programa. Si ese
+papel desaparece, la lista puede quedarse con el número viejo, y copiarlo rompe
+la tabla: AstraZeneca canjeó su ADR (media acción) por la acción el 02/02/2026,
+Comafi sigue anotando 2 CEDEARs por ADR y contra la acción que cotiza hoy son 4.
+Esas decisiones, verificadas a mano, viven en `NO_SEGUIR_A_COMAFI`: el chequeo
+las muestra aparte y `--write` no las toca. Si Comafi cambia el número que
+anotaba, o la tabla deja de decir lo decidido, lo marca para que lo mire una
+persona.
 """
 from __future__ import annotations
 
@@ -43,6 +55,16 @@ TABLA_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # El símbolo con el que Rendi guarda la posición no siempre es el que usa Comafi
 # en su columna "Identificación Mercado".
 ALIAS_A_COMAFI = {"BRK-B": "BRK/B", "BRKB": "BRK/B", "DISN": "DIS", "NOKA": "NOK"}
+
+# Donde la tabla NO copia a Comafi, a propósito (ver EXCEPCIONES arriba):
+# {símbolo: (ratio de la tabla, ratio que anota Comafi, por qué)}. Se guarda lo
+# que anota Comafi porque la decisión se tomó contra ESE número: si lo cambia, ya
+# no vale sola. El mismo motivo, más largo, en la tabla (cedearRatio.js).
+NO_SEGUIR_A_COMAFI = {
+    "AZN": (4, 2, "Comafi cuenta 2 por ADR; el 02/02/2026 cada ADR se canjeó por media "
+                  "acción y AZN en Nueva York (y en Yahoo) es la acción entera. Verificado "
+                  "el 06/11/2026: precio 4,00 en 230 ruedas, un cobro real 4,7."),
+}
 
 
 def parse_ratio(v) -> float | None:
@@ -97,16 +119,36 @@ def bajar_oficial(url: str = COMAFI_XLSX) -> dict[str, tuple[float, str]]:
     return out
 
 
+# Una entrada de la tabla: la clave (sin comillas o con simples o dobles) y el
+# ratio (entero, con decimales, o una fracción «1/3» con o sin espacios).
+_ENTRADA = re.compile(r"""\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z0-9_$\-.]+))\s*:\s*"""
+                      r"""([0-9]+(?:\.[0-9]+)?)(?:\s*/\s*([0-9]+(?:\.[0-9]+)?))?\s*""")
+
+
 def leer_tabla_js(path: str = TABLA_JS) -> tuple[dict[str, float], str, tuple[int, int]]:
-    """Lee CEDEAR_RATIOS del módulo. Devuelve (tabla, fuente completa, (ini, fin))."""
+    """Lee CEDEAR_RATIOS del módulo. Devuelve (tabla, fuente completa, (ini, fin)).
+
+    Entrada por entrada (lo que hay entre comas): si una no se entiende, o trae
+    una clave en minúscula (la pantalla busca en mayúscula: no la encontraría
+    nunca), FALLA en vez de saltearla. La lee también la prueba de paridad con la
+    copia del servidor (`backend/ratios_cedear.py`): antes, una clave nueva con
+    comillas dobles, un ratio con decimales (2.5 se leía 2) o una clave en
+    minúscula separaban las dos copias sin que la prueba se pusiera roja
+    (auditoría 06/11, pruebas: hallazgo 5)."""
     src = open(path, encoding="utf-8").read()
     ini = src.index("export const CEDEAR_RATIOS = {") + len("export const CEDEAR_RATIOS = {")
     fin = src.index("\n}", ini)
     cuerpo = re.sub(r"//.*", "", src[ini:fin])
     tabla = {}
-    for k, v in re.findall(r"'?([A-Z0-9\-.]+)'?\s*:\s*([0-9]+(?:/[0-9]+)?)", cuerpo):
-        num, _, den = v.partition("/")
-        tabla[k] = float(num) / float(den) if den else float(num)
+    for item in (x for x in cuerpo.split(",") if x.strip()):
+        m = _ENTRADA.fullmatch(item)
+        if not m:
+            raise ValueError(f"no entiendo esta entrada de CEDEAR_RATIOS: {item.strip()!r}")
+        k = next(g for g in m.groups()[:3] if g is not None)
+        if k != k.upper():
+            raise ValueError(f"CEDEAR_RATIOS tiene una clave en minúscula: {k!r}")
+        num, den = float(m.group(4)), float(m.group(5)) if m.group(5) else 1.0
+        tabla[k] = num / den
     return tabla, src, (ini, fin)
 
 
@@ -121,15 +163,51 @@ def aplicar_correcciones(src: str, ini: int, fin: int,
     bloque = src[ini:fin]
     for k, _mio, ofi, _nombre in diferentes:
         clave = k if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", k) else f"'{k}'"
-        val = str(int(ofi)) if abs(ofi - round(ofi)) < 1e-9 else f"1/{round(1 / ofi)}"
+        # Entero; menor a 1, como fracción (1/3); mayor a 1 y no entero, con
+        # decimales (escribía 1,5 como «1/1» y 2,5 como «1/0»).
+        val = (str(int(round(ofi))) if abs(ofi - round(ofi)) < 1e-9
+               else f"1/{round(1 / ofi)}" if ofi < 1 else f"{ofi:g}")
         # El lookbehind evita que al corregir 'BA' se pise el ratio de 'BABA'.
-        patron = rf"(?<![A-Z0-9]){re.escape(clave)}:\s*[0-9]+(?:/[0-9]+)?"
+        patron = rf"(?<![A-Z0-9]){re.escape(clave)}:\s*[0-9]+(?:\.[0-9]+)?(?:\s*/\s*[0-9]+(?:\.[0-9]+)?)?"
         bloque, n = re.subn(patron, f"{clave}: {val}", bloque, count=1)
         if n != 1:
             raise RuntimeError(
                 f"no pude ubicar {clave} en la tabla para corregirlo — "
                 f"revisá el formato a mano antes de confiar en --write")
     return src[:ini] + bloque + src[fin:]
+
+
+def comparar(tabla: dict[str, float], oficial: dict[str, tuple[float, str]],
+             excepciones: dict | None = None):
+    """Cruza la tabla con la lista oficial. Sin I/O, para poder testearla.
+
+    Devuelve (diferentes, a_proposito, revisar, sin_oficial):
+      · diferentes: [(k, tabla, oficial, nombre)], lo que `--write` corrige;
+      · a_proposito: [(k, tabla, oficial, por qué)], las excepciones que siguen
+        valiendo (Comafi anota lo mismo que cuando se decidió no copiarlo);
+      · revisar: [(k, tabla, oficial, qué cambió)], excepciones que ya no
+        describen lo que hay. No se corrigen solas: las mira una persona;
+      · sin_oficial: [k], sin fila en Comafi.
+    """
+    excepciones = NO_SEGUIR_A_COMAFI if excepciones is None else excepciones
+    diferentes, a_proposito, revisar, sin_oficial = [], [], [], []
+    for k, mio in sorted(tabla.items()):
+        hit = oficial.get(ALIAS_A_COMAFI.get(k, k))
+        if hit is None:
+            sin_oficial.append(k)
+            continue
+        ofi, nombre = hit
+        if k in excepciones:
+            nuestro, de_comafi, motivo = excepciones[k]
+            if abs(mio - nuestro) > 1e-6:
+                revisar.append((k, mio, ofi, f"la excepción dice que la tabla tiene {nuestro:g}"))
+            elif abs(ofi - de_comafi) > 1e-6:
+                revisar.append((k, mio, ofi, f"Comafi anotaba {de_comafi:g} y ahora {ofi:g}"))
+            else:
+                a_proposito.append((k, mio, ofi, motivo))
+        elif abs(mio - ofi) > 1e-6:
+            diferentes.append((k, mio, ofi, nombre))
+    return diferentes, a_proposito, revisar, sin_oficial
 
 
 def main() -> int:
@@ -149,13 +227,7 @@ def main() -> int:
     tabla, src, (ini, fin) = leer_tabla_js(args.tabla)
     print(f"oficial (Comafi): {len(oficial)} ratios · tabla de Rendi: {len(tabla)}")
 
-    diferentes, sin_oficial = [], []
-    for k, mio in sorted(tabla.items()):
-        hit = oficial.get(ALIAS_A_COMAFI.get(k, k))
-        if hit is None:
-            sin_oficial.append(k)
-        elif abs(mio - hit[0]) > 1e-6:
-            diferentes.append((k, mio, hit[0], hit[1]))
+    diferentes, a_proposito, revisar, sin_oficial = comparar(tabla, oficial)
 
     # Los que la oficial trae y nosotros ni tenemos: sin ratio no se publica monto,
     # así que no es un bug — pero es cobertura que estamos dejando sobre la mesa.
@@ -166,7 +238,15 @@ def main() -> int:
         for k, mio, ofi, nombre in diferentes:
             print(f"    {k:8s} tabla={mio:<8g} oficial={ofi:<8g}  ({nombre})")
     else:
-        print("\n✓ ningún ratio difiere de la lista oficial")
+        print("\n✓ ningún ratio difiere de la lista oficial"
+              + (" (fuera de las excepciones de abajo)" if a_proposito or revisar else ""))
+    if revisar:
+        print(f"\n✗ {len(revisar)} excepciones de NO_SEGUIR_A_COMAFI ya no cuadran "
+              f"(miralas a mano; --write no las toca):")
+        for k, mio, ofi, que in revisar:
+            print(f"    {k:8s} tabla={mio:<8g} oficial={ofi:<8g}  {que}")
+    for k, mio, ofi, motivo in a_proposito:
+        print(f"· {k} distinto de Comafi A PROPÓSITO (tabla={mio:g}, oficial={ofi:g}): {motivo}")
     print(f"· {len(sin_oficial)} sin fila en Comafi (ETFs / otros emisores, medidos del precio)")
     print(f"· {len(faltantes)} en la lista oficial que la tabla no cubre")
 
@@ -182,11 +262,11 @@ def main() -> int:
         open(args.tabla, "w", encoding="utf-8").write(nuevo)
         print(f"\n→ {len(diferentes)} corregidos en {os.path.basename(args.tabla)}."
               f" Corré los tests del frontend.")
-        return 0
+        return 1 if revisar else 0
 
     if diferentes:
         print("\n(volvé a correr con --write para corregirlos)")
-    return 1 if diferentes else 0
+    return 1 if diferentes or revisar else 0
 
 
 if __name__ == "__main__":
