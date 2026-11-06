@@ -239,6 +239,8 @@ def find_duplicate_batch(conn, uid: int, file_hash: str) -> Optional[str]:
 
 # Marca que ponen los parsers en la fila del saldo de apertura de un export.
 SALDO_ANTERIOR_NOTE = "Saldo anterior"
+# Una fecha guardada como "AAAA-MM-DD" (con o sin hora atrás), para un LIKE.
+_FECHA_ISO_LIKE = "____-__-__%"
 
 
 def drop_saldo_anterior_ya_contado(conn, uid: int, txs: list) -> list:
@@ -271,15 +273,18 @@ def drop_saldo_anterior_ya_contado(conn, uid: int, txs: list) -> list:
         # El broker y su hermano en dólares ("Bull Market · USD"): el efectivo es
         # de la misma cuenta, partido por moneda.
         like = f"{base} · %"
+        # Sólo fechas escritas "AAAA-MM-DD": una fila vieja con "15/06/2022" es,
+        # como texto, la más chica, y tapaba a todas las demás (2ª pasada de la
+        # revisión independiente, 06/11/2026).
         primeros = [conn.execute(
             f"""SELECT MIN(n.date) AS d FROM {TX_VIVAS}
                 WHERE b.user_id=? AND b.reverted_at IS NULL
-                  AND (n.broker = ? OR n.broker LIKE ?)""",
-            (uid, base, like),
+                  AND (n.broker = ? OR n.broker LIKE ?) AND n.date LIKE ?""",
+            (uid, base, like, _FECHA_ISO_LIKE),
         ).fetchone()["d"], conn.execute(
             """SELECT MIN(date) AS d FROM operations
-                WHERE user_id=? AND (broker = ? OR broker LIKE ?)""",
-            (uid, base, like),
+                WHERE user_id=? AND (broker = ? OR broker LIKE ?) AND date LIKE ?""",
+            (uid, base, like, _FECHA_ISO_LIKE),
         ).fetchone()["d"]]
         if _saldo_anterior.ya_contado(t.date, primeros):
             fuera.add(id(t))
@@ -1815,6 +1820,10 @@ def load_session_with_seed_revalidate(
 
     # Re-normalizar
     normalized, _ = normalize_rows(raw_rows)
+    # El saldo de apertura que la vista previa sacó por ya estar contado vuelve
+    # en las filas crudas: se saca con la MISMA regla. Sin esto, confirmar con
+    # «Estado inicial» lo traía de vuelta (2ª pasada de la revisión, 06/11/2026).
+    normalized = drop_saldo_anterior_ya_contado(conn, uid, normalized)
 
     # El broker de cada fila, como se llama HOY. El archivo crudo dice el nombre
     # que tenía al subirlo; si se renombró entre la vista previa y la

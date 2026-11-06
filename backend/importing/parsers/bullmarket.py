@@ -731,7 +731,7 @@ class BullMarketParser(Parser):
         con_fecha = [(i, r) for i, r in enumerate(rows, start=1)
                      if (gv(r, op_col) or gv(r, liq_col)) and gv(r, cpbt_col)]
         saldos_que_entran = _saldo_anterior.los_que_entran(
-            [(i, _liq(r), "ARS") for i, r in con_fecha if _es_saldo(r)],
+            [(i, _liq(r), "ARS", _num(gv(r, imp_col))) for i, r in con_fecha if _es_saldo(r)],
             [_liq(r) for _i, r in con_fecha if not _es_saldo(r)])
 
         # Netos que se emiten como UNA fila sintética al final (ver arriba).
@@ -1028,13 +1028,13 @@ class BullMarketParser(Parser):
             arranca = pos_fecha.get(i, "")
             if not arranca:
                 continue
-            saldos.append((i, _add_days(arranca, -1), "USD" if gv(row, mda_col) else "ARS"))
+            mda = gv(row, mda_col)
+            v = _num(gv(row, dol_col)) if mda else _num(gv(row, imp_col))
+            saldos.append((i, _add_days(arranca, -1), "USD" if mda else "ARS", v))
         entran = _saldo_anterior.los_que_entran(saldos, [r["fecha"] for r in recs])
-        for i, fecha_saldo, moneda in saldos:
+        for i, fecha_saldo, moneda, v in saldos:
             if i not in entran:
                 continue    # bloque posterior del lote → ya viene contado
-            row = rows[i]
-            v = _num(gv(row, dol_col)) if moneda == "USD" else _num(gv(row, imp_col))
             if not v:
                 continue
             result.raw_rows.append(_mk_row(

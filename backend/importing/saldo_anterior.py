@@ -11,11 +11,13 @@ Una sola regla para los tres lugares que lo deciden:
     Histórico compacto por mail (`bullmarket._parse_historico_compacto`), con
     los demás archivos de la MISMA subida;
   - `pipeline.drop_saldo_anterior_ya_contado`, con lo importado en subidas
-    ANTERIORES.
-Hasta el 06/11/2026 eran tres copias distintas: el Histórico compacto tenía la
-suya, el layout Movimientos ninguna, y la de subidas anteriores comparaba con
-«<» en vez de «≤». Los mismos archivos daban un efectivo distinto subidos juntos
-o de a uno.
+    ANTERIORES, en la vista previa y al confirmar con «Estado inicial» (que
+    vuelve a leer las filas crudas del lote).
+Hasta el 06/11/2026 eran copias distintas: el Histórico compacto tenía la suya,
+el layout Movimientos ninguna, la de subidas anteriores comparaba con «<» en vez
+de «≤», y confirmar con «Estado inicial» no pasaba por ninguna. Los mismos
+archivos daban un efectivo distinto subidos juntos, de a uno o con «Estado
+inicial».
 """
 from __future__ import annotations
 
@@ -47,23 +49,24 @@ def ya_contado(fecha_saldo, fechas_movimientos: Iterable) -> bool:
     return any(d and d <= dia for d in (_dia(f) for f in fechas_movimientos))
 
 
-def los_que_entran(saldos: List[Tuple[object, str, str]],
+def los_que_entran(saldos: List[Tuple[object, str, str, float]],
                    fechas_movimientos: List) -> Set:
-    """De los saldos de UNA subida, `[(clave, fecha, moneda)]`, las claves de los
-    que entran. Uno entra si:
+    """De los saldos de UNA subida, `[(clave, fecha, moneda, monto)]`, las claves
+    de los que entran. Uno entra si:
       1. ningún movimiento de la subida es de ese día o de antes (`ya_contado`), y
-      2. no hay otro saldo de la misma moneda con fecha ANTERIOR: ese otro abre un
-         período más viejo, y todo lo que pasó entre los dos ya está contado.
+      2. no hay otro saldo de la misma moneda, con fecha ANTERIOR y el MISMO
+         monto.
 
-    Sin la segunda, dos casos sumaban el saldo dos veces (revisión independiente
+    La 2 cubre dos casos que sumaban el saldo dos veces (revisión independiente
     del 06/11/2026): un período viejo sin ningún movimiento, y un segundo archivo
-    que arranca antes del primer movimiento del primero. Si falta un período en
-    el medio, la segunda no empeora nada: la primera ya lo descartaba.
-
-    Dos saldos del mismo día y la misma moneda entran los dos: si fueran de la
-    misma cuenta serían la misma línea, y el filtro entre archivos ya habría
-    dejado uno solo; distintos, son de cuentas distintas."""
-    candidatos = [(c, _dia(f), m) for c, f, m in saldos
+    que arranca antes del primer movimiento del primero. Si la 1 no lo sacó, es
+    que entre los dos saldos no hubo ningún movimiento: de la misma cuenta, el
+    más nuevo tiene que ser IGUAL al más viejo, y entra el más viejo. Distintos
+    son de cuentas distintas (dos comitentes subidos juntos) y entran los dos:
+    «sólo el más viejo» a secas tiraba el de la segunda cuenta (2ª pasada de la
+    revisión). Ante la duda, el saldo entra."""
+    candidatos = [(c, _dia(f), m, float(monto or 0)) for c, f, m, monto in saldos
                   if not ya_contado(f, fechas_movimientos)]
-    return {c for c, dia, m in candidatos
-            if not (dia and any(m2 == m and d2 and d2 < dia for _c2, d2, m2 in candidatos))}
+    return {c for c, dia, m, monto in candidatos
+            if not (dia and any(m2 == m and d2 and d2 < dia and abs(monto2 - monto) < 0.005
+                                for _c2, d2, m2, monto2 in candidatos))}

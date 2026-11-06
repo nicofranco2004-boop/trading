@@ -49,15 +49,17 @@ class _Cuenta:
         conn.close()
         self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
 
-    def importar(self, archivos, formato, tipo="text/csv"):
+    def importar(self, archivos, formato, tipo="text/csv", seed_state=None):
         r = self.client.post(
             "/api/imports/preview", headers=self.h,
             files=[("files", (nombre, io.BytesIO(datos), tipo)) for nombre, datos in archivos],
             data={"format": formato})
         assert r.status_code == 200, r.text
         prev = r.json()
-        c = self.client.post("/api/imports/confirm", headers=self.h,
-                             json={"session_id": prev["session_id"]})
+        cuerpo = {"session_id": prev["session_id"]}
+        if seed_state is not None:
+            cuerpo["seed_state"] = seed_state
+        c = self.client.post("/api/imports/confirm", headers=self.h, json=cuerpo)
         assert c.status_code == 200, c.text
         return prev
 
@@ -81,6 +83,18 @@ class _Cuenta:
                       "WHERE user_id=? AND is_cash=1 AND UPPER(asset) IN (?, ?)",
                       *(nombres * 2)[:2])
         return round(float(r["v"] or 0), 2)
+
+    def saldos_anteriores(self):
+        """(fecha, moneda, monto) de cada «Saldo anterior» que entró."""
+        conn = main.get_db()
+        try:
+            return sorted((r["date"], r["currency"], r["gross_amount"]) for r in conn.execute(
+                "SELECT n.date, n.currency, n.gross_amount FROM import_normalized_tx n "
+                "JOIN import_batches b ON b.id = n.batch_id "
+                "WHERE b.user_id=? AND b.status='confirmed' AND n.notes='Saldo anterior'",
+                (self.uid,)))
+        finally:
+            conn.close()
 
     def moneda_de(self, activo, tipo):
         filas = []
@@ -166,13 +180,17 @@ def test_inviu_titulos_con_saldo_o_con_relleno_siguen_siendo_titulos():
     def con_relleno(texto):
         return [texto] + ["-"] * (len(INVIU_HDR) - 2) + [0]
 
+    def con_ceros(texto):
+        return [texto, None, None, None, None, None, 0, 0, 0, None]
+
     ggal = ["2/6/2024", "4/6/2024", "Boleto / 500 / CPRA / 1 / GGAL / $", "CPRA",
             "GGAL", 10, 5000, -50000, -50000, 250000]
     cobro_mep_nuevo = ["3/6/2024", "3/6/2024", "Recibo de Cobro / 69600", "Recibo de Cobro",
                        "-", "-", 0, 50, 50, 150]
-    for titulo in (lambda t, s: con_saldo(t, s), lambda t, s: con_relleno(t)):
-        viejo = _inviu([titulo("PESOS - $", 0), COBRO_PESOS,
-                        titulo("Dólar MEP - U$S", 0), COBRO_MEP])
+    for titulo in (lambda t, s: con_saldo(t, s), lambda t, s: con_relleno(t),
+                   lambda t, s: con_ceros(t)):
+        viejo = _inviu([titulo("PESOS - $", 500), COBRO_PESOS,
+                        titulo("Dólar MEP - U$S", 3), COBRO_MEP])
         nuevo = _inviu([titulo("PESOS - $", 1000), COBRO_PESOS, ggal,
                         titulo("Dólar MEP - U$S", 7), COBRO_MEP, cobro_mep_nuevo])
         for orden in ((viejo, nuevo), (nuevo, viejo)):
@@ -287,6 +305,97 @@ def test_bull_market_una_fecha_ilegible_no_tira_el_saldo_de_un_archivo_solo():
     # 61.000 de apertura + 20.000; la fila de fecha ilegible no entra (error).
     assert cuenta.efectivo("ARS") == 81000.0
 
+def test_bull_market_de_a_uno_con_una_venta_cargada_a_mano_antes():
+    """Subiendo de a uno, una venta cargada A MANO antes del período del archivo
+    también cuenta como historia previa (`drop_saldo_anterior_ya_contado` mira
+    la tabla de operaciones). Nadie lo probaba: sacarlo pasaba todas las pruebas.
+    Ojo, medido el 06/11: esa tabla sólo tiene las VENTAS. Un depósito o una
+    compra cargados a mano no van ahí, y esta regla no los ve."""
+    cuenta = _Cuenta()
+    r = cuenta.client.post("/api/brokers", headers=cuenta.h,
+                           json={"name": "Bull Market", "currency": "ARS"})
+    assert r.status_code == 200, r.text
+    r = cuenta.client.post("/api/positions", headers=cuenta.h, json={
+        "broker": "Bull Market", "asset": "YPFD", "currency": "ARS", "quantity": 1,
+        "buy_price": 1000, "invested": 1000, "entry_date": "2022-06-01"})
+    assert r.status_code == 200, r.text
+    r = cuenta.client.post("/api/positions/sell", headers=cuenta.h, json={
+        "broker": "Bull Market", "asset": "YPFD", "quantity": 1, "exit_price": 1200,
+        "currency": "ARS", "date": "2022-07-01"})
+    assert r.status_code == 200, r.text
+    antes = cuenta.efectivo("ARS")
+    cuenta.importar([("bm-2023.csv", BM_2023)], "bullmarket")
+    # Sólo entra el cobro de 20.000; los 61.000 de apertura no.
+    assert cuenta.efectivo("ARS") - antes == 20000.0
+
+
+def test_historico_compacto_saldo_anterior_en_dolares():
+    """Con `Mda` lleno el saldo es de la cuenta en DÓLARES y la plata es la de
+    `Dolares` (US$100), no el equivalente en pesos de `Importe` (150.000).
+    Ninguna prueba tenía un saldo en dólares (revisión independiente)."""
+    hc = (HC_HDR + ";S.ANT;ERIOR;-150000;-100;DOLAR;\n"
+          + "02/01/23;COBA;6668;-500000;;;CREDITO CTA. CTE.\n").encode()
+    cuenta = _Cuenta()
+    cuenta.importar([("hc.csv", hc)], "bullmarket")
+    assert cuenta.efectivo("USD") == 100.0
+    assert cuenta.efectivo("ARS") == 500000.0
+
+
+def test_bull_market_de_a_uno_la_subida_anterior_cruza_la_fecha_del_saldo():
+    """Lo ya importado empieza ANTES del saldo y termina DESPUÉS: alcanza con
+    que algo sea de ese día o de antes (con «el último» en vez de «el primero»
+    entraba dos veces; revisión independiente)."""
+    temprano = (BM_HDR
+                + "10/01/22;Ant.;;-1000;-1000;;S.ANTERIOR\n"
+                + "19/01/22;COBA;53066;-100000;-101000;;CREDITO CTA. CTE.\n"
+                + "24/01/22;CPRA;251989;40000;-61000;GGAL;100                       400.0000\n"
+                + "10/02/23;COBA;60001;-20000;-81000;;CREDITO CTA. CTE.\n"
+                + BM_PIE + ";Total;;-81000;;;\n").encode()
+    cuenta = _Cuenta()
+    cuenta.importar([("temprano.csv", temprano)], "bullmarket")
+    cuenta.importar([("bm-2023.csv", BM_2023)], "bullmarket")
+    assert cuenta.efectivo("ARS") == 81000.0
+
+
+def test_bull_market_de_a_uno_una_fecha_vieja_mal_escrita_no_tapa_las_demas():
+    """Si en la cuenta quedó una fila vieja con la fecha en otro formato
+    («15/06/2022»), como texto es la «más chica» y tapaba a las buenas: el
+    control de subidas anteriores no veía nada (revisión independiente)."""
+    cuenta = _Cuenta()
+    r = cuenta.client.post("/api/brokers", headers=cuenta.h,
+                           json={"name": "Bull Market", "currency": "ARS"})
+    assert r.status_code == 200, r.text
+    for fecha in ("2022-06-02", "2022-07-01"):
+        r = cuenta.client.post("/api/positions", headers=cuenta.h, json={
+            "broker": "Bull Market", "asset": "YPFD", "currency": "ARS", "quantity": 1,
+            "buy_price": 1000, "invested": 1000, "entry_date": "2022-06-01"})
+        assert r.status_code == 200, r.text
+        r = cuenta.client.post("/api/positions/sell", headers=cuenta.h, json={
+            "broker": "Bull Market", "asset": "YPFD", "quantity": 1, "exit_price": 1200,
+            "currency": "ARS", "date": fecha})
+        assert r.status_code == 200, r.text
+    # Una fila heredada con la fecha escrita a la argentina.
+    conn = main.get_db()
+    conn.execute("UPDATE operations SET date='15/06/2022' WHERE user_id=? AND date='2022-06-02'",
+                 (cuenta.uid,))
+    conn.commit()
+    conn.close()
+    antes = cuenta.efectivo("ARS")
+    cuenta.importar([("bm-2023.csv", BM_2023)], "bullmarket")
+    assert cuenta.efectivo("ARS") - antes == 20000.0
+
+
+def test_confirmar_con_estado_inicial_no_trae_de_vuelta_el_saldo():
+    """Confirmar con «Estado inicial» vuelve a leer las filas crudas del lote, y
+    no pasaba por el control del saldo: el que la vista previa había sacado
+    volvía a entrar (142.000 en vez de 81.000; revisión independiente)."""
+    cuenta = _Cuenta()
+    cuenta.importar([("bm-2022.csv", BM_2022)], "bullmarket")
+    cuenta.importar([("bm-2023.csv", BM_2023)], "bullmarket",
+                    seed_state={"seed_date": "2022-12-30", "brokers": []})
+    assert cuenta.efectivo("ARS") == 81000.0
+
+
 def test_bull_market_dos_periodos_que_se_pisan():
     """El segundo arranca a mitad del primero: su saldo de apertura es lo que
     el primero ya trae hasta ese día, y las operaciones compartidas van una vez."""
@@ -316,6 +425,31 @@ def test_bull_market_el_periodo_viejo_sin_movimientos():
         cuenta = _Cuenta()
         cuenta.importar([(f"bm-{i}.csv", a) for i, a in enumerate(orden)], "bullmarket")
         assert cuenta.efectivo("ARS") == 21000.0
+        # El que entra es el más viejo: la plata ya estaba el 31/12/21.
+        assert cuenta.saldos_anteriores() == [("2021-12-31", "ARS", 1000.0)]
+
+
+def test_bull_market_dos_cuentas_distintas_en_la_misma_subida():
+    """Revisión independiente (2ª pasada, 06/11): dos cuentas de Bull Market
+    subidas juntas. Sin movimientos entre los dos saldos, si fueran de la MISMA
+    cuenta darían igual; distintos, son de cuentas distintas y entran los dos.
+    «Sólo el más viejo» a secas tiraba el de la segunda: 13.000 en vez de
+    18.000."""
+    x = (BM_HDR + "31/12/22;Ant.;;-1000;-1000;;S.ANTERIOR\n"
+         + "10/08/23;COBA;1;-10000;-11000;;CREDITO CTA. CTE.\n"
+         + BM_PIE + ";Total;;-11000;;;\n").encode()
+    y = (BM_HDR + "30/06/23;Ant.;;-5000;-5000;;S.ANTERIOR\n"
+         + "10/07/23;COBA;2;-2000;-7000;;CREDITO CTA. CTE.\n"
+         + BM_PIE + ";Total;;-7000;;;\n").encode()
+    # Y el mismo día, con montos distintos: también son dos cuentas.
+    y_mismo_dia = (BM_HDR + "31/12/22;Ant.;;-5000;-5000;;S.ANTERIOR\n"
+                   + "10/07/23;COBA;2;-2000;-7000;;CREDITO CTA. CTE.\n"
+                   + BM_PIE + ";Total;;-7000;;;\n").encode()
+    for otra in (y, y_mismo_dia):
+        for orden in ((x, otra), (otra, x)):
+            cuenta = _Cuenta()
+            cuenta.importar([(f"bm-{i}.csv", a) for i, a in enumerate(orden)], "bullmarket")
+            assert cuenta.efectivo("ARS") == 18000.0
 
 
 def test_bull_market_el_segundo_arranca_antes_del_primer_movimiento_del_primero():
