@@ -192,7 +192,11 @@ def de_hoy(car: dict) -> dict:
     junto: la cartera no repite activos. Su marca `local` es LA de la ficha
     (`esAccionLocal` de utils/accionLocal.js): acción argentina sólo si TODOS sus
     lotes son de BYMA; si no, el ADR. Antes decidía el lote más grande, y la
-    cartera usaba otra serie que la ficha (auditoría 05/11, H3)."""
+    cartera usaba otra serie que la ficha (auditoría 05/11, H3).
+    `parte`: qué porcentaje de toda tu plata (`car['total']`: también el
+    efectivo, los bonos, los fondos y los plazos fijos) es lo que se simula. Sin
+    él, una cartera mitad fondo y mitad CEDEARs se veía como «tu cartera», toda en
+    CEDEARs (auditoría de producto 05/11, A4). Un porcentaje, nunca la plata."""
     from cripto import yahoo_de_cripto
     juntos, afuera = {}, []
     for (asset, local), valor in car["tenencias"].items():
@@ -211,9 +215,12 @@ def de_hoy(car: dict) -> dict:
     quedan, sobran = orden[:MAX_ACTIVOS], orden[MAX_ACTIVOS:]
     afuera += [{"asset": j["asset"], "tipo": j["tipo"], "motivo": "tope"} for j in sobran]
     pesos = _sobre_cien([j["valor"] for j in quedan]) if quedan else []
+    total = car.get("total") or sum(v for v in car["tenencias"].values() if v > 0)
+    simulado = sum(j["valor"] for j in quedan)
     return {"activos": [{"asset": j["asset"], "local": j["local"], "peso": p, "tipo": j["tipo"]}
                         for j, p in zip(quedan, pesos)],
-            "afuera": sorted(afuera, key=lambda x: (x["motivo"], x["asset"]))}
+            "afuera": sorted(afuera, key=lambda x: (x["motivo"], x["asset"])),
+            "parte": round(simulado / total * 100) if total > 0 and quedan else None}
 
 
 @pesado

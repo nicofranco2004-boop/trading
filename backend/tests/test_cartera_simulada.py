@@ -246,6 +246,15 @@ class DeHoy(unittest.TestCase):
         self.assertEqual([(x["asset"], x["motivo"]) for x in r["afuera"]],
                          [("COCOSPPA", "sin_serie"), ("S30N6", "sin_serie"), ("YMCXO", "sin_serie")])
 
+    def test_dice_que_parte_de_tu_plata_se_simula(self):
+        # Mitad en acciones y mitad en bonos y efectivo: lo simulado es la mitad de tu
+        # plata, y se dice (auditoría de producto 05/11, A4). Un porcentaje, nunca plata.
+        car = self._car([("AAPL", False, 600.0, "STOCK"), ("AL30", False, 400.0, "BOND")])
+        car["total"] = 1200.0   # + US$ 200 de efectivo, que no es una tenencia
+        r = cs.de_hoy(car)
+        self.assertEqual(r["parte"], 50)
+        self.assertEqual(cs.de_hoy(self._car([("AL30", False, 400.0, "BOND")]))["parte"], None)
+
     def test_ninguno_queda_en_cero(self):
         # US$ 20 de BTC al lado de US$ 100.000 en acciones: con 0 % la fila quedaba
         # vacía y la ruta lo rechazaba. Lleva un décimo, sacado del que más pesa
@@ -405,6 +414,8 @@ class Ruta(unittest.TestCase):
         self.assertEqual([a["asset"] for a in res["activos"]], ["AAPL"])
         self.assertEqual(sorted((x["asset"], x["motivo"]) for x in res["afuera"]),
                          [("COCOSPPA", "sin_serie"), ("S30N6", "sin_serie"), ("YMCXO", "sin_serie")])
+        self.assertIsNotNone(res["parte"])
+        self.assertLess(res["parte"], 100)   # lo que quedó afuera también es tu plata
         # Y la noche ya no le pide a Yahoo el fondo crudo (lo pedía todos los días).
         with main.db_abierta() as conn:
             seguidos = velas_diarias.simbolos_a_seguir(conn)
@@ -456,15 +467,38 @@ class Ruta(unittest.TestCase):
         # Su historia llega hasta hace 20 días y otra persona lo está bajando: antes
         # decía «vieja» (sacalo) en vez de «bajando» (esperá unos segundos), y la
         # pantalla no reintentaba (auditoría de seguridad 05/11, hallazgo 6).
+        self._cvx_viejo()
+        with mock.patch.object(velas_diarias, "_a_pedido_en_curso", {"CVX"}):
+            res = self._get("activos=AAPL,CVX&pesos=50,50&anios=1").json()
+        self.assertEqual((res["disponible"], res["motivo"]), (False, "bajando"))
+
+    def _cvx_viejo(self):
+        """CVX con historia hasta hace 20 días: lo que la bajada a pedido quiere poner al día."""
         self._posicion("Schwab", "USD", "CVX", "STOCK")
         with main.db_abierta() as conn:
             for d in _ruedas(self.hoy - timedelta(days=20), 300):
                 conn.execute("INSERT INTO velas_diarias (symbol, date, open, high, low, close, volume) "
                              "VALUES ('CVX', ?, 150, 151, 149, 150, 1000)", (d.isoformat(),))
             conn.commit()
+
+    def test_comparar_y_una_regla_tambien_dicen_que_lo_estan_bajando(self):
+        # La misma regla (`_motivo_de_la_bajada`) en las otras dos rutas técnicas, que
+        # ninguna prueba recorría (auditoría de verificación 05/11, V12): antes
+        # Comparar decía «sus precios llegan hasta…» y «Una regla», «vieja».
+        self._cvx_viejo()
         with mock.patch.object(velas_diarias, "_a_pedido_en_curso", {"CVX"}):
-            res = self._get("activos=AAPL,CVX&pesos=50,50&anios=1").json()
-        self.assertEqual((res["disponible"], res["motivo"]), (False, "bajando"))
+            cmp = self.client.get("/api/comparar/precio?activos=CVX,AAPL&plazo=1a", headers=self.h).json()
+        self.assertIn({"clave": "CVX", "motivo": "bajando"},
+                      [{"clave": f["clave"], "motivo": f["motivo"]} for f in cmp["faltan"]], cmp["faltan"])
+        # «Una regla», con un activo que todavía no tiene precios: antes decía que no
+        # los tenemos («sin_serie»), aunque otra persona los estaba bajando.
+        self.yahoo.precios["NVDA"] = lambda i, d: 100 + i * 0.1
+        with mock.patch.object(velas_diarias, "_a_pedido_en_curso", {"NVDA"}):
+            regla = self.client.get("/api/tecnico/NVDA/backtest?reglas=rsi&anios=1", headers=self.h).json()
+        self.assertEqual((regla["disponible"], regla["motivo"]), (False, "bajando"))
+        with mock.patch("velas_diarias._hay_cupo", lambda uid, n: False):
+            regla = self.client.get("/api/tecnico/NVDA/backtest?reglas=rsi&anios=1", headers=self.h).json()
+        self.assertEqual((regla["disponible"], regla["motivo"]), (False, "tope"))
 
     def test_la_suma_del_100_es_la_que_ve_la_pantalla(self):
         # La tolerancia que importa es la de la RUTA (F2), y con la suma redondeada a
@@ -507,7 +541,8 @@ class Ruta(unittest.TestCase):
         self.assertEqual(sorted(a["asset"] for a in res["activos"]), ["AAPL", "MSFT"])
         self.assertAlmostEqual(sum(a["peso"] for a in res["activos"]), 100.0, places=9)
         self.assertEqual(res["afuera"], [])
-        self.assertEqual(set(res), {"activos", "afuera"})
+        self.assertEqual(set(res), {"activos", "afuera", "parte"})
+        self.assertEqual(res["parte"], 100)   # sólo acciones: se simula toda tu plata
         self.assertEqual({k for a in res["activos"] for k in a}, {"asset", "local", "peso", "tipo"})
         # Y lo que arma se puede simular tal cual.
         q = (f"activos={','.join(a['asset'] for a in res['activos'])}"
