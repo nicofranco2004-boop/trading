@@ -12,6 +12,9 @@
 // La causa se tapó en vercel.json (/assets/ ya no cae al index.html). Lo de acá
 // es la otra mitad: rescatar a los navegadores que YA quedaron envenenados.
 
+import { guardar as guardarEnAlmacen, leer as leerDelAlmacen } from './almacen'
+import { CATALOGO } from './catalogoDelAlmacen'
+
 // Cada patrón está escrito contra el mensaje TEXTUAL de un motor real, no contra
 // una paráfrasis. La lista original se armó mirando Chrome y NINGUNO matcheaba
 // lo que Safari escribe de verdad — por eso en Safari la reparación automática
@@ -92,4 +95,52 @@ export async function repararAssets(urls, { fetchImpl, timeoutMs = 3000 } = {}) 
   // Nunca dejamos al usuario esperando: si la red no responde, recargamos igual.
   await Promise.race([trabajo, new Promise(r => setTimeout(r, timeoutMs))])
   return reparados
+}
+
+// ─── Reparar y recargar ──────────────────────────────────────────────────────
+// Antes de recargar hay que REPARAR, no alcanza con volver a pedir la página:
+// si el navegador tiene un /assets/*.js envenenado (HTML guardado como si fuera
+// JavaScript, con `immutable` de un año), recargar le vuelve a dar el HTML de su
+// propio cache sin consultar al servidor — y el usuario queda en loop. El
+// `cache: 'reload'` de repararAssets() es lo único que pisa esa entrada.
+async function repararYRecargar(mensaje) {
+  try {
+    const recursos = performance.getEntriesByType('resource').map(r => r.name)
+    const nodos = [...document.querySelectorAll('script[src], link[href]')]
+      .map(n => n.src || n.href)
+    await repararAssets(
+      urlsAReparar({ mensaje, recursos, nodos, origin: window.location.origin }),
+    )
+  } catch {
+    // La reparación es best-effort: si algo falla, recargamos igual.
+  }
+  try {
+    // location.reload() sin args usa el cache. Para forzar bypass del
+    // bfcache de Safari, navegamos con un cache-buster query.
+    const url = new URL(window.location.href)
+    url.searchParams.set('_t', String(Date.now()))
+    window.location.replace(url.toString())
+  } catch {
+    window.location.reload()
+  }
+}
+
+/** Repara y recarga, una sola vez cada 10 s (si el reload no lo arregla, no hay
+ *  loop: el error queda a la vista). true si arrancó la recarga. */
+export function recargarUnaVez(mensaje) {
+  try {
+    const lastReload = parseInt(leerDelAlmacen(CATALOGO.recargaPorVersion) || '0', 10)
+    const now = Date.now()
+    if (now - lastReload > 10_000) {
+      guardarEnAlmacen(CATALOGO.recargaPorVersion, String(now))
+      repararYRecargar(mensaje)
+      return true
+    }
+    return false
+  } catch {
+    // El almacenamiento de la pestaña puede no estar disponible en el modo privado de iOS.
+    // Como último recurso, reparamos y recargamos igual.
+    repararYRecargar(mensaje)
+    return true
+  }
 }

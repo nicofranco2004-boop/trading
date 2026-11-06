@@ -2,6 +2,7 @@ import { Component } from 'react'
 import { AlertTriangle, RefreshCw, Eraser } from 'lucide-react'
 import { hay, leer, guardar, vaciar } from '../utils/almacen'
 import { CATALOGO, LOCAL, SESION } from '../utils/catalogoDelAlmacen'
+import { isChunkLoadError, recargarUnaVez } from '../utils/chunkErrors'
 
 // Sin esto, cualquier excepción en el render desmonta el árbol entero y deja la
 // PANTALLA EN NEGRO: sin mensaje, sin pista, y sin forma de que el usuario se
@@ -30,7 +31,7 @@ export function limpiarEstadoLocal() {
 export default class ErrorBoundary extends Component {
   constructor(props) {
     super(props)
-    this.state = { error: null, info: null }
+    this.state = { error: null, info: null, recargando: false }
   }
 
   static getDerivedStateFromError(error) {
@@ -38,6 +39,15 @@ export default class ErrorBoundary extends Component {
   }
 
   componentDidCatch(error, info) {
+    // Un pedazo de la app que ya no existe (se publicó una versión nueva con la
+    // pestaña abierta y se abrió una pantalla que se baja aparte, como «Una
+    // cartera»): React lo atrapa ACÁ y el navegador nunca avisa, así que la
+    // reparación de main.jsx no corría y quedaba «Se rompió esta pantalla» en vez
+    // de la app (verificación 05/11, V3). Se repara y se recarga una vez.
+    if (isChunkLoadError(error?.message) && recargarUnaVez(error.message)) {
+      this.setState({ info, recargando: true })
+      return
+    }
     this.setState({ info })
     // eslint-disable-next-line no-console
     console.error('[Rendi] error no capturado:', error, info?.componentStack)
@@ -49,8 +59,15 @@ export default class ErrorBoundary extends Component {
   }
 
   render() {
-    const { error, info } = this.state
+    const { error, info, recargando } = this.state
     if (!error) return this.props.children
+    if (recargando) {
+      return (
+        <div role="status" className="min-h-screen flex items-center justify-center p-6 bg-bg-0 text-ink-1 text-sm">
+          Hay una versión nueva de Rendi: la estamos cargando…
+        </div>
+      )
+    }
 
     const detalle = [
       error?.message || String(error),
